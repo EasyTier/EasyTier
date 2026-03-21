@@ -7,6 +7,8 @@ use axum::{
 use axum_login::AuthUser as _;
 use easytier::proto::rpc_types::controller::BaseController;
 
+use crate::db::UserIdInDb;
+
 use super::{other_error, AppState, HttpHandleError};
 
 #[derive(Debug, serde::Deserialize)]
@@ -162,11 +164,11 @@ pub fn router() -> Router<super::AppStateInner> {
 /// Internal proxy-rpc handler: no AuthSession, resolves the active session by machine_id.
 pub async fn handle_proxy_rpc_internal(
     State(client_mgr): AppState,
-    Path(machine_id): Path<uuid::Uuid>,
+    Path((user_id, machine_id)): Path<(UserIdInDb, uuid::Uuid)>,
     Json(req): Json<ProxyRpcRequest>,
 ) -> Result<Json<serde_json::Value>, HttpHandleError> {
     let session = client_mgr
-        .get_session_by_machine_id_global(&machine_id)
+        .get_session_by_machine_id(user_id, &machine_id)
         .ok_or((
             StatusCode::NOT_FOUND,
             other_error("Session not found").into(),
@@ -176,7 +178,7 @@ pub async fn handle_proxy_rpc_internal(
 
 pub fn router_internal() -> Router<super::AppStateInner> {
     Router::new().route(
-        "/api/internal/machines/:machine-id/proxy-rpc",
+        "/api/internal/users/:user-id/machines/:machine-id/proxy-rpc",
         post(handle_proxy_rpc_internal),
     )
 }

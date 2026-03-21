@@ -88,12 +88,16 @@ impl Drop for SessionData {
                 if self.webhook_config.is_enabled() {
                     let webhook = self.webhook_config.clone();
                     let machine_id = token.machine_id.to_string();
+                    let user_id = Some(token.user_id);
+                    let token_value = token.token.clone();
                     let web_instance_id = webhook.web_instance_id.clone();
                     let binding_version = self.binding_version;
                     tokio::spawn(async move {
                         webhook
                             .notify_node_disconnected(&crate::webhook::NodeDisconnectedRequest {
                                 machine_id,
+                                token: token_value,
+                                user_id,
                                 web_instance_id,
                                 binding_version,
                             })
@@ -190,6 +194,9 @@ impl SessionRpcService {
                 machine_id: machine_id.to_string(),
                 hostname: req.hostname.clone(),
                 version: req.easytier_version.clone(),
+                os_type: req.device_os.as_ref().map(|info| info.os_type.clone()),
+                os_version: req.device_os.as_ref().map(|info| info.version.clone()),
+                os_distribution: req.device_os.as_ref().map(|info| info.distribution.clone()),
                 web_instance_id: data.webhook_config.web_instance_id.clone(),
                 web_instance_api_base_url: data.webhook_config.web_instance_api_base_url.clone(),
             };
@@ -283,8 +290,12 @@ impl SessionRpcService {
                 let connect_req = crate::webhook::NodeConnectedRequest {
                     machine_id: machine_id.to_string(),
                     token: req.user_token.clone(),
+                    user_id: Some(user_id),
                     hostname: req.hostname.clone(),
                     version: req.easytier_version.clone(),
+                    os_type: req.device_os.as_ref().map(|info| info.os_type.clone()),
+                    os_version: req.device_os.as_ref().map(|info| info.version.clone()),
+                    os_distribution: req.device_os.as_ref().map(|info| info.distribution.clone()),
                     web_instance_id: webhook.web_instance_id.clone(),
                     binding_version,
                 };

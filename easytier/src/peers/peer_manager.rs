@@ -819,17 +819,15 @@ impl PeerManager {
                             tracing::error!(?e, "decrypt failed");
                             continue;
                         }
-                    } else if !peers.has_peer(from_peer_id)
-                        && !foreign_client.has_next_hop(from_peer_id)
-                    {
+                    } else if hdr.is_encrypted() {
                         match relay_peer_map.decrypt_if_needed(&mut ret).await {
                             Ok(true) => {}
                             Ok(false) => {
-                                tracing::error!("relay session not found");
+                                tracing::error!("secure session not found");
                                 continue;
                             }
                             Err(e) => {
-                                tracing::error!(?e, "relay decrypt failed");
+                                tracing::error!(?e, "secure decrypt failed");
                                 continue;
                             }
                         }
@@ -904,6 +902,16 @@ impl PeerManager {
             async fn try_process_packet_from_peer(&self, packet: ZCPacket) -> Option<ZCPacket> {
                 let hdr = packet.peer_manager_header().unwrap();
                 if hdr.packet_type == PacketType::Data as u8 && !hdr.is_not_send_to_tun() {
+                    if hdr.is_encrypted() || hdr.is_compressed() {
+                        tracing::warn!(
+                            from_peer_id = hdr.from_peer_id.get(),
+                            to_peer_id = hdr.to_peer_id.get(),
+                            encrypted = hdr.is_encrypted(),
+                            compressed = hdr.is_compressed(),
+                            "dropping packet before nic because it is not fully decoded"
+                        );
+                        return None;
+                    }
                     tracing::trace!(?packet, "send packet to nic channel");
                     // TODO: use a function to get the body ref directly for zero copy
                     let _ = self.nic_channel.send(packet).await;
@@ -987,6 +995,11 @@ impl PeerManager {
                 if let Some(foreign_client) = self.foreign_network_client.upgrade() {
                     let _ = foreign_client.get_peer_map().close_peer(peer_id).await;
                 }
+            }
+
+            async fn get_peer_public_key(&self, peer_id: PeerId) -> Option<Vec<u8>> {
+                let peer_map = self.peers.upgrade()?;
+                peer_map.get_peer_public_key(peer_id)
             }
 
             async fn get_peer_identity_type(&self, peer_id: PeerId) -> Option<PeerIdentityType> {

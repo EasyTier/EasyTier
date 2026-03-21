@@ -57,6 +57,17 @@ fn get_faketcp_tunnel_type_str(driver_type: &str) -> String {
     format!("faketcp_{}", driver_type)
 }
 
+async fn create_tun_off_runtime(
+    interface_name: String,
+    src_addr: Option<SocketAddr>,
+    dst_addr: SocketAddr,
+) -> Result<Arc<dyn stack::Tun>, TunnelError> {
+    tokio::task::spawn_blocking(move || create_tun(&interface_name, src_addr, dst_addr))
+        .await
+        .map_err(|e| TunnelError::InternalError(format!("faketcp create_tun task failed: {e}")))?
+        .map_err(Into::into)
+}
+
 pub struct FakeTcpTunnelListener {
     addr: url::Url,
     os_listener: Option<tokio::net::TcpListener>,
@@ -137,7 +148,9 @@ impl FakeTcpTunnelListener {
         let ret = match self.stack_map.entry(interface_name.to_string()) {
             dashmap::Entry::Occupied(entry) => entry.get().clone(),
             dashmap::Entry::Vacant(entry) => {
-                let tun = create_tun(interface_name, None, local_socket_addr)?;
+                let tun =
+                    create_tun_off_runtime(interface_name.to_string(), None, local_socket_addr)
+                        .await?;
                 tracing::info!(
                     ?local_socket_addr,
                     "create new stack with interface_name: {:?}",
@@ -314,7 +327,8 @@ impl crate::tunnel::TunnelConnector for FakeTcpTunnelConnector {
             IpAddr::V6(ip) => (None, Some(ip)),
         };
 
-        let tun = create_tun(&interface_name, Some(remote_addr), local_addr)?;
+        let tun =
+            create_tun_off_runtime(interface_name.clone(), Some(remote_addr), local_addr).await?;
         let local_ip = local_ip.unwrap_or("0.0.0.0".parse().unwrap());
         let mut stack = stack::Stack::new(tun, local_ip, local_ip6, mac);
         let driver_type = stack.driver_type();

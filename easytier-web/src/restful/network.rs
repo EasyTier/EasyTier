@@ -299,10 +299,9 @@ impl NetworkApi {
 
     async fn handle_run_network_instance_internal(
         State(client_mgr): AppState,
-        Path(machine_id): Path<uuid::Uuid>,
+        Path((user_id, machine_id)): Path<(UserIdInDb, uuid::Uuid)>,
         Json(payload): Json<RunNetworkJsonReq>,
     ) -> Result<Json<Void>, HttpHandleError> {
-        let user_id = Self::get_user_id_from_machine(&client_mgr, &machine_id)?;
         client_mgr
             .handle_run_network_instance((user_id, machine_id), payload.config, payload.save)
             .await
@@ -312,9 +311,8 @@ impl NetworkApi {
 
     async fn handle_remove_network_instance_internal(
         State(client_mgr): AppState,
-        Path((machine_id, inst_id)): Path<(uuid::Uuid, uuid::Uuid)>,
+        Path((user_id, machine_id, inst_id)): Path<(UserIdInDb, uuid::Uuid, uuid::Uuid)>,
     ) -> Result<(), HttpHandleError> {
-        let user_id = Self::get_user_id_from_machine(&client_mgr, &machine_id)?;
         client_mgr
             .handle_remove_network_instances((user_id, machine_id), vec![inst_id])
             .await
@@ -323,9 +321,8 @@ impl NetworkApi {
 
     async fn handle_list_network_instance_ids_internal(
         State(client_mgr): AppState,
-        Path(machine_id): Path<uuid::Uuid>,
+        Path((user_id, machine_id)): Path<(UserIdInDb, uuid::Uuid)>,
     ) -> Result<Json<ListNetworkInstanceIdsJsonResp>, HttpHandleError> {
-        let user_id = Self::get_user_id_from_machine(&client_mgr, &machine_id)?;
         Ok(client_mgr
             .handle_list_network_instance_ids((user_id, machine_id))
             .await
@@ -335,10 +332,9 @@ impl NetworkApi {
 
     async fn handle_collect_network_info_internal(
         State(client_mgr): AppState,
-        Path(machine_id): Path<uuid::Uuid>,
+        Path((user_id, machine_id)): Path<(UserIdInDb, uuid::Uuid)>,
         Json(payload): Json<CollectNetworkInfoJsonReq>,
     ) -> Result<Json<CollectNetworkInfoResponse>, HttpHandleError> {
-        let user_id = Self::get_user_id_from_machine(&client_mgr, &machine_id)?;
         Ok(client_mgr
             .handle_collect_network_info((user_id, machine_id), payload.inst_ids)
             .await
@@ -346,32 +342,19 @@ impl NetworkApi {
             .into())
     }
 
-    /// Look up user_id from a machine's active session token.
-    fn get_user_id_from_machine(
-        client_mgr: &AppStateInner,
-        machine_id: &uuid::Uuid,
-    ) -> Result<UserIdInDb, HttpHandleError> {
-        client_mgr
-            .get_user_id_by_machine_id_global(machine_id)
-            .ok_or((
-                StatusCode::NOT_FOUND,
-                other_error("Machine not found").into(),
-            ))
-    }
-
     pub fn build_route_internal() -> Router<AppStateInner> {
         Router::new()
             .route(
-                "/api/internal/machines/:machine-id/networks",
+                "/api/internal/users/:user-id/machines/:machine-id/networks",
                 post(Self::handle_run_network_instance_internal)
                     .get(Self::handle_list_network_instance_ids_internal),
             )
             .route(
-                "/api/internal/machines/:machine-id/networks/:inst-id",
+                "/api/internal/users/:user-id/machines/:machine-id/networks/:inst-id",
                 delete(Self::handle_remove_network_instance_internal),
             )
             .route(
-                "/api/internal/machines/:machine-id/networks/info",
+                "/api/internal/users/:user-id/machines/:machine-id/networks/info",
                 get(Self::handle_collect_network_info_internal),
             )
     }

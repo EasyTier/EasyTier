@@ -278,13 +278,9 @@ impl PeerMap {
 
     pub async fn list_peers_with_conn(&self) -> Vec<PeerId> {
         let mut ret = Vec::new();
-        let peers = self.list_peers();
-        for peer_id in peers.iter() {
-            let Some(peer) = self.get_peer_by_id(*peer_id) else {
-                continue;
-            };
-            if !peer.list_peer_conns().await.is_empty() {
-                ret.push(*peer_id);
+        for item in self.peer_map.iter() {
+            if item.value().has_live_conns() {
+                ret.push(*item.key());
             }
         }
         ret
@@ -306,6 +302,11 @@ impl PeerMap {
     pub fn get_peer_identity_type(&self, peer_id: PeerId) -> Option<PeerIdentityType> {
         self.get_peer_by_id(peer_id)
             .and_then(|p| p.get_peer_identity_type())
+    }
+
+    pub fn get_peer_public_key(&self, peer_id: PeerId) -> Option<Vec<u8>> {
+        self.get_peer_by_id(peer_id)
+            .and_then(|p| p.get_peer_public_key())
     }
 
     pub async fn close_peer_conn(

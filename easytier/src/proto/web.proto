@@ -4,6 +4,12 @@ import "common.proto";
 
 package web;
 
+message DeviceOsInfo {
+  string os_type = 1;
+  string version = 2;
+  string distribution = 3;
+}
+
 message HeartbeatRequest {
   common.UUID machine_id = 1;
   common.UUID inst_id = 2;
@@ -14,6 +20,7 @@ message HeartbeatRequest {
   string hostname = 6;
 
   repeated common.UUID running_network_instances = 7;
+  DeviceOsInfo device_os = 8;
 }
 
 message HeartbeatResponse {}
