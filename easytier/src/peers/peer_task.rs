@@ -1,10 +1,9 @@
 use std::{
     result::Result,
-    sync::{
-        atomic::{AtomicU64, Ordering},
-        Arc, Mutex,
-    },
+    sync::{atomic::Ordering, Arc, Mutex},
 };
+
+use atomic_shim::AtomicU64;
 
 use async_trait::async_trait;
 use dashmap::DashMap;
