@@ -272,6 +272,7 @@ impl GlobalCtx {
             support_conn_list_sync: true, // Enable selective peer list sync by default
             quic_input: !config_fs.get_flags().disable_quic_input,
             no_relay_quic: config_fs.get_flags().disable_relay_quic,
+            need_p2p: config_fs.get_flags().need_p2p,
             ..Default::default()
         };
 

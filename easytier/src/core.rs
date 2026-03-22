@@ -406,6 +406,15 @@ struct NetworkOptions {
 
     #[arg(
         long,
+        env = "ET_LAZY_P2P",
+        help = t!("core_clap.lazy_p2p").to_string(),
+        num_args = 0..=1,
+        default_missing_value = "true"
+    )]
+    lazy_p2p: Option<bool>,
+
+    #[arg(
+        long,
         env = "ET_DISABLE_P2P",
         help = t!("core_clap.disable_p2p").to_string(),
         num_args = 0..=1,
@@ -448,6 +457,15 @@ struct NetworkOptions {
         default_missing_value = "true"
     )]
     relay_all_peer_rpc: Option<bool>,
+
+    #[arg(
+        long,
+        env = "ET_NEED_P2P",
+        help = t!("core_clap.need_p2p").to_string(),
+        num_args = 0..=1,
+        default_missing_value = "true"
+    )]
+    need_p2p: Option<bool>,
 
     #[cfg(feature = "socks5")]
     #[arg(
@@ -1012,6 +1030,7 @@ impl NetworkOptions {
         }
         f.disable_p2p = self.disable_p2p.unwrap_or(f.disable_p2p);
         f.p2p_only = self.p2p_only.unwrap_or(f.p2p_only);
+        f.lazy_p2p = self.lazy_p2p.unwrap_or(f.lazy_p2p);
         f.disable_tcp_hole_punching = self
             .disable_tcp_hole_punching
             .unwrap_or(f.disable_tcp_hole_punching);
@@ -1019,6 +1038,7 @@ impl NetworkOptions {
             .disable_udp_hole_punching
             .unwrap_or(f.disable_udp_hole_punching);
         f.relay_all_peer_rpc = self.relay_all_peer_rpc.unwrap_or(f.relay_all_peer_rpc);
+        f.need_p2p = self.need_p2p.unwrap_or(f.need_p2p);
         f.multi_thread = self.multi_thread.unwrap_or(f.multi_thread);
         if let Some(compression) = &self.compression {
             f.data_compress_algo = match compression.as_str() {

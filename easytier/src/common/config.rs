@@ -40,6 +40,7 @@ pub fn gen_default_flags() -> Flags {
         relay_network_whitelist: "*".to_string(),
         disable_p2p: false,
         p2p_only: false,
+        lazy_p2p: false,
         relay_all_peer_rpc: false,
         disable_tcp_hole_punching: false,
         disable_udp_hole_punching: false,
@@ -63,6 +64,7 @@ pub fn gen_default_flags() -> Flags {
         tld_dns_zone: DEFAULT_ET_DNS_ZONE.to_string(),
 
         quic_listen_port: u32::MAX,
+        need_p2p: false,
     }
 }
 

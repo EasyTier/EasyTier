@@ -8,7 +8,7 @@ use std::{
         atomic::{AtomicBool, Ordering},
         Arc,
     },
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use crate::{
@@ -40,7 +40,10 @@ use rand::Rng;
 use tokio::{net::UdpSocket, task::JoinSet, time::timeout};
 use url::Host;
 
-use super::{create_connector_by_url, udp_hole_punch};
+use super::{
+    create_connector_by_url, should_background_p2p_with_peer, should_try_p2p_with_peer,
+    udp_hole_punch,
+};
 
 pub const DIRECT_CONNECTOR_SERVICE_ID: u32 = 1;
 pub const DIRECT_CONNECTOR_BLACKLIST_TIMEOUT_SEC: u64 = 300;
@@ -58,14 +61,22 @@ impl PeerManagerForDirectConnector for PeerManager {
     async fn list_peers(&self) -> Vec<PeerId> {
         let mut ret = vec![];
         let allow_public_server = use_global_var!(DIRECT_CONNECT_TO_PUBLIC_SERVER);
+        let lazy_p2p = self.get_global_ctx().get_flags().lazy_p2p;
+        let now = Instant::now();
 
         let routes = self.list_routes().await;
-        for r in routes.iter().filter(|r| {
-            r.feature_flag
-                .map(|r| allow_public_server || !r.is_public_server)
-                .unwrap_or(true)
-        }) {
-            ret.push(r.peer_id);
+        for route in routes.iter() {
+            let static_allowed = should_background_p2p_with_peer(
+                route.feature_flag.as_ref(),
+                allow_public_server,
+                lazy_p2p,
+            );
+            let dynamic_allowed =
+                should_try_p2p_with_peer(route.feature_flag.as_ref(), allow_public_server)
+                    && self.has_recent_traffic(route.peer_id, now);
+            if static_allowed || dynamic_allowed {
+                ret.push(route.peer_id);
+            }
         }
 
         ret
@@ -625,7 +636,11 @@ impl DirectConnectorManager {
             global_ctx.clone(),
             peer_manager.clone(),
         ));
-        let client = PeerTaskManager::new(DirectConnectorLauncher(data.clone()), peer_manager);
+        let client = PeerTaskManager::new_with_external_signal(
+            DirectConnectorLauncher(data.clone()),
+            peer_manager.clone(),
+            Some(peer_manager.p2p_demand_notify()),
+        );
         Self {
             global_ctx,
             data,

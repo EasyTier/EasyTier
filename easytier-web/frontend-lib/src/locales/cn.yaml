@@ -113,6 +113,9 @@ disable_p2p_help: 禁用 P2P 模式，所有流量通过手动指定的服务器
 p2p_only: 仅 P2P
 p2p_only_help: 仅与已经建立P2P连接的对等节点通信，不通过其他节点中转。
 
+lazy_p2p: 延迟 P2P
+lazy_p2p_help: 仅在实际流量需要某个对等节点时才尝试建立 P2P。开启 need-p2p 的节点仍会被主动连接。
+
 bind_device: 仅使用物理网卡
 bind_device_help: 仅使用物理网卡，避免 EasyTier 通过其他虚拟网建立连接。
 
@@ -126,6 +129,9 @@ relay_all_peer_rpc: 转发RPC包
 relay_all_peer_rpc_help: |
   允许转发所有对等节点的RPC数据包，即使对等节点不在转发网络白名单中。
   这可以帮助白名单外网络中的对等节点建立P2P连接。
+
+need_p2p: 需要 P2P
+need_p2p_help: 即使其他节点启用了 lazy p2p，也要求它们主动与当前节点建立 P2P 连接。
 
 multi_thread: 启用多线程
 multi_thread_help: 使用多线程运行时

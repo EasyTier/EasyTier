@@ -593,9 +593,12 @@ impl Instance {
         let mut direct_conn_manager =
             DirectConnectorManager::new(global_ctx.clone(), peer_manager.clone());
         direct_conn_manager.run();
+        let direct_conn_manager = Arc::new(direct_conn_manager);
 
-        let udp_hole_puncher = UdpHolePunchConnector::new(peer_manager.clone());
-        let tcp_hole_puncher = TcpHolePunchConnector::new(peer_manager.clone());
+        let udp_hole_puncher =
+            Arc::new(Mutex::new(UdpHolePunchConnector::new(peer_manager.clone())));
+        let tcp_hole_puncher =
+            Arc::new(Mutex::new(TcpHolePunchConnector::new(peer_manager.clone())));
 
         let peer_center = Arc::new(PeerCenterInstance::new(peer_manager.clone()));
 
@@ -618,9 +621,9 @@ impl Instance {
             peer_manager,
             listener_manager,
             conn_manager,
-            direct_conn_manager: Arc::new(direct_conn_manager),
-            udp_hole_puncher: Arc::new(Mutex::new(udp_hole_puncher)),
-            tcp_hole_puncher: Arc::new(Mutex::new(tcp_hole_puncher)),
+            direct_conn_manager,
+            udp_hole_puncher,
+            tcp_hole_puncher,
 
             ip_proxy: None,
             #[cfg(feature = "kcp")]

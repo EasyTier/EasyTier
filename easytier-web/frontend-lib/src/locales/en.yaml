@@ -112,6 +112,9 @@ disable_p2p_help: Disable P2P mode; route all traffic through a manually specifi
 p2p_only: P2P Only
 p2p_only_help: Only communicate with peers that have already established P2P connections, do not relay through other nodes.
 
+lazy_p2p: Lazy P2P
+lazy_p2p_help: Only try to establish P2P when traffic actually targets a peer. Peers with need-p2p enabled are still connected proactively.
+
 bind_device: Bind to Physical Device Only
 bind_device_help: Use only the physical network interface to prevent EasyTier from connecting via virtual networks.
 
@@ -125,6 +128,9 @@ relay_all_peer_rpc: Relay RPC Packets
 relay_all_peer_rpc_help: |
   Relay all peer rpc packets, even if the peer is not in the relay network whitelist.
   This can help peers not in relay network whitelist to establish p2p connection.
+
+need_p2p: Need P2P
+need_p2p_help: Ask other peers to proactively establish P2P connections to this node even when they enable lazy P2P.
 
 multi_thread: Multi Thread
 multi_thread_help: Use multi-thread runtime

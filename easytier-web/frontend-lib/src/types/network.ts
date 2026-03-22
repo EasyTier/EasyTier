@@ -53,10 +53,12 @@ export interface NetworkConfig {
   disable_quic_input?: boolean
   disable_p2p?: boolean
   p2p_only?: boolean
+  lazy_p2p?: boolean
   bind_device?: boolean
   no_tun?: boolean
   enable_exit_node?: boolean
   relay_all_peer_rpc?: boolean
+  need_p2p?: boolean
   multi_thread?: boolean
   proxy_forward_by_system?: boolean
   disable_encryption?: boolean
@@ -125,10 +127,12 @@ export function DEFAULT_NETWORK_CONFIG(): NetworkConfig {
     disable_quic_input: false,
     disable_p2p: false,
     p2p_only: false,
+    lazy_p2p: false,
     bind_device: true,
     no_tun: false,
     enable_exit_node: false,
     relay_all_peer_rpc: false,
+    need_p2p: false,
     multi_thread: true,
     proxy_forward_by_system: false,
     disable_encryption: false,
