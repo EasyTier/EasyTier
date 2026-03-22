@@ -1182,7 +1182,7 @@ pub mod tests {
         tracing::debug!("pm_center: {:?}", pm_center.my_peer_id());
         let mut flag = pm_center.get_global_ctx().get_flags();
         flag.relay_network_whitelist = ["net1".to_string(), "net2*".to_string()].join(" ");
-        pm_center.get_global_ctx().config.set_flags(flag);
+        pm_center.get_global_ctx().set_flags(flag);
 
         let pma_net1 = create_mock_peer_manager_for_foreign_network(name.as_str()).await;
 
@@ -1209,7 +1209,7 @@ pub mod tests {
         let mut flag = pm_center.get_global_ctx().get_flags();
         flag.relay_network_whitelist = "".to_string();
         flag.relay_all_peer_rpc = true;
-        pm_center.get_global_ctx().config.set_flags(flag);
+        pm_center.get_global_ctx().set_flags(flag);
         tracing::debug!("pm_center: {:?}", pm_center.my_peer_id());
 
         let pma_net1 = create_mock_peer_manager_for_foreign_network("net1").await;

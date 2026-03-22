@@ -389,7 +389,7 @@ impl PeerManager {
             return;
         }
 
-        let flags = self.global_ctx.get_flags();
+        let flags = self.global_ctx.flags_arc();
         if flags.disable_p2p || !flags.lazy_p2p || self.has_directly_connected_conn(dst_peer_id) {
             return;
         }
@@ -2373,7 +2373,7 @@ mod tests {
         let create_mgr = |enable_encryption| async move {
             let (s, _r) = create_packet_recv_chan();
             let mock_global_ctx = get_mock_global_ctx();
-            mock_global_ctx.config.set_flags(Flags {
+            mock_global_ctx.set_flags(Flags {
                 enable_encryption,
                 data_compress_algo: CompressionAlgoPb::Zstd.into(),
                 ..Default::default()

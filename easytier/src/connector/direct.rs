@@ -711,7 +711,7 @@ mod tests {
 
         let mut f = p_a.get_global_ctx().get_flags();
         f.bind_device = false;
-        p_a.get_global_ctx().config.set_flags(f);
+        p_a.get_global_ctx().set_flags(f);
 
         p_c.get_global_ctx()
             .config
@@ -780,7 +780,7 @@ mod tests {
         }
         let mut f = p_c.get_global_ctx().config.get_flags();
         f.enable_ipv6 = ipv6;
-        p_c.get_global_ctx().config.set_flags(f);
+        p_c.get_global_ctx().set_flags(f);
         let mut lis_c = ListenerManager::new(p_c.get_global_ctx(), p_c.clone());
         lis_c.prepare_listeners().await.unwrap();
 

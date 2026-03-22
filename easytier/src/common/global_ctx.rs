@@ -202,10 +202,7 @@ pub struct GlobalCtx {
 
     running_listeners: Mutex<Vec<url::Url>>,
 
-    enable_exit_node: bool,
-    proxy_forward_by_system: bool,
-    no_tun: bool,
-    p2p_only: bool,
+    flags: ArcSwap<Flags>,
 
     feature_flags: AtomicCell<PeerFeatureFlag>,
 
@@ -261,18 +258,15 @@ impl GlobalCtx {
 
         let stun_info_collector = Arc::new(stun_info_collector);
 
-        let enable_exit_node = config_fs.get_flags().enable_exit_node || cfg!(target_env = "ohos");
-        let proxy_forward_by_system = config_fs.get_flags().proxy_forward_by_system;
-        let no_tun = config_fs.get_flags().no_tun;
-        let p2p_only = config_fs.get_flags().p2p_only;
+        let flags = config_fs.get_flags();
 
         let feature_flags = PeerFeatureFlag {
-            kcp_input: !config_fs.get_flags().disable_kcp_input,
-            no_relay_kcp: config_fs.get_flags().disable_relay_kcp,
+            kcp_input: !flags.disable_kcp_input,
+            no_relay_kcp: flags.disable_relay_kcp,
             support_conn_list_sync: true, // Enable selective peer list sync by default
-            quic_input: !config_fs.get_flags().disable_quic_input,
-            no_relay_quic: config_fs.get_flags().disable_relay_quic,
-            need_p2p: config_fs.get_flags().need_p2p,
+            quic_input: !flags.disable_quic_input,
+            no_relay_quic: flags.disable_relay_quic,
+            need_p2p: flags.need_p2p,
             ..Default::default()
         };
 
@@ -302,10 +296,7 @@ impl GlobalCtx {
 
             running_listeners: Mutex::new(Vec::new()),
 
-            enable_exit_node,
-            proxy_forward_by_system,
-            no_tun,
-            p2p_only,
+            flags: ArcSwap::new(Arc::new(flags)),
 
             feature_flags: AtomicCell::new(feature_flags),
 
@@ -456,11 +447,16 @@ impl GlobalCtx {
     }
 
     pub fn get_flags(&self) -> Flags {
-        self.config.get_flags()
+        self.flags.load().as_ref().clone()
     }
 
     pub fn set_flags(&self, flags: Flags) {
-        self.config.set_flags(flags);
+        self.config.set_flags(flags.clone());
+        self.flags.store(Arc::new(flags));
+    }
+
+    pub fn flags_arc(&self) -> Arc<Flags> {
+        self.flags.load_full()
     }
 
     pub fn get_128_key(&self) -> [u8; 16] {
@@ -504,15 +500,15 @@ impl GlobalCtx {
     }
 
     pub fn enable_exit_node(&self) -> bool {
-        self.enable_exit_node
+        self.flags.load().enable_exit_node || cfg!(target_env = "ohos")
     }
 
     pub fn proxy_forward_by_system(&self) -> bool {
-        self.proxy_forward_by_system
+        self.flags.load().proxy_forward_by_system
     }
 
     pub fn no_tun(&self) -> bool {
-        self.no_tun
+        self.flags.load().no_tun
     }
 
     pub fn get_feature_flags(&self) -> PeerFeatureFlag {
@@ -612,12 +608,13 @@ impl GlobalCtx {
     }
 
     pub fn p2p_only(&self) -> bool {
-        self.p2p_only
+        self.flags.load().p2p_only
     }
 
     pub fn latency_first(&self) -> bool {
         // NOTICE: p2p only is conflict with latency first
-        self.config.get_flags().latency_first && !self.p2p_only
+        let flags = self.flags.load();
+        flags.latency_first && !flags.p2p_only
     }
 
     fn is_port_in_running_listeners(&self, port: u16, is_udp: bool) -> bool {
