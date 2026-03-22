@@ -194,7 +194,6 @@ impl PeerManager {
 
     fn gc_recent_traffic_entries<F>(
         recent_have_traffic: &DashMap<PeerId, Instant>,
-        now: Instant,
         mut has_directly_connected_conn: F,
     ) where
         F: FnMut(PeerId) -> bool,
@@ -202,7 +201,7 @@ impl PeerManager {
         let mut to_remove = Vec::new();
         for entry in recent_have_traffic.iter() {
             let peer_id = *entry.key();
-            let expired = now.duration_since(*entry.value()) > Self::RECENT_HAVE_TRAFFIC_TTL;
+            let expired = entry.value().elapsed() > Self::RECENT_HAVE_TRAFFIC_TTL;
             if expired || has_directly_connected_conn(peer_id) {
                 to_remove.push(peer_id);
             }
@@ -398,7 +397,7 @@ impl PeerManager {
 
         let now = Instant::now();
         if let Some(mut last_seen) = self.recent_have_traffic.get_mut(&dst_peer_id) {
-            if now.duration_since(*last_seen) <= Self::RECENT_HAVE_TRAFFIC_TTL {
+            if now.saturating_duration_since(*last_seen) <= Self::RECENT_HAVE_TRAFFIC_TTL {
                 return;
             }
             *last_seen = now;
@@ -415,7 +414,9 @@ impl PeerManager {
 
         self.recent_have_traffic
             .get(&peer_id)
-            .map(|last_seen| now.duration_since(*last_seen) <= Self::RECENT_HAVE_TRAFFIC_TTL)
+            .map(|last_seen| {
+                now.saturating_duration_since(*last_seen) <= Self::RECENT_HAVE_TRAFFIC_TTL
+            })
             .unwrap_or(false)
     }
 
@@ -427,8 +428,8 @@ impl PeerManager {
         self.p2p_demand_notify.clone()
     }
 
-    fn gc_recent_traffic(&self, now: Instant) {
-        Self::gc_recent_traffic_entries(&self.recent_have_traffic, now, |peer_id| {
+    fn gc_recent_traffic(&self) {
+        Self::gc_recent_traffic_entries(&self.recent_have_traffic, |peer_id| {
             self.has_directly_connected_conn(peer_id)
         });
     }
@@ -1573,17 +1574,13 @@ impl PeerManager {
         let foreign_network_client = self.foreign_network_client.clone();
         self.tasks.lock().await.spawn(async move {
             loop {
-                PeerManager::gc_recent_traffic_entries(
-                    &recent_have_traffic,
-                    Instant::now(),
-                    |peer_id| {
-                        if let Some(peer) = peers.get_peer_by_id(peer_id) {
-                            peer.has_directly_connected_conn()
-                        } else {
-                            foreign_network_client.get_peer_map().has_peer(peer_id)
-                        }
-                    },
-                );
+                PeerManager::gc_recent_traffic_entries(&recent_have_traffic, |peer_id| {
+                    if let Some(peer) = peers.get_peer_by_id(peer_id) {
+                        peer.has_directly_connected_conn()
+                    } else {
+                        foreign_network_client.get_peer_map().has_peer(peer_id)
+                    }
+                });
                 tokio::time::sleep(std::time::Duration::from_secs(30)).await;
             }
         });
@@ -1913,17 +1910,16 @@ mod tests {
         let stale_peer = 1;
         let direct_peer = 2;
         let active_peer = 3;
-        let now = Instant::now();
         let recent_have_traffic = dashmap::DashMap::new();
 
         recent_have_traffic.insert(
             stale_peer,
-            now - PeerManager::RECENT_HAVE_TRAFFIC_TTL - Duration::from_millis(1),
+            Instant::now() - PeerManager::RECENT_HAVE_TRAFFIC_TTL - Duration::from_millis(1),
         );
-        recent_have_traffic.insert(direct_peer, now);
-        recent_have_traffic.insert(active_peer, now);
+        recent_have_traffic.insert(direct_peer, Instant::now());
+        recent_have_traffic.insert(active_peer, Instant::now());
 
-        PeerManager::gc_recent_traffic_entries(&recent_have_traffic, now, |peer_id| {
+        PeerManager::gc_recent_traffic_entries(&recent_have_traffic, |peer_id| {
             peer_id == direct_peer
         });
 
@@ -1998,6 +1994,20 @@ mod tests {
         }
         peer_mgr_a.mark_recent_traffic(peer_b_id);
         assert_eq!(signal.version(), initial_version + 2);
+    }
+
+    #[tokio::test]
+    async fn recent_traffic_tolerates_future_timestamps() {
+        let peer_mgr_a = create_lazy_peer_manager().await;
+        let peer_mgr_b = create_mock_peer_manager_with_mock_stun(NatType::Unknown).await;
+        let peer_b_id = peer_mgr_b.my_peer_id();
+
+        peer_mgr_a
+            .recent_have_traffic
+            .insert(peer_b_id, Instant::now() + Duration::from_secs(1));
+
+        assert!(peer_mgr_a.has_recent_traffic(peer_b_id, Instant::now()));
+        peer_mgr_a.mark_recent_traffic(peer_b_id);
     }
 
     #[tokio::test]
