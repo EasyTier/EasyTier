@@ -184,7 +184,9 @@ impl Debug for PeerManager {
 }
 
 impl PeerManager {
-    const RECENT_HAVE_TRAFFIC_TTL: Duration = Duration::from_secs(3);
+    // Keep lazy-p2p demand alive across the 5s task rescan interval and a full on-demand
+    // connect attempt, without retaining extra per-task state in the hot path.
+    const RECENT_HAVE_TRAFFIC_TTL: Duration = Duration::from_secs(30);
 
     fn should_mark_recent_traffic_for_fanout(total_dst_peers: usize) -> bool {
         total_dst_peers <= 1
@@ -394,7 +396,15 @@ impl PeerManager {
             return;
         }
 
-        self.recent_have_traffic.insert(dst_peer_id, Instant::now());
+        let now = Instant::now();
+        if let Some(mut last_seen) = self.recent_have_traffic.get_mut(&dst_peer_id) {
+            if now.duration_since(*last_seen) <= Self::RECENT_HAVE_TRAFFIC_TTL {
+                return;
+            }
+            *last_seen = now;
+        } else {
+            self.recent_have_traffic.insert(dst_peer_id, now);
+        }
         self.p2p_demand_notify.notify();
     }
 
@@ -1962,6 +1972,32 @@ mod tests {
             !peer_mgr_a.has_recent_traffic(peer_b_id, Instant::now()),
             "directly connected peers should not be tracked as lazy-p2p demand"
         );
+    }
+
+    #[tokio::test]
+    async fn recent_traffic_notifies_only_when_demand_becomes_active() {
+        let peer_mgr_a = create_lazy_peer_manager().await;
+        let peer_mgr_b = create_mock_peer_manager_with_mock_stun(NatType::Unknown).await;
+        let peer_b_id = peer_mgr_b.my_peer_id();
+        let signal = peer_mgr_a.p2p_demand_notify();
+
+        let initial_version = signal.version();
+        peer_mgr_a.mark_recent_traffic(peer_b_id);
+        assert_eq!(signal.version(), initial_version + 1);
+
+        peer_mgr_a.mark_recent_traffic(peer_b_id);
+        assert_eq!(
+            signal.version(),
+            initial_version + 1,
+            "fresh demand should not wake all p2p workers again"
+        );
+
+        if let Some(mut last_seen) = peer_mgr_a.recent_have_traffic.get_mut(&peer_b_id) {
+            *last_seen =
+                Instant::now() - PeerManager::RECENT_HAVE_TRAFFIC_TTL - Duration::from_millis(1);
+        }
+        peer_mgr_a.mark_recent_traffic(peer_b_id);
+        assert_eq!(signal.version(), initial_version + 2);
     }
 
     #[tokio::test]
