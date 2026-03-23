@@ -45,7 +45,7 @@ pub async fn prepare_env_with_tld_dns_zone(
         if let Some(zone) = tld_dns_zone {
             flags.tld_dns_zone = zone.to_string();
         }
-        ctx.config.set_flags(flags);
+        ctx.set_flags(flags);
     }
 
     let (s, r) = create_packet_recv_chan();

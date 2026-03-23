@@ -1,4 +1,4 @@
-use crate::common::config::{ConfigFileControl, PortForwardConfig};
+use crate::common::config::{process_secure_mode_cfg, ConfigFileControl, PortForwardConfig};
 use crate::proto::api::{self, manage};
 use crate::proto::rpc_types::controller::BaseController;
 use crate::rpc_service::InstanceRpcService;
@@ -509,10 +509,29 @@ impl NetworkConfig {
         cfg.set_hostname(self.hostname.clone());
         cfg.set_dhcp(self.dhcp.unwrap_or_default());
         cfg.set_inst_name(self.network_name.clone().unwrap_or_default());
-        cfg.set_network_identity(NetworkIdentity::new(
-            self.network_name.clone().unwrap_or_default(),
-            self.network_secret.clone().unwrap_or_default(),
-        ));
+
+        // The web UI does not expose credential inputs directly, but imported/saved
+        // NetworkConfig objects still need to preserve credential-mode instances via
+        // secure_mode.local_private_key + empty network_secret.
+        let credential_secret = if self.network_secret.is_some() {
+            None
+        } else {
+            self.secure_mode
+                .as_ref()
+                .and_then(|mode| mode.local_private_key.clone())
+                .filter(|s| !s.is_empty())
+        };
+
+        if credential_secret.is_some() {
+            cfg.set_network_identity(NetworkIdentity::new_credential(
+                self.network_name.clone().unwrap_or_default(),
+            ));
+        } else {
+            cfg.set_network_identity(NetworkIdentity::new(
+                self.network_name.clone().unwrap_or_default(),
+                self.network_secret.clone().unwrap_or_default(),
+            ));
+        }
 
         if !cfg.get_dhcp() {
             let virtual_ipv4 = self.virtual_ipv4.clone().unwrap_or_default();
@@ -677,7 +696,30 @@ impl NetworkConfig {
             ));
         }
 
-        cfg.set_secure_mode(self.secure_mode.clone());
+        if let Some(credential_file) = self
+            .credential_file
+            .as_ref()
+            .filter(|path| !path.is_empty())
+        {
+            cfg.set_credential_file(Some(credential_file.into()));
+        }
+
+        if let Some(credential_secret) = credential_secret {
+            cfg.set_secure_mode(Some(process_secure_mode_cfg(
+                crate::proto::common::SecureModeConfig {
+                    enabled: true,
+                    local_private_key: Some(credential_secret),
+                    local_public_key: None,
+                },
+            )?));
+        } else {
+            cfg.set_secure_mode(
+                self.secure_mode
+                    .clone()
+                    .map(process_secure_mode_cfg)
+                    .transpose()?,
+            );
+        }
 
         let mut flags = gen_default_flags();
         if let Some(latency_first) = self.latency_first {
@@ -720,6 +762,10 @@ impl NetworkConfig {
             flags.p2p_only = p2p_only;
         }
 
+        if let Some(lazy_p2p) = self.lazy_p2p {
+            flags.lazy_p2p = lazy_p2p;
+        }
+
         if let Some(bind_device) = self.bind_device {
             flags.bind_device = bind_device;
         }
@@ -734,6 +780,10 @@ impl NetworkConfig {
 
         if let Some(relay_all_peer_rpc) = self.relay_all_peer_rpc {
             flags.relay_all_peer_rpc = relay_all_peer_rpc;
+        }
+
+        if let Some(need_p2p) = self.need_p2p {
+            flags.need_p2p = need_p2p;
         }
 
         if let Some(multi_thread) = self.multi_thread {
@@ -900,7 +950,9 @@ impl NetworkConfig {
         }
 
         result.secure_mode = config.get_secure_mode();
-
+        result.credential_file = config
+            .get_credential_file()
+            .map(|path| path.to_string_lossy().into_owned());
         let flags = config.get_flags();
         result.latency_first = Some(flags.latency_first);
         result.dev_name = Some(flags.dev_name.clone());
@@ -912,10 +964,12 @@ impl NetworkConfig {
         result.disable_quic_input = Some(flags.disable_quic_input);
         result.disable_p2p = Some(flags.disable_p2p);
         result.p2p_only = Some(flags.p2p_only);
+        result.lazy_p2p = Some(flags.lazy_p2p);
         result.bind_device = Some(flags.bind_device);
         result.no_tun = Some(flags.no_tun);
         result.enable_exit_node = Some(flags.enable_exit_node);
         result.relay_all_peer_rpc = Some(flags.relay_all_peer_rpc);
+        result.need_p2p = Some(flags.need_p2p);
         result.multi_thread = Some(flags.multi_thread);
         result.proxy_forward_by_system = Some(flags.proxy_forward_by_system);
         result.disable_encryption = Some(!flags.enable_encryption);
@@ -947,7 +1001,11 @@ impl NetworkConfig {
 
 #[cfg(test)]
 mod tests {
-    use crate::{common::config::ConfigLoader, proto::common::SecureModeConfig};
+    use crate::{
+        common::config::{process_secure_mode_cfg, ConfigLoader},
+        proto::common::SecureModeConfig,
+    };
+    use base64::prelude::{Engine as _, BASE64_STANDARD};
     use rand::Rng;
     use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
@@ -1166,10 +1224,12 @@ mod tests {
                 flags.disable_quic_input = rng.gen_bool(0.3);
                 flags.disable_p2p = rng.gen_bool(0.2);
                 flags.p2p_only = rng.gen_bool(0.2);
+                flags.lazy_p2p = rng.gen_bool(0.3);
                 flags.bind_device = rng.gen_bool(0.3);
                 flags.no_tun = rng.gen_bool(0.1);
                 flags.enable_exit_node = rng.gen_bool(0.4);
                 flags.relay_all_peer_rpc = rng.gen_bool(0.5);
+                flags.need_p2p = rng.gen_bool(0.3);
                 flags.multi_thread = rng.gen_bool(0.7);
                 flags.proxy_forward_by_system = rng.gen_bool(0.3);
                 flags.enable_encryption = rng.gen_bool(0.8);
@@ -1195,6 +1255,10 @@ mod tests {
                 config.set_flags(flags);
             }
 
+            if let Some(secure_mode) = config.get_secure_mode() {
+                config.set_secure_mode(Some(process_secure_mode_cfg(secure_mode)?));
+            }
+
             let network_config = super::NetworkConfig::new_from_config(&config)?;
             let generated_config = network_config.gen_config()?;
             generated_config.set_peers(generated_config.get_peers()); // Ensure peers field is not None
@@ -1208,6 +1272,61 @@ mod tests {
                 config_str, generated_config_str, serde_json::to_string(&network_config).unwrap()
             );
         }
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_network_config_conversion_credential_mode() -> Result<(), anyhow::Error> {
+        let private_key = x25519_dalek::StaticSecret::from([7u8; 32]);
+        let public_key = x25519_dalek::PublicKey::from(&private_key);
+        let credential_secret = BASE64_STANDARD.encode(private_key.as_bytes());
+        let credential_file = "/tmp/easytier-credentials.json".to_string();
+
+        let config = gen_default_config();
+        config.set_network_identity(crate::common::config::NetworkIdentity::new_credential(
+            "credential-net".to_string(),
+        ));
+        config.set_inst_name("credential-net".to_string());
+        config.set_credential_file(Some(credential_file.clone().into()));
+        config.set_secure_mode(Some(SecureModeConfig {
+            enabled: true,
+            local_private_key: Some(credential_secret.clone()),
+            local_public_key: Some(BASE64_STANDARD.encode(public_key.as_bytes())),
+        }));
+
+        let network_config = super::NetworkConfig::new_from_config(&config)?;
+        assert_eq!(
+            network_config.credential_file.as_deref(),
+            Some(credential_file.as_str())
+        );
+        assert_eq!(network_config.network_secret, None);
+        assert_eq!(
+            network_config
+                .secure_mode
+                .as_ref()
+                .and_then(|mode| mode.local_private_key.as_deref()),
+            Some(credential_secret.as_str())
+        );
+
+        let generated_config = network_config.gen_config()?;
+        assert_eq!(
+            generated_config.get_network_identity().network_secret,
+            None,
+            "credential mode should not be converted back into network_secret mode"
+        );
+        assert_eq!(
+            generated_config
+                .get_credential_file()
+                .map(|path| path.to_string_lossy().into_owned()),
+            Some(credential_file)
+        );
+        assert_eq!(
+            generated_config
+                .get_secure_mode()
+                .and_then(|mode| mode.local_private_key),
+            Some(credential_secret)
+        );
 
         Ok(())
     }

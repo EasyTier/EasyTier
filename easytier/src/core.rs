@@ -10,9 +10,10 @@ use std::{
 use crate::{
     common::{
         config::{
-            get_avaliable_encrypt_methods, load_config_from_file, ConfigFileControl, ConfigLoader,
-            ConsoleLoggerConfig, FileLoggerConfig, LoggingConfigLoader, NetworkIdentity,
-            PeerConfig, PortForwardConfig, TomlConfigLoader, VpnPortalConfig,
+            get_avaliable_encrypt_methods, load_config_from_file, process_secure_mode_cfg,
+            ConfigFileControl, ConfigLoader, ConsoleLoggerConfig, FileLoggerConfig,
+            LoggingConfigLoader, NetworkIdentity, PeerConfig, PortForwardConfig, TomlConfigLoader,
+            VpnPortalConfig,
         },
         constants::EASYTIER_VERSION,
         log,
@@ -27,10 +28,8 @@ use crate::{
     web_client, ShellType,
 };
 use anyhow::Context;
-use base64::{prelude::BASE64_STANDARD, Engine as _};
 use cidr::IpCidr;
 use clap::{CommandFactory, Parser};
-use rand::rngs::OsRng;
 use rust_i18n::t;
 use tokio::io::AsyncReadExt;
 
@@ -407,6 +406,15 @@ struct NetworkOptions {
 
     #[arg(
         long,
+        env = "ET_LAZY_P2P",
+        help = t!("core_clap.lazy_p2p").to_string(),
+        num_args = 0..=1,
+        default_missing_value = "true"
+    )]
+    lazy_p2p: Option<bool>,
+
+    #[arg(
+        long,
         env = "ET_DISABLE_P2P",
         help = t!("core_clap.disable_p2p").to_string(),
         num_args = 0..=1,
@@ -449,6 +457,15 @@ struct NetworkOptions {
         default_missing_value = "true"
     )]
     relay_all_peer_rpc: Option<bool>,
+
+    #[arg(
+        long,
+        env = "ET_NEED_P2P",
+        help = t!("core_clap.need_p2p").to_string(),
+        num_args = 0..=1,
+        default_missing_value = "true"
+    )]
+    need_p2p: Option<bool>,
 
     #[cfg(feature = "socks5")]
     #[arg(
@@ -773,42 +790,6 @@ impl NetworkOptions {
         false
     }
 
-    fn process_secure_mode_cfg(mut user_cfg: SecureModeConfig) -> anyhow::Result<SecureModeConfig> {
-        if !user_cfg.enabled {
-            return Ok(user_cfg);
-        }
-
-        let private_key = if user_cfg.local_private_key.is_none() {
-            // if no private key, generate random one
-            let private = x25519_dalek::StaticSecret::random_from_rng(OsRng);
-            user_cfg.local_private_key = Some(BASE64_STANDARD.encode(private.clone().as_bytes()));
-            private
-        } else {
-            // check if private key is valid
-            user_cfg.private_key()?
-        };
-
-        let public = x25519_dalek::PublicKey::from(&private_key);
-
-        match user_cfg.local_public_key {
-            None => {
-                user_cfg.local_public_key = Some(BASE64_STANDARD.encode(public.as_bytes()));
-            }
-            Some(ref user_pub) => {
-                let public = user_cfg.public_key()?;
-                if *user_pub != BASE64_STANDARD.encode(public.as_bytes()) {
-                    return Err(anyhow::anyhow!(
-                        "local public key {} does not match generated public key {}",
-                        user_pub,
-                        BASE64_STANDARD.encode(public.as_bytes())
-                    ));
-                }
-            }
-        }
-
-        Ok(user_cfg)
-    }
-
     fn merge_into(&self, cfg: &TomlConfigLoader) -> anyhow::Result<()> {
         if self.hostname.is_some() {
             cfg.set_hostname(self.hostname.clone());
@@ -1006,7 +987,7 @@ impl NetworkOptions {
                 local_private_key: Some(credential_secret.clone()),
                 local_public_key: None,
             };
-            cfg.set_secure_mode(Some(Self::process_secure_mode_cfg(c)?));
+            cfg.set_secure_mode(Some(process_secure_mode_cfg(c)?));
         } else if let Some(secure_mode) = self.secure_mode {
             if secure_mode {
                 let c = SecureModeConfig {
@@ -1014,7 +995,7 @@ impl NetworkOptions {
                     local_private_key: self.local_private_key.clone(),
                     local_public_key: self.local_public_key.clone(),
                 };
-                cfg.set_secure_mode(Some(Self::process_secure_mode_cfg(c)?));
+                cfg.set_secure_mode(Some(process_secure_mode_cfg(c)?));
             }
         }
 
@@ -1049,6 +1030,7 @@ impl NetworkOptions {
         }
         f.disable_p2p = self.disable_p2p.unwrap_or(f.disable_p2p);
         f.p2p_only = self.p2p_only.unwrap_or(f.p2p_only);
+        f.lazy_p2p = self.lazy_p2p.unwrap_or(f.lazy_p2p);
         f.disable_tcp_hole_punching = self
             .disable_tcp_hole_punching
             .unwrap_or(f.disable_tcp_hole_punching);
@@ -1056,6 +1038,7 @@ impl NetworkOptions {
             .disable_udp_hole_punching
             .unwrap_or(f.disable_udp_hole_punching);
         f.relay_all_peer_rpc = self.relay_all_peer_rpc.unwrap_or(f.relay_all_peer_rpc);
+        f.need_p2p = self.need_p2p.unwrap_or(f.need_p2p);
         f.multi_thread = self.multi_thread.unwrap_or(f.multi_thread);
         if let Some(compression) = &self.compression {
             f.data_compress_algo = match compression.as_str() {

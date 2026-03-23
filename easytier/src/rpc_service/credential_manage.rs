@@ -32,7 +32,7 @@ impl CredentialManageRpc for CredentialManageRpcService {
         ctrl: Self::Controller,
         req: GenerateCredentialRequest,
     ) -> crate::proto::rpc_types::error::Result<GenerateCredentialResponse> {
-        super::get_instance_service(&self.instance_manager, &None)?
+        super::get_instance_service(&self.instance_manager, &req.instance)?
             .get_credential_manage_service()
             .generate_credential(ctrl, req)
             .await
@@ -43,7 +43,7 @@ impl CredentialManageRpc for CredentialManageRpcService {
         ctrl: Self::Controller,
         req: RevokeCredentialRequest,
     ) -> crate::proto::rpc_types::error::Result<RevokeCredentialResponse> {
-        super::get_instance_service(&self.instance_manager, &None)?
+        super::get_instance_service(&self.instance_manager, &req.instance)?
             .get_credential_manage_service()
             .revoke_credential(ctrl, req)
             .await
@@ -54,7 +54,7 @@ impl CredentialManageRpc for CredentialManageRpcService {
         ctrl: Self::Controller,
         req: ListCredentialsRequest,
     ) -> crate::proto::rpc_types::error::Result<ListCredentialsResponse> {
-        super::get_instance_service(&self.instance_manager, &None)?
+        super::get_instance_service(&self.instance_manager, &req.instance)?
             .get_credential_manage_service()
             .list_credentials(ctrl, req)
             .await

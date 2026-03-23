@@ -83,6 +83,10 @@ message NetworkConfig {
   optional bool disable_tcp_hole_punching = 54;
 
   common.SecureModeConfig secure_mode = 55;
+  reserved 56;
+  optional string credential_file = 57;
+  optional bool lazy_p2p = 58;
+  optional bool need_p2p = 59;
 }
 
 message PortForwardConfig {
@@ -124,6 +128,7 @@ message NetworkMeta {
   common.UUID inst_id = 1;
   string network_name = 2;
   uint32 config_permission = 3;
+  string instance_name = 4;
 }
 
 message ValidateConfigRequest { NetworkConfig config = 1; }

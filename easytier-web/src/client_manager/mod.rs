@@ -19,6 +19,7 @@ use maxminddb::geoip2;
 use session::{Location, Session};
 use storage::{Storage, StorageToken};
 
+use crate::webhook::SharedWebhookConfig;
 use crate::FeatureFlags;
 use tokio::task::JoinSet;
 
@@ -59,12 +60,18 @@ pub struct ClientManager {
     storage: Storage,
 
     feature_flags: Arc<FeatureFlags>,
+    webhook_config: SharedWebhookConfig,
 
     geoip_db: Arc<Option<maxminddb::Reader<Vec<u8>>>>,
 }
 
 impl ClientManager {
-    pub fn new(db: Db, geoip_db: Option<String>, feature_flags: Arc<FeatureFlags>) -> Self {
+    pub fn new(
+        db: Db,
+        geoip_db: Option<String>,
+        feature_flags: Arc<FeatureFlags>,
+        webhook_config: SharedWebhookConfig,
+    ) -> Self {
         let client_sessions = Arc::new(DashMap::new());
         let sessions: Arc<DashMap<url::Url, Arc<Session>>> = client_sessions.clone();
         let mut tasks = JoinSet::new();
@@ -82,6 +89,7 @@ impl ClientManager {
             client_sessions,
             storage: Storage::new(db),
             feature_flags,
+            webhook_config,
 
             geoip_db: Arc::new(load_geoip_db(geoip_db)),
         }
@@ -98,6 +106,7 @@ impl ClientManager {
         let listeners_cnt = self.listeners_cnt.clone();
         let geoip_db = self.geoip_db.clone();
         let feature_flags = self.feature_flags.clone();
+        let webhook_config = self.webhook_config.clone();
         self.tasks.spawn(async move {
             while let Ok(tunnel) = listener.accept().await {
                 let (tunnel, secure) = match security::accept_or_upgrade_server_tunnel(tunnel).await {
@@ -121,6 +130,7 @@ impl ClientManager {
                     client_url.clone(),
                     location,
                     feature_flags.clone(),
+                    webhook_config.clone(),
                 );
                 session.serve(tunnel).await;
                 sessions.insert(client_url, Arc::new(session));
@@ -163,6 +173,24 @@ impl ClientManager {
         self.client_sessions
             .get(&c_url)
             .map(|item| item.value().clone())
+    }
+
+    pub async fn disconnect_session_by_machine_id(
+        &self,
+        user_id: UserIdInDb,
+        machine_id: &uuid::Uuid,
+    ) -> bool {
+        let Some(client_url) = self
+            .storage
+            .get_client_url_by_machine_id(user_id, machine_id)
+        else {
+            return false;
+        };
+        let Some((_, session)) = self.client_sessions.remove(&client_url) else {
+            return false;
+        };
+        session.stop().await;
+        true
     }
 
     pub async fn list_machine_by_user_id(&self, user_id: UserIdInDb) -> Vec<url::Url> {
@@ -321,6 +349,9 @@ mod tests {
             Db::memory_db().await,
             None,
             Arc::new(FeatureFlags::default()),
+            Arc::new(crate::webhook::WebhookConfig::new(
+                None, None, None, None, None,
+            )),
         );
         mgr.add_listener(Box::new(listener)).await.unwrap();
 

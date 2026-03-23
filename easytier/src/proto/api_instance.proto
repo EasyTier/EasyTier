@@ -114,12 +114,28 @@ message DumpRouteRequest { InstanceIdentifier instance = 1; }
 
 message DumpRouteResponse { string result = 1; }
 
-message ListForeignNetworkRequest { InstanceIdentifier instance = 1; }
+message ListForeignNetworkRequest {
+  InstanceIdentifier instance = 1;
+  bool include_trusted_keys = 2;
+}
+
+enum TrustedKeySourcePb {
+  TRUSTED_KEY_SOURCE_PB_UNSPECIFIED = 0;
+  TRUSTED_KEY_SOURCE_PB_OSPF_NODE = 1;
+  TRUSTED_KEY_SOURCE_PB_OSPF_CREDENTIAL = 2;
+}
+
+message TrustedKeyInfoPb {
+  bytes pubkey = 1;
+  TrustedKeySourcePb source = 2;
+  optional int64 expiry_unix = 3;
+}
 
 message ForeignNetworkEntryPb {
   repeated PeerInfo peers = 1;
   bytes network_secret_digest = 2;
   uint32 my_peer_id_for_this_network = 3;
+  repeated TrustedKeyInfoPb trusted_keys = 4;
 }
 
 message ListForeignNetworkResponse {
@@ -301,6 +317,7 @@ message GenerateCredentialRequest {
   repeated string allowed_proxy_cidrs = 3; // optional: restrict proxy_cidrs
   int64 ttl_seconds = 4;        // must be > 0: credential TTL in seconds (0 / omitted is invalid)
   optional string credential_id = 5; // optional: user-specified credential id, reused if already exists
+  InstanceIdentifier instance = 6;   // target network instance
 }
 
 message GenerateCredentialResponse {
@@ -310,13 +327,16 @@ message GenerateCredentialResponse {
 
 message RevokeCredentialRequest {
   string credential_id = 1;
+  InstanceIdentifier instance = 2;   // target network instance
 }
 
 message RevokeCredentialResponse {
   bool success = 1;
 }
 
-message ListCredentialsRequest {}
+message ListCredentialsRequest {
+  InstanceIdentifier instance = 1;   // target network instance
+}
 
 message CredentialInfo {
   string credential_id = 1;       // UUID

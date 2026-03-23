@@ -6,6 +6,14 @@ export enum NetworkingMethod {
   Standalone = 2,
 }
 
+export interface SecureModeConfig {
+  enabled: boolean
+  // Keep protocol compatibility with backend/import-export flows even though the GUI
+  // does not render secure-mode or credential inputs.
+  local_private_key?: string
+  local_public_key?: string
+}
+
 export interface NetworkConfig {
   instance_id: string
 
@@ -14,7 +22,9 @@ export interface NetworkConfig {
   network_length: number
   hostname?: string
   network_name: string
-  network_secret: string
+  network_secret?: string
+  credential_file?: string
+  secure_mode?: SecureModeConfig
 
   networking_method: NetworkingMethod
 
@@ -43,10 +53,12 @@ export interface NetworkConfig {
   disable_quic_input?: boolean
   disable_p2p?: boolean
   p2p_only?: boolean
+  lazy_p2p?: boolean
   bind_device?: boolean
   no_tun?: boolean
   enable_exit_node?: boolean
   relay_all_peer_rpc?: boolean
+  need_p2p?: boolean
   multi_thread?: boolean
   proxy_forward_by_system?: boolean
   disable_encryption?: boolean
@@ -83,6 +95,7 @@ export function DEFAULT_NETWORK_CONFIG(): NetworkConfig {
     network_length: 24,
     network_name: 'easytier',
     network_secret: '',
+    credential_file: '',
 
     networking_method: NetworkingMethod.PublicServer,
 
@@ -114,10 +127,12 @@ export function DEFAULT_NETWORK_CONFIG(): NetworkConfig {
     disable_quic_input: false,
     disable_p2p: false,
     p2p_only: false,
+    lazy_p2p: false,
     bind_device: true,
     no_tun: false,
     enable_exit_node: false,
     relay_all_peer_rpc: false,
+    need_p2p: false,
     multi_thread: true,
     proxy_forward_by_system: false,
     disable_encryption: false,

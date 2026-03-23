@@ -70,6 +70,9 @@ message FlagsInConfig {
   bool p2p_only = 32;
 
   bool disable_tcp_hole_punching = 34;
+
+  bool lazy_p2p = 37;
+  bool need_p2p = 38;
 }
 
 message RpcDescriptor {
@@ -217,6 +220,7 @@ message PeerFeatureFlag {
   bool quic_input = 6;
   bool no_relay_quic = 7;
   bool is_credential_peer = 8;
+  bool need_p2p = 9;
 }
 
 enum SocketType {

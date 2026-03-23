@@ -6,6 +6,7 @@ use std::{
 };
 
 use anyhow::Context;
+use base64::{prelude::BASE64_STANDARD, Engine as _};
 use serde::{Deserialize, Serialize};
 use tokio::io::AsyncReadExt as _;
 
@@ -39,6 +40,7 @@ pub fn gen_default_flags() -> Flags {
         relay_network_whitelist: "*".to_string(),
         disable_p2p: false,
         p2p_only: false,
+        lazy_p2p: false,
         relay_all_peer_rpc: false,
         disable_tcp_hole_punching: false,
         disable_udp_hole_punching: false,
@@ -62,6 +64,7 @@ pub fn gen_default_flags() -> Flags {
         tld_dns_zone: DEFAULT_ET_DNS_ZONE.to_string(),
 
         quic_listen_port: u32::MAX,
+        need_p2p: false,
     }
 }
 
@@ -403,6 +406,42 @@ impl From<PortForwardConfig> for PortForwardConfigPb {
             },
         }
     }
+}
+
+pub fn process_secure_mode_cfg(mut user_cfg: SecureModeConfig) -> anyhow::Result<SecureModeConfig> {
+    if !user_cfg.enabled {
+        return Ok(user_cfg);
+    }
+
+    let private_key = if user_cfg.local_private_key.is_none() {
+        // if no private key, generate random one
+        let private = x25519_dalek::StaticSecret::random_from_rng(rand::rngs::OsRng);
+        user_cfg.local_private_key = Some(BASE64_STANDARD.encode(private.clone().as_bytes()));
+        private
+    } else {
+        // check if private key is valid
+        user_cfg.private_key()?
+    };
+
+    let public = x25519_dalek::PublicKey::from(&private_key);
+
+    match user_cfg.local_public_key {
+        None => {
+            user_cfg.local_public_key = Some(BASE64_STANDARD.encode(public.as_bytes()));
+        }
+        Some(ref user_pub) => {
+            let public = user_cfg.public_key()?;
+            if *user_pub != BASE64_STANDARD.encode(public.as_bytes()) {
+                return Err(anyhow::anyhow!(
+                    "local public key {} does not match generated public key {}",
+                    user_pub,
+                    BASE64_STANDARD.encode(public.as_bytes())
+                ));
+            }
+        }
+    }
+
+    Ok(user_cfg)
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]

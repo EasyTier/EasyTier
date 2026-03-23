@@ -295,6 +295,70 @@ impl NetworkApi {
             .into())
     }
 
+    // --- Token-authenticated machine-scoped handlers (no AuthSession) ---
+
+    async fn handle_run_network_instance_internal(
+        State(client_mgr): AppState,
+        Path((user_id, machine_id)): Path<(UserIdInDb, uuid::Uuid)>,
+        Json(payload): Json<RunNetworkJsonReq>,
+    ) -> Result<Json<Void>, HttpHandleError> {
+        client_mgr
+            .handle_run_network_instance((user_id, machine_id), payload.config, payload.save)
+            .await
+            .map_err(convert_error)?;
+        Ok(Void::default().into())
+    }
+
+    async fn handle_remove_network_instance_internal(
+        State(client_mgr): AppState,
+        Path((user_id, machine_id, inst_id)): Path<(UserIdInDb, uuid::Uuid, uuid::Uuid)>,
+    ) -> Result<(), HttpHandleError> {
+        client_mgr
+            .handle_remove_network_instances((user_id, machine_id), vec![inst_id])
+            .await
+            .map_err(convert_error)
+    }
+
+    async fn handle_list_network_instance_ids_internal(
+        State(client_mgr): AppState,
+        Path((user_id, machine_id)): Path<(UserIdInDb, uuid::Uuid)>,
+    ) -> Result<Json<ListNetworkInstanceIdsJsonResp>, HttpHandleError> {
+        Ok(client_mgr
+            .handle_list_network_instance_ids((user_id, machine_id))
+            .await
+            .map_err(convert_error)?
+            .into())
+    }
+
+    async fn handle_collect_network_info_internal(
+        State(client_mgr): AppState,
+        Path((user_id, machine_id)): Path<(UserIdInDb, uuid::Uuid)>,
+        Json(payload): Json<CollectNetworkInfoJsonReq>,
+    ) -> Result<Json<CollectNetworkInfoResponse>, HttpHandleError> {
+        Ok(client_mgr
+            .handle_collect_network_info((user_id, machine_id), payload.inst_ids)
+            .await
+            .map_err(convert_error)?
+            .into())
+    }
+
+    pub fn build_route_internal() -> Router<AppStateInner> {
+        Router::new()
+            .route(
+                "/api/internal/users/:user-id/machines/:machine-id/networks",
+                post(Self::handle_run_network_instance_internal)
+                    .get(Self::handle_list_network_instance_ids_internal),
+            )
+            .route(
+                "/api/internal/users/:user-id/machines/:machine-id/networks/:inst-id",
+                delete(Self::handle_remove_network_instance_internal),
+            )
+            .route(
+                "/api/internal/users/:user-id/machines/:machine-id/networks/info",
+                get(Self::handle_collect_network_info_internal),
+            )
+    }
+
     pub fn build_route() -> Router<AppStateInner> {
         Router::new()
             .route("/api/v1/machines", get(Self::handle_list_machines))

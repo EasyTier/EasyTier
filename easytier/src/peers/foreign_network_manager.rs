@@ -23,7 +23,7 @@ use crate::{
     common::{
         config::{ConfigLoader, TomlConfigLoader},
         error::Error,
-        global_ctx::{ArcGlobalCtx, GlobalCtx, GlobalCtxEvent, NetworkIdentity},
+        global_ctx::{ArcGlobalCtx, GlobalCtx, GlobalCtxEvent, NetworkIdentity, TrustedKeySource},
         join_joinset_background, shrink_dashmap,
         stats_manager::{LabelSet, LabelType, MetricName, StatsManager},
         token_bucket::TokenBucket,
@@ -32,7 +32,10 @@ use crate::{
     peer_center::instance::{PeerCenterInstance, PeerMapWithPeerRpcManager},
     peers::route_trait::{Route, RouteInterface},
     proto::{
-        api::instance::{ForeignNetworkEntryPb, ListForeignNetworkResponse, PeerInfo},
+        api::instance::{
+            ForeignNetworkEntryPb, ListForeignNetworkResponse, PeerInfo, TrustedKeyInfoPb,
+            TrustedKeySourcePb,
+        },
         common::LimiterConfig,
         peer_rpc::{DirectConnectorRpcServer, PeerIdentityType},
     },
@@ -300,6 +303,26 @@ impl ForeignNetworkEntry {
             fn my_peer_id(&self) -> PeerId {
                 self.my_peer_id
             }
+
+            fn need_periodic_requery_peers(&self) -> bool {
+                true
+            }
+
+            async fn get_peer_identity_type(&self, peer_id: PeerId) -> Option<PeerIdentityType> {
+                let peer_map = self.peer_map.upgrade()?;
+                peer_map.get_peer_identity_type(peer_id)
+            }
+
+            async fn get_peer_public_key(&self, peer_id: PeerId) -> Option<Vec<u8>> {
+                let peer_map = self.peer_map.upgrade()?;
+                peer_map.get_peer_public_key(peer_id)
+            }
+
+            async fn close_peer(&self, peer_id: PeerId) {
+                if let Some(peer_map) = self.peer_map.upgrade() {
+                    let _ = peer_map.close_peer(peer_id).await;
+                }
+            }
         }
 
         let route = PeerRoute::new(
@@ -370,15 +393,15 @@ impl ForeignNetworkEntry {
                         continue;
                     }
 
-                    if !peer_map.has_peer(from_peer_id) && relay_peer_map.is_secure_mode_enabled() {
+                    if relay_peer_map.is_secure_mode_enabled() && hdr.is_encrypted() {
                         match relay_peer_map.decrypt_if_needed(&mut zc_packet).await {
                             Ok(true) => {}
                             Ok(false) => {
-                                tracing::error!("relay session not found");
+                                tracing::error!("secure session not found");
                                 continue;
                             }
                             Err(e) => {
-                                tracing::error!(?e, "relay decrypt failed");
+                                tracing::error!(?e, "secure decrypt failed");
                                 continue;
                             }
                         }
@@ -617,6 +640,45 @@ pub struct ForeignNetworkManager {
 }
 
 impl ForeignNetworkManager {
+    fn network_secret_digest_is_empty(network: &NetworkIdentity) -> bool {
+        network
+            .network_secret_digest
+            .as_ref()
+            .is_none_or(|d| d.iter().all(|b| *b == 0))
+    }
+
+    fn should_reject_credential_trust_path(identity_type: PeerIdentityType) -> bool {
+        matches!(identity_type, PeerIdentityType::Admin)
+    }
+
+    async fn is_credential_pubkey_trusted(
+        entry: &ForeignNetworkEntry,
+        remote_static_pubkey: &[u8],
+    ) -> bool {
+        remote_static_pubkey.len() == 32
+            && entry.global_ctx.is_pubkey_trusted_with_source(
+                remote_static_pubkey,
+                &entry.network.network_name,
+                TrustedKeySource::OspfCredential,
+            )
+    }
+
+    fn build_trusted_key_items(entry: &ForeignNetworkEntry) -> Vec<TrustedKeyInfoPb> {
+        entry
+            .global_ctx
+            .list_trusted_keys(&entry.network.network_name)
+            .into_iter()
+            .map(|(pubkey, metadata)| TrustedKeyInfoPb {
+                pubkey,
+                source: match metadata.source {
+                    TrustedKeySource::OspfNode => TrustedKeySourcePb::OspfNode.into(),
+                    TrustedKeySource::OspfCredential => TrustedKeySourcePb::OspfCredential.into(),
+                },
+                expiry_unix: metadata.expiry_unix,
+            })
+            .collect()
+    }
+
     pub fn new(
         my_peer_id: PeerId,
         global_ctx: ArcGlobalCtx,
@@ -655,21 +717,37 @@ impl ForeignNetworkManager {
     }
 
     pub async fn add_peer_conn(&self, peer_conn: PeerConn) -> Result<(), Error> {
-        tracing::info!(peer_conn = ?peer_conn.get_conn_info(), network = ?peer_conn.get_network_identity(), "add new peer conn in foreign network manager");
+        let conn_info = peer_conn.get_conn_info();
+        let peer_network = peer_conn.get_network_identity();
+        tracing::info!(peer_conn = ?conn_info, network = ?peer_network, "add new peer conn in foreign network manager");
 
         let relay_peer_rpc = self.global_ctx.get_flags().relay_all_peer_rpc;
         let ret = self
             .global_ctx
-            .check_network_in_whitelist(&peer_conn.get_network_identity().network_name)
+            .check_network_in_whitelist(&peer_network.network_name)
             .map_err(Into::into);
         if ret.is_err() && !relay_peer_rpc {
             return ret;
         }
 
+        let peer_digest_empty = Self::network_secret_digest_is_empty(&peer_network);
+        if peer_digest_empty
+            && self
+                .data
+                .get_network_entry(&peer_network.network_name)
+                .is_none()
+        {
+            return Err(anyhow::anyhow!(
+                "foreign network {} is not established by a secret-verified peer yet",
+                peer_network.network_name
+            )
+            .into());
+        }
+
         let (entry, new_added) = self
             .data
             .get_or_insert_entry(
-                &peer_conn.get_network_identity(),
+                &peer_network,
                 peer_conn.get_my_peer_id(),
                 peer_conn.get_peer_id(),
                 ret.is_ok(),
@@ -679,10 +757,18 @@ impl ForeignNetworkManager {
             )
             .await;
 
+        let same_identity = entry.network == peer_network;
+        let peer_identity_type = peer_conn.get_peer_identity_type();
+        let credential_peer_trusted = peer_digest_empty
+            && Self::is_credential_pubkey_trusted(&entry, &conn_info.noise_remote_static_pubkey)
+                .await;
+        let credential_identity_mismatch = credential_peer_trusted
+            && Self::should_reject_credential_trust_path(peer_identity_type);
+
         let _g = entry.lock.lock().await;
 
-        if (entry.network != peer_conn.get_network_identity()
-            && peer_conn.get_peer_identity_type() != PeerIdentityType::SharedNode)
+        if (!(same_identity || credential_peer_trusted))
+            || credential_identity_mismatch
             || entry.my_peer_id != peer_conn.get_my_peer_id()
         {
             if new_added {
@@ -695,11 +781,18 @@ impl ForeignNetworkManager {
                     entry.my_peer_id,
                     peer_conn.get_my_peer_id()
                 )
+            } else if credential_identity_mismatch {
+                anyhow::anyhow!(
+                    "credential-trusted foreign peer has invalid identity type: {:?}",
+                    peer_identity_type
+                )
             } else {
                 anyhow::anyhow!(
-                    "network secret not match. exp: {:?} real: {:?}",
+                    "foreign peer identity not trusted. exp: {:?} real: {:?}, remote_pubkey_len: {}, credential_trusted: {}",
                     entry.network,
-                    peer_conn.get_network_identity()
+                    peer_network,
+                    conn_info.noise_remote_static_pubkey.len(),
+                    credential_peer_trusted,
                 )
             };
             tracing::error!(?err, "foreign network entry not match, disconnect peer");
@@ -757,6 +850,13 @@ impl ForeignNetworkManager {
     }
 
     pub async fn list_foreign_networks(&self) -> ListForeignNetworkResponse {
+        self.list_foreign_networks_with_options(false).await
+    }
+
+    pub async fn list_foreign_networks_with_options(
+        &self,
+        include_trusted_keys: bool,
+    ) -> ListForeignNetworkResponse {
         let mut ret = ListForeignNetworkResponse::default();
         let networks = self
             .data
@@ -783,6 +883,11 @@ impl ForeignNetworkManager {
                     .to_vec(),
                 my_peer_id_for_this_network: item.my_peer_id,
                 peers: Default::default(),
+                trusted_keys: if include_trusted_keys {
+                    Self::build_trusted_key_items(&item)
+                } else {
+                    Default::default()
+                },
             };
             for peer in item.peer_map.list_peers() {
                 let peer_info = PeerInfo {
@@ -854,6 +959,7 @@ pub mod tests {
             create_mock_peer_manager_with_mock_stun, replace_stun_info_collector,
         },
         peers::{
+            peer_conn::tests::set_secure_mode_cfg,
             peer_manager::{PeerManager, RouteAlgoType},
             tests::{connect_peer_manager, wait_route_appear},
         },
@@ -861,7 +967,7 @@ pub mod tests {
         set_global_var,
         tunnel::common::tests::wait_for_condition,
     };
-    use std::time::Duration;
+    use std::{collections::HashMap, time::Duration};
 
     use super::*;
 
@@ -883,8 +989,37 @@ pub mod tests {
         peer_mgr
     }
 
+    async fn create_mock_credential_peer_manager_for_foreign_network(
+        network: &str,
+    ) -> Arc<PeerManager> {
+        let (s, _r) = create_packet_recv_chan();
+        let global_ctx = get_mock_global_ctx_with_network(Some(NetworkIdentity::new_credential(
+            network.to_string(),
+        )));
+        set_secure_mode_cfg(&global_ctx, true);
+        let peer_mgr = Arc::new(PeerManager::new(RouteAlgoType::Ospf, global_ctx, s));
+        replace_stun_info_collector(peer_mgr.clone(), NatType::Unknown);
+        peer_mgr.run().await.unwrap();
+        peer_mgr
+    }
+
     pub async fn create_mock_peer_manager_for_foreign_network(network: &str) -> Arc<PeerManager> {
         create_mock_peer_manager_for_foreign_network_ext(network, network).await
+    }
+
+    pub async fn create_mock_peer_manager_for_secure_foreign_network(
+        network: &str,
+    ) -> Arc<PeerManager> {
+        let (s, _r) = create_packet_recv_chan();
+        let global_ctx = get_mock_global_ctx_with_network(Some(NetworkIdentity::new(
+            network.to_string(),
+            network.to_string(),
+        )));
+        set_secure_mode_cfg(&global_ctx, true);
+        let peer_mgr = Arc::new(PeerManager::new(RouteAlgoType::Ospf, global_ctx, s));
+        replace_stun_info_collector(peer_mgr.clone(), NatType::Unknown);
+        peer_mgr.run().await.unwrap();
+        peer_mgr
     }
 
     #[tokio::test]
@@ -917,12 +1052,137 @@ pub mod tests {
         assert_eq!(2, rpc_resp.foreign_networks["net1"].peers.len());
     }
 
+    #[tokio::test]
+    async fn foreign_network_list_can_include_trusted_keys() {
+        let pm_center = create_mock_peer_manager_with_mock_stun(NatType::Unknown).await;
+        set_secure_mode_cfg(&pm_center.get_global_ctx(), true);
+
+        let pma_net1 = create_mock_peer_manager_for_secure_foreign_network("net1").await;
+        let pmb_net1 = create_mock_peer_manager_for_secure_foreign_network("net1").await;
+        connect_peer_manager(pma_net1.clone(), pm_center.clone()).await;
+        connect_peer_manager(pmb_net1.clone(), pm_center.clone()).await;
+        wait_route_appear(pma_net1.clone(), pmb_net1.clone())
+            .await
+            .unwrap();
+
+        let without_trusted_keys = pm_center
+            .get_foreign_network_manager()
+            .list_foreign_networks()
+            .await;
+        assert!(without_trusted_keys.foreign_networks["net1"]
+            .trusted_keys
+            .is_empty());
+
+        let foreign_mgr = pm_center.get_foreign_network_manager();
+        wait_for_condition(
+            || {
+                let foreign_mgr = foreign_mgr.clone();
+                async move {
+                    foreign_mgr
+                        .list_foreign_networks_with_options(true)
+                        .await
+                        .foreign_networks
+                        .get("net1")
+                        .map(|entry| !entry.trusted_keys.is_empty())
+                        .unwrap_or(false)
+                }
+            },
+            Duration::from_secs(5),
+        )
+        .await;
+
+        let with_trusted_keys = foreign_mgr.list_foreign_networks_with_options(true).await;
+        assert!(!with_trusted_keys.foreign_networks["net1"]
+            .trusted_keys
+            .is_empty());
+    }
+
+    #[tokio::test]
+    async fn credential_pubkey_trust_requires_ospf_credential_source() {
+        let global_ctx = get_mock_global_ctx_with_network(Some(NetworkIdentity::new(
+            "__access__".to_string(),
+            "access_secret".to_string(),
+        )));
+        let foreign_network = NetworkIdentity::new("net1".to_string(), "net1_secret".to_string());
+        let (pm_packet_sender, _pm_packet_recv) = create_packet_recv_chan();
+        let entry = ForeignNetworkEntry::new(
+            foreign_network.clone(),
+            1,
+            global_ctx.clone(),
+            false,
+            Arc::new(PeerSessionStore::new()),
+            pm_packet_sender,
+        );
+        let pubkey = vec![7; 32];
+
+        entry.global_ctx.update_trusted_keys(
+            HashMap::from([(
+                pubkey.clone(),
+                crate::common::global_ctx::TrustedKeyMetadata {
+                    source: TrustedKeySource::OspfNode,
+                    expiry_unix: None,
+                },
+            )]),
+            &foreign_network.network_name,
+        );
+        assert!(!ForeignNetworkManager::is_credential_pubkey_trusted(&entry, &pubkey).await);
+
+        entry.global_ctx.update_trusted_keys(
+            HashMap::from([(
+                pubkey.clone(),
+                crate::common::global_ctx::TrustedKeyMetadata {
+                    source: TrustedKeySource::OspfCredential,
+                    expiry_unix: None,
+                },
+            )]),
+            &foreign_network.network_name,
+        );
+        assert!(ForeignNetworkManager::is_credential_pubkey_trusted(&entry, &pubkey).await);
+    }
+
+    #[test]
+    fn credential_trust_path_rejects_admin_identity() {
+        assert!(ForeignNetworkManager::should_reject_credential_trust_path(
+            PeerIdentityType::Admin
+        ));
+        assert!(!ForeignNetworkManager::should_reject_credential_trust_path(
+            PeerIdentityType::Credential
+        ));
+        assert!(!ForeignNetworkManager::should_reject_credential_trust_path(
+            PeerIdentityType::SharedNode
+        ));
+    }
+
+    #[tokio::test]
+    async fn zero_digest_peer_cannot_bootstrap_foreign_network() {
+        let pm_center = create_mock_peer_manager_with_mock_stun(NatType::Unknown).await;
+        set_secure_mode_cfg(&pm_center.get_global_ctx(), true);
+
+        let pma_net1 = create_mock_credential_peer_manager_for_foreign_network("net1").await;
+
+        let (a_ring, b_ring) = crate::tunnel::ring::create_ring_tunnel_pair();
+        let a_mgr_copy = pma_net1.clone();
+        let client = tokio::spawn(async move { a_mgr_copy.add_client_tunnel(a_ring, false).await });
+        let b_mgr_copy = pm_center.clone();
+        let server =
+            tokio::spawn(async move { b_mgr_copy.add_tunnel_as_server(b_ring, true).await });
+
+        assert!(client.await.unwrap().is_ok());
+        assert!(server.await.unwrap().is_err());
+        assert!(pm_center
+            .get_foreign_network_manager()
+            .list_foreign_networks()
+            .await
+            .foreign_networks
+            .is_empty());
+    }
+
     async fn foreign_network_whitelist_helper(name: String) {
         let pm_center = create_mock_peer_manager_with_mock_stun(NatType::Unknown).await;
         tracing::debug!("pm_center: {:?}", pm_center.my_peer_id());
         let mut flag = pm_center.get_global_ctx().get_flags();
         flag.relay_network_whitelist = ["net1".to_string(), "net2*".to_string()].join(" ");
-        pm_center.get_global_ctx().config.set_flags(flag);
+        pm_center.get_global_ctx().set_flags(flag);
 
         let pma_net1 = create_mock_peer_manager_for_foreign_network(name.as_str()).await;
 
@@ -949,7 +1209,7 @@ pub mod tests {
         let mut flag = pm_center.get_global_ctx().get_flags();
         flag.relay_network_whitelist = "".to_string();
         flag.relay_all_peer_rpc = true;
-        pm_center.get_global_ctx().config.set_flags(flag);
+        pm_center.get_global_ctx().set_flags(flag);
         tracing::debug!("pm_center: {:?}", pm_center.my_peer_id());
 
         let pma_net1 = create_mock_peer_manager_for_foreign_network("net1").await;

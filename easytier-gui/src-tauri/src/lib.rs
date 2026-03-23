@@ -191,7 +191,7 @@ async fn remove_network_instance(app: AppHandle, instance_id: String) -> Result<
         .await
         .map_err(|e| e.to_string())?;
     client_manager
-        .post_remove_network_instances_hook(&app, &[instance_id])
+        .post_stop_network_instances_hook(&app)
         .await?;
 
     Ok(())
@@ -214,7 +214,7 @@ async fn update_network_config_state(
 
     if disabled {
         client_manager
-            .post_remove_network_instances_hook(&app, &[instance_id])
+            .post_stop_network_instances_hook(&app)
             .await?;
     }
 
@@ -613,7 +613,7 @@ mod manager {
         async fn post_remove_network_instances(&self, ids: &[uuid::Uuid]) -> Result<(), String> {
             let client_manager = get_client_manager!()?;
             client_manager
-                .post_remove_network_instances_hook(&self.app, ids)
+                .post_remote_remove_network_instances_hook(&self.app, ids)
                 .await
         }
     }
@@ -696,7 +696,9 @@ mod manager {
                 self.network_configs.remove(network_inst_id);
                 self.enabled_networks.remove(network_inst_id);
             }
-            self.save_configs(&app)
+            self.save_configs(&app)?;
+            self.save_enabled_networks(&app)?;
+            Ok(())
         }
 
         async fn update_network_config_state(
@@ -897,14 +899,23 @@ mod manager {
             Ok(())
         }
 
-        pub(super) async fn post_remove_network_instances_hook(
+        pub(super) async fn post_remote_remove_network_instances_hook(
             &self,
             app: &AppHandle,
-            _ids: &[uuid::Uuid],
+            ids: &[uuid::Uuid],
         ) -> Result<(), String> {
             self.storage
-                .enabled_networks
-                .retain(|id| !_ids.contains(id));
+                .delete_network_configs(app.clone(), ids)
+                .await
+                .map_err(|e| e.to_string())?;
+            self.notify_vpn_stop_if_no_tun(app)?;
+            Ok(())
+        }
+
+        pub(super) async fn post_stop_network_instances_hook(
+            &self,
+            app: &AppHandle,
+        ) -> Result<(), String> {
             self.notify_vpn_stop_if_no_tun(app)?;
             Ok(())
         }
