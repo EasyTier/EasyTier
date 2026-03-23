@@ -78,8 +78,7 @@ while true; do
             FINAL_ARGS="${CMD_CONTENT} --hostname ${DEVICE_HOSTNAME}"
         fi
         
-        eval set -- ${FINAL_ARGS}
-        TZ=Asia/Shanghai "${EASYTIER}" "$@" > "${LOG_FILE}" 2>&1 &
+        TZ=Asia/Shanghai "${EASYTIER}" ${FINAL_ARGS} > "${LOG_FILE}" 2>&1 &
         STR_MODE="启动参数模式"
         
         # 否则读取 config.toml 的内容作为启动参数
@@ -87,13 +86,11 @@ while true; do
         # 配置文件模式
         if grep -q "^[[:space:]]*hostname[[:space:]]*=" "${CONFIG_FILE}"; then
             TZ=Asia/Shanghai "${EASYTIER}" -c "${CONFIG_FILE}" > "${LOG_FILE}" 2>&1 &
-            STR_MODE="配置文件模式1"
         else
             TZ=Asia/Shanghai "${EASYTIER}" -c "${CONFIG_FILE}" --hostname "${DEVICE_HOSTNAME}" > "${LOG_FILE}" 2>&1 &
-            STR_MODE="配置文件模式2"
         fi
         
-        # STR_MODE="配置文件模式"
+        STR_MODE="配置文件模式"
     fi
     
     # 等待进程启动
