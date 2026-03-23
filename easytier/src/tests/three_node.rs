@@ -23,9 +23,11 @@ use crate::{
     },
     instance::instance::Instance,
     proto::{
-        api::instance::TcpProxyEntryTransportType,
+        api::instance::{GetStatsRequest, MetricSnapshot, TcpProxyEntryTransportType},
         common::{CompressionAlgoPb, SecureModeConfig},
+        rpc_types::controller::BaseController,
     },
+    rpc_service::InstanceRpcService,
     tunnel::{
         common::tests::{
             _tunnel_bench_netns, _tunnel_pingpong_netns_with_timeout, wait_for_condition,
@@ -304,6 +306,41 @@ async fn ping6_test(from_netns: &str, target_ip: &str, payload_size: Option<usiz
         .await
         .unwrap();
     code.code().unwrap() == 0
+}
+
+async fn fetch_stats_via_rpc(inst: &Instance) -> Vec<MetricSnapshot> {
+    let api = inst.get_api_rpc_service();
+    api.get_stats_service()
+        .get_stats(
+            BaseController::default(),
+            GetStatsRequest { instance: None },
+        )
+        .await
+        .unwrap()
+        .metrics
+}
+
+async fn wait_for_labeled_stat(
+    inst: &Instance,
+    metric: MetricName,
+    dst_ip: &str,
+    min_value: u64,
+    timeout: Duration,
+) {
+    let network_name = inst.get_global_ctx().get_network_name();
+    let metric_name = metric.to_string();
+    wait_for_condition(
+        || async {
+            fetch_stats_via_rpc(inst).await.into_iter().any(|snapshot| {
+                snapshot.name == metric_name
+                    && snapshot.value >= min_value
+                    && snapshot.labels.get("network_name") == Some(&network_name)
+                    && snapshot.labels.get("dst_ip").is_some_and(|v| v == dst_ip)
+            })
+        },
+        timeout,
+    )
+    .await;
 }
 
 #[rstest::rstest]
@@ -772,6 +809,91 @@ pub async fn data_compress(
     .await;
 
     drop_insts(_insts).await;
+}
+
+#[tokio::test]
+#[serial_test::serial]
+pub async fn stats_by_ip_virtual_ip_rpc_integration() {
+    let insts = init_three_node("udp").await;
+    let target_ip = "10.144.144.3";
+
+    wait_for_condition(
+        || async { ping_test("net_a", target_ip, None).await },
+        Duration::from_secs(5),
+    )
+    .await;
+
+    wait_for_labeled_stat(
+        &insts[0],
+        MetricName::TrafficPacketsSelfTx,
+        target_ip,
+        1,
+        Duration::from_secs(5),
+    )
+    .await;
+    wait_for_labeled_stat(
+        &insts[2],
+        MetricName::TrafficPacketsSelfRx,
+        target_ip,
+        1,
+        Duration::from_secs(5),
+    )
+    .await;
+
+    drop_insts(insts).await;
+}
+
+#[cfg(feature = "zstd")]
+#[tokio::test]
+#[serial_test::serial]
+pub async fn stats_by_ip_subnet_proxy_rpc_integration_with_compression() {
+    let insts = init_three_node_ex(
+        "udp",
+        |cfg| {
+            if cfg.get_inst_name() == "inst1" {
+                let mut flags = cfg.get_flags();
+                flags.data_compress_algo = CompressionAlgoPb::Zstd.into();
+                cfg.set_flags(flags);
+            }
+            if cfg.get_inst_name() == "inst3" {
+                cfg.add_proxy_cidr("10.1.2.0/24".parse().unwrap(), None)
+                    .unwrap();
+            }
+            cfg
+        },
+        false,
+    )
+    .await;
+
+    wait_proxy_route_appear(
+        &insts[0].get_peer_manager(),
+        "10.144.144.3/24",
+        insts[2].peer_id(),
+        "10.1.2.0/24",
+    )
+    .await;
+
+    let target_ip = "10.1.2.4";
+    subnet_proxy_test_icmp(target_ip, Duration::from_secs(5)).await;
+
+    wait_for_labeled_stat(
+        &insts[0],
+        MetricName::TrafficPacketsSelfTx,
+        target_ip,
+        1,
+        Duration::from_secs(5),
+    )
+    .await;
+    wait_for_labeled_stat(
+        &insts[2],
+        MetricName::TrafficPacketsSelfRx,
+        target_ip,
+        1,
+        Duration::from_secs(5),
+    )
+    .await;
+
+    drop_insts(insts).await;
 }
 
 #[cfg(feature = "wireguard")]

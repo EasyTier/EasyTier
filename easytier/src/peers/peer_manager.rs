@@ -9,6 +9,7 @@ use anyhow::Context;
 use async_trait::async_trait;
 
 use dashmap::DashMap;
+use pnet::packet::{ipv4::Ipv4Packet, ipv6::Ipv6Packet};
 
 use tokio::{
     sync::{
@@ -791,6 +792,7 @@ impl PeerManager {
         let secure_mode_enabled = self.is_secure_mode_enabled;
         let stats_mgr = self.global_ctx.stats_manager().clone();
         let route = self.get_route();
+        let network_name = global_ctx.get_network_name();
         let is_credential_node = self
             .global_ctx
             .get_network_identity()
@@ -799,7 +801,7 @@ impl PeerManager {
             && secure_mode_enabled;
 
         let label_set =
-            LabelSet::new().with_label_type(LabelType::NetworkName(global_ctx.get_network_name()));
+            LabelSet::new().with_label_type(LabelType::NetworkName(network_name.clone()));
 
         let self_tx_bytes = self.self_tx_counters.self_tx_bytes.clone();
         let self_tx_packets = self.self_tx_counters.self_tx_packets.clone();
@@ -830,7 +832,7 @@ impl PeerManager {
                 };
 
                 let buf_len = ret.buf_len();
-                let Some(hdr) = ret.mut_peer_manager_header() else {
+                let Some(hdr) = ret.peer_manager_header() else {
                     tracing::warn!(?ret, "invalid packet, skip");
                     continue;
                 };
@@ -838,7 +840,18 @@ impl PeerManager {
                 tracing::trace!(?hdr, "peer recv a packet...");
                 let from_peer_id = hdr.from_peer_id.get();
                 let to_peer_id = hdr.to_peer_id.get();
+                let packet_type = hdr.packet_type;
+                let is_encrypted = hdr.is_encrypted();
                 if to_peer_id != my_peer_id {
+                    let self_generated_dst_ip = if from_peer_id == my_peer_id {
+                        Self::extract_dst_ip_for_traffic_stats(packet_type, &ret)
+                    } else {
+                        None
+                    };
+                    let Some(hdr) = ret.mut_peer_manager_header() else {
+                        tracing::warn!(?ret, "invalid packet, skip");
+                        continue;
+                    };
                     if hdr.forward_counter > 7 {
                         tracing::warn!(?hdr, "forward counter exceed, drop packet");
                         continue;
@@ -879,8 +892,16 @@ impl PeerManager {
                         }
 
                         compress_tx_bytes_after.add(ret.buf_len() as u64);
-                        self_tx_bytes.add(ret.buf_len() as u64);
-                        self_tx_packets.inc();
+                        Self::record_self_traffic_stats(
+                            &self_tx_bytes,
+                            &self_tx_packets,
+                            stats_mgr.as_ref(),
+                            &network_name,
+                            MetricName::TrafficBytesSelfTx,
+                            MetricName::TrafficPacketsSelfTx,
+                            self_generated_dst_ip,
+                            ret.buf_len() as u64,
+                        );
                     } else {
                         forward_tx_bytes.add(buf_len as u64);
                         forward_tx_packets.inc();
@@ -899,8 +920,8 @@ impl PeerManager {
                         tracing::error!(?ret, ?to_peer_id, ?from_peer_id, "forward packet error");
                     }
                 } else {
-                    if hdr.packet_type == PacketType::RelayHandshake as u8
-                        || hdr.packet_type == PacketType::RelayHandshakeAck as u8
+                    if packet_type == PacketType::RelayHandshake as u8
+                        || packet_type == PacketType::RelayHandshakeAck as u8
                     {
                         let _ = relay_peer_map.handle_handshake_packet(ret).await;
                         continue;
@@ -910,7 +931,7 @@ impl PeerManager {
                             tracing::error!(?e, "decrypt failed");
                             continue;
                         }
-                    } else if hdr.is_encrypted() {
+                    } else if is_encrypted {
                         match relay_peer_map.decrypt_if_needed(&mut ret).await {
                             Ok(true) => {}
                             Ok(false) => {
@@ -924,8 +945,11 @@ impl PeerManager {
                         }
                     }
 
-                    self_rx_bytes.add(buf_len as u64);
-                    self_rx_packets.inc();
+                    Self::record_total_traffic_stats(
+                        &self_rx_bytes,
+                        &self_rx_packets,
+                        buf_len as u64,
+                    );
                     compress_rx_bytes_before.add(buf_len as u64);
 
                     let compressor = DefaultCompressor {};
@@ -935,6 +959,15 @@ impl PeerManager {
                     }
 
                     compress_rx_bytes_after.add(ret.buf_len() as u64);
+                    let dst_ip = Self::extract_dst_ip_for_traffic_stats(packet_type, &ret);
+                    Self::record_dst_ip_traffic_stats(
+                        stats_mgr.as_ref(),
+                        &network_name,
+                        MetricName::TrafficBytesSelfRx,
+                        MetricName::TrafficPacketsSelfRx,
+                        dst_ip,
+                        buf_len as u64,
+                    );
 
                     if !acl_filter.process_packet_with_acl(
                         &ret,
@@ -1231,6 +1264,81 @@ impl PeerManager {
         }
     }
 
+    fn packet_type_supports_dst_ip_stats(packet_type: u8) -> bool {
+        packet_type == PacketType::Data as u8
+            || packet_type == PacketType::DataWithKcpSrcModified as u8
+            || packet_type == PacketType::DataWithQuicSrcModified as u8
+    }
+
+    fn extract_dst_ip_for_traffic_stats(packet_type: u8, packet: &ZCPacket) -> Option<IpAddr> {
+        if Self::packet_type_supports_dst_ip_stats(packet_type) {
+            Self::extract_dst_ip_from_packet(packet)
+        } else {
+            None
+        }
+    }
+
+    fn extract_dst_ip_from_packet(packet: &ZCPacket) -> Option<IpAddr> {
+        let payload = packet.payload();
+        let version = payload.first()? >> 4;
+        match version {
+            4 => Some(IpAddr::V4(Ipv4Packet::new(payload)?.get_destination())),
+            6 => Some(IpAddr::V6(Ipv6Packet::new(payload)?.get_destination())),
+            _ => None,
+        }
+    }
+
+    fn record_dst_ip_traffic_stats(
+        stats_mgr: &crate::common::stats_manager::StatsManager,
+        network_name: &str,
+        bytes_metric: MetricName,
+        packets_metric: MetricName,
+        dst_ip: Option<IpAddr>,
+        bytes: u64,
+    ) {
+        let Some(dst_ip) = dst_ip else {
+            return;
+        };
+
+        let label_set = LabelSet::new()
+            .with_label_type(LabelType::NetworkName(network_name.to_string()))
+            .with_label_type(LabelType::DstIp(dst_ip.to_string()));
+        stats_mgr
+            .get_counter(bytes_metric, label_set.clone())
+            .add(bytes);
+        stats_mgr.get_counter(packets_metric, label_set).inc();
+    }
+
+    fn record_total_traffic_stats(
+        total_bytes_counter: &CounterHandle,
+        total_packets_counter: &CounterHandle,
+        bytes: u64,
+    ) {
+        total_bytes_counter.add(bytes);
+        total_packets_counter.inc();
+    }
+
+    fn record_self_traffic_stats(
+        total_bytes_counter: &CounterHandle,
+        total_packets_counter: &CounterHandle,
+        stats_mgr: &crate::common::stats_manager::StatsManager,
+        network_name: &str,
+        bytes_metric: MetricName,
+        packets_metric: MetricName,
+        dst_ip: Option<IpAddr>,
+        bytes: u64,
+    ) {
+        Self::record_total_traffic_stats(total_bytes_counter, total_packets_counter, bytes);
+        Self::record_dst_ip_traffic_stats(
+            stats_mgr,
+            network_name,
+            bytes_metric,
+            packets_metric,
+            dst_ip,
+            bytes,
+        );
+    }
+
     fn check_p2p_only_before_send(&self, dst_peer_id: PeerId) -> Result<(), Error> {
         if self.global_ctx.p2p_only() && !self.peers.has_peer(dst_peer_id) {
             return Err(Error::RouteError(None));
@@ -1438,6 +1546,7 @@ impl PeerManager {
             msg,
             ip_addr
         );
+        let network_name = self.global_ctx.get_network_name();
 
         msg.fill_peer_manager_hdr(
             self.my_peer_id,
@@ -1524,10 +1633,16 @@ impl PeerManager {
                 }
             }
 
-            self.self_tx_counters
-                .self_tx_bytes
-                .add(msg.buf_len() as u64);
-            self.self_tx_counters.self_tx_packets.inc();
+            Self::record_self_traffic_stats(
+                &self.self_tx_counters.self_tx_bytes,
+                &self.self_tx_counters.self_tx_packets,
+                self.global_ctx.stats_manager().as_ref(),
+                &network_name,
+                MetricName::TrafficBytesSelfTx,
+                MetricName::TrafficPacketsSelfTx,
+                Some(ip_addr),
+                msg.buf_len() as u64,
+            );
 
             if let Err(e) = Self::send_msg_internal(
                 &self.peers,
@@ -1859,14 +1974,20 @@ mod tests {
 
     use std::{
         fmt::Debug,
+        net::{IpAddr, Ipv4Addr, Ipv6Addr},
         sync::Arc,
         time::{Duration, Instant},
+    };
+
+    use pnet::packet::{
+        ip::IpNextHeaderProtocols, ipv4::MutableIpv4Packet, ipv6::MutableIpv6Packet, MutablePacket,
     };
 
     use crate::{
         common::{
             config::Flags,
             global_ctx::{tests::get_mock_global_ctx, NetworkIdentity},
+            stats_manager::{LabelSet, LabelType, MetricName, StatsManager},
         },
         connector::{
             create_connector_by_url, direct::PeerManagerForDirectConnector,
@@ -1891,6 +2012,7 @@ mod tests {
         tunnel::{
             common::tests::wait_for_condition,
             filter::{tests::DropSendTunnelFilter, TunnelWithFilter},
+            packet_def::{CompressorAlgo, PacketType},
             ring::create_ring_tunnel_pair,
             TunnelConnector, TunnelListener,
         },
@@ -1939,6 +2061,121 @@ mod tests {
         assert!(!recent_have_traffic.contains_key(&direct_peer));
         assert!(recent_have_traffic.contains_key(&active_peer));
         assert!(recent_have_traffic.contains_key(&future_peer));
+    }
+
+    #[test]
+    fn extract_dst_ip_from_packet_supports_ipv4_and_ipv6() {
+        let mut ipv4_buf = [0u8; 20];
+        let mut ipv4_packet = MutableIpv4Packet::new(&mut ipv4_buf).unwrap();
+        ipv4_packet.set_version(4);
+        ipv4_packet.set_header_length(5);
+        ipv4_packet.set_total_length(20);
+        ipv4_packet.set_next_level_protocol(IpNextHeaderProtocols::Udp);
+        ipv4_packet.set_source(Ipv4Addr::new(10, 10, 0, 1));
+        ipv4_packet.set_destination(Ipv4Addr::new(10, 10, 0, 2));
+
+        let ipv4_zc_packet = crate::tunnel::packet_def::ZCPacket::new_with_payload(&ipv4_buf);
+        assert_eq!(
+            PeerManager::extract_dst_ip_from_packet(&ipv4_zc_packet),
+            Some(IpAddr::V4(Ipv4Addr::new(10, 10, 0, 2)))
+        );
+
+        let mut ipv6_buf = [0u8; 40];
+        let mut ipv6_packet = MutableIpv6Packet::new(&mut ipv6_buf).unwrap();
+        ipv6_packet.set_version(6);
+        ipv6_packet.set_payload_length(0);
+        ipv6_packet.set_next_header(IpNextHeaderProtocols::Tcp);
+        ipv6_packet.set_source(Ipv6Addr::LOCALHOST);
+        ipv6_packet.set_destination(Ipv6Addr::new(0xfd00, 0, 0, 0, 0, 0, 0, 2));
+
+        let ipv6_zc_packet = crate::tunnel::packet_def::ZCPacket::new_with_payload(&ipv6_buf);
+        assert_eq!(
+            PeerManager::extract_dst_ip_from_packet(&ipv6_zc_packet),
+            Some(IpAddr::V6(Ipv6Addr::new(0xfd00, 0, 0, 0, 0, 0, 0, 2)))
+        );
+
+        let invalid_packet = crate::tunnel::packet_def::ZCPacket::new_with_payload(&[0x10, 0x00]);
+        assert_eq!(
+            PeerManager::extract_dst_ip_from_packet(&invalid_packet),
+            None
+        );
+    }
+
+    #[tokio::test]
+    async fn record_dst_ip_traffic_stats_creates_labeled_metrics() {
+        let stats = StatsManager::new();
+        let dst_ip = IpAddr::V4(Ipv4Addr::new(10, 20, 30, 40));
+
+        PeerManager::record_dst_ip_traffic_stats(
+            &stats,
+            "test-network",
+            MetricName::TrafficBytesSelfTx,
+            MetricName::TrafficPacketsSelfTx,
+            Some(dst_ip),
+            128,
+        );
+
+        let labels = LabelSet::new()
+            .with_label_type(LabelType::NetworkName("test-network".to_string()))
+            .with_label_type(LabelType::DstIp(dst_ip.to_string()));
+
+        assert_eq!(
+            stats
+                .get_metric(MetricName::TrafficBytesSelfTx, &labels)
+                .unwrap()
+                .value,
+            128
+        );
+        assert_eq!(
+            stats
+                .get_metric(MetricName::TrafficPacketsSelfTx, &labels)
+                .unwrap()
+                .value,
+            1
+        );
+
+        PeerManager::record_dst_ip_traffic_stats(
+            &stats,
+            "test-network",
+            MetricName::TrafficBytesSelfTx,
+            MetricName::TrafficPacketsSelfTx,
+            None,
+            64,
+        );
+
+        assert_eq!(stats.metric_count(), 2);
+    }
+
+    #[cfg(feature = "zstd")]
+    #[tokio::test]
+    async fn compressed_packet_dst_ip_is_read_after_decompress() {
+        use crate::common::compressor::{Compressor as _, DefaultCompressor};
+
+        let mut ipv4_buf = vec![0u8; 20 + 256];
+        let mut ipv4_packet = MutableIpv4Packet::new(&mut ipv4_buf).unwrap();
+        ipv4_packet.set_version(4);
+        ipv4_packet.set_header_length(5);
+        ipv4_packet.set_total_length((20 + 256) as u16);
+        ipv4_packet.set_next_level_protocol(IpNextHeaderProtocols::Udp);
+        ipv4_packet.set_source(Ipv4Addr::new(10, 10, 0, 1));
+        ipv4_packet.set_destination(Ipv4Addr::new(10, 10, 0, 2));
+        ipv4_packet.payload_mut().fill(0);
+
+        let mut packet = crate::tunnel::packet_def::ZCPacket::new_with_payload(&ipv4_buf);
+        packet.fill_peer_manager_hdr(1, 2, PacketType::Data as u8);
+
+        let compressor = DefaultCompressor::new();
+        compressor
+            .compress(&mut packet, CompressorAlgo::ZstdDefault)
+            .await
+            .unwrap();
+        assert!(packet.peer_manager_header().unwrap().is_compressed());
+
+        compressor.decompress(&mut packet).await.unwrap();
+        assert_eq!(
+            PeerManager::extract_dst_ip_for_traffic_stats(PacketType::Data as u8, &packet),
+            Some(IpAddr::V4(Ipv4Addr::new(10, 10, 0, 2)))
+        );
     }
 
     #[tokio::test]
