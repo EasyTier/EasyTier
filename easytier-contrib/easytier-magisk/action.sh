@@ -65,7 +65,7 @@ else
     echo "----------------------------------"
     echo "热点子网转发已激活"
     echo "热点开启后将自动将热点加入转发网络"
-    echo "需要本机已配置 cidr= 参数"
+    echo "需要在配置中提前配置好 cidr 参数"
     echo "----------------------------------"
     echo "[ET-NAT] Action: IP rule enabled." >> "${MODDIR}/log.log"
 fi
