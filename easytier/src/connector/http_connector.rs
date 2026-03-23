@@ -334,7 +334,7 @@ mod tests {
 
         let mut flags = global_ctx.config.get_flags();
         flags.bind_device = false;
-        global_ctx.config.set_flags(flags);
+        global_ctx.set_flags(flags);
         let mut connector = HttpTunnelConnector::new(test_url.clone(), global_ctx.clone());
 
         let mut listener = TcpTunnelListener::new("tcp://0.0.0.0:25888".parse().unwrap());

@@ -762,6 +762,10 @@ impl NetworkConfig {
             flags.p2p_only = p2p_only;
         }
 
+        if let Some(lazy_p2p) = self.lazy_p2p {
+            flags.lazy_p2p = lazy_p2p;
+        }
+
         if let Some(bind_device) = self.bind_device {
             flags.bind_device = bind_device;
         }
@@ -776,6 +780,10 @@ impl NetworkConfig {
 
         if let Some(relay_all_peer_rpc) = self.relay_all_peer_rpc {
             flags.relay_all_peer_rpc = relay_all_peer_rpc;
+        }
+
+        if let Some(need_p2p) = self.need_p2p {
+            flags.need_p2p = need_p2p;
         }
 
         if let Some(multi_thread) = self.multi_thread {
@@ -956,10 +964,12 @@ impl NetworkConfig {
         result.disable_quic_input = Some(flags.disable_quic_input);
         result.disable_p2p = Some(flags.disable_p2p);
         result.p2p_only = Some(flags.p2p_only);
+        result.lazy_p2p = Some(flags.lazy_p2p);
         result.bind_device = Some(flags.bind_device);
         result.no_tun = Some(flags.no_tun);
         result.enable_exit_node = Some(flags.enable_exit_node);
         result.relay_all_peer_rpc = Some(flags.relay_all_peer_rpc);
+        result.need_p2p = Some(flags.need_p2p);
         result.multi_thread = Some(flags.multi_thread);
         result.proxy_forward_by_system = Some(flags.proxy_forward_by_system);
         result.disable_encryption = Some(!flags.enable_encryption);
@@ -1214,10 +1224,12 @@ mod tests {
                 flags.disable_quic_input = rng.gen_bool(0.3);
                 flags.disable_p2p = rng.gen_bool(0.2);
                 flags.p2p_only = rng.gen_bool(0.2);
+                flags.lazy_p2p = rng.gen_bool(0.3);
                 flags.bind_device = rng.gen_bool(0.3);
                 flags.no_tun = rng.gen_bool(0.1);
                 flags.enable_exit_node = rng.gen_bool(0.4);
                 flags.relay_all_peer_rpc = rng.gen_bool(0.5);
+                flags.need_p2p = rng.gen_bool(0.3);
                 flags.multi_thread = rng.gen_bool(0.7);
                 flags.proxy_forward_by_system = rng.gen_bool(0.3);
                 flags.enable_encryption = rng.gen_bool(0.8);

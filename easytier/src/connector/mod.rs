@@ -15,6 +15,7 @@ use crate::tunnel::unix::UnixSocketTunnelConnector;
 use crate::tunnel::wireguard::{WgConfig, WgTunnelConnector};
 use crate::{
     common::{error::Error, global_ctx::ArcGlobalCtx, idn, network::IPCollector},
+    proto::common::PeerFeatureFlag,
     tunnel::{
         check_scheme_and_get_socket_addr, ring::RingTunnelConnector, tcp::TcpTunnelConnector,
         udp::UdpTunnelConnector, IpVersion, TunnelConnector,
@@ -28,6 +29,24 @@ pub mod udp_hole_punch;
 
 pub mod dns_connector;
 pub mod http_connector;
+
+pub(crate) fn should_try_p2p_with_peer(
+    feature_flag: Option<&PeerFeatureFlag>,
+    allow_public_server: bool,
+) -> bool {
+    feature_flag
+        .map(|flag| allow_public_server || !flag.is_public_server)
+        .unwrap_or(true)
+}
+
+pub(crate) fn should_background_p2p_with_peer(
+    feature_flag: Option<&PeerFeatureFlag>,
+    allow_public_server: bool,
+    lazy_p2p: bool,
+) -> bool {
+    should_try_p2p_with_peer(feature_flag, allow_public_server)
+        && (!lazy_p2p || feature_flag.map(|flag| flag.need_p2p).unwrap_or(false))
+}
 
 async fn set_bind_addr_for_peer_connector(
     connector: &mut (impl TunnelConnector + ?Sized),
@@ -196,4 +215,60 @@ pub async fn create_connector_by_url(
     connector.set_ip_version(ip_version);
 
     Ok(connector)
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::proto::common::PeerFeatureFlag;
+
+    use super::{should_background_p2p_with_peer, should_try_p2p_with_peer};
+
+    #[test]
+    fn lazy_background_p2p_requires_need_p2p() {
+        let no_need_p2p = PeerFeatureFlag {
+            need_p2p: false,
+            ..Default::default()
+        };
+        let need_p2p = PeerFeatureFlag {
+            need_p2p: true,
+            ..Default::default()
+        };
+
+        assert!(should_background_p2p_with_peer(
+            Some(&no_need_p2p),
+            false,
+            false
+        ));
+        assert!(!should_background_p2p_with_peer(
+            Some(&no_need_p2p),
+            false,
+            true
+        ));
+        assert!(should_background_p2p_with_peer(
+            Some(&need_p2p),
+            false,
+            true
+        ));
+    }
+
+    #[test]
+    fn p2p_policy_respects_public_server_setting() {
+        let public_server = PeerFeatureFlag {
+            is_public_server: true,
+            ..Default::default()
+        };
+
+        assert!(!should_try_p2p_with_peer(Some(&public_server), false));
+        assert!(should_try_p2p_with_peer(Some(&public_server), true));
+        assert!(!should_background_p2p_with_peer(
+            Some(&public_server),
+            false,
+            false
+        ));
+        assert!(should_background_p2p_with_peer(
+            Some(&public_server),
+            true,
+            false
+        ));
+    }
 }

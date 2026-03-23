@@ -48,17 +48,20 @@ pub fn prepare_linux_namespaces() {
     del_netns("net_b");
     del_netns("net_c");
     del_netns("net_d");
+    del_netns("net_e");
 
     create_netns("net_a", "10.1.1.1/24", "fd11::1/64");
     create_netns("net_b", "10.1.1.2/24", "fd11::2/64");
     create_netns("net_c", "10.1.2.3/24", "fd12::3/64");
     create_netns("net_d", "10.1.2.4/24", "fd12::4/64");
+    create_netns("net_e", "10.1.1.3/24", "fd11::3/64");
 
     prepare_bridge("br_a");
     prepare_bridge("br_b");
 
     add_ns_to_bridge("br_a", "net_a");
     add_ns_to_bridge("br_a", "net_b");
+    add_ns_to_bridge("br_a", "net_e");
     add_ns_to_bridge("br_b", "net_c");
     add_ns_to_bridge("br_b", "net_d");
 }
@@ -89,10 +92,13 @@ pub async fn init_three_node(proto: &str) -> Vec<Instance> {
     init_three_node_ex(proto, |cfg| cfg, false).await
 }
 
-pub async fn init_three_node_ex<F: Fn(TomlConfigLoader) -> TomlConfigLoader>(
+async fn init_three_node_ex_with_inst3<F: Fn(TomlConfigLoader) -> TomlConfigLoader>(
     proto: &str,
     cfg_cb: F,
     use_public_server: bool,
+    inst3_ns: &str,
+    inst3_ipv4: &str,
+    inst3_ipv6: &str,
 ) -> Vec<Instance> {
     prepare_linux_namespaces();
 
@@ -110,9 +116,9 @@ pub async fn init_three_node_ex<F: Fn(TomlConfigLoader) -> TomlConfigLoader>(
     )));
     let mut inst3 = Instance::new(cfg_cb(get_inst_config(
         "inst3",
-        Some("net_c"),
-        "10.144.144.3",
-        "fd00::3/64",
+        Some(inst3_ns),
+        inst3_ipv4,
+        inst3_ipv6,
     )));
 
     inst1.run().await.unwrap();
@@ -209,6 +215,29 @@ pub async fn init_three_node_ex<F: Fn(TomlConfigLoader) -> TomlConfigLoader>(
     .await;
 
     vec![inst1, inst2, inst3]
+}
+
+pub async fn init_three_node_ex<F: Fn(TomlConfigLoader) -> TomlConfigLoader>(
+    proto: &str,
+    cfg_cb: F,
+    use_public_server: bool,
+) -> Vec<Instance> {
+    init_three_node_ex_with_inst3(
+        proto,
+        cfg_cb,
+        use_public_server,
+        "net_c",
+        "10.144.144.3",
+        "fd00::3/64",
+    )
+    .await
+}
+
+async fn init_lazy_p2p_three_node_ex<F: Fn(TomlConfigLoader) -> TomlConfigLoader>(
+    proto: &str,
+    cfg_cb: F,
+) -> Vec<Instance> {
+    init_three_node_ex_with_inst3(proto, cfg_cb, false, "net_e", "10.144.144.3", "fd00::3/64").await
 }
 
 pub async fn drop_insts(insts: Vec<Instance>) {
@@ -2079,6 +2108,24 @@ where
     }
 }
 
+async fn wait_route_cost(inst: &Instance, peer_id: u32, cost: i32, timeout: Duration) {
+    let peer_manager = inst.get_peer_manager();
+    wait_for_condition(
+        move || {
+            let peer_manager = peer_manager.clone();
+            async move {
+                peer_manager
+                    .list_routes()
+                    .await
+                    .iter()
+                    .any(|route| route.peer_id == peer_id && route.cost == cost)
+            }
+        },
+        timeout,
+    )
+    .await;
+}
+
 #[rstest::rstest]
 #[tokio::test]
 #[serial_test::serial]
@@ -2396,6 +2443,124 @@ pub async fn acl_group_base_test(
     println!("ACL stats after group {} tests: {:?}", protocol, stats);
 
     println!("✓ All group-based ACL tests completed successfully");
+
+    drop_insts(insts).await;
+}
+
+#[tokio::test]
+#[serial_test::serial]
+pub async fn lazy_p2p_builds_direct_connection_on_demand() {
+    let insts = init_lazy_p2p_three_node_ex("udp", |cfg| {
+        if cfg.get_inst_name() == "inst1" {
+            let mut flags = cfg.get_flags();
+            flags.lazy_p2p = true;
+            cfg.set_flags(flags);
+        }
+        cfg
+    })
+    .await;
+
+    let inst3_peer_id = insts[2].peer_id();
+    assert!(
+        !insts[0]
+            .get_peer_manager()
+            .get_peer_map()
+            .has_peer(inst3_peer_id),
+        "inst1 should not proactively connect to inst3 when lazy_p2p is enabled"
+    );
+    wait_route_cost(&insts[0], inst3_peer_id, 2, Duration::from_secs(5)).await;
+
+    assert!(
+        ping_test("net_a", "10.144.144.3", None).await,
+        "initial relay traffic should still succeed"
+    );
+
+    wait_for_condition(
+        || async {
+            insts[0]
+                .get_peer_manager()
+                .get_peer_map()
+                .has_peer(inst3_peer_id)
+        },
+        Duration::from_secs(10),
+    )
+    .await;
+    wait_route_cost(&insts[0], inst3_peer_id, 1, Duration::from_secs(10)).await;
+
+    drop_insts(insts).await;
+}
+
+#[tokio::test]
+#[serial_test::serial]
+pub async fn need_p2p_overrides_lazy_p2p() {
+    let insts = init_lazy_p2p_three_node_ex("udp", |cfg| {
+        let mut flags = cfg.get_flags();
+        if cfg.get_inst_name() == "inst1" {
+            flags.lazy_p2p = true;
+        }
+        if cfg.get_inst_name() == "inst3" {
+            flags.need_p2p = true;
+        }
+        cfg.set_flags(flags);
+        cfg
+    })
+    .await;
+
+    let inst3_peer_id = insts[2].peer_id();
+    wait_route_cost(&insts[0], inst3_peer_id, 2, Duration::from_secs(5)).await;
+    wait_for_condition(
+        || async {
+            insts[0]
+                .get_peer_manager()
+                .get_peer_map()
+                .has_peer(inst3_peer_id)
+        },
+        Duration::from_secs(10),
+    )
+    .await;
+    wait_route_cost(&insts[0], inst3_peer_id, 1, Duration::from_secs(10)).await;
+
+    drop_insts(insts).await;
+}
+
+#[tokio::test]
+#[serial_test::serial]
+pub async fn lazy_p2p_warms_up_before_p2p_only_send() {
+    let insts = init_lazy_p2p_three_node_ex("udp", |cfg| {
+        if cfg.get_inst_name() == "inst1" {
+            let mut flags = cfg.get_flags();
+            flags.lazy_p2p = true;
+            flags.p2p_only = true;
+            cfg.set_flags(flags);
+        }
+        cfg
+    })
+    .await;
+
+    let inst3_peer_id = insts[2].peer_id();
+    wait_route_cost(&insts[0], inst3_peer_id, 2, Duration::from_secs(5)).await;
+    assert!(
+        !ping_test("net_a", "10.144.144.3", None).await,
+        "the first send should still fail under p2p_only before direct connectivity exists"
+    );
+
+    wait_for_condition(
+        || async {
+            insts[0]
+                .get_peer_manager()
+                .get_peer_map()
+                .has_peer(inst3_peer_id)
+        },
+        Duration::from_secs(10),
+    )
+    .await;
+    wait_route_cost(&insts[0], inst3_peer_id, 1, Duration::from_secs(10)).await;
+
+    wait_for_condition(
+        || async { ping_test("net_a", "10.144.144.3", None).await },
+        Duration::from_secs(6),
+    )
+    .await;
 
     drop_insts(insts).await;
 }

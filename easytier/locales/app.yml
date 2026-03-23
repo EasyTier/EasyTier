@@ -157,6 +157,12 @@ core_clap:
   p2p_only:
     en: "only communicate with peers that already establish p2p connection"
     zh-CN: "仅与已经建立P2P连接的对等节点通信"
+  lazy_p2p:
+    en: "only try to establish p2p when traffic actually needs the peer; peers marked as need-p2p are still connected proactively"
+    zh-CN: "仅在实际流量需要某个对等节点时才尝试建立P2P；被标记为 need-p2p 的节点仍会主动建立连接"
+  need_p2p:
+    en: "announce that other peers should proactively establish p2p connections to this node even when they enable lazy-p2p"
+    zh-CN: "声明即使其他节点启用了 lazy-p2p，也应主动与当前节点建立P2P连接"
   disable_tcp_hole_punching:
     en: "disable tcp hole punching"
     zh-CN: "禁用TCP打洞功能"
