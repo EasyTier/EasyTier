@@ -8,7 +8,6 @@ use std::{
     },
 };
 
-use arc_swap::ArcSwapOption;
 use crossbeam::atomic::AtomicCell;
 use futures::{StreamExt, TryFutureExt};
 
@@ -34,7 +33,6 @@ use crate::{
         defer,
         error::Error,
         global_ctx::ArcGlobalCtx,
-        stats_manager::{CounterHandle, LabelSet, LabelType, MetricName},
         PeerId,
     },
     peers::peer_session::{PeerSessionStore, SessionKey, UpsertResponderSessionReturn},
@@ -284,13 +282,6 @@ impl PeerConnCloseNotify {
     }
 }
 
-struct PeerConnCounter {
-    traffic_tx_bytes: CounterHandle,
-    traffic_rx_bytes: CounterHandle,
-    traffic_tx_packets: CounterHandle,
-    traffic_rx_packets: CounterHandle,
-}
-
 pub struct PeerConn {
     conn_id: PeerConnId,
 
@@ -322,8 +313,6 @@ pub struct PeerConn {
     latency_stats: Arc<WindowLatency>,
     throughput: Arc<Throughput>,
     loss_rate_stats: Arc<AtomicU32>,
-
-    counters: ArcSwapOption<PeerConnCounter>,
 
     peer_session_store: Arc<PeerSessionStore>,
     my_encrypt_algo: String,
@@ -412,8 +401,6 @@ impl PeerConn {
             latency_stats: Arc::new(WindowLatency::new(15)),
             throughput,
             loss_rate_stats: Arc::new(AtomicU32::new(0)),
-
-            counters: ArcSwapOption::new(None),
 
             peer_session_store,
             my_encrypt_algo,
@@ -1325,19 +1312,6 @@ impl PeerConn {
         let ctrl_sender = self.ctrl_resp_sender.clone();
         let conn_info_for_instrument = self.get_conn_info();
 
-        let stats_mgr = self.global_ctx.stats_manager();
-        let label_set = LabelSet::new().with_label_type(LabelType::NetworkName(
-            conn_info_for_instrument.network_name.clone(),
-        ));
-        let counters = PeerConnCounter {
-            traffic_tx_bytes: stats_mgr.get_counter(MetricName::TrafficBytesTx, label_set.clone()),
-            traffic_rx_bytes: stats_mgr.get_counter(MetricName::TrafficBytesRx, label_set.clone()),
-            traffic_tx_packets: stats_mgr
-                .get_counter(MetricName::TrafficPacketsTx, label_set.clone()),
-            traffic_rx_packets: stats_mgr.get_counter(MetricName::TrafficPacketsRx, label_set),
-        };
-        self.counters.store(Some(Arc::new(counters)));
-
         let is_foreign_network = conn_info_for_instrument.network_name
             != self.global_ctx.get_network_identity().network_name;
         let recv_limiter = if is_foreign_network {
@@ -1355,8 +1329,6 @@ impl PeerConn {
             None
         };
 
-        let counters = self.counters.load_full().unwrap();
-
         self.tasks.spawn(
             async move {
                 tracing::info!("start recving peer conn packet");
@@ -1370,9 +1342,6 @@ impl PeerConn {
 
                     let mut zc_packet = ret.unwrap();
                     let buf_len = zc_packet.buf_len() as u64;
-
-                    counters.traffic_rx_bytes.add(buf_len);
-                    counters.traffic_rx_packets.inc();
 
                     let Some(peer_mgr_hdr) = zc_packet.mut_peer_manager_header() else {
                         tracing::error!(
@@ -1438,11 +1407,6 @@ impl PeerConn {
     }
 
     pub async fn send_msg(&self, msg: ZCPacket) -> Result<(), Error> {
-        let counters = self.counters.load();
-        if let Some(ref counters) = *counters {
-            counters.traffic_tx_bytes.add(msg.buf_len() as u64);
-            counters.traffic_tx_packets.inc();
-        }
         Ok(self.sink.send(msg).await?)
     }
 
