@@ -1,5 +1,4 @@
 use std::{
-    collections::BTreeSet,
     io,
     net::{IpAddr, Ipv4Addr, Ipv6Addr},
     pin::Pin,
@@ -14,7 +13,6 @@ use crate::{
         ifcfg::{IfConfiger, IfConfiguerTrait},
         log,
     },
-    instance::proxy_cidrs_monitor::ProxyCidrsMonitor,
     peers::{peer_manager::PeerManager, recv_packet_from_chan, PacketRecvChanReceiver},
     tunnel::{
         common::{reserve_buf, FramedWriter, TunnelWrapper, ZCPacketToBytes},
@@ -990,132 +988,6 @@ impl NicCtx {
         });
     }
 
-    async fn apply_route_changes(
-        ifcfg: &impl IfConfiguerTrait,
-        ifname: &str,
-        net_ns: &crate::common::netns::NetNS,
-        cur_proxy_cidrs: &mut BTreeSet<cidr::Ipv4Cidr>,
-        added: Vec<cidr::Ipv4Cidr>,
-        removed: Vec<cidr::Ipv4Cidr>,
-    ) {
-        tracing::debug!(?added, ?removed, "applying proxy_cidrs route changes");
-
-        // Remove routes
-        for cidr in removed {
-            if !cur_proxy_cidrs.contains(&cidr) {
-                continue;
-            }
-            let _g = net_ns.guard();
-            let ret = ifcfg
-                .remove_ipv4_route(ifname, cidr.first_address(), cidr.network_length())
-                .await;
-
-            if ret.is_err() {
-                tracing::trace!(
-                    cidr = ?cidr,
-                    err = ?ret,
-                    "remove route failed.",
-                );
-            }
-            cur_proxy_cidrs.remove(&cidr);
-        }
-
-        // Add routes
-        for cidr in added {
-            if cur_proxy_cidrs.contains(&cidr) {
-                continue;
-            }
-            let _g = net_ns.guard();
-            let ret = ifcfg
-                .add_ipv4_route(ifname, cidr.first_address(), cidr.network_length(), None)
-                .await;
-
-            if ret.is_err() {
-                tracing::trace!(
-                    cidr = ?cidr,
-                    err = ?ret,
-                    "add route failed.",
-                );
-            }
-            cur_proxy_cidrs.insert(cidr);
-        }
-    }
-
-    async fn run_proxy_cidrs_route_updater(&mut self) -> Result<(), Error> {
-        let Some(peer_mgr) = self.peer_mgr.upgrade() else {
-            return Err(anyhow::anyhow!("peer manager not available").into());
-        };
-        let global_ctx = self.global_ctx.clone();
-        let net_ns = self.global_ctx.net_ns.clone();
-        let nic = self.nic.lock().await;
-        let ifcfg = nic.get_ifcfg();
-        let ifname = nic.ifname().to_owned();
-        let mut event_receiver = global_ctx.subscribe();
-
-        self.tasks.spawn(async move {
-            let mut cur_proxy_cidrs = BTreeSet::<cidr::Ipv4Cidr>::new();
-
-            // Initial sync: get current proxy_cidrs state and apply routes
-            let (_, added, removed) = ProxyCidrsMonitor::diff_proxy_cidrs(
-                peer_mgr.as_ref(),
-                &global_ctx,
-                &cur_proxy_cidrs,
-            )
-            .await;
-            Self::apply_route_changes(
-                &ifcfg,
-                &ifname,
-                &net_ns,
-                &mut cur_proxy_cidrs,
-                added,
-                removed,
-            )
-            .await;
-
-            loop {
-                let event = match event_receiver.recv().await {
-                    Ok(event) => event,
-                    Err(tokio::sync::broadcast::error::RecvError::Closed) => {
-                        tracing::debug!("event bus closed, stopping proxy_cidrs route updater");
-                        break;
-                    }
-                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
-                        tracing::warn!(
-                            "event bus lagged in proxy_cidrs route updater, doing full sync"
-                        );
-                        event_receiver = event_receiver.resubscribe();
-                        // Full sync after lagged to recover consistent state
-                        let (_, added, removed) = ProxyCidrsMonitor::diff_proxy_cidrs(
-                            peer_mgr.as_ref(),
-                            &global_ctx,
-                            &cur_proxy_cidrs,
-                        )
-                        .await;
-                        GlobalCtxEvent::ProxyCidrsUpdated(added, removed)
-                    }
-                };
-
-                // Only handle ProxyCidrsUpdated events
-                let (added, removed) = match event {
-                    GlobalCtxEvent::ProxyCidrsUpdated(added, removed) => (added, removed),
-                    _ => continue,
-                };
-
-                Self::apply_route_changes(
-                    &ifcfg,
-                    &ifname,
-                    &net_ns,
-                    &mut cur_proxy_cidrs,
-                    added,
-                    removed,
-                )
-                .await;
-            }
-        });
-
-        Ok(())
-    }
-
     pub async fn run(
         &mut self,
         ipv4_addr: Option<cidr::Ipv4Inet>,
@@ -1169,8 +1041,6 @@ impl NicCtx {
         if let Some(ipv6_addr) = ipv6_addr {
             self.assign_ipv6_to_tun_device(ipv6_addr).await?;
         }
-
-        self.run_proxy_cidrs_route_updater().await?;
 
         Ok(())
     }

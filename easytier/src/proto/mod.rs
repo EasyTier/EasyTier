@@ -4,6 +4,8 @@ pub mod rpc_types;
 pub mod acl;
 pub mod api;
 pub mod common;
+#[cfg(feature = "magic-dns")]
+pub mod dns;
 pub mod error;
 #[cfg(feature = "magic-dns")]
 pub mod magic_dns;
@@ -12,6 +14,7 @@ pub mod web;
 
 #[cfg(test)]
 pub mod tests;
+pub mod utils;
 
 const DESCRIPTOR_POOL_BYTES: &[u8] =
     include_bytes!(concat!(env!("OUT_DIR"), "/file_descriptor_set.bin"));

@@ -9,9 +9,9 @@
 use super::{
     config::{GeneralConfigBuilder, RunConfigBuilder},
     server::Server,
-    system_config::{OSConfig, SystemConfig},
     MAGIC_DNS_INSTANCE_ADDR,
 };
+use crate::dns::system::{OSConfig, SystemConfigurator};
 use crate::{
     common::{
         ifcfg::{IfConfiger, IfConfiguerTrait},
@@ -69,7 +69,7 @@ pub(super) struct MagicDnsServerInstanceData {
     // zone -> (tunnel remote addr -> route)
     route_infos: DashMap<String, MultiMap<url::Url, Route>>,
 
-    system_config: Option<Box<dyn SystemConfig>>,
+    system_config: Option<Box<dyn SystemConfigurator>>,
 }
 
 impl MagicDnsServerInstanceData {
@@ -492,17 +492,17 @@ pub struct MagicDnsServerInstance {
 
 fn get_system_config(
     _tun_name: Option<&str>,
-) -> Result<Option<Box<dyn SystemConfig>>, anyhow::Error> {
+) -> Result<Option<Box<dyn SystemConfigurator>>, anyhow::Error> {
     #[cfg(target_os = "windows")]
     {
-        use super::system_config::windows::WindowsDNSManager;
+        use crate::dns::system::windows::WindowsDNSManager;
         let tun_name = _tun_name.ok_or_else(|| anyhow::anyhow!("No tun name"))?;
         return Ok(Some(Box::new(WindowsDNSManager::new(tun_name)?)));
     }
 
     #[cfg(all(target_os = "macos", not(feature = "macos-ne")))]
     {
-        use super::system_config::darwin::DarwinConfigurator;
+        use crate::dns::system_config::darwin::DarwinConfigurator;
         return Ok(Some(Box::new(DarwinConfigurator::new())));
     }
 
@@ -583,7 +583,7 @@ impl MagicDnsServerInstance {
 
     pub async fn clean_env(&self) {
         if let Some(configer) = &self.data.system_config {
-            let ret = configer.close();
+            let ret = configer.clean();
             if let Err(e) = ret {
                 tracing::error!("Failed to close system config: {:?}", e);
             }

@@ -1,7 +1,9 @@
 [workspace]
 resolver = "2"
-members = [
-    "easytier",
+members = ["easytier"]
+default-members = ["easytier"]
+exclude = [
+    "easytier-contrib/easytier-ohrs", # it needs ohrs sdk
     "easytier-gui/src-tauri",
     "easytier-rpc-build",
     "easytier-web",
@@ -9,14 +11,11 @@ members = [
     "easytier-contrib/easytier-uptime",
     "easytier-contrib/easytier-android-jni",
 ]
-default-members = ["easytier", "easytier-web"]
-exclude = [
-    "easytier-contrib/easytier-ohrs", # it needs ohrs sdk
-]
 
 [profile.dev]
 panic = "unwind"
 debug = 2
+opt-level = 0
 
 [profile.release]
 panic = "abort"

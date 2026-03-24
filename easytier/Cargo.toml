@@ -37,7 +37,7 @@ tracing-subscriber = { version = "0.3", features = [
     "time",
 ] }
 derivative = "2.2.0"
-derive_more = {version = "2.1.1", features = ["full"]}
+derive_more = { version = "2.1.1", features = ["full"] }
 console-subscriber = { version = "0.4.1", optional = true }
 indoc = "2.0.7"
 regex = "1.8"
@@ -50,7 +50,9 @@ time = "0.3"
 toml = "0.8.12"
 chrono = { version = "0.4.37", features = ["serde"] }
 
-gethostname = "0.5.0"
+itertools = "0.14.0"
+
+gethostname = "1.1.0"
 
 futures = { version = "0.3", features = ["bilock", "unstable"] }
 
@@ -141,6 +143,7 @@ rand = "0.8.5"
 serde = { version = "1.0", features = ["derive"] }
 pnet = { version = "0.35.0", features = ["serde"] }
 serde_json = "1"
+serde_with = "3"
 
 clap = { version = "4.5.30", features = [
     "string",
@@ -159,7 +162,10 @@ network-interface = "2.0"
 # for ospf route
 petgraph = "0.8.1"
 hashbrown = "0.15.3"
-ordered_hash_map = "0.5.0"
+ordered_hash_map = "0.5.0"# TODO: REPLACE THIS
+indexmap = "2.13.0"
+
+moka = { version = "0.12.13", features = ["future"] }
 
 # for wireguard
 boringtun = { package = "boringtun-easytier", version = "0.6.1", optional = true }

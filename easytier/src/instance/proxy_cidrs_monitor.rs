@@ -1,38 +1,51 @@
 use std::collections::BTreeSet;
+use std::net::IpAddr;
 use std::sync::{Arc, Weak};
 use std::time::Instant;
 
 use crate::common::global_ctx::{ArcGlobalCtx, GlobalCtxEvent};
+use crate::common::ifcfg::{IfConfiger, IfConfiguerTrait};
 use crate::common::scoped_task::ScopedTask;
 use crate::peers::peer_manager::PeerManager;
 
-/// ProxyCidrsMonitor monitors changes in proxy CIDRs from peer routes
-/// and emits GlobalCtxEvent::ProxyCidrsUpdated with added/removed diffs.
+#[cfg(feature = "tun")]
+use crate::instance::instance::ArcNicCtx;
+use crate::instance::virtual_nic::NicCtx;
+
+/// ProxyCidrsMonitor monitors changes in proxy CIDRs from peer routes,
+/// directly applies route changes to the TUN device (if present), and emits
+/// `GlobalCtxEvent::ProxyCidrsUpdated` for logging / GUI notification.
+///
+/// The monitor holds an `ArcNicCtx` and on each tick attempts to extract the
+/// TUN interface name from it. If the NicCtx has been cleared (DHCP transition)
+/// or was never set (mobile / no-tun), route operations are simply skipped.
+/// No shared slots, no traits, no `Lagged` handling.
 pub struct ProxyCidrsMonitor {
     peer_mgr: Weak<PeerManager>,
     global_ctx: ArcGlobalCtx,
+    #[cfg(feature = "tun")]
+    nic_ctx: ArcNicCtx,
 }
 
 impl ProxyCidrsMonitor {
-    pub fn new(peer_mgr: Arc<PeerManager>, global_ctx: ArcGlobalCtx) -> Self {
+    pub fn new(
+        peer_mgr: Arc<PeerManager>,
+        global_ctx: ArcGlobalCtx,
+        #[cfg(feature = "tun")] nic_ctx: ArcNicCtx,
+    ) -> Self {
         Self {
             peer_mgr: Arc::downgrade(&peer_mgr),
             global_ctx,
+            #[cfg(feature = "tun")]
+            nic_ctx,
         }
     }
 
-    /// Collects current proxy_cidrs from peer routes, VPN portal config, and manual routes.
-    /// This is a static function that can be used for initial sync or recovery after Lagged errors.
-    pub async fn diff_proxy_cidrs(
+    /// Collects current proxy_cidrs from peer routes, VPN portal config, manual routes, and DNS.
+    pub async fn collect_proxy_cidrs(
         peer_mgr: &PeerManager,
         global_ctx: &ArcGlobalCtx,
-        cur_proxy_cidrs: &BTreeSet<cidr::Ipv4Cidr>,
-    ) -> (
-        BTreeSet<cidr::Ipv4Cidr>,
-        Vec<cidr::Ipv4Cidr>,
-        Vec<cidr::Ipv4Cidr>,
-    ) {
-        // Collect proxy_cidrs from routes
+    ) -> BTreeSet<cidr::Ipv4Cidr> {
         let mut proxy_cidrs = BTreeSet::new();
         let routes = peer_mgr.list_routes().await;
         for r in routes {
@@ -54,22 +67,66 @@ impl ProxyCidrsMonitor {
             proxy_cidrs = routes.into_iter().collect();
         }
 
-        // Calculate diff
-        if cur_proxy_cidrs == &proxy_cidrs {
-            return (proxy_cidrs, Vec::new(), Vec::new());
+        if let Some(dns) = global_ctx.get_dns() {
+            proxy_cidrs.extend(dns.addresses().into_iter().filter_map(|a| match a.ip() {
+                IpAddr::V4(ip) => Some(cidr::Ipv4Cidr::new_host(ip)),
+                _ => None,
+            }))
         }
-        let added: Vec<cidr::Ipv4Cidr> = proxy_cidrs.difference(cur_proxy_cidrs).cloned().collect();
-        let removed: Vec<cidr::Ipv4Cidr> =
-            cur_proxy_cidrs.difference(&proxy_cidrs).cloned().collect();
 
-        (proxy_cidrs, added, removed)
+        proxy_cidrs
     }
 
-    /// Starts monitoring proxy_cidrs changes and emits events with diffs
+    /// Try to get the TUN interface name from the NicCtx.
+    /// Returns `None` if there is no TUN device (cleared, mobile, no-tun).
+    #[cfg(feature = "tun")]
+    async fn ifname(&self) -> Option<String> {
+        let guard = self.nic_ctx.lock().await;
+        let container = guard.as_ref()?;
+        let nic = container.nic_ctx.as_ref()?;
+        let nic = nic.downcast_ref::<NicCtx>()?;
+        nic.ifname().await
+    }
+
+    /// Apply route changes to the TUN device.
+    #[cfg(feature = "tun")]
+    async fn apply_routes(
+        &self,
+        added: &[cidr::Ipv4Cidr],
+        removed: &[cidr::Ipv4Cidr],
+    ) {
+        let Some(ifname) = self.ifname().await else {
+            return;
+        };
+        let ifcfg = IfConfiger {};
+        let _g = self.global_ctx.net_ns.guard();
+
+        for cidr in removed {
+            let ret = ifcfg
+                .remove_ipv4_route(&ifname, cidr.first_address(), cidr.network_length())
+                .await;
+            if let Err(e) = ret {
+                tracing::trace!(?cidr, err = ?e, "remove route failed.");
+            }
+        }
+        for cidr in added {
+            let ret = ifcfg
+                .add_ipv4_route(&ifname, cidr.first_address(), cidr.network_length(), None)
+                .await;
+            if let Err(e) = ret {
+                tracing::trace!(?cidr, err = ?e, "add route failed.");
+            }
+        }
+    }
+
+    /// Starts the monitoring loop.
     pub fn start(self) -> ScopedTask<()> {
         ScopedTask::from(tokio::spawn(async move {
             let mut cur_proxy_cidrs = BTreeSet::new();
             let mut last_update = None::<Instant>;
+            // Track TUN ifname to detect NicCtx recreation (DHCP).
+            #[cfg(feature = "tun")]
+            let mut last_ifname: Option<String> = None;
 
             loop {
                 tokio::time::sleep(std::time::Duration::from_secs(1)).await;
@@ -79,24 +136,53 @@ impl ProxyCidrsMonitor {
                     break;
                 };
 
-                // Check if route info has been updated
                 let last_update_time = peer_mgr.get_route_peer_info_last_update_time().await;
+
+                // Detect NicCtx recreation by checking if ifname changed.
+                #[cfg(feature = "tun")]
+                {
+                    let cur_ifname = self.ifname().await;
+                    if cur_ifname != last_ifname {
+                        if cur_ifname.is_some() {
+                            tracing::debug!("TUN interface changed, forcing full proxy_cidrs resync");
+                            cur_proxy_cidrs.clear();
+                        }
+                        last_ifname = cur_ifname;
+                    } else if last_update == Some(last_update_time) {
+                        continue;
+                    }
+                }
+                #[cfg(not(feature = "tun"))]
                 if last_update == Some(last_update_time) {
                     continue;
                 }
                 last_update = Some(last_update_time);
 
-                let (new_proxy_cidrs, added, removed) =
-                    Self::diff_proxy_cidrs(peer_mgr.as_ref(), &self.global_ctx, &cur_proxy_cidrs)
-                        .await;
+                let new_proxy_cidrs =
+                    Self::collect_proxy_cidrs(peer_mgr.as_ref(), &self.global_ctx).await;
+
+                if cur_proxy_cidrs == new_proxy_cidrs {
+                    continue;
+                }
+
+                let added: Vec<_> = new_proxy_cidrs
+                    .difference(&cur_proxy_cidrs)
+                    .cloned()
+                    .collect();
+                let removed: Vec<_> = cur_proxy_cidrs
+                    .difference(&new_proxy_cidrs)
+                    .cloned()
+                    .collect();
+
+                #[cfg(feature = "tun")]
+                self.apply_routes(&added, &removed).await;
 
                 cur_proxy_cidrs = new_proxy_cidrs;
 
-                if added.is_empty() && removed.is_empty() {
-                    continue;
+                if !added.is_empty() || !removed.is_empty() {
+                    self.global_ctx
+                        .issue_event(GlobalCtxEvent::ProxyCidrsUpdated(added, removed));
                 }
-                self.global_ctx
-                    .issue_event(GlobalCtxEvent::ProxyCidrsUpdated(added, removed));
             }
         }))
     }
