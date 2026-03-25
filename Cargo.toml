@@ -18,6 +18,12 @@ exclude = [
 panic = "unwind"
 debug = 2
 
+[profile.dev.package."*"]
+opt-level = 3
+
+[profile.dev.build-override]
+opt-level = 3
+
 [profile.release]
 panic = "abort"
 lto = true
