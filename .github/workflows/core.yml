@@ -254,15 +254,16 @@ jobs:
         run: |
           mkdir -p ./artifacts/objects/
           # windows is the only OS using a different convention for executable file name
-          if [[ $OS =~ ^windows.*$ && $TARGET =~ ^x86_64.*$ ]]; then
+          if [[ $OS =~ ^windows.*$ ]]; then
               SUFFIX=.exe
-              cp easytier/third_party/x86_64/* ./artifacts/objects/
-          elif [[ $OS =~ ^windows.*$ && $TARGET =~ ^i686.*$ ]]; then
-              SUFFIX=.exe
-              cp easytier/third_party/i686/* ./artifacts/objects/
-          elif [[ $OS =~ ^windows.*$ && $TARGET =~ ^aarch64.*$ ]]; then
-              SUFFIX=.exe
-              cp easytier/third_party/arm64/* ./artifacts/objects/
+              case $TARGET in
+                  x86_64*)  ARCH_DIR=x86_64 ;;
+                  i686*)    ARCH_DIR=i686 ;;
+                  aarch64*) ARCH_DIR=arm64 ;;
+              esac
+              if [[ -n "$ARCH_DIR" ]]; then
+                  find "easytier/third_party/${ARCH_DIR}" -maxdepth 1 -type f \( -name "*.dll" -o -name "*.sys" \) -exec cp {} ./artifacts/objects/ \;
+              fi
           fi
           if [[ $GITHUB_REF_TYPE =~ ^tag$ ]]; then
             TAG=$GITHUB_REF_NAME
