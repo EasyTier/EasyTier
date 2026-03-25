@@ -188,17 +188,13 @@ impl TrafficMetricRecorder {
     }
 
     async fn resolve_instance_id(&self, peer_id: PeerId) -> Option<String> {
-        self.get_route()
-            .get_peer_info(peer_id)
-            .await
-            .as_ref()
-            .and_then(Self::route_peer_info_instance_id)
-    }
-
-    fn get_route(&self) -> Box<dyn Route + Send + Sync + 'static> {
         match &self.route_algo_inst {
-            RouteAlgoInst::Ospf(route) => Box::new(route.clone()),
-            RouteAlgoInst::None => Box::new(MockRoute {}),
+            RouteAlgoInst::Ospf(route) => route
+                .get_peer_info(peer_id)
+                .await
+                .as_ref()
+                .and_then(Self::route_peer_info_instance_id),
+            RouteAlgoInst::None => None,
         }
     }
 
@@ -2222,6 +2218,76 @@ mod tests {
                 &network_labels.with_label_type(LabelType::ToInstanceId("unknown".to_string())),
             )
             .is_none());
+    }
+
+    #[tokio::test]
+    async fn send_msg_internal_records_unknown_tx_metrics_without_route_algo() {
+        let (s, _r) = create_packet_recv_chan();
+        let peer_mgr = Arc::new(PeerManager::new(RouteAlgoType::None, get_mock_global_ctx(), s));
+        let dst_peer_id = peer_mgr.my_peer_id();
+        let network_labels = LabelSet::new().with_label_type(LabelType::NetworkName(
+            peer_mgr.get_global_ctx().get_network_name(),
+        ));
+
+        let mut pkt = ZCPacket::new_with_payload(b"tx");
+        pkt.fill_peer_manager_hdr(peer_mgr.my_peer_id(), dst_peer_id, PacketType::Data as u8);
+        let pkt_len = pkt.buf_len() as u64;
+
+        PeerManager::send_msg_internal(
+            &peer_mgr.peers,
+            &peer_mgr.foreign_network_client,
+            &peer_mgr.relay_peer_map,
+            Some(&peer_mgr.traffic_metrics),
+            pkt,
+            dst_peer_id,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            peer_mgr
+                .get_global_ctx()
+                .stats_manager()
+                .get_metric(MetricName::TrafficBytesTx, &network_labels)
+                .unwrap()
+                .value,
+            pkt_len
+        );
+        assert_eq!(
+            peer_mgr
+                .get_global_ctx()
+                .stats_manager()
+                .get_metric(MetricName::TrafficPacketsTx, &network_labels)
+                .unwrap()
+                .value,
+            1
+        );
+        assert_eq!(
+            peer_mgr
+                .get_global_ctx()
+                .stats_manager()
+                .get_metric(
+                    MetricName::TrafficBytesTxByInstance,
+                    &network_labels
+                        .clone()
+                        .with_label_type(LabelType::ToInstanceId("unknown".to_string())),
+                )
+                .unwrap()
+                .value,
+            pkt_len
+        );
+        assert_eq!(
+            peer_mgr
+                .get_global_ctx()
+                .stats_manager()
+                .get_metric(
+                    MetricName::TrafficPacketsTxByInstance,
+                    &network_labels.with_label_type(LabelType::ToInstanceId("unknown".to_string())),
+                )
+                .unwrap()
+                .value,
+            1
+        );
     }
 
     #[tokio::test]
