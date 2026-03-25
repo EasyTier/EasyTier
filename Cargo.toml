@@ -24,6 +24,17 @@ opt-level = 3
 [profile.dev.build-override]
 opt-level = 3
 
+[profile.ci]
+inherits = "dev"
+debug = 0
+opt-level = 0
+
+[profile.ci.package."*"]
+opt-level = 0
+
+[profile.ci.build-override]
+opt-level = 0
+
 [profile.release]
 panic = "abort"
 lto = true
