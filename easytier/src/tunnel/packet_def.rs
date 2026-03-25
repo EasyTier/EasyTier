@@ -277,14 +277,22 @@ impl ForeignNetworkPacketHeader {
     }
 }
 
-// reserve the space for aes tag and nonce
+// reserve space for AEAD authentication tag and nonce
 #[repr(C, packed)]
-#[derive(AsBytes, FromBytes, FromZeroes, Clone, Debug, Default)]
-pub struct AesGcmTail {
-    pub tag: [u8; 16],
-    pub nonce: [u8; 12],
+#[derive(AsBytes, FromBytes, FromZeroes, Clone, Debug)]
+pub struct AeadTail<const TAG_SIZE: usize, const NONCE_SIZE: usize> {
+    pub tag: [u8; TAG_SIZE],
+    pub nonce: [u8; NONCE_SIZE],
 }
-pub const AES_GCM_ENCRYPTION_RESERVED: usize = std::mem::size_of::<AesGcmTail>();
+
+impl<const TAG_SIZE: usize, const NONCE_SIZE: usize> AeadTail<TAG_SIZE, NONCE_SIZE> {
+    pub const TAG_SIZE: usize = TAG_SIZE;
+    pub const NONCE_SIZE: usize = NONCE_SIZE;
+
+    pub const SIZE: usize = std::mem::size_of::<Self>();
+}
+
+pub type StandardAeadTail = AeadTail<16, 12>;
 
 #[derive(AsBytes, FromZeroes, Clone, Debug, Copy, PartialEq, Hash, Eq)]
 #[repr(u8)]
@@ -315,7 +323,7 @@ impl CompressorTail {
     }
 }
 
-pub const TAIL_RESERVED_SIZE: usize = max(AES_GCM_ENCRYPTION_RESERVED, COMPRESSOR_TAIL_SIZE);
+pub const TAIL_RESERVED_SIZE: usize = max(StandardAeadTail::SIZE, COMPRESSOR_TAIL_SIZE);
 
 #[derive(Default, Debug)]
 pub struct ZCPacketOffsets {
