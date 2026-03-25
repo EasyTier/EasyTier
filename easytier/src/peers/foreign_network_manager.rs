@@ -54,6 +54,10 @@ use super::{
     recv_packet_from_chan,
     relay_peer_map::RelayPeerMap,
     route_trait::NextHopPolicy,
+    traffic_metrics::{
+        route_peer_info_instance_id, InstanceLabelKind, LogicalTrafficMetrics,
+        TrafficMetricRecorder,
+    },
     PacketRecvChan, PacketRecvChanReceiver, PUBLIC_SERVER_HOSTNAME_PREFIX,
 };
 
@@ -84,6 +88,7 @@ struct ForeignNetworkEntry {
     peer_center: Arc<PeerCenterInstance>,
 
     stats_mgr: Arc<StatsManager>,
+    traffic_metrics: Arc<TrafficMetricRecorder>,
 
     tasks: Mutex<JoinSet<()>>,
 
@@ -103,6 +108,7 @@ impl ForeignNetworkEntry {
         let stats_mgr = global_ctx.stats_manager().clone();
         let foreign_global_ctx =
             Self::build_foreign_global_ctx(&network, global_ctx.clone(), relay_data);
+        let network_name = network.network_name.clone();
 
         let (packet_sender, packet_recv) = create_packet_recv_chan();
 
@@ -110,6 +116,58 @@ impl ForeignNetworkEntry {
             packet_sender,
             foreign_global_ctx.clone(),
             my_peer_id,
+        ));
+        let traffic_metrics = Arc::new(TrafficMetricRecorder::new(
+            my_peer_id,
+            Arc::new(LogicalTrafficMetrics::new(
+                stats_mgr.clone(),
+                network_name.clone(),
+                MetricName::TrafficBytesTx,
+                MetricName::TrafficPacketsTx,
+                MetricName::TrafficBytesTxByInstance,
+                MetricName::TrafficPacketsTxByInstance,
+                InstanceLabelKind::To,
+            )),
+            Arc::new(LogicalTrafficMetrics::new(
+                stats_mgr.clone(),
+                network_name.clone(),
+                MetricName::TrafficControlBytesTx,
+                MetricName::TrafficControlPacketsTx,
+                MetricName::TrafficControlBytesTxByInstance,
+                MetricName::TrafficControlPacketsTxByInstance,
+                InstanceLabelKind::To,
+            )),
+            Arc::new(LogicalTrafficMetrics::new(
+                stats_mgr.clone(),
+                network_name.clone(),
+                MetricName::TrafficBytesRx,
+                MetricName::TrafficPacketsRx,
+                MetricName::TrafficBytesRxByInstance,
+                MetricName::TrafficPacketsRxByInstance,
+                InstanceLabelKind::From,
+            )),
+            Arc::new(LogicalTrafficMetrics::new(
+                stats_mgr.clone(),
+                network_name.clone(),
+                MetricName::TrafficControlBytesRx,
+                MetricName::TrafficControlPacketsRx,
+                MetricName::TrafficControlBytesRxByInstance,
+                MetricName::TrafficControlPacketsRxByInstance,
+                InstanceLabelKind::From,
+            )),
+            {
+                let peer_map = peer_map.clone();
+                move |peer_id| {
+                    let peer_map = peer_map.clone();
+                    async move {
+                        peer_map
+                            .get_route_peer_info(peer_id)
+                            .await
+                            .as_ref()
+                            .and_then(route_peer_info_instance_id)
+                    }
+                }
+            },
         ));
         let relay_peer_map = RelayPeerMap::new(
             peer_map.clone(),
@@ -164,6 +222,7 @@ impl ForeignNetworkEntry {
             bps_limiter,
 
             stats_mgr,
+            traffic_metrics,
 
             tasks: Mutex::new(JoinSet::new()),
 
@@ -353,6 +412,7 @@ impl ForeignNetworkEntry {
         let rpc_sender = self.rpc_sender.clone();
         let peer_map = self.peer_map.clone();
         let relay_peer_map = self.relay_peer_map.clone();
+        let traffic_metrics = self.traffic_metrics.clone();
         let relay_data = self.relay_data;
         let pm_sender = self.pm_packet_sender.lock().await.take().unwrap();
         let network_name = self.network.network_name.clone();
@@ -385,6 +445,11 @@ impl ForeignNetworkEntry {
                 let packet_type = hdr.packet_type;
                 let len = hdr.len.get();
                 let to_peer_id = hdr.to_peer_id.get();
+                if from_peer_id != my_node_id {
+                    traffic_metrics
+                        .record_rx(from_peer_id, packet_type, buf_len as u64)
+                        .await;
+                }
                 if to_peer_id == my_node_id {
                     if packet_type == PacketType::RelayHandshake as u8
                         || packet_type == PacketType::RelayHandshakeAck as u8
@@ -454,6 +519,10 @@ impl ForeignNetworkEntry {
                                         ?e,
                                         "send packet to foreign peer inside relay peer map failed"
                                     );
+                                } else {
+                                    traffic_metrics
+                                        .record_tx(to_peer_id, packet_type, buf_len as u64)
+                                        .await;
                                 }
                             } else if let Err(e) =
                                 peer_map.send_msg_directly(zc_packet, peer_id).await
@@ -462,6 +531,10 @@ impl ForeignNetworkEntry {
                                     ?e,
                                     "send packet to foreign peer inside peer map failed"
                                 );
+                            } else {
+                                traffic_metrics
+                                    .record_tx(to_peer_id, packet_type, buf_len as u64)
+                                    .await;
                             }
                         }
                         _ => {
@@ -917,10 +990,22 @@ impl ForeignNetworkManager {
         msg: ZCPacket,
     ) -> Result<(), Error> {
         if let Some(entry) = self.data.get_network_entry(network_name) {
-            entry
+            let packet_type = msg
+                .peer_manager_header()
+                .map(|hdr| hdr.packet_type)
+                .unwrap_or(0);
+            let msg_len = msg.buf_len() as u64;
+            let send_result = entry
                 .peer_map
                 .send_msg(msg, dst_peer_id, NextHopPolicy::LeastHop)
-                .await
+                .await;
+            if send_result.is_ok() {
+                entry
+                    .traffic_metrics
+                    .record_tx(dst_peer_id, packet_type, msg_len)
+                    .await;
+            }
+            send_result
         } else {
             Err(Error::RouteError(Some("network not found".to_string())))
         }
@@ -955,6 +1040,7 @@ impl Drop for ForeignNetworkManager {
 pub mod tests {
     use crate::{
         common::global_ctx::tests::get_mock_global_ctx_with_network,
+        common::stats_manager::{LabelSet, LabelType, MetricName},
         connector::udp_hole_punch::tests::{
             create_mock_peer_manager_with_mock_stun, replace_stun_info_collector,
         },
@@ -965,11 +1051,23 @@ pub mod tests {
         },
         proto::common::NatType,
         set_global_var,
-        tunnel::common::tests::wait_for_condition,
+        tunnel::{
+            common::tests::wait_for_condition,
+            packet_def::{PacketType, ZCPacket},
+        },
     };
     use std::{collections::HashMap, time::Duration};
 
     use super::*;
+
+    fn metric_value(peer_mgr: &PeerManager, metric: MetricName, labels: LabelSet) -> u64 {
+        peer_mgr
+            .get_global_ctx()
+            .stats_manager()
+            .get_metric(metric, &labels)
+            .map(|metric| metric.value)
+            .unwrap_or(0)
+    }
 
     async fn create_mock_peer_manager_for_foreign_network_ext(
         network: &str,
@@ -1050,6 +1148,94 @@ pub mod tests {
             .await;
         assert_eq!(1, rpc_resp.foreign_networks.len());
         assert_eq!(2, rpc_resp.foreign_networks["net1"].peers.len());
+    }
+
+    #[tokio::test]
+    async fn foreign_network_forwarding_records_traffic_metrics() {
+        let pm_center = create_mock_peer_manager_with_mock_stun(NatType::Unknown).await;
+        let pma_net1 = create_mock_peer_manager_for_foreign_network("net1").await;
+        let pmb_net1 = create_mock_peer_manager_for_foreign_network("net1").await;
+
+        connect_peer_manager(pma_net1.clone(), pm_center.clone()).await;
+        connect_peer_manager(pmb_net1.clone(), pm_center.clone()).await;
+        wait_route_appear(pma_net1.clone(), pmb_net1.clone())
+            .await
+            .unwrap();
+
+        let center_peer_id = pm_center
+            .get_foreign_network_manager()
+            .get_network_peer_id("net1")
+            .unwrap();
+
+        let mut rx_pkt = ZCPacket::new_with_payload(b"foreign-rx");
+        rx_pkt.fill_peer_manager_hdr(
+            pma_net1.my_peer_id(),
+            center_peer_id,
+            PacketType::Data as u8,
+        );
+        pma_net1
+            .get_foreign_network_client()
+            .send_msg(rx_pkt, center_peer_id)
+            .await
+            .unwrap();
+
+        let mut tx_pkt = ZCPacket::new_with_payload(b"foreign-tx");
+        tx_pkt.fill_peer_manager_hdr(
+            center_peer_id,
+            pmb_net1.my_peer_id(),
+            PacketType::Data as u8,
+        );
+        pm_center
+            .get_foreign_network_manager()
+            .forward_foreign_network_packet("net1", pmb_net1.my_peer_id(), tx_pkt)
+            .await
+            .unwrap();
+
+        let network_labels =
+            LabelSet::new().with_label_type(LabelType::NetworkName("net1".to_string()));
+        let tx_instance_labels = network_labels
+            .clone()
+            .with_label_type(LabelType::ToInstanceId(
+                pmb_net1.get_global_ctx().get_id().to_string(),
+            ));
+        let rx_instance_labels = network_labels
+            .clone()
+            .with_label_type(LabelType::FromInstanceId(
+                pma_net1.get_global_ctx().get_id().to_string(),
+            ));
+
+        wait_for_condition(
+            || {
+                let pm_center = pm_center.clone();
+                let network_labels = network_labels.clone();
+                let tx_instance_labels = tx_instance_labels.clone();
+                let rx_instance_labels = rx_instance_labels.clone();
+                async move {
+                    metric_value(
+                        &pm_center,
+                        MetricName::TrafficBytesTx,
+                        network_labels.clone(),
+                    ) > 0
+                        && metric_value(
+                            &pm_center,
+                            MetricName::TrafficBytesRx,
+                            network_labels.clone(),
+                        ) > 0
+                        && metric_value(
+                            &pm_center,
+                            MetricName::TrafficBytesTxByInstance,
+                            tx_instance_labels.clone(),
+                        ) > 0
+                        && metric_value(
+                            &pm_center,
+                            MetricName::TrafficBytesRxByInstance,
+                            rx_instance_labels.clone(),
+                        ) > 0
+                }
+            },
+            Duration::from_secs(5),
+        )
+        .await;
     }
 
     #[tokio::test]

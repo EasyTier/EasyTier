@@ -35,7 +35,10 @@ use crate::{
         peer_session::PeerSessionStore,
         recv_packet_from_chan,
         route_trait::{ForeignNetworkRouteInfoMap, MockRoute, NextHopPolicy, RouteInterface},
-        traffic_metrics::{InstanceLabelKind, LogicalTrafficMetrics},
+        traffic_metrics::{
+            route_peer_info_instance_id, InstanceLabelKind, LogicalTrafficMetrics,
+            TrafficMetricRecorder,
+        },
         PeerPacketFilter,
     },
     proto::{
@@ -140,126 +143,6 @@ struct SelfTxCounters {
     self_tx_bytes: CounterHandle,
     compress_tx_bytes_before: CounterHandle,
     compress_tx_bytes_after: CounterHandle,
-}
-
-#[derive(Clone, Copy)]
-enum TrafficKind {
-    Data,
-    Control,
-}
-
-#[derive(Clone)]
-struct TrafficMetricGroup {
-    data: Arc<LogicalTrafficMetrics>,
-    control: Arc<LogicalTrafficMetrics>,
-}
-
-impl TrafficMetricGroup {
-    fn select(&self, kind: TrafficKind) -> &Arc<LogicalTrafficMetrics> {
-        match kind {
-            TrafficKind::Data => &self.data,
-            TrafficKind::Control => &self.control,
-        }
-    }
-}
-
-struct TrafficMetricRecorder {
-    my_peer_id: PeerId,
-    route_algo_inst: RouteAlgoInst,
-    tx_metrics: TrafficMetricGroup,
-    rx_metrics: TrafficMetricGroup,
-}
-
-impl TrafficMetricRecorder {
-    fn new(
-        my_peer_id: PeerId,
-        route_algo_inst: RouteAlgoInst,
-        tx_metrics: TrafficMetricGroup,
-        rx_metrics: TrafficMetricGroup,
-    ) -> Self {
-        Self {
-            my_peer_id,
-            route_algo_inst,
-            tx_metrics,
-            rx_metrics,
-        }
-    }
-
-    async fn record_tx(&self, peer_id: PeerId, packet_type: u8, bytes: u64) {
-        if peer_id == self.my_peer_id {
-            return;
-        }
-        self.tx_metrics
-            .select(Self::traffic_kind(packet_type))
-            .record_with_resolver(peer_id, bytes, || async move {
-                self.resolve_instance_id(peer_id).await
-            })
-            .await;
-    }
-
-    async fn record_rx(&self, peer_id: PeerId, packet_type: u8, bytes: u64) {
-        if peer_id == self.my_peer_id {
-            return;
-        }
-        self.rx_metrics
-            .select(Self::traffic_kind(packet_type))
-            .record_with_resolver(peer_id, bytes, || async move {
-                self.resolve_instance_id(peer_id).await
-            })
-            .await;
-    }
-
-    fn remove_peer(&self, peer_id: PeerId) {
-        self.tx_metrics.data.remove_peer(peer_id);
-        self.tx_metrics.control.remove_peer(peer_id);
-        self.rx_metrics.data.remove_peer(peer_id);
-        self.rx_metrics.control.remove_peer(peer_id);
-    }
-
-    fn clear_peer_cache(&self) {
-        self.tx_metrics.data.clear_peer_cache();
-        self.tx_metrics.control.clear_peer_cache();
-        self.rx_metrics.data.clear_peer_cache();
-        self.rx_metrics.control.clear_peer_cache();
-    }
-
-    async fn resolve_instance_id(&self, peer_id: PeerId) -> Option<String> {
-        match &self.route_algo_inst {
-            RouteAlgoInst::Ospf(route) => route
-                .get_peer_info(peer_id)
-                .await
-                .as_ref()
-                .and_then(Self::route_peer_info_instance_id),
-            RouteAlgoInst::None => None,
-        }
-    }
-
-    fn route_peer_info_instance_id(
-        route_peer_info: &crate::proto::peer_rpc::RoutePeerInfo,
-    ) -> Option<String> {
-        let instance_id = route_peer_info.inst_id.as_ref()?;
-        let instance_id: uuid::Uuid = (*instance_id).into();
-        if instance_id.is_nil() {
-            None
-        } else {
-            Some(instance_id.to_string())
-        }
-    }
-
-    fn traffic_kind(packet_type: u8) -> TrafficKind {
-        if packet_type == PacketType::Data as u8
-            || packet_type == PacketType::KcpSrc as u8
-            || packet_type == PacketType::KcpDst as u8
-            || packet_type == PacketType::QuicSrc as u8
-            || packet_type == PacketType::QuicDst as u8
-            || packet_type == PacketType::DataWithKcpSrcModified as u8
-            || packet_type == PacketType::DataWithQuicSrcModified as u8
-        {
-            TrafficKind::Data
-        } else {
-            TrafficKind::Control
-        }
-    }
 }
 
 pub struct PeerManager {
@@ -502,16 +385,25 @@ impl PeerManager {
             MetricName::TrafficControlPacketsRxByInstance,
             InstanceLabelKind::From,
         ));
+        let route_algo_inst_for_metrics = route_algo_inst.clone();
         let traffic_metrics = Arc::new(TrafficMetricRecorder::new(
             my_peer_id,
-            route_algo_inst.clone(),
-            TrafficMetricGroup {
-                data: traffic_tx_metrics,
-                control: traffic_control_tx_metrics,
-            },
-            TrafficMetricGroup {
-                data: traffic_rx_metrics,
-                control: traffic_control_rx_metrics,
+            traffic_tx_metrics,
+            traffic_control_tx_metrics,
+            traffic_rx_metrics,
+            traffic_control_rx_metrics,
+            move |peer_id| {
+                let route_algo_inst = route_algo_inst_for_metrics.clone();
+                async move {
+                    match &route_algo_inst {
+                        RouteAlgoInst::Ospf(route) => route
+                            .get_peer_info(peer_id)
+                            .await
+                            .as_ref()
+                            .and_then(route_peer_info_instance_id),
+                        RouteAlgoInst::None => None,
+                    }
+                }
             },
         ));
 

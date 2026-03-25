@@ -1,12 +1,15 @@
 use std::{future::Future, sync::Arc};
 
 use dashmap::DashMap;
+use futures::future::BoxFuture;
 
 use crate::common::{
     shrink_dashmap,
     stats_manager::{CounterHandle, LabelSet, LabelType, MetricName, StatsManager},
     PeerId,
 };
+use crate::proto::peer_rpc::RoutePeerInfo;
+use crate::tunnel::packet_def::PacketType;
 
 pub(crate) const UNKNOWN_INSTANCE_ID: &str = "unknown";
 
@@ -26,6 +29,55 @@ impl TrafficCounters {
     fn add_sample(&self, bytes: u64) {
         self.bytes.add(bytes);
         self.packets.inc();
+    }
+}
+
+#[derive(Clone)]
+pub(crate) struct AggregateTrafficMetrics {
+    tx: TrafficCounters,
+    rx: TrafficCounters,
+}
+
+impl AggregateTrafficMetrics {
+    pub(crate) fn control(stats_mgr: Arc<StatsManager>, network_name: String) -> Self {
+        Self::new(
+            stats_mgr,
+            network_name,
+            MetricName::TrafficControlBytesTx,
+            MetricName::TrafficControlPacketsTx,
+            MetricName::TrafficControlBytesRx,
+            MetricName::TrafficControlPacketsRx,
+        )
+    }
+
+    fn new(
+        stats_mgr: Arc<StatsManager>,
+        network_name: String,
+        tx_bytes_metric: MetricName,
+        tx_packets_metric: MetricName,
+        rx_bytes_metric: MetricName,
+        rx_packets_metric: MetricName,
+    ) -> Self {
+        let label_set =
+            LabelSet::new().with_label_type(LabelType::NetworkName(network_name.clone()));
+        Self {
+            tx: TrafficCounters {
+                bytes: stats_mgr.get_counter(tx_bytes_metric, label_set.clone()),
+                packets: stats_mgr.get_counter(tx_packets_metric, label_set.clone()),
+            },
+            rx: TrafficCounters {
+                bytes: stats_mgr.get_counter(rx_bytes_metric, label_set.clone()),
+                packets: stats_mgr.get_counter(rx_packets_metric, label_set),
+            },
+        }
+    }
+
+    pub(crate) fn record_tx(&self, bytes: u64) {
+        self.tx.add_sample(bytes);
+    }
+
+    pub(crate) fn record_rx(&self, bytes: u64) {
+        self.rx.add_sample(bytes);
     }
 }
 
@@ -166,6 +218,127 @@ impl LogicalTrafficMetrics {
                 .stats_mgr
                 .get_counter(self.instance_packets_metric, label_set),
         }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum TrafficKind {
+    Data,
+    Control,
+}
+
+#[derive(Clone)]
+struct TrafficMetricGroup {
+    data: Arc<LogicalTrafficMetrics>,
+    control: Arc<LogicalTrafficMetrics>,
+}
+
+impl TrafficMetricGroup {
+    fn select(&self, kind: TrafficKind) -> &Arc<LogicalTrafficMetrics> {
+        match kind {
+            TrafficKind::Data => &self.data,
+            TrafficKind::Control => &self.control,
+        }
+    }
+}
+
+type InstanceIdResolver = dyn Fn(PeerId) -> BoxFuture<'static, Option<String>> + Send + Sync;
+
+pub(crate) struct TrafficMetricRecorder {
+    my_peer_id: PeerId,
+    tx_metrics: TrafficMetricGroup,
+    rx_metrics: TrafficMetricGroup,
+    resolve_instance_id: Arc<InstanceIdResolver>,
+}
+
+impl TrafficMetricRecorder {
+    pub(crate) fn new<F, Fut>(
+        my_peer_id: PeerId,
+        tx_data: Arc<LogicalTrafficMetrics>,
+        tx_control: Arc<LogicalTrafficMetrics>,
+        rx_data: Arc<LogicalTrafficMetrics>,
+        rx_control: Arc<LogicalTrafficMetrics>,
+        resolve_instance_id: F,
+    ) -> Self
+    where
+        F: Fn(PeerId) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = Option<String>> + Send + 'static,
+    {
+        Self {
+            my_peer_id,
+            tx_metrics: TrafficMetricGroup {
+                data: tx_data,
+                control: tx_control,
+            },
+            rx_metrics: TrafficMetricGroup {
+                data: rx_data,
+                control: rx_control,
+            },
+            resolve_instance_id: Arc::new(move |peer_id| Box::pin(resolve_instance_id(peer_id))),
+        }
+    }
+
+    pub(crate) async fn record_tx(&self, peer_id: PeerId, packet_type: u8, bytes: u64) {
+        if peer_id == self.my_peer_id {
+            return;
+        }
+        self.tx_metrics
+            .select(Self::traffic_kind(packet_type))
+            .record_with_resolver(peer_id, bytes, || self.resolve_instance_id(peer_id))
+            .await;
+    }
+
+    pub(crate) async fn record_rx(&self, peer_id: PeerId, packet_type: u8, bytes: u64) {
+        if peer_id == self.my_peer_id {
+            return;
+        }
+        self.rx_metrics
+            .select(Self::traffic_kind(packet_type))
+            .record_with_resolver(peer_id, bytes, || self.resolve_instance_id(peer_id))
+            .await;
+    }
+
+    pub(crate) fn remove_peer(&self, peer_id: PeerId) {
+        self.tx_metrics.data.remove_peer(peer_id);
+        self.tx_metrics.control.remove_peer(peer_id);
+        self.rx_metrics.data.remove_peer(peer_id);
+        self.rx_metrics.control.remove_peer(peer_id);
+    }
+
+    pub(crate) fn clear_peer_cache(&self) {
+        self.tx_metrics.data.clear_peer_cache();
+        self.tx_metrics.control.clear_peer_cache();
+        self.rx_metrics.data.clear_peer_cache();
+        self.rx_metrics.control.clear_peer_cache();
+    }
+
+    fn resolve_instance_id(&self, peer_id: PeerId) -> BoxFuture<'static, Option<String>> {
+        (self.resolve_instance_id)(peer_id)
+    }
+
+    fn traffic_kind(packet_type: u8) -> TrafficKind {
+        if packet_type == PacketType::Data as u8
+            || packet_type == PacketType::KcpSrc as u8
+            || packet_type == PacketType::KcpDst as u8
+            || packet_type == PacketType::QuicSrc as u8
+            || packet_type == PacketType::QuicDst as u8
+            || packet_type == PacketType::DataWithKcpSrcModified as u8
+            || packet_type == PacketType::DataWithQuicSrcModified as u8
+        {
+            TrafficKind::Data
+        } else {
+            TrafficKind::Control
+        }
+    }
+}
+
+pub(crate) fn route_peer_info_instance_id(route_peer_info: &RoutePeerInfo) -> Option<String> {
+    let instance_id = route_peer_info.inst_id.as_ref()?;
+    let instance_id: uuid::Uuid = (*instance_id).into();
+    if instance_id.is_nil() {
+        None
+    } else {
+        Some(instance_id.to_string())
     }
 }
 
