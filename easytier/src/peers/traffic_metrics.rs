@@ -140,6 +140,16 @@ impl LogicalTrafficMetrics {
         shrink_dashmap(&self.per_peer, None);
     }
 
+    pub(crate) fn clear_peer_cache(&self) {
+        self.per_peer.clear();
+        shrink_dashmap(&self.per_peer, None);
+    }
+
+    #[cfg(test)]
+    fn peer_cache_size(&self) -> usize {
+        self.per_peer.len()
+    }
+
     fn build_peer_counters(&self, instance_id: &str) -> TrafficCounters {
         let instance_label = match self.label_kind {
             InstanceLabelKind::To => LabelType::ToInstanceId(instance_id.to_string()),
@@ -311,5 +321,32 @@ mod tests {
                 .value,
             200
         );
+    }
+
+    #[tokio::test]
+    async fn logical_traffic_metrics_clear_peer_cache_resets_all_cached_peers() {
+        let stats_mgr = Arc::new(StatsManager::new());
+        let metrics = LogicalTrafficMetrics::new(
+            stats_mgr,
+            "default".to_string(),
+            MetricName::TrafficBytesTx,
+            MetricName::TrafficPacketsTx,
+            MetricName::TrafficBytesTxByInstance,
+            MetricName::TrafficPacketsTxByInstance,
+            InstanceLabelKind::To,
+        );
+
+        metrics
+            .record_with_resolver(1, 100, || async {
+                Some("87ede5a2-9c3d-492d-9bbe-989b9d07e742".to_string())
+            })
+            .await;
+        metrics.record_with_resolver(2, 200, || async { None }).await;
+
+        assert_eq!(metrics.peer_cache_size(), 2);
+
+        metrics.clear_peer_cache();
+
+        assert_eq!(metrics.peer_cache_size(), 0);
     }
 }

@@ -182,6 +182,11 @@ impl TrafficMetricRecorder {
         self.rx_metrics.remove_peer(peer_id);
     }
 
+    fn clear_peer_cache(&self) {
+        self.tx_metrics.clear_peer_cache();
+        self.rx_metrics.clear_peer_cache();
+    }
+
     async fn resolve_instance_id(&self, peer_id: PeerId) -> Option<String> {
         self.get_route()
             .get_peer_info(peer_id)
@@ -1733,7 +1738,14 @@ impl PeerManager {
                         traffic_metrics.remove_peer(peer_id);
                     }
                     Ok(_) => {}
-                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
+                        tracing::warn!(
+                            skipped,
+                            "traffic metrics GC receiver lagged; clearing peer cache to avoid stale metric attribution"
+                        );
+                        traffic_metrics.clear_peer_cache();
+                        event_receiver = event_receiver.resubscribe();
+                    }
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                 }
             }
