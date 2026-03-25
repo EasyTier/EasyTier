@@ -341,7 +341,9 @@ mod tests {
                 Some("87ede5a2-9c3d-492d-9bbe-989b9d07e742".to_string())
             })
             .await;
-        metrics.record_with_resolver(2, 200, || async { None }).await;
+        metrics
+            .record_with_resolver(2, 200, || async { None })
+            .await;
 
         assert_eq!(metrics.peer_cache_size(), 2);
 

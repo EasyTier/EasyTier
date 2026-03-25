@@ -206,7 +206,7 @@ impl TrafficMetricRecorder {
         route_peer_info: &crate::proto::peer_rpc::RoutePeerInfo,
     ) -> Option<String> {
         let instance_id = route_peer_info.inst_id.as_ref()?;
-        let instance_id: uuid::Uuid = instance_id.clone().into();
+        let instance_id: uuid::Uuid = (*instance_id).into();
         if instance_id.is_nil() {
             None
         } else {
