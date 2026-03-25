@@ -301,7 +301,6 @@ impl Server {
                 accepted_algo: CompressionAlgoPb::Zstd.into(),
             },
         });
-
         for packet in packets {
             if let Err(err) = sender.send(packet).await {
                 tracing::error!(?err, "Failed to send response packet");

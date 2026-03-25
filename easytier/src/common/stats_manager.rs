@@ -24,14 +24,22 @@ pub enum MetricName {
     /// RPC errors
     PeerRpcErrors,
 
-    /// Traffic bytes sent
+    /// Data-plane traffic bytes sent
     TrafficBytesTx,
-    /// Traffic bytes sent, grouped by destination instance
+    /// Data-plane traffic bytes sent, grouped by destination instance
     TrafficBytesTxByInstance,
-    /// Traffic bytes received
+    /// Data-plane traffic bytes received
     TrafficBytesRx,
-    /// Traffic bytes received, grouped by source instance
+    /// Data-plane traffic bytes received, grouped by source instance
     TrafficBytesRxByInstance,
+    /// Control-plane traffic bytes sent
+    TrafficControlBytesTx,
+    /// Control-plane traffic bytes sent, grouped by destination instance
+    TrafficControlBytesTxByInstance,
+    /// Control-plane traffic bytes received
+    TrafficControlBytesRx,
+    /// Control-plane traffic bytes received, grouped by source instance
+    TrafficControlBytesRxByInstance,
     /// Traffic bytes forwarded
     TrafficBytesForwarded,
     /// Traffic bytes sent to self
@@ -45,14 +53,22 @@ pub enum MetricName {
     /// Traffic bytes forwarded for foreign network, forward
     TrafficBytesForeignForwardForwarded,
 
-    /// Traffic packets sent
+    /// Data-plane traffic packets sent
     TrafficPacketsTx,
-    /// Traffic packets sent, grouped by destination instance
+    /// Data-plane traffic packets sent, grouped by destination instance
     TrafficPacketsTxByInstance,
-    /// Traffic packets received
+    /// Data-plane traffic packets received
     TrafficPacketsRx,
-    /// Traffic packets received, grouped by source instance
+    /// Data-plane traffic packets received, grouped by source instance
     TrafficPacketsRxByInstance,
+    /// Control-plane traffic packets sent
+    TrafficControlPacketsTx,
+    /// Control-plane traffic packets sent, grouped by destination instance
+    TrafficControlPacketsTxByInstance,
+    /// Control-plane traffic packets received
+    TrafficControlPacketsRx,
+    /// Control-plane traffic packets received, grouped by source instance
+    TrafficControlPacketsRxByInstance,
     /// Traffic packets forwarded
     TrafficPacketsForwarded,
     /// Traffic packets sent to self
@@ -92,6 +108,14 @@ impl fmt::Display for MetricName {
             MetricName::TrafficBytesTxByInstance => write!(f, "traffic_bytes_tx_by_instance"),
             MetricName::TrafficBytesRx => write!(f, "traffic_bytes_rx"),
             MetricName::TrafficBytesRxByInstance => write!(f, "traffic_bytes_rx_by_instance"),
+            MetricName::TrafficControlBytesTx => write!(f, "traffic_control_bytes_tx"),
+            MetricName::TrafficControlBytesTxByInstance => {
+                write!(f, "traffic_control_bytes_tx_by_instance")
+            }
+            MetricName::TrafficControlBytesRx => write!(f, "traffic_control_bytes_rx"),
+            MetricName::TrafficControlBytesRxByInstance => {
+                write!(f, "traffic_control_bytes_rx_by_instance")
+            }
             MetricName::TrafficBytesForwarded => write!(f, "traffic_bytes_forwarded"),
             MetricName::TrafficBytesSelfTx => write!(f, "traffic_bytes_self_tx"),
             MetricName::TrafficBytesSelfRx => write!(f, "traffic_bytes_self_rx"),
@@ -112,6 +136,14 @@ impl fmt::Display for MetricName {
             MetricName::TrafficPacketsRx => write!(f, "traffic_packets_rx"),
             MetricName::TrafficPacketsRxByInstance => {
                 write!(f, "traffic_packets_rx_by_instance")
+            }
+            MetricName::TrafficControlPacketsTx => write!(f, "traffic_control_packets_tx"),
+            MetricName::TrafficControlPacketsTxByInstance => {
+                write!(f, "traffic_control_packets_tx_by_instance")
+            }
+            MetricName::TrafficControlPacketsRx => write!(f, "traffic_control_packets_rx"),
+            MetricName::TrafficControlPacketsRxByInstance => {
+                write!(f, "traffic_control_packets_rx_by_instance")
             }
             MetricName::TrafficPacketsForwarded => write!(f, "traffic_packets_forwarded"),
             MetricName::TrafficPacketsSelfTx => write!(f, "traffic_packets_self_tx"),
