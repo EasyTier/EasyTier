@@ -3,7 +3,9 @@ package com.plugin.vpnservice
 import android.app.Activity
 import android.content.Intent
 import android.net.VpnService
+import androidx.activity.result.ActivityResult
 import app.tauri.annotation.Command
+import app.tauri.annotation.ActivityCallback
 import app.tauri.annotation.InvokeArg
 import app.tauri.annotation.TauriPlugin
 import app.tauri.plugin.Invoke
@@ -50,11 +52,19 @@ class VpnServicePlugin(private val activity: Activity) : Plugin(activity) {
     fun prepareVpn(invoke: Invoke) {
         println("prepare vpn in plugin")
         val it = VpnService.prepare(activity)
-        var ret = JSObject()
         if (it != null) {
-            activity.startActivityForResult(it, 0x0f)
-            ret.put("errorMsg", "again")
+            startActivityForResult(invoke, it, "onPrepareVpnResult")
+            return
         }
+        var ret = JSObject()
+        ret.put("granted", true)
+        invoke.resolve(ret)
+    }
+
+    @ActivityCallback
+    fun onPrepareVpnResult(invoke: Invoke, result: ActivityResult) {
+        val ret = JSObject()
+        ret.put("granted", result.resultCode == Activity.RESULT_OK)
         invoke.resolve(ret)
     }
 
@@ -89,5 +99,15 @@ class VpnServicePlugin(private val activity: Activity) : Plugin(activity) {
         activity.stopService(Intent(activity, TauriVpnService::class.java))
         println("stop vpn in plugin end")
         invoke.resolve(JSObject())
+    }
+
+    @Command
+    fun getVpnStatus(invoke: Invoke) {
+        val ret = JSObject()
+        ret.put("running", TauriVpnService.self != null)
+        ret.put("ipv4Addr", TauriVpnService.ipv4Addr)
+        ret.put("routes", TauriVpnService.routes)
+        ret.put("dns", TauriVpnService.dns)
+        invoke.resolve(ret)
     }
 }
