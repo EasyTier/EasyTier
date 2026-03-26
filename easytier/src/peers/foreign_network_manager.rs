@@ -1303,7 +1303,6 @@ pub mod tests {
             || {
                 let pm_center = pm_center.clone();
                 let network_labels = network_labels.clone();
-                let forwarded_bytes_before = forwarded_bytes_before;
                 async move {
                     metric_value(
                         &pm_center,
