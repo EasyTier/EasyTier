@@ -3,6 +3,9 @@ networking_method: 网络方式
 public_server: 公共服务器
 manual: 手动
 standalone: 独立
+initial_nodes: 初始节点
+initial_nodes_help: EasyTier 不区分服务端和客户端，组网就像插网线。节点之间只要通过已有链路直接或间接连通，就可以互通；仅设置相同的网络名称和密码，并不会自动发现彼此。留空初始节点时，本节点会先独立启动，直到你手动连到现有节点，或有已连入网络的节点主动连到它。初始节点可自建，也可使用别人分享的共享节点。
+initial_node_placeholder: 例如：tcp://node.example.com:11010
 virtual_ipv4: 虚拟IPv4地址
 virtual_ipv4_dhcp: DHCP
 network_name: 网络名称
@@ -26,6 +29,7 @@ error_msg: 错误信息
 detail: 详情
 add_new_network: 添加新网络
 add_peer_url: 添加节点
+add_initial_node: 添加初始节点
 add_listener_url: 添加监听地址
 add_mapped_listener: 添加监听映射
 del_cur_network: 删除当前网络

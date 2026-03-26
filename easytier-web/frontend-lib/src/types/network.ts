@@ -97,9 +97,8 @@ export function DEFAULT_NETWORK_CONFIG(): NetworkConfig {
     network_secret: '',
     credential_file: '',
 
-    networking_method: NetworkingMethod.PublicServer,
-
-    public_server_url: 'tcp://public.easytier.top:11010',
+    networking_method: NetworkingMethod.Manual,
+    public_server_url: '',
     peer_urls: [],
 
     proxy_cidrs: [],
@@ -152,6 +151,39 @@ export function DEFAULT_NETWORK_CONFIG(): NetworkConfig {
     enable_private_mode: false,
     port_forwards: [],
   }
+}
+
+function cleanPeerUrls(urls: string[] | undefined): string[] {
+  return (urls ?? []).map((url) => url.trim()).filter((url) => url.length > 0)
+}
+
+export function normalizeNetworkConfig(config: NetworkConfig): NetworkConfig {
+  const normalized: NetworkConfig = {
+    ...config,
+    peer_urls: cleanPeerUrls(config.peer_urls),
+  }
+
+  const publicServerUrl = normalized.public_server_url?.trim() ?? ''
+
+  switch (normalized.networking_method) {
+    case NetworkingMethod.PublicServer:
+      normalized.peer_urls = publicServerUrl ? [publicServerUrl] : []
+      break
+    case NetworkingMethod.Manual:
+      break
+    case NetworkingMethod.Standalone:
+    default:
+      normalized.peer_urls = []
+      break
+  }
+
+  normalized.networking_method = NetworkingMethod.Manual
+  normalized.public_server_url = ''
+  return normalized
+}
+
+export function toBackendNetworkConfig(config: NetworkConfig): NetworkConfig {
+  return normalizeNetworkConfig(config)
 }
 
 export interface NetworkInstance {

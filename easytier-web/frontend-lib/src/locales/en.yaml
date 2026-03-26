@@ -3,6 +3,15 @@ networking_method: Networking Method
 public_server: Public Server
 manual: Manual
 standalone: Standalone
+initial_nodes: Initial Nodes
+initial_nodes_help: |
+  EasyTier does not distinguish between server and client roles. Networking works like plugging in a cable:
+  nodes can communicate as long as they are connected directly or indirectly through existing links.
+  Using the same network name and secret alone does not provide discovery.
+  If you leave initial nodes empty, this node starts isolated until it connects to an existing peer,
+  or an already connected peer dials in to it.
+  Initial nodes can be self-hosted or shared by others.
+initial_node_placeholder: "Example: tcp://node.example.com:11010"
 virtual_ipv4: Virtual IPv4
 virtual_ipv4_dhcp: DHCP
 network_name: Network Name
@@ -26,6 +35,7 @@ error_msg: Error Message
 detail: Detail
 add_new_network: New Network
 add_peer_url: Add Peer
+add_initial_node: Add Initial Node
 add_listener_url: Add Listener
 add_mapped_listener: Add Mapped Listener
 del_cur_network: Delete Current Network
