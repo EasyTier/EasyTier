@@ -10,6 +10,7 @@ use crate::{
             tests::{get_mock_global_ctx, get_mock_global_ctx_with_network},
             NetworkIdentity,
         },
+        stats_manager::{LabelSet, LabelType, MetricName},
         PeerId,
     },
     tunnel::{
@@ -99,6 +100,18 @@ pub async fn wait_route_appear(
 ) -> Result<(), Error> {
     wait_route_appear_with_cost(peer_mgr.clone(), target_peer.my_peer_id(), None).await?;
     wait_route_appear_with_cost(target_peer, peer_mgr.my_peer_id(), None).await
+}
+
+fn metric_value(peer_mgr: &PeerManager, metric: MetricName, network_name: &str) -> u64 {
+    peer_mgr
+        .get_global_ctx()
+        .stats_manager()
+        .get_metric(
+            metric,
+            &LabelSet::new().with_label_type(LabelType::NetworkName(network_name.to_string())),
+        )
+        .map(|metric| metric.value)
+        .unwrap_or(0)
 }
 
 #[tokio::test]
@@ -392,6 +405,10 @@ async fn relay_peer_map_real_link_handshake_success() {
     let peer_a_id = peer_a.my_peer_id();
     let peer_b_id = peer_b.my_peer_id();
     let peer_c_id = peer_c.my_peer_id();
+    let a_control_tx_before = metric_value(&peer_a, MetricName::TrafficControlBytesTx, "net1");
+    let a_control_rx_before = metric_value(&peer_a, MetricName::TrafficControlBytesRx, "net1");
+    let c_control_tx_before = metric_value(&peer_c, MetricName::TrafficControlBytesTx, "net1");
+    let c_control_rx_before = metric_value(&peer_c, MetricName::TrafficControlBytesRx, "net1");
 
     wait_for_condition(
         || {
@@ -459,6 +476,11 @@ async fn relay_peer_map_real_link_handshake_success() {
         Duration::from_secs(5),
     )
     .await;
+
+    assert!(metric_value(&peer_a, MetricName::TrafficControlBytesTx, "net1") > a_control_tx_before);
+    assert!(metric_value(&peer_a, MetricName::TrafficControlBytesRx, "net1") > a_control_rx_before);
+    assert!(metric_value(&peer_c, MetricName::TrafficControlBytesTx, "net1") > c_control_tx_before);
+    assert!(metric_value(&peer_c, MetricName::TrafficControlBytesRx, "net1") > c_control_rx_before);
 }
 
 #[tokio::test]

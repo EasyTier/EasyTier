@@ -16,6 +16,8 @@
 use super::Command;
 use anyhow::Result;
 use std::env;
+use std::fs::File;
+use std::io::Read as _;
 use std::path::PathBuf;
 use std::process::{ExitStatus, Output};
 
@@ -23,10 +25,12 @@ use std::ffi::{CString, OsString};
 use std::io;
 use std::mem;
 use std::os::unix::ffi::OsStrExt;
+use std::os::unix::io::FromRawFd;
+use std::os::unix::process::ExitStatusExt;
 use std::path::Path;
 use std::ptr;
 
-use libc::{fcntl, fileno, waitpid, EINTR, F_GETOWN};
+use libc::{fileno, wait, EINTR, SHUT_WR};
 use security_framework_sys::authorization::{
     errAuthorizationSuccess, kAuthorizationFlagDefaults, kAuthorizationFlagDestroyRights,
     AuthorizationCreate, AuthorizationExecuteWithPrivileges, AuthorizationFree, AuthorizationRef,
@@ -71,7 +75,7 @@ macro_rules! make_cstring {
     };
 }
 
-unsafe fn gui_runas(prog: *const i8, argv: *const *const i8) -> i32 {
+unsafe fn gui_runas(prog: *const i8, argv: *const *const i8) -> io::Result<ExitStatus> {
     let mut authref: AuthorizationRef = ptr::null_mut();
     let mut pipe: *mut libc::FILE = ptr::null_mut();
 
@@ -82,7 +86,7 @@ unsafe fn gui_runas(prog: *const i8, argv: *const *const i8) -> i32 {
         &mut authref,
     ) != errAuthorizationSuccess
     {
-        return -1;
+        return Err(io::Error::last_os_error());
     }
     if AuthorizationExecuteWithPrivileges(
         authref,
@@ -93,22 +97,66 @@ unsafe fn gui_runas(prog: *const i8, argv: *const *const i8) -> i32 {
     ) != errAuthorizationSuccess
     {
         AuthorizationFree(authref, kAuthorizationFlagDestroyRights);
-        return -1;
+        return Err(io::Error::last_os_error());
     }
 
-    let pid = fcntl(fileno(pipe), F_GETOWN, 0);
+    let fd = fileno(pipe);
+    if fd == -1 {
+        AuthorizationFree(authref, kAuthorizationFlagDestroyRights);
+        return Err(io::Error::last_os_error());
+    }
+
+    // We never send input to the elevated GUI. Close the parent write half so
+    // the child sees EOF on stdin instead of waiting forever.
+    if libc::shutdown(fd, SHUT_WR) == -1 {
+        let err = io::Error::last_os_error();
+        libc::fclose(pipe);
+        AuthorizationFree(authref, kAuthorizationFlagDestroyRights);
+        return Err(err);
+    }
+
+    // AuthorizationExecuteWithPrivileges wires the tool's stdin/stdout to a
+    // bidirectional pipe. Drain stdout so the child can't block on a full pipe.
+    let read_fd = libc::dup(fd);
+    if read_fd == -1 {
+        let err = io::Error::last_os_error();
+        libc::fclose(pipe);
+        AuthorizationFree(authref, kAuthorizationFlagDestroyRights);
+        return Err(err);
+    }
+    let mut pipe_file = unsafe { File::from_raw_fd(read_fd) };
+    let mut sink = [0_u8; 8192];
+    loop {
+        match pipe_file.read(&mut sink) {
+            Ok(0) => break,
+            Ok(_) => {}
+            Err(err) if err.kind() == io::ErrorKind::Interrupted => continue,
+            Err(err) => {
+                libc::fclose(pipe);
+                AuthorizationFree(authref, kAuthorizationFlagDestroyRights);
+                return Err(err);
+            }
+        }
+    }
+
     let mut status = 0;
     loop {
-        let r = waitpid(pid, &mut status, 0);
+        let r = wait(&mut status);
         if r == -1 && io::Error::last_os_error().raw_os_error() == Some(EINTR) {
             continue;
+        } else if r == -1 {
+            let err = io::Error::last_os_error();
+            libc::fclose(pipe);
+            AuthorizationFree(authref, kAuthorizationFlagDestroyRights);
+            return Err(err);
         } else {
             break;
         }
     }
 
+    libc::fclose(pipe);
     AuthorizationFree(authref, kAuthorizationFlagDestroyRights);
-    status
+    Ok(ExitStatus::from_raw(status))
 }
 
 fn runas_root_gui(cmd: &Command) -> io::Result<ExitStatus> {
@@ -126,7 +174,7 @@ fn runas_root_gui(cmd: &Command) -> io::Result<ExitStatus> {
     let mut argv: Vec<_> = args.iter().map(|x| x.as_ptr()).collect();
     argv.push(ptr::null());
 
-    unsafe { Ok(mem::transmute(gui_runas(prog.as_ptr(), argv.as_ptr()))) }
+    unsafe { gui_runas(prog.as_ptr(), argv.as_ptr()) }
 }
 
 /// The implementation of state check and elevated executing varies on each platform

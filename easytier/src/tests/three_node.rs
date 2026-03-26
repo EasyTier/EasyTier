@@ -19,7 +19,7 @@ use crate::{
     common::{
         config::{ConfigLoader, NetworkIdentity, PortForwardConfig, TomlConfigLoader},
         netns::{NetNS, ROOT_NETNS_NAME},
-        stats_manager::{LabelType, MetricName},
+        stats_manager::{LabelSet, LabelType, MetricName},
     },
     instance::instance::Instance,
     proto::{
@@ -3072,6 +3072,124 @@ pub async fn relay_peer_e2e_encryption(#[values("tcp", "udp")] proto: &str) {
     );
 
     println!("Test completed successfully!");
+    drop_insts(insts).await;
+}
+
+#[tokio::test]
+#[serial_test::serial]
+pub async fn relay_peer_e2e_encryption_udp() {
+    let insts = init_three_node_ex(
+        "udp",
+        |cfg| {
+            cfg.set_secure_mode(Some(generate_secure_mode_config()));
+            cfg
+        },
+        false,
+    )
+    .await;
+
+    let inst1_id = insts[0].get_global_ctx().get_id().to_string();
+    let inst3_id = insts[2].get_global_ctx().get_id().to_string();
+    let network_name = insts[0].get_global_ctx().get_network_name();
+    let total_labels =
+        LabelSet::new().with_label_type(LabelType::NetworkName(network_name.clone()));
+
+    wait_for_condition(
+        || async {
+            let routes = insts[0].get_peer_manager().list_routes().await;
+            routes.len() == 2
+        },
+        Duration::from_secs(10),
+    )
+    .await;
+
+    wait_for_condition(
+        || async { ping_test("net_a", "10.144.144.3", None).await },
+        Duration::from_secs(6),
+    )
+    .await;
+
+    let tx_labels = LabelSet::new()
+        .with_label_type(LabelType::NetworkName(network_name.clone()))
+        .with_label_type(LabelType::ToInstanceId(inst3_id.clone()));
+    let rx_labels = LabelSet::new()
+        .with_label_type(LabelType::NetworkName(network_name.clone()))
+        .with_label_type(LabelType::FromInstanceId(inst1_id.clone()));
+
+    wait_for_condition(
+        || async {
+            insts[0]
+                .get_global_ctx()
+                .stats_manager()
+                .get_metric(MetricName::TrafficBytesTx, &tx_labels)
+                .is_none()
+                && insts[0]
+                    .get_global_ctx()
+                    .stats_manager()
+                    .get_metric(MetricName::TrafficPacketsTx, &tx_labels)
+                    .is_none()
+                && insts[0]
+                    .get_global_ctx()
+                    .stats_manager()
+                    .get_metric(MetricName::TrafficBytesTx, &total_labels)
+                    .is_some_and(|metric| metric.value > 0)
+                && insts[0]
+                    .get_global_ctx()
+                    .stats_manager()
+                    .get_metric(MetricName::TrafficPacketsTx, &total_labels)
+                    .is_some_and(|metric| metric.value > 0)
+                && insts[0]
+                    .get_global_ctx()
+                    .stats_manager()
+                    .get_metric(MetricName::TrafficBytesTxByInstance, &tx_labels)
+                    .is_some_and(|metric| metric.value > 0)
+                && insts[0]
+                    .get_global_ctx()
+                    .stats_manager()
+                    .get_metric(MetricName::TrafficPacketsTxByInstance, &tx_labels)
+                    .is_some_and(|metric| metric.value > 0)
+        },
+        Duration::from_secs(10),
+    )
+    .await;
+
+    wait_for_condition(
+        || async {
+            insts[2]
+                .get_global_ctx()
+                .stats_manager()
+                .get_metric(MetricName::TrafficBytesRx, &rx_labels)
+                .is_none()
+                && insts[2]
+                    .get_global_ctx()
+                    .stats_manager()
+                    .get_metric(MetricName::TrafficPacketsRx, &rx_labels)
+                    .is_none()
+                && insts[2]
+                    .get_global_ctx()
+                    .stats_manager()
+                    .get_metric(MetricName::TrafficBytesRx, &total_labels)
+                    .is_some_and(|metric| metric.value > 0)
+                && insts[2]
+                    .get_global_ctx()
+                    .stats_manager()
+                    .get_metric(MetricName::TrafficPacketsRx, &total_labels)
+                    .is_some_and(|metric| metric.value > 0)
+                && insts[2]
+                    .get_global_ctx()
+                    .stats_manager()
+                    .get_metric(MetricName::TrafficBytesRxByInstance, &rx_labels)
+                    .is_some_and(|metric| metric.value > 0)
+                && insts[2]
+                    .get_global_ctx()
+                    .stats_manager()
+                    .get_metric(MetricName::TrafficPacketsRxByInstance, &rx_labels)
+                    .is_some_and(|metric| metric.value > 0)
+        },
+        Duration::from_secs(10),
+    )
+    .await;
+
     drop_insts(insts).await;
 }
 
