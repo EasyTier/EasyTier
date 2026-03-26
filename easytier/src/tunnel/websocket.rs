@@ -1,5 +1,5 @@
 use super::{
-    common::{setup_sokcet2, wait_for_connect_futures, TunnelWrapper},
+    common::{setup_socket2, wait_for_connect_futures, TunnelWrapper},
     insecure_tls::{get_insecure_tls_cert, init_crypto_provider},
     packet_def::{ZCPacket, ZCPacketType},
     FromUrl, IpVersion, Tunnel, TunnelConnector, TunnelError, TunnelListener,
@@ -169,7 +169,7 @@ impl TunnelListener for WsTunnelListener {
             socket2::Type::STREAM,
             Some(socket2::Protocol::TCP),
         )?;
-        setup_sokcet2(&socket2_socket, &addr)?;
+        setup_socket2(&socket2_socket, &addr)?;
         let socket = TcpSocket::from_std_stream(socket2_socket.into());
 
         self.addr
@@ -294,7 +294,7 @@ impl WsTunnelConnector {
                 Some(socket2::Protocol::TCP),
             )?;
 
-            if let Err(e) = setup_sokcet2(&socket2_socket, bind_addr) {
+            if let Err(e) = setup_socket2(&socket2_socket, bind_addr) {
                 tracing::error!(bind_addr = ?bind_addr, ?addr, "bind addr fail: {:?}", e);
                 continue;
             }

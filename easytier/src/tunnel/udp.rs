@@ -22,7 +22,7 @@ use tokio::{
 use tracing::{instrument, Instrument};
 
 use super::{
-    common::{setup_sokcet2, setup_sokcet2_ext, wait_for_connect_futures},
+    common::{setup_socket2, setup_socket2_ext, wait_for_connect_futures},
     packet_def::{UDPTunnelHeader, V6HolePunchPacket, UDP_TUNNEL_HEADER_SIZE},
     ring::{RingSink, RingStream},
     FromUrl, IpVersion, Tunnel, TunnelConnCounter, TunnelError, TunnelInfo, TunnelListener,
@@ -545,9 +545,9 @@ impl TunnelListener for UdpTunnelListener {
 
         let tunnel_url: TunnelUrl = self.addr.clone().into();
         if let Some(bind_dev) = tunnel_url.bind_dev() {
-            setup_sokcet2_ext(&socket2_socket, &addr, Some(bind_dev))?;
+            setup_socket2_ext(&socket2_socket, &addr, Some(bind_dev))?;
         } else {
-            setup_sokcet2(&socket2_socket, &addr)?;
+            setup_socket2(&socket2_socket, &addr)?;
         }
 
         self.socket = Some(Arc::new(UdpSocket::from_std(socket2_socket.into())?));
@@ -838,7 +838,7 @@ impl UdpTunnelConnector {
                 socket2::Type::DGRAM,
                 Some(socket2::Protocol::UDP),
             )?;
-            if let Err(e) = setup_sokcet2(&socket2_socket, bind_addr) {
+            if let Err(e) = setup_socket2(&socket2_socket, bind_addr) {
                 tracing::error!(bind_addr = ?bind_addr, ?addr, "bind addr fail: {:?}", e);
                 continue;
             }
@@ -1040,7 +1040,7 @@ mod tests {
                 Some(socket2::Protocol::UDP),
             )
             .unwrap();
-            setup_sokcet2_ext(&socket2_socket, &addr, bind_dev.clone()).unwrap();
+            setup_socket2_ext(&socket2_socket, &addr, bind_dev.clone()).unwrap();
         }
     }
 

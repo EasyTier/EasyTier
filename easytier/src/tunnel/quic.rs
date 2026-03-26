@@ -7,7 +7,7 @@ use std::{
 };
 
 use crate::tunnel::{
-    common::{setup_sokcet2, FramedReader, FramedWriter, TunnelWrapper},
+    common::{setup_socket2, FramedReader, FramedWriter, TunnelWrapper},
     FromUrl, TunnelInfo,
 };
 use anyhow::Context;
@@ -110,7 +110,7 @@ pub fn make_server_endpoint(bind_addr: SocketAddr) -> Result<Endpoint, Box<dyn E
         socket2::Type::DGRAM,
         Some(socket2::Protocol::UDP),
     )?;
-    setup_sokcet2(&socket2_socket, &bind_addr)?;
+    setup_socket2(&socket2_socket, &bind_addr)?;
     let socket = std::net::UdpSocket::from(socket2_socket);
 
     let runtime =
