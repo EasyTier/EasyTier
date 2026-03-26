@@ -16,6 +16,7 @@ use tracing::Instrument;
 
 use crate::{
     common::{error::Error, PeerId},
+    peers::traffic_metrics::AggregateTrafficMetrics,
     tunnel::{
         mpsc::MpscTunnelSender,
         packet_def::{PacketType, ZCPacket},
@@ -118,6 +119,7 @@ pub struct PeerConnPinger {
     latency_stats: Arc<WindowLatency>,
     loss_rate_stats: Arc<AtomicU32>,
     throughput_stats: Arc<Throughput>,
+    control_metrics: AggregateTrafficMetrics,
     tasks: JoinSet<Result<(), TunnelError>>,
 }
 
@@ -131,7 +133,8 @@ impl std::fmt::Debug for PeerConnPinger {
 }
 
 impl PeerConnPinger {
-    pub fn new(
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn new(
         my_peer_id: PeerId,
         peer_id: PeerId,
         sink: MpscTunnelSender,
@@ -139,6 +142,7 @@ impl PeerConnPinger {
         latency_stats: Arc<WindowLatency>,
         loss_rate_stats: Arc<AtomicU32>,
         throughput_stats: Arc<Throughput>,
+        control_metrics: AggregateTrafficMetrics,
     ) -> Self {
         Self {
             my_peer_id,
@@ -149,6 +153,7 @@ impl PeerConnPinger {
             ctrl_sender,
             loss_rate_stats,
             throughput_stats,
+            control_metrics,
         }
     }
 
@@ -162,12 +167,15 @@ impl PeerConnPinger {
         my_node_id: PeerId,
         peer_id: PeerId,
         sink: &MpscTunnelSender,
+        control_metrics: &AggregateTrafficMetrics,
         receiver: &mut broadcast::Receiver<ZCPacket>,
         seq: u32,
     ) -> Result<u128, Error> {
         // should add seq here. so latency can be calculated more accurately
         let req = Self::new_ping_packet(my_node_id, peer_id, seq);
+        let req_len = req.buf_len() as u64;
         sink.send(req).await?;
+        control_metrics.record_tx(req_len);
 
         let now = std::time::Instant::now();
         // wait until we get a pong packet in ctrl_resp_receiver
@@ -214,6 +222,7 @@ impl PeerConnPinger {
 
     pub async fn pingpong(&mut self) {
         let sink = self.sink.clone();
+        let control_metrics = self.control_metrics.clone();
         let my_node_id = self.my_peer_id;
         let peer_id = self.peer_id;
         let latency_stats = self.latency_stats.clone();
@@ -259,6 +268,7 @@ impl PeerConnPinger {
                     );
 
                     let sink = sink.clone();
+                    let control_metrics = control_metrics.clone();
                     let receiver = ctrl_resp_sender.subscribe();
                     let ping_res_sender = ping_res_sender.clone();
                     pingpong_tasks.spawn(async move {
@@ -267,6 +277,7 @@ impl PeerConnPinger {
                             my_node_id,
                             peer_id,
                             &sink,
+                            &control_metrics,
                             &mut receiver,
                             req_seq,
                         )

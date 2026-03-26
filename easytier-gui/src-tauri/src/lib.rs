@@ -146,7 +146,6 @@ async fn collect_network_info(
 
 #[tauri::command]
 async fn set_logging_level(level: String) -> Result<(), String> {
-    println!("Setting logging level to: {}", level);
     get_client_manager!()?
         .set_logging_level(level.clone())
         .await

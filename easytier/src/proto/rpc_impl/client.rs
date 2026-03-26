@@ -306,7 +306,6 @@ impl Client {
                         accepted_algo: CompressionAlgoPb::Zstd.into(),
                     },
                 });
-
                 let timeout_dur = std::time::Duration::from_millis(ctrl.timeout_ms() as u64);
                 let mut rpc_packet = timeout(timeout_dur, self.do_rpc(packets, &mut rx)).await??;
 

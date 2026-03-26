@@ -169,12 +169,13 @@ jobs:
       - name: copy correct DLLs
         if: ${{ matrix.OS == 'windows-latest' }}
         run: |
-          if [[ $GUI_TARGET =~ ^aarch64.*$ ]]; then
-            cp ./easytier/third_party/arm64/* ./easytier-gui/src-tauri/
-          elif [[ $GUI_TARGET =~ ^i686.*$ ]]; then
-            cp ./easytier/third_party/i686/* ./easytier-gui/src-tauri/
-          else
-            cp ./easytier/third_party/x86_64/* ./easytier-gui/src-tauri/
+          case $TARGET in
+              x86_64*)  ARCH_DIR=x86_64 ;;
+              i686*)    ARCH_DIR=i686 ;;
+              aarch64*) ARCH_DIR=arm64 ;;
+          esac
+          if [[ -n "$ARCH_DIR" ]]; then
+              find "./easytier/third_party/${ARCH_DIR}" -maxdepth 1 -type f \( -name "*.dll" -o -name "*.sys" \) -exec cp {} ./easytier-gui/src-tauri/ \;
           fi
 
       - name: Build GUI
