@@ -697,12 +697,6 @@ impl PeerManager {
                 return Ok(());
             }
 
-            if self.global_ctx.config.get_flags().private_mode {
-                return Err(Error::SecretKeyError(
-                    "private mode is turned on, network identity not match".to_string(),
-                ));
-            }
-
             let mut peer_id = self
                 .foreign_network_manager
                 .get_network_peer_id(network_name);
@@ -724,11 +718,31 @@ impl PeerManager {
         })
         .await?;
 
-        let peer_network_name = conn.get_network_identity().network_name.clone();
+        let peer_identity = conn.get_network_identity();
+        let peer_network_name = peer_identity.network_name.clone();
+        let my_identity = self.global_ctx.get_network_identity();
+        let is_local_network = peer_network_name == my_identity.network_name;
+        let trusted_foreign_credential =
+            matches!(conn.get_peer_identity_type(), PeerIdentityType::Credential)
+                && self
+                    .foreign_network_manager
+                    .is_existing_credential_pubkey_trusted(
+                        &peer_network_name,
+                        &conn.get_conn_info().noise_remote_static_pubkey,
+                    );
+        let foreign_network_allowed =
+            conn.matches_local_network_secret() || trusted_foreign_credential;
+
+        if !is_local_network && self.global_ctx.get_flags().private_mode && !foreign_network_allowed
+        {
+            return Err(Error::SecretKeyError(
+                "private mode is turned on, foreign network secret mismatch".to_string(),
+            ));
+        }
 
         conn.set_is_hole_punched(!is_directly_connected);
 
-        if peer_network_name == self.global_ctx.get_network_identity().network_name {
+        if is_local_network {
             self.add_new_peer_conn(conn).await?;
         } else {
             self.foreign_network_manager.add_peer_conn(conn).await?;
