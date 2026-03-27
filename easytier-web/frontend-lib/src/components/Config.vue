@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import InputGroup from 'primevue/inputgroup'
 import InputGroupAddon from 'primevue/inputgroupaddon'
-import { Checkbox, InputText, InputNumber, AutoComplete, Panel, Divider, ToggleButton, Button, Password, Dialog, Message } from 'primevue'
+import { Checkbox, InputText, InputNumber, AutoComplete, Panel, Divider, ToggleButton, Button, Password, Dialog } from 'primevue'
 import {
   addRow,
   DEFAULT_NETWORK_CONFIG,
@@ -203,10 +203,10 @@ watch(() => curNetwork.value, syncNormalizedNetwork, { immediate: true, deep: fa
 
               <div class="flex flex-row gap-x-9 flex-wrap">
                 <div class="flex flex-col gap-2 basis-5/12 grow">
-                  <label for="initial_nodes">{{ t('initial_nodes') }}</label>
-                  <Message severity="secondary" :closable="false">
-                    {{ t('initial_nodes_help') }}
-                  </Message>
+                  <div class="flex items-center">
+                    <label for="initial_nodes">{{ t('initial_nodes') }}</label>
+                    <span class="pi pi-question-circle ml-2 self-center" v-tooltip="t('initial_nodes_help')"></span>
+                  </div>
                   <div class="items-center flex flex-col p-fluid gap-y-2">
                     <UrlListInput id="initial_nodes" v-model="curNetwork.peer_urls" :protos="protos"
                       :add-label="t('add_initial_node')" :placeholder="t('initial_node_placeholder')" />
