@@ -1,10 +1,10 @@
-use std::{net::SocketAddr, sync::Arc, time::Duration};
-
 use anyhow::Context;
 use bytes::BytesMut;
 use forwarded_header_value::ForwardedHeaderValue;
 use futures::{stream::FuturesUnordered, SinkExt, StreamExt};
 use pnet::ipnetwork::IpNetwork;
+use std::sync::LazyLock;
+use std::{net::SocketAddr, sync::Arc, time::Duration};
 use tokio::{
     net::{TcpListener, TcpSocket, TcpStream},
     time::timeout,
@@ -62,6 +62,20 @@ async fn map_from_ws_message(
     )))
 }
 
+static TRUSTED_PROXIES: LazyLock<Vec<IpNetwork>> = LazyLock::new(|| {
+    [
+        "127.0.0.0/8", // IPV4 Loopback
+        "10.0.0.0/8",  // IPV4 Private Networks
+        "172.16.0.0/12",
+        "192.168.0.0/16",
+        "::1/128",  // IPV6 Loopback
+        "fc00::/7", // IPV6 Private network
+    ]
+    .into_iter()
+    .map(|s| s.parse().unwrap())
+    .collect()
+});
+
 #[derive(Debug)]
 pub struct WSTunnelListener {
     addr: url::Url,
@@ -98,20 +112,10 @@ impl WSTunnelListener {
             .accept(stream)
             .await?;
 
-        let trusted: Vec<IpNetwork> = vec![
-            // IPV4 Loopback
-            "127.0.0.0/8".parse().unwrap(),
-            // IPV4 Private Networks
-            "10.0.0.0/8".parse().unwrap(),
-            "172.16.0.0/12".parse().unwrap(),
-            "192.168.0.0/16".parse().unwrap(),
-            // IPV6 Loopback
-            "::1/128".parse().unwrap(),
-            // IPV6 Private network
-            "fd00::/8".parse().unwrap(),
-        ];
-
-        if trusted.iter().any(|net| net.contains(remote_addr.ip())) {
+        if TRUSTED_PROXIES
+            .iter()
+            .any(|net| net.contains(remote_addr.ip()))
+        {
             if let Some(forwarded) = request
                 .headers()
                 .get("Forwarded")
