@@ -2,7 +2,9 @@ use std::{net::SocketAddr, sync::Arc, time::Duration};
 
 use anyhow::Context;
 use bytes::BytesMut;
+use forwarded_header_value::ForwardedHeaderValue;
 use futures::{stream::FuturesUnordered, SinkExt, StreamExt};
+use pnet::ipnetwork::IpNetwork;
 use tokio::{
     net::{TcpListener, TcpSocket, TcpStream},
     time::timeout,
@@ -75,7 +77,7 @@ impl WSTunnelListener {
     }
 
     async fn try_accept(&self, stream: TcpStream) -> Result<Box<dyn Tunnel>, TunnelError> {
-        let peer_addr = stream.peer_addr()?;
+        let mut remote_addr = stream.peer_addr()?;
 
         let stream = if is_wss(&self.addr)? {
             init_crypto_provider();
@@ -96,13 +98,38 @@ impl WSTunnelListener {
             .accept(stream)
             .await?;
 
-        let remote_addr = request
-            .headers()
-            .get("X-Forwarded-For")
-            .and_then(|v| v.to_str().ok())
-            .and_then(|s| s.split(',').next())
-            .map(|s| s.trim().to_string())
-            .unwrap_or_else(|| peer_addr.to_string());
+        let trusted: Vec<IpNetwork> = vec![
+            // IPV4 Loopback
+            "127.0.0.0/8".parse().unwrap(),
+            // IPV4 Private Networks
+            "10.0.0.0/8".parse().unwrap(),
+            "172.16.0.0/12".parse().unwrap(),
+            "192.168.0.0/16".parse().unwrap(),
+            // IPV6 Loopback
+            "::1/128".parse().unwrap(),
+            // IPV6 Private network
+            "fd00::/8".parse().unwrap(),
+        ];
+
+        if trusted.iter().any(|net| net.contains(remote_addr.ip())) {
+            if let Some(forwarded) = request
+                .headers()
+                .get("Forwarded")
+                .and_then(|f| f.to_str().ok())
+                .and_then(|f| ForwardedHeaderValue::from_forwarded(f).ok())
+                .or_else(|| {
+                    request
+                        .headers()
+                        .get("X-Forwarded-For")
+                        .and_then(|f| f.to_str().ok())
+                        .and_then(|f| ForwardedHeaderValue::from_x_forwarded_for(f).ok())
+                })
+            {
+                if let Some(ip) = forwarded.remotest_forwarded_for_ip() {
+                    remote_addr = SocketAddr::new(ip, 0);
+                }
+            }
+        }
 
         let (write, read) = stream.split();
 
@@ -111,7 +138,7 @@ impl WSTunnelListener {
             local_addr: Some(self.local_url().into()),
             remote_addr: Some(
                 super::build_url_from_socket_addr(
-                    &remote_addr,
+                    &remote_addr.to_string(),
                     self.addr.scheme().to_string().as_str(),
                 )
                 .into(),
