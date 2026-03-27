@@ -71,6 +71,7 @@ use super::{
 };
 
 use atomic_shim::AtomicU64;
+use itertools::Itertools;
 
 static SERVICE_ID: u32 = 7;
 static UPDATE_PEER_INFO_PERIOD: Duration = Duration::from_secs(3600);
@@ -87,16 +88,10 @@ static REMOVE_UNREACHABLE_PEER_INFO_AFTER: Duration = Duration::from_secs(90);
 
 type Version = u32;
 
-/// Check if `child` CIDR is a subset of `parent` CIDR (both as string representations).
-/// Returns true if child is contained within parent, or if they are equal.
-fn cidr_is_subset_str(child: &str, parent: &str) -> bool {
-    let Ok(child_cidr) = child.parse::<IpCidr>() else {
-        return false;
-    };
-    let Ok(parent_cidr) = parent.parse::<IpCidr>() else {
-        return false;
-    };
-    match (child_cidr, parent_cidr) {
+/// Check if `child` CIDR is a subset of `parent` CIDR.
+/// Returns true if `child` is contained within `parent`, or if they are equal.
+fn cidr_is_subset(child: &IpCidr, parent: &IpCidr) -> bool {
+    match (child, parent) {
         (IpCidr::V4(c), IpCidr::V4(p)) => {
             p.first_address() <= c.first_address() && c.last_address() <= p.last_address()
         }
@@ -105,6 +100,17 @@ fn cidr_is_subset_str(child: &str, parent: &str) -> bool {
         }
         _ => false, // mixed v4/v6
     }
+}
+
+/// Check if `child` CIDR is a subset of `parent` CIDR (both as string representations).
+fn cidr_is_subset_str(child: &str, parent: &str) -> bool {
+    let Ok(child_cidr) = child.parse::<IpCidr>() else {
+        return false;
+    };
+    let Ok(parent_cidr) = parent.parse::<IpCidr>() else {
+        return false;
+    };
+    cidr_is_subset(&child_cidr, &parent_cidr)
 }
 
 /// Patch specific fields in a raw DynamicMessage from a decoded RoutePeerInfo,
@@ -1308,6 +1314,15 @@ impl RouteTable {
     ) {
         let version = synced_info.version.get();
 
+        let local_proxy_cidrs = synced_info
+            .peer_infos
+            .read()
+            .get(&my_peer_id)
+            .into_iter()
+            .flat_map(|info| &info.proxy_cidrs)
+            .filter_map(|cidr| cidr.parse::<IpCidr>().ok())
+            .collect_vec();
+
         // build next hop map
         let (graph, start_node) =
             Self::build_peer_graph_from_synced_info(my_peer_id, synced_info, cost_calc);
@@ -1393,9 +1408,27 @@ impl RouteTable {
             }
 
             for cidr in info.proxy_cidrs.iter() {
-                let cidr = cidr.parse::<IpCidr>();
+                let Ok(cidr) = cidr.parse::<IpCidr>() else {
+                    tracing::warn!("invalid proxy cidr: {:?}, from peer: {:?}", cidr, peer_id);
+                    continue;
+                };
+
+                if *peer_id != my_peer_id
+                    && local_proxy_cidrs
+                        .iter()
+                        .any(|local_cidr| cidr_is_subset(&cidr, local_cidr))
+                {
+                    tracing::debug!(
+                        ?peer_id,
+                        ?my_peer_id,
+                        ?local_proxy_cidrs,
+                        ?cidr,
+                        "skip remote proxy cidr covered by local announced proxy cidr while building route table"
+                    );
+                    continue;
+                }
                 match cidr {
-                    Ok(IpCidr::V4(cidr)) => {
+                    IpCidr::V4(cidr) => {
                         new_cidr_prefix_trie
                             .entry(cidr)
                             .and_modify(|e| {
@@ -1407,7 +1440,7 @@ impl RouteTable {
                             .or_insert(peer_id_and_version);
                     }
 
-                    Ok(IpCidr::V6(cidr)) => {
+                    IpCidr::V6(cidr) => {
                         new_cidr_v6_prefix_trie
                             .entry(cidr)
                             .and_modify(|e| {
@@ -1417,10 +1450,6 @@ impl RouteTable {
                                 }
                             })
                             .or_insert(peer_id_and_version);
-                    }
-
-                    _ => {
-                        tracing::warn!("invalid proxy cidr: {:?}, from peer: {:?}", cidr, peer_id);
                     }
                 }
                 tracing::debug!(
@@ -3561,6 +3590,12 @@ impl PeerPacketFilter for Arc<PeerRoute> {}
 
 #[cfg(test)]
 mod tests {
+    use cidr::{Ipv4Cidr, Ipv4Inet, Ipv6Inet};
+    use dashmap::DashMap;
+    use parking_lot::Mutex;
+    use prefix_trie::PrefixMap;
+    use prost_reflect::{DynamicMessage, ReflectMessage};
+    use std::net::IpAddr;
     use std::{
         collections::{BTreeSet, HashMap},
         sync::{
@@ -3570,12 +3605,7 @@ mod tests {
         time::{Duration, SystemTime},
     };
 
-    use cidr::{Ipv4Cidr, Ipv4Inet, Ipv6Inet};
-    use dashmap::DashMap;
-    use parking_lot::Mutex;
-    use prefix_trie::PrefixMap;
-    use prost_reflect::{DynamicMessage, ReflectMessage};
-
+    use super::{PeerRoute, REMOVE_DEAD_PEER_INFO_AFTER};
     use crate::{
         common::{
             global_ctx::{tests::get_mock_global_ctx, GlobalCtxEvent, TrustedKeySource},
@@ -3599,8 +3629,6 @@ mod tests {
         tunnel::common::tests::wait_for_condition,
     };
     use prost::Message;
-
-    use super::{PeerRoute, REMOVE_DEAD_PEER_INFO_AFTER};
 
     struct AuthOnlyInterface {
         my_peer_id: PeerId,
@@ -4957,6 +4985,93 @@ mod tests {
         assert!(
             raw_has_unknown_bytes(stored_raw.value(), &unknown_bytes),
             "unknown fields should be preserved for admin sender (mark non-credential path)"
+        );
+    }
+
+    #[tokio::test]
+    async fn sync_route_info_prioritizes_local_over_remote_for_overlapped_proxy_cidrs() {
+        let peer_mgr = create_mock_pmgr().await;
+        let route = create_mock_route(peer_mgr.clone()).await;
+        let from_peer_id: PeerId = 11001;
+
+        let peers = Arc::new(Mutex::new(vec![from_peer_id]));
+        let peer_identity_types = Arc::new(Mutex::new(HashMap::from([(
+            from_peer_id,
+            Some(PeerIdentityType::Admin),
+        )])));
+        *route.service_impl.interface.lock().await = Some(Box::new(CountingInterface {
+            my_peer_id: peer_mgr.my_peer_id(),
+            peers,
+            peer_identity_types,
+            list_peers_calls: Arc::new(AtomicU32::new(0)),
+            get_peer_identity_type_calls: Arc::new(AtomicU32::new(0)),
+        }));
+        route.service_impl.mark_interface_peers_dirty();
+        assert!(route.service_impl.update_my_conn_info().await);
+
+        route
+            .service_impl
+            .global_ctx
+            .config
+            .add_proxy_cidr("10.10.0.0/16".parse().unwrap(), None)
+            .unwrap();
+        assert!(route.service_impl.update_my_peer_info());
+
+        let mut sender_info = RoutePeerInfo::new();
+        sender_info.peer_id = from_peer_id;
+        sender_info.version = 1;
+        sender_info.proxy_cidrs = vec![
+            "10.10.0.0/16".to_string(),
+            "10.10.1.0/24".to_string(),
+            "10.11.0.0/16".to_string(),
+        ];
+
+        let make_raw = |info: &RoutePeerInfo| {
+            let mut raw = DynamicMessage::new(RoutePeerInfo::default().descriptor());
+            raw.transcode_from(info).unwrap();
+            raw
+        };
+
+        route
+            .session_mgr
+            .do_sync_route_info(
+                from_peer_id,
+                1,
+                true,
+                Some(vec![sender_info.clone()]),
+                Some(vec![make_raw(&sender_info)]),
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+
+        // Keep route table in sync with interface-derived adjacency during assertion window.
+        route
+            .service_impl
+            .update_route_table_and_cached_local_conn_bitmap();
+
+        // Control plane: keep what remote announced.
+        let guard = route.service_impl.synced_route_info.peer_infos.read();
+        let stored = guard.get(&from_peer_id).unwrap();
+        assert_eq!(stored.proxy_cidrs, sender_info.proxy_cidrs);
+        drop(guard);
+
+        // Route-table filtering: local announced /16 should dominate remote equal/subset.
+        assert_eq!(
+            route
+                .service_impl
+                .route_table
+                .get_peer_id_for_proxy(&"10.10.1.1".parse::<IpAddr>().unwrap()),
+            Some(peer_mgr.my_peer_id())
+        );
+        // Non-overlapped remote prefix should still route to remote.
+        assert_eq!(
+            route
+                .service_impl
+                .route_table
+                .get_peer_id_for_proxy(&"10.11.0.1".parse::<IpAddr>().unwrap()),
+            Some(from_peer_id)
         );
     }
 }
