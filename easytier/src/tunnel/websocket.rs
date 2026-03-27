@@ -327,9 +327,9 @@ impl TunnelConnector for WSTunnelConnector {
 
 #[cfg(test)]
 pub mod tests {
+    use super::*;
     use crate::tunnel::common::tests::_tunnel_pingpong;
-    use crate::tunnel::websocket::{WSTunnelConnector, WSTunnelListener};
-    use crate::tunnel::{TunnelConnector, TunnelListener};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     #[rstest::rstest]
     #[tokio::test]
@@ -379,5 +379,49 @@ pub mod tests {
         connector.connect().await.unwrap();
 
         j.abort();
+    }
+
+    #[tokio::test]
+    async fn ws_forwarded() {
+        let mut listener = WSTunnelListener::new("ws://127.0.0.1:25559".parse().unwrap());
+        listener.listen().await.unwrap();
+
+        let server_task = tokio::spawn(async move {
+            let tunnel = listener.accept().await.unwrap();
+
+            let remote_addr = tunnel
+                .info()
+                .unwrap()
+                .remote_addr
+                .unwrap()
+                .url
+                .parse::<url::Url>()
+                .unwrap();
+
+            assert_eq!(remote_addr.host_str().unwrap(), "203.0.113.5");
+
+            tunnel
+        });
+
+        let mut stream = TcpStream::connect("127.0.0.1:25559").await.unwrap();
+
+        let handshake = "GET / HTTP/1.1\r\n\
+                         Host: 127.0.0.1:25559\r\n\
+                         Upgrade: websocket\r\n\
+                         Connection: Upgrade\r\n\
+                         Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\
+                         Sec-WebSocket-Version: 13\r\n\
+                         X-Forwarded-For: 203.0.113.5, 192.168.1.1\r\n\
+                         \r\n";
+
+        stream.write_all(handshake.as_bytes()).await.unwrap();
+
+        let mut buf = [0u8; 1024];
+        let bytes_read = stream.read(&mut buf).await.unwrap();
+        let response = String::from_utf8_lossy(&buf[..bytes_read]);
+
+        assert!(response.contains("101 Switching Protocols"));
+
+        let _tunnel = server_task.await.unwrap();
     }
 }
