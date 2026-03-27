@@ -49,4 +49,6 @@
 
 .v-popper__inner {
   white-space: pre-wrap;
+  max-width: 32rem;
+  line-height: 1.5;
 }

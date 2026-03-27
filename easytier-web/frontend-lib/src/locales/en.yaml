@@ -3,6 +3,14 @@ networking_method: Networking Method
 public_server: Public Server
 manual: Manual
 standalone: Standalone
+initial_nodes: Initial Nodes
+initial_nodes_help: |
+  EasyTier does not distinguish between server and client roles.
+  • Filling in Initial Nodes = plugging in the cable and joining an existing network.
+  • Leaving it empty = the node starts alone until others connect to it, or you connect it later yourself.
+  • Direct or indirect connectivity, including through relay nodes, can form one network.
+  Initial nodes can be your own nodes or ones shared by others.
+initial_node_placeholder: "Example: tcp://node.example.com:11010"
 virtual_ipv4: Virtual IPv4
 virtual_ipv4_dhcp: DHCP
 network_name: Network Name
@@ -26,6 +34,7 @@ error_msg: Error Message
 detail: Detail
 add_new_network: New Network
 add_peer_url: Add Peer
+add_initial_node: Add Initial Node
 add_listener_url: Add Listener
 add_mapped_listener: Add Mapped Listener
 del_cur_network: Delete Current Network

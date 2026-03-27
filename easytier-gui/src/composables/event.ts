@@ -14,7 +14,7 @@ const EVENTS = Object.freeze({
 
 function onSaveConfigs(event: Event<NetworkTypes.NetworkConfig[]>) {
     console.log(`Received event '${EVENTS.SAVE_CONFIGS}': ${event.payload}`);
-    localStorage.setItem('networkList', JSON.stringify(event.payload));
+    localStorage.setItem('networkList', JSON.stringify(event.payload.map((config) => NetworkTypes.normalizeNetworkConfig(config))));
 }
 
 async function onPreRunNetworkInstance(event: Event<string>) {
