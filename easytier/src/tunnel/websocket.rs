@@ -8,7 +8,8 @@ use tokio::{
     time::timeout,
 };
 use tokio_rustls::TlsAcceptor;
-use tokio_websockets::{ClientBuilder, Limits, MaybeTlsStream, Message};
+use tokio_util::either::Either;
+use tokio_websockets::{ClientBuilder, Limits, MaybeTlsStream, Message, ServerBuilder};
 use zerocopy::AsBytes;
 
 use super::TunnelInfo;
@@ -74,47 +75,54 @@ impl WSTunnelListener {
     }
 
     async fn try_accept(&self, stream: TcpStream) -> Result<Box<dyn Tunnel>, TunnelError> {
-        let info = TunnelInfo {
-            tunnel_type: self.addr.scheme().to_owned(),
-            local_addr: Some(self.local_url().into()),
-            remote_addr: Some(
-                super::build_url_from_socket_addr(
-                    &stream.peer_addr()?.to_string(),
-                    self.addr.scheme().to_string().as_str(),
-                )
-                .into(),
-            ),
-        };
+        let peer_addr = stream.peer_addr()?;
 
-        let server_bulder = tokio_websockets::ServerBuilder::new().limits(Limits::unlimited());
-
-        let ret: Box<dyn Tunnel> = if is_wss(&self.addr)? {
+        let stream = if is_wss(&self.addr)? {
             init_crypto_provider();
             let (certs, key) = get_insecure_tls_cert();
             let config = rustls::ServerConfig::builder()
                 .with_no_client_auth()
                 .with_single_cert(certs, key)
                 .with_context(|| "Failed to create server config")?;
-            let acceptor = TlsAcceptor::from(Arc::new(config));
 
-            let stream = acceptor.accept(stream).await?;
-            let (write, read) = server_bulder.accept(stream).await?.split();
-
-            Box::new(TunnelWrapper::new(
-                read.filter_map(map_from_ws_message),
-                write.with(sink_from_zc_packet),
-                Some(info),
-            ))
+            let stream = TlsAcceptor::from(Arc::new(config)).accept(stream).await?;
+            Either::Left(stream)
         } else {
-            let (write, read) = server_bulder.accept(stream).await?.split();
-            Box::new(TunnelWrapper::new(
-                read.filter_map(map_from_ws_message),
-                write.with(sink_from_zc_packet),
-                Some(info),
-            ))
+            Either::Right(stream)
         };
 
-        Ok(ret)
+        let (request, stream) = ServerBuilder::new()
+            .limits(Limits::unlimited())
+            .accept(stream)
+            .await?;
+
+        let remote_addr = request
+            .headers()
+            .get("X-Forwarded-For")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|s| s.split(',').next())
+            .map(|s| s.trim().to_string())
+            .unwrap_or_else(|| peer_addr.to_string());
+
+        let (write, read) = stream.split();
+
+        let info = TunnelInfo {
+            tunnel_type: self.addr.scheme().to_owned(),
+            local_addr: Some(self.local_url().into()),
+            remote_addr: Some(
+                super::build_url_from_socket_addr(
+                    &remote_addr,
+                    self.addr.scheme().to_string().as_str(),
+                )
+                .into(),
+            ),
+        };
+
+        Ok(Box::new(TunnelWrapper::new(
+            read.filter_map(map_from_ws_message),
+            write.with(sink_from_zc_packet),
+            Some(info),
+        )))
     }
 }
 
