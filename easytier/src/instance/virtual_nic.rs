@@ -7,11 +7,14 @@ use std::{
     task::{Context, Poll},
 };
 
+#[cfg(target_os = "windows")]
+use crate::common::ifcfg::RegistryManager;
 use crate::{
     common::{
         error::Error,
         global_ctx::{ArcGlobalCtx, GlobalCtxEvent},
-        ifcfg::{IfConfiger, IfConfiguerTrait},
+        ifcfg,
+        ifcfg::IfConfiger,
         log,
     },
     instance::proxy_cidrs_monitor::ProxyCidrsMonitor,
@@ -22,7 +25,6 @@ use crate::{
         StreamItem, Tunnel, TunnelError, ZCPacketSink, ZCPacketStream,
     },
 };
-
 use byteorder::WriteBytesExt as _;
 use bytes::{BufMut, BytesMut};
 use cidr::{Ipv4Inet, Ipv6Inet};
@@ -37,9 +39,6 @@ use tokio::{
 use tokio_util::bytes::Bytes;
 use tun::{AbstractDevice, AsyncDevice, Configuration, Layer};
 use zerocopy::{NativeEndian, NetworkEndian};
-
-#[cfg(target_os = "windows")]
-use crate::common::ifcfg::RegistryManager;
 
 pin_project! {
     pub struct TunStream {
@@ -241,7 +240,7 @@ pub struct VirtualNic {
     global_ctx: ArcGlobalCtx,
 
     ifname: Option<String>,
-    ifcfg: Box<dyn IfConfiguerTrait + Send + Sync + 'static>,
+    ifcfg: IfConfiger,
 }
 
 impl Drop for VirtualNic {
@@ -267,7 +266,7 @@ impl VirtualNic {
         Self {
             global_ctx,
             ifname: None,
-            ifcfg: Box::new(IfConfiger {}),
+            ifcfg: ifcfg::get(),
         }
     }
 
@@ -746,13 +745,13 @@ impl VirtualNic {
 
     pub async fn remove_ip(&self, ip: Option<Ipv4Inet>) -> Result<(), Error> {
         let _g = self.global_ctx.net_ns.guard();
-        self.ifcfg.remove_ip(self.ifname(), ip).await?;
+        self.ifcfg.remove_ipv4_ip(self.ifname(), ip).await?;
         Ok(())
     }
 
     pub async fn remove_ipv6(&self, ip: Option<Ipv6Inet>) -> Result<(), Error> {
         let _g = self.global_ctx.net_ns.guard();
-        self.ifcfg.remove_ipv6(self.ifname(), ip).await?;
+        self.ifcfg.remove_ipv6_ip(self.ifname(), ip).await?;
         Ok(())
     }
 
@@ -770,10 +769,6 @@ impl VirtualNic {
             .add_ipv6_ip(self.ifname(), ip, cidr as u8)
             .await?;
         Ok(())
-    }
-
-    pub fn get_ifcfg(&self) -> impl IfConfiguerTrait {
-        IfConfiger {}
     }
 }
 
@@ -991,7 +986,7 @@ impl NicCtx {
     }
 
     async fn apply_route_changes(
-        ifcfg: &impl IfConfiguerTrait,
+        ifcfg: IfConfiger,
         ifname: &str,
         net_ns: &crate::common::netns::NetNS,
         cur_proxy_cidrs: &mut BTreeSet<cidr::Ipv4Cidr>,
@@ -1048,7 +1043,7 @@ impl NicCtx {
         let global_ctx = self.global_ctx.clone();
         let net_ns = self.global_ctx.net_ns.clone();
         let nic = self.nic.lock().await;
-        let ifcfg = nic.get_ifcfg();
+        let ifcfg = ifcfg::get();
         let ifname = nic.ifname().to_owned();
         let mut event_receiver = global_ctx.subscribe();
 
@@ -1063,7 +1058,7 @@ impl NicCtx {
             )
             .await;
             Self::apply_route_changes(
-                &ifcfg,
+                ifcfg,
                 &ifname,
                 &net_ns,
                 &mut cur_proxy_cidrs,
@@ -1102,7 +1097,7 @@ impl NicCtx {
                 };
 
                 Self::apply_route_changes(
-                    &ifcfg,
+                    ifcfg,
                     &ifname,
                     &net_ns,
                     &mut cur_proxy_cidrs,
