@@ -1,35 +1,30 @@
-use std::{
-    collections::{hash_map::DefaultHasher, HashMap},
-    hash::Hasher,
-    net::{IpAddr, SocketAddr},
-    sync::{Arc, Mutex},
-    time::{SystemTime, UNIX_EPOCH},
-};
+use std::collections::hash_map::DefaultHasher;
+use std::collections::HashMap;
+use std::hash::Hasher;
+use std::net::{IpAddr, SocketAddr};
+use std::sync::{Arc, Mutex};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use arc_swap::ArcSwap;
 use dashmap::DashMap;
 
-use super::{
-    config::{ConfigLoader, Flags},
-    netns::NetNS,
-    network::IPCollector,
-    stun::{StunInfoCollector, StunInfoCollectorTrait},
-    PeerId,
-};
-use crate::{
-    common::{
-        config::ProxyNetworkConfig, shrink_dashmap, stats_manager::StatsManager,
-        token_bucket::TokenBucketManager,
-    },
-    peers::{acl_filter::AclFilter, credential_manager::CredentialManager},
-    proto::{
-        acl::GroupIdentity,
-        api::{config::InstanceConfigPatch, instance::PeerConnInfo},
-        common::{PeerFeatureFlag, PortForwardConfigPb},
-        peer_rpc::PeerGroupInfo,
-    },
-    tunnel::matches_protocol,
-};
+use super::config::{ConfigLoader, Flags};
+use super::netns::NetNS;
+use super::network::IPCollector;
+use super::stun::{StunInfoCollector, StunInfoCollectorTrait};
+use super::PeerId;
+use crate::common::config::ProxyNetworkConfig;
+use crate::common::shrink_dashmap;
+use crate::common::stats_manager::StatsManager;
+use crate::common::token_bucket::TokenBucketManager;
+use crate::peers::acl_filter::AclFilter;
+use crate::peers::credential_manager::CredentialManager;
+use crate::proto::acl::GroupIdentity;
+use crate::proto::api::config::InstanceConfigPatch;
+use crate::proto::api::instance::PeerConnInfo;
+use crate::proto::common::{PeerFeatureFlag, PortForwardConfigPb};
+use crate::proto::peer_rpc::PeerGroupInfo;
+use crate::tunnel::matches_protocol;
 use crossbeam::atomic::AtomicCell;
 use hmac::{Hmac, Mac};
 use sha2::Sha256;
@@ -665,10 +660,10 @@ impl GlobalCtx {
 
 #[cfg(test)]
 pub mod tests {
-    use crate::{
-        common::{config::TomlConfigLoader, new_peer_id, stun::MockStunInfoCollector},
-        proto::common::NatType,
-    };
+    use crate::common::config::TomlConfigLoader;
+    use crate::common::new_peer_id;
+    use crate::common::stun::MockStunInfoCollector;
+    use crate::proto::common::NatType;
 
     use super::*;
 

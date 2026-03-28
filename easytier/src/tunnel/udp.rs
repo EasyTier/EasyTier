@@ -1,43 +1,36 @@
-use std::{
-    fmt::Debug,
-    net::{Ipv6Addr, SocketAddrV6},
-    sync::{Arc, Weak},
-};
+use std::fmt::Debug;
+use std::net::{Ipv6Addr, SocketAddrV6};
+use std::sync::{Arc, Weak};
 
 use anyhow::Context;
 use async_trait::async_trait;
 use bytes::BytesMut;
 use dashmap::DashMap;
-use futures::{stream::FuturesUnordered, SinkExt, StreamExt};
+use futures::stream::FuturesUnordered;
+use futures::{SinkExt, StreamExt};
 use rand::{Rng, SeedableRng};
 use zerocopy::{AsBytes, FromBytes};
 
 use std::net::SocketAddr;
-use tokio::{
-    net::UdpSocket,
-    sync::mpsc::{Receiver, Sender, UnboundedReceiver, UnboundedSender},
-    task::JoinSet,
-};
+use tokio::net::UdpSocket;
+use tokio::sync::mpsc::{Receiver, Sender, UnboundedReceiver, UnboundedSender};
+use tokio::task::JoinSet;
 
 use tracing::{instrument, Instrument};
 
-use super::{packet_def::V6HolePunchPacket, TunnelInfo};
-use crate::{
-    common::{join_joinset_background, scoped_task::ScopedTask, shrink_dashmap},
-    tunnel::{
-        build_url_from_socket_addr,
-        common::{reserve_buf, TunnelWrapper},
-        packet_def::{UdpPacketType, ZCPacket, ZCPacketType},
-        ring::RingTunnel,
-    },
-};
-
+use super::common::{setup_sokcet2, setup_sokcet2_ext, wait_for_connect_futures};
+use super::packet_def::{UDPTunnelHeader, V6HolePunchPacket, UDP_TUNNEL_HEADER_SIZE};
+use super::ring::{RingSink, RingStream};
 use super::{
-    common::{setup_sokcet2, setup_sokcet2_ext, wait_for_connect_futures},
-    packet_def::{UDPTunnelHeader, UDP_TUNNEL_HEADER_SIZE},
-    ring::{RingSink, RingStream},
-    IpVersion, Tunnel, TunnelConnCounter, TunnelError, TunnelListener, TunnelUrl,
+    FromUrl, IpVersion, Tunnel, TunnelConnCounter, TunnelError, TunnelInfo, TunnelListener,
+    TunnelUrl,
 };
+use crate::common::scoped_task::ScopedTask;
+use crate::common::{join_joinset_background, shrink_dashmap};
+use crate::tunnel::build_url_from_socket_addr;
+use crate::tunnel::common::{reserve_buf, TunnelWrapper};
+use crate::tunnel::packet_def::{UdpPacketType, ZCPacket, ZCPacketType};
+use crate::tunnel::ring::RingTunnel;
 
 pub const UDP_DATA_MTU: usize = 2000;
 
@@ -149,8 +142,7 @@ async fn respond_stun_packet(
     req_buf: Vec<u8>,
 ) -> Result<(), anyhow::Error> {
     use crate::common::stun_codec_ext::*;
-    use bytecodec::DecodeExt as _;
-    use bytecodec::EncodeExt as _;
+    use bytecodec::{DecodeExt as _, EncodeExt as _};
     use stun_codec::rfc5389::attributes::XorMappedAddress;
     use stun_codec::rfc5389::methods::BINDING;
     use stun_codec::{Message, MessageClass, MessageDecoder, MessageEncoder};
@@ -532,13 +524,8 @@ impl UdpTunnelListener {
 
 #[async_trait]
 impl TunnelListener for UdpTunnelListener {
-    async fn listen(&mut self) -> Result<(), super::TunnelError> {
-        let addr = super::check_scheme_and_get_socket_addr::<SocketAddr>(
-            &self.addr,
-            "udp",
-            IpVersion::Both,
-        )
-        .await?;
+    async fn listen(&mut self) -> Result<(), TunnelError> {
+        let addr = SocketAddr::from_url(self.addr.clone(), IpVersion::Both).await?;
 
         let socket2_socket = socket2::Socket::new(
             socket2::Domain::for_address(addr),
@@ -851,13 +838,8 @@ impl UdpTunnelConnector {
 
 #[async_trait]
 impl super::TunnelConnector for UdpTunnelConnector {
-    async fn connect(&mut self) -> Result<Box<dyn super::Tunnel>, super::TunnelError> {
-        let addr = super::check_scheme_and_get_socket_addr::<SocketAddr>(
-            &self.addr,
-            "udp",
-            self.ip_version,
-        )
-        .await?;
+    async fn connect(&mut self) -> Result<Box<dyn Tunnel>, TunnelError> {
+        let addr = SocketAddr::from_url(self.addr.clone(), self.ip_version).await?;
         if self.bind_addrs.is_empty() || addr.is_ipv6() {
             self.connect_with_default_bind(addr).await
         } else {
@@ -880,23 +862,19 @@ impl super::TunnelConnector for UdpTunnelConnector {
 
 #[cfg(test)]
 mod tests {
-    use std::{net::IpAddr, time::Duration};
+    use std::net::IpAddr;
+    use std::time::Duration;
 
     use futures::SinkExt;
     use tokio::time::timeout;
 
     use super::*;
-    use crate::{
-        common::global_ctx::tests::get_mock_global_ctx,
-        tunnel::{
-            check_scheme_and_get_socket_addr,
-            common::{
-                get_interface_name_by_ip,
-                tests::{_tunnel_bench, _tunnel_echo_server, _tunnel_pingpong, wait_for_condition},
-            },
-            TunnelConnector,
-        },
+    use crate::common::global_ctx::tests::get_mock_global_ctx;
+    use crate::tunnel::common::get_interface_name_by_ip;
+    use crate::tunnel::common::tests::{
+        _tunnel_bench, _tunnel_echo_server, _tunnel_pingpong, wait_for_condition,
     };
+    use crate::tunnel::TunnelConnector;
 
     #[tokio::test]
     async fn udp_pingpong() {
@@ -1034,9 +1012,8 @@ mod tests {
 
         for ip in ips {
             println!("bind to ip: {}, {:?}", ip, bind_dev);
-            let addr = check_scheme_and_get_socket_addr::<SocketAddr>(
-                &format!("udp://{}:11111", ip).parse().unwrap(),
-                "udp",
+            let addr = SocketAddr::from_url(
+                format!("udp://{}:11111", ip).parse().unwrap(),
                 IpVersion::Both,
             )
             .await

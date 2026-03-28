@@ -1,22 +1,21 @@
-use std::{net::SocketAddr, sync::Arc};
+use std::net::SocketAddr;
+use std::sync::Arc;
 
-use crate::{
-    common::{
-        dns::{resolve_txt_record, RESOLVER},
-        error::Error,
-        global_ctx::ArcGlobalCtx,
-        log,
-    },
-    tunnel::{IpVersion, Tunnel, TunnelConnector, TunnelError, PROTO_PORT_OFFSET},
-};
+use crate::common::dns::{RESOLVER, resolve_txt_record};
+use crate::common::error::Error;
+use crate::common::global_ctx::ArcGlobalCtx;
+use crate::common::log;
+use crate::tunnel::{IpVersion, PROTO_PORT_OFFSET, Tunnel, TunnelConnector, TunnelError};
 use anyhow::Context;
 use dashmap::DashSet;
 use hickory_resolver::proto::rr::rdata::SRV;
-use rand::{seq::SliceRandom, Rng as _};
+use rand::Rng as _;
+use rand::seq::SliceRandom;
 
+use super::create_connector_by_url;
+use super::http_connector::TunnelWithInfo;
 use crate::proto::common::TunnelInfo;
-
-use super::{create_connector_by_url, http_connector::TunnelWithInfo};
+use crate::tunnel::TunnelScheme;
 
 fn weighted_choice<T>(options: &[(T, u64)]) -> Option<&T> {
     let total_weight = options.iter().map(|(_, weight)| *weight).sum();
@@ -36,6 +35,7 @@ fn weighted_choice<T>(options: &[(T, u64)]) -> Option<&T> {
 
 #[derive(Debug)]
 pub struct DNSTunnelConnector {
+    scheme: TunnelScheme,
     addr: url::Url,
     bind_addrs: Vec<SocketAddr>,
     global_ctx: ArcGlobalCtx,
@@ -45,6 +45,7 @@ pub struct DNSTunnelConnector {
 impl DNSTunnelConnector {
     pub fn new(addr: url::Url, global_ctx: ArcGlobalCtx) -> Self {
         Self {
+            scheme: (&addr).try_into().unwrap(),
             addr,
             bind_addrs: Vec::new(),
             global_ctx,
@@ -164,30 +165,26 @@ impl DNSTunnelConnector {
 #[async_trait::async_trait]
 impl super::TunnelConnector for DNSTunnelConnector {
     async fn connect(&mut self) -> Result<Box<dyn Tunnel>, TunnelError> {
-        let mut conn = if self.addr.scheme() == "txt" {
-            self.handle_txt_record(
-                self.addr
-                    .host_str()
-                    .as_ref()
-                    .ok_or(anyhow::anyhow!("host should not be empty in txt url"))?,
-            )
-            .await
-            .with_context(|| "get txt record url failed")?
-        } else if self.addr.scheme() == "srv" {
-            self.handle_srv_record(
-                self.addr
-                    .host_str()
-                    .as_ref()
-                    .ok_or(anyhow::anyhow!("host should not be empty in srv url"))?,
-            )
-            .await
-            .with_context(|| "get srv record url failed")?
-        } else {
-            return Err(anyhow::anyhow!(
-                "unsupported dns scheme: {}, expecting txt or srv",
-                self.addr.scheme()
-            )
-            .into());
+        let mut conn = match self.scheme {
+            TunnelScheme::Txt => self
+                .handle_txt_record(
+                    self.addr
+                        .host_str()
+                        .as_ref()
+                        .ok_or(anyhow::anyhow!("host should not be empty in txt url"))?,
+                )
+                .await
+                .with_context(|| "get txt record url failed")?,
+            TunnelScheme::Srv => self
+                .handle_srv_record(
+                    self.addr
+                        .host_str()
+                        .as_ref()
+                        .ok_or(anyhow::anyhow!("host should not be empty in srv url"))?,
+                )
+                .await
+                .with_context(|| "get srv record url failed")?,
+            _ => return Err(anyhow::anyhow!("unsupported dns scheme: {:?}", self.scheme).into()),
         };
         let t = conn.connect().await?;
         let info = t.info().unwrap_or_default();

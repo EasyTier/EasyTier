@@ -1,28 +1,26 @@
+use super::common::{setup_sokcet2, wait_for_connect_futures, TunnelWrapper};
+use super::insecure_tls::{get_insecure_tls_cert, init_crypto_provider};
+use super::packet_def::{ZCPacket, ZCPacketType};
+use super::{
+    FromUrl, IpVersion, Tunnel, TunnelConnector, TunnelError, TunnelListener,
+};
+use crate::proto::common::TunnelInfo;
+use crate::tunnel::insecure_tls::get_insecure_tls_client_config;
 use anyhow::Context;
 use bytes::BytesMut;
 use forwarded_header_value::ForwardedHeaderValue;
-use futures::{stream::FuturesUnordered, SinkExt, StreamExt};
+use futures::stream::FuturesUnordered;
+use futures::{SinkExt, StreamExt};
 use pnet::ipnetwork::IpNetwork;
-use std::sync::LazyLock;
-use std::{net::SocketAddr, sync::Arc, time::Duration};
-use tokio::{
-    net::{TcpListener, TcpSocket, TcpStream},
-    time::timeout,
-};
+use std::net::SocketAddr;
+use std::sync::{Arc, LazyLock};
+use std::time::Duration;
+use tokio::net::{TcpListener, TcpSocket, TcpStream};
+use tokio::time::timeout;
 use tokio_rustls::TlsAcceptor;
 use tokio_util::either::Either;
 use tokio_websockets::{ClientBuilder, Limits, MaybeTlsStream, Message, ServerBuilder};
 use zerocopy::AsBytes;
-
-use super::TunnelInfo;
-use crate::tunnel::insecure_tls::get_insecure_tls_client_config;
-
-use super::{
-    common::{setup_sokcet2, wait_for_connect_futures, TunnelWrapper},
-    insecure_tls::{get_insecure_tls_cert, init_crypto_provider},
-    packet_def::{ZCPacket, ZCPacketType},
-    FromUrl, IpVersion, Tunnel, TunnelConnector, TunnelError, TunnelListener,
-};
 
 fn is_wss(addr: &url::Url) -> Result<bool, TunnelError> {
     match addr.scheme() {
@@ -308,7 +306,7 @@ impl WSTunnelConnector {
 
 #[async_trait::async_trait]
 impl TunnelConnector for WSTunnelConnector {
-    async fn connect(&mut self) -> Result<Box<dyn Tunnel>, super::TunnelError> {
+    async fn connect(&mut self) -> Result<Box<dyn Tunnel>, TunnelError> {
         let addr = SocketAddr::from_url(self.addr.clone(), self.ip_version).await?;
         if self.bind_addrs.is_empty() || addr.is_ipv6() {
             self.connect_with_default_bind(addr).await

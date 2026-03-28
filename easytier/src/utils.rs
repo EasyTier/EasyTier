@@ -1,6 +1,7 @@
 use crate::common::log;
 use indoc::formatdoc;
-use std::{fs::OpenOptions, str::FromStr};
+use std::fs::OpenOptions;
+use std::str::FromStr;
 
 pub type PeerRoutePair = crate::proto::api::instance::PeerRoutePair;
 
@@ -18,7 +19,8 @@ pub fn float_to_str(f: f64, precision: usize) -> String {
 
 #[cfg(target_os = "windows")]
 pub fn utf8_or_gbk_to_string(s: &[u8]) -> String {
-    use encoding::{all::GBK, DecoderTrap, Encoding};
+    use encoding::all::GBK;
+    use encoding::{DecoderTrap, Encoding};
     if let Ok(utf8_str) = String::from_utf8(s.to_vec()) {
         utf8_str
     } else {
