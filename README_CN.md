@@ -13,11 +13,6 @@
 
 > ✨ 一个由 Rust 和 Tokio 驱动的简单、安全、去中心化 SD-WAN 组网方案
 
-<p align="center">
-  <img src="assets/config-page.png" width="300" alt="EasyTier 配置页面">
-  <img src="assets/running-page.png" width="300" alt="EasyTier 运行页面">
-</p>
-
 🌐 **[官网文档](https://easytier.cn)** | 🚀 **[快速开始](https://easytier.cn/guide/introduction.html)** | 📝 **[下载发布版本](https://github.com/EasyTier/EasyTier/releases)** | 🌍 **[国际站](https://easytier.rs)** | ❤️ **[赞助](#赞助)**
 
 ## 快速开始

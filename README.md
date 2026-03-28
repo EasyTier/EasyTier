@@ -13,11 +13,6 @@
 
 > ✨ A simple, secure, decentralized SD-WAN solution powered by Rust and Tokio
 
-<p align="center">
-  <img src="assets/config-page.png" width="300" alt="EasyTier configuration page">
-  <img src="assets/running-page.png" width="300" alt="EasyTier running page">
-</p>
-
 🌐 **[Official Website](https://easytier.rs)** | 📚 **[Documentation](https://easytier.rs/en/)** | 🚀 **[Get Started](https://easytier.rs/en/guide/introduction.html)** | 📝 **[Download Releases](https://github.com/EasyTier/EasyTier/releases)** | 🇨🇳 **[China Site](https://easytier.cn)** | ❤️ **[Sponsor](#sponsor)**
 
 ## Get Started
