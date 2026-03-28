@@ -730,16 +730,44 @@ impl ForeignNetworkManager {
         matches!(identity_type, PeerIdentityType::Admin)
     }
 
-    async fn is_credential_pubkey_trusted(
-        entry: &ForeignNetworkEntry,
+    fn credential_pubkey_is_trusted(
+        global_ctx: &ArcGlobalCtx,
+        network_name: &str,
         remote_static_pubkey: &[u8],
     ) -> bool {
         remote_static_pubkey.len() == 32
-            && entry.global_ctx.is_pubkey_trusted_with_source(
+            && global_ctx.is_pubkey_trusted_with_source(
                 remote_static_pubkey,
-                &entry.network.network_name,
+                network_name,
                 TrustedKeySource::OspfCredential,
             )
+    }
+
+    fn is_credential_pubkey_trusted(
+        entry: &ForeignNetworkEntry,
+        remote_static_pubkey: &[u8],
+    ) -> bool {
+        Self::credential_pubkey_is_trusted(
+            &entry.global_ctx,
+            &entry.network.network_name,
+            remote_static_pubkey,
+        )
+    }
+
+    pub(crate) fn is_existing_credential_pubkey_trusted(
+        &self,
+        network_name: &str,
+        remote_static_pubkey: &[u8],
+    ) -> bool {
+        self.data
+            .get_network_entry(network_name)
+            .is_some_and(|entry| {
+                Self::credential_pubkey_is_trusted(
+                    &entry.global_ctx,
+                    &entry.network.network_name,
+                    remote_static_pubkey,
+                )
+            })
     }
 
     fn build_trusted_key_items(entry: &ForeignNetworkEntry) -> Vec<TrustedKeyInfoPb> {
@@ -839,8 +867,7 @@ impl ForeignNetworkManager {
         let same_identity = entry.network == peer_network;
         let peer_identity_type = peer_conn.get_peer_identity_type();
         let credential_peer_trusted = peer_digest_empty
-            && Self::is_credential_pubkey_trusted(&entry, &conn_info.noise_remote_static_pubkey)
-                .await;
+            && Self::is_credential_pubkey_trusted(&entry, &conn_info.noise_remote_static_pubkey);
         let credential_identity_mismatch = credential_peer_trusted
             && Self::should_reject_credential_trust_path(peer_identity_type);
 
@@ -1483,7 +1510,9 @@ pub mod tests {
             )]),
             &foreign_network.network_name,
         );
-        assert!(!ForeignNetworkManager::is_credential_pubkey_trusted(&entry, &pubkey).await);
+        assert!(!ForeignNetworkManager::is_credential_pubkey_trusted(
+            &entry, &pubkey
+        ));
 
         entry.global_ctx.update_trusted_keys(
             HashMap::from([(
@@ -1495,7 +1524,9 @@ pub mod tests {
             )]),
             &foreign_network.network_name,
         );
-        assert!(ForeignNetworkManager::is_credential_pubkey_trusted(&entry, &pubkey).await);
+        assert!(ForeignNetworkManager::is_credential_pubkey_trusted(
+            &entry, &pubkey
+        ));
     }
 
     #[test]

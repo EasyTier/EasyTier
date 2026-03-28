@@ -1472,6 +1472,40 @@ impl PeerConn {
         ret
     }
 
+    fn network_secret_digest_is_empty(network: &NetworkIdentity) -> bool {
+        network
+            .network_secret_digest
+            .as_ref()
+            .is_none_or(|digest| digest.iter().all(|byte| *byte == 0))
+    }
+
+    fn matches_local_secret_proof(&self) -> bool {
+        let Some(secret_proof) = self
+            .noise_handshake_result
+            .as_ref()
+            .and_then(|noise| noise.client_secret_proof.as_ref())
+        else {
+            return false;
+        };
+
+        self.global_ctx
+            .get_secret_proof(&secret_proof.challenge)
+            .is_some_and(|mac| mac.verify_slice(&secret_proof.proof).is_ok())
+    }
+
+    pub(crate) fn matches_local_network_secret(&self) -> bool {
+        if self.matches_local_secret_proof() {
+            return true;
+        }
+
+        let my_identity = self.global_ctx.get_network_identity();
+        let peer_identity = self.get_network_identity();
+
+        !Self::network_secret_digest_is_empty(&my_identity)
+            && !Self::network_secret_digest_is_empty(&peer_identity)
+            && my_identity.network_secret_digest == peer_identity.network_secret_digest
+    }
+
     pub fn get_close_notifier(&self) -> Arc<PeerConnCloseNotify> {
         self.close_event_notifier.clone()
     }
