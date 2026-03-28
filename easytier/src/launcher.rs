@@ -826,6 +826,10 @@ impl NetworkConfig {
             flags.mtu = mtu as u32;
         }
 
+        if let Some(instance_recv_bps_limit) = self.instance_recv_bps_limit {
+            flags.instance_recv_bps_limit = instance_recv_bps_limit;
+        }
+
         if let Some(enable_private_mode) = self.enable_private_mode {
             flags.private_mode = enable_private_mode;
         }
@@ -978,6 +982,8 @@ impl NetworkConfig {
         result.disable_sym_hole_punching = Some(flags.disable_sym_hole_punching);
         result.enable_magic_dns = Some(flags.accept_dns);
         result.mtu = Some(flags.mtu as i32);
+        result.instance_recv_bps_limit =
+            (flags.instance_recv_bps_limit != u64::MAX).then_some(flags.instance_recv_bps_limit);
         result.enable_private_mode = Some(flags.private_mode);
 
         if flags.relay_network_whitelist == "*" {

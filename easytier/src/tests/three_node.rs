@@ -1535,6 +1535,48 @@ pub async fn relay_bps_limit_test(#[values(100, 200, 400, 800)] bps_limit: u64) 
     drop_insts(insts).await;
 }
 
+#[rstest::rstest]
+#[serial_test::serial]
+#[tokio::test]
+pub async fn instance_recv_bps_limit_test(#[values(100, 800)] bps_limit: u64) {
+    let insts = init_three_node_ex(
+        "tcp",
+        |cfg| {
+            if cfg.get_inst_name() == "inst2" {
+                let mut f = cfg.get_flags();
+                f.instance_recv_bps_limit = bps_limit * 1024;
+                cfg.set_flags(f);
+            }
+            cfg
+        },
+        false,
+    )
+    .await;
+
+    let tcp_listener = TcpTunnelListener::new("tcp://0.0.0.0:22223".parse().unwrap());
+    let tcp_connector = TcpTunnelConnector::new("tcp://10.144.144.3:22223".parse().unwrap());
+
+    let bps = _tunnel_bench_netns(
+        tcp_listener,
+        tcp_connector,
+        NetNS::new(Some("net_c".into())),
+        NetNS::new(Some("net_a".into())),
+    )
+    .await;
+
+    println!("bps: {}", bps);
+
+    let bps = bps as u64 / 1024;
+    assert!(
+        bps >= bps_limit - 50 && bps <= bps_limit + 50,
+        "bps: {}, bps_limit: {}",
+        bps,
+        bps_limit
+    );
+
+    drop_insts(insts).await;
+}
+
 async fn assert_try_direct_connect_err<C>(inst: &Instance, connector: C)
 where
     C: crate::tunnel::TunnelConnector + std::fmt::Debug,

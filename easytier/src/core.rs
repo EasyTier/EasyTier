@@ -562,6 +562,13 @@ struct NetworkOptions {
 
     #[arg(
         long,
+        env = "ET_INSTANCE_RECV_BPS_LIMIT",
+        help = t!("core_clap.instance_recv_bps_limit").to_string(),
+    )]
+    instance_recv_bps_limit: Option<u64>,
+
+    #[arg(
+        long,
         value_delimiter = ',',
         help = t!("core_clap.tcp_whitelist").to_string(),
         num_args = 0..
@@ -1060,6 +1067,9 @@ impl NetworkOptions {
         f.foreign_relay_bps_limit = self
             .foreign_relay_bps_limit
             .unwrap_or(f.foreign_relay_bps_limit);
+        f.instance_recv_bps_limit = self
+            .instance_recv_bps_limit
+            .unwrap_or(f.instance_recv_bps_limit);
         f.multi_thread_count = self.multi_thread_count.unwrap_or(f.multi_thread_count);
         f.disable_relay_kcp = self.disable_relay_kcp.unwrap_or(f.disable_relay_kcp);
         f.disable_relay_quic = self.disable_relay_quic.unwrap_or(f.disable_relay_quic);

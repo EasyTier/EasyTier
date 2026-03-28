@@ -1365,6 +1365,17 @@ impl PeerConn {
                 &format!("{}:recv", conn_info_for_instrument.network_name),
                 limiter_config.into(),
             ))
+        } else if self.global_ctx.get_flags().instance_recv_bps_limit != u64::MAX {
+            let limiter_config = LimiterConfig {
+                burst_rate: None,
+                bps: Some(self.global_ctx.get_flags().instance_recv_bps_limit),
+                fill_duration_ms: None,
+            };
+            Some(
+                self.global_ctx
+                    .token_bucket_manager()
+                    .get_or_create("instance:recv", limiter_config.into()),
+            )
         } else {
             None
         };
