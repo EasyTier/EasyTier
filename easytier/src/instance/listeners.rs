@@ -9,14 +9,9 @@ use anyhow::Context;
 use async_trait::async_trait;
 use derive_more::From;
 use pnet::packet::ip::{IpNextHeaderProtocol, IpNextHeaderProtocols};
+use strum::{Display, EnumString};
 use tokio::task::JoinSet;
 
-#[cfg(feature = "faketcp")]
-use crate::tunnel::fake_tcp::FakeTcpTunnelListener;
-#[cfg(feature = "quic")]
-use crate::tunnel::quic::QUICTunnelListener;
-#[cfg(feature = "wireguard")]
-use crate::tunnel::wireguard::{WgConfig, WgTunnelListener};
 use crate::{
     common::{
         error::Error,
@@ -30,42 +25,6 @@ use crate::{
     },
 };
 
-pub fn get_listener_by_url(
-    l: &url::Url,
-    _ctx: ArcGlobalCtx,
-) -> Result<Box<dyn TunnelListener>, Error> {
-    Ok(match l.scheme() {
-        "tcp" => Box::new(TcpTunnelListener::new(l.clone())),
-        "udp" => Box::new(UdpTunnelListener::new(l.clone())),
-        #[cfg(feature = "wireguard")]
-        "wg" => {
-            let nid = _ctx.get_network_identity();
-            let wg_config = WgConfig::new_from_network_identity(
-                &nid.network_name,
-                &nid.network_secret.unwrap_or_default(),
-            );
-            Box::new(WgTunnelListener::new(l.clone(), wg_config))
-        }
-        #[cfg(feature = "quic")]
-        "quic" => Box::new(QUICTunnelListener::new(l.clone())),
-        #[cfg(feature = "websocket")]
-        "ws" | "wss" => {
-            use crate::tunnel::websocket::WSTunnelListener;
-            Box::new(WSTunnelListener::new(l.clone()))
-        }
-        #[cfg(feature = "faketcp")]
-        "faketcp" => Box::new(FakeTcpTunnelListener::new(l.clone())),
-        #[cfg(unix)]
-        "unix" => {
-            use crate::tunnel::unix::UnixSocketTunnelListener;
-            Box::new(UnixSocketTunnelListener::new(l.clone()))
-        }
-        _ => {
-            return Err(Error::InvalidUrl(l.to_string()));
-        }
-    })
-}
-
 #[derive(Debug, From)]
 pub enum Transport {
     Ip(IpNextHeaderProtocol),
@@ -73,32 +32,105 @@ pub enum Transport {
     Unix,
 }
 
-pub fn get_transport(l: &url::Url) -> Result<Transport, Error> {
+#[derive(Clone, Copy, Display, EnumString)]
+#[strum(serialize_all = "lowercase")]
+pub enum ListenerScheme {
+    Tcp,
+    Udp,
+    #[cfg(feature = "wireguard")]
+    #[strum(serialize = "wg")]
+    WireGuard,
+    #[cfg(feature = "quic")]
+    Quic,
+    #[cfg(feature = "websocket")]
+    #[strum(serialize = "ws")]
+    WebSocket,
+    #[cfg(feature = "websocket")]
+    #[strum(serialize = "wss")]
+    WebSocketSecure,
+    #[cfg(feature = "faketcp")]
+    FakeTcp,
     #[cfg(unix)]
-    if l.scheme() == "unix" {
-        return Ok(Transport::Unix);
+    Unix,
+}
+
+impl TryFrom<&url::Url> for ListenerScheme {
+    type Error = Error;
+
+    fn try_from(value: &url::Url) -> Result<Self, Self::Error> {
+        value
+            .scheme()
+            .parse()
+            .map_err(|_| Error::InvalidUrl(value.to_string()))
     }
-    Ok(match l.scheme() {
-        "tcp" => IpNextHeaderProtocols::Tcp,
-        "udp" => IpNextHeaderProtocols::Udp,
+}
+
+impl ListenerScheme {
+    const fn transport(self) -> Transport {
+        Transport::Ip(match self {
+            Self::Tcp => IpNextHeaderProtocols::Tcp,
+            Self::Udp => IpNextHeaderProtocols::Udp,
+            #[cfg(feature = "wireguard")]
+            Self::WireGuard => IpNextHeaderProtocols::Udp,
+            #[cfg(feature = "quic")]
+            Self::Quic => IpNextHeaderProtocols::Udp,
+            #[cfg(feature = "websocket")]
+            Self::WebSocket | Self::WebSocketSecure => IpNextHeaderProtocols::Tcp,
+            #[cfg(feature = "faketcp")]
+            Self::FakeTcp => IpNextHeaderProtocols::Tcp,
+            #[cfg(unix)]
+            Self::Unix => return Transport::Unix,
+        })
+    }
+}
+
+pub fn get_listener_by_url(
+    l: &url::Url,
+    #[allow(unused_variables)] ctx: ArcGlobalCtx,
+) -> Result<Box<dyn TunnelListener>, Error> {
+    Ok(match l.try_into()? {
+        ListenerScheme::Tcp => Box::new(TcpTunnelListener::new(l.clone())),
+        ListenerScheme::Udp => Box::new(UdpTunnelListener::new(l.clone())),
         #[cfg(feature = "wireguard")]
-        "wg" => IpNextHeaderProtocols::Udp,
-        #[cfg(feature = "quic")]
-        "quic" => IpNextHeaderProtocols::Udp,
-        #[cfg(feature = "websocket")]
-        "ws" | "wss" => IpNextHeaderProtocols::Tcp,
-        #[cfg(feature = "faketcp")]
-        "faketcp" => IpNextHeaderProtocols::Tcp,
-        _ => {
-            return Err(Error::InvalidUrl(l.to_string()));
+        ListenerScheme::WireGuard => {
+            use crate::tunnel::wireguard::{WgConfig, WgTunnelListener};
+            let nid = ctx.get_network_identity();
+            let wg_config = WgConfig::new_from_network_identity(
+                &nid.network_name,
+                &nid.network_secret.unwrap_or_default(),
+            );
+            Box::new(WgTunnelListener::new(l.clone(), wg_config))
         }
-    }
-    .into())
+        #[cfg(feature = "quic")]
+        ListenerScheme::Quic => {
+            use crate::tunnel::quic::QUICTunnelListener;
+            Box::new(QUICTunnelListener::new(l.clone()))
+        }
+        #[cfg(feature = "websocket")]
+        ListenerScheme::WebSocket | ListenerScheme::WebSocketSecure => {
+            use crate::tunnel::websocket::WSTunnelListener;
+            Box::new(WSTunnelListener::new(l.clone()))
+        }
+        #[cfg(feature = "faketcp")]
+        ListenerScheme::FakeTcp => {
+            use crate::tunnel::fake_tcp::FakeTcpTunnelListener;
+            Box::new(FakeTcpTunnelListener::new(l.clone()))
+        }
+        #[cfg(unix)]
+        ListenerScheme::Unix => {
+            use crate::tunnel::unix::UnixSocketTunnelListener;
+            Box::new(UnixSocketTunnelListener::new(l.clone()))
+        }
+    })
+}
+
+pub fn get_transport_by_url(l: &url::Url) -> Result<Transport, Error> {
+    Ok(ListenerScheme::try_from(l)?.transport())
 }
 
 macro_rules! __matches_transport__ {
     ($url:expr, $( $pattern:pat_param )|+ ) => {
-        matches!($crate::instance::listeners::get_transport($url), Ok($( $pattern )|+))
+        matches!($crate::instance::listeners::get_transport_by_url($url), Ok($( $pattern )|+))
     };
 }
 
