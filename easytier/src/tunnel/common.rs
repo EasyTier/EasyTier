@@ -344,10 +344,11 @@ pub(crate) fn get_interface_name_by_ip(local_ip: &IpAddr) -> Option<String> {
     None
 }
 
-pub(crate) fn setup_sokcet2_ext(
+pub(crate) fn setup_socket2_ext(
     socket2_socket: &socket2::Socket,
     bind_addr: &SocketAddr,
     #[allow(unused_variables)] bind_dev: Option<String>,
+    only_v6: bool,
 ) -> Result<(), TunnelError> {
     #[cfg(target_os = "windows")]
     {
@@ -356,7 +357,7 @@ pub(crate) fn setup_sokcet2_ext(
     }
 
     if bind_addr.is_ipv6() {
-        socket2_socket.set_only_v6(true)?;
+        socket2_socket.set_only_v6(only_v6)?;
     }
 
     socket2_socket.set_nonblocking(true)?;
@@ -428,14 +429,16 @@ where
     Err(last_err.unwrap_or(TunnelError::Shutdown))
 }
 
-pub(crate) fn setup_sokcet2(
+pub(crate) fn setup_socket2(
     socket2_socket: &socket2::Socket,
     bind_addr: &SocketAddr,
+    only_v6: bool,
 ) -> Result<(), TunnelError> {
-    setup_sokcet2_ext(
+    setup_socket2_ext(
         socket2_socket,
         bind_addr,
         super::common::get_interface_name_by_ip(&bind_addr.ip()),
+        only_v6,
     )
 }
 
