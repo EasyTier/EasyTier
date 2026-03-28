@@ -5,11 +5,12 @@ use std::{
     sync::{Arc, Weak},
 };
 
-use crate::tunnel::TunnelScheme;
+use crate::tunnel::{IpScheme, TunnelScheme};
 use anyhow::Context;
 use async_trait::async_trait;
 use tokio::task::JoinSet;
 
+use crate::utils::BoxExt;
 use crate::{
     common::{
         error::Error,
@@ -17,6 +18,7 @@ use crate::{
         netns::NetNS,
     },
     peers::peer_manager::PeerManager,
+    tunnel,
     tunnel::{
         ring::RingTunnelListener, tcp::TcpTunnelListener, udp::UdpTunnelListener, Tunnel,
         TunnelListener,
@@ -28,38 +30,30 @@ pub fn create_listener_by_url(
     #[allow(unused_variables)] ctx: ArcGlobalCtx,
 ) -> Result<Box<dyn TunnelListener>, Error> {
     Ok(match l.try_into()? {
-        TunnelScheme::Tcp => Box::new(TcpTunnelListener::new(l.clone())),
-        TunnelScheme::Udp => Box::new(UdpTunnelListener::new(l.clone())),
-        #[cfg(feature = "wireguard")]
-        TunnelScheme::WireGuard => {
-            use crate::tunnel::wireguard::{WgConfig, WgTunnelListener};
-            let nid = ctx.get_network_identity();
-            let wg_config = WgConfig::new_from_network_identity(
-                &nid.network_name,
-                &nid.network_secret.unwrap_or_default(),
-            );
-            Box::new(WgTunnelListener::new(l.clone(), wg_config))
-        }
-        #[cfg(feature = "quic")]
-        TunnelScheme::Quic => {
-            use crate::tunnel::quic::QuicTunnelListener;
-            Box::new(QuicTunnelListener::new(l.clone()))
-        }
-        #[cfg(feature = "websocket")]
-        TunnelScheme::WebSocket | TunnelScheme::WebSocketSecure => {
-            use crate::tunnel::websocket::WSTunnelListener;
-            Box::new(WSTunnelListener::new(l.clone()))
-        }
-        #[cfg(feature = "faketcp")]
-        TunnelScheme::FakeTcp => {
-            use crate::tunnel::fake_tcp::FakeTcpTunnelListener;
-            Box::new(FakeTcpTunnelListener::new(l.clone()))
-        }
+        TunnelScheme::Ip(scheme) => match scheme {
+            IpScheme::Tcp => TcpTunnelListener::new(l.clone()).boxed(),
+            IpScheme::Udp => UdpTunnelListener::new(l.clone()).boxed(),
+            #[cfg(feature = "wireguard")]
+            IpScheme::WireGuard => {
+                use crate::tunnel::wireguard::{WgConfig, WgTunnelListener};
+                let nid = ctx.get_network_identity();
+                let wg_config = WgConfig::new_from_network_identity(
+                    &nid.network_name,
+                    &nid.network_secret.unwrap_or_default(),
+                );
+                WgTunnelListener::new(l.clone(), wg_config).boxed()
+            }
+            #[cfg(feature = "quic")]
+            IpScheme::Quic => tunnel::quic::QuicTunnelListener::new(l.clone()).boxed(),
+            #[cfg(feature = "websocket")]
+            IpScheme::WebSocket | IpScheme::WebSocketSecure => {
+                tunnel::websocket::WSTunnelListener::new(l.clone()).boxed()
+            }
+            #[cfg(feature = "faketcp")]
+            IpScheme::FakeTcp => tunnel::fake_tcp::FakeTcpTunnelListener::new(l.clone()).boxed(),
+        },
         #[cfg(unix)]
-        TunnelScheme::Unix => {
-            use crate::tunnel::unix::UnixSocketTunnelListener;
-            Box::new(UnixSocketTunnelListener::new(l.clone()))
-        }
+        TunnelScheme::Unix => tunnel::unix::UnixSocketTunnelListener::new(l.clone()).boxed(),
         _ => return Err(Error::InvalidUrl(l.to_string())),
     })
 }
