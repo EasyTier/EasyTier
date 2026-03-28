@@ -1,12 +1,11 @@
-use std::collections::hash_map::DefaultHasher;
-use std::hash::Hasher;
-use std::net::SocketAddr;
-use std::pin::Pin;
-use std::sync::Arc;
+use std::{
+    collections::hash_map::DefaultHasher, hash::Hasher, net::SocketAddr, pin::Pin, sync::Arc,
+};
 
-use crate::common::dns::socket_addrs;
-use crate::common::error::Error;
-use crate::proto::common::TunnelInfo;
+use crate::{
+    common::{dns::socket_addrs, error::Error},
+    proto::common::TunnelInfo,
+};
 use async_trait::async_trait;
 use derive_more::{From, TryInto};
 use futures::{Sink, Stream};

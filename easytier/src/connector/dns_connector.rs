@@ -1,21 +1,21 @@
-use std::net::SocketAddr;
-use std::sync::Arc;
+use std::{net::SocketAddr, sync::Arc};
 
-use super::create_connector_by_url;
-use super::http_connector::TunnelWithInfo;
-use crate::common::dns::{resolve_txt_record, RESOLVER};
-use crate::common::error::Error;
-use crate::common::global_ctx::ArcGlobalCtx;
-use crate::common::log;
-use crate::proto::common::TunnelInfo;
-use crate::tunnel::TunnelScheme;
-use crate::tunnel::{IpScheme, IpVersion, Tunnel, TunnelConnector, TunnelError};
+use super::{create_connector_by_url, http_connector::TunnelWithInfo};
+use crate::{
+    common::{
+        dns::{resolve_txt_record, RESOLVER},
+        error::Error,
+        global_ctx::ArcGlobalCtx,
+        log,
+    },
+    proto::common::TunnelInfo,
+    tunnel::{IpScheme, IpVersion, Tunnel, TunnelConnector, TunnelError, TunnelScheme},
+};
 use anyhow::Context;
 use dashmap::DashSet;
 use hickory_resolver::proto::rr::rdata::SRV;
 use itertools::Itertools;
-use rand::seq::SliceRandom;
-use rand::Rng as _;
+use rand::{seq::SliceRandom, Rng as _};
 use strum::VariantArray;
 
 fn weighted_choice<T>(options: &[(T, u64)]) -> Option<&T> {

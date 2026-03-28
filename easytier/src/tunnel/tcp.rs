@@ -6,8 +6,10 @@ use async_trait::async_trait;
 use futures::stream::FuturesUnordered;
 use tokio::net::{TcpListener, TcpSocket, TcpStream};
 
-use super::common::{wait_for_connect_futures, FramedReader, FramedWriter, TunnelWrapper};
-use super::{IpVersion, Tunnel, TunnelError, TunnelListener};
+use super::{
+    common::{wait_for_connect_futures, FramedReader, FramedWriter, TunnelWrapper},
+    IpVersion, Tunnel, TunnelError, TunnelListener,
+};
 
 const TCP_MTU_BYTES: usize = 2000;
 
@@ -207,8 +209,10 @@ impl super::TunnelConnector for TcpTunnelConnector {
 
 #[cfg(test)]
 mod tests {
-    use crate::tunnel::common::tests::{_tunnel_bench, _tunnel_pingpong};
-    use crate::tunnel::TunnelConnector;
+    use crate::tunnel::{
+        common::tests::{_tunnel_bench, _tunnel_pingpong},
+        TunnelConnector,
+    };
 
     use super::*;
 

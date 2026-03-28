@@ -3,17 +3,15 @@ use std::{
     sync::Arc,
 };
 
-use crate::connector::dns_connector::DNSTunnelConnector;
-use crate::tunnel::{FromUrl, IpScheme, TunnelError, TunnelScheme};
-use crate::utils::BoxExt;
 use crate::{
     common::{error::Error, global_ctx::ArcGlobalCtx, idn, network::IPCollector},
+    connector::dns_connector::DNSTunnelConnector,
     proto::common::PeerFeatureFlag,
-    tunnel,
     tunnel::{
-        ring::RingTunnelConnector, tcp::TcpTunnelConnector, udp::UdpTunnelConnector, IpVersion,
-        TunnelConnector,
+        self, ring::RingTunnelConnector, tcp::TcpTunnelConnector, udp::UdpTunnelConnector, FromUrl,
+        IpScheme, IpVersion, TunnelConnector, TunnelError, TunnelScheme,
     },
+    utils::BoxExt,
 };
 use http_connector::HttpTunnelConnector;
 

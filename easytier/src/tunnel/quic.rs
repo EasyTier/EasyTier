@@ -2,24 +2,20 @@
 //!
 //! Checkout the `README.md` for guidance.
 
-use std::error::Error;
-use std::io::IoSliceMut;
-use std::net::SocketAddr;
-use std::pin::Pin;
-use std::sync::Arc;
-use std::task::Poll;
-use std::time::Duration;
+use std::{
+    error::Error, io::IoSliceMut, net::SocketAddr, pin::Pin, sync::Arc, task::Poll, time::Duration,
+};
 
-use crate::tunnel::common::{setup_sokcet2, FramedReader, FramedWriter, TunnelWrapper};
-use crate::tunnel::{FromUrl, TunnelInfo};
+use crate::tunnel::{
+    common::{setup_sokcet2, FramedReader, FramedWriter, TunnelWrapper},
+    FromUrl, TunnelInfo,
+};
 use anyhow::Context;
 
 use super::{IpVersion, Tunnel, TunnelConnector, TunnelError, TunnelListener};
-use quinn::congestion::BbrConfig;
-use quinn::udp::RecvMeta;
 use quinn::{
-    AsyncUdpSocket, ClientConfig, Connection, Endpoint, EndpointConfig, ServerConfig,
-    TransportConfig, UdpPoller,
+    congestion::BbrConfig, udp::RecvMeta, AsyncUdpSocket, ClientConfig, Connection, Endpoint,
+    EndpointConfig, ServerConfig, TransportConfig, UdpPoller,
 };
 
 pub fn transport_config() -> Arc<TransportConfig> {
@@ -305,8 +301,10 @@ impl TunnelConnector for QuicTunnelConnector {
 
 #[cfg(test)]
 mod tests {
-    use crate::tunnel::common::tests::{_tunnel_bench, _tunnel_pingpong};
-    use crate::tunnel::{IpVersion, TunnelConnector};
+    use crate::tunnel::{
+        common::tests::{_tunnel_bench, _tunnel_pingpong},
+        IpVersion, TunnelConnector,
+    };
 
     use super::*;
 

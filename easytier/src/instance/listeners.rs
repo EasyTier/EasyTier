@@ -1,22 +1,27 @@
-use std::fmt::Debug;
-use std::net::IpAddr;
-use std::str::FromStr;
-use std::sync::{Arc, Weak};
+use std::{
+    fmt::Debug,
+    net::IpAddr,
+    str::FromStr,
+    sync::{Arc, Weak},
+};
 
 use anyhow::Context;
 use async_trait::async_trait;
 use tokio::task::JoinSet;
 
-use crate::common::error::Error;
-use crate::common::global_ctx::{ArcGlobalCtx, GlobalCtxEvent};
-use crate::common::netns::NetNS;
-use crate::peers::peer_manager::PeerManager;
-use crate::tunnel;
-use crate::tunnel::ring::RingTunnelListener;
-use crate::tunnel::tcp::TcpTunnelListener;
-use crate::tunnel::udp::UdpTunnelListener;
-use crate::tunnel::{IpScheme, Tunnel, TunnelListener, TunnelScheme};
-use crate::utils::BoxExt;
+use crate::{
+    common::{
+        error::Error,
+        global_ctx::{ArcGlobalCtx, GlobalCtxEvent},
+        netns::NetNS,
+    },
+    peers::peer_manager::PeerManager,
+    tunnel::{
+        self, ring::RingTunnelListener, tcp::TcpTunnelListener, udp::UdpTunnelListener, IpScheme,
+        Tunnel, TunnelListener, TunnelScheme,
+    },
+    utils::BoxExt,
+};
 
 pub fn create_listener_by_url(
     l: &url::Url,
@@ -277,10 +282,10 @@ mod tests {
     use futures::{SinkExt, StreamExt};
     use tokio::time::timeout;
 
-    use crate::common::global_ctx::tests::get_mock_global_ctx;
-    use crate::tunnel::packet_def::ZCPacket;
-    use crate::tunnel::ring::RingTunnelConnector;
-    use crate::tunnel::{TunnelConnector, TunnelError};
+    use crate::{
+        common::global_ctx::tests::get_mock_global_ctx,
+        tunnel::{packet_def::ZCPacket, ring::RingTunnelConnector, TunnelConnector, TunnelError},
+    };
 
     use super::*;
 
