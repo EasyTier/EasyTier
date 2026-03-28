@@ -2,16 +2,18 @@ use std::{
     collections::hash_map::DefaultHasher, hash::Hasher, net::SocketAddr, pin::Pin, sync::Arc,
 };
 
-use async_trait::async_trait;
-use futures::{Sink, Stream};
-use std::fmt::Debug;
-
 use crate::{
     common::{dns::socket_addrs, error::Error},
     proto::common::TunnelInfo,
 };
-use derive_more::From;
+use async_trait::async_trait;
+use derive_more::{From, TryInto};
+use futures::{Sink, Stream};
+use serde::de::IntoDeserializer;
+use serde::{Deserialize, Serialize};
 use socket2::Protocol;
+use std::fmt::Debug;
+use std::str::FromStr;
 use strum::{Display, EnumString};
 use tokio::time::error::Elapsed;
 
@@ -129,6 +131,7 @@ pub enum IpVersion {
 #[async_trait]
 #[auto_impl::auto_impl(Box)]
 pub trait TunnelListener: Send {
+    fn scheme(&self) -> TunnelScheme;
     async fn listen(&mut self) -> Result<(), TunnelError>;
     async fn accept(&mut self) -> Result<Box<dyn Tunnel>, TunnelError>;
     fn local_url(&self) -> url::Url;
@@ -147,6 +150,7 @@ pub trait TunnelListener: Send {
 #[async_trait]
 #[auto_impl::auto_impl(Box, &mut)]
 pub trait TunnelConnector: Send {
+    fn scheme(&self) -> TunnelScheme;
     async fn connect(&mut self) -> Result<Box<dyn Tunnel>, TunnelError>;
     fn remote_url(&self) -> url::Url;
     fn set_bind_addrs(&mut self, _addrs: Vec<SocketAddr>) {}
@@ -216,9 +220,11 @@ where
 impl FromUrl for SocketAddr {
     async fn from_url(url: url::Url, ip_version: IpVersion) -> Result<Self, TunnelError> {
         let addrs = socket_addrs(&url, || {
-            TunnelScheme::try_from(&url)
+            (&url)
+                .try_into()
                 .ok()
-                .and_then(|s| s.default_port())
+                .and_then(|s: TunnelScheme| s.try_into().ok())
+                .map(IpScheme::default_port)
         })
         .await
         .map_err(|e| {
@@ -301,55 +307,29 @@ pub fn generate_digest_from_str(str1: &str, str2: &str, digest: &mut [u8]) {
     }
 }
 
-#[derive(Debug, From)]
-pub enum Transport {
-    Ip(Protocol),
-    #[cfg(unix)]
-    Unix,
-    Unknown,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Display, EnumString)]
-#[strum(serialize_all = "lowercase")]
-pub enum TunnelScheme {
+#[derive(Debug, Clone, Copy, PartialEq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum IpScheme {
     Tcp,
     Udp,
     #[cfg(feature = "wireguard")]
-    #[strum(serialize = "wg")]
+    #[serde(rename = "wg")]
     WireGuard,
     #[cfg(feature = "quic")]
     Quic,
     #[cfg(feature = "websocket")]
-    #[strum(serialize = "ws")]
+    #[serde(rename = "ws")]
     WebSocket,
     #[cfg(feature = "websocket")]
-    #[strum(serialize = "wss")]
+    #[serde(rename = "wss")]
     WebSocketSecure,
     #[cfg(feature = "faketcp")]
     FakeTcp,
-    #[cfg(unix)]
-    Unix,
-    // Only for connector
-    Http,
-    Https,
-    Txt,
-    Srv,
 }
 
-impl TryFrom<&url::Url> for TunnelScheme {
-    type Error = Error;
-
-    fn try_from(value: &url::Url) -> Result<Self, Self::Error> {
-        value
-            .scheme()
-            .parse()
-            .map_err(|_| Error::InvalidUrl(value.to_string()))
-    }
-}
-
-impl TunnelScheme {
-    pub const fn transport(self) -> Transport {
-        Transport::Ip(match self {
+impl IpScheme {
+    pub const fn protocol(self) -> Protocol {
+        match self {
             Self::Tcp => Protocol::TCP,
             Self::Udp => Protocol::UDP,
             #[cfg(feature = "wireguard")]
@@ -360,14 +340,11 @@ impl TunnelScheme {
             Self::WebSocket | Self::WebSocketSecure => Protocol::TCP,
             #[cfg(feature = "faketcp")]
             Self::FakeTcp => Protocol::TCP,
-            #[cfg(unix)]
-            Self::Unix => return Transport::Unix,
-            _ => return Transport::Unknown,
-        })
+        }
     }
 
-    pub const fn default_port(self) -> Option<u16> {
-        Some(match self {
+    pub const fn default_port(self) -> u16 {
+        match self {
             Self::Tcp => 11010,
             Self::Udp => 11010,
             #[cfg(feature = "wireguard")]
@@ -380,30 +357,44 @@ impl TunnelScheme {
             Self::WebSocketSecure => 443,
             #[cfg(feature = "faketcp")]
             Self::FakeTcp => 11013,
-            #[allow(unreachable_patterns)]
-            _ => return None,
-        })
+        }
     }
 }
 
-pub fn get_transport_by_url(l: &url::Url) -> Result<Transport, Error> {
-    Ok(TunnelScheme::try_from(l)?.transport())
+#[derive(Debug, Clone, Copy, PartialEq, Deserialize, TryInto)]
+#[serde(rename_all = "lowercase")]
+#[serde(untagged)]
+pub enum TunnelScheme {
+    Ip(IpScheme),
+    #[cfg(unix)]
+    Unix,
+    // Only for connector
+    Http,
+    Https,
+    Ring,
+    Txt,
+    Srv,
 }
 
-macro_rules! __matches_transport__ {
-    ($url:expr, $( $pattern:pat_param )|+ ) => {
-        matches!($crate::tunnel::get_transport_by_url($url), Ok($( $pattern )|+))
+impl TryFrom<&url::Url> for TunnelScheme {
+    type Error = Error;
+
+    fn try_from(value: &url::Url) -> Result<Self, Self::Error> {
+        Self::deserialize(value.scheme().into_deserializer())
+            .map_err(|_: serde::de::value::Error| Error::InvalidUrl(value.to_string()))
+    }
+}
+
+pub fn get_protocol_by_url(l: &url::Url) -> Result<Protocol, Error> {
+    let TunnelScheme::Ip(scheme) = l.try_into()? else {
+        return Err(Error::InvalidUrl(l.to_string()));
     };
+    Ok(scheme.protocol())
 }
-
-pub(crate) use __matches_transport__ as matches_transport;
 
 macro_rules! __matches_protocol__ {
     ($url:expr, $( $pattern:pat_param )|+ ) => {
-        $crate::tunnel::matches_transport!(
-            $url,
-            $crate::tunnel::Transport::Ip($( $pattern )|+)
-        )
+        matches!($crate::tunnel::get_protocol_by_url($url), Ok($( $pattern )|+))
     };
 }
 
