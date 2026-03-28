@@ -35,15 +35,16 @@ use crate::{
     use_global_var,
 };
 
-use anyhow::Context;
-use rand::Rng;
-use tokio::{net::UdpSocket, task::JoinSet, time::timeout};
-use url::Host;
-
 use super::{
     create_connector_by_url, should_background_p2p_with_peer, should_try_p2p_with_peer,
     udp_hole_punch,
 };
+use crate::instance::listeners::matches_protocol;
+use anyhow::Context;
+use rand::Rng;
+use smoltcp::wire::IpProtocol;
+use tokio::{net::UdpSocket, task::JoinSet, time::timeout};
+use url::Host;
 
 pub const DIRECT_CONNECTOR_SERVICE_ID: u32 = 1;
 pub const DIRECT_CONNECTOR_BLACKLIST_TIMEOUT_SEC: u64 = 300;
@@ -306,7 +307,7 @@ impl DirectConnectorManagerData {
         let listener_host = addrs.pop();
         tracing::info!(?listener_host, ?listener, "try direct connect to peer");
 
-        let is_udp = matches!(listener.scheme(), "udp" | "wg");
+        let is_udp = matches_protocol!(listener, IpProtocol::Udp);
         // Snapshot running listeners once; used for cheap port pre-checks before the
         // expensive should_deny_proxy call (which binds a socket per IP) in the
         // unspecified-address expansion loops below.
@@ -314,7 +315,7 @@ impl DirectConnectorManagerData {
         let port_has_local_listener = |port: u16| -> bool {
             local_listeners
                 .iter()
-                .any(|l| l.port() == Some(port) && (matches!(l.scheme(), "udp" | "wg") == is_udp))
+                .any(|l| l.port() == Some(port) && matches_protocol!(l, IpProtocol::Udp) == is_udp)
         };
 
         match listener_host {
