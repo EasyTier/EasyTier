@@ -1,20 +1,19 @@
-use std::{
-    collections::hash_map::DefaultHasher, hash::Hasher, net::SocketAddr, pin::Pin, sync::Arc,
-};
+use std::collections::hash_map::DefaultHasher;
+use std::hash::Hasher;
+use std::net::SocketAddr;
+use std::pin::Pin;
+use std::sync::Arc;
 
-use crate::{
-    common::{dns::socket_addrs, error::Error},
-    proto::common::TunnelInfo,
-};
+use crate::common::dns::socket_addrs;
+use crate::common::error::Error;
+use crate::proto::common::TunnelInfo;
 use async_trait::async_trait;
 use derive_more::{From, TryInto};
 use futures::{Sink, Stream};
+use serde::Deserialize;
 use serde::de::IntoDeserializer;
-use serde::{Deserialize, Serialize};
 use socket2::Protocol;
 use std::fmt::Debug;
-use std::str::FromStr;
-use strum::{Display, EnumString};
 use tokio::time::error::Elapsed;
 
 use self::packet_def::ZCPacket;
@@ -131,7 +130,6 @@ pub enum IpVersion {
 #[async_trait]
 #[auto_impl::auto_impl(Box)]
 pub trait TunnelListener: Send {
-    fn scheme(&self) -> TunnelScheme;
     async fn listen(&mut self) -> Result<(), TunnelError>;
     async fn accept(&mut self) -> Result<Box<dyn Tunnel>, TunnelError>;
     fn local_url(&self) -> url::Url;
@@ -150,7 +148,6 @@ pub trait TunnelListener: Send {
 #[async_trait]
 #[auto_impl::auto_impl(Box, &mut)]
 pub trait TunnelConnector: Send {
-    fn scheme(&self) -> TunnelScheme;
     async fn connect(&mut self) -> Result<Box<dyn Tunnel>, TunnelError>;
     fn remote_url(&self) -> url::Url;
     fn set_bind_addrs(&mut self, _addrs: Vec<SocketAddr>) {}
@@ -199,21 +196,6 @@ pub(crate) trait FromUrl {
     async fn from_url(url: url::Url, ip_version: IpVersion) -> Result<Self, TunnelError>
     where
         Self: Sized;
-}
-
-pub(crate) async fn check_scheme_and_get_socket_addr<T>(
-    url: &url::Url,
-    scheme: TunnelScheme,
-    ip_version: IpVersion,
-) -> Result<T, TunnelError>
-where
-    T: FromUrl,
-{
-    if !matches!(TunnelScheme::try_from(url), Ok(s) if s == scheme) {
-        return Err(TunnelError::InvalidProtocol(url.scheme().to_string()));
-    }
-
-    T::from_url(url.clone(), ip_version).await
 }
 
 #[async_trait::async_trait]
@@ -361,7 +343,7 @@ impl IpScheme {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Deserialize, TryInto)]
+#[derive(Debug, Clone, Copy, PartialEq, Deserialize, From, TryInto)]
 #[serde(rename_all = "lowercase")]
 #[serde(untagged)]
 pub enum TunnelScheme {
@@ -384,6 +366,14 @@ impl TryFrom<&url::Url> for TunnelScheme {
             .map_err(|_: serde::de::value::Error| Error::InvalidUrl(value.to_string()))
     }
 }
+
+macro_rules! __matches_scheme__ {
+    ($url:expr, $( $pattern:pat_param )|+ ) => {
+        matches!($crate::tunnel::TunnelScheme::try_from(($url).as_ref()), Ok($( $pattern )|+))
+    };
+}
+
+pub(crate) use __matches_scheme__ as matches_scheme;
 
 pub fn get_protocol_by_url(l: &url::Url) -> Result<Protocol, Error> {
     let TunnelScheme::Ip(scheme) = l.try_into()? else {

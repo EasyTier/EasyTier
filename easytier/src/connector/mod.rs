@@ -5,17 +5,17 @@ use std::{
 
 use crate::connector::dns_connector::DNSTunnelConnector;
 use crate::tunnel::{FromUrl, IpScheme, TunnelError, TunnelScheme};
+use crate::utils::BoxExt;
 use crate::{
     common::{error::Error, global_ctx::ArcGlobalCtx, idn, network::IPCollector},
     proto::common::PeerFeatureFlag,
     tunnel,
     tunnel::{
-        check_scheme_and_get_socket_addr, ring::RingTunnelConnector, tcp::TcpTunnelConnector,
-        udp::UdpTunnelConnector, IpVersion, TunnelConnector,
+        ring::RingTunnelConnector, tcp::TcpTunnelConnector, udp::UdpTunnelConnector, IpVersion,
+        TunnelConnector,
     },
 };
 use http_connector::HttpTunnelConnector;
-use crate::utils::BoxExt;
 
 pub mod direct;
 pub mod manual;

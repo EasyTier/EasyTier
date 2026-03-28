@@ -1,29 +1,22 @@
-use std::{
-    fmt::Debug,
-    net::IpAddr,
-    str::FromStr,
-    sync::{Arc, Weak},
-};
+use std::fmt::Debug;
+use std::net::IpAddr;
+use std::str::FromStr;
+use std::sync::{Arc, Weak};
 
-use crate::tunnel::{IpScheme, TunnelScheme};
 use anyhow::Context;
 use async_trait::async_trait;
 use tokio::task::JoinSet;
 
+use crate::common::error::Error;
+use crate::common::global_ctx::{ArcGlobalCtx, GlobalCtxEvent};
+use crate::common::netns::NetNS;
+use crate::peers::peer_manager::PeerManager;
+use crate::tunnel;
+use crate::tunnel::ring::RingTunnelListener;
+use crate::tunnel::tcp::TcpTunnelListener;
+use crate::tunnel::udp::UdpTunnelListener;
+use crate::tunnel::{IpScheme, Tunnel, TunnelListener, TunnelScheme};
 use crate::utils::BoxExt;
-use crate::{
-    common::{
-        error::Error,
-        global_ctx::{ArcGlobalCtx, GlobalCtxEvent},
-        netns::NetNS,
-    },
-    peers::peer_manager::PeerManager,
-    tunnel,
-    tunnel::{
-        ring::RingTunnelListener, tcp::TcpTunnelListener, udp::UdpTunnelListener, Tunnel,
-        TunnelListener,
-    },
-};
 
 pub fn create_listener_by_url(
     l: &url::Url,
@@ -284,10 +277,10 @@ mod tests {
     use futures::{SinkExt, StreamExt};
     use tokio::time::timeout;
 
-    use crate::{
-        common::global_ctx::tests::get_mock_global_ctx,
-        tunnel::{packet_def::ZCPacket, ring::RingTunnelConnector, TunnelConnector, TunnelError},
-    };
+    use crate::common::global_ctx::tests::get_mock_global_ctx;
+    use crate::tunnel::packet_def::ZCPacket;
+    use crate::tunnel::ring::RingTunnelConnector;
+    use crate::tunnel::{TunnelConnector, TunnelError};
 
     use super::*;
 
@@ -355,14 +348,6 @@ mod tests {
 
         #[async_trait::async_trait]
         impl TunnelListener for MockListener {
-            fn scheme(&self) -> TunnelScheme {
-                unimplemented!()
-            }
-
-            fn local_url(&self) -> url::Url {
-                "mock://".parse().unwrap()
-            }
-
             async fn listen(&mut self) -> Result<(), TunnelError> {
                 self.counter.fetch_add(1, Ordering::Relaxed);
                 Ok(())
@@ -371,6 +356,10 @@ mod tests {
             async fn accept(&mut self) -> Result<Box<dyn Tunnel>, TunnelError> {
                 tokio::time::sleep(std::time::Duration::from_secs(1)).await;
                 Err(TunnelError::BufferFull)
+            }
+
+            fn local_url(&self) -> url::Url {
+                "mock://".parse().unwrap()
             }
         }
 

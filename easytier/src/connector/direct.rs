@@ -1,48 +1,43 @@
 // try connect peers directly, with either its public ip or lan ip
 
-use std::{
-    collections::HashSet,
-    net::{IpAddr, Ipv6Addr, SocketAddr},
-    str::FromStr,
-    sync::{
-        atomic::{AtomicBool, Ordering},
-        Arc,
-    },
-    time::{Duration, Instant},
-};
+use std::collections::HashSet;
+use std::net::{IpAddr, Ipv6Addr, SocketAddr};
+use std::str::FromStr;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 
-use crate::{
-    common::{
-        dns::socket_addrs, error::Error, global_ctx::ArcGlobalCtx, stun::StunInfoCollectorTrait,
-        PeerId,
-    },
-    connector::udp_hole_punch::handle_rpc_result,
-    peers::{
-        peer_conn::PeerConnId,
-        peer_manager::PeerManager,
-        peer_rpc::PeerRpcManager,
-        peer_rpc_service::DirectConnectorManagerRpcServer,
-        peer_task::{PeerTaskLauncher, PeerTaskManager},
-    },
-    proto::{
-        peer_rpc::{
-            DirectConnectorRpc, DirectConnectorRpcClientFactory, DirectConnectorRpcServer,
-            GetIpListRequest, GetIpListResponse, SendV6HolePunchPacketRequest,
-        },
-        rpc_types::controller::BaseController,
-    },
-    tunnel::{matches_protocol, udp::UdpTunnelConnector, IpVersion, TunnelScheme},
-    use_global_var,
+use crate::common::dns::socket_addrs;
+use crate::common::error::Error;
+use crate::common::global_ctx::ArcGlobalCtx;
+use crate::common::stun::StunInfoCollectorTrait;
+use crate::common::PeerId;
+use crate::connector::udp_hole_punch::handle_rpc_result;
+use crate::peers::peer_conn::PeerConnId;
+use crate::peers::peer_manager::PeerManager;
+use crate::peers::peer_rpc::PeerRpcManager;
+use crate::peers::peer_rpc_service::DirectConnectorManagerRpcServer;
+use crate::peers::peer_task::{PeerTaskLauncher, PeerTaskManager};
+use crate::proto::peer_rpc::{
+    DirectConnectorRpc, DirectConnectorRpcClientFactory, DirectConnectorRpcServer,
+    GetIpListRequest, GetIpListResponse, SendV6HolePunchPacketRequest,
 };
+use crate::proto::rpc_types::controller::BaseController;
+use crate::tunnel::udp::UdpTunnelConnector;
+use crate::tunnel::{matches_protocol, IpVersion};
+use crate::use_global_var;
 
 use super::{
     create_connector_by_url, should_background_p2p_with_peer, should_try_p2p_with_peer,
     udp_hole_punch,
 };
+use crate::tunnel::{matches_scheme, FromUrl, IpScheme, TunnelScheme};
 use anyhow::Context;
 use rand::Rng;
 use socket2::Protocol;
-use tokio::{net::UdpSocket, task::JoinSet, time::timeout};
+use tokio::net::UdpSocket;
+use tokio::task::JoinSet;
+use tokio::time::timeout;
 use url::Host;
 
 pub const DIRECT_CONNECTOR_SERVICE_ID: u32 = 1;
@@ -189,12 +184,7 @@ impl DirectConnectorManagerData {
             .await;
 
         let udp_connector = UdpTunnelConnector::new(remote_url.clone());
-        let remote_addr = super::check_scheme_and_get_socket_addr::<SocketAddr>(
-            remote_url,
-            TunnelScheme::Udp,
-            IpVersion::V6,
-        )
-        .await?;
+        let remote_addr = SocketAddr::from_url(remote_url.clone(), IpVersion::V6).await?;
         let ret = udp_connector
             .try_connect_with_socket(local_socket, remote_addr)
             .await?;
@@ -208,18 +198,19 @@ impl DirectConnectorManagerData {
     async fn do_try_connect_to_ip(&self, dst_peer_id: PeerId, addr: String) -> Result<(), Error> {
         let connector = create_connector_by_url(&addr, &self.global_ctx, IpVersion::Both).await?;
         let remote_url = connector.remote_url();
-        let (peer_id, conn_id) =
-            if remote_url.scheme() == "udp" && matches!(remote_url.host(), Some(Host::Ipv6(_))) {
-                self.connect_to_public_ipv6(dst_peer_id, &remote_url)
-                    .await?
-            } else {
-                timeout(
-                    std::time::Duration::from_secs(3),
-                    self.peer_manager
-                        .try_direct_connect_with_peer_id_hint(connector, Some(dst_peer_id)),
-                )
-                .await??
-            };
+        let (peer_id, conn_id) = if matches_scheme!(remote_url, TunnelScheme::Ip(IpScheme::Udp))
+            && matches!(remote_url.host(), Some(Host::Ipv6(_)))
+        {
+            self.connect_to_public_ipv6(dst_peer_id, &remote_url)
+                .await?
+        } else {
+            timeout(
+                std::time::Duration::from_secs(3),
+                self.peer_manager
+                    .try_direct_connect_with_peer_id_hint(connector, Some(dst_peer_id)),
+            )
+            .await??
+        };
 
         if peer_id != dst_peer_id && !TESTING.load(Ordering::Relaxed) {
             tracing::info!(
@@ -684,17 +675,15 @@ impl DirectConnectorManager {
 mod tests {
     use std::sync::Arc;
 
-    use crate::{
-        connector::direct::{
-            DirectConnectorManager, DirectConnectorManagerData, DstListenerUrlBlackListItem,
-        },
-        instance::listeners::ListenerManager,
-        peers::tests::{
-            connect_peer_manager, create_mock_peer_manager, wait_route_appear,
-            wait_route_appear_with_cost,
-        },
-        proto::peer_rpc::GetIpListResponse,
+    use crate::connector::direct::{
+        DirectConnectorManager, DirectConnectorManagerData, DstListenerUrlBlackListItem,
     };
+    use crate::instance::listeners::ListenerManager;
+    use crate::peers::tests::{
+        connect_peer_manager, create_mock_peer_manager, wait_route_appear,
+        wait_route_appear_with_cost,
+    };
+    use crate::proto::peer_rpc::GetIpListResponse;
 
     use super::TESTING;
 
