@@ -2,21 +2,24 @@ mod netfilter;
 mod packet;
 mod stack;
 
-use std::net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket};
-use std::pin::Pin;
-use std::sync::Arc;
+use std::{
+    net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket},
+    pin::Pin,
+    sync::Arc,
+};
 
 use bytes::BytesMut;
 use network_interface::NetworkInterfaceConfig;
 use pnet::util::MacAddr;
-use tokio::io::AsyncReadExt;
-use tokio::net::TcpStream;
-use tokio::sync::Mutex;
+use tokio::{io::AsyncReadExt, net::TcpStream, sync::Mutex};
 
-use crate::common::scoped_task::ScopedTask;
-use crate::tunnel::common::TunnelWrapper;
-use crate::tunnel::fake_tcp::netfilter::create_tun;
-use crate::tunnel::{Tunnel, TunnelError, TunnelInfo, TunnelListener};
+use crate::{
+    common::scoped_task::ScopedTask,
+    tunnel::{
+        common::TunnelWrapper, fake_tcp::netfilter::create_tun, Tunnel, TunnelError, TunnelInfo,
+        TunnelListener,
+    },
+};
 
 use futures::Future;
 
@@ -378,10 +381,10 @@ impl crate::tunnel::TunnelConnector for FakeTcpTunnelConnector {
     }
 }
 
-use crate::tunnel::packet_def::{
-    ZCPacket, ZCPacketType, PEER_MANAGER_HEADER_SIZE, TCP_TUNNEL_HEADER_SIZE,
+use crate::tunnel::{
+    packet_def::{ZCPacket, ZCPacketType, PEER_MANAGER_HEADER_SIZE, TCP_TUNNEL_HEADER_SIZE},
+    FromUrl, IpVersion, SinkError, SinkItem, StreamItem,
 };
-use crate::tunnel::{FromUrl, IpVersion, SinkError, SinkItem, StreamItem};
 use futures::{Sink, Stream};
 use std::task::{Context as TaskContext, Poll};
 

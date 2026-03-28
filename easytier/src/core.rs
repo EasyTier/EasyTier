@@ -1134,8 +1134,7 @@ impl LoggingConfigLoader for &LoggingOptions {
 #[cfg(target_os = "windows")]
 fn win_service_set_work_dir(service_name: &std::ffi::OsString) -> anyhow::Result<()> {
     use crate::common::constants::WIN_SERVICE_WORK_DIR_REG_KEY;
-    use winreg::enums::*;
-    use winreg::RegKey;
+    use winreg::{enums::*, RegKey};
 
     let hklm = RegKey::predef(HKEY_LOCAL_MACHINE);
     let key = hklm.open_subkey_with_flags(WIN_SERVICE_WORK_DIR_REG_KEY, KEY_READ)?;
@@ -1215,11 +1214,9 @@ fn parse_cli() -> Cli {
 
 #[cfg(target_os = "windows")]
 fn win_service_main(arg: Vec<std::ffi::OsString>) {
-    use std::sync::Arc;
-    use std::time::Duration;
+    use std::{sync::Arc, time::Duration};
     use tokio::sync::Notify;
-    use windows_service::service::*;
-    use windows_service::service_control_handler::*;
+    use windows_service::{service::*, service_control_handler::*};
 
     _ = win_service_set_work_dir(&arg[0]);
 

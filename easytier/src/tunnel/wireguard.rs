@@ -1,37 +1,41 @@
-use std::fmt::{Debug, Formatter};
-use std::net::SocketAddr;
-use std::pin::Pin;
-use std::sync::atomic::AtomicBool;
-use std::sync::Arc;
-use std::time::Duration;
+use std::{
+    fmt::{Debug, Formatter},
+    net::SocketAddr,
+    pin::Pin,
+    sync::{atomic::AtomicBool, Arc},
+    time::Duration,
+};
 
 use anyhow::Context;
 use async_recursion::async_recursion;
 use async_trait::async_trait;
-use boringtun::noise::errors::WireGuardError;
-use boringtun::noise::{Tunn, TunnResult};
-use boringtun::x25519::{PublicKey, StaticSecret};
+use boringtun::{
+    noise::{errors::WireGuardError, Tunn, TunnResult},
+    x25519::{PublicKey, StaticSecret},
+};
 use bytes::BytesMut;
 use crossbeam::atomic::AtomicCell;
 use dashmap::DashMap;
-use futures::stream::FuturesUnordered;
-use futures::{SinkExt, StreamExt};
+use futures::{stream::FuturesUnordered, SinkExt, StreamExt};
 use rand::RngCore;
-use tokio::net::UdpSocket;
-use tokio::sync::Mutex;
-use tokio::task::JoinSet;
+use tokio::{net::UdpSocket, sync::Mutex, task::JoinSet};
 
-use super::common::{setup_sokcet2, setup_sokcet2_ext, wait_for_connect_futures};
-use super::packet_def::{ZCPacketType, PEER_MANAGER_HEADER_SIZE};
-use super::ring::create_ring_tunnel_pair;
 use super::{
-    generate_digest_from_str, FromUrl, IpVersion, Tunnel, TunnelError, TunnelInfo, TunnelListener,
-    TunnelUrl, ZCPacketSink, ZCPacketStream,
+    common::{setup_sokcet2, setup_sokcet2_ext, wait_for_connect_futures},
+    generate_digest_from_str,
+    packet_def::{ZCPacketType, PEER_MANAGER_HEADER_SIZE},
+    ring::create_ring_tunnel_pair,
+    FromUrl, IpVersion, Tunnel, TunnelError, TunnelInfo, TunnelListener, TunnelUrl, ZCPacketSink,
+    ZCPacketStream,
 };
-use crate::common::shrink_dashmap;
-use crate::tunnel::build_url_from_socket_addr;
-use crate::tunnel::common::TunnelWrapper;
-use crate::tunnel::packet_def::{ZCPacket, WG_TUNNEL_HEADER_SIZE};
+use crate::{
+    common::shrink_dashmap,
+    tunnel::{
+        build_url_from_socket_addr,
+        common::TunnelWrapper,
+        packet_def::{ZCPacket, WG_TUNNEL_HEADER_SIZE},
+    },
+};
 
 const MAX_PACKET: usize = 2048;
 
@@ -761,8 +765,10 @@ impl super::TunnelConnector for WgTunnelConnector {
 #[cfg(test)]
 pub mod tests {
     use super::*;
-    use crate::tunnel::common::tests::{_tunnel_bench, _tunnel_pingpong};
-    use crate::tunnel::TunnelConnector;
+    use crate::tunnel::{
+        common::tests::{_tunnel_bench, _tunnel_pingpong},
+        TunnelConnector,
+    };
     use boringtun::*;
 
     pub fn create_wg_config() -> (WgConfig, WgConfig) {

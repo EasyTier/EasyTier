@@ -1,31 +1,39 @@
 // try connect peers directly, with either its public ip or lan ip
 
-use std::collections::HashSet;
-use std::net::{IpAddr, Ipv6Addr, SocketAddr};
-use std::str::FromStr;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
-use std::time::{Duration, Instant};
-
-use crate::common::dns::socket_addrs;
-use crate::common::error::Error;
-use crate::common::global_ctx::ArcGlobalCtx;
-use crate::common::stun::StunInfoCollectorTrait;
-use crate::common::PeerId;
-use crate::connector::udp_hole_punch::handle_rpc_result;
-use crate::peers::peer_conn::PeerConnId;
-use crate::peers::peer_manager::PeerManager;
-use crate::peers::peer_rpc::PeerRpcManager;
-use crate::peers::peer_rpc_service::DirectConnectorManagerRpcServer;
-use crate::peers::peer_task::{PeerTaskLauncher, PeerTaskManager};
-use crate::proto::peer_rpc::{
-    DirectConnectorRpc, DirectConnectorRpcClientFactory, DirectConnectorRpcServer,
-    GetIpListRequest, GetIpListResponse, SendV6HolePunchPacketRequest,
+use std::{
+    collections::HashSet,
+    net::{IpAddr, Ipv6Addr, SocketAddr},
+    str::FromStr,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
+    time::{Duration, Instant},
 };
-use crate::proto::rpc_types::controller::BaseController;
-use crate::tunnel::udp::UdpTunnelConnector;
-use crate::tunnel::{matches_protocol, IpVersion};
-use crate::use_global_var;
+
+use crate::{
+    common::{
+        dns::socket_addrs, error::Error, global_ctx::ArcGlobalCtx, stun::StunInfoCollectorTrait,
+        PeerId,
+    },
+    connector::udp_hole_punch::handle_rpc_result,
+    peers::{
+        peer_conn::PeerConnId,
+        peer_manager::PeerManager,
+        peer_rpc::PeerRpcManager,
+        peer_rpc_service::DirectConnectorManagerRpcServer,
+        peer_task::{PeerTaskLauncher, PeerTaskManager},
+    },
+    proto::{
+        peer_rpc::{
+            DirectConnectorRpc, DirectConnectorRpcClientFactory, DirectConnectorRpcServer,
+            GetIpListRequest, GetIpListResponse, SendV6HolePunchPacketRequest,
+        },
+        rpc_types::controller::BaseController,
+    },
+    tunnel::{matches_protocol, udp::UdpTunnelConnector, IpVersion},
+    use_global_var,
+};
 
 use super::{
     create_connector_by_url, should_background_p2p_with_peer, should_try_p2p_with_peer,
@@ -35,9 +43,7 @@ use crate::tunnel::{matches_scheme, FromUrl, IpScheme, TunnelScheme};
 use anyhow::Context;
 use rand::Rng;
 use socket2::Protocol;
-use tokio::net::UdpSocket;
-use tokio::task::JoinSet;
-use tokio::time::timeout;
+use tokio::{net::UdpSocket, task::JoinSet, time::timeout};
 use url::Host;
 
 pub const DIRECT_CONNECTOR_SERVICE_ID: u32 = 1;
@@ -675,15 +681,17 @@ impl DirectConnectorManager {
 mod tests {
     use std::sync::Arc;
 
-    use crate::connector::direct::{
-        DirectConnectorManager, DirectConnectorManagerData, DstListenerUrlBlackListItem,
+    use crate::{
+        connector::direct::{
+            DirectConnectorManager, DirectConnectorManagerData, DstListenerUrlBlackListItem,
+        },
+        instance::listeners::ListenerManager,
+        peers::tests::{
+            connect_peer_manager, create_mock_peer_manager, wait_route_appear,
+            wait_route_appear_with_cost,
+        },
+        proto::peer_rpc::GetIpListResponse,
     };
-    use crate::instance::listeners::ListenerManager;
-    use crate::peers::tests::{
-        connect_peer_manager, create_mock_peer_manager, wait_route_appear,
-        wait_route_appear_with_cost,
-    };
-    use crate::proto::peer_rpc::GetIpListResponse;
 
     use super::TESTING;
 
