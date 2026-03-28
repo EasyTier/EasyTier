@@ -31,8 +31,8 @@ use crate::proto::common::{PeerFeatureFlag, PortForwardConfigPb};
 use crate::proto::peer_rpc::PeerGroupInfo;
 use crossbeam::atomic::AtomicCell;
 use hmac::{Hmac, Mac};
+use pnet::packet::ip::IpNextHeaderProtocols;
 use sha2::Sha256;
-use smoltcp::wire::IpProtocol;
 
 pub type NetworkIdentity = crate::common::config::NetworkIdentity;
 
@@ -626,11 +626,9 @@ impl GlobalCtx {
     }
 
     fn is_port_in_running_listeners(&self, port: u16, is_udp: bool) -> bool {
-        self.running_listeners
-            .lock()
-            .unwrap()
-            .iter()
-            .any(|x| x.port() == Some(port) && matches_protocol!(x, IpProtocol::Udp) == is_udp)
+        self.running_listeners.lock().unwrap().iter().any(|x| {
+            x.port() == Some(port) && matches_protocol!(x, IpNextHeaderProtocols::Udp) == is_udp
+        })
     }
 
     #[tracing::instrument(ret, skip(self))]

@@ -41,8 +41,8 @@ use super::{
 };
 use crate::instance::listeners::matches_protocol;
 use anyhow::Context;
+use pnet::packet::ip::IpNextHeaderProtocols;
 use rand::Rng;
-use smoltcp::wire::IpProtocol;
 use tokio::{net::UdpSocket, task::JoinSet, time::timeout};
 use url::Host;
 
@@ -307,15 +307,15 @@ impl DirectConnectorManagerData {
         let listener_host = addrs.pop();
         tracing::info!(?listener_host, ?listener, "try direct connect to peer");
 
-        let is_udp = matches_protocol!(listener, IpProtocol::Udp);
+        let is_udp = matches_protocol!(listener, IpNextHeaderProtocols::Udp);
         // Snapshot running listeners once; used for cheap port pre-checks before the
         // expensive should_deny_proxy call (which binds a socket per IP) in the
         // unspecified-address expansion loops below.
         let local_listeners = self.global_ctx.get_running_listeners();
         let port_has_local_listener = |port: u16| -> bool {
-            local_listeners
-                .iter()
-                .any(|l| l.port() == Some(port) && matches_protocol!(l, IpProtocol::Udp) == is_udp)
+            local_listeners.iter().any(|l| {
+                l.port() == Some(port) && matches_protocol!(l, IpNextHeaderProtocols::Udp) == is_udp
+            })
         };
 
         match listener_host {
