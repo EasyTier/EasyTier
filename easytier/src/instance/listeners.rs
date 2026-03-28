@@ -5,11 +5,9 @@ use std::{
     sync::{Arc, Weak},
 };
 
+use crate::tunnel::TunnelScheme;
 use anyhow::Context;
 use async_trait::async_trait;
-use derive_more::From;
-use socket2::Protocol;
-use strum::{Display, EnumString};
 use tokio::task::JoinSet;
 
 use crate::{
@@ -25,85 +23,7 @@ use crate::{
     },
 };
 
-#[derive(Debug, From)]
-pub enum Transport {
-    Ip(Protocol),
-    #[cfg(unix)]
-    Unix,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Display, EnumString)]
-#[strum(serialize_all = "lowercase")]
-pub enum TunnelScheme {
-    Tcp,
-    Udp,
-    #[cfg(feature = "wireguard")]
-    #[strum(serialize = "wg")]
-    WireGuard,
-    #[cfg(feature = "quic")]
-    Quic,
-    #[cfg(feature = "websocket")]
-    #[strum(serialize = "ws")]
-    WebSocket,
-    #[cfg(feature = "websocket")]
-    #[strum(serialize = "wss")]
-    WebSocketSecure,
-    #[cfg(feature = "faketcp")]
-    FakeTcp,
-    #[cfg(unix)]
-    Unix,
-}
-
-impl TryFrom<&url::Url> for TunnelScheme {
-    type Error = Error;
-
-    fn try_from(value: &url::Url) -> Result<Self, Self::Error> {
-        value
-            .scheme()
-            .parse()
-            .map_err(|_| Error::InvalidUrl(value.to_string()))
-    }
-}
-
-impl TunnelScheme {
-    const fn transport(self) -> Transport {
-        Transport::Ip(match self {
-            Self::Tcp => Protocol::TCP,
-            Self::Udp => Protocol::UDP,
-            #[cfg(feature = "wireguard")]
-            Self::WireGuard => Protocol::UDP,
-            #[cfg(feature = "quic")]
-            Self::Quic => Protocol::UDP,
-            #[cfg(feature = "websocket")]
-            Self::WebSocket | Self::WebSocketSecure => Protocol::TCP,
-            #[cfg(feature = "faketcp")]
-            Self::FakeTcp => Protocol::TCP,
-            #[cfg(unix)]
-            Self::Unix => return Transport::Unix,
-        })
-    }
-
-    pub(crate) const fn default_port(self) -> Option<u16> {
-        Some(match self {
-            Self::Tcp => 11010,
-            Self::Udp => 11010,
-            #[cfg(feature = "wireguard")]
-            Self::WireGuard => 11011,
-            #[cfg(feature = "quic")]
-            Self::Quic => 11012,
-            #[cfg(feature = "websocket")]
-            Self::WebSocket => 80,
-            #[cfg(feature = "websocket")]
-            Self::WebSocketSecure => 443,
-            #[cfg(feature = "faketcp")]
-            Self::FakeTcp => 11013,
-            #[allow(unreachable_patterns)]
-            _ => return None,
-        })
-    }
-}
-
-pub fn get_listener_by_url(
+pub fn create_listener_by_url(
     l: &url::Url,
     #[allow(unused_variables)] ctx: ArcGlobalCtx,
 ) -> Result<Box<dyn TunnelListener>, Error> {
@@ -140,31 +60,9 @@ pub fn get_listener_by_url(
             use crate::tunnel::unix::UnixSocketTunnelListener;
             Box::new(UnixSocketTunnelListener::new(l.clone()))
         }
+        _ => return Err(Error::InvalidUrl(l.to_string())),
     })
 }
-
-pub fn get_transport_by_url(l: &url::Url) -> Result<Transport, Error> {
-    Ok(TunnelScheme::try_from(l)?.transport())
-}
-
-macro_rules! __matches_transport__ {
-    ($url:expr, $( $pattern:pat_param )|+ ) => {
-        matches!($crate::instance::listeners::get_transport_by_url($url), Ok($( $pattern )|+))
-    };
-}
-
-pub(crate) use __matches_transport__ as matches_transport;
-
-macro_rules! __matches_protocol__ {
-    ($url:expr, $( $pattern:pat_param )|+ ) => {
-        $crate::instance::listeners::matches_transport!(
-            $url,
-            $crate::instance::listeners::Transport::Ip($( $pattern )|+)
-        )
-    };
-}
-
-pub(crate) use __matches_protocol__ as matches_protocol;
 
 pub fn is_url_host_ipv6(l: &url::Url) -> bool {
     l.host_str().is_some_and(|h| h.contains(':'))
@@ -235,7 +133,7 @@ impl<H: TunnelHandlerForListener + Send + Sync + 'static + Debug> ListenerManage
 
         for l in self.global_ctx.config.get_listener_uris().iter() {
             let l = l.clone();
-            let Ok(_) = get_listener_by_url(&l, self.global_ctx.clone()) else {
+            let Ok(_) = create_listener_by_url(&l, self.global_ctx.clone()) else {
                 let msg = format!("failed to get listener by url: {}, maybe not supported", l);
                 self.global_ctx
                     .issue_event(GlobalCtxEvent::ListenerAddFailed(l.clone(), msg));
@@ -245,7 +143,7 @@ impl<H: TunnelHandlerForListener + Send + Sync + 'static + Debug> ListenerManage
 
             let listener = l.clone();
             self.add_listener(
-                move || get_listener_by_url(&listener, ctx.clone()).unwrap(),
+                move || create_listener_by_url(&listener, ctx.clone()).unwrap(),
                 true,
             )
             .await?;
@@ -262,7 +160,7 @@ impl<H: TunnelHandlerForListener + Send + Sync + 'static + Debug> ListenerManage
                     .with_context(|| format!("failed to set ipv6 host for listener: {}", l))?;
                 let ctx = self.global_ctx.clone();
                 self.add_listener(
-                    move || get_listener_by_url(&ipv6_listener, ctx.clone()).unwrap(),
+                    move || create_listener_by_url(&ipv6_listener, ctx.clone()).unwrap(),
                     false,
                 )
                 .await?;

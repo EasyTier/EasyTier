@@ -1,8 +1,7 @@
-use std::collections::hash_map::DefaultHasher;
-use std::collections::HashMap;
-use std::net::{IpAddr, SocketAddr};
 use std::{
+    collections::{hash_map::DefaultHasher, HashMap},
     hash::Hasher,
+    net::{IpAddr, SocketAddr},
     sync::{Arc, Mutex},
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -17,18 +16,20 @@ use super::{
     stun::{StunInfoCollector, StunInfoCollectorTrait},
     PeerId,
 };
-use crate::common::config::ProxyNetworkConfig;
-use crate::common::shrink_dashmap;
-use crate::common::stats_manager::StatsManager;
-use crate::common::token_bucket::TokenBucketManager;
-use crate::instance::listeners::matches_protocol;
-use crate::peers::acl_filter::AclFilter;
-use crate::peers::credential_manager::CredentialManager;
-use crate::proto::acl::GroupIdentity;
-use crate::proto::api::config::InstanceConfigPatch;
-use crate::proto::api::instance::PeerConnInfo;
-use crate::proto::common::{PeerFeatureFlag, PortForwardConfigPb};
-use crate::proto::peer_rpc::PeerGroupInfo;
+use crate::{
+    common::{
+        config::ProxyNetworkConfig, shrink_dashmap, stats_manager::StatsManager,
+        token_bucket::TokenBucketManager,
+    },
+    peers::{acl_filter::AclFilter, credential_manager::CredentialManager},
+    proto::{
+        acl::GroupIdentity,
+        api::{config::InstanceConfigPatch, instance::PeerConnInfo},
+        common::{PeerFeatureFlag, PortForwardConfigPb},
+        peer_rpc::PeerGroupInfo,
+    },
+    tunnel::matches_protocol,
+};
 use crossbeam::atomic::AtomicCell;
 use hmac::{Hmac, Mac};
 use sha2::Sha256;
