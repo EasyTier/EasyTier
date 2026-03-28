@@ -2,7 +2,6 @@ use crate::{
     common::{config::EncryptionAlgorithm, log},
     tunnel::packet_def::ZCPacket,
 };
-use cfg_if::cfg_if;
 use std::sync::Arc;
 
 #[cfg(feature = "wireguard")]
@@ -61,8 +60,11 @@ impl Encryptor for NullCipher {
 pub fn create_encryptor(
     algorithm: &str,
     key_128: [u8; 16],
-    key_256: [u8; 32],
+    #[allow(unused_variables)] key_256: [u8; 32],
 ) -> Arc<dyn Encryptor> {
+    #[cfg(any(feature = "aes-gcm", feature = "wireguard", feature = "openssl-crypto"))]
+    use cfg_if::cfg_if;
+
     let algorithm = match EncryptionAlgorithm::try_from(algorithm) {
         Ok(algorithm) => algorithm,
         Err(_) => {
@@ -75,6 +77,7 @@ pub fn create_encryptor(
             default
         }
     };
+
     match algorithm {
         EncryptionAlgorithm::Xor => Arc::new(xor::XorCipher::new(&key_128)),
 
