@@ -31,7 +31,7 @@ use crate::{
         },
         rpc_types::controller::BaseController,
     },
-    tunnel::{udp::UdpTunnelConnector, IpVersion},
+    tunnel::{matches_protocol, udp::UdpTunnelConnector, IpVersion, TunnelScheme},
     use_global_var,
 };
 
@@ -39,7 +39,6 @@ use super::{
     create_connector_by_url, should_background_p2p_with_peer, should_try_p2p_with_peer,
     udp_hole_punch,
 };
-use crate::instance::listeners::{matches_protocol, TunnelScheme};
 use anyhow::Context;
 use rand::Rng;
 use socket2::Protocol;

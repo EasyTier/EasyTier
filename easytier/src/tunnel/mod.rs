@@ -1,15 +1,19 @@
-use std::collections::hash_map::DefaultHasher;
-use std::hash::Hasher;
-use std::{net::SocketAddr, pin::Pin, sync::Arc};
+use std::{
+    collections::hash_map::DefaultHasher, hash::Hasher, net::SocketAddr, pin::Pin, sync::Arc,
+};
 
 use async_trait::async_trait;
 use futures::{Sink, Stream};
 use std::fmt::Debug;
 
+use crate::{
+    common::{dns::socket_addrs, error::Error},
+    proto::common::TunnelInfo,
+};
+use derive_more::From;
+use socket2::Protocol;
+use strum::{Display, EnumString};
 use tokio::time::error::Elapsed;
-
-use crate::common::dns::socket_addrs;
-use crate::proto::common::TunnelInfo;
 
 use self::packet_def::ZCPacket;
 
@@ -195,43 +199,34 @@ pub(crate) trait FromUrl {
 
 pub(crate) async fn check_scheme_and_get_socket_addr<T>(
     url: &url::Url,
-    scheme: &str,
+    scheme: TunnelScheme,
     ip_version: IpVersion,
 ) -> Result<T, TunnelError>
 where
     T: FromUrl,
 {
-    if url.scheme() != scheme {
+    if !matches!(TunnelScheme::try_from(url), Ok(s) if s == scheme) {
         return Err(TunnelError::InvalidProtocol(url.scheme().to_string()));
     }
 
     T::from_url(url.clone(), ip_version).await
 }
 
-fn default_port(scheme: &str) -> Option<u16> {
-    match scheme {
-        "tcp" => Some(11010),
-        "udp" => Some(11010),
-        "ws" => Some(80),
-        "wss" => Some(443),
-        "faketcp" => Some(11013),
-        "quic" => Some(11012),
-        "wg" => Some(11011),
-        _ => None,
-    }
-}
-
 #[async_trait::async_trait]
 impl FromUrl for SocketAddr {
     async fn from_url(url: url::Url, ip_version: IpVersion) -> Result<Self, TunnelError> {
-        let addrs = socket_addrs(&url, || default_port(url.scheme()))
-            .await
-            .map_err(|e| {
-                TunnelError::InvalidAddr(format!(
-                    "failed to resolve socket addr, url: {}, error: {}",
-                    url, e
-                ))
-            })?;
+        let addrs = socket_addrs(&url, || {
+            TunnelScheme::try_from(&url)
+                .ok()
+                .and_then(|s| s.default_port())
+        })
+        .await
+        .map_err(|e| {
+            TunnelError::InvalidAddr(format!(
+                "failed to resolve socket addr, url: {}, error: {}",
+                url, e
+            ))
+        })?;
         tracing::debug!(?addrs, ?ip_version, ?url, "convert url to socket addrs");
         let addrs = addrs
             .into_iter()
@@ -305,3 +300,111 @@ pub fn generate_digest_from_str(str1: &str, str2: &str, digest: &mut [u8]) {
         hasher.write(&digest[..(i + 1) * 8]);
     }
 }
+
+#[derive(Debug, From)]
+pub enum Transport {
+    Ip(Protocol),
+    #[cfg(unix)]
+    Unix,
+    Unknown,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Display, EnumString)]
+#[strum(serialize_all = "lowercase")]
+pub enum TunnelScheme {
+    Tcp,
+    Udp,
+    #[cfg(feature = "wireguard")]
+    #[strum(serialize = "wg")]
+    WireGuard,
+    #[cfg(feature = "quic")]
+    Quic,
+    #[cfg(feature = "websocket")]
+    #[strum(serialize = "ws")]
+    WebSocket,
+    #[cfg(feature = "websocket")]
+    #[strum(serialize = "wss")]
+    WebSocketSecure,
+    #[cfg(feature = "faketcp")]
+    FakeTcp,
+    #[cfg(unix)]
+    Unix,
+    // Only for connector
+    Http,
+    Https,
+    Txt,
+    Srv,
+}
+
+impl TryFrom<&url::Url> for TunnelScheme {
+    type Error = Error;
+
+    fn try_from(value: &url::Url) -> Result<Self, Self::Error> {
+        value
+            .scheme()
+            .parse()
+            .map_err(|_| Error::InvalidUrl(value.to_string()))
+    }
+}
+
+impl TunnelScheme {
+    pub const fn transport(self) -> Transport {
+        Transport::Ip(match self {
+            Self::Tcp => Protocol::TCP,
+            Self::Udp => Protocol::UDP,
+            #[cfg(feature = "wireguard")]
+            Self::WireGuard => Protocol::UDP,
+            #[cfg(feature = "quic")]
+            Self::Quic => Protocol::UDP,
+            #[cfg(feature = "websocket")]
+            Self::WebSocket | Self::WebSocketSecure => Protocol::TCP,
+            #[cfg(feature = "faketcp")]
+            Self::FakeTcp => Protocol::TCP,
+            #[cfg(unix)]
+            Self::Unix => return Transport::Unix,
+            _ => return Transport::Unknown,
+        })
+    }
+
+    pub const fn default_port(self) -> Option<u16> {
+        Some(match self {
+            Self::Tcp => 11010,
+            Self::Udp => 11010,
+            #[cfg(feature = "wireguard")]
+            Self::WireGuard => 11011,
+            #[cfg(feature = "quic")]
+            Self::Quic => 11012,
+            #[cfg(feature = "websocket")]
+            Self::WebSocket => 80,
+            #[cfg(feature = "websocket")]
+            Self::WebSocketSecure => 443,
+            #[cfg(feature = "faketcp")]
+            Self::FakeTcp => 11013,
+            #[allow(unreachable_patterns)]
+            _ => return None,
+        })
+    }
+}
+
+pub fn get_transport_by_url(l: &url::Url) -> Result<Transport, Error> {
+    Ok(TunnelScheme::try_from(l)?.transport())
+}
+
+macro_rules! __matches_transport__ {
+    ($url:expr, $( $pattern:pat_param )|+ ) => {
+        matches!($crate::tunnel::get_transport_by_url($url), Ok($( $pattern )|+))
+    };
+}
+
+pub(crate) use __matches_transport__ as matches_transport;
+
+macro_rules! __matches_protocol__ {
+    ($url:expr, $( $pattern:pat_param )|+ ) => {
+        $crate::tunnel::matches_transport!(
+            $url,
+            $crate::tunnel::Transport::Ip($( $pattern )|+)
+        )
+    };
+}
+
+pub(crate) use __matches_protocol__ as matches_protocol;
