@@ -39,10 +39,10 @@ use super::{
     create_connector_by_url, should_background_p2p_with_peer, should_try_p2p_with_peer,
     udp_hole_punch,
 };
-use crate::instance::listeners::matches_protocol;
+use crate::instance::listeners::{matches_protocol, TunnelScheme};
 use anyhow::Context;
-use pnet::packet::ip::IpNextHeaderProtocols;
 use rand::Rng;
+use socket2::Protocol;
 use tokio::{net::UdpSocket, task::JoinSet, time::timeout};
 use url::Host;
 
@@ -190,9 +190,12 @@ impl DirectConnectorManagerData {
             .await;
 
         let udp_connector = UdpTunnelConnector::new(remote_url.clone());
-        let remote_addr =
-            super::check_scheme_and_get_socket_addr::<SocketAddr>(remote_url, "udp", IpVersion::V6)
-                .await?;
+        let remote_addr = super::check_scheme_and_get_socket_addr::<SocketAddr>(
+            remote_url,
+            TunnelScheme::Udp,
+            IpVersion::V6,
+        )
+        .await?;
         let ret = udp_connector
             .try_connect_with_socket(local_socket, remote_addr)
             .await?;
@@ -307,15 +310,15 @@ impl DirectConnectorManagerData {
         let listener_host = addrs.pop();
         tracing::info!(?listener_host, ?listener, "try direct connect to peer");
 
-        let is_udp = matches_protocol!(listener, IpNextHeaderProtocols::Udp);
+        let is_udp = matches_protocol!(listener, Protocol::UDP);
         // Snapshot running listeners once; used for cheap port pre-checks before the
         // expensive should_deny_proxy call (which binds a socket per IP) in the
         // unspecified-address expansion loops below.
         let local_listeners = self.global_ctx.get_running_listeners();
         let port_has_local_listener = |port: u16| -> bool {
-            local_listeners.iter().any(|l| {
-                l.port() == Some(port) && matches_protocol!(l, IpNextHeaderProtocols::Udp) == is_udp
-            })
+            local_listeners
+                .iter()
+                .any(|l| l.port() == Some(port) && matches_protocol!(l, Protocol::UDP) == is_udp)
         };
 
         match listener_host {
