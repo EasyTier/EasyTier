@@ -8,7 +8,7 @@ use std::{
 use anyhow::Context;
 use async_trait::async_trait;
 use derive_more::From;
-use pnet::packet::ip::{IpNextHeaderProtocol, IpNextHeaderProtocols};
+use socket2::Protocol;
 use strum::{Display, EnumString};
 use tokio::task::JoinSet;
 
@@ -27,14 +27,14 @@ use crate::{
 
 #[derive(Debug, From)]
 pub enum Transport {
-    Ip(IpNextHeaderProtocol),
+    Ip(Protocol),
     #[cfg(unix)]
     Unix,
 }
 
-#[derive(Clone, Copy, Display, EnumString)]
+#[derive(Debug, Clone, Copy, PartialEq, Display, EnumString)]
 #[strum(serialize_all = "lowercase")]
-pub enum ListenerScheme {
+pub enum TunnelScheme {
     Tcp,
     Udp,
     #[cfg(feature = "wireguard")]
@@ -54,7 +54,7 @@ pub enum ListenerScheme {
     Unix,
 }
 
-impl TryFrom<&url::Url> for ListenerScheme {
+impl TryFrom<&url::Url> for TunnelScheme {
     type Error = Error;
 
     fn try_from(value: &url::Url) -> Result<Self, Self::Error> {
@@ -65,21 +65,40 @@ impl TryFrom<&url::Url> for ListenerScheme {
     }
 }
 
-impl ListenerScheme {
+impl TunnelScheme {
     const fn transport(self) -> Transport {
         Transport::Ip(match self {
-            Self::Tcp => IpNextHeaderProtocols::Tcp,
-            Self::Udp => IpNextHeaderProtocols::Udp,
+            Self::Tcp => Protocol::TCP,
+            Self::Udp => Protocol::UDP,
             #[cfg(feature = "wireguard")]
-            Self::WireGuard => IpNextHeaderProtocols::Udp,
+            Self::WireGuard => Protocol::UDP,
             #[cfg(feature = "quic")]
-            Self::Quic => IpNextHeaderProtocols::Udp,
+            Self::Quic => Protocol::UDP,
             #[cfg(feature = "websocket")]
-            Self::WebSocket | Self::WebSocketSecure => IpNextHeaderProtocols::Tcp,
+            Self::WebSocket | Self::WebSocketSecure => Protocol::TCP,
             #[cfg(feature = "faketcp")]
-            Self::FakeTcp => IpNextHeaderProtocols::Tcp,
+            Self::FakeTcp => Protocol::TCP,
             #[cfg(unix)]
             Self::Unix => return Transport::Unix,
+        })
+    }
+
+    pub(crate) const fn default_port(self) -> Option<u16> {
+        Some(match self {
+            Self::Tcp => 11010,
+            Self::Udp => 11010,
+            #[cfg(feature = "wireguard")]
+            Self::WireGuard => 11011,
+            #[cfg(feature = "quic")]
+            Self::Quic => 11012,
+            #[cfg(feature = "websocket")]
+            Self::WebSocket => 80,
+            #[cfg(feature = "websocket")]
+            Self::WebSocketSecure => 443,
+            #[cfg(feature = "faketcp")]
+            Self::FakeTcp => 11013,
+            #[allow(unreachable_patterns)]
+            _ => return None,
         })
     }
 }
@@ -89,10 +108,10 @@ pub fn get_listener_by_url(
     #[allow(unused_variables)] ctx: ArcGlobalCtx,
 ) -> Result<Box<dyn TunnelListener>, Error> {
     Ok(match l.try_into()? {
-        ListenerScheme::Tcp => Box::new(TcpTunnelListener::new(l.clone())),
-        ListenerScheme::Udp => Box::new(UdpTunnelListener::new(l.clone())),
+        TunnelScheme::Tcp => Box::new(TcpTunnelListener::new(l.clone())),
+        TunnelScheme::Udp => Box::new(UdpTunnelListener::new(l.clone())),
         #[cfg(feature = "wireguard")]
-        ListenerScheme::WireGuard => {
+        TunnelScheme::WireGuard => {
             use crate::tunnel::wireguard::{WgConfig, WgTunnelListener};
             let nid = ctx.get_network_identity();
             let wg_config = WgConfig::new_from_network_identity(
@@ -102,22 +121,22 @@ pub fn get_listener_by_url(
             Box::new(WgTunnelListener::new(l.clone(), wg_config))
         }
         #[cfg(feature = "quic")]
-        ListenerScheme::Quic => {
-            use crate::tunnel::quic::QUICTunnelListener;
-            Box::new(QUICTunnelListener::new(l.clone()))
+        TunnelScheme::Quic => {
+            use crate::tunnel::quic::QuicTunnelListener;
+            Box::new(QuicTunnelListener::new(l.clone()))
         }
         #[cfg(feature = "websocket")]
-        ListenerScheme::WebSocket | ListenerScheme::WebSocketSecure => {
+        TunnelScheme::WebSocket | TunnelScheme::WebSocketSecure => {
             use crate::tunnel::websocket::WSTunnelListener;
             Box::new(WSTunnelListener::new(l.clone()))
         }
         #[cfg(feature = "faketcp")]
-        ListenerScheme::FakeTcp => {
+        TunnelScheme::FakeTcp => {
             use crate::tunnel::fake_tcp::FakeTcpTunnelListener;
             Box::new(FakeTcpTunnelListener::new(l.clone()))
         }
         #[cfg(unix)]
-        ListenerScheme::Unix => {
+        TunnelScheme::Unix => {
             use crate::tunnel::unix::UnixSocketTunnelListener;
             Box::new(UnixSocketTunnelListener::new(l.clone()))
         }
@@ -125,7 +144,7 @@ pub fn get_listener_by_url(
 }
 
 pub fn get_transport_by_url(l: &url::Url) -> Result<Transport, Error> {
-    Ok(ListenerScheme::try_from(l)?.transport())
+    Ok(TunnelScheme::try_from(l)?.transport())
 }
 
 macro_rules! __matches_transport__ {
@@ -444,6 +463,10 @@ mod tests {
 
         #[async_trait::async_trait]
         impl TunnelListener for MockListener {
+            fn scheme(&self) -> TunnelScheme {
+                unimplemented!()
+            }
+
             fn local_url(&self) -> url::Url {
                 "mock://".parse().unwrap()
             }
