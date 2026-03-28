@@ -97,7 +97,7 @@ pub async fn create_connector_by_url(
                 #[cfg(feature = "quic")]
                 IpScheme::Quic => tunnel::quic::QuicTunnelConnector::new(url).boxed(),
                 #[cfg(feature = "wireguard")]
-                IpScheme::WireGuard => {
+                IpScheme::Wg => {
                     use crate::tunnel::wireguard::{WgConfig, WgTunnelConnector};
                     let nid = global_ctx.get_network_identity();
                     let wg_config = WgConfig::new_from_network_identity(
@@ -107,7 +107,7 @@ pub async fn create_connector_by_url(
                     WgTunnelConnector::new(url, wg_config).boxed()
                 }
                 #[cfg(feature = "websocket")]
-                IpScheme::WebSocket | IpScheme::WebSocketSecure => {
+                IpScheme::Ws | IpScheme::Wss => {
                     tunnel::websocket::WSTunnelConnector::new(url).boxed()
                 }
                 #[cfg(feature = "faketcp")]

@@ -10,10 +10,9 @@ use crate::proto::common::TunnelInfo;
 use async_trait::async_trait;
 use derive_more::{From, TryInto};
 use futures::{Sink, Stream};
-use serde::Deserialize;
-use serde::de::IntoDeserializer;
 use socket2::Protocol;
 use std::fmt::Debug;
+use strum::{Display, EnumString, VariantArray};
 use tokio::time::error::Elapsed;
 
 use self::packet_def::ZCPacket;
@@ -27,15 +26,6 @@ pub mod ring;
 pub mod stats;
 pub mod tcp;
 pub mod udp;
-
-pub const PROTO_PORT_OFFSET: &[(&str, u16)] = &[
-    ("tcp", 0),
-    ("udp", 0),
-    ("wg", 1),
-    ("ws", 1),
-    ("wss", 2),
-    ("faketcp", 3),
-];
 
 #[cfg(feature = "faketcp")]
 pub mod fake_tcp;
@@ -289,64 +279,73 @@ pub fn generate_digest_from_str(str1: &str, str2: &str, digest: &mut [u8]) {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Deserialize)]
-#[serde(rename_all = "lowercase")]
+#[derive(Debug, Clone, Copy)]
+struct IpSchemeAttributes {
+    protocol: Protocol,
+    port_offset: u16,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Display, EnumString, VariantArray)]
+#[strum(serialize_all = "lowercase")]
 pub enum IpScheme {
     Tcp,
     Udp,
     #[cfg(feature = "wireguard")]
-    #[serde(rename = "wg")]
-    WireGuard,
+    Wg,
     #[cfg(feature = "quic")]
     Quic,
     #[cfg(feature = "websocket")]
-    #[serde(rename = "ws")]
-    WebSocket,
+    Ws,
     #[cfg(feature = "websocket")]
-    #[serde(rename = "wss")]
-    WebSocketSecure,
+    Wss,
     #[cfg(feature = "faketcp")]
     FakeTcp,
 }
 
 impl IpScheme {
-    pub const fn protocol(self) -> Protocol {
-        match self {
-            Self::Tcp => Protocol::TCP,
-            Self::Udp => Protocol::UDP,
+    const fn attributes(self) -> IpSchemeAttributes {
+        let (protocol, port_offset) = match self {
+            Self::Tcp => (Protocol::TCP, 0),
+            Self::Udp => (Protocol::UDP, 0),
             #[cfg(feature = "wireguard")]
-            Self::WireGuard => Protocol::UDP,
+            Self::Wg => (Protocol::UDP, 1),
             #[cfg(feature = "quic")]
-            Self::Quic => Protocol::UDP,
+            Self::Quic => (Protocol::UDP, 2),
             #[cfg(feature = "websocket")]
-            Self::WebSocket | Self::WebSocketSecure => Protocol::TCP,
+            Self::Ws => (Protocol::TCP, 1),
+            #[cfg(feature = "websocket")]
+            Self::Wss => (Protocol::TCP, 2),
             #[cfg(feature = "faketcp")]
-            Self::FakeTcp => Protocol::TCP,
+            Self::FakeTcp => (Protocol::TCP, 3),
+        };
+        IpSchemeAttributes {
+            protocol,
+            port_offset,
         }
+    }
+    pub const fn protocol(self) -> Protocol {
+        self.attributes().protocol
+    }
+
+    pub const fn port_offset(self) -> u16 {
+        self.attributes().port_offset
     }
 
     pub const fn default_port(self) -> u16 {
         match self {
-            Self::Tcp => 11010,
-            Self::Udp => 11010,
-            #[cfg(feature = "wireguard")]
-            Self::WireGuard => 11011,
-            #[cfg(feature = "quic")]
-            Self::Quic => 11012,
             #[cfg(feature = "websocket")]
-            Self::WebSocket => 80,
+            Self::Ws => 80,
             #[cfg(feature = "websocket")]
-            Self::WebSocketSecure => 443,
-            #[cfg(feature = "faketcp")]
-            Self::FakeTcp => 11013,
+            Self::Wss => 443,
+            _ => 11010 + self.port_offset(),
         }
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Deserialize, From, TryInto)]
-#[serde(rename_all = "lowercase")]
-#[serde(untagged)]
+#[derive(Debug, Clone, Copy, PartialEq, EnumString, From, TryInto)]
+#[strum(serialize_all = "lowercase")]
 pub enum TunnelScheme {
+    #[strum(disabled)]
     Ip(IpScheme),
     #[cfg(unix)]
     Unix,
@@ -362,8 +361,14 @@ impl TryFrom<&url::Url> for TunnelScheme {
     type Error = Error;
 
     fn try_from(value: &url::Url) -> Result<Self, Self::Error> {
-        Self::deserialize(value.scheme().into_deserializer())
-            .map_err(|_: serde::de::value::Error| Error::InvalidUrl(value.to_string()))
+        let scheme = value.scheme();
+        scheme.parse().or_else(|_| {
+            Ok(TunnelScheme::Ip(
+                scheme
+                    .parse()
+                    .map_err(|_| Error::InvalidUrl(value.to_string()))?,
+            ))
+        })
     }
 }
 

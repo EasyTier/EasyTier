@@ -1,21 +1,22 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
 
-use crate::common::dns::{RESOLVER, resolve_txt_record};
+use super::create_connector_by_url;
+use super::http_connector::TunnelWithInfo;
+use crate::common::dns::{resolve_txt_record, RESOLVER};
 use crate::common::error::Error;
 use crate::common::global_ctx::ArcGlobalCtx;
 use crate::common::log;
-use crate::tunnel::{IpVersion, PROTO_PORT_OFFSET, Tunnel, TunnelConnector, TunnelError};
+use crate::proto::common::TunnelInfo;
+use crate::tunnel::TunnelScheme;
+use crate::tunnel::{IpScheme, IpVersion, Tunnel, TunnelConnector, TunnelError};
 use anyhow::Context;
 use dashmap::DashSet;
 use hickory_resolver::proto::rr::rdata::SRV;
-use rand::Rng as _;
+use itertools::Itertools;
 use rand::seq::SliceRandom;
-
-use super::create_connector_by_url;
-use super::http_connector::TunnelWithInfo;
-use crate::proto::common::TunnelInfo;
-use crate::tunnel::TunnelScheme;
+use rand::Rng as _;
+use strum::VariantArray;
 
 fn weighted_choice<T>(options: &[(T, u64)]) -> Option<&T> {
     let total_weight = options.iter().map(|(_, weight)| *weight).sum();
@@ -83,7 +84,7 @@ impl DNSTunnelConnector {
         Ok(connector)
     }
 
-    fn handle_one_srv_record(record: &SRV, protocol: &str) -> Result<(url::Url, u64), Error> {
+    fn handle_one_srv_record(record: &SRV, protocol: IpScheme) -> Result<(url::Url, u64), Error> {
         // port must be non-zero
         if record.port() == 0 {
             return Err(anyhow::anyhow!("port must be non-zero").into());
@@ -113,15 +114,15 @@ impl DNSTunnelConnector {
     ) -> Result<Box<dyn TunnelConnector>, Error> {
         tracing::info!("handle_srv_record: {}", domain_name);
 
-        let srv_domains = PROTO_PORT_OFFSET
+        let srv_domains = IpScheme::VARIANTS
             .iter()
-            .map(|(p, _)| (format!("_easytier._{}.{}", p, domain_name), *p)) // _easytier._udp.{domain_name}
-            .collect::<Vec<_>>();
+            .map(|s| (s, format!("_easytier._{}.{}", s, domain_name)))
+            .collect_vec();
         tracing::info!("build srv_domains: {:?}", srv_domains);
         let responses = Arc::new(DashSet::new());
         let srv_lookup_tasks = srv_domains
             .iter()
-            .map(|(srv_domain, protocol)| {
+            .map(|(protocol, srv_domain)| {
                 let resolver = RESOLVER.clone();
                 let responses = responses.clone();
                 async move {
@@ -130,7 +131,7 @@ impl DNSTunnelConnector {
                     })?;
                     tracing::info!(?response, ?srv_domain, "srv_lookup response");
                     for record in response.iter() {
-                        let parsed_record = Self::handle_one_srv_record(record, protocol);
+                        let parsed_record = Self::handle_one_srv_record(record, **protocol);
                         tracing::info!(?parsed_record, ?srv_domain, "parsed_record");
                         if let Err(e) = &parsed_record {
                             log::warn!("got invalid srv record {:?}", e);
