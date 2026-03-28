@@ -7,6 +7,8 @@ use std::{
 
 use anyhow::Context;
 use async_trait::async_trait;
+use derive_more::From;
+use smoltcp::wire::IpProtocol;
 use tokio::task::JoinSet;
 
 #[cfg(feature = "faketcp")]
@@ -63,6 +65,55 @@ pub fn get_listener_by_url(
         }
     })
 }
+
+#[derive(Debug, From)]
+pub enum Transport {
+    Ip(IpProtocol),
+    #[cfg(unix)]
+    Unix,
+}
+
+pub fn get_transport(l: &url::Url) -> Result<Transport, Error> {
+    #[cfg(unix)]
+    if l.scheme() == "unix" {
+        return Ok(Transport::Unix);
+    }
+    Ok(match l.scheme() {
+        "tcp" => IpProtocol::Tcp,
+        "udp" => IpProtocol::Udp,
+        #[cfg(feature = "wireguard")]
+        "wg" => IpProtocol::Udp,
+        #[cfg(feature = "quic")]
+        "quic" => IpProtocol::Udp,
+        #[cfg(feature = "websocket")]
+        "ws" | "wss" => IpProtocol::Tcp,
+        #[cfg(feature = "faketcp")]
+        "faketcp" => IpProtocol::Tcp,
+        _ => {
+            return Err(Error::InvalidUrl(l.to_string()));
+        }
+    }
+    .into())
+}
+
+macro_rules! __matches_transport__ {
+    ($url:expr, $( $pattern:pat_param )|+ ) => {
+        matches!($crate::instance::listeners::get_transport($url), Ok($( $pattern )|+))
+    };
+}
+
+pub(crate) use __matches_transport__ as matches_transport;
+
+macro_rules! __matches_protocol__ {
+    ($url:expr, $( $pattern:pat_param )|+ ) => {
+        $crate::instance::listeners::matches_transport!(
+            $url,
+            $crate::instance::listeners::Transport::Ip($( $pattern )|+)
+        )
+    };
+}
+
+pub(crate) use __matches_protocol__ as matches_protocol;
 
 pub fn is_url_host_ipv6(l: &url::Url) -> bool {
     l.host_str().is_some_and(|h| h.contains(':'))

@@ -10,10 +10,18 @@ use std::{
 use arc_swap::ArcSwap;
 use dashmap::DashMap;
 
+use super::{
+    config::{ConfigLoader, Flags},
+    netns::NetNS,
+    network::IPCollector,
+    stun::{StunInfoCollector, StunInfoCollectorTrait},
+    PeerId,
+};
 use crate::common::config::ProxyNetworkConfig;
 use crate::common::shrink_dashmap;
 use crate::common::stats_manager::StatsManager;
 use crate::common::token_bucket::TokenBucketManager;
+use crate::instance::listeners::matches_protocol;
 use crate::peers::acl_filter::AclFilter;
 use crate::peers::credential_manager::CredentialManager;
 use crate::proto::acl::GroupIdentity;
@@ -24,14 +32,7 @@ use crate::proto::peer_rpc::PeerGroupInfo;
 use crossbeam::atomic::AtomicCell;
 use hmac::{Hmac, Mac};
 use sha2::Sha256;
-
-use super::{
-    config::{ConfigLoader, Flags},
-    netns::NetNS,
-    network::IPCollector,
-    stun::{StunInfoCollector, StunInfoCollectorTrait},
-    PeerId,
-};
+use smoltcp::wire::IpProtocol;
 
 pub type NetworkIdentity = crate::common::config::NetworkIdentity;
 
@@ -625,15 +626,11 @@ impl GlobalCtx {
     }
 
     fn is_port_in_running_listeners(&self, port: u16, is_udp: bool) -> bool {
-        let check_proto = |listener_proto: &str| {
-            let listener_is_udp = matches!(listener_proto, "udp" | "wg");
-            listener_is_udp == is_udp
-        };
         self.running_listeners
             .lock()
             .unwrap()
             .iter()
-            .any(|x| x.port() == Some(port) && check_proto(x.scheme()))
+            .any(|x| x.port() == Some(port) && matches_protocol!(x, IpProtocol::Udp) == is_udp)
     }
 
     #[tracing::instrument(ret, skip(self))]
