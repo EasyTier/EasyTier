@@ -8,7 +8,7 @@ use std::{
 use anyhow::Context;
 use async_trait::async_trait;
 use derive_more::From;
-use smoltcp::wire::IpProtocol;
+use pnet::packet::ip::{IpNextHeaderProtocol, IpNextHeaderProtocols};
 use tokio::task::JoinSet;
 
 #[cfg(feature = "faketcp")]
@@ -68,7 +68,7 @@ pub fn get_listener_by_url(
 
 #[derive(Debug, From)]
 pub enum Transport {
-    Ip(IpProtocol),
+    Ip(IpNextHeaderProtocol),
     #[cfg(unix)]
     Unix,
 }
@@ -79,16 +79,16 @@ pub fn get_transport(l: &url::Url) -> Result<Transport, Error> {
         return Ok(Transport::Unix);
     }
     Ok(match l.scheme() {
-        "tcp" => IpProtocol::Tcp,
-        "udp" => IpProtocol::Udp,
+        "tcp" => IpNextHeaderProtocols::Tcp,
+        "udp" => IpNextHeaderProtocols::Udp,
         #[cfg(feature = "wireguard")]
-        "wg" => IpProtocol::Udp,
+        "wg" => IpNextHeaderProtocols::Udp,
         #[cfg(feature = "quic")]
-        "quic" => IpProtocol::Udp,
+        "quic" => IpNextHeaderProtocols::Udp,
         #[cfg(feature = "websocket")]
-        "ws" | "wss" => IpProtocol::Tcp,
+        "ws" | "wss" => IpNextHeaderProtocols::Tcp,
         #[cfg(feature = "faketcp")]
-        "faketcp" => IpProtocol::Tcp,
+        "faketcp" => IpNextHeaderProtocols::Tcp,
         _ => {
             return Err(Error::InvalidUrl(l.to_string()));
         }
