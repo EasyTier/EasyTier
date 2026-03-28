@@ -27,7 +27,7 @@ pub fn create_listener_by_url(
             IpScheme::Tcp => TcpTunnelListener::new(l.clone()).boxed(),
             IpScheme::Udp => UdpTunnelListener::new(l.clone()).boxed(),
             #[cfg(feature = "wireguard")]
-            IpScheme::WireGuard => {
+            IpScheme::Wg => {
                 use crate::tunnel::wireguard::{WgConfig, WgTunnelListener};
                 let nid = ctx.get_network_identity();
                 let wg_config = WgConfig::new_from_network_identity(
@@ -39,7 +39,7 @@ pub fn create_listener_by_url(
             #[cfg(feature = "quic")]
             IpScheme::Quic => tunnel::quic::QuicTunnelListener::new(l.clone()).boxed(),
             #[cfg(feature = "websocket")]
-            IpScheme::WebSocket | IpScheme::WebSocketSecure => {
+            IpScheme::Ws | IpScheme::Wss => {
                 tunnel::websocket::WSTunnelListener::new(l.clone()).boxed()
             }
             #[cfg(feature = "faketcp")]
