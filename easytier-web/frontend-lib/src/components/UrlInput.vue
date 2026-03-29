@@ -16,6 +16,13 @@ const editing = ref(false)
 const container = ref<HTMLElement | null>(null)
 const internalCompact = ref(false)
 
+type ParsedUrlValue = {
+    proto: string
+    host: string
+    port: number
+    path: string
+}
+
 onMounted(() => {
     if (container.value) {
         const observer = new ResizeObserver(entries => {
@@ -31,22 +38,25 @@ onMounted(() => {
     }
 })
 
-const parseUrl = (val: string | null | undefined) => {
+const parseUrl = (val: string | null | undefined): ParsedUrlValue => {
     const getValidPort = (portStr: string, proto: string) => {
         const p = parseInt(portStr)
         return isNaN(p) ? (props.protos[proto] ?? 11010) : p
     }
 
     if (!val) {
-        return { proto: 'tcp', host: '', port: props.protos['tcp'] ?? 11010 }
+        return { proto: 'tcp', host: '', port: props.protos['tcp'] ?? 11010, path: '' }
     }
+
     try {
         const urlObj = new URL(val)
         const proto = urlObj.protocol.replace(':', '')
+        const path = `${urlObj.pathname}${urlObj.search}${urlObj.hash}`
         return {
             proto: proto,
             host: urlObj.hostname,
-            port: getValidPort(urlObj.port, proto)
+            port: getValidPort(urlObj.port, proto),
+            path: path === '/' ? '' : path
         }
     } catch (e) {
         // Fallback for incomplete or invalid URLs
@@ -54,14 +64,18 @@ const parseUrl = (val: string | null | undefined) => {
         if (match) {
             const proto = match[1]
             const rest = match[2]
-            const portMatch = rest.match(/:(\d+)$/)
+            const slashIndex = rest.indexOf('/')
+            const hostPort = slashIndex >= 0 ? rest.slice(0, slashIndex) : rest
+            const path = slashIndex >= 0 ? rest.slice(slashIndex) : ''
+            const portMatch = hostPort.match(/:(\d+)$/)
             return {
                 proto,
-                host: portMatch ? rest.slice(0, portMatch.index) : rest,
-                port: portMatch ? parseInt(portMatch[1]) : (props.protos[proto] ?? 11010)
+                host: portMatch ? hostPort.slice(0, portMatch.index) : hostPort,
+                port: portMatch ? parseInt(portMatch[1]) : (props.protos[proto] ?? 11010),
+                path
             }
         }
-        return { proto: 'tcp', host: '', port: 11010 }
+        return { proto: 'tcp', host: '', port: 11010, path: '' }
     }
 }
 
@@ -71,12 +85,25 @@ const isNoPortProto = computed(() => {
     return props.protos[internalValue.value.proto] === 0
 })
 
+const supportsPath = computed(() => {
+    const proto = internalValue.value.proto
+    return proto === 'ws' || proto === 'wss' || proto === 'http' || proto === 'https'
+})
+
+const normalizePath = (path: string) => {
+    const trimmed = path.trim()
+    if (!trimmed)
+        return ''
+    return trimmed.startsWith('/') ? trimmed : `/${trimmed}`
+}
+
 // Sync from external
 watch(() => url.value, (newVal) => {
     const parsed = parseUrl(newVal)
     if (parsed.proto !== internalValue.value.proto ||
         parsed.host !== internalValue.value.host ||
-        parsed.port !== internalValue.value.port) {
+        parsed.port !== internalValue.value.port ||
+        parsed.path !== internalValue.value.path) {
         internalValue.value = parsed
     }
 })
@@ -86,14 +113,16 @@ watch(internalValue, (newVal) => {
     const proto = newVal.proto || 'tcp'
     const host = newVal.host || '0.0.0.0'
     let port = newVal.port
-    if (isNaN(parseInt(port as any))) {
+    if (typeof port !== 'number' || Number.isNaN(port)) {
         port = props.protos[proto] ?? 11010
     }
 
+    const path = supportsPath.value ? normalizePath(newVal.path) : ''
+
     if (props.protos[proto] === 0) {
-        url.value = `${proto}://${host}`
+        url.value = `${proto}://${host}${path}`
     } else {
-        url.value = `${proto}://${host}:${port}`
+        url.value = `${proto}://${host}:${port}${path}`
     }
 }, { deep: true })
 
@@ -136,6 +165,9 @@ const onProtoChange = (newProto: string) => {
                 <InputNumber v-model="internalValue.port" :format="false" :min="1" :max="65535" class="max-w-24"
                     fluid />
             </template>
+            <template v-if="supportsPath">
+                <InputText v-model="internalValue.path" placeholder="/mypath" class="grow" />
+            </template>
             <slot name="actions"></slot>
         </InputGroup>
 
@@ -161,6 +193,10 @@ const onProtoChange = (newProto: string) => {
                 <div v-if="!isNoPortProto" class="flex flex-col gap-2">
                     <label>{{ t('port') }}</label>
                     <InputNumber v-model="internalValue.port" :format="false" :min="1" :max="65535" class="w-full" />
+                </div>
+                <div v-if="supportsPath" class="flex flex-col gap-2">
+                    <label>{{ t('path') }}</label>
+                    <InputText v-model="internalValue.path" placeholder="/mypath" class="w-full" />
                 </div>
             </div>
             <template #footer>
