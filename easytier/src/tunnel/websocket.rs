@@ -409,12 +409,17 @@ pub mod tests {
                 .find(|(k, _)| k == "proxy")
                 .map(|(_, v)| v.into_owned())
                 .unwrap();
-            assert!(proxy_addr.starts_with("127.0.0.1:"), "{}", proxy_addr);
+            assert_eq!(proxy_addr, "127.0.0.1:25560");
 
             tunnel
         });
 
-        let mut stream = TcpStream::connect("127.0.0.1:25559").await.unwrap();
+        let socket = TcpSocket::new_v4().unwrap();
+        socket.bind("127.0.0.1:25560".parse().unwrap()).unwrap();
+        let mut stream = socket
+            .connect("127.0.0.1:25559".parse().unwrap())
+            .await
+            .unwrap();
 
         let handshake = "GET / HTTP/1.1\r\n\
                          Host: 127.0.0.1:25559\r\n\
