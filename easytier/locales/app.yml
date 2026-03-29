@@ -217,6 +217,9 @@ core_clap:
   foreign_relay_bps_limit:
     en: "the maximum bps limit for foreign network relay, default is no limit. unit: BPS (bytes per second)"
     zh-CN: "作为共享节点时，限制非本地网络的流量转发速率，默认无限制，单位 BPS （字节每秒）"
+  instance_recv_bps_limit:
+    en: "the maximum total receive bps limit for this instance, default is no limit. unit: BPS (bytes per second)"
+    zh-CN: "限制当前网络实例整体入站流量的总接收速率，默认无限制，单位 BPS （字节每秒）"
   tcp_whitelist:
     en: "tcp port whitelist. Supports single ports (80) and ranges (8000-9000)"
     zh-CN: "TCP 端口白名单。支持单个端口（80）和范围（8000-9000）"

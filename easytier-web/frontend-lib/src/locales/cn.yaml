@@ -196,6 +196,12 @@ mtu_help: |
   TUN设备的MTU，默认为非加密时为1380，加密时为1360。范围：400-1380
 mtu_placeholder: 留空为默认值1380
 
+instance_recv_bps_limit: 实例接收限速
+instance_recv_bps_limit_help: |
+  限制当前实例整体入站流量的总接收速率，单位为字节每秒。
+  留空表示不限速。
+instance_recv_bps_limit_placeholder: 留空表示不限速
+
 mapped_listeners: 监听映射
 mapped_listeners_help: |
   手动指定监听器的公网地址，其他节点可以使用该地址连接到本节点。
