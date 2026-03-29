@@ -1080,10 +1080,6 @@ impl NetworkOptions {
             .enable_relay_foreign_network_quic
             .unwrap_or(f.enable_relay_foreign_network_quic);
         f.disable_sym_hole_punching = self.disable_sym_hole_punching.unwrap_or(false);
-        // Configure tld_dns_zone: use provided value if set
-        if let Some(tld_dns_zone) = &self.tld_dns_zone {
-            f.tld_dns_zone = tld_dns_zone.clone();
-        }
         cfg.set_flags(f);
 
         if !self.exit_nodes.is_empty() {

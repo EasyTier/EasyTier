@@ -15,7 +15,6 @@ use tokio::sync::{broadcast, Notify};
 use tokio::task::JoinSet;
 use tokio::time::{sleep, sleep_until, Instant};
 use uuid::Uuid;
-use crate::instance::instance::ArcNicCtx;
 
 #[derive(Debug)]
 pub struct DnsNode {
