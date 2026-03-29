@@ -21,7 +21,7 @@ use tokio::process::Command;
 use super::error::Error;
 
 #[async_trait]
-pub trait IfConfiguerTrait: Send + Sync {
+pub trait IfConfigerTrait: Send + Sync {
     async fn add_ipv4_route(
         &self,
         _name: &str,
@@ -45,6 +45,9 @@ pub trait IfConfiguerTrait: Send + Sync {
         _address: Ipv4Addr,
         _cidr_prefix: u8,
     ) -> Result<(), Error> {
+        Ok(())
+    }
+    async fn remove_ipv4_ip(&self, _name: &str, _ip: Option<Ipv4Inet>) -> Result<(), Error> {
         Ok(())
     }
     async fn add_ipv6_route(
@@ -72,17 +75,14 @@ pub trait IfConfiguerTrait: Send + Sync {
     ) -> Result<(), Error> {
         Ok(())
     }
+    async fn remove_ipv6_ip(&self, _name: &str, _ip: Option<Ipv6Inet>) -> Result<(), Error> {
+        Ok(())
+    }
     async fn set_link_status(&self, _name: &str, _up: bool) -> Result<(), Error> {
         Ok(())
     }
-    async fn remove_ip(&self, _name: &str, _ip: Option<Ipv4Inet>) -> Result<(), Error> {
-        Ok(())
-    }
-    async fn remove_ipv6(&self, _name: &str, _ip: Option<Ipv6Inet>) -> Result<(), Error> {
-        Ok(())
-    }
     async fn wait_interface_show(&self, _name: &str) -> Result<(), Error> {
-        return Ok(());
+        Ok(())
     }
     async fn set_mtu(&self, _name: &str, _mtu: u32) -> Result<(), Error> {
         Ok(())
@@ -140,21 +140,19 @@ async fn run_shell_cmd(cmd: &str) -> Result<(), Error> {
     Ok(())
 }
 
-pub struct DummyIfConfiger {}
-#[async_trait]
-impl IfConfiguerTrait for DummyIfConfiger {}
+pub struct DummyIfConfiger;
 
 #[cfg(target_os = "linux")]
-pub type IfConfiger = netlink::NetlinkIfConfiger;
+const IF_CONFIGER: netlink::IfConfiger = netlink::IfConfiger;
 
 #[cfg(any(
     all(target_os = "macos", not(feature = "macos-ne")),
     target_os = "freebsd"
 ))]
-pub type IfConfiger = darwin::MacIfConfiger;
+const IF_CONFIGER: darwin::IfConfiger = darwin::IfConfiger;
 
 #[cfg(target_os = "windows")]
-pub type IfConfiger = windows::WindowsIfConfiger;
+const IF_CONFIGER: windows::IfConfiger = windows::IfConfiger;
 
 #[cfg(not(any(
     all(target_os = "macos", not(feature = "macos-ne")),
@@ -162,7 +160,13 @@ pub type IfConfiger = windows::WindowsIfConfiger;
     target_os = "windows",
     target_os = "freebsd",
 )))]
-pub type IfConfiger = DummyIfConfiger;
+const IF_CONFIGER: DummyIfConfiger = DummyIfConfiger;
 
 #[cfg(target_os = "windows")]
 pub use windows::RegistryManager;
+
+pub type IfConfiger = &'static dyn IfConfigerTrait;
+
+pub fn get() -> IfConfiger {
+    &IF_CONFIGER
+}

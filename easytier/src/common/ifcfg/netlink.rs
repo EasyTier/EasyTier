@@ -30,7 +30,7 @@ use nix::{
 };
 use pnet::ipnetwork::ip_mask_to_prefix;
 
-use super::{route::Route, Error, IfConfiguerTrait};
+use super::{route::Route, Error, IfConfigerTrait};
 
 pub(crate) fn dummy_socket() -> Result<std::net::UdpSocket, Error> {
     Ok(std::net::UdpSocket::bind("0:0")?)
@@ -157,9 +157,9 @@ impl From<RouteMessage> for Route {
     }
 }
 
-pub struct NetlinkIfConfiger {}
+pub struct IfConfiger;
 
-impl NetlinkIfConfiger {
+impl IfConfiger {
     fn get_interface_index(name: &str) -> Result<u32, Error> {
         let name = CString::new(name).with_context(|| "failed to convert interface name")?;
         match unsafe { libc::if_nametoindex(name.as_ptr()) } {
@@ -181,7 +181,7 @@ impl NetlinkIfConfiger {
     fn remove_one_ip(name: &str, ip: Ipv4Addr, prefix_len: u8) -> Result<(), Error> {
         let mut message = AddressMessage::default();
         message.header.prefix_len = prefix_len;
-        message.header.index = NetlinkIfConfiger::get_interface_index(name)?;
+        message.header.index = IfConfiger::get_interface_index(name)?;
         message.header.family = AddressFamily::Inet;
 
         message
@@ -207,7 +207,7 @@ impl NetlinkIfConfiger {
     fn remove_one_ipv6(name: &str, ip: Ipv6Addr, prefix_len: u8) -> Result<(), Error> {
         let mut message = AddressMessage::default();
         message.header.prefix_len = prefix_len;
-        message.header.index = NetlinkIfConfiger::get_interface_index(name)?;
+        message.header.index = IfConfiger::get_interface_index(name)?;
         message.header.family = AddressFamily::Inet6;
 
         message
@@ -370,7 +370,13 @@ impl NetlinkIfConfiger {
 }
 
 #[async_trait]
-impl IfConfiguerTrait for NetlinkIfConfiger {
+impl IfConfigerTrait for IfConfiger {
+    fn new() -> Self
+    where
+        Self: Sized + 'static,
+    {
+        Self(())
+    }
     async fn add_ipv4_route(
         &self,
         name: &str,
@@ -392,7 +398,7 @@ impl IfConfiguerTrait for NetlinkIfConfiger {
         // output interface
         message
             .attributes
-            .push(RouteAttribute::Oif(NetlinkIfConfiger::get_interface_index(
+            .push(RouteAttribute::Oif(IfConfiger::get_interface_index(
                 name,
             )?));
         // source address
@@ -411,7 +417,7 @@ impl IfConfiguerTrait for NetlinkIfConfiger {
         cidr_prefix: u8,
     ) -> Result<(), Error> {
         let routes = Self::list_routes()?;
-        let ifidx = NetlinkIfConfiger::get_interface_index(name)?;
+        let ifidx = IfConfiger::get_interface_index(name)?;
 
         for msg in routes {
             let other_route: Route = msg.clone().into();
@@ -436,7 +442,7 @@ impl IfConfiguerTrait for NetlinkIfConfiger {
         let mut message = AddressMessage::default();
 
         message.header.prefix_len = cidr_prefix;
-        message.header.index = NetlinkIfConfiger::get_interface_index(name)?;
+        message.header.index = IfConfiger::get_interface_index(name)?;
         message.header.family = AddressFamily::Inet;
 
         message
@@ -466,14 +472,7 @@ impl IfConfiguerTrait for NetlinkIfConfiger {
         )
     }
 
-    async fn set_link_status(&self, name: &str, up: bool) -> Result<(), Error> {
-        let mut flags = Self::get_flags(name)?;
-        flags.set(InterfaceFlags::IFF_UP, up);
-        Self::set_flags(name, flags)?;
-        Ok(())
-    }
-
-    async fn remove_ip(&self, name: &str, ip: Option<Ipv4Inet>) -> Result<(), Error> {
+    async fn remove_ipv4_ip(&self, name: &str, ip: Option<Ipv4Inet>) -> Result<(), Error> {
         if let Some(ip) = ip {
             let prefix_len = Self::get_prefix_len(name, ip.address())?;
             Self::remove_one_ip(name, ip.address(), prefix_len)?;
@@ -482,52 +481,6 @@ impl IfConfiguerTrait for NetlinkIfConfiger {
             for addr in addrs {
                 if let IpAddr::V4(ipv4) = addr.address() {
                     Self::remove_one_ip(name, ipv4, addr.network_length())?;
-                }
-            }
-        }
-
-        Ok(())
-    }
-
-    async fn set_mtu(&self, name: &str, mtu: u32) -> Result<(), Error> {
-        Self::mtu_op(name, SIOCSIFMTU, mtu as libc::c_int)?;
-
-        Ok(())
-    }
-
-    async fn add_ipv6_ip(
-        &self,
-        name: &str,
-        address: std::net::Ipv6Addr,
-        cidr_prefix: u8,
-    ) -> Result<(), Error> {
-        let mut message = AddressMessage::default();
-
-        message.header.prefix_len = cidr_prefix;
-        message.header.index = NetlinkIfConfiger::get_interface_index(name)?;
-        message.header.family = AddressFamily::Inet6;
-
-        message
-            .attributes
-            .push(AddressAttribute::Address(std::net::IpAddr::V6(address)));
-
-        // For IPv6, we don't need IFA_LOCAL or IFA_BROADCAST
-        send_netlink_req_and_wait_one_resp::<RouteNetlinkMessage>(
-            RouteNetlinkMessage::NewAddress(message),
-            false,
-        )
-    }
-
-    async fn remove_ipv6(&self, name: &str, ip: Option<Ipv6Inet>) -> Result<(), Error> {
-        if let Some(ipv6) = ip {
-            let prefix_len = Self::get_prefix_len_ipv6(name, ipv6.address())?;
-            Self::remove_one_ipv6(name, ipv6.address(), prefix_len)?;
-        } else {
-            let addrs = Self::list_addresses(name)?;
-            for addr in addrs {
-                if let IpAddr::V6(ipv6) = addr.address() {
-                    let prefix_len = addr.network_length();
-                    Self::remove_one_ipv6(name, ipv6, prefix_len)?;
                 }
             }
         }
@@ -560,7 +513,7 @@ impl IfConfiguerTrait for NetlinkIfConfiger {
 
         message
             .attributes
-            .push(RouteAttribute::Oif(NetlinkIfConfiger::get_interface_index(
+            .push(RouteAttribute::Oif(IfConfiger::get_interface_index(
                 name,
             )?));
 
@@ -578,7 +531,7 @@ impl IfConfiguerTrait for NetlinkIfConfiger {
         cidr_prefix: u8,
     ) -> Result<(), Error> {
         let routes = Self::list_routes()?;
-        let ifidx = NetlinkIfConfiger::get_interface_index(name)?;
+        let ifidx = IfConfiger::get_interface_index(name)?;
 
         for msg in routes {
             let other_route: Route = msg.clone().into();
@@ -593,12 +546,63 @@ impl IfConfiguerTrait for NetlinkIfConfiger {
 
         Ok(())
     }
+
+    async fn add_ipv6_ip(
+        &self,
+        name: &str,
+        address: std::net::Ipv6Addr,
+        cidr_prefix: u8,
+    ) -> Result<(), Error> {
+        let mut message = AddressMessage::default();
+
+        message.header.prefix_len = cidr_prefix;
+        message.header.index = IfConfiger::get_interface_index(name)?;
+        message.header.family = AddressFamily::Inet6;
+
+        message
+            .attributes
+            .push(AddressAttribute::Address(std::net::IpAddr::V6(address)));
+
+        // For IPv6, we don't need IFA_LOCAL or IFA_BROADCAST
+        send_netlink_req_and_wait_one_resp::<RouteNetlinkMessage>(
+            RouteNetlinkMessage::NewAddress(message),
+            false,
+        )
+    }
+
+    async fn remove_ipv6_ip(&self, name: &str, ip: Option<Ipv6Inet>) -> Result<(), Error> {
+        if let Some(ipv6) = ip {
+            let prefix_len = Self::get_prefix_len_ipv6(name, ipv6.address())?;
+            Self::remove_one_ipv6(name, ipv6.address(), prefix_len)?;
+        } else {
+            let addrs = Self::list_addresses(name)?;
+            for addr in addrs {
+                if let IpAddr::V6(ipv6) = addr.address() {
+                    let prefix_len = addr.network_length();
+                    Self::remove_one_ipv6(name, ipv6, prefix_len)?;
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn set_link_status(&self, name: &str, up: bool) -> Result<(), Error> {
+        let mut flags = Self::get_flags(name)?;
+        flags.set(InterfaceFlags::IFF_UP, up);
+        Self::set_flags(name, flags)?;
+        Ok(())
+    }
+
+    async fn set_mtu(&self, name: &str, mtu: u32) -> Result<(), Error> {
+        Self::mtu_op(name, SIOCSIFMTU, mtu as libc::c_int)?;
+
+        Ok(())
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     const DUMMY_IFACE_NAME: &str = "dummy";
 
     fn run_cmd(cmd: &str) -> String {
