@@ -11,286 +11,88 @@
 
 [简体中文](/README_CN.md) | [English](/README.md)
 
-> ✨ A simple, secure, decentralized virtual private network solution powered by Rust and Tokio
+> ✨ A simple, secure, decentralized SD-WAN solution powered by Rust and Tokio
 
-<p align="center">
-<img src="assets/config-page.png" width="300" alt="config page">
-<img src="assets/running-page.png" width="300" alt="running page">
-</p>
+🌐 **[Official Website](https://easytier.rs)** | 📚 **[Documentation](https://easytier.rs/en/)** | 🚀 **[Get Started](https://easytier.rs/en/guide/introduction.html)** | 📝 **[Download Releases](https://github.com/EasyTier/EasyTier/releases)** | 🇨🇳 **[China Site](https://easytier.cn)** | ❤️ **[Sponsor](#sponsor)**
 
-📚 **[Full Documentation](https://easytier.cn/en/)** | 🖥️ **[Web Console](https://easytier.cn/web)** | 📝 **[Download Releases](https://github.com/EasyTier/EasyTier/releases)** | 🧩 **[Third Party Tools](https://easytier.cn/en/guide/installation_gui.html#third-party-graphical-interfaces)** | ❤️ **[Sponsor](#sponsor)**
+## Get Started
 
-## Features
+### Install
 
-### Core Features
+Linux:
 
-- 🔒 **Decentralized**: Nodes are equal and independent, no centralized services required  
-- 🚀 **Easy to Use**: Multiple operation methods via web, client, and command line  
-- 🌍 **Cross-Platform**: Supports Win/MacOS/Linux/FreeBSD/Android and X86/ARM/MIPS architectures  
-- 🔐 **Secure**: AES-GCM or WireGuard encryption, prevents man-in-the-middle attacks  
-
-### Advanced Capabilities
-
-- 🔌 **Efficient NAT Traversal**: Supports UDP and IPv6 traversal, works with NAT4-NAT4 networks  
-- 🌐 **Subnet Proxy**: Nodes can share subnets for other nodes to access  
-- 🔄 **Intelligent Routing**: Latency priority and automatic route selection for best network experience  
-- ⚡ **High Performance**: Zero-copy throughout the entire link, supports TCP/UDP/WSS/WG protocols  
-
-### Network Optimization
-
-- 📊 **UDP Loss Resistance**: KCP/QUIC proxy optimizes latency and bandwidth in high packet loss environments  
-- 🔧 **Web Management**: Easy configuration and monitoring through web interface  
-- 🛠️ **Zero Config**: Simple deployment with statically linked executables  
-
-## Quick Start
-
-### 📥 Installation
-
-Choose the installation method that best suits your needs:
-
-Linux (Recommended):
 ```bash
 curl -fsSL "https://github.com/EasyTier/EasyTier/blob/main/script/install.sh?raw=true" | sudo bash -s install
 ```
 
-Homebrew (MacOS/Linux):
+Windows (run with administrator privileges):
+
+```powershell
+irm "https://github.com/EasyTier/EasyTier/blob/main/script/install.ps1?raw=true" | iex
+```
+
+Homebrew (macOS/Linux):
+
 ```bash
 brew tap brewforge/chinese
 brew install --cask easytier-gui
 ```
 
-Windows (Recommended, run with administrator privileges):
-```powershell
-irm "https://github.com/EasyTier/EasyTier/blob/main/script/install.ps1?raw=true" | iex
-```
+Install from source (latest development version):
 
-Install via cargo (Latest development version): 
 ```bash
 cargo install --git https://github.com/EasyTier/EasyTier.git easytier
 ```
 
-[Install pre-built binary](https://github.com/EasyTier/EasyTier/releases) (Recommended, All platforms supported)
+More installation options:
 
-[Install via Docker](https://easytier.cn/en/guide/installation.html#installation-methods)
+- [CLI installation guide](https://easytier.rs/en/guide/installation.html)
+- [GUI installation guide](https://easytier.rs/en/guide/installation_gui.html)
+- [Pre-built binaries](https://github.com/EasyTier/EasyTier/releases)
+- [OpenWrt package](https://github.com/EasyTier/luci-app-easytier)
+- [One-click register service](https://easytier.rs/en/guide/network/oneclick-install-as-service.html)
 
-[Install OpenWrt ipk package](https://github.com/EasyTier/luci-app-easytier)
+### Quick Example
 
-Additional steps:
-
-[One-Click Register Service](https://easytier.cn/en/guide/network/oneclick-install-as-service.html) (Automatically start when the system boots and run in the background)
-
-### 🚀 Basic Usage
-
-#### Quick Networking with Shared Nodes
-
-EasyTier supports quick networking using shared public nodes. When you don't have a public IP, you can use the free shared nodes provided by the EasyTier community. Nodes will automatically attempt NAT traversal and establish P2P connections. When P2P fails, data will be relayed through shared nodes.
-
-When using shared nodes, each node entering the network needs to provide the same `--network-name` and `--network-secret` parameters as the unique identifier of the network.
-
-Taking two nodes as an example (Please use more complex network name to avoid conflicts):
-
-1. Run on Node A:
+Join the same network from multiple nodes with a shared public node:
 
 ```bash
-# Run with administrator privileges
-sudo easytier-core -d --network-name abc --network-secret abc -p tcp://<SharedNodeIP>:11010
+# Node A
+sudo easytier-core -d --network-name demo --network-secret demo -p tcp://<SharedNodeIP>:11010
+
+# Node B
+sudo easytier-core -d --network-name demo --network-secret demo -p tcp://<SharedNodeIP>:11010
 ```
 
-2. Run on Node B:
+Use the same `--network-name` and `--network-secret` on every node to join the same network. After startup, check peers with `easytier-cli peer`, `easytier-cli route`, or `easytier-cli node`.
 
-```bash
-# Run with administrator privileges
-sudo easytier-core -d --network-name abc --network-secret abc -p tcp://<SharedNodeIP>:11010
-```
+## Why EasyTier
 
-After successful execution, you can check the network status using `easytier-cli`:
+- 🔒 **Decentralized**: Nodes are equal and independent, with no centralized controller required.
+- 🚀 **Easy to Use**: Use EasyTier from the web console, GUI clients, or the command line.
+- 🌍 **Cross-Platform**: Supports Windows, macOS, Linux, FreeBSD, Android, and multiple CPU architectures.
+- 🔐 **Secure**: Protects traffic with AES-GCM or WireGuard encryption.
+- 🔌 **Efficient NAT Traversal**: Supports UDP and IPv6 traversal, including NAT4-to-NAT4 scenarios.
+- 🌐 **Subnet Proxy**: Share private subnets with other nodes in the virtual network.
+- 🔄 **Intelligent Routing**: Chooses lower-latency paths automatically for a better network experience.
+- ⚡ **High Performance**: Uses zero-copy data paths and supports TCP, UDP, WS, WSS, WG, QUIC, and more.
 
-```text
-| ipv4         | hostname       | cost  | lat_ms | loss_rate | rx_bytes | tx_bytes | tunnel_proto | nat_type | id         | version         |
-| ------------ | -------------- | ----- | ------ | --------- | -------- | -------- | ------------ | -------- | ---------- | --------------- |
-| 10.126.126.1 | abc-1          | Local | *      | *         | *        | *        | udp          | FullCone | 439804259  | 2.5.0-70e69a38~ |
-| 10.126.126.2 | abc-2          | p2p   | 3.452  | 0         | 17.33 kB | 20.42 kB | udp          | FullCone | 390879727  | 2.5.0-70e69a38~ |
-|              | PublicServer_a | p2p   | 27.796 | 0.000     | 50.01 kB | 67.46 kB | tcp          | Unknown  | 3771642457 | 2.5.0-70e69a38~ |
-```
+## Learn More
 
-You can test connectivity between nodes:
+- [Introduction](https://easytier.rs/en/guide/introduction.html)
+- [Command line networking](https://easytier.rs/en/guide/networking.html)
+- [Decentralized networking](https://easytier.rs/en/guide/network/decentralized-networking.html)
+- [Networking with web console](https://easytier.rs/en/guide/network/web-console.html)
+- [WireGuard client access](https://easytier.rs/en/guide/network/use-easytier-with-wireguard-client.html)
+- [Subnet proxy (point-to-network)](https://easytier.rs/en/guide/network/point-to-networking.html)
+- [Bandwidth and latency optimization](https://easytier.rs/en/guide/network/kcp-proxy.html)
+- [Hosting public shared nodes](https://easytier.rs/en/guide/network/host-public-server.html)
+- [Third-party graphical interfaces](https://easytier.rs/en/guide/installation_gui.html#third-party-graphical-interfaces)
 
-```bash
-# Test connectivity
-ping 10.126.126.1
-ping 10.126.126.2
-```
-
-Note: If you cannot ping through, it may be that the firewall is blocking incoming traffic. Please turn off the firewall or add allow rules.
-
-To improve availability, you can connect to multiple shared nodes simultaneously:
-
-```bash
-# Connect to multiple shared nodes
-sudo easytier-core -d --network-name abc --network-secret abc -p tcp://<SharedNodeIP1>:11010 -p udp://<SharedNodeIP2>:11010
-```
-
-Once your network is set up successfully, you can easily configure it to start automatically on system boot. Refer to the [One-Click Register Service guide](https://easytier.cn/en/guide/network/oneclick-install-as-service.html) for step-by-step instructions on registering EasyTier as a system service.
-
-#### Decentralized Networking
-
-EasyTier is fundamentally decentralized, with no distinction between server and client. As long as one device can communicate with any node in the virtual network, it can join the virtual network. Here's how to set up a decentralized network:
-
-1. Start First Node (Node A):
-
-```bash
-# Start the first node
-sudo easytier-core -i 10.144.144.1
-```
-
-After startup, this node will listen on the following ports by default:
-- TCP: 11010
-- UDP: 11010
-- WebSocket: 11011
-- WebSocket SSL: 11012
-- WireGuard: 11013
-
-2. Connect Second Node (Node B):
-
-```bash
-# Connect to the first node using its public IP
-sudo easytier-core -i 10.144.144.2 -p udp://FIRST_NODE_PUBLIC_IP:11010
-```
-
-3. Verify Connection:
-
-```bash
-# Test connectivity
-ping 10.144.144.2
-
-# View connected peers
-easytier-cli peer
-
-# View routing information
-easytier-cli route
-
-# View local node information
-easytier-cli node
-```
-
-For more nodes to join the network, they can connect to any existing node in the network using the `-p` parameter:
-
-```bash
-# Connect to any existing node using its public IP
-sudo easytier-core -i 10.144.144.3 -p udp://ANY_EXISTING_NODE_PUBLIC_IP:11010
-```
-
-### 🔍 Advanced Features
-
-#### Subnet Proxy
-
-Assuming the network topology is as follows, Node B wants to share its accessible subnet 10.1.1.0/24 with other nodes:
-
-```mermaid
-flowchart LR
-
-subgraph Node A Public IP 22.1.1.1
-nodea[EasyTier<br/>10.144.144.1]
-end
-
-subgraph Node B
-nodeb[EasyTier<br/>10.144.144.2]
-end
-
-id1[[10.1.1.0/24]]
-
-nodea <--> nodeb <-.-> id1
-```
-
-To share a subnet, add the `-n` parameter when starting EasyTier:
-
-```bash
-# Share subnet 10.1.1.0/24 with other nodes
-sudo easytier-core -i 10.144.144.2 -n 10.1.1.0/24
-```
-
-Subnet proxy information will automatically sync to each node in the virtual network, and each node will automatically configure the corresponding route. You can verify the subnet proxy setup:
-
-1. Check if the routing information has been synchronized (the proxy_cidrs column shows the proxied subnets):
-
-```bash
-# View routing information
-easytier-cli route
-```
-
-![Routing Information](/assets/image-3.png)
-
-2. Test if you can access nodes in the proxied subnet:
-
-```bash
-# Test connectivity to proxied subnet
-ping 10.1.1.2
-```
-
-#### WireGuard Integration
-
-EasyTier can act as a WireGuard server, allowing any device with a WireGuard client (including iOS and Android) to access the EasyTier network. Here's an example setup:
-
-```mermaid
-flowchart LR
-
-ios[[iPhone<br/>WireGuard Installed]]
-
-subgraph Node A Public IP 22.1.1.1
-nodea[EasyTier<br/>10.144.144.1]
-end
-
-subgraph Node B
-nodeb[EasyTier<br/>10.144.144.2]
-end
-
-id1[[10.1.1.0/24]]
-
-ios <-.-> nodea <--> nodeb <-.-> id1
-```
-
-1. Start EasyTier with WireGuard portal enabled:
-
-```bash
-# Listen on 0.0.0.0:11013 and use 10.14.14.0/24 subnet for WireGuard clients
-sudo easytier-core -i 10.144.144.1 --vpn-portal wg://0.0.0.0:11013/10.14.14.0/24
-```
-
-2. Get WireGuard client configuration:
-
-```bash
-# Get WireGuard client configuration
-easytier-cli vpn-portal
-```
-
-3. In the output configuration:
-   - Set `Interface.Address` to an available IP from the WireGuard subnet
-   - Set `Peer.Endpoint` to the public IP/domain of your EasyTier node
-   - Import the modified configuration into your WireGuard client
-
-#### Self-Hosted Public Shared Node
-
-You can run your own public shared node to help other nodes discover each other. A public shared node is just a regular EasyTier network (with same network name and secret) that other networks can connect to.
-
-To run a public shared node:
-
-```bash
-# No need to specify IPv4 address for public shared nodes
-sudo easytier-core --network-name mysharednode --network-secret mysharednode
-```
-
-## Related Projects
-
-- [ZeroTier](https://www.zerotier.com/): A global virtual network for connecting devices.
-- [TailScale](https://tailscale.com/): A VPN solution aimed at simplifying network configuration.
-
-### Contact Us
+## Community
 
 - 💬 **[Telegram Group](https://t.me/easytier)**
-- 👥 **[QQ Group]**
-  - No.1 [949700262](https://qm.qq.com/q/wFoTUChqZW)
-  - No.2 [837676408](https://qm.qq.com/q/4V33DrfgHe)
-  - No.3 [957189589](https://qm.qq.com/q/YNyTQjwlai)
+- 👥 **QQ Groups**: [No.1 949700262](https://qm.qq.com/q/wFoTUChqZW), [No.2 837676408](https://qm.qq.com/q/4V33DrfgHe), [No.3 957189589](https://qm.qq.com/q/YNyTQjwlai)
 
 ## License
 
@@ -306,21 +108,20 @@ CDN acceleration and security protection for this project are sponsored by Tence
   </a>
 </p>
 
-Special thanks to [Langlang Cloud](https://langlangy.cn/?i26c5a5)  and [RainCloud](https://www.rainyun.com/NjM0NzQ1_) for sponsoring our public servers.
+Special thanks to [Langlang Cloud](https://langlangy.cn/?i26c5a5) and [RainCloud](https://www.rainyun.com/NjM0NzQ1_) for sponsoring our public servers.
 
 <p align="center">
-<a href="https://langlangy.cn/?i26c5a5" target="_blank">
-<img src="assets/langlang.png" width="200">
-</a>
-<a href="https://langlangy.cn/?i26c5a5" target="_blank">
-<img src="assets/raincloud.png" width="200">
-</a>
+  <a href="https://langlangy.cn/?i26c5a5" target="_blank">
+    <img src="assets/langlang.png" width="200" alt="Langlang Cloud Logo">
+  </a>
+  <a href="https://www.rainyun.com/NjM0NzQ1_" target="_blank">
+    <img src="assets/raincloud.png" width="200" alt="RainCloud Logo">
+  </a>
 </p>
 
-
-If you find EasyTier helpful, please consider sponsoring us. Software development and maintenance require a lot of time and effort, and your sponsorship will help us better maintain and improve EasyTier.
+If you find EasyTier helpful, please consider sponsoring us. Software development and maintenance require time and effort, and your sponsorship helps us keep improving EasyTier.
 
 <p align="center">
-<img src="assets/wechat.png" width="200">
-<img src="assets/alipay.png" width="200">
+  <img src="assets/wechat.png" width="200" alt="WeChat sponsor QR code">
+  <img src="assets/alipay.png" width="200" alt="Alipay sponsor QR code">
 </p>
