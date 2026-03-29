@@ -432,7 +432,6 @@ impl PeerTaskLauncher for UdpHolePunchPeerTaskLauncher {
         let now = Instant::now();
 
         data.blacklist.cleanup();
-
         // collect peer list from peer manager and do some filter:
         // 1. peers without direct conns;
         // 2. peers is full cone (any restricted type);
@@ -464,7 +463,14 @@ impl PeerTaskLauncher for UdpHolePunchPeerTaskLauncher {
                 continue;
             }
 
-            if data.peer_mgr.get_peer_map().has_peer(peer_id) {
+            // Skip if peer already has a connection that is not low priority
+            if data
+                .peer_mgr
+                .get_peer_map()
+                .get_peer_by_id(peer_id)
+                .is_some_and(|f| !f.all_conns_low_priority())
+            {
+                tracing::trace!(peer_id, "udp hole punch task collect skip already has peer");
                 continue;
             }
 
