@@ -808,14 +808,7 @@ impl Instance {
                         continue;
                     }
 
-                    #[cfg(all(
-                        not(any(
-                            target_os = "android",
-                            any(target_os = "ios", all(target_os = "macos", feature = "macos-ne")),
-                            target_env = "ohos"
-                        )),
-                        feature = "tun"
-                    ))]
+                    #[cfg(all(not(mobile), feature = "tun"))]
                     {
                         let mut new_nic_ctx = NicCtx::new(
                             global_ctx_c.clone(),
@@ -856,14 +849,7 @@ impl Instance {
         });
     }
 
-    #[cfg(all(
-        not(any(
-            target_os = "android",
-            any(target_os = "ios", all(target_os = "macos", feature = "macos-ne")),
-            target_env = "ohos"
-        )),
-        feature = "tun"
-    ))]
+    #[cfg(all(not(mobile), feature = "tun"))]
     fn check_for_static_ip(&self, first_round_output: oneshot::Sender<Result<(), Error>>) {
         let ipv4_addr = self.global_ctx.get_ipv4();
         let ipv6_addr = self.global_ctx.get_ipv6();
@@ -951,11 +937,7 @@ impl Instance {
         {
             Self::clear_nic_ctx(self.nic_ctx.clone(), self.peer_packet_receiver.clone()).await;
 
-            #[cfg(not(any(
-                target_os = "android",
-                any(target_os = "ios", all(target_os = "macos", feature = "macos-ne")),
-                target_env = "ohos"
-            )))]
+            #[cfg(not(mobile))]
             if !self.global_ctx.config.get_flags().no_tun {
                 let (output_tx, output_rx) = oneshot::channel();
                 self.check_for_static_ip(output_tx);
@@ -1475,11 +1457,7 @@ impl Instance {
         self.peer_packet_receiver.clone()
     }
 
-    #[cfg(any(
-        target_os = "android",
-        any(target_os = "ios", all(target_os = "macos", feature = "macos-ne")),
-        target_env = "ohos"
-    ))]
+    #[cfg(mobile)]
     pub async fn setup_nic_ctx_for_mobile(
         nic_ctx: ArcNicCtx,
         global_ctx: ArcGlobalCtx,
