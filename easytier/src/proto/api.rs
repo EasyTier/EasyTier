@@ -135,17 +135,18 @@ pub mod instance {
         }
 
         pub fn get_loss_rate(&self) -> Option<f64> {
-            let mut ret = 0.0;
             let p = self.peer.as_ref()?;
+            let default_conn_id = p.default_conn_id.map(|id| id.to_string());
+            let mut ret = None;
             for conn in p.conns.iter() {
-                ret += conn.loss_rate;
+                if default_conn_id == Some(conn.conn_id.to_string()) {
+                    return Some(conn.loss_rate as f64);
+                }
+
+                ret.get_or_insert(conn.loss_rate as f64);
             }
 
-            if ret == 0.0 {
-                None
-            } else {
-                Some(ret as f64)
-            }
+            ret
         }
 
         fn is_tunnel_ipv6(tunnel_info: &super::super::common::TunnelInfo) -> bool {
@@ -266,6 +267,7 @@ mod tests {
     use bytes::Bytes;
     use prost::Message;
 
+    use super::instance::{PeerConnInfo, PeerInfo, PeerRoutePair};
     use super::manage::{
         ListNetworkInstanceRequest, ListNetworkInstanceResponse, WebClientService,
         WebClientServiceClient, WebClientServiceDescriptor, WebClientServiceMethodDescriptor,
@@ -354,5 +356,57 @@ mod tests {
             )
             .await;
         assert!(ret.is_err());
+    }
+
+    #[test]
+    fn peer_route_pair_loss_rate_uses_default_conn() {
+        let default_conn_id = uuid::Uuid::new_v4();
+        let pair = PeerRoutePair {
+            peer: Some(PeerInfo {
+                default_conn_id: Some(default_conn_id.into()),
+                conns: vec![
+                    PeerConnInfo {
+                        conn_id: uuid::Uuid::new_v4().to_string(),
+                        loss_rate: 0.8,
+                        ..Default::default()
+                    },
+                    PeerConnInfo {
+                        conn_id: default_conn_id.to_string(),
+                        loss_rate: 0.4,
+                        ..Default::default()
+                    },
+                ],
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+
+        assert!(pair
+            .get_loss_rate()
+            .is_some_and(|loss_rate| (loss_rate - 0.4).abs() < 1e-6));
+    }
+
+    #[test]
+    fn peer_route_pair_loss_rate_falls_back_to_first_conn() {
+        let pair = PeerRoutePair {
+            peer: Some(PeerInfo {
+                conns: vec![
+                    PeerConnInfo {
+                        conn_id: uuid::Uuid::new_v4().to_string(),
+                        loss_rate: 0.0,
+                        ..Default::default()
+                    },
+                    PeerConnInfo {
+                        conn_id: uuid::Uuid::new_v4().to_string(),
+                        loss_rate: 0.7,
+                        ..Default::default()
+                    },
+                ],
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+
+        assert_eq!(pair.get_loss_rate(), Some(0.0));
     }
 }
