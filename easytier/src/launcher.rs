@@ -403,12 +403,6 @@ impl NetworkInstance {
         self.config.get_network_identity().network_name
     }
 
-    pub fn set_tun_fd(&mut self, tun_fd: i32) {
-        if let Some(launcher) = self.launcher.as_ref() {
-            let _ = launcher.data.tun_fd.0.blocking_send(Some(tun_fd));
-        }
-    }
-
     pub fn get_tun_fd_sender(&self) -> Option<mpsc::Sender<TunFd>> {
         self.launcher
             .as_ref()
@@ -573,8 +567,9 @@ impl NetworkConfig {
                         peer_public_key: None,
                     });
                 }
-
-                cfg.set_peers(peers);
+                if !peers.is_empty() {
+                    cfg.set_peers(peers);
+                }
             }
             NetworkingMethod::Standalone => {}
         }
@@ -874,18 +869,9 @@ impl NetworkConfig {
         }
 
         let peers = config.get_peers();
-        match peers.len() {
-            1 => {
-                result.networking_method = Some(NetworkingMethod::PublicServer as i32);
-                result.public_server_url = Some(peers[0].uri.to_string());
-            }
-            0 => {
-                result.networking_method = Some(NetworkingMethod::Standalone as i32);
-            }
-            _ => {
-                result.networking_method = Some(NetworkingMethod::Manual as i32);
-                result.peer_urls = peers.iter().map(|p| p.uri.to_string()).collect();
-            }
+        result.networking_method = Some(NetworkingMethod::Manual as i32);
+        if !peers.is_empty() {
+            result.peer_urls = peers.iter().map(|p| p.uri.to_string()).collect();
         }
 
         result.listener_urls = config

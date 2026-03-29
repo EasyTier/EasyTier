@@ -3,7 +3,9 @@ package com.plugin.vpnservice
 import android.app.Activity
 import android.content.Intent
 import android.net.VpnService
+import androidx.activity.result.ActivityResult
 import app.tauri.annotation.Command
+import app.tauri.annotation.ActivityCallback
 import app.tauri.annotation.InvokeArg
 import app.tauri.annotation.TauriPlugin
 import app.tauri.plugin.Invoke
@@ -48,46 +50,70 @@ class VpnServicePlugin(private val activity: Activity) : Plugin(activity) {
 
     @Command
     fun prepareVpn(invoke: Invoke) {
-        println("prepare vpn in plugin")
-        val it = VpnService.prepare(activity)
-        var ret = JSObject()
-        if (it != null) {
-            activity.startActivityForResult(it, 0x0f)
-            ret.put("errorMsg", "again")
+        activity.runOnUiThread {
+            println("prepare vpn in plugin")
+            val it = VpnService.prepare(activity)
+            if (it != null) {
+                startActivityForResult(invoke, it, "onPrepareVpnResult")
+                return@runOnUiThread
+            }
+            val ret = JSObject()
+            ret.put("granted", true)
+            invoke.resolve(ret)
         }
+    }
+
+    @ActivityCallback
+    fun onPrepareVpnResult(invoke: Invoke, result: ActivityResult) {
+        val ret = JSObject()
+        ret.put("granted", result.resultCode == Activity.RESULT_OK)
         invoke.resolve(ret)
     }
 
     @Command
     fun startVpn(invoke: Invoke) {
         val args = invoke.parseArgs(StartVpnArgs::class.java)
-        println("start vpn in plugin, args: $args")
+        activity.runOnUiThread {
+            println("start vpn in plugin, args: $args")
 
-        TauriVpnService.self?.onRevoke()
+            TauriVpnService.self?.onRevoke()
 
-        val it = VpnService.prepare(activity)
-        var ret = JSObject()
-        if (it != null) {
-            ret.put("errorMsg", "need_prepare")
-        } else {
-            var intent = Intent(activity, TauriVpnService::class.java)
-            intent.putExtra(TauriVpnService.IPV4_ADDR, args.ipv4Addr)
-            intent.putExtra(TauriVpnService.ROUTES, args.routes)
-            intent.putExtra(TauriVpnService.DNS, args.dns)
-            intent.putExtra(TauriVpnService.DISALLOWED_APPLICATIONS, args.disallowedApplications)
-            intent.putExtra(TauriVpnService.MTU, args.mtu)
+            val it = VpnService.prepare(activity)
+            val ret = JSObject()
+            if (it != null) {
+                ret.put("errorMsg", "need_prepare")
+            } else {
+                val intent = Intent(activity, TauriVpnService::class.java)
+                intent.putExtra(TauriVpnService.IPV4_ADDR, args.ipv4Addr)
+                intent.putExtra(TauriVpnService.ROUTES, args.routes)
+                intent.putExtra(TauriVpnService.DNS, args.dns)
+                intent.putExtra(TauriVpnService.DISALLOWED_APPLICATIONS, args.disallowedApplications)
+                intent.putExtra(TauriVpnService.MTU, args.mtu)
 
-            activity.startService(intent)
+                activity.startService(intent)
+            }
+            invoke.resolve(ret)
         }
-        invoke.resolve(ret)
     }
 
     @Command
     fun stopVpn(invoke: Invoke) {
-        println("stop vpn in plugin")
-        TauriVpnService.self?.onRevoke()
-        activity.stopService(Intent(activity, TauriVpnService::class.java))
-        println("stop vpn in plugin end")
-        invoke.resolve(JSObject())
+        activity.runOnUiThread {
+            println("stop vpn in plugin")
+            TauriVpnService.self?.onRevoke()
+            activity.stopService(Intent(activity, TauriVpnService::class.java))
+            println("stop vpn in plugin end")
+            invoke.resolve(JSObject())
+        }
+    }
+
+    @Command
+    fun getVpnStatus(invoke: Invoke) {
+        val ret = JSObject()
+        ret.put("running", TauriVpnService.self != null)
+        ret.put("ipv4Addr", TauriVpnService.ipv4Addr)
+        ret.put("routes", TauriVpnService.routes)
+        ret.put("dns", TauriVpnService.dns)
+        invoke.resolve(ret)
     }
 }

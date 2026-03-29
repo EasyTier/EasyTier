@@ -9,6 +9,7 @@ import { exit } from '@tauri-apps/plugin-process'
 import { I18nUtils, RemoteManagement, Utils } from "easytier-frontend-lib"
 import type { MenuItem } from 'primevue/menuitem'
 import { useTray } from '~/composables/tray'
+import { initMobileVpnService } from '~/composables/mobile_vpn'
 import { GUIRemoteClient } from '~/modules/api'
 
 import { useToast, useConfirm } from 'primevue'
@@ -189,9 +190,25 @@ async function initWithMode(mode: Mode) {
   clientRunning.value = await isClientRunning()
 }
 
-onMounted(() => {
+onMounted(async () => {
+  const cleanupFns: Array<() => void> = []
+
+  if (type() === 'android') {
+    try {
+      await initMobileVpnService()
+      console.error("easytier init vpn service done")
+    } catch (e: any) {
+      console.error("easytier init vpn service failed", e)
+    }
+  }
+
+  cleanupFns.push(await listenGlobalEvents())
   currentMode.value = loadMode()
-  initWithMode(currentMode.value);
+  await initWithMode(currentMode.value);
+
+  onUnmounted(() => {
+    cleanupFns.forEach(unlisten => unlisten())
+  })
 });
 
 useTray(true)
@@ -346,22 +363,6 @@ async function connectRpcClient(isNormalMode: boolean, url?: string) {
   await initRpcConnection(isNormalMode, url)
   console.log("easytier rpc connection established, isNormalMode: ", isNormalMode)
 }
-
-onMounted(async () => {
-  if (type() === 'android') {
-    try {
-      await initMobileVpnService()
-      console.error("easytier init vpn service done")
-    } catch (e: any) {
-      console.error("easytier init vpn service failed", e)
-    }
-  }
-  const unlisten = await listenGlobalEvents()
-
-  onUnmounted(() => {
-    unlisten()
-  })
-})
 
 async function openConfigServerDialog() {
   editingMode.value = JSON.parse(JSON.stringify(loadMode()))

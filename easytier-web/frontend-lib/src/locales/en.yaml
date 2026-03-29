@@ -10,7 +10,7 @@ initial_nodes_help: |
   • Leaving it empty = the node starts alone until others connect to it, or you connect it later yourself.
   • Direct or indirect connectivity, including through relay nodes, can form one network.
   Initial nodes can be your own nodes or ones shared by others.
-initial_node_placeholder: "Example: tcp://node.example.com:11010"
+initial_node_placeholder: "Example: node.example.com"
 virtual_ipv4: Virtual IPv4
 virtual_ipv4_dhcp: DHCP
 network_name: Network Name

@@ -209,7 +209,8 @@ watch(() => curNetwork.value, syncNormalizedNetwork, { immediate: true, deep: fa
                   </div>
                   <div class="items-center flex flex-col p-fluid gap-y-2">
                     <UrlListInput id="initial_nodes" v-model="curNetwork.peer_urls" :protos="protos"
-                      :add-label="t('add_initial_node')" :placeholder="t('initial_node_placeholder')" />
+                      defaultUrl="tcp://:11010" :add-label="t('add_initial_node')"
+                      :placeholder="t('initial_node_placeholder')" />
                   </div>
                 </div>
               </div>
@@ -300,8 +301,8 @@ watch(() => curNetwork.value, syncNormalizedNetwork, { immediate: true, deep: fa
                     <label for="mtu">{{ t('mtu') }}</label>
                     <span class="pi pi-question-circle ml-2 self-center" v-tooltip="t('mtu_help')"></span>
                   </div>
-                    <InputNumber id="mtu" v-model="curNetwork.mtu" aria-describedby="mtu-help" :format="false"
-                      :placeholder="t('mtu_placeholder')" :min="400" :max="1380" fluid />
+                  <InputNumber id="mtu" v-model="curNetwork.mtu" aria-describedby="mtu-help" :format="false"
+                    :placeholder="t('mtu_placeholder')" :min="400" :max="1380" fluid />
                 </div>
               </div>
 

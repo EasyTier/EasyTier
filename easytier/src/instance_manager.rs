@@ -227,11 +227,17 @@ impl NetworkInstanceManager {
     }
 
     pub fn set_tun_fd(&self, instance_id: &uuid::Uuid, fd: i32) -> Result<(), anyhow::Error> {
-        let mut instance = self
+        let sender = self
             .instance_map
-            .get_mut(instance_id)
-            .ok_or_else(|| anyhow::anyhow!("instance not found"))?;
-        instance.set_tun_fd(fd);
+            .get(instance_id)
+            .ok_or_else(|| anyhow::anyhow!("instance not found"))?
+            .get_tun_fd_sender()
+            .ok_or_else(|| anyhow::anyhow!("tun fd sender not found"))?;
+
+        sender
+            .try_send(Some(fd))
+            .map_err(|e| anyhow::anyhow!("failed to send tun fd: {}", e))?;
+
         Ok(())
     }
 
