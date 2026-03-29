@@ -20,7 +20,14 @@ use futures::{stream::FuturesUnordered, SinkExt, StreamExt};
 use rand::RngCore;
 use tokio::{net::UdpSocket, sync::Mutex, task::JoinSet};
 
-use super::TunnelInfo;
+use super::{
+    common::{setup_sokcet2, setup_sokcet2_ext, wait_for_connect_futures},
+    generate_digest_from_str,
+    packet_def::{ZCPacketType, PEER_MANAGER_HEADER_SIZE},
+    ring::create_ring_tunnel_pair,
+    FromUrl, IpVersion, Tunnel, TunnelError, TunnelInfo, TunnelListener, TunnelUrl, ZCPacketSink,
+    ZCPacketStream,
+};
 use crate::{
     common::shrink_dashmap,
     tunnel::{
@@ -28,15 +35,6 @@ use crate::{
         common::TunnelWrapper,
         packet_def::{ZCPacket, WG_TUNNEL_HEADER_SIZE},
     },
-};
-
-use super::{
-    check_scheme_and_get_socket_addr,
-    common::{setup_sokcet2, setup_sokcet2_ext, wait_for_connect_futures},
-    generate_digest_from_str,
-    packet_def::{ZCPacketType, PEER_MANAGER_HEADER_SIZE},
-    ring::create_ring_tunnel_pair,
-    IpVersion, Tunnel, TunnelError, TunnelListener, TunnelUrl, ZCPacketSink, ZCPacketStream,
 };
 
 const MAX_PACKET: usize = 2048;
@@ -202,7 +200,10 @@ impl WgPeerData {
                 match self.udp.send_to(packet, self.endpoint).await {
                     Ok(_) => {}
                     Err(e) => {
-                        tracing::error!("Failed to send decapsulation-instructed packet to WireGuard endpoint: {:?}", e);
+                        tracing::error!(
+                            "Failed to send decapsulation-instructed packet to WireGuard endpoint: {:?}",
+                            e
+                        );
                         return;
                     }
                 };
@@ -214,7 +215,10 @@ impl WgPeerData {
                             match self.udp.send_to(packet, self.endpoint).await {
                                 Ok(_) => {}
                                 Err(e) => {
-                                    tracing::error!("Failed to send decapsulation-instructed packet to WireGuard endpoint: {:?}", e);
+                                    tracing::error!(
+                                        "Failed to send decapsulation-instructed packet to WireGuard endpoint: {:?}",
+                                        e
+                                    );
                                     break;
                                 }
                             };
@@ -550,10 +554,8 @@ impl WgTunnelListener {
 
 #[async_trait]
 impl TunnelListener for WgTunnelListener {
-    async fn listen(&mut self) -> Result<(), super::TunnelError> {
-        let addr =
-            check_scheme_and_get_socket_addr::<SocketAddr>(&self.addr, "wg", IpVersion::Both)
-                .await?;
+    async fn listen(&mut self) -> Result<(), TunnelError> {
+        let addr = SocketAddr::from_url(self.addr.clone(), IpVersion::Both).await?;
         let socket2_socket = socket2::Socket::new(
             socket2::Domain::for_address(addr),
             socket2::Type::DGRAM,
@@ -705,13 +707,8 @@ impl WgTunnelConnector {
 #[async_trait]
 impl super::TunnelConnector for WgTunnelConnector {
     #[tracing::instrument]
-    async fn connect(&mut self) -> Result<Box<dyn super::Tunnel>, super::TunnelError> {
-        let addr = super::check_scheme_and_get_socket_addr::<SocketAddr>(
-            &self.addr,
-            "wg",
-            self.ip_version,
-        )
-        .await?;
+    async fn connect(&mut self) -> Result<Box<dyn Tunnel>, TunnelError> {
+        let addr = SocketAddr::from_url(self.addr.clone(), self.ip_version).await?;
 
         if addr.is_ipv6() {
             return self.connect_with_ipv6(addr).await;

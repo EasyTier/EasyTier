@@ -9,12 +9,6 @@ use anyhow::Context;
 use async_trait::async_trait;
 use tokio::task::JoinSet;
 
-#[cfg(feature = "faketcp")]
-use crate::tunnel::fake_tcp::FakeTcpTunnelListener;
-#[cfg(feature = "quic")]
-use crate::tunnel::quic::QUICTunnelListener;
-#[cfg(feature = "wireguard")]
-use crate::tunnel::wireguard::{WgConfig, WgTunnelListener};
 use crate::{
     common::{
         error::Error,
@@ -23,44 +17,42 @@ use crate::{
     },
     peers::peer_manager::PeerManager,
     tunnel::{
-        ring::RingTunnelListener, tcp::TcpTunnelListener, udp::UdpTunnelListener, Tunnel,
-        TunnelListener,
+        self, ring::RingTunnelListener, tcp::TcpTunnelListener, udp::UdpTunnelListener, IpScheme,
+        Tunnel, TunnelListener, TunnelScheme,
     },
+    utils::BoxExt,
 };
 
-pub fn get_listener_by_url(
+pub fn create_listener_by_url(
     l: &url::Url,
-    _ctx: ArcGlobalCtx,
+    #[allow(unused_variables)] ctx: ArcGlobalCtx,
 ) -> Result<Box<dyn TunnelListener>, Error> {
-    Ok(match l.scheme() {
-        "tcp" => Box::new(TcpTunnelListener::new(l.clone())),
-        "udp" => Box::new(UdpTunnelListener::new(l.clone())),
-        #[cfg(feature = "wireguard")]
-        "wg" => {
-            let nid = _ctx.get_network_identity();
-            let wg_config = WgConfig::new_from_network_identity(
-                &nid.network_name,
-                &nid.network_secret.unwrap_or_default(),
-            );
-            Box::new(WgTunnelListener::new(l.clone(), wg_config))
-        }
-        #[cfg(feature = "quic")]
-        "quic" => Box::new(QUICTunnelListener::new(l.clone())),
-        #[cfg(feature = "websocket")]
-        "ws" | "wss" => {
-            use crate::tunnel::websocket::WSTunnelListener;
-            Box::new(WSTunnelListener::new(l.clone()))
-        }
-        #[cfg(feature = "faketcp")]
-        "faketcp" => Box::new(FakeTcpTunnelListener::new(l.clone())),
+    Ok(match l.try_into()? {
+        TunnelScheme::Ip(scheme) => match scheme {
+            IpScheme::Tcp => TcpTunnelListener::new(l.clone()).boxed(),
+            IpScheme::Udp => UdpTunnelListener::new(l.clone()).boxed(),
+            #[cfg(feature = "wireguard")]
+            IpScheme::Wg => {
+                use crate::tunnel::wireguard::{WgConfig, WgTunnelListener};
+                let nid = ctx.get_network_identity();
+                let wg_config = WgConfig::new_from_network_identity(
+                    &nid.network_name,
+                    &nid.network_secret.unwrap_or_default(),
+                );
+                WgTunnelListener::new(l.clone(), wg_config).boxed()
+            }
+            #[cfg(feature = "quic")]
+            IpScheme::Quic => tunnel::quic::QuicTunnelListener::new(l.clone()).boxed(),
+            #[cfg(feature = "websocket")]
+            IpScheme::Ws | IpScheme::Wss => {
+                tunnel::websocket::WSTunnelListener::new(l.clone()).boxed()
+            }
+            #[cfg(feature = "faketcp")]
+            IpScheme::FakeTcp => tunnel::fake_tcp::FakeTcpTunnelListener::new(l.clone()).boxed(),
+        },
         #[cfg(unix)]
-        "unix" => {
-            use crate::tunnel::unix::UnixSocketTunnelListener;
-            Box::new(UnixSocketTunnelListener::new(l.clone()))
-        }
-        _ => {
-            return Err(Error::InvalidUrl(l.to_string()));
-        }
+        TunnelScheme::Unix => tunnel::unix::UnixSocketTunnelListener::new(l.clone()).boxed(),
+        _ => return Err(Error::InvalidUrl(l.to_string())),
     })
 }
 
@@ -133,7 +125,7 @@ impl<H: TunnelHandlerForListener + Send + Sync + 'static + Debug> ListenerManage
 
         for l in self.global_ctx.config.get_listener_uris().iter() {
             let l = l.clone();
-            let Ok(_) = get_listener_by_url(&l, self.global_ctx.clone()) else {
+            let Ok(_) = create_listener_by_url(&l, self.global_ctx.clone()) else {
                 let msg = format!("failed to get listener by url: {}, maybe not supported", l);
                 self.global_ctx
                     .issue_event(GlobalCtxEvent::ListenerAddFailed(l.clone(), msg));
@@ -143,7 +135,7 @@ impl<H: TunnelHandlerForListener + Send + Sync + 'static + Debug> ListenerManage
 
             let listener = l.clone();
             self.add_listener(
-                move || get_listener_by_url(&listener, ctx.clone()).unwrap(),
+                move || create_listener_by_url(&listener, ctx.clone()).unwrap(),
                 true,
             )
             .await?;
@@ -160,7 +152,7 @@ impl<H: TunnelHandlerForListener + Send + Sync + 'static + Debug> ListenerManage
                     .with_context(|| format!("failed to set ipv6 host for listener: {}", l))?;
                 let ctx = self.global_ctx.clone();
                 self.add_listener(
-                    move || get_listener_by_url(&ipv6_listener, ctx.clone()).unwrap(),
+                    move || create_listener_by_url(&ipv6_listener, ctx.clone()).unwrap(),
                     false,
                 )
                 .await?;
@@ -361,10 +353,6 @@ mod tests {
 
         #[async_trait::async_trait]
         impl TunnelListener for MockListener {
-            fn local_url(&self) -> url::Url {
-                "mock://".parse().unwrap()
-            }
-
             async fn listen(&mut self) -> Result<(), TunnelError> {
                 self.counter.fetch_add(1, Ordering::Relaxed);
                 Ok(())
@@ -373,6 +361,10 @@ mod tests {
             async fn accept(&mut self) -> Result<Box<dyn Tunnel>, TunnelError> {
                 tokio::time::sleep(std::time::Duration::from_secs(1)).await;
                 Err(TunnelError::BufferFull)
+            }
+
+            fn local_url(&self) -> url::Url {
+                "mock://".parse().unwrap()
             }
         }
 

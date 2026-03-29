@@ -8,18 +8,14 @@ use std::{
 
 use crate::tunnel::{
     common::{setup_sokcet2, FramedReader, FramedWriter, TunnelWrapper},
-    TunnelInfo,
+    FromUrl, TunnelInfo,
 };
 use anyhow::Context;
 
+use super::{IpVersion, Tunnel, TunnelConnector, TunnelError, TunnelListener};
 use quinn::{
     congestion::BbrConfig, udp::RecvMeta, AsyncUdpSocket, ClientConfig, Connection, Endpoint,
     EndpointConfig, ServerConfig, TransportConfig, UdpPoller,
-};
-
-use super::{
-    check_scheme_and_get_socket_addr, IpVersion, Tunnel, TunnelConnector, TunnelError,
-    TunnelListener,
 };
 
 pub fn transport_config() -> Arc<TransportConfig> {
@@ -145,14 +141,14 @@ impl Drop for ConnWrapper {
     }
 }
 
-pub struct QUICTunnelListener {
+pub struct QuicTunnelListener {
     addr: url::Url,
     endpoint: Option<Endpoint>,
 }
 
-impl QUICTunnelListener {
+impl QuicTunnelListener {
     pub fn new(addr: url::Url) -> Self {
-        QUICTunnelListener {
+        QuicTunnelListener {
             addr,
             endpoint: None,
         }
@@ -190,11 +186,9 @@ impl QUICTunnelListener {
 }
 
 #[async_trait::async_trait]
-impl TunnelListener for QUICTunnelListener {
+impl TunnelListener for QuicTunnelListener {
     async fn listen(&mut self) -> Result<(), TunnelError> {
-        let addr =
-            check_scheme_and_get_socket_addr::<SocketAddr>(&self.addr, "quic", IpVersion::Both)
-                .await?;
+        let addr = SocketAddr::from_url(self.addr.clone(), IpVersion::Both).await?;
         let endpoint = make_server_endpoint(addr)
             .map_err(|e| anyhow::anyhow!("make server endpoint error: {:?}", e))?;
         self.endpoint = Some(endpoint);
@@ -223,15 +217,15 @@ impl TunnelListener for QUICTunnelListener {
     }
 }
 
-pub struct QUICTunnelConnector {
+pub struct QuicTunnelConnector {
     addr: url::Url,
     endpoint: Option<Endpoint>,
     ip_version: IpVersion,
 }
 
-impl QUICTunnelConnector {
+impl QuicTunnelConnector {
     pub fn new(addr: url::Url) -> Self {
-        QUICTunnelConnector {
+        QuicTunnelConnector {
             addr,
             endpoint: None,
             ip_version: IpVersion::Both,
@@ -240,11 +234,9 @@ impl QUICTunnelConnector {
 }
 
 #[async_trait::async_trait]
-impl TunnelConnector for QUICTunnelConnector {
-    async fn connect(&mut self) -> Result<Box<dyn Tunnel>, super::TunnelError> {
-        let addr =
-            check_scheme_and_get_socket_addr::<SocketAddr>(&self.addr, "quic", self.ip_version)
-                .await?;
+impl TunnelConnector for QuicTunnelConnector {
+    async fn connect(&mut self) -> Result<Box<dyn Tunnel>, TunnelError> {
+        let addr = SocketAddr::from_url(self.addr.clone(), self.ip_version).await?;
         if addr.port() == 0 {
             return Err(TunnelError::InvalidAddr(format!(
                 "invalid remote QUIC port 0 in url: {} (port 0 is not a valid QUIC port)",
@@ -318,36 +310,36 @@ mod tests {
 
     #[tokio::test]
     async fn quic_pingpong() {
-        let listener = QUICTunnelListener::new("quic://0.0.0.0:21011".parse().unwrap());
-        let connector = QUICTunnelConnector::new("quic://127.0.0.1:21011".parse().unwrap());
+        let listener = QuicTunnelListener::new("quic://0.0.0.0:21011".parse().unwrap());
+        let connector = QuicTunnelConnector::new("quic://127.0.0.1:21011".parse().unwrap());
         _tunnel_pingpong(listener, connector).await
     }
 
     #[tokio::test]
     async fn quic_bench() {
-        let listener = QUICTunnelListener::new("quic://0.0.0.0:21012".parse().unwrap());
-        let connector = QUICTunnelConnector::new("quic://127.0.0.1:21012".parse().unwrap());
+        let listener = QuicTunnelListener::new("quic://0.0.0.0:21012".parse().unwrap());
+        let connector = QuicTunnelConnector::new("quic://127.0.0.1:21012".parse().unwrap());
         _tunnel_bench(listener, connector).await
     }
 
     #[tokio::test]
     async fn ipv6_pingpong() {
-        let listener = QUICTunnelListener::new("quic://[::1]:31015".parse().unwrap());
-        let connector = QUICTunnelConnector::new("quic://[::1]:31015".parse().unwrap());
+        let listener = QuicTunnelListener::new("quic://[::1]:31015".parse().unwrap());
+        let connector = QuicTunnelConnector::new("quic://[::1]:31015".parse().unwrap());
         _tunnel_pingpong(listener, connector).await
     }
 
     #[tokio::test]
     async fn ipv6_domain_pingpong() {
-        let listener = QUICTunnelListener::new("quic://[::1]:31016".parse().unwrap());
+        let listener = QuicTunnelListener::new("quic://[::1]:31016".parse().unwrap());
         let mut connector =
-            QUICTunnelConnector::new("quic://test.easytier.top:31016".parse().unwrap());
+            QuicTunnelConnector::new("quic://test.easytier.top:31016".parse().unwrap());
         connector.set_ip_version(IpVersion::V6);
         _tunnel_pingpong(listener, connector).await;
 
-        let listener = QUICTunnelListener::new("quic://127.0.0.1:31016".parse().unwrap());
+        let listener = QuicTunnelListener::new("quic://127.0.0.1:31016".parse().unwrap());
         let mut connector =
-            QUICTunnelConnector::new("quic://test.easytier.top:31016".parse().unwrap());
+            QuicTunnelConnector::new("quic://test.easytier.top:31016".parse().unwrap());
         connector.set_ip_version(IpVersion::V4);
         _tunnel_pingpong(listener, connector).await;
     }
@@ -355,13 +347,13 @@ mod tests {
     #[tokio::test]
     async fn test_alloc_port() {
         // v4
-        let mut listener = QUICTunnelListener::new("quic://0.0.0.0:0".parse().unwrap());
+        let mut listener = QuicTunnelListener::new("quic://0.0.0.0:0".parse().unwrap());
         listener.listen().await.unwrap();
         let port = listener.local_url().port().unwrap();
         assert!(port > 0);
 
         // v6
-        let mut listener = QUICTunnelListener::new("quic://[::]:0".parse().unwrap());
+        let mut listener = QuicTunnelListener::new("quic://[::]:0".parse().unwrap());
         listener.listen().await.unwrap();
         let port = listener.local_url().port().unwrap();
         assert!(port > 0);
@@ -369,7 +361,7 @@ mod tests {
 
     #[tokio::test]
     async fn quic_connector_reject_port_zero() {
-        let mut connector = QUICTunnelConnector::new("quic://127.0.0.1:0".parse().unwrap());
+        let mut connector = QuicTunnelConnector::new("quic://127.0.0.1:0".parse().unwrap());
         let err = connector.connect().await.unwrap_err().to_string();
         assert!(err.contains("port 0"), "unexpected error: {}", err);
     }

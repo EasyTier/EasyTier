@@ -3,24 +3,17 @@ use std::{
     sync::Arc,
 };
 
-use http_connector::HttpTunnelConnector;
-
-#[cfg(feature = "faketcp")]
-use crate::tunnel::fake_tcp::FakeTcpTunnelConnector;
-#[cfg(feature = "quic")]
-use crate::tunnel::quic::QUICTunnelConnector;
-#[cfg(unix)]
-use crate::tunnel::unix::UnixSocketTunnelConnector;
-#[cfg(feature = "wireguard")]
-use crate::tunnel::wireguard::{WgConfig, WgTunnelConnector};
 use crate::{
     common::{error::Error, global_ctx::ArcGlobalCtx, idn, network::IPCollector},
+    connector::dns_connector::DNSTunnelConnector,
     proto::common::PeerFeatureFlag,
     tunnel::{
-        check_scheme_and_get_socket_addr, ring::RingTunnelConnector, tcp::TcpTunnelConnector,
-        udp::UdpTunnelConnector, IpVersion, TunnelConnector,
+        self, ring::RingTunnelConnector, tcp::TcpTunnelConnector, udp::UdpTunnelConnector, FromUrl,
+        IpScheme, IpVersion, TunnelConnector, TunnelError, TunnelScheme,
     },
+    utils::BoxExt,
 };
+use http_connector::HttpTunnelConnector;
 
 pub mod direct;
 pub mod manual;
@@ -90,84 +83,34 @@ pub async fn create_connector_by_url(
 ) -> Result<Box<dyn TunnelConnector + 'static>, Error> {
     let url = url::Url::parse(url).map_err(|_| Error::InvalidUrl(url.to_owned()))?;
     let url = idn::convert_idn_to_ascii(url)?;
-    let mut connector: Box<dyn TunnelConnector + 'static> = match url.scheme() {
-        "tcp" => {
-            let dst_addr =
-                check_scheme_and_get_socket_addr::<SocketAddr>(&url, "tcp", ip_version).await?;
-            let mut connector = TcpTunnelConnector::new(url);
-            if global_ctx.config.get_flags().bind_device {
-                set_bind_addr_for_peer_connector(
-                    &mut connector,
-                    dst_addr.is_ipv4(),
-                    &global_ctx.get_ip_collector(),
-                )
-                .await;
-            }
-            Box::new(connector)
-        }
-        "udp" => {
-            let dst_addr =
-                check_scheme_and_get_socket_addr::<SocketAddr>(&url, "udp", ip_version).await?;
-            let mut connector = UdpTunnelConnector::new(url);
-            if global_ctx.config.get_flags().bind_device {
-                set_bind_addr_for_peer_connector(
-                    &mut connector,
-                    dst_addr.is_ipv4(),
-                    &global_ctx.get_ip_collector(),
-                )
-                .await;
-            }
-            Box::new(connector)
-        }
-        "http" | "https" => {
-            let connector = HttpTunnelConnector::new(url, global_ctx.clone());
-            Box::new(connector)
-        }
-        "ring" => {
-            check_scheme_and_get_socket_addr::<uuid::Uuid>(&url, "ring", IpVersion::Both).await?;
-            let connector = RingTunnelConnector::new(url);
-            Box::new(connector)
-        }
-        #[cfg(feature = "quic")]
-        "quic" => {
-            let dst_addr =
-                check_scheme_and_get_socket_addr::<SocketAddr>(&url, "quic", ip_version).await?;
-            let mut connector = QUICTunnelConnector::new(url);
-            if global_ctx.config.get_flags().bind_device {
-                set_bind_addr_for_peer_connector(
-                    &mut connector,
-                    dst_addr.is_ipv4(),
-                    &global_ctx.get_ip_collector(),
-                )
-                .await;
-            }
-            Box::new(connector)
-        }
-        #[cfg(feature = "wireguard")]
-        "wg" => {
-            let dst_addr =
-                check_scheme_and_get_socket_addr::<SocketAddr>(&url, "wg", ip_version).await?;
-            let nid = global_ctx.get_network_identity();
-            let wg_config = WgConfig::new_from_network_identity(
-                &nid.network_name,
-                &nid.network_secret.unwrap_or_default(),
-            );
-            let mut connector = WgTunnelConnector::new(url, wg_config);
-            if global_ctx.config.get_flags().bind_device {
-                set_bind_addr_for_peer_connector(
-                    &mut connector,
-                    dst_addr.is_ipv4(),
-                    &global_ctx.get_ip_collector(),
-                )
-                .await;
-            }
-            Box::new(connector)
-        }
-        #[cfg(feature = "websocket")]
-        "ws" | "wss" => {
-            use crate::tunnel::FromUrl;
+    let scheme = (&url)
+        .try_into()
+        .map_err(|_| TunnelError::InvalidProtocol(url.scheme().to_owned()))?;
+    let mut connector: Box<dyn TunnelConnector + 'static> = match scheme {
+        TunnelScheme::Ip(scheme) => {
             let dst_addr = SocketAddr::from_url(url.clone(), ip_version).await?;
-            let mut connector = crate::tunnel::websocket::WSTunnelConnector::new(url);
+            let mut connector: Box<dyn TunnelConnector> = match scheme {
+                IpScheme::Tcp => TcpTunnelConnector::new(url).boxed(),
+                IpScheme::Udp => UdpTunnelConnector::new(url).boxed(),
+                #[cfg(feature = "quic")]
+                IpScheme::Quic => tunnel::quic::QuicTunnelConnector::new(url).boxed(),
+                #[cfg(feature = "wireguard")]
+                IpScheme::Wg => {
+                    use crate::tunnel::wireguard::{WgConfig, WgTunnelConnector};
+                    let nid = global_ctx.get_network_identity();
+                    let wg_config = WgConfig::new_from_network_identity(
+                        &nid.network_name,
+                        &nid.network_secret.unwrap_or_default(),
+                    );
+                    WgTunnelConnector::new(url, wg_config).boxed()
+                }
+                #[cfg(feature = "websocket")]
+                IpScheme::Ws | IpScheme::Wss => {
+                    tunnel::websocket::WSTunnelConnector::new(url).boxed()
+                }
+                #[cfg(feature = "faketcp")]
+                IpScheme::FakeTcp => tunnel::fake_tcp::FakeTcpTunnelConnector::new(url).boxed(),
+            };
             if global_ctx.config.get_flags().bind_device {
                 set_bind_addr_for_peer_connector(
                     &mut connector,
@@ -176,40 +119,22 @@ pub async fn create_connector_by_url(
                 )
                 .await;
             }
-            Box::new(connector)
+            connector
         }
-        "txt" | "srv" => {
+        #[cfg(unix)]
+        TunnelScheme::Unix => tunnel::unix::UnixSocketTunnelConnector::new(url).boxed(),
+        TunnelScheme::Http | TunnelScheme::Https => {
+            HttpTunnelConnector::new(url, global_ctx.clone()).boxed()
+        }
+        TunnelScheme::Ring => RingTunnelConnector::new(url).boxed(),
+        TunnelScheme::Txt | TunnelScheme::Srv => {
             if url.host_str().is_none() {
                 return Err(Error::InvalidUrl(format!(
                     "host should not be empty in txt or srv url: {}",
                     url
                 )));
             }
-            let connector = dns_connector::DNSTunnelConnector::new(url, global_ctx.clone());
-            Box::new(connector)
-        }
-        #[cfg(feature = "faketcp")]
-        "faketcp" => {
-            let dst_addr =
-                check_scheme_and_get_socket_addr::<SocketAddr>(&url, "faketcp", ip_version).await?;
-            let mut connector = FakeTcpTunnelConnector::new(url);
-            if global_ctx.config.get_flags().bind_device {
-                set_bind_addr_for_peer_connector(
-                    &mut connector,
-                    dst_addr.is_ipv4(),
-                    &global_ctx.get_ip_collector(),
-                )
-                .await;
-            }
-            Box::new(connector)
-        }
-        #[cfg(unix)]
-        "unix" => {
-            let connector = UnixSocketTunnelConnector::new(url);
-            Box::new(connector)
-        }
-        _ => {
-            return Err(Error::InvalidUrl(url.into()));
+            DNSTunnelConnector::new(url, global_ctx.clone()).boxed()
         }
     };
     connector.set_ip_version(ip_version);

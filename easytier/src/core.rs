@@ -22,7 +22,6 @@ use crate::{
     launcher::add_proxy_network_to_config,
     proto::common::{CompressionAlgoPb, SecureModeConfig},
     rpc_service::ApiRpcServer,
-    tunnel::PROTO_PORT_OFFSET,
     utils::setup_panic_handler,
     web_client, ShellType,
 };
@@ -30,8 +29,10 @@ use anyhow::Context;
 use cidr::IpCidr;
 use clap::{CommandFactory, Parser};
 use rust_i18n::t;
+use strum::VariantArray;
 use tokio::io::AsyncReadExt;
 
+use crate::tunnel::IpScheme;
 #[cfg(feature = "jemalloc-prof")]
 use jemalloc_ctl::{epoch, stats, Access as _, AsName as _};
 
@@ -742,8 +743,12 @@ impl Cli {
         let mut listeners: Vec<String> = Vec::new();
         if origin_listeners.len() == 1 {
             if let Ok(port) = origin_listeners[0].parse::<u16>() {
-                for (proto, offset) in PROTO_PORT_OFFSET {
-                    listeners.push(format!("{}://0.0.0.0:{}", proto, port + *offset));
+                for proto in IpScheme::VARIANTS {
+                    listeners.push(format!(
+                        "{}://0.0.0.0:{}",
+                        proto,
+                        port + proto.port_offset()
+                    ));
                 }
                 return Ok(listeners);
             }
@@ -758,20 +763,15 @@ impl Cli {
                     panic!("failed to parse listener: {}", l);
                 }
             } else {
-                let Some((proto, offset)) = PROTO_PORT_OFFSET
-                    .iter()
-                    .find(|(proto, _)| *proto == proto_port[0])
-                else {
-                    return Err(anyhow::anyhow!("unknown protocol: {}", proto_port[0]));
-                };
+                let scheme: IpScheme = proto_port[0].parse()?;
 
                 let port = if proto_port.len() == 2 {
                     proto_port[1].parse::<u16>().unwrap()
                 } else {
-                    11010 + offset
+                    11010 + scheme.port_offset()
                 };
 
-                listeners.push(format!("{}://0.0.0.0:{}", proto, port));
+                listeners.push(format!("{}://0.0.0.0:{}", scheme, port));
             }
         }
 
@@ -1134,8 +1134,7 @@ impl LoggingConfigLoader for &LoggingOptions {
 #[cfg(target_os = "windows")]
 fn win_service_set_work_dir(service_name: &std::ffi::OsString) -> anyhow::Result<()> {
     use crate::common::constants::WIN_SERVICE_WORK_DIR_REG_KEY;
-    use winreg::enums::*;
-    use winreg::RegKey;
+    use winreg::{enums::*, RegKey};
 
     let hklm = RegKey::predef(HKEY_LOCAL_MACHINE);
     let key = hklm.open_subkey_with_flags(WIN_SERVICE_WORK_DIR_REG_KEY, KEY_READ)?;
@@ -1215,11 +1214,9 @@ fn parse_cli() -> Cli {
 
 #[cfg(target_os = "windows")]
 fn win_service_main(arg: Vec<std::ffi::OsString>) {
-    use std::sync::Arc;
-    use std::time::Duration;
+    use std::{sync::Arc, time::Duration};
     use tokio::sync::Notify;
-    use windows_service::service::*;
-    use windows_service::service_control_handler::*;
+    use windows_service::{service::*, service_control_handler::*};
 
     _ = win_service_set_work_dir(&arg[0]);
 
