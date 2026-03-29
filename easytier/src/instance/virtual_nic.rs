@@ -575,11 +575,7 @@ impl VirtualNic {
         Ok(tun::create(&config)?)
     }
 
-    #[cfg(any(
-        target_os = "android",
-        any(target_os = "ios", all(target_os = "macos", feature = "macos-ne")),
-        target_env = "ohos"
-    ))]
+    #[cfg(mobile)]
     pub async fn create_dev_for_mobile(
         &mut self,
         tun_fd: std::os::fd::RawFd,
@@ -1175,11 +1171,7 @@ impl NicCtx {
         Ok(())
     }
 
-    #[cfg(any(
-        target_os = "android",
-        any(target_os = "ios", all(target_os = "macos", feature = "macos-ne")),
-        target_env = "ohos"
-    ))]
+    #[cfg(mobile)]
     pub async fn run_for_mobile(&mut self, tun_fd: std::os::fd::RawFd) -> Result<(), Error> {
         let tunnel = {
             let mut nic = self.nic.lock().await;
