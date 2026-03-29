@@ -66,6 +66,42 @@ const parseUrl = (val: string | null | undefined) => {
 }
 
 const internalValue = ref(parseUrl(url.value))
+const defaultHost = '0.0.0.0'
+
+const buildUrlValue = (value: { proto: string, host: string, port: number }, forceDefaultHost = false) => {
+    const proto = value.proto || 'tcp'
+    const rawHost = (value.host ?? '').trim()
+    const host = rawHost || (forceDefaultHost ? defaultHost : '')
+    if (!host) {
+        return null
+    }
+    let port = value.port
+    if (isNaN(parseInt(port as any))) {
+        port = props.protos[proto] ?? 11010
+    }
+
+    if (props.protos[proto] === 0) {
+        return `${proto}://${host}`
+    }
+    return `${proto}://${host}:${port}`
+}
+
+const syncUrlFromInternal = (forceDefaultHost = false) => {
+    const nextUrl = buildUrlValue(internalValue.value, forceDefaultHost)
+    if (!nextUrl || nextUrl === url.value) {
+        return
+    }
+    url.value = nextUrl
+}
+
+const onHostBlur = () => {
+    syncUrlFromInternal(true)
+}
+
+const onDialogConfirm = () => {
+    syncUrlFromInternal(true)
+    editing.value = false
+}
 
 const isNoPortProto = computed(() => {
     return props.protos[internalValue.value.proto] === 0
@@ -74,27 +110,18 @@ const isNoPortProto = computed(() => {
 // Sync from external
 watch(() => url.value, (newVal) => {
     const parsed = parseUrl(newVal)
+    const internalHost = internalValue.value.host ?? ''
+    const sameHost = parsed.host === internalHost || (!internalHost.trim() && parsed.host === defaultHost)
     if (parsed.proto !== internalValue.value.proto ||
-        parsed.host !== internalValue.value.host ||
+        !sameHost ||
         parsed.port !== internalValue.value.port) {
         internalValue.value = parsed
     }
 })
 
 // Sync to external
-watch(internalValue, (newVal) => {
-    const proto = newVal.proto || 'tcp'
-    const host = newVal.host || '0.0.0.0'
-    let port = newVal.port
-    if (isNaN(parseInt(port as any))) {
-        port = props.protos[proto] ?? 11010
-    }
-
-    if (props.protos[proto] === 0) {
-        url.value = `${proto}://${host}`
-    } else {
-        url.value = `${proto}://${host}:${port}`
-    }
+watch(internalValue, () => {
+    syncUrlFromInternal(false)
 }, { deep: true })
 
 const protoOptions = computed(() => Object.keys(props.protos))
@@ -128,7 +155,8 @@ const onProtoChange = (newProto: string) => {
             <AutoComplete :model-value="internalValue.proto" :suggestions="filteredProtos" dropdown
                 class="max-w-32 proto-autocomplete-in-group" @complete="searchProtos"
                 @update:model-value="onProtoChange" />
-            <InputText v-model="internalValue.host" :placeholder="placeholder || '0.0.0.0'" class="grow" />
+            <InputText v-model="internalValue.host" :placeholder="placeholder || '0.0.0.0'" class="grow"
+                @blur="onHostBlur" />
             <template v-if="!isNoPortProto">
                 <InputGroupAddon>
                     <span style="font-weight: bold">:</span>
@@ -156,7 +184,8 @@ const onProtoChange = (newProto: string) => {
                 </div>
                 <div class="flex flex-col gap-2">
                     <label>{{ t('web.common.address') || 'Address' }}</label>
-                    <InputText v-model="internalValue.host" :placeholder="placeholder || '0.0.0.0'" class="w-full" />
+                    <InputText v-model="internalValue.host" :placeholder="placeholder || '0.0.0.0'" class="w-full"
+                        @blur="onHostBlur" />
                 </div>
                 <div v-if="!isNoPortProto" class="flex flex-col gap-2">
                     <label>{{ t('port') }}</label>
@@ -164,7 +193,7 @@ const onProtoChange = (newProto: string) => {
                 </div>
             </div>
             <template #footer>
-                <Button :label="t('web.common.confirm') || 'Done'" icon="pi pi-check" @click="editing = false"
+                <Button :label="t('web.common.confirm') || 'Done'" icon="pi pi-check" @click="onDialogConfirm"
                     autofocus />
             </template>
         </Dialog>
