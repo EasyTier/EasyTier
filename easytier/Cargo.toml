@@ -253,6 +253,9 @@ shellexpand = "3.1.1"
 # for fake tcp
 flume = { version = "0.12", optional = true }
 
+quinn-udp = "0.6.1"
+delegate = "0.13.5"
+
 [target.'cfg(any(target_os = "linux", target_os = "macos", target_os = "windows", target_os = "freebsd"))'.dependencies]
 machine-uid = "0.5.3"
 

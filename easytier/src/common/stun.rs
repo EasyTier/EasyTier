@@ -235,7 +235,7 @@ impl StunClient {
         Err(Error::Unknown)
     }
 
-    fn extrace_mapped_addr(msg: &Message<Attribute>) -> Option<SocketAddr> {
+    fn extract_mapped_addr(msg: &Message<Attribute>) -> Option<SocketAddr> {
         let mut mapped_addr = None;
         for x in msg.attributes() {
             match x {
@@ -322,7 +322,7 @@ impl StunClient {
             local_addr: self.socket.local_addr()?,
             stun_server_addr: stun_host,
             recv_from_addr: recv_addr,
-            mapped_socket_addr: Self::extrace_mapped_addr(&msg),
+            mapped_socket_addr: Self::extract_mapped_addr(&msg),
             changed_socket_addr,
             change_ip,
             change_port,
@@ -1161,14 +1161,20 @@ impl StunInfoCollector {
                 break;
             };
             let udp = Arc::new(udp_socket);
-            let ret = StunClientBuilder::new(udp.clone())
+            let resp = StunClientBuilder::new(udp.clone())
                 .new_stun_client(ip)
                 .bind_request(false, false)
                 .await;
-            tracing::debug!(?ret, "finish ipv6 udp nat type detect");
-            if let Ok(Some(IpAddr::V6(v6))) = ret.map(|x| x.mapped_socket_addr.map(|x| x.ip())) {
-                return Some(v6);
-            }
+            tracing::debug!(?resp, "finish ipv6 udp nat type detect");
+            let Ok(resp) = resp else { continue };
+            let Some(mapped_addr) = resp.mapped_socket_addr else {
+                continue;
+            };
+            let IpAddr::V6(mapped_v6) = mapped_addr.ip() else {
+                continue;
+            };
+            // TODO: Also detect IPv6 NAT type here.
+            return Some(mapped_v6);
         }
         None
     }

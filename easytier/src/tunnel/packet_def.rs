@@ -37,6 +37,8 @@ pub enum UdpPacketType {
 pub struct V6HolePunchPacket {
     pub dst_ipv6: [u8; 16],
     pub dst_port: U16<DefaultEndian>,
+    // when source ip is unknown, its value should be the unspecified address (all zero)
+    pub src_ipv6: [u8; 16],
 }
 
 #[repr(C, packed)]

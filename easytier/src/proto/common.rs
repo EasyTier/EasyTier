@@ -384,17 +384,29 @@ impl Url {
     }
 }
 
+impl From<std::net::SocketAddrV4> for SocketAddr {
+    fn from(value: std::net::SocketAddrV4) -> Self {
+        SocketAddr {
+            ip: Some(socket_addr::Ip::Ipv4((*value.ip()).into())),
+            port: value.port() as u32,
+        }
+    }
+}
+
+impl From<std::net::SocketAddrV6> for SocketAddr {
+    fn from(value: std::net::SocketAddrV6) -> Self {
+        SocketAddr {
+            ip: Some(socket_addr::Ip::Ipv6((*value.ip()).into())),
+            port: value.port() as u32,
+        }
+    }
+}
+
 impl From<std::net::SocketAddr> for SocketAddr {
     fn from(value: std::net::SocketAddr) -> Self {
         match value {
-            std::net::SocketAddr::V4(v4) => SocketAddr {
-                ip: Some(socket_addr::Ip::Ipv4((*v4.ip()).into())),
-                port: v4.port() as u32,
-            },
-            std::net::SocketAddr::V6(v6) => SocketAddr {
-                ip: Some(socket_addr::Ip::Ipv6((*v6.ip()).into())),
-                port: v6.port() as u32,
-            },
+            std::net::SocketAddr::V4(v4) => v4.into(),
+            std::net::SocketAddr::V6(v6) => v6.into(),
         }
     }
 }

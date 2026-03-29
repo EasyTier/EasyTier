@@ -4,10 +4,9 @@ use std::{
 };
 
 use anyhow::Context;
-use tokio::net::UdpSocket;
 
 use crate::{
-    common::{scoped_task::ScopedTask, stun::StunInfoCollectorTrait, PeerId},
+    common::{scoped_task::ScopedTask, socket::UdpSocket, stun::StunInfoCollectorTrait, PeerId},
     connector::udp_hole_punch::common::{
         try_connect_with_socket, UdpSocketArray, HOLE_PUNCH_PACKET_BODY_LEN,
     },
@@ -71,7 +70,10 @@ impl PunchConeHoleServer {
             for _ in 0..request.packet_count_per_batch {
                 let udp_packet =
                     new_hole_punch_packet(request.transaction_id, HOLE_PUNCH_PACKET_BODY_LEN);
-                if let Err(e) = listener.send_to(&udp_packet.into_bytes(), &dest_addr).await {
+                if let Err(e) = listener
+                    .send_to(&udp_packet.into_bytes(), dest_addr, None)
+                    .await
+                {
                     tracing::error!(?e, "failed to send hole punch packet to dest addr");
                 }
             }
@@ -172,6 +174,7 @@ impl PunchConeHoleClient {
                 .send_with_all(
                     &new_hole_punch_packet(tid, HOLE_PUNCH_PACKET_BODY_LEN).into_bytes(),
                     remote_mapped_addr.into(),
+                    None,
                 )
                 .await
                 .with_context(|| "failed to send hole punch packet from local")
@@ -226,6 +229,7 @@ impl PunchConeHoleClient {
                     global_ctx.clone(),
                     socket.socket.clone(),
                     remote_mapped_addr.into(),
+                    None,
                 )
                 .await
                 {

@@ -7,14 +7,14 @@ use std::{
 use crossbeam::atomic::AtomicCell;
 use dashmap::{DashMap, DashSet};
 use rand::seq::SliceRandom as _;
-use tokio::{net::UdpSocket, sync::Mutex, task::JoinSet};
+use tokio::{net::UdpSocket as TokioUdpSocket, sync::Mutex, task::JoinSet};
 use tracing::{instrument, Instrument, Level};
 use zerocopy::FromBytes as _;
 
 use crate::{
     common::{
         error::Error, global_ctx::ArcGlobalCtx, join_joinset_background, netns::NetNS,
-        stun::StunInfoCollectorTrait as _, PeerId,
+        socket::UdpSocket, stun::StunInfoCollectorTrait as _, PeerId,
     },
     defer,
     peers::peer_manager::PeerManager,
@@ -240,7 +240,7 @@ impl UdpSocketArray {
                 let mut buf = [0u8; UDP_TUNNEL_HEADER_SIZE + HOLE_PUNCH_PACKET_BODY_LEN as usize];
                 tracing::trace!(?local_addr, "udp socket added");
                 loop {
-                    let Ok((len, addr)) = socket.recv_from(&mut buf).await else {
+                    let Ok((len, addr, _)) = socket.recv_from(&mut buf).await else {
                         break;
                     };
 
@@ -300,7 +300,12 @@ impl UdpSocketArray {
     }
 
     #[instrument(err)]
-    pub async fn send_with_all(&self, data: &[u8], addr: SocketAddr) -> Result<(), anyhow::Error> {
+    pub async fn send_with_all(
+        &self,
+        data: &[u8],
+        addr: SocketAddr,
+        src_ip: Option<IpAddr>,
+    ) -> Result<(), anyhow::Error> {
         tracing::info!(?addr, "sending hole punching packet");
 
         let sockets = self
@@ -311,7 +316,7 @@ impl UdpSocketArray {
 
         for socket in sockets.iter() {
             for _ in 0..3 {
-                socket.send_to(data, addr).await?;
+                socket.send_to(data, addr, src_ip).await?;
             }
         }
 
@@ -590,7 +595,7 @@ pub(crate) async fn send_symmetric_hole_punch_packet(
             let addr = SocketAddr::V4(SocketAddrV4::new(*pub_ip, port));
             for _ in 0..3 {
                 let packet = new_hole_punch_packet(transaction_id, HOLE_PUNCH_PACKET_BODY_LEN);
-                udp.send_to(&packet.into_bytes(), addr).await?;
+                udp.send_to(&packet.into_bytes(), addr, None).await?;
             }
             sent_packets += 1;
         }
@@ -604,7 +609,7 @@ async fn check_udp_socket_local_addr(
     global_ctx: ArcGlobalCtx,
     remote_mapped_addr: SocketAddr,
 ) -> Result<(), Error> {
-    let socket = UdpSocket::bind("0.0.0.0:0").await?;
+    let socket = TokioUdpSocket::bind("0.0.0.0:0").await?;
     socket.connect(remote_mapped_addr).await?;
     if let Ok(local_addr) = socket.local_addr() {
         // local_addr should not be equal to virtual ipv4 or virtual ipv6
@@ -629,6 +634,8 @@ pub(crate) async fn try_connect_with_socket(
     global_ctx: ArcGlobalCtx,
     socket: Arc<UdpSocket>,
     remote_mapped_addr: SocketAddr,
+    src_ip: Option<IpAddr>, // important for firewall hole-punching
+                            // but no need to care about behind NAT
 ) -> Result<Box<dyn Tunnel>, Error> {
     let connector = UdpTunnelConnector::new(
         format!(
@@ -643,7 +650,7 @@ pub(crate) async fn try_connect_with_socket(
     check_udp_socket_local_addr(global_ctx, remote_mapped_addr).await?;
 
     connector
-        .try_connect_with_socket(socket, remote_mapped_addr)
+        .try_connect_with_socket(socket, remote_mapped_addr, src_ip)
         .await
         .map_err(Error::from)
 }

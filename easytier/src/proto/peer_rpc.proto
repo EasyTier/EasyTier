@@ -145,6 +145,8 @@ message GetIpListResponse {
 message SendV6HolePunchPacketRequest {
   common.SocketAddr connector_addr = 1;
   uint32 listener_port = 2;
+  // indicates the source IP to use
+  common.Ipv6Addr with_ip = 3;
 }
 
 service DirectConnectorRpc {

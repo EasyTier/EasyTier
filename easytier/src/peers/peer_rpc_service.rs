@@ -63,6 +63,7 @@ impl DirectConnectorRpc for DirectConnectorManagerRpcServer {
         else {
             return Err(anyhow::anyhow!("connector_addr is not a v6 address").into());
         };
+        let src_ip: Option<std::net::Ipv6Addr> = req.with_ip.map(Into::into);
 
         tracing::info!(
             "Sending v6 hole punch packet to {} from listener port {}",
@@ -72,7 +73,7 @@ impl DirectConnectorRpc for DirectConnectorManagerRpcServer {
 
         // send 3 packets to the connector
         for _ in 0..3 {
-            udp::send_v6_hole_punch_packet(listener_port, connector_addr).await?;
+            udp::send_v6_hole_punch_packet(listener_port, connector_addr, src_ip).await?;
             tokio::time::sleep(std::time::Duration::from_millis(30)).await;
         }
         Ok(Default::default())

@@ -98,6 +98,7 @@ impl PunchBothEasySymHoleServer {
                             public_ips.into(),
                             request.dst_port_num as u16,
                         )),
+                        None,
                     )
                     .await
                 {
@@ -145,7 +146,7 @@ impl PunchBothEasySymHoleServer {
 
                 for p in &punched {
                     let (socket, remote_addr) = p;
-                    let send_remote_ret = socket.send_to(&punch_packet, remote_addr).await;
+                    let send_remote_ret = socket.send_to(&punch_packet, *remote_addr, None).await;
                     tracing::debug!(
                         ?send_remote_ret,
                         ?socket,
@@ -292,6 +293,7 @@ impl PunchBothEasySymHoleClient {
                 .send_with_all(
                     &new_hole_punch_packet(tid, HOLE_PUNCH_PACKET_BODY_LEN).into_bytes(),
                     remote_mapped_addr.into(),
+                    None,
                 )
                 .await?;
 
@@ -318,6 +320,7 @@ impl PunchBothEasySymHoleClient {
                     global_ctx.clone(),
                     socket.socket.clone(),
                     remote_mapped_addr.into(),
+                    None,
                 )
                 .await
                 {

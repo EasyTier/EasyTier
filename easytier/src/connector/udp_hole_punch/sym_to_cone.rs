@@ -10,12 +10,13 @@ use std::{
 
 use anyhow::Context;
 use rand::{seq::SliceRandom, Rng};
-use tokio::{net::UdpSocket, sync::RwLock};
+use tokio::sync::RwLock;
 use tracing::Level;
 
 use crate::{
     common::{
-        global_ctx::ArcGlobalCtx, scoped_task::ScopedTask, stun::StunInfoCollectorTrait, PeerId,
+        global_ctx::ArcGlobalCtx, scoped_task::ScopedTask, socket::UdpSocket,
+        stun::StunInfoCollectorTrait, PeerId,
     },
     connector::udp_hole_punch::{
         common::{
@@ -367,7 +368,7 @@ impl PunchSymToConeHoleClient {
         let mut finish_time: Option<Instant> = None;
         while finish_time.is_none() || finish_time.as_ref().unwrap().elapsed().as_millis() < 1000 {
             udp_array
-                .send_with_all(packet, remote_mapped_addr.into())
+                .send_with_all(packet, remote_mapped_addr.into(), None)
                 .await?;
 
             tokio::time::sleep(Duration::from_millis(200)).await;
@@ -386,6 +387,7 @@ impl PunchSymToConeHoleClient {
                 global_ctx.clone(),
                 socket.socket.clone(),
                 remote_mapped_addr.into(),
+                None,
             )
             .await
             {
@@ -450,6 +452,7 @@ impl PunchSymToConeHoleClient {
                 global_ctx.clone(),
                 Arc::new(UdpSocket::bind("0.0.0.0:0").await?),
                 remote_mapped_addr.into(),
+                None,
             )
             .await
             {
@@ -475,7 +478,7 @@ impl PunchSymToConeHoleClient {
         let port_index = *last_port_idx as u32;
         let base_port_for_easy_sym = self.get_base_port_for_easy_sym(my_nat_info).await;
         udp_array
-            .send_with_all(&packet, remote_mapped_addr.into())
+            .send_with_all(&packet, remote_mapped_addr.into(), None)
             .await?;
 
         if self.punch_predicablely.load(Ordering::Relaxed) && base_port_for_easy_sym.is_some() {

@@ -3,7 +3,7 @@ use std::{io, mem::ManuallyDrop, net::SocketAddr, os::windows::io::AsRawSocket};
 use anyhow::Context;
 use network_interface::NetworkInterfaceConfig;
 use windows::{
-    core::BSTR,
+    core::{BSTR, PSTR},
     Win32::{
         Foundation::{BOOL, FALSE},
         NetworkManagement::WindowsFirewall::{
@@ -12,7 +12,7 @@ use windows::{
             NET_FW_RULE_DIR_OUT,
         },
         Networking::WinSock::{
-            htonl, setsockopt, WSAGetLastError, WSAIoctl, IPPROTO_IP, IPPROTO_IPV6,
+            getsockopt, htonl, setsockopt, WSAGetLastError, WSAIoctl, IPPROTO_IP, IPPROTO_IPV6,
             IPV6_UNICAST_IF, IP_UNICAST_IF, SIO_UDP_CONNRESET, SOCKET, SOCKET_ERROR,
         },
         System::Com::{
@@ -23,7 +23,50 @@ use windows::{
     },
 };
 
-pub fn disable_connection_reset<S: AsRawSocket>(socket: &S) -> io::Result<()> {
+pub fn get_socket_option(socket: &impl AsRawSocket, level: i32, name: i32) -> io::Result<u32> {
+    let mut result: u32 = 0;
+    let rc = unsafe {
+        let mut len = std::mem::size_of_val(&result) as i32;
+        getsockopt(
+            SOCKET(socket.as_raw_socket() as usize),
+            level,
+            name,
+            PSTR(&mut result as *mut _ as _),
+            &mut len,
+        )
+    };
+
+    if rc == 0 {
+        Ok(result)
+    } else {
+        Err(io::Error::last_os_error())
+    }
+}
+
+pub fn set_socket_option(
+    socket: &impl AsRawSocket,
+    level: i32,
+    name: i32,
+    value: u32,
+) -> io::Result<()> {
+    let value_bytes = value.to_ne_bytes();
+    let rc = unsafe {
+        setsockopt(
+            SOCKET(socket.as_raw_socket() as usize),
+            level,
+            name,
+            Some(&value_bytes),
+        )
+    };
+
+    if rc == 0 {
+        Ok(())
+    } else {
+        Err(io::Error::last_os_error())
+    }
+}
+
+pub fn disable_connection_reset(socket: &impl AsRawSocket) -> io::Result<()> {
     let handle = SOCKET(socket.as_raw_socket() as usize);
 
     unsafe {
@@ -88,51 +131,42 @@ pub fn find_interface_index(iface_name: &str) -> io::Result<u32> {
     ))
 }
 
-pub fn set_ip_unicast_if<S: AsRawSocket>(
-    socket: &S,
+pub fn set_ip_unicast_if(
+    socket: &impl AsRawSocket,
     addr: &SocketAddr,
     iface: &str,
 ) -> io::Result<()> {
-    let handle = SOCKET(socket.as_raw_socket() as usize);
-
     let if_index = find_interface_index(iface)?;
 
-    unsafe {
-        // https://docs.microsoft.com/en-us/windows/win32/winsock/ipproto-ip-socket-options
-        let ret = match addr {
-            SocketAddr::V4(..) => {
-                let if_index = htonl(if_index);
-                let if_index_bytes = if_index.to_ne_bytes();
-                setsockopt(handle, IPPROTO_IP.0, IP_UNICAST_IF, Some(&if_index_bytes))
-            }
-            SocketAddr::V6(..) => {
-                let if_index_bytes = if_index.to_ne_bytes();
-                setsockopt(
-                    handle,
-                    IPPROTO_IPV6.0,
-                    IPV6_UNICAST_IF,
-                    Some(&if_index_bytes),
-                )
-            }
-        };
-
-        if ret == SOCKET_ERROR {
-            let err = std::io::Error::from_raw_os_error(WSAGetLastError().0);
-            tracing::error!(
-                "set IP_UNICAST_IF / IPV6_UNICAST_IF interface: {}, index: {}, error: {}",
-                iface,
-                if_index,
-                err
-            );
-            return Err(err);
+    let ret = match addr {
+        SocketAddr::V4(..) => {
+            // https://docs.microsoft.com/en-us/windows/win32/winsock/ipproto-ip-socket-options
+            // if_index should be in network byte order
+            set_socket_option(socket, IPPROTO_IP.0, IP_UNICAST_IF, unsafe {
+                htonl(if_index)
+            })
         }
+        SocketAddr::V6(..) => {
+            // https://docs.microsoft.com/en-us/windows/win32/winsock/ipproto-ipv6-socket-options
+            // if_index should be in host byte order
+            set_socket_option(socket, IPPROTO_IPV6.0, IPV6_UNICAST_IF, if_index)
+        }
+    };
+
+    if let Err(err) = ret.as_ref() {
+        tracing::error!(
+            "set IP_UNICAST_IF / IPV6_UNICAST_IF interface: {}, index: {}, error: {}",
+            iface,
+            if_index,
+            err
+        );
     }
 
-    Ok(())
+    ret
 }
 
-pub fn setup_socket_for_win<S: AsRawSocket>(
-    socket: &S,
+pub fn setup_socket_for_win(
+    socket: &impl AsRawSocket,
     bind_addr: &SocketAddr,
     bind_dev: Option<String>,
     is_udp: bool,
