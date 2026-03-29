@@ -36,6 +36,7 @@
     "core:tray:allow-set-show-menu-on-left-click",
     "core:tray:allow-set-tooltip",
     "vpnservice:allow-ping",
+    "vpnservice:allow-get-vpn-status",
     "vpnservice:allow-prepare-vpn",
     "vpnservice:allow-start-vpn",
     "vpnservice:allow-stop-vpn",

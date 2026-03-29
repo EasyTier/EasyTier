@@ -15,6 +15,7 @@ const url = defineModel<string>({ required: true })
 const editing = ref(false)
 const container = ref<HTMLElement | null>(null)
 const internalCompact = ref(false)
+const hostFocused = ref(false)
 
 onMounted(() => {
     if (container.value) {
@@ -36,33 +37,42 @@ const parseUrl = (val: string | null | undefined) => {
         const p = parseInt(portStr)
         return isNaN(p) ? (props.protos[proto] ?? 11010) : p
     }
+    const parseByPattern = (input: string) => {
+        const trimmed = input.trim()
+        if (!trimmed) {
+            return null
+        }
+        const match = trimmed.match(/^(\w+):\/\/(.*)$/)
+        const proto = match ? match[1] : 'tcp'
+        const rest = match ? match[2] : trimmed
+        const authority = rest.split(/[/?#]/)[0]
+        if (!authority) {
+            return null
+        }
+        const hostAndMaybePort = authority.includes('@') ? authority.slice(authority.lastIndexOf('@') + 1) : authority
+        if (hostAndMaybePort.startsWith('[')) {
+            const ipv6End = hostAndMaybePort.indexOf(']')
+            if (ipv6End > 0) {
+                const host = hostAndMaybePort.slice(0, ipv6End + 1)
+                const remain = hostAndMaybePort.slice(ipv6End + 1)
+                const port = remain.startsWith(':') ? getValidPort(remain.slice(1), proto) : (props.protos[proto] ?? 11010)
+                return { proto, host, port }
+            }
+        }
+        const portMatch = hostAndMaybePort.match(/^(.*):(\d+)$/)
+        const host = portMatch ? portMatch[1] : hostAndMaybePort
+        const port = portMatch ? parseInt(portMatch[2]) : (props.protos[proto] ?? 11010)
+        return { proto, host, port }
+    }
 
     if (!val) {
         return { proto: 'tcp', host: '', port: props.protos['tcp'] ?? 11010 }
     }
-    try {
-        const urlObj = new URL(val)
-        const proto = urlObj.protocol.replace(':', '')
-        return {
-            proto: proto,
-            host: urlObj.hostname,
-            port: getValidPort(urlObj.port, proto)
-        }
-    } catch (e) {
-        // Fallback for incomplete or invalid URLs
-        const match = val.match(/^(\w+):\/\/(.*)$/)
-        if (match) {
-            const proto = match[1]
-            const rest = match[2]
-            const portMatch = rest.match(/:(\d+)$/)
-            return {
-                proto,
-                host: portMatch ? rest.slice(0, portMatch.index) : rest,
-                port: portMatch ? parseInt(portMatch[1]) : (props.protos[proto] ?? 11010)
-            }
-        }
-        return { proto: 'tcp', host: '', port: 11010 }
+    const parsedByPattern = parseByPattern(val)
+    if (parsedByPattern) {
+        return parsedByPattern
     }
+    return { proto: 'tcp', host: '', port: 11010 }
 }
 
 const internalValue = ref(parseUrl(url.value))
@@ -95,7 +105,12 @@ const syncUrlFromInternal = (forceDefaultHost = false) => {
 }
 
 const onHostBlur = () => {
+    hostFocused.value = false
     syncUrlFromInternal(true)
+}
+
+const onHostFocus = () => {
+    hostFocused.value = true
 }
 
 const onDialogConfirm = () => {
@@ -109,6 +124,9 @@ const isNoPortProto = computed(() => {
 
 // Sync from external
 watch(() => url.value, (newVal) => {
+    if (hostFocused.value) {
+        return
+    }
     const parsed = parseUrl(newVal)
     const internalHost = internalValue.value.host ?? ''
     const sameHost = parsed.host === internalHost || (!internalHost.trim() && parsed.host === defaultHost)
@@ -156,7 +174,7 @@ const onProtoChange = (newProto: string) => {
                 class="max-w-32 proto-autocomplete-in-group" @complete="searchProtos"
                 @update:model-value="onProtoChange" />
             <InputText v-model="internalValue.host" :placeholder="placeholder || '0.0.0.0'" class="grow"
-                @blur="onHostBlur" />
+                @focus="onHostFocus" @blur="onHostBlur" />
             <template v-if="!isNoPortProto">
                 <InputGroupAddon>
                     <span style="font-weight: bold">:</span>
@@ -185,7 +203,7 @@ const onProtoChange = (newProto: string) => {
                 <div class="flex flex-col gap-2">
                     <label>{{ t('web.common.address') || 'Address' }}</label>
                     <InputText v-model="internalValue.host" :placeholder="placeholder || '0.0.0.0'" class="w-full"
-                        @blur="onHostBlur" />
+                        @focus="onHostFocus" @blur="onHostBlur" />
                 </div>
                 <div v-if="!isNoPortProto" class="flex flex-col gap-2">
                     <label>{{ t('port') }}</label>

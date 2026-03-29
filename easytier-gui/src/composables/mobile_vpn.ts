@@ -24,6 +24,22 @@ const curVpnStatus: vpnStatus = {
   dns: undefined,
 }
 
+async function requestVpnPermission() {
+  console.log('prepare vpn')
+  const prepare_ret = await prepare_vpn()
+  console.log('prepare vpn', JSON.stringify((prepare_ret)))
+  if (prepare_ret?.errorMsg?.length) {
+    throw new Error(prepare_ret.errorMsg)
+  }
+
+  const granted = prepare_ret?.granted ?? true
+  if (!granted) {
+    console.info('vpn permission request was denied or dismissed')
+  }
+
+  return granted
+}
+
 function resetVpnConfigStatus() {
   curVpnStatus.ipv4Addr = undefined
   curVpnStatus.ipv4Cidr = undefined
@@ -86,13 +102,25 @@ async function doStartVpn(ipv4Addr: string, cidr: number, routes: string[], dns?
   }
 
   console.log('start vpn service', ipv4Addr, cidr, routes, dns)
-  const start_ret = await start_vpn({
+  const request = {
     ipv4Addr: `${ipv4Addr}/${cidr}`,
     routes,
     dns,
     disallowedApplications: ['com.kkrainbow.easytier'],
     mtu: 1300,
-  })
+  }
+
+  let start_ret = await start_vpn(request)
+  console.log('start vpn response', JSON.stringify(start_ret))
+  if (start_ret?.errorMsg === 'need_prepare') {
+    const granted = await requestVpnPermission()
+    if (!granted) {
+      throw new Error('vpn_permission_denied')
+    }
+    start_ret = await start_vpn(request)
+    console.log('start vpn retry response', JSON.stringify(start_ret))
+  }
+
   if (start_ret?.errorMsg?.length) {
     throw new Error(start_ret.errorMsg)
   }
@@ -171,15 +199,25 @@ export async function onNetworkInstanceChange(instanceId: string) {
   }
 
   if (!instanceId) {
-    await doStopVpn()
+    console.warn('vpn service skipped because instance id is empty')
+    if (curVpnStatus.running) {
+      await doStopVpn()
+    }
     return
   }
   const config = await getConfig(instanceId)
+  console.log('vpn service loaded config', instanceId, JSON.stringify({
+    no_tun: config.no_tun,
+    dhcp: config.dhcp,
+    enable_magic_dns: config.enable_magic_dns,
+  }))
   if (config.no_tun) {
+    console.log('vpn service skipped because no_tun is enabled', instanceId)
     return
   }
   const curNetworkInfo = (await collectNetworkInfo(instanceId)).info.map[instanceId]
   if (!curNetworkInfo || curNetworkInfo?.error_msg?.length) {
+    console.warn('vpn service skipped because network info is unavailable', instanceId, curNetworkInfo?.error_msg)
     await doStopVpn()
     return
   }
@@ -234,6 +272,10 @@ export async function onNetworkInstanceChange(instanceId: string) {
         console.info('vpn permission is required before starting the Android VPN service')
         return
       }
+      if (e instanceof Error && e.message === 'vpn_permission_denied') {
+        console.info('vpn permission request was denied or dismissed')
+        return
+      }
       console.error('start vpn service failed', e)
     }
   }
@@ -246,6 +288,22 @@ async function isNoTunEnabled(instanceId: string | undefined) {
   return (await getConfig(instanceId)).no_tun ?? false
 }
 
+async function findRunningTunInstanceId() {
+  const instanceIds = await listNetworkInstanceIds()
+  const runningIds = instanceIds.running_inst_ids.map(Utils.UuidToStr)
+  console.log('vpn service sync running instances', JSON.stringify(runningIds))
+
+  for (const instanceId of runningIds) {
+    if (await isNoTunEnabled(instanceId)) {
+      continue
+    }
+
+    return instanceId
+  }
+
+  return undefined
+}
+
 export async function initMobileVpnService() {
   await registerVpnServiceListener()
 }
@@ -254,27 +312,14 @@ export async function prepareVpnService(instanceId: string) {
   if (await isNoTunEnabled(instanceId)) {
     return
   }
-  console.log('prepare vpn')
-  const prepare_ret = await prepare_vpn()
-  console.log('prepare vpn', JSON.stringify((prepare_ret)))
-  if (prepare_ret?.errorMsg?.length) {
-    throw new Error(prepare_ret.errorMsg)
-  }
-  if (prepare_ret && 'granted' in prepare_ret && !prepare_ret.granted) {
-    console.info('vpn permission request was denied or dismissed')
-  }
+  await requestVpnPermission()
 }
 
 export async function syncMobileVpnService() {
   syncVpnStatusFromNative(await get_vpn_status())
-
-  const instanceIds = await listNetworkInstanceIds()
-
-  for (const instanceId of instanceIds.running_inst_ids.map(Utils.UuidToStr)) {
-    if (await isNoTunEnabled(instanceId)) {
-      continue
-    }
-
+  const instanceId = await findRunningTunInstanceId()
+  if (instanceId) {
+    console.log('vpn service sync selected instance', instanceId)
     await onNetworkInstanceChange(instanceId)
     return
   }

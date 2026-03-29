@@ -10,7 +10,7 @@ initial_nodes_help: |
   • 留空 = 节点独立启动，等别人来连，或你后续手动连。
   • 无论直接还是间接连通（通过其他节点搭桥），都能组网互通。
   初始节点可以用自己的，也可以用别人分享的。
-initial_node_placeholder: 例如：tcp://node.example.com:11010
+initial_node_placeholder: 例如：node.example.com
 virtual_ipv4: 虚拟IPv4地址
 virtual_ipv4_dhcp: DHCP
 network_name: 网络名称
