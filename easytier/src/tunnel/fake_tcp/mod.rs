@@ -2,22 +2,26 @@ mod netfilter;
 mod packet;
 mod stack;
 
+use bytes::BytesMut;
+use futures::{Sink, Stream};
+use network_interface::NetworkInterfaceConfig;
+use pnet::util::MacAddr;
 use std::{
     net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket},
     pin::Pin,
     sync::Arc,
+    task::{Context as TaskContext, Poll},
 };
-
-use bytes::BytesMut;
-use network_interface::NetworkInterfaceConfig;
-use pnet::util::MacAddr;
 use tokio::{io::AsyncReadExt, net::TcpStream, sync::Mutex};
 
 use crate::{
     common::scoped_task::ScopedTask,
     tunnel::{
-        common::TunnelWrapper, fake_tcp::netfilter::create_tun, Tunnel, TunnelError, TunnelInfo,
-        TunnelListener,
+        common::TunnelWrapper,
+        fake_tcp::netfilter::create_tun,
+        packet_def::{ZCPacket, ZCPacketType, PEER_MANAGER_HEADER_SIZE, TCP_TUNNEL_HEADER_SIZE},
+        FromUrl, IpVersion, SinkError, SinkItem, StreamItem, Tunnel, TunnelConnector, TunnelError,
+        TunnelInfo, TunnelListener,
     },
 };
 
@@ -305,7 +309,7 @@ fn get_local_ip_for_destination(destination: IpAddr) -> Option<IpAddr> {
 }
 
 #[async_trait::async_trait]
-impl crate::tunnel::TunnelConnector for FakeTcpTunnelConnector {
+impl TunnelConnector for FakeTcpTunnelConnector {
     async fn connect(&mut self) -> Result<Box<dyn Tunnel>, TunnelError> {
         let remote_addr = SocketAddr::from_url(self.addr.clone(), IpVersion::Both).await?;
         let local_ip = get_local_ip_for_destination(remote_addr.ip())
@@ -380,13 +384,6 @@ impl crate::tunnel::TunnelConnector for FakeTcpTunnelConnector {
         self.addr.clone()
     }
 }
-
-use crate::tunnel::{
-    packet_def::{ZCPacket, ZCPacketType, PEER_MANAGER_HEADER_SIZE, TCP_TUNNEL_HEADER_SIZE},
-    FromUrl, IpVersion, SinkError, SinkItem, StreamItem,
-};
-use futures::{Sink, Stream};
-use std::task::{Context as TaskContext, Poll};
 
 type RecvFut = Pin<Box<dyn Future<Output = Option<(BytesMut, usize)>> + Send + Sync>>;
 
