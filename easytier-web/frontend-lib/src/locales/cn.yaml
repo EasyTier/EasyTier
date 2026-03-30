@@ -3,6 +3,14 @@ networking_method: 网络方式
 public_server: 公共服务器
 manual: 手动
 standalone: 独立
+initial_nodes: 初始节点
+initial_nodes_help: |
+  EasyTier 不分服务端/客户端。
+  • 填“初始节点” = 插上网线，直接加入已有网络。
+  • 留空 = 节点独立启动，等别人来连，或你后续手动连。
+  • 无论直接还是间接连通（通过其他节点搭桥），都能组网互通。
+  初始节点可以用自己的，也可以用别人分享的。
+initial_node_placeholder: 例如：node.example.com
 virtual_ipv4: 虚拟IPv4地址
 virtual_ipv4_dhcp: DHCP
 network_name: 网络名称
@@ -26,6 +34,7 @@ error_msg: 错误信息
 detail: 详情
 add_new_network: 添加新网络
 add_peer_url: 添加节点
+add_initial_node: 添加初始节点
 add_listener_url: 添加监听地址
 add_mapped_listener: 添加监听映射
 del_cur_network: 删除当前网络
@@ -186,6 +195,12 @@ mtu: MTU
 mtu_help: |
   TUN设备的MTU，默认为非加密时为1380，加密时为1360。范围：400-1380
 mtu_placeholder: 留空为默认值1380
+
+instance_recv_bps_limit: 实例接收限速
+instance_recv_bps_limit_help: |
+  限制当前实例整体入站流量的总接收速率，单位为字节每秒。
+  留空表示不限速。
+instance_recv_bps_limit_placeholder: 留空表示不限速
 
 mapped_listeners: 监听映射
 mapped_listeners_help: |

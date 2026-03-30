@@ -10,6 +10,7 @@ export async function ping(value: string): Promise<string | null> {
 
 export interface InvokeResponse {
   errorMsg?: string;
+  granted?: boolean;
 }
 
 export interface StartVpnRequest {
@@ -18,6 +19,13 @@ export interface StartVpnRequest {
   dns?: string;
   disallowedApplications?: string[];
   mtu?: number;
+}
+
+export interface VpnStatusResponse {
+  running: boolean;
+  ipv4Addr?: string;
+  routes?: string[];
+  dns?: string;
 }
 
 export async function prepare_vpn(): Promise<InvokeResponse | null> {
@@ -32,4 +40,8 @@ export async function start_vpn(request: StartVpnRequest): Promise<InvokeRespons
 
 export async function stop_vpn(): Promise<InvokeResponse | null> {
   return await invoke<InvokeResponse>('plugin:vpnservice|stop_vpn', {})
+}
+
+export async function get_vpn_status(): Promise<VpnStatusResponse | null> {
+  return await invoke<VpnStatusResponse>('plugin:vpnservice|get_vpn_status', {})
 }

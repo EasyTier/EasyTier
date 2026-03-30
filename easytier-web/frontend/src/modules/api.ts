@@ -1,5 +1,5 @@
 import axios, { AxiosError, AxiosInstance, AxiosResponse, InternalAxiosRequestConfig } from 'axios';
-import { type Api, type NetworkTypes, Utils } from 'easytier-frontend-lib';
+import { type Api, NetworkTypes, Utils } from 'easytier-frontend-lib';
 import { Md5 } from 'ts-md5';
 
 export interface ValidateConfigResponse {
@@ -206,13 +206,13 @@ class WebRemoteClient implements Api.RemoteClient {
     }
     async validate_config(config: NetworkTypes.NetworkConfig): Promise<Api.ValidateConfigResponse> {
         const response = await this.client.post<NetworkTypes.NetworkConfig, ValidateConfigResponse>(`/machines/${this.machine_id}/validate-config`, {
-            config: config,
+            config: NetworkTypes.toBackendNetworkConfig(config),
         });
         return response;
     }
     async run_network(config: NetworkTypes.NetworkConfig, save: boolean): Promise<undefined> {
         await this.client.post<string>(`/machines/${this.machine_id}/networks`, {
-            config: config,
+            config: NetworkTypes.toBackendNetworkConfig(config),
             save: save
         });
     }
@@ -233,15 +233,19 @@ class WebRemoteClient implements Api.RemoteClient {
         });
     }
     async save_config(config: NetworkTypes.NetworkConfig): Promise<undefined> {
-        await this.client.put(`/machines/${this.machine_id}/networks/config/${config.instance_id}`, { config });
+        await this.client.put(`/machines/${this.machine_id}/networks/config/${config.instance_id}`, {
+            config: NetworkTypes.toBackendNetworkConfig(config)
+        });
     }
     async get_network_config(inst_id: string): Promise<NetworkTypes.NetworkConfig> {
         const response = await this.client.get<any, NetworkTypes.NetworkConfig>('/machines/' + this.machine_id + '/networks/config/' + inst_id);
-        return response;
+        return NetworkTypes.normalizeNetworkConfig(response);
     }
     async generate_config(config: NetworkTypes.NetworkConfig): Promise<Api.GenerateConfigResponse> {
         try {
-            const response = await this.client.post<any, GenerateConfigResponse>('/generate-config', { config });
+            const response = await this.client.post<any, GenerateConfigResponse>('/generate-config', {
+                config: NetworkTypes.toBackendNetworkConfig(config)
+            });
             return response;
         } catch (error) {
             if (error instanceof AxiosError) {
@@ -253,6 +257,9 @@ class WebRemoteClient implements Api.RemoteClient {
     async parse_config(toml_config: string): Promise<Api.ParseConfigResponse> {
         try {
             const response = await this.client.post<any, ParseConfigResponse>('/parse-config', { toml_config });
+            if (response.config) {
+                response.config = NetworkTypes.normalizeNetworkConfig(response.config);
+            }
             return response;
         } catch (error) {
             if (error instanceof AxiosError) {

@@ -146,7 +146,6 @@ async fn collect_network_info(
 
 #[tauri::command]
 async fn set_logging_level(level: String) -> Result<(), String> {
-    println!("Setting logging level to: {}", level);
     get_client_manager!()?
         .set_logging_level(level.clone())
         .await
@@ -207,6 +206,16 @@ async fn update_network_config_state(
         .parse()
         .map_err(|e: uuid::Error| e.to_string())?;
     let client_manager = get_client_manager!()?;
+    if !disabled {
+        let cfg = client_manager
+            .handle_get_network_config(app.clone(), instance_id)
+            .await
+            .map_err(|e| e.to_string())?;
+        let toml_config = cfg.gen_config().map_err(|e| e.to_string())?;
+        client_manager
+            .pre_run_network_instance_hook(&app, &toml_config)
+            .await?;
+    }
     client_manager
         .handle_update_network_state(app.clone(), instance_id, disabled)
         .await
@@ -215,6 +224,10 @@ async fn update_network_config_state(
     if disabled {
         client_manager
             .post_stop_network_instances_hook(&app)
+            .await?;
+    } else {
+        client_manager
+            .post_run_network_instance_hook(&app, &instance_id)
             .await?;
     }
 
@@ -831,7 +844,7 @@ mod manager {
             cfg: &easytier::common::config::TomlConfigLoader,
         ) -> Result<(), String> {
             let instance_id = cfg.get_id();
-            app.emit("pre_run_network_instance", instance_id)
+            app.emit("pre_run_network_instance", instance_id.to_string())
                 .map_err(|e| e.to_string())?;
 
             #[cfg(target_os = "android")]
@@ -868,20 +881,21 @@ mod manager {
                         let app_clone = app.clone();
                         let instance_id_clone = *instance_id;
                         tokio::spawn(async move {
+                            let instance_id_str = instance_id_clone.to_string();
                             loop {
                                 match event_receiver.recv().await {
                                     Ok(easytier::common::global_ctx::GlobalCtxEvent::DhcpIpv4Changed(_, _)) => {
-                                        let _ = app_clone.emit("dhcp_ip_changed", instance_id_clone);
+                                        let _ = app_clone.emit("dhcp_ip_changed", &instance_id_str);
                                     }
                                     Ok(easytier::common::global_ctx::GlobalCtxEvent::ProxyCidrsUpdated(_, _)) => {
-                                        let _ = app_clone.emit("proxy_cidrs_updated", instance_id_clone);
+                                        let _ = app_clone.emit("proxy_cidrs_updated", &instance_id_str);
                                     }
                                     Ok(_) => {}
                                     Err(tokio::sync::broadcast::error::RecvError::Closed) => {
                                         break;
                                     }
                                     Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
-                                        let _ = app_clone.emit("event_lagged", instance_id_clone);
+                                        let _ = app_clone.emit("event_lagged", &instance_id_str);
                                         event_receiver = event_receiver.resubscribe();
                                     }
                                 }
@@ -893,7 +907,7 @@ mod manager {
 
             self.storage.enabled_networks.insert(*instance_id);
 
-            app.emit("post_run_network_instance", instance_id)
+            app.emit("post_run_network_instance", instance_id.to_string())
                 .map_err(|e| e.to_string())?;
 
             Ok(())
@@ -972,20 +986,26 @@ mod manager {
                             .network_configs
                             .get(&uuid)
                             .map(|i| i.value().1.clone());
-                        if config.is_none() {
+                        let Some(config) = config else {
                             continue;
-                        }
+                        };
+                        let toml_config = config.gen_config()?;
+                        self.pre_run_network_instance_hook(&app, &toml_config)
+                            .await
+                            .map_err(|e| anyhow::anyhow!(e))?;
                         client
                             .run_network_instance(
                                 BaseController::default(),
                                 RunNetworkInstanceRequest {
                                     inst_id: None,
-                                    config,
+                                    config: Some(config),
                                     overwrite: false,
                                 },
                             )
                             .await?;
-                        self.storage.enabled_networks.insert(uuid);
+                        self.post_run_network_instance_hook(&app, &uuid)
+                            .await
+                            .map_err(|e| anyhow::anyhow!(e))?;
                     }
                 }
             }

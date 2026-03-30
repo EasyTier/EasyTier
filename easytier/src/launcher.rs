@@ -403,12 +403,6 @@ impl NetworkInstance {
         self.config.get_network_identity().network_name
     }
 
-    pub fn set_tun_fd(&mut self, tun_fd: i32) {
-        if let Some(launcher) = self.launcher.as_ref() {
-            let _ = launcher.data.tun_fd.0.blocking_send(Some(tun_fd));
-        }
-    }
-
     pub fn get_tun_fd_sender(&self) -> Option<mpsc::Sender<TunFd>> {
         self.launcher
             .as_ref()
@@ -573,8 +567,9 @@ impl NetworkConfig {
                         peer_public_key: None,
                     });
                 }
-
-                cfg.set_peers(peers);
+                if !peers.is_empty() {
+                    cfg.set_peers(peers);
+                }
             }
             NetworkingMethod::Standalone => {}
         }
@@ -826,6 +821,10 @@ impl NetworkConfig {
             flags.mtu = mtu as u32;
         }
 
+        if let Some(instance_recv_bps_limit) = self.instance_recv_bps_limit {
+            flags.instance_recv_bps_limit = instance_recv_bps_limit;
+        }
+
         if let Some(enable_private_mode) = self.enable_private_mode {
             flags.private_mode = enable_private_mode;
         }
@@ -870,18 +869,9 @@ impl NetworkConfig {
         }
 
         let peers = config.get_peers();
-        match peers.len() {
-            1 => {
-                result.networking_method = Some(NetworkingMethod::PublicServer as i32);
-                result.public_server_url = Some(peers[0].uri.to_string());
-            }
-            0 => {
-                result.networking_method = Some(NetworkingMethod::Standalone as i32);
-            }
-            _ => {
-                result.networking_method = Some(NetworkingMethod::Manual as i32);
-                result.peer_urls = peers.iter().map(|p| p.uri.to_string()).collect();
-            }
+        result.networking_method = Some(NetworkingMethod::Manual as i32);
+        if !peers.is_empty() {
+            result.peer_urls = peers.iter().map(|p| p.uri.to_string()).collect();
         }
 
         result.listener_urls = config
@@ -978,6 +968,8 @@ impl NetworkConfig {
         result.disable_sym_hole_punching = Some(flags.disable_sym_hole_punching);
         result.enable_magic_dns = Some(flags.accept_dns);
         result.mtu = Some(flags.mtu as i32);
+        result.instance_recv_bps_limit =
+            (flags.instance_recv_bps_limit != u64::MAX).then_some(flags.instance_recv_bps_limit);
         result.enable_private_mode = Some(flags.private_mode);
 
         if flags.relay_network_whitelist == "*" {

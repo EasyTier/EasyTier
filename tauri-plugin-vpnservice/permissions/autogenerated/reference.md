@@ -19,6 +19,32 @@ Default permissions for the plugin
 <tr>
 <td>
 
+`vpnservice:allow-get-vpn-status`
+
+</td>
+<td>
+
+Enables the get_vpn_status command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`vpnservice:deny-get-vpn-status`
+
+</td>
+<td>
+
+Denies the get_vpn_status command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
 `vpnservice:allow-ping`
 
 </td>

@@ -1,17 +1,16 @@
 <script setup lang="ts">
 import InputGroup from 'primevue/inputgroup'
 import InputGroupAddon from 'primevue/inputgroupaddon'
-import { SelectButton, Checkbox, InputText, InputNumber, AutoComplete, Panel, Divider, ToggleButton, Button, Password, Dialog } from 'primevue'
+import { Checkbox, InputText, InputNumber, AutoComplete, Panel, Divider, ToggleButton, Button, Password, Dialog } from 'primevue'
 import {
   addRow,
   DEFAULT_NETWORK_CONFIG,
   NetworkConfig,
-  NetworkingMethod,
+  normalizeNetworkConfig,
   removeRow
 } from '../types/network'
-import { ref, onMounted, onUnmounted } from 'vue'
+import { ref, onMounted, onUnmounted, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import UrlInput from './UrlInput.vue'
 import UrlListInput from './UrlListInput.vue'
 
 const props = defineProps<{
@@ -27,12 +26,6 @@ const curNetwork = defineModel('curNetwork', {
 })
 
 const { t } = useI18n()
-
-const networking_methods = ref([
-  { value: NetworkingMethod.PublicServer, label: () => t('public_server') },
-  { value: NetworkingMethod.Manual, label: () => t('manual') },
-  { value: NetworkingMethod.Standalone, label: () => t('standalone') },
-])
 
 const protos: { [proto: string]: number } = {
   tcp: 11010,
@@ -154,6 +147,16 @@ onMounted(() => {
     });
   }
 });
+
+function syncNormalizedNetwork(network: NetworkConfig | undefined): void {
+  if (!network) {
+    return
+  }
+
+  Object.assign(network, normalizeNetworkConfig(network))
+}
+
+watch(() => curNetwork.value, syncNormalizedNetwork, { immediate: true, deep: false })
 </script>
 
 <template>
@@ -200,15 +203,14 @@ onMounted(() => {
 
               <div class="flex flex-row gap-x-9 flex-wrap">
                 <div class="flex flex-col gap-2 basis-5/12 grow">
-                  <label for="nm">{{ t('networking_method') }}</label>
-                  <SelectButton v-model="curNetwork.networking_method" :options="networking_methods"
-                    :option-label="(v) => v.label()" option-value="value" />
+                  <div class="flex items-center">
+                    <label for="initial_nodes">{{ t('initial_nodes') }}</label>
+                    <span class="pi pi-question-circle ml-2 self-center" v-tooltip="t('initial_nodes_help')"></span>
+                  </div>
                   <div class="items-center flex flex-col p-fluid gap-y-2">
-                    <UrlListInput v-if="curNetwork.networking_method === NetworkingMethod.Manual"
-                      v-model="curNetwork.peer_urls" :protos="protos" :add-label="t('add_peer_url')" />
-
-                    <UrlInput v-if="curNetwork.networking_method === NetworkingMethod.PublicServer"
-                      v-model="curNetwork.public_server_url" :protos="protos" />
+                    <UrlListInput id="initial_nodes" v-model="curNetwork.peer_urls" :protos="protos"
+                      defaultUrl="tcp://:11010" :add-label="t('add_initial_node')"
+                      :placeholder="t('initial_node_placeholder')" />
                   </div>
                 </div>
               </div>
@@ -301,6 +303,19 @@ onMounted(() => {
                   </div>
                   <InputNumber id="mtu" v-model="curNetwork.mtu" aria-describedby="mtu-help" :format="false"
                     :placeholder="t('mtu_placeholder')" :min="400" :max="1380" fluid />
+                </div>
+              </div>
+
+              <div class="flex flex-row gap-x-9 flex-wrap">
+                <div class="flex flex-col gap-2 basis-5/12 grow">
+                  <div class="flex">
+                    <label for="instance_recv_bps_limit">{{ t('instance_recv_bps_limit') }}</label>
+                    <span class="pi pi-question-circle ml-2 self-center"
+                      v-tooltip="t('instance_recv_bps_limit_help')"></span>
+                  </div>
+                  <InputNumber id="instance_recv_bps_limit" v-model="curNetwork.instance_recv_bps_limit"
+                    aria-describedby="instance_recv_bps_limit-help" :format="false"
+                    :placeholder="t('instance_recv_bps_limit_placeholder')" :min="1" fluid />
                 </div>
               </div>
 

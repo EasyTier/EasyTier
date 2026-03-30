@@ -10,8 +10,10 @@ use crate::{
             tests::{get_mock_global_ctx, get_mock_global_ctx_with_network},
             NetworkIdentity,
         },
+        stats_manager::{LabelSet, LabelType, MetricName},
         PeerId,
     },
+    proto::api::instance::TrustedKeySourcePb,
     tunnel::{
         common::tests::wait_for_condition,
         packet_def::{PacketType, ZCPacket},
@@ -62,6 +64,92 @@ pub async fn create_mock_peer_manager_secure(
     peer_mgr
 }
 
+fn set_private_mode(peer_mgr: &PeerManager, enabled: bool) {
+    let global_ctx = peer_mgr.get_global_ctx();
+    let mut flags = global_ctx.get_flags();
+    flags.private_mode = enabled;
+    global_ctx.set_flags(flags);
+}
+
+async fn connect_client_and_server(
+    client: Arc<PeerManager>,
+    server: Arc<PeerManager>,
+) -> (Result<(), Error>, Result<(), Error>) {
+    let (client_ring, server_ring) = create_ring_tunnel_pair();
+    tokio::join!(
+        {
+            let client = client.clone();
+            async move {
+                client.add_client_tunnel(client_ring, false).await?;
+                Ok(())
+            }
+        },
+        {
+            let server = server.clone();
+            async move { server.add_tunnel_as_server(server_ring, true).await }
+        }
+    )
+}
+
+async fn wait_for_foreign_network(server: Arc<PeerManager>, network_name: &'static str) {
+    wait_for_condition(
+        || {
+            let server = server.clone();
+            async move {
+                server
+                    .get_foreign_network_manager()
+                    .list_foreign_networks()
+                    .await
+                    .foreign_networks
+                    .contains_key(network_name)
+            }
+        },
+        Duration::from_secs(10),
+    )
+    .await;
+}
+
+async fn wait_for_foreign_network_peer_count_at_least(
+    server: Arc<PeerManager>,
+    network_name: &'static str,
+    min_peer_count: usize,
+) {
+    wait_for_condition(
+        || {
+            let server = server.clone();
+            async move {
+                server
+                    .get_foreign_network_manager()
+                    .list_foreign_networks()
+                    .await
+                    .foreign_networks
+                    .get(network_name)
+                    .map(|entry| entry.peers.len() >= min_peer_count)
+                    .unwrap_or(false)
+            }
+        },
+        Duration::from_secs(10),
+    )
+    .await;
+}
+
+async fn wait_for_public_peers_empty(client: Arc<PeerManager>) {
+    wait_for_condition(
+        || {
+            let client = client.clone();
+            async move {
+                client
+                    .get_foreign_network_client()
+                    .list_public_peers()
+                    .await
+                    .is_empty()
+            }
+        },
+        Duration::from_secs(5),
+    )
+    .await;
+}
+
 pub async fn connect_peer_manager(client: Arc<PeerManager>, server: Arc<PeerManager>) {
     let (a_ring, b_ring) = create_ring_tunnel_pair();
     let a_mgr_copy = client;
@@ -99,6 +187,18 @@ pub async fn wait_route_appear(
 ) -> Result<(), Error> {
     wait_route_appear_with_cost(peer_mgr.clone(), target_peer.my_peer_id(), None).await?;
     wait_route_appear_with_cost(target_peer, peer_mgr.my_peer_id(), None).await
+}
+
+fn metric_value(peer_mgr: &PeerManager, metric: MetricName, network_name: &str) -> u64 {
+    peer_mgr
+        .get_global_ctx()
+        .stats_manager()
+        .get_metric(
+            metric,
+            &LabelSet::new().with_label_type(LabelType::NetworkName(network_name.to_string())),
+        )
+        .map(|metric| metric.value)
+        .unwrap_or(0)
 }
 
 #[tokio::test]
@@ -190,6 +290,145 @@ async fn relay_peer_map_secure_session_decrypt() {
     session.encrypt_payload(20, 10, &mut packet).unwrap();
     assert!(relay_map.decrypt_if_needed(&mut packet).await.unwrap());
     assert_eq!(packet.payload(), b"relay-hello");
+}
+
+#[tokio::test]
+async fn private_mode_allows_foreign_network_with_same_secret() {
+    let server = create_mock_peer_manager_secure("public".to_string(), "shared".to_string()).await;
+    let client =
+        create_mock_peer_manager_secure("tenant-a".to_string(), "shared".to_string()).await;
+    set_private_mode(&server, true);
+
+    let (client_ret, server_ret) = connect_client_and_server(client, server.clone()).await;
+
+    assert!(client_ret.is_ok(), "client should connect in private mode");
+    assert!(
+        server_ret.is_ok(),
+        "server should accept foreign network with matching secret: {:?}",
+        server_ret
+    );
+    wait_for_foreign_network(server, "tenant-a").await;
+}
+
+#[tokio::test]
+async fn private_mode_rejects_foreign_network_with_different_secret() {
+    let server = create_mock_peer_manager_secure("public".to_string(), "shared".to_string()).await;
+    let client = create_mock_peer_manager_secure("tenant-a".to_string(), "other".to_string()).await;
+    set_private_mode(&server, true);
+
+    let (client_ret, server_ret) = connect_client_and_server(client.clone(), server.clone()).await;
+
+    assert!(
+        server_ret.is_err(),
+        "server should reject foreign network with mismatched secret in private mode"
+    );
+    let _ = client_ret;
+    wait_for_public_peers_empty(client).await;
+    assert!(server
+        .get_foreign_network_manager()
+        .list_foreign_networks()
+        .await
+        .foreign_networks
+        .is_empty());
+}
+
+#[tokio::test]
+async fn private_mode_allows_trusted_foreign_credential() {
+    let server = create_mock_peer_manager_secure("public".to_string(), "shared".to_string()).await;
+    let admin = create_mock_peer_manager_secure("tenant-a".to_string(), "shared".to_string()).await;
+    set_private_mode(&server, true);
+
+    let (_cred_id, cred_secret) = admin
+        .get_global_ctx()
+        .get_credential_manager()
+        .generate_credential(vec![], false, vec![], Duration::from_secs(3600));
+
+    let privkey_bytes: [u8; 32] = base64::engine::general_purpose::STANDARD
+        .decode(&cred_secret)
+        .unwrap()
+        .try_into()
+        .unwrap();
+    let private = x25519_dalek::StaticSecret::from(privkey_bytes);
+    let public = x25519_dalek::PublicKey::from(&private);
+    let credential = create_mock_peer_manager_credential("tenant-a".to_string(), &private).await;
+
+    connect_peer_manager(admin.clone(), server.clone()).await;
+    wait_for_condition(
+        || {
+            let server = server.clone();
+            let pubkey = public.as_bytes().to_vec();
+            async move {
+                server
+                    .get_foreign_network_manager()
+                    .list_foreign_networks_with_options(true)
+                    .await
+                    .foreign_networks
+                    .get("tenant-a")
+                    .map(|entry| {
+                        entry.trusted_keys.iter().any(|trusted_key| {
+                            trusted_key.pubkey == pubkey
+                                && trusted_key.source == TrustedKeySourcePb::OspfCredential as i32
+                        })
+                    })
+                    .unwrap_or(false)
+            }
+        },
+        Duration::from_secs(10),
+    )
+    .await;
+
+    let (client_ret, server_ret) = connect_client_and_server(credential, server.clone()).await;
+
+    assert!(
+        client_ret.is_ok(),
+        "trusted foreign credential client should connect in private mode"
+    );
+    assert!(
+        server_ret.is_ok(),
+        "server should allow trusted foreign credential in private mode: {:?}",
+        server_ret
+    );
+    wait_for_foreign_network_peer_count_at_least(server, "tenant-a", 2).await;
+}
+
+#[tokio::test]
+async fn private_mode_rejects_untrusted_foreign_credential() {
+    let server = create_mock_peer_manager_secure("public".to_string(), "shared".to_string()).await;
+    let admin = create_mock_peer_manager_secure("tenant-a".to_string(), "shared".to_string()).await;
+    set_private_mode(&server, true);
+
+    let random_private = x25519_dalek::StaticSecret::random_from_rng(rand::rngs::OsRng);
+    let unknown_credential =
+        create_mock_peer_manager_credential("tenant-a".to_string(), &random_private).await;
+
+    connect_peer_manager(admin.clone(), server.clone()).await;
+    wait_for_foreign_network(server.clone(), "tenant-a").await;
+
+    let (client_ret, server_ret) =
+        connect_client_and_server(unknown_credential, server.clone()).await;
+
+    let _ = client_ret;
+    assert!(
+        server_ret.is_err(),
+        "server should reject untrusted foreign credential in private mode"
+    );
+    wait_for_condition(
+        || {
+            let server = server.clone();
+            async move {
+                server
+                    .get_foreign_network_manager()
+                    .list_foreign_networks()
+                    .await
+                    .foreign_networks
+                    .get("tenant-a")
+                    .map(|entry| entry.peers.len() == 1)
+                    .unwrap_or(false)
+            }
+        },
+        Duration::from_secs(10),
+    )
+    .await;
 }
 
 #[tokio::test]
@@ -392,6 +631,10 @@ async fn relay_peer_map_real_link_handshake_success() {
     let peer_a_id = peer_a.my_peer_id();
     let peer_b_id = peer_b.my_peer_id();
     let peer_c_id = peer_c.my_peer_id();
+    let a_control_tx_before = metric_value(&peer_a, MetricName::TrafficControlBytesTx, "net1");
+    let a_control_rx_before = metric_value(&peer_a, MetricName::TrafficControlBytesRx, "net1");
+    let c_control_tx_before = metric_value(&peer_c, MetricName::TrafficControlBytesTx, "net1");
+    let c_control_rx_before = metric_value(&peer_c, MetricName::TrafficControlBytesRx, "net1");
 
     wait_for_condition(
         || {
@@ -459,6 +702,11 @@ async fn relay_peer_map_real_link_handshake_success() {
         Duration::from_secs(5),
     )
     .await;
+
+    assert!(metric_value(&peer_a, MetricName::TrafficControlBytesTx, "net1") > a_control_tx_before);
+    assert!(metric_value(&peer_a, MetricName::TrafficControlBytesRx, "net1") > a_control_rx_before);
+    assert!(metric_value(&peer_c, MetricName::TrafficControlBytesTx, "net1") > c_control_tx_before);
+    assert!(metric_value(&peer_c, MetricName::TrafficControlBytesRx, "net1") > c_control_rx_before);
 }
 
 #[tokio::test]

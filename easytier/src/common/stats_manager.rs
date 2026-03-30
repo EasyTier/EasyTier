@@ -24,10 +24,22 @@ pub enum MetricName {
     /// RPC errors
     PeerRpcErrors,
 
-    /// Traffic bytes sent
+    /// Data-plane traffic bytes sent
     TrafficBytesTx,
-    /// Traffic bytes received
+    /// Data-plane traffic bytes sent, grouped by destination instance
+    TrafficBytesTxByInstance,
+    /// Data-plane traffic bytes received
     TrafficBytesRx,
+    /// Data-plane traffic bytes received, grouped by source instance
+    TrafficBytesRxByInstance,
+    /// Control-plane traffic bytes sent
+    TrafficControlBytesTx,
+    /// Control-plane traffic bytes sent, grouped by destination instance
+    TrafficControlBytesTxByInstance,
+    /// Control-plane traffic bytes received
+    TrafficControlBytesRx,
+    /// Control-plane traffic bytes received, grouped by source instance
+    TrafficControlBytesRxByInstance,
     /// Traffic bytes forwarded
     TrafficBytesForwarded,
     /// Traffic bytes sent to self
@@ -41,10 +53,22 @@ pub enum MetricName {
     /// Traffic bytes forwarded for foreign network, forward
     TrafficBytesForeignForwardForwarded,
 
-    /// Traffic packets sent
+    /// Data-plane traffic packets sent
     TrafficPacketsTx,
-    /// Traffic packets received
+    /// Data-plane traffic packets sent, grouped by destination instance
+    TrafficPacketsTxByInstance,
+    /// Data-plane traffic packets received
     TrafficPacketsRx,
+    /// Data-plane traffic packets received, grouped by source instance
+    TrafficPacketsRxByInstance,
+    /// Control-plane traffic packets sent
+    TrafficControlPacketsTx,
+    /// Control-plane traffic packets sent, grouped by destination instance
+    TrafficControlPacketsTxByInstance,
+    /// Control-plane traffic packets received
+    TrafficControlPacketsRx,
+    /// Control-plane traffic packets received, grouped by source instance
+    TrafficControlPacketsRxByInstance,
     /// Traffic packets forwarded
     TrafficPacketsForwarded,
     /// Traffic packets sent to self
@@ -81,7 +105,17 @@ impl fmt::Display for MetricName {
             MetricName::PeerRpcErrors => write!(f, "peer_rpc_errors"),
 
             MetricName::TrafficBytesTx => write!(f, "traffic_bytes_tx"),
+            MetricName::TrafficBytesTxByInstance => write!(f, "traffic_bytes_tx_by_instance"),
             MetricName::TrafficBytesRx => write!(f, "traffic_bytes_rx"),
+            MetricName::TrafficBytesRxByInstance => write!(f, "traffic_bytes_rx_by_instance"),
+            MetricName::TrafficControlBytesTx => write!(f, "traffic_control_bytes_tx"),
+            MetricName::TrafficControlBytesTxByInstance => {
+                write!(f, "traffic_control_bytes_tx_by_instance")
+            }
+            MetricName::TrafficControlBytesRx => write!(f, "traffic_control_bytes_rx"),
+            MetricName::TrafficControlBytesRxByInstance => {
+                write!(f, "traffic_control_bytes_rx_by_instance")
+            }
             MetricName::TrafficBytesForwarded => write!(f, "traffic_bytes_forwarded"),
             MetricName::TrafficBytesSelfTx => write!(f, "traffic_bytes_self_tx"),
             MetricName::TrafficBytesSelfRx => write!(f, "traffic_bytes_self_rx"),
@@ -96,7 +130,21 @@ impl fmt::Display for MetricName {
             }
 
             MetricName::TrafficPacketsTx => write!(f, "traffic_packets_tx"),
+            MetricName::TrafficPacketsTxByInstance => {
+                write!(f, "traffic_packets_tx_by_instance")
+            }
             MetricName::TrafficPacketsRx => write!(f, "traffic_packets_rx"),
+            MetricName::TrafficPacketsRxByInstance => {
+                write!(f, "traffic_packets_rx_by_instance")
+            }
+            MetricName::TrafficControlPacketsTx => write!(f, "traffic_control_packets_tx"),
+            MetricName::TrafficControlPacketsTxByInstance => {
+                write!(f, "traffic_control_packets_tx_by_instance")
+            }
+            MetricName::TrafficControlPacketsRx => write!(f, "traffic_control_packets_rx"),
+            MetricName::TrafficControlPacketsRxByInstance => {
+                write!(f, "traffic_control_packets_rx_by_instance")
+            }
             MetricName::TrafficPacketsForwarded => write!(f, "traffic_packets_forwarded"),
             MetricName::TrafficPacketsSelfTx => write!(f, "traffic_packets_self_tx"),
             MetricName::TrafficPacketsSelfRx => write!(f, "traffic_packets_self_rx"),
@@ -125,6 +173,10 @@ impl fmt::Display for MetricName {
 pub enum LabelType {
     /// Network Name
     NetworkName(String),
+    /// Destination instance ID
+    ToInstanceId(String),
+    /// Source instance ID
+    FromInstanceId(String),
     /// Source peer ID
     SrcPeerId(u32),
     /// Destination peer ID
@@ -153,6 +205,8 @@ impl fmt::Display for LabelType {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             LabelType::NetworkName(name) => write!(f, "network_name={}", name),
+            LabelType::ToInstanceId(id) => write!(f, "to_instance_id={}", id),
+            LabelType::FromInstanceId(id) => write!(f, "from_instance_id={}", id),
             LabelType::SrcPeerId(id) => write!(f, "src_peer_id={}", id),
             LabelType::DstPeerId(id) => write!(f, "dst_peer_id={}", id),
             LabelType::ServiceName(name) => write!(f, "service_name={}", name),
@@ -172,6 +226,8 @@ impl LabelType {
     pub fn key(&self) -> &'static str {
         match self {
             LabelType::NetworkName(_) => "network_name",
+            LabelType::ToInstanceId(_) => "to_instance_id",
+            LabelType::FromInstanceId(_) => "from_instance_id",
             LabelType::SrcPeerId(_) => "src_peer_id",
             LabelType::DstPeerId(_) => "dst_peer_id",
             LabelType::ServiceName(_) => "service_name",
@@ -189,6 +245,8 @@ impl LabelType {
     pub fn value(&self) -> String {
         match self {
             LabelType::NetworkName(name) => name.clone(),
+            LabelType::ToInstanceId(id) => id.clone(),
+            LabelType::FromInstanceId(id) => id.clone(),
             LabelType::SrcPeerId(id) => id.to_string(),
             LabelType::DstPeerId(id) => id.to_string(),
             LabelType::ServiceName(name) => name.clone(),
@@ -677,6 +735,20 @@ mod tests {
             .with_label("method", "ping");
 
         assert_eq!(labels.to_key(), "method=ping,peer_id=peer1");
+
+        let instance_labels = LabelSet::new()
+            .with_label_type(LabelType::NetworkName("default".to_string()))
+            .with_label_type(LabelType::ToInstanceId(
+                "87ede5a2-9c3d-492d-9bbe-989b9d07e742".to_string(),
+            ))
+            .with_label_type(LabelType::FromInstanceId(
+                "9b7d4368-b688-4897-a1f4-b6caaed9e8a6".to_string(),
+            ));
+
+        assert_eq!(
+            instance_labels.to_key(),
+            "from_instance_id=9b7d4368-b688-4897-a1f4-b6caaed9e8a6,network_name=default,to_instance_id=87ede5a2-9c3d-492d-9bbe-989b9d07e742"
+        );
     }
 
     #[tokio::test]
@@ -745,12 +817,24 @@ mod tests {
         let counter2 = stats.get_counter(MetricName::PeerRpcClientTx, labels);
         counter2.set(50);
 
+        let traffic_labels = LabelSet::new()
+            .with_label_type(LabelType::NetworkName("default".to_string()))
+            .with_label_type(LabelType::ToInstanceId(
+                "87ede5a2-9c3d-492d-9bbe-989b9d07e742".to_string(),
+            ));
+        let counter3 = stats.get_counter(MetricName::TrafficBytesTxByInstance, traffic_labels);
+        counter3.set(25);
+
         let prometheus_output = stats.export_prometheus();
 
         assert!(prometheus_output.contains("# TYPE peer_rpc_client_tx counter"));
         assert!(prometheus_output.contains("peer_rpc_client_tx{status=\"success\"} 50"));
         assert!(prometheus_output.contains("# TYPE traffic_bytes_tx counter"));
         assert!(prometheus_output.contains("traffic_bytes_tx 100"));
+        assert!(prometheus_output.contains("# TYPE traffic_bytes_tx_by_instance counter"));
+        assert!(prometheus_output.contains(
+            "traffic_bytes_tx_by_instance{network_name=\"default\",to_instance_id=\"87ede5a2-9c3d-492d-9bbe-989b9d07e742\"} 25"
+        ));
     }
 
     #[tokio::test]

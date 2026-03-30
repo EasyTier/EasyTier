@@ -8,7 +8,6 @@ use std::{
     },
 };
 
-use arc_swap::ArcSwapOption;
 use crossbeam::atomic::AtomicCell;
 use futures::{StreamExt, TryFutureExt};
 
@@ -34,7 +33,6 @@ use crate::{
         defer,
         error::Error,
         global_ctx::ArcGlobalCtx,
-        stats_manager::{CounterHandle, LabelSet, LabelType, MetricName},
         PeerId,
     },
     peers::peer_session::{PeerSessionStore, SessionKey, UpsertResponderSessionReturn},
@@ -59,6 +57,7 @@ use crate::{
 use super::{
     peer_conn_ping::PeerConnPinger,
     peer_session::{PeerSession, PeerSessionAction},
+    traffic_metrics::AggregateTrafficMetrics,
     PacketRecvChan,
 };
 
@@ -284,13 +283,6 @@ impl PeerConnCloseNotify {
     }
 }
 
-struct PeerConnCounter {
-    traffic_tx_bytes: CounterHandle,
-    traffic_rx_bytes: CounterHandle,
-    traffic_tx_packets: CounterHandle,
-    traffic_rx_packets: CounterHandle,
-}
-
 pub struct PeerConn {
     conn_id: PeerConnId,
 
@@ -322,8 +314,6 @@ pub struct PeerConn {
     latency_stats: Arc<WindowLatency>,
     throughput: Arc<Throughput>,
     loss_rate_stats: Arc<AtomicU32>,
-
-    counters: ArcSwapOption<PeerConnCounter>,
 
     peer_session_store: Arc<PeerSessionStore>,
     my_encrypt_algo: String,
@@ -413,8 +403,6 @@ impl PeerConn {
             throughput,
             loss_rate_stats: Arc::new(AtomicU32::new(0)),
 
-            counters: ArcSwapOption::new(None),
-
             peer_session_store,
             my_encrypt_algo,
         }
@@ -480,6 +468,7 @@ impl PeerConn {
         };
 
         *need_retry = true;
+        let rsp_len = rsp.buf_len() as u64;
 
         let Some(peer_mgr_hdr) = rsp.peer_manager_header() else {
             return Err(Error::WaitRespError(format!(
@@ -505,6 +494,8 @@ impl PeerConn {
             ));
         }
 
+        self.record_control_rx(&rsp.network_name, rsp_len);
+
         Ok(rsp)
     }
 
@@ -527,7 +518,11 @@ impl PeerConn {
         .await?
     }
 
-    async fn send_handshake(&self, send_secret_digest: bool) -> Result<(), Error> {
+    async fn send_handshake(
+        &self,
+        send_secret_digest: bool,
+        metric_network_name: &str,
+    ) -> Result<(), Error> {
         let network = self.global_ctx.get_network_identity();
         let mut req = HandshakeRequest {
             magic: MAGIC,
@@ -555,11 +550,13 @@ impl PeerConn {
             PeerId::default(),
             PacketType::HandShake as u8,
         );
+        let pkt_len = zc_packet.buf_len() as u64;
 
         self.sink.send(zc_packet).await.map_err(|e| {
             tracing::warn!("send handshake request error: {:?}", e);
             Error::WaitRespError("send handshake request error".to_owned())
         })?;
+        self.record_control_tx(metric_network_name, pkt_len);
 
         // yield to send the response packet
         tokio::task::yield_now().await;
@@ -663,6 +660,7 @@ impl PeerConn {
         pb: Msg,
         packet_type: PacketType,
         remote_peer_id: PeerId,
+        metric_network_name: &str,
         hs: &mut snow::HandshakeState,
     ) -> Result<(), Error> {
         tracing::info!(
@@ -679,7 +677,10 @@ impl PeerConn {
             .map_err(|e| Error::WaitRespError(format!("noise write msg1 failed: {e:?}")))?;
         let mut pkt = ZCPacket::new_with_payload(&msg[..msg_len]);
         pkt.fill_peer_manager_hdr(self.my_peer_id, remote_peer_id, packet_type as u8);
-        Ok(self.sink.send(pkt).await?)
+        let pkt_len = pkt.buf_len() as u64;
+        self.sink.send(pkt).await?;
+        self.record_control_tx(metric_network_name, pkt_len);
+        Ok(())
     }
 
     /// Unified remote peer authentication verification.
@@ -833,6 +834,7 @@ impl PeerConn {
             msg1_pb,
             PacketType::NoiseHandshakeMsg1,
             PeerId::default(),
+            &network.network_name,
             &mut hs,
         )
         .await?;
@@ -844,6 +846,7 @@ impl PeerConn {
             self.recv_next_peer_manager_packet(Some(PacketType::NoiseHandshakeMsg2)),
         )
         .await??;
+        self.record_control_rx(&network.network_name, msg2.buf_len() as u64);
         let remote_peer_id = msg2.get_src_peer_id().expect("missing src peer id");
         if let Some(hint) = self.peer_id_hint {
             if hint != remote_peer_id {
@@ -896,6 +899,7 @@ impl PeerConn {
             msg3_pb,
             PacketType::NoiseHandshakeMsg3,
             remote_peer_id,
+            &network.network_name,
             &mut hs,
         )
         .await?;
@@ -1063,6 +1067,7 @@ impl PeerConn {
         let remote_peer_id = first_msg1
             .get_src_peer_id()
             .expect("msg1 must have src peer id");
+        let first_msg1_len = first_msg1.buf_len() as u64;
 
         let msg1_pb = Self::decode_handshake_message::<PeerConnNoiseMsg1Pb>(
             PacketType::NoiseHandshakeMsg1,
@@ -1070,6 +1075,7 @@ impl PeerConn {
             first_msg1,
         )?;
         let remote_network_name = msg1_pb.a_network_name.clone();
+        self.record_control_rx(&remote_network_name, first_msg1_len);
 
         // this may update my peer id
         handshake_recved(self, &remote_network_name)?;
@@ -1122,6 +1128,7 @@ impl PeerConn {
             msg2_pb,
             PacketType::NoiseHandshakeMsg2,
             remote_peer_id,
+            &remote_network_name,
             &mut hs,
         )
         .await?;
@@ -1133,6 +1140,7 @@ impl PeerConn {
             self.recv_next_peer_manager_packet(Some(PacketType::NoiseHandshakeMsg3)),
         )
         .await??;
+        self.record_control_rx(&remote_network_name, msg3_pkt.buf_len() as u64);
         let msg3_pb = Self::decode_handshake_message::<PeerConnNoiseMsg3Pb>(
             PacketType::NoiseHandshakeMsg3,
             Some(&mut hs),
@@ -1260,11 +1268,13 @@ impl PeerConn {
             let rsp = Self::decode_handshake_packet(&first_pkt)?;
             handshake_recved(self, &rsp.network_name)?;
             tracing::info!("handshake request: {:?}", rsp);
+            self.record_control_rx(&rsp.network_name, first_pkt.buf_len() as u64);
             self.info = Some(rsp);
             self.is_client = Some(false);
 
             let send_digest = self.get_network_identity() == self.global_ctx.get_network_identity();
-            self.send_handshake(send_digest).await?;
+            self.send_handshake(send_digest, &self.get_network_identity().network_name)
+                .await?;
         } else {
             return Err(Error::WaitRespError(format!(
                 "unexpected packet type during handshake: {}",
@@ -1296,7 +1306,8 @@ impl PeerConn {
             self.info = Some(handshake_rsp);
             self.is_client = Some(true);
         } else {
-            self.send_handshake(true).await?;
+            let network = self.global_ctx.get_network_identity();
+            self.send_handshake(true, &network.network_name).await?;
             tracing::info!("waiting for handshake request from server");
             let rsp = self.wait_handshake_loop().await?;
             tracing::info!("handshake response: {:?}", rsp);
@@ -1317,6 +1328,21 @@ impl PeerConn {
         self.info.is_some()
     }
 
+    fn control_metrics(&self, network_name: &str) -> AggregateTrafficMetrics {
+        AggregateTrafficMetrics::control(
+            self.global_ctx.stats_manager().clone(),
+            network_name.to_string(),
+        )
+    }
+
+    fn record_control_tx(&self, network_name: &str, bytes: u64) {
+        self.control_metrics(network_name).record_tx(bytes);
+    }
+
+    fn record_control_rx(&self, network_name: &str, bytes: u64) {
+        self.control_metrics(network_name).record_rx(bytes);
+    }
+
     pub async fn start_recv_loop(&mut self, packet_recv_chan: PacketRecvChan) {
         let mut stream = self.recv.lock().await.take().unwrap();
         let sink = self.sink.clone();
@@ -1324,19 +1350,7 @@ impl PeerConn {
         let close_event_notifier = self.close_event_notifier.clone();
         let ctrl_sender = self.ctrl_resp_sender.clone();
         let conn_info_for_instrument = self.get_conn_info();
-
-        let stats_mgr = self.global_ctx.stats_manager();
-        let label_set = LabelSet::new().with_label_type(LabelType::NetworkName(
-            conn_info_for_instrument.network_name.clone(),
-        ));
-        let counters = PeerConnCounter {
-            traffic_tx_bytes: stats_mgr.get_counter(MetricName::TrafficBytesTx, label_set.clone()),
-            traffic_rx_bytes: stats_mgr.get_counter(MetricName::TrafficBytesRx, label_set.clone()),
-            traffic_tx_packets: stats_mgr
-                .get_counter(MetricName::TrafficPacketsTx, label_set.clone()),
-            traffic_rx_packets: stats_mgr.get_counter(MetricName::TrafficPacketsRx, label_set),
-        };
-        self.counters.store(Some(Arc::new(counters)));
+        let control_metrics = self.control_metrics(&conn_info_for_instrument.network_name);
 
         let is_foreign_network = conn_info_for_instrument.network_name
             != self.global_ctx.get_network_identity().network_name;
@@ -1351,11 +1365,20 @@ impl PeerConn {
                 &format!("{}:recv", conn_info_for_instrument.network_name),
                 limiter_config.into(),
             ))
+        } else if self.global_ctx.get_flags().instance_recv_bps_limit != u64::MAX {
+            let limiter_config = LimiterConfig {
+                burst_rate: None,
+                bps: Some(self.global_ctx.get_flags().instance_recv_bps_limit),
+                fill_duration_ms: None,
+            };
+            Some(
+                self.global_ctx
+                    .token_bucket_manager()
+                    .get_or_create("instance:recv", limiter_config.into()),
+            )
         } else {
             None
         };
-
-        let counters = self.counters.load_full().unwrap();
 
         self.tasks.spawn(
             async move {
@@ -1370,10 +1393,6 @@ impl PeerConn {
 
                     let mut zc_packet = ret.unwrap();
                     let buf_len = zc_packet.buf_len() as u64;
-
-                    counters.traffic_rx_bytes.add(buf_len);
-                    counters.traffic_rx_packets.inc();
-
                     let Some(peer_mgr_hdr) = zc_packet.mut_peer_manager_header() else {
                         tracing::error!(
                             "unexpected packet: {:?}, cannot decode peer manager hdr",
@@ -1383,11 +1402,15 @@ impl PeerConn {
                     };
 
                     if peer_mgr_hdr.packet_type == PacketType::Ping as u8 {
+                        control_metrics.record_rx(buf_len);
                         peer_mgr_hdr.packet_type = PacketType::Pong as u8;
                         if let Err(e) = sink.send(zc_packet).await {
                             tracing::error!(?e, "peer conn send req error");
+                        } else {
+                            control_metrics.record_tx(buf_len);
                         }
                     } else if peer_mgr_hdr.packet_type == PacketType::Pong as u8 {
+                        control_metrics.record_rx(buf_len);
                         if let Err(e) = ctrl_sender.send(zc_packet) {
                             tracing::error!(?e, "peer conn send ctrl resp error");
                         }
@@ -1422,6 +1445,7 @@ impl PeerConn {
             self.latency_stats.clone(),
             self.loss_rate_stats.clone(),
             self.throughput.clone(),
+            self.control_metrics(&self.get_conn_info().network_name),
         );
 
         let close_event_notifier = self.close_event_notifier.clone();
@@ -1438,11 +1462,6 @@ impl PeerConn {
     }
 
     pub async fn send_msg(&self, msg: ZCPacket) -> Result<(), Error> {
-        let counters = self.counters.load();
-        if let Some(ref counters) = *counters {
-            counters.traffic_tx_bytes.add(msg.buf_len() as u64);
-            counters.traffic_tx_packets.inc();
-        }
         Ok(self.sink.send(msg).await?)
     }
 
@@ -1462,6 +1481,40 @@ impl PeerConn {
             .unwrap()
             .copy_from_slice(&info.network_secret_digest);
         ret
+    }
+
+    fn network_secret_digest_is_empty(network: &NetworkIdentity) -> bool {
+        network
+            .network_secret_digest
+            .as_ref()
+            .is_none_or(|digest| digest.iter().all(|byte| *byte == 0))
+    }
+
+    fn matches_local_secret_proof(&self) -> bool {
+        let Some(secret_proof) = self
+            .noise_handshake_result
+            .as_ref()
+            .and_then(|noise| noise.client_secret_proof.as_ref())
+        else {
+            return false;
+        };
+
+        self.global_ctx
+            .get_secret_proof(&secret_proof.challenge)
+            .is_some_and(|mac| mac.verify_slice(&secret_proof.proof).is_ok())
+    }
+
+    pub(crate) fn matches_local_network_secret(&self) -> bool {
+        if self.matches_local_secret_proof() {
+            return true;
+        }
+
+        let my_identity = self.global_ctx.get_network_identity();
+        let peer_identity = self.get_network_identity();
+
+        !Self::network_secret_digest_is_empty(&my_identity)
+            && !Self::network_secret_digest_is_empty(&peer_identity)
+            && my_identity.network_secret_digest == peer_identity.network_secret_digest
     }
 
     pub fn get_close_notifier(&self) -> Arc<PeerConnCloseNotify> {
@@ -1545,7 +1598,7 @@ impl Drop for PeerConn {
 
 #[cfg(test)]
 pub mod tests {
-    use std::sync::Arc;
+    use std::{sync::Arc, time::Duration};
 
     use rand::rngs::OsRng;
 
@@ -1555,8 +1608,10 @@ pub mod tests {
     use crate::common::global_ctx::GlobalCtx;
     use crate::common::new_peer_id;
     use crate::common::scoped_task::ScopedTask;
+    use crate::common::stats_manager::{LabelSet, LabelType, MetricName};
     use crate::peers::create_packet_recv_chan;
     use crate::peers::recv_packet_from_chan;
+    use crate::tunnel::common::tests::wait_for_condition;
     use crate::tunnel::filter::tests::DropSendTunnelFilter;
     use crate::tunnel::filter::PacketRecorderTunnelFilter;
     use crate::tunnel::ring::create_ring_tunnel_pair;
@@ -1575,6 +1630,17 @@ pub mod tests {
                 local_public_key: Some(BASE64_STANDARD.encode(public.as_bytes())),
             }));
         }
+    }
+
+    fn metric_value(global_ctx: &GlobalCtx, metric: MetricName, network_name: &str) -> u64 {
+        global_ctx
+            .stats_manager()
+            .get_metric(
+                metric,
+                &LabelSet::new().with_label_type(LabelType::NetworkName(network_name.to_string())),
+            )
+            .map(|metric| metric.value)
+            .unwrap_or(0)
     }
 
     #[tokio::test]
@@ -1610,10 +1676,12 @@ pub mod tests {
         let s_peer_id = new_peer_id();
 
         let ps = Arc::new(PeerSessionStore::new());
+        let c_ctx = get_mock_global_ctx();
+        let s_ctx = get_mock_global_ctx();
 
-        let mut c_peer = PeerConn::new(c_peer_id, get_mock_global_ctx(), Box::new(c), ps.clone());
+        let mut c_peer = PeerConn::new(c_peer_id, c_ctx.clone(), Box::new(c), ps.clone());
 
-        let mut s_peer = PeerConn::new(s_peer_id, get_mock_global_ctx(), Box::new(s), ps.clone());
+        let mut s_peer = PeerConn::new(s_peer_id, s_ctx.clone(), Box::new(s), ps.clone());
 
         let (c_ret, s_ret) = tokio::join!(
             c_peer.do_handshake_as_client(),
@@ -1628,6 +1696,47 @@ pub mod tests {
 
         assert_eq!(s_recorder.sent.lock().unwrap().len(), 1);
         assert_eq!(s_recorder.received.lock().unwrap().len(), 1);
+
+        assert_eq!(
+            metric_value(&c_ctx, MetricName::TrafficControlBytesTx, "default"),
+            c_recorder
+                .sent
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|pkt| pkt.buf_len() as u64)
+                .sum::<u64>()
+        );
+        assert_eq!(
+            metric_value(&c_ctx, MetricName::TrafficControlBytesRx, "default"),
+            c_recorder
+                .received
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|pkt| pkt.buf_len() as u64)
+                .sum::<u64>()
+        );
+        assert_eq!(
+            metric_value(&s_ctx, MetricName::TrafficControlBytesTx, "default"),
+            s_recorder
+                .sent
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|pkt| pkt.buf_len() as u64)
+                .sum::<u64>()
+        );
+        assert_eq!(
+            metric_value(&s_ctx, MetricName::TrafficControlBytesRx, "default"),
+            s_recorder
+                .received
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|pkt| pkt.buf_len() as u64)
+                .sum::<u64>()
+        );
 
         assert_eq!(c_peer.get_peer_id(), s_peer_id);
         assert_eq!(s_peer.get_peer_id(), c_peer_id);
@@ -1672,6 +1781,47 @@ pub mod tests {
 
         c_ret.unwrap();
         s_ret.unwrap();
+
+        assert_eq!(
+            metric_value(&c_ctx, MetricName::TrafficControlBytesTx, "default"),
+            c_recorder
+                .sent
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|pkt| pkt.buf_len() as u64)
+                .sum::<u64>()
+        );
+        assert_eq!(
+            metric_value(&c_ctx, MetricName::TrafficControlBytesRx, "default"),
+            c_recorder
+                .received
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|pkt| pkt.buf_len() as u64)
+                .sum::<u64>()
+        );
+        assert_eq!(
+            metric_value(&s_ctx, MetricName::TrafficControlBytesTx, "default"),
+            s_recorder
+                .sent
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|pkt| pkt.buf_len() as u64)
+                .sum::<u64>()
+        );
+        assert_eq!(
+            metric_value(&s_ctx, MetricName::TrafficControlBytesRx, "default"),
+            s_recorder
+                .received
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|pkt| pkt.buf_len() as u64)
+                .sum::<u64>()
+        );
 
         let c_info = c_peer.get_conn_info();
         let s_info = s_peer.get_conn_info();
@@ -2069,6 +2219,47 @@ pub mod tests {
         } else {
             assert!(!close_notifier.is_closed());
         }
+    }
+
+    #[tokio::test]
+    async fn peer_conn_pingpong_records_control_metrics() {
+        let (c, s) = create_ring_tunnel_pair();
+
+        let c_peer_id = new_peer_id();
+        let s_peer_id = new_peer_id();
+
+        let c_ctx = get_mock_global_ctx();
+        let s_ctx = get_mock_global_ctx();
+        let ps = Arc::new(PeerSessionStore::new());
+        let mut c_peer = PeerConn::new(c_peer_id, c_ctx.clone(), Box::new(c), ps.clone());
+        let mut s_peer = PeerConn::new(s_peer_id, s_ctx.clone(), Box::new(s), ps.clone());
+
+        let (c_ret, s_ret) = tokio::join!(
+            c_peer.do_handshake_as_client(),
+            s_peer.do_handshake_as_server()
+        );
+
+        assert!(c_ret.is_ok());
+        assert!(s_ret.is_ok());
+
+        s_peer.start_recv_loop(create_packet_recv_chan().0).await;
+        c_peer.start_pingpong();
+        c_peer.start_recv_loop(create_packet_recv_chan().0).await;
+
+        wait_for_condition(
+            || {
+                let c_ctx = c_ctx.clone();
+                let s_ctx = s_ctx.clone();
+                async move {
+                    metric_value(&c_ctx, MetricName::TrafficControlBytesTx, "default") > 0
+                        && metric_value(&c_ctx, MetricName::TrafficControlBytesRx, "default") > 0
+                        && metric_value(&s_ctx, MetricName::TrafficControlBytesTx, "default") > 0
+                        && metric_value(&s_ctx, MetricName::TrafficControlBytesRx, "default") > 0
+                }
+            },
+            Duration::from_secs(5),
+        )
+        .await;
     }
 
     #[tokio::test]

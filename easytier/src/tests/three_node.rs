@@ -19,7 +19,7 @@ use crate::{
     common::{
         config::{ConfigLoader, NetworkIdentity, PortForwardConfig, TomlConfigLoader},
         netns::{NetNS, ROOT_NETNS_NAME},
-        stats_manager::{LabelType, MetricName},
+        stats_manager::{LabelSet, LabelType, MetricName},
     },
     instance::instance::Instance,
     proto::{
@@ -1525,6 +1525,48 @@ pub async fn relay_bps_limit_test(#[values(100, 200, 400, 800)] bps_limit: u64) 
 
     let bps = bps as u64 / 1024;
     // allow 50kb jitter
+    assert!(
+        bps >= bps_limit - 50 && bps <= bps_limit + 50,
+        "bps: {}, bps_limit: {}",
+        bps,
+        bps_limit
+    );
+
+    drop_insts(insts).await;
+}
+
+#[rstest::rstest]
+#[serial_test::serial]
+#[tokio::test]
+pub async fn instance_recv_bps_limit_test(#[values(100, 800)] bps_limit: u64) {
+    let insts = init_three_node_ex(
+        "tcp",
+        |cfg| {
+            if cfg.get_inst_name() == "inst2" {
+                let mut f = cfg.get_flags();
+                f.instance_recv_bps_limit = bps_limit * 1024;
+                cfg.set_flags(f);
+            }
+            cfg
+        },
+        false,
+    )
+    .await;
+
+    let tcp_listener = TcpTunnelListener::new("tcp://0.0.0.0:22223".parse().unwrap());
+    let tcp_connector = TcpTunnelConnector::new("tcp://10.144.144.3:22223".parse().unwrap());
+
+    let bps = _tunnel_bench_netns(
+        tcp_listener,
+        tcp_connector,
+        NetNS::new(Some("net_c".into())),
+        NetNS::new(Some("net_a".into())),
+    )
+    .await;
+
+    println!("bps: {}", bps);
+
+    let bps = bps as u64 / 1024;
     assert!(
         bps >= bps_limit - 50 && bps <= bps_limit + 50,
         "bps: {}, bps_limit: {}",
@@ -3072,6 +3114,124 @@ pub async fn relay_peer_e2e_encryption(#[values("tcp", "udp")] proto: &str) {
     );
 
     println!("Test completed successfully!");
+    drop_insts(insts).await;
+}
+
+#[tokio::test]
+#[serial_test::serial]
+pub async fn relay_peer_e2e_encryption_udp() {
+    let insts = init_three_node_ex(
+        "udp",
+        |cfg| {
+            cfg.set_secure_mode(Some(generate_secure_mode_config()));
+            cfg
+        },
+        false,
+    )
+    .await;
+
+    let inst1_id = insts[0].get_global_ctx().get_id().to_string();
+    let inst3_id = insts[2].get_global_ctx().get_id().to_string();
+    let network_name = insts[0].get_global_ctx().get_network_name();
+    let total_labels =
+        LabelSet::new().with_label_type(LabelType::NetworkName(network_name.clone()));
+
+    wait_for_condition(
+        || async {
+            let routes = insts[0].get_peer_manager().list_routes().await;
+            routes.len() == 2
+        },
+        Duration::from_secs(10),
+    )
+    .await;
+
+    wait_for_condition(
+        || async { ping_test("net_a", "10.144.144.3", None).await },
+        Duration::from_secs(6),
+    )
+    .await;
+
+    let tx_labels = LabelSet::new()
+        .with_label_type(LabelType::NetworkName(network_name.clone()))
+        .with_label_type(LabelType::ToInstanceId(inst3_id.clone()));
+    let rx_labels = LabelSet::new()
+        .with_label_type(LabelType::NetworkName(network_name.clone()))
+        .with_label_type(LabelType::FromInstanceId(inst1_id.clone()));
+
+    wait_for_condition(
+        || async {
+            insts[0]
+                .get_global_ctx()
+                .stats_manager()
+                .get_metric(MetricName::TrafficBytesTx, &tx_labels)
+                .is_none()
+                && insts[0]
+                    .get_global_ctx()
+                    .stats_manager()
+                    .get_metric(MetricName::TrafficPacketsTx, &tx_labels)
+                    .is_none()
+                && insts[0]
+                    .get_global_ctx()
+                    .stats_manager()
+                    .get_metric(MetricName::TrafficBytesTx, &total_labels)
+                    .is_some_and(|metric| metric.value > 0)
+                && insts[0]
+                    .get_global_ctx()
+                    .stats_manager()
+                    .get_metric(MetricName::TrafficPacketsTx, &total_labels)
+                    .is_some_and(|metric| metric.value > 0)
+                && insts[0]
+                    .get_global_ctx()
+                    .stats_manager()
+                    .get_metric(MetricName::TrafficBytesTxByInstance, &tx_labels)
+                    .is_some_and(|metric| metric.value > 0)
+                && insts[0]
+                    .get_global_ctx()
+                    .stats_manager()
+                    .get_metric(MetricName::TrafficPacketsTxByInstance, &tx_labels)
+                    .is_some_and(|metric| metric.value > 0)
+        },
+        Duration::from_secs(10),
+    )
+    .await;
+
+    wait_for_condition(
+        || async {
+            insts[2]
+                .get_global_ctx()
+                .stats_manager()
+                .get_metric(MetricName::TrafficBytesRx, &rx_labels)
+                .is_none()
+                && insts[2]
+                    .get_global_ctx()
+                    .stats_manager()
+                    .get_metric(MetricName::TrafficPacketsRx, &rx_labels)
+                    .is_none()
+                && insts[2]
+                    .get_global_ctx()
+                    .stats_manager()
+                    .get_metric(MetricName::TrafficBytesRx, &total_labels)
+                    .is_some_and(|metric| metric.value > 0)
+                && insts[2]
+                    .get_global_ctx()
+                    .stats_manager()
+                    .get_metric(MetricName::TrafficPacketsRx, &total_labels)
+                    .is_some_and(|metric| metric.value > 0)
+                && insts[2]
+                    .get_global_ctx()
+                    .stats_manager()
+                    .get_metric(MetricName::TrafficBytesRxByInstance, &rx_labels)
+                    .is_some_and(|metric| metric.value > 0)
+                && insts[2]
+                    .get_global_ctx()
+                    .stats_manager()
+                    .get_metric(MetricName::TrafficPacketsRxByInstance, &rx_labels)
+                    .is_some_and(|metric| metric.value > 0)
+        },
+        Duration::from_secs(10),
+    )
+    .await;
+
     drop_insts(insts).await;
 }
 

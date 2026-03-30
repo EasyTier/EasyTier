@@ -12,6 +12,10 @@ class ExamplePlugin: Plugin {
     let args = try invoke.parseArgs(PingArgs.self)
     invoke.resolve(["value": args.value ?? ""])
   }
+
+  @objc public func getVpnStatus(_ invoke: Invoke) {
+    invoke.resolve(["running": false])
+  }
 }
 
 @_cdecl("init_plugin_vpnservice")

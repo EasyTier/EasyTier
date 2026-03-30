@@ -1,6 +1,7 @@
 import { Event, listen } from "@tauri-apps/api/event";
 import { type } from "@tauri-apps/plugin-os";
 import { NetworkTypes } from "easytier-frontend-lib"
+import { Utils } from "easytier-frontend-lib";
 
 const EVENTS = Object.freeze({
     SAVE_CONFIGS: 'save_configs',
@@ -14,42 +15,74 @@ const EVENTS = Object.freeze({
 
 function onSaveConfigs(event: Event<NetworkTypes.NetworkConfig[]>) {
     console.log(`Received event '${EVENTS.SAVE_CONFIGS}': ${event.payload}`);
-    localStorage.setItem('networkList', JSON.stringify(event.payload));
+    localStorage.setItem('networkList', JSON.stringify(event.payload.map((config) => NetworkTypes.normalizeNetworkConfig(config))));
 }
 
-async function onPreRunNetworkInstance(event: Event<string>) {
+function normalizeInstanceIdPayload(payload: unknown): string {
+    if (typeof payload === 'string') {
+        return payload
+    }
+
+    if (payload && typeof payload === 'object') {
+        const uuid = payload as Partial<Utils.UUID>
+        if (
+            typeof uuid.part1 === 'number'
+            && typeof uuid.part2 === 'number'
+            && typeof uuid.part3 === 'number'
+            && typeof uuid.part4 === 'number'
+        ) {
+            return Utils.UuidToStr(uuid as Utils.UUID)
+        }
+    }
+
+    if (payload == null) {
+        return ''
+    }
+
+    const fallback = String(payload)
+    return fallback === '[object Object]' ? '' : fallback
+}
+
+async function onPreRunNetworkInstance(event: Event<unknown>) {
+    const instanceId = normalizeInstanceIdPayload(event.payload)
+    console.log(`Received event '${EVENTS.PRE_RUN_NETWORK_INSTANCE}', raw payload:`, event.payload, 'normalized:', instanceId)
     if (type() === 'android') {
-        await prepareVpnService(event.payload);
+        await prepareVpnService(instanceId);
     }
 }
 
-async function onPostRunNetworkInstance(event: Event<string>) {
+async function onPostRunNetworkInstance(event: Event<unknown>) {
+    const instanceId = normalizeInstanceIdPayload(event.payload)
+    console.log(`Received event '${EVENTS.POST_RUN_NETWORK_INSTANCE}', raw payload:`, event.payload, 'normalized:', instanceId)
     if (type() === 'android') {
-        await onNetworkInstanceChange(event.payload);
+        await onNetworkInstanceChange(instanceId);
     }
 }
 
-async function onVpnServiceStop(event: Event<string>) {
-    await onNetworkInstanceChange(event.payload);
+async function onVpnServiceStop(event: Event<unknown>) {
+    console.log(`Received event '${EVENTS.VPN_SERVICE_STOP}', raw payload:`, event.payload)
+    await syncMobileVpnService();
 }
 
-async function onDhcpIpChanged(event: Event<string>) {
-    console.log(`Received event '${EVENTS.DHCP_IP_CHANGED}' for instance: ${event.payload}`);
+async function onDhcpIpChanged(event: Event<unknown>) {
+    const instanceId = normalizeInstanceIdPayload(event.payload)
+    console.log(`Received event '${EVENTS.DHCP_IP_CHANGED}' for instance: ${instanceId}`);
     if (type() === 'android') {
-        await onNetworkInstanceChange(event.payload);
+        await onNetworkInstanceChange(instanceId);
     }
 }
 
-async function onProxyCidrsUpdated(event: Event<string>) {
-    console.log(`Received event '${EVENTS.PROXY_CIDRS_UPDATED}' for instance: ${event.payload}`);
+async function onProxyCidrsUpdated(event: Event<unknown>) {
+    const instanceId = normalizeInstanceIdPayload(event.payload)
+    console.log(`Received event '${EVENTS.PROXY_CIDRS_UPDATED}' for instance: ${instanceId}`);
     if (type() === 'android') {
-        await onNetworkInstanceChange(event.payload);
+        await onNetworkInstanceChange(instanceId);
     }
 }
 
-async function onEventLagged(event: Event<string>) {
+async function onEventLagged(event: Event<unknown>) {
     if (type() === 'android') {
-        await onNetworkInstanceChange(event.payload);
+        await onNetworkInstanceChange(normalizeInstanceIdPayload(event.payload));
     }
 }
 

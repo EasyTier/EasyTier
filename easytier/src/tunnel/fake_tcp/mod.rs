@@ -7,7 +7,7 @@ use std::sync::Arc;
 use std::{net::SocketAddr, pin::Pin};
 
 use bytes::BytesMut;
-use pnet::datalink;
+use network_interface::NetworkInterfaceConfig;
 use pnet::util::MacAddr;
 use tokio::io::AsyncReadExt;
 use tokio::net::TcpStream;
@@ -34,11 +34,18 @@ impl IpToIfNameCache {
 
     fn reload_ip_to_ifname(&self) {
         self.ip_to_ifname.clear();
-        let interfaces = datalink::interfaces();
+        let Ok(interfaces) = network_interface::NetworkInterface::show() else {
+            tracing::warn!("failed to enumerate interfaces when reloading faketcp ip cache");
+            return;
+        };
         for iface in interfaces {
-            for ip in iface.ips.iter() {
-                self.ip_to_ifname
-                    .insert(ip.ip(), (iface.name.clone(), iface.mac));
+            let mac = iface.mac_addr.as_deref().and_then(|mac| {
+                mac.parse::<MacAddr>().map_err(|e| {
+                    tracing::debug!(iface = %iface.name, mac, ?e, "failed to parse interface mac")
+                }).ok()
+            });
+            for ip in iface.addr.iter() {
+                self.ip_to_ifname.insert(ip.ip(), (iface.name.clone(), mac));
             }
         }
     }
