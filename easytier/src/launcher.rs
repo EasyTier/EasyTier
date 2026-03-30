@@ -93,11 +93,7 @@ impl EasyTierLauncher {
         }
     }
 
-    #[cfg(any(
-        target_os = "android",
-        any(target_os = "ios", all(target_os = "macos", feature = "macos-ne")),
-        target_env = "ohos"
-    ))]
+    #[cfg(mobile)]
     async fn run_routine_for_mobile(
         instance: &Instance,
         data: &EasyTierData,
@@ -156,11 +152,7 @@ impl EasyTierLauncher {
             }
         });
 
-        #[cfg(any(
-            target_os = "android",
-            any(target_os = "ios", all(target_os = "macos", feature = "macos-ne")),
-            target_env = "ohos"
-        ))]
+        #[cfg(mobile)]
         Self::run_routine_for_mobile(&instance, &data, &mut tasks).await;
 
         instance.run().await?;
