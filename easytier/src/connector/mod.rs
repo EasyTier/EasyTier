@@ -5,7 +5,7 @@ use std::{
 
 use crate::{
     common::{error::Error, global_ctx::ArcGlobalCtx, idn, network::IPCollector},
-    connector::dns_connector::DNSTunnelConnector,
+    connector::dns_connector::DnsTunnelConnector,
     proto::common::PeerFeatureFlag,
     tunnel::{
         self, ring::RingTunnelConnector, tcp::TcpTunnelConnector, udp::UdpTunnelConnector, FromUrl,
@@ -106,7 +106,7 @@ pub async fn create_connector_by_url(
                 }
                 #[cfg(feature = "websocket")]
                 IpScheme::Ws | IpScheme::Wss => {
-                    tunnel::websocket::WSTunnelConnector::new(url).boxed()
+                    tunnel::websocket::WsTunnelConnector::new(url).boxed()
                 }
                 #[cfg(feature = "faketcp")]
                 IpScheme::FakeTcp => tunnel::fake_tcp::FakeTcpTunnelConnector::new(url).boxed(),
@@ -134,7 +134,7 @@ pub async fn create_connector_by_url(
                     url
                 )));
             }
-            DNSTunnelConnector::new(url, global_ctx.clone()).boxed()
+            DnsTunnelConnector::new(url, global_ctx.clone()).boxed()
         }
     };
     connector.set_ip_version(ip_version);

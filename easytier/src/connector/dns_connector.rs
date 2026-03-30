@@ -35,7 +35,7 @@ fn weighted_choice<T>(options: &[(T, u64)]) -> Option<&T> {
 }
 
 #[derive(Debug)]
-pub struct DNSTunnelConnector {
+pub struct DnsTunnelConnector {
     scheme: TunnelScheme,
     addr: url::Url,
     bind_addrs: Vec<SocketAddr>,
@@ -43,7 +43,7 @@ pub struct DNSTunnelConnector {
     ip_version: IpVersion,
 }
 
-impl DNSTunnelConnector {
+impl DnsTunnelConnector {
     pub fn new(addr: url::Url, global_ctx: ArcGlobalCtx) -> Self {
         Self {
             scheme: (&addr).try_into().unwrap(),
@@ -164,7 +164,7 @@ impl DNSTunnelConnector {
 }
 
 #[async_trait::async_trait]
-impl super::TunnelConnector for DNSTunnelConnector {
+impl super::TunnelConnector for DnsTunnelConnector {
     async fn connect(&mut self) -> Result<Box<dyn Tunnel>, TunnelError> {
         let mut conn = match self.scheme {
             TunnelScheme::Txt => self
@@ -225,7 +225,7 @@ mod tests {
     async fn test_txt() {
         let url = "txt://txt.easytier.cn";
         let global_ctx = get_mock_global_ctx();
-        let mut connector = DNSTunnelConnector::new(url.parse().unwrap(), global_ctx);
+        let mut connector = DnsTunnelConnector::new(url.parse().unwrap(), global_ctx);
         connector.set_ip_version(IpVersion::V4);
         for _ in 0..5 {
             match connector.connect().await {
@@ -244,7 +244,7 @@ mod tests {
     async fn test_srv() {
         let url = "srv://easytier.cn";
         let global_ctx = get_mock_global_ctx();
-        let mut connector = DNSTunnelConnector::new(url.parse().unwrap(), global_ctx);
+        let mut connector = DnsTunnelConnector::new(url.parse().unwrap(), global_ctx);
         connector.set_ip_version(IpVersion::V4);
         for _ in 0..5 {
             match connector.connect().await {

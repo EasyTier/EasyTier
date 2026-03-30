@@ -45,7 +45,7 @@ pub fn create_listener_by_url(
             IpScheme::Quic => tunnel::quic::QuicTunnelListener::new(l.clone()).boxed(),
             #[cfg(feature = "websocket")]
             IpScheme::Ws | IpScheme::Wss => {
-                tunnel::websocket::WSTunnelListener::new(l.clone()).boxed()
+                tunnel::websocket::WsTunnelListener::new(l.clone()).boxed()
             }
             #[cfg(feature = "faketcp")]
             IpScheme::FakeTcp => tunnel::fake_tcp::FakeTcpTunnelListener::new(l.clone()).boxed(),
