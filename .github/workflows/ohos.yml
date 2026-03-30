@@ -22,7 +22,7 @@ jobs:
   cargo_fmt_check:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: fmt check
         working-directory: ./easytier-contrib/easytier-ohrs
         run: |
@@ -52,7 +52,7 @@ jobs:
       OHPM_PUBLISH_CODE: ${{ secrets.OHPM_PUBLISH_CODE }}
     if: needs.pre_job.outputs.should_skip != 'true'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Install dependencies
         run: |
           sudo apt-get update
@@ -178,7 +178,7 @@ jobs:
           mv package.har easytier-release.har
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: easytier-ohos
           path: |
