@@ -3,9 +3,10 @@ author: Luna
 description: 'Setup Node.js, pnpm, and install dependencies'
 
 inputs:
-  build_filter:
+  build-filter:
     description: 'The filter argument for pnpm build (e.g. ./easytier-web/*)'
-    required: true
+    required: false
+    default: ''
 
 runs:
   using: "composite"
@@ -38,5 +39,10 @@ runs:
       shell: bash
       run: |
         pnpm -r install
-        echo "Building with filter: ${{ inputs.build_filter }}"
-        pnpm -r --filter "${{ inputs.build_filter }}" build
+        if [ -n "${{ inputs.build-filter }}" ]; then
+          echo "Building with filter: ${{ inputs.build-filter }}"
+          pnpm -r --filter "${{ inputs.build-filter }}" build
+        else
+          echo "No build filter provided, building all packages"
+          pnpm -r build
+        fi
