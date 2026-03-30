@@ -119,6 +119,12 @@ jobs:
           echo "PKG_CONFIG_SYSROOT_DIR=/usr/aarch64-linux-gnu/" >> "$GITHUB_ENV"
           echo "PKG_CONFIG_PATH=/usr/lib/aarch64-linux-gnu/pkgconfig/" >> "$GITHUB_ENV"
 
+      - name: Install rpm package (Linux target only)
+        if: ${{ contains(matrix.TARGET, 'linux') }}
+        run: |
+          sudo apt update
+          sudo apt install -y rpm
+
       - name: Set current ref as env variable
         run: |
           echo "GIT_DESC=$(git log -1 --format=%cd.%h --date=format:%Y-%m-%d_%H:%M:%S)" >> $GITHUB_ENV
@@ -184,7 +190,7 @@ jobs:
         with:
           projectPath: ./easytier-gui
           # https://tauri.app/v1/guides/building/linux/#cross-compiling-tauri-applications-for-arm-based-devices
-          args: --verbose --target ${{ matrix.GUI_TARGET }} ${{ matrix.OS == 'ubuntu-22.04' && contains(matrix.TARGET, 'aarch64') && '--bundles deb' || ''  }}
+          args: --verbose --target ${{ matrix.GUI_TARGET }} ${{ contains(matrix.TARGET, '-linux-') && contains(matrix.TARGET, 'aarch64') && '--bundles deb,rpm' || ''  }}
 
       - name: Compress
         run: |
@@ -202,6 +208,7 @@ jobs:
               mv ./target/$GUI_TARGET/release/bundle/dmg/*.dmg ./artifacts/objects/
           elif [[ $OS =~ ^ubuntu.*$ && ! $TARGET =~ ^mips.*$ ]]; then
               mv ./target/$GUI_TARGET/release/bundle/deb/*.deb ./artifacts/objects/
+              mv ./target/$GUI_TARGET/release/bundle/rpm/*.rpm ./artifacts/objects/
               if [[ $GUI_TARGET =~ ^x86_64.*$ ]]; then
                 # currently only x86 appimage is supported
                 mv ./target/$GUI_TARGET/release/bundle/appimage/*.AppImage ./artifacts/objects/
