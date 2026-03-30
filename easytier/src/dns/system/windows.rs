@@ -6,7 +6,7 @@ use winreg::RegKey;
 
 use crate::common::ifcfg::RegistryManager;
 
-use super::{OSConfig, SystemConfigurator};
+use super::{SystemConfig, SystemConfigurator};
 
 pub fn is_windows_10_or_better() -> io::Result<bool> {
     let hklm = winreg::enums::HKEY_LOCAL_MACHINE;
@@ -149,7 +149,7 @@ impl WindowsDNSManager {
 }
 
 impl SystemConfigurator for WindowsDNSManager {
-    fn set_dns(&self, cfg: &OSConfig) -> io::Result<()> {
+    fn set_dns(&self, cfg: &SystemConfig) -> io::Result<()> {
         self.set_primary_dns(
             &cfg.nameservers
                 .iter()

@@ -6,7 +6,7 @@ use std::{
     path::Path,
 };
 
-use super::{OSConfig, SystemConfigurator};
+use super::{SystemConfig, SystemConfigurator};
 
 const MAC_RESOLVER_FILE_HEADER: &str = "# Added by easytier\n";
 const ETC_RESOLVER: &str = "/etc/resolver";
@@ -27,7 +27,7 @@ impl DarwinConfigurator {
         true
     }
 
-    pub fn do_set_dns(&self, cfg: &OSConfig) -> io::Result<()> {
+    pub fn do_set_dns(&self, cfg: &SystemConfig) -> io::Result<()> {
         fs::create_dir_all(ETC_RESOLVER)?;
         let mut keep = HashSet::new();
 
@@ -105,7 +105,7 @@ impl DarwinConfigurator {
 }
 
 impl SystemConfigurator for DarwinConfigurator {
-    fn set_dns(&self, cfg: &OSConfig) -> io::Result<()> {
+    fn set_dns(&self, cfg: &SystemConfig) -> io::Result<()> {
         self.do_set_dns(cfg)
     }
 

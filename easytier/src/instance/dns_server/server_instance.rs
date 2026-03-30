@@ -11,7 +11,7 @@ use super::{
     server::Server,
     MAGIC_DNS_INSTANCE_ADDR,
 };
-use crate::dns::system::{OSConfig, SystemConfigurator};
+use crate::dns::system::{SystemConfig, SystemConfigurator};
 use crate::{
     common::{
         ifcfg::{IfConfiger, IfConfiguerTrait},
@@ -155,7 +155,7 @@ impl MagicDnsServerInstanceData {
 
     fn do_system_config(&self, zone: &str) -> Result<(), anyhow::Error> {
         if let Some(c) = &self.system_config {
-            c.set_dns(&OSConfig {
+            c.set_dns(&SystemConfig {
                 nameservers: vec![self.fake_ip.to_string()],
                 search_domains: vec![zone.to_string()],
                 match_domains: vec![zone.to_string()],
