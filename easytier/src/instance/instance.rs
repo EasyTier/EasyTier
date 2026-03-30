@@ -25,6 +25,7 @@ use crate::connector::direct::DirectConnectorManager;
 use crate::connector::manual::{ConnectorManagerRpcService, ManualConnectorManager};
 use crate::connector::tcp_hole_punch::TcpHolePunchConnector;
 use crate::connector::udp_hole_punch::UdpHolePunchConnector;
+use crate::dns::node::DnsNode;
 use crate::gateway::icmp_proxy::IcmpProxy;
 #[cfg(feature = "kcp")]
 use crate::gateway::kcp_proxy::{KcpProxyDst, KcpProxyDstRpcService, KcpProxySrc};
@@ -127,10 +128,10 @@ impl IpProxy {
 }
 
 #[cfg(feature = "tun")]
-type NicCtx = super::virtual_nic::NicCtx;
+pub type NicCtx = super::virtual_nic::NicCtx;
 
 #[cfg(feature = "tun")]
-type ArcNicCtx = Arc<Mutex<Option<Box<dyn Any + 'static + Send>>>>;
+pub type ArcNicCtx = Arc<Mutex<Option<Box<dyn Any + 'static + Send>>>>;
 
 pub struct InstanceRpcServerHook {
     rpc_portal_whitelist: Vec<IpCidr>,
@@ -469,6 +470,8 @@ pub struct Instance {
 
     #[cfg(feature = "tun")]
     nic_ctx: ArcNicCtx,
+    #[cfg(feature = "magic-dns")]
+    dns: DnsNode,
 
     peer_packet_receiver: Arc<Mutex<PacketRecvChanReceiver>>,
     peer_manager: Arc<PeerManager>,

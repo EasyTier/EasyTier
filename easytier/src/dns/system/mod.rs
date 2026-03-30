@@ -22,7 +22,7 @@ pub trait SystemConfigurator: Send + Sync {
 }
 
 // TODO: move this to nic mod
-fn get(
+pub fn get(
     #[allow(unused_variables)] interface: &str,
 ) -> Result<Option<Box<dyn SystemConfigurator>>, anyhow::Error> {
     #[cfg(target_os = "windows")]

@@ -1,5 +1,9 @@
+use crate::common::config::ConfigLoader;
+use crate::common::global_ctx::ArcGlobalCtx;
 use crate::dns::node_mgr::DnsNodeMgr;
+use crate::dns::system;
 use crate::dns::utils::addr::NameServerAddr;
+use crate::instance::instance::{ArcNicCtx, NicCtx};
 use crate::peer_center::instance::PeerCenterPeerManagerTrait;
 use crate::peers::peer_manager::PeerManager;
 use crate::peers::NicPacketFilter;
@@ -10,6 +14,7 @@ use crate::tunnel::packet_def::ZCPacket;
 use crate::tunnel::tcp::TcpTunnelListener;
 use derivative::Derivative;
 use derive_more::{Deref, DerefMut, From, Into};
+use futures_util::StreamExt;
 use hickory_proto::rr::Record;
 use hickory_proto::serialize::binary::{BinDecodable, BinEncoder};
 use hickory_proto::xfer::Protocol;
@@ -19,6 +24,7 @@ use hickory_server::{
     server::{Request, RequestHandler, ResponseHandler, ResponseInfo},
     ServerFuture,
 };
+use itertools::Itertools;
 use parking_lot::{Mutex, RwLock};
 use pnet::packet::icmp::{IcmpTypes, MutableIcmpPacket};
 use pnet::packet::ip::IpNextHeaderProtocols;
@@ -28,6 +34,7 @@ use pnet::packet::{icmp, ipv4, udp, MutablePacket, Packet};
 use std::collections::HashSet;
 use std::io;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4};
+use std::path::Display;
 use std::{sync::Arc, time::Duration};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
@@ -152,7 +159,11 @@ impl Drop for DnsServerRuntime {
 pub struct DnsServer {
     mgr: Arc<DnsNodeMgr>,
 
+    #[cfg(feature = "tun")]
+    nic_ctx: ArcNicCtx, // TODO: REMOVE THIS
+
     peer_mgr: Arc<PeerManager>,
+    global_ctx: ArcGlobalCtx,
 
     #[derivative(Debug = "ignore")]
     catalog: DynamicCatalog,
@@ -163,7 +174,12 @@ pub struct DnsServer {
 const DNS_SERVER_LISTENER_TCP_TIMEOUT: Duration = Duration::from_secs(5);
 
 impl DnsServer {
-    pub fn new(peer_mgr: Arc<PeerManager>, rpc: StandAloneServer<TcpTunnelListener>) -> Self {
+    pub fn new(
+        peer_mgr: Arc<PeerManager>,
+        global_ctx: ArcGlobalCtx,
+        rpc: StandAloneServer<TcpTunnelListener>,
+        #[cfg(feature = "tun")] nic_ctx: ArcNicCtx, // TODO: REMOVE THIS
+    ) -> Self {
         let mgr = Arc::new(DnsNodeMgr::new());
 
         rpc.registry()
@@ -171,7 +187,9 @@ impl DnsServer {
 
         Self {
             mgr,
+            nic_ctx,
             peer_mgr,
+            global_ctx,
             catalog: DynamicCatalog::new(),
             addresses: Arc::new(Default::default()),
         }
@@ -208,6 +226,50 @@ impl DnsServer {
         Ok(())
     }
 
+    async fn reload_addresses(
+        &self,
+        addresses: impl IntoIterator<Item = NameServerAddr>,
+    ) -> anyhow::Result<()> {
+        let addresses: HashSet<_> = addresses.into_iter().collect();
+
+        #[cfg(feature = "tun")]
+        {
+            let nic_ctx = self.nic_ctx.lock().await;
+            if let Some(nic_ctx) = nic_ctx
+                .as_ref()
+                .and_then(|nic_ctx| nic_ctx.downcast_ref::<NicCtx>())
+            {
+                if let Some(system) = nic_ctx
+                    .ifname()
+                    .await
+                    .map(|ifname| system::get(&ifname))
+                    .transpose()?
+                    .flatten()
+                {
+                    let config = self.global_ctx.config.get_dns();
+                    let domain = vec![config.domain.to_string()];
+                    system.set_dns(&system::SystemConfig {
+                        nameservers: addresses
+                            .iter()
+                            .filter_map(|a| {
+                                (a.protocol == Protocol::Udp).then_some(a.addr.to_string())
+                            })
+                            .collect(),
+                        search_domains: domain.clone(),
+                        match_domains: domain
+                            .into_iter()
+                            .chain(config.zones.iter().map(|z| z.origin.to_string()))
+                            .collect(),
+                    })?;
+                }
+            }
+        }
+
+        *self.addresses.write() = addresses;
+
+        Ok(())
+    }
+
     pub async fn run(&self) {
         let dirty = &self.mgr.dirty;
         let mut runtime = None;
@@ -226,7 +288,10 @@ impl DnsServer {
             loop {
                 dirty.addresses.notified().await;
                 if dirty.addresses.reset() {
-                    *self.addresses.write() = self.mgr.iter_addresses().collect();
+                    if let Err(e) = self.reload_addresses(self.mgr.iter_addresses()).await {
+                        tracing::error!("failed to reload addresses: {:?}", e);
+                        dirty.addresses.mark();
+                    }
                 }
                 tokio::time::sleep(Duration::from_secs(1)).await;
             }

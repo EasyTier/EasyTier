@@ -3,6 +3,7 @@ use crate::common::PeerId;
 use crate::dns::config::{DNS_SERVER_ELECTION_INTERVAL, DNS_SERVER_RPC_ADDR};
 use crate::dns::peer_mgr::DnsPeerMgr;
 use crate::dns::server::DnsServer;
+use crate::instance::instance::ArcNicCtx;
 use crate::peers::peer_manager::PeerManager;
 use crate::peers::NicPacketFilter;
 use crate::proto::dns::{DnsNodeMgrRpcClientFactory, DnsPeerMgrRpcServer, HeartbeatRequest};
@@ -20,12 +21,19 @@ use uuid::Uuid;
 pub struct DnsNode {
     mgr: Arc<DnsPeerMgr>,
 
+    #[cfg(feature = "tun")]
+    nic_ctx: ArcNicCtx, // TODO: REMOVE THIS
+
     peer_mgr: Arc<PeerManager>,
     global_ctx: ArcGlobalCtx,
 }
 
 impl DnsNode {
-    pub fn new(peer_mgr: Arc<PeerManager>, global_ctx: ArcGlobalCtx) -> Self {
+    pub fn new(
+        peer_mgr: Arc<PeerManager>,
+        global_ctx: ArcGlobalCtx,
+        #[cfg(feature = "tun")] nic_ctx: ArcNicCtx, // TODO: REMOVE THIS
+    ) -> Self {
         let mgr = Arc::new(DnsPeerMgr::new(peer_mgr.clone()));
         peer_mgr
             .get_peer_rpc_mgr()
@@ -38,8 +46,9 @@ impl DnsNode {
 
         Self {
             mgr,
-            global_ctx,
+            nic_ctx,
             peer_mgr,
+            global_ctx,
         }
     }
 
@@ -71,7 +80,13 @@ impl DnsNode {
 
             tracing::info!("won DNS server election, starting DnsServer");
 
-            let server = Arc::new(DnsServer::new(self.peer_mgr.clone(), rpc));
+            let server = Arc::new(DnsServer::new(
+                self.peer_mgr.clone(),
+                self.global_ctx.clone(),
+                rpc,
+                #[cfg(feature = "tun")]
+                self.nic_ctx.clone(),
+            ));
 
             self.global_ctx.set_dns(Some(server.clone()));
             tokio::join!(
