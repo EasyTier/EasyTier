@@ -1,6 +1,5 @@
 use crate::common::global_ctx::{ArcGlobalCtx, GlobalCtxEvent};
 use crate::common::scoped_task::ScopedTask;
-use crate::common::PeerId;
 use crate::dns::config::{DNS_SERVER_ELECTION_INTERVAL, DNS_SERVER_RPC_ADDR};
 use crate::dns::peer_mgr::DnsPeerMgr;
 use crate::dns::server::DnsServer;
@@ -185,7 +184,12 @@ impl DnsNode {
                 event = subscriber.recv() => {
                     match event {
                         Ok(GlobalCtxEvent::PeerInfoUpdated(peer_ids)) => {
-                            self.refresh(&mut tasks, peer_ids);
+                            for peer_id in peer_ids {
+                                let mgr = self.mgr.clone();
+                                tasks.spawn(async move {
+                                    mgr.refresh(peer_id).await;
+                                });
+                            }
                             continue;
                         }
                         Ok(
@@ -241,21 +245,5 @@ impl DnsNode {
         }
 
         Ok(())
-    }
-
-    fn refresh(&self, tasks: &mut JoinSet<()>, peer_ids: Vec<PeerId>) {
-        let my_peer_id = self.peer_mgr.my_peer_id();
-        for peer_id in peer_ids {
-            if peer_id == my_peer_id {
-                continue;
-            }
-            let mgr = self.mgr.clone();
-            let route = self.peer_mgr.get_route();
-            tasks.spawn(async move {
-                if let Some(peer_info) = route.get_peer_info(peer_id).await {
-                    mgr.refresh(peer_id, peer_info.dns).await;
-                }
-            });
-        }
     }
 }

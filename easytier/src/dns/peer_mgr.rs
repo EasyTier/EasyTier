@@ -5,6 +5,7 @@ use crate::dns::utils::dirty::DirtyFlag;
 use crate::dns::zone::ZoneGroup;
 use crate::peer_center::instance::PeerCenterPeerManagerTrait;
 use crate::peers::peer_manager::PeerManager;
+use crate::peers::route_trait::Route;
 use crate::proto::dns::{
     DnsPeerMgrRpc, DnsPeerMgrRpcClientFactory, DnsSnapshot, GetExportConfigRequest,
     GetExportConfigResponse, ZoneData,
@@ -78,12 +79,24 @@ impl DnsPeerMgr {
         }
     }
 
-    pub(super) async fn refresh(&self, peer_id: PeerId, digest: Vec<u8>) {
-        if let Some(info) = self.peers.get(&peer_id).await {
-            if info.digest == *digest {
-                return;
-            }
+    pub async fn refresh(&self, peer_id: PeerId) {
+        if peer_id == self.peer_mgr.my_peer_id() {
+            self.dirty.mark();
+            self.dirty.notify_one();
+            return;
+        }
+
+        let Some(route) = self.peer_mgr.get_route().get_peer_info(peer_id).await else {
+            return;
         };
+        if self
+            .peers
+            .get(&peer_id)
+            .await
+            .is_some_and(|info| info.digest == *route.dns)
+        {
+            return;
+        }
 
         self.dirty.mark();
 
@@ -91,12 +104,8 @@ impl DnsPeerMgr {
             Ok(info) => {
                 self.peers.insert(peer_id, info).await;
             }
-            Err(e) => {
-                tracing::warn!(
-                    "failed to fetch dns export config from peer {}: {:?}",
-                    peer_id,
-                    e
-                );
+            Err(error) => {
+                tracing::warn!(%peer_id, ?error, "failed to fetch dns export config from peer");
                 self.peers.invalidate(&peer_id).await;
             }
         }
