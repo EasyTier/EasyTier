@@ -12,12 +12,10 @@ use crate::proto::rpc_impl::standalone::{StandAloneClient, StandAloneServer};
 use crate::proto::rpc_types::controller::BaseController;
 use crate::tunnel::tcp::{TcpTunnelConnector, TcpTunnelListener};
 use crate::utils::AsyncRuntime;
-use derivative::Derivative;
-use futures::task::SpawnExt;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::{broadcast, Mutex, Notify};
-use tokio::task::{JoinHandle, JoinSet};
+use tokio::sync::{broadcast, Notify};
+use tokio::task::JoinSet;
 use tokio::time::{sleep, sleep_until, Instant};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
@@ -108,10 +106,11 @@ impl DnsNode {
             let server = Arc::new(DnsServer::new(
                 self.peer_mgr.clone(),
                 self.global_ctx.clone(),
-                rpc,
                 #[cfg(feature = "tun")]
                 self.nic_ctx.clone(),
             ));
+
+            server.register(&rpc);
 
             self.global_ctx.set_dns(Some(server.clone()));
             tokio::join!(

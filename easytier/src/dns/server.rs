@@ -140,22 +140,21 @@ impl DnsServer {
     pub fn new(
         peer_mgr: Arc<PeerManager>,
         global_ctx: ArcGlobalCtx,
-        rpc: StandAloneServer<TcpTunnelListener>,
         #[cfg(feature = "tun")] nic_ctx: ArcNicCtx, // TODO: REMOVE THIS
     ) -> Self {
-        let mgr = Arc::new(DnsNodeMgr::new());
-
-        rpc.registry()
-            .register(DnsNodeMgrRpcServer::new_arc(mgr.clone()), "");
-
         Self {
-            mgr,
+            mgr: Arc::new(DnsNodeMgr::new()),
             nic_ctx,
             peer_mgr,
             global_ctx,
             catalog: DynamicCatalog::new(),
             addresses: Arc::new(Default::default()),
         }
+    }
+
+    pub fn register(&self, rpc: &StandAloneServer<TcpTunnelListener>) {
+        rpc.registry()
+            .register(DnsNodeMgrRpcServer::new_arc(self.mgr.clone()), "");
     }
 
     pub fn addresses(&self) -> HashSet<SocketAddr> {
