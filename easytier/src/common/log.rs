@@ -117,18 +117,19 @@ pub fn init(
 }
 
 fn console_layers(
-    level: LevelFilter,
+    default_level: LevelFilter,
 ) -> anyhow::Result<Vec<Box<dyn Layer<Registry> + Send + Sync>>> {
     let mut layers = Vec::new();
-    if level == LevelFilter::OFF {
+    if default_level == LevelFilter::OFF {
         return Ok(layers);
     }
 
-    let (console_filter, _) = tracing_subscriber::reload::Layer::new(parse_env_filter(level)?);
+    let (console_filter, _) =
+        tracing_subscriber::reload::Layer::new(parse_env_filter(default_level)?);
 
     cfg_if! {
         if #[cfg(test)] {
-            let w = TestWriter::new;
+            let w = tracing_subscriber::fmt::TestWriter::new;
             let (stdout, stderr) = (w, w);
         } else {
             let (stdout, stderr) = (std::io::stderr, std::io::stdout);
@@ -273,14 +274,21 @@ fn file_layers(
 }
 
 #[cfg(test)]
-mod tests {
+pub mod tests {
     use super::*;
     use crate::common::config::{self};
 
+    pub fn init() {
+        let _ = Registry::default()
+            .with(console_layers(LevelFilter::DEBUG).unwrap())
+            .try_init();
+    }
+
+    #[tokio::test]
     async fn test_logger_reload() {
         println!("current working dir: {:?}", std::env::current_dir());
         let config = config::LoggingConfigBuilder::default().build().unwrap();
-        let s = init(&config, true).unwrap();
+        let s = super::init(&config, true).unwrap();
         tracing::debug!("test not display debug");
         s.unwrap().send(LevelFilter::DEBUG.to_string()).unwrap();
         tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
