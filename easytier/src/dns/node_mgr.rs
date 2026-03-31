@@ -61,6 +61,9 @@ impl DnsNodeMgr {
 
     pub fn catalog(&self) -> Catalog {
         let zones = self.collect_zones();
+
+        tracing::warn!("building catalog with zones: {:?}", zones);
+
         let mut catalog = Catalog::new();
 
         for zone in zones.iter() {
@@ -81,14 +84,16 @@ impl DnsNodeMgr {
     }
 
     pub fn collect_zones(&self) -> ZoneGroup {
-        let mut zones = vec![Zone::system()];
-        let mut local = HashSet::<NameServerAddr>::new();
+        let mut zones = Vec::new();
+        let mut local = HashSet::new();
 
         for (_, info) in self.nodes.iter() {
             zones.extend(info.zones);
             local.extend(info.addresses);
             local.extend(info.listeners);
         }
+
+        zones.push(Zone::system());
 
         for zone in zones.iter_mut() {
             if let Some(forward) = zone.forward.as_mut() {
