@@ -109,10 +109,6 @@ impl DnsGlobalCtxExt for GlobalCtx {
     }
 
     fn dns_iter_zones(&self) -> impl Iterator<Item = ZoneConfig> {
-        self.config
-            .get_dns()
-            .zones
-            .into_iter()
-            .chain(iter::once(self.dns_self_zone()))
+        iter::once(self.dns_self_zone()).chain(self.config.get_dns().zones.into_iter())
     }
 }
