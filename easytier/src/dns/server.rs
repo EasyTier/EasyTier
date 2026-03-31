@@ -474,3 +474,369 @@ impl DnsServer {
 }
 
 // endregion
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::peers::tests::create_mock_peer_manager;
+    use hickory_client::client::{Client, ClientHandle};
+    use hickory_proto::op::{Message, MessageType, OpCode, Query};
+    use hickory_proto::rr::{rdata, DNSClass, Name, RData, Record, RecordType};
+    use hickory_proto::runtime::TokioRuntimeProvider;
+    use hickory_proto::serialize::binary::BinEncodable;
+    use hickory_proto::udp::UdpClientStream;
+    use hickory_server::authority::Catalog;
+    use hickory_server::authority::ZoneType;
+    use hickory_server::store::in_memory::InMemoryAuthority;
+    use pnet::packet::icmp::{IcmpPacket, IcmpTypes, MutableIcmpPacket};
+    use pnet::packet::ip::IpNextHeaderProtocols;
+    use pnet::packet::ipv4::{Ipv4Packet, MutableIpv4Packet};
+    use pnet::packet::udp::{MutableUdpPacket, UdpPacket};
+    use pnet::packet::{icmp, ipv4, udp, MutablePacket, Packet};
+    use std::net::{Ipv4Addr, SocketAddr};
+    use std::str::FromStr;
+    use std::time::Duration;
+
+    /// Build a `Catalog` containing a single A record: `test.example.com -> 1.2.3.4`.
+    fn build_test_catalog() -> Catalog {
+        let origin = Name::from_str("example.com.").unwrap();
+        let mut authority = InMemoryAuthority::empty(origin.clone(), ZoneType::Primary, false);
+
+        let record = Record::from_rdata(
+            Name::from_str("test.example.com.").unwrap(),
+            60,
+            RData::A(rdata::a::A(Ipv4Addr::new(1, 2, 3, 4))),
+        );
+        let rr_key =
+            hickory_proto::rr::RrKey::new(record.name().clone().into(), record.record_type());
+        let mut rr_set =
+            hickory_proto::rr::RecordSet::new(record.name().clone(), record.record_type(), 0);
+        rr_set.insert(record, 0);
+        authority.records_get_mut().insert(rr_key, Arc::new(rr_set));
+
+        let mut catalog = Catalog::new();
+        catalog.upsert(
+            origin.into(),
+            vec![Arc::new(authority) as Arc<dyn hickory_server::authority::AuthorityObject>],
+        );
+        catalog
+    }
+
+    /// Create a test `DnsServer` with `create_mock_peer_manager()`.
+    async fn create_test_server() -> Arc<DnsServer> {
+        let peer_mgr = create_mock_peer_manager().await;
+        let global_ctx = peer_mgr.get_global_ctx();
+        Arc::new(DnsServer::new(peer_mgr, global_ctx, #[cfg(feature = "tun")] ArcNicCtx::default()))
+    }
+
+    /// Build a raw IPv4 packet (as `Vec<u8>`) carrying the given L4 payload bytes.
+    /// `protocol` selects ICMP / UDP etc.
+    fn build_ipv4_packet(
+        src: Ipv4Addr,
+        dst: Ipv4Addr,
+        protocol: pnet::packet::ip::IpNextHeaderProtocol,
+        l4_payload: &[u8],
+    ) -> Vec<u8> {
+        let ip_header_len = 20usize;
+        let total_len = ip_header_len + l4_payload.len();
+        let mut buf = vec![0u8; total_len];
+        {
+            let mut ip = MutableIpv4Packet::new(&mut buf).unwrap();
+            ip.set_version(4);
+            ip.set_header_length(5); // 20 bytes
+            ip.set_total_length(total_len as u16);
+            ip.set_ttl(64);
+            ip.set_next_level_protocol(protocol);
+            ip.set_source(src);
+            ip.set_destination(dst);
+            ip.payload_mut().copy_from_slice(l4_payload);
+            ip.set_checksum(ipv4::checksum(&ip.to_immutable()));
+        }
+        buf
+    }
+
+    /// Build ICMP Echo Request payload (8 bytes minimum).
+    fn build_icmp_echo_request() -> Vec<u8> {
+        let mut buf = vec![0u8; 8];
+        {
+            let mut icmp_pkt = MutableIcmpPacket::new(&mut buf).unwrap();
+            icmp_pkt.set_icmp_type(IcmpTypes::EchoRequest);
+            icmp_pkt.set_icmp_code(icmp::IcmpCode::new(0));
+            icmp_pkt.set_checksum(icmp::checksum(&icmp_pkt.to_immutable()));
+        }
+        buf
+    }
+
+    /// Build a minimal DNS query message for `name` and encode it to bytes.
+    fn build_dns_query_bytes(name: &str) -> Vec<u8> {
+        let mut msg = Message::new();
+        msg.set_id(0x1234);
+        msg.set_message_type(MessageType::Query);
+        msg.set_op_code(OpCode::Query);
+        msg.set_recursion_desired(true);
+        let mut query = Query::new();
+        query.set_name(Name::from_str(name).unwrap());
+        query.set_query_type(RecordType::A);
+        query.set_query_class(DNSClass::IN);
+        msg.add_query(query);
+        msg.to_bytes().unwrap().to_vec()
+    }
+
+    /// Build a UDP packet carrying `payload`, with given src/dst ports.
+    fn build_udp_packet(
+        src_port: u16,
+        dst_port: u16,
+        payload: &[u8],
+        src_ip: Ipv4Addr,
+        dst_ip: Ipv4Addr,
+    ) -> Vec<u8> {
+        let udp_len = 8 + payload.len();
+        let mut buf = vec![0u8; udp_len];
+        {
+            let mut udp_pkt = MutableUdpPacket::new(&mut buf).unwrap();
+            udp_pkt.set_source(src_port);
+            udp_pkt.set_destination(dst_port);
+            udp_pkt.set_length(udp_len as u16);
+            udp_pkt.payload_mut().copy_from_slice(payload);
+            udp_pkt.set_checksum(udp::ipv4_checksum(
+                &udp_pkt.to_immutable(),
+                &src_ip,
+                &dst_ip,
+            ));
+        }
+        buf
+    }
+
+    // ─── Tests ───────────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_dynamic_catalog_replace() {
+        let catalog = DynamicCatalog::new();
+
+        let new_catalog = build_test_catalog();
+        catalog.replace(new_catalog).await;
+
+        // After replacement the catalog should resolve test.example.com
+        // This is implicitly verified by the UDP DNS test below; here we
+        // just make sure `replace` does not panic and completes.
+    }
+
+    #[tokio::test]
+    async fn test_is_hijacked_ip_and_addr() {
+        let server = create_test_server().await;
+        let addr: SocketAddr = "10.0.0.53:53".parse().unwrap();
+        assert!(!server.is_hijacked_ip(&addr.ip()));
+        assert!(!server.is_hijacked_addr(addr));
+
+        server.addresses.write().insert(addr.into());
+        assert!(server.is_hijacked_ip(&addr.ip()));
+        assert!(server.is_hijacked_addr(addr));
+
+        // Different port on same IP — ip matches, but addr does not.
+        let other_addr: SocketAddr = "10.0.0.53:5353".parse().unwrap();
+        assert!(server.is_hijacked_ip(&other_addr.ip()));
+        assert!(!server.is_hijacked_addr(other_addr));
+    }
+
+    #[tokio::test]
+    async fn test_handle_icmp_echo_request() {
+        let server = create_test_server().await;
+        let dst_ip: Ipv4Addr = "10.0.0.53".parse().unwrap();
+        let src_ip: Ipv4Addr = "10.0.0.1".parse().unwrap();
+
+        // Register the dst IP as hijacked.
+        server
+            .addresses
+            .write()
+            .insert(SocketAddr::new(dst_ip.into(), 53).into());
+
+        let icmp_payload = build_icmp_echo_request();
+        let ip_bytes =
+            build_ipv4_packet(src_ip, dst_ip, IpNextHeaderProtocols::Icmp, &icmp_payload);
+
+        let mut zc = ZCPacket::new_with_payload(&ip_bytes);
+        zc.fill_peer_manager_hdr(1, 2, crate::tunnel::packet_def::PacketType::Data as u8);
+
+        let result = server.handle_ip_packet(&mut zc).await;
+        assert!(
+            result.is_some(),
+            "handle_ip_packet should succeed for echo request"
+        );
+
+        // Verify ICMP type is now EchoReply.
+        let ip = Ipv4Packet::new(zc.payload()).unwrap();
+        let icmp = IcmpPacket::new(ip.payload()).unwrap();
+        assert_eq!(icmp.get_icmp_type(), IcmpTypes::EchoReply);
+
+        // Verify IP addresses are swapped.
+        assert_eq!(ip.get_source(), dst_ip);
+        assert_eq!(ip.get_destination(), src_ip);
+    }
+
+    #[tokio::test]
+    async fn test_handle_icmp_non_echo_ignored() {
+        let server = create_test_server().await;
+        let dst_ip: Ipv4Addr = "10.0.0.53".parse().unwrap();
+        let src_ip: Ipv4Addr = "10.0.0.1".parse().unwrap();
+
+        server
+            .addresses
+            .write()
+            .insert(SocketAddr::new(dst_ip.into(), 53).into());
+
+        // Build an ICMP Destination Unreachable (not echo request).
+        let mut icmp_buf = vec![0u8; 8];
+        {
+            let mut pkt = MutableIcmpPacket::new(&mut icmp_buf).unwrap();
+            pkt.set_icmp_type(IcmpTypes::DestinationUnreachable);
+            pkt.set_checksum(icmp::checksum(&pkt.to_immutable()));
+        }
+        let ip_bytes = build_ipv4_packet(src_ip, dst_ip, IpNextHeaderProtocols::Icmp, &icmp_buf);
+
+        let mut zc = ZCPacket::new_with_payload(&ip_bytes);
+        zc.fill_peer_manager_hdr(1, 2, crate::tunnel::packet_def::PacketType::Data as u8);
+
+        let result = server.handle_ip_packet(&mut zc).await;
+        assert!(result.is_none(), "non-echo ICMP should be ignored");
+    }
+
+    #[tokio::test]
+    async fn test_non_hijacked_ip_ignored() {
+        let server = create_test_server().await;
+        // Do NOT register any hijacked addresses.
+        let icmp_payload = build_icmp_echo_request();
+        let ip_bytes = build_ipv4_packet(
+            "10.0.0.1".parse().unwrap(),
+            "10.0.0.99".parse().unwrap(),
+            IpNextHeaderProtocols::Icmp,
+            &icmp_payload,
+        );
+
+        let mut zc = ZCPacket::new_with_payload(&ip_bytes);
+        zc.fill_peer_manager_hdr(1, 2, crate::tunnel::packet_def::PacketType::Data as u8);
+
+        let result = server.handle_ip_packet(&mut zc).await;
+        assert!(
+            result.is_none(),
+            "packet to non-hijacked IP should be ignored"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_handle_udp_dns_packet() {
+        let server = create_test_server().await;
+        let dst_ip: Ipv4Addr = "10.0.0.53".parse().unwrap();
+        let src_ip: Ipv4Addr = "10.0.0.1".parse().unwrap();
+        let dns_port: u16 = 53;
+        let client_port: u16 = 12345;
+
+        // Register dst as hijacked.
+        server
+            .addresses
+            .write()
+            .insert(SocketAddr::new(dst_ip.into(), dns_port).into());
+
+        // Load a catalog with test.example.com -> 1.2.3.4.
+        server.catalog.replace(build_test_catalog()).await;
+
+        // Build DNS query.
+        let dns_bytes = build_dns_query_bytes("test.example.com.");
+        let udp_bytes = build_udp_packet(client_port, dns_port, &dns_bytes, src_ip, dst_ip);
+        let ip_bytes = build_ipv4_packet(src_ip, dst_ip, IpNextHeaderProtocols::Udp, &udp_bytes);
+
+        let mut zc = ZCPacket::new_with_payload(&ip_bytes);
+        zc.fill_peer_manager_hdr(1, 2, crate::tunnel::packet_def::PacketType::Data as u8);
+
+        let result = server.handle_ip_packet(&mut zc).await;
+        assert!(result.is_some(), "DNS query should be handled");
+
+        // Parse the response IP packet => UDP => DNS message.
+        let ip = Ipv4Packet::new(zc.payload()).unwrap();
+        assert_eq!(
+            ip.get_source(),
+            dst_ip,
+            "reply source should be the DNS server IP"
+        );
+        assert_eq!(
+            ip.get_destination(),
+            src_ip,
+            "reply dest should be the client IP"
+        );
+
+        let udp_reply = UdpPacket::new(ip.payload()).unwrap();
+        assert_eq!(udp_reply.get_source(), dns_port);
+        assert_eq!(udp_reply.get_destination(), client_port);
+
+        let dns_reply = Message::from_vec(udp_reply.payload()).unwrap();
+        assert_eq!(dns_reply.id(), 0x1234);
+        assert!(
+            !dns_reply.answers().is_empty(),
+            "DNS reply should contain answers"
+        );
+
+        let answer = &dns_reply.answers()[0];
+        if let RData::A(a) = answer.data() {
+            assert_eq!(a.0, Ipv4Addr::new(1, 2, 3, 4));
+        } else {
+            panic!("expected A record in answer, got {:?}", answer.data());
+        }
+    }
+
+    /// Full end-to-end test: start a real DNS UDP listener via `ServerFuture`,
+    /// send a query with a `hickory_client`, and verify the response.
+    #[tokio::test]
+    async fn test_full_udp_dns_query() {
+        use hickory_server::ServerFuture;
+        use tokio::net::UdpSocket;
+        use tokio::time::timeout;
+
+        // Build a catalog with test.example.com -> 1.2.3.4.
+        let catalog = build_test_catalog();
+
+        // Bind to a random port.
+        let socket = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let addr = socket.local_addr().unwrap();
+
+        let mut server = ServerFuture::new(catalog);
+        server.register_socket(socket);
+
+        let shutdown_token = server.shutdown_token().clone();
+        tokio::spawn(async move {
+            server.block_until_done().await.ok();
+        });
+
+        // Send a real DNS query using hickory_client.
+        let conn = UdpClientStream::builder(addr, TokioRuntimeProvider::default()).build();
+        let (mut client, bg) = timeout(Duration::from_secs(2), Client::connect(conn))
+            .await
+            .expect("client connect timeout")
+            .expect("client connect failed");
+
+        tokio::spawn(async move {
+            bg.await.ok();
+        });
+
+        let response = timeout(
+            Duration::from_secs(2),
+            client.query(
+                Name::from_str("test.example.com.").unwrap(),
+                DNSClass::IN,
+                RecordType::A,
+            ),
+        )
+        .await
+        .expect("query timeout")
+        .expect("query failed");
+
+        assert!(!response.answers().is_empty(), "should get answers");
+        let a_record = &response.answers()[0];
+        if let RData::A(a) = a_record.data() {
+            assert_eq!(a.0, Ipv4Addr::new(1, 2, 3, 4));
+        } else {
+            panic!("expected A record, got {:?}", a_record.data());
+        }
+
+        // Shutdown the server.
+        shutdown_token.cancel();
+    }
+}
