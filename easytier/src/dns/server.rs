@@ -132,6 +132,7 @@ pub struct DnsServer {
     #[derivative(Debug = "ignore")]
     catalog: DynamicCatalog,
 
+    listeners: Arc<RwLock<HashSet<NameServerAddr>>>,
     addresses: Arc<RwLock<HashSet<NameServerAddr>>>,
 }
 
@@ -149,7 +150,8 @@ impl DnsServer {
             peer_mgr,
             global_ctx,
             catalog: DynamicCatalog::new(),
-            addresses: Arc::new(Default::default()),
+            listeners: Default::default(),
+            addresses: Default::default(),
         }
     }
 
@@ -162,11 +164,20 @@ impl DnsServer {
         self.addresses.read().iter().map(|a| a.addr).collect()
     }
 
+    #[instrument(skip_all)]
     async fn reload_listeners(
         &self,
         listeners: impl IntoIterator<Item = NameServerAddr>,
         runtime: &mut Option<AsyncRuntime>,
     ) -> anyhow::Result<()> {
+        let listeners = listeners.into_iter().collect();
+
+        if &*self.listeners.read() == &listeners {
+            tracing::info!("listeners unchanged, no need to reload");
+            return Ok(());
+        }
+        tracing::info!(?listeners, "reloading");
+
         if let Some(runtime) = runtime.as_ref() {
             if let Some(Err(e)) = runtime.stop().await {
                 tracing::error!("failed to stop old DNS server runtime: {}", e);
@@ -178,13 +189,14 @@ impl DnsServer {
         let mut server = ServerFuture::new(self.catalog.clone());
         for listener in listeners {
             let addr = listener.addr;
-            if let Err(e) = match listener.protocol {
+            tracing::info!(?addr, "binding listener");
+            if let Err(error) = match listener.protocol {
                 Protocol::Udp => bind_socket(addr, None).map(|s| server.register_socket(s)),
                 Protocol::Tcp => bind_socket(addr, None)
                     .map(|s| server.register_listener(s, DNS_SERVER_LISTENER_TCP_TIMEOUT)),
                 _ => unimplemented!(),
             } {
-                tracing::error!("failed to bind DNS server on {}: {:?}", addr, e);
+                tracing::error!(?addr, ?error, "failed to bind listener");
             }
         }
 
@@ -201,11 +213,18 @@ impl DnsServer {
         Ok(())
     }
 
+    #[instrument(skip_all)]
     async fn reload_addresses(
         &self,
         addresses: impl IntoIterator<Item = NameServerAddr>,
     ) -> anyhow::Result<()> {
-        let addresses: HashSet<_> = addresses.into_iter().collect();
+        let addresses = addresses.into_iter().collect();
+
+        if &*self.addresses.read() == &addresses {
+            tracing::info!("addresses unchanged, no need to reload");
+            return Ok(());
+        }
+        tracing::info!(?addresses, "reloading");
 
         #[cfg(feature = "tun")]
         {
