@@ -25,7 +25,7 @@ impl ResponseHandle {
     }
 }
 
-trait RecordIter<'r>: Iterator<Item = &'r Record> + Send + 'r {}
+pub trait RecordIter<'r>: Iterator<Item = &'r Record> + Send + 'r {}
 
 impl<'r, T> RecordIter<'r> for T where T: Iterator<Item = &'r Record> + Send + 'r {}
 
