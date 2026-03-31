@@ -14,7 +14,6 @@ use crate::tunnel::packet_def::ZCPacket;
 use crate::tunnel::tcp::TcpTunnelListener;
 use crate::utils::AsyncRuntime;
 use derivative::Derivative;
-use derive_more::{Deref, DerefMut, From, Into};
 use hickory_proto::rr::Record;
 use hickory_proto::serialize::binary::{BinDecodable, BinEncoder};
 use hickory_proto::xfer::Protocol;
@@ -24,7 +23,6 @@ use hickory_server::{
     server::{Request, RequestHandler, ResponseHandler, ResponseInfo},
     ServerFuture,
 };
-use itertools::Itertools;
 use parking_lot::{Mutex, RwLock};
 use pnet::packet::icmp::{IcmpTypes, MutableIcmpPacket};
 use pnet::packet::ip::IpNextHeaderProtocols;
@@ -34,9 +32,7 @@ use pnet::packet::{icmp, ipv4, udp, MutablePacket, Packet};
 use std::collections::HashSet;
 use std::io;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4};
-use std::path::Display;
 use std::{sync::Arc, time::Duration};
-use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
 #[derive(Clone)]
@@ -73,16 +69,20 @@ impl RequestHandler for DynamicCatalog {
 
 // ResponseWrapper for serializing DNS responses into a byte buffer.
 // Used by the address hijacking NIC packet filter to produce DNS replies in-place.
-#[derive(Debug, Clone, From, Into, Deref, DerefMut)]
-struct Response(Arc<Mutex<Vec<u8>>>);
+#[derive(Debug, Clone)]
+struct ResponseHandle {
+    inner: Arc<Mutex<Vec<u8>>>,
+}
 
-impl Response {
+impl ResponseHandle {
     pub fn new(capacity: usize) -> Self {
-        Self(Arc::new(Mutex::new(Vec::with_capacity(capacity))))
+        Self {
+            inner: Arc::new(Mutex::new(Vec::with_capacity(capacity))),
+        }
     }
 
     pub fn into_inner(self) -> Option<Vec<u8>> {
-        Arc::into_inner(self.0).map(Mutex::into_inner)
+        Arc::into_inner(self.inner).map(Mutex::into_inner)
     }
 }
 
@@ -90,7 +90,7 @@ trait RecordIter<'r>: Iterator<Item = &'r Record> + Send + 'r {}
 impl<'r, T> RecordIter<'r> for T where T: Iterator<Item = &'r Record> + Send + 'r {}
 
 #[async_trait::async_trait]
-impl ResponseHandler for Response {
+impl ResponseHandler for ResponseHandle {
     async fn send_response<'r>(
         &mut self,
         response: MessageResponse<
@@ -108,8 +108,8 @@ impl ResponseHandler for Response {
             hickory_proto::udp::MAX_RECEIVE_BUFFER_SIZE as u16
         };
 
-        let mut this = self.lock();
-        let mut encoder = BinEncoder::new(this.as_mut());
+        let mut inner = self.inner.lock();
+        let mut encoder = BinEncoder::new(inner.as_mut());
         encoder.set_max_size(max_size);
         response
             .destructive_emit(&mut encoder)
@@ -309,6 +309,8 @@ impl Drop for DnsServer {
     }
 }
 
+// region NIC packet filter
+
 const NIC_PIPELINE_NAME: &str = "magic_dns_server";
 
 #[async_trait::async_trait]
@@ -327,8 +329,8 @@ impl DnsServer {
         self.addresses.read().iter().any(|a| a.addr.ip() == *ip)
     }
 
-    fn is_hijacked_addr(&self, addr: &NameServerAddr) -> bool {
-        self.addresses.read().contains(addr)
+    fn is_hijacked_addr(&self, addr: SocketAddr) -> bool {
+        self.addresses.read().contains(&addr.into())
     }
 
     /// Replace the content of an incoming UDP DNS request and ICMP echo request packet with reply data,
@@ -407,12 +409,12 @@ impl DnsServer {
             )
         };
 
-        if !self.is_hijacked_addr(&SocketAddr::new(dst_ip.into(), dst_port).into()) {
+        if !self.is_hijacked_addr(SocketAddr::new(dst_ip.into(), dst_port)) {
             return None;
         }
 
         let response_payload = {
-            let response = Response::new(512);
+            let response = ResponseHandle::new(512);
 
             self.catalog
                 .handle_request(&request, response.clone())
@@ -471,3 +473,5 @@ impl DnsServer {
         Some(())
     }
 }
+
+// endregion
