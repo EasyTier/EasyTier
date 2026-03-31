@@ -12,6 +12,7 @@ use itertools::Itertools;
 use moka::future::Cache;
 use std::collections::HashSet;
 use std::time::Duration;
+use tracing::instrument;
 use uuid::Uuid;
 
 #[derive(Debug, Clone, Default)]
@@ -119,6 +120,8 @@ impl DnsNodeMgr {
 impl DnsNodeMgrRpc for DnsNodeMgr {
     type Controller = BaseController;
 
+    // TODO: change level to trace
+    #[instrument(level = "debug", skip_all, fields(from = ?input.id, snapshot = ?input.snapshot), err)]
     async fn heartbeat(
         &self,
         _: BaseController,
