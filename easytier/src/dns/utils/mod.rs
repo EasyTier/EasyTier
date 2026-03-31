@@ -5,6 +5,7 @@ use itertools::Itertools;
 pub mod addr;
 pub mod authority;
 pub mod dirty;
+pub mod response;
 
 pub fn sanitize(name: &str) -> String {
     let dot = name.ends_with('.');

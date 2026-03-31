@@ -3,6 +3,7 @@ use crate::common::global_ctx::ArcGlobalCtx;
 use crate::dns::node_mgr::DnsNodeMgr;
 use crate::dns::system;
 use crate::dns::utils::addr::NameServerAddr;
+use crate::dns::utils::response::ResponseHandle;
 use crate::instance::instance::{ArcNicCtx, NicCtx};
 use crate::peer_center::instance::PeerCenterPeerManagerTrait;
 use crate::peers::peer_manager::PeerManager;
@@ -37,7 +38,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{instrument, Instrument};
 
 #[derive(Clone)]
-pub struct DynamicCatalog {
+struct DynamicCatalog {
     inner: Arc<tokio::sync::RwLock<Catalog>>,
 }
 
@@ -65,56 +66,6 @@ impl RequestHandler for DynamicCatalog {
             .await
             .handle_request(request, response_handle)
             .await
-    }
-}
-
-// ResponseWrapper for serializing DNS responses into a byte buffer.
-// Used by the address hijacking NIC packet filter to produce DNS replies in-place.
-#[derive(Debug, Clone)]
-struct ResponseHandle {
-    inner: Arc<Mutex<Vec<u8>>>,
-}
-
-impl ResponseHandle {
-    pub fn new(capacity: usize) -> Self {
-        Self {
-            inner: Arc::new(Mutex::new(Vec::with_capacity(capacity))),
-        }
-    }
-
-    pub fn into_inner(self) -> Option<Vec<u8>> {
-        Arc::into_inner(self.inner).map(Mutex::into_inner)
-    }
-}
-
-trait RecordIter<'r>: Iterator<Item = &'r Record> + Send + 'r {}
-impl<'r, T> RecordIter<'r> for T where T: Iterator<Item = &'r Record> + Send + 'r {}
-
-#[async_trait::async_trait]
-impl ResponseHandler for ResponseHandle {
-    async fn send_response<'r>(
-        &mut self,
-        response: MessageResponse<
-            '_,
-            'r,
-            impl RecordIter<'r>,
-            impl RecordIter<'r>,
-            impl RecordIter<'r>,
-            impl RecordIter<'r>,
-        >,
-    ) -> io::Result<ResponseInfo> {
-        let max_size = if let Some(edns) = response.get_edns() {
-            edns.max_payload()
-        } else {
-            hickory_proto::udp::MAX_RECEIVE_BUFFER_SIZE as u16
-        };
-
-        let mut inner = self.inner.lock();
-        let mut encoder = BinEncoder::new(inner.as_mut());
-        encoder.set_max_size(max_size);
-        response
-            .destructive_emit(&mut encoder)
-            .map_err(io::Error::other)
     }
 }
 
@@ -436,8 +387,6 @@ impl DnsServer {
         if !self.is_hijacked_addr(SocketAddr::new(dst_ip.into(), dst_port)) {
             return None;
         }
-
-        tracing::warn!("HIJACKING PACKET");
 
         let response_payload = {
             let response = ResponseHandle::new(512);
