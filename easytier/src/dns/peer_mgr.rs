@@ -58,13 +58,10 @@ impl DnsPeerMgr {
 
     pub fn snapshot(&self) -> DnsSnapshot {
         let global_ctx = self.peer_mgr.get_global_ctx_ref();
-        let config = global_ctx.config.get_dns();
 
-        let zones = config
-            .zones
-            .into_iter()
+        let zones = global_ctx
+            .dns_iter_zones()
             .map_into()
-            .chain(global_ctx.dns_self_zone().into_iter().map_into())
             .chain(
                 self.peers
                     .iter()
@@ -72,6 +69,7 @@ impl DnsPeerMgr {
             )
             .collect();
 
+        let config = global_ctx.config.get_dns();
         DnsSnapshot {
             zones,
             addresses: config.addresses.into(),

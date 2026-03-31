@@ -26,13 +26,13 @@ pub struct DnsConfig {
     #[derivative(Default(value = "DNS_DEFAULT_TLD.clone()"))]
     pub domain: LowerName,
     #[derivative(Default(value = "vec![DNS_DEFAULT_ADDRESS].into()"))]
-    #[serde(deserialize_with = "DnsConfig::validate_addresses")]
+    #[serde(deserialize_with = "DnsConfig::deserialize_addresses")]
     pub addresses: NameServerAddrGroup,
     pub listeners: NameServerAddrGroup,
 }
 
 impl DnsConfig {
-    pub fn validate_addresses<'de, D>(deserializer: D) -> Result<NameServerAddrGroup, D::Error>
+    pub fn deserialize_addresses<'de, D>(deserializer: D) -> Result<NameServerAddrGroup, D::Error>
     where
         D: Deserializer<'de>,
     {
@@ -82,32 +82,37 @@ impl DnsConfig {
 pub type DnsExportConfig = GetExportConfigResponse;
 
 pub trait DnsGlobalCtxExt {
-    fn dns_self_zone(&self) -> Option<ZoneConfig>;
+    fn dns_self_zone(&self) -> ZoneConfig;
     fn dns_export_config(&self) -> DnsExportConfig;
+    fn dns_iter_zones(&self) -> impl Iterator<Item = ZoneConfig>;
 }
 
 impl DnsGlobalCtxExt for GlobalCtx {
-    fn dns_self_zone(&self) -> Option<ZoneConfig> {
+    fn dns_self_zone(&self) -> ZoneConfig {
         let fqdn = self.config.get_dns().get_fqdn();
         let ipv4 = self.get_ipv4().map(|ip| ip.address());
         let ipv6 = self.get_ipv6().map(|ip| ip.address());
         let ipv6 = ipv6.map(|a| vec![a]).unwrap_or_default();
 
-        ZoneConfig::dedicated(Some(self.get_id()), fqdn.clone(), ipv4, ipv6)
+        ZoneConfig::dedicated(Some(self.get_id()), fqdn.clone(), ipv4, ipv6).unwrap()
     }
 
     fn dns_export_config(&self) -> DnsExportConfig {
-        let config = self.config.get_dns();
-        let zone = self.dns_self_zone();
-        let zones = config.zones.iter().chain(zone.iter());
-
         DnsExportConfig {
-            zones: zones
+            zones: self
+                .dns_iter_zones()
                 .filter(|z| z.policy.export.is_some()) // TODO: check policies of parent zones
-                .cloned()
                 .map_into()
                 .collect(),
-            fqdn: config.get_fqdn().to_string(),
+            fqdn: self.config.get_dns().get_fqdn().to_string(),
         }
+    }
+
+    fn dns_iter_zones(&self) -> impl Iterator<Item = ZoneConfig> {
+        self.config
+            .get_dns()
+            .zones
+            .into_iter()
+            .chain(iter::once(self.dns_self_zone()))
     }
 }

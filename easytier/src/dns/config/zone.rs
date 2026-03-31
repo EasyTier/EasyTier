@@ -39,7 +39,7 @@ impl ZoneConfig {
         origin: LowerName,
         ipv4: Option<Ipv4Addr>,
         ipv6: Vec<Ipv6Addr>,
-    ) -> Option<Self> {
+    ) -> anyhow::Result<Self> {
         let mut records = Vec::new();
 
         if let Some(ipv4) = ipv4 {
@@ -53,10 +53,6 @@ impl ZoneConfig {
             export: Some(DnsExportPolicy::default()),
         };
 
-        if records.is_empty() {
-            return None;
-        }
-
         let config = ZoneConfigInner {
             id: id.unwrap_or_else(Uuid::new_v4),
             origin,
@@ -65,7 +61,7 @@ impl ZoneConfig {
             ..Default::default()
         };
 
-        config.try_into().ok()
+        config.try_into()
     }
 }
 
@@ -90,6 +86,7 @@ impl From<ZoneConfigInner> for ZoneData {
         Self {
             id: Some(value.id.into()),
             origin: value.origin.to_string(),
+            ttl: value.ttl,
             records: value.records,
             forwarders: value.forwarders.into(),
         }

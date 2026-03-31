@@ -160,6 +160,7 @@ impl From<Zone> for proto::dns::ZoneData {
         Self {
             id: Some(value.id.into()),
             origin: value.origin.to_string(),
+            ttl: 0,
             records,
             forwarders,
         }

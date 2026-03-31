@@ -7,8 +7,9 @@ package dns;
 message ZoneData {
   common.UUID id = 1;
   string origin = 2;
-  repeated string records = 3;
-  repeated common.Url forwarders = 4;
+  uint32 ttl = 3;
+  repeated string records = 4;
+  repeated common.Url forwarders = 5;
 }
 
 message GetExportConfigRequest {}

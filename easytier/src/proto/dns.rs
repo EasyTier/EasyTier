@@ -30,6 +30,8 @@ impl Display for ZoneData {
         }
         writeln!(f)?;
 
+        writeln!(f, "$TTL {}", self.ttl)?;
+
         for record in &self.records {
             writeln!(f, "{}", record)?;
         }
