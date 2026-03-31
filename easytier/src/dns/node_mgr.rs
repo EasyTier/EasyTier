@@ -165,3 +165,80 @@ impl DnsNodeMgrRpc for DnsNodeMgr {
         Ok(HeartbeatResponse { resync })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::dns::utils::response::ResponseHandle;
+    use hickory_proto::op::{Message, MessageType, OpCode, Query, ResponseCode};
+    use hickory_proto::rr::{rdata, Name, RData, RecordType};
+    use hickory_proto::serialize::binary::{BinDecodable, BinDecoder, BinEncodable, BinEncoder};
+    use hickory_proto::xfer::Protocol;
+    use hickory_server::authority::{MessageRequest, MessageResponse};
+    use hickory_server::server::Request;
+    use std::net::{Ipv4Addr, SocketAddrV4};
+    use crate::common::log;
+
+    #[tokio::test]
+    async fn test_force_insert_node_info_then_catalog_lookup() -> anyhow::Result<()> {
+        log::tests::init();
+
+        let mgr = DnsNodeMgr::new();
+
+        let zone = Zone::try_from(&crate::proto::dns::ZoneData {
+            id: Some(Uuid::new_v4().into()),
+            origin: "catalog.test".to_string(),
+            ttl: 60,
+            records: vec!["@ IN A 10.20.30.40".to_string()],
+            forwarders: vec![],
+        })?;
+
+        mgr.nodes
+            .insert(
+                Uuid::new_v4(),
+                DnsNodeInfo {
+                    digest: vec![],
+                    zones: vec![zone].into(),
+                    addresses: Default::default(),
+                    listeners: Default::default(),
+                },
+            )
+            .await;
+
+        let mut query = Message::new();
+        query.set_id(0x1234);
+        query.set_message_type(MessageType::Query);
+        query.set_op_code(OpCode::Query);
+        query.set_recursion_desired(true);
+        query.add_query(Query::query(
+            Name::from_ascii("catalog.test.")?,
+            RecordType::A,
+        ));
+
+        let mut request = Vec::new();
+        let mut encoder = BinEncoder::new(&mut request);
+        query.emit(&mut encoder)?;
+
+        let request = Request::new(
+            MessageRequest::from_bytes(&request)?,
+            SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0).into(),
+            Protocol::Udp,
+        );
+
+        let response = ResponseHandle::new(512);
+        let info = mgr.catalog().lookup(&request, None, response.clone()).await;
+
+        assert_eq!(info.response_code(), ResponseCode::NoError);
+
+        let response = response.into_inner().unwrap();
+        let message = Message::from_vec(&response)?;
+        assert!(message.answers().iter().any(|record| {
+            matches!(
+                record.data(),
+                RData::A(addr) if *addr == rdata::a::A(Ipv4Addr::new(10, 20, 30, 40))
+            )
+        }));
+
+        Ok(())
+    }
+}
