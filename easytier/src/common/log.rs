@@ -11,7 +11,8 @@ use regex::Regex;
 use tracing::level_filters::LevelFilter;
 use tracing::{Level, Metadata};
 use tracing_subscriber::filter::{filter_fn, FilterExt};
-use tracing_subscriber::fmt::{layer, TestWriter};
+use tracing_subscriber::fmt::format::FmtSpan;
+use tracing_subscriber::fmt::layer;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::Registry;
@@ -143,6 +144,7 @@ fn console_layers(
             .compact()
             .with_timer(get_logger_timer_rfc3339())
             .with_ansi(ansi)
+            .with_span_events(FmtSpan::NEW | FmtSpan::CLOSE)
             .with_writer(stderr)
     };
 
