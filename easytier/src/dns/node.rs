@@ -1,4 +1,5 @@
 use crate::common::global_ctx::{ArcGlobalCtx, GlobalCtxEvent};
+use crate::common::scoped_task::ScopedTask;
 use crate::common::PeerId;
 use crate::dns::config::{DNS_SERVER_ELECTION_INTERVAL, DNS_SERVER_RPC_ADDR};
 use crate::dns::peer_mgr::DnsPeerMgr;
@@ -10,14 +11,24 @@ use crate::proto::dns::{DnsNodeMgrRpcClientFactory, DnsPeerMgrRpcServer, Heartbe
 use crate::proto::rpc_impl::standalone::{StandAloneClient, StandAloneServer};
 use crate::proto::rpc_types::controller::BaseController;
 use crate::tunnel::tcp::{TcpTunnelConnector, TcpTunnelListener};
+use derivative::Derivative;
+use futures::task::SpawnExt;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::{broadcast, Notify};
-use tokio::task::JoinSet;
+use tokio::sync::{broadcast, Mutex, Notify};
+use tokio::task::{JoinHandle, JoinSet};
 use tokio::time::{sleep, sleep_until, Instant};
+use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
+use crate::utils::AsyncRuntime;
 
 #[derive(Debug)]
+struct DnsNodeRuntime {
+    token: CancellationToken,
+    task: ScopedTask<()>,
+}
+
+#[derive(Debug, Clone)]
 pub struct DnsNode {
     mgr: Arc<DnsPeerMgr>,
 
@@ -26,6 +37,9 @@ pub struct DnsNode {
 
     peer_mgr: Arc<PeerManager>,
     global_ctx: ArcGlobalCtx,
+
+    elect: Arc<Notify>,
+    runtime: AsyncRuntime,
 }
 
 impl DnsNode {
@@ -49,6 +63,8 @@ impl DnsNode {
             nic_ctx,
             peer_mgr,
             global_ctx,
+            elect: Default::default(),
+            runtime: Default::default(),
         }
     }
 
@@ -56,17 +72,26 @@ impl DnsNode {
         self.global_ctx.get_id()
     }
 
-    pub async fn run(&self) {
-        let election = Notify::new();
-
-        tokio::join!(self.run_election(&election), self.run_node(&election));
+    pub fn start(&self) {
+        let this = self.clone();
+        self.runtime.start(|token| async move {
+            tokio::join!(this.run_election(token.clone()), this.run_node(token));
+        });
     }
 
-    async fn run_election(&self, election: &Notify) {
+    pub async fn stop(&self) -> anyhow::Result<()> {
+        self.runtime.stop().await.unwrap_or(Ok(()))
+    }
+
+    async fn run_election(&self, token: CancellationToken) {
         loop {
             tokio::select! {
                 biased;
-                _ = election.notified() => {}
+                _ = token.cancelled() => {
+                    tracing::info!("DnsNode received shutdown signal, exiting election loop");
+                    break;
+                }
+                _ = self.elect.notified() => {}
                 _ = sleep(DNS_SERVER_ELECTION_INTERVAL) => {}
             }
 
@@ -105,7 +130,7 @@ impl DnsNode {
         }
     }
 
-    async fn run_node(&self, election: &Notify) {
+    async fn run_node(&self, token: CancellationToken) {
         let mut rpc = StandAloneClient::new(TcpTunnelConnector::new(DNS_SERVER_RPC_ADDR.clone()));
         let mut heartbeat = HeartbeatRequest {
             id: Some(self.id().into()),
@@ -132,10 +157,15 @@ impl DnsNode {
             tokio::select! {
                 biased;
 
+                _ = token.cancelled() => {
+                    tracing::info!("DnsNode received shutdown signal, exiting node loop");
+                    break;
+                }
+
                 _ = &mut sleep => {
                     if let Err(e) = self.heartbeat(&mut rpc, &mut heartbeat).await {
                         tracing::error!("heartbeat failed: {:?}", e);
-                        election.notify_one();
+                        self.elect.notify_one();
                     }
 
                     last_heartbeat = Instant::now();
