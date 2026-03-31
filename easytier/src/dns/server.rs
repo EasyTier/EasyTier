@@ -227,7 +227,8 @@ impl DnsServer {
                         nameservers: addresses
                             .iter()
                             .filter_map(|a| {
-                                (a.protocol == Protocol::Udp).then_some(a.addr.to_string())
+                                (a.protocol == Protocol::Udp && a.addr.port() == 53)
+                                    .then_some(a.addr.ip().to_string())
                             })
                             .collect(),
                         search_domains: domain.clone(),
