@@ -195,7 +195,7 @@ impl<T: Send + 'static> AsyncRuntime<T> {
         self.inner.lock().as_ref().map(|r| r.token.clone())
     }
 
-    pub fn start<F, Fut>(&self, factory: F)
+    pub fn start<F, Fut>(&self, token: Option<CancellationToken>, factory: F)
     where
         F: FnOnce(CancellationToken) -> Fut,
         Fut: Future<Output = T> + Send + 'static,
@@ -207,8 +207,8 @@ impl<T: Send + 'static> AsyncRuntime<T> {
                 return;
             }
         }
-
-        let token = CancellationToken::new();
+        
+        let token = token.unwrap_or_default();
         runtime.replace(AsyncRuntimeInner {
             task: tokio::spawn(factory(token.clone())).into(),
             token,

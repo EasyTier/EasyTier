@@ -270,7 +270,7 @@ impl DnsServer {
         Ok(())
     }
 
-    pub async fn run(&self) {
+    pub async fn run(&self, token: CancellationToken) {
         let dirty = &self.mgr.dirty;
         let mut runtime = None;
 
@@ -314,6 +314,10 @@ impl DnsServer {
         };
 
         tokio::select!(
+            _ = token.cancelled() => {
+                tracing::info!("DnsServer received shutdown signal, exiting server loop");
+            }
+
             _ = reload_catalog => {},
             _ = reload_addresses => {},
             _ = reload_listeners => {},

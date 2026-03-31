@@ -11,6 +11,7 @@ use crate::proto::dns::{DnsNodeMgrRpcClientFactory, DnsPeerMgrRpcServer, Heartbe
 use crate::proto::rpc_impl::standalone::{StandAloneClient, StandAloneServer};
 use crate::proto::rpc_types::controller::BaseController;
 use crate::tunnel::tcp::{TcpTunnelConnector, TcpTunnelListener};
+use crate::utils::AsyncRuntime;
 use derivative::Derivative;
 use futures::task::SpawnExt;
 use std::sync::Arc;
@@ -20,7 +21,6 @@ use tokio::task::{JoinHandle, JoinSet};
 use tokio::time::{sleep, sleep_until, Instant};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
-use crate::utils::AsyncRuntime;
 
 #[derive(Debug)]
 struct DnsNodeRuntime {
@@ -74,7 +74,7 @@ impl DnsNode {
 
     pub fn start(&self) {
         let this = self.clone();
-        self.runtime.start(|token| async move {
+        self.runtime.start(None, |token| async move {
             tokio::join!(this.run_election(token.clone()), this.run_node(token));
         });
     }
@@ -117,7 +117,7 @@ impl DnsNode {
             tokio::join!(
                 self.peer_mgr
                     .add_nic_packet_process_pipeline(Box::new(server.clone())),
-                server.run()
+                server.run(token.child_token())
             );
 
             self.global_ctx.set_dns(None);
