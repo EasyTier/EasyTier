@@ -3,6 +3,17 @@ import { addPluginListener } from '@tauri-apps/api/core'
 import { Utils } from 'easytier-frontend-lib'
 import { get_vpn_status, prepare_vpn, start_vpn, stop_vpn } from 'tauri-plugin-vpnservice-api'
 
+const DEFAULT_MAGIC_DNS_IP = '100.100.100.101'
+const IPV4_RE = /^(\d{1,3}\.){3}\d{1,3}$/
+
+function resolveMagicDnsIp(configured: string | undefined): string {
+  const ip = configured?.trim() ?? ''
+  if (ip && IPV4_RE.test(ip)) {
+    return ip
+  }
+  return DEFAULT_MAGIC_DNS_IP
+}
+
 type Route = NetworkTypes.Route
 
 interface vpnStatus {
@@ -183,8 +194,7 @@ function getRoutesForVpn(routes: Route[], node_config: NetworkTypes.NetworkConfi
   })
 
   if (node_config.enable_magic_dns) {
-    const dnsIp = node_config.magic_dns_server_ip || '100.100.100.101'
-    ret.push(`${dnsIp}/32`)
+    ret.push(`${resolveMagicDnsIp(node_config.magic_dns_server_ip)}/32`)
   }
 
   // sort and dedup
@@ -245,7 +255,7 @@ export async function onNetworkInstanceChange(instanceId: string) {
 
   const routes = getRoutesForVpn(curNetworkInfo?.routes, config)
 
-  const dns = config.enable_magic_dns ? (config.magic_dns_server_ip || '100.100.100.101') : undefined
+  const dns = config.enable_magic_dns ? resolveMagicDnsIp(config.magic_dns_server_ip) : undefined
 
   const ipChanged = virtual_ip !== curVpnStatus.ipv4Addr
   const cidrChanged = network_length !== curVpnStatus.ipv4Cidr

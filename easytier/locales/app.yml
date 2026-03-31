@@ -211,6 +211,9 @@ core_clap:
   tld_dns_zone:
     en: "specify the top-level domain zone for magic DNS. if not provided, defaults to the value from dns_server module (et.net.). only used when accept_dns is true."
     zh-CN: "指定魔法DNS的顶级域名区域。如果未提供，默认使用dns_server模块中的值（et.net.）。仅在accept_dns为true时使用。"
+  magic_dns_server_ip:
+    en: "specify the virtual IPv4 address used as the magic DNS server. if not provided, defaults to 100.100.100.101. only used when accept_dns is true."
+    zh-CN: "指定魔法DNS服务器使用的虚拟IPv4地址。如果未提供，默认使用100.100.100.101。仅在accept_dns为true时使用。"
   private_mode:
     en: "if true, foreign networks are only allowed when this node can verify they use the same network secret, or when a foreign credential node is already trusted via admin-issued credential propagation; different or missing secrets are otherwise rejected."
     zh-CN: "如果为true，则仅允许两类 foreign network 接入：本节点能验证其使用相同 network secret 的节点，或已通过 foreign network 管理节点传播而被信任的 credential 节点；否则 secret 不同或缺失时会被拒绝。"

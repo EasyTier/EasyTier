@@ -1038,6 +1038,33 @@ mod tests {
     }
 
     #[test]
+    fn test_network_config_magic_dns_round_trip() -> Result<(), anyhow::Error> {
+        // non-empty magic_dns_server_ip should survive round-trip
+        let config = gen_default_config();
+        let mut flags = config.get_flags();
+        flags.accept_dns = true;
+        flags.magic_dns_server_ip = "10.0.0.53".to_string();
+        flags.tld_dns_zone = "myhome.".to_string();
+        config.set_flags(flags);
+
+        let network_config = super::NetworkConfig::new_from_config(&config)?;
+        assert_eq!(network_config.magic_dns_server_ip.as_deref(), Some("10.0.0.53"));
+        assert_eq!(network_config.tld_dns_zone.as_deref(), Some("myhome."));
+
+        let generated_config = network_config.gen_config()?;
+        let generated_flags = generated_config.get_flags();
+        assert_eq!(generated_flags.magic_dns_server_ip, "10.0.0.53");
+        assert_eq!(generated_flags.tld_dns_zone, "myhome.");
+
+        // empty magic_dns_server_ip should produce None in NetworkConfig
+        let config2 = gen_default_config();
+        let network_config2 = super::NetworkConfig::new_from_config(&config2)?;
+        assert!(network_config2.magic_dns_server_ip.is_none());
+
+        Ok(())
+    }
+
+    #[test]
     fn test_network_config_conversion_random() -> Result<(), anyhow::Error> {
         let mut rng = rand::thread_rng();
 

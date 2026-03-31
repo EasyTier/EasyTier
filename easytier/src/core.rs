@@ -548,7 +548,7 @@ struct NetworkOptions {
     #[arg(
         long = "magic-dns-server-ip",
         env = "ET_MAGIC_DNS_SERVER_IP",
-        help = "specify the IP address of the magic DNS server. if not provided, defaults to 100.100.100.101. only used when accept_dns is true."
+        help = t!("core_clap.magic_dns_server_ip").to_string()
     )]
     magic_dns_server_ip: Option<String>,
 
