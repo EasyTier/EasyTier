@@ -12,9 +12,9 @@ use crate::proto::rpc_impl::standalone::StandAloneServer;
 use crate::tunnel::common::bind_socket;
 use crate::tunnel::packet_def::ZCPacket;
 use crate::tunnel::tcp::TcpTunnelListener;
+use crate::utils::AsyncRuntime;
 use derivative::Derivative;
 use derive_more::{Deref, DerefMut, From, Into};
-use futures_util::StreamExt;
 use hickory_proto::rr::Record;
 use hickory_proto::serialize::binary::{BinDecodable, BinEncoder};
 use hickory_proto::xfer::Protocol;
@@ -117,43 +117,6 @@ impl ResponseHandler for Response {
     }
 }
 
-struct DnsServerRuntime {
-    token: CancellationToken,
-    task: Option<JoinHandle<()>>,
-}
-
-impl DnsServerRuntime {
-    fn start<T: RequestHandler>(mut server: ServerFuture<T>) -> Self {
-        Self {
-            token: server.shutdown_token().clone(),
-            task: Some(tokio::spawn(async move {
-                server
-                    .block_until_done()
-                    .await
-                    .unwrap_or_else(|e| tracing::error!("DNS server exited with error: {:?}", e));
-            })),
-        }
-    }
-
-    async fn stop(mut self) -> anyhow::Result<()> {
-        self.token.cancel();
-        if let Some(task) = self.task.take() {
-            task.await?;
-        }
-        Ok(())
-    }
-}
-
-impl Drop for DnsServerRuntime {
-    fn drop(&mut self) {
-        self.token.cancel();
-        if let Some(task) = self.task.take() {
-            task.abort();
-            tracing::warn!("DNS server runtime is leaked");
-        }
-    }
-}
-
 #[derive(Derivative)]
 #[derivative(Debug)]
 pub struct DnsServer {
@@ -202,26 +165,35 @@ impl DnsServer {
     async fn reload_listeners(
         &self,
         listeners: impl IntoIterator<Item = NameServerAddr>,
-        runtime: &mut Option<DnsServerRuntime>,
+        runtime: &mut Option<AsyncRuntime>,
     ) -> anyhow::Result<()> {
-        if let Some(old) = runtime.take() {
-            old.stop().await?;
+        if let Some(runtime) = runtime.as_ref() {
+            if let Some(Err(e)) = runtime.stop().await {
+                tracing::error!("failed to stop old DNS server runtime: {}", e);
+            }
         }
 
-        let mut new = ServerFuture::new(self.catalog.clone());
+        let runtime = runtime.get_or_insert_default();
+
+        let mut server = ServerFuture::new(self.catalog.clone());
         for listener in listeners {
             let addr = listener.addr;
             if let Err(e) = match listener.protocol {
-                Protocol::Udp => bind_socket(addr, None).map(|s| new.register_socket(s)),
+                Protocol::Udp => bind_socket(addr, None).map(|s| server.register_socket(s)),
                 Protocol::Tcp => bind_socket(addr, None)
-                    .map(|s| new.register_listener(s, DNS_SERVER_LISTENER_TCP_TIMEOUT)),
+                    .map(|s| server.register_listener(s, DNS_SERVER_LISTENER_TCP_TIMEOUT)),
                 _ => unimplemented!(),
             } {
                 tracing::error!("failed to bind DNS server on {}: {:?}", addr, e);
             }
         }
 
-        runtime.replace(DnsServerRuntime::start(new));
+        runtime.start(Some(server.shutdown_token().clone()), |_| async move {
+            server
+                .block_until_done()
+                .await
+                .unwrap_or_else(|e| tracing::error!("DNS server exited with error: {:?}", e));
+        });
 
         Ok(())
     }
