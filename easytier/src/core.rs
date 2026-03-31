@@ -545,6 +545,12 @@ struct NetworkOptions {
         env = "ET_TLD_DNS_ZONE",
         help = t!("core_clap.tld_dns_zone").to_string())]
     tld_dns_zone: Option<String>,
+    #[arg(
+        long = "magic-dns-server-ip",
+        env = "ET_MAGIC_DNS_SERVER_IP",
+        help = "specify the IP address of the magic DNS server. if not provided, defaults to 100.100.100.101. only used when accept_dns is true."
+    )]
+    magic_dns_server_ip: Option<String>,
 
     #[arg(
         long,
@@ -1083,6 +1089,9 @@ impl NetworkOptions {
         // Configure tld_dns_zone: use provided value if set
         if let Some(tld_dns_zone) = &self.tld_dns_zone {
             f.tld_dns_zone = tld_dns_zone.clone();
+        }
+        if let Some(magic_dns_server_ip) = &self.magic_dns_server_ip {
+            f.magic_dns_server_ip = magic_dns_server_ip.clone();
         }
         cfg.set_flags(f);
 

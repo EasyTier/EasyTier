@@ -82,6 +82,8 @@ export interface NetworkConfig {
   mapped_listeners: string[]
 
   enable_magic_dns?: boolean
+  tld_dns_zone?: string
+  magic_dns_server_ip?: string
   enable_private_mode?: boolean
 
   port_forwards: PortForwardConfig[]
@@ -150,6 +152,8 @@ export function DEFAULT_NETWORK_CONFIG(): NetworkConfig {
     instance_recv_bps_limit: null,
     mapped_listeners: [],
     enable_magic_dns: false,
+    tld_dns_zone: '',
+    magic_dns_server_ip: '',
     enable_private_mode: false,
     port_forwards: [],
   }

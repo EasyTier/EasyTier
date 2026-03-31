@@ -809,6 +809,16 @@ impl NetworkConfig {
             flags.accept_dns = enable_magic_dns;
         }
 
+        if let Some(tld_dns_zone) = &self.tld_dns_zone {
+            if !tld_dns_zone.is_empty() {
+                flags.tld_dns_zone = tld_dns_zone.clone();
+            }
+        }
+
+        if let Some(magic_dns_server_ip) = &self.magic_dns_server_ip {
+            flags.magic_dns_server_ip = magic_dns_server_ip.clone();
+        }
+
         if let Some(mtu) = self.mtu {
             flags.mtu = mtu as u32;
         }
@@ -959,6 +969,12 @@ impl NetworkConfig {
         result.disable_udp_hole_punching = Some(flags.disable_udp_hole_punching);
         result.disable_sym_hole_punching = Some(flags.disable_sym_hole_punching);
         result.enable_magic_dns = Some(flags.accept_dns);
+        result.tld_dns_zone = Some(flags.tld_dns_zone.clone());
+        result.magic_dns_server_ip = if flags.magic_dns_server_ip.is_empty() {
+            None
+        } else {
+            Some(flags.magic_dns_server_ip.clone())
+        };
         result.mtu = Some(flags.mtu as i32);
         result.instance_recv_bps_limit =
             (flags.instance_recv_bps_limit != u64::MAX).then_some(flags.instance_recv_bps_limit);

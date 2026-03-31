@@ -237,6 +237,25 @@ watch(() => curNetwork.value, syncNormalizedNetwork, { immediate: true, deep: fa
                 </div>
               </div>
 
+              <div v-if="curNetwork.enable_magic_dns" class="flex flex-row gap-x-9 flex-wrap">
+                <div class="flex flex-col gap-2 basis-5/12 grow">
+                  <label for="tld_dns_zone">
+                    {{ t('tld_dns_zone') }}
+                    <span class="pi pi-question-circle ml-2" v-tooltip="t('tld_dns_zone_help')"></span>
+                  </label>
+                  <InputText id="tld_dns_zone" v-model="curNetwork.tld_dns_zone"
+                    :placeholder="t('tld_dns_zone_placeholder')" />
+                </div>
+                <div class="flex flex-col gap-2 basis-5/12 grow">
+                  <label for="magic_dns_server_ip">
+                    {{ t('magic_dns_server_ip') }}
+                    <span class="pi pi-question-circle ml-2" v-tooltip="t('magic_dns_server_ip_help')"></span>
+                  </label>
+                  <InputText id="magic_dns_server_ip" v-model="curNetwork.magic_dns_server_ip"
+                    :placeholder="t('magic_dns_server_ip_placeholder')" />
+                </div>
+              </div>
+
               <div class="flex flex-row gap-x-9 flex-wrap">
                 <div class="flex flex-col gap-2 basis-5/12 grow">
                   <label for="hostname">{{ t('hostname') }}</label>
