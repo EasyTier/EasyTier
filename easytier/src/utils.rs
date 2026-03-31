@@ -1,11 +1,11 @@
 use crate::common::log;
 use crate::common::scoped_task::ScopedTask;
-use derive_more::{Deref, DerefMut};
 use indoc::formatdoc;
 use parking_lot::Mutex;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::future::Future;
+use std::mem::replace;
 use std::sync::Arc;
 use std::{fs::OpenOptions, str::FromStr};
 use tokio_util::sync::CancellationToken;
@@ -144,7 +144,7 @@ pub fn find_free_tcp_port(mut range: std::ops::Range<u16>) -> Option<u16> {
     range.find(|&port| check_tcp_available(port))
 }
 
-pub fn weak_upgrade<T>(weak: &std::sync::Weak<T>) -> anyhow::Result<std::sync::Arc<T>> {
+pub fn weak_upgrade<T>(weak: &std::sync::Weak<T>) -> anyhow::Result<Arc<T>> {
     weak.upgrade()
         .ok_or_else(|| anyhow::anyhow!("{} not available", std::any::type_name::<T>()))
 }
@@ -179,20 +179,29 @@ pub trait MapTryInto: Iterator + Sized {
 
 impl<T> MapTryInto for T where T: Iterator + Sized {}
 
-#[derive(Debug)]
-struct AsyncRuntimeInner<T> {
-    task: ScopedTask<T>,
-    token: CancellationToken,
+#[derive(Debug, Default)]
+enum AsyncRuntimeState<T> {
+    #[default]
+    Idle,
+    Running {
+        task: ScopedTask<T>,
+        token: CancellationToken,
+    },
+    Stopping,
 }
 
 #[derive(Debug, Clone, Default)]
 pub struct AsyncRuntime<T = ()> {
-    inner: Arc<Mutex<Option<AsyncRuntimeInner<T>>>>,
+    state: Arc<Mutex<AsyncRuntimeState<T>>>,
 }
 
 impl<T: Send + 'static> AsyncRuntime<T> {
     pub fn token(&self) -> Option<CancellationToken> {
-        self.inner.lock().as_ref().map(|r| r.token.clone())
+        if let AsyncRuntimeState::Running { token, .. } = &*self.state.lock() {
+            Some(token.clone())
+        } else {
+            None
+        }
     }
 
     pub fn start<F, Fut>(&self, token: Option<CancellationToken>, factory: F)
@@ -200,28 +209,35 @@ impl<T: Send + 'static> AsyncRuntime<T> {
         F: FnOnce(CancellationToken) -> Fut,
         Fut: Future<Output = T> + Send + 'static,
     {
-        let mut runtime = self.inner.lock();
-        if let Some(runtime) = runtime.as_ref() {
-            if !runtime.task.is_finished() {
-                tracing::warn!("task is already running");
-                return;
-            }
+        let mut runtime = self.state.lock();
+        if !matches!(*runtime, AsyncRuntimeState::Idle) {
+            tracing::warn!("task is already running/stopping, cannot start a new one");
+            return;
         }
-        
+
         let token = token.unwrap_or_default();
-        runtime.replace(AsyncRuntimeInner {
+        *runtime = AsyncRuntimeState::Running {
             task: tokio::spawn(factory(token.clone())).into(),
             token,
-        });
+        };
     }
 
     pub async fn stop(&self) -> Option<anyhow::Result<T>> {
-        let runtime = self.inner.lock().take();
-        if let Some(runtime) = runtime {
-            runtime.token.cancel();
-            Some(runtime.task.await.map_err(Into::into))
-        } else {
-            None
-        }
+        let (task, token) = {
+            let mut state = self.state.lock();
+            match replace(&mut *state, AsyncRuntimeState::Stopping) {
+                AsyncRuntimeState::Running { task, token } => (task, token),
+                other => {
+                    *state = other;
+                    tracing::warn!("task is not running, cannot stop it");
+                    return None;
+                }
+            }
+        };
+
+        token.cancel();
+        let res = task.await;
+        *self.state.lock() = AsyncRuntimeState::Idle;
+        Some(res.map_err(Into::into))
     }
 }
