@@ -18,6 +18,7 @@ use tokio::sync::{broadcast, Notify};
 use tokio::task::JoinSet;
 use tokio::time::{sleep, sleep_until, Instant};
 use tokio_util::sync::CancellationToken;
+use tracing::instrument;
 use uuid::Uuid;
 
 #[derive(Debug)]
@@ -73,7 +74,9 @@ impl DnsNode {
     pub fn start(&self) {
         let this = self.clone();
         self.runtime.start(None, |token| async move {
-            tokio::join!(this.run_election(token.clone()), this.run_node(token));
+            tracing::info!("starting DnsNode");
+            this.elect.notify_one();
+            tokio::join!(this.run_election(token.clone()), this.run(token));
         });
     }
 
@@ -81,6 +84,7 @@ impl DnsNode {
         self.runtime.stop().await.unwrap_or(Ok(()))
     }
 
+    #[instrument(skip_all, name = "DnsNode election loop")]
     async fn run_election(&self, token: CancellationToken) {
         loop {
             tokio::select! {
@@ -93,11 +97,16 @@ impl DnsNode {
                 _ = sleep(DNS_SERVER_ELECTION_INTERVAL) => {}
             }
 
+            tracing::info!("trying to become DNS server");
+
             let mut rpc =
                 StandAloneServer::new(TcpTunnelListener::new(DNS_SERVER_RPC_ADDR.clone()));
 
             if rpc.serve().await.is_err() {
-                // Another instance already owns the address — that's fine.
+                // Another node already owns the address — that's fine.
+                tracing::info!(
+                    "failed to bind RPC server, another node might have won the election"
+                );
                 continue;
             }
 
@@ -129,7 +138,8 @@ impl DnsNode {
         }
     }
 
-    async fn run_node(&self, token: CancellationToken) {
+    #[instrument(skip_all, name = "DnsNode main loop")]
+    async fn run(&self, token: CancellationToken) {
         let mut rpc = StandAloneClient::new(TcpTunnelConnector::new(DNS_SERVER_RPC_ADDR.clone()));
         let mut heartbeat = HeartbeatRequest {
             id: Some(self.id().into()),

@@ -34,6 +34,7 @@ use std::io;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4};
 use std::{sync::Arc, time::Duration};
 use tokio_util::sync::CancellationToken;
+use tracing::{instrument, Instrument};
 
 #[derive(Clone)]
 pub struct DynamicCatalog {
@@ -187,11 +188,14 @@ impl DnsServer {
             }
         }
 
-        runtime.start(Some(server.shutdown_token().clone()), |_| async move {
-            server
-                .block_until_done()
-                .await
-                .unwrap_or_else(|e| tracing::error!("DNS server exited with error: {:?}", e));
+        runtime.start(Some(server.shutdown_token().clone()), |_| {
+            async move {
+                server
+                    .block_until_done()
+                    .await
+                    .unwrap_or_else(|e| tracing::error!("DNS server exited with error: {:?}", e));
+            }
+            .instrument(tracing::info_span!("DNS server backend runtime"))
         });
 
         Ok(())
@@ -241,6 +245,7 @@ impl DnsServer {
         Ok(())
     }
 
+    #[instrument(skip_all, name = "DnsServer main loop")]
     pub async fn run(&self, token: CancellationToken) {
         let dirty = &self.mgr.dirty;
         let mut runtime = None;
@@ -412,6 +417,8 @@ impl DnsServer {
             return None;
         }
 
+        tracing::warn!("HIJACKING PACKET");
+
         let response_payload = {
             let response = ResponseHandle::new(512);
 
@@ -526,7 +533,12 @@ mod tests {
     async fn create_test_server() -> Arc<DnsServer> {
         let peer_mgr = create_mock_peer_manager().await;
         let global_ctx = peer_mgr.get_global_ctx();
-        Arc::new(DnsServer::new(peer_mgr, global_ctx, #[cfg(feature = "tun")] ArcNicCtx::default()))
+        Arc::new(DnsServer::new(
+            peer_mgr,
+            global_ctx,
+            #[cfg(feature = "tun")]
+            ArcNicCtx::default(),
+        ))
     }
 
     /// Build a raw IPv4 packet (as `Vec<u8>`) carrying the given L4 payload bytes.
