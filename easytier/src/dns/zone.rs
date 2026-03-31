@@ -120,15 +120,14 @@ impl TryFrom<&proto::dns::ZoneData> for Zone {
             .parse()
             .map_err(|e| anyhow::anyhow!("failed to parse zone data: {e}"))?;
 
-        let name_servers = value
+        let servers = value
             .forwarders
             .iter()
             .map_try_into::<NameServerAddr>()
             .map_ok(Into::into)
-            .try_collect::<_, Vec<_>, _>()?
-            .into();
-        let forward = Some(ForwardConfig {
-            name_servers,
+            .try_collect::<_, Vec<_>, _>()?;
+        let forward = (!servers.is_empty()).then_some(ForwardConfig {
+            name_servers: servers.into(),
             options: None,
         });
 
