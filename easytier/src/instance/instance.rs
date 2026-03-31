@@ -703,13 +703,14 @@ impl Instance {
         }
 
         let flags = ctx.config.get_flags();
-        let fake_ip = if !flags.magic_dns_server_ip.is_empty() {
-            match flags.magic_dns_server_ip.parse() {
+        let configured_ip = flags.magic_dns_server_ip.trim();
+        let fake_ip = if !configured_ip.is_empty() {
+            match configured_ip.parse() {
                 Ok(ip) => ip,
                 Err(e) => {
                     tracing::warn!(
                         "Invalid magic_dns_server_ip '{}': {}, using default",
-                        flags.magic_dns_server_ip,
+                        configured_ip,
                         e
                     );
                     MAGIC_DNS_FAKE_IP.parse().unwrap()

@@ -4,14 +4,19 @@ import { Utils } from 'easytier-frontend-lib'
 import { get_vpn_status, prepare_vpn, start_vpn, stop_vpn } from 'tauri-plugin-vpnservice-api'
 
 const DEFAULT_MAGIC_DNS_IP = '100.100.100.101'
-const IPV4_RE = /^(\d{1,3}\.){3}\d{1,3}$/
+
+function isValidIPv4(ip: string): boolean {
+  const parts = ip.split('.')
+  if (parts.length !== 4) return false
+  return parts.every((p) => {
+    const n = Number(p)
+    return p !== '' && !isNaN(n) && Number.isInteger(n) && n >= 0 && n <= 255
+  })
+}
 
 function resolveMagicDnsIp(configured: string | undefined): string {
   const ip = configured?.trim() ?? ''
-  if (ip && IPV4_RE.test(ip)) {
-    return ip
-  }
-  return DEFAULT_MAGIC_DNS_IP
+  return isValidIPv4(ip) ? ip : DEFAULT_MAGIC_DNS_IP
 }
 
 type Route = NetworkTypes.Route
