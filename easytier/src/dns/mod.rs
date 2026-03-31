@@ -6,3 +6,6 @@ pub mod server;
 mod system;
 mod utils;
 pub mod zone;
+
+#[cfg(test)]
+mod tests;
