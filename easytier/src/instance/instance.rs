@@ -471,7 +471,7 @@ pub struct Instance {
     #[cfg(feature = "tun")]
     nic_ctx: ArcNicCtx,
     #[cfg(feature = "magic-dns")]
-    dns: DnsNode,
+    dns: Arc<DnsNode>,
 
     peer_packet_receiver: Arc<Mutex<PacketRecvChanReceiver>>,
     peer_manager: Arc<PeerManager>,
@@ -554,13 +554,26 @@ impl Instance {
         #[cfg(feature = "socks5")]
         let socks5_server = Socks5Server::new(global_ctx.clone(), peer_manager.clone(), None);
 
+        #[cfg(feature = "tun")]
+        let nic_ctx = Arc::new(Mutex::new(None));
+
+        #[cfg(feature = "magic-dns")]
+        let dns = Arc::new(DnsNode::new(
+            peer_manager.clone(),
+            global_ctx.clone(),
+            nic_ctx.clone(),
+        ));
+
         Instance {
             inst_name: global_ctx.inst_name.clone(),
             id,
 
             peer_packet_receiver: Arc::new(Mutex::new(peer_packet_receiver)),
+
             #[cfg(feature = "tun")]
-            nic_ctx: Arc::new(Mutex::new(None)),
+            nic_ctx,
+            #[cfg(feature = "magic-dns")]
+            dns,
 
             peer_manager,
             listener_manager,
@@ -829,6 +842,9 @@ impl Instance {
                 output_rx.await.unwrap()?;
             }
         }
+
+        #[cfg(feature = "magic-dns")]
+        self.dns.start();
 
         if self.global_ctx.config.get_dhcp() {
             self.check_dhcp_ip_conflict();
@@ -1378,6 +1394,10 @@ impl Instance {
 
     pub async fn clear_resources(&mut self) {
         self.peer_manager.clear_resources().await;
+        #[cfg(feature = "magic-dns")]
+        self.dns.stop().await.unwrap_or_else(|e| {
+            tracing::error!("failed to stop dns, err: {:?}", e);
+        });
         #[cfg(feature = "tun")]
         let _ = self.nic_ctx.lock().await.take();
     }
