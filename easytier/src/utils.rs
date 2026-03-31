@@ -1,8 +1,14 @@
 use crate::common::log;
+use crate::common::scoped_task::ScopedTask;
+use derive_more::{Deref, DerefMut};
 use indoc::formatdoc;
-use std::{fs::OpenOptions, str::FromStr};
+use parking_lot::Mutex;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
+use std::future::Future;
+use std::sync::Arc;
+use std::{fs::OpenOptions, str::FromStr};
+use tokio_util::sync::CancellationToken;
 
 pub type PeerRoutePair = crate::proto::api::instance::PeerRoutePair;
 
@@ -172,3 +178,50 @@ pub trait MapTryInto: Iterator + Sized {
 }
 
 impl<T> MapTryInto for T where T: Iterator + Sized {}
+
+#[derive(Debug)]
+struct AsyncRuntimeInner<T> {
+    task: ScopedTask<T>,
+    token: CancellationToken,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct AsyncRuntime<T = ()> {
+    inner: Arc<Mutex<Option<AsyncRuntimeInner<T>>>>,
+}
+
+impl<T: Send + 'static> AsyncRuntime<T> {
+    pub fn token(&self) -> Option<CancellationToken> {
+        self.inner.lock().as_ref().map(|r| r.token.clone())
+    }
+
+    pub fn start<F, Fut>(&self, factory: F)
+    where
+        F: FnOnce(CancellationToken) -> Fut,
+        Fut: Future<Output = T> + Send + 'static,
+    {
+        let mut runtime = self.inner.lock();
+        if let Some(runtime) = runtime.as_ref() {
+            if !runtime.task.is_finished() {
+                tracing::warn!("task is already running");
+                return;
+            }
+        }
+
+        let token = CancellationToken::new();
+        runtime.replace(AsyncRuntimeInner {
+            task: tokio::spawn(factory(token.clone())).into(),
+            token,
+        });
+    }
+
+    pub async fn stop(&self) -> Option<anyhow::Result<T>> {
+        let runtime = self.inner.lock().take();
+        if let Some(runtime) = runtime {
+            runtime.token.cancel();
+            Some(runtime.task.await.map_err(Into::into))
+        } else {
+            None
+        }
+    }
+}
