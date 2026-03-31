@@ -70,6 +70,10 @@ param(
     [string]$ConfigType,
 
     [Parameter(Mandatory = $false)]
+    [Alias("t")]
+    [string]$Tag = "latest",
+
+    [Parameter(Mandatory = $false)]
     [Alias("n")]
     [string]$ServiceName = "EasyTierService",
 
@@ -404,9 +408,83 @@ function Get-RemoteVersion {
 }
 function Get-EasyTier {
     $Arch = Get-SystemArchitecture
+    if ($Tag -eq "latest") {
+        try {
+            Write-Host "检查最新版本..." -ForegroundColor Green
+            $response = Invoke-RestMethodCompatible -Uri "https://api.github.com/repos/EasyTier/EasyTier/releases/tags/latest"
+        }
+        catch {
+            throw "获取最新版本失败。请检查网络连接或API请求达到上限`n$_"
+        }
+    }
+    else {
+        try {
+            Write-Host "检查指定版本: $Tag..." -ForegroundColor Green
+            $response = Invoke-RestMethodCompatible -Uri "https://api.github.com/repos/EasyTier/EasyTier/releases/tags/$Tag"
+        }
+        catch {
+            throw "获取版本 $Tag 失败。请检查网络连接或该版本是否存在`n$_"
+        }
+    }
+    $remoteVersion = Get-RemoteVersion($response)
+    $localVersion = Get-LocalVersion($EasyTierPath)
+    if ($localVersion -ge $remoteVersion) {
+        Write-Host "本地版本与" + ($Tag -eq "latest" ? "最新" : "指定($Tag)") + "版本一致, 无需重复获取。" -ForegroundColor Green
+        return
+    }
+    $asset = $response.assets | Where-Object { $_.name -like "easytier-$Arch*.zip" } | Select-Object -First 1
+    if ($asset) {
+        $downloadUrl = $asset.browser_download_url
+        if ($UseGitHubProxy) {
+            $downloadUrl = "$GitHubProxy$downloadUrl"
+        }
+        return @{ DownloadUrl = $downloadUrl; AssetName = $asset.name; TargetVersion = $remoteVersion; }
+    }
+    else {
+        throw "未适配当前平台!"
+    }
+}
+
+function Install-EasyTier {
+    param (
+        [PSCustomObject]$Params
+    )
+
+    try {
+        Write-Output "开始下载: $($Params.AssetName)"
+        Invoke-WebRequestCompatible -Uri $Params.DownloadUrl -OutFile $updateFile
+    }
+    catch {
+        throw "下载失败!`n$_"
+    }
+
+    try {
+        Write-Output "开始解压: $($Params.AssetName)"
+        Expand-ZipFile -ZipPath $updateFile -DestinationPath $ScriptRoot
+        $extractedRoot = Get-ChildItem -Path $ScriptRoot -Directory | Select-Object -First 1
+        Get-ChildItem -Path $extractedRoot.FullName | Copy-Item -Destination $ScriptRoot -Recurse -Force
+    }
+    catch {
+        throw "解压失败!`n$_"
+    }
+
+    try {
+        Write-Host "清理临时目录..." -ForegroundColor Green
+        Remove-Item -Recurse -Force $extractedRoot.FullName
+    }
+    catch {
+        throw "清理临时目录失败!`n$_"
+    }
+
+    Write-Host "EasyTier $($Params.TargetVersion) 已安装完成!" -ForegroundColor Green
+}
+
+function Update-EasyTier {
+    param (
+        [PSCustomObject]$Params
+    )
 
     $tempDirectory = Join-Path $ScriptRoot "easytier_update"
-
     try {
         if (-not (Test-Path $tempDirectory)) {
             New-Item -ItemType Directory -Path $tempDirectory | Out-Null
@@ -416,55 +494,27 @@ function Get-EasyTier {
         throw "无法创建文件夹 $tempDirectory`n$_"
     }
 
-    try {
-        Write-Host "检查最新版本..." -ForegroundColor Green
-        $response = Invoke-RestMethodCompatible -Uri "https://api.github.com/repos/EasyTier/EasyTier/releases/latest"
-        $latestVersion = Get-RemoteVersion($response)
-    }
-    catch {
-        throw "获取最新版本失败。请检查网络连接或API请求达到上限`n$_"
-    }
-
-    $localVersion = Get-LocalVersion($EasyTierPath)
-    if ($localVersion -ge $latestVersion) {
-        Write-Host "EasyTier 已是最新版本 $localVersion" -ForegroundColor Green
-        return
-    }
-
-    $asset = $response.assets | Where-Object { $_.name -like "easytier-$Arch*.zip" } | Select-Object -First 1
-    if ($asset) {
-        Write-Output "发现新版本 $latestVersion"
-        $downloadUrl = $asset.browser_download_url
-        if ($UseGitHubProxy) {
-            $downloadUrl = "$GitHubProxy$downloadUrl"
-        }
-    }
-    else {
-        throw "未适配当前平台!"
-    }
-
-    $updateFile = Join-Path $tempDirectory $asset.name
+    $updateFile = Join-Path $tempDirectory $Params.AssetName
 
     try {
-        Write-Output "开始下载: $downloadUrl"
-        Invoke-WebRequestCompatible -Uri $downloadUrl -OutFile $updateFile
+        Write-Output "开始下载: $($Params.AssetName)"
+        Invoke-WebRequestCompatible -Uri $Params.DownloadUrl -OutFile $updateFile
     }
     catch {
         throw "下载失败!`n$_"
     }
 
     try {
+        Write-Output "开始解压: $($Params.AssetName)"
         Expand-ZipFile -ZipPath $updateFile -DestinationPath $tempDirectory
         $extractedRoot = Get-ChildItem -Path $tempDirectory -Directory | Select-Object -First 1
-        $updateFileDirectory = $extractedRoot.FullName
     }
     catch {
         throw "解压失败!`n$_"
     }
 
-    Write-Host "准备就绪，开始更新..." -ForegroundColor Green
-            
     $activeServices = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue | Where-Object { $_.Status -eq "Running" }
+    
     if ($activeServices) {
         try {
             Write-Host "发现正在运行的服务: $ServiceName" -ForegroundColor Yellow
@@ -478,14 +528,14 @@ function Get-EasyTier {
 
     try {
         Write-Host "更新文件..."
-        Get-ChildItem -Path $updateFileDirectory | Copy-Item -Destination $ScriptRoot -Recurse -Force
+        Get-ChildItem -Path $extractedRoot.FullName | Copy-Item -Destination $ScriptRoot -Recurse -Force
     }
     catch {
         throw "更新文件失败!`n$_"
     }
 
     $localVersion = Get-LocalVersion($EasyTierPath)
-    if ($localVersion -ge $latestVersion) {
+    if ($localVersion -ge $Params.TargetVersion) {
         if ($activeServices) {
             try {
                 Write-Host "启动服务..." -ForegroundColor Green
@@ -495,12 +545,19 @@ function Get-EasyTier {
                 throw "服务启动失败!`n$_"
             }
         }
-        Write-Host "EasyTier 已成功更新到版本 $latestVersion" -ForegroundColor Green
+        Write-Host "EasyTier 已成功更新到版本 $localVersion" -ForegroundColor Green
     }
     else {
         throw "更新文件失败! 请检查脚本是否过时或者文件/文件夹是否被其他程序占用"
     }
-    Remove-Item -Recurse -Force $tempDirectory
+
+    try {
+        Write-Host "清理临时目录..." -ForegroundColor Green
+        Remove-Item -Recurse -Force $tempDirectory
+    }
+    catch {
+        throw "清理临时目录失败!`n$_"
+    }
 }
 
 $HelpText = @"
@@ -518,6 +575,9 @@ EasyTier 服务管理脚本
 
     -U / -Update
         更新 EasyTier 到最新版本
+
+    -T / -Tag
+        指定安装或更新的 EasyTier 版本(默认: latest [例如: v2.4.5])
 
     -X / -Uninstall
         卸载 EasyTier 服务
@@ -581,11 +641,14 @@ EasyTier 服务管理脚本
 
     5. 使用系统代理安装: 
         install.cmd -UseProxy -Proxy http://127.0.0.1:8080
+    
+    6. 更新 EasyTier 至 2.4.5 版本: 
+        install.cmd -Update -Tag v2.4.5
 
-    6. 卸载服务: 
+    7. 卸载服务: 
         install.cmd -Uninstall
 
-    7. 显示帮助信息: 
+    8. 显示帮助信息: 
         install.cmd -Help
 "@
 $WatchDogTemplate = @"
@@ -675,12 +738,12 @@ try {
         exit 0
     }
     if ($Update) {
-        Get-EasyTier
+        Get-EasyTier | Update-EasyTier
         Show-Pause -Text "按任意键退出..."
         exit 0
     }
     if (-not (Test-Path $EasyTierPath)) {
-        Get-EasyTier
+        Get-EasyTier | Install-EasyTier
     }
     if (-not $ConfigType) {
         $choices = @(
