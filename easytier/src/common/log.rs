@@ -5,6 +5,7 @@ use crate::common::get_logger_timer_rfc3339;
 use crate::common::tracing_rolling_appender::{FileAppenderWrapper, RollingFileAppenderBase};
 use crate::rpc_service::logger::{CURRENT_LOG_LEVEL, LOGGER_LEVEL_SENDER};
 use anyhow::Context;
+use cfg_if::cfg_if;
 use paste::paste;
 use regex::Regex;
 use tracing::level_filters::LevelFilter;
@@ -194,19 +195,30 @@ pub fn init(
     let (console_filter, _) =
         tracing_subscriber::reload::Layer::new(parse_env_filter(console_level)?);
 
+    cfg_if! {
+        if #[cfg(test)] {
+            let w = tracing_subscriber::fmt::TestWriter::new;
+            let (stdout, stderr) = (w, w);
+        } else {
+            let (stdout, stderr) = (std::io::stderr, std::io::stdout);
+        }
+    }
+
+    let ansi = std::io::stdin().is_terminal() || cfg!(test);
+
     let layer = || {
         layer()
             .compact()
-            .with_ansi(std::io::stderr().is_terminal())
             .with_timer(get_logger_timer_rfc3339())
-            .with_writer(std::io::stderr)
+            .with_ansi(ansi)
+            .with_writer(stderr)
     };
 
     layers.push(
         vec![
             tracing_layer!(layer()),
             log_layer!(layer()).with_filter(LevelFilter::WARN).boxed(),
-            log_layer!(layer().with_writer(std::io::stdout))
+            log_layer!(layer().with_writer(stdout))
                 .with_filter(filter_fn(|metadata| *metadata.level() > Level::WARN))
                 .boxed(),
         ]
@@ -219,7 +231,15 @@ pub fn init(
         layers.push(console_subscriber::ConsoleLayer::builder().spawn().boxed());
     }
 
-    Registry::default().with(layers).init();
+    let registry = Registry::default().with(layers);
+
+    cfg_if! {
+        if #[cfg(test)] {
+            let _ = registry.try_init();
+        } else {
+            registry.init();
+        }
+    }
 
     Ok(ret_sender)
 }
