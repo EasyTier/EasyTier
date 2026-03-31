@@ -1,20 +1,9 @@
-use derivative::Derivative;
-use derive_more::{Deref, DerefMut};
+use derive_more::Deref;
 use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::sync::Notify;
 
-#[derive(Debug, Default, Deref, DerefMut)]
-pub struct DirtyState<T> {
-    #[deref]
-    #[deref_mut]
-    flags: T,
-    pub notify: Notify,
-}
-
-#[derive(Derivative, Debug, Deref)]
-#[derivative(Default)]
+#[derive(Debug, Deref)]
 pub struct DirtyFlag {
-    #[derivative(Default(value = "AtomicBool::new(true)"))]
     dirty: AtomicBool,
     #[deref]
     notify: Notify,
@@ -22,9 +11,15 @@ pub struct DirtyFlag {
 
 impl DirtyFlag {
     pub fn new(value: bool) -> Self {
+        let notify = Notify::new();
+
+        if value {
+            notify.notify_one();
+        }
+
         Self {
             dirty: AtomicBool::new(value),
-            notify: Notify::new(),
+            notify,
         }
     }
 
@@ -39,5 +34,11 @@ impl DirtyFlag {
 
     pub fn reset(&self) -> bool {
         self.dirty.swap(false, Ordering::Acquire)
+    }
+}
+
+impl Default for DirtyFlag {
+    fn default() -> Self {
+        Self::new(true)
     }
 }
