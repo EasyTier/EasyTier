@@ -239,11 +239,11 @@ impl ForeignNetworkEntry {
     ) -> ArcGlobalCtx {
         let config = TomlConfigLoader::default();
         config.set_network_identity(network.clone());
-        config.set_hostname(Some(format!(
+        config.set_hostname(&format!(
             "{}{}",
             PUBLIC_SERVER_HOSTNAME_PREFIX,
             global_ctx.get_hostname()
-        )));
+        ));
         config.set_secure_mode(global_ctx.config.get_secure_mode());
 
         let mut flags = config.get_flags();

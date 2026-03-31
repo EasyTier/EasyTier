@@ -1,16 +1,15 @@
-use std::{
-    hash::Hasher,
-    net::{IpAddr, SocketAddr},
-    path::PathBuf,
-    sync::{Arc, Mutex},
-};
-
 use anyhow::Context;
 use base64::{prelude::BASE64_STANDARD, Engine as _};
 use cfg_if::cfg_if;
 use clap::builder::PossibleValue;
 use clap::ValueEnum;
 use serde::{Deserialize, Serialize};
+use std::{
+    hash::Hasher,
+    net::{IpAddr, SocketAddr},
+    path::PathBuf,
+    sync::{Arc, Mutex},
+};
 use strum::{Display, EnumString, VariantArray};
 use tokio::io::AsyncReadExt as _;
 
@@ -125,9 +124,6 @@ pub trait ConfigLoader: Send + Sync {
     fn get_id(&self) -> uuid::Uuid;
     fn set_id(&self, id: uuid::Uuid);
 
-    fn get_hostname(&self) -> String;
-    fn set_hostname(&self, name: Option<String>);
-
     fn get_inst_name(&self) -> String;
     fn set_inst_name(&self, name: String);
 
@@ -209,6 +205,12 @@ pub trait ConfigLoader: Send + Sync {
 
     fn get_dns(&self) -> DnsConfig;
     fn set_dns(&self, dns: DnsConfig);
+
+    fn get_hostname(&self) -> String;
+    fn set_hostname(&self, hostname: &str);
+
+    fn get_fqdn(&self) -> String;
+    fn set_fqdn(&self, fqdn: &str);
 
     fn dump(&self) -> String;
 }
@@ -430,7 +432,8 @@ pub fn process_secure_mode_cfg(mut user_cfg: SecureModeConfig) -> anyhow::Result
     Ok(user_cfg)
 }
 
-#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Default, Deserialize, Serialize)]
+#[serde(default)]
 struct Config {
     netns: Option<String>,
     hostname: Option<String>,
@@ -447,7 +450,7 @@ struct Config {
     peer: Option<Vec<PeerConfig>>,
     proxy_network: Option<Vec<ProxyNetworkConfig>>,
 
-    dns: Option<DnsConfig>,
+    dns: DnsConfig,
 
     vpn_portal_config: Option<VpnPortalConfig>,
 
@@ -533,6 +536,22 @@ impl TomlConfigLoader {
 }
 
 impl ConfigLoader for TomlConfigLoader {
+    fn get_id(&self) -> uuid::Uuid {
+        let mut locked_config = self.config.lock().unwrap();
+        match locked_config.instance_id {
+            Some(id) => id,
+            None => {
+                let id = uuid::Uuid::new_v4();
+                locked_config.instance_id = Some(id);
+                id
+            }
+        }
+    }
+
+    fn set_id(&self, id: uuid::Uuid) {
+        self.config.lock().unwrap().instance_id = Some(id);
+    }
+
     fn get_inst_name(&self) -> String {
         self.config
             .lock()
@@ -544,33 +563,6 @@ impl ConfigLoader for TomlConfigLoader {
 
     fn set_inst_name(&self, name: String) {
         self.config.lock().unwrap().instance_name = Some(name);
-    }
-
-    fn get_hostname(&self) -> String {
-        let hostname = self.config.lock().unwrap().hostname.clone();
-
-        match hostname {
-            Some(hostname) => {
-                let hostname = hostname
-                    .chars()
-                    .filter(|c| !c.is_control())
-                    .take(32)
-                    .collect::<String>();
-
-                if !hostname.is_empty() {
-                    self.set_hostname(Some(hostname.clone()));
-                    hostname
-                } else {
-                    self.set_hostname(None);
-                    gethostname::gethostname().to_string_lossy().to_string()
-                }
-            }
-            None => gethostname::gethostname().to_string_lossy().to_string(),
-        }
-    }
-
-    fn set_hostname(&self, name: Option<String>) {
-        self.config.lock().unwrap().hostname = name;
     }
 
     fn get_netns(&self) -> Option<String> {
@@ -676,22 +668,6 @@ impl ConfigLoader for TomlConfigLoader {
             .as_ref()
             .cloned()
             .unwrap_or_default()
-    }
-
-    fn get_id(&self) -> uuid::Uuid {
-        let mut locked_config = self.config.lock().unwrap();
-        match locked_config.instance_id {
-            Some(id) => id,
-            None => {
-                let id = uuid::Uuid::new_v4();
-                locked_config.instance_id = Some(id);
-                id
-            }
-        }
-    }
-
-    fn set_id(&self, id: uuid::Uuid) {
-        self.config.lock().unwrap().instance_id = Some(id);
     }
 
     fn get_network_identity(&self) -> NetworkIdentity {
@@ -874,11 +850,27 @@ impl ConfigLoader for TomlConfigLoader {
     }
 
     fn get_dns(&self) -> DnsConfig {
-        self.config.lock().unwrap().dns.clone().unwrap_or_default()
+        self.config.lock().unwrap().dns.clone()
     }
 
     fn set_dns(&self, dns: DnsConfig) {
-        self.config.lock().unwrap().dns = Some(dns);
+        self.config.lock().unwrap().dns = dns;
+    }
+
+    fn get_hostname(&self) -> String {
+        self.config.lock().unwrap().dns.get_name().to_string()
+    }
+
+    fn set_hostname(&self, hostname: &str) {
+        self.config.lock().unwrap().dns.set_name(hostname);
+    }
+
+    fn get_fqdn(&self) -> String {
+        self.config.lock().unwrap().dns.get_fqdn().to_string()
+    }
+
+    fn set_fqdn(&self, fqdn: &str) {
+        self.config.lock().unwrap().dns.set_fqdn(fqdn);
     }
 
     fn dump(&self) -> String {

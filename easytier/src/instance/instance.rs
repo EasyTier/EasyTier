@@ -212,7 +212,7 @@ impl InstanceConfigPatcher {
         let global_ctx = weak_upgrade(&self.global_ctx)?;
         if let Some(hostname) = patch.hostname {
             global_ctx.set_hostname(hostname.clone());
-            global_ctx.config.set_hostname(Some(hostname));
+            global_ctx.config.set_hostname(&hostname);
         }
         if let Some(ipv4) = patch.ipv4 {
             if !global_ctx.config.get_dhcp() {
