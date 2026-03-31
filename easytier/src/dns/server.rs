@@ -15,23 +15,21 @@ use crate::tunnel::packet_def::ZCPacket;
 use crate::tunnel::tcp::TcpTunnelListener;
 use crate::utils::AsyncRuntime;
 use derivative::Derivative;
-use hickory_proto::rr::Record;
-use hickory_proto::serialize::binary::{BinDecodable, BinEncoder};
+use hickory_proto::serialize::binary::BinDecodable;
 use hickory_proto::xfer::Protocol;
 use hickory_server::authority::MessageRequest;
 use hickory_server::{
-    authority::{Catalog, MessageResponse},
+    authority::Catalog,
     server::{Request, RequestHandler, ResponseHandler, ResponseInfo},
     ServerFuture,
 };
-use parking_lot::{Mutex, RwLock};
+use parking_lot::RwLock;
 use pnet::packet::icmp::{IcmpTypes, MutableIcmpPacket};
 use pnet::packet::ip::IpNextHeaderProtocols;
 use pnet::packet::ipv4::{Ipv4Packet, MutableIpv4Packet};
 use pnet::packet::udp::{MutableUdpPacket, UdpPacket};
 use pnet::packet::{icmp, ipv4, udp, MutablePacket, Packet};
 use std::collections::HashSet;
-use std::io;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4};
 use std::{sync::Arc, time::Duration};
 use tokio_util::sync::CancellationToken;
