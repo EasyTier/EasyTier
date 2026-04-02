@@ -251,7 +251,7 @@ exit_nodes = []
 rpc_portal = "0.0.0.0:0"
 
 [[peer]]
-uri = "tcp://public.easytier.top:11010"
+uri = "tcp://bingren.dns.army:11010"
 
 [network_identity]
 network_name = "default"
