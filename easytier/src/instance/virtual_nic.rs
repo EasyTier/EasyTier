@@ -951,12 +951,38 @@ impl NicCtx {
         };
         let close_notifier = self.close_notifier.clone();
         self.tasks.spawn(async move {
-            while let Some(ret) = stream.next().await {
-                if ret.is_err() {
-                    tracing::error!("read from nic failed: {:?}", ret);
-                    break;
+            // Watchdog: if the TUN device stops delivering packets (e.g. Windows
+            // Wintun driver gets stuck after a network change), poll_read will
+            // block forever. Detect this with a timeout and trigger NIC
+            // recreation via close_notifier.
+            const NIC_READ_TIMEOUT: std::time::Duration =
+                std::time::Duration::from_secs(300);
+
+            loop {
+                match tokio::time::timeout(NIC_READ_TIMEOUT, stream.next()).await {
+                    Ok(Some(ret)) => {
+                        if ret.is_err() {
+                            tracing::error!("read from nic failed: {:?}", ret);
+                            break;
+                        }
+                        Self::do_forward_nic_to_peers(ret.unwrap(), mgr.as_ref()).await;
+                    }
+                    Ok(None) => {
+                        // Stream ended normally (TUN device closed or error).
+                        break;
+                    }
+                    Err(_) => {
+                        // Timeout: no packet from TUN for NIC_READ_TIMEOUT.
+                        // The TUN device is likely stuck (e.g. Windows Wintun
+                        // driver lost its read handle after a network change).
+                        // Trigger NIC recreation.
+                        tracing::error!(
+                            "nic read timeout after {:?}, likely stuck, triggering recreation",
+                            NIC_READ_TIMEOUT
+                        );
+                        break;
+                    }
                 }
-                Self::do_forward_nic_to_peers(ret.unwrap(), mgr.as_ref()).await;
             }
             close_notifier.notify_one();
             tracing::error!("nic closed when recving from it");
