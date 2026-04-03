@@ -8,7 +8,7 @@ use crate::proto::rpc_types::controller::BaseController;
 use crate::utils::{DeterministicDigest, MapTryInto};
 use anyhow::Error;
 use hickory_server::authority::Catalog;
-use itertools::Itertools;
+use itertools::{chain, Itertools};
 use moka::future::Cache;
 use std::collections::HashSet;
 use std::time::Duration;
@@ -64,23 +64,17 @@ impl DnsNodeMgr {
 
         tracing::warn!("building catalog with zones: {:?}", zones);
 
-        let mut catalog = Catalog::new();
-
-        for zone in zones.iter() {
+        zones.into_iter().fold(Catalog::new(), |mut catalog, zone| {
             catalog.upsert(
                 zone.origin.clone(),
-                zone.create_memory_authority().into_iter().collect(),
+                chain(
+                    zone.create_memory_authority(),
+                    zone.create_forward_authority(),
+                )
+                .collect(),
             );
-        }
-
-        for zone in zones.iter() {
-            catalog.upsert(
-                zone.origin.clone(),
-                zone.create_forward_authority().into_iter().collect(),
-            );
-        }
-
-        catalog
+            catalog
+        })
     }
 
     pub fn collect_zones(&self) -> ZoneGroup {
@@ -126,7 +120,12 @@ impl DnsNodeMgrRpc for DnsNodeMgr {
     type Controller = BaseController;
 
     // TODO: change level to trace
-    #[instrument(level = "debug", skip_all, fields(from = ?input.id, snapshot = ?input.snapshot), err)]
+    #[instrument(
+        level = "debug",
+        skip_all,
+        fields(from = ?input.id, snapshot = ?input.snapshot),
+        err
+    )]
     async fn heartbeat(
         &self,
         _: BaseController,
@@ -169,15 +168,15 @@ impl DnsNodeMgrRpc for DnsNodeMgr {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::common::log;
     use crate::dns::utils::response::ResponseHandle;
     use hickory_proto::op::{Message, MessageType, OpCode, Query, ResponseCode};
     use hickory_proto::rr::{rdata, Name, RData, RecordType};
-    use hickory_proto::serialize::binary::{BinDecodable, BinDecoder, BinEncodable, BinEncoder};
+    use hickory_proto::serialize::binary::{BinDecodable, BinEncodable, BinEncoder};
     use hickory_proto::xfer::Protocol;
-    use hickory_server::authority::{MessageRequest, MessageResponse};
+    use hickory_server::authority::MessageRequest;
     use hickory_server::server::Request;
     use std::net::{Ipv4Addr, SocketAddrV4};
-    use crate::common::log;
 
     #[tokio::test]
     async fn test_force_insert_node_info_then_catalog_lookup() -> anyhow::Result<()> {
