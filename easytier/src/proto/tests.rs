@@ -476,7 +476,7 @@ async fn test_bidirect_rpc_manager() {
 
     tokio::time::sleep(std::time::Duration::from_secs(1)).await;
 
-    let mut tcp_connector = TcpTunnelConnector::new("tcp://0.0.0.0:55443".parse().unwrap());
+    let mut tcp_connector = TcpTunnelConnector::new("tcp://127.0.0.1:55443".parse().unwrap());
     let c_tunnel = tcp_connector.connect().await.unwrap();
     c.run_with_tunnel(c_tunnel);
 

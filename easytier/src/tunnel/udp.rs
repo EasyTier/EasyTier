@@ -1174,34 +1174,38 @@ mod tests {
 
     #[tokio::test]
     async fn test_v6_hole_punch_packet() {
+        use std::net::{Ipv6Addr, SocketAddr, SocketAddrV6};
+
         let mut lis = UdpTunnelListener::new("udp://[::]:0".parse().unwrap());
         lis.listen().await.unwrap();
 
         // a socket to receive forwarded hole punch packets
         let socket = Arc::new(UdpSocket::bind("[::]:0").await.unwrap());
-        let socket_clone = socket.clone();
-        let t = tokio::spawn(async move {
-            let mut buf = BytesMut::new();
-            buf.resize(128, 0);
-            socket_clone.recv_from(&mut buf).await.unwrap();
+        let SocketAddr::V6(local_addr) = socket.local_addr().unwrap() else {
+            panic!("Expected an IPv6 address");
+        };
+        let t = tokio::spawn({
+            let socket = socket.clone();
+            async move {
+                let mut buf = BytesMut::new();
+                buf.resize(128, 0);
+                socket.recv_from(&mut buf).await.unwrap();
+            }
         });
 
         tracing::info!("lis local addr: {:?}", lis.local_url());
-        tracing::info!("socket local addr: {:?}", socket.local_addr().unwrap());
+        tracing::info!("socket local addr: {:?}", local_addr);
 
         tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
+        // `socket.local_addr()` is not expected to get real bound ip and usually
+        // returns bound local address as-is (and returns unspecified address)
+        // so we should assemble dst_addr with loopback address
+        let loopback_addr = SocketAddrV6::new(Ipv6Addr::LOCALHOST, local_addr.port(), 0, 0);
         // a socket to send v6 hole punch packets
-        send_v6_hole_punch_packet(
-            lis.local_url().port().unwrap(),
-            match socket.local_addr().unwrap() {
-                std::net::SocketAddr::V6(addr_v6) => addr_v6,
-                _ => panic!("Expected an IPv6 address"),
-            },
-            None,
-        )
-        .await
-        .unwrap();
+        send_v6_hole_punch_packet(lis.local_url().port().unwrap(), loopback_addr, None)
+            .await
+            .unwrap();
 
         tokio::time::timeout(tokio::time::Duration::from_secs(2), t)
             .await
