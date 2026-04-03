@@ -87,12 +87,13 @@ impl ProxyCidrsMonitor {
                     break;
                 };
 
+                // TODO: same logic for DNS
                 // Check if route info has been updated
-                let last_update_time = peer_mgr.get_route_peer_info_last_update_time().await;
-                if last_update == Some(last_update_time) {
-                    continue;
-                }
-                last_update = Some(last_update_time);
+                // let last_update_time = peer_mgr.get_route_peer_info_last_update_time().await;
+                // if last_update == Some(last_update_time) {
+                //     continue;
+                // }
+                // last_update = Some(last_update_time);
 
                 let (new_proxy_cidrs, added, removed) =
                     Self::diff_proxy_cidrs(peer_mgr.as_ref(), &self.global_ctx, &cur_proxy_cidrs)
