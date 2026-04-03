@@ -60,21 +60,16 @@ impl DnsNodeMgr {
     }
 
     pub fn catalog(&self) -> Catalog {
-        let zones = self.collect_zones();
+        let groups = self.collect_zones().into_groups();
 
-        tracing::warn!("building catalog with zones: {:?}", zones);
+        tracing::trace!("building catalog with zones: {:?}", groups);
 
-        zones.into_iter().fold(Catalog::new(), |mut catalog, zone| {
-            catalog.upsert(
-                zone.origin.clone(),
-                chain(
-                    zone.create_memory_authority(),
-                    zone.create_forward_authority(),
-                )
-                .collect(),
-            );
-            catalog
-        })
+        groups
+            .into_iter()
+            .fold(Catalog::new(), |mut catalog, (origin, zones)| {
+                catalog.upsert(origin.clone(), zones.iter_authorities().collect());
+                catalog
+            })
     }
 
     pub fn collect_zones(&self) -> ZoneGroup {
