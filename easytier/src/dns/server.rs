@@ -36,7 +36,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{instrument, Instrument};
 
 #[derive(Clone)]
-struct DynamicCatalog {
+pub struct DynamicCatalog {
     inner: Arc<tokio::sync::RwLock<Catalog>>,
 }
 
@@ -121,7 +121,7 @@ impl DnsServer {
     ) -> anyhow::Result<()> {
         let listeners = listeners.into_iter().collect();
 
-        if &*self.listeners.read() == &listeners {
+        if *self.listeners.read() == listeners {
             tracing::info!("listeners unchanged, no need to reload");
             return Ok(());
         }
@@ -169,7 +169,7 @@ impl DnsServer {
     ) -> anyhow::Result<()> {
         let addresses = addresses.into_iter().collect();
 
-        if &*self.addresses.read() == &addresses {
+        if *self.addresses.read() == addresses {
             tracing::info!("addresses unchanged, no need to reload");
             return Ok(());
         }

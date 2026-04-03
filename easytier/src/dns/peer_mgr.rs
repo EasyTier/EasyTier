@@ -18,6 +18,7 @@ use itertools::Itertools;
 use moka::future::Cache;
 use std::sync::Arc;
 use std::time::Duration;
+use tracing::instrument;
 
 #[derive(Debug, Clone)]
 pub struct DnsPeerInfo {
@@ -111,6 +112,7 @@ impl DnsPeerMgr {
         self.dirty.notify_one();
     }
 
+    #[instrument(skip(self), level = "trace", ret)]
     async fn fetch(&self, peer_id: PeerId) -> anyhow::Result<DnsPeerInfo> {
         self.peer_mgr
             .get_peer_rpc_mgr()

@@ -492,7 +492,7 @@ impl NetworkConfig {
                 .parse()
                 .with_context(|| format!("failed to parse instance id: {:?}", self.instance_id))?,
         );
-        self.hostname.as_ref().map(|n| cfg.set_hostname(n));
+        if let Some(n) = self.hostname.as_ref() { cfg.set_hostname(n) }
         cfg.set_dhcp(self.dhcp.unwrap_or_default());
         cfg.set_inst_name(self.network_name.clone().unwrap_or_default());
 
