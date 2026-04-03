@@ -1,5 +1,6 @@
 use crate::common::dns::get_default_resolver_config;
 use crate::dns::utils::addr::NameServerAddr;
+use crate::dns::utils::authority::ArcAuthority;
 use crate::proto;
 use crate::proto::utils::RepeatedMessageModel;
 use crate::utils::MapTryInto;
@@ -9,10 +10,11 @@ use hickory_proto::serialize::txt::Parser;
 use hickory_resolver::config::ResolverOpts;
 use hickory_resolver::name_server::TokioConnectionProvider;
 use hickory_resolver::system_conf::read_system_conf;
-use hickory_server::authority::{AuthorityObject, ZoneType};
+use hickory_server::authority::ZoneType;
 use hickory_server::store::forwarder::{ForwardAuthority, ForwardConfig};
 use hickory_server::store::in_memory::InMemoryAuthority;
-use itertools::Itertools;
+use indexmap::IndexMap;
+use itertools::{chain, Itertools};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use uuid::Uuid;
@@ -64,7 +66,7 @@ impl Zone {
         }
     }
 
-    pub fn create_memory_authority(&self) -> Option<Arc<dyn AuthorityObject>> {
+    pub fn create_memory_authority(&self) -> Option<ArcAuthority> {
         (!self.records.is_empty()).then(|| {
             let mut memory =
                 InMemoryAuthority::empty(self.origin.clone().into(), ZoneType::External, false);
@@ -76,11 +78,11 @@ impl Zone {
                     .map(|(k, v)| (k, Arc::new(v))),
             );
 
-            Arc::new(memory) as Arc<dyn AuthorityObject>
+            Arc::new(memory) as ArcAuthority
         })
     }
 
-    pub fn create_forward_authority(&self) -> Option<Arc<dyn AuthorityObject>> {
+    pub fn create_forward_authority(&self) -> Option<ArcAuthority> {
         self.forward.as_ref().and_then(|forward| {
             ForwardAuthority::builder_with_config(
                 forward.clone(),
@@ -89,7 +91,7 @@ impl Zone {
             .build()
             .inspect_err(|e| tracing::error!("failed to create forward authority: {:?}", e))
             .ok()
-            .map(|f| Arc::new(f) as Arc<dyn AuthorityObject>)
+            .map(|f| Arc::new(f) as ArcAuthority)
         })
     }
 
@@ -168,6 +170,24 @@ impl From<Zone> for proto::dns::ZoneData {
 }
 
 pub type ZoneGroup = RepeatedMessageModel<Zone>;
+
+impl ZoneGroup {
+    pub fn into_groups(self) -> IndexMap<LowerName, ZoneGroup> {
+        self.into_iter().fold(IndexMap::new(), |mut map, zone| {
+            map.entry(zone.origin.clone()).or_default().push(zone);
+            map
+        })
+    }
+
+    pub fn iter_authorities(&self) -> impl Iterator<Item = ArcAuthority> + use<'_> {
+        self.iter().flat_map(|zone| {
+            chain(
+                zone.create_memory_authority(),
+                zone.create_forward_authority(),
+            )
+        })
+    }
+}
 
 #[cfg(test)]
 mod tests {

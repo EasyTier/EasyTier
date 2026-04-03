@@ -1,10 +1,13 @@
 use derive_more::{Deref, DerefMut, From};
 use hickory_proto::rr::{LowerName, RecordType};
 use hickory_server::authority::{
-    Authority, LookupControlFlow, LookupObject, LookupOptions, MessageRequest, UpdateResult,
-    ZoneType,
+    Authority, AuthorityObject, LookupControlFlow, LookupObject, LookupOptions, MessageRequest,
+    UpdateResult, ZoneType,
 };
 use hickory_server::server::RequestInfo;
+use std::sync::Arc;
+
+pub type ArcAuthority = Arc<dyn AuthorityObject>;
 
 #[derive(From, Deref, DerefMut)]
 pub struct ChainedAuthority<A>(A)
