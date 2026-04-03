@@ -8,7 +8,7 @@ use crate::proto::rpc_types::controller::BaseController;
 use crate::utils::{DeterministicDigest, MapTryInto};
 use anyhow::Error;
 use hickory_server::authority::Catalog;
-use itertools::{chain, Itertools};
+use itertools::Itertools;
 use moka::future::Cache;
 use std::collections::HashSet;
 use std::time::Duration;
@@ -84,12 +84,10 @@ impl DnsNodeMgr {
 
         zones.push(Zone::system());
 
-        for zone in zones.iter_mut() {
-            if let Some(forward) = zone.forward.as_mut() {
-                forward
-                    .name_servers
-                    .retain(|ns| !local.contains(&ns.clone().into()));
-            }
+        for forward in zones.iter_mut().flat_map(|z| &mut z.forward) {
+            forward
+                .name_servers
+                .retain(|ns| !local.contains(&ns.into()));
         }
 
         zones.into()
