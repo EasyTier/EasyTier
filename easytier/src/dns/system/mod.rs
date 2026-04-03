@@ -33,7 +33,7 @@ pub fn get(
 
     #[cfg(all(target_os = "macos", not(feature = "macos-ne")))]
     {
-        use crate::dns::system_config::darwin::DarwinConfigurator;
+        use crate::dns::system::macos::DarwinConfigurator;
         return Ok(Some(DarwinConfigurator::new().boxed()));
     }
 
