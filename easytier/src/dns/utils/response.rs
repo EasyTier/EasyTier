@@ -1,10 +1,10 @@
+use hickory_proto::rr::Record;
+use hickory_proto::serialize::binary::BinEncoder;
+use hickory_server::authority::MessageResponse;
+use hickory_server::server::{ResponseHandler, ResponseInfo};
+use parking_lot::Mutex;
 use std::io;
 use std::sync::Arc;
-use hickory_proto::rr::Record;
-use parking_lot::Mutex;
-use hickory_server::server::{ResponseHandler, ResponseInfo};
-use hickory_server::authority::MessageResponse;
-use hickory_proto::serialize::binary::BinEncoder;
 
 // ResponseWrapper for serializing DNS responses into a byte buffer.
 // Used by the address hijacking NIC packet filter to produce DNS replies in-place.

@@ -194,7 +194,6 @@ mod tests {
     use super::*;
     use crate::common::log;
     use crate::dns::config::DnsConfig;
-    use crate::dns::server::DynamicCatalog;
     use crate::dns::utils::response::ResponseHandle;
     use hickory_client::client::{Client, ClientHandle};
     use hickory_proto::op::{Message, MessageType, OpCode, Query, ResponseCode};
@@ -203,7 +202,7 @@ mod tests {
     use hickory_proto::serialize::binary::{BinDecodable, BinEncodable, BinEncoder};
     use hickory_proto::udp::UdpClientStream;
     use hickory_proto::xfer::Protocol;
-    use hickory_server::authority::MessageRequest;
+    use hickory_server::authority::{Catalog, MessageRequest};
     use hickory_server::server::Request;
     use hickory_server::ServerFuture;
     use std::net::{Ipv4Addr, SocketAddrV4};
@@ -259,7 +258,7 @@ mod tests {
     async fn test_config() -> anyhow::Result<()> {
         log::tests::init();
 
-        let catalog = DynamicCatalog::new();
+        let mut catalog = Catalog::new();
 
         let sep = "=".repeat(80);
         let config = toml::from_str::<DnsConfig>(CONFIG)?;
@@ -280,11 +279,7 @@ mod tests {
         let mut authorities = Vec::new();
         authorities.extend(zone.create_memory_authority().into_iter());
         authorities.extend(zone.create_forward_authority().into_iter());
-        catalog
-            .inner
-            .write()
-            .await
-            .upsert(zone.origin.clone().into(), authorities);
+        catalog.upsert(zone.origin.clone().into(), authorities);
 
         let mut record = Record::update0(zone.origin.clone().into(), 60, RecordType::A);
         record.set_data(RData::A(rdata::a::A("100.100.100.100".parse()?)));
@@ -346,21 +341,14 @@ mod tests {
         let mut authorities = Vec::new();
         authorities.extend(zone.create_memory_authority().into_iter());
         authorities.extend(zone.create_forward_authority().into_iter());
-        catalog
-            .inner
-            .write()
-            .await
-            .upsert(zone.origin.clone().into(), authorities);
+        catalog.upsert(zone.origin.clone().into(), authorities);
 
         let mut query = Message::new();
         query.set_id(0x1234);
         query.set_message_type(MessageType::Query);
         query.set_op_code(OpCode::Query);
         query.set_recursion_desired(true);
-        query.add_query(Query::query(
-            Name::from_ascii("et.top.")?,
-            RecordType::A,
-        ));
+        query.add_query(Query::query(Name::from_ascii("et.top.")?, RecordType::A));
 
         let mut request = Vec::new();
         let mut encoder = BinEncoder::new(&mut request);
@@ -373,12 +361,7 @@ mod tests {
         );
 
         let response = ResponseHandle::new(512);
-        let info = catalog
-            .inner
-            .read()
-            .await
-            .lookup(&request, None, response.clone())
-            .await;
+        let info = catalog.lookup(&request, None, response.clone()).await;
 
         assert_eq!(info.response_code(), ResponseCode::NoError);
 
