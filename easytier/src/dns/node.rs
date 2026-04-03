@@ -20,12 +20,6 @@ use tokio_util::sync::CancellationToken;
 use tracing::instrument;
 use uuid::Uuid;
 
-#[derive(Debug)]
-struct DnsNodeRuntime {
-    token: CancellationToken,
-    task: ScopedTask<()>,
-}
-
 #[derive(Debug, Clone)]
 pub struct DnsNode {
     mgr: Arc<DnsPeerMgr>,
