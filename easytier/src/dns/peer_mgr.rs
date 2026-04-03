@@ -99,14 +99,20 @@ impl DnsPeerMgr {
 
         self.dirty.mark();
 
-        match self.fetch(peer_id).await {
-            Ok(info) => {
-                self.peers.insert(peer_id, info).await;
-            }
-            Err(error) => {
-                tracing::warn!(%peer_id, ?error, "failed to fetch dns export config from peer");
-                self.peers.invalidate(&peer_id).await;
-            }
+        let invalidate = route.dns.is_empty()
+            || match self.fetch(peer_id).await {
+                Ok(info) => {
+                    self.peers.insert(peer_id, info).await;
+                    false
+                }
+                Err(error) => {
+                    tracing::warn!(%peer_id, ?error, "failed to fetch dns export config from peer");
+                    true
+                }
+            };
+
+        if invalidate {
+            self.peers.invalidate(&peer_id).await;
         }
 
         self.dirty.notify_one();
