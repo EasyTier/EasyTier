@@ -168,7 +168,7 @@ network-interface = "2.0"
 petgraph = "0.8.1"
 hashbrown = "0.15.3"
 ordered_hash_map = "0.5.0"# TODO: REPLACE THIS
-indexmap = "2.13.0"
+indexmap = "2.13.1"
 
 moka = { version = "0.12.13", features = ["future"] }
 
