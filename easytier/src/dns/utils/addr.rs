@@ -23,12 +23,18 @@ impl From<NameServerAddr> for NameServerConfig {
     }
 }
 
-impl From<NameServerConfig> for NameServerAddr {
-    fn from(value: NameServerConfig) -> Self {
+impl From<&NameServerConfig> for NameServerAddr {
+    fn from(value: &NameServerConfig) -> Self {
         Self {
             protocol: value.protocol,
             addr: value.socket_addr,
         }
+    }
+}
+
+impl From<NameServerConfig> for NameServerAddr {
+    fn from(value: NameServerConfig) -> Self {
+        (&value).into()
     }
 }
 
