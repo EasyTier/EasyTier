@@ -581,9 +581,9 @@ impl StatsManager {
                     break;
                 };
 
-                // Remove entries that haven't been updated for 3 minutes
-                counters.retain(|_, metric_data: &mut Arc<MetricData>| unsafe {
-                    metric_data.get_last_updated() > cutoff_time
+                counters.retain(|_, metric_data: &mut Arc<MetricData>| {
+                    Arc::strong_count(metric_data) > 1
+                        || unsafe { metric_data.get_last_updated() > cutoff_time }
                 });
                 counters.shrink_to_fit();
             }
@@ -898,6 +898,33 @@ mod tests {
 
         counter2.add(5);
         assert_eq!(counter2.get(), 25);
+    }
+
+    #[tokio::test]
+    async fn test_cleanup_keeps_metrics_with_live_handles() {
+        let stats = StatsManager::new();
+        let counter = stats.get_simple_counter(MetricName::TrafficBytesForwarded);
+        counter.set(1);
+
+        let cutoff_time = Instant::now().checked_add(Duration::from_secs(1)).unwrap();
+        stats
+            .counters
+            .retain(|_, metric_data: &mut Arc<MetricData>| {
+                Arc::strong_count(metric_data) > 1
+                    || unsafe { metric_data.get_last_updated() > cutoff_time }
+            });
+
+        assert_eq!(stats.metric_count(), 1);
+        assert_eq!(stats.get_all_metrics().len(), 1);
+
+        drop(counter);
+        stats
+            .counters
+            .retain(|_, metric_data: &mut Arc<MetricData>| {
+                Arc::strong_count(metric_data) > 1
+                    || unsafe { metric_data.get_last_updated() > cutoff_time }
+            });
+        assert_eq!(stats.metric_count(), 0);
     }
 
     #[tokio::test]
