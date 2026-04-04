@@ -17,6 +17,11 @@ use super::{
     stun::{StunInfoCollector, StunInfoCollectorTrait},
     PeerId,
 };
+#[cfg(feature = "magic-dns")]
+use crate::dns::{
+    config::{DnsExportConfig, DnsGlobalCtxExt},
+    server::DnsServer,
+};
 use crate::{
     common::{
         config::ProxyNetworkConfig, shrink_dashmap, stats_manager::StatsManager,
@@ -30,11 +35,6 @@ use crate::{
         peer_rpc::PeerGroupInfo,
     },
     tunnel::matches_protocol,
-};
-#[cfg(feature = "magic-dns")]
-use crate::dns::{
-    config::{DnsExportConfig, DnsGlobalCtxExt},
-    server::DnsServer,
 };
 use crossbeam::atomic::AtomicCell;
 use hmac::{Hmac, Mac};
