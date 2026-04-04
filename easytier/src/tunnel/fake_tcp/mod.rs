@@ -2,20 +2,28 @@ mod netfilter;
 mod packet;
 mod stack;
 
-use std::net::{IpAddr, Ipv4Addr, UdpSocket};
-use std::sync::Arc;
-use std::{net::SocketAddr, pin::Pin};
-
 use bytes::BytesMut;
+use futures::{Sink, Stream};
 use network_interface::NetworkInterfaceConfig;
 use pnet::util::MacAddr;
-use tokio::io::AsyncReadExt;
-use tokio::net::TcpStream;
-use tokio::sync::Mutex;
+use std::{
+    net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket},
+    pin::Pin,
+    sync::Arc,
+    task::{Context as TaskContext, Poll},
+};
+use tokio::{io::AsyncReadExt, net::TcpStream, sync::Mutex};
 
-use crate::common::scoped_task::ScopedTask;
-use crate::tunnel::fake_tcp::netfilter::create_tun;
-use crate::tunnel::{common::TunnelWrapper, Tunnel, TunnelError, TunnelInfo, TunnelListener};
+use crate::{
+    common::scoped_task::ScopedTask,
+    tunnel::{
+        common::TunnelWrapper,
+        fake_tcp::netfilter::create_tun,
+        packet_def::{ZCPacket, ZCPacketType, PEER_MANAGER_HEADER_SIZE, TCP_TUNNEL_HEADER_SIZE},
+        FromUrl, IpVersion, SinkError, SinkItem, StreamItem, Tunnel, TunnelConnector, TunnelError,
+        TunnelInfo, TunnelListener,
+    },
+};
 
 use futures::Future;
 
@@ -207,12 +215,7 @@ struct AcceptResult {
 impl TunnelListener for FakeTcpTunnelListener {
     async fn listen(&mut self) -> Result<(), TunnelError> {
         let port = self.addr.port().unwrap_or(0);
-        let bind_addr = crate::tunnel::check_scheme_and_get_socket_addr::<SocketAddr>(
-            &self.addr,
-            "faketcp",
-            crate::tunnel::IpVersion::Both,
-        )
-        .await?;
+        let bind_addr = SocketAddr::from_url(self.addr.clone(), IpVersion::Both).await?;
         let os_listener = tokio::net::TcpListener::bind(bind_addr).await?;
         tracing::info!(port, "FakeTcpTunnelListener listening");
         self.os_listener = Some(os_listener);
@@ -306,14 +309,9 @@ fn get_local_ip_for_destination(destination: IpAddr) -> Option<IpAddr> {
 }
 
 #[async_trait::async_trait]
-impl crate::tunnel::TunnelConnector for FakeTcpTunnelConnector {
+impl TunnelConnector for FakeTcpTunnelConnector {
     async fn connect(&mut self) -> Result<Box<dyn Tunnel>, TunnelError> {
-        let remote_addr = crate::tunnel::check_scheme_and_get_socket_addr::<SocketAddr>(
-            &self.addr,
-            "faketcp",
-            crate::tunnel::IpVersion::Both,
-        )
-        .await?;
+        let remote_addr = SocketAddr::from_url(self.addr.clone(), IpVersion::Both).await?;
         let local_ip = get_local_ip_for_destination(remote_addr.ip())
             .ok_or(TunnelError::InternalError("Failed to get local ip".into()))?;
 
@@ -386,13 +384,6 @@ impl crate::tunnel::TunnelConnector for FakeTcpTunnelConnector {
         self.addr.clone()
     }
 }
-
-use crate::tunnel::packet_def::{
-    ZCPacket, ZCPacketType, PEER_MANAGER_HEADER_SIZE, TCP_TUNNEL_HEADER_SIZE,
-};
-use crate::tunnel::{SinkError, SinkItem, StreamItem};
-use futures::{Sink, Stream};
-use std::task::{Context as TaskContext, Poll};
 
 type RecvFut = Pin<Box<dyn Future<Output = Option<(BytesMut, usize)>> + Send + Sync>>;
 

@@ -1,14 +1,12 @@
 use std::net::SocketAddr;
 
+use super::{FromUrl, TunnelInfo};
+use crate::tunnel::common::setup_sokcet2;
 use async_trait::async_trait;
 use futures::stream::FuturesUnordered;
 use tokio::net::{TcpListener, TcpSocket, TcpStream};
 
-use super::TunnelInfo;
-use crate::tunnel::common::setup_sokcet2;
-
 use super::{
-    check_scheme_and_get_socket_addr,
     common::{wait_for_connect_futures, FramedReader, FramedWriter, TunnelWrapper},
     IpVersion, Tunnel, TunnelError, TunnelListener,
 };
@@ -58,9 +56,7 @@ impl TcpTunnelListener {
 impl TunnelListener for TcpTunnelListener {
     async fn listen(&mut self) -> Result<(), TunnelError> {
         self.listener = None;
-        let addr =
-            check_scheme_and_get_socket_addr::<SocketAddr>(&self.addr, "tcp", IpVersion::Both)
-                .await?;
+        let addr = SocketAddr::from_url(self.addr.clone(), IpVersion::Both).await?;
 
         let socket2_socket = socket2::Socket::new(
             socket2::Domain::for_address(addr),
@@ -189,10 +185,8 @@ impl TcpTunnelConnector {
 
 #[async_trait]
 impl super::TunnelConnector for TcpTunnelConnector {
-    async fn connect(&mut self) -> Result<Box<dyn Tunnel>, super::TunnelError> {
-        let addr =
-            check_scheme_and_get_socket_addr::<SocketAddr>(&self.addr, "tcp", self.ip_version)
-                .await?;
+    async fn connect(&mut self) -> Result<Box<dyn Tunnel>, TunnelError> {
+        let addr = SocketAddr::from_url(self.addr.clone(), self.ip_version).await?;
         if self.bind_addrs.is_empty() {
             self.connect_with_default_bind(addr).await
         } else {

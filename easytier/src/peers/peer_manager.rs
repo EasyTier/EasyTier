@@ -2003,7 +2003,7 @@ mod tests {
             create_connector_by_url, direct::PeerManagerForDirectConnector,
             udp_hole_punch::tests::create_mock_peer_manager_with_mock_stun,
         },
-        instance::listeners::get_listener_by_url,
+        instance::listeners::create_listener_by_url,
         peers::{
             create_packet_recv_chan,
             peer_conn::tests::set_secure_mode_cfg,
@@ -2783,7 +2783,7 @@ mod tests {
         let peer_mgr_c = create_mock_peer_manager_with_mock_stun(NatType::Unknown).await;
         register_service(&peer_mgr_c.peer_rpc_mgr, "", 0, "hello c");
 
-        let mut listener1 = get_listener_by_url(
+        let mut listener1 = create_listener_by_url(
             &format!("{}://0.0.0.0:31013", proto1).parse().unwrap(),
             peer_mgr_b.get_global_ctx(),
         )
@@ -2802,7 +2802,7 @@ mod tests {
             .await
             .unwrap();
 
-        let mut listener2 = get_listener_by_url(
+        let mut listener2 = create_listener_by_url(
             &format!("{}://0.0.0.0:31014", proto2).parse().unwrap(),
             peer_mgr_c.get_global_ctx(),
         )

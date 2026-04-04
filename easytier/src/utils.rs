@@ -36,8 +36,7 @@ thread_local! {
 }
 
 pub fn setup_panic_handler() {
-    use std::backtrace;
-    use std::io::Write;
+    use std::{backtrace, io::Write};
     std::panic::set_hook(Box::new(|info| {
         let mut stderr = std::io::stderr();
         let sep = format!("{}\n", "=======".repeat(10));

@@ -31,19 +31,20 @@ use crate::{
         },
         rpc_types::controller::BaseController,
     },
-    tunnel::{udp::UdpTunnelConnector, IpVersion},
+    tunnel::{matches_protocol, udp::UdpTunnelConnector, IpVersion},
     use_global_var,
 };
-
-use anyhow::Context;
-use rand::Rng;
-use tokio::{net::UdpSocket, task::JoinSet, time::timeout};
-use url::Host;
 
 use super::{
     create_connector_by_url, should_background_p2p_with_peer, should_try_p2p_with_peer,
     udp_hole_punch,
 };
+use crate::tunnel::{matches_scheme, FromUrl, IpScheme, TunnelScheme};
+use anyhow::Context;
+use rand::Rng;
+use socket2::Protocol;
+use tokio::{net::UdpSocket, task::JoinSet, time::timeout};
+use url::Host;
 
 pub const DIRECT_CONNECTOR_SERVICE_ID: u32 = 1;
 pub const DIRECT_CONNECTOR_BLACKLIST_TIMEOUT_SEC: u64 = 300;
@@ -189,9 +190,7 @@ impl DirectConnectorManagerData {
             .await;
 
         let udp_connector = UdpTunnelConnector::new(remote_url.clone());
-        let remote_addr =
-            super::check_scheme_and_get_socket_addr::<SocketAddr>(remote_url, "udp", IpVersion::V6)
-                .await?;
+        let remote_addr = SocketAddr::from_url(remote_url.clone(), IpVersion::V6).await?;
         let ret = udp_connector
             .try_connect_with_socket(local_socket, remote_addr)
             .await?;
@@ -205,18 +204,19 @@ impl DirectConnectorManagerData {
     async fn do_try_connect_to_ip(&self, dst_peer_id: PeerId, addr: String) -> Result<(), Error> {
         let connector = create_connector_by_url(&addr, &self.global_ctx, IpVersion::Both).await?;
         let remote_url = connector.remote_url();
-        let (peer_id, conn_id) =
-            if remote_url.scheme() == "udp" && matches!(remote_url.host(), Some(Host::Ipv6(_))) {
-                self.connect_to_public_ipv6(dst_peer_id, &remote_url)
-                    .await?
-            } else {
-                timeout(
-                    std::time::Duration::from_secs(3),
-                    self.peer_manager
-                        .try_direct_connect_with_peer_id_hint(connector, Some(dst_peer_id)),
-                )
-                .await??
-            };
+        let (peer_id, conn_id) = if matches_scheme!(remote_url, TunnelScheme::Ip(IpScheme::Udp))
+            && matches!(remote_url.host(), Some(Host::Ipv6(_)))
+        {
+            self.connect_to_public_ipv6(dst_peer_id, &remote_url)
+                .await?
+        } else {
+            timeout(
+                std::time::Duration::from_secs(3),
+                self.peer_manager
+                    .try_direct_connect_with_peer_id_hint(connector, Some(dst_peer_id)),
+            )
+            .await??
+        };
 
         if peer_id != dst_peer_id && !TESTING.load(Ordering::Relaxed) {
             tracing::info!(
@@ -306,7 +306,7 @@ impl DirectConnectorManagerData {
         let listener_host = addrs.pop();
         tracing::info!(?listener_host, ?listener, "try direct connect to peer");
 
-        let is_udp = matches!(listener.scheme(), "udp" | "wg");
+        let is_udp = matches_protocol!(listener, Protocol::UDP);
         // Snapshot running listeners once; used for cheap port pre-checks before the
         // expensive should_deny_proxy call (which binds a socket per IP) in the
         // unspecified-address expansion loops below.
@@ -314,7 +314,7 @@ impl DirectConnectorManagerData {
         let port_has_local_listener = |port: u16| -> bool {
             local_listeners
                 .iter()
-                .any(|l| l.port() == Some(port) && (matches!(l.scheme(), "udp" | "wg") == is_udp))
+                .any(|l| l.port() == Some(port) && matches_protocol!(l, Protocol::UDP) == is_udp)
         };
 
         match listener_host {

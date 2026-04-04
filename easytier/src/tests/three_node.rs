@@ -156,14 +156,14 @@ async fn init_three_node_ex_with_inst3<F: Fn(TomlConfigLoader) -> TomlConfigLoad
         #[cfg(feature = "websocket")]
         inst1
             .get_conn_manager()
-            .add_connector(crate::tunnel::websocket::WSTunnelConnector::new(
+            .add_connector(crate::tunnel::websocket::WsTunnelConnector::new(
                 "ws://10.1.1.2:11011".parse().unwrap(),
             ));
     } else if proto == "wss" {
         #[cfg(feature = "websocket")]
         inst1
             .get_conn_manager()
-            .add_connector(crate::tunnel::websocket::WSTunnelConnector::new(
+            .add_connector(crate::tunnel::websocket::WsTunnelConnector::new(
                 "wss://10.1.1.2:11012".parse().unwrap(),
             ));
     }
