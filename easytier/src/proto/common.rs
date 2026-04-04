@@ -284,6 +284,99 @@ impl fmt::Display for Url {
     }
 }
 
+const IPV6_TUNNEL_SCHEMES: &[&str] = &["faketcp", "quic", "wss", "tcp", "udp", "ws", "wg"];
+
+fn split_tunnel_scheme(raw_scheme: &str) -> Option<(&str, &'static str, bool)> {
+    for scheme in IPV6_TUNNEL_SCHEMES {
+        let ipv6_suffix = format!("{scheme}6");
+        if let Some(prefix) = raw_scheme.strip_suffix(&ipv6_suffix) {
+            if prefix.is_empty() || prefix.ends_with('-') {
+                return Some((prefix, *scheme, true));
+            }
+        }
+
+        if let Some(prefix) = raw_scheme.strip_suffix(scheme) {
+            if prefix.is_empty() || prefix.ends_with('-') {
+                return Some((prefix, *scheme, false));
+            }
+        }
+    }
+
+    None
+}
+
+fn normalize_tunnel_scheme(raw_scheme: &str, is_ipv6: bool) -> Option<String> {
+    let (prefix, scheme, had_ipv6_suffix) = split_tunnel_scheme(raw_scheme)?;
+    let suffix = if is_ipv6 || had_ipv6_suffix { "6" } else { "" };
+    Some(format!("{prefix}{scheme}{suffix}"))
+}
+
+fn infer_tunnel_ipv6(raw: &str) -> Option<bool> {
+    let (_, rest) = raw.split_once("://")?;
+    if rest.starts_with('[') {
+        return Some(true);
+    }
+
+    url::Url::parse(raw)
+        .ok()
+        .map(|url| matches!(url.host(), Some(url::Host::Ipv6(_))))
+}
+
+fn normalize_tunnel_port(raw_port: &str, is_ipv6: bool) -> Option<u16> {
+    if let Ok(port) = raw_port.parse::<u16>() {
+        return Some(port);
+    }
+
+    if is_ipv6 && raw_port.ends_with('6') {
+        return raw_port[..raw_port.len() - 1].parse::<u16>().ok();
+    }
+
+    None
+}
+
+fn normalize_tunnel_url(raw: &str, fallback_ipv6: Option<bool>) -> Option<String> {
+    let (raw_scheme, rest) = raw.split_once("://")?;
+
+    if let Some(rest) = rest.strip_prefix('[') {
+        let (host, remainder) = rest.split_once(']')?;
+        let raw_port = remainder.strip_prefix(':')?;
+        let port = normalize_tunnel_port(raw_port, true)?;
+        let scheme = normalize_tunnel_scheme(raw_scheme, true)?;
+        return Some(format!("{scheme}://[{host}]:{port}"));
+    }
+
+    let is_ipv6 = infer_tunnel_ipv6(raw).or(fallback_ipv6).unwrap_or(false);
+    let scheme = normalize_tunnel_scheme(raw_scheme, is_ipv6)?;
+
+    if let Ok(url) = url::Url::parse(raw) {
+        let host = url.host_str()?;
+        let host = if is_ipv6 {
+            format!("[{host}]")
+        } else {
+            host.to_string()
+        };
+
+        return Some(match url.port_or_known_default() {
+            Some(port) => format!("{scheme}://{host}:{port}"),
+            None => format!("{scheme}://{host}"),
+        });
+    }
+
+    let (host, raw_port) = rest.rsplit_once(':')?;
+    let port = normalize_tunnel_port(raw_port, is_ipv6)?;
+    Some(format!("{scheme}://{host}:{port}"))
+}
+
+impl Url {
+    pub fn is_ipv6_tunnel_endpoint(&self) -> bool {
+        infer_tunnel_ipv6(&self.url).unwrap_or(false)
+    }
+
+    pub fn normalized_tunnel_display(&self) -> String {
+        normalize_tunnel_url(&self.url, None).unwrap_or_else(|| self.url.clone())
+    }
+}
+
 impl From<std::net::SocketAddr> for SocketAddr {
     fn from(value: std::net::SocketAddr) -> Self {
         match value {
@@ -322,6 +415,32 @@ impl From<SocketAddr> for std::net::SocketAddr {
 impl Display for SocketAddr {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", std::net::SocketAddr::from(*self))
+    }
+}
+
+impl TunnelInfo {
+    pub fn display_tunnel_type(&self) -> String {
+        let is_ipv6 = infer_tunnel_ipv6(&self.tunnel_type).or_else(|| {
+            self.local_addr
+                .as_ref()
+                .or(self.remote_addr.as_ref())
+                .map(Url::is_ipv6_tunnel_endpoint)
+        });
+
+        if self.tunnel_type.contains("://") {
+            normalize_tunnel_url(&self.tunnel_type, is_ipv6)
+                .unwrap_or_else(|| self.tunnel_type.clone())
+        } else {
+            is_ipv6
+                .and_then(|is_ipv6| normalize_tunnel_scheme(&self.tunnel_type, is_ipv6))
+                .unwrap_or_else(|| self.tunnel_type.clone())
+        }
+    }
+
+    pub fn display_remote_addr(&self) -> Option<String> {
+        self.remote_addr
+            .as_ref()
+            .map(Url::normalized_tunnel_display)
     }
 }
 
@@ -395,5 +514,80 @@ impl SecureModeConfig {
             .try_into()
             .map_err(|_| anyhow::anyhow!("invalid public key length: {}", len))?;
         Ok(x25519_dalek::PublicKey::from(k))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{normalize_tunnel_url, TunnelInfo, Url};
+
+    #[test]
+    fn normalize_plain_ipv6_tunnel_url() {
+        let url = Url {
+            url: "tcp://[2001:db8::1]:11010".to_string(),
+        };
+
+        assert_eq!(
+            url.normalized_tunnel_display(),
+            "tcp6://[2001:db8::1]:11010"
+        );
+        assert!(url.is_ipv6_tunnel_endpoint());
+    }
+
+    #[test]
+    fn normalize_composite_ipv6_tunnel_url() {
+        assert_eq!(
+            normalize_tunnel_url("txt-tcp://[2001:db8::1]:11010", None).as_deref(),
+            Some("txt-tcp6://[2001:db8::1]:11010")
+        );
+    }
+
+    #[test]
+    fn recover_malformed_composite_ipv6_tunnel_url() {
+        assert_eq!(
+            normalize_tunnel_url("txt-tcp://[2001:db8::1]:110106", None).as_deref(),
+            Some("txt-tcp6://[2001:db8::1]:11010")
+        );
+    }
+
+    #[test]
+    fn keep_normalized_ipv6_tunnel_url_stable() {
+        assert_eq!(
+            normalize_tunnel_url("tcp6://[2001:db8::1]:11010", None).as_deref(),
+            Some("tcp6://[2001:db8::1]:11010")
+        );
+    }
+
+    #[test]
+    fn tunnel_info_display_tunnel_type_preserves_composite_prefix() {
+        let tunnel = TunnelInfo {
+            tunnel_type: "txt-tcp://[2001:db8::2]:110106".to_string(),
+            local_addr: None,
+            remote_addr: Some(Url {
+                url: "txt://et.example.com".to_string(),
+            }),
+        };
+
+        assert_eq!(
+            tunnel.display_tunnel_type(),
+            "txt-tcp6://[2001:db8::2]:11010"
+        );
+    }
+
+    #[test]
+    fn tunnel_info_display_tunnel_type_uses_remote_addr_fallback() {
+        let tunnel = TunnelInfo {
+            tunnel_type: "tcp".to_string(),
+            local_addr: None,
+            remote_addr: Some(Url {
+                url: "tcp://[2001:db8::2]:11010".to_string(),
+            }),
+        };
+
+        assert_eq!(tunnel.display_tunnel_type(), "tcp6");
+        assert_eq!(
+            tunnel.display_remote_addr().as_deref(),
+            Some("tcp6://[2001:db8::2]:11010")
+        );
     }
 }

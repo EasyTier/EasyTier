@@ -1404,7 +1404,7 @@ impl<'a> CommandHandler<'a> {
                                 "remote_addr: {}, rx_bytes: {}, tx_bytes: {}, latency_us: {}",
                                 conn.tunnel
                                     .as_ref()
-                                    .map(|t| t.remote_addr.clone().unwrap_or_default())
+                                    .and_then(|t| t.display_remote_addr())
                                     .unwrap_or_default(),
                                 conn.stats.as_ref().map(|s| s.rx_bytes).unwrap_or_default(),
                                 conn.stats.as_ref().map(|s| s.tx_bytes).unwrap_or_default(),
