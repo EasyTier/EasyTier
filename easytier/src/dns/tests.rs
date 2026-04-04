@@ -12,7 +12,6 @@ use hickory_proto::runtime::TokioRuntimeProvider;
 use hickory_proto::udp::UdpClientStream;
 use tokio::sync::Notify;
 
-use crate::common::config::ConfigLoader;
 use crate::common::global_ctx::tests::get_mock_global_ctx;
 use crate::connector::udp_hole_punch::tests::replace_stun_info_collector;
 use crate::dns::node::DnsNode;

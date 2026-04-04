@@ -1,6 +1,7 @@
 use std::{
     collections::{hash_map::DefaultHasher, HashMap},
     hash::Hasher,
+    iter,
     net::{IpAddr, SocketAddr},
     sync::{Arc, Mutex},
     time::{SystemTime, UNIX_EPOCH},
@@ -30,11 +31,16 @@ use crate::{
     },
     tunnel::matches_protocol,
 };
+#[cfg(feature = "magic-dns")]
+use crate::dns::{
+    config::{DnsExportConfig, DnsGlobalCtxExt},
+    server::DnsServer,
+};
 use crossbeam::atomic::AtomicCell;
 use hmac::{Hmac, Mac};
+use itertools::Itertools;
 use parking_lot::RwLock;
 use sha2::Sha256;
-use crate::dns::server::DnsServer;
 use socket2::Protocol;
 
 pub type NetworkIdentity = crate::common::config::NetworkIdentity;
@@ -204,7 +210,8 @@ pub struct GlobalCtx {
 
     hostname: Mutex<String>,
 
-    dns: RwLock<Option<Arc<DnsServer>>>,
+    #[cfg(feature = "magic-dns")]
+    dns_server: RwLock<Option<Arc<DnsServer>>>,
 
     stun_info_collection: Mutex<Arc<dyn StunInfoCollectorTrait>>,
 
@@ -239,7 +246,7 @@ impl std::fmt::Debug for GlobalCtx {
     }
 }
 
-pub type ArcGlobalCtx = std::sync::Arc<GlobalCtx>;
+pub type ArcGlobalCtx = Arc<GlobalCtx>;
 
 impl GlobalCtx {
     fn derive_feature_flags(flags: &Flags, current: Option<PeerFeatureFlag>) -> PeerFeatureFlag {
@@ -302,7 +309,8 @@ impl GlobalCtx {
                 stun_info_collector.clone(),
             )))),
 
-            dns: RwLock::new(None),
+            #[cfg(feature = "magic-dns")]
+            dns_server: RwLock::new(None),
 
             hostname: Mutex::new(hostname),
 
@@ -420,14 +428,6 @@ impl GlobalCtx {
 
     pub fn get_ip_collector(&self) -> Arc<IPCollector> {
         self.ip_collector.lock().unwrap().as_ref().unwrap().clone()
-    }
-
-    pub fn get_dns(&self) -> Option<Arc<DnsServer>> {
-        self.dns.read().clone()
-    }
-
-    pub fn set_dns(&self, dns: Option<Arc<DnsServer>>) {
-        *self.dns.write() = dns;
     }
 
     pub fn get_hostname(&self) -> String {
@@ -677,6 +677,47 @@ impl GlobalCtx {
         } else {
             false
         }
+    }
+}
+
+#[cfg(feature = "magic-dns")]
+impl DnsGlobalCtxExt for GlobalCtx {
+    fn dns_server(&self) -> Option<Arc<DnsServer>> {
+        self.dns_server.read().clone()
+    }
+
+    fn set_dns_server(&self, dns: Option<Arc<DnsServer>>) {
+        *self.dns_server.write() = dns;
+    }
+
+    fn dns_self_zone(&self) -> crate::dns::config::zone::ZoneConfig {
+        let fqdn = self.config.get_dns().get_fqdn();
+        let ipv4 = self.get_ipv4().map(|ip| ip.address());
+        let ipv6 = self.get_ipv6().map(|ip| ip.address());
+        let ipv6 = ipv6.map(|a| vec![a]).unwrap_or_default();
+
+        crate::dns::config::zone::ZoneConfig::dedicated(
+            Some(self.get_id()),
+            fqdn.clone(),
+            ipv4,
+            ipv6,
+        )
+        .unwrap()
+    }
+
+    fn dns_export_config(&self) -> DnsExportConfig {
+        DnsExportConfig {
+            zones: self
+                .dns_iter_zones()
+                .filter(|z| z.policy.export.is_some()) // TODO: check policies of parent zones
+                .map_into()
+                .collect(),
+            fqdn: self.config.get_dns().get_fqdn().to_string(),
+        }
+    }
+
+    fn dns_iter_zones(&self) -> impl Iterator<Item = crate::dns::config::zone::ZoneConfig> {
+        iter::once(self.dns_self_zone()).chain(self.config.get_dns().zones)
     }
 }
 

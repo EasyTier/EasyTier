@@ -1,4 +1,3 @@
-use crate::common::config::ConfigLoader;
 use crate::common::PeerId;
 use crate::dns::config::{DnsExportConfig, DnsGlobalCtxExt};
 use crate::dns::utils::dirty::DirtyFlag;

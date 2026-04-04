@@ -1,3 +1,12 @@
+use super::env_parser;
+use crate::{
+    common::stun::StunInfoCollector,
+    proto::{
+        acl::Acl,
+        common::{CompressionAlgoPb, PortForwardConfigPb, SecureModeConfig, SocketType},
+    },
+    tunnel::generate_digest_from_str,
+};
 use anyhow::Context;
 use base64::{prelude::BASE64_STANDARD, Engine as _};
 use cfg_if::cfg_if;
@@ -13,23 +22,15 @@ use std::{
 use strum::{Display, EnumString, VariantArray};
 use tokio::io::AsyncReadExt as _;
 
-use crate::{
-    common::stun::StunInfoCollector,
-    dns::config::DnsConfig,
-    proto::{
-        acl::Acl,
-        common::{CompressionAlgoPb, PortForwardConfigPb, SecureModeConfig, SocketType},
-    },
-    tunnel::generate_digest_from_str,
-};
-
-use super::env_parser;
-
 pub type Flags = crate::proto::common::FlagsInConfig;
 
 pub fn gen_default_flags() -> Flags {
-    #[allow(deprecated)]
     Flags {
+        #[allow(deprecated)]
+        quic_listen_port: u32::MAX,
+        #[allow(deprecated)]
+        tld_dns_zone: "".to_string(),
+
         default_protocol: "tcp".to_string(),
         dev_name: "".to_string(),
         enable_encryption: true,
@@ -64,9 +65,6 @@ pub fn gen_default_flags() -> Flags {
         multi_thread_count: 2,
         encryption_algorithm: EncryptionAlgorithm::default().to_string(),
         disable_sym_hole_punching: false,
-        tld_dns_zone: "".to_string(),
-
-        quic_listen_port: u32::MAX,
         need_p2p: false,
         instance_recv_bps_limit: u64::MAX,
     }
@@ -119,8 +117,17 @@ impl Default for EncryptionAlgorithm {
     }
 }
 
+cfg_if! {
+    if #[cfg(feature = "magic-dns")] {
+        use crate::dns::config::{DnsConfig, DnsConfigLoaderExt};
+    } else {
+        #[auto_impl::auto_impl(Box, &)]
+        pub trait DnsConfigLoaderExt {}
+    }
+}
+
 #[auto_impl::auto_impl(Box, &)]
-pub trait ConfigLoader: Send + Sync {
+pub trait ConfigLoader: Send + Sync + DnsConfigLoaderExt {
     fn get_id(&self) -> uuid::Uuid;
     fn set_id(&self, id: uuid::Uuid);
 
@@ -203,14 +210,8 @@ pub trait ConfigLoader: Send + Sync {
     }
     fn set_credential_file(&self, _path: Option<std::path::PathBuf>) {}
 
-    fn get_dns(&self) -> DnsConfig;
-    fn set_dns(&self, dns: DnsConfig);
-
     fn get_hostname(&self) -> String;
     fn set_hostname(&self, hostname: &str);
-
-    fn get_fqdn(&self) -> String;
-    fn set_fqdn(&self, fqdn: &str);
 
     fn dump(&self) -> String;
 }
@@ -450,6 +451,7 @@ struct Config {
     peer: Option<Vec<PeerConfig>>,
     proxy_network: Option<Vec<ProxyNetworkConfig>>,
 
+    #[cfg(feature = "magic-dns")]
     dns: DnsConfig,
 
     vpn_portal_config: Option<VpnPortalConfig>,
@@ -532,6 +534,28 @@ impl TomlConfigLoader {
         }
 
         serde_json::from_value(serde_json::Value::Object(merged_hashmap)).unwrap()
+    }
+}
+
+impl DnsConfigLoaderExt for TomlConfigLoader {
+    cfg_if! {
+        if #[cfg(feature = "magic-dns")] {
+            fn get_dns(&self) -> DnsConfig {
+                self.config.lock().unwrap().dns.clone()
+            }
+
+            fn set_dns(&self, dns: DnsConfig) {
+                self.config.lock().unwrap().dns = dns;
+            }
+
+            fn get_fqdn(&self) -> String {
+                self.config.lock().unwrap().dns.get_fqdn().to_string()
+            }
+
+            fn set_fqdn(&self, fqdn: &str) {
+                self.config.lock().unwrap().dns.set_fqdn(fqdn);
+            }
+        }
     }
 }
 
@@ -849,28 +873,12 @@ impl ConfigLoader for TomlConfigLoader {
         self.config.lock().unwrap().credential_file = path;
     }
 
-    fn get_dns(&self) -> DnsConfig {
-        self.config.lock().unwrap().dns.clone()
-    }
-
-    fn set_dns(&self, dns: DnsConfig) {
-        self.config.lock().unwrap().dns = dns;
-    }
-
     fn get_hostname(&self) -> String {
         self.config.lock().unwrap().dns.get_name().to_string()
     }
 
     fn set_hostname(&self, hostname: &str) {
         self.config.lock().unwrap().dns.set_name(hostname);
-    }
-
-    fn get_fqdn(&self) -> String {
-        self.config.lock().unwrap().dns.get_fqdn().to_string()
-    }
-
-    fn set_fqdn(&self, fqdn: &str) {
-        self.config.lock().unwrap().dns.set_fqdn(fqdn);
     }
 
     fn dump(&self) -> String {

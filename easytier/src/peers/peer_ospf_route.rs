@@ -40,7 +40,6 @@ use super::{
     PeerPacketFilter,
 };
 use crate::common::config::ConfigLoader;
-use crate::dns::config::DnsGlobalCtxExt;
 use crate::utils::DeterministicDigest;
 use crate::{
     common::{
@@ -73,6 +72,7 @@ use crate::{
 };
 
 use atomic_shim::AtomicU64;
+use cfg_if::cfg_if;
 use itertools::Itertools;
 
 static SERVICE_ID: u32 = 7;
@@ -170,9 +170,11 @@ fn is_foreign_network_info_newer(
 }
 
 impl RoutePeerInfo {
-    #[allow(deprecated)]
     pub fn new() -> Self {
         Self {
+            #[allow(deprecated)]
+            quic_port: None,
+
             peer_id: 0,
             inst_id: Some(uuid::Uuid::nil().into()),
             cost: 0,
@@ -193,7 +195,6 @@ impl RoutePeerInfo {
             groups: Vec::new(),
             dns: Default::default(),
 
-            quic_port: None,
             noise_static_pubkey: Vec::new(),
             trusted_credential_pubkeys: Vec::new(),
         }
@@ -220,6 +221,14 @@ impl RoutePeerInfo {
             .and_then(|cfg| cfg.public_key().ok())
             .map(|pk| pk.as_bytes().to_vec())
             .unwrap_or_default();
+        cfg_if! {
+            if #[cfg(feature = "magic-dns")] {
+                use crate::dns::config::DnsGlobalCtxExt;
+                let dns = global_ctx.dns_export_config().digest();
+            } else {
+                let dns = Default::default();
+            }
+        }
         Self {
             peer_id: my_peer_id,
             inst_id: Some(global_ctx.get_id().into()),
@@ -252,7 +261,7 @@ impl RoutePeerInfo {
             ipv6_addr: global_ctx.get_ipv6().map(|x| x.into()),
 
             groups: global_ctx.get_acl_groups(my_peer_id),
-            dns: global_ctx.dns_export_config().digest(),
+            dns,
 
             noise_static_pubkey,
 
@@ -320,7 +329,7 @@ impl From<RoutePeerInfo> for crate::proto::api::instance::Route {
             next_hop_peer_id: 0, // next_hop_peer_id is calculated in RouteTable.
             cost: 0,             // cost is calculated in RouteTable.
             path_latency: 0,     // path_latency is calculated in RouteTable.
-            proxy_cidrs: val.proxy_cidrs.clone(),
+            proxy_cidrs: val.proxy_cidrs,
             hostname: val.hostname.unwrap_or_default(),
             stun_info: {
                 let mut stun_info = StunInfo::default();

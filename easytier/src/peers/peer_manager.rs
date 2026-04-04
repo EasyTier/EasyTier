@@ -18,6 +18,20 @@ use tokio::{
     task::JoinSet,
 };
 
+use super::{
+    create_packet_recv_chan,
+    encrypt::{Encryptor, NullCipher},
+    foreign_network_client::ForeignNetworkClient,
+    foreign_network_manager::{ForeignNetworkManager, GlobalForeignNetworkAccessor},
+    peer_conn::PeerConnId,
+    peer_map::PeerMap,
+    peer_ospf_route::PeerRoute,
+    peer_rpc::PeerRpcManager,
+    peer_task::ExternalTaskSignal,
+    relay_peer_map::RelayPeerMap,
+    route_trait::{ArcRoute, Route},
+    BoxNicPacketFilter, BoxPeerPacketFilter, PacketRecvChan, PacketRecvChanReceiver,
+};
 use crate::{
     common::{
         compressor::{Compressor as _, DefaultCompressor},
@@ -56,21 +70,6 @@ use crate::{
         packet_def::{CompressorAlgo, PacketType, ZCPacket},
         Tunnel, TunnelConnector,
     },
-};
-
-use super::{
-    create_packet_recv_chan,
-    encrypt::{Encryptor, NullCipher},
-    foreign_network_client::ForeignNetworkClient,
-    foreign_network_manager::{ForeignNetworkManager, GlobalForeignNetworkAccessor},
-    peer_conn::PeerConnId,
-    peer_map::PeerMap,
-    peer_ospf_route::PeerRoute,
-    peer_rpc::PeerRpcManager,
-    peer_task::ExternalTaskSignal,
-    relay_peer_map::RelayPeerMap,
-    route_trait::{ArcRoute, Route},
-    BoxNicPacketFilter, BoxPeerPacketFilter, PacketRecvChan, PacketRecvChanReceiver,
 };
 
 struct RpcTransport {
@@ -1986,7 +1985,6 @@ impl PeerManager {
 
 #[cfg(test)]
 mod tests {
-
     use std::{
         fmt::Debug,
         sync::Arc,

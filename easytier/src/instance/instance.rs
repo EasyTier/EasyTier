@@ -25,6 +25,7 @@ use crate::connector::direct::DirectConnectorManager;
 use crate::connector::manual::{ConnectorManagerRpcService, ManualConnectorManager};
 use crate::connector::tcp_hole_punch::TcpHolePunchConnector;
 use crate::connector::udp_hole_punch::UdpHolePunchConnector;
+#[cfg(feature = "magic-dns")]
 use crate::dns::node::DnsNode;
 use crate::gateway::icmp_proxy::IcmpProxy;
 #[cfg(feature = "kcp")]
@@ -1382,8 +1383,6 @@ impl Instance {
             .run_for_mobile(fd)
             .await
             .with_context(|| "add ip failed")?;
-
-        self.dns.start();
 
         Self::use_new_nic_ctx(nic_ctx.clone(), new_nic_ctx).await;
         Ok(())

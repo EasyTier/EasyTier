@@ -10,7 +10,7 @@ use url::Url;
 mod dns;
 pub use dns::*;
 mod policy;
-mod zone;
+pub mod zone;
 
 pub static DNS_DEFAULT_TLD: LazyLock<LowerName> =
     LazyLock::new(|| LowerName::from_str("et.net.").unwrap());

@@ -1,6 +1,5 @@
 use crate::common::global_ctx::{ArcGlobalCtx, GlobalCtxEvent};
-use crate::common::scoped_task::ScopedTask;
-use crate::dns::config::{DNS_SERVER_ELECTION_INTERVAL, DNS_SERVER_RPC_ADDR};
+use crate::dns::config::{DnsGlobalCtxExt, DNS_SERVER_ELECTION_INTERVAL, DNS_SERVER_RPC_ADDR};
 use crate::dns::peer_mgr::DnsPeerMgr;
 use crate::dns::server::DnsServer;
 use crate::instance::instance::ArcNicCtx;
@@ -114,14 +113,14 @@ impl DnsNode {
 
             server.register(&rpc);
 
-            self.global_ctx.set_dns(Some(server.clone()));
+            self.global_ctx.set_dns_server(Some(server.clone()));
             tokio::join!(
                 self.peer_mgr
                     .add_nic_packet_process_pipeline(Box::new(server.clone())),
                 server.run(token.child_token())
             );
 
-            self.global_ctx.set_dns(None);
+            self.global_ctx.set_dns_server(None);
             let _ = self
                 .peer_mgr
                 .remove_nic_packet_process_pipeline(server.id())

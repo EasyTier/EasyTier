@@ -1,7 +1,7 @@
-use crate::common::global_ctx::GlobalCtx;
 use crate::dns::config::policy::DnsPolicyConfig;
 use crate::dns::config::zone::ZoneConfig;
 use crate::dns::config::{DNS_DEFAULT_ADDRESS, DNS_DEFAULT_TLD};
+use crate::dns::server::DnsServer;
 use crate::dns::utils::addr::NameServerAddrGroup;
 use crate::dns::utils::parse;
 use crate::proto::dns::GetExportConfigResponse;
@@ -9,10 +9,10 @@ use derivative::Derivative;
 use gethostname::gethostname;
 use hickory_proto::rr::{LowerName, Name};
 use hickory_proto::xfer::Protocol;
-use itertools::Itertools;
 use serde::{Deserialize, Deserializer, Serialize};
 use std::collections::HashMap;
 use std::iter;
+use std::sync::Arc;
 
 #[derive(Derivative, Debug, Clone, Deserialize, Serialize, PartialEq)]
 #[derivative(Default)]
@@ -79,36 +79,21 @@ impl DnsConfig {
     }
 }
 
+#[auto_impl::auto_impl(Box, &)]
+pub trait DnsConfigLoaderExt {
+    fn get_dns(&self) -> DnsConfig;
+    fn set_dns(&self, dns: DnsConfig);
+
+    fn get_fqdn(&self) -> String;
+    fn set_fqdn(&self, fqdn: &str);
+}
+
 pub type DnsExportConfig = GetExportConfigResponse;
 
 pub trait DnsGlobalCtxExt {
+    fn dns_server(&self) -> Option<Arc<DnsServer>>; // TODO: remove this
+    fn set_dns_server(&self, dns: Option<Arc<DnsServer>>); // TODO: remove this
     fn dns_self_zone(&self) -> ZoneConfig;
     fn dns_export_config(&self) -> DnsExportConfig;
     fn dns_iter_zones(&self) -> impl Iterator<Item = ZoneConfig>;
-}
-
-impl DnsGlobalCtxExt for GlobalCtx {
-    fn dns_self_zone(&self) -> ZoneConfig {
-        let fqdn = self.config.get_dns().get_fqdn();
-        let ipv4 = self.get_ipv4().map(|ip| ip.address());
-        let ipv6 = self.get_ipv6().map(|ip| ip.address());
-        let ipv6 = ipv6.map(|a| vec![a]).unwrap_or_default();
-
-        ZoneConfig::dedicated(Some(self.get_id()), fqdn.clone(), ipv4, ipv6).unwrap()
-    }
-
-    fn dns_export_config(&self) -> DnsExportConfig {
-        DnsExportConfig {
-            zones: self
-                .dns_iter_zones()
-                .filter(|z| z.policy.export.is_some()) // TODO: check policies of parent zones
-                .map_into()
-                .collect(),
-            fqdn: self.config.get_dns().get_fqdn().to_string(),
-        }
-    }
-
-    fn dns_iter_zones(&self) -> impl Iterator<Item = ZoneConfig> {
-        iter::once(self.dns_self_zone()).chain(self.config.get_dns().zones)
-    }
 }

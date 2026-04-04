@@ -1,4 +1,3 @@
-use crate::common::config::ConfigLoader;
 use crate::common::global_ctx::ArcGlobalCtx;
 use crate::dns::node_mgr::DnsNodeMgr;
 use crate::dns::system;

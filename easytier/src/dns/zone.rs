@@ -369,7 +369,7 @@ mod tests {
         let addr = socket.local_addr()?;
         println!("listening on {}", addr);
 
-        let mut server = ServerFuture::new(catalog.clone());
+        let mut server = ServerFuture::new(catalog);
         server.register_socket(socket);
         spawn(async move {
             if let Err(e) = server.block_until_done().await {
