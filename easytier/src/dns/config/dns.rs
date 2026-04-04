@@ -82,10 +82,7 @@ impl DnsConfig {
 #[auto_impl::auto_impl(Box, &)]
 pub trait DnsConfigLoaderExt {
     fn get_dns(&self) -> DnsConfig;
-    fn set_dns(&self, dns: DnsConfig);
-
-    fn get_fqdn(&self) -> String;
-    fn set_fqdn(&self, fqdn: &str);
+    fn set_dns(&self, dns: Option<DnsConfig>);
 }
 
 pub type DnsExportConfig = GetExportConfigResponse;

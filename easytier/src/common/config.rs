@@ -452,7 +452,7 @@ struct Config {
     proxy_network: Option<Vec<ProxyNetworkConfig>>,
 
     #[cfg(feature = "magic-dns")]
-    dns: DnsConfig,
+    dns: Option<DnsConfig>,
 
     vpn_portal_config: Option<VpnPortalConfig>,
 
@@ -541,19 +541,11 @@ impl DnsConfigLoaderExt for TomlConfigLoader {
     cfg_if! {
         if #[cfg(feature = "magic-dns")] {
             fn get_dns(&self) -> DnsConfig {
-                self.config.lock().unwrap().dns.clone()
+                self.config.lock().unwrap().dns.clone().unwrap_or_default()
             }
 
-            fn set_dns(&self, dns: DnsConfig) {
+            fn set_dns(&self, dns: Option<DnsConfig>) {
                 self.config.lock().unwrap().dns = dns;
-            }
-
-            fn get_fqdn(&self) -> String {
-                self.config.lock().unwrap().dns.get_fqdn().to_string()
-            }
-
-            fn set_fqdn(&self, fqdn: &str) {
-                self.config.lock().unwrap().dns.set_fqdn(fqdn);
             }
         }
     }

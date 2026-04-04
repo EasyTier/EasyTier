@@ -39,7 +39,7 @@ pub async fn prepare_env_with_tld_dns_zone(
     if let Some(zone) = tld_dns_zone {
         dns_config.domain = zone.parse().expect("invalid test dns zone");
     }
-    ctx.config.set_dns(dns_config);
+    ctx.config.set_dns(Some(dns_config));
 
     let (s, r) = create_packet_recv_chan();
     let peer_mgr = Arc::new(PeerManager::new(RouteAlgoType::Ospf, ctx, s));
