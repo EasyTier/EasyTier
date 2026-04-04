@@ -10,8 +10,8 @@ use async_trait::async_trait;
 use derive_more::{From, TryInto};
 use futures::{Sink, Stream};
 use socket2::Protocol;
-use std::fmt::Debug;
-use strum::{Display, EnumString, VariantArray};
+use std::fmt::{self, Debug};
+use strum::{EnumString, VariantArray};
 use tokio::time::error::Elapsed;
 
 use self::packet_def::ZCPacket;
@@ -284,7 +284,7 @@ struct IpSchemeAttributes {
     port_offset: u16,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Display, EnumString, VariantArray)]
+#[derive(Debug, Clone, Copy, PartialEq, EnumString, VariantArray)]
 #[strum(serialize_all = "lowercase")]
 pub enum IpScheme {
     Tcp,
@@ -302,6 +302,28 @@ pub enum IpScheme {
 }
 
 impl IpScheme {
+    /// Returns the canonical scheme string as a `&'static str`.
+    ///
+    /// This duplicates `Display` (from strum) intentionally: callers like
+    /// `split_tunnel_scheme` need a `&'static str`, which `to_string()`
+    /// cannot provide.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Tcp => "tcp",
+            Self::Udp => "udp",
+            #[cfg(feature = "wireguard")]
+            Self::Wg => "wg",
+            #[cfg(feature = "quic")]
+            Self::Quic => "quic",
+            #[cfg(feature = "websocket")]
+            Self::Ws => "ws",
+            #[cfg(feature = "websocket")]
+            Self::Wss => "wss",
+            #[cfg(feature = "faketcp")]
+            Self::FakeTcp => "faketcp",
+        }
+    }
+
     const fn attributes(self) -> IpSchemeAttributes {
         let (protocol, port_offset) = match self {
             Self::Tcp => (Protocol::TCP, 0),
@@ -338,6 +360,12 @@ impl IpScheme {
             Self::Wss => 443,
             _ => 11010 + self.port_offset(),
         }
+    }
+}
+
+impl fmt::Display for IpScheme {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
     }
 }
 

@@ -5,8 +5,9 @@ use std::{
 
 use anyhow::Context;
 use base64::{prelude::BASE64_STANDARD, Engine as _};
+use strum::VariantArray;
 
-use crate::tunnel::packet_def::CompressorAlgo;
+use crate::tunnel::{packet_def::CompressorAlgo, IpScheme};
 
 include!(concat!(env!("OUT_DIR"), "/common.rs"));
 
@@ -284,20 +285,19 @@ impl fmt::Display for Url {
     }
 }
 
-const IPV6_TUNNEL_SCHEMES: &[&str] = &["faketcp", "quic", "wss", "tcp", "udp", "ws", "wg"];
-
 fn split_tunnel_scheme(raw_scheme: &str) -> Option<(&str, &'static str, bool)> {
-    for scheme in IPV6_TUNNEL_SCHEMES {
+    for scheme in IpScheme::VARIANTS {
+        let scheme = scheme.as_str();
         let ipv6_suffix = format!("{scheme}6");
         if let Some(prefix) = raw_scheme.strip_suffix(&ipv6_suffix) {
             if prefix.is_empty() || prefix.ends_with('-') {
-                return Some((prefix, *scheme, true));
+                return Some((prefix, scheme, true));
             }
         }
 
         if let Some(prefix) = raw_scheme.strip_suffix(scheme) {
             if prefix.is_empty() || prefix.ends_with('-') {
-                return Some((prefix, *scheme, false));
+                return Some((prefix, scheme, false));
             }
         }
     }
@@ -529,6 +529,14 @@ impl SecureModeConfig {
 mod tests {
     use super::{normalize_tunnel_url, TunnelInfo, Url};
 
+    fn assert_ipv6_tunnel_normalization(scheme: &str, port: u16) {
+        let expected = format!("{scheme}6://[2001:db8::1]:{port}");
+        assert_eq!(
+            normalize_tunnel_url(&format!("{scheme}://[2001:db8::1]:{port}"), None).as_deref(),
+            Some(expected.as_str())
+        );
+    }
+
     #[test]
     fn normalize_plain_ipv6_tunnel_url() {
         let url = Url {
@@ -540,6 +548,27 @@ mod tests {
             "tcp6://[2001:db8::1]:11010"
         );
         assert!(url.is_ipv6_tunnel_endpoint());
+    }
+
+    #[test]
+    fn normalize_all_enabled_ipv6_tunnel_urls() {
+        assert_ipv6_tunnel_normalization("tcp", 11010);
+        assert_ipv6_tunnel_normalization("udp", 11010);
+
+        #[cfg(feature = "wireguard")]
+        assert_ipv6_tunnel_normalization("wg", 11011);
+
+        #[cfg(feature = "quic")]
+        assert_ipv6_tunnel_normalization("quic", 11012);
+
+        #[cfg(feature = "websocket")]
+        assert_ipv6_tunnel_normalization("ws", 80);
+
+        #[cfg(feature = "websocket")]
+        assert_ipv6_tunnel_normalization("wss", 443);
+
+        #[cfg(feature = "faketcp")]
+        assert_ipv6_tunnel_normalization("faketcp", 11013);
     }
 
     #[test]
