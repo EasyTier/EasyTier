@@ -279,17 +279,17 @@ mod tests {
         let mut authorities = Vec::new();
         authorities.extend(zone.create_memory_authority().into_iter());
         authorities.extend(zone.create_forward_authority().into_iter());
-        catalog.upsert(zone.origin.clone().into(), authorities);
+        catalog.upsert(zone.origin.clone(), authorities);
 
         let mut record = Record::update0(zone.origin.clone().into(), 60, RecordType::A);
         record.set_data(RData::A(rdata::a::A("100.100.100.100".parse()?)));
-        assert_eq!(record, **records.iter().next().unwrap());
+        assert_eq!(record, **records.first().unwrap());
 
         let zone = zones
             .extract_if(.., |z| z.origin.to_string() == "google.com")
             .next()
             .unwrap();
-        assert_eq!(zone.policy.export.is_some(), true);
+        assert!(zone.policy.export.is_some());
         let zone = proto::dns::ZoneData::from(zone);
         println!("{}", sep);
         println!("{}", zone);
@@ -307,7 +307,7 @@ mod tests {
         assert_eq!(records.len(), 4);
 
         let mut record = Record::update0(
-            Name::from_str("www")?.append_domain(&*zone.origin)?,
+            Name::from_str("www")?.append_domain(&zone.origin)?,
             60,
             RecordType::A,
         );
@@ -321,12 +321,12 @@ mod tests {
         );
 
         let mut record = Record::update0(
-            Name::from_str("app")?.append_domain(&*zone.origin)?,
+            Name::from_str("app")?.append_domain(&zone.origin)?,
             10,
             RecordType::CNAME,
         );
         record.set_data(RData::CNAME(rdata::name::CNAME(
-            Name::from_str("www")?.append_domain(&*zone.origin)?,
+            Name::from_str("www")?.append_domain(&zone.origin)?,
         )));
         assert_eq!(
             record,
@@ -341,7 +341,7 @@ mod tests {
         let mut authorities = Vec::new();
         authorities.extend(zone.create_memory_authority().into_iter());
         authorities.extend(zone.create_forward_authority().into_iter());
-        catalog.upsert(zone.origin.clone().into(), authorities);
+        catalog.upsert(zone.origin.clone(), authorities);
 
         let mut query = Message::new();
         query.set_id(0x1234);
