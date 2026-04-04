@@ -492,9 +492,7 @@ impl NetworkConfig {
                 .parse()
                 .with_context(|| format!("failed to parse instance id: {:?}", self.instance_id))?,
         );
-        if let Some(n) = self.hostname.as_ref() {
-            cfg.set_hostname(n)
-        }
+        cfg.set_hostname(self.hostname.clone());
         cfg.set_dhcp(self.dhcp.unwrap_or_default());
         cfg.set_inst_name(self.network_name.clone().unwrap_or_default());
 
@@ -1035,7 +1033,8 @@ mod tests {
             config.set_dhcp(rng.gen_bool(0.5));
 
             if rng.gen_bool(0.7) {
-                config.set_hostname(&format!("host-{}", rng.gen::<u16>()));
+                let hostname = format!("host-{}", rng.gen::<u16>());
+                config.set_hostname(Some(hostname));
             }
 
             config.set_network_identity(crate::common::config::NetworkIdentity::new(

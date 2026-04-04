@@ -797,10 +797,9 @@ impl NetworkOptions {
     }
 
     fn merge_into(&self, cfg: &TomlConfigLoader) -> anyhow::Result<()> {
-        // TODO: remove hostname
-        // if self.hostname.is_some() {
-        //     cfg.set_hostname(&self.hostname.clone());
-        // }
+        if self.hostname.is_some() {
+            cfg.set_hostname(self.hostname.clone());
+        }
 
         let old_ns = cfg.get_network_identity();
         let network_name = self.network_name.clone().unwrap_or(old_ns.network_name);
