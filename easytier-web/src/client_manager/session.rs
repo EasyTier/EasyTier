@@ -302,18 +302,18 @@ impl SessionRpcService {
             (user_id, Vec::new(), String::new(), false, None)
         };
 
-        if webhook_validated {
-            if data.applied_config_revision.as_deref() != Some(webhook_config_revision.as_str()) {
-                Self::reconcile_managed_network_configs(
-                    &storage,
-                    user_id,
-                    machine_id,
-                    webhook_managed_network_configs,
-                )
-                .await
-                .map_err(rpc_types::error::Error::from)?;
-                data.applied_config_revision = Some(webhook_config_revision);
-            }
+        if webhook_validated
+            && data.applied_config_revision.as_deref() != Some(webhook_config_revision.as_str())
+        {
+            Self::reconcile_managed_network_configs(
+                &storage,
+                user_id,
+                machine_id,
+                webhook_managed_network_configs,
+            )
+            .await
+            .map_err(rpc_types::error::Error::from)?;
+            data.applied_config_revision = Some(webhook_config_revision);
         }
 
         if data.req.replace(req.clone()).is_none() {

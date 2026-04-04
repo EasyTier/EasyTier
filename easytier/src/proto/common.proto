@@ -222,6 +222,7 @@ message PeerFeatureFlag {
   bool no_relay_quic = 7;
   bool is_credential_peer = 8;
   bool need_p2p = 9;
+  bool disable_p2p = 10;
 }
 
 enum SocketType {

@@ -420,7 +420,8 @@ impl PeerTaskLauncher for TcpHolePunchPeerTaskLauncher {
     #[tracing::instrument(skip(self, data))]
     async fn collect_peers_need_task(&self, data: &Self::Data) -> Vec<Self::CollectPeerItem> {
         let global_ctx = data.peer_mgr.get_global_ctx();
-        let lazy_p2p = global_ctx.get_flags().lazy_p2p;
+        let flags = global_ctx.get_flags();
+        let lazy_p2p = flags.lazy_p2p;
         let my_tcp_nat_type = NatType::try_from(
             global_ctx
                 .get_stun_info_collector()
@@ -443,10 +444,19 @@ impl PeerTaskLauncher for TcpHolePunchPeerTaskLauncher {
 
         let mut peers_to_connect = Vec::new();
         for route in data.peer_mgr.list_routes().await.iter() {
-            let static_allowed =
-                should_background_p2p_with_peer(route.feature_flag.as_ref(), false, lazy_p2p);
-            let dynamic_allowed = should_try_p2p_with_peer(route.feature_flag.as_ref(), false)
-                && data.peer_mgr.has_recent_traffic(route.peer_id, now);
+            let static_allowed = should_background_p2p_with_peer(
+                route.feature_flag.as_ref(),
+                false,
+                lazy_p2p,
+                flags.disable_p2p,
+                flags.need_p2p,
+            );
+            let dynamic_allowed = should_try_p2p_with_peer(
+                route.feature_flag.as_ref(),
+                false,
+                flags.disable_p2p,
+                flags.need_p2p,
+            ) && data.peer_mgr.has_recent_traffic(route.peer_id, now);
             if !static_allowed && !dynamic_allowed {
                 continue;
             }
@@ -554,10 +564,9 @@ impl TcpHolePunchConnector {
 
     pub async fn run(&mut self) -> Result<(), Error> {
         let flags = self.peer_mgr.get_global_ctx().get_flags();
-        if flags.disable_p2p || flags.disable_tcp_hole_punching {
+        if flags.disable_tcp_hole_punching {
             tracing::debug!(
-                "tcp hole punch disabled by disable_p2p(={}) or disable_tcp_hole_punching(={});",
-                flags.disable_p2p,
+                "tcp hole punch disabled by disable_tcp_hole_punching(={});",
                 flags.disable_tcp_hole_punching
             );
             return Ok(());
