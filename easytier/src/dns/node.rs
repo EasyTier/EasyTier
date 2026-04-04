@@ -2,7 +2,6 @@ use crate::common::global_ctx::{ArcGlobalCtx, GlobalCtxEvent};
 use crate::dns::config::{DnsGlobalCtxExt, DNS_SERVER_ELECTION_INTERVAL, DNS_SERVER_RPC_ADDR};
 use crate::dns::peer_mgr::DnsPeerMgr;
 use crate::dns::server::DnsServer;
-use crate::instance::instance::ArcNicCtx;
 use crate::peers::peer_manager::PeerManager;
 use crate::peers::NicPacketFilter;
 use crate::proto::dns::{DnsNodeMgrRpcClientFactory, DnsPeerMgrRpcServer, HeartbeatRequest};
@@ -18,6 +17,9 @@ use tokio::time::{sleep, sleep_until, Instant};
 use tokio_util::sync::CancellationToken;
 use tracing::instrument;
 use uuid::Uuid;
+
+#[cfg(feature = "tun")]
+use crate::instance::instance::ArcNicCtx;
 
 #[derive(Debug, Clone)]
 pub struct DnsNode {
@@ -51,6 +53,7 @@ impl DnsNode {
 
         Self {
             mgr,
+            #[cfg(feature = "tun")]
             nic_ctx,
             peer_mgr,
             global_ctx,

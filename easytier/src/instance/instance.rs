@@ -562,6 +562,7 @@ impl Instance {
         let dns = Arc::new(DnsNode::new(
             peer_manager.clone(),
             global_ctx.clone(),
+            #[cfg(feature = "tun")]
             nic_ctx.clone(),
         ));
 

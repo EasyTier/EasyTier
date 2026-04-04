@@ -3,7 +3,6 @@ use crate::dns::node_mgr::DnsNodeMgr;
 use crate::dns::system;
 use crate::dns::utils::addr::NameServerAddr;
 use crate::dns::utils::response::ResponseHandle;
-use crate::instance::instance::{ArcNicCtx, NicCtx};
 use crate::peer_center::instance::PeerCenterPeerManagerTrait;
 use crate::peers::peer_manager::PeerManager;
 use crate::peers::NicPacketFilter;
@@ -33,6 +32,9 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4};
 use std::{sync::Arc, time::Duration};
 use tokio_util::sync::CancellationToken;
 use tracing::{instrument, Instrument};
+
+#[cfg(feature = "tun")]
+use crate::instance::instance::{ArcNicCtx, NicCtx};
 
 #[derive(Clone)]
 pub struct DynamicCatalog {
@@ -94,6 +96,7 @@ impl DnsServer {
     ) -> Self {
         Self {
             mgr: Arc::new(DnsNodeMgr::new()),
+            #[cfg(feature = "tun")]
             nic_ctx,
             peer_mgr,
             global_ctx,
