@@ -428,7 +428,8 @@ impl PeerTaskLauncher for UdpHolePunchPeerTaskLauncher {
         }
 
         let my_peer_id = data.peer_mgr.my_peer_id();
-        let lazy_p2p = data.peer_mgr.get_global_ctx().get_flags().lazy_p2p;
+        let flags = data.peer_mgr.get_global_ctx().get_flags();
+        let lazy_p2p = flags.lazy_p2p;
         let now = Instant::now();
 
         data.blacklist.cleanup();
@@ -438,10 +439,19 @@ impl PeerTaskLauncher for UdpHolePunchPeerTaskLauncher {
         // 2. peers is full cone (any restricted type);
         // 3. peers not in blacklist;
         for route in data.peer_mgr.list_routes().await.iter() {
-            let static_allowed =
-                should_background_p2p_with_peer(route.feature_flag.as_ref(), false, lazy_p2p);
-            let dynamic_allowed = should_try_p2p_with_peer(route.feature_flag.as_ref(), false)
-                && data.peer_mgr.has_recent_traffic(route.peer_id, now);
+            let static_allowed = should_background_p2p_with_peer(
+                route.feature_flag.as_ref(),
+                false,
+                lazy_p2p,
+                flags.disable_p2p,
+                flags.need_p2p,
+            );
+            let dynamic_allowed = should_try_p2p_with_peer(
+                route.feature_flag.as_ref(),
+                false,
+                flags.disable_p2p,
+                flags.need_p2p,
+            ) && data.peer_mgr.has_recent_traffic(route.peer_id, now);
             if !static_allowed && !dynamic_allowed {
                 continue;
             }
@@ -565,9 +575,6 @@ impl UdpHolePunchConnector {
     pub async fn run(&mut self) -> Result<(), Error> {
         let global_ctx = self.peer_mgr.get_global_ctx();
 
-        if global_ctx.get_flags().disable_p2p {
-            return Ok(());
-        }
         if global_ctx.get_flags().disable_udp_hole_punching {
             return Ok(());
         }

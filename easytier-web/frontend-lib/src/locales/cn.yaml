@@ -117,7 +117,7 @@ disable_quic_input: 禁用 QUIC 输入
 disable_quic_input_help: 禁用 QUIC 入站流量，其他开启 QUIC 代理的节点仍然使用 TCP 连接到本节点。
 
 disable_p2p: 禁用 P2P
-disable_p2p_help: 禁用 P2P 模式，所有流量通过手动指定的服务器中转。
+disable_p2p_help: 禁用普通自动 P2P。开启 need-p2p 的节点仍可与当前节点建立 P2P。
 
 p2p_only: 仅 P2P
 p2p_only_help: 仅与已经建立P2P连接的对等节点通信，不通过其他节点中转。

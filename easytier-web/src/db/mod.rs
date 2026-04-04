@@ -154,13 +154,17 @@ impl Storage<(UserIdInDb, Uuid), user_running_network_configs::Model, DbErr> for
 
         use entity::user_running_network_configs as urnc;
 
-        let on_conflict = OnConflict::column(urnc::Column::NetworkInstanceId)
-            .update_columns([
-                urnc::Column::NetworkConfig,
-                urnc::Column::Disabled,
-                urnc::Column::UpdateTime,
-            ])
-            .to_owned();
+        let on_conflict = OnConflict::columns([
+            urnc::Column::UserId,
+            urnc::Column::DeviceId,
+            urnc::Column::NetworkInstanceId,
+        ])
+        .update_columns([
+            urnc::Column::NetworkConfig,
+            urnc::Column::Disabled,
+            urnc::Column::UpdateTime,
+        ])
+        .to_owned();
         let insert_m = urnc::ActiveModel {
             user_id: sea_orm::Set(user_id),
             device_id: sea_orm::Set(device_id.to_string()),
@@ -184,13 +188,14 @@ impl Storage<(UserIdInDb, Uuid), user_running_network_configs::Model, DbErr> for
 
     async fn delete_network_configs(
         &self,
-        (user_id, _): (UserIdInDb, Uuid),
+        (user_id, device_id): (UserIdInDb, Uuid),
         network_inst_ids: &[Uuid],
     ) -> Result<(), DbErr> {
         use entity::user_running_network_configs as urnc;
 
         urnc::Entity::delete_many()
             .filter(urnc::Column::UserId.eq(user_id))
+            .filter(urnc::Column::DeviceId.eq(device_id.to_string()))
             .filter(
                 urnc::Column::NetworkInstanceId
                     .is_in(network_inst_ids.iter().map(|id| id.to_string())),
@@ -203,7 +208,7 @@ impl Storage<(UserIdInDb, Uuid), user_running_network_configs::Model, DbErr> for
 
     async fn update_network_config_state(
         &self,
-        (user_id, _): (UserIdInDb, Uuid),
+        (user_id, device_id): (UserIdInDb, Uuid),
         network_inst_id: Uuid,
         disabled: bool,
     ) -> Result<(), DbErr> {
@@ -211,6 +216,7 @@ impl Storage<(UserIdInDb, Uuid), user_running_network_configs::Model, DbErr> for
 
         urnc::Entity::update_many()
             .filter(urnc::Column::UserId.eq(user_id))
+            .filter(urnc::Column::DeviceId.eq(device_id.to_string()))
             .filter(urnc::Column::NetworkInstanceId.eq(network_inst_id.to_string()))
             .col_expr(urnc::Column::Disabled, Expr::value(disabled))
             .col_expr(
@@ -340,5 +346,61 @@ mod tests {
             .await
             .unwrap();
         assert!(result3.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_user_network_config_same_instance_id_is_scoped_by_device() {
+        let db = Db::memory_db().await;
+        let user_id = db.auto_create_user("user-1").await.unwrap().id;
+        let device1 = uuid::Uuid::new_v4();
+        let device2 = uuid::Uuid::new_v4();
+        let inst_id = uuid::Uuid::new_v4();
+
+        db.insert_or_update_user_network_config(
+            (user_id, device1),
+            inst_id,
+            NetworkConfig {
+                network_name: Some("cfg-1".to_string()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        db.insert_or_update_user_network_config(
+            (user_id, device2),
+            inst_id,
+            NetworkConfig {
+                network_name: Some("cfg-2".to_string()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+
+        let first = db
+            .get_network_config((user_id, device1), &inst_id.to_string())
+            .await
+            .unwrap()
+            .unwrap();
+        let second = db
+            .get_network_config((user_id, device2), &inst_id.to_string())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(first.user_id, user_id);
+        assert_eq!(first.device_id, device1.to_string());
+        assert_eq!(second.user_id, user_id);
+        assert_eq!(second.device_id, device2.to_string());
+
+        let device1_configs = db
+            .list_network_configs((user_id, device1), ListNetworkProps::All)
+            .await
+            .unwrap();
+        let device2_configs = db
+            .list_network_configs((user_id, device2), ListNetworkProps::All)
+            .await
+            .unwrap();
+        assert_eq!(device1_configs.len(), 1);
+        assert_eq!(device2_configs.len(), 1);
     }
 }

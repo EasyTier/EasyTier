@@ -1,4 +1,9 @@
-use std::{collections::HashSet, fmt::Debug, str::FromStr as _, sync::Arc};
+use std::{
+    collections::{HashMap, HashSet},
+    fmt::Debug,
+    str::FromStr as _,
+    sync::Arc,
+};
 
 use anyhow::Context;
 use easytier::{
@@ -37,6 +42,7 @@ pub struct SessionData {
 
     storage_token: Option<StorageToken>,
     binding_version: Option<u64>,
+    applied_config_revision: Option<String>,
     notifier: broadcast::Sender<HeartbeatRequest>,
     req: Option<HeartbeatRequest>,
     location: Option<Location>,
@@ -59,6 +65,7 @@ impl SessionData {
             client_url,
             storage_token: None,
             binding_version: None,
+            applied_config_revision: None,
             notifier: tx,
             req: None,
             location,
@@ -117,37 +124,16 @@ struct SessionRpcService {
 }
 
 impl SessionRpcService {
-    async fn persist_webhook_network_config(
-        storage: &Storage,
-        user_id: i32,
-        machine_id: uuid::Uuid,
-        network_config: serde_json::Value,
-    ) -> anyhow::Result<()> {
-        let mut network_config = network_config;
+    fn normalize_network_config(
+        mut network_config: serde_json::Value,
+        inst_id: uuid::Uuid,
+    ) -> anyhow::Result<NetworkConfig> {
         let network_name = network_config
             .get("network_name")
             .and_then(|v| v.as_str())
             .filter(|v| !v.is_empty())
             .ok_or_else(|| anyhow::anyhow!("webhook response missing network_name"))?
             .to_string();
-        let existing_configs = storage
-            .db()
-            .list_network_configs((user_id, machine_id), ListNetworkProps::All)
-            .await
-            .map_err(|e| anyhow::anyhow!("failed to list existing network configs: {:?}", e))?;
-        let inst_id = existing_configs
-            .iter()
-            .find_map(|cfg| {
-                let value = serde_json::from_str::<serde_json::Value>(&cfg.network_config).ok()?;
-                let cfg_network_name = value.get("network_name")?.as_str()?;
-                if cfg_network_name == network_name {
-                    uuid::Uuid::parse_str(&cfg.network_instance_id).ok()
-                } else {
-                    None
-                }
-            })
-            .unwrap_or_else(uuid::Uuid::new_v4);
-
         let config_obj = network_config
             .as_object_mut()
             .ok_or_else(|| anyhow::anyhow!("webhook network_config must be a JSON object"))?;
@@ -157,14 +143,66 @@ impl SessionRpcService {
         );
         config_obj
             .entry("instance_name".to_string())
-            .or_insert_with(|| serde_json::Value::String(network_name.clone()));
+            .or_insert_with(|| serde_json::Value::String(network_name));
 
-        let config = serde_json::from_value::<NetworkConfig>(network_config)?;
-        storage
+        Ok(serde_json::from_value::<NetworkConfig>(network_config)?)
+    }
+
+    async fn reconcile_managed_network_configs(
+        storage: &Storage,
+        user_id: i32,
+        machine_id: uuid::Uuid,
+        desired_configs: Vec<crate::webhook::ManagedNetworkConfig>,
+    ) -> anyhow::Result<()> {
+        let existing_configs = storage
             .db()
-            .insert_or_update_user_network_config((user_id, machine_id), inst_id, config)
+            .list_network_configs((user_id, machine_id), ListNetworkProps::All)
             .await
-            .map_err(|e| anyhow::anyhow!("failed to persist webhook network config: {:?}", e))?;
+            .map_err(|e| anyhow::anyhow!("failed to list existing network configs: {:?}", e))?;
+        let existing_ids = existing_configs
+            .iter()
+            .filter_map(|cfg| uuid::Uuid::parse_str(&cfg.network_instance_id).ok())
+            .collect::<HashSet<_>>();
+
+        let mut desired_ids = HashSet::with_capacity(desired_configs.len());
+        let mut normalized = HashMap::with_capacity(desired_configs.len());
+        for desired in desired_configs {
+            let inst_id = uuid::Uuid::parse_str(&desired.instance_id).with_context(|| {
+                format!(
+                    "invalid desired managed instance id: {}",
+                    desired.instance_id
+                )
+            })?;
+            let config = Self::normalize_network_config(desired.network_config, inst_id)?;
+            desired_ids.insert(inst_id);
+            normalized.insert(inst_id, config);
+        }
+
+        for (inst_id, config) in normalized {
+            storage
+                .db()
+                .insert_or_update_user_network_config((user_id, machine_id), inst_id, config)
+                .await
+                .map_err(|e| {
+                    anyhow::anyhow!(
+                        "failed to persist managed network config {}: {:?}",
+                        inst_id,
+                        e
+                    )
+                })?;
+        }
+
+        let stale_ids = existing_ids
+            .difference(&desired_ids)
+            .copied()
+            .collect::<Vec<_>>();
+        if !stale_ids.is_empty() {
+            storage
+                .db()
+                .delete_network_configs((user_id, machine_id), &stale_ids)
+                .await
+                .map_err(|e| anyhow::anyhow!("failed to delete stale network configs: {:?}", e))?;
+        }
 
         Ok(())
     }
@@ -185,10 +223,13 @@ impl SessionRpcService {
             req.machine_id
         ))?;
 
-        let (user_id, webhook_network_config, webhook_validated, binding_version) = if data
-            .webhook_config
-            .is_enabled()
-        {
+        let (
+            user_id,
+            webhook_managed_network_configs,
+            webhook_config_revision,
+            webhook_validated,
+            binding_version,
+        ) = if data.webhook_config.is_enabled() {
             let webhook_req = crate::webhook::ValidateTokenRequest {
                 token: req.user_token.clone(),
                 machine_id: machine_id.to_string(),
@@ -223,7 +264,8 @@ impl SessionRpcService {
                 };
                 (
                     user_id,
-                    resp.network_config,
+                    resp.managed_network_configs,
+                    resp.config_revision,
                     true,
                     Some(resp.binding_version),
                 )
@@ -257,21 +299,21 @@ impl SessionRpcService {
                     );
                 }
             };
-            (user_id, None, false, None)
+            (user_id, Vec::new(), String::new(), false, None)
         };
 
-        if webhook_validated {
-            if let Some(network_config) = webhook_network_config {
-                Self::persist_webhook_network_config(&storage, user_id, machine_id, network_config)
-                    .await
-                    .map_err(rpc_types::error::Error::from)?;
-            }
-        } else if webhook_network_config.is_some() {
-            return Err(anyhow::anyhow!(
-                "unexpected webhook network_config for non-webhook token {:?}",
-                req.user_token
+        if webhook_validated
+            && data.applied_config_revision.as_deref() != Some(webhook_config_revision.as_str())
+        {
+            Self::reconcile_managed_network_configs(
+                &storage,
+                user_id,
+                machine_id,
+                webhook_managed_network_configs,
             )
-            .into());
+            .await
+            .map_err(rpc_types::error::Error::from)?;
+            data.applied_config_revision = Some(webhook_config_revision);
         }
 
         if data.req.replace(req.clone()).is_none() {
@@ -411,6 +453,7 @@ impl Session {
         rpc_client: SessionRpcClient,
     ) {
         let mut cleaned_web_managed_instances = false;
+        let mut last_desired_inst_ids: Option<HashSet<String>> = None;
         loop {
             heartbeat_waiter = heartbeat_waiter.resubscribe();
             let req = heartbeat_waiter.recv().await;
@@ -467,8 +510,15 @@ impl Session {
             };
 
             let mut has_failed = false;
+            let should_be_alive_inst_ids = local_configs
+                .iter()
+                .map(|cfg| cfg.network_instance_id.clone())
+                .collect::<HashSet<_>>();
+            let desired_changed = last_desired_inst_ids
+                .as_ref()
+                .is_none_or(|last| last != &should_be_alive_inst_ids);
 
-            if !cleaned_web_managed_instances {
+            if !cleaned_web_managed_instances || desired_changed {
                 let all_local_configs = match storage
                     .db
                     .list_network_configs((user_id, machine_id.into()), ListNetworkProps::All)
@@ -482,11 +532,6 @@ impl Session {
                 };
 
                 let all_inst_ids = all_local_configs
-                    .iter()
-                    .map(|cfg| cfg.network_instance_id.clone())
-                    .collect::<HashSet<_>>();
-
-                let should_be_alive_inst_ids = local_configs
                     .iter()
                     .map(|cfg| cfg.network_instance_id.clone())
                     .collect::<HashSet<_>>();
@@ -519,6 +564,7 @@ impl Session {
 
                 if !has_failed {
                     cleaned_web_managed_instances = true;
+                    last_desired_inst_ids = Some(should_be_alive_inst_ids.clone());
                 }
             }
 
@@ -549,8 +595,7 @@ impl Session {
             }
 
             if !has_failed {
-                tracing::info!(?req, "All network instances are running");
-                break;
+                last_desired_inst_ids = Some(should_be_alive_inst_ids);
             }
         }
     }
@@ -583,5 +628,105 @@ impl Session {
 
     pub async fn get_heartbeat_req(&self) -> Option<HeartbeatRequest> {
         self.data.read().await.req()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use easytier::rpc_service::remote_client::{ListNetworkProps, Storage as _};
+    use serde_json::json;
+
+    use super::{super::storage::Storage, *};
+
+    #[tokio::test]
+    async fn reconcile_managed_network_configs_upserts_and_deletes_exact_set() {
+        let storage = Storage::new(crate::db::Db::memory_db().await);
+        let user_id = storage
+            .db()
+            .auto_create_user("webhook-user")
+            .await
+            .unwrap()
+            .id;
+        let machine_id = uuid::Uuid::new_v4();
+        let keep_id = uuid::Uuid::new_v4();
+        let stale_id = uuid::Uuid::new_v4();
+        let new_id = uuid::Uuid::new_v4();
+
+        storage
+            .db()
+            .insert_or_update_user_network_config(
+                (user_id, machine_id),
+                keep_id,
+                NetworkConfig {
+                    network_name: Some("old-name".to_string()),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        storage
+            .db()
+            .insert_or_update_user_network_config(
+                (user_id, machine_id),
+                stale_id,
+                NetworkConfig {
+                    network_name: Some("stale".to_string()),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+
+        SessionRpcService::reconcile_managed_network_configs(
+            &storage,
+            user_id,
+            machine_id,
+            vec![
+                crate::webhook::ManagedNetworkConfig {
+                    instance_id: keep_id.to_string(),
+                    network_config: json!({
+                        "instance_id": keep_id.to_string(),
+                        "network_name": "updated-name"
+                    }),
+                },
+                crate::webhook::ManagedNetworkConfig {
+                    instance_id: new_id.to_string(),
+                    network_config: json!({
+                        "instance_id": new_id.to_string(),
+                        "network_name": "new-name"
+                    }),
+                },
+            ],
+        )
+        .await
+        .unwrap();
+
+        let configs = storage
+            .db()
+            .list_network_configs((user_id, machine_id), ListNetworkProps::All)
+            .await
+            .unwrap();
+        let config_ids = configs
+            .iter()
+            .map(|cfg| cfg.network_instance_id.clone())
+            .collect::<HashSet<_>>();
+
+        assert_eq!(configs.len(), 2);
+        assert!(config_ids.contains(&keep_id.to_string()));
+        assert!(config_ids.contains(&new_id.to_string()));
+        assert!(!config_ids.contains(&stale_id.to_string()));
+
+        let updated_keep = storage
+            .db()
+            .get_network_config((user_id, machine_id), &keep_id.to_string())
+            .await
+            .unwrap()
+            .unwrap();
+        let updated_keep_config: NetworkConfig =
+            serde_json::from_str(&updated_keep.network_config).unwrap();
+        assert_eq!(
+            updated_keep_config.network_name.as_deref(),
+            Some("updated-name")
+        );
     }
 }
