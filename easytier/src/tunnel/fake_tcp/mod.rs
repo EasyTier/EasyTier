@@ -249,6 +249,13 @@ impl TunnelListener for FakeTcpTunnelListener {
                 )
                 .into(),
             ),
+            resolved_remote_addr: Some(
+                crate::tunnel::build_url_from_socket_addr(
+                    &socket.remote_addr().to_string(),
+                    "faketcp",
+                )
+                .into(),
+            ),
         };
 
         // We treat the fake tcp socket as a datagram tunnel directly
@@ -366,6 +373,10 @@ impl TunnelConnector for FakeTcpTunnelConnector {
                 .into(),
             ),
             remote_addr: Some(self.addr.clone().into()),
+            resolved_remote_addr: Some(
+                crate::tunnel::build_url_from_socket_addr(&remote_addr.to_string(), "faketcp")
+                    .into(),
+            ),
         };
 
         let socket = Arc::new(socket);

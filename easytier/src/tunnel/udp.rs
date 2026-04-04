@@ -428,6 +428,9 @@ impl UdpTunnelListenerData {
                 remote_addr: Some(
                     build_url_from_socket_addr(&remote_addr.to_string(), "udp").into(),
                 ),
+                resolved_remote_addr: Some(
+                    build_url_from_socket_addr(&remote_addr.to_string(), "udp").into(),
+                ),
             }),
         ));
 
@@ -772,6 +775,9 @@ impl UdpTunnelConnector {
                     build_url_from_socket_addr(&socket.local_addr()?.to_string(), "udp").into(),
                 ),
                 remote_addr: Some(self.addr.clone().into()),
+                resolved_remote_addr: Some(
+                    build_url_from_socket_addr(&dst_addr.to_string(), "udp").into(),
+                ),
             }),
         )))
     }

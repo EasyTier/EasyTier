@@ -201,6 +201,7 @@ message TunnelInfo {
   string tunnel_type = 1;
   common.Url local_addr = 2;
   common.Url remote_addr = 3;
+  common.Url resolved_remote_addr = 4;
 }
 
 message StunInfo {

@@ -143,11 +143,13 @@ impl WsTunnelListener {
         }
 
         let (write, read) = stream.split();
+        let remote_addr: crate::proto::common::Url = remote_addr.into();
 
         let info = TunnelInfo {
             tunnel_type: self.addr.scheme().to_owned(),
             local_addr: Some(self.local_url().into()),
-            remote_addr: Some(remote_addr.into()),
+            remote_addr: Some(remote_addr.clone()),
+            resolved_remote_addr: Some(remote_addr),
         };
 
         Ok(Box::new(TunnelWrapper::new(
@@ -235,6 +237,9 @@ impl WsTunnelConnector {
                 .into(),
             ),
             remote_addr: Some(addr.clone().into()),
+            resolved_remote_addr: Some(
+                super::build_url_from_socket_addr(&socket_addr.to_string(), addr.scheme()).into(),
+            ),
         };
 
         let c = ClientBuilder::from_uri(http::Uri::try_from(addr.to_string()).unwrap());

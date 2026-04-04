@@ -214,6 +214,9 @@ fn get_tunnel_for_client(conn: Arc<Connection>) -> impl Tunnel {
             tunnel_type: "ring".to_owned(),
             local_addr: Some(build_url_from_socket_addr(&conn.client.id.into(), "ring").into()),
             remote_addr: Some(build_url_from_socket_addr(&conn.server.id.into(), "ring").into()),
+            resolved_remote_addr: Some(
+                build_url_from_socket_addr(&conn.server.id.into(), "ring").into(),
+            ),
         }),
     )
 }
@@ -226,6 +229,9 @@ fn get_tunnel_for_server(conn: Arc<Connection>) -> impl Tunnel {
             tunnel_type: "ring".to_owned(),
             local_addr: Some(build_url_from_socket_addr(&conn.server.id.into(), "ring").into()),
             remote_addr: Some(build_url_from_socket_addr(&conn.client.id.into(), "ring").into()),
+            resolved_remote_addr: Some(
+                build_url_from_socket_addr(&conn.client.id.into(), "ring").into(),
+            ),
         }),
     )
 }

@@ -317,9 +317,11 @@ fn infer_tunnel_ipv6(raw: &str) -> Option<bool> {
         return Some(true);
     }
 
-    url::Url::parse(raw)
-        .ok()
-        .map(|url| matches!(url.host(), Some(url::Host::Ipv6(_))))
+    match url::Url::parse(raw).ok()?.host() {
+        Some(url::Host::Ipv4(_)) => Some(false),
+        Some(url::Host::Ipv6(_)) => Some(true),
+        Some(url::Host::Domain(_)) | None => None,
+    }
 }
 
 fn normalize_tunnel_port(raw_port: &str, is_ipv6: bool) -> Option<u16> {
@@ -419,10 +421,17 @@ impl Display for SocketAddr {
 }
 
 impl TunnelInfo {
+    pub fn effective_remote_addr(&self) -> Option<&Url> {
+        self.resolved_remote_addr
+            .as_ref()
+            .or(self.remote_addr.as_ref())
+    }
+
     pub fn display_tunnel_type(&self) -> String {
         let is_ipv6 = infer_tunnel_ipv6(&self.tunnel_type).or_else(|| {
-            self.local_addr
+            self.resolved_remote_addr
                 .as_ref()
+                .or(self.local_addr.as_ref())
                 .or(self.remote_addr.as_ref())
                 .map(Url::is_ipv6_tunnel_endpoint)
         });
@@ -438,8 +447,7 @@ impl TunnelInfo {
     }
 
     pub fn display_remote_addr(&self) -> Option<String> {
-        self.remote_addr
-            .as_ref()
+        self.effective_remote_addr()
             .map(Url::normalized_tunnel_display)
     }
 }
@@ -566,6 +574,7 @@ mod tests {
             remote_addr: Some(Url {
                 url: "txt://et.example.com".to_string(),
             }),
+            resolved_remote_addr: None,
         };
 
         assert_eq!(
@@ -582,12 +591,37 @@ mod tests {
             remote_addr: Some(Url {
                 url: "tcp://[2001:db8::2]:11010".to_string(),
             }),
+            resolved_remote_addr: None,
         };
 
         assert_eq!(tunnel.display_tunnel_type(), "tcp6");
         assert_eq!(
             tunnel.display_remote_addr().as_deref(),
             Some("tcp6://[2001:db8::2]:11010")
+        );
+    }
+
+    #[test]
+    fn tunnel_info_prefers_resolved_remote_addr() {
+        let tunnel = TunnelInfo {
+            tunnel_type: "txt-tcp".to_string(),
+            local_addr: None,
+            remote_addr: Some(Url {
+                url: "txt://et.example.com".to_string(),
+            }),
+            resolved_remote_addr: Some(Url {
+                url: "tcp://[2001:db8::3]:11010".to_string(),
+            }),
+        };
+
+        assert_eq!(tunnel.display_tunnel_type(), "txt-tcp6");
+        assert_eq!(
+            tunnel.display_remote_addr().as_deref(),
+            Some("tcp6://[2001:db8::3]:11010")
+        );
+        assert_eq!(
+            tunnel.effective_remote_addr().map(|url| url.url.as_str()),
+            Some("tcp://[2001:db8::3]:11010")
         );
     }
 }
