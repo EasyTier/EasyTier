@@ -78,7 +78,7 @@ jobs:
     needs: pre_job
     if: needs.pre_job.outputs.should_skip != 'true'    
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v5
 
       - name: Install GUI dependencies (x86 only)
         if: ${{ matrix.TARGET == 'x86_64-unknown-linux-musl' }}
@@ -119,37 +119,18 @@ jobs:
           echo "PKG_CONFIG_SYSROOT_DIR=/usr/aarch64-linux-gnu/" >> "$GITHUB_ENV"
           echo "PKG_CONFIG_PATH=/usr/lib/aarch64-linux-gnu/pkgconfig/" >> "$GITHUB_ENV"
 
+      - name: Install rpm package (Linux target only)
+        if: ${{ contains(matrix.TARGET, '-linux-') }}
+        run: |
+          sudo apt update
+          sudo apt install -y rpm
+
       - name: Set current ref as env variable
         run: |
           echo "GIT_DESC=$(git log -1 --format=%cd.%h --date=format:%Y-%m-%d_%H:%M:%S)" >> $GITHUB_ENV
 
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-
-      - name: Install pnpm
-        uses: pnpm/action-setup@v4
-        with:
-          version: 10
-          run_install: false
-
-      - name: Get pnpm store directory
-        shell: bash
-        run: |
-          echo "STORE_PATH=$(pnpm store path --silent)" >> $GITHUB_ENV
-
-      - name: Setup pnpm cache
-        uses: actions/cache@v4
-        with:
-          path: ${{ env.STORE_PATH }}
-          key: ${{ runner.os }}-pnpm-store-${{ hashFiles('**/pnpm-lock.yaml') }}
-          restore-keys: |
-            ${{ runner.os }}-pnpm-store-
-
-      - name: Install frontend dependencies
-        run: |
-          pnpm -r install
-          pnpm -r build
+      - name: Setup Frontend Environment
+        uses: ./.github/actions/prepare-pnpm
 
       - uses: Swatinem/rust-cache@v2
         with:
@@ -184,7 +165,7 @@ jobs:
         with:
           projectPath: ./easytier-gui
           # https://tauri.app/v1/guides/building/linux/#cross-compiling-tauri-applications-for-arm-based-devices
-          args: --verbose --target ${{ matrix.GUI_TARGET }} ${{ matrix.OS == 'ubuntu-22.04' && contains(matrix.TARGET, 'aarch64') && '--bundles deb' || ''  }}
+          args: --verbose --target ${{ matrix.GUI_TARGET }} ${{ contains(matrix.TARGET, '-linux-') && contains(matrix.TARGET, 'aarch64') && '--bundles deb,rpm' || ''  }}
 
       - name: Compress
         run: |
@@ -202,6 +183,7 @@ jobs:
               mv ./target/$GUI_TARGET/release/bundle/dmg/*.dmg ./artifacts/objects/
           elif [[ $OS =~ ^ubuntu.*$ && ! $TARGET =~ ^mips.*$ ]]; then
               mv ./target/$GUI_TARGET/release/bundle/deb/*.deb ./artifacts/objects/
+              mv ./target/$GUI_TARGET/release/bundle/rpm/*.rpm ./artifacts/objects/
               if [[ $GUI_TARGET =~ ^x86_64.*$ ]]; then
                 # currently only x86 appimage is supported
                 mv ./target/$GUI_TARGET/release/bundle/appimage/*.AppImage ./artifacts/objects/
@@ -212,7 +194,7 @@ jobs:
           rm -rf ./artifacts/objects/
 
       - name: Archive artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: easytier-gui-${{ matrix.ARTIFACT_NAME }}
           path: |

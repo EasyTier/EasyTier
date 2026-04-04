@@ -38,7 +38,7 @@ jobs:
     needs: pre_job
     if: needs.pre_job.outputs.should_skip != 'true'
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v5
 
       - name: Prepare build environment
         uses: ./.github/actions/prepare-build
@@ -79,7 +79,7 @@ jobs:
     needs: pre_job
     if: needs.pre_job.outputs.should_skip != 'true'
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v5
 
       - name: Prepare build environment
         uses: ./.github/actions/prepare-build
@@ -95,7 +95,7 @@ jobs:
       - name: Archive test
         run: cargo nextest archive --archive-file tests.tar.zst --package easytier --features full
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         with:
           name: tests
           path: tests.tar.zst
@@ -119,7 +119,7 @@ jobs:
           - name: "three_node::subnet_proxy_three_node_test"
             opts: "-E 'test(subnet_proxy_three_node_test)' --test-threads 1 --no-fail-fast"
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v5
 
       - name: Setup tools for test
         run: sudo apt install bridge-utils

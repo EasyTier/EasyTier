@@ -36,38 +36,15 @@ jobs:
     needs: pre_job
     if: needs.pre_job.outputs.should_skip != 'true'
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-node@v4
+      - name: Setup Frontend Environment
+        uses: ./.github/actions/prepare-pnpm
         with:
-          node-version: 22
-
-      - name: Install pnpm
-        uses: pnpm/action-setup@v4
-        with:
-          version: 10
-          run_install: false
-
-      - name: Get pnpm store directory
-        shell: bash
-        run: |
-          echo "STORE_PATH=$(pnpm store path --silent)" >> $GITHUB_ENV
-
-      - name: Setup pnpm cache
-        uses: actions/cache@v4
-        with:
-          path: ${{ env.STORE_PATH }}
-          key: ${{ runner.os }}-pnpm-store-${{ hashFiles('**/pnpm-lock.yaml') }}
-          restore-keys: |
-            ${{ runner.os }}-pnpm-store-
-
-      - name: Install frontend dependencies
-        run: |
-          pnpm -r install
-          pnpm -r --filter "./easytier-web/*"  build
+          build-filter: './easytier-web/*'
 
       - name: Archive artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: easytier-web-dashboard
           path: |
@@ -142,7 +119,7 @@ jobs:
       - build_web
     if: needs.pre_job.outputs.should_skip != 'true'
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v5
 
       - name: Set current ref as env variable
         run: |
@@ -290,7 +267,7 @@ jobs:
           rm -rf ./artifacts/objects/
 
       - name: Archive artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: easytier-${{ matrix.ARTIFACT_NAME }}
           path: |
@@ -317,7 +294,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Code
-        uses: actions/checkout@v4  # 必须先检出代码才能获取模块配置
+        uses: actions/checkout@v5  # 必须先检出代码才能获取模块配置
 
       # 下载二进制文件到独立目录
       - name: Download Linux aarch64 binaries
@@ -337,7 +314,7 @@ jobs:
 
       # 上传生成的模块
       - name: Upload Magisk Module
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: Easytier-Magisk
           path: |
