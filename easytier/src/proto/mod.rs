@@ -7,8 +7,6 @@ pub mod common;
 #[cfg(feature = "magic-dns")]
 pub mod dns;
 pub mod error;
-#[cfg(feature = "magic-dns")]
-pub mod magic_dns;
 pub mod peer_rpc;
 pub mod web;
 
