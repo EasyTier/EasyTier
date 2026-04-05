@@ -4,7 +4,7 @@ use crate::dns::peer_mgr::DnsPeerMgr;
 use crate::dns::server::DnsServer;
 use crate::peers::peer_manager::PeerManager;
 use crate::peers::NicPacketFilter;
-use crate::proto::dns::{DnsNodeMgrRpcClientFactory, DnsPeerMgrRpcServer, HeartbeatRequest};
+use crate::proto::dns::{DnsNodeMgrRpcClientFactory, HeartbeatRequest};
 use crate::proto::rpc_impl::standalone::{StandAloneClient, StandAloneServer};
 use crate::proto::rpc_types::controller::BaseController;
 use crate::tunnel::tcp::{TcpTunnelConnector, TcpTunnelListener};

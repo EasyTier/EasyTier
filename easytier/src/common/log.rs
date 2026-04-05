@@ -117,9 +117,9 @@ pub fn init(
     Ok(sender)
 }
 
-fn console_layers(
-    default_level: LevelFilter,
-) -> anyhow::Result<Vec<Box<dyn Layer<Registry> + Send + Sync>>> {
+type BoxLayer = Box<dyn Layer<Registry> + Send + Sync>;
+
+fn console_layers(default_level: LevelFilter) -> anyhow::Result<Vec<BoxLayer>> {
     let mut layers = Vec::new();
     if default_level == LevelFilter::OFF {
         return Ok(layers);
@@ -171,10 +171,7 @@ fn console_layers(
 fn file_layers(
     config: FileLoggerConfig,
     reload: bool,
-) -> anyhow::Result<(
-    Vec<Box<dyn Layer<Registry> + Send + Sync>>,
-    Option<NewFilterSender>,
-)> {
+) -> anyhow::Result<(Vec<BoxLayer>, Option<NewFilterSender>)> {
     let mut layers = Vec::new();
 
     let level = config

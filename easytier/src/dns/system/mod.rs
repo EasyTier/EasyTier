@@ -1,3 +1,4 @@
+#[allow(unused_imports)]
 use crate::utils::BoxExt;
 
 #[cfg(target_os = "linux")]
