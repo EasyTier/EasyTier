@@ -1401,6 +1401,7 @@ impl Instance {
     }
 }
 
+// TODO: duplicated with clear_resources?
 impl Drop for Instance {
     fn drop(&mut self) {
         let my_peer_id = self.peer_manager.my_peer_id();
@@ -1412,9 +1413,12 @@ impl Drop for Instance {
         tokio::spawn(async move {
             // TODO: change this
             #[cfg(feature = "magic-dns")]
-            dns.stop().await.unwrap_or_else(|e| {
-                tracing::error!("failed to stop dns, err: {:?}", e);
-            });
+            {
+                dns.stop().await.unwrap_or_else(|e| {
+                    tracing::error!("failed to stop dns, err: {:?}", e);
+                });
+                drop(dns);
+            }
             #[cfg(feature = "tun")]
             nic_ctx.lock().await.take();
             if let Some(pm) = pm.upgrade() {
