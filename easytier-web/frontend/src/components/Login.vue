@@ -24,9 +24,11 @@ const username = ref('');
 const password = ref('');
 const registerUsername = ref('');
 const registerPassword = ref('');
+const registerConfirmPassword = ref('');
 const captcha = ref('');
 const captchaSrc = computed(() => api.value.captcha_url());
 const registerPasswordValidation = computed(() => validatePasswordStrength(registerPassword.value));
+const registerPasswordsMatch = computed(() => registerPassword.value === registerConfirmPassword.value);
 const registerPasswordErrorMessage = computed(() => {
     if (registerPassword.value.length === 0 || registerPasswordValidation.value.valid) {
         return '';
@@ -34,6 +36,14 @@ const registerPasswordErrorMessage = computed(() => {
 
     return t(registerPasswordValidation.value.reasonKey!);
 });
+const registerConfirmPasswordErrorMessage = computed(() => {
+    if (registerConfirmPassword.value.length === 0 || registerPasswordsMatch.value) {
+        return '';
+    }
+
+    return t('web.common.password_mismatch');
+});
+const canRegister = computed(() => registerPasswordValidation.value.valid && registerPasswordsMatch.value);
 
 
 const onSubmit = async () => {
@@ -59,6 +69,16 @@ const onRegister = async () => {
             severity: 'warn',
             summary: t('web.common.warning'),
             detail: t(registerPasswordValidation.value.reasonKey!),
+            life: 3000,
+        });
+        return;
+    }
+
+    if (!registerPasswordsMatch.value) {
+        toast.add({
+            severity: 'warn',
+            summary: t('web.common.warning'),
+            detail: t('web.common.password_mismatch'),
             life: 3000,
         });
         return;
@@ -185,13 +205,24 @@ onBeforeUnmount(() => {
                         </small>
                     </div>
                     <div class="p-field">
+                        <label for="register-confirm-password" class="block text-sm font-medium">
+                            {{ t('web.settings.confirm_password') }}
+                        </label>
+                        <Password id="register-confirm-password" v-model="registerConfirmPassword" required toggleMask
+                            :feedback="false" class="w-full" />
+                        <small v-if="registerConfirmPasswordErrorMessage"
+                            class="block text-red-500 dark:text-red-400">
+                            {{ registerConfirmPasswordErrorMessage }}
+                        </small>
+                    </div>
+                    <div class="p-field">
                         <label for="captcha" class="block text-sm font-medium">{{ t('web.login.captcha') }}</label>
                         <InputText id="captcha" v-model="captcha" required class="w-full" />
                         <img :src="captchaSrc" alt="Captcha" class="mt-2 mb-2" />
                     </div>
                     <div class="flex items-center justify-between">
                         <Button :label="t('web.login.register')" type="submit" class="w-full"
-                            :disabled="!registerPasswordValidation.valid" />
+                            :disabled="!canRegister" />
                     </div>
                     <div class="flex items-center justify-between">
                         <Button :label="t('web.login.back_to_login')" type="button" class="w-full"

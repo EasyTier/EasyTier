@@ -366,6 +366,7 @@ web:
     password_empty: Password cannot be empty
     password_min_length: Password must be at least 8 characters long
     password_too_weak: Password is too weak
+    password_mismatch: Passwords do not match
     password_strength_hint: Password must be at least 8 characters and include at least 2 of uppercase letters, lowercase letters, numbers, or special characters
     enable: Enable
     disable: Disable
