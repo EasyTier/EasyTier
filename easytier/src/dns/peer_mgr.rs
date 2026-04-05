@@ -85,7 +85,7 @@ impl DnsPeerMgrInner {
             .peers
             .get(&peer_id)
             .await
-            .is_some_and(|info| info.digest == *route.dns)
+            .is_some_and(|info| info.digest == route.dns)
         {
             return;
         }
