@@ -382,10 +382,10 @@ impl QuicTunnelListener {
         let info = TunnelInfo {
             tunnel_type: "quic".to_owned(),
             local_addr: Some(self.local_url().into()),
-            remote_addr: Some(
+            remote_url: Some(
                 super::build_url_from_socket_addr(&remote_addr.to_string(), "quic").into(),
             ),
-            resolved_remote_addr: Some(
+            remote_addr: Some(
                 super::build_url_from_socket_addr(&remote_addr.to_string(), "quic").into(),
             ),
         };
@@ -467,8 +467,8 @@ impl TunnelConnector for QuicTunnelConnector {
             local_addr: Some(
                 super::build_url_from_socket_addr(&local_addr.to_string(), "quic").into(),
             ),
-            remote_addr: Some(self.addr.clone().into()),
-            resolved_remote_addr: Some(
+            remote_url: Some(self.addr.clone().into()),
+            remote_addr: Some(
                 super::build_url_from_socket_addr(&connection.remote_address().to_string(), "quic")
                     .into(),
             ),

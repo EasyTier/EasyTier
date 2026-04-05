@@ -6,8 +6,8 @@ use std::{
 use anyhow::Context;
 use base64::{Engine as _, prelude::BASE64_STANDARD};
 
-use crate::tunnel::{packet_def::CompressorAlgo, scheme::IpScheme};
 use crate::tunnel::scheme::TunnelScheme;
+use crate::tunnel::packet_def::CompressorAlgo;
 
 include!(concat!(env!("OUT_DIR"), "/common.rs"));
 
@@ -420,17 +420,17 @@ impl Display for SocketAddr {
 
 impl TunnelInfo {
     pub fn effective_remote_addr(&self) -> Option<&Url> {
-        self.resolved_remote_addr
+        self.remote_addr
             .as_ref()
-            .or(self.remote_addr.as_ref())
+            .or(self.remote_url.as_ref())
     }
 
     pub fn display_tunnel_type(&self) -> String {
         let is_ipv6 = infer_tunnel_ipv6(&self.tunnel_type).or_else(|| {
-            self.resolved_remote_addr
+            self.remote_addr
                 .as_ref()
                 .or(self.local_addr.as_ref())
-                .or(self.remote_addr.as_ref())
+                .or(self.remote_url.as_ref())
                 .map(Url::is_ipv6_tunnel_endpoint)
         });
 
@@ -622,10 +622,10 @@ mod tests {
         let tunnel = TunnelInfo {
             tunnel_type: "txt-tcp://[2001:db8::2]:110106".to_string(),
             local_addr: None,
-            remote_addr: Some(Url {
+            remote_url: Some(Url {
                 url: "txt://et.example.com".to_string(),
             }),
-            resolved_remote_addr: None,
+            remote_addr: None,
         };
 
         assert_eq!(
@@ -639,10 +639,10 @@ mod tests {
         let tunnel = TunnelInfo {
             tunnel_type: "tcp".to_string(),
             local_addr: None,
-            remote_addr: Some(Url {
+            remote_url: Some(Url {
                 url: "tcp://[2001:db8::2]:11010".to_string(),
             }),
-            resolved_remote_addr: None,
+            remote_addr: None,
         };
 
         assert_eq!(tunnel.display_tunnel_type(), "tcp6");
@@ -653,14 +653,14 @@ mod tests {
     }
 
     #[test]
-    fn tunnel_info_prefers_resolved_remote_addr() {
+    fn tunnel_info_prefers_remote_addr() {
         let tunnel = TunnelInfo {
             tunnel_type: "txt-tcp".to_string(),
             local_addr: None,
-            remote_addr: Some(Url {
+            remote_url: Some(Url {
                 url: "txt://et.example.com".to_string(),
             }),
-            resolved_remote_addr: Some(Url {
+            remote_addr: Some(Url {
                 url: "tcp://[2001:db8::3]:11010".to_string(),
             }),
         };

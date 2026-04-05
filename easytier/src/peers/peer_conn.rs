@@ -642,7 +642,7 @@ impl PeerConn {
         let remote_url_str = self
             .tunnel_info
             .as_ref()
-            .and_then(|t| t.remote_addr.as_ref())
+            .and_then(|t| t.remote_url.as_ref())
             .map(|u| u.url.as_str())?;
         let remote_url: url::Url = remote_url_str.parse().ok()?;
 
@@ -2071,7 +2071,7 @@ pub mod tests {
             network_secret_digest: None,
         });
 
-        let remote_url: url::Url = c.info().unwrap().remote_addr.unwrap().url.parse().unwrap();
+        let remote_url: url::Url = c.info().unwrap().remote_url.unwrap().url.parse().unwrap();
 
         set_secure_mode_cfg(&c_ctx, true);
         set_secure_mode_cfg(&s_ctx, true);
