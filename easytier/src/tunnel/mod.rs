@@ -361,13 +361,10 @@ impl TryFrom<&url::Url> for TunnelScheme {
 
     fn try_from(value: &url::Url) -> Result<Self, Self::Error> {
         let scheme = value.scheme();
-        scheme.parse().or_else(|_| {
-            Ok(TunnelScheme::Ip(
-                scheme
-                    .parse()
-                    .map_err(|_| Error::InvalidUrl(value.to_string()))?,
-            ))
-        })
+        scheme
+            .parse()
+            .or_else(|_| scheme.parse().map(TunnelScheme::Ip))
+            .map_err(|_| Error::InvalidUrl(value.to_string()))
     }
 }
 
