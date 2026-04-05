@@ -1,3 +1,4 @@
+use crate::common::global_ctx::ArcGlobalCtx;
 use crate::common::PeerId;
 use crate::dns::config::{DnsExportConfig, DnsGlobalCtxExt};
 use crate::dns::utils::dirty::DirtyFlag;
@@ -6,8 +7,8 @@ use crate::peer_center::instance::PeerCenterPeerManagerTrait;
 use crate::peers::peer_manager::PeerManager;
 use crate::peers::route_trait::Route;
 use crate::proto::dns::{
-    DnsPeerMgrRpc, DnsPeerMgrRpcClientFactory, DnsSnapshot, GetExportConfigRequest,
-    GetExportConfigResponse, ZoneData,
+    DnsPeerMgrRpc, DnsPeerMgrRpcClientFactory, DnsPeerMgrRpcServer, DnsSnapshot,
+    GetExportConfigRequest, GetExportConfigResponse, ZoneData,
 };
 use crate::proto::rpc_types;
 use crate::proto::rpc_types::controller::BaseController;
@@ -45,19 +46,32 @@ pub struct DnsPeerMgr {
     pub(super) dirty: DirtyFlag,
 
     peer_mgr: Arc<PeerManager>,
+    global_ctx: ArcGlobalCtx,
 }
 
 impl DnsPeerMgr {
-    pub fn new(peer_mgr: Arc<PeerManager>) -> Self {
+    pub fn new(peer_mgr: Arc<PeerManager>, global_ctx: ArcGlobalCtx) -> Self {
         Self {
             peers: Cache::builder().time_to_live(DNS_PEER_TTL).build(),
             dirty: Default::default(),
-            peer_mgr: peer_mgr.clone(),
+            peer_mgr,
+            global_ctx,
         }
     }
 
+    pub fn register(self: &Arc<Self>) {
+        self.peer_mgr
+            .get_peer_rpc_mgr()
+            .rpc_server()
+            .registry()
+            .register(
+                DnsPeerMgrRpcServer::new_arc(self.clone()),
+                &self.global_ctx.get_network_name(),
+            );
+    }
+
     pub fn snapshot(&self) -> DnsSnapshot {
-        let global_ctx = self.peer_mgr.get_global_ctx_ref();
+        let global_ctx = &self.global_ctx;
 
         let zones = global_ctx
             .dns_iter_zones()
@@ -125,7 +139,7 @@ impl DnsPeerMgr {
             .scoped_client::<DnsPeerMgrRpcClientFactory<BaseController>>(
                 self.peer_mgr.my_peer_id(),
                 peer_id,
-                "".to_string(),
+                self.global_ctx.get_network_name(),
             )
             .get_export_config(BaseController::default(), GetExportConfigRequest {})
             .await
@@ -143,6 +157,6 @@ impl DnsPeerMgrRpc for DnsPeerMgr {
         _: Self::Controller,
         _: GetExportConfigRequest,
     ) -> rpc_types::error::Result<GetExportConfigResponse> {
-        Ok(self.peer_mgr.get_global_ctx_ref().dns_export_config())
+        Ok(self.global_ctx.dns_export_config())
     }
 }

@@ -41,18 +41,8 @@ impl DnsNode {
         global_ctx: ArcGlobalCtx,
         #[cfg(feature = "tun")] nic_ctx: ArcNicCtx, // TODO: REMOVE THIS
     ) -> Self {
-        let mgr = Arc::new(DnsPeerMgr::new(peer_mgr.clone()));
-        peer_mgr
-            .get_peer_rpc_mgr()
-            .rpc_server()
-            .registry()
-            .register(
-                DnsPeerMgrRpcServer::new_arc(mgr.clone()),
-                &global_ctx.get_network_name(),
-            );
-
         Self {
-            mgr,
+            mgr: Arc::new(DnsPeerMgr::new(peer_mgr.clone(), global_ctx.clone())),
             #[cfg(feature = "tun")]
             nic_ctx,
             peer_mgr,
@@ -67,6 +57,7 @@ impl DnsNode {
     }
 
     pub fn start(&self) {
+        self.mgr.register();
         let this = self.clone();
         self.runtime.start(None, |token| async move {
             tracing::info!("starting DnsNode");
