@@ -1404,9 +1404,16 @@ impl Drop for Instance {
     fn drop(&mut self) {
         let my_peer_id = self.peer_manager.my_peer_id();
         let pm = Arc::downgrade(&self.peer_manager);
+        #[cfg(feature = "magic-dns")]
+        let dns = self.dns.clone();
         #[cfg(feature = "tun")]
         let nic_ctx = self.nic_ctx.clone();
         tokio::spawn(async move {
+            // TODO: change this
+            #[cfg(feature = "magic-dns")]
+            dns.stop().await.unwrap_or_else(|e| {
+                tracing::error!("failed to stop dns, err: {:?}", e);
+            });
             #[cfg(feature = "tun")]
             nic_ctx.lock().await.take();
             if let Some(pm) = pm.upgrade() {
