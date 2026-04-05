@@ -220,6 +220,19 @@ impl TryFrom<&url::Url> for TunnelScheme {
         value
             .scheme()
             .parse()
+            .map(|mut scheme| {
+                if matches!(value.host(), Some(url::Host::Ipv6(_))) {
+                    match &mut scheme {
+                        TunnelScheme::Ip(scheme) => scheme.v6 = true,
+                        TunnelScheme::Discovery(DiscoveryScheme {
+                            scheme: Some(scheme),
+                            ..
+                        }) => scheme.v6 = true,
+                        _ => {}
+                    };
+                }
+                scheme
+            })
             .map_err(|_| Error::InvalidUrl(value.to_string()))
     }
 }
