@@ -248,3 +248,41 @@ macro_rules! __matches_protocol__ {
 }
 
 pub(crate) use __matches_protocol__ as matches_protocol;
+
+#[cfg(test)]
+mod tests {
+    use super::{IpProto, TunnelScheme};
+
+    #[test]
+    fn normalize_all_enabled_ipv6_tunnel_urls() {
+        for scheme in IpProto::VARIANT_NAMES {
+            let url = url::Url::parse(&format!("{scheme}://[::]:0")).unwrap();
+            let parsed = TunnelScheme::try_from(&url).unwrap();
+
+            assert_eq!(parsed.to_string(), format!("{scheme}6"));
+        }
+    }
+
+    #[test]
+    fn normalize_composite_ipv6_tunnel_url() {
+        let url = url::Url::parse("txt-tcp://[::]:0").unwrap();
+        let parsed = TunnelScheme::try_from(&url).unwrap();
+
+        assert_eq!(parsed.to_string(), "txt-tcp6");
+    }
+
+    #[test]
+    fn reject_unknown_composite_prefix_in_tunnel_url_normalization() {
+        let url = url::Url::parse("foo-tcp://[::]:0").unwrap();
+
+        assert!(TunnelScheme::try_from(&url).is_err());
+    }
+
+    #[test]
+    fn keep_normalized_ipv6_tunnel_url_stable() {
+        let url = url::Url::parse("tcp6://[::]:0").unwrap();
+        let parsed = TunnelScheme::try_from(&url).unwrap();
+
+        assert_eq!(parsed.to_string(), "tcp6");
+    }
+}
