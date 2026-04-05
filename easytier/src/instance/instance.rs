@@ -867,46 +867,48 @@ impl Instance {
         tokio::spawn(async move {
             let mut output_tx = Some(first_round_output);
             loop {
-                let Some(peer_manager) = peer_mgr.upgrade() else {
-                    tracing::warn!("peer manager is dropped, stop static ip check.");
-                    if let Some(output_tx) = output_tx.take() {
-                        let _ = output_tx.send(Err(Error::Unknown));
-                        return;
-                    }
-                    return;
-                };
-
                 let close_notifier = Arc::new(Notify::new());
-                let mut new_nic_ctx = NicCtx::new(
-                    peer_manager.get_global_ctx(),
-                    &peer_manager,
-                    peer_packet_receiver.clone(),
-                    close_notifier.clone(),
-                );
-
-                if let Err(e) = new_nic_ctx.run(ipv4_addr, ipv6_addr).await {
-                    if let Some(output_tx) = output_tx.take() {
-                        let _ = output_tx.send(Err(e));
-                        return;
-                    }
-                    tracing::error!("failed to create new nic ctx, err: {:?}", e);
-                    tokio::time::sleep(Duration::from_secs(1)).await;
-                    continue;
-                }
-
-                // Create Magic DNS runner only if we have IPv4
-                #[cfg(feature = "magic-dns")]
                 {
-                    let ifname = new_nic_ctx.ifname().await;
-                    let dns_runner = if let Some(ipv4) = ipv4_addr {
-                        Self::create_magic_dns_runner(peer_manager, ifname, ipv4)
-                    } else {
-                        None
+                    let Some(peer_mgr) = peer_mgr.upgrade() else {
+                        tracing::warn!("peer manager is dropped, stop static ip check.");
+                        if let Some(output_tx) = output_tx.take() {
+                            let _ = output_tx.send(Err(Error::Unknown));
+                            return;
+                        }
+                        return;
                     };
-                    Self::use_new_nic_ctx(nic_ctx.clone(), new_nic_ctx, dns_runner).await;
+
+                    let mut new_nic_ctx = NicCtx::new(
+                        peer_mgr.get_global_ctx(),
+                        &peer_mgr,
+                        peer_packet_receiver.clone(),
+                        close_notifier.clone(),
+                    );
+
+                    if let Err(e) = new_nic_ctx.run(ipv4_addr, ipv6_addr).await {
+                        if let Some(output_tx) = output_tx.take() {
+                            let _ = output_tx.send(Err(e));
+                            return;
+                        }
+                        tracing::error!("failed to create new nic ctx, err: {:?}", e);
+                        tokio::time::sleep(Duration::from_secs(1)).await;
+                        continue;
+                    }
+
+                    // Create Magic DNS runner only if we have IPv4
+                    #[cfg(feature = "magic-dns")]
+                    {
+                        let ifname = new_nic_ctx.ifname().await;
+                        let dns_runner = if let Some(ipv4) = ipv4_addr {
+                            Self::create_magic_dns_runner(peer_mgr, ifname, ipv4)
+                        } else {
+                            None
+                        };
+                        Self::use_new_nic_ctx(nic_ctx.clone(), new_nic_ctx, dns_runner).await;
+                    }
+                    #[cfg(not(feature = "magic-dns"))]
+                    Self::use_new_nic_ctx(nic_ctx.clone(), new_nic_ctx).await;
                 }
-                #[cfg(not(feature = "magic-dns"))]
-                Self::use_new_nic_ctx(nic_ctx.clone(), new_nic_ctx).await;
 
                 if let Some(output_tx) = output_tx.take() {
                     let _ = output_tx.send(Ok(()));
