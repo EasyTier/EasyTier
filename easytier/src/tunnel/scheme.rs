@@ -1,4 +1,5 @@
 use crate::common::error::Error;
+use crate::utils::BoxExt;
 use delegate::delegate;
 use derive_more::{Deref, From, TryInto};
 use serde::{Deserialize, Serialize};
@@ -169,6 +170,19 @@ impl Display for DiscoveryScheme {
     }
 }
 
+macro_rules! impl_ip_extractor {
+    ($self:expr, $method:ident) => {
+        match $self {
+            Self::Ip(scheme) => Some(scheme),
+            Self::Discovery(DiscoveryScheme {
+                scheme: Some(inner),
+                ..
+            }) => inner.$method(),
+            _ => None,
+        }
+    };
+}
+
 #[derive(Debug, Clone, PartialEq, From, TryInto, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum TunnelScheme {
@@ -182,14 +196,19 @@ pub enum TunnelScheme {
 }
 
 impl TunnelScheme {
+    pub fn into_ip(self) -> Option<IpScheme> {
+        impl_ip_extractor!(self, into_ip)
+    }
+    pub fn as_ip(&self) -> Option<&IpScheme> {
+        impl_ip_extractor!(self, as_ip)
+    }
+    pub fn as_ip_mut(&mut self) -> Option<&mut IpScheme> {
+        impl_ip_extractor!(self, as_ip_mut)
+    }
+
     pub fn set_v6(&mut self, v6: bool) {
-        match self {
-            Self::Ip(scheme) => scheme.v6 = v6,
-            Self::Discovery(DiscoveryScheme {
-                scheme: Some(scheme),
-                ..
-            }) => scheme.set_v6(v6),
-            _ => {}
+        if let Some(scheme) = self.as_ip_mut() {
+            scheme.v6 = v6;
         }
     }
 }
@@ -215,17 +234,18 @@ impl Display for TunnelScheme {
     }
 }
 
-impl From<IpProto> for TunnelScheme {
-    fn from(value: IpProto) -> Self {
-        Self::Ip(value.into())
-    }
+macro_rules! impl_from_proto {
+    ($variant:ident, $ty:ty) => {
+        impl From<$ty> for TunnelScheme {
+            fn from(value: $ty) -> Self {
+                Self::$variant(value.into())
+            }
+        }
+    };
 }
 
-impl From<DiscoveryProto> for TunnelScheme {
-    fn from(value: DiscoveryProto) -> Self {
-        Self::Discovery(value.into())
-    }
-}
+impl_from_proto!(Ip, IpProto);
+impl_from_proto!(Discovery, DiscoveryProto);
 
 impl TryFrom<&url::Url> for TunnelScheme {
     type Error = Error;
@@ -244,17 +264,36 @@ impl TryFrom<&url::Url> for TunnelScheme {
     }
 }
 
-macro_rules! __matches_protocol__ {
+impl TryFrom<&url::Url> for IpScheme {
+    type Error = Error;
+
+    fn try_from(value: &url::Url) -> Result<Self, Self::Error> {
+        TunnelScheme::try_from(value)?
+            .into_ip()
+            .ok_or_else(|| Error::InvalidUrl(value.to_string()))
+    }
+}
+
+macro_rules! __matches_proto__ {
     ($url:expr, $( $pattern:pat_param )|+ ) => {{
-        if let Ok($crate::tunnel::scheme::TunnelScheme::Ip(scheme)) = ($url).try_into() {
-            matches!(scheme.protocol(), $( $pattern )|+)
-        } else {
-            false
-        }
+        matches!(
+            $crate::tunnel::scheme::IpScheme::try_from($url).ok().map(|s| s.proto),
+            Some($( $pattern )|+)
+        )
     }};
 }
 
-use crate::utils::BoxExt;
+pub(crate) use __matches_proto__ as matches_proto;
+
+macro_rules! __matches_protocol__ {
+    ($url:expr, $( $pattern:pat_param )|+ ) => {{
+        matches!(
+            $crate::tunnel::scheme::IpScheme::try_from($url).ok().map(|s| s.protocol()),
+            Some($( $pattern )|+)
+        )
+    }};
+}
+
 pub(crate) use __matches_protocol__ as matches_protocol;
 
 #[cfg(test)]
