@@ -2847,9 +2847,13 @@ impl RouteSessionManager {
         dst_peer_id: PeerId,
         mut sync_now: tokio::sync::broadcast::Receiver<()>,
     ) {
+        const RETRY_BASE_MS: u64 = 50;
+        const RETRY_MAX_MS: u64 = 5000;
+
         let mut last_sync = Instant::now();
         let mut last_clean_dst_saved_map = Instant::now();
         loop {
+            let mut retry_delay_ms = RETRY_BASE_MS;
             loop {
                 let Some(service_impl) = service_impl.clone().upgrade() else {
                     return;
@@ -2881,7 +2885,8 @@ impl RouteSessionManager {
                 drop(service_impl);
                 drop(peer_rpc);
 
-                tokio::time::sleep(Duration::from_millis(50)).await;
+                tokio::time::sleep(Duration::from_millis(retry_delay_ms)).await;
+                retry_delay_ms = (retry_delay_ms * 2).min(RETRY_MAX_MS);
             }
 
             sync_now = sync_now.resubscribe();
@@ -3243,7 +3248,13 @@ impl RouteSessionManager {
             .disconnect_untrusted_peers(&untrusted_peers)
             .await;
 
-        self.sync_now("sync_route_info");
+        // Only trigger reverse sync when we actually received new data that
+        // needs to be propagated to other peers.  Previously this was
+        // unconditional, which created an A→B→A→B ping-pong storm even when
+        // there was nothing new to propagate.
+        if need_update_route_table || foreign_network.is_some() {
+            self.sync_now("sync_route_info");
+        }
 
         Ok(SyncRouteInfoResponse {
             is_initiator,
