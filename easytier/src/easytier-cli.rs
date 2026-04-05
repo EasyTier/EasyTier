@@ -1159,14 +1159,9 @@ impl<'a> CommandHandler<'a> {
     }
 
     fn connector_validate_url(url: &str) -> Result<url::Url, Error> {
-        let url = url::Url::parse(url).map_err(|e| {
-            anyhow::anyhow!("invalid url ({url}): {e}")
-        })?;
+        let url = url::Url::parse(url).map_err(|e| anyhow::anyhow!("invalid url ({url}): {e}"))?;
         TunnelScheme::try_from(&url).map_err(|_| {
-            anyhow::anyhow!(
-                "unsupported scheme \"{}\" in url ({url})",
-                url.scheme()
-            )
+            anyhow::anyhow!("unsupported scheme \"{}\" in url ({url})", url.scheme())
         })?;
         Ok(url)
     }
@@ -1178,8 +1173,15 @@ impl<'a> CommandHandler<'a> {
     ) -> Result<(), Error> {
         let url = match action {
             ConfigPatchAction::Add => Self::connector_validate_url(url)?,
-            _ => url::Url::parse(url)
-                .map_err(|e| anyhow::anyhow!("invalid url ({url}): {e}"))?,
+            ConfigPatchAction::Remove => {
+                url::Url::parse(url).map_err(|e| anyhow::anyhow!("invalid url ({url}): {e}"))?
+            }
+            ConfigPatchAction::Clear => {
+                return Err(anyhow::anyhow!(
+                    "unsupported connector patch action: {:?}",
+                    action
+                ));
+            }
         };
         let client = self.get_config_client().await?;
         let request = PatchConfigRequest {
@@ -2639,13 +2641,13 @@ async fn main() -> Result<(), Error> {
                 handler
                     .handle_connector_modify(&url, ConfigPatchAction::Add)
                     .await?;
-                println!("connector added: {url}");
+                println!("connector add applied to selected instance(s): {url}");
             }
             Some(ConnectorSubCommand::Remove { url }) => {
                 handler
                     .handle_connector_modify(&url, ConfigPatchAction::Remove)
                     .await?;
-                println!("connector removed: {url}");
+                println!("connector remove applied to selected instance(s): {url}");
             }
             Some(ConnectorSubCommand::List) => {
                 handler.handle_connector_list().await?;
