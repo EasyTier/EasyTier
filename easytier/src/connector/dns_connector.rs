@@ -2,6 +2,7 @@ use std::{net::SocketAddr, sync::Arc};
 
 use super::{create_connector_by_url, http_connector::TunnelWithInfo};
 use crate::tunnel::scheme::{DiscoveryProto, DiscoveryScheme, IpProto};
+use crate::utils::BoxExt;
 use crate::{
     common::{
         dns::{RESOLVER, resolve_txt_record},
@@ -188,16 +189,14 @@ impl super::TunnelConnector for DnsTunnelConnector {
         };
         let t = conn.connect().await?;
         let info = t.info().unwrap_or_default();
+        self.scheme.scheme = info.tunnel_type.parse().map(BoxExt::boxed).ok();
         Ok(Box::new(TunnelWithInfo::new(
             t,
             TunnelInfo {
                 local_addr: info.local_addr.clone(),
                 remote_url: Some(self.addr.clone().into()),
-                remote_addr: info
-                    .remote_addr
-                    .clone()
-                    .or(info.remote_url.clone()),
-                tunnel_type: format!("{}-{}", self.addr.scheme(), info.tunnel_type),
+                remote_addr: info.remote_addr.clone().or(info.remote_url.clone()),
+                tunnel_type: self.scheme.to_string(),
             },
         )))
     }
