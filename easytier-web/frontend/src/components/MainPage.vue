@@ -1,13 +1,18 @@
 <script setup lang="ts">
 import { I18nUtils } from 'easytier-frontend-lib'
 import { computed, onMounted, ref, onUnmounted, nextTick } from 'vue';
-import { Button, TieredMenu } from 'primevue';
+import { Button, Message, TieredMenu } from 'primevue';
 import { useRoute, useRouter } from 'vue-router';
 import { useDialog } from 'primevue/usedialog';
 import ChangePassword from './ChangePassword.vue';
 import Icon from '../assets/easytier.png'
 import { useI18n } from 'vue-i18n'
 import ApiClient from '../modules/api';
+import {
+    clearMustChangePasswordFlag,
+    getMustChangePasswordFlag,
+    setMustChangePasswordFlag,
+} from '../modules/auth-status';
 
 const { t } = useI18n()
 const route = useRoute();
@@ -15,6 +20,7 @@ const router = useRouter();
 const api = computed<ApiClient | undefined>(() => {
     try {
         return new ApiClient(atob(route.params.apiHost as string), () => {
+            clearMustChangePasswordFlag();
             router.push({ name: 'login' });
         })
     } catch (e) {
@@ -23,25 +29,42 @@ const api = computed<ApiClient | undefined>(() => {
 });
 
 const dialog = useDialog();
+const mustChangePassword = ref(false);
+
+const openChangePasswordDialog = () => {
+    dialog.open(ChangePassword, {
+        props: {
+            modal: true,
+        },
+        data: {
+            api: api.value,
+        }
+    });
+};
+
+const loadAuthStatus = async () => {
+    const cachedStatus = getMustChangePasswordFlag();
+    if (cachedStatus !== null) {
+        mustChangePassword.value = cachedStatus;
+    }
+
+    try {
+        const status = await api.value?.check_login_status();
+        mustChangePassword.value = Boolean(
+            status?.loggedIn && status?.mustChangePassword,
+        );
+        setMustChangePasswordFlag(mustChangePassword.value);
+    } catch (e) {
+        console.error('Failed to load auth status', e);
+    }
+};
 
 const userMenu = ref();
 const userMenuItems = ref([
     {
         label: t('web.main.change_password'),
         icon: 'pi pi-key',
-        command: () => {
-            console.log('File');
-            let ret = dialog.open(ChangePassword, {
-                props: {
-                    modal: true,
-                },
-                data: {
-                    api: api.value,
-                }
-            });
-
-            console.log("return", ret)
-        },
+        command: openChangePasswordDialog,
     },
     {
         label: t('web.main.logout'),
@@ -52,6 +75,7 @@ const userMenuItems = ref([
             } catch (e) {
                 console.error("logout failed", e);
             }
+            clearMustChangePasswordFlag();
             router.push({ name: 'login' });
         },
     },
@@ -92,6 +116,7 @@ onMounted(async () => {
     // 等待 DOM 渲染完成后添加事件监听器
     await nextTick();
     document.addEventListener('click', handleClickOutside);
+    await loadAuthStatus();
 });
 
 onUnmounted(() => {
@@ -171,6 +196,13 @@ onUnmounted(() => {
     <div class="p-4 sm:ml-64">
         <div class="p-4 border-2 border-gray-200 border-dashed rounded-lg dark:border-gray-700">
             <div class="grid grid-cols-1 gap-4">
+                <Message v-if="mustChangePassword" severity="warn" :closable="false">
+                    <div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                        <span>{{ t('web.main.default_password_warning') }}</span>
+                        <Button size="small" icon="pi pi-key" :label="t('web.main.change_password_now')"
+                            @click="openChangePasswordDialog" />
+                    </div>
+                </Message>
                 <RouterView v-slot="{ Component }">
                     <component :is="Component" :api="api" />
                 </RouterView>

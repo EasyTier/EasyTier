@@ -2,6 +2,8 @@ import axios, { AxiosError, AxiosInstance, AxiosResponse, InternalAxiosRequestCo
 import { type Api, NetworkTypes, Utils } from 'easytier-frontend-lib';
 import { Md5 } from 'ts-md5';
 
+const hashAuthPassword = (password: string) => Md5.hashStr(password);
+
 export interface ValidateConfigResponse {
     toml_config: string;
 }
@@ -14,6 +16,16 @@ export interface OidcConfigResponse {
 export interface LoginResponse {
     success: boolean;
     message: string;
+    mustChangePassword?: boolean;
+}
+
+export interface AuthStatusResponse {
+    must_change_password: boolean;
+}
+
+export interface CheckLoginStatusResponse {
+    loggedIn: boolean;
+    mustChangePassword: boolean;
 }
 
 export interface RegisterResponse {
@@ -82,7 +94,6 @@ export class ApiClient {
 
         // 添加响应拦截器
         this.client.interceptors.response.use((response: AxiosResponse) => {
-            console.debug('Axios Response:', response);
             return response.data; // 假设服务器返回的数据都在data属性中
         }, (error: any) => {
             if (error.response) {
@@ -108,9 +119,8 @@ export class ApiClient {
     // 注册
     public async register(data: RegisterData): Promise<RegisterResponse> {
         try {
-            data.credentials.password = Md5.hashStr(data.credentials.password);
-            const response = await this.client.post<RegisterResponse>('/auth/register', data);
-            console.log("register response:", response);
+            data.credentials.password = hashAuthPassword(data.credentials.password);
+            await this.client.post<RegisterResponse>('/auth/register', data);
             return { success: true, message: 'Register success', };
         } catch (error) {
             if (error instanceof AxiosError) {
@@ -123,10 +133,13 @@ export class ApiClient {
     // 登录
     public async login(data: Credential): Promise<LoginResponse> {
         try {
-            data.password = Md5.hashStr(data.password);
-            const response = await this.client.post<any>('/auth/login', data);
-            console.log("login response:", response);
-            return { success: true, message: 'Login success', };
+            data.password = hashAuthPassword(data.password);
+            const response = await this.client.post<any, AuthStatusResponse>('/auth/login', data);
+            return {
+                success: true,
+                message: 'Login success',
+                mustChangePassword: response.must_change_password,
+            };
         } catch (error) {
             if (error instanceof AxiosError) {
                 if (error.response?.status === 401) {
@@ -147,16 +160,15 @@ export class ApiClient {
     }
 
     public async change_password(new_password: string) {
-        await this.client.put('/auth/password', { new_password: Md5.hashStr(new_password) });
+        await this.client.put('/auth/password', { new_password: hashAuthPassword(new_password) });
     }
 
-    public async check_login_status() {
-        try {
-            await this.client.get('/auth/check_login_status');
-            return true;
-        } catch (error) {
-            return false;
-        }
+    public async check_login_status(): Promise<CheckLoginStatusResponse> {
+        const response = await this.client.get<any, AuthStatusResponse>('/auth/check_login_status');
+        return {
+            loggedIn: true,
+            mustChangePassword: response.must_change_password,
+        };
     }
 
     public async list_session() {

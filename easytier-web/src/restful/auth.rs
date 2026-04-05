@@ -4,8 +4,7 @@ use axum::{
     Router,
 };
 use axum_login::login_required;
-use axum_messages::Message;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 
 use crate::restful::users::Backend;
 
@@ -18,9 +17,9 @@ use super::{
     AppStateInner,
 };
 
-#[derive(Debug, Deserialize, Serialize)]
-pub struct LoginResult {
-    messages: Vec<Message>,
+#[derive(Debug, Serialize)]
+pub struct AuthStatusResponse {
+    must_change_password: bool,
 }
 
 pub fn router() -> Router<AppStateInner> {
@@ -40,11 +39,14 @@ pub fn router() -> Router<AppStateInner> {
 }
 
 mod put {
+    use crate::restful::{
+        other_error,
+        users::{ChangePassword, ChangePasswordError},
+        HttpHandleError,
+    };
     use axum::Json;
     use axum_login::AuthUser;
     use easytier::proto::common::Void;
-
-    use crate::restful::{other_error, users::ChangePassword, HttpHandleError};
 
     use super::*;
 
@@ -58,15 +60,18 @@ mod put {
             .await
         {
             tracing::error!("Failed to change password: {:?}", e);
-            return Err((
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json::from(other_error(format!("{:?}", e))),
-            ));
+            let status = match e {
+                ChangePasswordError::EmptyPassword => StatusCode::BAD_REQUEST,
+                ChangePasswordError::UserNotFound | ChangePasswordError::Db(_) => {
+                    StatusCode::INTERNAL_SERVER_ERROR
+                }
+            };
+            return Err((status, Json::from(other_error(format!("{:?}", e)))));
         }
 
         let _ = auth_session.logout().await;
 
-        Ok(Void::default().into())
+        Ok(Json(Void::default()))
     }
 }
 
@@ -86,7 +91,7 @@ mod post {
     pub async fn login(
         mut auth_session: AuthSession,
         Json(creds): Json<Credentials>,
-    ) -> Result<Json<Void>, HttpHandleError> {
+    ) -> Result<Json<AuthStatusResponse>, HttpHandleError> {
         let user = match auth_session.authenticate(creds.clone()).await {
             Ok(Some(user)) => user,
             Ok(None) => {
@@ -110,7 +115,9 @@ mod post {
             ));
         }
 
-        Ok(Void::default().into())
+        Ok(Json(AuthStatusResponse {
+            must_change_password: user.db_user.must_change_password,
+        }))
     }
 
     pub async fn register(
@@ -189,9 +196,11 @@ mod get {
 
     pub async fn check_login_status(
         auth_session: AuthSession,
-    ) -> Result<Json<Void>, HttpHandleError> {
-        if auth_session.user.is_some() {
-            Ok(Json(Void::default()))
+    ) -> Result<Json<AuthStatusResponse>, HttpHandleError> {
+        if let Some(user) = auth_session.user {
+            Ok(Json(AuthStatusResponse {
+                must_change_password: user.db_user.must_change_password,
+            }))
         } else {
             Err((
                 StatusCode::UNAUTHORIZED,

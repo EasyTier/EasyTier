@@ -7,6 +7,7 @@ import { I18nUtils } from 'easytier-frontend-lib';
 import { getInitialApiHost, cleanAndLoadApiHosts, saveApiHost } from "../modules/api-host"
 import { useI18n } from 'vue-i18n'
 import ApiClient, { Credential, RegisterData } from '../modules/api';
+import { setMustChangePasswordFlag } from '../modules/auth-status';
 
 const { t } = useI18n()
 
@@ -33,6 +34,7 @@ const onSubmit = async () => {
     let ret = await api.value?.login(credential);
     if (ret.success) {
         localStorage.setItem('apiHost', btoa(apiHost.value));
+        setMustChangePasswordFlag(Boolean(ret.mustChangePassword));
         router.push({
             name: 'dashboard',
             params: { apiHost: btoa(apiHost.value) },

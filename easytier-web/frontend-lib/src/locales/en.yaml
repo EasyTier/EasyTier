@@ -286,6 +286,9 @@ web:
     logout: Logout
     language: Language
     change_password: Change Password
+    change_password_now: Change Password Now
+    default_password_warning: This account is still using the default password. Change it immediately after deployment to keep your instance secure.
+    password_changed_relogin: Password changed. Please log in again.
 
   device:
     list: Device List
@@ -369,6 +372,7 @@ web:
     change_password: Change Password
     old_password: Old Password
     new_password: New Password
+    new_password_empty: New password cannot be empty
     confirm_password: Confirm New Password
     language: Language
     theme: Theme

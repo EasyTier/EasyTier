@@ -2,6 +2,7 @@ use sea_orm_migration::prelude::*;
 
 mod m20241029_000001_init;
 mod m20260403_000002_scope_network_config_unique;
+mod m20260405_000003_add_must_change_password;
 
 pub struct Migrator;
 
@@ -11,6 +12,7 @@ impl MigratorTrait for Migrator {
         vec![
             Box::new(m20241029_000001_init::Migration),
             Box::new(m20260403_000002_scope_network_config_unique::Migration),
+            Box::new(m20260405_000003_add_must_change_password::Migration),
         ]
     }
 }
