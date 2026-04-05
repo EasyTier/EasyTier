@@ -39,9 +39,8 @@ use super::{
     create_connector_by_url, should_background_p2p_with_peer, should_try_p2p_with_peer,
     udp_hole_punch,
 };
-use crate::tunnel::scheme::{IpProto, TunnelScheme};
 use crate::tunnel::FromUrl;
-use crate::utils::eq_as;
+use crate::tunnel::scheme::{IpProto, IpScheme, TunnelScheme, matches_proto};
 use anyhow::Context;
 use rand::Rng;
 use socket2::Protocol;
@@ -58,7 +57,7 @@ fn mapped_listener_port(url: &url::Url) -> Option<u16> {
         TunnelScheme::try_from(url)
             .ok()
             .and_then(|scheme| IpScheme::try_from(scheme).ok())
-            .map(IpScheme::default_port)
+            .map(|scheme| scheme.default_port())
     })
 }
 
@@ -284,7 +283,7 @@ impl DirectConnectorManagerData {
     async fn do_try_connect_to_ip(&self, dst_peer_id: PeerId, addr: String) -> Result<(), Error> {
         let connector = create_connector_by_url(&addr, &self.global_ctx, IpVersion::Both).await?;
         let remote_url = connector.remote_url();
-        let (peer_id, conn_id) = if eq_as::<TunnelScheme>(&remote_url, IpProto::Udp) {
+        let (peer_id, conn_id) = if matches_proto!(&remote_url, IpProto::Udp) {
             match remote_url.host() {
                 Some(Host::Ipv6(_)) => {
                     self.connect_to_public_ipv6(dst_peer_id, &remote_url)
