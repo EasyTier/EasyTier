@@ -646,8 +646,8 @@ impl PeerManager {
         let Some(tunnel_info) = tunnel.info() else {
             anyhow::bail!("tunnel info is not set");
         };
-        let Some(src) = tunnel_info.remote_addr.map(url::Url::from) else {
-            anyhow::bail!("tunnel info remote addr is not set");
+        let Some(src) = tunnel_info.remote_url.map(url::Url::from) else {
+            anyhow::bail!("tunnel info remote url is not set");
         };
         if src.scheme() == "ring" {
             return Ok(());
@@ -2835,7 +2835,7 @@ mod tests {
         let server_remote_url: url::Url = a_ring
             .info()
             .unwrap()
-            .remote_addr
+            .remote_url
             .unwrap()
             .url
             .parse()

@@ -411,7 +411,7 @@ mod tests {
         let remote_url: url::Url = shared_client_tunnel
             .info()
             .unwrap()
-            .remote_addr
+            .remote_url
             .unwrap()
             .url
             .parse()

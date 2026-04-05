@@ -229,7 +229,7 @@ impl<H: TunnelHandlerForListener + Send + Sync + 'static + Debug> ListenerManage
                         .unwrap_or_default()
                         .to_string(),
                     tunnel_info
-                        .remote_addr
+                        .remote_url
                         .clone()
                         .unwrap_or_default()
                         .to_string(),
@@ -246,7 +246,7 @@ impl<H: TunnelHandlerForListener + Send + Sync + 'static + Debug> ListenerManage
                     if let Err(e) = &server_ret {
                         global_ctx.issue_event(GlobalCtxEvent::ConnectionError(
                             tunnel_info.local_addr.unwrap_or_default().to_string(),
-                            tunnel_info.remote_addr.unwrap_or_default().to_string(),
+                            tunnel_info.remote_url.unwrap_or_default().to_string(),
                             e.to_string(),
                         ));
                         tracing::error!(error = ?e, "handle conn error");

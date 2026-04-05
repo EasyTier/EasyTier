@@ -214,9 +214,9 @@ impl RpcServerHook for InstanceRpcServerHook {
         let tunnel_info = tunnel_info.ok_or_else(|| anyhow::anyhow!("tunnel info is None"))?;
 
         let remote_url = tunnel_info
-            .remote_addr
+            .remote_url
             .clone()
-            .ok_or_else(|| anyhow::anyhow!("remote_addr is None"))?;
+            .ok_or_else(|| anyhow::anyhow!("remote_url is None"))?;
 
         let url_str = &remote_url.url;
         let url = url::Url::parse(url_str)
@@ -1635,7 +1635,7 @@ mod tests {
         for case in test_cases {
             let hook = InstanceRpcServerHook::new(case.whitelist.clone());
             let tunnel_info = Some(crate::proto::common::TunnelInfo {
-                remote_addr: Some(crate::proto::common::Url {
+                remote_url: Some(crate::proto::common::Url {
                     url: case.remote_url.clone(),
                 }),
                 ..Default::default()

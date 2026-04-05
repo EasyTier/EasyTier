@@ -641,7 +641,7 @@ pub mod tests {
         }
 
         assert_eq!(
-            url::Url::from(tunnel.info().unwrap().remote_addr.unwrap()),
+            url::Url::from(tunnel.info().unwrap().remote_url.unwrap()),
             connector.remote_url(),
         );
 
