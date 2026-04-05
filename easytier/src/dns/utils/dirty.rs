@@ -1,39 +1,32 @@
-use derive_more::Deref;
-use std::sync::atomic::{AtomicBool, Ordering};
-use tokio::sync::Notify;
+use tokio::sync::watch;
 
-#[derive(Debug, Deref)]
+#[derive(Debug)]
 pub struct DirtyFlag {
-    dirty: AtomicBool,
-    #[deref]
-    notify: Notify,
+    tx: watch::Sender<bool>,
+    rx: watch::Receiver<bool>,
 }
 
 impl DirtyFlag {
     pub fn new(value: bool) -> Self {
-        let notify = Notify::new();
-
-        if value {
-            notify.notify_one();
-        }
-
-        Self {
-            dirty: AtomicBool::new(value),
-            notify,
-        }
+        let (tx, rx) = watch::channel(value);
+        Self { tx, rx }
     }
 
     pub fn mark(&self) {
-        self.dirty.store(true, Ordering::Release);
-        self.notify.notify_one();
+        self.tx.send(true).ok();
     }
 
     pub fn peek(&self) -> bool {
-        self.dirty.load(Ordering::Acquire)
+        *self.tx.borrow()
     }
 
     pub fn reset(&self) -> bool {
-        self.dirty.swap(false, Ordering::Acquire)
+        self.tx.send_replace(false)
+    }
+
+    pub async fn wait(&self) {
+        let mut rx = self.rx.clone();
+        let _ = rx.wait_for(|v| *v).await;
     }
 }
 

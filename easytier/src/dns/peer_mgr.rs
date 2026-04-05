@@ -75,7 +75,6 @@ impl DnsPeerMgrInner {
     pub async fn refresh(&self, peer_id: PeerId) {
         if peer_id == self.peer_mgr.my_peer_id() {
             self.dirty.mark();
-            self.dirty.notify_one();
             return;
         }
 
@@ -91,25 +90,23 @@ impl DnsPeerMgrInner {
             return;
         }
 
-        self.dirty.mark();
+        let mut invalidate = route.dns.is_empty();
 
-        let invalidate = route.dns.is_empty()
-            || match self.fetch(peer_id).await {
-                Ok(info) => {
-                    self.peers.insert(peer_id, info).await;
-                    false
-                }
+        if !invalidate {
+            match self.fetch(peer_id).await {
+                Ok(info) => self.peers.insert(peer_id, info).await,
                 Err(error) => {
                     tracing::warn!(%peer_id, ?error, "failed to fetch dns export config from peer");
-                    true
+                    invalidate = true;
                 }
             };
+        }
 
         if invalidate {
             self.peers.invalidate(&peer_id).await;
         }
 
-        self.dirty.notify_one();
+        self.dirty.mark();
     }
 
     #[instrument(skip(self), level = "trace", ret)]

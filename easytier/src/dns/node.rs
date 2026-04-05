@@ -166,7 +166,7 @@ impl DnsNode {
                     last_heartbeat = Instant::now();
                 }
 
-                _ = self.mgr.dirty.notified() => {}
+                _ = self.mgr.dirty.wait() => {}
 
                 event = subscriber.recv() => {
                     match event {

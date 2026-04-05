@@ -225,7 +225,7 @@ impl DnsServer {
 
         let reload_catalog = async {
             loop {
-                dirty.catalog.notified().await;
+                dirty.catalog.wait().await;
                 if dirty.catalog.reset() {
                     self.catalog.replace(self.mgr.catalog()).await;
                 }
@@ -235,7 +235,7 @@ impl DnsServer {
 
         let reload_addresses = async {
             loop {
-                dirty.addresses.notified().await;
+                dirty.addresses.wait().await;
                 if dirty.addresses.reset() {
                     if let Err(e) = self.reload_addresses(self.mgr.iter_addresses()).await {
                         tracing::error!("failed to reload addresses: {:?}", e);
@@ -248,7 +248,7 @@ impl DnsServer {
 
         let reload_listeners = async {
             loop {
-                dirty.listeners.notified().await;
+                dirty.listeners.wait().await;
                 if dirty.listeners.reset() {
                     if let Err(e) = self
                         .reload_listeners(self.mgr.iter_listeners(), &mut runtime)
