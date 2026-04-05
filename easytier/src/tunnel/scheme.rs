@@ -1,12 +1,12 @@
 use crate::common::error::Error;
+use delegate::delegate;
 use derive_more::{Deref, From, TryInto};
 use serde::{Deserialize, Serialize};
 use serde_with::{DeserializeFromStr, SerializeDisplay};
 use socket2::Protocol;
 use std::fmt::Display;
 use std::str::FromStr;
-use delegate::delegate;
-use strum::{Display, EnumString, IntoStaticStr, ParseError, VariantArray};
+use strum::{Display, EnumString, IntoStaticStr, ParseError, VariantArray, VariantNames};
 
 #[derive(Debug, Clone, Copy)]
 struct IpProtoAttributes {
@@ -14,7 +14,9 @@ struct IpProtoAttributes {
     port_offset: u16,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Display, EnumString, IntoStaticStr, VariantArray)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Display, EnumString, IntoStaticStr, VariantArray, VariantNames,
+)]
 #[strum(serialize_all = "lowercase")]
 pub enum IpProto {
     Tcp,
@@ -32,6 +34,9 @@ pub enum IpProto {
 }
 
 impl IpProto {
+    pub const VARIANTS: &'static [Self] = <Self as VariantArray>::VARIANTS;
+    pub const VARIANT_NAMES: &'static [&'static str] = <Self as VariantNames>::VARIANTS;
+
     const fn attributes(self) -> IpProtoAttributes {
         let (protocol, port_offset) = match self {
             Self::Tcp => (Protocol::TCP, 0),
@@ -52,7 +57,7 @@ impl IpProto {
             port_offset,
         }
     }
-    
+
     delegate! {
         to self.attributes() {
             #[field]
@@ -108,13 +113,20 @@ impl Display for IpScheme {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Display, EnumString, IntoStaticStr, VariantArray)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Display, EnumString, IntoStaticStr, VariantArray, VariantNames,
+)]
 #[strum(serialize_all = "lowercase")]
 pub enum DiscoveryProto {
     Http,
     Https,
     Txt,
     Srv,
+}
+
+impl DiscoveryProto {
+    pub const VARIANTS: &'static [Self] = <Self as VariantArray>::VARIANTS;
+    pub const VARIANT_NAMES: &'static [&'static str] = <Self as VariantNames>::VARIANTS;
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Deref, DeserializeFromStr, SerializeDisplay)]
