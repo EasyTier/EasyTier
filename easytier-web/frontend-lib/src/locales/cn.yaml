@@ -363,6 +363,10 @@ web:
     success: 成功
     warning: 警告
     info: 提示
+    password_empty: 密码不能为空
+    password_min_length: 密码至少需要 8 位
+    password_too_weak: 密码强度不足
+    password_strength_hint: 密码至少 8 位，且需包含大小写字母、数字、特殊字符中的至少 2 类
     enable: 开启
     disable: 关闭
     address: 地址

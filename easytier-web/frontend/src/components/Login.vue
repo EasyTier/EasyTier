@@ -8,6 +8,7 @@ import { getInitialApiHost, cleanAndLoadApiHosts, saveApiHost } from "../modules
 import { useI18n } from 'vue-i18n'
 import ApiClient, { Credential, RegisterData } from '../modules/api';
 import { setMustChangePasswordFlag } from '../modules/auth-status';
+import { validatePasswordStrength } from '../modules/password-policy';
 
 const { t } = useI18n()
 
@@ -25,6 +26,14 @@ const registerUsername = ref('');
 const registerPassword = ref('');
 const captcha = ref('');
 const captchaSrc = computed(() => api.value.captcha_url());
+const registerPasswordValidation = computed(() => validatePasswordStrength(registerPassword.value));
+const registerPasswordErrorMessage = computed(() => {
+    if (registerPassword.value.length === 0 || registerPasswordValidation.value.valid) {
+        return '';
+    }
+
+    return t(registerPasswordValidation.value.reasonKey!);
+});
 
 
 const onSubmit = async () => {
@@ -45,6 +54,16 @@ const onSubmit = async () => {
 };
 
 const onRegister = async () => {
+    if (!registerPasswordValidation.value.valid) {
+        toast.add({
+            severity: 'warn',
+            summary: t('web.common.warning'),
+            detail: t(registerPasswordValidation.value.reasonKey!),
+            life: 3000,
+        });
+        return;
+    }
+
     saveApiHost(apiHost.value);
     const credential: Credential = { username: registerUsername.value, password: registerPassword.value };
     const registerReq: RegisterData = { credentials: credential, captcha: captcha.value };
@@ -158,6 +177,12 @@ onBeforeUnmount(() => {
                             }}</label>
                         <Password id="register-password" v-model="registerPassword" required toggleMask
                             :feedback="false" class="w-full" />
+                        <small class="text-surface-500 dark:text-surface-400">
+                            {{ t('web.common.password_strength_hint') }}
+                        </small>
+                        <small v-if="registerPasswordErrorMessage" class="block text-red-500 dark:text-red-400">
+                            {{ registerPasswordErrorMessage }}
+                        </small>
                     </div>
                     <div class="p-field">
                         <label for="captcha" class="block text-sm font-medium">{{ t('web.login.captcha') }}</label>
@@ -165,7 +190,8 @@ onBeforeUnmount(() => {
                         <img :src="captchaSrc" alt="Captcha" class="mt-2 mb-2" />
                     </div>
                     <div class="flex items-center justify-between">
-                        <Button :label="t('web.login.register')" type="submit" class="w-full" />
+                        <Button :label="t('web.login.register')" type="submit" class="w-full"
+                            :disabled="!registerPasswordValidation.valid" />
                     </div>
                     <div class="flex items-center justify-between">
                         <Button :label="t('web.login.back_to_login')" type="button" class="w-full"

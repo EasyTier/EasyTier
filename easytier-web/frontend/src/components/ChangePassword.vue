@@ -6,6 +6,7 @@ import { useRouter } from 'vue-router';
 import { useI18n } from 'vue-i18n';
 import ApiClient from '../modules/api';
 import { clearMustChangePasswordFlag } from '../modules/auth-status';
+import { validatePasswordStrength } from '../modules/password-policy';
 
 const dialogRef = inject<any>('dialogRef');
 
@@ -15,14 +16,21 @@ const password = ref('');
 const toast = useToast();
 const router = useRouter();
 const { t } = useI18n();
-const passwordIsEmpty = computed(() => password.value.trim().length === 0);
+const passwordValidation = computed(() => validatePasswordStrength(password.value));
+const passwordErrorMessage = computed(() => {
+    if (password.value.length === 0 || passwordValidation.value.valid) {
+        return '';
+    }
+
+    return t(passwordValidation.value.reasonKey!);
+});
 
 const changePassword = async () => {
-    if (passwordIsEmpty.value) {
+    if (!passwordValidation.value.valid) {
         toast.add({
             severity: 'warn',
             summary: t('web.common.warning'),
-            detail: t('web.settings.new_password_empty'),
+            detail: t(passwordValidation.value.reasonKey!),
             life: 3000,
         });
         return;
@@ -61,8 +69,14 @@ const changePassword = async () => {
                 <div class="flex flex-col space-y-4">
                     <Password v-model="password" :placeholder="t('web.settings.new_password')" :feedback="false"
                         toggleMask />
+                    <small class="text-surface-500 dark:text-surface-400">
+                        {{ t('web.common.password_strength_hint') }}
+                    </small>
+                    <small v-if="passwordErrorMessage" class="text-red-500 dark:text-red-400">
+                        {{ passwordErrorMessage }}
+                    </small>
                     <Button @click="changePassword" :label="t('web.common.confirm')"
-                        :disabled="passwordIsEmpty" />
+                        :disabled="!passwordValidation.valid" />
                 </div>
             </template>
         </Card>
