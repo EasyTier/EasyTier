@@ -341,9 +341,14 @@ fn normalize_tunnel_url(raw: &str, fallback_ipv6: Option<bool>) -> Option<String
 
     if let Some(rest) = rest.strip_prefix('[') {
         let (host, remainder) = rest.split_once(']')?;
+        let scheme = normalize_tunnel_scheme(raw_scheme, true)?;
+
+        if remainder.is_empty() {
+            return Some(format!("{scheme}://[{host}]"));
+        }
+
         let raw_port = remainder.strip_prefix(':')?;
         let port = normalize_tunnel_port(raw_port, true)?;
-        let scheme = normalize_tunnel_scheme(raw_scheme, true)?;
         return Some(format!("{scheme}://[{host}]:{port}"));
     }
 
@@ -351,11 +356,10 @@ fn normalize_tunnel_url(raw: &str, fallback_ipv6: Option<bool>) -> Option<String
     let scheme = normalize_tunnel_scheme(raw_scheme, is_ipv6)?;
 
     if let Ok(url) = url::Url::parse(raw) {
-        let host = url.host_str()?;
-        let host = if is_ipv6 {
-            format!("[{host}]")
-        } else {
-            host.to_string()
+        let host = match url.host()? {
+            url::Host::Ipv4(host) => host.to_string(),
+            url::Host::Ipv6(host) => format!("[{host}]"),
+            url::Host::Domain(host) => host.to_string(),
         };
 
         return Some(match url.port_or_known_default() {
@@ -592,6 +596,22 @@ mod tests {
         assert_eq!(
             normalize_tunnel_url("tcp6://[2001:db8::1]:11010", None).as_deref(),
             Some("tcp6://[2001:db8::1]:11010")
+        );
+    }
+
+    #[test]
+    fn normalize_ipv6_tunnel_url_without_explicit_port() {
+        assert_eq!(
+            normalize_tunnel_url("tcp://[2001:db8::1]", None).as_deref(),
+            Some("tcp6://[2001:db8::1]")
+        );
+    }
+
+    #[test]
+    fn keep_domain_host_unbracketed_when_ipv6_falls_back() {
+        assert_eq!(
+            normalize_tunnel_url("tcp://localhost:11010", Some(true)).as_deref(),
+            Some("tcp6://localhost:11010")
         );
     }
 
