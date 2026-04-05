@@ -287,7 +287,7 @@ impl fmt::Display for Url {
 
 fn split_tunnel_scheme(raw_scheme: &str) -> Option<(&str, &'static str, bool)> {
     for scheme in IpScheme::VARIANTS {
-        let scheme = scheme.as_str();
+        let scheme: &'static str = scheme.into();
         let ipv6_suffix = format!("{scheme}6");
         if let Some(prefix) = raw_scheme.strip_suffix(&ipv6_suffix) {
             if prefix.is_empty() || prefix.ends_with('-') {
