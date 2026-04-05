@@ -75,7 +75,7 @@ use easytier::{
         rpc_impl::standalone::StandAloneClient,
         rpc_types::controller::BaseController,
     },
-    tunnel::tcp::TcpTunnelConnector,
+    tunnel::{tcp::TcpTunnelConnector, TunnelScheme},
     utils::{cost_to_str, PeerRoutePair},
 };
 
@@ -192,8 +192,6 @@ struct PeerArgs {
 
 #[derive(Subcommand, Debug)]
 enum PeerSubCommand {
-    Add,
-    Remove,
     List,
     ListForeign {
         #[arg(
@@ -232,8 +230,16 @@ struct ConnectorArgs {
 
 #[derive(Subcommand, Debug)]
 enum ConnectorSubCommand {
-    Add,
-    Remove,
+    /// Add a connector
+    Add {
+        #[arg(help = "connector url, e.g., tcp://1.2.3.4:11010")]
+        url: String,
+    },
+    /// Remove a connector
+    Remove {
+        #[arg(help = "connector url, e.g., tcp://1.2.3.4:11010")]
+        url: String,
+    },
     List,
 }
 
@@ -1152,14 +1158,59 @@ impl<'a> CommandHandler<'a> {
             .prometheus_text)
     }
 
-    #[allow(dead_code)]
-    fn handle_peer_add(&self, _args: PeerArgs) {
-        println!("add peer");
+    fn connector_validate_url(url: &str) -> Result<url::Url, Error> {
+        let url = url::Url::parse(url).map_err(|e| anyhow::anyhow!("invalid url ({url}): {e}"))?;
+        TunnelScheme::try_from(&url).map_err(|_| {
+            anyhow::anyhow!("unsupported scheme \"{}\" in url ({url})", url.scheme())
+        })?;
+        Ok(url)
     }
 
-    #[allow(dead_code)]
-    fn handle_peer_remove(&self, _args: PeerArgs) {
-        println!("remove peer");
+    async fn apply_connector_modify(
+        &self,
+        url: &str,
+        action: ConfigPatchAction,
+    ) -> Result<(), Error> {
+        let url = match action {
+            ConfigPatchAction::Add => Self::connector_validate_url(url)?,
+            ConfigPatchAction::Remove => {
+                url::Url::parse(url).map_err(|e| anyhow::anyhow!("invalid url ({url}): {e}"))?
+            }
+            ConfigPatchAction::Clear => {
+                return Err(anyhow::anyhow!(
+                    "unsupported connector patch action: {:?}",
+                    action
+                ));
+            }
+        };
+        let client = self.get_config_client().await?;
+        let request = PatchConfigRequest {
+            instance: Some(self.instance_selector.clone()),
+            patch: Some(InstanceConfigPatch {
+                connectors: vec![UrlPatch {
+                    action: action.into(),
+                    url: Some(url.into()),
+                }],
+                ..Default::default()
+            }),
+        };
+        let _response = client
+            .patch_config(BaseController::default(), request)
+            .await?;
+        Ok(())
+    }
+
+    async fn handle_connector_modify(
+        &self,
+        url: &str,
+        action: ConfigPatchAction,
+    ) -> Result<(), Error> {
+        let url = url.to_string();
+        self.apply_to_instances(|handler| {
+            let url = url.clone();
+            Box::pin(async move { handler.apply_connector_modify(&url, action).await })
+        })
+        .await
     }
 
     async fn handle_peer_list(&self) -> Result<(), Error> {
@@ -2572,12 +2623,6 @@ async fn main() -> Result<(), Error> {
 
     match cli.sub_command {
         SubCommand::Peer(peer_args) => match &peer_args.sub_command {
-            Some(PeerSubCommand::Add) => {
-                println!("add peer");
-            }
-            Some(PeerSubCommand::Remove) => {
-                println!("remove peer");
-            }
             Some(PeerSubCommand::List) => {
                 handler.handle_peer_list().await?;
             }
@@ -2592,11 +2637,17 @@ async fn main() -> Result<(), Error> {
             }
         },
         SubCommand::Connector(conn_args) => match conn_args.sub_command {
-            Some(ConnectorSubCommand::Add) => {
-                println!("add connector");
+            Some(ConnectorSubCommand::Add { url }) => {
+                handler
+                    .handle_connector_modify(&url, ConfigPatchAction::Add)
+                    .await?;
+                println!("connector add applied to selected instance(s): {url}");
             }
-            Some(ConnectorSubCommand::Remove) => {
-                println!("remove connector");
+            Some(ConnectorSubCommand::Remove { url }) => {
+                handler
+                    .handle_connector_modify(&url, ConfigPatchAction::Remove)
+                    .await?;
+                println!("connector remove applied to selected instance(s): {url}");
             }
             Some(ConnectorSubCommand::List) => {
                 handler.handle_connector_list().await?;
