@@ -16,7 +16,6 @@ use anyhow::Context;
 use dashmap::DashSet;
 use hickory_resolver::proto::rr::rdata::SRV;
 use rand::{Rng as _, seq::SliceRandom};
-use strum::VariantArray;
 
 fn weighted_choice<T>(options: &[(T, u64)]) -> Option<&T> {
     let total_weight = options.iter().map(|(_, weight)| *weight).sum();

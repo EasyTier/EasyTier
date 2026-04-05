@@ -185,7 +185,7 @@ impl FromStr for TunnelScheme {
     type Err = serde_json::Error;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        serde_json::from_str(&format!(r#""{s}""#))
+        serde_json::from_str(&serde_json::to_string(s)?)
     }
 }
 
@@ -194,7 +194,9 @@ impl Display for TunnelScheme {
         write!(
             f,
             "{}",
-            serde_json::to_string(self).unwrap().trim_matches('"')
+            serde_json::to_string(self)
+                .map_err(|_| std::fmt::Error)?
+                .trim_matches('"')
         )
     }
 }

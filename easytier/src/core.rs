@@ -30,7 +30,6 @@ use anyhow::Context;
 use cidr::IpCidr;
 use clap::{CommandFactory, Parser};
 use rust_i18n::t;
-use strum::VariantArray;
 use tokio::io::AsyncReadExt;
 
 use crate::tunnel::scheme::IpProto;
