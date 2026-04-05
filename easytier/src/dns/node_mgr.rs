@@ -112,9 +112,8 @@ impl DnsNodeMgr {
 impl DnsNodeMgrRpc for DnsNodeMgr {
     type Controller = BaseController;
 
-    // TODO: change level to trace
     #[instrument(
-        level = "debug",
+        level = "trace",
         skip_all,
         fields(from = ?input.id, snapshot = ?input.snapshot),
         err
