@@ -194,11 +194,11 @@ impl super::TunnelConnector for DnsTunnelConnector {
             TunnelInfo {
                 local_addr: info.local_addr.clone(),
                 remote_addr: Some(self.addr.clone().into()),
-                tunnel_type: format!(
-                    "{}-{}",
-                    self.addr.scheme(),
-                    info.remote_addr.unwrap_or_default()
-                ),
+                resolved_remote_addr: info
+                    .resolved_remote_addr
+                    .clone()
+                    .or(info.remote_addr.clone()),
+                tunnel_type: format!("{}-{}", self.addr.scheme(), info.tunnel_type),
             },
         )))
     }

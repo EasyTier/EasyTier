@@ -11,7 +11,7 @@ use derive_more::{From, TryInto};
 use futures::{Sink, Stream};
 use socket2::Protocol;
 use std::fmt::Debug;
-use strum::{Display, EnumString, VariantArray};
+use strum::{Display, EnumString, IntoStaticStr, VariantArray};
 use tokio::time::error::Elapsed;
 
 use self::packet_def::ZCPacket;
@@ -284,7 +284,7 @@ struct IpSchemeAttributes {
     port_offset: u16,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Display, EnumString, VariantArray)]
+#[derive(Debug, Clone, Copy, PartialEq, Display, EnumString, IntoStaticStr, VariantArray)]
 #[strum(serialize_all = "lowercase")]
 pub enum IpScheme {
     Tcp,

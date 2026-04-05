@@ -149,23 +149,8 @@ pub mod instance {
             ret
         }
 
-        fn is_tunnel_ipv6(tunnel_info: &super::super::common::TunnelInfo) -> bool {
-            let Some(local_addr) = &tunnel_info.local_addr else {
-                return false;
-            };
-
-            let u: url::Url = local_addr.clone().into();
-            u.host()
-                .map(|h| matches!(h, url::Host::Ipv6(_)))
-                .unwrap_or(false)
-        }
-
         fn get_tunnel_proto_str(tunnel_info: &super::super::common::TunnelInfo) -> String {
-            if Self::is_tunnel_ipv6(tunnel_info) {
-                format!("{}6", tunnel_info.tunnel_type)
-            } else {
-                tunnel_info.tunnel_type.clone()
-            }
+            tunnel_info.display_tunnel_type()
         }
 
         pub fn get_conn_protos(&self) -> Option<Vec<String>> {

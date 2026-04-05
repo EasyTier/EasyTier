@@ -175,6 +175,9 @@ impl QuicTunnelListener {
             remote_addr: Some(
                 super::build_url_from_socket_addr(&remote_addr.to_string(), "quic").into(),
             ),
+            resolved_remote_addr: Some(
+                super::build_url_from_socket_addr(&remote_addr.to_string(), "quic").into(),
+            ),
         };
 
         Ok(Box::new(TunnelWrapper::new(
@@ -280,6 +283,10 @@ impl TunnelConnector for QuicTunnelConnector {
                 super::build_url_from_socket_addr(&local_addr.to_string(), "quic").into(),
             ),
             remote_addr: Some(self.addr.clone().into()),
+            resolved_remote_addr: Some(
+                super::build_url_from_socket_addr(&connection.remote_address().to_string(), "quic")
+                    .into(),
+            ),
         };
 
         let arc_conn = Arc::new(ConnWrapper { conn: connection });
