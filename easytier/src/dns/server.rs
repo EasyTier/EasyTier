@@ -116,57 +116,6 @@ impl DnsServer {
     }
 
     #[instrument(skip_all)]
-    async fn reload_listeners(
-        &self,
-        listeners: impl IntoIterator<Item = NameServerAddr>,
-        runtime: &mut Option<AsyncRuntime>,
-    ) -> anyhow::Result<()> {
-        let listeners = listeners.into_iter().collect();
-
-        if *self.listeners.read() == listeners {
-            tracing::info!("listeners unchanged, no need to reload");
-            return Ok(());
-        }
-        tracing::info!(?listeners, "reloading");
-
-        if let Some(runtime) = runtime.as_ref() {
-            if let Some(Err(e)) = runtime.stop().await {
-                tracing::error!("failed to stop old DNS server runtime: {}", e);
-            }
-        }
-
-        let runtime = runtime.get_or_insert_default();
-
-        let mut server = ServerFuture::new(self.catalog.clone());
-        for listener in &listeners {
-            let addr = listener.addr;
-            tracing::info!(?addr, "binding listener");
-            if let Err(error) = match listener.protocol {
-                Protocol::Udp => bind_socket(addr, None).map(|s| server.register_socket(s)),
-                Protocol::Tcp => bind_socket(addr, None)
-                    .map(|s| server.register_listener(s, DNS_SERVER_LISTENER_TCP_TIMEOUT)),
-                _ => unimplemented!(),
-            } {
-                tracing::error!(?addr, ?error, "failed to bind listener");
-            }
-        }
-
-        runtime.start(Some(server.shutdown_token().clone()), |_| {
-            async move {
-                server
-                    .block_until_done()
-                    .await
-                    .unwrap_or_else(|e| tracing::error!("DNS server exited with error: {:?}", e));
-            }
-            .instrument(tracing::info_span!("DNS server backend runtime"))
-        });
-
-        *self.listeners.write() = listeners;
-
-        Ok(())
-    }
-
-    #[instrument(skip_all)]
     async fn reload_addresses(
         &self,
         addresses: impl IntoIterator<Item = NameServerAddr>,
@@ -214,6 +163,57 @@ impl DnsServer {
         }
 
         *self.addresses.write() = addresses;
+
+        Ok(())
+    }
+
+    #[instrument(skip_all)]
+    async fn reload_listeners(
+        &self,
+        listeners: impl IntoIterator<Item = NameServerAddr>,
+        runtime: &mut Option<AsyncRuntime>,
+    ) -> anyhow::Result<()> {
+        let listeners = listeners.into_iter().collect();
+
+        if *self.listeners.read() == listeners {
+            tracing::info!("listeners unchanged, no need to reload");
+            return Ok(());
+        }
+        tracing::info!(?listeners, "reloading");
+
+        if let Some(runtime) = runtime.as_ref() {
+            if let Some(Err(e)) = runtime.stop().await {
+                tracing::error!("failed to stop old DNS server runtime: {}", e);
+            }
+        }
+
+        let runtime = runtime.get_or_insert_default();
+
+        let mut server = ServerFuture::new(self.catalog.clone());
+        for listener in &listeners {
+            let addr = listener.addr;
+            tracing::info!(?addr, "binding listener");
+            if let Err(error) = match listener.protocol {
+                Protocol::Udp => bind_socket(addr, None).map(|s| server.register_socket(s)),
+                Protocol::Tcp => bind_socket(addr, None)
+                    .map(|s| server.register_listener(s, DNS_SERVER_LISTENER_TCP_TIMEOUT)),
+                _ => unimplemented!(),
+            } {
+                tracing::error!(?addr, ?error, "failed to bind listener");
+            }
+        }
+
+        runtime.start(Some(server.shutdown_token().clone()), |_| {
+            async move {
+                server
+                    .block_until_done()
+                    .await
+                    .unwrap_or_else(|e| tracing::error!("DNS server exited with error: {:?}", e));
+            }
+            .instrument(tracing::info_span!("DNS server backend runtime"))
+        });
+
+        *self.listeners.write() = listeners;
 
         Ok(())
     }
