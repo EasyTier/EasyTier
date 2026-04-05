@@ -1,6 +1,7 @@
 use std::{net::SocketAddr, sync::Arc};
 
 use super::{create_connector_by_url, http_connector::TunnelWithInfo};
+use crate::tunnel::scheme::{DiscoveryProto, DiscoveryScheme, IpProto};
 use crate::{
     common::{
         dns::{RESOLVER, resolve_txt_record},
@@ -9,7 +10,7 @@ use crate::{
         log,
     },
     proto::common::TunnelInfo,
-    tunnel::{IpScheme, IpVersion, Tunnel, TunnelConnector, TunnelError, TunnelScheme},
+    tunnel::{IpVersion, Tunnel, TunnelConnector, TunnelError},
 };
 use anyhow::Context;
 use dashmap::DashSet;
@@ -35,7 +36,7 @@ fn weighted_choice<T>(options: &[(T, u64)]) -> Option<&T> {
 
 #[derive(Debug)]
 pub struct DnsTunnelConnector {
-    scheme: TunnelScheme,
+    scheme: DiscoveryScheme,
     addr: url::Url,
     bind_addrs: Vec<SocketAddr>,
     global_ctx: ArcGlobalCtx,
@@ -45,7 +46,7 @@ pub struct DnsTunnelConnector {
 impl DnsTunnelConnector {
     pub fn new(addr: url::Url, global_ctx: ArcGlobalCtx) -> Self {
         Self {
-            scheme: (&addr).try_into().unwrap(),
+            scheme: addr.scheme().parse().unwrap(),
             addr,
             bind_addrs: Vec::new(),
             global_ctx,
@@ -83,7 +84,7 @@ impl DnsTunnelConnector {
         Ok(connector)
     }
 
-    fn handle_one_srv_record(record: &SRV, protocol: IpScheme) -> Result<(url::Url, u64), Error> {
+    fn handle_one_srv_record(record: &SRV, protocol: IpProto) -> Result<(url::Url, u64), Error> {
         // port must be non-zero
         if record.port() == 0 {
             return Err(anyhow::anyhow!("port must be non-zero").into());
@@ -113,7 +114,7 @@ impl DnsTunnelConnector {
     ) -> Result<Box<dyn TunnelConnector>, Error> {
         tracing::info!("handle_srv_record: {}", domain_name);
 
-        let srv_domains = IpScheme::VARIANTS
+        let srv_domains = IpProto::VARIANTS
             .iter()
             .map(|s| (s, format!("_easytier._{}.{}", s, domain_name)))
             .collect::<Vec<_>>();
@@ -165,8 +166,8 @@ impl DnsTunnelConnector {
 #[async_trait::async_trait]
 impl super::TunnelConnector for DnsTunnelConnector {
     async fn connect(&mut self) -> Result<Box<dyn Tunnel>, TunnelError> {
-        let mut conn = match self.scheme {
-            TunnelScheme::Txt => self
+        let mut conn = match self.scheme.proto {
+            DiscoveryProto::Txt => self
                 .handle_txt_record(
                     self.addr
                         .host_str()
@@ -175,7 +176,7 @@ impl super::TunnelConnector for DnsTunnelConnector {
                 )
                 .await
                 .with_context(|| "get txt record url failed")?,
-            TunnelScheme::Srv => self
+            DiscoveryProto::Srv => self
                 .handle_srv_record(
                     self.addr
                         .host_str()
