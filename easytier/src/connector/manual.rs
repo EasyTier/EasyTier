@@ -86,17 +86,10 @@ pub struct ManualConnectorManager {
 
 impl ManualConnectorManager {
     fn reconnect_timeout(dead_url: &url::Url) -> Duration {
-        use crate::tunnel::IpScheme;
-
         let use_long_timeout = matches_scheme!(
             dead_url,
-            TunnelScheme::Http
-                | TunnelScheme::Https
-                | TunnelScheme::Txt
-                | TunnelScheme::Srv
-                | TunnelScheme::Ip(IpScheme::Ws)
-                | TunnelScheme::Ip(IpScheme::Wss)
-        );
+            TunnelScheme::Http | TunnelScheme::Https | TunnelScheme::Txt | TunnelScheme::Srv
+        ) || matches!(dead_url.scheme(), "ws" | "wss");
 
         Duration::from_secs(if use_long_timeout { 20 } else { 2 })
     }
@@ -309,7 +302,7 @@ impl ManualConnectorManager {
     ) -> Result<ReconnResult, ConnectError> {
         // Stage 1: Resolve — create connector (involves DNS internally)
         let remaining = Self::remaining_budget(started_at, total_timeout)
-            .ok_or(ConnectError::ResolveTimeout(Duration::ZERO))?;
+            .ok_or(ConnectError::ResolveTimeout(started_at.elapsed()))?;
         let connector = match timeout(
             remaining,
             create_connector_by_url(dead_url.as_str(), &data.global_ctx, ip_version),
@@ -330,7 +323,7 @@ impl ManualConnectorManager {
 
         // Stage 2: Connect — transport-layer connect
         let remaining = Self::remaining_budget(started_at, total_timeout)
-            .ok_or(ConnectError::ConnectTimeout(Duration::ZERO))?;
+            .ok_or(ConnectError::ConnectTimeout(started_at.elapsed()))?;
         let tunnel = match timeout(remaining, pm.connect_tunnel(connector)).await {
             Ok(Ok(t)) => t,
             Ok(Err(e)) => return Err(ConnectError::ConnectFailed(e)),
@@ -339,7 +332,7 @@ impl ManualConnectorManager {
 
         // Stage 3: Handshake — noise handshake + peer registration
         let remaining = Self::remaining_budget(started_at, total_timeout)
-            .ok_or(ConnectError::HandshakeTimeout(Duration::ZERO))?;
+            .ok_or(ConnectError::HandshakeTimeout(started_at.elapsed()))?;
         let (peer_id, conn_id) = match timeout(
             remaining,
             pm.add_client_tunnel_with_peer_id_hint(tunnel, true, None),
@@ -384,24 +377,26 @@ impl ManualConnectorManager {
                         return Err(error);
                     }
                 };
-            let addrs = match timeout(
-                total_timeout,
-                socket_addrs(&converted_dead_url, || Some(1000)),
-            )
-            .await
-            {
-                Ok(Ok(addrs)) => addrs,
-                Ok(Err(error)) => {
-                    let error = ConnectError::ResolveFailed(error);
-                    Self::emit_connect_error(&data, &dead_url, IpVersion::Both, &error);
-                    return Err(error);
-                }
-                Err(_) => {
-                    let error = ConnectError::ResolveTimeout(total_timeout);
-                    Self::emit_connect_error(&data, &dead_url, IpVersion::Both, &error);
-                    return Err(error);
-                }
-            };
+            let remaining = total_timeout.saturating_sub(started_at.elapsed());
+            if remaining.is_zero() {
+                let error = ConnectError::ResolveTimeout(started_at.elapsed());
+                Self::emit_connect_error(&data, &dead_url, IpVersion::Both, &error);
+                return Err(error);
+            }
+            let addrs =
+                match timeout(remaining, socket_addrs(&converted_dead_url, || Some(1000))).await {
+                    Ok(Ok(addrs)) => addrs,
+                    Ok(Err(error)) => {
+                        let error = ConnectError::ResolveFailed(error);
+                        Self::emit_connect_error(&data, &dead_url, IpVersion::Both, &error);
+                        return Err(error);
+                    }
+                    Err(_) => {
+                        let error = ConnectError::ResolveTimeout(started_at.elapsed());
+                        Self::emit_connect_error(&data, &dead_url, IpVersion::Both, &error);
+                        return Err(error);
+                    }
+                };
             tracing::info!(?addrs, ?dead_url, "get ip from url done");
             let mut has_ipv4 = false;
             let mut has_ipv6 = false;
