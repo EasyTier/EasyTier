@@ -129,11 +129,11 @@ impl DiscoveryProto {
     pub const VARIANT_NAMES: &'static [&'static str] = <Self as VariantNames>::VARIANTS;
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Deref, DeserializeFromStr, SerializeDisplay)]
+#[derive(Debug, Clone, PartialEq, Deref, DeserializeFromStr, SerializeDisplay)]
 pub struct DiscoveryScheme {
     #[deref]
     pub proto: DiscoveryProto,
-    pub scheme: Option<IpScheme>,
+    pub scheme: Option<Box<TunnelScheme>>,
 }
 
 impl From<DiscoveryProto> for DiscoveryScheme {
@@ -150,9 +150,9 @@ impl FromStr for DiscoveryScheme {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         Ok(match s.split_once('-') {
-            Some((method, transport)) => Self {
-                proto: method.parse()?,
-                scheme: Some(transport.parse()?),
+            Some((proto, scheme)) => Self {
+                proto: proto.parse()?,
+                scheme: Some(scheme.parse::<TunnelScheme>()?.boxed()),
             },
             None => s.parse::<DiscoveryProto>()?.into(),
         })
@@ -169,7 +169,7 @@ impl Display for DiscoveryScheme {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, From, TryInto, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, From, TryInto, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum TunnelScheme {
     Ring,
@@ -181,11 +181,25 @@ pub enum TunnelScheme {
     Discovery(DiscoveryScheme),
 }
 
+impl TunnelScheme {
+    pub fn set_v6(&mut self, v6: bool) {
+        match self {
+            Self::Ip(scheme) => scheme.v6 = v6,
+            Self::Discovery(DiscoveryScheme {
+                scheme: Some(scheme),
+                ..
+            }) => scheme.set_v6(v6),
+            _ => {}
+        }
+    }
+}
+
 impl FromStr for TunnelScheme {
-    type Err = serde_json::Error;
+    type Err = ParseError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        serde_json::from_str(&serde_json::to_string(s)?)
+        serde_json::from_str(&serde_json::to_string(s).unwrap())
+            .map_err(|_| ParseError::VariantNotFound)
     }
 }
 
@@ -219,17 +233,10 @@ impl TryFrom<&url::Url> for TunnelScheme {
     fn try_from(value: &url::Url) -> Result<Self, Self::Error> {
         value
             .scheme()
-            .parse()
+            .parse::<Self>()
             .map(|mut scheme| {
                 if matches!(value.host(), Some(url::Host::Ipv6(_))) {
-                    match &mut scheme {
-                        TunnelScheme::Ip(scheme) => scheme.v6 = true,
-                        TunnelScheme::Discovery(DiscoveryScheme {
-                            scheme: Some(scheme),
-                            ..
-                        }) => scheme.v6 = true,
-                        _ => {}
-                    };
+                    scheme.set_v6(true);
                 }
                 scheme
             })
@@ -247,6 +254,7 @@ macro_rules! __matches_protocol__ {
     }};
 }
 
+use crate::utils::BoxExt;
 pub(crate) use __matches_protocol__ as matches_protocol;
 
 #[cfg(test)]
