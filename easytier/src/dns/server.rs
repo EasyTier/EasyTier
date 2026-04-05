@@ -138,7 +138,7 @@ impl DnsServer {
         let runtime = runtime.get_or_insert_default();
 
         let mut server = ServerFuture::new(self.catalog.clone());
-        for listener in listeners {
+        for listener in &listeners {
             let addr = listener.addr;
             tracing::info!(?addr, "binding listener");
             if let Err(error) = match listener.protocol {
@@ -160,6 +160,8 @@ impl DnsServer {
             }
             .instrument(tracing::info_span!("DNS server backend runtime"))
         });
+
+        *self.listeners.write() = listeners;
 
         Ok(())
     }
