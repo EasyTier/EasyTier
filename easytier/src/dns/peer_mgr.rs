@@ -16,6 +16,7 @@ use crate::utils::DeterministicDigest;
 use anyhow::Context;
 use itertools::Itertools;
 use moka::future::Cache;
+use std::ops::Deref;
 use std::sync::Arc;
 use std::time::Duration;
 use tracing::instrument;
@@ -41,35 +42,15 @@ impl TryFrom<DnsExportConfig> for DnsPeerInfo {
 const DNS_PEER_TTL: Duration = Duration::from_secs(3);
 
 #[derive(Debug)]
-pub struct DnsPeerMgr {
+pub struct DnsPeerMgrInner {
     peers: Cache<PeerId, DnsPeerInfo>,
-    pub(super) dirty: DirtyFlag,
+    pub dirty: DirtyFlag,
 
     peer_mgr: Arc<PeerManager>,
     global_ctx: ArcGlobalCtx,
 }
 
-impl DnsPeerMgr {
-    pub fn new(peer_mgr: Arc<PeerManager>, global_ctx: ArcGlobalCtx) -> Self {
-        Self {
-            peers: Cache::builder().time_to_live(DNS_PEER_TTL).build(),
-            dirty: Default::default(),
-            peer_mgr,
-            global_ctx,
-        }
-    }
-
-    pub fn register(self: &Arc<Self>) {
-        self.peer_mgr
-            .get_peer_rpc_mgr()
-            .rpc_server()
-            .registry()
-            .register(
-                DnsPeerMgrRpcServer::new_arc(self.clone()),
-                &self.global_ctx.get_network_name(),
-            );
-    }
-
+impl DnsPeerMgrInner {
     pub fn snapshot(&self) -> DnsSnapshot {
         let global_ctx = &self.global_ctx;
 
@@ -149,7 +130,7 @@ impl DnsPeerMgr {
 }
 
 #[async_trait::async_trait]
-impl DnsPeerMgrRpc for DnsPeerMgr {
+impl DnsPeerMgrRpc for DnsPeerMgrInner {
     type Controller = BaseController;
 
     async fn get_export_config(
@@ -158,5 +139,55 @@ impl DnsPeerMgrRpc for DnsPeerMgr {
         _: GetExportConfigRequest,
     ) -> rpc_types::error::Result<GetExportConfigResponse> {
         Ok(self.global_ctx.dns_export_config())
+    }
+}
+
+#[derive(Debug)]
+pub struct DnsPeerMgr(Arc<DnsPeerMgrInner>);
+
+impl DnsPeerMgr {
+    pub fn new(peer_mgr: Arc<PeerManager>, global_ctx: ArcGlobalCtx) -> Self {
+        Self(Arc::new(DnsPeerMgrInner {
+            peers: Cache::builder().time_to_live(DNS_PEER_TTL).build(),
+            dirty: Default::default(),
+            peer_mgr,
+            global_ctx,
+        }))
+    }
+
+    pub fn register(&self) {
+        self.peer_mgr
+            .get_peer_rpc_mgr()
+            .rpc_server()
+            .registry()
+            .register(
+                DnsPeerMgrRpcServer::new_arc(self.0.clone()),
+                &self.global_ctx.get_network_name(),
+            );
+    }
+
+    pub fn unregister(&self) -> Option<()> {
+        self.peer_mgr
+            .get_peer_rpc_mgr()
+            .rpc_server()
+            .registry()
+            .unregister(
+                DnsPeerMgrRpcServer::new_arc(self.0.clone()),
+                &self.global_ctx.get_network_name(),
+            )
+    }
+}
+
+impl Deref for DnsPeerMgr {
+    type Target = DnsPeerMgrInner;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl Drop for DnsPeerMgr {
+    fn drop(&mut self) {
+        self.unregister();
     }
 }
