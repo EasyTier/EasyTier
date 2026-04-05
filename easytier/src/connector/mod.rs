@@ -1,12 +1,13 @@
 use std::net::{IpAddr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
 
+use crate::tunnel::scheme::{DiscoveryProto, IpProto, IpScheme, TunnelScheme};
 use crate::{
     common::{dns::socket_addrs, error::Error, global_ctx::ArcGlobalCtx, idn},
     connector::dns_connector::DnsTunnelConnector,
     proto::common::PeerFeatureFlag,
     tunnel::{
-        self, IpScheme, IpVersion, TunnelConnector, TunnelError, TunnelScheme,
-        ring::RingTunnelConnector, tcp::TcpTunnelConnector, udp::UdpTunnelConnector,
+        self, IpVersion, TunnelConnector, TunnelError, ring::RingTunnelConnector,
+        tcp::TcpTunnelConnector, udp::UdpTunnelConnector,
     },
     utils::BoxExt,
 };
@@ -99,7 +100,7 @@ fn connector_default_port(url: &url::Url) -> Option<u16> {
     url.try_into()
         .ok()
         .and_then(|s: TunnelScheme| s.try_into().ok())
-        .map(IpScheme::default_port)
+        .map(|s: IpScheme| s.proto.default_port())
 }
 
 fn addr_matches_ip_version(addr: &SocketAddr, ip_version: IpVersion) -> bool {
@@ -240,18 +241,21 @@ pub async fn create_connector_by_url(
         .map_err(|_| TunnelError::InvalidProtocol(url.scheme().to_owned()))?;
     let mut effective_connector_ip_version = ip_version;
     let mut connector: Box<dyn TunnelConnector + 'static> = match scheme {
+        TunnelScheme::Ring => RingTunnelConnector::new(url).boxed(),
+        #[cfg(unix)]
+        TunnelScheme::Unix => tunnel::unix::UnixSocketTunnelConnector::new(url).boxed(),
         TunnelScheme::Ip(scheme) => {
             let resolved_addr = resolve_connector_socket_addr(&url, global_ctx, ip_version).await?;
             effective_connector_ip_version = resolved_addr.ip_version;
-            let mut connector: Box<dyn TunnelConnector> = match scheme {
-                IpScheme::Tcp => TcpTunnelConnector::new(url).boxed(),
-                IpScheme::Udp => UdpTunnelConnector::new(url).boxed(),
+            let mut connector: Box<dyn TunnelConnector> = match scheme.proto {
+                IpProto::Tcp => TcpTunnelConnector::new(url).boxed(),
+                IpProto::Udp => UdpTunnelConnector::new(url).boxed(),
                 #[cfg(feature = "quic")]
-                IpScheme::Quic => {
+                IpProto::Quic => {
                     tunnel::quic::QuicTunnelConnector::new(url, global_ctx.clone()).boxed()
                 }
                 #[cfg(feature = "wireguard")]
-                IpScheme::Wg => {
+                IpProto::Wg => {
                     use crate::tunnel::wireguard::{WgConfig, WgTunnelConnector};
                     let nid = global_ctx.get_network_identity();
                     let wg_config = WgConfig::new_from_network_identity(
@@ -261,11 +265,11 @@ pub async fn create_connector_by_url(
                     WgTunnelConnector::new(url, wg_config).boxed()
                 }
                 #[cfg(feature = "websocket")]
-                IpScheme::Ws | IpScheme::Wss => {
+                IpProto::Ws | IpProto::Wss => {
                     tunnel::websocket::WsTunnelConnector::new(url).boxed()
                 }
                 #[cfg(feature = "faketcp")]
-                IpScheme::FakeTcp => tunnel::fake_tcp::FakeTcpTunnelConnector::new(url).boxed(),
+                IpProto::FakeTcp => tunnel::fake_tcp::FakeTcpTunnelConnector::new(url).boxed(),
             };
             connector.set_resolved_addr(resolved_addr.addr);
             if global_ctx.config.get_flags().bind_device {
@@ -278,21 +282,20 @@ pub async fn create_connector_by_url(
             }
             connector
         }
-        #[cfg(unix)]
-        TunnelScheme::Unix => tunnel::unix::UnixSocketTunnelConnector::new(url).boxed(),
-        TunnelScheme::Http | TunnelScheme::Https => {
-            HttpTunnelConnector::new(url, global_ctx.clone()).boxed()
-        }
-        TunnelScheme::Ring => RingTunnelConnector::new(url).boxed(),
-        TunnelScheme::Txt | TunnelScheme::Srv => {
-            if url.host_str().is_none() {
-                return Err(Error::InvalidUrl(format!(
-                    "host should not be empty in txt or srv url: {}",
-                    url
-                )));
+        TunnelScheme::Discovery(scheme) => match scheme.proto {
+            DiscoveryProto::Http | DiscoveryProto::Https => {
+                HttpTunnelConnector::new(url, global_ctx.clone()).boxed()
             }
-            DnsTunnelConnector::new(url, global_ctx.clone()).boxed()
-        }
+            DiscoveryProto::Txt | DiscoveryProto::Srv => {
+                if url.host_str().is_none() {
+                    return Err(Error::InvalidUrl(format!(
+                        "host should not be empty in txt or srv url: {}",
+                        url
+                    )));
+                }
+                DnsTunnelConnector::new(url, global_ctx.clone()).boxed()
+            }
+        },
     };
     connector.set_ip_version(effective_connector_ip_version);
 

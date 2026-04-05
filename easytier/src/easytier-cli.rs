@@ -76,7 +76,7 @@ use easytier::{
         rpc_impl::standalone::StandAloneClient,
         rpc_types::{controller::BaseController, error::Error as RpcError},
     },
-    tunnel::{TunnelScheme, tcp::TcpTunnelConnector},
+    tunnel::{scheme::TunnelScheme, tcp::TcpTunnelConnector},
     utils::{PeerRoutePair, string::cost_to_str},
 };
 

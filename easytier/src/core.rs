@@ -30,10 +30,9 @@ use std::{
     process::ExitCode,
     sync::{Arc, atomic::AtomicBool},
 };
-use strum::VariantArray;
 use tokio::io::AsyncReadExt;
 
-use crate::tunnel::IpScheme;
+use crate::tunnel::scheme::IpProto;
 #[cfg(feature = "jemalloc-prof")]
 use jemalloc_ctl::{Access as _, AsName as _, epoch, stats};
 
@@ -771,7 +770,7 @@ struct RpcPortalOptions {
 impl Cli {
     fn gen_listeners(addr: SocketAddr) -> impl Iterator<Item = String> {
         let dynamic = addr.port() == 0;
-        IpScheme::VARIANTS.iter().map(move |proto| {
+        IpProto::VARIANTS.iter().map(move |proto| {
             let mut addr = addr;
             if !dynamic {
                 addr.set_port(addr.port() + proto.port_offset());
@@ -807,7 +806,7 @@ impl Cli {
             }
 
             let (scheme, rest) = l.split_once(':').unwrap_or((&l, ""));
-            let Ok(scheme) = scheme.parse::<IpScheme>() else {
+            let Ok(scheme) = scheme.parse::<IpProto>() else {
                 anyhow::bail!("invalid listener: {}", l);
             };
 
@@ -1629,9 +1628,9 @@ mod tests {
 
     #[test]
     fn test_parse_listeners() {
-        type IpSchemeMap = fn(&IpScheme) -> String;
+        type IpProtoMap = fn(&IpProto) -> String;
 
-        let cases: [(&str, IpSchemeMap); _] = [
+        let cases: [(&str, IpProtoMap); _] = [
             ("0", |s| format!("{}://0.0.0.0:0", s)),
             ("11010", |s| {
                 format!("{}://0.0.0.0:{}", s, 11010 + s.port_offset())
@@ -1653,18 +1652,18 @@ mod tests {
         for (input, output) in cases {
             assert_eq!(
                 Cli::parse_listeners(false, vec![input.to_string()]).unwrap(),
-                IpScheme::VARIANTS.iter().map(output).collect::<Vec<_>>()
+                IpProto::VARIANTS.iter().map(output).collect::<Vec<_>>()
             );
         }
 
         let input = cases.iter().map(|(i, _)| i.to_string()).collect::<Vec<_>>();
         let output = cases
             .iter()
-            .flat_map(|(_, o)| IpScheme::VARIANTS.iter().map(o))
+            .flat_map(|(_, o)| IpProto::VARIANTS.iter().map(o))
             .collect::<Vec<_>>();
         assert_eq!(Cli::parse_listeners(false, input).unwrap(), output);
 
-        let cases: [(IpSchemeMap, IpSchemeMap); _] = [
+        let cases: [(IpProtoMap, IpProtoMap); _] = [
             (
                 |s| format!("{}", s),
                 |s| format!("{}://0.0.0.0:{}", s, 11010 + s.port_offset()),
@@ -1683,20 +1682,20 @@ mod tests {
             assert_eq!(
                 Cli::parse_listeners(
                     false,
-                    IpScheme::VARIANTS.iter().map(input).collect::<Vec<_>>(),
+                    IpProto::VARIANTS.iter().map(input).collect::<Vec<_>>(),
                 )
                 .unwrap(),
-                IpScheme::VARIANTS.iter().map(output).collect::<Vec<_>>()
+                IpProto::VARIANTS.iter().map(output).collect::<Vec<_>>()
             );
         }
 
         let input = cases
             .iter()
-            .flat_map(|(i, _)| IpScheme::VARIANTS.iter().map(i))
+            .flat_map(|(i, _)| IpProto::VARIANTS.iter().map(i))
             .collect::<Vec<_>>();
         let output = cases
             .iter()
-            .flat_map(|(_, o)| IpScheme::VARIANTS.iter().map(o))
+            .flat_map(|(_, o)| IpProto::VARIANTS.iter().map(o))
             .collect::<Vec<_>>();
         assert_eq!(Cli::parse_listeners(false, input).unwrap(), output);
 
