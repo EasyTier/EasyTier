@@ -776,10 +776,11 @@ impl Instance {
 
         tokio::spawn(async move {
             let mut output_tx = Some(first_round_output);
+
             loop {
                 let close_notifier = Arc::new(Notify::new());
-                {
-                    let Some(peer_mgr) = peer_mgr.upgrade() else {
+                let mut new_nic_ctx = {
+                    let Some(peer_manager) = peer_mgr.upgrade() else {
                         tracing::warn!("peer manager is dropped, stop static ip check.");
                         if let Some(output_tx) = output_tx.take() {
                             let _ = output_tx.send(Err(Error::Unknown));
@@ -788,25 +789,25 @@ impl Instance {
                         return;
                     };
 
-                    let mut new_nic_ctx = NicCtx::new(
-                        peer_mgr.get_global_ctx(),
-                        &peer_mgr,
+                    NicCtx::new(
+                        peer_manager.get_global_ctx(),
+                        &peer_manager,
                         peer_packet_receiver.clone(),
                         close_notifier.clone(),
-                    );
+                    )
+                };
 
-                    if let Err(e) = new_nic_ctx.run(ipv4_addr, ipv6_addr).await {
-                        if let Some(output_tx) = output_tx.take() {
-                            let _ = output_tx.send(Err(e));
-                            return;
-                        }
-                        tracing::error!("failed to create new nic ctx, err: {:?}", e);
-                        tokio::time::sleep(Duration::from_secs(1)).await;
-                        continue;
+                if let Err(e) = new_nic_ctx.run(ipv4_addr, ipv6_addr).await {
+                    if let Some(output_tx) = output_tx.take() {
+                        let _ = output_tx.send(Err(e));
+                        return;
                     }
-
-                    Self::use_new_nic_ctx(nic_ctx.clone(), new_nic_ctx).await;
+                    tracing::error!("failed to create new nic ctx, err: {:?}", e);
+                    tokio::time::sleep(Duration::from_secs(1)).await;
+                    continue;
                 }
+
+                Self::use_new_nic_ctx(nic_ctx.clone(), new_nic_ctx).await;
 
                 if let Some(output_tx) = output_tx.take() {
                     let _ = output_tx.send(Ok(()));
