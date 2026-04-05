@@ -171,13 +171,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("cargo:rerun-if-changed={proto_file}");
     }
 
-    let out = PathBuf::from(env::var("OUT_DIR")?);
-    let descriptor_file = out.join("descriptors.bin");
-
     let mut config = prost_build::Config::new();
     config
-        .protoc_arg("--experimental_allow_proto3_optional")
-        .file_descriptor_set_path(&descriptor_file)
         .extern_path(".google.protobuf.Any", "::prost_wkt_types::Any")
         .extern_path(".google.protobuf.Timestamp", "::prost_wkt_types::Timestamp")
         .extern_path(".google.protobuf.Value", "::prost_wkt_types::Value");
@@ -198,10 +193,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     config.skip_debug([".common.Ipv4Addr", ".common.Ipv6Addr", ".common.UUID"]);
 
+    let out = PathBuf::from(env::var("OUT_DIR")?);
+    let descriptor_file = out.join("descriptors.bin");
+
     config
         .btree_map(["."])
         .service_generator(Box::new(easytier_rpc_build::ServiceGenerator::default()))
         .protoc_arg("--experimental_allow_proto3_optional")
+        .file_descriptor_set_path(&descriptor_file)
         .compile_protos(&proto_files, &["src/proto/"])?;
 
     prost_reflect_build::Builder::new()
@@ -209,7 +208,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .compile_protos_with_config(config, &proto_files_reflect, &["src/proto/"])?;
 
     let descriptor_bytes = std::fs::read(descriptor_file)?;
-    let descriptor = FileDescriptorSet::decode(&descriptor_bytes[..]).unwrap();
+    let descriptor = FileDescriptorSet::decode(&descriptor_bytes[..])?;
     prost_wkt_build::add_serde(out, descriptor);
 
     check_locale();
