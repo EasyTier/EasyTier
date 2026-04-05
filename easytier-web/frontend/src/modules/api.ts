@@ -164,10 +164,21 @@ export class ApiClient {
     }
 
     public async check_login_status(): Promise<CheckLoginStatusResponse> {
-        const response = await this.client.get<any, AuthStatusResponse>('/auth/check_login_status');
-        return {
-            loggedIn: true,
-            mustChangePassword: response.must_change_password,
+        try {
+            const response = await this.client.get<any, AuthStatusResponse>('/auth/check_login_status');
+            return {
+                loggedIn: true,
+                mustChangePassword: response.must_change_password,
+            };
+        } catch (error) {
+            if (error instanceof AxiosError && error.response?.status === 401) {
+                return {
+                    loggedIn: false,
+                    mustChangePassword: false,
+                };
+            }
+
+            throw error;
         };
     }
 

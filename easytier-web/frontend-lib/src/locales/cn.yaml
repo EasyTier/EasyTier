@@ -377,7 +377,6 @@ web:
     change_password: 修改密码
     old_password: 旧密码
     new_password: 新密码
-    new_password_empty: 新密码不能为空
     confirm_password: 确认新密码
     language: 语言
     theme: 主题

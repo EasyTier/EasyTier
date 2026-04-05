@@ -60,13 +60,16 @@ mod put {
             .await
         {
             tracing::error!("Failed to change password: {:?}", e);
-            let status = match e {
-                ChangePasswordError::EmptyPassword => StatusCode::BAD_REQUEST,
-                ChangePasswordError::UserNotFound | ChangePasswordError::Db(_) => {
-                    StatusCode::INTERNAL_SERVER_ERROR
+            let (status, message) = match &e {
+                ChangePasswordError::EmptyPassword => {
+                    (StatusCode::BAD_REQUEST, "password cannot be empty")
                 }
+                ChangePasswordError::UserNotFound | ChangePasswordError::Db(_) => (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "failed to change password",
+                ),
             };
-            return Err((status, Json::from(other_error(format!("{:?}", e)))));
+            return Err((status, Json::from(other_error(message.to_string()))));
         }
 
         let _ = auth_session.logout().await;

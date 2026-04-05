@@ -377,7 +377,6 @@ web:
     change_password: Change Password
     old_password: Old Password
     new_password: New Password
-    new_password_empty: New password cannot be empty
     confirm_password: Confirm New Password
     language: Language
     theme: Theme
