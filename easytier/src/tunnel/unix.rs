@@ -43,8 +43,8 @@ impl UnixSocketTunnelListener {
         let info = TunnelInfo {
             tunnel_type: "unix".to_owned(),
             local_addr: Some(self.local_url().into()),
-            remote_addr: remote_addr.clone().map(Into::into),
-            resolved_remote_addr: remote_addr.map(Into::into),
+            remote_url: remote_addr.clone().map(Into::into),
+            remote_addr: remote_addr.map(Into::into),
         };
 
         let (r, w) = stream.into_split();
@@ -122,8 +122,8 @@ impl super::TunnelConnector for UnixSocketTunnelConnector {
         let info = TunnelInfo {
             tunnel_type: "unix".to_owned(),
             local_addr: local_addr.map(Into::into),
+            remote_url: Some(self.addr.clone().into()),
             remote_addr: Some(self.addr.clone().into()),
-            resolved_remote_addr: Some(self.addr.clone().into()),
         };
 
         let (r, w) = stream.into_split();

@@ -228,11 +228,11 @@ impl super::TunnelConnector for HttpTunnelConnector {
             t,
             TunnelInfo {
                 local_addr: info.local_addr.clone(),
-                remote_addr: Some(self.addr.clone().into()),
-                resolved_remote_addr: info
-                    .resolved_remote_addr
+                remote_url: Some(self.addr.clone().into()),
+                remote_addr: info
+                    .remote_addr
                     .clone()
-                    .or(info.remote_addr.clone()),
+                    .or(info.remote_url.clone()),
                 tunnel_type: format!("{}-{}", self.addr.scheme(), info.tunnel_type),
             },
         )))
@@ -351,10 +351,10 @@ mod tests {
         assert_eq!(captured_name, network_name);
 
         let info = t.info().unwrap();
+        let remote_url = info.remote_url.unwrap();
+        assert_eq!(remote_url, test_url.into());
         let remote_addr = info.remote_addr.unwrap();
-        assert_eq!(remote_addr, test_url.into());
-        let resolved_remote_addr = info.resolved_remote_addr.unwrap();
-        assert_eq!(resolved_remote_addr.url, "tcp://127.0.0.1:25888");
+        assert_eq!(remote_addr.url, "tcp://127.0.0.1:25888");
 
         tokio::join!(task).0.unwrap();
     }
