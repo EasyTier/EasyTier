@@ -5,9 +5,9 @@ use std::{
 
 use anyhow::Context;
 use base64::{Engine as _, prelude::BASE64_STANDARD};
-use strum::VariantArray;
 
-use crate::tunnel::{IpScheme, packet_def::CompressorAlgo};
+use crate::tunnel::{packet_def::CompressorAlgo, scheme::IpScheme};
+use crate::tunnel::scheme::TunnelScheme;
 
 include!(concat!(env!("OUT_DIR"), "/common.rs"));
 
@@ -289,30 +289,20 @@ impl fmt::Display for Url {
     }
 }
 
-fn split_tunnel_scheme(raw_scheme: &str) -> Option<(&str, &'static str, bool)> {
-    for scheme in IpScheme::VARIANTS {
-        let scheme: &'static str = scheme.into();
-        if let Some(base) = raw_scheme.strip_suffix('6')
-            && let Some(prefix) = base.strip_suffix(scheme)
-            && (prefix.is_empty() || prefix.ends_with('-'))
-        {
-            return Some((prefix, scheme, true));
-        }
-
-        if let Some(prefix) = raw_scheme.strip_suffix(scheme)
-            && (prefix.is_empty() || prefix.ends_with('-'))
-        {
-            return Some((prefix, scheme, false));
-        }
-    }
-
-    None
-}
-
 fn normalize_tunnel_scheme(raw_scheme: &str, is_ipv6: bool) -> Option<String> {
-    let (prefix, scheme, had_ipv6_suffix) = split_tunnel_scheme(raw_scheme)?;
-    let suffix = if is_ipv6 || had_ipv6_suffix { "6" } else { "" };
-    Some(format!("{prefix}{scheme}{suffix}"))
+    match raw_scheme.parse::<TunnelScheme>().ok()? {
+        TunnelScheme::Ip(mut scheme) => {
+            scheme.v6 |= is_ipv6;
+            Some(TunnelScheme::Ip(scheme).to_string())
+        }
+        TunnelScheme::Discovery(mut scheme) => {
+            if let Some(ip_scheme) = &mut scheme.scheme {
+                ip_scheme.v6 |= is_ipv6;
+            }
+            Some(TunnelScheme::Discovery(scheme).to_string())
+        }
+        _ => None,
+    }
 }
 
 fn infer_tunnel_ipv6(raw: &str) -> Option<bool> {
@@ -584,6 +574,14 @@ mod tests {
         assert_eq!(
             normalize_tunnel_url("txt-tcp://[2001:db8::1]:11010", None).as_deref(),
             Some("txt-tcp6://[2001:db8::1]:11010")
+        );
+    }
+
+    #[test]
+    fn reject_unknown_composite_prefix_in_tunnel_url_normalization() {
+        assert_eq!(
+            normalize_tunnel_url("foo-tcp://[2001:db8::1]:11010", None),
+            None
         );
     }
 
