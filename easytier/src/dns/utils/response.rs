@@ -49,6 +49,7 @@ impl ResponseHandler for ResponseHandle {
         };
 
         let mut inner = self.inner.lock();
+        inner.clear();
         let mut encoder = BinEncoder::new(inner.as_mut());
         encoder.set_max_size(max_size);
         response
