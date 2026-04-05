@@ -76,6 +76,8 @@ pub mod config {
 }
 
 pub mod instance {
+    use crate::tunnel::scheme::TunnelScheme;
+
     include!(concat!(env!("OUT_DIR"), "/api.instance.rs"));
 
     impl PeerRoutePair {
@@ -142,7 +144,15 @@ pub mod instance {
         }
 
         fn get_tunnel_proto_str(tunnel_info: &super::super::common::TunnelInfo) -> String {
-            tunnel_info.display_tunnel_type()
+            let tunnel_type = tunnel_info.tunnel_type.as_str();
+            // TODO: tunnel_type should not be a url
+            if let Ok(url) = url::Url::parse(tunnel_type) {
+                (&url).try_into().ok()
+            } else {
+                tunnel_type.parse().ok()
+            }
+            .map(|s: TunnelScheme| s.to_string())
+            .unwrap_or_else(|| tunnel_type.to_owned())
         }
 
         pub fn get_conn_protos(&self) -> Option<Vec<String>> {
