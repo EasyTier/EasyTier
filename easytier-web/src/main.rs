@@ -20,7 +20,7 @@ use easytier::{
     utils::panic::setup_panic_handler,
 };
 
-use easytier::tunnel::IpScheme;
+use easytier::tunnel::scheme::IpScheme;
 use easytier::utils::BoxExt;
 use mimalloc::MiMalloc;
 

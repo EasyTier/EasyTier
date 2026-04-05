@@ -31,7 +31,7 @@ use crate::{
         },
         rpc_types::controller::BaseController,
     },
-    tunnel::{IpVersion, matches_protocol, udp::UdpTunnelConnector},
+    tunnel::{IpVersion, scheme::matches_protocol, udp::UdpTunnelConnector},
     use_global_var,
 };
 
@@ -39,7 +39,9 @@ use super::{
     create_connector_by_url, should_background_p2p_with_peer, should_try_p2p_with_peer,
     udp_hole_punch,
 };
-use crate::tunnel::{FromUrl, IpScheme, TunnelScheme, matches_scheme};
+use crate::tunnel::scheme::{IpProto, TunnelScheme};
+use crate::tunnel::FromUrl;
+use crate::utils::eq_as;
 use anyhow::Context;
 use rand::Rng;
 use socket2::Protocol;
@@ -136,7 +138,7 @@ impl DirectConnectorManagerData {
         connector_addr: SocketAddr,
         remote_url: &url::Url,
     ) -> Result<(), Error> {
-        if !matches_scheme!(remote_url, TunnelScheme::Ip(IpScheme::Udp)) {
+        if !matches_proto!(remote_url, IpProto::Udp) {
             return Err(anyhow::anyhow!(
                 "udp hole punch packet only applies to udp listener: {}",
                 remote_url
@@ -270,7 +272,7 @@ impl DirectConnectorManagerData {
     async fn do_try_connect_to_ip(&self, dst_peer_id: PeerId, addr: String) -> Result<(), Error> {
         let connector = create_connector_by_url(&addr, &self.global_ctx, IpVersion::Both).await?;
         let remote_url = connector.remote_url();
-        let (peer_id, conn_id) = if matches_scheme!(remote_url, TunnelScheme::Ip(IpScheme::Udp)) {
+        let (peer_id, conn_id) = if eq_as::<TunnelScheme>(&remote_url, IpProto::Udp) {
             match remote_url.host() {
                 Some(Host::Ipv6(_)) => {
                     self.connect_to_public_ipv6(dst_peer_id, &remote_url)
