@@ -239,9 +239,9 @@ mod tests {
 
     "#;
 
-    fn query(name: &str, rtype: RecordType) -> anyhow::Result<MessageRequest> {
+    fn new_request(name: &str, rtype: RecordType) -> anyhow::Result<Request> {
         let mut query = Message::new();
-        query.set_id(0x1234);
+        query.set_id(0);
         query.set_message_type(MessageType::Query);
         query.set_op_code(OpCode::Query);
         query.set_recursion_desired(true);
@@ -251,11 +251,14 @@ mod tests {
         let mut encoder = BinEncoder::new(&mut request);
         query.emit(&mut encoder)?;
 
-        Ok(MessageRequest::from_bytes(&request)?)
+        Ok(Request::new(
+            MessageRequest::from_bytes(&request)?,
+            SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0).into(),
+            Protocol::Udp,
+        ))
     }
 
-    // #[tokio::test]
-    #[tokio::test(flavor = "current_thread")]
+    #[tokio::test]
     async fn test_config() -> anyhow::Result<()> {
         log::tests::init();
 
@@ -344,11 +347,7 @@ mod tests {
         authorities.extend(zone.create_forward_authority().into_iter());
         catalog.upsert(zone.origin.clone(), authorities);
 
-        let request = Request::new(
-            query("et.top.", RecordType::A)?,
-            SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0).into(),
-            Protocol::Udp,
-        );
+        let request = new_request("et.top.", RecordType::A)?;
 
         let response = ResponseHandle::new(512);
         let info = catalog.lookup(&request, None, response.clone()).await;
@@ -360,22 +359,14 @@ mod tests {
             vec![Zone::system().create_forward_authority().unwrap()],
         );
 
-        let request = Request::new(
-            query("example.com", RecordType::A)?,
-            SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0).into(),
-            Protocol::Udp,
-        );
+        let request = new_request("example.com", RecordType::A)?;
 
         let response = ResponseHandle::new(512);
         let info = catalog.lookup(&request, None, response.clone()).await;
 
         assert_eq!(info.response_code(), ResponseCode::NoError);
 
-        let request = Request::new(
-            query("example.invalid", RecordType::A)?,
-            SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0).into(),
-            Protocol::Udp,
-        );
+        let request = new_request("example.invalid", RecordType::A)?;
 
         let response = ResponseHandle::new(512);
         let info = catalog.lookup(&request, None, response.clone()).await;
