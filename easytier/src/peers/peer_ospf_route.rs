@@ -2521,14 +2521,13 @@ impl PeerRouteServiceImpl {
         let now = SystemTime::now();
         let mut to_remove = Vec::new();
         for (peer_id, peer_info) in self.synced_route_info.peer_infos.read().iter() {
-            if let Ok(d) = now.duration_since(peer_info.last_update.unwrap().try_into().unwrap()) {
-                if d > REMOVE_DEAD_PEER_INFO_AFTER
+            if let Ok(d) = now.duration_since(peer_info.last_update.unwrap().try_into().unwrap())
+                && (d > REMOVE_DEAD_PEER_INFO_AFTER
                     || (d > REMOVE_UNREACHABLE_PEER_INFO_AFTER
-                        && !self.route_table.peer_reachable(*peer_id))
+                        && !self.route_table.peer_reachable(*peer_id)))
                 {
                     to_remove.push(*peer_id);
                 }
-            }
         }
 
         for p in to_remove.iter() {
@@ -3020,11 +3019,10 @@ impl RouteSessionManager {
                     service_impl.my_peer_id
                 );
                 // update initiator flag for previous session
-                if let Some(cur_peer_id_to_initiate) = cur_dst_peer_id_to_initiate {
-                    if let Some(session) = service_impl.get_session(cur_peer_id_to_initiate) {
+                if let Some(cur_peer_id_to_initiate) = cur_dst_peer_id_to_initiate
+                    && let Some(session) = service_impl.get_session(cur_peer_id_to_initiate) {
                         session.update_initiator_flag(false);
                     }
-                }
 
                 cur_dst_peer_id_to_initiate = new_initiator_dst;
                 // update initiator flag for new session

@@ -370,8 +370,8 @@ pub async fn admin_get_nodes(
         let ids = NodeOperations::filter_node_ids_by_tag(&app_state.db, &tag).await?;
         filtered_ids = Some(ids);
     }
-    if let Some(tags) = filters.tags {
-        if !tags.is_empty() {
+    if let Some(tags) = filters.tags
+        && !tags.is_empty() {
             let ids_any = NodeOperations::filter_node_ids_by_tags_any(&app_state.db, &tags).await?;
             filtered_ids = match filtered_ids {
                 Some(mut existing) => {
@@ -383,7 +383,6 @@ pub async fn admin_get_nodes(
                 None => Some(ids_any),
             };
         }
-    }
     if let Some(ids) = filtered_ids {
         if ids.is_empty() {
             return Ok(Json(ApiResponse::success(PaginatedResponse {

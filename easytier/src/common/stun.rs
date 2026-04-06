@@ -1404,11 +1404,10 @@ mod tests {
             loop {
                 let ret = detector.detect_nat_type(0).await;
                 println!("{:#?}, {:?}", ret, ret.as_ref().map(|x| x.nat_type()));
-                if let Ok(resp) = ret {
-                    if !resp.stun_resps.is_empty() {
+                if let Ok(resp) = ret
+                    && !resp.stun_resps.is_empty() {
                         return;
                     }
-                }
                 sleep(Duration::from_secs(1)).await;
             }
         })

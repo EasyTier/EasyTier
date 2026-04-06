@@ -559,11 +559,10 @@ fn toggle_window_visibility(app: &tauri::AppHandle) {
 }
 
 fn get_exe_path() -> String {
-    if let Ok(appimage_path) = std::env::var("APPIMAGE") {
-        if !appimage_path.is_empty() {
+    if let Ok(appimage_path) = std::env::var("APPIMAGE")
+        && !appimage_path.is_empty() {
             return appimage_path;
         }
-    }
     std::env::current_exe()
         .map(|p| p.to_string_lossy().to_string())
         .unwrap_or_default()
@@ -979,8 +978,8 @@ mod manager {
                 .get_rpc_client(app.clone())
                 .ok_or_else(|| anyhow::anyhow!("RPC client not found"))?;
             for id in enabled_networks {
-                if let Ok(uuid) = id.parse() {
-                    if !self.storage.enabled_networks.contains(&uuid) {
+                if let Ok(uuid) = id.parse()
+                    && !self.storage.enabled_networks.contains(&uuid) {
                         let config = self
                             .storage
                             .network_configs
@@ -1007,7 +1006,6 @@ mod manager {
                             .await
                             .map_err(|e| anyhow::anyhow!(e))?;
                     }
-                }
             }
             Ok(())
         }

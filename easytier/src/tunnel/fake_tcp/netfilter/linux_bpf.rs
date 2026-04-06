@@ -182,14 +182,13 @@ fn build_tcp_filter(
     src_addr: Option<SocketAddr>,
     dst_addr: SocketAddr,
 ) -> io::Result<Vec<libc::sock_filter>> {
-    if let Some(src) = src_addr {
-        if src.is_ipv4() != dst_addr.is_ipv4() {
+    if let Some(src) = src_addr
+        && src.is_ipv4() != dst_addr.is_ipv4() {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "src/dst addr family mismatch",
             ));
         }
-    }
 
     let mut b = BpfBuilder::new();
     let l_check_ipv6 = b.new_label();

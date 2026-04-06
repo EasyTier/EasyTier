@@ -274,14 +274,13 @@ impl RelayPeerMap {
             return Ok(());
         }
 
-        if let Some(next_retry_at) = self.states.get(&dst_peer_id).and_then(|v| v.next_retry_at) {
-            if Instant::now() < next_retry_at {
+        if let Some(next_retry_at) = self.states.get(&dst_peer_id).and_then(|v| v.next_retry_at)
+            && Instant::now() < next_retry_at {
                 self.pending_packets.remove(&dst_peer_id);
                 return Err(Error::RouteError(Some(
                     "relay handshake backoff".to_string(),
                 )));
             }
-        }
 
         let mut last_err = None;
         for attempt in 0..HANDSHAKE_MAX_ATTEMPTS {

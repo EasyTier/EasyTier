@@ -117,8 +117,7 @@ impl WsTunnelListener {
         if TRUSTED_PROXIES
             .iter()
             .any(|net| net.contains(peer_addr.ip()))
-        {
-            if let Some(forwarded) = request
+            && let Some(forwarded) = request
                 .headers()
                 .get("Forwarded")
                 .and_then(|f| f.to_str().ok())
@@ -130,8 +129,7 @@ impl WsTunnelListener {
                         .and_then(|f| f.to_str().ok())
                         .and_then(|f| ForwardedHeaderValue::from_x_forwarded_for(f).ok())
                 })
-            {
-                if let Some(ip) = forwarded.remotest_forwarded_for_ip() {
+                && let Some(ip) = forwarded.remotest_forwarded_for_ip() {
                     remote_addr.set_host(Some(&ip.to_string())).map_err(|_| {
                         TunnelError::InvalidAddr(format!("invalid forwarded ip {}", ip))
                     })?;
@@ -139,8 +137,6 @@ impl WsTunnelListener {
                         .query_pairs_mut()
                         .append_pair("proxy", &peer_addr.to_string());
                 }
-            }
-        }
 
         let (write, read) = stream.split();
         let remote_addr: crate::proto::common::Url = remote_addr.into();

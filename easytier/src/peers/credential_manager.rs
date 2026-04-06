@@ -62,11 +62,10 @@ impl CredentialManager {
             .map(|x| x.trim().to_string())
             .filter(|x| !x.is_empty())
         {
-            if let Some(existing) = credentials.get(&id) {
-                if !existing.secret.is_empty() {
+            if let Some(existing) = credentials.get(&id)
+                && !existing.secret.is_empty() {
                     return (id, existing.secret.clone());
                 }
-            }
             id
         } else {
             uuid::Uuid::new_v4().to_string()
@@ -191,11 +190,10 @@ impl CredentialManager {
             return;
         };
         let creds = self.credentials.lock().unwrap();
-        if let Ok(json) = serde_json::to_string_pretty(&*creds) {
-            if let Err(e) = std::fs::write(path, json) {
+        if let Ok(json) = serde_json::to_string_pretty(&*creds)
+            && let Err(e) = std::fs::write(path, json) {
                 tracing::warn!(?e, "failed to save credentials to disk");
             }
-        }
     }
 
     fn load_from_disk(&self) {

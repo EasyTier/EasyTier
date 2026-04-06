@@ -272,12 +272,11 @@ impl InstanceConfigPatcher {
             global_ctx.set_hostname(hostname.clone());
             global_ctx.config.set_hostname(Some(hostname));
         }
-        if let Some(ipv4) = patch.ipv4 {
-            if !global_ctx.config.get_dhcp() {
+        if let Some(ipv4) = patch.ipv4
+            && !global_ctx.config.get_dhcp() {
                 global_ctx.set_ipv4(Some(ipv4.into()));
                 global_ctx.config.set_ipv4(Some(ipv4.into()));
             }
-        }
         if let Some(ipv6) = patch.ipv6 {
             global_ctx.set_ipv6(Some(ipv6.into()));
             global_ctx.config.set_ipv6(Some(ipv6.into()));
@@ -667,14 +666,13 @@ impl Instance {
         packet_recv: Arc<Mutex<PacketRecvChanReceiver>>,
     ) {
         #[cfg(feature = "magic-dns")]
-        if let Some(old_ctx) = arc_nic_ctx.lock().await.take() {
-            if let Some(dns_runner) = old_ctx.magic_dns {
+        if let Some(old_ctx) = arc_nic_ctx.lock().await.take()
+            && let Some(dns_runner) = old_ctx.magic_dns {
                 dns_runner.dns_runner_cancel_token.cancel();
                 tracing::debug!("cancelling dns runner task");
                 let ret = dns_runner.dns_runner_task.await;
                 tracing::debug!("dns runner task cancelled, ret: {:?}", ret);
-            }
-        };
+            };
 
         let mut tasks = JoinSet::new();
         tasks.spawn(async move {
@@ -772,11 +770,10 @@ impl Instance {
 
                 let dhcp_inet = used_ipv4.iter().next().unwrap_or(&default_ipv4_addr);
                 // if old ip is already in this subnet and not conflicted, use it
-                if let Some(ip) = current_dhcp_ip {
-                    if ip.network() == dhcp_inet.network() && !used_ipv4.contains(&ip) {
+                if let Some(ip) = current_dhcp_ip
+                    && ip.network() == dhcp_inet.network() && !used_ipv4.contains(&ip) {
                         continue;
                     }
-                }
 
                 // find an available ip in the subnet
                 let candidate_ipv4_addr = dhcp_inet.network().iter().find(|ip| {

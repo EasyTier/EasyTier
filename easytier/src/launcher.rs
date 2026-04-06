@@ -272,11 +272,10 @@ impl Drop for EasyTierLauncher {
     fn drop(&mut self) {
         self.stop_flag
             .store(true, std::sync::atomic::Ordering::Relaxed);
-        if let Some(handle) = self.thread_handle.take() {
-            if let Err(e) = handle.join() {
+        if let Some(handle) = self.thread_handle.take()
+            && let Err(e) = handle.join() {
                 println!("Error when joining thread: {:?}", e);
             }
-        }
     }
 }
 
@@ -656,13 +655,12 @@ impl NetworkConfig {
             cfg.set_exit_nodes(exit_nodes);
         }
 
-        if self.enable_socks5.unwrap_or_default() {
-            if let Some(socks5_port) = self.socks5_port {
+        if self.enable_socks5.unwrap_or_default()
+            && let Some(socks5_port) = self.socks5_port {
                 cfg.set_socks5_portal(Some(
                     format!("socks5://0.0.0.0:{}", socks5_port).parse().unwrap(),
                 ));
             }
-        }
 
         if !self.mapped_listeners.is_empty() {
             cfg.set_mapped_listeners(Some(
@@ -909,12 +907,11 @@ impl NetworkConfig {
             result.vpn_portal_listen_port = Some(vpn_config.wireguard_listen.port() as i32);
         }
 
-        if let Some(routes) = config.get_routes() {
-            if !routes.is_empty() {
+        if let Some(routes) = config.get_routes()
+            && !routes.is_empty() {
                 result.enable_manual_routes = Some(true);
                 result.routes = routes.iter().map(|r| r.to_string()).collect();
             }
-        }
 
         let exit_nodes = config.get_exit_nodes();
         if !exit_nodes.is_empty() {

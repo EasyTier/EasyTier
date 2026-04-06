@@ -256,8 +256,8 @@ impl WireGuardImpl {
 
         self.start_listener(&self.listener_addr).await?;
         // if binding to v4 unspecified, also start a listener on v6 unspecified
-        if let SocketAddr::V4(v4) = &self.listener_addr {
-            if v4.ip().is_unspecified() {
+        if let SocketAddr::V4(v4) = &self.listener_addr
+            && v4.ip().is_unspecified() {
                 let _ = self
                     .start_listener(&SocketAddr::V6(SocketAddrV6::new(
                         Ipv6Addr::UNSPECIFIED,
@@ -266,8 +266,7 @@ impl WireGuardImpl {
                         0,
                     )))
                     .await;
-            }
-        };
+            };
 
         join_joinset_background(self.tasks.clone(), "wireguard".to_string());
         self.start_pipeline_processor().await;

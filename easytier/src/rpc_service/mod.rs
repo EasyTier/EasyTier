@@ -100,13 +100,10 @@ fn get_instance_service(
                 if let Some(api::instance::instance_identifier::Selector::InstanceSelector(
                     selector,
                 )) = selector
-                {
-                    if let Some(name) = selector.name.as_ref() {
-                        if v.get_inst_name() != *name {
+                    && let Some(name) = selector.name.as_ref()
+                        && v.get_inst_name() != *name {
                             return false;
                         }
-                    }
-                }
                 true
             })
             .map(|v| *v.key())

@@ -1408,11 +1408,10 @@ impl PeerManager {
             Err(Error::RouteError(None))
         };
 
-        if send_result.is_ok() {
-            if let Some(metrics) = direct_tx_metrics {
+        if send_result.is_ok()
+            && let Some(metrics) = direct_tx_metrics {
                 metrics.record_tx(dst_peer_id, packet_type, msg_len).await;
             }
-        }
 
         send_result
     }

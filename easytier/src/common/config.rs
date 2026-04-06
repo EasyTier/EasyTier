@@ -621,15 +621,14 @@ impl ConfigLoader for TomlConfigLoader {
         if locked_config.proxy_network.is_none() {
             locked_config.proxy_network = Some(vec![]);
         }
-        if let Some(mapped_cidr) = mapped_cidr.as_ref() {
-            if cidr.network_length() != mapped_cidr.network_length() {
+        if let Some(mapped_cidr) = mapped_cidr.as_ref()
+            && cidr.network_length() != mapped_cidr.network_length() {
                 return Err(anyhow::anyhow!(
                     "Mapped CIDR must have the same network length as the original CIDR: {} != {}",
                     cidr.network_length(),
                     mapped_cidr.network_length()
                 ));
             }
-        }
         // insert if no duplicate
         if !locked_config
             .proxy_network
@@ -881,11 +880,10 @@ impl ConfigLoader for TomlConfigLoader {
 
         let mut flag_map: serde_json::Map<String, serde_json::Value> = Default::default();
         for (key, value) in default_flags_hashmap {
-            if let Some(v) = cur_flags_hashmap.get(&key) {
-                if *v != value {
+            if let Some(v) = cur_flags_hashmap.get(&key)
+                && *v != value {
                     flag_map.insert(key, v.clone());
                 }
-            }
         }
 
         let mut config = self.config.lock().unwrap().clone();

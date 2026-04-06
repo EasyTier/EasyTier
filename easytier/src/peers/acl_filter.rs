@@ -238,8 +238,8 @@ impl AclFilter {
         chain_type: ChainType,
         processor: &AclProcessor,
     ) {
-        if result.should_log {
-            if let Some(ref log_context) = result.log_context {
+        if result.should_log
+            && let Some(ref log_context) = result.log_context {
                 let log_message = log_context.to_message();
                 tracing::info!(
                     src_ip = %packet_info.src_ip,
@@ -255,7 +255,6 @@ impl AclFilter {
                     "ACL: {}", log_message
                 );
             }
-        }
 
         // Update global statistics in the ACL processor
         match result.action {

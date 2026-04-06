@@ -2497,11 +2497,9 @@ fn header_indices(headers: &[String], names: &[&str]) -> Vec<usize> {
         if let Some(index) = headers
             .iter()
             .position(|header| header.eq_ignore_ascii_case(name))
-        {
-            if !indices.contains(&index) {
+            && !indices.contains(&index) {
                 indices.push(index);
             }
-        }
     }
     indices
 }

@@ -189,12 +189,11 @@ impl PeerSessionStore {
             PeerSessionAction::Sync | PeerSessionAction::Create => {
                 let root_key = root_key_32.ok_or_else(|| anyhow!("missing root_key"))?;
                 // If the existing session is invalidated, remove it so we create a fresh one
-                if let Some(existing) = self.sessions.get(key) {
-                    if !existing.is_valid() {
+                if let Some(existing) = self.sessions.get(key)
+                    && !existing.is_valid() {
                         drop(existing);
                         self.sessions.remove(key);
                     }
-                }
                 let session = self
                     .sessions
                     .entry(key.clone())

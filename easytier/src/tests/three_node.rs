@@ -846,15 +846,15 @@ pub async fn proxy_three_node_disconnect_test(#[values("tcp", "wg")] proto: &str
             }));
             wait_for_condition(
                 || async {
-                    let ret = !insts[2]
+                    
+
+                    !insts[2]
                         .get_peer_manager()
                         .get_peer_map()
                         .list_peers_with_conn()
                         .await
                         .iter()
-                        .any(|r| *r == inst4.peer_id());
-
-                    ret
+                        .any(|r| *r == inst4.peer_id())
                 },
                 // 0 down, assume last packet is recv in -0.01
                 // [2, 7) send ping

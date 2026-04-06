@@ -741,8 +741,8 @@ impl Cli {
 
         let origin_listeners = listeners;
         let mut listeners: Vec<String> = Vec::new();
-        if origin_listeners.len() == 1 {
-            if let Ok(port) = origin_listeners[0].parse::<u16>() {
+        if origin_listeners.len() == 1
+            && let Ok(port) = origin_listeners[0].parse::<u16>() {
                 for proto in IpScheme::VARIANTS {
                     listeners.push(format!(
                         "{}://0.0.0.0:{}",
@@ -752,7 +752,6 @@ impl Cli {
                 }
                 return Ok(listeners);
             }
-        }
 
         for l in &origin_listeners {
             let proto_port: Vec<&str> = l.split(':').collect();
@@ -994,8 +993,8 @@ impl NetworkOptions {
                 local_public_key: None,
             };
             cfg.set_secure_mode(Some(process_secure_mode_cfg(c)?));
-        } else if let Some(secure_mode) = self.secure_mode {
-            if secure_mode {
+        } else if let Some(secure_mode) = self.secure_mode
+            && secure_mode {
                 let c = SecureModeConfig {
                     enabled: secure_mode,
                     local_private_key: self.local_private_key.clone(),
@@ -1003,7 +1002,6 @@ impl NetworkOptions {
                 };
                 cfg.set_secure_mode(Some(process_secure_mode_cfg(c)?));
             }
-        }
 
         let mut f = cfg.get_flags();
         if let Some(default_protocol) = &self.default_protocol {

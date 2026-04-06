@@ -288,19 +288,16 @@ impl fmt::Display for Url {
 fn split_tunnel_scheme(raw_scheme: &str) -> Option<(&str, &'static str, bool)> {
     for scheme in IpScheme::VARIANTS {
         let scheme: &'static str = scheme.into();
-        if let Some(base) = raw_scheme.strip_suffix('6') {
-            if let Some(prefix) = base.strip_suffix(scheme) {
-                if prefix.is_empty() || prefix.ends_with('-') {
+        if let Some(base) = raw_scheme.strip_suffix('6')
+            && let Some(prefix) = base.strip_suffix(scheme)
+                && (prefix.is_empty() || prefix.ends_with('-')) {
                     return Some((prefix, scheme, true));
                 }
-            }
-        }
 
-        if let Some(prefix) = raw_scheme.strip_suffix(scheme) {
-            if prefix.is_empty() || prefix.ends_with('-') {
+        if let Some(prefix) = raw_scheme.strip_suffix(scheme)
+            && (prefix.is_empty() || prefix.ends_with('-')) {
                 return Some((prefix, scheme, false));
             }
-        }
     }
 
     None

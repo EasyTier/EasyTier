@@ -87,8 +87,8 @@ impl SessionData {
 
 impl Drop for SessionData {
     fn drop(&mut self) {
-        if let Ok(storage) = Storage::try_from(self.storage.clone()) {
-            if let Some(token) = self.storage_token.as_ref() {
+        if let Ok(storage) = Storage::try_from(self.storage.clone())
+            && let Some(token) = self.storage_token.as_ref() {
                 storage.remove_client(token);
 
                 // Notify the webhook receiver when a node disconnects.
@@ -112,7 +112,6 @@ impl Drop for SessionData {
                     });
                 }
             }
-        }
     }
 }
 

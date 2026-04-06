@@ -92,11 +92,10 @@ async fn run(
 
         // wake up all closed sockets (smoltcp seems have a bug that it doesn't wake up closed sockets)
         for (_, socket) in socket_allocator.sockets().lock().iter_mut() {
-            if let Socket::Tcp(tcp) = socket {
-                if tcp.state() == smoltcp::socket::tcp::State::Closed {
+            if let Socket::Tcp(tcp) = socket
+                && tcp.state() == smoltcp::socket::tcp::State::Closed {
                     tcp.abort();
                 }
-            }
         }
     }
 

@@ -445,8 +445,8 @@ impl PunchSymToConeHoleClient {
         ))?;
 
         // try direct connect first
-        if self.try_direct_connect.load(Ordering::Relaxed) {
-            if let Ok(tunnel) = try_connect_with_socket(
+        if self.try_direct_connect.load(Ordering::Relaxed)
+            && let Ok(tunnel) = try_connect_with_socket(
                 global_ctx.clone(),
                 Arc::new(UdpSocket::bind("0.0.0.0:0").await?),
                 remote_mapped_addr.into(),
@@ -455,7 +455,6 @@ impl PunchSymToConeHoleClient {
             {
                 return Ok(Some(tunnel));
             }
-        }
 
         let stun_info = global_ctx.get_stun_info_collector().get_stun_info();
         let public_ips: Vec<Ipv4Addr> = stun_info

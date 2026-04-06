@@ -373,8 +373,8 @@ mod route {
             )
                 .into_response();
         }
-        if let Some(verifier) = pkce_verifier {
-            if let Err(e) = session
+        if let Some(verifier) = pkce_verifier
+            && let Err(e) = session
                 .insert("oidc_pkce_verifier", verifier.secret().clone())
                 .await
             {
@@ -385,7 +385,6 @@ mod route {
                 )
                     .into_response();
             }
-        }
         if let Err(e) = session.insert("oidc_pkce_used", pkce_enabled).await {
             tracing::error!("Failed to store pkce_used in session: {:?}", e);
             return (

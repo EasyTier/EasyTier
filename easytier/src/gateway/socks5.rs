@@ -280,11 +280,10 @@ impl AsyncTcpConnector for Socks5AutoConnector {
             return Err(anyhow::anyhow!("peer manager is dropped").into());
         };
 
-        if let Some(local_addr) = self.smoltcp_net.as_ref().map(|n| n.get_address()) {
-            if local_addr == addr.ip() {
+        if let Some(local_addr) = self.smoltcp_net.as_ref().map(|n| n.get_address())
+            && local_addr == addr.ip() {
                 addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), addr.port());
             }
-        }
 
         if self.smoltcp_net.is_none()
             || peer_mgr_arc.get_msg_dst_peer(&addr.ip()).await.0.is_empty()

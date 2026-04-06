@@ -347,11 +347,10 @@ impl<C: NatDstConnector> PeerPacketFilter for TcpProxy<C> {
                 if let Err(e) = smoltcp_stack_sender.try_send(packet) {
                     tracing::error!("send to smoltcp stack failed: {:?}", e);
                 }
-            } else if let Some(peer_manager) = self.get_peer_manager() {
-                if let Err(e) = peer_manager.get_nic_channel().send(packet).await {
+            } else if let Some(peer_manager) = self.get_peer_manager()
+                && let Err(e) = peer_manager.get_nic_channel().send(packet).await {
                     tracing::error!("send to nic failed: {:?}", e);
                 }
-            }
             return None;
         } else {
             Some(packet)

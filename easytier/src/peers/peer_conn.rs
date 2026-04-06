@@ -716,13 +716,11 @@ impl PeerConn {
         remote_network_name: &str,
     ) -> Result<SecureAuthLevel, Error> {
         // 1. Verify proof
-        if let Some(proof) = proof {
-            if let Some(mac) = self.global_ctx.get_secret_proof(handshake_hash) {
-                if mac.verify_slice(proof).is_ok() {
+        if let Some(proof) = proof
+            && let Some(mac) = self.global_ctx.get_secret_proof(handshake_hash)
+                && mac.verify_slice(proof).is_ok() {
                     return Ok(SecureAuthLevel::NetworkSecretConfirmed);
                 }
-            }
-        }
 
         // 2. Check pinned pubkey
         if let Some(pinned) = pinned_pubkey {
@@ -848,11 +846,10 @@ impl PeerConn {
         .await??;
         self.record_control_rx(&network.network_name, msg2.buf_len() as u64);
         let remote_peer_id = msg2.get_src_peer_id().expect("missing src peer id");
-        if let Some(hint) = self.peer_id_hint {
-            if hint != remote_peer_id {
+        if let Some(hint) = self.peer_id_hint
+            && hint != remote_peer_id {
                 return Err(Error::WaitRespError("peer_id mismatch".to_owned()));
             }
-        }
         let msg2_pb = Self::decode_handshake_message::<PeerConnNoiseMsg2Pb>(
             PacketType::NoiseHandshakeMsg2,
             Some(&mut hs),

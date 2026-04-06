@@ -147,12 +147,11 @@ impl LogicalTrafficMetrics {
     {
         self.total.add_sample(bytes);
 
-        if let Some(entry) = self.per_peer.get(&peer_id) {
-            if entry.value().is_resolved() {
+        if let Some(entry) = self.per_peer.get(&peer_id)
+            && entry.value().is_resolved() {
                 entry.value().counters().add_sample(bytes);
                 return;
             }
-        }
 
         let resolved_instance_id = resolver().await;
         let counters = self.get_or_update_peer_counters(peer_id, resolved_instance_id.as_deref());

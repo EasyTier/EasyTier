@@ -679,8 +679,8 @@ impl AclProcessor {
         }
 
         // Source port check
-        if let Some(src_port) = packet_info.src_port {
-            if !rule.src_port_ranges.is_empty() {
+        if let Some(src_port) = packet_info.src_port
+            && !rule.src_port_ranges.is_empty() {
                 let matches = rule
                     .src_port_ranges
                     .iter()
@@ -689,11 +689,10 @@ impl AclProcessor {
                     return false;
                 }
             }
-        }
 
         // Destination port check
-        if let Some(dst_port) = packet_info.dst_port {
-            if !rule.dst_port_ranges.is_empty() {
+        if let Some(dst_port) = packet_info.dst_port
+            && !rule.dst_port_ranges.is_empty() {
                 let matches = rule
                     .dst_port_ranges
                     .iter()
@@ -702,7 +701,6 @@ impl AclProcessor {
                     return false;
                 }
             }
-        }
 
         // Source group check
         if !rule.source_groups.is_empty() {

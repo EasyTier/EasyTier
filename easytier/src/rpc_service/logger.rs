@@ -72,11 +72,10 @@ impl LoggerRpc for LoggerRpcService {
         }
 
         // 更新当前日志级别
-        if let Some(current_level) = CURRENT_LOG_LEVEL.get() {
-            if let Ok(mut level) = current_level.lock() {
+        if let Some(current_level) = CURRENT_LOG_LEVEL.get()
+            && let Ok(mut level) = current_level.lock() {
                 *level = Self::log_level_to_string(request.level());
             }
-        }
 
         Ok(SetLoggerConfigResponse {})
     }
