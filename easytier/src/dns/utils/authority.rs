@@ -1,3 +1,5 @@
+use crate::utils::BoxExt;
+use delegate::delegate;
 use derive_more::{Deref, DerefMut, From};
 use hickory_proto::rr::{LowerName, RecordType};
 use hickory_server::authority::{
@@ -23,21 +25,17 @@ where
 {
     type Lookup = A::Lookup;
 
-    #[inline]
-    fn zone_type(&self) -> ZoneType {
-        self.0.zone_type()
+    delegate! {
+        to self.0 {
+            fn zone_type(&self) -> ZoneType;
+            fn is_axfr_allowed(&self) -> bool;
+            fn origin(&self) -> &LowerName;
+        }
     }
-    #[inline]
-    fn is_axfr_allowed(&self) -> bool {
-        self.0.is_axfr_allowed()
-    }
+
     #[inline]
     async fn update(&self, update: &MessageRequest) -> UpdateResult<bool> {
         self.0.update(update).await
-    }
-    #[inline]
-    fn origin(&self) -> &LowerName {
-        self.0.origin()
     }
     #[inline]
     async fn lookup(
@@ -62,7 +60,7 @@ where
             self.0
                 .lookup(name, rtype, lookup_options)
                 .await
-                .map(|l| Box::new(l) as _)
+                .map(|l| l.boxed() as _)
         }
     }
     #[inline]
