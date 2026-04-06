@@ -133,11 +133,11 @@ fn console_layers(default_level: LevelFilter) -> anyhow::Result<Vec<BoxLayer>> {
             let w = tracing_subscriber::fmt::TestWriter::new;
             let (stdout, stderr) = (w, w);
         } else {
-            let (stdout, stderr) = (std::io::stderr, std::io::stdout);
+            let (stdout, stderr) = (std::io::stdout, std::io::stderr);
         }
     }
 
-    let ansi = std::io::stdin().is_terminal() || cfg!(test);
+    let ansi = std::io::stderr().is_terminal() || cfg!(test);
 
     let layer = || {
         layer()
