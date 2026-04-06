@@ -1,6 +1,6 @@
 #![cfg(all(feature = "magic-dns", feature = "tun"))]
 
-use std::net::{Ipv4Addr, SocketAddr};
+use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
 use std::str::FromStr as _;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -11,7 +11,12 @@ use hickory_proto::rr;
 use hickory_proto::runtime::TokioRuntimeProvider;
 use hickory_proto::udp::UdpClientStream;
 use tokio::sync::Notify;
-
+use hickory_proto::rr::{Name, RecordType};
+use hickory_server::server::Request;
+use hickory_proto::op::{Message, MessageType, OpCode, Query};
+use hickory_proto::serialize::binary::{BinDecodable, BinEncodable, BinEncoder};
+use hickory_server::authority::MessageRequest;
+use hickory_proto::xfer::Protocol;
 use crate::common::global_ctx::tests::get_mock_global_ctx;
 use crate::connector::udp_hole_punch::tests::replace_stun_info_collector;
 use crate::dns::node::DnsNode;
@@ -140,4 +145,23 @@ pub async fn check_dns_record_missing(fake_ip: &Ipv4Addr, domain: &str) {
     background_task.abort();
     let _ = background_task.await;
     assert!(response.answers().is_empty(), "{:?}", response.answers());
+}
+
+pub fn new_request(name: &str, rtype: RecordType) -> anyhow::Result<Request> {
+    let mut query = Message::new();
+    query.set_id(0);
+    query.set_message_type(MessageType::Query);
+    query.set_op_code(OpCode::Query);
+    query.set_recursion_desired(true);
+    query.add_query(Query::query(Name::from_ascii(name)?, rtype));
+
+    let mut request = Vec::new();
+    let mut encoder = BinEncoder::new(&mut request);
+    query.emit(&mut encoder)?;
+
+    Ok(Request::new(
+        MessageRequest::from_bytes(&request)?,
+        SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0).into(),
+        Protocol::Udp,
+    ))
 }

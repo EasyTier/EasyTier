@@ -167,21 +167,18 @@ mod tests {
     use crate::dns::config::DnsConfig;
     use crate::dns::utils::response::ResponseHandle;
     use hickory_client::client::{Client, ClientHandle};
-    use hickory_proto::op::{Message, MessageType, OpCode, Query, ResponseCode};
+    use hickory_proto::op::ResponseCode;
     use hickory_proto::rr::{rdata, DNSClass, Name, RData, Record, RecordType, RrsetRecords};
     use hickory_proto::runtime::TokioRuntimeProvider;
-    use hickory_proto::serialize::binary::{BinDecodable, BinEncodable, BinEncoder};
     use hickory_proto::udp::UdpClientStream;
-    use hickory_proto::xfer::Protocol;
-    use hickory_server::authority::{Catalog, MessageRequest};
-    use hickory_server::server::Request;
+    use hickory_server::authority::Catalog;
     use hickory_server::ServerFuture;
-    use std::net::{Ipv4Addr, SocketAddrV4};
     use std::str::FromStr;
     use std::time::Duration;
     use tokio::net::UdpSocket;
     use tokio::spawn;
     use tokio::time::timeout;
+    use crate::dns;
 
     impl Zone {
         // TODO: remove this
@@ -238,25 +235,6 @@ mod tests {
     [zone.export]
 
     "#;
-
-    fn new_request(name: &str, rtype: RecordType) -> anyhow::Result<Request> {
-        let mut query = Message::new();
-        query.set_id(0);
-        query.set_message_type(MessageType::Query);
-        query.set_op_code(OpCode::Query);
-        query.set_recursion_desired(true);
-        query.add_query(Query::query(Name::from_ascii(name)?, rtype));
-
-        let mut request = Vec::new();
-        let mut encoder = BinEncoder::new(&mut request);
-        query.emit(&mut encoder)?;
-
-        Ok(Request::new(
-            MessageRequest::from_bytes(&request)?,
-            SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0).into(),
-            Protocol::Udp,
-        ))
-    }
 
     #[tokio::test]
     async fn test_config() -> anyhow::Result<()> {
@@ -347,7 +325,7 @@ mod tests {
         authorities.extend(zone.create_forward_authority().into_iter());
         catalog.upsert(zone.origin.clone(), authorities);
 
-        let request = new_request("et.top.", RecordType::A)?;
+        let request = dns::tests::new_request("et.top.", RecordType::A)?;
 
         let response = ResponseHandle::new(512);
         let info = catalog.lookup(&request, None, response.clone()).await;
@@ -359,14 +337,14 @@ mod tests {
             vec![Zone::system().create_forward_authority().unwrap()],
         );
 
-        let request = new_request("example.com", RecordType::A)?;
+        let request = dns::tests::new_request("example.com", RecordType::A)?;
 
         let response = ResponseHandle::new(512);
         let info = catalog.lookup(&request, None, response.clone()).await;
 
         assert_eq!(info.response_code(), ResponseCode::NoError);
 
-        let request = new_request("example.invalid", RecordType::A)?;
+        let request = dns::tests::new_request("example.invalid", RecordType::A)?;
 
         let response = ResponseHandle::new(512);
         let info = catalog.lookup(&request, None, response.clone()).await;
