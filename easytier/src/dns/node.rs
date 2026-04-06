@@ -1,7 +1,10 @@
 use crate::common::global_ctx::{ArcGlobalCtx, GlobalCtxEvent};
+use crate::common::join_joinset_background;
 use crate::dns::config::{DnsGlobalCtxExt, DNS_SERVER_ELECTION_INTERVAL, DNS_SERVER_RPC_ADDR};
 use crate::dns::peer_mgr::DnsPeerMgr;
 use crate::dns::server::DnsServer;
+#[cfg(feature = "tun")]
+use crate::instance::instance::ArcNicCtx;
 use crate::peers::peer_manager::PeerManager;
 use crate::peers::NicPacketFilter;
 use crate::proto::dns::{DnsNodeMgrRpcClientFactory, HeartbeatRequest};
@@ -9,7 +12,7 @@ use crate::proto::rpc_impl::standalone::{StandAloneClient, StandAloneServer};
 use crate::proto::rpc_types::controller::BaseController;
 use crate::tunnel::tcp::{TcpTunnelConnector, TcpTunnelListener};
 use crate::utils::AsyncRuntime;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::sync::{broadcast, Notify};
 use tokio::task::JoinSet;
@@ -17,9 +20,6 @@ use tokio::time::{sleep, sleep_until, Instant};
 use tokio_util::sync::CancellationToken;
 use tracing::instrument;
 use uuid::Uuid;
-
-#[cfg(feature = "tun")]
-use crate::instance::instance::ArcNicCtx;
 
 #[derive(Debug, Clone)]
 pub struct DnsNode {
@@ -138,7 +138,8 @@ impl DnsNode {
         tokio::pin!(sleep);
 
         let mut subscriber = self.global_ctx.subscribe();
-        let mut tasks = JoinSet::new();
+        let tasks = Arc::new(Mutex::new(JoinSet::new()));
+        join_joinset_background(tasks.clone(), "DnsNode".to_owned());
 
         loop {
             let next_heartbeat = last_heartbeat
@@ -173,7 +174,7 @@ impl DnsNode {
                         Ok(GlobalCtxEvent::PeerInfoUpdated(peer_ids)) => {
                             for peer_id in peer_ids {
                                 let mgr = self.mgr.clone();
-                                tasks.spawn(async move {
+                                tasks.lock().unwrap().spawn(async move {
                                     mgr.refresh(peer_id).await;
                                 });
                             }
