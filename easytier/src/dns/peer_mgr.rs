@@ -198,24 +198,15 @@ mod tests {
     use super::*;
     use crate::common::global_ctx::tests::get_mock_global_ctx;
     use crate::dns::config::zone::ZoneConfig;
+    use crate::dns::tests::zone_data_a as valid_zone_data;
     use crate::peers::create_packet_recv_chan;
     use crate::peers::peer_manager::RouteAlgoType;
     use crate::peers::tests::{connect_peer_manager, wait_route_appear};
-    use crate::proto::dns::{GetExportConfigRequest, ZoneData};
+    use crate::proto::dns::GetExportConfigRequest;
     use std::collections::HashSet;
     use std::net::Ipv4Addr;
     use tokio::time::{sleep, Duration};
     use uuid::Uuid;
-
-    fn valid_zone_data(origin: &str, record: &str) -> ZoneData {
-        ZoneData {
-            id: Some(Uuid::new_v4().into()),
-            origin: origin.to_string(),
-            ttl: 60,
-            records: vec![format!("@ IN A {record}")],
-            forwarders: vec![],
-        }
-    }
 
     async fn create_peer_manager_with_zone(
         host: &str,

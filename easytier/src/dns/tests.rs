@@ -9,15 +9,16 @@ use crate::common::config::TomlConfigLoader;
 use crate::common::global_ctx::tests::get_mock_global_ctx;
 use crate::common::global_ctx::GlobalCtx;
 use crate::connector::udp_hole_punch::tests::replace_stun_info_collector;
+use crate::dns::config::zone::ZoneConfigInner;
 use crate::dns::node::DnsNode;
 use crate::dns::peer_mgr::DnsPeerMgr;
-use crate::dns::config::zone::ZoneConfigInner;
 use crate::instance::instance::ArcNicCtx;
 use crate::instance::virtual_nic::NicCtx;
 use crate::peers::create_packet_recv_chan;
 use crate::peers::peer_manager::{PeerManager, RouteAlgoType};
 use crate::peers::tests::{connect_peer_manager, wait_route_appear};
-use crate::proto::common::NatType;
+use crate::proto::common::{NatType, Url};
+use crate::proto::dns::{DnsSnapshot, HeartbeatRequest, ZoneData};
 use cidr::Ipv4Inet;
 use hickory_client::client::{Client, ClientHandle as _};
 use hickory_proto::op::{Message, MessageType, OpCode, Query};
@@ -30,7 +31,9 @@ use hickory_proto::xfer::Protocol;
 use hickory_server::authority::MessageRequest;
 use hickory_server::server::Request;
 use tokio::sync::Notify;
+use uuid::Uuid;
 
+// TODO: move to system::tests
 pub async fn prepare_env(dns_name: &str, tun_ip: Ipv4Inet) -> (Arc<PeerManager>, NicCtx) {
     prepare_env_with_tld_dns_zone(dns_name, tun_ip, None).await
 }
@@ -96,6 +99,50 @@ pub async fn prepare_env_from_config_str(config_str: &str) -> Arc<PeerManager> {
     replace_stun_info_collector(peer_mgr.clone(), NatType::PortRestricted);
 
     peer_mgr
+}
+
+pub fn zone_data_a(origin: &str, record: &str) -> ZoneData {
+    zone_data_a_with_forwarders(origin, record, vec![])
+}
+
+pub fn zone_data_a_with_forwarders(origin: &str, record: &str, forwarders: Vec<&str>) -> ZoneData {
+    ZoneData {
+        id: Some(Uuid::new_v4().into()),
+        origin: origin.to_string(),
+        ttl: 60,
+        records: vec![format!("@ IN A {record}")],
+        forwarders: forwarders
+            .into_iter()
+            .map(|f| Url::from_str(f).expect("invalid forwarder"))
+            .collect(),
+    }
+}
+
+pub fn dns_snapshot_with(
+    zones: Vec<ZoneData>,
+    addresses: Vec<&str>,
+    listeners: Vec<&str>,
+) -> DnsSnapshot {
+    DnsSnapshot {
+        zones,
+        addresses: addresses
+            .into_iter()
+            .map(|a| Url::from_str(a).expect("invalid address"))
+            .collect(),
+        listeners: listeners
+            .into_iter()
+            .map(|l| Url::from_str(l).expect("invalid listener"))
+            .collect(),
+    }
+}
+
+pub fn heartbeat_with_snapshot(id: Uuid, snapshot: DnsSnapshot) -> HeartbeatRequest {
+    let mut hb = HeartbeatRequest {
+        id: Some(id.into()),
+        ..Default::default()
+    };
+    hb.update(snapshot);
+    hb
 }
 
 fn find_free_udp_port() -> u16 {
@@ -539,11 +586,10 @@ records = ["api IN A 10.80.0.1"]
     zone.records = vec!["api IN A 10.80.0.2".to_string()];
     dns.zones[zone_idx] = zone.try_into().expect("patch zone update should be valid");
     peer.get_global_ctx().config.set_dns(Some(dns));
-    peer.get_global_ctx().issue_event(
-        crate::common::global_ctx::GlobalCtxEvent::ConfigPatched(
+    peer.get_global_ctx()
+        .issue_event(crate::common::global_ctx::GlobalCtxEvent::ConfigPatched(
             crate::proto::api::config::InstanceConfigPatch::default(),
-        ),
-    );
+        ));
 
     check_dns_record_at(server_addr, "api.patch.mesh-test.", "10.80.0.2").await;
 
@@ -555,7 +601,12 @@ records = ["api IN A 10.80.0.1"]
 async fn config_patch_reloads_listener_binding() {
     let listener_old = find_free_udp_port();
     let listener_new = find_free_udp_port();
-    let config = cfg_with_listener("listener-patch", "10.144.150.11/24", "mesh-test", listener_old);
+    let config = cfg_with_listener(
+        "listener-patch",
+        "10.144.150.11/24",
+        "mesh-test",
+        listener_old,
+    );
 
     let peer = prepare_env_from_config_str(&config).await;
     let dns_node = start_dns_node_without_nic(peer.clone());
@@ -570,11 +621,10 @@ async fn config_patch_reloads_listener_binding() {
         .expect("invalid listener")]
     .into();
     peer.get_global_ctx().config.set_dns(Some(dns));
-    peer.get_global_ctx().issue_event(
-        crate::common::global_ctx::GlobalCtxEvent::ConfigPatched(
+    peer.get_global_ctx()
+        .issue_event(crate::common::global_ctx::GlobalCtxEvent::ConfigPatched(
             crate::proto::api::config::InstanceConfigPatch::default(),
-        ),
-    );
+        ));
 
     check_dns_record_at(new_addr, "listener-patch.mesh-test.", "10.144.150.11").await;
     check_dns_unavailable_at(old_addr, "listener-patch.mesh-test.").await;
@@ -621,7 +671,13 @@ records = ["svc IN A 10.77.7.7"]
     let addr_a = SocketAddr::new(Ipv4Addr::LOCALHOST.into(), listener_a);
     check_dns_record_at(addr_a, "node-c7.mesh7-test.", "10.144.151.13").await;
     check_dns_record_at(addr_a, "svc.shared-c7.mesh7-test.", "10.77.7.7").await;
-    wait_peer_zone_visibility(peer_a.clone(), peer_c.my_peer_id(), "node-c7.mesh7-test", true).await;
+    wait_peer_zone_visibility(
+        peer_a.clone(),
+        peer_c.my_peer_id(),
+        "node-c7.mesh7-test",
+        true,
+    )
+    .await;
     wait_peer_zone_visibility(
         peer_a.clone(),
         peer_c.my_peer_id(),
@@ -633,8 +689,13 @@ records = ["svc IN A 10.77.7.7"]
     disconnect_all_peer_conns(peer_b.clone(), peer_c.clone()).await;
     wait_route_disappear(peer_a.clone(), peer_c.my_peer_id()).await;
     // Validate via peer-sync snapshot to avoid process-wide DNS-server election side effects.
-    wait_peer_zone_visibility(peer_a.clone(), peer_c.my_peer_id(), "node-c7.mesh7-test", false)
-        .await;
+    wait_peer_zone_visibility(
+        peer_a.clone(),
+        peer_c.my_peer_id(),
+        "node-c7.mesh7-test",
+        false,
+    )
+    .await;
     wait_peer_zone_visibility(
         peer_a.clone(),
         peer_c.my_peer_id(),
@@ -648,7 +709,13 @@ records = ["svc IN A 10.77.7.7"]
         .await
         .expect("route a-c should recover via b");
 
-    wait_peer_zone_visibility(peer_a.clone(), peer_c.my_peer_id(), "node-c7.mesh7-test", true).await;
+    wait_peer_zone_visibility(
+        peer_a.clone(),
+        peer_c.my_peer_id(),
+        "node-c7.mesh7-test",
+        true,
+    )
+    .await;
     wait_peer_zone_visibility(
         peer_a.clone(),
         peer_c.my_peer_id(),

@@ -163,7 +163,7 @@ impl ZoneGroup {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::dns;
+    use crate::dns::tests::new_request;
     use crate::dns::utils::response::ResponseHandle;
     use crate::proto::common::Url;
     use crate::proto::dns::ZoneData;
@@ -220,7 +220,7 @@ mod tests {
         name: &str,
         record_type: RecordType,
     ) -> anyhow::Result<(ResponseCode, Option<Message>)> {
-        let request = dns::tests::new_request(name, record_type)?;
+        let request = new_request(name, record_type)?;
         let response = ResponseHandle::new(1024);
         let info = catalog.lookup(&request, None, response.clone()).await;
         let message = response
@@ -231,9 +231,10 @@ mod tests {
     }
 
     fn has_a_answer(message: &Message, expected: Ipv4Addr) -> bool {
-        message.answers().iter().any(|record| {
-            matches!(record.data(), RData::A(addr) if *addr == rdata::a::A(expected))
-        })
+        message
+            .answers()
+            .iter()
+            .any(|record| matches!(record.data(), RData::A(addr) if *addr == rdata::a::A(expected)))
     }
 
     async fn start_upstream_server() -> anyhow::Result<(SocketAddr, JoinHandle<()>)> {
@@ -288,9 +289,7 @@ mod tests {
         let data = zone_data("invalid-forwarder.test", vec![], vec!["http://1.1.1.1:53"]);
 
         let err = Zone::try_from(&data).expect_err("unsupported forwarder should fail");
-        assert!(
-            err.to_string().contains("unsupported") || err.to_string().contains("protocol")
-        );
+        assert!(err.to_string().contains("unsupported") || err.to_string().contains("protocol"));
     }
 
     #[test]
@@ -339,8 +338,20 @@ mod tests {
 
         let groups = zones.into_groups();
         assert_eq!(groups.len(), 2);
-        assert_eq!(groups.get(&LowerName::from_str("same.test.")?).unwrap().len(), 2);
-        assert_eq!(groups.get(&LowerName::from_str("other.test.")?).unwrap().len(), 1);
+        assert_eq!(
+            groups
+                .get(&LowerName::from_str("same.test.")?)
+                .unwrap()
+                .len(),
+            2
+        );
+        assert_eq!(
+            groups
+                .get(&LowerName::from_str("other.test.")?)
+                .unwrap()
+                .len(),
+            1
+        );
 
         Ok(())
     }

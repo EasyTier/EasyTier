@@ -161,55 +161,15 @@ impl DnsNodeMgrRpc for DnsNodeMgr {
 mod tests {
     use super::*;
     use crate::common::log;
-    use crate::dns::tests::new_request;
+    use crate::dns::tests::{
+        dns_snapshot_with as snapshot_with, heartbeat_with_snapshot, new_request,
+        zone_data_a_with_forwarders as valid_zone_data,
+    };
     use crate::dns::utils::response::ResponseHandle;
-    use crate::proto::common::Url;
-    use crate::proto::dns::ZoneData;
     use hickory_proto::op::{Message, ResponseCode};
     use hickory_proto::rr::{rdata, RData, RecordType};
     use std::net::Ipv4Addr;
-    use std::str::FromStr;
     use tokio::time::{sleep, Duration};
-
-    fn valid_zone_data(origin: &str, record: &str, forwarders: Vec<&str>) -> ZoneData {
-        ZoneData {
-            id: Some(Uuid::new_v4().into()),
-            origin: origin.to_string(),
-            ttl: 60,
-            records: vec![format!("@ IN A {record}")],
-            forwarders: forwarders
-                .into_iter()
-                .map(|f| Url::from_str(f).expect("invalid forwarder"))
-                .collect(),
-        }
-    }
-
-    fn snapshot_with(
-        zones: Vec<ZoneData>,
-        addresses: Vec<&str>,
-        listeners: Vec<&str>,
-    ) -> DnsSnapshot {
-        DnsSnapshot {
-            zones,
-            addresses: addresses
-                .into_iter()
-                .map(|a| Url::from_str(a).expect("invalid address"))
-                .collect(),
-            listeners: listeners
-                .into_iter()
-                .map(|l| Url::from_str(l).expect("invalid listener"))
-                .collect(),
-        }
-    }
-
-    fn heartbeat_with_snapshot(id: Uuid, snapshot: DnsSnapshot) -> HeartbeatRequest {
-        let mut hb = HeartbeatRequest {
-            id: Some(id.into()),
-            ..Default::default()
-        };
-        hb.update(snapshot);
-        hb
-    }
 
     fn heartbeat_digest_only(id: Uuid, digest: Vec<u8>) -> HeartbeatRequest {
         HeartbeatRequest {
@@ -480,10 +440,12 @@ mod tests {
             )
             .await;
 
-        let zones: Vec<ZoneData> = mgr.collect_zones().into_iter().map(Into::into).collect();
+        let zones: Vec<_> = mgr.collect_zones().into_iter().map(Into::into).collect();
         let loop_zone = zones
             .into_iter()
-            .find(|z| z.origin.trim_end_matches('.') == "filter-loop.test")
+            .find(|z: &crate::proto::dns::ZoneData| {
+                z.origin.trim_end_matches('.') == "filter-loop.test"
+            })
             .expect("test zone should exist");
 
         let forwarders: HashSet<NameServerAddr> = loop_zone
@@ -528,10 +490,12 @@ mod tests {
         let _ = send_heartbeat(&mgr, heartbeat_with_snapshot(Uuid::new_v4(), node_a)).await;
         let _ = send_heartbeat(&mgr, heartbeat_with_snapshot(Uuid::new_v4(), node_b)).await;
 
-        let zones: Vec<ZoneData> = mgr.collect_zones().into_iter().map(Into::into).collect();
+        let zones: Vec<_> = mgr.collect_zones().into_iter().map(Into::into).collect();
         let zone = zones
             .into_iter()
-            .find(|z| z.origin.trim_end_matches('.') == "cross-node-filter.test")
+            .find(|z: &crate::proto::dns::ZoneData| {
+                z.origin.trim_end_matches('.') == "cross-node-filter.test"
+            })
             .expect("test zone should exist");
 
         let forwarders: HashSet<NameServerAddr> = zone

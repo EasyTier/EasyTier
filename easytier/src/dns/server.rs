@@ -478,9 +478,11 @@ impl DnsServer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::dns::tests::{
+        dns_snapshot_with as snapshot_with, heartbeat_with_snapshot, zone_data_a as valid_zone_data,
+    };
     use crate::peers::tests::create_mock_peer_manager;
-    use crate::proto::common::Url;
-    use crate::proto::dns::{DnsNodeMgrRpc, DnsSnapshot, HeartbeatRequest, ZoneData};
+    use crate::proto::dns::DnsNodeMgrRpc;
     use crate::proto::rpc_types::controller::BaseController;
     use hickory_client::client::{Client, ClientHandle};
     use hickory_proto::op::{Message, MessageType, OpCode, Query};
@@ -618,39 +620,6 @@ mod tests {
         buf
     }
 
-    fn valid_zone_data(origin: &str, record: &str) -> ZoneData {
-        ZoneData {
-            id: Some(Uuid::new_v4().into()),
-            origin: origin.to_string(),
-            ttl: 60,
-            records: vec![format!("@ IN A {record}")],
-            forwarders: vec![],
-        }
-    }
-
-    fn snapshot_with(zones: Vec<ZoneData>, addresses: Vec<&str>, listeners: Vec<&str>) -> DnsSnapshot {
-        DnsSnapshot {
-            zones,
-            addresses: addresses
-                .into_iter()
-                .map(|a| Url::from_str(a).expect("invalid address"))
-                .collect(),
-            listeners: listeners
-                .into_iter()
-                .map(|l| Url::from_str(l).expect("invalid listener"))
-                .collect(),
-        }
-    }
-
-    fn heartbeat_with_snapshot(id: Uuid, snapshot: DnsSnapshot) -> HeartbeatRequest {
-        let mut hb = HeartbeatRequest {
-            id: Some(id.into()),
-            ..Default::default()
-        };
-        hb.update(snapshot);
-        hb
-    }
-
     async fn wait_until(mut f: impl FnMut() -> bool) {
         for _ in 0..80 {
             if f() {
@@ -664,19 +633,7 @@ mod tests {
     // ─── Tests ───────────────────────────────────────────────────────────
 
     #[tokio::test]
-    async fn test_dynamic_catalog_replace() {
-        let catalog = DynamicCatalog::new();
-
-        let new_catalog = build_test_catalog();
-        catalog.replace(new_catalog).await;
-
-        // After replacement the catalog should resolve test.example.com
-        // This is implicitly verified by the UDP DNS test below; here we
-        // just make sure `replace` does not panic and completes.
-    }
-
-    #[tokio::test]
-    async fn test_is_hijacked_ip_and_addr() {
+    async fn should_match_hijacked_ip_and_addr_when_address_is_registered() {
         let server = create_test_server().await;
         let addr: SocketAddr = "10.0.0.53:53".parse().unwrap();
         assert!(!server.is_hijacked_ip(&addr.ip()));
@@ -693,7 +650,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_handle_icmp_echo_request() {
+    async fn should_reply_icmp_echo_and_swap_endpoints_when_packet_is_hijacked() {
         let server = create_test_server().await;
         let dst_ip: Ipv4Addr = "10.0.0.53".parse().unwrap();
         let src_ip: Ipv4Addr = "10.0.0.1".parse().unwrap();
@@ -732,7 +689,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_handle_icmp_non_echo_ignored() {
+    async fn should_ignore_icmp_when_type_is_not_echo_request() {
         let server = create_test_server().await;
         let dst_ip: Ipv4Addr = "10.0.0.53".parse().unwrap();
         let src_ip: Ipv4Addr = "10.0.0.1".parse().unwrap();
@@ -759,7 +716,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_non_hijacked_ip_ignored() {
+    async fn should_ignore_packet_when_destination_ip_is_not_hijacked() {
         let server = create_test_server().await;
         // Do NOT register any hijacked addresses.
         let icmp_payload = build_icmp_echo_request();
@@ -781,7 +738,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_handle_udp_dns_packet() {
+    async fn should_rewrite_udp_dns_packet_when_query_targets_hijacked_dns_addr() {
         let server = create_test_server().await;
         let dst_ip: Ipv4Addr = "10.0.0.53".parse().unwrap();
         let src_ip: Ipv4Addr = "10.0.0.1".parse().unwrap();
@@ -860,7 +817,7 @@ mod tests {
     /// Full end-to-end test: start a real DNS UDP listener via `ServerFuture`,
     /// send a query with a `hickory_client`, and verify the response.
     #[tokio::test]
-    async fn test_full_udp_dns_query() {
+    async fn should_resolve_record_via_real_udp_listener() {
         use hickory_server::ServerFuture;
         use tokio::net::UdpSocket;
         use tokio::time::timeout;
@@ -916,7 +873,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_try_process_packet_from_nic_and_pipeline_id() {
+    async fn should_process_icmp_packet_and_expose_pipeline_id() {
         let server = create_test_server().await;
         let src_ip: Ipv4Addr = "10.0.0.1".parse().unwrap();
         let dst_ip: Ipv4Addr = "10.0.0.53".parse().unwrap();
@@ -927,7 +884,8 @@ mod tests {
             .insert(SocketAddr::new(dst_ip.into(), 53).into());
 
         let icmp_payload = build_icmp_echo_request();
-        let ip_bytes = build_ipv4_packet(src_ip, dst_ip, IpNextHeaderProtocols::Icmp, &icmp_payload);
+        let ip_bytes =
+            build_ipv4_packet(src_ip, dst_ip, IpNextHeaderProtocols::Icmp, &icmp_payload);
         let mut zc = ZCPacket::new_with_payload(&ip_bytes);
         zc.fill_peer_manager_hdr(1, 2, crate::tunnel::packet_def::PacketType::Data as u8);
 
@@ -936,7 +894,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_handle_ip_packet_non_ipv4_version_ignored() {
+    async fn should_ignore_packet_when_ipv4_header_has_non_ipv4_version() {
         let server = create_test_server().await;
         let src_ip: Ipv4Addr = "10.0.0.1".parse().unwrap();
         let dst_ip: Ipv4Addr = "10.0.0.53".parse().unwrap();
@@ -947,7 +905,8 @@ mod tests {
             .insert(SocketAddr::new(dst_ip.into(), 53).into());
 
         let icmp_payload = build_icmp_echo_request();
-        let mut ip_bytes = build_ipv4_packet(src_ip, dst_ip, IpNextHeaderProtocols::Icmp, &icmp_payload);
+        let mut ip_bytes =
+            build_ipv4_packet(src_ip, dst_ip, IpNextHeaderProtocols::Icmp, &icmp_payload);
         ip_bytes[0] = (6 << 4) | 5; // fake IPv6 version in IPv4 header
 
         let mut zc = ZCPacket::new_with_payload(&ip_bytes);
@@ -957,7 +916,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_handle_ip_packet_unsupported_protocol_ignored() {
+    async fn should_ignore_packet_when_protocol_is_unsupported() {
         let server = create_test_server().await;
         let src_ip: Ipv4Addr = "10.0.0.1".parse().unwrap();
         let dst_ip: Ipv4Addr = "10.0.0.53".parse().unwrap();
@@ -982,7 +941,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_handle_udp_packet_wrong_port_ignored() {
+    async fn should_ignore_udp_dns_packet_when_destination_port_is_not_hijacked() {
         let server = create_test_server().await;
         let dst_ip: Ipv4Addr = "10.0.0.53".parse().unwrap();
         let src_ip: Ipv4Addr = "10.0.0.1".parse().unwrap();
@@ -1004,7 +963,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_handle_udp_packet_invalid_dns_payload_ignored() {
+    async fn should_ignore_udp_packet_when_dns_payload_is_invalid() {
         let server = create_test_server().await;
         let dst_ip: Ipv4Addr = "10.0.0.53".parse().unwrap();
         let src_ip: Ipv4Addr = "10.0.0.1".parse().unwrap();
@@ -1025,7 +984,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_reload_addresses_updates_public_addresses() {
+    async fn should_update_public_addresses_when_reload_addresses_is_called() {
         let server = create_test_server().await;
 
         let addrs = vec![
@@ -1045,7 +1004,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_reload_listeners_partial_bind_failure_still_serves_working_listener() {
+    async fn should_still_serve_working_listener_when_one_bind_fails() {
         let server = create_test_server().await;
         server.catalog.replace(build_test_catalog()).await;
 
@@ -1068,7 +1027,10 @@ mod tests {
         ];
 
         let mut runtime = None;
-        server.reload_listeners(listeners, &mut runtime).await.unwrap();
+        server
+            .reload_listeners(listeners, &mut runtime)
+            .await
+            .unwrap();
 
         let conn = UdpClientStream::builder(good_addr, TokioRuntimeProvider::default()).build();
         let (mut client, bg) = timeout(Duration::from_secs(2), Client::connect(conn))
@@ -1099,7 +1061,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_run_applies_snapshot_updates_and_clears_on_shutdown() {
+    async fn should_apply_snapshot_updates_and_clear_state_on_shutdown() {
         let server = create_test_server().await;
         let token = CancellationToken::new();
         let run_server = server.clone();
@@ -1152,7 +1114,13 @@ mod tests {
         token.cancel();
         let _ = run_task.await;
 
-        assert!(server.addresses().is_empty(), "run() should clear addresses on exit");
-        assert!(server.listeners.read().is_empty(), "run() should clear listeners on exit");
+        assert!(
+            server.addresses().is_empty(),
+            "run() should clear addresses on exit"
+        );
+        assert!(
+            server.listeners.read().is_empty(),
+            "run() should clear listeners on exit"
+        );
     }
 }
