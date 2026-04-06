@@ -4,7 +4,7 @@ use crate::dns::utils::authority::ArcAuthority;
 use crate::proto;
 use crate::proto::utils::RepeatedMessageModel;
 use crate::utils::MapTryInto;
-use hickory_proto::rr::{LowerName, Record, RecordSet, RrKey, RrsetRecords};
+use hickory_proto::rr::{LowerName, RecordSet, RrKey};
 use hickory_proto::serialize::txt::Parser;
 use hickory_resolver::config::ResolverOpts;
 use hickory_resolver::name_server::TokioConnectionProvider;
@@ -77,19 +77,6 @@ impl Zone {
             .ok()
             .map(|f| Arc::new(f) as ArcAuthority)
         })
-    }
-
-    // TODO: remove this
-    pub fn iter_records(&self) -> impl Iterator<Item = &Record> {
-        self.records
-            .values()
-            .filter(|set| !set.is_empty())
-            .flat_map(|set| {
-                let RrsetRecords::RecordsOnly(records) = set.records_without_rrsigs() else {
-                    unreachable!()
-                };
-                records
-            })
     }
 }
 
@@ -181,7 +168,7 @@ mod tests {
     use crate::dns::utils::response::ResponseHandle;
     use hickory_client::client::{Client, ClientHandle};
     use hickory_proto::op::{Message, MessageType, OpCode, Query, ResponseCode};
-    use hickory_proto::rr::{rdata, DNSClass, Name, RData, RecordType};
+    use hickory_proto::rr::{rdata, DNSClass, Name, RData, Record, RecordType, RrsetRecords};
     use hickory_proto::runtime::TokioRuntimeProvider;
     use hickory_proto::serialize::binary::{BinDecodable, BinEncodable, BinEncoder};
     use hickory_proto::udp::UdpClientStream;
@@ -195,6 +182,21 @@ mod tests {
     use tokio::net::UdpSocket;
     use tokio::spawn;
     use tokio::time::timeout;
+
+    impl Zone {
+        // TODO: remove this
+        pub fn iter_records(&self) -> impl Iterator<Item = &Record> {
+            self.records
+                .values()
+                .filter(|set| !set.is_empty())
+                .flat_map(|set| {
+                    let RrsetRecords::RecordsOnly(records) = set.records_without_rrsigs() else {
+                        unreachable!()
+                    };
+                    records
+                })
+        }
+    }
 
     const CONFIG: &str = r#"
     listeners = [
