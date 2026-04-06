@@ -4,7 +4,6 @@ use crate::dns::utils::authority::ArcAuthority;
 use crate::proto;
 use crate::proto::utils::RepeatedMessageModel;
 use crate::utils::MapTryInto;
-use derivative::Derivative;
 use hickory_proto::rr::{LowerName, Record, RecordSet, RrKey, RrsetRecords};
 use hickory_proto::serialize::txt::Parser;
 use hickory_resolver::config::ResolverOpts;
@@ -19,13 +18,11 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use uuid::Uuid;
 
-#[derive(Derivative, Debug, Clone)]
-#[derivative(PartialEq)]
+#[derive(Debug, Clone)]
 pub struct Zone {
     id: Uuid,
     origin: LowerName,
     records: BTreeMap<RrKey, RecordSet>,
-    #[derivative(PartialEq(compare_with = "Zone::compare_forward"))]
     pub forward: Option<ForwardConfig>,
 }
 
@@ -40,19 +37,6 @@ impl Zone {
         let mut zone = Self::new(".".parse().unwrap());
         zone.forward = Some(forward);
         zone
-    }
-
-    pub fn compare_forward(l: &Option<ForwardConfig>, r: &Option<ForwardConfig>) -> bool {
-        match (l, r) {
-            (Some(l), Some(r)) => l
-                .name_servers
-                .iter()
-                .cloned()
-                .map_into::<NameServerAddr>()
-                .eq(r.name_servers.iter().cloned().map_into()),
-            (None, None) => true,
-            _ => false,
-        }
     }
 }
 
