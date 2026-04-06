@@ -1,5 +1,8 @@
 use crate::common::log;
 use indoc::formatdoc;
+use serde::Serialize;
+use sha2::{Digest, Sha256};
+use std::sync::Arc;
 use std::{fs::OpenOptions, str::FromStr};
 
 pub type PeerRoutePair = crate::proto::api::instance::PeerRoutePair;
@@ -136,7 +139,7 @@ pub fn find_free_tcp_port(mut range: std::ops::Range<u16>) -> Option<u16> {
     range.find(|&port| check_tcp_available(port))
 }
 
-pub fn weak_upgrade<T>(weak: &std::sync::Weak<T>) -> anyhow::Result<std::sync::Arc<T>> {
+pub fn weak_upgrade<T>(weak: &std::sync::Weak<T>) -> anyhow::Result<Arc<T>> {
     weak.upgrade()
         .ok_or_else(|| anyhow::anyhow!("{} not available", std::any::type_name::<T>()))
 }
@@ -148,3 +151,14 @@ pub trait BoxExt: Sized {
 }
 
 impl<T> BoxExt for T {}
+
+pub trait DeterministicDigest: Serialize {
+    fn digest(&self) -> Vec<u8> {
+        let json = serde_json::to_vec(self).expect("failed to serialize the object to json");
+        let mut hasher = Sha256::new();
+        hasher.update(json);
+        hasher.finalize().to_vec()
+    }
+}
+
+impl<S: Serialize> DeterministicDigest for S {}
