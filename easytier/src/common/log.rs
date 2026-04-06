@@ -277,6 +277,7 @@ pub mod tests {
     use super::*;
     use crate::common::config::{self};
 
+    #[ctor::ctor]
     pub fn init() {
         let _ = Registry::default()
             .with(console_layers(LevelFilter::DEBUG).unwrap())
