@@ -274,7 +274,7 @@ fn file_layers(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::common::config::{self};
+    use crate::common::config::FileLoggerConfig;
 
     #[ctor::ctor]
     fn init() {
@@ -283,14 +283,45 @@ mod tests {
             .try_init();
     }
 
-    #[tokio::test]
-    async fn test_logger_reload() {
-        println!("current working dir: {:?}", std::env::current_dir());
-        let config = config::LoggingConfigBuilder::default().build().unwrap();
-        let s = super::init(&config, true).unwrap();
-        tracing::debug!("test not display debug");
-        s.unwrap().send(LevelFilter::DEBUG.to_string()).unwrap();
-        tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
-        tracing::debug!("test display debug");
+    #[test]
+    fn test_logger_reload() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let log_file_name = "reload-test.log".to_string();
+        let log_path = temp_dir.path().join(&log_file_name);
+
+        let cfg = FileLoggerConfig {
+            level: Some(LevelFilter::INFO.to_string()),
+            file: Some(log_file_name),
+            dir: Some(temp_dir.path().to_string_lossy().to_string()),
+            size_mb: Some(10),
+            count: Some(1),
+        };
+
+        let (layers, sender) = file_layers(cfg, true).unwrap();
+        let sender = sender.expect("reload=true should return a sender");
+
+        let before_marker = "reload-before-debug-marker";
+        let after_marker = "reload-after-debug-marker";
+        let subscriber = Registry::default().with(layers);
+
+        tracing::subscriber::with_default(subscriber, || {
+            tracing::debug!("{}", before_marker);
+
+            sender.send(LevelFilter::DEBUG.to_string()).unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(300));
+
+            tracing::debug!("{}", after_marker);
+            std::thread::sleep(std::time::Duration::from_millis(300));
+        });
+
+        let content = std::fs::read_to_string(&log_path).unwrap_or_default();
+        assert!(
+            !content.contains(before_marker),
+            "debug log should be filtered before reload"
+        );
+        assert!(
+            content.contains(after_marker),
+            "debug log should be visible after reload"
+        );
     }
 }
