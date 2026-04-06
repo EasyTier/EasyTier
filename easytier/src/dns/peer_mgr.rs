@@ -39,7 +39,7 @@ impl TryFrom<DnsExportConfig> for DnsPeerInfo {
     }
 }
 
-const DNS_PEER_TTL: Duration = Duration::from_secs(3);
+const DNS_PEER_TTI: Duration = Duration::from_secs(3);
 
 #[derive(Debug)]
 pub struct DnsPeerMgrInner {
@@ -145,7 +145,7 @@ pub struct DnsPeerMgr(Arc<DnsPeerMgrInner>);
 impl DnsPeerMgr {
     pub fn new(peer_mgr: Arc<PeerManager>, global_ctx: ArcGlobalCtx) -> Self {
         Self(Arc::new(DnsPeerMgrInner {
-            peers: Cache::builder().time_to_live(DNS_PEER_TTL).build(),
+            peers: Cache::builder().time_to_idle(DNS_PEER_TTI).build(),
             dirty: Default::default(),
             peer_mgr,
             global_ctx,

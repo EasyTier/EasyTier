@@ -36,7 +36,7 @@ impl TryFrom<&DnsSnapshot> for DnsNodeInfo {
     }
 }
 
-const DNS_CLIENT_TTL: Duration = Duration::from_secs(5);
+const DNS_NODE_TTI: Duration = Duration::from_secs(5);
 
 #[derive(Debug, Default)]
 pub struct DnsNodeMgrDirtyFlags {
@@ -54,7 +54,7 @@ pub struct DnsNodeMgr {
 impl DnsNodeMgr {
     pub fn new() -> Self {
         Self {
-            nodes: Cache::builder().time_to_live(DNS_CLIENT_TTL).build(),
+            nodes: Cache::builder().time_to_idle(DNS_NODE_TTI).build(),
             dirty: Default::default(),
         }
     }
