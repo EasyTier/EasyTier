@@ -253,6 +253,21 @@ mod tests {
 
     "#;
 
+    fn query(name: &str, rtype: RecordType) -> anyhow::Result<MessageRequest> {
+        let mut query = Message::new();
+        query.set_id(0x1234);
+        query.set_message_type(MessageType::Query);
+        query.set_op_code(OpCode::Query);
+        query.set_recursion_desired(true);
+        query.add_query(Query::query(Name::from_ascii(name)?, rtype));
+
+        let mut request = Vec::new();
+        let mut encoder = BinEncoder::new(&mut request);
+        query.emit(&mut encoder)?;
+
+        Ok(MessageRequest::from_bytes(&request)?)
+    }
+
     // #[tokio::test]
     #[tokio::test(flavor = "current_thread")]
     async fn test_config() -> anyhow::Result<()> {
@@ -343,19 +358,8 @@ mod tests {
         authorities.extend(zone.create_forward_authority().into_iter());
         catalog.upsert(zone.origin.clone(), authorities);
 
-        let mut query = Message::new();
-        query.set_id(0x1234);
-        query.set_message_type(MessageType::Query);
-        query.set_op_code(OpCode::Query);
-        query.set_recursion_desired(true);
-        query.add_query(Query::query(Name::from_ascii("et.top.")?, RecordType::A));
-
-        let mut request = Vec::new();
-        let mut encoder = BinEncoder::new(&mut request);
-        query.emit(&mut encoder)?;
-
         let request = Request::new(
-            MessageRequest::from_bytes(&request)?,
+            query("et.top.", RecordType::A)?,
             SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0).into(),
             Protocol::Udp,
         );
@@ -364,6 +368,33 @@ mod tests {
         let info = catalog.lookup(&request, None, response.clone()).await;
 
         assert_eq!(info.response_code(), ResponseCode::NoError);
+
+        catalog.upsert(
+            Name::root().into(),
+            vec![Zone::system().create_forward_authority().unwrap()],
+        );
+
+        let request = Request::new(
+            query("example.com", RecordType::A)?,
+            SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0).into(),
+            Protocol::Udp,
+        );
+
+        let response = ResponseHandle::new(512);
+        let info = catalog.lookup(&request, None, response.clone()).await;
+
+        assert_eq!(info.response_code(), ResponseCode::NoError);
+
+        let request = Request::new(
+            query("example.invalid", RecordType::A)?,
+            SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0).into(),
+            Protocol::Udp,
+        );
+
+        let response = ResponseHandle::new(512);
+        let info = catalog.lookup(&request, None, response.clone()).await;
+
+        assert_eq!(info.response_code(), ResponseCode::NXDomain);
 
         let socket = UdpSocket::bind("127.0.0.1:0").await?;
         let addr = socket.local_addr()?;
