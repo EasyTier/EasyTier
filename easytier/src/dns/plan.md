@@ -128,6 +128,7 @@ forwarders = [
 - [minor] 防止死锁/挂起的 DnsServer 占用 socket
 - ~~[minor] RoutePeerInfo 可能不能过大~~
 - [minor] 增量 Zone 更新
+- DNS 策略
 
 ## TODO
 
@@ -141,20 +142,27 @@ forwarders = [
 <details>
 <summary><h2>Related Issues</h2></summary>
 
-- related to https://github.com/EasyTier/EasyTier/issues/742
-- related to https://github.com/EasyTier/EasyTier/issues/771
-- related to https://github.com/EasyTier/EasyTier/issues/1071
-- related to https://github.com/EasyTier/EasyTier/issues/1142
-- related to https://github.com/EasyTier/EasyTier/issues/1322
-- related to https://github.com/EasyTier/EasyTier/issues/1488
-- related to https://github.com/EasyTier/EasyTier/issues/1597
-- related to https://github.com/EasyTier/EasyTier/issues/1645
-- related to https://github.com/EasyTier/EasyTier/issues/1764
-- related to https://github.com/EasyTier/EasyTier/issues/1814
+- closes https://github.com/EasyTier/EasyTier/issues/742
+- closes https://github.com/EasyTier/EasyTier/issues/771
+- closes https://github.com/EasyTier/EasyTier/issues/927
+- closes https://github.com/EasyTier/EasyTier/issues/1071
+- closes https://github.com/EasyTier/EasyTier/issues/1142
+- closes https://github.com/EasyTier/EasyTier/issues/1322
+- closes https://github.com/EasyTier/EasyTier/issues/1381
+- closes https://github.com/EasyTier/EasyTier/issues/1488
+- closes https://github.com/EasyTier/EasyTier/issues/1597
+- closes https://github.com/EasyTier/EasyTier/issues/1645
+- closes https://github.com/EasyTier/EasyTier/issues/1764
+- closes https://github.com/EasyTier/EasyTier/issues/1814
+- closes https://github.com/EasyTier/EasyTier/issues/1826
+- closes https://github.com/EasyTier/EasyTier/issues/2004
 
 ---
 
 - (maybe) related to https://github.com/EasyTier/EasyTier/issues/937
+- (maybe) related to https://github.com/EasyTier/EasyTier/issues/1016
+- (maybe) related to https://github.com/EasyTier/EasyTier/issues/1348
+- (maybe) related to https://github.com/EasyTier/EasyTier/issues/1699
 - (maybe) related to https://github.com/EasyTier/EasyTier/issues/1873
 
 </details>
