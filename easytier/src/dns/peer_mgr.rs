@@ -79,8 +79,13 @@ impl DnsPeerMgrInner {
         }
 
         let Some(route) = self.peer_mgr.get_route().get_peer_info(peer_id).await else {
+            if self.peers.remove(&peer_id).await.is_some() {
+                tracing::debug!(%peer_id, "peer route disappeared, removing from cache");
+                self.dirty.mark();
+            }
             return;
         };
+
         if self
             .peers
             .get(&peer_id)
@@ -90,19 +95,18 @@ impl DnsPeerMgrInner {
             return;
         }
 
-        let mut invalidate = route.dns.is_empty();
-
-        if !invalidate {
-            match self.fetch(peer_id).await {
-                Ok(info) => self.peers.insert(peer_id, info).await,
-                Err(error) => {
-                    tracing::warn!(%peer_id, ?error, "failed to fetch dns export config from peer");
-                    invalidate = true;
-                }
+        let info =
+            if !route.dns.is_empty() {
+                self.fetch(peer_id).await.inspect_err(|error| {
+                tracing::warn!(%peer_id, ?error, "failed to fetch dns export config from peer");
+            }).ok()
+            } else {
+                None
             };
-        }
 
-        if invalidate {
+        if let Some(info) = info {
+            self.peers.insert(peer_id, info).await;
+        } else {
             self.peers.invalidate(&peer_id).await;
         }
 
@@ -288,18 +292,14 @@ mod tests {
             .await;
 
         let snapshot = mgr.snapshot();
-        assert!(
-            snapshot
-                .zones
-                .iter()
-                .any(|z| z.origin.contains("peer-cache.test"))
-        );
-        assert!(
-            snapshot
-                .zones
-                .iter()
-                .any(|z| z.origin.contains("local-custom.test"))
-        );
+        assert!(snapshot
+            .zones
+            .iter()
+            .any(|z| z.origin.contains("peer-cache.test")));
+        assert!(snapshot
+            .zones
+            .iter()
+            .any(|z| z.origin.contains("local-custom.test")));
     }
 
     #[tokio::test]
@@ -540,12 +540,10 @@ mod tests {
 
         assert!(local_dns.dirty.peek());
         let snapshot = local_dns.snapshot();
-        assert!(
-            snapshot
-                .zones
-                .iter()
-                .any(|z| z.origin.contains("remote-export.test"))
-        );
+        assert!(snapshot
+            .zones
+            .iter()
+            .any(|z| z.origin.contains("remote-export.test")));
     }
 
     #[tokio::test]
@@ -556,18 +554,12 @@ mod tests {
             Ipv4Addr::new(10, 2, 0, 1),
         )
         .await;
-        let peer_a = create_peer_manager_with_zone(
-            "peer-a",
-            "remote-a.test",
-            Ipv4Addr::new(10, 2, 0, 2),
-        )
-        .await;
-        let peer_b = create_peer_manager_with_zone(
-            "peer-b",
-            "remote-b.test",
-            Ipv4Addr::new(10, 2, 0, 3),
-        )
-        .await;
+        let peer_a =
+            create_peer_manager_with_zone("peer-a", "remote-a.test", Ipv4Addr::new(10, 2, 0, 2))
+                .await;
+        let peer_b =
+            create_peer_manager_with_zone("peer-b", "remote-b.test", Ipv4Addr::new(10, 2, 0, 3))
+                .await;
 
         let local_dns = DnsPeerMgr::new(local.clone(), local.get_global_ctx());
         let peer_a_dns = DnsPeerMgr::new(peer_a.clone(), peer_a.get_global_ctx());
@@ -585,18 +577,14 @@ mod tests {
         local_dns.refresh(peer_a.my_peer_id()).await;
 
         let snapshot = local_dns.snapshot();
-        assert!(
-            snapshot
-                .zones
-                .iter()
-                .any(|z| z.origin.contains("remote-a.test"))
-        );
-        assert!(
-            !snapshot
-                .zones
-                .iter()
-                .any(|z| z.origin.contains("remote-b.test"))
-        );
+        assert!(snapshot
+            .zones
+            .iter()
+            .any(|z| z.origin.contains("remote-a.test")));
+        assert!(!snapshot
+            .zones
+            .iter()
+            .any(|z| z.origin.contains("remote-b.test")));
     }
 
     #[tokio::test]
@@ -744,12 +732,10 @@ mod tests {
             .get(&unchanged_id)
             .await
             .expect("unchanged peer cache should stay");
-        assert!(
-            unchanged_cache
-                .zones
-                .iter()
-                .any(|z| z.origin.contains("cached-unchanged.test"))
-        );
+        assert!(unchanged_cache
+            .zones
+            .iter()
+            .any(|z| z.origin.contains("cached-unchanged.test")));
     }
 
     #[tokio::test]
@@ -775,18 +761,14 @@ mod tests {
             .await;
 
         let before = mgr.snapshot();
-        assert!(
-            before
-                .zones
-                .iter()
-                .any(|z| z.origin.contains("cached-expire.test"))
-        );
-        assert!(
-            before
-                .zones
-                .iter()
-                .any(|z| z.origin.contains("local-tti.test"))
-        );
+        assert!(before
+            .zones
+            .iter()
+            .any(|z| z.origin.contains("cached-expire.test")));
+        assert!(before
+            .zones
+            .iter()
+            .any(|z| z.origin.contains("local-tti.test")));
 
         let deadline = tokio::time::Instant::now() + DNS_PEER_TTI + Duration::from_secs(3);
         loop {
@@ -796,12 +778,10 @@ mod tests {
                 .iter()
                 .any(|z| z.origin.contains("cached-expire.test"));
             if expired {
-                assert!(
-                    now_snapshot
-                        .zones
-                        .iter()
-                        .any(|z| z.origin.contains("local-tti.test"))
-                );
+                assert!(now_snapshot
+                    .zones
+                    .iter()
+                    .any(|z| z.origin.contains("local-tti.test")));
                 break;
             }
 
@@ -867,4 +847,3 @@ mod tests {
         assert!(res.is_none());
     }
 }
-
