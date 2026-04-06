@@ -347,6 +347,7 @@ rstest = "0.25.0"
 futures-util = "0.3.31"
 maplit = "1.0.2"
 tempfile = "3.22.0"
+ctor = "0.8.0"
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
 defguard_wireguard_rs = "0.4.2"
