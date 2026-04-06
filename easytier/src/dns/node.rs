@@ -142,11 +142,12 @@ impl DnsNode {
         join_joinset_background(tasks.clone(), "DnsNode".to_owned());
 
         loop {
+            // Dynamic interval: slower if dirty (throttled), faster if clean (fast liveness check)
             let next_heartbeat = last_heartbeat
                 + if self.mgr.dirty.peek() {
                     rr_interval
                 } else {
-                    rr_interval / 8
+                    rr_interval / 4
                 };
             sleep.as_mut().reset(next_heartbeat);
 
