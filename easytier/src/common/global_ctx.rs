@@ -709,7 +709,7 @@ impl DnsGlobalCtxExt for GlobalCtx {
         DnsExportConfig {
             zones: self
                 .dns_iter_zones()
-                .filter(|z| z.policy.export.is_some()) // TODO: check policies of parent zones
+                .filter(|z| z.policy.export.as_ref().is_some_and(|f| !f.disabled)) // TODO: check policies of parent zones
                 .map_into()
                 .collect(),
             fqdn: self.config.get_dns().get_fqdn().to_string(),
