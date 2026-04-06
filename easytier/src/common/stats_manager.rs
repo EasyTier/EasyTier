@@ -42,6 +42,8 @@ pub enum MetricName {
     TrafficControlBytesRxByInstance,
     /// Traffic bytes forwarded
     TrafficBytesForwarded,
+    /// Control-plane traffic bytes forwarded
+    TrafficControlBytesForwarded,
     /// Traffic bytes sent to self
     TrafficBytesSelfTx,
     /// Traffic bytes received from self
@@ -71,6 +73,8 @@ pub enum MetricName {
     TrafficControlPacketsRxByInstance,
     /// Traffic packets forwarded
     TrafficPacketsForwarded,
+    /// Control-plane traffic packets forwarded
+    TrafficControlPacketsForwarded,
     /// Traffic packets sent to self
     TrafficPacketsSelfTx,
     /// Traffic packets received from self
@@ -117,6 +121,9 @@ impl fmt::Display for MetricName {
                 write!(f, "traffic_control_bytes_rx_by_instance")
             }
             MetricName::TrafficBytesForwarded => write!(f, "traffic_bytes_forwarded"),
+            MetricName::TrafficControlBytesForwarded => {
+                write!(f, "traffic_control_bytes_forwarded")
+            }
             MetricName::TrafficBytesSelfTx => write!(f, "traffic_bytes_self_tx"),
             MetricName::TrafficBytesSelfRx => write!(f, "traffic_bytes_self_rx"),
             MetricName::TrafficBytesForeignForwardRx => {
@@ -146,6 +153,9 @@ impl fmt::Display for MetricName {
                 write!(f, "traffic_control_packets_rx_by_instance")
             }
             MetricName::TrafficPacketsForwarded => write!(f, "traffic_packets_forwarded"),
+            MetricName::TrafficControlPacketsForwarded => {
+                write!(f, "traffic_control_packets_forwarded")
+            }
             MetricName::TrafficPacketsSelfTx => write!(f, "traffic_packets_self_tx"),
             MetricName::TrafficPacketsSelfRx => write!(f, "traffic_packets_self_rx"),
             MetricName::TrafficPacketsForeignForwardRx => {

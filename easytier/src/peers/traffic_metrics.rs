@@ -221,10 +221,25 @@ impl LogicalTrafficMetrics {
     }
 }
 
-#[derive(Clone, Copy)]
-enum TrafficKind {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum TrafficKind {
     Data,
     Control,
+}
+
+pub(crate) fn traffic_kind(packet_type: u8) -> TrafficKind {
+    if packet_type == PacketType::Data as u8
+        || packet_type == PacketType::KcpSrc as u8
+        || packet_type == PacketType::KcpDst as u8
+        || packet_type == PacketType::QuicSrc as u8
+        || packet_type == PacketType::QuicDst as u8
+        || packet_type == PacketType::DataWithKcpSrcModified as u8
+        || packet_type == PacketType::DataWithQuicSrcModified as u8
+    {
+        TrafficKind::Data
+    } else {
+        TrafficKind::Control
+    }
 }
 
 #[derive(Clone)]
@@ -283,7 +298,7 @@ impl TrafficMetricRecorder {
             return;
         }
         self.tx_metrics
-            .select(Self::traffic_kind(packet_type))
+            .select(traffic_kind(packet_type))
             .record_with_resolver(peer_id, bytes, || self.resolve_instance_id(peer_id))
             .await;
     }
@@ -293,7 +308,7 @@ impl TrafficMetricRecorder {
             return;
         }
         self.rx_metrics
-            .select(Self::traffic_kind(packet_type))
+            .select(traffic_kind(packet_type))
             .record_with_resolver(peer_id, bytes, || self.resolve_instance_id(peer_id))
             .await;
     }
@@ -314,21 +329,6 @@ impl TrafficMetricRecorder {
 
     fn resolve_instance_id(&self, peer_id: PeerId) -> BoxFuture<'static, Option<String>> {
         (self.resolve_instance_id)(peer_id)
-    }
-
-    fn traffic_kind(packet_type: u8) -> TrafficKind {
-        if packet_type == PacketType::Data as u8
-            || packet_type == PacketType::KcpSrc as u8
-            || packet_type == PacketType::KcpDst as u8
-            || packet_type == PacketType::QuicSrc as u8
-            || packet_type == PacketType::QuicDst as u8
-            || packet_type == PacketType::DataWithKcpSrcModified as u8
-            || packet_type == PacketType::DataWithQuicSrcModified as u8
-        {
-            TrafficKind::Data
-        } else {
-            TrafficKind::Control
-        }
     }
 }
 
