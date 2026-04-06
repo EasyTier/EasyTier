@@ -273,6 +273,27 @@ impl DnsServer {
         );
 
         self.addresses.write().clear();
+        self.listeners.write().clear();
+
+        #[cfg(feature = "tun")]
+        if let Some(nic_ctx) = self
+            .nic_ctx
+            .lock()
+            .await
+            .as_ref()
+            .and_then(|nic_ctx| nic_ctx.downcast_ref::<NicCtx>())
+        {
+            if let Some(system) = nic_ctx
+                .ifname()
+                .await
+                .map(|ifname| system::get(&ifname).ok())
+                .flatten()
+                .flatten()
+            {
+                let _ = system.clean();
+            }
+        }
+
         if let Some(runtime) = runtime.take() {
             let _ = runtime.stop().await;
         }
@@ -283,6 +304,7 @@ impl Drop for DnsServer {
     fn drop(&mut self) {
         tracing::info!("DnsServer is dropped");
         self.addresses.write().clear();
+        self.listeners.write().clear();
     }
 }
 
