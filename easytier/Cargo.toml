@@ -5,10 +5,10 @@ homepage = "https://github.com/EasyTier/EasyTier"
 repository = "https://github.com/EasyTier/EasyTier"
 version = "2.6.0"
 edition.workspace = true
+rust-version.workspace = true
 authors = ["kkrainbow"]
 keywords = ["vpn", "p2p", "network", "easytier"]
 categories = ["network-programming", "command-line-utilities"]
-rust-version = "1.93.0"
 license-file = "LICENSE"
 readme = "README.md"
 

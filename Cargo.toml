@@ -16,6 +16,7 @@ exclude = [
 
 [workspace.package]
 edition = "2021"
+rust-version = "1.93.0"
 
 [profile.dev]
 panic = "unwind"
