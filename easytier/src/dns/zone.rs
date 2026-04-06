@@ -163,25 +163,22 @@ impl ZoneGroup {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::common::log;
-    use crate::dns::config::DnsConfig;
+    use crate::dns;
     use crate::dns::utils::response::ResponseHandle;
-    use hickory_client::client::{Client, ClientHandle};
-    use hickory_proto::op::ResponseCode;
-    use hickory_proto::rr::{rdata, DNSClass, Name, RData, Record, RecordType, RrsetRecords};
-    use hickory_proto::runtime::TokioRuntimeProvider;
-    use hickory_proto::udp::UdpClientStream;
+    use crate::proto::common::Url;
+    use crate::proto::dns::ZoneData;
+    use hickory_proto::op::{Message, ResponseCode};
+    use hickory_proto::rr::{rdata, RData, Record, RecordType, RrsetRecords};
     use hickory_server::authority::Catalog;
     use hickory_server::ServerFuture;
+    use std::net::{Ipv4Addr, SocketAddr};
     use std::str::FromStr;
-    use std::time::Duration;
     use tokio::net::UdpSocket;
-    use tokio::spawn;
-    use tokio::time::timeout;
-    use crate::dns;
+    use tokio::task::JoinHandle;
+    use uuid::Uuid;
 
     impl Zone {
-        // TODO: remove this
+        // Test-only record iterator for precise assertions.
         pub fn iter_records(&self) -> impl Iterator<Item = &Record> {
             self.records
                 .values()
@@ -195,202 +192,237 @@ mod tests {
         }
     }
 
-    const CONFIG: &str = r#"
-    listeners = [
-        "127.0.0.1:5353",
-    ]
+    fn zone_data(origin: &str, records: Vec<&str>, forwarders: Vec<&str>) -> ZoneData {
+        ZoneData {
+            id: Some(Uuid::new_v4().into()),
+            origin: origin.to_string(),
+            ttl: 60,
+            records: records.into_iter().map(ToString::to_string).collect(),
+            forwarders: forwarders
+                .into_iter()
+                .map(|f| Url::from_str(f).expect("invalid forwarder"))
+                .collect(),
+        }
+    }
 
-    name = "et-test"
-    domain = "测试.net"
+    fn build_catalog(zones: ZoneGroup) -> Catalog {
+        zones
+            .into_groups()
+            .into_iter()
+            .fold(Catalog::new(), |mut catalog, (origin, group)| {
+                catalog.upsert(origin, group.iter_authorities().collect());
+                catalog
+            })
+    }
 
-    ["top".import]
-    whitelist = ["*"]
-    blacklist = []
-    disabled = true
-    recursive = true
+    async fn lookup_message(
+        catalog: &Catalog,
+        name: &str,
+        record_type: RecordType,
+    ) -> anyhow::Result<(ResponseCode, Option<Message>)> {
+        let request = dns::tests::new_request(name, record_type)?;
+        let response = ResponseHandle::new(1024);
+        let info = catalog.lookup(&request, None, response.clone()).await;
+        let message = response
+            .into_inner()
+            .map(|raw| Message::from_vec(&raw))
+            .transpose()?;
+        Ok((info.response_code(), message))
+    }
 
-    [[zone]]
-    origin = "et.top"
+    fn has_a_answer(message: &Message, expected: Ipv4Addr) -> bool {
+        message.answers().iter().any(|record| {
+            matches!(record.data(), RData::A(addr) if *addr == rdata::a::A(expected))
+        })
+    }
 
-    records = [
-        "@ 60 A 100.100.100.100",
-    ]
-
-    [[zone]]
-    origin = "google.com"
-
-    ttl = 10
-
-    records = [
-        "www 0 IN A 123.123.123.123",
-        "app IN CNAME www",
-        "ftp IN AAAA ::",
-        "mail IN MX 10 app",
-    ]
-
-    forwarders = [
-        "10.175.160.10",
-    ]
-
-    [zone.export]
-
-    "#;
-
-    #[tokio::test]
-    async fn test_config() -> anyhow::Result<()> {
-        log::tests::init();
+    async fn start_upstream_server() -> anyhow::Result<(SocketAddr, JoinHandle<()>)> {
+        let upstream = Zone::try_from(&zone_data(
+            "upstream.test",
+            vec!["from-forward 60 IN A 203.0.113.9"],
+            vec![],
+        ))?;
 
         let mut catalog = Catalog::new();
-
-        let sep = "=".repeat(80);
-        let config = toml::from_str::<DnsConfig>(CONFIG)?;
-        assert_eq!(config.domain.to_string(), "测试.net");
-        let mut zones = config.zones;
-        assert_eq!(zones.len(), 2);
-
-        let zone = zones
-            .extract_if(.., |c| c.origin.to_string() == "et.top")
-            .next()
-            .unwrap();
-        let zone = proto::dns::ZoneData::from(zone);
-        let zone = Zone::try_from(&zone)?;
-        assert_eq!(zone.origin.to_string(), "et.top.");
-        let records = zone.iter_records().collect_vec();
-        assert_eq!(records.len(), 1);
-
-        let mut authorities = Vec::new();
-        authorities.extend(zone.create_memory_authority().into_iter());
-        authorities.extend(zone.create_forward_authority().into_iter());
-        catalog.upsert(zone.origin.clone(), authorities);
-
-        let mut record = Record::update0(zone.origin.clone().into(), 60, RecordType::A);
-        record.set_data(RData::A(rdata::a::A("100.100.100.100".parse()?)));
-        assert_eq!(record, **records.first().unwrap());
-
-        let zone = zones
-            .extract_if(.., |z| z.origin.to_string() == "google.com")
-            .next()
-            .unwrap();
-        assert!(zone.policy.export.is_some());
-        let zone = proto::dns::ZoneData::from(zone);
-        println!("{}", sep);
-        println!("{}", zone);
-        println!("{}", sep);
-
-        let zone = Zone::try_from(&zone)?;
-
-        for record in zone.iter_records() {
-            println!("{}", record);
-        }
-
-        assert_eq!(zone.origin.to_string(), "google.com.");
-
-        let records = zone.iter_records().collect_vec();
-        assert_eq!(records.len(), 4);
-
-        let mut record = Record::update0(
-            Name::from_str("www")?.append_domain(&zone.origin)?,
-            60,
-            RecordType::A,
-        );
-        record.set_data(RData::A(rdata::a::A("123.123.123.123".parse()?)));
-        assert_eq!(
-            record,
-            **records
-                .iter()
-                .find(|r| r.name().to_string().starts_with("www."))
-                .unwrap()
-        );
-
-        let mut record = Record::update0(
-            Name::from_str("app")?.append_domain(&zone.origin)?,
-            10,
-            RecordType::CNAME,
-        );
-        record.set_data(RData::CNAME(rdata::name::CNAME(
-            Name::from_str("www")?.append_domain(&zone.origin)?,
-        )));
-        assert_eq!(
-            record,
-            **records
-                .iter()
-                .find(|r| r.name().to_string().starts_with("app."))
-                .unwrap()
-        );
-
-        assert_eq!(zone.forward.as_ref().unwrap().name_servers.len(), 1);
-
-        let mut authorities = Vec::new();
-        authorities.extend(zone.create_memory_authority().into_iter());
-        authorities.extend(zone.create_forward_authority().into_iter());
-        catalog.upsert(zone.origin.clone(), authorities);
-
-        let request = dns::tests::new_request("et.top.", RecordType::A)?;
-
-        let response = ResponseHandle::new(512);
-        let info = catalog.lookup(&request, None, response.clone()).await;
-
-        assert_eq!(info.response_code(), ResponseCode::NoError);
-
         catalog.upsert(
-            Name::root().into(),
-            vec![Zone::system().create_forward_authority().unwrap()],
+            upstream.origin.clone(),
+            vec![upstream.create_memory_authority().unwrap()],
         );
-
-        let request = dns::tests::new_request("example.com", RecordType::A)?;
-
-        let response = ResponseHandle::new(512);
-        let info = catalog.lookup(&request, None, response.clone()).await;
-
-        assert_eq!(info.response_code(), ResponseCode::NoError);
-
-        let request = dns::tests::new_request("example.invalid", RecordType::A)?;
-
-        let response = ResponseHandle::new(512);
-        let info = catalog.lookup(&request, None, response.clone()).await;
-
-        assert_eq!(info.response_code(), ResponseCode::NXDomain);
 
         let socket = UdpSocket::bind("127.0.0.1:0").await?;
         let addr = socket.local_addr()?;
-        println!("listening on {}", addr);
 
         let mut server = ServerFuture::new(catalog);
         server.register_socket(socket);
-        spawn(async move {
-            if let Err(e) = server.block_until_done().await {
-                eprintln!("server error: {}", e);
-            }
+        let handle = tokio::spawn(async move {
+            let _ = server.block_until_done().await;
         });
 
-        let conn = UdpClientStream::builder(addr, TokioRuntimeProvider::default()).build();
-        let (mut client, background) =
-            timeout(Duration::from_secs(1), Client::connect(conn)).await??;
-        spawn(async move {
-            if let Err(e) = background.await {
-                eprintln!("client error: {}", e);
-            }
-        });
-        let value = timeout(
-            Duration::from_secs(1),
-            client.query("maps.google.com".parse()?, DNSClass::IN, RecordType::A),
-        )
-        .await??;
-        value.answers().iter().for_each(|r| println!("{}", r));
+        Ok((addr, handle))
+    }
 
-        let value = timeout(
-            Duration::from_secs(1),
-            client.query("www.google.com".parse()?, DNSClass::IN, RecordType::A),
-        )
-        .await??;
-        value.answers().iter().for_each(|r| println!("{}", r));
+    #[test]
+    fn zone_try_from_rejects_missing_id() {
+        let data = ZoneData {
+            id: None,
+            origin: "missing-id.test".to_string(),
+            ttl: 60,
+            records: vec!["@ IN A 10.0.0.1".to_string()],
+            forwarders: vec![],
+        };
 
-        let value = timeout(
-            Duration::from_secs(1),
-            client.query("google.com".parse()?, DNSClass::IN, RecordType::A),
-        )
-        .await??;
-        value.answers().iter().for_each(|r| println!("{}", r));
+        let err = Zone::try_from(&data).expect_err("missing id should fail");
+        assert!(err.to_string().contains("missing id"));
+    }
+
+    #[test]
+    fn zone_try_from_rejects_invalid_record() {
+        let data = zone_data("invalid-record.test", vec!["this is not a record"], vec![]);
+
+        let err = Zone::try_from(&data).expect_err("invalid record should fail");
+        assert!(err.to_string().contains("failed to parse zone data"));
+    }
+
+    #[test]
+    fn zone_try_from_rejects_invalid_forwarder_protocol() {
+        let data = zone_data("invalid-forwarder.test", vec![], vec!["http://1.1.1.1:53"]);
+
+        let err = Zone::try_from(&data).expect_err("unsupported forwarder should fail");
+        assert!(
+            err.to_string().contains("unsupported") || err.to_string().contains("protocol")
+        );
+    }
+
+    #[test]
+    fn empty_zone_creates_no_authority() -> anyhow::Result<()> {
+        let zone = Zone::try_from(&zone_data("empty.test", vec![], vec![]))?;
+
+        assert!(zone.create_memory_authority().is_none());
+        assert!(zone.create_forward_authority().is_none());
+
+        Ok(())
+    }
+
+    #[test]
+    fn zone_roundtrip_preserves_records_and_forwarders() -> anyhow::Result<()> {
+        let zone = Zone::try_from(&zone_data(
+            "roundtrip.test",
+            vec!["www 0 IN A 123.123.123.123", "app IN CNAME www"],
+            vec!["udp://1.1.1.1:53", "tcp://8.8.8.8:53"],
+        ))?;
+
+        assert_eq!(zone.iter_records().count(), 2);
+        assert_eq!(zone.forward.as_ref().unwrap().name_servers.len(), 2);
+
+        let serialized = ZoneData::from(zone.clone());
+        assert!(serialized.id.is_some());
+        assert_eq!(serialized.origin, "roundtrip.test.");
+        assert_eq!(serialized.records.len(), 2);
+        assert_eq!(serialized.forwarders.len(), 2);
+
+        let reparsed = Zone::try_from(&serialized)?;
+        assert_eq!(reparsed.origin.to_string(), "roundtrip.test.");
+        assert_eq!(reparsed.iter_records().count(), 2);
+        assert_eq!(reparsed.forward.as_ref().unwrap().name_servers.len(), 2);
+
+        Ok(())
+    }
+
+    #[test]
+    fn zone_group_into_groups_merges_same_origin() -> anyhow::Result<()> {
+        let zones: ZoneGroup = vec![
+            Zone::try_from(&zone_data("same.test", vec!["@ IN A 10.0.0.1"], vec![]))?,
+            Zone::try_from(&zone_data("other.test", vec!["@ IN A 10.0.0.2"], vec![]))?,
+            Zone::try_from(&zone_data("same.test", vec![], vec!["udp://1.1.1.1:53"]))?,
+        ]
+        .into();
+
+        let groups = zones.into_groups();
+        assert_eq!(groups.len(), 2);
+        assert_eq!(groups.get(&LowerName::from_str("same.test.")?).unwrap().len(), 2);
+        assert_eq!(groups.get(&LowerName::from_str("other.test.")?).unwrap().len(), 1);
+
+        Ok(())
+    }
+
+    #[test]
+    fn zone_group_iter_authorities_returns_memory_and_forward() -> anyhow::Result<()> {
+        let zones: ZoneGroup = vec![Zone::try_from(&zone_data(
+            "authority.test",
+            vec!["@ IN A 10.0.0.10"],
+            vec!["udp://1.1.1.1:53"],
+        ))?]
+        .into();
+
+        let authorities = zones.iter_authorities().collect_vec();
+        assert_eq!(authorities.len(), 2);
+
+        Ok(())
+    }
+
+    #[test]
+    fn zone_system_builds_root_forwarder() {
+        let zone = Zone::system();
+        assert_eq!(zone.origin.to_string(), ".");
+        assert!(zone.forward.is_some());
+        assert!(zone.create_forward_authority().is_some());
+    }
+
+    #[tokio::test]
+    async fn catalog_lookup_returns_a_record_from_memory_authority() -> anyhow::Result<()> {
+        let zones: ZoneGroup = vec![Zone::try_from(&zone_data(
+            "memory.test",
+            vec!["@ IN A 10.20.30.40"],
+            vec![],
+        ))?]
+        .into();
+        let catalog = build_catalog(zones);
+
+        let (rcode, message) = lookup_message(&catalog, "memory.test.", RecordType::A).await?;
+        assert_eq!(rcode, ResponseCode::NoError);
+        let message = message.expect("response should exist");
+        assert!(has_a_answer(&message, Ipv4Addr::new(10, 20, 30, 40)));
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn catalog_lookup_returns_refused_when_zone_is_missing() -> anyhow::Result<()> {
+        let zones: ZoneGroup = vec![Zone::try_from(&zone_data(
+            "present.test",
+            vec!["@ IN A 10.20.30.41"],
+            vec![],
+        ))?]
+        .into();
+        let catalog = build_catalog(zones);
+
+        let (rcode, _message) = lookup_message(&catalog, "absent.test.", RecordType::A).await?;
+        assert_eq!(rcode, ResponseCode::Refused);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn catalog_forward_only_zone_queries_upstream() -> anyhow::Result<()> {
+        let (upstream_addr, upstream_handle) = start_upstream_server().await?;
+
+        let forward_zone = Zone::try_from(&zone_data(
+            "upstream.test",
+            vec![],
+            vec![&format!("udp://{}", upstream_addr)],
+        ))?;
+        let catalog = build_catalog(vec![forward_zone].into());
+
+        let (rcode, message) =
+            lookup_message(&catalog, "from-forward.upstream.test.", RecordType::A).await?;
+        assert_eq!(rcode, ResponseCode::NoError);
+        assert!(has_a_answer(
+            &message.expect("response should exist"),
+            Ipv4Addr::new(203, 0, 113, 9)
+        ));
+
+        upstream_handle.abort();
+        let _ = upstream_handle.await;
 
         Ok(())
     }
