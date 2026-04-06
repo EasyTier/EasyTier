@@ -1,5 +1,6 @@
 use prost::Message;
 use sha2::{Digest, Sha256};
+use delegate::delegate;
 use derivative::Derivative;
 use derive_more::{Deref, DerefMut, From, IntoIterator};
 use serde::{Deserialize, Serialize};
@@ -59,20 +60,45 @@ impl<Model> RepeatedMessageModel<Model> {
     }
 }
 
-impl<'m, Message, Model> TryFrom<&'m Vec<Message>> for RepeatedMessageModel<Model>
+impl<Model> FromIterator<Model> for RepeatedMessageModel<Model> {
+    fn from_iter<I: IntoIterator<Item = Model>>(iter: I) -> Self {
+        Self(iter.into_iter().collect())
+    }
+}
+
+impl<Model> Extend<Model> for RepeatedMessageModel<Model> {
+    delegate! {
+        to self.0 {
+            fn extend<T: IntoIterator<Item = Model>>(&mut self, iter: T);
+        }
+    }
+}
+
+impl<Model> AsRef<[Model]> for RepeatedMessageModel<Model> {
+    delegate! {
+        to self.0 {
+            fn as_ref(&self) -> &[Model];
+        }
+    }
+}
+
+impl<Model> AsMut<[Model]> for RepeatedMessageModel<Model> {
+    delegate! {
+        to self.0 {
+            fn as_mut(&mut self) -> &mut [Model];
+        }
+    }
+}
+
+impl<'m, Message, Model> TryFrom<&'m [Message]> for RepeatedMessageModel<Model>
 where
     Message: prost::Message,
     Model: MessageModel<Message>,
 {
     type Error = <Model as TryFrom<&'m Message>>::Error;
 
-    fn try_from(value: &'m Vec<Message>) -> Result<Self, Self::Error> {
-        Ok(Self(
-            value
-                .iter()
-                .map(TryInto::try_into)
-                .collect::<Result<_, _>>()?,
-        ))
+    fn try_from(value: &'m [Message]) -> Result<Self, Self::Error> {
+        value.iter().map(TryInto::try_into).collect()
     }
 }
 
