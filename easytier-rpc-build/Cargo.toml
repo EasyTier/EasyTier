@@ -2,7 +2,7 @@
 name = "easytier-rpc-build"
 description = "Protobuf RPC Service Generator for EasyTier"
 version = "0.1.0"
-edition = "2021"
+edition.workspace = true
 homepage = "https://github.com/EasyTier/EasyTier"
 repository = "https://github.com/EasyTier/EasyTier"
 authors = ["kkrainbow"]
