@@ -11,12 +11,14 @@ use network_interface::NetworkInterfaceConfig as _;
 use pin_project_lite::pin_project;
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
+use super::TunnelInfo;
+use crate::common::error::Error;
+use crate::common::netns::NetNS;
 use bytes::{Buf, BufMut, Bytes, BytesMut};
+use tokio::net::{TcpListener, TcpSocket, UdpSocket};
 use tokio_stream::StreamExt;
 use tokio_util::io::poll_write_buf;
 use zerocopy::FromBytes as _;
-
-use super::TunnelInfo;
 
 use crate::tunnel::packet_def::{PEER_MANAGER_HEADER_SIZE, ZCPacket};
 
@@ -440,6 +442,65 @@ pub(crate) fn setup_socket2(
         super::common::get_interface_name_by_ip(&bind_addr.ip()),
         only_v6,
     )
+}
+
+pub trait Bindable: Sized {
+    const TYPE: socket2::Type;
+    const PROTOCOL: Option<socket2::Protocol>;
+
+    fn finalize(socket: socket2::Socket) -> Result<Self, TunnelError>;
+}
+
+impl Bindable for TcpSocket {
+    const TYPE: socket2::Type = socket2::Type::STREAM;
+    const PROTOCOL: Option<socket2::Protocol> = Some(socket2::Protocol::TCP);
+
+    fn finalize(socket: socket2::Socket) -> Result<Self, TunnelError> {
+        let socket = TcpSocket::from_std_stream(socket.into());
+
+        if let Err(error) = socket.set_nodelay(true) {
+            tracing::warn!(?error, "set_nodelay failed for listener");
+        }
+
+        Ok(socket)
+    }
+}
+
+impl Bindable for TcpListener {
+    const TYPE: socket2::Type = socket2::Type::STREAM;
+    const PROTOCOL: Option<socket2::Protocol> = Some(socket2::Protocol::TCP);
+
+    fn finalize(socket: socket2::Socket) -> Result<Self, TunnelError> {
+        Ok(TcpSocket::finalize(socket)?.listen(1024)?)
+    }
+}
+
+impl Bindable for UdpSocket {
+    const TYPE: socket2::Type = socket2::Type::DGRAM;
+    const PROTOCOL: Option<socket2::Protocol> = Some(socket2::Protocol::UDP);
+
+    fn finalize(socket: socket2::Socket) -> Result<Self, TunnelError> {
+        Ok(UdpSocket::from_std(socket.into())?)
+    }
+}
+
+pub fn bind_socket<B: Bindable>(addr: SocketAddr, net_ns: Option<NetNS>) -> Result<B, Error> {
+    let _g = net_ns.map(|n| n.guard());
+
+    let socket2_socket =
+        socket2::Socket::new(socket2::Domain::for_address(addr), B::TYPE, B::PROTOCOL)?;
+
+    setup_sokcet2(&socket2_socket, &addr)?;
+
+    B::finalize(socket2_socket)
+}
+
+pub fn bind_tcp_socket(addr: SocketAddr, net_ns: NetNS) -> Result<TcpListener, Error> {
+    bind_socket(addr, Some(net_ns))
+}
+
+pub fn bind_udp_socket(addr: SocketAddr, net_ns: NetNS) -> Result<UdpSocket, Error> {
+    bind_socket(addr, Some(net_ns))
 }
 
 pub fn reserve_buf(buf: &mut BytesMut, min_size: usize, max_size: usize) {
