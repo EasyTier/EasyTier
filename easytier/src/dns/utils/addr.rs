@@ -4,7 +4,6 @@ use crate::proto::utils::RepeatedMessageModel;
 use anyhow::{anyhow, Error};
 use hickory_proto::xfer::Protocol;
 use hickory_resolver::config::{NameServerConfig, NameServerConfigGroup};
-use itertools::Itertools;
 use serde_with::{DeserializeFromStr, SerializeDisplay};
 use std::fmt::{Display, Formatter};
 use std::net::{IpAddr, SocketAddr};
@@ -129,7 +128,7 @@ pub type NameServerAddrGroup = RepeatedMessageModel<NameServerAddr>;
 
 impl From<NameServerAddrGroup> for NameServerConfigGroup {
     fn from(value: NameServerAddrGroup) -> Self {
-        value.into_iter().map_into().collect_vec().into()
+        value.into_iter().map(Into::into).collect::<Vec<_>>().into()
     }
 }
 
@@ -138,8 +137,8 @@ impl From<NameServerConfigGroup> for NameServerAddrGroup {
         value
             .into_inner()
             .into_iter()
-            .map_into()
-            .collect_vec()
+            .map(Into::into)
+            .collect::<Vec<_>>()
             .into()
     }
 }

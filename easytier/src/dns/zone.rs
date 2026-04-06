@@ -3,7 +3,6 @@ use crate::dns::utils::addr::NameServerAddr;
 use crate::dns::utils::authority::ArcAuthority;
 use crate::proto;
 use crate::proto::utils::RepeatedMessageModel;
-use crate::utils::MapTryInto;
 use hickory_proto::rr::{LowerName, RecordSet, RrKey};
 use hickory_proto::serialize::txt::Parser;
 use hickory_resolver::config::ResolverOpts;
@@ -13,7 +12,7 @@ use hickory_server::authority::ZoneType;
 use hickory_server::store::forwarder::{ForwardAuthority, ForwardConfig};
 use hickory_server::store::in_memory::InMemoryAuthority;
 use indexmap::IndexMap;
-use itertools::{chain, Itertools};
+use itertools::chain;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use uuid::Uuid;
@@ -96,9 +95,9 @@ impl TryFrom<&proto::dns::ZoneData> for Zone {
         let servers = value
             .forwarders
             .iter()
-            .map_try_into::<NameServerAddr>()
-            .map_ok(Into::into)
-            .try_collect::<_, Vec<_>, _>()?;
+            .map(TryInto::<NameServerAddr>::try_into)
+            .map(|a| a.map(Into::into))
+            .collect::<Result<Vec<_>, _>>()?;
         let forward = (!servers.is_empty()).then_some(ForwardConfig {
             name_servers: servers.into(),
             options: None,
@@ -126,8 +125,8 @@ impl From<Zone> for proto::dns::ZoneData {
             .forward
             .into_iter()
             .flat_map(|f| f.name_servers.into_inner().into_iter())
-            .map_into::<NameServerAddr>()
-            .map_into()
+            .map(Into::<NameServerAddr>::into)
+            .map(Into::into)
             .collect();
 
         Self {
@@ -365,7 +364,7 @@ mod tests {
         ))?]
         .into();
 
-        let authorities = zones.iter_authorities().collect_vec();
+        let authorities = zones.iter_authorities().collect::<Vec<_>>();
         assert_eq!(authorities.len(), 2);
 
         Ok(())

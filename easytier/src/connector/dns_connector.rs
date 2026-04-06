@@ -14,7 +14,6 @@ use crate::{
 use anyhow::Context;
 use dashmap::DashSet;
 use hickory_resolver::proto::rr::rdata::SRV;
-use itertools::Itertools;
 use rand::{seq::SliceRandom, Rng as _};
 use strum::VariantArray;
 
@@ -117,7 +116,7 @@ impl DnsTunnelConnector {
         let srv_domains = IpScheme::VARIANTS
             .iter()
             .map(|s| (s, format!("_easytier._{}.{}", s, domain_name)))
-            .collect_vec();
+            .collect::<Vec<_>>();
         tracing::info!("build srv_domains: {:?}", srv_domains);
         let responses = Arc::new(DashSet::new());
         let srv_lookup_tasks = srv_domains

@@ -168,17 +168,6 @@ pub trait DeterministicDigest: Serialize {
 
 impl<S: Serialize> DeterministicDigest for S {}
 
-pub trait MapTryInto: Iterator + Sized {
-    fn map_try_into<R>(self) -> impl Iterator<Item = Result<R, <Self::Item as TryInto<R>>::Error>>
-    where
-        Self::Item: TryInto<R>,
-    {
-        self.into_iter().map(Self::Item::try_into)
-    }
-}
-
-impl<T> MapTryInto for T where T: Iterator + Sized {}
-
 #[derive(Debug, Default)]
 enum AsyncRuntimeState<T> {
     #[default]

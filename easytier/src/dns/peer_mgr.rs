@@ -14,7 +14,6 @@ use crate::proto::rpc_types;
 use crate::proto::rpc_types::controller::BaseController;
 use crate::utils::DeterministicDigest;
 use anyhow::Context;
-use itertools::Itertools;
 use moka::future::Cache;
 use std::ops::Deref;
 use std::sync::Arc;
@@ -53,7 +52,7 @@ impl DnsPeerMgrInner {
 
         let zones = global_ctx
             .dns_iter_zones()
-            .map_into()
+            .map(Into::into)
             .chain(
                 self.peers
                     .iter()

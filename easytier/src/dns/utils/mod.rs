@@ -1,6 +1,5 @@
 use hickory_proto::rr::LowerName;
 use idna::AsciiDenyList;
-use itertools::Itertools;
 
 pub mod addr;
 pub mod authority;
@@ -24,7 +23,7 @@ pub fn sanitize(name: &str) -> String {
                 .to_string()
         })
         .filter(|label| !label.is_empty())
-        .collect_vec()
+        .collect::<Vec<_>>()
         .join(".");
     name.truncate(253);
     if dot {

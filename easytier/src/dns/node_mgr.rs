@@ -6,7 +6,7 @@ use crate::proto::dns::DnsNodeMgrRpc;
 use crate::proto::dns::{DnsSnapshot, HeartbeatRequest, HeartbeatResponse};
 use crate::proto::rpc_types;
 use crate::proto::rpc_types::controller::BaseController;
-use crate::utils::{DeterministicDigest, MapTryInto};
+use crate::utils::DeterministicDigest;
 use anyhow::Error;
 use hickory_server::authority::Catalog;
 use itertools::Itertools;
@@ -30,8 +30,16 @@ impl TryFrom<&DnsSnapshot> for DnsNodeInfo {
         Ok(Self {
             digest: value.digest(),
             zones: (&value.zones).try_into()?,
-            addresses: value.addresses.iter().map_try_into().try_collect()?,
-            listeners: value.listeners.iter().map_try_into().try_collect()?,
+            addresses: value
+                .addresses
+                .iter()
+                .map(TryInto::try_into)
+                .collect::<Result<_, _>>()?,
+            listeners: value
+                .listeners
+                .iter()
+                .map(TryInto::try_into)
+                .collect::<Result<_, _>>()?,
         })
     }
 }
