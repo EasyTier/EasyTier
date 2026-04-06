@@ -3,23 +3,25 @@ use crate::dns::utils::addr::NameServerAddrGroup;
 use crate::dns::zone::Zone;
 use crate::proto::dns::ZoneData;
 use derivative::Derivative;
-use derive_more::{Deref, DerefMut, Into};
+use derive_more::{Deref, Into};
 use hickory_proto::rr::LowerName;
 use serde::{Deserialize, Serialize};
 use std::convert::{TryFrom, TryInto};
 use std::net::{Ipv4Addr, Ipv6Addr};
 use uuid::Uuid;
 
-#[derive(Derivative, Debug, Clone, Deserialize, Serialize, Default, Deref, DerefMut, Into)]
+#[derive(Derivative, Debug, Clone, Deserialize, Serialize, Default, Deref, Into)]
 #[derivative(PartialEq)]
 #[serde(try_from = "ZoneConfigInner", into = "ZoneConfigInner")]
 pub struct ZoneConfig {
     #[into]
     #[derivative(PartialEq = "ignore")]
     data: ZoneData,
+    // User-facing config source of truth used for serde round-trips.
+    // Keep this in sync with `data` by rebuilding a full ZoneConfig via TryFrom.
+    // Do not mutate subfields in place and expect `data` to follow.
     #[into]
     #[deref]
-    #[deref_mut]
     inner: ZoneConfigInner,
 }
 
@@ -27,8 +29,10 @@ impl TryFrom<ZoneConfigInner> for ZoneConfig {
     type Error = anyhow::Error;
 
     fn try_from(value: ZoneConfigInner) -> Result<Self, Self::Error> {
+        // Rebuild both representations together and validate zone semantics.
+        // Config updates should follow this replacement path.
         let data = ZoneData::from(value.clone());
-        let _ = Zone::try_from(&data)?;
+        let _ = Zone::try_from(&data)?; // validation
         Ok(Self { data, inner: value })
     }
 }
