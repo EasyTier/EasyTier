@@ -5,7 +5,7 @@ mod peer_mgr;
 pub mod server;
 mod system;
 mod utils;
-pub mod zone;
+mod zone;
 
 #[cfg(test)]
 mod tests;

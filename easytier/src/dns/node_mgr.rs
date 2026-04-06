@@ -16,7 +16,7 @@ use tracing::instrument;
 use uuid::Uuid;
 
 #[derive(Debug, Clone, Default)]
-pub struct DnsNodeInfo {
+struct DnsNodeInfo {
     digest: Vec<u8>,
     zones: ZoneGroup,
     addresses: HashSet<NameServerAddr>,
@@ -40,15 +40,15 @@ const DNS_CLIENT_TTL: Duration = Duration::from_secs(5);
 
 #[derive(Debug, Default)]
 pub struct DnsNodeMgrDirtyFlags {
-    pub(super) catalog: DirtyFlag,
-    pub(super) addresses: DirtyFlag,
-    pub(super) listeners: DirtyFlag,
+    pub catalog: DirtyFlag,
+    pub addresses: DirtyFlag,
+    pub listeners: DirtyFlag,
 }
 
 #[derive(Debug)]
 pub struct DnsNodeMgr {
     nodes: Cache<Uuid, DnsNodeInfo>,
-    pub(super) dirty: DnsNodeMgrDirtyFlags,
+    pub dirty: DnsNodeMgrDirtyFlags,
 }
 
 impl DnsNodeMgr {

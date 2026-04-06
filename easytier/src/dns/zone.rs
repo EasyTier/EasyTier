@@ -22,11 +22,11 @@ use uuid::Uuid;
 #[derive(Derivative, Debug, Clone)]
 #[derivative(PartialEq)]
 pub struct Zone {
-    pub(crate) id: Uuid,
-    pub(crate) origin: LowerName,
-    pub(crate) records: BTreeMap<RrKey, RecordSet>,
+    id: Uuid,
+    origin: LowerName,
+    records: BTreeMap<RrKey, RecordSet>,
     #[derivative(PartialEq(compare_with = "Zone::compare_forward"))]
-    pub(crate) forward: Option<ForwardConfig>,
+    pub forward: Option<ForwardConfig>,
 }
 
 impl Zone {

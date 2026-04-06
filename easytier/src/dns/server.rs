@@ -37,18 +37,18 @@ use tracing::{instrument, Instrument};
 use crate::instance::instance::{ArcNicCtx, NicCtx};
 
 #[derive(Clone)]
-pub struct DynamicCatalog {
+struct DynamicCatalog {
     inner: Arc<tokio::sync::RwLock<Catalog>>,
 }
 
 impl DynamicCatalog {
-    pub fn new() -> Self {
+    fn new() -> Self {
         Self {
             inner: Arc::new(tokio::sync::RwLock::new(Catalog::new())),
         }
     }
 
-    pub async fn replace(&self, new: Catalog) {
+    async fn replace(&self, new: Catalog) {
         *self.inner.write().await = new;
     }
 }

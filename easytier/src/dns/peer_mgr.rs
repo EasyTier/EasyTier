@@ -22,7 +22,7 @@ use std::time::Duration;
 use tracing::instrument;
 
 #[derive(Debug, Clone)]
-pub struct DnsPeerInfo {
+struct DnsPeerInfo {
     digest: Vec<u8>,
     zones: Vec<ZoneData>,
 }
