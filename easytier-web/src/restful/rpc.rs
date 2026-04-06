@@ -1,15 +1,15 @@
 use axum::{
+    Json, Router,
     extract::{Path, State},
     http::StatusCode,
     routing::post,
-    Json, Router,
 };
 use axum_login::AuthUser as _;
 use easytier::proto::rpc_types::controller::BaseController;
 
 use crate::db::UserIdInDb;
 
-use super::{other_error, AppState, HttpHandleError};
+use super::{AppState, HttpHandleError, other_error};
 
 #[derive(Debug, serde::Deserialize)]
 pub struct ProxyRpcRequest {
@@ -120,7 +120,7 @@ async fn handle_proxy_rpc_by_session(
             return Err((
                 StatusCode::BAD_REQUEST,
                 other_error(format!("Unknown service: {}", service_name)).into(),
-            ))
+            ));
         }
     };
 

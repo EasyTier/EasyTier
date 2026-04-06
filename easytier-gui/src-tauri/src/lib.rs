@@ -21,9 +21,9 @@ use easytier::{
     instance_manager::NetworkInstanceManager,
     launcher::NetworkConfig,
     rpc_service::ApiRpcServer,
+    tunnel::TunnelListener,
     tunnel::ring::RingTunnelListener,
     tunnel::tcp::TcpTunnelListener,
-    tunnel::TunnelListener,
     utils::{self},
 };
 use std::ops::Deref;
@@ -560,9 +560,10 @@ fn toggle_window_visibility(app: &tauri::AppHandle) {
 
 fn get_exe_path() -> String {
     if let Ok(appimage_path) = std::env::var("APPIMAGE")
-        && !appimage_path.is_empty() {
-            return appimage_path;
-        }
+        && !appimage_path.is_empty()
+    {
+        return appimage_path;
+    }
     std::env::current_exe()
         .map(|p| p.to_string_lossy().to_string())
         .unwrap_or_default()
@@ -595,8 +596,8 @@ mod manager {
     use easytier::proto::rpc_types::controller::BaseController;
     use easytier::rpc_service::logger::LoggerRpcService;
     use easytier::rpc_service::remote_client::PersistentConfig;
-    use easytier::tunnel::ring::RingTunnelConnector;
     use easytier::tunnel::TunnelConnector;
+    use easytier::tunnel::ring::RingTunnelConnector;
     use easytier::web_client::WebClientHooks;
 
     pub(super) struct GuiHooks {
@@ -979,33 +980,34 @@ mod manager {
                 .ok_or_else(|| anyhow::anyhow!("RPC client not found"))?;
             for id in enabled_networks {
                 if let Ok(uuid) = id.parse()
-                    && !self.storage.enabled_networks.contains(&uuid) {
-                        let config = self
-                            .storage
-                            .network_configs
-                            .get(&uuid)
-                            .map(|i| i.value().1.clone());
-                        let Some(config) = config else {
-                            continue;
-                        };
-                        let toml_config = config.gen_config()?;
-                        self.pre_run_network_instance_hook(&app, &toml_config)
-                            .await
-                            .map_err(|e| anyhow::anyhow!(e))?;
-                        client
-                            .run_network_instance(
-                                BaseController::default(),
-                                RunNetworkInstanceRequest {
-                                    inst_id: None,
-                                    config: Some(config),
-                                    overwrite: false,
-                                },
-                            )
-                            .await?;
-                        self.post_run_network_instance_hook(&app, &uuid)
-                            .await
-                            .map_err(|e| anyhow::anyhow!(e))?;
-                    }
+                    && !self.storage.enabled_networks.contains(&uuid)
+                {
+                    let config = self
+                        .storage
+                        .network_configs
+                        .get(&uuid)
+                        .map(|i| i.value().1.clone());
+                    let Some(config) = config else {
+                        continue;
+                    };
+                    let toml_config = config.gen_config()?;
+                    self.pre_run_network_instance_hook(&app, &toml_config)
+                        .await
+                        .map_err(|e| anyhow::anyhow!(e))?;
+                    client
+                        .run_network_instance(
+                            BaseController::default(),
+                            RunNetworkInstanceRequest {
+                                inst_id: None,
+                                config: Some(config),
+                                overwrite: false,
+                            },
+                        )
+                        .await?;
+                    self.post_run_network_instance_hook(&app, &uuid)
+                        .await
+                        .map_err(|e| anyhow::anyhow!(e))?;
+                }
             }
             Ok(())
         }

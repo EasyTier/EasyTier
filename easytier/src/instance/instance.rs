@@ -17,12 +17,12 @@ use tokio::{sync::oneshot, task::JoinSet};
 #[cfg(feature = "magic-dns")]
 use tokio_util::sync::CancellationToken;
 
+use crate::common::PeerId;
 use crate::common::acl_processor::AclRuleBuilder;
 use crate::common::config::ConfigLoader;
 use crate::common::error::Error;
 use crate::common::global_ctx::{ArcGlobalCtx, GlobalCtx, GlobalCtxEvent};
 use crate::common::scoped_task::ScopedTask;
-use crate::common::PeerId;
 use crate::connector::direct::DirectConnectorManager;
 use crate::connector::manual::{ConnectorManagerRpcService, ManualConnectorManager};
 use crate::connector::tcp_hole_punch::TcpHolePunchConnector;
@@ -40,7 +40,7 @@ use crate::peers::peer_manager::{PeerManager, RouteAlgoType};
 #[cfg(feature = "tun")]
 use crate::peers::recv_packet_from_chan;
 use crate::peers::rpc_service::PeerManagerRpcService;
-use crate::peers::{create_packet_recv_chan, PacketRecvChanReceiver};
+use crate::peers::{PacketRecvChanReceiver, create_packet_recv_chan};
 use crate::proto::api::config::{
     ConfigPatchAction, ConfigRpc, GetConfigRequest, GetConfigResponse, PatchConfigRequest,
     PatchConfigResponse, PortForwardPatch,
@@ -63,7 +63,7 @@ use crate::utils::weak_upgrade;
 use crate::vpn_portal::{self, VpnPortal};
 
 #[cfg(feature = "magic-dns")]
-use super::dns_server::{runner::DnsRunner, MAGIC_DNS_FAKE_IP};
+use super::dns_server::{MAGIC_DNS_FAKE_IP, runner::DnsRunner};
 use super::listeners::ListenerManager;
 
 #[cfg(feature = "socks5")]
@@ -273,10 +273,11 @@ impl InstanceConfigPatcher {
             global_ctx.config.set_hostname(Some(hostname));
         }
         if let Some(ipv4) = patch.ipv4
-            && !global_ctx.config.get_dhcp() {
-                global_ctx.set_ipv4(Some(ipv4.into()));
-                global_ctx.config.set_ipv4(Some(ipv4.into()));
-            }
+            && !global_ctx.config.get_dhcp()
+        {
+            global_ctx.set_ipv4(Some(ipv4.into()));
+            global_ctx.config.set_ipv4(Some(ipv4.into()));
+        }
         if let Some(ipv6) = patch.ipv6 {
             global_ctx.set_ipv6(Some(ipv6.into()));
             global_ctx.config.set_ipv6(Some(ipv6.into()));
@@ -667,12 +668,13 @@ impl Instance {
     ) {
         #[cfg(feature = "magic-dns")]
         if let Some(old_ctx) = arc_nic_ctx.lock().await.take()
-            && let Some(dns_runner) = old_ctx.magic_dns {
-                dns_runner.dns_runner_cancel_token.cancel();
-                tracing::debug!("cancelling dns runner task");
-                let ret = dns_runner.dns_runner_task.await;
-                tracing::debug!("dns runner task cancelled, ret: {:?}", ret);
-            };
+            && let Some(dns_runner) = old_ctx.magic_dns
+        {
+            dns_runner.dns_runner_cancel_token.cancel();
+            tracing::debug!("cancelling dns runner task");
+            let ret = dns_runner.dns_runner_task.await;
+            tracing::debug!("dns runner task cancelled, ret: {:?}", ret);
+        };
 
         let mut tasks = JoinSet::new();
         tasks.spawn(async move {
@@ -771,9 +773,11 @@ impl Instance {
                 let dhcp_inet = used_ipv4.iter().next().unwrap_or(&default_ipv4_addr);
                 // if old ip is already in this subnet and not conflicted, use it
                 if let Some(ip) = current_dhcp_ip
-                    && ip.network() == dhcp_inet.network() && !used_ipv4.contains(&ip) {
-                        continue;
-                    }
+                    && ip.network() == dhcp_inet.network()
+                    && !used_ipv4.contains(&ip)
+                {
+                    continue;
+                }
 
                 // find an available ip in the subnet
                 let candidate_ipv4_addr = dhcp_inet.network().iter().find(|ip| {

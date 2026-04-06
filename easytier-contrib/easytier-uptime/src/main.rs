@@ -10,7 +10,7 @@ mod migrator;
 use api::routes::create_routes;
 use clap::Parser;
 use config::AppConfig;
-use db::{operations::NodeOperations, Db};
+use db::{Db, operations::NodeOperations};
 use easytier::common::log;
 use health_checker::HealthChecker;
 use health_checker_manager::HealthCheckerManager;

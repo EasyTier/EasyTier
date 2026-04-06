@@ -1,14 +1,14 @@
 use super::{
-    common::{setup_sokcet2, wait_for_connect_futures, TunnelWrapper},
+    FromUrl, IpVersion, Tunnel, TunnelConnector, TunnelError, TunnelListener,
+    common::{TunnelWrapper, setup_sokcet2, wait_for_connect_futures},
     insecure_tls::{get_insecure_tls_cert, init_crypto_provider},
     packet_def::{ZCPacket, ZCPacketType},
-    FromUrl, IpVersion, Tunnel, TunnelConnector, TunnelError, TunnelListener,
 };
 use crate::{proto::common::TunnelInfo, tunnel::insecure_tls::get_insecure_tls_client_config};
 use anyhow::Context;
 use bytes::BytesMut;
 use forwarded_header_value::ForwardedHeaderValue;
-use futures::{stream::FuturesUnordered, SinkExt, StreamExt};
+use futures::{SinkExt, StreamExt, stream::FuturesUnordered};
 use pnet::ipnetwork::IpNetwork;
 use std::{
     net::SocketAddr,
@@ -129,14 +129,15 @@ impl WsTunnelListener {
                         .and_then(|f| f.to_str().ok())
                         .and_then(|f| ForwardedHeaderValue::from_x_forwarded_for(f).ok())
                 })
-                && let Some(ip) = forwarded.remotest_forwarded_for_ip() {
-                    remote_addr.set_host(Some(&ip.to_string())).map_err(|_| {
-                        TunnelError::InvalidAddr(format!("invalid forwarded ip {}", ip))
-                    })?;
-                    remote_addr
-                        .query_pairs_mut()
-                        .append_pair("proxy", &peer_addr.to_string());
-                }
+            && let Some(ip) = forwarded.remotest_forwarded_for_ip()
+        {
+            remote_addr
+                .set_host(Some(&ip.to_string()))
+                .map_err(|_| TunnelError::InvalidAddr(format!("invalid forwarded ip {}", ip)))?;
+            remote_addr
+                .query_pairs_mut()
+                .append_pair("proxy", &peer_addr.to_string());
+        }
 
         let (write, read) = stream.split();
         let remote_addr: crate::proto::common::Url = remote_addr.into();

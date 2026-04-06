@@ -9,14 +9,14 @@ use super::super::{CaptchaFont, NewCaptcha};
 
 use image::{ImageBuffer, Rgba};
 use imageproc::drawing;
-use rand::{rngs::ThreadRng, Rng};
+use rand::{Rng, rngs::ThreadRng};
 use rusttype::{Font, Scale};
 use std::io::{Cursor, Write};
 use std::sync::Arc;
 
 mod color {
     use image::Rgba;
-    use rand::{rngs::ThreadRng, Rng};
+    use rand::{Rng, rngs::ThreadRng};
     pub fn gen_background_color(rng: &mut ThreadRng) -> Rgba<u8> {
         let red = rng.gen_range(200..=255);
         let green = rng.gen_range(200..=255);

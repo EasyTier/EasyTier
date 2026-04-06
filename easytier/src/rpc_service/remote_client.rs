@@ -217,14 +217,14 @@ where
                     },
                 )
                 .await
-            {
-                for meta in resp.metas {
-                    if let Some(inst_id) = meta.inst_id.as_ref() {
-                        let inst_id: uuid::Uuid = (*inst_id).into();
-                        metas.insert(inst_id, meta);
-                    }
+        {
+            for meta in resp.metas {
+                if let Some(inst_id) = meta.inst_id.as_ref() {
+                    let inst_id: uuid::Uuid = (*inst_id).into();
+                    metas.insert(inst_id, meta);
                 }
             }
+        }
 
         for instance_id in inst_ids {
             if metas.contains_key(&instance_id) {
@@ -279,9 +279,10 @@ where
                     },
                 )
                 .await
-                && let Some(config) = resp.config {
-                    return Ok(config);
-                }
+            && let Some(config) = resp.config
+        {
+            return Ok(config);
+        }
 
         let inst_id = inst_id.to_string();
 
@@ -350,7 +351,7 @@ where
     ) -> Result<(), E>;
 
     async fn delete_network_configs(&self, identify: T, network_inst_ids: &[Uuid])
-        -> Result<(), E>;
+    -> Result<(), E>;
 
     async fn update_network_config_state(
         &self,
@@ -360,7 +361,7 @@ where
     ) -> Result<(), E>;
 
     async fn list_network_configs(&self, identify: T, props: ListNetworkProps)
-        -> Result<Vec<C>, E>;
+    -> Result<Vec<C>, E>;
 
     async fn get_network_config(&self, identify: T, network_inst_id: &str) -> Result<Option<C>, E>;
 }

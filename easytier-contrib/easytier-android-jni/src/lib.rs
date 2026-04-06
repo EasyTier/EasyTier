@@ -1,7 +1,7 @@
 use easytier::proto::api::manage::{NetworkInstanceRunningInfo, NetworkInstanceRunningInfoMap};
+use jni::JNIEnv;
 use jni::objects::{JClass, JObjectArray, JString};
 use jni::sys::{jint, jstring};
-use jni::JNIEnv;
 use once_cell::sync::Lazy;
 use std::ffi::{CStr, CString};
 use std::ptr;
@@ -88,9 +88,10 @@ pub extern "system" fn Java_com_easytier_jni_EasyTierJNI_setTunFd(
     unsafe {
         let result = set_tun_fd(inst_name_cstr.as_ptr(), fd);
         if result != 0
-            && let Some(error) = get_last_error() {
-                throw_exception(&mut env, &error);
-            }
+            && let Some(error) = get_last_error()
+        {
+            throw_exception(&mut env, &error);
+        }
         result
     }
 }
@@ -115,9 +116,10 @@ pub extern "system" fn Java_com_easytier_jni_EasyTierJNI_parseConfig(
     unsafe {
         let result = parse_config(config_cstr.as_ptr());
         if result != 0
-            && let Some(error) = get_last_error() {
-                throw_exception(&mut env, &error);
-            }
+            && let Some(error) = get_last_error()
+        {
+            throw_exception(&mut env, &error);
+        }
         result
     }
 }
@@ -142,9 +144,10 @@ pub extern "system" fn Java_com_easytier_jni_EasyTierJNI_runNetworkInstance(
     unsafe {
         let result = run_network_instance(config_cstr.as_ptr());
         if result != 0
-            && let Some(error) = get_last_error() {
-                throw_exception(&mut env, &error);
-            }
+            && let Some(error) = get_last_error()
+        {
+            throw_exception(&mut env, &error);
+        }
         result
     }
 }
@@ -163,9 +166,10 @@ pub extern "system" fn Java_com_easytier_jni_EasyTierJNI_retainNetworkInstance(
         unsafe {
             let result = retain_network_instance(ptr::null(), 0);
             if result != 0
-                && let Some(error) = get_last_error() {
-                    throw_exception(&mut env, &error);
-                }
+                && let Some(error) = get_last_error()
+            {
+                throw_exception(&mut env, &error);
+            }
             return result;
         }
     }
@@ -184,9 +188,10 @@ pub extern "system" fn Java_com_easytier_jni_EasyTierJNI_retainNetworkInstance(
         unsafe {
             let result = retain_network_instance(ptr::null(), 0);
             if result != 0
-                && let Some(error) = get_last_error() {
-                    throw_exception(&mut env, &error);
-                }
+                && let Some(error) = get_last_error()
+            {
+                throw_exception(&mut env, &error);
+            }
             return result;
         }
     }
@@ -230,9 +235,10 @@ pub extern "system" fn Java_com_easytier_jni_EasyTierJNI_retainNetworkInstance(
     unsafe {
         let result = retain_network_instance(c_string_ptrs.as_ptr(), c_string_ptrs.len());
         if result != 0
-            && let Some(error) = get_last_error() {
-                throw_exception(&mut env, &error);
-            }
+            && let Some(error) = get_last_error()
+        {
+            throw_exception(&mut env, &error);
+        }
         result
     }
 }

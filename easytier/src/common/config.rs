@@ -6,10 +6,10 @@ use std::{
 };
 
 use anyhow::Context;
-use base64::{prelude::BASE64_STANDARD, Engine as _};
+use base64::{Engine as _, prelude::BASE64_STANDARD};
 use cfg_if::cfg_if;
-use clap::builder::PossibleValue;
 use clap::ValueEnum;
+use clap::builder::PossibleValue;
 use serde::{Deserialize, Serialize};
 use strum::{Display, EnumString, VariantArray};
 use tokio::io::AsyncReadExt as _;
@@ -622,13 +622,14 @@ impl ConfigLoader for TomlConfigLoader {
             locked_config.proxy_network = Some(vec![]);
         }
         if let Some(mapped_cidr) = mapped_cidr.as_ref()
-            && cidr.network_length() != mapped_cidr.network_length() {
-                return Err(anyhow::anyhow!(
-                    "Mapped CIDR must have the same network length as the original CIDR: {} != {}",
-                    cidr.network_length(),
-                    mapped_cidr.network_length()
-                ));
-            }
+            && cidr.network_length() != mapped_cidr.network_length()
+        {
+            return Err(anyhow::anyhow!(
+                "Mapped CIDR must have the same network length as the original CIDR: {} != {}",
+                cidr.network_length(),
+                mapped_cidr.network_length()
+            ));
+        }
         // insert if no duplicate
         if !locked_config
             .proxy_network
@@ -881,9 +882,10 @@ impl ConfigLoader for TomlConfigLoader {
         let mut flag_map: serde_json::Map<String, serde_json::Value> = Default::default();
         for (key, value) in default_flags_hashmap {
             if let Some(v) = cur_flags_hashmap.get(&key)
-                && *v != value {
-                    flag_map.insert(key, v.clone());
-                }
+                && *v != value
+            {
+                flag_map.insert(key, v.clone());
+            }
         }
 
         let mut config = self.config.lock().unwrap().clone();

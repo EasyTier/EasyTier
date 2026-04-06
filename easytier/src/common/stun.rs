@@ -11,8 +11,8 @@ use crossbeam::atomic::AtomicCell;
 use rand::seq::IteratorRandom;
 use socket2::{SockAddr, SockRef};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::{lookup_host, UdpSocket};
-use tokio::sync::{broadcast, Mutex};
+use tokio::net::{UdpSocket, lookup_host};
+use tokio::sync::{Mutex, broadcast};
 use tokio::task::JoinSet;
 use tracing::{Instrument, Level};
 
@@ -1340,7 +1340,7 @@ impl StunInfoCollectorTrait for MockStunInfoCollector {
 mod tests {
     use crate::{
         common::scoped_task::ScopedTask,
-        tunnel::{udp::UdpTunnelListener, TunnelListener},
+        tunnel::{TunnelListener, udp::UdpTunnelListener},
     };
     use tokio::time::{sleep, timeout};
 
@@ -1405,9 +1405,10 @@ mod tests {
                 let ret = detector.detect_nat_type(0).await;
                 println!("{:#?}, {:?}", ret, ret.as_ref().map(|x| x.nat_type()));
                 if let Ok(resp) = ret
-                    && !resp.stun_resps.is_empty() {
-                        return;
-                    }
+                    && !resp.stun_resps.is_empty()
+                {
+                    return;
+                }
                 sleep(Duration::from_secs(1)).await;
             }
         })

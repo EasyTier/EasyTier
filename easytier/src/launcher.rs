@@ -1,12 +1,12 @@
-use crate::common::config::{process_secure_mode_cfg, ConfigFileControl, PortForwardConfig};
+use crate::common::config::{ConfigFileControl, PortForwardConfig, process_secure_mode_cfg};
 use crate::proto::api::{self, manage};
 use crate::proto::rpc_types::controller::BaseController;
 use crate::rpc_service::InstanceRpcService;
 use crate::{
     common::{
         config::{
-            gen_default_flags, ConfigLoader, NetworkIdentity, PeerConfig, TomlConfigLoader,
-            VpnPortalConfig,
+            ConfigLoader, NetworkIdentity, PeerConfig, TomlConfigLoader, VpnPortalConfig,
+            gen_default_flags,
         },
         constants::EASYTIER_VERSION,
         global_ctx::{EventBusSubscriber, GlobalCtxEvent},
@@ -19,7 +19,7 @@ use chrono::{DateTime, Local};
 use std::{
     collections::VecDeque,
     net::SocketAddr,
-    sync::{atomic::AtomicBool, Arc, Mutex, RwLock},
+    sync::{Arc, Mutex, RwLock, atomic::AtomicBool},
 };
 use tokio::{
     sync::{broadcast, mpsc},
@@ -273,9 +273,10 @@ impl Drop for EasyTierLauncher {
         self.stop_flag
             .store(true, std::sync::atomic::Ordering::Relaxed);
         if let Some(handle) = self.thread_handle.take()
-            && let Err(e) = handle.join() {
-                println!("Error when joining thread: {:?}", e);
-            }
+            && let Err(e) = handle.join()
+        {
+            println!("Error when joining thread: {:?}", e);
+        }
     }
 }
 
@@ -656,11 +657,12 @@ impl NetworkConfig {
         }
 
         if self.enable_socks5.unwrap_or_default()
-            && let Some(socks5_port) = self.socks5_port {
-                cfg.set_socks5_portal(Some(
-                    format!("socks5://0.0.0.0:{}", socks5_port).parse().unwrap(),
-                ));
-            }
+            && let Some(socks5_port) = self.socks5_port
+        {
+            cfg.set_socks5_portal(Some(
+                format!("socks5://0.0.0.0:{}", socks5_port).parse().unwrap(),
+            ));
+        }
 
         if !self.mapped_listeners.is_empty() {
             cfg.set_mapped_listeners(Some(
@@ -908,10 +910,11 @@ impl NetworkConfig {
         }
 
         if let Some(routes) = config.get_routes()
-            && !routes.is_empty() {
-                result.enable_manual_routes = Some(true);
-                result.routes = routes.iter().map(|r| r.to_string()).collect();
-            }
+            && !routes.is_empty()
+        {
+            result.enable_manual_routes = Some(true);
+            result.routes = routes.iter().map(|r| r.to_string()).collect();
+        }
 
         let exit_nodes = config.get_exit_nodes();
         if !exit_nodes.is_empty() {
@@ -983,10 +986,10 @@ impl NetworkConfig {
 #[cfg(test)]
 mod tests {
     use crate::{
-        common::config::{process_secure_mode_cfg, ConfigLoader},
+        common::config::{ConfigLoader, process_secure_mode_cfg},
         proto::common::SecureModeConfig,
     };
-    use base64::prelude::{Engine as _, BASE64_STANDARD};
+    use base64::prelude::{BASE64_STANDARD, Engine as _};
     use rand::Rng;
     use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 

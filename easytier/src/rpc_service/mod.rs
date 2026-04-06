@@ -101,9 +101,10 @@ fn get_instance_service(
                     selector,
                 )) = selector
                     && let Some(name) = selector.name.as_ref()
-                        && v.get_inst_name() != *name {
-                            return false;
-                        }
+                    && v.get_inst_name() != *name
+                {
+                    return false;
+                }
                 true
             })
             .map(|v| *v.key())
@@ -115,7 +116,7 @@ fn get_instance_service(
                 return Err(anyhow::anyhow!(
                     "{} instances match the selector, please specify the instance ID",
                     ids.len()
-                ))
+                ));
             }
         }
     };

@@ -2,7 +2,7 @@ use std::{
     fmt::{Debug, Formatter},
     net::SocketAddr,
     pin::Pin,
-    sync::{atomic::AtomicBool, Arc},
+    sync::{Arc, atomic::AtomicBool},
     time::Duration,
 };
 
@@ -10,30 +10,30 @@ use anyhow::Context;
 use async_recursion::async_recursion;
 use async_trait::async_trait;
 use boringtun::{
-    noise::{errors::WireGuardError, Tunn, TunnResult},
+    noise::{Tunn, TunnResult, errors::WireGuardError},
     x25519::{PublicKey, StaticSecret},
 };
 use bytes::BytesMut;
 use crossbeam::atomic::AtomicCell;
 use dashmap::DashMap;
-use futures::{stream::FuturesUnordered, SinkExt, StreamExt};
+use futures::{SinkExt, StreamExt, stream::FuturesUnordered};
 use rand::RngCore;
 use tokio::{net::UdpSocket, sync::Mutex, task::JoinSet};
 
 use super::{
-    common::{setup_sokcet2, setup_sokcet2_ext, wait_for_connect_futures},
-    generate_digest_from_str,
-    packet_def::{ZCPacketType, PEER_MANAGER_HEADER_SIZE},
-    ring::create_ring_tunnel_pair,
     FromUrl, IpVersion, Tunnel, TunnelError, TunnelInfo, TunnelListener, TunnelUrl, ZCPacketSink,
     ZCPacketStream,
+    common::{setup_sokcet2, setup_sokcet2_ext, wait_for_connect_futures},
+    generate_digest_from_str,
+    packet_def::{PEER_MANAGER_HEADER_SIZE, ZCPacketType},
+    ring::create_ring_tunnel_pair,
 };
 use crate::{
     common::shrink_dashmap,
     tunnel::{
         build_url_from_socket_addr,
         common::TunnelWrapper,
-        packet_def::{ZCPacket, WG_TUNNEL_HEADER_SIZE},
+        packet_def::{WG_TUNNEL_HEADER_SIZE, ZCPacket},
     },
 };
 
@@ -331,11 +331,7 @@ impl WgPeerData {
     }
 
     fn remove_ip_header<'a>(&self, packet: &'a [u8], is_v4: bool) -> &'a [u8] {
-        if is_v4 {
-            &packet[20..]
-        } else {
-            &packet[40..]
-        }
+        if is_v4 { &packet[20..] } else { &packet[40..] }
     }
 }
 
@@ -772,8 +768,8 @@ impl super::TunnelConnector for WgTunnelConnector {
 pub mod tests {
     use super::*;
     use crate::tunnel::{
-        common::tests::{_tunnel_bench, _tunnel_pingpong},
         TunnelConnector,
+        common::tests::{_tunnel_bench, _tunnel_pingpong},
     };
     use boringtun::*;
 

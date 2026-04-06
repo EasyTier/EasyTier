@@ -3,10 +3,10 @@ use std::{
     net::{IpAddr, SocketAddr},
     pin::Pin,
     sync::{Arc, Mutex},
-    task::{ready, Poll},
+    task::{Poll, ready},
 };
 
-use futures::{stream::FuturesUnordered, Future, Sink, Stream};
+use futures::{Future, Sink, Stream, stream::FuturesUnordered};
 use network_interface::NetworkInterfaceConfig as _;
 use pin_project_lite::pin_project;
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
@@ -18,12 +18,12 @@ use zerocopy::FromBytes as _;
 
 use super::TunnelInfo;
 
-use crate::tunnel::packet_def::{ZCPacket, PEER_MANAGER_HEADER_SIZE};
+use crate::tunnel::packet_def::{PEER_MANAGER_HEADER_SIZE, ZCPacket};
 
 use super::{
-    buf::BufList,
-    packet_def::{TCPTunnelHeader, ZCPacketType, TCP_TUNNEL_HEADER_SIZE},
     SinkItem, StreamItem, Tunnel, TunnelError, ZCPacketSink, ZCPacketStream,
+    buf::BufList,
+    packet_def::{TCP_TUNNEL_HEADER_SIZE, TCPTunnelHeader, ZCPacketType},
 };
 
 pub struct TunnelWrapper<R, W> {
@@ -454,7 +454,7 @@ pub mod tests {
 
     use crate::{
         common::netns::NetNS,
-        tunnel::{packet_def::ZCPacket, TunnelConnector, TunnelListener},
+        tunnel::{TunnelConnector, TunnelListener, packet_def::ZCPacket},
     };
 
     pub async fn _tunnel_echo_server(tunnel: Box<dyn super::Tunnel>, once: bool) {

@@ -351,7 +351,7 @@ mod win_service_manager {
         ServiceStopCtx, ServiceUninstallCtx,
     };
 
-    use winreg::{enums::*, RegKey};
+    use winreg::{RegKey, enums::*};
 
     use crate::common::constants::WIN_SERVICE_WORK_DIR_REG_KEY;
 

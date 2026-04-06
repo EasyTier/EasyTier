@@ -2,8 +2,8 @@ use std::{
     any::Any,
     net::{IpAddr, Ipv4Addr, SocketAddr},
     sync::{
-        atomic::{AtomicBool, AtomicUsize, Ordering},
         Arc, Weak,
+        atomic::{AtomicBool, AtomicUsize, Ordering},
     },
     time::{Duration, Instant},
 };
@@ -28,7 +28,7 @@ use crate::{
             util::stream::tcp_connect_with_timeout,
         },
         ip_reassembler::IpReassembler,
-        tokio_smoltcp::{channel_device, BufferSize, Net, NetConfig},
+        tokio_smoltcp::{BufferSize, Net, NetConfig, channel_device},
     },
     tunnel::{
         common::setup_sokcet2,
@@ -38,20 +38,20 @@ use crate::{
 use anyhow::Context;
 use dashmap::DashMap;
 use pnet::packet::{
-    ip::IpNextHeaderProtocols, ipv4::Ipv4Packet, tcp::TcpPacket, udp::UdpPacket, Packet,
+    Packet, ip::IpNextHeaderProtocols, ipv4::Ipv4Packet, tcp::TcpPacket, udp::UdpPacket,
 };
 use tokio::{
     io::{AsyncRead, AsyncWrite},
     net::{TcpListener, TcpSocket, UdpSocket},
     select,
-    sync::{mpsc, Mutex, Notify},
+    sync::{Mutex, Notify, mpsc},
     task::JoinSet,
     time::timeout,
 };
 
 use crate::{
     common::{error::Error, global_ctx::GlobalCtx},
-    peers::{peer_manager::PeerManager, PeerPacketFilter},
+    peers::{PeerPacketFilter, peer_manager::PeerManager},
 };
 
 #[cfg(feature = "kcp")]
@@ -281,9 +281,10 @@ impl AsyncTcpConnector for Socks5AutoConnector {
         };
 
         if let Some(local_addr) = self.smoltcp_net.as_ref().map(|n| n.get_address())
-            && local_addr == addr.ip() {
-                addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), addr.port());
-            }
+            && local_addr == addr.ip()
+        {
+            addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), addr.port());
+        }
 
         if self.smoltcp_net.is_none()
             || peer_mgr_arc.get_msg_dst_peer(&addr.ip()).await.0.is_empty()

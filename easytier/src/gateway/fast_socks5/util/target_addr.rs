@@ -1,6 +1,6 @@
+use crate::gateway::fast_socks5::SocksError;
 use crate::gateway::fast_socks5::consts;
 use crate::gateway::fast_socks5::consts::SOCKS5_ADDR_TYPE_IPV4;
-use crate::gateway::fast_socks5::SocksError;
 use crate::read_exact;
 
 use anyhow::Context;

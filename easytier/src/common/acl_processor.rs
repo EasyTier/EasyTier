@@ -507,7 +507,7 @@ impl AclProcessor {
                     matched_rule: Some(RuleId::Default),
                     should_log: false,
                     log_context: Some(AclLogContext::UnsupportedChainType),
-                }
+                };
             }
         };
 
@@ -680,27 +680,29 @@ impl AclProcessor {
 
         // Source port check
         if let Some(src_port) = packet_info.src_port
-            && !rule.src_port_ranges.is_empty() {
-                let matches = rule
-                    .src_port_ranges
-                    .iter()
-                    .any(|(start, end)| src_port >= *start && src_port <= *end);
-                if !matches {
-                    return false;
-                }
+            && !rule.src_port_ranges.is_empty()
+        {
+            let matches = rule
+                .src_port_ranges
+                .iter()
+                .any(|(start, end)| src_port >= *start && src_port <= *end);
+            if !matches {
+                return false;
             }
+        }
 
         // Destination port check
         if let Some(dst_port) = packet_info.dst_port
-            && !rule.dst_port_ranges.is_empty() {
-                let matches = rule
-                    .dst_port_ranges
-                    .iter()
-                    .any(|(start, end)| dst_port >= *start && dst_port <= *end);
-                if !matches {
-                    return false;
-                }
+            && !rule.dst_port_ranges.is_empty()
+        {
+            let matches = rule
+                .dst_port_ranges
+                .iter()
+                .any(|(start, end)| dst_port >= *start && dst_port <= *end);
+            if !matches {
+                return false;
             }
+        }
 
         // Source group check
         if !rule.source_groups.is_empty() {

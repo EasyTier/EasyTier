@@ -1,6 +1,6 @@
 use super::{reactor::Reactor, socket_allocator::SocketHandle};
 use futures::future::{self, poll_fn};
-use futures::{ready, Stream};
+use futures::{Stream, ready};
 pub use smoltcp::socket::tcp;
 use smoltcp::socket::udp;
 use smoltcp::wire::{IpAddress, IpEndpoint};

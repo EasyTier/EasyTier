@@ -1,7 +1,7 @@
 use std::{
     fmt::Debug,
     net::{IpAddr, Ipv4Addr, Ipv6Addr},
-    sync::{atomic::AtomicBool, Arc, Weak},
+    sync::{Arc, Weak, atomic::AtomicBool},
     time::{Duration, Instant, SystemTime},
 };
 
@@ -12,14 +12,15 @@ use dashmap::DashMap;
 
 use tokio::{
     sync::{
-        mpsc::{self, UnboundedReceiver, UnboundedSender},
         Mutex, RwLock,
+        mpsc::{self, UnboundedReceiver, UnboundedSender},
     },
     task::JoinSet,
 };
 
 use crate::{
     common::{
+        PeerId,
         compressor::{Compressor as _, DefaultCompressor},
         constants::EASYTIER_VERSION,
         error::Error,
@@ -27,24 +28,23 @@ use crate::{
         shrink_dashmap,
         stats_manager::{CounterHandle, LabelSet, LabelType, MetricName},
         stun::StunInfoCollectorTrait,
-        PeerId,
     },
     peers::{
+        PeerPacketFilter,
         peer_conn::PeerConn,
         peer_rpc::PeerRpcManagerTransport,
         peer_session::PeerSessionStore,
         recv_packet_from_chan,
         route_trait::{ForeignNetworkRouteInfoMap, MockRoute, NextHopPolicy, RouteInterface},
         traffic_metrics::{
-            route_peer_info_instance_id, InstanceLabelKind, LogicalTrafficMetrics,
-            TrafficMetricRecorder,
+            InstanceLabelKind, LogicalTrafficMetrics, TrafficMetricRecorder,
+            route_peer_info_instance_id,
         },
-        PeerPacketFilter,
     },
     proto::{
         api::instance::{
-            self, list_global_foreign_network_response::OneForeignNetwork,
-            ListGlobalForeignNetworkResponse,
+            self, ListGlobalForeignNetworkResponse,
+            list_global_foreign_network_response::OneForeignNetwork,
         },
         peer_rpc::{
             ForeignNetworkRouteInfoEntry, ForeignNetworkRouteInfoKey, PeerIdentityType,
@@ -52,13 +52,13 @@ use crate::{
         },
     },
     tunnel::{
-        self,
+        self, Tunnel, TunnelConnector,
         packet_def::{CompressorAlgo, PacketType, ZCPacket},
-        Tunnel, TunnelConnector,
     },
 };
 
 use super::{
+    BoxNicPacketFilter, BoxPeerPacketFilter, PacketRecvChan, PacketRecvChanReceiver,
     create_packet_recv_chan,
     encrypt::{Encryptor, NullCipher},
     foreign_network_client::ForeignNetworkClient,
@@ -70,7 +70,6 @@ use super::{
     peer_task::ExternalTaskSignal,
     relay_peer_map::RelayPeerMap,
     route_trait::{ArcRoute, Route},
-    BoxNicPacketFilter, BoxPeerPacketFilter, PacketRecvChan, PacketRecvChanReceiver,
 };
 
 struct RpcTransport {
@@ -1409,9 +1408,10 @@ impl PeerManager {
         };
 
         if send_result.is_ok()
-            && let Some(metrics) = direct_tx_metrics {
-                metrics.record_tx(dst_peer_id, packet_type, msg_len).await;
-            }
+            && let Some(metrics) = direct_tx_metrics
+        {
+            metrics.record_tx(dst_peer_id, packet_type, msg_len).await;
+        }
 
         send_result
     }
@@ -1995,7 +1995,7 @@ mod tests {
     use crate::{
         common::{
             config::Flags,
-            global_ctx::{tests::get_mock_global_ctx, NetworkIdentity},
+            global_ctx::{NetworkIdentity, tests::get_mock_global_ctx},
             stats_manager::{LabelSet, LabelType, MetricName},
         },
         connector::{
@@ -2019,11 +2019,11 @@ mod tests {
             peer_rpc::SecureAuthLevel,
         },
         tunnel::{
+            TunnelConnector, TunnelListener,
             common::tests::wait_for_condition,
-            filter::{tests::DropSendTunnelFilter, TunnelWithFilter},
+            filter::{TunnelWithFilter, tests::DropSendTunnelFilter},
             packet_def::{PacketType, ZCPacket},
             ring::create_ring_tunnel_pair,
-            TunnelConnector, TunnelListener,
         },
     };
 
@@ -2193,24 +2193,28 @@ mod tests {
                 .value,
             0
         );
-        assert!(peer_mgr
-            .get_global_ctx()
-            .stats_manager()
-            .get_metric(
-                MetricName::TrafficBytesTxByInstance,
-                &network_labels
-                    .clone()
-                    .with_label_type(LabelType::ToInstanceId("unknown".to_string())),
-            )
-            .is_none());
-        assert!(peer_mgr
-            .get_global_ctx()
-            .stats_manager()
-            .get_metric(
-                MetricName::TrafficPacketsTxByInstance,
-                &network_labels.with_label_type(LabelType::ToInstanceId("unknown".to_string())),
-            )
-            .is_none());
+        assert!(
+            peer_mgr
+                .get_global_ctx()
+                .stats_manager()
+                .get_metric(
+                    MetricName::TrafficBytesTxByInstance,
+                    &network_labels
+                        .clone()
+                        .with_label_type(LabelType::ToInstanceId("unknown".to_string())),
+                )
+                .is_none()
+        );
+        assert!(
+            peer_mgr
+                .get_global_ctx()
+                .stats_manager()
+                .get_metric(
+                    MetricName::TrafficPacketsTxByInstance,
+                    &network_labels.with_label_type(LabelType::ToInstanceId("unknown".to_string())),
+                )
+                .is_none()
+        );
     }
 
     #[tokio::test]
@@ -2264,24 +2268,28 @@ mod tests {
             ),
             0
         );
-        assert!(peer_mgr
-            .get_global_ctx()
-            .stats_manager()
-            .get_metric(
-                MetricName::TrafficBytesTxByInstance,
-                &network_labels
-                    .clone()
-                    .with_label_type(LabelType::ToInstanceId("unknown".to_string())),
-            )
-            .is_none());
-        assert!(peer_mgr
-            .get_global_ctx()
-            .stats_manager()
-            .get_metric(
-                MetricName::TrafficControlBytesTxByInstance,
-                &network_labels.with_label_type(LabelType::ToInstanceId("unknown".to_string())),
-            )
-            .is_none());
+        assert!(
+            peer_mgr
+                .get_global_ctx()
+                .stats_manager()
+                .get_metric(
+                    MetricName::TrafficBytesTxByInstance,
+                    &network_labels
+                        .clone()
+                        .with_label_type(LabelType::ToInstanceId("unknown".to_string())),
+                )
+                .is_none()
+        );
+        assert!(
+            peer_mgr
+                .get_global_ctx()
+                .stats_manager()
+                .get_metric(
+                    MetricName::TrafficControlBytesTxByInstance,
+                    &network_labels.with_label_type(LabelType::ToInstanceId("unknown".to_string())),
+                )
+                .is_none()
+        );
     }
 
     #[tokio::test]

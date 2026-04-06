@@ -81,11 +81,7 @@ where
     /// Determines the final filename, where n==0 indicates the current file
     fn filename_for(&self, n: usize) -> String {
         let f = self.filename.clone();
-        if n > 0 {
-            format!("{}.{}", f, n)
-        } else {
-            f
-        }
+        if n > 0 { format!("{}.{}", f, n) } else { f }
     }
 
     /// Rotates old files to make room for a new one.
@@ -146,13 +142,14 @@ where
     /// Writes data using the given datetime to calculate the rolling condition
     pub fn write_with_datetime(&mut self, buf: &[u8], now: &DateTime<Local>) -> io::Result<usize> {
         if self.condition.should_rollover(now, self.current_filesize)
-            && let Err(e) = self.rollover() {
-                // If we can't rollover, just try to continue writing anyway
-                // (better than missing data).
-                // This will likely used to implement logging, so
-                // avoid using log::warn and log to stderr directly
-                eprintln!("WARNING: Failed to rotate logfile {}: {}", self.filename, e);
-            }
+            && let Err(e) = self.rollover()
+        {
+            // If we can't rollover, just try to continue writing anyway
+            // (better than missing data).
+            // This will likely used to implement logging, so
+            // avoid using log::warn and log to stderr directly
+            eprintln!("WARNING: Failed to rotate logfile {}: {}", self.filename, e);
+        }
         self.open_writer_if_needed()?;
         if let Some(writer) = self.writer_opt.as_mut() {
             let buf_len = buf.len();

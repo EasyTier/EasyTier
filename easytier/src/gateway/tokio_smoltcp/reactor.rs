@@ -2,7 +2,7 @@ use super::{
     device::{BufferDevice, Packet},
     socket_allocator::{BufferSize, SocketAlloctor},
 };
-use futures::{stream::iter, FutureExt, SinkExt, StreamExt};
+use futures::{FutureExt, SinkExt, StreamExt, stream::iter};
 use parking_lot::{MappedMutexGuard, Mutex, MutexGuard};
 use smoltcp::{
     iface::{Context, Interface, SocketHandle},
@@ -93,9 +93,10 @@ async fn run(
         // wake up all closed sockets (smoltcp seems have a bug that it doesn't wake up closed sockets)
         for (_, socket) in socket_allocator.sockets().lock().iter_mut() {
             if let Socket::Tcp(tcp) = socket
-                && tcp.state() == smoltcp::socket::tcp::State::Closed {
-                    tcp.abort();
-                }
+                && tcp.state() == smoltcp::socket::tcp::State::Closed
+            {
+                tcp.abort();
+            }
         }
     }
 

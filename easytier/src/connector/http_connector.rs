@@ -10,9 +10,9 @@ use rand::seq::SliceRandom as _;
 use url::Url;
 
 use crate::{
+    VERSION,
     common::{error::Error, global_ctx::ArcGlobalCtx},
     tunnel::{IpVersion, Tunnel, TunnelConnector, TunnelError, ZCPacketSink, ZCPacketStream},
-    VERSION,
 };
 
 use crate::proto::common::TunnelInfo;
@@ -257,7 +257,7 @@ mod tests {
 
     use crate::{
         common::global_ctx::tests::get_mock_global_ctx_with_network,
-        tunnel::{tcp::TcpTunnelListener, TunnelConnector, TunnelListener},
+        tunnel::{TunnelConnector, TunnelListener, tcp::TcpTunnelListener},
     };
 
     use super::*;

@@ -110,11 +110,7 @@ pub mod instance {
                 ret += stats.rx_bytes;
             }
 
-            if ret == 0 {
-                None
-            } else {
-                Some(ret)
-            }
+            if ret == 0 { None } else { Some(ret) }
         }
 
         pub fn get_tx_bytes(&self) -> Option<u64> {
@@ -127,11 +123,7 @@ pub mod instance {
                 ret += stats.tx_bytes;
             }
 
-            if ret == 0 {
-                None
-            } else {
-                Some(ret)
-            }
+            if ret == 0 { None } else { Some(ret) }
         }
 
         pub fn get_loss_rate(&self) -> Option<f64> {
@@ -167,11 +159,7 @@ pub mod instance {
                 }
             }
 
-            if ret.is_empty() {
-                None
-            } else {
-                Some(ret)
-            }
+            if ret.is_empty() { None } else { Some(ret) }
         }
 
         pub fn get_udp_nat_type(&self) -> String {
@@ -366,9 +354,10 @@ mod tests {
             ..Default::default()
         };
 
-        assert!(pair
-            .get_loss_rate()
-            .is_some_and(|loss_rate| (loss_rate - 0.4).abs() < 1e-6));
+        assert!(
+            pair.get_loss_rate()
+                .is_some_and(|loss_rate| (loss_rate - 0.4).abs() < 1e-6)
+        );
     }
 
     #[test]

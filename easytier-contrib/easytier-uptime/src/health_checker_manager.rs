@@ -1,11 +1,11 @@
 use std::{collections::HashSet, sync::Arc, time::Duration};
 
 use anyhow::Context as _;
-use tokio::time::{interval, Interval};
+use tokio::time::{Interval, interval};
 use tracing::{error, info};
 
 use crate::{
-    db::{entity::shared_nodes, operations::NodeOperations, Db},
+    db::{Db, entity::shared_nodes, operations::NodeOperations},
     health_checker::HealthChecker,
 };
 

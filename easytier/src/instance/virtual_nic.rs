@@ -15,18 +15,18 @@ use crate::{
         log,
     },
     instance::proxy_cidrs_monitor::ProxyCidrsMonitor,
-    peers::{peer_manager::PeerManager, recv_packet_from_chan, PacketRecvChanReceiver},
+    peers::{PacketRecvChanReceiver, peer_manager::PeerManager, recv_packet_from_chan},
     tunnel::{
-        common::{reserve_buf, FramedWriter, TunnelWrapper, ZCPacketToBytes},
-        packet_def::{ZCPacket, ZCPacketType, TAIL_RESERVED_SIZE},
         StreamItem, Tunnel, TunnelError, ZCPacketSink, ZCPacketStream,
+        common::{FramedWriter, TunnelWrapper, ZCPacketToBytes, reserve_buf},
+        packet_def::{TAIL_RESERVED_SIZE, ZCPacket, ZCPacketType},
     },
 };
 
 use byteorder::WriteBytesExt as _;
 use bytes::{BufMut, BytesMut};
 use cidr::{Ipv4Inet, Ipv6Inet};
-use futures::{lock::BiLock, ready, SinkExt, Stream, StreamExt};
+use futures::{SinkExt, Stream, StreamExt, lock::BiLock, ready};
 use pin_project_lite::pin_project;
 use pnet::packet::{ipv4::Ipv4Packet, ipv6::Ipv6Packet};
 use tokio::{

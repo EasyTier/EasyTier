@@ -1,6 +1,6 @@
 use std::{
     result::Result,
-    sync::{atomic::Ordering, Arc, Mutex},
+    sync::{Arc, Mutex, atomic::Ordering},
 };
 
 use atomic_shim::AtomicU64;

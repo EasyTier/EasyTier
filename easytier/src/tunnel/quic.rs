@@ -7,15 +7,15 @@ use std::{
 };
 
 use crate::tunnel::{
-    common::{setup_sokcet2, FramedReader, FramedWriter, TunnelWrapper},
     FromUrl, TunnelInfo,
+    common::{FramedReader, FramedWriter, TunnelWrapper, setup_sokcet2},
 };
 use anyhow::Context;
 
 use super::{IpVersion, Tunnel, TunnelConnector, TunnelError, TunnelListener};
 use quinn::{
-    congestion::BbrConfig, udp::RecvMeta, AsyncUdpSocket, ClientConfig, Connection, Endpoint,
-    EndpointConfig, ServerConfig, TransportConfig, UdpPoller,
+    AsyncUdpSocket, ClientConfig, Connection, Endpoint, EndpointConfig, ServerConfig,
+    TransportConfig, UdpPoller, congestion::BbrConfig, udp::RecvMeta,
 };
 
 pub fn transport_config() -> Arc<TransportConfig> {
@@ -309,8 +309,8 @@ impl TunnelConnector for QuicTunnelConnector {
 #[cfg(test)]
 mod tests {
     use crate::tunnel::{
-        common::tests::{_tunnel_bench, _tunnel_pingpong},
         IpVersion, TunnelConnector,
+        common::tests::{_tunnel_bench, _tunnel_pingpong},
     };
 
     use super::*;

@@ -4,8 +4,8 @@ use std::time::Duration;
 
 use subtle::ConstantTimeEq;
 
-use axum::routing::get;
 use axum::Router;
+use axum::routing::get;
 use openidconnect::core::{
     CoreAuthDisplay, CoreAuthPrompt, CoreErrorResponseType, CoreGenderClaim, CoreJsonWebKey,
     CoreJweContentEncryptionAlgorithm, CoreJwsSigningAlgorithm, CoreProviderMetadata,
@@ -216,7 +216,9 @@ impl OidcConfig {
         } = opts;
 
         if oidc_issuer_url.is_none() || oidc_client_id.is_none() || oidc_redirect_url.is_none() {
-            return Err(anyhow::anyhow!("--oidc-issuer-url, --oidc-client-id and --oidc-redirect-url are required when using OIDC authentication"));
+            return Err(anyhow::anyhow!(
+                "--oidc-issuer-url, --oidc-client-id and --oidc-redirect-url are required when using OIDC authentication"
+            ));
         }
         if oidc_username_claim.trim().is_empty() {
             return Err(anyhow::anyhow!("--oidc-username-claim cannot be empty"));
@@ -377,14 +379,14 @@ mod route {
             && let Err(e) = session
                 .insert("oidc_pkce_verifier", verifier.secret().clone())
                 .await
-            {
-                tracing::error!("Failed to store pkce_verifier in session: {:?}", e);
-                return (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(other_error("Session error")),
-                )
-                    .into_response();
-            }
+        {
+            tracing::error!("Failed to store pkce_verifier in session: {:?}", e);
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(other_error("Session error")),
+            )
+                .into_response();
+        }
         if let Err(e) = session.insert("oidc_pkce_used", pkce_enabled).await {
             tracing::error!("Failed to store pkce_used in session: {:?}", e);
             return (

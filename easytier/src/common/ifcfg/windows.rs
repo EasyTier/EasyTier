@@ -10,14 +10,14 @@ use std::{
 };
 use windows_sys::Win32::{
     Foundation::NO_ERROR,
-    NetworkManagement::IpHelper::{GetIfEntry, SetIfEntry, MIB_IFROW},
+    NetworkManagement::IpHelper::{GetIfEntry, MIB_IFROW, SetIfEntry},
     System::Diagnostics::Debug::{
-        FormatMessageW, FORMAT_MESSAGE_FROM_SYSTEM, FORMAT_MESSAGE_IGNORE_INSERTS,
+        FORMAT_MESSAGE_FROM_SYSTEM, FORMAT_MESSAGE_IGNORE_INSERTS, FormatMessageW,
     },
 };
 use winreg::{
-    enums::{HKEY_LOCAL_MACHINE, KEY_READ, KEY_WRITE},
     RegKey,
+    enums::{HKEY_LOCAL_MACHINE, KEY_READ, KEY_WRITE},
 };
 
 use super::{Error, IfConfiguerTrait};
@@ -331,7 +331,7 @@ impl RegistryManager {
         r"SYSTEM\CurrentControlSet\Services\NetBT\Parameters\Interfaces\Tcpip_";
 
     pub fn reg_delete_obsoleted_items(dev_name: &str) -> io::Result<()> {
-        use winreg::{enums::HKEY_LOCAL_MACHINE, enums::KEY_ALL_ACCESS, RegKey};
+        use winreg::{RegKey, enums::HKEY_LOCAL_MACHINE, enums::KEY_ALL_ACCESS};
         let hklm = RegKey::predef(HKEY_LOCAL_MACHINE);
         let profiles_key = hklm.open_subkey_with_flags(
             "SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\NetworkList\\Profiles",
@@ -405,7 +405,7 @@ impl RegistryManager {
     }
 
     pub fn reg_change_catrgory_in_profile(dev_name: &str) -> io::Result<()> {
-        use winreg::{enums::HKEY_LOCAL_MACHINE, enums::KEY_ALL_ACCESS, RegKey};
+        use winreg::{RegKey, enums::HKEY_LOCAL_MACHINE, enums::KEY_ALL_ACCESS};
         let hklm = RegKey::predef(HKEY_LOCAL_MACHINE);
         let profiles_key = hklm.open_subkey_with_flags(
             "SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\NetworkList\\Profiles",

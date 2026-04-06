@@ -3,14 +3,14 @@ use std::sync::atomic::Ordering;
 use std::time::Instant;
 use std::{
     net::IpAddr,
-    sync::{atomic::AtomicBool, Arc},
+    sync::{Arc, atomic::AtomicBool},
 };
 
 use arc_swap::ArcSwap;
 use dashmap::DashMap;
 use pnet::packet::ipv6::Ipv6Packet;
 use pnet::packet::{
-    ip::IpNextHeaderProtocols, ipv4::Ipv4Packet, tcp::TcpPacket, udp::UdpPacket, Packet as _,
+    Packet as _, ip::IpNextHeaderProtocols, ipv4::Ipv4Packet, tcp::TcpPacket, udp::UdpPacket,
 };
 
 use crate::common::scoped_task::ScopedTask;
@@ -239,22 +239,23 @@ impl AclFilter {
         processor: &AclProcessor,
     ) {
         if result.should_log
-            && let Some(ref log_context) = result.log_context {
-                let log_message = log_context.to_message();
-                tracing::info!(
-                    src_ip = %packet_info.src_ip,
-                    dst_ip = %packet_info.dst_ip,
-                    src_port = packet_info.src_port,
-                    dst_port = packet_info.dst_port,
-                    src_group = packet_info.src_groups.join(","),
-                    dst_group = packet_info.dst_groups.join(","),
-                    protocol = ?packet_info.protocol,
-                    action = ?result.action,
-                    rule = result.matched_rule_str().as_deref().unwrap_or("unknown"),
-                    chain_type = ?chain_type,
-                    "ACL: {}", log_message
-                );
-            }
+            && let Some(ref log_context) = result.log_context
+        {
+            let log_message = log_context.to_message();
+            tracing::info!(
+                src_ip = %packet_info.src_ip,
+                dst_ip = %packet_info.dst_ip,
+                src_port = packet_info.src_port,
+                dst_port = packet_info.dst_port,
+                src_group = packet_info.src_groups.join(","),
+                dst_group = packet_info.dst_groups.join(","),
+                protocol = ?packet_info.protocol,
+                action = ?result.action,
+                rule = result.matched_rule_str().as_deref().unwrap_or("unknown"),
+                chain_type = ?chain_type,
+                "ACL: {}", log_message
+            );
+        }
 
         // Update global statistics in the ACL processor
         match result.action {

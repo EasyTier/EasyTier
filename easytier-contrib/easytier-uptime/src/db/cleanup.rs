@@ -1,7 +1,7 @@
-use crate::db::entity::*;
 use crate::db::Db;
+use crate::db::entity::*;
 use sea_orm::*;
-use tokio::time::{sleep, Duration};
+use tokio::time::{Duration, sleep};
 use tracing::{error, info, warn};
 
 /// 数据清理策略配置

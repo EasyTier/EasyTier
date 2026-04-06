@@ -231,7 +231,7 @@ mod tests {
     };
 
     use super::*;
-    use tokio::time::{sleep, Duration};
+    use tokio::time::{Duration, sleep};
 
     /// Test initial state after creation
     #[tokio::test]

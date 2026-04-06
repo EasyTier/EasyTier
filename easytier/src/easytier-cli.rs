@@ -12,8 +12,8 @@ use std::{
 };
 
 use anyhow::Context;
-use base64::prelude::BASE64_STANDARD;
 use base64::Engine as _;
+use base64::prelude::BASE64_STANDARD;
 use cidr::Ipv4Inet;
 use clap::{Args, CommandFactory, Parser, Subcommand};
 use dashmap::DashMap;
@@ -21,8 +21,8 @@ use easytier::ShellType;
 use humansize::format_size;
 use rust_i18n::t;
 use service_manager::*;
-use tabled::settings::{location::ByColumnName, object::Columns, Disable, Modify, Style, Width};
-use terminal_size::{terminal_size, Width as TerminalWidth};
+use tabled::settings::{Disable, Modify, Style, Width, location::ByColumnName, object::Columns};
+use terminal_size::{Width as TerminalWidth, terminal_size};
 use unicode_width::UnicodeWidthStr;
 
 use easytier::service_manager::{Service, ServiceInstallOptions};
@@ -42,9 +42,7 @@ use easytier::{
                 InstanceConfigPatch, PatchConfigRequest, PortForwardPatch, StringPatch, UrlPatch,
             },
             instance::{
-                instance_identifier::{InstanceSelector, Selector},
-                list_global_foreign_network_response, list_peer_route_pair, AclManageRpc,
-                AclManageRpcClientFactory, Connector, ConnectorManageRpc,
+                AclManageRpc, AclManageRpcClientFactory, Connector, ConnectorManageRpc,
                 ConnectorManageRpcClientFactory, CredentialManageRpc,
                 CredentialManageRpcClientFactory, DumpRouteRequest, ForeignNetworkEntryPb,
                 GenerateCredentialRequest, GetAclStatsRequest, GetPrometheusStatsRequest,
@@ -60,6 +58,8 @@ use easytier::{
                 StatsRpc, StatsRpcClientFactory, TcpProxyEntryState, TcpProxyEntryTransportType,
                 TcpProxyRpc, TcpProxyRpcClientFactory, TrustedKeySourcePb, VpnPortalInfo,
                 VpnPortalRpc, VpnPortalRpcClientFactory,
+                instance_identifier::{InstanceSelector, Selector},
+                list_global_foreign_network_response, list_peer_route_pair,
             },
             logger::{
                 GetLoggerConfigRequest, LogLevel, LoggerRpc, LoggerRpcClientFactory,
@@ -75,8 +75,8 @@ use easytier::{
         rpc_impl::standalone::StandAloneClient,
         rpc_types::controller::BaseController,
     },
-    tunnel::{tcp::TcpTunnelConnector, TunnelScheme},
-    utils::{cost_to_str, PeerRoutePair},
+    tunnel::{TunnelScheme, tcp::TcpTunnelConnector},
+    utils::{PeerRoutePair, cost_to_str},
 };
 
 rust_i18n::i18n!("locales", fallback = "en");
@@ -1972,7 +1972,12 @@ impl<'a> CommandHandler<'a> {
             "info" => LogLevel::Info,
             "debug" => LogLevel::Debug,
             "trace" => LogLevel::Trace,
-            _ => return Err(anyhow::anyhow!("Invalid log level: {}. Valid levels are: disabled, error, warning, info, debug, trace", level)),
+            _ => {
+                return Err(anyhow::anyhow!(
+                    "Invalid log level: {}. Valid levels are: disabled, error, warning, info, debug, trace",
+                    level
+                ));
+            }
         };
 
         let client = self.get_logger_client().await?;
@@ -2497,9 +2502,10 @@ fn header_indices(headers: &[String], names: &[&str]) -> Vec<usize> {
         if let Some(index) = headers
             .iter()
             .position(|header| header.eq_ignore_ascii_case(name))
-            && !indices.contains(&index) {
-                indices.push(index);
-            }
+            && !indices.contains(&index)
+        {
+            indices.push(index);
+        }
     }
     indices
 }

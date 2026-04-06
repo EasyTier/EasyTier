@@ -94,14 +94,15 @@ impl WebClientService for InstanceManageRpcService {
 
         if !control.is_read_only()
             && let Some(config_file) = control.path.as_ref()
-                && let Err(e) = std::fs::write(config_file, cfg.dump()) {
-                    tracing::warn!(
-                        "failed to write config file {}: {}",
-                        config_file.display(),
-                        e
-                    );
-                    control.set_read_only(true);
-                }
+            && let Err(e) = std::fs::write(config_file, cfg.dump())
+        {
+            tracing::warn!(
+                "failed to write config file {}: {}",
+                config_file.display(),
+                e
+            );
+            control.set_read_only(true);
+        }
 
         if let Err(e) = self.hooks.pre_run_network_instance(&cfg).await {
             return Err(anyhow::anyhow!("pre-run hook failed: {}", e).into());

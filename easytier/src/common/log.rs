@@ -9,11 +9,11 @@ use paste::paste;
 use regex::Regex;
 use tracing::level_filters::LevelFilter;
 use tracing::{Level, Metadata};
-use tracing_subscriber::filter::{filter_fn, FilterExt};
+use tracing_subscriber::Registry;
+use tracing_subscriber::filter::{FilterExt, filter_fn};
 use tracing_subscriber::fmt::layer;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
-use tracing_subscriber::Registry;
 use tracing_subscriber::{EnvFilter, Layer};
 
 macro_rules! __log__ {
