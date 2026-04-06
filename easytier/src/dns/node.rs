@@ -159,8 +159,8 @@ impl DnsNode {
                 }
 
                 _ = &mut sleep => {
-                    if let Err(e) = self.heartbeat(&mut rpc, &mut heartbeat).await {
-                        tracing::error!("heartbeat failed: {:?}", e);
+                    if let Err(error) = self.heartbeat(&mut rpc, &mut heartbeat).await {
+                        tracing::error!(?error, "heartbeat failed");
                         self.elect.notify_one();
                     }
 

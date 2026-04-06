@@ -182,8 +182,8 @@ impl DnsServer {
         tracing::info!(?listeners, "reloading");
 
         if let Some(runtime) = runtime.as_ref() {
-            if let Some(Err(e)) = runtime.stop().await {
-                tracing::error!("failed to stop old DNS server runtime: {}", e);
+            if let Some(Err(error)) = runtime.stop().await {
+                tracing::error!(?error, "failed to stop old DNS server runtime");
             }
         }
 
@@ -237,8 +237,8 @@ impl DnsServer {
             loop {
                 dirty.addresses.wait().await;
                 if dirty.addresses.reset() {
-                    if let Err(e) = self.reload_addresses(self.mgr.iter_addresses()).await {
-                        tracing::error!("failed to reload addresses: {:?}", e);
+                    if let Err(error) = self.reload_addresses(self.mgr.iter_addresses()).await {
+                        tracing::error!(?error, "failed to reload addresses");
                         dirty.addresses.mark();
                     }
                 }
@@ -250,11 +250,11 @@ impl DnsServer {
             loop {
                 dirty.listeners.wait().await;
                 if dirty.listeners.reset() {
-                    if let Err(e) = self
+                    if let Err(error) = self
                         .reload_listeners(self.mgr.iter_listeners(), &mut runtime)
                         .await
                     {
-                        tracing::error!("failed to reload listeners: {:?}", e);
+                        tracing::error!(?error, "failed to reload listeners");
                         dirty.listeners.mark();
                     }
                 }
