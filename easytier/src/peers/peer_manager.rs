@@ -37,8 +37,8 @@ use crate::{
         recv_packet_from_chan,
         route_trait::{ForeignNetworkRouteInfoMap, MockRoute, NextHopPolicy, RouteInterface},
         traffic_metrics::{
-            InstanceLabelKind, LogicalTrafficMetrics, TrafficMetricRecorder,
-            route_peer_info_instance_id,
+            InstanceLabelKind, LogicalTrafficMetrics, TrafficKind, TrafficMetricRecorder,
+            route_peer_info_instance_id, traffic_kind,
         },
     },
     proto::{
@@ -888,10 +888,16 @@ impl PeerManager {
             stats_mgr.get_counter(MetricName::TrafficBytesSelfRx, label_set.clone());
         let self_rx_packets =
             stats_mgr.get_counter(MetricName::TrafficPacketsSelfRx, label_set.clone());
-        let forward_tx_bytes =
+        let forward_data_tx_bytes =
             stats_mgr.get_counter(MetricName::TrafficBytesForwarded, label_set.clone());
-        let forward_tx_packets =
+        let forward_data_tx_packets =
             stats_mgr.get_counter(MetricName::TrafficPacketsForwarded, label_set.clone());
+        let forward_control_tx_bytes =
+            stats_mgr.get_counter(MetricName::TrafficControlBytesForwarded, label_set.clone());
+        let forward_control_tx_packets = stats_mgr.get_counter(
+            MetricName::TrafficControlPacketsForwarded,
+            label_set.clone(),
+        );
 
         let compress_tx_bytes_before = self.self_tx_counters.compress_tx_bytes_before.clone();
         let compress_tx_bytes_after = self.self_tx_counters.compress_tx_bytes_after.clone();
@@ -966,8 +972,16 @@ impl PeerManager {
                         self_tx_bytes.add(ret.buf_len() as u64);
                         self_tx_packets.inc();
                     } else {
-                        forward_tx_bytes.add(buf_len as u64);
-                        forward_tx_packets.inc();
+                        match traffic_kind(packet_type) {
+                            TrafficKind::Data => {
+                                forward_data_tx_bytes.add(buf_len as u64);
+                                forward_data_tx_packets.inc();
+                            }
+                            TrafficKind::Control => {
+                                forward_control_tx_bytes.add(buf_len as u64);
+                                forward_control_tx_packets.inc();
+                            }
+                        }
                     }
 
                     tracing::trace!(?to_peer_id, ?my_peer_id, "need forward");
@@ -2046,6 +2060,12 @@ mod tests {
             .unwrap_or(0)
     }
 
+    fn network_labels(peer_mgr: &PeerManager) -> LabelSet {
+        LabelSet::new().with_label_type(LabelType::NetworkName(
+            peer_mgr.get_global_ctx().get_network_name(),
+        ))
+    }
+
     #[test]
     fn recent_traffic_fanout_policy_only_marks_single_peer() {
         assert!(PeerManager::should_mark_recent_traffic_for_fanout(0));
@@ -2430,6 +2450,136 @@ mod tests {
             metric_value(&peer_mgr_b, MetricName::TrafficBytesRx, &b_network_labels),
             b_data_rx_before
         );
+    }
+
+    #[tokio::test]
+    async fn send_msg_internal_records_data_forwarded_metrics_for_transit_peer() {
+        let peer_mgr_a = create_mock_peer_manager_with_mock_stun(NatType::Unknown).await;
+        let peer_mgr_b = create_mock_peer_manager_with_mock_stun(NatType::Unknown).await;
+        let peer_mgr_c = create_mock_peer_manager_with_mock_stun(NatType::Unknown).await;
+
+        connect_peer_manager(peer_mgr_a.clone(), peer_mgr_b.clone()).await;
+        connect_peer_manager(peer_mgr_b.clone(), peer_mgr_c.clone()).await;
+        wait_route_appear(peer_mgr_a.clone(), peer_mgr_c.clone())
+            .await
+            .unwrap();
+
+        let b_network_labels = network_labels(&peer_mgr_b);
+        let forwarded_bytes_before = metric_value(
+            &peer_mgr_b,
+            MetricName::TrafficBytesForwarded,
+            &b_network_labels,
+        );
+        let forwarded_packets_before = metric_value(
+            &peer_mgr_b,
+            MetricName::TrafficPacketsForwarded,
+            &b_network_labels,
+        );
+
+        let mut pkt = ZCPacket::new_with_payload(b"forward-data");
+        pkt.fill_peer_manager_hdr(
+            peer_mgr_a.my_peer_id(),
+            peer_mgr_c.my_peer_id(),
+            PacketType::Data as u8,
+        );
+        let pkt_len = pkt.buf_len() as u64;
+
+        PeerManager::send_msg_internal(
+            &peer_mgr_a.peers,
+            &peer_mgr_a.foreign_network_client,
+            &peer_mgr_a.relay_peer_map,
+            Some(&peer_mgr_a.traffic_metrics),
+            pkt,
+            peer_mgr_c.my_peer_id(),
+        )
+        .await
+        .unwrap();
+
+        wait_for_condition(
+            || {
+                let peer_mgr_b = peer_mgr_b.clone();
+                let b_network_labels = b_network_labels.clone();
+                async move {
+                    metric_value(
+                        &peer_mgr_b,
+                        MetricName::TrafficBytesForwarded,
+                        &b_network_labels,
+                    ) >= forwarded_bytes_before + pkt_len
+                        && metric_value(
+                            &peer_mgr_b,
+                            MetricName::TrafficPacketsForwarded,
+                            &b_network_labels,
+                        ) > forwarded_packets_before
+                }
+            },
+            Duration::from_secs(5),
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn send_msg_internal_records_control_forwarded_metrics_for_transit_peer() {
+        let peer_mgr_a = create_mock_peer_manager_with_mock_stun(NatType::Unknown).await;
+        let peer_mgr_b = create_mock_peer_manager_with_mock_stun(NatType::Unknown).await;
+        let peer_mgr_c = create_mock_peer_manager_with_mock_stun(NatType::Unknown).await;
+
+        connect_peer_manager(peer_mgr_a.clone(), peer_mgr_b.clone()).await;
+        connect_peer_manager(peer_mgr_b.clone(), peer_mgr_c.clone()).await;
+        wait_route_appear(peer_mgr_a.clone(), peer_mgr_c.clone())
+            .await
+            .unwrap();
+
+        let b_network_labels = network_labels(&peer_mgr_b);
+        let forwarded_bytes_before = metric_value(
+            &peer_mgr_b,
+            MetricName::TrafficControlBytesForwarded,
+            &b_network_labels,
+        );
+        let forwarded_packets_before = metric_value(
+            &peer_mgr_b,
+            MetricName::TrafficControlPacketsForwarded,
+            &b_network_labels,
+        );
+
+        let mut pkt = ZCPacket::new_with_payload(b"forward-control");
+        pkt.fill_peer_manager_hdr(
+            peer_mgr_a.my_peer_id(),
+            peer_mgr_c.my_peer_id(),
+            PacketType::RpcReq as u8,
+        );
+        let pkt_len = pkt.buf_len() as u64;
+
+        PeerManager::send_msg_internal(
+            &peer_mgr_a.peers,
+            &peer_mgr_a.foreign_network_client,
+            &peer_mgr_a.relay_peer_map,
+            Some(&peer_mgr_a.traffic_metrics),
+            pkt,
+            peer_mgr_c.my_peer_id(),
+        )
+        .await
+        .unwrap();
+
+        wait_for_condition(
+            || {
+                let peer_mgr_b = peer_mgr_b.clone();
+                let b_network_labels = b_network_labels.clone();
+                async move {
+                    metric_value(
+                        &peer_mgr_b,
+                        MetricName::TrafficControlBytesForwarded,
+                        &b_network_labels,
+                    ) >= forwarded_bytes_before + pkt_len
+                        && metric_value(
+                            &peer_mgr_b,
+                            MetricName::TrafficControlPacketsForwarded,
+                            &b_network_labels,
+                        ) > forwarded_packets_before
+                }
+            },
+            Duration::from_secs(5),
+        )
+        .await;
     }
 
     #[tokio::test]

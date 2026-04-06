@@ -55,8 +55,8 @@ use super::{
     relay_peer_map::RelayPeerMap,
     route_trait::NextHopPolicy,
     traffic_metrics::{
-        InstanceLabelKind, LogicalTrafficMetrics, TrafficMetricRecorder,
-        route_peer_info_instance_id,
+        InstanceLabelKind, LogicalTrafficMetrics, TrafficKind, TrafficMetricRecorder,
+        route_peer_info_instance_id, traffic_kind,
     },
 };
 
@@ -419,12 +419,19 @@ impl ForeignNetworkEntry {
 
         let label_set =
             LabelSet::new().with_label_type(LabelType::NetworkName(network_name.clone()));
-        let forward_bytes = self
+        let forward_data_bytes = self
             .stats_mgr
             .get_counter(MetricName::TrafficBytesForwarded, label_set.clone());
-        let forward_packets = self
+        let forward_data_packets = self
             .stats_mgr
             .get_counter(MetricName::TrafficPacketsForwarded, label_set.clone());
+        let forward_control_bytes = self
+            .stats_mgr
+            .get_counter(MetricName::TrafficControlBytesForwarded, label_set.clone());
+        let forward_control_packets = self.stats_mgr.get_counter(
+            MetricName::TrafficControlPacketsForwarded,
+            label_set.clone(),
+        );
         let rx_bytes = self
             .stats_mgr
             .get_counter(MetricName::TrafficBytesSelfRx, label_set.clone());
@@ -502,8 +509,16 @@ impl ForeignNetworkEntry {
                         }
                     }
 
-                    forward_bytes.add(buf_len as u64);
-                    forward_packets.inc();
+                    match traffic_kind(packet_type) {
+                        TrafficKind::Data => {
+                            forward_data_bytes.add(buf_len as u64);
+                            forward_data_packets.inc();
+                        }
+                        TrafficKind::Control => {
+                            forward_control_bytes.add(buf_len as u64);
+                            forward_control_packets.inc();
+                        }
+                    }
 
                     let gateway_peer_id = peer_map
                         .get_gateway_peer_id(to_peer_id, NextHopPolicy::LeastHop)
@@ -1293,6 +1308,11 @@ pub mod tests {
             MetricName::TrafficBytesForwarded,
             network_labels.clone(),
         );
+        let forwarded_packets_before = metric_value(
+            &pm_center,
+            MetricName::TrafficPacketsForwarded,
+            network_labels.clone(),
+        );
         let rx_bytes_before = metric_value(
             &pm_center,
             MetricName::TrafficBytesRx,
@@ -1320,6 +1340,7 @@ pub mod tests {
             pmb_net1.my_peer_id(),
             PacketType::Data as u8,
         );
+        let transit_pkt_len = transit_pkt.buf_len() as u64;
         pma_net1
             .get_foreign_network_client()
             .send_msg(transit_pkt, center_peer_id)
@@ -1334,7 +1355,12 @@ pub mod tests {
                         &pm_center,
                         MetricName::TrafficBytesForwarded,
                         network_labels.clone(),
-                    ) > forwarded_bytes_before
+                    ) >= forwarded_bytes_before + transit_pkt_len
+                        && metric_value(
+                            &pm_center,
+                            MetricName::TrafficPacketsForwarded,
+                            network_labels.clone(),
+                        ) > forwarded_packets_before
                 }
             },
             Duration::from_secs(5),
@@ -1369,6 +1395,70 @@ pub mod tests {
             metric_value(&pm_center, MetricName::TrafficPacketsTx, network_labels),
             tx_packets_before
         );
+    }
+
+    #[tokio::test]
+    async fn foreign_network_transit_control_forwarding_records_control_forwarded_metrics() {
+        let pm_center = create_mock_peer_manager_with_mock_stun(NatType::Unknown).await;
+        let pma_net1 = create_mock_peer_manager_for_foreign_network("net1").await;
+        let pmb_net1 = create_mock_peer_manager_for_foreign_network("net1").await;
+
+        connect_peer_manager(pma_net1.clone(), pm_center.clone()).await;
+        connect_peer_manager(pmb_net1.clone(), pm_center.clone()).await;
+        wait_route_appear(pma_net1.clone(), pmb_net1.clone())
+            .await
+            .unwrap();
+
+        let center_peer_id = pm_center
+            .get_foreign_network_manager()
+            .get_network_peer_id("net1")
+            .unwrap();
+        let network_labels =
+            LabelSet::new().with_label_type(LabelType::NetworkName("net1".to_string()));
+        let forwarded_bytes_before = metric_value(
+            &pm_center,
+            MetricName::TrafficControlBytesForwarded,
+            network_labels.clone(),
+        );
+        let forwarded_packets_before = metric_value(
+            &pm_center,
+            MetricName::TrafficControlPacketsForwarded,
+            network_labels.clone(),
+        );
+
+        let mut transit_pkt = ZCPacket::new_with_payload(b"foreign-control-transit");
+        transit_pkt.fill_peer_manager_hdr(
+            pma_net1.my_peer_id(),
+            pmb_net1.my_peer_id(),
+            PacketType::RpcReq as u8,
+        );
+        let transit_pkt_len = transit_pkt.buf_len() as u64;
+        pma_net1
+            .get_foreign_network_client()
+            .send_msg(transit_pkt, center_peer_id)
+            .await
+            .unwrap();
+
+        wait_for_condition(
+            || {
+                let pm_center = pm_center.clone();
+                let network_labels = network_labels.clone();
+                async move {
+                    metric_value(
+                        &pm_center,
+                        MetricName::TrafficControlBytesForwarded,
+                        network_labels.clone(),
+                    ) >= forwarded_bytes_before + transit_pkt_len
+                        && metric_value(
+                            &pm_center,
+                            MetricName::TrafficControlPacketsForwarded,
+                            network_labels.clone(),
+                        ) > forwarded_packets_before
+                }
+            },
+            Duration::from_secs(5),
+        )
+        .await;
     }
 
     #[tokio::test]
