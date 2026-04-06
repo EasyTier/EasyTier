@@ -101,20 +101,19 @@ pub fn init(
     )?;
     layers.extend(console_layers);
 
-    let (file_layers, sender) = file_layers(config.get_file_logger_config(), reload)?;
-    layers.extend(file_layers);
+    let sender = if cfg!(not(test)) {
+        let (file_layers, sender) = file_layers(config.get_file_logger_config(), reload)?;
+        layers.extend(file_layers);
+        sender
+    } else {
+        None
+    };
 
-    let registry = Registry::default().with(layers);
-
-    cfg_if! {
-        if #[cfg(test)] {
-            let _ = registry.try_init();
-        } else {
-            registry.init();
-        }
-    }
-
-    Ok(sender)
+    Registry::default()
+        .with(layers)
+        .try_init()
+        .map(|_| sender)
+        .map_err(Into::into)
 }
 
 type BoxLayer = Box<dyn Layer<Registry> + Send + Sync>;
