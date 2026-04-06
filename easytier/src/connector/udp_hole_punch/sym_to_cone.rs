@@ -467,7 +467,7 @@ impl PunchSymToConeHoleClient {
             return Err(anyhow::anyhow!("failed to get public ips"));
         }
 
-        let tid = rand::thread_rng().gen();
+        let tid = rand::thread_rng().r#gen();
         let packet = new_hole_punch_packet(tid, HOLE_PUNCH_PACKET_BODY_LEN).into_bytes();
         udp_array.add_intreast_tid(tid);
         defer! { udp_array.remove_intreast_tid(tid);}

@@ -49,7 +49,9 @@ async fn main() -> anyhow::Result<()> {
 
     // 如果提供了管理员密码，设置环境变量
     if let Some(password) = args.admin_password {
-        env::set_var("ADMIN_PASSWORD", password);
+        unsafe {
+            env::set_var("ADMIN_PASSWORD", password);
+        }
     }
 
     tracing::info!(

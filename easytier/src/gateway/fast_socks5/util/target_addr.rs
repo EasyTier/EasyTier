@@ -99,7 +99,7 @@ impl TargetAddr {
                 buf.extend_from_slice(&(addr.ip()).octets()); // ip
                 buf.extend_from_slice(&addr.port().to_be_bytes()); // port
             }
-            TargetAddr::Domain(ref domain, port) => {
+            TargetAddr::Domain(domain, port) => {
                 debug!("TargetAddr::Domain");
                 if domain.len() > u8::MAX as usize {
                     return Err(SocksError::ExceededMaxDomainLen(domain.len()).into());

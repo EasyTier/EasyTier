@@ -1014,9 +1014,12 @@ mod tests {
         let generated_config_str = generated_config.dump();
 
         assert_eq!(
-                config_str, generated_config_str,
-                "Generated config does not match original config:\nOriginal:\n{}\n\nGenerated:\n{}\nNetwork Config: {}\n",
-                config_str, generated_config_str, serde_json::to_string(&network_config).unwrap()
+            config_str,
+            generated_config_str,
+            "Generated config does not match original config:\nOriginal:\n{}\n\nGenerated:\n{}\nNetwork Config: {}\n",
+            config_str,
+            generated_config_str,
+            serde_json::to_string(&network_config).unwrap()
         );
         Ok(())
     }
@@ -1033,13 +1036,13 @@ mod tests {
             config.set_dhcp(rng.gen_bool(0.5));
 
             if rng.gen_bool(0.7) {
-                let hostname = format!("host-{}", rng.gen::<u16>());
+                let hostname = format!("host-{}", rng.r#gen::<u16>());
                 config.set_hostname(Some(hostname));
             }
 
             config.set_network_identity(crate::common::config::NetworkIdentity::new(
-                format!("network-{}", rng.gen::<u16>()),
-                format!("secret-{}", rng.gen::<u64>()),
+                format!("network-{}", rng.r#gen::<u16>()),
+                format!("secret-{}", rng.r#gen::<u64>()),
             ));
             config.set_inst_name(config.get_network_identity().network_name.clone());
 
@@ -1251,9 +1254,12 @@ mod tests {
             let generated_config_str = generated_config.dump();
 
             assert_eq!(
-                config_str, generated_config_str,
+                config_str,
+                generated_config_str,
                 "Generated config does not match original config:\nOriginal:\n{}\n\nGenerated:\n{}\nNetwork Config: {}\n",
-                config_str, generated_config_str, serde_json::to_string(&network_config).unwrap()
+                config_str,
+                generated_config_str,
+                serde_json::to_string(&network_config).unwrap()
             );
         }
 

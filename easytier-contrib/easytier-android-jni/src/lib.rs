@@ -15,7 +15,7 @@ pub struct KeyValuePair {
 }
 
 // 声明外部 C 函数
-extern "C" {
+unsafe extern "C" {
     fn set_tun_fd(inst_name: *const std::ffi::c_char, fd: std::ffi::c_int) -> std::ffi::c_int;
     fn get_error_msg(out: *mut *const std::ffi::c_char);
     fn free_string(s: *const std::ffi::c_char);
@@ -68,7 +68,7 @@ fn throw_exception(env: &mut JNIEnv, message: &str) {
 }
 
 /// 设置 TUN 文件描述符
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "system" fn Java_com_easytier_jni_EasyTierJNI_setTunFd(
     mut env: JNIEnv,
     _class: JClass,
@@ -97,7 +97,7 @@ pub extern "system" fn Java_com_easytier_jni_EasyTierJNI_setTunFd(
 }
 
 /// 解析配置
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "system" fn Java_com_easytier_jni_EasyTierJNI_parseConfig(
     mut env: JNIEnv,
     _class: JClass,
@@ -125,7 +125,7 @@ pub extern "system" fn Java_com_easytier_jni_EasyTierJNI_parseConfig(
 }
 
 /// 运行网络实例
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "system" fn Java_com_easytier_jni_EasyTierJNI_runNetworkInstance(
     mut env: JNIEnv,
     _class: JClass,
@@ -153,7 +153,7 @@ pub extern "system" fn Java_com_easytier_jni_EasyTierJNI_runNetworkInstance(
 }
 
 /// 保持网络实例
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "system" fn Java_com_easytier_jni_EasyTierJNI_retainNetworkInstance(
     mut env: JNIEnv,
     _class: JClass,
@@ -244,7 +244,7 @@ pub extern "system" fn Java_com_easytier_jni_EasyTierJNI_retainNetworkInstance(
 }
 
 /// 收集网络信息
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "system" fn Java_com_easytier_jni_EasyTierJNI_collectNetworkInfos(
     mut env: JNIEnv,
     _class: JClass,
@@ -304,7 +304,7 @@ pub extern "system" fn Java_com_easytier_jni_EasyTierJNI_collectNetworkInfos(
 }
 
 /// 获取最后的错误信息
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "system" fn Java_com_easytier_jni_EasyTierJNI_getLastError(
     env: JNIEnv,
     _class: JClass,

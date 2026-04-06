@@ -1070,7 +1070,9 @@ impl Instance {
         self.peer_manager.my_peer_id()
     }
 
-    fn get_vpn_portal_rpc_service(&self) -> impl VpnPortalRpc<Controller = BaseController> + Clone {
+    fn get_vpn_portal_rpc_service(
+        &self,
+    ) -> impl VpnPortalRpc<Controller = BaseController> + Clone + use<> {
         #[derive(Clone)]
         struct VpnPortalRpcService {
             peer_mgr: Weak<PeerManager>,
@@ -1115,7 +1117,7 @@ impl Instance {
 
     fn get_mapped_listener_manager_rpc_service(
         &self,
-    ) -> impl MappedListenerManageRpc<Controller = BaseController> + Clone {
+    ) -> impl MappedListenerManageRpc<Controller = BaseController> + Clone + use<> {
         #[derive(Clone)]
         pub struct MappedListenerManagerRpcService(Weak<GlobalCtx>);
 
@@ -1146,7 +1148,7 @@ impl Instance {
 
     fn get_port_forward_manager_rpc_service(
         &self,
-    ) -> impl PortForwardManageRpc<Controller = BaseController> + Clone {
+    ) -> impl PortForwardManageRpc<Controller = BaseController> + Clone + use<> {
         #[derive(Clone)]
         pub struct PortForwardManagerRpcService {
             global_ctx: Weak<GlobalCtx>,
@@ -1176,7 +1178,7 @@ impl Instance {
         }
     }
 
-    fn get_stats_rpc_service(&self) -> impl StatsRpc<Controller = BaseController> + Clone {
+    fn get_stats_rpc_service(&self) -> impl StatsRpc<Controller = BaseController> + Clone + use<> {
         #[derive(Clone)]
         pub struct StatsRpcService {
             global_ctx: Weak<GlobalCtx>,
@@ -1242,7 +1244,7 @@ impl Instance {
         }
     }
 
-    fn get_config_service(&self) -> impl ConfigRpc<Controller = BaseController> + Clone {
+    fn get_config_service(&self) -> impl ConfigRpc<Controller = BaseController> + Clone + use<> {
         #[derive(Clone)]
         pub struct ConfigRpcService {
             patcher: InstanceConfigPatcher,
@@ -1285,7 +1287,7 @@ impl Instance {
         }
     }
 
-    pub fn get_api_rpc_service(&self) -> impl InstanceRpcService {
+    pub fn get_api_rpc_service(&self) -> impl InstanceRpcService + use<> {
         use crate::proto::api::instance::*;
 
         #[derive(Clone)]
@@ -1308,15 +1310,15 @@ impl Instance {
 
         #[async_trait::async_trait]
         impl<
-                A: PeerManageRpc<Controller = BaseController> + Send + Sync,
-                B: ConnectorManageRpc<Controller = BaseController> + Send + Sync,
-                C: MappedListenerManageRpc<Controller = BaseController> + Send + Sync,
-                D: VpnPortalRpc<Controller = BaseController> + Send + Sync,
-                E: AclManageRpc<Controller = BaseController> + Send + Sync,
-                F: PortForwardManageRpc<Controller = BaseController> + Send + Sync,
-                G: StatsRpc<Controller = BaseController> + Send + Sync,
-                H: ConfigRpc<Controller = BaseController> + Send + Sync,
-            > InstanceRpcService for ApiRpcServiceImpl<A, B, C, D, E, F, G, H>
+            A: PeerManageRpc<Controller = BaseController> + Send + Sync,
+            B: ConnectorManageRpc<Controller = BaseController> + Send + Sync,
+            C: MappedListenerManageRpc<Controller = BaseController> + Send + Sync,
+            D: VpnPortalRpc<Controller = BaseController> + Send + Sync,
+            E: AclManageRpc<Controller = BaseController> + Send + Sync,
+            F: PortForwardManageRpc<Controller = BaseController> + Send + Sync,
+            G: StatsRpc<Controller = BaseController> + Send + Sync,
+            H: ConfigRpc<Controller = BaseController> + Send + Sync,
+        > InstanceRpcService for ApiRpcServiceImpl<A, B, C, D, E, F, G, H>
         {
             fn get_peer_manage_service(&self) -> &dyn PeerManageRpc<Controller = BaseController> {
                 &self.peer_mgr_rpc_service
