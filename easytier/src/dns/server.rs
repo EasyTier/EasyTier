@@ -286,8 +286,7 @@ impl DnsServer {
             if let Some(system) = nic_ctx
                 .ifname()
                 .await
-                .map(|ifname| system::get(&ifname).ok())
-                .flatten()
+                .and_then(|ifname| system::get(&ifname).ok())
                 .flatten()
             {
                 let _ = system.clean();

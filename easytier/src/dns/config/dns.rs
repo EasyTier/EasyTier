@@ -1,6 +1,6 @@
 use crate::dns::config::policy::DnsPolicyConfig;
 use crate::dns::config::zone::ZoneConfig;
-use crate::dns::config::{DNS_DEFAULT_ADDRESS, DNS_DEFAULT_TLD};
+use crate::dns::config::{DNS_DEFAULT_ADDRESS, DNS_DEFAULT_DOMAIN};
 use crate::dns::server::DnsServer;
 use crate::dns::utils::addr::NameServerAddrGroup;
 use crate::dns::utils::parse;
@@ -23,7 +23,7 @@ pub struct DnsConfig {
     #[serde(flatten)]
     pub policies: HashMap<LowerName, DnsPolicyConfig>,
     name: LowerName,
-    #[derivative(Default(value = "DNS_DEFAULT_TLD.clone()"))]
+    #[derivative(Default(value = "DNS_DEFAULT_DOMAIN.clone()"))]
     pub domain: LowerName,
     #[derivative(Default(value = "vec![DNS_DEFAULT_ADDRESS].into()"))]
     #[serde(deserialize_with = "DnsConfig::deserialize_addresses")]

@@ -1,3 +1,4 @@
+use crate::dns::config::DNS_NODE_TTI;
 use crate::dns::utils::addr::NameServerAddr;
 use crate::dns::utils::dirty::DirtyFlag;
 use crate::dns::zone::{Zone, ZoneGroup};
@@ -11,7 +12,6 @@ use hickory_server::authority::Catalog;
 use itertools::Itertools;
 use moka::future::Cache;
 use std::collections::HashSet;
-use std::time::Duration;
 use tracing::instrument;
 use uuid::Uuid;
 
@@ -35,8 +35,6 @@ impl TryFrom<&DnsSnapshot> for DnsNodeInfo {
         })
     }
 }
-
-const DNS_NODE_TTI: Duration = Duration::from_secs(5);
 
 #[derive(Debug, Default)]
 pub struct DnsNodeMgrDirtyFlags {

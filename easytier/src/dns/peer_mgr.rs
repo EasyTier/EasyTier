@@ -1,6 +1,6 @@
 use crate::common::global_ctx::ArcGlobalCtx;
 use crate::common::PeerId;
-use crate::dns::config::{DnsExportConfig, DnsGlobalCtxExt};
+use crate::dns::config::{DnsExportConfig, DnsGlobalCtxExt, DNS_PEER_TTI};
 use crate::dns::utils::dirty::DirtyFlag;
 use crate::dns::zone::ZoneGroup;
 use crate::peer_center::instance::PeerCenterPeerManagerTrait;
@@ -18,7 +18,6 @@ use itertools::Itertools;
 use moka::future::Cache;
 use std::ops::Deref;
 use std::sync::Arc;
-use std::time::Duration;
 use tracing::instrument;
 
 #[derive(Debug, Clone)]
@@ -38,8 +37,6 @@ impl TryFrom<DnsExportConfig> for DnsPeerInfo {
         })
     }
 }
-
-const DNS_PEER_TTI: Duration = Duration::from_secs(3);
 
 #[derive(Debug)]
 pub struct DnsPeerMgrInner {

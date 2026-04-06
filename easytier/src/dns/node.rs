@@ -1,6 +1,8 @@
 use crate::common::global_ctx::{ArcGlobalCtx, GlobalCtxEvent};
 use crate::common::join_joinset_background;
-use crate::dns::config::{DnsGlobalCtxExt, DNS_SERVER_ELECTION_INTERVAL, DNS_SERVER_RPC_ADDR};
+use crate::dns::config::{
+    DnsGlobalCtxExt, DNS_NODE_RR_INTERVAL, DNS_SERVER_ELECTION_INTERVAL, DNS_SERVER_RPC_ADDR,
+};
 use crate::dns::peer_mgr::DnsPeerMgr;
 use crate::dns::server::DnsServer;
 #[cfg(feature = "tun")]
@@ -13,7 +15,6 @@ use crate::proto::rpc_types::controller::BaseController;
 use crate::tunnel::tcp::{TcpTunnelConnector, TcpTunnelListener};
 use crate::utils::AsyncRuntime;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
 use tokio::sync::{broadcast, Notify};
 use tokio::task::JoinSet;
 use tokio::time::{sleep, sleep_until, Instant};
@@ -132,7 +133,6 @@ impl DnsNode {
 
             ..Default::default()
         };
-        let rr_interval = Duration::from_secs(1);
         let mut last_heartbeat = Instant::now();
         let sleep = sleep_until(last_heartbeat);
         tokio::pin!(sleep);
@@ -145,9 +145,9 @@ impl DnsNode {
             // Dynamic interval: slower if dirty (throttled), faster if clean (fast liveness check)
             let next_heartbeat = last_heartbeat
                 + if self.mgr.dirty.peek() {
-                    rr_interval
+                    DNS_NODE_RR_INTERVAL
                 } else {
-                    rr_interval / 4
+                    DNS_NODE_RR_INTERVAL / 4
                 };
             sleep.as_mut().reset(next_heartbeat);
 
@@ -250,6 +250,7 @@ mod tests {
     use crate::proto::rpc_types;
     use crate::tunnel::common::tests::wait_for_condition;
     use std::sync::atomic::{AtomicBool, Ordering};
+    use std::time::Duration;
     use tokio::sync::Mutex;
 
     #[derive(Debug)]
