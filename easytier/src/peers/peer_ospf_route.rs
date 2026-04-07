@@ -71,7 +71,6 @@ use super::{
 };
 
 use atomic_shim::AtomicU64;
-use itertools::Itertools;
 
 static SERVICE_ID: u32 = 7;
 static UPDATE_PEER_INFO_PERIOD: Duration = Duration::from_secs(3600);
@@ -1327,7 +1326,7 @@ impl RouteTable {
             .into_iter()
             .flat_map(|info| &info.proxy_cidrs)
             .filter_map(|cidr| cidr.parse::<IpCidr>().ok())
-            .collect_vec();
+            .collect::<Vec<_>>();
 
         // build next hop map
         let (graph, start_node) =
