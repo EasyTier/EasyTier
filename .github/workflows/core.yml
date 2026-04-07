@@ -56,7 +56,7 @@ jobs:
             easytier-web/frontend/dist/*
   build:
     strategy:
-      fail-fast: false
+      fail-fast: true
       matrix:
         include:
           - TARGET: aarch64-unknown-linux-musl

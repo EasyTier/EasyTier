@@ -37,7 +37,7 @@ jobs:
           paths: '["Cargo.toml", "Cargo.lock", "easytier/**", "easytier-gui/**", ".github/workflows/gui.yml", ".github/workflows/install_rust.sh", ".github/workflows/install_gui_dep.sh", "easytier-web/frontend-lib/**"]'
   build-gui:
     strategy:
-      fail-fast: false
+      fail-fast: true
       matrix:
         include:
           - TARGET: aarch64-unknown-linux-musl
