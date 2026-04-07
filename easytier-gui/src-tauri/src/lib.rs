@@ -24,7 +24,7 @@ use easytier::{
     tunnel::TunnelListener,
     tunnel::ring::RingTunnelListener,
     tunnel::tcp::TcpTunnelListener,
-    utils::{self},
+    utils::panic::setup_panic_handler,
 };
 use std::ops::Deref;
 use std::sync::Arc;
@@ -1120,7 +1120,7 @@ pub fn run_gui() -> std::process::ExitCode {
         process::exit(0);
     }
 
-    utils::setup_panic_handler();
+    setup_panic_handler();
 
     let mut builder = tauri::Builder::default();
 
