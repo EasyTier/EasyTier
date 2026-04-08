@@ -26,7 +26,7 @@ use crate::{
     utils::setup_panic_handler,
     web_client,
 };
-use anyhow::{anyhow, Context};
+use anyhow::Context;
 use cidr::IpCidr;
 use clap::{CommandFactory, Parser};
 use rust_i18n::t;
@@ -764,15 +764,12 @@ impl Cli {
             .into_iter()
             .map(|l| {
                 if l.matches(':').count() >= 2 {
-                    let url: url::Url = l
-                        .parse()
-                        .with_context(|| anyhow!("failed to parse listener: {}", l))?;
-                    Ok(url.to_string())
+                    Ok(l.parse::<url::Url>()?.to_string())
                 } else {
                     let mut parts = l.splitn(2, ':');
                     let scheme: IpScheme = parts.next().unwrap().parse()?;
                     let port = match parts.next() {
-                        Some(p) => p.parse()?,
+                        Some(p) => p.parse().with_context(|| format!("invalid port: {}", p))?,
                         None => 11010 + scheme.port_offset(),
                     };
                     Ok(format!("{}://0.0.0.0:{}", scheme, port))
@@ -850,7 +847,8 @@ impl NetworkOptions {
 
         if self.no_listener || !self.listeners.is_empty() {
             cfg.set_listeners(
-                Cli::parse_listeners(self.no_listener, self.listeners.clone())?
+                Cli::parse_listeners(self.no_listener, self.listeners.clone())
+                    .with_context(|| format!("failed to parse listeners: {:?}", self.listeners))?
                     .into_iter()
                     .map(|s| s.parse().unwrap())
                     .collect(),

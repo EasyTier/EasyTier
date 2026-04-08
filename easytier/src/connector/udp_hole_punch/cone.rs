@@ -120,7 +120,7 @@ impl PunchConeHoleClient {
 
         let local_addr = local_socket
             .local_addr()
-            .with_context(|| anyhow::anyhow!("failed to get local port from udp array"))?;
+            .with_context(|| "failed to get local port from udp array")?;
         let local_port = local_addr.port();
 
         drop(local_socket);
