@@ -41,14 +41,14 @@ jobs:
       fail-fast: true
       matrix:
         include:
-          - TARGET: aarch64-unknown-linux-musl
-            OS: ubuntu-22.04
-            GUI_TARGET: aarch64-unknown-linux-gnu
-            ARTIFACT_NAME: linux-aarch64
           - TARGET: x86_64-unknown-linux-musl
-            OS: ubuntu-22.04
+            OS: ubuntu-24.04
             GUI_TARGET: x86_64-unknown-linux-gnu
             ARTIFACT_NAME: linux-x86_64
+          - TARGET: aarch64-unknown-linux-musl
+            OS: ubuntu-24.04-arm
+            GUI_TARGET: aarch64-unknown-linux-gnu
+            ARTIFACT_NAME: linux-aarch64
 
           - TARGET: x86_64-apple-darwin
             OS: macos-latest
@@ -63,16 +63,14 @@ jobs:
             OS: windows-latest
             GUI_TARGET: x86_64-pc-windows-msvc
             ARTIFACT_NAME: windows-x86_64
-
-          - TARGET: aarch64-pc-windows-msvc
-            OS: windows-latest
-            GUI_TARGET: aarch64-pc-windows-msvc
-            ARTIFACT_NAME: windows-arm64
-
           - TARGET: i686-pc-windows-msvc
             OS: windows-latest
             GUI_TARGET: i686-pc-windows-msvc
             ARTIFACT_NAME: windows-i686
+          - TARGET: aarch64-pc-windows-msvc
+            OS: windows-11-arm
+            GUI_TARGET: aarch64-pc-windows-msvc
+            ARTIFACT_NAME: windows-arm64
 
     runs-on: ${{ matrix.OS }}
     env:
@@ -154,7 +152,7 @@ jobs:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: copy correct DLLs
-        if: ${{ matrix.OS == 'windows-latest' }}
+        if: ${{ contains(matrix.GUI_TARGET, 'windows') }}
         run: |
           case $TARGET in
               x86_64*)  ARCH_DIR=x86_64 ;;
@@ -170,10 +168,9 @@ jobs:
         uses: tauri-apps/tauri-action@v0
         with:
           projectPath: ./easytier-gui
-          # https://tauri.app/v1/guides/building/linux/#cross-compiling-tauri-applications-for-arm-based-devices
-          args: --verbose --target ${{ matrix.GUI_TARGET }} ${{ contains(matrix.TARGET, '-linux-') && contains(matrix.TARGET, 'aarch64') && '--bundles deb,rpm' || ''  }}
+          args: --verbose --target ${{ matrix.GUI_TARGET }}
 
-      - name: Compress
+      - name: Collect artifact
         run: |
           mkdir -p ./artifacts/objects/
           
@@ -182,18 +179,16 @@ jobs:
           else
             TAG=$GITHUB_SHA
           fi
+
           # copy gui bundle, gui is built without specific target
-          if [[ $OS =~ ^windows.*$ ]]; then
+          if [[ $GUI_TARGET =~ windows ]]; then
               mv ./target/$GUI_TARGET/release/bundle/nsis/*.exe ./artifacts/objects/
-          elif [[ $OS =~ ^macos.*$ ]]; then
+          elif [[ $GUI_TARGET =~ darwin ]]; then
               mv ./target/$GUI_TARGET/release/bundle/dmg/*.dmg ./artifacts/objects/
-          elif [[ $OS =~ ^ubuntu.*$ && ! $TARGET =~ ^mips.*$ ]]; then
+          elif [[ $GUI_TARGET =~ linux ]]; then
               mv ./target/$GUI_TARGET/release/bundle/deb/*.deb ./artifacts/objects/
               mv ./target/$GUI_TARGET/release/bundle/rpm/*.rpm ./artifacts/objects/
-              if [[ $GUI_TARGET =~ ^x86_64.*$ ]]; then
-                # currently only x86 appimage is supported
-                mv ./target/$GUI_TARGET/release/bundle/appimage/*.AppImage ./artifacts/objects/
-              fi
+              mv ./target/$GUI_TARGET/release/bundle/appimage/*.AppImage ./artifacts/objects/
           fi
 
           mv ./artifacts/objects/* ./artifacts/
