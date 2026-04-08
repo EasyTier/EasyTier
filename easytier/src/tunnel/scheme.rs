@@ -1,5 +1,6 @@
 use crate::common::error::Error;
 use crate::utils::BoxExt;
+use anyhow::Context;
 use delegate::delegate;
 use derive_more::{Deref, From, TryInto};
 use serde::{Deserialize, Serialize};
@@ -93,7 +94,7 @@ impl From<IpProto> for IpScheme {
 }
 
 impl FromStr for IpScheme {
-    type Err = ParseError;
+    type Err = anyhow::Error;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let (scheme, v6) = match s.strip_suffix('6') {
@@ -102,7 +103,9 @@ impl FromStr for IpScheme {
         };
 
         Ok(Self {
-            proto: scheme.parse()?,
+            proto: scheme
+                .parse()
+                .with_context(|| format!("invalid scheme: {}", s))?,
             v6,
         })
     }
@@ -147,12 +150,14 @@ impl From<DiscoveryProto> for DiscoveryScheme {
 }
 
 impl FromStr for DiscoveryScheme {
-    type Err = ParseError;
+    type Err = anyhow::Error;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         Ok(match s.split_once('-') {
             Some((proto, scheme)) => Self {
-                proto: proto.parse()?,
+                proto: proto
+                    .parse()
+                    .with_context(|| format!("invalid scheme: {}", s))?,
                 scheme: Some(scheme.parse::<TunnelScheme>()?.boxed()),
             },
             None => s.parse::<DiscoveryProto>()?.into(),
@@ -214,11 +219,12 @@ impl TunnelScheme {
 }
 
 impl FromStr for TunnelScheme {
-    type Err = ParseError;
+    type Err = anyhow::Error;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        serde_json::from_str(&serde_json::to_string(s).unwrap())
+        serde_json::from_str(&serde_json::to_string(s)?)
             .map_err(|_| ParseError::VariantNotFound)
+            .with_context(|| format!("invalid scheme: {}", s))
     }
 }
 
