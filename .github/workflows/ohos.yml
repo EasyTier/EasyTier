@@ -38,10 +38,11 @@ jobs:
   pre_job:
     # continue-on-error: true # Uncomment once integration is finished
     runs-on: ubuntu-latest
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     # Map a step output to a job output
     outputs:
       # do not skip push on branch starts with releases/
-      should_skip: ${{ (github.event_name == 'pull_request' && github.event.pull_request.draft) || (steps.skip_check.outputs.should_skip == 'true' && !startsWith(github.ref_name, 'releases/')) }}
+      should_skip: ${{ steps.skip_check.outputs.should_skip == 'true' && !startsWith(github.ref_name, 'releases/') }}
     steps:
       - id: skip_check
         uses: fkirc/skip-duplicate-actions@v5
