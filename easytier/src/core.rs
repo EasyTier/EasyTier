@@ -763,17 +763,25 @@ impl Cli {
         listeners
             .into_iter()
             .map(|l| {
-                if l.matches(':').count() >= 2 {
-                    Ok(l.parse::<url::Url>()?.to_string())
-                } else {
-                    let mut parts = l.splitn(2, ':');
-                    let scheme: IpScheme = parts.next().unwrap().parse()?;
-                    let port = match parts.next() {
-                        Some(p) => p.parse().with_context(|| format!("invalid port: {}", p))?,
-                        None => 11010 + scheme.port_offset(),
-                    };
-                    Ok(format!("{}://0.0.0.0:{}", scheme, port))
+                let l = l
+                    .parse::<url::Url>()
+                    .or_else(|_| url::Url::parse(&format!("{}:", l)))?;
+
+                if l.has_authority() {
+                    return Ok(l.to_string());
                 }
+
+                let scheme: IpScheme = l.scheme().parse()?;
+                let port = {
+                    let port = l.path();
+                    if port.is_empty() {
+                        11010 + scheme.port_offset()
+                    } else {
+                        port.parse::<u16>()
+                            .with_context(|| format!("invalid port: {}", port))?
+                    }
+                };
+                Ok(format!("{}://0.0.0.0:{}", scheme, port))
             })
             .collect()
     }
