@@ -1,9 +1,9 @@
-use prost::Message;
-use sha2::{Digest, Sha256};
 use delegate::delegate;
 use derivative::Derivative;
 use derive_more::{Deref, DerefMut, From, IntoIterator};
+use prost::Message;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 /// Generates a stable digest strictly within the lifecycle of the current process.
 ///
@@ -24,7 +24,7 @@ pub trait TransientDigest: Message {
 impl<S: Message> TransientDigest for S {}
 
 pub trait MessageModel<Message: prost::Message>:
-Into<Message> + for<'m> TryFrom<&'m Message>
+    Into<Message> + for<'m> TryFrom<&'m Message>
 {
 }
 
