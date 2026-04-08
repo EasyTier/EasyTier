@@ -139,8 +139,15 @@ jobs:
           name: easytier-web-dashboard
           path: easytier-web/frontend/dist/
 
+      - name: Prepare build environment
+        uses: ./.github/actions/prepare-build
+        with:
+          target: ${{ matrix.TARGET }}
+          gui: true
+          web: true
+          token: ${{ secrets.GITHUB_TOKEN }}
+
       - uses: Swatinem/rust-cache@v2
-        if: ${{ ! endsWith(matrix.TARGET, 'freebsd') }}
         with:
           # The prefix cache key, this can be changed to start a new cache manually.
           # default: "v0-rust"
@@ -148,44 +155,24 @@ jobs:
           shared-key: "core-registry"
           cache-targets: "false"
 
-      - name: Setup protoc
-        uses: arduino/setup-protoc@v3
-        with:
-          # GitHub repo token to use to avoid rate limiter
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
-
       - uses: mlugg/setup-zig@v2
+        if: ${{ contains(matrix.OS, 'ubuntu') }}
 
       - uses: taiki-e/install-action@v2
+        if: ${{ contains(matrix.OS, 'ubuntu') }}
         with:
           tool: cargo-zigbuild
 
-      - name: Setup LLVM (LoongArch)
-        if: ${{ contains(matrix.TARGET, 'loongarch') }}
-        run: |
-          sudo apt-get install -qqy llvm-18 clang-18
-          echo "LLVM_CONFIG_PATH=/usr/lib/llvm-18/bin/llvm-config" >> $GITHUB_ENV
-
-      - name: Setup Sysroot Env
-        if: ${{ contains(matrix.TARGET, 'mips') || contains(matrix.TARGET, 'loongarch') }}
-        run: |
-          bash ./.github/workflows/install_rust.sh
-          if [[ -d "./musl_gcc/sysroot" ]]; then
-            echo "BINDGEN_EXTRA_CLANG_ARGS=--sysroot=$(readlink -f ./musl_gcc/sysroot)" >> $GITHUB_ENV
-          fi
-
       - name: Build
-        if: ${{ ! contains(matrix.TARGET, 'mips') }}
-        run: |
-          rustup target add $TARGET
-          
+        if: ${{ !contains(matrix.TARGET, 'mips') }}
+        run: |          
           if [[ "$TARGET" == *windows* ]]; then
             SUFFIX=.exe
           else
             SUFFIX=""
           fi
 
-          if [[ "$TARGET" =~ (x86_64-unknown-linux-musl|aarch64-unknown-linux-musl|windows|darwin|loongarch) ]]; then
+          if [[ "$TARGET" =~ (x86_64-unknown-linux-musl|aarch64-unknown-linux-musl|windows|darwin) ]]; then
             BUILD=build
           else
             BUILD=zigbuild
@@ -230,7 +217,7 @@ jobs:
             TAG=$GITHUB_SHA
           fi
           
-          if [[ ! $TARGET =~ (freebsd|loongarch|riscv64) ]]; then
+          if [[ ! $TARGET =~ (freebsd|loongarch) ]]; then
             UPX_VERSION=5.1.1
 
             if [[ $OS =~ ^windows.*$ ]]; then
