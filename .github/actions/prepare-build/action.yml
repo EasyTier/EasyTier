@@ -5,10 +5,14 @@ inputs:
   target:
     description: 'The target to build for'
     required: false
-  web:
-    description: 'Whether to prepare the web build environment'
+  pnpm:
+    description: 'Whether to run pnpm build'
     required: true
     default: 'true'
+  pnpm-build-filter:
+    description: 'The filter argument for pnpm build (e.g. ./easytier-web/*)'
+    required: false
+    default: './easytier-web/*'
   gui:
     description: 'Whether to prepare the GUI build environment'
     required: true
@@ -30,10 +34,10 @@ runs:
       shell: bash
 
     - name: Setup Frontend Environment
-      if: ${{ inputs.web == 'true' }}
+      if: ${{ inputs.pnpm == 'true' }}
       uses: ./.github/actions/prepare-pnpm
       with:
-        build-filter: './easytier-web/*'
+        build-filter: ${{ inputs.pnpm-build-filter }}
 
     - name: Install GUI dependencies (Linux)
       if: ${{ inputs.gui == 'true' && runner.os == 'Linux' }}

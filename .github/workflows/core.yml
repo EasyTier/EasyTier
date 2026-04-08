@@ -144,7 +144,7 @@ jobs:
         with:
           target: ${{ matrix.TARGET }}
           gui: true
-          web: true
+          pnpm: true
           token: ${{ secrets.GITHUB_TOKEN }}
 
       - uses: Swatinem/rust-cache@v2

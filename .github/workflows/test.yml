@@ -48,7 +48,7 @@ jobs:
         uses: ./.github/actions/prepare-build
         with:
           gui: true
-          web: true
+          pnpm: true
           token: ${{ secrets.GITHUB_TOKEN }}
 
       - uses: actions-rust-lang/setup-rust-toolchain@v1
@@ -86,7 +86,7 @@ jobs:
         uses: ./.github/actions/prepare-build
         with:
           gui: true
-          web: true
+          pnpm: true
           token: ${{ secrets.GITHUB_TOKEN }}
 
       - uses: Swatinem/rust-cache@v2
