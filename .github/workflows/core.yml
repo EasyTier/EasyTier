@@ -5,6 +5,11 @@ on:
     branches: ["develop", "main", "releases/**"]
   pull_request:
     branches: ["develop", "main"]
+    types: [opened, synchronize, reopened, ready_for_review]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 env:
   CARGO_TERM_COLOR: always
@@ -21,7 +26,7 @@ jobs:
     # Map a step output to a job output
     outputs:
       # do not skip push on branch starts with releases/
-      should_skip: ${{ steps.skip_check.outputs.should_skip == 'true' && !startsWith(github.ref_name, 'releases/') }}
+      should_skip: ${{ (github.event_name == 'pull_request' && github.event.pull_request.draft) || (steps.skip_check.outputs.should_skip == 'true' && !startsWith(github.ref_name, 'releases/')) }}
     steps:
       - id: skip_check
         uses: fkirc/skip-duplicate-actions@v5
@@ -51,7 +56,7 @@ jobs:
             easytier-web/frontend/dist/*
   build:
     strategy:
-      fail-fast: false
+      fail-fast: true
       matrix:
         include:
           - TARGET: aarch64-unknown-linux-musl
