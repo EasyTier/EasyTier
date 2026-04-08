@@ -126,7 +126,7 @@ jobs:
             ./artifacts/*
 
   mobile-result:
-    if: needs.pre_job.outputs.should_skip != 'true' && always()
+    if: needs.pre_job.result == 'success' && needs.pre_job.outputs.should_skip != 'true' && always()
     runs-on: ubuntu-latest
     needs:
       - pre_job
