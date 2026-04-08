@@ -1,7 +1,5 @@
 use cidr::{Ipv4Cidr, Ipv6Cidr};
 use dashmap::DashMap;
-use std::future::Future;
-use std::pin::Pin;
 use std::{
     collections::BTreeSet,
     net::{Ipv4Addr, Ipv6Addr},
