@@ -69,13 +69,11 @@ subtle = "2.6"
 
 mimalloc = { version = "*" }
 
+[build-dependencies]
+thunk-rs = { git = "https://github.com/easytier/thunk.git", default-features = false, features = [
+    "win7",
+] }
+
 [features]
 default = []
 embed = ["dep:axum-embed"]
-
-# enable thunk-rs when compiling for x86_64 or i686 windows
-[target.x86_64-pc-windows-msvc.build-dependencies]
-thunk-rs = { git = "https://github.com/easytier/thunk.git", default-features = false, features = ["win7"] }
-
-[target.i686-pc-windows-msvc.build-dependencies]
-thunk-rs = { git = "https://github.com/easytier/thunk.git", default-features = false, features = ["win7"] }
