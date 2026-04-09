@@ -374,7 +374,9 @@ impl UnsafeCounter {
     /// that no other thread is accessing this counter simultaneously.
     pub unsafe fn add(&self, delta: u64) {
         let ptr = self.value.get();
-        *ptr = (*ptr).saturating_add(delta);
+        unsafe {
+            *ptr = (*ptr).saturating_add(delta);
+        }
     }
 
     /// Increment the counter by 1
@@ -382,7 +384,9 @@ impl UnsafeCounter {
     /// This method is unsafe because it uses UnsafeCell. The caller must ensure
     /// that no other thread is accessing this counter simultaneously.
     pub unsafe fn inc(&self) {
-        self.add(1);
+        unsafe {
+            self.add(1);
+        }
     }
 
     /// Get the current value of the counter
@@ -391,7 +395,7 @@ impl UnsafeCounter {
     /// that no other thread is modifying this counter simultaneously.
     pub unsafe fn get(&self) -> u64 {
         let ptr = self.value.get();
-        *ptr
+        unsafe { *ptr }
     }
 
     /// Reset the counter to zero
@@ -400,7 +404,9 @@ impl UnsafeCounter {
     /// that no other thread is accessing this counter simultaneously.
     pub unsafe fn reset(&self) {
         let ptr = self.value.get();
-        *ptr = 0;
+        unsafe {
+            *ptr = 0;
+        }
     }
 
     /// Set the counter to a specific value
@@ -409,7 +415,9 @@ impl UnsafeCounter {
     /// that no other thread is accessing this counter simultaneously.
     pub unsafe fn set(&self, value: u64) {
         let ptr = self.value.get();
-        *ptr = value;
+        unsafe {
+            *ptr = value;
+        }
     }
 }
 
@@ -446,7 +454,9 @@ impl MetricData {
     /// that no other thread is accessing this timestamp simultaneously.
     unsafe fn touch(&self) {
         let ptr = self.last_updated.get();
-        *ptr = Instant::now();
+        unsafe {
+            *ptr = Instant::now();
+        }
     }
 
     /// Get the last updated timestamp
@@ -455,7 +465,7 @@ impl MetricData {
     /// that no other thread is modifying this timestamp simultaneously.
     unsafe fn get_last_updated(&self) -> Instant {
         let ptr = self.last_updated.get();
-        *ptr
+        unsafe { *ptr }
     }
 }
 

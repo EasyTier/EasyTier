@@ -1,5 +1,5 @@
 use std::{
-    collections::{hash_map::DefaultHasher, HashMap},
+    collections::{HashMap, hash_map::DefaultHasher},
     hash::Hasher,
     net::{IpAddr, SocketAddr},
     sync::{Arc, Mutex},
@@ -10,11 +10,11 @@ use arc_swap::ArcSwap;
 use dashmap::DashMap;
 
 use super::{
+    PeerId,
     config::{ConfigLoader, Flags},
     netns::NetNS,
     network::IPCollector,
     stun::{StunInfoCollector, StunInfoCollectorTrait},
-    PeerId,
 };
 use crate::{
     common::{

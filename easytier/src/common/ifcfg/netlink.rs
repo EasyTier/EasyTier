@@ -10,27 +10,27 @@ use anyhow::Context;
 use async_trait::async_trait;
 use cidr::{IpInet, Ipv4Inet, Ipv6Inet};
 use netlink_packet_core::{
-    NetlinkDeserializable, NetlinkHeader, NetlinkMessage, NetlinkPayload, NetlinkSerializable,
-    NLM_F_ACK, NLM_F_CREATE, NLM_F_DUMP, NLM_F_EXCL, NLM_F_REQUEST,
+    NLM_F_ACK, NLM_F_CREATE, NLM_F_DUMP, NLM_F_EXCL, NLM_F_REQUEST, NetlinkDeserializable,
+    NetlinkHeader, NetlinkMessage, NetlinkPayload, NetlinkSerializable,
 };
 use netlink_packet_route::{
+    AddressFamily, RouteNetlinkMessage,
     address::{AddressAttribute, AddressMessage},
     route::{
         RouteAddress, RouteAttribute, RouteHeader, RouteMessage, RouteProtocol, RouteScope,
         RouteType,
     },
-    AddressFamily, RouteNetlinkMessage,
 };
-use netlink_sys::{protocols::NETLINK_ROUTE, Socket, SocketAddr};
+use netlink_sys::{Socket, SocketAddr, protocols::NETLINK_ROUTE};
 use nix::{
     ifaddrs::getifaddrs,
-    libc::{self, ifreq, ioctl, Ioctl, SIOCGIFFLAGS, SIOCGIFMTU, SIOCSIFFLAGS, SIOCSIFMTU},
+    libc::{self, Ioctl, SIOCGIFFLAGS, SIOCGIFMTU, SIOCSIFFLAGS, SIOCSIFMTU, ifreq, ioctl},
     net::if_::InterfaceFlags,
     sys::socket::SockaddrLike as _,
 };
 use pnet::ipnetwork::ip_mask_to_prefix;
 
-use super::{route::Route, Error, IfConfiguerTrait};
+use super::{Error, IfConfiguerTrait, route::Route};
 
 pub(crate) fn dummy_socket() -> Result<std::net::UdpSocket, Error> {
     Ok(std::net::UdpSocket::bind("0:0")?)

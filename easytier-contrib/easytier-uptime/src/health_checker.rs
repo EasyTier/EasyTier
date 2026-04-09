@@ -19,9 +19,9 @@ use sqlx::any;
 use tracing::{debug, error, info, instrument, warn};
 
 use crate::db::{
+    Db, HealthStatus,
     entity::shared_nodes,
     operations::{HealthOperations, NodeOperations},
-    Db, HealthStatus,
 };
 
 pub struct HealthCheckOneNode {

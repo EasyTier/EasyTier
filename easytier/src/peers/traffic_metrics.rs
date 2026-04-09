@@ -4,9 +4,8 @@ use dashmap::DashMap;
 use futures::future::BoxFuture;
 
 use crate::common::{
-    shrink_dashmap,
+    PeerId, shrink_dashmap,
     stats_manager::{CounterHandle, LabelSet, LabelType, MetricName, StatsManager},
-    PeerId,
 };
 use crate::proto::peer_rpc::RoutePeerInfo;
 use crate::tunnel::packet_def::PacketType;
@@ -147,11 +146,11 @@ impl LogicalTrafficMetrics {
     {
         self.total.add_sample(bytes);
 
-        if let Some(entry) = self.per_peer.get(&peer_id) {
-            if entry.value().is_resolved() {
-                entry.value().counters().add_sample(bytes);
-                return;
-            }
+        if let Some(entry) = self.per_peer.get(&peer_id)
+            && entry.value().is_resolved()
+        {
+            entry.value().counters().add_sample(bytes);
+            return;
         }
 
         let resolved_instance_id = resolver().await;
@@ -388,18 +387,22 @@ mod tests {
                 .value,
             300
         );
-        assert!(stats_mgr
-            .get_metric(
-                MetricName::TrafficBytesTx,
-                &to_instance_labels("default", UNKNOWN_INSTANCE_ID),
-            )
-            .is_none());
-        assert!(stats_mgr
-            .get_metric(
-                MetricName::TrafficBytesTx,
-                &to_instance_labels("default", resolved_instance_id),
-            )
-            .is_none());
+        assert!(
+            stats_mgr
+                .get_metric(
+                    MetricName::TrafficBytesTx,
+                    &to_instance_labels("default", UNKNOWN_INSTANCE_ID),
+                )
+                .is_none()
+        );
+        assert!(
+            stats_mgr
+                .get_metric(
+                    MetricName::TrafficBytesTx,
+                    &to_instance_labels("default", resolved_instance_id),
+                )
+                .is_none()
+        );
         assert_eq!(
             stats_mgr
                 .get_metric(

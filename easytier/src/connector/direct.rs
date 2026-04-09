@@ -5,16 +5,16 @@ use std::{
     net::{IpAddr, Ipv6Addr, SocketAddr},
     str::FromStr,
     sync::{
-        atomic::{AtomicBool, Ordering},
         Arc,
+        atomic::{AtomicBool, Ordering},
     },
     time::{Duration, Instant},
 };
 
 use crate::{
     common::{
-        dns::socket_addrs, error::Error, global_ctx::ArcGlobalCtx, stun::StunInfoCollectorTrait,
-        PeerId,
+        PeerId, dns::socket_addrs, error::Error, global_ctx::ArcGlobalCtx,
+        stun::StunInfoCollectorTrait,
     },
     connector::udp_hole_punch::handle_rpc_result,
     peers::{
@@ -31,7 +31,7 @@ use crate::{
         },
         rpc_types::controller::BaseController,
     },
-    tunnel::{matches_protocol, udp::UdpTunnelConnector, IpVersion},
+    tunnel::{IpVersion, matches_protocol, udp::UdpTunnelConnector},
     use_global_var,
 };
 
@@ -39,7 +39,7 @@ use super::{
     create_connector_by_url, should_background_p2p_with_peer, should_try_p2p_with_peer,
     udp_hole_punch,
 };
-use crate::tunnel::{matches_scheme, FromUrl, IpScheme, TunnelScheme};
+use crate::tunnel::{FromUrl, IpScheme, TunnelScheme, matches_scheme};
 use anyhow::Context;
 use rand::Rng;
 use socket2::Protocol;
@@ -769,12 +769,9 @@ mod tests {
 
         let port = if proto == "wg" { 11040 } else { 11041 };
         if !ipv6 {
-            p_c.get_global_ctx().config.set_listeners(vec![format!(
-                "{}://0.0.0.0:{}",
-                proto, port
-            )
-            .parse()
-            .unwrap()]);
+            p_c.get_global_ctx().config.set_listeners(vec![
+                format!("{}://0.0.0.0:{}", proto, port).parse().unwrap(),
+            ]);
         } else {
             p_c.get_global_ctx()
                 .config
@@ -814,11 +811,12 @@ mod tests {
             .await
             .unwrap();
 
-        assert!(data
-            .dst_listener_blacklist
-            .contains(&DstListenerUrlBlackListItem(
-                1,
-                "tcp://127.0.0.1:10222".parse().unwrap()
-            )));
+        assert!(
+            data.dst_listener_blacklist
+                .contains(&DstListenerUrlBlackListItem(
+                    1,
+                    "tcp://127.0.0.1:10222".parse().unwrap()
+                ))
+        );
     }
 }

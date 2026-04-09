@@ -7,8 +7,8 @@ use futures::stream::FuturesUnordered;
 use tokio::net::{TcpListener, TcpSocket, TcpStream};
 
 use super::{
-    common::{wait_for_connect_futures, FramedReader, FramedWriter, TunnelWrapper},
     IpVersion, Tunnel, TunnelError, TunnelListener,
+    common::{FramedReader, FramedWriter, TunnelWrapper, wait_for_connect_futures},
 };
 
 const TCP_MTU_BYTES: usize = 2000;
@@ -216,8 +216,8 @@ impl super::TunnelConnector for TcpTunnelConnector {
 #[cfg(test)]
 mod tests {
     use crate::tunnel::{
-        common::tests::{_tunnel_bench, _tunnel_pingpong},
         TunnelConnector,
+        common::tests::{_tunnel_bench, _tunnel_pingpong},
     };
 
     use super::*;

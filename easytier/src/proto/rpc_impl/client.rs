@@ -12,15 +12,15 @@ use tokio_stream::StreamExt;
 
 use crate::common::shrink_dashmap;
 use crate::common::{
-    stats_manager::{LabelSet, LabelType, MetricName, StatsManager},
     PeerId,
+    stats_manager::{LabelSet, LabelType, MetricName, StatsManager},
 };
 use crate::defer;
 use crate::proto::common::{
     CompressionAlgoPb, RpcCompressionInfo, RpcDescriptor, RpcPacket, RpcRequest, RpcResponse,
 };
 use crate::proto::rpc_impl::packet::{
-    build_rpc_packet, compress_packet, decompress_packet, BuildRpcPacketArgs,
+    BuildRpcPacketArgs, build_rpc_packet, compress_packet, decompress_packet,
 };
 use crate::proto::rpc_types::controller::Controller;
 use crate::proto::rpc_types::descriptor::MethodDescriptor;

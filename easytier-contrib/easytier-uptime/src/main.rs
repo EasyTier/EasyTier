@@ -10,7 +10,7 @@ mod migrator;
 use api::routes::create_routes;
 use clap::Parser;
 use config::AppConfig;
-use db::{operations::NodeOperations, Db};
+use db::{Db, operations::NodeOperations};
 use easytier::common::log;
 use health_checker::HealthChecker;
 use health_checker_manager::HealthCheckerManager;
@@ -49,7 +49,9 @@ async fn main() -> anyhow::Result<()> {
 
     // 如果提供了管理员密码，设置环境变量
     if let Some(password) = args.admin_password {
-        env::set_var("ADMIN_PASSWORD", password);
+        unsafe {
+            env::set_var("ADMIN_PASSWORD", password);
+        }
     }
 
     tracing::info!(

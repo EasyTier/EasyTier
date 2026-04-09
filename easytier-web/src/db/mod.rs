@@ -8,11 +8,11 @@ use easytier::{
 };
 use entity::user_running_network_configs;
 use sea_orm::{
-    prelude::Expr, sea_query::OnConflict, ColumnTrait as _, DatabaseConnection, DbErr, EntityTrait,
-    QueryFilter as _, Set, SqlxSqliteConnector, TransactionTrait as _,
+    ColumnTrait as _, DatabaseConnection, DbErr, EntityTrait, QueryFilter as _, Set,
+    SqlxSqliteConnector, TransactionTrait as _, prelude::Expr, sea_query::OnConflict,
 };
 use sea_orm_migration::MigratorTrait as _;
-use sqlx::{migrate::MigrateDatabase as _, types::chrono, Sqlite, SqlitePool};
+use sqlx::{Sqlite, SqlitePool, migrate::MigrateDatabase as _, types::chrono};
 use uuid::Uuid;
 
 use crate::migrator;
@@ -280,7 +280,7 @@ mod tests {
     use easytier::{proto::api::manage::NetworkConfig, rpc_service::remote_client::Storage};
     use sea_orm::{ColumnTrait, EntityTrait, QueryFilter as _};
 
-    use crate::db::{entity::user_running_network_configs, Db, ListNetworkProps};
+    use crate::db::{Db, ListNetworkProps, entity::user_running_network_configs};
 
     #[tokio::test]
     async fn test_user_network_config_management() {

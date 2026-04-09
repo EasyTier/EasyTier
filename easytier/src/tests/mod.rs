@@ -11,6 +11,14 @@ use std::io::IsTerminal as _;
 use crate::common::PeerId;
 use crate::peers::peer_manager::PeerManager;
 
+pub fn set_env_var<K: AsRef<std::ffi::OsStr>, V: AsRef<std::ffi::OsStr>>(key: K, value: V) {
+    unsafe { std::env::set_var(key, value) }
+}
+
+pub fn remove_env_var<K: AsRef<std::ffi::OsStr>>(key: K) {
+    unsafe { std::env::remove_var(key) }
+}
+
 pub fn get_guest_veth_name(net_ns: &str) -> &str {
     Box::leak(format!("veth_{}_g", net_ns).into_boxed_str())
 }

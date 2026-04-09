@@ -13,21 +13,21 @@ use std::{
 use dashmap::{DashMap, DashSet};
 use tokio::{
     sync::{
-        mpsc::{self, UnboundedReceiver, UnboundedSender},
         Mutex,
+        mpsc::{self, UnboundedReceiver, UnboundedSender},
     },
     task::JoinSet,
 };
 
 use crate::{
     common::{
+        PeerId,
         config::{ConfigLoader, TomlConfigLoader},
         error::Error,
         global_ctx::{ArcGlobalCtx, GlobalCtx, GlobalCtxEvent, NetworkIdentity, TrustedKeySource},
         join_joinset_background, shrink_dashmap,
         stats_manager::{LabelSet, LabelType, MetricName, StatsManager},
         token_bucket::TokenBucket,
-        PeerId,
     },
     peer_center::instance::{PeerCenterInstance, PeerMapWithPeerRpcManager},
     peers::route_trait::{Route, RouteInterface},
@@ -44,7 +44,7 @@ use crate::{
 };
 
 use super::{
-    create_packet_recv_chan,
+    PUBLIC_SERVER_HOSTNAME_PREFIX, PacketRecvChan, PacketRecvChanReceiver, create_packet_recv_chan,
     peer_conn::PeerConn,
     peer_map::PeerMap,
     peer_ospf_route::PeerRoute,
@@ -55,10 +55,9 @@ use super::{
     relay_peer_map::RelayPeerMap,
     route_trait::NextHopPolicy,
     traffic_metrics::{
-        route_peer_info_instance_id, InstanceLabelKind, LogicalTrafficMetrics,
-        TrafficMetricRecorder,
+        InstanceLabelKind, LogicalTrafficMetrics, TrafficMetricRecorder,
+        route_peer_info_instance_id,
     },
-    PacketRecvChan, PacketRecvChanReceiver, PUBLIC_SERVER_HOSTNAME_PREFIX,
 };
 
 #[async_trait::async_trait]
@@ -1454,9 +1453,11 @@ pub mod tests {
             .get_foreign_network_manager()
             .list_foreign_networks()
             .await;
-        assert!(without_trusted_keys.foreign_networks["net1"]
-            .trusted_keys
-            .is_empty());
+        assert!(
+            without_trusted_keys.foreign_networks["net1"]
+                .trusted_keys
+                .is_empty()
+        );
 
         let foreign_mgr = pm_center.get_foreign_network_manager();
         wait_for_condition(
@@ -1477,9 +1478,11 @@ pub mod tests {
         .await;
 
         let with_trusted_keys = foreign_mgr.list_foreign_networks_with_options(true).await;
-        assert!(!with_trusted_keys.foreign_networks["net1"]
-            .trusted_keys
-            .is_empty());
+        assert!(
+            !with_trusted_keys.foreign_networks["net1"]
+                .trusted_keys
+                .is_empty()
+        );
     }
 
     #[tokio::test]
@@ -1558,12 +1561,14 @@ pub mod tests {
 
         assert!(client.await.unwrap().is_ok());
         assert!(server.await.unwrap().is_err());
-        assert!(pm_center
-            .get_foreign_network_manager()
-            .list_foreign_networks()
-            .await
-            .foreign_networks
-            .is_empty());
+        assert!(
+            pm_center
+                .get_foreign_network_manager()
+                .list_foreign_networks()
+                .await
+                .foreign_networks
+                .is_empty()
+        );
     }
 
     async fn foreign_network_whitelist_helper(name: String) {
@@ -1651,20 +1656,24 @@ pub mod tests {
             .unwrap();
 
         assert_eq!(
-            vec![pm_center
-                .get_foreign_network_manager()
-                .get_network_peer_id("net1")
-                .unwrap()],
+            vec![
+                pm_center
+                    .get_foreign_network_manager()
+                    .get_network_peer_id("net1")
+                    .unwrap()
+            ],
             pma_net1
                 .get_foreign_network_client()
                 .get_peer_map()
                 .list_peers()
         );
         assert_eq!(
-            vec![pm_center
-                .get_foreign_network_manager()
-                .get_network_peer_id("net1")
-                .unwrap()],
+            vec![
+                pm_center
+                    .get_foreign_network_manager()
+                    .get_network_peer_id("net1")
+                    .unwrap()
+            ],
             pmb_net1
                 .get_foreign_network_client()
                 .get_peer_map()

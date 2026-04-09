@@ -3,7 +3,6 @@ use std::{io, mem::ManuallyDrop, net::SocketAddr, os::windows::io::AsRawSocket};
 use anyhow::Context;
 use network_interface::NetworkInterfaceConfig;
 use windows::{
-    core::BSTR,
     Win32::{
         Foundation::{BOOL, FALSE},
         NetworkManagement::WindowsFirewall::{
@@ -12,15 +11,16 @@ use windows::{
             NET_FW_RULE_DIR_OUT,
         },
         Networking::WinSock::{
-            htonl, setsockopt, WSAGetLastError, WSAIoctl, IPPROTO_IP, IPPROTO_IPV6,
-            IPV6_UNICAST_IF, IP_UNICAST_IF, SIO_UDP_CONNRESET, SOCKET, SOCKET_ERROR,
+            IP_UNICAST_IF, IPPROTO_IP, IPPROTO_IPV6, IPV6_UNICAST_IF, SIO_UDP_CONNRESET, SOCKET,
+            SOCKET_ERROR, WSAGetLastError, WSAIoctl, htonl, setsockopt,
         },
         System::Com::{
-            CoCreateInstance, CoInitializeEx, CoUninitialize, CLSCTX_ALL, COINIT_MULTITHREADED,
+            CLSCTX_ALL, COINIT_MULTITHREADED, CoCreateInstance, CoInitializeEx, CoUninitialize,
         },
         System::Ole::{SafeArrayCreateVector, SafeArrayPutElement},
         System::Variant::{VARENUM, VARIANT, VT_ARRAY, VT_BSTR, VT_VARIANT},
     },
+    core::BSTR,
 };
 
 pub fn disable_connection_reset<S: AsRawSocket>(socket: &S) -> io::Result<()> {

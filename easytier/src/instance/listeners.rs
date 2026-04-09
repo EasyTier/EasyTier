@@ -17,8 +17,8 @@ use crate::{
     },
     peers::peer_manager::PeerManager,
     tunnel::{
-        self, ring::RingTunnelListener, tcp::TcpTunnelListener, udp::UdpTunnelListener, IpScheme,
-        Tunnel, TunnelListener, TunnelScheme,
+        self, IpScheme, Tunnel, TunnelListener, TunnelScheme, ring::RingTunnelListener,
+        tcp::TcpTunnelListener, udp::UdpTunnelListener,
     },
     utils::BoxExt,
 };
@@ -284,7 +284,7 @@ mod tests {
 
     use crate::{
         common::global_ctx::tests::get_mock_global_ctx,
-        tunnel::{packet_def::ZCPacket, ring::RingTunnelConnector, TunnelConnector, TunnelError},
+        tunnel::{TunnelConnector, TunnelError, packet_def::ZCPacket, ring::RingTunnelConnector},
     };
 
     use super::*;

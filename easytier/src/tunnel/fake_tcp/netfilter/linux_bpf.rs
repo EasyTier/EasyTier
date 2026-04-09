@@ -7,8 +7,8 @@ use std::mem;
 use std::net::IpAddr;
 use std::net::SocketAddr;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
-use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 use std::time::{Duration, Instant};
 use tokio::sync::Mutex;
 
@@ -182,13 +182,13 @@ fn build_tcp_filter(
     src_addr: Option<SocketAddr>,
     dst_addr: SocketAddr,
 ) -> io::Result<Vec<libc::sock_filter>> {
-    if let Some(src) = src_addr {
-        if src.is_ipv4() != dst_addr.is_ipv4() {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "src/dst addr family mismatch",
-            ));
-        }
+    if let Some(src) = src_addr
+        && src.is_ipv4() != dst_addr.is_ipv4()
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "src/dst addr family mismatch",
+        ));
     }
 
     let mut b = BpfBuilder::new();
@@ -637,7 +637,7 @@ mod tests {
     use pnet::util::MacAddr;
     use rand::Rng;
     use std::net::{IpAddr, Ipv4Addr};
-    use tokio::time::{timeout, Duration};
+    use tokio::time::{Duration, timeout};
 
     fn is_root() -> bool {
         unsafe { libc::geteuid() == 0 }

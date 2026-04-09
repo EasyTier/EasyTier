@@ -42,10 +42,11 @@ pub fn expand_env_vars(text: &str) -> (String, bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tests::{remove_env_var, set_env_var};
 
     #[test]
     fn test_expand_standard_syntax() {
-        std::env::set_var("TEST_VAR_STANDARD", "test_value");
+        set_env_var("TEST_VAR_STANDARD", "test_value");
         let (result, changed) = expand_env_vars("secret=${TEST_VAR_STANDARD}");
         assert_eq!(result, "secret=test_value");
         assert!(changed);
@@ -53,7 +54,7 @@ mod tests {
 
     #[test]
     fn test_expand_short_syntax() {
-        std::env::set_var("TEST_VAR_SHORT", "short_value");
+        set_env_var("TEST_VAR_SHORT", "short_value");
         let (result, changed) = expand_env_vars("key=$TEST_VAR_SHORT");
         assert_eq!(result, "key=short_value");
         assert!(changed);
@@ -62,7 +63,7 @@ mod tests {
     #[test]
     fn test_expand_with_default() {
         // 确保变量未定义
-        std::env::remove_var("UNDEFINED_VAR_WITH_DEFAULT");
+        remove_env_var("UNDEFINED_VAR_WITH_DEFAULT");
         let (result, changed) = expand_env_vars("port=${UNDEFINED_VAR_WITH_DEFAULT:-8080}");
         assert_eq!(result, "port=8080");
         assert!(changed);
@@ -84,8 +85,8 @@ mod tests {
 
     #[test]
     fn test_multiple_vars() {
-        std::env::set_var("VAR1", "value1");
-        std::env::set_var("VAR2", "value2");
+        set_env_var("VAR1", "value1");
+        set_env_var("VAR2", "value2");
         let (result, changed) = expand_env_vars("${VAR1} and ${VAR2}");
         assert_eq!(result, "value1 and value2");
         assert!(changed);
@@ -94,7 +95,7 @@ mod tests {
     #[test]
     fn test_undefined_var_without_default() {
         // 确保变量未定义
-        std::env::remove_var("COMPLETELY_UNDEFINED_VAR");
+        remove_env_var("COMPLETELY_UNDEFINED_VAR");
         let (result, changed) = expand_env_vars("value=${COMPLETELY_UNDEFINED_VAR}");
         // shellexpand::env 对未定义的变量会保持原样
         assert_eq!(result, "value=${COMPLETELY_UNDEFINED_VAR}");
@@ -103,8 +104,8 @@ mod tests {
 
     #[test]
     fn test_complex_toml_config() {
-        std::env::set_var("ET_SECRET", "my-secret-key");
-        std::env::set_var("ET_PORT", "11010");
+        set_env_var("ET_SECRET", "my-secret-key");
+        set_env_var("ET_PORT", "11010");
 
         let config = r#"
 [network_identity]
@@ -123,7 +124,7 @@ uri = "tcp://127.0.0.1:${ET_PORT}"
 
     #[test]
     fn test_escape_syntax_double_dollar() {
-        std::env::set_var("ESCAPED_VAR", "should_not_expand");
+        set_env_var("ESCAPED_VAR", "should_not_expand");
         // shellexpand 使用 $$ 作为转义序列，表示字面量的单个 $
         // $$ 会被转义为单个 $，不会触发变量扩展
         let (result, changed) = expand_env_vars("value=$${ESCAPED_VAR}");
@@ -133,7 +134,7 @@ uri = "tcp://127.0.0.1:${ET_PORT}"
 
     #[test]
     fn test_escape_syntax_backslash() {
-        std::env::set_var("ESCAPED_VAR", "should_not_expand");
+        set_env_var("ESCAPED_VAR", "should_not_expand");
         // shellexpand 中反斜杠转义的行为：\$ 会展开为 \<变量值>
         // 这不是推荐的转义方式，此测试仅为记录实际行为
         let (result, changed) = expand_env_vars(r"value=\${ESCAPED_VAR}");
@@ -143,7 +144,7 @@ uri = "tcp://127.0.0.1:${ET_PORT}"
 
     #[test]
     fn test_multiple_dollar_signs() {
-        std::env::set_var("TEST_VAR", "value");
+        set_env_var("TEST_VAR", "value");
         // 测试多个连续的 $ 符号
         let (result1, changed1) = expand_env_vars("$$");
         assert_eq!(result1, "$");
@@ -161,7 +162,7 @@ uri = "tcp://127.0.0.1:${ET_PORT}"
 
     #[test]
     fn test_empty_var_value() {
-        std::env::set_var("EMPTY_VAR", "");
+        set_env_var("EMPTY_VAR", "");
         let (result, changed) = expand_env_vars("value=${EMPTY_VAR}");
         // 变量存在但值为空
         assert_eq!(result, "value=");
@@ -170,7 +171,7 @@ uri = "tcp://127.0.0.1:${ET_PORT}"
 
     #[test]
     fn test_default_with_special_chars() {
-        std::env::remove_var("UNDEFINED_SPECIAL");
+        remove_env_var("UNDEFINED_SPECIAL");
         // 测试默认值包含冒号、等号、空格等特殊字符
         let (result, changed) = expand_env_vars("url=${UNDEFINED_SPECIAL:-http://localhost:8080}");
         assert_eq!(result, "url=http://localhost:8080");
@@ -187,9 +188,9 @@ uri = "tcp://127.0.0.1:${ET_PORT}"
 
     #[test]
     fn test_var_name_with_numbers_underscores() {
-        std::env::set_var("VAR_123", "num_value");
-        std::env::set_var("_VAR", "underscore_prefix");
-        std::env::set_var("VAR_", "underscore_suffix");
+        set_env_var("VAR_123", "num_value");
+        set_env_var("_VAR", "underscore_prefix");
+        set_env_var("VAR_", "underscore_suffix");
 
         let (result1, changed1) = expand_env_vars("${VAR_123}");
         assert_eq!(result1, "num_value");
@@ -214,7 +215,7 @@ uri = "tcp://127.0.0.1:${ET_PORT}"
 
         // 注意：未闭合的 ${VAR 实际上 shellexpand 会当作普通文本处理
         // 它会尝试查找名为 "VAR" 的环境变量（到字符串末尾）
-        std::env::remove_var("VAR");
+        remove_env_var("VAR");
         let (result2, _changed2) = expand_env_vars("incomplete ${VAR");
         // 如果 VAR 未定义，shellexpand 会返回错误或保持原样
         assert_eq!(result2, "incomplete ${VAR");
@@ -224,8 +225,8 @@ uri = "tcp://127.0.0.1:${ET_PORT}"
 
     #[test]
     fn test_mixed_defined_undefined_vars() {
-        std::env::set_var("DEFINED_VAR", "defined");
-        std::env::remove_var("UNDEFINED_VAR");
+        set_env_var("DEFINED_VAR", "defined");
+        remove_env_var("UNDEFINED_VAR");
 
         // 混合已定义和未定义的变量
         // shellexpand::env 在遇到未定义变量时会返回错误（默认行为）
@@ -237,7 +238,7 @@ uri = "tcp://127.0.0.1:${ET_PORT}"
 
     #[test]
     fn test_nested_braces() {
-        std::env::set_var("OUTER", "outer_value");
+        set_env_var("OUTER", "outer_value");
         // 嵌套的大括号是无效语法，shellexpand::env 会返回错误
         let (result, changed) = expand_env_vars("${OUTER} and ${{INNER}}");
         // 由于语法错误，整个字符串保持不变

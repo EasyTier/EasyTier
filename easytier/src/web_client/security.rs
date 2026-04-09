@@ -3,14 +3,14 @@ use std::time::Duration;
 
 use bytes::BytesMut;
 use futures::{SinkExt, StreamExt};
-use snow::{params::NoiseParams, Builder, TransportState};
+use snow::{Builder, TransportState, params::NoiseParams};
 
 use crate::{
     proto::common::TunnelInfo,
     tunnel::{
+        SplitTunnel, StreamItem, Tunnel, TunnelError, ZCPacketSink, ZCPacketStream,
         filter::{TunnelFilter, TunnelWithFilter},
         packet_def::{PacketType, ZCPacket, ZCPacketType},
-        SplitTunnel, StreamItem, Tunnel, TunnelError, ZCPacketSink, ZCPacketStream,
     },
 };
 

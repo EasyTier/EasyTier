@@ -6,8 +6,8 @@ use std::{
     io,
     net::{IpAddr, SocketAddr},
     sync::{
-        atomic::{AtomicU16, Ordering},
         Arc,
+        atomic::{AtomicU16, Ordering},
     },
 };
 

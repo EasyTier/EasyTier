@@ -6,10 +6,10 @@ use std::{
 };
 
 use anyhow::Context;
-use base64::{prelude::BASE64_STANDARD, Engine as _};
+use base64::{Engine as _, prelude::BASE64_STANDARD};
 use cfg_if::cfg_if;
-use clap::builder::PossibleValue;
 use clap::ValueEnum;
+use clap::builder::PossibleValue;
 use serde::{Deserialize, Serialize};
 use strum::{Display, EnumString, VariantArray};
 use tokio::io::AsyncReadExt as _;
@@ -621,14 +621,14 @@ impl ConfigLoader for TomlConfigLoader {
         if locked_config.proxy_network.is_none() {
             locked_config.proxy_network = Some(vec![]);
         }
-        if let Some(mapped_cidr) = mapped_cidr.as_ref() {
-            if cidr.network_length() != mapped_cidr.network_length() {
-                return Err(anyhow::anyhow!(
-                    "Mapped CIDR must have the same network length as the original CIDR: {} != {}",
-                    cidr.network_length(),
-                    mapped_cidr.network_length()
-                ));
-            }
+        if let Some(mapped_cidr) = mapped_cidr.as_ref()
+            && cidr.network_length() != mapped_cidr.network_length()
+        {
+            return Err(anyhow::anyhow!(
+                "Mapped CIDR must have the same network length as the original CIDR: {} != {}",
+                cidr.network_length(),
+                mapped_cidr.network_length()
+            ));
         }
         // insert if no duplicate
         if !locked_config
@@ -881,10 +881,10 @@ impl ConfigLoader for TomlConfigLoader {
 
         let mut flag_map: serde_json::Map<String, serde_json::Value> = Default::default();
         for (key, value) in default_flags_hashmap {
-            if let Some(v) = cur_flags_hashmap.get(&key) {
-                if *v != value {
-                    flag_map.insert(key, v.clone());
-                }
+            if let Some(v) = cur_flags_hashmap.get(&key)
+                && *v != value
+            {
+                flag_map.insert(key, v.clone());
             }
         }
 
@@ -1089,6 +1089,7 @@ pub async fn load_config_from_file(
 #[cfg(test)]
 pub mod tests {
     use super::*;
+    use crate::tests::{remove_env_var, set_env_var};
     use std::io::Write;
     use std::path::PathBuf;
     use tempfile::NamedTempFile;
@@ -1212,8 +1213,8 @@ proto = "tcp"
     #[tokio::test]
     async fn test_env_var_expansion_and_readonly_flag() {
         // 设置测试环境变量
-        std::env::set_var("TEST_SECRET", "my-test-secret-123");
-        std::env::set_var("TEST_NETWORK", "test-network");
+        set_env_var("TEST_SECRET", "my-test-secret-123");
+        set_env_var("TEST_NETWORK", "test-network");
 
         // 创建临时配置文件，包含环境变量占位符
         let mut temp_file = NamedTempFile::new().unwrap();
@@ -1253,8 +1254,8 @@ network_secret = "${TEST_SECRET}"
         );
 
         // 清理环境变量
-        std::env::remove_var("TEST_SECRET");
-        std::env::remove_var("TEST_NETWORK");
+        remove_env_var("TEST_SECRET");
+        remove_env_var("TEST_NETWORK");
     }
 
     /// RPC API 安全测试（只读配置保护）
@@ -1267,7 +1268,7 @@ network_secret = "${TEST_SECRET}"
     /// `easytier/src/rpc_service/instance_manage.rs` 中实现
     #[tokio::test]
     async fn test_readonly_config_api_protection() {
-        std::env::set_var("API_TEST_SECRET", "secret-value");
+        set_env_var("API_TEST_SECRET", "secret-value");
 
         // 创建包含环境变量的配置
         let mut temp_file = NamedTempFile::new().unwrap();
@@ -1298,7 +1299,7 @@ network_secret = "${API_TEST_SECRET}"
             "Permission flag should be set correctly"
         );
 
-        std::env::remove_var("API_TEST_SECRET");
+        remove_env_var("API_TEST_SECRET");
     }
 
     /// CLI 参数测试（--disable-env-parsing 开关）
@@ -1308,7 +1309,7 @@ network_secret = "${API_TEST_SECRET}"
     /// - 配置不会被标记为只读
     #[tokio::test]
     async fn test_disable_env_parsing_flag() {
-        std::env::set_var("DISABLED_TEST_VAR", "should-not-expand");
+        set_env_var("DISABLED_TEST_VAR", "should-not-expand");
 
         // 创建包含环境变量占位符的配置
         let mut temp_file = NamedTempFile::new().unwrap();
@@ -1346,7 +1347,7 @@ network_secret = "${DISABLED_TEST_VAR}"
             "Config should be NO_DELETE due to no config_dir, not env vars"
         );
 
-        std::env::remove_var("DISABLED_TEST_VAR");
+        remove_env_var("DISABLED_TEST_VAR");
     }
 
     /// 多实例隔离测试
@@ -1357,8 +1358,8 @@ network_secret = "${DISABLED_TEST_VAR}"
     #[tokio::test]
     async fn test_multiple_instances_with_different_env_vars() {
         // 实例1：使用第一组环境变量
-        std::env::set_var("INSTANCE_SECRET", "instance1-secret");
-        std::env::set_var("INSTANCE_NAME", "instance-one");
+        set_env_var("INSTANCE_SECRET", "instance1-secret");
+        set_env_var("INSTANCE_NAME", "instance-one");
 
         let mut temp_file1 = NamedTempFile::new().unwrap();
         let config_content = r#"
@@ -1388,8 +1389,8 @@ network_secret = "${INSTANCE_SECRET}"
         );
 
         // 实例2：修改环境变量后加载同一模板
-        std::env::set_var("INSTANCE_SECRET", "instance2-secret");
-        std::env::set_var("INSTANCE_NAME", "instance-two");
+        set_env_var("INSTANCE_SECRET", "instance2-secret");
+        set_env_var("INSTANCE_NAME", "instance-two");
 
         let mut temp_file2 = NamedTempFile::new().unwrap();
         temp_file2.write_all(config_content.as_bytes()).unwrap();
@@ -1419,8 +1420,8 @@ network_secret = "${INSTANCE_SECRET}"
         );
 
         // 清理
-        std::env::remove_var("INSTANCE_SECRET");
-        std::env::remove_var("INSTANCE_NAME");
+        remove_env_var("INSTANCE_SECRET");
+        remove_env_var("INSTANCE_NAME");
     }
 
     /// 实际配置字段测试（network_secret、peer.uri 等）
@@ -1433,11 +1434,11 @@ network_secret = "${INSTANCE_SECRET}"
     #[tokio::test]
     async fn test_real_config_fields_expansion() {
         // 设置各种实际场景的环境变量
-        std::env::set_var("ET_SECRET", "production-secret-key");
-        std::env::set_var("PEER_HOST", "peer.example.com");
-        std::env::set_var("PEER_PORT", "11011");
-        std::env::set_var("LISTEN_PORT", "11010");
-        std::env::set_var("NETWORK_NAME", "prod-network");
+        set_env_var("ET_SECRET", "production-secret-key");
+        set_env_var("PEER_HOST", "peer.example.com");
+        set_env_var("PEER_PORT", "11011");
+        set_env_var("LISTEN_PORT", "11010");
+        set_env_var("NETWORK_NAME", "prod-network");
 
         // 创建包含多个实际字段的完整配置
         let mut temp_file = NamedTempFile::new().unwrap();
@@ -1485,11 +1486,11 @@ uri = "tcp://${PEER_HOST}:${PEER_PORT}"
         assert!(control.is_no_delete());
 
         // 清理环境变量
-        std::env::remove_var("ET_SECRET");
-        std::env::remove_var("PEER_HOST");
-        std::env::remove_var("PEER_PORT");
-        std::env::remove_var("LISTEN_PORT");
-        std::env::remove_var("NETWORK_NAME");
+        remove_env_var("ET_SECRET");
+        remove_env_var("PEER_HOST");
+        remove_env_var("PEER_PORT");
+        remove_env_var("LISTEN_PORT");
+        remove_env_var("NETWORK_NAME");
     }
 
     /// 带默认值的环境变量
@@ -1499,8 +1500,8 @@ uri = "tcp://${PEER_HOST}:${PEER_PORT}"
     #[tokio::test]
     async fn test_env_var_with_default_value() {
         // 确保变量未定义
-        std::env::remove_var("UNDEFINED_PORT");
-        std::env::remove_var("UNDEFINED_SECRET");
+        remove_env_var("UNDEFINED_PORT");
+        remove_env_var("UNDEFINED_SECRET");
 
         let mut temp_file = NamedTempFile::new().unwrap();
         let config_content = r#"
@@ -1541,7 +1542,7 @@ network_secret = "${UNDEFINED_SECRET:-default-secret}"
     /// - 未定义的环境变量保持原样（shellexpand 的默认行为）
     #[tokio::test]
     async fn test_undefined_env_var_without_default() {
-        std::env::remove_var("COMPLETELY_UNDEFINED");
+        remove_env_var("COMPLETELY_UNDEFINED");
 
         let mut temp_file = NamedTempFile::new().unwrap();
         let config_content = r#"
@@ -1571,6 +1572,8 @@ network_secret = "${COMPLETELY_UNDEFINED}"
 
         // 注意：由于没有实际替换发生，控制标记不应因环境变量而设置
         // 但会因为其他原因（如没有 config_dir）被标记为 NO_DELETE
+        // 这里我们主要验证 NO_DELETE 标记的逻辑
+        // 由于没有 config_dir，文件会被标记为 NO_DELETE，但不是因为环境变量
         assert!(control.is_no_delete());
     }
 
@@ -1582,9 +1585,9 @@ network_secret = "${COMPLETELY_UNDEFINED}"
     #[tokio::test]
     async fn test_boolean_type_env_vars() {
         // 设置布尔类型的环境变量
-        std::env::set_var("ENABLE_DHCP", "true");
-        std::env::set_var("ENABLE_ENCRYPTION", "false");
-        std::env::set_var("ENABLE_IPV6", "true");
+        set_env_var("ENABLE_DHCP", "true");
+        set_env_var("ENABLE_ENCRYPTION", "false");
+        set_env_var("ENABLE_IPV6", "true");
 
         let mut temp_file = NamedTempFile::new().unwrap();
         let config_content = r#"
@@ -1622,9 +1625,9 @@ enable_ipv6 = ${ENABLE_IPV6}
         assert!(control.is_no_delete());
 
         // 清理
-        std::env::remove_var("ENABLE_DHCP");
-        std::env::remove_var("ENABLE_ENCRYPTION");
-        std::env::remove_var("ENABLE_IPV6");
+        remove_env_var("ENABLE_DHCP");
+        remove_env_var("ENABLE_ENCRYPTION");
+        remove_env_var("ENABLE_IPV6");
     }
 
     /// 数字类型环境变量
@@ -1635,8 +1638,8 @@ enable_ipv6 = ${ENABLE_IPV6}
     #[tokio::test]
     async fn test_numeric_type_env_vars() {
         // 设置数字类型的环境变量
-        std::env::set_var("MTU_VALUE", "1400");
-        std::env::set_var("THREAD_COUNT", "4");
+        set_env_var("MTU_VALUE", "1400");
+        set_env_var("THREAD_COUNT", "4");
 
         let mut temp_file = NamedTempFile::new().unwrap();
         let config_content = r#"
@@ -1671,8 +1674,8 @@ multi_thread_count = ${THREAD_COUNT}
         assert!(control.is_no_delete());
 
         // 清理
-        std::env::remove_var("MTU_VALUE");
-        std::env::remove_var("THREAD_COUNT");
+        remove_env_var("MTU_VALUE");
+        remove_env_var("THREAD_COUNT");
     }
 
     /// 混合类型环境变量
@@ -1684,12 +1687,12 @@ multi_thread_count = ${THREAD_COUNT}
     #[tokio::test]
     async fn test_mixed_type_env_vars() {
         // 设置不同类型的环境变量
-        std::env::set_var("MIXED_SECRET", "mixed-secret-key");
-        std::env::set_var("MIXED_NETWORK", "production");
-        std::env::set_var("MIXED_DHCP", "true");
-        std::env::set_var("MIXED_MTU", "1500");
-        std::env::set_var("MIXED_ENCRYPTION", "false");
-        std::env::set_var("MIXED_LISTEN_PORT", "12345");
+        set_env_var("MIXED_SECRET", "mixed-secret-key");
+        set_env_var("MIXED_NETWORK", "production");
+        set_env_var("MIXED_DHCP", "true");
+        set_env_var("MIXED_MTU", "1500");
+        set_env_var("MIXED_ENCRYPTION", "false");
+        set_env_var("MIXED_LISTEN_PORT", "12345");
 
         let mut temp_file = NamedTempFile::new().unwrap();
         let config_content = r#"
@@ -1741,11 +1744,11 @@ enable_encryption = ${MIXED_ENCRYPTION}
         assert!(control.is_no_delete());
 
         // 清理
-        std::env::remove_var("MIXED_SECRET");
-        std::env::remove_var("MIXED_NETWORK");
-        std::env::remove_var("MIXED_DHCP");
-        std::env::remove_var("MIXED_MTU");
-        std::env::remove_var("MIXED_ENCRYPTION");
-        std::env::remove_var("MIXED_LISTEN_PORT");
+        remove_env_var("MIXED_SECRET");
+        remove_env_var("MIXED_NETWORK");
+        remove_env_var("MIXED_DHCP");
+        remove_env_var("MIXED_MTU");
+        remove_env_var("MIXED_ENCRYPTION");
+        remove_env_var("MIXED_LISTEN_PORT");
     }
 }

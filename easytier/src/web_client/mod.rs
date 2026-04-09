@@ -162,7 +162,10 @@ impl WebClient {
             if secure_mode {
                 connected.store(false, Ordering::Release);
                 let wait = 1;
-                log::warn!("secure-mode enabled but server does not support encryption, retrying in {} seconds...", wait);
+                log::warn!(
+                    "secure-mode enabled but server does not support encryption, retrying in {} seconds...",
+                    wait
+                );
                 tokio::time::sleep(std::time::Duration::from_secs(wait)).await;
                 continue;
             }
@@ -238,7 +241,7 @@ pub async fn run_web_client(
 
 #[cfg(test)]
 mod tests {
-    use std::sync::{atomic::AtomicBool, Arc};
+    use std::sync::{Arc, atomic::AtomicBool};
 
     use crate::instance_manager::NetworkInstanceManager;
 

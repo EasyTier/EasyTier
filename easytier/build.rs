@@ -86,7 +86,9 @@ impl WindowsBuild {
         } else {
             Self::download_protoc()
         };
-        std::env::set_var("PROTOC", protoc_path);
+        unsafe {
+            std::env::set_var("PROTOC", protoc_path);
+        }
     }
 }
 

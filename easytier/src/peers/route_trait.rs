@@ -6,7 +6,7 @@ use std::{
 use dashmap::DashMap;
 
 use crate::{
-    common::{global_ctx::NetworkIdentity, PeerId},
+    common::{PeerId, global_ctx::NetworkIdentity},
     proto::peer_rpc::{
         ForeignNetworkRouteInfoEntry, ForeignNetworkRouteInfoKey, PeerIdentityType,
         RouteForeignNetworkInfos, RouteForeignNetworkSummary, RoutePeerInfo,

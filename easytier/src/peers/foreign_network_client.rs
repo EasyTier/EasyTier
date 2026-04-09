@@ -1,11 +1,11 @@
 use std::sync::{Arc, Mutex};
 
 use crate::{
-    common::{error::Error, global_ctx::ArcGlobalCtx, scoped_task::ScopedTask, PeerId},
+    common::{PeerId, error::Error, global_ctx::ArcGlobalCtx, scoped_task::ScopedTask},
     tunnel::packet_def::ZCPacket,
 };
 
-use super::{peer_conn::PeerConn, peer_map::PeerMap, peer_rpc::PeerRpcManager, PacketRecvChan};
+use super::{PacketRecvChan, peer_conn::PeerConn, peer_map::PeerMap, peer_rpc::PeerRpcManager};
 
 pub struct ForeignNetworkClient {
     global_ctx: ArcGlobalCtx,

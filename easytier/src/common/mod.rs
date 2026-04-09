@@ -41,8 +41,8 @@ pub fn get_logger_timer<F: time::formatting::Formattable>(
     tracing_subscriber::fmt::time::OffsetTime::new(local_offset, format)
 }
 
-pub fn get_logger_timer_rfc3339(
-) -> tracing_subscriber::fmt::time::OffsetTime<time::format_description::well_known::Rfc3339> {
+pub fn get_logger_timer_rfc3339()
+-> tracing_subscriber::fmt::time::OffsetTime<time::format_description::well_known::Rfc3339> {
     get_logger_timer(time::format_description::well_known::Rfc3339)
 }
 
@@ -117,10 +117,10 @@ pub fn get_machine_id() -> uuid::Uuid {
         .unwrap_or_else(|_| std::path::PathBuf::from("et_machine_id"));
 
     // try load from local file
-    if let Ok(mid) = std::fs::read_to_string(&machine_id_file) {
-        if let Ok(mid) = uuid::Uuid::parse_str(mid.trim()) {
-            return mid;
-        }
+    if let Ok(mid) = std::fs::read_to_string(&machine_id_file)
+        && let Ok(mid) = uuid::Uuid::parse_str(mid.trim())
+    {
+        return mid;
     }
 
     #[cfg(any(

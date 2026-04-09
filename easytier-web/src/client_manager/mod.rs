@@ -2,8 +2,8 @@ pub mod session;
 pub mod storage;
 
 use std::sync::{
-    atomic::{AtomicU32, Ordering},
     Arc,
+    atomic::{AtomicU32, Ordering},
 };
 
 use dashmap::DashMap;
@@ -19,11 +19,11 @@ use maxminddb::geoip2;
 use session::{Location, Session};
 use storage::{Storage, StorageToken};
 
-use crate::webhook::SharedWebhookConfig;
 use crate::FeatureFlags;
+use crate::webhook::SharedWebhookConfig;
 use tokio::task::JoinSet;
 
-use crate::db::{entity::user_running_network_configs, Db, UserIdInDb};
+use crate::db::{Db, UserIdInDb, entity::user_running_network_configs};
 
 #[derive(rust_embed::Embed)]
 #[folder = "resources/"]
@@ -340,7 +340,7 @@ mod tests {
     };
     use sqlx::Executor;
 
-    use crate::{client_manager::ClientManager, db::Db, FeatureFlags};
+    use crate::{FeatureFlags, client_manager::ClientManager, db::Db};
 
     #[tokio::test]
     async fn test_client() {
