@@ -428,9 +428,8 @@ function Get-EasyTier {
     }
     $remoteVersion = Get-RemoteVersion($response)
     $localVersion = Get-LocalVersion($EasyTierPath)
-    if ($localVersion -ge $remoteVersion) {
-        Write-Host "本地版本与$(if ($Tag -eq 'latest') { '最新' } else { '指定('+$Tag+')' })版本一致, 无需重复获取。" -ForegroundColor Green
-        return
+    if ($localVersion -ge $remoteVersion) { 
+        throw "本地版本与$(if ($Tag -eq 'latest') { '最新' } else { '指定('+$Tag+')' })版本一致, 无需重复获取。"
     }
     $asset = $response.assets | Where-Object { $_.name -like "easytier-$Arch*.zip" } | Select-Object -First 1
     if ($asset) {
