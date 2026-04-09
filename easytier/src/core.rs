@@ -1195,9 +1195,9 @@ fn win_service_event_loop(
                             status_handle.set_service_status(normal_status).unwrap();
                             std::process::exit(0);
                         }
-                        Err(e) => {
+                        Err(error) => {
                             status_handle.set_service_status(error_status).unwrap();
-                            log::error!("{}", e);
+                            log::error!(?error);
                         }
                     }
                 },
@@ -1511,8 +1511,8 @@ pub async fn main() -> ExitCode {
 
     // Verify configurations
     if cli.check_config {
-        if let Err(e) = validate_config(&cli).await {
-            log::error!("Config validation failed: {:?}", e);
+        if let Err(error) = validate_config(&cli).await {
+            log::error!(?error, "Config validation failed");
             return ExitCode::FAILURE;
         } else {
             return ExitCode::SUCCESS;
@@ -1522,7 +1522,7 @@ pub async fn main() -> ExitCode {
     let mut ret_code = 0;
 
     if let Err(error) = run_main(cli).await {
-        log::error!(%error);
+        log::error!(?error);
         ret_code = 1;
     }
 
