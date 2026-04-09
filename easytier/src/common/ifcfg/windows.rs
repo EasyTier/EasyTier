@@ -20,8 +20,9 @@ use winreg::{
     RegKey,
 };
 
-use super::{Error, IfConfiguerTrait};
-pub struct WindowsIfConfiger {}
+use super::{Error, IfConfigerTrait};
+
+pub struct IfConfiger;
 
 fn format_win_error(error: u32) -> String {
     // use FormatMessageW to get the error message
@@ -48,7 +49,7 @@ fn format_win_error(error: u32) -> String {
     )
 }
 
-impl WindowsIfConfiger {
+impl IfConfiger {
     pub fn get_interface_index(name: &str) -> Option<u32> {
         crate::arch::windows::find_interface_index(name).ok()
     }
@@ -179,7 +180,7 @@ impl WindowsIfConfiger {
 }
 
 #[async_trait]
-impl IfConfiguerTrait for WindowsIfConfiger {
+impl IfConfigerTrait for IfConfiger {
     async fn add_ipv4_route(
         &self,
         name: &str,
@@ -232,45 +233,8 @@ impl IfConfiguerTrait for WindowsIfConfiger {
         Self::add_ip_address(name, Ipv4Inet::new(address, cidr_prefix).unwrap()).await
     }
 
-    async fn set_link_status(&self, name: &str, up: bool) -> Result<(), Error> {
-        Self::set_interface_status(name, up).await
-    }
-
-    async fn remove_ip(&self, name: &str, ip: Option<Ipv4Inet>) -> Result<(), Error> {
+    async fn remove_ipv4_ip(&self, name: &str, ip: Option<Ipv4Inet>) -> Result<(), Error> {
         Self::remove_ip_address(name, ip).await
-    }
-
-    async fn wait_interface_show(&self, name: &str) -> Result<(), Error> {
-        Ok(
-            tokio::time::timeout(std::time::Duration::from_secs(10), async move {
-                loop {
-                    if let Some(idx) = Self::get_interface_index(name) {
-                        tracing::info!(?name, ?idx, "Interface found");
-                        break;
-                    }
-                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-                }
-                Ok::<(), Error>(())
-            })
-            .await??,
-        )
-    }
-
-    async fn set_mtu(&self, name: &str, mtu: u32) -> Result<(), Error> {
-        Self::set_interface_mtu(name, mtu).await
-    }
-
-    async fn add_ipv6_ip(
-        &self,
-        name: &str,
-        address: Ipv6Addr,
-        cidr_prefix: u8,
-    ) -> Result<(), Error> {
-        Self::add_ipv6_address(name, Ipv6Inet::new(address, cidr_prefix).unwrap()).await
-    }
-
-    async fn remove_ipv6(&self, name: &str, ip: Option<Ipv6Inet>) -> Result<(), Error> {
-        Self::remove_ipv6_address(name, ip).await
     }
 
     async fn add_ipv6_route(
@@ -317,6 +281,43 @@ impl IfConfiguerTrait for WindowsIfConfiger {
         )
         .map_err(|e| anyhow::anyhow!("Failed to delete route: {}", format_win_error(e)))?;
         Ok(())
+    }
+
+    async fn add_ipv6_ip(
+        &self,
+        name: &str,
+        address: Ipv6Addr,
+        cidr_prefix: u8,
+    ) -> Result<(), Error> {
+        Self::add_ipv6_address(name, Ipv6Inet::new(address, cidr_prefix).unwrap()).await
+    }
+
+    async fn remove_ipv6_ip(&self, name: &str, ip: Option<Ipv6Inet>) -> Result<(), Error> {
+        Self::remove_ipv6_address(name, ip).await
+    }
+
+    async fn set_link_status(&self, name: &str, up: bool) -> Result<(), Error> {
+        Self::set_interface_status(name, up).await
+    }
+
+    async fn wait_interface_show(&self, name: &str) -> Result<(), Error> {
+        Ok(
+            tokio::time::timeout(std::time::Duration::from_secs(10), async move {
+                loop {
+                    if let Some(idx) = Self::get_interface_index(name) {
+                        tracing::info!(?name, ?idx, "Interface found");
+                        break;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                }
+                Ok::<(), Error>(())
+            })
+            .await??,
+        )
+    }
+
+    async fn set_mtu(&self, name: &str, mtu: u32) -> Result<(), Error> {
+        Self::set_interface_mtu(name, mtu).await
     }
 }
 

@@ -13,10 +13,7 @@ use super::{
     MAGIC_DNS_INSTANCE_ADDR,
 };
 use crate::{
-    common::{
-        ifcfg::{IfConfiger, IfConfiguerTrait},
-        PeerId,
-    },
+    common::{ifcfg, PeerId},
     instance::dns_server::{
         config::{Record, RecordBuilder, RecordType},
         server::build_authority,
@@ -535,8 +532,7 @@ impl MagicDnsServerInstance {
                 } else {
                     None
                 };
-                let ifcfg = IfConfiger {};
-                ifcfg
+                ifcfg::get()
                     .add_ipv4_route(tun_dev_name, fake_ip, 32, cost)
                     .await?;
             }
@@ -589,8 +585,7 @@ impl MagicDnsServerInstance {
             }
             if !self.tun_inet.contains(&self.data.fake_ip) {
                 if let Some(tun_dev_name) = &self.data.tun_dev {
-                    let ifcfg = IfConfiger {};
-                    let _ = ifcfg
+                    let _ = ifcfg::get()
                         .remove_ipv4_route(tun_dev_name, self.data.fake_ip, 32)
                         .await;
                 }
