@@ -283,6 +283,15 @@ struct NetworkOptions {
 
     #[arg(
         long,
+        env = "ET_ENABLE_POST_QUANTUM",
+        help = t!("core_clap.enable_post_quantum").to_string(),
+        num_args = 0..=1,
+        default_missing_value = "true"
+    )]
+    enable_post_quantum: Option<bool>,
+
+    #[arg(
+        long,
         env = "ET_MULTI_THREAD",
         help = t!("core_clap.multi_thread").to_string(),
         num_args = 0..=1,
@@ -1015,6 +1024,7 @@ impl NetworkOptions {
         if let Some(algorithm) = &self.encryption_algorithm {
             f.encryption_algorithm = algorithm.to_string();
         }
+        f.enable_post_quantum = self.enable_post_quantum.unwrap_or(f.enable_post_quantum);
         if let Some(v) = self.disable_ipv6 {
             f.enable_ipv6 = !v;
         }

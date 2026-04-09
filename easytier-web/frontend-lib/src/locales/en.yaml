@@ -150,6 +150,9 @@ proxy_forward_by_system_help: Forward packet to proxy networks via system kernel
 disable_encryption: Disable Encryption
 disable_encryption_help: Disable encryption for peers communication. Encryption is enabled by default, this option must be same with peers.
 
+enable_post_quantum: Post-Quantum Key Exchange
+enable_post_quantum_help: Enable hybrid post-quantum key exchange (ML-KEM-768 + X25519). Provides protection against quantum computer attacks. Both peers must enable this for PQ protection; otherwise falls back to classical key exchange automatically.
+
 disable_tcp_hole_punching: Disable TCP Hole Punching
 disable_tcp_hole_punching_help: Disable tcp hole punching
 

@@ -178,6 +178,7 @@ aes-gcm = { version = "0.10.3", optional = true }
 openssl = { version = "0.10", optional = true, features = ["vendored"] }
 snow = "0.10.0"
 x25519-dalek = { version = "2.0", features = ["static_secrets"] }
+ml-kem = { version = "0.2", optional = true }
 
 # for cli
 tabled = "0.16"
@@ -365,6 +366,7 @@ default = [
     "faketcp",
     "magic-dns",
     "zstd",
+    "pq-kem",
 ]
 full = [
     "websocket",
@@ -379,6 +381,7 @@ full = [
     "faketcp",
     "magic-dns",
     "zstd",
+    "pq-kem",
 ]
 wireguard = ["dep:boringtun", "dep:ring"]
 quic = ["dep:quinn", "dep:quinn-plaintext", "dep:rustls", "dep:rcgen"]
@@ -409,5 +412,6 @@ tracing = ["tokio/tracing", "dep:console-subscriber"]
 magic-dns = ["dep:hickory-client", "dep:hickory-server"]
 faketcp = ["dep:flume"]
 zstd = ["dep:zstd"]
+pq-kem = ["dep:ml-kem"]
 # For Network Extension on macOS
 macos-ne = []
