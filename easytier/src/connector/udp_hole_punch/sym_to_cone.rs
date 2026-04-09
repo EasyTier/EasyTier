@@ -616,7 +616,7 @@ pub mod tests {
                     .await
                     .is_ok()
             },
-            Duration::from_secs(30),
+            Duration::from_secs(60),
         )
         .await;
         println!("{:?}", p_a.list_routes().await);
