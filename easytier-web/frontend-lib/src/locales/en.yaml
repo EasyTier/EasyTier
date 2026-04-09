@@ -286,6 +286,9 @@ web:
     logout: Logout
     language: Language
     change_password: Change Password
+    change_password_now: Change Password Now
+    default_password_warning: This account is still using the default password. Change it immediately after deployment to keep your instance secure.
+    password_changed_relogin: Password changed. Please log in again.
 
   device:
     list: Device List
@@ -360,6 +363,11 @@ web:
     success: Success
     warning: Warning
     info: Info
+    password_empty: Password cannot be empty
+    password_min_length: Password must be at least 8 characters long
+    password_too_weak: Password is too weak
+    password_mismatch: Passwords do not match
+    password_strength_hint: Password must be at least 8 characters and include at least 2 of uppercase letters, lowercase letters, numbers, or special characters
     enable: Enable
     disable: Disable
     address: Address

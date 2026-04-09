@@ -286,6 +286,9 @@ web:
     logout: 退出登录
     language: 语言
     change_password: 修改密码
+    change_password_now: 立即修改密码
+    default_password_warning: 当前账号仍在使用系统默认密码。为保障安全，请部署完成后立即修改密码。
+    password_changed_relogin: 密码已修改，请重新登录。
 
   device:
     list: 设备列表
@@ -360,6 +363,11 @@ web:
     success: 成功
     warning: 警告
     info: 提示
+    password_empty: 密码不能为空
+    password_min_length: 密码至少需要 8 位
+    password_too_weak: 密码强度不足
+    password_mismatch: 两次输入的密码不一致
+    password_strength_hint: 密码至少 8 位，且需包含大小写字母、数字、特殊字符中的至少 2 类
     enable: 开启
     disable: 关闭
     address: 地址

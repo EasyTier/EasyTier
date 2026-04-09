@@ -96,6 +96,7 @@ impl Db {
         let user_active = users::ActiveModel {
             username: Set(username.to_string()),
             password: Set(password_hash),
+            must_change_password: Set(false),
             ..Default::default()
         };
         let insert_result = users::Entity::insert(user_active).exec(&txn).await?;
@@ -280,7 +281,28 @@ mod tests {
     use easytier::{proto::api::manage::NetworkConfig, rpc_service::remote_client::Storage};
     use sea_orm::{ColumnTrait, EntityTrait, QueryFilter as _};
 
-    use crate::db::{entity::user_running_network_configs, Db, ListNetworkProps};
+    use crate::db::{
+        entity::{user_running_network_configs, users},
+        Db, ListNetworkProps,
+    };
+
+    #[tokio::test]
+    async fn created_users_default_to_not_requiring_password_change() {
+        let db = Db::memory_db().await;
+
+        let user = db
+            .create_user_and_join_users_group("created-user", "pre-hashed-password".to_string())
+            .await
+            .unwrap();
+
+        let stored = users::Entity::find_by_id(user.id)
+            .one(db.orm_db())
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert!(!stored.must_change_password);
+    }
 
     #[tokio::test]
     async fn test_user_network_config_management() {

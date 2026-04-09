@@ -12,6 +12,8 @@ use tokio::task;
 
 use crate::db::{self, entity};
 
+const EMPTY_PASSWORD_MD5: &str = "d41d8cd98f00b204e9800998ecf8427e";
+
 #[derive(Clone, Serialize, Deserialize)]
 pub struct User {
     pub(crate) db_user: entity::users::Model,
@@ -62,6 +64,18 @@ pub struct RegisterNewUser {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ChangePassword {
     pub new_password: String,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum ChangePasswordError {
+    #[error("Password cannot be empty")]
+    EmptyPassword,
+
+    #[error("User not found")]
+    UserNotFound,
+
+    #[error(transparent)]
+    Db(#[from] sea_orm::DbErr),
 }
 
 #[derive(Debug, Clone)]
@@ -119,7 +133,14 @@ impl Backend {
         &self,
         id: <User as AuthUser>::Id,
         req: &ChangePassword,
-    ) -> anyhow::Result<()> {
+    ) -> Result<(), ChangePasswordError> {
+        // With the existing pre-hashed protocol the backend can only reject the
+        // exact empty-string digest; whitespace-only passwords must be blocked
+        // on the client before hashing.
+        if req.new_password == EMPTY_PASSWORD_MD5 {
+            return Err(ChangePasswordError::EmptyPassword);
+        }
+
         let hashed_password = password_auth::generate_hash(req.new_password.as_str());
 
         use entity::users;
@@ -127,9 +148,10 @@ impl Backend {
         let mut user = users::Entity::find_by_id(id)
             .one(self.db.orm_db())
             .await?
-            .ok_or(anyhow::anyhow!("User not found"))?
+            .ok_or(ChangePasswordError::UserNotFound)?
             .into_active_model();
         user.password = Set(hashed_password.clone());
+        user.must_change_password = Set(false);
 
         entity::users::Entity::update(user)
             .exec(self.db.orm_db())
@@ -239,6 +261,107 @@ impl AuthzBackend for Backend {
             .await?;
 
         Ok(permissions.into_iter().collect())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use axum_login::AuthnBackend;
+    use sea_orm::{ColumnTrait, EntityTrait, QueryFilter as _};
+
+    use super::{Backend, ChangePassword, ChangePasswordError, EMPTY_PASSWORD_MD5};
+    use crate::db::{entity::users, Db};
+
+    async fn find_user(db: &Db, username: &str) -> users::Model {
+        users::Entity::find()
+            .filter(users::Column::Username.eq(username))
+            .one(db.orm_db())
+            .await
+            .unwrap()
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn seeded_default_users_require_password_change() {
+        let db = Db::memory_db().await;
+
+        assert!(find_user(&db, "admin").await.must_change_password);
+        assert!(find_user(&db, "user").await.must_change_password);
+    }
+
+    #[tokio::test]
+    async fn auto_created_user_does_not_require_password_change() {
+        let db = Db::memory_db().await;
+
+        db.auto_create_user("oidc-user").await.unwrap();
+
+        assert!(!find_user(&db, "oidc-user").await.must_change_password);
+    }
+
+    #[tokio::test]
+    async fn change_password_clears_must_change_password_flag() {
+        let db = Db::memory_db().await;
+        let backend = Backend::new(db.clone());
+        let admin = find_user(&db, "admin").await;
+
+        backend
+            .change_password(
+                admin.id,
+                &ChangePassword {
+                    new_password: "f1086f68460b65771de50a970cd1242d".to_string(),
+                },
+            )
+            .await
+            .unwrap();
+
+        assert!(!find_user(&db, "admin").await.must_change_password);
+    }
+
+    #[tokio::test]
+    async fn change_password_rejects_empty_password_digest() {
+        let db = Db::memory_db().await;
+        let backend = Backend::new(db.clone());
+        let admin = find_user(&db, "admin").await;
+
+        let error = backend
+            .change_password(
+                admin.id,
+                &ChangePassword {
+                    new_password: EMPTY_PASSWORD_MD5.to_string(),
+                },
+            )
+            .await
+            .unwrap_err();
+
+        assert!(matches!(error, ChangePasswordError::EmptyPassword));
+        assert!(find_user(&db, "admin").await.must_change_password);
+    }
+
+    #[tokio::test]
+    async fn can_authenticate_with_new_password_after_change() {
+        let db = Db::memory_db().await;
+        let backend = Backend::new(db.clone());
+        let admin = find_user(&db, "admin").await;
+
+        backend
+            .change_password(
+                admin.id,
+                &ChangePassword {
+                    new_password: "f1086f68460b65771de50a970cd1242d".to_string(),
+                },
+            )
+            .await
+            .unwrap();
+
+        let authenticated = backend
+            .authenticate(super::Credentials {
+                username: "admin".to_string(),
+                password: "f1086f68460b65771de50a970cd1242d".to_string(),
+            })
+            .await
+            .unwrap();
+
+        assert!(authenticated.is_some());
     }
 }
 
