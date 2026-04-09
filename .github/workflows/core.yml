@@ -23,10 +23,11 @@ jobs:
   pre_job:
     # continue-on-error: true # Uncomment once integration is finished
     runs-on: ubuntu-latest
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     # Map a step output to a job output
     outputs:
       # do not skip push on branch starts with releases/
-      should_skip: ${{ (github.event_name == 'pull_request' && github.event.pull_request.draft) || (steps.skip_check.outputs.should_skip == 'true' && !startsWith(github.ref_name, 'releases/')) }}
+      should_skip: ${{ steps.skip_check.outputs.should_skip == 'true' && !startsWith(github.ref_name, 'releases/') }}
     steps:
       - id: skip_check
         uses: fkirc/skip-duplicate-actions@v5
@@ -279,24 +280,18 @@ jobs:
             ./artifacts/*
 
   core-result:
-    if: needs.pre_job.outputs.should_skip != 'true' && always()
     runs-on: ubuntu-latest
-    needs:
-      - pre_job
-      - build_web
-      - build
+    needs: [ pre_job, build_web, build ]
+    if: needs.pre_job.result == 'success' && needs.pre_job.outputs.should_skip != 'true' && !cancelled()
     steps:
       - name: Mark result as failed
-        if: needs.build.result != 'success'
+        if: contains(needs.*.result, 'failure')
         run: exit 1
 
   magisk_build:
-    needs: 
-      - pre_job
-      - build_web
-      - build
-    if: needs.pre_job.outputs.should_skip != 'true' && always()
     runs-on: ubuntu-latest
+    needs: [ pre_job, build_web, build ]
+    if: needs.pre_job.result == 'success' && needs.pre_job.outputs.should_skip != 'true' && !cancelled()
     steps:
       - name: Checkout Code
         uses: actions/checkout@v5  # 必须先检出代码才能获取模块配置
