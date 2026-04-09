@@ -3,6 +3,14 @@ networking_method: 网络方式
 public_server: 公共服务器
 manual: 手动
 standalone: 独立
+initial_nodes: 初始节点
+initial_nodes_help: |
+  EasyTier 不分服务端/客户端。
+  • 填“初始节点” = 插上网线，直接加入已有网络。
+  • 留空 = 节点独立启动，等别人来连，或你后续手动连。
+  • 无论直接还是间接连通（通过其他节点搭桥），都能组网互通。
+  初始节点可以用自己的，也可以用别人分享的。
+initial_node_placeholder: 例如：node.example.com
 virtual_ipv4: 虚拟IPv4地址
 virtual_ipv4_dhcp: DHCP
 network_name: 网络名称
@@ -26,6 +34,7 @@ error_msg: 错误信息
 detail: 详情
 add_new_network: 添加新网络
 add_peer_url: 添加节点
+add_initial_node: 添加初始节点
 add_listener_url: 添加监听地址
 add_mapped_listener: 添加监听映射
 del_cur_network: 删除当前网络
@@ -108,10 +117,13 @@ disable_quic_input: 禁用 QUIC 输入
 disable_quic_input_help: 禁用 QUIC 入站流量，其他开启 QUIC 代理的节点仍然使用 TCP 连接到本节点。
 
 disable_p2p: 禁用 P2P
-disable_p2p_help: 禁用 P2P 模式，所有流量通过手动指定的服务器中转。
+disable_p2p_help: 禁用普通自动 P2P。开启 need-p2p 的节点仍可与当前节点建立 P2P。
 
 p2p_only: 仅 P2P
 p2p_only_help: 仅与已经建立P2P连接的对等节点通信，不通过其他节点中转。
+
+lazy_p2p: 延迟 P2P
+lazy_p2p_help: 仅在实际流量需要某个对等节点时才尝试建立 P2P。开启 need-p2p 的节点仍会被主动连接。
 
 bind_device: 仅使用物理网卡
 bind_device_help: 仅使用物理网卡，避免 EasyTier 通过其他虚拟网建立连接。
@@ -126,6 +138,9 @@ relay_all_peer_rpc: 转发RPC包
 relay_all_peer_rpc_help: |
   允许转发所有对等节点的RPC数据包，即使对等节点不在转发网络白名单中。
   这可以帮助白名单外网络中的对等节点建立P2P连接。
+
+need_p2p: 需要 P2P
+need_p2p_help: 即使其他节点启用了 lazy p2p，也要求它们主动与当前节点建立 P2P 连接。
 
 multi_thread: 启用多线程
 multi_thread_help: 使用多线程运行时
@@ -180,6 +195,12 @@ mtu: MTU
 mtu_help: |
   TUN设备的MTU，默认为非加密时为1380，加密时为1360。范围：400-1380
 mtu_placeholder: 留空为默认值1380
+
+instance_recv_bps_limit: 实例接收限速
+instance_recv_bps_limit_help: |
+  限制当前实例整体入站流量的总接收速率，单位为字节每秒。
+  留空表示不限速。
+instance_recv_bps_limit_placeholder: 留空表示不限速
 
 mapped_listeners: 监听映射
 mapped_listeners_help: |

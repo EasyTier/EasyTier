@@ -3,6 +3,14 @@ networking_method: Networking Method
 public_server: Public Server
 manual: Manual
 standalone: Standalone
+initial_nodes: Initial Nodes
+initial_nodes_help: |
+  EasyTier does not distinguish between server and client roles.
+  • Filling in Initial Nodes = plugging in the cable and joining an existing network.
+  • Leaving it empty = the node starts alone until others connect to it, or you connect it later yourself.
+  • Direct or indirect connectivity, including through relay nodes, can form one network.
+  Initial nodes can be your own nodes or ones shared by others.
+initial_node_placeholder: "Example: node.example.com"
 virtual_ipv4: Virtual IPv4
 virtual_ipv4_dhcp: DHCP
 network_name: Network Name
@@ -26,6 +34,7 @@ error_msg: Error Message
 detail: Detail
 add_new_network: New Network
 add_peer_url: Add Peer
+add_initial_node: Add Initial Node
 add_listener_url: Add Listener
 add_mapped_listener: Add Mapped Listener
 del_cur_network: Delete Current Network
@@ -107,10 +116,13 @@ disable_quic_input: Disable QUIC Input
 disable_quic_input_help: Disable inbound QUIC traffic, while nodes with QUIC proxy enabled continue to connect using TCP.
 
 disable_p2p: Disable P2P
-disable_p2p_help: Disable P2P mode; route all traffic through a manually specified relay server.
+disable_p2p_help: Disable ordinary automatic P2P. Nodes with need-p2p enabled can still establish P2P with this node.
 
 p2p_only: P2P Only
 p2p_only_help: Only communicate with peers that have already established P2P connections, do not relay through other nodes.
+
+lazy_p2p: Lazy P2P
+lazy_p2p_help: Only try to establish P2P when traffic actually targets a peer. Peers with need-p2p enabled are still connected proactively.
 
 bind_device: Bind to Physical Device Only
 bind_device_help: Use only the physical network interface to prevent EasyTier from connecting via virtual networks.
@@ -125,6 +137,9 @@ relay_all_peer_rpc: Relay RPC Packets
 relay_all_peer_rpc_help: |
   Relay all peer rpc packets, even if the peer is not in the relay network whitelist.
   This can help peers not in relay network whitelist to establish p2p connection.
+
+need_p2p: Need P2P
+need_p2p_help: Ask other peers to proactively establish P2P connections to this node even when they enable lazy P2P.
 
 multi_thread: Multi Thread
 multi_thread_help: Use multi-thread runtime
@@ -180,6 +195,12 @@ mtu: MTU
 mtu_help: |
   MTU of the TUN device, default is 1380 for non-encryption, 1360 for encryption. Range:400-1380
 mtu_placeholder: Leave blank as default value 1380
+
+instance_recv_bps_limit: Instance Receive Limit
+instance_recv_bps_limit_help: |
+  Limit the total receive bandwidth for the whole instance. Unit: bytes per second.
+  Leave blank for no limit.
+instance_recv_bps_limit_placeholder: Leave blank for no limit
 
 mapped_listeners: Map Listeners
 mapped_listeners_help: |

@@ -1,24 +1,24 @@
 use std::{
     sync::{
-        atomic::{AtomicBool, AtomicU32, Ordering},
         Arc, Mutex, RwLock,
+        atomic::{AtomicBool, AtomicU32, Ordering},
     },
     time::{SystemTime, UNIX_EPOCH},
 };
 
 use atomic_shim::AtomicU64;
 
+use crate::{
+    common::PeerId,
+    peers::encrypt::{Encryptor, create_encryptor},
+    tunnel::packet_def::{StandardAeadTail, ZCPacket},
+};
 use anyhow::anyhow;
 use dashmap::DashMap;
 use hmac::{Hmac, Mac as _};
 use rand::RngCore as _;
 use sha2::Sha256;
-
-use crate::{
-    common::PeerId,
-    peers::encrypt::{create_encryptor, Encryptor},
-    tunnel::packet_def::{AesGcmTail, ZCPacket},
-};
+use zerocopy::FromBytes;
 
 type HmacSha256 = Hmac<Sha256>;
 pub struct UpsertResponderSessionReturn {
@@ -189,11 +189,11 @@ impl PeerSessionStore {
             PeerSessionAction::Sync | PeerSessionAction::Create => {
                 let root_key = root_key_32.ok_or_else(|| anyhow!("missing root_key"))?;
                 // If the existing session is invalidated, remove it so we create a fresh one
-                if let Some(existing) = self.sessions.get(key) {
-                    if !existing.is_valid() {
-                        drop(existing);
-                        self.sessions.remove(key);
-                    }
+                if let Some(existing) = self.sessions.get(key)
+                    && !existing.is_valid()
+                {
+                    drop(existing);
+                    self.sessions.remove(key);
                 }
                 let session = self
                     .sessions
@@ -212,7 +212,12 @@ impl PeerSessionStore {
                     .clone();
                 session.check_encrypt_algo_same(&send_algorithm, &recv_algorithm)?;
                 session.check_or_set_peer_static_pubkey(peer_static_pubkey)?;
-                session.sync_root_key(root_key, b_session_generation, initial_epoch);
+                session.sync_root_key(
+                    root_key,
+                    b_session_generation,
+                    initial_epoch,
+                    matches!(action, PeerSessionAction::Sync),
+                );
                 Ok(session)
             }
         }
@@ -352,6 +357,33 @@ impl EpochRxSlot {
     }
 }
 
+#[derive(Debug, Clone, Copy, Default)]
+struct SyncRxGrace {
+    slots: [[EpochRxSlot; 2]; 2],
+    expires_at_ms: u64,
+    valid: bool,
+}
+
+impl SyncRxGrace {
+    fn clear(&mut self) {
+        self.slots = [[EpochRxSlot::default(), EpochRxSlot::default()]; 2];
+        self.expires_at_ms = 0;
+        self.valid = false;
+    }
+
+    fn refresh(&mut self, slots: [[EpochRxSlot; 2]; 2], expires_at_ms: u64) {
+        self.slots = slots;
+        self.expires_at_ms = expires_at_ms;
+        self.valid = true;
+    }
+
+    fn maybe_expire(&mut self, now_ms: u64) {
+        if self.valid && now_ms >= self.expires_at_ms {
+            self.clear();
+        }
+    }
+}
+
 pub struct PeerSession {
     peer_id: PeerId,
     root_key: RwLock<[u8; 32]>,
@@ -365,6 +397,8 @@ pub struct PeerSession {
 
     rx_slots: Mutex<[[EpochRxSlot; 2]; 2]>,
     key_cache: Mutex<[[EpochKeySlot; 2]; 2]>,
+    sync_rx_grace: Mutex<SyncRxGrace>,
+    sync_rx_grace_expires_at_ms: AtomicU64,
 
     send_cipher_algorithm: String,
     recv_cipher_algorithm: String,
@@ -389,6 +423,11 @@ impl std::fmt::Debug for PeerSession {
             .field("send_packets_since_epoch", &self.send_packets_since_epoch)
             .field("rx_slots", &self.rx_slots)
             .field("key_cache", &self.key_cache)
+            .field("sync_rx_grace", &self.sync_rx_grace)
+            .field(
+                "sync_rx_grace_expires_at_ms",
+                &self.sync_rx_grace_expires_at_ms,
+            )
             .field("send_cipher_algorithm", &self.send_cipher_algorithm)
             .field("recv_cipher_algorithm", &self.recv_cipher_algorithm)
             .finish()
@@ -405,6 +444,10 @@ impl PeerSession {
     /// traffic may want to increase this value; low-latency or tightly
     /// resource-constrained deployments may lower it.
     const EVICT_IDLE_AFTER_MS: u64 = 30_000;
+    /// Keep the pre-sync receive windows alive briefly so in-flight packets
+    /// from the previous epochs are still accepted after a shared session is
+    /// synced in place by another connection.
+    const SYNC_RX_GRACE_AFTER_MS: u64 = 5_000;
 
     /// Maximum number of packets to send in a single epoch before forcing
     /// a key/epoch rotation.
@@ -458,6 +501,8 @@ impl PeerSession {
             send_packets_since_epoch: AtomicU64::new(0),
             rx_slots: Mutex::new(rx_slots),
             key_cache: Mutex::new(key_cache),
+            sync_rx_grace: Mutex::new(SyncRxGrace::default()),
+            sync_rx_grace_expires_at_ms: AtomicU64::new(0),
             send_cipher_algorithm,
             recv_cipher_algorithm,
             invalidated: AtomicBool::new(false),
@@ -540,7 +585,15 @@ impl PeerSession {
         Ok(())
     }
 
-    pub fn sync_root_key(&self, root_key: [u8; 32], session_generation: u32, initial_epoch: u32) {
+    pub fn sync_root_key(
+        &self,
+        root_key: [u8; 32],
+        session_generation: u32,
+        initial_epoch: u32,
+        preserve_rx_grace: bool,
+    ) {
+        let old_root_key = self.root_key();
+        let can_preserve_rx_grace = preserve_rx_grace && old_root_key == root_key;
         {
             let mut g = self.root_key.write().unwrap();
             *g = root_key;
@@ -557,6 +610,16 @@ impl PeerSession {
 
         {
             let mut rx = self.rx_slots.lock().unwrap();
+            let mut sync_rx_grace = self.sync_rx_grace.lock().unwrap();
+            if can_preserve_rx_grace {
+                let expires_at_ms = now_ms().saturating_add(Self::SYNC_RX_GRACE_AFTER_MS);
+                sync_rx_grace.refresh(*rx, expires_at_ms);
+                self.sync_rx_grace_expires_at_ms
+                    .store(expires_at_ms, Ordering::Relaxed);
+            } else {
+                sync_rx_grace.clear();
+                self.sync_rx_grace_expires_at_ms.store(0, Ordering::Relaxed);
+            }
             for dir in 0..2 {
                 rx[dir][0].clear();
                 rx[dir][1].clear();
@@ -598,21 +661,17 @@ impl PeerSession {
         key
     }
 
-    fn get_encryptor(&self, epoch: u32, dir: usize, is_send: bool) -> Option<Arc<dyn Encryptor>> {
-        let generation = self.session_generation();
-        let rx = self.rx_slots.lock().unwrap();
-        let send_epoch = self.send_epoch.load(Ordering::Relaxed);
-        let allowed = epoch == send_epoch
-            || rx[dir][0].valid && rx[dir][0].epoch == epoch
-            || rx[dir][1].valid && rx[dir][1].epoch == epoch;
-        if !allowed {
-            return None;
-        }
-
+    fn get_or_create_encryptor(
+        &self,
+        epoch: u32,
+        dir: usize,
+        generation: u32,
+        is_send: bool,
+    ) -> Arc<dyn Encryptor> {
         let mut guard = self.key_cache.lock().unwrap();
         for slot in guard[dir].iter_mut() {
             if slot.valid && slot.epoch == epoch && slot.generation == generation {
-                return Some(slot.get_encryptor(is_send));
+                return slot.get_encryptor(is_send);
             }
         }
 
@@ -635,7 +694,7 @@ impl PeerSession {
             guard[dir][1] = slot;
         }
 
-        Some(ret)
+        ret
     }
 
     fn maybe_rotate_epoch(&self, now_ms: u64) {
@@ -674,14 +733,8 @@ impl PeerSession {
     }
 
     fn parse_tail(payload: &[u8]) -> Option<[u8; 12]> {
-        if payload.len() < std::mem::size_of::<AesGcmTail>() {
-            return None;
-        }
-        let tail_off = payload.len() - std::mem::size_of::<AesGcmTail>();
-        let tail = &payload[tail_off..];
-        let mut nonce = [0u8; 12];
-        nonce.copy_from_slice(&tail[16..]);
-        Some(nonce)
+        let tail = StandardAeadTail::ref_from_suffix(payload)?;
+        Some(tail.nonce)
     }
 
     fn evict_old_rx_slots(rx: &mut [[EpochRxSlot; 2]; 2], now_ms: u64) {
@@ -698,9 +751,38 @@ impl PeerSession {
         }
     }
 
+    fn epoch_in_slots(slots: &[EpochRxSlot; 2], epoch: u32) -> bool {
+        slots[0].valid && slots[0].epoch == epoch || slots[1].valid && slots[1].epoch == epoch
+    }
+
+    fn sync_rx_grace_active(&self, now_ms: u64) -> bool {
+        let expires_at_ms = self.sync_rx_grace_expires_at_ms.load(Ordering::Relaxed);
+        if expires_at_ms == 0 {
+            return false;
+        }
+        if now_ms < expires_at_ms {
+            return true;
+        }
+        self.sync_rx_grace_expires_at_ms.store(0, Ordering::Relaxed);
+        false
+    }
+
     fn check_replay(&self, epoch: u32, seq: u64, dir: usize, now_ms: u64) -> bool {
         let mut rx = self.rx_slots.lock().unwrap();
         Self::evict_old_rx_slots(&mut rx, now_ms);
+        let mut sync_rx_grace = if self.sync_rx_grace_active(now_ms) {
+            let mut sync_rx_grace = self.sync_rx_grace.lock().unwrap();
+            sync_rx_grace.maybe_expire(now_ms);
+            if sync_rx_grace.valid {
+                Self::evict_old_rx_slots(&mut sync_rx_grace.slots, now_ms);
+                Some(sync_rx_grace)
+            } else {
+                self.sync_rx_grace_expires_at_ms.store(0, Ordering::Relaxed);
+                None
+            }
+        } else {
+            None
+        };
         let send_epoch = self.send_epoch.load(Ordering::Relaxed);
         {
             let mut key_cache = self.key_cache.lock().unwrap();
@@ -712,10 +794,25 @@ impl PeerSession {
                     let e = key_cache[d][s].epoch;
                     let allowed = e == send_epoch
                         || rx[d][0].valid && rx[d][0].epoch == e
-                        || rx[d][1].valid && rx[d][1].epoch == e;
+                        || rx[d][1].valid && rx[d][1].epoch == e
+                        || sync_rx_grace
+                            .as_ref()
+                            .is_some_and(|g| Self::epoch_in_slots(&g.slots[d], e));
                     if !allowed {
                         key_cache[d][s].valid = false;
                     }
+                }
+            }
+        }
+
+        if sync_rx_grace
+            .as_ref()
+            .is_some_and(|g| Self::epoch_in_slots(&g.slots[dir], epoch))
+        {
+            for slot in sync_rx_grace.as_mut().unwrap().slots[dir].iter_mut() {
+                if slot.valid && slot.epoch == epoch {
+                    slot.last_rx_ms = now_ms;
+                    return slot.window.accept(seq);
                 }
             }
         }
@@ -777,9 +874,7 @@ impl PeerSession {
         }
         let dir = Self::dir_for_sender(sender_peer_id, receiver_peer_id);
         let (epoch, _seq, nonce_bytes) = self.next_nonce(dir);
-        let encryptor = self
-            .get_encryptor(epoch, dir, true)
-            .ok_or_else(|| anyhow!("no key for epoch"))?;
+        let encryptor = self.get_or_create_encryptor(epoch, dir, self.session_generation(), true);
         if let Err(e) = encryptor.encrypt_with_nonce(pkt, Some(nonce_bytes.as_slice())) {
             tracing::warn!(
                 peer_id = ?self.peer_id,
@@ -816,9 +911,7 @@ impl PeerSession {
             ));
         }
 
-        let encryptor = self
-            .get_encryptor(epoch, dir, false)
-            .ok_or_else(|| anyhow!("no key for epoch"))?;
+        let encryptor = self.get_or_create_encryptor(epoch, dir, self.session_generation(), false);
         if let Err(e) = encryptor.decrypt(ciphertext_with_tail) {
             let count = self.decrypt_fail_count.fetch_add(1, Ordering::Relaxed) + 1;
             if count >= Self::DECRYPT_FAIL_THRESHOLD {
@@ -974,13 +1067,94 @@ mod tests {
         assert!(s.check_replay(0, 1, 0, now));
 
         // Sync with initial_epoch=2 (simulating a Sync action)
-        s.sync_root_key(root_key, 2, 2);
+        s.sync_root_key(root_key, 2, 2, true);
 
         // Remote peer is still sending at epoch 0 — should be accepted
         // (rx_slots were cleared, so the first packet establishes the epoch)
         assert!(
             s.check_replay(0, 10, 0, now + 1),
             "packets at old epoch should be accepted after sync"
+        );
+    }
+
+    #[test]
+    fn sync_root_key_keeps_previous_epochs_during_grace_window() {
+        let peer_id: PeerId = 10;
+        let root_key = PeerSession::new_root_key();
+        let s = PeerSession::new(
+            peer_id,
+            root_key,
+            1,
+            0,
+            "aes-256-gcm".to_string(),
+            "aes-256-gcm".to_string(),
+            None,
+        );
+
+        let now = now_ms();
+        assert!(s.check_replay(0, 0, 0, now));
+        assert!(s.check_replay(1, 0, 0, now + 1));
+
+        s.sync_root_key(root_key, 2, 2, true);
+
+        // The first packet after sync may already use the new epoch.
+        assert!(s.check_replay(2, 0, 0, now + 2));
+        // Older in-flight packets from pre-sync epochs should still be accepted
+        // during the grace period, regardless of arrival order.
+        assert!(s.check_replay(1, 1, 0, now + 3));
+        assert!(s.check_replay(0, 1, 0, now + 4));
+    }
+
+    #[test]
+    fn sync_root_key_expires_previous_epochs_after_grace_window() {
+        let peer_id: PeerId = 10;
+        let root_key = PeerSession::new_root_key();
+        let s = PeerSession::new(
+            peer_id,
+            root_key,
+            1,
+            0,
+            "aes-256-gcm".to_string(),
+            "aes-256-gcm".to_string(),
+            None,
+        );
+
+        let now = now_ms();
+        assert!(s.check_replay(0, 0, 0, now));
+        assert!(s.check_replay(1, 0, 0, now + 1));
+
+        s.sync_root_key(root_key, 2, 2, true);
+        assert!(s.check_replay(2, 0, 0, now + 2));
+
+        assert!(
+            !s.check_replay(0, 1, 0, now + PeerSession::SYNC_RX_GRACE_AFTER_MS + 3),
+            "old epochs should stop being accepted once the sync grace window expires"
+        );
+    }
+
+    #[test]
+    fn sync_root_key_does_not_preserve_previous_epochs_when_root_key_changes() {
+        let peer_id: PeerId = 10;
+        let root_key = PeerSession::new_root_key();
+        let s = PeerSession::new(
+            peer_id,
+            root_key,
+            1,
+            0,
+            "aes-256-gcm".to_string(),
+            "aes-256-gcm".to_string(),
+            None,
+        );
+
+        let now = now_ms();
+        assert!(s.check_replay(0, 0, 0, now));
+        assert!(s.check_replay(1, 0, 0, now + 1));
+
+        s.sync_root_key(PeerSession::new_root_key(), 2, 2, true);
+        assert!(s.check_replay(2, 0, 0, now + 2));
+        assert!(
+            !s.check_replay(1, 1, 0, now + 3),
+            "old epochs should not be preserved when sync replaces the root key"
         );
     }
 }

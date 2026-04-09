@@ -5,12 +5,12 @@ pub mod operations;
 use std::fmt;
 
 use sea_orm::{
-    prelude::*, sea_query::OnConflict, ColumnTrait as _, DatabaseConnection, DbErr, EntityTrait,
-    QueryFilter as _, Set, SqlxSqliteConnector, Statement, TransactionTrait as _,
+    ColumnTrait as _, DatabaseConnection, DbErr, EntityTrait, QueryFilter as _, Set,
+    SqlxSqliteConnector, Statement, TransactionTrait as _, prelude::*, sea_query::OnConflict,
 };
 use sea_orm_migration::MigratorTrait as _;
 use serde::{Deserialize, Serialize};
-use sqlx::{migrate::MigrateDatabase as _, Sqlite, SqlitePool};
+use sqlx::{Sqlite, SqlitePool, migrate::MigrateDatabase as _};
 
 use crate::migrator;
 

@@ -1,9 +1,9 @@
 [package]
 name = "easytier-gui"
-version = "2.5.0"
+version = "2.6.0"
 description = "EasyTier GUI"
 authors = ["you"]
-edition = "2021"
+edition.workspace = true
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 

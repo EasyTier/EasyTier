@@ -61,7 +61,7 @@ impl Encryptor for XorCipher {
 #[cfg(test)]
 mod tests {
     use crate::{
-        peers::encrypt::{xor_cipher::XorCipher, Encryptor},
+        peers::encrypt::{Encryptor, xor::XorCipher},
         tunnel::packet_def::ZCPacket,
     };
 

@@ -8,13 +8,13 @@ mod users;
 use std::{net::SocketAddr, sync::Arc};
 
 use axum::extract::Path;
-use axum::http::{header, Request, StatusCode};
+use axum::http::{Request, StatusCode, header};
 use axum::middleware::{self as axum_mw, Next};
 use axum::response::Response;
 use axum::routing::{delete, post};
-use axum::{extract::State, routing::get, Extension, Json, Router};
+use axum::{Extension, Json, Router, extract::State, routing::get};
 use axum_login::tower_sessions::{ExpiredDeletion, SessionManagerLayer};
-use axum_login::{login_required, AuthManagerLayerBuilder, AuthUser, AuthzBackend};
+use axum_login::{AuthManagerLayerBuilder, AuthUser, AuthzBackend, login_required};
 use axum_messages::MessagesManagerLayer;
 use easytier::common::config::{ConfigLoader, TomlConfigLoader};
 use easytier::common::scoped_task::ScopedTask;
@@ -23,17 +23,17 @@ use easytier::proto::rpc_types;
 use network::NetworkApi;
 use sea_orm::DbErr;
 use tokio::net::TcpListener;
+use tower_sessions::Expiry;
 use tower_sessions::cookie::time::Duration;
 use tower_sessions::cookie::{Key, SameSite};
-use tower_sessions::Expiry;
 use tower_sessions_sqlx_store::SqliteStore;
 use users::{AuthSession, Backend};
 
-use crate::client_manager::storage::StorageToken;
-use crate::client_manager::ClientManager;
-use crate::db::Db;
-use crate::webhook::SharedWebhookConfig;
 use crate::FeatureFlags;
+use crate::client_manager::ClientManager;
+use crate::client_manager::storage::StorageToken;
+use crate::db::{Db, UserIdInDb};
+use crate::webhook::SharedWebhookConfig;
 
 /// Embed assets for web dashboard, build frontend first
 #[cfg(feature = "embed")]
@@ -252,7 +252,7 @@ impl RestfulServer {
                     get(Self::handle_list_all_sessions_internal),
                 )
                 .route(
-                    "/api/internal/sessions/:machine-id",
+                    "/api/internal/users/:user-id/sessions/:machine-id",
                     delete(Self::handle_disconnect_session_internal),
                 )
                 .merge(NetworkApi::build_route_internal())
@@ -315,11 +315,11 @@ impl RestfulServer {
     }
 
     async fn handle_disconnect_session_internal(
-        Path(machine_id): Path<uuid::Uuid>,
+        Path((user_id, machine_id)): Path<(UserIdInDb, uuid::Uuid)>,
         State(client_mgr): AppState,
     ) -> Result<StatusCode, HttpHandleError> {
         if client_mgr
-            .disconnect_session_by_machine_id_global(&machine_id)
+            .disconnect_session_by_machine_id(user_id, &machine_id)
             .await
         {
             Ok(StatusCode::NO_CONTENT)

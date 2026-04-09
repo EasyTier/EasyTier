@@ -7,8 +7,8 @@ use std::mem;
 use std::net::IpAddr;
 use std::net::SocketAddr;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
-use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 use std::time::{Duration, Instant};
 use tokio::sync::Mutex;
 
@@ -182,13 +182,13 @@ fn build_tcp_filter(
     src_addr: Option<SocketAddr>,
     dst_addr: SocketAddr,
 ) -> io::Result<Vec<libc::sock_filter>> {
-    if let Some(src) = src_addr {
-        if src.is_ipv4() != dst_addr.is_ipv4() {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "src/dst addr family mismatch",
-            ));
-        }
+    if let Some(src) = src_addr
+        && src.is_ipv4() != dst_addr.is_ipv4()
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "src/dst addr family mismatch",
+        ));
     }
 
     let mut b = BpfBuilder::new();
@@ -367,7 +367,7 @@ fn read_packet_socket_stats(fd: i32) -> io::Result<PacketSocketStats> {
 }
 
 pub struct LinuxBpfTun {
-    fd: OwnedFd,
+    fd: Arc<OwnedFd>,
     ifindex: i32,
     stop: Arc<AtomicBool>,
     worker: Option<std::thread::JoinHandle<()>>,
@@ -395,7 +395,7 @@ impl LinuxBpfTun {
         if fd < 0 {
             return Err(io::Error::last_os_error());
         }
-        let fd = unsafe { OwnedFd::from_raw_fd(fd) };
+        let fd = Arc::new(unsafe { OwnedFd::from_raw_fd(fd) });
 
         let mut addr: libc::sockaddr_ll = unsafe { mem::zeroed() };
         addr.sll_family = libc::AF_PACKET as u16;
@@ -404,7 +404,7 @@ impl LinuxBpfTun {
 
         let bind_ret = unsafe {
             libc::bind(
-                fd.as_raw_fd(),
+                fd.as_ref().as_raw_fd(),
                 &addr as *const _ as *const libc::sockaddr,
                 mem::size_of::<libc::sockaddr_ll>() as u32,
             )
@@ -413,7 +413,7 @@ impl LinuxBpfTun {
             return Err(io::Error::last_os_error());
         }
 
-        let actual_rcvbuf = set_socket_rcvbuf(fd.as_raw_fd(), DEFAULT_RCVBUF_BYTES)?;
+        let actual_rcvbuf = set_socket_rcvbuf(fd.as_ref().as_raw_fd(), DEFAULT_RCVBUF_BYTES)?;
 
         let filter = build_tcp_filter(src_addr, dst_addr)?;
         let mut prog = libc::sock_fprog {
@@ -425,7 +425,7 @@ impl LinuxBpfTun {
         };
         let opt_ret = unsafe {
             libc::setsockopt(
-                fd.as_raw_fd(),
+                fd.as_ref().as_raw_fd(),
                 libc::SOL_SOCKET,
                 libc::SO_ATTACH_FILTER,
                 &mut prog as *mut _ as *mut libc::c_void,
@@ -442,7 +442,7 @@ impl LinuxBpfTun {
         };
         let _ = unsafe {
             libc::setsockopt(
-                fd.as_raw_fd(),
+                fd.as_ref().as_raw_fd(),
                 libc::SOL_SOCKET,
                 libc::SO_RCVTIMEO,
                 &timeout as *const _ as *const libc::c_void,
@@ -453,10 +453,13 @@ impl LinuxBpfTun {
         let stop = Arc::new(AtomicBool::new(false));
         let (tx, rx) = tokio::sync::mpsc::channel(1024);
         let stop_clone = stop.clone();
-        let read_fd = fd.as_raw_fd();
+        let read_fd = fd.as_ref().as_raw_fd();
+        let fd_guard = fd.clone();
         let interface_name_for_worker = interface_name.to_string();
 
         let worker = std::thread::spawn(move || {
+            // Keep the packet socket alive until the detached worker actually exits.
+            let _fd_guard = fd_guard;
             let mut buf = vec![0u8; 65536];
             let mut stats_enabled = true;
             let mut total_packets: u64 = 0;
@@ -562,9 +565,11 @@ impl LinuxBpfTun {
 impl Drop for LinuxBpfTun {
     fn drop(&mut self) {
         self.stop.store(true, AtomicOrdering::Relaxed);
-        let _ = unsafe { libc::shutdown(self.fd.as_raw_fd(), libc::SHUT_RD) };
+        let _ = unsafe { libc::shutdown(self.fd.as_ref().as_raw_fd(), libc::SHUT_RD) };
         if let Some(worker) = self.worker.take() {
-            let _ = worker.join();
+            // Dropping the JoinHandle detaches the worker. The worker holds its own Arc<OwnedFd>
+            // clone, so the packet socket stays valid until recv wakes up and the thread exits.
+            drop(worker);
         }
     }
 }
@@ -602,7 +607,7 @@ impl stack::Tun for LinuxBpfTun {
 
         let ret = unsafe {
             libc::sendto(
-                self.fd.as_raw_fd(),
+                self.fd.as_ref().as_raw_fd(),
                 packet.as_ptr() as *const libc::c_void,
                 packet.len(),
                 0,
@@ -632,7 +637,7 @@ mod tests {
     use pnet::util::MacAddr;
     use rand::Rng;
     use std::net::{IpAddr, Ipv4Addr};
-    use tokio::time::{timeout, Duration};
+    use tokio::time::{Duration, timeout};
 
     fn is_root() -> bool {
         unsafe { libc::geteuid() == 0 }

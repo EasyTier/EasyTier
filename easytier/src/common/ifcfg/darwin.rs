@@ -1,6 +1,6 @@
 use std::net::Ipv4Addr;
 
-use super::{cidr_to_subnet_mask, run_shell_cmd, Error, IfConfiguerTrait};
+use super::{Error, IfConfiguerTrait, cidr_to_subnet_mask, run_shell_cmd};
 use async_trait::async_trait;
 use cidr::{Ipv4Inet, Ipv6Inet};
 

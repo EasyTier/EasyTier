@@ -17,12 +17,12 @@ use tokio::{sync::oneshot, task::JoinSet};
 #[cfg(feature = "magic-dns")]
 use tokio_util::sync::CancellationToken;
 
+use crate::common::PeerId;
 use crate::common::acl_processor::AclRuleBuilder;
 use crate::common::config::ConfigLoader;
 use crate::common::error::Error;
 use crate::common::global_ctx::{ArcGlobalCtx, GlobalCtx, GlobalCtxEvent};
 use crate::common::scoped_task::ScopedTask;
-use crate::common::PeerId;
 use crate::connector::direct::DirectConnectorManager;
 use crate::connector::manual::{ConnectorManagerRpcService, ManualConnectorManager};
 use crate::connector::tcp_hole_punch::TcpHolePunchConnector;
@@ -40,7 +40,7 @@ use crate::peers::peer_manager::{PeerManager, RouteAlgoType};
 #[cfg(feature = "tun")]
 use crate::peers::recv_packet_from_chan;
 use crate::peers::rpc_service::PeerManagerRpcService;
-use crate::peers::{create_packet_recv_chan, PacketRecvChanReceiver};
+use crate::peers::{PacketRecvChanReceiver, create_packet_recv_chan};
 use crate::proto::api::config::{
     ConfigPatchAction, ConfigRpc, GetConfigRequest, GetConfigResponse, PatchConfigRequest,
     PatchConfigResponse, PortForwardPatch,
@@ -63,7 +63,7 @@ use crate::utils::weak_upgrade;
 use crate::vpn_portal::{self, VpnPortal};
 
 #[cfg(feature = "magic-dns")]
-use super::dns_server::{runner::DnsRunner, MAGIC_DNS_FAKE_IP};
+use super::dns_server::{MAGIC_DNS_FAKE_IP, runner::DnsRunner};
 use super::listeners::ListenerManager;
 
 #[cfg(feature = "socks5")]
@@ -272,11 +272,11 @@ impl InstanceConfigPatcher {
             global_ctx.set_hostname(hostname.clone());
             global_ctx.config.set_hostname(Some(hostname));
         }
-        if let Some(ipv4) = patch.ipv4 {
-            if !global_ctx.config.get_dhcp() {
-                global_ctx.set_ipv4(Some(ipv4.into()));
-                global_ctx.config.set_ipv4(Some(ipv4.into()));
-            }
+        if let Some(ipv4) = patch.ipv4
+            && !global_ctx.config.get_dhcp()
+        {
+            global_ctx.set_ipv4(Some(ipv4.into()));
+            global_ctx.config.set_ipv4(Some(ipv4.into()));
         }
         if let Some(ipv6) = patch.ipv6 {
             global_ctx.set_ipv6(Some(ipv6.into()));
@@ -593,9 +593,12 @@ impl Instance {
         let mut direct_conn_manager =
             DirectConnectorManager::new(global_ctx.clone(), peer_manager.clone());
         direct_conn_manager.run();
+        let direct_conn_manager = Arc::new(direct_conn_manager);
 
-        let udp_hole_puncher = UdpHolePunchConnector::new(peer_manager.clone());
-        let tcp_hole_puncher = TcpHolePunchConnector::new(peer_manager.clone());
+        let udp_hole_puncher =
+            Arc::new(Mutex::new(UdpHolePunchConnector::new(peer_manager.clone())));
+        let tcp_hole_puncher =
+            Arc::new(Mutex::new(TcpHolePunchConnector::new(peer_manager.clone())));
 
         let peer_center = Arc::new(PeerCenterInstance::new(peer_manager.clone()));
 
@@ -618,9 +621,9 @@ impl Instance {
             peer_manager,
             listener_manager,
             conn_manager,
-            direct_conn_manager: Arc::new(direct_conn_manager),
-            udp_hole_puncher: Arc::new(Mutex::new(udp_hole_puncher)),
-            tcp_hole_puncher: Arc::new(Mutex::new(tcp_hole_puncher)),
+            direct_conn_manager,
+            udp_hole_puncher,
+            tcp_hole_puncher,
 
             ip_proxy: None,
             #[cfg(feature = "kcp")]
@@ -664,13 +667,13 @@ impl Instance {
         packet_recv: Arc<Mutex<PacketRecvChanReceiver>>,
     ) {
         #[cfg(feature = "magic-dns")]
-        if let Some(old_ctx) = arc_nic_ctx.lock().await.take() {
-            if let Some(dns_runner) = old_ctx.magic_dns {
-                dns_runner.dns_runner_cancel_token.cancel();
-                tracing::debug!("cancelling dns runner task");
-                let ret = dns_runner.dns_runner_task.await;
-                tracing::debug!("dns runner task cancelled, ret: {:?}", ret);
-            }
+        if let Some(old_ctx) = arc_nic_ctx.lock().await.take()
+            && let Some(dns_runner) = old_ctx.magic_dns
+        {
+            dns_runner.dns_runner_cancel_token.cancel();
+            tracing::debug!("cancelling dns runner task");
+            let ret = dns_runner.dns_runner_task.await;
+            tracing::debug!("dns runner task cancelled, ret: {:?}", ret);
         };
 
         let mut tasks = JoinSet::new();
@@ -769,10 +772,11 @@ impl Instance {
 
                 let dhcp_inet = used_ipv4.iter().next().unwrap_or(&default_ipv4_addr);
                 // if old ip is already in this subnet and not conflicted, use it
-                if let Some(ip) = current_dhcp_ip {
-                    if ip.network() == dhcp_inet.network() && !used_ipv4.contains(&ip) {
-                        continue;
-                    }
+                if let Some(ip) = current_dhcp_ip
+                    && ip.network() == dhcp_inet.network()
+                    && !used_ipv4.contains(&ip)
+                {
+                    continue;
                 }
 
                 // find an available ip in the subnet
@@ -805,14 +809,7 @@ impl Instance {
                         continue;
                     }
 
-                    #[cfg(all(
-                        not(any(
-                            target_os = "android",
-                            any(target_os = "ios", all(target_os = "macos", feature = "macos-ne")),
-                            target_env = "ohos"
-                        )),
-                        feature = "tun"
-                    ))]
+                    #[cfg(all(not(mobile), feature = "tun"))]
                     {
                         let mut new_nic_ctx = NicCtx::new(
                             global_ctx_c.clone(),
@@ -853,14 +850,7 @@ impl Instance {
         });
     }
 
-    #[cfg(all(
-        not(any(
-            target_os = "android",
-            any(target_os = "ios", all(target_os = "macos", feature = "macos-ne")),
-            target_env = "ohos"
-        )),
-        feature = "tun"
-    ))]
+    #[cfg(all(not(mobile), feature = "tun"))]
     fn check_for_static_ip(&self, first_round_output: oneshot::Sender<Result<(), Error>>) {
         let ipv4_addr = self.global_ctx.get_ipv4();
         let ipv6_addr = self.global_ctx.get_ipv6();
@@ -878,46 +868,48 @@ impl Instance {
         tokio::spawn(async move {
             let mut output_tx = Some(first_round_output);
             loop {
-                let Some(peer_manager) = peer_mgr.upgrade() else {
-                    tracing::warn!("peer manager is dropped, stop static ip check.");
-                    if let Some(output_tx) = output_tx.take() {
-                        let _ = output_tx.send(Err(Error::Unknown));
-                        return;
-                    }
-                    return;
-                };
-
                 let close_notifier = Arc::new(Notify::new());
-                let mut new_nic_ctx = NicCtx::new(
-                    peer_manager.get_global_ctx(),
-                    &peer_manager,
-                    peer_packet_receiver.clone(),
-                    close_notifier.clone(),
-                );
-
-                if let Err(e) = new_nic_ctx.run(ipv4_addr, ipv6_addr).await {
-                    if let Some(output_tx) = output_tx.take() {
-                        let _ = output_tx.send(Err(e));
-                        return;
-                    }
-                    tracing::error!("failed to create new nic ctx, err: {:?}", e);
-                    tokio::time::sleep(Duration::from_secs(1)).await;
-                    continue;
-                }
-
-                // Create Magic DNS runner only if we have IPv4
-                #[cfg(feature = "magic-dns")]
                 {
-                    let ifname = new_nic_ctx.ifname().await;
-                    let dns_runner = if let Some(ipv4) = ipv4_addr {
-                        Self::create_magic_dns_runner(peer_manager, ifname, ipv4)
-                    } else {
-                        None
+                    let Some(peer_mgr) = peer_mgr.upgrade() else {
+                        tracing::warn!("peer manager is dropped, stop static ip check.");
+                        if let Some(output_tx) = output_tx.take() {
+                            let _ = output_tx.send(Err(Error::Unknown));
+                            return;
+                        }
+                        return;
                     };
-                    Self::use_new_nic_ctx(nic_ctx.clone(), new_nic_ctx, dns_runner).await;
+
+                    let mut new_nic_ctx = NicCtx::new(
+                        peer_mgr.get_global_ctx(),
+                        &peer_mgr,
+                        peer_packet_receiver.clone(),
+                        close_notifier.clone(),
+                    );
+
+                    if let Err(e) = new_nic_ctx.run(ipv4_addr, ipv6_addr).await {
+                        if let Some(output_tx) = output_tx.take() {
+                            let _ = output_tx.send(Err(e));
+                            return;
+                        }
+                        tracing::error!("failed to create new nic ctx, err: {:?}", e);
+                        tokio::time::sleep(Duration::from_secs(1)).await;
+                        continue;
+                    }
+
+                    // Create Magic DNS runner only if we have IPv4
+                    #[cfg(feature = "magic-dns")]
+                    {
+                        let ifname = new_nic_ctx.ifname().await;
+                        let dns_runner = if let Some(ipv4) = ipv4_addr {
+                            Self::create_magic_dns_runner(peer_mgr, ifname, ipv4)
+                        } else {
+                            None
+                        };
+                        Self::use_new_nic_ctx(nic_ctx.clone(), new_nic_ctx, dns_runner).await;
+                    }
+                    #[cfg(not(feature = "magic-dns"))]
+                    Self::use_new_nic_ctx(nic_ctx.clone(), new_nic_ctx).await;
                 }
-                #[cfg(not(feature = "magic-dns"))]
-                Self::use_new_nic_ctx(nic_ctx.clone(), new_nic_ctx).await;
 
                 if let Some(output_tx) = output_tx.take() {
                     let _ = output_tx.send(Ok(()));
@@ -948,11 +940,7 @@ impl Instance {
         {
             Self::clear_nic_ctx(self.nic_ctx.clone(), self.peer_packet_receiver.clone()).await;
 
-            #[cfg(not(any(
-                target_os = "android",
-                any(target_os = "ios", all(target_os = "macos", feature = "macos-ne")),
-                target_env = "ohos"
-            )))]
+            #[cfg(not(mobile))]
             if !self.global_ctx.config.get_flags().no_tun {
                 let (output_tx, output_rx) = oneshot::channel();
                 self.check_for_static_ip(output_tx);
@@ -1083,7 +1071,9 @@ impl Instance {
         self.peer_manager.my_peer_id()
     }
 
-    fn get_vpn_portal_rpc_service(&self) -> impl VpnPortalRpc<Controller = BaseController> + Clone {
+    fn get_vpn_portal_rpc_service(
+        &self,
+    ) -> impl VpnPortalRpc<Controller = BaseController> + Clone + use<> {
         #[derive(Clone)]
         struct VpnPortalRpcService {
             peer_mgr: Weak<PeerManager>,
@@ -1128,7 +1118,7 @@ impl Instance {
 
     fn get_mapped_listener_manager_rpc_service(
         &self,
-    ) -> impl MappedListenerManageRpc<Controller = BaseController> + Clone {
+    ) -> impl MappedListenerManageRpc<Controller = BaseController> + Clone + use<> {
         #[derive(Clone)]
         pub struct MappedListenerManagerRpcService(Weak<GlobalCtx>);
 
@@ -1159,7 +1149,7 @@ impl Instance {
 
     fn get_port_forward_manager_rpc_service(
         &self,
-    ) -> impl PortForwardManageRpc<Controller = BaseController> + Clone {
+    ) -> impl PortForwardManageRpc<Controller = BaseController> + Clone + use<> {
         #[derive(Clone)]
         pub struct PortForwardManagerRpcService {
             global_ctx: Weak<GlobalCtx>,
@@ -1189,7 +1179,7 @@ impl Instance {
         }
     }
 
-    fn get_stats_rpc_service(&self) -> impl StatsRpc<Controller = BaseController> + Clone {
+    fn get_stats_rpc_service(&self) -> impl StatsRpc<Controller = BaseController> + Clone + use<> {
         #[derive(Clone)]
         pub struct StatsRpcService {
             global_ctx: Weak<GlobalCtx>,
@@ -1255,7 +1245,7 @@ impl Instance {
         }
     }
 
-    fn get_config_service(&self) -> impl ConfigRpc<Controller = BaseController> + Clone {
+    fn get_config_service(&self) -> impl ConfigRpc<Controller = BaseController> + Clone + use<> {
         #[derive(Clone)]
         pub struct ConfigRpcService {
             patcher: InstanceConfigPatcher,
@@ -1298,7 +1288,7 @@ impl Instance {
         }
     }
 
-    pub fn get_api_rpc_service(&self) -> impl InstanceRpcService {
+    pub fn get_api_rpc_service(&self) -> impl InstanceRpcService + use<> {
         use crate::proto::api::instance::*;
 
         #[derive(Clone)]
@@ -1321,15 +1311,15 @@ impl Instance {
 
         #[async_trait::async_trait]
         impl<
-                A: PeerManageRpc<Controller = BaseController> + Send + Sync,
-                B: ConnectorManageRpc<Controller = BaseController> + Send + Sync,
-                C: MappedListenerManageRpc<Controller = BaseController> + Send + Sync,
-                D: VpnPortalRpc<Controller = BaseController> + Send + Sync,
-                E: AclManageRpc<Controller = BaseController> + Send + Sync,
-                F: PortForwardManageRpc<Controller = BaseController> + Send + Sync,
-                G: StatsRpc<Controller = BaseController> + Send + Sync,
-                H: ConfigRpc<Controller = BaseController> + Send + Sync,
-            > InstanceRpcService for ApiRpcServiceImpl<A, B, C, D, E, F, G, H>
+            A: PeerManageRpc<Controller = BaseController> + Send + Sync,
+            B: ConnectorManageRpc<Controller = BaseController> + Send + Sync,
+            C: MappedListenerManageRpc<Controller = BaseController> + Send + Sync,
+            D: VpnPortalRpc<Controller = BaseController> + Send + Sync,
+            E: AclManageRpc<Controller = BaseController> + Send + Sync,
+            F: PortForwardManageRpc<Controller = BaseController> + Send + Sync,
+            G: StatsRpc<Controller = BaseController> + Send + Sync,
+            H: ConfigRpc<Controller = BaseController> + Send + Sync,
+        > InstanceRpcService for ApiRpcServiceImpl<A, B, C, D, E, F, G, H>
         {
             fn get_peer_manage_service(&self) -> &dyn PeerManageRpc<Controller = BaseController> {
                 &self.peer_mgr_rpc_service
@@ -1472,11 +1462,7 @@ impl Instance {
         self.peer_packet_receiver.clone()
     }
 
-    #[cfg(any(
-        target_os = "android",
-        any(target_os = "ios", all(target_os = "macos", feature = "macos-ne")),
-        target_env = "ohos"
-    ))]
+    #[cfg(mobile)]
     pub async fn setup_nic_ctx_for_mobile(
         nic_ctx: ArcNicCtx,
         global_ctx: ArcGlobalCtx,

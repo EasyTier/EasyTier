@@ -6,6 +6,10 @@ on:
   pull_request:
     branches: [ "develop", "main" ]
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 env:
   CARGO_TERM_COLOR: always
 #  RUSTC_WRAPPER: "sccache"
@@ -38,7 +42,7 @@ jobs:
     needs: pre_job
     if: needs.pre_job.outputs.should_skip != 'true'
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v5
 
       - name: Prepare build environment
         uses: ./.github/actions/prepare-build
@@ -54,8 +58,14 @@ jobs:
           rustup component add rustfmt
           rustup component add clippy
 
-      - name: Install cargo-hack
-        run: cargo install cargo-hack --locked
+      - uses: taiki-e/install-action@cargo-hack
+
+      - name: Check Cargo.lock is up to date
+        run: |
+          if ! cargo metadata --format-version 1 --locked --no-deps > /dev/null; then
+            echo "::error::Cargo.lock is out of date. Run cargo generate-lockfile or cargo build locally, then commit Cargo.lock."
+            exit 1
+          fi
 
       - name: Check formatting
         run: cargo fmt --all -- --check
@@ -65,7 +75,7 @@ jobs:
 
       - name: Check features
         if: ${{ !cancelled() }}
-        run: cargo hack check --package easytier --each-feature --features aes-gcm --exclude-features macos-ne --verbose
+        run: cargo hack check --package easytier --each-feature --exclude-features macos-ne --verbose
 
   pre-test:
     name: Build test
@@ -73,7 +83,7 @@ jobs:
     needs: pre_job
     if: needs.pre_job.outputs.should_skip != 'true'
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v5
 
       - name: Prepare build environment
         uses: ./.github/actions/prepare-build
@@ -89,7 +99,7 @@ jobs:
       - name: Archive test
         run: cargo nextest archive --archive-file tests.tar.zst --package easytier --features full
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         with:
           name: tests
           path: tests.tar.zst
@@ -113,7 +123,7 @@ jobs:
           - name: "three_node::subnet_proxy_three_node_test"
             opts: "-E 'test(subnet_proxy_three_node_test)' --test-threads 1 --no-fail-fast"
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v5
 
       - name: Setup tools for test
         run: sudo apt install bridge-utils
@@ -140,9 +150,9 @@ jobs:
 
   test:
     runs-on: ubuntu-latest
-    needs: [ pre_job, test_matrix ]
-    if: needs.pre_job.outputs.should_skip != 'true' && always()
+    needs: [ pre_job, check, test_matrix ]
+    if: needs.pre_job.result == 'success' && needs.pre_job.outputs.should_skip != 'true' && !cancelled()
     steps:
       - name: Mark result as failed
-        if: needs.test_matrix.result != 'success'
+        if: contains(needs.*.result, 'failure')
         run: exit 1

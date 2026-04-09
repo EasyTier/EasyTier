@@ -1,25 +1,28 @@
-use std::{net::SocketAddr, sync::Arc, time::Duration};
-
+use super::{
+    FromUrl, IpVersion, Tunnel, TunnelConnector, TunnelError, TunnelListener,
+    common::{TunnelWrapper, setup_socket2, wait_for_connect_futures},
+    insecure_tls::{get_insecure_tls_cert, init_crypto_provider},
+    packet_def::{ZCPacket, ZCPacketType},
+};
+use crate::{proto::common::TunnelInfo, tunnel::insecure_tls::get_insecure_tls_client_config};
 use anyhow::Context;
 use bytes::BytesMut;
-use futures::{stream::FuturesUnordered, SinkExt, StreamExt};
+use forwarded_header_value::ForwardedHeaderValue;
+use futures::{SinkExt, StreamExt, stream::FuturesUnordered};
+use pnet::ipnetwork::IpNetwork;
+use std::{
+    net::SocketAddr,
+    sync::{Arc, LazyLock},
+    time::Duration,
+};
 use tokio::{
     net::{TcpListener, TcpSocket, TcpStream},
     time::timeout,
 };
 use tokio_rustls::TlsAcceptor;
-use tokio_websockets::{ClientBuilder, Limits, MaybeTlsStream, Message};
+use tokio_util::either::Either;
+use tokio_websockets::{ClientBuilder, Limits, MaybeTlsStream, Message, ServerBuilder};
 use zerocopy::AsBytes;
-
-use super::TunnelInfo;
-use crate::tunnel::insecure_tls::get_insecure_tls_client_config;
-
-use super::{
-    common::{setup_socket2, wait_for_connect_futures, TunnelWrapper},
-    insecure_tls::{get_insecure_tls_cert, init_crypto_provider},
-    packet_def::{ZCPacket, ZCPacketType},
-    FromUrl, IpVersion, Tunnel, TunnelConnector, TunnelError, TunnelListener,
-};
 
 fn is_wss(addr: &url::Url) -> Result<bool, TunnelError> {
     match addr.scheme() {
@@ -59,67 +62,103 @@ async fn map_from_ws_message(
     )))
 }
 
+static TRUSTED_PROXIES: LazyLock<Vec<IpNetwork>> = LazyLock::new(|| {
+    [
+        "127.0.0.0/8", // IPV4 Loopback
+        "10.0.0.0/8",  // IPV4 Private Networks
+        "172.16.0.0/12",
+        "192.168.0.0/16",
+        "::1/128",  // IPV6 Loopback
+        "fc00::/7", // IPV6 Private network
+    ]
+    .into_iter()
+    .map(|s| s.parse().unwrap())
+    .collect()
+});
+
 #[derive(Debug)]
-pub struct WSTunnelListener {
+pub struct WsTunnelListener {
     addr: url::Url,
     listener: Option<TcpListener>,
 }
 
-impl WSTunnelListener {
+impl WsTunnelListener {
     pub fn new(addr: url::Url) -> Self {
-        WSTunnelListener {
+        WsTunnelListener {
             addr,
             listener: None,
         }
     }
 
     async fn try_accept(&self, stream: TcpStream) -> Result<Box<dyn Tunnel>, TunnelError> {
-        let info = TunnelInfo {
-            tunnel_type: self.addr.scheme().to_owned(),
-            local_addr: Some(self.local_url().into()),
-            remote_addr: Some(
-                super::build_url_from_socket_addr(
-                    &stream.peer_addr()?.to_string(),
-                    self.addr.scheme().to_string().as_str(),
-                )
-                .into(),
-            ),
-        };
+        let peer_addr = stream.peer_addr()?;
+        let mut remote_addr =
+            super::build_url_from_socket_addr(&peer_addr.to_string(), self.addr.scheme());
 
-        let server_bulder = tokio_websockets::ServerBuilder::new().limits(Limits::unlimited());
-
-        let ret: Box<dyn Tunnel> = if is_wss(&self.addr)? {
+        let stream = if is_wss(&self.addr)? {
             init_crypto_provider();
             let (certs, key) = get_insecure_tls_cert();
             let config = rustls::ServerConfig::builder()
                 .with_no_client_auth()
                 .with_single_cert(certs, key)
                 .with_context(|| "Failed to create server config")?;
-            let acceptor = TlsAcceptor::from(Arc::new(config));
 
-            let stream = acceptor.accept(stream).await?;
-            let (write, read) = server_bulder.accept(stream).await?.split();
-
-            Box::new(TunnelWrapper::new(
-                read.filter_map(map_from_ws_message),
-                write.with(sink_from_zc_packet),
-                Some(info),
-            ))
+            let stream = TlsAcceptor::from(Arc::new(config)).accept(stream).await?;
+            Either::Left(stream)
         } else {
-            let (write, read) = server_bulder.accept(stream).await?.split();
-            Box::new(TunnelWrapper::new(
-                read.filter_map(map_from_ws_message),
-                write.with(sink_from_zc_packet),
-                Some(info),
-            ))
+            Either::Right(stream)
         };
 
-        Ok(ret)
+        let (request, stream) = ServerBuilder::new()
+            .limits(Limits::unlimited())
+            .accept(stream)
+            .await?;
+
+        if TRUSTED_PROXIES
+            .iter()
+            .any(|net| net.contains(peer_addr.ip()))
+            && let Some(forwarded) = request
+                .headers()
+                .get("Forwarded")
+                .and_then(|f| f.to_str().ok())
+                .and_then(|f| ForwardedHeaderValue::from_forwarded(f).ok())
+                .or_else(|| {
+                    request
+                        .headers()
+                        .get("X-Forwarded-For")
+                        .and_then(|f| f.to_str().ok())
+                        .and_then(|f| ForwardedHeaderValue::from_x_forwarded_for(f).ok())
+                })
+            && let Some(ip) = forwarded.remotest_forwarded_for_ip()
+        {
+            remote_addr
+                .set_host(Some(&ip.to_string()))
+                .map_err(|_| TunnelError::InvalidAddr(format!("invalid forwarded ip {}", ip)))?;
+            remote_addr
+                .query_pairs_mut()
+                .append_pair("proxy", &peer_addr.to_string());
+        }
+
+        let (write, read) = stream.split();
+        let remote_addr: crate::proto::common::Url = remote_addr.into();
+
+        let info = TunnelInfo {
+            tunnel_type: self.addr.scheme().to_owned(),
+            local_addr: Some(self.local_url().into()),
+            remote_addr: Some(remote_addr.clone()),
+            resolved_remote_addr: Some(remote_addr),
+        };
+
+        Ok(Box::new(TunnelWrapper::new(
+            read.filter_map(map_from_ws_message),
+            write.with(sink_from_zc_packet),
+            Some(info),
+        )))
     }
 }
 
 #[async_trait::async_trait]
-impl TunnelListener for WSTunnelListener {
+impl TunnelListener for WsTunnelListener {
     async fn listen(&mut self) -> Result<(), TunnelError> {
         let addr = SocketAddr::from_url(self.addr.clone(), IpVersion::Both).await?;
         let socket2_socket = socket2::Socket::new(
@@ -159,16 +198,16 @@ impl TunnelListener for WSTunnelListener {
     }
 }
 
-pub struct WSTunnelConnector {
+pub struct WsTunnelConnector {
     addr: url::Url,
     ip_version: IpVersion,
 
     bind_addrs: Vec<SocketAddr>,
 }
 
-impl WSTunnelConnector {
+impl WsTunnelConnector {
     pub fn new(addr: url::Url) -> Self {
-        WSTunnelConnector {
+        WsTunnelConnector {
             addr,
             ip_version: IpVersion::Both,
 
@@ -195,6 +234,9 @@ impl WSTunnelConnector {
                 .into(),
             ),
             remote_addr: Some(addr.clone().into()),
+            resolved_remote_addr: Some(
+                super::build_url_from_socket_addr(&socket_addr.to_string(), addr.scheme()).into(),
+            ),
         };
 
         let c = ClientBuilder::from_uri(http::Uri::try_from(addr.to_string()).unwrap());
@@ -267,8 +309,8 @@ impl WSTunnelConnector {
 }
 
 #[async_trait::async_trait]
-impl TunnelConnector for WSTunnelConnector {
-    async fn connect(&mut self) -> Result<Box<dyn Tunnel>, super::TunnelError> {
+impl TunnelConnector for WsTunnelConnector {
+    async fn connect(&mut self) -> Result<Box<dyn Tunnel>, TunnelError> {
         let addr = SocketAddr::from_url(self.addr.clone(), self.ip_version).await?;
         if self.bind_addrs.is_empty() || addr.is_ipv6() {
             self.connect_with_default_bind(addr).await
@@ -292,17 +334,17 @@ impl TunnelConnector for WSTunnelConnector {
 
 #[cfg(test)]
 pub mod tests {
+    use super::*;
     use crate::tunnel::common::tests::_tunnel_pingpong;
-    use crate::tunnel::websocket::{WSTunnelConnector, WSTunnelListener};
-    use crate::tunnel::{TunnelConnector, TunnelListener};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     #[rstest::rstest]
     #[tokio::test]
     #[serial_test::serial]
     async fn ws_pingpong(#[values("ws", "wss")] proto: &str) {
-        let listener = WSTunnelListener::new(format!("{}://0.0.0.0:25556", proto).parse().unwrap());
+        let listener = WsTunnelListener::new(format!("{}://0.0.0.0:25556", proto).parse().unwrap());
         let connector =
-            WSTunnelConnector::new(format!("{}://127.0.0.1:25556", proto).parse().unwrap());
+            WsTunnelConnector::new(format!("{}://127.0.0.1:25556", proto).parse().unwrap());
         _tunnel_pingpong(listener, connector).await
     }
 
@@ -310,9 +352,9 @@ pub mod tests {
     #[tokio::test]
     #[serial_test::serial]
     async fn ws_pingpong_bind(#[values("ws", "wss")] proto: &str) {
-        let listener = WSTunnelListener::new(format!("{}://0.0.0.0:25557", proto).parse().unwrap());
+        let listener = WsTunnelListener::new(format!("{}://0.0.0.0:25557", proto).parse().unwrap());
         let mut connector =
-            WSTunnelConnector::new(format!("{}://127.0.0.1:25557", proto).parse().unwrap());
+            WsTunnelConnector::new(format!("{}://127.0.0.1:25557", proto).parse().unwrap());
         connector.set_bind_addrs(vec!["127.0.0.1:0".parse().unwrap()]);
         _tunnel_pingpong(listener, connector).await
     }
@@ -331,18 +373,73 @@ pub mod tests {
 
     #[tokio::test]
     async fn ws_accept_wss() {
-        let mut listener = WSTunnelListener::new("wss://0.0.0.0:25558".parse().unwrap());
+        let mut listener = WsTunnelListener::new("wss://0.0.0.0:25558".parse().unwrap());
         listener.listen().await.unwrap();
         let j = tokio::spawn(async move {
             let _ = listener.accept().await;
         });
 
-        let mut connector = WSTunnelConnector::new("ws://127.0.0.1:25558".parse().unwrap());
+        let mut connector = WsTunnelConnector::new("ws://127.0.0.1:25558".parse().unwrap());
         connector.connect().await.unwrap_err();
 
-        let mut connector = WSTunnelConnector::new("wss://127.0.0.1:25558".parse().unwrap());
+        let mut connector = WsTunnelConnector::new("wss://127.0.0.1:25558".parse().unwrap());
         connector.connect().await.unwrap();
 
         j.abort();
+    }
+
+    #[tokio::test]
+    async fn ws_forwarded() {
+        let mut listener = WsTunnelListener::new("ws://127.0.0.1:25559".parse().unwrap());
+        listener.listen().await.unwrap();
+
+        let server_task = tokio::spawn(async move {
+            let tunnel = listener.accept().await.unwrap();
+
+            let remote_addr = tunnel
+                .info()
+                .unwrap()
+                .remote_addr
+                .unwrap()
+                .url
+                .parse::<url::Url>()
+                .unwrap();
+
+            assert_eq!(remote_addr.host_str().unwrap(), "203.0.113.5");
+            let proxy_addr = remote_addr
+                .query_pairs()
+                .find(|(k, _)| k == "proxy")
+                .map(|(_, v)| v.into_owned())
+                .unwrap();
+            assert_eq!(proxy_addr, "127.0.0.1:25560");
+
+            tunnel
+        });
+
+        let socket = TcpSocket::new_v4().unwrap();
+        socket.bind("127.0.0.1:25560".parse().unwrap()).unwrap();
+        let mut stream = socket
+            .connect("127.0.0.1:25559".parse().unwrap())
+            .await
+            .unwrap();
+
+        let handshake = "GET / HTTP/1.1\r\n\
+                         Host: 127.0.0.1:25559\r\n\
+                         Upgrade: websocket\r\n\
+                         Connection: Upgrade\r\n\
+                         Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\
+                         Sec-WebSocket-Version: 13\r\n\
+                         X-Forwarded-For: 203.0.113.5, 192.168.1.1\r\n\
+                         \r\n";
+
+        stream.write_all(handshake.as_bytes()).await.unwrap();
+
+        let mut buf = [0u8; 1024];
+        let bytes_read = stream.read(&mut buf).await.unwrap();
+        let response = String::from_utf8_lossy(&buf[..bytes_read]);
+
+        assert!(response.contains("101 Switching Protocols"));
+
+        let _tunnel = server_task.await.unwrap();
     }
 }

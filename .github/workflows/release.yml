@@ -18,7 +18,7 @@ on:
       version:
         description: 'Version for this release'
         type: string
-        default: 'v2.5.0'
+        default: 'v2.6.0'
         required: true
       make_latest:
         description: 'Mark this release as latest'
@@ -35,7 +35,7 @@ jobs:
     steps:
       -
         name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Download Core Artifact
         uses: dawidd6/action-download-artifact@v11

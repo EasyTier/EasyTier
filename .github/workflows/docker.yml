@@ -11,7 +11,7 @@ on:
       image_tag:
         description: 'Tag for this image build'
         type: string
-        default: 'v2.5.0'
+        default: 'v2.6.0'
         required: true
       mark_latest:
         description: 'Mark this image as latest'
@@ -31,7 +31,7 @@ jobs:
     steps:
       -
         name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
       -
         name: Validate inputs
         run: |

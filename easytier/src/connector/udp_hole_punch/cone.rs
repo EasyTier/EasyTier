@@ -7,9 +7,9 @@ use anyhow::Context;
 use tokio::net::UdpSocket;
 
 use crate::{
-    common::{scoped_task::ScopedTask, stun::StunInfoCollectorTrait, PeerId},
+    common::{PeerId, scoped_task::ScopedTask, stun::StunInfoCollectorTrait},
     connector::udp_hole_punch::common::{
-        try_connect_with_socket, UdpSocketArray, HOLE_PUNCH_PACKET_BODY_LEN,
+        HOLE_PUNCH_PACKET_BODY_LEN, UdpSocketArray, try_connect_with_socket,
     },
     connector::udp_hole_punch::handle_rpc_result,
     peers::peer_manager::PeerManager,
@@ -20,7 +20,7 @@ use crate::{
         },
         rpc_types::{self, controller::BaseController},
     },
-    tunnel::{udp::new_hole_punch_packet, Tunnel},
+    tunnel::{Tunnel, udp::new_hole_punch_packet},
 };
 
 use super::common::PunchHoleServerCommon;
@@ -249,7 +249,7 @@ pub mod tests {
 
     use crate::{
         connector::udp_hole_punch::{
-            tests::create_mock_peer_manager_with_mock_stun, UdpHolePunchConnector,
+            UdpHolePunchConnector, tests::create_mock_peer_manager_with_mock_stun,
         },
         peers::tests::{connect_peer_manager, wait_route_appear, wait_route_appear_with_cost},
         proto::common::NatType,

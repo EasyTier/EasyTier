@@ -100,12 +100,10 @@ fn get_instance_service(
                 if let Some(api::instance::instance_identifier::Selector::InstanceSelector(
                     selector,
                 )) = selector
+                    && let Some(name) = selector.name.as_ref()
+                    && v.get_inst_name() != *name
                 {
-                    if let Some(name) = selector.name.as_ref() {
-                        if v.get_inst_name() != *name {
-                            return false;
-                        }
-                    }
+                    return false;
                 }
                 true
             })
@@ -118,7 +116,7 @@ fn get_instance_service(
                 return Err(anyhow::anyhow!(
                     "{} instances match the selector, please specify the instance ID",
                     ids.len()
-                ))
+                ));
             }
         }
     };

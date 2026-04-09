@@ -2,8 +2,8 @@ pub mod session;
 pub mod storage;
 
 use std::sync::{
-    atomic::{AtomicU32, Ordering},
     Arc,
+    atomic::{AtomicU32, Ordering},
 };
 
 use dashmap::DashMap;
@@ -19,11 +19,11 @@ use maxminddb::geoip2;
 use session::{Location, Session};
 use storage::{Storage, StorageToken};
 
-use crate::webhook::SharedWebhookConfig;
 use crate::FeatureFlags;
+use crate::webhook::SharedWebhookConfig;
 use tokio::task::JoinSet;
 
-use crate::db::{entity::user_running_network_configs, Db, UserIdInDb};
+use crate::db::{Db, UserIdInDb, entity::user_running_network_configs};
 
 #[derive(rust_embed::Embed)]
 #[folder = "resources/"]
@@ -175,27 +175,15 @@ impl ClientManager {
             .map(|item| item.value().clone())
     }
 
-    /// Find a session by machine_id regardless of user_id.
-    pub fn get_session_by_machine_id_global(
+    pub async fn disconnect_session_by_machine_id(
         &self,
+        user_id: UserIdInDb,
         machine_id: &uuid::Uuid,
-    ) -> Option<Arc<Session>> {
-        self.storage
-            .get_client_url_by_machine_id_global(machine_id)
-            .and_then(|url| {
-                self.client_sessions
-                    .get(&url)
-                    .map(|item| item.value().clone())
-            })
-    }
-
-    /// Get user_id associated with a machine_id.
-    pub fn get_user_id_by_machine_id_global(&self, machine_id: &uuid::Uuid) -> Option<UserIdInDb> {
-        self.storage.get_user_id_by_machine_id_global(machine_id)
-    }
-
-    pub async fn disconnect_session_by_machine_id_global(&self, machine_id: &uuid::Uuid) -> bool {
-        let Some(client_url) = self.storage.get_client_url_by_machine_id_global(machine_id) else {
+    ) -> bool {
+        let Some(client_url) = self
+            .storage
+            .get_client_url_by_machine_id(user_id, machine_id)
+        else {
             return false;
         };
         let Some((_, session)) = self.client_sessions.remove(&client_url) else {
@@ -352,7 +340,7 @@ mod tests {
     };
     use sqlx::Executor;
 
-    use crate::{client_manager::ClientManager, db::Db, FeatureFlags};
+    use crate::{FeatureFlags, client_manager::ClientManager, db::Db};
 
     #[tokio::test]
     async fn test_client() {

@@ -1,12 +1,12 @@
-use crate::common::config::{process_secure_mode_cfg, ConfigFileControl, PortForwardConfig};
+use crate::common::config::{ConfigFileControl, PortForwardConfig, process_secure_mode_cfg};
 use crate::proto::api::{self, manage};
 use crate::proto::rpc_types::controller::BaseController;
 use crate::rpc_service::InstanceRpcService;
 use crate::{
     common::{
         config::{
-            gen_default_flags, ConfigLoader, NetworkIdentity, PeerConfig, TomlConfigLoader,
-            VpnPortalConfig,
+            ConfigLoader, NetworkIdentity, PeerConfig, TomlConfigLoader, VpnPortalConfig,
+            gen_default_flags,
         },
         constants::EASYTIER_VERSION,
         global_ctx::{EventBusSubscriber, GlobalCtxEvent},
@@ -19,7 +19,7 @@ use chrono::{DateTime, Local};
 use std::{
     collections::VecDeque,
     net::SocketAddr,
-    sync::{atomic::AtomicBool, Arc, Mutex, RwLock},
+    sync::{Arc, Mutex, RwLock, atomic::AtomicBool},
 };
 use tokio::{
     sync::{broadcast, mpsc},
@@ -93,11 +93,7 @@ impl EasyTierLauncher {
         }
     }
 
-    #[cfg(any(
-        target_os = "android",
-        any(target_os = "ios", all(target_os = "macos", feature = "macos-ne")),
-        target_env = "ohos"
-    ))]
+    #[cfg(mobile)]
     async fn run_routine_for_mobile(
         instance: &Instance,
         data: &EasyTierData,
@@ -156,11 +152,7 @@ impl EasyTierLauncher {
             }
         });
 
-        #[cfg(any(
-            target_os = "android",
-            any(target_os = "ios", all(target_os = "macos", feature = "macos-ne")),
-            target_env = "ohos"
-        ))]
+        #[cfg(mobile)]
         Self::run_routine_for_mobile(&instance, &data, &mut tasks).await;
 
         instance.run().await?;
@@ -280,10 +272,10 @@ impl Drop for EasyTierLauncher {
     fn drop(&mut self) {
         self.stop_flag
             .store(true, std::sync::atomic::Ordering::Relaxed);
-        if let Some(handle) = self.thread_handle.take() {
-            if let Err(e) = handle.join() {
-                println!("Error when joining thread: {:?}", e);
-            }
+        if let Some(handle) = self.thread_handle.take()
+            && let Err(e) = handle.join()
+        {
+            println!("Error when joining thread: {:?}", e);
         }
     }
 }
@@ -401,12 +393,6 @@ impl NetworkInstance {
 
     pub fn get_network_name(&self) -> String {
         self.config.get_network_identity().network_name
-    }
-
-    pub fn set_tun_fd(&mut self, tun_fd: i32) {
-        if let Some(launcher) = self.launcher.as_ref() {
-            let _ = launcher.data.tun_fd.0.blocking_send(Some(tun_fd));
-        }
     }
 
     pub fn get_tun_fd_sender(&self) -> Option<mpsc::Sender<TunFd>> {
@@ -573,8 +559,9 @@ impl NetworkConfig {
                         peer_public_key: None,
                     });
                 }
-
-                cfg.set_peers(peers);
+                if !peers.is_empty() {
+                    cfg.set_peers(peers);
+                }
             }
             NetworkingMethod::Standalone => {}
         }
@@ -669,12 +656,12 @@ impl NetworkConfig {
             cfg.set_exit_nodes(exit_nodes);
         }
 
-        if self.enable_socks5.unwrap_or_default() {
-            if let Some(socks5_port) = self.socks5_port {
-                cfg.set_socks5_portal(Some(
-                    format!("socks5://0.0.0.0:{}", socks5_port).parse().unwrap(),
-                ));
-            }
+        if self.enable_socks5.unwrap_or_default()
+            && let Some(socks5_port) = self.socks5_port
+        {
+            cfg.set_socks5_portal(Some(
+                format!("socks5://0.0.0.0:{}", socks5_port).parse().unwrap(),
+            ));
         }
 
         if !self.mapped_listeners.is_empty() {
@@ -762,6 +749,10 @@ impl NetworkConfig {
             flags.p2p_only = p2p_only;
         }
 
+        if let Some(lazy_p2p) = self.lazy_p2p {
+            flags.lazy_p2p = lazy_p2p;
+        }
+
         if let Some(bind_device) = self.bind_device {
             flags.bind_device = bind_device;
         }
@@ -776,6 +767,10 @@ impl NetworkConfig {
 
         if let Some(relay_all_peer_rpc) = self.relay_all_peer_rpc {
             flags.relay_all_peer_rpc = relay_all_peer_rpc;
+        }
+
+        if let Some(need_p2p) = self.need_p2p {
+            flags.need_p2p = need_p2p;
         }
 
         if let Some(multi_thread) = self.multi_thread {
@@ -816,6 +811,10 @@ impl NetworkConfig {
 
         if let Some(mtu) = self.mtu {
             flags.mtu = mtu as u32;
+        }
+
+        if let Some(instance_recv_bps_limit) = self.instance_recv_bps_limit {
+            flags.instance_recv_bps_limit = instance_recv_bps_limit;
         }
 
         if let Some(enable_private_mode) = self.enable_private_mode {
@@ -862,18 +861,9 @@ impl NetworkConfig {
         }
 
         let peers = config.get_peers();
-        match peers.len() {
-            1 => {
-                result.networking_method = Some(NetworkingMethod::PublicServer as i32);
-                result.public_server_url = Some(peers[0].uri.to_string());
-            }
-            0 => {
-                result.networking_method = Some(NetworkingMethod::Standalone as i32);
-            }
-            _ => {
-                result.networking_method = Some(NetworkingMethod::Manual as i32);
-                result.peer_urls = peers.iter().map(|p| p.uri.to_string()).collect();
-            }
+        result.networking_method = Some(NetworkingMethod::Manual as i32);
+        if !peers.is_empty() {
+            result.peer_urls = peers.iter().map(|p| p.uri.to_string()).collect();
         }
 
         result.listener_urls = config
@@ -919,11 +909,11 @@ impl NetworkConfig {
             result.vpn_portal_listen_port = Some(vpn_config.wireguard_listen.port() as i32);
         }
 
-        if let Some(routes) = config.get_routes() {
-            if !routes.is_empty() {
-                result.enable_manual_routes = Some(true);
-                result.routes = routes.iter().map(|r| r.to_string()).collect();
-            }
+        if let Some(routes) = config.get_routes()
+            && !routes.is_empty()
+        {
+            result.enable_manual_routes = Some(true);
+            result.routes = routes.iter().map(|r| r.to_string()).collect();
         }
 
         let exit_nodes = config.get_exit_nodes();
@@ -956,10 +946,12 @@ impl NetworkConfig {
         result.disable_quic_input = Some(flags.disable_quic_input);
         result.disable_p2p = Some(flags.disable_p2p);
         result.p2p_only = Some(flags.p2p_only);
+        result.lazy_p2p = Some(flags.lazy_p2p);
         result.bind_device = Some(flags.bind_device);
         result.no_tun = Some(flags.no_tun);
         result.enable_exit_node = Some(flags.enable_exit_node);
         result.relay_all_peer_rpc = Some(flags.relay_all_peer_rpc);
+        result.need_p2p = Some(flags.need_p2p);
         result.multi_thread = Some(flags.multi_thread);
         result.proxy_forward_by_system = Some(flags.proxy_forward_by_system);
         result.disable_encryption = Some(!flags.enable_encryption);
@@ -968,6 +960,8 @@ impl NetworkConfig {
         result.disable_sym_hole_punching = Some(flags.disable_sym_hole_punching);
         result.enable_magic_dns = Some(flags.accept_dns);
         result.mtu = Some(flags.mtu as i32);
+        result.instance_recv_bps_limit =
+            (flags.instance_recv_bps_limit != u64::MAX).then_some(flags.instance_recv_bps_limit);
         result.enable_private_mode = Some(flags.private_mode);
 
         if flags.relay_network_whitelist == "*" {
@@ -992,10 +986,10 @@ impl NetworkConfig {
 #[cfg(test)]
 mod tests {
     use crate::{
-        common::config::{process_secure_mode_cfg, ConfigLoader},
+        common::config::{ConfigLoader, process_secure_mode_cfg},
         proto::common::SecureModeConfig,
     };
-    use base64::prelude::{Engine as _, BASE64_STANDARD};
+    use base64::prelude::{BASE64_STANDARD, Engine as _};
     use rand::Rng;
     use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
@@ -1020,9 +1014,12 @@ mod tests {
         let generated_config_str = generated_config.dump();
 
         assert_eq!(
-                config_str, generated_config_str,
-                "Generated config does not match original config:\nOriginal:\n{}\n\nGenerated:\n{}\nNetwork Config: {}\n",
-                config_str, generated_config_str, serde_json::to_string(&network_config).unwrap()
+            config_str,
+            generated_config_str,
+            "Generated config does not match original config:\nOriginal:\n{}\n\nGenerated:\n{}\nNetwork Config: {}\n",
+            config_str,
+            generated_config_str,
+            serde_json::to_string(&network_config).unwrap()
         );
         Ok(())
     }
@@ -1039,13 +1036,13 @@ mod tests {
             config.set_dhcp(rng.gen_bool(0.5));
 
             if rng.gen_bool(0.7) {
-                let hostname = format!("host-{}", rng.gen::<u16>());
+                let hostname = format!("host-{}", rng.r#gen::<u16>());
                 config.set_hostname(Some(hostname));
             }
 
             config.set_network_identity(crate::common::config::NetworkIdentity::new(
-                format!("network-{}", rng.gen::<u16>()),
-                format!("secret-{}", rng.gen::<u64>()),
+                format!("network-{}", rng.r#gen::<u16>()),
+                format!("secret-{}", rng.r#gen::<u64>()),
             ));
             config.set_inst_name(config.get_network_identity().network_name.clone());
 
@@ -1214,10 +1211,12 @@ mod tests {
                 flags.disable_quic_input = rng.gen_bool(0.3);
                 flags.disable_p2p = rng.gen_bool(0.2);
                 flags.p2p_only = rng.gen_bool(0.2);
+                flags.lazy_p2p = rng.gen_bool(0.3);
                 flags.bind_device = rng.gen_bool(0.3);
                 flags.no_tun = rng.gen_bool(0.1);
                 flags.enable_exit_node = rng.gen_bool(0.4);
                 flags.relay_all_peer_rpc = rng.gen_bool(0.5);
+                flags.need_p2p = rng.gen_bool(0.3);
                 flags.multi_thread = rng.gen_bool(0.7);
                 flags.proxy_forward_by_system = rng.gen_bool(0.3);
                 flags.enable_encryption = rng.gen_bool(0.8);
@@ -1255,9 +1254,12 @@ mod tests {
             let generated_config_str = generated_config.dump();
 
             assert_eq!(
-                config_str, generated_config_str,
+                config_str,
+                generated_config_str,
                 "Generated config does not match original config:\nOriginal:\n{}\n\nGenerated:\n{}\nNetwork Config: {}\n",
-                config_str, generated_config_str, serde_json::to_string(&network_config).unwrap()
+                config_str,
+                generated_config_str,
+                serde_json::to_string(&network_config).unwrap()
             );
         }
 

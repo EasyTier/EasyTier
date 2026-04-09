@@ -1,7 +1,7 @@
 use std::{
     net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
     sync::Arc,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use anyhow::{Context, Error};
@@ -9,7 +9,7 @@ use rand::Rng as _;
 use tokio::task::JoinSet;
 
 use crate::{
-    common::{join_joinset_background, stun::StunInfoCollectorTrait, PeerId},
+    common::{PeerId, join_joinset_background, stun::StunInfoCollectorTrait},
     connector::udp_hole_punch::BackOff,
     peers::{
         peer_manager::PeerManager,
@@ -24,10 +24,12 @@ use crate::{
         rpc_types::{self, controller::BaseController},
     },
     tunnel::{
-        tcp::{TcpTunnelConnector, TcpTunnelListener},
         TunnelConnector as _, TunnelListener as _,
+        tcp::{TcpTunnelConnector, TcpTunnelListener},
     },
 };
+
+use crate::connector::{should_background_p2p_with_peer, should_try_p2p_with_peer};
 
 pub const BLACKLIST_TIMEOUT_SEC: u64 = 3600;
 
@@ -418,6 +420,8 @@ impl PeerTaskLauncher for TcpHolePunchPeerTaskLauncher {
     #[tracing::instrument(skip(self, data))]
     async fn collect_peers_need_task(&self, data: &Self::Data) -> Vec<Self::CollectPeerItem> {
         let global_ctx = data.peer_mgr.get_global_ctx();
+        let flags = global_ctx.get_flags();
+        let lazy_p2p = flags.lazy_p2p;
         let my_tcp_nat_type = NatType::try_from(
             global_ctx
                 .get_stun_info_collector()
@@ -434,16 +438,26 @@ impl PeerTaskLauncher for TcpHolePunchPeerTaskLauncher {
         }
 
         let my_peer_id = data.peer_mgr.my_peer_id();
+        let now = Instant::now();
 
         data.blacklist.cleanup();
 
         let mut peers_to_connect = Vec::new();
         for route in data.peer_mgr.list_routes().await.iter() {
-            if route
-                .feature_flag
-                .map(|x| x.is_public_server)
-                .unwrap_or(false)
-            {
+            let static_allowed = should_background_p2p_with_peer(
+                route.feature_flag.as_ref(),
+                false,
+                lazy_p2p,
+                flags.disable_p2p,
+                flags.need_p2p,
+            );
+            let dynamic_allowed = should_try_p2p_with_peer(
+                route.feature_flag.as_ref(),
+                false,
+                flags.disable_p2p,
+                flags.need_p2p,
+            ) && data.peer_mgr.has_recent_traffic(route.peer_id, now);
+            if !static_allowed && !dynamic_allowed {
                 continue;
             }
 
@@ -520,7 +534,11 @@ impl TcpHolePunchConnector {
     pub fn new(peer_mgr: Arc<PeerManager>) -> Self {
         Self {
             server: TcpHolePunchServer::new(peer_mgr.clone()),
-            client: PeerTaskManager::new(TcpHolePunchPeerTaskLauncher {}, peer_mgr.clone()),
+            client: PeerTaskManager::new_with_external_signal(
+                TcpHolePunchPeerTaskLauncher {},
+                peer_mgr.clone(),
+                Some(peer_mgr.p2p_demand_notify()),
+            ),
             peer_mgr,
         }
     }
@@ -546,10 +564,9 @@ impl TcpHolePunchConnector {
 
     pub async fn run(&mut self) -> Result<(), Error> {
         let flags = self.peer_mgr.get_global_ctx().get_flags();
-        if flags.disable_p2p || flags.disable_tcp_hole_punching {
+        if flags.disable_tcp_hole_punching {
             tracing::debug!(
-                "tcp hole punch disabled by disable_p2p(={}) or disable_tcp_hole_punching(={});",
-                flags.disable_p2p,
+                "tcp hole punch disabled by disable_tcp_hole_punching(={});",
                 flags.disable_tcp_hole_punching
             );
             return Ok(());
@@ -570,11 +587,14 @@ mod tests {
         connector::tcp_hole_punch::TcpHolePunchConnector,
         peers::{
             peer_manager::PeerManager,
+            peer_task::PeerTaskLauncher,
             tests::{connect_peer_manager, create_mock_peer_manager, wait_route_appear},
         },
         proto::common::{NatType, StunInfo},
         tunnel::common::tests::wait_for_condition,
     };
+
+    use super::TcpHolePunchPeerTaskLauncher;
 
     struct MockStunInfoCollector {
         udp_nat_type: NatType,
@@ -617,6 +637,17 @@ mod tests {
         peer_mgr
             .get_global_ctx()
             .replace_stun_info_collector(collector);
+    }
+
+    async fn collect_lazy_punch_peers(peer_mgr: Arc<PeerManager>) -> Vec<u32> {
+        let launcher = TcpHolePunchPeerTaskLauncher {};
+        let data = launcher.new_data(peer_mgr);
+        launcher
+            .collect_peers_need_task(&data)
+            .await
+            .into_iter()
+            .map(|task| task.dst_peer_id)
+            .collect()
     }
 
     #[tokio::test]
@@ -688,17 +719,52 @@ mod tests {
 
         tokio::time::sleep(Duration::from_secs(2)).await;
 
-        assert!(p_a
-            .get_peer_map()
-            .list_peer_conns(p_c.my_peer_id())
-            .await
-            .map(|c| c.is_empty())
-            .unwrap_or(true));
-        assert!(p_c
-            .get_peer_map()
-            .list_peer_conns(p_a.my_peer_id())
-            .await
-            .map(|c| c.is_empty())
-            .unwrap_or(true));
+        assert!(
+            p_a.get_peer_map()
+                .list_peer_conns(p_c.my_peer_id())
+                .await
+                .map(|c| c.is_empty())
+                .unwrap_or(true)
+        );
+        assert!(
+            p_c.get_peer_map()
+                .list_peer_conns(p_a.my_peer_id())
+                .await
+                .map(|c| c.is_empty())
+                .unwrap_or(true)
+        );
+    }
+
+    #[tokio::test]
+    async fn lazy_p2p_collects_tcp_hole_punch_tasks_only_after_recent_traffic() {
+        let p_a = create_mock_peer_manager().await;
+        let p_b = create_mock_peer_manager().await;
+        let p_c = create_mock_peer_manager().await;
+
+        replace_stun_info_collector(p_a.clone(), NatType::PortRestricted);
+        replace_stun_info_collector(p_b.clone(), NatType::PortRestricted);
+        replace_stun_info_collector(p_c.clone(), NatType::PortRestricted);
+
+        let mut flags = p_a.get_global_ctx().get_flags();
+        flags.lazy_p2p = true;
+        p_a.get_global_ctx().set_flags(flags);
+
+        connect_peer_manager(p_a.clone(), p_b.clone()).await;
+        connect_peer_manager(p_b.clone(), p_c.clone()).await;
+        wait_route_appear(p_a.clone(), p_c.clone()).await.unwrap();
+
+        assert!(
+            !collect_lazy_punch_peers(p_a.clone())
+                .await
+                .contains(&p_c.my_peer_id())
+        );
+
+        p_a.mark_recent_traffic(p_c.my_peer_id());
+
+        assert!(
+            collect_lazy_punch_peers(p_a.clone())
+                .await
+                .contains(&p_c.my_peer_id())
+        );
     }
 }

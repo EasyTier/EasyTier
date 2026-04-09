@@ -9,7 +9,7 @@ use tokio::sync::Mutex;
 use windivert::error::WinDivertError;
 use windivert::packet::WinDivertPacket;
 use windivert::prelude::{WinDivertFlags, WinDivertShutdownMode};
-use windivert::{layer, WinDivert};
+use windivert::{WinDivert, layer};
 
 use crate::tunnel::fake_tcp::stack;
 

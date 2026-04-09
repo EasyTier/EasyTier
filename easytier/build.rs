@@ -1,8 +1,8 @@
+use cfg_aliases::cfg_aliases;
+use prost_wkt_build::{FileDescriptorSet, Message as _};
 #[cfg(target_os = "windows")]
 use std::io::Cursor;
 use std::{env, path::PathBuf};
-
-use prost_wkt_build::{FileDescriptorSet, Message as _};
 
 #[cfg(target_os = "windows")]
 struct WindowsBuild {}
@@ -86,7 +86,9 @@ impl WindowsBuild {
         } else {
             Self::download_protoc()
         };
-        std::env::set_var("PROTOC", protoc_path);
+        unsafe {
+            std::env::set_var("PROTOC", protoc_path);
+        }
     }
 }
 
@@ -130,6 +132,17 @@ fn check_locale() {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    cfg_aliases! {
+        mobile: {
+            any(
+                target_os = "android",
+                target_os = "ios",
+                all(target_os = "macos", feature = "macos-ne"),
+                target_env = "ohos"
+            )
+        }
+    }
+
     // enable thunk-rs when target os is windows and arch is x86_64 or i686
     #[cfg(target_os = "windows")]
     if !std::env::var("TARGET")

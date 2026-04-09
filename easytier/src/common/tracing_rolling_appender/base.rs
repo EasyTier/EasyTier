@@ -57,17 +57,16 @@ impl Default for RollingConditionBase {
 impl RollingCondition for RollingConditionBase {
     fn should_rollover(&mut self, now: &DateTime<Local>, current_filesize: u64) -> bool {
         let mut rollover = false;
-        if let Some(frequency) = self.frequency_opt.as_ref() {
-            if let Some(last_write) = self.last_write_opt.as_ref() {
-                if frequency.equivalent_datetime(now) != frequency.equivalent_datetime(last_write) {
-                    rollover = true;
-                }
-            }
+        if let Some(frequency) = self.frequency_opt.as_ref()
+            && let Some(last_write) = self.last_write_opt.as_ref()
+            && frequency.equivalent_datetime(now) != frequency.equivalent_datetime(last_write)
+        {
+            rollover = true;
         }
-        if let Some(max_size) = self.max_size_opt.as_ref() {
-            if current_filesize >= *max_size {
-                rollover = true;
-            }
+        if let Some(max_size) = self.max_size_opt.as_ref()
+            && current_filesize >= *max_size
+        {
+            rollover = true;
         }
         self.last_write_opt = Some(*now);
         rollover

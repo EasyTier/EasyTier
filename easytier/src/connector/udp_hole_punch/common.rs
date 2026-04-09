@@ -8,21 +8,21 @@ use crossbeam::atomic::AtomicCell;
 use dashmap::{DashMap, DashSet};
 use rand::seq::SliceRandom as _;
 use tokio::{net::UdpSocket, sync::Mutex, task::JoinSet};
-use tracing::{instrument, Instrument, Level};
+use tracing::{Instrument, Level, instrument};
 use zerocopy::FromBytes as _;
 
 use crate::{
     common::{
-        error::Error, global_ctx::ArcGlobalCtx, join_joinset_background, netns::NetNS,
-        stun::StunInfoCollectorTrait as _, PeerId,
+        PeerId, error::Error, global_ctx::ArcGlobalCtx, join_joinset_background, netns::NetNS,
+        stun::StunInfoCollectorTrait as _,
     },
     defer,
     peers::peer_manager::PeerManager,
     proto::common::NatType,
     tunnel::{
-        packet_def::{UDPTunnelHeader, UdpPacketType, UDP_TUNNEL_HEADER_SIZE},
-        udp::{new_hole_punch_packet, UdpTunnelConnector, UdpTunnelListener},
         Tunnel, TunnelConnCounter, TunnelListener as _,
+        packet_def::{UDP_TUNNEL_HEADER_SIZE, UDPTunnelHeader, UdpPacketType},
+        udp::{UdpTunnelConnector, UdpTunnelListener, new_hole_punch_packet},
     },
 };
 

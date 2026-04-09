@@ -23,7 +23,7 @@ runs:
       if: ${{ inputs.web == 'true' }}
       uses: ./.github/actions/prepare-pnpm
       with:
-        build_filter: './easytier-web/*'
+        build-filter: './easytier-web/*'
 
     - name: Install GUI dependencies (Used by clippy)
       if: ${{ inputs.gui == 'true' }}

@@ -44,14 +44,14 @@ use super::packet::*;
 use bytes::{Bytes, BytesMut};
 use crossbeam::atomic::AtomicCell;
 use pnet::packet::tcp::TcpOptionNumbers;
-use pnet::packet::{tcp, Packet};
+use pnet::packet::{Packet, tcp};
 use pnet::util::MacAddr;
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::sync::{
-    atomic::{AtomicU32, Ordering},
     Arc, RwLock,
+    atomic::{AtomicU32, Ordering},
 };
 use tokio::sync::broadcast;
 use tokio::time;

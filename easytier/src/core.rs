@@ -4,16 +4,16 @@ use std::{
     net::{IpAddr, SocketAddr},
     path::PathBuf,
     process::ExitCode,
-    sync::{atomic::AtomicBool, Arc},
+    sync::{Arc, atomic::AtomicBool},
 };
 
 use crate::{
+    ShellType,
     common::{
         config::{
-            get_avaliable_encrypt_methods, load_config_from_file, process_secure_mode_cfg,
-            ConfigFileControl, ConfigLoader, ConsoleLoggerConfig, FileLoggerConfig,
-            LoggingConfigLoader, NetworkIdentity, PeerConfig, PortForwardConfig, TomlConfigLoader,
-            VpnPortalConfig,
+            ConfigFileControl, ConfigLoader, ConsoleLoggerConfig, EncryptionAlgorithm,
+            FileLoggerConfig, LoggingConfigLoader, NetworkIdentity, PeerConfig, PortForwardConfig,
+            TomlConfigLoader, VpnPortalConfig, load_config_from_file, process_secure_mode_cfg,
         },
         constants::EASYTIER_VERSION,
         log,
@@ -23,18 +23,19 @@ use crate::{
     launcher::add_proxy_network_to_config,
     proto::common::{CompressionAlgoPb, SecureModeConfig},
     rpc_service::ApiRpcServer,
-    tunnel::PROTO_PORT_OFFSET,
     utils::setup_panic_handler,
-    web_client, ShellType,
+    web_client,
 };
 use anyhow::Context;
 use cidr::IpCidr;
 use clap::{CommandFactory, Parser};
 use rust_i18n::t;
+use strum::VariantArray;
 use tokio::io::AsyncReadExt;
 
+use crate::tunnel::IpScheme;
 #[cfg(feature = "jemalloc-prof")]
-use jemalloc_ctl::{epoch, stats, Access as _, AsName as _};
+use jemalloc_ctl::{Access as _, AsName as _, epoch, stats};
 
 #[cfg(target_os = "windows")]
 windows_service::define_windows_service!(ffi_service_main, win_service_main);
@@ -277,9 +278,9 @@ struct NetworkOptions {
         long,
         env = "ET_ENCRYPTION_ALGORITHM",
         help = t!("core_clap.encryption_algorithm").to_string(),
-        value_parser = get_avaliable_encrypt_methods()
+        value_enum,
     )]
-    encryption_algorithm: Option<String>,
+    encryption_algorithm: Option<EncryptionAlgorithm>,
 
     #[arg(
         long,
@@ -406,6 +407,15 @@ struct NetworkOptions {
 
     #[arg(
         long,
+        env = "ET_LAZY_P2P",
+        help = t!("core_clap.lazy_p2p").to_string(),
+        num_args = 0..=1,
+        default_missing_value = "true"
+    )]
+    lazy_p2p: Option<bool>,
+
+    #[arg(
+        long,
         env = "ET_DISABLE_P2P",
         help = t!("core_clap.disable_p2p").to_string(),
         num_args = 0..=1,
@@ -448,6 +458,15 @@ struct NetworkOptions {
         default_missing_value = "true"
     )]
     relay_all_peer_rpc: Option<bool>,
+
+    #[arg(
+        long,
+        env = "ET_NEED_P2P",
+        help = t!("core_clap.need_p2p").to_string(),
+        num_args = 0..=1,
+        default_missing_value = "true"
+    )]
+    need_p2p: Option<bool>,
 
     #[cfg(feature = "socks5")]
     #[arg(
@@ -542,6 +561,13 @@ struct NetworkOptions {
         help = t!("core_clap.foreign_relay_bps_limit").to_string(),
     )]
     foreign_relay_bps_limit: Option<u64>,
+
+    #[arg(
+        long,
+        env = "ET_INSTANCE_RECV_BPS_LIMIT",
+        help = t!("core_clap.instance_recv_bps_limit").to_string(),
+    )]
+    instance_recv_bps_limit: Option<u64>,
 
     #[arg(
         long,
@@ -716,13 +742,17 @@ impl Cli {
 
         let origin_listeners = listeners;
         let mut listeners: Vec<String> = Vec::new();
-        if origin_listeners.len() == 1 {
-            if let Ok(port) = origin_listeners[0].parse::<u16>() {
-                for (proto, offset) in PROTO_PORT_OFFSET {
-                    listeners.push(format!("{}://0.0.0.0:{}", proto, port + *offset));
-                }
-                return Ok(listeners);
+        if origin_listeners.len() == 1
+            && let Ok(port) = origin_listeners[0].parse::<u16>()
+        {
+            for proto in IpScheme::VARIANTS {
+                listeners.push(format!(
+                    "{}://0.0.0.0:{}",
+                    proto,
+                    port + proto.port_offset()
+                ));
             }
+            return Ok(listeners);
         }
 
         for l in &origin_listeners {
@@ -734,20 +764,15 @@ impl Cli {
                     panic!("failed to parse listener: {}", l);
                 }
             } else {
-                let Some((proto, offset)) = PROTO_PORT_OFFSET
-                    .iter()
-                    .find(|(proto, _)| *proto == proto_port[0])
-                else {
-                    return Err(anyhow::anyhow!("unknown protocol: {}", proto_port[0]));
-                };
+                let scheme: IpScheme = proto_port[0].parse()?;
 
                 let port = if proto_port.len() == 2 {
                     proto_port[1].parse::<u16>().unwrap()
                 } else {
-                    11010 + offset
+                    11010 + scheme.port_offset()
                 };
 
-                listeners.push(format!("{}://0.0.0.0:{}", proto, port));
+                listeners.push(format!("{}://0.0.0.0:{}", scheme, port));
             }
         }
 
@@ -970,15 +995,15 @@ impl NetworkOptions {
                 local_public_key: None,
             };
             cfg.set_secure_mode(Some(process_secure_mode_cfg(c)?));
-        } else if let Some(secure_mode) = self.secure_mode {
-            if secure_mode {
-                let c = SecureModeConfig {
-                    enabled: secure_mode,
-                    local_private_key: self.local_private_key.clone(),
-                    local_public_key: self.local_public_key.clone(),
-                };
-                cfg.set_secure_mode(Some(process_secure_mode_cfg(c)?));
-            }
+        } else if let Some(secure_mode) = self.secure_mode
+            && secure_mode
+        {
+            let c = SecureModeConfig {
+                enabled: secure_mode,
+                local_private_key: self.local_private_key.clone(),
+                local_public_key: self.local_public_key.clone(),
+            };
+            cfg.set_secure_mode(Some(process_secure_mode_cfg(c)?));
         }
 
         let mut f = cfg.get_flags();
@@ -989,7 +1014,7 @@ impl NetworkOptions {
             f.enable_encryption = !v;
         }
         if let Some(algorithm) = &self.encryption_algorithm {
-            f.encryption_algorithm = algorithm.clone();
+            f.encryption_algorithm = algorithm.to_string();
         }
         if let Some(v) = self.disable_ipv6 {
             f.enable_ipv6 = !v;
@@ -1012,6 +1037,7 @@ impl NetworkOptions {
         }
         f.disable_p2p = self.disable_p2p.unwrap_or(f.disable_p2p);
         f.p2p_only = self.p2p_only.unwrap_or(f.p2p_only);
+        f.lazy_p2p = self.lazy_p2p.unwrap_or(f.lazy_p2p);
         f.disable_tcp_hole_punching = self
             .disable_tcp_hole_punching
             .unwrap_or(f.disable_tcp_hole_punching);
@@ -1019,6 +1045,7 @@ impl NetworkOptions {
             .disable_udp_hole_punching
             .unwrap_or(f.disable_udp_hole_punching);
         f.relay_all_peer_rpc = self.relay_all_peer_rpc.unwrap_or(f.relay_all_peer_rpc);
+        f.need_p2p = self.need_p2p.unwrap_or(f.need_p2p);
         f.multi_thread = self.multi_thread.unwrap_or(f.multi_thread);
         if let Some(compression) = &self.compression {
             f.data_compress_algo = match compression.as_str() {
@@ -1041,6 +1068,9 @@ impl NetworkOptions {
         f.foreign_relay_bps_limit = self
             .foreign_relay_bps_limit
             .unwrap_or(f.foreign_relay_bps_limit);
+        f.instance_recv_bps_limit = self
+            .instance_recv_bps_limit
+            .unwrap_or(f.instance_recv_bps_limit);
         f.multi_thread_count = self.multi_thread_count.unwrap_or(f.multi_thread_count);
         f.disable_relay_kcp = self.disable_relay_kcp.unwrap_or(f.disable_relay_kcp);
         f.disable_relay_quic = self.disable_relay_quic.unwrap_or(f.disable_relay_quic);
@@ -1105,8 +1135,7 @@ impl LoggingConfigLoader for &LoggingOptions {
 #[cfg(target_os = "windows")]
 fn win_service_set_work_dir(service_name: &std::ffi::OsString) -> anyhow::Result<()> {
     use crate::common::constants::WIN_SERVICE_WORK_DIR_REG_KEY;
-    use winreg::enums::*;
-    use winreg::RegKey;
+    use winreg::{RegKey, enums::*};
 
     let hklm = RegKey::predef(HKEY_LOCAL_MACHINE);
     let key = hklm.open_subkey_with_flags(WIN_SERVICE_WORK_DIR_REG_KEY, KEY_READ)?;
@@ -1157,9 +1186,9 @@ fn win_service_event_loop(
                             status_handle.set_service_status(normal_status).unwrap();
                             std::process::exit(0);
                         }
-                        Err(e) => {
+                        Err(error) => {
                             status_handle.set_service_status(error_status).unwrap();
-                            log::error!("{}", e);
+                            log::error!(?error);
                         }
                     }
                 },
@@ -1186,11 +1215,9 @@ fn parse_cli() -> Cli {
 
 #[cfg(target_os = "windows")]
 fn win_service_main(arg: Vec<std::ffi::OsString>) {
-    use std::sync::Arc;
-    use std::time::Duration;
+    use std::{sync::Arc, time::Duration};
     use tokio::sync::Notify;
-    use windows_service::service::*;
-    use windows_service::service_control_handler::*;
+    use windows_service::{service::*, service_control_handler::*};
 
     _ = win_service_set_work_dir(&arg[0]);
 
@@ -1475,8 +1502,8 @@ pub async fn main() -> ExitCode {
 
     // Verify configurations
     if cli.check_config {
-        if let Err(e) = validate_config(&cli).await {
-            log::error!("Config validation failed: {:?}", e);
+        if let Err(error) = validate_config(&cli).await {
+            log::error!(?error, "Config validation failed");
             return ExitCode::FAILURE;
         } else {
             return ExitCode::SUCCESS;
@@ -1486,7 +1513,7 @@ pub async fn main() -> ExitCode {
     let mut ret_code = 0;
 
     if let Err(error) = run_main(cli).await {
-        log::error!(%error);
+        log::error!(?error);
         ret_code = 1;
     }
 

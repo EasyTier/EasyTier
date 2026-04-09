@@ -5,16 +5,16 @@ use std::{
     net::{IpAddr, Ipv6Addr, SocketAddr},
     str::FromStr,
     sync::{
-        atomic::{AtomicBool, Ordering},
         Arc,
+        atomic::{AtomicBool, Ordering},
     },
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use crate::{
     common::{
-        dns::socket_addrs, error::Error, global_ctx::ArcGlobalCtx, stun::StunInfoCollectorTrait,
-        PeerId,
+        PeerId, dns::socket_addrs, error::Error, global_ctx::ArcGlobalCtx,
+        stun::StunInfoCollectorTrait,
     },
     connector::udp_hole_punch::handle_rpc_result,
     peers::{
@@ -31,16 +31,20 @@ use crate::{
         },
         rpc_types::controller::BaseController,
     },
-    tunnel::{udp::UdpTunnelConnector, IpVersion},
+    tunnel::{IpVersion, matches_protocol, udp::UdpTunnelConnector},
     use_global_var,
 };
 
+use super::{
+    create_connector_by_url, should_background_p2p_with_peer, should_try_p2p_with_peer,
+    udp_hole_punch,
+};
+use crate::tunnel::{FromUrl, IpScheme, TunnelScheme, matches_scheme};
 use anyhow::Context;
 use rand::Rng;
+use socket2::Protocol;
 use tokio::{net::UdpSocket, task::JoinSet, time::timeout};
 use url::Host;
-
-use super::{create_connector_by_url, udp_hole_punch};
 
 pub const DIRECT_CONNECTOR_SERVICE_ID: u32 = 1;
 pub const DIRECT_CONNECTOR_BLACKLIST_TIMEOUT_SEC: u64 = 300;
@@ -58,14 +62,28 @@ impl PeerManagerForDirectConnector for PeerManager {
     async fn list_peers(&self) -> Vec<PeerId> {
         let mut ret = vec![];
         let allow_public_server = use_global_var!(DIRECT_CONNECT_TO_PUBLIC_SERVER);
+        let flags = self.get_global_ctx().get_flags();
+        let lazy_p2p = flags.lazy_p2p;
+        let now = Instant::now();
 
         let routes = self.list_routes().await;
-        for r in routes.iter().filter(|r| {
-            r.feature_flag
-                .map(|r| allow_public_server || !r.is_public_server)
-                .unwrap_or(true)
-        }) {
-            ret.push(r.peer_id);
+        for route in routes.iter() {
+            let static_allowed = should_background_p2p_with_peer(
+                route.feature_flag.as_ref(),
+                allow_public_server,
+                lazy_p2p,
+                flags.disable_p2p,
+                flags.need_p2p,
+            );
+            let dynamic_allowed = should_try_p2p_with_peer(
+                route.feature_flag.as_ref(),
+                allow_public_server,
+                flags.disable_p2p,
+                flags.need_p2p,
+            ) && self.has_recent_traffic(route.peer_id, now);
+            if static_allowed || dynamic_allowed {
+                ret.push(route.peer_id);
+            }
         }
 
         ret
@@ -178,9 +196,7 @@ impl DirectConnectorManagerData {
             .await;
 
         let udp_connector = UdpTunnelConnector::new(remote_url.clone());
-        let remote_addr =
-            super::check_scheme_and_get_socket_addr::<SocketAddr>(remote_url, "udp", IpVersion::V6)
-                .await?;
+        let remote_addr = SocketAddr::from_url(remote_url.clone(), IpVersion::V6).await?;
         let ret = udp_connector
             .try_connect_with_socket(local_socket, remote_addr)
             .await?;
@@ -194,18 +210,19 @@ impl DirectConnectorManagerData {
     async fn do_try_connect_to_ip(&self, dst_peer_id: PeerId, addr: String) -> Result<(), Error> {
         let connector = create_connector_by_url(&addr, &self.global_ctx, IpVersion::Both).await?;
         let remote_url = connector.remote_url();
-        let (peer_id, conn_id) =
-            if remote_url.scheme() == "udp" && matches!(remote_url.host(), Some(Host::Ipv6(_))) {
-                self.connect_to_public_ipv6(dst_peer_id, &remote_url)
-                    .await?
-            } else {
-                timeout(
-                    std::time::Duration::from_secs(3),
-                    self.peer_manager
-                        .try_direct_connect_with_peer_id_hint(connector, Some(dst_peer_id)),
-                )
-                .await??
-            };
+        let (peer_id, conn_id) = if matches_scheme!(remote_url, TunnelScheme::Ip(IpScheme::Udp))
+            && matches!(remote_url.host(), Some(Host::Ipv6(_)))
+        {
+            self.connect_to_public_ipv6(dst_peer_id, &remote_url)
+                .await?
+        } else {
+            timeout(
+                std::time::Duration::from_secs(3),
+                self.peer_manager
+                    .try_direct_connect_with_peer_id_hint(connector, Some(dst_peer_id)),
+            )
+            .await??
+        };
 
         if peer_id != dst_peer_id && !TESTING.load(Ordering::Relaxed) {
             tracing::info!(
@@ -295,7 +312,7 @@ impl DirectConnectorManagerData {
         let listener_host = addrs.pop();
         tracing::info!(?listener_host, ?listener, "try direct connect to peer");
 
-        let is_udp = matches!(listener.scheme(), "udp" | "wg");
+        let is_udp = matches_protocol!(listener, Protocol::UDP);
         // Snapshot running listeners once; used for cheap port pre-checks before the
         // expensive should_deny_proxy call (which binds a socket per IP) in the
         // unspecified-address expansion loops below.
@@ -303,7 +320,7 @@ impl DirectConnectorManagerData {
         let port_has_local_listener = |port: u16| -> bool {
             local_listeners
                 .iter()
-                .any(|l| l.port() == Some(port) && (matches!(l.scheme(), "udp" | "wg") == is_udp))
+                .any(|l| l.port() == Some(port) && matches_protocol!(l, Protocol::UDP) == is_udp)
         };
 
         match listener_host {
@@ -625,7 +642,11 @@ impl DirectConnectorManager {
             global_ctx.clone(),
             peer_manager.clone(),
         ));
-        let client = PeerTaskManager::new(DirectConnectorLauncher(data.clone()), peer_manager);
+        let client = PeerTaskManager::new_with_external_signal(
+            DirectConnectorLauncher(data.clone()),
+            peer_manager.clone(),
+            Some(peer_manager.p2p_demand_notify()),
+        );
         Self {
             global_ctx,
             data,
@@ -635,10 +656,6 @@ impl DirectConnectorManager {
     }
 
     pub fn run(&mut self) {
-        if self.global_ctx.get_flags().disable_p2p {
-            return;
-        }
-
         self.run_as_server();
         self.run_as_client();
     }
@@ -696,7 +713,7 @@ mod tests {
 
         let mut f = p_a.get_global_ctx().get_flags();
         f.bind_device = false;
-        p_a.get_global_ctx().config.set_flags(f);
+        p_a.get_global_ctx().set_flags(f);
 
         p_c.get_global_ctx()
             .config
@@ -752,12 +769,9 @@ mod tests {
 
         let port = if proto == "wg" { 11040 } else { 11041 };
         if !ipv6 {
-            p_c.get_global_ctx().config.set_listeners(vec![format!(
-                "{}://0.0.0.0:{}",
-                proto, port
-            )
-            .parse()
-            .unwrap()]);
+            p_c.get_global_ctx().config.set_listeners(vec![
+                format!("{}://0.0.0.0:{}", proto, port).parse().unwrap(),
+            ]);
         } else {
             p_c.get_global_ctx()
                 .config
@@ -765,7 +779,7 @@ mod tests {
         }
         let mut f = p_c.get_global_ctx().config.get_flags();
         f.enable_ipv6 = ipv6;
-        p_c.get_global_ctx().config.set_flags(f);
+        p_c.get_global_ctx().set_flags(f);
         let mut lis_c = ListenerManager::new(p_c.get_global_ctx(), p_c.clone());
         lis_c.prepare_listeners().await.unwrap();
 
@@ -797,11 +811,12 @@ mod tests {
             .await
             .unwrap();
 
-        assert!(data
-            .dst_listener_blacklist
-            .contains(&DstListenerUrlBlackListItem(
-                1,
-                "tcp://127.0.0.1:10222".parse().unwrap()
-            )));
+        assert!(
+            data.dst_listener_blacklist
+                .contains(&DstListenerUrlBlackListItem(
+                    1,
+                    "tcp://127.0.0.1:10222".parse().unwrap()
+                ))
+        );
     }
 }

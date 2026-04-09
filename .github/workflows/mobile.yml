@@ -5,7 +5,12 @@ on:
     branches: ["develop", "main", "releases/**"]
   pull_request:
     branches: ["develop", "main"]
-      
+    types: [opened, synchronize, reopened, ready_for_review]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 env:
   CARGO_TERM_COLOR: always
 
@@ -18,6 +23,7 @@ jobs:
   pre_job:
     # continue-on-error: true # Uncomment once integration is finished
     runs-on: ubuntu-latest
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     # Map a step output to a job output
     outputs:
       should_skip: ${{ steps.skip_check.outputs.should_skip == 'true' && !startsWith(github.ref_name, 'releases/') }}
@@ -32,7 +38,7 @@ jobs:
           paths: '["Cargo.toml", "Cargo.lock", "easytier/**", "easytier-gui/**", "tauri-plugin-vpnservice/**", ".github/workflows/mobile.yml", ".github/workflows/install_rust.sh"]'
   build-mobile:
     strategy:
-      fail-fast: false
+      fail-fast: true
       matrix:
         include:
           - TARGET: android
@@ -47,7 +53,7 @@ jobs:
     needs: pre_job
     if: needs.pre_job.outputs.should_skip != 'true'    
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v5
 
       - name: Set current ref as env variable
         run: |
@@ -70,33 +76,8 @@ jobs:
           echo "$ANDROID_HOME/ndk/26.0.10792818/toolchains/llvm/prebuilt/linux-x86_64/bin" >> $GITHUB_PATH
           echo "NDK_HOME=$ANDROID_HOME/ndk/26.0.10792818/" > $GITHUB_ENV
 
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-
-      - name: Install pnpm
-        uses: pnpm/action-setup@v4
-        with:
-          version: 10
-          run_install: false
-
-      - name: Get pnpm store directory
-        shell: bash
-        run: |
-          echo "STORE_PATH=$(pnpm store path --silent)" >> $GITHUB_ENV
-
-      - name: Setup pnpm cache
-        uses: actions/cache@v4
-        with:
-          path: ${{ env.STORE_PATH }}
-          key: ${{ runner.os }}-pnpm-store-${{ hashFiles('**/pnpm-lock.yaml') }}
-          restore-keys: |
-            ${{ runner.os }}-pnpm-store-
-
-      - name: Install frontend dependencies
-        run: |
-          pnpm -r install
-          pnpm -r build
+      - name: Setup Frontend Environment
+        uses: ./.github/actions/prepare-pnpm
 
       - uses: Swatinem/rust-cache@v2
         with:
@@ -138,19 +119,17 @@ jobs:
           rm -rf ./artifacts/objects/
 
       - name: Archive artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: easytier-gui-${{ matrix.ARTIFACT_NAME }}
           path: |
             ./artifacts/*
 
   mobile-result:
-    if: needs.pre_job.outputs.should_skip != 'true' && always()
     runs-on: ubuntu-latest
-    needs:
-      - pre_job
-      - build-mobile
+    needs: [ pre_job, build-mobile ]
+    if: needs.pre_job.result == 'success' && needs.pre_job.outputs.should_skip != 'true' && !cancelled()
     steps:
       - name: Mark result as failed
-        if: needs.build-mobile.result != 'success'
+        if: contains(needs.*.result, 'failure')
         run: exit 1

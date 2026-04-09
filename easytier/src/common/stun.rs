@@ -11,8 +11,8 @@ use crossbeam::atomic::AtomicCell;
 use rand::seq::IteratorRandom;
 use socket2::{SockAddr, SockRef};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::{lookup_host, UdpSocket};
-use tokio::sync::{broadcast, Mutex};
+use tokio::net::{UdpSocket, lookup_host};
+use tokio::sync::{Mutex, broadcast};
 use tokio::task::JoinSet;
 use tracing::{Instrument, Level};
 
@@ -1340,8 +1340,9 @@ impl StunInfoCollectorTrait for MockStunInfoCollector {
 mod tests {
     use crate::{
         common::scoped_task::ScopedTask,
-        tunnel::{udp::UdpTunnelListener, TunnelListener},
+        tunnel::{TunnelListener, udp::UdpTunnelListener},
     };
+    use tokio::time::{sleep, timeout};
 
     use super::*;
 
@@ -1399,18 +1400,20 @@ mod tests {
     async fn test_txt_public_stun_server() {
         let stun_servers = vec!["txt:stun.easytier.cn".to_string()];
         let detector = UdpNatTypeDetector::new(stun_servers, 1);
-        for _ in 0..5 {
-            let ret = detector.detect_nat_type(0).await;
-            println!("{:#?}, {:?}", ret, ret.as_ref().map(|x| x.nat_type()));
-            if let Ok(resp) = ret {
-                assert!(!resp.stun_resps.is_empty());
-                return;
+        timeout(Duration::from_secs(30), async {
+            loop {
+                let ret = detector.detect_nat_type(0).await;
+                println!("{:#?}, {:?}", ret, ret.as_ref().map(|x| x.nat_type()));
+                if let Ok(resp) = ret
+                    && !resp.stun_resps.is_empty()
+                {
+                    return;
+                }
+                sleep(Duration::from_secs(1)).await;
             }
-        }
-        debug_assert!(
-            false,
-            "should not reach here, stun server should be available"
-        );
+        })
+        .await
+        .expect("stun server should be available");
     }
 
     #[tokio::test]

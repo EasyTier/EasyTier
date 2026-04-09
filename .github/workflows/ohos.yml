@@ -8,7 +8,12 @@ on:
       - '!*-pre'
   pull_request:
     branches: ["develop", "main"]
+    types: [opened, synchronize, reopened, ready_for_review]
   workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 env:
   CARGO_TERM_COLOR: always
@@ -20,9 +25,10 @@ defaults:
 
 jobs:
   cargo_fmt_check:
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: fmt check
         working-directory: ./easytier-contrib/easytier-ohrs
         run: |
@@ -32,6 +38,7 @@ jobs:
   pre_job:
     # continue-on-error: true # Uncomment once integration is finished
     runs-on: ubuntu-latest
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     # Map a step output to a job output
     outputs:
       # do not skip push on branch starts with releases/
@@ -52,7 +59,7 @@ jobs:
       OHPM_PUBLISH_CODE: ${{ secrets.OHPM_PUBLISH_CODE }}
     if: needs.pre_job.outputs.should_skip != 'true'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Install dependencies
         run: |
           sudo apt-get update
@@ -174,11 +181,14 @@ jobs:
           jq --arg v "$TAG_VERSION" '.name = "easytier-release" | .version = $v' oh-package.json5 > oh-package.tmp.json5 && mv oh-package.tmp.json5 oh-package.json5
           cd ..
           ohrs build --release --arch aarch
+          cd dist/arm64-v8a
+          mv libeasytier_ohrs.so libeasytier_release.so
+          cd ../..
           ohrs artifact
           mv package.har easytier-release.har
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: easytier-ohos
           path: |

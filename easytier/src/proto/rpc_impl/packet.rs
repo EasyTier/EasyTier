@@ -1,7 +1,7 @@
 use prost::Message as _;
 
 use crate::{
-    common::{compressor::DefaultCompressor, PeerId},
+    common::{PeerId, compressor::DefaultCompressor},
     proto::{
         common::{CompressionAlgoPb, RpcCompressionInfo, RpcDescriptor, RpcPacket},
         rpc_types::error::Error,

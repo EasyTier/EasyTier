@@ -1,4 +1,4 @@
-use crate::tunnel::{mpsc::MpscTunnel, Tunnel};
+use crate::tunnel::{Tunnel, mpsc::MpscTunnel};
 
 pub type RpcController = super::rpc_types::controller::BaseController;
 

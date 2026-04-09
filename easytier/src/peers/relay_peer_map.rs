@@ -3,16 +3,17 @@ use std::{sync::Arc, time::Instant};
 use dashmap::DashMap;
 use prost::Message;
 use snow::params::NoiseParams;
-use tokio::sync::{oneshot, Mutex, OwnedMutexGuard};
-use tokio::time::{timeout, Duration};
+use tokio::sync::{Mutex, OwnedMutexGuard, oneshot};
+use tokio::time::{Duration, timeout};
 
 use crate::peers::foreign_network_client::ForeignNetworkClient;
 use crate::{
     common::error::Error,
-    common::{global_ctx::ArcGlobalCtx, PeerId},
+    common::{PeerId, global_ctx::ArcGlobalCtx},
     peers::peer_map::PeerMap,
     peers::peer_session::{PeerSession, PeerSessionAction, PeerSessionStore, SessionKey},
     peers::route_trait::NextHopPolicy,
+    peers::traffic_metrics::AggregateTrafficMetrics,
     proto::peer_rpc::{PeerConnSessionActionPb, RelayNoiseMsg1Pb, RelayNoiseMsg2Pb},
     tunnel::packet_def::{PacketType, ZCPacket},
 };
@@ -53,6 +54,7 @@ pub struct RelayPeerMap {
     pub(crate) pending_packets: DashMap<PeerId, Vec<(ZCPacket, NextHopPolicy)>>,
 
     is_secure_mode_enabled: bool,
+    control_metrics: AggregateTrafficMetrics,
 }
 
 impl RelayPeerMap {
@@ -69,6 +71,10 @@ impl RelayPeerMap {
             .map(|cfg| cfg.enabled)
             .unwrap_or(false);
         Arc::new(Self {
+            control_metrics: AggregateTrafficMetrics::control(
+                global_ctx.stats_manager().clone(),
+                global_ctx.get_network_name(),
+            ),
             peer_map,
             foreign_network_client,
             global_ctx,
@@ -131,7 +137,10 @@ impl RelayPeerMap {
     ) -> Result<(), Error> {
         let mut pkt = ZCPacket::new_with_payload(&payload);
         pkt.fill_peer_manager_hdr(self.my_peer_id, dst_peer_id, packet_type as u8);
-        self.send_via_next_hop(pkt, dst_peer_id, policy).await
+        let pkt_len = pkt.buf_len() as u64;
+        self.send_via_next_hop(pkt, dst_peer_id, policy).await?;
+        self.control_metrics.record_tx(pkt_len);
+        Ok(())
     }
 
     async fn send_via_next_hop(
@@ -265,13 +274,13 @@ impl RelayPeerMap {
             return Ok(());
         }
 
-        if let Some(next_retry_at) = self.states.get(&dst_peer_id).and_then(|v| v.next_retry_at) {
-            if Instant::now() < next_retry_at {
-                self.pending_packets.remove(&dst_peer_id);
-                return Err(Error::RouteError(Some(
-                    "relay handshake backoff".to_string(),
-                )));
-            }
+        if let Some(next_retry_at) = self.states.get(&dst_peer_id).and_then(|v| v.next_retry_at)
+            && Instant::now() < next_retry_at
+        {
+            self.pending_packets.remove(&dst_peer_id);
+            return Err(Error::RouteError(Some(
+                "relay handshake backoff".to_string(),
+            )));
         }
 
         let mut last_err = None;
@@ -467,6 +476,7 @@ impl RelayPeerMap {
             .peer_manager_header()
             .ok_or_else(|| Error::RouteError(Some("packet without header".to_string())))?;
         let src_peer_id = hdr.from_peer_id.get();
+        self.control_metrics.record_rx(packet.buf_len() as u64);
         match hdr.packet_type {
             x if x == PacketType::RelayHandshake as u8 => {
                 tracing::debug!("handle_relay_msg1 from {:?}", src_peer_id);

@@ -85,11 +85,11 @@ impl NetworkInstanceManager {
                 let _t = instance_event_receiver
                     .map(|event| ScopedTask::from(handle_event(instance_id, event)));
                 instance_stop_notifier.notified().await;
-                if let Some(instance) = instance_map.get(&instance_id) {
-                    if let Some(error) = instance.get_latest_error_msg() {
-                        log::error!(%error, "instance {} stopped", instance_id);
-                        instance_error_messages.insert(instance_id, error);
-                    }
+                if let Some(instance) = instance_map.get(&instance_id)
+                    && let Some(error) = instance.get_latest_error_msg()
+                {
+                    log::error!(%error, "instance {} stopped", instance_id);
+                    instance_error_messages.insert(instance_id, error);
                 }
                 stop_check_notifier.notify_one();
                 instance_stop_tasks.remove(&instance_id);
@@ -227,11 +227,17 @@ impl NetworkInstanceManager {
     }
 
     pub fn set_tun_fd(&self, instance_id: &uuid::Uuid, fd: i32) -> Result<(), anyhow::Error> {
-        let mut instance = self
+        let sender = self
             .instance_map
-            .get_mut(instance_id)
-            .ok_or_else(|| anyhow::anyhow!("instance not found"))?;
-        instance.set_tun_fd(fd);
+            .get(instance_id)
+            .ok_or_else(|| anyhow::anyhow!("instance not found"))?
+            .get_tun_fd_sender()
+            .ok_or_else(|| anyhow::anyhow!("tun fd sender not found"))?;
+
+        sender
+            .try_send(Some(fd))
+            .map_err(|e| anyhow::anyhow!("failed to send tun fd: {}", e))?;
+
         Ok(())
     }
 
@@ -537,45 +543,57 @@ mod tests {
 
         let port = crate::utils::find_free_tcp_port(10012..65534).expect("no free tcp port found");
 
-        assert!(manager
-            .run_network_instance(
-                TomlConfigLoader::new_from_str(cfg_str).unwrap(),
-                true,
-                ConfigFileControl::STATIC_CONFIG
-            )
-            .is_err());
-        assert!(manager
-            .run_network_instance(
-                TomlConfigLoader::new_from_str(cfg_str).unwrap(),
-                true,
-                ConfigFileControl::STATIC_CONFIG
-            )
-            .is_err());
-        assert!(manager
-            .run_network_instance(
-                TomlConfigLoader::new_from_str(cfg_str)
-                    .inspect(|c| {
-                        c.set_listeners(vec![format!("tcp://0.0.0.0:{}", port).parse().unwrap()]);
-                    })
-                    .unwrap(),
-                false,
-                ConfigFileControl::STATIC_CONFIG
-            )
-            .is_ok());
-        assert!(manager
-            .run_network_instance(
-                TomlConfigLoader::new_from_str(cfg_str).unwrap(),
-                true,
-                ConfigFileControl::STATIC_CONFIG
-            )
-            .is_err());
-        assert!(manager
-            .run_network_instance(
-                TomlConfigLoader::new_from_str(cfg_str).unwrap(),
-                false,
-                ConfigFileControl::STATIC_CONFIG
-            )
-            .is_ok());
+        assert!(
+            manager
+                .run_network_instance(
+                    TomlConfigLoader::new_from_str(cfg_str).unwrap(),
+                    true,
+                    ConfigFileControl::STATIC_CONFIG
+                )
+                .is_err()
+        );
+        assert!(
+            manager
+                .run_network_instance(
+                    TomlConfigLoader::new_from_str(cfg_str).unwrap(),
+                    true,
+                    ConfigFileControl::STATIC_CONFIG
+                )
+                .is_err()
+        );
+        assert!(
+            manager
+                .run_network_instance(
+                    TomlConfigLoader::new_from_str(cfg_str)
+                        .inspect(|c| {
+                            c.set_listeners(vec![
+                                format!("tcp://0.0.0.0:{}", port).parse().unwrap(),
+                            ]);
+                        })
+                        .unwrap(),
+                    false,
+                    ConfigFileControl::STATIC_CONFIG
+                )
+                .is_ok()
+        );
+        assert!(
+            manager
+                .run_network_instance(
+                    TomlConfigLoader::new_from_str(cfg_str).unwrap(),
+                    true,
+                    ConfigFileControl::STATIC_CONFIG
+                )
+                .is_err()
+        );
+        assert!(
+            manager
+                .run_network_instance(
+                    TomlConfigLoader::new_from_str(cfg_str).unwrap(),
+                    false,
+                    ConfigFileControl::STATIC_CONFIG
+                )
+                .is_ok()
+        );
 
         std::thread::sleep(std::time::Duration::from_secs(1)); // wait instance actually started
 

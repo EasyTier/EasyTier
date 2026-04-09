@@ -45,7 +45,7 @@ pub async fn prepare_env_with_tld_dns_zone(
         if let Some(zone) = tld_dns_zone {
             flags.tld_dns_zone = zone.to_string();
         }
-        ctx.config.set_flags(flags);
+        ctx.set_flags(flags);
     }
 
     let (s, r) = create_packet_recv_chan();
@@ -232,6 +232,7 @@ async fn test_magic_dns_update_replaces_records_for_same_client() {
         remote_addr: Some(crate::proto::common::Url {
             url: "tcp://127.0.0.1:54321".to_string(),
         }),
+        resolved_remote_addr: None,
     }));
 
     dns_server_inst
@@ -299,6 +300,7 @@ async fn test_magic_dns_update_replaces_records_for_same_client() {
         remote_addr: Some(crate::proto::common::Url {
             url: "tcp://127.0.0.1:54321".to_string(),
         }),
+        resolved_remote_addr: None,
     }));
 
     dns_server_inst

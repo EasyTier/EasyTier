@@ -348,15 +348,15 @@ impl Drop for ConnWrapper {
     }
 }
 
-pub struct QUICTunnelListener {
+pub struct QuicTunnelListener {
     addr: url::Url,
     global_ctx: ArcGlobalCtx,
     endpoint: Option<Endpoint>,
 }
 
-impl QUICTunnelListener {
+impl QuicTunnelListener {
     pub fn new(addr: url::Url, global_ctx: ArcGlobalCtx) -> Self {
-        QUICTunnelListener {
+        QuicTunnelListener {
             addr,
             global_ctx,
             endpoint: None,
@@ -384,6 +384,9 @@ impl QUICTunnelListener {
             remote_addr: Some(
                 super::build_url_from_socket_addr(&remote_addr.to_string(), "quic").into(),
             ),
+            resolved_remote_addr: Some(
+                super::build_url_from_socket_addr(&remote_addr.to_string(), "quic").into(),
+            ),
         };
 
         Ok(Box::new(TunnelWrapper::new(
@@ -395,11 +398,9 @@ impl QUICTunnelListener {
 }
 
 #[async_trait::async_trait]
-impl TunnelListener for QUICTunnelListener {
+impl TunnelListener for QuicTunnelListener {
     async fn listen(&mut self) -> Result<(), TunnelError> {
-        let addr =
-            check_scheme_and_get_socket_addr::<SocketAddr>(&self.addr, "quic", IpVersion::Both)
-                .await?;
+        let addr = SocketAddr::from_url(self.addr.clone(), IpVersion::Both).await?;
         let endpoint = QuicEndpointManager::server(&self.global_ctx, addr)?;
         self.addr
             .set_port(Some(endpoint.local_addr()?.port()))
@@ -426,15 +427,15 @@ impl TunnelListener for QUICTunnelListener {
     }
 }
 
-pub struct QUICTunnelConnector {
+pub struct QuicTunnelConnector {
     addr: url::Url,
     global_ctx: ArcGlobalCtx,
     ip_version: IpVersion,
 }
 
-impl QUICTunnelConnector {
+impl QuicTunnelConnector {
     pub fn new(addr: url::Url, global_ctx: ArcGlobalCtx) -> Self {
-        QUICTunnelConnector {
+        QuicTunnelConnector {
             addr,
             global_ctx,
             ip_version: IpVersion::Both,
@@ -443,11 +444,9 @@ impl QUICTunnelConnector {
 }
 
 #[async_trait::async_trait]
-impl TunnelConnector for QUICTunnelConnector {
+impl TunnelConnector for QuicTunnelConnector {
     async fn connect(&mut self) -> Result<Box<dyn Tunnel>, TunnelError> {
-        let addr =
-            check_scheme_and_get_socket_addr::<SocketAddr>(&self.addr, "quic", self.ip_version)
-                .await?;
+        let addr = SocketAddr::from_url(self.addr.clone(), self.ip_version).await?;
         let (endpoint, connection) = QuicEndpointManager::connect(&self.global_ctx, addr).await?;
 
         let local_addr = endpoint.local_addr()?;
@@ -463,6 +462,10 @@ impl TunnelConnector for QUICTunnelConnector {
                 super::build_url_from_socket_addr(&local_addr.to_string(), "quic").into(),
             ),
             remote_addr: Some(self.addr.clone().into()),
+            resolved_remote_addr: Some(
+                super::build_url_from_socket_addr(&connection.remote_address().to_string(), "quic")
+                    .into(),
+            ),
         };
 
         let arc_conn = Arc::new(ConnWrapper { conn: connection });
@@ -486,6 +489,7 @@ impl TunnelConnector for QUICTunnelConnector {
 mod tests {
     use crate::common::global_ctx::tests::get_mock_global_ctx_with_network;
     use crate::tunnel::{
+        IpVersion, TunnelConnector,
         common::tests::{_tunnel_bench, _tunnel_pingpong},
         IpVersion,
     };
@@ -508,9 +512,9 @@ mod tests {
         RUNTIME.block_on(quic_pingpong_impl())
     }
     async fn quic_pingpong_impl() {
-        let listener = QUICTunnelListener::new("quic://[::]:21011".parse().unwrap(), global_ctx());
+        let listener = QuicTunnelListener::new("quic://[::]:21011".parse().unwrap(), global_ctx());
         let connector =
-            QUICTunnelConnector::new("quic://127.0.0.1:21011".parse().unwrap(), global_ctx());
+            QuicTunnelConnector::new("quic://127.0.0.1:21011".parse().unwrap(), global_ctx());
         _tunnel_pingpong(listener, connector).await
     }
 
@@ -519,9 +523,9 @@ mod tests {
         RUNTIME.block_on(quic_bench_impl())
     }
     async fn quic_bench_impl() {
-        let listener = QUICTunnelListener::new("quic://[::]:21012".parse().unwrap(), global_ctx());
+        let listener = QuicTunnelListener::new("quic://[::]:21012".parse().unwrap(), global_ctx());
         let connector =
-            QUICTunnelConnector::new("quic://127.0.0.1:21012".parse().unwrap(), global_ctx());
+            QuicTunnelConnector::new("quic://127.0.0.1:21012".parse().unwrap(), global_ctx());
         _tunnel_bench(listener, connector).await
     }
 
@@ -530,9 +534,9 @@ mod tests {
         RUNTIME.block_on(ipv6_pingpong_impl())
     }
     async fn ipv6_pingpong_impl() {
-        let listener = QUICTunnelListener::new("quic://[::1]:31015".parse().unwrap(), global_ctx());
+        let listener = QuicTunnelListener::new("quic://[::1]:31015".parse().unwrap(), global_ctx());
         let connector =
-            QUICTunnelConnector::new("quic://[::1]:31015".parse().unwrap(), global_ctx());
+            QuicTunnelConnector::new("quic://[::1]:31015".parse().unwrap(), global_ctx());
         _tunnel_pingpong(listener, connector).await
     }
 
@@ -541,8 +545,8 @@ mod tests {
         RUNTIME.block_on(ipv6_domain_pingpong_impl())
     }
     async fn ipv6_domain_pingpong_impl() {
-        let listener = QUICTunnelListener::new("quic://[::1]:31016".parse().unwrap(), global_ctx());
-        let mut connector = QUICTunnelConnector::new(
+        let listener = QuicTunnelListener::new("quic://[::1]:31016".parse().unwrap(), global_ctx());
+        let mut connector = QuicTunnelConnector::new(
             "quic://test.easytier.top:31016".parse().unwrap(),
             global_ctx(),
         );
@@ -550,8 +554,8 @@ mod tests {
         _tunnel_pingpong(listener, connector).await;
 
         let listener =
-            QUICTunnelListener::new("quic://127.0.0.1:31016".parse().unwrap(), global_ctx());
-        let mut connector = QUICTunnelConnector::new(
+            QuicTunnelListener::new("quic://127.0.0.1:31016".parse().unwrap(), global_ctx());
+        let mut connector = QuicTunnelConnector::new(
             "quic://test.easytier.top:31016".parse().unwrap(),
             global_ctx(),
         );
@@ -566,13 +570,13 @@ mod tests {
     async fn alloc_port_impl() {
         // v4
         let mut listener =
-            QUICTunnelListener::new("quic://0.0.0.0:0".parse().unwrap(), global_ctx());
+            QuicTunnelListener::new("quic://0.0.0.0:0".parse().unwrap(), global_ctx());
         listener.listen().await.unwrap();
         let port = listener.local_url().port().unwrap();
         assert!(port > 0);
 
         // v6
-        let mut listener = QUICTunnelListener::new("quic://[::]:0".parse().unwrap(), global_ctx());
+        let mut listener = QuicTunnelListener::new("quic://[::]:0".parse().unwrap(), global_ctx());
         listener.listen().await.unwrap();
         let port = listener.local_url().port().unwrap();
         assert!(port > 0);
@@ -584,7 +588,7 @@ mod tests {
     }
     async fn invalid_peer_addr_impl() {
         let mut connector =
-            QUICTunnelConnector::new("quic://127.0.0.1:0".parse().unwrap(), global_ctx());
+            QuicTunnelConnector::new("quic://127.0.0.1:0".parse().unwrap(), global_ctx());
         let err = connector.connect().await.unwrap_err();
         assert!(
             err.to_string().contains("invalid remote address"),

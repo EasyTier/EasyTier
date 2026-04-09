@@ -1,16 +1,14 @@
 use std::net::SocketAddr;
 
+use super::{FromUrl, TunnelInfo};
+use crate::tunnel::common::setup_socket2;
 use async_trait::async_trait;
 use futures::stream::FuturesUnordered;
 use tokio::net::{TcpListener, TcpSocket, TcpStream};
 
-use super::TunnelInfo;
-use crate::tunnel::common::setup_socket2;
-
 use super::{
-    check_scheme_and_get_socket_addr,
-    common::{wait_for_connect_futures, FramedReader, FramedWriter, TunnelWrapper},
     IpVersion, Tunnel, TunnelError, TunnelListener,
+    common::{FramedReader, FramedWriter, TunnelWrapper, wait_for_connect_futures},
 };
 
 const TCP_MTU_BYTES: usize = 2000;
@@ -43,6 +41,9 @@ impl TcpTunnelListener {
             remote_addr: Some(
                 super::build_url_from_socket_addr(&stream.peer_addr()?.to_string(), "tcp").into(),
             ),
+            resolved_remote_addr: Some(
+                super::build_url_from_socket_addr(&stream.peer_addr()?.to_string(), "tcp").into(),
+            ),
         };
 
         let (r, w) = stream.into_split();
@@ -58,9 +59,7 @@ impl TcpTunnelListener {
 impl TunnelListener for TcpTunnelListener {
     async fn listen(&mut self) -> Result<(), TunnelError> {
         self.listener = None;
-        let addr =
-            check_scheme_and_get_socket_addr::<SocketAddr>(&self.addr, "tcp", IpVersion::Both)
-                .await?;
+        let addr = SocketAddr::from_url(self.addr.clone(), IpVersion::Both).await?;
 
         let socket2_socket = socket2::Socket::new(
             socket2::Domain::for_address(addr),
@@ -121,6 +120,9 @@ fn get_tunnel_with_tcp_stream(
             super::build_url_from_socket_addr(&stream.local_addr()?.to_string(), "tcp").into(),
         ),
         remote_addr: Some(remote_url.into()),
+        resolved_remote_addr: Some(
+            super::build_url_from_socket_addr(&stream.peer_addr()?.to_string(), "tcp").into(),
+        ),
     };
 
     let (r, w) = stream.into_split();
@@ -189,10 +191,8 @@ impl TcpTunnelConnector {
 
 #[async_trait]
 impl super::TunnelConnector for TcpTunnelConnector {
-    async fn connect(&mut self) -> Result<Box<dyn Tunnel>, super::TunnelError> {
-        let addr =
-            check_scheme_and_get_socket_addr::<SocketAddr>(&self.addr, "tcp", self.ip_version)
-                .await?;
+    async fn connect(&mut self) -> Result<Box<dyn Tunnel>, TunnelError> {
+        let addr = SocketAddr::from_url(self.addr.clone(), self.ip_version).await?;
         if self.bind_addrs.is_empty() {
             self.connect_with_default_bind(addr).await
         } else {
@@ -216,8 +216,8 @@ impl super::TunnelConnector for TcpTunnelConnector {
 #[cfg(test)]
 mod tests {
     use crate::tunnel::{
-        common::tests::{_tunnel_bench, _tunnel_pingpong},
         TunnelConnector,
+        common::tests::{_tunnel_bench, _tunnel_pingpong},
     };
 
     use super::*;
@@ -281,6 +281,34 @@ mod tests {
             TcpTunnelConnector::new("tcp://test.easytier.top:31015".parse().unwrap());
         connector.set_ip_version(IpVersion::V4);
         _tunnel_pingpong(listener, connector).await;
+    }
+
+    #[tokio::test]
+    async fn connector_keeps_source_addr_and_reports_resolved_addr() {
+        let mut listener = TcpTunnelListener::new("tcp://127.0.0.1:0".parse().unwrap());
+        listener.listen().await.unwrap();
+
+        let port = listener.local_url().port().unwrap();
+        let source_url: url::Url = format!("tcp://localhost:{port}").parse().unwrap();
+        let mut connector = TcpTunnelConnector::new(source_url.clone());
+        connector.set_ip_version(IpVersion::V4);
+
+        let accept_task = tokio::spawn(async move { listener.accept().await.unwrap() });
+        let tunnel = connector.connect().await.unwrap();
+        let accepted_tunnel = accept_task.await.unwrap();
+
+        let info = tunnel.info().unwrap();
+        assert_eq!(info.remote_addr.unwrap().url, source_url.to_string());
+
+        let resolved_remote_addr: url::Url = info.resolved_remote_addr.unwrap().into();
+        assert_eq!(resolved_remote_addr.host_str(), Some("127.0.0.1"));
+        assert_eq!(resolved_remote_addr.port(), Some(port));
+
+        let accepted_info = accepted_tunnel.info().unwrap();
+        assert_eq!(
+            accepted_info.remote_addr,
+            accepted_info.resolved_remote_addr,
+        );
     }
 
     #[tokio::test]

@@ -2,7 +2,7 @@ use std::{
     fmt::{Debug, Formatter},
     net::SocketAddr,
     pin::Pin,
-    sync::{atomic::AtomicBool, Arc},
+    sync::{Arc, atomic::AtomicBool},
     time::Duration,
 };
 
@@ -10,33 +10,31 @@ use anyhow::Context;
 use async_recursion::async_recursion;
 use async_trait::async_trait;
 use boringtun::{
-    noise::{errors::WireGuardError, Tunn, TunnResult},
+    noise::{Tunn, TunnResult, errors::WireGuardError},
     x25519::{PublicKey, StaticSecret},
 };
 use bytes::BytesMut;
 use crossbeam::atomic::AtomicCell;
 use dashmap::DashMap;
-use futures::{stream::FuturesUnordered, SinkExt, StreamExt};
+use futures::{SinkExt, StreamExt, stream::FuturesUnordered};
 use rand::RngCore;
 use tokio::{net::UdpSocket, sync::Mutex, task::JoinSet};
 
-use super::TunnelInfo;
+use super::{
+    FromUrl, IpVersion, Tunnel, TunnelError, TunnelInfo, TunnelListener, TunnelUrl, ZCPacketSink,
+    ZCPacketStream,
+    common::{setup_socket2, setup_socket2_ext, wait_for_connect_futures},
+    generate_digest_from_str,
+    packet_def::{PEER_MANAGER_HEADER_SIZE, ZCPacketType},
+    ring::create_ring_tunnel_pair,
+};
 use crate::{
     common::shrink_dashmap,
     tunnel::{
         build_url_from_socket_addr,
         common::TunnelWrapper,
-        packet_def::{ZCPacket, WG_TUNNEL_HEADER_SIZE},
+        packet_def::{WG_TUNNEL_HEADER_SIZE, ZCPacket},
     },
-};
-
-use super::{
-    check_scheme_and_get_socket_addr,
-    common::{setup_socket2, setup_socket2_ext, wait_for_connect_futures},
-    generate_digest_from_str,
-    packet_def::{ZCPacketType, PEER_MANAGER_HEADER_SIZE},
-    ring::create_ring_tunnel_pair,
-    IpVersion, Tunnel, TunnelError, TunnelListener, TunnelUrl, ZCPacketSink, ZCPacketStream,
 };
 
 const MAX_PACKET: usize = 2048;
@@ -202,7 +200,10 @@ impl WgPeerData {
                 match self.udp.send_to(packet, self.endpoint).await {
                     Ok(_) => {}
                     Err(e) => {
-                        tracing::error!("Failed to send decapsulation-instructed packet to WireGuard endpoint: {:?}", e);
+                        tracing::error!(
+                            "Failed to send decapsulation-instructed packet to WireGuard endpoint: {:?}",
+                            e
+                        );
                         return;
                     }
                 };
@@ -214,7 +215,10 @@ impl WgPeerData {
                             match self.udp.send_to(packet, self.endpoint).await {
                                 Ok(_) => {}
                                 Err(e) => {
-                                    tracing::error!("Failed to send decapsulation-instructed packet to WireGuard endpoint: {:?}", e);
+                                    tracing::error!(
+                                        "Failed to send decapsulation-instructed packet to WireGuard endpoint: {:?}",
+                                        e
+                                    );
                                     break;
                                 }
                             };
@@ -327,11 +331,7 @@ impl WgPeerData {
     }
 
     fn remove_ip_header<'a>(&self, packet: &'a [u8], is_v4: bool) -> &'a [u8] {
-        if is_v4 {
-            &packet[20..]
-        } else {
-            &packet[40..]
-        }
+        if is_v4 { &packet[20..] } else { &packet[40..] }
     }
 }
 
@@ -534,6 +534,9 @@ impl WgTunnelListener {
                         remote_addr: Some(
                             build_url_from_socket_addr(&addr.to_string(), "wg").into(),
                         ),
+                        resolved_remote_addr: Some(
+                            build_url_from_socket_addr(&addr.to_string(), "wg").into(),
+                        ),
                     }),
                 ));
                 if let Err(e) = conn_sender.send(tunnel) {
@@ -550,10 +553,8 @@ impl WgTunnelListener {
 
 #[async_trait]
 impl TunnelListener for WgTunnelListener {
-    async fn listen(&mut self) -> Result<(), super::TunnelError> {
-        let addr =
-            check_scheme_and_get_socket_addr::<SocketAddr>(&self.addr, "wg", IpVersion::Both)
-                .await?;
+    async fn listen(&mut self) -> Result<(), TunnelError> {
+        let addr = SocketAddr::from_url(self.addr.clone(), IpVersion::Both).await?;
         let socket2_socket = socket2::Socket::new(
             socket2::Domain::for_address(addr),
             socket2::Type::DGRAM,
@@ -683,6 +684,9 @@ impl WgTunnelConnector {
                 tunnel_type: "wg".to_owned(),
                 local_addr: Some(super::build_url_from_socket_addr(&local_addr, "wg").into()),
                 remote_addr: Some(addr_url.into()),
+                resolved_remote_addr: Some(
+                    super::build_url_from_socket_addr(&addr.to_string(), "wg").into(),
+                ),
             }),
             Some(Box::new(wg_peer)),
         ));
@@ -705,13 +709,8 @@ impl WgTunnelConnector {
 #[async_trait]
 impl super::TunnelConnector for WgTunnelConnector {
     #[tracing::instrument]
-    async fn connect(&mut self) -> Result<Box<dyn super::Tunnel>, super::TunnelError> {
-        let addr = super::check_scheme_and_get_socket_addr::<SocketAddr>(
-            &self.addr,
-            "wg",
-            self.ip_version,
-        )
-        .await?;
+    async fn connect(&mut self) -> Result<Box<dyn Tunnel>, TunnelError> {
+        let addr = SocketAddr::from_url(self.addr.clone(), self.ip_version).await?;
 
         if addr.is_ipv6() {
             return self.connect_with_ipv6(addr).await;
@@ -769,8 +768,8 @@ impl super::TunnelConnector for WgTunnelConnector {
 pub mod tests {
     use super::*;
     use crate::tunnel::{
-        common::tests::{_tunnel_bench, _tunnel_pingpong},
         TunnelConnector,
+        common::tests::{_tunnel_bench, _tunnel_pingpong},
     };
     use boringtun::*;
 

@@ -1,6 +1,12 @@
 use std::{net::IpAddr, ops::Deref, sync::Arc};
 
+#[cfg(target_os = "windows")]
+use network_interface::{
+    Addr as SystemAddr, NetworkInterface as SystemNetworkInterface, NetworkInterfaceConfig,
+};
 use pnet::datalink::NetworkInterface;
+#[cfg(target_os = "windows")]
+use pnet::{ipnetwork::IpNetwork, util::MacAddr};
 use tokio::{
     sync::{Mutex, RwLock},
     task::JoinSet,
@@ -264,6 +270,9 @@ impl IPCollector {
 
     pub async fn collect_interfaces(net_ns: NetNS, filter: bool) -> Vec<NetworkInterface> {
         let _g = net_ns.guard();
+        #[cfg(target_os = "windows")]
+        let ifaces = Self::collect_interfaces_windows();
+        #[cfg(not(target_os = "windows"))]
         let ifaces = pnet::datalink::interfaces();
         let mut ret = vec![];
         for iface in ifaces {
@@ -279,6 +288,86 @@ impl IPCollector {
         }
 
         ret
+    }
+
+    #[cfg(target_os = "windows")]
+    fn collect_interfaces_windows() -> Vec<NetworkInterface> {
+        match SystemNetworkInterface::show() {
+            Ok(ifaces) => ifaces
+                .into_iter()
+                .map(Self::convert_windows_interface)
+                .collect(),
+            Err(e) => {
+                tracing::warn!(
+                    ?e,
+                    "failed to enumerate interfaces via network-interface, falling back to pnet"
+                );
+                match std::panic::catch_unwind(pnet::datalink::interfaces) {
+                    Ok(ifaces) => ifaces,
+                    Err(_) => {
+                        tracing::error!(
+                            "failed to enumerate interfaces via both network-interface and pnet"
+                        );
+                        Vec::new()
+                    }
+                }
+            }
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    fn convert_windows_interface(iface: SystemNetworkInterface) -> NetworkInterface {
+        let mac = iface.mac_addr.as_deref().and_then(|mac| {
+            mac.parse::<MacAddr>()
+                .map_err(|e| {
+                    tracing::debug!(iface = %iface.name, mac, ?e, "failed to parse interface mac")
+                })
+                .ok()
+        });
+
+        let ips = iface
+            .addr
+            .into_iter()
+            .filter_map(Self::convert_windows_interface_addr)
+            .collect();
+
+        NetworkInterface {
+            name: iface.name,
+            description: String::new(),
+            index: iface.index,
+            mac,
+            ips,
+            // pnet does not populate Windows flags either, so keep the existing semantics.
+            flags: 0,
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    fn convert_windows_interface_addr(addr: SystemAddr) -> Option<IpNetwork> {
+        match addr {
+            SystemAddr::V4(addr) => {
+                let netmask = addr
+                    .netmask
+                    .map(IpAddr::V4)
+                    .unwrap_or(IpAddr::V4(std::net::Ipv4Addr::new(255, 255, 255, 255)));
+                IpNetwork::with_netmask(IpAddr::V4(addr.ip), netmask)
+                    .map_err(|e| {
+                        tracing::debug!(ip = %addr.ip, ?addr.netmask, ?e, "failed to convert ipv4")
+                    })
+                    .ok()
+            }
+            SystemAddr::V6(addr) => {
+                let netmask = addr
+                    .netmask
+                    .map(IpAddr::V6)
+                    .unwrap_or(IpAddr::V6(std::net::Ipv6Addr::from(u128::MAX)));
+                IpNetwork::with_netmask(IpAddr::V6(addr.ip), netmask)
+                    .map_err(|e| {
+                        tracing::debug!(ip = %addr.ip, ?addr.netmask, ?e, "failed to convert ipv6")
+                    })
+                    .ok()
+            }
+        }
     }
 
     #[tracing::instrument(skip(net_ns))]

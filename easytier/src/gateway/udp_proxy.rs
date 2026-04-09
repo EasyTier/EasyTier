@@ -1,6 +1,6 @@
 use std::{
     net::{Ipv4Addr, SocketAddr, SocketAddrV4},
-    sync::{atomic::AtomicBool, Arc, Weak},
+    sync::{Arc, Weak, atomic::AtomicBool},
     time::Duration,
 };
 
@@ -9,12 +9,12 @@ use cidr::Ipv4Inet;
 use crossbeam::atomic::AtomicCell;
 use dashmap::DashMap;
 use pnet::packet::{
+    Packet,
     ip::IpNextHeaderProtocols,
     ipv4::Ipv4Packet,
     udp::{self, MutableUdpPacket},
-    Packet,
 };
-use tokio::sync::mpsc::{channel, error::TrySendError, Receiver, Sender};
+use tokio::sync::mpsc::{Receiver, Sender, channel, error::TrySendError};
 use tokio::{
     net::UdpSocket,
     sync::Mutex,
@@ -25,16 +25,16 @@ use tokio::{
 use tracing::Level;
 
 use crate::{
-    common::{error::Error, global_ctx::ArcGlobalCtx, scoped_task::ScopedTask, PeerId},
-    gateway::ip_reassembler::{compose_ipv4_packet, ComposeIpv4PacketArgs},
-    peers::{peer_manager::PeerManager, PeerPacketFilter},
+    common::{PeerId, error::Error, global_ctx::ArcGlobalCtx, scoped_task::ScopedTask},
+    gateway::ip_reassembler::{ComposeIpv4PacketArgs, compose_ipv4_packet},
+    peers::{PeerPacketFilter, peer_manager::PeerManager},
     tunnel::{
         common::{reserve_buf, setup_socket2},
         packet_def::{PacketType, ZCPacket},
     },
 };
 
-use super::{ip_reassembler::IpReassembler, CidrSet};
+use super::{CidrSet, ip_reassembler::IpReassembler};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 struct UdpNatKey {

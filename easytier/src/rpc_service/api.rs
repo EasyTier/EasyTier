@@ -30,7 +30,7 @@ use crate::{
         port_forward_manage::PortForwardManageRpcService, proxy::TcpProxyRpcService,
         stats::StatsRpcService, vpn_portal::VpnPortalRpcService,
     },
-    tunnel::{tcp::TcpTunnelListener, TunnelListener},
+    tunnel::{TunnelListener, tcp::TcpTunnelListener},
     web_client::{DefaultHooks, WebClientHooks},
 };
 

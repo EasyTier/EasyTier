@@ -3,23 +3,17 @@ use std::{
     sync::Arc,
 };
 
-use http_connector::HttpTunnelConnector;
-
-#[cfg(feature = "faketcp")]
-use crate::tunnel::fake_tcp::FakeTcpTunnelConnector;
-#[cfg(feature = "quic")]
-use crate::tunnel::quic::QUICTunnelConnector;
-#[cfg(unix)]
-use crate::tunnel::unix::UnixSocketTunnelConnector;
-#[cfg(feature = "wireguard")]
-use crate::tunnel::wireguard::{WgConfig, WgTunnelConnector};
 use crate::{
     common::{error::Error, global_ctx::ArcGlobalCtx, idn, network::IPCollector},
+    connector::dns_connector::DnsTunnelConnector,
+    proto::common::PeerFeatureFlag,
     tunnel::{
-        check_scheme_and_get_socket_addr, ring::RingTunnelConnector, tcp::TcpTunnelConnector,
-        udp::UdpTunnelConnector, IpVersion, TunnelConnector,
+        self, FromUrl, IpScheme, IpVersion, TunnelConnector, TunnelError, TunnelScheme,
+        ring::RingTunnelConnector, tcp::TcpTunnelConnector, udp::UdpTunnelConnector,
     },
+    utils::BoxExt,
 };
+use http_connector::HttpTunnelConnector;
 
 pub mod direct;
 pub mod manual;
@@ -28,6 +22,36 @@ pub mod udp_hole_punch;
 
 pub mod dns_connector;
 pub mod http_connector;
+
+pub(crate) fn should_try_p2p_with_peer(
+    feature_flag: Option<&PeerFeatureFlag>,
+    allow_public_server: bool,
+    local_disable_p2p: bool,
+    local_need_p2p: bool,
+) -> bool {
+    feature_flag
+        .map(|flag| {
+            (allow_public_server || !flag.is_public_server)
+                && (!local_disable_p2p || flag.need_p2p)
+                && (!flag.disable_p2p || local_need_p2p)
+        })
+        .unwrap_or(!local_disable_p2p)
+}
+
+pub(crate) fn should_background_p2p_with_peer(
+    feature_flag: Option<&PeerFeatureFlag>,
+    allow_public_server: bool,
+    lazy_p2p: bool,
+    local_disable_p2p: bool,
+    local_need_p2p: bool,
+) -> bool {
+    should_try_p2p_with_peer(
+        feature_flag,
+        allow_public_server,
+        local_disable_p2p,
+        local_need_p2p,
+    ) && (!lazy_p2p || feature_flag.map(|flag| flag.need_p2p).unwrap_or(false))
+}
 
 async fn set_bind_addr_for_peer_connector(
     connector: &mut (impl TunnelConnector + ?Sized),
@@ -71,84 +95,34 @@ pub async fn create_connector_by_url(
 ) -> Result<Box<dyn TunnelConnector + 'static>, Error> {
     let url = url::Url::parse(url).map_err(|_| Error::InvalidUrl(url.to_owned()))?;
     let url = idn::convert_idn_to_ascii(url)?;
-    let mut connector: Box<dyn TunnelConnector + 'static> = match url.scheme() {
-        "tcp" => {
-            let dst_addr =
-                check_scheme_and_get_socket_addr::<SocketAddr>(&url, "tcp", ip_version).await?;
-            let mut connector = TcpTunnelConnector::new(url);
-            if global_ctx.config.get_flags().bind_device {
-                set_bind_addr_for_peer_connector(
-                    &mut connector,
-                    dst_addr.is_ipv4(),
-                    &global_ctx.get_ip_collector(),
-                )
-                .await;
-            }
-            Box::new(connector)
-        }
-        "udp" => {
-            let dst_addr =
-                check_scheme_and_get_socket_addr::<SocketAddr>(&url, "udp", ip_version).await?;
-            let mut connector = UdpTunnelConnector::new(url);
-            if global_ctx.config.get_flags().bind_device {
-                set_bind_addr_for_peer_connector(
-                    &mut connector,
-                    dst_addr.is_ipv4(),
-                    &global_ctx.get_ip_collector(),
-                )
-                .await;
-            }
-            Box::new(connector)
-        }
-        "http" | "https" => {
-            let connector = HttpTunnelConnector::new(url, global_ctx.clone());
-            Box::new(connector)
-        }
-        "ring" => {
-            check_scheme_and_get_socket_addr::<uuid::Uuid>(&url, "ring", IpVersion::Both).await?;
-            let connector = RingTunnelConnector::new(url);
-            Box::new(connector)
-        }
-        #[cfg(feature = "quic")]
-        "quic" => {
-            let dst_addr =
-                check_scheme_and_get_socket_addr::<SocketAddr>(&url, "quic", ip_version).await?;
-            let mut connector = QUICTunnelConnector::new(url, global_ctx.clone());
-            if global_ctx.config.get_flags().bind_device {
-                set_bind_addr_for_peer_connector(
-                    &mut connector,
-                    dst_addr.is_ipv4(),
-                    &global_ctx.get_ip_collector(),
-                )
-                .await;
-            }
-            Box::new(connector)
-        }
-        #[cfg(feature = "wireguard")]
-        "wg" => {
-            let dst_addr =
-                check_scheme_and_get_socket_addr::<SocketAddr>(&url, "wg", ip_version).await?;
-            let nid = global_ctx.get_network_identity();
-            let wg_config = WgConfig::new_from_network_identity(
-                &nid.network_name,
-                &nid.network_secret.unwrap_or_default(),
-            );
-            let mut connector = WgTunnelConnector::new(url, wg_config);
-            if global_ctx.config.get_flags().bind_device {
-                set_bind_addr_for_peer_connector(
-                    &mut connector,
-                    dst_addr.is_ipv4(),
-                    &global_ctx.get_ip_collector(),
-                )
-                .await;
-            }
-            Box::new(connector)
-        }
-        #[cfg(feature = "websocket")]
-        "ws" | "wss" => {
-            use crate::tunnel::FromUrl;
+    let scheme = (&url)
+        .try_into()
+        .map_err(|_| TunnelError::InvalidProtocol(url.scheme().to_owned()))?;
+    let mut connector: Box<dyn TunnelConnector + 'static> = match scheme {
+        TunnelScheme::Ip(scheme) => {
             let dst_addr = SocketAddr::from_url(url.clone(), ip_version).await?;
-            let mut connector = crate::tunnel::websocket::WSTunnelConnector::new(url);
+            let mut connector: Box<dyn TunnelConnector> = match scheme {
+                IpScheme::Tcp => TcpTunnelConnector::new(url).boxed(),
+                IpScheme::Udp => UdpTunnelConnector::new(url).boxed(),
+                #[cfg(feature = "quic")]
+                IpScheme::Quic => tunnel::quic::QuicTunnelConnector::new(url, global_ctx.clone()).boxed(),
+                #[cfg(feature = "wireguard")]
+                IpScheme::Wg => {
+                    use crate::tunnel::wireguard::{WgConfig, WgTunnelConnector};
+                    let nid = global_ctx.get_network_identity();
+                    let wg_config = WgConfig::new_from_network_identity(
+                        &nid.network_name,
+                        &nid.network_secret.unwrap_or_default(),
+                    );
+                    WgTunnelConnector::new(url, wg_config).boxed()
+                }
+                #[cfg(feature = "websocket")]
+                IpScheme::Ws | IpScheme::Wss => {
+                    tunnel::websocket::WsTunnelConnector::new(url).boxed()
+                }
+                #[cfg(feature = "faketcp")]
+                IpScheme::FakeTcp => tunnel::fake_tcp::FakeTcpTunnelConnector::new(url).boxed(),
+            };
             if global_ctx.config.get_flags().bind_device {
                 set_bind_addr_for_peer_connector(
                     &mut connector,
@@ -157,43 +131,164 @@ pub async fn create_connector_by_url(
                 )
                 .await;
             }
-            Box::new(connector)
+            connector
         }
-        "txt" | "srv" => {
+        #[cfg(unix)]
+        TunnelScheme::Unix => tunnel::unix::UnixSocketTunnelConnector::new(url).boxed(),
+        TunnelScheme::Http | TunnelScheme::Https => {
+            HttpTunnelConnector::new(url, global_ctx.clone()).boxed()
+        }
+        TunnelScheme::Ring => RingTunnelConnector::new(url).boxed(),
+        TunnelScheme::Txt | TunnelScheme::Srv => {
             if url.host_str().is_none() {
                 return Err(Error::InvalidUrl(format!(
                     "host should not be empty in txt or srv url: {}",
                     url
                 )));
             }
-            let connector = dns_connector::DNSTunnelConnector::new(url, global_ctx.clone());
-            Box::new(connector)
-        }
-        #[cfg(feature = "faketcp")]
-        "faketcp" => {
-            let dst_addr =
-                check_scheme_and_get_socket_addr::<SocketAddr>(&url, "faketcp", ip_version).await?;
-            let mut connector = FakeTcpTunnelConnector::new(url);
-            if global_ctx.config.get_flags().bind_device {
-                set_bind_addr_for_peer_connector(
-                    &mut connector,
-                    dst_addr.is_ipv4(),
-                    &global_ctx.get_ip_collector(),
-                )
-                .await;
-            }
-            Box::new(connector)
-        }
-        #[cfg(unix)]
-        "unix" => {
-            let connector = UnixSocketTunnelConnector::new(url);
-            Box::new(connector)
-        }
-        _ => {
-            return Err(Error::InvalidUrl(url.into()));
+            DnsTunnelConnector::new(url, global_ctx.clone()).boxed()
         }
     };
     connector.set_ip_version(ip_version);
 
     Ok(connector)
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::proto::common::PeerFeatureFlag;
+
+    use super::{should_background_p2p_with_peer, should_try_p2p_with_peer};
+
+    #[test]
+    fn lazy_background_p2p_requires_need_p2p() {
+        let no_need_p2p = PeerFeatureFlag {
+            need_p2p: false,
+            ..Default::default()
+        };
+        let need_p2p = PeerFeatureFlag {
+            need_p2p: true,
+            ..Default::default()
+        };
+
+        assert!(should_background_p2p_with_peer(
+            Some(&no_need_p2p),
+            false,
+            false,
+            false,
+            false
+        ));
+        assert!(!should_background_p2p_with_peer(
+            Some(&no_need_p2p),
+            false,
+            true,
+            false,
+            false
+        ));
+        assert!(should_background_p2p_with_peer(
+            Some(&need_p2p),
+            false,
+            true,
+            false,
+            false
+        ));
+    }
+
+    #[test]
+    fn p2p_policy_respects_public_server_setting() {
+        let public_server = PeerFeatureFlag {
+            is_public_server: true,
+            ..Default::default()
+        };
+
+        assert!(!should_try_p2p_with_peer(
+            Some(&public_server),
+            false,
+            false,
+            false
+        ));
+        assert!(should_try_p2p_with_peer(
+            Some(&public_server),
+            true,
+            false,
+            false
+        ));
+        assert!(!should_background_p2p_with_peer(
+            Some(&public_server),
+            false,
+            false,
+            false,
+            false
+        ));
+        assert!(should_background_p2p_with_peer(
+            Some(&public_server),
+            true,
+            false,
+            false,
+            false
+        ));
+    }
+
+    #[test]
+    fn disable_p2p_only_allows_need_p2p_exceptions() {
+        let normal_peer = PeerFeatureFlag::default();
+        let need_peer = PeerFeatureFlag {
+            need_p2p: true,
+            ..Default::default()
+        };
+        let disable_peer = PeerFeatureFlag {
+            disable_p2p: true,
+            ..Default::default()
+        };
+        let disable_need_peer = PeerFeatureFlag {
+            disable_p2p: true,
+            need_p2p: true,
+            ..Default::default()
+        };
+
+        assert!(should_try_p2p_with_peer(
+            Some(&normal_peer),
+            false,
+            false,
+            false
+        ));
+        assert!(should_try_p2p_with_peer(None, false, false, false));
+        assert!(!should_try_p2p_with_peer(None, false, true, false));
+        assert!(!should_try_p2p_with_peer(
+            Some(&normal_peer),
+            false,
+            true,
+            false
+        ));
+        assert!(should_try_p2p_with_peer(
+            Some(&need_peer),
+            false,
+            true,
+            false
+        ));
+        assert!(!should_try_p2p_with_peer(
+            Some(&disable_peer),
+            false,
+            false,
+            false
+        ));
+        assert!(should_try_p2p_with_peer(
+            Some(&disable_peer),
+            false,
+            false,
+            true
+        ));
+        assert!(should_try_p2p_with_peer(
+            Some(&disable_need_peer),
+            false,
+            true,
+            true
+        ));
+        assert!(!should_try_p2p_with_peer(
+            Some(&disable_need_peer),
+            false,
+            true,
+            false
+        ));
+    }
 }
