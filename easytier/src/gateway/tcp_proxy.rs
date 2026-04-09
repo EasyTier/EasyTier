@@ -67,7 +67,7 @@ impl NatDstConnector for NatDstTcpConnector {
         let socket = match TcpSocket::new_v4() {
             Ok(s) => s,
             Err(error) => {
-                log::error!(%error, "create v4 socket failed");
+                log::error!(?error, "create v4 socket failed");
                 return Err(error.into());
             }
         };
