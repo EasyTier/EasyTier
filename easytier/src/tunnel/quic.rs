@@ -2,22 +2,19 @@
 //!
 //! Checkout the `README.md` for guidance.
 
-use super::{
-    check_scheme_and_get_socket_addr, IpVersion, Tunnel, TunnelConnector, TunnelError,
-    TunnelListener,
-};
+use super::{FromUrl, IpVersion, Tunnel, TunnelConnector, TunnelError, TunnelListener};
 use crate::common::global_ctx::ArcGlobalCtx;
 use crate::tunnel::{
-    common::{setup_socket2, FramedReader, FramedWriter, TunnelWrapper},
     TunnelInfo,
+    common::{FramedReader, FramedWriter, TunnelWrapper, setup_socket2},
 };
 use anyhow::Context;
 use derivative::Derivative;
 use derive_more::{Deref, DerefMut};
 use parking_lot::RwLock;
 use quinn::{
-    congestion::BbrConfig, default_runtime, ClientConfig, Connection, Endpoint, EndpointConfig,
-    ServerConfig, TransportConfig,
+    ClientConfig, Connection, Endpoint, EndpointConfig, ServerConfig, TransportConfig,
+    congestion::BbrConfig, default_runtime,
 };
 use std::net::{Ipv4Addr, Ipv6Addr};
 use std::sync::OnceLock;
@@ -213,14 +210,14 @@ impl QuicEndpointManager {
             };
 
             let endpoint = Self::try_create(addr, dual_stack);
-            if let Err(e) = endpoint.as_ref() {
-                if dual_stack {
-                    tracing::warn!("create dual stack quic endpoint failed: {:?}", e);
-                    self.both.disable();
-                    self.ipv4.enable();
-                    self.ipv6.enable();
-                    continue;
-                }
+            if let Err(e) = endpoint.as_ref()
+                && dual_stack
+            {
+                tracing::warn!("create dual stack quic endpoint failed: {:?}", e);
+                self.both.disable();
+                self.ipv4.enable();
+                self.ipv6.enable();
+                continue;
             }
 
             return Ok((pool, Some(endpoint?)));
@@ -489,9 +486,8 @@ impl TunnelConnector for QuicTunnelConnector {
 mod tests {
     use crate::common::global_ctx::tests::get_mock_global_ctx_with_network;
     use crate::tunnel::{
-        IpVersion, TunnelConnector,
+        TunnelConnector,
         common::tests::{_tunnel_bench, _tunnel_pingpong},
-        IpVersion,
     };
     use std::sync::LazyLock;
     use tokio::runtime::{Builder, Runtime};

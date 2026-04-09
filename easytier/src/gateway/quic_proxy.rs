@@ -27,7 +27,7 @@ use derive_more::{Constructor, Deref, DerefMut, From, Into};
 use prost::Message;
 use quinn::udp::{EcnCodepoint, RecvMeta, Transmit};
 use quinn::{
-    default_runtime, AsyncUdpSocket, Endpoint, RecvStream, SendStream, StreamId, UdpPoller,
+    AsyncUdpSocket, Endpoint, RecvStream, SendStream, StreamId, UdpPoller, default_runtime,
 };
 use std::cmp::min;
 use std::future::Future;

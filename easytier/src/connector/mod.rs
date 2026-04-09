@@ -105,7 +105,9 @@ pub async fn create_connector_by_url(
                 IpScheme::Tcp => TcpTunnelConnector::new(url).boxed(),
                 IpScheme::Udp => UdpTunnelConnector::new(url).boxed(),
                 #[cfg(feature = "quic")]
-                IpScheme::Quic => tunnel::quic::QuicTunnelConnector::new(url, global_ctx.clone()).boxed(),
+                IpScheme::Quic => {
+                    tunnel::quic::QuicTunnelConnector::new(url, global_ctx.clone()).boxed()
+                }
                 #[cfg(feature = "wireguard")]
                 IpScheme::Wg => {
                     use crate::tunnel::wireguard::{WgConfig, WgTunnelConnector};
