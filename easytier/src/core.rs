@@ -740,43 +740,50 @@ impl Cli {
             return Ok(vec![]);
         }
 
-        let origin_listeners = listeners;
-        let mut listeners: Vec<String> = Vec::new();
-        if origin_listeners.len() == 1
-            && let Ok(port) = origin_listeners[0].parse::<u16>()
+        if listeners.len() == 1
+            && let Ok(port) = listeners[0].parse::<u16>()
         {
-            for proto in IpScheme::VARIANTS {
-                listeners.push(format!(
-                    "{}://0.0.0.0:{}",
-                    proto,
-                    port + proto.port_offset()
-                ));
-            }
+            let listeners = IpScheme::VARIANTS
+                .iter()
+                .map(|proto| {
+                    format!(
+                        "{}://0.0.0.0:{}",
+                        proto,
+                        if port == 0 {
+                            0
+                        } else {
+                            port + proto.port_offset()
+                        }
+                    )
+                })
+                .collect();
             return Ok(listeners);
         }
 
-        for l in &origin_listeners {
-            let proto_port: Vec<&str> = l.split(':').collect();
-            if proto_port.len() > 2 {
-                if let Ok(url) = l.parse::<url::Url>() {
-                    listeners.push(url.to_string());
-                } else {
-                    panic!("failed to parse listener: {}", l);
+        listeners
+            .into_iter()
+            .map(|l| {
+                let l = l
+                    .parse::<url::Url>()
+                    .or_else(|_| url::Url::parse(&format!("{}:", l)))?;
+
+                if l.has_authority() {
+                    return Ok(l.to_string());
                 }
-            } else {
-                let scheme: IpScheme = proto_port[0].parse()?;
 
-                let port = if proto_port.len() == 2 {
-                    proto_port[1].parse::<u16>().unwrap()
-                } else {
-                    11010 + scheme.port_offset()
+                let scheme: IpScheme = l.scheme().parse()?;
+                let port = {
+                    let port = l.path();
+                    if port.is_empty() {
+                        11010 + scheme.port_offset()
+                    } else {
+                        port.parse::<u16>()
+                            .with_context(|| format!("invalid port: {}", port))?
+                    }
                 };
-
-                listeners.push(format!("{}://0.0.0.0:{}", scheme, port));
-            }
-        }
-
-        Ok(listeners)
+                Ok(format!("{}://0.0.0.0:{}", scheme, port))
+            })
+            .collect()
     }
 }
 
@@ -848,7 +855,8 @@ impl NetworkOptions {
 
         if self.no_listener || !self.listeners.is_empty() {
             cfg.set_listeners(
-                Cli::parse_listeners(self.no_listener, self.listeners.clone())?
+                Cli::parse_listeners(self.no_listener, self.listeners.clone())
+                    .with_context(|| format!("failed to parse listeners: {:?}", self.listeners))?
                     .into_iter()
                     .map(|s| s.parse().unwrap())
                     .collect(),
