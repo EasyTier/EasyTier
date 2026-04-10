@@ -217,28 +217,19 @@ jobs:
             TAG=$GITHUB_SHA
           fi
           
-          if [[ ! $TARGET =~ (freebsd|loongarch) ]]; then
-            UPX_VERSION=5.1.1
+          if [[ $OS =~ ^ubuntu.*$ && ! $TARGET =~ (loongarch|freebsd) ]]; then
+            HOST_ARCH=$(uname -m)
+            case $HOST_ARCH in
+              x86_64)  UPX_ARCH="amd64" ;;
+              aarch64) UPX_ARCH="arm64" ;;
+              *)       UPX_ARCH="amd64" ;;
+            esac
 
-            if [[ $OS =~ ^windows.*$ ]]; then
-              curl -L "https://github.com/upx/upx/releases/download/v${UPX_VERSION}/upx-${UPX_VERSION}-win64.zip" -o upx.zip -s
-              unzip -q upx.zip
-              cp upx-${UPX_VERSION}-win64/upx.exe .
-              UPX_BIN=./upx.exe
-            fi
-            
-            if [[ $OS =~ ^ubuntu.*$ ]]; then
-              HOST_ARCH=$(uname -m)
-              case $HOST_ARCH in
-                x86_64)  UPX_ARCH="amd64" ;;
-                aarch64) UPX_ARCH="arm64" ;;
-                *)       UPX_ARCH="amd64" ;;
-              esac
-              UPX_PKG="upx-${UPX_VERSION}-${UPX_ARCH}_linux"
-              curl -L "https://github.com/upx/upx/releases/download/v${UPX_VERSION}/${UPX_PKG}.tar.xz" -s | tar xJvf -
-              cp "${UPX_PKG}/upx" .
-              UPX_BIN=./upx
-            fi
+            UPX_VERSION=5.1.1
+            UPX_PKG="upx-${UPX_VERSION}-${UPX_ARCH}_linux"
+            curl -L "https://github.com/upx/upx/releases/download/v${UPX_VERSION}/${UPX_PKG}.tar.xz" -s | tar xJvf -
+            cp "${UPX_PKG}/upx" .
+            UPX_BIN=./upx
           fi
 
           for BIN in ./target/$TARGET/release/easytier-{core,cli,web,web-embed}"$SUFFIX"; do
