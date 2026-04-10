@@ -181,13 +181,14 @@ pub struct QuicEndpointManager {
 static QUIC_ENDPOINT_MANAGER: OnceLock<QuicEndpointManager> = OnceLock::new();
 
 impl QuicEndpointManager {
-    fn try_create(addr: SocketAddr, dual_stack: bool) -> std::io::Result<Endpoint> {
+    fn try_create(addr: SocketAddr, dual_stack: bool) -> Result<Endpoint, TunnelError> {
         let socket = bind::<UdpSocket>()
             .addr(addr)
             .only_v6(addr.is_ipv6() && !dual_stack)
-            .call()
-            .map_err(std::io::Error::other)?;
-        let runtime = default_runtime().ok_or(std::io::Error::other("no async runtime found"))?;
+            .call()?;
+        let runtime = default_runtime().ok_or(TunnelError::InternalError(
+            "no async runtime found".to_owned(),
+        ))?;
         let mut endpoint = Endpoint::new_with_abstract_socket(
             endpoint_config(),
             None,
@@ -198,7 +199,10 @@ impl QuicEndpointManager {
         Ok(endpoint)
     }
 
-    fn create<F>(&self, mut selector: F) -> std::io::Result<(&RwPool<Endpoint>, Option<Endpoint>)>
+    fn create<F>(
+        &self,
+        mut selector: F,
+    ) -> Result<(&RwPool<Endpoint>, Option<Endpoint>), TunnelError>
     where
         F: FnMut(&QuicEndpointManager) -> (&RwPool<Endpoint>, Option<(SocketAddr, bool)>),
     {
@@ -209,10 +213,10 @@ impl QuicEndpointManager {
             };
 
             let endpoint = Self::try_create(addr, dual_stack);
-            if let Err(e) = endpoint.as_ref()
+            if let Err(error) = endpoint.as_ref()
                 && dual_stack
             {
-                tracing::warn!("create dual stack quic endpoint failed: {:?}", e);
+                tracing::warn!(?error, "create dual stack quic endpoint failed");
                 self.both.disable();
                 self.ipv4.enable();
                 self.ipv6.enable();
@@ -262,7 +266,7 @@ impl QuicEndpointManager {
     ///
     /// # Arguments
     /// * `addr`: listen address
-    fn server(global_ctx: &ArcGlobalCtx, addr: SocketAddr) -> std::io::Result<Endpoint> {
+    fn server(global_ctx: &ArcGlobalCtx, addr: SocketAddr) -> Result<Endpoint, TunnelError> {
         let mgr = Self::load(global_ctx);
 
         let (pool, endpoint) = mgr.create(|mgr| {
@@ -288,7 +292,7 @@ impl QuicEndpointManager {
     ///
     /// # Arguments
     /// * `ip_version`: the IP version of the remote address
-    fn client(global_ctx: &ArcGlobalCtx, ip_version: IpVersion) -> std::io::Result<Endpoint> {
+    fn client(global_ctx: &ArcGlobalCtx, ip_version: IpVersion) -> Result<Endpoint, TunnelError> {
         let mgr = Self::load(global_ctx);
 
         let (pool, endpoint) = mgr.create(|mgr| {
@@ -317,7 +321,7 @@ impl QuicEndpointManager {
     async fn connect(
         global_ctx: &ArcGlobalCtx,
         addr: SocketAddr,
-    ) -> std::io::Result<(Endpoint, Connection)> {
+    ) -> Result<(Endpoint, Connection), TunnelError> {
         let ip_version = if addr.ip().is_ipv4() {
             IpVersion::V4
         } else {
@@ -326,8 +330,9 @@ impl QuicEndpointManager {
         let endpoint = Self::client(global_ctx, ip_version)?;
         let connection = endpoint
             .connect(addr, "localhost")
-            .map_err(std::io::Error::other)?
-            .await?;
+            .with_context(|| format!("failed to create connection to {}", addr))?
+            .await
+            .with_context(|| format!("failed to connect to {}", addr))?;
 
         Ok((endpoint, connection))
     }
@@ -584,10 +589,10 @@ mod tests {
     async fn invalid_peer_addr_impl() {
         let mut connector =
             QuicTunnelConnector::new("quic://127.0.0.1:0".parse().unwrap(), global_ctx());
-        let err = connector.connect().await.unwrap_err();
+        let err = format!("{:?}", connector.connect().await.unwrap_err());
         assert!(
-            err.to_string().contains("invalid remote address"),
-            "unexpected error: {:?}",
+            err.contains("invalid remote address"),
+            "unexpected error: {}",
             err
         );
     }

@@ -445,7 +445,7 @@ impl Bindable for TcpSocket {
         let socket = TcpSocket::from_std_stream(socket.into());
 
         if let Err(error) = socket.set_nodelay(true) {
-            tracing::warn!(?error, "set_nodelay failed for listener");
+            tracing::warn!(?error, "set_nodelay failed for tcp socket");
         }
 
         Ok(socket)
@@ -470,6 +470,30 @@ impl Bindable for UdpSocket {
     }
 }
 
+/// Binds a socket to a specific address and optionally a network interface.
+///
+/// This function creates a new socket, applies specific configurations (such as
+/// binding to a device or setting IPv6-only flags), and finalizes it into the
+/// requested [`Bindable`] type.
+///
+/// # Arguments
+///
+/// * `addr` - The `SocketAddr` to bind the socket to.
+/// * `dev` - The name of the network interface to bind to. Pay attention to the subtle
+///   differences in how this option is evaluated:
+///   * **`None`**: Enables **auto-discovery**. The function will attempt to automatically
+///     resolve the interface name associated with the provided `addr.ip()`.
+///   * **`Some(String::new())` (Empty string)**: **Disables** auto-discovery and
+///     explicitly chooses **not** to bind to any specific device. The routing will be
+///     left entirely to the OS.
+///   * **`Some("eth0".to_string())`**: Skips auto-discovery and explicitly binds to
+///     the specified interface.
+/// * `net_ns` - An optional network namespace to switch into before creating the socket.
+/// * `only_v6` - If `true`, sets the `IPV6_V6ONLY` flag on the socket.
+///
+/// # Errors
+///
+/// Returns a [`TunnelError`] if socket creation, configuration, or finalization fails.
 #[builder]
 pub fn bind<B: Bindable>(
     addr: SocketAddr,
