@@ -345,6 +345,69 @@ pub(crate) fn get_interface_name_by_ip(local_ip: &IpAddr) -> Option<String> {
     None
 }
 
+pub(crate) async fn wait_for_connect_futures<Fut, Ret, E>(
+    mut futures: FuturesUnordered<Fut>,
+) -> Result<Ret, TunnelError>
+where
+    Fut: Future<Output = Result<Ret, E>> + Send,
+    E: std::error::Error + Into<TunnelError> + Send + 'static,
+{
+    // return last error
+    let mut last_err = None;
+
+    while let Some(ret) = futures.next().await {
+        if let Err(e) = ret {
+            last_err = Some(e.into());
+        } else {
+            return ret.map_err(|e| e.into());
+        }
+    }
+
+    Err(last_err.unwrap_or(TunnelError::Shutdown))
+}
+
+// region bind
+
+pub trait Bindable: Sized {
+    const TYPE: socket2::Type;
+    const PROTOCOL: Option<socket2::Protocol>;
+
+    fn finalize(socket: socket2::Socket) -> Result<Self, TunnelError>;
+}
+
+impl Bindable for TcpSocket {
+    const TYPE: socket2::Type = socket2::Type::STREAM;
+    const PROTOCOL: Option<socket2::Protocol> = Some(socket2::Protocol::TCP);
+
+    fn finalize(socket: socket2::Socket) -> Result<Self, TunnelError> {
+        let socket = TcpSocket::from_std_stream(socket.into());
+
+        if let Err(error) = socket.set_nodelay(true) {
+            tracing::warn!(?error, "set_nodelay failed for tcp socket");
+        }
+
+        Ok(socket)
+    }
+}
+
+impl Bindable for TcpListener {
+    const TYPE: socket2::Type = socket2::Type::STREAM;
+    const PROTOCOL: Option<socket2::Protocol> = Some(socket2::Protocol::TCP);
+
+    fn finalize(socket: socket2::Socket) -> Result<Self, TunnelError> {
+        Ok(TcpSocket::finalize(socket)?.listen(1024)?)
+    }
+}
+
+impl Bindable for UdpSocket {
+    const TYPE: socket2::Type = socket2::Type::DGRAM;
+    const PROTOCOL: Option<socket2::Protocol> = Some(socket2::Protocol::UDP);
+
+    fn finalize(socket: socket2::Socket) -> Result<Self, TunnelError> {
+        Ok(UdpSocket::from_std(socket.into())?)
+    }
+}
+
 fn setup_socket2_ext(
     socket2_socket: &socket2::Socket,
     bind_addr: &SocketAddr,
@@ -409,67 +472,6 @@ fn setup_socket2_ext(
     Ok(())
 }
 
-pub(crate) async fn wait_for_connect_futures<Fut, Ret, E>(
-    mut futures: FuturesUnordered<Fut>,
-) -> Result<Ret, TunnelError>
-where
-    Fut: Future<Output = Result<Ret, E>> + Send,
-    E: std::error::Error + Into<TunnelError> + Send + 'static,
-{
-    // return last error
-    let mut last_err = None;
-
-    while let Some(ret) = futures.next().await {
-        if let Err(e) = ret {
-            last_err = Some(e.into());
-        } else {
-            return ret.map_err(|e| e.into());
-        }
-    }
-
-    Err(last_err.unwrap_or(TunnelError::Shutdown))
-}
-
-pub trait Bindable: Sized {
-    const TYPE: socket2::Type;
-    const PROTOCOL: Option<socket2::Protocol>;
-
-    fn finalize(socket: socket2::Socket) -> Result<Self, TunnelError>;
-}
-
-impl Bindable for TcpSocket {
-    const TYPE: socket2::Type = socket2::Type::STREAM;
-    const PROTOCOL: Option<socket2::Protocol> = Some(socket2::Protocol::TCP);
-
-    fn finalize(socket: socket2::Socket) -> Result<Self, TunnelError> {
-        let socket = TcpSocket::from_std_stream(socket.into());
-
-        if let Err(error) = socket.set_nodelay(true) {
-            tracing::warn!(?error, "set_nodelay failed for tcp socket");
-        }
-
-        Ok(socket)
-    }
-}
-
-impl Bindable for TcpListener {
-    const TYPE: socket2::Type = socket2::Type::STREAM;
-    const PROTOCOL: Option<socket2::Protocol> = Some(socket2::Protocol::TCP);
-
-    fn finalize(socket: socket2::Socket) -> Result<Self, TunnelError> {
-        Ok(TcpSocket::finalize(socket)?.listen(1024)?)
-    }
-}
-
-impl Bindable for UdpSocket {
-    const TYPE: socket2::Type = socket2::Type::DGRAM;
-    const PROTOCOL: Option<socket2::Protocol> = Some(socket2::Protocol::UDP);
-
-    fn finalize(socket: socket2::Socket) -> Result<Self, TunnelError> {
-        Ok(UdpSocket::from_std(socket.into())?)
-    }
-}
-
 /// Binds a socket to a specific address and optionally a network interface.
 ///
 /// This function creates a new socket, applies specific configurations (such as
@@ -515,6 +517,8 @@ pub fn reserve_buf(buf: &mut BytesMut, min_size: usize, max_size: usize) {
         buf.reserve(max_size);
     }
 }
+
+// endregion
 
 pub mod tests {
     use atomic_shim::AtomicU64;
