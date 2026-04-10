@@ -25,7 +25,7 @@ use crate::{
 
 pub fn create_listener_by_url(
     l: &url::Url,
-    #[allow(unused_variables)] ctx: ArcGlobalCtx,
+    global_ctx: ArcGlobalCtx,
 ) -> Result<Box<dyn TunnelListener>, Error> {
     Ok(match l.try_into()? {
         TunnelScheme::Ip(scheme) => match scheme {
@@ -34,7 +34,7 @@ pub fn create_listener_by_url(
             #[cfg(feature = "wireguard")]
             IpScheme::Wg => {
                 use crate::tunnel::wireguard::{WgConfig, WgTunnelListener};
-                let nid = ctx.get_network_identity();
+                let nid = global_ctx.get_network_identity();
                 let wg_config = WgConfig::new_from_network_identity(
                     &nid.network_name,
                     &nid.network_secret.unwrap_or_default(),
@@ -42,7 +42,9 @@ pub fn create_listener_by_url(
                 WgTunnelListener::new(l.clone(), wg_config).boxed()
             }
             #[cfg(feature = "quic")]
-            IpScheme::Quic => tunnel::quic::QuicTunnelListener::new(l.clone()).boxed(),
+            IpScheme::Quic => {
+                tunnel::quic::QuicTunnelListener::new(l.clone(), global_ctx.clone()).boxed()
+            }
             #[cfg(feature = "websocket")]
             IpScheme::Ws | IpScheme::Wss => {
                 tunnel::websocket::WsTunnelListener::new(l.clone()).boxed()

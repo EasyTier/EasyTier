@@ -31,7 +31,7 @@ use crate::{
         tokio_smoltcp::{BufferSize, Net, NetConfig, channel_device},
     },
     tunnel::{
-        common::setup_sokcet2,
+        common::setup_socket2,
         packet_def::{PacketType, ZCPacket},
     },
 };
@@ -336,7 +336,7 @@ fn bind_tcp_socket(addr: SocketAddr, net_ns: NetNS) -> Result<TcpListener, Error
         Some(socket2::Protocol::TCP),
     )?;
 
-    setup_sokcet2(&socket2_socket, &addr)?;
+    setup_socket2(&socket2_socket, &addr, true)?;
 
     let socket = TcpSocket::from_std_stream(socket2_socket.into());
 
@@ -355,7 +355,7 @@ fn bind_udp_socket(addr: SocketAddr, net_ns: NetNS) -> Result<UdpSocket, Error> 
         Some(socket2::Protocol::UDP),
     )?;
 
-    setup_sokcet2(&socket2_socket, &addr)?;
+    setup_socket2(&socket2_socket, &addr, true)?;
 
     Ok(UdpSocket::from_std(socket2_socket.into())?)
 }

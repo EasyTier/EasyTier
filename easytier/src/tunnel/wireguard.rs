@@ -23,7 +23,7 @@ use tokio::{net::UdpSocket, sync::Mutex, task::JoinSet};
 use super::{
     FromUrl, IpVersion, Tunnel, TunnelError, TunnelInfo, TunnelListener, TunnelUrl, ZCPacketSink,
     ZCPacketStream,
-    common::{setup_sokcet2, setup_sokcet2_ext, wait_for_connect_futures},
+    common::{setup_socket2, setup_socket2_ext, wait_for_connect_futures},
     generate_digest_from_str,
     packet_def::{PEER_MANAGER_HEADER_SIZE, ZCPacketType},
     ring::create_ring_tunnel_pair,
@@ -563,9 +563,9 @@ impl TunnelListener for WgTunnelListener {
 
         let tunnel_url: TunnelUrl = self.addr.clone().into();
         if let Some(bind_dev) = tunnel_url.bind_dev() {
-            setup_sokcet2_ext(&socket2_socket, &addr, Some(bind_dev))?;
+            setup_socket2_ext(&socket2_socket, &addr, Some(bind_dev), true)?;
         } else {
-            setup_sokcet2(&socket2_socket, &addr)?;
+            setup_socket2(&socket2_socket, &addr, true)?;
         }
 
         self.udp = Some(Arc::new(UdpSocket::from_std(socket2_socket.into())?));
@@ -700,7 +700,7 @@ impl WgTunnelConnector {
             socket2::Type::DGRAM,
             Some(socket2::Protocol::UDP),
         )?;
-        setup_sokcet2_ext(&socket2_socket, &"[::]:0".parse().unwrap(), None)?;
+        setup_socket2_ext(&socket2_socket, &"[::]:0".parse().unwrap(), None, true)?;
         let socket = UdpSocket::from_std(socket2_socket.into())?;
         Self::connect_with_socket(self.addr.clone(), self.config.clone(), socket, addr).await
     }
@@ -728,7 +728,7 @@ impl super::TunnelConnector for WgTunnelConnector {
                 socket2::Type::DGRAM,
                 Some(socket2::Protocol::UDP),
             )?;
-            if let Err(e) = setup_sokcet2(&socket2_socket, &bind_addr) {
+            if let Err(e) = setup_socket2(&socket2_socket, &bind_addr, true) {
                 tracing::error!(bind_addr = ?bind_addr, ?addr, "bind addr fail: {:?}", e);
                 continue;
             }
