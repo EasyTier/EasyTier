@@ -48,7 +48,7 @@ use tokio::{
 
 #[cfg(feature = "kcp")]
 use super::tcp_proxy::NatDstConnector as _;
-use crate::tunnel::common::{bind_tcp_socket, bind_udp_socket};
+use crate::tunnel::common::bind;
 use crate::{
     common::{error::Error, global_ctx::GlobalCtx},
     peers::{PeerPacketFilter, peer_manager::PeerManager},
@@ -667,10 +667,10 @@ impl Socks5Server {
                 proxy_url.port().unwrap()
             );
 
-            let listener = bind_tcp_socket(
-                bind_addr.parse::<SocketAddr>().unwrap(),
-                self.global_ctx.net_ns.clone(),
-            )?;
+            let listener = bind::<TcpListener>()
+                .addr(bind_addr.parse::<SocketAddr>().unwrap())
+                .net_ns(self.global_ctx.net_ns.clone())
+                .call()?;
 
             let entries = self.entries.clone();
             let entry_count = self.entry_count.clone();
@@ -803,7 +803,10 @@ impl Socks5Server {
 
     pub async fn add_tcp_port_forward(&self, cfg: &PortForwardConfig) -> Result<(), Error> {
         let (bind_addr, dst_addr) = (cfg.bind_addr, cfg.dst_addr);
-        let listener = bind_tcp_socket(bind_addr, self.global_ctx.net_ns.clone())?;
+        let listener = bind::<TcpListener>()
+            .addr(bind_addr)
+            .net_ns(self.global_ctx.net_ns.clone())
+            .call()?;
 
         let net = self.net.clone();
         let entries = self.entries.clone();
@@ -871,7 +874,12 @@ impl Socks5Server {
     #[tracing::instrument(name = "add_udp_port_forward", skip(self))]
     pub async fn add_udp_port_forward(&self, cfg: &PortForwardConfig) -> Result<(), Error> {
         let (bind_addr, dst_addr) = (cfg.bind_addr, cfg.dst_addr);
-        let socket = Arc::new(bind_udp_socket(bind_addr, self.global_ctx.net_ns.clone())?);
+        let socket = Arc::new(
+            bind::<UdpSocket>()
+                .addr(bind_addr)
+                .net_ns(self.global_ctx.net_ns.clone())
+                .call()?,
+        );
 
         let entries = self.entries.clone();
         let entry_count = self.entry_count.clone();

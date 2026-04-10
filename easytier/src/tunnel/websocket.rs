@@ -1,9 +1,10 @@
 use super::{
     FromUrl, IpVersion, Tunnel, TunnelConnector, TunnelError, TunnelListener,
-    common::{TunnelWrapper, setup_socket2, wait_for_connect_futures},
+    common::{TunnelWrapper, wait_for_connect_futures},
     insecure_tls::{get_insecure_tls_cert, init_crypto_provider},
     packet_def::{ZCPacket, ZCPacketType},
 };
+use crate::tunnel::common::bind;
 use crate::{proto::common::TunnelInfo, tunnel::insecure_tls::get_insecure_tls_client_config};
 use anyhow::Context;
 use bytes::BytesMut;
@@ -160,20 +161,16 @@ impl WsTunnelListener {
 #[async_trait::async_trait]
 impl TunnelListener for WsTunnelListener {
     async fn listen(&mut self) -> Result<(), TunnelError> {
+        self.listener = None;
+
         let addr = SocketAddr::from_url(self.addr.clone(), IpVersion::Both).await?;
-        let socket2_socket = socket2::Socket::new(
-            socket2::Domain::for_address(addr),
-            socket2::Type::STREAM,
-            Some(socket2::Protocol::TCP),
-        )?;
-        setup_socket2(&socket2_socket, &addr, true)?;
-        let socket = TcpSocket::from_std_stream(socket2_socket.into());
+        let listener = bind::<TcpListener>().addr(addr).only_v6(true).call()?;
 
         self.addr
-            .set_port(Some(socket.local_addr()?.port()))
+            .set_port(Some(listener.local_addr()?.port()))
             .unwrap();
+        self.listener = Some(listener);
 
-        self.listener = Some(socket.listen(1024)?);
         Ok(())
     }
 
@@ -283,25 +280,18 @@ impl WsTunnelConnector {
         let futures = FuturesUnordered::new();
 
         for bind_addr in self.bind_addrs.iter() {
-            tracing::info!(bind_addr = ?bind_addr, ?addr, "bind addr");
-
-            let socket2_socket = socket2::Socket::new(
-                socket2::Domain::for_address(addr),
-                socket2::Type::STREAM,
-                Some(socket2::Protocol::TCP),
-            )?;
-
-            if let Err(e) = setup_socket2(&socket2_socket, bind_addr, true) {
-                tracing::error!(bind_addr = ?bind_addr, ?addr, "bind addr fail: {:?}", e);
-                continue;
+            tracing::info!(?bind_addr, ?addr, "bind addr");
+            match bind().addr(*bind_addr).only_v6(true).call() {
+                Ok(socket) => futures.push(Self::connect_with(
+                    self.addr.clone(),
+                    self.ip_version,
+                    socket,
+                )),
+                Err(error) => {
+                    tracing::error!(?bind_addr, ?addr, ?error, "bind addr fail");
+                    continue;
+                }
             }
-
-            let socket = TcpSocket::from_std_stream(socket2_socket.into());
-            futures.push(Self::connect_with(
-                self.addr.clone(),
-                self.ip_version,
-                socket,
-            ))
         }
 
         wait_for_connect_futures(futures).await

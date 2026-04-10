@@ -1,3 +1,7 @@
+use bon::builder;
+use futures::{Future, Sink, Stream, stream::FuturesUnordered};
+use network_interface::NetworkInterfaceConfig as _;
+use pin_project_lite::pin_project;
 use std::{
     any::Any,
     net::{IpAddr, SocketAddr},
@@ -5,14 +9,9 @@ use std::{
     sync::{Arc, Mutex},
     task::{Poll, ready},
 };
-
-use futures::{Future, Sink, Stream, stream::FuturesUnordered};
-use network_interface::NetworkInterfaceConfig as _;
-use pin_project_lite::pin_project;
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
 use super::TunnelInfo;
-use crate::common::error::Error;
 use crate::common::netns::NetNS;
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 use tokio::net::{TcpListener, TcpSocket, UdpSocket};
@@ -346,7 +345,7 @@ pub(crate) fn get_interface_name_by_ip(local_ip: &IpAddr) -> Option<String> {
     None
 }
 
-pub(crate) fn setup_socket2_ext(
+fn setup_socket2_ext(
     socket2_socket: &socket2::Socket,
     bind_addr: &SocketAddr,
     #[allow(unused_variables)] bind_dev: Option<String>,
@@ -431,19 +430,6 @@ where
     Err(last_err.unwrap_or(TunnelError::Shutdown))
 }
 
-pub(crate) fn setup_socket2(
-    socket2_socket: &socket2::Socket,
-    bind_addr: &SocketAddr,
-    only_v6: bool,
-) -> Result<(), TunnelError> {
-    setup_socket2_ext(
-        socket2_socket,
-        bind_addr,
-        super::common::get_interface_name_by_ip(&bind_addr.ip()),
-        only_v6,
-    )
-}
-
 pub trait Bindable: Sized {
     const TYPE: socket2::Type;
     const PROTOCOL: Option<socket2::Protocol>;
@@ -484,23 +470,20 @@ impl Bindable for UdpSocket {
     }
 }
 
-pub fn bind_socket<B: Bindable>(addr: SocketAddr, net_ns: Option<NetNS>) -> Result<B, Error> {
+#[builder]
+pub fn bind<B: Bindable>(
+    addr: SocketAddr,
+    dev: Option<String>,
+    net_ns: Option<NetNS>,
+    #[builder(default)] only_v6: bool,
+) -> Result<B, TunnelError> {
     let _g = net_ns.map(|n| n.guard());
-
-    let socket2_socket =
-        socket2::Socket::new(socket2::Domain::for_address(addr), B::TYPE, B::PROTOCOL)?;
-
-    setup_sokcet2(&socket2_socket, &addr)?;
-
-    B::finalize(socket2_socket)
-}
-
-pub fn bind_tcp_socket(addr: SocketAddr, net_ns: NetNS) -> Result<TcpListener, Error> {
-    bind_socket(addr, Some(net_ns))
-}
-
-pub fn bind_udp_socket(addr: SocketAddr, net_ns: NetNS) -> Result<UdpSocket, Error> {
-    bind_socket(addr, Some(net_ns))
+    let dev = dev
+        .or_else(|| get_interface_name_by_ip(&addr.ip()))
+        .filter(|d| !d.is_empty());
+    let socket = socket2::Socket::new(socket2::Domain::for_address(addr), B::TYPE, B::PROTOCOL)?;
+    setup_socket2_ext(&socket, &addr, dev, only_v6)?;
+    B::finalize(socket)
 }
 
 pub fn reserve_buf(buf: &mut BytesMut, min_size: usize, max_size: usize) {

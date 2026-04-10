@@ -4,9 +4,10 @@
 
 use super::{FromUrl, IpVersion, Tunnel, TunnelConnector, TunnelError, TunnelListener};
 use crate::common::global_ctx::ArcGlobalCtx;
+use crate::tunnel::common::bind;
 use crate::tunnel::{
     TunnelInfo,
-    common::{FramedReader, FramedWriter, TunnelWrapper, setup_socket2},
+    common::{FramedReader, FramedWriter, TunnelWrapper},
 };
 use anyhow::Context;
 use derivative::Derivative;
@@ -19,6 +20,7 @@ use quinn::{
 use std::net::{Ipv4Addr, Ipv6Addr};
 use std::sync::OnceLock;
 use std::{net::SocketAddr, sync::Arc, time::Duration};
+use tokio::net::UdpSocket;
 
 // region config
 pub fn transport_config() -> Arc<TransportConfig> {
@@ -180,19 +182,16 @@ static QUIC_ENDPOINT_MANAGER: OnceLock<QuicEndpointManager> = OnceLock::new();
 
 impl QuicEndpointManager {
     fn try_create(addr: SocketAddr, dual_stack: bool) -> std::io::Result<Endpoint> {
-        let socket = socket2::Socket::new(
-            socket2::Domain::for_address(addr),
-            socket2::Type::DGRAM,
-            Some(socket2::Protocol::UDP),
-        )?;
-        setup_socket2(&socket, &addr, addr.is_ipv6() && !dual_stack)
+        let socket = bind::<UdpSocket>()
+            .addr(addr)
+            .only_v6(addr.is_ipv6() && !dual_stack)
+            .call()
             .map_err(std::io::Error::other)?;
-        let socket = std::net::UdpSocket::from(socket);
         let runtime = default_runtime().ok_or(std::io::Error::other("no async runtime found"))?;
         let mut endpoint = Endpoint::new_with_abstract_socket(
             endpoint_config(),
             None,
-            runtime.wrap_udp_socket(socket)?,
+            runtime.wrap_udp_socket(socket.into_std()?)?,
             runtime,
         )?;
         endpoint.set_default_client_config(client_config());
