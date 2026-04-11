@@ -223,8 +223,12 @@ impl Socket {
                         return None;
                     };
 
-                    let (src_mac, dst_mac, _v4_packet, tcp_packet) =
-                        parse_ip_packet(&raw_buf).unwrap();
+                    let Some((src_mac, dst_mac, _v4_packet, tcp_packet)) =
+                        parse_ip_packet(&raw_buf)
+                    else {
+                        trace!("Dropping malformed fake tcp packet for established socket");
+                        continue;
+                    };
 
                     tracing::trace!(
                         "Socket received TCP packet from {}({:?}) to {}({:?}): {:?}",
@@ -307,8 +311,11 @@ impl Socket {
                         info!("Waiting for client SYN + ACK timed out");
                         return None;
                     };
-                    let (src_mac, _dst_mac, _v4_packet, tcp_packet) =
-                        parse_ip_packet(&buf).unwrap();
+                    let Some((src_mac, _dst_mac, _v4_packet, tcp_packet)) = parse_ip_packet(&buf)
+                    else {
+                        trace!("Dropping malformed fake tcp packet during handshake");
+                        continue;
+                    };
 
                     if (tcp_packet.get_flags() & tcp::TcpFlags::RST) != 0 {
                         tracing::trace!("Connection {} reset by peer", self);
