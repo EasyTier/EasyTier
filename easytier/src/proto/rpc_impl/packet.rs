@@ -1,4 +1,4 @@
-use prost::{length_delimiter_len, Message as _};
+use prost::{Message as _, length_delimiter_len};
 
 use crate::{
     common::{PeerId, compressor::DefaultCompressor},
@@ -6,7 +6,7 @@ use crate::{
         common::{CompressionAlgoPb, RpcCompressionInfo, RpcDescriptor, RpcPacket},
         rpc_types::error::Error,
     },
-    tunnel::packet_def::{CompressorAlgo, PacketType, ZCPacket, ZCPacketType, TAIL_RESERVED_SIZE},
+    tunnel::packet_def::{CompressorAlgo, PacketType, TAIL_RESERVED_SIZE, ZCPacket, ZCPacketType},
 };
 
 use super::RpcTransactId;
@@ -199,7 +199,7 @@ fn build_rpc_piece(
         body: body.to_vec(),
         trace_id: args.trace_id,
         compression_info: if piece_idx == 0 {
-            Some(args.compression_info.clone())
+            Some(args.compression_info)
         } else {
             None
         },
