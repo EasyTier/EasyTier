@@ -1,14 +1,14 @@
+use anyhow::Context;
+use async_trait::async_trait;
+use cidr::{Ipv4Cidr, Ipv6Cidr};
+use dashmap::DashMap;
+use std::collections::BTreeSet;
 use std::{
     fmt::Debug,
     net::{IpAddr, Ipv4Addr, Ipv6Addr},
     sync::{Arc, Weak, atomic::AtomicBool},
     time::{Duration, Instant, SystemTime},
 };
-
-use anyhow::Context;
-use async_trait::async_trait;
-
-use dashmap::DashMap;
 
 use tokio::{
     sync::{
@@ -1254,6 +1254,14 @@ impl PeerManager {
         self.get_route().get_peer_info_last_update_time().await
     }
 
+    pub async fn list_proxy_cidrs(&self) -> BTreeSet<Ipv4Cidr> {
+        self.get_route().list_proxy_cidrs().await
+    }
+
+    pub async fn list_proxy_cidrs_v6(&self) -> BTreeSet<Ipv6Cidr> {
+        self.get_route().list_proxy_cidrs_v6().await
+    }
+
     pub async fn dump_route(&self) -> String {
         self.get_route().dump().await
     }
@@ -1985,7 +1993,6 @@ impl PeerManager {
 
 #[cfg(test)]
 mod tests {
-
     use std::{
         fmt::Debug,
         sync::Arc,
