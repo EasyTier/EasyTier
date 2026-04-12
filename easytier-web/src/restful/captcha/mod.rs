@@ -7,7 +7,7 @@
 //!
 //! 目前已适配框架 / Frameworks which is adapted now:
 //!
-//!  - `axum` + `tower-sessions`
+//!  - `axum` + 内存 challenge store
 //!
 //!  更多框架欢迎您提交PR，参与适配🙏 PR for new frameworks are welcomed
 //!
@@ -32,41 +32,22 @@
 //! use axum::extract::Query;
 //! use axum::response::IntoResponse;
 //! use easy_captcha::captcha::gif::GifCaptcha;
-//! use easy_captcha::extension::axum_tower_sessions::{
-//!     CaptchaAxumTowerSessionExt, CaptchaAxumTowerSessionStaticExt,
-//! };
+//! use easy_captcha::extension::axum_tower_sessions::CaptchaAxumChallengeStoreExt;
 //! use easy_captcha::extension::CaptchaUtil;
 //! use easy_captcha::NewCaptcha;
+//! use crate::restful::auth_state::CaptchaChallengeStore;
 //!
 //! /// 接口：获取验证码
 //! /// Handler: Get a captcha
-//! async fn get_captcha(session: tower_sessions::Session) -> Result<axum::response::Response, axum::http::StatusCode> {
+//! async fn get_captcha(challenge_store: CaptchaChallengeStore) -> Result<axum::response::Response, axum::http::StatusCode> {
 //!     let mut captcha: CaptchaUtil<GifCaptcha> = CaptchaUtil::new();
-//!     match captcha.out(&session).await {
+//!     match captcha.out_with_challenge_store(&challenge_store).await {
 //!         Ok(response) => Ok(response),
 //!         Err(_) => Err(axum::http::StatusCode::INTERNAL_SERVER_ERROR),
 //!     }
 //! }
 //!
-//! /// 接口：验证验证码
-//! /// Handler: Verify captcha codes
-//! async fn verify_captcha(
-//!     session: tower_sessions::Session,
-//!     Query(query): Query<HashMap<String, String>>,
-//! ) -> axum::response::Response {
-//!     // 从请求中获取验证码 Getting code from the request.
-//!     if let Some(code) = query.get("code") {
-//!         // 调用CaptchaUtil的静态方法验证验证码是否正确 Use a static method in CaptchaUtil to verify.
-//!         if CaptchaUtil::ver(code, &session).await {
-//!             CaptchaUtil::clear(&session).await; // 如果愿意的话，你可以从Session中清理掉验证码  You may clear the Captcha from the Session if you want
-//!             "Your code is valid, thank you.".into_response()
-//!         } else {
-//!             "Your code is not valid, I'm sorry.".into_response()
-//!         }
-//!     } else {
-//!         "You didn't provide the code.".into_response()
-//!     }
-//! }
+//! // 验证时请在业务层从 challenge store 读取并消费 challenge_id。
 //! ```
 //!
 //! 您也可以自定义验证码的各项属性
@@ -75,13 +56,14 @@
 //!
 //! ```rust
 //! use easy_captcha::captcha::gif::GifCaptcha;
-//! use easy_captcha::extension::axum_tower_sessions::CaptchaAxumTowerSessionExt;
+//! use easy_captcha::extension::axum_tower_sessions::CaptchaAxumChallengeStoreExt;
 //! use easy_captcha::extension::CaptchaUtil;
 //! use easy_captcha::NewCaptcha;
+//! use crate::restful::auth_state::CaptchaChallengeStore;
 //!
-//! async fn get_captcha(session: tower_sessions::Session) -> Result<axum::response::Response, axum::http::StatusCode> {
+//! async fn get_captcha(challenge_store: CaptchaChallengeStore) -> Result<axum::response::Response, axum::http::StatusCode> {
 //!     let mut captcha: CaptchaUtil<GifCaptcha> = CaptchaUtil::with_size_and_len(127, 48, 4);
-//!     match captcha.out(&session).await {
+//!     match captcha.out_with_challenge_store(&challenge_store).await {
 //!         Ok(response) => Ok(response),
 //!         Err(_) => Err(axum::http::StatusCode::INTERNAL_SERVER_ERROR),
 //!     }

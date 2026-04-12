@@ -6,11 +6,11 @@ import { useToast } from 'primevue/usetoast';
 import { I18nUtils } from 'easytier-frontend-lib';
 import { getInitialApiHost, cleanAndLoadApiHosts, saveApiHost } from "../modules/api-host"
 import { useI18n } from 'vue-i18n'
-import ApiClient, { Credential, RegisterData } from '../modules/api';
+import ApiClient, { Credential, RegisterData, setToken } from '../modules/api';
 
 const { t } = useI18n()
 
-defineProps<{
+const props = defineProps<{
     isRegistering: boolean;
 }>();
 
@@ -23,7 +23,59 @@ const password = ref('');
 const registerUsername = ref('');
 const registerPassword = ref('');
 const captcha = ref('');
-const captchaSrc = computed(() => api.value.captcha_url());
+const captchaId = ref('');
+const captchaSrc = ref('');
+const captchaObjectUrl = ref<string | null>(null);
+let captchaRequestSeq = 0;
+
+const revokeCaptchaUrl = () => {
+    if (captchaObjectUrl.value) {
+        URL.revokeObjectURL(captchaObjectUrl.value);
+        captchaObjectUrl.value = null;
+    }
+};
+
+const resetCaptchaState = () => {
+    captchaRequestSeq += 1;
+    revokeCaptchaUrl();
+    captchaSrc.value = '';
+    captchaId.value = '';
+    captcha.value = '';
+};
+
+const loadCaptcha = async () => {
+    if (!props.isRegistering) {
+        resetCaptchaState();
+        return;
+    }
+
+    const requestSeq = ++captchaRequestSeq;
+    captchaId.value = '';
+    captcha.value = '';
+
+    try {
+        const response = await api.value.fetchCaptcha();
+        if (requestSeq !== captchaRequestSeq) {
+            return;
+        }
+        if (!response.captcha_id) {
+            throw new Error('Missing captcha id header');
+        }
+
+        revokeCaptchaUrl();
+        const objectUrl = URL.createObjectURL(response.blob);
+        captchaObjectUrl.value = objectUrl;
+        captchaSrc.value = objectUrl;
+        captchaId.value = response.captcha_id;
+    } catch (error) {
+        if (requestSeq !== captchaRequestSeq) {
+            return;
+        }
+
+        resetCaptchaState();
+        toast.add({ severity: 'error', summary: 'Captcha Failed', detail: String(error), life: 2000 });
+    }
+};
 
 
 const onSubmit = async () => {
@@ -44,14 +96,21 @@ const onSubmit = async () => {
 
 const onRegister = async () => {
     saveApiHost(apiHost.value);
+    if (!captchaId.value) {
+        await loadCaptcha();
+        toast.add({ severity: 'error', summary: 'Register Failed', detail: 'Captcha unavailable, please retry.', life: 2000 });
+        return;
+    }
+
     const credential: Credential = { username: registerUsername.value, password: registerPassword.value };
-    const registerReq: RegisterData = { credentials: credential, captcha: captcha.value };
+    const registerReq: RegisterData = { credentials: credential, captcha_id: captchaId.value, captcha: captcha.value };
     let ret = await api.value?.register(registerReq);
     if (ret.success) {
         toast.add({ severity: 'success', summary: 'Register Success', detail: ret.message, life: 2000 });
         router.push({ name: 'login' });
     } else {
         toast.add({ severity: 'error', summary: 'Register Failed', detail: ret.message, life: 2000 });
+        await loadCaptcha();
     }
 };
 
@@ -88,6 +147,17 @@ const checkOidcConfig = () => {
 
 watch(apiHost, () => {
     checkOidcConfig();
+    if (props.isRegistering) {
+        void loadCaptcha();
+    }
+});
+
+watch(() => props.isRegistering, (isRegistering) => {
+    if (isRegistering) {
+        void loadCaptcha();
+    } else {
+        resetCaptchaState();
+    }
 });
 
 const onSsoLogin = () => {
@@ -96,11 +166,40 @@ const onSsoLogin = () => {
     window.location.href = api.value.oidcLoginUrl();
 };
 
+const parseExpiresAt = (raw: string): string | null => {
+    const numeric = Number(raw);
+    if (Number.isFinite(numeric) && /^\d+$/.test(raw.trim())) {
+        return new Date(numeric * 1000).toISOString();
+    }
+
+    const parsedMs = Date.parse(raw);
+    if (Number.isNaN(parsedMs)) {
+        return null;
+    }
+
+    return new Date(parsedMs).toISOString();
+};
+
 onMounted(() => {
     checkOidcConfig();
+    if (props.isRegistering) {
+        void loadCaptcha();
+    }
+    const query = router.currentRoute.value.query;
+    const expiresAt = query.expires_at ? parseExpiresAt(query.expires_at as string) : null;
+    if (query.token && expiresAt) {
+        setToken(query.token as string, expiresAt);
+        saveApiHost(apiHost.value);
+        localStorage.setItem('apiHost', btoa(apiHost.value));
+        router.replace({
+            name: 'dashboard',
+            params: { apiHost: btoa(apiHost.value) },
+        });
+    }
 });
 
 onBeforeUnmount(() => {
+    resetCaptchaState();
     if (oidcCheckTimer.value) {
         clearTimeout(oidcCheckTimer.value);
         oidcCheckTimer.value = null;
@@ -160,7 +259,8 @@ onBeforeUnmount(() => {
                     <div class="p-field">
                         <label for="captcha" class="block text-sm font-medium">{{ t('web.login.captcha') }}</label>
                         <InputText id="captcha" v-model="captcha" required class="w-full" />
-                        <img :src="captchaSrc" alt="Captcha" class="mt-2 mb-2" />
+                        <img v-if="captchaSrc" :src="captchaSrc" alt="Captcha" class="mt-2 mb-2 cursor-pointer"
+                            @click="loadCaptcha" />
                     </div>
                     <div class="flex items-center justify-between">
                         <Button :label="t('web.login.register')" type="submit" class="w-full" />

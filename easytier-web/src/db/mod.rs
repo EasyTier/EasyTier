@@ -304,7 +304,6 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        println!("{:?}", result);
         assert_eq!(result.network_config, network_config_json);
 
         // overwrite the config
@@ -323,7 +322,6 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        println!("device: {}, {:?}", device_id, result2);
         assert_eq!(result2.network_config, network_config_json);
 
         assert_eq!(result.create_time, result2.create_time);

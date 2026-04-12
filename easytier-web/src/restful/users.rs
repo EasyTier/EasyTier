@@ -1,7 +1,5 @@
 use std::collections::HashSet;
 
-use async_trait::async_trait;
-use axum_login::{AuthUser, AuthnBackend, AuthzBackend, UserId};
 use password_auth::verify_password;
 use sea_orm::{
     ColumnTrait, EntityTrait, FromQueryResult, IntoActiveModel, JoinType, QueryFilter,
@@ -10,7 +8,7 @@ use sea_orm::{
 use serde::{Deserialize, Serialize};
 use tokio::task;
 
-use crate::db::{self, entity};
+use crate::db::{self, UserIdInDb, entity};
 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct User {
@@ -30,18 +28,9 @@ impl std::fmt::Debug for User {
     }
 }
 
-impl AuthUser for User {
-    type Id = i32;
-
-    fn id(&self) -> Self::Id {
+impl User {
+    pub fn id(&self) -> UserIdInDb {
         self.db_user.id
-    }
-
-    fn session_auth_hash(&self) -> &[u8] {
-        self.db_user.password.as_bytes() // We use the password hash as the auth
-        // hash--what this means
-        // is when the user changes their password the
-        // auth session becomes invalid.
     }
 }
 
@@ -56,6 +45,7 @@ pub struct Credentials {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct RegisterNewUser {
     pub credentials: Credentials,
+    pub captcha_id: String,
     pub captcha: String,
 }
 
@@ -117,7 +107,7 @@ impl Backend {
 
     pub async fn change_password(
         &self,
-        id: <User as AuthUser>::Id,
+        id: UserIdInDb,
         req: &ChangePassword,
     ) -> anyhow::Result<()> {
         let hashed_password = password_auth::generate_hash(req.new_password.as_str());
@@ -137,36 +127,21 @@ impl Backend {
 
         Ok(())
     }
-}
 
-#[derive(Debug, thiserror::Error)]
-pub enum Error {
-    #[error(transparent)]
-    Sqlx(#[from] sea_orm::DbErr),
-
-    #[error(transparent)]
-    TaskJoin(#[from] task::JoinError),
-}
-
-#[async_trait]
-impl AuthnBackend for Backend {
-    type User = User;
-    type Credentials = Credentials;
-    type Error = Error;
-
-    async fn authenticate(
+    pub async fn authenticate_credentials(
         &self,
-        creds: Self::Credentials,
-    ) -> Result<Option<Self::User>, Self::Error> {
+        username: &str,
+        password: &str,
+    ) -> Result<Option<User>, Error> {
         let user = entity::users::Entity::find()
-            .filter(entity::users::Column::Username.eq(creds.username))
+            .filter(entity::users::Column::Username.eq(username))
             .one(self.db.orm_db())
             .await?;
-        task::spawn_blocking(|| {
-            // We're using password-based authentication--this works by comparing our form
-            // input with an argon2 password hash.
+
+        let password = password.to_owned();
+        task::spawn_blocking(move || {
             Ok(user
-                .filter(|user| verify_password(creds.password, &user.password).is_ok())
+                .filter(|user| verify_password(&password, &user.password).is_ok())
                 .map(|user| User {
                     db_user: user.clone(),
                     tokens: vec![user.username.clone()],
@@ -175,9 +150,9 @@ impl AuthnBackend for Backend {
         .await?
     }
 
-    async fn get_user(&self, user_id: &UserId<Self>) -> Result<Option<Self::User>, Self::Error> {
+    pub async fn find_user_by_id(&self, id: UserIdInDb) -> Result<Option<User>, Error> {
         let mut user = entity::users::Entity::find()
-            .filter(entity::users::Column::Id.eq(*user_id))
+            .filter(entity::users::Column::Id.eq(id))
             .one(self.db.orm_db())
             .await?;
 
@@ -186,36 +161,14 @@ impl AuthnBackend for Backend {
                 db_user: u.clone(),
                 tokens: vec![],
             };
-            // username is a token
             user.tokens.push(u.username.clone());
             Ok(Some(user))
         } else {
             Ok(None)
         }
     }
-}
 
-#[derive(Debug, Clone, Eq, PartialEq, Hash, FromQueryResult)]
-pub struct Permission {
-    pub name: String,
-}
-
-impl From<&str> for Permission {
-    fn from(name: &str) -> Self {
-        Permission {
-            name: name.to_string(),
-        }
-    }
-}
-
-#[async_trait]
-impl AuthzBackend for Backend {
-    type Permission = Permission;
-
-    async fn get_group_permissions(
-        &self,
-        _user: &Self::User,
-    ) -> Result<HashSet<Self::Permission>, Self::Error> {
+    pub async fn get_group_permissions(&self, _user: &User) -> Result<HashSet<Permission>, Error> {
         let permissions = entity::users::Entity::find()
             .column_as(entity::permissions::Column::Name, "name")
             .join(
@@ -234,7 +187,7 @@ impl AuthzBackend for Backend {
                 JoinType::LeftJoin,
                 entity::groups_permissions::Relation::Permissions.def(),
             )
-            .into_model::<Self::Permission>()
+            .into_model::<Permission>()
             .all(self.db.orm_db())
             .await?;
 
@@ -242,7 +195,24 @@ impl AuthzBackend for Backend {
     }
 }
 
-// We use a type alias for convenience.
-//
-// Note that we've supplied our concrete backend here.
-pub type AuthSession = axum_login::AuthSession<Backend>;
+#[derive(Debug, thiserror::Error)]
+pub enum Error {
+    #[error(transparent)]
+    Sqlx(#[from] sea_orm::DbErr),
+
+    #[error(transparent)]
+    TaskJoin(#[from] task::JoinError),
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Hash, FromQueryResult)]
+pub struct Permission {
+    pub name: String,
+}
+
+impl From<&str> for Permission {
+    fn from(name: &str) -> Self {
+        Permission {
+            name: name.to_string(),
+        }
+    }
+}

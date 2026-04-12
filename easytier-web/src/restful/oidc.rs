@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant, SystemTime};
 
 use subtle::ConstantTimeEq;
 
@@ -121,6 +121,33 @@ fn timing_safe_eq(a: &str, b: &str) -> bool {
         return false;
     }
     a.as_bytes().ct_eq(b.as_bytes()).into()
+}
+
+fn instant_to_rfc3339(expires_at: Instant) -> String {
+    let remaining = expires_at.saturating_duration_since(Instant::now());
+    let system_time = SystemTime::now()
+        .checked_add(remaining)
+        .unwrap_or_else(SystemTime::now);
+    chrono::DateTime::<chrono::Utc>::from(system_time).to_rfc3339()
+}
+
+fn build_frontend_auth_redirect_url(
+    frontend_base_url: Option<&str>,
+    token: &str,
+    expires_at: &str,
+) -> String {
+    let base = frontend_base_url.unwrap_or("/").trim_end_matches('/');
+    let base = if base.is_empty() { "/" } else { base };
+    let query = url::form_urlencoded::Serializer::new(String::new())
+        .append_pair("token", token)
+        .append_pair("expires_at", expires_at)
+        .finish();
+
+    if base == "/" {
+        format!("/#/auth?{query}")
+    } else {
+        format!("{base}#/auth?{query}")
+    }
 }
 
 #[derive(Debug, Clone, clap::Args)]
@@ -287,6 +314,8 @@ pub fn router() -> Router<AppStateInner> {
 }
 
 mod route {
+    use std::sync::Arc;
+
     use axum::extract::Query;
     use axum::http::StatusCode;
     use axum::response::{IntoResponse, Redirect, Response};
@@ -298,8 +327,8 @@ mod route {
     };
     use serde::Deserialize;
 
+    use crate::restful::auth_state::{BearerTokenStore, OidcStateStore};
     use crate::restful::other_error;
-    use crate::restful::users::AuthSession;
 
     use super::OidcConfig;
 
@@ -309,7 +338,7 @@ mod route {
 
     pub async fn oidc_login(
         Extension(oidc): Extension<OidcConfig>,
-        session: tower_sessions::Session,
+        Extension(oidc_state_store): Extension<Arc<OidcStateStore>>,
     ) -> Response {
         if !oidc.enabled {
             return (
@@ -356,69 +385,46 @@ mod route {
 
         let (auth_url, csrf_token, nonce) = auth_request.url();
 
-        if let Err(e) = session
-            .insert("oidc_csrf_token", csrf_token.secret().clone())
-            .await
-        {
-            tracing::error!("Failed to store csrf_token in session: {:?}", e);
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(other_error("Session error")),
-            )
-                .into_response();
-        }
-        if let Err(e) = session.insert("oidc_nonce", nonce.secret().clone()).await {
-            tracing::error!("Failed to store nonce in session: {:?}", e);
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(other_error("Session error")),
-            )
-                .into_response();
-        }
-        if let Some(verifier) = pkce_verifier
-            && let Err(e) = session
-                .insert("oidc_pkce_verifier", verifier.secret().clone())
-                .await
-        {
-            tracing::error!("Failed to store pkce_verifier in session: {:?}", e);
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(other_error("Session error")),
-            )
-                .into_response();
-        }
-        if let Err(e) = session.insert("oidc_pkce_used", pkce_enabled).await {
-            tracing::error!("Failed to store pkce_used in session: {:?}", e);
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(other_error("Session error")),
-            )
-                .into_response();
-        }
+        oidc_state_store.insert(
+            csrf_token.secret().clone(),
+            nonce.secret().clone(),
+            pkce_verifier.map(|verifier| verifier.secret().clone()),
+            pkce_enabled,
+        );
 
         Redirect::temporary(auth_url.as_str()).into_response()
     }
 
     #[derive(Deserialize)]
     pub struct CallbackParams {
-        code: Option<String>,
-        state: Option<String>,
-        error: Option<String>,
-        error_description: Option<String>,
+        pub(crate) code: Option<String>,
+        pub(crate) state: Option<String>,
+        pub(crate) error: Option<String>,
+        pub(crate) error_description: Option<String>,
     }
 
-    async fn cleanup_oidc_session(session: &tower_sessions::Session) {
-        let _ = session.remove::<String>("oidc_csrf_token").await;
-        let _ = session.remove::<String>("oidc_nonce").await;
-        let _ = session.remove::<String>("oidc_pkce_verifier").await;
-        let _ = session.remove::<bool>("oidc_pkce_used").await;
+    impl CallbackParams {
+        #[cfg(test)]
+        pub(crate) fn test_new(
+            code: Option<String>,
+            state: Option<String>,
+            error: Option<String>,
+            error_description: Option<String>,
+        ) -> Self {
+            Self {
+                code,
+                state,
+                error,
+                error_description,
+            }
+        }
     }
 
     pub async fn oidc_callback(
         Extension(oidc): Extension<OidcConfig>,
+        Extension(oidc_state_store): Extension<Arc<OidcStateStore>>,
+        Extension(token_store): Extension<Arc<BearerTokenStore>>,
         Query(params): Query<CallbackParams>,
-        session: tower_sessions::Session,
-        mut auth_session: AuthSession,
     ) -> Response {
         if !oidc.enabled {
             return (
@@ -435,7 +441,7 @@ mod route {
                 params.error_description
             );
             return (
-                StatusCode::BAD_REQUEST,
+                StatusCode::INTERNAL_SERVER_ERROR,
                 Json(other_error(
                     "Authentication failed at the identity provider",
                 )),
@@ -465,17 +471,23 @@ mod route {
             }
         };
 
-        let stored_csrf: String = match session.get("oidc_csrf_token").await {
-            Ok(Some(v)) => v,
-            _ => {
+        let stored_state = match oidc_state_store.consume(&callback_state) {
+            Some(state) => {
+                oidc_state_store.remove(&callback_state);
+                state
+            }
+            None => {
                 return (
                     StatusCode::BAD_REQUEST,
-                    Json(other_error("Missing or invalid CSRF token in session")),
+                    Json(other_error(
+                        "Missing, expired, or already consumed OIDC state",
+                    )),
                 )
                     .into_response();
             }
         };
-        if !super::timing_safe_eq(&stored_csrf, &callback_state) {
+
+        if !super::timing_safe_eq(&stored_state.state, &callback_state) {
             return (
                 StatusCode::BAD_REQUEST,
                 Json(other_error("CSRF state mismatch")),
@@ -483,22 +495,29 @@ mod route {
                 .into_response();
         }
 
-        let stored_nonce: String = match session.get("oidc_nonce").await {
-            Ok(Some(v)) => v,
-            _ => {
-                return (
-                    StatusCode::BAD_REQUEST,
-                    Json(other_error("Missing nonce in session")),
-                )
-                    .into_response();
-            }
-        };
+        if stored_state.nonce.is_empty() {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(other_error("Missing nonce in OIDC state store")),
+            )
+                .into_response();
+        }
 
-        let stored_pkce_verifier: Option<String> =
-            session.get("oidc_pkce_verifier").await.ok().flatten();
-        let pkce_was_used: Option<bool> = session.get("oidc_pkce_used").await.ok().flatten();
-
-        cleanup_oidc_session(&session).await;
+        let stored_pkce_verifier = stored_state.pkce_verifier.clone();
+        if stored_state.pkce_used
+            && stored_pkce_verifier
+                .as_deref()
+                .map(|verifier| verifier.is_empty())
+                .unwrap_or(true)
+        {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(other_error(
+                    "PKCE was enabled but verifier is missing from state store",
+                )),
+            )
+                .into_response();
+        }
 
         let client = match oidc.client() {
             Some(c) => c,
@@ -538,14 +557,6 @@ mod route {
         if let Some(stored_pkce_verifier) = stored_pkce_verifier {
             token_request =
                 token_request.set_pkce_verifier(PkceCodeVerifier::new(stored_pkce_verifier));
-        } else if pkce_was_used == Some(true) {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(other_error(
-                    "PKCE was enabled but verifier is missing from session (session may have expired)",
-                )),
-            )
-                .into_response();
         }
 
         let token_response = match token_request.request_async(http_client).await {
@@ -571,17 +582,18 @@ mod route {
             }
         };
 
-        let claims = match id_token.claims(&client.id_token_verifier(), &Nonce::new(stored_nonce)) {
-            Ok(c) => c,
-            Err(e) => {
-                tracing::error!("Failed to verify ID token: {:?}", e);
-                return (
-                    StatusCode::UNAUTHORIZED,
-                    Json(other_error("ID token verification failed")),
-                )
-                    .into_response();
-            }
-        };
+        let claims =
+            match id_token.claims(&client.id_token_verifier(), &Nonce::new(stored_state.nonce)) {
+                Ok(c) => c,
+                Err(e) => {
+                    tracing::error!("Failed to verify ID token: {:?}", e);
+                    return (
+                        StatusCode::UNAUTHORIZED,
+                        Json(other_error("ID token verification failed")),
+                    )
+                        .into_response();
+                }
+            };
 
         if let Some(expected_at_hash) = claims.access_token_hash() {
             let id_token_verifier = client.id_token_verifier();
@@ -656,8 +668,8 @@ mod route {
             }
         };
 
-        let user = match auth_session
-            .backend
+        let user = match token_store
+            .backend()
             .find_or_create_oidc_user(&username)
             .await
         {
@@ -672,29 +684,259 @@ mod route {
             }
         };
 
-        if let Err(e) = auth_session.login(&user).await {
-            tracing::error!("Failed to login user via OIDC: {:?}", e);
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(other_error("Failed to establish session")),
-            )
-                .into_response();
-        }
+        let token = token_store.issue_token(user.id());
+        let expires_at = match token_store.get(&token) {
+            Some(context) => super::instant_to_rfc3339(context.expires_at),
+            None => {
+                tracing::error!("Failed to resolve freshly-issued OIDC bearer token");
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(other_error("Failed to issue bearer token")),
+                )
+                    .into_response();
+            }
+        };
 
-        if let Err(e) = session.cycle_id().await {
-            tracing::error!("Failed to cycle session ID after OIDC login: {:?}", e);
-        }
-        if let Some(frontend_url) = &oidc.frontend_base_url {
-            Redirect::temporary(frontend_url).into_response()
-        } else {
-            Redirect::temporary("/").into_response()
-        }
+        let redirect_url = super::build_frontend_auth_redirect_url(
+            oidc.frontend_base_url.as_deref(),
+            &token,
+            &expires_at,
+        );
+        Redirect::temporary(&redirect_url).into_response()
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+
+    use axum::{
+        Extension, Json, Router,
+        body::to_bytes,
+        extract::{Form, Query, State},
+        http::{StatusCode, header},
+        response::{IntoResponse, Response},
+        routing::post,
+    };
+    use chrono::{Duration as ChronoDuration, Utc};
+    use openidconnect::core::{
+        CoreGenderClaim, CoreJsonWebKeySet, CoreJweContentEncryptionAlgorithm,
+        CoreJwsSigningAlgorithm, CoreResponseType, CoreRsaPrivateSigningKey,
+        CoreSubjectIdentifierType, CoreTokenType,
+    };
+    use openidconnect::{
+        AccessToken, Audience, AuthUrl, ClientId, ClientSecret, EmptyExtraTokenFields,
+        EndUserUsername, IdToken, IdTokenClaims, IssuerUrl, JsonWebKeyId, JsonWebKeySetUrl, Nonce,
+        PrivateSigningKey, StandardClaims, SubjectIdentifier, TokenUrl,
+    };
+
+    use crate::restful::auth_state::{BearerTokenStore, OidcStateStore};
+    use crate::restful::users::Backend;
+
     use super::*;
+
+    const TEST_RSA_PRIVATE_KEY: &str = "-----BEGIN RSA PRIVATE KEY-----\n\
+         MIIEowIBAAKCAQEAn4EPtAOCc9AlkeQHPzHStgAbgs7bTZLwUBZdR8/KuKPEHLd4\n\
+         rHVTeT+O+XV2jRojdNhxJWTDvNd7nqQ0VEiZQHz/AJmSCpMaJMRBSFKrKb2wqVwG\n\
+         U/NsYOYL+QtiWN2lbzcEe6XC0dApr5ydQLrHqkHHig3RBordaZ6Aj+oBHqFEHYpP\n\
+         e7Tpe+OfVfHd1E6cS6M1FZcD1NNLYD5lFHpPI9bTwJlsde3uhGqC0ZCuEHg8lhzw\n\
+         OHrtIQbS0FVbb9k3+tVTU4fg/3L/vniUFAKwuCLqKnS2BYwdq/mzSnbLY7h/qixo\n\
+         R7jig3//kRhuaxwUkRz5iaiQkqgc5gHdrNP5zwIDAQABAoIBAG1lAvQfhBUSKPJK\n\
+         Rn4dGbshj7zDSr2FjbQf4pIh/ZNtHk/jtavyO/HomZKV8V0NFExLNi7DUUvvLiW7\n\
+         0PgNYq5MDEjJCtSd10xoHa4QpLvYEZXWO7DQPwCmRofkOutf+NqyDS0QnvFvp2d+\n\
+         Lov6jn5C5yvUFgw6qWiLAPmzMFlkgxbtjFAWMJB0zBMy2BqjntOJ6KnqtYRMQUxw\n\
+         TgXZDF4rhYVKtQVOpfg6hIlsaoPNrF7dofizJ099OOgDmCaEYqM++bUlEHxgrIVk\n\
+         wZz+bg43dfJCocr9O5YX0iXaz3TOT5cpdtYbBX+C/5hwrqBWru4HbD3xz8cY1TnD\n\
+         qQa0M8ECgYEA3Slxg/DwTXJcb6095RoXygQCAZ5RnAvZlno1yhHtnUex/fp7AZ/9\n\
+         nRaO7HX/+SFfGQeutao2TDjDAWU4Vupk8rw9JR0AzZ0N2fvuIAmr/WCsmGpeNqQn\n\
+         ev1T7IyEsnh8UMt+n5CafhkikzhEsrmndH6LxOrvRJlsPp6Zv8bUq0kCgYEAuKE2\n\
+         dh+cTf6ERF4k4e/jy78GfPYUIaUyoSSJuBzp3Cubk3OCqs6grT8bR/cu0Dm1MZwW\n\
+         mtdqDyI95HrUeq3MP15vMMON8lHTeZu2lmKvwqW7anV5UzhM1iZ7z4yMkuUwFWoB\n\
+         vyY898EXvRD+hdqRxHlSqAZ192zB3pVFJ0s7pFcCgYAHw9W9eS8muPYv4ZhDu/fL\n\
+         2vorDmD1JqFcHCxZTOnX1NWWAj5hXzmrU0hvWvFC0P4ixddHf5Nqd6+5E9G3k4E5\n\
+         2IwZCnylu3bqCWNh8pT8T3Gf5FQsfPT5530T2BcsoPhUaeCnP499D+rb2mTnFYeg\n\
+         mnTT1B/Ue8KGLFFfn16GKQKBgAiw5gxnbocpXPaO6/OKxFFZ+6c0OjxfN2PogWce\n\
+         TU/k6ZzmShdaRKwDFXisxRJeNQ5Rx6qgS0jNFtbDhW8E8WFmQ5urCOqIOYk28EBi\n\
+         At4JySm4v+5P7yYBh8B8YD2l9j57z/s8hJAxEbn/q8uHP2ddQqvQKgtsni+pHSk9\n\
+         XGBfAoGBANz4qr10DdM8DHhPrAb2YItvPVz/VwkBd1Vqj8zCpyIEKe/07oKOvjWQ\n\
+         SgkLDH9x2hBgY01SbP43CvPk0V72invu2TGkI/FXwXWJLLG7tDSgw4YyfhrYrHmg\n\
+         1Vre3XB9HH8MYBVB6UIexaAq4xSeoemRKTBesZro7OKjKT8/GmiO\n\
+         -----END RSA PRIVATE KEY-----";
+
+    #[derive(Clone)]
+    struct MockOidcProviderState {
+        issuer: String,
+        client_id: String,
+        client_secret: String,
+        expected_code: String,
+        expected_pkce_verifier: Option<String>,
+        access_token: String,
+        username: String,
+        nonce: String,
+        token_requests: Arc<AtomicUsize>,
+    }
+
+    #[derive(Deserialize)]
+    struct MockTokenRequest {
+        grant_type: String,
+        code: String,
+        redirect_uri: Option<String>,
+        code_verifier: Option<String>,
+    }
+
+    async fn make_backend() -> Backend {
+        Backend::new(crate::db::Db::memory_db().await)
+    }
+
+    async fn mock_token_endpoint(
+        State(state): State<MockOidcProviderState>,
+        Form(form): Form<MockTokenRequest>,
+    ) -> Response {
+        state.token_requests.fetch_add(1, Ordering::SeqCst);
+
+        assert_eq!(form.grant_type, "authorization_code");
+        assert_eq!(form.code, state.expected_code);
+        assert!(form.redirect_uri.is_some());
+        assert_eq!(form.code_verifier, state.expected_pkce_verifier);
+
+        let access_token = AccessToken::new(state.access_token.clone());
+        let claims = IdTokenClaims::<JsonAdditionalClaims, CoreGenderClaim>::new(
+            IssuerUrl::new(state.issuer.clone()).unwrap(),
+            vec![Audience::new(state.client_id.clone())],
+            Utc::now() + ChronoDuration::minutes(5),
+            Utc::now(),
+            StandardClaims::new(SubjectIdentifier::new("oidc-user-subject".to_string()))
+                .set_preferred_username(Some(EndUserUsername::new(state.username.clone()))),
+            JsonAdditionalClaims::default(),
+        )
+        .set_nonce(Some(Nonce::new(state.nonce.clone())));
+        let signing_key = CoreRsaPrivateSigningKey::from_pem(
+            TEST_RSA_PRIVATE_KEY,
+            Some(JsonWebKeyId::new("test-key".to_string())),
+        )
+        .unwrap();
+        let id_token = IdToken::<
+            JsonAdditionalClaims,
+            CoreGenderClaim,
+            CoreJweContentEncryptionAlgorithm,
+            CoreJwsSigningAlgorithm,
+        >::new(
+            claims,
+            &signing_key,
+            CoreJwsSigningAlgorithm::RsaSsaPkcs1V15Sha256,
+            Some(&access_token),
+            None,
+        )
+        .unwrap();
+        let mut token_response = AppTokenResponse::new(
+            access_token,
+            CoreTokenType::Bearer,
+            AppIdTokenFields::new(Some(id_token), EmptyExtraTokenFields {}),
+        );
+        token_response.set_expires_in(Some(&std::time::Duration::from_secs(300)));
+
+        Json(token_response).into_response()
+    }
+
+    async fn spawn_mock_oidc_provider(
+        mut state: MockOidcProviderState,
+    ) -> (MockOidcProviderState, tokio::task::JoinHandle<()>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        state.issuer = format!("http://{addr}");
+        let app = Router::new()
+            .route("/token", post(mock_token_endpoint))
+            .with_state(state.clone());
+        let handle = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        (state, handle)
+    }
+
+    fn make_test_oidc_config(
+        issuer: String,
+        client_id: String,
+        client_secret: String,
+        token_endpoint: String,
+        frontend_base_url: Option<String>,
+    ) -> OidcConfig {
+        let provider_metadata = Arc::new(
+            CoreProviderMetadata::new(
+                IssuerUrl::new(issuer).unwrap(),
+                AuthUrl::new("https://provider.example/authorize".to_string()).unwrap(),
+                JsonWebKeySetUrl::new("https://provider.example/jwks".to_string()).unwrap(),
+                vec![openidconnect::ResponseTypes::new(vec![
+                    CoreResponseType::Code,
+                ])],
+                vec![CoreSubjectIdentifierType::Public],
+                vec![CoreJwsSigningAlgorithm::RsaSsaPkcs1V15Sha256],
+                openidconnect::EmptyAdditionalProviderMetadata {},
+            )
+            .set_jwks(CoreJsonWebKeySet::new(vec![
+                CoreRsaPrivateSigningKey::from_pem(
+                    TEST_RSA_PRIVATE_KEY,
+                    Some(JsonWebKeyId::new("test-key".to_string())),
+                )
+                .unwrap()
+                .as_verification_key(),
+            ]))
+            .set_token_endpoint(Some(TokenUrl::new(token_endpoint).unwrap())),
+        );
+        let redirect_url = openidconnect::RedirectUrl::new(
+            "http://localhost/api/v1/auth/oidc/callback".to_string(),
+        )
+        .unwrap();
+        let client = Arc::new(
+            AppClient::from_provider_metadata(
+                provider_metadata.as_ref().clone(),
+                ClientId::new(client_id.clone()),
+                Some(ClientSecret::new(client_secret.clone())),
+            )
+            .set_redirect_uri(redirect_url.clone()),
+        );
+
+        OidcConfig {
+            enabled: true,
+            provider_metadata: Some(provider_metadata),
+            client_id,
+            client_secret: Some(client_secret),
+            redirect_url: Some(redirect_url),
+            username_claim: "preferred_username".to_string(),
+            scopes: vec!["openid".to_string(), "profile".to_string()],
+            pkce_enabled: true,
+            frontend_base_url,
+            http_client: Some(reqwest::Client::new()),
+            cached_client: Some(client),
+        }
+    }
+
+    fn parse_auth_redirect(response: &Response) -> HashMap<String, String> {
+        let location = response
+            .headers()
+            .get(header::LOCATION)
+            .unwrap()
+            .to_str()
+            .unwrap();
+        let url = url::Url::parse(location).unwrap();
+        let fragment = url.fragment().unwrap();
+        assert!(
+            fragment.starts_with("/auth?"),
+            "unexpected fragment: {fragment}"
+        );
+        url::form_urlencoded::parse(fragment.trim_start_matches("/auth?").as_bytes())
+            .into_owned()
+            .collect()
+    }
+
+    async fn response_body_json(response: Response) -> serde_json::Value {
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        serde_json::from_slice(&body).unwrap()
+    }
 
     #[test]
     fn test_dot_path_to_json_pointer() {
@@ -731,5 +973,259 @@ mod tests {
                 ptr
             );
         }
+    }
+
+    #[tokio::test]
+    async fn oidc_bearer_callback_issues_token() {
+        let backend = make_backend().await;
+        let token_store = Arc::new(BearerTokenStore::with_ttl_and_cleanup_interval(
+            backend.clone(),
+            Duration::from_secs(60),
+            Duration::from_millis(10),
+        ));
+        let oidc_state_store = Arc::new(OidcStateStore::with_ttl_and_cleanup_interval(
+            Duration::from_secs(60),
+            Duration::from_millis(10),
+        ));
+        let token_requests = Arc::new(AtomicUsize::new(0));
+        let provider_state = MockOidcProviderState {
+            issuer: String::new(),
+            client_id: "oidc-client".to_string(),
+            client_secret: "oidc-secret".to_string(),
+            expected_code: "valid-code".to_string(),
+            expected_pkce_verifier: Some("pkce-verifier".to_string()),
+            access_token: "provider-access-token".to_string(),
+            username: "oidc-bearer-user".to_string(),
+            nonce: "oidc-nonce".to_string(),
+            token_requests: token_requests.clone(),
+        };
+        let (server_state, server) = spawn_mock_oidc_provider(provider_state).await;
+        let oidc = make_test_oidc_config(
+            server_state.issuer.clone(),
+            server_state.client_id.clone(),
+            server_state.client_secret.clone(),
+            format!("{}/token", server_state.issuer),
+            Some("https://frontend.example/app/".to_string()),
+        );
+
+        oidc_state_store.insert(
+            "state-success",
+            server_state.nonce.clone(),
+            server_state.expected_pkce_verifier.clone(),
+            true,
+        );
+
+        let response = route::oidc_callback(
+            Extension(oidc),
+            Extension(oidc_state_store.clone()),
+            Extension(token_store.clone()),
+            Query(route::CallbackParams::test_new(
+                Some(server_state.expected_code.clone()),
+                Some("state-success".to_string()),
+                None,
+                None,
+            )),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::TEMPORARY_REDIRECT);
+        assert_eq!(token_requests.load(Ordering::SeqCst), 1);
+        assert!(oidc_state_store.get("state-success").is_none());
+
+        let params = parse_auth_redirect(&response);
+        let token = params.get("token").unwrap();
+        let expires_at = params.get("expires_at").unwrap();
+        let token_context = token_store.get(token).expect("token should be stored");
+        let user = backend
+            .find_user_by_id(token_context.user_id)
+            .await
+            .unwrap()
+            .expect("oidc user should exist");
+
+        assert_eq!(user.db_user.username, server_state.username);
+        assert!(chrono::DateTime::parse_from_rfc3339(expires_at).is_ok());
+        assert!(expires_at.contains('T'));
+
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn oidc_bearer_rejects_expired_or_replayed_state() {
+        let backend = make_backend().await;
+        let token_store = Arc::new(BearerTokenStore::with_ttl_and_cleanup_interval(
+            backend,
+            Duration::from_secs(60),
+            Duration::from_millis(10),
+        ));
+        let oidc_state_store = Arc::new(OidcStateStore::with_ttl_and_cleanup_interval(
+            Duration::from_millis(20),
+            Duration::from_millis(10),
+        ));
+        let token_requests = Arc::new(AtomicUsize::new(0));
+        let provider_state = MockOidcProviderState {
+            issuer: String::new(),
+            client_id: "oidc-client".to_string(),
+            client_secret: "oidc-secret".to_string(),
+            expected_code: "valid-code".to_string(),
+            expected_pkce_verifier: Some("pkce-verifier".to_string()),
+            access_token: "provider-access-token".to_string(),
+            username: "oidc-bearer-user".to_string(),
+            nonce: "oidc-nonce".to_string(),
+            token_requests: token_requests.clone(),
+        };
+        let (provider_state, server) = spawn_mock_oidc_provider(provider_state).await;
+        let oidc = make_test_oidc_config(
+            provider_state.issuer.clone(),
+            provider_state.client_id.clone(),
+            provider_state.client_secret.clone(),
+            format!("{}/token", provider_state.issuer),
+            Some("https://frontend.example/app".to_string()),
+        );
+
+        oidc_state_store.insert(
+            "state-expired",
+            provider_state.nonce.clone(),
+            provider_state.expected_pkce_verifier.clone(),
+            true,
+        );
+        tokio::time::sleep(Duration::from_millis(40)).await;
+
+        let expired_response = route::oidc_callback(
+            Extension(oidc.clone()),
+            Extension(oidc_state_store.clone()),
+            Extension(token_store.clone()),
+            Query(route::CallbackParams::test_new(
+                Some(provider_state.expected_code.clone()),
+                Some("state-expired".to_string()),
+                None,
+                None,
+            )),
+        )
+        .await;
+        assert_eq!(expired_response.status(), StatusCode::BAD_REQUEST);
+        let expired_body = response_body_json(expired_response).await;
+        assert!(
+            expired_body["message"]
+                .as_str()
+                .unwrap()
+                .contains("Missing, expired, or already consumed OIDC state")
+        );
+        assert_eq!(token_requests.load(Ordering::SeqCst), 0);
+
+        oidc_state_store.insert(
+            "state-replay",
+            provider_state.nonce.clone(),
+            provider_state.expected_pkce_verifier.clone(),
+            true,
+        );
+        let first_response = route::oidc_callback(
+            Extension(oidc.clone()),
+            Extension(oidc_state_store.clone()),
+            Extension(token_store.clone()),
+            Query(route::CallbackParams::test_new(
+                Some(provider_state.expected_code.clone()),
+                Some("state-replay".to_string()),
+                None,
+                None,
+            )),
+        )
+        .await;
+        assert_eq!(first_response.status(), StatusCode::TEMPORARY_REDIRECT);
+        assert_eq!(token_requests.load(Ordering::SeqCst), 1);
+
+        let replay_response = route::oidc_callback(
+            Extension(oidc),
+            Extension(oidc_state_store),
+            Extension(token_store),
+            Query(route::CallbackParams::test_new(
+                Some(provider_state.expected_code),
+                Some("state-replay".to_string()),
+                None,
+                None,
+            )),
+        )
+        .await;
+        assert_eq!(replay_response.status(), StatusCode::BAD_REQUEST);
+        let replay_body = response_body_json(replay_response).await;
+        assert!(
+            replay_body["message"]
+                .as_str()
+                .unwrap()
+                .contains("Missing, expired, or already consumed OIDC state")
+        );
+        assert_eq!(token_requests.load(Ordering::SeqCst), 1);
+
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn oidc_bearer_restart_invalidates_pending_login_state() {
+        let backend = make_backend().await;
+        let token_store = Arc::new(BearerTokenStore::with_ttl_and_cleanup_interval(
+            backend,
+            Duration::from_secs(60),
+            Duration::from_millis(10),
+        ));
+        let original_store = Arc::new(OidcStateStore::with_ttl_and_cleanup_interval(
+            Duration::from_secs(60),
+            Duration::from_millis(10),
+        ));
+        let token_requests = Arc::new(AtomicUsize::new(0));
+        let provider_state = MockOidcProviderState {
+            issuer: String::new(),
+            client_id: "oidc-client".to_string(),
+            client_secret: "oidc-secret".to_string(),
+            expected_code: "valid-code".to_string(),
+            expected_pkce_verifier: Some("pkce-verifier".to_string()),
+            access_token: "provider-access-token".to_string(),
+            username: "oidc-bearer-user".to_string(),
+            nonce: "oidc-nonce".to_string(),
+            token_requests: token_requests.clone(),
+        };
+        let (provider_state, server) = spawn_mock_oidc_provider(provider_state).await;
+        let oidc = make_test_oidc_config(
+            provider_state.issuer.clone(),
+            provider_state.client_id.clone(),
+            provider_state.client_secret.clone(),
+            format!("{}/token", provider_state.issuer),
+            Some("https://frontend.example/app".to_string()),
+        );
+
+        original_store.insert(
+            "state-restart",
+            provider_state.nonce.clone(),
+            provider_state.expected_pkce_verifier.clone(),
+            true,
+        );
+        drop(original_store);
+        let restarted_store = Arc::new(OidcStateStore::with_ttl_and_cleanup_interval(
+            Duration::from_secs(60),
+            Duration::from_millis(10),
+        ));
+
+        let response = route::oidc_callback(
+            Extension(oidc),
+            Extension(restarted_store),
+            Extension(token_store),
+            Query(route::CallbackParams::test_new(
+                Some(provider_state.expected_code),
+                Some("state-restart".to_string()),
+                None,
+                None,
+            )),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = response_body_json(response).await;
+        assert!(
+            body["message"]
+                .as_str()
+                .unwrap()
+                .contains("Missing, expired, or already consumed OIDC state")
+        );
+        assert_eq!(token_requests.load(Ordering::SeqCst), 0);
+
+        server.abort();
     }
 }
