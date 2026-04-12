@@ -1,5 +1,3 @@
-use std::io::IsTerminal as _;
-
 use crate::common::config::{FileLoggerConfig, LoggingConfigLoader};
 use crate::common::get_logger_timer_rfc3339;
 use crate::common::tracing_rolling_appender::{FileAppenderWrapper, RollingFileAppenderBase};
@@ -7,6 +5,7 @@ use crate::rpc_service::logger::{CURRENT_LOG_LEVEL, LOGGER_LEVEL_SENDER};
 use anyhow::Context;
 use cfg_if::cfg_if;
 use paste::paste;
+use std::io::IsTerminal;
 use tracing::level_filters::LevelFilter;
 use tracing::{Level, Metadata};
 use tracing_subscriber::Registry;
@@ -200,7 +199,7 @@ fn file_layers(
             .max_filecount(config.count.unwrap_or(10))
             .condition_max_file_size(config.size_mb.unwrap_or(100) * 1024 * 1024)
             .build()
-            .unwrap();
+            .with_context(|| "failed to initialize rolling file appender")?;
 
         FileAppenderWrapper::new(file_appender)
     };

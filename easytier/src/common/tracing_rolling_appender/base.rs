@@ -1,4 +1,5 @@
 use super::*;
+use anyhow::anyhow;
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct RollingConditionBase {
@@ -135,9 +136,11 @@ impl RollingFileAppenderBaseBuilder {
     /// Builds a RollingFileAppenderBase instance from the current settings.
     ///
     /// Returns an error if the filename is empty.
-    pub fn build(self) -> Result<RollingFileAppenderBase, &'static str> {
+    pub fn build(self) -> anyhow::Result<RollingFileAppenderBase> {
         if self.filename.is_empty() {
-            return Err("A filename is required to be set and can not be blank");
+            return Err(anyhow!(
+                "A filename is required to be set and can not be blank"
+            ));
         }
         Ok(RollingFileAppenderBase {
             condition: self.condition,
