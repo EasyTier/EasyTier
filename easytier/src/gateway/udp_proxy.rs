@@ -394,11 +394,10 @@ impl UdpProxy {
 #[async_trait::async_trait]
 impl PeerPacketFilter for UdpProxy {
     async fn try_process_packet_from_peer(&self, packet: ZCPacket) -> Option<ZCPacket> {
-        if self.try_handle_packet(&packet).await.is_some() {
-            return None;
-        } else {
-            return Some(packet);
-        }
+        self.try_handle_packet(&packet)
+            .await
+            .is_none()
+            .then_some(packet)
     }
 }
 
