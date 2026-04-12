@@ -76,7 +76,6 @@ macro_rules! log_layer {
         $layer
             .with_file(false)
             .with_line_number(false)
-            .with_ansi(true)
             .with_filter(filter_fn(is_log))
             .boxed()
     };
