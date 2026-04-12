@@ -809,6 +809,16 @@ impl NetworkConfig {
             flags.accept_dns = enable_magic_dns;
         }
 
+        if let Some(tld_dns_zone) = &self.tld_dns_zone {
+            if !tld_dns_zone.is_empty() {
+                flags.tld_dns_zone = tld_dns_zone.clone();
+            }
+        }
+
+        if let Some(magic_dns_server_ip) = &self.magic_dns_server_ip {
+            flags.magic_dns_server_ip = magic_dns_server_ip.clone();
+        }
+
         if let Some(mtu) = self.mtu {
             flags.mtu = mtu as u32;
         }
@@ -959,6 +969,12 @@ impl NetworkConfig {
         result.disable_udp_hole_punching = Some(flags.disable_udp_hole_punching);
         result.disable_sym_hole_punching = Some(flags.disable_sym_hole_punching);
         result.enable_magic_dns = Some(flags.accept_dns);
+        result.tld_dns_zone = Some(flags.tld_dns_zone.clone());
+        result.magic_dns_server_ip = if flags.magic_dns_server_ip.is_empty() {
+            None
+        } else {
+            Some(flags.magic_dns_server_ip.clone())
+        };
         result.mtu = Some(flags.mtu as i32);
         result.instance_recv_bps_limit =
             (flags.instance_recv_bps_limit != u64::MAX).then_some(flags.instance_recv_bps_limit);
@@ -1021,6 +1037,33 @@ mod tests {
             generated_config_str,
             serde_json::to_string(&network_config).unwrap()
         );
+        Ok(())
+    }
+
+    #[test]
+    fn test_network_config_magic_dns_round_trip() -> Result<(), anyhow::Error> {
+        // non-empty magic_dns_server_ip should survive round-trip
+        let config = gen_default_config();
+        let mut flags = config.get_flags();
+        flags.accept_dns = true;
+        flags.magic_dns_server_ip = "10.0.0.53".to_string();
+        flags.tld_dns_zone = "myhome.".to_string();
+        config.set_flags(flags);
+
+        let network_config = super::NetworkConfig::new_from_config(&config)?;
+        assert_eq!(network_config.magic_dns_server_ip.as_deref(), Some("10.0.0.53"));
+        assert_eq!(network_config.tld_dns_zone.as_deref(), Some("myhome."));
+
+        let generated_config = network_config.gen_config()?;
+        let generated_flags = generated_config.get_flags();
+        assert_eq!(generated_flags.magic_dns_server_ip, "10.0.0.53");
+        assert_eq!(generated_flags.tld_dns_zone, "myhome.");
+
+        // empty magic_dns_server_ip should produce None in NetworkConfig
+        let config2 = gen_default_config();
+        let network_config2 = super::NetworkConfig::new_from_config(&config2)?;
+        assert!(network_config2.magic_dns_server_ip.is_none());
+
         Ok(())
     }
 

@@ -66,6 +66,7 @@ pub fn gen_default_flags() -> Flags {
         encryption_algorithm: EncryptionAlgorithm::default().to_string(),
         disable_sym_hole_punching: false,
         tld_dns_zone: DEFAULT_ET_DNS_ZONE.to_string(),
+        magic_dns_server_ip: "".to_string(),
 
         quic_listen_port: u32::MAX,
         need_p2p: false,

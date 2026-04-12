@@ -74,6 +74,9 @@ message FlagsInConfig {
   bool lazy_p2p = 37;
   bool need_p2p = 38;
   uint64 instance_recv_bps_limit = 39;
+
+  // custom fake IP for magic dns server; empty means use the default (100.100.100.101)
+  string magic_dns_server_ip = 40;
 }
 
 message RpcDescriptor {

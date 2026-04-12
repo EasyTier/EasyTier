@@ -163,6 +163,16 @@ enable_magic_dns: Enable Magic DNS
 enable_magic_dns_help: |
   Enable magic dns, all nodes in the network can access each other by domain name, e.g.: node1.et.net.
 
+tld_dns_zone: Magic DNS Suffix
+tld_dns_zone_help: |
+  Top-level domain zone for Magic DNS. Leave blank to use the default (et.net.). Only used when Magic DNS is enabled.
+tld_dns_zone_placeholder: "Default: et.net."
+
+magic_dns_server_ip: Magic DNS Server IP
+magic_dns_server_ip_help: |
+  The virtual IP address used by the Magic DNS server. Leave blank to use the default (100.100.100.101). Only used when Magic DNS is enabled.
+magic_dns_server_ip_placeholder: "Default: 100.100.100.101"
+
 enable_private_mode: Enable Private Mode
 enable_private_mode_help: |
   Enable private mode, nodes with different network names or passwords from this network are not allowed to perform handshake or relay through this node.

@@ -702,12 +702,25 @@ impl Instance {
             return None;
         }
 
-        let runner = DnsRunner::new(
-            peer_mgr,
-            tun_dev,
-            tun_ip,
-            MAGIC_DNS_FAKE_IP.parse().unwrap(),
-        );
+        let flags = ctx.config.get_flags();
+        let configured_ip = flags.magic_dns_server_ip.trim();
+        let fake_ip = if !configured_ip.is_empty() {
+            match configured_ip.parse() {
+                Ok(ip) => ip,
+                Err(e) => {
+                    tracing::warn!(
+                        "Invalid magic_dns_server_ip '{}': {}, using default",
+                        configured_ip,
+                        e
+                    );
+                    MAGIC_DNS_FAKE_IP.parse().unwrap()
+                }
+            }
+        } else {
+            MAGIC_DNS_FAKE_IP.parse().unwrap()
+        };
+
+        let runner = DnsRunner::new(peer_mgr, tun_dev, tun_ip, fake_ip);
         Some(runner)
     }
 
