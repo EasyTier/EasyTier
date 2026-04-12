@@ -2,10 +2,17 @@ name: prepare-build
 author: Luna
 description: Prepare build environment
 inputs:
-  web:
-    description: 'Whether to prepare the web build environment'
+  target:
+    description: 'The target to build for'
+    required: false
+  pnpm:
+    description: 'Whether to run pnpm build'
     required: true
     default: 'true'
+  pnpm-build-filter:
+    description: 'The filter argument for pnpm build (e.g. ./easytier-web/*)'
+    required: false
+    default: './easytier-web/*'
   gui:
     description: 'Whether to prepare the GUI build environment'
     required: true
@@ -19,21 +26,63 @@ runs:
     - run: mkdir -p easytier-gui/dist
       shell: bash
 
-    - name: Setup Frontend Environment
-      if: ${{ inputs.web == 'true' }}
-      uses: ./.github/actions/prepare-pnpm
-      with:
-        build-filter: './easytier-web/*'
-
-    - name: Install GUI dependencies (Used by clippy)
-      if: ${{ inputs.gui == 'true' }}
+    - name: Install dependencies
+      if: ${{ runner.os == 'Linux' }}
       run: |
-        bash ./.github/workflows/install_gui_dep.sh
+        sudo apt-get update
+        sudo apt-get install -qqy build-essential mold musl-tools
       shell: bash
 
-    - name: Install Rust
+    - name: Setup Frontend Environment
+      if: ${{ inputs.pnpm == 'true' }}
+      uses: ./.github/actions/prepare-pnpm
+      with:
+        build-filter: ${{ inputs.pnpm-build-filter }}
+
+    - name: Install GUI dependencies (Linux)
+      if: ${{ inputs.gui == 'true' && runner.os == 'Linux' }}
       run: |
-        bash ./.github/workflows/install_rust.sh
+        sudo apt-get install -qq xdg-utils \
+        libappindicator3-dev \
+        libgtk-3-dev \
+        librsvg2-dev \
+        libwebkit2gtk-4.1-dev \
+        libxdo-dev
+      shell: bash
+
+    - uses: actions-rust-lang/setup-rust-toolchain@v1
+      with:
+        toolchain: stable
+        target: ${{ !contains(inputs.target, 'mips') && inputs.target || '' }}
+        cache: false
+        rustflags: ''
+
+    - name: Install Rust (MIPS)
+      if: ${{ contains(inputs.target, 'mips') }}
+      run: |
+        rustup toolchain install nightly-2026-02-02-x86_64-unknown-linux-gnu
+        rustup component add rust-src --toolchain nightly-2026-02-02-x86_64-unknown-linux-gnu
+        
+        MUSL_TARGET=${{ inputs.target }}sf
+        mkdir -p ./musl_gcc
+        wget --inet4-only -c https://github.com/cross-tools/musl-cross/releases/download/20250520/${MUSL_TARGET}.tar.xz -P ./musl_gcc/
+        tar xf ./musl_gcc/${MUSL_TARGET}.tar.xz -C ./musl_gcc/
+        sudo ln -sf $(pwd)/musl_gcc/${MUSL_TARGET}/bin/*gcc /usr/bin/
+        sudo ln -sf $(pwd)/musl_gcc/${MUSL_TARGET}/include/ /usr/include/musl-cross
+        sudo ln -sf $(pwd)/musl_gcc/${MUSL_TARGET}/${MUSL_TARGET}/sysroot/ ./musl_gcc/sysroot
+        sudo chmod -R a+rwx ./musl_gcc
+
+        if [[ -d "./musl_gcc/sysroot" ]]; then
+          echo "BINDGEN_EXTRA_CLANG_ARGS=--sysroot=$(readlink -f ./musl_gcc/sysroot)" >> $GITHUB_ENV
+        fi
+
+        cd "$PWD/musl_gcc/${MUSL_TARGET}/lib/gcc/${MUSL_TARGET}/15.1.0" || exit 255
+        # for panic-abort
+        cp libgcc_eh.a libunwind.a
+        
+        # for mimalloc
+        ar x libgcc.a _ctzsi2.o _clz.o _bswapsi2.o
+        ar rcs libctz.a _ctzsi2.o _clz.o _bswapsi2.o
       shell: bash
 
     - name: Setup protoc

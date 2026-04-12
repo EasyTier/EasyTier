@@ -29,12 +29,21 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-      - name: fmt check
+
+      - name: Prepare build environment
+        uses: ./.github/actions/prepare-build
+        with:
+          gui: false
+          pnpm: false
+
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          components: rustfmt
+
+      - name: Check formatting
         working-directory: ./easytier-contrib/easytier-ohrs
-        run: |
-          bash ../../.github/workflows/install_rust.sh
-          rustup component add rustfmt
-          cargo fmt --all -- --check
+        run: cargo fmt --all -- --check
+
   pre_job:
     # continue-on-error: true # Uncomment once integration is finished
     runs-on: ubuntu-latest
@@ -51,7 +60,8 @@ jobs:
           concurrent_skipping: "same_content_newer"
           skip_after_successful_duplicate: "true"
           cancel_others: "true"
-          paths: '["Cargo.toml", "Cargo.lock", "easytier/**", "easytier-contrib/easytier-ohrs/**", ".github/workflows/ohos.yml", ".github/workflows/install_rust.sh"]'
+          paths: '["Cargo.toml", "Cargo.lock", "easytier/**", "easytier-contrib/easytier-ohrs/**", ".github/workflows/ohos.yml", ".github/actions/**"]'
+
   build-ohos:
     runs-on: ubuntu-latest
     needs: pre_job
@@ -63,13 +73,12 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y \
+          sudo apt-get install -qq \
             build-essential \
             wget \
             unzip \
             git \
             pkg-config curl libgl1-mesa-dev expect
-          sudo apt-get clean
 
       - name: Resolve easytier version
         run: |
@@ -141,6 +150,15 @@ jobs:
         run: |
           echo "TARGET_ARCH=aarch64-linux-ohos" >> $GITHUB_ENV
 
+          rustup install stable
+          rustup default stable
+
+          rustup target add aarch64-unknown-linux-ohos
+
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: ohrs
+
       - name: Create clang wrapper script
         run: |
           sudo mkdir -p $OHOS_NDK_HOME/native/llvm
@@ -159,11 +177,7 @@ jobs:
         run: |
           sudo apt-get install -y llvm clang lldb lld
           sudo apt-get install -y protobuf-compiler
-          bash ../../.github/workflows/install_rust.sh
           source env.sh
-          cargo install ohrs
-          rustup target add aarch64-unknown-linux-ohos
-          cargo update easytier
           ohrs doctor
           ohrs build --release --arch aarch
           ohrs artifact
