@@ -12,20 +12,18 @@ use std::{
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
 use super::TunnelInfo;
-use crate::common::netns::NetNS;
-use bytes::{Buf, BufMut, Bytes, BytesMut};
-use tokio::net::{TcpListener, TcpSocket, UdpSocket};
-use tokio_stream::StreamExt;
-use tokio_util::io::poll_write_buf;
-use zerocopy::FromBytes as _;
-
-use crate::tunnel::packet_def::{PEER_MANAGER_HEADER_SIZE, ZCPacket};
-
 use super::{
     SinkItem, StreamItem, Tunnel, TunnelError, ZCPacketSink, ZCPacketStream,
     buf::BufList,
     packet_def::{TCP_TUNNEL_HEADER_SIZE, TCPTunnelHeader, ZCPacketType},
 };
+use crate::common::netns::NetNS;
+use crate::tunnel::packet_def::{PEER_MANAGER_HEADER_SIZE, ZCPacket};
+use bytes::{Buf, BufMut, Bytes, BytesMut};
+use tokio::net::{TcpListener, TcpSocket, UdpSocket};
+use tokio_stream::StreamExt;
+use tokio_util::io::poll_write_buf;
+use zerocopy::FromBytes as _;
 
 pub struct TunnelWrapper<R, W> {
     reader: Arc<Mutex<Option<R>>>,
@@ -472,6 +470,30 @@ fn setup_socket2_ext(
     Ok(())
 }
 
+#[derive(Debug, Default, Clone)]
+pub enum BindDev {
+    #[default]
+    Auto,
+    Disabled,
+    Custom(String),
+}
+
+impl From<String> for BindDev {
+    fn from(value: String) -> Self {
+        if value.is_empty() {
+            Self::Disabled
+        } else {
+            Self::Custom(value)
+        }
+    }
+}
+
+impl From<&str> for BindDev {
+    fn from(value: &str) -> Self {
+        value.to_string().into()
+    }
+}
+
 /// Binds a socket to a specific address and optionally a network interface.
 ///
 /// This function creates a new socket, applies specific configurations (such as
@@ -481,14 +503,13 @@ fn setup_socket2_ext(
 /// # Arguments
 ///
 /// * `addr` - The `SocketAddr` to bind the socket to.
-/// * `dev` - The name of the network interface to bind to. Pay attention to the subtle
-///   differences in how this option is evaluated:
-///   * **`None`**: Enables **auto-discovery**. The function will attempt to automatically
+/// * `dev` - The name of the network interface to bind to:
+///   * **(default) `BindDev::Auto`**: Enables **auto-discovery**. The function will attempt to automatically
 ///     resolve the interface name associated with the provided `addr.ip()`.
-///   * **`Some(String::new())` (Empty string)**: **Disables** auto-discovery and
+///   * **empty string or `BindDev::Disabled`**: **Disables** auto-discovery and
 ///     explicitly chooses **not** to bind to any specific device. The routing will be
 ///     left entirely to the OS.
-///   * **`Some("eth0".to_string())`**: Skips auto-discovery and explicitly binds to
+///   * **non-empty string or `BindDev::Custom(..)`**: Skips auto-discovery and explicitly binds to
 ///     the specified interface.
 /// * `net_ns` - An optional network namespace to switch into before creating the socket.
 /// * `only_v6` - If `true`, sets the `IPV6_V6ONLY` flag on the socket.
@@ -499,14 +520,16 @@ fn setup_socket2_ext(
 #[builder]
 pub fn bind<B: Bindable>(
     addr: SocketAddr,
-    dev: Option<String>,
+    #[builder(default, into)] dev: BindDev,
     net_ns: Option<NetNS>,
     #[builder(default)] only_v6: bool,
 ) -> Result<B, TunnelError> {
     let _g = net_ns.map(|n| n.guard());
-    let dev = dev
-        .or_else(|| get_interface_name_by_ip(&addr.ip()))
-        .filter(|d| !d.is_empty());
+    let dev = match dev {
+        BindDev::Auto => get_interface_name_by_ip(&addr.ip()),
+        BindDev::Disabled => None,
+        BindDev::Custom(s) => Some(s),
+    };
     let socket = socket2::Socket::new(socket2::Domain::for_address(addr), B::TYPE, B::PROTOCOL)?;
     setup_socket2_ext(&socket, &addr, dev, only_v6)?;
     B::finalize(socket)

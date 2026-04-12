@@ -64,12 +64,7 @@ impl UdpNatEntry {
     ) -> Result<Self, Error> {
         // TODO: try use src port, so we will be ip restricted nat type
         let socket = (!denied)
-            .then(|| {
-                bind()
-                    .addr("0.0.0.0:0".parse().unwrap())
-                    .only_v6(true)
-                    .call()
-            })
+            .then(|| bind().addr("0.0.0.0:0".parse().unwrap()).call())
             .transpose()?;
 
         Ok(Self {

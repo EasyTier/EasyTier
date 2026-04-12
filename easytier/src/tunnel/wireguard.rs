@@ -14,7 +14,7 @@ use super::{
     packet_def::{PEER_MANAGER_HEADER_SIZE, ZCPacketType},
     ring::create_ring_tunnel_pair,
 };
-use crate::tunnel::common::bind;
+use crate::tunnel::common::{BindDev, bind};
 use crate::{
     common::shrink_dashmap,
     tunnel::{
@@ -691,7 +691,7 @@ impl WgTunnelConnector {
     async fn connect_with_ipv6(&self, addr: SocketAddr) -> Result<Box<dyn Tunnel>, TunnelError> {
         let socket = bind()
             .addr("[::]:0".parse().unwrap())
-            .dev("".to_owned())
+            .dev(BindDev::Disabled)
             .only_v6(true)
             .call()?;
         Self::connect_with_socket(self.addr.clone(), self.config.clone(), socket, addr).await
