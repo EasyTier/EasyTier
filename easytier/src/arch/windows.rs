@@ -345,7 +345,7 @@ fn add_protocol_firewall_rules(
 
             SafeArrayPutElement(
                 interface_array,
-                &index as *const _ as *const i32,
+                &index as *const _,
                 &variant_interface as *const _ as *const std::ffi::c_void,
             )?;
 
