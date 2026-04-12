@@ -965,12 +965,6 @@ mod tests {
     use super::*;
     use bytes::Buf;
 
-    fn init() {
-        let _ = tracing_subscriber::fmt()
-            .with_env_filter("debug")
-            .try_init();
-    }
-
     /// Helper function: Create a pair of interconnected QuicSockets.
     /// Data sent by socket_a will enter socket_b's rx, and vice versa.
     fn make_socket_pair() -> (QuicSocket, QuicSocket) {

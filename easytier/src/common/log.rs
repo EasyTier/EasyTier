@@ -1,16 +1,18 @@
 use std::io::IsTerminal as _;
 
-use crate::common::config::LoggingConfigLoader;
+use crate::common::config::{FileLoggerConfig, LoggingConfigLoader};
 use crate::common::get_logger_timer_rfc3339;
 use crate::common::tracing_rolling_appender::{FileAppenderWrapper, RollingFileAppenderBase};
 use crate::rpc_service::logger::{CURRENT_LOG_LEVEL, LOGGER_LEVEL_SENDER};
 use anyhow::Context;
+use cfg_if::cfg_if;
 use paste::paste;
 use regex::Regex;
 use tracing::level_filters::LevelFilter;
 use tracing::{Level, Metadata};
 use tracing_subscriber::Registry;
 use tracing_subscriber::filter::{FilterExt, filter_fn};
+use tracing_subscriber::fmt::format::FmtSpan;
 use tracing_subscriber::fmt::layer;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
@@ -86,127 +88,70 @@ macro_rules! log_layer {
 
 pub fn init(
     config: impl LoggingConfigLoader,
-    need_reload: bool,
+    reload: bool,
 ) -> Result<Option<NewFilterSender>, anyhow::Error> {
     let mut layers = Vec::new();
 
-    let file_config = config.get_file_logger_config();
-    let file_level = file_config
-        .level
-        .map(|s| s.parse().unwrap())
-        .unwrap_or(LevelFilter::OFF);
+    let console_layers = console_layers(
+        config
+            .get_console_logger_config()
+            .level
+            .map(|s| s.parse().unwrap())
+            .unwrap_or(LevelFilter::OFF),
+    )?;
+    layers.extend(console_layers);
 
-    let mut ret_sender: Option<NewFilterSender> = None;
+    let sender = if cfg!(not(test)) {
+        let (file_layers, sender) = file_layers(config.get_file_logger_config(), reload)?;
+        layers.extend(file_layers);
+        sender
+    } else {
+        None
+    };
 
-    // logger to a rolling file
-    if file_level != LevelFilter::OFF || need_reload {
-        let dir = file_config.dir.as_deref().unwrap_or(".");
-        let file = file_config.file.as_deref().unwrap_or("easytier.log");
-        let path = std::path::Path::new(dir).join(file);
-        let path_str = path.to_string_lossy().into_owned();
+    Registry::default()
+        .with(layers)
+        .try_init()
+        .map(|_| sender)
+        .map_err(Into::into)
+}
 
-        let builder = RollingFileAppenderBase::builder();
-        let file_appender = builder
-            .filename(path_str)
-            .condition_daily()
-            .max_filecount(file_config.count.unwrap_or(10))
-            .condition_max_file_size(file_config.size_mb.unwrap_or(100) * 1024 * 1024)
-            .build()
-            .unwrap();
+type BoxLayer = Box<dyn Layer<Registry> + Send + Sync>;
 
-        // Create a simple wrapper that implements MakeWriter
-        let wrapper = FileAppenderWrapper::new(file_appender);
+fn console_layers(default_level: LevelFilter) -> anyhow::Result<Vec<BoxLayer>> {
+    let mut layers = Vec::new();
+    if default_level == LevelFilter::OFF {
+        return Ok(layers);
+    }
 
-        let (file_filter, file_filter_reloader) =
-            tracing_subscriber::reload::Layer::<_, Registry>::new(parse_env_filter(file_level)?);
+    let (console_filter, _) =
+        tracing_subscriber::reload::Layer::new(parse_env_filter(default_level)?);
 
-        let layer = |wrapper| {
-            layer()
-                .with_ansi(false)
-                .with_writer(wrapper)
-                .with_timer(get_logger_timer_rfc3339())
-        };
-
-        layers.push(
-            vec![
-                tracing_layer!(layer(wrapper.clone())),
-                log_layer!(layer(wrapper.clone())),
-            ]
-            .with_filter(file_filter)
-            .boxed(),
-        );
-
-        if need_reload {
-            let (sender, recver) = std::sync::mpsc::channel();
-            ret_sender = Some(sender.clone());
-
-            // 初始化全局状态
-            let _ = LOGGER_LEVEL_SENDER.set(std::sync::Mutex::new(sender));
-            let _ = CURRENT_LOG_LEVEL.set(std::sync::Mutex::new(file_level.to_string()));
-
-            std::thread::spawn(move || {
-                while let Ok(lf) = recver.recv() {
-                    let parsed_level = match lf.parse::<LevelFilter>() {
-                        Ok(level) => level,
-                        Err(e) => {
-                            error!("Failed to parse new log level {:?}: {}", lf, e);
-                            continue;
-                        }
-                    };
-
-                    let mut new_filter = match EnvFilter::builder()
-                        .with_default_directive(parsed_level.into())
-                        .from_env()
-                        .with_context(|| "failed to create file filter")
-                    {
-                        Ok(filter) => Some(filter),
-                        Err(e) => {
-                            error!("Failed to build new log filter for {:?}: {:?}", lf, e);
-                            continue;
-                        }
-                    };
-
-                    match file_filter_reloader.modify(|f| {
-                        *f = new_filter
-                            .take()
-                            .expect("log filter reloader only applies one filter per reload");
-                    }) {
-                        Ok(()) => {
-                            info!("Reload log filter succeed, new filter level: {:?}", lf);
-                        }
-                        Err(e) => {
-                            error!("Failed to reload log filter: {:?}", e);
-                        }
-                    }
-                }
-                info!("Stop log filter reloader");
-            });
+    cfg_if! {
+        if #[cfg(test)] {
+            let w = tracing_subscriber::fmt::TestWriter::new;
+            let (stdout, stderr) = (w, w);
+        } else {
+            let (stdout, stderr) = (std::io::stdout, std::io::stderr);
         }
     }
 
-    // logger to console
-    let console_config = config.get_console_logger_config();
-    let console_level = console_config
-        .level
-        .map(|s| s.parse().unwrap())
-        .unwrap_or(LevelFilter::OFF);
-
-    let (console_filter, _) =
-        tracing_subscriber::reload::Layer::new(parse_env_filter(console_level)?);
+    let ansi = std::io::stderr().is_terminal() || cfg!(test);
 
     let layer = || {
         layer()
             .compact()
-            .with_ansi(std::io::stderr().is_terminal())
             .with_timer(get_logger_timer_rfc3339())
-            .with_writer(std::io::stderr)
+            .with_ansi(ansi)
+            .with_span_events(FmtSpan::NEW | FmtSpan::CLOSE)
+            .with_writer(stderr)
     };
 
     layers.push(
         vec![
             tracing_layer!(layer()),
             log_layer!(layer()).with_filter(LevelFilter::WARN).boxed(),
-            log_layer!(layer().with_writer(std::io::stdout))
+            log_layer!(layer().with_writer(stdout))
                 .with_filter(filter_fn(|metadata| *metadata.level() > Level::WARN))
                 .boxed(),
         ]
@@ -219,23 +164,164 @@ pub fn init(
         layers.push(console_subscriber::ConsoleLayer::builder().spawn().boxed());
     }
 
-    Registry::default().with(layers).init();
+    Ok(layers)
+}
 
-    Ok(ret_sender)
+fn file_layers(
+    config: FileLoggerConfig,
+    reload: bool,
+) -> anyhow::Result<(Vec<BoxLayer>, Option<NewFilterSender>)> {
+    let mut layers = Vec::new();
+
+    let level = config
+        .level
+        .map(|s| s.parse().unwrap())
+        .unwrap_or(LevelFilter::OFF);
+
+    if level == LevelFilter::OFF && !reload {
+        return Ok((layers, None));
+    }
+
+    let path = {
+        let dir = config.dir.as_deref().unwrap_or(".");
+        let file = config.file.as_deref().unwrap_or("easytier.log");
+        let path = std::path::Path::new(dir).join(file);
+        path.to_string_lossy().into_owned()
+    };
+
+    let builder = RollingFileAppenderBase::builder();
+    let file_appender = builder
+        .filename(path)
+        .condition_daily()
+        .max_filecount(config.count.unwrap_or(10))
+        .condition_max_file_size(config.size_mb.unwrap_or(100) * 1024 * 1024)
+        .build()
+        .unwrap();
+
+    // Create a simple wrapper that implements MakeWriter
+    let wrapper = FileAppenderWrapper::new(file_appender);
+
+    let (file_filter, file_filter_reloader) =
+        tracing_subscriber::reload::Layer::<_, Registry>::new(parse_env_filter(level)?);
+
+    let layer = |wrapper| {
+        layer()
+            .with_ansi(false)
+            .with_writer(wrapper)
+            .with_timer(get_logger_timer_rfc3339())
+    };
+
+    layers.push(
+        vec![
+            tracing_layer!(layer(wrapper.clone())),
+            log_layer!(layer(wrapper.clone())),
+        ]
+        .with_filter(file_filter)
+        .boxed(),
+    );
+
+    if !reload {
+        return Ok((layers, None));
+    }
+
+    let (tx, rx) = std::sync::mpsc::channel();
+
+    // 初始化全局状态
+    let _ = LOGGER_LEVEL_SENDER.set(std::sync::Mutex::new(tx.clone()));
+    let _ = CURRENT_LOG_LEVEL.set(std::sync::Mutex::new(level.to_string()));
+
+    std::thread::spawn(move || {
+        while let Ok(lf) = rx.recv() {
+            let parsed_level = match lf.parse::<LevelFilter>() {
+                Ok(level) => level,
+                Err(e) => {
+                    error!("Failed to parse new log level {:?}: {}", lf, e);
+                    continue;
+                }
+            };
+
+            let mut new_filter = match EnvFilter::builder()
+                .with_default_directive(parsed_level.into())
+                .from_env()
+                .with_context(|| "failed to create file filter")
+            {
+                Ok(filter) => Some(filter),
+                Err(e) => {
+                    error!("Failed to build new log filter for {:?}: {:?}", lf, e);
+                    continue;
+                }
+            };
+
+            match file_filter_reloader.modify(|f| {
+                *f = new_filter
+                    .take()
+                    .expect("log filter reloader only applies one filter per reload");
+            }) {
+                Ok(()) => {
+                    info!("Reload log filter succeed, new filter level: {:?}", lf);
+                }
+                Err(e) => {
+                    error!("Failed to reload log filter: {:?}", e);
+                }
+            }
+        }
+        info!("Stop log filter reloader");
+    });
+
+    Ok((layers, Some(tx)))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::common::config::{self};
+    use crate::common::config::FileLoggerConfig;
 
-    async fn test_logger_reload() {
-        println!("current working dir: {:?}", std::env::current_dir());
-        let config = config::LoggingConfigBuilder::default().build().unwrap();
-        let s = init(&config, true).unwrap();
-        tracing::debug!("test not display debug");
-        s.unwrap().send(LevelFilter::DEBUG.to_string()).unwrap();
-        tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
-        tracing::debug!("test display debug");
+    #[ctor::ctor]
+    fn init() {
+        let _ = Registry::default()
+            .with(console_layers(LevelFilter::DEBUG).unwrap())
+            .try_init();
+    }
+
+    #[test]
+    fn test_logger_reload() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let log_file_name = "reload-test.log".to_string();
+        let log_path = temp_dir.path().join(&log_file_name);
+
+        let cfg = FileLoggerConfig {
+            level: Some(LevelFilter::INFO.to_string()),
+            file: Some(log_file_name),
+            dir: Some(temp_dir.path().to_string_lossy().to_string()),
+            size_mb: Some(10),
+            count: Some(1),
+        };
+
+        let (layers, sender) = file_layers(cfg, true).unwrap();
+        let sender = sender.expect("reload=true should return a sender");
+
+        let before_marker = "reload-before-debug-marker";
+        let after_marker = "reload-after-debug-marker";
+        let subscriber = Registry::default().with(layers);
+
+        tracing::subscriber::with_default(subscriber, || {
+            tracing::debug!("{}", before_marker);
+
+            sender.send(LevelFilter::DEBUG.to_string()).unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(300));
+
+            tracing::debug!("{}", after_marker);
+            std::thread::sleep(std::time::Duration::from_millis(300));
+        });
+
+        let content = std::fs::read_to_string(&log_path).unwrap_or_default();
+        assert!(
+            !content.contains(before_marker),
+            "debug log should be filtered before reload"
+        );
+        assert!(
+            content.contains(after_marker),
+            "debug log should be visible after reload"
+        );
     }
 }

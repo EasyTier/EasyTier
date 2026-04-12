@@ -691,18 +691,6 @@ pub mod tests {
         bps as usize
     }
 
-    pub fn enable_log() {
-        let filter = tracing_subscriber::EnvFilter::builder()
-            .with_default_directive(tracing::level_filters::LevelFilter::TRACE.into())
-            .from_env()
-            .unwrap()
-            .add_directive("tarpc=error".parse().unwrap());
-        tracing_subscriber::fmt::fmt()
-            .pretty()
-            .with_env_filter(filter)
-            .init();
-    }
-
     pub async fn wait_for_condition<F, FRet>(mut condition: F, timeout: std::time::Duration)
     where
         F: FnMut() -> FRet + Send,
