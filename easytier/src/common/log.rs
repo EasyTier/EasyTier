@@ -1,5 +1,3 @@
-use std::io::IsTerminal as _;
-
 use crate::common::config::{FileLoggerConfig, LoggingConfigLoader};
 use crate::common::get_logger_timer_rfc3339;
 use crate::common::tracing_rolling_appender::{FileAppenderWrapper, RollingFileAppenderBase};
@@ -7,7 +5,7 @@ use crate::rpc_service::logger::{CURRENT_LOG_LEVEL, LOGGER_LEVEL_SENDER};
 use anyhow::Context;
 use cfg_if::cfg_if;
 use paste::paste;
-use regex::Regex;
+use std::io::IsTerminal;
 use tracing::level_filters::LevelFilter;
 use tracing::{Level, Metadata};
 use tracing_subscriber::Registry;
@@ -49,18 +47,16 @@ macro_rules! __log__ {
 
 __log__!(const LOG_TARGET = "CORE");
 
-fn parse_env_filter(default_level: LevelFilter) -> Result<EnvFilter, anyhow::Error> {
-    let mut filter = EnvFilter::builder()
-        .with_default_directive(default_level.into())
+fn parse_env_filter(default_level: Option<LevelFilter>) -> Result<EnvFilter, anyhow::Error> {
+    let directive = match default_level {
+        Some(level) => level.into(),
+        None => format!("{LOG_TARGET}=info").parse()?,
+    };
+
+    EnvFilter::builder()
+        .with_default_directive(directive)
         .from_env()
-        .with_context(|| "failed to create env filter")?;
-
-    let pattern = Regex::new(&format!(r"(^|,){}\s*=", regex::escape(LOG_TARGET)))?;
-    if !pattern.is_match(&filter.to_string()) {
-        filter = filter.add_directive(format!("{LOG_TARGET}=info").parse()?);
-    }
-
-    Ok(filter)
+        .with_context(|| "failed to create env filter")
 }
 
 fn is_log(meta: &Metadata) -> bool {
@@ -96,8 +92,7 @@ pub fn init(
         config
             .get_console_logger_config()
             .level
-            .map(|s| s.parse().unwrap())
-            .unwrap_or(LevelFilter::OFF),
+            .map(|s| s.parse().unwrap()),
     )?;
     layers.extend(console_layers);
 
@@ -118,9 +113,9 @@ pub fn init(
 
 type BoxLayer = Box<dyn Layer<Registry> + Send + Sync>;
 
-fn console_layers(default_level: LevelFilter) -> anyhow::Result<Vec<BoxLayer>> {
+fn console_layers(default_level: Option<LevelFilter>) -> anyhow::Result<Vec<BoxLayer>> {
     let mut layers = Vec::new();
-    if default_level == LevelFilter::OFF {
+    if matches!(default_level, Some(LevelFilter::OFF)) {
         return Ok(layers);
     }
 
@@ -173,33 +168,11 @@ fn file_layers(
 ) -> anyhow::Result<(Vec<BoxLayer>, Option<NewFilterSender>)> {
     let mut layers = Vec::new();
 
-    let level = config
-        .level
-        .map(|s| s.parse().unwrap())
-        .unwrap_or(LevelFilter::OFF);
+    let level = config.level.map(|s| s.parse().unwrap());
 
-    if level == LevelFilter::OFF && !reload {
+    if matches!(level, Some(LevelFilter::OFF)) && !reload {
         return Ok((layers, None));
     }
-
-    let path = {
-        let dir = config.dir.as_deref().unwrap_or(".");
-        let file = config.file.as_deref().unwrap_or("easytier.log");
-        let path = std::path::Path::new(dir).join(file);
-        path.to_string_lossy().into_owned()
-    };
-
-    let builder = RollingFileAppenderBase::builder();
-    let file_appender = builder
-        .filename(path)
-        .condition_daily()
-        .max_filecount(config.count.unwrap_or(10))
-        .condition_max_file_size(config.size_mb.unwrap_or(100) * 1024 * 1024)
-        .build()
-        .unwrap();
-
-    // Create a simple wrapper that implements MakeWriter
-    let wrapper = FileAppenderWrapper::new(file_appender);
 
     let (file_filter, file_filter_reloader) =
         tracing_subscriber::reload::Layer::<_, Registry>::new(parse_env_filter(level)?);
@@ -209,6 +182,26 @@ fn file_layers(
             .with_ansi(false)
             .with_writer(wrapper)
             .with_timer(get_logger_timer_rfc3339())
+    };
+
+    let wrapper = {
+        let path = {
+            let dir = config.dir.as_deref().unwrap_or(".");
+            let file = config.file.as_deref().unwrap_or("easytier.log");
+            let path = std::path::Path::new(dir).join(file);
+            path.to_string_lossy().into_owned()
+        };
+
+        let builder = RollingFileAppenderBase::builder();
+        let file_appender = builder
+            .filename(path)
+            .condition_daily()
+            .max_filecount(config.count.unwrap_or(10))
+            .condition_max_file_size(config.size_mb.unwrap_or(100) * 1024 * 1024)
+            .build()
+            .with_context(|| "failed to initialize rolling file appender")?;
+
+        FileAppenderWrapper::new(file_appender)
     };
 
     layers.push(
@@ -228,7 +221,9 @@ fn file_layers(
 
     // 初始化全局状态
     let _ = LOGGER_LEVEL_SENDER.set(std::sync::Mutex::new(tx.clone()));
-    let _ = CURRENT_LOG_LEVEL.set(std::sync::Mutex::new(level.to_string()));
+    if let Some(level) = level {
+        let _ = CURRENT_LOG_LEVEL.set(std::sync::Mutex::new(level.to_string()));
+    }
 
     std::thread::spawn(move || {
         while let Ok(lf) = rx.recv() {
@@ -279,7 +274,7 @@ mod tests {
     #[ctor::ctor]
     fn init() {
         let _ = Registry::default()
-            .with(console_layers(LevelFilter::DEBUG).unwrap())
+            .with(console_layers(Some(LevelFilter::DEBUG)).unwrap())
             .try_init();
     }
 
