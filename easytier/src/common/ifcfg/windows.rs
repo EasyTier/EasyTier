@@ -448,12 +448,11 @@ impl RegistryManager {
         for guid in network_key.enum_keys().map_while(Result::ok) {
             if let Ok(guid_key) = network_key.open_subkey_with_flags(&guid, KEY_READ) {
                 // 检查 Connection/Name 是否匹配目标接口名
-                if let Ok(conn_key) = guid_key.open_subkey_with_flags("Connection", KEY_READ) {
-                    if let Ok(name) = conn_key.get_value::<String, _>("Name") {
-                        if name == interface_name {
-                            return Ok(guid);
-                        }
-                    }
+                if let Ok(conn_key) = guid_key.open_subkey_with_flags("Connection", KEY_READ)
+                    && let Ok(name) = conn_key.get_value::<String, _>("Name")
+                    && name == interface_name
+                {
+                    return Ok(guid);
                 }
             }
         }
