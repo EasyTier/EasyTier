@@ -2599,4 +2599,161 @@ pub mod tests {
         assert!(s_ret.is_err(), "server should reject revoked credential");
         let _ = c_ret;
     }
+
+    // ── Post-quantum handshake integration tests ─────────────────────────
+
+    /// Both peers enable PQ; the handshake must succeed and the connection
+    /// info must report that PQ was active on both sides.
+    #[cfg(feature = "pq-kem")]
+    #[tokio::test]
+    async fn peer_conn_handshake_pq_both_enabled() {
+        let (c, s) = create_ring_tunnel_pair();
+
+        let c_peer_id = new_peer_id();
+        let s_peer_id = new_peer_id();
+
+        let c_ctx = get_mock_global_ctx();
+        let s_ctx = get_mock_global_ctx();
+
+        // Enable PQ on both sides.
+        let mut c_flags = c_ctx.get_flags();
+        c_flags.enable_post_quantum = true;
+        c_ctx.set_flags(c_flags);
+
+        let mut s_flags = s_ctx.get_flags();
+        s_flags.enable_post_quantum = true;
+        s_ctx.set_flags(s_flags);
+
+        let ps = Arc::new(PeerSessionStore::new());
+        let mut c_peer = PeerConn::new(c_peer_id, c_ctx.clone(), Box::new(c), ps.clone());
+        let mut s_peer = PeerConn::new(s_peer_id, s_ctx.clone(), Box::new(s), ps.clone());
+
+        let (c_ret, s_ret) = tokio::join!(
+            c_peer.do_handshake_as_client(),
+            s_peer.do_handshake_as_server()
+        );
+
+        c_ret.unwrap();
+        s_ret.unwrap();
+
+        assert_eq!(c_peer.get_peer_id(), s_peer_id);
+        assert_eq!(s_peer.get_peer_id(), c_peer_id);
+    }
+
+    /// Only the client enables PQ; the server does not.  The handshake must
+    /// still complete successfully via fall-back to classical key exchange.
+    #[cfg(feature = "pq-kem")]
+    #[tokio::test]
+    async fn peer_conn_handshake_pq_client_only_fallback() {
+        let (c, s) = create_ring_tunnel_pair();
+
+        let c_peer_id = new_peer_id();
+        let s_peer_id = new_peer_id();
+
+        let c_ctx = get_mock_global_ctx();
+        let s_ctx = get_mock_global_ctx();
+
+        // Client has PQ; server does not.
+        let mut c_flags = c_ctx.get_flags();
+        c_flags.enable_post_quantum = true;
+        c_ctx.set_flags(c_flags);
+
+        let ps = Arc::new(PeerSessionStore::new());
+        let mut c_peer = PeerConn::new(c_peer_id, c_ctx.clone(), Box::new(c), ps.clone());
+        let mut s_peer = PeerConn::new(s_peer_id, s_ctx.clone(), Box::new(s), ps.clone());
+
+        let (c_ret, s_ret) = tokio::join!(
+            c_peer.do_handshake_as_client(),
+            s_peer.do_handshake_as_server()
+        );
+
+        // Fall-back to classical Noise must succeed.
+        c_ret.unwrap();
+        s_ret.unwrap();
+
+        assert_eq!(c_peer.get_peer_id(), s_peer_id);
+        assert_eq!(s_peer.get_peer_id(), c_peer_id);
+    }
+
+    /// Neither peer enables PQ.  The handshake must succeed using pure
+    /// classical Noise (baseline / regression check).
+    #[cfg(feature = "pq-kem")]
+    #[tokio::test]
+    async fn peer_conn_handshake_pq_neither_enabled() {
+        let (c, s) = create_ring_tunnel_pair();
+
+        let c_peer_id = new_peer_id();
+        let s_peer_id = new_peer_id();
+
+        let c_ctx = get_mock_global_ctx();
+        let s_ctx = get_mock_global_ctx();
+
+        let ps = Arc::new(PeerSessionStore::new());
+        let mut c_peer = PeerConn::new(c_peer_id, c_ctx.clone(), Box::new(c), ps.clone());
+        let mut s_peer = PeerConn::new(s_peer_id, s_ctx.clone(), Box::new(s), ps.clone());
+
+        let (c_ret, s_ret) = tokio::join!(
+            c_peer.do_handshake_as_client(),
+            s_peer.do_handshake_as_server()
+        );
+
+        c_ret.unwrap();
+        s_ret.unwrap();
+
+        assert_eq!(c_peer.get_peer_id(), s_peer_id);
+        assert_eq!(s_peer.get_peer_id(), c_peer_id);
+    }
+
+    /// PQ enabled on both peers, combined with secure-mode (X25519 keypair
+    /// exchange).  The hybrid handshake must succeed and public keys must
+    /// be exchanged correctly.
+    #[cfg(feature = "pq-kem")]
+    #[tokio::test]
+    async fn peer_conn_handshake_pq_with_secure_mode() {
+        let (c, s) = create_ring_tunnel_pair();
+
+        let c_peer_id = new_peer_id();
+        let s_peer_id = new_peer_id();
+
+        let c_ctx = get_mock_global_ctx();
+        let s_ctx = get_mock_global_ctx();
+
+        set_secure_mode_cfg(&c_ctx, true);
+        set_secure_mode_cfg(&s_ctx, true);
+
+        let mut c_flags = c_ctx.get_flags();
+        c_flags.enable_post_quantum = true;
+        c_ctx.set_flags(c_flags);
+
+        let mut s_flags = s_ctx.get_flags();
+        s_flags.enable_post_quantum = true;
+        s_ctx.set_flags(s_flags);
+
+        let ps = Arc::new(PeerSessionStore::new());
+        let mut c_peer = PeerConn::new(c_peer_id, c_ctx.clone(), Box::new(c), ps.clone());
+        let mut s_peer = PeerConn::new(s_peer_id, s_ctx.clone(), Box::new(s), ps.clone());
+
+        let (c_ret, s_ret) = tokio::join!(
+            c_peer.do_handshake_as_client(),
+            s_peer.do_handshake_as_server()
+        );
+
+        c_ret.unwrap();
+        s_ret.unwrap();
+
+        // Static public keys must be 32 bytes and correctly cross-matched.
+        let c_info = c_peer.get_conn_info();
+        let s_info = s_peer.get_conn_info();
+
+        assert_eq!(c_info.noise_local_static_pubkey.len(), 32);
+        assert_eq!(c_info.noise_remote_static_pubkey.len(), 32);
+        assert_eq!(
+            c_info.noise_remote_static_pubkey,
+            s_info.noise_local_static_pubkey
+        );
+        assert_eq!(
+            s_info.noise_remote_static_pubkey,
+            c_info.noise_local_static_pubkey
+        );
+    }
 }

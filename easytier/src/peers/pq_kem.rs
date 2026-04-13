@@ -95,6 +95,41 @@ mod tests {
         assert_ne!(h1, hybrid_root_key(noise_key, [0xCC; 32]));
     }
 
+    #[test]
+    fn test_hybrid_root_key_output_length() {
+        let key = hybrid_root_key([0x01; 32], [0x02; 32]);
+        assert_eq!(key.len(), 32);
+    }
+
+    #[test]
+    fn test_hybrid_root_key_not_identity() {
+        // Output must not equal either input.
+        let noise_key = [0xAA; 32];
+        let pq_ss = [0xBB; 32];
+        let key = hybrid_root_key(noise_key, pq_ss);
+        assert_ne!(key, noise_key);
+        assert_ne!(key, pq_ss);
+    }
+
+    #[test]
+    fn test_hybrid_root_key_not_commutative() {
+        // Swapping noise_key and pq_ss must produce a different result,
+        // confirming the two roles are distinct in the HKDF construction.
+        let a = [0xAA; 32];
+        let b = [0xBB; 32];
+        assert_ne!(hybrid_root_key(a, b), hybrid_root_key(b, a));
+    }
+
+    #[test]
+    fn test_hybrid_root_key_zero_inputs() {
+        // All-zero inputs are valid; the function must not panic and must
+        // still produce a non-zero output (HKDF expands to non-trivial bytes).
+        let key = hybrid_root_key([0u8; 32], [0u8; 32]);
+        assert_eq!(key.len(), 32);
+        // The HKDF output for all-zero inputs is a well-defined non-zero value.
+        assert_ne!(key, [0u8; 32]);
+    }
+
     #[cfg(feature = "pq-kem")]
     #[test]
     fn test_kem_roundtrip() {
@@ -106,5 +141,79 @@ mod tests {
 
         let ss_client = kem::decapsulate(&kp, &ct).unwrap();
         assert_eq!(ss_server, ss_client);
+    }
+
+    #[cfg(feature = "pq-kem")]
+    #[test]
+    fn test_kem_invalid_ek_length() {
+        // Encapsulation with an undersized key must return an error, not panic.
+        let err = kem::encapsulate(&[0u8; 32]);
+        assert!(err.is_err());
+    }
+
+    #[cfg(feature = "pq-kem")]
+    #[test]
+    fn test_kem_invalid_ct_length() {
+        // Decapsulation with an undersized ciphertext must return an error.
+        let kp = kem::generate_keypair();
+        let err = kem::decapsulate(&kp, &[0u8; 32]);
+        assert!(err.is_err());
+    }
+
+    #[cfg(feature = "pq-kem")]
+    #[test]
+    fn test_kem_different_keypairs_produce_different_secrets() {
+        let kp1 = kem::generate_keypair();
+        let kp2 = kem::generate_keypair();
+
+        let (ss1, _ct1) = kem::encapsulate(&kp1.ek_bytes).unwrap();
+        let (ss2, _ct2) = kem::encapsulate(&kp2.ek_bytes).unwrap();
+
+        // Two independent keypairs must yield different shared secrets.
+        assert_ne!(ss1, ss2);
+    }
+
+    #[cfg(feature = "pq-kem")]
+    #[test]
+    fn test_kem_ciphertext_for_wrong_keypair_differs() {
+        // Decapsulating a ciphertext with the wrong keypair must not yield
+        // the same shared secret (implicit-rejection property of ML-KEM).
+        let kp1 = kem::generate_keypair();
+        let kp2 = kem::generate_keypair();
+
+        let (ss_correct, ct) = kem::encapsulate(&kp1.ek_bytes).unwrap();
+        // ML-KEM uses implicit rejection: decapsulation with the wrong key
+        // succeeds but returns a pseudo-random value that differs from the
+        // genuine shared secret.
+        let ss_wrong = kem::decapsulate(&kp2, &ct).unwrap();
+        assert_ne!(ss_correct, ss_wrong);
+    }
+
+    #[cfg(feature = "pq-kem")]
+    #[test]
+    fn test_kem_shared_secret_length() {
+        let kp = kem::generate_keypair();
+        let (ss_server, ct) = kem::encapsulate(&kp.ek_bytes).unwrap();
+        let ss_client = kem::decapsulate(&kp, &ct).unwrap();
+        assert_eq!(ss_server.len(), 32);
+        assert_eq!(ss_client.len(), 32);
+    }
+
+    #[cfg(feature = "pq-kem")]
+    #[test]
+    fn test_kem_hybrid_integration() {
+        // Full end-to-end: KEM roundtrip feeds into hybrid_root_key, and both
+        // sides must arrive at the same hybrid key given the same noise root key.
+        let kp = kem::generate_keypair();
+        let (ss_server, ct) = kem::encapsulate(&kp.ek_bytes).unwrap();
+        let ss_client = kem::decapsulate(&kp, &ct).unwrap();
+
+        let noise_root_key = [0x42u8; 32];
+        let hybrid_server = hybrid_root_key(noise_root_key, ss_server);
+        let hybrid_client = hybrid_root_key(noise_root_key, ss_client);
+
+        assert_eq!(hybrid_server, hybrid_client);
+        // The hybrid key must differ from the raw noise root key.
+        assert_ne!(hybrid_server, noise_root_key);
     }
 }
