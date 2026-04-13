@@ -4,11 +4,11 @@ description = "A full meshed p2p VPN, connecting all your devices in one network
 homepage = "https://github.com/EasyTier/EasyTier"
 repository = "https://github.com/EasyTier/EasyTier"
 version = "2.6.0"
-edition = "2021"
+edition.workspace = true
+rust-version.workspace = true
 authors = ["kkrainbow"]
 keywords = ["vpn", "p2p", "network", "easytier"]
 categories = ["network-programming", "command-line-utilities"]
-rust-version = "1.93.0"
 license-file = "LICENSE"
 readme = "README.md"
 
@@ -243,6 +243,7 @@ hickory-server = { version = "0.25.2", features = [
     "resolver",
 ], optional = true }
 
+bon = "3.9.1"
 derive_builder = "0.20.2"
 humantime-serde = "1.1.1"
 multimap = "0.10.1"
@@ -325,21 +326,13 @@ easytier-rpc-build = { path = "../easytier-rpc-build", features = [
     "internal-namespace",
 ] }
 prost-reflect-build = { version = "0.14.0" }
+thunk-rs = { git = "https://github.com/easytier/thunk.git", default-features = false, features = [
+    "win7",
+] }
 
 [target.'cfg(windows)'.build-dependencies]
 reqwest = { version = "0.12.12", features = ["blocking"] }
 zip = "4.0.0"
-
-# enable thunk-rs when compiling for x86_64 or i686 windows
-[target.x86_64-pc-windows-msvc.build-dependencies]
-thunk-rs = { git = "https://github.com/easytier/thunk.git", default-features = false, features = [
-    "win7",
-] }
-
-[target.i686-pc-windows-msvc.build-dependencies]
-thunk-rs = { git = "https://github.com/easytier/thunk.git", default-features = false, features = [
-    "win7",
-] }
 
 
 [dev-dependencies]
@@ -348,6 +341,7 @@ rstest = "0.25.0"
 futures-util = "0.3.31"
 maplit = "1.0.2"
 tempfile = "3.22.0"
+ctor = "0.8.0"
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
 defguard_wireguard_rs = "0.4.2"

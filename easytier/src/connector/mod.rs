@@ -8,8 +8,8 @@ use crate::{
     connector::dns_connector::DnsTunnelConnector,
     proto::common::PeerFeatureFlag,
     tunnel::{
-        self, ring::RingTunnelConnector, tcp::TcpTunnelConnector, udp::UdpTunnelConnector, FromUrl,
-        IpScheme, IpVersion, TunnelConnector, TunnelError, TunnelScheme,
+        self, FromUrl, IpScheme, IpVersion, TunnelConnector, TunnelError, TunnelScheme,
+        ring::RingTunnelConnector, tcp::TcpTunnelConnector, udp::UdpTunnelConnector,
     },
     utils::BoxExt,
 };
@@ -105,7 +105,9 @@ pub async fn create_connector_by_url(
                 IpScheme::Tcp => TcpTunnelConnector::new(url).boxed(),
                 IpScheme::Udp => UdpTunnelConnector::new(url).boxed(),
                 #[cfg(feature = "quic")]
-                IpScheme::Quic => tunnel::quic::QuicTunnelConnector::new(url).boxed(),
+                IpScheme::Quic => {
+                    tunnel::quic::QuicTunnelConnector::new(url, global_ctx.clone()).boxed()
+                }
                 #[cfg(feature = "wireguard")]
                 IpScheme::Wg => {
                     use crate::tunnel::wireguard::{WgConfig, WgTunnelConnector};

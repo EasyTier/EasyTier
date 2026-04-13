@@ -1,29 +1,40 @@
-[target.x86_64-unknown-linux-musl]
-linker = "rust-lld"
-rustflags = ["-C", "linker-flavor=ld.lld"]
+# region Native
+
+[target.x86_64-unknown-linux-gnu]
+rustflags = ["-C", "link-arg=-fuse-ld=mold"]
 
 [target.aarch64-unknown-linux-gnu]
-linker = "aarch64-linux-gnu-gcc"
+rustflags = ["-C", "link-arg=-fuse-ld=mold"]
 
-[target.aarch64-unknown-linux-ohos]
-ar = "/usr/local/ohos-sdk/linux/native/llvm/bin/llvm-ar"
-linker = "/home/runner/sdk/native/llvm/aarch64-unknown-linux-ohos-clang.sh"
+[target.'cfg(all(windows, target_env = "msvc"))']
+rustflags = ["-C", "target-feature=+crt-static"]
 
-[target.aarch64-unknown-linux-ohos.env]
-PKG_CONFIG_PATH = "/usr/local/ohos-sdk/linux/native/sysroot/usr/lib/pkgconfig:/usr/local/ohos-sdk/linux/native/sysroot/usr/local/lib/pkgconfig"
-PKG_CONFIG_LIBDIR = "/usr/local/ohos-sdk/linux/native/sysroot/usr/lib:/usr/local/ohos-sdk/linux/native/sysroot/usr/local/lib"
-PKG_CONFIG_SYSROOT_DIR = "/usr/local/ohos-sdk/linux/native/sysroot"
-SYSROOT = "/usr/local/ohos-sdk/linux/native/sysroot"
+# region
+
+# region CI
+
+[target.x86_64-unknown-linux-musl]
+rustflags = ["-C", "target-feature=+crt-static"]
 
 [target.aarch64-unknown-linux-musl]
-linker = "aarch64-unknown-linux-musl-gcc"
 rustflags = ["-C", "target-feature=+crt-static"]
 
 [target.riscv64gc-unknown-linux-musl]
-linker = "riscv64-unknown-linux-musl-gcc"
 rustflags = ["-C", "target-feature=+crt-static"]
 
-[target.'cfg(all(windows, target_env = "msvc"))']
+[target.armv7-unknown-linux-musleabihf]
+rustflags = ["-C", "target-feature=+crt-static"]
+
+[target.armv7-unknown-linux-musleabi]
+rustflags = ["-C", "target-feature=+crt-static"]
+
+[target.arm-unknown-linux-musleabihf]
+rustflags = ["-C", "target-feature=+crt-static"]
+
+[target.arm-unknown-linux-musleabi]
+rustflags = ["-C", "target-feature=+crt-static"]
+
+[target.loongarch64-unknown-linux-musl]
 rustflags = ["-C", "target-feature=+crt-static"]
 
 [target.mipsel-unknown-linux-musl]
@@ -64,44 +75,14 @@ rustflags = [
     "gcc",
 ]
 
-[target.armv7-unknown-linux-musleabihf]
-linker = "armv7-unknown-linux-musleabihf-gcc"
-rustflags = ["-C", "target-feature=+crt-static"]
+[target.aarch64-unknown-linux-ohos]
+ar = "/usr/local/ohos-sdk/linux/native/llvm/bin/llvm-ar"
+linker = "/home/runner/sdk/native/llvm/aarch64-unknown-linux-ohos-clang.sh"
 
-[target.armv7-unknown-linux-musleabi]
-linker = "armv7-unknown-linux-musleabi-gcc"
-rustflags = ["-C", "target-feature=+crt-static"]
+[target.aarch64-unknown-linux-ohos.env]
+PKG_CONFIG_PATH = "/usr/local/ohos-sdk/linux/native/sysroot/usr/lib/pkgconfig:/usr/local/ohos-sdk/linux/native/sysroot/usr/local/lib/pkgconfig"
+PKG_CONFIG_LIBDIR = "/usr/local/ohos-sdk/linux/native/sysroot/usr/lib:/usr/local/ohos-sdk/linux/native/sysroot/usr/local/lib"
+PKG_CONFIG_SYSROOT_DIR = "/usr/local/ohos-sdk/linux/native/sysroot"
+SYSROOT = "/usr/local/ohos-sdk/linux/native/sysroot"
 
-[target.loongarch64-unknown-linux-musl]
-linker = "loongarch64-unknown-linux-musl-gcc"
-rustflags = ["-C", "target-feature=+crt-static"]
-
-[target.arm-unknown-linux-musleabihf]
-linker = "arm-unknown-linux-musleabihf-gcc"
-rustflags = [
-    "-C",
-    "target-feature=+crt-static",
-    "-L",
-    "./musl_gcc/arm-unknown-linux-musleabihf/arm-unknown-linux-musleabihf/lib",
-    "-L",
-    "./musl_gcc/arm-unknown-linux-musleabihf/lib/gcc/arm-unknown-linux-musleabihf/15.1.0",
-    "-l",
-    "atomic",
-    "-l",
-    "gcc",
-]
-
-[target.arm-unknown-linux-musleabi]
-linker = "arm-unknown-linux-musleabi-gcc"
-rustflags = [
-    "-C",
-    "target-feature=+crt-static",
-    "-L",
-    "./musl_gcc/arm-unknown-linux-musleabi/arm-unknown-linux-musleabi/lib",
-    "-L",
-    "./musl_gcc/arm-unknown-linux-musleabi/lib/gcc/arm-unknown-linux-musleabi/15.1.0",
-    "-l",
-    "atomic",
-    "-l",
-    "gcc",
-]
+# endregion

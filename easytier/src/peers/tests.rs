@@ -5,13 +5,13 @@ use base64::Engine as _;
 
 use crate::{
     common::{
+        PeerId,
         error::Error,
         global_ctx::{
-            tests::{get_mock_global_ctx, get_mock_global_ctx_with_network},
             NetworkIdentity,
+            tests::{get_mock_global_ctx, get_mock_global_ctx_with_network},
         },
         stats_manager::{LabelSet, LabelType, MetricName},
-        PeerId,
     },
     proto::api::instance::TrustedKeySourcePb,
     tunnel::{
@@ -324,12 +324,14 @@ async fn private_mode_rejects_foreign_network_with_different_secret() {
     );
     let _ = client_ret;
     wait_for_public_peers_empty(client).await;
-    assert!(server
-        .get_foreign_network_manager()
-        .list_foreign_networks()
-        .await
-        .foreign_networks
-        .is_empty());
+    assert!(
+        server
+            .get_foreign_network_manager()
+            .list_foreign_networks()
+            .await
+            .foreign_networks
+            .is_empty()
+    );
 }
 
 #[tokio::test]
@@ -968,8 +970,8 @@ pub async fn create_mock_peer_manager_credential(
 ) -> Arc<PeerManager> {
     use crate::common::config::NetworkIdentity;
     use crate::proto::common::SecureModeConfig;
-    use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
     use base64::Engine;
+    use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 
     let (s, _r) = create_packet_recv_chan();
     let g = get_mock_global_ctx_with_network(Some(NetworkIdentity::new_credential(network_name)));
@@ -1127,10 +1129,12 @@ async fn credential_revocation_removes_from_routes() {
     .await;
 
     // Now revoke the credential
-    assert!(admin_a
-        .get_global_ctx()
-        .get_credential_manager()
-        .revoke_credential(&cred_id));
+    assert!(
+        admin_a
+            .get_global_ctx()
+            .get_credential_manager()
+            .revoke_credential(&cred_id)
+    );
     // Issue event to trigger OSPF sync
     admin_a
         .get_global_ctx()
@@ -1416,10 +1420,12 @@ async fn multi_admin_multi_credential_route_and_revocation_isolation() {
     )
     .await;
 
-    assert!(admin_a
-        .get_global_ctx()
-        .get_credential_manager()
-        .revoke_credential(&cred1_id));
+    assert!(
+        admin_a
+            .get_global_ctx()
+            .get_credential_manager()
+            .revoke_credential(&cred1_id)
+    );
     admin_a
         .get_global_ctx()
         .issue_event(crate::common::global_ctx::GlobalCtxEvent::CredentialChanged);

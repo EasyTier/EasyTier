@@ -1,4 +1,5 @@
 use super::*;
+use anyhow::anyhow;
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct RollingConditionBase {
@@ -57,17 +58,16 @@ impl Default for RollingConditionBase {
 impl RollingCondition for RollingConditionBase {
     fn should_rollover(&mut self, now: &DateTime<Local>, current_filesize: u64) -> bool {
         let mut rollover = false;
-        if let Some(frequency) = self.frequency_opt.as_ref() {
-            if let Some(last_write) = self.last_write_opt.as_ref() {
-                if frequency.equivalent_datetime(now) != frequency.equivalent_datetime(last_write) {
-                    rollover = true;
-                }
-            }
+        if let Some(frequency) = self.frequency_opt.as_ref()
+            && let Some(last_write) = self.last_write_opt.as_ref()
+            && frequency.equivalent_datetime(now) != frequency.equivalent_datetime(last_write)
+        {
+            rollover = true;
         }
-        if let Some(max_size) = self.max_size_opt.as_ref() {
-            if current_filesize >= *max_size {
-                rollover = true;
-            }
+        if let Some(max_size) = self.max_size_opt.as_ref()
+            && current_filesize >= *max_size
+        {
+            rollover = true;
         }
         self.last_write_opt = Some(*now);
         rollover
@@ -136,9 +136,11 @@ impl RollingFileAppenderBaseBuilder {
     /// Builds a RollingFileAppenderBase instance from the current settings.
     ///
     /// Returns an error if the filename is empty.
-    pub fn build(self) -> Result<RollingFileAppenderBase, &'static str> {
+    pub fn build(self) -> anyhow::Result<RollingFileAppenderBase> {
         if self.filename.is_empty() {
-            return Err("A filename is required to be set and can not be blank");
+            return Err(anyhow!(
+                "A filename is required to be set and can not be blank"
+            ));
         }
         Ok(RollingFileAppenderBase {
             condition: self.condition,

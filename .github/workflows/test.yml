@@ -34,7 +34,7 @@ jobs:
           # All of these options are optional, so you can remove them if you are happy with the defaults
           concurrent_skipping: 'never'
           skip_after_successful_duplicate: 'true'
-          paths: '["Cargo.toml", "Cargo.lock", "easytier/**", ".github/workflows/test.yml", ".github/workflows/install_gui_dep.sh", ".github/workflows/install_rust.sh"]'
+          paths: '["Cargo.toml", "Cargo.lock", "easytier/**", ".github/workflows/test.yml", ".github/actions/**"]'
 
   check:
     name: Run linters & check
@@ -48,15 +48,12 @@ jobs:
         uses: ./.github/actions/prepare-build
         with:
           gui: true
-          web: true
+          pnpm: true
           token: ${{ secrets.GITHUB_TOKEN }}
 
-      - uses: Swatinem/rust-cache@v2
-
-      - name: Install rustfmt and clippy
-        run: |
-          rustup component add rustfmt
-          rustup component add clippy
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          components: rustfmt,clippy
 
       - uses: taiki-e/install-action@cargo-hack
 
@@ -89,7 +86,7 @@ jobs:
         uses: ./.github/actions/prepare-build
         with:
           gui: true
-          web: true
+          pnpm: true
           token: ${{ secrets.GITHUB_TOKEN }}
 
       - uses: Swatinem/rust-cache@v2

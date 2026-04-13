@@ -8,7 +8,7 @@ use anyhow::Context;
 use async_trait::async_trait;
 use bytes::BytesMut;
 use dashmap::DashMap;
-use futures::{stream::FuturesUnordered, SinkExt, StreamExt};
+use futures::{SinkExt, StreamExt, stream::FuturesUnordered};
 use rand::{Rng, SeedableRng};
 use zerocopy::{AsBytes, FromBytes};
 
@@ -18,21 +18,21 @@ use tokio::{
     sync::mpsc::{Receiver, Sender, UnboundedReceiver, UnboundedSender},
     task::JoinSet,
 };
-
-use tracing::{instrument, Instrument};
+use tracing::{Instrument, instrument};
 
 use super::{
-    common::{setup_sokcet2, setup_sokcet2_ext, wait_for_connect_futures},
-    packet_def::{UDPTunnelHeader, V6HolePunchPacket, UDP_TUNNEL_HEADER_SIZE},
-    ring::{RingSink, RingStream},
     FromUrl, IpVersion, Tunnel, TunnelConnCounter, TunnelError, TunnelInfo, TunnelListener,
     TunnelUrl,
+    common::wait_for_connect_futures,
+    packet_def::{UDP_TUNNEL_HEADER_SIZE, UDPTunnelHeader, V6HolePunchPacket},
+    ring::{RingSink, RingStream},
 };
+use crate::tunnel::common::bind;
 use crate::{
     common::{join_joinset_background, scoped_task::ScopedTask, shrink_dashmap},
     tunnel::{
         build_url_from_socket_addr,
-        common::{reserve_buf, TunnelWrapper},
+        common::{TunnelWrapper, reserve_buf},
         packet_def::{UdpPacketType, ZCPacket, ZCPacketType},
         ring::RingTunnel,
     },
@@ -150,8 +150,8 @@ async fn respond_stun_packet(
     use crate::common::stun_codec_ext::*;
     use bytecodec::{DecodeExt as _, EncodeExt as _};
     use stun_codec::{
-        rfc5389::{attributes::XorMappedAddress, methods::BINDING},
         Message, MessageClass, MessageDecoder, MessageEncoder,
+        rfc5389::{attributes::XorMappedAddress, methods::BINDING},
     };
 
     let mut decoder = MessageDecoder::<Attribute>::new();
@@ -536,21 +536,14 @@ impl UdpTunnelListener {
 impl TunnelListener for UdpTunnelListener {
     async fn listen(&mut self) -> Result<(), TunnelError> {
         let addr = SocketAddr::from_url(self.addr.clone(), IpVersion::Both).await?;
-
-        let socket2_socket = socket2::Socket::new(
-            socket2::Domain::for_address(addr),
-            socket2::Type::DGRAM,
-            Some(socket2::Protocol::UDP),
-        )?;
-
         let tunnel_url: TunnelUrl = self.addr.clone().into();
-        if let Some(bind_dev) = tunnel_url.bind_dev() {
-            setup_sokcet2_ext(&socket2_socket, &addr, Some(bind_dev))?;
-        } else {
-            setup_sokcet2(&socket2_socket, &addr)?;
-        }
-
-        self.socket = Some(Arc::new(UdpSocket::from_std(socket2_socket.into())?));
+        self.socket = Some(Arc::new(
+            bind()
+                .addr(addr)
+                .only_v6(true)
+                .maybe_dev(tunnel_url.bind_dev())
+                .call()?,
+        ));
         self.data.socket = self.socket.clone();
 
         self.addr
@@ -833,17 +826,14 @@ impl UdpTunnelConnector {
         let futures = FuturesUnordered::new();
 
         for bind_addr in self.bind_addrs.iter() {
-            let socket2_socket = socket2::Socket::new(
-                socket2::Domain::for_address(*bind_addr),
-                socket2::Type::DGRAM,
-                Some(socket2::Protocol::UDP),
-            )?;
-            if let Err(e) = setup_sokcet2(&socket2_socket, bind_addr) {
-                tracing::error!(bind_addr = ?bind_addr, ?addr, "bind addr fail: {:?}", e);
-                continue;
+            tracing::info!(?bind_addr, ?addr, "bind addr");
+            match bind().addr(*bind_addr).only_v6(true).call() {
+                Ok(socket) => futures.push(self.try_connect_with_socket(Arc::new(socket), addr)),
+                Err(error) => {
+                    tracing::error!(?error, ?bind_addr, ?addr, "bind addr fail");
+                    continue;
+                }
             }
-            let socket = UdpSocket::from_std(socket2_socket.into())?;
-            futures.push(self.try_connect_with_socket(Arc::new(socket), addr));
         }
         wait_for_connect_futures(futures).await
     }
@@ -884,11 +874,11 @@ mod tests {
     use crate::{
         common::global_ctx::tests::get_mock_global_ctx,
         tunnel::{
+            TunnelConnector,
             common::{
                 get_interface_name_by_ip,
                 tests::{_tunnel_bench, _tunnel_echo_server, _tunnel_pingpong, wait_for_condition},
             },
-            TunnelConnector,
         },
     };
 
@@ -1034,13 +1024,12 @@ mod tests {
             )
             .await
             .unwrap();
-            let socket2_socket = socket2::Socket::new(
-                socket2::Domain::for_address(addr),
-                socket2::Type::DGRAM,
-                Some(socket2::Protocol::UDP),
-            )
-            .unwrap();
-            setup_sokcet2_ext(&socket2_socket, &addr, bind_dev.clone()).unwrap();
+            let _ = bind::<UdpSocket>()
+                .addr(addr)
+                .maybe_dev(bind_dev.clone())
+                .only_v6(true)
+                .call()
+                .unwrap();
         }
     }
 

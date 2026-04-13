@@ -3,11 +3,11 @@
 use core::panic;
 use std::{
     future::Future,
-    sync::{atomic::AtomicU32, Arc},
+    sync::{Arc, atomic::AtomicU32},
     time::Duration,
 };
 
-use rand::{rngs::OsRng, Rng};
+use rand::{Rng, rngs::OsRng};
 use tokio::{net::UdpSocket, task::JoinSet};
 use x25519_dalek::StaticSecret;
 
@@ -846,15 +846,13 @@ pub async fn proxy_three_node_disconnect_test(#[values("tcp", "wg")] proto: &str
             }));
             wait_for_condition(
                 || async {
-                    let ret = !insts[2]
+                    !insts[2]
                         .get_peer_manager()
                         .get_peer_map()
                         .list_peers_with_conn()
                         .await
                         .iter()
-                        .any(|r| *r == inst4.peer_id());
-
-                    ret
+                        .any(|r| *r == inst4.peer_id())
                 },
                 // 0 down, assume last packet is recv in -0.01
                 // [2, 7) send ping
@@ -999,7 +997,7 @@ pub async fn foreign_network_forward_nic_data() {
 use std::{net::SocketAddr, str::FromStr};
 
 use defguard_wireguard_rs::{
-    host::Peer, key::Key, net::IpAddrMask, InterfaceConfiguration, WGApi, WireguardInterfaceApi,
+    InterfaceConfiguration, WGApi, WireguardInterfaceApi, host::Peer, key::Key, net::IpAddrMask,
 };
 
 fn run_wireguard_client(
@@ -2257,10 +2255,10 @@ pub async fn acl_group_base_test(
     #[values(true, false)] enable_quic_proxy: bool,
 ) {
     use crate::tunnel::{
+        TunnelConnector, TunnelListener,
         common::tests::_tunnel_pingpong_netns_with_timeout,
         tcp::{TcpTunnelConnector, TcpTunnelListener},
         udp::{UdpTunnelConnector, UdpTunnelListener},
-        TunnelConnector, TunnelListener,
     };
     use rand::Rng;
 
@@ -2683,10 +2681,10 @@ pub async fn acl_group_self_test(
     #[values(true, false)] enable_quic_proxy: bool,
 ) {
     use crate::tunnel::{
+        TunnelConnector, TunnelListener,
         common::tests::_tunnel_pingpong_netns_with_timeout,
         tcp::{TcpTunnelConnector, TcpTunnelListener},
         udp::{UdpTunnelConnector, UdpTunnelListener},
-        TunnelConnector, TunnelListener,
     };
     use rand::Rng;
 
@@ -2877,10 +2875,10 @@ pub async fn whitelist_test(
     .await;
 
     use crate::tunnel::{
+        TunnelConnector, TunnelListener,
         common::tests::_tunnel_pingpong_netns_with_timeout,
         tcp::{TcpTunnelConnector, TcpTunnelListener},
         udp::{UdpTunnelConnector, UdpTunnelListener},
-        TunnelConnector, TunnelListener,
     };
     use rand::Rng;
 
@@ -3052,7 +3050,7 @@ pub async fn config_patch_test() {
 pub fn generate_secure_mode_config_with_key(
     private_key: &x25519_dalek::StaticSecret,
 ) -> SecureModeConfig {
-    use base64::{prelude::BASE64_STANDARD, Engine};
+    use base64::{Engine, prelude::BASE64_STANDARD};
     use x25519_dalek::PublicKey;
 
     let public = PublicKey::from(private_key);

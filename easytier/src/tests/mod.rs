@@ -6,10 +6,16 @@ mod ipv6_test;
 #[cfg(target_os = "linux")]
 mod credential_tests;
 
-use std::io::IsTerminal as _;
-
 use crate::common::PeerId;
 use crate::peers::peer_manager::PeerManager;
+
+pub fn set_env_var<K: AsRef<std::ffi::OsStr>, V: AsRef<std::ffi::OsStr>>(key: K, value: V) {
+    unsafe { std::env::set_var(key, value) }
+}
+
+pub fn remove_env_var<K: AsRef<std::ffi::OsStr>>(key: K) {
+    unsafe { std::env::remove_var(key) }
+}
 
 pub fn get_guest_veth_name(net_ns: &str) -> &str {
     Box::leak(format!("veth_{}_g", net_ns).into_boxed_str())
@@ -123,21 +129,6 @@ pub fn add_ns_to_bridge(br_name: &str, ns_name: &str) {
         .args(["link", "set", br_name, "up"])
         .output()
         .unwrap();
-}
-
-pub fn enable_log() {
-    let filter = tracing_subscriber::EnvFilter::builder()
-        .with_default_directive(tracing::level_filters::LevelFilter::TRACE.into())
-        .from_env()
-        .unwrap()
-        .add_directive("tarpc=error".parse().unwrap());
-    let use_ansi = std::io::stderr().is_terminal();
-    tracing_subscriber::fmt::fmt()
-        .pretty()
-        .with_ansi(use_ansi)
-        .with_env_filter(filter)
-        .with_writer(std::io::stderr)
-        .init();
 }
 
 fn check_route(ipv4: &str, dst_peer_id: PeerId, routes: Vec<crate::proto::api::instance::Route>) {

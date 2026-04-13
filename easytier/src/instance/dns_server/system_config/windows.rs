@@ -202,13 +202,12 @@ mod tests {
                 .arg("1")
                 .arg("-w")
                 .arg("100")
-                .arg(&fake_ip.to_string())
+                .arg(fake_ip.to_string())
                 .output()
                 .await
+                && o.status.success()
             {
-                if o.status.success() {
-                    break;
-                }
+                break;
             }
         }
 

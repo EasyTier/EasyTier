@@ -155,7 +155,7 @@ impl Encryptor for RingCipher {
 #[cfg(test)]
 mod tests {
     use crate::{
-        peers::encrypt::{ring::RingCipher, Encryptor},
+        peers::encrypt::{Encryptor, ring::RingCipher},
         tunnel::packet_def::{StandardAeadTail, ZCPacket},
     };
     use zerocopy::FromBytes;

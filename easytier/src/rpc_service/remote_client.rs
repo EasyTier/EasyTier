@@ -208,8 +208,8 @@ where
     ) -> Result<GetNetworkMetasResponse, RemoteClientError<E>> {
         let mut metas = std::collections::HashMap::new();
 
-        if let Some(client) = self.get_rpc_client(identify.clone()) {
-            if let Ok(resp) = client
+        if let Some(client) = self.get_rpc_client(identify.clone())
+            && let Ok(resp) = client
                 .list_network_instance_meta(
                     BaseController::default(),
                     ListNetworkInstanceMetaRequest {
@@ -217,12 +217,11 @@ where
                     },
                 )
                 .await
-            {
-                for meta in resp.metas {
-                    if let Some(inst_id) = meta.inst_id.as_ref() {
-                        let inst_id: uuid::Uuid = (*inst_id).into();
-                        metas.insert(inst_id, meta);
-                    }
+        {
+            for meta in resp.metas {
+                if let Some(inst_id) = meta.inst_id.as_ref() {
+                    let inst_id: uuid::Uuid = (*inst_id).into();
+                    metas.insert(inst_id, meta);
                 }
             }
         }
@@ -271,8 +270,8 @@ where
         identify: T,
         inst_id: uuid::Uuid,
     ) -> Result<NetworkConfig, RemoteClientError<E>> {
-        if let Some(client) = self.get_rpc_client(identify.clone()) {
-            if let Ok(resp) = client
+        if let Some(client) = self.get_rpc_client(identify.clone())
+            && let Ok(resp) = client
                 .get_network_instance_config(
                     BaseController::default(),
                     GetNetworkInstanceConfigRequest {
@@ -280,11 +279,9 @@ where
                     },
                 )
                 .await
-            {
-                if let Some(config) = resp.config {
-                    return Ok(config);
-                }
-            }
+            && let Some(config) = resp.config
+        {
+            return Ok(config);
         }
 
         let inst_id = inst_id.to_string();
@@ -354,7 +351,7 @@ where
     ) -> Result<(), E>;
 
     async fn delete_network_configs(&self, identify: T, network_inst_ids: &[Uuid])
-        -> Result<(), E>;
+    -> Result<(), E>;
 
     async fn update_network_config_state(
         &self,
@@ -364,7 +361,7 @@ where
     ) -> Result<(), E>;
 
     async fn list_network_configs(&self, identify: T, props: ListNetworkProps)
-        -> Result<Vec<C>, E>;
+    -> Result<Vec<C>, E>;
 
     async fn get_network_config(&self, identify: T, network_inst_id: &str) -> Result<Option<C>, E>;
 }

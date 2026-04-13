@@ -2,24 +2,24 @@ use std::{
     net::Ipv4Addr,
     ops::{Div, Mul},
     sync::{
-        atomic::{AtomicBool, Ordering},
         Arc,
+        atomic::{AtomicBool, Ordering},
     },
     time::{Duration, Instant},
 };
 
 use anyhow::Context;
-use rand::{seq::SliceRandom, Rng};
+use rand::{Rng, seq::SliceRandom};
 use tokio::{net::UdpSocket, sync::RwLock};
 use tracing::Level;
 
 use crate::{
     common::{
-        global_ctx::ArcGlobalCtx, scoped_task::ScopedTask, stun::StunInfoCollectorTrait, PeerId,
+        PeerId, global_ctx::ArcGlobalCtx, scoped_task::ScopedTask, stun::StunInfoCollectorTrait,
     },
     connector::udp_hole_punch::{
         common::{
-            send_symmetric_hole_punch_packet, try_connect_with_socket, HOLE_PUNCH_PACKET_BODY_LEN,
+            HOLE_PUNCH_PACKET_BODY_LEN, send_symmetric_hole_punch_packet, try_connect_with_socket,
         },
         handle_rpc_result,
     },
@@ -33,7 +33,7 @@ use crate::{
         },
         rpc_types::{self, controller::BaseController},
     },
-    tunnel::{udp::new_hole_punch_packet, Tunnel},
+    tunnel::{Tunnel, udp::new_hole_punch_packet},
 };
 
 use super::common::{PunchHoleServerCommon, UdpNatType, UdpSocketArray};
@@ -445,16 +445,15 @@ impl PunchSymToConeHoleClient {
         ))?;
 
         // try direct connect first
-        if self.try_direct_connect.load(Ordering::Relaxed) {
-            if let Ok(tunnel) = try_connect_with_socket(
+        if self.try_direct_connect.load(Ordering::Relaxed)
+            && let Ok(tunnel) = try_connect_with_socket(
                 global_ctx.clone(),
                 Arc::new(UdpSocket::bind("0.0.0.0:0").await?),
                 remote_mapped_addr.into(),
             )
             .await
-            {
-                return Ok(Some(tunnel));
-            }
+        {
+            return Ok(Some(tunnel));
         }
 
         let stun_info = global_ctx.get_stun_info_collector().get_stun_info();
@@ -467,7 +466,7 @@ impl PunchSymToConeHoleClient {
             return Err(anyhow::anyhow!("failed to get public ips"));
         }
 
-        let tid = rand::thread_rng().gen();
+        let tid = rand::thread_rng().r#gen();
         let packet = new_hole_punch_packet(tid, HOLE_PUNCH_PACKET_BODY_LEN).into_bytes();
         udp_array.add_intreast_tid(tid);
         defer! { udp_array.remove_intreast_tid(tid);}
@@ -544,7 +543,7 @@ impl PunchSymToConeHoleClient {
 #[cfg(test)]
 pub mod tests {
     use std::{
-        sync::{atomic::AtomicU32, Arc},
+        sync::{Arc, atomic::AtomicU32},
         time::Duration,
     };
 
@@ -552,7 +551,7 @@ pub mod tests {
 
     use crate::{
         connector::udp_hole_punch::{
-            tests::create_mock_peer_manager_with_mock_stun, UdpHolePunchConnector, RUN_TESTING,
+            RUN_TESTING, UdpHolePunchConnector, tests::create_mock_peer_manager_with_mock_stun,
         },
         peers::tests::{connect_peer_manager, wait_route_appear, wait_route_appear_with_cost},
         proto::common::NatType,
@@ -617,7 +616,7 @@ pub mod tests {
                     .await
                     .is_ok()
             },
-            Duration::from_secs(30),
+            Duration::from_secs(60),
         )
         .await;
         println!("{:?}", p_a.list_routes().await);

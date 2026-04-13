@@ -1,7 +1,7 @@
 use std::sync::{Arc, Weak};
 
 use tokio::{
-    sync::{broadcast, Mutex},
+    sync::{Mutex, broadcast},
     task::JoinSet,
     time::interval,
 };

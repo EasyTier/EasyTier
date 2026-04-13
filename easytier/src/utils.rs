@@ -19,7 +19,7 @@ pub fn float_to_str(f: f64, precision: usize) -> String {
 
 #[cfg(target_os = "windows")]
 pub fn utf8_or_gbk_to_string(s: &[u8]) -> String {
-    use encoding::{all::GBK, DecoderTrap, Encoding};
+    use encoding::{DecoderTrap, Encoding, all::GBK};
     if let Ok(utf8_str) = String::from_utf8(s.to_vec()) {
         utf8_str
     } else {

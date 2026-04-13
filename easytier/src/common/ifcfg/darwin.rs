@@ -1,6 +1,6 @@
 use std::net::Ipv4Addr;
 
-use super::{cidr_to_subnet_mask, run_shell_cmd, Error, IfConfiguerTrait};
+use super::{Error, IfConfiguerTrait, cidr_to_subnet_mask, run_shell_cmd};
 use async_trait::async_trait;
 use cidr::{Ipv4Inet, Ipv6Inet};
 
@@ -53,8 +53,8 @@ impl IfConfiguerTrait for MacIfConfiger {
     ) -> Result<(), Error> {
         run_shell_cmd(
             format!(
-                "ifconfig {} {:?}/{:?} 10.8.8.8 up",
-                name, address, cidr_prefix,
+                "ifconfig {} {:?}/{:?} {:?} up",
+                name, address, cidr_prefix, address,
             )
             .as_str(),
         )

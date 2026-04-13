@@ -3,37 +3,37 @@ use std::{
     fmt::Debug,
     pin::Pin,
     sync::{
-        atomic::{AtomicU32, Ordering},
         Arc,
+        atomic::{AtomicU32, Ordering},
     },
 };
 
 use crossbeam::atomic::AtomicCell;
 use futures::{StreamExt, TryFutureExt};
 
-use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use base64::Engine as _;
+use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use hmac::Mac;
 use prost::Message;
 
 use tokio::{
-    sync::{broadcast, Mutex},
+    sync::{Mutex, broadcast},
     task::JoinSet,
-    time::{timeout, Duration},
+    time::{Duration, timeout},
 };
 
 use tracing::Instrument;
 use zerocopy::AsBytes;
 
-use snow::{params::NoiseParams, HandshakeState};
+use snow::{HandshakeState, params::NoiseParams};
 
 use crate::{
     common::{
+        PeerId,
         config::{NetworkIdentity, NetworkSecretDigest},
         defer,
         error::Error,
         global_ctx::ArcGlobalCtx,
-        PeerId,
     },
     peers::peer_session::{PeerSessionStore, SessionKey, UpsertResponderSessionReturn},
     proto::{
@@ -45,20 +45,20 @@ use crate::{
         },
     },
     tunnel::{
+        Tunnel, TunnelError, ZCPacketStream,
         filter::{StatsRecorderTunnelFilter, TunnelFilter, TunnelFilterChain, TunnelWithFilter},
         mpsc::{MpscTunnel, MpscTunnelSender},
         packet_def::{PacketType, ZCPacket},
         stats::{Throughput, WindowLatency},
-        Tunnel, TunnelError, ZCPacketStream,
     },
     use_global_var,
 };
 
 use super::{
+    PacketRecvChan,
     peer_conn_ping::PeerConnPinger,
     peer_session::{PeerSession, PeerSessionAction},
     traffic_metrics::AggregateTrafficMetrics,
-    PacketRecvChan,
 };
 
 pub type PeerConnId = uuid::Uuid;
@@ -458,12 +458,12 @@ impl PeerConn {
                 return Err(Error::WaitRespError(format!(
                     "conn recv error during wait handshake response, err: {:?}",
                     e
-                )))
+                )));
             }
             None => {
                 return Err(Error::WaitRespError(
                     "conn closed during wait handshake response".to_owned(),
-                ))
+                ));
             }
         };
 
@@ -610,7 +610,7 @@ impl PeerConn {
                     return Err(Error::WaitRespError(format!(
                         "conn recv error during wait handshake response, err: {:?}",
                         e
-                    )))
+                    )));
                 }
             };
 
@@ -716,12 +716,11 @@ impl PeerConn {
         remote_network_name: &str,
     ) -> Result<SecureAuthLevel, Error> {
         // 1. Verify proof
-        if let Some(proof) = proof {
-            if let Some(mac) = self.global_ctx.get_secret_proof(handshake_hash) {
-                if mac.verify_slice(proof).is_ok() {
-                    return Ok(SecureAuthLevel::NetworkSecretConfirmed);
-                }
-            }
+        if let Some(proof) = proof
+            && let Some(mac) = self.global_ctx.get_secret_proof(handshake_hash)
+            && mac.verify_slice(proof).is_ok()
+        {
+            return Ok(SecureAuthLevel::NetworkSecretConfirmed);
         }
 
         // 2. Check pinned pubkey
@@ -862,10 +861,10 @@ impl PeerConn {
         .await??;
         self.record_control_rx(&network.network_name, msg2.buf_len() as u64);
         let remote_peer_id = msg2.get_src_peer_id().expect("missing src peer id");
-        if let Some(hint) = self.peer_id_hint {
-            if hint != remote_peer_id {
-                return Err(Error::WaitRespError("peer_id mismatch".to_owned()));
-            }
+        if let Some(hint) = self.peer_id_hint
+            && hint != remote_peer_id
+        {
+            return Err(Error::WaitRespError("peer_id mismatch".to_owned()));
         }
         let msg2_pb = Self::decode_handshake_message::<PeerConnNoiseMsg2Pb>(
             PacketType::NoiseHandshakeMsg2,
@@ -1683,16 +1682,16 @@ pub mod tests {
 
     use super::*;
     use crate::common::config::PeerConfig;
-    use crate::common::global_ctx::tests::get_mock_global_ctx;
     use crate::common::global_ctx::GlobalCtx;
+    use crate::common::global_ctx::tests::get_mock_global_ctx;
     use crate::common::new_peer_id;
     use crate::common::scoped_task::ScopedTask;
     use crate::common::stats_manager::{LabelSet, LabelType, MetricName};
     use crate::peers::create_packet_recv_chan;
     use crate::peers::recv_packet_from_chan;
     use crate::tunnel::common::tests::wait_for_condition;
-    use crate::tunnel::filter::tests::DropSendTunnelFilter;
     use crate::tunnel::filter::PacketRecorderTunnelFilter;
+    use crate::tunnel::filter::tests::DropSendTunnelFilter;
     use crate::tunnel::ring::create_ring_tunnel_pair;
 
     pub fn set_secure_mode_cfg(global_ctx: &GlobalCtx, enabled: bool) {
@@ -2568,9 +2567,11 @@ pub mod tests {
         );
 
         // Revoke the credential
-        assert!(admin_ctx
-            .get_credential_manager()
-            .revoke_credential(&cred_id));
+        assert!(
+            admin_ctx
+                .get_credential_manager()
+                .revoke_credential(&cred_id)
+        );
 
         // Now try to connect with the revoked credential
         let (c, s) = create_ring_tunnel_pair();

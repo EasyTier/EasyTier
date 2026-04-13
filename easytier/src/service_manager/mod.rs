@@ -351,7 +351,7 @@ mod win_service_manager {
         ServiceStopCtx, ServiceUninstallCtx,
     };
 
-    use winreg::{enums::*, RegKey};
+    use winreg::{RegKey, enums::*};
 
     use crate::common::constants::WIN_SERVICE_WORK_DIR_REG_KEY;
 
@@ -491,10 +491,10 @@ mod win_service_manager {
             {
                 Ok(s) => s,
                 Err(e) => {
-                    if let windows_service::Error::Winapi(ref win_err) = e {
-                        if win_err.raw_os_error() == Some(0x424) {
-                            return Ok(ServiceStatus::NotInstalled);
-                        }
+                    if let windows_service::Error::Winapi(ref win_err) = e
+                        && win_err.raw_os_error() == Some(0x424)
+                    {
+                        return Ok(ServiceStatus::NotInstalled);
                     }
                     return Err(io::Error::other(e));
                 }

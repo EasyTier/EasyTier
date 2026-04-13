@@ -9,14 +9,14 @@ use tokio::{select, sync::mpsc};
 use tracing::Instrument;
 
 use super::{
-    peer_conn::{PeerConn, PeerConnId},
     PacketRecvChan,
+    peer_conn::{PeerConn, PeerConnId},
 };
 use crate::{
     common::{
+        PeerId,
         error::Error,
         global_ctx::{ArcGlobalCtx, GlobalCtxEvent},
-        PeerId,
     },
     proto::peer_rpc::PeerIdentityType,
     tunnel::packet_def::ZCPacket,
@@ -294,7 +294,7 @@ impl Drop for Peer {
 
 #[cfg(test)]
 mod tests {
-    use base64::prelude::{Engine as _, BASE64_STANDARD};
+    use base64::prelude::{BASE64_STANDARD, Engine as _};
     use rand::rngs::OsRng;
     use std::sync::Arc;
     use tokio::time::timeout;
@@ -302,7 +302,7 @@ mod tests {
     use crate::{
         common::{
             config::{NetworkIdentity, PeerConfig},
-            global_ctx::{tests::get_mock_global_ctx, GlobalCtx},
+            global_ctx::{GlobalCtx, tests::get_mock_global_ctx},
             new_peer_id,
         },
         peers::{create_packet_recv_chan, peer_conn::PeerConn, peer_session::PeerSessionStore},

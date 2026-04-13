@@ -16,7 +16,7 @@ use easytier::{
         log,
         network::{local_ipv4, local_ipv6},
     },
-    tunnel::{tcp::TcpTunnelListener, udp::UdpTunnelListener, TunnelListener},
+    tunnel::{TunnelListener, tcp::TcpTunnelListener, udp::UdpTunnelListener},
     utils::setup_panic_handler,
 };
 

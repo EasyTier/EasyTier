@@ -1,10 +1,10 @@
-use async_ringbuf::{traits::*, AsyncHeapCons, AsyncHeapProd, AsyncHeapRb};
+use async_ringbuf::{AsyncHeapCons, AsyncHeapProd, AsyncHeapRb, traits::*};
 use crossbeam::atomic::AtomicCell;
 use std::{
     collections::HashMap,
     fmt::Debug,
     sync::Arc,
-    task::{ready, Poll},
+    task::{Poll, ready},
 };
 
 use async_trait::async_trait;
@@ -18,8 +18,8 @@ use uuid::Uuid;
 use crate::tunnel::{FromUrl, IpVersion, SinkError, SinkItem};
 
 use super::{
-    build_url_from_socket_addr, common::TunnelWrapper, StreamItem, Tunnel, TunnelConnector,
-    TunnelError, TunnelInfo, TunnelListener,
+    StreamItem, Tunnel, TunnelConnector, TunnelError, TunnelInfo, TunnelListener,
+    build_url_from_socket_addr, common::TunnelWrapper,
 };
 
 pub static RING_TUNNEL_CAP: usize = 128;

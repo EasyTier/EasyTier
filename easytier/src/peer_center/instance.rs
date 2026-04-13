@@ -12,7 +12,7 @@ use tokio::task::JoinSet;
 use tracing::Instrument;
 
 use crate::{
-    common::{global_ctx::GlobalCtx, PeerId},
+    common::{PeerId, global_ctx::GlobalCtx},
     peers::{
         peer_manager::PeerManager,
         peer_map::PeerMap,
@@ -30,7 +30,7 @@ use crate::{
     },
 };
 
-use super::{server::PeerCenterServer, Digest, Error};
+use super::{Digest, Error, server::PeerCenterServer};
 
 #[async_trait::async_trait]
 #[auto_impl::auto_impl(&, Arc, Box)]
@@ -97,12 +97,12 @@ impl PeerCenterBase {
         &self,
         job_ctx: T,
         job_fn: impl Fn(
-                Box<dyn PeerCenterRpc<Controller = BaseController> + Send>,
-                Arc<PeridicJobCtx<T>>,
-            ) -> Fut
-            + Send
-            + Sync
-            + 'static,
+            Box<dyn PeerCenterRpc<Controller = BaseController> + Send>,
+            Arc<PeridicJobCtx<T>>,
+        ) -> Fut
+        + Send
+        + Sync
+        + 'static,
     ) {
         let my_peer_id = self.my_peer_id;
         let peer_mgr = self.peer_mgr.clone();

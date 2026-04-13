@@ -1,8 +1,9 @@
 use axum::{
+    Router,
     extract::State,
     http::header,
     response::{IntoResponse, Response},
-    routing, Router,
+    routing,
 };
 use axum_embed::ServeEmbed;
 use easytier::common::scoped_task::ScopedTask;

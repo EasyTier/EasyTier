@@ -92,17 +92,16 @@ impl WebClientService for InstanceManageRpcService {
             ConfigFileControl::new(None, ConfigFilePermission::default())
         };
 
-        if !control.is_read_only() {
-            if let Some(config_file) = control.path.as_ref() {
-                if let Err(e) = std::fs::write(config_file, cfg.dump()) {
-                    tracing::warn!(
-                        "failed to write config file {}: {}",
-                        config_file.display(),
-                        e
-                    );
-                    control.set_read_only(true);
-                }
-            }
+        if !control.is_read_only()
+            && let Some(config_file) = control.path.as_ref()
+            && let Err(e) = std::fs::write(config_file, cfg.dump())
+        {
+            tracing::warn!(
+                "failed to write config file {}: {}",
+                config_file.display(),
+                e
+            );
+            control.set_read_only(true);
         }
 
         if let Err(e) = self.hooks.pre_run_network_instance(&cfg).await {

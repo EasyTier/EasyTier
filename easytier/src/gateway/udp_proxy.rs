@@ -1,6 +1,6 @@
 use std::{
     net::{Ipv4Addr, SocketAddr, SocketAddrV4},
-    sync::{atomic::AtomicBool, Arc, Weak},
+    sync::{Arc, Weak, atomic::AtomicBool},
     time::Duration,
 };
 
@@ -9,12 +9,12 @@ use cidr::Ipv4Inet;
 use crossbeam::atomic::AtomicCell;
 use dashmap::DashMap;
 use pnet::packet::{
+    Packet,
     ip::IpNextHeaderProtocols,
     ipv4::Ipv4Packet,
     udp::{self, MutableUdpPacket},
-    Packet,
 };
-use tokio::sync::mpsc::{channel, error::TrySendError, Receiver, Sender};
+use tokio::sync::mpsc::{Receiver, Sender, channel, error::TrySendError};
 use tokio::{
     net::UdpSocket,
     sync::Mutex,
@@ -24,17 +24,17 @@ use tokio::{
 
 use tracing::Level;
 
+use super::{CidrSet, ip_reassembler::IpReassembler};
+use crate::tunnel::common::bind;
 use crate::{
-    common::{error::Error, global_ctx::ArcGlobalCtx, scoped_task::ScopedTask, PeerId},
-    gateway::ip_reassembler::{compose_ipv4_packet, ComposeIpv4PacketArgs},
-    peers::{peer_manager::PeerManager, PeerPacketFilter},
+    common::{PeerId, error::Error, global_ctx::ArcGlobalCtx, scoped_task::ScopedTask},
+    gateway::ip_reassembler::{ComposeIpv4PacketArgs, compose_ipv4_packet},
+    peers::{PeerPacketFilter, peer_manager::PeerManager},
     tunnel::{
-        common::{reserve_buf, setup_sokcet2},
+        common::reserve_buf,
         packet_def::{PacketType, ZCPacket},
     },
 };
-
-use super::{ip_reassembler::IpReassembler, CidrSet};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 struct UdpNatKey {
@@ -63,18 +63,9 @@ impl UdpNatEntry {
         denied: bool,
     ) -> Result<Self, Error> {
         // TODO: try use src port, so we will be ip restricted nat type
-        let socket = if denied {
-            None
-        } else {
-            let socket2_socket = socket2::Socket::new(
-                socket2::Domain::IPV4,
-                socket2::Type::DGRAM,
-                Some(socket2::Protocol::UDP),
-            )?;
-            let dst_socket_addr = "0.0.0.0:0".parse().unwrap();
-            setup_sokcet2(&socket2_socket, &dst_socket_addr)?;
-            Some(UdpSocket::from_std(socket2_socket.into())?)
-        };
+        let socket = (!denied)
+            .then(|| bind().addr("0.0.0.0:0".parse().unwrap()).call())
+            .transpose()?;
 
         Ok(Self {
             src_peer_id,
@@ -403,11 +394,10 @@ impl UdpProxy {
 #[async_trait::async_trait]
 impl PeerPacketFilter for UdpProxy {
     async fn try_process_packet_from_peer(&self, packet: ZCPacket) -> Option<ZCPacket> {
-        if self.try_handle_packet(&packet).await.is_some() {
-            return None;
-        } else {
-            return Some(packet);
-        }
+        self.try_handle_packet(&packet)
+            .await
+            .is_none()
+            .then_some(packet)
     }
 }
 

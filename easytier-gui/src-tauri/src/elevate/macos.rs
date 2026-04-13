@@ -30,10 +30,10 @@ use std::os::unix::process::ExitStatusExt;
 use std::path::Path;
 use std::ptr;
 
-use libc::{fileno, wait, EINTR, SHUT_WR};
+use libc::{EINTR, SHUT_WR, fileno, wait};
 use security_framework_sys::authorization::{
-    errAuthorizationSuccess, kAuthorizationFlagDefaults, kAuthorizationFlagDestroyRights,
     AuthorizationCreate, AuthorizationExecuteWithPrivileges, AuthorizationFree, AuthorizationRef,
+    errAuthorizationSuccess, kAuthorizationFlagDefaults, kAuthorizationFlagDestroyRights,
 };
 
 const ENV_PATH: &str = "PATH";

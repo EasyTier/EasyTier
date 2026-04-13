@@ -5,7 +5,7 @@ use std::{
     pin::Pin,
     task::{Context, Poll},
 };
-use tokio::sync::mpsc::{channel, Receiver, Sender};
+use tokio::sync::mpsc::{Receiver, Sender, channel};
 use tokio_util::sync::{PollSendError, PollSender};
 
 use super::device::AsyncDevice;
