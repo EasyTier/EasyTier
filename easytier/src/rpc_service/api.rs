@@ -27,8 +27,8 @@ use crate::{
         instance_manage::InstanceManageRpcService, logger::LoggerRpcService,
         mapped_listener_manage::MappedListenerManageRpcService,
         peer_center::PeerCenterManageRpcService, peer_manage::PeerManageRpcService,
-        port_forward_manage::PortForwardManageRpcService, proxy::TcpProxyRpcService,
-        stats::StatsRpcService, vpn_portal::VpnPortalRpcService,
+        port_forward_manage::PortForwardManageRpcService, protected_port,
+        proxy::TcpProxyRpcService, stats::StatsRpcService, vpn_portal::VpnPortalRpcService,
     },
     tunnel::{TunnelListener, tcp::TcpTunnelListener},
     web_client::{DefaultHooks, WebClientHooks},
@@ -36,6 +36,7 @@ use crate::{
 
 pub struct ApiRpcServer<T: TunnelListener + 'static> {
     rpc_server: StandAloneServer<T>,
+    protected_tcp_port: Option<u16>,
 }
 
 impl ApiRpcServer<TcpTunnelListener> {
@@ -44,14 +45,17 @@ impl ApiRpcServer<TcpTunnelListener> {
         rpc_portal_whitelist: Option<Vec<IpCidr>>,
         instance_manager: Arc<NetworkInstanceManager>,
     ) -> anyhow::Result<Self> {
+        let rpc_addr = parse_rpc_portal(rpc_portal)?;
         let mut server = Self::from_tunnel(
             TcpTunnelListener::new(
-                format!("tcp://{}", parse_rpc_portal(rpc_portal)?)
+                format!("tcp://{}", rpc_addr)
                     .parse()
                     .context("failed to parse rpc portal address")?,
             ),
             instance_manager,
         );
+        protected_port::register_protected_tcp_port(rpc_addr.port());
+        server.protected_tcp_port = Some(rpc_addr.port());
 
         server
             .rpc_server
@@ -65,7 +69,10 @@ impl<T: TunnelListener + 'static> ApiRpcServer<T> {
     pub fn from_tunnel(tunnel: T, instance_manager: Arc<NetworkInstanceManager>) -> Self {
         let rpc_server = StandAloneServer::new(tunnel);
         register_api_rpc_service(&instance_manager, rpc_server.registry(), None);
-        Self { rpc_server }
+        Self {
+            rpc_server,
+            protected_tcp_port: None,
+        }
     }
 }
 
@@ -83,6 +90,9 @@ impl<T: TunnelListener + 'static> ApiRpcServer<T> {
 
 impl<T: TunnelListener + 'static> Drop for ApiRpcServer<T> {
     fn drop(&mut self) {
+        if let Some(port) = self.protected_tcp_port.take() {
+            protected_port::unregister_protected_tcp_port(port);
+        }
         self.rpc_server.registry().unregister_all();
     }
 }

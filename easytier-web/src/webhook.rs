@@ -49,6 +49,7 @@ impl WebhookConfig {
 pub struct ValidateTokenRequest {
     pub token: String,
     pub machine_id: String,
+    pub public_ip: Option<String>,
     pub hostname: String,
     pub version: String,
     pub os_type: Option<String>,

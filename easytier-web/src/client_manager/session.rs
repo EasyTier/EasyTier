@@ -233,6 +233,7 @@ impl SessionRpcService {
             let webhook_req = crate::webhook::ValidateTokenRequest {
                 token: req.user_token.clone(),
                 machine_id: machine_id.to_string(),
+                public_ip: data.client_url.host_str().map(str::to_string),
                 hostname: req.hostname.clone(),
                 version: req.easytier_version.clone(),
                 os_type: req.device_os.as_ref().map(|info| info.os_type.clone()),
