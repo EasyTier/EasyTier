@@ -274,7 +274,7 @@ mod tests {
     #[ctor::ctor]
     fn init() {
         let _ = Registry::default()
-            .with(console_layers(Some(LevelFilter::DEBUG)).unwrap())
+            .with(console_layers(Some(LevelFilter::WARN)).unwrap())
             .try_init();
     }
 
