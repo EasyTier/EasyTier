@@ -6,6 +6,7 @@ mod mapped_listener_manage;
 mod peer_center;
 mod peer_manage;
 mod port_forward_manage;
+pub(crate) mod protected_port;
 mod proxy;
 mod stats;
 mod vpn_portal;
