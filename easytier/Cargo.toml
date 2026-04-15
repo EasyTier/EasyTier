@@ -51,6 +51,7 @@ toml = "0.8.12"
 chrono = { version = "0.4.37", features = ["serde"] }
 
 cfg-if = "1.0"
+delegate = "0.13.5"
 
 itertools = "0.14.0"
 

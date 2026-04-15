@@ -76,7 +76,6 @@ macro_rules! log_layer {
         $layer
             .with_file(false)
             .with_line_number(false)
-            .with_ansi(true)
             .with_filter(filter_fn(is_log))
             .boxed()
     };
@@ -274,7 +273,7 @@ mod tests {
     #[ctor::ctor]
     fn init() {
         let _ = Registry::default()
-            .with(console_layers(Some(LevelFilter::DEBUG)).unwrap())
+            .with(console_layers(Some(LevelFilter::WARN)).unwrap())
             .try_init();
     }
 
