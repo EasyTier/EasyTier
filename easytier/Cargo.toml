@@ -23,6 +23,7 @@ test = false
 [[bin]]
 name = "easytier-cli"
 path = "src/easytier-cli.rs"
+required-features = ["cli"]
 
 [lib]
 name = "easytier"
@@ -67,7 +68,6 @@ tokio = { version = "1", features = ["full"] }
 tokio-stream = "0.1"
 tokio-util = { version = "0.7.9", features = ["codec", "net", "io", "rt"] }
 
-async-stream = "0.3.5"
 async-trait = "0.1.74"
 
 dashmap = "6.0"
@@ -187,10 +187,10 @@ snow = "0.10.0"
 x25519-dalek = { version = "2.0", features = ["static_secrets"] }
 
 # for cli
-tabled = "0.16"
-humansize = "2.1.3"
-terminal_size = "0.4"
-unicode-width = "0.1"
+tabled = { version = "0.16", optional = true }
+humansize = { version = "2.1.3", optional = true }
+terminal_size = { version = "0.4", optional = true }
+unicode-width = { version = "0.1", optional = true }
 
 base64 = "0.22"
 
@@ -199,7 +199,7 @@ mimalloc = { version = "*", optional = true }
 # mips
 atomic-shim = "0.2.0"
 
-smoltcp = { git = "https://github.com/smoltcp-rs/smoltcp.git", rev = "0a926767a68bc88d5512afefa7529c5ecdade4ea", optional = true, default-features = false, features = [
+smoltcp = { version = "0.13.1", optional = true, default-features = false, features = [
     "std",
     "medium-ip",
     "proto-ipv4",
@@ -240,14 +240,14 @@ hickory-resolver = "0.25.2"
 hickory-proto = "0.25.2"
 
 # for magic dns
+derive_builder = { version = "0.20.2", optional = true }
+humantime-serde = { version = "1.1.1", optional = true }
 hickory-client = { version = "0.25.2", optional = true }
 hickory-server = { version = "0.25.2", features = [
     "resolver",
 ], optional = true }
 
 bon = "3.9.1"
-derive_builder = "0.20.2"
-humantime-serde = "1.1.1"
 multimap = "0.10.1"
 version-compare = "0.2.0"
 hmac = "0.12.1"
@@ -269,7 +269,7 @@ netlink-packet-core = { version = "0.7.0" }
 netlink-packet-utils = "0.5.2"
 # for magic dns
 resolv-conf = "0.7.3"
-dbus = { version = "0.9.7", features = ["vendored"] }
+dbus = { version = "0.9.7", features = ["vendored"], optional = true }
 which = "7.0.3"
 
 [target.'cfg(all(windows, any(target_arch = "x86_64", target_arch = "x86")))'.dependencies]
@@ -325,7 +325,7 @@ prost-reflect-build = "0.16.0"
 pbjson-build = "0.9.0"
 proc-macro2 = "1"
 quote = "1"
-thunk-rs = { git = "https://github.com/easytier/thunk.git", default-features = false, features = [
+thunk-rs = { git = "https://github.com/EasyTier/thunk.git", default-features = false, features = [
     "win7",
 ] }
 
@@ -349,6 +349,7 @@ tokio-socks = "0.5.2"
 
 [features]
 default = [
+    "cli",
     "wireguard",
     "websocket",
     "smoltcp",
@@ -361,6 +362,7 @@ default = [
     "zstd",
 ]
 full = [
+    "cli",
     "websocket",
     "wireguard",
     "aes-gcm",
@@ -374,6 +376,7 @@ full = [
     "magic-dns",
     "zstd",
 ]
+cli = ["dep:tabled", "dep:humansize", "dep:terminal_size", "dep:unicode-width"]
 wireguard = ["dep:boringtun", "dep:ring"]
 quic = ["dep:quinn", "dep:quinn-proto", "dep:seahash", "dep:rustls", "dep:rcgen"]
 kcp = ["dep:kcp-sys"]
@@ -401,7 +404,7 @@ jemalloc-prof = [
     "jemalloc-sys/stats",
 ]
 tracing = ["tokio/tracing", "dep:console-subscriber"]
-magic-dns = ["dep:hickory-client", "dep:hickory-server"]
+magic-dns = ["dep:derive_builder", "dep:humantime-serde", "dep:hickory-client", "dep:hickory-server", "dep:dbus"]
 faketcp = ["dep:flume"]
 zstd = ["dep:zstd"]
 # For Network Extension on macOS

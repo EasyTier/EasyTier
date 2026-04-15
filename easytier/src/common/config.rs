@@ -8,6 +8,7 @@ use std::{
 use anyhow::Context;
 use ariadne::{CharSet, Config as AriadneConfig, IndexType, Label, Report, ReportKind, Source};
 use base64::{Engine as _, prelude::BASE64_STANDARD};
+use bon::Builder;
 use clap::ValueEnum;
 use clap::builder::PossibleValue;
 use serde::{Deserialize, Serialize};
@@ -429,11 +430,11 @@ pub struct ConsoleLoggerConfig {
     pub level: Option<String>,
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, derive_builder::Builder)]
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Builder)]
 pub struct LoggingConfig {
-    #[builder(setter(into, strip_option), default = None)]
+    #[builder(into)]
     pub file_logger: Option<FileLoggerConfig>,
-    #[builder(setter(into, strip_option), default = None)]
+    #[builder(into)]
     pub console_logger: Option<ConsoleLoggerConfig>,
 }
 
