@@ -256,10 +256,10 @@ async fn forward_from_ring_to_udp(
         let buf = packet.into_bytes();
         tracing::trace!(?udp_payload_len, ?buf, "udp forward from ring to udp");
         let ret = socket.send_to(&buf, &addr).await;
-        if ret.is_err() {
-            return Some(TunnelError::IOError(ret.unwrap_err()));
-        } else if ret.unwrap() == 0 {
-            return None;
+        match ret {
+            Ok(0) => return None,
+            Err(e) => return Some(e.into()),
+            _ => {}
         }
     }
 }
