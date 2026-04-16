@@ -127,6 +127,7 @@ $I18N = @{
         ChooseAction                 = "EasyTier服务管理"
         InstallHelp                  = "安装服务"
         UninstallHelp                = "卸载服务"
+        UpdateHelp                   = "更新EasyTier"
         SelectPrompt                 = "请选择:"
         LabelsHelpsCountMismatch     = "Labels 和 Helps 的数量必须相同。"
         ShowChoiceError              = "显示选择提示时出错: {0}"
@@ -768,6 +769,54 @@ function Uninstall-EasyTier {
     }
     Unregister-ScheduledTask -TaskName "EasyTierWatchDog" -Confirm:$false -ErrorAction SilentlyContinue | Out-Null
 }
+
+function Set-EasyTier {
+    switch ($ConfigType) {
+        "File" {
+            $OPTIONS += "--config-file $(Get-InputWithFileValidation -Prompt (T "InputConfigFile"))"
+        }
+        "Remote" {
+            if (Show-YesNoPrompt -Message (T "ConfirmCustomServer") -DefaultIndex 1) {
+                $configServer = Get-InputWithNoNullOrWhiteSpace -Prompt (T "InputServer") 
+            }
+            else {
+                $configServer = Get-InputWithNoNullOrWhiteSpace -Prompt (T "InputUser")
+            }
+            $OPTIONS += "--config-server $configServer"
+        } 
+        "CLI" {
+            if (-not $ServiceArgs -or $ServiceArgs.Count -eq 0) {
+                $OPTIONS += Get-InputWithNoNullOrWhiteSpace -Prompt (T "InputCLI") 
+            }
+            else {
+                $OPTIONS += $ServiceArgs
+            }
+        }
+        default {
+            throw (T "ConfigUnknown" $ConfigType)
+        }
+    }
+    $BinaryPath = "`"$EasyTierPath`" $($OPTIONS -join ' ')" 
+    Write-Host (T "GeneratedArgs") -ForegroundColor Yellow
+    Write-Host ($OPTIONS -join " ") -ForegroundColor DarkGray
+    if (Show-YesNoPrompt -Message (T "ConfigConfirm") -DefaultIndex 1) {
+        if (Get-Service -Name $ServiceName -ErrorAction SilentlyContinue) {
+            Stop-Service -Name $ServiceName -Force | Out-Null
+            Remove-ServiceCompatible -Name $ServiceName
+        }
+        New-Service -Name $ServiceName -DisplayName "EasyTier" `
+            -Description "EasyTier Core Service" `
+            -StartupType Automatic `
+            -BinaryPathName $BinaryPath | Out-Null
+        Start-Service -Name $ServiceName | Out-Null
+
+        Save-ServiceName -Name $ServiceName
+        Write-Host (T "ConfigDone") -ForegroundColor Green
+    }
+    else {
+        Write-Host (T "ConfigCancel") -ForegroundColor Yellow
+    }
+}
 $HelpText = @"
 EasyTier Service Management Script
 
@@ -893,7 +942,8 @@ try {
     if (-not $ConfigType) {
         $choices = @(
             New-Object System.Management.Automation.Host.ChoiceDescription "&Install", (T "InstallHelp")
-            New-Object System.Management.Automation.Host.ChoiceDescription "&Uninstall", (T "UninstallHelp")
+            New-Object System.Management.Automation.Host.ChoiceDescription "U&ninstall", (T "UninstallHelp")
+            New-Object System.Management.Automation.Host.ChoiceDescription "&Update", (T "UpdateHelp")
         )
         $selected = $Host.UI.PromptForChoice(
             (T "ChooseAction"),
@@ -901,74 +951,38 @@ try {
             $choices,
             0
         )
-        if ($selected -eq 1) {
-            Uninstall-EasyTier
-            Show-Pause -Text (T "ExitPrompt")
-            exit 0
-        }
-        $choices = @(
-            New-Object System.Management.Automation.Host.ChoiceDescription "&File", (T "FileModeHelp")
-            New-Object System.Management.Automation.Host.ChoiceDescription "&Remote", (T "RemoteModeHelp")
-            New-Object System.Management.Automation.Host.ChoiceDescription "&CLI", (T "CLIModeHelp")
-        )
-        $selected = $Host.UI.PromptForChoice(
-            (T "ChooseConfig"),
-            (T "SelectPrompt"),
-            $choices,
-            0
-        )
-        $ConfigType = @("File", "Remote", "CLI")[$selected]
-    }
-    switch ($ConfigType) {
-        "File" {
-            $OPTIONS += "--config-file $(Get-InputWithFileValidation -Prompt (T "InputConfigFile"))"
-        }
-        "Remote" {
-            if (Show-YesNoPrompt -Message (T "ConfirmCustomServer") -DefaultIndex 1) {
-                $configServer = Get-InputWithNoNullOrWhiteSpace -Prompt (T "InputServer") 
+        switch ($selected) {
+            0 {
+                $ConfigType = @("File", "Remote", "CLI")[$Host.UI.PromptForChoice(
+                    (T "ChooseConfig"),
+                    (T "SelectPrompt"),
+                    @(
+                        New-Object System.Management.Automation.Host.ChoiceDescription "&File", (T "FileModeHelp")
+                        New-Object System.Management.Automation.Host.ChoiceDescription "&Remote", (T "RemoteModeHelp")
+                        New-Object System.Management.Automation.Host.ChoiceDescription "&CLI", (T "CLIModeHelp")
+                    ),
+                    0
+                )]
+            } 
+            1 {
+                Uninstall-EasyTier
+                Show-Pause -Text (T "ExitPrompt")
+                exit 0
             }
-            else {
-                $configServer = Get-InputWithNoNullOrWhiteSpace -Prompt (T "InputUser")
-            }
-            $OPTIONS += "--config-server $configServer"
-        } 
-        "CLI" {
-            if (-not $ServiceArgs -or $ServiceArgs.Count -eq 0) {
-                $OPTIONS += Get-InputWithNoNullOrWhiteSpace -Prompt (T "InputCLI") 
-            }
-            else {
-                $OPTIONS += $ServiceArgs
+            2 {
+                Get-EasyTier | Update-EasyTier
+                Show-Pause -Text (T "ExitPrompt")
+                exit 0
             }
         }
-        default {
-            throw (T "ConfigUnknown" $ConfigType)
-        }
     }
-    $BinaryPath = "`"$EasyTierPath`" $($OPTIONS -join ' ')" 
-    Write-Host (T "GeneratedArgs") -ForegroundColor Yellow
-    Write-Host ($OPTIONS -join " ") -ForegroundColor DarkGray
-    if (Show-YesNoPrompt -Message (T "ConfigConfirm") -DefaultIndex 1) {
-        if (Get-Service -Name $ServiceName -ErrorAction SilentlyContinue) {
-            Stop-Service -Name $ServiceName -Force | Out-Null
-            Remove-ServiceCompatible -Name $ServiceName
-        }
-        New-Service -Name $ServiceName -DisplayName "EasyTier" `
-            -Description "EasyTier 核心服务" `
-            -StartupType Automatic `
-            -BinaryPathName $BinaryPath | Out-Null
-        Start-Service -Name $ServiceName | Out-Null
-
-        Save-ServiceName -Name $ServiceName
-        Write-Host (T "ConfigDone") -ForegroundColor Green
-    }
-    else {
-        Write-Host (T "ConfigCancel") -ForegroundColor Yellow
-    }
+    Set-EasyTier
     Show-Pause -Text (T "ExitPrompt")
+    exit 0
 }
 catch {
+    Unregister-ScheduledTask -TaskName "EasyTierWatchDog" -Confirm:$false -ErrorAction SilentlyContinue
     Write-Host (T "Error" $_) -ForegroundColor Red
     Show-Pause -Text (T "ExitPrompt")
-    Unregister-ScheduledTask -TaskName "EasyTierWatchDog" -Confirm:$false -ErrorAction SilentlyContinue
     exit 1
 }
