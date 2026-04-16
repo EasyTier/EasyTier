@@ -465,13 +465,38 @@ impl SyncedRouteInfo {
     }
 
     fn remove_peer(&self, peer_id: PeerId) {
-        tracing::warn!(?peer_id, "remove_peer from synced_route_info");
-        self.peer_infos.write().remove(&peer_id);
-        self.raw_peer_infos.remove(&peer_id);
-        self.conn_map.write().remove(&peer_id);
-        self.foreign_network.retain(|k, _| k.peer_id != peer_id);
-        self.group_trust_map.remove(&peer_id);
-        self.group_trust_map_cache.remove(&peer_id);
+        self.remove_peers([peer_id]);
+    }
+
+    fn remove_peers<I>(&self, peer_ids: I)
+    where
+        I: IntoIterator<Item = PeerId>,
+    {
+        let peer_ids: HashSet<_> = peer_ids.into_iter().collect();
+        if peer_ids.is_empty() {
+            return;
+        }
+
+        for peer_id in &peer_ids {
+            tracing::warn!(?peer_id, "remove_peer from synced_route_info");
+        }
+
+        {
+            let mut peer_infos = self.peer_infos.write();
+            let mut conn_map = self.conn_map.write();
+            for peer_id in &peer_ids {
+                peer_infos.remove(peer_id);
+                conn_map.remove(peer_id);
+            }
+        }
+
+        for peer_id in &peer_ids {
+            self.raw_peer_infos.remove(peer_id);
+            self.group_trust_map.remove(peer_id);
+            self.group_trust_map_cache.remove(peer_id);
+        }
+        self.foreign_network
+            .retain(|k, _| !peer_ids.contains(&k.peer_id));
 
         shrink_dashmap(&self.raw_peer_infos, None);
         shrink_dashmap(&self.foreign_network, None);
@@ -853,6 +878,7 @@ impl SyncedRouteInfo {
         &self,
         peer_infos: &[RoutePeerInfo],
         local_group_declarations: &[GroupIdentity],
+        trust_admin_groups_without_proof: bool,
     ) {
         let local_group_declarations = local_group_declarations
             .iter()
@@ -878,6 +904,14 @@ impl SyncedRouteInfo {
                             "Group proof verification failed"
                         );
                     }
+                }
+            }
+
+            if trust_admin_groups_without_proof && self.is_admin_peer(info) {
+                for group_proof in &info.groups {
+                    trusted_groups_for_peer
+                        .entry(group_proof.group_name.clone())
+                        .or_default();
                 }
             }
 
@@ -1043,8 +1077,8 @@ impl SyncedRouteInfo {
             drop(peer_infos); // release read lock before writing
             for peer_id in &untrusted_peers {
                 tracing::warn!(?peer_id, "removing untrusted peer from route info");
-                self.remove_peer(*peer_id);
             }
+            self.remove_peers(untrusted_peers.iter().copied());
         }
 
         (untrusted_peers, global_trusted_keys)
@@ -2439,6 +2473,11 @@ impl PeerRouteServiceImpl {
 
     async fn refresh_acl_groups(&self) -> bool {
         let my_peer_info_updated = self.update_my_peer_info();
+        let trust_admin_groups_without_proof = self
+            .global_ctx
+            .get_network_identity()
+            .network_secret
+            .is_none();
 
         let peer_infos: Vec<_> = self
             .synced_route_info
@@ -2450,6 +2489,7 @@ impl PeerRouteServiceImpl {
         self.synced_route_info.verify_and_update_group_trusts(
             &peer_infos,
             &self.global_ctx.get_acl_group_declarations(),
+            trust_admin_groups_without_proof,
         );
 
         let untrusted = self.refresh_credential_trusts();
@@ -2555,9 +2595,8 @@ impl PeerRouteServiceImpl {
             }
         }
 
-        for p in to_remove.iter() {
-            self.synced_route_info.remove_peer(*p);
-        }
+        self.synced_route_info
+            .remove_peers(to_remove.iter().copied());
 
         // clear expired foreign network info
         let mut to_remove = Vec::new();
@@ -3223,6 +3262,11 @@ impl RouteSessionManager {
                 (peer_infos, raw_peer_infos.as_ref().unwrap())
             };
             if !pi.is_empty() {
+                let trust_admin_groups_without_proof = service_impl
+                    .global_ctx
+                    .get_network_identity()
+                    .network_secret
+                    .is_none();
                 service_impl.synced_route_info.update_peer_infos(
                     my_peer_id,
                     service_impl.my_peer_route_id,
@@ -3235,6 +3279,7 @@ impl RouteSessionManager {
                     .verify_and_update_group_trusts(
                         pi,
                         &service_impl.global_ctx.get_acl_group_declarations(),
+                        trust_admin_groups_without_proof,
                     );
                 session.update_dst_saved_peer_info_version(pi, from_peer_id);
                 need_update_route_table = true;
@@ -3689,11 +3734,14 @@ mod tests {
         time::{Duration, SystemTime},
     };
 
-    use super::{PeerRoute, REMOVE_DEAD_PEER_INFO_AFTER};
+    use super::{PeerRoute, REMOVE_DEAD_PEER_INFO_AFTER, RouteConnInfo};
     use crate::{
         common::{
             PeerId,
-            global_ctx::{GlobalCtxEvent, TrustedKeySource, tests::get_mock_global_ctx},
+            global_ctx::{
+                GlobalCtxEvent, TrustedKeySource,
+                tests::{get_mock_global_ctx, get_mock_global_ctx_with_network},
+            },
         },
         connector::udp_hole_punch::tests::replace_stun_info_collector,
         peers::{
@@ -3707,8 +3755,9 @@ mod tests {
             acl::{Acl, AclV1, GroupIdentity, GroupInfo},
             common::{NatType, PeerFeatureFlag},
             peer_rpc::{
-                PeerGroupInfo, PeerIdentityType, RoutePeerInfo, RoutePeerInfos,
-                SyncRouteInfoRequest, TrustedCredentialPubkey, TrustedCredentialPubkeyProof,
+                ForeignNetworkRouteInfoEntry, ForeignNetworkRouteInfoKey, PeerGroupInfo,
+                PeerIdentityType, RoutePeerInfo, RoutePeerInfos, SyncRouteInfoRequest,
+                TrustedCredentialPubkey, TrustedCredentialPubkeyProof,
             },
         },
         tunnel::common::tests::wait_for_condition,
@@ -4117,6 +4166,7 @@ mod tests {
                     group_name: "proof-group".to_string(),
                     group_secret: "proof-secret".to_string(),
                 }],
+                false,
             );
         service_impl
             .synced_route_info
@@ -4154,6 +4204,127 @@ mod tests {
         assert!(groups.contains(&"proof-group".to_string()));
         assert!(groups.contains(&"replacement-group".to_string()));
         assert!(!groups.contains(&"cred-group".to_string()));
+    }
+
+    #[tokio::test]
+    async fn remove_peers_batches_cleanup_and_version_increment() {
+        let service_impl = PeerRouteServiceImpl::new(1, get_mock_global_ctx());
+        let removed_peer_ids = [41, 42];
+        let retained_peer_id = 43;
+
+        {
+            let mut peer_infos = service_impl.synced_route_info.peer_infos.write();
+            let mut conn_map = service_impl.synced_route_info.conn_map.write();
+            for peer_id in removed_peer_ids {
+                let mut info = RoutePeerInfo::new();
+                info.peer_id = peer_id;
+                info.version = 1;
+                peer_infos.insert(peer_id, info);
+                conn_map.insert(peer_id, RouteConnInfo::default());
+            }
+
+            let mut retained_info = RoutePeerInfo::new();
+            retained_info.peer_id = retained_peer_id;
+            retained_info.version = 1;
+            peer_infos.insert(retained_peer_id, retained_info);
+            conn_map.insert(retained_peer_id, RouteConnInfo::default());
+        }
+
+        for peer_id in removed_peer_ids {
+            service_impl.synced_route_info.raw_peer_infos.insert(
+                peer_id,
+                DynamicMessage::new(RoutePeerInfo::default().descriptor()),
+            );
+            service_impl.synced_route_info.group_trust_map.insert(
+                peer_id,
+                HashMap::from([("guest".to_string(), vec![1, 2, 3])]),
+            );
+            service_impl
+                .synced_route_info
+                .group_trust_map_cache
+                .insert(peer_id, Arc::new(vec!["guest".to_string()]));
+            service_impl.synced_route_info.foreign_network.insert(
+                ForeignNetworkRouteInfoKey {
+                    peer_id,
+                    ..Default::default()
+                },
+                ForeignNetworkRouteInfoEntry::default(),
+            );
+        }
+
+        service_impl.synced_route_info.foreign_network.insert(
+            ForeignNetworkRouteInfoKey {
+                peer_id: retained_peer_id,
+                ..Default::default()
+            },
+            ForeignNetworkRouteInfoEntry::default(),
+        );
+
+        let initial_version = service_impl.synced_route_info.version.get();
+        service_impl
+            .synced_route_info
+            .remove_peers(removed_peer_ids);
+
+        assert_eq!(
+            service_impl.synced_route_info.version.get(),
+            initial_version + 1
+        );
+        for peer_id in removed_peer_ids {
+            assert!(
+                !service_impl
+                    .synced_route_info
+                    .peer_infos
+                    .read()
+                    .contains_key(&peer_id)
+            );
+            assert!(
+                !service_impl
+                    .synced_route_info
+                    .conn_map
+                    .read()
+                    .contains_key(&peer_id)
+            );
+            assert!(
+                !service_impl
+                    .synced_route_info
+                    .raw_peer_infos
+                    .contains_key(&peer_id)
+            );
+            assert!(
+                !service_impl
+                    .synced_route_info
+                    .group_trust_map
+                    .contains_key(&peer_id)
+            );
+            assert!(
+                !service_impl
+                    .synced_route_info
+                    .group_trust_map_cache
+                    .contains_key(&peer_id)
+            );
+            assert!(
+                !service_impl.synced_route_info.foreign_network.contains_key(
+                    &ForeignNetworkRouteInfoKey {
+                        peer_id,
+                        ..Default::default()
+                    }
+                )
+            );
+        }
+
+        assert!(
+            service_impl
+                .synced_route_info
+                .peer_infos
+                .read()
+                .contains_key(&retained_peer_id)
+        );
+        assert!(service_impl.synced_route_info.foreign_network.contains_key(
+            &ForeignNetworkRouteInfoKey {
+                peer_id: retained_peer_id,
+                ..Default::default()
+            }
+        ));
     }
 
     #[tokio::test]
@@ -4458,6 +4629,7 @@ mod tests {
             .verify_and_update_group_trusts(
                 &[remote_info],
                 &peer_mgr.get_global_ctx().get_acl_group_declarations(),
+                false,
             );
 
         assert!(
@@ -4488,6 +4660,130 @@ mod tests {
                 .get_peer_groups(remote_peer_id)
                 .is_empty()
         );
+    }
+
+    #[tokio::test]
+    async fn credential_verifier_trusts_admin_self_groups_from_multiple_admins() {
+        let service_impl = PeerRouteServiceImpl::new(
+            1,
+            get_mock_global_ctx_with_network(Some(
+                crate::common::config::NetworkIdentity::new_credential("net1".to_string()),
+            )),
+        );
+
+        let mut admin_a = RoutePeerInfo::new();
+        admin_a.peer_id = 501;
+        admin_a.version = 1;
+        admin_a.groups = vec![
+            PeerGroupInfo {
+                group_name: "ops".to_string(),
+                group_proof: vec![1; 32],
+            },
+            PeerGroupInfo {
+                group_name: "core-admin".to_string(),
+                group_proof: vec![2; 32],
+            },
+        ];
+
+        let mut admin_b = RoutePeerInfo::new();
+        admin_b.peer_id = 502;
+        admin_b.version = 1;
+        admin_b.groups = vec![PeerGroupInfo {
+            group_name: "audit".to_string(),
+            group_proof: vec![3; 32],
+        }];
+
+        service_impl
+            .synced_route_info
+            .verify_and_update_group_trusts(&[admin_a.clone(), admin_b.clone()], &[], true);
+
+        let admin_a_groups = service_impl.get_peer_groups(admin_a.peer_id);
+        assert!(admin_a_groups.contains(&"ops".to_string()));
+        assert!(admin_a_groups.contains(&"core-admin".to_string()));
+
+        let admin_b_groups = service_impl.get_peer_groups(admin_b.peer_id);
+        assert!(admin_b_groups.contains(&"audit".to_string()));
+    }
+
+    #[tokio::test]
+    async fn credential_verifier_still_checks_credential_self_declared_groups() {
+        let service_impl = PeerRouteServiceImpl::new(
+            1,
+            get_mock_global_ctx_with_network(Some(
+                crate::common::config::NetworkIdentity::new_credential("net1".to_string()),
+            )),
+        );
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+        let credential_peer_id = 601;
+        let credential_pubkey = vec![9; 32];
+
+        let mut admin_info = RoutePeerInfo::new();
+        admin_info.peer_id = 600;
+        admin_info.version = 1;
+        admin_info.trusted_credential_pubkeys = vec![TrustedCredentialPubkeyProof {
+            credential: Some(TrustedCredentialPubkey {
+                pubkey: credential_pubkey.clone(),
+                groups: vec!["cred-acl".to_string()],
+                expiry_unix: now + 600,
+                ..Default::default()
+            }),
+            credential_hmac: vec![7; 32],
+        }];
+
+        let mut credential_info = RoutePeerInfo::new();
+        credential_info.peer_id = credential_peer_id;
+        credential_info.version = 1;
+        credential_info.noise_static_pubkey = credential_pubkey.clone();
+        credential_info.feature_flag = Some(PeerFeatureFlag {
+            is_credential_peer: true,
+            ..Default::default()
+        });
+        credential_info.groups = vec![
+            PeerGroupInfo::generate_with_proof(
+                "proof-group".to_string(),
+                "proof-secret".to_string(),
+                credential_peer_id,
+            ),
+            PeerGroupInfo::generate_with_proof(
+                "invalid-group".to_string(),
+                "wrong-secret".to_string(),
+                credential_peer_id,
+            ),
+        ];
+
+        {
+            let mut guard = service_impl.synced_route_info.peer_infos.write();
+            guard.insert(admin_info.peer_id, admin_info.clone());
+            guard.insert(credential_info.peer_id, credential_info.clone());
+        }
+
+        service_impl
+            .synced_route_info
+            .verify_and_update_group_trusts(
+                &[admin_info, credential_info],
+                &[
+                    GroupIdentity {
+                        group_name: "proof-group".to_string(),
+                        group_secret: "proof-secret".to_string(),
+                    },
+                    GroupIdentity {
+                        group_name: "invalid-group".to_string(),
+                        group_secret: "actual-secret".to_string(),
+                    },
+                ],
+                true,
+            );
+        service_impl
+            .synced_route_info
+            .verify_and_update_credential_trusts(None);
+
+        let groups = service_impl.get_peer_groups(credential_peer_id);
+        assert!(groups.contains(&"proof-group".to_string()));
+        assert!(groups.contains(&"cred-acl".to_string()));
+        assert!(!groups.contains(&"invalid-group".to_string()));
     }
 
     #[rstest::rstest]
