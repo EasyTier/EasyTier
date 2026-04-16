@@ -220,6 +220,9 @@ impl WsTunnelConnector {
         let is_wss = is_wss(&addr)?;
         let socket_addr = SocketAddr::from_url(addr.clone(), ip_version).await?;
         let stream = tcp_socket.connect(socket_addr).await?;
+        if let Err(error) = stream.set_nodelay(true) {
+            tracing::warn!(?error, "set_nodelay fail in ws connect");
+        }
 
         let info = TunnelInfo {
             tunnel_type: addr.scheme().to_owned(),
