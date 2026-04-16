@@ -23,7 +23,7 @@ use crate::{
     launcher::add_proxy_network_to_config,
     proto::common::{CompressionAlgoPb, SecureModeConfig},
     rpc_service::ApiRpcServer,
-    utils::setup_panic_handler,
+    utils::panic::setup_panic_handler,
     web_client,
 };
 use anyhow::Context;

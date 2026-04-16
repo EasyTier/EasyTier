@@ -1,43 +1,14 @@
 use crate::common::log;
 use indoc::formatdoc;
-use std::sync::Arc;
-use std::{fs::OpenOptions, str::FromStr};
-
-pub type PeerRoutePair = crate::proto::api::instance::PeerRoutePair;
-
-pub fn cost_to_str(cost: i32) -> String {
-    if cost == 1 {
-        "p2p".to_string()
-    } else {
-        format!("relay({})", cost)
-    }
-}
-
-pub fn float_to_str(f: f64, precision: usize) -> String {
-    format!("{:.1$}", f, precision)
-}
-
-#[cfg(target_os = "windows")]
-pub fn utf8_or_gbk_to_string(s: &[u8]) -> String {
-    use encoding::{DecoderTrap, Encoding, all::GBK};
-    if let Ok(utf8_str) = String::from_utf8(s.to_vec()) {
-        utf8_str
-    } else {
-        // 如果解码失败，则尝试使用GBK解码
-        if let Ok(gbk_str) = GBK.decode(s, DecoderTrap::Strict) {
-            gbk_str
-        } else {
-            String::from_utf8_lossy(s).to_string()
-        }
-    }
-}
+use std::fs::OpenOptions;
+use std::str::FromStr;
+use std::{backtrace, io::Write};
 
 thread_local! {
     static PANIC_COUNT : std::cell::RefCell<u32> = const { std::cell::RefCell::new(0) };
 }
 
 pub fn setup_panic_handler() {
-    use std::{backtrace, io::Write};
     std::panic::set_hook(Box::new(|info| {
         let mut stderr = std::io::stderr();
         let sep = format!("{}\n", "=======".repeat(10));
@@ -126,26 +97,3 @@ pub fn setup_panic_handler() {
         std::process::exit(1);
     }));
 }
-
-pub fn check_tcp_available(port: u16) -> bool {
-    use std::net::TcpListener;
-    let s = std::net::SocketAddr::new(std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED), port);
-    TcpListener::bind(s).is_ok()
-}
-
-pub fn find_free_tcp_port(mut range: std::ops::Range<u16>) -> Option<u16> {
-    range.find(|&port| check_tcp_available(port))
-}
-
-pub fn weak_upgrade<T>(weak: &std::sync::Weak<T>) -> anyhow::Result<Arc<T>> {
-    weak.upgrade()
-        .ok_or_else(|| anyhow::anyhow!("{} not available", std::any::type_name::<T>()))
-}
-
-pub trait BoxExt: Sized {
-    fn boxed(self) -> Box<Self> {
-        Box::new(self)
-    }
-}
-
-impl<T> BoxExt for T {}

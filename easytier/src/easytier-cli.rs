@@ -76,7 +76,7 @@ use easytier::{
         rpc_types::controller::BaseController,
     },
     tunnel::{TunnelScheme, tcp::TcpTunnelConnector},
-    utils::{PeerRoutePair, cost_to_str},
+    utils::{PeerRoutePair, string::cost_to_str},
 };
 
 rust_i18n::i18n!("locales", fallback = "en");
