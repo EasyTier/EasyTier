@@ -1,12 +1,12 @@
-use crate::common::config::{process_secure_mode_cfg, ConfigFileControl, PortForwardConfig};
+use crate::common::config::{ConfigFileControl, PortForwardConfig, process_secure_mode_cfg};
 use crate::proto::api::{self, manage};
 use crate::proto::rpc_types::controller::BaseController;
 use crate::rpc_service::InstanceRpcService;
 use crate::{
     common::{
         config::{
-            gen_default_flags, ConfigLoader, NetworkIdentity, PeerConfig, TomlConfigLoader,
-            VpnPortalConfig,
+            ConfigLoader, NetworkIdentity, PeerConfig, TomlConfigLoader, VpnPortalConfig,
+            gen_default_flags,
         },
         constants::EASYTIER_VERSION,
         global_ctx::{EventBusSubscriber, GlobalCtxEvent},
@@ -19,7 +19,7 @@ use chrono::{DateTime, Local};
 use std::{
     collections::VecDeque,
     net::SocketAddr,
-    sync::{atomic::AtomicBool, Arc, Mutex, RwLock},
+    sync::{Arc, Mutex, RwLock, atomic::AtomicBool},
 };
 use tokio::{
     sync::{broadcast, mpsc},
@@ -272,10 +272,10 @@ impl Drop for EasyTierLauncher {
     fn drop(&mut self) {
         self.stop_flag
             .store(true, std::sync::atomic::Ordering::Relaxed);
-        if let Some(handle) = self.thread_handle.take() {
-            if let Err(e) = handle.join() {
-                println!("Error when joining thread: {:?}", e);
-            }
+        if let Some(handle) = self.thread_handle.take()
+            && let Err(e) = handle.join()
+        {
+            println!("Error when joining thread: {:?}", e);
         }
     }
 }
@@ -656,12 +656,12 @@ impl NetworkConfig {
             cfg.set_exit_nodes(exit_nodes);
         }
 
-        if self.enable_socks5.unwrap_or_default() {
-            if let Some(socks5_port) = self.socks5_port {
-                cfg.set_socks5_portal(Some(
-                    format!("socks5://0.0.0.0:{}", socks5_port).parse().unwrap(),
-                ));
-            }
+        if self.enable_socks5.unwrap_or_default()
+            && let Some(socks5_port) = self.socks5_port
+        {
+            cfg.set_socks5_portal(Some(
+                format!("socks5://0.0.0.0:{}", socks5_port).parse().unwrap(),
+            ));
         }
 
         if !self.mapped_listeners.is_empty() {
@@ -909,11 +909,11 @@ impl NetworkConfig {
             result.vpn_portal_listen_port = Some(vpn_config.wireguard_listen.port() as i32);
         }
 
-        if let Some(routes) = config.get_routes() {
-            if !routes.is_empty() {
-                result.enable_manual_routes = Some(true);
-                result.routes = routes.iter().map(|r| r.to_string()).collect();
-            }
+        if let Some(routes) = config.get_routes()
+            && !routes.is_empty()
+        {
+            result.enable_manual_routes = Some(true);
+            result.routes = routes.iter().map(|r| r.to_string()).collect();
         }
 
         let exit_nodes = config.get_exit_nodes();
@@ -986,10 +986,10 @@ impl NetworkConfig {
 #[cfg(test)]
 mod tests {
     use crate::{
-        common::config::{process_secure_mode_cfg, ConfigLoader},
+        common::config::{ConfigLoader, process_secure_mode_cfg},
         proto::common::SecureModeConfig,
     };
-    use base64::prelude::{Engine as _, BASE64_STANDARD};
+    use base64::prelude::{BASE64_STANDARD, Engine as _};
     use rand::Rng;
     use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
@@ -1014,9 +1014,12 @@ mod tests {
         let generated_config_str = generated_config.dump();
 
         assert_eq!(
-                config_str, generated_config_str,
-                "Generated config does not match original config:\nOriginal:\n{}\n\nGenerated:\n{}\nNetwork Config: {}\n",
-                config_str, generated_config_str, serde_json::to_string(&network_config).unwrap()
+            config_str,
+            generated_config_str,
+            "Generated config does not match original config:\nOriginal:\n{}\n\nGenerated:\n{}\nNetwork Config: {}\n",
+            config_str,
+            generated_config_str,
+            serde_json::to_string(&network_config).unwrap()
         );
         Ok(())
     }
@@ -1033,13 +1036,13 @@ mod tests {
             config.set_dhcp(rng.gen_bool(0.5));
 
             if rng.gen_bool(0.7) {
-                let hostname = format!("host-{}", rng.gen::<u16>());
+                let hostname = format!("host-{}", rng.r#gen::<u16>());
                 config.set_hostname(Some(hostname));
             }
 
             config.set_network_identity(crate::common::config::NetworkIdentity::new(
-                format!("network-{}", rng.gen::<u16>()),
-                format!("secret-{}", rng.gen::<u64>()),
+                format!("network-{}", rng.r#gen::<u16>()),
+                format!("secret-{}", rng.r#gen::<u64>()),
             ));
             config.set_inst_name(config.get_network_identity().network_name.clone());
 
@@ -1251,9 +1254,12 @@ mod tests {
             let generated_config_str = generated_config.dump();
 
             assert_eq!(
-                config_str, generated_config_str,
+                config_str,
+                generated_config_str,
                 "Generated config does not match original config:\nOriginal:\n{}\n\nGenerated:\n{}\nNetwork Config: {}\n",
-                config_str, generated_config_str, serde_json::to_string(&network_config).unwrap()
+                config_str,
+                generated_config_str,
+                serde_json::to_string(&network_config).unwrap()
             );
         }
 

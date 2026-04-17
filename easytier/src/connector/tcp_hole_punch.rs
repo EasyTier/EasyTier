@@ -9,7 +9,7 @@ use rand::Rng as _;
 use tokio::task::JoinSet;
 
 use crate::{
-    common::{join_joinset_background, stun::StunInfoCollectorTrait, PeerId},
+    common::{PeerId, join_joinset_background, stun::StunInfoCollectorTrait},
     connector::udp_hole_punch::BackOff,
     peers::{
         peer_manager::PeerManager,
@@ -24,8 +24,8 @@ use crate::{
         rpc_types::{self, controller::BaseController},
     },
     tunnel::{
-        tcp::{TcpTunnelConnector, TcpTunnelListener},
         TunnelConnector as _, TunnelListener as _,
+        tcp::{TcpTunnelConnector, TcpTunnelListener},
     },
 };
 
@@ -719,18 +719,20 @@ mod tests {
 
         tokio::time::sleep(Duration::from_secs(2)).await;
 
-        assert!(p_a
-            .get_peer_map()
-            .list_peer_conns(p_c.my_peer_id())
-            .await
-            .map(|c| c.is_empty())
-            .unwrap_or(true));
-        assert!(p_c
-            .get_peer_map()
-            .list_peer_conns(p_a.my_peer_id())
-            .await
-            .map(|c| c.is_empty())
-            .unwrap_or(true));
+        assert!(
+            p_a.get_peer_map()
+                .list_peer_conns(p_c.my_peer_id())
+                .await
+                .map(|c| c.is_empty())
+                .unwrap_or(true)
+        );
+        assert!(
+            p_c.get_peer_map()
+                .list_peer_conns(p_a.my_peer_id())
+                .await
+                .map(|c| c.is_empty())
+                .unwrap_or(true)
+        );
     }
 
     #[tokio::test]
@@ -751,14 +753,18 @@ mod tests {
         connect_peer_manager(p_b.clone(), p_c.clone()).await;
         wait_route_appear(p_a.clone(), p_c.clone()).await.unwrap();
 
-        assert!(!collect_lazy_punch_peers(p_a.clone())
-            .await
-            .contains(&p_c.my_peer_id()));
+        assert!(
+            !collect_lazy_punch_peers(p_a.clone())
+                .await
+                .contains(&p_c.my_peer_id())
+        );
 
         p_a.mark_recent_traffic(p_c.my_peer_id());
 
-        assert!(collect_lazy_punch_peers(p_a.clone())
-            .await
-            .contains(&p_c.my_peer_id()));
+        assert!(
+            collect_lazy_punch_peers(p_a.clone())
+                .await
+                .contains(&p_c.my_peer_id())
+        );
     }
 }

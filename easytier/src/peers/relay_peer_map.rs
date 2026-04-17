@@ -3,13 +3,13 @@ use std::{sync::Arc, time::Instant};
 use dashmap::DashMap;
 use prost::Message;
 use snow::params::NoiseParams;
-use tokio::sync::{oneshot, Mutex, OwnedMutexGuard};
-use tokio::time::{timeout, Duration};
+use tokio::sync::{Mutex, OwnedMutexGuard, oneshot};
+use tokio::time::{Duration, timeout};
 
 use crate::peers::foreign_network_client::ForeignNetworkClient;
 use crate::{
     common::error::Error,
-    common::{global_ctx::ArcGlobalCtx, PeerId},
+    common::{PeerId, global_ctx::ArcGlobalCtx},
     peers::peer_map::PeerMap,
     peers::peer_session::{PeerSession, PeerSessionAction, PeerSessionStore, SessionKey},
     peers::route_trait::NextHopPolicy,
@@ -274,13 +274,13 @@ impl RelayPeerMap {
             return Ok(());
         }
 
-        if let Some(next_retry_at) = self.states.get(&dst_peer_id).and_then(|v| v.next_retry_at) {
-            if Instant::now() < next_retry_at {
-                self.pending_packets.remove(&dst_peer_id);
-                return Err(Error::RouteError(Some(
-                    "relay handshake backoff".to_string(),
-                )));
-            }
+        if let Some(next_retry_at) = self.states.get(&dst_peer_id).and_then(|v| v.next_retry_at)
+            && Instant::now() < next_retry_at
+        {
+            self.pending_packets.remove(&dst_peer_id);
+            return Err(Error::RouteError(Some(
+                "relay handshake backoff".to_string(),
+            )));
         }
 
         let mut last_err = None;

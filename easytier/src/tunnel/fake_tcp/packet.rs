@@ -80,7 +80,10 @@ pub fn build_tcp_packet(
     let mut ethernet = MutableEthernetPacket::new(&mut eth_buf).unwrap();
     ethernet.set_destination(dst_mac);
     ethernet.set_source(src_mac);
-    ethernet.set_ethertype(EtherTypes::Ipv4);
+    ethernet.set_ethertype(match local_addr {
+        SocketAddr::V4(_) => EtherTypes::Ipv4,
+        SocketAddr::V6(_) => EtherTypes::Ipv6,
+    });
 
     match (local_addr, remote_addr) {
         (SocketAddr::V4(local), SocketAddr::V4(remote)) => {
@@ -129,31 +132,150 @@ pub fn build_tcp_packet(
 pub fn parse_ip_packet(
     buf: &Bytes,
 ) -> Option<(MacAddr, MacAddr, IPPacket<'_>, tcp::TcpPacket<'_>)> {
-    let eth = EthernetPacket::new(buf).unwrap();
+    let eth = EthernetPacket::new(buf.as_ref())?;
     let src_mac = eth.get_source();
     let dst_mac = eth.get_destination();
+    let ethertype = eth.get_ethertype();
 
     tracing::trace!("Parsing IP packet: {:?}", eth);
 
-    let buf = &buf[ETH_HDR_LEN..];
-    if buf[0] >> 4 == 4 {
-        let v4 = ipv4::Ipv4Packet::new(buf).unwrap();
-        if v4.get_next_level_protocol() != ip::IpNextHeaderProtocols::Tcp {
-            return None;
-        }
+    let ip_payload = &buf[ETH_HDR_LEN..];
 
-        let tcp = tcp::TcpPacket::new(&buf[IPV4_HEADER_LEN..]).unwrap();
-        Some((src_mac, dst_mac, IPPacket::V4(v4), tcp))
-    } else if buf[0] >> 4 == 6 {
-        let v6 = ipv6::Ipv6Packet::new(buf).unwrap();
-        if v6.get_next_header() != ip::IpNextHeaderProtocols::Tcp {
-            return None;
-        }
+    match ethertype {
+        EtherTypes::Ipv4 => {
+            let v4 = ipv4::Ipv4Packet::new(ip_payload)?;
+            if v4.get_next_level_protocol() != ip::IpNextHeaderProtocols::Tcp {
+                return None;
+            }
 
-        let tcp = tcp::TcpPacket::new(&buf[IPV6_HEADER_LEN..]).unwrap();
-        Some((src_mac, dst_mac, IPPacket::V6(v6), tcp))
-    } else {
-        tracing::trace!("Invalid IP version: {}", buf[0] >> 4);
-        None
+            let tcp_offset = usize::from(v4.get_header_length()) * 4;
+            if tcp_offset < IPV4_HEADER_LEN || tcp_offset > ip_payload.len() {
+                return None;
+            }
+
+            let tcp = tcp::TcpPacket::new(&ip_payload[tcp_offset..])?;
+            Some((src_mac, dst_mac, IPPacket::V4(v4), tcp))
+        }
+        EtherTypes::Ipv6 => {
+            let v6 = ipv6::Ipv6Packet::new(ip_payload)?;
+            if v6.get_next_header() != ip::IpNextHeaderProtocols::Tcp {
+                return None;
+            }
+
+            let tcp = tcp::TcpPacket::new(&ip_payload[IPV6_HEADER_LEN..])?;
+            Some((src_mac, dst_mac, IPPacket::V6(v6), tcp))
+        }
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pnet::packet::Packet as _;
+
+    #[test]
+    fn parse_ipv4_packet_round_trip() {
+        let src_mac = MacAddr::new(0x02, 0, 0, 0, 0, 1);
+        let dst_mac = MacAddr::new(0x02, 0, 0, 0, 0, 2);
+        let local_addr: SocketAddr = "192.0.2.1:12345".parse().unwrap();
+        let remote_addr: SocketAddr = "198.51.100.2:23456".parse().unwrap();
+        let payload = b"hello fake tcp";
+
+        let packet = build_tcp_packet(
+            src_mac,
+            dst_mac,
+            local_addr,
+            remote_addr,
+            10,
+            20,
+            tcp::TcpFlags::ACK,
+            Some(payload),
+        );
+
+        let (parsed_src_mac, parsed_dst_mac, ip_packet, tcp_packet) =
+            parse_ip_packet(&packet).unwrap();
+
+        assert_eq!(parsed_src_mac, src_mac);
+        assert_eq!(parsed_dst_mac, dst_mac);
+        assert_eq!(ip_packet.get_source(), local_addr.ip());
+        assert_eq!(ip_packet.get_destination(), remote_addr.ip());
+        assert_eq!(tcp_packet.get_source(), local_addr.port());
+        assert_eq!(tcp_packet.get_destination(), remote_addr.port());
+        assert_eq!(tcp_packet.payload(), payload);
+    }
+
+    #[test]
+    fn build_and_parse_ipv6_packet_round_trip() {
+        let src_mac = MacAddr::new(0x02, 0, 0, 0, 0, 3);
+        let dst_mac = MacAddr::new(0x02, 0, 0, 0, 0, 4);
+        let local_addr: SocketAddr = "[2001:db8::1]:12345".parse().unwrap();
+        let remote_addr: SocketAddr = "[2001:db8::2]:23456".parse().unwrap();
+        let payload = b"ipv6 payload";
+
+        let packet = build_tcp_packet(
+            src_mac,
+            dst_mac,
+            local_addr,
+            remote_addr,
+            30,
+            40,
+            tcp::TcpFlags::ACK,
+            Some(payload),
+        );
+
+        let ethernet = EthernetPacket::new(packet.as_ref()).unwrap();
+        assert_eq!(ethernet.get_ethertype(), EtherTypes::Ipv6);
+
+        let (parsed_src_mac, parsed_dst_mac, ip_packet, tcp_packet) =
+            parse_ip_packet(&packet).unwrap();
+
+        assert_eq!(parsed_src_mac, src_mac);
+        assert_eq!(parsed_dst_mac, dst_mac);
+        assert_eq!(ip_packet.get_source(), local_addr.ip());
+        assert_eq!(ip_packet.get_destination(), remote_addr.ip());
+        assert_eq!(tcp_packet.get_source(), local_addr.port());
+        assert_eq!(tcp_packet.get_destination(), remote_addr.port());
+        assert_eq!(tcp_packet.payload(), payload);
+    }
+
+    #[test]
+    fn parse_rejects_short_ethernet_frame() {
+        let packet = Bytes::from_static(&[0u8; ETH_HDR_LEN - 1]);
+        assert!(parse_ip_packet(&packet).is_none());
+    }
+
+    #[test]
+    fn parse_rejects_truncated_ipv4_tcp_packet() {
+        let packet = build_tcp_packet(
+            MacAddr::new(0x02, 0, 0, 0, 0, 5),
+            MacAddr::new(0x02, 0, 0, 0, 0, 6),
+            "192.0.2.10:1111".parse().unwrap(),
+            "198.51.100.20:2222".parse().unwrap(),
+            1,
+            2,
+            tcp::TcpFlags::ACK,
+            None,
+        );
+        let truncated = Bytes::copy_from_slice(&packet[..ETH_HDR_LEN + IPV4_HEADER_LEN + 10]);
+
+        assert!(parse_ip_packet(&truncated).is_none());
+    }
+
+    #[test]
+    fn parse_rejects_truncated_ipv6_header() {
+        let packet = build_tcp_packet(
+            MacAddr::new(0x02, 0, 0, 0, 0, 7),
+            MacAddr::new(0x02, 0, 0, 0, 0, 8),
+            "[2001:db8::10]:1111".parse().unwrap(),
+            "[2001:db8::20]:2222".parse().unwrap(),
+            1,
+            2,
+            tcp::TcpFlags::ACK,
+            None,
+        );
+        let truncated = Bytes::copy_from_slice(&packet[..ETH_HDR_LEN + IPV6_HEADER_LEN - 1]);
+
+        assert!(parse_ip_packet(&truncated).is_none());
     }
 }

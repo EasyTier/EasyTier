@@ -119,8 +119,8 @@ async fn run_shell_cmd(cmd: &str) -> Result<(), Error> {
             .creation_flags(CREATE_NO_WINDOW)
             .output()
             .await?;
-        stdout = crate::utils::utf8_or_gbk_to_string(cmd_out.stdout.as_slice());
-        stderr = crate::utils::utf8_or_gbk_to_string(cmd_out.stderr.as_slice());
+        stdout = crate::utils::string::utf8_or_gbk_to_string(cmd_out.stdout.as_slice());
+        stderr = crate::utils::string::utf8_or_gbk_to_string(cmd_out.stderr.as_slice());
     };
 
     #[cfg(not(target_os = "windows"))]

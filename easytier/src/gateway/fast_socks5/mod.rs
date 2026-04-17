@@ -46,9 +46,9 @@ use anyhow::Context;
 use std::fmt;
 use std::io;
 use thiserror::Error;
-use util::target_addr::read_address;
 use util::target_addr::TargetAddr;
 use util::target_addr::ToTargetAddr;
+use util::target_addr::read_address;
 
 use tokio::io::AsyncReadExt;
 

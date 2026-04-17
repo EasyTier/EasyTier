@@ -1,5 +1,5 @@
 use std::{
-    sync::{atomic::AtomicU32, Arc, Mutex},
+    sync::{Arc, Mutex, atomic::AtomicU32},
     time::Duration,
 };
 
@@ -204,8 +204,8 @@ mod tests {
     use crate::{
         proto::rpc_impl::standalone::StandAloneServer,
         tunnel::{
-            tcp::{TcpTunnelConnector, TcpTunnelListener},
             TunnelConnector as _,
+            tcp::{TcpTunnelConnector, TcpTunnelListener},
         },
     };
 

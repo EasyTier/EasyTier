@@ -1,14 +1,14 @@
 use std::net::SocketAddr;
 
 use super::{FromUrl, TunnelInfo};
-use crate::tunnel::common::setup_sokcet2;
+use crate::tunnel::common::bind;
 use async_trait::async_trait;
 use futures::stream::FuturesUnordered;
 use tokio::net::{TcpListener, TcpSocket, TcpStream};
 
 use super::{
-    common::{wait_for_connect_futures, FramedReader, FramedWriter, TunnelWrapper},
     IpVersion, Tunnel, TunnelError, TunnelListener,
+    common::{FramedReader, FramedWriter, TunnelWrapper, wait_for_connect_futures},
 };
 
 const TCP_MTU_BYTES: usize = 2000;
@@ -59,25 +59,15 @@ impl TcpTunnelListener {
 impl TunnelListener for TcpTunnelListener {
     async fn listen(&mut self) -> Result<(), TunnelError> {
         self.listener = None;
+
         let addr = SocketAddr::from_url(self.addr.clone(), IpVersion::Both).await?;
-
-        let socket2_socket = socket2::Socket::new(
-            socket2::Domain::for_address(addr),
-            socket2::Type::STREAM,
-            Some(socket2::Protocol::TCP),
-        )?;
-        setup_sokcet2(&socket2_socket, &addr)?;
-        let socket = TcpSocket::from_std_stream(socket2_socket.into());
-
-        if let Err(e) = socket.set_nodelay(true) {
-            tracing::warn!(?e, "set_nodelay fail in listen");
-        }
+        let listener = bind::<TcpListener>().addr(addr).only_v6(true).call()?;
 
         self.addr
-            .set_port(Some(socket.local_addr()?.port()))
+            .set_port(Some(listener.local_addr()?.port()))
             .unwrap();
+        self.listener = Some(listener);
 
-        self.listener = Some(socket.listen(1024)?);
         Ok(())
     }
 
@@ -167,21 +157,14 @@ impl TcpTunnelConnector {
         let futures = FuturesUnordered::new();
 
         for bind_addr in self.bind_addrs.iter() {
-            tracing::info!(bind_addr = ?bind_addr, ?addr, "bind addr");
-
-            let socket2_socket = socket2::Socket::new(
-                socket2::Domain::for_address(addr),
-                socket2::Type::STREAM,
-                Some(socket2::Protocol::TCP),
-            )?;
-
-            if let Err(e) = setup_sokcet2(&socket2_socket, bind_addr) {
-                tracing::error!(bind_addr = ?bind_addr, ?addr, "bind addr fail: {:?}", e);
-                continue;
+            tracing::info!(?bind_addr, ?addr, "bind addr");
+            match bind::<TcpSocket>().addr(*bind_addr).only_v6(true).call() {
+                Ok(socket) => futures.push(socket.connect(addr)),
+                Err(error) => {
+                    tracing::error!(?bind_addr, ?addr, ?error, "bind addr fail");
+                    continue;
+                }
             }
-
-            let socket = TcpSocket::from_std_stream(socket2_socket.into());
-            futures.push(socket.connect(addr));
         }
 
         let ret = wait_for_connect_futures(futures).await;
@@ -216,8 +199,8 @@ impl super::TunnelConnector for TcpTunnelConnector {
 #[cfg(test)]
 mod tests {
     use crate::tunnel::{
-        common::tests::{_tunnel_bench, _tunnel_pingpong},
         TunnelConnector,
+        common::tests::{_tunnel_bench, _tunnel_pingpong},
     };
 
     use super::*;

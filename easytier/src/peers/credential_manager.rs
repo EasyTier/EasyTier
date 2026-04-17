@@ -5,8 +5,8 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use base64::Engine;
+use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use serde::{Deserialize, Serialize};
 use x25519_dalek::{PublicKey, StaticSecret};
 
@@ -62,10 +62,10 @@ impl CredentialManager {
             .map(|x| x.trim().to_string())
             .filter(|x| !x.is_empty())
         {
-            if let Some(existing) = credentials.get(&id) {
-                if !existing.secret.is_empty() {
-                    return (id, existing.secret.clone());
-                }
+            if let Some(existing) = credentials.get(&id)
+                && !existing.secret.is_empty()
+            {
+                return (id, existing.secret.clone());
             }
             id
         } else {
@@ -191,10 +191,10 @@ impl CredentialManager {
             return;
         };
         let creds = self.credentials.lock().unwrap();
-        if let Ok(json) = serde_json::to_string_pretty(&*creds) {
-            if let Err(e) = std::fs::write(path, json) {
-                tracing::warn!(?e, "failed to save credentials to disk");
-            }
+        if let Ok(json) = serde_json::to_string_pretty(&*creds)
+            && let Err(e) = std::fs::write(path, json)
+        {
+            tracing::warn!(?e, "failed to save credentials to disk");
         }
     }
 
@@ -386,11 +386,12 @@ mod tests {
         );
         assert!(tc.credential.as_ref().unwrap().expiry_unix > 0);
         assert!(tc.verify_credential_hmac("sec"));
-        assert!(tc
-            .credential
-            .as_ref()
-            .map(|x| !x.pubkey.is_empty())
-            .unwrap_or(false));
+        assert!(
+            tc.credential
+                .as_ref()
+                .map(|x| !x.pubkey.is_empty())
+                .unwrap_or(false)
+        );
 
         let sk: [u8; 32] = BASE64_STANDARD.decode(&secret).unwrap().try_into().unwrap();
         let pk = PublicKey::from(&StaticSecret::from(sk)).as_bytes().to_vec();

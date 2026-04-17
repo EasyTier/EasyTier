@@ -6,6 +6,10 @@ on:
   pull_request:
     branches: [ "develop", "main" ]
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 env:
   CARGO_TERM_COLOR: always
 #  RUSTC_WRAPPER: "sccache"
@@ -30,7 +34,7 @@ jobs:
           # All of these options are optional, so you can remove them if you are happy with the defaults
           concurrent_skipping: 'never'
           skip_after_successful_duplicate: 'true'
-          paths: '["Cargo.toml", "Cargo.lock", "easytier/**", ".github/workflows/test.yml", ".github/workflows/install_gui_dep.sh", ".github/workflows/install_rust.sh"]'
+          paths: '["Cargo.toml", "Cargo.lock", "easytier/**", ".github/workflows/test.yml", ".github/actions/**"]'
 
   check:
     name: Run linters & check
@@ -44,15 +48,13 @@ jobs:
         uses: ./.github/actions/prepare-build
         with:
           gui: true
-          web: true
+          pnpm: true
           token: ${{ secrets.GITHUB_TOKEN }}
 
-      - uses: Swatinem/rust-cache@v2
-
-      - name: Install rustfmt and clippy
-        run: |
-          rustup component add rustfmt
-          rustup component add clippy
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          components: rustfmt,clippy
+          rustflags: ''
 
       - uses: taiki-e/install-action@cargo-hack
 
@@ -85,7 +87,7 @@ jobs:
         uses: ./.github/actions/prepare-build
         with:
           gui: true
-          web: true
+          pnpm: true
           token: ${{ secrets.GITHUB_TOKEN }}
 
       - uses: Swatinem/rust-cache@v2
@@ -146,9 +148,9 @@ jobs:
 
   test:
     runs-on: ubuntu-latest
-    needs: [ pre_job, test_matrix ]
-    if: needs.pre_job.outputs.should_skip != 'true' && always()
+    needs: [ pre_job, check, test_matrix ]
+    if: needs.pre_job.result == 'success' && needs.pre_job.outputs.should_skip != 'true' && !cancelled()
     steps:
       - name: Mark result as failed
-        if: needs.test_matrix.result != 'success'
+        if: contains(needs.*.result, 'failure')
         run: exit 1

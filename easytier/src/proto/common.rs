@@ -4,10 +4,10 @@ use std::{
 };
 
 use anyhow::Context;
-use base64::{prelude::BASE64_STANDARD, Engine as _};
+use base64::{Engine as _, prelude::BASE64_STANDARD};
 use strum::VariantArray;
 
-use crate::tunnel::{packet_def::CompressorAlgo, IpScheme};
+use crate::tunnel::{IpScheme, packet_def::CompressorAlgo};
 
 include!(concat!(env!("OUT_DIR"), "/common.rs"));
 
@@ -292,18 +292,17 @@ impl fmt::Display for Url {
 fn split_tunnel_scheme(raw_scheme: &str) -> Option<(&str, &'static str, bool)> {
     for scheme in IpScheme::VARIANTS {
         let scheme: &'static str = scheme.into();
-        if let Some(base) = raw_scheme.strip_suffix('6') {
-            if let Some(prefix) = base.strip_suffix(scheme) {
-                if prefix.is_empty() || prefix.ends_with('-') {
-                    return Some((prefix, scheme, true));
-                }
-            }
+        if let Some(base) = raw_scheme.strip_suffix('6')
+            && let Some(prefix) = base.strip_suffix(scheme)
+            && (prefix.is_empty() || prefix.ends_with('-'))
+        {
+            return Some((prefix, scheme, true));
         }
 
-        if let Some(prefix) = raw_scheme.strip_suffix(scheme) {
-            if prefix.is_empty() || prefix.ends_with('-') {
-                return Some((prefix, scheme, false));
-            }
+        if let Some(prefix) = raw_scheme.strip_suffix(scheme)
+            && (prefix.is_empty() || prefix.ends_with('-'))
+        {
+            return Some((prefix, scheme, false));
         }
     }
 
@@ -536,7 +535,7 @@ impl SecureModeConfig {
 
 #[cfg(test)]
 mod tests {
-    use super::{normalize_tunnel_url, TunnelInfo, Url};
+    use super::{TunnelInfo, Url, normalize_tunnel_url};
 
     fn assert_ipv6_tunnel_normalization(scheme: &str, port: u16) {
         let expected = format!("{scheme}6://[2001:db8::1]:{port}");

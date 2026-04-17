@@ -235,11 +235,7 @@ async fn wait_ping_reachability(src_ns: &str, dst_ip: &str, reachable: bool, tim
     wait_for_condition(
         || async {
             let ping_result = ping_test(src_ns, dst_ip, None).await;
-            if reachable {
-                ping_result
-            } else {
-                !ping_result
-            }
+            if reachable { ping_result } else { !ping_result }
         },
         timeout,
     )

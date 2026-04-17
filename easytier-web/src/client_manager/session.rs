@@ -20,11 +20,11 @@ use easytier::{
     rpc_service::remote_client::{ListNetworkProps, Storage as _},
     tunnel::Tunnel,
 };
-use tokio::sync::{broadcast, RwLock};
+use tokio::sync::{RwLock, broadcast};
 
 use super::storage::{Storage, StorageToken, WeakRefStorage};
-use crate::webhook::SharedWebhookConfig;
 use crate::FeatureFlags;
+use crate::webhook::SharedWebhookConfig;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Location {
@@ -87,30 +87,30 @@ impl SessionData {
 
 impl Drop for SessionData {
     fn drop(&mut self) {
-        if let Ok(storage) = Storage::try_from(self.storage.clone()) {
-            if let Some(token) = self.storage_token.as_ref() {
-                storage.remove_client(token);
+        if let Ok(storage) = Storage::try_from(self.storage.clone())
+            && let Some(token) = self.storage_token.as_ref()
+        {
+            storage.remove_client(token);
 
-                // Notify the webhook receiver when a node disconnects.
-                if self.webhook_config.is_enabled() {
-                    let webhook = self.webhook_config.clone();
-                    let machine_id = token.machine_id.to_string();
-                    let user_id = Some(token.user_id);
-                    let token_value = token.token.clone();
-                    let web_instance_id = webhook.web_instance_id.clone();
-                    let binding_version = self.binding_version;
-                    tokio::spawn(async move {
-                        webhook
-                            .notify_node_disconnected(&crate::webhook::NodeDisconnectedRequest {
-                                machine_id,
-                                token: token_value,
-                                user_id,
-                                web_instance_id,
-                                binding_version,
-                            })
-                            .await;
-                    });
-                }
+            // Notify the webhook receiver when a node disconnects.
+            if self.webhook_config.is_enabled() {
+                let webhook = self.webhook_config.clone();
+                let machine_id = token.machine_id.to_string();
+                let user_id = Some(token.user_id);
+                let token_value = token.token.clone();
+                let web_instance_id = webhook.web_instance_id.clone();
+                let binding_version = self.binding_version;
+                tokio::spawn(async move {
+                    webhook
+                        .notify_node_disconnected(&crate::webhook::NodeDisconnectedRequest {
+                            machine_id,
+                            token: token_value,
+                            user_id,
+                            web_instance_id,
+                            binding_version,
+                        })
+                        .await;
+                });
             }
         }
     }
@@ -233,6 +233,7 @@ impl SessionRpcService {
             let webhook_req = crate::webhook::ValidateTokenRequest {
                 token: req.user_token.clone(),
                 machine_id: machine_id.to_string(),
+                public_ip: data.client_url.host_str().map(str::to_string),
                 hostname: req.hostname.clone(),
                 version: req.easytier_version.clone(),
                 os_type: req.device_os.as_ref().map(|info| info.os_type.clone()),

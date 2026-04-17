@@ -44,14 +44,14 @@ use super::packet::*;
 use bytes::{Bytes, BytesMut};
 use crossbeam::atomic::AtomicCell;
 use pnet::packet::tcp::TcpOptionNumbers;
-use pnet::packet::{tcp, Packet};
+use pnet::packet::{Packet, tcp};
 use pnet::util::MacAddr;
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::sync::{
-    atomic::{AtomicU32, Ordering},
     Arc, RwLock,
+    atomic::{AtomicU32, Ordering},
 };
 use tokio::sync::broadcast;
 use tokio::time;
@@ -223,8 +223,12 @@ impl Socket {
                         return None;
                     };
 
-                    let (src_mac, dst_mac, _v4_packet, tcp_packet) =
-                        parse_ip_packet(&raw_buf).unwrap();
+                    let Some((src_mac, dst_mac, _v4_packet, tcp_packet)) =
+                        parse_ip_packet(&raw_buf)
+                    else {
+                        trace!("Dropping malformed fake tcp packet for established socket");
+                        continue;
+                    };
 
                     tracing::trace!(
                         "Socket received TCP packet from {}({:?}) to {}({:?}): {:?}",
@@ -307,8 +311,11 @@ impl Socket {
                         info!("Waiting for client SYN + ACK timed out");
                         return None;
                     };
-                    let (src_mac, _dst_mac, _v4_packet, tcp_packet) =
-                        parse_ip_packet(&buf).unwrap();
+                    let Some((src_mac, _dst_mac, _v4_packet, tcp_packet)) = parse_ip_packet(&buf)
+                    else {
+                        trace!("Dropping malformed fake tcp packet during handshake");
+                        continue;
+                    };
 
                     if (tcp_packet.get_flags() & tcp::TcpFlags::RST) != 0 {
                         tracing::trace!("Connection {} reset by peer", self);

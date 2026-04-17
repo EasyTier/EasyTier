@@ -4,15 +4,16 @@ use std::{
     net::{IpAddr, SocketAddr},
     path::PathBuf,
     process::ExitCode,
-    sync::{atomic::AtomicBool, Arc},
+    sync::{Arc, atomic::AtomicBool},
 };
 
 use crate::{
+    ShellType,
     common::{
         config::{
-            load_config_from_file, process_secure_mode_cfg, ConfigFileControl, ConfigLoader,
-            ConsoleLoggerConfig, EncryptionAlgorithm, FileLoggerConfig, LoggingConfigLoader,
-            NetworkIdentity, PeerConfig, PortForwardConfig, TomlConfigLoader, VpnPortalConfig,
+            ConfigFileControl, ConfigLoader, ConsoleLoggerConfig, EncryptionAlgorithm,
+            FileLoggerConfig, LoggingConfigLoader, NetworkIdentity, PeerConfig, PortForwardConfig,
+            TomlConfigLoader, VpnPortalConfig, load_config_from_file, process_secure_mode_cfg,
         },
         constants::EASYTIER_VERSION,
         log,
@@ -22,8 +23,8 @@ use crate::{
     launcher::add_proxy_network_to_config,
     proto::common::{CompressionAlgoPb, SecureModeConfig},
     rpc_service::ApiRpcServer,
-    utils::setup_panic_handler,
-    web_client, ShellType,
+    utils::panic::setup_panic_handler,
+    web_client,
 };
 use anyhow::Context;
 use cidr::IpCidr;
@@ -34,7 +35,7 @@ use tokio::io::AsyncReadExt;
 
 use crate::tunnel::IpScheme;
 #[cfg(feature = "jemalloc-prof")]
-use jemalloc_ctl::{epoch, stats, Access as _, AsName as _};
+use jemalloc_ctl::{Access as _, AsName as _, epoch, stats};
 
 #[cfg(target_os = "windows")]
 windows_service::define_windows_service!(ffi_service_main, win_service_main);
@@ -739,43 +740,50 @@ impl Cli {
             return Ok(vec![]);
         }
 
-        let origin_listeners = listeners;
-        let mut listeners: Vec<String> = Vec::new();
-        if origin_listeners.len() == 1 {
-            if let Ok(port) = origin_listeners[0].parse::<u16>() {
-                for proto in IpScheme::VARIANTS {
-                    listeners.push(format!(
+        if listeners.len() == 1
+            && let Ok(port) = listeners[0].parse::<u16>()
+        {
+            let listeners = IpScheme::VARIANTS
+                .iter()
+                .map(|proto| {
+                    format!(
                         "{}://0.0.0.0:{}",
                         proto,
-                        port + proto.port_offset()
-                    ));
-                }
-                return Ok(listeners);
-            }
+                        if port == 0 {
+                            0
+                        } else {
+                            port + proto.port_offset()
+                        }
+                    )
+                })
+                .collect();
+            return Ok(listeners);
         }
 
-        for l in &origin_listeners {
-            let proto_port: Vec<&str> = l.split(':').collect();
-            if proto_port.len() > 2 {
-                if let Ok(url) = l.parse::<url::Url>() {
-                    listeners.push(url.to_string());
-                } else {
-                    panic!("failed to parse listener: {}", l);
-                }
-            } else {
-                let scheme: IpScheme = proto_port[0].parse()?;
+        listeners
+            .into_iter()
+            .map(|l| {
+                let l = l
+                    .parse::<url::Url>()
+                    .or_else(|_| url::Url::parse(&format!("{}:", l)))?;
 
-                let port = if proto_port.len() == 2 {
-                    proto_port[1].parse::<u16>().unwrap()
-                } else {
-                    11010 + scheme.port_offset()
+                if l.has_authority() {
+                    return Ok(l.to_string());
+                }
+
+                let scheme: IpScheme = l.scheme().parse()?;
+                let port = {
+                    let port = l.path();
+                    if port.is_empty() {
+                        11010 + scheme.port_offset()
+                    } else {
+                        port.parse::<u16>()
+                            .with_context(|| format!("invalid port: {}", port))?
+                    }
                 };
-
-                listeners.push(format!("{}://0.0.0.0:{}", scheme, port));
-            }
-        }
-
-        Ok(listeners)
+                Ok(format!("{}://0.0.0.0:{}", scheme, port))
+            })
+            .collect()
     }
 }
 
@@ -847,7 +855,8 @@ impl NetworkOptions {
 
         if self.no_listener || !self.listeners.is_empty() {
             cfg.set_listeners(
-                Cli::parse_listeners(self.no_listener, self.listeners.clone())?
+                Cli::parse_listeners(self.no_listener, self.listeners.clone())
+                    .with_context(|| format!("failed to parse listeners: {:?}", self.listeners))?
                     .into_iter()
                     .map(|s| s.parse().unwrap())
                     .collect(),
@@ -994,15 +1003,15 @@ impl NetworkOptions {
                 local_public_key: None,
             };
             cfg.set_secure_mode(Some(process_secure_mode_cfg(c)?));
-        } else if let Some(secure_mode) = self.secure_mode {
-            if secure_mode {
-                let c = SecureModeConfig {
-                    enabled: secure_mode,
-                    local_private_key: self.local_private_key.clone(),
-                    local_public_key: self.local_public_key.clone(),
-                };
-                cfg.set_secure_mode(Some(process_secure_mode_cfg(c)?));
-            }
+        } else if let Some(secure_mode) = self.secure_mode
+            && secure_mode
+        {
+            let c = SecureModeConfig {
+                enabled: secure_mode,
+                local_private_key: self.local_private_key.clone(),
+                local_public_key: self.local_public_key.clone(),
+            };
+            cfg.set_secure_mode(Some(process_secure_mode_cfg(c)?));
         }
 
         let mut f = cfg.get_flags();
@@ -1130,7 +1139,7 @@ impl LoggingConfigLoader for &LoggingOptions {
 #[cfg(target_os = "windows")]
 fn win_service_set_work_dir(service_name: &std::ffi::OsString) -> anyhow::Result<()> {
     use crate::common::constants::WIN_SERVICE_WORK_DIR_REG_KEY;
-    use winreg::{enums::*, RegKey};
+    use winreg::{RegKey, enums::*};
 
     let hklm = RegKey::predef(HKEY_LOCAL_MACHINE);
     let key = hklm.open_subkey_with_flags(WIN_SERVICE_WORK_DIR_REG_KEY, KEY_READ)?;
@@ -1181,9 +1190,9 @@ fn win_service_event_loop(
                             status_handle.set_service_status(normal_status).unwrap();
                             std::process::exit(0);
                         }
-                        Err(e) => {
+                        Err(error) => {
                             status_handle.set_service_status(error_status).unwrap();
-                            log::error!("{}", e);
+                            log::error!(?error);
                         }
                     }
                 },
@@ -1497,8 +1506,8 @@ pub async fn main() -> ExitCode {
 
     // Verify configurations
     if cli.check_config {
-        if let Err(e) = validate_config(&cli).await {
-            log::error!("Config validation failed: {:?}", e);
+        if let Err(error) = validate_config(&cli).await {
+            log::error!(?error, "Config validation failed");
             return ExitCode::FAILURE;
         } else {
             return ExitCode::SUCCESS;
@@ -1508,7 +1517,7 @@ pub async fn main() -> ExitCode {
     let mut ret_code = 0;
 
     if let Err(error) = run_main(cli).await {
-        log::error!(%error);
+        log::error!(?error);
         ret_code = 1;
     }
 

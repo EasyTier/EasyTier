@@ -1,5 +1,5 @@
 use std::{
-    collections::{hash_map::DefaultHasher, HashMap},
+    collections::{HashMap, hash_map::DefaultHasher},
     hash::Hasher,
     iter,
     net::{IpAddr, SocketAddr},
@@ -11,11 +11,11 @@ use arc_swap::ArcSwap;
 use dashmap::DashMap;
 
 use super::{
+    PeerId,
     config::{ConfigLoader, Flags},
     netns::NetNS,
     network::IPCollector,
     stun::{StunInfoCollector, StunInfoCollectorTrait},
-    PeerId,
 };
 #[cfg(feature = "magic-dns")]
 use crate::dns::{
@@ -34,6 +34,7 @@ use crate::{
         common::{PeerFeatureFlag, PortForwardConfigPb},
         peer_rpc::PeerGroupInfo,
     },
+    rpc_service::protected_port,
     tunnel::matches_protocol,
 };
 use crossbeam::atomic::AtomicCell;
@@ -673,6 +674,7 @@ impl GlobalCtx {
         if dst_is_local_virtual_ip || dst_is_local_phy_ip {
             // if is local ip, make sure the port is not one of the listening ports
             self.is_port_in_running_listeners(dst_addr.port(), is_udp)
+                || (!is_udp && protected_port::is_protected_tcp_port(dst_addr.port()))
         } else {
             false
         }
@@ -819,6 +821,23 @@ pub mod tests {
         assert!(feature_flags.support_conn_list_sync);
         assert!(feature_flags.avoid_relay_data);
         assert!(feature_flags.is_public_server);
+    }
+
+    #[tokio::test]
+    async fn should_deny_proxy_for_process_wide_rpc_port() {
+        protected_port::clear_protected_tcp_ports_for_test();
+        protected_port::register_protected_tcp_port(15888);
+
+        let config = TomlConfigLoader::default();
+        let global_ctx = GlobalCtx::new(config);
+        let rpc_addr = SocketAddr::from(([127, 0, 0, 1], 15888));
+        let other_tcp_addr = SocketAddr::from(([127, 0, 0, 1], 15889));
+
+        assert!(global_ctx.should_deny_proxy(&rpc_addr, false));
+        assert!(!global_ctx.should_deny_proxy(&rpc_addr, true));
+        assert!(!global_ctx.should_deny_proxy(&other_tcp_addr, false));
+
+        protected_port::clear_protected_tcp_ports_for_test();
     }
 
     pub fn get_mock_global_ctx_with_network(

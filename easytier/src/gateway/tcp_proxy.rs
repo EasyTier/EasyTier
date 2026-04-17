@@ -3,19 +3,19 @@ use cidr::Ipv4Inet;
 use core::panic;
 use crossbeam::atomic::AtomicCell;
 use dashmap::DashMap;
-use pnet::packet::ip::IpNextHeaderProtocols;
-use pnet::packet::ipv4::{Ipv4Packet, MutableIpv4Packet};
-use pnet::packet::tcp::{ipv4_checksum, MutableTcpPacket, TcpPacket};
 use pnet::packet::MutablePacket;
 use pnet::packet::Packet;
+use pnet::packet::ip::IpNextHeaderProtocols;
+use pnet::packet::ipv4::{Ipv4Packet, MutableIpv4Packet};
+use pnet::packet::tcp::{MutableTcpPacket, TcpPacket, ipv4_checksum};
 use socket2::{SockRef, TcpKeepalive};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4};
 use std::sync::atomic::{AtomicBool, AtomicU16};
 use std::sync::{Arc, Weak};
 use std::time::{Duration, Instant};
-use tokio::io::{copy_bidirectional, AsyncRead, AsyncWrite, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt, copy_bidirectional};
 use tokio::net::{TcpListener, TcpSocket, TcpStream};
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::{Mutex, mpsc};
 use tokio::task::JoinSet;
 use tokio::time::timeout;
 use tracing::Instrument;
@@ -38,7 +38,7 @@ use crate::tunnel::packet_def::{PacketType, PeerManagerHeader, ZCPacket};
 use super::CidrSet;
 
 #[cfg(feature = "smoltcp")]
-use super::tokio_smoltcp::{self, channel_device, Net, NetConfig};
+use super::tokio_smoltcp::{self, Net, NetConfig, channel_device};
 
 #[async_trait::async_trait]
 pub(crate) trait NatDstConnector: Send + Sync + Clone + 'static {
@@ -67,7 +67,7 @@ impl NatDstConnector for NatDstTcpConnector {
         let socket = match TcpSocket::new_v4() {
             Ok(s) => s,
             Err(error) => {
-                log::error!(%error, "create v4 socket failed");
+                log::error!(?error, "create v4 socket failed");
                 return Err(error.into());
             }
         };
@@ -347,10 +347,10 @@ impl<C: NatDstConnector> PeerPacketFilter for TcpProxy<C> {
                 if let Err(e) = smoltcp_stack_sender.try_send(packet) {
                     tracing::error!("send to smoltcp stack failed: {:?}", e);
                 }
-            } else if let Some(peer_manager) = self.get_peer_manager() {
-                if let Err(e) = peer_manager.get_nic_channel().send(packet).await {
-                    tracing::error!("send to nic failed: {:?}", e);
-                }
+            } else if let Some(peer_manager) = self.get_peer_manager()
+                && let Err(e) = peer_manager.get_nic_channel().send(packet).await
+            {
+                tracing::error!("send to nic failed: {:?}", e);
             }
             return None;
         } else {

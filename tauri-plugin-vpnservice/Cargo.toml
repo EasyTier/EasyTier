@@ -3,8 +3,7 @@ name = "tauri-plugin-vpnservice"
 version = "0.0.0"
 authors = ["You"]
 description = ""
-edition = "2021"
-rust-version = "1.70"
+edition.workspace = true
 exclude = ["/examples", "/webview-dist", "/webview-src", "/node_modules"]
 links = "tauri-plugin-vpnservice"
 

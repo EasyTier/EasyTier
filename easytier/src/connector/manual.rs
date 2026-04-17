@@ -7,7 +7,7 @@ use dashmap::DashSet;
 use tokio::{sync::mpsc, task::JoinSet, time::timeout};
 
 use crate::{
-    common::{dns::socket_addrs, join_joinset_background, PeerId},
+    common::{PeerId, dns::socket_addrs, join_joinset_background},
     peers::peer_conn::PeerConnId,
     proto::{
         api::instance::{

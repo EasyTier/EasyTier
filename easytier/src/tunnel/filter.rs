@@ -98,7 +98,7 @@ where
         }
     }
 
-    fn wrap_sink<S: ZCPacketSink + Unpin + 'static>(&self, sink: S) -> impl ZCPacketSink {
+    fn wrap_sink<S: ZCPacketSink + Unpin + 'static>(filter: Arc<F>, sink: S) -> impl ZCPacketSink {
         struct SinkWrapper<F, S> {
             sink: S,
             filter: Arc<F>,
@@ -143,13 +143,13 @@ where
             }
         }
 
-        SinkWrapper {
-            sink,
-            filter: self.filter.clone(),
-        }
+        SinkWrapper { sink, filter }
     }
 
-    fn wrap_stream<S: ZCPacketStream + Unpin + 'static>(&self, stream: S) -> impl ZCPacketStream {
+    fn wrap_stream<S: ZCPacketStream + Unpin + 'static>(
+        filter: Arc<F>,
+        stream: S,
+    ) -> impl ZCPacketStream {
         struct StreamWrapper<F, S> {
             stream: S,
             filter: Arc<F>,
@@ -186,10 +186,7 @@ where
             }
         }
 
-        StreamWrapper {
-            stream,
-            filter: self.filter.clone(),
-        }
+        StreamWrapper { stream, filter }
     }
 }
 
@@ -204,9 +201,10 @@ where
 
     fn split(&self) -> (Pin<Box<dyn ZCPacketStream>>, Pin<Box<dyn ZCPacketSink>>) {
         let (stream, sink) = self.inner.split();
+        let filter = self.filter.clone();
         (
-            Box::pin(self.wrap_stream(stream)),
-            Box::pin(self.wrap_sink(sink)),
+            Box::pin(Self::wrap_stream(filter.clone(), stream)),
+            Box::pin(Self::wrap_sink(filter, sink)),
         )
     }
 }
@@ -363,9 +361,9 @@ pub mod tests {
 
         let out = filter.filter_output();
 
-        let a = out.0 .0 .0 .1;
-        let b = out.0 .0 .1;
-        let c = out.0 .1;
+        let a = out.0.0.0.1;
+        let b = out.0.0.1;
+        let c = out.0.1;
         let _d = out.1;
 
         assert_eq!(1, a.0.len());

@@ -1,5 +1,5 @@
-use axum::routing::{delete, get, post, put};
 use axum::Router;
+use axum::routing::{delete, get, post, put};
 use tower_http::compression::CompressionLayer;
 use tower_http::cors::CorsLayer;
 

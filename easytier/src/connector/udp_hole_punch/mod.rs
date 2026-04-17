@@ -1,5 +1,5 @@
 use std::{
-    sync::{atomic::AtomicBool, Arc},
+    sync::{Arc, atomic::AtomicBool},
     time::{Duration, Instant},
 };
 
@@ -13,7 +13,7 @@ use sym_to_cone::{PunchSymToConeHoleClient, PunchSymToConeHoleServer};
 use tokio::{sync::Mutex, task::JoinHandle};
 
 use crate::{
-    common::{stun::StunInfoCollectorTrait, PeerId},
+    common::{PeerId, stun::StunInfoCollectorTrait},
     peers::{
         peer_manager::PeerManager,
         peer_task::{PeerTaskLauncher, PeerTaskManager},
@@ -601,7 +601,7 @@ pub mod tests {
     use crate::proto::common::NatType;
     use crate::tunnel::common::tests::wait_for_condition;
 
-    use super::{UdpHolePunchConnector, UdpHolePunchPeerTaskLauncher, RUN_TESTING};
+    use super::{RUN_TESTING, UdpHolePunchConnector, UdpHolePunchPeerTaskLauncher};
 
     pub fn replace_stun_info_collector(peer_mgr: Arc<PeerManager>, udp_nat_type: NatType) {
         let collector = Box::new(MockStunInfoCollector { udp_nat_type });
@@ -676,14 +676,18 @@ pub mod tests {
         connect_peer_manager(p_b.clone(), p_c.clone()).await;
         wait_route_appear(p_a.clone(), p_c.clone()).await.unwrap();
 
-        assert!(!collect_lazy_punch_peers(p_a.clone())
-            .await
-            .contains(&p_c.my_peer_id()));
+        assert!(
+            !collect_lazy_punch_peers(p_a.clone())
+                .await
+                .contains(&p_c.my_peer_id())
+        );
 
         p_a.mark_recent_traffic(p_c.my_peer_id());
 
-        assert!(collect_lazy_punch_peers(p_a.clone())
-            .await
-            .contains(&p_c.my_peer_id()));
+        assert!(
+            collect_lazy_punch_peers(p_a.clone())
+                .await
+                .contains(&p_c.my_peer_id())
+        );
     }
 }

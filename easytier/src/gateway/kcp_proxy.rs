@@ -17,8 +17,8 @@ use prost::Message;
 use tokio::{select, task::JoinSet};
 
 use super::{
-    tcp_proxy::{NatDstConnector, NatDstTcpConnector, TcpProxy},
     CidrSet,
+    tcp_proxy::{NatDstConnector, NatDstTcpConnector, TcpProxy},
 };
 use crate::{
     common::{
@@ -27,7 +27,7 @@ use crate::{
         global_ctx::{ArcGlobalCtx, GlobalCtx},
     },
     gateway::wrapped_proxy::{ProxyAclHandler, TcpProxyForWrappedSrcTrait},
-    peers::{peer_manager::PeerManager, PeerPacketFilter},
+    peers::{PeerPacketFilter, peer_manager::PeerManager},
     proto::{
         acl::{ChainType, Protocol},
         api::instance::{

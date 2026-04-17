@@ -2,8 +2,8 @@ use std::{
     any::Any,
     net::{IpAddr, Ipv4Addr, SocketAddr},
     sync::{
-        atomic::{AtomicBool, AtomicUsize, Ordering},
         Arc, Weak,
+        atomic::{AtomicBool, AtomicUsize, Ordering},
     },
     time::{Duration, Instant},
 };
@@ -28,30 +28,30 @@ use crate::{
             util::stream::tcp_connect_with_timeout,
         },
         ip_reassembler::IpReassembler,
-        tokio_smoltcp::{channel_device, BufferSize, Net, NetConfig},
+        tokio_smoltcp::{BufferSize, Net, NetConfig, channel_device},
     },
     tunnel::packet_def::{PacketType, ZCPacket},
 };
 use anyhow::Context;
 use dashmap::DashMap;
 use pnet::packet::{
-    ip::IpNextHeaderProtocols, ipv4::Ipv4Packet, tcp::TcpPacket, udp::UdpPacket, Packet,
+    Packet, ip::IpNextHeaderProtocols, ipv4::Ipv4Packet, tcp::TcpPacket, udp::UdpPacket,
 };
 use tokio::{
     io::{AsyncRead, AsyncWrite},
     net::{TcpListener, UdpSocket},
     select,
-    sync::{mpsc, Mutex, Notify},
+    sync::{Mutex, Notify, mpsc},
     task::JoinSet,
     time::timeout,
 };
 
 #[cfg(feature = "kcp")]
 use super::tcp_proxy::NatDstConnector as _;
-use crate::tunnel::common::{bind_tcp_socket, bind_udp_socket};
+use crate::tunnel::common::bind;
 use crate::{
     common::{error::Error, global_ctx::GlobalCtx},
-    peers::{peer_manager::PeerManager, PeerPacketFilter},
+    peers::{PeerPacketFilter, peer_manager::PeerManager},
 };
 
 enum SocksUdpSocket {
@@ -89,12 +89,10 @@ impl AsyncRead for SocksTcpStream {
         buf: &mut tokio::io::ReadBuf<'_>,
     ) -> std::task::Poll<std::io::Result<()>> {
         match self.get_mut() {
-            SocksTcpStream::Tcp(ref mut stream) => std::pin::Pin::new(stream).poll_read(cx, buf),
-            SocksTcpStream::SmolTcp(ref mut stream) => {
-                std::pin::Pin::new(stream).poll_read(cx, buf)
-            }
+            SocksTcpStream::Tcp(stream) => std::pin::Pin::new(stream).poll_read(cx, buf),
+            SocksTcpStream::SmolTcp(stream) => std::pin::Pin::new(stream).poll_read(cx, buf),
             #[cfg(feature = "kcp")]
-            SocksTcpStream::Kcp(ref mut stream) => std::pin::Pin::new(stream).poll_read(cx, buf),
+            SocksTcpStream::Kcp(stream) => std::pin::Pin::new(stream).poll_read(cx, buf),
         }
     }
 }
@@ -106,12 +104,10 @@ impl AsyncWrite for SocksTcpStream {
         buf: &[u8],
     ) -> std::task::Poll<Result<usize, std::io::Error>> {
         match self.get_mut() {
-            SocksTcpStream::Tcp(ref mut stream) => std::pin::Pin::new(stream).poll_write(cx, buf),
-            SocksTcpStream::SmolTcp(ref mut stream) => {
-                std::pin::Pin::new(stream).poll_write(cx, buf)
-            }
+            SocksTcpStream::Tcp(stream) => std::pin::Pin::new(stream).poll_write(cx, buf),
+            SocksTcpStream::SmolTcp(stream) => std::pin::Pin::new(stream).poll_write(cx, buf),
             #[cfg(feature = "kcp")]
-            SocksTcpStream::Kcp(ref mut stream) => std::pin::Pin::new(stream).poll_write(cx, buf),
+            SocksTcpStream::Kcp(stream) => std::pin::Pin::new(stream).poll_write(cx, buf),
         }
     }
 
@@ -120,10 +116,10 @@ impl AsyncWrite for SocksTcpStream {
         cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Result<(), std::io::Error>> {
         match self.get_mut() {
-            SocksTcpStream::Tcp(ref mut stream) => std::pin::Pin::new(stream).poll_flush(cx),
-            SocksTcpStream::SmolTcp(ref mut stream) => std::pin::Pin::new(stream).poll_flush(cx),
+            SocksTcpStream::Tcp(stream) => std::pin::Pin::new(stream).poll_flush(cx),
+            SocksTcpStream::SmolTcp(stream) => std::pin::Pin::new(stream).poll_flush(cx),
             #[cfg(feature = "kcp")]
-            SocksTcpStream::Kcp(ref mut stream) => std::pin::Pin::new(stream).poll_flush(cx),
+            SocksTcpStream::Kcp(stream) => std::pin::Pin::new(stream).poll_flush(cx),
         }
     }
 
@@ -132,10 +128,10 @@ impl AsyncWrite for SocksTcpStream {
         cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Result<(), std::io::Error>> {
         match self.get_mut() {
-            SocksTcpStream::Tcp(ref mut stream) => std::pin::Pin::new(stream).poll_shutdown(cx),
-            SocksTcpStream::SmolTcp(ref mut stream) => std::pin::Pin::new(stream).poll_shutdown(cx),
+            SocksTcpStream::Tcp(stream) => std::pin::Pin::new(stream).poll_shutdown(cx),
+            SocksTcpStream::SmolTcp(stream) => std::pin::Pin::new(stream).poll_shutdown(cx),
             #[cfg(feature = "kcp")]
-            SocksTcpStream::Kcp(ref mut stream) => std::pin::Pin::new(stream).poll_shutdown(cx),
+            SocksTcpStream::Kcp(stream) => std::pin::Pin::new(stream).poll_shutdown(cx),
         }
     }
 }
@@ -281,10 +277,10 @@ impl AsyncTcpConnector for Socks5AutoConnector {
             return Err(anyhow::anyhow!("peer manager is dropped").into());
         };
 
-        if let Some(local_addr) = self.smoltcp_net.as_ref().map(|n| n.get_address()) {
-            if local_addr == addr.ip() {
-                addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), addr.port());
-            }
+        if let Some(local_addr) = self.smoltcp_net.as_ref().map(|n| n.get_address())
+            && local_addr == addr.ip()
+        {
+            addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), addr.port());
         }
 
         if self.smoltcp_net.is_none()
@@ -671,10 +667,10 @@ impl Socks5Server {
                 proxy_url.port().unwrap()
             );
 
-            let listener = bind_tcp_socket(
-                bind_addr.parse::<SocketAddr>().unwrap(),
-                self.global_ctx.net_ns.clone(),
-            )?;
+            let listener = bind::<TcpListener>()
+                .addr(bind_addr.parse::<SocketAddr>().unwrap())
+                .net_ns(self.global_ctx.net_ns.clone())
+                .call()?;
 
             let entries = self.entries.clone();
             let entry_count = self.entry_count.clone();
@@ -770,7 +766,8 @@ impl Socks5Server {
             Ok((from_client, from_server)) => {
                 tracing::info!(
                     "port forward connection finished: client->server: {} bytes, server->client: {} bytes",
-                    from_client, from_server
+                    from_client,
+                    from_server
                 );
             }
             Err(e) => {
@@ -806,7 +803,10 @@ impl Socks5Server {
 
     pub async fn add_tcp_port_forward(&self, cfg: &PortForwardConfig) -> Result<(), Error> {
         let (bind_addr, dst_addr) = (cfg.bind_addr, cfg.dst_addr);
-        let listener = bind_tcp_socket(bind_addr, self.global_ctx.net_ns.clone())?;
+        let listener = bind::<TcpListener>()
+            .addr(bind_addr)
+            .net_ns(self.global_ctx.net_ns.clone())
+            .call()?;
 
         let net = self.net.clone();
         let entries = self.entries.clone();
@@ -874,7 +874,12 @@ impl Socks5Server {
     #[tracing::instrument(name = "add_udp_port_forward", skip(self))]
     pub async fn add_udp_port_forward(&self, cfg: &PortForwardConfig) -> Result<(), Error> {
         let (bind_addr, dst_addr) = (cfg.bind_addr, cfg.dst_addr);
-        let socket = Arc::new(bind_udp_socket(bind_addr, self.global_ctx.net_ns.clone())?);
+        let socket = Arc::new(
+            bind::<UdpSocket>()
+                .addr(bind_addr)
+                .net_ns(self.global_ctx.net_ns.clone())
+                .call()?,
+        );
 
         let entries = self.entries.clone();
         let entry_count = self.entry_count.clone();

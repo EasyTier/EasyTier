@@ -3,8 +3,8 @@ use std::{
     fmt::Debug,
     net::{IpAddr, Ipv4Addr, Ipv6Addr},
     sync::{
-        atomic::{AtomicBool, AtomicU32, Ordering},
         Arc, Weak,
+        atomic::{AtomicBool, AtomicU32, Ordering},
     },
     time::{Duration, Instant, SystemTime},
 };
@@ -14,12 +14,12 @@ use cidr::{IpCidr, Ipv4Cidr, Ipv6Cidr};
 use crossbeam::atomic::AtomicCell;
 use dashmap::DashMap;
 use ordered_hash_map::OrderedHashMap;
-use parking_lot::{lock_api::RwLockUpgradableReadGuard, RwLock};
+use parking_lot::{RwLock, lock_api::RwLockUpgradableReadGuard};
 use petgraph::{
+    Directed,
     algo::dijkstra,
     graph::{Graph, NodeIndex},
     visit::{EdgeRef, IntoNodeReferences},
-    Directed,
 };
 use prefix_trie::PrefixMap;
 use prost::Message;
@@ -43,25 +43,24 @@ use crate::common::config::ConfigLoader;
 use crate::utils::DeterministicDigest;
 use crate::{
     common::{
+        PeerId,
         config::NetworkIdentity,
         constants::EASYTIER_VERSION,
         global_ctx::{ArcGlobalCtx, GlobalCtxEvent},
         shrink_dashmap,
         stun::StunInfoCollectorTrait,
-        PeerId,
     },
     peers::route_trait::{Route, RouteInterfaceBox},
     proto::{
         acl::GroupIdentity,
         common::{Ipv4Inet, NatType, StunInfo},
         peer_rpc::{
-            route_foreign_network_infos, route_foreign_network_summary,
-            sync_route_info_request::ConnInfo, ForeignNetworkRouteInfoEntry,
-            ForeignNetworkRouteInfoKey, OspfRouteRpc, OspfRouteRpcClientFactory,
-            OspfRouteRpcServer, PeerGroupInfo, PeerIdVersion, PeerIdentityType,
-            RouteForeignNetworkInfos, RouteForeignNetworkSummary, RoutePeerInfo, RoutePeerInfos,
-            SyncRouteInfoError, SyncRouteInfoRequest, SyncRouteInfoResponse,
-            TrustedCredentialPubkey,
+            ForeignNetworkRouteInfoEntry, ForeignNetworkRouteInfoKey, OspfRouteRpc,
+            OspfRouteRpcClientFactory, OspfRouteRpcServer, PeerGroupInfo, PeerIdVersion,
+            PeerIdentityType, RouteForeignNetworkInfos, RouteForeignNetworkSummary, RoutePeerInfo,
+            RoutePeerInfos, SyncRouteInfoError, SyncRouteInfoRequest, SyncRouteInfoResponse,
+            TrustedCredentialPubkey, route_foreign_network_infos, route_foreign_network_summary,
+            sync_route_info_request::ConnInfo,
         },
         rpc_types::{
             self,
@@ -71,8 +70,17 @@ use crate::{
     use_global_var,
 };
 
+use super::{
+    PeerPacketFilter,
+    graph_algo::dijkstra_with_first_hop,
+    peer_rpc::PeerRpcManager,
+    route_trait::{
+        DefaultRouteCostCalculator, ForeignNetworkRouteInfoMap, NextHopPolicy, RouteCostCalculator,
+        RouteCostCalculatorInterface,
+    },
+};
+
 use atomic_shim::AtomicU64;
-use cfg_if::cfg_if;
 
 static SERVICE_ID: u32 = 7;
 static UPDATE_PEER_INFO_PERIOD: Duration = Duration::from_secs(3600);
@@ -2535,13 +2543,12 @@ impl PeerRouteServiceImpl {
         let now = SystemTime::now();
         let mut to_remove = Vec::new();
         for (peer_id, peer_info) in self.synced_route_info.peer_infos.read().iter() {
-            if let Ok(d) = now.duration_since(peer_info.last_update.unwrap().try_into().unwrap()) {
-                if d > REMOVE_DEAD_PEER_INFO_AFTER
+            if let Ok(d) = now.duration_since(peer_info.last_update.unwrap().try_into().unwrap())
+                && (d > REMOVE_DEAD_PEER_INFO_AFTER
                     || (d > REMOVE_UNREACHABLE_PEER_INFO_AFTER
-                        && !self.route_table.peer_reachable(*peer_id))
-                {
-                    to_remove.push(*peer_id);
-                }
+                        && !self.route_table.peer_reachable(*peer_id)))
+            {
+                to_remove.push(*peer_id);
             }
         }
 
@@ -2635,8 +2642,16 @@ impl PeerRouteServiceImpl {
             return true;
         }
 
-        tracing::debug!(?foreign_network, "sync_route request need send to peer. my_id {:?}, dst_peer_id: {:?}, peer_infos: {:?}, conn_info: {:?}, synced_route_info: {:?} session: {:?}",
-                       my_peer_id, dst_peer_id, peer_infos, conn_info, self.synced_route_info, session);
+        tracing::debug!(
+            ?foreign_network,
+            "sync_route request need send to peer. my_id {:?}, dst_peer_id: {:?}, peer_infos: {:?}, conn_info: {:?}, synced_route_info: {:?} session: {:?}",
+            my_peer_id,
+            dst_peer_id,
+            peer_infos,
+            conn_info,
+            self.synced_route_info,
+            session
+        );
 
         session
             .need_sync_initiator_info
@@ -2678,7 +2693,11 @@ impl PeerRouteServiceImpl {
 
         tracing::debug!(
             "sync_route_info resp: {:?}, req: {:?}, session: {:?}, my_info: {:?}, next_last_sync_succ_timestamp: {:?}",
-            ret, sync_route_info_req, session, self.global_ctx.network, next_last_sync_succ_timestamp
+            ret,
+            sync_route_info_req,
+            session,
+            self.global_ctx.network,
+            next_last_sync_succ_timestamp
         );
 
         match ret.as_ref() {
@@ -3034,10 +3053,10 @@ impl RouteSessionManager {
                     service_impl.my_peer_id
                 );
                 // update initiator flag for previous session
-                if let Some(cur_peer_id_to_initiate) = cur_dst_peer_id_to_initiate {
-                    if let Some(session) = service_impl.get_session(cur_peer_id_to_initiate) {
-                        session.update_initiator_flag(false);
-                    }
+                if let Some(cur_peer_id_to_initiate) = cur_dst_peer_id_to_initiate
+                    && let Some(session) = service_impl.get_session(cur_peer_id_to_initiate)
+                {
+                    session.update_initiator_flag(false);
                 }
 
                 cur_dst_peer_id_to_initiate = new_initiator_dst;
@@ -3267,7 +3286,14 @@ impl RouteSessionManager {
 
         tracing::debug!(
             "handling sync_route_info rpc: from_peer_id: {:?}, is_initiator: {:?}, peer_infos: {:?}, conn_info: {:?}, synced_route_info: {:?} session: {:?}, new_route_table: {:?}",
-            from_peer_id, is_initiator, peer_infos, conn_info, service_impl.synced_route_info, session, service_impl.route_table);
+            from_peer_id,
+            is_initiator,
+            peer_infos,
+            conn_info,
+            service_impl.synced_route_info,
+            session,
+            service_impl.route_table
+        );
 
         session
             .dst_is_initiator
@@ -3503,6 +3529,26 @@ impl Route for PeerRoute {
         routes
     }
 
+    async fn list_proxy_cidrs(&self) -> BTreeSet<Ipv4Cidr> {
+        self.service_impl
+            .route_table
+            .cidr_peer_id_map
+            .load()
+            .iter()
+            .map(|(cidr, _)| *cidr)
+            .collect()
+    }
+
+    async fn list_proxy_cidrs_v6(&self) -> BTreeSet<Ipv6Cidr> {
+        self.service_impl
+            .route_table
+            .cidr_v6_peer_id_map
+            .load()
+            .iter()
+            .map(|(cidr, _)| *cidr)
+            .collect()
+    }
+
     async fn get_peer_id_by_ipv4(&self, ipv4_addr: &Ipv4Addr) -> Option<PeerId> {
         let route_table = &self.service_impl.route_table;
         if let Some(p) = route_table.ipv4_peer_id_map.get(ipv4_addr) {
@@ -3642,8 +3688,8 @@ mod tests {
     use std::{
         collections::{BTreeSet, HashMap},
         sync::{
-            atomic::{AtomicU32, Ordering},
             Arc,
+            atomic::{AtomicU32, Ordering},
         },
         time::{Duration, SystemTime},
     };
@@ -3651,14 +3697,14 @@ mod tests {
     use super::{PeerRoute, REMOVE_DEAD_PEER_INFO_AFTER};
     use crate::{
         common::{
-            global_ctx::{tests::get_mock_global_ctx, GlobalCtxEvent, TrustedKeySource},
             PeerId,
+            global_ctx::{GlobalCtxEvent, TrustedKeySource, tests::get_mock_global_ctx},
         },
         connector::udp_hole_punch::tests::replace_stun_info_collector,
         peers::{
             create_packet_recv_chan,
             peer_manager::{PeerManager, RouteAlgoType},
-            peer_ospf_route::{PeerIdVersion, PeerRouteServiceImpl, FORCE_USE_CONN_LIST},
+            peer_ospf_route::{FORCE_USE_CONN_LIST, PeerIdVersion, PeerRouteServiceImpl},
             route_trait::{NextHopPolicy, Route, RouteCostCalculatorInterface, RouteInterface},
             tests::{connect_peer_manager, create_mock_peer_manager, wait_route_appear},
         },
@@ -3937,15 +3983,21 @@ mod tests {
         }
 
         assert!(service_impl.synced_route_info.is_admin_peer(&admin_info));
-        assert!(!service_impl
-            .synced_route_info
-            .is_admin_peer(&credential_info));
-        assert!(service_impl
-            .synced_route_info
-            .is_credential_peer(credential_info.peer_id));
-        assert!(!service_impl
-            .synced_route_info
-            .is_credential_peer(admin_info.peer_id));
+        assert!(
+            !service_impl
+                .synced_route_info
+                .is_admin_peer(&credential_info)
+        );
+        assert!(
+            service_impl
+                .synced_route_info
+                .is_credential_peer(credential_info.peer_id)
+        );
+        assert!(
+            !service_impl
+                .synced_route_info
+                .is_credential_peer(admin_info.peer_id)
+        );
     }
 
     #[tokio::test]
@@ -4003,14 +4055,18 @@ mod tests {
             .synced_route_info
             .verify_and_update_credential_trusts(Some(network_secret));
 
-        assert!(service_impl
-            .synced_route_info
-            .trusted_credential_pubkeys
-            .contains_key(&admin_key));
-        assert!(!service_impl
-            .synced_route_info
-            .trusted_credential_pubkeys
-            .contains_key(&credential_key));
+        assert!(
+            service_impl
+                .synced_route_info
+                .trusted_credential_pubkeys
+                .contains_key(&admin_key)
+        );
+        assert!(
+            !service_impl
+                .synced_route_info
+                .trusted_credential_pubkeys
+                .contains_key(&credential_key)
+        );
     }
 
     #[tokio::test]
@@ -4075,11 +4131,13 @@ mod tests {
 
         let guard = route.service_impl.synced_route_info.peer_infos.read();
         let stored = guard.get(&from_peer_id).unwrap();
-        assert!(stored
-            .feature_flag
-            .as_ref()
-            .map(|x| x.is_credential_peer)
-            .unwrap_or(false));
+        assert!(
+            stored
+                .feature_flag
+                .as_ref()
+                .map(|x| x.is_credential_peer)
+                .unwrap_or(false)
+        );
         assert!(stored.proxy_cidrs.is_empty());
         assert!(guard.get(&forwarded_peer_id).is_none());
     }
@@ -4138,11 +4196,13 @@ mod tests {
             .await
             .unwrap();
 
-        assert!(!route
-            .service_impl
-            .synced_route_info
-            .trusted_credential_pubkeys
-            .contains_key(&credential_key));
+        assert!(
+            !route
+                .service_impl
+                .synced_route_info
+                .trusted_credential_pubkeys
+                .contains_key(&credential_key)
+        );
     }
 
     #[tokio::test]
@@ -4200,10 +4260,12 @@ mod tests {
             .global_ctx
             .update_trusted_keys(global_trusted_keys, &network_name);
 
-        assert!(service_impl
-            .synced_route_info
-            .trusted_credential_pubkeys
-            .contains_key(&credential_pubkey));
+        assert!(
+            service_impl
+                .synced_route_info
+                .trusted_credential_pubkeys
+                .contains_key(&credential_pubkey)
+        );
 
         service_impl.clear_expired_peer().await;
 
@@ -4213,16 +4275,20 @@ mod tests {
             TrustedKeySource::OspfCredential,
         ));
         assert!(closed_peers.lock().contains(&credential_peer_id));
-        assert!(!service_impl
-            .synced_route_info
-            .peer_infos
-            .read()
-            .contains_key(&admin_peer_id));
-        assert!(!service_impl
-            .synced_route_info
-            .peer_infos
-            .read()
-            .contains_key(&credential_peer_id));
+        assert!(
+            !service_impl
+                .synced_route_info
+                .peer_infos
+                .read()
+                .contains_key(&admin_peer_id)
+        );
+        assert!(
+            !service_impl
+                .synced_route_info
+                .peer_infos
+                .read()
+                .contains_key(&credential_peer_id)
+        );
     }
 
     #[rstest::rstest]
