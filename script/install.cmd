@@ -156,6 +156,7 @@ $I18N = @{
         FileModeHelp                 = "本地配置文件"
         RemoteModeHelp               = "服务器集中管理"
         CLIModeHelp                  = "命令行传参"
+        Default                      = "默认"
     }
 
     "en-US" = @{
@@ -208,6 +209,7 @@ $I18N = @{
         ChooseAction                 = "EasyTier service manage"
         InstallHelp                  = "Install service"
         UninstallHelp                = "Uninstall service"
+        UpdateHelp                   = "Update EasyTier"
         SelectPrompt                 = "Choose:"
         LabelsHelpsCountMismatch     = "Labels and Helps count must match."
         ShowChoiceError              = "Error showing choice prompt: {0}"
@@ -236,6 +238,7 @@ $I18N = @{
         FileModeHelp                 = "Local configuration file"
         RemoteModeHelp               = "Remote server centralized management"
         CLIModeHelp                  = "Command line arguments"
+        Default                      = "default"
     }
 }
 $script:Lang = (Get-UICulture).Name
@@ -371,7 +374,7 @@ function Show-YesNoPrompt {
         [ValidateRange(0, 1)]
         [int]$DefaultIndex = 0,
         [string[]]$Labels = @("&Yes", "&No"),
-        [string[]]$Helps = @("是", "否")
+        [string[]]$Helps = @("Yes", "No")
     )
     if ($Labels.Count -ne $Helps.Count) {
         throw (T "LabelsHelpsCountMismatch")
@@ -441,7 +444,7 @@ function Get-InputWithDefault {
         [string]$DefaultValue
     )
     try {
-        $response = Read-Host "${Prompt}(默认: ${DefaultValue})"
+        $response = Read-Host "$Prompt($(T "Default"): $DefaultValue)"
         if ([string]::IsNullOrWhiteSpace($response)) {
             return $DefaultValue
         }
