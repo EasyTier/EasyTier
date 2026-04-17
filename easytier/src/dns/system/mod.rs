@@ -26,18 +26,17 @@ pub trait SystemConfigurator: Send + Sync {
 pub fn get(
     #[allow(unused_variables)] interface: &str,
 ) -> Result<Option<Box<dyn SystemConfigurator>>, anyhow::Error> {
-    #[cfg(target_os = "windows")]
-    {
-        use crate::dns::system::windows::WindowsDNSManager;
-        return Ok(Some(WindowsDNSManager::new(interface)?.boxed()));
-    }
+    cfg_select! {
+        target_os = "windows" => {
+            use crate::dns::system::windows::WindowsDNSManager;
+            Ok(Some(WindowsDNSManager::new(interface)?.boxed()))
+        }
 
-    #[cfg(all(target_os = "macos", not(feature = "macos-ne")))]
-    {
-        use crate::dns::system::macos::DarwinConfigurator;
-        return Ok(Some(DarwinConfigurator::new().boxed()));
-    }
+        all(target_os = "macos", not(feature = "macos-ne")) => {
+            use crate::dns::system::macos::DarwinConfigurator;
+            Ok(Some(DarwinConfigurator::new().boxed()))
+        }
 
-    #[allow(unreachable_code)]
-    Ok(None)
+        _ => Ok(None)
+    }
 }
