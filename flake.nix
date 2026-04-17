@@ -67,6 +67,7 @@
                   rust
                   protobuf
                   clang
+                  mold
                   pkg-config
                   bridge-utils # for three node test
                 ]
@@ -97,6 +98,10 @@
             ZSTD_SYS_USE_PKG_CONFIG = true;
             KCP_SYS_EXTRA_HEADER_PATH = "${pkgs.libclang.lib}/lib/clang/19/include:${pkgs.glibc.dev}/include";
             JEMALLOC_OVERRIDE = "${pkgs.jemalloc}/lib/libjemalloc.so";
+          }
+          // pkgs.lib.optionalAttrs pkgs.stdenv.isLinux {
+            CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER = "clang";
+            CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER = "clang";
           }
           // (if hasFeature "android" then android.envVars else { }));
       in
