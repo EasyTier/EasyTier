@@ -51,7 +51,12 @@ impl DnsConfig {
 impl DnsConfig {
     pub fn get_name(&self) -> LowerName {
         if self.name.is_empty() {
-            parse(hostname::get().unwrap_or_default().to_string_lossy().as_ref())
+            parse(
+                hostname::get()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .as_ref(),
+            )
         } else {
             self.name.clone()
         }

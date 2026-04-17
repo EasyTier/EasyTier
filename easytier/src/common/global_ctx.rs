@@ -6,7 +6,7 @@ use sha2::Sha256;
 use socket2::Protocol;
 use std::sync::RwLock;
 use std::{
-    collections::{hash_map::DefaultHasher, HashMap},
+    collections::{HashMap, hash_map::DefaultHasher},
     hash::Hasher,
     iter,
     net::{IpAddr, SocketAddr},
@@ -15,11 +15,11 @@ use std::{
 };
 
 use super::{
+    PeerId,
     config::{ConfigLoader, Flags},
     netns::NetNS,
     network::IPCollector,
     stun::{StunInfoCollector, StunInfoCollectorTrait},
-    PeerId,
 };
 #[cfg(feature = "magic-dns")]
 use crate::dns::{

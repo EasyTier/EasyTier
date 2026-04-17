@@ -72,7 +72,7 @@ impl ProxyCidrsMonitor {
     pub fn start(self) -> ScopedTask<()> {
         ScopedTask::from(tokio::spawn(async move {
             let mut cur_proxy_cidrs = BTreeSet::new();
-            // let last_update = None::<Instant>;
+            // let mut last_update = None::<Instant>;
 
             loop {
                 tokio::time::sleep(std::time::Duration::from_secs(1)).await;

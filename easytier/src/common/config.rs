@@ -6,9 +6,9 @@ use std::{
 };
 
 use anyhow::Context;
-use base64::{prelude::BASE64_STANDARD, Engine as _};
-use clap::builder::PossibleValue;
+use base64::{Engine as _, prelude::BASE64_STANDARD};
 use clap::ValueEnum;
+use clap::builder::PossibleValue;
 use serde::{Deserialize, Serialize};
 use strum::{Display, EnumString, VariantArray};
 use tokio::io::AsyncReadExt as _;
@@ -584,7 +584,12 @@ impl ConfigLoader for TomlConfigLoader {
             .filter(|h| !h.is_empty());
 
         self.set_hostname(hostname.clone());
-        hostname.unwrap_or_else(|| hostname::get().unwrap_or_default().to_string_lossy().into_owned())
+        hostname.unwrap_or_else(|| {
+            hostname::get()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .into_owned()
+        })
     }
 
     fn set_hostname(&self, name: Option<String>) {
