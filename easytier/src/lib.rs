@@ -19,6 +19,7 @@ pub mod launcher;
 pub mod peers;
 pub mod proto;
 pub mod rpc_service;
+mod secure_datagram;
 pub mod service_manager;
 pub mod tunnel;
 pub mod utils;
