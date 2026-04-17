@@ -88,6 +88,8 @@ message NetworkConfig {
   optional bool lazy_p2p = 58;
   optional bool need_p2p = 59;
   optional uint64 instance_recv_bps_limit = 60;
+
+  optional bool enable_post_quantum = 61;
 }
 
 message PortForwardConfig {

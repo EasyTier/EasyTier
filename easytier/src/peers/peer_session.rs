@@ -537,6 +537,19 @@ impl PeerSession {
         out
     }
 
+    /// Replace the root key without changing epochs or resetting sequence numbers.
+    /// Used during handshake (before any traffic is sent) to upgrade the key
+    /// with post-quantum material.
+    pub fn replace_root_key(&self, new_key: [u8; 32]) {
+        let mut g = self.root_key.write().unwrap();
+        *g = new_key;
+        // Invalidate the key cache so new encryptors are derived from the updated root key.
+        self.key_cache
+            .lock()
+            .unwrap()
+            .fill([EpochKeySlot::default(), EpochKeySlot::default()]);
+    }
+
     pub fn next_sync_epoch(&self) -> u32 {
         let send_epoch = self.send_epoch.load(Ordering::Relaxed);
         let rx = self.rx_slots.lock().unwrap();

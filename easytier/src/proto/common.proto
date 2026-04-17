@@ -74,6 +74,9 @@ message FlagsInConfig {
   bool lazy_p2p = 37;
   bool need_p2p = 38;
   uint64 instance_recv_bps_limit = 39;
+
+  // enable post-quantum hybrid key exchange (ML-KEM-768 + X25519)
+  bool enable_post_quantum = 40;
 }
 
 message RpcDescriptor {

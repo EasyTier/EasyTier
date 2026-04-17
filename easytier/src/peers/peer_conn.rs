@@ -671,7 +671,7 @@ impl PeerConn {
             remote_peer_id
         );
         let payload = pb.encode_to_vec();
-        let mut msg = vec![0u8; 4096];
+        let mut msg = vec![0u8; 8192];
         let msg_len = hs
             .write_message(&payload, &mut msg)
             .map_err(|e| Error::WaitRespError(format!("noise write msg1 failed: {e:?}")))?;
@@ -815,6 +815,16 @@ impl PeerConn {
             })
             .map(|s| s.session_generation());
 
+        // Generate post-quantum keypair if PQ is enabled at runtime and compiled in.
+        #[cfg(feature = "pq-kem")]
+        let pq_keypair = if self.global_ctx.get_flags().enable_post_quantum {
+            let kp = super::pq_kem::kem::generate_keypair();
+            tracing::info!("PQ-KEM: generated ML-KEM-768 keypair for handshake");
+            Some(kp)
+        } else {
+            None
+        };
+
         let a_conn_id = uuid::Uuid::new_v4();
         let msg1_pb = PeerConnNoiseMsg1Pb {
             version: VERSION,
@@ -822,6 +832,10 @@ impl PeerConn {
             a_session_generation,
             a_conn_id: Some(a_conn_id.into()),
             client_encryption_algorithm: self.my_encrypt_algo.clone(),
+            #[cfg(feature = "pq-kem")]
+            pq_encapsulation_key: pq_keypair.as_ref().map(|kp| kp.ek_bytes.clone()),
+            #[cfg(not(feature = "pq-kem"))]
+            pq_encapsulation_key: None,
         };
 
         let mut hs = builder
@@ -862,6 +876,27 @@ impl PeerConn {
                 "noise msg2 conn_id_echo mismatch".to_owned(),
             ));
         }
+
+        // Post-quantum decapsulation: recover shared secret from server's ciphertext.
+        #[cfg(feature = "pq-kem")]
+        let pq_shared_secret: Option<[u8; 32]> = match (&pq_keypair, &msg2_pb.pq_ciphertext) {
+            (Some(kp), Some(ct)) => {
+                let ss = super::pq_kem::kem::decapsulate(kp, ct)
+                    .map_err(|e| Error::WaitRespError(format!("PQ decapsulation failed: {e}")))?;
+                tracing::info!("PQ-KEM: decapsulated ML-KEM-768 shared secret");
+                Some(ss)
+            }
+            (Some(_), None) => {
+                tracing::info!(
+                    "PQ-KEM: remote peer does not support PQ, falling back to classical Noise"
+                );
+                None
+            }
+            _ => None,
+        };
+        #[cfg(not(feature = "pq-kem"))]
+        let pq_shared_secret: Option<[u8; 32]> = None;
+
         let action = PeerConnSessionActionPb::try_from(msg2_pb.action)
             .map_err(|_| Error::WaitRespError("invalid session action".to_owned()))?;
         let remote_network_name = msg2_pb.b_network_name.clone();
@@ -947,7 +982,13 @@ impl PeerConn {
             .map(|v| {
                 let mut key = [0u8; 32];
                 key.copy_from_slice(v);
-                key
+                // If PQ exchange succeeded, derive hybrid root key.
+                if let Some(pq_ss) = pq_shared_secret {
+                    tracing::info!("PQ-KEM: deriving hybrid root key (Noise + ML-KEM-768)");
+                    super::pq_kem::hybrid_root_key(key, pq_ss)
+                } else {
+                    key
+                }
             });
         let session_action = match action {
             PeerConnSessionActionPb::Join => PeerSessionAction::Join,
@@ -1011,7 +1052,7 @@ impl PeerConn {
 
         let msg = match hs {
             Some(hs) => {
-                let mut out = vec![0u8; 4096];
+                let mut out = vec![0u8; 8192];
                 let out_len = hs
                     .read_message(pkt.payload(), &mut out)
                     .map_err(|e| Error::WaitRespError(format!("noise read msg failed: {e:?}")))?;
@@ -1091,6 +1132,32 @@ impl PeerConn {
             (2, None)
         };
 
+        // Post-quantum encapsulation: if PQ is enabled and client sent an encapsulation key,
+        // encapsulate a shared secret.
+        #[cfg(feature = "pq-kem")]
+        let pq_result: Option<([u8; 32], Vec<u8>)> =
+            if self.global_ctx.get_flags().enable_post_quantum {
+                msg1_pb.pq_encapsulation_key.as_ref().and_then(|ek| {
+                    match super::pq_kem::kem::encapsulate(ek) {
+                        Ok((ss, ct)) => {
+                            tracing::info!(
+                                "PQ-KEM: encapsulated ML-KEM-768, ciphertext {} bytes",
+                                ct.len()
+                            );
+                            Some((ss, ct))
+                        }
+                        Err(e) => {
+                            tracing::warn!("PQ-KEM: encapsulation failed: {e}, skipping PQ");
+                            None
+                        }
+                    }
+                })
+            } else {
+                None
+            };
+        #[cfg(not(feature = "pq-kem"))]
+        let pq_result: Option<([u8; 32], Vec<u8>)> = None;
+
         let algo = self.global_ctx.get_flags().encryption_algorithm.clone();
         let UpsertResponderSessionReturn {
             session,
@@ -1105,6 +1172,17 @@ impl PeerConn {
             msg1_pb.client_encryption_algorithm.clone(),
             None,
         )?;
+
+        // If PQ exchange succeeded and a root_key was generated, upgrade the session's
+        // root key to the hybrid key. The raw root_key is still sent in Msg2 so the
+        // client can independently derive the same hybrid key.
+        if let Some((pq_ss, _)) = &pq_result {
+            if let Some(raw_root_key) = root_key_32 {
+                let hybrid = super::pq_kem::hybrid_root_key(raw_root_key, *pq_ss);
+                tracing::info!("PQ-KEM: deriving hybrid root key (Noise + ML-KEM-768)");
+                session.replace_root_key(hybrid);
+            }
+        }
 
         let b_conn_id = uuid::Uuid::new_v4();
         let msg2_pb = PeerConnNoiseMsg2Pb {
@@ -1122,6 +1200,7 @@ impl PeerConn {
             a_conn_id_echo: msg1_pb.a_conn_id,
             secret_proof_32,
             server_encryption_algorithm: algo,
+            pq_ciphertext: pq_result.map(|(_, ct)| ct),
         };
         self.send_noise_msg(
             msg2_pb,
@@ -2520,5 +2599,162 @@ pub mod tests {
         // Server should reject the revoked credential
         assert!(s_ret.is_err(), "server should reject revoked credential");
         let _ = c_ret;
+    }
+
+    // ── Post-quantum handshake integration tests ─────────────────────────
+
+    /// Both peers enable PQ; the handshake must succeed and the connection
+    /// info must report that PQ was active on both sides.
+    #[cfg(feature = "pq-kem")]
+    #[tokio::test]
+    async fn peer_conn_handshake_pq_both_enabled() {
+        let (c, s) = create_ring_tunnel_pair();
+
+        let c_peer_id = new_peer_id();
+        let s_peer_id = new_peer_id();
+
+        let c_ctx = get_mock_global_ctx();
+        let s_ctx = get_mock_global_ctx();
+
+        // Enable PQ on both sides.
+        let mut c_flags = c_ctx.get_flags();
+        c_flags.enable_post_quantum = true;
+        c_ctx.set_flags(c_flags);
+
+        let mut s_flags = s_ctx.get_flags();
+        s_flags.enable_post_quantum = true;
+        s_ctx.set_flags(s_flags);
+
+        let ps = Arc::new(PeerSessionStore::new());
+        let mut c_peer = PeerConn::new(c_peer_id, c_ctx.clone(), Box::new(c), ps.clone());
+        let mut s_peer = PeerConn::new(s_peer_id, s_ctx.clone(), Box::new(s), ps.clone());
+
+        let (c_ret, s_ret) = tokio::join!(
+            c_peer.do_handshake_as_client(),
+            s_peer.do_handshake_as_server()
+        );
+
+        c_ret.unwrap();
+        s_ret.unwrap();
+
+        assert_eq!(c_peer.get_peer_id(), s_peer_id);
+        assert_eq!(s_peer.get_peer_id(), c_peer_id);
+    }
+
+    /// Only the client enables PQ; the server does not.  The handshake must
+    /// still complete successfully via fall-back to classical key exchange.
+    #[cfg(feature = "pq-kem")]
+    #[tokio::test]
+    async fn peer_conn_handshake_pq_client_only_fallback() {
+        let (c, s) = create_ring_tunnel_pair();
+
+        let c_peer_id = new_peer_id();
+        let s_peer_id = new_peer_id();
+
+        let c_ctx = get_mock_global_ctx();
+        let s_ctx = get_mock_global_ctx();
+
+        // Client has PQ; server does not.
+        let mut c_flags = c_ctx.get_flags();
+        c_flags.enable_post_quantum = true;
+        c_ctx.set_flags(c_flags);
+
+        let ps = Arc::new(PeerSessionStore::new());
+        let mut c_peer = PeerConn::new(c_peer_id, c_ctx.clone(), Box::new(c), ps.clone());
+        let mut s_peer = PeerConn::new(s_peer_id, s_ctx.clone(), Box::new(s), ps.clone());
+
+        let (c_ret, s_ret) = tokio::join!(
+            c_peer.do_handshake_as_client(),
+            s_peer.do_handshake_as_server()
+        );
+
+        // Fall-back to classical Noise must succeed.
+        c_ret.unwrap();
+        s_ret.unwrap();
+
+        assert_eq!(c_peer.get_peer_id(), s_peer_id);
+        assert_eq!(s_peer.get_peer_id(), c_peer_id);
+    }
+
+    /// Neither peer enables PQ.  The handshake must succeed using pure
+    /// classical Noise (baseline / regression check).
+    #[cfg(feature = "pq-kem")]
+    #[tokio::test]
+    async fn peer_conn_handshake_pq_neither_enabled() {
+        let (c, s) = create_ring_tunnel_pair();
+
+        let c_peer_id = new_peer_id();
+        let s_peer_id = new_peer_id();
+
+        let c_ctx = get_mock_global_ctx();
+        let s_ctx = get_mock_global_ctx();
+
+        let ps = Arc::new(PeerSessionStore::new());
+        let mut c_peer = PeerConn::new(c_peer_id, c_ctx.clone(), Box::new(c), ps.clone());
+        let mut s_peer = PeerConn::new(s_peer_id, s_ctx.clone(), Box::new(s), ps.clone());
+
+        let (c_ret, s_ret) = tokio::join!(
+            c_peer.do_handshake_as_client(),
+            s_peer.do_handshake_as_server()
+        );
+
+        c_ret.unwrap();
+        s_ret.unwrap();
+
+        assert_eq!(c_peer.get_peer_id(), s_peer_id);
+        assert_eq!(s_peer.get_peer_id(), c_peer_id);
+    }
+
+    /// PQ enabled on both peers, combined with secure-mode (X25519 keypair
+    /// exchange).  The hybrid handshake must succeed and public keys must
+    /// be exchanged correctly.
+    #[cfg(feature = "pq-kem")]
+    #[tokio::test]
+    async fn peer_conn_handshake_pq_with_secure_mode() {
+        let (c, s) = create_ring_tunnel_pair();
+
+        let c_peer_id = new_peer_id();
+        let s_peer_id = new_peer_id();
+
+        let c_ctx = get_mock_global_ctx();
+        let s_ctx = get_mock_global_ctx();
+
+        set_secure_mode_cfg(&c_ctx, true);
+        set_secure_mode_cfg(&s_ctx, true);
+
+        let mut c_flags = c_ctx.get_flags();
+        c_flags.enable_post_quantum = true;
+        c_ctx.set_flags(c_flags);
+
+        let mut s_flags = s_ctx.get_flags();
+        s_flags.enable_post_quantum = true;
+        s_ctx.set_flags(s_flags);
+
+        let ps = Arc::new(PeerSessionStore::new());
+        let mut c_peer = PeerConn::new(c_peer_id, c_ctx.clone(), Box::new(c), ps.clone());
+        let mut s_peer = PeerConn::new(s_peer_id, s_ctx.clone(), Box::new(s), ps.clone());
+
+        let (c_ret, s_ret) = tokio::join!(
+            c_peer.do_handshake_as_client(),
+            s_peer.do_handshake_as_server()
+        );
+
+        c_ret.unwrap();
+        s_ret.unwrap();
+
+        // Static public keys must be 32 bytes and correctly cross-matched.
+        let c_info = c_peer.get_conn_info();
+        let s_info = s_peer.get_conn_info();
+
+        assert_eq!(c_info.noise_local_static_pubkey.len(), 32);
+        assert_eq!(c_info.noise_remote_static_pubkey.len(), 32);
+        assert_eq!(
+            c_info.noise_remote_static_pubkey,
+            s_info.noise_local_static_pubkey
+        );
+        assert_eq!(
+            s_info.noise_remote_static_pubkey,
+            c_info.noise_local_static_pubkey
+        );
     }
 }

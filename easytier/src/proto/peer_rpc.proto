@@ -301,6 +301,7 @@ message PeerConnNoiseMsg1Pb {
   optional uint32 a_session_generation = 3;
   common.UUID a_conn_id = 4;
   string client_encryption_algorithm = 5;
+  optional bytes pq_encapsulation_key = 6; // ML-KEM-768 encapsulation key (1184 bytes) for post-quantum hybrid key exchange
 }
 
 message PeerConnNoiseMsg2Pb {
@@ -314,6 +315,7 @@ message PeerConnNoiseMsg2Pb {
   common.UUID a_conn_id_echo = 8;
   optional bytes secret_proof_32 = 9;
   string server_encryption_algorithm = 10;
+  optional bytes pq_ciphertext = 11; // ML-KEM-768 ciphertext (1088 bytes) for post-quantum hybrid key exchange
 }
 
 message RelayNoiseMsg1Pb {
@@ -321,6 +323,7 @@ message RelayNoiseMsg1Pb {
   optional uint32 a_session_generation = 3;
   common.UUID a_conn_id = 4;
   string client_encryption_algorithm = 5;
+  optional bytes pq_encapsulation_key = 6; // ML-KEM-768 encapsulation key for post-quantum hybrid key exchange
 }
 
 message RelayNoiseMsg2Pb {
@@ -331,6 +334,7 @@ message RelayNoiseMsg2Pb {
   common.UUID b_conn_id = 7;
   common.UUID a_conn_id_echo = 8;
   string server_encryption_algorithm = 10;
+  optional bytes pq_ciphertext = 11; // ML-KEM-768 ciphertext for post-quantum hybrid key exchange
 }
 
 message PeerConnNoiseMsg3Pb {

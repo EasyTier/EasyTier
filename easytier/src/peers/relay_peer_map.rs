@@ -341,15 +341,29 @@ impl RelayPeerMap {
             .peer_session_store
             .get(&session_key)
             .map(|s| s.session_generation());
+        // Generate post-quantum keypair if PQ is enabled.
+        #[cfg(feature = "pq-kem")]
+        let pq_keypair = if self.global_ctx.get_flags().enable_post_quantum {
+            let kp = super::pq_kem::kem::generate_keypair();
+            tracing::info!("PQ-KEM: generated ML-KEM-768 keypair for relay handshake");
+            Some(kp)
+        } else {
+            None
+        };
+
         let a_conn_id = uuid::Uuid::new_v4();
         let msg1_pb = RelayNoiseMsg1Pb {
             version: RELAY_NOISE_VERSION,
             a_session_generation,
             a_conn_id: Some(a_conn_id.into()),
             client_encryption_algorithm: self.global_ctx.get_flags().encryption_algorithm.clone(),
+            #[cfg(feature = "pq-kem")]
+            pq_encapsulation_key: pq_keypair.as_ref().map(|kp| kp.ek_bytes.clone()),
+            #[cfg(not(feature = "pq-kem"))]
+            pq_encapsulation_key: None,
         };
         let payload = msg1_pb.encode_to_vec();
-        let mut out = vec![0u8; 4096];
+        let mut out = vec![0u8; 8192];
         let out_len = hs
             .write_message(&payload, &mut out)
             .map_err(|e| Error::RouteError(Some(format!("noise write msg1 failed: {e:?}"))))?;
@@ -396,6 +410,27 @@ impl RelayPeerMap {
             )));
         }
 
+        // Post-quantum decapsulation for relay handshake.
+        #[cfg(feature = "pq-kem")]
+        let pq_shared_secret: Option<[u8; 32]> = match (&pq_keypair, &msg2_pb.pq_ciphertext) {
+            (Some(kp), Some(ct)) => {
+                let ss = super::pq_kem::kem::decapsulate(kp, ct).map_err(|e| {
+                    Error::RouteError(Some(format!("PQ decapsulation failed: {e}")))
+                })?;
+                tracing::info!("PQ-KEM: decapsulated ML-KEM-768 shared secret (relay)");
+                Some(ss)
+            }
+            (Some(_), None) => {
+                tracing::info!(
+                    "PQ-KEM: remote relay peer does not support PQ, falling back to classical Noise"
+                );
+                None
+            }
+            _ => None,
+        };
+        #[cfg(not(feature = "pq-kem"))]
+        let pq_shared_secret: Option<[u8; 32]> = None;
+
         let action = PeerConnSessionActionPb::try_from(msg2_pb.action)
             .map_err(|_| Error::RouteError(Some("invalid session action".to_string())))?;
         let session_action = match action {
@@ -417,7 +452,13 @@ impl RelayPeerMap {
             .map(|v| {
                 let mut key_bytes = [0u8; 32];
                 key_bytes.copy_from_slice(v);
-                key_bytes
+                // If PQ exchange succeeded, derive hybrid root key.
+                if let Some(pq_ss) = pq_shared_secret {
+                    tracing::info!("PQ-KEM: deriving hybrid root key (Noise + ML-KEM-768) (relay)");
+                    super::pq_kem::hybrid_root_key(key_bytes, pq_ss)
+                } else {
+                    key_bytes
+                }
             });
         let algo = self.global_ctx.get_flags().encryption_algorithm.clone();
         let session = self
@@ -462,7 +503,7 @@ impl RelayPeerMap {
         if hdr.packet_type != expected_type as u8 {
             return Err(Error::RouteError(Some("packet type mismatch".to_string())));
         }
-        let mut out = vec![0u8; 4096];
+        let mut out = vec![0u8; 8192];
         let out_len = hs
             .read_message(pkt.payload(), &mut out)
             .map_err(|e| Error::RouteError(Some(format!("noise read msg failed: {e:?}"))))?;
@@ -563,6 +604,31 @@ impl RelayPeerMap {
             ))));
         }
 
+        // Post-quantum encapsulation for relay handshake.
+        #[cfg(feature = "pq-kem")]
+        let pq_result: Option<([u8; 32], Vec<u8>)> =
+            if self.global_ctx.get_flags().enable_post_quantum {
+                msg1_pb.pq_encapsulation_key.as_ref().and_then(|ek| {
+                    match super::pq_kem::kem::encapsulate(ek) {
+                        Ok((ss, ct)) => {
+                            tracing::info!(
+                                "PQ-KEM: encapsulated ML-KEM-768 for relay, ciphertext {} bytes",
+                                ct.len()
+                            );
+                            Some((ss, ct))
+                        }
+                        Err(e) => {
+                            tracing::warn!("PQ-KEM: relay encapsulation failed: {e}, skipping PQ");
+                            None
+                        }
+                    }
+                })
+            } else {
+                None
+            };
+        #[cfg(not(feature = "pq-kem"))]
+        let pq_result: Option<([u8; 32], Vec<u8>)> = None;
+
         let server_network_name = self.global_ctx.get_network_name();
         let algo = self.global_ctx.get_flags().encryption_algorithm.clone();
         let key = SessionKey::new(server_network_name.clone(), remote_peer_id);
@@ -576,6 +642,18 @@ impl RelayPeerMap {
                 remote_static_key,
             )
             .map_err(|e| Error::RouteError(Some(format!("{e:?}"))))?;
+
+        // If PQ exchange succeeded, upgrade the session's root key to hybrid.
+        if let Some((pq_ss, _)) = &pq_result {
+            if let Some(raw_root_key) = upsert.root_key {
+                let hybrid = super::pq_kem::hybrid_root_key(raw_root_key, *pq_ss);
+                tracing::info!(
+                    "PQ-KEM: deriving hybrid root key (Noise + ML-KEM-768) (relay responder)"
+                );
+                upsert.session.replace_root_key(hybrid);
+            }
+        }
+
         let msg2_pb = RelayNoiseMsg2Pb {
             action: match upsert.action {
                 PeerSessionAction::Join => PeerConnSessionActionPb::Join as i32,
@@ -588,9 +666,10 @@ impl RelayPeerMap {
             b_conn_id: Some(uuid::Uuid::new_v4().into()),
             a_conn_id_echo: msg1_pb.a_conn_id,
             server_encryption_algorithm: algo,
+            pq_ciphertext: pq_result.map(|(_, ct)| ct),
         };
         let payload = msg2_pb.encode_to_vec();
-        let mut out = vec![0u8; 4096];
+        let mut out = vec![0u8; 8192];
         let out_len = hs
             .write_message(&payload, &mut out)
             .map_err(|e| Error::RouteError(Some(format!("noise write msg2 failed: {e:?}"))))?;

@@ -104,6 +104,9 @@ core_clap:
   encryption_algorithm:
     en: "encryption algorithm to use, supported: '', 'xor', 'chacha20', 'aes-gcm', 'aes-gcm-256', 'openssl-aes128-gcm', 'openssl-aes256-gcm', 'openssl-chacha20'. Empty string means default (aes-gcm)"
     zh-CN: "要使用的加密算法，支持：''（默认aes-gcm）、'xor'、'chacha20'、'aes-gcm'、'aes-gcm-256'、'openssl-aes128-gcm'、'openssl-aes256-gcm'、'openssl-chacha20'"
+  enable_post_quantum:
+    en: "enable post-quantum hybrid key exchange (ML-KEM-768 + X25519), default is false"
+    zh-CN: "启用后量子混合密钥交换（ML-KEM-768 + X25519），默认为false"
   multi_thread:
     en: "use multi-thread runtime, default is single-thread"
     zh-CN: "使用多线程运行时，默认为单线程"
