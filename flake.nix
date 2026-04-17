@@ -29,7 +29,7 @@
             allowUnfree = true;
           };
         };
-        rustVersion = "1.93.0";
+        rustVersion = "1.95.0";
         makeRust =
           features:
           let
