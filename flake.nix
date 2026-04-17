@@ -29,15 +29,15 @@
             allowUnfree = true;
           };
         };
-        rustVersion = "1.95.0";
         makeRust =
           features:
           let
             rustTarget = pkgs.stdenv.hostPlatform.config;
             muslTarget = pkgs.lib.replaceStrings [ "gnu" ] [ "musl" ] rustTarget;
             muslTargets = if pkgs.stdenv.isLinux then [ muslTarget ] else [ ];
+            toolchain = pkgs.rust-bin.fromRustupToolchainFile ./rust-toolchain.toml;
           in
-          pkgs.rust-bin.stable.${rustVersion}.default.override {
+          toolchain.override {
             extensions = [
               "rust-src"
               "rust-analyzer"
