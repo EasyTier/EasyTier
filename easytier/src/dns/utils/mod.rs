@@ -2,7 +2,6 @@ use hickory_proto::rr::LowerName;
 use idna::AsciiDenyList;
 
 pub mod addr;
-pub mod dirty;
 pub mod response;
 pub mod zone_handler;
 
@@ -37,7 +36,7 @@ pub fn parse(name: &str) -> LowerName {
         name
     } else {
         let sanitized = sanitize(name);
-        tracing::debug!("invalid hostname: {}, sanitized to: {}", name, sanitized);
+        tracing::debug!("invalid name: {}, sanitized to: {}", name, sanitized);
         sanitized.parse().unwrap_or_default()
     }
 }

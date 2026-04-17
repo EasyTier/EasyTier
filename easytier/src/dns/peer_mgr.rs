@@ -1,7 +1,7 @@
 use crate::common::PeerId;
 use crate::common::global_ctx::ArcGlobalCtx;
 use crate::dns::config::{DNS_PEER_TTI, DnsExportConfig, DnsGlobalCtxExt};
-use crate::dns::utils::dirty::DirtyFlag;
+use crate::utils::dirty::DirtyFlag;
 use crate::dns::zone::ZoneGroup;
 use crate::peer_center::instance::PeerCenterPeerManagerTrait;
 use crate::peers::peer_manager::PeerManager;

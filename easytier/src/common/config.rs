@@ -134,11 +134,11 @@ pub trait ConfigLoader: Send + Sync + DnsConfigLoaderExt {
     fn get_id(&self) -> uuid::Uuid;
     fn set_id(&self, id: uuid::Uuid);
 
-    fn get_inst_name(&self) -> String;
-    fn set_inst_name(&self, name: String);
-
     fn get_hostname(&self) -> String;
     fn set_hostname(&self, name: Option<String>);
+
+    fn get_inst_name(&self) -> String;
+    fn set_inst_name(&self, name: String);
 
     fn get_netns(&self) -> Option<String>;
     fn set_netns(&self, ns: Option<String>);

@@ -1,6 +1,6 @@
 use crate::dns::config::DNS_NODE_TTI;
 use crate::dns::utils::addr::NameServerAddr;
-use crate::dns::utils::dirty::DirtyFlag;
+use crate::utils::dirty::DirtyFlag;
 use crate::dns::zone::{Zone, ZoneGroup};
 use crate::proto::dns::DnsNodeMgrRpc;
 use crate::proto::dns::{DnsSnapshot, HeartbeatRequest, HeartbeatResponse};
