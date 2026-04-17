@@ -6,8 +6,8 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crate::common::config::TomlConfigLoader;
-use crate::common::global_ctx::tests::get_mock_global_ctx;
 use crate::common::global_ctx::GlobalCtx;
+use crate::common::global_ctx::tests::get_mock_global_ctx;
 use crate::connector::udp_hole_punch::tests::replace_stun_info_collector;
 use crate::dns::config::zone::ZoneConfigInner;
 use crate::dns::node::DnsNode;
@@ -616,9 +616,11 @@ async fn config_patch_reloads_listener_binding() {
     check_dns_record_at(old_addr, "listener-patch.mesh-test.", "10.144.150.11").await;
 
     let mut dns = peer.get_global_ctx().config.get_dns();
-    dns.listeners = vec![format!("udp://127.0.0.1:{listener_new}")
-        .parse()
-        .expect("invalid listener")]
+    dns.listeners = vec![
+        format!("udp://127.0.0.1:{listener_new}")
+            .parse()
+            .expect("invalid listener"),
+    ]
     .into();
     peer.get_global_ctx().config.set_dns(Some(dns));
     peer.get_global_ctx()

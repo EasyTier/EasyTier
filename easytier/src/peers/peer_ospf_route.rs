@@ -30,17 +30,8 @@ use tokio::{
     task::{JoinHandle, JoinSet},
 };
 
-use super::{
-    graph_algo::dijkstra_with_first_hop,
-    peer_rpc::PeerRpcManager,
-    route_trait::{
-        DefaultRouteCostCalculator, ForeignNetworkRouteInfoMap, NextHopPolicy, RouteCostCalculator,
-        RouteCostCalculatorInterface,
-    },
-    PeerPacketFilter,
-};
 use crate::common::config::ConfigLoader;
-use crate::utils::DeterministicDigest;
+use crate::proto::utils::TransientDigest;
 use crate::{
     common::{
         PeerId,
@@ -228,14 +219,15 @@ impl RoutePeerInfo {
             .and_then(|cfg| cfg.public_key().ok())
             .map(|pk| pk.as_bytes().to_vec())
             .unwrap_or_default();
-        cfg_if! {
-            if #[cfg(feature = "magic-dns")] {
+
+        let dns = cfg_select! {
+            feature = "magic-dns" => {{
                 use crate::dns::config::DnsGlobalCtxExt;
-                let dns = global_ctx.dns_export_config().digest();
-            } else {
-                let dns = Default::default();
-            }
-        }
+                global_ctx.dns_export_config().digest()
+            }}
+            _ => Default::default(),
+        };
+
         Self {
             peer_id: my_peer_id,
             inst_id: Some(global_ctx.get_id().into()),
@@ -268,7 +260,7 @@ impl RoutePeerInfo {
             ipv6_addr: global_ctx.get_ipv6().map(|x| x.into()),
 
             groups: global_ctx.get_acl_groups(my_peer_id),
-            dns,
+            dns: dns.into(),
 
             noise_static_pubkey,
 

@@ -1,6 +1,6 @@
-use crate::common::global_ctx::ArcGlobalCtx;
 use crate::common::PeerId;
-use crate::dns::config::{DnsExportConfig, DnsGlobalCtxExt, DNS_PEER_TTI};
+use crate::common::global_ctx::ArcGlobalCtx;
+use crate::dns::config::{DNS_PEER_TTI, DnsExportConfig, DnsGlobalCtxExt};
 use crate::dns::utils::dirty::DirtyFlag;
 use crate::dns::zone::ZoneGroup;
 use crate::peer_center::instance::PeerCenterPeerManagerTrait;
@@ -12,7 +12,7 @@ use crate::proto::dns::{
 };
 use crate::proto::rpc_types;
 use crate::proto::rpc_types::controller::BaseController;
-use crate::utils::DeterministicDigest;
+use crate::proto::utils::TransientDigest;
 use anyhow::Context;
 use moka::future::Cache;
 use std::ops::Deref;
@@ -21,7 +21,7 @@ use tracing::instrument;
 
 #[derive(Debug, Clone)]
 struct DnsPeerInfo {
-    digest: Vec<u8>,
+    digest: [u8; 32],
     zones: Vec<ZoneData>,
 }
 
@@ -29,7 +29,7 @@ impl TryFrom<DnsExportConfig> for DnsPeerInfo {
     type Error = anyhow::Error;
 
     fn try_from(value: DnsExportConfig) -> Result<Self, Self::Error> {
-        let _ = ZoneGroup::try_from(&value.zones)?;
+        let _ = ZoneGroup::try_from(value.zones.as_slice())?;
         Ok(Self {
             digest: value.digest(),
             zones: value.zones,
@@ -86,7 +86,7 @@ impl DnsPeerMgrInner {
             .peers
             .get(&peer_id)
             .await
-            .is_some_and(|info| info.digest == route.dns)
+            .is_some_and(|info| route.dns == info.digest)
         {
             return;
         }
@@ -201,7 +201,7 @@ mod tests {
     use crate::proto::dns::GetExportConfigRequest;
     use std::collections::HashSet;
     use std::net::Ipv4Addr;
-    use tokio::time::{sleep, Duration};
+    use tokio::time::{Duration, sleep};
     use uuid::Uuid;
 
     async fn create_peer_manager_with_zone(
@@ -279,14 +279,18 @@ mod tests {
             .await;
 
         let snapshot = mgr.snapshot();
-        assert!(snapshot
-            .zones
-            .iter()
-            .any(|z| z.origin.contains("peer-cache.test")));
-        assert!(snapshot
-            .zones
-            .iter()
-            .any(|z| z.origin.contains("local-custom.test")));
+        assert!(
+            snapshot
+                .zones
+                .iter()
+                .any(|z| z.origin.contains("peer-cache.test"))
+        );
+        assert!(
+            snapshot
+                .zones
+                .iter()
+                .any(|z| z.origin.contains("local-custom.test"))
+        );
     }
 
     #[tokio::test]
@@ -527,10 +531,12 @@ mod tests {
 
         assert!(local_dns.dirty.peek());
         let snapshot = local_dns.snapshot();
-        assert!(snapshot
-            .zones
-            .iter()
-            .any(|z| z.origin.contains("remote-export.test")));
+        assert!(
+            snapshot
+                .zones
+                .iter()
+                .any(|z| z.origin.contains("remote-export.test"))
+        );
     }
 
     #[tokio::test]
@@ -564,14 +570,18 @@ mod tests {
         local_dns.refresh(peer_a.my_peer_id()).await;
 
         let snapshot = local_dns.snapshot();
-        assert!(snapshot
-            .zones
-            .iter()
-            .any(|z| z.origin.contains("remote-a.test")));
-        assert!(!snapshot
-            .zones
-            .iter()
-            .any(|z| z.origin.contains("remote-b.test")));
+        assert!(
+            snapshot
+                .zones
+                .iter()
+                .any(|z| z.origin.contains("remote-a.test"))
+        );
+        assert!(
+            !snapshot
+                .zones
+                .iter()
+                .any(|z| z.origin.contains("remote-b.test"))
+        );
     }
 
     #[tokio::test]
@@ -719,10 +729,12 @@ mod tests {
             .get(&unchanged_id)
             .await
             .expect("unchanged peer cache should stay");
-        assert!(unchanged_cache
-            .zones
-            .iter()
-            .any(|z| z.origin.contains("cached-unchanged.test")));
+        assert!(
+            unchanged_cache
+                .zones
+                .iter()
+                .any(|z| z.origin.contains("cached-unchanged.test"))
+        );
     }
 
     #[tokio::test]
@@ -748,14 +760,18 @@ mod tests {
             .await;
 
         let before = mgr.snapshot();
-        assert!(before
-            .zones
-            .iter()
-            .any(|z| z.origin.contains("cached-expire.test")));
-        assert!(before
-            .zones
-            .iter()
-            .any(|z| z.origin.contains("local-tti.test")));
+        assert!(
+            before
+                .zones
+                .iter()
+                .any(|z| z.origin.contains("cached-expire.test"))
+        );
+        assert!(
+            before
+                .zones
+                .iter()
+                .any(|z| z.origin.contains("local-tti.test"))
+        );
 
         let deadline = tokio::time::Instant::now() + DNS_PEER_TTI + Duration::from_secs(3);
         loop {
@@ -765,10 +781,12 @@ mod tests {
                 .iter()
                 .any(|z| z.origin.contains("cached-expire.test"));
             if expired {
-                assert!(now_snapshot
-                    .zones
-                    .iter()
-                    .any(|z| z.origin.contains("local-tti.test")));
+                assert!(
+                    now_snapshot
+                        .zones
+                        .iter()
+                        .any(|z| z.origin.contains("local-tti.test"))
+                );
                 break;
             }
 

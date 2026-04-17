@@ -44,19 +44,19 @@ impl ProxyCidrsMonitor {
                 proxy_cidrs.insert(vpn_cfg.client_cidr);
             }
 
+            #[cfg(feature = "magic-dns")]
+            {
+                use crate::dns::config::DnsGlobalCtxExt;
+                if let Some(dns) = global_ctx.dns_server() {
+                    proxy_cidrs.extend(dns.addresses().into_iter().filter_map(|a| match a.ip() {
+                        IpAddr::V4(ip) => Some(cidr::Ipv4Cidr::new_host(ip)),
+                        _ => None,
+                    }))
+                }
+            }
+
             proxy_cidrs
         };
-
-        #[cfg(feature = "magic-dns")]
-        {
-            use crate::dns::config::DnsGlobalCtxExt;
-            if let Some(dns) = global_ctx.dns_server() {
-                proxy_cidrs.extend(dns.addresses().into_iter().filter_map(|a| match a.ip() {
-                    IpAddr::V4(ip) => Some(cidr::Ipv4Cidr::new_host(ip)),
-                    _ => None,
-                }))
-            }
-        }
 
         // Calculate diff
         if cur_proxy_cidrs == &proxy_cidrs {

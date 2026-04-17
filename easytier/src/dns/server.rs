@@ -4,37 +4,37 @@ use crate::dns::system;
 use crate::dns::utils::addr::NameServerAddr;
 use crate::dns::utils::response::ResponseHandle;
 use crate::peer_center::instance::PeerCenterPeerManagerTrait;
-use crate::peers::peer_manager::PeerManager;
 use crate::peers::NicPacketFilter;
+use crate::peers::peer_manager::PeerManager;
 use crate::proto::dns::DnsNodeMgrRpcServer;
 use crate::proto::rpc_impl::standalone::StandAloneServer;
-use crate::tunnel::common::bind_socket;
 use crate::tunnel::packet_def::ZCPacket;
 use crate::tunnel::tcp::TcpTunnelListener;
-use crate::utils::AsyncRuntime;
+use crate::utils::task::AsyncRuntime;
 use derivative::Derivative;
 use hickory_proto::serialize::binary::BinDecodable;
 use hickory_proto::xfer::Protocol;
 use hickory_server::authority::MessageRequest;
 use hickory_server::{
+    ServerFuture,
     authority::Catalog,
     server::{Request, RequestHandler, ResponseHandler, ResponseInfo},
-    ServerFuture,
 };
 use parking_lot::RwLock;
 use pnet::packet::icmp::{IcmpTypes, MutableIcmpPacket};
 use pnet::packet::ip::IpNextHeaderProtocols;
 use pnet::packet::ipv4::{Ipv4Packet, MutableIpv4Packet};
 use pnet::packet::udp::{MutableUdpPacket, UdpPacket};
-use pnet::packet::{icmp, ipv4, udp, MutablePacket, Packet};
+use pnet::packet::{MutablePacket, Packet, icmp, ipv4, udp};
 use std::collections::HashSet;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4};
 use std::{sync::Arc, time::Duration};
 use tokio_util::sync::CancellationToken;
-use tracing::{instrument, Instrument};
+use tracing::{Instrument, instrument};
 
 #[cfg(feature = "tun")]
 use crate::instance::instance::{ArcNicCtx, NicCtx};
+use crate::tunnel::common::bind;
 
 #[derive(Clone)]
 struct DynamicCatalog {
@@ -182,7 +182,7 @@ impl DnsServer {
         tracing::info!(?listeners, "reloading");
 
         if let Some(runtime) = runtime.as_ref() {
-            if let Some(Err(error)) = runtime.stop().await {
+            if let Some(Err(error)) = runtime.stop(None).await {
                 tracing::error!(?error, "failed to stop old DNS server runtime");
             }
         }
@@ -194,9 +194,11 @@ impl DnsServer {
             let addr = listener.addr;
             tracing::info!(?addr, "binding listener");
             if let Err(error) = match listener.protocol {
-                Protocol::Udp => bind_socket(addr, None).map(|s| server.register_socket(s)),
-                Protocol::Tcp => bind_socket(addr, None)
+                Protocol::Tcp => bind()
+                    .addr(addr)
+                    .call()
                     .map(|s| server.register_listener(s, DNS_SERVER_LISTENER_TCP_TIMEOUT)),
+                Protocol::Udp => bind().addr(addr).call().map(|s| server.register_socket(s)),
                 _ => unimplemented!(),
             } {
                 tracing::error!(?addr, ?error, "failed to bind listener");
@@ -294,7 +296,7 @@ impl DnsServer {
         }
 
         if let Some(runtime) = runtime.take() {
-            let _ = runtime.stop().await;
+            let _ = runtime.stop(None).await;
         }
     }
 }
@@ -485,7 +487,7 @@ mod tests {
     use crate::proto::rpc_types::controller::BaseController;
     use hickory_client::client::{Client, ClientHandle};
     use hickory_proto::op::{Message, MessageType, OpCode, Query};
-    use hickory_proto::rr::{rdata, DNSClass, Name, RData, Record, RecordType};
+    use hickory_proto::rr::{DNSClass, Name, RData, Record, RecordType, rdata};
     use hickory_proto::runtime::TokioRuntimeProvider;
     use hickory_proto::serialize::binary::BinEncodable;
     use hickory_proto::udp::UdpClientStream;
@@ -496,7 +498,7 @@ mod tests {
     use pnet::packet::ip::IpNextHeaderProtocols;
     use pnet::packet::ipv4::{Ipv4Packet, MutableIpv4Packet};
     use pnet::packet::udp::{MutableUdpPacket, UdpPacket};
-    use pnet::packet::{icmp, ipv4, udp, MutablePacket, Packet};
+    use pnet::packet::{MutablePacket, Packet, icmp, ipv4, udp};
     use std::net::{Ipv4Addr, SocketAddr};
     use std::str::FromStr;
     use std::time::Duration;

@@ -17,7 +17,7 @@ use super::{
     buf::BufList,
     packet_def::{TCP_TUNNEL_HEADER_SIZE, TCPTunnelHeader, ZCPacketType},
 };
-use crate::common::error::Error;
+use crate::common::netns::NetNS;
 use crate::tunnel::packet_def::{PEER_MANAGER_HEADER_SIZE, ZCPacket};
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 use tokio::net::{TcpListener, TcpSocket, UdpSocket};
@@ -533,56 +533,6 @@ pub fn bind<B: Bindable>(
     let socket = socket2::Socket::new(socket2::Domain::for_address(addr), B::TYPE, B::PROTOCOL)?;
     setup_socket2_ext(&socket, &addr, dev, only_v6)?;
     B::finalize(socket)
-}
-
-pub trait Bindable: Sized {
-    const TY: socket2::Type;
-    const PROTOCOL: Option<socket2::Protocol>;
-
-    fn finalize(socket: socket2::Socket) -> Result<Self, Error>;
-}
-
-impl Bindable for TcpListener {
-    const TY: socket2::Type = socket2::Type::STREAM;
-    const PROTOCOL: Option<socket2::Protocol> = Some(socket2::Protocol::TCP);
-
-    fn finalize(socket: socket2::Socket) -> Result<Self, Error> {
-        let tcp_socket = TcpSocket::from_std_stream(socket.into());
-
-        if let Err(e) = tcp_socket.set_nodelay(true) {
-            tracing::warn!(?e, "set_nodelay fail in listen");
-        }
-
-        Ok(tcp_socket.listen(1024)?)
-    }
-}
-
-impl Bindable for UdpSocket {
-    const TY: socket2::Type = socket2::Type::DGRAM;
-    const PROTOCOL: Option<socket2::Protocol> = Some(socket2::Protocol::UDP);
-
-    fn finalize(socket: socket2::Socket) -> Result<Self, Error> {
-        Ok(UdpSocket::from_std(socket.into())?)
-    }
-}
-
-pub fn bind_socket<B: Bindable>(addr: SocketAddr, net_ns: Option<NetNS>) -> Result<B, Error> {
-    let _g = net_ns.map(|n| n.guard());
-
-    let socket2_socket =
-        socket2::Socket::new(socket2::Domain::for_address(addr), B::TY, B::PROTOCOL)?;
-
-    setup_sokcet2(&socket2_socket, &addr)?;
-
-    B::finalize(socket2_socket)
-}
-
-pub fn bind_tcp_socket(addr: SocketAddr, net_ns: NetNS) -> Result<TcpListener, Error> {
-    bind_socket(addr, Some(net_ns))
-}
-
-pub fn bind_udp_socket(addr: SocketAddr, net_ns: NetNS) -> Result<UdpSocket, Error> {
-    bind_socket(addr, Some(net_ns))
 }
 
 pub fn reserve_buf(buf: &mut BytesMut, min_size: usize, max_size: usize) {

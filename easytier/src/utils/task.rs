@@ -79,7 +79,7 @@ impl<R: Send + 'static> AsyncRuntime<R> {
         Ok(())
     }
 
-    pub async fn stop(&self, timeout: Duration) -> Option<Result<R, JoinError>> {
+    pub async fn stop(&self, timeout: Option<Duration>) -> Option<Result<R, JoinError>> {
         let state = {
             let mut state = self.state.lock();
             match &*state {
@@ -104,12 +104,17 @@ impl<R: Send + 'static> AsyncRuntime<R> {
         };
 
         token.cancel();
-        let result = if let Ok(result) = tokio::time::timeout(timeout, &mut task).await {
-            result
-        } else {
-            task.abort();
-            tracing::warn!("task stop timeout after {:?}, aborted", timeout);
-            task.await
+        let result = match timeout {
+            Some(duration) => {
+                if let Ok(result) = tokio::time::timeout(duration, &mut task).await {
+                    result
+                } else {
+                    task.abort();
+                    tracing::warn!("task stop timeout after {:?}, aborted", duration);
+                    task.await
+                }
+            }
+            None => task.await,
         };
 
         {

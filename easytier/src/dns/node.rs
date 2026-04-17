@@ -1,23 +1,23 @@
 use crate::common::global_ctx::{ArcGlobalCtx, GlobalCtxEvent};
 use crate::common::join_joinset_background;
 use crate::dns::config::{
-    DnsGlobalCtxExt, DNS_NODE_RR_INTERVAL, DNS_SERVER_ELECTION_INTERVAL, DNS_SERVER_RPC_ADDR,
+    DNS_NODE_RR_INTERVAL, DNS_SERVER_ELECTION_INTERVAL, DNS_SERVER_RPC_ADDR, DnsGlobalCtxExt,
 };
 use crate::dns::peer_mgr::DnsPeerMgr;
 use crate::dns::server::DnsServer;
 #[cfg(feature = "tun")]
 use crate::instance::instance::ArcNicCtx;
-use crate::peers::peer_manager::PeerManager;
 use crate::peers::NicPacketFilter;
+use crate::peers::peer_manager::PeerManager;
 use crate::proto::dns::{DnsNodeMgrRpcClientFactory, HeartbeatRequest};
 use crate::proto::rpc_impl::standalone::{StandAloneClient, StandAloneServer};
 use crate::proto::rpc_types::controller::BaseController;
 use crate::tunnel::tcp::{TcpTunnelConnector, TcpTunnelListener};
-use crate::utils::AsyncRuntime;
+use crate::utils::task::AsyncRuntime;
 use std::sync::{Arc, Mutex};
-use tokio::sync::{broadcast, Notify};
-use tokio::task::JoinSet;
-use tokio::time::{sleep, sleep_until, Instant};
+use tokio::sync::{Notify, broadcast};
+use tokio::task::{JoinError, JoinSet};
+use tokio::time::{Instant, sleep, sleep_until};
 use tokio_util::sync::CancellationToken;
 use tracing::instrument;
 use uuid::Uuid;
@@ -57,18 +57,18 @@ impl DnsNode {
         self.global_ctx.get_id()
     }
 
-    pub fn start(&self) {
+    pub fn start(&self) -> anyhow::Result<()> {
         self.mgr.register();
         let this = self.clone();
         self.runtime.start(None, |token| async move {
             tracing::info!("starting DnsNode");
             this.elect.notify_one();
             tokio::join!(this.run_election(token.clone()), this.run(token));
-        });
+        })
     }
 
-    pub async fn stop(&self) -> anyhow::Result<()> {
-        self.runtime.stop().await.unwrap_or(Ok(()))
+    pub async fn stop(&self) -> Result<(), JoinError> {
+        self.runtime.stop(None).await.unwrap_or(Ok(()))
     }
 
     #[instrument(skip_all, name = "DnsNode election loop")]

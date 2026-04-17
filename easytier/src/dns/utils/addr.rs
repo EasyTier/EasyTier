@@ -1,7 +1,7 @@
 use crate::dns::config::DNS_SUPPORTED_PROTOCOLS;
 use crate::proto;
 use crate::proto::utils::RepeatedMessageModel;
-use anyhow::{anyhow, Error};
+use anyhow::{Error, anyhow};
 use hickory_proto::xfer::Protocol;
 use hickory_resolver::config::{NameServerConfig, NameServerConfigGroup};
 use serde_with::{DeserializeFromStr, SerializeDisplay};

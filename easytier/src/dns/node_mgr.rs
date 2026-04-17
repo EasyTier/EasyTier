@@ -6,7 +6,7 @@ use crate::proto::dns::DnsNodeMgrRpc;
 use crate::proto::dns::{DnsSnapshot, HeartbeatRequest, HeartbeatResponse};
 use crate::proto::rpc_types;
 use crate::proto::rpc_types::controller::BaseController;
-use crate::utils::DeterministicDigest;
+use crate::proto::utils::TransientDigest;
 use anyhow::Error;
 use hickory_server::authority::Catalog;
 use itertools::Itertools;
@@ -17,7 +17,7 @@ use uuid::Uuid;
 
 #[derive(Debug, Clone, Default)]
 struct DnsNodeInfo {
-    digest: Vec<u8>,
+    digest: [u8; 32],
     zones: ZoneGroup,
     addresses: HashSet<NameServerAddr>,
     listeners: HashSet<NameServerAddr>,
@@ -29,7 +29,7 @@ impl TryFrom<&DnsSnapshot> for DnsNodeInfo {
     fn try_from(value: &DnsSnapshot) -> Result<Self, Self::Error> {
         Ok(Self {
             digest: value.digest(),
-            zones: (&value.zones).try_into()?,
+            zones: value.zones.as_slice().try_into()?,
             addresses: value
                 .addresses
                 .iter()
@@ -156,7 +156,7 @@ impl DnsNodeMgrRpc for DnsNodeMgr {
             self.nodes
                 .get(&id)
                 .await
-                .is_none_or(|info| info.digest != input.digest)
+                .is_none_or(|info| input.digest != info.digest)
         };
 
         Ok(HeartbeatResponse { resync })
@@ -173,9 +173,9 @@ mod tests {
     };
     use crate::dns::utils::response::ResponseHandle;
     use hickory_proto::op::{Message, ResponseCode};
-    use hickory_proto::rr::{rdata, RData, RecordType};
+    use hickory_proto::rr::{RData, RecordType, rdata};
     use std::net::Ipv4Addr;
-    use tokio::time::{sleep, Duration};
+    use tokio::time::{Duration, sleep};
 
     fn heartbeat_digest_only(id: Uuid, digest: Vec<u8>) -> HeartbeatRequest {
         HeartbeatRequest {

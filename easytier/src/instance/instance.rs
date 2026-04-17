@@ -848,7 +848,7 @@ impl Instance {
         }
 
         #[cfg(feature = "magic-dns")]
-        self.dns.start();
+        self.dns.start()?;
 
         if self.global_ctx.config.get_dhcp() {
             self.check_dhcp_ip_conflict();

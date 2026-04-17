@@ -167,9 +167,9 @@ mod tests {
     use crate::proto::common::Url;
     use crate::proto::dns::ZoneData;
     use hickory_proto::op::{Message, ResponseCode};
-    use hickory_proto::rr::{rdata, RData, Record, RecordType, RrsetRecords};
-    use hickory_server::authority::Catalog;
+    use hickory_proto::rr::{RData, Record, RecordType, RrsetRecords, rdata};
     use hickory_server::ServerFuture;
+    use hickory_server::authority::Catalog;
     use std::net::{Ipv4Addr, SocketAddr};
     use std::str::FromStr;
     use tokio::net::UdpSocket;

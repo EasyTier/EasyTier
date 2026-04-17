@@ -1,11 +1,11 @@
-use crate::utils::DeterministicDigest;
+use crate::proto::utils::TransientDigest;
 use std::fmt::Display;
 
 include!(concat!(env!("OUT_DIR"), "/dns.rs"));
 
 impl HeartbeatRequest {
     pub fn update(&mut self, snapshot: DnsSnapshot) {
-        self.digest = snapshot.digest();
+        self.digest = snapshot.digest().into();
         self.snapshot = Some(snapshot);
     }
 }
