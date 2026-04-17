@@ -272,7 +272,7 @@ mod tests {
             .insert(
                 999_999,
                 DnsPeerInfo {
-                    digest: vec![1, 2, 3],
+                    digest: [9; 32],
                     zones: vec![valid_zone_data("peer-cache.test", "10.20.30.40")],
                 },
             )
@@ -351,7 +351,7 @@ mod tests {
             .insert(
                 11,
                 DnsPeerInfo {
-                    digest: vec![11],
+                    digest: [11; 32],
                     zones: vec![valid_zone_data("peer-a.test", "10.20.30.41")],
                 },
             )
@@ -360,7 +360,7 @@ mod tests {
             .insert(
                 12,
                 DnsPeerInfo {
-                    digest: vec![12],
+                    digest: [12; 32],
                     zones: vec![valid_zone_data("peer-b.test", "10.20.30.42")],
                 },
             )
@@ -390,7 +390,7 @@ mod tests {
             .insert(
                 13,
                 DnsPeerInfo {
-                    digest: vec![13],
+                    digest: [13; 32],
                     zones: vec![],
                 },
             )
@@ -489,7 +489,9 @@ mod tests {
             .insert(
                 remote_id,
                 DnsPeerInfo {
-                    digest: remote_route_dns,
+                    digest: remote_route_dns
+                        .try_into()
+                        .expect("route dns digest should be 32 bytes"),
                     zones: vec![valid_zone_data("cached-same.test", "10.0.1.9")],
                 },
             )
@@ -617,7 +619,7 @@ mod tests {
             .insert(
                 fail_id,
                 DnsPeerInfo {
-                    digest: vec![1],
+                    digest: [1; 32],
                     zones: vec![valid_zone_data("cached-fail.test", "10.2.1.20")],
                 },
             )
@@ -627,7 +629,7 @@ mod tests {
             .insert(
                 keep_id,
                 DnsPeerInfo {
-                    digest: vec![2],
+                    digest: [2; 32],
                     zones: vec![valid_zone_data("cached-keep.test", "10.2.1.21")],
                 },
             )
@@ -700,7 +702,7 @@ mod tests {
             .insert(
                 changed_peer.my_peer_id(),
                 DnsPeerInfo {
-                    digest: vec![0],
+                    digest: [0; 32],
                     zones: vec![valid_zone_data("stale-changed.test", "10.2.2.20")],
                 },
             )
@@ -710,7 +712,9 @@ mod tests {
             .insert(
                 unchanged_id,
                 DnsPeerInfo {
-                    digest: unchanged_digest,
+                    digest: unchanged_digest
+                        .try_into()
+                        .expect("route dns digest should be 32 bytes"),
                     zones: vec![valid_zone_data("cached-unchanged.test", "10.2.2.21")],
                 },
             )
@@ -753,7 +757,7 @@ mod tests {
             .insert(
                 cached_peer_id,
                 DnsPeerInfo {
-                    digest: vec![6, 6, 6],
+                    digest: [6; 32],
                     zones: vec![valid_zone_data("cached-expire.test", "10.3.0.2")],
                 },
             )

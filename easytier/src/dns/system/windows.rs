@@ -167,10 +167,8 @@ impl SystemConfigurator for WindowsDNSManager {
 
 #[cfg(all(test, target_os = "windows", feature = "magic-dns", feature = "tun"))]
 mod tests {
-    use std::net::IpAddr;
-
-    use crate::common::log;
     use cidr::Ipv4Inet;
+    use std::net::IpAddr;
 
     #[tokio::test]
     async fn test_windows_set_primary_server() {
@@ -183,8 +181,6 @@ mod tests {
         use crate::instance::proxy_cidrs_monitor::ProxyCidrsMonitor;
         use crate::instance::virtual_nic::NicCtx;
         use crate::peers::peer_manager::PeerManager;
-
-        log::tests::init();
 
         let tun_ip = Ipv4Inet::from_str("10.144.144.10/24").unwrap();
         let (peer_mgr, virtual_nic): (Arc<PeerManager>, NicCtx) =
@@ -212,14 +208,13 @@ mod tests {
                 .arg("1")
                 .arg("-w")
                 .arg("100")
-                .arg(&fake_ip.to_string())
+                .arg(fake_ip.to_string())
                 .output()
                 .await
+                && o.status.success()
             {
-                if o.status.success() {
-                    ping_ready = true;
-                    break;
-                }
+                ping_ready = true;
+                break;
             }
         }
         if !ping_ready {

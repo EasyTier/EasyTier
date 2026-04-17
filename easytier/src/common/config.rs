@@ -5,15 +5,6 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use super::env_parser;
-use crate::{
-    common::stun::StunInfoCollector,
-    proto::{
-        acl::Acl,
-        common::{CompressionAlgoPb, PortForwardConfigPb, SecureModeConfig, SocketType},
-    },
-    tunnel::generate_digest_from_str,
-};
 use anyhow::Context;
 use base64::{Engine as _, prelude::BASE64_STANDARD};
 use clap::ValueEnum;
@@ -21,6 +12,18 @@ use clap::builder::PossibleValue;
 use serde::{Deserialize, Serialize};
 use strum::{Display, EnumString, VariantArray};
 use tokio::io::AsyncReadExt as _;
+
+use crate::{
+    common::stun::StunInfoCollector,
+    instance::dns_server::DEFAULT_ET_DNS_ZONE,
+    proto::{
+        acl::Acl,
+        common::{CompressionAlgoPb, PortForwardConfigPb, SecureModeConfig, SocketType},
+    },
+    tunnel::generate_digest_from_str,
+};
+
+use super::env_parser;
 
 pub type Flags = crate::proto::common::FlagsInConfig;
 
@@ -116,10 +119,12 @@ impl Default for EncryptionAlgorithm {
     }
 }
 
-cfg_if! {
-    if #[cfg(feature = "magic-dns")] {
+cfg_select! {
+    feature = "magic-dns" => {
         use crate::dns::config::{DnsConfig, DnsConfigLoaderExt};
-    } else {
+    }
+
+    _ => {
         #[auto_impl::auto_impl(Box, &)]
         pub trait DnsConfigLoaderExt {}
     }
@@ -536,16 +541,17 @@ impl TomlConfigLoader {
 }
 
 impl DnsConfigLoaderExt for TomlConfigLoader {
-    cfg_if! {
-        if #[cfg(feature = "magic-dns")] {
+    cfg_select! {
+        feature = "magic-dns" => {
             fn get_dns(&self) -> DnsConfig {
                 self.config.lock().unwrap().dns.clone().unwrap_or_default()
             }
-
-            fn set_dns(&self, dns: Option<DnsConfig>) {
-                self.config.lock().unwrap().dns = dns;
+            fn set_dns(&self, config: Option<DnsConfig>) {
+                self.config.lock().unwrap().dns = config;
             }
         }
+
+        _ => {}
     }
 }
 

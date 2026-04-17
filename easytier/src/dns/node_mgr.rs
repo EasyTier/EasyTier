@@ -166,7 +166,6 @@ impl DnsNodeMgrRpc for DnsNodeMgr {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::common::log;
     use crate::dns::tests::{
         dns_snapshot_with as snapshot_with, heartbeat_with_snapshot, new_request,
         zone_data_a_with_forwarders as valid_zone_data,
@@ -214,8 +213,6 @@ mod tests {
 
     #[tokio::test]
     async fn catalog_lookup_returns_record_after_snapshot_heartbeat() -> anyhow::Result<()> {
-        log::tests::init();
-
         let mgr = DnsNodeMgr::new();
         let id = Uuid::new_v4();
         let snapshot = snapshot_with(
@@ -291,7 +288,7 @@ mod tests {
         let full = send_heartbeat(&mgr, heartbeat_with_snapshot(id, snapshot)).await;
         assert!(!full.resync);
 
-        let same = send_heartbeat(&mgr, heartbeat_digest_only(id, digest.clone())).await;
+        let same = send_heartbeat(&mgr, heartbeat_digest_only(id, digest.into())).await;
         assert!(!same.resync);
 
         let different = send_heartbeat(&mgr, heartbeat_digest_only(id, vec![9, 9, 9])).await;
@@ -381,7 +378,7 @@ mod tests {
             .insert(
                 Uuid::new_v4(),
                 DnsNodeInfo {
-                    digest: vec![1],
+                    digest: [1; 32],
                     zones: vec![zone_a].into(),
                     addresses: [ns("udp://10.100.0.1:53"), ns("udp://10.100.0.2:53")]
                         .into_iter()
@@ -394,7 +391,7 @@ mod tests {
             .insert(
                 Uuid::new_v4(),
                 DnsNodeInfo {
-                    digest: vec![2],
+                    digest: [2; 32],
                     zones: vec![zone_b].into(),
                     addresses: [ns("udp://10.100.0.2:53"), ns("udp://10.100.0.3:53")]
                         .into_iter()
@@ -438,7 +435,7 @@ mod tests {
             .insert(
                 Uuid::new_v4(),
                 DnsNodeInfo {
-                    digest: vec![1],
+                    digest: [1; 32],
                     zones: vec![zone].into(),
                     addresses: [ns("udp://10.0.0.10:53")].into_iter().collect(),
                     listeners: [ns("tcp://10.0.0.11:53")].into_iter().collect(),
@@ -531,7 +528,7 @@ mod tests {
 
         let _ = send_heartbeat(&mgr, heartbeat_with_snapshot(node_a, snap_a)).await;
 
-        let a_same = send_heartbeat(&mgr, heartbeat_digest_only(node_a, digest_a)).await;
+        let a_same = send_heartbeat(&mgr, heartbeat_digest_only(node_a, digest_a.into())).await;
         assert!(!a_same.resync);
 
         let b_unknown = send_heartbeat(&mgr, heartbeat_digest_only(node_b, vec![1, 2, 3])).await;
@@ -550,12 +547,12 @@ mod tests {
         let digest = snapshot.digest();
 
         let _ = send_heartbeat(&mgr, heartbeat_with_snapshot(id, snapshot)).await;
-        let before_expiry = send_heartbeat(&mgr, heartbeat_digest_only(id, digest.clone())).await;
+        let before_expiry = send_heartbeat(&mgr, heartbeat_digest_only(id, digest.to_vec())).await;
         assert!(!before_expiry.resync);
 
         sleep(DNS_NODE_TTI + Duration::from_millis(300)).await;
 
-        let after_expiry = send_heartbeat(&mgr, heartbeat_digest_only(id, digest)).await;
+        let after_expiry = send_heartbeat(&mgr, heartbeat_digest_only(id, digest.into())).await;
         assert!(after_expiry.resync);
     }
 }

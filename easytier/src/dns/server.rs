@@ -134,31 +134,29 @@ impl DnsServer {
             if let Some(nic_ctx) = nic_ctx
                 .as_ref()
                 .and_then(|nic_ctx| nic_ctx.downcast_ref::<NicCtx>())
-            {
-                if let Some(system) = nic_ctx
+                && let Some(system) = nic_ctx
                     .ifname()
                     .await
                     .map(|ifname| system::get(&ifname))
                     .transpose()?
                     .flatten()
-                {
-                    let config = self.global_ctx.config.get_dns();
-                    let domain = vec![config.domain.to_string()];
-                    system.set_dns(&system::SystemConfig {
-                        nameservers: addresses
-                            .iter()
-                            .filter_map(|a| {
-                                (a.protocol == Protocol::Udp && a.addr.port() == 53)
-                                    .then_some(a.addr.ip().to_string())
-                            })
-                            .collect(),
-                        search_domains: domain.clone(),
-                        match_domains: domain
-                            .into_iter()
-                            .chain(config.zones.iter().map(|z| z.origin.to_string()))
-                            .collect(),
-                    })?;
-                }
+            {
+                let config = self.global_ctx.config.get_dns();
+                let domain = vec![config.domain.to_string()];
+                system.set_dns(&system::SystemConfig {
+                    nameservers: addresses
+                        .iter()
+                        .filter_map(|a| {
+                            (a.protocol == Protocol::Udp && a.addr.port() == 53)
+                                .then_some(a.addr.ip().to_string())
+                        })
+                        .collect(),
+                    search_domains: domain.clone(),
+                    match_domains: domain
+                        .into_iter()
+                        .chain(config.zones.iter().map(|z| z.origin.to_string()))
+                        .collect(),
+                })?;
             }
         }
 
@@ -181,10 +179,10 @@ impl DnsServer {
         }
         tracing::info!(?listeners, "reloading");
 
-        if let Some(runtime) = runtime.as_ref() {
-            if let Some(Err(error)) = runtime.stop(None).await {
-                tracing::error!(?error, "failed to stop old DNS server runtime");
-            }
+        if let Some(runtime) = runtime.as_ref()
+            && let Some(Err(error)) = runtime.stop(None).await
+        {
+            tracing::error!(?error, "failed to stop old DNS server runtime");
         }
 
         let runtime = runtime.get_or_insert_default();
@@ -213,7 +211,7 @@ impl DnsServer {
                     .unwrap_or_else(|e| tracing::error!("DNS server exited with error: {:?}", e));
             }
             .instrument(tracing::info_span!("DNS server backend runtime"))
-        });
+        })?;
 
         *self.listeners.write() = listeners;
 
@@ -238,11 +236,11 @@ impl DnsServer {
         let reload_addresses = async {
             loop {
                 dirty.addresses.wait().await;
-                if dirty.addresses.reset() {
-                    if let Err(error) = self.reload_addresses(self.mgr.iter_addresses()).await {
-                        tracing::error!(?error, "failed to reload addresses");
-                        dirty.addresses.mark();
-                    }
+                if dirty.addresses.reset()
+                    && let Err(error) = self.reload_addresses(self.mgr.iter_addresses()).await
+                {
+                    tracing::error!(?error, "failed to reload addresses");
+                    dirty.addresses.mark();
                 }
                 tokio::time::sleep(Duration::from_secs(1)).await;
             }
@@ -251,14 +249,13 @@ impl DnsServer {
         let reload_listeners = async {
             loop {
                 dirty.listeners.wait().await;
-                if dirty.listeners.reset() {
-                    if let Err(error) = self
+                if dirty.listeners.reset()
+                    && let Err(error) = self
                         .reload_listeners(self.mgr.iter_listeners(), &mut runtime)
                         .await
-                    {
-                        tracing::error!(?error, "failed to reload listeners");
-                        dirty.listeners.mark();
-                    }
+                {
+                    tracing::error!(?error, "failed to reload listeners");
+                    dirty.listeners.mark();
                 }
                 tokio::time::sleep(Duration::from_secs(1)).await;
             }
@@ -284,15 +281,13 @@ impl DnsServer {
             .await
             .as_ref()
             .and_then(|nic_ctx| nic_ctx.downcast_ref::<NicCtx>())
-        {
-            if let Some(system) = nic_ctx
+            && let Some(system) = nic_ctx
                 .ifname()
                 .await
                 .and_then(|ifname| system::get(&ifname).ok())
                 .flatten()
-            {
-                let _ = system.clean();
-            }
+        {
+            let _ = system.clean();
         }
 
         if let Some(runtime) = runtime.take() {
@@ -1057,7 +1052,7 @@ mod tests {
         assert!(!response.answers().is_empty());
 
         if let Some(runtime) = runtime.take() {
-            let _ = runtime.stop().await;
+            let _ = runtime.stop(None).await;
         }
     }
 

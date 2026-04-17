@@ -76,7 +76,7 @@ pub fn start_dns_node(peer_mgr: Arc<PeerManager>, virtual_nic: NicCtx) -> DnsNod
     let nic_ctx: ArcNicCtx = Arc::new(tokio::sync::Mutex::new(Some(Box::new(virtual_nic))));
 
     let dns_node = DnsNode::new(peer_mgr, global_ctx, nic_ctx);
-    dns_node.start();
+    dns_node.start().expect("failed to start dns node");
     dns_node
 }
 
@@ -85,7 +85,7 @@ pub fn start_dns_node_without_nic(peer_mgr: Arc<PeerManager>) -> DnsNode {
     let nic_ctx: ArcNicCtx = Arc::new(tokio::sync::Mutex::new(None));
 
     let dns_node = DnsNode::new(peer_mgr, global_ctx, nic_ctx);
-    dns_node.start();
+    dns_node.start().expect("failed to start dns node");
     dns_node
 }
 
@@ -178,12 +178,11 @@ pub async fn check_dns_record_at(server_addr: SocketAddr, domain: &str, expected
 
         let attempt_err = match query_result {
             Ok(Ok(response)) => {
-                if response.answers().len() == 1 {
-                    if let Some(resp) = response.answers().first() {
-                        if resp.clone().into_parts().rdata.into_a().unwrap().0 == expected {
-                            return;
-                        }
-                    }
+                if response.answers().len() == 1
+                    && let Some(resp) = response.answers().first()
+                    && resp.clone().into_parts().rdata.into_a().unwrap().0 == expected
+                {
+                    return;
                 }
                 format!("unexpected response: {:?}", response.answers())
             }
