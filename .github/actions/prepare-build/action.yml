@@ -52,7 +52,7 @@ runs:
 
     - uses: actions-rust-lang/setup-rust-toolchain@v1
       with:
-        toolchain: stable
+        toolchain: 1.95
         target: ${{ !contains(inputs.target, 'mips') && inputs.target || '' }}
         cache: false
         rustflags: ''
