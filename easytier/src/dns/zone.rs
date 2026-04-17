@@ -1,5 +1,5 @@
 use crate::common::dns::get_default_resolver_config;
-use crate::dns::utils::addr::NameServerAddr;
+use crate::dns::utils::addr::{NameServerAddr, NameServerAddrGroup};
 use crate::dns::utils::zone_handler::ArcZoneHandler;
 use crate::proto;
 use crate::proto::utils::RepeatedMessageModel;
@@ -128,7 +128,8 @@ impl From<Zone> for proto::dns::ZoneData {
             .forward
             .into_iter()
             .flat_map(|f| f.name_servers.into_iter())
-            .map(Into::<NameServerAddr>::into)
+            .map(|ns| (&ns).into())
+            .flat_map(NameServerAddrGroup::into_iter)
             .map(Into::into)
             .collect();
 

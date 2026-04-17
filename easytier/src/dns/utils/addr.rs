@@ -2,14 +2,14 @@ use crate::proto;
 use crate::proto::utils::RepeatedMessageModel;
 use anyhow::{Error, anyhow};
 use hickory_net::xfer::Protocol;
-use hickory_resolver::config::{ConnectionConfig, NameServerConfig};
+use hickory_resolver::config::{ConnectionConfig, NameServerConfig, ProtocolConfig};
 use serde::de::IntoDeserializer;
 use serde::{Deserialize, de};
 use serde_with::{DeserializeFromStr, SerializeDisplay};
 use std::fmt::{Display, Formatter};
 use std::net::{IpAddr, SocketAddr};
 use std::str::FromStr;
-use url::{Host, Url};
+use url::Url;
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash, SerializeDisplay, DeserializeFromStr)]
 pub struct NameServerAddr {
@@ -29,19 +29,13 @@ impl From<NameServerAddr> for NameServerConfig {
     }
 }
 
-impl From<&NameServerConfig> for NameServerAddr {
-    fn from(value: &NameServerConfig) -> Self {
-        let connection = value.connections.first().unwrap();
+impl From<(IpAddr, &ConnectionConfig)> for NameServerAddr {
+    fn from(value: (IpAddr, &ConnectionConfig)) -> Self {
+        let (ip, config) = value;
         Self {
-            protocol: connection.protocol.to_protocol(),
-            addr: SocketAddr::new(value.ip, connection.port),
+            protocol: config.protocol.to_protocol(),
+            addr: SocketAddr::new(ip, config.port),
         }
-    }
-}
-
-impl From<NameServerConfig> for NameServerAddr {
-    fn from(value: NameServerConfig) -> Self {
-        (&value).into()
     }
 }
 
@@ -70,23 +64,23 @@ impl TryFrom<&Url> for NameServerAddr {
     type Error = Error;
 
     fn try_from(value: &Url) -> Result<Self, Self::Error> {
-        let protocol = Protocol::deserialize(value.scheme().into_deserializer()).map_err(
+        let protocol = match Protocol::deserialize(value.scheme().into_deserializer()).map_err(
             |e: de::value::Error| anyhow!("invalid protocol '{}': {}", value.scheme(), e),
-        )?;
-        let port = value
-            .port()
-            .or_else(|| matches!(protocol, Protocol::Udp | Protocol::Tcp).then_some(53))
-            .ok_or_else(|| anyhow!("port not found"))?;
-        let ip = match value.host().ok_or(anyhow!("host not found"))? {
-            Host::Domain(_) => {
-                return Err(anyhow!("unsupported host: {}", value.host_str().unwrap()));
-            }
-            Host::Ipv4(ip) => ip.into(),
-            Host::Ipv6(ip) => ip.into(),
+        )? {
+            Protocol::Udp => ProtocolConfig::Udp,
+            Protocol::Tcp => ProtocolConfig::Tcp,
+            p => return Err(anyhow!("unsupported protocol: {}", p)),
+        };
+        let host = value.host_str().ok_or(anyhow!("host not found"))?;
+        let port = value.port().unwrap_or(protocol.default_port());
+        let addr = if let Ok(addr) = IpAddr::from_str(host) {
+            SocketAddr::new(addr, port)
+        } else {
+            return Err(anyhow!("invalid address: {}", host));
         };
         Ok(Self {
-            protocol,
-            addr: SocketAddr::new(ip, port),
+            protocol: protocol.to_protocol(),
+            addr,
         })
     }
 }
@@ -127,3 +121,13 @@ impl Display for NameServerAddr {
 }
 
 pub type NameServerAddrGroup = RepeatedMessageModel<NameServerAddr>;
+
+impl From<&NameServerConfig> for NameServerAddrGroup {
+    fn from(value: &NameServerConfig) -> Self {
+        value
+            .connections
+            .iter()
+            .map(|c| (value.ip, c).into())
+            .collect()
+    }
+}

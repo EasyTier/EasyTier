@@ -1,7 +1,6 @@
 use crate::common::PeerId;
 use crate::common::global_ctx::ArcGlobalCtx;
 use crate::dns::config::{DNS_PEER_TTI, DnsExportConfig, DnsGlobalCtxExt};
-use crate::utils::dirty::DirtyFlag;
 use crate::dns::zone::ZoneGroup;
 use crate::peer_center::instance::PeerCenterPeerManagerTrait;
 use crate::peers::peer_manager::PeerManager;
@@ -13,6 +12,7 @@ use crate::proto::dns::{
 use crate::proto::rpc_types;
 use crate::proto::rpc_types::controller::BaseController;
 use crate::proto::utils::TransientDigest;
+use crate::utils::dirty::DirtyFlag;
 use anyhow::Context;
 use moka::future::Cache;
 use std::ops::Deref;

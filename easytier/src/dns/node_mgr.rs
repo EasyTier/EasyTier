@@ -1,12 +1,12 @@
 use crate::dns::config::DNS_NODE_TTI;
 use crate::dns::utils::addr::NameServerAddr;
-use crate::utils::dirty::DirtyFlag;
 use crate::dns::zone::{Zone, ZoneGroup};
 use crate::proto::dns::DnsNodeMgrRpc;
 use crate::proto::dns::{DnsSnapshot, HeartbeatRequest, HeartbeatResponse};
 use crate::proto::rpc_types;
 use crate::proto::rpc_types::controller::BaseController;
 use crate::proto::utils::TransientDigest;
+use crate::utils::dirty::DirtyFlag;
 use anyhow::Error;
 use hickory_server::zone_handler::Catalog;
 use itertools::Itertools;
@@ -91,9 +91,11 @@ impl DnsNodeMgr {
         zones.push(Zone::system());
 
         for forward in zones.iter_mut().flat_map(|z| &mut z.forward) {
-            forward
-                .name_servers
-                .retain(|ns| !local.contains(&ns.into()));
+            forward.name_servers.retain_mut(|ns| {
+                ns.connections
+                    .retain(|c| !local.contains(&(ns.ip, c).into()));
+                !ns.connections.is_empty()
+            });
         }
 
         zones.into()
