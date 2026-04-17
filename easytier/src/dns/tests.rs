@@ -20,15 +20,14 @@ use crate::peers::tests::{connect_peer_manager, wait_route_appear};
 use crate::proto::common::{NatType, Url};
 use crate::proto::dns::{DnsSnapshot, HeartbeatRequest, ZoneData};
 use cidr::Ipv4Inet;
-use hickory_client::client::{Client, ClientHandle as _};
+use hickory_net::client::{Client, ClientHandle};
+use hickory_net::runtime::TokioRuntimeProvider;
+use hickory_net::udp::UdpClientStream;
+use hickory_net::xfer::Protocol;
 use hickory_proto::op::{Message, MessageType, OpCode, Query};
 use hickory_proto::rr;
-use hickory_proto::rr::{Name, RecordType};
-use hickory_proto::runtime::TokioRuntimeProvider;
-use hickory_proto::serialize::binary::{BinDecodable, BinEncodable, BinEncoder};
-use hickory_proto::udp::UdpClientStream;
-use hickory_proto::xfer::Protocol;
-use hickory_server::authority::MessageRequest;
+use hickory_proto::rr::{DNSClass, Name, RData, RecordType};
+use hickory_proto::serialize::binary::{BinEncodable, BinEncoder};
 use hickory_server::server::Request;
 use tokio::sync::Notify;
 use uuid::Uuid;
@@ -159,17 +158,17 @@ pub async fn check_dns_record(fake_ip: &Ipv4Addr, domain: &str, expected_ip: &st
 
 pub async fn check_dns_record_at(server_addr: SocketAddr, domain: &str, expected_ip: &str) {
     let expected = expected_ip.parse::<Ipv4Addr>().unwrap();
-    let name = rr::Name::from_str(domain).unwrap();
+    let name = Name::from_str(domain).unwrap();
     let deadline = Instant::now() + Duration::from_secs(30);
 
     loop {
         let stream = UdpClientStream::builder(server_addr, TokioRuntimeProvider::default()).build();
-        let (mut client, background) = Client::connect(stream).await.unwrap();
+        let (mut client, background) = Client::<TokioRuntimeProvider>::from_sender(stream);
         let background_task = tokio::spawn(background);
 
         let query_result = tokio::time::timeout(
             Duration::from_secs(2),
-            client.query(name.clone(), rr::DNSClass::IN, rr::RecordType::A),
+            client.query(name.clone(), DNSClass::IN, RecordType::A),
         )
         .await;
 
@@ -178,13 +177,13 @@ pub async fn check_dns_record_at(server_addr: SocketAddr, domain: &str, expected
 
         let attempt_err = match query_result {
             Ok(Ok(response)) => {
-                if response.answers().len() == 1
-                    && let Some(resp) = response.answers().first()
-                    && resp.clone().into_parts().rdata.into_a().unwrap().0 == expected
+                if response.answers.len() == 1
+                    && let Some(resp) = response.answers.first()
+                    && matches!(resp.clone().data, RData::A(a) if a.0 == expected)
                 {
                     return;
                 }
-                format!("unexpected response: {:?}", response.answers())
+                format!("unexpected response: {:?}", response.answers)
             }
             Ok(Err(e)) => {
                 format!("DNS query failed for domain '{domain}': {e}")
@@ -213,15 +212,11 @@ pub async fn check_dns_record_missing_at(server_addr: SocketAddr, domain: &str) 
 
     loop {
         let stream = UdpClientStream::builder(server_addr, TokioRuntimeProvider::default()).build();
-        let (mut client, background) = Client::connect(stream).await.unwrap();
+        let (mut client, background) = Client::<TokioRuntimeProvider>::from_sender(stream);
         let background_task = tokio::spawn(background);
         let query_result = tokio::time::timeout(
             Duration::from_secs(2),
-            client.query(
-                rr::Name::from_str(domain).unwrap(),
-                rr::DNSClass::IN,
-                rr::RecordType::A,
-            ),
+            client.query(Name::from_str(domain).unwrap(), DNSClass::IN, RecordType::A),
         )
         .await;
         background_task.abort();
@@ -229,10 +224,10 @@ pub async fn check_dns_record_missing_at(server_addr: SocketAddr, domain: &str) 
 
         let attempt_err = match query_result {
             Ok(Ok(response)) => {
-                if response.answers().is_empty() {
+                if response.answers.is_empty() {
                     return;
                 }
-                format!("unexpected non-empty response: {:?}", response.answers())
+                format!("unexpected non-empty response: {:?}", response.answers)
             }
             Ok(Err(e)) => {
                 format!("DNS query for missing record failed for domain '{domain}': {e}")
@@ -253,22 +248,19 @@ pub async fn check_dns_record_missing_at(server_addr: SocketAddr, domain: &str) 
 }
 
 pub fn new_request(name: &str, rtype: RecordType) -> anyhow::Result<Request> {
-    let mut query = Message::new();
-    query.set_id(0);
-    query.set_message_type(MessageType::Query);
-    query.set_op_code(OpCode::Query);
-    query.set_recursion_desired(true);
-    query.add_query(Query::query(Name::from_ascii(name)?, rtype));
+    let mut msg = Message::new(0, MessageType::Query, OpCode::Query);
+    msg.metadata.recursion_desired = true;
+    msg.add_query(Query::query(Name::from_ascii(name)?, rtype));
 
     let mut request = Vec::new();
     let mut encoder = BinEncoder::new(&mut request);
-    query.emit(&mut encoder)?;
+    msg.emit(&mut encoder)?;
 
-    Ok(Request::new(
-        MessageRequest::from_bytes(&request)?,
+    Ok(Request::from_bytes(
+        request,
         SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0).into(),
         Protocol::Udp,
-    ))
+    )?)
 }
 
 async fn wait_route_disappear(peer_mgr: Arc<PeerManager>, target_peer_id: u32) {
@@ -313,32 +305,28 @@ async fn check_dns_unavailable_at(server_addr: SocketAddr, domain: &str) {
 
     loop {
         let stream = UdpClientStream::builder(server_addr, TokioRuntimeProvider::default()).build();
-        let connect = Client::connect(stream).await;
+        let (mut client, background) = Client::<TokioRuntimeProvider>::from_sender(stream);
 
-        if let Ok((mut client, background)) = connect {
-            let background_task = tokio::spawn(background);
-            let query_result = tokio::time::timeout(
-                Duration::from_secs(1),
-                client.query(name.clone(), rr::DNSClass::IN, rr::RecordType::A),
-            )
-            .await;
+        let background_task = tokio::spawn(background);
+        let query_result = tokio::time::timeout(
+            Duration::from_secs(1),
+            client.query(name.clone(), DNSClass::IN, RecordType::A),
+        )
+        .await;
 
-            background_task.abort();
-            let _ = background_task.await;
+        background_task.abort();
+        let _ = background_task.await;
 
-            match query_result {
-                Ok(Ok(response)) if !response.answers().is_empty() => {
-                    if Instant::now() >= deadline {
-                        panic!(
-                            "DNS endpoint {server_addr} still answered for '{domain}': {:?}",
-                            response.answers()
-                        );
-                    }
+        match query_result {
+            Ok(Ok(response)) if !response.answers.is_empty() => {
+                if Instant::now() >= deadline {
+                    panic!(
+                        "DNS endpoint {server_addr} still answered for '{domain}': {:?}",
+                        response.answers
+                    );
                 }
-                _ => return,
             }
-        } else {
-            return;
+            _ => return,
         }
 
         tokio::time::sleep(Duration::from_millis(200)).await;

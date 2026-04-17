@@ -13,6 +13,7 @@ use crate::{
 };
 use anyhow::Context;
 use dashmap::DashSet;
+use hickory_proto::rr::RData;
 use hickory_resolver::proto::rr::rdata::SRV;
 use rand::{Rng as _, seq::SliceRandom};
 use strum::VariantArray;
@@ -85,24 +86,21 @@ impl DnsTunnelConnector {
 
     fn handle_one_srv_record(record: &SRV, protocol: IpScheme) -> Result<(url::Url, u64), Error> {
         // port must be non-zero
-        if record.port() == 0 {
+        if record.port == 0 {
             return Err(anyhow::anyhow!("port must be non-zero").into());
         }
 
-        let connector_dst = record.target().to_utf8();
-        let dst_url = format!("{}://{}:{}", protocol, connector_dst, record.port());
+        let connector_dst = record.target.to_utf8();
+        let dst_url = format!("{}://{}:{}", protocol, connector_dst, record.port);
 
         Ok((
             dst_url.parse().with_context(|| {
                 format!(
                     "parse dst_url failed, protocol: {}, connector_dst: {}, port: {}, dst_url: {}",
-                    protocol,
-                    connector_dst,
-                    record.port(),
-                    dst_url
+                    protocol, connector_dst, record.port, dst_url
                 )
             })?,
-            record.priority() as _,
+            record.priority as _,
         ))
     }
 
@@ -129,7 +127,14 @@ impl DnsTunnelConnector {
                         format!("srv_lookup failed, srv_domain: {}", srv_domain)
                     })?;
                     tracing::info!(?response, ?srv_domain, "srv_lookup response");
-                    for record in response.iter() {
+                    for record in response
+                        .answers()
+                        .iter()
+                        .filter_map(|record| match record.data {
+                            RData::SRV(ref srv) => Some(srv),
+                            _ => None,
+                        })
+                    {
                         let parsed_record = Self::handle_one_srv_record(record, **protocol);
                         tracing::info!(?parsed_record, ?srv_domain, "parsed_record");
                         if let Err(e) = &parsed_record {

@@ -35,7 +35,7 @@
 - **服务层（数据面）**（`server.rs` + `node_mgr.rs` + `zone.rs`）
   - `DnsServer`：真正处理 DNS 请求、维护监听 socket、管理 hijack addresses。
   - `DnsNodeMgr`：服务端的快照管理器，接收 Node 心跳，维护节点 TTL 与 dirty 状态。
-  - `Zone`/`ZoneGroup`：把 records + forwarders 变成 Hickory `Authority` 并装配 `Catalog`。
+  - `Zone`/`ZoneGroup`：把 records + forwarders 变成 Hickory `ZoneHandler` 并装配 `Catalog`。
 
 - **系统集成层**（`system/*`）
   - 将当前 DNS 配置下发到 OS（`SystemConfigurator` 抽象）。
@@ -52,9 +52,9 @@
 - **`ZoneData` / `Zone`**（`proto/dns.proto` + `zone.rs`）
   - `ZoneData` 是网络传输模型（protobuf），含 `id/origin/ttl/records/forwarders`。
   - `Zone` 是运行期模型：
-    - `records -> InMemoryAuthority`
-    - `forwarders -> ForwardAuthority`
-    - 同 origin 可链式共存（ChainedAuthority 语义）。
+    - `records -> InMemoryZoneHandler`
+    - `forwarders -> ForwardZoneHandler`
+    - 同 origin 可链式共存（ChainedZoneHandler 语义）。
 
 - **`DnsSnapshot`**（`proto/dns.proto`）
   - Node 发给 Server 的完整状态：`zones + addresses + listeners`。
@@ -324,7 +324,7 @@ Node 发送 heartbeat 时：
 2. 追加 `Zone::system()` 作为 root zone。
 3. 收集本地所有 `addresses + listeners` 形成 `local` 集合。
 4. 遍历每个 zone 的 forwarders，剔除命中 `local` 的 nameserver（避免显式回环）。
-5. 以 `origin -> authorities[]` 方式 `upsert` 到 Hickory `Catalog`。
+5. 以 `origin -> zone_handlers[]` 方式 `upsert` 到 Hickory `Catalog`。
 
 ### 10.3 `DnsServer::run`：三路热重载
 
@@ -380,12 +380,12 @@ Node 发送 heartbeat 时：
 2. 用 Hickory `Parser` 解析 zone 文本（origin + RR）。
 3. 把 `forwarders` URL 转成 `NameServerAddr`，为空则 `forward=None`。
 
-这确保网络收到的 `ZoneData` 能直接映射成可执行 authority。
+这确保网络收到的 `ZoneData` 能直接映射成可执行 zone_handler。
 
-### 11.3 Authority 构建策略
+### 11.3 ZoneHandler 构建策略
 
-- `create_memory_authority()`：仅当 records 非空时创建 `InMemoryAuthority`。
-- `create_forward_authority()`：仅当 forward 非空时创建 `ForwardAuthority`。
+- `create_memory_zone_handler()`：仅当 records 非空时创建 `InMemoryZoneHandler`。
+- `create_forward_zone_handler()`：仅当 forward 非空时创建 `ForwardZoneHandler`。
 
 因此允许 3 种 zone 形态：
 
@@ -396,10 +396,10 @@ Node 发送 heartbeat 时：
 ### 11.4 `ZoneGroup` 与同源链式行为
 
 - `ZoneGroup::into_groups()` 按 `origin` 分组。
-- `iter_authorities()` 对每个 zone 按顺序产出：先 memory，再 forward。
-- `DnsNodeMgr::catalog()` 把同 origin 的多个 zone authority 以数组形式 `upsert`。
+- `iter_zone_handlers()` 对每个 zone 按顺序产出：先 memory，再 forward。
+- `DnsNodeMgr::catalog()` 把同 origin 的多个 zone zone_handler 以数组形式 `upsert`。
 
-结果是同 origin 下可自然形成 ChainedAuthority，不做“硬合并单 Zone”，与 `plan.md` 一致。
+结果是同 origin 下可自然形成 ChainedZoneHandler，不做“硬合并单 Zone”，与 `plan.md` 一致。
 
 ### 11.5 `Zone::system()` 的作用边界
 
@@ -473,7 +473,7 @@ Node 发送 heartbeat 时：
 - `dns/tests.rs`：测试基建与辅助函数（构造环境、启动 `DnsNode`、DNS 查询断言工具）。
 - `dns/server.rs`：数据面与 server 行为主测试集。
 - `dns/node_mgr.rs`：聚合 catalog 的基本可用性测试。
-- `dns/zone.rs`：配置解析、记录转换、authority 装配测试。
+- `dns/zone.rs`：配置解析、记录转换、zone_handler 装配测试。
 
 > 说明：`system/*` 也有测试，但本轮文档按约定不展开。
 
@@ -504,7 +504,7 @@ Node 发送 heartbeat 时：
 - TOML `DnsConfig` 解析。
 - `ZoneConfig -> ZoneData -> Zone` 转换链。
 - record 解析/TTL 基本行为。
-- memory/forward authority 构建，以及通过 server 查询验证。
+- memory/forward zone_handler 构建，以及通过 server 查询验证。
 
 该测试更多是“模型与解析正确性”，不是策略执行链路完整验证。
 

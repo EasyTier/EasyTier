@@ -3,8 +3,8 @@ use std::{
     fmt::Debug,
     net::{IpAddr, Ipv4Addr, Ipv6Addr},
     sync::{
-        atomic::{AtomicBool, AtomicU32, Ordering}, Arc,
-        Weak,
+        Arc, Weak,
+        atomic::{AtomicBool, AtomicU32, Ordering},
     },
     time::{Duration, Instant, SystemTime},
 };
@@ -14,12 +14,12 @@ use cidr::{IpCidr, Ipv4Cidr, Ipv6Cidr};
 use crossbeam::atomic::AtomicCell;
 use dashmap::DashMap;
 use ordered_hash_map::OrderedHashMap;
-use parking_lot::{lock_api::RwLockUpgradableReadGuard, RwLock};
+use parking_lot::{RwLock, lock_api::RwLockUpgradableReadGuard};
 use petgraph::{
+    Directed,
     algo::dijkstra,
     graph::{Graph, NodeIndex},
     visit::{EdgeRef, IntoNodeReferences},
-    Directed,
 };
 use prefix_trie::PrefixMap;
 use prost::Message;
@@ -34,24 +34,24 @@ use crate::common::config::ConfigLoader;
 use crate::proto::utils::TransientDigest;
 use crate::{
     common::{
+        PeerId,
         config::NetworkIdentity,
         constants::EASYTIER_VERSION,
         global_ctx::{ArcGlobalCtx, GlobalCtxEvent},
         shrink_dashmap,
         stun::StunInfoCollectorTrait,
-        PeerId,
     },
     peers::route_trait::{Route, RouteInterfaceBox},
     proto::{
         acl::GroupIdentity,
         common::{Ipv4Inet, NatType, StunInfo},
         peer_rpc::{
-            route_foreign_network_infos, route_foreign_network_summary, sync_route_info_request::ConnInfo,
-            ForeignNetworkRouteInfoEntry, ForeignNetworkRouteInfoKey, OspfRouteRpc, OspfRouteRpcClientFactory,
-            OspfRouteRpcServer, PeerGroupInfo, PeerIdVersion, PeerIdentityType,
-            RouteForeignNetworkInfos, RouteForeignNetworkSummary, RoutePeerInfo, RoutePeerInfos,
-            SyncRouteInfoError, SyncRouteInfoRequest, SyncRouteInfoResponse,
-            TrustedCredentialPubkey,
+            ForeignNetworkRouteInfoEntry, ForeignNetworkRouteInfoKey, OspfRouteRpc,
+            OspfRouteRpcClientFactory, OspfRouteRpcServer, PeerGroupInfo, PeerIdVersion,
+            PeerIdentityType, RouteForeignNetworkInfos, RouteForeignNetworkSummary, RoutePeerInfo,
+            RoutePeerInfos, SyncRouteInfoError, SyncRouteInfoRequest, SyncRouteInfoResponse,
+            TrustedCredentialPubkey, route_foreign_network_infos, route_foreign_network_summary,
+            sync_route_info_request::ConnInfo,
         },
         rpc_types::{
             self,
@@ -62,13 +62,13 @@ use crate::{
 };
 
 use super::{
+    PeerPacketFilter,
     graph_algo::dijkstra_with_first_hop,
     peer_rpc::PeerRpcManager,
     route_trait::{
         DefaultRouteCostCalculator, ForeignNetworkRouteInfoMap, NextHopPolicy, RouteCostCalculator,
         RouteCostCalculatorInterface,
     },
-    PeerPacketFilter,
 };
 
 use atomic_shim::AtomicU64;
@@ -3681,8 +3681,8 @@ mod tests {
     use std::{
         collections::{BTreeSet, HashMap},
         sync::{
-            atomic::{AtomicU32, Ordering},
             Arc,
+            atomic::{AtomicU32, Ordering},
         },
         time::{Duration, SystemTime},
     };
@@ -3690,14 +3690,14 @@ mod tests {
     use super::{PeerRoute, REMOVE_DEAD_PEER_INFO_AFTER};
     use crate::{
         common::{
-            global_ctx::{tests::get_mock_global_ctx, GlobalCtxEvent, TrustedKeySource},
             PeerId,
+            global_ctx::{GlobalCtxEvent, TrustedKeySource, tests::get_mock_global_ctx},
         },
         connector::udp_hole_punch::tests::replace_stun_info_collector,
         peers::{
             create_packet_recv_chan,
             peer_manager::{PeerManager, RouteAlgoType},
-            peer_ospf_route::{PeerIdVersion, PeerRouteServiceImpl, FORCE_USE_CONN_LIST},
+            peer_ospf_route::{FORCE_USE_CONN_LIST, PeerIdVersion, PeerRouteServiceImpl},
             route_trait::{NextHopPolicy, Route, RouteCostCalculatorInterface, RouteInterface},
             tests::{connect_peer_manager, create_mock_peer_manager, wait_route_appear},
         },

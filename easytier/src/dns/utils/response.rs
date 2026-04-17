@@ -1,9 +1,9 @@
+use hickory_net::NetError;
 use hickory_proto::rr::Record;
 use hickory_proto::serialize::binary::BinEncoder;
-use hickory_server::authority::MessageResponse;
 use hickory_server::server::{ResponseHandler, ResponseInfo};
+use hickory_server::zone_handler::MessageResponse;
 use parking_lot::Mutex;
-use std::io;
 use std::sync::Arc;
 
 // ResponseWrapper for serializing DNS responses into a byte buffer.
@@ -41,11 +41,11 @@ impl ResponseHandler for ResponseHandle {
             impl RecordIter<'r>,
             impl RecordIter<'r>,
         >,
-    ) -> io::Result<ResponseInfo> {
-        let max_size = if let Some(edns) = response.get_edns() {
+    ) -> Result<ResponseInfo, NetError> {
+        let max_size = if let Some(edns) = response.edns() {
             edns.max_payload()
         } else {
-            hickory_proto::udp::MAX_RECEIVE_BUFFER_SIZE as u16
+            hickory_net::udp::MAX_RECEIVE_BUFFER_SIZE as u16
         };
 
         let mut inner = self.inner.lock();
@@ -54,6 +54,6 @@ impl ResponseHandler for ResponseHandle {
         encoder.set_max_size(max_size);
         response
             .destructive_emit(&mut encoder)
-            .map_err(io::Error::other)
+            .map_err(NetError::Proto)
     }
 }

@@ -2,9 +2,9 @@ use hickory_proto::rr::LowerName;
 use idna::AsciiDenyList;
 
 pub mod addr;
-pub mod authority;
 pub mod dirty;
 pub mod response;
+pub mod zone_handler;
 
 pub fn sanitize(name: &str) -> String {
     let dot = name.ends_with('.');

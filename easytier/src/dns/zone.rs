@@ -1,16 +1,16 @@
 use crate::common::dns::get_default_resolver_config;
 use crate::dns::utils::addr::NameServerAddr;
-use crate::dns::utils::authority::ArcAuthority;
+use crate::dns::utils::zone_handler::ArcZoneHandler;
 use crate::proto;
 use crate::proto::utils::RepeatedMessageModel;
+use hickory_net::runtime::TokioRuntimeProvider;
 use hickory_proto::rr::{LowerName, RecordSet, RrKey};
 use hickory_proto::serialize::txt::Parser;
 use hickory_resolver::config::ResolverOpts;
-use hickory_resolver::name_server::TokioConnectionProvider;
 use hickory_resolver::system_conf::read_system_conf;
-use hickory_server::authority::ZoneType;
-use hickory_server::store::forwarder::{ForwardAuthority, ForwardConfig};
-use hickory_server::store::in_memory::InMemoryAuthority;
+use hickory_server::store::forwarder::{ForwardConfig, ForwardZoneHandler};
+use hickory_server::store::in_memory::InMemoryZoneHandler;
+use hickory_server::zone_handler::{AxfrPolicy, ZoneType};
 use indexmap::IndexMap;
 use itertools::chain;
 use std::collections::BTreeMap;
@@ -30,7 +30,7 @@ impl Zone {
         let (config, opts) =
             read_system_conf().unwrap_or((get_default_resolver_config(), ResolverOpts::default()));
         let forward = ForwardConfig {
-            name_servers: config.name_servers().to_vec().into(),
+            name_servers: config.name_servers().to_vec(),
             options: Some(opts),
         };
         let mut zone = Self::new(".".parse().unwrap());
@@ -49,10 +49,13 @@ impl Zone {
         }
     }
 
-    pub fn create_memory_authority(&self) -> Option<ArcAuthority> {
+    pub fn create_memory_zone_handler(&self) -> Option<ArcZoneHandler> {
         (!self.records.is_empty()).then(|| {
-            let mut memory =
-                InMemoryAuthority::empty(self.origin.clone().into(), ZoneType::External, false);
+            let mut memory = InMemoryZoneHandler::<TokioRuntimeProvider>::empty(
+                self.origin.clone().into(),
+                ZoneType::External,
+                AxfrPolicy::default(),
+            );
 
             memory.records_get_mut().extend(
                 self.records
@@ -61,20 +64,20 @@ impl Zone {
                     .map(|(k, v)| (k, Arc::new(v))),
             );
 
-            Arc::new(memory) as ArcAuthority
+            Arc::new(memory) as ArcZoneHandler
         })
     }
 
-    pub fn create_forward_authority(&self) -> Option<ArcAuthority> {
+    pub fn create_forward_zone_handler(&self) -> Option<ArcZoneHandler> {
         self.forward.as_ref().and_then(|forward| {
-            ForwardAuthority::builder_with_config(
+            ForwardZoneHandler::builder_with_config(
                 forward.clone(),
-                TokioConnectionProvider::default(),
+                TokioRuntimeProvider::default(),
             )
             .build()
-            .inspect_err(|e| tracing::error!("failed to create forward authority: {:?}", e))
+            .inspect_err(|e| tracing::error!("failed to create forward zone_handler: {:?}", e))
             .ok()
-            .map(|f| Arc::new(f) as ArcAuthority)
+            .map(|f| Arc::new(f) as ArcZoneHandler)
         })
     }
 }
@@ -92,14 +95,14 @@ impl TryFrom<&proto::dns::ZoneData> for Zone {
             .parse()
             .map_err(|e| anyhow::anyhow!("failed to parse zone data: {e}"))?;
 
-        let servers = value
+        let name_servers = value
             .forwarders
             .iter()
             .map(TryInto::<NameServerAddr>::try_into)
             .map(|a| a.map(Into::into))
             .collect::<Result<Vec<_>, _>>()?;
-        let forward = (!servers.is_empty()).then_some(ForwardConfig {
-            name_servers: servers.into(),
+        let forward = (!name_servers.is_empty()).then_some(ForwardConfig {
+            name_servers,
             options: None,
         });
 
@@ -124,7 +127,7 @@ impl From<Zone> for proto::dns::ZoneData {
         let forwarders = value
             .forward
             .into_iter()
-            .flat_map(|f| f.name_servers.into_inner().into_iter())
+            .flat_map(|f| f.name_servers.into_iter())
             .map(Into::<NameServerAddr>::into)
             .map(Into::into)
             .collect();
@@ -149,11 +152,11 @@ impl ZoneGroup {
         })
     }
 
-    pub fn iter_authorities(&self) -> impl Iterator<Item = ArcAuthority> + use<'_> {
+    pub fn iter_zone_handlers(&self) -> impl Iterator<Item = ArcZoneHandler> + use<'_> {
         self.iter().flat_map(|zone| {
             chain(
-                zone.create_memory_authority(),
-                zone.create_forward_authority(),
+                zone.create_memory_zone_handler(),
+                zone.create_forward_zone_handler(),
             )
         })
     }
@@ -167,9 +170,9 @@ mod tests {
     use crate::proto::common::Url;
     use crate::proto::dns::ZoneData;
     use hickory_proto::op::{Message, ResponseCode};
-    use hickory_proto::rr::{RData, Record, RecordType, RrsetRecords, rdata};
-    use hickory_server::ServerFuture;
-    use hickory_server::authority::Catalog;
+    use hickory_proto::rr::{RData, Record, RecordType, RrsetRecords};
+    use hickory_server::Server;
+    use hickory_server::zone_handler::Catalog;
     use std::net::{Ipv4Addr, SocketAddr};
     use std::str::FromStr;
     use tokio::net::UdpSocket;
@@ -209,7 +212,7 @@ mod tests {
             .into_groups()
             .into_iter()
             .fold(Catalog::new(), |mut catalog, (origin, group)| {
-                catalog.upsert(origin, group.iter_authorities().collect());
+                catalog.upsert(origin, group.iter_zone_handlers().collect());
                 catalog
             })
     }
@@ -221,19 +224,19 @@ mod tests {
     ) -> anyhow::Result<(ResponseCode, Option<Message>)> {
         let request = new_request(name, record_type)?;
         let response = ResponseHandle::new(1024);
-        let info = catalog.lookup(&request, None, response.clone()).await;
+        let info = catalog.lookup(&request, None, 0, response.clone()).await;
         let message = response
             .into_inner()
             .map(|raw| Message::from_vec(&raw))
             .transpose()?;
-        Ok((info.response_code(), message))
+        Ok((info.response_code, message))
     }
 
     fn has_a_answer(message: &Message, expected: Ipv4Addr) -> bool {
         message
-            .answers()
+            .answers
             .iter()
-            .any(|record| matches!(record.data(), RData::A(addr) if *addr == rdata::a::A(expected)))
+            .any(|record| matches!(record.data, RData::A(addr) if *addr == expected))
     }
 
     async fn start_upstream_server() -> anyhow::Result<(SocketAddr, JoinHandle<()>)> {
@@ -246,13 +249,13 @@ mod tests {
         let mut catalog = Catalog::new();
         catalog.upsert(
             upstream.origin.clone(),
-            vec![upstream.create_memory_authority().unwrap()],
+            vec![upstream.create_memory_zone_handler().unwrap()],
         );
 
         let socket = UdpSocket::bind("127.0.0.1:0").await?;
         let addr = socket.local_addr()?;
 
-        let mut server = ServerFuture::new(catalog);
+        let mut server = Server::new(catalog);
         server.register_socket(socket);
         let handle = tokio::spawn(async move {
             let _ = server.block_until_done().await;
@@ -292,11 +295,11 @@ mod tests {
     }
 
     #[test]
-    fn empty_zone_creates_no_authority() -> anyhow::Result<()> {
+    fn empty_zone_creates_no_zone_handler() -> anyhow::Result<()> {
         let zone = Zone::try_from(&zone_data("empty.test", vec![], vec![]))?;
 
-        assert!(zone.create_memory_authority().is_none());
-        assert!(zone.create_forward_authority().is_none());
+        assert!(zone.create_memory_zone_handler().is_none());
+        assert!(zone.create_forward_zone_handler().is_none());
 
         Ok(())
     }
@@ -356,16 +359,16 @@ mod tests {
     }
 
     #[test]
-    fn zone_group_iter_authorities_returns_memory_and_forward() -> anyhow::Result<()> {
+    fn zone_group_iter_zone_handlers_returns_memory_and_forward() -> anyhow::Result<()> {
         let zones: ZoneGroup = vec![Zone::try_from(&zone_data(
-            "authority.test",
+            "zone-handler.test",
             vec!["@ IN A 10.0.0.10"],
             vec!["udp://1.1.1.1:53"],
         ))?]
         .into();
 
-        let authorities = zones.iter_authorities().collect::<Vec<_>>();
-        assert_eq!(authorities.len(), 2);
+        let zone_handlers = zones.iter_zone_handlers().collect::<Vec<_>>();
+        assert_eq!(zone_handlers.len(), 2);
 
         Ok(())
     }
@@ -375,11 +378,11 @@ mod tests {
         let zone = Zone::system();
         assert_eq!(zone.origin.to_string(), ".");
         assert!(zone.forward.is_some());
-        assert!(zone.create_forward_authority().is_some());
+        assert!(zone.create_forward_zone_handler().is_some());
     }
 
     #[tokio::test]
-    async fn catalog_lookup_returns_a_record_from_memory_authority() -> anyhow::Result<()> {
+    async fn catalog_lookup_returns_a_record_from_memory_zone_handler() -> anyhow::Result<()> {
         let zones: ZoneGroup = vec![Zone::try_from(&zone_data(
             "memory.test",
             vec!["@ IN A 10.20.30.40"],

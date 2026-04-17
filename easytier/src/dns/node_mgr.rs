@@ -8,7 +8,7 @@ use crate::proto::rpc_types;
 use crate::proto::rpc_types::controller::BaseController;
 use crate::proto::utils::TransientDigest;
 use anyhow::Error;
-use hickory_server::authority::Catalog;
+use hickory_server::zone_handler::Catalog;
 use itertools::Itertools;
 use moka::future::Cache;
 use std::collections::HashSet;
@@ -73,7 +73,7 @@ impl DnsNodeMgr {
         groups
             .into_iter()
             .fold(Catalog::new(), |mut catalog, (origin, zones)| {
-                catalog.upsert(origin.clone(), zones.iter_authorities().collect());
+                catalog.upsert(origin.clone(), zones.iter_zone_handlers().collect());
                 catalog
             })
     }
@@ -172,7 +172,7 @@ mod tests {
     };
     use crate::dns::utils::response::ResponseHandle;
     use hickory_proto::op::{Message, ResponseCode};
-    use hickory_proto::rr::{RData, RecordType, rdata};
+    use hickory_proto::rr::{RData, RecordType};
     use std::net::Ipv4Addr;
     use tokio::time::{Duration, sleep};
 
@@ -203,9 +203,12 @@ mod tests {
     async fn lookup_a_record(mgr: &DnsNodeMgr, name: &str) -> anyhow::Result<Message> {
         let request = new_request(name, RecordType::A)?;
         let response = ResponseHandle::new(512);
-        let info = mgr.catalog().lookup(&request, None, response.clone()).await;
+        let info = mgr
+            .catalog()
+            .lookup(&request, None, 0, response.clone())
+            .await;
 
-        assert_eq!(info.response_code(), ResponseCode::NoError);
+        assert_eq!(info.response_code, ResponseCode::NoError);
 
         let response = response.into_inner().expect("response should exist");
         Message::from_vec(&response).map_err(Into::into)
@@ -224,10 +227,10 @@ mod tests {
         let _ = send_heartbeat(&mgr, heartbeat_with_snapshot(id, snapshot)).await;
 
         let message = lookup_a_record(&mgr, "catalog.test.").await?;
-        assert!(message.answers().iter().any(|record| {
+        assert!(message.answers.iter().any(|record| {
             matches!(
-                record.data(),
-                RData::A(addr) if *addr == rdata::a::A(Ipv4Addr::new(10, 20, 30, 40))
+                record.data,
+                RData::A(addr) if *addr == Ipv4Addr::new(10, 20, 30, 40)
             )
         }));
 
@@ -255,16 +258,16 @@ mod tests {
         let message_a = lookup_a_record(&mgr, "node-a.test.").await?;
         let message_b = lookup_a_record(&mgr, "node-b.test.").await?;
 
-        assert!(message_a.answers().iter().any(|record| {
+        assert!(message_a.answers.iter().any(|record| {
             matches!(
-                record.data(),
-                RData::A(addr) if *addr == rdata::a::A(Ipv4Addr::new(10, 11, 12, 13))
+                record.data,
+                RData::A(addr) if *addr == Ipv4Addr::new(10, 11, 12, 13)
             )
         }));
-        assert!(message_b.answers().iter().any(|record| {
+        assert!(message_b.answers.iter().any(|record| {
             matches!(
-                record.data(),
-                RData::A(addr) if *addr == rdata::a::A(Ipv4Addr::new(10, 21, 22, 23))
+                record.data,
+                RData::A(addr) if *addr == Ipv4Addr::new(10, 21, 22, 23)
             )
         }));
 

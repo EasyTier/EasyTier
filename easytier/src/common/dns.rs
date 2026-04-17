@@ -3,10 +3,11 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
 use anyhow::Context;
-use hickory_proto::runtime::TokioRuntimeProvider;
-use hickory_proto::xfer::Protocol;
-use hickory_resolver::config::{LookupIpStrategy, NameServerConfig, ResolverConfig, ResolverOpts};
-use hickory_resolver::name_server::{GenericConnector, TokioConnectionProvider};
+use hickory_net::runtime::TokioRuntimeProvider;
+use hickory_proto::rr::RData;
+use hickory_resolver::config::{
+    ConnectionConfig, LookupIpStrategy, NameServerConfig, ResolverConfig, ResolverOpts,
+};
 use hickory_resolver::system_conf::read_system_conf;
 use hickory_resolver::{Resolver, TokioResolver};
 use once_cell::sync::Lazy;
@@ -15,36 +16,37 @@ use tokio::net::lookup_host;
 use super::error::Error;
 
 pub fn get_default_resolver_config() -> ResolverConfig {
-    let mut default_resolve_config = ResolverConfig::new();
+    let mut default_resolve_config = ResolverConfig::default();
     default_resolve_config.add_name_server(NameServerConfig::new(
-        "223.5.5.5:53".parse().unwrap(),
-        Protocol::Udp,
+        "223.5.5.5".parse().unwrap(),
+        true,
+        vec![ConnectionConfig::udp()],
     ));
     default_resolve_config.add_name_server(NameServerConfig::new(
-        "180.184.1.1:53".parse().unwrap(),
-        Protocol::Udp,
+        "180.184.1.1".parse().unwrap(),
+        true,
+        vec![ConnectionConfig::udp()],
     ));
     default_resolve_config
 }
 
 pub static ALLOW_USE_SYSTEM_DNS_RESOLVER: Lazy<AtomicBool> = Lazy::new(|| AtomicBool::new(true));
 
-pub static RESOLVER: Lazy<Arc<Resolver<GenericConnector<TokioRuntimeProvider>>>> =
-    Lazy::new(|| {
-        let system_cfg = read_system_conf();
-        let mut cfg = get_default_resolver_config();
-        let mut opt = ResolverOpts::default();
-        if let Ok(s) = system_cfg {
-            for ns in s.0.name_servers() {
-                cfg.add_name_server(ns.clone());
-            }
-            opt = s.1;
+pub static RESOLVER: Lazy<Arc<Resolver<TokioRuntimeProvider>>> = Lazy::new(|| {
+    let system_cfg = read_system_conf();
+    let mut cfg = get_default_resolver_config();
+    let mut opt = ResolverOpts::default();
+    if let Ok(s) = system_cfg {
+        for ns in s.0.name_servers() {
+            cfg.add_name_server(ns.clone());
         }
-        opt.ip_strategy = LookupIpStrategy::Ipv4AndIpv6;
-        let builder = TokioResolver::builder_with_config(cfg, TokioConnectionProvider::default())
-            .with_options(opt);
-        Arc::new(builder.build())
-    });
+        opt = s.1;
+    }
+    opt.ip_strategy = LookupIpStrategy::Ipv4AndIpv6;
+    let builder =
+        TokioResolver::builder_with_config(cfg, TokioRuntimeProvider::default()).with_options(opt);
+    Arc::new(builder.build().unwrap())
+});
 
 pub async fn resolve_txt_record(domain_name: &str) -> Result<String, Error> {
     let r = RESOLVER.clone();
@@ -53,12 +55,16 @@ pub async fn resolve_txt_record(domain_name: &str) -> Result<String, Error> {
         .await
         .with_context(|| format!("txt_lookup failed, domain_name: {}", domain_name))?;
 
-    let txt_record = response
+    let txt_data = response
+        .answers()
         .iter()
+        .filter_map(|record| match record.data {
+            RData::TXT(ref txt) => Some(txt),
+            _ => None,
+        })
         .next()
         .with_context(|| format!("no txt record found, domain_name: {}", domain_name))?;
 
-    let txt_data = String::from_utf8_lossy(&txt_record.txt_data()[0]);
     tracing::info!(?txt_data, ?domain_name, "get txt record");
 
     Ok(txt_data.to_string())

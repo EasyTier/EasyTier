@@ -12,13 +12,12 @@ use crate::tunnel::packet_def::ZCPacket;
 use crate::tunnel::tcp::TcpTunnelListener;
 use crate::utils::task::AsyncRuntime;
 use derivative::Derivative;
-use hickory_proto::serialize::binary::BinDecodable;
-use hickory_proto::xfer::Protocol;
-use hickory_server::authority::MessageRequest;
+use hickory_net::runtime::{Time, TokioTime};
+use hickory_net::xfer::Protocol;
 use hickory_server::{
-    ServerFuture,
-    authority::Catalog,
+    Server,
     server::{Request, RequestHandler, ResponseHandler, ResponseInfo},
+    zone_handler::Catalog,
 };
 use parking_lot::RwLock;
 use pnet::packet::icmp::{IcmpTypes, MutableIcmpPacket};
@@ -55,7 +54,7 @@ impl DynamicCatalog {
 
 #[async_trait::async_trait]
 impl RequestHandler for DynamicCatalog {
-    async fn handle_request<R: ResponseHandler>(
+    async fn handle_request<R: ResponseHandler, T: Time>(
         &self,
         request: &Request,
         response_handle: R,
@@ -63,7 +62,7 @@ impl RequestHandler for DynamicCatalog {
         self.inner
             .read()
             .await
-            .handle_request(request, response_handle)
+            .handle_request::<_, T>(request, response_handle)
             .await
     }
 }
@@ -87,6 +86,7 @@ pub struct DnsServer {
 }
 
 const DNS_SERVER_LISTENER_TCP_TIMEOUT: Duration = Duration::from_secs(5);
+const DNS_SERVER_LISTENER_TCP_BUFFER_SIZE: usize = 32;
 
 impl DnsServer {
     pub fn new(
@@ -187,15 +187,18 @@ impl DnsServer {
 
         let runtime = runtime.get_or_insert_default();
 
-        let mut server = ServerFuture::new(self.catalog.clone());
+        let mut server = Server::new(self.catalog.clone());
         for listener in &listeners {
             let addr = listener.addr;
             tracing::info!(?addr, "binding listener");
             if let Err(error) = match listener.protocol {
-                Protocol::Tcp => bind()
-                    .addr(addr)
-                    .call()
-                    .map(|s| server.register_listener(s, DNS_SERVER_LISTENER_TCP_TIMEOUT)),
+                Protocol::Tcp => bind().addr(addr).call().map(|s| {
+                    server.register_listener(
+                        s,
+                        DNS_SERVER_LISTENER_TCP_TIMEOUT,
+                        DNS_SERVER_LISTENER_TCP_BUFFER_SIZE,
+                    )
+                }),
                 Protocol::Udp => bind().addr(addr).call().map(|s| server.register_socket(s)),
                 _ => unimplemented!(),
             } {
@@ -395,11 +398,12 @@ impl DnsServer {
             (
                 src_port,
                 dst_port,
-                Request::new(
-                    MessageRequest::from_bytes(request_payload).ok()?,
+                Request::from_bytes(
+                    request_payload.to_vec(),
                     SocketAddr::from(SocketAddrV4::new(src_ip, src_port)),
                     Protocol::Udp,
-                ),
+                )
+                .ok()?,
                 request_payload.len(),
             )
         };
@@ -412,7 +416,7 @@ impl DnsServer {
             let response = ResponseHandle::new(512);
 
             self.catalog
-                .handle_request(&request, response.clone())
+                .handle_request::<_, TokioTime>(&request, response.clone())
                 .await;
 
             response.into_inner()?
@@ -480,15 +484,15 @@ mod tests {
     use crate::peers::tests::create_mock_peer_manager;
     use crate::proto::dns::DnsNodeMgrRpc;
     use crate::proto::rpc_types::controller::BaseController;
-    use hickory_client::client::{Client, ClientHandle};
+    use hickory_net::client::{Client, ClientHandle};
+    use hickory_net::runtime::TokioRuntimeProvider;
+    use hickory_net::udp::UdpClientStream;
     use hickory_proto::op::{Message, MessageType, OpCode, Query};
     use hickory_proto::rr::{DNSClass, Name, RData, Record, RecordType, rdata};
-    use hickory_proto::runtime::TokioRuntimeProvider;
     use hickory_proto::serialize::binary::BinEncodable;
-    use hickory_proto::udp::UdpClientStream;
-    use hickory_server::authority::Catalog;
-    use hickory_server::authority::ZoneType;
-    use hickory_server::store::in_memory::InMemoryAuthority;
+    use hickory_server::store::in_memory::InMemoryZoneHandler;
+    use hickory_server::zone_handler::ZoneType;
+    use hickory_server::zone_handler::{AxfrPolicy, Catalog};
     use pnet::packet::icmp::{IcmpPacket, IcmpTypes, MutableIcmpPacket};
     use pnet::packet::ip::IpNextHeaderProtocols;
     use pnet::packet::ipv4::{Ipv4Packet, MutableIpv4Packet};
@@ -504,7 +508,11 @@ mod tests {
     /// Build a `Catalog` containing a single A record: `test.example.com -> 1.2.3.4`.
     fn build_test_catalog() -> Catalog {
         let origin = Name::from_str("example.com.").unwrap();
-        let mut authority = InMemoryAuthority::empty(origin.clone(), ZoneType::Primary, false);
+        let mut zone_handler = InMemoryZoneHandler::<TokioRuntimeProvider>::empty(
+            origin.clone(),
+            ZoneType::Primary,
+            AxfrPolicy::default(),
+        );
 
         let record = Record::from_rdata(
             Name::from_str("test.example.com.").unwrap(),
@@ -512,16 +520,18 @@ mod tests {
             RData::A(rdata::a::A(Ipv4Addr::new(1, 2, 3, 4))),
         );
         let rr_key =
-            hickory_proto::rr::RrKey::new(record.name().clone().into(), record.record_type());
+            hickory_proto::rr::RrKey::new(record.name.clone().into(), record.record_type());
         let mut rr_set =
-            hickory_proto::rr::RecordSet::new(record.name().clone(), record.record_type(), 0);
+            hickory_proto::rr::RecordSet::new(record.name.clone(), record.record_type(), 0);
         rr_set.insert(record, 0);
-        authority.records_get_mut().insert(rr_key, Arc::new(rr_set));
+        zone_handler
+            .records_get_mut()
+            .insert(rr_key, Arc::new(rr_set));
 
         let mut catalog = Catalog::new();
         catalog.upsert(
             origin.into(),
-            vec![Arc::new(authority) as Arc<dyn hickory_server::authority::AuthorityObject>],
+            vec![Arc::new(zone_handler) as Arc<dyn hickory_server::zone_handler::ZoneHandler>],
         );
         catalog
     }
@@ -578,11 +588,8 @@ mod tests {
 
     /// Build a minimal DNS query message for `name` and encode it to bytes.
     fn build_dns_query_bytes(name: &str) -> Vec<u8> {
-        let mut msg = Message::new();
-        msg.set_id(0x1234);
-        msg.set_message_type(MessageType::Query);
-        msg.set_op_code(OpCode::Query);
-        msg.set_recursion_desired(true);
+        let mut msg = Message::new(0x1234, MessageType::Query, OpCode::Query);
+        msg.metadata.recursion_desired = true;
         let mut query = Query::new();
         query.set_name(Name::from_str(name).unwrap());
         query.set_query_type(RecordType::A);
@@ -796,17 +803,17 @@ mod tests {
         );
 
         let dns_reply = Message::from_vec(udp_reply.payload()).unwrap();
-        assert_eq!(dns_reply.id(), 0x1234);
+        assert_eq!(dns_reply.id, 0x1234);
         assert!(
-            !dns_reply.answers().is_empty(),
+            !dns_reply.answers.is_empty(),
             "DNS reply should contain answers"
         );
 
-        let answer = &dns_reply.answers()[0];
-        if let RData::A(a) = answer.data() {
+        let answer = &dns_reply.answers[0];
+        if let RData::A(a) = answer.data {
             assert_eq!(a.0, Ipv4Addr::new(1, 2, 3, 4));
         } else {
-            panic!("expected A record in answer, got {:?}", answer.data());
+            panic!("expected A record in answer, got {:?}", answer.data);
         }
     }
 
@@ -814,7 +821,7 @@ mod tests {
     /// send a query with a `hickory_client`, and verify the response.
     #[tokio::test]
     async fn should_resolve_record_via_real_udp_listener() {
-        use hickory_server::ServerFuture;
+        use hickory_server::Server;
         use tokio::net::UdpSocket;
         use tokio::time::timeout;
 
@@ -825,7 +832,7 @@ mod tests {
         let socket = UdpSocket::bind("127.0.0.1:0").await.unwrap();
         let addr = socket.local_addr().unwrap();
 
-        let mut server = ServerFuture::new(catalog);
+        let mut server = Server::new(catalog);
         server.register_socket(socket);
 
         let shutdown_token = server.shutdown_token().clone();
@@ -834,15 +841,10 @@ mod tests {
         });
 
         // Send a real DNS query using hickory_client.
-        let conn = UdpClientStream::builder(addr, TokioRuntimeProvider::default()).build();
-        let (mut client, bg) = timeout(Duration::from_secs(2), Client::connect(conn))
-            .await
-            .expect("client connect timeout")
-            .expect("client connect failed");
+        let stream = UdpClientStream::builder(addr, TokioRuntimeProvider::default()).build();
+        let (mut client, bg) = Client::<TokioRuntimeProvider>::from_sender(stream);
 
-        tokio::spawn(async move {
-            bg.await.ok();
-        });
+        tokio::spawn(bg);
 
         let response = timeout(
             Duration::from_secs(2),
@@ -856,12 +858,12 @@ mod tests {
         .expect("query timeout")
         .expect("query failed");
 
-        assert!(!response.answers().is_empty(), "should get answers");
-        let a_record = &response.answers()[0];
-        if let RData::A(a) = a_record.data() {
+        assert!(!response.answers.is_empty(), "should get answers");
+        let a_record = &response.answers[0];
+        if let RData::A(a) = a_record.data {
             assert_eq!(a.0, Ipv4Addr::new(1, 2, 3, 4));
         } else {
-            panic!("expected A record, got {:?}", a_record.data());
+            panic!("expected A record, got {:?}", a_record.data);
         }
 
         // Shutdown the server.
@@ -1028,14 +1030,9 @@ mod tests {
             .await
             .unwrap();
 
-        let conn = UdpClientStream::builder(good_addr, TokioRuntimeProvider::default()).build();
-        let (mut client, bg) = timeout(Duration::from_secs(2), Client::connect(conn))
-            .await
-            .expect("client connect timeout")
-            .expect("client connect failed");
-        tokio::spawn(async move {
-            let _ = bg.await;
-        });
+        let stream = UdpClientStream::builder(good_addr, TokioRuntimeProvider::default()).build();
+        let (mut client, bg) = Client::<TokioRuntimeProvider>::from_sender(stream);
+        tokio::spawn(bg);
 
         let response = timeout(
             Duration::from_secs(2),
@@ -1049,7 +1046,7 @@ mod tests {
         .expect("query timeout")
         .expect("query failed");
 
-        assert!(!response.answers().is_empty());
+        assert!(!response.answers.is_empty());
 
         if let Some(runtime) = runtime.take() {
             let _ = runtime.stop(None).await;
