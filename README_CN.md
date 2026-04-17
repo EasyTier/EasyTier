@@ -11,7 +11,7 @@
 
 [简体中文](/README_CN.md) | [English](/README.md)
 
-> ✨ 一个由 Rust 和 Tokio 驱动的简单、安全、去中心化的异地组网方案
+> ✨ 一个由 Rust 和 Tokio 驱动的简单、安全、去中心化的异地组网方案。
 
 <p align="center">
 <img src="assets/config-page.png" width="300" alt="配置页面">
