@@ -191,8 +191,10 @@ jobs:
 
       - name: Build (MIPS)
         if: ${{ contains(matrix.TARGET, 'mips') }}
+        env:
+          RUSTC_BOOTSTRAP: 1
         run: |
-          cargo +nightly-2026-02-02 build -r --target $TARGET -Z build-std=std,panic_abort --package=easytier --features=jemalloc
+          cargo build -r --target $TARGET -Z build-std=std,panic_abort --package=easytier --features=jemalloc
 
       - name: Compress
         run: |
