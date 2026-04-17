@@ -239,15 +239,11 @@ impl StunClient {
         let mut mapped_addr = None;
         for x in msg.attributes() {
             match x {
-                Attribute::MappedAddress(addr) => {
-                    if mapped_addr.is_none() {
-                        let _ = mapped_addr.insert(addr.address());
-                    }
+                Attribute::MappedAddress(addr) if mapped_addr.is_none() => {
+                    let _ = mapped_addr.insert(addr.address());
                 }
-                Attribute::XorMappedAddress(addr) => {
-                    if mapped_addr.is_none() {
-                        let _ = mapped_addr.insert(addr.address());
-                    }
+                Attribute::XorMappedAddress(addr) if mapped_addr.is_none() => {
+                    let _ = mapped_addr.insert(addr.address());
                 }
                 _ => {}
             }
@@ -259,15 +255,11 @@ impl StunClient {
         let mut changed_addr = None;
         for x in msg.attributes() {
             match x {
-                Attribute::OtherAddress(m) => {
-                    if changed_addr.is_none() {
-                        let _ = changed_addr.insert(m.address());
-                    }
+                Attribute::OtherAddress(m) if changed_addr.is_none() => {
+                    let _ = changed_addr.insert(m.address());
                 }
-                Attribute::ChangedAddress(m) => {
-                    if changed_addr.is_none() {
-                        let _ = changed_addr.insert(m.address());
-                    }
+                Attribute::ChangedAddress(m) if changed_addr.is_none() => {
+                    let _ = changed_addr.insert(m.address());
                 }
                 _ => {}
             }
@@ -714,15 +706,11 @@ impl TcpStunClient {
         let mut mapped_addr = None;
         for x in msg.attributes() {
             match x {
-                Attribute::MappedAddress(addr) => {
-                    if mapped_addr.is_none() {
-                        let _ = mapped_addr.insert(addr.address());
-                    }
+                Attribute::MappedAddress(addr) if mapped_addr.is_none() => {
+                    let _ = mapped_addr.insert(addr.address());
                 }
-                Attribute::XorMappedAddress(addr) => {
-                    if mapped_addr.is_none() {
-                        let _ = mapped_addr.insert(addr.address());
-                    }
+                Attribute::XorMappedAddress(addr) if mapped_addr.is_none() => {
+                    let _ = mapped_addr.insert(addr.address());
                 }
                 _ => {}
             }

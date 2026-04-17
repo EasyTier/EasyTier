@@ -16,7 +16,6 @@ use crate::{
 };
 use anyhow::Context;
 use base64::{Engine as _, prelude::BASE64_STANDARD};
-use cfg_if::cfg_if;
 use clap::ValueEnum;
 use clap::builder::PossibleValue;
 use serde::{Deserialize, Serialize};
@@ -107,10 +106,9 @@ impl ValueEnum for EncryptionAlgorithm {
 #[allow(clippy::derivable_impls)]
 impl Default for EncryptionAlgorithm {
     fn default() -> Self {
-        cfg_if! {
-            if #[cfg(any(feature = "aes-gcm", feature = "wireguard", feature = "openssl-crypto"))] {
-                EncryptionAlgorithm::AesGcm
-            } else {
+        cfg_select! {
+            any(feature = "aes-gcm", feature = "wireguard", feature = "openssl-crypto") => EncryptionAlgorithm::AesGcm,
+            _ => {
                 crate::common::log::warn!("no AEAD encryption algorithm is available, using INSECURE XOR");
                 EncryptionAlgorithm::Xor
             }

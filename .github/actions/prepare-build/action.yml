@@ -52,17 +52,15 @@ runs:
 
     - uses: actions-rust-lang/setup-rust-toolchain@v1
       with:
-        toolchain: stable
+        toolchain: 1.95
         target: ${{ !contains(inputs.target, 'mips') && inputs.target || '' }}
+        components: ${{ contains(inputs.target, 'mips') && 'rust-src' || '' }}
         cache: false
         rustflags: ''
 
     - name: Install Rust (MIPS)
       if: ${{ contains(inputs.target, 'mips') }}
       run: |
-        rustup toolchain install nightly-2026-02-02-x86_64-unknown-linux-gnu
-        rustup component add rust-src --toolchain nightly-2026-02-02-x86_64-unknown-linux-gnu
-        
         MUSL_TARGET=${{ inputs.target }}sf
         mkdir -p ./musl_gcc
         wget --inet4-only -c https://github.com/cross-tools/musl-cross/releases/download/20250520/${MUSL_TARGET}.tar.xz -P ./musl_gcc/

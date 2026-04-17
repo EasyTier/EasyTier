@@ -4413,9 +4413,9 @@ mod tests {
 
         // find the smallest peer_id, which should be a center node
         let mut all_route = [r_a.clone(), r_b.clone(), r_c.clone(), r_d.clone()];
-        all_route.sort_by(|a, b| a.my_peer_id.cmp(&b.my_peer_id));
+        all_route.sort_by_key(|r| r.my_peer_id);
         let mut all_peer_mgr = [p_a.clone(), p_b.clone(), p_c.clone(), p_d.clone()];
-        all_peer_mgr.sort_by_key(|a| a.my_peer_id());
+        all_peer_mgr.sort_by_key(|p| p.my_peer_id());
 
         wait_for_condition(
             || async { all_route[0].service_impl.sessions.len() == 3 },

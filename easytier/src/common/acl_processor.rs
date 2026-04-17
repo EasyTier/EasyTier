@@ -345,7 +345,7 @@ impl AclProcessor {
                     .collect::<Vec<_>>();
 
                 // Sort by priority (higher priority first)
-                rules.sort_by(|a, b| b.priority.cmp(&a.priority));
+                rules.sort_by_key(|r| std::cmp::Reverse(r.priority));
 
                 match chain.chain_type() {
                     ChainType::Inbound => inbound_rules.extend(rules),
