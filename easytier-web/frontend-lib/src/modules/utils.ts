@@ -68,18 +68,27 @@ export interface DeviceInfo {
     running_network_instances?: Array<string>;
     machine_id: string;
     location: Location | undefined;
+    is_online: boolean;
 }
 
 export function buildDeviceInfo(device: any): DeviceInfo {
+    const machineId = device.info?.machine_id
+        ? UuidToStr(device.info.machine_id)
+        : (device.machine_id ? UuidToStr(device.machine_id) : 'unknown-machine');
+    const runningNetworkInstances = device.info?.running_network_instances
+        ? device.info.running_network_instances.map((instance: any) => UuidToStr(instance))
+        : [];
+
     let dev_info: DeviceInfo = {
-        hostname: device.info?.hostname,
-        public_ip: device.client_url,
-        running_network_instances: device.info?.running_network_instances.map((instance: any) => UuidToStr(instance)),
-        running_network_count: device.info?.running_network_instances.length,
-        report_time: device.info?.report_time,
-        easytier_version: device.info?.easytier_version,
-        machine_id: UuidToStr(device.info?.machine_id),
+        hostname: device.info?.hostname || machineId,
+        public_ip: device.client_url || '-',
+        running_network_instances: runningNetworkInstances,
+        running_network_count: runningNetworkInstances.length,
+        report_time: device.info?.report_time || '-',
+        easytier_version: device.info?.easytier_version || '-',
+        machine_id: machineId,
         location: device.location,
+        is_online: !!device.info,
     };
 
     return dev_info;

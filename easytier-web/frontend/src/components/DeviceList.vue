@@ -21,12 +21,16 @@ const props = defineProps({
 
 const detailPopover = ref();
 const selectedDevice = ref<Utils.DeviceInfo | null>(null);
+const expandedDeviceIds = ref<Set<string>>(new Set());
 // 从 localStorage 读取显示详情状态，默认为 false
 const showDetailedView = ref(localStorage.getItem('deviceList.showDetailedView') === 'true');
 
 // 监听显示详情状态变化，保存到 localStorage
 watch(showDetailedView, (newValue) => {
     localStorage.setItem('deviceList.showDetailedView', newValue.toString());
+    if (newValue) {
+        expandedDeviceIds.value = new Set();
+    }
 });
 
 const api = props.api;
@@ -99,6 +103,23 @@ const handleDeviceManagement = (device: Utils.DeviceInfo) => {
 const showDeviceDetails = (device: Utils.DeviceInfo, event: Event) => {
     selectedDevice.value = device;
     detailPopover.value.toggle(event);
+};
+
+const toggleCardDetails = (device: Utils.DeviceInfo) => {
+    if (showDetailedView.value) {
+        return;
+    }
+    const nextExpanded = new Set(expandedDeviceIds.value);
+    if (nextExpanded.has(device.machine_id)) {
+        nextExpanded.delete(device.machine_id);
+    } else {
+        nextExpanded.add(device.machine_id);
+    }
+    expandedDeviceIds.value = nextExpanded;
+};
+
+const isCardExpanded = (device: Utils.DeviceInfo) => {
+    return showDetailedView.value || expandedDeviceIds.value.has(device.machine_id);
 };
 
 // 检查是否为桌面设备
@@ -196,11 +217,27 @@ const handleResize = () => {
     flex-direction: column;
     position: relative;
     overflow: hidden;
+    cursor: pointer;
 }
 
 .device-card:hover {
     transform: translateY(-2px);
     box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+}
+
+.device-card.expanded {
+    border-color: var(--primary-color, #3b82f6);
+    box-shadow: 0 0 0 1px color-mix(in srgb, var(--primary-color, #3b82f6) 35%, transparent);
+}
+
+.expand-icon {
+    font-size: 0.8rem;
+    color: var(--text-color-secondary, #64748b);
+    transition: transform 0.2s ease;
+}
+
+.expand-icon.expanded {
+    transform: rotate(180deg);
 }
 
 .card-header {
@@ -442,6 +479,11 @@ const handleResize = () => {
         box-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.3);
     }
 
+    :deep(.device-card.expanded) {
+        border-color: var(--primary-color, #60a5fa);
+        box-shadow: 0 0 0 1px color-mix(in srgb, var(--primary-color, #60a5fa) 40%, transparent);
+    }
+
     :deep(.card-header) {
         color: var(--text-color, #f1f5f9);
     }
@@ -666,6 +708,45 @@ const handleResize = () => {
     font-size: 0.9rem;
 }
 
+.ip-icon {
+    color: var(--blue-500);
+    font-size: 0.85rem;
+}
+
+.ip-text {
+    font-size: 0.8rem;
+    line-height: 1.2rem;
+    color: var(--text-color-secondary, #64748b);
+}
+
+.status-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+    padding: 0.1rem 0.5rem;
+    border-radius: 9999px;
+    font-size: 0.72rem;
+    font-weight: 600;
+    line-height: 1.2;
+}
+
+.status-badge.online {
+    background-color: #dcfce7;
+    color: #166534;
+}
+
+.status-badge.offline {
+    background-color: #f1f5f9;
+    color: #475569;
+}
+
+.status-dot {
+    width: 0.42rem;
+    height: 0.42rem;
+    border-radius: 9999px;
+    background-color: currentColor;
+}
+
 .location-text {
     font-size: 0.875rem;
     line-height: 1.25rem;
@@ -688,6 +769,24 @@ const handleResize = () => {
 
     .location-icon {
         color: var(--pink-400);
+    }
+
+    .ip-icon {
+        color: var(--blue-300);
+    }
+
+    .ip-text {
+        color: var(--text-color-secondary, #cbd5e1);
+    }
+
+    .status-badge.online {
+        background-color: rgba(34, 197, 94, 0.25);
+        color: #bbf7d0;
+    }
+
+    .status-badge.offline {
+        background-color: rgba(148, 163, 184, 0.25);
+        color: #cbd5e1;
     }
 }
 </style>
@@ -743,20 +842,35 @@ const handleResize = () => {
         <div v-if="deviceList !== undefined">
             <!-- 卡片视图 (适用于所有屏幕尺寸) -->
             <div class="card-container">
-                <div v-for="device in sortedDeviceList" :key="device.machine_id" class="device-card">
+                <div v-for="device in sortedDeviceList" :key="device.machine_id"
+                    :class="['device-card', { expanded: isCardExpanded(device) }]" @click="toggleCardDetails(device)">
                     <!-- 卡片头部 -->
                     <div class="card-header">
                         <!-- 上部区域：设备名称和版本徽章 -->
                         <div class="flex justify-between items-center mb-2">
-                            <!-- 设备名称 -->
-                            <div class="font-semibold truncate card-title" :title="device.hostname">{{ device.hostname
-                            }}
+                            <div class="flex items-center gap-2 min-w-0 max-w-[70%]">
+                                <!-- 设备名称 -->
+                                <div class="font-semibold truncate card-title" :title="device.hostname">{{
+                                    device.hostname }}</div>
+                                <i class="pi pi-chevron-down expand-icon"
+                                    :class="{ expanded: isCardExpanded(device) }"></i>
                             </div>
 
                             <!-- 版本徽章 -->
                             <div class="text-xs version-badge" v-tooltip="`EasyTier ${device.easytier_version}`">
-                                v{{ device.easytier_version.split('-')[0] }}
+                                {{ device.easytier_version === '-' ? '-' : `v${device.easytier_version.split('-')[0]}` }}
                             </div>
+                        </div>
+
+                        <div class="flex justify-between items-center mb-2 gap-2">
+                            <div class="flex items-center gap-2 min-w-0 max-w-[70%]" :title="device.public_ip">
+                                <i class="pi pi-globe ip-icon"></i>
+                                <span class="ip-text truncate">{{ device.public_ip }}</span>
+                            </div>
+                            <span :class="['status-badge', device.is_online ? 'online' : 'offline']">
+                                <span class="status-dot"></span>
+                                {{ device.is_online ? t('web.device.online') : t('web.device.offline') }}
+                            </span>
                         </div>
 
                         <!-- 下部区域：IP地址和操作按钮 -->
@@ -794,17 +908,18 @@ const handleResize = () => {
                                 <!-- 详情按钮 -->
                                 <Button v-tooltip="t('web.device.show_detailed_view')" icon="pi pi-info-circle"
                                     severity="info" text rounded class="w-9 h-9" v-if="!showDetailedView"
-                                    @click="showDeviceDetails(device, $event)" />
+                                    @click.stop="showDeviceDetails(device, $event)" />
 
                                 <!-- 设置按钮 -->
-                                <Button icon="pi pi-cog" @click="handleDeviceManagement(device)" severity="secondary"
-                                    rounded class="w-9 h-9" :title="`Manage ${device.hostname}`" />
+                                <Button icon="pi pi-cog" @click.stop="handleDeviceManagement(device)"
+                                    severity="secondary" rounded class="w-9 h-9"
+                                    :title="`Manage ${device.hostname}`" />
                             </div>
                         </div>
                     </div>
 
                     <!-- 详情区域 - 当开启详情显示时展示 -->
-                    <div v-if="showDetailedView" class="card-details border-t border-gray-200 fade-in">
+                    <div v-if="isCardExpanded(device)" class="card-details border-t border-gray-200 fade-in">
                         <DeviceDetails :device="device" containerClass="card-details-content" :compact="true" />
                     </div>
                 </div>
