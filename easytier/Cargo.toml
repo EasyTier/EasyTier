@@ -56,7 +56,7 @@ itertools = "0.14.0"
 
 strum = { version = "0.27.2", features = ["derive"] }
 
-gethostname = "1.1.0"
+hostname = "0.4.2"
 
 futures = { version = "0.3", features = ["bilock", "unstable"] }
 

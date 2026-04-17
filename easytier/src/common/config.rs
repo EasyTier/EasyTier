@@ -6,16 +6,15 @@ use std::{
 };
 
 use anyhow::Context;
-use base64::{Engine as _, prelude::BASE64_STANDARD};
-use clap::ValueEnum;
+use base64::{prelude::BASE64_STANDARD, Engine as _};
 use clap::builder::PossibleValue;
+use clap::ValueEnum;
 use serde::{Deserialize, Serialize};
 use strum::{Display, EnumString, VariantArray};
 use tokio::io::AsyncReadExt as _;
 
 use crate::{
     common::stun::StunInfoCollector,
-    instance::dns_server::DEFAULT_ET_DNS_ZONE,
     proto::{
         acl::Acl,
         common::{CompressionAlgoPb, PortForwardConfigPb, SecureModeConfig, SocketType},
@@ -570,26 +569,22 @@ impl ConfigLoader for TomlConfigLoader {
     }
 
     fn get_hostname(&self) -> String {
-        let hostname = self.config.lock().unwrap().hostname.clone();
-
-        match hostname {
-            Some(hostname) => {
-                let hostname = hostname
-                    .chars()
+        let hostname = self
+            .config
+            .lock()
+            .unwrap()
+            .hostname
+            .clone()
+            .map(|h| {
+                h.chars()
                     .filter(|c| !c.is_control())
                     .take(32)
-                    .collect::<String>();
+                    .collect::<String>()
+            })
+            .filter(|h| !h.is_empty());
 
-                if !hostname.is_empty() {
-                    self.set_hostname(Some(hostname.clone()));
-                    hostname
-                } else {
-                    self.set_hostname(None);
-                    gethostname::gethostname().to_string_lossy().to_string()
-                }
-            }
-            None => gethostname::gethostname().to_string_lossy().to_string(),
-        }
+        self.set_hostname(hostname.clone());
+        hostname.unwrap_or_else(|| hostname::get().unwrap_or_default().to_string_lossy().into_owned())
     }
 
     fn set_hostname(&self, name: Option<String>) {

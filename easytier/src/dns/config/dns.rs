@@ -6,7 +6,6 @@ use crate::dns::utils::addr::NameServerAddrGroup;
 use crate::dns::utils::parse;
 use crate::proto::dns::GetExportConfigResponse;
 use derivative::Derivative;
-use gethostname::gethostname;
 use hickory_proto::rr::{LowerName, Name};
 use hickory_proto::xfer::Protocol;
 use serde::{Deserialize, Deserializer, Serialize};
@@ -52,7 +51,7 @@ impl DnsConfig {
 impl DnsConfig {
     pub fn get_name(&self) -> LowerName {
         if self.name.is_empty() {
-            parse(gethostname().to_string_lossy().as_ref())
+            parse(hostname::get().unwrap_or_default().to_string_lossy().as_ref())
         } else {
             self.name.clone()
         }
