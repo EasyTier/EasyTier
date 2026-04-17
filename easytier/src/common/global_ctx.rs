@@ -1,5 +1,12 @@
+use arc_swap::ArcSwap;
+use crossbeam::atomic::AtomicCell;
+use dashmap::DashMap;
+use hmac::{Hmac, Mac};
+use sha2::Sha256;
+use socket2::Protocol;
+use std::sync::RwLock;
 use std::{
-    collections::{HashMap, hash_map::DefaultHasher},
+    collections::{hash_map::DefaultHasher, HashMap},
     hash::Hasher,
     iter,
     net::{IpAddr, SocketAddr},
@@ -7,15 +14,12 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use arc_swap::ArcSwap;
-use dashmap::DashMap;
-
 use super::{
-    PeerId,
     config::{ConfigLoader, Flags},
     netns::NetNS,
     network::IPCollector,
     stun::{StunInfoCollector, StunInfoCollectorTrait},
+    PeerId,
 };
 #[cfg(feature = "magic-dns")]
 use crate::dns::{
@@ -37,11 +41,6 @@ use crate::{
     rpc_service::protected_port,
     tunnel::matches_protocol,
 };
-use crossbeam::atomic::AtomicCell;
-use hmac::{Hmac, Mac};
-use parking_lot::RwLock;
-use sha2::Sha256;
-use socket2::Protocol;
 
 pub type NetworkIdentity = crate::common::config::NetworkIdentity;
 
@@ -684,11 +683,11 @@ impl GlobalCtx {
 #[cfg(feature = "magic-dns")]
 impl DnsGlobalCtxExt for GlobalCtx {
     fn dns_server(&self) -> Option<Arc<DnsServer>> {
-        self.dns_server.read().clone()
+        self.dns_server.read().unwrap().clone()
     }
 
     fn set_dns_server(&self, dns: Option<Arc<DnsServer>>) {
-        *self.dns_server.write() = dns;
+        *self.dns_server.write().unwrap() = dns;
     }
 
     fn dns_self_zone(&self) -> crate::dns::config::zone::ZoneConfig {
