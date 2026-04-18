@@ -2503,7 +2503,7 @@ impl PeerRouteServiceImpl {
             self.update_peer_info_last_update();
         }
 
-        my_peer_info_updated
+        my_peer_info_updated || !untrusted.is_empty()
     }
 
     fn refresh_credential_trusts(&self) -> Vec<PeerId> {
@@ -4558,6 +4558,68 @@ mod tests {
                 .synced_route_info
                 .group_trust_map_cache
                 .contains_key(&credential_peer_id)
+        );
+    }
+
+    #[tokio::test]
+    async fn refresh_acl_groups_returns_true_when_untrusted_peers_are_disconnected() {
+        let service_impl = PeerRouteServiceImpl::new(1, get_mock_global_ctx());
+        let credential_peer_id: PeerId = 10061;
+        let credential_pubkey = vec![8u8; 32];
+        let closed_peers = Arc::new(Mutex::new(Vec::new()));
+
+        *service_impl.interface.lock().await = Some(Box::new(TrackingInterface {
+            my_peer_id: service_impl.my_peer_id,
+            closed_peers: closed_peers.clone(),
+        }));
+
+        let mut credential_info = RoutePeerInfo::new();
+        credential_info.peer_id = credential_peer_id;
+        credential_info.version = 1;
+        credential_info.noise_static_pubkey = credential_pubkey.clone();
+        credential_info.feature_flag = Some(PeerFeatureFlag {
+            is_credential_peer: true,
+            ..Default::default()
+        });
+        let self_info = RoutePeerInfo::new_updated_self(
+            service_impl.my_peer_id,
+            service_impl.my_peer_route_id,
+            &service_impl.global_ctx,
+        );
+        let mut self_info = self_info;
+        self_info.version = 1;
+        self_info.last_update = Some(SystemTime::now().into());
+        {
+            let mut guard = service_impl.synced_route_info.peer_infos.write();
+            guard.insert(service_impl.my_peer_id, self_info);
+            guard.insert(credential_peer_id, credential_info);
+        }
+        service_impl
+            .synced_route_info
+            .trusted_credential_pubkeys
+            .insert(
+                credential_pubkey.clone(),
+                TrustedCredentialPubkey {
+                    pubkey: credential_pubkey.clone(),
+                    expiry_unix: i64::MAX,
+                    ..Default::default()
+                },
+            );
+
+        assert!(service_impl.refresh_acl_groups().await);
+        assert!(closed_peers.lock().contains(&credential_peer_id));
+        assert!(
+            !service_impl
+                .synced_route_info
+                .peer_infos
+                .read()
+                .contains_key(&credential_peer_id)
+        );
+        assert!(
+            !service_impl
+                .synced_route_info
+                .trusted_credential_pubkeys
+                .contains_key(&credential_pubkey)
         );
     }
 
