@@ -997,7 +997,8 @@ pub async fn foreign_network_forward_nic_data() {
 use std::{net::SocketAddr, str::FromStr};
 
 use defguard_wireguard_rs::{
-    InterfaceConfiguration, WGApi, WireguardInterfaceApi, host::Peer, key::Key, net::IpAddrMask,
+    InterfaceConfiguration, Kernel, WGApi, WireguardInterfaceApi, key::Key, net::IpAddrMask,
+    peer::Peer,
 };
 
 fn run_wireguard_client(
@@ -1013,7 +1014,7 @@ fn run_wireguard_client(
     } else {
         "utun3".into()
     };
-    let wgapi = WGApi::new(ifname.clone(), false)?;
+    let mut wgapi = WGApi::<Kernel>::new(ifname.clone())?;
 
     // create interface
     wgapi.create_interface()?;
@@ -1033,9 +1034,11 @@ fn run_wireguard_client(
     let interface_config = InterfaceConfiguration {
         name: ifname.clone(),
         prvkey: client_private_key.to_string(),
-        address: client_ip,
+        addresses: vec![IpAddrMask::from_str(client_ip.as_str())?],
         port: 12345,
         peers: vec![peer],
+        mtu: None,
+        fwmark: None,
     };
 
     #[cfg(not(windows))]
