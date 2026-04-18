@@ -144,15 +144,17 @@ pub struct DnsPeerMgr(Arc<DnsPeerMgrInner>);
 
 impl DnsPeerMgr {
     pub fn new(peer_mgr: Arc<PeerManager>, global_ctx: ArcGlobalCtx) -> Self {
-        Self(Arc::new(DnsPeerMgrInner {
+        let this = Self(Arc::new(DnsPeerMgrInner {
             peers: Cache::builder().time_to_idle(DNS_PEER_TTI).build(),
             dirty: Default::default(),
             peer_mgr,
             global_ctx,
-        }))
+        }));
+        this.register();
+        this
     }
 
-    pub fn register(&self) {
+    fn register(&self) {
         self.peer_mgr
             .get_peer_rpc_mgr()
             .rpc_server()
@@ -163,7 +165,7 @@ impl DnsPeerMgr {
             );
     }
 
-    pub fn unregister(&self) -> Option<()> {
+    fn unregister(&self) -> Option<()> {
         self.peer_mgr
             .get_peer_rpc_mgr()
             .rpc_server()
@@ -812,22 +814,7 @@ mod tests {
         )
         .await;
         let mgr = DnsPeerMgr::new(peer_mgr.clone(), peer_mgr.get_global_ctx());
-
-        mgr.register();
         assert!(mgr.unregister().is_some());
-    }
-
-    #[tokio::test]
-    async fn unregister_without_register_returns_none() {
-        let peer_mgr = create_peer_manager_with_zone(
-            "unregister-peer",
-            "unregister-zone.test",
-            Ipv4Addr::new(10, 1, 0, 2),
-        )
-        .await;
-        let mgr = DnsPeerMgr::new(peer_mgr, get_mock_global_ctx());
-
-        assert!(mgr.unregister().is_none());
     }
 
     #[tokio::test]

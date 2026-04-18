@@ -472,7 +472,7 @@ pub struct Instance {
     #[cfg(feature = "tun")]
     nic_ctx: ArcNicCtx,
     #[cfg(feature = "magic-dns")]
-    dns: Arc<DnsNode>,
+    dns: Option<DnsNode>,
 
     peer_packet_receiver: Arc<Mutex<PacketRecvChanReceiver>>,
     peer_manager: Arc<PeerManager>,
@@ -558,14 +558,6 @@ impl Instance {
         #[cfg(feature = "tun")]
         let nic_ctx = Arc::new(Mutex::new(None));
 
-        #[cfg(feature = "magic-dns")]
-        let dns = Arc::new(DnsNode::new(
-            peer_manager.clone(),
-            global_ctx.clone(),
-            #[cfg(feature = "tun")]
-            nic_ctx.clone(),
-        ));
-
         Instance {
             inst_name: global_ctx.inst_name.clone(),
             id,
@@ -575,7 +567,7 @@ impl Instance {
             #[cfg(feature = "tun")]
             nic_ctx,
             #[cfg(feature = "magic-dns")]
-            dns,
+            dns: None,
 
             peer_manager,
             listener_manager,
@@ -848,7 +840,14 @@ impl Instance {
         }
 
         #[cfg(feature = "magic-dns")]
-        self.dns.start()?;
+        {
+            self.dns = Some(DnsNode::new(
+                self.get_peer_manager(),
+                self.get_global_ctx(),
+                #[cfg(feature = "tun")]
+                self.get_nic_ctx(),
+            ));
+        }
 
         if self.global_ctx.config.get_dhcp() {
             self.check_dhcp_ip_conflict();
@@ -1396,9 +1395,9 @@ impl Instance {
     pub async fn clear_resources(&mut self) {
         self.peer_manager.clear_resources().await;
         #[cfg(feature = "magic-dns")]
-        self.dns.stop().await.unwrap_or_else(|e| {
-            tracing::error!("failed to stop dns, err: {:?}", e);
-        });
+        if let Some(node) = self.dns.take() {
+            let _ = node.stop().await;
+        }
         #[cfg(feature = "tun")]
         let _ = self.nic_ctx.lock().await.take();
     }
@@ -1410,18 +1409,10 @@ impl Drop for Instance {
         let my_peer_id = self.peer_manager.my_peer_id();
         let pm = Arc::downgrade(&self.peer_manager);
         #[cfg(feature = "magic-dns")]
-        let dns = self.dns.clone();
+        let _ = self.dns.take(); // force abort
         #[cfg(feature = "tun")]
         let nic_ctx = self.nic_ctx.clone();
         tokio::spawn(async move {
-            // TODO: change this
-            #[cfg(feature = "magic-dns")]
-            {
-                dns.stop().await.unwrap_or_else(|e| {
-                    tracing::error!("failed to stop dns, err: {:?}", e);
-                });
-                drop(dns);
-            }
             #[cfg(feature = "tun")]
             nic_ctx.lock().await.take();
             if let Some(pm) = pm.upgrade() {

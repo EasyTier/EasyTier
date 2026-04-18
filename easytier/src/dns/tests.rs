@@ -74,18 +74,14 @@ pub fn start_dns_node(peer_mgr: Arc<PeerManager>, virtual_nic: NicCtx) -> DnsNod
     let global_ctx = peer_mgr.get_global_ctx();
     let nic_ctx: ArcNicCtx = Arc::new(tokio::sync::Mutex::new(Some(Box::new(virtual_nic))));
 
-    let dns_node = DnsNode::new(peer_mgr, global_ctx, nic_ctx);
-    dns_node.start().expect("failed to start dns node");
-    dns_node
+    DnsNode::new(peer_mgr, global_ctx, nic_ctx)
 }
 
 pub fn start_dns_node_without_nic(peer_mgr: Arc<PeerManager>) -> DnsNode {
     let global_ctx = peer_mgr.get_global_ctx();
     let nic_ctx: ArcNicCtx = Arc::new(tokio::sync::Mutex::new(None));
 
-    let dns_node = DnsNode::new(peer_mgr, global_ctx, nic_ctx);
-    dns_node.start().expect("failed to start dns node");
-    dns_node
+    DnsNode::new(peer_mgr, global_ctx, nic_ctx)
 }
 
 pub async fn prepare_env_from_config_str(config_str: &str) -> Arc<PeerManager> {
@@ -489,9 +485,7 @@ records = ["secret IN A 10.99.0.9"]
 
     // Export behavior is determined by whether `[dns.zone.export]` exists.
     // Verify from peer-sync view to avoid host-wide DNS-server election side effects.
-    let dns_a = DnsPeerMgr::new(peer_a.clone(), peer_a.get_global_ctx());
-    dns_a.register();
-
+    let _dns_a = DnsPeerMgr::new(peer_a.clone(), peer_a.get_global_ctx());
     let dns_b = DnsPeerMgr::new(peer_b.clone(), peer_b.get_global_ctx());
     dns_b.refresh(peer_a.my_peer_id()).await;
 
@@ -534,9 +528,7 @@ disabled = true
         .await
         .expect("route should appear");
 
-    let dns_a = DnsPeerMgr::new(peer_a.clone(), peer_a.get_global_ctx());
-    dns_a.register();
-
+    let _dns_a = DnsPeerMgr::new(peer_a.clone(), peer_a.get_global_ctx());
     let dns_b = DnsPeerMgr::new(peer_b.clone(), peer_b.get_global_ctx());
     dns_b.refresh(peer_a.my_peer_id()).await;
 
@@ -873,9 +865,7 @@ records = ["secret IN A 10.66.3.8"]
         .await
         .expect("route a-c should appear via b");
 
-    let dns_c = DnsPeerMgr::new(peer_c.clone(), peer_c.get_global_ctx());
-    dns_c.register();
-
+    let _dns_c = DnsPeerMgr::new(peer_c.clone(), peer_c.get_global_ctx());
     let dns_a = DnsPeerMgr::new(peer_a.clone(), peer_a.get_global_ctx());
     dns_a.refresh(peer_c.my_peer_id()).await;
 
@@ -906,9 +896,7 @@ async fn config_string_two_nodes_peer_dns_offline_then_rejoin() {
         .await
         .expect("route should appear");
 
-    let dns_b = DnsPeerMgr::new(peer_b.clone(), peer_b.get_global_ctx());
-    dns_b.register();
-
+    let _dns_b = DnsPeerMgr::new(peer_b.clone(), peer_b.get_global_ctx());
     let dns_a_online = DnsPeerMgr::new(peer_a.clone(), peer_a.get_global_ctx());
     dns_a_online.refresh(peer_b.my_peer_id()).await;
     assert!(

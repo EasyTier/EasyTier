@@ -1,5 +1,4 @@
 use crate::common::global_ctx::{ArcGlobalCtx, GlobalCtxEvent};
-use crate::common::join_joinset_background;
 use crate::dns::config::{
     DNS_NODE_RR_INTERVAL, DNS_SERVER_ELECTION_INTERVAL, DNS_SERVER_RPC_ADDR, DnsGlobalCtxExt,
 };
@@ -13,8 +12,8 @@ use crate::proto::dns::{DnsNodeMgrRpcClientFactory, HeartbeatRequest};
 use crate::proto::rpc_impl::standalone::{StandAloneClient, StandAloneServer};
 use crate::proto::rpc_types::controller::BaseController;
 use crate::tunnel::tcp::{TcpTunnelConnector, TcpTunnelListener};
-use crate::utils::task::AsyncRuntime;
-use std::sync::{Arc, Mutex};
+use crate::utils::task::CancellableTask;
+use std::sync::Arc;
 use tokio::sync::{Notify, broadcast};
 use tokio::task::{JoinError, JoinSet};
 use tokio::time::{Instant, sleep, sleep_until};
@@ -23,7 +22,7 @@ use tracing::instrument;
 use uuid::Uuid;
 
 #[derive(Debug, Clone)]
-pub struct DnsNode {
+struct DnsNodeRuntime {
     mgr: Arc<DnsPeerMgr>,
 
     #[cfg(feature = "tun")]
@@ -33,42 +32,11 @@ pub struct DnsNode {
     global_ctx: ArcGlobalCtx,
 
     elect: Arc<Notify>,
-    runtime: AsyncRuntime,
 }
 
-impl DnsNode {
-    pub fn new(
-        peer_mgr: Arc<PeerManager>,
-        global_ctx: ArcGlobalCtx,
-        #[cfg(feature = "tun")] nic_ctx: ArcNicCtx, // TODO: REMOVE THIS
-    ) -> Self {
-        Self {
-            mgr: Arc::new(DnsPeerMgr::new(peer_mgr.clone(), global_ctx.clone())),
-            #[cfg(feature = "tun")]
-            nic_ctx,
-            peer_mgr,
-            global_ctx,
-            elect: Default::default(),
-            runtime: Default::default(),
-        }
-    }
-
-    pub fn id(&self) -> Uuid {
+impl DnsNodeRuntime {
+    fn id(&self) -> Uuid {
         self.global_ctx.get_id()
-    }
-
-    pub fn start(&self) -> anyhow::Result<()> {
-        self.mgr.register();
-        let this = self.clone();
-        self.runtime.start(None, |token| async move {
-            tracing::info!("starting DnsNode");
-            this.elect.notify_one();
-            tokio::join!(this.run_election(token.clone()), this.run(token));
-        })
-    }
-
-    pub async fn stop(&self) -> Result<(), JoinError> {
-        self.runtime.stop(None).await.unwrap_or(Ok(()))
     }
 
     #[instrument(skip_all, name = "DnsNode election loop")]
@@ -138,8 +106,7 @@ impl DnsNode {
         tokio::pin!(sleep);
 
         let mut subscriber = self.global_ctx.subscribe();
-        let tasks = Arc::new(Mutex::new(JoinSet::new()));
-        join_joinset_background(tasks.clone(), "DnsNode".to_owned());
+        let mut tasks = JoinSet::new();
 
         loop {
             // Dynamic interval: slower if dirty (throttled), faster if clean (fast liveness check)
@@ -175,7 +142,7 @@ impl DnsNode {
                         Ok(GlobalCtxEvent::PeerInfoUpdated(peer_ids)) => {
                             for peer_id in peer_ids {
                                 let mgr = self.mgr.clone();
-                                tasks.lock().unwrap().spawn(async move {
+                                tasks.spawn(async move {
                                     mgr.refresh(peer_id).await;
                                 });
                             }
@@ -202,6 +169,12 @@ impl DnsNode {
                     }
 
                     self.mgr.dirty.mark();
+                }
+
+                result = tasks.join_next(), if !tasks.is_empty() => {
+                    if let Some(Err(error)) = result {
+                        tracing::error!(?error, "refresh task panicked");
+                    }
                 }
             }
         }
@@ -236,6 +209,43 @@ impl DnsNode {
         }
 
         Ok(())
+    }
+}
+
+#[derive(Debug)]
+pub struct DnsNode {
+    runtime: DnsNodeRuntime,
+    task: CancellableTask,
+}
+
+impl DnsNode {
+    pub fn new(
+        peer_mgr: Arc<PeerManager>,
+        global_ctx: ArcGlobalCtx,
+        #[cfg(feature = "tun")] nic_ctx: ArcNicCtx, // TODO: REMOVE THIS
+    ) -> Self {
+        let runtime = DnsNodeRuntime {
+            mgr: Arc::new(DnsPeerMgr::new(peer_mgr.clone(), global_ctx.clone())),
+            #[cfg(feature = "tun")]
+            nic_ctx,
+            peer_mgr,
+            global_ctx,
+            elect: Default::default(),
+        };
+
+        let task = {
+            let runtime = runtime.clone();
+            CancellableTask::spawn(|token| async move {
+                runtime.elect.notify_one();
+                tokio::join!(runtime.run_election(token.clone()), runtime.run(token),);
+            })
+        };
+
+        Self { runtime, task }
+    }
+
+    pub async fn stop(self) -> Result<(), JoinError> {
+        self.task.stop(None).await
     }
 }
 
@@ -292,11 +302,26 @@ mod tests {
         }
     }
 
-    async fn build_test_node() -> DnsNode {
+    async fn build_test_runtime() -> DnsNodeRuntime {
         let peer_mgr = create_mock_peer_manager().await;
         let global_ctx = peer_mgr.get_global_ctx();
-        let nic_ctx: ArcNicCtx = Arc::new(tokio::sync::Mutex::new(None));
-        DnsNode::new(peer_mgr, global_ctx, nic_ctx)
+        let nic_ctx: ArcNicCtx = Arc::new(Mutex::new(None));
+        DnsNodeRuntime {
+            mgr: Arc::new(DnsPeerMgr::new(peer_mgr.clone(), global_ctx.clone())),
+            nic_ctx,
+            peer_mgr,
+            global_ctx,
+            elect: Default::default(),
+        }
+    }
+
+    async fn build_test_node() -> DnsNode {
+        let runtime = build_test_runtime().await;
+        DnsNode::new(
+            runtime.peer_mgr.clone(),
+            runtime.global_ctx.clone(),
+            runtime.nic_ctx.clone(),
+        )
     }
 
     async fn start_recording_rpc_server(
@@ -311,14 +336,13 @@ mod tests {
             .registry()
             .register(DnsNodeMgrRpcServer::new_arc(mgr.clone()), "");
         server.serve().await?;
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        sleep(Duration::from_millis(50)).await;
         Ok((mgr, server))
     }
 
     async fn occupy_dns_rpc_addr() -> StandAloneServer<TcpTunnelListener> {
         let mut server = StandAloneServer::new(TcpTunnelListener::new(DNS_SERVER_RPC_ADDR.clone()));
         server.serve().await.unwrap();
-        tokio::time::sleep(Duration::from_millis(50)).await;
         server
     }
 
@@ -326,7 +350,7 @@ mod tests {
     #[serial_test::serial(dns_node_rpc_addr)]
     async fn heartbeat_first_send_includes_snapshot() {
         let (_mgr, server) = start_recording_rpc_server(false).await.unwrap();
-        let node = build_test_node().await;
+        let node = build_test_runtime().await;
 
         let mut rpc = StandAloneClient::new(TcpTunnelConnector::new(DNS_SERVER_RPC_ADDR.clone()));
         let mut heartbeat = HeartbeatRequest {
@@ -337,7 +361,7 @@ mod tests {
         node.heartbeat(&mut rpc, &mut heartbeat).await.unwrap();
 
         drop(server);
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        sleep(Duration::from_millis(50)).await;
 
         assert!(heartbeat.snapshot.is_some());
         assert!(!heartbeat.digest.is_empty());
@@ -347,7 +371,7 @@ mod tests {
     #[serial_test::serial(dns_node_rpc_addr)]
     async fn heartbeat_clean_send_digest_only() {
         let (mgr, server) = start_recording_rpc_server(false).await.unwrap();
-        let node = build_test_node().await;
+        let node = build_test_runtime().await;
 
         let mut rpc = StandAloneClient::new(TcpTunnelConnector::new(DNS_SERVER_RPC_ADDR.clone()));
         let mut heartbeat = HeartbeatRequest {
@@ -361,7 +385,7 @@ mod tests {
 
         let requests = mgr.recorded_requests().await;
         drop(server);
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        sleep(Duration::from_millis(50)).await;
 
         assert_eq!(requests.len(), 2);
         assert!(requests[0].snapshot.is_some());
@@ -373,7 +397,7 @@ mod tests {
     #[serial_test::serial(dns_node_rpc_addr)]
     async fn heartbeat_dirty_forces_full_snapshot() {
         let (mgr, server) = start_recording_rpc_server(false).await.unwrap();
-        let node = build_test_node().await;
+        let node = build_test_runtime().await;
 
         let mut rpc = StandAloneClient::new(TcpTunnelConnector::new(DNS_SERVER_RPC_ADDR.clone()));
         let mut heartbeat = HeartbeatRequest {
@@ -387,7 +411,7 @@ mod tests {
 
         let requests = mgr.recorded_requests().await;
         drop(server);
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        sleep(Duration::from_millis(50)).await;
 
         assert_eq!(requests.len(), 2);
         assert!(requests[0].snapshot.is_some());
@@ -398,7 +422,7 @@ mod tests {
     #[serial_test::serial(dns_node_rpc_addr)]
     async fn heartbeat_resync_triggers_second_send() {
         let (mgr, server) = start_recording_rpc_server(true).await.unwrap();
-        let node = build_test_node().await;
+        let node = build_test_runtime().await;
 
         let mut rpc = StandAloneClient::new(TcpTunnelConnector::new(DNS_SERVER_RPC_ADDR.clone()));
         let mut heartbeat = HeartbeatRequest {
@@ -410,7 +434,7 @@ mod tests {
 
         let requests = mgr.recorded_requests().await;
         drop(server);
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        sleep(Duration::from_millis(50)).await;
 
         assert_eq!(requests.len(), 2);
         assert!(requests[0].snapshot.is_some());
@@ -420,7 +444,8 @@ mod tests {
     #[tokio::test]
     #[serial_test::serial(dns_node_rpc_addr)]
     async fn run_marks_dirty_on_dhcp_event() {
-        let node = build_test_node().await;
+        let node = build_test_runtime().await;
+
         let _ = node.mgr.dirty.reset();
         assert!(!node.mgr.dirty.peek());
 
@@ -431,7 +456,7 @@ mod tests {
             async move { node.run(token).await }
         });
 
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        sleep(Duration::from_millis(50)).await;
         node.global_ctx
             .issue_event(GlobalCtxEvent::DhcpIpv4Changed(None, None));
 
@@ -447,7 +472,8 @@ mod tests {
     #[tokio::test]
     #[serial_test::serial(dns_node_rpc_addr)]
     async fn run_marks_dirty_on_config_patched_event() {
-        let node = build_test_node().await;
+        let node = build_test_runtime().await;
+
         let _ = node.mgr.dirty.reset();
         assert!(!node.mgr.dirty.peek());
 
@@ -458,7 +484,7 @@ mod tests {
             async move { node.run(token).await }
         });
 
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        sleep(Duration::from_millis(50)).await;
         node.global_ctx
             .issue_event(GlobalCtxEvent::ConfigPatched(InstanceConfigPatch::default()));
 
@@ -474,7 +500,8 @@ mod tests {
     #[tokio::test]
     #[serial_test::serial(dns_node_rpc_addr)]
     async fn run_peer_info_updated_non_self_does_not_mark_dirty() {
-        let node = build_test_node().await;
+        let node = build_test_runtime().await;
+
         let _ = node.mgr.dirty.reset();
         assert!(!node.mgr.dirty.peek());
 
@@ -485,10 +512,10 @@ mod tests {
             async move { node.run(token).await }
         });
 
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        sleep(Duration::from_millis(50)).await;
         node.global_ctx
             .issue_event(GlobalCtxEvent::PeerInfoUpdated(vec![u32::MAX]));
-        tokio::time::sleep(Duration::from_millis(200)).await;
+        sleep(Duration::from_millis(200)).await;
 
         assert!(!node.mgr.dirty.peek());
 
@@ -502,7 +529,8 @@ mod tests {
     #[tokio::test]
     #[serial_test::serial(dns_node_rpc_addr)]
     async fn run_heartbeat_error_notifies_election() {
-        let node = build_test_node().await;
+        let node = build_test_runtime().await;
+
         let _ = node.mgr.dirty.reset();
 
         let token = CancellationToken::new();
@@ -526,7 +554,8 @@ mod tests {
 
     #[tokio::test]
     async fn id_matches_global_ctx_id() {
-        let node = build_test_node().await;
+        let node = build_test_runtime().await;
+
         assert_eq!(node.id(), node.global_ctx.get_id());
     }
 
@@ -540,28 +569,19 @@ mod tests {
     #[serial_test::serial(dns_node_rpc_addr)]
     async fn election_wins_and_sets_dns_server() {
         let node = build_test_node().await;
-        let token = CancellationToken::new();
-        let handle = tokio::spawn({
-            let node = node.clone();
-            let token = token.clone();
-            async move { node.run_election(token).await }
-        });
+        let runtime = node.runtime.clone();
 
-        node.elect.notify_one();
         wait_for_condition(
-            async || node.global_ctx.dns_server().is_some(),
+            async || runtime.global_ctx.dns_server().is_some(),
             Duration::from_secs(2),
         )
         .await;
 
-        token.cancel();
-        tokio::time::timeout(Duration::from_secs(3), handle)
-            .await
-            .unwrap()
-            .unwrap();
+        let global_ctx = runtime.global_ctx.clone();
+        node.stop().await.unwrap();
 
         wait_for_condition(
-            async || node.global_ctx.dns_server().is_none(),
+            async || global_ctx.dns_server().is_none(),
             Duration::from_secs(2),
         )
         .await;
@@ -572,22 +592,12 @@ mod tests {
     async fn election_loses_when_rpc_addr_is_occupied() {
         let holder = occupy_dns_rpc_addr().await;
         let node = build_test_node().await;
-        let token = CancellationToken::new();
-        let handle = tokio::spawn({
-            let node = node.clone();
-            let token = token.clone();
-            async move { node.run_election(token).await }
-        });
+        let runtime = node.runtime.clone();
 
-        node.elect.notify_one();
-        tokio::time::sleep(Duration::from_millis(300)).await;
-        assert!(node.global_ctx.dns_server().is_none());
+        sleep(Duration::from_millis(300)).await;
+        assert!(runtime.global_ctx.dns_server().is_none());
 
-        token.cancel();
-        tokio::time::timeout(Duration::from_secs(3), handle)
-            .await
-            .unwrap()
-            .unwrap();
+        node.stop().await.unwrap();
         drop(holder);
     }
 
@@ -596,31 +606,19 @@ mod tests {
     async fn election_retries_after_losing_then_wins() {
         let holder = occupy_dns_rpc_addr().await;
         let node = build_test_node().await;
-        let token = CancellationToken::new();
-        let handle = tokio::spawn({
-            let node = node.clone();
-            let token = token.clone();
-            async move { node.run_election(token).await }
-        });
+        let runtime = node.runtime.clone();
 
-        node.elect.notify_one();
-        tokio::time::sleep(Duration::from_millis(300)).await;
-        assert!(node.global_ctx.dns_server().is_none());
+        sleep(Duration::from_millis(300)).await;
+        assert!(runtime.global_ctx.dns_server().is_none());
 
         drop(holder);
-        tokio::time::sleep(Duration::from_millis(100)).await;
-
-        node.elect.notify_one();
+        sleep(DNS_NODE_RR_INTERVAL).await;
         wait_for_condition(
-            async || node.global_ctx.dns_server().is_some(),
+            async || runtime.global_ctx.dns_server().is_some(),
             Duration::from_secs(2),
         )
         .await;
 
-        token.cancel();
-        tokio::time::timeout(Duration::from_secs(3), handle)
-            .await
-            .unwrap()
-            .unwrap();
+        node.stop().await.unwrap();
     }
 }
