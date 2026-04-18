@@ -7,10 +7,7 @@ use anyhow::anyhow;
 use dashmap::DashMap;
 
 use super::secure_datagram::{SecureDatagramDirection, SecureDatagramSession};
-use crate::{
-    common::PeerId,
-    tunnel::packet_def::ZCPacket,
-};
+use crate::{common::PeerId, tunnel::packet_def::ZCPacket};
 
 pub struct UpsertResponderSessionReturn {
     pub session: Arc<PeerSession>,

@@ -516,11 +516,7 @@ impl SecureDatagramSession {
         false
     }
 
-    fn prune_key_cache(
-        &self,
-        rx: &[[EpochRxSlot; 2]; 2],
-        sync_rx_grace: Option<&SyncRxGrace>,
-    ) {
+    fn prune_key_cache(&self, rx: &[[EpochRxSlot; 2]; 2], sync_rx_grace: Option<&SyncRxGrace>) {
         let send_epoch = self.send_epoch.load(Ordering::Relaxed);
         let mut key_cache = self.key_cache.lock().unwrap();
         for d in 0..2 {
@@ -687,7 +683,7 @@ impl SecureDatagramSession {
             }
         };
 
-        self.prune_key_cache(&rx, sync_rx_grace.as_ref().map(|g| &**g));
+        self.prune_key_cache(&rx, sync_rx_grace.as_deref());
         accepted
     }
 
