@@ -160,6 +160,9 @@ disable_udp_hole_punching_help: 禁用UDP打洞功能
 disable_sym_hole_punching: 禁用对称NAT打洞
 disable_sym_hole_punching_help: 禁用对称NAT的打洞（生日攻击），将对称NAT视为锥形NAT处理
 
+default_protocol: 默认协议
+default_protocol_help: 连接到对等节点时使用的默认协议
+
 enable_magic_dns: 启用魔法DNS
 enable_magic_dns_help: |
   启用魔法DNS，允许通过EasyTier的DNS服务器访问其他节点的虚拟IPv4地址， 如 node1.et.net。
