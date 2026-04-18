@@ -1,13 +1,11 @@
-use crate::utils::dns::get_default_resolver_config;
 use crate::dns::utils::addr::{NameServerAddr, NameServerAddrGroup};
 use crate::dns::utils::zone_handler::{ArcZoneHandler, ChainedZoneHandler};
 use crate::proto;
 use crate::proto::utils::RepeatedMessageModel;
+use crate::utils::dns::resolver_conf;
 use hickory_net::runtime::TokioRuntimeProvider;
 use hickory_proto::rr::{LowerName, RecordSet, RrKey};
 use hickory_proto::serialize::txt::Parser;
-use hickory_resolver::config::ResolverOpts;
-use hickory_resolver::system_conf::read_system_conf;
 use hickory_server::store::forwarder::{ForwardConfig, ForwardZoneHandler};
 use hickory_server::store::in_memory::InMemoryZoneHandler;
 use hickory_server::zone_handler::{AxfrPolicy, ZoneType};
@@ -28,8 +26,7 @@ pub struct Zone {
 
 impl Zone {
     pub fn system() -> Self {
-        let (config, opts) =
-            read_system_conf().unwrap_or((get_default_resolver_config(), ResolverOpts::default()));
+        let (config, opts) = resolver_conf();
         let forward = ForwardConfig {
             name_servers: config.name_servers().to_vec(),
             options: Some(opts),

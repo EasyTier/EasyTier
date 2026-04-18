@@ -1,11 +1,12 @@
+use std::fmt::Debug;
 use std::net::SocketAddr;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
 use anyhow::Context;
 use hickory_net::runtime::TokioRuntimeProvider;
-use hickory_proto::rr::{IntoName, RData};
 use hickory_proto::rr::rdata::SRV;
+use hickory_proto::rr::{IntoName, RData};
 use hickory_resolver::config::{
     ConnectionConfig, LookupIpStrategy, NameServerConfig, ResolverConfig, ResolverOpts,
 };
@@ -19,7 +20,7 @@ use tokio::net::lookup_host;
 
 use crate::common::error::Error;
 
-pub fn get_default_resolver_config() -> ResolverConfig {
+pub fn resolver_conf() -> (ResolverConfig, ResolverOpts) {
     let mut config = ResolverConfig::default();
     for server in ["223.5.5.5", "180.184.1.1"] {
         config.add_name_server(NameServerConfig::new(
@@ -28,23 +29,27 @@ pub fn get_default_resolver_config() -> ResolverConfig {
             vec![ConnectionConfig::udp()],
         ));
     }
-    config
+
+    let mut opts = ResolverOpts::default();
+
+    if let Ok((system_config, system_opts)) = read_system_conf() {
+        for ns in system_config.name_servers() {
+            config.add_name_server(ns.clone());
+        }
+        opts = system_opts;
+    }
+
+    opts.ip_strategy = LookupIpStrategy::Ipv4AndIpv6;
+
+    (config, opts)
 }
 
-pub static ALLOW_USE_SYSTEM_DNS_RESOLVER: AtomicBool = AtomicBool::new(true);
+static ALLOW_USE_SYSTEM_DNS_RESOLVER: AtomicBool = AtomicBool::new(true);
 
-pub static RESOLVER: Lazy<Arc<Resolver<TokioRuntimeProvider>>> = Lazy::new(|| {
-    let mut cfg = get_default_resolver_config();
-    let mut opt = ResolverOpts::default();
-    if let Ok((sys_cfg, sys_opt)) = read_system_conf() {
-        for ns in sys_cfg.name_servers() {
-            cfg.add_name_server(ns.clone());
-        }
-        opt = sys_opt;
-    }
-    opt.ip_strategy = LookupIpStrategy::Ipv4AndIpv6;
-    let builder =
-        TokioResolver::builder_with_config(cfg, TokioRuntimeProvider::default()).with_options(opt);
+static RESOLVER: Lazy<Arc<Resolver<TokioRuntimeProvider>>> = Lazy::new(|| {
+    let (config, opts) = resolver_conf();
+    let builder = TokioResolver::builder_with_config(config, TokioRuntimeProvider::default())
+        .with_options(opts);
     Arc::new(
         builder
             .build()
@@ -106,51 +111,45 @@ pub async fn socket_addrs(
     default_port_number: impl Fn() -> Option<u16>,
 ) -> Result<Vec<SocketAddr>, Error> {
     let host = url.host().ok_or(Error::InvalidUrl(url.to_string()))?;
+
+    // see https://github.com/EasyTier/EasyTier/pull/947, https://github.com/EasyTier/EasyTier/pull/1700
     let port = url
         .port()
         .or_else(default_port_number)
         .ok_or(Error::InvalidUrl(url.to_string()))?;
-    // See https://github.com/EasyTier/EasyTier/pull/947
-    // here is for compatibility with old version
-    let port = match port {
-        0 => match url.scheme() {
-            "ws" => 80,
-            "wss" => 443,
-            _ => port,
-        },
-        _ => port,
-    };
 
     // if host is an ip address, return it directly
-    match host {
-        url::Host::Ipv4(ip) => return Ok(vec![SocketAddr::new(std::net::IpAddr::V4(ip), port)]),
-        url::Host::Ipv6(ip) => return Ok(vec![SocketAddr::new(std::net::IpAddr::V6(ip), port)]),
-        _ => {}
+    if let Some(ip) = match host {
+        url::Host::Ipv4(ip) => Some(ip.into()),
+        url::Host::Ipv6(ip) => Some(ip.into()),
+        _ => None,
+    } {
+        return Ok(vec![SocketAddr::new(ip, port)]);
     }
+
     let host = host.to_string();
 
     if ALLOW_USE_SYSTEM_DNS_RESOLVER.load(std::sync::atomic::Ordering::Relaxed) {
-        let socket_addr = format!("{}:{}", host, port);
-        match lookup_host(socket_addr).await {
-            Ok(a) => {
-                let a = a.collect();
-                tracing::debug!(?a, "system dns lookup done");
-                return Ok(a);
+        match lookup_host(format!("{}:{}", host, port)).await {
+            Ok(addrs) => {
+                let addrs = addrs.collect();
+                tracing::debug!(?addrs, "system dns lookup done");
+                return Ok(addrs);
             }
-            Err(e) => {
-                tracing::error!(?e, "system dns lookup failed");
+            Err(error) => {
+                tracing::error!(?error, "system dns lookup failed");
             }
         }
     }
 
     // use hickory_resolver
-    let ret = RESOLVER.lookup_ip(&host).await.with_context(|| {
+    let ips = RESOLVER.lookup_ip(&host).await.with_context(|| {
         format!(
             "hickory dns lookup_ip failed, host: {}, port: {}",
             host, port
         )
     })?;
-    Ok(ret
+    Ok(ips
         .iter()
         .map(|ip| SocketAddr::new(ip, port))
         .collect::<Vec<_>>())
