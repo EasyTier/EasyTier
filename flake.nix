@@ -41,6 +41,8 @@
             extensions = [
               "rust-src"
               "rust-analyzer"
+              "rustfmt"
+              "clippy"
             ]
             ++ (if builtins.elem "android" features then android.rust.extensions else [ ]);
 
