@@ -149,6 +149,15 @@ impl ReplayWindow256 {
         self.set_bit(delta);
         true
     }
+
+    fn can_accept(&self, seq: u64) -> bool {
+        if !self.valid || seq > self.max_seq {
+            return true;
+        }
+
+        let delta = (self.max_seq - seq) as usize;
+        delta < 256 && !self.test_bit(delta)
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -507,7 +516,98 @@ impl SecureDatagramSession {
         false
     }
 
-    fn check_replay(
+    fn prune_key_cache(
+        &self,
+        rx: &[[EpochRxSlot; 2]; 2],
+        sync_rx_grace: Option<&SyncRxGrace>,
+    ) {
+        let send_epoch = self.send_epoch.load(Ordering::Relaxed);
+        let mut key_cache = self.key_cache.lock().unwrap();
+        for d in 0..2 {
+            for s in 0..2 {
+                if !key_cache[d][s].valid {
+                    continue;
+                }
+                let e = key_cache[d][s].epoch;
+                let allowed = e == send_epoch
+                    || rx[d][0].valid && rx[d][0].epoch == e
+                    || rx[d][1].valid && rx[d][1].epoch == e
+                    || sync_rx_grace.is_some_and(|g| Self::epoch_in_slots(&g.slots[d], e));
+                if !allowed {
+                    key_cache[d][s].valid = false;
+                }
+            }
+        }
+    }
+
+    fn precheck_replay(
+        &self,
+        epoch: u32,
+        seq: u64,
+        dir: SecureDatagramDirection,
+        now_ms: u64,
+    ) -> bool {
+        let dir_idx = dir.idx();
+        let mut rx = self.rx_slots.lock().unwrap();
+        Self::evict_old_rx_slots(&mut rx, now_ms);
+        let sync_rx_grace = if self.sync_rx_grace_active(now_ms) {
+            let mut sync_rx_grace = self.sync_rx_grace.lock().unwrap();
+            sync_rx_grace.maybe_expire(now_ms);
+            if sync_rx_grace.valid {
+                Self::evict_old_rx_slots(&mut sync_rx_grace.slots, now_ms);
+                Some(sync_rx_grace)
+            } else {
+                self.sync_rx_grace_expires_at_ms.store(0, Ordering::Relaxed);
+                None
+            }
+        } else {
+            None
+        };
+
+        if sync_rx_grace
+            .as_ref()
+            .is_some_and(|g| Self::epoch_in_slots(&g.slots[dir_idx], epoch))
+        {
+            for slot in sync_rx_grace.as_ref().unwrap().slots[dir_idx].iter() {
+                if slot.valid && slot.epoch == epoch {
+                    return slot.window.can_accept(seq);
+                }
+            }
+        }
+
+        if !rx[dir_idx][0].valid {
+            return true;
+        }
+
+        if rx[dir_idx][0].valid && epoch == rx[dir_idx][0].epoch {
+            return rx[dir_idx][0].window.can_accept(seq);
+        }
+
+        if rx[dir_idx][1].valid && epoch == rx[dir_idx][1].epoch {
+            return rx[dir_idx][1].window.can_accept(seq);
+        }
+
+        if rx[dir_idx][0].valid && epoch > rx[dir_idx][0].epoch {
+            let mut baseline_epoch = self.send_epoch.load(Ordering::Relaxed);
+            if rx[dir_idx][0].valid {
+                baseline_epoch = baseline_epoch.max(rx[dir_idx][0].epoch);
+            }
+            if rx[dir_idx][1].valid {
+                baseline_epoch = baseline_epoch.max(rx[dir_idx][1].epoch);
+            }
+            let max_allowed_epoch =
+                baseline_epoch.saturating_add(Self::MAX_ACCEPTED_RX_EPOCH_AHEAD);
+            if epoch > max_allowed_epoch {
+                return false;
+            }
+
+            return true;
+        }
+
+        false
+    }
+
+    fn commit_replay(
         &self,
         epoch: u32,
         seq: u64,
@@ -530,81 +630,76 @@ impl SecureDatagramSession {
         } else {
             None
         };
-        let send_epoch = self.send_epoch.load(Ordering::Relaxed);
-        {
-            let mut key_cache = self.key_cache.lock().unwrap();
-            for d in 0..2 {
-                for s in 0..2 {
-                    if !key_cache[d][s].valid {
-                        continue;
-                    }
-                    let e = key_cache[d][s].epoch;
-                    let allowed = e == send_epoch
-                        || rx[d][0].valid && rx[d][0].epoch == e
-                        || rx[d][1].valid && rx[d][1].epoch == e
-                        || sync_rx_grace
-                            .as_ref()
-                            .is_some_and(|g| Self::epoch_in_slots(&g.slots[d], e));
-                    if !allowed {
-                        key_cache[d][s].valid = false;
-                    }
-                }
-            }
-        }
 
-        if sync_rx_grace
+        let accepted = if sync_rx_grace
             .as_ref()
             .is_some_and(|g| Self::epoch_in_slots(&g.slots[dir_idx], epoch))
         {
+            let mut accepted = false;
             for slot in sync_rx_grace.as_mut().unwrap().slots[dir_idx].iter_mut() {
                 if slot.valid && slot.epoch == epoch {
                     slot.last_rx_ms = now_ms;
-                    return slot.window.accept(seq);
+                    accepted = slot.window.accept(seq);
+                    break;
                 }
             }
-        }
-
-        if !rx[dir_idx][0].valid {
-            rx[dir_idx][0] = EpochRxSlot {
-                epoch,
-                window: ReplayWindow256::default(),
-                last_rx_ms: now_ms,
-                valid: true,
-            };
-        }
-
-        if rx[dir_idx][0].valid && epoch == rx[dir_idx][0].epoch {
-            rx[dir_idx][0].last_rx_ms = now_ms;
-            return rx[dir_idx][0].window.accept(seq);
-        }
-
-        if rx[dir_idx][1].valid && epoch == rx[dir_idx][1].epoch {
-            rx[dir_idx][1].last_rx_ms = now_ms;
-            return rx[dir_idx][1].window.accept(seq);
-        }
-
-        if rx[dir_idx][0].valid && epoch > rx[dir_idx][0].epoch {
-            let mut baseline_epoch = send_epoch;
-            if rx[dir_idx][0].valid {
-                baseline_epoch = baseline_epoch.max(rx[dir_idx][0].epoch);
-            }
-            if rx[dir_idx][1].valid {
-                baseline_epoch = baseline_epoch.max(rx[dir_idx][1].epoch);
-            }
-            let max_allowed_epoch =
-                baseline_epoch.saturating_add(Self::MAX_ACCEPTED_RX_EPOCH_AHEAD);
-            if epoch > max_allowed_epoch {
-                return false;
+            accepted
+        } else {
+            if !rx[dir_idx][0].valid {
+                rx[dir_idx][0] = EpochRxSlot {
+                    epoch,
+                    window: ReplayWindow256::default(),
+                    last_rx_ms: now_ms,
+                    valid: true,
+                };
             }
 
-            rx[dir_idx][1] = rx[dir_idx][0];
-            rx[dir_idx][0] = EpochRxSlot {
-                epoch,
-                window: ReplayWindow256::default(),
-                last_rx_ms: now_ms,
-                valid: true,
-            };
-            return rx[dir_idx][0].window.accept(seq);
+            if rx[dir_idx][0].valid && epoch == rx[dir_idx][0].epoch {
+                rx[dir_idx][0].last_rx_ms = now_ms;
+                rx[dir_idx][0].window.accept(seq)
+            } else if rx[dir_idx][1].valid && epoch == rx[dir_idx][1].epoch {
+                rx[dir_idx][1].last_rx_ms = now_ms;
+                rx[dir_idx][1].window.accept(seq)
+            } else if rx[dir_idx][0].valid && epoch > rx[dir_idx][0].epoch {
+                let mut baseline_epoch = self.send_epoch.load(Ordering::Relaxed);
+                if rx[dir_idx][0].valid {
+                    baseline_epoch = baseline_epoch.max(rx[dir_idx][0].epoch);
+                }
+                if rx[dir_idx][1].valid {
+                    baseline_epoch = baseline_epoch.max(rx[dir_idx][1].epoch);
+                }
+                let max_allowed_epoch =
+                    baseline_epoch.saturating_add(Self::MAX_ACCEPTED_RX_EPOCH_AHEAD);
+                if epoch > max_allowed_epoch {
+                    false
+                } else {
+                    rx[dir_idx][1] = rx[dir_idx][0];
+                    rx[dir_idx][0] = EpochRxSlot {
+                        epoch,
+                        window: ReplayWindow256::default(),
+                        last_rx_ms: now_ms,
+                        valid: true,
+                    };
+                    rx[dir_idx][0].window.accept(seq)
+                }
+            } else {
+                false
+            }
+        };
+
+        self.prune_key_cache(&rx, sync_rx_grace.as_ref().map(|g| &**g));
+        accepted
+    }
+
+    fn check_replay(
+        &self,
+        epoch: u32,
+        seq: u64,
+        dir: SecureDatagramDirection,
+        now_ms: u64,
+    ) -> bool {
+        if self.precheck_replay(epoch, seq, dir, now_ms) {
+            return self.commit_replay(epoch, seq, dir, now_ms);
         }
 
         false
@@ -642,7 +737,7 @@ impl SecureDatagramSession {
         let seq = u64::from_be_bytes(nonce_bytes[4..].try_into().unwrap());
 
         let now_ms = now_ms();
-        if !self.check_replay(epoch, seq, dir, now_ms) {
+        if !self.precheck_replay(epoch, seq, dir, now_ms) {
             return Err(anyhow!("replay rejected"));
         }
 
@@ -659,6 +754,10 @@ impl SecureDatagramSession {
             return Err(e.into());
         }
         self.decrypt_fail_count.store(0, Ordering::Relaxed);
+
+        if !self.commit_replay(epoch, seq, dir, now_ms) {
+            return Err(anyhow!("replay rejected"));
+        }
 
         Ok(())
     }
@@ -746,6 +845,65 @@ mod tests {
 
         assert!(s.check_replay_for_test(1, 1, SecureDatagramDirection::AToB, now + 1));
         assert!(s.check_replay_for_test(1, 2, SecureDatagramDirection::AToB, now + 2));
+    }
+
+    #[test]
+    fn failed_decrypt_does_not_poison_replay_window() {
+        let root_key = SecureDatagramSession::new_root_key();
+        let sender = SecureDatagramSession::new(
+            root_key,
+            1,
+            0,
+            "aes-256-gcm".to_string(),
+            "aes-256-gcm".to_string(),
+        );
+        let receiver = SecureDatagramSession::new(
+            root_key,
+            1,
+            0,
+            "aes-256-gcm".to_string(),
+            "aes-256-gcm".to_string(),
+        );
+
+        let mut pkt0 = ZCPacket::new_with_payload(b"pkt0");
+        pkt0.fill_peer_manager_hdr(10, 20, PacketType::Data as u8);
+        sender
+            .encrypt_payload(SecureDatagramDirection::AToB, &mut pkt0)
+            .unwrap();
+        receiver
+            .decrypt_payload(SecureDatagramDirection::AToB, &mut pkt0)
+            .unwrap();
+
+        let mut forged = ZCPacket::new_with_payload(b"forged");
+        forged.fill_peer_manager_hdr(10, 20, PacketType::Data as u8);
+        sender
+            .encrypt_payload(SecureDatagramDirection::AToB, &mut forged)
+            .unwrap();
+
+        let mut poisoned_nonce = [0u8; StandardAeadTail::NONCE_SIZE];
+        poisoned_nonce[..4].copy_from_slice(&0u32.to_be_bytes());
+        poisoned_nonce[4..].copy_from_slice(&500u64.to_be_bytes());
+
+        let payload = forged.mut_payload();
+        let nonce_offset = payload.len() - StandardAeadTail::NONCE_SIZE;
+        payload[nonce_offset..].copy_from_slice(&poisoned_nonce);
+
+        assert!(
+            receiver
+                .decrypt_payload(SecureDatagramDirection::AToB, &mut forged)
+                .is_err()
+        );
+
+        let plaintext = b"pkt2";
+        let mut pkt2 = ZCPacket::new_with_payload(plaintext);
+        pkt2.fill_peer_manager_hdr(10, 20, PacketType::Data as u8);
+        sender
+            .encrypt_payload(SecureDatagramDirection::AToB, &mut pkt2)
+            .unwrap();
+        receiver
+            .decrypt_payload(SecureDatagramDirection::AToB, &mut pkt2)
+            .unwrap();
+        assert_eq!(pkt2.payload(), plaintext);
     }
 
     #[test]
