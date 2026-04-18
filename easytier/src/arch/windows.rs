@@ -4,15 +4,16 @@ use anyhow::Context;
 use network_interface::NetworkInterfaceConfig;
 use windows::{
     Win32::{
-        Foundation::{BOOL, FALSE},
+        Foundation::FALSE,
         NetworkManagement::WindowsFirewall::{
             INetFwPolicy2, INetFwRule, NET_FW_ACTION_ALLOW, NET_FW_PROFILE2_DOMAIN,
             NET_FW_PROFILE2_PRIVATE, NET_FW_PROFILE2_PUBLIC, NET_FW_RULE_DIR_IN,
             NET_FW_RULE_DIR_OUT,
         },
         Networking::WinSock::{
-            IP_UNICAST_IF, IPPROTO_IP, IPPROTO_IPV6, IPV6_UNICAST_IF, SIO_UDP_CONNRESET, SOCKET,
-            SOCKET_ERROR, WSAGetLastError, WSAIoctl, htonl, setsockopt,
+            IP_UNICAST_IF, IPPROTO_IP, IPPROTO_IPV6, IPV6_UNICAST_IF, SIO_UDP_CONNRESET,
+            SO_EXCLUSIVEADDRUSE, SOCKET, SOCKET_ERROR, SOL_SOCKET, WSAGetLastError, WSAIoctl,
+            htonl, setsockopt,
         },
         System::Com::{
             CLSCTX_ALL, COINIT_MULTITHREADED, CoCreateInstance, CoInitializeEx, CoUninitialize,
@@ -20,7 +21,7 @@ use windows::{
         System::Ole::{SafeArrayCreateVector, SafeArrayPutElement},
         System::Variant::{VARENUM, VARIANT, VT_ARRAY, VT_BSTR, VT_VARIANT},
     },
-    core::BSTR,
+    core::{BOOL, BSTR},
 };
 
 pub fn disable_connection_reset<S: AsRawSocket>(socket: &S) -> io::Result<()> {
@@ -88,13 +89,7 @@ pub fn find_interface_index(iface_name: &str) -> io::Result<u32> {
     ))
 }
 
-pub fn set_ip_unicast_if<S: AsRawSocket>(
-    socket: &S,
-    addr: &SocketAddr,
-    iface: &str,
-) -> io::Result<()> {
-    let handle = SOCKET(socket.as_raw_socket() as usize);
-
+pub fn set_ip_unicast_if(socket: SOCKET, addr: &SocketAddr, iface: &str) -> io::Result<()> {
     let if_index = find_interface_index(iface)?;
 
     unsafe {
@@ -103,12 +98,12 @@ pub fn set_ip_unicast_if<S: AsRawSocket>(
             SocketAddr::V4(..) => {
                 let if_index = htonl(if_index);
                 let if_index_bytes = if_index.to_ne_bytes();
-                setsockopt(handle, IPPROTO_IP.0, IP_UNICAST_IF, Some(&if_index_bytes))
+                setsockopt(socket, IPPROTO_IP.0, IP_UNICAST_IF, Some(&if_index_bytes))
             }
             SocketAddr::V6(..) => {
                 let if_index_bytes = if_index.to_ne_bytes();
                 setsockopt(
-                    handle,
+                    socket,
                     IPPROTO_IPV6.0,
                     IPV6_UNICAST_IF,
                     Some(&if_index_bytes),
@@ -141,8 +136,16 @@ pub fn setup_socket_for_win<S: AsRawSocket>(
         disable_connection_reset(socket)?;
     }
 
+    let socket = SOCKET(socket.as_raw_socket() as usize);
+    let optval = 1_i32.to_ne_bytes();
+    unsafe {
+        if setsockopt(socket, SOL_SOCKET, SO_EXCLUSIVEADDRUSE, Some(&optval)) == SOCKET_ERROR {
+            return Err(io::Error::last_os_error());
+        }
+    }
+
     if let Some(iface) = bind_dev {
-        set_ip_unicast_if(socket, bind_addr, iface.as_str())?;
+        set_ip_unicast_if(socket, bind_addr, &iface)?;
     }
 
     Ok(())
@@ -152,7 +155,7 @@ struct ComInitializer;
 
 impl ComInitializer {
     fn new() -> windows::core::Result<Self> {
-        unsafe { CoInitializeEx(None, COINIT_MULTITHREADED)? };
+        unsafe { CoInitializeEx(None, COINIT_MULTITHREADED).ok()? };
         Ok(Self)
     }
 }
@@ -354,7 +357,7 @@ fn add_protocol_firewall_rules(
             (*interface_variant.Anonymous.Anonymous).vt = VARENUM(VT_ARRAY.0 | VT_VARIANT.0);
             (*interface_variant.Anonymous.Anonymous).Anonymous.parray = interface_array;
 
-            rule.SetInterfaces(interface_variant)?;
+            rule.SetInterfaces(&interface_variant)?;
 
             // Get rule collection and add new rule
             let rules = policy.Rules()?;
