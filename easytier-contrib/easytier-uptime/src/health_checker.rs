@@ -7,15 +7,15 @@ use std::{
 use anyhow::Context as _;
 use dashmap::DashMap;
 use easytier::{
-    common::{
-        config::{ConfigFileControl, ConfigLoader, NetworkIdentity, PeerConfig, TomlConfigLoader},
-        scoped_task::ScopedTask,
+    common::config::{
+        ConfigFileControl, ConfigLoader, NetworkIdentity, PeerConfig, TomlConfigLoader,
     },
     defer,
     instance_manager::NetworkInstanceManager,
 };
 use serde::{Deserialize, Serialize};
 use sqlx::any;
+use tokio_util::task::AbortOnDropHandle;
 use tracing::{debug, error, info, instrument, warn};
 
 use crate::db::{
@@ -240,7 +240,7 @@ pub struct HealthChecker {
     db: Db,
     instance_mgr: Arc<NetworkInstanceManager>,
     inst_id_map: DashMap<i32, uuid::Uuid>,
-    node_tasks: DashMap<i32, ScopedTask<()>>,
+    node_tasks: DashMap<i32, AbortOnDropHandle<()>>,
     node_records: Arc<DashMap<i32, HealthyMemRecord>>,
     node_cfg: Arc<DashMap<i32, TomlConfigLoader>>,
 }
@@ -465,7 +465,7 @@ impl HealthChecker {
         }
 
         // 启动健康检查任务
-        let task = ScopedTask::from(tokio::spawn(Self::node_health_check_task(
+        let task = AbortOnDropHandle::new(tokio::spawn(Self::node_health_check_task(
             node_id,
             cfg.get_id(),
             Arc::clone(&self.instance_mgr),

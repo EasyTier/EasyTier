@@ -12,14 +12,12 @@ use crossbeam::atomic::AtomicCell;
 #[cfg(feature = "kcp")]
 use kcp_sys::{endpoint::KcpEndpoint, stream::KcpStream};
 use tokio_util::sync::{CancellationToken, DropGuard};
+use tokio_util::task::AbortOnDropHandle;
 
 #[cfg(feature = "kcp")]
 use crate::gateway::kcp_proxy::NatDstKcpConnector;
 use crate::{
-    common::{
-        config::PortForwardConfig, global_ctx::GlobalCtxEvent, join_joinset_background,
-        scoped_task::ScopedTask,
-    },
+    common::{config::PortForwardConfig, global_ctx::GlobalCtxEvent, join_joinset_background},
     gateway::{
         fast_socks5::{
             server::{
@@ -473,7 +471,7 @@ pub struct Socks5Server {
     entries: Socks5EntrySet,
 
     udp_client_map: Arc<DashMap<UdpClientKey, Arc<UdpClientInfo>>>,
-    udp_forward_task: Arc<DashMap<UdpClientKey, ScopedTask<()>>>,
+    udp_forward_task: Arc<DashMap<UdpClientKey, AbortOnDropHandle<()>>>,
 
     #[cfg(feature = "kcp")]
     kcp_endpoint: Mutex<Option<Weak<KcpEndpoint>>>,
@@ -997,7 +995,7 @@ impl Socks5Server {
                         let client_addr = addr;
                         udp_forward_task.insert(
                             udp_client_key.clone(),
-                            ScopedTask::from(tokio::spawn(async move {
+                            AbortOnDropHandle::new(tokio::spawn(async move {
                                 loop {
                                     let mut buf = vec![0u8; 8192];
                                     match socks_udp.recv_from(&mut buf).await {

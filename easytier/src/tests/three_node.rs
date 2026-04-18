@@ -779,10 +779,8 @@ pub async fn data_compress(
 #[tokio::test]
 #[serial_test::serial]
 pub async fn proxy_three_node_disconnect_test(#[values("tcp", "wg")] proto: &str) {
-    use crate::{
-        common::scoped_task::ScopedTask,
-        tunnel::wireguard::{WgConfig, WgTunnelConnector},
-    };
+    use crate::tunnel::wireguard::{WgConfig, WgTunnelConnector};
+    use tokio_util::task::AbortOnDropHandle;
 
     let insts = init_three_node(proto).await;
     let mut inst4 = Instance::new(get_inst_config(
@@ -838,7 +836,7 @@ pub async fn proxy_three_node_disconnect_test(#[values("tcp", "wg")] proto: &str
             .await;
 
             set_link_status("net_d", false);
-            let _t = ScopedTask::from(tokio::spawn(async move {
+            let _t = AbortOnDropHandle::new(tokio::spawn(async move {
                 // do some ping in net_a to trigger net_c pingpong
                 loop {
                     ping_test("net_a", "10.144.144.4", Some(1)).await;

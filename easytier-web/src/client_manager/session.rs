@@ -7,7 +7,6 @@ use std::{
 
 use anyhow::Context;
 use easytier::{
-    common::scoped_task::ScopedTask,
     proto::{
         api::manage::{
             NetworkConfig, RunNetworkInstanceRequest, WebClientService,
@@ -21,6 +20,7 @@ use easytier::{
     tunnel::Tunnel,
 };
 use tokio::sync::{RwLock, broadcast};
+use tokio_util::task::AbortOnDropHandle;
 
 use super::storage::{Storage, StorageToken, WeakRefStorage};
 use crate::FeatureFlags;
@@ -396,7 +396,7 @@ pub struct Session {
 
     data: SharedSessionData,
 
-    run_network_on_start_task: Option<ScopedTask<()>>,
+    run_network_on_start_task: Option<AbortOnDropHandle<()>>,
 }
 
 impl Debug for Session {
@@ -438,14 +438,14 @@ impl Session {
         self.rpc_mgr.run_with_tunnel(tunnel);
 
         let data = self.data.read().await;
-        self.run_network_on_start_task.replace(
-            tokio::spawn(Self::run_network_on_start(
-                data.heartbeat_waiter(),
-                data.storage.clone(),
-                self.scoped_rpc_client(),
-            ))
-            .into(),
-        );
+        self.run_network_on_start_task
+            .replace(AbortOnDropHandle::new(tokio::spawn(
+                Self::run_network_on_start(
+                    data.heartbeat_waiter(),
+                    data.storage.clone(),
+                    self.scoped_rpc_client(),
+                ),
+            )));
     }
 
     async fn run_network_on_start(

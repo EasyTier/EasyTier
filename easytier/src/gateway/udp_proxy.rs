@@ -21,13 +21,14 @@ use tokio::{
     task::{JoinHandle, JoinSet},
     time::timeout,
 };
+use tokio_util::task::AbortOnDropHandle;
 
 use tracing::Level;
 
 use super::{CidrSet, ip_reassembler::IpReassembler};
 use crate::tunnel::common::bind;
 use crate::{
-    common::{PeerId, error::Error, global_ctx::ArcGlobalCtx, scoped_task::ScopedTask},
+    common::{PeerId, error::Error, global_ctx::ArcGlobalCtx},
     gateway::ip_reassembler::{ComposeIpv4PacketArgs, compose_ipv4_packet},
     peers::{PeerPacketFilter, peer_manager::PeerManager},
     tunnel::{
@@ -149,7 +150,7 @@ impl UdpNatEntry {
         let (s, mut r) = channel(128);
 
         let self_clone = self.clone();
-        let recv_task = ScopedTask::from(tokio::spawn(async move {
+        let recv_task = AbortOnDropHandle::new(tokio::spawn(async move {
             let mut cur_buf = BytesMut::new();
             loop {
                 if self_clone
@@ -194,7 +195,7 @@ impl UdpNatEntry {
         }));
 
         let self_clone = self.clone();
-        let send_task = ScopedTask::from(tokio::spawn(async move {
+        let send_task = AbortOnDropHandle::new(tokio::spawn(async move {
             let mut ip_id = 1;
             while let Some((mut packet, len, src_socket)) = r.recv().await {
                 let SocketAddr::V4(mut src_v4) = src_socket else {

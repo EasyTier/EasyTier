@@ -5,8 +5,8 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::sync::Notify;
 use tokio::time;
+use tokio_util::task::AbortOnDropHandle;
 
-use crate::common::scoped_task::ScopedTask;
 use crate::proto::common::LimiterConfig;
 
 /// Token Bucket rate limiter using atomic operations
@@ -14,7 +14,7 @@ pub struct TokenBucket {
     available_tokens: AtomicU64, // Current token count (atomic)
     last_refill_time: AtomicU64, // Last refill time as micros since epoch
     config: BucketConfig,        // Immutable configuration
-    refill_task: Mutex<Option<ScopedTask<()>>>, // Background refill task
+    refill_task: Mutex<Option<AbortOnDropHandle<()>>>, // Background refill task
     start_time: Instant,         // Bucket creation time
 
     refill_notifier: Arc<Notify>,
@@ -91,7 +91,7 @@ impl TokenBucket {
             .refill_task
             .lock()
             .unwrap()
-            .replace(refill_task.into());
+            .replace(AbortOnDropHandle::new(refill_task));
         arc_self
     }
 
@@ -172,7 +172,7 @@ impl TokenBucket {
 pub struct TokenBucketManager {
     buckets: Arc<DashMap<String, Arc<TokenBucket>>>,
 
-    retain_task: ScopedTask<()>,
+    retain_task: AbortOnDropHandle<()>,
 }
 
 impl Default for TokenBucketManager {
@@ -205,7 +205,7 @@ impl TokenBucketManager {
 
         Self {
             buckets,
-            retain_task: retain_task.into(),
+            retain_task: AbortOnDropHandle::new(retain_task),
         }
     }
 
