@@ -197,6 +197,10 @@ impl ClientManager {
         self.storage.list_user_clients(user_id)
     }
 
+    pub async fn list_machine_tokens_by_user_id(&self, user_id: UserIdInDb) -> Vec<StorageToken> {
+        self.storage.list_user_storage_tokens(user_id)
+    }
+
     pub async fn get_heartbeat_requests(&self, client_url: &url::Url) -> Option<HeartbeatRequest> {
         let s = self.client_sessions.get(client_url)?.clone();
         s.data().read().await.req()

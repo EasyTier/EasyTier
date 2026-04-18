@@ -114,6 +114,19 @@ impl Storage {
             .unwrap_or_default()
     }
 
+    pub fn list_user_storage_tokens(&self, user_id: UserIdInDb) -> Vec<StorageToken> {
+        self.0
+            .user_clients_map
+            .get(&user_id)
+            .map(|info_map| {
+                info_map
+                    .iter()
+                    .map(|info| info.value().storage_token.clone())
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
     pub fn db(&self) -> &Db {
         &self.0.db
     }

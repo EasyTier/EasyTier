@@ -84,6 +84,7 @@ struct RemoveNetworkJsonReq {
 
 #[derive(Debug, serde::Deserialize, serde::Serialize)]
 struct ListMachineItem {
+    machine_id: uuid::Uuid,
     client_url: Option<url::Url>,
     info: Option<HeartbeatRequest>,
     location: Option<Location>,
@@ -203,14 +204,15 @@ impl NetworkApi {
     ) -> Result<Json<ListMachineJsonResp>, HttpHandleError> {
         let user_id = Self::get_user_id(&auth_session)?;
 
-        let client_urls = client_mgr.list_machine_by_user_id(user_id).await;
+        let machine_tokens = client_mgr.list_machine_tokens_by_user_id(user_id).await;
 
         let mut machines = vec![];
-        for item in client_urls.iter() {
-            let client_url = item.clone();
+        for token in machine_tokens.iter() {
+            let client_url = token.client_url.clone();
             let session = client_mgr.get_heartbeat_requests(&client_url).await;
             let location = client_mgr.get_machine_location(&client_url).await;
             machines.push(ListMachineItem {
+                machine_id: token.machine_id,
                 client_url: Some(client_url),
                 info: session,
                 location,
