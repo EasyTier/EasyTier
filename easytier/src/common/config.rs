@@ -583,7 +583,7 @@ impl ConfigLoader for TomlConfigLoader {
         hostname.unwrap_or_else(|| {
             sanitize(
                 hostname::get()
-                    .unwrap_or_default()
+                    .unwrap_or_else(|_| "localhost".into())
                     .to_string_lossy()
                     .as_ref(),
             )

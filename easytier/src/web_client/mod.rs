@@ -227,7 +227,7 @@ pub async fn run_web_client(
     global_ctx.set_flags(flags);
     let hostname = hostname.unwrap_or_else(|| {
         hostname::get()
-            .unwrap_or_default()
+            .unwrap_or_else(|_| "localhost".into())
             .to_string_lossy()
             .into_owned()
     });
