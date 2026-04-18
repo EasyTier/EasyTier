@@ -213,7 +213,7 @@ mod tests {
     ) -> Arc<PeerManager> {
         let ctx = get_mock_global_ctx();
         let mut dns = ctx.config.get_dns();
-        dns.set_name(host);
+        dns.name = host.parse().unwrap();
         dns.zones.push(
             ZoneConfig::dedicated(
                 Some(Uuid::new_v4()),

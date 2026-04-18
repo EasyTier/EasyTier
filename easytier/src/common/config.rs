@@ -581,10 +581,12 @@ impl ConfigLoader for TomlConfigLoader {
 
         self.set_hostname(hostname.clone());
         hostname.unwrap_or_else(|| {
-            hostname::get()
-                .unwrap_or_default()
-                .to_string_lossy()
-                .into_owned()
+            sanitize(
+                hostname::get()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .as_ref(),
+            )
         })
     }
 

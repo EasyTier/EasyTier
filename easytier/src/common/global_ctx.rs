@@ -23,7 +23,7 @@ use super::{
 };
 #[cfg(feature = "magic-dns")]
 use crate::dns::{
-    config::{DnsExportConfig, DnsGlobalCtxExt},
+    config::{DnsConfigLoaderExt, DnsExportConfig, DnsGlobalCtxExt},
     server::DnsServer,
 };
 use crate::{
@@ -691,18 +691,22 @@ impl DnsGlobalCtxExt for GlobalCtx {
     }
 
     fn dns_self_zone(&self) -> crate::dns::config::zone::ZoneConfig {
-        let fqdn = self.config.get_dns().get_fqdn();
+        let dns = self.config.get_dns();
+        let mut hostname = dns.name.to_string();
+        if hostname.is_empty() {
+            hostname = self.get_hostname();
+        }
+        let fqdn = dns
+            .domain
+            .prepend_label(hostname)
+            .unwrap_or_default()
+            .into();
         let ipv4 = self.get_ipv4().map(|ip| ip.address());
         let ipv6 = self.get_ipv6().map(|ip| ip.address());
         let ipv6 = ipv6.map(|a| vec![a]).unwrap_or_default();
 
-        crate::dns::config::zone::ZoneConfig::dedicated(
-            Some(self.get_id()),
-            fqdn.clone(),
-            ipv4,
-            ipv6,
-        )
-        .unwrap()
+        crate::dns::config::zone::ZoneConfig::dedicated(Some(self.get_id()), fqdn, ipv4, ipv6)
+            .unwrap()
     }
 
     fn dns_export_config(&self) -> DnsExportConfig {

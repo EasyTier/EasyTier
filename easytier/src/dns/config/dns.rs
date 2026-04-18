@@ -4,13 +4,11 @@ use crate::dns::config::{DNS_DEFAULT_ADDRESS, DNS_DEFAULT_DOMAIN};
 use crate::dns::server::DnsServer;
 use crate::dns::utils::addr::NameServerAddrGroup;
 use crate::proto::dns::GetExportConfigResponse;
-use crate::utils::dns::parse;
 use derivative::Derivative;
 use hickory_net::xfer::Protocol;
-use hickory_proto::rr::{LowerName, Name};
+use hickory_proto::rr::LowerName;
 use serde::{Deserialize, Deserializer, Serialize};
 use std::collections::HashMap;
-use std::iter;
 use std::sync::Arc;
 
 #[derive(Derivative, Debug, Clone, Deserialize, Serialize, PartialEq)]
@@ -21,7 +19,7 @@ pub struct DnsConfig {
     pub zones: Vec<ZoneConfig>,
     #[serde(flatten)]
     pub policies: HashMap<LowerName, DnsPolicyConfig>,
-    name: LowerName,
+    pub name: LowerName,
     #[derivative(Default(value = "DNS_DEFAULT_DOMAIN.clone()"))]
     pub domain: LowerName,
     #[derivative(Default(value = "vec![DNS_DEFAULT_ADDRESS].into()"))]
@@ -45,41 +43,6 @@ impl DnsConfig {
             }
         }
         Ok(addresses)
-    }
-}
-
-impl DnsConfig {
-    pub fn get_name(&self) -> LowerName {
-        if self.name.is_empty() {
-            parse(
-                hostname::get()
-                    .unwrap_or_default()
-                    .to_string_lossy()
-                    .as_ref(),
-            )
-        } else {
-            self.name.clone()
-        }
-    }
-
-    pub fn set_name(&mut self, name: &str) {
-        self.name = parse(name);
-    }
-
-    pub fn get_fqdn(&self) -> LowerName {
-        Name::from(self.get_name())
-            .append_domain(&self.domain)
-            .unwrap()
-            .into()
-    }
-
-    pub fn set_fqdn(&mut self, fqdn: &str) {
-        let mut fqdn = Name::from(parse(fqdn));
-        fqdn.set_fqdn(true);
-        self.name = Name::from_labels(iter::once(fqdn.iter().next().unwrap_or_default()))
-            .unwrap_or_default()
-            .into();
-        self.domain = fqdn.base_name().into();
     }
 }
 

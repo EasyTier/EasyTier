@@ -47,7 +47,7 @@ pub async fn prepare_env_with_tld_dns_zone(
     ctx.set_ipv4(Some(tun_ip));
 
     let mut dns_config = ctx.config.get_dns();
-    dns_config.set_name(dns_name);
+    dns_config.name = dns_name.parse().unwrap();
     if let Some(zone) = tld_dns_zone {
         dns_config.domain = zone.parse().expect("invalid test dns zone");
     }
