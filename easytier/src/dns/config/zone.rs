@@ -69,20 +69,21 @@ impl ZoneConfig {
     }
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Default)]
+#[derive(Derivative, Debug, Clone, PartialEq, Deserialize, Serialize)]
+#[derivative(Default)]
+#[serde(default)]
 pub struct ZoneConfigInner {
-    #[serde(default = "Uuid::new_v4")]
+    #[derivative(Default(value = "Uuid::new_v4()"))]
     #[serde(skip_serializing)]
     id: Uuid,
     pub origin: LowerName,
-    #[serde(default)]
     pub ttl: u32,
-    #[serde(default)]
     pub records: Vec<String>,
-    #[serde(default)]
     pub forwarders: NameServerAddrGroup,
     #[serde(flatten)]
     pub policy: ZonePolicyConfig,
+    #[derivative(Default(value = "true"))]
+    pub fallthrough: bool,
 }
 
 impl From<ZoneConfigInner> for ZoneData {
@@ -93,6 +94,7 @@ impl From<ZoneConfigInner> for ZoneData {
             ttl: value.ttl,
             records: value.records,
             forwarders: value.forwarders.into(),
+            fallthrough: value.fallthrough,
         }
     }
 }

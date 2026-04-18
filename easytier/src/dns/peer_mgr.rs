@@ -250,6 +250,7 @@ mod tests {
                 ttl: 60,
                 records: vec!["@ IN A 10.0.0.11".to_string()],
                 forwarders: vec![],
+                fallthrough: false,
             }],
             fqdn: "invalid.peer.test".to_string(),
         };

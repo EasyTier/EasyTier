@@ -114,6 +114,7 @@ pub fn zone_data_a_with_forwarders(origin: &str, record: &str, forwarders: Vec<&
             .into_iter()
             .map(|f| Url::from_str(f).expect("invalid forwarder"))
             .collect(),
+        fallthrough: false,
     }
 }
 
@@ -344,8 +345,10 @@ async fn wait_peer_zone_visibility(
 
     loop {
         dns.refresh(target_peer_id).await;
-        let visible = dns
-            .snapshot()
+
+        let snapshot = dns.snapshot();
+
+        let visible = snapshot
             .zones
             .iter()
             .any(|z| z.origin.contains(zone_origin_substr));
@@ -354,12 +357,19 @@ async fn wait_peer_zone_visibility(
             return;
         }
 
+        let origins = snapshot
+            .zones
+            .iter()
+            .map(|z| z.origin.clone())
+            .collect::<Vec<_>>();
+
         assert!(
             Instant::now() < deadline,
-            "zone visibility mismatch for '{}': expected {}, got {}",
+            "zone visibility mismatch for '{}': expected {}, got {}, current origins: {:?}",
             zone_origin_substr,
             expected_visible,
-            visible
+            visible,
+            origins
         );
         tokio::time::sleep(Duration::from_millis(200)).await;
     }

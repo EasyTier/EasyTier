@@ -10,6 +10,7 @@ message ZoneData {
   uint32 ttl = 3;
   repeated string records = 4;
   repeated common.Url forwarders = 5;
+  bool fallthrough = 6;
 }
 
 message GetExportConfigRequest {}

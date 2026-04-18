@@ -1,6 +1,6 @@
 use crate::common::dns::get_default_resolver_config;
 use crate::dns::utils::addr::{NameServerAddr, NameServerAddrGroup};
-use crate::dns::utils::zone_handler::ArcZoneHandler;
+use crate::dns::utils::zone_handler::{ArcZoneHandler, ChainedZoneHandler};
 use crate::proto;
 use crate::proto::utils::RepeatedMessageModel;
 use hickory_net::runtime::TokioRuntimeProvider;
@@ -23,6 +23,7 @@ pub struct Zone {
     origin: LowerName,
     records: BTreeMap<RrKey, RecordSet>,
     pub forward: Option<ForwardConfig>,
+    fallthrough: bool,
 }
 
 impl Zone {
@@ -35,6 +36,7 @@ impl Zone {
         };
         let mut zone = Self::new(".".parse().unwrap());
         zone.forward = Some(forward);
+        zone.fallthrough = false;
         zone
     }
 }
@@ -46,6 +48,7 @@ impl Zone {
             origin: name,
             records: BTreeMap::new(),
             forward: None,
+            fallthrough: true,
         }
     }
 
@@ -64,7 +67,11 @@ impl Zone {
                     .map(|(k, v)| (k, Arc::new(v))),
             );
 
-            Arc::new(memory) as ArcZoneHandler
+            if self.fallthrough {
+                Arc::new(ChainedZoneHandler::from(memory)) as _
+            } else {
+                Arc::new(memory) as _
+            }
         })
     }
 
@@ -77,7 +84,13 @@ impl Zone {
             .build()
             .inspect_err(|e| tracing::error!("failed to create forward zone_handler: {:?}", e))
             .ok()
-            .map(|f| Arc::new(f) as ArcZoneHandler)
+            .map(|f| {
+                if self.fallthrough {
+                    Arc::new(ChainedZoneHandler::from(f)) as _
+                } else {
+                    Arc::new(f) as _
+                }
+            })
         })
     }
 }
@@ -111,6 +124,7 @@ impl TryFrom<&proto::dns::ZoneData> for Zone {
             origin: origin.into(),
             records,
             forward,
+            fallthrough: value.fallthrough,
         })
     }
 }
@@ -139,6 +153,7 @@ impl From<Zone> for proto::dns::ZoneData {
             ttl: 0,
             records,
             forwarders,
+            fallthrough: value.fallthrough,
         }
     }
 }
@@ -195,7 +210,12 @@ mod tests {
         }
     }
 
-    fn zone_data(origin: &str, records: Vec<&str>, forwarders: Vec<&str>) -> ZoneData {
+    fn zone_data_with_fallthrough(
+        origin: &str,
+        records: Vec<&str>,
+        forwarders: Vec<&str>,
+        fallthrough: bool,
+    ) -> ZoneData {
         ZoneData {
             id: Some(Uuid::new_v4().into()),
             origin: origin.to_string(),
@@ -205,7 +225,12 @@ mod tests {
                 .into_iter()
                 .map(|f| Url::from_str(f).expect("invalid forwarder"))
                 .collect(),
+            fallthrough,
         }
+    }
+
+    fn zone_data(origin: &str, records: Vec<&str>, forwarders: Vec<&str>) -> ZoneData {
+        zone_data_with_fallthrough(origin, records, forwarders, true)
     }
 
     fn build_catalog(zones: ZoneGroup) -> Catalog {
@@ -273,6 +298,7 @@ mod tests {
             ttl: 60,
             records: vec!["@ IN A 10.0.0.1".to_string()],
             forwarders: vec![],
+            fallthrough: false,
         };
 
         let err = Zone::try_from(&data).expect_err("missing id should fail");
@@ -412,6 +438,67 @@ mod tests {
 
         let (rcode, _message) = lookup_message(&catalog, "absent.test.", RecordType::A).await?;
         assert_eq!(rcode, ResponseCode::Refused);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn catalog_lookup_falls_back_to_later_zone_handler_with_same_origin() -> anyhow::Result<()>
+    {
+        let zones: ZoneGroup = vec![
+            // First matching zone exists but does not contain the queried name.
+            Zone::try_from(&zone_data(
+                "fallback.test",
+                vec!["first IN A 10.20.30.1"],
+                vec![],
+            ))?,
+            // Second matching zone should be queried as fallback and answer.
+            Zone::try_from(&zone_data(
+                "fallback.test",
+                vec!["target IN A 10.20.30.2"],
+                vec![],
+            ))?,
+        ]
+        .into();
+        let catalog = build_catalog(zones);
+
+        let (rcode, message) =
+            lookup_message(&catalog, "target.fallback.test.", RecordType::A).await?;
+        assert_eq!(rcode, ResponseCode::NoError);
+        assert!(has_a_answer(
+            &message.expect("response should exist"),
+            Ipv4Addr::new(10, 20, 30, 2)
+        ));
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn catalog_lookup_does_not_fall_back_when_fallthrough_disabled() -> anyhow::Result<()> {
+        let zones: ZoneGroup = vec![
+            Zone::try_from(&zone_data_with_fallthrough(
+                "fallback-disabled.test",
+                vec!["first IN A 10.20.31.1"],
+                vec![],
+                false,
+            ))?,
+            Zone::try_from(&zone_data_with_fallthrough(
+                "fallback-disabled.test",
+                vec!["target IN A 10.20.31.2"],
+                vec![],
+                false,
+            ))?,
+        ]
+        .into();
+        let catalog = build_catalog(zones);
+
+        let (rcode, message) =
+            lookup_message(&catalog, "target.fallback-disabled.test.", RecordType::A).await?;
+
+        assert_ne!(rcode, ResponseCode::NoError);
+        if let Some(message) = message.as_ref() {
+            assert!(!has_a_answer(message, Ipv4Addr::new(10, 20, 31, 2)));
+        }
 
         Ok(())
     }
