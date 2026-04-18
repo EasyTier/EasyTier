@@ -22,6 +22,7 @@ const WEB_SECURE_CIPHER_ALGORITHM: &str = "aes-gcm";
 const WEB_SESSION_GENERATION: u32 = 1;
 const WEB_INITIAL_EPOCH: u32 = 0;
 const WEB_SECURE_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(3);
+const WEB_SECURE_ACCEPT_TIMEOUT: Duration = WEB_SECURE_HANDSHAKE_TIMEOUT;
 
 struct RawSplitTunnel {
     info: Option<TunnelInfo>,
@@ -242,7 +243,7 @@ pub async fn accept_or_upgrade_server_tunnel(
     let mut stream = stream;
     let mut sink = sink;
 
-    let first_packet = match tokio::time::timeout(Duration::from_secs(1), stream.next()).await {
+    let first_packet = match tokio::time::timeout(WEB_SECURE_ACCEPT_TIMEOUT, stream.next()).await {
         Ok(Some(Ok(packet))) => packet,
         Ok(Some(Err(error))) => return Err(error),
         Ok(None) => return Err(TunnelError::Shutdown),
@@ -335,5 +336,22 @@ mod tests {
 
         let err = upgrade_client_tunnel(client_tunnel).await.unwrap_err();
         assert!(matches!(err, TunnelError::Timeout(_)));
+    }
+
+    #[tokio::test]
+    async fn accept_secure_tunnel_after_short_client_delay() {
+        let (server_tunnel, client_tunnel) = create_ring_tunnel_pair();
+
+        let server_task =
+            tokio::spawn(async move { accept_or_upgrade_server_tunnel(server_tunnel).await });
+
+        tokio::time::sleep(Duration::from_millis(1500)).await;
+
+        let client_task = tokio::spawn(async move { upgrade_client_tunnel(client_tunnel).await });
+
+        let (server_res, client_res) = tokio::join!(server_task, client_task);
+        let (_, secure) = server_res.unwrap().unwrap();
+        assert!(secure);
+        assert!(client_res.unwrap().is_ok());
     }
 }
