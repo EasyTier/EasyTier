@@ -630,14 +630,138 @@ impl Session {
     pub async fn get_heartbeat_req(&self) -> Option<HeartbeatRequest> {
         self.data.read().await.req()
     }
+
+    #[cfg(test)]
+    pub async fn seed_test_state(
+        &self,
+        storage_token: StorageToken,
+        heartbeat_req: Option<HeartbeatRequest>,
+    ) {
+        let mut data = self.data.write().await;
+        data.storage_token = Some(storage_token);
+        data.req = heartbeat_req;
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use easytier::rpc_service::remote_client::{ListNetworkProps, Storage as _};
+    use super::*;
+    use crate::client_manager::storage::Storage;
+    use crate::db::Db;
+    use easytier::rpc_service::remote_client::ListNetworkProps;
     use serde_json::json;
 
-    use super::{super::storage::Storage, *};
+    fn webhook_disabled() -> SharedWebhookConfig {
+        Arc::new(crate::webhook::WebhookConfig::new(
+            None, None, None, None, None,
+        ))
+    }
+
+    fn make_heartbeat(user_token: &str, machine_id: uuid::Uuid) -> HeartbeatRequest {
+        HeartbeatRequest {
+            machine_id: Some(machine_id.into()),
+            inst_id: Some(uuid::Uuid::new_v4().into()),
+            user_token: user_token.to_string(),
+            easytier_version: "test-version".to_string(),
+            hostname: "test-host".to_string(),
+            report_time: chrono::Local::now().to_rfc3339(),
+            device_os: None,
+            running_network_instances: vec![],
+        }
+    }
+
+    fn make_service(
+        storage: &Storage,
+        allow_auto_create_user: bool,
+        client_url: &str,
+    ) -> SessionRpcService {
+        let data = SessionData::new(
+            storage.weak_ref(),
+            client_url.parse().unwrap(),
+            None,
+            Arc::new(FeatureFlags {
+                allow_auto_create_user,
+                ..FeatureFlags::default()
+            }),
+            webhook_disabled(),
+        );
+
+        SessionRpcService {
+            data: Arc::new(RwLock::new(data)),
+        }
+    }
+
+    #[tokio::test]
+    async fn heartbeat_token_path_accepts_existing_user_token() {
+        let db = Db::memory_db().await;
+        let inserted_user = db
+            .create_user_and_join_users_group(
+                "heartbeat-user",
+                password_auth::generate_hash("password-for-tests"),
+            )
+            .await
+            .unwrap();
+        let storage = Storage::new(db.clone());
+        let service = make_service(&storage, false, "tcp://127.0.0.1:10001");
+        let machine_id = uuid::Uuid::new_v4();
+
+        let ret = service
+            .handle_heartbeat(make_heartbeat("heartbeat-user", machine_id))
+            .await;
+        assert!(ret.is_ok());
+
+        let data = service.data.read().await;
+        let token = data
+            .storage_token
+            .as_ref()
+            .expect("storage token should be persisted");
+        assert_eq!(token.user_id, inserted_user.id);
+        assert_eq!(token.token, "heartbeat-user");
+        assert_eq!(token.machine_id, machine_id);
+    }
+
+    #[tokio::test]
+    async fn heartbeat_token_path_rejects_unknown_user_when_auto_create_disabled() {
+        let storage = Storage::new(Db::memory_db().await);
+        let service = make_service(&storage, false, "tcp://127.0.0.1:10002");
+
+        let ret = service
+            .handle_heartbeat(make_heartbeat("missing-user", uuid::Uuid::new_v4()))
+            .await;
+
+        assert!(ret.is_err());
+        assert!(
+            ret.unwrap_err()
+                .to_string()
+                .contains("User not found by token")
+        );
+    }
+
+    #[tokio::test]
+    async fn heartbeat_token_path_auto_creates_user_when_enabled() {
+        let db = Db::memory_db().await;
+        let storage = Storage::new(db.clone());
+        let service = make_service(&storage, true, "tcp://127.0.0.1:10003");
+        let machine_id = uuid::Uuid::new_v4();
+
+        let ret = service
+            .handle_heartbeat(make_heartbeat("auto-created-heartbeat-user", machine_id))
+            .await;
+        assert!(ret.is_ok());
+
+        let user_id = db
+            .get_user_id("auto-created-heartbeat-user")
+            .await
+            .unwrap()
+            .expect("user should be auto-created from heartbeat token");
+        let data = service.data.read().await;
+        let token = data
+            .storage_token
+            .as_ref()
+            .expect("storage token should be persisted");
+        assert_eq!(token.user_id, user_id);
+        assert_eq!(token.machine_id, machine_id);
+    }
 
     #[tokio::test]
     async fn reconcile_managed_network_configs_upserts_and_deletes_exact_set() {

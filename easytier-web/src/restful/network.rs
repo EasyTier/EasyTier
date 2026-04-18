@@ -2,7 +2,6 @@ use axum::extract::Path;
 use axum::http::StatusCode;
 use axum::routing::{delete, post};
 use axum::{Json, Router, extract::State, routing::get};
-use axum_login::AuthUser;
 use easytier::launcher::NetworkConfig;
 use easytier::proto::common::Void;
 use easytier::proto::{api::manage::*, web::*};
@@ -14,7 +13,7 @@ use sea_orm::DbErr;
 use crate::client_manager::session::Location;
 use crate::db::UserIdInDb;
 
-use super::users::AuthSession;
+use super::bearer_auth::BearerAuth;
 use super::{
     AppState, AppStateInner, Error, HttpHandleError, RpcError, convert_db_error, other_error,
 };
@@ -97,41 +96,32 @@ struct ListMachineJsonResp {
 pub struct NetworkApi;
 
 impl NetworkApi {
-    fn get_user_id(auth_session: &AuthSession) -> Result<UserIdInDb, (StatusCode, Json<Error>)> {
-        let Some(user_id) = auth_session.user.as_ref().map(|x| x.id()) else {
-            return Err((
-                StatusCode::UNAUTHORIZED,
-                other_error("No user id found".to_string()).into(),
-            ));
-        };
-        Ok(user_id)
+    fn get_user_id(auth: &BearerAuth) -> UserIdInDb {
+        auth.user_id()
     }
 
     async fn handle_validate_config(
-        auth_session: AuthSession,
+        auth: BearerAuth,
         State(client_mgr): AppState,
         Path(machine_id): Path<uuid::Uuid>,
         Json(payload): Json<ValidateConfigJsonReq>,
     ) -> Result<Json<ValidateConfigResponse>, HttpHandleError> {
         Ok(client_mgr
-            .handle_validate_config(
-                (Self::get_user_id(&auth_session)?, machine_id),
-                payload.config,
-            )
+            .handle_validate_config((Self::get_user_id(&auth), machine_id), payload.config)
             .await
             .map_err(convert_error)?
             .into())
     }
 
     async fn handle_run_network_instance(
-        auth_session: AuthSession,
+        auth: BearerAuth,
         State(client_mgr): AppState,
         Path(machine_id): Path<uuid::Uuid>,
         Json(payload): Json<RunNetworkJsonReq>,
     ) -> Result<Json<Void>, HttpHandleError> {
         client_mgr
             .handle_run_network_instance(
-                (Self::get_user_id(&auth_session)?, machine_id),
+                (Self::get_user_id(&auth), machine_id),
                 payload.config,
                 payload.save,
             )
@@ -141,13 +131,13 @@ impl NetworkApi {
     }
 
     async fn handle_collect_one_network_info(
-        auth_session: AuthSession,
+        auth: BearerAuth,
         State(client_mgr): AppState,
         Path((machine_id, inst_id)): Path<(uuid::Uuid, uuid::Uuid)>,
     ) -> Result<Json<CollectNetworkInfoResponse>, HttpHandleError> {
         Ok(client_mgr
             .handle_collect_network_info(
-                (Self::get_user_id(&auth_session)?, machine_id),
+                (Self::get_user_id(&auth), machine_id),
                 Some(vec![inst_id]),
             )
             .await
@@ -156,52 +146,46 @@ impl NetworkApi {
     }
 
     async fn handle_collect_network_info(
-        auth_session: AuthSession,
+        auth: BearerAuth,
         State(client_mgr): AppState,
         Path(machine_id): Path<uuid::Uuid>,
         Json(payload): Json<CollectNetworkInfoJsonReq>,
     ) -> Result<Json<CollectNetworkInfoResponse>, HttpHandleError> {
         Ok(client_mgr
-            .handle_collect_network_info(
-                (Self::get_user_id(&auth_session)?, machine_id),
-                payload.inst_ids,
-            )
+            .handle_collect_network_info((Self::get_user_id(&auth), machine_id), payload.inst_ids)
             .await
             .map_err(convert_error)?
             .into())
     }
 
     async fn handle_list_network_instance_ids(
-        auth_session: AuthSession,
+        auth: BearerAuth,
         State(client_mgr): AppState,
         Path(machine_id): Path<uuid::Uuid>,
     ) -> Result<Json<ListNetworkInstanceIdsJsonResp>, HttpHandleError> {
         Ok(client_mgr
-            .handle_list_network_instance_ids((Self::get_user_id(&auth_session)?, machine_id))
+            .handle_list_network_instance_ids((Self::get_user_id(&auth), machine_id))
             .await
             .map_err(convert_error)?
             .into())
     }
 
     async fn handle_remove_network_instance(
-        auth_session: AuthSession,
+        auth: BearerAuth,
         State(client_mgr): AppState,
         Path((machine_id, inst_id)): Path<(uuid::Uuid, uuid::Uuid)>,
     ) -> Result<(), HttpHandleError> {
         client_mgr
-            .handle_remove_network_instances(
-                (Self::get_user_id(&auth_session)?, machine_id),
-                vec![inst_id],
-            )
+            .handle_remove_network_instances((Self::get_user_id(&auth), machine_id), vec![inst_id])
             .await
             .map_err(convert_error)
     }
 
     async fn handle_list_machines(
-        auth_session: AuthSession,
+        auth: BearerAuth,
         State(client_mgr): AppState,
     ) -> Result<Json<ListMachineJsonResp>, HttpHandleError> {
-        let user_id = Self::get_user_id(&auth_session)?;
+        let user_id = Self::get_user_id(&auth);
 
         let client_urls = client_mgr.list_machine_by_user_id(user_id).await;
 
@@ -221,7 +205,7 @@ impl NetworkApi {
     }
 
     async fn handle_update_network_state(
-        auth_session: AuthSession,
+        auth: BearerAuth,
         State(client_mgr): AppState,
         Path((machine_id, inst_id)): Path<(uuid::Uuid, Option<uuid::Uuid>)>,
         Json(payload): Json<UpdateNetworkStateJsonReq>,
@@ -236,7 +220,7 @@ impl NetworkApi {
 
         client_mgr
             .handle_update_network_state(
-                (auth_session.user.unwrap().id(), machine_id),
+                (Self::get_user_id(&auth), machine_id),
                 inst_id,
                 payload.disabled,
             )
@@ -245,7 +229,7 @@ impl NetworkApi {
     }
 
     async fn handle_get_network_metas(
-        auth_session: AuthSession,
+        auth: BearerAuth,
         State(client_mgr): AppState,
         Path(machine_id): Path<uuid::Uuid>,
         Json(payload): Json<GetNetworkMetasJsonReq>,
@@ -253,7 +237,7 @@ impl NetworkApi {
         Ok(Json(
             client_mgr
                 .handle_get_network_metas(
-                    (Self::get_user_id(&auth_session)?, machine_id),
+                    (Self::get_user_id(&auth), machine_id),
                     payload.instance_ids,
                 )
                 .await
@@ -262,7 +246,7 @@ impl NetworkApi {
     }
 
     async fn handle_save_network_config(
-        auth_session: AuthSession,
+        auth: BearerAuth,
         State(client_mgr): AppState,
         Path((machine_id, inst_id)): Path<(uuid::Uuid, uuid::Uuid)>,
         Json(payload): Json<SaveNetworkJsonReq>,
@@ -275,7 +259,7 @@ impl NetworkApi {
         }
         client_mgr
             .handle_save_network_config(
-                (Self::get_user_id(&auth_session)?, machine_id),
+                (Self::get_user_id(&auth), machine_id),
                 inst_id,
                 payload.config,
             )
@@ -284,19 +268,16 @@ impl NetworkApi {
     }
 
     async fn handle_get_network_config(
-        auth_session: AuthSession,
+        auth: BearerAuth,
         State(client_mgr): AppState,
         Path((machine_id, inst_id)): Path<(uuid::Uuid, uuid::Uuid)>,
     ) -> Result<Json<NetworkConfig>, HttpHandleError> {
         Ok(client_mgr
-            .handle_get_network_config((auth_session.user.unwrap().id(), machine_id), inst_id)
+            .handle_get_network_config((Self::get_user_id(&auth), machine_id), inst_id)
             .await
             .map_err(convert_error)?
             .into())
     }
-
-    // --- Token-authenticated machine-scoped handlers (no AuthSession) ---
-
     async fn handle_run_network_instance_internal(
         State(client_mgr): AppState,
         Path((user_id, machine_id)): Path<(UserIdInDb, uuid::Uuid)>,

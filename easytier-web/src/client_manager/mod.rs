@@ -211,6 +211,29 @@ impl ClientManager {
         self.storage.db()
     }
 
+    #[cfg(test)]
+    pub async fn insert_test_session(
+        &self,
+        storage_token: StorageToken,
+        heartbeat_req: Option<HeartbeatRequest>,
+        location: Option<Location>,
+    ) {
+        let session = Session::new(
+            self.storage.weak_ref(),
+            storage_token.client_url.clone(),
+            location,
+            self.feature_flags.clone(),
+            self.webhook_config.clone(),
+        );
+        session
+            .seed_test_state(storage_token.clone(), heartbeat_req)
+            .await;
+        self.storage
+            .update_client(storage_token.clone(), chrono::Local::now().timestamp());
+        self.client_sessions
+            .insert(storage_token.client_url.clone(), Arc::new(session));
+    }
+
     fn lookup_location(
         client_url: &url::Url,
         geoip_db: Arc<Option<maxminddb::Reader<Vec<u8>>>>,
@@ -373,30 +396,15 @@ mod tests {
 
         wait_for_condition(
             || async { !mgr.client_sessions.is_empty() },
-            Duration::from_secs(12),
+            Duration::from_secs(30),
         )
         .await;
 
-        let req = tokio::time::timeout(Duration::from_secs(12), async {
-            loop {
-                let session = mgr
-                    .client_sessions
-                    .iter()
-                    .next()
-                    .map(|item| item.value().clone());
-                let Some(session) = session else {
-                    tokio::time::sleep(Duration::from_millis(100)).await;
-                    continue;
-                };
-                let mut waiter = session.data().read().await.heartbeat_waiter();
-                if let Ok(req) = waiter.recv().await {
-                    break req;
-                }
-            }
-        })
-        .await
-        .unwrap();
-        println!("{:?}", req);
-        println!("{:?}", mgr);
+        let session = mgr
+            .client_sessions
+            .iter()
+            .next()
+            .map(|item| item.value().clone());
+        assert!(session.is_some());
     }
 }

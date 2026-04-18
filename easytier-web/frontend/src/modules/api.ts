@@ -14,6 +14,36 @@ export interface OidcConfigResponse {
 export interface LoginResponse {
     success: boolean;
     message: string;
+    token?: string;
+    expires_at?: string;
+}
+
+const TOKEN_KEY = 'auth_token';
+const EXPIRES_AT_KEY = 'auth_expires_at';
+
+export function getToken(): string | null {
+    return localStorage.getItem(TOKEN_KEY);
+}
+
+export function setToken(token: string, expires_at: string) {
+    localStorage.setItem(TOKEN_KEY, token);
+    localStorage.setItem(EXPIRES_AT_KEY, expires_at);
+}
+
+export function clearToken() {
+    localStorage.removeItem(TOKEN_KEY);
+    localStorage.removeItem(EXPIRES_AT_KEY);
+}
+
+export function isTokenExpired(): boolean {
+    const raw = localStorage.getItem(EXPIRES_AT_KEY);
+    if (!raw) return true;
+    const ts = Date.parse(raw);
+    if (!Number.isFinite(ts)) {
+        clearToken();
+        return true;
+    }
+    return Date.now() >= ts - 30_000;
 }
 
 export interface RegisterResponse {
@@ -29,7 +59,13 @@ export interface Credential {
 
 export interface RegisterData {
     credentials: Credential;
+    captcha_id: string;
     captcha: string;
+}
+
+export interface CaptchaChallengeResponse {
+    blob: Blob;
+    captcha_id: string | null;
 }
 
 export interface Summary {
@@ -66,7 +102,6 @@ export class ApiClient {
     constructor(baseUrl: string, authFailedCb: Function | undefined = undefined) {
         this.client = axios.create({
             baseURL: baseUrl.replace(/\/+$/, '') + '/api/v1',
-            withCredentials: true, // 如果需要支持跨域携带cookie
             headers: {
                 'Content-Type': 'application/json',
             },
@@ -75,21 +110,27 @@ export class ApiClient {
 
         // 添加请求拦截器
         this.client.interceptors.request.use((config: InternalAxiosRequestConfig) => {
+            const token = getToken();
+            if (token) {
+                config.headers.Authorization = `Bearer ${token}`;
+            }
             return config;
         }, (error: any) => {
             return Promise.reject(error);
         });
 
-        // 添加响应拦截器
-        this.client.interceptors.response.use((response: AxiosResponse) => {
-            console.debug('Axios Response:', response);
-            return response.data; // 假设服务器返回的数据都在data属性中
-        }, (error: any) => {
+    // 添加响应拦截器
+    this.client.interceptors.response.use((response: AxiosResponse) => {
+      return response.data; // 假设服务器返回的数据都在data属性中
+    }, (error: any) => {
             if (error.response) {
                 let response: AxiosResponse = error.response;
-                if (response.status == 401 && this.authFailedCb) {
-                    console.error('Unauthorized:', response.data);
-                    this.authFailedCb();
+                if (response.status == 401) {
+                    clearToken();
+                    if (this.authFailedCb) {
+                        console.error('Unauthorized:', response.data);
+                        this.authFailedCb();
+                    }
                 } else {
                     // 请求已发出，但是服务器响应的状态码不在2xx范围
                     console.error('Response Error:', error.response.data);
@@ -105,13 +146,17 @@ export class ApiClient {
         });
     }
 
-    // 注册
-    public async register(data: RegisterData): Promise<RegisterResponse> {
-        try {
-            data.credentials.password = Md5.hashStr(data.credentials.password);
-            const response = await this.client.post<RegisterResponse>('/auth/register', data);
-            console.log("register response:", response);
-            return { success: true, message: 'Register success', };
+  // 注册
+  public async register(data: RegisterData): Promise<RegisterResponse> {
+    try {
+      await this.client.post<RegisterResponse>('/auth/register', {
+        ...data,
+        credentials: {
+          ...data.credentials,
+          password: Md5.hashStr(data.credentials.password),
+        }
+      });
+      return { success: true, message: 'Register success', };
         } catch (error) {
             if (error instanceof AxiosError) {
                 return { success: false, message: 'Failed to register, error: ' + JSON.stringify(error.response?.data), };
@@ -124,8 +169,10 @@ export class ApiClient {
     public async login(data: Credential): Promise<LoginResponse> {
         try {
             data.password = Md5.hashStr(data.password);
-            const response = await this.client.post<any>('/auth/login', data);
-            console.log("login response:", response);
+      const response = await this.client.post<any, LoginResponse>('/auth/login', data);
+      if (response.token && response.expires_at) {
+                setToken(response.token, response.expires_at);
+            }
             return { success: true, message: 'Login success', };
         } catch (error) {
             if (error instanceof AxiosError) {
@@ -140,9 +187,13 @@ export class ApiClient {
     }
 
     public async logout() {
-        await this.client.get('/auth/logout');
-        if (this.authFailedCb) {
-            this.authFailedCb();
+        try {
+            await this.client.get('/auth/logout');
+        } finally {
+            clearToken();
+            if (this.authFailedCb) {
+                this.authFailedCb();
+            }
         }
     }
 
@@ -152,6 +203,9 @@ export class ApiClient {
 
     public async check_login_status() {
         try {
+            if (isTokenExpired()) {
+                return false;
+            }
             await this.client.get('/auth/check_login_status');
             return true;
         } catch (error) {
@@ -176,6 +230,17 @@ export class ApiClient {
 
     public captcha_url() {
         return this.client.defaults.baseURL + '/auth/captcha';
+    }
+
+    public async fetchCaptcha(): Promise<CaptchaChallengeResponse> {
+        const response = await axios.get<Blob>(this.captcha_url(), {
+            responseType: 'blob',
+        });
+
+        return {
+            blob: response.data,
+            captcha_id: response.headers['x-captcha-id'] ?? null,
+        };
     }
 
     public async getOidcConfig(): Promise<OidcConfigResponse> {
