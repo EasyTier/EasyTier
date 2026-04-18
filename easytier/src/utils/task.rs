@@ -1,140 +1,76 @@
-use crate::common::scoped_task::ScopedTask;
-use derivative::Derivative;
-use derive_more::{Deref, DerefMut};
-use parking_lot::Mutex;
 use std::future::Future;
-use std::mem::take;
-use std::sync::Arc;
+use std::io;
+use std::pin::Pin;
+use std::task::{Context, Poll};
 use std::time::Duration;
-use tokio::sync::Notify;
-use tokio::task::{AbortHandle, JoinError};
+use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
+use tokio_util::task::AbortOnDropHandle;
 
-#[derive(Derivative, Debug)]
-#[derivative(Default(bound = ""))]
-enum AsyncRuntimeState<R: Send + 'static> {
-    #[derivative(Default)]
-    Idle,
-    Running {
-        id: tokio::task::Id,
-        task: ScopedTask<R>,
-        token: CancellationToken,
-    },
-    Stopping(AbortHandle),
+#[derive(Debug)]
+pub struct CancellableTask<Output> {
+    handle: AbortOnDropHandle<Output>,
+    token: CancellationToken,
 }
 
-#[derive(Derivative, Debug)]
-#[derivative(Default(bound = ""))]
-pub struct AsyncRuntimeInner<R: Send + 'static = ()> {
-    state: Mutex<AsyncRuntimeState<R>>,
-    idle: Notify,
-}
-
-#[derive(Derivative, Deref, DerefMut)]
-#[derivative(Debug = "transparent", Default(bound = ""), Clone(bound = ""))]
-pub struct AsyncRuntime<R: Send + 'static = ()>(Arc<AsyncRuntimeInner<R>>);
-
-impl<R: Send + 'static> AsyncRuntime<R> {
-    pub fn token(&self) -> Option<CancellationToken> {
-        if let AsyncRuntimeState::Running { token, .. } = &*self.state.lock() {
-            Some(token.clone())
-        } else {
-            None
-        }
+impl<Output> CancellableTask<Output> {
+    pub fn token(&self) -> &CancellationToken {
+        &self.token
     }
 
-    pub fn start<F, Fut>(&self, token: Option<CancellationToken>, factory: F) -> anyhow::Result<()>
-    where
-        F: FnOnce(CancellationToken) -> Fut,
-        Fut: Future<Output = R> + Send + 'static,
-    {
-        let mut state = self.state.lock();
-        if !matches!(*state, AsyncRuntimeState::Idle) {
-            return Err(anyhow::anyhow!("task is already running/stopping"));
-        }
-
-        let token = token.unwrap_or_default();
-
-        let task = {
-            let f = factory(token.clone());
-            let this = (*self).clone();
-            tokio::spawn(async move {
-                let result = f.await;
-                let mut state = this.state.lock();
-                if let AsyncRuntimeState::Running { id, .. } = &*state
-                    && *id == tokio::task::id()
-                {
-                    take(&mut *state);
-                }
-                result
-            })
-        };
-
-        *state = AsyncRuntimeState::Running {
-            id: task.id(),
-            task: task.into(),
+    pub fn with_handle(token: CancellationToken, handle: JoinHandle<Output>) -> Self {
+        Self {
+            handle: AbortOnDropHandle::new(handle),
             token,
-        };
-
-        Ok(())
+        }
     }
 
-    pub async fn stop(&self, timeout: Duration) -> Option<Result<R, JoinError>> {
-        let state = {
-            let mut state = self.state.lock();
-            match &*state {
-                AsyncRuntimeState::Running { .. } => {
-                    let AsyncRuntimeState::Running { task, token, .. } = take(&mut *state) else {
-                        unreachable!()
-                    };
-                    *state = AsyncRuntimeState::Stopping(task.abort_handle());
-                    Ok((task, token))
-                }
-                AsyncRuntimeState::Stopping(_) => Err(self.idle.notified()),
-                AsyncRuntimeState::Idle => return None,
-            }
-        };
+    pub async fn stop(mut self, timeout: Option<Duration>) -> io::Result<Output> {
+        self.token.cancel();
 
-        let (mut task, token) = match state {
-            Ok(running) => running,
-            Err(stopping) => {
-                stopping.await;
-                return None;
-            }
-        };
-
-        token.cancel();
-        let result = if let Ok(result) = tokio::time::timeout(timeout, &mut task).await {
-            result
-        } else {
-            task.abort();
-            tracing::warn!("task stop timeout after {:?}, aborted", timeout);
-            task.await
-        };
-
-        {
-            let mut state = self.state.lock();
-            if matches!(*state, AsyncRuntimeState::Stopping(_)) {
-                *state = AsyncRuntimeState::Idle;
-                drop(state);
-                self.idle.notify_waiters();
-            }
+        match timeout {
+            Some(timeout) => tokio::time::timeout(timeout, &mut self.handle)
+                .await
+                .map_err(|e| {
+                    tracing::warn!("task stop timeout after {:?}, aborted", timeout);
+                    io::Error::new(io::ErrorKind::TimedOut, e)
+                })?,
+            None => self.handle.await,
         }
+        .map_err(Into::into)
+    }
+}
 
-        Some(result)
+impl<Output: Send + 'static> CancellableTask<Output> {
+    pub fn new<F>(token: CancellationToken, future: F) -> Self
+    where
+        F: Future<Output = Output> + Send + 'static,
+    {
+        Self::with_handle(token, tokio::spawn(future))
     }
 
-    pub fn abort(&self) {
-        let mut state = self.state.lock();
-        match &*state {
-            AsyncRuntimeState::Running { task, .. } => {
-                task.abort();
-                *state = AsyncRuntimeState::Idle;
-                drop(state);
-                self.idle.notify_waiters();
-            }
-            AsyncRuntimeState::Stopping(handle) => handle.abort(),
-            _ => {}
-        }
+    pub fn spawn<F>(factory: impl FnOnce(CancellationToken) -> F) -> Self
+    where
+        F: Future<Output = Output> + Send + 'static,
+    {
+        let token = CancellationToken::new();
+        Self::new(token.clone(), factory(token))
+    }
+
+    pub fn child<F>(&self, factory: impl FnOnce(CancellationToken) -> F) -> Self
+    where
+        F: Future<Output = Output> + Send + 'static,
+    {
+        let token = self.token.clone();
+        Self::new(token.clone(), factory(token))
+    }
+}
+
+impl<Output> Future for CancellableTask<Output> {
+    type Output = io::Result<Output>;
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        Pin::new(&mut self.handle)
+            .poll(cx)
+            .map(|result| result.map_err(Into::into))
     }
 }
