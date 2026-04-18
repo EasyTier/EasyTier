@@ -1,24 +1,57 @@
-use std::fmt::Debug;
-use std::net::SocketAddr;
-use std::sync::atomic::AtomicBool;
-use std::sync::Arc;
-
+use crate::common::error::Error;
 use anyhow::Context;
 use hickory_net::runtime::TokioRuntimeProvider;
 use hickory_proto::rr::rdata::SRV;
-use hickory_proto::rr::{IntoName, RData};
+use hickory_proto::rr::{IntoName, LowerName, RData};
 use hickory_resolver::config::{
     ConnectionConfig, LookupIpStrategy, NameServerConfig, ResolverConfig, ResolverOpts,
 };
 use hickory_resolver::system_conf::read_system_conf;
 use hickory_resolver::{Resolver, TokioResolver};
+use idna::AsciiDenyList;
 use once_cell::sync::Lazy;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use tokio::net::lookup_host;
 
-use crate::common::error::Error;
+pub fn sanitize(name: impl AsRef<str>) -> String {
+    let name = name.as_ref();
+    let dot = name.ends_with('.');
+    let mut name = idna::domain_to_ascii_cow(name.as_ref(), AsciiDenyList::EMPTY)
+        .unwrap_or_default()
+        .into_owned()
+        .to_lowercase()
+        .split('.')
+        .map(|label| {
+            label
+                .chars()
+                .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+                .take(63)
+                .collect::<String>()
+                .trim_matches('-')
+                .to_string()
+        })
+        .filter(|label| !label.is_empty())
+        .collect::<Vec<_>>()
+        .join(".");
+    name.truncate(253);
+    if dot {
+        name.push('.');
+    }
+    name
+}
+
+pub fn parse(name: impl AsRef<str>) -> LowerName {
+    let name = name.as_ref();
+    if let Ok(name) = name.parse() {
+        name
+    } else {
+        let sanitized = sanitize(name);
+        tracing::debug!("invalid name: {}, sanitized to: {}", name, sanitized);
+        sanitized.parse().unwrap_or_default()
+    }
+}
 
 pub fn resolver_conf() -> (ResolverConfig, ResolverOpts) {
     let mut config = ResolverConfig::default();
@@ -160,6 +193,31 @@ mod tests {
     use crate::defer;
 
     use super::*;
+
+    #[test]
+    fn parse_matrix_cases() {
+        let cases = [
+            ["Example.COM.", "example.com."],
+            ["a_b!.et.net.", "a-b.et.net."],
+            ["foo..bar.com.", "foo.bar.com."],
+            [
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.com.",
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.com.",
+            ],
+            ["___", "___"],
+            ["!", ""],
+            ["", ""],
+        ];
+
+        for [input, expected] in cases {
+            let parsed = parse(input);
+            let expected: LowerName = expected.parse().unwrap();
+            assert_eq!(
+                parsed, expected,
+                "parse({input:?}) should equal {expected:?}, got {parsed:?}"
+            );
+        }
+    }
 
     #[tokio::test]
     async fn test_socket_addrs() {
