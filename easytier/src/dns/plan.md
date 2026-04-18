@@ -40,10 +40,12 @@ forwarders = [
     "1.1.1.1",
 ] # optional, forward DNS requests to these servers
 
+fallthrough = false # optional, whether to fall back to next zone (with same origin) if request doesn't match any record in this zone, default to true
+
 # this policy applies to the current zone block
 [dns.zone.export] # if present, export this zone to connected peers
-whitelist = ["*"]
-blacklist = []
+whitelist = ["*"] # optional
+blacklist = [] # optional
 
 # same zone, but not exported
 [[dns.zone]]
