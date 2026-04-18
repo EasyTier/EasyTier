@@ -22,7 +22,7 @@ use stun_codec::{Message, MessageClass, MessageDecoder, MessageEncoder};
 
 use crate::common::error::Error;
 
-use super::dns::resolve_txt_record;
+use crate::utils::dns::resolve_txt_record;
 use super::stun_codec_ext::*;
 
 const DEFAULT_UDP_STUN_SERVERS: &[&str] = &[

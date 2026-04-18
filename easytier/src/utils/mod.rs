@@ -1,4 +1,5 @@
 pub mod dirty;
+pub mod dns;
 pub mod panic;
 pub mod string;
 pub mod task;

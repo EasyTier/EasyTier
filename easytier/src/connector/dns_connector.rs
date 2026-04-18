@@ -3,7 +3,6 @@ use std::{net::SocketAddr, sync::Arc};
 use super::{create_connector_by_url, http_connector::TunnelWithInfo};
 use crate::{
     common::{
-        dns::{RESOLVER, resolve_txt_record},
         error::Error,
         global_ctx::ArcGlobalCtx,
         log,
@@ -15,8 +14,9 @@ use anyhow::Context;
 use dashmap::DashSet;
 use hickory_proto::rr::RData;
 use hickory_resolver::proto::rr::rdata::SRV;
-use rand::{Rng as _, seq::SliceRandom};
+use rand::{seq::SliceRandom, Rng as _};
 use strum::VariantArray;
+use crate::utils::dns::{resolve_txt_record, RESOLVER};
 
 fn weighted_choice<T>(options: &[(T, u64)]) -> Option<&T> {
     let total_weight = options.iter().map(|(_, weight)| *weight).sum();

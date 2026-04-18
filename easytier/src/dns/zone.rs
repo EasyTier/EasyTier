@@ -1,4 +1,4 @@
-use crate::common::dns::get_default_resolver_config;
+use crate::utils::dns::get_default_resolver_config;
 use crate::dns::utils::addr::{NameServerAddr, NameServerAddrGroup};
 use crate::dns::utils::zone_handler::{ArcZoneHandler, ChainedZoneHandler};
 use crate::proto;
