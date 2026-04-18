@@ -1,73 +1,104 @@
 use std::net::SocketAddr;
-use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
+use std::sync::Arc;
 
 use anyhow::Context;
 use hickory_net::runtime::TokioRuntimeProvider;
-use hickory_proto::rr::RData;
+use hickory_proto::rr::{IntoName, RData};
+use hickory_proto::rr::rdata::SRV;
 use hickory_resolver::config::{
     ConnectionConfig, LookupIpStrategy, NameServerConfig, ResolverConfig, ResolverOpts,
 };
 use hickory_resolver::system_conf::read_system_conf;
 use hickory_resolver::{Resolver, TokioResolver};
 use once_cell::sync::Lazy;
+use std::net::SocketAddr;
+use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 use tokio::net::lookup_host;
 
-use super::error::Error;
+use crate::common::error::Error;
 
 pub fn get_default_resolver_config() -> ResolverConfig {
-    let mut default_resolve_config = ResolverConfig::default();
-    default_resolve_config.add_name_server(NameServerConfig::new(
-        "223.5.5.5".parse().unwrap(),
-        true,
-        vec![ConnectionConfig::udp()],
-    ));
-    default_resolve_config.add_name_server(NameServerConfig::new(
-        "180.184.1.1".parse().unwrap(),
-        true,
-        vec![ConnectionConfig::udp()],
-    ));
-    default_resolve_config
+    let mut config = ResolverConfig::default();
+    for server in ["223.5.5.5", "180.184.1.1"] {
+        config.add_name_server(NameServerConfig::new(
+            server.parse().unwrap(),
+            true,
+            vec![ConnectionConfig::udp()],
+        ));
+    }
+    config
 }
 
-pub static ALLOW_USE_SYSTEM_DNS_RESOLVER: Lazy<AtomicBool> = Lazy::new(|| AtomicBool::new(true));
+pub static ALLOW_USE_SYSTEM_DNS_RESOLVER: AtomicBool = AtomicBool::new(true);
 
 pub static RESOLVER: Lazy<Arc<Resolver<TokioRuntimeProvider>>> = Lazy::new(|| {
-    let system_cfg = read_system_conf();
     let mut cfg = get_default_resolver_config();
     let mut opt = ResolverOpts::default();
-    if let Ok(s) = system_cfg {
-        for ns in s.0.name_servers() {
+    if let Ok((sys_cfg, sys_opt)) = read_system_conf() {
+        for ns in sys_cfg.name_servers() {
             cfg.add_name_server(ns.clone());
         }
-        opt = s.1;
+        opt = sys_opt;
     }
     opt.ip_strategy = LookupIpStrategy::Ipv4AndIpv6;
     let builder =
         TokioResolver::builder_with_config(cfg, TokioRuntimeProvider::default()).with_options(opt);
-    Arc::new(builder.build().unwrap())
+    Arc::new(
+        builder
+            .build()
+            .expect("failed to initialize global DNS resolver"),
+    )
 });
 
-pub async fn resolve_txt_record(domain_name: &str) -> Result<String, Error> {
-    let r = RESOLVER.clone();
-    let response = r
-        .txt_lookup(domain_name)
+pub async fn txt_lookup(name: impl IntoName) -> Result<Vec<String>, Error> {
+    let response = RESOLVER
+        .txt_lookup(name)
         .await
-        .with_context(|| format!("txt_lookup failed, domain_name: {}", domain_name))?;
+        .context("failed to lookup txt record")?;
 
-    let txt_data = response
+    let data = response
         .answers()
         .iter()
         .filter_map(|record| match record.data {
-            RData::TXT(ref txt) => Some(txt),
+            RData::TXT(ref txt) => Some(txt.to_string()),
             _ => None,
         })
-        .next()
-        .with_context(|| format!("no txt record found, domain_name: {}", domain_name))?;
+        .collect();
 
-    tracing::info!(?txt_data, ?domain_name, "get txt record");
+    tracing::info!(?data, "got txt record(s)");
 
-    Ok(txt_data.to_string())
+    Ok(data)
+}
+
+pub async fn txt_resolve(name: impl IntoName) -> Result<Vec<String>, Error> {
+    Ok(txt_lookup(name)
+        .await?
+        .iter()
+        .flat_map(|s| s.split_whitespace())
+        .map(String::from)
+        .collect())
+}
+
+pub async fn srv_lookup(name: impl IntoName) -> Result<Vec<SRV>, Error> {
+    let response = RESOLVER
+        .srv_lookup(name)
+        .await
+        .context("failed to lookup srv record")?;
+
+    let data = response
+        .answers()
+        .iter()
+        .filter_map(|record| match record.data {
+            RData::SRV(ref srv) => Some(srv.clone()),
+            _ => None,
+        })
+        .collect();
+
+    tracing::info!(?data, "got srv record(s)");
+
+    Ok(data)
 }
 
 pub async fn socket_addrs(
