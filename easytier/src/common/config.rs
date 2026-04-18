@@ -13,6 +13,8 @@ use serde::{Deserialize, Serialize};
 use strum::{Display, EnumString, VariantArray};
 use tokio::io::AsyncReadExt as _;
 
+use super::env_parser;
+use crate::utils::dns::sanitize;
 use crate::{
     common::stun::StunInfoCollector,
     proto::{
@@ -21,8 +23,6 @@ use crate::{
     },
     tunnel::generate_digest_from_str,
 };
-
-use super::env_parser;
 
 pub type Flags = crate::proto::common::FlagsInConfig;
 
@@ -575,13 +575,8 @@ impl ConfigLoader for TomlConfigLoader {
             .lock()
             .unwrap()
             .hostname
-            .clone()
-            .map(|h| {
-                h.chars()
-                    .filter(|c| !c.is_control())
-                    .take(32)
-                    .collect::<String>()
-            })
+            .as_ref()
+            .map(sanitize)
             .filter(|h| !h.is_empty());
 
         self.set_hostname(hostname.clone());
