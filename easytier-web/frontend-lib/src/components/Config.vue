@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import InputGroup from 'primevue/inputgroup'
 import InputGroupAddon from 'primevue/inputgroupaddon'
-import { Checkbox, InputText, InputNumber, AutoComplete, Panel, Divider, ToggleButton, Button, Password, Dialog } from 'primevue'
+import { Checkbox, InputText, InputNumber, AutoComplete, Panel, Divider, ToggleButton, Button, Password, Dialog, Dropdown } from 'primevue'
 import {
   addRow,
   DEFAULT_NETWORK_CONFIG,
@@ -292,6 +292,17 @@ watch(() => curNetwork.value, syncNormalizedNetwork, { immediate: true, deep: fa
                   <label for="dev_name">{{ t('dev_name') }}</label>
                   <InputText id="dev_name" v-model="curNetwork.dev_name" aria-describedby="dev_name-help" :format="true"
                     :placeholder="t('dev_name_placeholder')" />
+                </div>
+              </div>
+
+              <div class="flex flex-row gap-x-9 flex-wrap">
+                <div class="flex flex-col gap-2 basis-5/12 grow">
+                  <div class="flex">
+                    <label for="default_protocol">{{ t('default_protocol') }}</label>
+                    <span class="pi pi-question-circle ml-2 self-center" v-tooltip="t('default_protocol_help')"></span>
+                  </div>
+                  <Dropdown id="default_protocol" v-model="curNetwork.default_protocol" :options="Object.keys(protos)" 
+                    placeholder="Select protocol" class="w-full" />
                 </div>
               </div>
 
