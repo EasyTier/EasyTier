@@ -6,9 +6,9 @@ use std::sync::{
 use anyhow::anyhow;
 use dashmap::DashMap;
 
+use super::secure_datagram::{SecureDatagramDirection, SecureDatagramSession};
 use crate::{
     common::PeerId,
-    secure_datagram::{SecureDatagramDirection, SecureDatagramSession},
     tunnel::packet_def::ZCPacket,
 };
 

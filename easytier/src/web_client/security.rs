@@ -6,8 +6,8 @@ use snow::{Builder, params::NoiseParams};
 
 use crate::{
     common::config::EncryptionAlgorithm,
+    peers::secure_datagram::{SecureDatagramDirection, SecureDatagramSession},
     proto::common::TunnelInfo,
-    secure_datagram::{SecureDatagramDirection, SecureDatagramSession},
     tunnel::{
         SplitTunnel, StreamItem, Tunnel, TunnelError, ZCPacketSink, ZCPacketStream,
         filter::{TunnelFilter, TunnelWithFilter},
