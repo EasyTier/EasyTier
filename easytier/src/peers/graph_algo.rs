@@ -1,12 +1,10 @@
 use core::cmp::Ordering;
-use hashbrown::hash_map::{
-    Entry::{Occupied, Vacant},
-    HashMap,
-};
 use petgraph::{
     algo::Measure,
-    visit::{EdgeRef as _, IntoEdges, VisitMap as _, Visitable},
+    visit::{EdgeRef, IntoEdges, VisitMap, Visitable},
 };
+use std::collections::HashMap;
+use std::collections::hash_map::Entry::{Occupied, Vacant};
 use std::{collections::BinaryHeap, hash::Hash};
 
 /// `MinScored<K, T>` holds a score `K` and a scored object `T` in
