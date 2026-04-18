@@ -31,6 +31,8 @@ pub fn gen_default_flags() -> Flags {
         #[allow(deprecated)]
         quic_listen_port: u32::MAX,
         #[allow(deprecated)]
+        accept_dns: false,
+        #[allow(deprecated)]
         tld_dns_zone: "".to_string(),
 
         default_protocol: "tcp".to_string(),
@@ -57,7 +59,6 @@ pub fn gen_default_flags() -> Flags {
         disable_kcp_input: false,
         disable_relay_kcp: false,
         enable_relay_foreign_network_kcp: false,
-        accept_dns: false,
         private_mode: false,
         enable_quic_proxy: false,
         disable_quic_input: false,

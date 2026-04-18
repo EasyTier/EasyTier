@@ -33,7 +33,7 @@ message FlagsInConfig {
   bool proxy_forward_by_system = 21;
 
   // enable magic dns or not
-  bool accept_dns = 22;
+  bool accept_dns = 22 [deprecated = true];
   // enable private mode
   bool private_mode = 23;
 
