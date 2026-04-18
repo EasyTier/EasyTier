@@ -21,6 +21,7 @@ const NOISE_PATTERN: &str = "Noise_NN_25519_ChaChaPoly_SHA256";
 const WEB_SECURE_CIPHER_ALGORITHM: &str = "aes-gcm";
 const WEB_SESSION_GENERATION: u32 = 1;
 const WEB_INITIAL_EPOCH: u32 = 0;
+const WEB_SECURE_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(3);
 
 struct RawSplitTunnel {
     info: Option<TunnelInfo>,
@@ -205,7 +206,13 @@ pub async fn upgrade_client_tunnel(
     )))
     .await?;
 
-    let msg2_packet = stream.next().await.ok_or(TunnelError::Shutdown)??;
+    let msg2_packet = match tokio::time::timeout(WEB_SECURE_HANDSHAKE_TIMEOUT, stream.next()).await
+    {
+        Ok(Some(Ok(packet))) => packet,
+        Ok(Some(Err(error))) => return Err(error),
+        Ok(None) => return Err(TunnelError::Shutdown),
+        Err(error) => return Err(error.into()),
+    };
     let msg2_cipher = decode_noise_payload(msg2_packet.payload())
         .ok_or_else(|| TunnelError::InvalidPacket("invalid noise msg2 magic".to_string()))?;
     let mut root_key_buf = [0u8; 32];
@@ -294,6 +301,7 @@ pub async fn accept_or_upgrade_server_tunnel(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tunnel::ring::create_ring_tunnel_pair;
 
     #[test]
     fn web_secure_cipher_algorithm_matches_support_flag() {
@@ -318,5 +326,14 @@ mod tests {
         session
             .check_encrypt_algo_same(WEB_SECURE_CIPHER_ALGORITHM, WEB_SECURE_CIPHER_ALGORITHM)
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn upgrade_client_tunnel_times_out_when_server_never_replies() {
+        let (server_tunnel, client_tunnel) = create_ring_tunnel_pair();
+        let _server_tunnel = server_tunnel;
+
+        let err = upgrade_client_tunnel(client_tunnel).await.unwrap_err();
+        assert!(matches!(err, TunnelError::Timeout(_)));
     }
 }
