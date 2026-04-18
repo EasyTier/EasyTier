@@ -132,13 +132,6 @@ forwarders = [
 - [minor] 增量 Zone 更新
 - DNS 策略
 
-## TODO
-
-- [x] 配置解析
-- [ ] 重写 DNS 系统配置修改（参考 https://github.com/mullvad/mullvadvpn-app/tree/main/talpid-dns ？）
-- [ ] 单元测试
-- [ ] cli 输出状态
-
 </details>
 
 <details>
