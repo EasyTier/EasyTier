@@ -235,7 +235,6 @@ mod tests {
     fn dns_peer_info_try_from_valid_config() {
         let cfg = DnsExportConfig {
             zones: vec![valid_zone_data("valid.peer.test", "10.0.0.10")],
-            fqdn: "valid.peer.test".to_string(),
         };
 
         let info = DnsPeerInfo::try_from(cfg).expect("valid export config should pass");
@@ -254,7 +253,6 @@ mod tests {
                 forwarders: vec![],
                 fallthrough: false,
             }],
-            fqdn: "invalid.peer.test".to_string(),
         };
 
         assert!(DnsPeerInfo::try_from(cfg).is_err());

@@ -17,7 +17,6 @@ message GetExportConfigRequest {}
 
 message GetExportConfigResponse {
   repeated ZoneData zones = 1;
-  string fqdn = 2;
 }
 
 service DnsPeerMgrRpc {
