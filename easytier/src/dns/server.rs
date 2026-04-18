@@ -10,7 +10,6 @@ use crate::proto::dns::DnsNodeMgrRpcServer;
 use crate::proto::rpc_impl::standalone::StandAloneServer;
 use crate::tunnel::packet_def::ZCPacket;
 use crate::tunnel::tcp::TcpTunnelListener;
-use crate::utils::task::AsyncRuntime;
 use derivative::Derivative;
 use hickory_net::runtime::{Time, TokioTime};
 use hickory_net::xfer::Protocol;
@@ -34,6 +33,7 @@ use tracing::{Instrument, instrument};
 #[cfg(feature = "tun")]
 use crate::instance::instance::{ArcNicCtx, NicCtx};
 use crate::tunnel::common::bind;
+use crate::utils::task::CancellableTask;
 
 #[derive(Clone)]
 struct DynamicCatalog {
@@ -169,7 +169,7 @@ impl DnsServer {
     async fn reload_listeners(
         &self,
         listeners: impl IntoIterator<Item = NameServerAddr>,
-        runtime: &mut Option<AsyncRuntime>,
+        runtime: &mut Option<CancellableTask>,
     ) -> anyhow::Result<()> {
         let listeners = listeners.into_iter().collect();
 
@@ -179,13 +179,11 @@ impl DnsServer {
         }
         tracing::info!(?listeners, "reloading");
 
-        if let Some(runtime) = runtime.as_ref()
-            && let Some(Err(error)) = runtime.stop(None).await
+        if let Some(runtime) = runtime.take()
+            && let Err(error) = runtime.stop(None).await
         {
             tracing::error!(?error, "failed to stop old DNS server runtime");
         }
-
-        let runtime = runtime.get_or_insert_default();
 
         let mut server = Server::new(self.catalog.clone());
         for listener in &listeners {
@@ -206,15 +204,16 @@ impl DnsServer {
             }
         }
 
-        runtime.start(Some(server.shutdown_token().clone()), |_| {
+        *runtime = Some(CancellableTask::with_token(
+            server.shutdown_token().clone(),
             async move {
                 server
                     .block_until_done()
                     .await
                     .unwrap_or_else(|e| tracing::error!("DNS server exited with error: {:?}", e));
             }
-            .instrument(tracing::info_span!("DNS server backend runtime"))
-        })?;
+            .instrument(tracing::info_span!("DNS server backend runtime")),
+        ));
 
         *self.listeners.write() = listeners;
 
