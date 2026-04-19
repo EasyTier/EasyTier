@@ -379,19 +379,26 @@ mod tests {
 
         let req = tokio::time::timeout(Duration::from_secs(12), async {
             loop {
-                let session = mgr
+                let sessions = mgr
                     .client_sessions
                     .iter()
-                    .next()
-                    .map(|item| item.value().clone());
-                let Some(session) = session else {
+                    .map(|item| item.value().clone())
+                    .collect::<Vec<_>>();
+                if sessions.is_empty() {
                     tokio::time::sleep(Duration::from_millis(100)).await;
                     continue;
-                };
-                let mut waiter = session.data().read().await.heartbeat_waiter();
-                if let Ok(req) = waiter.recv().await {
+                }
+                let mut found_req = None;
+                for session in sessions {
+                    if let Some(req) = session.data().read().await.req() {
+                        found_req = Some(req);
+                        break;
+                    }
+                }
+                if let Some(req) = found_req {
                     break req;
                 }
+                tokio::time::sleep(Duration::from_millis(100)).await;
             }
         })
         .await
