@@ -326,6 +326,10 @@ impl InstanceConfigPatcher {
         global_ctx
             .get_acl_filter()
             .reload_rules(AclRuleBuilder::build(&global_ctx)?.as_ref());
+        weak_upgrade(&self.peer_manager)?
+            .get_route()
+            .refresh_acl_groups()
+            .await;
         Ok(())
     }
 

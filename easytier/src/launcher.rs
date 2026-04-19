@@ -821,6 +821,12 @@ impl NetworkConfig {
             flags.encryption_algorithm = encryption_algorithm;
         }
 
+        if let Some(acl) = self.acl.as_ref()
+            && !acl.is_empty()
+        {
+            cfg.set_acl(Some(acl.clone()));
+        }
+
         if let Some(data_compress_algo) = self.data_compress_algo {
             if data_compress_algo < 1 {
                 flags.data_compress_algo = 1;
@@ -958,6 +964,8 @@ impl NetworkConfig {
         result.instance_recv_bps_limit =
             (flags.instance_recv_bps_limit != u64::MAX).then_some(flags.instance_recv_bps_limit);
         result.enable_private_mode = Some(flags.private_mode);
+
+        result.acl = config.get_acl();
 
         if flags.relay_network_whitelist == "*" {
             result.enable_relay_network_whitelist = Some(false);

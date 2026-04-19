@@ -386,7 +386,7 @@ impl WebServerService for SessionRpcService {
         _: easytier::proto::web::GetFeatureRequest,
     ) -> rpc_types::error::Result<easytier::proto::web::GetFeatureResponse> {
         Ok(easytier::proto::web::GetFeatureResponse {
-            support_encryption: true,
+            support_encryption: easytier::web_client::security::web_secure_tunnel_supported(),
         })
     }
 }

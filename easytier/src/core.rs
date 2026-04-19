@@ -775,20 +775,33 @@ impl Cli {
 }
 
 impl NetworkOptions {
-    fn can_merge(&self, cfg: &TomlConfigLoader, config_file_count: usize) -> bool {
+    fn can_merge(
+        &self,
+        cfg: &TomlConfigLoader,
+        source: ConfigSource,
+        explicit_config_file_count: usize,
+        config_dir_file_count: usize,
+    ) -> bool {
         if (*self) == NetworkOptions::default() {
             return false;
         }
-        if config_file_count == 1 {
+
+        if source == ConfigSource::CliConfigFile
+            && explicit_config_file_count == 1
+            && config_dir_file_count == 0
+        {
             return true;
         }
+
         let Some(network_name) = &self.network_name else {
             return false;
         };
-        if cfg.get_network_identity().network_name == *network_name {
-            return true;
+
+        if source == ConfigSource::ConfigDir {
+            return cfg.get_network_identity().network_name == *network_name;
         }
-        false
+
+        cfg.get_network_identity().network_name == *network_name
     }
 
     fn merge_into(&self, cfg: &TomlConfigLoader) -> anyhow::Result<()> {
@@ -1104,6 +1117,12 @@ impl NetworkOptions {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ConfigSource {
+    CliConfigFile,
+    ConfigDir,
+}
+
 impl LoggingConfigLoader for &LoggingOptions {
     fn get_console_logger_config(&self) -> ConsoleLoggerConfig {
         ConsoleLoggerConfig {
@@ -1286,8 +1305,13 @@ async fn run_main(cli: Cli) -> anyhow::Result<()> {
         None
     };
 
+    let explicit_config_file_count = cli.config_file.as_ref().map_or(0, |files| files.len());
+    let mut config_dir_file_count = 0;
     let mut config_files = if let Some(v) = cli.config_file {
-        v.clone()
+        v.iter()
+            .cloned()
+            .map(|path| (path, ConfigSource::CliConfigFile))
+            .collect()
     } else {
         vec![]
     };
@@ -1308,7 +1332,8 @@ async fn run_main(cli: Cli) -> anyhow::Result<()> {
             if ext != "toml" {
                 continue;
             }
-            config_files.push(path);
+            config_dir_file_count += 1;
+            config_files.push((path, ConfigSource::ConfigDir));
         }
     }
     let config_file_count = config_files.len();
@@ -1321,7 +1346,7 @@ async fn run_main(cli: Cli) -> anyhow::Result<()> {
             cli.network_options.network_name.is_some()
         }
     };
-    for config_file in config_files {
+    for (config_file, source) in config_files {
         let (cfg, mut control) = load_config_from_file(
             &config_file,
             cli.config_dir.as_ref(),
@@ -1329,7 +1354,12 @@ async fn run_main(cli: Cli) -> anyhow::Result<()> {
         )
         .await?;
 
-        if cli.network_options.can_merge(&cfg, config_file_count) {
+        if cli.network_options.can_merge(
+            &cfg,
+            source,
+            explicit_config_file_count,
+            config_dir_file_count,
+        ) {
             cli.network_options
                 .merge_into(&cfg)
                 .with_context(|| format!("failed to merge config from cli: {:?}", config_file))?;
