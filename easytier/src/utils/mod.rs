@@ -23,6 +23,13 @@ pub fn weak_upgrade<T>(weak: &Weak<T>) -> anyhow::Result<Arc<T>> {
         .ok_or_else(|| anyhow::anyhow!("{} not available", std::any::type_name::<T>()))
 }
 
+pub fn hostname() -> String {
+    hostname::get()
+        .unwrap_or_else(|_| "localhost".into())
+        .to_string_lossy()
+        .into_owned()
+}
+
 pub trait BoxExt: Sized {
     fn boxed(self) -> Box<Self> {
         Box::new(self)

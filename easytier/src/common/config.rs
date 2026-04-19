@@ -22,6 +22,7 @@ use crate::{
         common::{CompressionAlgoPb, PortForwardConfigPb, SecureModeConfig, SocketType},
     },
     tunnel::generate_digest_from_str,
+    utils,
 };
 
 pub type Flags = crate::proto::common::FlagsInConfig;
@@ -580,14 +581,7 @@ impl ConfigLoader for TomlConfigLoader {
             .filter(|h| !h.is_empty());
 
         self.set_hostname(hostname.clone());
-        hostname.unwrap_or_else(|| {
-            sanitize(
-                hostname::get()
-                    .unwrap_or_else(|_| "localhost".into())
-                    .to_string_lossy()
-                    .as_ref(),
-            )
-        })
+        hostname.unwrap_or_else(|| sanitize(utils::hostname()))
     }
 
     fn set_hostname(&self, name: Option<String>) {

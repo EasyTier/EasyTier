@@ -9,6 +9,7 @@ use crate::{
     instance_manager::{DaemonGuard, NetworkInstanceManager},
     proto::common::NatType,
     tunnel::{IpVersion, TunnelConnector},
+    utils,
 };
 use anyhow::{Context as _, Result};
 use async_trait::async_trait;
@@ -225,12 +226,7 @@ pub async fn run_web_client(
     let mut flags = global_ctx.get_flags();
     flags.bind_device = false;
     global_ctx.set_flags(flags);
-    let hostname = hostname.unwrap_or_else(|| {
-        hostname::get()
-            .unwrap_or_else(|_| "localhost".into())
-            .to_string_lossy()
-            .into_owned()
-    });
+    let hostname = hostname.unwrap_or_else(utils::hostname);
     Ok(WebClient::new(
         create_connector_by_url(c_url.as_str(), &global_ctx, IpVersion::Both).await?,
         token.to_string(),
