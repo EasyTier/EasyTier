@@ -102,7 +102,6 @@ pub fn zone_data_a(origin: &str, record: &str) -> ZoneData {
 
 pub fn zone_data_a_with_forwarders(origin: &str, record: &str, forwarders: Vec<&str>) -> ZoneData {
     ZoneData {
-        id: Some(Uuid::new_v4().into()),
         origin: origin.to_string(),
         ttl: 60,
         records: vec![format!("@ IN A {record}")],

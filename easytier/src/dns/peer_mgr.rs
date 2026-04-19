@@ -204,7 +204,6 @@ mod tests {
     use std::collections::HashSet;
     use std::net::Ipv4Addr;
     use tokio::time::{Duration, sleep};
-    use uuid::Uuid;
 
     async fn create_peer_manager_with_zone(
         host: &str,
@@ -216,7 +215,6 @@ mod tests {
         dns.name = host.parse().unwrap();
         dns.zones.push(
             ZoneConfig::dedicated(
-                Some(Uuid::new_v4()),
                 origin.parse().expect("invalid zone origin"),
                 Some(record_ip),
                 vec![],
@@ -246,10 +244,9 @@ mod tests {
     fn dns_peer_info_try_from_invalid_zone_rejected() {
         let cfg = DnsExportConfig {
             zones: vec![ZoneData {
-                id: None,
-                origin: "invalid.peer.test".to_string(),
+                origin: "?".to_string(),
                 ttl: 60,
-                records: vec!["@ IN A 10.0.0.11".to_string()],
+                records: vec!["?".to_string()],
                 forwarders: vec![],
                 fallthrough: false,
             }],

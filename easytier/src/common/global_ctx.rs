@@ -705,8 +705,7 @@ impl DnsGlobalCtxExt for GlobalCtx {
         let ipv6 = self.get_ipv6().map(|ip| ip.address());
         let ipv6 = ipv6.map(|a| vec![a]).unwrap_or_default();
 
-        crate::dns::config::zone::ZoneConfig::dedicated(Some(self.get_id()), fqdn, ipv4, ipv6)
-            .unwrap()
+        crate::dns::config::zone::ZoneConfig::dedicated(fqdn, ipv4, ipv6).unwrap()
     }
 
     fn dns_export_config(&self) -> DnsExportConfig {

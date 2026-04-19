@@ -13,11 +13,9 @@ use indexmap::IndexMap;
 use itertools::chain;
 use std::collections::BTreeMap;
 use std::sync::Arc;
-use uuid::Uuid;
 
 #[derive(Debug, Clone)]
 pub struct Zone {
-    id: Uuid,
     origin: LowerName,
     records: BTreeMap<RrKey, RecordSet>,
     pub forward: Option<ForwardConfig>,
@@ -41,7 +39,6 @@ impl Zone {
 impl Zone {
     pub fn new(name: LowerName) -> Self {
         Self {
-            id: Uuid::new_v4(),
             origin: name,
             records: BTreeMap::new(),
             forward: None,
@@ -96,11 +93,6 @@ impl TryFrom<&proto::dns::ZoneData> for Zone {
     type Error = anyhow::Error;
 
     fn try_from(value: &proto::dns::ZoneData) -> Result<Self, Self::Error> {
-        let id = value
-            .id
-            .ok_or(anyhow::anyhow!("missing id in zone data"))?
-            .into();
-
         let (origin, records) = Parser::new(value.to_string(), None, None)
             .parse()
             .map_err(|e| anyhow::anyhow!("failed to parse zone data: {e}"))?;
@@ -117,7 +109,6 @@ impl TryFrom<&proto::dns::ZoneData> for Zone {
         });
 
         Ok(Self {
-            id,
             origin: origin.into(),
             records,
             forward,
@@ -145,7 +136,6 @@ impl From<Zone> for proto::dns::ZoneData {
             .collect();
 
         Self {
-            id: Some(value.id.into()),
             origin: value.origin.to_string(),
             ttl: 0,
             records,
@@ -190,7 +180,6 @@ mod tests {
     use std::str::FromStr;
     use tokio::net::UdpSocket;
     use tokio::task::JoinHandle;
-    use uuid::Uuid;
 
     impl Zone {
         // Test-only record iterator for precise assertions.
@@ -214,7 +203,6 @@ mod tests {
         fallthrough: bool,
     ) -> ZoneData {
         ZoneData {
-            id: Some(Uuid::new_v4().into()),
             origin: origin.to_string(),
             ttl: 60,
             records: records.into_iter().map(ToString::to_string).collect(),
@@ -288,21 +276,6 @@ mod tests {
     }
 
     #[test]
-    fn zone_try_from_rejects_missing_id() {
-        let data = ZoneData {
-            id: None,
-            origin: "missing-id.test".to_string(),
-            ttl: 60,
-            records: vec!["@ IN A 10.0.0.1".to_string()],
-            forwarders: vec![],
-            fallthrough: false,
-        };
-
-        let err = Zone::try_from(&data).expect_err("missing id should fail");
-        assert!(err.to_string().contains("missing id"));
-    }
-
-    #[test]
     fn zone_try_from_rejects_invalid_record() {
         let data = zone_data("invalid-record.test", vec!["this is not a record"], vec![]);
 
@@ -340,7 +313,6 @@ mod tests {
         assert_eq!(zone.forward.as_ref().unwrap().name_servers.len(), 2);
 
         let serialized = ZoneData::from(zone.clone());
-        assert!(serialized.id.is_some());
         assert_eq!(serialized.origin, "roundtrip.test.");
         assert_eq!(serialized.records.len(), 2);
         assert_eq!(serialized.forwarders.len(), 2);

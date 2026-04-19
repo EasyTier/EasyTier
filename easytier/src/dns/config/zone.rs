@@ -8,7 +8,6 @@ use hickory_proto::rr::LowerName;
 use serde::{Deserialize, Serialize};
 use std::convert::{TryFrom, TryInto};
 use std::net::{Ipv4Addr, Ipv6Addr};
-use uuid::Uuid;
 
 #[derive(Derivative, Debug, Clone, Deserialize, Serialize, Default, Deref, Into)]
 #[derivative(PartialEq)]
@@ -39,7 +38,6 @@ impl TryFrom<ZoneConfigInner> for ZoneConfig {
 
 impl ZoneConfig {
     pub fn dedicated(
-        id: Option<Uuid>,
         origin: LowerName,
         ipv4: Option<Ipv4Addr>,
         ipv6: Vec<Ipv6Addr>,
@@ -58,7 +56,6 @@ impl ZoneConfig {
         };
 
         let config = ZoneConfigInner {
-            id: id.unwrap_or_else(Uuid::new_v4),
             origin,
             records,
             policy,
@@ -73,9 +70,6 @@ impl ZoneConfig {
 #[derivative(Default)]
 #[serde(default)]
 pub struct ZoneConfigInner {
-    #[derivative(Default(value = "Uuid::new_v4()"))]
-    #[serde(skip_serializing)]
-    id: Uuid,
     pub origin: LowerName,
     pub ttl: u32,
     pub records: Vec<String>,
@@ -89,7 +83,6 @@ pub struct ZoneConfigInner {
 impl From<ZoneConfigInner> for ZoneData {
     fn from(value: ZoneConfigInner) -> Self {
         Self {
-            id: Some(value.id.into()),
             origin: value.origin.to_string(),
             ttl: value.ttl,
             records: value.records,
