@@ -29,7 +29,7 @@ use crate::{
         peer_rpc::PeerGroupInfo,
     },
     rpc_service::protected_port,
-    tunnel::matches_protocol,
+    tunnel::scheme::matches_protocol,
 };
 use crossbeam::atomic::AtomicCell;
 use hmac::{Hmac, Mac};

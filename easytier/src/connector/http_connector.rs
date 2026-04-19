@@ -15,9 +15,10 @@ use crate::{
     tunnel::{IpVersion, Tunnel, TunnelConnector, TunnelError, ZCPacketSink, ZCPacketStream},
 };
 
-use crate::proto::common::TunnelInfo;
-
 use super::create_connector_by_url;
+use crate::proto::common::TunnelInfo;
+use crate::tunnel::scheme::DiscoveryScheme;
+use crate::utils::BoxExt;
 
 pub struct TunnelWithInfo {
     inner: Box<dyn Tunnel>,
@@ -53,6 +54,7 @@ enum HttpRedirectType {
 
 #[derive(Debug)]
 pub struct HttpTunnelConnector {
+    scheme: DiscoveryScheme,
     addr: url::Url,
     bind_addrs: Vec<SocketAddr>,
     ip_version: IpVersion,
@@ -63,6 +65,7 @@ pub struct HttpTunnelConnector {
 impl HttpTunnelConnector {
     pub fn new(addr: url::Url, global_ctx: ArcGlobalCtx) -> Self {
         Self {
+            scheme: addr.scheme().parse().unwrap(),
             addr,
             bind_addrs: Vec::new(),
             ip_version: IpVersion::Both,
@@ -224,16 +227,14 @@ impl super::TunnelConnector for HttpTunnelConnector {
         conn.set_ip_version(self.ip_version);
         let t = conn.connect().await?;
         let info = t.info().unwrap_or_default();
+        self.scheme.scheme = info.tunnel_type.parse().map(BoxExt::boxed).ok();
         Ok(Box::new(TunnelWithInfo::new(
             t,
             TunnelInfo {
                 local_addr: info.local_addr.clone(),
-                remote_addr: Some(self.addr.clone().into()),
-                resolved_remote_addr: info
-                    .resolved_remote_addr
-                    .clone()
-                    .or(info.remote_addr.clone()),
-                tunnel_type: format!("{}-{}", self.addr.scheme(), info.tunnel_type),
+                remote_url: Some(self.addr.clone().into()),
+                remote_addr: info.remote_addr.clone().or(info.remote_url.clone()),
+                tunnel_type: self.scheme.to_string(),
             },
         )))
     }
@@ -351,10 +352,10 @@ mod tests {
         assert_eq!(captured_name, network_name);
 
         let info = t.info().unwrap();
+        let remote_url = info.remote_url.unwrap();
+        assert_eq!(remote_url, test_url.into());
         let remote_addr = info.remote_addr.unwrap();
-        assert_eq!(remote_addr, test_url.into());
-        let resolved_remote_addr = info.resolved_remote_addr.unwrap();
-        assert_eq!(resolved_remote_addr.url, "tcp://127.0.0.1:25888");
+        assert_eq!(remote_addr.url, "tcp://127.0.0.1:25888");
 
         tokio::join!(task).0.unwrap();
     }

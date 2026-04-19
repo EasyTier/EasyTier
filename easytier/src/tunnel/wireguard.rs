@@ -531,10 +531,10 @@ impl WgTunnelListener {
                             )
                             .into(),
                         ),
-                        remote_addr: Some(
+                        remote_url: Some(
                             build_url_from_socket_addr(&addr.to_string(), "wg").into(),
                         ),
-                        resolved_remote_addr: Some(
+                        remote_addr: Some(
                             build_url_from_socket_addr(&addr.to_string(), "wg").into(),
                         ),
                     }),
@@ -677,8 +677,8 @@ impl WgTunnelConnector {
             Some(TunnelInfo {
                 tunnel_type: "wg".to_owned(),
                 local_addr: Some(super::build_url_from_socket_addr(&local_addr, "wg").into()),
-                remote_addr: Some(addr_url.into()),
-                resolved_remote_addr: Some(
+                remote_url: Some(addr_url.into()),
+                remote_addr: Some(
                     super::build_url_from_socket_addr(&addr.to_string(), "wg").into(),
                 ),
             }),

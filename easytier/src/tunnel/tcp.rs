@@ -38,10 +38,10 @@ impl TcpTunnelListener {
         let info = TunnelInfo {
             tunnel_type: "tcp".to_owned(),
             local_addr: Some(self.local_url().into()),
-            remote_addr: Some(
+            remote_url: Some(
                 super::build_url_from_socket_addr(&stream.peer_addr()?.to_string(), "tcp").into(),
             ),
-            resolved_remote_addr: Some(
+            remote_addr: Some(
                 super::build_url_from_socket_addr(&stream.peer_addr()?.to_string(), "tcp").into(),
             ),
         };
@@ -109,8 +109,8 @@ fn get_tunnel_with_tcp_stream(
         local_addr: Some(
             super::build_url_from_socket_addr(&stream.local_addr()?.to_string(), "tcp").into(),
         ),
-        remote_addr: Some(remote_url.into()),
-        resolved_remote_addr: Some(
+        remote_url: Some(remote_url.into()),
+        remote_addr: Some(
             super::build_url_from_socket_addr(&stream.peer_addr()?.to_string(), "tcp").into(),
         ),
     };
@@ -267,7 +267,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn connector_keeps_source_addr_and_reports_resolved_addr() {
+    async fn connector_keeps_source_addr_and_reports_remote_addr() {
         let mut listener = TcpTunnelListener::new("tcp://127.0.0.1:0".parse().unwrap());
         listener.listen().await.unwrap();
 
@@ -281,17 +281,14 @@ mod tests {
         let accepted_tunnel = accept_task.await.unwrap();
 
         let info = tunnel.info().unwrap();
-        assert_eq!(info.remote_addr.unwrap().url, source_url.to_string());
+        assert_eq!(info.remote_url.unwrap().url, source_url.to_string());
 
-        let resolved_remote_addr: url::Url = info.resolved_remote_addr.unwrap().into();
-        assert_eq!(resolved_remote_addr.host_str(), Some("127.0.0.1"));
-        assert_eq!(resolved_remote_addr.port(), Some(port));
+        let remote_addr: url::Url = info.remote_addr.unwrap().into();
+        assert_eq!(remote_addr.host_str(), Some("127.0.0.1"));
+        assert_eq!(remote_addr.port(), Some(port));
 
         let accepted_info = accepted_tunnel.info().unwrap();
-        assert_eq!(
-            accepted_info.remote_addr,
-            accepted_info.resolved_remote_addr,
-        );
+        assert_eq!(accepted_info.remote_url, accepted_info.remote_addr,);
     }
 
     #[tokio::test]

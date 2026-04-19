@@ -84,13 +84,13 @@ impl WireGuardImpl {
         let mut stream = mpsc_tunnel.get_stream();
         let mut ip_registered = false;
 
-        let remote_addr = info.remote_addr.clone();
+        let remote_addr = info.remote_url.clone();
         let endpoint_addr = remote_addr.clone().map(Into::into);
         peer_mgr
             .get_global_ctx()
             .issue_event(GlobalCtxEvent::VpnPortalClientConnected(
                 info.local_addr.clone().unwrap_or_default().to_string(),
-                info.remote_addr.clone().unwrap_or_default().to_string(),
+                info.remote_url.clone().unwrap_or_default().to_string(),
             ));
 
         let mut map_key = None;
@@ -155,7 +155,7 @@ impl WireGuardImpl {
             .get_global_ctx()
             .issue_event(GlobalCtxEvent::VpnPortalClientDisconnected(
                 info.local_addr.unwrap_or_default().to_string(),
-                info.remote_addr.unwrap_or_default().to_string(),
+                info.remote_url.unwrap_or_default().to_string(),
             ));
     }
 
