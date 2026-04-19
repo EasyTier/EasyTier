@@ -69,6 +69,7 @@ use super::public_ipv6_provider::{
     should_run_public_ipv6_provider_reconcile, validate_public_ipv6_config,
     validate_public_ipv6_config_values,
 };
+use super::listeners::RproxyTunnelHandler;
 
 #[cfg(feature = "socks5")]
 use crate::gateway::socks5::Socks5Server;
@@ -620,6 +621,8 @@ pub struct Instance {
     peer_packet_receiver: Arc<Mutex<PacketRecvChanReceiver>>,
     peer_manager: Arc<PeerManager>,
     listener_manager: Arc<Mutex<ListenerManager<PeerManager>>>,
+    rproxy_handler: Arc<RproxyTunnelHandler>,
+    rproxy_listener_manager: Arc<Mutex<ListenerManager<RproxyTunnelHandler>>>,
     conn_manager: Arc<ManualConnectorManager>,
     direct_conn_manager: Arc<DirectConnectorManager>,
     udp_hole_puncher: Arc<Mutex<UdpHolePunchConnector>>,
@@ -673,6 +676,11 @@ impl Instance {
             peer_manager.clone(),
         )));
 
+        let rproxy_handler = Arc::new(RproxyTunnelHandler(peer_manager.clone()));
+        let rproxy_listener_manager = Arc::new(Mutex::new(
+            ListenerManager::new(global_ctx.clone(), rproxy_handler.clone()),
+        ));
+
         let conn_manager = Arc::new(ManualConnectorManager::new(
             global_ctx.clone(),
             peer_manager.clone(),
@@ -708,6 +716,8 @@ impl Instance {
 
             peer_manager,
             listener_manager,
+            rproxy_handler,
+            rproxy_listener_manager,
             conn_manager,
             direct_conn_manager,
             udp_hole_puncher,
@@ -1029,6 +1039,16 @@ impl Instance {
             .prepare_listeners()
             .await?;
         self.listener_manager.lock().await.run().await?;
+
+        // Set up reverse-proxy listeners (connections accepted here are NOT treated as
+        // directly-connected so P2P hole-punching will be attempted automatically).
+        self.rproxy_listener_manager
+            .lock()
+            .await
+            .prepare_rproxy_listeners()
+            .await?;
+        self.rproxy_listener_manager.lock().await.run().await?;
+
         self.peer_manager.run().await?;
         run_public_ipv6_provider_reconcile_task(&self.global_ctx);
 

@@ -83,6 +83,21 @@ impl TunnelHandlerForListener for PeerManager {
     }
 }
 
+/// Wraps a `PeerManager` so that tunnels accepted on reverse-proxy listeners are
+/// treated as *non-directly-connected*.  This causes EasyTier to trigger P2P
+/// hole-punching just as it would for a relayed (hole-punched) connection.
+#[derive(Debug, Clone)]
+pub struct RproxyTunnelHandler(pub Arc<PeerManager>);
+
+#[async_trait]
+impl TunnelHandlerForListener for RproxyTunnelHandler {
+    #[tracing::instrument(skip(self))]
+    async fn handle_tunnel(&self, tunnel: Box<dyn Tunnel>) -> Result<(), Error> {
+        // is_directly_connected = false  →  hole_punched = true  →  P2P will be attempted
+        self.0.add_tunnel_as_server(tunnel, false).await
+    }
+}
+
 pub trait ListenerCreatorTrait: Fn() -> Box<dyn TunnelListener> + Send + Sync {}
 impl<T: Send + Sync> ListenerCreatorTrait for T where T: Fn() -> Box<dyn TunnelListener> + Send {}
 pub type ListenerCreator = Box<dyn ListenerCreatorTrait>;
@@ -126,41 +141,46 @@ impl<H: TunnelHandlerForListener + Send + Sync + 'static + Debug> ListenerManage
         .await?;
 
         for l in self.global_ctx.config.get_listener_uris().iter() {
-            let l = l.clone();
-            let Ok(_) = create_listener_by_url(&l, self.global_ctx.clone()) else {
-                let msg = format!("failed to get listener by url: {}, maybe not supported", l);
-                self.global_ctx
-                    .issue_event(GlobalCtxEvent::ListenerAddFailed(l.clone(), msg));
-                continue;
-            };
-            let ctx = self.global_ctx.clone();
-
-            let listener = l.clone();
-            self.add_listener(
-                move || create_listener_by_url(&listener, ctx.clone()).unwrap(),
-                true,
-            )
-            .await?;
-
-            if self.global_ctx.config.get_flags().enable_ipv6
-                && !is_url_host_ipv6(&l)
-                && is_url_host_unspecified(&l)
-                // quic enables dual-stack by default, may conflict with v4 listener
-                && l.scheme() != "quic" && l.scheme() != "faketcp"
-            {
-                let mut ipv6_listener = l.clone();
-                ipv6_listener
-                    .set_host(Some("[::]".to_string().as_str()))
-                    .with_context(|| format!("failed to set ipv6 host for listener: {}", l))?;
-                let ctx = self.global_ctx.clone();
-                self.add_listener(
-                    move || create_listener_by_url(&ipv6_listener, ctx.clone()).unwrap(),
-                    false,
-                )
-                .await?;
-            }
+            self.add_listener_url(l, true).await?;
         }
 
+        Ok(())
+    }
+
+    /// Register a single URL as a listener (with optional IPv6 companion).
+    async fn add_listener_url(&mut self, l: &url::Url, must_succ: bool) -> Result<(), Error> {
+        let Ok(_) = create_listener_by_url(l, self.global_ctx.clone()) else {
+            let msg = format!("failed to get listener by url: {}, maybe not supported", l);
+            self.global_ctx
+                .issue_event(GlobalCtxEvent::ListenerAddFailed(l.clone(), msg));
+            return Ok(());
+        };
+        let ctx = self.global_ctx.clone();
+        let listener = l.clone();
+        self.add_listener(
+            move || create_listener_by_url(&listener, ctx.clone()).unwrap(),
+            must_succ,
+        )
+        .await?;
+
+        if self.global_ctx.config.get_flags().enable_ipv6
+            && !is_url_host_ipv6(l)
+            && is_url_host_unspecified(l)
+            // quic enables dual-stack by default, may conflict with v4 listener
+            && l.scheme() != "quic"
+            && l.scheme() != "faketcp"
+        {
+            let mut ipv6_listener = l.clone();
+            ipv6_listener
+                .set_host(Some("[::]".to_string().as_str()))
+                .with_context(|| format!("failed to set ipv6 host for listener: {}", l))?;
+            let ctx = self.global_ctx.clone();
+            self.add_listener(
+                move || create_listener_by_url(&ipv6_listener, ctx.clone()).unwrap(),
+                false,
+            )
+            .await?;
+        }
         Ok(())
     }
 
@@ -273,6 +293,16 @@ impl<H: TunnelHandlerForListener + Send + Sync + 'static + Debug> ListenerManage
             ));
         }
 
+        Ok(())
+    }
+}
+
+impl ListenerManager<RproxyTunnelHandler> {
+    /// Register all `rproxy_listeners` from the config as listeners in this manager.
+    pub async fn prepare_rproxy_listeners(&mut self) -> Result<(), Error> {
+        for l in self.global_ctx.config.get_rproxy_listeners().iter() {
+            self.add_listener_url(l, true).await?;
+        }
         Ok(())
     }
 }

@@ -213,6 +213,14 @@ mapped_listeners_help: |
   手动指定监听器的公网地址，其他节点可以使用该地址连接到本节点。
   例如：tcp://123.123.123.123:11223，可以指定多个。
 
+rproxy_listeners: 反向代理监听
+rproxy_listeners_help: |
+  在这些端口上监听，专门用于反向代理场景（例如使用 frp 或 cloudflared 隧道）。
+  通过这些端口接受的连接不会被视为直连，EasyTier 会自动触发 P2P 打洞以建立真正的直连。
+  这些端口的 URL 不会被广播给其他对端节点。
+  示例：tcp://0.0.0.0:12011
+add_rproxy_listener: 添加反向代理监听
+
 status:
   version: 内核版本
   local: 本机

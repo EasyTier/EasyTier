@@ -676,6 +676,27 @@ impl NetworkConfig {
             cfg.set_mapped_listeners(Some(mapped_listeners));
         }
 
+        if !self.rproxy_listeners.is_empty() {
+            cfg.set_rproxy_listeners(Some(
+                self.rproxy_listeners
+                    .iter()
+                    .map(|s| {
+                        s.parse()
+                            .with_context(|| {
+                                format!("rproxy listener is not a valid url: {}", s)
+                            })
+                            .unwrap()
+                    })
+                    .map(|s: url::Url| {
+                        if s.port().is_none() {
+                            panic!("rproxy listener port is missing: {}", s);
+                        }
+                        s
+                    })
+                    .collect(),
+            ));
+        }
+
         if let Some(credential_file) = self
             .credential_file
             .as_ref()
@@ -965,6 +986,11 @@ impl NetworkConfig {
         let mapped_listeners = config.get_mapped_listeners();
         if !mapped_listeners.is_empty() {
             result.mapped_listeners = mapped_listeners.iter().map(|l| l.to_string()).collect();
+        }
+
+        let rproxy_listeners = config.get_rproxy_listeners();
+        if !rproxy_listeners.is_empty() {
+            result.rproxy_listeners = rproxy_listeners.iter().map(|l| l.to_string()).collect();
         }
 
         result.secure_mode = config.get_secure_mode();

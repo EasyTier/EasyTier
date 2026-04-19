@@ -213,6 +213,15 @@ mapped_listeners_help: |
   Manually specify the public address of the listener, other nodes can use this address to connect to this node.
   e.g.: tcp://123.123.123.123:11223, can specify multiple.
 
+rproxy_listeners: Reverse-Proxy Listeners
+rproxy_listeners_help: |
+  Listen on these ports as reverse-proxy-only listeners (e.g. behind frp or cloudflared tunnel).
+  Connections accepted on these ports are NOT treated as directly-connected, so EasyTier will
+  automatically attempt P2P hole-punching to establish a real direct connection.
+  These listener URLs are NOT advertised to remote peers.
+  Example: tcp://0.0.0.0:12011
+add_rproxy_listener: Add Reverse-Proxy Listener
+
 status:
   version: Version
   local: Local

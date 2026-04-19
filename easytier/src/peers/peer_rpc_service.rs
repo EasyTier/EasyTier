@@ -44,12 +44,32 @@ impl DirectConnectorRpc for DirectConnectorManagerRpcServer {
         _: GetIpListRequest,
     ) -> rpc_types::error::Result<GetIpListResponse> {
         let mut ret = self.global_ctx.get_ip_collector().collect_ip_addrs().await;
+
+        // Build a set of (scheme, port) pairs that belong to rproxy listeners so we
+        // can exclude them from the advertised listener list.  Peers should never be
+        // told to dial these addresses directly – they are only reachable through the
+        // reverse proxy, and advertising them would just route peers through the proxy
+        // again instead of attempting a real P2P connection.
+        let rproxy_keys: std::collections::HashSet<(String, u16)> = self
+            .global_ctx
+            .config
+            .get_rproxy_listeners()
+            .iter()
+            .filter_map(|u| u.port().map(|p| (u.scheme().to_string(), p)))
+            .collect();
+
         ret.listeners = self
             .global_ctx
             .config
             .get_mapped_listeners()
             .into_iter()
             .chain(self.global_ctx.get_running_listeners())
+            .filter(|u| {
+                // Keep the URL unless it matches one of the rproxy (scheme, port) pairs.
+                u.port()
+                    .map(|p| !rproxy_keys.contains(&(u.scheme().to_string(), p)))
+                    .unwrap_or(true)
+            })
             .map(Into::into)
             .collect();
         remove_easytier_managed_ipv6s(&mut ret, &self.global_ctx);

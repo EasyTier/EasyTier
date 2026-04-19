@@ -206,6 +206,9 @@ pub trait ConfigLoader: Send + Sync {
     fn get_mapped_listeners(&self) -> Vec<url::Url>;
     fn set_mapped_listeners(&self, listeners: Option<Vec<url::Url>>);
 
+    fn get_rproxy_listeners(&self) -> Vec<url::Url>;
+    fn set_rproxy_listeners(&self, listeners: Option<Vec<url::Url>>);
+
     fn get_vpn_portal_config(&self) -> Option<VpnPortalConfig>;
     fn set_vpn_portal_config(&self, config: VpnPortalConfig);
 
@@ -536,6 +539,7 @@ struct Config {
     network_identity: Option<NetworkIdentity>,
     listeners: Option<Vec<url::Url>>,
     mapped_listeners: Option<Vec<url::Url>>,
+    rproxy_listeners: Option<Vec<url::Url>>,
     exit_nodes: Option<Vec<IpAddr>>,
 
     peer: Option<Vec<PeerConfig>>,
@@ -884,6 +888,19 @@ impl ConfigLoader for TomlConfigLoader {
 
     fn set_mapped_listeners(&self, listeners: Option<Vec<url::Url>>) {
         self.config.lock().unwrap().mapped_listeners = listeners;
+    }
+
+    fn get_rproxy_listeners(&self) -> Vec<url::Url> {
+        self.config
+            .lock()
+            .unwrap()
+            .rproxy_listeners
+            .clone()
+            .unwrap_or_default()
+    }
+
+    fn set_rproxy_listeners(&self, listeners: Option<Vec<url::Url>>) {
+        self.config.lock().unwrap().rproxy_listeners = listeners;
     }
 
     fn get_vpn_portal_config(&self) -> Option<VpnPortalConfig> {

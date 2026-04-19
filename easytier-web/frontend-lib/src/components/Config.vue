@@ -399,6 +399,17 @@ watch(() => curNetwork.value, syncNormalizedNetwork, { immediate: true, deep: fa
                 </div>
               </div>
 
+              <div class="flex flex-row gap-x-9 flex-wrap w-full">
+                <div class="flex flex-col gap-2 grow p-fluid">
+                  <div class="flex">
+                    <label for="rproxy_listeners">{{ t('rproxy_listeners') }}</label>
+                    <span class="pi pi-question-circle ml-2 self-center" v-tooltip="t('rproxy_listeners_help')"></span>
+                  </div>
+                  <UrlListInput v-model="curNetwork.rproxy_listeners" :protos="protos"
+                    :add-label="t('add_rproxy_listener')" placeholder="0.0.0.0" />
+                </div>
+              </div>
+
             </div>
           </Panel>
 
