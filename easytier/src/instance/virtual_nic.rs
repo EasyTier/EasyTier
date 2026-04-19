@@ -73,7 +73,7 @@ impl Stream for TunStream {
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<StreamItem>> {
         let mut self_mut = self.project();
-        
+
         if let Some(p) = self_mut.packet_queue.pop_front() {
             return Poll::Ready(Some(Ok(p)));
         }
@@ -104,60 +104,75 @@ impl Stream for TunStream {
             Ok(_) => {
                 let pi_size = if *self_mut.has_packet_info { 4 } else { 0 };
                 let mut data_offset = *self_mut.payload_offset;
-                
+
                 loop {
                     if data_offset + pi_size >= ret_buf.len() {
                         break;
                     }
-                    
+
                     let payload = &ret_buf[data_offset + pi_size..];
-                    if payload.is_empty() { break; }
-                    
+                    if payload.is_empty() {
+                        break;
+                    }
+
                     let ip_version = payload[0] >> 4;
                     let packet_len = match ip_version {
                         4 => {
-                            if payload.len() < 4 { break; }
+                            if payload.len() < 4 {
+                                break;
+                            }
                             u16::from_be_bytes([payload[2], payload[3]]) as usize
                         }
                         6 => {
-                            if payload.len() < 6 { break; }
+                            if payload.len() < 6 {
+                                break;
+                            }
                             u16::from_be_bytes([payload[4], payload[5]]) as usize + 40
                         }
                         _ => payload.len(),
                     };
-                    
+
                     if packet_len == 0 || packet_len > payload.len() {
                         break;
                     }
-                    
+
                     let is_first = data_offset == *self_mut.payload_offset;
                     let total_len = pi_size + packet_len;
-                    
+
                     if is_first {
-                        let mut first_packet = ret_buf.split_to(*self_mut.payload_offset + total_len);
+                        let mut first_packet = ret_buf.split_to(
+                            *self_mut.payload_offset + total_len);
                         first_packet.reserve(TAIL_RESERVED_SIZE);
                         unsafe { first_packet.set_len(first_packet.len() + TAIL_RESERVED_SIZE) };
                         let cur_len = first_packet.len();
                         first_packet.truncate(cur_len - TAIL_RESERVED_SIZE);
-                        self_mut.packet_queue.push_back(ZCPacket::new_from_buf(first_packet, ZCPacketType::NIC));
+                        self_mut
+                            .packet_queue
+                            .push_back(ZCPacket::new_from_buf(first_packet, ZCPacketType::NIC));
                         data_offset = 0;
                     } else {
-                        let mut new_buf = BytesMut::with_capacity(*self_mut.payload_offset + total_len + TAIL_RESERVED_SIZE);
+                        let mut new_buf = BytesMut::with_capacity(
+                            *self_mut.payload_offset + total_len + TAIL_RESERVED_SIZE
+                        );
                         unsafe { new_buf.set_len(*self_mut.payload_offset) };
                         new_buf.extend_from_slice(&ret_buf[0..total_len]);
                         ret_buf.advance(total_len);
-                        self_mut.packet_queue.push_back(ZCPacket::new_from_buf(new_buf, ZCPacketType::NIC));
+                        self_mut
+                            .packet_queue
+                            .push_back(ZCPacket::new_from_buf(new_buf, ZCPacketType::NIC));
                     }
                 }
-                
+
                 if ret_buf.len() > 0 && data_offset == *self_mut.payload_offset {
                     ret_buf.reserve(TAIL_RESERVED_SIZE);
                     unsafe { ret_buf.set_len(ret_buf.len() + TAIL_RESERVED_SIZE) };
                     let cur_len = ret_buf.len();
                     ret_buf.truncate(cur_len - TAIL_RESERVED_SIZE);
-                    self_mut.packet_queue.push_back(ZCPacket::new_from_buf(ret_buf, ZCPacketType::NIC));
+                    self_mut
+                        .packet_queue
+                        .push_back(ZCPacket::new_from_buf(ret_buf, ZCPacketType::NIC));
                 }
-                
+
                 if let Some(p) = self_mut.packet_queue.pop_front() {
                     Poll::Ready(Some(Ok(p)))
                 } else {
@@ -361,8 +376,8 @@ impl VirtualNic {
         // Check if TUN kernel module is available
         let tun_module_available = tokio::fs::metadata("/proc/net/dev").await.is_ok()
             && (tokio::fs::read_to_string("/proc/modules").await)
-                .map(|content| content.contains("tun"))
-                .unwrap_or(false);
+            .map(|content| content.contains("tun"))
+            .unwrap_or(false);
 
         if !tun_module_available {
             log::warn!("TUN kernel module may not be available.");
@@ -840,7 +855,7 @@ impl VirtualNic {
         Ok(())
     }
 
-    pub fn get_ifcfg(&self) -> impl IfConfiguerTrait + use<> {
+    pub fn get_ifcfg(&self) -> impl IfConfiguerTrait + use < > {
         IfConfiger {}
     }
 }
@@ -1129,7 +1144,7 @@ impl NicCtx {
                 &global_ctx,
                 &cur_proxy_cidrs,
             )
-            .await;
+                .await;
             Self::apply_route_changes(
                 &ifcfg,
                 &ifname,
@@ -1138,7 +1153,7 @@ impl NicCtx {
                 added,
                 removed,
             )
-            .await;
+                .await;
 
             loop {
                 let event = match event_receiver.recv().await {
@@ -1158,7 +1173,7 @@ impl NicCtx {
                             &global_ctx,
                             &cur_proxy_cidrs,
                         )
-                        .await;
+                            .await;
                         GlobalCtxEvent::ProxyCidrsUpdated(added, removed)
                     }
                 };
@@ -1177,7 +1192,7 @@ impl NicCtx {
                     added,
                     removed,
                 )
-                .await;
+                    .await;
             }
         });
 
