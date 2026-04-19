@@ -4,7 +4,9 @@ use derive_more::{Deref, DerefMut};
 use parking_lot::Mutex;
 use std::future::Future;
 use std::mem::take;
+use std::pin::Pin;
 use std::sync::Arc;
+use std::task::{Context, Poll};
 use std::time::Duration;
 use tokio::sync::Notify;
 use tokio::task::{AbortHandle, JoinError};
@@ -135,6 +137,77 @@ impl<R: Send + 'static> AsyncRuntime<R> {
             }
             AsyncRuntimeState::Stopping(handle) => handle.abort(),
             _ => {}
+        }
+    }
+}
+
+type Task<F> = Pin<Box<F>>;
+type TaskSpawner<F> = Box<dyn FnOnce(Task<F>) + Send>;
+
+pub struct DetachableTask<F>
+where
+    F: Future + Send + 'static,
+    <F as Future>::Output: Send,
+{
+    spawner: Option<TaskSpawner<F>>,
+    f: Option<Task<F>>,
+}
+
+impl<F> DetachableTask<F>
+where
+    F: Future + Send + 'static,
+    <F as Future>::Output: Send + 'static,
+{
+    pub fn with_spawner<S, R>(spawner: S, f: F) -> Self
+    where
+        S: FnOnce(Task<F>) -> R + Send + 'static,
+    {
+        Self {
+            f: Some(Box::pin(f)),
+            spawner: Some(Box::new(|f| {
+                spawner(f);
+            })),
+        }
+    }
+}
+
+impl<F> From<F> for DetachableTask<F>
+where
+    F: Future + Send + 'static,
+    <F as Future>::Output: Send + 'static,
+{
+    fn from(value: F) -> Self {
+        Self::with_spawner(|f| tokio::runtime::Handle::current().spawn(f), value)
+    }
+}
+
+impl<F> Future for DetachableTask<F>
+where
+    F: Future + Send + 'static,
+    <F as Future>::Output: Send,
+{
+    type Output = <F as Future>::Output;
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let Some(f) = self.f.as_mut() else {
+            return Poll::Pending;
+        };
+        let poll = f.as_mut().poll(cx);
+        if poll.is_ready() {
+            self.f = None;
+        }
+        poll
+    }
+}
+
+impl<F> Drop for DetachableTask<F>
+where
+    F: Future + Send + 'static,
+    <F as Future>::Output: Send,
+{
+    fn drop(&mut self) {
+        let spawner = self.spawner.take().unwrap();
+        if let Some(f) = self.f.take() {
+            spawner(f);
         }
     }
 }
