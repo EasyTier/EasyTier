@@ -1495,18 +1495,6 @@ impl PeerManager {
                 }
             }
         }
-        #[cfg(target_env = "ohos")]
-        {
-            if dst_peers.is_empty()
-                && !self
-                    .global_ctx
-                    .is_ip_in_same_network(&std::net::IpAddr::V4(*ipv4_addr))
-            {
-                tracing::trace!("no peer id for ipv4: {}, set exit_node for ohos", ipv4_addr);
-                dst_peers.push(self.my_peer_id.clone());
-                is_exit_node = true;
-            }
-        }
         (dst_peers, is_exit_node)
     }
 

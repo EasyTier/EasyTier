@@ -327,6 +327,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "bon"
+version = "3.9.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f47dbe92550676ee653353c310dfb9cf6ba17ee70396e1f7cf0a2020ad49b2fe"
+dependencies = [
+ "bon-macros",
+ "rustversion",
+]
+
+[[package]]
+name = "bon-macros"
+version = "3.9.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "519bd3116aeeb42d5372c29d982d16d0170d3d4a5ed85fc7dd91642ffff3c67c"
+dependencies = [
+ "darling",
+ "ident_case",
+ "prettyplease",
+ "proc-macro2",
+ "quote",
+ "rustversion",
+ "syn 2.0.106",
+]
+
+[[package]]
 name = "boringtun-easytier"
 version = "0.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -940,6 +965,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "delegate"
+version = "0.13.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "780eb241654bf097afb00fc5f054a09b687dad862e485fdcf8399bb056565370"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.106",
+]
+
+[[package]]
 name = "deranged"
 version = "0.5.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1083,7 +1119,7 @@ checksum = "7454e41ff9012c00d53cf7f475c5e3afa3b91b7c90568495495e8d9bf47a1055"
 
 [[package]]
 name = "easytier"
-version = "2.6.0"
+version = "2.6.1"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -1096,11 +1132,11 @@ dependencies = [
  "auto_impl",
  "base64 0.22.1",
  "bitflags 2.9.4",
+ "bon",
  "boringtun-easytier",
  "bytecodec",
  "byteorder",
  "bytes",
- "cfg-if",
  "cfg_aliases",
  "chrono",
  "cidr",
@@ -1110,6 +1146,7 @@ dependencies = [
  "crossbeam",
  "dashmap",
  "dbus",
+ "delegate",
  "derivative",
  "derive_builder",
  "derive_more",
@@ -1121,7 +1158,6 @@ dependencies = [
  "gethostname",
  "git-version",
  "globwalk",
- "hashbrown 0.15.5",
  "hickory-client",
  "hickory-proto",
  "hickory-resolver",

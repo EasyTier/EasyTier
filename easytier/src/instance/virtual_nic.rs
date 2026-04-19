@@ -24,7 +24,7 @@ use crate::{
 };
 
 use byteorder::WriteBytesExt as _;
-use bytes::{BufMut, BytesMut};
+use bytes::{Buf, BufMut, BytesMut};
 use cidr::{Ipv4Inet, Ipv6Inet};
 use futures::{SinkExt, Stream, StreamExt, lock::BiLock, ready};
 use pin_project_lite::pin_project;
@@ -48,6 +48,7 @@ pin_project! {
         cur_buf: BytesMut,
         has_packet_info: bool,
         payload_offset: usize,
+        packet_queue: std::collections::VecDeque<ZCPacket>,
     }
 }
 
@@ -62,6 +63,7 @@ impl TunStream {
             cur_buf: BytesMut::new(),
             has_packet_info,
             payload_offset,
+            packet_queue: std::collections::VecDeque::new(),
         }
     }
 }
@@ -70,7 +72,12 @@ impl Stream for TunStream {
     type Item = StreamItem;
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<StreamItem>> {
-        let self_mut = self.project();
+        let mut self_mut = self.project();
+        
+        if let Some(p) = self_mut.packet_queue.pop_front() {
+            return Poll::Ready(Some(Ok(p)));
+        }
+
         let mut g = ready!(self_mut.l.poll_lock(cx));
         reserve_buf(self_mut.cur_buf, 2500, 4 * 1024);
         if self_mut.cur_buf.is_empty() {
@@ -94,7 +101,70 @@ impl Stream for TunStream {
         ret_buf.truncate(cur_len - TAIL_RESERVED_SIZE);
 
         match ret {
-            Ok(_) => Poll::Ready(Some(Ok(ZCPacket::new_from_buf(ret_buf, ZCPacketType::NIC)))),
+            Ok(_) => {
+                let pi_size = if *self_mut.has_packet_info { 4 } else { 0 };
+                let mut data_offset = *self_mut.payload_offset;
+                
+                loop {
+                    if data_offset + pi_size >= ret_buf.len() {
+                        break;
+                    }
+                    
+                    let payload = &ret_buf[data_offset + pi_size..];
+                    if payload.is_empty() { break; }
+                    
+                    let ip_version = payload[0] >> 4;
+                    let packet_len = match ip_version {
+                        4 => {
+                            if payload.len() < 4 { break; }
+                            u16::from_be_bytes([payload[2], payload[3]]) as usize
+                        }
+                        6 => {
+                            if payload.len() < 6 { break; }
+                            u16::from_be_bytes([payload[4], payload[5]]) as usize + 40
+                        }
+                        _ => payload.len(),
+                    };
+                    
+                    if packet_len == 0 || packet_len > payload.len() {
+                        break;
+                    }
+                    
+                    let is_first = data_offset == *self_mut.payload_offset;
+                    let total_len = pi_size + packet_len;
+                    
+                    if is_first {
+                        let mut first_packet = ret_buf.split_to(*self_mut.payload_offset + total_len);
+                        first_packet.reserve(TAIL_RESERVED_SIZE);
+                        unsafe { first_packet.set_len(first_packet.len() + TAIL_RESERVED_SIZE) };
+                        let cur_len = first_packet.len();
+                        first_packet.truncate(cur_len - TAIL_RESERVED_SIZE);
+                        self_mut.packet_queue.push_back(ZCPacket::new_from_buf(first_packet, ZCPacketType::NIC));
+                        data_offset = 0;
+                    } else {
+                        let mut new_buf = BytesMut::with_capacity(*self_mut.payload_offset + total_len + TAIL_RESERVED_SIZE);
+                        unsafe { new_buf.set_len(*self_mut.payload_offset) };
+                        new_buf.extend_from_slice(&ret_buf[0..total_len]);
+                        ret_buf.advance(total_len);
+                        self_mut.packet_queue.push_back(ZCPacket::new_from_buf(new_buf, ZCPacketType::NIC));
+                    }
+                }
+                
+                if ret_buf.len() > 0 && data_offset == *self_mut.payload_offset {
+                    ret_buf.reserve(TAIL_RESERVED_SIZE);
+                    unsafe { ret_buf.set_len(ret_buf.len() + TAIL_RESERVED_SIZE) };
+                    let cur_len = ret_buf.len();
+                    ret_buf.truncate(cur_len - TAIL_RESERVED_SIZE);
+                    self_mut.packet_queue.push_back(ZCPacket::new_from_buf(ret_buf, ZCPacketType::NIC));
+                }
+                
+                if let Some(p) = self_mut.packet_queue.pop_front() {
+                    Poll::Ready(Some(Ok(p)))
+                } else {
+                    cx.waker().wake_by_ref();
+                    Poll::Pending
+                }
+            }
             Err(err) => {
                 log::error!("tun stream error: {:?}", err);
                 Poll::Ready(None)

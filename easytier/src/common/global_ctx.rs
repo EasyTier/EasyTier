@@ -511,7 +511,7 @@ impl GlobalCtx {
     }
 
     pub fn enable_exit_node(&self) -> bool {
-        self.flags.load().enable_exit_node || cfg!(target_env = "ohos")
+        self.flags.load().enable_exit_node
     }
 
     pub fn proxy_forward_by_system(&self) -> bool {
