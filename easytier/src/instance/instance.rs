@@ -1,5 +1,3 @@
-#[cfg(feature = "tun")]
-use std::any::Any;
 use std::collections::HashSet;
 use std::net::{IpAddr, Ipv4Addr};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -65,6 +63,10 @@ use crate::vpn_portal::{self, VpnPortal};
 #[cfg(feature = "magic-dns")]
 use super::dns_server::{MAGIC_DNS_FAKE_IP, runner::DnsRunner};
 use super::listeners::ListenerManager;
+#[cfg(feature = "tun")]
+use super::shared_tun::{
+    SharedTunAccess, SharedTunAttachError, SharedTunMemberHandle, try_attach_shared_tun,
+};
 
 #[cfg(feature = "socks5")]
 use crate::gateway::socks5::Socks5Server;
@@ -133,6 +135,13 @@ impl IpProxy {
 #[cfg(feature = "tun")]
 type NicCtx = super::virtual_nic::NicCtx;
 
+#[cfg(feature = "tun")]
+enum NicRuntime {
+    Dedicated(NicCtx),
+    Shared(SharedTunMemberHandle),
+    Dummy(JoinSet<()>),
+}
+
 #[cfg(feature = "magic-dns")]
 struct MagicDnsContainer {
     dns_runner_task: ScopedTask<()>,
@@ -142,7 +151,7 @@ struct MagicDnsContainer {
 // nic container will be cleared when dhcp ip changed
 #[cfg(feature = "tun")]
 pub struct NicCtxContainer {
-    nic_ctx: Option<Box<dyn Any + 'static + Send>>,
+    nic_ctx: Option<NicRuntime>,
     #[cfg(feature = "magic-dns")]
     magic_dns: Option<MagicDnsContainer>,
 }
@@ -150,14 +159,14 @@ pub struct NicCtxContainer {
 #[cfg(feature = "tun")]
 impl NicCtxContainer {
     #[cfg(not(feature = "magic-dns"))]
-    fn new(nic_ctx: NicCtx) -> Self {
+    fn new_dedicated(nic_ctx: NicCtx) -> Self {
         Self {
-            nic_ctx: Some(Box::new(nic_ctx)),
+            nic_ctx: Some(NicRuntime::Dedicated(nic_ctx)),
         }
     }
 
     #[cfg(feature = "magic-dns")]
-    fn new(nic_ctx: NicCtx, dns_runner: Option<DnsRunner>) -> Self {
+    fn new_dedicated(nic_ctx: NicCtx, dns_runner: Option<DnsRunner>) -> Self {
         if let Some(mut dns_runner) = dns_runner {
             let token = CancellationToken::new();
             let token_clone = token.clone();
@@ -165,7 +174,7 @@ impl NicCtxContainer {
                 let _ = dns_runner.run(token_clone).await;
             });
             Self {
-                nic_ctx: Some(Box::new(nic_ctx)),
+                nic_ctx: Some(NicRuntime::Dedicated(nic_ctx)),
                 magic_dns: Some(MagicDnsContainer {
                     dns_runner_task: task.into(),
                     dns_runner_cancel_token: token,
@@ -173,15 +182,45 @@ impl NicCtxContainer {
             }
         } else {
             Self {
-                nic_ctx: Some(Box::new(nic_ctx)),
+                nic_ctx: Some(NicRuntime::Dedicated(nic_ctx)),
                 magic_dns: None,
             }
         }
     }
 
-    fn new_with_any<T: 'static + Send>(ctx: T) -> Self {
+    #[cfg(not(feature = "magic-dns"))]
+    fn new_shared(handle: SharedTunMemberHandle) -> Self {
         Self {
-            nic_ctx: Some(Box::new(ctx)),
+            nic_ctx: Some(NicRuntime::Shared(handle)),
+        }
+    }
+
+    #[cfg(feature = "magic-dns")]
+    fn new_shared(handle: SharedTunMemberHandle, dns_runner: Option<DnsRunner>) -> Self {
+        if let Some(mut dns_runner) = dns_runner {
+            let token = CancellationToken::new();
+            let token_clone = token.clone();
+            let task = tokio::spawn(async move {
+                let _ = dns_runner.run(token_clone).await;
+            });
+            Self {
+                nic_ctx: Some(NicRuntime::Shared(handle)),
+                magic_dns: Some(MagicDnsContainer {
+                    dns_runner_task: task.into(),
+                    dns_runner_cancel_token: token,
+                }),
+            }
+        } else {
+            Self {
+                nic_ctx: Some(NicRuntime::Shared(handle)),
+                magic_dns: None,
+            }
+        }
+    }
+
+    fn new_dummy(tasks: JoinSet<()>) -> Self {
+        Self {
+            nic_ctx: Some(NicRuntime::Dummy(tasks)),
             #[cfg(feature = "magic-dns")]
             magic_dns: None,
         }
@@ -666,19 +705,31 @@ impl Instance {
 
     // use a mock nic ctx to consume packets.
     #[cfg(feature = "tun")]
-    async fn clear_nic_ctx(
-        arc_nic_ctx: ArcNicCtx,
-        packet_recv: Arc<Mutex<PacketRecvChanReceiver>>,
-    ) {
+    async fn cleanup_nic_ctx(mut old_ctx: NicCtxContainer) {
+        if let Some(runtime) = old_ctx.nic_ctx.take() {
+            match runtime {
+                NicRuntime::Shared(handle) => handle.shutdown().await,
+                NicRuntime::Dedicated(_) | NicRuntime::Dummy(_) => {}
+            }
+        }
+
         #[cfg(feature = "magic-dns")]
-        if let Some(old_ctx) = arc_nic_ctx.lock().await.take()
-            && let Some(dns_runner) = old_ctx.magic_dns
-        {
+        if let Some(dns_runner) = old_ctx.magic_dns.take() {
             dns_runner.dns_runner_cancel_token.cancel();
             tracing::debug!("cancelling dns runner task");
             let ret = dns_runner.dns_runner_task.await;
             tracing::debug!("dns runner task cancelled, ret: {:?}", ret);
-        };
+        }
+    }
+
+    #[cfg(feature = "tun")]
+    async fn clear_nic_ctx(
+        arc_nic_ctx: ArcNicCtx,
+        packet_recv: Arc<Mutex<PacketRecvChanReceiver>>,
+    ) {
+        if let Some(old_ctx) = arc_nic_ctx.lock().await.take() {
+            Self::cleanup_nic_ctx(old_ctx).await;
+        }
 
         let mut tasks = JoinSet::new();
         tasks.spawn(async move {
@@ -690,7 +741,7 @@ impl Instance {
         arc_nic_ctx
             .lock()
             .await
-            .replace(NicCtxContainer::new_with_any(tasks));
+            .replace(NicCtxContainer::new_dummy(tasks));
 
         tracing::debug!("nic ctx cleared.");
     }
@@ -716,18 +767,103 @@ impl Instance {
     }
 
     #[cfg(feature = "tun")]
-    async fn use_new_nic_ctx(
+    async fn use_new_dedicated_nic_ctx(
         arc_nic_ctx: ArcNicCtx,
         nic_ctx: NicCtx,
         #[cfg(feature = "magic-dns")] magic_dns: Option<DnsRunner>,
     ) {
         let mut g = arc_nic_ctx.lock().await;
-        *g = Some(NicCtxContainer::new(
+        *g = Some(NicCtxContainer::new_dedicated(
             nic_ctx,
             #[cfg(feature = "magic-dns")]
             magic_dns,
         ));
         tracing::debug!("nic ctx updated.");
+    }
+
+    #[cfg(feature = "tun")]
+    async fn use_new_shared_nic_ctx(
+        arc_nic_ctx: ArcNicCtx,
+        handle: SharedTunMemberHandle,
+        #[cfg(feature = "magic-dns")] magic_dns: Option<DnsRunner>,
+    ) {
+        let mut g = arc_nic_ctx.lock().await;
+        *g = Some(NicCtxContainer::new_shared(
+            handle,
+            #[cfg(feature = "magic-dns")]
+            magic_dns,
+        ));
+        tracing::debug!("shared nic ctx updated.");
+    }
+
+    #[cfg(all(not(mobile), feature = "tun"))]
+    async fn setup_dedicated_nic_ctx(
+        arc_nic_ctx: ArcNicCtx,
+        global_ctx: ArcGlobalCtx,
+        peer_mgr: Arc<PeerManager>,
+        peer_packet_receiver: Arc<Mutex<PacketRecvChanReceiver>>,
+        close_notifier: Arc<Notify>,
+        ipv4_addr: Option<Ipv4Inet>,
+        ipv6_addr: Option<cidr::Ipv6Inet>,
+    ) -> Result<(), Error> {
+        let mut new_nic_ctx =
+            NicCtx::new(global_ctx, &peer_mgr, peer_packet_receiver, close_notifier);
+        new_nic_ctx.run(ipv4_addr, ipv6_addr).await?;
+
+        #[cfg(feature = "magic-dns")]
+        {
+            let ifname = new_nic_ctx.ifname().await;
+            let dns_runner =
+                ipv4_addr.and_then(|ipv4| Self::create_magic_dns_runner(peer_mgr, ifname, ipv4));
+            Self::use_new_dedicated_nic_ctx(arc_nic_ctx, new_nic_ctx, dns_runner).await;
+        }
+        #[cfg(not(feature = "magic-dns"))]
+        Self::use_new_dedicated_nic_ctx(arc_nic_ctx, new_nic_ctx).await;
+
+        Ok(())
+    }
+
+    #[cfg(all(not(mobile), feature = "tun"))]
+    async fn try_setup_shared_tun(
+        arc_nic_ctx: ArcNicCtx,
+        global_ctx: ArcGlobalCtx,
+        peer_mgr: Arc<PeerManager>,
+        peer_packet_receiver: Arc<Mutex<PacketRecvChanReceiver>>,
+        close_notifier: Arc<Notify>,
+        ipv4_addr: Option<Ipv4Inet>,
+    ) -> Result<bool, Error> {
+        match try_attach_shared_tun(
+            global_ctx.clone(),
+            peer_mgr.clone(),
+            peer_packet_receiver,
+            close_notifier,
+            SharedTunAccess::Native,
+        )
+        .await
+        {
+            Ok(attached) => {
+                global_ctx.issue_event(GlobalCtxEvent::TunDeviceReady(attached.ifname.clone()));
+                #[cfg(feature = "magic-dns")]
+                let dns_runner = ipv4_addr
+                    .and_then(|ip| {
+                        Self::create_magic_dns_runner(peer_mgr, Some(attached.ifname.clone()), ip)
+                    });
+                Self::use_new_shared_nic_ctx(
+                    arc_nic_ctx,
+                    attached.handle,
+                    #[cfg(feature = "magic-dns")]
+                    dns_runner,
+                )
+                .await;
+                Ok(true)
+            }
+            Err(SharedTunAttachError::Fallback(reason)) => {
+                tracing::info!(instance_id = %global_ctx.get_id(), %reason, "shared tun unavailable, falling back to dedicated tun");
+                global_ctx.issue_event(GlobalCtxEvent::TunDeviceFallback(reason));
+                Ok(false)
+            }
+            Err(SharedTunAttachError::Fatal(err)) => Err(err),
+        }
     }
 
     // Warning, if there is an IP conflict in the network when using DHCP, the IP will be automatically changed.
@@ -813,37 +949,57 @@ impl Instance {
                         continue;
                     }
 
+                    global_ctx_c.set_ipv4(Some(ip));
+
                     #[cfg(all(not(mobile), feature = "tun"))]
                     {
-                        let mut new_nic_ctx = NicCtx::new(
+                        match Self::try_setup_shared_tun(
+                            nic_ctx.clone(),
                             global_ctx_c.clone(),
-                            &peer_manager_c,
+                            peer_manager_c.clone(),
                             _peer_packet_receiver.clone(),
                             nic_closed_notifier.clone(),
-                        );
-                        if let Err(e) = new_nic_ctx.run(Some(ip), global_ctx_c.get_ipv6()).await {
-                            tracing::error!(
-                                ?current_dhcp_ip,
-                                ?candidate_ipv4_addr,
-                                ?e,
-                                "add ip failed"
-                            );
-                            global_ctx_c.set_ipv4(None);
-                            continue;
-                        }
-                        #[cfg(feature = "magic-dns")]
-                        let ifname = new_nic_ctx.ifname().await;
-                        Self::use_new_nic_ctx(
-                            nic_ctx.clone(),
-                            new_nic_ctx,
-                            #[cfg(feature = "magic-dns")]
-                            Self::create_magic_dns_runner(peer_manager_c.clone(), ifname, ip),
+                            Some(ip),
                         )
-                        .await;
+                        .await
+                        {
+                            Ok(true) => {}
+                            Ok(false) => {
+                                if let Err(e) = Self::setup_dedicated_nic_ctx(
+                                    nic_ctx.clone(),
+                                    global_ctx_c.clone(),
+                                    peer_manager_c.clone(),
+                                    _peer_packet_receiver.clone(),
+                                    nic_closed_notifier.clone(),
+                                    Some(ip),
+                                    global_ctx_c.get_ipv6(),
+                                )
+                                .await
+                                {
+                                    tracing::error!(
+                                        ?current_dhcp_ip,
+                                        ?candidate_ipv4_addr,
+                                        ?e,
+                                        "add ip failed"
+                                    );
+                                    global_ctx_c.set_ipv4(None);
+                                    continue;
+                                }
+                            }
+                            Err(e) => {
+                                tracing::error!(
+                                    ?current_dhcp_ip,
+                                    ?candidate_ipv4_addr,
+                                    ?e,
+                                    "shared tun attach failed"
+                                );
+                                global_ctx_c.set_ipv4(None);
+                                continue;
+                            }
+                        }
                     }
 
                     current_dhcp_ip = Some(ip);
-                    global_ctx_c.set_ipv4(Some(ip));
                     global_ctx_c.issue_event(GlobalCtxEvent::DhcpIpv4Changed(last_ip, Some(ip)));
                 } else {
                     current_dhcp_ip = None;
@@ -883,36 +1039,51 @@ impl Instance {
                         return;
                     };
 
-                    let mut new_nic_ctx = NicCtx::new(
+                    let shared_ready = match Self::try_setup_shared_tun(
+                        nic_ctx.clone(),
                         peer_mgr.get_global_ctx(),
-                        &peer_mgr,
+                        peer_mgr.clone(),
                         peer_packet_receiver.clone(),
                         close_notifier.clone(),
-                    );
-
-                    if let Err(e) = new_nic_ctx.run(ipv4_addr, ipv6_addr).await {
-                        if let Some(output_tx) = output_tx.take() {
-                            let _ = output_tx.send(Err(e));
-                            return;
-                        }
-                        tracing::error!("failed to create new nic ctx, err: {:?}", e);
-                        tokio::time::sleep(Duration::from_secs(1)).await;
-                        continue;
-                    }
-
-                    // Create Magic DNS runner only if we have IPv4
-                    #[cfg(feature = "magic-dns")]
+                        ipv4_addr,
+                    )
+                    .await
                     {
-                        let ifname = new_nic_ctx.ifname().await;
-                        let dns_runner = if let Some(ipv4) = ipv4_addr {
-                            Self::create_magic_dns_runner(peer_mgr, ifname, ipv4)
-                        } else {
-                            None
-                        };
-                        Self::use_new_nic_ctx(nic_ctx.clone(), new_nic_ctx, dns_runner).await;
+                        Ok(ready) => ready,
+                        Err(e) => {
+                            if let Some(output_tx) = output_tx.take() {
+                                let _ = output_tx.send(Err(e));
+                                return;
+                            }
+                            tracing::error!("failed to attach shared tun, err: {:?}", e);
+                            tokio::time::sleep(Duration::from_secs(1)).await;
+                            continue;
+                        }
+                    };
+
+                    if shared_ready {
+                        // shared nic context is installed
+                    } else {
+                        if let Err(e) = Self::setup_dedicated_nic_ctx(
+                            nic_ctx.clone(),
+                            peer_mgr.get_global_ctx(),
+                            peer_mgr.clone(),
+                            peer_packet_receiver.clone(),
+                            close_notifier.clone(),
+                            ipv4_addr,
+                            ipv6_addr,
+                        )
+                        .await
+                        {
+                            if let Some(output_tx) = output_tx.take() {
+                                let _ = output_tx.send(Err(e));
+                                return;
+                            }
+                            tracing::error!("failed to create new nic ctx, err: {:?}", e);
+                            tokio::time::sleep(Duration::from_secs(1)).await;
+                            continue;
+                        }
                     }
-                    #[cfg(not(feature = "magic-dns"))]
-                    Self::use_new_nic_ctx(nic_ctx.clone(), new_nic_ctx).await;
                 }
 
                 if let Some(output_tx) = output_tx.take() {
@@ -1480,30 +1651,60 @@ impl Instance {
             return Ok(());
         }
         let close_notifier = Arc::new(Notify::new());
-        let mut new_nic_ctx = NicCtx::new(
+        match try_attach_shared_tun(
             global_ctx.clone(),
-            &peer_manager,
+            peer_manager.clone(),
             peer_packet_receiver.clone(),
             close_notifier.clone(),
-        );
-        new_nic_ctx
-            .run_for_mobile(fd)
-            .await
-            .with_context(|| "add ip failed")?;
+            SharedTunAccess::MobileFd(fd),
+        )
+        .await
+        {
+            Ok(attached) => {
+                global_ctx.issue_event(GlobalCtxEvent::TunDeviceReady(attached.ifname.clone()));
+                let magic_dns_runner = if let Some(ipv4) = global_ctx.get_ipv4() {
+                    Self::create_magic_dns_runner(
+                        peer_manager.clone(),
+                        Some(attached.ifname.clone()),
+                        ipv4,
+                    )
+                } else {
+                    None
+                };
+                Self::use_new_shared_nic_ctx(nic_ctx, attached.handle, magic_dns_runner).await;
+            }
+            Err(SharedTunAttachError::Fallback(reason)) => {
+                tracing::info!(instance_id = %global_ctx.get_id(), %reason, "shared mobile tun unavailable, falling back to dedicated tun");
+                global_ctx.issue_event(GlobalCtxEvent::TunDeviceFallback(reason));
+                let mut dedicated_nic_ctx = NicCtx::new(
+                    global_ctx.clone(),
+                    &peer_manager,
+                    peer_packet_receiver.clone(),
+                    close_notifier.clone(),
+                );
+                dedicated_nic_ctx
+                    .run_for_mobile(fd)
+                    .await
+                    .with_context(|| "add ip failed")?;
 
-        let magic_dns_runner = if let Some(ipv4) = global_ctx.get_ipv4() {
-            Self::create_magic_dns_runner(peer_manager.clone(), None, ipv4)
-        } else {
-            None
-        };
-        Self::use_new_nic_ctx(nic_ctx.clone(), new_nic_ctx, magic_dns_runner).await;
+                let magic_dns_runner = if let Some(ipv4) = global_ctx.get_ipv4() {
+                    Self::create_magic_dns_runner(peer_manager.clone(), None, ipv4)
+                } else {
+                    None
+                };
+                Self::use_new_dedicated_nic_ctx(nic_ctx, dedicated_nic_ctx, magic_dns_runner).await;
+            }
+            Err(SharedTunAttachError::Fatal(err)) => return Err(err.into()),
+        }
         Ok(())
     }
 
     pub async fn clear_resources(&mut self) {
         self.peer_manager.clear_resources().await;
         #[cfg(feature = "tun")]
-        let _ = self.nic_ctx.lock().await.take();
+        if let Some(old_ctx) = self.nic_ctx.lock().await.take() {
+            Self::cleanup_nic_ctx(old_ctx).await;
+        }
     }
 }
 
@@ -1515,7 +1716,9 @@ impl Drop for Instance {
         let nic_ctx = self.nic_ctx.clone();
         tokio::spawn(async move {
             #[cfg(feature = "tun")]
-            nic_ctx.lock().await.take();
+            if let Some(old_ctx) = nic_ctx.lock().await.take() {
+                Instance::cleanup_nic_ctx(old_ctx).await;
+            }
             if let Some(pm) = pm.upgrade() {
                 pm.clear_resources().await;
             };

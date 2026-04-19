@@ -258,6 +258,211 @@ pub async fn drop_insts(insts: Vec<Instance>) {
     while set.join_next().await.is_some() {}
 }
 
+async fn wait_for_tun_ready_event(
+    receiver: &mut tokio::sync::broadcast::Receiver<crate::common::global_ctx::GlobalCtxEvent>,
+) -> String {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if let crate::common::global_ctx::GlobalCtxEvent::TunDeviceReady(ifname) = receiver.recv().await.unwrap() {
+                return ifname;
+            }
+        }
+    })
+    .await
+    .unwrap()
+}
+
+async fn assert_no_tun_ready_event(
+    receiver: &mut tokio::sync::broadcast::Receiver<crate::common::global_ctx::GlobalCtxEvent>,
+    timeout: Duration,
+) {
+    tokio::time::timeout(timeout, async {
+        loop {
+            if let crate::common::global_ctx::GlobalCtxEvent::TunDeviceReady(ifname) = receiver.recv().await.unwrap() {
+                panic!("unexpected TunDeviceReady event: {ifname}");
+            }
+        }
+    })
+    .await
+    .ok();
+}
+
+async fn assert_no_tun_fallback_event(
+    receiver: &mut tokio::sync::broadcast::Receiver<crate::common::global_ctx::GlobalCtxEvent>,
+    timeout: Duration,
+) {
+    tokio::time::timeout(timeout, async {
+        loop {
+            if let crate::common::global_ctx::GlobalCtxEvent::TunDeviceFallback(reason) = receiver.recv().await.unwrap() {
+                panic!("unexpected TunDeviceFallback event: {reason}");
+            }
+        }
+    })
+    .await
+    .ok();
+}
+
+fn assert_tcp_proxy_metric_has_protocol(
+    inst: &Instance,
+    protocol: TcpProxyEntryTransportType,
+    min_value: u64,
+) {
+    let metrics = inst
+        .get_global_ctx()
+        .stats_manager()
+        .get_metrics_by_prefix(&MetricName::TcpProxyConnect.to_string());
+
+    assert!(
+        metrics.iter().any(|metric| {
+            metric.value >= min_value
+                && metric.labels.labels().iter().any(|l| {
+                    let t = LabelType::Protocol(protocol.as_str_name().to_string());
+                    t.key() == l.key && t.value() == l.value
+                })
+        }),
+        "metrics: {:?}",
+        metrics
+    );
+}
+
+async fn shared_tun_subnet_proxy_transport_test(
+    transport: TcpProxyEntryTransportType,
+    source_shared: bool,
+) {
+    prepare_linux_namespaces();
+
+    let center_cfg = get_inst_config("center", Some("net_b"), "10.144.144.100", "fd00::64/64");
+    center_cfg.set_listeners(vec![]);
+    let mut center = Instance::new(center_cfg);
+
+    let mut shared_events = Vec::new();
+    let mut insts = Vec::new();
+    let dst_idx;
+
+    if source_shared {
+        let source_cfg = get_inst_config("src_shared", Some("net_a"), "10.144.144.1", "fd00::1/64");
+        source_cfg.set_listeners(vec![]);
+        source_cfg.set_socks5_portal(None);
+        let mut source_flags = source_cfg.get_flags();
+        source_flags.dev_name = "et_ssrc0".to_string();
+        match transport {
+            TcpProxyEntryTransportType::Kcp => source_flags.enable_kcp_proxy = true,
+            TcpProxyEntryTransportType::Quic => source_flags.enable_quic_proxy = true,
+            _ => unreachable!(),
+        }
+        source_cfg.set_flags(source_flags.clone());
+        let source = Instance::new(source_cfg);
+        shared_events.push(source.get_global_ctx().subscribe());
+
+        let source_peer = get_inst_config("src_peer", Some("net_a"), "10.144.144.2", "fd00::2/64");
+        source_peer.set_listeners(vec![]);
+        source_peer.set_socks5_portal(None);
+        source_peer.set_flags(source_flags);
+        let source_peer = Instance::new(source_peer);
+        shared_events.push(source_peer.get_global_ctx().subscribe());
+
+        let dst_cfg = get_inst_config("dst", Some("net_c"), "10.144.144.3", "fd00::3/64");
+        dst_cfg.set_listeners(vec![]);
+        dst_cfg.set_socks5_portal(None);
+        dst_cfg
+            .add_proxy_cidr("10.1.2.0/24".parse().unwrap(), None)
+            .unwrap();
+        let dst = Instance::new(dst_cfg);
+
+        insts.push(source);
+        insts.push(source_peer);
+        insts.push(dst);
+        dst_idx = 2;
+    } else {
+        let src_cfg = get_inst_config("src", Some("net_a"), "10.144.144.1", "fd00::1/64");
+        src_cfg.set_listeners(vec![]);
+        src_cfg.set_socks5_portal(None);
+        let mut src_flags = src_cfg.get_flags();
+        match transport {
+            TcpProxyEntryTransportType::Kcp => src_flags.enable_kcp_proxy = true,
+            TcpProxyEntryTransportType::Quic => src_flags.enable_quic_proxy = true,
+            _ => unreachable!(),
+        }
+        src_cfg.set_flags(src_flags);
+        let src = Instance::new(src_cfg);
+
+        let dst_cfg = get_inst_config("dst_shared", Some("net_c"), "10.144.144.3", "fd00::3/64");
+        dst_cfg.set_listeners(vec![]);
+        dst_cfg.set_socks5_portal(None);
+        dst_cfg
+            .add_proxy_cidr("10.1.2.0/24".parse().unwrap(), None)
+            .unwrap();
+        let mut dst_flags = dst_cfg.get_flags();
+        dst_flags.dev_name = "et_sdst0".to_string();
+        dst_cfg.set_flags(dst_flags.clone());
+        let dst = Instance::new(dst_cfg);
+        shared_events.push(dst.get_global_ctx().subscribe());
+
+        let dst_peer = get_inst_config("dst_peer", Some("net_c"), "10.144.144.4", "fd00::4/64");
+        dst_peer.set_listeners(vec![]);
+        dst_peer.set_socks5_portal(None);
+        dst_peer.set_flags(dst_flags);
+        let dst_peer = Instance::new(dst_peer);
+        shared_events.push(dst_peer.get_global_ctx().subscribe());
+
+        insts.push(src);
+        insts.push(dst);
+        insts.push(dst_peer);
+        dst_idx = 1;
+    }
+
+    center.run().await.unwrap();
+    for inst in &mut insts {
+        inst.run().await.unwrap();
+    }
+
+    let ifname = wait_for_tun_ready_event(&mut shared_events[0]).await;
+    for receiver in shared_events.iter_mut().skip(1) {
+        assert_eq!(ifname, wait_for_tun_ready_event(receiver).await);
+    }
+
+    insts[0]
+        .get_conn_manager()
+        .add_connector(RingTunnelConnector::new(
+            format!("ring://{}", center.id()).parse().unwrap(),
+        ));
+    insts[dst_idx]
+        .get_conn_manager()
+        .add_connector(RingTunnelConnector::new(
+            format!("ring://{}", center.id()).parse().unwrap(),
+        ));
+
+    wait_for_condition(
+        || async {
+            insts[0].get_peer_manager().list_routes().await.len() >= 2
+                && insts[dst_idx].get_peer_manager().list_routes().await.len() >= 2
+        },
+        Duration::from_secs(8),
+    )
+    .await;
+
+    wait_proxy_route_appear(
+        &insts[0].get_peer_manager(),
+        "10.144.144.3/24",
+        insts[dst_idx].peer_id(),
+        "10.1.2.0/24",
+    )
+    .await;
+
+    subnet_proxy_test_icmp("10.1.2.4", Duration::from_secs(8)).await;
+    subnet_proxy_test_tcp("10.1.2.4", "10.1.2.4", Duration::from_secs(8)).await;
+    subnet_proxy_test_udp("10.1.2.4", "10.1.2.4", Duration::from_secs(8)).await;
+
+    assert_tcp_proxy_metric_has_protocol(&insts[0], transport, 1);
+    for receiver in &mut shared_events {
+        assert_no_tun_fallback_event(receiver, Duration::from_secs(2)).await;
+    }
+
+    let mut all_insts = vec![center];
+    all_insts.extend(insts);
+    drop_insts(all_insts).await;
+}
+
 async fn ping_test(from_netns: &str, target_ip: &str, payload_size: Option<usize>) -> bool {
     let _g = NetNS::new(Some(ROOT_NETNS_NAME.to_owned())).guard();
     let code = tokio::process::Command::new("ip")
@@ -992,6 +1197,293 @@ pub async fn foreign_network_forward_nic_data() {
     .await;
 
     drop_insts(vec![center_inst, inst1, inst2]).await;
+}
+
+#[tokio::test]
+#[serial_test::serial]
+pub async fn shared_tun_same_namespace_real_tun() {
+    prepare_linux_namespaces();
+
+    let center_cfg = get_inst_config("center", Some("net_a"), "10.144.144.1", "fd00::1/64");
+    center_cfg.set_listeners(vec![]);
+    let mut center = Instance::new(center_cfg);
+
+    let shared_cfg_1 = get_inst_config("shared_1", Some("net_b"), "10.144.144.2", "fd00::2/64");
+    shared_cfg_1.set_listeners(vec![]);
+    shared_cfg_1.set_socks5_portal(None);
+    let mut shared_flags = shared_cfg_1.get_flags();
+    shared_flags.dev_name = "et_shared0".to_string();
+    shared_cfg_1.set_flags(shared_flags.clone());
+    let mut shared_1 = Instance::new(shared_cfg_1);
+
+    let shared_cfg_2 = get_inst_config("shared_2", Some("net_b"), "10.144.144.3", "fd00::3/64");
+    shared_cfg_2.set_listeners(vec![]);
+    shared_cfg_2.set_socks5_portal(None);
+    shared_cfg_2.set_flags(shared_flags);
+    let mut shared_2 = Instance::new(shared_cfg_2);
+
+    let remote_cfg = get_inst_config("remote", Some("net_c"), "10.144.144.4", "fd00::4/64");
+    remote_cfg.set_listeners(vec![]);
+    let mut remote = Instance::new(remote_cfg);
+
+    let mut shared_1_events = shared_1.get_global_ctx().subscribe();
+    let mut shared_2_events = shared_2.get_global_ctx().subscribe();
+
+    center.run().await.unwrap();
+    shared_1.run().await.unwrap();
+    shared_2.run().await.unwrap();
+    remote.run().await.unwrap();
+
+    let shared_1_tun = wait_for_tun_ready_event(&mut shared_1_events).await;
+    let shared_2_tun = wait_for_tun_ready_event(&mut shared_2_events).await;
+    assert_eq!(shared_1_tun, shared_2_tun);
+
+    shared_1
+        .get_conn_manager()
+        .add_connector(RingTunnelConnector::new(
+            format!("ring://{}", center.id()).parse().unwrap(),
+        ));
+    shared_2
+        .get_conn_manager()
+        .add_connector(RingTunnelConnector::new(
+            format!("ring://{}", center.id()).parse().unwrap(),
+        ));
+    remote
+        .get_conn_manager()
+        .add_connector(RingTunnelConnector::new(
+            format!("ring://{}", center.id()).parse().unwrap(),
+        ));
+
+    wait_for_condition(
+        || async {
+            shared_1.get_peer_manager().list_routes().await.len() == 3
+                && shared_2.get_peer_manager().list_routes().await.len() == 3
+                && remote.get_peer_manager().list_routes().await.len() == 3
+        },
+        Duration::from_secs(8),
+    )
+    .await;
+
+    wait_for_condition(
+        || async { ping_test("net_c", "10.144.144.2", None).await },
+        Duration::from_secs(8),
+    )
+    .await;
+    wait_for_condition(
+        || async { ping_test("net_c", "10.144.144.3", None).await },
+        Duration::from_secs(8),
+    )
+    .await;
+    wait_for_condition(
+        || async { ping_test("net_b", "10.144.144.4", None).await },
+        Duration::from_secs(8),
+    )
+    .await;
+
+    drop_insts(vec![center, shared_1, shared_2, remote]).await;
+}
+
+#[tokio::test]
+#[serial_test::serial]
+pub async fn shared_tun_proxy_cidr_same_namespace_real_tun() {
+    prepare_linux_namespaces();
+
+    let center_cfg = get_inst_config("center", Some("net_a"), "10.144.144.1", "fd00::1/64");
+    center_cfg.set_listeners(vec![]);
+    let mut center = Instance::new(center_cfg);
+
+    let shared_cfg_1 = get_inst_config("shared_1", Some("net_c"), "10.144.144.2", "fd00::2/64");
+    shared_cfg_1.set_listeners(vec![]);
+    shared_cfg_1.set_socks5_portal(None);
+    shared_cfg_1
+        .add_proxy_cidr("10.1.2.0/24".parse().unwrap(), None)
+        .unwrap();
+    let mut shared_flags = shared_cfg_1.get_flags();
+    shared_flags.dev_name = "et_shp0".to_string();
+    shared_cfg_1.set_flags(shared_flags.clone());
+    let mut shared_1 = Instance::new(shared_cfg_1);
+
+    let shared_cfg_2 = get_inst_config("shared_2", Some("net_c"), "10.144.144.3", "fd00::3/64");
+    shared_cfg_2.set_listeners(vec![]);
+    shared_cfg_2.set_socks5_portal(None);
+    shared_cfg_2.set_flags(shared_flags);
+    let mut shared_2 = Instance::new(shared_cfg_2);
+
+    let remote_cfg = get_inst_config("remote", Some("net_b"), "10.144.144.4", "fd00::4/64");
+    remote_cfg.set_listeners(vec![]);
+    let mut remote = Instance::new(remote_cfg);
+
+    let mut shared_1_events = shared_1.get_global_ctx().subscribe();
+    let mut shared_2_events = shared_2.get_global_ctx().subscribe();
+
+    center.run().await.unwrap();
+    shared_1.run().await.unwrap();
+    shared_2.run().await.unwrap();
+    remote.run().await.unwrap();
+
+    let shared_1_tun = wait_for_tun_ready_event(&mut shared_1_events).await;
+    let shared_2_tun = wait_for_tun_ready_event(&mut shared_2_events).await;
+    assert_eq!(shared_1_tun, shared_2_tun);
+
+    shared_1
+        .get_conn_manager()
+        .add_connector(RingTunnelConnector::new(
+            format!("ring://{}", center.id()).parse().unwrap(),
+        ));
+    shared_2
+        .get_conn_manager()
+        .add_connector(RingTunnelConnector::new(
+            format!("ring://{}", center.id()).parse().unwrap(),
+        ));
+    remote
+        .get_conn_manager()
+        .add_connector(RingTunnelConnector::new(
+            format!("ring://{}", center.id()).parse().unwrap(),
+        ));
+
+    wait_for_condition(
+        || async {
+            shared_1.get_peer_manager().list_routes().await.len() == 3
+                && shared_2.get_peer_manager().list_routes().await.len() == 3
+                && remote.get_peer_manager().list_routes().await.len() == 3
+        },
+        Duration::from_secs(8),
+    )
+    .await;
+
+    wait_proxy_route_appear(
+        &center.get_peer_manager(),
+        "10.144.144.2/24",
+        shared_1.peer_id(),
+        "10.1.2.0/24",
+    )
+    .await;
+    wait_proxy_route_appear(
+        &remote.get_peer_manager(),
+        "10.144.144.2/24",
+        shared_1.peer_id(),
+        "10.1.2.0/24",
+    )
+    .await;
+
+    wait_for_condition(
+        || async { ping_test("net_a", "10.1.2.4", None).await },
+        Duration::from_secs(8),
+    )
+    .await;
+    wait_for_condition(
+        || async { ping_test("net_b", "10.1.2.4", None).await },
+        Duration::from_secs(8),
+    )
+    .await;
+
+    assert_no_tun_fallback_event(&mut shared_1_events, Duration::from_secs(2)).await;
+    assert_no_tun_fallback_event(&mut shared_2_events, Duration::from_secs(2)).await;
+
+    drop_insts(vec![center, shared_1, shared_2, remote]).await;
+}
+
+#[tokio::test]
+#[serial_test::serial]
+pub async fn shared_tun_kcp_proxy_with_source_shared_tun() {
+    shared_tun_subnet_proxy_transport_test(TcpProxyEntryTransportType::Kcp, true).await;
+}
+
+#[tokio::test]
+#[serial_test::serial]
+pub async fn shared_tun_quic_proxy_with_source_shared_tun() {
+    shared_tun_subnet_proxy_transport_test(TcpProxyEntryTransportType::Quic, true).await;
+}
+
+#[tokio::test]
+#[serial_test::serial]
+pub async fn shared_tun_kcp_proxy_with_destination_shared_tun() {
+    shared_tun_subnet_proxy_transport_test(TcpProxyEntryTransportType::Kcp, false).await;
+}
+
+#[tokio::test]
+#[serial_test::serial]
+pub async fn shared_tun_quic_proxy_with_destination_shared_tun() {
+    shared_tun_subnet_proxy_transport_test(TcpProxyEntryTransportType::Quic, false).await;
+}
+
+#[tokio::test]
+#[serial_test::serial]
+pub async fn same_namespace_no_tun_skips_shared_tun_and_keeps_connectivity() {
+    prepare_linux_namespaces();
+
+    let center_cfg = get_inst_config("center", Some("net_a"), "10.144.144.1", "fd00::1/64");
+    center_cfg.set_listeners(vec![]);
+    let mut center = Instance::new(center_cfg);
+
+    let no_tun_cfg_1 = get_inst_config("no_tun_1", Some("net_b"), "10.144.144.2", "fd00::2/64");
+    no_tun_cfg_1.set_listeners(vec![]);
+    no_tun_cfg_1.set_socks5_portal(None);
+    let mut no_tun_flags = no_tun_cfg_1.get_flags();
+    no_tun_flags.dev_name = "et_shared_disabled0".to_string();
+    no_tun_flags.no_tun = true;
+    no_tun_cfg_1.set_flags(no_tun_flags.clone());
+    let mut no_tun_1 = Instance::new(no_tun_cfg_1);
+
+    let no_tun_cfg_2 = get_inst_config("no_tun_2", Some("net_b"), "10.144.144.3", "fd00::3/64");
+    no_tun_cfg_2.set_listeners(vec![]);
+    no_tun_cfg_2.set_socks5_portal(None);
+    no_tun_cfg_2.set_flags(no_tun_flags);
+    let mut no_tun_2 = Instance::new(no_tun_cfg_2);
+
+    let remote_cfg = get_inst_config("remote", Some("net_c"), "10.144.144.4", "fd00::4/64");
+    remote_cfg.set_listeners(vec![]);
+    let mut remote = Instance::new(remote_cfg);
+
+    let mut no_tun_1_events = no_tun_1.get_global_ctx().subscribe();
+    let mut no_tun_2_events = no_tun_2.get_global_ctx().subscribe();
+
+    center.run().await.unwrap();
+    no_tun_1.run().await.unwrap();
+    no_tun_2.run().await.unwrap();
+    remote.run().await.unwrap();
+
+    assert_no_tun_ready_event(&mut no_tun_1_events, Duration::from_secs(2)).await;
+    assert_no_tun_ready_event(&mut no_tun_2_events, Duration::from_secs(2)).await;
+
+    no_tun_1
+        .get_conn_manager()
+        .add_connector(RingTunnelConnector::new(
+            format!("ring://{}", center.id()).parse().unwrap(),
+        ));
+    no_tun_2
+        .get_conn_manager()
+        .add_connector(RingTunnelConnector::new(
+            format!("ring://{}", center.id()).parse().unwrap(),
+        ));
+    remote
+        .get_conn_manager()
+        .add_connector(RingTunnelConnector::new(
+            format!("ring://{}", center.id()).parse().unwrap(),
+        ));
+
+    wait_for_condition(
+        || async {
+            no_tun_1.get_peer_manager().list_routes().await.len() == 3
+                && no_tun_2.get_peer_manager().list_routes().await.len() == 3
+                && remote.get_peer_manager().list_routes().await.len() == 3
+        },
+        Duration::from_secs(8),
+    )
+    .await;
+
+    wait_for_condition(
+        || async { ping_test("net_c", "10.144.144.2", None).await },
+        Duration::from_secs(8),
+    )
+    .await;
+    wait_for_condition(
+        || async { ping_test("net_c", "10.144.144.3", None).await },
+        Duration::from_secs(8),
+    )
+    .await;
+
+    drop_insts(vec![center, no_tun_1, no_tun_2, remote]).await;
 }
 
 use std::{net::SocketAddr, str::FromStr};

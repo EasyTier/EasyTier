@@ -363,6 +363,10 @@ fn handle_event(
                         event!(error, %err, "[{}] tun device error", instance_id);
                     }
 
+                    GlobalCtxEvent::TunDeviceFallback(reason) => {
+                        event!(warn, %reason, "[{}] tun device fallback", instance_id);
+                    }
+
                     GlobalCtxEvent::Connecting(dst) => {
                         event!(info, category: "CONNECTION", %dst, "[{}] connecting to peer", instance_id);
                     }
