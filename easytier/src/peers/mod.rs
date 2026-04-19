@@ -20,6 +20,7 @@ pub mod foreign_network_client;
 pub mod foreign_network_manager;
 
 pub mod encrypt;
+pub(crate) mod secure_datagram;
 
 pub mod peer_task;
 
