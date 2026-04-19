@@ -1,5 +1,6 @@
 import java.util.Properties
 import java.io.FileInputStream
+import groovy.json.JsonSlurper
 
 plugins {
     id("com.android.application")
@@ -14,6 +15,32 @@ val tauriProperties = Properties().apply {
     }
 }
 
+val versionPattern = Regex("""^(\d+)\.(\d+)\.(\d+)$""")
+
+val tauriVersionName = tauriProperties.getProperty("tauri.android.versionName")?.ifBlank { null } ?: run {
+    val tauriConfFile = file("../../../tauri.conf.json")
+    check(tauriConfFile.exists()) { "Missing tauri.conf.json at ${tauriConfFile.path}" }
+
+    val tauriConf = tauriConfFile.reader().use { JsonSlurper().parse(it) as? Map<*, *> }
+        ?: error("Failed to parse ${tauriConfFile.path} as a JSON object")
+    tauriConf["version"] as? String
+        ?: error("Missing string field \"version\" in ${tauriConfFile.path}")
+}
+
+val tauriVersionMatch = versionPattern.matchEntire(tauriVersionName)
+    ?: error("Android version must use x.y.z format, but got \"$tauriVersionName\"")
+
+val tauriVersionCode = if (tauriProperties.getProperty("tauri.android.versionName") != null) {
+    tauriProperties.getProperty("tauri.android.versionCode")?.toIntOrNull()
+        ?: run {
+            val (major, minor, patch) = tauriVersionMatch.destructured
+            major.toInt() * 1_000_000 + minor.toInt() * 1_000 + patch.toInt()
+        }
+} else {
+    val (major, minor, patch) = tauriVersionMatch.destructured
+    major.toInt() * 1_000_000 + minor.toInt() * 1_000 + patch.toInt()
+}
+
 android {
     compileSdk = 34
     namespace = "com.kkrainbow.easytier"
@@ -22,8 +49,8 @@ android {
         applicationId = "com.kkrainbow.easytier"
         minSdk = 24
         targetSdk = 34
-        versionCode = tauriProperties.getProperty("tauri.android.versionCode", "1").toInt()
-        versionName = tauriProperties.getProperty("tauri.android.versionName", "1.0")
+        versionCode = tauriVersionCode
+        versionName = tauriVersionName
     }
     signingConfigs {
         create("release") {
