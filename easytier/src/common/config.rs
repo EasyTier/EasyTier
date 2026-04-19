@@ -13,23 +13,29 @@ use serde::{Deserialize, Serialize};
 use strum::{Display, EnumString, VariantArray};
 use tokio::io::AsyncReadExt as _;
 
+use super::env_parser;
+use crate::utils::dns::sanitize;
 use crate::{
     common::stun::StunInfoCollector,
-    instance::dns_server::DEFAULT_ET_DNS_ZONE,
     proto::{
         acl::Acl,
         common::{CompressionAlgoPb, PortForwardConfigPb, SecureModeConfig, SocketType},
     },
     tunnel::generate_digest_from_str,
+    utils,
 };
-
-use super::env_parser;
 
 pub type Flags = crate::proto::common::FlagsInConfig;
 
 pub fn gen_default_flags() -> Flags {
-    #[allow(deprecated)]
     Flags {
+        #[allow(deprecated)]
+        quic_listen_port: u32::MAX,
+        #[allow(deprecated)]
+        accept_dns: false,
+        #[allow(deprecated)]
+        tld_dns_zone: "".to_string(),
+
         default_protocol: "tcp".to_string(),
         dev_name: "".to_string(),
         enable_encryption: true,
@@ -54,7 +60,6 @@ pub fn gen_default_flags() -> Flags {
         disable_kcp_input: false,
         disable_relay_kcp: false,
         enable_relay_foreign_network_kcp: false,
-        accept_dns: false,
         private_mode: false,
         enable_quic_proxy: false,
         disable_quic_input: false,
@@ -64,9 +69,6 @@ pub fn gen_default_flags() -> Flags {
         multi_thread_count: 2,
         encryption_algorithm: EncryptionAlgorithm::default().to_string(),
         disable_sym_hole_punching: false,
-        tld_dns_zone: DEFAULT_ET_DNS_ZONE.to_string(),
-
-        quic_listen_port: u32::MAX,
         need_p2p: false,
         instance_recv_bps_limit: u64::MAX,
     }
@@ -118,8 +120,19 @@ impl Default for EncryptionAlgorithm {
     }
 }
 
+cfg_select! {
+    feature = "magic-dns" => {
+        use crate::dns::config::{DnsConfig, DnsConfigLoaderExt};
+    }
+
+    _ => {
+        #[auto_impl::auto_impl(Box, &)]
+        pub trait DnsConfigLoaderExt {}
+    }
+}
+
 #[auto_impl::auto_impl(Box, &)]
-pub trait ConfigLoader: Send + Sync {
+pub trait ConfigLoader: Send + Sync + DnsConfigLoaderExt {
     fn get_id(&self) -> uuid::Uuid;
     fn set_id(&self, id: uuid::Uuid);
 
@@ -442,6 +455,9 @@ struct Config {
     peer: Option<Vec<PeerConfig>>,
     proxy_network: Option<Vec<ProxyNetworkConfig>>,
 
+    #[cfg(feature = "magic-dns")]
+    dns: Option<DnsConfig>,
+
     vpn_portal_config: Option<VpnPortalConfig>,
 
     routes: Option<Vec<cidr::Ipv4Cidr>>,
@@ -525,6 +541,21 @@ impl TomlConfigLoader {
     }
 }
 
+impl DnsConfigLoaderExt for TomlConfigLoader {
+    cfg_select! {
+        feature = "magic-dns" => {
+            fn get_dns(&self) -> DnsConfig {
+                self.config.lock().unwrap().dns.clone().unwrap_or_default()
+            }
+            fn set_dns(&self, config: Option<DnsConfig>) {
+                self.config.lock().unwrap().dns = config;
+            }
+        }
+
+        _ => {}
+    }
+}
+
 impl ConfigLoader for TomlConfigLoader {
     fn get_inst_name(&self) -> String {
         self.config
@@ -540,26 +571,17 @@ impl ConfigLoader for TomlConfigLoader {
     }
 
     fn get_hostname(&self) -> String {
-        let hostname = self.config.lock().unwrap().hostname.clone();
+        let hostname = self
+            .config
+            .lock()
+            .unwrap()
+            .hostname
+            .as_ref()
+            .map(sanitize)
+            .filter(|h| !h.is_empty());
 
-        match hostname {
-            Some(hostname) => {
-                let hostname = hostname
-                    .chars()
-                    .filter(|c| !c.is_control())
-                    .take(32)
-                    .collect::<String>();
-
-                if !hostname.is_empty() {
-                    self.set_hostname(Some(hostname.clone()));
-                    hostname
-                } else {
-                    self.set_hostname(None);
-                    gethostname::gethostname().to_string_lossy().to_string()
-                }
-            }
-            None => gethostname::gethostname().to_string_lossy().to_string(),
-        }
+        self.set_hostname(hostname.clone());
+        hostname.unwrap_or_else(|| sanitize(utils::hostname()))
     }
 
     fn set_hostname(&self, name: Option<String>) {

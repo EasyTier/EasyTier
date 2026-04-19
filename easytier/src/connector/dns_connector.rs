@@ -1,13 +1,9 @@
 use std::{net::SocketAddr, sync::Arc};
 
 use super::{create_connector_by_url, http_connector::TunnelWithInfo};
+use crate::utils::dns::{srv_lookup, txt_resolve};
 use crate::{
-    common::{
-        dns::{RESOLVER, resolve_txt_record},
-        error::Error,
-        global_ctx::ArcGlobalCtx,
-        log,
-    },
+    common::{error::Error, global_ctx::ArcGlobalCtx, log},
     proto::common::TunnelInfo,
     tunnel::{IpScheme, IpVersion, Tunnel, TunnelConnector, TunnelError, TunnelScheme},
 };
@@ -58,14 +54,13 @@ impl DnsTunnelConnector {
         &self,
         domain_name: &str,
     ) -> Result<Box<dyn TunnelConnector>, Error> {
-        let txt_data = resolve_txt_record(domain_name)
+        let txt_data = txt_resolve(domain_name)
             .await
             .with_context(|| format!("resolve txt record failed, domain_name: {}", domain_name))?;
 
         let candidate_urls = txt_data
-            .split(" ")
-            .map(|s| s.to_string())
-            .filter_map(|s| url::Url::parse(s.as_str()).ok())
+            .iter()
+            .filter_map(|s| url::Url::parse(s).ok())
             .collect::<Vec<_>>();
 
         // shuffle candidate_urls and get the first one
@@ -73,7 +68,7 @@ impl DnsTunnelConnector {
             .choose(&mut rand::thread_rng())
             .with_context(|| {
                 format!(
-                    "no valid url found, txt_data: {}, expecting an url list splitted by space",
+                    "no valid url found, txt_data: {:?}, expecting an url list split by space",
                     txt_data
                 )
             })?;
@@ -83,26 +78,23 @@ impl DnsTunnelConnector {
         Ok(connector)
     }
 
-    fn handle_one_srv_record(record: &SRV, protocol: IpScheme) -> Result<(url::Url, u64), Error> {
+    fn handle_one_srv_record(record: SRV, protocol: IpScheme) -> Result<(url::Url, u64), Error> {
         // port must be non-zero
-        if record.port() == 0 {
+        if record.port == 0 {
             return Err(anyhow::anyhow!("port must be non-zero").into());
         }
 
-        let connector_dst = record.target().to_utf8();
-        let dst_url = format!("{}://{}:{}", protocol, connector_dst, record.port());
+        let connector_dst = record.target.to_utf8();
+        let dst_url = format!("{}://{}:{}", protocol, connector_dst, record.port);
 
         Ok((
             dst_url.parse().with_context(|| {
                 format!(
                     "parse dst_url failed, protocol: {}, connector_dst: {}, port: {}, dst_url: {}",
-                    protocol,
-                    connector_dst,
-                    record.port(),
-                    dst_url
+                    protocol, connector_dst, record.port, dst_url
                 )
             })?,
-            record.priority() as _,
+            record.priority as _,
         ))
     }
 
@@ -122,14 +114,9 @@ impl DnsTunnelConnector {
         let srv_lookup_tasks = srv_domains
             .iter()
             .map(|(protocol, srv_domain)| {
-                let resolver = RESOLVER.clone();
                 let responses = responses.clone();
                 async move {
-                    let response = resolver.srv_lookup(srv_domain).await.with_context(|| {
-                        format!("srv_lookup failed, srv_domain: {}", srv_domain)
-                    })?;
-                    tracing::info!(?response, ?srv_domain, "srv_lookup response");
-                    for record in response.iter() {
+                    for record in srv_lookup(srv_domain).await? {
                         let parsed_record = Self::handle_one_srv_record(record, **protocol);
                         tracing::info!(?parsed_record, ?srv_domain, "parsed_record");
                         if let Err(e) = &parsed_record {

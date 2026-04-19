@@ -4,9 +4,9 @@ pub mod rpc_types;
 pub mod acl;
 pub mod api;
 pub mod common;
-pub mod error;
 #[cfg(feature = "magic-dns")]
-pub mod magic_dns;
+pub mod dns;
+pub mod error;
 pub mod peer_rpc;
 pub mod web;
 

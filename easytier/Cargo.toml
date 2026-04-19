@@ -56,13 +56,13 @@ itertools = "0.14.0"
 
 strum = { version = "0.27.2", features = ["derive"] }
 
-gethostname = "0.5.0"
+hostname = "0.4.2"
 
 futures = { version = "0.3", features = ["bilock", "unstable"] }
 
 tokio = { version = "1", features = ["full"] }
 tokio-stream = "0.1"
-tokio-util = { version = "0.7.9", features = ["codec", "net", "io"] }
+tokio-util = { version = "0.7.9", features = ["codec", "net", "io", "rt"] }
 
 async-stream = "0.3.5"
 async-trait = "0.1.74"
@@ -148,6 +148,7 @@ rand = "0.8.5"
 serde = { version = "1.0", features = ["derive"] }
 pnet = { version = "0.35.0", features = ["serde"] }
 serde_json = "1"
+serde_with = "3"
 
 clap = { version = "4.5.30", features = [
     "string",
@@ -166,6 +167,9 @@ network-interface = "2.0"
 # for ospf route
 petgraph = "0.8.1"
 ordered_hash_map = "0.5.0"
+indexmap = "2.13.1"
+
+moka = { version = "0.12.13", features = ["future"] }
 
 # for wireguard
 boringtun = { package = "boringtun-easytier", version = "0.6.1", optional = true }
@@ -232,14 +236,12 @@ http_req = { git = "https://github.com/EasyTier/http_req.git", default-features 
 ] }
 
 # for dns connector
-hickory-resolver = "0.25.2"
-hickory-proto = "0.25.2"
+hickory-proto = "0.26.0"
+hickory-net = { version = "0.26.0", features = ["serde"] }
+hickory-resolver = "0.26.0"
 
 # for magic dns
-hickory-client = { version = "0.25.2", optional = true }
-hickory-server = { version = "0.25.2", features = [
-    "resolver",
-], optional = true }
+hickory-server = { version = "0.26.0", features = ["resolver"], optional = true }
 
 bon = "3.9.1"
 derive_builder = "0.20.2"
@@ -337,7 +339,6 @@ zip = "4.0.0"
 serial_test = "3.0.0"
 rstest = "0.25.0"
 futures-util = "0.3.31"
-maplit = "1.0.2"
 tempfile = "3.22.0"
 ctor = "0.8.0"
 
@@ -399,7 +400,7 @@ jemalloc-prof = [
     "jemalloc-sys/stats",
 ]
 tracing = ["tokio/tracing", "dep:console-subscriber"]
-magic-dns = ["dep:hickory-client", "dep:hickory-server"]
+magic-dns = ["dep:hickory-server"]
 faketcp = ["dep:flume"]
 zstd = ["dep:zstd"]
 # For Network Extension on macOS

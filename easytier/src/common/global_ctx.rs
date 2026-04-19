@@ -1,13 +1,18 @@
+use arc_swap::ArcSwap;
+use crossbeam::atomic::AtomicCell;
+use dashmap::DashMap;
+use hmac::{Hmac, Mac};
+use sha2::Sha256;
+use socket2::Protocol;
+use std::sync::RwLock;
 use std::{
     collections::{HashMap, hash_map::DefaultHasher},
     hash::Hasher,
+    iter,
     net::{IpAddr, SocketAddr},
     sync::{Arc, Mutex},
     time::{SystemTime, UNIX_EPOCH},
 };
-
-use arc_swap::ArcSwap;
-use dashmap::DashMap;
 
 use super::{
     PeerId,
@@ -15,6 +20,11 @@ use super::{
     netns::NetNS,
     network::IPCollector,
     stun::{StunInfoCollector, StunInfoCollectorTrait},
+};
+#[cfg(feature = "magic-dns")]
+use crate::dns::{
+    config::{DnsConfigLoaderExt, DnsExportConfig, DnsGlobalCtxExt},
+    server::DnsServer,
 };
 use crate::{
     common::{
@@ -31,10 +41,6 @@ use crate::{
     rpc_service::protected_port,
     tunnel::matches_protocol,
 };
-use crossbeam::atomic::AtomicCell;
-use hmac::{Hmac, Mac};
-use sha2::Sha256;
-use socket2::Protocol;
 
 pub type NetworkIdentity = crate::common::config::NetworkIdentity;
 
@@ -47,6 +53,8 @@ pub enum GlobalCtxEvent {
     PeerRemoved(PeerId),
     PeerConnAdded(PeerConnInfo),
     PeerConnRemoved(PeerConnInfo),
+
+    PeerInfoUpdated(Vec<PeerId>),
 
     ListenerAdded(url::Url),
     ListenerAddFailed(url::Url, String), // (url, error message)
@@ -201,6 +209,9 @@ pub struct GlobalCtx {
 
     hostname: Mutex<String>,
 
+    #[cfg(feature = "magic-dns")]
+    dns_server: RwLock<Option<Arc<DnsServer>>>,
+
     stun_info_collection: Mutex<Arc<dyn StunInfoCollectorTrait>>,
 
     running_listeners: Mutex<Vec<url::Url>>,
@@ -234,7 +245,7 @@ impl std::fmt::Debug for GlobalCtx {
     }
 }
 
-pub type ArcGlobalCtx = std::sync::Arc<GlobalCtx>;
+pub type ArcGlobalCtx = Arc<GlobalCtx>;
 
 impl GlobalCtx {
     fn derive_feature_flags(flags: &Flags, current: Option<PeerFeatureFlag>) -> PeerFeatureFlag {
@@ -296,6 +307,9 @@ impl GlobalCtx {
                 net_ns,
                 stun_info_collector.clone(),
             )))),
+
+            #[cfg(feature = "magic-dns")]
+            dns_server: RwLock::new(None),
 
             hostname: Mutex::new(hostname),
 
@@ -663,6 +677,49 @@ impl GlobalCtx {
         } else {
             false
         }
+    }
+}
+
+#[cfg(feature = "magic-dns")]
+impl DnsGlobalCtxExt for GlobalCtx {
+    fn dns_server(&self) -> Option<Arc<DnsServer>> {
+        self.dns_server.read().unwrap().clone()
+    }
+
+    fn set_dns_server(&self, dns: Option<Arc<DnsServer>>) {
+        *self.dns_server.write().unwrap() = dns;
+    }
+
+    fn dns_self_zone(&self) -> crate::dns::config::zone::ZoneConfig {
+        let dns = self.config.get_dns();
+        let mut hostname = dns.name.to_string();
+        if hostname.is_empty() {
+            hostname = self.get_hostname();
+        }
+        let fqdn = dns
+            .domain
+            .prepend_label(hostname)
+            .unwrap_or_default()
+            .into();
+        let ipv4 = self.get_ipv4().map(|ip| ip.address());
+        let ipv6 = self.get_ipv6().map(|ip| ip.address());
+        let ipv6 = ipv6.map(|a| vec![a]).unwrap_or_default();
+
+        crate::dns::config::zone::ZoneConfig::dedicated(fqdn, ipv4, ipv6).unwrap()
+    }
+
+    fn dns_export_config(&self) -> DnsExportConfig {
+        DnsExportConfig {
+            zones: self
+                .dns_iter_zones()
+                .filter(|z| z.policy.export.as_ref().is_some_and(|f| !f.disabled)) // TODO: check policies of parent zones
+                .map(Into::into)
+                .collect(),
+        }
+    }
+
+    fn dns_iter_zones(&self) -> impl Iterator<Item = crate::dns::config::zone::ZoneConfig> {
+        iter::once(self.dns_self_zone()).chain(self.config.get_dns().zones)
     }
 }
 

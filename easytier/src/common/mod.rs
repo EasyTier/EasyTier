@@ -15,7 +15,6 @@ pub mod compressor;
 pub mod config;
 pub mod constants;
 pub mod defer;
-pub mod dns;
 pub mod env_parser;
 pub mod error;
 pub mod global_ctx;

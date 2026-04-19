@@ -2,10 +2,7 @@ use std::{
     collections::hash_map::DefaultHasher, hash::Hasher, net::SocketAddr, pin::Pin, sync::Arc,
 };
 
-use crate::{
-    common::{dns::socket_addrs, error::Error},
-    proto::common::TunnelInfo,
-};
+use crate::{common::error::Error, proto::common::TunnelInfo};
 use async_trait::async_trait;
 use derive_more::{From, TryInto};
 use futures::{Sink, Stream};
@@ -392,4 +389,5 @@ macro_rules! __matches_protocol__ {
     };
 }
 
+use crate::utils::dns::socket_addrs;
 pub(crate) use __matches_protocol__ as matches_protocol;

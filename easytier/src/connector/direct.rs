@@ -12,10 +12,7 @@ use std::{
 };
 
 use crate::{
-    common::{
-        PeerId, dns::socket_addrs, error::Error, global_ctx::ArcGlobalCtx,
-        stun::StunInfoCollectorTrait,
-    },
+    common::{PeerId, error::Error, global_ctx::ArcGlobalCtx, stun::StunInfoCollectorTrait},
     connector::udp_hole_punch::handle_rpc_result,
     peers::{
         peer_conn::PeerConnId,
@@ -40,6 +37,7 @@ use super::{
     udp_hole_punch,
 };
 use crate::tunnel::{FromUrl, IpScheme, TunnelScheme, matches_scheme};
+use crate::utils::dns::socket_addrs;
 use anyhow::Context;
 use rand::Rng;
 use socket2::Protocol;

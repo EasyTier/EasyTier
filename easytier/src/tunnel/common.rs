@@ -535,13 +535,13 @@ pub fn bind<B: Bindable>(
     B::finalize(socket)
 }
 
+// endregion
+
 pub fn reserve_buf(buf: &mut BytesMut, min_size: usize, max_size: usize) {
     if buf.capacity() < min_size {
         buf.reserve(max_size);
     }
 }
-
-// endregion
 
 pub mod tests {
     use atomic_shim::AtomicU64;

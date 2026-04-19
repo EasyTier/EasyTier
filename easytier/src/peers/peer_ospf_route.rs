@@ -30,6 +30,8 @@ use tokio::{
     task::{JoinHandle, JoinSet},
 };
 
+use crate::common::config::ConfigLoader;
+use crate::proto::utils::TransientDigest;
 use crate::{
     common::{
         PeerId,
@@ -166,9 +168,11 @@ fn is_foreign_network_info_newer(
 }
 
 impl RoutePeerInfo {
-    #[allow(deprecated)]
     pub fn new() -> Self {
         Self {
+            #[allow(deprecated)]
+            quic_port: None,
+
             peer_id: 0,
             inst_id: Some(uuid::Uuid::nil().into()),
             cost: 0,
@@ -187,8 +191,8 @@ impl RoutePeerInfo {
             network_length: 24,
             ipv6_addr: None,
             groups: Vec::new(),
+            dns: Default::default(),
 
-            quic_port: None,
             noise_static_pubkey: Vec::new(),
             trusted_credential_pubkeys: Vec::new(),
         }
@@ -215,7 +219,19 @@ impl RoutePeerInfo {
             .and_then(|cfg| cfg.public_key().ok())
             .map(|pk| pk.as_bytes().to_vec())
             .unwrap_or_default();
+
+        let dns = cfg_select! {
+            feature = "magic-dns" => {{
+                use crate::dns::config::DnsGlobalCtxExt;
+                global_ctx.dns_export_config().digest().into()
+            }}
+            _ => Default::default(),
+        };
+
         Self {
+            #[allow(deprecated)]
+            quic_port: None,
+
             peer_id: my_peer_id,
             inst_id: Some(global_ctx.get_id().into()),
             cost: 0,
@@ -247,6 +263,7 @@ impl RoutePeerInfo {
             ipv6_addr: global_ctx.get_ipv6().map(|x| x.into()),
 
             groups: global_ctx.get_acl_groups(my_peer_id),
+            dns,
 
             noise_static_pubkey,
 
@@ -260,8 +277,6 @@ impl RoutePeerInfo {
             } else {
                 Vec::new()
             },
-
-            ..Default::default()
         }
     }
 
@@ -314,7 +329,7 @@ impl From<RoutePeerInfo> for crate::proto::api::instance::Route {
             next_hop_peer_id: 0, // next_hop_peer_id is calculated in RouteTable.
             cost: 0,             // cost is calculated in RouteTable.
             path_latency: 0,     // path_latency is calculated in RouteTable.
-            proxy_cidrs: val.proxy_cidrs.clone(),
+            proxy_cidrs: val.proxy_cidrs,
             hostname: val.hostname.unwrap_or_default(),
             stun_info: {
                 let mut stun_info = StunInfo::default();
@@ -593,8 +608,8 @@ impl SyncedRouteInfo {
         dst_peer_id: PeerId,
         peer_infos: &[RoutePeerInfo],
         raw_peer_infos: &[DynamicMessage],
-    ) -> Result<(), Error> {
-        let mut need_inc_version = false;
+    ) -> Result<Vec<PeerId>, Error> {
+        let mut updated_peer_ids = Vec::new();
         for (idx, route_info) in peer_infos.iter().enumerate() {
             let mut route_info = route_info.clone();
             let raw_route_info = &raw_peer_infos[idx];
@@ -630,14 +645,15 @@ impl SyncedRouteInfo {
             {
                 self.raw_peer_infos
                     .insert(route_info.peer_id, raw_route_info.clone());
-                guard.insert(route_info.peer_id, route_info);
-                need_inc_version = true;
+                let peer_id = route_info.peer_id;
+                guard.insert(peer_id, route_info);
+                updated_peer_ids.push(peer_id);
             }
         }
-        if need_inc_version {
+        if !updated_peer_ids.is_empty() {
             self.version.inc();
         }
-        Ok(())
+        Ok(updated_peer_ids)
     }
 
     fn update_conn_info_one_peer(
@@ -3267,7 +3283,7 @@ impl RouteSessionManager {
                     .get_network_identity()
                     .network_secret
                     .is_none();
-                service_impl.synced_route_info.update_peer_infos(
+                let updated_peer_ids = service_impl.synced_route_info.update_peer_infos(
                     my_peer_id,
                     service_impl.my_peer_route_id,
                     from_peer_id,
@@ -3283,6 +3299,12 @@ impl RouteSessionManager {
                     );
                 session.update_dst_saved_peer_info_version(pi, from_peer_id);
                 need_update_route_table = true;
+
+                if !updated_peer_ids.is_empty() {
+                    service_impl
+                        .global_ctx
+                        .issue_event(GlobalCtxEvent::PeerInfoUpdated(updated_peer_ids));
+                }
             }
         }
 
