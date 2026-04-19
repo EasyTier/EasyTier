@@ -844,10 +844,9 @@ impl Instance {
             Ok(attached) => {
                 global_ctx.issue_event(GlobalCtxEvent::TunDeviceReady(attached.ifname.clone()));
                 #[cfg(feature = "magic-dns")]
-                let dns_runner = ipv4_addr
-                    .and_then(|ip| {
-                        Self::create_magic_dns_runner(peer_mgr, Some(attached.ifname.clone()), ip)
-                    });
+                let dns_runner = ipv4_addr.and_then(|ip| {
+                    Self::create_magic_dns_runner(peer_mgr, Some(attached.ifname.clone()), ip)
+                });
                 Self::use_new_shared_nic_ctx(
                     arc_nic_ctx,
                     attached.handle,

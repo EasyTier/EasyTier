@@ -13,6 +13,9 @@ use x25519_dalek::StaticSecret;
 
 use super::*;
 
+#[cfg(feature = "magic-dns")]
+use crate::instance::dns_server::MAGIC_DNS_INSTANCE_ADDR;
+
 // TODO: 需要加一个单测，确保 socks5 + exit node == self || proxy_cidr == 0.0.0.0/0 时，可以实现出口节点的能力。
 
 use crate::{
@@ -263,7 +266,9 @@ async fn wait_for_tun_ready_event(
 ) -> String {
     tokio::time::timeout(Duration::from_secs(5), async {
         loop {
-            if let crate::common::global_ctx::GlobalCtxEvent::TunDeviceReady(ifname) = receiver.recv().await.unwrap() {
+            if let crate::common::global_ctx::GlobalCtxEvent::TunDeviceReady(ifname) =
+                receiver.recv().await.unwrap()
+            {
                 return ifname;
             }
         }
@@ -278,7 +283,9 @@ async fn assert_no_tun_ready_event(
 ) {
     tokio::time::timeout(timeout, async {
         loop {
-            if let crate::common::global_ctx::GlobalCtxEvent::TunDeviceReady(ifname) = receiver.recv().await.unwrap() {
+            if let crate::common::global_ctx::GlobalCtxEvent::TunDeviceReady(ifname) =
+                receiver.recv().await.unwrap()
+            {
                 panic!("unexpected TunDeviceReady event: {ifname}");
             }
         }
@@ -293,13 +300,59 @@ async fn assert_no_tun_fallback_event(
 ) {
     tokio::time::timeout(timeout, async {
         loop {
-            if let crate::common::global_ctx::GlobalCtxEvent::TunDeviceFallback(reason) = receiver.recv().await.unwrap() {
+            if let crate::common::global_ctx::GlobalCtxEvent::TunDeviceFallback(reason) =
+                receiver.recv().await.unwrap()
+            {
                 panic!("unexpected TunDeviceFallback event: {reason}");
             }
         }
     })
     .await
     .ok();
+}
+
+async fn wait_for_tun_fallback_event(
+    receiver: &mut tokio::sync::broadcast::Receiver<crate::common::global_ctx::GlobalCtxEvent>,
+) -> String {
+    tokio::time::timeout(Duration::from_secs(8), async {
+        loop {
+            if let crate::common::global_ctx::GlobalCtxEvent::TunDeviceFallback(reason) =
+                receiver.recv().await.unwrap()
+            {
+                return reason;
+            }
+        }
+    })
+    .await
+    .unwrap()
+}
+
+async fn wait_for_dhcp_ipv4_changed_event(
+    receiver: &mut tokio::sync::broadcast::Receiver<crate::common::global_ctx::GlobalCtxEvent>,
+) -> cidr::Ipv4Inet {
+    tokio::time::timeout(Duration::from_secs(15), async {
+        loop {
+            if let crate::common::global_ctx::GlobalCtxEvent::DhcpIpv4Changed(_, Some(ip)) =
+                receiver.recv().await.unwrap()
+            {
+                return ip;
+            }
+        }
+    })
+    .await
+    .unwrap()
+}
+
+async fn link_exists_in_netns(netns: &str, ifname: &str) -> bool {
+    let _g = NetNS::new(Some(ROOT_NETNS_NAME.to_owned())).guard();
+    let code = tokio::process::Command::new("ip")
+        .args(["netns", "exec", netns, "ip", "link", "show", "dev", ifname])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .await
+        .unwrap();
+    code.success()
 }
 
 fn assert_tcp_proxy_metric_has_protocol(
@@ -1279,8 +1332,111 @@ pub async fn shared_tun_same_namespace_real_tun() {
         Duration::from_secs(8),
     )
     .await;
+    wait_for_condition(
+        || async { ping6_test("net_c", "fd00::2", None).await },
+        Duration::from_secs(8),
+    )
+    .await;
+    wait_for_condition(
+        || async { ping6_test("net_c", "fd00::3", None).await },
+        Duration::from_secs(8),
+    )
+    .await;
+    wait_for_condition(
+        || async { ping6_test("net_b", "fd00::4", None).await },
+        Duration::from_secs(8),
+    )
+    .await;
 
     drop_insts(vec![center, shared_1, shared_2, remote]).await;
+}
+
+#[tokio::test]
+#[serial_test::serial]
+pub async fn shared_tun_dev_name_mismatch_falls_back_to_dedicated_tun() {
+    prepare_linux_namespaces();
+
+    let shared_cfg_1 = get_inst_config("shared_1", Some("net_b"), "10.144.144.2", "fd00::2/64");
+    shared_cfg_1.set_listeners(vec![]);
+    shared_cfg_1.set_socks5_portal(None);
+    let mut flags_1 = shared_cfg_1.get_flags();
+    flags_1.dev_name = "et_sdm0".to_string();
+    shared_cfg_1.set_flags(flags_1);
+    let mut shared_1 = Instance::new(shared_cfg_1);
+
+    let shared_cfg_2 = get_inst_config("shared_2", Some("net_b"), "10.144.144.3", "fd00::3/64");
+    shared_cfg_2.set_listeners(vec![]);
+    shared_cfg_2.set_socks5_portal(None);
+    let mut flags_2 = shared_cfg_2.get_flags();
+    flags_2.dev_name = "et_sdm1".to_string();
+    shared_cfg_2.set_flags(flags_2);
+    let mut shared_2 = Instance::new(shared_cfg_2);
+
+    let mut shared_1_events = shared_1.get_global_ctx().subscribe();
+    let mut shared_2_events = shared_2.get_global_ctx().subscribe();
+
+    shared_1.run().await.unwrap();
+    shared_2.run().await.unwrap();
+
+    let ifname = wait_for_tun_ready_event(&mut shared_1_events).await;
+    assert_eq!(ifname, "et_sdm0");
+
+    let reason = wait_for_tun_fallback_event(&mut shared_2_events).await;
+    assert!(reason.contains("does not match requested dev_name"));
+    wait_for_condition(
+        || async { link_exists_in_netns("net_b", "et_sdm1").await },
+        Duration::from_secs(8),
+    )
+    .await;
+    assert_no_tun_fallback_event(&mut shared_1_events, Duration::from_secs(2)).await;
+
+    drop_insts(vec![shared_1, shared_2]).await;
+}
+
+#[tokio::test]
+#[serial_test::serial]
+pub async fn shared_tun_cleans_up_device_after_last_member_leaves() {
+    prepare_linux_namespaces();
+
+    let shared_cfg_1 = get_inst_config("shared_1", Some("net_b"), "10.144.144.2", "fd00::2/64");
+    shared_cfg_1.set_listeners(vec![]);
+    shared_cfg_1.set_socks5_portal(None);
+    let mut shared_flags = shared_cfg_1.get_flags();
+    shared_flags.dev_name = "et_shared_gc0".to_string();
+    shared_cfg_1.set_flags(shared_flags.clone());
+    let mut shared_1 = Instance::new(shared_cfg_1);
+
+    let shared_cfg_2 = get_inst_config("shared_2", Some("net_b"), "10.144.144.3", "fd00::3/64");
+    shared_cfg_2.set_listeners(vec![]);
+    shared_cfg_2.set_socks5_portal(None);
+    shared_cfg_2.set_flags(shared_flags);
+    let mut shared_2 = Instance::new(shared_cfg_2);
+
+    let mut shared_1_events = shared_1.get_global_ctx().subscribe();
+    let mut shared_2_events = shared_2.get_global_ctx().subscribe();
+
+    shared_1.run().await.unwrap();
+    shared_2.run().await.unwrap();
+
+    let ifname = wait_for_tun_ready_event(&mut shared_1_events).await;
+    assert_eq!(ifname, wait_for_tun_ready_event(&mut shared_2_events).await);
+    assert!(link_exists_in_netns("net_b", &ifname).await);
+
+    shared_1.clear_resources().await;
+    drop(shared_1);
+    wait_for_condition(
+        || async { link_exists_in_netns("net_b", &ifname).await },
+        Duration::from_secs(5),
+    )
+    .await;
+
+    shared_2.clear_resources().await;
+    drop(shared_2);
+    wait_for_condition(
+        || async { !link_exists_in_netns("net_b", &ifname).await },
+        Duration::from_secs(8),
+    )
+    .await;
 }
 
 #[tokio::test]
@@ -1376,6 +1532,305 @@ pub async fn shared_tun_proxy_cidr_same_namespace_real_tun() {
         Duration::from_secs(8),
     )
     .await;
+
+    assert_no_tun_fallback_event(&mut shared_1_events, Duration::from_secs(2)).await;
+    assert_no_tun_fallback_event(&mut shared_2_events, Duration::from_secs(2)).await;
+
+    drop_insts(vec![center, shared_1, shared_2, remote]).await;
+}
+
+#[tokio::test]
+#[serial_test::serial]
+pub async fn shared_tun_dhcp_same_namespace_real_tun() {
+    prepare_linux_namespaces();
+
+    let center_cfg = get_inst_config("center", Some("net_a"), "10.144.144.1", "fd00::1/64");
+    center_cfg.set_listeners(vec![]);
+    let mut center = Instance::new(center_cfg);
+
+    let dhcp_cfg_1 = get_inst_config("dhcp_1", Some("net_b"), "10.144.144.2", "fd00::2/64");
+    dhcp_cfg_1.set_listeners(vec![]);
+    dhcp_cfg_1.set_socks5_portal(None);
+    dhcp_cfg_1.set_ipv4(None);
+    dhcp_cfg_1.set_dhcp(true);
+    let mut dhcp_flags = dhcp_cfg_1.get_flags();
+    dhcp_flags.dev_name = "et_shdh0".to_string();
+    dhcp_cfg_1.set_flags(dhcp_flags.clone());
+    let mut dhcp_1 = Instance::new(dhcp_cfg_1);
+
+    let dhcp_cfg_2 = get_inst_config("dhcp_2", Some("net_b"), "10.144.144.3", "fd00::3/64");
+    dhcp_cfg_2.set_listeners(vec![]);
+    dhcp_cfg_2.set_socks5_portal(None);
+    dhcp_cfg_2.set_ipv4(None);
+    dhcp_cfg_2.set_dhcp(true);
+    dhcp_cfg_2.set_flags(dhcp_flags);
+    let mut dhcp_2 = Instance::new(dhcp_cfg_2);
+
+    let remote_cfg = get_inst_config("remote", Some("net_c"), "10.144.144.4", "fd00::4/64");
+    remote_cfg.set_listeners(vec![]);
+    let mut remote = Instance::new(remote_cfg);
+
+    let mut dhcp_1_tun_events = dhcp_1.get_global_ctx().subscribe();
+    let mut dhcp_2_tun_events = dhcp_2.get_global_ctx().subscribe();
+    let mut dhcp_1_dhcp_events = dhcp_1.get_global_ctx().subscribe();
+    let mut dhcp_2_dhcp_events = dhcp_2.get_global_ctx().subscribe();
+
+    center.run().await.unwrap();
+    dhcp_1.run().await.unwrap();
+
+    dhcp_1
+        .get_conn_manager()
+        .add_connector(RingTunnelConnector::new(
+            format!("ring://{}", center.id()).parse().unwrap(),
+        ));
+
+    let dhcp_1_tun = wait_for_tun_ready_event(&mut dhcp_1_tun_events).await;
+    let dhcp_1_ip = wait_for_dhcp_ipv4_changed_event(&mut dhcp_1_dhcp_events).await;
+
+    wait_for_condition(
+        || async { dhcp_1.get_peer_manager().list_routes().await.len() == 1 },
+        Duration::from_secs(8),
+    )
+    .await;
+
+    dhcp_2.run().await.unwrap();
+    remote.run().await.unwrap();
+
+    dhcp_2
+        .get_conn_manager()
+        .add_connector(RingTunnelConnector::new(
+            format!("ring://{}", center.id()).parse().unwrap(),
+        ));
+    remote
+        .get_conn_manager()
+        .add_connector(RingTunnelConnector::new(
+            format!("ring://{}", center.id()).parse().unwrap(),
+        ));
+
+    let dhcp_2_tun = wait_for_tun_ready_event(&mut dhcp_2_tun_events).await;
+    let dhcp_2_ip = wait_for_dhcp_ipv4_changed_event(&mut dhcp_2_dhcp_events).await;
+
+    assert_eq!(dhcp_1_tun, dhcp_2_tun);
+    assert_ne!(dhcp_1_ip.address(), dhcp_2_ip.address());
+    assert_eq!(dhcp_1_ip.network(), dhcp_2_ip.network());
+
+    wait_for_condition(
+        || async {
+            dhcp_1.get_peer_manager().list_routes().await.len() == 3
+                && dhcp_2.get_peer_manager().list_routes().await.len() == 3
+                && remote.get_peer_manager().list_routes().await.len() == 3
+        },
+        Duration::from_secs(12),
+    )
+    .await;
+
+    let dhcp_1_ip_str = dhcp_1_ip.address().to_string();
+    let dhcp_2_ip_str = dhcp_2_ip.address().to_string();
+    wait_for_condition(
+        || async { ping_test("net_c", &dhcp_1_ip_str, None).await },
+        Duration::from_secs(12),
+    )
+    .await;
+    wait_for_condition(
+        || async { ping_test("net_c", &dhcp_2_ip_str, None).await },
+        Duration::from_secs(12),
+    )
+    .await;
+    wait_for_condition(
+        || async { ping_test("net_b", "10.144.144.4", None).await },
+        Duration::from_secs(12),
+    )
+    .await;
+
+    assert_no_tun_fallback_event(&mut dhcp_1_tun_events, Duration::from_secs(2)).await;
+    assert_no_tun_fallback_event(&mut dhcp_2_tun_events, Duration::from_secs(2)).await;
+
+    drop_insts(vec![center, dhcp_1, dhcp_2, remote]).await;
+}
+
+#[tokio::test]
+#[serial_test::serial]
+pub async fn shared_tun_dynamic_proxy_conflict_falls_back() {
+    use crate::proto::api::config::{ConfigPatchAction, InstanceConfigPatch, ProxyNetworkPatch};
+
+    prepare_linux_namespaces();
+
+    let center_cfg = get_inst_config("center", Some("net_a"), "10.144.144.1", "fd00::1/64");
+    center_cfg.set_listeners(vec![]);
+    let mut center = Instance::new(center_cfg);
+
+    let shared_cfg_1 = get_inst_config("shared_1", Some("net_c"), "10.144.144.2", "fd00::2/64");
+    shared_cfg_1.set_listeners(vec![]);
+    shared_cfg_1.set_socks5_portal(None);
+    shared_cfg_1
+        .add_proxy_cidr("10.1.2.0/24".parse().unwrap(), None)
+        .unwrap();
+    let mut shared_flags = shared_cfg_1.get_flags();
+    shared_flags.dev_name = "et_srf0".to_string();
+    shared_cfg_1.set_flags(shared_flags.clone());
+    let mut shared_1 = Instance::new(shared_cfg_1);
+
+    let shared_cfg_2 = get_inst_config("shared_2", Some("net_c"), "10.144.144.3", "fd00::3/64");
+    shared_cfg_2.set_listeners(vec![]);
+    shared_cfg_2.set_socks5_portal(None);
+    shared_cfg_2.set_flags(shared_flags);
+    let mut shared_2 = Instance::new(shared_cfg_2);
+
+    let remote_cfg = get_inst_config("remote", Some("net_b"), "10.144.144.4", "fd00::4/64");
+    remote_cfg.set_listeners(vec![]);
+    let mut remote = Instance::new(remote_cfg);
+
+    let mut shared_1_events = shared_1.get_global_ctx().subscribe();
+    let mut shared_2_events = shared_2.get_global_ctx().subscribe();
+
+    center.run().await.unwrap();
+    shared_1.run().await.unwrap();
+    shared_2.run().await.unwrap();
+    remote.run().await.unwrap();
+
+    let shared_1_tun = wait_for_tun_ready_event(&mut shared_1_events).await;
+    let shared_2_tun = wait_for_tun_ready_event(&mut shared_2_events).await;
+    assert_eq!(shared_1_tun, shared_2_tun);
+
+    shared_1
+        .get_conn_manager()
+        .add_connector(RingTunnelConnector::new(
+            format!("ring://{}", center.id()).parse().unwrap(),
+        ));
+    shared_2
+        .get_conn_manager()
+        .add_connector(RingTunnelConnector::new(
+            format!("ring://{}", center.id()).parse().unwrap(),
+        ));
+    remote
+        .get_conn_manager()
+        .add_connector(RingTunnelConnector::new(
+            format!("ring://{}", center.id()).parse().unwrap(),
+        ));
+
+    wait_for_condition(
+        || async {
+            shared_1.get_peer_manager().list_routes().await.len() == 3
+                && shared_2.get_peer_manager().list_routes().await.len() == 3
+                && remote.get_peer_manager().list_routes().await.len() == 3
+        },
+        Duration::from_secs(8),
+    )
+    .await;
+
+    shared_2
+        .get_config_patcher()
+        .apply_patch(InstanceConfigPatch {
+            proxy_networks: vec![ProxyNetworkPatch {
+                action: ConfigPatchAction::Add as i32,
+                cidr: Some("10.1.2.0/24".parse().unwrap()),
+                mapped_cidr: None,
+            }],
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+
+    let reason = wait_for_tun_fallback_event(&mut shared_2_events).await;
+    assert!(reason.contains("route prefix"));
+    wait_for_condition(
+        || async { ping_test("net_b", "10.1.2.4", None).await },
+        Duration::from_secs(10),
+    )
+    .await;
+    wait_for_condition(
+        || async { ping_test("net_b", "10.144.144.3", None).await },
+        Duration::from_secs(10),
+    )
+    .await;
+    assert_no_tun_fallback_event(&mut shared_1_events, Duration::from_secs(2)).await;
+
+    drop_insts(vec![center, shared_1, shared_2, remote]).await;
+}
+
+#[cfg(feature = "magic-dns")]
+#[tokio::test]
+#[serial_test::serial]
+pub async fn shared_tun_magic_dns_same_namespace_real_tun() {
+    prepare_linux_namespaces();
+
+    let center_cfg = get_inst_config("center", Some("net_a"), "10.144.144.1", "fd00::1/64");
+    center_cfg.set_listeners(vec![]);
+    let mut center = Instance::new(center_cfg);
+
+    let shared_cfg_1 = get_inst_config("shared_1", Some("net_b"), "10.144.144.2", "fd00::2/64");
+    shared_cfg_1.set_listeners(vec![]);
+    shared_cfg_1.set_socks5_portal(None);
+    let mut shared_flags = shared_cfg_1.get_flags();
+    shared_flags.dev_name = "et_shared_dns0".to_string();
+    shared_flags.accept_dns = true;
+    shared_cfg_1.set_flags(shared_flags.clone());
+    let mut shared_1 = Instance::new(shared_cfg_1);
+
+    let shared_cfg_2 = get_inst_config("shared_2", Some("net_b"), "10.144.144.3", "fd00::3/64");
+    shared_cfg_2.set_listeners(vec![]);
+    shared_cfg_2.set_socks5_portal(None);
+    shared_cfg_2.set_flags(shared_flags);
+    let mut shared_2 = Instance::new(shared_cfg_2);
+
+    let remote_cfg = get_inst_config("remote", Some("net_c"), "10.144.144.4", "fd00::4/64");
+    remote_cfg.set_listeners(vec![]);
+    let mut remote = Instance::new(remote_cfg);
+
+    let mut shared_1_events = shared_1.get_global_ctx().subscribe();
+    let mut shared_2_events = shared_2.get_global_ctx().subscribe();
+
+    center.run().await.unwrap();
+    shared_1.run().await.unwrap();
+    shared_2.run().await.unwrap();
+    remote.run().await.unwrap();
+
+    let shared_1_tun = wait_for_tun_ready_event(&mut shared_1_events).await;
+    let shared_2_tun = wait_for_tun_ready_event(&mut shared_2_events).await;
+    assert_eq!(shared_1_tun, shared_2_tun);
+
+    shared_1
+        .get_conn_manager()
+        .add_connector(RingTunnelConnector::new(
+            format!("ring://{}", center.id()).parse().unwrap(),
+        ));
+    shared_2
+        .get_conn_manager()
+        .add_connector(RingTunnelConnector::new(
+            format!("ring://{}", center.id()).parse().unwrap(),
+        ));
+    remote
+        .get_conn_manager()
+        .add_connector(RingTunnelConnector::new(
+            format!("ring://{}", center.id()).parse().unwrap(),
+        ));
+
+    wait_for_condition(
+        || async {
+            shared_1.get_peer_manager().list_routes().await.len() == 3
+                && shared_2.get_peer_manager().list_routes().await.len() == 3
+                && remote.get_peer_manager().list_routes().await.len() == 3
+        },
+        Duration::from_secs(8),
+    )
+    .await;
+
+    wait_for_condition(
+        || async { ping_test("net_c", "10.144.144.2", None).await },
+        Duration::from_secs(8),
+    )
+    .await;
+    wait_for_condition(
+        || async { ping_test("net_c", "10.144.144.3", None).await },
+        Duration::from_secs(8),
+    )
+    .await;
+    wait_for_condition(
+        || async { ping_test("net_b", "10.144.144.4", None).await },
+        Duration::from_secs(8),
+    )
+    .await;
+    let _ = MAGIC_DNS_INSTANCE_ADDR;
 
     assert_no_tun_fallback_event(&mut shared_1_events, Duration::from_secs(2)).await;
     assert_no_tun_fallback_event(&mut shared_2_events, Duration::from_secs(2)).await;

@@ -126,6 +126,90 @@ impl MemberClaims {
     }
 }
 
+fn ipv4_prefixes_overlap(left: cidr::Ipv4Cidr, right: cidr::Ipv4Cidr) -> bool {
+    left.contains(&right.first_address()) || right.contains(&left.first_address())
+}
+
+fn ipv6_prefixes_overlap(left: cidr::Ipv6Cidr, right: cidr::Ipv6Cidr) -> bool {
+    left.contains(&right.first_address()) || right.contains(&left.first_address())
+}
+
+fn format_v4_prefix_conflict(left: cidr::Ipv4Cidr, right: cidr::Ipv4Cidr) -> String {
+    if left == right {
+        format!("shared tun conflict: duplicated IPv4 route prefix {}", left)
+    } else {
+        format!(
+            "shared tun conflict: overlapping IPv4 route prefix {} with {}",
+            left, right
+        )
+    }
+}
+
+fn format_v6_prefix_conflict(left: cidr::Ipv6Cidr, right: cidr::Ipv6Cidr) -> String {
+    if left == right {
+        format!("shared tun conflict: duplicated IPv6 route prefix {}", left)
+    } else {
+        format!(
+            "shared tun conflict: overlapping IPv6 route prefix {} with {}",
+            left, right
+        )
+    }
+}
+
+fn validate_claim_conflicts(
+    claims: &MemberClaims,
+    other_claims: &MemberClaims,
+) -> Result<(), String> {
+    if let (Some(left), Some(right)) = (claims.ipv4, other_claims.ipv4)
+        && left.address() == right.address()
+    {
+        return Err(format!(
+            "shared tun conflict: duplicated IPv4 address {}",
+            left.address()
+        ));
+    }
+    if let (Some(left), Some(right)) = (claims.ipv6, other_claims.ipv6)
+        && left.address() == right.address()
+    {
+        return Err(format!(
+            "shared tun conflict: duplicated IPv6 address {}",
+            left.address()
+        ));
+    }
+
+    for prefix in claims.shared_route_v4_prefixes() {
+        for other_prefix in other_claims.dispatch_v4_prefixes() {
+            if ipv4_prefixes_overlap(prefix, other_prefix) {
+                return Err(format_v4_prefix_conflict(prefix, other_prefix));
+            }
+        }
+    }
+    if let Some(prefix) = claims.local_v4_prefix() {
+        for other_prefix in other_claims.shared_route_v4_prefixes() {
+            if ipv4_prefixes_overlap(prefix, other_prefix) {
+                return Err(format_v4_prefix_conflict(prefix, other_prefix));
+            }
+        }
+    }
+
+    for prefix in claims.shared_route_v6_prefixes() {
+        for other_prefix in other_claims.dispatch_v6_prefixes() {
+            if ipv6_prefixes_overlap(prefix, other_prefix) {
+                return Err(format_v6_prefix_conflict(prefix, other_prefix));
+            }
+        }
+    }
+    if let Some(prefix) = claims.local_v6_prefix() {
+        for other_prefix in other_claims.shared_route_v6_prefixes() {
+            if ipv6_prefixes_overlap(prefix, other_prefix) {
+                return Err(format_v6_prefix_conflict(prefix, other_prefix));
+            }
+        }
+    }
+
+    Ok(())
+}
+
 #[derive(Clone)]
 struct MemberRuntimeContext {
     device: Arc<SharedTunDevice>,
@@ -541,56 +625,7 @@ impl SharedTunDevice {
 
         for other in others {
             let other_claims = other.claims.read().await.clone();
-            if let (Some(left), Some(right)) = (claims.ipv4, other_claims.ipv4)
-                && left.address() == right.address()
-            {
-                return Err(format!(
-                    "shared tun conflict: duplicated IPv4 address {}",
-                    left.address()
-                ));
-            }
-            if let (Some(left), Some(right)) = (claims.ipv6, other_claims.ipv6)
-                && left.address() == right.address()
-            {
-                return Err(format!(
-                    "shared tun conflict: duplicated IPv6 address {}",
-                    left.address()
-                ));
-            }
-
-            for prefix in claims.shared_route_v4_prefixes() {
-                if other_claims.dispatch_v4_prefixes().contains(&prefix) {
-                    return Err(format!(
-                        "shared tun conflict: duplicated IPv4 route prefix {}",
-                        prefix
-                    ));
-                }
-            }
-            if let Some(prefix) = claims.local_v4_prefix()
-                && other_claims.shared_route_v4_prefixes().contains(&prefix)
-            {
-                return Err(format!(
-                    "shared tun conflict: duplicated IPv4 route prefix {}",
-                    prefix
-                ));
-            }
-
-            for prefix in claims.shared_route_v6_prefixes() {
-                if other_claims.dispatch_v6_prefixes().contains(&prefix) {
-                    return Err(format!(
-                        "shared tun conflict: duplicated IPv6 route prefix {}",
-                        prefix
-                    ));
-                }
-            }
-            if let Some(prefix) = claims.local_v6_prefix()
-                && other_claims.shared_route_v6_prefixes().contains(&prefix)
-            {
-                return Err(format!(
-                    "shared tun conflict: duplicated IPv6 route prefix {}",
-                    prefix
-                ));
-            }
+            validate_claim_conflicts(claims, &other_claims)?;
         }
 
         Ok(())
@@ -938,7 +973,7 @@ fn collect_owned_proxy_v4_routes(global_ctx: &ArcGlobalCtx) -> BTreeSet<cidr::Ip
 mod tests {
     use std::str::FromStr;
 
-    use super::MemberClaims;
+    use super::{MemberClaims, validate_claim_conflicts};
 
     #[test]
     fn nested_prefixes_are_distinct() {
@@ -998,5 +1033,113 @@ mod tests {
                 .reachable_v4_prefixes()
                 .contains(&cidr::Ipv4Cidr::from_str("10.1.2.0/24").unwrap())
         );
+    }
+
+    #[test]
+    fn duplicated_ipv4_addresses_are_rejected() {
+        let claims = MemberClaims {
+            ipv4: Some(cidr::Ipv4Inet::from_str("10.144.144.2/24").unwrap()),
+            ..Default::default()
+        };
+        let other = MemberClaims {
+            ipv4: Some(cidr::Ipv4Inet::from_str("10.144.144.2/24").unwrap()),
+            ..Default::default()
+        };
+
+        let err = validate_claim_conflicts(&claims, &other).unwrap_err();
+        assert!(err.contains("duplicated IPv4 address"));
+    }
+
+    #[test]
+    fn duplicated_ipv6_addresses_are_rejected() {
+        let claims = MemberClaims {
+            ipv6: Some(cidr::Ipv6Inet::from_str("fd00::2/64").unwrap()),
+            ..Default::default()
+        };
+        let other = MemberClaims {
+            ipv6: Some(cidr::Ipv6Inet::from_str("fd00::2/64").unwrap()),
+            ..Default::default()
+        };
+
+        let err = validate_claim_conflicts(&claims, &other).unwrap_err();
+        assert!(err.contains("duplicated IPv6 address"));
+    }
+
+    #[test]
+    fn duplicated_proxy_v4_routes_are_rejected() {
+        let mut claims = MemberClaims::default();
+        claims
+            .owned_proxy_v4_routes
+            .insert(cidr::Ipv4Cidr::from_str("10.1.2.0/24").unwrap());
+
+        let mut other = MemberClaims::default();
+        other
+            .owned_proxy_v4_routes
+            .insert(cidr::Ipv4Cidr::from_str("10.1.2.0/24").unwrap());
+
+        let err = validate_claim_conflicts(&claims, &other).unwrap_err();
+        assert!(err.contains("duplicated IPv4 route prefix"));
+    }
+
+    #[test]
+    fn duplicated_default_ipv6_routes_are_rejected() {
+        let claims = MemberClaims {
+            default_route_v6: true,
+            ..Default::default()
+        };
+        let other = MemberClaims {
+            default_route_v6: true,
+            ..Default::default()
+        };
+
+        let err = validate_claim_conflicts(&claims, &other).unwrap_err();
+        assert!(err.contains("duplicated IPv6 route prefix"));
+    }
+
+    #[test]
+    fn overlapping_proxy_v4_routes_are_rejected() {
+        let mut claims = MemberClaims::default();
+        claims
+            .owned_proxy_v4_routes
+            .insert(cidr::Ipv4Cidr::from_str("10.1.0.0/16").unwrap());
+
+        let mut other = MemberClaims::default();
+        other
+            .owned_proxy_v4_routes
+            .insert(cidr::Ipv4Cidr::from_str("10.1.2.0/24").unwrap());
+
+        let err = validate_claim_conflicts(&claims, &other).unwrap_err();
+        assert!(err.contains("overlapping IPv4 route prefix"));
+    }
+
+    #[test]
+    fn default_ipv6_route_overlapping_local_subnet_is_rejected() {
+        let claims = MemberClaims {
+            default_route_v6: true,
+            ..Default::default()
+        };
+        let other = MemberClaims {
+            ipv6: Some(cidr::Ipv6Inet::from_str("fd00::2/64").unwrap()),
+            ..Default::default()
+        };
+
+        let err = validate_claim_conflicts(&claims, &other).unwrap_err();
+        assert!(err.contains("overlapping IPv6 route prefix"));
+    }
+
+    #[test]
+    fn proxy_v4_routes_overlapping_local_subnet_are_rejected() {
+        let mut claims = MemberClaims::default();
+        claims
+            .owned_proxy_v4_routes
+            .insert(cidr::Ipv4Cidr::from_str("10.144.144.0/23").unwrap());
+
+        let other = MemberClaims {
+            ipv4: Some(cidr::Ipv4Inet::from_str("10.144.145.2/24").unwrap()),
+            ..Default::default()
+        };
+
+        let err = validate_claim_conflicts(&claims, &other).unwrap_err();
+        assert!(err.contains("overlapping IPv4 route prefix"));
     }
 }
