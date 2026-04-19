@@ -466,3 +466,16 @@ acl:
     name: 名称
     type: 类型
   match: 匹配
+  route_distance:
+    title: 路由距离
+    help: 为不同目标配置路由距离规则，影响对等节点的路径选择。
+    enabled: 启用路由距离配置
+    add_rule: 添加距离规则
+    edit_rule: 编辑距离规则
+    default_distance: 默认距离
+    distance: 距离
+    priority: 优先级
+    dst_ips: 目的 IP
+    dst_groups: 目的组
+    foreign_node: 仅外部节点
+    foreign_node_hint: 启用后仅匹配公网/共享节点。
