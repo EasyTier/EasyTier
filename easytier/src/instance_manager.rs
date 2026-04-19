@@ -241,6 +241,17 @@ impl NetworkInstanceManager {
         Ok(())
     }
 
+    pub fn set_tun_fd_for_instances<I>(&self, instance_ids: I, fd: i32) -> Result<(), anyhow::Error>
+    where
+        I: IntoIterator<Item = uuid::Uuid>,
+    {
+        for instance_id in instance_ids {
+            self.set_tun_fd(&instance_id, fd)?;
+        }
+
+        Ok(())
+    }
+
     pub fn get_config_dir(&self) -> Option<&PathBuf> {
         self.config_dir.as_ref()
     }
@@ -363,6 +374,10 @@ fn handle_event(
                         event!(error, %err, "[{}] tun device error", instance_id);
                     }
 
+                    GlobalCtxEvent::TunDeviceFallback(reason) => {
+                        event!(warn, %reason, "[{}] tun device fallback", instance_id);
+                    }
+
                     GlobalCtxEvent::Connecting(dst) => {
                         event!(info, category: "CONNECTION", %dst, "[{}] connecting to peer", instance_id);
                     }
@@ -461,6 +476,7 @@ impl Display for proto::api::instance::PeerConnInfo {
 mod tests {
     use super::*;
     use crate::common::config::*;
+    use crate::launcher::{EasyTierLauncher, NetworkInstance};
 
     #[tokio::test]
     #[serial_test::serial]
@@ -610,6 +626,70 @@ mod tests {
             5
         ); // stop tasks failed not affect instance running status
         assert_eq!(manager.instance_stop_tasks.len(), 0);
+    }
+
+    #[test]
+    fn set_tun_fd_for_instances_allows_empty_target_list() {
+        let manager = NetworkInstanceManager::new();
+        assert!(manager.set_tun_fd_for_instances(Vec::new(), 1234).is_ok());
+    }
+
+    #[test]
+    fn set_tun_fd_for_instances_errors_on_missing_instance() {
+        let manager = NetworkInstanceManager::new();
+        let err = manager
+            .set_tun_fd_for_instances(vec![uuid::Uuid::new_v4()], 1234)
+            .unwrap_err();
+        assert!(err.to_string().contains("instance not found"));
+    }
+
+    #[test]
+    fn set_tun_fd_for_instances_broadcasts_to_all_targets() {
+        let manager = NetworkInstanceManager::new();
+        let instance_ids = [
+            uuid::Uuid::new_v4(),
+            uuid::Uuid::new_v4(),
+            uuid::Uuid::new_v4(),
+        ];
+
+        for instance_id in instance_ids {
+            let cfg = TomlConfigLoader::default();
+            cfg.set_id(instance_id);
+            cfg.set_inst_name(format!("inst-{instance_id}"));
+            cfg.set_listeners(vec![]);
+
+            manager.instance_map.insert(
+                instance_id,
+                NetworkInstance::with_launcher_for_test(
+                    cfg,
+                    ConfigFileControl::STATIC_CONFIG,
+                    EasyTierLauncher::new(),
+                ),
+            );
+        }
+
+        let mut receivers = instance_ids
+            .iter()
+            .map(|instance_id| {
+                manager
+                    .instance_map
+                    .get(instance_id)
+                    .unwrap()
+                    .take_tun_fd_receiver_for_test()
+                    .unwrap()
+            })
+            .collect::<Vec<_>>();
+
+        manager
+            .set_tun_fd_for_instances(instance_ids[..2].to_vec(), 1234)
+            .unwrap();
+
+        assert_eq!(receivers[0].try_recv().unwrap(), Some(1234));
+        assert_eq!(receivers[1].try_recv().unwrap(), Some(1234));
+        assert!(matches!(
+            receivers[2].try_recv(),
+            Err(tokio::sync::mpsc::error::TryRecvError::Empty)
+        ));
     }
 
     #[tokio::test]

@@ -260,6 +260,11 @@ impl EasyTierLauncher {
             }
         }
     }
+
+    #[cfg(test)]
+    pub(crate) fn take_tun_fd_receiver_for_test(&self) -> Option<mpsc::Receiver<TunFd>> {
+        self.data.tun_fd.1.lock().unwrap().take()
+    }
 }
 
 impl Default for EasyTierLauncher {
@@ -446,6 +451,26 @@ impl NetworkInstance {
         self.launcher
             .as_ref()
             .and_then(|launcher| launcher.get_api_service())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_launcher_for_test(
+        config: TomlConfigLoader,
+        config_file_control: ConfigFileControl,
+        launcher: EasyTierLauncher,
+    ) -> Self {
+        Self {
+            config,
+            launcher: Some(launcher),
+            config_file_control,
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn take_tun_fd_receiver_for_test(&self) -> Option<mpsc::Receiver<TunFd>> {
+        self.launcher
+            .as_ref()
+            .and_then(|launcher| launcher.take_tun_fd_receiver_for_test())
     }
 }
 

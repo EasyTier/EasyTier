@@ -742,6 +742,22 @@ impl VirtualNic {
         Ok(())
     }
 
+    pub async fn remove_route(&self, address: Ipv4Addr, cidr: u8) -> Result<(), Error> {
+        let _g = self.global_ctx.net_ns.guard();
+        self.ifcfg
+            .remove_ipv4_route(self.ifname(), address, cidr)
+            .await?;
+        Ok(())
+    }
+
+    pub async fn remove_ipv6_route(&self, address: Ipv6Addr, cidr: u8) -> Result<(), Error> {
+        let _g = self.global_ctx.net_ns.guard();
+        self.ifcfg
+            .remove_ipv6_route(self.ifname(), address, cidr)
+            .await?;
+        Ok(())
+    }
+
     pub async fn remove_ip(&self, ip: Option<Ipv4Inet>) -> Result<(), Error> {
         let _g = self.global_ctx.net_ns.guard();
         self.ifcfg.remove_ip(self.ifname(), ip).await?;
@@ -767,6 +783,12 @@ impl VirtualNic {
         self.ifcfg
             .add_ipv6_ip(self.ifname(), ip, cidr as u8)
             .await?;
+        Ok(())
+    }
+
+    pub async fn set_mtu(&self, mtu: u16) -> Result<(), Error> {
+        let _g = self.global_ctx.net_ns.guard();
+        self.ifcfg.set_mtu(self.ifname(), mtu as u32).await?;
         Ok(())
     }
 
@@ -941,6 +963,10 @@ impl NicCtx {
                 tracing::warn!(?ret, "[USER_PACKET] unknown IP version");
             }
         }
+    }
+
+    pub(crate) async fn forward_nic_packet_to_peers(ret: ZCPacket, mgr: &PeerManager) {
+        Self::do_forward_nic_to_peers(ret, mgr).await;
     }
 
     fn do_forward_nic_to_peers_task(

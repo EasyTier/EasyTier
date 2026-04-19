@@ -7,4 +7,7 @@ pub mod listeners;
 pub mod proxy_cidrs_monitor;
 
 #[cfg(feature = "tun")]
+pub mod shared_tun;
+
+#[cfg(feature = "tun")]
 pub mod virtual_nic;

@@ -42,6 +42,7 @@ pub type NetworkIdentity = crate::common::config::NetworkIdentity;
 pub enum GlobalCtxEvent {
     TunDeviceReady(String),
     TunDeviceError(String),
+    TunDeviceFallback(String),
 
     PeerAdded(PeerId),
     PeerRemoved(PeerId),
