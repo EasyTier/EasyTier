@@ -92,33 +92,6 @@ impl WindowsBuild {
     }
 }
 
-/// Add third_party link search path for Windows targets.
-/// This works for both native Windows builds and cross-compilation from any host.
-fn add_windows_link_search() {
-    let target = std::env::var("TARGET").unwrap_or_default();
-    if !target.contains("windows") {
-        return;
-    }
-    let manifest_dir =
-        std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".to_string());
-    if target.contains("aarch64") {
-        println!(
-            "cargo:rustc-link-search=native={}/third_party/arm64/",
-            manifest_dir
-        );
-    } else if target.contains("x86_64") {
-        println!(
-            "cargo:rustc-link-search=native={}/third_party/x86_64/",
-            manifest_dir
-        );
-    } else if target.contains("i686") {
-        println!(
-            "cargo:rustc-link-search=native={}/third_party/i686/",
-            manifest_dir
-        );
-    }
-}
-
 fn workdir() -> Option<String> {
     if let Ok(cargo_manifest_dir) = std::env::var("CARGO_MANIFEST_DIR") {
         return Some(cargo_manifest_dir);
