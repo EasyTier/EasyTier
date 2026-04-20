@@ -1595,3 +1595,91 @@ async fn validate_config(cli: &Cli) -> anyhow::Result<()> {
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_listeners() {
+        type IpSchemeMap = fn(&IpScheme) -> String;
+
+        let cases: [(&str, IpSchemeMap); _] = [
+            ("0", |s| format!("{}://0.0.0.0:0", s)),
+            ("11010", |s| {
+                format!("{}://0.0.0.0:{}", s, 11010 + s.port_offset())
+            }),
+            ("1.1.1.1", |s| {
+                format!("{}://1.1.1.1:{}", s, 11010 + s.port_offset())
+            }),
+            ("1.1.1.1:50000", |s| {
+                format!("{}://1.1.1.1:{}", s, 50000 + s.port_offset())
+            }),
+            ("[::1]", |s| {
+                format!("{}://[::1]:{}", s, 11010 + s.port_offset())
+            }),
+            ("[::1]:50000", |s| {
+                format!("{}://[::1]:{}", s, 50000 + s.port_offset())
+            }),
+        ];
+
+        for (input, output) in cases {
+            assert_eq!(
+                Cli::parse_listeners(false, vec![input.to_string()]).unwrap(),
+                IpScheme::VARIANTS.iter().map(output).collect::<Vec<_>>()
+            );
+        }
+
+        let input = cases.iter().map(|(i, _)| i.to_string()).collect::<Vec<_>>();
+        let output = cases
+            .iter()
+            .flat_map(|(_, o)| IpScheme::VARIANTS.iter().map(o))
+            .collect::<Vec<_>>();
+        assert_eq!(Cli::parse_listeners(false, input).unwrap(), output);
+
+        let cases: [(IpSchemeMap, IpSchemeMap); _] = [
+            (
+                |s| format!("{}", s),
+                |s| format!("{}://0.0.0.0:{}", s, 11010 + s.port_offset()),
+            ),
+            (
+                |s| format!("{}:50000", s),
+                |s| format!("{}://0.0.0.0:50000", s),
+            ),
+            (
+                |s| format!("{}://1.1.1.1:50000", s),
+                |s| format!("{}://1.1.1.1:50000", s),
+            ),
+        ];
+
+        for (input, output) in cases {
+            assert_eq!(
+                Cli::parse_listeners(
+                    false,
+                    IpScheme::VARIANTS.iter().map(input).collect::<Vec<_>>(),
+                )
+                .unwrap(),
+                IpScheme::VARIANTS.iter().map(output).collect::<Vec<_>>()
+            );
+        }
+
+        let input = cases
+            .iter()
+            .flat_map(|(i, _)| IpScheme::VARIANTS.iter().map(i))
+            .collect::<Vec<_>>();
+        let output = cases
+            .iter()
+            .flat_map(|(_, o)| IpScheme::VARIANTS.iter().map(o))
+            .collect::<Vec<_>>();
+        assert_eq!(Cli::parse_listeners(false, input).unwrap(), output);
+
+        let cases = ["tcp://[::1", "xxx", "tcp:/abc", "tcp:abc"];
+        for input in cases {
+            assert!(
+                Cli::parse_listeners(false, vec![input.to_string()]).is_err(),
+                "input: {}",
+                input
+            );
+        }
+    }
+}
