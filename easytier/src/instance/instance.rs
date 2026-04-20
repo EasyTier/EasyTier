@@ -16,13 +16,13 @@ use tokio::sync::{Mutex, Notify};
 use tokio::{sync::oneshot, task::JoinSet};
 #[cfg(feature = "magic-dns")]
 use tokio_util::sync::CancellationToken;
+use tokio_util::task::AbortOnDropHandle;
 
 use crate::common::PeerId;
 use crate::common::acl_processor::AclRuleBuilder;
 use crate::common::config::ConfigLoader;
 use crate::common::error::Error;
 use crate::common::global_ctx::{ArcGlobalCtx, GlobalCtx, GlobalCtxEvent};
-use crate::common::scoped_task::ScopedTask;
 use crate::connector::direct::DirectConnectorManager;
 use crate::connector::manual::{ConnectorManagerRpcService, ManualConnectorManager};
 use crate::connector::tcp_hole_punch::TcpHolePunchConnector;
@@ -135,7 +135,7 @@ type NicCtx = super::virtual_nic::NicCtx;
 
 #[cfg(feature = "magic-dns")]
 struct MagicDnsContainer {
-    dns_runner_task: ScopedTask<()>,
+    dns_runner_task: AbortOnDropHandle<()>,
     dns_runner_cancel_token: CancellationToken,
 }
 
@@ -167,7 +167,7 @@ impl NicCtxContainer {
             Self {
                 nic_ctx: Some(Box::new(nic_ctx)),
                 magic_dns: Some(MagicDnsContainer {
-                    dns_runner_task: task.into(),
+                    dns_runner_task: AbortOnDropHandle::new(task),
                     dns_runner_cancel_token: token,
                 }),
             }
@@ -558,7 +558,7 @@ pub struct Instance {
     #[cfg(feature = "socks5")]
     socks5_server: Arc<Socks5Server>,
 
-    proxy_cidrs_monitor: Option<ScopedTask<()>>,
+    proxy_cidrs_monitor: Option<AbortOnDropHandle<()>>,
 
     global_ctx: ArcGlobalCtx,
 }

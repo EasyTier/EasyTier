@@ -5,9 +5,10 @@ use std::{
 
 use anyhow::Context;
 use tokio::net::UdpSocket;
+use tokio_util::task::AbortOnDropHandle;
 
 use crate::{
-    common::{PeerId, scoped_task::ScopedTask, stun::StunInfoCollectorTrait},
+    common::{PeerId, stun::StunInfoCollectorTrait},
     connector::udp_hole_punch::common::{
         HOLE_PUNCH_PACKET_BODY_LEN, UdpSocketArray, try_connect_with_socket,
     },
@@ -179,7 +180,7 @@ impl PunchConeHoleClient {
 
         send_from_local().await?;
 
-        let scoped_punch_task: ScopedTask<()> = tokio::spawn(async move {
+        let punch_task = AbortOnDropHandle::new(tokio::spawn(async move {
             if let Err(e) = rpc_stub
                 .send_punch_packet_cone(
                     BaseController {
@@ -199,8 +200,7 @@ impl PunchConeHoleClient {
             {
                 tracing::error!(?e, "failed to call remote send punch packet");
             }
-        })
-        .into();
+        }));
 
         // server: will send some punching resps, total 10 packets.
         // client: use the socket to create UdpTunnel with UdpTunnelConnector
@@ -209,7 +209,7 @@ impl PunchConeHoleClient {
         while finish_time.is_none() || finish_time.as_ref().unwrap().elapsed().as_millis() < 1000 {
             tokio::time::sleep(Duration::from_millis(200)).await;
 
-            if finish_time.is_none() && (*scoped_punch_task).is_finished() {
+            if finish_time.is_none() && punch_task.is_finished() {
                 finish_time = Some(Instant::now());
             }
 

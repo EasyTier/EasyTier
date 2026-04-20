@@ -1,4 +1,3 @@
-use crate::common::scoped_task::ScopedTask;
 use derivative::Derivative;
 use derive_more::{Deref, DerefMut};
 use parking_lot::Mutex;
@@ -9,6 +8,7 @@ use std::time::Duration;
 use tokio::sync::Notify;
 use tokio::task::{AbortHandle, JoinError};
 use tokio_util::sync::CancellationToken;
+use tokio_util::task::AbortOnDropHandle;
 
 #[derive(Derivative, Debug)]
 #[derivative(Default(bound = ""))]
@@ -17,7 +17,7 @@ enum AsyncRuntimeState<R: Send + 'static> {
     Idle,
     Running {
         id: tokio::task::Id,
-        task: ScopedTask<R>,
+        task: AbortOnDropHandle<R>,
         token: CancellationToken,
     },
     Stopping(AbortHandle),
@@ -72,7 +72,7 @@ impl<R: Send + 'static> AsyncRuntime<R> {
 
         *state = AsyncRuntimeState::Running {
             id: task.id(),
-            task: task.into(),
+            task: AbortOnDropHandle::new(task),
             token,
         };
 

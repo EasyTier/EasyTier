@@ -5,8 +5,7 @@ use std::fmt;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::time::interval;
-
-use crate::common::scoped_task::ScopedTask;
+use tokio_util::task::AbortOnDropHandle;
 
 /// Predefined metric names for type safety
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -578,7 +577,7 @@ impl MetricSnapshot {
 /// StatsManager manages global statistics with high performance counters
 pub struct StatsManager {
     counters: Arc<DashMap<MetricKey, Arc<MetricData>>>,
-    cleanup_task: ScopedTask<()>,
+    cleanup_task: AbortOnDropHandle<()>,
 }
 
 impl StatsManager {
@@ -611,7 +610,7 @@ impl StatsManager {
 
         Self {
             counters,
-            cleanup_task: cleanup_task.into(),
+            cleanup_task: AbortOnDropHandle::new(cleanup_task),
         }
     }
 
