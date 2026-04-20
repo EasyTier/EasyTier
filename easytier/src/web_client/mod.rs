@@ -2,13 +2,18 @@ use std::sync::Arc;
 
 use crate::{
     common::{
-        config::TomlConfigLoader, global_ctx::GlobalCtx, log, os_info::collect_device_os_info,
-        scoped_task::ScopedTask, set_default_machine_id, stun::MockStunInfoCollector,
+        config::TomlConfigLoader,
+        global_ctx::{ArcGlobalCtx, GlobalCtx},
+        idn, log,
+        os_info::collect_device_os_info,
+        scoped_task::ScopedTask,
+        set_default_machine_id,
+        stun::MockStunInfoCollector,
     },
     connector::create_connector_by_url,
     instance_manager::{DaemonGuard, NetworkInstanceManager},
     proto::common::NatType,
-    tunnel::{IpVersion, TunnelConnector},
+    tunnel::{IpVersion, Tunnel, TunnelConnector, TunnelScheme},
 };
 use anyhow::{Context as _, Result};
 use async_trait::async_trait;
@@ -48,9 +53,104 @@ pub struct WebClient {
     connected: Arc<AtomicBool>,
 }
 
+enum ConnectorSource {
+    Fixed(Box<dyn TunnelConnector>),
+    ConfigServer { url: Url, global_ctx: ArcGlobalCtx },
+}
+
+impl ConnectorSource {
+    async fn connect(&mut self) -> Result<Box<dyn Tunnel>> {
+        match self {
+            Self::Fixed(connector) => Ok(connector.connect().await?),
+            Self::ConfigServer { url, global_ctx } => {
+                let mut connector =
+                    create_connector_by_url(url.as_str(), global_ctx, IpVersion::Both)
+                        .await
+                        .with_context(|| {
+                            format!("failed to create connector for config server {}", url)
+                        })?;
+                Ok(connector
+                    .connect()
+                    .await
+                    .with_context(|| format!("failed to connect to config server {}", url))?)
+            }
+        }
+    }
+}
+
+fn validate_config_server_url(config_server_url: &Url) -> Result<Url> {
+    let config_server_url = idn::convert_idn_to_ascii(config_server_url.clone())?;
+    let scheme = TunnelScheme::try_from(&config_server_url).map_err(|_| {
+        anyhow::anyhow!(
+            "unsupported config server scheme: {}",
+            config_server_url.scheme()
+        )
+    })?;
+
+    match scheme {
+        #[cfg(unix)]
+        TunnelScheme::Unix => {}
+        TunnelScheme::Ip(_)
+        | TunnelScheme::Http
+        | TunnelScheme::Https
+        | TunnelScheme::Ring
+        | TunnelScheme::Txt
+        | TunnelScheme::Srv => {
+            if config_server_url.host_str().is_none() {
+                anyhow::bail!(
+                    "config server URL host should not be empty: {}",
+                    config_server_url
+                );
+            }
+        }
+    }
+
+    Ok(config_server_url)
+}
+
 impl WebClient {
     pub fn new<T: TunnelConnector + 'static, S: ToString, H: ToString>(
         connector: T,
+        token: S,
+        hostname: H,
+        secure_mode: bool,
+        manager: Arc<NetworkInstanceManager>,
+        hooks: Option<Arc<dyn WebClientHooks>>,
+    ) -> Self {
+        Self::new_inner(
+            ConnectorSource::Fixed(Box::new(connector)),
+            token,
+            hostname,
+            secure_mode,
+            manager,
+            hooks,
+        )
+    }
+
+    fn new_from_config_server<S: ToString, H: ToString>(
+        config_server_url: Url,
+        global_ctx: ArcGlobalCtx,
+        token: S,
+        hostname: H,
+        secure_mode: bool,
+        manager: Arc<NetworkInstanceManager>,
+        hooks: Option<Arc<dyn WebClientHooks>>,
+    ) -> Self {
+        Self::new_inner(
+            ConnectorSource::ConfigServer {
+                url: config_server_url,
+                global_ctx,
+            },
+            token,
+            hostname,
+            secure_mode,
+            manager,
+            hooks,
+        )
+    }
+
+    fn new_inner<S: ToString, H: ToString>(
+        connector: ConnectorSource,
         token: S,
         hostname: H,
         secure_mode: bool,
@@ -71,13 +171,7 @@ impl WebClient {
         let controller_clone = controller.clone();
         let connected_clone = connected.clone();
         let tasks = ScopedTask::from(tokio::spawn(async move {
-            Self::routine(
-                controller_clone,
-                connected_clone,
-                secure_mode,
-                Box::new(connector),
-            )
-            .await;
+            Self::routine(controller_clone, connected_clone, secure_mode, connector).await;
         }));
 
         WebClient {
@@ -92,7 +186,7 @@ impl WebClient {
         controller: Arc<controller::Controller>,
         connected: Arc<AtomicBool>,
         secure_mode: bool,
-        mut connector: Box<dyn TunnelConnector>,
+        mut connector: ConnectorSource,
     ) {
         loop {
             let conn = match connector.connect().await {
@@ -217,7 +311,7 @@ pub async fn run_web_client(
         .with_context(|| "failed to parse config server URL")?,
     };
 
-    let mut c_url = config_server_url.clone();
+    let mut c_url = validate_config_server_url(&config_server_url)?;
     if !matches!(c_url.scheme(), "ws" | "wss") {
         c_url.set_path("");
     }
@@ -242,12 +336,17 @@ pub async fn run_web_client(
     let mut flags = global_ctx.get_flags();
     flags.bind_device = false;
     global_ctx.set_flags(flags);
+
+    // Validate connector construction up front without forcing DNS resolution while offline.
+    create_connector_by_url(c_url.as_str(), &global_ctx, IpVersion::Both).await?;
+
     let hostname = match hostname {
         None => gethostname::gethostname().to_string_lossy().to_string(),
         Some(hostname) => hostname,
     };
-    Ok(WebClient::new(
-        create_connector_by_url(c_url.as_str(), &global_ctx, IpVersion::Both).await?,
+    Ok(WebClient::new_from_config_server(
+        c_url,
+        global_ctx,
         token.to_string(),
         hostname,
         secure_mode,
@@ -290,5 +389,38 @@ mod tests {
         manager.wait().await;
         assert!(sleep_finish.load(std::sync::atomic::Ordering::Relaxed));
         println!("Manager stopped.");
+    }
+
+    #[tokio::test]
+    async fn test_run_web_client_with_unreachable_config_server() {
+        let manager = Arc::new(NetworkInstanceManager::new());
+        let client = super::run_web_client(
+            "udp://config-server.invalid:22020/test",
+            None,
+            None,
+            false,
+            manager,
+            None,
+        )
+        .await
+        .unwrap();
+
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        assert!(!client.is_connected());
+        drop(client);
+    }
+
+    #[tokio::test]
+    async fn test_run_web_client_rejects_invalid_config_server_scheme() {
+        let manager = Arc::new(NetworkInstanceManager::new());
+        let err =
+            match super::run_web_client("ftp://example.com/test", None, None, false, manager, None)
+                .await
+            {
+                Ok(_) => panic!("invalid config server scheme should fail fast"),
+                Err(err) => err,
+            };
+
+        assert!(err.to_string().contains("unsupported config server scheme"));
     }
 }
