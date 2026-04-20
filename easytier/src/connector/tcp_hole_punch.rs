@@ -472,8 +472,11 @@ impl PeerTaskLauncher for TcpHolePunchPeerTaskLauncher {
                 continue;
             }
 
-            if data.peer_mgr.get_peer_map().has_peer(peer_id) {
-                tracing::trace!(peer_id, "tcp hole punch task collect skip already has peer");
+            // Skip peers that already have a real (non-rproxy) direct or P2P connection.
+            // Peers connected *only* via an rproxy listener are NOT skipped so that
+            // hole-punching can replace the relay path with a real P2P tunnel.
+            if data.peer_mgr.has_non_rproxy_conn(peer_id) {
+                tracing::trace!(peer_id, "tcp hole punch task collect skip already has non-rproxy peer");
                 continue;
             }
 

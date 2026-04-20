@@ -305,6 +305,8 @@ pub struct PeerConn {
 
     // remote or local
     is_hole_punched: bool,
+    // connection came in through a reverse-proxy listener (e.g. frp / cloudflare tunnel)
+    is_rproxy: bool,
 
     close_event_notifier: Arc<PeerConnCloseNotify>,
 
@@ -393,6 +395,7 @@ impl PeerConn {
             is_client: None,
 
             is_hole_punched: true,
+            is_rproxy: false,
 
             close_event_notifier: Arc::new(PeerConnCloseNotify::new(conn_id)),
 
@@ -440,6 +443,18 @@ impl PeerConn {
 
     pub fn is_hole_punched(&self) -> bool {
         self.is_hole_punched
+    }
+
+    /// Mark this connection as having been accepted on a reverse-proxy listener.
+    pub fn set_is_rproxy(&mut self, is_rproxy: bool) {
+        self.is_rproxy = is_rproxy;
+    }
+
+    /// Returns `true` if this connection came in through an `rproxy_listeners` port
+    /// (e.g. frp, cloudflare tunnel).  Such connections should be replaced by a real
+    /// P2P connection once hole-punching succeeds.
+    pub fn is_rproxy(&self) -> bool {
+        self.is_rproxy
     }
 
     pub fn is_closed(&self) -> bool {

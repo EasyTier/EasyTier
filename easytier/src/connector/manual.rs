@@ -3,7 +3,7 @@ use std::{
     sync::{Arc, Weak},
 };
 
-use dashmap::DashSet;
+use dashmap::{DashMap, DashSet};
 use tokio::{sync::mpsc, task::JoinSet, time::timeout};
 
 use crate::{
@@ -50,6 +50,10 @@ struct ConnectorManagerData {
     removed_conn_urls: Arc<DashSet<url::Url>>,
     net_ns: NetNS,
     global_ctx: ArcGlobalCtx,
+    /// Tracks the peer_id that each configured URL most recently connected to.
+    /// Used to detect when the original rproxy connection dropped but the peer is
+    /// still reachable via a P2P tunnel, so we avoid re-establishing the rproxy link.
+    connected_url_peer_ids: DashMap<url::Url, crate::common::PeerId>,
 }
 
 pub struct ManualConnectorManager {
@@ -73,6 +77,7 @@ impl ManualConnectorManager {
                 removed_conn_urls: Arc::new(DashSet::new()),
                 net_ns: global_ctx.net_ns.clone(),
                 global_ctx,
+                connected_url_peer_ids: DashMap::new(),
             }),
             tasks,
         };
@@ -228,14 +233,34 @@ impl ManualConnectorManager {
             return ret;
         };
         for url in data.connectors.iter().map(|x| x.key().clone()) {
-            if !pm.get_peer_map().is_client_url_alive(&url)
-                && !pm
+            let url_alive = pm.get_peer_map().is_client_url_alive(&url)
+                || pm
                     .get_foreign_network_client()
                     .get_peer_map()
-                    .is_client_url_alive(&url)
-            {
-                ret.insert(url.clone());
+                    .is_client_url_alive(&url);
+            if url_alive {
+                continue;
             }
+            // The configured URL connection is dead.  Before scheduling a reconnect,
+            // check whether the peer we last talked to via this URL still has any
+            // live connection (e.g. a P2P hole-punched tunnel).  If it does, skip
+            // the reconnect — the traffic is flowing fine via the better path.
+            // Only reconnect once ALL connections to that peer are gone.
+            if let Some(peer_id) = data.connected_url_peer_ids.get(&url).map(|r| *r) {
+                if pm
+                    .get_peer_map()
+                    .get_peer_by_id(peer_id)
+                    .is_some_and(|p| p.has_live_conns())
+                {
+                    tracing::debug!(
+                        ?url,
+                        ?peer_id,
+                        "configured peer URL is dead but peer still has live P2P conn, skip reconnect"
+                    );
+                    continue;
+                }
+            }
+            ret.insert(url.clone());
         }
         ret
     }
@@ -259,6 +284,11 @@ impl ManualConnectorManager {
 
         let (peer_id, conn_id) = pm.try_direct_connect(connector).await?;
         tracing::info!("reconnect succ: {} {} {}", peer_id, conn_id, dead_url);
+        // Record the URL → peer_id so collect_dead_conns can suppress reconnects
+        // when the peer is still reachable via a P2P tunnel.
+        if let Ok(parsed_url) = dead_url.parse::<url::Url>() {
+            data.connected_url_peer_ids.insert(parsed_url, peer_id);
+        }
         Ok(ReconnResult {
             dead_url,
             peer_id,

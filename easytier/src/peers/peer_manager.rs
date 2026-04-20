@@ -575,7 +575,23 @@ impl PeerManager {
             ));
         }
         let peer_id = peer_conn.get_peer_id();
+        let is_non_rproxy = !peer_conn.is_rproxy();
         self.peers.add_new_peer_conn(peer_conn).await?;
+        // When a real (non-rproxy) connection is added, close any lingering rproxy
+        // connections to the same peer so traffic migrates to the P2P tunnel.
+        if is_non_rproxy {
+            if let Some(peer) = self.peers.get_peer_by_id(peer_id) {
+                let rproxy_ids = peer.get_rproxy_conn_ids();
+                for conn_id in rproxy_ids {
+                    tracing::info!(
+                        ?peer_id,
+                        ?conn_id,
+                        "closing rproxy conn after real P2P connection established"
+                    );
+                    let _ = peer.close_peer_conn(&conn_id).await;
+                }
+            }
+        }
         self.clear_recent_traffic(peer_id);
         Ok(())
     }
@@ -621,6 +637,17 @@ impl PeerManager {
             peer.has_directly_connected_conn()
         } else {
             self.foreign_network_client.get_peer_map().has_peer(peer_id)
+        }
+    }
+
+    /// Returns `true` if the peer has at least one live connection that is **not** an
+    /// rproxy connection (i.e. a direct TCP/UDP connection or a hole-punched P2P tunnel).
+    /// Used by the hole-punch collectors to decide whether to skip a peer.
+    pub fn has_non_rproxy_conn(&self, peer_id: PeerId) -> bool {
+        if let Some(peer) = self.peers.get_peer_by_id(peer_id) {
+            peer.has_non_rproxy_conn()
+        } else {
+            false
         }
     }
 
@@ -768,6 +795,11 @@ impl PeerManager {
         }
 
         conn.set_is_hole_punched(!is_directly_connected);
+        // Connections accepted on rproxy listeners are flagged so the hole-punch
+        // collector can still try to establish a real P2P path.
+        if !is_directly_connected {
+            conn.set_is_rproxy(true);
+        }
 
         let add_peer_ret = if is_local_network {
             self.add_new_peer_conn(conn).await
