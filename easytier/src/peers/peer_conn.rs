@@ -1176,12 +1176,10 @@ impl PeerConn {
         // If PQ exchange succeeded and a root_key was generated, upgrade the session's
         // root key to the hybrid key. The raw root_key is still sent in Msg2 so the
         // client can independently derive the same hybrid key.
-        if let Some((pq_ss, _)) = &pq_result {
-            if let Some(raw_root_key) = root_key_32 {
-                let hybrid = super::pq_kem::hybrid_root_key(raw_root_key, *pq_ss);
-                tracing::info!("PQ-KEM: deriving hybrid root key (Noise + ML-KEM-768)");
-                session.replace_root_key(hybrid);
-            }
+        if let (Some((pq_ss, _)), Some(raw_root_key)) = (&pq_result, root_key_32) {
+            let hybrid = super::pq_kem::hybrid_root_key(raw_root_key, *pq_ss);
+            tracing::info!("PQ-KEM: deriving hybrid root key (Noise + ML-KEM-768)");
+            session.replace_root_key(hybrid);
         }
 
         let b_conn_id = uuid::Uuid::new_v4();

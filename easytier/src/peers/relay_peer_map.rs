@@ -644,14 +644,12 @@ impl RelayPeerMap {
             .map_err(|e| Error::RouteError(Some(format!("{e:?}"))))?;
 
         // If PQ exchange succeeded, upgrade the session's root key to hybrid.
-        if let Some((pq_ss, _)) = &pq_result {
-            if let Some(raw_root_key) = upsert.root_key {
-                let hybrid = super::pq_kem::hybrid_root_key(raw_root_key, *pq_ss);
-                tracing::info!(
-                    "PQ-KEM: deriving hybrid root key (Noise + ML-KEM-768) (relay responder)"
-                );
-                upsert.session.replace_root_key(hybrid);
-            }
+        if let (Some((pq_ss, _)), Some(raw_root_key)) = (&pq_result, upsert.root_key) {
+            let hybrid = super::pq_kem::hybrid_root_key(raw_root_key, *pq_ss);
+            tracing::info!(
+                "PQ-KEM: deriving hybrid root key (Noise + ML-KEM-768) (relay responder)"
+            );
+            upsert.session.replace_root_key(hybrid);
         }
 
         let msg2_pb = RelayNoiseMsg2Pb {
