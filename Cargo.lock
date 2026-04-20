@@ -2329,6 +2329,7 @@ dependencies = [
  "rustls",
  "serde",
  "serde_json",
+ "serde_with",
  "serial_test",
  "service-manager",
  "sha2",
