@@ -1,10 +1,23 @@
 use std::{collections::HashSet, sync::Arc};
 
 use crate::{
-    common::config::{ConfigFileControl, ConfigFilePermission, ConfigLoader},
+    common::config::{ConfigFileControl, ConfigFilePermission, ConfigLoader, ConfigSource},
     instance_manager::NetworkInstanceManager,
     proto::{
-        api::{config::GetConfigRequest, manage::*},
+        api::{
+            config::GetConfigRequest,
+            manage::{
+                CollectNetworkInfoRequest, CollectNetworkInfoResponse,
+                DeleteNetworkInstanceRequest, DeleteNetworkInstanceResponse,
+                GetNetworkInstanceConfigRequest, GetNetworkInstanceConfigResponse,
+                ListNetworkInstanceMetaRequest, ListNetworkInstanceMetaResponse,
+                ListNetworkInstanceRequest, ListNetworkInstanceResponse,
+                NetworkInstanceRunningInfoMap, NetworkMeta, RetainNetworkInstanceRequest,
+                RetainNetworkInstanceResponse, RunNetworkInstanceRequest,
+                RunNetworkInstanceResponse, ValidateConfigRequest, ValidateConfigResponse,
+                WebClientService,
+            },
+        },
         rpc_types::{self, controller::BaseController},
     },
     web_client::WebClientHooks,
@@ -48,11 +61,13 @@ impl WebClientService for InstanceManageRpcService {
         if let Some(inst_id) = req.inst_id {
             cfg.set_id(inst_id.into());
         }
+        let requested_source = ConfigSource::from_rpc(req.source);
         let resp = RunNetworkInstanceResponse {
             inst_id: Some(id.into()),
         };
 
         let mut control = if let Some(control) = self.manager.get_instance_config_control(&id) {
+            let existing_source = self.manager.get_instance_network_config_source(&id);
             let error_msg = self
                 .manager
                 .get_network_info(&id)
@@ -82,13 +97,16 @@ impl WebClientService for InstanceManageRpcService {
 
             self.manager.delete_network_instance(vec![id])?;
 
+            cfg.set_network_config_source(requested_source.or(existing_source));
             control.clone()
         } else if let Some(config_dir) = self.manager.get_config_dir() {
+            cfg.set_network_config_source(requested_source);
             ConfigFileControl::new(
                 Some(config_dir.join(format!("{}.toml", id))),
                 ConfigFilePermission::default(),
             )
         } else {
+            cfg.set_network_config_source(requested_source);
             ConfigFileControl::new(None, ConfigFilePermission::default())
         };
 
@@ -261,7 +279,14 @@ impl WebClientService for InstanceManageRpcService {
             .get_config(BaseController::default(), GetConfigRequest::default())
             .await?
             .config;
-        Ok(GetNetworkInstanceConfigResponse { config })
+        Ok(GetNetworkInstanceConfigResponse {
+            config,
+            source: self
+                .manager
+                .get_instance_network_config_source(&inst_id)
+                .unwrap_or(ConfigSource::User)
+                .to_rpc(),
+        })
     }
 
     async fn list_network_instance_meta(
@@ -286,6 +311,11 @@ impl WebClientService for InstanceManageRpcService {
                 network_name,
                 config_permission: control.permission.into(),
                 instance_name,
+                source: self
+                    .manager
+                    .get_instance_network_config_source(&inst_id)
+                    .unwrap_or(ConfigSource::User)
+                    .to_rpc(),
             };
             metas.push(meta);
         }

@@ -4,7 +4,7 @@ use std::{collections::BTreeMap, path::PathBuf, sync::Arc};
 
 use crate::{
     common::{
-        config::{ConfigFileControl, ConfigLoader, TomlConfigLoader},
+        config::{ConfigFileControl, ConfigLoader, ConfigSource, TomlConfigLoader},
         global_ctx::{EventBusSubscriber, GlobalCtxEvent},
         log,
         scoped_task::ScopedTask,
@@ -215,6 +215,15 @@ impl NetworkInstanceManager {
         self.instance_map
             .get(instance_id)
             .map(|instance| instance.value().get_config_file_control().clone())
+    }
+
+    pub fn get_instance_network_config_source(
+        &self,
+        instance_id: &uuid::Uuid,
+    ) -> Option<ConfigSource> {
+        self.instance_map
+            .get(instance_id)
+            .map(|instance| instance.value().get_network_config_source())
     }
 
     pub fn get_instance_service(

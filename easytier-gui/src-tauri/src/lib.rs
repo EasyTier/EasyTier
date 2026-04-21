@@ -15,7 +15,9 @@ use easytier::rpc_service::remote_client::{
 use easytier::web_client::{self, WebClient};
 use easytier::{
     common::{
-        config::{ConfigLoader, FileLoggerConfig, LoggingConfigBuilder, TomlConfigLoader},
+        config::{
+            ConfigLoader, ConfigSource, FileLoggerConfig, LoggingConfigBuilder, TomlConfigLoader,
+        },
         log,
     },
     instance_manager::NetworkInstanceManager,
@@ -118,7 +120,7 @@ async fn run_network_instance(
     let client_manager = get_client_manager!()?;
     let toml_config = cfg.gen_config().map_err(|e| e.to_string())?;
     client_manager
-        .pre_run_network_instance_hook(&app, &toml_config)
+        .pre_run_network_instance_hook(&app, &toml_config, manager::PersistedConfigSource::User)
         .await?;
     client_manager
         .handle_run_network_instance(app.clone(), cfg, save)
@@ -207,13 +209,17 @@ async fn update_network_config_state(
         .map_err(|e: uuid::Error| e.to_string())?;
     let client_manager = get_client_manager!()?;
     if !disabled {
-        let cfg = client_manager
-            .handle_get_network_config(app.clone(), instance_id)
+        let (cfg, source) = client_manager
+            .handle_get_network_config_with_source(app.clone(), instance_id)
             .await
             .map_err(|e| e.to_string())?;
         let toml_config = cfg.gen_config().map_err(|e| e.to_string())?;
         client_manager
-            .pre_run_network_instance_hook(&app, &toml_config)
+            .pre_run_network_instance_hook(
+                &app,
+                &toml_config,
+                manager::PersistedConfigSource::from_runtime_source(source),
+            )
             .await?;
     }
     client_manager
@@ -272,7 +278,7 @@ async fn get_config(app: AppHandle, instance_id: String) -> Result<NetworkConfig
 #[tauri::command]
 async fn load_configs(
     app: AppHandle,
-    configs: Vec<NetworkConfig>,
+    configs: Vec<manager::StoredGuiConfig>,
     enabled_networks: Vec<String>,
 ) -> Result<(), String> {
     get_client_manager!()?
@@ -612,7 +618,11 @@ mod manager {
         ) -> Result<(), String> {
             let client_manager = get_client_manager!()?;
             client_manager
-                .pre_run_network_instance_hook(&self.app, cfg)
+                .pre_run_network_instance_hook(
+                    &self.app,
+                    cfg,
+                    PersistedConfigSource::from_runtime_source(cfg.get_network_config_source()),
+                )
                 .await
         }
 
@@ -631,14 +641,89 @@ mod manager {
         }
     }
 
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+    #[serde(rename_all = "snake_case")]
+    #[derive(Default)]
+    pub(super) enum PersistedConfigSource {
+        User,
+        Webhook,
+        #[serde(other)]
+        #[default]
+        Legacy,
+    }
+
+    
+
+    impl PersistedConfigSource {
+        pub(super) fn from_runtime_source(source: ConfigSource) -> Self {
+            match source {
+                ConfigSource::User => Self::User,
+                ConfigSource::Webhook => Self::Webhook,
+            }
+        }
+
+        fn merge_persisted(self, incoming: Self) -> Self {
+            match (self, incoming) {
+                // Older runtimes report missing source as `user`. Keep the stronger persisted
+                // ownership until webhook sync or an explicit user save repairs it.
+                (Self::Webhook, Self::User) | (Self::Legacy, Self::User) => self,
+                (_, next) => next,
+            }
+        }
+
+        fn to_runtime_source(self) -> ConfigSource {
+            match self {
+                Self::User | Self::Legacy => ConfigSource::User,
+                Self::Webhook => ConfigSource::Webhook,
+            }
+        }
+
+        #[cfg(any(test, target_os = "android"))]
+        fn is_webhook_like(self) -> bool {
+            matches!(self, Self::Webhook)
+        }
+    }
+
     #[derive(Clone)]
-    pub(super) struct GUIConfig(String, pub(crate) NetworkConfig);
+    pub(super) struct GUIConfig {
+        inst_id: String,
+        pub(crate) config: NetworkConfig,
+        source: PersistedConfigSource,
+    }
+
+    #[derive(Clone, serde::Serialize, serde::Deserialize)]
+    pub(super) struct StoredGuiConfig {
+        config: NetworkConfig,
+        #[serde(default)]
+        source: PersistedConfigSource,
+    }
+
+    impl GUIConfig {
+        fn new(inst_id: String, config: NetworkConfig, source: PersistedConfigSource) -> Self {
+            Self {
+                inst_id,
+                config,
+                source,
+            }
+        }
+
+        fn into_stored(self) -> StoredGuiConfig {
+            StoredGuiConfig {
+                config: self.config,
+                source: self.source,
+            }
+        }
+    }
+
     impl PersistentConfig<anyhow::Error> for GUIConfig {
         fn get_network_inst_id(&self) -> &str {
-            &self.0
+            &self.inst_id
         }
         fn get_network_config(&self) -> Result<NetworkConfig, anyhow::Error> {
-            Ok(self.1.clone())
+            Ok(self.config.clone())
+        }
+        fn get_network_config_source(&self) -> ConfigSource {
+            self.source.to_runtime_source()
         }
     }
 
@@ -655,13 +740,12 @@ mod manager {
         }
 
         fn save_configs(&self, app: &AppHandle) -> anyhow::Result<()> {
-            let configs: Result<Vec<String>, _> = self
+            let configs = self
                 .network_configs
                 .iter()
-                .map(|entry| serde_json::to_string(&entry.value().1))
-                .collect();
-            let payload = format!("[{}]", configs?.join(","));
-            app.emit_str("save_configs", payload)?;
+                .map(|entry| entry.value().clone().into_stored())
+                .collect::<Vec<_>>();
+            app.emit("save_configs", configs)?;
             Ok(())
         }
 
@@ -680,8 +764,14 @@ mod manager {
             app: &AppHandle,
             inst_id: Uuid,
             cfg: NetworkConfig,
+            source: PersistedConfigSource,
         ) -> anyhow::Result<()> {
-            let config = GUIConfig(inst_id.to_string(), cfg);
+            let source = self
+                .network_configs
+                .get(&inst_id)
+                .map(|existing| existing.source.merge_persisted(source))
+                .unwrap_or(source);
+            let config = GUIConfig::new(inst_id.to_string(), cfg, source);
             self.network_configs.insert(inst_id, config);
             self.save_configs(app)
         }
@@ -693,8 +783,14 @@ mod manager {
             app: AppHandle,
             network_inst_id: Uuid,
             network_config: NetworkConfig,
+            source: ConfigSource,
         ) -> Result<(), anyhow::Error> {
-            self.save_config(&app, network_inst_id, network_config)?;
+            self.save_config(
+                &app,
+                network_inst_id,
+                network_config,
+                PersistedConfigSource::from_runtime_source(source),
+            )?;
             self.enabled_networks.insert(network_inst_id);
             self.save_enabled_networks(&app)?;
             Ok(())
@@ -811,17 +907,36 @@ mod manager {
                 .network_configs
                 .iter()
                 .filter(|v| self.storage.enabled_networks.contains(v.key()))
-                .filter(|v| !v.1.no_tun())
-                .filter_map(|c| c.1.instance_id().parse::<uuid::Uuid>().ok())
+                .filter(|v| !v.config.no_tun())
+                .filter_map(|c| c.config.instance_id().parse::<uuid::Uuid>().ok())
+        }
+
+        #[cfg(target_os = "android")]
+        pub fn get_enabled_instances_with_webhook_like_tun_ids(
+            &self,
+        ) -> impl Iterator<Item = uuid::Uuid> + '_ {
+            self.storage
+                .network_configs
+                .iter()
+                .filter(|v| self.storage.enabled_networks.contains(v.key()))
+                .filter(|v| !v.config.no_tun())
+                .filter(|v| v.source.is_webhook_like())
+                .filter_map(|c| c.config.instance_id().parse::<uuid::Uuid>().ok())
         }
 
         #[cfg(target_os = "android")]
         pub(super) async fn disable_instances_with_tun(
             &self,
             app: &AppHandle,
+            webhook_only: bool,
         ) -> Result<(), easytier::rpc_service::remote_client::RemoteClientError<anyhow::Error>>
         {
-            let inst_ids: Vec<uuid::Uuid> = self.get_enabled_instances_with_tun_ids().collect();
+            let inst_ids: Vec<uuid::Uuid> = if webhook_only {
+                self.get_enabled_instances_with_webhook_like_tun_ids()
+                    .collect()
+            } else {
+                self.get_enabled_instances_with_tun_ids().collect()
+            };
             for inst_id in inst_ids {
                 self.handle_update_network_state(app.clone(), inst_id, true)
                     .await?;
@@ -842,6 +957,7 @@ mod manager {
             &self,
             app: &AppHandle,
             cfg: &easytier::common::config::TomlConfigLoader,
+            source: PersistedConfigSource,
         ) -> Result<(), String> {
             let instance_id = cfg.get_id();
             app.emit("pre_run_network_instance", instance_id.to_string())
@@ -849,9 +965,24 @@ mod manager {
 
             #[cfg(target_os = "android")]
             if !cfg.get_flags().no_tun {
-                self.disable_instances_with_tun(app)
-                    .await
-                    .map_err(|e| e.to_string())?;
+                match source {
+                    PersistedConfigSource::User | PersistedConfigSource::Legacy => {
+                        self.disable_instances_with_tun(app, false)
+                            .await
+                            .map_err(|e| e.to_string())?;
+                    }
+                    PersistedConfigSource::Webhook => {
+                        self.disable_instances_with_tun(app, true)
+                            .await
+                            .map_err(|e| e.to_string())?;
+                        if self.get_enabled_instances_with_tun_ids().next().is_some() {
+                            return Err(
+                                "Android only supports one active TUN network; user-managed VPN remains active"
+                                    .to_string(),
+                            );
+                        }
+                    }
+                }
             }
 
             self.storage
@@ -859,6 +990,7 @@ mod manager {
                     app,
                     instance_id,
                     NetworkConfig::new_from_config(cfg).map_err(|e| e.to_string())?,
+                    source,
                 )
                 .map_err(|e| e.to_string())?;
 
@@ -962,15 +1094,15 @@ mod manager {
         pub(super) async fn load_configs(
             &self,
             app: AppHandle,
-            configs: Vec<NetworkConfig>,
+            configs: Vec<StoredGuiConfig>,
             enabled_networks: Vec<String>,
         ) -> anyhow::Result<()> {
             self.storage.network_configs.clear();
-            for cfg in configs {
-                let instance_id = cfg.instance_id();
+            for stored in configs {
+                let instance_id = stored.config.instance_id();
                 self.storage.network_configs.insert(
                     instance_id.parse()?,
-                    GUIConfig(instance_id.to_string(), cfg),
+                    GUIConfig::new(instance_id.to_string(), stored.config, stored.source),
                 );
             }
 
@@ -986,12 +1118,12 @@ mod manager {
                         .storage
                         .network_configs
                         .get(&uuid)
-                        .map(|i| i.value().1.clone());
-                    let Some(config) = config else {
+                        .map(|i| (i.value().config.clone(), i.value().source));
+                    let Some((config, source)) = config else {
                         continue;
                     };
                     let toml_config = config.gen_config()?;
-                    self.pre_run_network_instance_hook(&app, &toml_config)
+                    self.pre_run_network_instance_hook(&app, &toml_config, source)
                         .await
                         .map_err(|e| anyhow::anyhow!(e))?;
                     client
@@ -1001,6 +1133,7 @@ mod manager {
                                 inst_id: None,
                                 config: Some(config),
                                 overwrite: false,
+                                source: source.to_runtime_source().to_rpc(),
                             },
                         )
                         .await?;
@@ -1030,6 +1163,44 @@ mod manager {
 
         fn get_storage(&self) -> &impl Storage<AppHandle, GUIConfig, anyhow::Error> {
             &self.storage
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::{PersistedConfigSource, StoredGuiConfig};
+        use easytier::proto::api::manage::NetworkConfig;
+
+        #[test]
+        fn stored_gui_config_defaults_missing_source_to_legacy() {
+            let stored: StoredGuiConfig = serde_json::from_value(serde_json::json!({
+                "config": NetworkConfig::default(),
+            }))
+            .unwrap();
+            assert_eq!(stored.source, PersistedConfigSource::Legacy);
+        }
+
+        #[test]
+        fn persisted_source_merge_keeps_legacy_and_webhook_over_ambiguous_user() {
+            assert_eq!(
+                PersistedConfigSource::Legacy.merge_persisted(PersistedConfigSource::User),
+                PersistedConfigSource::Legacy
+            );
+            assert_eq!(
+                PersistedConfigSource::Webhook.merge_persisted(PersistedConfigSource::User),
+                PersistedConfigSource::Webhook
+            );
+            assert_eq!(
+                PersistedConfigSource::Legacy.merge_persisted(PersistedConfigSource::Webhook),
+                PersistedConfigSource::Webhook
+            );
+        }
+
+        #[test]
+        fn only_webhook_configs_are_webhook_like() {
+            assert!(!PersistedConfigSource::Legacy.is_webhook_like());
+            assert!(!PersistedConfigSource::User.is_webhook_like());
+            assert!(PersistedConfigSource::Webhook.is_webhook_like());
         }
     }
 }

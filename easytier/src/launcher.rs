@@ -1,4 +1,6 @@
-use crate::common::config::{ConfigFileControl, PortForwardConfig, process_secure_mode_cfg};
+use crate::common::config::{
+    ConfigFileControl, ConfigSource, PortForwardConfig, process_secure_mode_cfg,
+};
 use crate::proto::api::{self, manage};
 use crate::proto::rpc_types::controller::BaseController;
 use crate::rpc_service::InstanceRpcService;
@@ -432,6 +434,10 @@ impl NetworkInstance {
 
     pub fn get_config_file_control(&self) -> &ConfigFileControl {
         &self.config_file_control
+    }
+
+    pub fn get_network_config_source(&self) -> ConfigSource {
+        self.config.get_network_config_source()
     }
 
     pub fn get_latest_error_msg(&self) -> Option<String> {
