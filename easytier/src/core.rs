@@ -452,6 +452,15 @@ struct NetworkOptions {
 
     #[arg(
         long,
+        env = "ET_DISABLE_UPNP",
+        help = t!("core_clap.disable_upnp").to_string(),
+        num_args = 0..=1,
+        default_missing_value = "true"
+    )]
+    disable_upnp: Option<bool>,
+
+    #[arg(
+        long,
         env = "ET_RELAY_ALL_PEER_RPC",
         help = t!("core_clap.relay_all_peer_rpc").to_string(),
         num_args = 0..=1,
@@ -1101,7 +1110,10 @@ impl NetworkOptions {
         f.enable_relay_foreign_network_quic = self
             .enable_relay_foreign_network_quic
             .unwrap_or(f.enable_relay_foreign_network_quic);
-        f.disable_sym_hole_punching = self.disable_sym_hole_punching.unwrap_or(false);
+        f.disable_sym_hole_punching = self
+            .disable_sym_hole_punching
+            .unwrap_or(f.disable_sym_hole_punching);
+        f.disable_upnp = self.disable_upnp.unwrap_or(f.disable_upnp);
         // Configure tld_dns_zone: use provided value if set
         if let Some(tld_dns_zone) = &self.tld_dns_zone {
             f.tld_dns_zone = tld_dns_zone.clone();
