@@ -3564,21 +3564,25 @@ impl Route for PeerRoute {
     }
 
     async fn list_proxy_cidrs(&self) -> BTreeSet<Ipv4Cidr> {
+        let my_peer_id = self.my_peer_id;
         self.service_impl
             .route_table
             .cidr_peer_id_map
             .load()
             .iter()
+            .filter(|(_, pv)| pv.peer_id != my_peer_id)
             .map(|(cidr, _)| *cidr)
             .collect()
     }
 
     async fn list_proxy_cidrs_v6(&self) -> BTreeSet<Ipv6Cidr> {
+        let my_peer_id = self.my_peer_id;
         self.service_impl
             .route_table
             .cidr_v6_peer_id_map
             .load()
             .iter()
+            .filter(|(_, pv)| pv.peer_id != my_peer_id)
             .map(|(cidr, _)| *cidr)
             .collect()
     }
