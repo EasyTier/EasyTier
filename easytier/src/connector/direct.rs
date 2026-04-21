@@ -11,6 +11,10 @@ use std::{
     time::{Duration, Instant},
 };
 
+use tokio::sync::Semaphore;
+
+const MAX_CONCURRENT_DIRECT_CONNECTIONS: usize = 4;
+
 use crate::{
     common::{
         PeerId, dns::socket_addrs, error::Error, global_ctx::ArcGlobalCtx,
@@ -105,6 +109,7 @@ struct DirectConnectorManagerData {
     peer_manager: Arc<PeerManager>,
     dst_listener_blacklist: timedmap::TimedMap<DstListenerUrlBlackListItem, ()>,
     peer_black_list: timedmap::TimedMap<PeerId, ()>,
+    conn_semaphore: Arc<Semaphore>,
 }
 
 impl DirectConnectorManagerData {
@@ -114,6 +119,7 @@ impl DirectConnectorManagerData {
             peer_manager,
             dst_listener_blacklist: timedmap::TimedMap::new(),
             peer_black_list: timedmap::TimedMap::new(),
+            conn_semaphore: Arc::new(Semaphore::new(MAX_CONCURRENT_DIRECT_CONNECTIONS)),
         }
     }
 
@@ -245,7 +251,7 @@ impl DirectConnectorManagerData {
         addr: String,
     ) -> Result<(), Error> {
         let mut rand_gen = rand::rngs::OsRng;
-        let backoff_ms = [1000, 2000, 4000];
+        let backoff_ms = [4000];
         let mut backoff_idx = 0;
 
         tracing::debug!(?dst_peer_id, ?addr, "try_connect_to_ip start");
@@ -305,6 +311,7 @@ impl DirectConnectorManagerData {
         listener: &url::Url,
         tasks: &mut JoinSet<Result<(), Error>>,
     ) {
+        let semaphore = self.conn_semaphore.clone();
         let Ok(mut addrs) = socket_addrs(listener, || None).await else {
             tracing::error!(?listener, "failed to parse socket address from listener");
             return;
@@ -349,11 +356,15 @@ impl DirectConnectorManagerData {
                             }
                             let mut addr = (*listener).clone();
                             if addr.set_host(Some(ip.to_string().as_str())).is_ok() {
-                                tasks.spawn(Self::try_connect_to_ip(
-                                    self.clone(),
-                                    dst_peer_id,
-                                    addr.to_string(),
-                                ));
+                                let sem = semaphore.clone();
+                                let this = self.clone();
+                                let addr_str = addr.to_string();
+                                tasks.spawn(async move {
+                                    let _permit = sem.acquire().await.unwrap();
+                                    DirectConnectorManagerData::try_connect_to_ip(
+                                        this, dst_peer_id, addr_str,
+                                    ).await
+                                });
                             } else {
                                 tracing::error!(
                                     ?ip,
@@ -370,11 +381,15 @@ impl DirectConnectorManagerData {
                     {
                         tracing::debug!(?listener, "skip self-connection (specific IPv4)");
                     } else {
-                        tasks.spawn(Self::try_connect_to_ip(
-                            self.clone(),
-                            dst_peer_id,
-                            listener.to_string(),
-                        ));
+                        let sem = semaphore.clone();
+                        let this = self.clone();
+                        let addr_str = listener.to_string();
+                        tasks.spawn(async move {
+                            let _permit = sem.acquire().await.unwrap();
+                            DirectConnectorManagerData::try_connect_to_ip(
+                                this, dst_peer_id, addr_str,
+                            ).await
+                        });
                     }
                 }
             }
@@ -411,11 +426,15 @@ impl DirectConnectorManagerData {
                             }
                             let mut addr = (*listener).clone();
                             if addr.set_host(Some(format!("[{}]", ip).as_str())).is_ok() {
-                                tasks.spawn(Self::try_connect_to_ip(
-                                    self.clone(),
-                                    dst_peer_id,
-                                    addr.to_string(),
-                                ));
+                                let sem = semaphore.clone();
+                                let this = self.clone();
+                                let addr_str = addr.to_string();
+                                tasks.spawn(async move {
+                                    let _permit = sem.acquire().await.unwrap();
+                                    DirectConnectorManagerData::try_connect_to_ip(
+                                        this, dst_peer_id, addr_str,
+                                    ).await
+                                });
                             } else {
                                 tracing::error!(
                                     ?ip,
@@ -432,11 +451,15 @@ impl DirectConnectorManagerData {
                     {
                         tracing::debug!(?listener, "skip self-connection (specific IPv6)");
                     } else {
-                        tasks.spawn(Self::try_connect_to_ip(
-                            self.clone(),
-                            dst_peer_id,
-                            listener.to_string(),
-                        ));
+                        let sem = semaphore.clone();
+                        let this = self.clone();
+                        let addr_str = listener.to_string();
+                        tasks.spawn(async move {
+                            let _permit = sem.acquire().await.unwrap();
+                            DirectConnectorManagerData::try_connect_to_ip(
+                                this, dst_peer_id, addr_str,
+                            ).await
+                        });
                     }
                 }
             }
@@ -529,7 +552,7 @@ impl DirectConnectorManagerData {
         dst_peer_id: PeerId,
     ) -> Result<(), Error> {
         let mut backoff =
-            udp_hole_punch::BackOff::new(vec![1000, 2000, 2000, 5000, 5000, 10000, 30000, 60000]);
+            udp_hole_punch::BackOff::new(vec![5000, 10000, 30000, 60000]);
         let mut attempt = 0;
         loop {
             if self.peer_black_list.contains(&dst_peer_id) {
@@ -632,7 +655,7 @@ impl PeerTaskLauncher for DirectConnectorLauncher {
     async fn all_task_done(&self, _data: &Self::Data) {}
 
     fn loop_interval_ms(&self) -> u64 {
-        5000
+        60000
     }
 }
 

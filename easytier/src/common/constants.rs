@@ -19,7 +19,7 @@ macro_rules! set_global_var {
     };
 }
 
-define_global_var!(MANUAL_CONNECTOR_RECONNECT_INTERVAL_MS, u64, 1000);
+define_global_var!(MANUAL_CONNECTOR_RECONNECT_INTERVAL_MS, u64, 60000);
 
 define_global_var!(OSPF_UPDATE_MY_GLOBAL_FOREIGN_NETWORK_INTERVAL_SEC, u64, 10);
 
