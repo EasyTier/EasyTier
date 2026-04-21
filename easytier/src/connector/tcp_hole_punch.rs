@@ -106,7 +106,7 @@ async fn try_connect_to_remote(
             let add_tunnel_ret = if is_client {
                 peer_mgr.add_client_tunnel(tunnel, false).await.map(|_| ())
             } else {
-                peer_mgr.add_tunnel_as_server(tunnel, false).await
+                peer_mgr.add_tunnel_as_server(tunnel, false, false).await
             };
             if let Err(e) = add_tunnel_ret {
                 tracing::error!(
@@ -381,7 +381,7 @@ impl TcpHolePunchConnectorData {
         loop {
             match listener.accept().await {
                 Ok(tunnel) => {
-                    if let Err(e) = self.peer_mgr.add_tunnel_as_server(tunnel, false).await {
+                    if let Err(e) = self.peer_mgr.add_tunnel_as_server(tunnel, false, false).await {
                         tracing::error!("tcp hole punch add tunnel error: {}", e);
                         continue;
                     }

@@ -79,7 +79,7 @@ pub trait TunnelHandlerForListener {
 impl TunnelHandlerForListener for PeerManager {
     #[tracing::instrument]
     async fn handle_tunnel(&self, tunnel: Box<dyn Tunnel>) -> Result<(), Error> {
-        self.add_tunnel_as_server(tunnel, true).await
+        self.add_tunnel_as_server(tunnel, true, false).await
     }
 }
 
@@ -94,7 +94,8 @@ impl TunnelHandlerForListener for RproxyTunnelHandler {
     #[tracing::instrument(skip(self))]
     async fn handle_tunnel(&self, tunnel: Box<dyn Tunnel>) -> Result<(), Error> {
         // is_directly_connected = false  →  hole_punched = true  →  P2P will be attempted
-        self.0.add_tunnel_as_server(tunnel, false).await
+        // is_rproxy = true  →  hole-punch collectors will still try this peer
+        self.0.add_tunnel_as_server(tunnel, false, true).await
     }
 }
 

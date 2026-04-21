@@ -724,6 +724,7 @@ impl PeerManager {
         &self,
         tunnel: Box<dyn Tunnel>,
         is_directly_connected: bool,
+        is_rproxy: bool,
     ) -> Result<(), Error> {
         tracing::info!("add tunnel as server start");
         self.check_remote_addr_not_from_virtual_network(&tunnel)?;
@@ -795,11 +796,10 @@ impl PeerManager {
         }
 
         conn.set_is_hole_punched(!is_directly_connected);
-        // Connections accepted on rproxy listeners are flagged so the hole-punch
-        // collector can still try to establish a real P2P path.
-        if !is_directly_connected {
-            conn.set_is_rproxy(true);
-        }
+        // Only connections accepted on rproxy listeners are flagged as rproxy.
+        // Regular hole-punched connections (UDP / TCP) are NOT rproxy even though
+        // they also have is_directly_connected = false.
+        conn.set_is_rproxy(is_rproxy);
 
         let add_peer_ret = if is_local_network {
             self.add_new_peer_conn(conn).await
@@ -2264,7 +2264,7 @@ mod tests {
         let (a_ring, b_ring) = create_ring_tunnel_pair();
         let (client_ret, server_ret) = tokio::join!(
             peer_mgr_a.add_client_tunnel(a_ring, true),
-            peer_mgr_b.add_tunnel_as_server(b_ring, true)
+            peer_mgr_b.add_tunnel_as_server(b_ring, true, false)
         );
         client_ret.unwrap();
         server_ret.unwrap();
@@ -2877,7 +2877,7 @@ mod tests {
         let (a_ring, b_ring) = create_ring_tunnel_pair();
         let (a_ret, b_ret) = tokio::join!(
             peer_mgr_a.add_client_tunnel(a_ring, false),
-            peer_mgr_b.add_tunnel_as_server(b_ring, true)
+            peer_mgr_b.add_tunnel_as_server(b_ring, true, false)
         );
         let (peer_b_id, _) = a_ret.unwrap();
         b_ret.unwrap();
@@ -2957,7 +2957,7 @@ mod tests {
         let (c_ring, s_ring) = create_ring_tunnel_pair();
         let (c_ret, s_ret) = tokio::join!(
             peer_mgr_client.add_client_tunnel(c_ring, false),
-            peer_mgr_server.add_tunnel_as_server(s_ring, true)
+            peer_mgr_server.add_tunnel_as_server(s_ring, true, false)
         );
         let _ = c_ret;
         assert!(
@@ -3072,7 +3072,7 @@ mod tests {
 
         let (c_ret, s_ret) = tokio::join!(
             peer_mgr_client.add_client_tunnel(a_ring, false),
-            peer_mgr_server.add_tunnel_as_server(b_ring, true)
+            peer_mgr_server.add_tunnel_as_server(b_ring, true, false)
         );
         c_ret.unwrap();
         s_ret.unwrap();
@@ -3351,7 +3351,7 @@ mod tests {
         });
         let b_mgr_copy = peer_mgr_b.clone();
         tokio::spawn(async move {
-            b_mgr_copy.add_tunnel_as_server(b_ring, true).await.unwrap();
+            b_mgr_copy.add_tunnel_as_server(b_ring, true, false).await.unwrap();
         });
 
         wait_for_condition(

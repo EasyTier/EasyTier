@@ -86,7 +86,7 @@ async fn connect_client_and_server(
         },
         {
             let server = server.clone();
-            async move { server.add_tunnel_as_server(server_ring, true).await }
+            async move { server.add_tunnel_as_server(server_ring, true, false).await }
         }
     )
 }
@@ -158,7 +158,7 @@ pub async fn connect_peer_manager(client: Arc<PeerManager>, server: Arc<PeerMana
     });
     let b_mgr_copy = server;
     tokio::spawn(async move {
-        b_mgr_copy.add_tunnel_as_server(b_ring, true).await.unwrap();
+        b_mgr_copy.add_tunnel_as_server(b_ring, true, false).await.unwrap();
     });
 }
 
@@ -1593,7 +1593,7 @@ async fn unknown_credential_rejected_while_valid_credential_survives() {
         let admin_a = admin_a.clone();
         async move {
             admin_a
-                .add_tunnel_as_server(unknown_ring_server, true)
+                .add_tunnel_as_server(unknown_ring_server, true, false)
                 .await
         }
     });
