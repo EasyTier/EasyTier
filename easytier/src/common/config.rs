@@ -69,6 +69,7 @@ pub fn gen_default_flags() -> Flags {
         quic_listen_port: u32::MAX,
         need_p2p: false,
         instance_recv_bps_limit: u64::MAX,
+        disable_upnp: false,
     }
 }
 
