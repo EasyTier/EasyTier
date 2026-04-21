@@ -1,4 +1,5 @@
 use crate::utils::task::{DetachableTask, TaskSpawner};
+use std::fmt::Debug;
 use std::mem::ManuallyDrop;
 use std::ops::{Deref, DerefMut};
 
@@ -50,6 +51,21 @@ impl<const ASYNC: bool, Context, Guard: CallableGuard<ASYNC, Context>> DerefMut
 {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.context
+    }
+}
+
+impl<const ASYNC: bool, Context: Debug, Guard: CallableGuard<ASYNC, Context>> Debug
+    for ContextGuard<ASYNC, Context, Guard>
+{
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let name = if ASYNC {
+            "ContextGuard::Async"
+        } else {
+            "ContextGuard::Sync"
+        };
+        f.debug_struct(name)
+            .field("context", &self.context)
+            .finish_non_exhaustive()
     }
 }
 
