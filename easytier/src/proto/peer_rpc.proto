@@ -359,6 +359,7 @@ message PeerConnNoiseMsg2Pb {
   common.UUID a_conn_id_echo = 8;
   optional bytes secret_proof_32 = 9;
   string server_encryption_algorithm = 10;
+  bool accepted_as_rproxy = 11;
 }
 
 message RelayNoiseMsg1Pb {
