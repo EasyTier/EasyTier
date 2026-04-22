@@ -237,7 +237,8 @@ impl Service {
         let mut unit_content = String::new();
 
         writeln!(unit_content, "[Unit]")?;
-        writeln!(unit_content, "After=network.target syslog.target")?;
+        writeln!(unit_content, "Wants=network-online.target")?;
+        writeln!(unit_content, "After=network-online.target syslog.target")?;
         if let Some(ref d) = options.description {
             writeln!(unit_content, "Description={d}")?;
         }
@@ -337,11 +338,12 @@ impl Service {
 
 #[cfg(target_os = "windows")]
 mod win_service_manager {
-    use std::{ffi::OsStr, ffi::OsString, io, path::PathBuf};
+    use std::{ffi::OsStr, ffi::OsString, io, path::PathBuf, time::Duration};
     use windows_service::{
         service::{
-            ServiceAccess, ServiceDependency, ServiceErrorControl, ServiceInfo, ServiceStartType,
-            ServiceType,
+            ServiceAccess, ServiceAction, ServiceActionType, ServiceDependency,
+            ServiceErrorControl, ServiceFailureActions, ServiceFailureResetPeriod, ServiceInfo,
+            ServiceStartType, ServiceType,
         },
         service_manager::{ServiceManager, ServiceManagerAccess},
     };
@@ -366,6 +368,51 @@ mod win_service_manager {
 
     pub struct WinServiceManager {
         service_manager: ServiceManager,
+    }
+
+    fn build_failure_actions(disable_restart_on_failure: bool) -> ServiceFailureActions {
+        let actions = if disable_restart_on_failure {
+            Vec::new()
+        } else {
+            vec![
+                ServiceAction {
+                    action_type: ServiceActionType::Restart,
+                    delay: Duration::from_secs(1),
+                },
+                ServiceAction {
+                    action_type: ServiceActionType::Restart,
+                    delay: Duration::from_secs(1),
+                },
+                ServiceAction {
+                    action_type: ServiceActionType::Restart,
+                    delay: Duration::from_secs(1),
+                },
+            ]
+        };
+
+        ServiceFailureActions {
+            reset_period: ServiceFailureResetPeriod::After(Duration::from_secs(24 * 60 * 60)),
+            reboot_msg: None,
+            command: None,
+            actions: Some(actions),
+        }
+    }
+
+    fn configure_service_behavior(
+        service: &windows_service::service::Service,
+        ctx: &ServiceInstallCtx,
+    ) -> io::Result<()> {
+        service
+            .set_delayed_auto_start(ctx.autostart)
+            .map_err(io::Error::other)?;
+        service
+            .update_failure_actions(build_failure_actions(ctx.disable_restart_on_failure))
+            .map_err(io::Error::other)?;
+        service
+            .set_failure_actions_on_non_crash_failures(!ctx.disable_restart_on_failure)
+            .map_err(io::Error::other)?;
+
+        Ok(())
     }
 
     fn generate_service_info(ctx: &ServiceInstallCtx) -> (ServiceInfo, Option<OsString>) {
@@ -436,6 +483,8 @@ mod win_service_manager {
                     .set_description(s.clone())
                     .map_err(io::Error::other)?;
             }
+
+            configure_service_behavior(&service, &ctx)?;
 
             if let Some(work_dir) = ctx.working_directory {
                 set_service_work_directory(&ctx.label.to_qualified_name(), work_dir)?;
@@ -527,6 +576,8 @@ mod win_service_manager {
                     .set_description(s.clone())
                     .map_err(io::Error::other)?;
             }
+
+            configure_service_behavior(&service, &ctx)?;
 
             if let Some(work_dir) = ctx.working_directory {
                 set_service_work_directory(&ctx.label.to_qualified_name(), work_dir)?;
