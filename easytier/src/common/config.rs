@@ -21,7 +21,7 @@ use crate::{
         api::manage::ConfigSource as RpcConfigSource,
         common::{CompressionAlgoPb, PortForwardConfigPb, SecureModeConfig, SocketType},
     },
-    tunnel::generate_digest_from_str,
+    tunnel::{IpScheme, TunnelScheme, generate_digest_from_str},
 };
 
 use super::env_parser;
@@ -72,6 +72,36 @@ pub fn gen_default_flags() -> Flags {
         instance_recv_bps_limit: u64::MAX,
         disable_upnp: false,
     }
+}
+
+fn mapped_listener_allows_implicit_port(url: &url::Url) -> bool {
+    TunnelScheme::try_from(url)
+        .ok()
+        .and_then(|scheme| IpScheme::try_from(scheme).ok())
+        .is_some()
+}
+
+pub fn validate_mapped_listener_url(url: &url::Url) -> Result<(), anyhow::Error> {
+    if url.port().is_none() && !mapped_listener_allows_implicit_port(url) {
+        anyhow::bail!("mapped listener port is missing: {}", url);
+    }
+
+    Ok(())
+}
+
+pub fn parse_mapped_listener_urls(
+    mapped_listeners: &[String],
+) -> Result<Vec<url::Url>, anyhow::Error> {
+    mapped_listeners
+        .iter()
+        .map(|s| {
+            let url: url::Url = s
+                .parse()
+                .with_context(|| format!("mapped listener is not a valid url: {}", s))?;
+            validate_mapped_listener_url(&url)?;
+            Ok(url)
+        })
+        .collect()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Display, EnumString, VariantArray)]
@@ -1224,6 +1254,37 @@ stun_servers = [
 
         let loaded = TomlConfigLoader::new_from_str(&dumped).unwrap();
         assert_eq!(loaded.get_network_config_source(), ConfigSource::Webhook);
+    }
+
+    #[test]
+    fn test_parse_mapped_listener_urls_allows_ws_without_port() {
+        let parsed = parse_mapped_listener_urls(&[
+            "ws://example.com".to_string(),
+            "wss://example.com/path".to_string(),
+        ])
+        .unwrap();
+
+        assert_eq!(parsed.len(), 2);
+        assert_eq!(parsed[0].scheme(), "ws");
+        assert_eq!(parsed[0].port(), None);
+        assert_eq!(parsed[1].scheme(), "wss");
+        assert_eq!(parsed[1].port(), None);
+    }
+
+    #[test]
+    fn test_parse_mapped_listener_urls_allows_tcp_without_port() {
+        let parsed = parse_mapped_listener_urls(&["tcp://127.0.0.1".to_string()]).unwrap();
+
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0].scheme(), "tcp");
+        assert_eq!(parsed[0].port(), None);
+    }
+
+    #[test]
+    fn test_parse_mapped_listener_urls_requires_port_for_non_ip_scheme() {
+        let err = parse_mapped_listener_urls(&["ring://peer-id".to_string()]).unwrap_err();
+
+        assert!(err.to_string().contains("mapped listener port is missing"));
     }
 
     #[test]
