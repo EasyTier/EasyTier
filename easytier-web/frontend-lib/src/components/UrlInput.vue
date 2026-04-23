@@ -32,7 +32,7 @@ onMounted(() => {
     }
 })
 
-const parseUrl = (val: string | null | undefined) => {
+const parseUrl = (val: string | null | undefined): { proto: string; host: string; port: number | null } => {
     const getValidPort = (portStr: string, proto: string) => {
         const p = parseInt(portStr)
         return isNaN(p) ? (props.protos[proto] ?? 11010) : p
@@ -55,13 +55,16 @@ const parseUrl = (val: string | null | undefined) => {
             if (ipv6End > 0) {
                 const host = hostAndMaybePort.slice(0, ipv6End + 1)
                 const remain = hostAndMaybePort.slice(ipv6End + 1)
-                const port = remain.startsWith(':') ? getValidPort(remain.slice(1), proto) : (props.protos[proto] ?? 11010)
+                // null = no explicit port in URL; do not fabricate a default
+                const port: number | null = remain.startsWith(':') ? getValidPort(remain.slice(1), proto) : null
                 return { proto, host, port }
             }
         }
         const portMatch = hostAndMaybePort.match(/^(.*):(\d+)$/)
         const host = portMatch ? portMatch[1] : hostAndMaybePort
-        const port = portMatch ? parseInt(portMatch[2]) : (props.protos[proto] ?? 11010)
+        // null = no explicit port in URL; buildUrlValue will omit the port entirely,
+        // preserving the protocol's implied standard port (e.g. 443 for wss://).
+        const port: number | null = portMatch ? parseInt(portMatch[2]) : null
         return { proto, host, port }
     }
 
@@ -72,28 +75,26 @@ const parseUrl = (val: string | null | undefined) => {
     if (parsedByPattern) {
         return parsedByPattern
     }
-    return { proto: 'tcp', host: '', port: 11010 }
+    return { proto: 'tcp', host: '', port: null }
 }
 
 const internalValue = ref(parseUrl(url.value))
 const defaultHost = '0.0.0.0'
 
-const buildUrlValue = (value: { proto: string, host: string, port: number }, forceDefaultHost = false) => {
+const buildUrlValue = (value: { proto: string, host: string, port: number | null }, forceDefaultHost = false) => {
     const proto = value.proto || 'tcp'
     const rawHost = (value.host ?? '').trim()
     const host = rawHost || (forceDefaultHost ? defaultHost : '')
     if (!host) {
         return null
     }
-    let port = value.port
-    if (isNaN(parseInt(port as any))) {
-        port = props.protos[proto] ?? 11010
-    }
-
-    if (props.protos[proto] === 0) {
+    // Omit port when the protocol uses no port (protos value = 0), or when the
+    // original URL had no explicit port (port === null) – avoids overwriting an
+    // implicit standard port (e.g. 443 for wss) with an EasyTier default (11012).
+    if (props.protos[proto] === 0 || value.port === null) {
         return `${proto}://${host}`
     }
-    return `${proto}://${host}:${port}`
+    return `${proto}://${host}:${value.port}`
 }
 
 const syncUrlFromInternal = (forceDefaultHost = false) => {
@@ -180,6 +181,7 @@ const onProtoChange = (newProto: string) => {
                     <span style="font-weight: bold">:</span>
                 </InputGroupAddon>
                 <InputNumber v-model="internalValue.port" :format="false" :min="1" :max="65535" class="max-w-24"
+                    :placeholder="String(protos[internalValue.proto] ?? 11010)"
                     fluid />
             </template>
             <slot name="actions"></slot>
@@ -207,7 +209,8 @@ const onProtoChange = (newProto: string) => {
                 </div>
                 <div v-if="!isNoPortProto" class="flex flex-col gap-2">
                     <label>{{ t('port') }}</label>
-                    <InputNumber v-model="internalValue.port" :format="false" :min="1" :max="65535" class="w-full" />
+                    <InputNumber v-model="internalValue.port" :format="false" :min="1" :max="65535" class="w-full"
+                        :placeholder="String(protos[internalValue.proto] ?? 11010)" />
                 </div>
             </div>
             <template #footer>
