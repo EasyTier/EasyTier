@@ -18,6 +18,7 @@ use crate::{
     instance::dns_server::DEFAULT_ET_DNS_ZONE,
     proto::{
         acl::Acl,
+        api::manage::ConfigSource as RpcConfigSource,
         common::{CompressionAlgoPb, PortForwardConfigPb, SecureModeConfig, SocketType},
     },
     tunnel::generate_digest_from_str,
@@ -206,6 +207,11 @@ pub trait ConfigLoader: Send + Sync {
     }
     fn set_credential_file(&self, _path: Option<std::path::PathBuf>) {}
 
+    fn get_network_config_source(&self) -> ConfigSource {
+        ConfigSource::User
+    }
+    fn set_network_config_source(&self, _source: Option<ConfigSource>) {}
+
     fn dump(&self) -> String;
 }
 
@@ -223,6 +229,55 @@ pub struct NetworkIdentity {
     pub network_secret: Option<String>,
     #[serde(skip)]
     pub network_secret_digest: Option<NetworkSecretDigest>,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ConfigSource {
+    #[default]
+    User,
+    Webhook,
+}
+
+impl ConfigSource {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::User => "user",
+            Self::Webhook => "webhook",
+        }
+    }
+
+    pub fn from_rpc(source: i32) -> Option<Self> {
+        match RpcConfigSource::try_from(source).ok() {
+            Some(RpcConfigSource::Webhook) => Some(Self::Webhook),
+            Some(RpcConfigSource::User) => Some(Self::User),
+            _ => None,
+        }
+    }
+
+    pub fn to_rpc(self) -> i32 {
+        match self {
+            Self::User => RpcConfigSource::User as i32,
+            Self::Webhook => RpcConfigSource::Webhook as i32,
+        }
+    }
+}
+
+impl std::str::FromStr for ConfigSource {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "user" => Ok(Self::User),
+            "webhook" => Ok(Self::Webhook),
+            other => Err(format!("unknown network config source: {other}")),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+struct ConfigSourceConfig {
+    source: ConfigSource,
 }
 
 #[derive(Eq, PartialEq, Hash)]
@@ -466,6 +521,7 @@ struct Config {
     stun_servers_v6: Option<Vec<String>>,
 
     credential_file: Option<PathBuf>,
+    source: Option<ConfigSourceConfig>,
 }
 
 #[derive(Debug, Clone)]
@@ -480,9 +536,20 @@ impl Default for TomlConfigLoader {
 }
 
 impl TomlConfigLoader {
+    fn normalize_config_source(config: &mut Config) {
+        if matches!(
+            config.source.as_ref().map(|source| source.source),
+            Some(ConfigSource::User)
+        ) {
+            config.source = None;
+        }
+    }
+
     pub fn new_from_str(config_str: &str) -> Result<Self, anyhow::Error> {
         let mut config = toml::de::from_str::<Config>(config_str)
             .with_context(|| format!("failed to parse config file: {}", config_str))?;
+
+        Self::normalize_config_source(&mut config);
 
         config.flags_struct = Some(Self::gen_flags(config.flags.clone().unwrap_or_default()));
 
@@ -867,6 +934,23 @@ impl ConfigLoader for TomlConfigLoader {
         self.config.lock().unwrap().credential_file = path;
     }
 
+    fn get_network_config_source(&self) -> ConfigSource {
+        self.config
+            .lock()
+            .unwrap()
+            .source
+            .as_ref()
+            .map(|source| source.source)
+            .unwrap_or(ConfigSource::User)
+    }
+
+    fn set_network_config_source(&self, source: Option<ConfigSource>) {
+        self.config.lock().unwrap().source = source.and_then(|source| match source {
+            ConfigSource::User => None,
+            other => Some(ConfigSourceConfig { source: other }),
+        });
+    }
+
     fn dump(&self) -> String {
         let default_flags_json = serde_json::to_string(&gen_default_flags()).unwrap();
         let default_flags_hashmap =
@@ -888,6 +972,7 @@ impl ConfigLoader for TomlConfigLoader {
         }
 
         let mut config = self.config.lock().unwrap().clone();
+        Self::normalize_config_source(&mut config);
         config.flags = Some(flag_map);
         if config.stun_servers == Some(StunInfoCollector::get_default_servers()) {
             config.stun_servers = None;
@@ -1124,6 +1209,46 @@ stun_servers = [
         assert_eq!(stun_servers[0], "stun.l.google.com:19302");
         assert_eq!(stun_servers[1], "stun1.l.google.com:19302");
         assert_eq!(stun_servers[2], "txt:stun.easytier.cn");
+    }
+
+    #[test]
+    fn test_network_config_source_toml_roundtrip() {
+        let config = TomlConfigLoader::default();
+        assert_eq!(config.get_network_config_source(), ConfigSource::User);
+
+        config.set_network_config_source(Some(ConfigSource::Webhook));
+        let dumped = config.dump();
+
+        assert!(dumped.contains("[source]"));
+        assert!(dumped.contains("source = \"webhook\""));
+
+        let loaded = TomlConfigLoader::new_from_str(&dumped).unwrap();
+        assert_eq!(loaded.get_network_config_source(), ConfigSource::Webhook);
+    }
+
+    #[test]
+    fn test_network_config_source_user_is_implicit() {
+        let config = TomlConfigLoader::default();
+        config.set_network_config_source(Some(ConfigSource::User));
+        let dumped = config.dump();
+
+        assert!(!dumped.contains("[source]"));
+
+        let loaded = TomlConfigLoader::new_from_str(&dumped).unwrap();
+        assert_eq!(loaded.get_network_config_source(), ConfigSource::User);
+
+        let explicit_user = TomlConfigLoader::new_from_str(
+            r#"
+[source]
+source = "user"
+"#,
+        )
+        .unwrap();
+        assert_eq!(
+            explicit_user.get_network_config_source(),
+            ConfigSource::User
+        );
+        assert!(!explicit_user.dump().contains("[source]"));
     }
 
     #[tokio::test]

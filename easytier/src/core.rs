@@ -813,7 +813,7 @@ impl NetworkOptions {
     fn can_merge(
         &self,
         cfg: &TomlConfigLoader,
-        source: ConfigSource,
+        source: ConfigFileSource,
         explicit_config_file_count: usize,
         config_dir_file_count: usize,
     ) -> bool {
@@ -821,7 +821,7 @@ impl NetworkOptions {
             return false;
         }
 
-        if source == ConfigSource::CliConfigFile
+        if source == ConfigFileSource::CliConfigFile
             && explicit_config_file_count == 1
             && config_dir_file_count == 0
         {
@@ -832,7 +832,7 @@ impl NetworkOptions {
             return false;
         };
 
-        if source == ConfigSource::ConfigDir {
+        if source == ConfigFileSource::ConfigDir {
             return cfg.get_network_identity().network_name == *network_name;
         }
 
@@ -1161,7 +1161,7 @@ impl NetworkOptions {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ConfigSource {
+enum ConfigFileSource {
     CliConfigFile,
     ConfigDir,
 }
@@ -1353,7 +1353,7 @@ async fn run_main(cli: Cli) -> anyhow::Result<()> {
     let mut config_files = if let Some(v) = cli.config_file {
         v.iter()
             .cloned()
-            .map(|path| (path, ConfigSource::CliConfigFile))
+            .map(|path| (path, ConfigFileSource::CliConfigFile))
             .collect()
     } else {
         vec![]
@@ -1376,7 +1376,7 @@ async fn run_main(cli: Cli) -> anyhow::Result<()> {
                 continue;
             }
             config_dir_file_count += 1;
-            config_files.push((path, ConfigSource::ConfigDir));
+            config_files.push((path, ConfigFileSource::ConfigDir));
         }
     }
     let config_file_count = config_files.len();

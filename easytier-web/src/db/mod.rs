@@ -3,6 +3,7 @@
 pub mod entity;
 
 use easytier::{
+    common::config::ConfigSource,
     launcher::NetworkConfig,
     rpc_service::remote_client::{ListNetworkProps, Storage},
 };
@@ -149,6 +150,7 @@ impl Storage<(UserIdInDb, Uuid), user_running_network_configs::Model, DbErr> for
         (user_id, device_id): (UserIdInDb, Uuid),
         network_inst_id: Uuid,
         network_config: NetworkConfig,
+        source: ConfigSource,
     ) -> Result<(), DbErr> {
         let txn = self.orm_db().begin().await?;
 
@@ -161,6 +163,7 @@ impl Storage<(UserIdInDb, Uuid), user_running_network_configs::Model, DbErr> for
         ])
         .update_columns([
             urnc::Column::NetworkConfig,
+            urnc::Column::Source,
             urnc::Column::Disabled,
             urnc::Column::UpdateTime,
         ])
@@ -172,6 +175,7 @@ impl Storage<(UserIdInDb, Uuid), user_running_network_configs::Model, DbErr> for
             network_config: sea_orm::Set(
                 serde_json::to_string(&network_config).map_err(|e| DbErr::Json(e.to_string()))?,
             ),
+            source: sea_orm::Set(source.as_str().to_string()),
             disabled: sea_orm::Set(false),
             create_time: sea_orm::Set(chrono::Local::now().fixed_offset()),
             update_time: sea_orm::Set(chrono::Local::now().fixed_offset()),
@@ -277,8 +281,12 @@ impl Storage<(UserIdInDb, Uuid), user_running_network_configs::Model, DbErr> for
 
 #[cfg(test)]
 mod tests {
-    use easytier::{proto::api::manage::NetworkConfig, rpc_service::remote_client::Storage};
-    use sea_orm::{ColumnTrait, EntityTrait, QueryFilter as _};
+    use easytier::{
+        common::config::ConfigSource,
+        proto::api::manage::NetworkConfig,
+        rpc_service::remote_client::{PersistentConfig, Storage},
+    };
+    use sea_orm::{ActiveModelTrait, ColumnTrait, EntityTrait, QueryFilter as _, Set};
 
     use crate::db::{Db, ListNetworkProps, entity::user_running_network_configs};
 
@@ -294,9 +302,14 @@ mod tests {
         let inst_id = uuid::Uuid::new_v4();
         let device_id = uuid::Uuid::new_v4();
 
-        db.insert_or_update_user_network_config((user_id, device_id), inst_id, network_config)
-            .await
-            .unwrap();
+        db.insert_or_update_user_network_config(
+            (user_id, device_id),
+            inst_id,
+            network_config,
+            ConfigSource::User,
+        )
+        .await
+        .unwrap();
 
         let result = user_running_network_configs::Entity::find()
             .filter(user_running_network_configs::Column::UserId.eq(user_id))
@@ -306,6 +319,7 @@ mod tests {
             .unwrap();
         println!("{:?}", result);
         assert_eq!(result.network_config, network_config_json);
+        assert_eq!(result.get_network_config_source(), ConfigSource::User);
 
         // overwrite the config
         let network_config = NetworkConfig {
@@ -313,9 +327,14 @@ mod tests {
             ..Default::default()
         };
         let network_config_json = serde_json::to_string(&network_config).unwrap();
-        db.insert_or_update_user_network_config((user_id, device_id), inst_id, network_config)
-            .await
-            .unwrap();
+        db.insert_or_update_user_network_config(
+            (user_id, device_id),
+            inst_id,
+            network_config,
+            ConfigSource::Webhook,
+        )
+        .await
+        .unwrap();
 
         let result2 = user_running_network_configs::Entity::find()
             .filter(user_running_network_configs::Column::UserId.eq(user_id))
@@ -325,6 +344,11 @@ mod tests {
             .unwrap();
         println!("device: {}, {:?}", device_id, result2);
         assert_eq!(result2.network_config, network_config_json);
+        assert_eq!(result2.get_network_config_source(), ConfigSource::Webhook);
+        assert_eq!(
+            result2.get_runtime_network_config_source(),
+            ConfigSource::Webhook
+        );
 
         assert_eq!(result.create_time, result2.create_time);
         assert_ne!(result.update_time, result2.update_time);
@@ -349,6 +373,45 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_legacy_network_config_defaults_to_user_runtime_source() {
+        let db = Db::memory_db().await;
+        let user_id = 1;
+        let inst_id = uuid::Uuid::new_v4();
+        let device_id = uuid::Uuid::new_v4();
+
+        user_running_network_configs::ActiveModel {
+            user_id: Set(user_id),
+            device_id: Set(device_id.to_string()),
+            network_instance_id: Set(inst_id.to_string()),
+            network_config: Set(serde_json::to_string(&NetworkConfig {
+                network_name: Some("legacy".to_string()),
+                ..Default::default()
+            })
+            .unwrap()),
+            source: Set("legacy".to_string()),
+            disabled: Set(false),
+            create_time: Set(sqlx::types::chrono::Local::now().fixed_offset()),
+            update_time: Set(sqlx::types::chrono::Local::now().fixed_offset()),
+            ..Default::default()
+        }
+        .insert(db.orm_db())
+        .await
+        .unwrap();
+
+        let result = user_running_network_configs::Entity::find()
+            .filter(user_running_network_configs::Column::UserId.eq(user_id))
+            .one(db.orm_db())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(result.get_network_config_source(), ConfigSource::User);
+        assert_eq!(
+            result.get_runtime_network_config_source(),
+            ConfigSource::User
+        );
+    }
+
+    #[tokio::test]
     async fn test_user_network_config_same_instance_id_is_scoped_by_device() {
         let db = Db::memory_db().await;
         let user_id = db.auto_create_user("user-1").await.unwrap().id;
@@ -363,6 +426,7 @@ mod tests {
                 network_name: Some("cfg-1".to_string()),
                 ..Default::default()
             },
+            ConfigSource::User,
         )
         .await
         .unwrap();
@@ -373,6 +437,7 @@ mod tests {
                 network_name: Some("cfg-2".to_string()),
                 ..Default::default()
             },
+            ConfigSource::User,
         )
         .await
         .unwrap();
