@@ -652,8 +652,6 @@ mod manager {
         Legacy,
     }
 
-    
-
     impl PersistedConfigSource {
         pub(super) fn from_runtime_source(source: ConfigSource) -> Self {
             match source {

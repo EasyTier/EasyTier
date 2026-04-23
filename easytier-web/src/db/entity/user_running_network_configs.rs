@@ -15,7 +15,7 @@ pub struct Model {
     pub user_id: i32,
     #[sea_orm(column_type = "Text")]
     pub device_id: String,
-    #[sea_orm(column_type = "Text", unique)]
+    #[sea_orm(column_type = "Text")]
     pub network_instance_id: String,
     #[sea_orm(column_type = "Text")]
     pub network_config: String,
