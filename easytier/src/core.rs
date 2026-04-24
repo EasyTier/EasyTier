@@ -1,12 +1,5 @@
 #![allow(dead_code)]
 
-use std::{
-    net::{IpAddr, SocketAddr},
-    path::PathBuf,
-    process::ExitCode,
-    sync::{Arc, atomic::AtomicBool},
-};
-
 use crate::{
     ShellType,
     common::{
@@ -30,6 +23,12 @@ use anyhow::Context;
 use cidr::IpCidr;
 use clap::{CommandFactory, Parser};
 use rust_i18n::t;
+use std::{
+    net::{IpAddr, SocketAddr},
+    path::PathBuf,
+    process::ExitCode,
+    sync::{Arc, atomic::AtomicBool},
+};
 use strum::VariantArray;
 use tokio::io::AsyncReadExt;
 
@@ -452,6 +451,15 @@ struct NetworkOptions {
 
     #[arg(
         long,
+        env = "ET_DISABLE_UPNP",
+        help = t!("core_clap.disable_upnp").to_string(),
+        num_args = 0..=1,
+        default_missing_value = "true"
+    )]
+    disable_upnp: Option<bool>,
+
+    #[arg(
+        long,
         env = "ET_RELAY_ALL_PEER_RPC",
         help = t!("core_clap.relay_all_peer_rpc").to_string(),
         num_args = 0..=1,
@@ -735,73 +743,100 @@ struct RpcPortalOptions {
 }
 
 impl Cli {
+    fn gen_listeners(addr: SocketAddr) -> impl Iterator<Item = String> {
+        let dynamic = addr.port() == 0;
+        IpScheme::VARIANTS.iter().map(move |proto| {
+            let mut addr = addr;
+            if !dynamic {
+                addr.set_port(addr.port() + proto.port_offset());
+            }
+            format!("{}://{}", proto, addr)
+        })
+    }
+
     fn parse_listeners(no_listener: bool, listeners: Vec<String>) -> anyhow::Result<Vec<String>> {
         if no_listener || listeners.is_empty() {
             return Ok(vec![]);
         }
 
-        if listeners.len() == 1
-            && let Ok(port) = listeners[0].parse::<u16>()
-        {
-            let listeners = IpScheme::VARIANTS
-                .iter()
-                .map(|proto| {
-                    format!(
-                        "{}://0.0.0.0:{}",
-                        proto,
-                        if port == 0 {
-                            0
-                        } else {
-                            port + proto.port_offset()
-                        }
-                    )
-                })
-                .collect();
-            return Ok(listeners);
+        let mut parsed = vec![];
+
+        for l in listeners.into_iter() {
+            if let Ok(port) = l.parse::<u16>() {
+                parsed.extend(Self::gen_listeners(SocketAddr::new(
+                    "0.0.0.0".parse()?,
+                    port,
+                )));
+                continue;
+            }
+
+            if let Ok(ip) = l.trim_matches(|c| c == '[' || c == ']').parse::<IpAddr>() {
+                parsed.extend(Self::gen_listeners(SocketAddr::new(ip, 11010)));
+                continue;
+            }
+
+            if let Ok(addr) = l.parse::<SocketAddr>() {
+                parsed.extend(Self::gen_listeners(addr));
+                continue;
+            }
+
+            let (scheme, rest) = l.split_once(':').unwrap_or((&l, ""));
+            let Ok(scheme) = scheme.parse::<IpScheme>() else {
+                anyhow::bail!("invalid listener: {}", l);
+            };
+
+            if rest.is_empty() {
+                parsed.push(format!(
+                    "{}://0.0.0.0:{}",
+                    scheme,
+                    11010 + scheme.port_offset()
+                ));
+                continue;
+            }
+
+            if let Ok(port) = rest.parse::<u16>() {
+                parsed.push(format!("{}://0.0.0.0:{}", scheme, port));
+                continue;
+            }
+
+            if !l.parse::<url::Url>()?.has_authority() {
+                anyhow::bail!("invalid listener: {}", l);
+            }
+            parsed.push(l);
         }
 
-        listeners
-            .into_iter()
-            .map(|l| {
-                let l = l
-                    .parse::<url::Url>()
-                    .or_else(|_| url::Url::parse(&format!("{}:", l)))?;
-
-                if l.has_authority() {
-                    return Ok(l.to_string());
-                }
-
-                let scheme: IpScheme = l.scheme().parse()?;
-                let port = {
-                    let port = l.path();
-                    if port.is_empty() {
-                        11010 + scheme.port_offset()
-                    } else {
-                        port.parse::<u16>()
-                            .with_context(|| format!("invalid port: {}", port))?
-                    }
-                };
-                Ok(format!("{}://0.0.0.0:{}", scheme, port))
-            })
-            .collect()
+        Ok(parsed)
     }
 }
 
 impl NetworkOptions {
-    fn can_merge(&self, cfg: &TomlConfigLoader, config_file_count: usize) -> bool {
+    fn can_merge(
+        &self,
+        cfg: &TomlConfigLoader,
+        source: ConfigFileSource,
+        explicit_config_file_count: usize,
+        config_dir_file_count: usize,
+    ) -> bool {
         if (*self) == NetworkOptions::default() {
             return false;
         }
-        if config_file_count == 1 {
+
+        if source == ConfigFileSource::CliConfigFile
+            && explicit_config_file_count == 1
+            && config_dir_file_count == 0
+        {
             return true;
         }
+
         let Some(network_name) = &self.network_name else {
             return false;
         };
-        if cfg.get_network_identity().network_name == *network_name {
-            return true;
+
+        if source == ConfigFileSource::ConfigDir {
+            return cfg.get_network_identity().network_name == *network_name;
         }
-        false
+
+        cfg.get_network_identity().network_name == *network_name
     }
 
     fn merge_into(&self, cfg: &TomlConfigLoader) -> anyhow::Result<()> {
@@ -1088,7 +1123,10 @@ impl NetworkOptions {
         f.enable_relay_foreign_network_quic = self
             .enable_relay_foreign_network_quic
             .unwrap_or(f.enable_relay_foreign_network_quic);
-        f.disable_sym_hole_punching = self.disable_sym_hole_punching.unwrap_or(false);
+        f.disable_sym_hole_punching = self
+            .disable_sym_hole_punching
+            .unwrap_or(f.disable_sym_hole_punching);
+        f.disable_upnp = self.disable_upnp.unwrap_or(f.disable_upnp);
         // Configure tld_dns_zone: use provided value if set
         if let Some(tld_dns_zone) = &self.tld_dns_zone {
             f.tld_dns_zone = tld_dns_zone.clone();
@@ -1120,6 +1158,12 @@ impl NetworkOptions {
         }
         Ok(())
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ConfigFileSource {
+    CliConfigFile,
+    ConfigDir,
 }
 
 impl LoggingConfigLoader for &LoggingOptions {
@@ -1304,8 +1348,13 @@ async fn run_main(cli: Cli) -> anyhow::Result<()> {
         None
     };
 
+    let explicit_config_file_count = cli.config_file.as_ref().map_or(0, |files| files.len());
+    let mut config_dir_file_count = 0;
     let mut config_files = if let Some(v) = cli.config_file {
-        v.clone()
+        v.iter()
+            .cloned()
+            .map(|path| (path, ConfigFileSource::CliConfigFile))
+            .collect()
     } else {
         vec![]
     };
@@ -1326,7 +1375,8 @@ async fn run_main(cli: Cli) -> anyhow::Result<()> {
             if ext != "toml" {
                 continue;
             }
-            config_files.push(path);
+            config_dir_file_count += 1;
+            config_files.push((path, ConfigFileSource::ConfigDir));
         }
     }
     let config_file_count = config_files.len();
@@ -1339,7 +1389,7 @@ async fn run_main(cli: Cli) -> anyhow::Result<()> {
             cli.network_options.network_name.is_some()
         }
     };
-    for config_file in config_files {
+    for (config_file, source) in config_files {
         let (cfg, mut control) = load_config_from_file(
             &config_file,
             cli.config_dir.as_ref(),
@@ -1347,7 +1397,12 @@ async fn run_main(cli: Cli) -> anyhow::Result<()> {
         )
         .await?;
 
-        if cli.network_options.can_merge(&cfg, config_file_count) {
+        if cli.network_options.can_merge(
+            &cfg,
+            source,
+            explicit_config_file_count,
+            config_dir_file_count,
+        ) {
             cli.network_options
                 .merge_into(&cfg)
                 .with_context(|| format!("failed to merge config from cli: {:?}", config_file))?;
@@ -1551,4 +1606,92 @@ async fn validate_config(cli: &Cli) -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_listeners() {
+        type IpSchemeMap = fn(&IpScheme) -> String;
+
+        let cases: [(&str, IpSchemeMap); _] = [
+            ("0", |s| format!("{}://0.0.0.0:0", s)),
+            ("11010", |s| {
+                format!("{}://0.0.0.0:{}", s, 11010 + s.port_offset())
+            }),
+            ("1.1.1.1", |s| {
+                format!("{}://1.1.1.1:{}", s, 11010 + s.port_offset())
+            }),
+            ("1.1.1.1:50000", |s| {
+                format!("{}://1.1.1.1:{}", s, 50000 + s.port_offset())
+            }),
+            ("[::1]", |s| {
+                format!("{}://[::1]:{}", s, 11010 + s.port_offset())
+            }),
+            ("[::1]:50000", |s| {
+                format!("{}://[::1]:{}", s, 50000 + s.port_offset())
+            }),
+        ];
+
+        for (input, output) in cases {
+            assert_eq!(
+                Cli::parse_listeners(false, vec![input.to_string()]).unwrap(),
+                IpScheme::VARIANTS.iter().map(output).collect::<Vec<_>>()
+            );
+        }
+
+        let input = cases.iter().map(|(i, _)| i.to_string()).collect::<Vec<_>>();
+        let output = cases
+            .iter()
+            .flat_map(|(_, o)| IpScheme::VARIANTS.iter().map(o))
+            .collect::<Vec<_>>();
+        assert_eq!(Cli::parse_listeners(false, input).unwrap(), output);
+
+        let cases: [(IpSchemeMap, IpSchemeMap); _] = [
+            (
+                |s| format!("{}", s),
+                |s| format!("{}://0.0.0.0:{}", s, 11010 + s.port_offset()),
+            ),
+            (
+                |s| format!("{}:50000", s),
+                |s| format!("{}://0.0.0.0:50000", s),
+            ),
+            (
+                |s| format!("{}://1.1.1.1:50000", s),
+                |s| format!("{}://1.1.1.1:50000", s),
+            ),
+        ];
+
+        for (input, output) in cases {
+            assert_eq!(
+                Cli::parse_listeners(
+                    false,
+                    IpScheme::VARIANTS.iter().map(input).collect::<Vec<_>>(),
+                )
+                .unwrap(),
+                IpScheme::VARIANTS.iter().map(output).collect::<Vec<_>>()
+            );
+        }
+
+        let input = cases
+            .iter()
+            .flat_map(|(i, _)| IpScheme::VARIANTS.iter().map(i))
+            .collect::<Vec<_>>();
+        let output = cases
+            .iter()
+            .flat_map(|(_, o)| IpScheme::VARIANTS.iter().map(o))
+            .collect::<Vec<_>>();
+        assert_eq!(Cli::parse_listeners(false, input).unwrap(), output);
+
+        let cases = ["tcp://[::1", "xxx", "tcp:/abc", "tcp:abc"];
+        for input in cases {
+            assert!(
+                Cli::parse_listeners(false, vec![input.to_string()]).is_err(),
+                "input: {}",
+                input
+            );
+        }
+    }
 }

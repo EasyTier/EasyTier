@@ -14,6 +14,74 @@ export interface SecureModeConfig {
   local_public_key?: string
 }
 
+export enum AclProtocol {
+  Unspecified = 0,
+  TCP = 1,
+  UDP = 2,
+  ICMP = 3,
+  ICMPv6 = 4,
+  Any = 5,
+}
+
+export enum AclAction {
+  Noop = 0,
+  Allow = 1,
+  Drop = 2,
+}
+
+export enum AclChainType {
+  UnspecifiedChain = 0,
+  Inbound = 1,
+  Outbound = 2,
+  Forward = 3,
+}
+
+export interface AclRule {
+  name: string
+  description: string
+  priority: number
+  enabled: boolean
+  protocol: AclProtocol
+  ports: string[]
+  source_ips: string[]
+  destination_ips: string[]
+  source_ports: string[]
+  action: AclAction
+  rate_limit: number
+  burst_limit: number
+  stateful: boolean
+  source_groups: string[]
+  destination_groups: string[]
+}
+
+export interface AclChain {
+  name: string
+  chain_type: AclChainType
+  description: string
+  enabled: boolean
+  rules: AclRule[]
+  default_action: AclAction
+}
+
+export interface GroupIdentity {
+  group_name: string
+  group_secret: string
+}
+
+export interface GroupInfo {
+  declares: GroupIdentity[]
+  members: string[]
+}
+
+export interface AclV1 {
+  chains: AclChain[]
+  group?: GroupInfo
+}
+
+export interface Acl {
+  acl_v1?: AclV1
+}
+
 export interface NetworkConfig {
   instance_id: string
 
@@ -87,6 +155,7 @@ export interface NetworkConfig {
   default_protocol?: string
 
   port_forwards: PortForwardConfig[]
+  acl?: Acl
 }
 
 export function DEFAULT_NETWORK_CONFIG(): NetworkConfig {
@@ -155,6 +224,15 @@ export function DEFAULT_NETWORK_CONFIG(): NetworkConfig {
     enable_private_mode: false,
     default_protocol: 'tcp',
     port_forwards: [],
+    acl: {
+      acl_v1: {
+        group: {
+          declares: [],
+          members: [],
+        },
+        chains: [],
+      },
+    },
   }
 }
 

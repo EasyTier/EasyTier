@@ -3,6 +3,7 @@ syntax = "proto3";
 import "common.proto";
 import "peer_rpc.proto";
 import "api_instance.proto";
+import "acl.proto";
 
 package api.manage;
 
@@ -10,6 +11,12 @@ enum NetworkingMethod {
   PublicServer = 0;
   Manual = 1;
   Standalone = 2;
+}
+
+enum ConfigSource {
+  ConfigSourceUnspecified = 0;
+  ConfigSourceUser = 1;
+  ConfigSourceWebhook = 2;
 }
 
 message NetworkConfig {
@@ -83,12 +90,13 @@ message NetworkConfig {
   optional bool disable_tcp_hole_punching = 54;
 
   common.SecureModeConfig secure_mode = 55;
-  reserved 56;
+  optional acl.Acl acl = 56;
   optional string credential_file = 57;
   optional bool lazy_p2p = 58;
   optional bool need_p2p = 59;
   optional uint64 instance_recv_bps_limit = 60;
-  optional string default_protocol = 61;
+  optional bool disable_upnp = 61;
+  optional string default_protocol = 62;
 }
 
 message PortForwardConfig {
@@ -131,6 +139,7 @@ message NetworkMeta {
   string network_name = 2;
   uint32 config_permission = 3;
   string instance_name = 4;
+  ConfigSource source = 5;
 }
 
 message ValidateConfigRequest { NetworkConfig config = 1; }
@@ -141,6 +150,7 @@ message RunNetworkInstanceRequest {
   common.UUID inst_id = 1;
   NetworkConfig config = 2;
   bool overwrite = 3;
+  ConfigSource source = 4;
 }
 
 message RunNetworkInstanceResponse { common.UUID inst_id = 1; }
@@ -167,7 +177,10 @@ message DeleteNetworkInstanceResponse {
 
 message GetNetworkInstanceConfigRequest { common.UUID inst_id = 1; }
 
-message GetNetworkInstanceConfigResponse { NetworkConfig config = 1; }
+message GetNetworkInstanceConfigResponse {
+  NetworkConfig config = 1;
+  ConfigSource source = 2;
+}
 
 message ListNetworkInstanceMetaRequest { repeated common.UUID inst_ids = 1; }
 

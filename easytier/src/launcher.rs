@@ -1,4 +1,6 @@
-use crate::common::config::{ConfigFileControl, PortForwardConfig, process_secure_mode_cfg};
+use crate::common::config::{
+    ConfigFileControl, ConfigSource, PortForwardConfig, process_secure_mode_cfg,
+};
 use crate::proto::api::{self, manage};
 use crate::proto::rpc_types::controller::BaseController;
 use crate::rpc_service::InstanceRpcService;
@@ -434,6 +436,10 @@ impl NetworkInstance {
         &self.config_file_control
     }
 
+    pub fn get_network_config_source(&self) -> ConfigSource {
+        self.config.get_network_config_source()
+    }
+
     pub fn get_latest_error_msg(&self) -> Option<String> {
         if let Some(launcher) = self.launcher.as_ref() {
             launcher.error_msg.read().unwrap().clone()
@@ -804,6 +810,10 @@ impl NetworkConfig {
             flags.disable_udp_hole_punching = disable_udp_hole_punching;
         }
 
+        if let Some(disable_upnp) = self.disable_upnp {
+            flags.disable_upnp = disable_upnp;
+        }
+
         if let Some(disable_sym_hole_punching) = self.disable_sym_hole_punching {
             flags.disable_sym_hole_punching = disable_sym_hole_punching;
         }
@@ -826,6 +836,12 @@ impl NetworkConfig {
 
         if let Some(encryption_algorithm) = self.encryption_algorithm.clone() {
             flags.encryption_algorithm = encryption_algorithm;
+        }
+
+        if let Some(acl) = self.acl.as_ref()
+            && !acl.is_empty()
+        {
+            cfg.set_acl(Some(acl.clone()));
         }
 
         if let Some(data_compress_algo) = self.data_compress_algo {
@@ -960,12 +976,15 @@ impl NetworkConfig {
         result.disable_encryption = Some(!flags.enable_encryption);
         result.disable_tcp_hole_punching = Some(flags.disable_tcp_hole_punching);
         result.disable_udp_hole_punching = Some(flags.disable_udp_hole_punching);
+        result.disable_upnp = Some(flags.disable_upnp);
         result.disable_sym_hole_punching = Some(flags.disable_sym_hole_punching);
         result.enable_magic_dns = Some(flags.accept_dns);
         result.mtu = Some(flags.mtu as i32);
         result.instance_recv_bps_limit =
             (flags.instance_recv_bps_limit != u64::MAX).then_some(flags.instance_recv_bps_limit);
         result.enable_private_mode = Some(flags.private_mode);
+
+        result.acl = config.get_acl();
 
         if flags.relay_network_whitelist == "*" {
             result.enable_relay_network_whitelist = Some(false);
@@ -1225,6 +1244,7 @@ mod tests {
                 flags.enable_encryption = rng.gen_bool(0.8);
                 flags.disable_tcp_hole_punching = rng.gen_bool(0.2);
                 flags.disable_udp_hole_punching = rng.gen_bool(0.2);
+                flags.disable_upnp = rng.gen_bool(0.2);
                 flags.accept_dns = rng.gen_bool(0.6);
                 flags.mtu = rng.gen_range(1200..1500);
                 flags.private_mode = rng.gen_bool(0.3);

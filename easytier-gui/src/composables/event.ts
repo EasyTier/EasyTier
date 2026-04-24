@@ -3,6 +3,11 @@ import { type } from "@tauri-apps/plugin-os";
 import { NetworkTypes } from "easytier-frontend-lib"
 import { Utils } from "easytier-frontend-lib";
 
+interface StoredGuiConfig {
+    config: NetworkTypes.NetworkConfig
+    source?: 'user' | 'webhook' | 'legacy'
+}
+
 const EVENTS = Object.freeze({
     SAVE_CONFIGS: 'save_configs',
     PRE_RUN_NETWORK_INSTANCE: 'pre_run_network_instance',
@@ -13,9 +18,15 @@ const EVENTS = Object.freeze({
     EVENT_LAGGED: 'event_lagged',
 });
 
-function onSaveConfigs(event: Event<NetworkTypes.NetworkConfig[]>) {
+function onSaveConfigs(event: Event<StoredGuiConfig[]>) {
     console.log(`Received event '${EVENTS.SAVE_CONFIGS}': ${event.payload}`);
-    localStorage.setItem('networkList', JSON.stringify(event.payload.map((config) => NetworkTypes.normalizeNetworkConfig(config))));
+    localStorage.setItem(
+        'networkList',
+        JSON.stringify(event.payload.map(({ config, source }) => ({
+            config: NetworkTypes.normalizeNetworkConfig(config),
+            source: source ?? 'legacy',
+        }))),
+    );
 }
 
 function normalizeInstanceIdPayload(payload: unknown): string {

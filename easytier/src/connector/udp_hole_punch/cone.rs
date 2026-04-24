@@ -7,7 +7,7 @@ use anyhow::Context;
 use tokio::net::UdpSocket;
 
 use crate::{
-    common::{PeerId, scoped_task::ScopedTask, stun::StunInfoCollectorTrait},
+    common::{PeerId, scoped_task::ScopedTask, upnp},
     connector::udp_hole_punch::common::{
         HOLE_PUNCH_PACKET_BODY_LEN, UdpSocketArray, try_connect_with_socket,
     },
@@ -117,23 +117,19 @@ impl PunchConeHoleClient {
             let _g = self.peer_mgr.get_global_ctx().net_ns.guard();
             Arc::new(UdpSocket::bind("0.0.0.0:0").await?)
         };
-
         let local_addr = local_socket
             .local_addr()
-            .with_context(|| "failed to get local port from udp array")?;
-        let local_port = local_addr.port();
-
-        drop(local_socket);
-        let local_mapped_addr = global_ctx
-            .get_stun_info_collector()
-            .get_udp_port_mapping(local_port)
-            .await
-            .with_context(|| "failed to get udp port mapping")?;
-
-        let local_socket = {
-            let _g = self.peer_mgr.get_global_ctx().net_ns.guard();
-            Arc::new(UdpSocket::bind(local_addr).await?)
-        };
+            .with_context(|| "failed to get local addr from udp punch socket")?;
+        let local_listener: url::Url = format!("udp://0.0.0.0:{}", local_addr.port())
+            .parse()
+            .unwrap();
+        let (local_mapped_addr, _local_port_mapping_lease) = upnp::resolve_udp_public_addr(
+            global_ctx.clone(),
+            &local_listener,
+            local_socket.clone(),
+        )
+        .await
+        .with_context(|| "failed to resolve udp public addr for cone hole punch")?;
 
         // client -> server: tell server the mapped port, server will return the mapped address of listening port.
         let rpc_stub = self
@@ -149,7 +145,10 @@ impl PunchConeHoleClient {
         let resp = rpc_stub
             .select_punch_listener(
                 BaseController::default(),
-                SelectPunchListenerRequest { force_new: false },
+                SelectPunchListenerRequest {
+                    force_new: false,
+                    prefer_port_mapping: true,
+                },
             )
             .await;
 

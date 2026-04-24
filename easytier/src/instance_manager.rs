@@ -4,7 +4,7 @@ use std::{collections::BTreeMap, path::PathBuf, sync::Arc};
 
 use crate::{
     common::{
-        config::{ConfigFileControl, ConfigLoader, TomlConfigLoader},
+        config::{ConfigFileControl, ConfigLoader, ConfigSource, TomlConfigLoader},
         global_ctx::{EventBusSubscriber, GlobalCtxEvent},
         log,
         scoped_task::ScopedTask,
@@ -217,6 +217,15 @@ impl NetworkInstanceManager {
             .map(|instance| instance.value().get_config_file_control().clone())
     }
 
+    pub fn get_instance_network_config_source(
+        &self,
+        instance_id: &uuid::Uuid,
+    ) -> Option<ConfigSource> {
+        self.instance_map
+            .get(instance_id)
+            .map(|instance| instance.value().get_network_config_source())
+    }
+
     pub fn get_instance_service(
         &self,
         instance_id: &uuid::Uuid,
@@ -353,6 +362,21 @@ fn handle_event(
 
                     GlobalCtxEvent::ConnectionError(local, remote, err) => {
                         event!(info, category: "CONNECTION", local, remote, err, "[{}] connection error", instance_id);
+                    }
+
+                    GlobalCtxEvent::ListenerPortMappingEstablished {
+                        local_listener,
+                        mapped_listener,
+                        backend,
+                    } => {
+                        event!(
+                            info,
+                            %local_listener,
+                            %mapped_listener,
+                            backend,
+                            "[{}] listener port mapping established",
+                            instance_id
+                        );
                     }
 
                     GlobalCtxEvent::TunDeviceReady(dev) => {

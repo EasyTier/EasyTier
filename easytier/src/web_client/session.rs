@@ -93,6 +93,7 @@ impl Session {
                     hostname: hostname.clone(),
                     report_time: chrono::Local::now().to_rfc3339(),
                     device_os: Some(device_os.clone()),
+                    support_config_source: true,
 
                     running_network_instances: controller
                         .list_network_instance_ids()

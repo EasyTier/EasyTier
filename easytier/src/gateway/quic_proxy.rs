@@ -611,6 +611,11 @@ impl QuicStreamReceiver {
                 }
 
                 _ = self.tasks.join_next(), if !self.tasks.is_empty() => {}
+
+                else => {
+                    info!("quic stream receiver endpoint closed, exiting");
+                    break;
+                }
             }
         }
     }

@@ -142,18 +142,19 @@ message GetIpListResponse {
   repeated common.Url listeners = 5;
 }
 
-message SendV6HolePunchPacketRequest {
+message SendUdpHolePunchPacketRequest {
   common.SocketAddr connector_addr = 1;
   uint32 listener_port = 2;
 }
 
 service DirectConnectorRpc {
   rpc GetIpList(GetIpListRequest) returns (GetIpListResponse);
-  rpc SendV6HolePunchPacket(SendV6HolePunchPacketRequest) returns (common.Void);
+  rpc SendUdpHolePunchPacket(SendUdpHolePunchPacketRequest) returns (common.Void);
 }
 
 message SelectPunchListenerRequest {
   bool force_new = 1;
+  bool prefer_port_mapping = 2;
 }
 
 message SelectPunchListenerResponse {

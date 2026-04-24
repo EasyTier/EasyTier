@@ -126,7 +126,7 @@ impl WebClient {
                 }
             };
 
-            if support_encryption {
+            if support_encryption && security::web_secure_tunnel_supported() {
                 log::info!("Server supports encryption, reconnecting with secure tunnel");
                 drop(session);
 
@@ -157,6 +157,23 @@ impl WebClient {
                 session.wait().await;
                 connected.store(false, Ordering::Release);
                 continue;
+            }
+
+            if support_encryption {
+                if secure_mode {
+                    connected.store(false, Ordering::Release);
+                    let wait = 1;
+                    log::warn!(
+                        "secure-mode enabled but local build lacks aes-gcm support for web secure tunnel, retrying in {} seconds...",
+                        wait
+                    );
+                    tokio::time::sleep(std::time::Duration::from_secs(wait)).await;
+                    continue;
+                }
+
+                log::warn!(
+                    "Server supports encryption but local build lacks aes-gcm support for web secure tunnel, falling back to legacy tunnel"
+                );
             }
 
             if secure_mode {

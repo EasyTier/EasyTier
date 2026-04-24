@@ -3,7 +3,7 @@ name = "easytier"
 description = "A full meshed p2p VPN, connecting all your devices in one network with one command."
 homepage = "https://github.com/EasyTier/EasyTier"
 repository = "https://github.com/EasyTier/EasyTier"
-version = "2.6.0"
+version = "2.6.1"
 edition.workspace = true
 rust-version.workspace = true
 authors = ["kkrainbow"]
@@ -252,6 +252,8 @@ shellexpand = "3.1.1"
 
 # for fake tcp
 flume = { version = "0.12", optional = true }
+igd-next = { version = "0.17.0", features = ["aio_tokio"] }
+natpmp = "0.5.0"
 
 [target.'cfg(any(target_os = "linux", target_os = "macos", target_os = "windows", target_os = "freebsd"))'.dependencies]
 machine-uid = "0.5.3"
