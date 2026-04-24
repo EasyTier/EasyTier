@@ -162,14 +162,10 @@ where
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = unsafe { self.get_unchecked_mut() };
         let context = this.guard.deref_mut();
-        let poll = context
-            .task
-            .as_mut()
-            .expect("polled after completion")
-            .as_mut()
-            .poll(cx);
-        if poll.is_ready() {
-            context.task.take();
+        let mut task = context.task.take().expect("polled after completion");
+        let poll = task.as_mut().poll(cx);
+        if poll.is_pending() {
+            context.task = Some(task);
         }
         poll
     }
