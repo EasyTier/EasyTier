@@ -6,15 +6,16 @@ use cidr::{Ipv4Inet, Ipv6Inet};
 use std::{
     io,
     net::{Ipv4Addr, Ipv6Addr},
-    ptr::null_mut,
 };
-use windows_sys::Win32::{
+use windows::Win32::NetworkManagement::IpHelper::INTERNAL_IF_OPER_STATUS;
+use windows::Win32::{
     Foundation::NO_ERROR,
     NetworkManagement::IpHelper::{GetIfEntry, MIB_IFROW, SetIfEntry},
     System::Diagnostics::Debug::{
         FORMAT_MESSAGE_FROM_SYSTEM, FORMAT_MESSAGE_IGNORE_INSERTS, FormatMessageW,
     },
 };
+use windows::core::PWSTR;
 use winreg::{
     RegKey,
     enums::{HKEY_LOCAL_MACHINE, KEY_READ, KEY_WRITE},
@@ -32,12 +33,12 @@ fn format_win_error(error: u32) -> String {
     unsafe {
         FormatMessageW(
             flags,
-            null_mut(),
+            None,
             error,
             0,
-            buffer.as_mut_ptr(),
+            PWSTR(buffer.as_mut_ptr()),
             size,
-            null_mut(),
+            None,
         );
     }
     let str_end = buffer.iter().position(|&b| b == 0).unwrap_or(buffer.len());
@@ -100,7 +101,7 @@ impl WindowsIfConfiger {
                 dwPhysAddrLen: 0,
                 bPhysAddr: [0; 8],
                 dwAdminStatus: if up { 1 } else { 2 }, // 1 = up, 2 = down
-                dwOperStatus: 0,
+                dwOperStatus: INTERNAL_IF_OPER_STATUS(0),
                 dwLastChange: 0,
                 dwInOctets: 0,
                 dwInUcastPkts: 0,
@@ -118,8 +119,8 @@ impl WindowsIfConfiger {
                 bDescr: [0; 256],
             };
 
-            if GetIfEntry(&mut if_row) == NO_ERROR {
-                if SetIfEntry(&if_row) == NO_ERROR {
+            if GetIfEntry(&mut if_row) == NO_ERROR.0 {
+                if SetIfEntry(&if_row) == NO_ERROR.0 {
                     Ok(())
                 } else {
                     Err(anyhow::anyhow!("Failed to set interface status").into())

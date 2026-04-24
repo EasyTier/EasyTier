@@ -274,11 +274,15 @@ windivert = { git = "https://github.com/EasyTier/windivert-rust.git", rev = "adc
 ] }
 
 [target.'cfg(windows)'.dependencies]
-windows = { version = "0.52.0", features = [
+windows = { version = "0.62.2", features = [
     "Win32_Foundation",
+    "Win32_NetworkManagement_IpHelper",
+    "Win32_NetworkManagement_Ndis",
     "Win32_NetworkManagement_WindowsFirewall",
-    "Win32_System_Com",
     "Win32_Networking",
+    "Win32_System_Com",
+    "Win32_System_Diagnostics",
+    "Win32_System_Diagnostics_Debug",
     "Win32_System_Ole",
     "Win32_System_Variant",
     "Win32_Networking_WinSock",
@@ -287,14 +291,6 @@ windows = { version = "0.52.0", features = [
 encoding = "0.2"
 winreg = "0.52"
 windows-service = "0.7.0"
-windows-sys = { version = "0.52", features = [
-    "Win32_NetworkManagement_IpHelper",
-    "Win32_NetworkManagement_Ndis",
-    "Win32_Networking_WinSock",
-    "Win32_Foundation",
-    "Win32_System_Diagnostics",
-    "Win32_System_Diagnostics_Debug",
-] }
 winapi = { version = "0.3.9", features = ["impl-default"] }
 
 [target.'cfg(not(windows))'.dependencies]
