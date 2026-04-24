@@ -83,6 +83,11 @@ impl<Output> Future for CancellableTask<Output> {
 
 // region DetachableTask
 
+/// A pinned, heap-allocated task.
+///
+/// **Why Box?** Heap allocation is required because if the task detaches,
+/// it outlives the current stack frame. `Pin<Box<_>>` ensures its memory address
+/// remains completely stable during and after the transfer.
 type BoxTask<Task> = Pin<Box<Task>>;
 
 struct DetachableTaskContext<Spawner, Task> {
@@ -93,6 +98,23 @@ type DetachableTaskGuardHelper<Context> = ContextGuard<false, Context, fn(Contex
 type DetachableTaskGuard<Spawner, Task> =
     DetachableTaskGuardHelper<DetachableTaskContext<Spawner, Task>>;
 
+/// A task wrapper that executes inline but automatically detaches to a background spawner
+/// if the current execution context is interrupted or dropped.
+///
+/// `DetachableTask` ensures anti-cancellation. If the outer future is dropped (e.g., due to
+/// a timeout or a `select!` branch failing), the underlying unfinished task is seamlessly
+/// transferred to a background executor via an RAII guard.
+///
+/// # Advantages over `tokio::spawn` + `.await JoinHandle`
+///
+/// 1. **Zero Initial Scheduling Overhead**: Prioritizes inline execution. If the task
+///    completes before being interrupted, it entirely bypasses the runtime's scheduling queue,
+///    eliminating queuing latency and context-switching CPU costs. Spawning is strictly a fallback.
+///
+/// 2. **Context Locality**: Before detachment, the task is polled directly by the caller's thread.
+///    This implicitly preserves the current execution context, including thread-local storage (TLS),
+///    Tokio `task_local!` variables, and `tracing` spans, which would otherwise be immediately
+///    lost or require explicit propagation across task boundaries.
 pub struct DetachableTask<Spawner, Task> {
     guard: DetachableTaskGuard<Spawner, Task>,
 }
@@ -160,6 +182,10 @@ where
     type Output = Task::Output;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        // SAFETY:
+        // 1. We only access the outer struct's unpinned fields.
+        // 2. The inner task remains securely pinned on the heap via `BoxTask<Task>`.
+        // 3. We never expose a mutable, unpinned reference to the underlying task.
         let this = unsafe { self.get_unchecked_mut() };
         let context = this.guard.deref_mut();
         let mut task = context.task.take().expect("polled after completion");
