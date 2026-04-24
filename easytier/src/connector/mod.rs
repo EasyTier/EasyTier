@@ -100,7 +100,11 @@ pub async fn create_connector_by_url(
         .map_err(|_| TunnelError::InvalidProtocol(url.scheme().to_owned()))?;
     let mut connector: Box<dyn TunnelConnector + 'static> = match scheme {
         TunnelScheme::Ip(scheme) => {
-            let dst_addr = SocketAddr::from_url(url.clone(), ip_version).await?;
+            let bind_device_dst_addr = if global_ctx.config.get_flags().bind_device {
+                Some(SocketAddr::from_url(url.clone(), ip_version).await?)
+            } else {
+                None
+            };
             let mut connector: Box<dyn TunnelConnector> = match scheme {
                 IpScheme::Tcp => TcpTunnelConnector::new(url).boxed(),
                 IpScheme::Udp => UdpTunnelConnector::new(url).boxed(),
@@ -125,7 +129,7 @@ pub async fn create_connector_by_url(
                 #[cfg(feature = "faketcp")]
                 IpScheme::FakeTcp => tunnel::fake_tcp::FakeTcpTunnelConnector::new(url).boxed(),
             };
-            if global_ctx.config.get_flags().bind_device {
+            if let Some(dst_addr) = bind_device_dst_addr {
                 set_bind_addr_for_peer_connector(
                     &mut connector,
                     dst_addr.is_ipv4(),
