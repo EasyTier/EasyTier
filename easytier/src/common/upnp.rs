@@ -5,6 +5,9 @@ use std::{
     time::Duration,
 };
 
+#[cfg(test)]
+use std::sync::atomic::{AtomicUsize, Ordering};
+
 use anyhow::{Context, anyhow, bail};
 use igd_next::{
     AddAnyPortError, PortMappingProtocol, SearchOptions,
@@ -34,6 +37,19 @@ const PORT_MAPPING_BACKEND_NAT_PMP: &str = "nat-pmp";
 const PORT_MAPPING_BACKEND_IGD: &str = "igd";
 
 type TokioGateway = Gateway<Tokio>;
+
+#[cfg(test)]
+static UDP_PORT_MAPPING_ATTEMPTS: AtomicUsize = AtomicUsize::new(0);
+
+#[cfg(test)]
+pub(crate) fn reset_udp_port_mapping_attempts_for_test() {
+    UDP_PORT_MAPPING_ATTEMPTS.store(0, Ordering::Relaxed);
+}
+
+#[cfg(test)]
+pub(crate) fn udp_port_mapping_attempts_for_test() -> usize {
+    UDP_PORT_MAPPING_ATTEMPTS.load(Ordering::Relaxed)
+}
 
 enum PortMappingBackend {
     NatPmp { gateway: Ipv4Addr },
@@ -261,6 +277,9 @@ async fn try_start_udp_port_mapping(
     if global_ctx.get_flags().disable_upnp || !should_map_udp_listener(local_listener) {
         return Ok(None);
     }
+
+    #[cfg(test)]
+    UDP_PORT_MAPPING_ATTEMPTS.fetch_add(1, Ordering::Relaxed);
 
     let mapping = discover_udp_port_mapping(global_ctx.clone(), local_listener.clone()).await?;
     tracing::info!(
