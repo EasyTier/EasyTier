@@ -295,4 +295,43 @@ mod tests {
         assert_eq!(detached_result, 21);
         assert_eq!(spawn_count.load(Ordering::SeqCst), 1);
     }
+
+    #[tokio::test]
+    async fn panic_during_inline_poll_does_not_detach_on_drop() {
+        struct PanicOnPollFuture {
+            poll_count: Arc<AtomicUsize>,
+        }
+
+        impl Future for PanicOnPollFuture {
+            type Output = ();
+
+            fn poll(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Self::Output> {
+                self.poll_count.fetch_add(1, Ordering::SeqCst);
+                panic!("panic during inline poll")
+            }
+        }
+
+        let poll_count = Arc::new(AtomicUsize::new(0));
+        let detach_count = Arc::new(AtomicUsize::new(0));
+
+        let task = {
+            let detach_count = detach_count.clone();
+            DetachableTask::with_spawner(
+                move |_| {
+                    detach_count.fetch_add(1, Ordering::SeqCst);
+                },
+                PanicOnPollFuture {
+                    poll_count: poll_count.clone(),
+                },
+            )
+        };
+
+        let err = tokio::spawn(task.into_future())
+            .await
+            .expect_err("inline poll panic should propagate");
+
+        assert!(err.is_panic());
+        assert_eq!(poll_count.load(Ordering::SeqCst), 1);
+        assert_eq!(detach_count.load(Ordering::SeqCst), 0);
+    }
 }
