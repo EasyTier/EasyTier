@@ -113,16 +113,7 @@ impl<const ASYNC: bool, Context, Guard: CallableGuard<ASYNC, Context>> Drop
     for ContextGuard<ASYNC, Context, Guard>
 {
     fn drop(&mut self) {
-        if let Err(error) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let _ = unsafe { self.call() };
-        })) {
-            let msg = error
-                .downcast_ref::<String>()
-                .map(String::as_str)
-                .or_else(|| error.downcast_ref::<&str>().copied())
-                .unwrap_or("<unknown panic payload>");
-            tracing::error!(%msg, "ContextGuard panicked during drop");
-        }
+        let _: Guard::Output = unsafe { self.call() };
     }
 }
 
