@@ -1,3 +1,31 @@
+//! # Guard Module Utilities
+//!
+//! This module provides mechanisms for scope-based resource management and deferred execution.
+//!
+//! ### ⚠️ Critical Usage Note: Diverging Expressions
+//!
+//! Do not use "naked" diverging expressions—such as `panic!`, `todo!`, or `loop {}`—as
+//! the sole content of sync guard closure. This prevents the compiler from
+//! distinguishing between synchronous (`ASYNC = false`) and asynchronous
+//! (`ASYNC = true`) implementations, leading to a type inference error (E0277).
+//!
+//! ### Technical Context
+//!
+//! The `!` (Never Type) is a bottom type that can be coerced into any other type.
+//! Because it satisfies both the `()` requirement for sync guards and the `Future`
+//! requirement for async guards, the compiler encounters an inference deadlock.
+//!
+//! ### Workaround
+//!
+//! For macros like `guard!` or `guarded!`, force the closure to resolve to `()`
+//! by explicitly setting the guard to `sync`:
+//!
+//! ```rust
+//! let _g = guard!([val] sync {
+//!     panic!("critical failure");
+//! });
+//! ```
+
 use crate::utils::task::{DetachableTask, TaskSpawner};
 use std::fmt::Debug;
 use std::mem::ManuallyDrop;
@@ -19,10 +47,11 @@ where
     }
 }
 
-impl<Context, Guard, Task> CallableGuard<true, Context> for Guard
+impl<Context, Guard, Task, _R> CallableGuard<true, Context> for Guard
 where
     Guard: FnOnce(Context) -> Task + Send + 'static,
-    Task: Future<Output = ()> + Send + 'static,
+    Task: Future<Output = _R> + Send + 'static,
+    _R: Send + 'static,
 {
     type Output = DetachableTask<TaskSpawner<Task>, Task>;
 
@@ -72,6 +101,11 @@ impl<const ASYNC: bool, Context: Debug, Guard: CallableGuard<ASYNC, Context>> De
 impl<const ASYNC: bool, Context, Guard: CallableGuard<ASYNC, Context>>
     ContextGuard<ASYNC, Context, Guard>
 {
+    /// Creates a new `ContextGuard`.
+    ///
+    /// **Note on generics:** The seemingly unused `_R` generic parameter and the
+    /// `Guard: FnOnce(Context) -> _R` trait bound are intentionally included.
+    /// They act as a hint to help the compiler infer closure types.
     pub fn new<_R>(context: Context, guard: Guard) -> Self
     where
         Guard: FnOnce(Context) -> _R,
@@ -272,6 +306,11 @@ macro_rules! __guarded {
     };
 }
 
+/// Creates a [`ContextGuard`] object, binding it to a variable with the specified name (e.g., `_guard`).
+/// Context variables specified in the macro invocation are available within and after the guard body.
+///
+/// **Note:** For usage with `panic!` or `loop`, see the [module-level documentation](self)
+/// regarding type inference deadlocks.
 #[macro_export]
 macro_rules! guarded {
     ( $($tt:tt)* ) => {
@@ -279,6 +318,11 @@ macro_rules! guarded {
     };
 }
 
+/// Creates a [`ContextGuard`] object, without binding it to a variable.
+/// Context variables specified in the macro invocation are available within the guard body.
+///
+/// **Note:** For usage with `panic!` or `loop`, see the [module-level documentation](self)
+/// regarding type inference deadlocks.
 #[macro_export]
 macro_rules! guard {
     ( $($tt:tt)* ) => {
@@ -288,6 +332,10 @@ macro_rules! guard {
 
 // endregion
 
+/// Alias for [`guarded!`].
+///
+/// **Note:** For usage with `panic!` or `loop`, see the [module-level documentation](self)
+/// regarding type inference deadlocks.
 #[macro_export]
 macro_rules! defer {
     ( $($tt:tt)* ) => {
