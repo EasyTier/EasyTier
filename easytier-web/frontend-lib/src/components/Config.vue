@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { AutoComplete, Button, Checkbox, Dialog, Divider, InputNumber, InputText, Panel, Password, SelectButton, ToggleButton } from 'primevue'
+import { AutoComplete, Button, Checkbox, Dialog, Divider, InputNumber, InputText, Panel, Password, SelectButton, ToggleButton, Dropdown } from 'primevue'
 import InputGroup from 'primevue/inputgroup'
 import InputGroupAddon from 'primevue/inputgroupaddon'
 import {
@@ -302,7 +302,7 @@ watch(() => curNetwork.value, syncNormalizedNetwork, { immediate: true, deep: fa
                     <label for="default_protocol">{{ t('default_protocol') }}</label>
                     <span class="pi pi-question-circle ml-2 self-center" v-tooltip="t('default_protocol_help')"></span>
                   </div>
-                  <Dropdown id="default_protocol" v-model="curNetwork.default_protocol" :options="Object.keys(protos)" 
+                  <Dropdown id="default_protocol" v-model="curNetwork.default_protocol" :options="Object.keys(protos)"
                     placeholder="Select protocol" class="w-full" />
                 </div>
               </div>
