@@ -497,7 +497,7 @@ watch(() => curNetwork.value, syncNormalizedNetwork, { immediate: true, deep: fa
             </div>
             <div v-else class="flex justify-center p-4">
               <Button :label="t('acl.enabled')"
-                @click="curNetwork.acl = { acl_v1: { chains: [], group: { declares: [], members: [] } } }" />
+                @click="curNetwork.acl = { acl_v1: { chains: [], group: { declares: [], members: [] }, route_distance: { rules: [], default_distance: 1 } } }" />
             </div>
           </Panel>
 

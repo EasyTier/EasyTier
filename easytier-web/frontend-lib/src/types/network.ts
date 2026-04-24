@@ -73,9 +73,25 @@ export interface GroupInfo {
   members: string[]
 }
 
+export interface RouteDistanceRule {
+  name: string
+  priority: number
+  enabled: boolean
+  distance: number
+  destination_ips: string[]
+  destination_groups: string[]
+  foreign_node?: boolean
+}
+
+export interface RouteDistanceConfig {
+  rules: RouteDistanceRule[]
+  default_distance: number
+}
+
 export interface AclV1 {
   chains: AclChain[]
   group?: GroupInfo
+  route_distance?: RouteDistanceConfig
 }
 
 export interface Acl {
@@ -228,6 +244,10 @@ export function DEFAULT_NETWORK_CONFIG(): NetworkConfig {
           members: [],
         },
         chains: [],
+        route_distance: {
+          rules: [],
+          default_distance: 1,
+        },
       },
     },
   }

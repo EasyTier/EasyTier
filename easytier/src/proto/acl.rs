@@ -12,13 +12,24 @@ impl AclV1 {
     pub fn is_empty(&self) -> bool {
         let has_chains = !self.chains.is_empty();
         let has_groups = self.group.as_ref().map(|g| !g.is_empty()).unwrap_or(false);
-        !has_chains && !has_groups
+        let has_route_distance = self
+            .route_distance
+            .as_ref()
+            .map(|r| !r.is_empty())
+            .unwrap_or(false);
+        !has_chains && !has_groups && !has_route_distance
     }
 }
 
 impl GroupInfo {
     pub fn is_empty(&self) -> bool {
         self.declares.is_empty() && self.members.is_empty()
+    }
+}
+
+impl RouteDistanceConfig {
+    pub fn is_empty(&self) -> bool {
+        self.rules.is_empty() && self.default_distance <= 1
     }
 }
 

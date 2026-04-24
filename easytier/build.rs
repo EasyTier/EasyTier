@@ -182,6 +182,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .extern_path(".google.protobuf.Value", "::prost_wkt_types::Value")
         .file_descriptor_set_path(&descriptor_file)
         .protoc_arg("--experimental_allow_proto3_optional")
+        .type_attribute("acl.RouteDistanceRule", "#[derive(Hash)]")
+        .type_attribute("acl.RouteDistanceConfig", "#[derive(Hash)]")
         .type_attribute("peer_rpc.DirectConnectedPeerInfo", "#[derive(Hash)]")
         .type_attribute("peer_rpc.PeerInfoForGlobalMap", "#[derive(Hash)]")
         .type_attribute("peer_rpc.ForeignNetworkRouteInfoKey", "#[derive(Hash, Eq)]")

@@ -5,6 +5,7 @@ import { useI18n } from 'vue-i18n'
 import { Acl, AclAction, AclChainType } from '../../types/network'
 import AclChainEditor from './AclChainEditor.vue'
 import AclGroupEditor from './AclGroupEditor.vue'
+import AclRouteDistanceEditor from './AclRouteDistanceEditor.vue'
 
 const acl = defineModel<Acl>({ required: true })
 
@@ -21,7 +22,11 @@ const addMenuModel = ref([
 
 function addChain(type: AclChainType) {
   if (!acl.value.acl_v1) {
-    acl.value.acl_v1 = { chains: [], group: { declares: [], members: [] } }
+    acl.value.acl_v1 = {
+      chains: [],
+      group: { declares: [], members: [] },
+      route_distance: { rules: [], default_distance: 1 },
+    }
   }
 
   let defaultName = ''
@@ -84,6 +89,7 @@ const tabs = computed(() => {
   }
 
   result.push({ type: 'groups', label: t('acl.groups'), index: result.length })
+  result.push({ type: 'route-distance', label: t('acl.route_distance.title'), index: result.length })
   return result
 })
 </script>
@@ -140,8 +146,19 @@ const tabs = computed(() => {
             </template>
             <div v-else class="flex justify-center p-4">
               <Button :label="t('acl.enabled')"
-                @click="acl.acl_v1 = { chains: [], group: { declares: [], members: [] } }" />
+                @click="acl.acl_v1 = { chains: [], group: { declares: [], members: [] }, route_distance: { rules: [], default_distance: 1 } }" />
             </div>
+          </div>
+
+          <div v-if="tab.type === 'route-distance'" class="py-4">
+            <template v-if="acl.acl_v1">
+              <AclRouteDistanceEditor v-if="acl.acl_v1.route_distance" v-model="acl.acl_v1.route_distance"
+                :group-names="groupNames" />
+              <div v-else class="flex justify-center p-4">
+                <Button :label="t('acl.route_distance.enabled')"
+                  @click="acl.acl_v1.route_distance = { rules: [], default_distance: 1 }" />
+              </div>
+            </template>
           </div>
         </TabPanel>
       </TabPanels>
