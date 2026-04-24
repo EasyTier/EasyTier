@@ -294,3 +294,297 @@ macro_rules! defer {
         $crate::guarded! { $($tt)* }
     };
 }
+
+#[cfg(test)]
+mod tests {
+    use std::panic::catch_unwind;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::Duration;
+    use tokio::sync::oneshot;
+
+    #[test]
+    fn trigger_sync_executes_once() {
+        let called = Arc::new(AtomicUsize::new(0));
+        let observed = Arc::new(AtomicUsize::new(0));
+
+        let value = 7usize;
+        let guard = {
+            let called = called.clone();
+            let observed = observed.clone();
+            crate::guard!(move [value] {
+                called.fetch_add(1, Ordering::SeqCst);
+                observed.store(value, Ordering::SeqCst);
+            })
+        };
+
+        guard.trigger();
+
+        assert_eq!(called.load(Ordering::SeqCst), 1);
+        assert_eq!(observed.load(Ordering::SeqCst), 7);
+    }
+
+    #[test]
+    fn defuse_sync_returns_context_without_running_guard() {
+        let called = Arc::new(AtomicUsize::new(0));
+
+        let value = String::from("hello");
+        let guard = {
+            let called = called.clone();
+            crate::guard!(move [mut value] {
+                value.push_str(" world");
+                called.fetch_add(1, Ordering::SeqCst);
+            })
+        };
+
+        let context = guard.defuse();
+        assert_eq!(context, "hello");
+        assert_eq!(called.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn drop_sync_triggers_guard() {
+        let called = Arc::new(AtomicUsize::new(0));
+
+        {
+            let called = called.clone();
+            crate::guarded!([called] {
+                called.fetch_add(1, Ordering::SeqCst);
+            });
+        }
+
+        assert_eq!(called.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn drop_propagates_guard_panic() {
+        let dropped = catch_unwind(|| {
+            guarded! {
+                sync {
+                    panic!("boom");
+                }
+            }
+        });
+
+        assert!(dropped.is_err());
+    }
+
+    #[tokio::test]
+    async fn trigger_async_returns_runnable_task() {
+        let called = Arc::new(AtomicUsize::new(0));
+
+        let value = 5usize;
+        let guard = {
+            let called = called.clone();
+            crate::guard!(move [value] async move {
+                called.fetch_add(value, Ordering::SeqCst);
+            })
+        };
+        let task = guard.trigger();
+        task.await;
+
+        assert_eq!(called.load(Ordering::SeqCst), 5);
+    }
+
+    #[tokio::test]
+    async fn drop_async_detaches_task() {
+        let (tx, rx) = oneshot::channel();
+
+        {
+            let mut tx = Some(tx);
+            let value = 9usize;
+            let _guard = crate::guard!(move [value] {
+                let tx = tx.take();
+                async move {
+                        if let Some(tx) = tx {
+                            let _ = tx.send(value);
+                        }
+                    }
+            });
+        }
+
+        let value = tokio::time::timeout(Duration::from_secs(1), rx)
+            .await
+            .expect("detached task should run")
+            .expect("detached task should send value");
+        assert_eq!(value, 9);
+    }
+
+    #[tokio::test]
+    async fn defuse_async_does_not_execute() {
+        let called = Arc::new(AtomicUsize::new(0));
+
+        let value = 11usize;
+        let guard = {
+            let called = called.clone();
+            crate::guard!(move [value] async move {
+                called.fetch_add(value, Ordering::SeqCst);
+            })
+        };
+
+        let context = guard.defuse();
+        assert_eq!(context, 11);
+
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert_eq!(called.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn guarded_named_mut_binding_updates_context_before_drop() {
+        let committed = Arc::new(AtomicUsize::new(0));
+
+        {
+            let value = 1usize;
+            let step = 2usize;
+            let committed = committed.clone();
+
+            crate::guarded!(scope_guard => [mut value, step] {
+                committed.store(value + step, Ordering::SeqCst);
+            });
+
+            *value += 10;
+            assert_eq!(*value, 11);
+            assert_eq!(*step, 2);
+
+            drop(scope_guard);
+        }
+
+        assert_eq!(committed.load(Ordering::SeqCst), 13);
+    }
+
+    #[test]
+    fn guard_expression_parses_without_braces() {
+        let observed = Arc::new(AtomicUsize::new(0));
+
+        let value = 3usize;
+        let observed_clone = observed.clone();
+        let guard = crate::guard!([value] observed_clone.store(value, Ordering::SeqCst));
+        guard.trigger();
+
+        assert_eq!(observed.load(Ordering::SeqCst), 3);
+    }
+
+    #[test]
+    fn defer_alias_behaves_like_guarded_statement() {
+        let called = Arc::new(AtomicUsize::new(0));
+
+        {
+            let n = 42usize;
+            let called = called.clone();
+            crate::defer!([n] {
+                called.store(n, Ordering::SeqCst);
+            });
+        }
+
+        assert_eq!(called.load(Ordering::SeqCst), 42);
+    }
+
+    #[tokio::test]
+    async fn guard_and_guarded_macro_usage_matrix() {
+        // 1) guard!: block body + trailing comma args + trigger()
+        let sink = Arc::new(AtomicUsize::new(0));
+        let v = 1usize;
+        let sink_clone = sink.clone();
+        let g1 = crate::guard!([v,] {
+            sink_clone.store(v, Ordering::SeqCst);
+        });
+        g1.trigger();
+        assert_eq!(sink.load(Ordering::SeqCst), 1);
+
+        // 2) guard!: expression body (no braces)
+        let sink = Arc::new(AtomicUsize::new(0));
+        let sink_clone = sink.clone();
+        let v = 2usize;
+        let g2 = crate::guard!([v] sink_clone.store(v, Ordering::SeqCst));
+        g2.trigger();
+        assert_eq!(sink.load(Ordering::SeqCst), 2);
+
+        // 3) guard!: explicit sync + no args form
+        let sink = Arc::new(AtomicUsize::new(0));
+        let sink_clone = sink.clone();
+        let g3 = crate::guard!(sync {
+            sink_clone.store(3, Ordering::SeqCst);
+        });
+        g3.trigger();
+        assert_eq!(sink.load(Ordering::SeqCst), 3);
+
+        // 4) guard!: move capture + defuse() prevents execution
+        let sink = Arc::new(AtomicUsize::new(0));
+        let owned = String::from("owned");
+        let sink_clone = sink.clone();
+        let g4 = crate::guard!(move [owned] {
+            if owned == "owned" {
+                sink_clone.store(4, Ordering::SeqCst);
+            }
+        });
+        let context = g4.defuse();
+        assert_eq!(context, "owned");
+        assert_eq!(sink.load(Ordering::SeqCst), 0);
+
+        // 5) guard!: async block inference + trigger() returns task
+        let sink = Arc::new(AtomicUsize::new(0));
+        let sink_clone = sink.clone();
+        let n = 5usize;
+        let g5 = crate::guard!([n] async move {
+            sink_clone.fetch_add(n, Ordering::SeqCst);
+        });
+        g5.trigger().await;
+        assert_eq!(sink.load(Ordering::SeqCst), 5);
+
+        // 6) guarded!: named binding + mut arg visible outside + explicit drop
+        let sink = Arc::new(AtomicUsize::new(0));
+        {
+            let value = 6usize;
+            let delta = 1usize;
+            let sink_clone = sink.clone();
+
+            crate::guarded!(named => [mut value, delta] {
+                sink_clone.store(value + delta, Ordering::SeqCst);
+            });
+
+            *value += 10;
+            assert_eq!(*value, 16);
+            assert_eq!(*delta, 1);
+            drop(named);
+        }
+        assert_eq!(sink.load(Ordering::SeqCst), 17);
+
+        // 7) guarded!: unnamed statement + expression body + implicit drop at scope end
+        let sink = Arc::new(AtomicUsize::new(0));
+        {
+            let n = 7usize;
+            let sink_clone = sink.clone();
+            crate::guarded!([n] sink_clone.store(n, Ordering::SeqCst));
+        }
+        assert_eq!(sink.load(Ordering::SeqCst), 7);
+
+        // 8) guarded!: explicit sync + panic path propagates on drop
+        let dropped = catch_unwind(|| {
+            guarded! {
+                sync {
+                    panic!("matrix-boom");
+                }
+            }
+        });
+        assert!(dropped.is_err());
+
+        // 9) guarded!: async inference on drop detaches and executes
+        let (tx, rx) = oneshot::channel();
+        {
+            let tx = Some(tx);
+            crate::guarded!([mut tx] {
+                let tx = tx.take();
+                async move {
+                    if let Some(tx) = tx {
+                        let _ = tx.send(9usize);
+                    }
+                }
+            });
+        }
+        let detached = tokio::time::timeout(Duration::from_secs(1), rx)
+            .await
+            .expect("detached task should complete")
+            .expect("detached task should send value");
+        assert_eq!(detached, 9);
+    }
+}
