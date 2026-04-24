@@ -234,12 +234,13 @@ impl CredentialManageRpc for PeerManagerRpcService {
 
         let (id, secret) = global_ctx
             .get_credential_manager()
-            .generate_credential_with_id(
+            .generate_credential_with_options(
                 request.groups,
                 request.allow_relay,
                 request.allowed_proxy_cidrs,
                 ttl,
                 request.credential_id,
+                request.reusable.unwrap_or(true),
             );
 
         global_ctx.issue_event(crate::common::global_ctx::GlobalCtxEvent::CredentialChanged);
