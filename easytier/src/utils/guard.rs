@@ -122,12 +122,29 @@ impl<const ASYNC: bool, Context, Guard: CallableGuard<ASYNC, Context>> Drop
 #[doc(hidden)]
 #[macro_export]
 macro_rules! __guarded {
+    (@parse@action $guard:ident => $($tt:tt)*) => {
+        $crate::__guarded! { @parse@async action: [ @stmt $guard ] ; $($tt)* }
+    };
+
+    (@parse@action $($tt:tt)*) => {
+        $crate::__guarded! { @parse@async action: [ @stmt __guard ] ; $($tt)* }
+    };
+
+    (@parse@async action: [ $($action:tt)* ] ; sync $($tt:tt)*) => {
+        $crate::__guarded! { @parse action: [ $($action)* ] ; async: [ false ] ; $($tt)* }
+    };
+
+    (@parse@async action: [ $($action:tt)* ] ; $($tt:tt)*) => {
+        $crate::__guarded! { @parse action: [ $($action)* ] ; async: [ _ ] ; $($tt)* }
+    };
+
     (
-        @parse action: [ $($action:tt)* ] ;
+        @parse action: [ $($action:tt)* ] ; async: [ $async:tt ] ;
         [ $($args:tt)* ] $body:block
     ) => {
         $crate::__guarded! {
             action: [ $($action)* ]
+            async: [ $async ]
             mut: []
             rest: [ $($args)* , ]
             args: []
@@ -137,37 +154,38 @@ macro_rules! __guarded {
     };
 
     (
-        @parse action: [ $($action:tt)* ] ;
+        @parse action: [ $($action:tt)* ] ; async: [ $async:tt ] ;
         $body:block
     ) => {
         $crate::__guarded! {
-            @parse action: [ $($action)* ] ;
+            @parse action: [ $($action)* ] ; async: [ $async ] ;
             [] $body
         }
     };
 
     (
-        @parse action: [ $($action:tt)* ] ;
+        @parse action: [ $($action:tt)* ] ; async: [ $async:tt ] ;
         [ $($args:tt)* ] $($body:tt)*
     ) => {
         $crate::__guarded! {
-            @parse action: [ $($action)* ] ;
+            @parse action: [ $($action)* ] ; async: [ $async ] ;
             [ $($args)* ] { $($body)* }
         }
     };
 
     (
-        @parse action: [ $($action:tt)* ] ;
+        @parse action: [ $($action:tt)* ] ; async: [ $async:tt ] ;
         $($body:tt)*
     ) => {
         $crate::__guarded! {
-            @parse action: [ $($action)* ] ;
+            @parse action: [ $($action)* ] ; async: [ $async ] ;
             [] { $($body)* }
         }
     };
 
     (
         action: [ $($action:tt)* ]
+        async: [ $async:tt ]
         mut: [ $($mut:tt)? ]
         rest: [ mut $arg:ident , $($rest:tt)* ]
         args: [ $($args:ident)* ]
@@ -176,6 +194,7 @@ macro_rules! __guarded {
     ) => {
         $crate::__guarded! {
             action: [ $($action)* ]
+            async: [ $async ]
             mut: [ mut ]
             rest: [ $($rest)* ]
             args: [ $($args)* $arg ]
@@ -186,6 +205,7 @@ macro_rules! __guarded {
 
     (
         action: [ $($action:tt)* ]
+        async: [ $async:tt ]
         mut: [ $($mut:tt)? ]
         rest: [ $arg:ident , $($rest:tt)* ]
         args: [ $($args:ident)* ]
@@ -194,6 +214,7 @@ macro_rules! __guarded {
     ) => {
         $crate::__guarded! {
             action: [ $($action)* ]
+            async: [ $async ]
             mut: [ $($mut)? ]
             rest: [ $($rest)* ]
             args: [ $($args)* $arg ]
@@ -204,13 +225,14 @@ macro_rules! __guarded {
 
     (
         action: [ @stmt $guard:ident ]
+        async: [ $async:tt ]
         mut: [ $($mut:tt)? ]
         rest: [ $(,)* ]
         args: [ $($args:ident)* ]
         vars: [ $([$($vars:tt)*])* ]
         body: [ $body:expr ]
     ) => {
-        let $($mut)? $guard = $crate::utils::guard::ContextGuard::new(
+        let $($mut)? $guard = $crate::utils::guard::ContextGuard::<$async, _, _>::new(
             ( $($args),* ),
             |#[allow(unused_parens, unused_mut)] ( $($($vars)*),* )| $body
         );
@@ -221,13 +243,14 @@ macro_rules! __guarded {
 
     (
         action: [ @expr ]
+        async: [ $async:tt ]
         mut: [ $($mut:tt)? ]
         rest: [ $(,)* ]
         args: [ $($args:ident)* ]
         vars: [ $([$($vars:tt)*])* ]
         body: [ $body:expr ]
     ) => {
-        $crate::utils::guard::ContextGuard::new(
+        $crate::utils::guard::ContextGuard::<$async, _, _>::new(
             ( $($args),* ),
             |#[allow(unused_parens)] ( $($($vars)*),* )| $body
         )
@@ -236,18 +259,15 @@ macro_rules! __guarded {
 
 #[macro_export]
 macro_rules! guarded {
-    ( $guard:ident => $($tt:tt)* ) => {
-        $crate::__guarded! { @parse action: [ @stmt $guard ] ; $($tt)* }
-    };
     ( $($tt:tt)* ) => {
-        $crate::__guarded! { @parse action: [ @stmt __guard ] ; $($tt)* }
+        $crate::__guarded! { @parse@action $($tt)* }
     };
 }
 
 #[macro_export]
 macro_rules! guard {
     ( $($tt:tt)* ) => {
-        $crate::__guarded! { @parse action: [ @expr ] ; $($tt)* }
+        $crate::__guarded! { @parse@async action: [ @expr ] ; $($tt)* }
     };
 }
 
