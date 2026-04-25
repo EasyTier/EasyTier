@@ -158,7 +158,6 @@ $I18N = @{
         CLIModeHelp                  = "命令行传参"
         Default                      = "默认"
     }
-
     "en-US" = @{
         PressAnyKey                  = "Press any key to continue..."
         Error                        = "Error: {0}"
@@ -241,6 +240,10 @@ $I18N = @{
         Default                      = "default"
     }
 }
+
+$culture = [System.Globalization.CultureInfo]::CurrentCulture
+[System.Threading.Thread]::CurrentThread.CurrentCulture = $culture
+[System.Threading.Thread]::CurrentThread.CurrentUICulture = $culture
 $script:Lang = (Get-UICulture).Name
 if (-not $I18N.ContainsKey($Lang)) { $script:Lang = "en-US" }
 function T {
@@ -257,9 +260,6 @@ function T {
     return $text
 }
 try {
-    $culture = [System.Globalization.CultureInfo]::CurrentCulture
-    [System.Threading.Thread]::CurrentThread.CurrentCulture = $culture
-    [System.Threading.Thread]::CurrentThread.CurrentUICulture = $culture
     [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 }
 catch {
