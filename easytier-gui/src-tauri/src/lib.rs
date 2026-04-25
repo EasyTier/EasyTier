@@ -160,14 +160,12 @@ async fn set_tun_fd(fd: i32) -> Result<(), String> {
     let Some(instance_manager) = INSTANCE_MANAGER.read().await.clone() else {
         return Err("set_tun_fd is not supported in remote mode".to_string());
     };
-    if let Some(uuid) = get_client_manager!()?
+    let instance_ids: Vec<_> = get_client_manager!()?
         .get_enabled_instances_with_tun_ids()
-        .next()
-    {
-        instance_manager
-            .set_tun_fd(&uuid, fd)
-            .map_err(|e| e.to_string())?;
-    }
+        .collect();
+    instance_manager
+        .set_tun_fd_for_instances(instance_ids, fd)
+        .map_err(|e| e.to_string())?;
     Ok(())
 }
 

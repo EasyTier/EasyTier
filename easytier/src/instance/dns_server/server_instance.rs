@@ -536,6 +536,7 @@ impl MagicDnsServerInstance {
                 None
             };
             let ifcfg = IfConfiger {};
+            let _g = peer_mgr.get_global_ctx().net_ns.guard();
             ifcfg
                 .add_ipv4_route(tun_dev_name, fake_ip, 32, cost)
                 .await?;
@@ -590,6 +591,7 @@ impl MagicDnsServerInstance {
                 && let Some(tun_dev_name) = &self.data.tun_dev
             {
                 let ifcfg = IfConfiger {};
+                let _g = self.peer_mgr.get_global_ctx().net_ns.guard();
                 let _ = ifcfg
                     .remove_ipv4_route(tun_dev_name, self.data.fake_ip, 32)
                     .await;
