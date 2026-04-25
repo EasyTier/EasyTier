@@ -1,16 +1,21 @@
 #[cfg(feature = "tun")]
 use std::any::Any;
 use std::collections::HashSet;
+#[cfg(target_os = "linux")]
+use std::net::Ipv6Addr;
 use std::net::{IpAddr, Ipv4Addr};
+#[cfg(target_os = "linux")]
+use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Weak};
 #[cfg(feature = "tun")]
 use std::time::Duration;
 
 use anyhow::Context;
-use cidr::{IpCidr, Ipv4Inet};
-
+use cidr::{IpCidr, Ipv4Inet, Ipv6Cidr};
 use futures::FutureExt;
+#[cfg(target_os = "linux")]
+use netlink_packet_route::route::{RouteAddress, RouteAttribute, RouteMessage, RouteType};
 use tokio::sync::{Mutex, Notify};
 #[cfg(feature = "tun")]
 use tokio::{sync::oneshot, task::JoinSet};
@@ -23,6 +28,8 @@ use crate::common::acl_processor::AclRuleBuilder;
 use crate::common::config::ConfigLoader;
 use crate::common::error::Error;
 use crate::common::global_ctx::{ArcGlobalCtx, GlobalCtx, GlobalCtxEvent};
+#[cfg(target_os = "linux")]
+use crate::common::ifcfg::{get_interface_index, list_ipv6_route_messages};
 use crate::connector::direct::DirectConnectorManager;
 use crate::connector::manual::{ConnectorManagerRpcService, ManualConnectorManager};
 use crate::connector::tcp_hole_punch::TcpHolePunchConnector;
@@ -193,6 +200,202 @@ type ArcNicCtx = Arc<Mutex<Option<NicCtxContainer>>>;
 
 pub struct InstanceRpcServerHook {
     rpc_portal_whitelist: Vec<IpCidr>,
+}
+
+fn is_global_routable_public_ipv6_prefix(prefix: Ipv6Cidr) -> bool {
+    let addr = prefix.first_address();
+    !addr.is_loopback()
+        && !addr.is_multicast()
+        && !addr.is_unicast_link_local()
+        && !addr.is_unique_local()
+        && !addr.is_unspecified()
+}
+
+fn ensure_public_ipv6_provider_supported() -> Result<(), Error> {
+    if cfg!(target_os = "linux") {
+        return Ok(());
+    }
+
+    Err(anyhow::anyhow!(
+        "the provider feature requires Linux; run without --ipv6-public-addr-provider on this node, or move the provider role to a Linux node. client mode (--ipv6-public-addr-auto) works on all platforms"
+    )
+    .into())
+}
+
+fn public_ipv6_provider_auto_detect_error() -> Error {
+    anyhow::anyhow!(
+        "no public IPv6 prefix found on this system; set --ipv6-public-addr-prefix manually, or check that your ISP has delegated an IPv6 prefix and a default-from route exists in the kernel routing table"
+    )
+    .into()
+}
+
+#[cfg(target_os = "linux")]
+fn read_linux_proc_bool(path: &Path) -> Result<bool, Error> {
+    let value = std::fs::read_to_string(path)
+        .with_context(|| format!("failed to read {}", path.display()))?;
+    match value.trim() {
+        "0" => Ok(false),
+        "1" => Ok(true),
+        other => Err(anyhow::anyhow!("unexpected value '{}' in {}", other, path.display()).into()),
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn write_linux_proc_bool(path: &Path, enabled: bool) -> Result<(), Error> {
+    let value = if enabled { "1\n" } else { "0\n" };
+    std::fs::write(path, value).with_context(|| format!("failed to write {}", path.display()))?;
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn ensure_linux_ipv6_forwarding_at_paths(
+    all_path: &Path,
+    default_path: &Path,
+) -> Result<bool, Error> {
+    let all_enabled = read_linux_proc_bool(all_path)?;
+    let default_enabled = read_linux_proc_bool(default_path)?;
+    let mut changed = false;
+
+    if !all_enabled {
+        write_linux_proc_bool(all_path, true)?;
+        changed = true;
+    }
+
+    if !default_enabled {
+        write_linux_proc_bool(default_path, true)?;
+        changed = true;
+    }
+
+    if !read_linux_proc_bool(all_path)? || !read_linux_proc_bool(default_path)? {
+        return Err(anyhow::anyhow!(
+            "failed to enable Linux IPv6 forwarding in {} and {}",
+            all_path.display(),
+            default_path.display()
+        )
+        .into());
+    }
+
+    Ok(changed)
+}
+
+#[cfg(target_os = "linux")]
+fn ensure_linux_ipv6_forwarding() -> Result<bool, Error> {
+    let all_path = Path::new("/proc/sys/net/ipv6/conf/all/forwarding");
+    let default_path = Path::new("/proc/sys/net/ipv6/conf/default/forwarding");
+
+    ensure_linux_ipv6_forwarding_at_paths(all_path, default_path).map_err(|err| {
+        anyhow::anyhow!(
+            "public IPv6 provider requires Linux IPv6 forwarding; failed to enable net.ipv6.conf.all.forwarding=1 and net.ipv6.conf.default.forwarding=1 automatically: {}. run with sufficient privileges or set them manually",
+            err
+        )
+        .into()
+    })
+}
+
+#[cfg(target_os = "linux")]
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct DetectedIpv6Route {
+    dst: Option<Ipv6Cidr>,
+    src: Option<Ipv6Cidr>,
+    ifindex: Option<u32>,
+    kind: RouteType,
+}
+
+#[cfg(target_os = "linux")]
+fn ipv6_cidr_from_route_addr(addr: RouteAddress, prefix_len: u8) -> Option<Ipv6Cidr> {
+    match addr {
+        RouteAddress::Inet6(addr) => Ipv6Cidr::new(addr, prefix_len).ok(),
+        _ => None,
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl TryFrom<RouteMessage> for DetectedIpv6Route {
+    type Error = Error;
+
+    fn try_from(message: RouteMessage) -> Result<Self, Self::Error> {
+        let dst = message.attributes.iter().find_map(|attr| match attr {
+            RouteAttribute::Destination(addr) => {
+                ipv6_cidr_from_route_addr(addr.clone(), message.header.destination_prefix_length)
+            }
+            _ => None,
+        });
+        let src = message.attributes.iter().find_map(|attr| match attr {
+            RouteAttribute::Source(addr) => {
+                ipv6_cidr_from_route_addr(addr.clone(), message.header.source_prefix_length)
+            }
+            _ => None,
+        });
+        let ifindex = message.attributes.iter().find_map(|attr| match attr {
+            RouteAttribute::Oif(index) => Some(*index),
+            _ => None,
+        });
+
+        Ok(Self {
+            dst,
+            src,
+            ifindex,
+            kind: message.header.kind,
+        })
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn is_ipv6_default_route(dst: Option<Ipv6Cidr>) -> bool {
+    dst.is_none() || dst == Some(Ipv6Cidr::new(Ipv6Addr::UNSPECIFIED, 0).unwrap())
+}
+
+#[cfg(target_os = "linux")]
+fn detect_public_ipv6_prefix_from_routes(
+    routes: &[DetectedIpv6Route],
+    loopback_ifindex: u32,
+) -> Option<Ipv6Cidr> {
+    routes
+        .iter()
+        .filter_map(|route| {
+            if !is_ipv6_default_route(route.dst) {
+                return None;
+            }
+
+            let prefix = route.src?;
+            let wan_ifindex = route.ifindex?;
+            if !is_global_routable_public_ipv6_prefix(prefix) {
+                return None;
+            }
+
+            let delegated = routes.iter().any(|candidate| {
+                candidate.dst == Some(prefix)
+                    && candidate.ifindex.is_some()
+                    && candidate.ifindex != Some(wan_ifindex)
+                    && candidate.ifindex != Some(loopback_ifindex)
+                    && candidate.kind == RouteType::Unicast
+            });
+
+            delegated.then_some(prefix)
+        })
+        .min_by_key(|prefix| prefix.network_length())
+}
+
+#[cfg(target_os = "linux")]
+async fn detect_public_ipv6_prefix_linux() -> Result<Option<Ipv6Cidr>, Error> {
+    let routes = list_ipv6_route_messages().with_context(|| "failed to query linux ipv6 routes")?;
+    let routes = routes
+        .iter()
+        .cloned()
+        .map(DetectedIpv6Route::try_from)
+        .collect::<Result<Vec<_>, _>>()?;
+    let loopback_ifindex =
+        get_interface_index("lo").with_context(|| "failed to resolve linux loopback ifindex")?;
+
+    Ok(detect_public_ipv6_prefix_from_routes(
+        &routes,
+        loopback_ifindex,
+    ))
+}
+
+#[cfg(not(target_os = "linux"))]
+async fn detect_public_ipv6_prefix_linux() -> Result<Option<Ipv6Cidr>, Error> {
+    Ok(None)
 }
 
 impl InstanceRpcServerHook {
@@ -664,6 +867,61 @@ impl Instance {
         Ok(())
     }
 
+    async fn prepare_public_ipv6_config(&self) -> Result<(), Error> {
+        if self.global_ctx.config.get_ipv6_public_addr_auto()
+            && self.global_ctx.get_ipv6().is_some()
+        {
+            return Err(anyhow::anyhow!(
+                "cannot use --ipv6-public-addr-auto together with a manually set --ipv6; pick one or the other"
+            )
+            .into());
+        }
+
+        if !self.global_ctx.config.get_ipv6_public_addr_provider() {
+            let mut feature_flags = self.global_ctx.get_feature_flags();
+            feature_flags.ipv6_public_addr_provider = false;
+            self.global_ctx.set_feature_flags(feature_flags);
+            return Ok(());
+        }
+
+        ensure_public_ipv6_provider_supported()?;
+
+        let prefix = if let Some(prefix) = self.global_ctx.config.get_ipv6_public_addr_prefix() {
+            prefix
+        } else {
+            let _g = self.global_ctx.net_ns.guard();
+            detect_public_ipv6_prefix_linux()
+                .await?
+                .ok_or_else(public_ipv6_provider_auto_detect_error)?
+        };
+
+        if !is_global_routable_public_ipv6_prefix(prefix) {
+            return Err(anyhow::anyhow!(
+                "the prefix {} is not a valid global unicast IPv6 prefix; it must be a routable address range, not a private, link-local, or multicast address",
+                prefix
+            )
+            .into());
+        }
+
+        #[cfg(target_os = "linux")]
+        {
+            let _g = self.global_ctx.net_ns.guard();
+            if ensure_linux_ipv6_forwarding()? {
+                tracing::info!(
+                    "enabled Linux IPv6 forwarding for public IPv6 provider at runtime; this change is not persisted across reboot"
+                );
+            }
+        }
+
+        self.global_ctx
+            .config
+            .set_ipv6_public_addr_prefix(Some(prefix));
+        let mut feature_flags = self.global_ctx.get_feature_flags();
+        feature_flags.ipv6_public_addr_provider = true;
+        self.global_ctx.set_feature_flags(feature_flags);
+        Ok(())
+    }
+
     // use a mock nic ctx to consume packets.
     #[cfg(feature = "tun")]
     async fn clear_nic_ctx(
@@ -932,6 +1190,7 @@ impl Instance {
     }
 
     pub async fn run(&mut self) -> Result<(), Error> {
+        self.prepare_public_ipv6_config().await?;
         self.listener_manager
             .lock()
             .await
@@ -1543,9 +1802,87 @@ impl Drop for Instance {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(target_os = "linux")]
+    use netlink_packet_route::route::RouteType;
+    #[cfg(target_os = "linux")]
+    use std::fs;
+    #[cfg(target_os = "linux")]
+    use std::path::PathBuf;
+    #[cfg(target_os = "linux")]
+    use std::process::Command;
+
     use crate::{
         instance::instance::InstanceRpcServerHook, proto::rpc_impl::standalone::RpcServerHook,
     };
+
+    #[cfg(target_os = "linux")]
+    use super::{
+        DetectedIpv6Route, detect_public_ipv6_prefix_from_routes, detect_public_ipv6_prefix_linux,
+        ensure_linux_ipv6_forwarding_at_paths, ensure_public_ipv6_provider_supported,
+        public_ipv6_provider_auto_detect_error,
+    };
+
+    #[cfg(not(target_os = "linux"))]
+    use super::{ensure_public_ipv6_provider_supported, public_ipv6_provider_auto_detect_error};
+
+    #[cfg(target_os = "linux")]
+    fn run_ip(args: &[&str]) {
+        let output = Command::new("ip")
+            .args(args)
+            .output()
+            .expect("failed to execute ip process");
+        assert!(
+            output.status.success(),
+            "ip command failed: {:?}\nstdout: {}\nstderr: {}",
+            args,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    fn test_iface_name(tag: &str) -> String {
+        format!("et{}{:x}", tag, std::process::id() & 0xffff)
+    }
+
+    #[cfg(target_os = "linux")]
+    struct ScopedDummyLink {
+        name: String,
+    }
+
+    #[cfg(target_os = "linux")]
+    impl ScopedDummyLink {
+        fn new(name: &str) -> Self {
+            let _ = Command::new("ip").args(["link", "del", name]).output();
+            run_ip(&["link", "add", name, "type", "dummy"]);
+            run_ip(&["link", "set", name, "up"]);
+            Self {
+                name: name.to_string(),
+            }
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    impl Drop for ScopedDummyLink {
+        fn drop(&mut self) {
+            let _ = Command::new("ip")
+                .args(["link", "del", &self.name])
+                .output();
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    fn temp_forwarding_paths(
+        all_value: &str,
+        default_value: &str,
+    ) -> (tempfile::TempDir, PathBuf, PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let all_path = dir.path().join("all_forwarding");
+        let default_path = dir.path().join("default_forwarding");
+        fs::write(&all_path, all_value).unwrap();
+        fs::write(&default_path, default_value).unwrap();
+        (dir, all_path, default_path)
+    }
 
     #[tokio::test]
     async fn test_rpc_portal_whitelist() {
@@ -1664,5 +2001,238 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[cfg(target_os = "linux")]
+    fn route(
+        dst: Option<&str>,
+        src: Option<&str>,
+        ifindex: Option<u32>,
+        kind: RouteType,
+    ) -> DetectedIpv6Route {
+        DetectedIpv6Route {
+            dst: dst.map(|cidr| cidr.parse().unwrap()),
+            src: src.map(|cidr| cidr.parse().unwrap()),
+            ifindex,
+            kind,
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn test_detect_public_ipv6_prefix_from_routes_selects_delegated_prefix() {
+        let routes = vec![
+            route(None, Some("2001:db8:1::/56"), Some(2), RouteType::Unicast),
+            route(Some("2001:db8:1::/56"), None, Some(3), RouteType::Unicast),
+        ];
+
+        assert_eq!(
+            detect_public_ipv6_prefix_from_routes(&routes, 1),
+            Some("2001:db8:1::/56".parse().unwrap())
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn test_detect_public_ipv6_prefix_from_routes_rejects_non_public_prefixes() {
+        let routes = vec![
+            route(Some("::/0"), Some("fd00::/48"), Some(2), RouteType::Unicast),
+            route(Some("fd00::/48"), None, Some(3), RouteType::Unicast),
+            route(None, Some("fe80::/64"), Some(4), RouteType::Unicast),
+            route(Some("fe80::/64"), None, Some(5), RouteType::Unicast),
+            route(None, Some("ff00::/8"), Some(6), RouteType::Unicast),
+            route(Some("ff00::/8"), None, Some(7), RouteType::Unicast),
+            route(None, Some("::/0"), Some(8), RouteType::Unicast),
+            route(Some("::/0"), None, Some(9), RouteType::Unicast),
+        ];
+
+        assert_eq!(detect_public_ipv6_prefix_from_routes(&routes, 1), None);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn test_detect_public_ipv6_prefix_from_routes_requires_delegated_route() {
+        let routes = vec![route(
+            None,
+            Some("2001:db8:1::/56"),
+            Some(2),
+            RouteType::Unicast,
+        )];
+
+        assert_eq!(detect_public_ipv6_prefix_from_routes(&routes, 1), None);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn test_detect_public_ipv6_prefix_from_routes_rejects_loopback_delegation() {
+        let routes = vec![
+            route(None, Some("2001:db8:1::/56"), Some(2), RouteType::Unicast),
+            route(Some("2001:db8:1::/56"), None, Some(1), RouteType::Unicast),
+        ];
+
+        assert_eq!(detect_public_ipv6_prefix_from_routes(&routes, 1), None);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn test_detect_public_ipv6_prefix_from_routes_prefers_shortest_prefix() {
+        let routes = vec![
+            route(None, Some("2001:db8:1::/56"), Some(2), RouteType::Unicast),
+            route(Some("2001:db8:1::/56"), None, Some(3), RouteType::Unicast),
+            route(None, Some("2001:db8::/48"), Some(4), RouteType::Unicast),
+            route(Some("2001:db8::/48"), None, Some(5), RouteType::Unicast),
+        ];
+
+        assert_eq!(
+            detect_public_ipv6_prefix_from_routes(&routes, 1),
+            Some("2001:db8::/48".parse().unwrap())
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn test_detect_public_ipv6_prefix_from_routes_rejects_non_unicast_delegation() {
+        let routes = vec![
+            route(None, Some("2001:db8:1::/56"), Some(2), RouteType::Unicast),
+            route(Some("2001:db8:1::/56"), None, Some(3), RouteType::BlackHole),
+        ];
+
+        assert_eq!(detect_public_ipv6_prefix_from_routes(&routes, 1), None);
+    }
+
+    #[test]
+    fn test_public_ipv6_provider_auto_detect_error_mentions_manual_prefix() {
+        let err = public_ipv6_provider_auto_detect_error();
+        let msg = err.to_string();
+
+        assert!(msg.contains("IPv6 prefix"), "{}", msg);
+        assert!(msg.contains("ipv6-public-addr-prefix"), "{}", msg);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn test_public_ipv6_provider_platform_check_accepts_linux() {
+        assert!(ensure_public_ipv6_provider_supported().is_ok());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn test_ensure_linux_ipv6_forwarding_enables_all_and_default() {
+        let (_dir, all_path, default_path) = temp_forwarding_paths("0\n", "0\n");
+
+        let changed = ensure_linux_ipv6_forwarding_at_paths(&all_path, &default_path).unwrap();
+
+        assert!(changed);
+        assert_eq!(fs::read_to_string(&all_path).unwrap(), "1\n");
+        assert_eq!(fs::read_to_string(&default_path).unwrap(), "1\n");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn test_ensure_linux_ipv6_forwarding_is_noop_when_already_enabled() {
+        let (_dir, all_path, default_path) = temp_forwarding_paths("1\n", "1\n");
+
+        let changed = ensure_linux_ipv6_forwarding_at_paths(&all_path, &default_path).unwrap();
+
+        assert!(!changed);
+        assert_eq!(fs::read_to_string(&all_path).unwrap(), "1\n");
+        assert_eq!(fs::read_to_string(&default_path).unwrap(), "1\n");
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    #[test]
+    fn test_public_ipv6_provider_platform_check_reports_linux_only() {
+        let err = ensure_public_ipv6_provider_supported().unwrap_err();
+        let msg = err.to_string();
+
+        assert!(msg.contains("Linux"), "{}", msg);
+        assert!(msg.contains("ipv6-public-addr-auto"), "{}", msg);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[serial_test::serial]
+    #[tokio::test]
+    async fn test_detect_public_ipv6_prefix_linux_reads_netlink_routes_from_kernel() {
+        let wan_if = test_iface_name("dw");
+        let lan_if = test_iface_name("dl");
+        let _wan = ScopedDummyLink::new(&wan_if);
+        let _lan = ScopedDummyLink::new(&lan_if);
+
+        run_ip(&[
+            "-6",
+            "addr",
+            "add",
+            "2001:db8:100:ffff::1/64",
+            "dev",
+            &wan_if,
+        ]);
+        run_ip(&[
+            "-6",
+            "route",
+            "add",
+            "default",
+            "from",
+            "2001:db8:100::/56",
+            "dev",
+            &wan_if,
+        ]);
+        run_ip(&["-6", "route", "add", "2001:db8:100::/56", "dev", &lan_if]);
+
+        assert_eq!(
+            detect_public_ipv6_prefix_linux().await.unwrap(),
+            Some("2001:db8:100::/56".parse().unwrap())
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[serial_test::serial]
+    #[tokio::test]
+    async fn test_detect_public_ipv6_prefix_linux_prefers_shortest_prefix_from_kernel() {
+        let wan_if_1 = test_iface_name("sw1");
+        let lan_if_1 = test_iface_name("sl1");
+        let wan_if_2 = test_iface_name("sw2");
+        let lan_if_2 = test_iface_name("sl2");
+        let _wan_1 = ScopedDummyLink::new(&wan_if_1);
+        let _lan_1 = ScopedDummyLink::new(&lan_if_1);
+        let _wan_2 = ScopedDummyLink::new(&wan_if_2);
+        let _lan_2 = ScopedDummyLink::new(&lan_if_2);
+
+        run_ip(&[
+            "-6",
+            "addr",
+            "add",
+            "2001:db8:3000:ffff::1/64",
+            "dev",
+            &wan_if_1,
+        ]);
+        run_ip(&[
+            "-6",
+            "route",
+            "add",
+            "default",
+            "from",
+            "2001:db8:3000::/56",
+            "dev",
+            &wan_if_1,
+        ]);
+        run_ip(&["-6", "route", "add", "2001:db8:3000::/56", "dev", &lan_if_1]);
+
+        run_ip(&["-6", "addr", "add", "2001:db9:ffff::1/64", "dev", &wan_if_2]);
+        run_ip(&[
+            "-6",
+            "route",
+            "add",
+            "default",
+            "from",
+            "2001:db9::/48",
+            "dev",
+            &wan_if_2,
+        ]);
+        run_ip(&["-6", "route", "add", "2001:db9::/48", "dev", &lan_if_2]);
+
+        assert_eq!(
+            detect_public_ipv6_prefix_linux().await.unwrap(),
+            Some("2001:db9::/48".parse().unwrap())
+        );
     }
 }

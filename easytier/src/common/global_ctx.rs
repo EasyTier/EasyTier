@@ -68,6 +68,8 @@ pub enum GlobalCtxEvent {
 
     DhcpIpv4Changed(Option<cidr::Ipv4Inet>, Option<cidr::Ipv4Inet>), // (old, new)
     DhcpIpv4Conflicted(Option<cidr::Ipv4Inet>),
+    PublicIpv6Changed(Option<cidr::Ipv6Inet>, Option<cidr::Ipv6Inet>), // (old, new)
+    PublicIpv6RoutesUpdated(Vec<cidr::Ipv6Inet>, Vec<cidr::Ipv6Inet>), // (added, removed)
 
     PortForwardAdded(PortForwardConfigPb),
 
@@ -770,6 +772,7 @@ pub mod tests {
         assert!(feature_flags.support_conn_list_sync);
         assert!(feature_flags.avoid_relay_data);
         assert!(feature_flags.is_public_server);
+        assert!(!feature_flags.ipv6_public_addr_provider);
     }
 
     #[tokio::test]

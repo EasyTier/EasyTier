@@ -81,6 +81,7 @@ message Route {
   optional int32 path_latency_latency_first = 14;
 
   common.Ipv6Inet ipv6_addr = 15;
+  common.Ipv6Inet public_ipv6_addr = 16;
 }
 
 message PeerRoutePair {
@@ -100,6 +101,7 @@ message NodeInfo {
   string version = 9;
   common.PeerFeatureFlag feature_flag = 10;
   peer_rpc.GetIpListResponse ip_list = 11;
+  common.Ipv6Inet public_ipv6_addr = 12;
 }
 
 message ShowNodeInfoRequest { InstanceIdentifier instance = 1; }

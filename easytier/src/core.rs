@@ -172,6 +172,31 @@ struct NetworkOptions {
     ipv6: Option<String>,
 
     #[arg(
+        long,
+        env = "ET_IPV6_PUBLIC_ADDR_PROVIDER",
+        help = t!("core_clap.ipv6_public_addr_provider").to_string(),
+        num_args = 0..=1,
+        default_missing_value = "true"
+    )]
+    ipv6_public_addr_provider: Option<bool>,
+
+    #[arg(
+        long,
+        env = "ET_IPV6_PUBLIC_ADDR_AUTO",
+        help = t!("core_clap.ipv6_public_addr_auto").to_string(),
+        num_args = 0..=1,
+        default_missing_value = "true"
+    )]
+    ipv6_public_addr_auto: Option<bool>,
+
+    #[arg(
+        long,
+        env = "ET_IPV6_PUBLIC_ADDR_PREFIX",
+        help = t!("core_clap.ipv6_public_addr_prefix").to_string()
+    )]
+    ipv6_public_addr_prefix: Option<String>,
+
+    #[arg(
         short,
         long,
         env = "ET_DHCP",
@@ -873,6 +898,20 @@ impl NetworkOptions {
             cfg.set_ipv6(Some(ipv6.parse().with_context(|| {
                 format!("failed to parse ipv6 address: {}", ipv6)
             })?))
+        }
+
+        if let Some(enabled) = self.ipv6_public_addr_provider {
+            cfg.set_ipv6_public_addr_provider(enabled);
+        }
+
+        if let Some(enabled) = self.ipv6_public_addr_auto {
+            cfg.set_ipv6_public_addr_auto(enabled);
+        }
+
+        if let Some(prefix) = &self.ipv6_public_addr_prefix {
+            cfg.set_ipv6_public_addr_prefix(Some(prefix.parse().with_context(|| {
+                format!("failed to parse ipv6 public address prefix: {}", prefix)
+            })?));
         }
 
         if !self.peers.is_empty() {

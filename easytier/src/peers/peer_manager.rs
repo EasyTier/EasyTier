@@ -1291,6 +1291,14 @@ impl PeerManager {
         self.get_route().list_proxy_cidrs_v6().await
     }
 
+    pub async fn list_public_ipv6_routes(&self) -> BTreeSet<cidr::Ipv6Inet> {
+        self.get_route().list_public_ipv6_routes().await
+    }
+
+    pub async fn get_my_public_ipv6_addr(&self) -> Option<cidr::Ipv6Inet> {
+        self.get_route().get_my_public_ipv6_addr().await
+    }
+
     pub async fn dump_route(&self) -> String {
         self.get_route().dump().await
     }
@@ -1879,6 +1887,7 @@ impl PeerManager {
             version: EASYTIER_VERSION.to_string(),
             feature_flag: Some(self.global_ctx.get_feature_flags()),
             ip_list: Some(self.global_ctx.get_ip_collector().collect_ip_addrs().await),
+            public_ipv6_addr: self.get_my_public_ipv6_addr().await.map(Into::into),
         }
     }
 
