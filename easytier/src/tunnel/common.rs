@@ -423,7 +423,7 @@ fn setup_socket2_ext(
     }
 
     socket2_socket.set_nonblocking(true)?;
-    socket2_socket.set_reuse_address(true)?;
+    socket2_socket.set_reuse_address(!cfg!(target_os = "windows"))?;
     if let Err(e) = socket2_socket.bind(&socket2::SockAddr::from(*bind_addr)) {
         if bind_addr.is_ipv4() {
             return Err(e.into());

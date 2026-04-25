@@ -536,6 +536,21 @@ impl PeerManager {
     async fn add_new_peer_conn(&self, peer_conn: PeerConn) -> Result<(), Error> {
         let my_identity = self.global_ctx.get_network_identity();
         let peer_identity = peer_conn.get_network_identity();
+        let conn_info = peer_conn.get_conn_info();
+        let local_secure_mode = self
+            .global_ctx
+            .config
+            .get_secure_mode()
+            .as_ref()
+            .map(|cfg| cfg.enabled)
+            .unwrap_or(false);
+        let peer_secure_mode = !conn_info.noise_remote_static_pubkey.is_empty();
+
+        if local_secure_mode != peer_secure_mode {
+            return Err(Error::SecretKeyError(
+                "same-network peers must use the same secure mode".to_string(),
+            ));
+        }
 
         // For credential nodes, network_secret_digest is either None or all-zeros
         // (all-zeros when received over the wire via handshake).
@@ -2717,7 +2732,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn peer_manager_safe_server_accept_legacy_client() {
+    async fn peer_manager_same_network_secure_mode_mismatch_rejected() {
         let peer_mgr_client = create_mock_peer_manager_with_mock_stun(NatType::Unknown).await;
         let peer_mgr_server = create_mock_peer_manager_with_mock_stun(NatType::Unknown).await;
 
@@ -2737,64 +2752,65 @@ mod tests {
             peer_mgr_client.add_client_tunnel(c_ring, false),
             peer_mgr_server.add_tunnel_as_server(s_ring, true)
         );
-        let (server_id, _) = c_ret.unwrap();
-        s_ret.unwrap();
+        let _ = c_ret;
+        assert!(
+            s_ret.is_err(),
+            "same-network peer with mismatched secure mode should be rejected"
+        );
 
-        wait_for_condition(
-            || {
-                let peer_mgr_client = peer_mgr_client.clone();
-                async move {
-                    if !peer_mgr_client
-                        .get_peer_map()
-                        .list_peers_with_conn()
-                        .await
-                        .contains(&server_id)
-                    {
-                        return false;
-                    }
-                    let Some(conns) = peer_mgr_client
-                        .get_peer_map()
-                        .list_peer_conns(server_id)
-                        .await
-                    else {
-                        return false;
-                    };
-                    conns.iter().any(|c| {
-                        c.noise_local_static_pubkey.is_empty()
-                            && c.noise_remote_static_pubkey.is_empty()
-                            && c.secure_auth_level == SecureAuthLevel::None as i32
-                    })
-                }
-            },
-            Duration::from_secs(10),
-        )
-        .await;
-
-        let client_id = peer_mgr_client.my_peer_id();
         wait_for_condition(
             || {
                 let peer_mgr_server = peer_mgr_server.clone();
                 async move {
-                    if !peer_mgr_server
+                    peer_mgr_server
                         .get_peer_map()
                         .list_peers_with_conn()
                         .await
-                        .contains(&client_id)
-                    {
-                        return false;
-                    }
-                    let Some(conns) = peer_mgr_server
+                        .is_empty()
+                }
+            },
+            Duration::from_secs(5),
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn credential_node_rejects_legacy_client() {
+        let peer_mgr_client = create_mock_peer_manager_with_mock_stun(NatType::Unknown).await;
+        let peer_mgr_server = create_mock_peer_manager_with_mock_stun(NatType::Unknown).await;
+
+        peer_mgr_client
+            .get_global_ctx()
+            .config
+            .set_network_identity(NetworkIdentity::new("net1".to_string(), "sec1".to_string()));
+        peer_mgr_server
+            .get_global_ctx()
+            .config
+            .set_network_identity(NetworkIdentity::new_credential("net1".to_string()));
+
+        set_secure_mode_cfg(&peer_mgr_server.get_global_ctx(), true);
+
+        let (c_ring, s_ring) = create_ring_tunnel_pair();
+        let (c_ret, s_ret) = tokio::join!(
+            peer_mgr_client.add_client_tunnel(c_ring, false),
+            peer_mgr_server.add_tunnel_as_server(s_ring, true)
+        );
+
+        let _ = c_ret;
+        assert!(
+            s_ret.is_err(),
+            "credential server should reject legacy client"
+        );
+
+        wait_for_condition(
+            || {
+                let peer_mgr_server = peer_mgr_server.clone();
+                async move {
+                    peer_mgr_server
                         .get_peer_map()
-                        .list_peer_conns(client_id)
+                        .list_peers_with_conn()
                         .await
-                    else {
-                        return false;
-                    };
-                    conns.iter().any(|c| {
-                        c.noise_local_static_pubkey.is_empty()
-                            && c.noise_remote_static_pubkey.is_empty()
-                            && c.secure_auth_level == SecureAuthLevel::None as i32
-                    })
+                        .is_empty()
                 }
             },
             Duration::from_secs(5),

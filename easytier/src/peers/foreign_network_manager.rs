@@ -1576,6 +1576,41 @@ pub mod tests {
     }
 
     #[tokio::test]
+    async fn secure_center_can_serve_legacy_and_secure_foreign_networks() {
+        let pm_center = create_mock_peer_manager_with_mock_stun(NatType::Unknown).await;
+        set_secure_mode_cfg(&pm_center.get_global_ctx(), true);
+
+        let legacy_a = create_mock_peer_manager_for_foreign_network("legacy-net").await;
+        let legacy_b = create_mock_peer_manager_for_foreign_network("legacy-net").await;
+        connect_peer_manager(legacy_a.clone(), pm_center.clone()).await;
+        connect_peer_manager(legacy_b.clone(), pm_center.clone()).await;
+        wait_route_appear(legacy_a.clone(), legacy_b.clone())
+            .await
+            .unwrap();
+
+        let secure_a = create_mock_peer_manager_for_secure_foreign_network("secure-net").await;
+        let secure_b = create_mock_peer_manager_for_secure_foreign_network("secure-net").await;
+        connect_peer_manager(secure_a.clone(), pm_center.clone()).await;
+        connect_peer_manager(secure_b.clone(), pm_center.clone()).await;
+        wait_route_appear(secure_a.clone(), secure_b.clone())
+            .await
+            .unwrap();
+
+        assert_eq!(2, legacy_a.list_routes().await.len());
+        assert_eq!(2, legacy_b.list_routes().await.len());
+        assert_eq!(2, secure_a.list_routes().await.len());
+        assert_eq!(2, secure_b.list_routes().await.len());
+
+        let rpc_resp = pm_center
+            .get_foreign_network_manager()
+            .list_foreign_networks()
+            .await;
+        assert_eq!(2, rpc_resp.foreign_networks.len());
+        assert_eq!(2, rpc_resp.foreign_networks["legacy-net"].peers.len());
+        assert_eq!(2, rpc_resp.foreign_networks["secure-net"].peers.len());
+    }
+
+    #[tokio::test]
     async fn credential_pubkey_trust_requires_ospf_credential_source() {
         let global_ctx = get_mock_global_ctx_with_network(Some(NetworkIdentity::new(
             "__access__".to_string(),

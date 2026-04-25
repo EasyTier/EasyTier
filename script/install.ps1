@@ -7,7 +7,7 @@
     Copies binaries to the install directory and updates the system PATH.
 
 .PARAMETER Version
-    Target version: "latest", "stable", or a specific tag like "v2.6.1".
+    Target version: "latest", "stable", or a specific tag like "v2.6.2".
     Default: "latest"
 
 .PARAMETER InstallDir
@@ -16,7 +16,7 @@
 
 .EXAMPLE
     .\install.ps1
-    .\install.ps1 -Version v2.6.1
+    .\install.ps1 -Version v2.6.2
     .\install.ps1 -InstallDir "C:\EasyTier"
 
 .NOTES

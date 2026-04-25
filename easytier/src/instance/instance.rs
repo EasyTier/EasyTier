@@ -20,7 +20,6 @@ use crate::common::acl_processor::AclRuleBuilder;
 use crate::common::config::ConfigLoader;
 use crate::common::error::Error;
 use crate::common::global_ctx::{ArcGlobalCtx, GlobalCtx, GlobalCtxEvent};
-use crate::common::scoped_task::ScopedTask;
 use crate::connector::direct::DirectConnectorManager;
 use crate::connector::manual::{ConnectorManagerRpcService, ManualConnectorManager};
 use crate::connector::tcp_hole_punch::TcpHolePunchConnector;
@@ -503,7 +502,7 @@ pub struct Instance {
     #[cfg(feature = "socks5")]
     socks5_server: Arc<Socks5Server>,
 
-    proxy_cidrs_monitor: Option<ScopedTask<()>>,
+    proxy_cidrs_monitor: Option<AbortOnDropHandle<()>>,
 
     global_ctx: ArcGlobalCtx,
 }

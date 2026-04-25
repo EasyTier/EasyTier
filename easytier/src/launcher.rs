@@ -1,4 +1,7 @@
-use crate::common::config::{ConfigFileControl, PortForwardConfig, process_secure_mode_cfg};
+use crate::common::config::{
+    ConfigFileControl, ConfigSource, PortForwardConfig, parse_mapped_listener_urls,
+    process_secure_mode_cfg,
+};
 use crate::proto::api::{self, manage};
 use crate::proto::rpc_types::controller::BaseController;
 use crate::rpc_service::InstanceRpcService;
@@ -434,6 +437,10 @@ impl NetworkInstance {
         &self.config_file_control
     }
 
+    pub fn get_network_config_source(&self) -> ConfigSource {
+        self.config.get_network_config_source()
+    }
+
     pub fn get_latest_error_msg(&self) -> Option<String> {
         if let Some(launcher) = self.launcher.as_ref() {
             launcher.error_msg.read().unwrap().clone()
@@ -665,22 +672,8 @@ impl NetworkConfig {
         }
 
         if !self.mapped_listeners.is_empty() {
-            cfg.set_mapped_listeners(Some(
-                self.mapped_listeners
-                    .iter()
-                    .map(|s| {
-                        s.parse()
-                            .with_context(|| format!("mapped listener is not a valid url: {}", s))
-                            .unwrap()
-                    })
-                    .map(|s: url::Url| {
-                        if s.port().is_none() {
-                            panic!("mapped listener port is missing: {}", s);
-                        }
-                        s
-                    })
-                    .collect(),
-            ));
+            let mapped_listeners = parse_mapped_listener_urls(&self.mapped_listeners)?;
+            cfg.set_mapped_listeners(Some(mapped_listeners));
         }
 
         if let Some(credential_file) = self
@@ -799,6 +792,10 @@ impl NetworkConfig {
 
         if let Some(disable_udp_hole_punching) = self.disable_udp_hole_punching {
             flags.disable_udp_hole_punching = disable_udp_hole_punching;
+        }
+
+        if let Some(disable_upnp) = self.disable_upnp {
+            flags.disable_upnp = disable_upnp;
         }
 
         if let Some(disable_sym_hole_punching) = self.disable_sym_hole_punching {
@@ -959,6 +956,7 @@ impl NetworkConfig {
         result.disable_encryption = Some(!flags.enable_encryption);
         result.disable_tcp_hole_punching = Some(flags.disable_tcp_hole_punching);
         result.disable_udp_hole_punching = Some(flags.disable_udp_hole_punching);
+        result.disable_upnp = Some(flags.disable_upnp);
         result.disable_sym_hole_punching = Some(flags.disable_sym_hole_punching);
         result.mtu = Some(flags.mtu as i32);
         result.instance_recv_bps_limit =
@@ -1225,6 +1223,7 @@ mod tests {
                 flags.enable_encryption = rng.gen_bool(0.8);
                 flags.disable_tcp_hole_punching = rng.gen_bool(0.2);
                 flags.disable_udp_hole_punching = rng.gen_bool(0.2);
+                flags.disable_upnp = rng.gen_bool(0.2);
                 flags.mtu = rng.gen_range(1200..1500);
                 flags.private_mode = rng.gen_bool(0.3);
 

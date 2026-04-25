@@ -22,8 +22,7 @@ use smoltcp::{
 pub use socket::{TcpListener, TcpStream, UdpSocket};
 pub use socket_allocator::BufferSize;
 use tokio::sync::Notify;
-
-use crate::common::scoped_task::ScopedTask;
+use tokio_util::task::AbortOnDropHandle;
 
 /// The async devices.
 pub mod channel_device;
@@ -79,7 +78,7 @@ pub struct Net {
     ip_addr: IpCidr,
     from_port: AtomicU16,
     stopper: Arc<Notify>,
-    fut: ScopedTask<io::Result<()>>,
+    fut: AbortOnDropHandle<io::Result<()>>,
 }
 
 impl std::fmt::Debug for Net {
@@ -131,7 +130,7 @@ impl Net {
             ip_addr: config.ip_addr,
             from_port: AtomicU16::new(10001),
             stopper,
-            fut: ScopedTask::from(tokio::spawn(fut)),
+            fut: AbortOnDropHandle::new(tokio::spawn(fut)),
         }
     }
     pub fn get_address(&self) -> IpAddr {

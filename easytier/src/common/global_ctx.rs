@@ -61,6 +61,11 @@ pub enum GlobalCtxEvent {
     ListenerAcceptFailed(url::Url, String), // (url, error message)
     ConnectionAccepted(String, String),  // (local url, remote url)
     ConnectionError(String, String, String), // (local url, remote url, error message)
+    ListenerPortMappingEstablished {
+        local_listener: url::Url,
+        mapped_listener: url::Url,
+        backend: String,
+    },
 
     Connecting(url::Url),
     ConnectError(String, String, String), // (dst, ip version, error message)

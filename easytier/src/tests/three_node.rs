@@ -258,6 +258,102 @@ pub async fn drop_insts(insts: Vec<Instance>) {
     while set.join_next().await.is_some() {}
 }
 
+mod direct_connector_mapped_listener_tests {
+    use std::sync::Arc;
+
+    use crate::{
+        common::{
+            config::{ConfigLoader, TomlConfigLoader},
+            global_ctx::GlobalCtx,
+            stun::MockStunInfoCollector,
+        },
+        connector::direct::DirectConnectorManager,
+        instance::listeners::ListenerManager,
+        peers::{
+            create_packet_recv_chan,
+            peer_manager::{PeerManager, RouteAlgoType},
+            tests::{
+                connect_peer_manager, create_mock_peer_manager, wait_route_appear,
+                wait_route_appear_with_cost,
+            },
+        },
+        proto::{common::NatType, peer_rpc::GetIpListResponse},
+        tests::TestNetnsGuard,
+    };
+
+    async fn create_mock_peer_manager_in_netns(netns: &str) -> Arc<PeerManager> {
+        let (s, _r) = create_packet_recv_chan();
+        let config = TomlConfigLoader::default();
+        config.set_netns(Some(netns.to_owned()));
+        let global_ctx = Arc::new(GlobalCtx::new(config));
+        global_ctx.replace_stun_info_collector(Box::new(MockStunInfoCollector {
+            udp_nat_type: NatType::Unknown,
+        }));
+
+        let peer_mgr = Arc::new(PeerManager::new(RouteAlgoType::Ospf, global_ctx, s));
+        peer_mgr.run().await.unwrap();
+        peer_mgr
+    }
+
+    async fn run_direct_connector_mapped_listener_without_port_test(
+        mapped_listener: &str,
+        listener: &str,
+    ) {
+        let ns_name = "dmlp";
+        let mut _ns = TestNetnsGuard::new(ns_name, "10.199.0.2/24", "fd99::2/64");
+        _ns.set_host_ipv4("10.199.0.1/24");
+
+        let p_a = create_mock_peer_manager().await;
+        let p_b = create_mock_peer_manager().await;
+        let p_c = create_mock_peer_manager_in_netns(ns_name).await;
+        connect_peer_manager(p_a.clone(), p_b.clone()).await;
+        connect_peer_manager(p_b.clone(), p_c.clone()).await;
+
+        wait_route_appear(p_a.clone(), p_c.clone()).await.unwrap();
+
+        let mut f = p_a.get_global_ctx().get_flags();
+        f.bind_device = false;
+        p_a.get_global_ctx().set_flags(f);
+
+        p_c.get_global_ctx()
+            .config
+            .set_mapped_listeners(Some(vec![mapped_listener.parse().unwrap()]));
+
+        p_c.get_global_ctx()
+            .config
+            .set_listeners(vec![listener.parse().unwrap()]);
+        let mut lis_c = ListenerManager::new(p_c.get_global_ctx(), p_c.clone());
+        lis_c.prepare_listeners().await.unwrap();
+        lis_c.run().await.unwrap();
+
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+        let dm_a = DirectConnectorManager::new(p_a.get_global_ctx(), p_a.clone());
+        let mut ip_list = GetIpListResponse::default();
+        ip_list.listeners.push(mapped_listener.parse().unwrap());
+        dm_a.try_direct_connect_with_ip_list(p_c.my_peer_id(), ip_list)
+            .await
+            .unwrap();
+
+        wait_route_appear_with_cost(p_a.clone(), p_c.my_peer_id(), Some(1))
+            .await
+            .unwrap();
+    }
+
+    #[rstest::rstest]
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn direct_connector_mapped_listener_without_port(
+        #[values(
+            ("tcp://10.199.0.2", "tcp://0.0.0.0:11010"),
+            ("ws://10.199.0.2", "ws://0.0.0.0:80"),
+            ("wss://10.199.0.2", "wss://0.0.0.0:443")
+        )]
+        case: (&str, &str),
+    ) {
+        run_direct_connector_mapped_listener_without_port_test(case.0, case.1).await;
+    }
+}
+
 async fn ping_test(from_netns: &str, target_ip: &str, payload_size: Option<usize>) -> bool {
     let _g = NetNS::new(Some(ROOT_NETNS_NAME.to_owned())).guard();
     let code = tokio::process::Command::new("ip")
@@ -779,10 +875,8 @@ pub async fn data_compress(
 #[tokio::test]
 #[serial_test::serial]
 pub async fn proxy_three_node_disconnect_test(#[values("tcp", "wg")] proto: &str) {
-    use crate::{
-        common::scoped_task::ScopedTask,
-        tunnel::wireguard::{WgConfig, WgTunnelConnector},
-    };
+    use crate::tunnel::wireguard::{WgConfig, WgTunnelConnector};
+    use tokio_util::task::AbortOnDropHandle;
 
     let insts = init_three_node(proto).await;
     let mut inst4 = Instance::new(get_inst_config(
@@ -838,7 +932,7 @@ pub async fn proxy_three_node_disconnect_test(#[values("tcp", "wg")] proto: &str
             .await;
 
             set_link_status("net_d", false);
-            let _t = ScopedTask::from(tokio::spawn(async move {
+            let _t = AbortOnDropHandle::new(tokio::spawn(async move {
                 // do some ping in net_a to trigger net_c pingpong
                 loop {
                     ping_test("net_a", "10.144.144.4", Some(1)).await;

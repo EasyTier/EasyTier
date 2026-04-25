@@ -13,6 +13,12 @@ enum NetworkingMethod {
   Standalone = 2;
 }
 
+enum ConfigSource {
+  ConfigSourceUnspecified = 0;
+  ConfigSourceUser = 1;
+  ConfigSourceWebhook = 2;
+}
+
 message NetworkConfig {
   optional string instance_id = 1;
 
@@ -89,6 +95,7 @@ message NetworkConfig {
   optional bool lazy_p2p = 58;
   optional bool need_p2p = 59;
   optional uint64 instance_recv_bps_limit = 60;
+  optional bool disable_upnp = 61;
 }
 
 message PortForwardConfig {
@@ -131,6 +138,7 @@ message NetworkMeta {
   string network_name = 2;
   uint32 config_permission = 3;
   string instance_name = 4;
+  ConfigSource source = 5;
 }
 
 message ValidateConfigRequest { NetworkConfig config = 1; }
@@ -141,6 +149,7 @@ message RunNetworkInstanceRequest {
   common.UUID inst_id = 1;
   NetworkConfig config = 2;
   bool overwrite = 3;
+  ConfigSource source = 4;
 }
 
 message RunNetworkInstanceResponse { common.UUID inst_id = 1; }
@@ -167,7 +176,10 @@ message DeleteNetworkInstanceResponse {
 
 message GetNetworkInstanceConfigRequest { common.UUID inst_id = 1; }
 
-message GetNetworkInstanceConfigResponse { NetworkConfig config = 1; }
+message GetNetworkInstanceConfigResponse {
+  NetworkConfig config = 1;
+  ConfigSource source = 2;
+}
 
 message ListNetworkInstanceMetaRequest { repeated common.UUID inst_ids = 1; }
 

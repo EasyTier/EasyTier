@@ -19,9 +19,10 @@ use crate::{
     common::stun::StunInfoCollector,
     proto::{
         acl::Acl,
+        api::manage::ConfigSource as RpcConfigSource,
         common::{CompressionAlgoPb, PortForwardConfigPb, SecureModeConfig, SocketType},
     },
-    tunnel::generate_digest_from_str,
+    tunnel::{IpScheme, TunnelScheme, generate_digest_from_str},
     utils,
 };
 
@@ -71,7 +72,38 @@ pub fn gen_default_flags() -> Flags {
         disable_sym_hole_punching: false,
         need_p2p: false,
         instance_recv_bps_limit: u64::MAX,
+        disable_upnp: false,
     }
+}
+
+fn mapped_listener_allows_implicit_port(url: &url::Url) -> bool {
+    TunnelScheme::try_from(url)
+        .ok()
+        .and_then(|scheme| IpScheme::try_from(scheme).ok())
+        .is_some()
+}
+
+pub fn validate_mapped_listener_url(url: &url::Url) -> Result<(), anyhow::Error> {
+    if url.port().is_none() && !mapped_listener_allows_implicit_port(url) {
+        anyhow::bail!("mapped listener port is missing: {}", url);
+    }
+
+    Ok(())
+}
+
+pub fn parse_mapped_listener_urls(
+    mapped_listeners: &[String],
+) -> Result<Vec<url::Url>, anyhow::Error> {
+    mapped_listeners
+        .iter()
+        .map(|s| {
+            let url: url::Url = s
+                .parse()
+                .with_context(|| format!("mapped listener is not a valid url: {}", s))?;
+            validate_mapped_listener_url(&url)?;
+            Ok(url)
+        })
+        .collect()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Display, EnumString, VariantArray)]
@@ -218,6 +250,11 @@ pub trait ConfigLoader: Send + Sync + DnsConfigLoaderExt {
     }
     fn set_credential_file(&self, _path: Option<std::path::PathBuf>) {}
 
+    fn get_network_config_source(&self) -> ConfigSource {
+        ConfigSource::User
+    }
+    fn set_network_config_source(&self, _source: Option<ConfigSource>) {}
+
     fn dump(&self) -> String;
 }
 
@@ -235,6 +272,55 @@ pub struct NetworkIdentity {
     pub network_secret: Option<String>,
     #[serde(skip)]
     pub network_secret_digest: Option<NetworkSecretDigest>,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ConfigSource {
+    #[default]
+    User,
+    Webhook,
+}
+
+impl ConfigSource {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::User => "user",
+            Self::Webhook => "webhook",
+        }
+    }
+
+    pub fn from_rpc(source: i32) -> Option<Self> {
+        match RpcConfigSource::try_from(source).ok() {
+            Some(RpcConfigSource::Webhook) => Some(Self::Webhook),
+            Some(RpcConfigSource::User) => Some(Self::User),
+            _ => None,
+        }
+    }
+
+    pub fn to_rpc(self) -> i32 {
+        match self {
+            Self::User => RpcConfigSource::User as i32,
+            Self::Webhook => RpcConfigSource::Webhook as i32,
+        }
+    }
+}
+
+impl std::str::FromStr for ConfigSource {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "user" => Ok(Self::User),
+            "webhook" => Ok(Self::Webhook),
+            other => Err(format!("unknown network config source: {other}")),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+struct ConfigSourceConfig {
+    source: ConfigSource,
 }
 
 #[derive(Eq, PartialEq, Hash)]
@@ -481,6 +567,7 @@ struct Config {
     stun_servers_v6: Option<Vec<String>>,
 
     credential_file: Option<PathBuf>,
+    source: Option<ConfigSourceConfig>,
 }
 
 #[derive(Debug, Clone)]
@@ -495,9 +582,20 @@ impl Default for TomlConfigLoader {
 }
 
 impl TomlConfigLoader {
+    fn normalize_config_source(config: &mut Config) {
+        if matches!(
+            config.source.as_ref().map(|source| source.source),
+            Some(ConfigSource::User)
+        ) {
+            config.source = None;
+        }
+    }
+
     pub fn new_from_str(config_str: &str) -> Result<Self, anyhow::Error> {
         let mut config = toml::de::from_str::<Config>(config_str)
             .with_context(|| format!("failed to parse config file: {}", config_str))?;
+
+        Self::normalize_config_source(&mut config);
 
         config.flags_struct = Some(Self::gen_flags(config.flags.clone().unwrap_or_default()));
 
@@ -888,6 +986,23 @@ impl ConfigLoader for TomlConfigLoader {
         self.config.lock().unwrap().credential_file = path;
     }
 
+    fn get_network_config_source(&self) -> ConfigSource {
+        self.config
+            .lock()
+            .unwrap()
+            .source
+            .as_ref()
+            .map(|source| source.source)
+            .unwrap_or(ConfigSource::User)
+    }
+
+    fn set_network_config_source(&self, source: Option<ConfigSource>) {
+        self.config.lock().unwrap().source = source.and_then(|source| match source {
+            ConfigSource::User => None,
+            other => Some(ConfigSourceConfig { source: other }),
+        });
+    }
+
     fn dump(&self) -> String {
         let default_flags_json = serde_json::to_string(&gen_default_flags()).unwrap();
         let default_flags_hashmap =
@@ -909,6 +1024,7 @@ impl ConfigLoader for TomlConfigLoader {
         }
 
         let mut config = self.config.lock().unwrap().clone();
+        Self::normalize_config_source(&mut config);
         config.flags = Some(flag_map);
         if config.stun_servers == Some(StunInfoCollector::get_default_servers()) {
             config.stun_servers = None;
@@ -1145,6 +1261,77 @@ stun_servers = [
         assert_eq!(stun_servers[0], "stun.l.google.com:19302");
         assert_eq!(stun_servers[1], "stun1.l.google.com:19302");
         assert_eq!(stun_servers[2], "txt:stun.easytier.cn");
+    }
+
+    #[test]
+    fn test_network_config_source_toml_roundtrip() {
+        let config = TomlConfigLoader::default();
+        assert_eq!(config.get_network_config_source(), ConfigSource::User);
+
+        config.set_network_config_source(Some(ConfigSource::Webhook));
+        let dumped = config.dump();
+
+        assert!(dumped.contains("[source]"));
+        assert!(dumped.contains("source = \"webhook\""));
+
+        let loaded = TomlConfigLoader::new_from_str(&dumped).unwrap();
+        assert_eq!(loaded.get_network_config_source(), ConfigSource::Webhook);
+    }
+
+    #[test]
+    fn test_parse_mapped_listener_urls_allows_ws_without_port() {
+        let parsed = parse_mapped_listener_urls(&[
+            "ws://example.com".to_string(),
+            "wss://example.com/path".to_string(),
+        ])
+        .unwrap();
+
+        assert_eq!(parsed.len(), 2);
+        assert_eq!(parsed[0].scheme(), "ws");
+        assert_eq!(parsed[0].port(), None);
+        assert_eq!(parsed[1].scheme(), "wss");
+        assert_eq!(parsed[1].port(), None);
+    }
+
+    #[test]
+    fn test_parse_mapped_listener_urls_allows_tcp_without_port() {
+        let parsed = parse_mapped_listener_urls(&["tcp://127.0.0.1".to_string()]).unwrap();
+
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0].scheme(), "tcp");
+        assert_eq!(parsed[0].port(), None);
+    }
+
+    #[test]
+    fn test_parse_mapped_listener_urls_requires_port_for_non_ip_scheme() {
+        let err = parse_mapped_listener_urls(&["ring://peer-id".to_string()]).unwrap_err();
+
+        assert!(err.to_string().contains("mapped listener port is missing"));
+    }
+
+    #[test]
+    fn test_network_config_source_user_is_implicit() {
+        let config = TomlConfigLoader::default();
+        config.set_network_config_source(Some(ConfigSource::User));
+        let dumped = config.dump();
+
+        assert!(!dumped.contains("[source]"));
+
+        let loaded = TomlConfigLoader::new_from_str(&dumped).unwrap();
+        assert_eq!(loaded.get_network_config_source(), ConfigSource::User);
+
+        let explicit_user = TomlConfigLoader::new_from_str(
+            r#"
+[source]
+source = "user"
+"#,
+        )
+        .unwrap();
+        assert_eq!(
+            explicit_user.get_network_config_source(),
+            ConfigSource::User
+        );
+        assert!(!explicit_user.dump().contains("[source]"));
     }
 
     #[tokio::test]

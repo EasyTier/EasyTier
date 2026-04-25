@@ -17,12 +17,12 @@ use axum_login::tower_sessions::{ExpiredDeletion, SessionManagerLayer};
 use axum_login::{AuthManagerLayerBuilder, AuthUser, AuthzBackend, login_required};
 use axum_messages::MessagesManagerLayer;
 use easytier::common::config::{ConfigLoader, TomlConfigLoader};
-use easytier::common::scoped_task::ScopedTask;
 use easytier::launcher::NetworkConfig;
 use easytier::proto::rpc_types;
 use network::NetworkApi;
 use sea_orm::DbErr;
 use tokio::net::TcpListener;
+use tokio_util::task::AbortOnDropHandle;
 use tower_sessions::Expiry;
 use tower_sessions::cookie::time::Duration;
 use tower_sessions::cookie::{Key, SameSite};
@@ -199,8 +199,8 @@ impl RestfulServer {
         mut self,
     ) -> Result<
         (
-            ScopedTask<()>,
-            ScopedTask<tower_sessions::session_store::Result<()>>,
+            AbortOnDropHandle<()>,
+            AbortOnDropHandle<tower_sessions::session_store::Result<()>>,
         ),
         anyhow::Error,
     > {
@@ -213,13 +213,11 @@ impl RestfulServer {
         let session_store = SqliteStore::new(self.db.inner());
         session_store.migrate().await?;
 
-        let delete_task: ScopedTask<tower_sessions::session_store::Result<()>> =
-            tokio::task::spawn(
-                session_store
-                    .clone()
-                    .continuously_delete_expired(tokio::time::Duration::from_secs(60)),
-            )
-            .into();
+        let delete_task = AbortOnDropHandle::new(tokio::task::spawn(
+            session_store
+                .clone()
+                .continuously_delete_expired(tokio::time::Duration::from_secs(60)),
+        ));
 
         // Generate a cryptographic key to sign the session cookie.
         let key = Key::generate();
@@ -298,10 +296,9 @@ impl RestfulServer {
             app
         };
 
-        let serve_task: ScopedTask<()> = tokio::spawn(async move {
+        let serve_task = AbortOnDropHandle::new(tokio::spawn(async move {
             axum::serve(listener, app).await.unwrap();
-        })
-        .into();
+        }));
 
         Ok((serve_task, delete_task))
     }
