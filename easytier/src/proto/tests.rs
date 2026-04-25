@@ -424,11 +424,11 @@ async fn standalone_rpc_test() {
 
 #[tokio::test]
 async fn test_bidirect_rpc_manager() {
-    use crate::common::scoped_task::ScopedTask;
     use crate::proto::rpc_impl::bidirect::BidirectRpcManager;
     use crate::tunnel::tcp::{TcpTunnelConnector, TcpTunnelListener};
     use crate::tunnel::{TunnelConnector, TunnelListener};
     use tokio::sync::Notify;
+    use tokio_util::task::AbortOnDropHandle;
 
     let c = BidirectRpcManager::new();
     let s = BidirectRpcManager::new();
@@ -448,7 +448,7 @@ async fn test_bidirect_rpc_manager() {
     let server_test_done = Arc::new(Notify::new());
     let server_test_done_clone = server_test_done.clone();
     let mut tcp_listener = TcpTunnelListener::new("tcp://0.0.0.0:55443".parse().unwrap());
-    let s_task: ScopedTask<()> = tokio::spawn(async move {
+    let s_task = AbortOnDropHandle::new(tokio::spawn(async move {
         tcp_listener.listen().await.unwrap();
         let tunnel = tcp_listener.accept().await.unwrap();
         s.run_with_tunnel(tunnel);
@@ -471,8 +471,7 @@ async fn test_bidirect_rpc_manager() {
         server_test_done_clone.notify_one();
 
         s.wait().await;
-    })
-    .into();
+    }));
 
     tokio::time::sleep(std::time::Duration::from_secs(1)).await;
 

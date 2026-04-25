@@ -1606,7 +1606,6 @@ pub mod tests {
     use crate::common::global_ctx::GlobalCtx;
     use crate::common::global_ctx::tests::get_mock_global_ctx;
     use crate::common::new_peer_id;
-    use crate::common::scoped_task::ScopedTask;
     use crate::common::stats_manager::{LabelSet, LabelType, MetricName};
     use crate::peers::create_packet_recv_chan;
     use crate::peers::recv_packet_from_chan;
@@ -1614,6 +1613,7 @@ pub mod tests {
     use crate::tunnel::filter::PacketRecorderTunnelFilter;
     use crate::tunnel::filter::tests::DropSendTunnelFilter;
     use crate::tunnel::ring::create_ring_tunnel_pair;
+    use tokio_util::task::AbortOnDropHandle;
 
     pub fn set_secure_mode_cfg(global_ctx: &GlobalCtx, enabled: bool) {
         if !enabled {
@@ -2200,7 +2200,7 @@ pub mod tests {
         c_peer.start_recv_loop(create_packet_recv_chan().0).await;
 
         let throughput = c_peer.throughput.clone();
-        let _t = ScopedTask::from(tokio::spawn(async move {
+        let _t = AbortOnDropHandle::new(tokio::spawn(async move {
             // if not drop both, we mock some rx traffic for client peer to test pinger
             if drop_both {
                 return;
