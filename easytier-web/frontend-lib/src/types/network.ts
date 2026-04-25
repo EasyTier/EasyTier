@@ -152,6 +152,8 @@ export interface NetworkConfig {
   enable_magic_dns?: boolean
   enable_private_mode?: boolean
 
+  default_protocol?: string
+
   port_forwards: PortForwardConfig[]
   acl?: Acl
 }
@@ -220,6 +222,7 @@ export function DEFAULT_NETWORK_CONFIG(): NetworkConfig {
     mapped_listeners: [],
     enable_magic_dns: false,
     enable_private_mode: false,
+    default_protocol: 'tcp',
     port_forwards: [],
     acl: {
       acl_v1: {

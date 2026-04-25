@@ -702,6 +702,9 @@ impl NetworkConfig {
         }
 
         let mut flags = gen_default_flags();
+        if let Some(default_protocol) = self.default_protocol.clone() {
+            flags.default_protocol = default_protocol;
+        }
         if let Some(latency_first) = self.latency_first {
             flags.latency_first = latency_first;
         }
