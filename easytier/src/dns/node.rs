@@ -15,7 +15,7 @@ use crate::tunnel::tcp::{TcpTunnelConnector, TcpTunnelListener};
 use crate::utils::task::CancellableTask;
 use std::sync::Arc;
 use tokio::sync::{Notify, broadcast};
-use tokio::task::{JoinError, JoinSet};
+use tokio::task::JoinSet;
 use tokio::time::{Instant, sleep, sleep_until};
 use tokio_util::sync::CancellationToken;
 use tracing::instrument;
@@ -244,7 +244,7 @@ impl DnsNode {
         Self { runtime, task }
     }
 
-    pub async fn stop(self) -> Result<(), JoinError> {
+    pub async fn stop(self) -> std::io::Result<()> {
         self.task.stop(None).await
     }
 }
