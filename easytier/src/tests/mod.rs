@@ -108,6 +108,58 @@ pub fn create_netns(name: &str, ipv4: &str, ipv6: &str) {
     }
 }
 
+pub struct TestNetnsGuard {
+    name: String,
+    host_ipv4: Option<String>,
+}
+
+impl TestNetnsGuard {
+    fn run_ip(args: &[&str]) {
+        let status = std::process::Command::new("ip")
+            .args(args)
+            .status()
+            .unwrap();
+        assert!(status.success(), "ip command failed: {:?}", args);
+    }
+
+    pub fn new(name: &str, guest_ipv4: &str, guest_ipv6: &str) -> Self {
+        del_netns(name);
+        create_netns(name, guest_ipv4, guest_ipv6);
+        Self {
+            name: name.to_string(),
+            host_ipv4: None,
+        }
+    }
+
+    pub fn set_host_ipv4(&mut self, host_ipv4: &str) {
+        Self::run_ip(&[
+            "addr",
+            "add",
+            host_ipv4,
+            "dev",
+            get_host_veth_name(&self.name),
+        ]);
+        self.host_ipv4 = Some(host_ipv4.to_string());
+    }
+}
+
+impl Drop for TestNetnsGuard {
+    fn drop(&mut self) {
+        if let Some(host_ipv4) = self.host_ipv4.as_deref() {
+            let _ = std::process::Command::new("ip")
+                .args([
+                    "addr",
+                    "del",
+                    host_ipv4,
+                    "dev",
+                    get_host_veth_name(&self.name),
+                ])
+                .status();
+        }
+        del_netns(&self.name);
+    }
+}
+
 pub fn prepare_bridge(name: &str) {
     // del bridge with brctl
     let _ = std::process::Command::new("brctl")
