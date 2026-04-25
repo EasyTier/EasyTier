@@ -6,7 +6,7 @@ use winreg::RegKey;
 
 use crate::common::ifcfg::RegistryManager;
 
-use super::{OSConfig, SystemConfig};
+use super::{SystemConfig, SystemConfigurator};
 
 pub fn is_windows_10_or_better() -> io::Result<bool> {
     let hklm = winreg::enums::HKEY_LOCAL_MACHINE;
@@ -19,6 +19,7 @@ pub fn is_windows_10_or_better() -> io::Result<bool> {
 }
 
 // 假设 interface_guid 是你的网络接口 GUID
+#[derive(Clone)]
 pub struct InterfaceControl {
     interface_guid: String,
 }
@@ -125,6 +126,7 @@ impl InterfaceControl {
     }
 }
 
+#[derive(Clone)]
 pub struct WindowsDNSManager {
     tun_dev_name: String,
     interface_control: InterfaceControl,
@@ -146,8 +148,8 @@ impl WindowsDNSManager {
     }
 }
 
-impl SystemConfig for WindowsDNSManager {
-    fn set_dns(&self, cfg: &OSConfig) -> io::Result<()> {
+impl SystemConfigurator for WindowsDNSManager {
+    fn set_dns(&self, cfg: &SystemConfig) -> io::Result<()> {
         self.set_primary_dns(
             &cfg.nameservers
                 .iter()
@@ -158,44 +160,48 @@ impl SystemConfig for WindowsDNSManager {
         Ok(())
     }
 
-    fn close(&self) -> io::Result<()> {
+    fn clean(&self) -> io::Result<()> {
         Ok(())
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, target_os = "windows", feature = "magic-dns", feature = "tun"))]
 mod tests {
     use cidr::Ipv4Inet;
+    use std::net::IpAddr;
 
-    #[cfg(target_os = "windows")]
     #[tokio::test]
     async fn test_windows_set_primary_server() {
-        use std::{net::Ipv4Addr, str::FromStr as _, time::Duration};
+        use std::{str::FromStr as _, sync::Arc, time::Duration};
 
-        use tokio_util::sync::CancellationToken;
-
-        use crate::instance::dns_server::{
-            runner::DnsRunner,
-            tests::{check_dns_record, prepare_env},
+        use crate::dns::{
+            config::DNS_DEFAULT_ADDRESS,
+            tests::{prepare_env, start_dns_node},
         };
+        use crate::instance::proxy_cidrs_monitor::ProxyCidrsMonitor;
+        use crate::instance::virtual_nic::NicCtx;
+        use crate::peers::peer_manager::PeerManager;
 
         let tun_ip = Ipv4Inet::from_str("10.144.144.10/24").unwrap();
-        let (peer_mgr, virtual_nic) = prepare_env("test1", tun_ip).await;
+        let (peer_mgr, virtual_nic): (Arc<PeerManager>, NicCtx) =
+            prepare_env("test1", tun_ip).await;
         let tun_name = virtual_nic.ifname().await.unwrap();
 
+        // prepare_env does not run full Instance::run, so start the monitor explicitly in test.
+        let _monitor = ProxyCidrsMonitor::new(peer_mgr.clone(), peer_mgr.get_global_ctx()).start();
+
+        let dns_node = start_dns_node(peer_mgr, virtual_nic);
+
         println!("dev_name: {}", tun_name);
-        let fake_ip = Ipv4Addr::from_str("100.100.100.101").unwrap();
-        let mut dns_runner = DnsRunner::new(peer_mgr, Some(tun_name.clone()), tun_ip, fake_ip);
+        let fake_ip = match DNS_DEFAULT_ADDRESS.addr.ip() {
+            IpAddr::V4(ip) => ip,
+            IpAddr::V6(ip) => panic!("unexpected ipv6 default dns address in test: {ip}"),
+        };
 
-        let cancel_token = CancellationToken::new();
-        let cancel_token_clone = cancel_token.clone();
-        let t = tokio::spawn(async move {
-            dns_runner.run(cancel_token_clone).await;
-        });
-
-        // windows is slow to add a ip address, wait for a longer time for dns server ready ,with ping
+        // Windows may take a while to attach the test IP; wait until ping succeeds.
         let now = std::time::Instant::now();
-        while now.elapsed() < Duration::from_secs(15) {
+        let mut ping_ready = false;
+        while now.elapsed() < Duration::from_secs(5) {
             tokio::time::sleep(Duration::from_secs(1)).await;
             if let Ok(o) = tokio::process::Command::new("ping")
                 .arg("-n")
@@ -207,11 +213,49 @@ mod tests {
                 .await
                 && o.status.success()
             {
+                ping_ready = true;
                 break;
             }
         }
+        if !ping_ready {
+            tracing::warn!(
+                "dns test endpoint {} did not respond to ping in time; continue with dns checks",
+                fake_ip
+            );
+        }
 
-        check_dns_record(&fake_ip, "test1.et.net", "10.144.144.10").await;
+        // First verify the DNS node can answer queries when explicitly targeting it.
+        let direct_lookup_deadline = std::time::Instant::now() + Duration::from_secs(3);
+        let mut direct_lookup_ok = false;
+        let mut last_direct_output = String::new();
+
+        while std::time::Instant::now() < direct_lookup_deadline {
+            let result = tokio::time::timeout(
+                Duration::from_secs(3),
+                tokio::process::Command::new("nslookup")
+                    .arg("test1.et.net")
+                    .arg(fake_ip.to_string())
+                    .output(),
+            )
+            .await;
+
+            if let Ok(Ok(ret)) = result {
+                let output = String::from_utf8_lossy(&ret.stdout).to_string();
+                println!("direct nslookup output: {}", output);
+                if ret.status.success() && output.contains("10.144.144.10") {
+                    direct_lookup_ok = true;
+                    break;
+                }
+                last_direct_output = output;
+            }
+
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+
+        assert!(
+            direct_lookup_ok,
+            "direct nslookup against dns server did not return expected IP in time; last output: {last_direct_output}"
+        );
 
         let dns_mgr = super::WindowsDNSManager::new(&tun_name).unwrap();
         println!("dev_name: {}", tun_name);
@@ -219,27 +263,44 @@ mod tests {
 
         dns_mgr
             .interface_control
-            .set_primary_dns(
-                &["100.100.100.101".parse().unwrap()],
-                &[".et.net.".to_string()],
-            )
+            .set_primary_dns(&[fake_ip.into()], &[".et.net.".to_string()])
             .unwrap();
         dns_mgr.interface_control.flush_dns().unwrap();
 
         tracing::info!("check dns record with nslookup");
 
-        // nslookup should return 10.144.144.10
-        let ret = tokio::process::Command::new("nslookup")
-            .arg("test1.et.net")
-            .output()
-            .await
-            .expect("failed to execute process");
-        assert!(ret.status.success());
-        let output = String::from_utf8_lossy(&ret.stdout);
-        println!("nslookup output: {}", output);
-        assert!(output.contains("10.144.144.10"));
+        // nslookup should eventually return 10.144.144.10 after system DNS setting propagation.
+        let lookup_deadline = std::time::Instant::now() + Duration::from_secs(30);
+        let mut lookup_ok = false;
+        let mut last_output = String::new();
 
-        cancel_token.cancel();
-        let _ = t.await;
+        while std::time::Instant::now() < lookup_deadline {
+            let result = tokio::time::timeout(
+                Duration::from_secs(3),
+                tokio::process::Command::new("nslookup")
+                    .arg("test1.et.net")
+                    .output(),
+            )
+            .await;
+
+            if let Ok(Ok(ret)) = result {
+                let output = String::from_utf8_lossy(&ret.stdout).to_string();
+                println!("nslookup output: {}", output);
+                if ret.status.success() && output.contains("10.144.144.10") {
+                    lookup_ok = true;
+                    break;
+                }
+                last_output = output;
+            }
+
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+
+        assert!(
+            lookup_ok,
+            "nslookup did not return expected IP in time; last output: {last_output}"
+        );
+
+        dns_node.stop().await.unwrap();
     }
 }

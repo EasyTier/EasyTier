@@ -12,7 +12,7 @@ use tokio_util::task::AbortOnDropHandle;
 // region CancellableTask
 
 #[derive(Debug)]
-pub struct CancellableTask<Output> {
+pub struct CancellableTask<Output = ()> {
     handle: AbortOnDropHandle<Output>,
     token: CancellationToken,
 }

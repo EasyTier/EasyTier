@@ -316,6 +316,8 @@ fn handle_event(
                         event!(info, peer_id, "[{}] peer removed", instance_id);
                     }
 
+                    GlobalCtxEvent::PeerInfoUpdated(_) => {}
+
                     GlobalCtxEvent::PeerConnAdded(conn_info) => {
                         event!(
                             info,

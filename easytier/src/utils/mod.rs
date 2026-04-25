@@ -1,3 +1,5 @@
+pub mod dirty;
+pub mod dns;
 pub mod guard;
 pub mod panic;
 pub mod string;
@@ -20,6 +22,13 @@ pub fn find_free_tcp_port(mut range: std::ops::Range<u16>) -> Option<u16> {
 pub fn weak_upgrade<T>(weak: &Weak<T>) -> anyhow::Result<Arc<T>> {
     weak.upgrade()
         .ok_or_else(|| anyhow::anyhow!("{} not available", std::any::type_name::<T>()))
+}
+
+pub fn hostname() -> String {
+    hostname::get()
+        .unwrap_or_else(|_| "localhost".into())
+        .to_string_lossy()
+        .into_owned()
 }
 
 pub trait BoxExt: Sized {
