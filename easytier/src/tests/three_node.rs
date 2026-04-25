@@ -477,6 +477,26 @@ pub async fn basic_three_node_test(
 
 #[tokio::test]
 #[serial_test::serial]
+pub async fn ping_own_virtual_ip_should_work() {
+    let insts = init_three_node("udp").await;
+
+    wait_for_condition(
+        || async { ping_test("net_a", "10.144.144.1", None).await },
+        Duration::from_secs(5),
+    )
+    .await;
+
+    wait_for_condition(
+        || async { ping6_test("net_a", "fd00::1", None).await },
+        Duration::from_secs(5),
+    )
+    .await;
+
+    drop_insts(insts).await;
+}
+
+#[tokio::test]
+#[serial_test::serial]
 pub async fn subnet_proxy_loop_prevention_test() {
     // 测试场景：inst1 和 inst2 都代理了 10.1.2.0/24 网段，
     // inst1 发起对 10.1.2.5 的 ping，不应该出现环路
