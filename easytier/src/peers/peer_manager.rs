@@ -1657,8 +1657,12 @@ impl PeerManager {
 
             #[cfg(not(target_env = "ohos"))]
             {
-                if not_send_to_self && *peer_id == self.my_peer_id {
-                    // the packet may be sent to vpn portal, so we just set flags instead of drop it
+                if not_send_to_self
+                    && *peer_id == self.my_peer_id
+                    && !self.global_ctx.is_ip_local_virtual_ip(&ip_addr)
+                {
+                    // Keep the loop-prevention flags for proxy-induced self-delivery where
+                    // the destination is not this node's own virtual IP.
                     hdr.set_not_send_to_tun(true);
                     hdr.set_no_proxy(true);
                 }
