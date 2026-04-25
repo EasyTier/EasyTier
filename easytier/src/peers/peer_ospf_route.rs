@@ -270,7 +270,7 @@ impl RoutePeerInfo {
                 .unwrap_or(24),
 
             ipv6_addr: global_ctx.get_ipv6().map(|x| x.into()),
-            ipv6_public_addr_prefix: global_ctx.config.get_ipv6_public_addr_prefix().map(
+            ipv6_public_addr_prefix: global_ctx.get_advertised_ipv6_public_addr_prefix().map(
                 |prefix| {
                     Ipv6Inet::new(prefix.first_address(), prefix.network_length())
                         .unwrap()

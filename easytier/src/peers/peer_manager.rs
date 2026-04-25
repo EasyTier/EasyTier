@@ -1888,6 +1888,14 @@ impl PeerManager {
             feature_flag: Some(self.global_ctx.get_feature_flags()),
             ip_list: Some(self.global_ctx.get_ip_collector().collect_ip_addrs().await),
             public_ipv6_addr: self.get_my_public_ipv6_addr().await.map(Into::into),
+            ipv6_public_addr_prefix: self
+                .global_ctx
+                .get_advertised_ipv6_public_addr_prefix()
+                .map(|prefix| {
+                    cidr::Ipv6Inet::new(prefix.first_address(), prefix.network_length())
+                        .unwrap()
+                        .into()
+                }),
         }
     }
 

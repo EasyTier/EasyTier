@@ -102,6 +102,7 @@ message NodeInfo {
   common.PeerFeatureFlag feature_flag = 10;
   peer_rpc.GetIpListResponse ip_list = 11;
   common.Ipv6Inet public_ipv6_addr = 12;
+  common.Ipv6Inet ipv6_public_addr_prefix = 13;
 }
 
 message ShowNodeInfoRequest { InstanceIdentifier instance = 1; }

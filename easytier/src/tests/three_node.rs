@@ -766,8 +766,7 @@ pub async fn public_ipv6_auto_addr_end_to_end() {
         || async {
             provider
                 .get_global_ctx()
-                .config
-                .get_ipv6_public_addr_prefix()
+                .get_advertised_ipv6_public_addr_prefix()
                 == Some(PublicIpv6Lab::PROVIDER_PREFIX.parse().unwrap())
         },
         Duration::from_secs(10),
@@ -782,7 +781,31 @@ pub async fn public_ipv6_auto_addr_end_to_end() {
             .get_global_ctx()
             .config
             .get_ipv6_public_addr_prefix(),
+        None
+    );
+    assert_eq!(
+        provider
+            .get_global_ctx()
+            .get_advertised_ipv6_public_addr_prefix(),
         Some(PublicIpv6Lab::PROVIDER_PREFIX.parse().unwrap())
+    );
+    let provider_prefix = PublicIpv6Lab::PROVIDER_PREFIX
+        .parse::<cidr::Ipv6Cidr>()
+        .unwrap();
+    assert_eq!(
+        provider
+            .get_peer_manager()
+            .get_my_info()
+            .await
+            .ipv6_public_addr_prefix,
+        Some(
+            cidr::Ipv6Inet::new(
+                provider_prefix.first_address(),
+                provider_prefix.network_length()
+            )
+            .unwrap()
+            .into()
+        )
     );
     assert!(
         leased.address().segments()[0] & 0xfe00 != 0xfc00,

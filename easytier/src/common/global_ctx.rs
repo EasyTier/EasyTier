@@ -211,6 +211,7 @@ pub struct GlobalCtx {
     stun_info_collection: Mutex<Arc<dyn StunInfoCollectorTrait>>,
 
     running_listeners: Mutex<Vec<url::Url>>,
+    advertised_ipv6_public_addr_prefix: Mutex<Option<cidr::Ipv6Cidr>>,
 
     flags: ArcSwap<Flags>,
 
@@ -309,6 +310,7 @@ impl GlobalCtx {
             stun_info_collection: Mutex::new(stun_info_collector),
 
             running_listeners: Mutex::new(Vec::new()),
+            advertised_ipv6_public_addr_prefix: Mutex::new(None),
 
             flags: ArcSwap::new(Arc::new(flags)),
 
@@ -381,6 +383,20 @@ impl GlobalCtx {
     pub fn set_ipv6(&self, addr: Option<cidr::Ipv6Inet>) {
         self.config.set_ipv6(addr);
         self.cached_ipv6.store(None);
+    }
+
+    pub fn get_advertised_ipv6_public_addr_prefix(&self) -> Option<cidr::Ipv6Cidr> {
+        *self.advertised_ipv6_public_addr_prefix.lock().unwrap()
+    }
+
+    pub fn set_advertised_ipv6_public_addr_prefix(&self, prefix: Option<cidr::Ipv6Cidr>) -> bool {
+        let mut guard = self.advertised_ipv6_public_addr_prefix.lock().unwrap();
+        if *guard == prefix {
+            return false;
+        }
+
+        *guard = prefix;
+        true
     }
 
     pub fn get_id(&self) -> uuid::Uuid {
