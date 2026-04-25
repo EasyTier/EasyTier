@@ -1,3 +1,4 @@
+pub mod guard;
 pub mod panic;
 pub mod string;
 pub mod task;
