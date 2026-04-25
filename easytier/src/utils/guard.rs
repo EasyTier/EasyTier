@@ -131,20 +131,29 @@ macro_rules! __guarded {
     };
 
     (@parse@async action: [ $($action:tt)* ] ; sync $($tt:tt)*) => {
-        $crate::__guarded! { @parse action: [ $($action)* ] ; async: [ false ] ; $($tt)* }
+        $crate::__guarded! { @parse@move action: [ $($action)* ] ; async: [ false ] ; $($tt)* }
     };
 
     (@parse@async action: [ $($action:tt)* ] ; $($tt:tt)*) => {
-        $crate::__guarded! { @parse action: [ $($action)* ] ; async: [ _ ] ; $($tt)* }
+        $crate::__guarded! { @parse@move action: [ $($action)* ] ; async: [ _ ] ; $($tt)* }
+    };
+
+    (@parse@move action: [ $($action:tt)* ] ; async: [ $async:tt ] ; move $($tt:tt)*) => {
+        $crate::__guarded! { @parse action: [ $($action)* ] ; async: [ $async ] ; move: [ move ] ; $($tt)* }
+    };
+
+    (@parse@move action: [ $($action:tt)* ] ; async: [ $async:tt ] ; $($tt:tt)*) => {
+        $crate::__guarded! { @parse action: [ $($action)* ] ; async: [ $async ] ; move: [] ; $($tt)* }
     };
 
     (
-        @parse action: [ $($action:tt)* ] ; async: [ $async:tt ] ;
+        @parse action: [ $($action:tt)* ] ; async: [ $async:tt ] ; move: [ $($move:tt)? ] ;
         [ $($args:tt)* ] $body:block
     ) => {
         $crate::__guarded! {
             action: [ $($action)* ]
             async: [ $async ]
+            move: [ $($move)? ]
             mut: []
             rest: [ $($args)* , ]
             args: []
@@ -154,31 +163,31 @@ macro_rules! __guarded {
     };
 
     (
-        @parse action: [ $($action:tt)* ] ; async: [ $async:tt ] ;
+        @parse action: [ $($action:tt)* ] ; async: [ $async:tt ] ; move: [ $($move:tt)? ] ;
         $body:block
     ) => {
         $crate::__guarded! {
-            @parse action: [ $($action)* ] ; async: [ $async ] ;
+            @parse action: [ $($action)* ] ; async: [ $async ] ; move: [ $($move)? ] ;
             [] $body
         }
     };
 
     (
-        @parse action: [ $($action:tt)* ] ; async: [ $async:tt ] ;
+        @parse action: [ $($action:tt)* ] ; async: [ $async:tt ] ; move: [ $($move:tt)? ] ;
         [ $($args:tt)* ] $($body:tt)*
     ) => {
         $crate::__guarded! {
-            @parse action: [ $($action)* ] ; async: [ $async ] ;
+            @parse action: [ $($action)* ] ; async: [ $async ] ; move: [ $($move)? ] ;
             [ $($args)* ] { $($body)* }
         }
     };
 
     (
-        @parse action: [ $($action:tt)* ] ; async: [ $async:tt ] ;
+        @parse action: [ $($action:tt)* ] ; async: [ $async:tt ] ; move: [ $($move:tt)? ] ;
         $($body:tt)*
     ) => {
         $crate::__guarded! {
-            @parse action: [ $($action)* ] ; async: [ $async ] ;
+            @parse action: [ $($action)* ] ; async: [ $async ] ; move: [ $($move)? ] ;
             [] { $($body)* }
         }
     };
@@ -186,6 +195,7 @@ macro_rules! __guarded {
     (
         action: [ $($action:tt)* ]
         async: [ $async:tt ]
+        move: [ $($move:tt)? ]
         mut: [ $($mut:tt)? ]
         rest: [ mut $arg:ident , $($rest:tt)* ]
         args: [ $($args:ident)* ]
@@ -195,6 +205,7 @@ macro_rules! __guarded {
         $crate::__guarded! {
             action: [ $($action)* ]
             async: [ $async ]
+            move: [ $($move)? ]
             mut: [ mut ]
             rest: [ $($rest)* ]
             args: [ $($args)* $arg ]
@@ -206,6 +217,7 @@ macro_rules! __guarded {
     (
         action: [ $($action:tt)* ]
         async: [ $async:tt ]
+        move: [ $($move:tt)? ]
         mut: [ $($mut:tt)? ]
         rest: [ $arg:ident , $($rest:tt)* ]
         args: [ $($args:ident)* ]
@@ -215,6 +227,7 @@ macro_rules! __guarded {
         $crate::__guarded! {
             action: [ $($action)* ]
             async: [ $async ]
+            move: [ $($move)? ]
             mut: [ $($mut)? ]
             rest: [ $($rest)* ]
             args: [ $($args)* $arg ]
@@ -226,6 +239,7 @@ macro_rules! __guarded {
     (
         action: [ @stmt $guard:ident ]
         async: [ $async:tt ]
+        move: [ $($move:tt)? ]
         mut: [ $($mut:tt)? ]
         rest: [ $(,)* ]
         args: [ $($args:ident)* ]
@@ -234,7 +248,7 @@ macro_rules! __guarded {
     ) => {
         let $($mut)? $guard = $crate::utils::guard::ContextGuard::<$async, _, _>::new(
             ( $($args),* ),
-            |#[allow(unused_parens, unused_mut)] ( $($($vars)*),* )| $body
+            $($move)? |#[allow(unused_parens, unused_mut)] ( $($($vars)*),* )| $body
         );
 
         #[allow(unused_parens, unused_variables, clippy::toplevel_ref_arg)]
@@ -244,6 +258,7 @@ macro_rules! __guarded {
     (
         action: [ @expr ]
         async: [ $async:tt ]
+        move: [ $($move:tt)? ]
         mut: [ $($mut:tt)? ]
         rest: [ $(,)* ]
         args: [ $($args:ident)* ]
@@ -252,7 +267,7 @@ macro_rules! __guarded {
     ) => {
         $crate::utils::guard::ContextGuard::<$async, _, _>::new(
             ( $($args),* ),
-            |#[allow(unused_parens)] ( $($($vars)*),* )| $body
+            $($move)? |#[allow(unused_parens)] ( $($($vars)*),* )| $body
         )
     };
 }
