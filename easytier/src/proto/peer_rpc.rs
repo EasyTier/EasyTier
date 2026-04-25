@@ -40,15 +40,22 @@ impl PeerGroupInfo {
 }
 
 impl TrustedCredentialPubkeyProof {
-    pub fn generate_credential_hmac(
-        credential: &TrustedCredentialPubkey,
+    pub fn generate_credential_hmac_from_bytes(
+        credential_bytes: &[u8],
         network_secret: &str,
     ) -> Vec<u8> {
         let mut mac = Hmac::<Sha256>::new_from_slice(network_secret.as_bytes())
             .expect("HMAC can take key of any size");
         mac.update(b"easytier credential proof");
-        mac.update(&credential.encode_to_vec());
+        mac.update(credential_bytes);
         mac.finalize().into_bytes().to_vec()
+    }
+
+    pub fn generate_credential_hmac(
+        credential: &TrustedCredentialPubkey,
+        network_secret: &str,
+    ) -> Vec<u8> {
+        Self::generate_credential_hmac_from_bytes(&credential.encode_to_vec(), network_secret)
     }
 
     pub fn new_signed(credential: TrustedCredentialPubkey, network_secret: &str) -> Self {
@@ -63,6 +70,14 @@ impl TrustedCredentialPubkeyProof {
         let Some(credential) = self.credential.as_ref() else {
             return false;
         };
+        self.verify_credential_hmac_with_bytes(&credential.encode_to_vec(), network_secret)
+    }
+
+    pub fn verify_credential_hmac_with_bytes(
+        &self,
+        credential_bytes: &[u8],
+        network_secret: &str,
+    ) -> bool {
         if self.credential_hmac.is_empty() {
             return false;
         }
@@ -70,7 +85,7 @@ impl TrustedCredentialPubkeyProof {
         let mut mac = Hmac::<Sha256>::new_from_slice(network_secret.as_bytes())
             .expect("HMAC can take key of any size");
         mac.update(b"easytier credential proof");
-        mac.update(&credential.encode_to_vec());
+        mac.update(credential_bytes);
         mac.verify_slice(&self.credential_hmac).is_ok()
     }
 }
@@ -300,6 +315,7 @@ mod tests {
             allow_relay: true,
             expiry_unix: 123456,
             allowed_proxy_cidrs: vec!["10.0.0.0/24".to_string()],
+            reusable: Some(true),
         };
         let tc = TrustedCredentialPubkeyProof::new_signed(credential, "sec-1");
 
@@ -315,11 +331,43 @@ mod tests {
             allow_relay: false,
             expiry_unix: 1,
             allowed_proxy_cidrs: vec![],
+            reusable: Some(true),
         };
         let tc = TrustedCredentialPubkeyProof::new_signed(credential, "sec-1");
 
         let mut tampered = tc.clone();
         tampered.credential.as_mut().unwrap().allow_relay = true;
         assert!(!tampered.verify_credential_hmac("sec-1"));
+    }
+
+    #[test]
+    fn test_trusted_credential_pubkey_hmac_with_raw_bytes() {
+        let credential = TrustedCredentialPubkey {
+            pubkey: vec![9u8; 32],
+            groups: vec!["raw".to_string()],
+            allow_relay: true,
+            expiry_unix: 123456,
+            allowed_proxy_cidrs: vec![],
+            reusable: Some(true),
+        };
+
+        let mut raw_credential_bytes = credential.encode_to_vec();
+        prost::encoding::encode_key(
+            9999,
+            prost::encoding::WireType::Varint,
+            &mut raw_credential_bytes,
+        );
+        prost::encoding::encode_varint(42, &mut raw_credential_bytes);
+
+        let proof = TrustedCredentialPubkeyProof {
+            credential: Some(credential),
+            credential_hmac: TrustedCredentialPubkeyProof::generate_credential_hmac_from_bytes(
+                &raw_credential_bytes,
+                "sec-1",
+            ),
+        };
+
+        assert!(proof.verify_credential_hmac_with_bytes(&raw_credential_bytes, "sec-1"));
+        assert!(!proof.verify_credential_hmac("sec-1"));
     }
 }

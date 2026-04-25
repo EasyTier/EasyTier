@@ -1,6 +1,6 @@
 [package]
 name = "easytier-web"
-version = "2.6.1"
+version = "2.6.2"
 edition.workspace = true
 description = "Config server for easytier. easytier-core gets config from this and web frontend use it as restful api server."
 
@@ -10,6 +10,7 @@ tracing = { version = "0.1", features = ["log"] }
 anyhow = { version = "1.0" }
 thiserror = "1.0"
 tokio = { version = "1", features = ["full"] }
+tokio-util = { version = "0.7", features = ["rt"] }
 dashmap = "6.1"
 url = "2.2"
 async-trait = "0.1"

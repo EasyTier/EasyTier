@@ -17,6 +17,7 @@ use tokio::{
     sync::mpsc::{Receiver, Sender, UnboundedReceiver, UnboundedSender},
     task::JoinSet,
 };
+use tokio_util::task::AbortOnDropHandle;
 use tracing::{Instrument, instrument};
 
 use super::{
@@ -28,7 +29,7 @@ use super::{
 };
 use crate::tunnel::common::bind;
 use crate::{
-    common::{join_joinset_background, scoped_task::ScopedTask, shrink_dashmap},
+    common::{join_joinset_background, shrink_dashmap},
     tunnel::{
         build_url_from_socket_addr,
         common::{TunnelWrapper, reserve_buf},
@@ -339,7 +340,7 @@ struct UdpConnection {
     dst_addr: SocketAddr,
 
     ring_sender: RingSink,
-    forward_task: ScopedTask<()>,
+    forward_task: AbortOnDropHandle<()>,
 }
 
 impl UdpConnection {
@@ -352,15 +353,13 @@ impl UdpConnection {
         close_event_sender: UdpCloseEventSender,
     ) -> Self {
         let s = socket.clone();
-        let forward_task = tokio::spawn(async move {
+        let forward_task = AbortOnDropHandle::new(tokio::spawn(async move {
             let close_event_sender = close_event_sender;
             let err = forward_from_ring_to_udp(ring_recv, &s, &dst_addr, conn_id).await;
             if let Err(e) = close_event_sender.send((dst_addr, err)) {
                 tracing::error!(?e, "udp send close event error");
             }
-        })
-        .into();
-
+        }));
         Self {
             socket,
             conn_id,

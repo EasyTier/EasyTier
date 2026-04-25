@@ -6,7 +6,8 @@ use crate::{
         config::{
             ConfigFileControl, ConfigLoader, ConsoleLoggerConfig, EncryptionAlgorithm,
             FileLoggerConfig, LoggingConfigLoader, NetworkIdentity, PeerConfig, PortForwardConfig,
-            TomlConfigLoader, VpnPortalConfig, load_config_from_file, process_secure_mode_cfg,
+            TomlConfigLoader, VpnPortalConfig, load_config_from_file, parse_mapped_listener_urls,
+            process_secure_mode_cfg,
         },
         constants::EASYTIER_VERSION,
         log,
@@ -906,32 +907,7 @@ impl NetworkOptions {
         }
 
         if !self.mapped_listeners.is_empty() {
-            let mut errs = Vec::new();
-            cfg.set_mapped_listeners(Some(
-                self.mapped_listeners
-                    .iter()
-                    .map(|s| {
-                        s.parse()
-                            .with_context(|| format!("mapped listener is not a valid url: {}", s))
-                            .unwrap()
-                    })
-                    .map(|s: url::Url| {
-                        if s.port().is_none() {
-                            errs.push(anyhow::anyhow!("mapped listener port is missing: {}", s));
-                        }
-                        s
-                    })
-                    .collect::<Vec<_>>(),
-            ));
-            if !errs.is_empty() {
-                return Err(anyhow::anyhow!(
-                    "{}",
-                    errs.iter()
-                        .map(|x| format!("{}", x))
-                        .collect::<Vec<_>>()
-                        .join("\n")
-                ));
-            }
+            cfg.set_mapped_listeners(Some(parse_mapped_listener_urls(&self.mapped_listeners)?));
         }
 
         for n in self.proxy_networks.iter() {

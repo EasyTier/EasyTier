@@ -15,7 +15,7 @@ use anyhow::Context;
 use base64::Engine as _;
 use base64::prelude::BASE64_STANDARD;
 use cidr::Ipv4Inet;
-use clap::{Args, CommandFactory, Parser, Subcommand};
+use clap::{ArgAction, Args, CommandFactory, Parser, Subcommand, builder::BoolishValueParser};
 use dashmap::DashMap;
 use easytier::ShellType;
 use humansize::format_size;
@@ -402,6 +402,14 @@ enum CredentialSubCommand {
             help = "allowed proxy CIDRs (comma-separated)"
         )]
         allowed_proxy_cidrs: Option<Vec<String>>,
+        #[arg(
+            long,
+            action = ArgAction::Set,
+            default_value = "true",
+            value_parser = BoolishValueParser::new(),
+            help = "whether this credential may be reused by multiple peers concurrently"
+        )]
+        reusable: bool,
     },
     /// Revoke a credential by its ID
     Revoke {
@@ -2008,6 +2016,7 @@ impl<'a> CommandHandler<'a> {
         groups: Vec<String>,
         allow_relay: bool,
         allowed_proxy_cidrs: Vec<String>,
+        reusable: bool,
     ) -> Result<(), Error> {
         let results = self
             .collect_instance_results(|handler| {
@@ -2027,6 +2036,7 @@ impl<'a> CommandHandler<'a> {
                                 allowed_proxy_cidrs,
                                 ttl_seconds: ttl,
                                 instance: Some(handler.instance_selector.clone()),
+                                reusable: Some(reusable),
                             },
                         )
                         .await
@@ -2104,7 +2114,14 @@ impl<'a> CommandHandler<'a> {
             } else {
                 use tabled::{builder::Builder, settings::Style};
                 let mut builder = Builder::default();
-                builder.push_record(["ID", "Groups", "Relay", "Expiry", "Allowed CIDRs"]);
+                builder.push_record([
+                    "ID",
+                    "Groups",
+                    "Relay",
+                    "Reusable",
+                    "Expiry",
+                    "Allowed CIDRs",
+                ]);
                 for cred in &response.credentials {
                     let expiry = {
                         let secs = cred.expiry_unix;
@@ -2123,6 +2140,11 @@ impl<'a> CommandHandler<'a> {
                         &cred.credential_id[..],
                         &cred.groups.join(","),
                         if cred.allow_relay { "yes" } else { "no" },
+                        if cred.reusable.unwrap_or(true) {
+                            "yes"
+                        } else {
+                            "no"
+                        },
                         &expiry,
                         &cred.allowed_proxy_cidrs.join(","),
                     ]);
@@ -2921,6 +2943,7 @@ async fn main() -> Result<(), Error> {
                 groups,
                 allow_relay,
                 allowed_proxy_cidrs,
+                reusable,
             } => {
                 handler
                     .handle_credential_generate(
@@ -2929,6 +2952,7 @@ async fn main() -> Result<(), Error> {
                         groups.clone().unwrap_or_default(),
                         *allow_relay,
                         allowed_proxy_cidrs.clone().unwrap_or_default(),
+                        *reusable,
                     )
                     .await?;
             }

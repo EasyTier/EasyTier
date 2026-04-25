@@ -11,6 +11,7 @@ message TrustedCredentialPubkey {
   bool allow_relay = 3;         // whether this credential node can relay data
   int64 expiry_unix = 4;        // expiry time (Unix timestamp)
   repeated string allowed_proxy_cidrs = 5; // allowed proxy_cidrs ranges
+  optional bool reusable = 6;   // whether multiple peers may use the same credential concurrently
 }
 
 message TrustedCredentialPubkeyProof {

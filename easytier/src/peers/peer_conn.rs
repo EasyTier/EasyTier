@@ -1,3 +1,5 @@
+use crossbeam::atomic::AtomicCell;
+use futures::{StreamExt, TryFutureExt};
 use std::{
     any::Any,
     fmt::Debug,
@@ -7,9 +9,6 @@ use std::{
         atomic::{AtomicU32, Ordering},
     },
 };
-
-use crossbeam::atomic::AtomicCell;
-use futures::{StreamExt, TryFutureExt};
 
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
@@ -27,14 +26,21 @@ use zerocopy::AsBytes;
 
 use snow::{HandshakeState, params::NoiseParams};
 
+use super::{
+    PacketRecvChan,
+    peer_conn_ping::PeerConnPinger,
+    peer_session::{PeerSession, PeerSessionAction},
+    traffic_metrics::AggregateTrafficMetrics,
+};
+use crate::utils::BoxExt;
 use crate::{
     common::{
         PeerId,
         config::{NetworkIdentity, NetworkSecretDigest},
-        defer,
         error::Error,
         global_ctx::ArcGlobalCtx,
     },
+    guard,
     peers::peer_session::{PeerSessionStore, SessionKey, UpsertResponderSessionReturn},
     proto::{
         api::instance::{PeerConnInfo, PeerConnStats},
@@ -52,13 +58,6 @@ use crate::{
         stats::{Throughput, WindowLatency},
     },
     use_global_var,
-};
-
-use super::{
-    PacketRecvChan,
-    peer_conn_ping::PeerConnPinger,
-    peer_session::{PeerSession, PeerSessionAction},
-    traffic_metrics::AggregateTrafficMetrics,
 };
 
 pub type PeerConnId = uuid::Uuid;
@@ -381,9 +380,9 @@ impl PeerConn {
             session_filter,
             noise_handshake_result: None,
 
-            tunnel: Arc::new(Mutex::new(Box::new(defer::Defer::new(move || {
-                mpsc_tunnel.close()
-            })))),
+            tunnel: Arc::new(Mutex::new(
+                guard!([mut mpsc_tunnel] mpsc_tunnel.close()).boxed(),
+            )),
             sink,
             recv: Mutex::new(Some(recv)),
             tunnel_info,
@@ -1606,7 +1605,6 @@ pub mod tests {
     use crate::common::global_ctx::GlobalCtx;
     use crate::common::global_ctx::tests::get_mock_global_ctx;
     use crate::common::new_peer_id;
-    use crate::common::scoped_task::ScopedTask;
     use crate::common::stats_manager::{LabelSet, LabelType, MetricName};
     use crate::peers::create_packet_recv_chan;
     use crate::peers::recv_packet_from_chan;
@@ -1614,6 +1612,7 @@ pub mod tests {
     use crate::tunnel::filter::PacketRecorderTunnelFilter;
     use crate::tunnel::filter::tests::DropSendTunnelFilter;
     use crate::tunnel::ring::create_ring_tunnel_pair;
+    use tokio_util::task::AbortOnDropHandle;
 
     pub fn set_secure_mode_cfg(global_ctx: &GlobalCtx, enabled: bool) {
         if !enabled {
@@ -2200,7 +2199,7 @@ pub mod tests {
         c_peer.start_recv_loop(create_packet_recv_chan().0).await;
 
         let throughput = c_peer.throughput.clone();
-        let _t = ScopedTask::from(tokio::spawn(async move {
+        let _t = AbortOnDropHandle::new(tokio::spawn(async move {
             // if not drop both, we mock some rx traffic for client peer to test pinger
             if drop_both {
                 return;

@@ -3,8 +3,8 @@ use std::sync::{Arc, Weak};
 use std::time::Instant;
 
 use crate::common::global_ctx::{ArcGlobalCtx, GlobalCtxEvent};
-use crate::common::scoped_task::ScopedTask;
 use crate::peers::peer_manager::PeerManager;
+use tokio_util::task::AbortOnDropHandle;
 
 /// ProxyCidrsMonitor monitors changes in proxy CIDRs from peer routes
 /// and emits GlobalCtxEvent::ProxyCidrsUpdated with added/removed diffs.
@@ -58,8 +58,8 @@ impl ProxyCidrsMonitor {
     }
 
     /// Starts monitoring proxy_cidrs changes and emits events with diffs
-    pub fn start(self) -> ScopedTask<()> {
-        ScopedTask::from(tokio::spawn(async move {
+    pub fn start(self) -> AbortOnDropHandle<()> {
+        AbortOnDropHandle::new(tokio::spawn(async move {
             let mut cur_proxy_cidrs = BTreeSet::new();
             let mut last_update = None::<Instant>;
 

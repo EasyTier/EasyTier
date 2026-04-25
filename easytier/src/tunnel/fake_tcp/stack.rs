@@ -38,8 +38,6 @@
 //! and [`server.rs`](https://github.com/dndx/phantun/blob/main/phantun/src/bin/server.rs) files
 //! from the `phantun` crate for how to use this library in client/server mode, respectively.
 
-use crate::common::scoped_task::ScopedTask;
-
 use super::packet::*;
 use bytes::{Bytes, BytesMut};
 use crossbeam::atomic::AtomicCell;
@@ -55,6 +53,7 @@ use std::sync::{
 };
 use tokio::sync::broadcast;
 use tokio::time;
+use tokio_util::task::AbortOnDropHandle;
 use tracing::{info, trace, warn};
 
 const TIMEOUT: time::Duration = time::Duration::from_secs(1);
@@ -96,7 +95,7 @@ pub struct Stack {
     local_ip: Ipv4Addr,
     local_ip6: Option<Ipv6Addr>,
     local_mac: MacAddr,
-    reader_task: ScopedTask<()>,
+    reader_task: AbortOnDropHandle<()>,
 }
 
 #[derive(Hash, Eq, PartialEq, Clone, Copy, Debug)]
@@ -418,7 +417,7 @@ impl Stack {
             local_ip,
             local_ip6,
             local_mac: local_mac.unwrap_or(MacAddr::zero()),
-            reader_task: t.into(),
+            reader_task: AbortOnDropHandle::new(t),
         }
     }
 

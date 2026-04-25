@@ -5,9 +5,10 @@ use std::{
 
 use anyhow::Context;
 use tokio::net::UdpSocket;
+use tokio_util::task::AbortOnDropHandle;
 
 use crate::{
-    common::{PeerId, scoped_task::ScopedTask, upnp},
+    common::{PeerId, upnp},
     connector::udp_hole_punch::common::{
         HOLE_PUNCH_PACKET_BODY_LEN, UdpSocketArray, try_connect_with_socket,
     },
@@ -113,25 +114,7 @@ impl PunchConeHoleClient {
 
         let global_ctx = self.peer_mgr.get_global_ctx();
         let udp_array = UdpSocketArray::new(1, global_ctx.net_ns.clone());
-        let local_socket = {
-            let _g = self.peer_mgr.get_global_ctx().net_ns.guard();
-            Arc::new(UdpSocket::bind("0.0.0.0:0").await?)
-        };
-        let local_addr = local_socket
-            .local_addr()
-            .with_context(|| "failed to get local addr from udp punch socket")?;
-        let local_listener: url::Url = format!("udp://0.0.0.0:{}", local_addr.port())
-            .parse()
-            .unwrap();
-        let (local_mapped_addr, _local_port_mapping_lease) = upnp::resolve_udp_public_addr(
-            global_ctx.clone(),
-            &local_listener,
-            local_socket.clone(),
-        )
-        .await
-        .with_context(|| "failed to resolve udp public addr for cone hole punch")?;
 
-        // client -> server: tell server the mapped port, server will return the mapped address of listening port.
         let rpc_stub = self
             .peer_mgr
             .get_peer_rpc_mgr()
@@ -158,6 +141,24 @@ impl PunchConeHoleClient {
             "select_punch_listener response missing listener_mapped_addr"
         ))?;
 
+        let local_socket = {
+            let _g = self.peer_mgr.get_global_ctx().net_ns.guard();
+            Arc::new(UdpSocket::bind("0.0.0.0:0").await?)
+        };
+        let local_addr = local_socket
+            .local_addr()
+            .with_context(|| "failed to get local addr from udp punch socket")?;
+        let local_listener: url::Url = format!("udp://0.0.0.0:{}", local_addr.port())
+            .parse()
+            .unwrap();
+        let (local_mapped_addr, _local_port_mapping_lease) = upnp::resolve_udp_public_addr(
+            global_ctx.clone(),
+            &local_listener,
+            local_socket.clone(),
+        )
+        .await
+        .with_context(|| "failed to resolve udp public addr for cone hole punch")?;
+
         tracing::debug!(
             ?local_mapped_addr,
             ?remote_mapped_addr,
@@ -178,7 +179,7 @@ impl PunchConeHoleClient {
 
         send_from_local().await?;
 
-        let scoped_punch_task: ScopedTask<()> = tokio::spawn(async move {
+        let punch_task = AbortOnDropHandle::new(tokio::spawn(async move {
             if let Err(e) = rpc_stub
                 .send_punch_packet_cone(
                     BaseController {
@@ -198,8 +199,7 @@ impl PunchConeHoleClient {
             {
                 tracing::error!(?e, "failed to call remote send punch packet");
             }
-        })
-        .into();
+        }));
 
         // server: will send some punching resps, total 10 packets.
         // client: use the socket to create UdpTunnel with UdpTunnelConnector
@@ -208,7 +208,7 @@ impl PunchConeHoleClient {
         while finish_time.is_none() || finish_time.as_ref().unwrap().elapsed().as_millis() < 1000 {
             tokio::time::sleep(Duration::from_millis(200)).await;
 
-            if finish_time.is_none() && (*scoped_punch_task).is_finished() {
+            if finish_time.is_none() && punch_task.is_finished() {
                 finish_time = Some(Instant::now());
             }
 
@@ -245,10 +245,15 @@ impl PunchConeHoleClient {
 
 #[cfg(test)]
 pub mod tests {
+    use std::sync::Arc;
 
     use crate::{
+        common::upnp::{
+            reset_udp_port_mapping_attempts_for_test, udp_port_mapping_attempts_for_test,
+        },
         connector::udp_hole_punch::{
-            UdpHolePunchConnector, tests::create_mock_peer_manager_with_mock_stun,
+            UdpHolePunchConnector, cone::PunchConeHoleClient,
+            tests::create_mock_peer_manager_with_mock_stun,
         },
         peers::tests::{connect_peer_manager, wait_route_appear, wait_route_appear_with_cost},
         proto::common::NatType,
@@ -278,5 +283,28 @@ pub mod tests {
             .await
             .unwrap();
         println!("{:?}", p_a.list_routes().await);
+    }
+
+    #[tokio::test]
+    async fn cone_hole_punch_does_not_create_upnp_mapping_before_listener_rpc_succeeds() {
+        let p_a = create_mock_peer_manager_with_mock_stun(NatType::Restricted).await;
+        let p_b = create_mock_peer_manager_with_mock_stun(NatType::PortRestricted).await;
+        let p_c = create_mock_peer_manager_with_mock_stun(NatType::Restricted).await;
+        connect_peer_manager(p_a.clone(), p_b.clone()).await;
+        connect_peer_manager(p_b.clone(), p_c.clone()).await;
+        wait_route_appear(p_a.clone(), p_c.clone()).await.unwrap();
+
+        let mut flags = p_a.get_global_ctx().get_flags();
+        flags.disable_upnp = false;
+        p_a.get_global_ctx().set_flags(flags);
+
+        reset_udp_port_mapping_attempts_for_test();
+
+        let ret = PunchConeHoleClient::new(p_a.clone(), Arc::new(timedmap::TimedMap::new()))
+            .do_hole_punching(p_c.my_peer_id())
+            .await;
+
+        assert!(ret.is_err());
+        assert_eq!(udp_port_mapping_attempts_for_test(), 0);
     }
 }

@@ -3,7 +3,7 @@ name = "easytier"
 description = "A full meshed p2p VPN, connecting all your devices in one network with one command."
 homepage = "https://github.com/EasyTier/EasyTier"
 repository = "https://github.com/EasyTier/EasyTier"
-version = "2.6.1"
+version = "2.6.2"
 edition.workspace = true
 rust-version.workspace = true
 authors = ["kkrainbow"]
@@ -62,7 +62,7 @@ futures = { version = "0.3", features = ["bilock", "unstable"] }
 
 tokio = { version = "1", features = ["full"] }
 tokio-stream = "0.1"
-tokio-util = { version = "0.7.9", features = ["codec", "net", "io"] }
+tokio-util = { version = "0.7.9", features = ["codec", "net", "io", "rt"] }
 
 async-stream = "0.3.5"
 async-trait = "0.1.74"
@@ -274,11 +274,15 @@ windivert = { git = "https://github.com/EasyTier/windivert-rust.git", rev = "adc
 ] }
 
 [target.'cfg(windows)'.dependencies]
-windows = { version = "0.52.0", features = [
+windows = { version = "0.62.2", features = [
     "Win32_Foundation",
+    "Win32_NetworkManagement_IpHelper",
+    "Win32_NetworkManagement_Ndis",
     "Win32_NetworkManagement_WindowsFirewall",
-    "Win32_System_Com",
     "Win32_Networking",
+    "Win32_System_Com",
+    "Win32_System_Diagnostics",
+    "Win32_System_Diagnostics_Debug",
     "Win32_System_Ole",
     "Win32_System_Variant",
     "Win32_Networking_WinSock",
@@ -287,14 +291,6 @@ windows = { version = "0.52.0", features = [
 encoding = "0.2"
 winreg = "0.52"
 windows-service = "0.7.0"
-windows-sys = { version = "0.52", features = [
-    "Win32_NetworkManagement_IpHelper",
-    "Win32_NetworkManagement_Ndis",
-    "Win32_Networking_WinSock",
-    "Win32_Foundation",
-    "Win32_System_Diagnostics",
-    "Win32_System_Diagnostics_Debug",
-] }
 winapi = { version = "0.3.9", features = ["impl-default"] }
 
 [target.'cfg(not(windows))'.dependencies]

@@ -13,7 +13,6 @@ use pnet::packet::{
     Packet as _, ip::IpNextHeaderProtocols, ipv4::Ipv4Packet, tcp::TcpPacket, udp::UdpPacket,
 };
 
-use crate::common::scoped_task::ScopedTask;
 use crate::proto::acl::{AclStats, Protocol};
 use crate::tunnel::packet_def::PacketType;
 use crate::{
@@ -21,6 +20,7 @@ use crate::{
     proto::acl::{Acl, Action, ChainType},
     tunnel::packet_def::ZCPacket,
 };
+use tokio_util::task::AbortOnDropHandle;
 
 #[derive(Debug, Eq, PartialEq, Hash)]
 struct OutboundAllowRecord {
@@ -63,7 +63,7 @@ pub struct AclFilter {
     // Track allowed outbound packets and automatically allow their corresponding inbound response
     // packets, even if they would normally be dropped by ACL rules
     outbound_allow_records: Arc<DashMap<OutboundAllowRecord, Instant>>,
-    clean_task: ScopedTask<()>,
+    clean_task: AbortOnDropHandle<()>,
 }
 
 impl Default for AclFilter {
@@ -80,14 +80,13 @@ impl AclFilter {
             acl_processor: ArcSwap::from(Arc::new(AclProcessor::new(Acl::default()))),
             acl_enabled: Arc::new(AtomicBool::new(false)),
             outbound_allow_records,
-            clean_task: tokio::spawn(async move {
+            clean_task: AbortOnDropHandle::new(tokio::spawn(async move {
                 let max_life = std::time::Duration::from_secs(30);
                 loop {
                     record_clone.retain(|_, v| v.elapsed() < max_life);
                     tokio::time::sleep(std::time::Duration::from_secs(30)).await;
                 }
-            })
-            .into(),
+            })),
         }
     }
 

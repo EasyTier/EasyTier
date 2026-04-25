@@ -1,5 +1,6 @@
 use crate::common::config::{
-    ConfigFileControl, ConfigSource, PortForwardConfig, process_secure_mode_cfg,
+    ConfigFileControl, ConfigSource, PortForwardConfig, parse_mapped_listener_urls,
+    process_secure_mode_cfg,
 };
 use crate::proto::api::{self, manage};
 use crate::proto::rpc_types::controller::BaseController;
@@ -671,22 +672,8 @@ impl NetworkConfig {
         }
 
         if !self.mapped_listeners.is_empty() {
-            cfg.set_mapped_listeners(Some(
-                self.mapped_listeners
-                    .iter()
-                    .map(|s| {
-                        s.parse()
-                            .with_context(|| format!("mapped listener is not a valid url: {}", s))
-                            .unwrap()
-                    })
-                    .map(|s: url::Url| {
-                        if s.port().is_none() {
-                            panic!("mapped listener port is missing: {}", s);
-                        }
-                        s
-                    })
-                    .collect(),
-            ));
+            let mapped_listeners = parse_mapped_listener_urls(&self.mapped_listeners)?;
+            cfg.set_mapped_listeners(Some(mapped_listeners));
         }
 
         if let Some(credential_file) = self
