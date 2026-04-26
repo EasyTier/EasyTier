@@ -1356,9 +1356,9 @@ impl NicCtx {
 
         self.run_proxy_cidrs_route_updater().await?;
         self.run_public_ipv6_route_updater().await?;
-        if self.global_ctx.config.get_ipv6_public_addr_auto() {
-            self.run_public_ipv6_addr_updater().await?;
-        }
+        // Keep the updater running so runtime config patches can enable auto mode
+        // without recreating the NIC.
+        self.run_public_ipv6_addr_updater().await?;
 
         Ok(())
     }

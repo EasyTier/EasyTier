@@ -226,9 +226,7 @@ impl PublicIpv6Service {
         if *cached_my_addr != my_addr {
             let old = *cached_my_addr;
             *cached_my_addr = my_addr;
-            if self.global_ctx.config.get_ipv6_public_addr_auto() {
-                self.global_ctx.set_ipv6(my_addr);
-            }
+            self.global_ctx.set_ipv6(my_addr);
             self.global_ctx
                 .issue_event(GlobalCtxEvent::PublicIpv6Changed(old, my_addr));
         }
@@ -844,12 +842,48 @@ fn allocate_public_ipv6_leases(
 
 #[cfg(test)]
 mod tests {
-    use std::collections::{HashMap, HashSet};
     use std::net::Ipv6Addr;
+    use std::{
+        collections::{HashMap, HashSet},
+        sync::{Arc, Mutex},
+    };
 
-    use cidr::Ipv6Cidr;
+    use cidr::{Ipv6Cidr, Ipv6Inet};
 
-    use super::{PublicIpv6PeerRouteInfo, PublicIpv6Service, allocate_public_ipv6_leases};
+    use crate::{
+        common::{PeerId, global_ctx::tests::get_mock_global_ctx},
+        peers::peer_rpc::PeerRpcManager,
+    };
+
+    use super::{
+        PublicIpv6PeerRouteInfo, PublicIpv6RouteControl, PublicIpv6Service, PublicIpv6SyncTrigger,
+        allocate_public_ipv6_leases,
+    };
+
+    struct TestRouteControl {
+        my_peer_id: PeerId,
+        peers: Mutex<Vec<PublicIpv6PeerRouteInfo>>,
+    }
+
+    impl PublicIpv6RouteControl for TestRouteControl {
+        fn my_peer_id(&self) -> PeerId {
+            self.my_peer_id
+        }
+
+        fn peer_route_snapshot(&self) -> Vec<PublicIpv6PeerRouteInfo> {
+            self.peers.lock().unwrap().clone()
+        }
+
+        fn publish_self_public_ipv6_lease(&self, _lease: Option<Ipv6Inet>) -> bool {
+            false
+        }
+    }
+
+    struct TestSyncTrigger;
+
+    impl PublicIpv6SyncTrigger for TestSyncTrigger {
+        fn sync_now(&self, _reason: &str) {}
+    }
 
     #[test]
     fn public_ipv6_lease_allocator_keeps_stable_addresses() {
@@ -938,5 +972,30 @@ mod tests {
         );
 
         assert!(leases.is_empty());
+    }
+
+    #[tokio::test]
+    async fn reconcile_runtime_clears_global_ipv6_when_auto_is_disabled() {
+        let global_ctx = get_mock_global_ctx();
+        global_ctx.config.set_ipv6_public_addr_auto(false);
+
+        let stale_addr = "2001:db8::123/64".parse().unwrap();
+        global_ctx.set_ipv6(Some(stale_addr));
+
+        let service = Arc::new(PublicIpv6Service::new(
+            global_ctx.clone(),
+            std::sync::Weak::<PeerRpcManager>::new(),
+            Arc::new(TestRouteControl {
+                my_peer_id: 1,
+                peers: Mutex::new(Vec::new()),
+            }),
+            Arc::new(TestSyncTrigger),
+        ));
+        *service.my_addr_cache.lock().unwrap() = Some(stale_addr);
+
+        service.reconcile_runtime_from_snapshot(&[]);
+
+        assert_eq!(*service.my_addr_cache.lock().unwrap(), None);
+        assert_eq!(global_ctx.get_ipv6(), None);
     }
 }

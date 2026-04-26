@@ -3599,7 +3599,15 @@ pub async fn config_patch_test() {
     };
     use crate::tunnel::common::tests::_tunnel_pingpong_netns_with_timeout;
 
-    let insts = init_three_node("udp").await;
+    let insts = init_three_node_ex(
+        "udp",
+        |cfg| {
+            cfg.set_ipv6(None);
+            cfg
+        },
+        false,
+    )
+    .await;
 
     check_route(
         "10.144.144.2/24",

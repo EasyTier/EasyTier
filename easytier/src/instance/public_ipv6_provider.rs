@@ -1,7 +1,7 @@
 use std::{path::Path, sync::Arc};
 
 use anyhow::Context;
-use cidr::Ipv6Cidr;
+use cidr::{Ipv6Cidr, Ipv6Inet};
 #[cfg(target_os = "linux")]
 use netlink_packet_route::route::{RouteAddress, RouteAttribute, RouteMessage, RouteType};
 
@@ -44,6 +44,12 @@ fn should_run_public_ipv6_provider_reconcile_task(
     config.provider_enabled && config.configured_prefix.is_none()
 }
 
+pub(super) fn should_run_public_ipv6_provider_reconcile(global_ctx: &ArcGlobalCtx) -> bool {
+    should_run_public_ipv6_provider_reconcile_task(read_public_ipv6_provider_config_snapshot(
+        global_ctx,
+    ))
+}
+
 fn is_global_routable_public_ipv6_prefix(prefix: Ipv6Cidr) -> bool {
     let addr = prefix.first_address();
     !addr.is_loopback()
@@ -53,21 +59,26 @@ fn is_global_routable_public_ipv6_prefix(prefix: Ipv6Cidr) -> bool {
         && !addr.is_unspecified()
 }
 
-pub(super) fn validate_public_ipv6_config(global_ctx: &ArcGlobalCtx) -> Result<(), Error> {
-    if global_ctx.config.get_ipv6_public_addr_auto() && global_ctx.get_ipv6().is_some() {
+pub(super) fn validate_public_ipv6_config_values(
+    ipv6: Option<Ipv6Inet>,
+    provider_enabled: bool,
+    auto_enabled: bool,
+    prefix: Option<Ipv6Cidr>,
+) -> Result<(), Error> {
+    if auto_enabled && ipv6.is_some() {
         return Err(anyhow::anyhow!(
             "cannot use --ipv6-public-addr-auto together with a manually set --ipv6; pick one or the other"
         )
         .into());
     }
 
-    if !global_ctx.config.get_ipv6_public_addr_provider() {
+    if !provider_enabled {
         return Ok(());
     }
 
     ensure_public_ipv6_provider_supported()?;
 
-    if let Some(prefix) = global_ctx.config.get_ipv6_public_addr_prefix()
+    if let Some(prefix) = prefix
         && !is_global_routable_public_ipv6_prefix(prefix)
     {
         return Err(anyhow::anyhow!(
@@ -78,6 +89,15 @@ pub(super) fn validate_public_ipv6_config(global_ctx: &ArcGlobalCtx) -> Result<(
     }
 
     Ok(())
+}
+
+pub(super) fn validate_public_ipv6_config(global_ctx: &ArcGlobalCtx) -> Result<(), Error> {
+    validate_public_ipv6_config_values(
+        global_ctx.get_ipv6(),
+        global_ctx.config.get_ipv6_public_addr_provider(),
+        global_ctx.config.get_ipv6_public_addr_auto(),
+        global_ctx.config.get_ipv6_public_addr_prefix(),
+    )
 }
 
 fn ensure_public_ipv6_provider_supported() -> Result<(), Error> {
