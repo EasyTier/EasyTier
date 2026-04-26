@@ -1551,7 +1551,7 @@ impl RouteTable {
             .into_iter()
             .flat_map(|info| &info.proxy_cidrs)
             .filter_map(|cidr| cidr.parse::<IpCidr>().ok())
-            .collect::<Vec<_>>();
+            .collect::<HashSet<_>>();
 
         // build next hop map
         let (graph, start_node) =
@@ -1658,11 +1658,7 @@ impl RouteTable {
                     continue;
                 };
 
-                if *peer_id != my_peer_id
-                    && local_proxy_cidrs
-                        .iter()
-                        .any(|local_cidr| cidr_is_subset(&cidr, local_cidr))
-                {
+                if *peer_id != my_peer_id && local_proxy_cidrs.contains(&cidr) {
                     tracing::debug!(
                         ?peer_id,
                         ?my_peer_id,
@@ -6588,7 +6584,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn sync_route_info_prioritizes_local_over_remote_for_overlapped_proxy_cidrs() {
+    async fn sync_route_info_uses_lpm_for_overlapped_proxy_cidrs() {
         let peer_mgr = create_mock_pmgr().await;
         let route = create_mock_route(peer_mgr.clone()).await;
         let from_peer_id: PeerId = 11001;
@@ -6656,13 +6652,13 @@ mod tests {
         assert_eq!(stored.proxy_cidrs, sender_info.proxy_cidrs);
         drop(guard);
 
-        // Route-table filtering: local announced /16 should dominate remote equal/subset.
+        // Data plane uses LPM: remote /24 should win over local /16 for 10.10.1.1.
         assert_eq!(
             route
                 .service_impl
                 .route_table
                 .get_peer_id_for_proxy(&"10.10.1.1".parse::<IpAddr>().unwrap()),
-            Some(peer_mgr.my_peer_id())
+            Some(from_peer_id)
         );
         // Non-overlapped remote prefix should still route to remote.
         assert_eq!(
