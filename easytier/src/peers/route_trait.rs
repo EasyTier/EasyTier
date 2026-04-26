@@ -9,9 +9,12 @@ use std::{
 
 use crate::{
     common::{PeerId, global_ctx::NetworkIdentity},
-    proto::peer_rpc::{
-        ForeignNetworkRouteInfoEntry, ForeignNetworkRouteInfoKey, PeerIdentityType,
-        RouteForeignNetworkInfos, RouteForeignNetworkSummary, RoutePeerInfo,
+    proto::{
+        api::instance::ListPublicIpv6InfoResponse,
+        peer_rpc::{
+            ForeignNetworkRouteInfoEntry, ForeignNetworkRouteInfoKey, PeerIdentityType,
+            RouteForeignNetworkInfos, RouteForeignNetworkSummary, RoutePeerInfo,
+        },
     },
 };
 
@@ -100,6 +103,10 @@ pub trait Route {
 
     async fn get_my_public_ipv6_addr(&self) -> Option<Ipv6Inet> {
         None
+    }
+
+    async fn get_local_public_ipv6_info(&self) -> ListPublicIpv6InfoResponse {
+        ListPublicIpv6InfoResponse::default()
     }
 
     async fn get_peer_id_by_ipv4(&self, _ipv4: &Ipv4Addr) -> Option<PeerId> {

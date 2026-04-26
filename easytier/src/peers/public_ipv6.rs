@@ -641,6 +641,20 @@ impl PublicIpv6Service {
     pub(crate) fn my_addr(&self) -> Option<Ipv6Inet> {
         *self.my_addr_cache.lock().unwrap()
     }
+
+    pub(crate) fn local_provider_state(
+        &self,
+    ) -> Option<(PublicIpv6Provider, Vec<PublicIpv6ProviderLease>)> {
+        let provider = self.selected_provider()?;
+        if provider.peer_id != self.my_peer_id() {
+            return None;
+        }
+
+        let state = Self::prune_expired_leases(&provider, self.current_provider_state());
+        let mut leases = state.leases.into_values().collect::<Vec<_>>();
+        leases.sort_by_key(|lease| (lease.peer_id, lease.inst_id, lease.addr));
+        Some((provider, leases))
+    }
 }
 
 #[derive(Clone)]

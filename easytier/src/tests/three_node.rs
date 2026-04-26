@@ -807,6 +807,32 @@ pub async fn public_ipv6_auto_addr_end_to_end() {
             .into()
         )
     );
+    let provider_info = provider
+        .get_peer_manager()
+        .get_local_public_ipv6_info()
+        .await;
+    let client_peer_id = client.get_peer_manager().get_my_info().await.peer_id;
+    assert_eq!(
+        provider_info.provider_prefix,
+        Some(
+            cidr::Ipv6Inet::new(
+                provider_prefix.first_address(),
+                provider_prefix.network_length()
+            )
+            .unwrap()
+            .into()
+        )
+    );
+    assert_eq!(provider_info.provider_leases.len(), 1);
+    assert_eq!(provider_info.provider_leases[0].peer_id, client_peer_id);
+    assert_eq!(
+        provider_info.provider_leases[0].inst_id,
+        client_id.to_string()
+    );
+    assert_eq!(
+        provider_info.provider_leases[0].leased_addr,
+        Some(leased.into())
+    );
     assert!(
         leased.address().segments()[0] & 0xfe00 != 0xfc00,
         "leased address should not be unique-local: {leased}"

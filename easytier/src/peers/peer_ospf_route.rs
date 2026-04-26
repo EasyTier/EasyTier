@@ -369,6 +369,7 @@ impl From<RoutePeerInfo> for crate::proto::api::instance::Route {
 
             ipv6_addr: val.ipv6_addr,
             public_ipv6_addr: val.ipv6_public_addr_lease,
+            ipv6_public_addr_prefix: val.ipv6_public_addr_prefix,
         }
     }
 }
@@ -3951,6 +3952,39 @@ impl Route for PeerRoute {
 
     async fn get_my_public_ipv6_addr(&self) -> Option<Ipv6Inet> {
         self.public_ipv6_service.my_addr()
+    }
+
+    async fn get_local_public_ipv6_info(
+        &self,
+    ) -> crate::proto::api::instance::ListPublicIpv6InfoResponse {
+        let Some((provider, leases)) = self.public_ipv6_service.local_provider_state() else {
+            return crate::proto::api::instance::ListPublicIpv6InfoResponse::default();
+        };
+
+        crate::proto::api::instance::ListPublicIpv6InfoResponse {
+            provider_prefix: Some(
+                Ipv6Inet::new(
+                    provider.prefix.first_address(),
+                    provider.prefix.network_length(),
+                )
+                .unwrap()
+                .into(),
+            ),
+            provider_leases: leases
+                .into_iter()
+                .map(|lease| crate::proto::api::instance::PublicIpv6LeaseInfo {
+                    peer_id: lease.peer_id,
+                    inst_id: lease.inst_id.to_string(),
+                    leased_addr: Some(lease.addr.into()),
+                    valid_until_unix_seconds: lease
+                        .valid_until
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_secs() as i64,
+                    reused: lease.reused,
+                })
+                .collect(),
+        }
     }
 
     async fn get_peer_id_by_ipv4(&self, ipv4_addr: &Ipv4Addr) -> Option<PeerId> {

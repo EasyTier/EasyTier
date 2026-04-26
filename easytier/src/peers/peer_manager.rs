@@ -1299,6 +1299,10 @@ impl PeerManager {
         self.get_route().get_my_public_ipv6_addr().await
     }
 
+    pub async fn get_local_public_ipv6_info(&self) -> instance::ListPublicIpv6InfoResponse {
+        self.get_route().get_local_public_ipv6_info().await
+    }
+
     pub async fn dump_route(&self) -> String {
         self.get_route().dump().await
     }
