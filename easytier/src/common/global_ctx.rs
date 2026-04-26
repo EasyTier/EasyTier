@@ -68,6 +68,8 @@ pub enum GlobalCtxEvent {
 
     DhcpIpv4Changed(Option<cidr::Ipv4Inet>, Option<cidr::Ipv4Inet>), // (old, new)
     DhcpIpv4Conflicted(Option<cidr::Ipv4Inet>),
+    PublicIpv6Changed(Option<cidr::Ipv6Inet>, Option<cidr::Ipv6Inet>), // (old, new)
+    PublicIpv6RoutesUpdated(Vec<cidr::Ipv6Inet>, Vec<cidr::Ipv6Inet>), // (added, removed)
 
     PortForwardAdded(PortForwardConfigPb),
 
@@ -200,6 +202,7 @@ pub struct GlobalCtx {
 
     cached_ipv4: AtomicCell<Option<cidr::Ipv4Inet>>,
     cached_ipv6: AtomicCell<Option<cidr::Ipv6Inet>>,
+    public_ipv6_lease: AtomicCell<Option<cidr::Ipv6Inet>>,
     cached_proxy_cidrs: AtomicCell<Option<Vec<ProxyNetworkConfig>>>,
 
     ip_collector: Mutex<Option<Arc<IPCollector>>>,
@@ -209,6 +212,7 @@ pub struct GlobalCtx {
     stun_info_collection: Mutex<Arc<dyn StunInfoCollectorTrait>>,
 
     running_listeners: Mutex<Vec<url::Url>>,
+    advertised_ipv6_public_addr_prefix: Mutex<Option<cidr::Ipv6Cidr>>,
 
     flags: ArcSwap<Flags>,
 
@@ -295,6 +299,7 @@ impl GlobalCtx {
             event_bus,
             cached_ipv4: AtomicCell::new(None),
             cached_ipv6: AtomicCell::new(None),
+            public_ipv6_lease: AtomicCell::new(None),
             cached_proxy_cidrs: AtomicCell::new(None),
 
             ip_collector: Mutex::new(Some(Arc::new(IPCollector::new(
@@ -307,6 +312,7 @@ impl GlobalCtx {
             stun_info_collection: Mutex::new(stun_info_collector),
 
             running_listeners: Mutex::new(Vec::new()),
+            advertised_ipv6_public_addr_prefix: Mutex::new(None),
 
             flags: ArcSwap::new(Arc::new(flags)),
 
@@ -381,6 +387,36 @@ impl GlobalCtx {
         self.cached_ipv6.store(None);
     }
 
+    pub fn get_public_ipv6_lease(&self) -> Option<cidr::Ipv6Inet> {
+        self.public_ipv6_lease.load()
+    }
+
+    pub fn set_public_ipv6_lease(&self, addr: Option<cidr::Ipv6Inet>) {
+        self.public_ipv6_lease.store(addr);
+    }
+
+    pub fn is_ip_local_ipv6(&self, ip: &std::net::Ipv6Addr) -> bool {
+        self.get_ipv6().map(|x| x.address() == *ip).unwrap_or(false)
+            || self
+                .get_public_ipv6_lease()
+                .map(|x| x.address() == *ip)
+                .unwrap_or(false)
+    }
+
+    pub fn get_advertised_ipv6_public_addr_prefix(&self) -> Option<cidr::Ipv6Cidr> {
+        *self.advertised_ipv6_public_addr_prefix.lock().unwrap()
+    }
+
+    pub fn set_advertised_ipv6_public_addr_prefix(&self, prefix: Option<cidr::Ipv6Cidr>) -> bool {
+        let mut guard = self.advertised_ipv6_public_addr_prefix.lock().unwrap();
+        if *guard == prefix {
+            return false;
+        }
+
+        *guard = prefix;
+        true
+    }
+
     pub fn get_id(&self) -> uuid::Uuid {
         self.config.get_id()
     }
@@ -395,7 +431,7 @@ impl GlobalCtx {
     pub fn is_ip_local_virtual_ip(&self, ip: &IpAddr) -> bool {
         match ip {
             IpAddr::V4(v4) => self.get_ipv4().map(|x| x.address() == *v4).unwrap_or(false),
-            IpAddr::V6(v6) => self.get_ipv6().map(|x| x.address() == *v6).unwrap_or(false),
+            IpAddr::V6(v6) => self.is_ip_local_ipv6(v6),
         }
     }
 
@@ -645,23 +681,23 @@ impl GlobalCtx {
     pub fn should_deny_proxy(&self, dst_addr: &SocketAddr, is_udp: bool) -> bool {
         let _g = self.net_ns.guard();
         let ip = dst_addr.ip();
-        // first check if ip is virtual ip
+        // first check if ip is an EasyTier-managed local address
         // then try bind this ip, if succ means it is local ip
-        let dst_is_local_virtual_ip = self.is_ip_local_virtual_ip(&ip);
+        let dst_is_local_et_ip = self.is_ip_local_virtual_ip(&ip);
         // this is an expensive operation, should be called sparingly
         // 1. tcp/kcp/quic call this only after proxy conn is established
         // 2. udp cache the result in nat entry
         let dst_is_local_phy_ip = std::net::UdpSocket::bind(format!("{}:0", ip)).is_ok();
 
         tracing::trace!(
-            "check should_deny_proxy: dst_addr={}, dst_is_local_virtual_ip={}, dst_is_local_phy_ip={}, is_udp={}",
+            "check should_deny_proxy: dst_addr={}, dst_is_local_et_ip={}, dst_is_local_phy_ip={}, is_udp={}",
             dst_addr,
-            dst_is_local_virtual_ip,
+            dst_is_local_et_ip,
             dst_is_local_phy_ip,
             is_udp
         );
 
-        if dst_is_local_virtual_ip || dst_is_local_phy_ip {
+        if dst_is_local_et_ip || dst_is_local_phy_ip {
             // if is local ip, make sure the port is not one of the listening ports
             self.is_port_in_running_listeners(dst_addr.port(), is_udp)
                 || (!is_udp && protected_port::is_protected_tcp_port(dst_addr.port()))
@@ -770,6 +806,7 @@ pub mod tests {
         assert!(feature_flags.support_conn_list_sync);
         assert!(feature_flags.avoid_relay_data);
         assert!(feature_flags.is_public_server);
+        assert!(!feature_flags.ipv6_public_addr_provider);
     }
 
     #[tokio::test]
@@ -785,6 +822,40 @@ pub mod tests {
         assert!(global_ctx.should_deny_proxy(&rpc_addr, false));
         assert!(!global_ctx.should_deny_proxy(&rpc_addr, true));
         assert!(!global_ctx.should_deny_proxy(&other_tcp_addr, false));
+
+        protected_port::clear_protected_tcp_ports_for_test();
+    }
+
+    #[tokio::test]
+    async fn virtual_ipv6_and_public_ipv6_lease_are_stored_separately() {
+        let config = TomlConfigLoader::default();
+        let global_ctx = GlobalCtx::new(config);
+        let virtual_ipv6 = "fd00::1/64".parse().unwrap();
+        let public_ipv6 = "2001:db8::2/64".parse().unwrap();
+
+        global_ctx.set_ipv6(Some(virtual_ipv6));
+        global_ctx.set_public_ipv6_lease(Some(public_ipv6));
+
+        assert_eq!(global_ctx.get_ipv6(), Some(virtual_ipv6));
+        assert_eq!(global_ctx.get_public_ipv6_lease(), Some(public_ipv6));
+    }
+
+    #[tokio::test]
+    async fn public_ipv6_lease_is_treated_as_local_ip() {
+        protected_port::clear_protected_tcp_ports_for_test();
+
+        let config = TomlConfigLoader::default();
+        let global_ctx = GlobalCtx::new(config);
+        let public_ipv6 = "2001:db8::2/64".parse().unwrap();
+        let listener: url::Url = "tcp://[2001:db8::2]:11010".parse().unwrap();
+        global_ctx.set_public_ipv6_lease(Some(public_ipv6));
+        global_ctx.add_running_listener(listener);
+
+        let ip = std::net::IpAddr::V6(public_ipv6.address());
+        let socket = SocketAddr::from((public_ipv6.address(), 11010));
+
+        assert!(global_ctx.is_ip_local_virtual_ip(&ip));
+        assert!(global_ctx.should_deny_proxy(&socket, false));
 
         protected_port::clear_protected_tcp_ports_for_test();
     }

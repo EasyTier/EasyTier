@@ -3,7 +3,10 @@ use std::sync::Arc;
 use crate::{
     instance_manager::NetworkInstanceManager,
     proto::{
-        api::instance::{self, ListPeerRequest, ListPeerResponse, PeerManageRpc},
+        api::instance::{
+            self, ListPeerRequest, ListPeerResponse, ListPublicIpv6InfoRequest,
+            ListPublicIpv6InfoResponse, PeerManageRpc,
+        },
         rpc_types::controller::BaseController,
     },
 };
@@ -31,6 +34,17 @@ impl PeerManageRpc for PeerManageRpcService {
         super::get_instance_service(&self.instance_manager, &req.instance)?
             .get_peer_manage_service()
             .list_peer(ctrl, req)
+            .await
+    }
+
+    async fn list_public_ipv6_info(
+        &self,
+        ctrl: Self::Controller,
+        req: ListPublicIpv6InfoRequest,
+    ) -> crate::proto::rpc_types::error::Result<ListPublicIpv6InfoResponse> {
+        super::get_instance_service(&self.instance_manager, &req.instance)?
+            .get_peer_manage_service()
+            .list_public_ipv6_info(ctrl, req)
             .await
     }
 

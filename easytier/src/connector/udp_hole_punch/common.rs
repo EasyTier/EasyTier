@@ -720,7 +720,7 @@ async fn check_udp_socket_local_addr(
     let socket = UdpSocket::bind("0.0.0.0:0").await?;
     socket.connect(remote_mapped_addr).await?;
     if let Ok(local_addr) = socket.local_addr() {
-        // local_addr should not be equal to virtual ipv4 or virtual ipv6
+        // local_addr should not be equal to an EasyTier-managed virtual/public address.
         match local_addr.ip() {
             IpAddr::V4(ip) => {
                 if global_ctx.get_ipv4().map(|ip| ip.address()) == Some(ip) {
@@ -728,8 +728,8 @@ async fn check_udp_socket_local_addr(
                 }
             }
             IpAddr::V6(ip) => {
-                if global_ctx.get_ipv6().map(|ip| ip.address()) == Some(ip) {
-                    return Err(anyhow::anyhow!("local address is virtual ipv6").into());
+                if global_ctx.is_ip_local_ipv6(&ip) {
+                    return Err(anyhow::anyhow!("local address is easytier-managed ipv6").into());
                 }
             }
         }

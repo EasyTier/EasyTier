@@ -47,6 +47,9 @@ message RoutePeerInfo {
 
   // Trusted credential public keys published by admin nodes (holding network_secret)
   repeated TrustedCredentialPubkeyProof trusted_credential_pubkeys = 19;
+
+  optional common.Ipv6Inet ipv6_public_addr_prefix = 22;
+  optional common.Ipv6Inet ipv6_public_addr_lease = 24;
 }
 
 message PeerIdVersion {
@@ -131,6 +134,46 @@ message SyncRouteInfoResponse {
 service OspfRouteRpc {
   // Generates a "hello" greeting based on the supplied info.
   rpc SyncRouteInfo(SyncRouteInfoRequest) returns (SyncRouteInfoResponse);
+}
+
+message AcquireIpv6PublicAddrLeaseRequest {
+  uint32 peer_id = 1;
+  common.UUID inst_id = 2;
+}
+
+message RenewIpv6PublicAddrLeaseRequest {
+  uint32 peer_id = 1;
+  common.UUID inst_id = 2;
+  common.Ipv6Inet leased_addr = 3;
+}
+
+message ReleaseIpv6PublicAddrLeaseRequest {
+  uint32 peer_id = 1;
+  common.UUID inst_id = 2;
+}
+
+message GetIpv6PublicAddrLeaseRequest {
+  uint32 peer_id = 1;
+  common.UUID inst_id = 2;
+}
+
+message Ipv6PublicAddrLeaseReply {
+  uint32 provider_peer_id = 1;
+  common.UUID provider_inst_id = 2;
+  common.Ipv6Inet provider_prefix = 3;
+  common.Ipv6Inet leased_addr = 4;
+  google.protobuf.Timestamp valid_until = 5;
+  bool reused = 6;
+  optional string error_msg = 7;
+}
+
+service PublicIpv6AddrRpc {
+  rpc AcquireLease(AcquireIpv6PublicAddrLeaseRequest)
+      returns (Ipv6PublicAddrLeaseReply);
+  rpc RenewLease(RenewIpv6PublicAddrLeaseRequest)
+      returns (Ipv6PublicAddrLeaseReply);
+  rpc ReleaseLease(ReleaseIpv6PublicAddrLeaseRequest) returns (common.Void);
+  rpc GetLease(GetIpv6PublicAddrLeaseRequest) returns (Ipv6PublicAddrLeaseReply);
 }
 
 message GetIpListRequest {}

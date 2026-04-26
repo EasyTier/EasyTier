@@ -11,6 +11,7 @@ pub mod peer_ospf_route;
 pub mod peer_rpc;
 pub mod peer_rpc_service;
 pub mod peer_session;
+pub(crate) mod public_ipv6;
 pub mod relay_peer_map;
 pub mod route_trait;
 pub mod rpc_service;

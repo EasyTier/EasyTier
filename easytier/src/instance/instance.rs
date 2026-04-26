@@ -9,7 +9,6 @@ use std::time::Duration;
 
 use anyhow::Context;
 use cidr::{IpCidr, Ipv4Inet};
-
 use futures::FutureExt;
 use tokio::sync::{Mutex, Notify};
 #[cfg(feature = "tun")]
@@ -65,6 +64,11 @@ use crate::vpn_portal::{self, VpnPortal};
 #[cfg(feature = "magic-dns")]
 use super::dns_server::{MAGIC_DNS_FAKE_IP, runner::DnsRunner};
 use super::listeners::ListenerManager;
+use super::public_ipv6_provider::{
+    reconcile_public_ipv6_provider_runtime, run_public_ipv6_provider_reconcile_task,
+    should_run_public_ipv6_provider_reconcile, validate_public_ipv6_config,
+    validate_public_ipv6_config_values,
+};
 
 #[cfg(feature = "socks5")]
 use crate::gateway::socks5::Socks5Server;
@@ -253,11 +257,64 @@ pub struct InstanceConfigPatcher {
 }
 
 impl InstanceConfigPatcher {
+    fn parse_ipv6_public_addr_prefix_patch(
+        prefix: Option<&str>,
+    ) -> Result<Option<Option<cidr::Ipv6Cidr>>, anyhow::Error> {
+        let Some(prefix) = prefix else {
+            return Ok(None);
+        };
+
+        let prefix = prefix.trim();
+        if prefix.is_empty() {
+            return Ok(Some(None));
+        }
+
+        let parsed = prefix
+            .parse()
+            .with_context(|| format!("failed to parse ipv6 public address prefix: {prefix}"))?;
+        Ok(Some(Some(parsed)))
+    }
+
+    fn effective_ipv6_for_public_ipv6_validation(
+        global_ctx: &ArcGlobalCtx,
+        patch: &crate::proto::api::config::InstanceConfigPatch,
+        _auto_enabled: bool,
+    ) -> Option<cidr::Ipv6Inet> {
+        if let Some(ipv6) = patch.ipv6 {
+            return Some(ipv6.into());
+        }
+
+        global_ctx.get_ipv6()
+    }
+
+    fn validate_public_ipv6_patch(
+        global_ctx: &ArcGlobalCtx,
+        patch: &crate::proto::api::config::InstanceConfigPatch,
+    ) -> Result<Option<Option<cidr::Ipv6Cidr>>, anyhow::Error> {
+        let parsed_prefix =
+            Self::parse_ipv6_public_addr_prefix_patch(patch.ipv6_public_addr_prefix.as_deref())?;
+
+        let auto_enabled = patch
+            .ipv6_public_addr_auto
+            .unwrap_or(global_ctx.config.get_ipv6_public_addr_auto());
+        let provider_enabled = patch
+            .ipv6_public_addr_provider
+            .unwrap_or(global_ctx.config.get_ipv6_public_addr_provider());
+        let prefix =
+            parsed_prefix.unwrap_or_else(|| global_ctx.config.get_ipv6_public_addr_prefix());
+        let ipv6 = Self::effective_ipv6_for_public_ipv6_validation(global_ctx, patch, auto_enabled);
+
+        validate_public_ipv6_config_values(ipv6, provider_enabled, auto_enabled, prefix)?;
+        Ok(parsed_prefix)
+    }
+
     pub async fn apply_patch(
         &self,
         patch: crate::proto::api::config::InstanceConfigPatch,
     ) -> Result<(), anyhow::Error> {
         let patch_for_event = patch.clone();
+        let global_ctx = weak_upgrade(&self.global_ctx)?;
+        let parsed_ipv6_public_addr_prefix = Self::validate_public_ipv6_patch(&global_ctx, &patch)?;
 
         self.patch_port_forwards(patch.port_forwards).await?;
         self.patch_acl(patch.acl).await?;
@@ -267,7 +324,8 @@ impl InstanceConfigPatcher {
         self.patch_mapped_listeners(patch.mapped_listeners).await?;
         self.patch_connector(patch.connectors).await?;
 
-        let global_ctx = weak_upgrade(&self.global_ctx)?;
+        let provider_reconcile_was_running = should_run_public_ipv6_provider_reconcile(&global_ctx);
+        let mut provider_config_changed = false;
         if let Some(hostname) = patch.hostname {
             global_ctx.set_hostname(hostname.clone());
             global_ctx.config.set_hostname(Some(hostname));
@@ -282,8 +340,29 @@ impl InstanceConfigPatcher {
             global_ctx.set_ipv6(Some(ipv6.into()));
             global_ctx.config.set_ipv6(Some(ipv6.into()));
         }
+        if let Some(enabled) = patch.ipv6_public_addr_provider {
+            global_ctx.config.set_ipv6_public_addr_provider(enabled);
+            provider_config_changed = true;
+        }
+        if let Some(enabled) = patch.ipv6_public_addr_auto {
+            global_ctx.config.set_ipv6_public_addr_auto(enabled);
+        }
+        if let Some(prefix) = parsed_ipv6_public_addr_prefix {
+            global_ctx.config.set_ipv6_public_addr_prefix(prefix);
+            provider_config_changed = true;
+        }
 
         global_ctx.issue_event(GlobalCtxEvent::ConfigPatched(patch_for_event));
+
+        if provider_config_changed {
+            reconcile_public_ipv6_provider_runtime(&global_ctx).await;
+
+            let provider_reconcile_should_run =
+                should_run_public_ipv6_provider_reconcile(&global_ctx);
+            if !provider_reconcile_was_running && provider_reconcile_should_run {
+                run_public_ipv6_provider_reconcile_task(&global_ctx);
+            }
+        }
 
         Ok(())
     }
@@ -664,6 +743,12 @@ impl Instance {
         Ok(())
     }
 
+    async fn prepare_public_ipv6_config(&self) -> Result<(), Error> {
+        validate_public_ipv6_config(&self.global_ctx)?;
+        reconcile_public_ipv6_provider_runtime(&self.global_ctx).await;
+        Ok(())
+    }
+
     // use a mock nic ctx to consume packets.
     #[cfg(feature = "tun")]
     async fn clear_nic_ctx(
@@ -932,6 +1017,7 @@ impl Instance {
     }
 
     pub async fn run(&mut self) -> Result<(), Error> {
+        self.prepare_public_ipv6_config().await?;
         self.listener_manager
             .lock()
             .await
@@ -939,6 +1025,7 @@ impl Instance {
             .await?;
         self.listener_manager.lock().await.run().await?;
         self.peer_manager.run().await?;
+        run_public_ipv6_provider_reconcile_task(&self.global_ctx);
 
         #[cfg(feature = "tun")]
         {
@@ -1544,7 +1631,9 @@ impl Drop for Instance {
 #[cfg(test)]
 mod tests {
     use crate::{
-        instance::instance::InstanceRpcServerHook, proto::rpc_impl::standalone::RpcServerHook,
+        common::global_ctx::tests::get_mock_global_ctx,
+        instance::instance::{InstanceConfigPatcher, InstanceRpcServerHook},
+        proto::{api::config::InstanceConfigPatch, rpc_impl::standalone::RpcServerHook},
     };
 
     #[tokio::test]
@@ -1664,5 +1753,51 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[tokio::test]
+    async fn validate_public_ipv6_patch_rejects_non_global_prefix() {
+        let global_ctx = get_mock_global_ctx();
+        let patch = InstanceConfigPatch {
+            ipv6_public_addr_provider: Some(true),
+            ipv6_public_addr_prefix: Some("fd00::/64".to_string()),
+            ..Default::default()
+        };
+
+        let err =
+            InstanceConfigPatcher::validate_public_ipv6_patch(&global_ctx, &patch).unwrap_err();
+
+        assert!(
+            err.to_string()
+                .contains("not a valid global unicast IPv6 prefix")
+        );
+    }
+
+    #[tokio::test]
+    async fn validate_public_ipv6_patch_allows_enabling_auto_with_manual_ipv6() {
+        let global_ctx = get_mock_global_ctx();
+        global_ctx.set_ipv6(Some("fd00::1/64".parse().unwrap()));
+
+        let patch = InstanceConfigPatch {
+            ipv6_public_addr_auto: Some(true),
+            ..Default::default()
+        };
+
+        assert!(InstanceConfigPatcher::validate_public_ipv6_patch(&global_ctx, &patch).is_ok());
+    }
+
+    #[tokio::test]
+    async fn validate_public_ipv6_patch_ignores_runtime_auto_ipv6_cache() {
+        let global_ctx = get_mock_global_ctx();
+        global_ctx.config.set_ipv6_public_addr_auto(true);
+        global_ctx.set_ipv6(Some("2001:db8::10/64".parse().unwrap()));
+
+        let patch = InstanceConfigPatch {
+            ipv6_public_addr_provider: Some(true),
+            ipv6_public_addr_prefix: Some("2001:db8:100::/64".to_string()),
+            ..Default::default()
+        };
+
+        assert!(InstanceConfigPatcher::validate_public_ipv6_patch(&global_ctx, &patch).is_ok());
     }
 }
