@@ -271,6 +271,9 @@ impl InstanceConfigPatcher {
         self.patch_connector(patch.connectors).await?;
 
         let global_ctx = weak_upgrade(&self.global_ctx)?;
+        let provider_reconcile_was_running = global_ctx.config.get_ipv6_public_addr_provider()
+            && global_ctx.config.get_ipv6_public_addr_prefix().is_none();
+        let mut provider_config_changed = false;
         if let Some(hostname) = patch.hostname {
             global_ctx.set_hostname(hostname.clone());
             global_ctx.config.set_hostname(Some(hostname));
@@ -285,8 +288,37 @@ impl InstanceConfigPatcher {
             global_ctx.set_ipv6(Some(ipv6.into()));
             global_ctx.config.set_ipv6(Some(ipv6.into()));
         }
+        if let Some(enabled) = patch.ipv6_public_addr_provider {
+            global_ctx.config.set_ipv6_public_addr_provider(enabled);
+            provider_config_changed = true;
+        }
+        if let Some(enabled) = patch.ipv6_public_addr_auto {
+            global_ctx.config.set_ipv6_public_addr_auto(enabled);
+        }
+        if let Some(prefix) = patch.ipv6_public_addr_prefix {
+            let prefix = prefix.trim();
+            let parsed = if prefix.is_empty() {
+                None
+            } else {
+                Some(prefix.parse().with_context(|| {
+                    format!("failed to parse ipv6 public address prefix: {prefix}")
+                })?)
+            };
+            global_ctx.config.set_ipv6_public_addr_prefix(parsed);
+            provider_config_changed = true;
+        }
 
         global_ctx.issue_event(GlobalCtxEvent::ConfigPatched(patch_for_event));
+
+        if provider_config_changed {
+            reconcile_public_ipv6_provider_runtime(&global_ctx).await;
+
+            let provider_reconcile_should_run = global_ctx.config.get_ipv6_public_addr_provider()
+                && global_ctx.config.get_ipv6_public_addr_prefix().is_none();
+            if !provider_reconcile_was_running && provider_reconcile_should_run {
+                run_public_ipv6_provider_reconcile_task(&global_ctx);
+            }
+        }
 
         Ok(())
     }

@@ -3646,6 +3646,46 @@ pub async fn config_patch_test() {
         },
     );
 
+    // 测试1.1：修改公网 IPv6 provider 相关配置
+    let public_prefix = "2001:db8:100::/64";
+    let patch = InstanceConfigPatch {
+        ipv6_public_addr_provider: Some(true),
+        ipv6_public_addr_auto: Some(true),
+        ipv6_public_addr_prefix: Some(public_prefix.to_string()),
+        ..Default::default()
+    };
+    insts[1]
+        .get_config_patcher()
+        .apply_patch(patch)
+        .await
+        .unwrap();
+    assert!(
+        insts[1]
+            .get_global_ctx()
+            .config
+            .get_ipv6_public_addr_provider()
+    );
+    assert!(insts[1].get_global_ctx().config.get_ipv6_public_addr_auto());
+    assert_eq!(
+        insts[1]
+            .get_global_ctx()
+            .config
+            .get_ipv6_public_addr_prefix(),
+        Some(public_prefix.parse().unwrap())
+    );
+    assert!(
+        insts[1]
+            .get_global_ctx()
+            .get_feature_flags()
+            .ipv6_public_addr_provider
+    );
+    assert_eq!(
+        insts[1]
+            .get_global_ctx()
+            .get_advertised_ipv6_public_addr_prefix(),
+        Some(public_prefix.parse().unwrap())
+    );
+
     // 测试2: 端口转发
     let patch = InstanceConfigPatch {
         port_forwards: vec![PortForwardPatch {
