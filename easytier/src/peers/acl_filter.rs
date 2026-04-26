@@ -292,13 +292,33 @@ impl AclFilter {
         processor.increment_stat(AclStatKey::PacketsTotal);
     }
 
+    fn classify_chain_type(
+        is_in: bool,
+        packet_info: &PacketInfo,
+        my_ipv4: Option<Ipv4Addr>,
+        is_local_ipv6: impl Fn(Ipv6Addr) -> bool,
+    ) -> ChainType {
+        if !is_in {
+            return ChainType::Outbound;
+        }
+
+        let is_local_dst = packet_info.dst_ip == my_ipv4.unwrap_or(Ipv4Addr::UNSPECIFIED)
+            || matches!(packet_info.dst_ip, IpAddr::V6(dst) if is_local_ipv6(dst));
+
+        if is_local_dst {
+            ChainType::Inbound
+        } else {
+            ChainType::Forward
+        }
+    }
+
     /// Common ACL processing logic
     pub fn process_packet_with_acl(
         &self,
         packet: &ZCPacket,
         is_in: bool,
         my_ipv4: Option<Ipv4Addr>,
-        my_ipv6: Option<Ipv6Addr>,
+        is_local_ipv6: impl Fn(Ipv6Addr) -> bool,
         route: &(dyn super::route_trait::Route + Send + Sync + 'static),
     ) -> bool {
         if !self.acl_enabled.load(Ordering::Relaxed) {
@@ -323,17 +343,7 @@ impl AclFilter {
             }
         };
 
-        let chain_type = if is_in {
-            if packet_info.dst_ip == my_ipv4.unwrap_or(Ipv4Addr::UNSPECIFIED)
-                || packet_info.dst_ip == my_ipv6.unwrap_or(Ipv6Addr::UNSPECIFIED)
-            {
-                ChainType::Inbound
-            } else {
-                ChainType::Forward
-            }
-        } else {
-            ChainType::Outbound
-        };
+        let chain_type = Self::classify_chain_type(is_in, &packet_info, my_ipv4, is_local_ipv6);
 
         // Get current processor atomically
         let processor = self.get_processor();
@@ -382,5 +392,57 @@ impl AclFilter {
                 false
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        net::{IpAddr, Ipv4Addr, Ipv6Addr},
+        sync::Arc,
+    };
+
+    use crate::{
+        common::acl_processor::PacketInfo,
+        proto::acl::{ChainType, Protocol},
+    };
+
+    use super::AclFilter;
+
+    fn packet_info(dst_ip: IpAddr) -> PacketInfo {
+        PacketInfo {
+            src_ip: IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)),
+            dst_ip,
+            src_port: Some(1234),
+            dst_port: Some(80),
+            protocol: Protocol::Tcp,
+            packet_size: 64,
+            src_groups: Arc::new(Vec::new()),
+            dst_groups: Arc::new(Vec::new()),
+        }
+    }
+
+    #[test]
+    fn classify_chain_type_treats_public_ipv6_lease_as_inbound() {
+        let leased_ipv6 = Ipv6Addr::new(0x2001, 0xdb8, 0x100, 0, 0, 0, 0, 0x123);
+        let packet_info = packet_info(IpAddr::V6(leased_ipv6));
+
+        let chain =
+            AclFilter::classify_chain_type(true, &packet_info, None, |ip| ip == leased_ipv6);
+
+        assert_eq!(chain, ChainType::Inbound);
+    }
+
+    #[test]
+    fn classify_chain_type_keeps_non_local_ipv6_as_forward() {
+        let leased_ipv6 = Ipv6Addr::new(0x2001, 0xdb8, 0x100, 0, 0, 0, 0, 0x123);
+        let packet_info = packet_info(IpAddr::V6(Ipv6Addr::new(
+            0x2001, 0xdb8, 0xffff, 2, 0, 0, 0, 0x100,
+        )));
+
+        let chain =
+            AclFilter::classify_chain_type(true, &packet_info, None, |ip| ip == leased_ipv6);
+
+        assert_eq!(chain, ChainType::Forward);
     }
 }

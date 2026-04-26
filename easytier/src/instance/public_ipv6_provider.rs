@@ -60,18 +60,11 @@ fn is_global_routable_public_ipv6_prefix(prefix: Ipv6Cidr) -> bool {
 }
 
 pub(super) fn validate_public_ipv6_config_values(
-    ipv6: Option<Ipv6Inet>,
+    _ipv6: Option<Ipv6Inet>,
     provider_enabled: bool,
-    auto_enabled: bool,
+    _auto_enabled: bool,
     prefix: Option<Ipv6Cidr>,
 ) -> Result<(), Error> {
-    if auto_enabled && ipv6.is_some() {
-        return Err(anyhow::anyhow!(
-            "cannot use --ipv6-public-addr-auto together with a manually set --ipv6; pick one or the other"
-        )
-        .into());
-    }
-
     if !provider_enabled {
         return Ok(());
     }

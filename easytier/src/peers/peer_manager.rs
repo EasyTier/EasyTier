@@ -1062,7 +1062,7 @@ impl PeerManager {
                         &ret,
                         true,
                         global_ctx.get_ipv4().map(|x| x.address()),
-                        global_ctx.get_ipv6().map(|x| x.address()),
+                        |dst| global_ctx.is_ip_local_ipv6(&dst),
                         &route,
                     ) {
                         continue;
@@ -1342,7 +1342,7 @@ impl PeerManager {
             data,
             false,
             None,
-            None,
+            |_| false,
             &self.get_route(),
         ) {
             return false;
@@ -1544,6 +1544,10 @@ impl PeerManager {
             dst_peers.extend(self.peers.list_routes().await.iter().map(|x| *x.key()));
         } else if let Some(peer_id) = self.peers.get_peer_id_by_ipv6(ipv6_addr).await {
             dst_peers.push(peer_id);
+        } else if !ipv6_addr.is_unicast_link_local()
+            && let Some(peer_id) = self.get_route().get_public_ipv6_gateway_peer_id().await
+        {
+            dst_peers.push(peer_id);
         } else if !ipv6_addr.is_unicast_link_local() {
             // NOTE: never route link local address to exit node.
             for exit_node in self.exit_nodes.read().await.iter() {
@@ -1674,7 +1678,7 @@ impl PeerManager {
                     && !self.global_ctx.is_ip_local_virtual_ip(&ip_addr)
                 {
                     // Keep the loop-prevention flags for proxy-induced self-delivery where
-                    // the destination is not this node's own virtual IP.
+                    // the destination is not this node's own EasyTier-managed IP.
                     hdr.set_not_send_to_tun(true);
                     hdr.set_no_proxy(true);
                 }

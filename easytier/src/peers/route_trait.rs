@@ -105,6 +105,10 @@ pub trait Route {
         None
     }
 
+    async fn get_public_ipv6_gateway_peer_id(&self) -> Option<PeerId> {
+        None
+    }
+
     async fn get_local_public_ipv6_info(&self) -> ListPublicIpv6InfoResponse {
         ListPublicIpv6InfoResponse::default()
     }

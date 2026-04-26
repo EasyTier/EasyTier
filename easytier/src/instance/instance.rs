@@ -278,14 +278,10 @@ impl InstanceConfigPatcher {
     fn effective_ipv6_for_public_ipv6_validation(
         global_ctx: &ArcGlobalCtx,
         patch: &crate::proto::api::config::InstanceConfigPatch,
-        auto_enabled: bool,
+        _auto_enabled: bool,
     ) -> Option<cidr::Ipv6Inet> {
         if let Some(ipv6) = patch.ipv6 {
             return Some(ipv6.into());
-        }
-
-        if global_ctx.config.get_ipv6_public_addr_auto() && auto_enabled {
-            return None;
         }
 
         global_ctx.get_ipv6()
@@ -1778,7 +1774,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn validate_public_ipv6_patch_rejects_enabling_auto_with_manual_ipv6() {
+    async fn validate_public_ipv6_patch_allows_enabling_auto_with_manual_ipv6() {
         let global_ctx = get_mock_global_ctx();
         global_ctx.set_ipv6(Some("fd00::1/64".parse().unwrap()));
 
@@ -1787,13 +1783,7 @@ mod tests {
             ..Default::default()
         };
 
-        let err =
-            InstanceConfigPatcher::validate_public_ipv6_patch(&global_ctx, &patch).unwrap_err();
-
-        assert!(
-            err.to_string()
-                .contains("cannot use --ipv6-public-addr-auto")
-        );
+        assert!(InstanceConfigPatcher::validate_public_ipv6_patch(&global_ctx, &patch).is_ok());
     }
 
     #[tokio::test]

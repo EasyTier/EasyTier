@@ -41,6 +41,10 @@ impl DirectConnectorRpc for DirectConnectorManagerRpcServer {
             let et_ipv6: crate::proto::common::Ipv6Addr = et_ipv6.address().into();
             ret.interface_ipv6s.retain(|x| *x != et_ipv6);
         }
+        if let Some(public_ipv6) = self.global_ctx.get_public_ipv6_lease() {
+            let public_ipv6: crate::proto::common::Ipv6Addr = public_ipv6.address().into();
+            ret.interface_ipv6s.retain(|x| *x != public_ipv6);
+        }
         tracing::trace!(
             "get_ip_list: public_ipv4: {:?}, public_ipv6: {:?}, listeners: {:?}",
             ret.public_ipv4,

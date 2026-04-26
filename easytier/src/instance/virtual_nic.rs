@@ -920,7 +920,7 @@ impl NicCtx {
             }
             let src_ipv6 = ipv6.get_source();
             let dst_ipv6 = ipv6.get_destination();
-            let my_ipv6 = mgr.get_global_ctx().get_ipv6().map(|x| x.address());
+            let is_local_src = mgr.get_global_ctx().is_ip_local_ipv6(&src_ipv6);
             tracing::trace!(
                 ?ret,
                 ?src_ipv6,
@@ -928,14 +928,14 @@ impl NicCtx {
                 "[USER_PACKET] recv new packet from tun device and forward to peers."
             );
 
-            if src_ipv6.is_unicast_link_local() && Some(src_ipv6) != my_ipv6 {
+            if src_ipv6.is_unicast_link_local() && !is_local_src {
                 // do not route link local packet to other nodes unless the address is assigned by user
                 return;
             }
 
             // TODO: use zero-copy
             let send_ret = mgr
-                .send_msg_by_ip(ret, IpAddr::V6(dst_ipv6), Some(src_ipv6) == my_ipv6)
+                .send_msg_by_ip(ret, IpAddr::V6(dst_ipv6), is_local_src)
                 .await;
             if send_ret.is_err() {
                 tracing::trace!(?send_ret, "[USER_PACKET] send_msg failed")

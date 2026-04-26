@@ -3954,6 +3954,10 @@ impl Route for PeerRoute {
         self.public_ipv6_service.my_addr()
     }
 
+    async fn get_public_ipv6_gateway_peer_id(&self) -> Option<PeerId> {
+        self.public_ipv6_service.provider_peer_id_for_client()
+    }
+
     async fn get_local_public_ipv6_info(
         &self,
     ) -> crate::proto::api::instance::ListPublicIpv6InfoResponse {

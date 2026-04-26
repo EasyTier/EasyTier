@@ -226,7 +226,7 @@ impl PublicIpv6Service {
         if *cached_my_addr != my_addr {
             let old = *cached_my_addr;
             *cached_my_addr = my_addr;
-            self.global_ctx.set_ipv6(my_addr);
+            self.global_ctx.set_public_ipv6_lease(my_addr);
             self.global_ctx
                 .issue_event(GlobalCtxEvent::PublicIpv6Changed(old, my_addr));
         }
@@ -640,6 +640,11 @@ impl PublicIpv6Service {
         *self.my_addr_cache.lock().unwrap()
     }
 
+    pub(crate) fn provider_peer_id_for_client(&self) -> Option<PeerId> {
+        self.current_client_state()
+            .map(|state| state.provider.peer_id)
+    }
+
     pub(crate) fn local_provider_state(
         &self,
     ) -> Option<(PublicIpv6Provider, Vec<PublicIpv6ProviderLease>)> {
@@ -975,12 +980,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn reconcile_runtime_clears_global_ipv6_when_auto_is_disabled() {
+    async fn reconcile_runtime_clears_public_ipv6_lease_when_auto_is_disabled() {
         let global_ctx = get_mock_global_ctx();
         global_ctx.config.set_ipv6_public_addr_auto(false);
 
+        let virtual_addr = "fd00::1/64".parse().unwrap();
         let stale_addr = "2001:db8::123/64".parse().unwrap();
-        global_ctx.set_ipv6(Some(stale_addr));
+        global_ctx.set_ipv6(Some(virtual_addr));
+        global_ctx.set_public_ipv6_lease(Some(stale_addr));
 
         let service = Arc::new(PublicIpv6Service::new(
             global_ctx.clone(),
@@ -996,6 +1003,39 @@ mod tests {
         service.reconcile_runtime_from_snapshot(&[]);
 
         assert_eq!(*service.my_addr_cache.lock().unwrap(), None);
-        assert_eq!(global_ctx.get_ipv6(), None);
+        assert_eq!(global_ctx.get_ipv6(), Some(virtual_addr));
+        assert_eq!(global_ctx.get_public_ipv6_lease(), None);
+    }
+
+    #[tokio::test]
+    async fn reconcile_runtime_keeps_virtual_ipv6_when_public_lease_changes() {
+        let global_ctx = get_mock_global_ctx();
+        global_ctx.config.set_ipv6_public_addr_auto(true);
+
+        let virtual_addr = "fd00::1/64".parse().unwrap();
+        let public_addr = "2001:db8::123/64".parse().unwrap();
+        global_ctx.set_ipv6(Some(virtual_addr));
+
+        let service = Arc::new(PublicIpv6Service::new(
+            global_ctx.clone(),
+            std::sync::Weak::<PeerRpcManager>::new(),
+            Arc::new(TestRouteControl {
+                my_peer_id: 1,
+                peers: Mutex::new(vec![PublicIpv6PeerRouteInfo {
+                    peer_id: 1,
+                    inst_id: Some(uuid::Uuid::from_u128(1)),
+                    is_provider: false,
+                    prefix: None,
+                    lease: Some(public_addr),
+                    reachable: true,
+                }]),
+            }),
+            Arc::new(TestSyncTrigger),
+        ));
+
+        service.reconcile_runtime();
+
+        assert_eq!(global_ctx.get_ipv6(), Some(virtual_addr));
+        assert_eq!(global_ctx.get_public_ipv6_lease(), Some(public_addr));
     }
 }
