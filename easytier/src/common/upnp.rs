@@ -231,14 +231,14 @@ async fn try_get_public_addr_via_upnp(
     let public_ip = gateway.get_external_ip().await
         .context("failed to get external ip from gateway")?;
 
-	let lease_ref = mapping.as_ref();
+    let lease_ref = mapping.as_ref();
 
-	let public_addr = if let Some(lease) = lease_ref {
-		SocketAddr::new(public_ip, lease.gateway_external_port())
+    let public_addr = if let Some(lease) = lease_ref {
+        SocketAddr::new(public_ip, lease.gateway_external_port())
     } else {
-		bail!("port mapping lease is required to get external port")
-	};
-	Ok(public_addr)
+        bail!("port mapping lease is required to get external port")
+    };
+    Ok(public_addr)
 }
 
 pub async fn resolve_udp_public_addr(
