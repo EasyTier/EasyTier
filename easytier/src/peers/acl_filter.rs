@@ -94,6 +94,8 @@ impl AclFilter {
     /// Preserves connection tracking and rate limiting state across reloads
     /// Now lock-free and doesn't require &mut self!
     pub fn reload_rules(&self, acl_config: Option<&Acl>) {
+        self.outbound_allow_records.clear();
+
         let Some(acl_config) = acl_config else {
             self.acl_enabled.store(false, Ordering::Relaxed);
             return;
@@ -400,14 +402,15 @@ mod tests {
     use std::{
         net::{IpAddr, Ipv4Addr, Ipv6Addr},
         sync::Arc,
+        time::Instant,
     };
 
     use crate::{
         common::acl_processor::PacketInfo,
-        proto::acl::{ChainType, Protocol},
+        proto::acl::{Acl, ChainType, Protocol},
     };
 
-    use super::AclFilter;
+    use super::{AclFilter, OutboundAllowRecord};
 
     fn packet_info(dst_ip: IpAddr) -> PacketInfo {
         PacketInfo {
@@ -444,5 +447,41 @@ mod tests {
             AclFilter::classify_chain_type(true, &packet_info, None, |ip| ip == leased_ipv6);
 
         assert_eq!(chain, ChainType::Forward);
+    }
+
+    #[tokio::test]
+    async fn reload_rules_clears_outbound_allow_records() {
+        let filter = AclFilter::new();
+        filter.outbound_allow_records.insert(
+            OutboundAllowRecord {
+                src_ip: IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)),
+                dst_ip: IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)),
+                src_port: Some(1234),
+                dst_port: Some(80),
+                protocol: Protocol::Tcp,
+            },
+            Instant::now(),
+        );
+        assert_eq!(filter.outbound_allow_records.len(), 1);
+
+        filter.reload_rules(Some(&Acl::default()));
+
+        assert_eq!(filter.outbound_allow_records.len(), 0);
+
+        filter.outbound_allow_records.insert(
+            OutboundAllowRecord {
+                src_ip: IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)),
+                dst_ip: IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)),
+                src_port: Some(4321),
+                dst_port: Some(443),
+                protocol: Protocol::Tcp,
+            },
+            Instant::now(),
+        );
+        assert_eq!(filter.outbound_allow_records.len(), 1);
+
+        filter.reload_rules(None);
+
+        assert_eq!(filter.outbound_allow_records.len(), 0);
     }
 }
