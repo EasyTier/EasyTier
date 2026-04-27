@@ -6,9 +6,10 @@ use std::{
 
 use anyhow::Context;
 use tokio::sync::Mutex;
+use tokio_util::task::AbortOnDropHandle;
 
 use crate::{
-    common::{PeerId, scoped_task::ScopedTask, stun::StunInfoCollectorTrait},
+    common::{PeerId, stun::StunInfoCollectorTrait},
     connector::udp_hole_punch::common::{
         HOLE_PUNCH_PACKET_BODY_LEN, UdpHolePunchListener, try_connect_with_socket,
     },
@@ -32,7 +33,7 @@ const REMOTE_WAIT_TIME_MS: u64 = 5000;
 
 pub(crate) struct PunchBothEasySymHoleServer {
     common: Arc<PunchHoleServerCommon>,
-    task: Mutex<Option<ScopedTask<()>>>,
+    task: Mutex<Option<AbortOnDropHandle<()>>>,
 }
 
 impl PunchBothEasySymHoleServer {
@@ -161,7 +162,7 @@ impl PunchBothEasySymHoleServer {
             }
         });
 
-        *locked_task = Some(task.into());
+        *locked_task = Some(AbortOnDropHandle::new(task));
         return Ok(SendPunchPacketBothEasySymResponse {
             is_busy: false,
             base_mapped_addr: Some(cur_mapped_addr.into()),

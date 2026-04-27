@@ -1,7 +1,18 @@
 use async_trait::async_trait;
 use uuid::Uuid;
 
-use crate::proto::{api::manage::*, rpc_types::controller::BaseController};
+use crate::{
+    common::config::ConfigSource,
+    proto::{
+        api::manage::{
+            CollectNetworkInfoRequest, CollectNetworkInfoResponse, DeleteNetworkInstanceRequest,
+            GetNetworkInstanceConfigRequest, ListNetworkInstanceMetaRequest,
+            ListNetworkInstanceRequest, NetworkConfig, NetworkMeta, RunNetworkInstanceRequest,
+            ValidateConfigRequest, ValidateConfigResponse, WebClientService,
+        },
+        rpc_types::controller::BaseController,
+    },
+};
 
 #[async_trait]
 pub trait RemoteClientManager<T, C, E>
@@ -52,6 +63,7 @@ where
                     inst_id: None,
                     config: Some(config.clone()),
                     overwrite: true,
+                    source: ConfigSource::User.to_rpc(),
                 },
             )
             .await?;
@@ -62,6 +74,7 @@ where
                     identify,
                     resp.inst_id.unwrap_or_default().into(),
                     config,
+                    ConfigSource::User,
                 )
                 .await
                 .map_err(RemoteClientError::PersistentError)?;
@@ -162,13 +175,18 @@ where
             .get_rpc_client(identify.clone())
             .ok_or(RemoteClientError::ClientNotFound)?;
 
-        let cfg = self
-            .handle_get_network_config(identify.clone(), inst_id)
+        let (cfg, source) = self
+            .handle_get_network_config_with_source(identify.clone(), inst_id)
             .await?;
 
         if disabled {
             self.get_storage()
-                .insert_or_update_user_network_config(identify.clone(), inst_id, cfg.clone())
+                .insert_or_update_user_network_config(
+                    identify.clone(),
+                    inst_id,
+                    cfg.clone(),
+                    source,
+                )
                 .await
                 .map_err(RemoteClientError::PersistentError)?;
 
@@ -188,6 +206,7 @@ where
                         inst_id: Some(inst_id.into()),
                         config: Some(cfg),
                         overwrite: true,
+                        source: source.to_rpc(),
                     },
                 )
                 .await?;
@@ -230,8 +249,8 @@ where
             if metas.contains_key(&instance_id) {
                 continue;
             }
-            let config = self
-                .handle_get_network_config(identify.clone(), instance_id)
+            let (config, source) = self
+                .handle_get_network_config_with_source(identify.clone(), instance_id)
                 .await?;
             let network_name = config.network_name.unwrap_or_default();
             metas.insert(
@@ -241,6 +260,7 @@ where
                     network_name: network_name.clone(),
                     config_permission: 0,
                     instance_name: network_name,
+                    source: source.to_rpc(),
                 },
             );
         }
@@ -255,7 +275,12 @@ where
         config: NetworkConfig,
     ) -> Result<(), RemoteClientError<E>> {
         self.get_storage()
-            .insert_or_update_user_network_config(identify.clone(), inst_id, config)
+            .insert_or_update_user_network_config(
+                identify.clone(),
+                inst_id,
+                config,
+                ConfigSource::User,
+            )
             .await
             .map_err(RemoteClientError::PersistentError)?;
         self.get_storage()
@@ -270,6 +295,16 @@ where
         identify: T,
         inst_id: uuid::Uuid,
     ) -> Result<NetworkConfig, RemoteClientError<E>> {
+        self.handle_get_network_config_with_source(identify, inst_id)
+            .await
+            .map(|(config, _)| config)
+    }
+
+    async fn handle_get_network_config_with_source(
+        &self,
+        identify: T,
+        inst_id: uuid::Uuid,
+    ) -> Result<(NetworkConfig, ConfigSource), RemoteClientError<E>> {
         if let Some(client) = self.get_rpc_client(identify.clone())
             && let Ok(resp) = client
                 .get_network_instance_config(
@@ -281,7 +316,17 @@ where
                 .await
             && let Some(config) = resp.config
         {
-            return Ok(config);
+            let source = if let Some(source) = ConfigSource::from_rpc(resp.source) {
+                source
+            } else {
+                self.get_storage()
+                    .get_network_config(identify.clone(), &inst_id.to_string())
+                    .await
+                    .map_err(RemoteClientError::PersistentError)?
+                    .map(|cfg| cfg.get_runtime_network_config_source())
+                    .unwrap_or(ConfigSource::User)
+            };
+            return Ok((config, source));
         }
 
         let inst_id = inst_id.to_string();
@@ -296,9 +341,12 @@ where
                 inst_id
             )))?;
 
-        Ok(db_row
-            .get_network_config()
-            .map_err(RemoteClientError::PersistentError)?)
+        Ok((
+            db_row
+                .get_network_config()
+                .map_err(RemoteClientError::PersistentError)?,
+            db_row.get_runtime_network_config_source(),
+        ))
     }
 }
 
@@ -336,6 +384,10 @@ pub struct GetNetworkMetasResponse {
 pub trait PersistentConfig<E> {
     fn get_network_inst_id(&self) -> &str;
     fn get_network_config(&self) -> Result<NetworkConfig, E>;
+    fn get_network_config_source(&self) -> ConfigSource;
+    fn get_runtime_network_config_source(&self) -> ConfigSource {
+        self.get_network_config_source()
+    }
 }
 
 #[async_trait]
@@ -348,6 +400,7 @@ where
         identify: T,
         network_inst_id: Uuid,
         network_config: NetworkConfig,
+        source: ConfigSource,
     ) -> Result<(), E>;
 
     async fn delete_network_configs(&self, identify: T, network_inst_ids: &[Uuid])

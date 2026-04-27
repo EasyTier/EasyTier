@@ -2,7 +2,7 @@
 
 use std::{
     collections::HashSet,
-    net::{IpAddr, Ipv6Addr, SocketAddr},
+    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
     str::FromStr,
     sync::{
         Arc,
@@ -24,7 +24,7 @@ use crate::{
     proto::{
         peer_rpc::{
             DirectConnectorRpc, DirectConnectorRpcClientFactory, DirectConnectorRpcServer,
-            GetIpListRequest, GetIpListResponse, SendV6HolePunchPacketRequest,
+            GetIpListRequest, GetIpListResponse, SendUdpHolePunchPacketRequest,
         },
         rpc_types::controller::BaseController,
     },
@@ -48,6 +48,19 @@ pub const DIRECT_CONNECTOR_SERVICE_ID: u32 = 1;
 pub const DIRECT_CONNECTOR_BLACKLIST_TIMEOUT_SEC: u64 = 300;
 
 static TESTING: AtomicBool = AtomicBool::new(false);
+
+fn mapped_listener_port(url: &url::Url) -> Option<u16> {
+    url.port().or_else(|| {
+        TunnelScheme::try_from(url)
+            .ok()
+            .and_then(|scheme| IpScheme::try_from(scheme).ok())
+            .map(IpScheme::default_port)
+    })
+}
+
+async fn resolve_mapped_listener_addrs(listener: &url::Url) -> Result<Vec<SocketAddr>, Error> {
+    socket_addrs(listener, || mapped_listener_port(listener)).await
+}
 
 #[async_trait::async_trait]
 pub trait PeerManagerForDirectConnector {
@@ -115,37 +128,25 @@ impl DirectConnectorManagerData {
         }
     }
 
-    async fn remote_send_v6_hole_punch_packet(
+    async fn remote_send_udp_hole_punch_packet(
         &self,
         dst_peer_id: PeerId,
-        local_socket: &UdpSocket,
+        connector_addr: SocketAddr,
         remote_url: &url::Url,
     ) -> Result<(), Error> {
+        if !matches_scheme!(remote_url, TunnelScheme::Ip(IpScheme::Udp)) {
+            return Err(anyhow::anyhow!(
+                "udp hole punch packet only applies to udp listener: {}",
+                remote_url
+            )
+            .into());
+        }
+
         let global_ctx = self.peer_manager.get_global_ctx();
-        let listener_port = remote_url.port().ok_or(anyhow::anyhow!(
+        let listener_port = mapped_listener_port(remote_url).ok_or(anyhow::anyhow!(
             "failed to parse port from remote url: {}",
             remote_url
         ))?;
-        let connector_ip = global_ctx
-            .get_stun_info_collector()
-            .get_stun_info()
-            .public_ip
-            .iter()
-            .find(|x| x.contains(":"))
-            .ok_or(anyhow::anyhow!(
-                "failed to get public ipv6 address from stun info"
-            ))?
-            .parse::<std::net::Ipv6Addr>()
-            .with_context(|| {
-                format!(
-                    "failed to parse public ipv6 address from stun info: {:?}",
-                    global_ctx.get_stun_info_collector().get_stun_info()
-                )
-            })?;
-        let connector_addr = SocketAddr::new(
-            std::net::IpAddr::V6(connector_ip),
-            local_socket.local_addr()?.port(),
-        );
 
         let rpc_stub = self
             .peer_manager
@@ -158,9 +159,9 @@ impl DirectConnectorManagerData {
         );
 
         rpc_stub
-            .send_v6_hole_punch_packet(
+            .send_udp_hole_punch_packet(
                 BaseController::default(),
-                SendV6HolePunchPacketRequest {
+                SendUdpHolePunchPacketRequest {
                     listener_port: listener_port as u32,
                     connector_addr: Some(connector_addr.into()),
                 },
@@ -168,7 +169,7 @@ impl DirectConnectorManagerData {
             .await
             .with_context(|| {
                 format!(
-                    "do rpc, send v6 hole punch packet to peer {} at {}",
+                    "do rpc, send udp hole punch packet to peer {} at {}",
                     dst_peer_id, remote_url
                 )
             })?;
@@ -186,11 +187,34 @@ impl DirectConnectorManagerData {
                 .await
                 .with_context(|| format!("failed to bind local socket for {}", remote_url))?,
         );
+        let connector_ip = self
+            .peer_manager
+            .get_global_ctx()
+            .get_stun_info_collector()
+            .get_stun_info()
+            .public_ip
+            .iter()
+            .find(|x| x.contains(':'))
+            .ok_or(anyhow::anyhow!(
+                "failed to get public ipv6 address from stun info"
+            ))?
+            .parse::<Ipv6Addr>()
+            .with_context(|| {
+                format!(
+                    "failed to parse public ipv6 address from stun info: {:?}",
+                    self.peer_manager
+                        .get_global_ctx()
+                        .get_stun_info_collector()
+                        .get_stun_info()
+                )
+            })?;
+        let connector_addr =
+            SocketAddr::new(IpAddr::V6(connector_ip), local_socket.local_addr()?.port());
 
         // ask remote to send v6 hole punch packet
         // and no matter what the result is, continue to connect
         let _ = self
-            .remote_send_v6_hole_punch_packet(dst_peer_id, &local_socket, remote_url)
+            .remote_send_udp_hole_punch_packet(dst_peer_id, connector_addr, remote_url)
             .await;
 
         let udp_connector = UdpTunnelConnector::new(remote_url.clone());
@@ -205,14 +229,80 @@ impl DirectConnectorManagerData {
             .await
     }
 
+    async fn connect_to_public_ipv4(
+        &self,
+        dst_peer_id: PeerId,
+        remote_url: &url::Url,
+    ) -> Result<(PeerId, PeerConnId), Error> {
+        let local_socket = {
+            let _g = self.global_ctx.net_ns.guard();
+            Arc::new(
+                UdpSocket::bind("0.0.0.0:0")
+                    .await
+                    .with_context(|| format!("failed to bind local socket for {}", remote_url))?,
+            )
+        };
+        let connector_addr = self
+            .peer_manager
+            .get_global_ctx()
+            .get_stun_info_collector()
+            .get_udp_port_mapping_with_socket(local_socket.clone())
+            .await
+            .with_context(|| format!("failed to get udp port mapping for {}", remote_url))?;
+
+        let _ = self
+            .remote_send_udp_hole_punch_packet(dst_peer_id, connector_addr, remote_url)
+            .await;
+
+        let udp_connector = UdpTunnelConnector::new(remote_url.clone());
+        let remote_addr = SocketAddr::from_url(remote_url.clone(), IpVersion::V4).await?;
+        let ret = udp_connector
+            .try_connect_with_socket(local_socket, remote_addr)
+            .await?;
+
+        self.peer_manager
+            .add_client_tunnel_with_peer_id_hint(ret, true, Some(dst_peer_id))
+            .await
+    }
+
     async fn do_try_connect_to_ip(&self, dst_peer_id: PeerId, addr: String) -> Result<(), Error> {
         let connector = create_connector_by_url(&addr, &self.global_ctx, IpVersion::Both).await?;
         let remote_url = connector.remote_url();
-        let (peer_id, conn_id) = if matches_scheme!(remote_url, TunnelScheme::Ip(IpScheme::Udp))
-            && matches!(remote_url.host(), Some(Host::Ipv6(_)))
-        {
-            self.connect_to_public_ipv6(dst_peer_id, &remote_url)
-                .await?
+        let (peer_id, conn_id) = if matches_scheme!(remote_url, TunnelScheme::Ip(IpScheme::Udp)) {
+            match remote_url.host() {
+                Some(Host::Ipv6(_)) => {
+                    self.connect_to_public_ipv6(dst_peer_id, &remote_url)
+                        .await?
+                }
+                Some(Host::Ipv4(ip)) if is_public_ipv4(ip) => {
+                    match self.connect_to_public_ipv4(dst_peer_id, &remote_url).await {
+                        Ok(ret) => ret,
+                        Err(err) => {
+                            tracing::debug!(
+                                ?err,
+                                %remote_url,
+                                "udp public ipv4 listener punch failed, falling back to direct connect"
+                            );
+                            timeout(
+                                std::time::Duration::from_secs(3),
+                                self.peer_manager.try_direct_connect_with_peer_id_hint(
+                                    connector,
+                                    Some(dst_peer_id),
+                                ),
+                            )
+                            .await??
+                        }
+                    }
+                }
+                _ => {
+                    timeout(
+                        std::time::Duration::from_secs(3),
+                        self.peer_manager
+                            .try_direct_connect_with_peer_id_hint(connector, Some(dst_peer_id)),
+                    )
+                    .await??
+                }
+            }
         } else {
             timeout(
                 std::time::Duration::from_secs(3),
@@ -303,7 +393,7 @@ impl DirectConnectorManagerData {
         listener: &url::Url,
         tasks: &mut JoinSet<Result<(), Error>>,
     ) {
-        let Ok(mut addrs) = socket_addrs(listener, || None).await else {
+        let Ok(mut addrs) = resolve_mapped_listener_addrs(listener).await else {
             tracing::error!(?listener, "failed to parse socket address from listener");
             return;
         };
@@ -457,7 +547,7 @@ impl DirectConnectorManagerData {
             .into_iter()
             .map(Into::<url::Url>::into)
             .filter_map(|l| if l.scheme() != "ring" { Some(l) } else { None })
-            .filter(|l| l.port().is_some() && l.host().is_some())
+            .filter(|l| mapped_listener_port(l).is_some() && l.host().is_some())
             .filter(|l| enable_ipv6 || !matches!(l.host().unwrap().to_owned(), Host::Ipv6(_)))
             .collect::<Vec<_>>();
 
@@ -575,6 +665,14 @@ impl DirectConnectorManagerData {
     }
 }
 
+fn is_public_ipv4(ip: Ipv4Addr) -> bool {
+    !ip.is_private()
+        && !ip.is_loopback()
+        && !ip.is_link_local()
+        && !ip.is_broadcast()
+        && !ip.is_unspecified()
+}
+
 impl std::fmt::Debug for DirectConnectorManagerData {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("DirectConnectorManagerData")
@@ -675,6 +773,17 @@ impl DirectConnectorManager {
     pub fn run_as_client(&mut self) {
         self.client.start();
     }
+
+    #[cfg(test)]
+    pub(crate) async fn try_direct_connect_with_ip_list(
+        &self,
+        dst_peer_id: PeerId,
+        ip_list: GetIpListResponse,
+    ) -> Result<(), Error> {
+        self.data
+            .do_try_direct_connect_internal(dst_peer_id, ip_list)
+            .await
+    }
 }
 
 #[cfg(test)]
@@ -693,10 +802,53 @@ mod tests {
         proto::peer_rpc::GetIpListResponse,
     };
 
-    use super::TESTING;
+    use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+
+    use super::{TESTING, mapped_listener_port, resolve_mapped_listener_addrs};
+
+    #[test]
+    fn mapped_listener_port_uses_ip_scheme_defaults() {
+        assert_eq!(
+            mapped_listener_port(&"ws://example.com".parse().unwrap()),
+            Some(80)
+        );
+        assert_eq!(
+            mapped_listener_port(&"wss://example.com".parse().unwrap()),
+            Some(443)
+        );
+        assert_eq!(
+            mapped_listener_port(&"tcp://127.0.0.1".parse().unwrap()),
+            Some(11010)
+        );
+        assert_eq!(
+            mapped_listener_port(&"udp://127.0.0.1".parse().unwrap()),
+            Some(11010)
+        );
+    }
 
     #[tokio::test]
-    async fn direct_connector_mapped_listener() {
+    async fn resolve_mapped_listener_addrs_uses_default_ports() {
+        let wss_addrs = resolve_mapped_listener_addrs(&"wss://127.0.0.1".parse().unwrap())
+            .await
+            .unwrap();
+        assert_eq!(
+            wss_addrs,
+            vec![SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 443)]
+        );
+
+        let tcp_addrs = resolve_mapped_listener_addrs(&"tcp://127.0.0.1".parse().unwrap())
+            .await
+            .unwrap();
+        assert_eq!(
+            tcp_addrs,
+            vec![SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 11010)]
+        );
+    }
+
+    async fn run_direct_connector_mapped_listener_test(
+        mapped_listener: &str,
+        target_listener: &str,
+    ) {
         TESTING.store(true, std::sync::atomic::Ordering::Relaxed);
         let p_a = create_mock_peer_manager().await;
         let p_b = create_mock_peer_manager().await;
@@ -715,11 +867,11 @@ mod tests {
 
         p_c.get_global_ctx()
             .config
-            .set_mapped_listeners(Some(vec!["tcp://127.0.0.1:11334".parse().unwrap()]));
+            .set_mapped_listeners(Some(vec![mapped_listener.parse().unwrap()]));
 
         p_x.get_global_ctx()
             .config
-            .set_listeners(vec!["tcp://0.0.0.0:11334".parse().unwrap()]);
+            .set_listeners(vec![target_listener.parse().unwrap()]);
         let mut lis_x = ListenerManager::new(p_x.get_global_ctx(), p_x.clone());
         lis_x.prepare_listeners().await.unwrap();
         lis_x.run().await.unwrap();
@@ -734,6 +886,12 @@ mod tests {
         wait_route_appear_with_cost(p_a.clone(), p_x.my_peer_id(), Some(1))
             .await
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn direct_connector_mapped_listener() {
+        run_direct_connector_mapped_listener_test("tcp://127.0.0.1:11334", "tcp://0.0.0.0:11334")
+            .await;
     }
 
     #[rstest::rstest]

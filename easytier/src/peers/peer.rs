@@ -12,6 +12,7 @@ use super::{
     PacketRecvChan,
     peer_conn::{PeerConn, PeerConnId},
 };
+use crate::{common::shrink_dashmap, proto::api::instance::PeerConnInfo};
 use crate::{
     common::{
         PeerId,
@@ -21,10 +22,7 @@ use crate::{
     proto::peer_rpc::PeerIdentityType,
     tunnel::packet_def::ZCPacket,
 };
-use crate::{
-    common::{scoped_task::ScopedTask, shrink_dashmap},
-    proto::api::instance::PeerConnInfo,
-};
+use tokio_util::task::AbortOnDropHandle;
 
 type ArcPeerConn = Arc<PeerConn>;
 type ConnMap = Arc<DashMap<PeerConnId, ArcPeerConn>>;
@@ -37,14 +35,14 @@ pub struct Peer {
     packet_recv_chan: PacketRecvChan,
 
     close_event_sender: mpsc::Sender<PeerConnId>,
-    close_event_listener: ScopedTask<()>,
+    close_event_listener: AbortOnDropHandle<()>,
 
     shutdown_notifier: Arc<tokio::sync::Notify>,
 
     default_conn_id: Arc<AtomicCell<PeerConnId>>,
     peer_identity_type: Arc<AtomicCell<Option<PeerIdentityType>>>,
     peer_public_key: Arc<RwLock<Option<Vec<u8>>>>,
-    default_conn_id_clear_task: ScopedTask<()>,
+    default_conn_id_clear_task: AbortOnDropHandle<()>,
 }
 
 impl Peer {
@@ -64,7 +62,7 @@ impl Peer {
         let conns_copy = conns.clone();
         let shutdown_notifier_copy = shutdown_notifier.clone();
         let global_ctx_copy = global_ctx.clone();
-        let close_event_listener = tokio::spawn(
+        let close_event_listener = AbortOnDropHandle::new(tokio::spawn(
             async move {
                 loop {
                     select! {
@@ -103,14 +101,13 @@ impl Peer {
                 "peer_close_event_listener",
                 ?peer_node_id,
             )),
-        )
-        .into();
+        ));
 
         let default_conn_id = Arc::new(AtomicCell::new(PeerConnId::default()));
 
         let conns_copy = conns.clone();
         let default_conn_id_copy = default_conn_id.clone();
-        let default_conn_id_clear_task = ScopedTask::from(tokio::spawn(async move {
+        let default_conn_id_clear_task = AbortOnDropHandle::new(tokio::spawn(async move {
             loop {
                 tokio::time::sleep(std::time::Duration::from_secs(5)).await;
                 if conns_copy.len() > 1 {

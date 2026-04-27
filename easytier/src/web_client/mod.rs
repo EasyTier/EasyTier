@@ -3,7 +3,7 @@ use std::sync::Arc;
 use crate::{
     common::{
         config::TomlConfigLoader, global_ctx::GlobalCtx, log, os_info::collect_device_os_info,
-        scoped_task::ScopedTask, set_default_machine_id, stun::MockStunInfoCollector,
+        set_default_machine_id, stun::MockStunInfoCollector,
     },
     connector::create_connector_by_url,
     instance_manager::{DaemonGuard, NetworkInstanceManager},
@@ -13,6 +13,7 @@ use crate::{
 };
 use anyhow::{Context as _, Result};
 use async_trait::async_trait;
+use tokio_util::task::AbortOnDropHandle;
 use url::Url;
 use uuid::Uuid;
 
@@ -44,7 +45,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 pub struct WebClient {
     controller: Arc<controller::Controller>,
-    tasks: ScopedTask<()>,
+    tasks: AbortOnDropHandle<()>,
     manager_guard: DaemonGuard,
     connected: Arc<AtomicBool>,
 }
@@ -71,7 +72,7 @@ impl WebClient {
 
         let controller_clone = controller.clone();
         let connected_clone = connected.clone();
-        let tasks = ScopedTask::from(tokio::spawn(async move {
+        let tasks = AbortOnDropHandle::new(tokio::spawn(async move {
             Self::routine(
                 controller_clone,
                 connected_clone,
@@ -127,7 +128,7 @@ impl WebClient {
                 }
             };
 
-            if support_encryption {
+            if support_encryption && security::web_secure_tunnel_supported() {
                 log::info!("Server supports encryption, reconnecting with secure tunnel");
                 drop(session);
 
@@ -158,6 +159,23 @@ impl WebClient {
                 session.wait().await;
                 connected.store(false, Ordering::Release);
                 continue;
+            }
+
+            if support_encryption {
+                if secure_mode {
+                    connected.store(false, Ordering::Release);
+                    let wait = 1;
+                    log::warn!(
+                        "secure-mode enabled but local build lacks aes-gcm support for web secure tunnel, retrying in {} seconds...",
+                        wait
+                    );
+                    tokio::time::sleep(std::time::Duration::from_secs(wait)).await;
+                    continue;
+                }
+
+                log::warn!(
+                    "Server supports encryption but local build lacks aes-gcm support for web secure tunnel, falling back to legacy tunnel"
+                );
             }
 
             if secure_mode {

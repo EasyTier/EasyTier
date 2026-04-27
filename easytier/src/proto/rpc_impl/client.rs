@@ -4,18 +4,17 @@ use std::sync::{Arc, Mutex};
 
 use bytes::Bytes;
 use dashmap::DashMap;
+use guarden::defer;
 use prost::Message;
 use tokio::sync::mpsc;
 use tokio::task::JoinSet;
 use tokio::time::timeout;
 use tokio_stream::StreamExt;
 
-use crate::common::shrink_dashmap;
 use crate::common::{
-    PeerId,
+    PeerId, shrink_dashmap,
     stats_manager::{LabelSet, LabelType, MetricName, StatsManager},
 };
-use crate::defer;
 use crate::proto::common::{
     CompressionAlgoPb, RpcCompressionInfo, RpcDescriptor, RpcPacket, RpcRequest, RpcResponse,
 };

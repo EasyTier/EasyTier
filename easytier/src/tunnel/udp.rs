@@ -1,6 +1,6 @@
 use std::{
     fmt::Debug,
-    net::{Ipv6Addr, SocketAddrV6},
+    net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6},
     sync::{Arc, Weak},
 };
 
@@ -12,24 +12,24 @@ use futures::{SinkExt, StreamExt, stream::FuturesUnordered};
 use rand::{Rng, SeedableRng};
 use zerocopy::{AsBytes, FromBytes};
 
-use std::net::SocketAddr;
 use tokio::{
     net::UdpSocket,
     sync::mpsc::{Receiver, Sender, UnboundedReceiver, UnboundedSender},
     task::JoinSet,
 };
+use tokio_util::task::AbortOnDropHandle;
 use tracing::{Instrument, instrument};
 
 use super::{
     FromUrl, IpVersion, Tunnel, TunnelConnCounter, TunnelError, TunnelInfo, TunnelListener,
     TunnelUrl,
     common::wait_for_connect_futures,
-    packet_def::{UDP_TUNNEL_HEADER_SIZE, UDPTunnelHeader, V6HolePunchPacket},
+    packet_def::{UDP_TUNNEL_HEADER_SIZE, UDPTunnelHeader, V4HolePunchPacket, V6HolePunchPacket},
     ring::{RingSink, RingStream},
 };
 use crate::tunnel::common::bind;
 use crate::{
-    common::{join_joinset_background, scoped_task::ScopedTask, shrink_dashmap},
+    common::{join_joinset_background, shrink_dashmap},
     tunnel::{
         build_url_from_socket_addr,
         common::{TunnelWrapper, reserve_buf},
@@ -114,6 +114,28 @@ pub fn new_v6_hole_punch_packet(dst: &SocketAddrV6) -> ZCPacket {
     )
 }
 
+pub fn new_v4_hole_punch_packet(dst: &SocketAddrV4) -> ZCPacket {
+    let mut body = V4HolePunchPacket::default();
+    body.dst_ipv4.copy_from_slice(&dst.ip().octets());
+    body.dst_port.set(dst.port());
+    new_udp_packet(
+        |header| {
+            header.msg_type = UdpPacketType::V4HolePunch as u8;
+            header.conn_id.set(dst.port() as u32);
+            header
+                .len
+                .set(std::mem::size_of::<V4HolePunchPacket>() as u16);
+        },
+        Some(body.as_bytes()),
+    )
+}
+
+fn extract_dst_addr_from_v4_hole_punch_packet(buf: &[u8]) -> Option<SocketAddrV4> {
+    let body = V4HolePunchPacket::ref_from_prefix(buf)?;
+    let ip = Ipv4Addr::from(body.dst_ipv4);
+    Some(SocketAddrV4::new(ip, body.dst_port.get()))
+}
+
 fn extrace_dst_addr_from_hole_punch_packet(buf: &[u8]) -> Option<SocketAddrV6> {
     let body = V6HolePunchPacket::ref_from_prefix(buf)?;
     let ip = Ipv6Addr::from(body.dst_ipv6);
@@ -134,6 +156,21 @@ pub async fn send_v6_hole_punch_packet(
     let local_socket = UdpSocket::bind("[::1]:0").await?;
     let udp_packet = new_v6_hole_punch_packet(&dst_addr);
     let remote_addr = format!("[::1]:{}", listener_port)
+        .parse::<SocketAddr>()
+        .unwrap();
+    local_socket
+        .send_to(&udp_packet.into_bytes(), remote_addr)
+        .await?;
+    Ok(())
+}
+
+pub async fn send_v4_hole_punch_packet(
+    listener_port: u16,
+    dst_addr: SocketAddrV4,
+) -> Result<(), TunnelError> {
+    let local_socket = UdpSocket::bind("127.0.0.1:0").await?;
+    let udp_packet = new_v4_hole_punch_packet(&dst_addr);
+    let remote_addr = format!("127.0.0.1:{}", listener_port)
         .parse::<SocketAddr>()
         .unwrap();
     local_socket
@@ -303,7 +340,7 @@ struct UdpConnection {
     dst_addr: SocketAddr,
 
     ring_sender: RingSink,
-    forward_task: ScopedTask<()>,
+    forward_task: AbortOnDropHandle<()>,
 }
 
 impl UdpConnection {
@@ -316,15 +353,13 @@ impl UdpConnection {
         close_event_sender: UdpCloseEventSender,
     ) -> Self {
         let s = socket.clone();
-        let forward_task = tokio::spawn(async move {
+        let forward_task = AbortOnDropHandle::new(tokio::spawn(async move {
             let close_event_sender = close_event_sender;
             let err = forward_from_ring_to_udp(ring_recv, &s, &dst_addr, conn_id).await;
             if let Err(e) = close_event_sender.send((dst_addr, err)) {
                 tracing::error!(?e, "udp send close event error");
             }
-        })
-        .into();
-
+        }));
         Self {
             socket,
             conn_id,
@@ -455,6 +490,27 @@ impl UdpTunnelListenerData {
                     tracing::error!(?e, "udp respond stun packet error");
                 }
             });
+        } else if header.msg_type == UdpPacketType::V4HolePunch as u8 {
+            if !addr.ip().is_loopback() {
+                tracing::warn!(?addr, "v4 hole punch packet should be from loopback");
+                return;
+            }
+            if !addr.ip().is_ipv4() {
+                tracing::warn!(?addr, "v4 hole punch packet should be sent from ipv4");
+                return;
+            }
+            let Some(dst_addr) =
+                extract_dst_addr_from_v4_hole_punch_packet(zc_packet.udp_payload())
+            else {
+                tracing::warn!("invalid v4 hole punch packet");
+                return;
+            };
+            let socket = self.socket.as_ref().unwrap().clone();
+            let udp_packet = new_hole_punch_packet(1, 32);
+            if let Err(e) = socket.try_send_to(&udp_packet.into_bytes(), SocketAddr::V4(dst_addr)) {
+                tracing::error!(?e, "udp send hole punch packet error");
+            }
+            tracing::debug!(?dst_addr, "udp forward packet send hole punch packet");
         } else if header.msg_type == UdpPacketType::V6HolePunch as u8 {
             if !addr.ip().is_loopback() {
                 tracing::warn!(?addr, "v6 hole punch packet should be from loopback");
@@ -527,6 +583,12 @@ impl UdpTunnelListener {
         }
     }
 
+    pub fn new_with_socket(addr: url::Url, socket: Arc<UdpSocket>) -> Self {
+        let mut listener = Self::new(addr);
+        listener.socket = Some(socket);
+        listener
+    }
+
     pub fn get_socket(&self) -> Option<Arc<UdpSocket>> {
         self.socket.clone()
     }
@@ -535,15 +597,17 @@ impl UdpTunnelListener {
 #[async_trait]
 impl TunnelListener for UdpTunnelListener {
     async fn listen(&mut self) -> Result<(), TunnelError> {
-        let addr = SocketAddr::from_url(self.addr.clone(), IpVersion::Both).await?;
-        let tunnel_url: TunnelUrl = self.addr.clone().into();
-        self.socket = Some(Arc::new(
-            bind()
-                .addr(addr)
-                .only_v6(true)
-                .maybe_dev(tunnel_url.bind_dev())
-                .call()?,
-        ));
+        if self.socket.is_none() {
+            let addr = SocketAddr::from_url(self.addr.clone(), IpVersion::Both).await?;
+            let tunnel_url: TunnelUrl = self.addr.clone().into();
+            self.socket = Some(Arc::new(
+                bind()
+                    .addr(addr)
+                    .only_v6(true)
+                    .maybe_dev(tunnel_url.bind_dev())
+                    .call()?,
+            ));
+        }
         self.data.socket = self.socket.clone();
 
         self.addr
@@ -1145,6 +1209,37 @@ mod tests {
         tokio::time::timeout(tokio::time::Duration::from_secs(2), t)
             .await
             .expect("Timeout waiting for v6 hole punch packet")
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_v4_hole_punch_packet() {
+        let mut lis = UdpTunnelListener::new("udp://0.0.0.0:0".parse().unwrap());
+        lis.listen().await.unwrap();
+
+        let socket = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let socket_clone = socket.clone();
+        let t = tokio::spawn(async move {
+            let mut buf = BytesMut::new();
+            buf.resize(128, 0);
+            socket_clone.recv_from(&mut buf).await.unwrap();
+        });
+
+        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+
+        send_v4_hole_punch_packet(
+            lis.local_url().port().unwrap(),
+            match socket.local_addr().unwrap() {
+                std::net::SocketAddr::V4(addr_v4) => addr_v4,
+                _ => panic!("Expected an IPv4 address"),
+            },
+        )
+        .await
+        .unwrap();
+
+        tokio::time::timeout(tokio::time::Duration::from_secs(2), t)
+            .await
+            .expect("Timeout waiting for v4 hole punch packet")
             .unwrap();
     }
 }

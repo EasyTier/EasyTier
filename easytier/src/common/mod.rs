@@ -14,7 +14,6 @@ pub mod acl_processor;
 pub mod compressor;
 pub mod config;
 pub mod constants;
-pub mod defer;
 pub mod env_parser;
 pub mod error;
 pub mod global_ctx;
@@ -24,12 +23,12 @@ pub mod log;
 pub mod netns;
 pub mod network;
 pub mod os_info;
-pub mod scoped_task;
 pub mod stats_manager;
 pub mod stun;
 pub mod stun_codec_ext;
 pub mod token_bucket;
 pub mod tracing_rolling_appender;
+pub mod upnp;
 
 pub fn get_logger_timer<F: time::formatting::Formattable>(
     format: F,

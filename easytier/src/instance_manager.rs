@@ -1,13 +1,13 @@
 use dashmap::DashMap;
 use std::fmt::{Display, Formatter};
 use std::{collections::BTreeMap, path::PathBuf, sync::Arc};
+use tokio_util::task::AbortOnDropHandle;
 
 use crate::{
     common::{
-        config::{ConfigFileControl, ConfigLoader, TomlConfigLoader},
+        config::{ConfigFileControl, ConfigLoader, ConfigSource, TomlConfigLoader},
         global_ctx::{EventBusSubscriber, GlobalCtxEvent},
         log,
-        scoped_task::ScopedTask,
     },
     launcher::{NetworkInstance, NetworkInstanceRunningInfo},
     proto::{self},
@@ -27,7 +27,7 @@ impl Drop for DaemonGuard {
 
 pub struct NetworkInstanceManager {
     instance_map: Arc<DashMap<uuid::Uuid, NetworkInstance>>,
-    instance_stop_tasks: Arc<DashMap<uuid::Uuid, ScopedTask<()>>>,
+    instance_stop_tasks: Arc<DashMap<uuid::Uuid, AbortOnDropHandle<()>>>,
     stop_check_notifier: Arc<tokio::sync::Notify>,
     instance_error_messages: Arc<DashMap<uuid::Uuid, String>>,
     config_dir: Option<PathBuf>,
@@ -78,12 +78,12 @@ impl NetworkInstanceManager {
         let stop_check_notifier = self.stop_check_notifier.clone();
         self.instance_stop_tasks.insert(
             instance_id,
-            ScopedTask::from(tokio::spawn(async move {
+            AbortOnDropHandle::new(tokio::spawn(async move {
                 let Some(instance_stop_notifier) = instance_stop_notifier else {
                     return;
                 };
                 let _t = instance_event_receiver
-                    .map(|event| ScopedTask::from(handle_event(instance_id, event)));
+                    .map(|event| AbortOnDropHandle::new(handle_event(instance_id, event)));
                 instance_stop_notifier.notified().await;
                 if let Some(instance) = instance_map.get(&instance_id)
                     && let Some(error) = instance.get_latest_error_msg()
@@ -215,6 +215,15 @@ impl NetworkInstanceManager {
         self.instance_map
             .get(instance_id)
             .map(|instance| instance.value().get_config_file_control().clone())
+    }
+
+    pub fn get_instance_network_config_source(
+        &self,
+        instance_id: &uuid::Uuid,
+    ) -> Option<ConfigSource> {
+        self.instance_map
+            .get(instance_id)
+            .map(|instance| instance.value().get_network_config_source())
     }
 
     pub fn get_instance_service(
@@ -357,6 +366,21 @@ fn handle_event(
                         event!(info, category: "CONNECTION", local, remote, err, "[{}] connection error", instance_id);
                     }
 
+                    GlobalCtxEvent::ListenerPortMappingEstablished {
+                        local_listener,
+                        mapped_listener,
+                        backend,
+                    } => {
+                        event!(
+                            info,
+                            %local_listener,
+                            %mapped_listener,
+                            backend,
+                            "[{}] listener port mapping established",
+                            instance_id
+                        );
+                    }
+
                     GlobalCtxEvent::TunDeviceReady(dev) => {
                         event!(info, dev, "[{}] tun device ready", instance_id);
                     }
@@ -411,6 +435,20 @@ fn handle_event(
 
                     GlobalCtxEvent::DhcpIpv4Conflicted(ip) => {
                         event!(info, ?ip, "[{}] dhcp ip conflict", instance_id);
+                    }
+
+                    GlobalCtxEvent::PublicIpv6Changed(old, new) => {
+                        event!(info, ?old, ?new, "[{}] public ipv6 changed", instance_id);
+                    }
+
+                    GlobalCtxEvent::PublicIpv6RoutesUpdated(added, removed) => {
+                        event!(
+                            info,
+                            ?added,
+                            ?removed,
+                            "[{}] public ipv6 routes updated",
+                            instance_id
+                        );
                     }
 
                     GlobalCtxEvent::PortForwardAdded(cfg) => {

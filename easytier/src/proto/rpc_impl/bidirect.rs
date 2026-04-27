@@ -1,10 +1,10 @@
 use std::sync::{Arc, Mutex, atomic::AtomicBool};
 
 use futures::{SinkExt as _, StreamExt};
+use guarden::defer;
 use tokio::{task::JoinSet, time::timeout};
 
 use crate::{
-    defer,
     proto::rpc_types::error::Error,
     tunnel::{Tunnel, packet_def::PacketType, ring::create_ring_tunnel_pair},
 };

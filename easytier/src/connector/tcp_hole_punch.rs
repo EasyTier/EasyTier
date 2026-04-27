@@ -621,6 +621,13 @@ mod tests {
             Ok(format!("127.0.0.1:{}", port).parse().unwrap())
         }
 
+        async fn get_udp_port_mapping_with_socket(
+            &self,
+            udp: std::sync::Arc<tokio::net::UdpSocket>,
+        ) -> Result<SocketAddr, Error> {
+            self.get_udp_port_mapping(udp.local_addr()?.port()).await
+        }
+
         async fn get_tcp_port_mapping(&self, mut port: u16) -> Result<SocketAddr, Error> {
             if port == 0 {
                 port = 40144;

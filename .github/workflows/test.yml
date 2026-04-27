@@ -58,22 +58,25 @@ jobs:
 
       - uses: taiki-e/install-action@cargo-hack
 
-      - name: Check Cargo.lock is up to date
-        run: |
-          if ! cargo metadata --format-version 1 --locked --no-deps > /dev/null; then
-            echo "::error::Cargo.lock is out of date. Run cargo generate-lockfile or cargo build locally, then commit Cargo.lock."
-            exit 1
-          fi
-
       - name: Check formatting
+        if: ${{ !cancelled() }}
         run: cargo fmt --all -- --check
 
       - name: Check Clippy
+        if: ${{ !cancelled() }}
         run: cargo clippy --all-targets --features full --all -- -D warnings
 
       - name: Check features
         if: ${{ !cancelled() }}
         run: cargo hack check --package easytier --each-feature --exclude-features macos-ne --verbose
+
+      - name: Check Cargo.lock is up to date
+        if: ${{ !cancelled() }}
+        run: |
+          if ! cargo metadata --format-version 1 --locked > /dev/null; then
+            echo "::error::Cargo.lock is out of date. Run cargo generate-lockfile or cargo build locally, then commit Cargo.lock."
+            exit 1
+          fi
 
   pre-test:
     name: Build test
@@ -125,6 +128,10 @@ jobs:
 
       - name: Setup tools for test
         run: sudo apt install bridge-utils
+      - name: Setup upnpd for test
+        run: |
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y miniupnpd miniupnpd-iptables iptables
 
       - name: Setup system for test
         run: |

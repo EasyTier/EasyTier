@@ -52,7 +52,7 @@ pub fn client_config() -> ClientConfig {
 
 pub fn endpoint_config() -> EndpointConfig {
     let mut config = EndpointConfig::default();
-    config.max_udp_payload_size(65527).unwrap();
+    config.max_udp_payload_size(1200).unwrap();
     config
 }
 //endregion

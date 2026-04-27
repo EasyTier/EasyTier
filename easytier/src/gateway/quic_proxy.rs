@@ -24,6 +24,7 @@ use bytes::{BufMut, Bytes, BytesMut};
 use dashmap::DashMap;
 use derivative::Derivative;
 use derive_more::{Constructor, Deref, DerefMut, From, Into};
+use guarden::defer;
 use prost::Message;
 use quinn::udp::{EcnCodepoint, RecvMeta, Transmit};
 use quinn::{
@@ -611,6 +612,11 @@ impl QuicStreamReceiver {
                 }
 
                 _ = self.tasks.join_next(), if !self.tasks.is_empty() => {}
+
+                else => {
+                    info!("quic stream receiver endpoint closed, exiting");
+                    break;
+                }
             }
         }
     }
@@ -657,7 +663,7 @@ impl QuicStreamReceiver {
                 transport_type: TcpProxyEntryTransportType::Quic.into(),
             },
         );
-        crate::defer! {
+        defer! {
             proxy_entries.remove(&handle);
             if proxy_entries.capacity() - proxy_entries.len() > 16 {
                 proxy_entries.shrink_to_fit();
