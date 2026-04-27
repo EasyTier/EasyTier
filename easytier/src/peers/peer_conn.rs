@@ -12,6 +12,7 @@ use std::{
 
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
+use guarden::guard;
 use hmac::Mac;
 use prost::Message;
 
@@ -40,7 +41,6 @@ use crate::{
         error::Error,
         global_ctx::ArcGlobalCtx,
     },
-    guard,
     peers::peer_session::{PeerSessionStore, SessionKey, UpsertResponderSessionReturn},
     proto::{
         api::instance::{PeerConnInfo, PeerConnStats},

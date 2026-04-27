@@ -6,6 +6,7 @@ use std::{
 
 use crossbeam::atomic::AtomicCell;
 use dashmap::{DashMap, DashSet};
+use guarden::defer;
 use rand::seq::SliceRandom as _;
 use tokio::{net::UdpSocket, sync::Mutex, task::JoinSet};
 use tracing::{Instrument, Level, instrument};
@@ -15,7 +16,6 @@ use crate::{
     common::{
         PeerId, error::Error, global_ctx::ArcGlobalCtx, join_joinset_background, netns::NetNS, upnp,
     },
-    defer,
     peers::peer_manager::PeerManager,
     proto::common::NatType,
     tunnel::{
