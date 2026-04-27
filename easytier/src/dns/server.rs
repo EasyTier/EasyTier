@@ -169,7 +169,7 @@ impl DnsServer {
     async fn reload_listeners(
         &self,
         listeners: impl IntoIterator<Item = NameServerAddr>,
-        runtime: &mut Option<CancellableTask>,
+        runtime: &mut Option<CancellableTask<()>>,
     ) -> anyhow::Result<()> {
         let listeners = listeners.into_iter().collect();
 
@@ -204,8 +204,8 @@ impl DnsServer {
             }
         }
 
-        *runtime = Some(CancellableTask::with_token(
-            server.shutdown_token().clone(),
+        let token = server.shutdown_token().clone();
+        let handle = tokio::spawn(
             async move {
                 server
                     .block_until_done()
@@ -213,7 +213,9 @@ impl DnsServer {
                     .unwrap_or_else(|e| tracing::error!("DNS server exited with error: {:?}", e));
             }
             .instrument(tracing::info_span!("DNS server backend runtime")),
-        ));
+        );
+
+        *runtime = Some(CancellableTask::with_handle(token, handle));
 
         *self.listeners.write() = listeners;
 

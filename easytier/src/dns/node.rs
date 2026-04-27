@@ -13,6 +13,7 @@ use crate::proto::rpc_impl::standalone::{StandAloneClient, StandAloneServer};
 use crate::proto::rpc_types::controller::BaseController;
 use crate::tunnel::tcp::{TcpTunnelConnector, TcpTunnelListener};
 use crate::utils::task::CancellableTask;
+use std::io;
 use std::sync::Arc;
 use tokio::sync::{Notify, broadcast};
 use tokio::task::{JoinError, JoinSet};
@@ -215,7 +216,7 @@ impl DnsNodeRuntime {
 #[derive(Debug)]
 pub struct DnsNode {
     runtime: DnsNodeRuntime,
-    task: CancellableTask,
+    task: CancellableTask<()>,
 }
 
 impl DnsNode {
@@ -244,7 +245,7 @@ impl DnsNode {
         Self { runtime, task }
     }
 
-    pub async fn stop(self) -> Result<(), JoinError> {
+    pub async fn stop(self) -> io::Result<()> {
         self.task.stop(None).await
     }
 }

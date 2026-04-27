@@ -190,9 +190,8 @@ pub async fn socket_addrs(
 
 #[cfg(test)]
 mod tests {
-    use crate::defer;
-
     use super::*;
+    use guarden::defer;
 
     #[test]
     fn parse_matrix_cases() {

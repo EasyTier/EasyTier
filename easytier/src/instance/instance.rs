@@ -7,13 +7,6 @@ use std::sync::{Arc, Weak};
 #[cfg(feature = "tun")]
 use std::time::Duration;
 
-use anyhow::Context;
-use cidr::{IpCidr, Ipv4Inet};
-use futures::FutureExt;
-use tokio::sync::{Mutex, Notify};
-#[cfg(feature = "tun")]
-use tokio::{sync::oneshot, task::JoinSet};
-
 use crate::common::PeerId;
 use crate::common::acl_processor::AclRuleBuilder;
 use crate::common::config::ConfigLoader;
@@ -59,6 +52,13 @@ use crate::proto::rpc_types::controller::BaseController;
 use crate::rpc_service::InstanceRpcService;
 use crate::utils::weak_upgrade;
 use crate::vpn_portal::{self, VpnPortal};
+use anyhow::Context;
+use cidr::{IpCidr, Ipv4Inet};
+use futures::FutureExt;
+use tokio::sync::{Mutex, Notify};
+#[cfg(feature = "tun")]
+use tokio::{sync::oneshot, task::JoinSet};
+use tokio_util::task::AbortOnDropHandle;
 
 use super::listeners::ListenerManager;
 use super::public_ipv6_provider::{
