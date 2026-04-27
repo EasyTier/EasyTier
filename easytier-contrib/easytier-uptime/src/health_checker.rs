@@ -10,9 +10,9 @@ use easytier::{
     common::config::{
         ConfigFileControl, ConfigLoader, NetworkIdentity, PeerConfig, TomlConfigLoader,
     },
-    defer,
     instance_manager::NetworkInstanceManager,
 };
+use guarden::defer;
 use serde::{Deserialize, Serialize};
 use sqlx::any;
 use tokio_util::task::AbortOnDropHandle;

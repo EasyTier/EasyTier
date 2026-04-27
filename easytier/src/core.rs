@@ -12,7 +12,6 @@ use crate::{
         constants::EASYTIER_VERSION,
         log,
     },
-    defer,
     instance_manager::NetworkInstanceManager,
     launcher::add_proxy_network_to_config,
     proto::common::{CompressionAlgoPb, SecureModeConfig},
@@ -23,6 +22,7 @@ use crate::{
 use anyhow::Context;
 use cidr::IpCidr;
 use clap::{CommandFactory, Parser};
+use guarden::defer;
 use rust_i18n::t;
 use std::{
     net::{IpAddr, SocketAddr},
