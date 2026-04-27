@@ -198,6 +198,7 @@ impl TunnelListener for WsTunnelListener {
 pub struct WsTunnelConnector {
     addr: url::Url,
     ip_version: IpVersion,
+    resolved_addr: Option<SocketAddr>,
 
     bind_addrs: Vec<SocketAddr>,
 }
@@ -207,6 +208,7 @@ impl WsTunnelConnector {
         WsTunnelConnector {
             addr,
             ip_version: IpVersion::Both,
+            resolved_addr: None,
 
             bind_addrs: vec![],
         }
@@ -214,11 +216,10 @@ impl WsTunnelConnector {
 
     async fn connect_with(
         addr: url::Url,
-        ip_version: IpVersion,
+        socket_addr: SocketAddr,
         tcp_socket: TcpSocket,
     ) -> Result<Box<dyn Tunnel>, TunnelError> {
         let is_wss = is_wss(&addr)?;
-        let socket_addr = SocketAddr::from_url(addr.clone(), ip_version).await?;
         let stream = tcp_socket.connect(socket_addr).await?;
         if let Err(error) = stream.set_nodelay(true) {
             tracing::warn!(?error, "set_nodelay fail in ws connect");
@@ -273,7 +274,7 @@ impl WsTunnelConnector {
         } else {
             TcpSocket::new_v6()?
         };
-        Self::connect_with(self.addr.clone(), self.ip_version, socket).await
+        Self::connect_with(self.addr.clone(), addr, socket).await
     }
 
     async fn connect_with_custom_bind(
@@ -285,11 +286,7 @@ impl WsTunnelConnector {
         for bind_addr in self.bind_addrs.iter() {
             tracing::info!(?bind_addr, ?addr, "bind addr");
             match bind().addr(*bind_addr).only_v6(true).call() {
-                Ok(socket) => futures.push(Self::connect_with(
-                    self.addr.clone(),
-                    self.ip_version,
-                    socket,
-                )),
+                Ok(socket) => futures.push(Self::connect_with(self.addr.clone(), addr, socket)),
                 Err(error) => {
                     tracing::error!(?bind_addr, ?addr, ?error, "bind addr fail");
                     continue;
@@ -304,7 +301,10 @@ impl WsTunnelConnector {
 #[async_trait::async_trait]
 impl TunnelConnector for WsTunnelConnector {
     async fn connect(&mut self) -> Result<Box<dyn Tunnel>, TunnelError> {
-        let addr = SocketAddr::from_url(self.addr.clone(), self.ip_version).await?;
+        let addr = match self.resolved_addr {
+            Some(addr) => addr,
+            None => SocketAddr::from_url(self.addr.clone(), self.ip_version).await?,
+        };
         if self.bind_addrs.is_empty() || addr.is_ipv6() {
             self.connect_with_default_bind(addr).await
         } else {
@@ -322,6 +322,10 @@ impl TunnelConnector for WsTunnelConnector {
 
     fn set_bind_addrs(&mut self, addrs: Vec<SocketAddr>) {
         self.bind_addrs = addrs;
+    }
+
+    fn set_resolved_addr(&mut self, addr: SocketAddr) {
+        self.resolved_addr = Some(addr);
     }
 }
 

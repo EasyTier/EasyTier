@@ -720,22 +720,28 @@ async fn check_udp_socket_local_addr(
     let socket = UdpSocket::bind("0.0.0.0:0").await?;
     socket.connect(remote_mapped_addr).await?;
     if let Ok(local_addr) = socket.local_addr() {
-        // local_addr should not be equal to an EasyTier-managed virtual/public address.
-        match local_addr.ip() {
-            IpAddr::V4(ip) => {
-                if global_ctx.get_ipv4().map(|ip| ip.address()) == Some(ip) {
-                    return Err(anyhow::anyhow!("local address is virtual ipv4").into());
-                }
-            }
-            IpAddr::V6(ip) => {
-                if global_ctx.is_ip_local_ipv6(&ip) {
-                    return Err(anyhow::anyhow!("local address is easytier-managed ipv6").into());
-                }
-            }
+        if let Some(err) = easytier_managed_local_addr_error(&global_ctx, local_addr) {
+            return Err(anyhow::anyhow!(err).into());
         }
     }
 
     Ok(())
+}
+
+fn easytier_managed_local_addr_error(
+    global_ctx: &ArcGlobalCtx,
+    local_addr: SocketAddr,
+) -> Option<&'static str> {
+    // local_addr should not be equal to an EasyTier-managed virtual/public address.
+    match local_addr.ip() {
+        IpAddr::V4(ip) if global_ctx.get_ipv4().map(|ip| ip.address()) == Some(ip) => {
+            Some("local address is virtual ipv4")
+        }
+        IpAddr::V6(ip) if global_ctx.is_ip_easytier_managed_ipv6(&ip) => {
+            Some("local address is easytier-managed ipv6")
+        }
+        _ => None,
+    }
 }
 
 pub(crate) async fn try_connect_with_socket(
@@ -763,10 +769,28 @@ pub(crate) async fn try_connect_with_socket(
 
 #[cfg(test)]
 mod tests {
+    use std::{collections::BTreeSet, net::SocketAddr};
+
+    use crate::common::global_ctx::tests::get_mock_global_ctx;
+
     use super::{
-        MAX_PUBLIC_UDP_HOLE_PUNCH_LISTENERS, should_create_public_listener,
-        should_retry_public_listener_selection,
+        MAX_PUBLIC_UDP_HOLE_PUNCH_LISTENERS, easytier_managed_local_addr_error,
+        should_create_public_listener, should_retry_public_listener_selection,
     };
+
+    #[tokio::test]
+    async fn local_addr_check_rejects_easytier_public_ipv6_route() {
+        let global_ctx = get_mock_global_ctx();
+        let public_route: cidr::Ipv6Inet = "2001:db8::4/128".parse().unwrap();
+        global_ctx.set_public_ipv6_routes(BTreeSet::from([public_route]));
+
+        let local_addr: SocketAddr = "[2001:db8::4]:1234".parse().unwrap();
+
+        assert_eq!(
+            easytier_managed_local_addr_error(&global_ctx, local_addr),
+            Some("local address is easytier-managed ipv6")
+        );
+    }
 
     #[test]
     fn listener_selection_prefers_reuse_before_cap() {

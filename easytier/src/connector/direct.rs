@@ -64,6 +64,24 @@ async fn resolve_mapped_listener_addrs(listener: &url::Url) -> Result<Vec<Socket
     socket_addrs(listener, || mapped_listener_port(listener)).await
 }
 
+fn is_usable_public_ipv6_candidate(ip: &Ipv6Addr, global_ctx: &ArcGlobalCtx) -> bool {
+    is_usable_public_ipv6_candidate_with_mode(ip, global_ctx, TESTING.load(Ordering::Relaxed))
+}
+
+fn is_usable_public_ipv6_candidate_with_mode(
+    ip: &Ipv6Addr,
+    global_ctx: &ArcGlobalCtx,
+    testing: bool,
+) -> bool {
+    !global_ctx.is_ip_easytier_managed_ipv6(ip)
+        && (testing
+            || (!ip.is_loopback()
+                && !ip.is_unspecified()
+                && !ip.is_unique_local()
+                && !ip.is_unicast_link_local()
+                && !ip.is_multicast()))
+}
+
 #[async_trait::async_trait]
 pub trait PeerManagerForDirectConnector {
     async fn list_peers(&self) -> Vec<PeerId>;
@@ -190,34 +208,28 @@ impl DirectConnectorManagerData {
                 .with_context(|| format!("failed to bind local socket for {}", remote_url))?,
         );
         let connector_ip = self
-            .peer_manager
-            .get_global_ctx()
+            .global_ctx
             .get_stun_info_collector()
             .get_stun_info()
             .public_ip
             .iter()
-            .find(|x| x.contains(':'))
-            .ok_or(anyhow::anyhow!(
-                "failed to get public ipv6 address from stun info"
-            ))?
-            .parse::<Ipv6Addr>()
-            .with_context(|| {
-                format!(
-                    "failed to parse public ipv6 address from stun info: {:?}",
-                    self.peer_manager
-                        .get_global_ctx()
-                        .get_stun_info_collector()
-                        .get_stun_info()
-                )
-            })?;
-        let connector_addr =
-            SocketAddr::new(IpAddr::V6(connector_ip), local_socket.local_addr()?.port());
+            .filter_map(|ip| ip.parse::<Ipv6Addr>().ok())
+            .find(|ip| !self.global_ctx.is_ip_easytier_managed_ipv6(ip));
 
         // ask remote to send v6 hole punch packet
         // and no matter what the result is, continue to connect
-        let _ = self
-            .remote_send_udp_hole_punch_packet(dst_peer_id, connector_addr, remote_url)
-            .await;
+        if let Some(connector_ip) = connector_ip {
+            let connector_addr =
+                SocketAddr::new(IpAddr::V6(connector_ip), local_socket.local_addr()?.port());
+            let _ = self
+                .remote_send_udp_hole_punch_packet(dst_peer_id, connector_addr, remote_url)
+                .await;
+        } else {
+            tracing::debug!(
+                ?remote_url,
+                "skip remote IPv6 hole-punch packet; no non-EasyTier public IPv6 in STUN info"
+            );
+        }
 
         let udp_connector = UdpTunnelConnector::new(remote_url.clone());
         let remote_addr = SocketAddr::from_url(remote_url.clone(), IpVersion::V6).await?;
@@ -479,14 +491,7 @@ impl DirectConnectorManagerData {
                         .iter()
                         .chain(ip_list.public_ipv6.iter())
                         .filter_map(|x| Ipv6Addr::from_str(&x.to_string()).ok())
-                        .filter(|x| {
-                            TESTING.load(Ordering::Relaxed)
-                                || (!x.is_loopback()
-                                    && !x.is_unspecified()
-                                    && !x.is_unique_local()
-                                    && !x.is_unicast_link_local()
-                                    && !x.is_multicast())
-                        })
+                        .filter(|x| is_usable_public_ipv6_candidate(x, &self.global_ctx))
                         .collect::<HashSet<_>>()
                         .iter()
                         .for_each(|ip| {
@@ -515,6 +520,11 @@ impl DirectConnectorManagerData {
                                 );
                             }
                         });
+                } else if self.global_ctx.is_ip_easytier_managed_ipv6(s_addr.ip()) {
+                    tracing::debug!(
+                        ?listener,
+                        "skip EasyTier-managed IPv6 as direct-connect target"
+                    );
                 } else if !s_addr.ip().is_loopback() || TESTING.load(Ordering::Relaxed) {
                     if self
                         .global_ctx
@@ -790,9 +800,10 @@ impl DirectConnectorManager {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
+    use std::{collections::BTreeSet, sync::Arc};
 
     use crate::{
+        common::global_ctx::tests::get_mock_global_ctx,
         connector::direct::{
             DirectConnectorManager, DirectConnectorManagerData, DstListenerUrlBlackListItem,
         },
@@ -808,6 +819,24 @@ mod tests {
     use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
     use super::{TESTING, mapped_listener_port, resolve_mapped_listener_addrs};
+
+    #[tokio::test]
+    async fn public_ipv6_candidate_rejects_easytier_managed_addr_even_in_tests() {
+        let global_ctx = get_mock_global_ctx();
+        let managed_ipv6: cidr::Ipv6Inet = "2001:db8::2/128".parse().unwrap();
+        global_ctx.set_public_ipv6_routes(BTreeSet::from([managed_ipv6]));
+
+        assert!(!super::is_usable_public_ipv6_candidate_with_mode(
+            &"2001:db8::2".parse().unwrap(),
+            &global_ctx,
+            true,
+        ));
+        assert!(super::is_usable_public_ipv6_candidate_with_mode(
+            &"::1".parse().unwrap(),
+            &global_ctx,
+            true,
+        ));
+    }
 
     #[test]
     fn udp_ipv6_url_matches_hole_punch_branch_condition() {

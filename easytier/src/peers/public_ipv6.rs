@@ -244,6 +244,8 @@ impl PublicIpv6Service {
                 .collect::<Vec<_>>();
             *cached_routes = routes;
             self.global_ctx
+                .set_public_ipv6_routes(cached_routes.clone());
+            self.global_ctx
                 .issue_event(GlobalCtxEvent::PublicIpv6RoutesUpdated(added, removed));
         }
     }
