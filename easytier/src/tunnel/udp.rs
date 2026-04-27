@@ -460,16 +460,16 @@ impl UdpTunnelListenerData {
             Some(TunnelInfo {
                 tunnel_type: "udp".to_owned(),
                 local_addr: Some(self.local_url.clone().into()),
-                remote_addr: Some(
+                remote_url: Some(
                     build_url_from_socket_addr(&remote_addr.to_string(), "udp").into(),
                 ),
-                resolved_remote_addr: Some(
+                remote_addr: Some(
                     build_url_from_socket_addr(&remote_addr.to_string(), "udp").into(),
                 ),
             }),
         ));
 
-        tracing::info!(info = ?conn.info().unwrap().remote_addr, "udp connection accept done");
+        tracing::info!(info = ?conn.info().unwrap().remote_url, "udp connection accept done");
 
         if let Err(e) = self.conn_send.send(conn).await {
             tracing::warn!(?e, "udp send conn to accept channel error");
@@ -831,10 +831,8 @@ impl UdpTunnelConnector {
                 local_addr: Some(
                     build_url_from_socket_addr(&socket.local_addr()?.to_string(), "udp").into(),
                 ),
-                remote_addr: Some(self.addr.clone().into()),
-                resolved_remote_addr: Some(
-                    build_url_from_socket_addr(&dst_addr.to_string(), "udp").into(),
-                ),
+                remote_url: Some(self.addr.clone().into()),
+                remote_addr: Some(build_url_from_socket_addr(&dst_addr.to_string(), "udp").into()),
             }),
         )))
     }
@@ -1029,11 +1027,11 @@ mod tests {
         ));
         tokio::spawn(timeout(
             Duration::from_secs(2),
-            send_random_data_to_socket(t1.info().unwrap().remote_addr.unwrap().into()),
+            send_random_data_to_socket(t1.info().unwrap().remote_url.unwrap().into()),
         ));
         tokio::spawn(timeout(
             Duration::from_secs(2),
-            send_random_data_to_socket(t2.info().unwrap().remote_addr.unwrap().into()),
+            send_random_data_to_socket(t2.info().unwrap().remote_url.unwrap().into()),
         ));
 
         let sender1 = tokio::spawn(async move {

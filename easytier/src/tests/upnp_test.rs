@@ -1473,7 +1473,7 @@ async fn peer_has_udp_conn_to_remote_addr(
             return false;
         }
 
-        let Some(remote_addr) = tunnel.effective_remote_addr() else {
+        let Some(remote_addr) = tunnel.remote_addr.as_ref().or(tunnel.remote_url.as_ref()) else {
             return false;
         };
         let remote_addr: url::Url = remote_addr.clone().into();

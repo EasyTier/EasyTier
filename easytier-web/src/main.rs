@@ -3,7 +3,7 @@
 #[macro_use]
 extern crate rust_i18n;
 
-use std::net::IpAddr;
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::sync::Arc;
 
 use clap::Parser;
@@ -20,7 +20,7 @@ use easytier::{
     utils::panic::setup_panic_handler,
 };
 
-use easytier::tunnel::IpScheme;
+use easytier::tunnel::scheme::{IpProto, TunnelScheme};
 use easytier::utils::BoxExt;
 use mimalloc::MiMalloc;
 
@@ -194,11 +194,12 @@ impl LoggingConfigLoader for &Cli {
     }
 }
 
-pub fn get_listener_by_url(scheme: IpScheme, l: &url::Url) -> Option<Box<dyn TunnelListener>> {
-    Some(match scheme {
-        IpScheme::Tcp => TcpTunnelListener::new(l.clone()).boxed(),
-        IpScheme::Udp => UdpTunnelListener::new(l.clone()).boxed(),
-        IpScheme::Ws => WsTunnelListener::new(l.clone()).boxed(),
+pub fn get_listener(proto: IpProto, addr: SocketAddr) -> Option<Box<dyn TunnelListener>> {
+    let l = format!("{proto}://{addr}").parse().unwrap();
+    Some(match proto {
+        IpProto::Tcp => TcpTunnelListener::new(l).boxed(),
+        IpProto::Udp => UdpTunnelListener::new(l).boxed(),
+        IpProto::Ws => WsTunnelListener::new(l).boxed(),
         _ => return None,
     })
 }
@@ -213,26 +214,21 @@ async fn get_dual_stack_listener(
     ),
     Error,
 > {
-    let scheme = protocol
+    let TunnelScheme::Ip(scheme) = protocol
         .parse()
-        .map_err(|_| Error::InvalidUrl(protocol.to_string()))?;
-    let v6_listener =
-        if local_ipv6().await.is_ok() && matches!(scheme, IpScheme::Tcp | IpScheme::Udp) {
-            get_listener_by_url(
-                scheme,
-                &format!("{protocol}://[::]:{port}").parse().unwrap(),
-            )
-        } else {
-            None
-        };
-    let v4_listener = if local_ipv4().await.is_ok() {
-        get_listener_by_url(
-            scheme,
-            &format!("{protocol}://0.0.0.0:{port}").parse().unwrap(),
-        )
-    } else {
-        None
+        .map_err(|_| Error::InvalidUrl(protocol.to_string()))?
+    else {
+        return Ok((None, None));
     };
+    let proto = scheme.proto;
+    let v6_listener = (local_ipv6().await.is_ok() && matches!(proto, IpProto::Tcp | IpProto::Udp))
+        .then(|| get_listener(proto, (Ipv6Addr::UNSPECIFIED, port).into()))
+        .flatten();
+    let v4_listener = local_ipv4()
+        .await
+        .is_ok()
+        .then(|| get_listener(proto, (Ipv4Addr::UNSPECIFIED, port).into()))
+        .flatten();
     Ok((v6_listener, v4_listener))
 }
 

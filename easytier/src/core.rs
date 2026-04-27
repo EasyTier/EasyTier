@@ -30,10 +30,9 @@ use std::{
     process::ExitCode,
     sync::{Arc, atomic::AtomicBool},
 };
-use strum::VariantArray;
 use tokio::io::AsyncReadExt;
 
-use crate::tunnel::IpScheme;
+use crate::tunnel::scheme::IpProto;
 #[cfg(feature = "jemalloc-prof")]
 use jemalloc_ctl::{Access as _, AsName as _, epoch, stats};
 
@@ -771,7 +770,7 @@ struct RpcPortalOptions {
 impl Cli {
     fn gen_listeners(addr: SocketAddr) -> impl Iterator<Item = String> {
         let dynamic = addr.port() == 0;
-        IpScheme::VARIANTS.iter().map(move |proto| {
+        IpProto::VARIANTS.iter().map(move |proto| {
             let mut addr = addr;
             if !dynamic {
                 addr.set_port(addr.port() + proto.port_offset());
@@ -807,7 +806,7 @@ impl Cli {
             }
 
             let (scheme, rest) = l.split_once(':').unwrap_or((&l, ""));
-            let Ok(scheme) = scheme.parse::<IpScheme>() else {
+            let Ok(scheme) = scheme.parse::<IpProto>() else {
                 anyhow::bail!("invalid listener: {}", l);
             };
 

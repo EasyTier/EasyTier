@@ -1,3 +1,13 @@
+use anyhow::Context;
+use base64::Engine as _;
+use base64::prelude::BASE64_STANDARD;
+use cidr::Ipv4Inet;
+use clap::{ArgAction, Args, CommandFactory, Parser, Subcommand, builder::BoolishValueParser};
+use dashmap::DashMap;
+use easytier::ShellType;
+use humansize::format_size;
+use rust_i18n::t;
+use service_manager::*;
 use std::{
     collections::{BTreeMap, HashMap},
     ffi::OsString,
@@ -10,17 +20,6 @@ use std::{
     time::Duration,
     vec,
 };
-
-use anyhow::Context;
-use base64::Engine as _;
-use base64::prelude::BASE64_STANDARD;
-use cidr::Ipv4Inet;
-use clap::{ArgAction, Args, CommandFactory, Parser, Subcommand, builder::BoolishValueParser};
-use dashmap::DashMap;
-use easytier::ShellType;
-use humansize::format_size;
-use rust_i18n::t;
-use service_manager::*;
 use tabled::settings::{Disable, Modify, Style, Width, location::ByColumnName, object::Columns};
 use terminal_size::{Width as TerminalWidth, terminal_size};
 use unicode_width::UnicodeWidthStr;
@@ -76,7 +75,7 @@ use easytier::{
         rpc_impl::standalone::StandAloneClient,
         rpc_types::controller::BaseController,
     },
-    tunnel::{TunnelScheme, tcp::TcpTunnelConnector},
+    tunnel::{scheme::TunnelScheme, tcp::TcpTunnelConnector},
     utils::{PeerRoutePair, string::cost_to_str},
 };
 
@@ -1589,7 +1588,8 @@ impl<'a> CommandHandler<'a> {
                                 "remote_addr: {}, rx_bytes: {}, tx_bytes: {}, latency_us: {}",
                                 conn.tunnel
                                     .as_ref()
-                                    .and_then(|t| t.display_remote_addr())
+                                    .and_then(|t| t.remote_addr.as_ref().or(t.remote_url.as_ref()))
+                                    .map(ToString::to_string)
                                     .unwrap_or_default(),
                                 conn.stats.as_ref().map(|s| s.rx_bytes).unwrap_or_default(),
                                 conn.stats.as_ref().map(|s| s.tx_bytes).unwrap_or_default(),
