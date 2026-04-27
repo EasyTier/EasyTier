@@ -128,6 +128,8 @@ $I18N = @{
         InstallHelp                  = "安装服务"
         UninstallHelp                = "卸载服务"
         UpdateHelp                   = "更新EasyTier"
+        ConfirmSpecifyVersion        = "是否指定特定版本？"
+        InputTag                     = "版本标签(如 v2.4.5)"
         SelectPrompt                 = "请选择:"
         LabelsHelpsCountMismatch     = "Labels 和 Helps 的数量必须相同。"
         ShowChoiceError              = "显示选择提示时出错: {0}"
@@ -156,7 +158,37 @@ $I18N = @{
         FileModeHelp                 = "本地配置文件"
         RemoteModeHelp               = "服务器集中管理"
         CLIModeHelp                  = "命令行传参"
+        FileOccupiedScan             = "扫描被占用的文件..."
+        FileOccupiedStopService      = "停止占用文件的旧服务 {0}..."
+        RestoringBackup              = "正在从备份恢复原文件..."
         Default                      = "默认"
+        ServiceDiscoveringSCM        = "正在扫描 Windows 服务管理器..."
+        ServiceFoundInSCM            = "在 SCM 中发现 {0} 个 EasyTier 相关服务"
+        ServiceNotFoundInSCM         = "SCM 中未发现 EasyTier 相关服务"
+        ServiceWaitStop              = "等待服务 {0} 停止..."
+        ServiceWaitStopTimeout       = "等待服务 {0} 停止超时，尝试强制终止..."
+        ServiceForceStop             = "正在强制终止服务 {0}..."
+        ServiceStopRetry             = "服务 {0} 停止失败，正在进行第 {1} 次重试..."
+        ServiceRemoveRetry           = "服务 {0} 移除失败，正在进行第 {1} 次重试..."
+        ServiceForceRemove           = "尝试强制删除服务 {0}..."
+        ServiceForceRemoveFail       = "强制删除服务 {0} 失败: {1}"
+        ServiceConflictFound         = "发现冲突服务: {0} (路径: {1})"
+        ServiceConflictResolve       = "正在处理冲突服务 {0}..."
+        ServiceSyncRegistry          = "正在同步注册表记录..."
+        ServiceRegistrySynced        = "注册表记录已同步"
+        ServiceStoppingTimeout       = "停止服务 {0} 超时（{1}秒）"
+        ServiceRemoveFail            = "移除服务 {0} 失败: {1}"
+        ServiceNotStopped            = "服务 {0} 未能停止，跳过移除"
+        DiscoveredServiceSummary     = "发现服务: {0} (状态: {1}, 路径: {2})"
+        ServiceNotFound              = "未找到服务: {0}"
+        ServiceExternalDetected      = "检测到外部安装的服务（无注册表记录）: {0}"
+        ExtractFailAlternative       = "所有解压方法均失败: {0}"
+        DownloadValidateFail         = "下载文件验证失败: 文件大小为 {0} 字节，不是有效的 ZIP 文件"
+        DownloadValidateRetry        = "文件不完整或损坏，正在重新下载..."
+        ExtractMethodFallback        = "[解压] 尝试方案: {0}"
+        ExtractMethodWarn            = "  [警告] 方案 {0} 失败: {1}"
+        TagNotFound                  = "版本 {0} 不存在！请检查版本标签是否正确（例如 v2.4.5）"
+        RetryFetch                   = "拉取失败，正在进行第 {0} 次重试..."
     }
     "en-US" = @{
         PressAnyKey                  = "Press any key to continue..."
@@ -209,6 +241,8 @@ $I18N = @{
         InstallHelp                  = "Install service"
         UninstallHelp                = "Uninstall service"
         UpdateHelp                   = "Update EasyTier"
+        ConfirmSpecifyVersion        = "Specify a specific version?"
+        InputTag                     = "Version tag (e.g., v2.4.5)"
         SelectPrompt                 = "Choose:"
         LabelsHelpsCountMismatch     = "Labels and Helps count must match."
         ShowChoiceError              = "Error showing choice prompt: {0}"
@@ -237,7 +271,37 @@ $I18N = @{
         FileModeHelp                 = "Local configuration file"
         RemoteModeHelp               = "Remote server centralized management"
         CLIModeHelp                  = "Command line arguments"
+        FileOccupiedScan             = "Scanning for occupied files..."
+        FileOccupiedStopService      = "Stopping old service {0} that occupies files..."
+        RestoringBackup              = "Restoring original files from backup..."
         Default                      = "default"
+        ServiceDiscoveringSCM        = "Scanning Windows SCM..."
+        ServiceFoundInSCM            = "Found {0} EasyTier-related services in SCM"
+        ServiceNotFoundInSCM         = "No EasyTier-related services found in SCM"
+        ServiceWaitStop              = "Waiting for service {0} to stop..."
+        ServiceWaitStopTimeout       = "Timeout waiting for service {0} to stop, forcing termination..."
+        ServiceForceStop             = "Forcefully terminating service {0}..."
+        ServiceStopRetry             = "Failed to stop service {0}, retry {1}..."
+        ServiceRemoveRetry           = "Failed to remove service {0}, retry {1}..."
+        ServiceForceRemove           = "Attempting force removal of service {0}..."
+        ServiceForceRemoveFail       = "Force removal of service {0} failed: {1}"
+        ServiceConflictFound         = "Conflict service found: {0} (path: {1})"
+        ServiceConflictResolve       = "Resolving conflict service {0}..."
+        ServiceSyncRegistry          = "Syncing registry records..."
+        ServiceRegistrySynced        = "Registry records synced"
+        ServiceStoppingTimeout       = "Service {0} stop timeout ({1}s)"
+        ServiceRemoveFail            = "Failed to remove service {0}: {1}"
+        ServiceNotStopped            = "Service {0} not stopped, skipping removal"
+        DiscoveredServiceSummary     = "Discovered service: {0} (status: {1}, path: {2})"
+        ServiceNotFound              = "Service not found: {0}"
+        ServiceExternalDetected      = "Externally installed service detected (no registry record): {0}"
+        ExtractFailAlternative       = "All extraction methods failed: {0}"
+        DownloadValidateFail         = "Download validation failed: file size {0} bytes, not a valid ZIP file"
+        DownloadValidateRetry        = "File is incomplete or corrupted, re-downloading..."
+        ExtractMethodFallback        = "[Extract] Try Method: {0}"
+        ExtractMethodWarn            = "  [WARN] Method {0} failed: {1}"
+        TagNotFound                  = "Version {0} does not exist! Check the version tag (e.g., v2.4.5)"
+        RetryFetch                   = "Fetch failed, retry {0}..."
     }
 }
 
@@ -313,44 +377,264 @@ function Invoke-RestMethodCompatible {
         [Parameter(Mandatory = $true)]
         [string]$Uri
     )
-    if ($PSVersionTable.PSVersion.Major -lt 5) {
-        $rawJson = Invoke-WebRequestCompatible -Uri $Uri
+    $maxRetries = 2
+    $lastError = $null
+    for ($attempt = 1; $attempt -le $maxRetries; $attempt++) {
         try {
-            return $rawJson | ConvertFrom-Json
+            if ($PSVersionTable.PSVersion.Major -lt 5) {
+                $rawJson = Invoke-WebRequestCompatible -Uri $Uri
+                $result = $rawJson | ConvertFrom-Json
+                if ($result.message -and $result.message -eq "Not Found" -and $Uri -match "releases/tags/") {
+                    throw "HTTP 404"
+                }
+                return $result
+            }
+            else {
+                $params = @{
+                    Uri             = $Uri
+                    UseBasicParsing = $true
+                    ErrorAction     = "Stop"
+                }
+                if ($UseProxy) {
+                    $params.Proxy = $Proxy
+                }
+                return Invoke-RestMethod @params
+            }
         }
         catch {
-            throw (T "CompatibleRestMethodError" $_)
+            $lastError = $_
+            if ($_.Exception -is [System.Net.WebException]) {
+                $response = $_.Exception.Response
+                if ($response -and [int]$response.StatusCode -eq 404) {
+                    throw $_
+                }
+            }
+            if ($_ -match "HTTP 404") {
+                throw (T "CompatibleRestMethodError" "HTTP 404 (Not Found)")
+            }
+            if ($attempt -lt $maxRetries) {
+                Write-Host (T "RetryFetch" $attempt) -ForegroundColor Yellow
+                Start-Sleep -Seconds 2
+            }
         }
     }
-    else {
-        $params = @{
-            Uri             = $Uri
-            UseBasicParsing = $true
+    throw $lastError
+}
+function Invoke-DownloadWithValidation {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Url,
+
+        [Parameter(Mandatory = $true)]
+        [string]$OutFile,
+
+        [Parameter(Mandatory = $false)]
+        [int]$MaxRetries = 2,
+
+        [Parameter(Mandatory = $false)]
+        [long]$MinSizeBytes = 1024
+    )
+    $attempt = 0
+    do {
+        $attempt++
+        try {
+            Write-Output (T "DownloadStart" (Split-Path $OutFile -Leaf))
+            if ($attempt -gt 1) {
+                Write-Host (T "DownloadValidateRetry") -ForegroundColor Yellow
+            }
+            Invoke-WebRequestCompatible -Uri $Url -OutFile $OutFile
         }
-        if ($UseProxy) {
-            $params.Proxy = $Proxy
+        catch {
+            throw (T "DownloadFail" $_)
         }
-        return Invoke-RestMethod @params
+        if (-not (Test-DownloadValid -Path $OutFile -MinSizeBytes $MinSizeBytes)) {
+            $fileInfo = Get-Item -Path $OutFile -ErrorAction SilentlyContinue
+            $fileSize = if ($fileInfo) { $fileInfo.Length } else { 0 }
+            Write-Host (T "DownloadValidateFail" $fileSize) -ForegroundColor Red
+            if ($attempt -ge $MaxRetries) {
+                throw (T "DownloadValidateFail" $fileSize)
+            }
+            Write-Host (T "DownloadValidateRetry") -ForegroundColor Yellow
+            Remove-Item -Path $OutFile -Force -ErrorAction SilentlyContinue
+        }
+    } while ((-not (Test-DownloadValid -Path $OutFile -MinSizeBytes $MinSizeBytes)) -and ($attempt -lt $MaxRetries))
+}
+function Test-DownloadValid {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Path,
+        [Parameter(Mandatory = $false)]
+        [long]$MinSizeBytes = 1024
+    )
+    if (-not (Test-Path $Path)) { return $false }
+    $item = Get-Item -Path $Path -ErrorAction SilentlyContinue
+    if (-not $item -or $item.Length -lt $MinSizeBytes) { return $false }
+    try {
+        $stream = [System.IO.File]::OpenRead($Path)
+        try {
+            $header = New-Object byte[] 4
+            $stream.Read($header, 0, 4) | Out-Null
+            return ($header[0] -eq 0x50 -and $header[1] -eq 0x4B -and $header[2] -eq 0x03 -and $header[3] -eq 0x04)
+        }
+        finally {
+            $stream.Close()
+        }
+    }
+    catch {
+        return $false
     }
 }
-function Expand-ZipFile {
+function Expand-ArchiveViaDotNet {
+    [CmdletBinding()]
     param(
         [Parameter(Mandatory = $true)]
         [string]$ZipPath,
         [Parameter(Mandatory = $true)]
         [string]$DestinationPath
     )
-    if ($PSVersionTable.PSVersion.Major -lt 5) {
+    try {
+        [System.IO.Compression.ZipArchive]::new | Out-Null
+    }
+    catch {
+        Add-Type -AssemblyName System.IO.Compression -ErrorAction SilentlyContinue
+    }
+    Add-Type -AssemblyName System.IO.Compression.FileSystem -ErrorAction SilentlyContinue
+    if (-not ([System.Management.Automation.PSTypeName]'System.IO.Compression.ZipFile').Type) {
+        throw "Assembly System.IO.Compression.FileSystem not available"
+    }
+    $readStream = [System.IO.File]::OpenRead($ZipPath)
+    try {
+        $archive = [System.IO.Compression.ZipArchive]::new($readStream, [System.IO.Compression.ZipArchiveMode]::Read)
         try {
-            Add-Type -AssemblyName System.IO.Compression.FileSystem -ErrorAction SilentlyContinue
-            [System.IO.Compression.ZipFile]::ExtractToDirectory($ZipPath, $DestinationPath)
+            if ($archive.Entries.Count -eq 0) { throw "ZIP archive contains 0 entries" }
         }
-        catch {
-            throw (T "CompatibleExpandArchiveError" $_)
+        finally {
+            $archive.Dispose()
         }
     }
-    else {
-        Expand-Archive -Path $ZipPath -DestinationPath $DestinationPath -Force
+    finally {
+        $readStream.Close()
+    }
+    [System.IO.Compression.ZipFile]::ExtractToDirectory($ZipPath, $DestinationPath)
+    return $true
+}
+function Expand-ArchiveViaManualZip {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$ZipPath,
+        [Parameter(Mandatory = $true)]
+        [string]$DestinationPath
+    )
+    try {
+        [System.IO.Compression.ZipArchive]::new | Out-Null
+    }
+    catch {
+        Add-Type -AssemblyName System.IO.Compression -ErrorAction SilentlyContinue
+    }
+    if (-not (Test-Path $DestinationPath)) {
+        New-Item -ItemType Directory -Path $DestinationPath -Force | Out-Null
+    }
+    $readStream = [System.IO.File]::OpenRead($ZipPath)
+    try {
+        $archive = [System.IO.Compression.ZipArchive]::new($readStream, [System.IO.Compression.ZipArchiveMode]::Read)
+        try {
+            if ($archive.Entries.Count -eq 0) { throw "ZIP archive contains 0 entries" }
+            foreach ($entry in $archive.Entries) {
+                $entryPath = Join-Path $DestinationPath $entry.FullName
+                if ($entry.FullName.EndsWith("/") -or $entry.FullName.EndsWith("\")) {
+                    $null = New-Item -ItemType Directory -Path $entryPath -Force -ErrorAction SilentlyContinue
+                    continue
+                }
+                $parentDir = Split-Path $entryPath -Parent
+                if (-not (Test-Path $parentDir)) {
+                    $null = New-Item -ItemType Directory -Path $parentDir -Force -ErrorAction SilentlyContinue
+                }
+                $entryStream = $entry.Open()
+                try {
+                    $fileStream = [System.IO.File]::Create($entryPath)
+                    try {
+                        $entryStream.CopyTo($fileStream)
+                    }
+                    finally {
+                        $fileStream.Close()
+                    }
+                }
+                finally {
+                    $entryStream.Close()
+                }
+            }
+            return $true
+        }
+        finally {
+            $archive.Dispose()
+        }
+    }
+    finally {
+        $readStream.Close()
+    }
+}
+function Expand-ArchiveViaShellApp {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$ZipPath,
+        [Parameter(Mandatory = $true)]
+        [string]$DestinationPath
+    )
+    $shell = New-Object -ComObject Shell.Application -ErrorAction Stop
+    $zipFolder = $shell.NameSpace($ZipPath)
+    if (-not $zipFolder) { throw "Cannot open ZIP via Shell.Application" }
+    if (-not (Test-Path $DestinationPath)) {
+        New-Item -ItemType Directory -Path $DestinationPath -Force | Out-Null
+    }
+    $destFolder = $shell.NameSpace($DestinationPath)
+    if (-not $destFolder) { throw "Cannot open destination via Shell.Application" }
+    $destFolder.CopyHere($zipFolder.Items(), 20)  # 20 = 4(NoProgress) + 16(NoConfirmation)
+    Start-Sleep -Milliseconds 1000
+    if ((Get-ChildItem -Path $DestinationPath | Measure-Object).Count -eq 0) {
+        throw "Shell.Application extraction produced 0 files"
+    }
+    return $true
+}
+function Expand-ArchiveCompatible {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$ZipPath,
+        [Parameter(Mandatory = $true)]
+        [string]$DestinationPath
+    )
+    $methods = @(
+        @{ Name = "PowerShell Expand-Archive"; Script = {
+                param($ZipPath, $DestinationPath)
+                if (-not (Test-Path $DestinationPath)) {
+                    New-Item -ItemType Directory -Path $DestinationPath -Force | Out-Null
+                }
+                Expand-Archive -Path $ZipPath -DestinationPath $DestinationPath -Force
+            }
+        },
+        @{ Name = ".NET ZipFile.ExtractToDirectory"; Script = ${function:Expand-ArchiveViaDotNet} },
+        @{ Name = ".NET ZipArchive ManualExtract"; Script = ${function:Expand-ArchiveViaManualZip} },
+        @{ Name = "Shell.Application COM"; Script = ${function:Expand-ArchiveViaShellApp} }
+    )
+    $errors = @()
+    $succeeded = $false
+    foreach ($method in $methods) {
+        if ($succeeded) { break }
+        try {
+            Write-Host (T "ExtractMethodFallback" $method.Name) -ForegroundColor DarkGray
+            & $method.Script -ZipPath $ZipPath -DestinationPath $DestinationPath
+            $succeeded = $true
+        }
+        catch {
+            Write-Host (T "ExtractMethodWarn" $method.Name $_.Exception.Message) -ForegroundColor DarkGray
+            $errors += "[$($method.Name)] $($_.Exception.Message)"
+        }
+    }
+    if (-not $succeeded) {
+        throw (T "ExtractFailAlternative" $($errors -join " | "))
     }
 }
 function Show-Pause {
@@ -527,6 +811,320 @@ function Remove-ServiceCompatible {
         sc.exe delete "$Name" > $null 2>&1
     }
 }
+function Unregister-ScheduledTaskCompatible {
+    param (
+        [Parameter(Mandatory = $true)]
+        [string]$TaskName
+    )
+    if (Get-Command -Name Unregister-ScheduledTask -ErrorAction SilentlyContinue) {
+        Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false -ErrorAction SilentlyContinue | Out-Null
+    }
+    else {
+        schtasks.exe /Delete /TN "$TaskName" /F > $null 2>&1
+    }
+}
+function Find-EasyTierService {
+    [CmdletBinding()]
+    param()
+    Write-Host (T "ServiceDiscoveringSCM") -ForegroundColor Green
+    $discovered = [System.Collections.ArrayList]@()
+    try {
+        $allServices = Get-WmiObject -Class Win32_Service -ErrorAction Stop
+    }
+    catch {
+        try {
+            $allServices = Get-CimInstance -ClassName Win32_Service -ErrorAction Stop
+        }
+        catch {
+            Write-Host (T "ServiceDiscoveringSCM") -ForegroundColor Red
+            return $discovered
+        }
+    }
+    $easyTierExe = [System.IO.Path]::GetFileName($EasyTierPath)
+    $scriptRootLower = $ScriptRoot.ToLowerInvariant()
+    foreach ($svc in $allServices) {
+        $pathName = if ($svc.PathName) { $svc.PathName } else { "" }
+        if ($pathName -match [regex]::Escape($easyTierExe) -or
+            $pathName.ToLowerInvariant() -like "*$scriptRootLower*" -or
+            $pathName -match "easytier") {
+            [void]$discovered.Add([PSCustomObject]@{
+                    Name        = $svc.Name
+                    State       = $svc.State
+                    PathName    = $pathName
+                    DisplayName = if ($svc.DisplayName) { $svc.DisplayName } else { "" }
+                })
+        }
+    }
+    return $discovered
+}
+function Get-ServiceInfo {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Name
+    )
+    try {
+        $svc = Get-WmiObject -Class Win32_Service -Filter "Name='$Name'" -ErrorAction Stop
+        if ($svc) {
+            return [PSCustomObject]@{
+                Name        = $svc.Name
+                State       = $svc.State
+                PathName    = if ($svc.PathName) { $svc.PathName } else { "" }
+                DisplayName = if ($svc.DisplayName) { $svc.DisplayName } else { "" }
+            }
+        }
+    }
+    catch {
+        try {
+            $svc = Get-CimInstance -ClassName Win32_Service -Filter "Name='$Name'" -ErrorAction Stop
+            if ($svc) {
+                return [PSCustomObject]@{
+                    Name        = $svc.Name
+                    State       = $svc.State
+                    PathName    = if ($svc.PathName) { $svc.PathName } else { "" }
+                    DisplayName = if ($svc.DisplayName) { $svc.DisplayName } else { "" }
+                }
+            }
+        }
+        catch { }
+    }
+    return $null
+}
+function Stop-ServiceForce {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Name,
+        [int]$MaxRetries = 3,
+        [int]$WaitTimeoutSeconds = 30,
+        [int]$RetryDelaySeconds = 2
+    )
+    $svc = Get-Service -Name $Name -ErrorAction SilentlyContinue
+    if (-not $svc) {
+        return $false
+    }
+    $wasRunning = $svc.Status -eq "Running"
+    if (-not $wasRunning) {
+        return $false
+    }
+    Write-Host (T "ServiceRunningFound" $Name) -ForegroundColor Yellow
+    Write-Host (T "StopService") -ForegroundColor Yellow
+    $stopped = $false
+    for ($attempt = 1; $attempt -le $MaxRetries; $attempt++) {
+        try {
+            if ($attempt -gt 1) {
+                Write-Host (T "ServiceStopRetry" $Name $attempt) -ForegroundColor Yellow
+                Start-Sleep -Seconds $RetryDelaySeconds
+            }
+            Stop-Service -Name $Name -Force -ErrorAction Stop
+            Write-Host (T "ServiceWaitStop" $Name) -ForegroundColor Yellow
+            try {
+                $svc.WaitForStatus("Stopped", [System.TimeSpan]::FromSeconds($WaitTimeoutSeconds))
+                $stopped = $true
+            }
+            catch {
+                Write-Host (T "ServiceWaitStopTimeout" $Name) -ForegroundColor Yellow
+            }
+            if ($stopped) { break }
+            $svc.Refresh()
+            if ($svc.Status -eq "Stopped") {
+                $stopped = $true
+                break
+            }
+        }
+        catch {
+            if ($attempt -ge $MaxRetries) {
+                throw (T "StopServiceFail" $_)
+            }
+        }
+    }
+    if (-not $stopped) {
+        Write-Host (T "ServiceForceStop" $Name) -ForegroundColor Red
+        try {
+            $processId = (Get-WmiObject -Class Win32_Service -Filter "Name='$Name'" -ErrorAction SilentlyContinue).ProcessId
+            if ($processId -and $processId -gt 0) {
+                Stop-Process -Id $processId -Force -ErrorAction SilentlyContinue
+                Start-Sleep -Seconds 2
+                $svc.Refresh()
+                if ($svc.Status -ne "Stopped") {
+                    sc.exe stop "$Name" > $null 2>&1
+                    Start-Sleep -Seconds 3
+                }
+            }
+        }
+        catch {
+            throw (T "ServiceStoppingTimeout" $Name $WaitTimeoutSeconds)
+        }
+    }
+    return $true
+}
+function Remove-ServiceForce {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Name,
+        [int]$MaxRetries = 3
+    )
+    $svc = Get-Service -Name $Name -ErrorAction SilentlyContinue
+    if (-not $svc) {
+        Remove-ServiceName -Name $Name
+        return $true
+    }
+    if ($svc.Status -ne "Stopped") {
+        try {
+            Stop-ServiceForce -Name $Name
+        }
+        catch {
+            Write-Host (T "ServiceNotStopped" $Name) -ForegroundColor Yellow
+        }
+    }
+    $svc.Refresh()
+    if ($svc.Status -ne "Stopped") {
+        Write-Host (T "ServiceNotStopped" $Name) -ForegroundColor Yellow
+    }
+    $removed = $false
+    for ($attempt = 1; $attempt -le $MaxRetries; $attempt++) {
+        try {
+            if ($attempt -gt 1) {
+                Write-Host (T "ServiceRemoveRetry" $Name $attempt) -ForegroundColor Yellow
+                Start-Sleep -Seconds 2
+            }
+            Remove-ServiceCompatible -Name $Name
+            $removed = $true
+            break
+        }
+        catch {
+            if ($attempt -ge $MaxRetries) {
+                Write-Host (T "ServiceForceRemove" $Name) -ForegroundColor Yellow
+                sc.exe delete "$Name" > $null 2>&1
+                Start-Sleep -Seconds 1
+                if (Get-Service -Name $Name -ErrorAction SilentlyContinue) {
+                    $output = sc.exe delete "$Name" 2>&1
+                    if ($LASTEXITCODE -ne 0) {
+                        Write-Host (T "ServiceForceRemoveFail" $Name $output) -ForegroundColor Red
+                        return $false
+                    }
+                }
+                $removed = $true
+            }
+        }
+    }
+    Remove-ServiceName -Name $Name
+    return $removed
+}
+function Update-RegistryServiceList {
+    [CmdletBinding()]
+    param()
+    Write-Host (T "ServiceSyncRegistry") -ForegroundColor Green
+    $discovered = Find-EasyTierService
+    $existing = Get-ServiceNames
+    $newList = @()
+    foreach ($svc in $discovered) {
+        if ($existing -notcontains $svc.Name) {
+            Write-Host (T "ServiceExternalDetected" $svc.Name) -ForegroundColor Yellow
+        }
+        $newList += $svc.Name
+    }
+    foreach ($oldName in $existing) {
+        $info = Get-ServiceInfo -Name $oldName
+        if ($info) {
+            if ($newList -notcontains $oldName) {
+                $newList += $oldName
+            }
+        }
+    }
+    Initialize-RegistryEntryExists
+    Set-ItemProperty -Path $RegistryPath -Name $RegistryName -Value $newList -Force
+    Write-Host (T "ServiceRegistrySynced") -ForegroundColor Green
+}
+function Stop-RunningService {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Name
+    )
+    return Stop-ServiceForce -Name $Name
+}
+function Start-ServiceIfWasRunning {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Name,
+        [Parameter(Mandatory = $true)]
+        [bool]$WasRunning,
+        [int]$MaxRetries = 3
+    )
+    if ($WasRunning) {
+        for ($attempt = 1; $attempt -le $MaxRetries; $attempt++) {
+            try {
+                if ($attempt -gt 1) {
+                    Start-Sleep -Seconds 2
+                }
+                Write-Host (T "StartService") -ForegroundColor Green
+                Start-Service -Name $Name -ErrorAction Stop
+                return
+            }
+            catch {
+                if ($attempt -ge $MaxRetries) {
+                    throw (T "ServiceStartFail" $_)
+                }
+            }
+        }
+    }
+}
+function Stop-LockingProcesses {
+    Write-Host (T "FileOccupiedScan") -ForegroundColor Yellow
+    $lockedFiles = @()
+    $scriptFiles = Get-ChildItem -Path $ScriptRoot -File -Recurse -ErrorAction SilentlyContinue
+    foreach ($file in $scriptFiles) {
+        try {
+            $stream = $file.Open([System.IO.FileMode]::Open, [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::None)
+            $stream.Close()
+        }
+        catch {
+            $lockedFiles += $file.FullName
+        }
+    }
+    $killedServices = [System.Collections.ArrayList]@()
+    if ($lockedFiles.Count -gt 0) {
+        try {
+            $processes = Get-CimInstance -ClassName Win32_Process -ErrorAction SilentlyContinue
+        }
+        catch {
+            $processes = Get-WmiObject -Class Win32_Process -ErrorAction SilentlyContinue
+        }
+        foreach ($lockedFile in $lockedFiles) {
+            foreach ($proc in $processes) {
+                if ($proc.CommandLine -and $proc.CommandLine -like "*$ScriptRoot*") {
+                    try {
+                        $svcName = $null
+                        if ($proc.Name -eq "easytier-core.exe") {
+                            try {
+                                $svc = Get-CimInstance -ClassName Win32_Service -Filter "ProcessId = $($proc.ProcessId)" -ErrorAction SilentlyContinue
+                                if ($svc) { $svcName = $svc.Name }
+                            }
+                            catch {
+                                $svc = Get-WmiObject -Class Win32_Service -Filter "ProcessId = $($proc.ProcessId)" -ErrorAction SilentlyContinue
+                                if ($svc) { $svcName = $svc.Name }
+                            }
+                            if (-not $svcName) { $svcName = "$ServiceName(unknown)" }
+                        }
+                        else {
+                            $svcName = $proc.ProcessName
+                        }
+                        Write-Host (T "FileOccupiedStopService" $svcName) -ForegroundColor Yellow
+                        Stop-Process -Id $proc.ProcessId -Force -ErrorAction SilentlyContinue
+                        [void]$killedServices.Add($svcName)
+                    }
+                    catch {
+                        Write-Host (T "StopServiceFail" $_) -ForegroundColor Red
+                    }
+                }
+            }
+        }
+    }
+    return , $killedServices
+}
 function Get-SystemArchitecture {
     try {
         $platform = [System.Environment]::OSVersion.Platform
@@ -572,9 +1170,18 @@ function Get-LocalVersion {
 function Get-RemoteVersion {
     param([PSCustomObject]$response)
     try {
+        if (-not $response -or -not $response.tag_name) {
+            throw "tag_name_missing"
+        }
         return [System.Version]$response.tag_name.TrimStart("v")
     }
     catch {
+        if ($_.Exception.Message -eq "tag_name_missing") {
+            throw (T "TagNotFound" $Tag)
+        }
+        if ($_.Exception.Message -match "Cannot bind argument to parameter 'response'") {
+            throw (T "TagNotFound" $Tag)
+        }
         throw (T "FetchFail" $response)
     }
 }
@@ -586,6 +1193,9 @@ function Get-EasyTier {
             $response = Invoke-RestMethodCompatible -Uri "https://api.github.com/repos/EasyTier/EasyTier/releases/latest"
         }
         catch {
+            if ($_.Exception.Message -match "404" -or $_ -match "404") {
+                throw (T "TagNotFound" $Tag)
+            }
             throw (T "FetchLatestFailDetailed" $_)
         }
     }
@@ -595,6 +1205,9 @@ function Get-EasyTier {
             $response = Invoke-RestMethodCompatible -Uri "https://api.github.com/repos/EasyTier/EasyTier/releases/tags/$Tag"
         }
         catch {
+            if ($_.Exception.Message -match "404" -or $_ -match "404") {
+                throw (T "TagNotFound" $Tag)
+            }
             throw (T "FetchTagFailDetailed" $Tag $_)
         }
     }
@@ -642,16 +1255,10 @@ function Install-EasyTier {
         throw (T "CreateFolderFail" $tempDirectory $_)
     }
     $updateFile = Join-Path $tempDirectory $AssetName
-    try {
-        Write-Output (T "DownloadStart" $AssetName)
-        Invoke-WebRequestCompatible -Uri $DownloadUrl -OutFile $updateFile
-    }
-    catch {
-        throw (T "DownloadFail" $_)
-    }
+    Invoke-DownloadWithValidation -Url $DownloadUrl -OutFile $updateFile
     try {
         Write-Output (T "ExtractStart" $AssetName)
-        Expand-ZipFile -ZipPath $updateFile -DestinationPath $tempDirectory
+        Expand-ArchiveCompatible -ZipPath $updateFile -DestinationPath $tempDirectory
         $extractedRoot = Get-ChildItem -Path $tempDirectory -Directory | Select-Object -First 1
         Get-ChildItem -Path $extractedRoot.FullName | Copy-Item -Destination $ScriptRoot -Recurse -Force
     }
@@ -688,52 +1295,80 @@ function Update-EasyTier {
         throw (T "CreateFolderFail" $tempDirectory $_)
     }
     $updateFile = Join-Path $tempDirectory $AssetName
-    try {
-        Write-Output (T "DownloadStart" $AssetName)
-        Invoke-WebRequestCompatible -Uri $DownloadUrl -OutFile $updateFile
-    }
-    catch {
-        throw (T "DownloadFail" $_)
-    }
+    Invoke-DownloadWithValidation -Url $DownloadUrl -OutFile $updateFile
     try {
         Write-Output (T "ExtractStart" $AssetName)
-        Expand-ZipFile -ZipPath $updateFile -DestinationPath $tempDirectory
+        Expand-ArchiveCompatible -ZipPath $updateFile -DestinationPath $tempDirectory
         $extractedRoot = Get-ChildItem -Path $tempDirectory -Directory | Select-Object -First 1
     }
     catch {
         throw (T "ExtractFail" $_)
     }
-    $activeServices = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue | Where-Object { $_.Status -eq "Running" }
-    if ($activeServices) {
-        try {
-            Write-Host (T "ServiceRunningFound" $ServiceName) -ForegroundColor Yellow
-            Write-Host (T "StopService") -ForegroundColor Yellow
-            $activeServices | Stop-Service -Force
-        }
-        catch {
-            throw (T "StopServiceFail" $_)
+    $wasRunning = Stop-RunningService -Name $ServiceName
+    $killedServices = Stop-LockingProcesses
+    if (-not $wasRunning -and $killedServices.Count -gt 0) {
+        $normalizedSvcName = $ServiceName.ToLowerInvariant()
+        foreach ($ks in $killedServices) {
+            if ($ks.ToLowerInvariant() -eq $normalizedSvcName) {
+                $wasRunning = $true
+                break
+            }
         }
     }
+    if (-not $wasRunning) {
+        $svcInfo = Get-ServiceInfo -Name $ServiceName
+        if ($svcInfo -and $svcInfo.State -eq "Running") {
+            $wasRunning = $true
+        }
+    }
+    $copySucceeded = $false
+    $backupPath = Join-Path $tempDirectory "easytier_backup"
     try {
+        New-Item -ItemType Directory -Path $backupPath -Force | Out-Null
+        Get-ChildItem -Path $extractedRoot.FullName | ForEach-Object {
+            $target = Join-Path $ScriptRoot $_.Name
+            if (Test-Path $target) {
+                Copy-Item -Path $target -Destination (Join-Path $backupPath $_.Name) -Force
+            }
+        }
         Write-Host (T "UpdateFile")
         Get-ChildItem -Path $extractedRoot.FullName | Copy-Item -Destination $ScriptRoot -Recurse -Force
+        $copySucceeded = $true
+        $localVersion = Get-LocalVersion($EasyTierPath)
     }
     catch {
-        throw (T "UpdateFileFail" $_)
+        Write-Host (T "UpdateFileFail" $_) -ForegroundColor Red
     }
-    $localVersion = Get-LocalVersion($EasyTierPath)
-    if ($localVersion -ge $TargetVersion) {
-        if ($activeServices) {
+    if (-not $copySucceeded) {
+        if (Test-Path $backupPath) {
+            Write-Host (T "RestoringBackup") -ForegroundColor Yellow
+            Get-ChildItem -Path $backupPath | Copy-Item -Destination $ScriptRoot -Recurse -Force
+        }
+    }
+    if ($wasRunning) {
+        try {
+            Start-ServiceIfWasRunning -Name $ServiceName -WasRunning $true
+        }
+        catch {
+            Write-Host (T "ServiceStartFail" $_) -ForegroundColor Red
+        }
+    }
+    foreach ($ks in $killedServices) {
+        $normalizedKs = $ks.ToLowerInvariant()
+        if ($normalizedKs -eq $ServiceName.ToLowerInvariant()) { continue }
+        if ($ks -match "\(unknown\)$") { continue }
+        $svcInfo = Get-ServiceInfo -Name $ks
+        if ($svcInfo) {
+            Save-ServiceName -Name $ks
             try {
-                Write-Host (T "StartService") -ForegroundColor Green
-                $activeServices | Start-Service
+                Start-ServiceIfWasRunning -Name $ks -WasRunning $true
             }
             catch {
-                throw (T "ServiceStartFail" $_)
+                Write-Host (T "ServiceStartFail" $_) -ForegroundColor Red
             }
         }
     }
-    else {
+    if (-not $copySucceeded) {
         throw (T "UpdateFileFailDetailed")
     }
     Write-Host (T "UpdateDone" $localVersion) -ForegroundColor Green
@@ -746,31 +1381,55 @@ function Update-EasyTier {
     }
 }
 function Uninstall-EasyTier {
+    Update-RegistryServiceList
     $services = Get-ServiceNames
-    if ($services.Count -lt 1 -and (-not (Test-ServiceNameExists -Name $ServiceName))) {
+    $discovered = Find-EasyTierService
+    $allTargets = @{}
+    foreach ($svc in $discovered) {
+        if (-not $allTargets.ContainsKey($svc.Name)) {
+            $allTargets[$svc.Name] = $svc
+        }
+    }
+    foreach ($name in $services) {
+        if (-not $allTargets.ContainsKey($name)) {
+            $allTargets[$name] = $null
+        }
+    }
+    if ($allTargets.Count -lt 1) {
         Write-Host (T "ServiceNotInstalled") -ForegroundColor Red
         if (Show-YesNoPrompt -Message (T "ConfirmForceRemove") -DefaultIndex 1) {
-            Write-Host (T "ServiceStopping" $ServiceName)
+            Write-Host (T "ServiceStopping" $ServiceName) -ForegroundColor Yellow
             Stop-Service -Name $ServiceName -Force -ErrorAction SilentlyContinue
-            Write-Host (T "ServiceRemoving" $ServiceName)
+            Write-Host (T "ServiceRemoving" $ServiceName) -ForegroundColor Yellow
             Remove-ServiceCompatible -Name "$ServiceName" -ErrorAction SilentlyContinue
             Remove-ServiceName -Name $ServiceName -ErrorAction SilentlyContinue
             Write-Host (T "ServiceRemoved" $ServiceName) -ForegroundColor Green
         }
     }
     else {
-        foreach ($service in $services) {
-            if (Get-Service -Name $service -ErrorAction SilentlyContinue) {
-                Write-Host (T "ServiceStopping" $service)
-                Stop-Service -Name $service -Force
-                Write-Host (T "ServiceRemoving" $service)
-                Remove-ServiceCompatible -Name "$service"
-                Remove-ServiceName -Name $service
+        Write-Host (T "ServiceFoundInSCM" $allTargets.Count) -ForegroundColor Yellow
+        foreach ($name in $allTargets.Keys) {
+            $info = $allTargets[$name]
+            if ($info) {
+                Write-Host (T "DiscoveredServiceSummary" $info.Name $info.State $info.PathName) -ForegroundColor DarkGray
             }
-            Write-Host (T "ServiceRemoved" $service) -ForegroundColor Green
+            Write-Host (T "ServiceStopping" $name) -ForegroundColor Yellow
+            try {
+                Stop-ServiceForce -Name $name
+            }
+            catch {
+                Write-Host (T "ServiceNotStopped" $name) -ForegroundColor Yellow
+            }
+            Write-Host (T "ServiceRemoving" $name) -ForegroundColor Yellow
+            if (Remove-ServiceForce -Name $name) {
+                Write-Host (T "ServiceRemoved" $name) -ForegroundColor Green
+            }
+            else {
+                Write-Host (T "ServiceRemoveFail" $name "unknown") -ForegroundColor Red
+            }
         }
     }
-    Unregister-ScheduledTask -TaskName "EasyTierWatchDog" -Confirm:$false -ErrorAction SilentlyContinue | Out-Null
+    Unregister-ScheduledTaskCompatible -TaskName "EasyTierWatchDog"
 }
 
 function Set-EasyTier {
@@ -803,15 +1462,48 @@ function Set-EasyTier {
     Write-Host (T "GeneratedArgs") -ForegroundColor Yellow
     Write-Host ($OPTIONS -join " ") -ForegroundColor DarkGray
     if (Show-YesNoPrompt -Message (T "ConfigConfirm") -DefaultIndex 1) {
-        if (Get-Service -Name $ServiceName -ErrorAction SilentlyContinue) {
-            Stop-Service -Name $ServiceName -Force | Out-Null
-            Remove-ServiceCompatible -Name $ServiceName
+        Update-RegistryServiceList
+        $discovered = Find-EasyTierService
+        $resolvedConflicts = $false
+        foreach ($svc in $discovered) {
+            if ($svc.PathName -match [regex]::Escape($EasyTierPath) -or
+                $svc.PathName.ToLowerInvariant() -like "*$($ScriptRoot.ToLowerInvariant())*") {
+                if ($svc.Name -ne $ServiceName) {
+                    Write-Host (T "ServiceConflictFound" $svc.Name $svc.PathName) -ForegroundColor Yellow
+                    if (Show-YesNoPrompt -Message (T "ServiceConflictResolve" $svc.Name) -DefaultIndex 0) {
+                        Write-Host (T "ServiceStopping" $svc.Name) -ForegroundColor Yellow
+                        try { Stop-ServiceForce -Name $svc.Name } catch {}
+                        Write-Host (T "ServiceRemoving" $svc.Name) -ForegroundColor Yellow
+                        Remove-ServiceForce -Name $svc.Name
+                        $resolvedConflicts = $true
+                    }
+                }
+            }
         }
-        New-Service -Name $ServiceName -DisplayName "EasyTier" `
-            -Description "EasyTier Core Service" `
-            -StartupType Automatic `
-            -BinaryPathName $BinaryPath | Out-Null
-        Start-Service -Name $ServiceName | Out-Null
+        if ($resolvedConflicts) {
+            Start-Sleep -Seconds 1
+        }
+        if (Get-Service -Name $ServiceName -ErrorAction SilentlyContinue) {
+            Write-Host (T "ServiceConflictResolve" $ServiceName) -ForegroundColor Yellow
+            try { Stop-ServiceForce -Name $ServiceName } catch {}
+            Remove-ServiceForce -Name $ServiceName
+        }
+        try {
+            New-Service -Name $ServiceName -DisplayName "EasyTier" `
+                -Description "EasyTier Core Service" `
+                -StartupType Automatic `
+                -BinaryPathName $BinaryPath -ErrorAction Stop | Out-Null
+        }
+        catch {
+            throw (T "CreateDirFail" "Service($ServiceName)" $_)
+        }
+        try {
+            Write-Host (T "StartService") -ForegroundColor Green
+            Start-Service -Name $ServiceName -ErrorAction Stop
+        }
+        catch {
+            throw (T "ServiceStartFail" $_)
+        }
 
         Save-ServiceName -Name $ServiceName
         Write-Host (T "ConfigDone") -ForegroundColor Green
@@ -973,6 +1665,9 @@ try {
                 exit 0
             }
             2 {
+                if (Show-YesNoPrompt -Message (T "ConfirmSpecifyVersion") -DefaultIndex 1) {
+                    $Tag = Get-InputWithNoNullOrWhiteSpace -Prompt (T "InputTag") 
+                }
                 Get-EasyTier | Update-EasyTier
                 Show-Pause -Text (T "ExitPrompt")
                 exit 0
@@ -984,7 +1679,7 @@ try {
     exit 0
 }
 catch {
-    Unregister-ScheduledTask -TaskName "EasyTierWatchDog" -Confirm:$false -ErrorAction SilentlyContinue
+    Unregister-ScheduledTaskCompatible -TaskName "EasyTierWatchDog"
     Write-Host (T "Error" $_) -ForegroundColor Red
     Show-Pause -Text (T "ExitPrompt")
     exit 1
