@@ -13,10 +13,11 @@ use crate::proto::rpc_impl::standalone::{StandAloneClient, StandAloneServer};
 use crate::proto::rpc_types::controller::BaseController;
 use crate::tunnel::tcp::{TcpTunnelConnector, TcpTunnelListener};
 use crate::utils::task::CancellableTask;
+use guarden::guard;
 use std::io;
 use std::sync::Arc;
 use tokio::sync::{Notify, broadcast};
-use tokio::task::{JoinError, JoinSet};
+use tokio::task::JoinSet;
 use tokio::time::{Instant, sleep, sleep_until};
 use tokio_util::sync::CancellationToken;
 use tracing::instrument;
@@ -76,19 +77,25 @@ impl DnsNodeRuntime {
             ));
 
             server.register(&rpc);
-
             self.global_ctx.set_dns_server(Some(server.clone()));
+
+            let guard = guard! {
+                [
+                    global_ctx = self.global_ctx.clone(),
+                    peer_mgr = self.peer_mgr.clone(),
+                    id = server.id()
+                ]
+                global_ctx.set_dns_server(None);
+                async move { let _ = peer_mgr.remove_nic_packet_process_pipeline(id).await; }
+            };
+
             tokio::join!(
                 self.peer_mgr
                     .add_nic_packet_process_pipeline(Box::new(server.clone())),
                 server.run(token.child_token())
             );
 
-            self.global_ctx.set_dns_server(None);
-            let _ = self
-                .peer_mgr
-                .remove_nic_packet_process_pipeline(server.id())
-                .await;
+            guard.trigger().await;
 
             tracing::warn!("DnsServer exited, will retry election");
         }
