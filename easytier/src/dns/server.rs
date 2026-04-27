@@ -11,6 +11,7 @@ use crate::proto::rpc_impl::standalone::StandAloneServer;
 use crate::tunnel::packet_def::ZCPacket;
 use crate::tunnel::tcp::TcpTunnelListener;
 use derivative::Derivative;
+use guarden::guarded;
 use hickory_net::runtime::{Time, TokioTime};
 use hickory_net::xfer::Protocol;
 use hickory_server::{
@@ -81,8 +82,8 @@ pub struct DnsServer {
     #[derivative(Debug = "ignore")]
     catalog: DynamicCatalog,
 
-    listeners: Arc<RwLock<HashSet<NameServerAddr>>>,
-    addresses: Arc<RwLock<HashSet<NameServerAddr>>>,
+    listeners: RwLock<HashSet<NameServerAddr>>,
+    addresses: RwLock<HashSet<NameServerAddr>>,
 }
 
 const DNS_SERVER_LISTENER_TCP_TIMEOUT: Duration = Duration::from_secs(5);
@@ -225,7 +226,40 @@ impl DnsServer {
     #[instrument(skip_all, name = "DnsServer main loop")]
     pub async fn run(&self, token: CancellationToken) {
         let dirty = &self.mgr.dirty;
-        let mut runtime = None;
+        let runtime = None::<CancellableTask<()>>;
+
+        #[cfg(feature = "tun")]
+        guarded! {
+            system_guard => [
+                nic_ctx = self.nic_ctx.clone(),
+            ]
+            async move {
+                if let Some(nic_ctx) = nic_ctx
+                    .lock()
+                    .await
+                    .as_ref()
+                    .and_then(|nic_ctx| nic_ctx.downcast_ref::<NicCtx>())
+                    && let Some(system) = nic_ctx
+                        .ifname()
+                        .await
+                        .and_then(|ifname| system::get(&ifname).ok())
+                        .flatten()
+                {
+                    let _ = system.clean();
+                }
+            }
+        }
+
+        guarded! {
+            runtime_guard => [
+                mut runtime,
+            ]
+            async move {
+                if let Some(runtime) = runtime.take() {
+                    let _ = runtime.stop(Some(Duration::from_secs(1))).await;
+                }
+            }
+        }
 
         let reload_catalog = async {
             loop {
@@ -255,7 +289,7 @@ impl DnsServer {
                 dirty.listeners.wait().await;
                 if dirty.listeners.reset()
                     && let Err(error) = self
-                        .reload_listeners(self.mgr.iter_listeners(), &mut runtime)
+                        .reload_listeners(self.mgr.iter_listeners(), runtime)
                         .await
                 {
                     tracing::error!(?error, "failed to reload listeners");
@@ -275,36 +309,9 @@ impl DnsServer {
             _ = reload_listeners => {},
         );
 
-        self.addresses.write().clear();
-        self.listeners.write().clear();
-
         #[cfg(feature = "tun")]
-        if let Some(nic_ctx) = self
-            .nic_ctx
-            .lock()
-            .await
-            .as_ref()
-            .and_then(|nic_ctx| nic_ctx.downcast_ref::<NicCtx>())
-            && let Some(system) = nic_ctx
-                .ifname()
-                .await
-                .and_then(|ifname| system::get(&ifname).ok())
-                .flatten()
-        {
-            let _ = system.clean();
-        }
-
-        if let Some(runtime) = runtime.take() {
-            let _ = runtime.stop(None).await;
-        }
-    }
-}
-
-impl Drop for DnsServer {
-    fn drop(&mut self) {
-        tracing::info!("DnsServer is dropped");
-        self.addresses.write().clear();
-        self.listeners.write().clear();
+        system_guard.trigger().await;
+        runtime_guard.trigger().await;
     }
 }
 
