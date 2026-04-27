@@ -4,10 +4,10 @@ use anyhow::{Error, anyhow};
 use hickory_net::xfer::Protocol;
 use hickory_resolver::config::{ConnectionConfig, NameServerConfig, ProtocolConfig};
 use serde::de::IntoDeserializer;
-use serde::{Deserialize, de};
+use serde::{Deserialize, Deserializer, de};
 use serde_with::{DeserializeFromStr, SerializeDisplay};
 use std::fmt::{Display, Formatter};
-use std::net::{IpAddr, SocketAddr};
+use std::net::{IpAddr, Ipv6Addr, SocketAddr};
 use std::str::FromStr;
 use url::Url;
 
@@ -36,21 +36,6 @@ impl From<(IpAddr, &ConnectionConfig)> for NameServerAddr {
             protocol: config.protocol.to_protocol(),
             addr: SocketAddr::new(ip, config.port),
         }
-    }
-}
-
-impl From<SocketAddr> for NameServerAddr {
-    fn from(value: SocketAddr) -> Self {
-        Self {
-            protocol: Protocol::Udp,
-            addr: value,
-        }
-    }
-}
-
-impl From<IpAddr> for NameServerAddr {
-    fn from(value: IpAddr) -> Self {
-        SocketAddr::new(value, 53).into()
     }
 }
 
@@ -102,14 +87,6 @@ impl TryFrom<&proto::common::Url> for NameServerAddr {
 impl FromStr for NameServerAddr {
     type Err = Error;
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        macro_rules! try_parse {
-            ($($t:ty),+) => {
-                $( if let Ok(v) = s.parse::<$t>() { return Ok(v.into()); } )+
-            };
-        }
-
-        try_parse!(IpAddr, SocketAddr);
-
         (&Url::parse(s)?).try_into()
     }
 }
@@ -129,5 +106,64 @@ impl From<&NameServerConfig> for NameServerAddrGroup {
             .iter()
             .map(|c| (value.ip, c).into())
             .collect()
+    }
+}
+
+impl From<SocketAddr> for NameServerAddrGroup {
+    fn from(value: SocketAddr) -> Self {
+        vec![
+            NameServerAddr {
+                protocol: Protocol::Udp,
+                addr: value,
+            },
+            NameServerAddr {
+                protocol: Protocol::Tcp,
+                addr: value,
+            },
+        ]
+        .into()
+    }
+}
+
+impl From<IpAddr> for NameServerAddrGroup {
+    fn from(value: IpAddr) -> Self {
+        SocketAddr::new(value, 53).into()
+    }
+}
+
+impl From<u16> for NameServerAddrGroup {
+    fn from(value: u16) -> Self {
+        SocketAddr::new(Ipv6Addr::UNSPECIFIED.into(), value).into()
+    }
+}
+
+impl<'de> Deserialize<'de> for NameServerAddrGroup {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Candidate {
+            NameServerAddr(NameServerAddr),
+            U16(u16),
+            IpAddr(IpAddr),
+            SocketAddr(SocketAddr),
+        }
+
+        let items = Vec::<Candidate>::deserialize(deserializer)?;
+        let items = items
+            .into_iter()
+            .flat_map(|item| -> NameServerAddrGroup {
+                match item {
+                    Candidate::NameServerAddr(addr) => vec![addr].into(),
+                    Candidate::U16(port) => port.into(),
+                    Candidate::IpAddr(ip) => ip.into(),
+                    Candidate::SocketAddr(addr) => addr.into(),
+                }
+            })
+            .collect();
+
+        Ok(items)
     }
 }

@@ -175,7 +175,7 @@ mod tests {
         use std::{str::FromStr as _, sync::Arc, time::Duration};
 
         use crate::dns::{
-            config::DNS_DEFAULT_ADDRESS,
+            config::DNS_DEFAULT_ADDRESSES,
             tests::{prepare_env, start_dns_node},
         };
         use crate::instance::proxy_cidrs_monitor::ProxyCidrsMonitor;
@@ -193,7 +193,7 @@ mod tests {
         let dns_node = start_dns_node(peer_mgr, virtual_nic);
 
         println!("dev_name: {}", tun_name);
-        let fake_ip = match DNS_DEFAULT_ADDRESS.addr.ip() {
+        let fake_ip = match DNS_DEFAULT_ADDRESSES[0].addr.ip() {
             IpAddr::V4(ip) => ip,
             IpAddr::V6(ip) => panic!("unexpected ipv6 default dns address in test: {ip}"),
         };

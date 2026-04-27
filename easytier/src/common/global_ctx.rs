@@ -4,7 +4,6 @@ use dashmap::DashMap;
 use hmac::{Hmac, Mac};
 use sha2::Sha256;
 use socket2::Protocol;
-use std::sync::RwLock;
 use std::{
     collections::{HashMap, hash_map::DefaultHasher},
     hash::Hasher,
@@ -22,10 +21,7 @@ use super::{
     stun::{StunInfoCollector, StunInfoCollectorTrait},
 };
 #[cfg(feature = "magic-dns")]
-use crate::dns::{
-    config::{DnsConfigLoaderExt, DnsExportConfig, DnsGlobalCtxExt},
-    server::DnsServer,
-};
+use crate::dns::config::{DnsConfigLoaderExt, DnsExportConfig, DnsGlobalCtxExt};
 use crate::{
     common::{
         config::ProxyNetworkConfig, shrink_dashmap, stats_manager::StatsManager,
@@ -217,9 +213,6 @@ pub struct GlobalCtx {
 
     hostname: Mutex<String>,
 
-    #[cfg(feature = "magic-dns")]
-    dns_server: RwLock<Option<Arc<DnsServer>>>,
-
     stun_info_collection: Mutex<Arc<dyn StunInfoCollectorTrait>>,
 
     running_listeners: Mutex<Vec<url::Url>>,
@@ -317,9 +310,6 @@ impl GlobalCtx {
                 net_ns,
                 stun_info_collector.clone(),
             )))),
-
-            #[cfg(feature = "magic-dns")]
-            dns_server: RwLock::new(None),
 
             hostname: Mutex::new(hostname),
 
@@ -723,14 +713,6 @@ impl GlobalCtx {
 
 #[cfg(feature = "magic-dns")]
 impl DnsGlobalCtxExt for GlobalCtx {
-    fn dns_server(&self) -> Option<Arc<DnsServer>> {
-        self.dns_server.read().unwrap().clone()
-    }
-
-    fn set_dns_server(&self, dns: Option<Arc<DnsServer>>) {
-        *self.dns_server.write().unwrap() = dns;
-    }
-
     fn dns_self_zone(&self) -> crate::dns::config::zone::ZoneConfig {
         let dns = self.config.get_dns();
         let mut hostname = dns.name.to_string();

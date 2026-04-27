@@ -1,7 +1,6 @@
-use crate::dns::utils::addr::NameServerAddr;
-use hickory_net::xfer::Protocol;
+use crate::dns::utils::addr::NameServerAddrGroup;
 use hickory_proto::rr::LowerName;
-use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
+use std::net::IpAddr;
 use std::str::FromStr;
 use std::sync::LazyLock;
 use std::time::Duration;
@@ -14,10 +13,8 @@ pub mod zone;
 
 pub static DNS_DEFAULT_DOMAIN: LazyLock<LowerName> =
     LazyLock::new(|| LowerName::from_str("et.net.").unwrap());
-pub const DNS_DEFAULT_ADDRESS: NameServerAddr = NameServerAddr {
-    protocol: Protocol::Udp,
-    addr: SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(100, 100, 100, 101), 53)),
-};
+pub static DNS_DEFAULT_ADDRESSES: LazyLock<NameServerAddrGroup> =
+    LazyLock::new(|| IpAddr::from_str("100.100.100.101").unwrap().into());
 
 pub static DNS_SERVER_RPC_ADDR: LazyLock<Url> =
     LazyLock::new(|| Url::parse("tcp://127.0.0.1:49813").unwrap());

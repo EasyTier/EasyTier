@@ -1,19 +1,17 @@
 use crate::common::global_ctx::{ArcGlobalCtx, GlobalCtxEvent};
 use crate::dns::config::{
-    DNS_NODE_RR_INTERVAL, DNS_SERVER_ELECTION_INTERVAL, DNS_SERVER_RPC_ADDR, DnsGlobalCtxExt,
+    DNS_NODE_RR_INTERVAL, DNS_SERVER_ELECTION_INTERVAL, DNS_SERVER_RPC_ADDR,
 };
 use crate::dns::peer_mgr::DnsPeerMgr;
 use crate::dns::server::DnsServer;
 #[cfg(feature = "tun")]
 use crate::instance::instance::ArcNicCtx;
-use crate::peers::NicPacketFilter;
 use crate::peers::peer_manager::PeerManager;
 use crate::proto::dns::{DnsNodeMgrRpcClientFactory, HeartbeatRequest};
 use crate::proto::rpc_impl::standalone::{StandAloneClient, StandAloneServer};
 use crate::proto::rpc_types::controller::BaseController;
 use crate::tunnel::tcp::{TcpTunnelConnector, TcpTunnelListener};
 use crate::utils::task::CancellableTask;
-use guarden::guard;
 use std::io;
 use std::sync::Arc;
 use tokio::sync::{Notify, broadcast};
@@ -75,27 +73,8 @@ impl DnsNodeRuntime {
                 #[cfg(feature = "tun")]
                 self.nic_ctx.clone(),
             ));
-
             server.register(&rpc);
-            self.global_ctx.set_dns_server(Some(server.clone()));
-
-            let guard = guard! {
-                [
-                    global_ctx = self.global_ctx.clone(),
-                    peer_mgr = self.peer_mgr.clone(),
-                    id = server.id()
-                ]
-                global_ctx.set_dns_server(None);
-                async move { let _ = peer_mgr.remove_nic_packet_process_pipeline(id).await; }
-            };
-
-            tokio::join!(
-                self.peer_mgr
-                    .add_nic_packet_process_pipeline(Box::new(server.clone())),
-                server.run(token.child_token())
-            );
-
-            guard.trigger().await;
+            server.run(token.child_token()).await;
 
             tracing::warn!("DnsServer exited, will retry election");
         }
@@ -570,63 +549,6 @@ mod tests {
     #[tokio::test]
     async fn stop_without_start_is_ok() {
         let node = build_test_node().await;
-        node.stop().await.unwrap();
-    }
-
-    #[tokio::test]
-    #[serial_test::serial(dns_node_rpc_addr)]
-    async fn election_wins_and_sets_dns_server() {
-        let node = build_test_node().await;
-        let runtime = node.runtime.clone();
-
-        wait_for_condition(
-            async || runtime.global_ctx.dns_server().is_some(),
-            Duration::from_secs(2),
-        )
-        .await;
-
-        let global_ctx = runtime.global_ctx.clone();
-        node.stop().await.unwrap();
-
-        wait_for_condition(
-            async || global_ctx.dns_server().is_none(),
-            Duration::from_secs(2),
-        )
-        .await;
-    }
-
-    #[tokio::test]
-    #[serial_test::serial(dns_node_rpc_addr)]
-    async fn election_loses_when_rpc_addr_is_occupied() {
-        let holder = occupy_dns_rpc_addr().await;
-        let node = build_test_node().await;
-        let runtime = node.runtime.clone();
-
-        sleep(Duration::from_millis(300)).await;
-        assert!(runtime.global_ctx.dns_server().is_none());
-
-        node.stop().await.unwrap();
-        drop(holder);
-    }
-
-    #[tokio::test]
-    #[serial_test::serial(dns_node_rpc_addr)]
-    async fn election_retries_after_losing_then_wins() {
-        let holder = occupy_dns_rpc_addr().await;
-        let node = build_test_node().await;
-        let runtime = node.runtime.clone();
-
-        sleep(Duration::from_millis(300)).await;
-        assert!(runtime.global_ctx.dns_server().is_none());
-
-        drop(holder);
-        sleep(DNS_NODE_RR_INTERVAL).await;
-        wait_for_condition(
-            async || runtime.global_ctx.dns_server().is_some(),
-            Duration::from_secs(2),
-        )
-        .await;
-
         node.stop().await.unwrap();
     }
 }
