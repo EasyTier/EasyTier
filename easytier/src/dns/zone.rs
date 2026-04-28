@@ -412,6 +412,97 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn catalog_lookup_returns_nodata_on_nameexists() -> anyhow::Result<()> {
+        let upstream = Zone::try_from(&zone_data(
+            "forward-aaaa.test",
+            vec!["host 60 IN AAAA 2001:db8::1"],
+            vec![],
+        ))?;
+
+        let mut upstream_catalog = Catalog::new();
+        upstream_catalog.upsert(
+            upstream.origin.clone(),
+            vec![upstream.create_memory_zone_handler().unwrap()],
+        );
+
+        let socket = UdpSocket::bind("127.0.0.1:0").await?;
+        let upstream_addr = socket.local_addr()?;
+
+        let mut server = Server::new(upstream_catalog);
+        server.register_socket(socket);
+        let upstream_handle = tokio::spawn(async move {
+            let _ = server.block_until_done().await;
+        });
+
+        let zones: ZoneGroup = vec![Zone::try_from(&zone_data(
+            "forward-aaaa.test",
+            vec!["host IN A 10.20.30.40"],
+            vec![&format!("udp://{}", upstream_addr)],
+        ))?]
+        .into();
+        let catalog = build_catalog(zones);
+
+        let (rcode, message) =
+            lookup_message(&catalog, "host.forward-aaaa.test.", RecordType::AAAA).await?;
+        assert_eq!(rcode, ResponseCode::NoError);
+
+        let message = message.expect("response should exist");
+        assert!(
+            message.answers.is_empty(),
+            "NameExists should return NODATA"
+        );
+
+        upstream_handle.abort();
+        let _ = upstream_handle.await;
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn catalog_lookup_forwards_on_nxdomain() -> anyhow::Result<()> {
+        let upstream = Zone::try_from(&zone_data(
+            "forward-nxdomain.test",
+            vec!["missing 60 IN A 203.0.113.55"],
+            vec![],
+        ))?;
+
+        let mut upstream_catalog = Catalog::new();
+        upstream_catalog.upsert(
+            upstream.origin.clone(),
+            vec![upstream.create_memory_zone_handler().unwrap()],
+        );
+
+        let socket = UdpSocket::bind("127.0.0.1:0").await?;
+        let upstream_addr = socket.local_addr()?;
+
+        let mut server = Server::new(upstream_catalog);
+        server.register_socket(socket);
+        let upstream_handle = tokio::spawn(async move {
+            let _ = server.block_until_done().await;
+        });
+
+        let zones: ZoneGroup = vec![Zone::try_from(&zone_data(
+            "forward-nxdomain.test",
+            vec!["present IN A 10.20.30.41"],
+            vec![&format!("udp://{}", upstream_addr)],
+        ))?]
+        .into();
+        let catalog = build_catalog(zones);
+
+        let (rcode, message) =
+            lookup_message(&catalog, "missing.forward-nxdomain.test.", RecordType::A).await?;
+        assert_eq!(rcode, ResponseCode::NoError);
+
+        let message = message.expect("response should exist");
+        assert!(has_a_answer(&message, Ipv4Addr::new(203, 0, 113, 55)));
+
+        upstream_handle.abort();
+        let _ = upstream_handle.await;
+
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn catalog_lookup_falls_back_to_later_zone_handler_with_same_origin() -> anyhow::Result<()>
     {
         let zones: ZoneGroup = vec![

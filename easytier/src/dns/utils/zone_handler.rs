@@ -4,11 +4,27 @@ use hickory_proto::op::ResponseCode;
 use hickory_proto::rr::{LowerName, RecordType, TSigResponseContext};
 use hickory_server::server::{Request, RequestInfo};
 use hickory_server::zone_handler::{
-    AuthLookup, AxfrPolicy, LookupControlFlow, LookupOptions, ZoneHandler, ZoneType,
+    AuthLookup, AxfrPolicy, LookupControlFlow, LookupError, LookupOptions, ZoneHandler, ZoneType,
 };
 use std::sync::Arc;
 
 pub type ArcZoneHandler = Arc<dyn ZoneHandler>;
+
+pub trait LookupControlFlowExt {
+    fn skip_negative(self) -> Self;
+}
+
+impl LookupControlFlowExt for LookupControlFlow<AuthLookup> {
+    fn skip_negative(self) -> Self {
+        match self {
+            Self::Continue(e) | Self::Break(e) if matches!(e, Err(LookupError::NameExists)) => {
+                Self::Continue(Ok(Default::default()))
+            }
+            Self::Continue(Err(_)) | Self::Break(Err(_)) => Self::Skip,
+            other => other,
+        }
+    }
+}
 
 #[derive(From, Deref, DerefMut)]
 pub struct ChainedZoneHandler<H>(H)
@@ -47,6 +63,7 @@ where
         self.0
             .lookup(name, rtype, request_info, lookup_options)
             .await
+            .skip_negative()
     }
     #[inline]
     async fn consult(
@@ -63,6 +80,7 @@ where
             self.0
                 .lookup(name, rtype, request_info, lookup_options)
                 .await
+                .skip_negative()
         };
         (result, None)
     }
@@ -72,7 +90,8 @@ where
         request: &Request,
         lookup_options: LookupOptions,
     ) -> (LookupControlFlow<AuthLookup>, Option<TSigResponseContext>) {
-        self.0.search(request, lookup_options).await
+        let (result, tsig) = self.0.search(request, lookup_options).await;
+        (result.skip_negative(), tsig)
     }
     #[inline]
     async fn nsec_records(
