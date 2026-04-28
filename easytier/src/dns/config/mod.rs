@@ -24,3 +24,5 @@ pub const DNS_NODE_TTI: Duration = Duration::from_secs(5);
 pub const DNS_NODE_RR_INTERVAL: Duration = Duration::from_secs(4);
 pub const DNS_SERVER_ELECTION_INTERVAL: Duration = Duration::from_secs(5);
 pub const DNS_PEER_TTI: Duration = Duration::from_secs(3);
+pub const DNS_PEER_REFRESH_ATTEMPTS: usize = 3;
+pub const DNS_PEER_REFRESH_BACKOFF: Duration = Duration::from_secs(1);

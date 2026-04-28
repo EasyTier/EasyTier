@@ -339,7 +339,9 @@ async fn wait_peer_zone_visibility(
     let deadline = Instant::now() + Duration::from_secs(20);
 
     loop {
-        dns.refresh(target_peer_id).await;
+        dns.refresh(target_peer_id, Default::default(), Default::default())
+            .await
+            .unwrap();
 
         let snapshot = dns.snapshot();
 
@@ -486,7 +488,10 @@ records = ["secret IN A 10.99.0.9"]
     // Verify from peer-sync view to avoid host-wide DNS-server election side effects.
     let _dns_a = DnsPeerMgr::new(peer_a.clone(), peer_a.get_global_ctx());
     let dns_b = DnsPeerMgr::new(peer_b.clone(), peer_b.get_global_ctx());
-    dns_b.refresh(peer_a.my_peer_id()).await;
+    dns_b
+        .refresh(peer_a.my_peer_id(), Default::default(), Default::default())
+        .await
+        .unwrap();
 
     let snapshot = dns_b.snapshot();
     assert!(
@@ -529,7 +534,10 @@ disabled = true
 
     let _dns_a = DnsPeerMgr::new(peer_a.clone(), peer_a.get_global_ctx());
     let dns_b = DnsPeerMgr::new(peer_b.clone(), peer_b.get_global_ctx());
-    dns_b.refresh(peer_a.my_peer_id()).await;
+    dns_b
+        .refresh(peer_a.my_peer_id(), Default::default(), Default::default())
+        .await
+        .unwrap();
 
     let snapshot = dns_b.snapshot();
     assert!(
@@ -866,7 +874,10 @@ records = ["secret IN A 10.66.3.8"]
 
     let _dns_c = DnsPeerMgr::new(peer_c.clone(), peer_c.get_global_ctx());
     let dns_a = DnsPeerMgr::new(peer_a.clone(), peer_a.get_global_ctx());
-    dns_a.refresh(peer_c.my_peer_id()).await;
+    dns_a
+        .refresh(peer_c.my_peer_id(), Default::default(), Default::default())
+        .await
+        .unwrap();
 
     let snapshot = dns_a.snapshot();
     assert!(
@@ -897,7 +908,10 @@ async fn config_string_two_nodes_peer_dns_offline_then_rejoin() {
 
     let _dns_b = DnsPeerMgr::new(peer_b.clone(), peer_b.get_global_ctx());
     let dns_a_online = DnsPeerMgr::new(peer_a.clone(), peer_a.get_global_ctx());
-    dns_a_online.refresh(peer_b.my_peer_id()).await;
+    dns_a_online
+        .refresh(peer_b.my_peer_id(), Default::default(), Default::default())
+        .await
+        .unwrap();
     assert!(
         dns_a_online
             .snapshot()
@@ -950,7 +964,10 @@ async fn config_string_two_nodes_peer_dns_offline_then_rejoin() {
         .expect("route should re-appear");
 
     let dns_a_rejoin = DnsPeerMgr::new(peer_a.clone(), peer_a.get_global_ctx());
-    dns_a_rejoin.refresh(peer_b.my_peer_id()).await;
+    dns_a_rejoin
+        .refresh(peer_b.my_peer_id(), Default::default(), Default::default())
+        .await
+        .unwrap();
     assert!(
         dns_a_rejoin
             .snapshot()

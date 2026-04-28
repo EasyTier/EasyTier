@@ -1,5 +1,8 @@
 use crate::common::global_ctx::{ArcGlobalCtx, GlobalCtxEvent};
-use crate::dns::config::{DNS_NODE_RR_INTERVAL, DNS_SERVER_ELECTION_INTERVAL, DNS_SERVER_RPC_ADDR};
+use crate::dns::config::{
+    DNS_NODE_RR_INTERVAL, DNS_PEER_REFRESH_ATTEMPTS, DNS_PEER_REFRESH_BACKOFF,
+    DNS_SERVER_ELECTION_INTERVAL, DNS_SERVER_RPC_ADDR,
+};
 use crate::dns::peer_mgr::DnsPeerMgr;
 use crate::dns::server::DnsServer;
 #[cfg(feature = "tun")]
@@ -12,16 +15,16 @@ use crate::tunnel::tcp::{TcpTunnelConnector, TcpTunnelListener};
 use crate::utils::task::CancellableTask;
 use std::io;
 use std::sync::Arc;
-use tokio::sync::{Notify, broadcast};
+use tokio::sync::{broadcast, Notify};
 use tokio::task::JoinSet;
-use tokio::time::{Instant, sleep, sleep_until};
+use tokio::time::{sleep, sleep_until, Instant};
 use tokio_util::sync::CancellationToken;
 use tracing::instrument;
 use uuid::Uuid;
 
 #[derive(Debug, Clone)]
 struct DnsNodeRuntime {
-    mgr: Arc<DnsPeerMgr>,
+    mgr: DnsPeerMgr,
 
     #[cfg(feature = "tun")]
     nic_ctx: ArcNicCtx, // TODO: REMOVE THIS
@@ -87,8 +90,8 @@ impl DnsNodeRuntime {
             ..Default::default()
         };
         let mut last_heartbeat = Instant::now();
-        let sleep = sleep_until(last_heartbeat);
-        tokio::pin!(sleep);
+        let timer = sleep_until(last_heartbeat);
+        tokio::pin!(timer);
 
         let mut subscriber = self.global_ctx.subscribe();
         let mut tasks = JoinSet::new();
@@ -101,17 +104,17 @@ impl DnsNodeRuntime {
                 } else {
                     DNS_NODE_RR_INTERVAL / 4
                 };
-            sleep.as_mut().reset(next_heartbeat);
+            timer.as_mut().reset(next_heartbeat);
 
             tokio::select! {
                 biased;
 
                 _ = token.cancelled() => {
-                    tracing::info!("DnsNode received shutdown signal, exiting node loop");
+                    tracing::info!("DnsNode received shutdown signal, exiting main loop");
                     break;
                 }
 
-                _ = &mut sleep => {
+                _ = &mut timer => {
                     if let Err(error) = self.heartbeat(&mut rpc, &mut heartbeat).await {
                         tracing::error!(?error, "heartbeat failed");
                         self.elect.notify_one();
@@ -128,7 +131,9 @@ impl DnsNodeRuntime {
                             for peer_id in peer_ids {
                                 let mgr = self.mgr.clone();
                                 tasks.spawn(async move {
-                                    mgr.refresh(peer_id).await;
+                                    if let Err(error) = mgr.refresh(peer_id, DNS_PEER_REFRESH_ATTEMPTS, DNS_PEER_REFRESH_BACKOFF).await {
+                                        tracing::error!(?error, ?peer_id, "failed to refresh peer");
+                                    }
                                 });
                             }
                             continue;
@@ -209,7 +214,7 @@ impl DnsNode {
         #[cfg(feature = "tun")] nic_ctx: ArcNicCtx, // TODO: REMOVE THIS
     ) -> Self {
         let runtime = DnsNodeRuntime {
-            mgr: Arc::new(DnsPeerMgr::new(peer_mgr.clone(), global_ctx.clone())),
+            mgr: DnsPeerMgr::new(peer_mgr.clone(), global_ctx.clone()),
             #[cfg(feature = "tun")]
             nic_ctx,
             peer_mgr,
@@ -291,7 +296,7 @@ mod tests {
         let global_ctx = peer_mgr.get_global_ctx();
         let nic_ctx: ArcNicCtx = Arc::new(Mutex::new(None));
         DnsNodeRuntime {
-            mgr: Arc::new(DnsPeerMgr::new(peer_mgr.clone(), global_ctx.clone())),
+            mgr: DnsPeerMgr::new(peer_mgr.clone(), global_ctx.clone()),
             nic_ctx,
             peer_mgr,
             global_ctx,

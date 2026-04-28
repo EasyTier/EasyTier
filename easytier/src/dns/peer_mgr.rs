@@ -1,6 +1,9 @@
 use crate::common::PeerId;
 use crate::common::global_ctx::ArcGlobalCtx;
-use crate::dns::config::{DNS_PEER_TTI, DnsExportConfig, DnsGlobalCtxExt};
+use crate::dns::config::{
+    DNS_PEER_REFRESH_ATTEMPTS, DNS_PEER_REFRESH_BACKOFF, DNS_PEER_TTI, DnsExportConfig,
+    DnsGlobalCtxExt,
+};
 use crate::dns::zone::ZoneGroup;
 use crate::peer_center::instance::PeerCenterPeerManagerTrait;
 use crate::peers::peer_manager::PeerManager;
@@ -14,9 +17,13 @@ use crate::proto::rpc_types::controller::BaseController;
 use crate::proto::utils::TransientDigest;
 use crate::utils::dirty::DirtyFlag;
 use anyhow::Context;
+use futures::StreamExt;
+use futures::stream;
 use moka::future::Cache;
 use std::ops::Deref;
 use std::sync::Arc;
+use std::time::Duration;
+use tokio::time::sleep;
 use tracing::instrument;
 
 #[derive(Debug, Clone)]
@@ -68,18 +75,44 @@ impl DnsPeerMgrInner {
         }
     }
 
-    pub async fn refresh(&self, peer_id: PeerId) {
+    pub async fn refresh(
+        &self,
+        peer_id: PeerId,
+        mut attempts: usize,
+        mut backoff: Duration,
+    ) -> anyhow::Result<bool> {
+        loop {
+            attempts = attempts.saturating_sub(1);
+            let result = self.try_refresh(peer_id).await;
+            match &result {
+                Ok(_) => return result,
+                Err(_) if attempts == 0 => return result,
+                Err(error) => {
+                    tracing::error!(
+                        ?error,
+                        ?peer_id,
+                        "failed to refresh peer info, retrying in {:?}",
+                        backoff
+                    );
+                    sleep(backoff).await;
+                    backoff *= 2;
+                }
+            }
+        }
+    }
+
+    async fn try_refresh(&self, peer_id: PeerId) -> anyhow::Result<bool> {
         if peer_id == self.peer_mgr.my_peer_id() {
             self.dirty.mark();
-            return;
+            return Ok(true);
         }
 
         let Some(route) = self.peer_mgr.get_route().get_peer_info(peer_id).await else {
             if self.peers.remove(&peer_id).await.is_some() {
-                tracing::debug!(%peer_id, "peer route disappeared, removing from cache");
+                tracing::debug!(?peer_id, "peer route disappeared, removing from cache");
                 self.dirty.mark();
             }
-            return;
+            return Ok(true);
         };
 
         if self
@@ -88,25 +121,20 @@ impl DnsPeerMgrInner {
             .await
             .is_some_and(|info| route.dns == info.digest)
         {
-            return;
+            return Ok(false);
         }
 
-        let info =
-            if !route.dns.is_empty() {
-                self.fetch(peer_id).await.inspect_err(|error| {
-                tracing::warn!(%peer_id, ?error, "failed to fetch dns export config from peer");
-            }).ok()
-            } else {
-                None
-            };
-
-        if let Some(info) = info {
+        if !route.dns.is_empty() {
+            let info = self.fetch(peer_id).await.with_context(|| {
+                format!("failed to fetch dns export config from peer {}", peer_id)
+            })?;
             self.peers.insert(peer_id, info).await;
         } else {
             self.peers.invalidate(&peer_id).await;
         }
 
         self.dirty.mark();
+        Ok(true)
     }
 
     #[instrument(skip(self), level = "trace", ret)]
@@ -139,7 +167,7 @@ impl DnsPeerMgrRpc for DnsPeerMgrInner {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct DnsPeerMgr(Arc<DnsPeerMgrInner>);
 
 impl DnsPeerMgr {
@@ -433,7 +461,7 @@ mod tests {
         let mgr = DnsPeerMgr::new(peer_mgr.clone(), peer_mgr.get_global_ctx());
 
         mgr.dirty.reset();
-        mgr.refresh(peer_mgr.my_peer_id()).await;
+        mgr.try_refresh(peer_mgr.my_peer_id()).await.unwrap();
 
         assert!(mgr.dirty.peek());
     }
@@ -449,7 +477,7 @@ mod tests {
         let mgr = DnsPeerMgr::new(peer_mgr, get_mock_global_ctx());
 
         mgr.dirty.reset();
-        mgr.refresh(987_654).await;
+        mgr.try_refresh(987_654).await.unwrap();
 
         assert!(!mgr.dirty.peek());
     }
@@ -496,7 +524,7 @@ mod tests {
             .await;
 
         mgr.dirty.reset();
-        mgr.refresh(remote_id).await;
+        mgr.try_refresh(remote_id).await.unwrap();
         sleep(Duration::from_millis(50)).await;
 
         assert!(!mgr.dirty.peek());
@@ -527,7 +555,7 @@ mod tests {
             .expect("route should appear");
 
         local_dns.dirty.reset();
-        local_dns.refresh(remote.my_peer_id()).await;
+        local_dns.try_refresh(remote.my_peer_id()).await.unwrap();
 
         assert!(local_dns.dirty.peek());
         let snapshot = local_dns.snapshot();
@@ -567,7 +595,7 @@ mod tests {
             .await
             .expect("route to peer_b should appear");
 
-        local_dns.refresh(peer_a.my_peer_id()).await;
+        local_dns.try_refresh(peer_a.my_peer_id()).await.unwrap();
 
         let snapshot = local_dns.snapshot();
         assert!(
@@ -643,7 +671,7 @@ mod tests {
             .expect("route to keep_peer should appear");
 
         local_dns.dirty.reset();
-        local_dns.refresh(fail_id).await;
+        local_dns.try_refresh(fail_id).await.unwrap();
 
         assert!(local_dns.dirty.peek());
         assert!(local_dns.peers.get(&fail_id).await.is_none());
@@ -719,11 +747,14 @@ mod tests {
             .await;
 
         local_dns.dirty.reset();
-        local_dns.refresh(changed_peer.my_peer_id()).await;
+        local_dns
+            .try_refresh(changed_peer.my_peer_id())
+            .await
+            .unwrap();
         assert!(local_dns.dirty.peek());
 
         local_dns.dirty.reset();
-        local_dns.refresh(unchanged_id).await;
+        local_dns.try_refresh(unchanged_id).await.unwrap();
         assert!(!local_dns.dirty.peek());
 
         let unchanged_cache = local_dns
