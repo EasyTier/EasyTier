@@ -90,7 +90,15 @@ impl DnsPeerMgrInner {
                     tracing::trace!(?peer_id, "peer info refreshed");
                     return result;
                 }
-                Err(_) if attempts == 0 => return result,
+                Err(_) if attempts == 0 => {
+                    self.peers.invalidate(&peer_id).await;
+                    self.dirty.mark();
+                    tracing::error!(
+                        ?peer_id,
+                        "exhausted all attempts to refresh peer info, invalidating cache"
+                    );
+                    return result;
+                }
                 Err(error) => {
                     tracing::error!(
                         ?error,
@@ -688,7 +696,10 @@ mod tests {
             .expect("route to keep_peer should appear");
 
         local_dns.dirty.reset();
-        local_dns.try_refresh(fail_id).await.unwrap();
+        local_dns
+            .refresh(fail_id, Default::default(), Default::default())
+            .await
+            .unwrap_err();
 
         assert!(local_dns.dirty.peek());
         assert!(local_dns.peers.get(&fail_id).await.is_none());
