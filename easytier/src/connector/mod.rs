@@ -186,8 +186,8 @@ async fn resolve_connector_socket_addr(
         .into_iter()
         .filter(|addr| addr_matches_ip_version(addr, ip_version))
     {
-        if let SocketAddr::V6(v6_addr) = addr {
-            if let Some(reason) = ipv6_connector_reject_reason(
+        if let SocketAddr::V6(v6_addr) = addr
+            && let Some(reason) = ipv6_connector_reject_reason(
                 url,
                 global_ctx,
                 v6_addr,
@@ -198,7 +198,6 @@ async fn resolve_connector_socket_addr(
                 rejected_ipv6_reason = Some(reason);
                 continue;
             }
-        }
 
         usable_addrs.push(addr);
     }
