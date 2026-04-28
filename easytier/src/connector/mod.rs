@@ -194,10 +194,10 @@ async fn resolve_connector_socket_addr(
                 skip_source_validation_errors,
             )
             .await?
-            {
-                rejected_ipv6_reason = Some(reason);
-                continue;
-            }
+        {
+            rejected_ipv6_reason = Some(reason);
+            continue;
+        }
 
         usable_addrs.push(addr);
     }

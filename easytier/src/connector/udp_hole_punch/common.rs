@@ -720,9 +720,10 @@ async fn check_udp_socket_local_addr(
     let socket = UdpSocket::bind("0.0.0.0:0").await?;
     socket.connect(remote_mapped_addr).await?;
     if let Ok(local_addr) = socket.local_addr()
-        && let Some(err) = easytier_managed_local_addr_error(&global_ctx, local_addr) {
-            return Err(anyhow::anyhow!(err).into());
-        }
+        && let Some(err) = easytier_managed_local_addr_error(&global_ctx, local_addr)
+    {
+        return Err(anyhow::anyhow!(err).into());
+    }
 
     Ok(())
 }
