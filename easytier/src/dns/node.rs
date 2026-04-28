@@ -207,7 +207,7 @@ impl DnsNodeRuntime {
 #[derive(Debug)]
 pub struct DnsNode {
     runtime: DnsNodeRuntime,
-    task: CancellableTask<()>,
+    task: Option<CancellableTask<()>>,
 }
 
 impl DnsNode {
@@ -225,19 +225,34 @@ impl DnsNode {
             elect: Default::default(),
         };
 
-        let task = {
-            let runtime = runtime.clone();
-            CancellableTask::spawn(|token| async move {
-                runtime.elect.notify_one();
-                tokio::join!(runtime.run_election(token.clone()), runtime.run(token));
-            })
-        };
-
-        Self { runtime, task }
+        Self {
+            runtime,
+            task: None,
+        }
     }
 
-    pub async fn stop(self) -> io::Result<()> {
-        self.task.stop(None).await
+    pub fn start(&mut self) {
+        let runtime = self.runtime.clone();
+        self.task
+            .replace(CancellableTask::spawn(|token| async move {
+                runtime.elect.notify_one();
+                tokio::join!(runtime.run_election(token.clone()), runtime.run(token));
+            }));
+        self.runtime.mgr.register();
+    }
+
+    pub async fn stop(&mut self) -> io::Result<()> {
+        self.runtime.mgr.unregister();
+        let Some(task) = self.task.take() else {
+            return Ok(());
+        };
+        task.stop(None).await
+    }
+}
+
+impl Drop for DnsNode {
+    fn drop(&mut self) {
+        self.runtime.mgr.unregister();
     }
 }
 

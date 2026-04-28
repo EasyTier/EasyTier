@@ -74,14 +74,18 @@ pub fn start_dns_node(peer_mgr: Arc<PeerManager>, virtual_nic: NicCtx) -> DnsNod
     let global_ctx = peer_mgr.get_global_ctx();
     let nic_ctx: ArcNicCtx = Arc::new(tokio::sync::Mutex::new(Some(Box::new(virtual_nic))));
 
-    DnsNode::new(peer_mgr, global_ctx, nic_ctx)
+    let mut node = DnsNode::new(peer_mgr, global_ctx, nic_ctx);
+    node.start();
+    node
 }
 
 pub fn start_dns_node_without_nic(peer_mgr: Arc<PeerManager>) -> DnsNode {
     let global_ctx = peer_mgr.get_global_ctx();
     let nic_ctx: ArcNicCtx = Arc::new(tokio::sync::Mutex::new(None));
 
-    DnsNode::new(peer_mgr, global_ctx, nic_ctx)
+    let mut node = DnsNode::new(peer_mgr, global_ctx, nic_ctx);
+    node.start();
+    node
 }
 
 pub async fn prepare_env_from_config_str(config_str: &str) -> Arc<PeerManager> {
@@ -405,7 +409,7 @@ whitelist = ["*"]
     );
 
     let peer_mgr = prepare_env_from_config_str(&config).await;
-    let dns_node = start_dns_node_without_nic(peer_mgr);
+    let mut dns_node = start_dns_node_without_nic(peer_mgr);
 
     let server_addr = SocketAddr::new(Ipv4Addr::LOCALHOST.into(), listener_port);
     check_dns_record_at(server_addr, "alpha.et-test.", "10.144.144.11").await;
@@ -443,8 +447,8 @@ whitelist = ["*"]
         .await
         .expect("route should appear");
 
-    let node_a = start_dns_node_without_nic(peer_a);
-    let node_b = start_dns_node_without_nic(peer_b);
+    let mut node_a = start_dns_node_without_nic(peer_a);
+    let mut node_b = start_dns_node_without_nic(peer_b);
 
     let addr_a = SocketAddr::new(Ipv4Addr::LOCALHOST.into(), listener_a);
     let addr_b = SocketAddr::new(Ipv4Addr::LOCALHOST.into(), listener_b);
@@ -486,8 +490,10 @@ records = ["secret IN A 10.99.0.9"]
 
     // Export behavior is determined by whether `[dns.zone.export]` exists.
     // Verify from peer-sync view to avoid host-wide DNS-server election side effects.
-    let _dns_a = DnsPeerMgr::new(peer_a.clone(), peer_a.get_global_ctx());
+    let dns_a = DnsPeerMgr::new(peer_a.clone(), peer_a.get_global_ctx());
+    dns_a.register();
     let dns_b = DnsPeerMgr::new(peer_b.clone(), peer_b.get_global_ctx());
+    dns_b.register();
     dns_b
         .refresh(peer_a.my_peer_id(), Default::default(), Default::default())
         .await
@@ -532,8 +538,10 @@ disabled = true
         .await
         .expect("route should appear");
 
-    let _dns_a = DnsPeerMgr::new(peer_a.clone(), peer_a.get_global_ctx());
+    let dns_a = DnsPeerMgr::new(peer_a.clone(), peer_a.get_global_ctx());
+    dns_a.register();
     let dns_b = DnsPeerMgr::new(peer_b.clone(), peer_b.get_global_ctx());
+    dns_b.register();
     dns_b
         .refresh(peer_a.my_peer_id(), Default::default(), Default::default())
         .await
@@ -567,7 +575,7 @@ records = ["api IN A 10.80.0.1"]
     );
 
     let peer = prepare_env_from_config_str(&config).await;
-    let dns_node = start_dns_node_without_nic(peer.clone());
+    let mut dns_node = start_dns_node_without_nic(peer.clone());
     let server_addr = SocketAddr::new(Ipv4Addr::LOCALHOST.into(), listener);
 
     check_dns_record_at(server_addr, "api.patch.mesh-test.", "10.80.0.1").await;
@@ -605,7 +613,7 @@ async fn config_patch_reloads_listener_binding() {
     );
 
     let peer = prepare_env_from_config_str(&config).await;
-    let dns_node = start_dns_node_without_nic(peer.clone());
+    let mut dns_node = start_dns_node_without_nic(peer.clone());
 
     let old_addr = SocketAddr::new(Ipv4Addr::LOCALHOST.into(), listener_old);
     let new_addr = SocketAddr::new(Ipv4Addr::LOCALHOST.into(), listener_new);
@@ -662,9 +670,9 @@ records = ["svc IN A 10.77.7.7"]
         .await
         .expect("route a-c should appear via b");
 
-    let node_a = start_dns_node_without_nic(peer_a.clone());
-    let node_b = start_dns_node_without_nic(peer_b.clone());
-    let node_c = start_dns_node_without_nic(peer_c.clone());
+    let mut node_a = start_dns_node_without_nic(peer_a.clone());
+    let mut node_b = start_dns_node_without_nic(peer_b.clone());
+    let mut node_c = start_dns_node_without_nic(peer_c.clone());
 
     let addr_a = SocketAddr::new(Ipv4Addr::LOCALHOST.into(), listener_a);
     check_dns_record_at(addr_a, "node-c7.mesh7-test.", "10.144.151.13").await;
@@ -768,9 +776,9 @@ records = ["api IN A 10.66.1.8"]
         .await
         .expect("route a-c should appear via b");
 
-    let node_a = start_dns_node_without_nic(peer_a);
-    let node_b = start_dns_node_without_nic(peer_b);
-    let node_c = start_dns_node_without_nic(peer_c);
+    let mut node_a = start_dns_node_without_nic(peer_a);
+    let mut node_b = start_dns_node_without_nic(peer_b);
+    let mut node_c = start_dns_node_without_nic(peer_c);
 
     let addr_a = SocketAddr::new(Ipv4Addr::LOCALHOST.into(), listener_a);
     let addr_b = SocketAddr::new(Ipv4Addr::LOCALHOST.into(), listener_b);
@@ -818,8 +826,8 @@ records = ["svc IN A 10.66.2.8"]
         .await
         .expect("route a-b should appear");
 
-    let node_a = start_dns_node_without_nic(peer_a.clone());
-    let node_b = start_dns_node_without_nic(peer_b.clone());
+    let mut node_a = start_dns_node_without_nic(peer_a.clone());
+    let mut node_b = start_dns_node_without_nic(peer_b.clone());
 
     let addr_a = SocketAddr::new(Ipv4Addr::LOCALHOST.into(), listener_a);
     check_dns_record_missing_at(addr_a, "node-c4.mesh4-test.").await;
@@ -832,7 +840,7 @@ records = ["svc IN A 10.66.2.8"]
         .await
         .expect("route a-c should appear after c joins");
 
-    let node_c = start_dns_node_without_nic(peer_c);
+    let mut node_c = start_dns_node_without_nic(peer_c);
 
     check_dns_record_at(addr_a, "node-c4.mesh4-test.", "10.144.146.13").await;
     check_dns_record_at(addr_a, "svc.joined.mesh4-test.", "10.66.2.8").await;
@@ -872,8 +880,10 @@ records = ["secret IN A 10.66.3.8"]
         .await
         .expect("route a-c should appear via b");
 
-    let _dns_c = DnsPeerMgr::new(peer_c.clone(), peer_c.get_global_ctx());
+    let dns_c = DnsPeerMgr::new(peer_c.clone(), peer_c.get_global_ctx());
+    dns_c.register();
     let dns_a = DnsPeerMgr::new(peer_a.clone(), peer_a.get_global_ctx());
+    dns_a.register();
     dns_a
         .refresh(peer_c.my_peer_id(), Default::default(), Default::default())
         .await
@@ -906,8 +916,10 @@ async fn config_string_two_nodes_peer_dns_offline_then_rejoin() {
         .await
         .expect("route should appear");
 
-    let _dns_b = DnsPeerMgr::new(peer_b.clone(), peer_b.get_global_ctx());
+    let dns_b = DnsPeerMgr::new(peer_b.clone(), peer_b.get_global_ctx());
+    dns_b.register();
     let dns_a_online = DnsPeerMgr::new(peer_a.clone(), peer_a.get_global_ctx());
+    dns_a_online.register();
     dns_a_online
         .refresh(peer_b.my_peer_id(), Default::default(), Default::default())
         .await

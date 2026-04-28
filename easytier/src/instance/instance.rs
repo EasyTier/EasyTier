@@ -931,12 +931,14 @@ impl Instance {
 
         #[cfg(feature = "magic-dns")]
         {
-            self.dns = Some(DnsNode::new(
+            let mut node = DnsNode::new(
                 self.get_peer_manager(),
                 self.get_global_ctx(),
                 #[cfg(feature = "tun")]
                 self.get_nic_ctx(),
-            ));
+            );
+            node.start();
+            self.dns = Some(node);
         }
 
         if self.global_ctx.config.get_dhcp() {
@@ -1485,7 +1487,7 @@ impl Instance {
     pub async fn clear_resources(&mut self) {
         self.peer_manager.clear_resources().await;
         #[cfg(feature = "magic-dns")]
-        if let Some(node) = self.dns.take() {
+        if let Some(mut node) = self.dns.take() {
             let _ = node.stop().await;
         }
         #[cfg(feature = "tun")]

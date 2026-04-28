@@ -190,7 +190,7 @@ mod tests {
         // prepare_env does not run full Instance::run, so start the monitor explicitly in test.
         let _monitor = ProxyCidrsMonitor::new(peer_mgr.clone(), peer_mgr.get_global_ctx()).start();
 
-        let dns_node = start_dns_node(peer_mgr, virtual_nic);
+        let mut dns_node = start_dns_node(peer_mgr, virtual_nic);
 
         println!("dev_name: {}", tun_name);
         let fake_ip = match DNS_DEFAULT_ADDRESSES[0].addr.ip() {

@@ -176,17 +176,15 @@ pub struct DnsPeerMgr(Arc<DnsPeerMgrInner>);
 
 impl DnsPeerMgr {
     pub fn new(peer_mgr: Arc<PeerManager>, global_ctx: ArcGlobalCtx) -> Self {
-        let this = Self(Arc::new(DnsPeerMgrInner {
+        Self(Arc::new(DnsPeerMgrInner {
             peers: Cache::builder().time_to_idle(DNS_PEER_TTI).build(),
             dirty: Default::default(),
             peer_mgr,
             global_ctx,
-        }));
-        this.register();
-        this
+        }))
     }
 
-    fn register(&self) {
+    pub fn register(&self) {
         self.peer_mgr
             .get_peer_rpc_mgr()
             .rpc_server()
@@ -197,7 +195,7 @@ impl DnsPeerMgr {
             );
     }
 
-    fn unregister(&self) -> Option<()> {
+    pub fn unregister(&self) -> Option<()> {
         self.peer_mgr
             .get_peer_rpc_mgr()
             .rpc_server()
@@ -234,12 +232,6 @@ impl Deref for DnsPeerMgr {
 
     fn deref(&self) -> &Self::Target {
         &self.0
-    }
-}
-
-impl Drop for DnsPeerMgr {
-    fn drop(&mut self) {
-        self.unregister();
     }
 }
 
@@ -658,6 +650,7 @@ mod tests {
         .await;
 
         let local_dns = DnsPeerMgr::new(local.clone(), local.get_global_ctx());
+        local_dns.register();
         let keep_dns = DnsPeerMgr::new(keep_peer.clone(), keep_peer.get_global_ctx());
         keep_dns.register();
 
@@ -864,33 +857,7 @@ mod tests {
         )
         .await;
         let mgr = DnsPeerMgr::new(peer_mgr.clone(), peer_mgr.get_global_ctx());
-        assert!(mgr.unregister().is_some());
-    }
-
-    #[tokio::test]
-    async fn drop_triggers_unregister() {
-        let peer_mgr = create_peer_manager_with_zone(
-            "drop-peer",
-            "drop-zone.test",
-            Ipv4Addr::new(10, 1, 0, 3),
-        )
-        .await;
-        let global_ctx = peer_mgr.get_global_ctx();
-
-        let mgr = DnsPeerMgr::new(peer_mgr.clone(), global_ctx.clone());
-        let inner = mgr.0.clone();
         mgr.register();
-
-        drop(mgr);
-
-        let res = peer_mgr
-            .get_peer_rpc_mgr()
-            .rpc_server()
-            .registry()
-            .unregister(
-                DnsPeerMgrRpcServer::new_arc(inner),
-                &global_ctx.get_network_name(),
-            );
-        assert!(res.is_none());
+        assert!(mgr.unregister().is_some());
     }
 }
