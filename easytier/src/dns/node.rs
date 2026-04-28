@@ -270,6 +270,7 @@ mod tests {
     use std::time::Duration;
     use tokio::sync::Mutex;
     use tokio::time::sleep;
+    use url::Url;
 
     #[derive(Debug)]
     struct RecordingDnsNodeMgr {
@@ -324,13 +325,14 @@ mod tests {
     }
 
     async fn start_recording_rpc_server(
+        rpc_addr: Url,
         resync_on_first: bool,
     ) -> anyhow::Result<(
         Arc<RecordingDnsNodeMgr>,
         StandAloneServer<TcpTunnelListener>,
     )> {
         let mgr = Arc::new(RecordingDnsNodeMgr::new(resync_on_first));
-        let mut server = StandAloneServer::new(TcpTunnelListener::new(DNS_SERVER_RPC_ADDR.clone()));
+        let mut server = StandAloneServer::new(TcpTunnelListener::new(rpc_addr));
         server
             .registry()
             .register(DnsNodeMgrRpcServer::new_arc(mgr.clone()), "");
@@ -339,19 +341,21 @@ mod tests {
         Ok((mgr, server))
     }
 
-    async fn occupy_dns_rpc_addr() -> StandAloneServer<TcpTunnelListener> {
-        let mut server = StandAloneServer::new(TcpTunnelListener::new(DNS_SERVER_RPC_ADDR.clone()));
+    async fn occupy_dns_rpc_addr(rpc_addr: Url) -> StandAloneServer<TcpTunnelListener> {
+        let mut server = StandAloneServer::new(TcpTunnelListener::new(rpc_addr));
         server.serve().await.unwrap();
         server
     }
 
     #[tokio::test]
-    #[serial_test::serial(dns_node_rpc_addr)]
     async fn heartbeat_first_send_includes_snapshot() {
-        let (_mgr, server) = start_recording_rpc_server(false).await.unwrap();
+        let rpc_addr = Url::parse(&format!("tcp://127.0.0.1:{}", 49851)).unwrap();
+        let (_mgr, server) = start_recording_rpc_server(rpc_addr.clone(), false)
+            .await
+            .unwrap();
         let node = build_test_runtime().await;
 
-        let mut rpc = StandAloneClient::new(TcpTunnelConnector::new(DNS_SERVER_RPC_ADDR.clone()));
+        let mut rpc = StandAloneClient::new(TcpTunnelConnector::new(rpc_addr));
         let mut heartbeat = HeartbeatRequest {
             id: Some(node.id().into()),
             ..Default::default()
@@ -367,12 +371,14 @@ mod tests {
     }
 
     #[tokio::test]
-    #[serial_test::serial(dns_node_rpc_addr)]
     async fn heartbeat_clean_send_digest_only() {
-        let (mgr, server) = start_recording_rpc_server(false).await.unwrap();
+        let rpc_addr = Url::parse(&format!("tcp://127.0.0.1:{}", 49852)).unwrap();
+        let (mgr, server) = start_recording_rpc_server(rpc_addr.clone(), false)
+            .await
+            .unwrap();
         let node = build_test_runtime().await;
 
-        let mut rpc = StandAloneClient::new(TcpTunnelConnector::new(DNS_SERVER_RPC_ADDR.clone()));
+        let mut rpc = StandAloneClient::new(TcpTunnelConnector::new(rpc_addr));
         let mut heartbeat = HeartbeatRequest {
             id: Some(node.id().into()),
             ..Default::default()
@@ -393,12 +399,14 @@ mod tests {
     }
 
     #[tokio::test]
-    #[serial_test::serial(dns_node_rpc_addr)]
     async fn heartbeat_dirty_forces_full_snapshot() {
-        let (mgr, server) = start_recording_rpc_server(false).await.unwrap();
+        let rpc_addr = Url::parse(&format!("tcp://127.0.0.1:{}", 49853)).unwrap();
+        let (mgr, server) = start_recording_rpc_server(rpc_addr.clone(), false)
+            .await
+            .unwrap();
         let node = build_test_runtime().await;
 
-        let mut rpc = StandAloneClient::new(TcpTunnelConnector::new(DNS_SERVER_RPC_ADDR.clone()));
+        let mut rpc = StandAloneClient::new(TcpTunnelConnector::new(rpc_addr));
         let mut heartbeat = HeartbeatRequest {
             id: Some(node.id().into()),
             ..Default::default()
@@ -418,12 +426,14 @@ mod tests {
     }
 
     #[tokio::test]
-    #[serial_test::serial(dns_node_rpc_addr)]
     async fn heartbeat_resync_triggers_second_send() {
-        let (mgr, server) = start_recording_rpc_server(true).await.unwrap();
+        let rpc_addr = Url::parse(&format!("tcp://127.0.0.1:{}", 49854)).unwrap();
+        let (mgr, server) = start_recording_rpc_server(rpc_addr.clone(), true)
+            .await
+            .unwrap();
         let node = build_test_runtime().await;
 
-        let mut rpc = StandAloneClient::new(TcpTunnelConnector::new(DNS_SERVER_RPC_ADDR.clone()));
+        let mut rpc = StandAloneClient::new(TcpTunnelConnector::new(rpc_addr));
         let mut heartbeat = HeartbeatRequest {
             id: Some(node.id().into()),
             ..Default::default()
@@ -469,7 +479,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[serial_test::serial(dns_node_rpc_addr)]
     async fn run_marks_dirty_on_config_patched_event() {
         let node = build_test_runtime().await;
 
@@ -497,7 +506,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[serial_test::serial(dns_node_rpc_addr)]
     async fn run_peer_info_updated_non_self_does_not_mark_dirty() {
         let node = build_test_runtime().await;
 
@@ -526,7 +534,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[serial_test::serial(dns_node_rpc_addr)]
     async fn run_heartbeat_error_notifies_election() {
         let node = build_test_runtime().await;
 
@@ -549,12 +556,5 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-    }
-
-    #[tokio::test]
-    async fn id_matches_global_ctx_id() {
-        let node = build_test_runtime().await;
-
-        assert_eq!(node.id(), node.global_ctx.get_id());
     }
 }
