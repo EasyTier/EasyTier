@@ -1,7 +1,7 @@
 use crate::common::global_ctx::{ArcGlobalCtx, GlobalCtxEvent};
 use crate::dns::config::{
-    DNS_NODE_RR_INTERVAL, DNS_PEER_REFRESH_ATTEMPTS, DNS_PEER_REFRESH_BACKOFF,
-    DNS_SERVER_ELECTION_INTERVAL, DNS_SERVER_RPC_ADDR,
+    DNS_NODE_RECONCILE_INTERVAL, DNS_NODE_RR_INTERVAL, DNS_PEER_REFRESH_ATTEMPTS,
+    DNS_PEER_REFRESH_BACKOFF, DNS_SERVER_ELECTION_INTERVAL, DNS_SERVER_RPC_ADDR,
 };
 use crate::dns::peer_mgr::DnsPeerMgr;
 use crate::dns::server::DnsServer;
@@ -17,7 +17,7 @@ use std::io;
 use std::sync::Arc;
 use tokio::sync::{broadcast, Notify};
 use tokio::task::JoinSet;
-use tokio::time::{sleep, sleep_until, Instant};
+use tokio::time::{interval, sleep, sleep_until, Instant, MissedTickBehavior};
 use tokio_util::sync::CancellationToken;
 use tracing::instrument;
 use uuid::Uuid;
@@ -93,6 +93,9 @@ impl DnsNodeRuntime {
         let timer = sleep_until(last_heartbeat);
         tokio::pin!(timer);
 
+        let mut reconcile_interval = interval(DNS_NODE_RECONCILE_INTERVAL);
+        reconcile_interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
+
         let mut subscriber = self.global_ctx.subscribe();
         let mut tasks = JoinSet::new();
 
@@ -121,6 +124,13 @@ impl DnsNodeRuntime {
                     }
 
                     last_heartbeat = Instant::now();
+                }
+
+                _ = reconcile_interval.tick() => {
+                    let mgr = self.mgr.clone();
+                    tasks.spawn(async move {
+                        mgr.reconcile().await;
+                    });
                 }
 
                 _ = self.mgr.dirty.wait() => {}

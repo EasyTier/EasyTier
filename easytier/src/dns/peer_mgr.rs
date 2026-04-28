@@ -75,6 +75,7 @@ impl DnsPeerMgrInner {
         }
     }
 
+    #[instrument(skip(self), level = "trace", ret)]
     pub async fn refresh(
         &self,
         peer_id: PeerId,
@@ -85,7 +86,10 @@ impl DnsPeerMgrInner {
             attempts = attempts.saturating_sub(1);
             let result = self.try_refresh(peer_id).await;
             match &result {
-                Ok(_) => return result,
+                Ok(_) => {
+                    tracing::trace!(?peer_id, "peer info refreshed");
+                    return result;
+                }
                 Err(_) if attempts == 0 => return result,
                 Err(error) => {
                     tracing::error!(
@@ -202,6 +206,26 @@ impl DnsPeerMgr {
                 DnsPeerMgrRpcServer::new_arc(self.0.clone()),
                 &self.global_ctx.get_network_name(),
             )
+    }
+
+    #[instrument(skip(self), level = "trace")]
+    pub async fn reconcile(&self) {
+        stream::iter(self.peer_mgr.list_routes().await.into_iter())
+            .map(|route| {
+                let peer_id = route.peer_id;
+                let this = self.clone();
+                async move {
+                    if let Err(error) = this
+                        .refresh(peer_id, DNS_PEER_REFRESH_ATTEMPTS, DNS_PEER_REFRESH_BACKOFF)
+                        .await
+                    {
+                        tracing::error!(?error, ?peer_id, "failed to refresh peer info");
+                    }
+                }
+            })
+            .buffer_unordered(32)
+            .collect::<Vec<_>>()
+            .await;
     }
 }
 
