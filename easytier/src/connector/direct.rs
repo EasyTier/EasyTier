@@ -814,12 +814,11 @@ mod tests {
             wait_route_appear_with_cost,
         },
         proto::peer_rpc::GetIpListResponse,
-        tunnel::{IpScheme, TunnelScheme, matches_scheme},
+        tunnel::scheme::{IpProto, matches_proto},
     };
 
-    use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-
     use super::{TESTING, mapped_listener_port, resolve_mapped_listener_addrs};
+    use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
     #[tokio::test]
     async fn public_ipv6_candidate_rejects_easytier_managed_addr_even_in_tests() {
@@ -842,9 +841,8 @@ mod tests {
     #[test]
     fn udp_ipv6_url_matches_hole_punch_branch_condition() {
         let remote_url: url::Url = "udp://[2001:db8::1]:11010".parse().unwrap();
-        let takes_udp_ipv6_hole_punch_branch =
-            matches_scheme!(remote_url, TunnelScheme::Ip(IpScheme::Udp))
-                && matches!(remote_url.host(), Some(url::Host::Ipv6(_)));
+        let takes_udp_ipv6_hole_punch_branch = matches_proto!(remote_url, IpProto::Udp)
+            && matches!(remote_url.host(), Some(url::Host::Ipv6(_)));
 
         assert!(takes_udp_ipv6_hole_punch_branch);
     }

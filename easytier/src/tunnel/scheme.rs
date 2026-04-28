@@ -283,7 +283,10 @@ impl TryFrom<&url::Url> for IpScheme {
 macro_rules! __matches_proto__ {
     ($url:expr, $( $pattern:pat_param )|+ ) => {{
         matches!(
-            $crate::tunnel::scheme::IpScheme::try_from($url).ok().map(|s| s.proto),
+            {
+                let url: &url::Url = &$url;
+                $crate::tunnel::scheme::IpScheme::try_from(url).ok().map(|s| s.proto)
+            },
             Some($( $pattern )|+)
         )
     }};
@@ -294,7 +297,10 @@ pub(crate) use __matches_proto__ as matches_proto;
 macro_rules! __matches_protocol__ {
     ($url:expr, $( $pattern:pat_param )|+ ) => {{
         matches!(
-            $crate::tunnel::scheme::IpScheme::try_from($url).ok().map(|s| s.protocol()),
+            {
+                let url: &url::Url = &$url;
+                $crate::tunnel::scheme::IpScheme::try_from(url).ok().map(|s| s.protocol())
+            },
             Some($( $pattern )|+)
         )
     }};
@@ -304,7 +310,21 @@ pub(crate) use __matches_protocol__ as matches_protocol;
 
 #[cfg(test)]
 mod tests {
-    use super::{IpProto, TunnelScheme};
+    use super::*;
+
+    #[test]
+    fn matches_scheme_accepts_owned_url() {
+        let url: url::Url = "udp://[2001:db8::1]:11010".parse().unwrap();
+
+        assert!(matches_proto!(url, IpProto::Udp));
+    }
+
+    #[test]
+    fn matches_scheme_accepts_borrowed_url() {
+        let url: url::Url = "udp://[2001:db8::1]:11010".parse().unwrap();
+
+        assert!(matches_proto!(&url, IpProto::Udp));
+    }
 
     #[test]
     fn normalize_all_enabled_ipv6_tunnel_urls() {
