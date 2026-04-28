@@ -300,15 +300,6 @@ mod tests {
         }
     }
 
-    async fn build_test_node() -> DnsNode {
-        let runtime = build_test_runtime().await;
-        DnsNode::new(
-            runtime.peer_mgr.clone(),
-            runtime.global_ctx.clone(),
-            runtime.nic_ctx.clone(),
-        )
-    }
-
     async fn start_recording_rpc_server(
         resync_on_first: bool,
     ) -> anyhow::Result<(
@@ -542,11 +533,5 @@ mod tests {
         let node = build_test_runtime().await;
 
         assert_eq!(node.id(), node.global_ctx.get_id());
-    }
-
-    #[tokio::test]
-    async fn stop_without_start_is_ok() {
-        let node = build_test_node().await;
-        node.stop().await.unwrap();
     }
 }

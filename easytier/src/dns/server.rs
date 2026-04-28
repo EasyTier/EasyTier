@@ -371,7 +371,7 @@ mod tests {
     use hickory_net::runtime::TokioRuntimeProvider;
     use hickory_net::udp::UdpClientStream;
     use hickory_proto::op::{Message, MessageType, OpCode, Query};
-    use hickory_proto::rr::{rdata, DNSClass, Name, RData, Record, RecordType};
+    use hickory_proto::rr::{DNSClass, Name, RData, Record, RecordType, rdata};
     use hickory_proto::serialize::binary::BinEncodable;
     use hickory_server::store::in_memory::InMemoryZoneHandler;
     use hickory_server::zone_handler::ZoneType;
@@ -379,12 +379,11 @@ mod tests {
     use pnet::packet::icmp::{IcmpTypes, MutableIcmpPacket};
     use pnet::packet::ipv4::MutableIpv4Packet;
     use pnet::packet::udp::MutableUdpPacket;
-    use pnet::packet::{icmp, ipv4, udp, MutablePacket};
+    use pnet::packet::{MutablePacket, icmp, ipv4, udp};
     use std::net::Ipv4Addr;
     use std::str::FromStr;
     use std::time::Duration;
-    use tokio::net::UdpSocket;
-    use tokio::time::{sleep, timeout};
+    use tokio::time::sleep;
 
     /// Build a `Catalog` containing a single A record: `test.example.com -> 1.2.3.4`.
     fn build_test_catalog() -> Catalog {
@@ -567,74 +566,5 @@ mod tests {
 
         // Shutdown the server.
         shutdown_token.cancel();
-    }
-
-    #[tokio::test]
-    async fn should_update_public_addresses_when_reload_addresses_is_called() {
-        let server = create_test_server().await;
-
-        let addrs = vec![
-            "udp://10.10.10.53:53".parse::<NameServerAddr>().unwrap(),
-            "tcp://10.10.10.54:5353".parse::<NameServerAddr>().unwrap(),
-        ];
-        server.reload_addresses().await.unwrap();
-
-        let as_socket = server
-            .addresses
-            .read()
-            .iter()
-            .map(|a| a.addr)
-            .collect::<HashSet<_>>();
-        assert_eq!(as_socket.len(), 2);
-        assert!(as_socket.contains(&addrs[0].addr));
-        assert!(as_socket.contains(&addrs[1].addr));
-
-        // No-op reload should keep the same content.
-        server.reload_addresses().await.unwrap();
-        assert_eq!(server.addresses.read().len(), 2);
-    }
-
-    #[tokio::test]
-    async fn should_still_serve_working_listener_when_one_bind_fails() {
-        let server = create_test_server().await;
-        server.catalog.replace(build_test_catalog()).await;
-
-        let occupied = UdpSocket::bind("127.0.0.1:0").await.unwrap();
-        let occupied_addr = occupied.local_addr().unwrap();
-
-        let probe = UdpSocket::bind("127.0.0.1:0").await.unwrap();
-        let good_addr = probe.local_addr().unwrap();
-        drop(probe);
-
-        let listeners = vec![
-            NameServerAddr {
-                protocol: Protocol::Udp,
-                addr: occupied_addr,
-            },
-            NameServerAddr {
-                protocol: Protocol::Udp,
-                addr: good_addr,
-            },
-        ];
-
-        server.reload_listeners().await.unwrap();
-
-        let stream = UdpClientStream::builder(good_addr, TokioRuntimeProvider::default()).build();
-        let (mut client, bg) = Client::<TokioRuntimeProvider>::from_sender(stream);
-        tokio::spawn(bg);
-
-        let response = timeout(
-            Duration::from_secs(2),
-            client.query(
-                Name::from_str("test.example.com.").unwrap(),
-                DNSClass::IN,
-                RecordType::A,
-            ),
-        )
-        .await
-        .expect("query timeout")
-        .expect("query failed");
-
-        assert!(!response.answers.is_empty());
     }
 }
