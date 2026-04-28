@@ -343,9 +343,9 @@ async fn wait_peer_zone_visibility(
     let deadline = Instant::now() + Duration::from_secs(20);
 
     loop {
-        dns.refresh(target_peer_id, Default::default(), Default::default())
-            .await
-            .unwrap();
+        let _ = dns
+            .refresh(target_peer_id, Default::default(), Default::default())
+            .await;
 
         let snapshot = dns.snapshot();
 
