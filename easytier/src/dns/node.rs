@@ -1,7 +1,5 @@
 use crate::common::global_ctx::{ArcGlobalCtx, GlobalCtxEvent};
-use crate::dns::config::{
-    DNS_NODE_RR_INTERVAL, DNS_SERVER_ELECTION_INTERVAL, DNS_SERVER_RPC_ADDR,
-};
+use crate::dns::config::{DNS_NODE_RR_INTERVAL, DNS_SERVER_ELECTION_INTERVAL, DNS_SERVER_RPC_ADDR};
 use crate::dns::peer_mgr::DnsPeerMgr;
 use crate::dns::server::DnsServer;
 #[cfg(feature = "tun")]
@@ -224,7 +222,7 @@ impl DnsNode {
             let runtime = runtime.clone();
             CancellableTask::spawn(|token| async move {
                 runtime.elect.notify_one();
-                tokio::join!(runtime.run_election(token.clone()), runtime.run(token),);
+                tokio::join!(runtime.run_election(token.clone()), runtime.run(token));
             })
         };
 

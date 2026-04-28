@@ -2,10 +2,15 @@ use crate::common::global_ctx::ArcGlobalCtx;
 use crate::dns::node_mgr::DnsNodeMgr;
 use crate::dns::system;
 use crate::dns::utils::addr::NameServerAddr;
+#[cfg(feature = "tun")]
+use crate::instance::instance::{ArcNicCtx, NicCtx};
 use crate::peers::peer_manager::PeerManager;
 use crate::proto::dns::DnsNodeMgrRpcServer;
 use crate::proto::rpc_impl::standalone::StandAloneServer;
+use crate::tunnel::common::bind;
 use crate::tunnel::tcp::TcpTunnelListener;
+use crate::utils::task::CancellableTask;
+use anyhow::Context;
 use derivative::Derivative;
 use guarden::guarded;
 use hickory_net::runtime::Time;
@@ -15,17 +20,14 @@ use hickory_server::{
     server::{Request, RequestHandler, ResponseHandler, ResponseInfo},
     zone_handler::Catalog,
 };
+use itertools::chain;
 use parking_lot::RwLock;
 use std::collections::HashSet;
-use std::net::SocketAddr;
+use std::net::IpAddr;
 use std::{sync::Arc, time::Duration};
+use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 use tracing::{Instrument, instrument};
-
-#[cfg(feature = "tun")]
-use crate::instance::instance::{ArcNicCtx, NicCtx};
-use crate::tunnel::common::bind;
-use crate::utils::task::CancellableTask;
 
 #[derive(Clone)]
 struct DynamicCatalog {
@@ -72,13 +74,15 @@ pub struct DnsServer {
 
     #[derivative(Debug = "ignore")]
     catalog: DynamicCatalog,
+    runtime: Mutex<Option<CancellableTask<()>>>,
+    bindings: RwLock<HashSet<NameServerAddr>>,
 
-    listeners: RwLock<HashSet<NameServerAddr>>,
     addresses: RwLock<HashSet<NameServerAddr>>,
+    listeners: RwLock<HashSet<NameServerAddr>>,
 }
 
-const DNS_SERVER_LISTENER_TCP_TIMEOUT: Duration = Duration::from_secs(5);
-const DNS_SERVER_LISTENER_TCP_BUFFER_SIZE: usize = 32;
+const DNS_SERVER_TCP_TIMEOUT: Duration = Duration::from_secs(5);
+const DNS_SERVER_TCP_BUFFER_SIZE: usize = 32;
 
 impl DnsServer {
     pub fn new(
@@ -93,6 +97,8 @@ impl DnsServer {
             peer_mgr,
             global_ctx,
             catalog: DynamicCatalog::new(),
+            runtime: Default::default(),
+            bindings: Default::default(),
             listeners: Default::default(),
             addresses: Default::default(),
         }
@@ -103,98 +109,76 @@ impl DnsServer {
             .register(DnsNodeMgrRpcServer::new_arc(self.mgr.clone()), "");
     }
 
-    pub fn addresses(&self) -> HashSet<SocketAddr> {
-        self.addresses.read().iter().map(|a| a.addr).collect()
-    }
-
-    #[instrument(skip_all)]
-    async fn reload_addresses(
-        &self,
-        addresses: impl IntoIterator<Item = NameServerAddr>,
-    ) -> anyhow::Result<()> {
-        let addresses = addresses.into_iter().collect();
-
-        if *self.addresses.read() == addresses {
-            tracing::info!("addresses unchanged, no need to reload");
-            return Ok(());
-        }
-        tracing::info!(?addresses, "reloading");
-
-        #[cfg(feature = "tun")]
-        {
-            let nic_ctx = self.nic_ctx.lock().await;
-            if let Some(nic_ctx) = nic_ctx
-                .as_ref()
-                .and_then(|nic_ctx| nic_ctx.downcast_ref::<NicCtx>())
-                && let Some(system) = nic_ctx
-                    .ifname()
-                    .await
-                    .map(|ifname| system::get(&ifname))
-                    .transpose()?
-                    .flatten()
-            {
-                let config = self.global_ctx.config.get_dns();
-                let domain = vec![config.domain.to_string()];
-                system.set_dns(&system::SystemConfig {
-                    nameservers: addresses
-                        .iter()
-                        .filter_map(|a| {
-                            (a.protocol == Protocol::Udp && a.addr.port() == 53)
-                                .then_some(a.addr.ip().to_string())
-                        })
-                        .collect(),
-                    search_domains: domain.clone(),
-                    match_domains: domain
-                        .into_iter()
-                        .chain(config.zones.iter().map(|z| z.origin.to_string()))
-                        .collect(),
-                })?;
-            }
-        }
-
-        *self.addresses.write() = addresses;
-
+    #[cfg(feature = "tun")]
+    async fn update_system(&self, nameservers: &HashSet<NameServerAddr>) -> anyhow::Result<()> {
+        let nic_ctx = self.nic_ctx.lock().await;
+        let nic_ctx = nic_ctx
+            .as_ref()
+            .and_then(|nic_ctx| nic_ctx.downcast_ref::<NicCtx>())
+            .with_context(|| "failed to get NicCtx")?;
+        let ifname = nic_ctx
+            .ifname()
+            .await
+            .with_context(|| "failed to get interface name from NicCtx")?;
+        let system = system::get(&ifname)?.with_context(|| "failed to get system configurator")?;
+        let config = self.global_ctx.config.get_dns();
+        let domain = vec![config.domain.to_string()];
+        system.set_dns(&system::SystemConfig {
+            nameservers: nameservers
+                .iter()
+                .filter_map(|a| {
+                    (a.protocol == Protocol::Udp && a.addr.port() == 53)
+                        .then_some(a.addr.ip().to_string())
+                })
+                .collect(),
+            search_domains: domain.clone(),
+            match_domains: domain
+                .into_iter()
+                .chain(config.zones.iter().map(|z| z.origin.to_string()))
+                .collect(),
+        })?;
         Ok(())
     }
 
     #[instrument(skip_all)]
-    async fn reload_listeners(
-        &self,
-        listeners: impl IntoIterator<Item = NameServerAddr>,
-        runtime: &mut Option<CancellableTask<()>>,
-    ) -> anyhow::Result<()> {
-        let listeners = listeners.into_iter().collect();
+    async fn rebind(&self) -> anyhow::Result<bool> {
+        let Ok(mut runtime) = self.runtime.try_lock() else {
+            return Ok(false);
+        };
 
-        if *self.listeners.read() == listeners {
-            tracing::info!("listeners unchanged, no need to reload");
-            return Ok(());
-        }
-        tracing::info!(?listeners, "reloading");
+        let mut bindings = {
+            let current = self.bindings.read();
+            let bindings = chain(
+                self.addresses.read().iter().cloned(),
+                self.listeners.read().iter().cloned(),
+            )
+            .collect();
+            if *current == bindings {
+                tracing::info!("bindings unchanged, no need to rebind");
+                return Ok(false);
+            }
+            bindings
+        };
 
-        if let Some(runtime) = runtime.take()
-            && let Err(error) = runtime.stop(None).await
-        {
-            tracing::error!(?error, "failed to stop old DNS server runtime");
+        if let Some(runtime) = runtime.take() {
+            runtime.stop(None).await?;
         }
 
         let mut server = Server::new(self.catalog.clone());
-        for listener in &listeners {
-            let addr = listener.addr;
-            tracing::info!(?addr, "binding listener");
-            if let Err(error) = match listener.protocol {
+
+        bindings.retain(|binding| {
+            let addr = binding.addr;
+            tracing::info!(?addr, "binding");
+            match binding.protocol {
                 Protocol::Tcp => bind().addr(addr).call().map(|s| {
-                    server.register_listener(
-                        s,
-                        DNS_SERVER_LISTENER_TCP_TIMEOUT,
-                        DNS_SERVER_LISTENER_TCP_BUFFER_SIZE,
-                    )
+                    server.register_listener(s, DNS_SERVER_TCP_TIMEOUT, DNS_SERVER_TCP_BUFFER_SIZE)
                 }),
                 Protocol::Udp => bind().addr(addr).call().map(|s| server.register_socket(s)),
                 _ => unimplemented!(),
-            } {
-                tracing::error!(?addr, ?error, "failed to bind listener");
             }
-        }
+            .inspect_err(|error| tracing::error!(?addr, ?error, "failed to bind"))
+            .is_ok()
+        });
 
         let token = server.shutdown_token().clone();
         let handle = tokio::spawn(
@@ -209,7 +193,82 @@ impl DnsServer {
 
         *runtime = Some(CancellableTask::with_handle(token, handle));
 
+        #[cfg(feature = "tun")]
+        if let Err(error) = self.update_system(&bindings).await {
+            tracing::error!(?error, "failed to update system DNS settings");
+        }
+
+        *self.bindings.write() = bindings;
+
+        Ok(true)
+    }
+
+    #[instrument(skip_all)]
+    async fn reload_addresses(&self) -> anyhow::Result<()> {
+        let addresses = self.mgr.iter_addresses().collect();
+
+        let removed = {
+            let current = self.addresses.read();
+            if *current == addresses {
+                tracing::info!("addresses unchanged, no need to reload");
+                return Ok(());
+            }
+            current
+                .difference(&addresses)
+                .cloned()
+                .collect::<HashSet<_>>()
+        };
+        tracing::info!(?addresses, "reloading");
+
+        #[cfg(feature = "tun")]
+        {
+            let nic_ctx = self.nic_ctx.lock().await;
+            if let Some(nic_ctx) = nic_ctx
+                .as_ref()
+                .and_then(|nic_ctx| nic_ctx.downcast_ref::<NicCtx>())
+            {
+                for addr in &addresses {
+                    let ip = addr.addr.ip();
+                    if let Err(error) = match ip {
+                        IpAddr::V4(ipv4) => nic_ctx.add_ipv4_to_tun_device(ipv4.into()).await,
+                        IpAddr::V6(ipv6) => nic_ctx.add_ipv6_to_tun_device(ipv6.into()).await,
+                    } {
+                        tracing::error!(?addr, ?error, "failed to add address to tun device");
+                    }
+                }
+
+                for addr in removed {
+                    let ip = addr.addr.ip();
+                    if let Err(error) = match ip {
+                        IpAddr::V4(ipv4) => nic_ctx.remove_ipv4_from_tun_device(ipv4.into()).await,
+                        IpAddr::V6(ipv6) => nic_ctx.remove_ipv6_from_tun_device(ipv6.into()).await,
+                    } {
+                        tracing::error!(?addr, ?error, "failed to remove address from tun device");
+                    }
+                }
+            }
+        }
+
+        *self.addresses.write() = addresses;
+
+        self.rebind().await?;
+
+        Ok(())
+    }
+
+    #[instrument(skip_all)]
+    async fn reload_listeners(&self) -> anyhow::Result<()> {
+        let listeners = self.mgr.iter_listeners().collect();
+
+        if *self.listeners.read() == listeners {
+            tracing::info!("listeners unchanged, no need to reload");
+            return Ok(());
+        }
+        tracing::info!(?listeners, "reloading");
+
         *self.listeners.write() = listeners;
+
+        self.rebind().await?;
 
         Ok(())
     }
@@ -266,7 +325,7 @@ impl DnsServer {
             loop {
                 dirty.addresses.wait().await;
                 if dirty.addresses.reset()
-                    && let Err(error) = self.reload_addresses(self.mgr.iter_addresses()).await
+                    && let Err(error) = self.reload_addresses().await
                 {
                     tracing::error!(?error, "failed to reload addresses");
                     dirty.addresses.mark();
@@ -279,9 +338,7 @@ impl DnsServer {
             loop {
                 dirty.listeners.wait().await;
                 if dirty.listeners.reset()
-                    && let Err(error) = self
-                        .reload_listeners(self.mgr.iter_listeners(), runtime)
-                        .await
+                    && let Err(error) = self.reload_listeners().await
                 {
                     tracing::error!(?error, "failed to reload listeners");
                     dirty.listeners.mark();
@@ -314,7 +371,7 @@ mod tests {
     use hickory_net::runtime::TokioRuntimeProvider;
     use hickory_net::udp::UdpClientStream;
     use hickory_proto::op::{Message, MessageType, OpCode, Query};
-    use hickory_proto::rr::{DNSClass, Name, RData, Record, RecordType, rdata};
+    use hickory_proto::rr::{rdata, DNSClass, Name, RData, Record, RecordType};
     use hickory_proto::serialize::binary::BinEncodable;
     use hickory_server::store::in_memory::InMemoryZoneHandler;
     use hickory_server::zone_handler::ZoneType;
@@ -322,7 +379,7 @@ mod tests {
     use pnet::packet::icmp::{IcmpTypes, MutableIcmpPacket};
     use pnet::packet::ipv4::MutableIpv4Packet;
     use pnet::packet::udp::MutableUdpPacket;
-    use pnet::packet::{MutablePacket, icmp, ipv4, udp};
+    use pnet::packet::{icmp, ipv4, udp, MutablePacket};
     use std::net::Ipv4Addr;
     use std::str::FromStr;
     use std::time::Duration;
@@ -520,16 +577,21 @@ mod tests {
             "udp://10.10.10.53:53".parse::<NameServerAddr>().unwrap(),
             "tcp://10.10.10.54:5353".parse::<NameServerAddr>().unwrap(),
         ];
-        server.reload_addresses(addrs.clone()).await.unwrap();
+        server.reload_addresses().await.unwrap();
 
-        let as_socket = server.addresses();
+        let as_socket = server
+            .addresses
+            .read()
+            .iter()
+            .map(|a| a.addr)
+            .collect::<HashSet<_>>();
         assert_eq!(as_socket.len(), 2);
         assert!(as_socket.contains(&addrs[0].addr));
         assert!(as_socket.contains(&addrs[1].addr));
 
         // No-op reload should keep the same content.
-        server.reload_addresses(addrs).await.unwrap();
-        assert_eq!(server.addresses().len(), 2);
+        server.reload_addresses().await.unwrap();
+        assert_eq!(server.addresses.read().len(), 2);
     }
 
     #[tokio::test]
@@ -555,11 +617,7 @@ mod tests {
             },
         ];
 
-        let mut runtime = None;
-        server
-            .reload_listeners(listeners, &mut runtime)
-            .await
-            .unwrap();
+        server.reload_listeners().await.unwrap();
 
         let stream = UdpClientStream::builder(good_addr, TokioRuntimeProvider::default()).build();
         let (mut client, bg) = Client::<TokioRuntimeProvider>::from_sender(stream);
@@ -578,9 +636,5 @@ mod tests {
         .expect("query failed");
 
         assert!(!response.answers.is_empty());
-
-        if let Some(runtime) = runtime.take() {
-            let _ = runtime.stop(None).await;
-        }
     }
 }
