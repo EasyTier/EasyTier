@@ -1,6 +1,6 @@
 use crate::common::global_ctx::{ArcGlobalCtx, GlobalCtxEvent};
 use crate::dns::config::{
-    DNS_NODE_RECONCILE_INTERVAL, DNS_NODE_RR_INTERVAL, DNS_PEER_REFRESH_ATTEMPTS,
+    DNS_NODE_HEARTBEAT_INTERVAL, DNS_NODE_RECONCILE_INTERVAL, DNS_PEER_REFRESH_ATTEMPTS,
     DNS_PEER_REFRESH_BACKOFF, DNS_SERVER_ELECTION_INTERVAL, DNS_SERVER_RPC_ADDR,
 };
 use crate::dns::peer_mgr::DnsPeerMgr;
@@ -15,9 +15,9 @@ use crate::tunnel::tcp::{TcpTunnelConnector, TcpTunnelListener};
 use crate::utils::task::CancellableTask;
 use std::io;
 use std::sync::Arc;
-use tokio::sync::{broadcast, Notify};
+use tokio::sync::{Notify, broadcast};
 use tokio::task::JoinSet;
-use tokio::time::{interval, sleep, sleep_until, Instant, MissedTickBehavior};
+use tokio::time::{MissedTickBehavior, interval};
 use tokio_util::sync::CancellationToken;
 use tracing::instrument;
 use uuid::Uuid;
@@ -42,6 +42,9 @@ impl DnsNodeRuntime {
 
     #[instrument(skip_all, name = "DnsNode election loop")]
     async fn run_election(&self, token: CancellationToken) {
+        let mut election_interval = interval(DNS_SERVER_ELECTION_INTERVAL);
+        election_interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
+
         loop {
             tokio::select! {
                 biased;
@@ -50,7 +53,7 @@ impl DnsNodeRuntime {
                     break;
                 }
                 _ = self.elect.notified() => {}
-                _ = sleep(DNS_SERVER_ELECTION_INTERVAL) => {}
+                _ = election_interval.tick() => {}
             }
 
             tracing::info!("trying to become DNS server");
@@ -84,14 +87,15 @@ impl DnsNodeRuntime {
     #[instrument(skip_all, name = "DnsNode main loop")]
     async fn run(&self, token: CancellationToken) {
         let mut rpc = StandAloneClient::new(TcpTunnelConnector::new(DNS_SERVER_RPC_ADDR.clone()));
+
         let mut heartbeat = HeartbeatRequest {
             id: Some(self.id().into()),
 
             ..Default::default()
         };
-        let mut last_heartbeat = Instant::now();
-        let timer = sleep_until(last_heartbeat);
-        tokio::pin!(timer);
+
+        let mut heartbeat_interval = interval(DNS_NODE_HEARTBEAT_INTERVAL);
+        heartbeat_interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
 
         let mut reconcile_interval = interval(DNS_NODE_RECONCILE_INTERVAL);
         reconcile_interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
@@ -100,15 +104,6 @@ impl DnsNodeRuntime {
         let mut tasks = JoinSet::new();
 
         loop {
-            // Dynamic interval: slower if dirty (throttled), faster if clean (fast liveness check)
-            let next_heartbeat = last_heartbeat
-                + if self.mgr.dirty.peek() {
-                    DNS_NODE_RR_INTERVAL
-                } else {
-                    DNS_NODE_RR_INTERVAL / 4
-                };
-            timer.as_mut().reset(next_heartbeat);
-
             tokio::select! {
                 biased;
 
@@ -117,13 +112,11 @@ impl DnsNodeRuntime {
                     break;
                 }
 
-                _ = &mut timer => {
+                _ = heartbeat_interval.tick() => {
                     if let Err(error) = self.heartbeat(&mut rpc, &mut heartbeat).await {
                         tracing::error!(?error, "heartbeat failed");
                         self.elect.notify_one();
                     }
-
-                    last_heartbeat = Instant::now();
                 }
 
                 _ = reconcile_interval.tick() => {
@@ -261,6 +254,7 @@ mod tests {
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::time::Duration;
     use tokio::sync::Mutex;
+    use tokio::time::sleep;
 
     #[derive(Debug)]
     struct RecordingDnsNodeMgr {
