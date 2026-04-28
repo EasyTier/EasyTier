@@ -802,11 +802,22 @@ mod tests {
             wait_route_appear_with_cost,
         },
         proto::peer_rpc::GetIpListResponse,
+        tunnel::{IpScheme, TunnelScheme, matches_scheme},
     };
 
     use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
     use super::{TESTING, mapped_listener_port, resolve_mapped_listener_addrs};
+
+    #[test]
+    fn udp_ipv6_url_matches_hole_punch_branch_condition() {
+        let remote_url: url::Url = "udp://[2001:db8::1]:11010".parse().unwrap();
+        let takes_udp_ipv6_hole_punch_branch =
+            matches_scheme!(remote_url, TunnelScheme::Ip(IpScheme::Udp))
+                && matches!(remote_url.host(), Some(url::Host::Ipv6(_)));
+
+        assert!(takes_udp_ipv6_hole_punch_branch);
+    }
 
     #[test]
     fn mapped_listener_port_uses_ip_scheme_defaults() {
