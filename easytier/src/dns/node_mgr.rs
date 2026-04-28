@@ -70,10 +70,17 @@ impl DnsNodeMgr {
 
         tracing::trace!("building catalog with zones: {:?}", groups);
 
+        let system = Zone::system().create_forward_zone_handler();
         groups
             .into_iter()
             .fold(Catalog::new(), |mut catalog, (origin, zones)| {
-                catalog.upsert(origin.clone(), zones.iter_zone_handlers().collect());
+                catalog.upsert(
+                    origin.clone(),
+                    zones
+                        .iter_zone_handlers()
+                        .chain(system.iter().cloned())
+                        .collect(),
+                );
                 catalog
             })
     }
