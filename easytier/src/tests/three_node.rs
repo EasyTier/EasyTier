@@ -4066,3 +4066,257 @@ pub async fn relay_peer_session_cleanup() {
 
     drop_insts(insts).await;
 }
+
+#[cfg(feature = "magic-dns")]
+async fn check_dns_record_at(server_addr: SocketAddr, domain: &str, expected_ip: &str) {
+    use hickory_net::client::{Client, ClientHandle};
+    use hickory_net::runtime::TokioRuntimeProvider;
+    use hickory_net::udp::UdpClientStream;
+    use hickory_proto::rr::{DNSClass, Name, RData, RecordType};
+    use std::str::FromStr;
+    use std::time::{Duration, Instant};
+
+    let expected = expected_ip.parse::<std::net::Ipv4Addr>().unwrap();
+    let name = Name::from_str(domain).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(30);
+
+    loop {
+        let stream = UdpClientStream::builder(server_addr, TokioRuntimeProvider::default()).build();
+        let (mut client, background) = Client::<TokioRuntimeProvider>::from_sender(stream);
+        let background_task = tokio::spawn(background);
+
+        let query_result = tokio::time::timeout(
+            Duration::from_secs(2),
+            client.query(name.clone(), DNSClass::IN, RecordType::A),
+        )
+        .await;
+
+        background_task.abort();
+        let _ = background_task.await;
+
+        let attempt_err = match query_result {
+            Ok(Ok(response)) => {
+                if response.answers.len() == 1
+                    && let Some(resp) = response.answers.first()
+                    && let RData::A(a) = &resp.data
+                    && a.0 == expected
+                {
+                    return;
+                }
+                format!("unexpected response: {:?}", response.answers)
+            }
+            Ok(Err(e)) => format!("DNS query failed for domain '{domain}': {e}"),
+            Err(_) => format!("DNS query timed out for domain '{domain}'"),
+        };
+
+        if Instant::now() >= deadline {
+            panic!(
+                "DNS query failed unexpectedly for domain '{domain}' after retries: {attempt_err}"
+            );
+        }
+
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+}
+
+#[cfg(feature = "magic-dns")]
+#[tokio::test]
+#[serial_test::serial]
+pub async fn three_node_dns_export() {
+    let insts = init_three_node_ex(
+        "tcp",
+        |cfg| {
+            use crate::dns::config::zone::ZoneConfig;
+            use crate::dns::config::{DnsConfig, DnsConfigLoaderExt};
+            use hickory_proto::rr::LowerName;
+            use std::str::FromStr;
+
+            let inst_name = cfg.get_inst_name();
+            let origin = LowerName::from_str(&format!("{}.com.", inst_name)).unwrap();
+            let mut dns_config = DnsConfig {
+                name: LowerName::from_str(&inst_name).unwrap(),
+                ..Default::default()
+            };
+
+            let ipv4 = match inst_name.as_str() {
+                "inst1" => "10.144.144.1".parse().ok(),
+                "inst2" => "10.144.144.2".parse().ok(),
+                "inst3" => "10.144.144.3".parse().ok(),
+                _ => None,
+            };
+
+            dns_config
+                .zones
+                .push(ZoneConfig::dedicated(origin, ipv4, vec![]).unwrap());
+
+            let listener_port = match inst_name.as_str() {
+                "inst1" => 5351,
+                "inst2" => 5352,
+                "inst3" => 5353,
+                _ => 5350,
+            };
+            dns_config.listeners = vec![
+                format!("udp://127.0.0.1:{}", listener_port)
+                    .parse()
+                    .unwrap(),
+            ]
+            .into();
+
+            cfg.set_dns(Some(dns_config));
+            cfg
+        },
+        false,
+    )
+    .await;
+
+    use std::net::{Ipv4Addr, SocketAddr};
+
+    let addr1 = SocketAddr::new(Ipv4Addr::LOCALHOST.into(), 5351);
+    let addr2 = SocketAddr::new(Ipv4Addr::LOCALHOST.into(), 5352);
+    let addr3 = SocketAddr::new(Ipv4Addr::LOCALHOST.into(), 5353);
+
+    check_dns_record_at(addr1, "inst2.com.", "10.144.144.2").await;
+    check_dns_record_at(addr1, "inst3.com.", "10.144.144.3").await;
+
+    check_dns_record_at(addr2, "inst1.com.", "10.144.144.1").await;
+    check_dns_record_at(addr2, "inst3.com.", "10.144.144.3").await;
+
+    check_dns_record_at(addr3, "inst1.com.", "10.144.144.1").await;
+    check_dns_record_at(addr3, "inst2.com.", "10.144.144.2").await;
+
+    drop_insts(insts).await;
+}
+
+#[cfg(feature = "magic-dns")]
+#[tokio::test]
+#[serial_test::serial]
+pub async fn three_node_dns_export_chain() {
+    prepare_linux_namespaces();
+
+    let cfg_cb = |cfg: TomlConfigLoader| {
+        use crate::dns::config::zone::ZoneConfig;
+        use crate::dns::config::{DnsConfig, DnsConfigLoaderExt};
+        use hickory_proto::rr::LowerName;
+        use std::str::FromStr;
+
+        let inst_name = cfg.get_inst_name();
+        let origin = LowerName::from_str(&format!("{}.com.", inst_name)).unwrap();
+        let mut dns_config = DnsConfig {
+            name: LowerName::from_str(&inst_name).unwrap(),
+            ..Default::default()
+        };
+
+        let ipv4 = match inst_name.as_str() {
+            "inst1" => "10.144.144.1".parse().ok(),
+            "inst2" => "10.144.144.2".parse().ok(),
+            "inst3" => "10.144.144.3".parse().ok(),
+            _ => None,
+        };
+
+        dns_config
+            .zones
+            .push(ZoneConfig::dedicated(origin, ipv4, vec![]).unwrap());
+
+        let listener_port = match inst_name.as_str() {
+            "inst1" => 5351,
+            "inst2" => 5352,
+            "inst3" => 5353,
+            _ => 5350,
+        };
+        dns_config.listeners = vec![
+            format!("udp://127.0.0.1:{}", listener_port)
+                .parse()
+                .unwrap(),
+        ]
+        .into();
+
+        cfg.set_dns(Some(dns_config));
+
+        let mut flags = cfg.get_flags();
+        flags.disable_p2p = true;
+        cfg.set_flags(flags);
+
+        cfg
+    };
+
+    let mut inst1 = Instance::new(cfg_cb(get_inst_config(
+        "inst1",
+        Some("net_a"),
+        "10.144.144.1",
+        "fd00::1/64",
+    )));
+    let mut inst2 = Instance::new(cfg_cb(get_inst_config(
+        "inst2",
+        Some("net_b"),
+        "10.144.144.2",
+        "fd00::2/64",
+    )));
+    let mut inst3 = Instance::new(cfg_cb(get_inst_config(
+        "inst3",
+        Some("net_c"),
+        "10.144.144.3",
+        "fd00::3/64",
+    )));
+
+    inst1.run().await.unwrap();
+    inst2.run().await.unwrap();
+    inst3.run().await.unwrap();
+
+    inst1
+        .get_conn_manager()
+        .add_connector(crate::tunnel::tcp::TcpTunnelConnector::new(
+            "tcp://10.1.1.2:11010".parse().unwrap(),
+        ));
+
+    inst2
+        .get_conn_manager()
+        .add_connector(crate::tunnel::ring::RingTunnelConnector::new(
+            format!("ring://{}", inst3.id()).parse().unwrap(),
+        ));
+
+    wait_for_condition(
+        || async {
+            let routes = inst2.get_peer_manager().list_routes().await;
+            routes.len() == 2
+        },
+        Duration::from_secs(5),
+    )
+    .await;
+
+    wait_for_condition(
+        || async {
+            let routes = inst1.get_peer_manager().list_routes().await;
+            routes.len() == 2
+        },
+        Duration::from_secs(5),
+    )
+    .await;
+
+    wait_for_condition(
+        || async {
+            let routes = inst3.get_peer_manager().list_routes().await;
+            routes.len() == 2
+        },
+        Duration::from_secs(5),
+    )
+    .await;
+
+    let insts = vec![inst1, inst2, inst3];
+
+    use std::net::{Ipv4Addr, SocketAddr};
+
+    let addr1 = SocketAddr::new(Ipv4Addr::LOCALHOST.into(), 5351);
+    let addr2 = SocketAddr::new(Ipv4Addr::LOCALHOST.into(), 5352);
+    let addr3 = SocketAddr::new(Ipv4Addr::LOCALHOST.into(), 5353);
+
+    check_dns_record_at(addr1, "inst2.com.", "10.144.144.2").await;
+    check_dns_record_at(addr1, "inst3.com.", "10.144.144.3").await;
+
+    check_dns_record_at(addr2, "inst1.com.", "10.144.144.1").await;
+    check_dns_record_at(addr2, "inst3.com.", "10.144.144.3").await;
+
+    check_dns_record_at(addr3, "inst1.com.", "10.144.144.1").await;
+    check_dns_record_at(addr3, "inst2.com.", "10.144.144.2").await;
+
+    drop_insts(insts).await;
+}
