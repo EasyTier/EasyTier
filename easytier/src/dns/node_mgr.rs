@@ -12,7 +12,6 @@ use hickory_server::zone_handler::Catalog;
 use itertools::Itertools;
 use moka::future::Cache;
 use std::collections::HashSet;
-use tracing::instrument;
 use uuid::Uuid;
 
 #[derive(Debug, Clone, Default)]
@@ -127,12 +126,6 @@ impl DnsNodeMgr {
 impl DnsNodeMgrRpc for DnsNodeMgr {
     type Controller = BaseController;
 
-    #[instrument(
-        level = "trace",
-        skip_all,
-        fields(from = ?input.id, snapshot = ?input.snapshot),
-        err
-    )]
     async fn heartbeat(
         &self,
         _: BaseController,

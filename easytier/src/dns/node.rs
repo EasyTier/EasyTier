@@ -184,7 +184,6 @@ impl DnsNodeRuntime {
             .scoped_client::<DnsNodeMgrRpcClientFactory<BaseController>>("".to_string())
             .await?;
 
-        tracing::trace!(?request, "sending heartbeat");
         let response = client.heartbeat(BaseController::default(), request).await?;
         if response.resync {
             tracing::trace!("resync requested by server, sending full snapshot");
