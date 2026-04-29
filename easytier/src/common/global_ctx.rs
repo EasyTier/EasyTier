@@ -5,7 +5,7 @@ use hmac::{Hmac, Mac};
 use sha2::Sha256;
 use socket2::Protocol;
 use std::{
-    collections::{HashMap, hash_map::DefaultHasher},
+    collections::{BTreeSet, HashMap, hash_map::DefaultHasher},
     hash::Hasher,
     iter,
     net::{IpAddr, SocketAddr},
@@ -207,6 +207,7 @@ pub struct GlobalCtx {
     cached_ipv4: AtomicCell<Option<cidr::Ipv4Inet>>,
     cached_ipv6: AtomicCell<Option<cidr::Ipv6Inet>>,
     public_ipv6_lease: AtomicCell<Option<cidr::Ipv6Inet>>,
+    public_ipv6_routes: Mutex<BTreeSet<std::net::Ipv6Addr>>,
     cached_proxy_cidrs: AtomicCell<Option<Vec<ProxyNetworkConfig>>>,
 
     ip_collector: Mutex<Option<Arc<IPCollector>>>,
@@ -304,6 +305,7 @@ impl GlobalCtx {
             cached_ipv4: AtomicCell::new(None),
             cached_ipv6: AtomicCell::new(None),
             public_ipv6_lease: AtomicCell::new(None),
+            public_ipv6_routes: Mutex::new(BTreeSet::new()),
             cached_proxy_cidrs: AtomicCell::new(None),
 
             ip_collector: Mutex::new(Some(Arc::new(IPCollector::new(
@@ -399,12 +401,21 @@ impl GlobalCtx {
         self.public_ipv6_lease.store(addr);
     }
 
+    pub fn set_public_ipv6_routes(&self, routes: BTreeSet<cidr::Ipv6Inet>) {
+        *self.public_ipv6_routes.lock().unwrap() =
+            routes.into_iter().map(|route| route.address()).collect();
+    }
+
     pub fn is_ip_local_ipv6(&self, ip: &std::net::Ipv6Addr) -> bool {
         self.get_ipv6().map(|x| x.address() == *ip).unwrap_or(false)
             || self
                 .get_public_ipv6_lease()
                 .map(|x| x.address() == *ip)
                 .unwrap_or(false)
+    }
+
+    pub fn is_ip_easytier_managed_ipv6(&self, ip: &std::net::Ipv6Addr) -> bool {
+        self.is_ip_local_ipv6(ip) || self.public_ipv6_routes.lock().unwrap().contains(ip)
     }
 
     pub fn get_advertised_ipv6_public_addr_prefix(&self) -> Option<cidr::Ipv6Cidr> {

@@ -129,6 +129,7 @@ pub struct TcpTunnelConnector {
 
     bind_addrs: Vec<SocketAddr>,
     ip_version: IpVersion,
+    resolved_addr: Option<SocketAddr>,
 }
 
 impl TcpTunnelConnector {
@@ -137,6 +138,7 @@ impl TcpTunnelConnector {
             addr,
             bind_addrs: vec![],
             ip_version: IpVersion::Both,
+            resolved_addr: None,
         }
     }
 
@@ -175,7 +177,10 @@ impl TcpTunnelConnector {
 #[async_trait]
 impl super::TunnelConnector for TcpTunnelConnector {
     async fn connect(&mut self) -> Result<Box<dyn Tunnel>, TunnelError> {
-        let addr = SocketAddr::from_url(self.addr.clone(), self.ip_version).await?;
+        let addr = match self.resolved_addr {
+            Some(addr) => addr,
+            None => SocketAddr::from_url(self.addr.clone(), self.ip_version).await?,
+        };
         if self.bind_addrs.is_empty() {
             self.connect_with_default_bind(addr).await
         } else {
@@ -193,6 +198,10 @@ impl super::TunnelConnector for TcpTunnelConnector {
 
     fn set_ip_version(&mut self, ip_version: IpVersion) {
         self.ip_version = ip_version;
+    }
+
+    fn set_resolved_addr(&mut self, addr: SocketAddr) {
+        self.resolved_addr = Some(addr);
     }
 }
 
@@ -292,6 +301,31 @@ mod tests {
             accepted_info.remote_addr,
             accepted_info.resolved_remote_addr,
         );
+    }
+
+    #[tokio::test]
+    async fn connector_uses_pre_resolved_addr_without_resolving_url() {
+        let mut listener = TcpTunnelListener::new("tcp://127.0.0.1:0".parse().unwrap());
+        listener.listen().await.unwrap();
+
+        let port = listener.local_url().port().unwrap();
+        let source_url: url::Url = format!("tcp://unresolvable.invalid:{port}")
+            .parse()
+            .unwrap();
+        let resolved_addr: SocketAddr = format!("127.0.0.1:{port}").parse().unwrap();
+        let mut connector = TcpTunnelConnector::new(source_url.clone());
+        connector.set_resolved_addr(resolved_addr);
+
+        let accept_task = tokio::spawn(async move { listener.accept().await.unwrap() });
+        let tunnel = connector.connect().await.unwrap();
+        let _accepted_tunnel = accept_task.await.unwrap();
+
+        let info = tunnel.info().unwrap();
+        assert_eq!(info.remote_addr.unwrap().url, source_url.to_string());
+
+        let resolved_remote_addr: url::Url = info.resolved_remote_addr.unwrap().into();
+        assert_eq!(resolved_remote_addr.host_str(), Some("127.0.0.1"));
+        assert_eq!(resolved_remote_addr.port(), Some(port));
     }
 
     #[tokio::test]
