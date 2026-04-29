@@ -71,6 +71,7 @@ pub fn gen_default_flags() -> Flags {
         need_p2p: false,
         instance_recv_bps_limit: u64::MAX,
         disable_upnp: false,
+        disable_relay_data: false,
     }
 }
 

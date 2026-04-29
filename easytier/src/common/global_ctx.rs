@@ -256,6 +256,9 @@ impl GlobalCtx {
         feature_flags.no_relay_quic = flags.disable_relay_quic;
         feature_flags.need_p2p = flags.need_p2p;
         feature_flags.disable_p2p = flags.disable_p2p;
+        if flags.disable_relay_data {
+            feature_flags.avoid_relay_data = true;
+        }
         feature_flags
     }
 
@@ -818,6 +821,18 @@ pub mod tests {
         assert!(feature_flags.avoid_relay_data);
         assert!(feature_flags.is_public_server);
         assert!(!feature_flags.ipv6_public_addr_provider);
+    }
+
+    #[tokio::test]
+    async fn disable_relay_data_sets_avoid_relay_feature_flag() {
+        let config = TomlConfigLoader::default();
+        let global_ctx = GlobalCtx::new(config);
+
+        let mut flags = global_ctx.get_flags().clone();
+        flags.disable_relay_data = true;
+        global_ctx.set_flags(flags);
+
+        assert!(global_ctx.get_feature_flags().avoid_relay_data);
     }
 
     #[tokio::test]

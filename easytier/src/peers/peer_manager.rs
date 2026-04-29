@@ -774,6 +774,7 @@ impl PeerManager {
         my_peer_id: PeerId,
         peer_map: &PeerMap,
         foreign_network_mgr: &ForeignNetworkManager,
+        disable_relay_data: bool,
     ) -> Result<(), ZCPacket> {
         let pm_header = packet.peer_manager_header().unwrap();
         if pm_header.packet_type != PacketType::ForeignNetworkPacket as u8 {
@@ -782,6 +783,15 @@ impl PeerManager {
 
         let from_peer_id = pm_header.from_peer_id.get();
         let to_peer_id = pm_header.to_peer_id.get();
+
+        if disable_relay_data {
+            tracing::debug!(
+                ?from_peer_id,
+                ?to_peer_id,
+                "drop foreign network relay data while relay data is disabled"
+            );
+            return Ok(());
+        }
 
         let foreign_hdr = packet.foreign_network_hdr().unwrap();
         let foreign_network_name = foreign_hdr.get_network_name(packet.payload());
@@ -872,6 +882,19 @@ impl PeerManager {
         }
     }
 
+    fn is_relay_data_packet(packet_type: u8) -> bool {
+        packet_type == PacketType::Data as u8
+            || packet_type == PacketType::KcpSrc as u8
+            || packet_type == PacketType::KcpDst as u8
+            || packet_type == PacketType::QuicSrc as u8
+            || packet_type == PacketType::QuicDst as u8
+            || packet_type == PacketType::DataWithKcpSrcModified as u8
+            || packet_type == PacketType::DataWithQuicSrcModified as u8
+            || packet_type == PacketType::RelayHandshake as u8
+            || packet_type == PacketType::RelayHandshakeAck as u8
+            || packet_type == PacketType::ForeignNetworkPacket as u8
+    }
+
     async fn start_peer_recv(&self) {
         let mut recv = self.packet_recv.lock().await.take().unwrap();
         let my_peer_id = self.my_peer_id;
@@ -925,9 +948,14 @@ impl PeerManager {
         self.tasks.lock().await.spawn(async move {
             tracing::trace!("start_peer_recv");
             while let Ok(ret) = recv_packet_from_chan(&mut recv).await {
-                let Err(mut ret) =
-                    Self::try_handle_foreign_network_packet(ret, my_peer_id, &peers, &foreign_mgr)
-                        .await
+                let Err(mut ret) = Self::try_handle_foreign_network_packet(
+                    ret,
+                    my_peer_id,
+                    &peers,
+                    &foreign_mgr,
+                    global_ctx.get_flags().disable_relay_data,
+                )
+                .await
                 else {
                     continue;
                 };
@@ -944,6 +972,18 @@ impl PeerManager {
                 let packet_type = hdr.packet_type;
                 let is_encrypted = hdr.is_encrypted();
                 if to_peer_id != my_peer_id {
+                    if global_ctx.get_flags().disable_relay_data
+                        && Self::is_relay_data_packet(packet_type)
+                    {
+                        tracing::debug!(
+                            ?from_peer_id,
+                            ?to_peer_id,
+                            packet_type,
+                            "drop forwarded relay data while relay data is disabled"
+                        );
+                        continue;
+                    }
+
                     if hdr.forward_counter > 7 {
                         tracing::warn!(?hdr, "forward counter exceed, drop packet");
                         continue;
@@ -2222,6 +2262,37 @@ mod tests {
         }
         peer_mgr_a.mark_recent_traffic(peer_b_id);
         assert_eq!(signal.version(), initial_version + 2);
+    }
+
+    #[test]
+    fn disable_relay_data_classifies_data_plane_packets_only() {
+        for packet_type in [
+            PacketType::Data,
+            PacketType::KcpSrc,
+            PacketType::KcpDst,
+            PacketType::QuicSrc,
+            PacketType::QuicDst,
+            PacketType::DataWithKcpSrcModified,
+            PacketType::DataWithQuicSrcModified,
+            PacketType::RelayHandshake,
+            PacketType::RelayHandshakeAck,
+            PacketType::ForeignNetworkPacket,
+        ] {
+            assert!(PeerManager::is_relay_data_packet(packet_type as u8));
+        }
+
+        for packet_type in [
+            PacketType::RpcReq,
+            PacketType::RpcResp,
+            PacketType::Ping,
+            PacketType::Pong,
+            PacketType::HandShake,
+            PacketType::NoiseHandshakeMsg1,
+            PacketType::NoiseHandshakeMsg2,
+            PacketType::NoiseHandshakeMsg3,
+        ] {
+            assert!(!PeerManager::is_relay_data_packet(packet_type as u8));
+        }
     }
 
     #[tokio::test]
