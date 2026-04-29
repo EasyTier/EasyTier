@@ -3730,6 +3730,94 @@ pub async fn config_patch_test() {
     drop_insts(insts).await;
 }
 
+#[rstest::rstest]
+#[tokio::test]
+#[serial_test::serial]
+pub async fn config_patch_disable_relay_data_test() {
+    use crate::proto::api::config::InstanceConfigPatch;
+
+    let insts = init_three_node_ex(
+        "udp",
+        |cfg| {
+            cfg.set_ipv6(None);
+            cfg
+        },
+        false,
+    )
+    .await;
+
+    let patched_peer_id = insts[1].peer_id();
+    assert!(!insts[1].get_global_ctx().get_flags().disable_relay_data);
+    assert!(
+        !insts[1]
+            .get_global_ctx()
+            .get_feature_flags()
+            .avoid_relay_data
+    );
+
+    insts[1]
+        .get_config_patcher()
+        .apply_patch(InstanceConfigPatch {
+            disable_relay_data: Some(true),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+
+    assert!(insts[1].get_global_ctx().get_flags().disable_relay_data);
+    assert!(
+        insts[1]
+            .get_global_ctx()
+            .config
+            .get_flags()
+            .disable_relay_data
+    );
+    assert!(
+        insts[1]
+            .get_global_ctx()
+            .get_feature_flags()
+            .avoid_relay_data
+    );
+
+    wait_for_condition(
+        || {
+            let peer_mgr = insts[0].get_peer_manager().clone();
+            async move {
+                peer_mgr.list_routes().await.iter().any(|route| {
+                    route.peer_id == patched_peer_id
+                        && route
+                            .feature_flag
+                            .as_ref()
+                            .map(|flag| flag.avoid_relay_data)
+                            .unwrap_or(false)
+                })
+            }
+        },
+        Duration::from_secs(5),
+    )
+    .await;
+
+    insts[1]
+        .get_config_patcher()
+        .apply_patch(InstanceConfigPatch {
+            disable_relay_data: Some(false),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+
+    assert!(!insts[1].get_global_ctx().get_flags().disable_relay_data);
+    assert!(
+        !insts[1]
+            .get_global_ctx()
+            .config
+            .get_flags()
+            .disable_relay_data
+    );
+
+    drop_insts(insts).await;
+}
+
 /// Generate SecureModeConfig with specified x25519 private key
 pub fn generate_secure_mode_config_with_key(
     private_key: &x25519_dalek::StaticSecret,
