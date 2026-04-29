@@ -3,12 +3,40 @@ use crate::dns::config::policy::{DnsExportPolicy, ZonePolicyConfig};
 use crate::dns::utils::addr::NameServerAddrGroup;
 use crate::dns::zone::Zone;
 use crate::proto::dns::ZoneData;
+use derive_more::From;
+use hickory_proto::op::ResponseCode;
 use hickory_proto::rr::LowerName;
+use maplit::hashset;
 use optional_struct::{Applicable, optional_struct};
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use std::convert::TryFrom;
 use std::net::{Ipv4Addr, Ipv6Addr};
-use url::Url;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Hash, From, Deserialize, Serialize)]
+#[serde(untagged)]
+pub enum Fallthrough {
+    Any,
+    ResponseCode(ResponseCode),
+}
+
+impl From<Fallthrough> for i32 {
+    fn from(value: Fallthrough) -> Self {
+        match value {
+            Fallthrough::ResponseCode(code) => u16::from(code).into(),
+            Fallthrough::Any => -1,
+        }
+    }
+}
+
+impl From<i32> for Fallthrough {
+    fn from(value: i32) -> Self {
+        match u16::try_from(value) {
+            Ok(value) => Self::ResponseCode(value.into()),
+            Err(_) => Self::Any,
+        }
+    }
+}
 
 #[optional_struct(ZoneConfigRaw)]
 #[derive(Debug, Clone, Default, PartialEq, Deserialize, Serialize)]
@@ -21,7 +49,7 @@ pub struct ZoneConfigParsed {
     #[optional_skip_wrap]
     #[serde(flatten)]
     pub policy: ZonePolicyConfig,
-    pub fallthrough: bool,
+    pub fallthrough: HashSet<Fallthrough>,
 }
 
 impl From<&ZoneConfigParsed> for ZoneData {
@@ -30,8 +58,8 @@ impl From<&ZoneConfigParsed> for ZoneData {
             &value.origin,
             value.ttl,
             &value.records,
-            value.forwarders.iter().map(Url::from),
-            value.fallthrough,
+            value.forwarders.iter().map(Into::into),
+            value.fallthrough.iter().copied(),
         )
     }
 }
@@ -43,7 +71,7 @@ impl TryFrom<ZoneConfigRaw> for ZoneConfig {
 
     fn try_from(raw: ZoneConfigRaw) -> Result<Self, Self::Error> {
         let default = ZoneConfigParsed {
-            fallthrough: true,
+            fallthrough: hashset! {Fallthrough::Any},
             ..Default::default()
         };
 

@@ -735,7 +735,7 @@ impl DnsGlobalCtxExt for GlobalCtx {
             .clone()
             .unwrap_or_else(|| dns::parse(self.get_hostname()))
             .into();
-        let fqdn = name.append_domain(&*dns.domain).unwrap_or_default().into();
+        let fqdn = name.append_domain(&dns.domain).unwrap_or_default().into();
         let ipv4 = self.get_ipv4().map(|ip| ip.address());
         let ipv6 = self.get_ipv6().map(|ip| ip.address());
         let ipv6 = ipv6.map(|a| vec![a]).unwrap_or_default();

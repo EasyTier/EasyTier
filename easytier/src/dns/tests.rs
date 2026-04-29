@@ -28,6 +28,7 @@ use hickory_proto::rr;
 use hickory_proto::rr::{DNSClass, Name, RData, RecordType};
 use hickory_proto::serialize::binary::{BinEncodable, BinEncoder};
 use hickory_server::server::Request;
+use maplit::hashset;
 use tokio::sync::Notify;
 use uuid::Uuid;
 
@@ -108,10 +109,8 @@ pub fn zone_data_a_with_forwarders(origin: &str, record: &str, forwarders: Vec<&
         &origin.parse().unwrap(),
         60,
         [format!("@ IN A {record}")],
-        forwarders
-            .into_iter()
-            .map(|f| Url::from_str(f).expect("invalid forwarder")),
-        false,
+        forwarders.into_iter().map(|f| Url::from_str(f).unwrap()),
+        hashset! {},
     )
 }
 

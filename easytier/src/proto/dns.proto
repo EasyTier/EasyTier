@@ -7,7 +7,7 @@ package dns;
 message ZoneData {
   string content = 1;
   repeated common.Url forwarders = 2;
-  bool fallthrough = 3;
+  repeated int32 fallthrough = 3;
 }
 
 message GetExportConfigRequest {}

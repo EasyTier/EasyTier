@@ -39,31 +39,19 @@ impl From<(IpAddr, &ConnectionConfig)> for NameServerAddr {
     }
 }
 
-impl From<&NameServerAddr> for Url {
-    fn from(value: &NameServerAddr) -> Self {
-        Url::parse(&format!("{}://{}", value.protocol, value.addr)).unwrap()
-    }
-}
-
-impl From<NameServerAddr> for Url {
-    fn from(value: NameServerAddr) -> Self {
-        (&value).into()
-    }
-}
-
 impl TryFrom<&Url> for NameServerAddr {
     type Error = Error;
 
-    fn try_from(value: &Url) -> Result<Self, Self::Error> {
-        let protocol = match Protocol::deserialize(value.scheme().into_deserializer()).map_err(
-            |e: de::value::Error| anyhow!("invalid protocol '{}': {}", value.scheme(), e),
-        )? {
+    fn try_from(url: &Url) -> Result<Self, Self::Error> {
+        let protocol = match Protocol::deserialize(url.scheme().into_deserializer())
+            .map_err(|e: de::value::Error| anyhow!("invalid protocol '{}': {}", url.scheme(), e))?
+        {
             Protocol::Udp => ProtocolConfig::Udp,
             Protocol::Tcp => ProtocolConfig::Tcp,
             p => return Err(anyhow!("unsupported protocol: {}", p)),
         };
-        let host = value.host_str().ok_or(anyhow!("host not found"))?;
-        let port = value.port().unwrap_or(protocol.default_port());
+        let host = url.host_str().ok_or(anyhow!("host not found"))?;
+        let port = url.port().unwrap_or(protocol.default_port());
         let addr = if let Ok(addr) = IpAddr::from_str(host) {
             SocketAddr::new(addr, port)
         } else {
@@ -76,17 +64,35 @@ impl TryFrom<&Url> for NameServerAddr {
     }
 }
 
-impl From<NameServerAddr> for proto::common::Url {
-    fn from(value: NameServerAddr) -> Self {
-        Url::from(value).into()
-    }
-}
-
 impl TryFrom<&proto::common::Url> for NameServerAddr {
     type Error = Error;
 
     fn try_from(value: &proto::common::Url) -> Result<Self, Self::Error> {
-        Self::try_from(&Url::try_from(value)?)
+        (&Url::try_from(value)?).try_into()
+    }
+}
+
+impl From<&NameServerAddr> for Url {
+    fn from(value: &NameServerAddr) -> Self {
+        Url::parse(&format!("{}://{}", value.protocol, value.addr)).unwrap()
+    }
+}
+
+impl From<&NameServerAddr> for proto::common::Url {
+    fn from(value: &NameServerAddr) -> Self {
+        Url::from(value).into()
+    }
+}
+
+impl From<NameServerAddr> for Url {
+    fn from(value: NameServerAddr) -> Self {
+        (&value).into()
+    }
+}
+
+impl From<NameServerAddr> for proto::common::Url {
+    fn from(value: NameServerAddr) -> Self {
+        (&value).into()
     }
 }
 

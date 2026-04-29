@@ -1,3 +1,4 @@
+use crate::dns::config::zone::Fallthrough;
 use crate::proto::common::Url;
 use crate::proto::utils::TransientDigest;
 use hickory_proto::rr::LowerName;
@@ -13,19 +14,13 @@ impl HeartbeatRequest {
 }
 
 impl ZoneData {
-    pub fn new<Records, R, Urls, U>(
+    pub fn new<Record: AsRef<str>>(
         origin: &LowerName,
         ttl: u32,
-        records: Records,
-        forwarders: Urls,
-        fallthrough: bool,
-    ) -> Self
-    where
-        Records: IntoIterator<Item = R>,
-        R: AsRef<str>,
-        Urls: IntoIterator<Item = U>,
-        U: Into<Url>,
-    {
+        records: impl IntoIterator<Item = Record>,
+        forwarders: impl IntoIterator<Item = Url>,
+        fallthrough: impl IntoIterator<Item = Fallthrough>,
+    ) -> Self {
         let mut content = String::new();
 
         content.push_str("; EasyTier Magic DNS zone data\n");
@@ -44,7 +39,8 @@ impl ZoneData {
             content.push('\n');
         }
 
-        let forwarders = forwarders.into_iter().map(Into::into).collect();
+        let forwarders = forwarders.into_iter().collect();
+        let fallthrough = fallthrough.into_iter().map(Into::into).collect();
 
         Self {
             content,

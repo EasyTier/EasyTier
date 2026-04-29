@@ -1,3 +1,4 @@
+use crate::dns::config::zone::Fallthrough;
 use crate::dns::utils::addr::{NameServerAddr, NameServerAddrGroup};
 use crate::dns::utils::zone_handler::{ArcZoneHandler, ChainedZoneHandler};
 use crate::proto::dns::ZoneData;
@@ -11,16 +12,16 @@ use hickory_server::store::in_memory::InMemoryZoneHandler;
 use hickory_server::zone_handler::{AxfrPolicy, ZoneType};
 use indexmap::IndexMap;
 use itertools::chain;
-use std::collections::BTreeMap;
+use maplit::hashset;
+use std::collections::{BTreeMap, HashSet};
 use std::sync::Arc;
-use url::Url;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct Zone {
     origin: LowerName,
     records: BTreeMap<RrKey, RecordSet>,
     pub forward: Option<ForwardConfig>,
-    fallthrough: bool,
+    fallthrough: HashSet<Fallthrough>,
 }
 
 impl Zone {
@@ -30,23 +31,16 @@ impl Zone {
             name_servers: config.name_servers().to_vec(),
             options: Some(opts),
         };
-        let mut zone = Self::new(".".parse().unwrap());
-        zone.forward = Some(forward);
-        zone.fallthrough = false;
-        zone
+        Self {
+            origin: ".".parse().unwrap(),
+            forward: Some(forward),
+            fallthrough: hashset! {},
+            ..Default::default()
+        }
     }
 }
 
 impl Zone {
-    pub fn new(name: LowerName) -> Self {
-        Self {
-            origin: name,
-            records: BTreeMap::new(),
-            forward: None,
-            fallthrough: true,
-        }
-    }
-
     pub fn create_memory_zone_handler(&self) -> Option<ArcZoneHandler> {
         (!self.records.is_empty()).then(|| {
             let mut memory = InMemoryZoneHandler::<TokioRuntimeProvider>::empty(
@@ -62,11 +56,7 @@ impl Zone {
                     .map(|(k, v)| (k, Arc::new(v))),
             );
 
-            if self.fallthrough {
-                Arc::new(ChainedZoneHandler::from(memory)) as _
-            } else {
-                Arc::new(memory) as _
-            }
+            Arc::new(ChainedZoneHandler::new(memory, self.fallthrough.clone())) as _
         })
     }
 
@@ -77,14 +67,10 @@ impl Zone {
                 TokioRuntimeProvider::default(),
             )
             .build()
-            .inspect_err(|e| tracing::error!("failed to create forward zone_handler: {:?}", e))
+            .inspect_err(|error| tracing::error!(?error, "failed to create forward zone_handler"))
             .ok()
-            .map(|f| {
-                if self.fallthrough {
-                    Arc::new(ChainedZoneHandler::from(f)) as _
-                } else {
-                    Arc::new(f) as _
-                }
+            .map(|handler| {
+                Arc::new(ChainedZoneHandler::new(handler, self.fallthrough.clone())) as _
             })
         })
     }
@@ -101,7 +87,7 @@ impl TryFrom<&ZoneData> for Zone {
         let name_servers = value
             .forwarders
             .iter()
-            .map(TryInto::<NameServerAddr>::try_into)
+            .map(NameServerAddr::try_from)
             .map(|a| a.map(Into::into))
             .collect::<Result<Vec<_>, _>>()?;
         let forward = (!name_servers.is_empty()).then_some(ForwardConfig {
@@ -109,11 +95,13 @@ impl TryFrom<&ZoneData> for Zone {
             options: None,
         });
 
+        let fallthrough = value.fallthrough.iter().copied().map(Into::into).collect();
+
         Ok(Self {
             origin: origin.into(),
             records,
             forward,
-            fallthrough: value.fallthrough,
+            fallthrough,
         })
     }
 }
@@ -132,7 +120,7 @@ impl From<Zone> for ZoneData {
             .flat_map(|f| f.name_servers.into_iter())
             .map(|ns| (&ns).into())
             .flat_map(NameServerAddrGroup::into_iter)
-            .map(Url::from);
+            .map(Into::into);
 
         Self::new(&value.origin, 0, records, forwarders, value.fallthrough)
     }
@@ -169,7 +157,9 @@ mod tests {
     use hickory_proto::rr::{RData, Record, RecordType, RrsetRecords};
     use hickory_server::Server;
     use hickory_server::zone_handler::Catalog;
-    use std::net::{Ipv4Addr, SocketAddr};
+    use maplit::hashset;
+    use std::collections::HashSet;
+    use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
     use std::str::FromStr;
     use tokio::net::UdpSocket;
     use tokio::task::JoinHandle;
@@ -193,21 +183,21 @@ mod tests {
         origin: &str,
         records: Vec<&str>,
         forwarders: Vec<&str>,
-        fallthrough: bool,
+        fallthrough: HashSet<Fallthrough>,
     ) -> ZoneData {
         ZoneData::new(
             &origin.parse().unwrap(),
             60,
             records,
-            forwarders.into_iter().map(|url| Url {
-                url: url.to_string(),
-            }),
+            forwarders
+                .into_iter()
+                .map(|url| Url::from_str(url).unwrap()),
             fallthrough,
         )
     }
 
     fn zone_data(origin: &str, records: Vec<&str>, forwarders: Vec<&str>) -> ZoneData {
-        zone_data_with_fallthrough(origin, records, forwarders, true)
+        zone_data_with_fallthrough(origin, records, forwarders, hashset! {Fallthrough::Any})
     }
 
     fn build_catalog(zones: ZoneGroup) -> Catalog {
@@ -240,6 +230,13 @@ mod tests {
             .answers
             .iter()
             .any(|record| matches!(record.data, RData::A(addr) if *addr == expected))
+    }
+
+    fn has_aaaa_answer(message: &Message, expected: Ipv6Addr) -> bool {
+        message
+            .answers
+            .iter()
+            .any(|record| matches!(record.data, RData::AAAA(addr) if *addr == expected))
     }
 
     async fn start_upstream_server() -> anyhow::Result<(SocketAddr, JoinHandle<()>)> {
@@ -400,7 +397,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn catalog_lookup_returns_nodata_on_nameexists() -> anyhow::Result<()> {
+    async fn catalog_lookup_forwards_on_nameexists() -> anyhow::Result<()> {
         let upstream = Zone::try_from(&zone_data(
             "forward-aaaa.test",
             vec!["host 60 IN AAAA 2001:db8::1"],
@@ -435,10 +432,7 @@ mod tests {
         assert_eq!(rcode, ResponseCode::NoError);
 
         let message = message.expect("response should exist");
-        assert!(
-            message.answers.is_empty(),
-            "NameExists should return NODATA"
-        );
+        assert!(has_aaaa_answer(&message, "2001:db8::1".parse()?));
 
         upstream_handle.abort();
         let _ = upstream_handle.await;
@@ -528,13 +522,13 @@ mod tests {
                 "fallback-disabled.test",
                 vec!["first IN A 10.20.31.1"],
                 vec![],
-                false,
+                hashset! {},
             ))?,
             Zone::try_from(&zone_data_with_fallthrough(
                 "fallback-disabled.test",
                 vec!["target IN A 10.20.31.2"],
                 vec![],
-                false,
+                hashset! {},
             ))?,
         ]
         .into();

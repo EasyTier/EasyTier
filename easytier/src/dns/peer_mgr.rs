@@ -254,10 +254,10 @@ mod tests {
     use crate::peers::peer_manager::RouteAlgoType;
     use crate::peers::tests::{connect_peer_manager, wait_route_appear};
     use crate::proto::dns::GetExportConfigRequest;
+
     use std::collections::HashSet;
     use std::net::Ipv4Addr;
     use tokio::time::{Duration, sleep};
-    use url::Url;
 
     async fn create_peer_manager_with_zone(
         host: &str,
@@ -296,13 +296,7 @@ mod tests {
     #[test]
     fn dns_peer_info_try_from_invalid_zone_rejected() {
         let cfg = DnsExportConfig {
-            zones: vec![ZoneData::new(
-                &".".parse().unwrap(),
-                60,
-                ["?"],
-                Vec::<Url>::new(),
-                false,
-            )],
+            zones: vec![ZoneData::new(&".".parse().unwrap(), 60, ["?"], [], [])],
         };
 
         assert!(DnsPeerInfo::try_from(cfg).is_err());
