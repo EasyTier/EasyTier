@@ -12,6 +12,7 @@ use std::collections::HashMap;
 #[optional_struct(DnsConfigRaw)]
 #[derive(Debug, Clone, Default, PartialEq, Deserialize, Serialize)]
 pub struct DnsConfigParsed {
+    pub disabled: bool,
     #[serde(rename = "zone")]
     pub zones: Vec<ZoneConfig>,
     #[optional_skip_wrap]

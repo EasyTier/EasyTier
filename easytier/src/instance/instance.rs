@@ -7,6 +7,12 @@ use std::sync::{Arc, Weak};
 #[cfg(feature = "tun")]
 use std::time::Duration;
 
+use super::listeners::ListenerManager;
+use super::public_ipv6_provider::{
+    reconcile_public_ipv6_provider_runtime, run_public_ipv6_provider_reconcile_task,
+    should_run_public_ipv6_provider_reconcile, validate_public_ipv6_config,
+    validate_public_ipv6_config_values,
+};
 use crate::common::PeerId;
 use crate::common::acl_processor::AclRuleBuilder;
 use crate::common::config::ConfigLoader;
@@ -17,7 +23,7 @@ use crate::connector::manual::{ConnectorManagerRpcService, ManualConnectorManage
 use crate::connector::tcp_hole_punch::TcpHolePunchConnector;
 use crate::connector::udp_hole_punch::UdpHolePunchConnector;
 #[cfg(feature = "magic-dns")]
-use crate::dns::node::DnsNode;
+use crate::dns::{config::DnsConfigLoaderExt, node::DnsNode};
 use crate::gateway::icmp_proxy::IcmpProxy;
 #[cfg(feature = "kcp")]
 use crate::gateway::kcp_proxy::{KcpProxyDst, KcpProxyDstRpcService, KcpProxySrc};
@@ -59,13 +65,6 @@ use tokio::sync::{Mutex, Notify};
 #[cfg(feature = "tun")]
 use tokio::{sync::oneshot, task::JoinSet};
 use tokio_util::task::AbortOnDropHandle;
-
-use super::listeners::ListenerManager;
-use super::public_ipv6_provider::{
-    reconcile_public_ipv6_provider_runtime, run_public_ipv6_provider_reconcile_task,
-    should_run_public_ipv6_provider_reconcile, validate_public_ipv6_config,
-    validate_public_ipv6_config_values,
-};
 
 #[cfg(feature = "socks5")]
 use crate::gateway::socks5::Socks5Server;
@@ -930,7 +929,7 @@ impl Instance {
         }
 
         #[cfg(feature = "magic-dns")]
-        {
+        if !self.global_ctx.config.get_dns().disabled {
             let mut node = DnsNode::new(
                 self.get_peer_manager(),
                 self.get_global_ctx(),
