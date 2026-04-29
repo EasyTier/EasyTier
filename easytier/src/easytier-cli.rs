@@ -74,7 +74,7 @@ use easytier::{
         common::{NatType, PortForwardConfigPb, SocketType},
         peer_rpc::{GetGlobalPeerMapRequest, PeerCenterRpc, PeerCenterRpcClientFactory},
         rpc_impl::standalone::StandAloneClient,
-        rpc_types::controller::BaseController,
+        rpc_types::{controller::BaseController, error::Error as RpcError},
     },
     tunnel::{TunnelScheme, tcp::TcpTunnelConnector},
     utils::{PeerRoutePair, string::cost_to_str},
@@ -526,6 +526,40 @@ type LocalBoxFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T, Error>> + 'a>
 type ForeignNetworkMap = BTreeMap<String, ForeignNetworkEntryPb>;
 type GlobalForeignNetworkMap = BTreeMap<u32, list_global_foreign_network_response::ForeignNetworks>;
 
+fn is_missing_web_client_service(error: &RpcError) -> bool {
+    matches!(
+        error,
+        RpcError::InvalidServiceKey(service_name, _)
+            if service_name.trim_matches('"') == "WebClientService"
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn missing_web_client_service_matches_raw_service_name() {
+        let error = RpcError::InvalidServiceKey("WebClientService".to_string(), "".to_string());
+
+        assert!(is_missing_web_client_service(&error));
+    }
+
+    #[test]
+    fn missing_web_client_service_matches_serialized_service_name() {
+        let error = RpcError::InvalidServiceKey("\"WebClientService\"".to_string(), "".to_string());
+
+        assert!(is_missing_web_client_service(&error));
+    }
+
+    #[test]
+    fn missing_web_client_service_rejects_other_services() {
+        let error = RpcError::InvalidServiceKey("PeerManageRpc".to_string(), "".to_string());
+
+        assert!(!is_missing_web_client_service(&error));
+    }
+}
+
 #[derive(serde::Serialize)]
 struct PeerListData {
     node_info: NodeInfo,
@@ -599,9 +633,15 @@ impl<'a> CommandHandler<'a> {
         }
 
         let client = self.get_manage_client().await?;
-        let inst_ids = client
+        let list_response = match client
             .list_network_instance(BaseController::default(), ListNetworkInstanceRequest {})
-            .await?
+            .await
+        {
+            Ok(response) => response,
+            Err(error) if is_missing_web_client_service(&error) => return Ok(None),
+            Err(error) => return Err(error.into()),
+        };
+        let inst_ids = list_response
             .inst_ids
             .into_iter()
             .map(uuid::Uuid::from)
