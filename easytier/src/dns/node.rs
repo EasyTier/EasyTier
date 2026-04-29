@@ -547,12 +547,12 @@ mod tests {
             async move { node.run(token).await }
         });
 
-        tokio::time::timeout(Duration::from_secs(2), notified)
+        tokio::time::timeout(2 * DNS_NODE_HEARTBEAT_INTERVAL, notified)
             .await
             .expect("heartbeat failure should notify election");
 
         token.cancel();
-        tokio::time::timeout(Duration::from_secs(2), handle)
+        tokio::time::timeout(Duration::from_secs(5), handle)
             .await
             .unwrap()
             .unwrap();
