@@ -217,6 +217,8 @@ pub struct GlobalCtx {
 
     flags: ArcSwap<Flags>,
 
+    base_feature_flags: AtomicCell<PeerFeatureFlag>,
+
     feature_flags: AtomicCell<PeerFeatureFlag>,
 
     token_bucket_manager: TokenBucketManager,
@@ -247,8 +249,7 @@ impl std::fmt::Debug for GlobalCtx {
 pub type ArcGlobalCtx = std::sync::Arc<GlobalCtx>;
 
 impl GlobalCtx {
-    fn derive_feature_flags(flags: &Flags, current: Option<PeerFeatureFlag>) -> PeerFeatureFlag {
-        let mut feature_flags = current.unwrap_or_default();
+    fn derive_feature_flags(flags: &Flags, mut feature_flags: PeerFeatureFlag) -> PeerFeatureFlag {
         feature_flags.kcp_input = !flags.disable_kcp_input;
         feature_flags.no_relay_kcp = flags.disable_relay_kcp;
         feature_flags.support_conn_list_sync = true;
@@ -288,7 +289,8 @@ impl GlobalCtx {
 
         let flags = config_fs.get_flags();
 
-        let feature_flags = Self::derive_feature_flags(&flags, None);
+        let base_feature_flags = PeerFeatureFlag::default();
+        let feature_flags = Self::derive_feature_flags(&flags, base_feature_flags);
 
         let credential_storage_path = config_fs.get_credential_file();
         let credential_manager = Arc::new(CredentialManager::new(credential_storage_path));
@@ -320,6 +322,8 @@ impl GlobalCtx {
             advertised_ipv6_public_addr_prefix: Mutex::new(None),
 
             flags: ArcSwap::new(Arc::new(flags)),
+
+            base_feature_flags: AtomicCell::new(base_feature_flags),
 
             feature_flags: AtomicCell::new(feature_flags),
 
@@ -516,7 +520,7 @@ impl GlobalCtx {
         self.config.set_flags(flags.clone());
         self.feature_flags.store(Self::derive_feature_flags(
             &flags,
-            Some(self.feature_flags.load()),
+            self.base_feature_flags.load(),
         ));
         self.flags.store(Arc::new(flags));
     }
@@ -582,7 +586,17 @@ impl GlobalCtx {
     }
 
     pub fn set_feature_flags(&self, flags: PeerFeatureFlag) {
-        self.feature_flags.store(flags);
+        let mut base_feature_flags = flags;
+        let current_feature_flags = self.feature_flags.load();
+        if flags.avoid_relay_data == current_feature_flags.avoid_relay_data {
+            base_feature_flags.avoid_relay_data = self.base_feature_flags.load().avoid_relay_data;
+        }
+        self.base_feature_flags.store(base_feature_flags);
+        let flags = self.flags.load();
+        self.feature_flags.store(Self::derive_feature_flags(
+            flags.as_ref(),
+            base_feature_flags,
+        ));
     }
 
     pub fn token_bucket_manager(&self) -> &TokenBucketManager {
@@ -830,6 +844,28 @@ pub mod tests {
 
         let mut flags = global_ctx.get_flags().clone();
         flags.disable_relay_data = true;
+        global_ctx.set_flags(flags);
+
+        assert!(global_ctx.get_feature_flags().avoid_relay_data);
+
+        let mut flags = global_ctx.get_flags().clone();
+        flags.disable_relay_data = false;
+        global_ctx.set_flags(flags);
+
+        assert!(!global_ctx.get_feature_flags().avoid_relay_data);
+
+        let mut feature_flags = global_ctx.get_feature_flags();
+        feature_flags.avoid_relay_data = true;
+        global_ctx.set_feature_flags(feature_flags);
+
+        let mut flags = global_ctx.get_flags().clone();
+        flags.disable_relay_data = true;
+        global_ctx.set_flags(flags);
+
+        assert!(global_ctx.get_feature_flags().avoid_relay_data);
+
+        let mut flags = global_ctx.get_flags().clone();
+        flags.disable_relay_data = false;
         global_ctx.set_flags(flags);
 
         assert!(global_ctx.get_feature_flags().avoid_relay_data);

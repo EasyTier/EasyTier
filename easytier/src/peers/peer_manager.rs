@@ -948,12 +948,13 @@ impl PeerManager {
         self.tasks.lock().await.spawn(async move {
             tracing::trace!("start_peer_recv");
             while let Ok(ret) = recv_packet_from_chan(&mut recv).await {
+                let disable_relay_data = global_ctx.flags_arc().disable_relay_data;
                 let Err(mut ret) = Self::try_handle_foreign_network_packet(
                     ret,
                     my_peer_id,
                     &peers,
                     &foreign_mgr,
-                    global_ctx.get_flags().disable_relay_data,
+                    disable_relay_data,
                 )
                 .await
                 else {
@@ -972,9 +973,7 @@ impl PeerManager {
                 let packet_type = hdr.packet_type;
                 let is_encrypted = hdr.is_encrypted();
                 if to_peer_id != my_peer_id {
-                    if global_ctx.get_flags().disable_relay_data
-                        && Self::is_relay_data_packet(packet_type)
-                    {
+                    if disable_relay_data && Self::is_relay_data_packet(packet_type) {
                         tracing::debug!(
                             ?from_peer_id,
                             ?to_peer_id,

@@ -3843,6 +3843,36 @@ pub async fn config_patch_disable_relay_data_test() {
             .get_flags()
             .disable_relay_data
     );
+    assert!(
+        !insts[1]
+            .get_global_ctx()
+            .get_feature_flags()
+            .avoid_relay_data
+    );
+
+    wait_for_condition(
+        || {
+            let peer_mgr = insts[0].get_peer_manager().clone();
+            async move {
+                peer_mgr.list_routes().await.iter().any(|route| {
+                    route.peer_id == relay_peer_id
+                        && route
+                            .feature_flag
+                            .as_ref()
+                            .map(|flag| !flag.avoid_relay_data)
+                            .unwrap_or(false)
+                })
+            }
+        },
+        Duration::from_secs(5),
+    )
+    .await;
+
+    wait_for_condition(
+        || async { ping_test("net_a", "10.144.144.3", None).await },
+        Duration::from_secs(5),
+    )
+    .await;
 
     drop_insts(insts).await;
 }
