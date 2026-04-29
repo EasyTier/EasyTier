@@ -18,7 +18,7 @@ pub struct DnsConfigParsed {
     #[optional_skip_wrap]
     #[serde(flatten)]
     pub policies: HashMap<LowerName, DnsPolicyConfig>,
-    pub name: LowerName,
+    pub name: Option<LowerName>,
     pub domain: LowerName,
     pub addresses: NameServerAddrGroup,
     pub listeners: NameServerAddrGroup,
@@ -30,7 +30,6 @@ impl From<DnsConfigRaw> for DnsConfig {
     fn from(raw: DnsConfigRaw) -> Self {
         let default = DnsConfigParsed {
             domain: DNS_DEFAULT_DOMAIN.clone(),
-            name: DNS_DEFAULT_DOMAIN.clone(),
             addresses: DNS_DEFAULT_ADDRESSES.clone(),
             ..Default::default()
         };

@@ -20,8 +20,6 @@ use super::{
     network::IPCollector,
     stun::{StunInfoCollector, StunInfoCollectorTrait},
 };
-#[cfg(feature = "magic-dns")]
-use crate::dns::config::{DnsConfigLoaderExt, DnsExportConfig, DnsGlobalCtxExt, zone::ZoneConfig};
 use crate::{
     common::{
         config::ProxyNetworkConfig, shrink_dashmap, stats_manager::StatsManager,
@@ -36,6 +34,11 @@ use crate::{
     },
     rpc_service::protected_port,
     tunnel::matches_protocol,
+};
+#[cfg(feature = "magic-dns")]
+use crate::{
+    dns::config::{DnsConfigLoaderExt, DnsExportConfig, DnsGlobalCtxExt, zone::ZoneConfig},
+    utils::dns,
 };
 
 pub type NetworkIdentity = crate::common::config::NetworkIdentity;
@@ -725,16 +728,14 @@ impl GlobalCtx {
 #[cfg(feature = "magic-dns")]
 impl DnsGlobalCtxExt for GlobalCtx {
     fn dns_self_zone(&self) -> ZoneConfig {
+        use hickory_proto::rr::Name;
         let dns = self.config.get_dns();
-        let mut hostname = dns.name.to_string();
-        if hostname.is_empty() {
-            hostname = self.get_hostname();
-        }
-        let fqdn = dns
-            .domain
-            .prepend_label(hostname)
-            .unwrap_or_default()
+        let name: Name = dns
+            .name
+            .clone()
+            .unwrap_or_else(|| dns::parse(self.get_hostname()))
             .into();
+        let fqdn = name.append_domain(&*dns.domain).unwrap_or_default().into();
         let ipv4 = self.get_ipv4().map(|ip| ip.address());
         let ipv6 = self.get_ipv6().map(|ip| ip.address());
         let ipv6 = ipv6.map(|a| vec![a]).unwrap_or_default();
