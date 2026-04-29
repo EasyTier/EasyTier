@@ -2302,6 +2302,7 @@ dependencies = [
  "nix 0.29.0",
  "once_cell",
  "openssl",
+ "optional_struct",
  "ordered_hash_map",
  "parking_lot",
  "paste",
@@ -5931,6 +5932,27 @@ name = "option-ext"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "04744f49eae99ab78e0d5c0b603ab218f515ea8cfe5a456d7629ad883a3b6e7d"
+
+[[package]]
+name = "optional_struct"
+version = "0.5.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "14199f59efce6ed2c5854f0abc725c32eedfbd02c6ef82c9733c726f3fc6dc91"
+dependencies = [
+ "optional_struct_macro",
+ "serde",
+]
+
+[[package]]
+name = "optional_struct_macro"
+version = "0.5.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e5eba042d9efe5e108e0df9ce2f85c540fc4f94f41c6821cbcf70ed47c1221da"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.117",
+]
 
 [[package]]
 name = "ordered-float"
