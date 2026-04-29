@@ -451,9 +451,7 @@ mod tests {
         let zones: Vec<_> = mgr.collect_zones().into_iter().map(Into::into).collect();
         let loop_zone = zones
             .into_iter()
-            .find(|z: &crate::proto::dns::ZoneData| {
-                z.origin.trim_end_matches('.') == "filter-loop.test"
-            })
+            .find(|z: &crate::proto::dns::ZoneData| z.content.contains("$ORIGIN filter-loop.test"))
             .expect("test zone should exist");
 
         let forwarders: HashSet<NameServerAddr> = loop_zone
@@ -502,7 +500,7 @@ mod tests {
         let zone = zones
             .into_iter()
             .find(|z: &crate::proto::dns::ZoneData| {
-                z.origin.trim_end_matches('.') == "cross-node-filter.test"
+                z.content.contains("$ORIGIN cross-node-filter.test")
             })
             .expect("test zone should exist");
 

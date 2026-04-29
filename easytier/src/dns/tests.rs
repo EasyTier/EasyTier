@@ -9,7 +9,6 @@ use crate::common::config::TomlConfigLoader;
 use crate::common::global_ctx::GlobalCtx;
 use crate::common::global_ctx::tests::get_mock_global_ctx;
 use crate::connector::udp_hole_punch::tests::replace_stun_info_collector;
-use crate::dns::config::zone::ZoneConfigInner;
 use crate::dns::node::DnsNode;
 use crate::dns::peer_mgr::DnsPeerMgr;
 use crate::instance::instance::ArcNicCtx;
@@ -46,12 +45,12 @@ pub async fn prepare_env_with_tld_dns_zone(
     ctx.set_hostname(dns_name.to_owned());
     ctx.set_ipv4(Some(tun_ip));
 
-    let mut dns_config = ctx.config.get_dns();
-    dns_config.name = dns_name.parse().unwrap();
+    let mut dns_config = ctx.config.get_dns().into_raw();
+    dns_config.name = Some(dns_name.parse().unwrap());
     if let Some(zone) = tld_dns_zone {
-        dns_config.domain = zone.parse().expect("invalid test dns zone");
+        dns_config.domain = Some(zone.parse().expect("invalid test dns zone"));
     }
-    ctx.config.set_dns(Some(dns_config));
+    ctx.config.set_dns(dns_config.into());
 
     let (s, r) = create_packet_recv_chan();
     let peer_mgr = Arc::new(PeerManager::new(RouteAlgoType::Ospf, ctx, s));
@@ -105,16 +104,15 @@ pub fn zone_data_a(origin: &str, record: &str) -> ZoneData {
 }
 
 pub fn zone_data_a_with_forwarders(origin: &str, record: &str, forwarders: Vec<&str>) -> ZoneData {
-    ZoneData {
-        origin: origin.to_string(),
-        ttl: 60,
-        records: vec![format!("@ IN A {record}")],
-        forwarders: forwarders
+    ZoneData::new(
+        &origin.parse().unwrap(),
+        60,
+        [format!("@ IN A {record}")],
+        forwarders
             .into_iter()
-            .map(|f| Url::from_str(f).expect("invalid forwarder"))
-            .collect(),
-        fallthrough: false,
-    }
+            .map(|f| Url::from_str(f).expect("invalid forwarder")),
+        false,
+    )
 }
 
 pub fn dns_snapshot_with(
@@ -349,28 +347,21 @@ async fn wait_peer_zone_visibility(
 
         let snapshot = dns.snapshot();
 
-        let visible = snapshot
-            .zones
-            .iter()
-            .any(|z| z.origin.contains(zone_origin_substr));
+        let visible = snapshot.zones.iter().any(|z| {
+            z.content
+                .contains(&format!("$ORIGIN {}", zone_origin_substr))
+        });
 
         if visible == expected_visible {
             return;
         }
 
-        let origins = snapshot
-            .zones
-            .iter()
-            .map(|z| z.origin.clone())
-            .collect::<Vec<_>>();
-
         assert!(
             Instant::now() < deadline,
-            "zone visibility mismatch for '{}': expected {}, got {}, current origins: {:?}",
+            "zone visibility mismatch for '{}': expected {}, got {}",
             zone_origin_substr,
             expected_visible,
             visible,
-            origins
         );
         tokio::time::sleep(Duration::from_millis(200)).await;
     }
@@ -504,7 +495,7 @@ records = ["secret IN A 10.99.0.9"]
         !snapshot
             .zones
             .iter()
-            .any(|z| z.origin.contains("private.mesh-test")),
+            .any(|z| z.content.contains("$ORIGIN private.mesh-test")),
         "zone without [dns.zone.export] should not be exported to peer snapshot"
     );
 }
@@ -552,7 +543,7 @@ disabled = true
         !snapshot
             .zones
             .iter()
-            .any(|z| z.origin.contains("disabled.mesh-test")),
+            .any(|z| z.content.contains("$ORIGIN disabled.mesh-test")),
         "zone with [dns.zone.export] disabled=true should not be exported"
     );
 }
@@ -580,16 +571,17 @@ records = ["api IN A 10.80.0.1"]
 
     check_dns_record_at(server_addr, "api.patch.mesh-test.", "10.80.0.1").await;
 
-    let mut dns = peer.get_global_ctx().config.get_dns();
-    let zone_idx = dns
-        .zones
+    let mut dns = peer.get_global_ctx().config.get_dns().into_raw();
+    let mut zones = dns.zones.unwrap();
+    let zone_idx = zones
         .iter()
         .position(|z| z.origin.to_string().contains("patch.mesh-test"))
         .expect("patch zone should exist");
-    let mut zone: ZoneConfigInner = dns.zones[zone_idx].clone().into();
-    zone.records = vec!["api IN A 10.80.0.2".to_string()];
-    dns.zones[zone_idx] = zone.try_into().expect("patch zone update should be valid");
-    peer.get_global_ctx().config.set_dns(Some(dns));
+    let mut zone = zones[zone_idx].clone().into_raw();
+    zone.records = Some(vec!["api IN A 10.80.0.2".to_string()]);
+    zones[zone_idx] = zone.try_into().expect("patch zone update should be valid");
+    dns.zones = Some(zones);
+    peer.get_global_ctx().config.set_dns(dns.into());
     peer.get_global_ctx()
         .issue_event(crate::common::global_ctx::GlobalCtxEvent::ConfigPatched(
             crate::proto::api::config::InstanceConfigPatch::default(),
@@ -619,14 +611,16 @@ async fn config_patch_reloads_listener_binding() {
     let new_addr = SocketAddr::new(Ipv4Addr::LOCALHOST.into(), listener_new);
     check_dns_record_at(old_addr, "listener-patch.mesh-test.", "10.144.150.11").await;
 
-    let mut dns = peer.get_global_ctx().config.get_dns();
-    dns.listeners = vec![
-        format!("udp://127.0.0.1:{listener_new}")
-            .parse()
-            .expect("invalid listener"),
-    ]
-    .into();
-    peer.get_global_ctx().config.set_dns(Some(dns));
+    let mut dns = peer.get_global_ctx().config.get_dns().into_raw();
+    dns.listeners = Some(
+        vec![
+            format!("udp://127.0.0.1:{listener_new}")
+                .parse()
+                .expect("invalid listener"),
+        ]
+        .into(),
+    );
+    peer.get_global_ctx().config.set_dns(dns.into());
     peer.get_global_ctx()
         .issue_event(crate::common::global_ctx::GlobalCtxEvent::ConfigPatched(
             crate::proto::api::config::InstanceConfigPatch::default(),
@@ -894,7 +888,7 @@ records = ["secret IN A 10.66.3.8"]
         !snapshot
             .zones
             .iter()
-            .any(|z| z.origin.contains("private-c.mesh5-test")),
+            .any(|z| z.content.contains("$ORIGIN private-c.mesh5-test")),
         "zone without [dns.zone.export] should not sync over multi-hop"
     );
 }
@@ -929,7 +923,7 @@ async fn config_string_two_nodes_peer_dns_offline_then_rejoin() {
             .snapshot()
             .zones
             .iter()
-            .any(|z| z.origin.contains("node-b6.mesh6-test")),
+            .any(|z| z.content.contains("$ORIGIN node-b6.mesh6-test")),
         "peer B self zone should be visible after initial refresh"
     );
 
@@ -966,7 +960,7 @@ async fn config_string_two_nodes_peer_dns_offline_then_rejoin() {
             .snapshot()
             .zones
             .iter()
-            .any(|z| z.origin.contains("node-b6.mesh6-test")),
+            .any(|z| z.content.contains("$ORIGIN node-b6.mesh6-test")),
         "peer B self zone should disappear after route withdrawal and cache expiry"
     );
 
@@ -985,7 +979,7 @@ async fn config_string_two_nodes_peer_dns_offline_then_rejoin() {
             .snapshot()
             .zones
             .iter()
-            .any(|z| z.origin.contains("node-b6.mesh6-test")),
+            .any(|z| z.content.contains("$ORIGIN node-b6.mesh6-test")),
         "peer B self zone should be restored after DNS RPC rejoins"
     );
 }

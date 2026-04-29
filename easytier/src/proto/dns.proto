@@ -5,11 +5,9 @@ import "common.proto";
 package dns;
 
 message ZoneData {
-  string origin = 1;
-  uint32 ttl = 2;
-  repeated string records = 3;
-  repeated common.Url forwarders = 4;
-  bool fallthrough = 5;
+  string content = 1;
+  repeated common.Url forwarders = 2;
+  bool fallthrough = 3;
 }
 
 message GetExportConfigRequest {}

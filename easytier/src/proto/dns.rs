@@ -1,5 +1,7 @@
+use crate::proto::common::Url;
 use crate::proto::utils::TransientDigest;
-use std::fmt::Display;
+use hickory_proto::rr::LowerName;
+use std::fmt::Write;
 
 include!(concat!(env!("OUT_DIR"), "/dns.rs"));
 
@@ -10,31 +12,44 @@ impl HeartbeatRequest {
     }
 }
 
-impl Display for ZoneData {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        writeln!(f, "; EasyTier Magic DNS zone data")?;
-        writeln!(f, "; https://github.com/easytier/easytier")?;
+impl ZoneData {
+    pub fn new<Records, R, Urls, U>(
+        origin: &LowerName,
+        ttl: u32,
+        records: Records,
+        forwarders: Urls,
+        fallthrough: bool,
+    ) -> Self
+    where
+        Records: IntoIterator<Item = R>,
+        R: AsRef<str>,
+        Urls: IntoIterator<Item = U>,
+        U: Into<Url>,
+    {
+        let mut content = String::new();
 
-        if !self.forwarders.is_empty() {
-            writeln!(f, "; Forwarders:")?;
-            for forwarder in &self.forwarders {
-                writeln!(f, "; \t{}", forwarder)?;
-            }
+        content.push_str("; EasyTier Magic DNS zone data\n");
+        content.push_str("; https://github.com/easytier/easytier\n");
+
+        let mut origin = origin.to_string();
+        if !origin.ends_with('.') {
+            origin.push('.');
         }
-        writeln!(f)?;
 
-        write!(f, "$ORIGIN {}", self.origin)?;
-        if !self.origin.ends_with('.') {
-            write!(f, ".")?;
-        }
-        writeln!(f)?;
+        writeln!(content, "$ORIGIN {}", origin).unwrap();
+        writeln!(content, "$TTL {}", ttl).unwrap();
 
-        writeln!(f, "$TTL {}", self.ttl)?;
-
-        for record in &self.records {
-            writeln!(f, "{}", record)?;
+        for record in records {
+            content.push_str(record.as_ref());
+            content.push('\n');
         }
 
-        Ok(())
+        let forwarders = forwarders.into_iter().map(Into::into).collect();
+
+        Self {
+            content,
+            forwarders,
+            fallthrough,
+        }
     }
 }

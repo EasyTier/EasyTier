@@ -1,47 +1,62 @@
+use crate::common::config::ConfigBase;
 use crate::dns::config::policy::{DnsExportPolicy, ZonePolicyConfig};
 use crate::dns::utils::addr::NameServerAddrGroup;
 use crate::dns::zone::Zone;
 use crate::proto::dns::ZoneData;
-use derivative::Derivative;
-use derive_more::{Deref, Into};
 use hickory_proto::rr::LowerName;
+use optional_struct::{Applicable, optional_struct};
 use serde::{Deserialize, Serialize};
-use std::convert::{TryFrom, TryInto};
+use std::convert::TryFrom;
 use std::net::{Ipv4Addr, Ipv6Addr};
+use url::Url;
 
-#[derive(Derivative, Debug, Clone, Deserialize, Serialize, Default, Deref, Into)]
-#[derivative(PartialEq)]
-#[serde(try_from = "ZoneConfigInner", into = "ZoneConfigInner")]
-pub struct ZoneConfig {
-    #[into]
-    #[derivative(PartialEq = "ignore")]
-    data: ZoneData,
-    // User-facing config source of truth used for serde round-trips.
-    // Keep this in sync with `data` by rebuilding a full ZoneConfig via TryFrom.
-    // Do not mutate subfields in place and expect `data` to follow.
-    #[into]
-    #[deref]
-    inner: ZoneConfigInner,
+#[optional_struct(ZoneConfigRaw)]
+#[derive(Debug, Clone, Default, PartialEq, Deserialize, Serialize)]
+pub struct ZoneConfigParsed {
+    #[optional_skip_wrap]
+    pub origin: LowerName,
+    pub ttl: u32,
+    pub records: Vec<String>,
+    pub forwarders: NameServerAddrGroup,
+    #[optional_skip_wrap]
+    #[serde(flatten)]
+    pub policy: ZonePolicyConfig,
+    pub fallthrough: bool,
 }
 
-impl TryFrom<ZoneConfigInner> for ZoneConfig {
+impl From<&ZoneConfigParsed> for ZoneData {
+    fn from(value: &ZoneConfigParsed) -> Self {
+        Self::new(
+            &value.origin,
+            value.ttl,
+            &value.records,
+            value.forwarders.iter().map(Url::from),
+            value.fallthrough,
+        )
+    }
+}
+
+pub type ZoneConfig = ConfigBase<ZoneConfigRaw, ZoneConfigParsed, ZoneData>;
+
+impl TryFrom<ZoneConfigRaw> for ZoneConfig {
     type Error = anyhow::Error;
 
-    fn try_from(value: ZoneConfigInner) -> Result<Self, Self::Error> {
-        // Rebuild both representations together and validate zone semantics.
-        // Config updates should follow this replacement path.
-        let data = ZoneData::from(value.clone());
+    fn try_from(raw: ZoneConfigRaw) -> Result<Self, Self::Error> {
+        let default = ZoneConfigParsed {
+            fallthrough: true,
+            ..Default::default()
+        };
+
+        let parsed = raw.clone().build(default);
+        let data = (&parsed).into();
         let _ = Zone::try_from(&data)?; // validation
-        Ok(Self { data, inner: value })
+
+        Ok(Self::new(raw, parsed, data))
     }
 }
 
 impl ZoneConfig {
-    pub fn dedicated(
-        origin: LowerName,
-        ipv4: Option<Ipv4Addr>,
-        ipv6: Vec<Ipv6Addr>,
-    ) -> anyhow::Result<Self> {
+    pub fn dedicated(origin: LowerName, ipv4: Option<Ipv4Addr>, ipv6: Vec<Ipv6Addr>) -> Self {
         let mut records = Vec::new();
 
         if let Some(ipv4) = ipv4 {
@@ -55,39 +70,15 @@ impl ZoneConfig {
             export: Some(DnsExportPolicy::default()),
         };
 
-        let config = ZoneConfigInner {
+        let parsed = ZoneConfigParsed {
             origin,
             records,
             policy,
             ..Default::default()
         };
 
-        config.try_into()
-    }
-}
+        let data = (&parsed).into();
 
-#[derive(Derivative, Debug, Clone, PartialEq, Deserialize, Serialize)]
-#[derivative(Default)]
-#[serde(default)]
-pub struct ZoneConfigInner {
-    pub origin: LowerName,
-    pub ttl: u32,
-    pub records: Vec<String>,
-    pub forwarders: NameServerAddrGroup,
-    #[serde(flatten)]
-    pub policy: ZonePolicyConfig,
-    #[derivative(Default(value = "true"))]
-    pub fallthrough: bool,
-}
-
-impl From<ZoneConfigInner> for ZoneData {
-    fn from(value: ZoneConfigInner) -> Self {
-        Self {
-            origin: value.origin.to_string(),
-            ttl: value.ttl,
-            records: value.records,
-            forwarders: value.forwarders.into(),
-            fallthrough: value.fallthrough,
-        }
+        Self::new(Default::default(), parsed, data)
     }
 }

@@ -21,7 +21,7 @@ use super::{
     stun::{StunInfoCollector, StunInfoCollectorTrait},
 };
 #[cfg(feature = "magic-dns")]
-use crate::dns::config::{DnsConfigLoaderExt, DnsExportConfig, DnsGlobalCtxExt};
+use crate::dns::config::{DnsConfigLoaderExt, DnsExportConfig, DnsGlobalCtxExt, zone::ZoneConfig};
 use crate::{
     common::{
         config::ProxyNetworkConfig, shrink_dashmap, stats_manager::StatsManager,
@@ -461,7 +461,7 @@ impl GlobalCtx {
     }
 
     pub fn get_hostname(&self) -> String {
-        return self.hostname.lock().unwrap().clone();
+        self.hostname.lock().unwrap().clone()
     }
 
     pub fn set_hostname(&self, hostname: String) {
@@ -713,7 +713,7 @@ impl GlobalCtx {
 
 #[cfg(feature = "magic-dns")]
 impl DnsGlobalCtxExt for GlobalCtx {
-    fn dns_self_zone(&self) -> crate::dns::config::zone::ZoneConfig {
+    fn dns_self_zone(&self) -> ZoneConfig {
         let dns = self.config.get_dns();
         let mut hostname = dns.name.to_string();
         if hostname.is_empty() {
@@ -728,7 +728,7 @@ impl DnsGlobalCtxExt for GlobalCtx {
         let ipv6 = self.get_ipv6().map(|ip| ip.address());
         let ipv6 = ipv6.map(|a| vec![a]).unwrap_or_default();
 
-        crate::dns::config::zone::ZoneConfig::dedicated(fqdn, ipv4, ipv6).unwrap()
+        ZoneConfig::dedicated(fqdn, ipv4, ipv6)
     }
 
     fn dns_export_config(&self) -> DnsExportConfig {
@@ -736,13 +736,13 @@ impl DnsGlobalCtxExt for GlobalCtx {
             zones: self
                 .dns_iter_zones()
                 .filter(|z| z.policy.export.as_ref().is_some_and(|f| !f.disabled)) // TODO: check policies of parent zones
-                .map(Into::into)
+                .map(ZoneConfig::into_data)
                 .collect(),
         }
     }
 
-    fn dns_iter_zones(&self) -> impl Iterator<Item = crate::dns::config::zone::ZoneConfig> {
-        iter::once(self.dns_self_zone()).chain(self.config.get_dns().zones)
+    fn dns_iter_zones(&self) -> impl Iterator<Item = ZoneConfig> {
+        iter::once(self.dns_self_zone()).chain(self.config.get_dns().into_parsed().zones)
     }
 }
 

@@ -39,9 +39,15 @@ impl From<(IpAddr, &ConnectionConfig)> for NameServerAddr {
     }
 }
 
+impl From<&NameServerAddr> for Url {
+    fn from(value: &NameServerAddr) -> Self {
+        Url::parse(&format!("{}://{}", value.protocol, value.addr)).unwrap()
+    }
+}
+
 impl From<NameServerAddr> for Url {
     fn from(value: NameServerAddr) -> Self {
-        Url::parse(&format!("{}://{}", value.protocol, value.addr)).unwrap()
+        (&value).into()
     }
 }
 

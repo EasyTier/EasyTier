@@ -1,5 +1,6 @@
 use crate::common::PeerId;
 use crate::common::global_ctx::ArcGlobalCtx;
+use crate::dns::config::zone::ZoneConfig;
 use crate::dns::config::{
     DNS_PEER_REFRESH_ATTEMPTS, DNS_PEER_REFRESH_BACKOFF, DNS_PEER_TTI, DnsExportConfig,
     DnsGlobalCtxExt,
@@ -59,7 +60,7 @@ impl DnsPeerMgrInner {
 
         let zones = global_ctx
             .dns_iter_zones()
-            .map(Into::into)
+            .map(ZoneConfig::into_data)
             .chain(
                 self.peers
                     .iter()
@@ -67,7 +68,7 @@ impl DnsPeerMgrInner {
             )
             .collect();
 
-        let config = global_ctx.config.get_dns();
+        let config = global_ctx.config.get_dns().into_parsed();
         DnsSnapshot {
             zones,
             addresses: config.addresses.into(),
@@ -256,6 +257,7 @@ mod tests {
     use std::collections::HashSet;
     use std::net::Ipv4Addr;
     use tokio::time::{Duration, sleep};
+    use url::Url;
 
     async fn create_peer_manager_with_zone(
         host: &str,
@@ -263,17 +265,16 @@ mod tests {
         record_ip: Ipv4Addr,
     ) -> Arc<PeerManager> {
         let ctx = get_mock_global_ctx();
-        let mut dns = ctx.config.get_dns();
-        dns.name = host.parse().unwrap();
-        dns.zones.push(
-            ZoneConfig::dedicated(
+        let mut dns = ctx.config.get_dns().into_raw();
+        dns.name = Some(host.parse().unwrap());
+        dns.zones
+            .get_or_insert_default()
+            .push(ZoneConfig::dedicated(
                 origin.parse().expect("invalid zone origin"),
                 Some(record_ip),
                 vec![],
-            )
-            .expect("failed to build test zone"),
-        );
-        ctx.config.set_dns(Some(dns));
+            ));
+        ctx.config.set_dns(dns.into());
 
         let (s, _r) = create_packet_recv_chan();
         let peer_mgr = Arc::new(PeerManager::new(RouteAlgoType::Ospf, ctx, s));
@@ -295,13 +296,13 @@ mod tests {
     #[test]
     fn dns_peer_info_try_from_invalid_zone_rejected() {
         let cfg = DnsExportConfig {
-            zones: vec![ZoneData {
-                origin: "?".to_string(),
-                ttl: 60,
-                records: vec!["?".to_string()],
-                forwarders: vec![],
-                fallthrough: false,
-            }],
+            zones: vec![ZoneData::new(
+                &".".parse().unwrap(),
+                60,
+                ["?"],
+                Vec::<Url>::new(),
+                false,
+            )],
         };
 
         assert!(DnsPeerInfo::try_from(cfg).is_err());
@@ -333,13 +334,13 @@ mod tests {
             snapshot
                 .zones
                 .iter()
-                .any(|z| z.origin.contains("peer-cache.test"))
+                .any(|z| z.content.contains("$ORIGIN peer-cache.test"))
         );
         assert!(
             snapshot
                 .zones
                 .iter()
-                .any(|z| z.origin.contains("local-custom.test"))
+                .any(|z| z.content.contains("$ORIGIN local-custom.test"))
         );
     }
 
@@ -352,7 +353,7 @@ mod tests {
         )
         .await;
         let global_ctx = peer_mgr.get_global_ctx();
-        let expected = global_ctx.config.get_dns();
+        let expected = global_ctx.config.get_dns().into_parsed();
         let mgr = DnsPeerMgr::new(peer_mgr, global_ctx);
 
         let snapshot = mgr.snapshot();
@@ -417,11 +418,15 @@ mod tests {
             .await;
 
         let snapshot = mgr.snapshot();
-        let origins: HashSet<_> = snapshot.zones.into_iter().map(|z| z.origin).collect();
+        let contents: HashSet<_> = snapshot.zones.into_iter().map(|z| z.content).collect();
 
-        assert!(origins.iter().any(|z| z.contains("peer-a.test")));
-        assert!(origins.iter().any(|z| z.contains("peer-b.test")));
-        assert!(origins.iter().any(|z| z.contains("local-multi.test")));
+        assert!(contents.iter().any(|z| z.contains("$ORIGIN peer-a.test")));
+        assert!(contents.iter().any(|z| z.contains("$ORIGIN peer-b.test")));
+        assert!(
+            contents
+                .iter()
+                .any(|z| z.contains("$ORIGIN local-multi.test"))
+        );
     }
 
     #[tokio::test]
@@ -587,7 +592,7 @@ mod tests {
             snapshot
                 .zones
                 .iter()
-                .any(|z| z.origin.contains("remote-export.test"))
+                .any(|z| z.content.contains("$ORIGIN remote-export.test"))
         );
     }
 
@@ -626,13 +631,13 @@ mod tests {
             snapshot
                 .zones
                 .iter()
-                .any(|z| z.origin.contains("remote-a.test"))
+                .any(|z| z.content.contains("$ORIGIN remote-a.test"))
         );
         assert!(
             !snapshot
                 .zones
                 .iter()
-                .any(|z| z.origin.contains("remote-b.test"))
+                .any(|z| z.content.contains("$ORIGIN remote-b.test"))
         );
     }
 
@@ -794,7 +799,7 @@ mod tests {
             unchanged_cache
                 .zones
                 .iter()
-                .any(|z| z.origin.contains("cached-unchanged.test"))
+                .any(|z| z.content.contains("$ORIGIN cached-unchanged.test"))
         );
     }
 
@@ -825,13 +830,13 @@ mod tests {
             before
                 .zones
                 .iter()
-                .any(|z| z.origin.contains("cached-expire.test"))
+                .any(|z| z.content.contains("$ORIGIN cached-expire.test"))
         );
         assert!(
             before
                 .zones
                 .iter()
-                .any(|z| z.origin.contains("local-tti.test"))
+                .any(|z| z.content.contains("$ORIGIN local-tti.test"))
         );
 
         let deadline = tokio::time::Instant::now() + DNS_PEER_TTI + Duration::from_secs(3);
@@ -840,13 +845,13 @@ mod tests {
             let expired = !now_snapshot
                 .zones
                 .iter()
-                .any(|z| z.origin.contains("cached-expire.test"));
+                .any(|z| z.content.contains("$ORIGIN cached-expire.test"));
             if expired {
                 assert!(
                     now_snapshot
                         .zones
                         .iter()
-                        .any(|z| z.origin.contains("local-tti.test"))
+                        .any(|z| z.content.contains("local-tti.test"))
                 );
                 break;
             }

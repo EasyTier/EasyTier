@@ -1,6 +1,6 @@
 use crate::dns::utils::addr::{NameServerAddr, NameServerAddrGroup};
 use crate::dns::utils::zone_handler::{ArcZoneHandler, ChainedZoneHandler};
-use crate::proto;
+use crate::proto::dns::ZoneData;
 use crate::proto::utils::RepeatedMessageModel;
 use crate::utils::dns::resolver_conf;
 use hickory_net::runtime::TokioRuntimeProvider;
@@ -13,6 +13,7 @@ use indexmap::IndexMap;
 use itertools::chain;
 use std::collections::BTreeMap;
 use std::sync::Arc;
+use url::Url;
 
 #[derive(Debug, Clone)]
 pub struct Zone {
@@ -89,11 +90,11 @@ impl Zone {
     }
 }
 
-impl TryFrom<&proto::dns::ZoneData> for Zone {
+impl TryFrom<&ZoneData> for Zone {
     type Error = anyhow::Error;
 
-    fn try_from(value: &proto::dns::ZoneData) -> Result<Self, Self::Error> {
-        let (origin, records) = Parser::new(value.to_string(), None, None)
+    fn try_from(value: &ZoneData) -> Result<Self, Self::Error> {
+        let (origin, records) = Parser::new(&value.content, None, None)
             .parse()
             .map_err(|e| anyhow::anyhow!("failed to parse zone data: {e}"))?;
 
@@ -117,14 +118,13 @@ impl TryFrom<&proto::dns::ZoneData> for Zone {
     }
 }
 
-impl From<Zone> for proto::dns::ZoneData {
+impl From<Zone> for ZoneData {
     fn from(value: Zone) -> Self {
         let records = value
             .records
             .values()
             .flat_map(RecordSet::records_without_rrsigs)
-            .map(ToString::to_string)
-            .collect();
+            .map(ToString::to_string);
 
         let forwarders = value
             .forward
@@ -132,16 +132,9 @@ impl From<Zone> for proto::dns::ZoneData {
             .flat_map(|f| f.name_servers.into_iter())
             .map(|ns| (&ns).into())
             .flat_map(NameServerAddrGroup::into_iter)
-            .map(Into::into)
-            .collect();
+            .map(Url::from);
 
-        Self {
-            origin: value.origin.to_string(),
-            ttl: 0,
-            records,
-            forwarders,
-            fallthrough: value.fallthrough,
-        }
+        Self::new(&value.origin, 0, records, forwarders, value.fallthrough)
     }
 }
 
@@ -202,16 +195,15 @@ mod tests {
         forwarders: Vec<&str>,
         fallthrough: bool,
     ) -> ZoneData {
-        ZoneData {
-            origin: origin.to_string(),
-            ttl: 60,
-            records: records.into_iter().map(ToString::to_string).collect(),
-            forwarders: forwarders
-                .into_iter()
-                .map(|f| Url::from_str(f).expect("invalid forwarder"))
-                .collect(),
+        ZoneData::new(
+            &origin.parse().unwrap(),
+            60,
+            records,
+            forwarders.into_iter().map(|url| Url {
+                url: url.to_string(),
+            }),
             fallthrough,
-        }
+        )
     }
 
     fn zone_data(origin: &str, records: Vec<&str>, forwarders: Vec<&str>) -> ZoneData {
@@ -313,10 +305,6 @@ mod tests {
         assert_eq!(zone.forward.as_ref().unwrap().name_servers.len(), 2);
 
         let serialized = ZoneData::from(zone.clone());
-        assert_eq!(serialized.origin, "roundtrip.test.");
-        assert_eq!(serialized.records.len(), 2);
-        assert_eq!(serialized.forwarders.len(), 2);
-
         let reparsed = Zone::try_from(&serialized)?;
         assert_eq!(reparsed.origin.to_string(), "roundtrip.test.");
         assert_eq!(reparsed.iter_records().count(), 2);

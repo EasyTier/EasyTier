@@ -1,18 +1,3 @@
-use std::{
-    hash::Hasher,
-    net::{IpAddr, SocketAddr},
-    path::PathBuf,
-    sync::{Arc, Mutex},
-};
-
-use anyhow::Context;
-use base64::{Engine as _, prelude::BASE64_STANDARD};
-use clap::ValueEnum;
-use clap::builder::PossibleValue;
-use serde::{Deserialize, Serialize};
-use strum::{Display, EnumString, VariantArray};
-use tokio::io::AsyncReadExt as _;
-
 use super::env_parser;
 use crate::utils::dns::sanitize;
 use crate::{
@@ -25,6 +10,89 @@ use crate::{
     tunnel::{IpScheme, TunnelScheme, generate_digest_from_str},
     utils,
 };
+use anyhow::Context;
+use base64::{Engine as _, prelude::BASE64_STANDARD};
+use clap::ValueEnum;
+use clap::builder::PossibleValue;
+use derivative::Derivative;
+use derive_more::{Constructor, Deref};
+use optional_struct::Applicable;
+use serde::{Deserialize, Serialize};
+use std::fmt::{Debug, Display};
+use std::{
+    hash::Hasher,
+    net::{IpAddr, SocketAddr},
+    path::PathBuf,
+    sync::{Arc, Mutex},
+};
+use strum::{Display, EnumString, VariantArray};
+use tokio::io::AsyncReadExt as _;
+
+#[derive(Derivative, Debug, Clone, Constructor, Deref, Deserialize)]
+#[derivative(PartialEq(bound = "Parsed: PartialEq"))]
+#[serde(try_from = "Raw")]
+#[serde(
+    bound = "Raw: Deserialize<'de>, <ConfigBase<Raw, Parsed, Data> as TryFrom<Raw>>::Error: Display"
+)]
+pub struct ConfigBase<Raw, Parsed, Data>
+where
+    Raw: Applicable<Base = Parsed>,
+    ConfigBase<Raw, Parsed, Data>: TryFrom<Raw, Error: Debug>,
+{
+    #[derivative(PartialEq = "ignore")]
+    raw: Raw,
+    #[deref]
+    parsed: Parsed,
+    #[derivative(PartialEq = "ignore")]
+    data: Data,
+}
+
+impl<Raw, Parsed, Data> Serialize for ConfigBase<Raw, Parsed, Data>
+where
+    Raw: Applicable<Base = Parsed> + Serialize,
+    ConfigBase<Raw, Parsed, Data>: TryFrom<Raw, Error: Debug>,
+{
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        self.raw.serialize(serializer)
+    }
+}
+
+impl<Raw, Parsed, Data> Default for ConfigBase<Raw, Parsed, Data>
+where
+    Raw: Applicable<Base = Parsed> + Default,
+    ConfigBase<Raw, Parsed, Data>: TryFrom<Raw, Error: Debug>,
+{
+    fn default() -> Self {
+        Raw::default().try_into().unwrap()
+    }
+}
+
+impl<Raw, Parsed, Data> ConfigBase<Raw, Parsed, Data>
+where
+    Raw: Applicable<Base = Parsed>,
+    ConfigBase<Raw, Parsed, Data>: TryFrom<Raw, Error: Debug>,
+{
+    pub fn into_raw(self) -> Raw {
+        self.raw
+    }
+
+    pub fn into_parsed(self) -> Parsed {
+        self.parsed
+    }
+
+    pub fn into_data(self) -> Data {
+        self.data
+    }
+
+    pub fn update(self, config: Raw) -> Result<Self, <Self as TryFrom<Raw>>::Error> {
+        let mut raw = self.into_raw();
+        config.apply_to_opt(&mut raw);
+        raw.try_into()
+    }
+}
 
 pub type Flags = crate::proto::common::FlagsInConfig;
 
@@ -554,7 +622,8 @@ struct Config {
     proxy_network: Option<Vec<ProxyNetworkConfig>>,
 
     #[cfg(feature = "magic-dns")]
-    dns: Option<DnsConfig>,
+    #[serde(default)]
+    dns: DnsConfig,
 
     vpn_portal_config: Option<VpnPortalConfig>,
 
@@ -655,9 +724,9 @@ impl DnsConfigLoaderExt for TomlConfigLoader {
     cfg_select! {
         feature = "magic-dns" => {
             fn get_dns(&self) -> DnsConfig {
-                self.config.lock().unwrap().dns.clone().unwrap_or_default()
+                self.config.lock().unwrap().dns.clone()
             }
-            fn set_dns(&self, config: Option<DnsConfig>) {
+            fn set_dns(&self, config: DnsConfig) {
                 self.config.lock().unwrap().dns = config;
             }
         }

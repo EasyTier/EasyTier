@@ -4127,14 +4127,14 @@ pub async fn three_node_dns_export() {
         "tcp",
         |cfg| {
             use crate::dns::config::zone::ZoneConfig;
-            use crate::dns::config::{DnsConfig, DnsConfigLoaderExt};
+            use crate::dns::config::{DnsConfigLoaderExt, DnsConfigRaw};
             use hickory_proto::rr::LowerName;
             use std::str::FromStr;
 
             let inst_name = cfg.get_inst_name();
             let origin = LowerName::from_str(&format!("{}.com.", inst_name)).unwrap();
-            let mut dns_config = DnsConfig {
-                name: LowerName::from_str(&inst_name).unwrap(),
+            let mut dns_config = DnsConfigRaw {
+                name: Some(LowerName::from_str(&inst_name).unwrap()),
                 ..Default::default()
             };
 
@@ -4147,7 +4147,8 @@ pub async fn three_node_dns_export() {
 
             dns_config
                 .zones
-                .push(ZoneConfig::dedicated(origin, ipv4, vec![]).unwrap());
+                .get_or_insert_default()
+                .push(ZoneConfig::dedicated(origin, ipv4, vec![]));
 
             let listener_port = match inst_name.as_str() {
                 "inst1" => 5351,
@@ -4155,14 +4156,16 @@ pub async fn three_node_dns_export() {
                 "inst3" => 5353,
                 _ => 5350,
             };
-            dns_config.listeners = vec![
-                format!("udp://127.0.0.1:{}", listener_port)
-                    .parse()
-                    .unwrap(),
-            ]
-            .into();
+            dns_config.listeners = Some(
+                vec![
+                    format!("udp://127.0.0.1:{}", listener_port)
+                        .parse()
+                        .unwrap(),
+                ]
+                .into(),
+            );
 
-            cfg.set_dns(Some(dns_config));
+            cfg.set_dns(dns_config.into());
             cfg
         },
         false,
@@ -4195,14 +4198,14 @@ pub async fn three_node_dns_export_chain() {
 
     let cfg_cb = |cfg: TomlConfigLoader| {
         use crate::dns::config::zone::ZoneConfig;
-        use crate::dns::config::{DnsConfig, DnsConfigLoaderExt};
+        use crate::dns::config::{DnsConfigLoaderExt, DnsConfigRaw};
         use hickory_proto::rr::LowerName;
         use std::str::FromStr;
 
         let inst_name = cfg.get_inst_name();
         let origin = LowerName::from_str(&format!("{}.com.", inst_name)).unwrap();
-        let mut dns_config = DnsConfig {
-            name: LowerName::from_str(&inst_name).unwrap(),
+        let mut dns_config = DnsConfigRaw {
+            name: Some(LowerName::from_str(&inst_name).unwrap()),
             ..Default::default()
         };
 
@@ -4215,7 +4218,8 @@ pub async fn three_node_dns_export_chain() {
 
         dns_config
             .zones
-            .push(ZoneConfig::dedicated(origin, ipv4, vec![]).unwrap());
+            .get_or_insert_default()
+            .push(ZoneConfig::dedicated(origin, ipv4, vec![]));
 
         let listener_port = match inst_name.as_str() {
             "inst1" => 5351,
@@ -4223,14 +4227,16 @@ pub async fn three_node_dns_export_chain() {
             "inst3" => 5353,
             _ => 5350,
         };
-        dns_config.listeners = vec![
-            format!("udp://127.0.0.1:{}", listener_port)
-                .parse()
-                .unwrap(),
-        ]
-        .into();
+        dns_config.listeners = Some(
+            vec![
+                format!("udp://127.0.0.1:{}", listener_port)
+                    .parse()
+                    .unwrap(),
+            ]
+            .into(),
+        );
 
-        cfg.set_dns(Some(dns_config));
+        cfg.set_dns(dns_config.into());
 
         let mut flags = cfg.get_flags();
         flags.disable_p2p = true;
