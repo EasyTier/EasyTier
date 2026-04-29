@@ -141,6 +141,7 @@ pub trait TunnelConnector: Send {
     fn remote_url(&self) -> url::Url;
     fn set_bind_addrs(&mut self, _addrs: Vec<SocketAddr>) {}
     fn set_ip_version(&mut self, _ip_version: IpVersion) {}
+    fn set_resolved_addr(&mut self, _addr: SocketAddr) {}
 }
 
 pub fn build_url_from_socket_addr(addr: &String, scheme: &str) -> url::Url {

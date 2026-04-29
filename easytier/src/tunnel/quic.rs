@@ -432,6 +432,7 @@ pub struct QuicTunnelConnector {
     addr: url::Url,
     global_ctx: ArcGlobalCtx,
     ip_version: IpVersion,
+    resolved_addr: Option<SocketAddr>,
 }
 
 impl QuicTunnelConnector {
@@ -440,6 +441,7 @@ impl QuicTunnelConnector {
             addr,
             global_ctx,
             ip_version: IpVersion::Both,
+            resolved_addr: None,
         }
     }
 }
@@ -447,7 +449,10 @@ impl QuicTunnelConnector {
 #[async_trait::async_trait]
 impl TunnelConnector for QuicTunnelConnector {
     async fn connect(&mut self) -> Result<Box<dyn Tunnel>, TunnelError> {
-        let addr = SocketAddr::from_url(self.addr.clone(), self.ip_version).await?;
+        let addr = match self.resolved_addr {
+            Some(addr) => addr,
+            None => SocketAddr::from_url(self.addr.clone(), self.ip_version).await?,
+        };
         let (endpoint, connection) = QuicEndpointManager::connect(&self.global_ctx, addr).await?;
 
         let local_addr = endpoint.local_addr()?;
@@ -483,6 +488,10 @@ impl TunnelConnector for QuicTunnelConnector {
 
     fn set_ip_version(&mut self, ip_version: IpVersion) {
         self.ip_version = ip_version;
+    }
+
+    fn set_resolved_addr(&mut self, addr: SocketAddr) {
+        self.resolved_addr = Some(addr);
     }
 }
 
