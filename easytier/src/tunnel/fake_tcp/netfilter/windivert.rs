@@ -80,15 +80,11 @@ impl Drop for WinDivertTun {
 }
 
 impl WinDivertTun {
-    pub fn new(local_addr: SocketAddr) -> io::Result<Self> {
+    pub fn new(src_addr: Option<SocketAddr>, dst_addr: SocketAddr) -> io::Result<Self> {
         let (tx, rx) = tokio::sync::mpsc::channel(1024);
 
-        let ip_filter = match local_addr {
-            SocketAddr::V4(addr) => format!("ip.DstAddr == {}", addr.ip()),
-            SocketAddr::V6(addr) => format!("ipv6.DstAddr == {}", addr.ip()),
-        };
-        // Filter: DstIP == LocalIP AND TCP.
-        let filter = format!("{} and tcp", ip_filter);
+        let filter = build_filter(src_addr, dst_addr)?;
+        tracing::debug!(%filter, "WinDivertTun created with filter");
 
         // Sniff mode: 1 (WINDIVERT_FLAG_SNIFF)
         // Layer: Network (0)
@@ -141,6 +137,46 @@ impl WinDivertTun {
             reader,
         })
     }
+}
+
+fn build_filter(src_addr: Option<SocketAddr>, dst_addr: SocketAddr) -> io::Result<String> {
+    if let Some(src_addr) = src_addr
+        && src_addr.is_ipv4() != dst_addr.is_ipv4()
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "src/dst addr family mismatch",
+        ));
+    }
+
+    let mut filters = Vec::with_capacity(5);
+    filters.push("tcp".to_owned());
+
+    match dst_addr {
+        SocketAddr::V4(addr) => {
+            filters.push(format!("ip.DstAddr == {}", addr.ip()));
+            filters.push(format!("tcp.DstPort == {}", addr.port()));
+        }
+        SocketAddr::V6(addr) => {
+            filters.push(format!("ipv6.DstAddr == {}", addr.ip()));
+            filters.push(format!("tcp.DstPort == {}", addr.port()));
+        }
+    }
+
+    if let Some(src_addr) = src_addr {
+        match src_addr {
+            SocketAddr::V4(addr) => {
+                filters.push(format!("ip.SrcAddr == {}", addr.ip()));
+                filters.push(format!("tcp.SrcPort == {}", addr.port()));
+            }
+            SocketAddr::V6(addr) => {
+                filters.push(format!("ipv6.SrcAddr == {}", addr.ip()));
+                filters.push(format!("tcp.SrcPort == {}", addr.port()));
+            }
+        }
+    }
+
+    Ok(filters.join(" and "))
 }
 
 #[async_trait::async_trait]
