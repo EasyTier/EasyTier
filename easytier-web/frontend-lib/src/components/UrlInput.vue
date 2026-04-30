@@ -4,6 +4,7 @@ import InputGroup from 'primevue/inputgroup'
 import InputGroupAddon from 'primevue/inputgroupaddon'
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
+import { buildUrlInputValue, getHostInputValue, parseHostInputOnBlur, parseUrlInput } from '../modules/url-input'
 
 const props = defineProps<{
     placeholder?: string
@@ -32,73 +33,11 @@ onMounted(() => {
     }
 })
 
-const parseUrl = (val: string | null | undefined): { proto: string; host: string; port: number | null } => {
-    const getValidPort = (portStr: string, proto: string) => {
-        const p = parseInt(portStr)
-        return isNaN(p) ? (props.protos[proto] ?? 11010) : p
-    }
-    const parseByPattern = (input: string) => {
-        const trimmed = input.trim()
-        if (!trimmed) {
-            return null
-        }
-        const match = trimmed.match(/^(\w+):\/\/(.*)$/)
-        const proto = match ? match[1] : 'tcp'
-        const rest = match ? match[2] : trimmed
-        const authority = rest.split(/[/?#]/)[0]
-        if (!authority) {
-            return null
-        }
-        const hostAndMaybePort = authority.includes('@') ? authority.slice(authority.lastIndexOf('@') + 1) : authority
-        if (hostAndMaybePort.startsWith('[')) {
-            const ipv6End = hostAndMaybePort.indexOf(']')
-            if (ipv6End > 0) {
-                const host = hostAndMaybePort.slice(0, ipv6End + 1)
-                const remain = hostAndMaybePort.slice(ipv6End + 1)
-                // null = no explicit port in URL; do not fabricate a default
-                const port: number | null = remain.startsWith(':') ? getValidPort(remain.slice(1), proto) : null
-                return { proto, host, port }
-            }
-        }
-        const portMatch = hostAndMaybePort.match(/^(.*):(\d+)$/)
-        const host = portMatch ? portMatch[1] : hostAndMaybePort
-        // null = no explicit port in URL; buildUrlValue will omit the port entirely,
-        // preserving the protocol's implied standard port (e.g. 443 for wss://).
-        const port: number | null = portMatch ? parseInt(portMatch[2]) : null
-        return { proto, host, port }
-    }
-
-    if (!val) {
-        return { proto: 'tcp', host: '', port: props.protos['tcp'] ?? 11010 }
-    }
-    const parsedByPattern = parseByPattern(val)
-    if (parsedByPattern) {
-        return parsedByPattern
-    }
-    return { proto: 'tcp', host: '', port: null }
-}
-
-const internalValue = ref(parseUrl(url.value))
+const internalValue = ref(parseUrlInput(url.value, props.protos))
 const defaultHost = '0.0.0.0'
 
-const buildUrlValue = (value: { proto: string, host: string, port: number | null }, forceDefaultHost = false) => {
-    const proto = value.proto || 'tcp'
-    const rawHost = (value.host ?? '').trim()
-    const host = rawHost || (forceDefaultHost ? defaultHost : '')
-    if (!host) {
-        return null
-    }
-    // Omit port when the protocol uses no port (protos value = 0), or when the
-    // original URL had no explicit port (port === null) – avoids overwriting an
-    // implicit standard port (e.g. 443 for wss) with an EasyTier default (11012).
-    if (props.protos[proto] === 0 || value.port === null) {
-        return `${proto}://${host}`
-    }
-    return `${proto}://${host}:${value.port}`
-}
-
 const syncUrlFromInternal = (forceDefaultHost = false) => {
-    const nextUrl = buildUrlValue(internalValue.value, forceDefaultHost)
+    const nextUrl = buildUrlInputValue(internalValue.value, props.protos, forceDefaultHost)
     if (!nextUrl || nextUrl === url.value) {
         return
     }
@@ -107,6 +46,10 @@ const syncUrlFromInternal = (forceDefaultHost = false) => {
 
 const onHostBlur = () => {
     hostFocused.value = false
+    const parsedHost = parseHostInputOnBlur(internalValue.value.host ?? '', internalValue.value.proto, props.protos)
+    if (parsedHost) {
+        internalValue.value = parsedHost
+    }
     syncUrlFromInternal(true)
 }
 
@@ -123,12 +66,20 @@ const isNoPortProto = computed(() => {
     return props.protos[internalValue.value.proto] === 0
 })
 
+const hostInputValue = computed({
+    get: () => getHostInputValue(internalValue.value),
+    set: (value: string) => {
+        internalValue.value.host = value
+        internalValue.value.suffix = undefined
+    },
+})
+
 // Sync from external
 watch(() => url.value, (newVal) => {
     if (hostFocused.value) {
         return
     }
-    const parsed = parseUrl(newVal)
+    const parsed = parseUrlInput(newVal, props.protos)
     const internalHost = internalValue.value.host ?? ''
     const sameHost = parsed.host === internalHost || (!internalHost.trim() && parsed.host === defaultHost)
     if (parsed.proto !== internalValue.value.proto ||
@@ -140,6 +91,9 @@ watch(() => url.value, (newVal) => {
 
 // Sync to external
 watch(internalValue, () => {
+    if (hostFocused.value) {
+        return
+    }
     syncUrlFromInternal(false)
 }, { deep: true })
 
@@ -165,6 +119,8 @@ const onProtoChange = (newProto: string) => {
         internalValue.value.port = newDefault
     }
     internalValue.value.proto = newProto
+    internalValue.value.suffix = undefined
+    internalValue.value.hasExplicitPort = true
 }
 </script>
 
@@ -174,7 +130,7 @@ const onProtoChange = (newProto: string) => {
             <AutoComplete :model-value="internalValue.proto" :suggestions="filteredProtos" dropdown
                 class="max-w-32 proto-autocomplete-in-group" @complete="searchProtos"
                 @update:model-value="onProtoChange" />
-            <InputText v-model="internalValue.host" :placeholder="placeholder || '0.0.0.0'" class="grow"
+            <InputText v-model="hostInputValue" :placeholder="placeholder || '0.0.0.0'" class="grow"
                 @focus="onHostFocus" @blur="onHostBlur" />
             <template v-if="!isNoPortProto">
                 <InputGroupAddon>
@@ -204,7 +160,7 @@ const onProtoChange = (newProto: string) => {
                 </div>
                 <div class="flex flex-col gap-2">
                     <label>{{ t('web.common.address') || 'Address' }}</label>
-                    <InputText v-model="internalValue.host" :placeholder="placeholder || '0.0.0.0'" class="w-full"
+                    <InputText v-model="hostInputValue" :placeholder="placeholder || '0.0.0.0'" class="w-full"
                         @focus="onHostFocus" @blur="onHostBlur" />
                 </div>
                 <div v-if="!isNoPortProto" class="flex flex-col gap-2">
