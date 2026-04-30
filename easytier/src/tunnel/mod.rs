@@ -141,6 +141,7 @@ pub trait TunnelConnector: Send {
     fn remote_url(&self) -> url::Url;
     fn set_bind_addrs(&mut self, _addrs: Vec<SocketAddr>) {}
     fn set_ip_version(&mut self, _ip_version: IpVersion) {}
+    fn set_resolved_addr(&mut self, _addr: SocketAddr) {}
 }
 
 pub fn build_url_from_socket_addr(addr: &String, scheme: &str) -> url::Url {
@@ -371,9 +372,13 @@ impl TryFrom<&url::Url> for TunnelScheme {
     }
 }
 
+pub(crate) fn get_scheme_by_url(l: &url::Url) -> Result<TunnelScheme, Error> {
+    l.try_into()
+}
+
 macro_rules! __matches_scheme__ {
     ($url:expr, $( $pattern:pat_param )|+ ) => {
-        matches!($crate::tunnel::TunnelScheme::try_from(($url).as_ref()), Ok($( $pattern )|+))
+        matches!($crate::tunnel::get_scheme_by_url(&$url), Ok($( $pattern )|+))
     };
 }
 
@@ -393,3 +398,22 @@ macro_rules! __matches_protocol__ {
 }
 
 pub(crate) use __matches_protocol__ as matches_protocol;
+
+#[cfg(test)]
+mod tests {
+    use super::{IpScheme, TunnelScheme, matches_scheme};
+
+    #[test]
+    fn matches_scheme_accepts_owned_url() {
+        let url: url::Url = "udp://[2001:db8::1]:11010".parse().unwrap();
+
+        assert!(matches_scheme!(url, TunnelScheme::Ip(IpScheme::Udp)));
+    }
+
+    #[test]
+    fn matches_scheme_accepts_borrowed_url() {
+        let url: url::Url = "udp://[2001:db8::1]:11010".parse().unwrap();
+
+        assert!(matches_scheme!(&url, TunnelScheme::Ip(IpScheme::Udp)));
+    }
+}

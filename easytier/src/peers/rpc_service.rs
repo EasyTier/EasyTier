@@ -13,9 +13,9 @@ use crate::{
             GetWhitelistRequest, GetWhitelistResponse, ListCredentialsRequest,
             ListCredentialsResponse, ListForeignNetworkRequest, ListForeignNetworkResponse,
             ListGlobalForeignNetworkRequest, ListGlobalForeignNetworkResponse, ListPeerRequest,
-            ListPeerResponse, ListRouteRequest, ListRouteResponse, PeerInfo, PeerManageRpc,
-            RevokeCredentialRequest, RevokeCredentialResponse, ShowNodeInfoRequest,
-            ShowNodeInfoResponse,
+            ListPeerResponse, ListPublicIpv6InfoRequest, ListPublicIpv6InfoResponse,
+            ListRouteRequest, ListRouteResponse, PeerInfo, PeerManageRpc, RevokeCredentialRequest,
+            RevokeCredentialResponse, ShowNodeInfoRequest, ShowNodeInfoResponse,
         },
         rpc_types::{self, controller::BaseController},
     },
@@ -97,6 +97,16 @@ impl PeerManageRpc for PeerManagerRpcService {
         }
 
         Ok(reply)
+    }
+
+    async fn list_public_ipv6_info(
+        &self,
+        _: BaseController,
+        _request: ListPublicIpv6InfoRequest,
+    ) -> Result<ListPublicIpv6InfoResponse, rpc_types::error::Error> {
+        Ok(weak_upgrade(&self.peer_manager)?
+            .get_local_public_ipv6_info()
+            .await)
     }
 
     async fn list_route(

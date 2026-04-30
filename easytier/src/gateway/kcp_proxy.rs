@@ -7,6 +7,7 @@ use std::{
 use anyhow::Context;
 use bytes::Bytes;
 use dashmap::DashMap;
+use guarden::defer;
 use kcp_sys::{
     endpoint::{ConnId, KcpEndpoint, KcpPacketReceiver},
     ffi_safe::KcpConfig,
@@ -359,7 +360,7 @@ impl KcpProxyDst {
                 transport_type: TcpProxyEntryTransportType::Kcp.into(),
             },
         );
-        crate::defer! {
+        defer! {
             proxy_entries.remove(&conn_id);
             if proxy_entries.capacity() - proxy_entries.len() > 16 {
                 proxy_entries.shrink_to_fit();

@@ -402,6 +402,528 @@ async fn ping6_test(from_netns: &str, target_ip: &str, payload_size: Option<usiz
     code.code().unwrap() == 0
 }
 
+fn run_cmd(program: &str, args: &[&str]) {
+    let output = std::process::Command::new(program)
+        .args(args)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{} {:?} failed: stdout={}, stderr={}",
+        program,
+        args,
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+fn run_cmd_output(program: &str, args: &[&str]) -> String {
+    let output = std::process::Command::new(program)
+        .args(args)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{} {:?} failed: stdout={}, stderr={}",
+        program,
+        args,
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8(output.stdout).unwrap()
+}
+
+fn run_ip(args: &[&str]) {
+    run_cmd("ip", args);
+}
+
+fn run_ip_in_ns(ns: &str, args: &[&str]) {
+    let mut cmd = vec!["netns", "exec", ns, "ip"];
+    cmd.extend_from_slice(args);
+    run_cmd("ip", &cmd);
+}
+
+fn run_ip_in_ns_output(ns: &str, args: &[&str]) -> String {
+    let mut cmd = vec!["netns", "exec", ns, "ip"];
+    cmd.extend_from_slice(args);
+    run_cmd_output("ip", &cmd)
+}
+
+fn run_sysctl_in_ns(ns: &str, assignment: &str) {
+    run_cmd("ip", &["netns", "exec", ns, "sysctl", "-qw", assignment]);
+}
+
+fn create_empty_netns(name: &str) {
+    del_netns(name);
+    run_ip(&["netns", "add", name]);
+    run_ip(&["netns", "exec", name, "ip", "link", "set", "lo", "up"]);
+}
+
+fn connect_ns_to_bridge(ns: &str, guest_if: &str, host_if: &str, bridge: &str) {
+    let _ = std::process::Command::new("ip")
+        .args(["link", "del", host_if])
+        .status();
+    run_ip(&[
+        "link", "add", host_if, "type", "veth", "peer", "name", guest_if,
+    ]);
+    run_ip(&["link", "set", guest_if, "netns", ns]);
+    run_ip(&["link", "set", host_if, "up"]);
+    run_cmd("brctl", &["addif", bridge, host_if]);
+    run_ip(&["netns", "exec", ns, "ip", "link", "set", guest_if, "up"]);
+}
+
+struct PublicIpv6Lab {
+    extra_namespaces: [&'static str; 2],
+    extra_bridges: [&'static str; 2],
+}
+
+impl PublicIpv6Lab {
+    const PROVIDER_NS: &'static str = "net_a";
+    const CLIENT_NS: &'static str = "net_b";
+    const UPSTREAM_NS: &'static str = "net_pubgw";
+    const SERVER_NS: &'static str = "net_pubsrv";
+    const WAN_BRIDGE: &'static str = "br_pubwan";
+    const SERVER_BRIDGE: &'static str = "br_pubsrv";
+    const PROVIDER_TUN: &'static str = "etpubv6p";
+    const CLIENT_TUN: &'static str = "etpubv6c";
+    const PROVIDER_PREFIX: &'static str = "2001:db8:100::/64";
+    const PROVIDER_DEFAULT_FROM: &'static str = "2001:db8:100::/64";
+    const PROVIDER_WAN_ADDR: &'static str = "2001:db8:ffff:1::2/64";
+    const UPSTREAM_WAN_ADDR: &'static str = "2001:db8:ffff:1::1/64";
+    const UPSTREAM_SERVER_ADDR: &'static str = "2001:db8:ffff:2::1/64";
+    const SERVER_ADDR: &'static str = "2001:db8:ffff:2::100/64";
+    const SERVER_IP: &'static str = "2001:db8:ffff:2::100";
+
+    fn setup() -> Self {
+        prepare_linux_namespaces();
+
+        del_netns(Self::UPSTREAM_NS);
+        del_netns(Self::SERVER_NS);
+        let _ = std::process::Command::new("ip")
+            .args(["link", "del", Self::WAN_BRIDGE])
+            .status();
+        let _ = std::process::Command::new("ip")
+            .args(["link", "del", Self::SERVER_BRIDGE])
+            .status();
+        let _ = std::process::Command::new("brctl")
+            .args(["delbr", Self::WAN_BRIDGE])
+            .status();
+        let _ = std::process::Command::new("brctl")
+            .args(["delbr", Self::SERVER_BRIDGE])
+            .status();
+
+        create_empty_netns(Self::UPSTREAM_NS);
+        create_empty_netns(Self::SERVER_NS);
+        prepare_bridge(Self::WAN_BRIDGE);
+        prepare_bridge(Self::SERVER_BRIDGE);
+        run_ip(&["link", "set", Self::WAN_BRIDGE, "up"]);
+        run_ip(&["link", "set", Self::SERVER_BRIDGE, "up"]);
+
+        connect_ns_to_bridge(
+            Self::PROVIDER_NS,
+            "pubwan0",
+            "veth_pubwan_p",
+            Self::WAN_BRIDGE,
+        );
+        connect_ns_to_bridge(
+            Self::UPSTREAM_NS,
+            "upwan0",
+            "veth_pubwan_u",
+            Self::WAN_BRIDGE,
+        );
+        connect_ns_to_bridge(
+            Self::UPSTREAM_NS,
+            "upsrv0",
+            "veth_pubsrv_u",
+            Self::SERVER_BRIDGE,
+        );
+        connect_ns_to_bridge(
+            Self::SERVER_NS,
+            "srv0",
+            "veth_pubsrv_s",
+            Self::SERVER_BRIDGE,
+        );
+
+        run_ip_in_ns(
+            Self::PROVIDER_NS,
+            &["addr", "add", Self::PROVIDER_WAN_ADDR, "dev", "pubwan0"],
+        );
+        run_ip_in_ns(
+            Self::UPSTREAM_NS,
+            &["addr", "add", Self::UPSTREAM_WAN_ADDR, "dev", "upwan0"],
+        );
+        run_ip_in_ns(
+            Self::UPSTREAM_NS,
+            &["addr", "add", Self::UPSTREAM_SERVER_ADDR, "dev", "upsrv0"],
+        );
+        run_ip_in_ns(
+            Self::SERVER_NS,
+            &["addr", "add", Self::SERVER_ADDR, "dev", "srv0"],
+        );
+
+        run_ip_in_ns(
+            Self::PROVIDER_NS,
+            &["link", "add", "pubprefix0", "type", "dummy"],
+        );
+        run_ip_in_ns(Self::PROVIDER_NS, &["link", "set", "pubprefix0", "up"]);
+        run_ip_in_ns(
+            Self::PROVIDER_NS,
+            &[
+                "-6",
+                "route",
+                "add",
+                Self::PROVIDER_PREFIX,
+                "dev",
+                "pubprefix0",
+            ],
+        );
+        run_ip_in_ns(
+            Self::PROVIDER_NS,
+            &[
+                "-6",
+                "route",
+                "add",
+                "default",
+                "from",
+                Self::PROVIDER_DEFAULT_FROM,
+                "via",
+                "2001:db8:ffff:1::1",
+                "dev",
+                "pubwan0",
+            ],
+        );
+
+        run_ip_in_ns(
+            Self::SERVER_NS,
+            &[
+                "-6",
+                "route",
+                "add",
+                "default",
+                "via",
+                "2001:db8:ffff:2::1",
+                "dev",
+                "srv0",
+            ],
+        );
+        run_ip_in_ns(
+            Self::UPSTREAM_NS,
+            &[
+                "-6",
+                "route",
+                "add",
+                Self::PROVIDER_PREFIX,
+                "via",
+                "2001:db8:ffff:1::2",
+                "dev",
+                "upwan0",
+            ],
+        );
+
+        run_sysctl_in_ns(Self::PROVIDER_NS, "net.ipv6.conf.all.forwarding=1");
+        run_sysctl_in_ns(Self::UPSTREAM_NS, "net.ipv6.conf.all.forwarding=1");
+
+        Self {
+            extra_namespaces: [Self::UPSTREAM_NS, Self::SERVER_NS],
+            extra_bridges: [Self::WAN_BRIDGE, Self::SERVER_BRIDGE],
+        }
+    }
+}
+
+impl Drop for PublicIpv6Lab {
+    fn drop(&mut self) {
+        for ns in self.extra_namespaces {
+            del_netns(ns);
+        }
+        for bridge in self.extra_bridges {
+            let _ = std::process::Command::new("ip")
+                .args(["link", "del", bridge])
+                .status();
+            let _ = std::process::Command::new("brctl")
+                .args(["delbr", bridge])
+                .status();
+        }
+    }
+}
+
+fn get_public_ipv6_config(
+    inst_name: &str,
+    netns: &str,
+    ipv4: &str,
+    dev_name: &str,
+    inst_id: uuid::Uuid,
+) -> TomlConfigLoader {
+    let config = get_inst_config(inst_name, Some(netns), ipv4, "fd00::1/64");
+    config.set_id(inst_id);
+    config.set_ipv6(None);
+    config.set_socks5_portal(None);
+    config.set_network_identity(NetworkIdentity {
+        network_name: "public_ipv6_auto_addr_test".to_string(),
+        network_secret: Some("public_ipv6_auto_addr_secret".to_string()),
+        network_secret_digest: None,
+    });
+    config.set_listeners(vec!["tcp://0.0.0.0:11010".parse().unwrap()]);
+    let mut flags = config.get_flags();
+    flags.dev_name = dev_name.to_string();
+    config.set_flags(flags);
+    config
+}
+
+async fn init_public_ipv6_two_node(
+    client_inst_id: uuid::Uuid,
+) -> (PublicIpv6Lab, Instance, Instance) {
+    let lab = PublicIpv6Lab::setup();
+
+    let provider_cfg = get_public_ipv6_config(
+        "provider_public_ipv6",
+        PublicIpv6Lab::PROVIDER_NS,
+        "10.144.144.1",
+        PublicIpv6Lab::PROVIDER_TUN,
+        uuid::Uuid::parse_str("11111111-1111-1111-1111-111111111111").unwrap(),
+    );
+    provider_cfg.set_ipv6_public_addr_provider(true);
+
+    let client_cfg = get_public_ipv6_config(
+        "client_public_ipv6",
+        PublicIpv6Lab::CLIENT_NS,
+        "10.144.144.2",
+        PublicIpv6Lab::CLIENT_TUN,
+        client_inst_id,
+    );
+    client_cfg.set_ipv6_public_addr_auto(true);
+
+    let mut provider = Instance::new(provider_cfg);
+    let mut client = Instance::new(client_cfg);
+
+    provider.run().await.unwrap();
+    client.run().await.unwrap();
+
+    provider
+        .get_conn_manager()
+        .add_connector(TcpTunnelConnector::new(
+            "tcp://10.1.1.2:11010".parse().unwrap(),
+        ));
+
+    wait_for_condition(
+        || async {
+            provider.get_peer_manager().list_routes().await.len() == 1
+                && client.get_peer_manager().list_routes().await.len() == 1
+        },
+        Duration::from_secs(8),
+    )
+    .await;
+
+    (lab, provider, client)
+}
+
+async fn wait_for_public_ipv6_addr(inst: &Instance) -> cidr::Ipv6Inet {
+    wait_for_condition(
+        || async {
+            inst.get_peer_manager()
+                .get_my_public_ipv6_addr()
+                .await
+                .is_some()
+        },
+        Duration::from_secs(10),
+    )
+    .await;
+    inst.get_peer_manager()
+        .get_my_public_ipv6_addr()
+        .await
+        .unwrap()
+}
+
+async fn wait_for_public_ipv6_route(inst: &Instance, target: cidr::Ipv6Inet) {
+    wait_for_condition(
+        || async {
+            inst.get_peer_manager()
+                .list_public_ipv6_routes()
+                .await
+                .contains(&target)
+        },
+        Duration::from_secs(10),
+    )
+    .await;
+}
+
+fn route_exists_in_ns(ns: &str, needle: &str) -> bool {
+    run_ip_in_ns_output(ns, &["-6", "route", "show"])
+        .lines()
+        .any(|line| line.contains(needle))
+}
+
+fn addr_exists_in_ns(ns: &str, dev: &str, needle: &str) -> bool {
+    run_ip_in_ns_output(ns, &["-6", "addr", "show", "dev", dev]).contains(needle)
+}
+
+#[tokio::test]
+#[serial_test::serial]
+pub async fn public_ipv6_auto_addr_end_to_end() {
+    let client_id = uuid::Uuid::parse_str("22222222-2222-2222-2222-222222222222").unwrap();
+    let (_lab, provider, client) = init_public_ipv6_two_node(client_id).await;
+
+    wait_for_condition(
+        || async {
+            provider
+                .get_global_ctx()
+                .get_advertised_ipv6_public_addr_prefix()
+                == Some(PublicIpv6Lab::PROVIDER_PREFIX.parse().unwrap())
+        },
+        Duration::from_secs(10),
+    )
+    .await;
+
+    let leased = wait_for_public_ipv6_addr(&client).await;
+    wait_for_public_ipv6_route(&provider, leased).await;
+
+    assert_eq!(
+        provider
+            .get_global_ctx()
+            .config
+            .get_ipv6_public_addr_prefix(),
+        None
+    );
+    assert_eq!(
+        provider
+            .get_global_ctx()
+            .get_advertised_ipv6_public_addr_prefix(),
+        Some(PublicIpv6Lab::PROVIDER_PREFIX.parse().unwrap())
+    );
+    let provider_prefix = PublicIpv6Lab::PROVIDER_PREFIX
+        .parse::<cidr::Ipv6Cidr>()
+        .unwrap();
+    assert_eq!(
+        provider
+            .get_peer_manager()
+            .get_my_info()
+            .await
+            .ipv6_public_addr_prefix,
+        Some(
+            cidr::Ipv6Inet::new(
+                provider_prefix.first_address(),
+                provider_prefix.network_length()
+            )
+            .unwrap()
+            .into()
+        )
+    );
+    let provider_info = provider
+        .get_peer_manager()
+        .get_local_public_ipv6_info()
+        .await;
+    let client_peer_id = client.get_peer_manager().get_my_info().await.peer_id;
+    assert_eq!(
+        provider_info.provider_prefix,
+        Some(
+            cidr::Ipv6Inet::new(
+                provider_prefix.first_address(),
+                provider_prefix.network_length()
+            )
+            .unwrap()
+            .into()
+        )
+    );
+    assert_eq!(provider_info.provider_leases.len(), 1);
+    assert_eq!(provider_info.provider_leases[0].peer_id, client_peer_id);
+    assert_eq!(
+        provider_info.provider_leases[0].inst_id,
+        client_id.to_string()
+    );
+    assert_eq!(
+        provider_info.provider_leases[0].leased_addr,
+        Some(leased.into())
+    );
+    assert!(
+        leased.address().segments()[0] & 0xfe00 != 0xfc00,
+        "leased address should not be unique-local: {leased}"
+    );
+
+    wait_for_condition(
+        || async {
+            addr_exists_in_ns(
+                PublicIpv6Lab::CLIENT_NS,
+                PublicIpv6Lab::CLIENT_TUN,
+                &leased.to_string(),
+            ) && route_exists_in_ns(
+                PublicIpv6Lab::CLIENT_NS,
+                &format!("default dev {}", PublicIpv6Lab::CLIENT_TUN),
+            ) && route_exists_in_ns(
+                PublicIpv6Lab::PROVIDER_NS,
+                &format!("{} dev {}", leased.address(), PublicIpv6Lab::PROVIDER_TUN),
+            )
+        },
+        Duration::from_secs(10),
+    )
+    .await;
+
+    wait_for_condition(
+        || async { ping6_test(PublicIpv6Lab::CLIENT_NS, PublicIpv6Lab::SERVER_IP, None).await },
+        Duration::from_secs(10),
+    )
+    .await;
+
+    wait_for_condition(
+        || async {
+            ping6_test(
+                PublicIpv6Lab::SERVER_NS,
+                leased.address().to_string().as_str(),
+                None,
+            )
+            .await
+        },
+        Duration::from_secs(10),
+    )
+    .await;
+
+    drop_insts(vec![provider, client]).await;
+}
+
+#[tokio::test]
+#[serial_test::serial]
+pub async fn public_ipv6_auto_addr_reconnect_reuses_same_address() {
+    let client_id = uuid::Uuid::parse_str("33333333-3333-3333-3333-333333333333").unwrap();
+    let (_lab, provider, client) = init_public_ipv6_two_node(client_id).await;
+    let first = wait_for_public_ipv6_addr(&client).await;
+
+    drop_insts(vec![client]).await;
+
+    let client_cfg = get_public_ipv6_config(
+        "client_public_ipv6_reconnect",
+        PublicIpv6Lab::CLIENT_NS,
+        "10.144.144.2",
+        PublicIpv6Lab::CLIENT_TUN,
+        client_id,
+    );
+    client_cfg.set_ipv6_public_addr_auto(true);
+    let mut client = Instance::new(client_cfg);
+    client.run().await.unwrap();
+    provider
+        .get_conn_manager()
+        .add_connector(TcpTunnelConnector::new(
+            "tcp://10.1.1.2:11010".parse().unwrap(),
+        ));
+
+    wait_for_condition(
+        || async {
+            provider.get_peer_manager().list_routes().await.len() == 1
+                && client.get_peer_manager().list_routes().await.len() == 1
+        },
+        Duration::from_secs(8),
+    )
+    .await;
+
+    let second = wait_for_public_ipv6_addr(&client).await;
+    assert_eq!(first, second);
+
+    wait_for_condition(
+        || async { ping6_test(PublicIpv6Lab::CLIENT_NS, PublicIpv6Lab::SERVER_IP, None).await },
+        Duration::from_secs(10),
+    )
+    .await;
+
+    drop_insts(vec![provider, client]).await;
+}
+
 #[rstest::rstest]
 #[tokio::test]
 #[serial_test::serial]
@@ -3077,7 +3599,15 @@ pub async fn config_patch_test() {
     };
     use crate::tunnel::common::tests::_tunnel_pingpong_netns_with_timeout;
 
-    let insts = init_three_node("udp").await;
+    let insts = init_three_node_ex(
+        "udp",
+        |cfg| {
+            cfg.set_ipv6(None);
+            cfg
+        },
+        false,
+    )
+    .await;
 
     check_route(
         "10.144.144.2/24",
@@ -3124,6 +3654,46 @@ pub async fn config_patch_test() {
         },
     );
 
+    // 测试1.1：修改公网 IPv6 provider 相关配置
+    let public_prefix = "2001:db8:100::/64";
+    let patch = InstanceConfigPatch {
+        ipv6_public_addr_provider: Some(true),
+        ipv6_public_addr_auto: Some(true),
+        ipv6_public_addr_prefix: Some(public_prefix.to_string()),
+        ..Default::default()
+    };
+    insts[1]
+        .get_config_patcher()
+        .apply_patch(patch)
+        .await
+        .unwrap();
+    assert!(
+        insts[1]
+            .get_global_ctx()
+            .config
+            .get_ipv6_public_addr_provider()
+    );
+    assert!(insts[1].get_global_ctx().config.get_ipv6_public_addr_auto());
+    assert_eq!(
+        insts[1]
+            .get_global_ctx()
+            .config
+            .get_ipv6_public_addr_prefix(),
+        Some(public_prefix.parse().unwrap())
+    );
+    assert!(
+        insts[1]
+            .get_global_ctx()
+            .get_feature_flags()
+            .ipv6_public_addr_provider
+    );
+    assert_eq!(
+        insts[1]
+            .get_global_ctx()
+            .get_advertised_ipv6_public_addr_prefix(),
+        Some(public_prefix.parse().unwrap())
+    );
+
     // 测试2: 端口转发
     let patch = InstanceConfigPatch {
         port_forwards: vec![PortForwardPatch {
@@ -3156,6 +3726,153 @@ pub async fn config_patch_test() {
     )
     .await;
     assert!(result.is_ok(), "Port forward pingpong should succeed");
+
+    drop_insts(insts).await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+#[serial_test::serial]
+pub async fn config_patch_disable_relay_data_test() {
+    use crate::proto::api::config::InstanceConfigPatch;
+
+    let insts = init_three_node_ex(
+        "udp",
+        |cfg| {
+            cfg.set_ipv6(None);
+            cfg
+        },
+        false,
+    )
+    .await;
+
+    let relay_peer_id = insts[1].peer_id();
+    let dst_peer_id = insts[2].peer_id();
+    assert!(!insts[1].get_global_ctx().get_flags().disable_relay_data);
+    assert!(
+        !insts[1]
+            .get_global_ctx()
+            .get_feature_flags()
+            .avoid_relay_data
+    );
+
+    check_route_ex(
+        insts[0].get_peer_manager().list_routes().await,
+        dst_peer_id,
+        |route| {
+            assert_eq!(route.next_hop_peer_id, relay_peer_id);
+            true
+        },
+    );
+
+    wait_for_condition(
+        || async { ping_test("net_a", "10.144.144.3", None).await },
+        Duration::from_secs(5),
+    )
+    .await;
+
+    insts[1]
+        .get_config_patcher()
+        .apply_patch(InstanceConfigPatch {
+            disable_relay_data: Some(true),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+
+    assert!(insts[1].get_global_ctx().get_flags().disable_relay_data);
+    assert!(
+        insts[1]
+            .get_global_ctx()
+            .config
+            .get_flags()
+            .disable_relay_data
+    );
+    assert!(
+        insts[1]
+            .get_global_ctx()
+            .get_feature_flags()
+            .avoid_relay_data
+    );
+
+    wait_for_condition(
+        || {
+            let peer_mgr = insts[0].get_peer_manager().clone();
+            async move {
+                peer_mgr.list_routes().await.iter().any(|route| {
+                    route.peer_id == relay_peer_id
+                        && route
+                            .feature_flag
+                            .as_ref()
+                            .map(|flag| flag.avoid_relay_data)
+                            .unwrap_or(false)
+                })
+            }
+        },
+        Duration::from_secs(5),
+    )
+    .await;
+
+    check_route_ex(
+        insts[0].get_peer_manager().list_routes().await,
+        dst_peer_id,
+        |route| {
+            assert_eq!(route.next_hop_peer_id, relay_peer_id);
+            true
+        },
+    );
+    assert!(
+        !ping_test("net_a", "10.144.144.3", None).await,
+        "traffic from inst1 to inst3 should be blocked while inst2 relay data is disabled"
+    );
+
+    insts[1]
+        .get_config_patcher()
+        .apply_patch(InstanceConfigPatch {
+            disable_relay_data: Some(false),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+
+    assert!(!insts[1].get_global_ctx().get_flags().disable_relay_data);
+    assert!(
+        !insts[1]
+            .get_global_ctx()
+            .config
+            .get_flags()
+            .disable_relay_data
+    );
+    assert!(
+        !insts[1]
+            .get_global_ctx()
+            .get_feature_flags()
+            .avoid_relay_data
+    );
+
+    wait_for_condition(
+        || {
+            let peer_mgr = insts[0].get_peer_manager().clone();
+            async move {
+                peer_mgr.list_routes().await.iter().any(|route| {
+                    route.peer_id == relay_peer_id
+                        && route
+                            .feature_flag
+                            .as_ref()
+                            .map(|flag| !flag.avoid_relay_data)
+                            .unwrap_or(false)
+                })
+            }
+        },
+        Duration::from_secs(5),
+    )
+    .await;
+
+    wait_for_condition(
+        || async { ping_test("net_a", "10.144.144.3", None).await },
+        Duration::from_secs(5),
+    )
+    .await;
 
     drop_insts(insts).await;
 }

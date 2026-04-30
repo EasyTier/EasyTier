@@ -39,6 +39,15 @@ core_clap:
   ipv6:
     en: "ipv6 address of this vpn node, can be used together with ipv4 for dual-stack operation"
     zh-CN: "此VPN节点的IPv6地址，可与IPv4一起使用以进行双栈操作"
+  ipv6_public_addr_provider:
+    en: "share this node's public IPv6 subnet with other peers so they can obtain public IPv6 addresses (Linux only)"
+    zh-CN: "将此节点的公网 IPv6 子网共享给其他节点，使它们也能获得公网 IPv6 地址（仅 Linux 支持）"
+  ipv6_public_addr_auto:
+    en: "auto-obtain a public IPv6 address from a peer that shares its IPv6 subnet"
+    zh-CN: "自动从共享了 IPv6 子网的对等节点获取一个公网 IPv6 地址"
+  ipv6_public_addr_prefix:
+    en: "manually specify the public IPv6 subnet to share, instead of auto-detecting from system routes"
+    zh-CN: "手动指定要共享的公网 IPv6 子网，不自动从系统路由检测"
   dhcp:
     en: "automatically determine and set IP address by Easytier, and the IP address starts from 10.0.0.1 by default. Warning, if there is an IP conflict in the network when using DHCP, the IP will be automatically changed."
     zh-CN: "由Easytier自动确定并设置IP地址，默认从10.0.0.1开始。警告：在使用DHCP时，如果网络中出现IP冲突，IP将自动更改。"

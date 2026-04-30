@@ -717,6 +717,24 @@ impl NetworkConfig {
             flags.use_smoltcp = use_smoltcp;
         }
 
+        if let Some(ipv6_public_addr_provider) = self.ipv6_public_addr_provider {
+            cfg.set_ipv6_public_addr_provider(ipv6_public_addr_provider);
+        }
+
+        if let Some(ipv6_public_addr_auto) = self.ipv6_public_addr_auto {
+            cfg.set_ipv6_public_addr_auto(ipv6_public_addr_auto);
+        }
+
+        if let Some(ipv6_public_addr_prefix) = self
+            .ipv6_public_addr_prefix
+            .as_ref()
+            .filter(|prefix| !prefix.is_empty())
+        {
+            cfg.set_ipv6_public_addr_prefix(Some(ipv6_public_addr_prefix.parse().with_context(
+                || format!("failed to parse ipv6 public address prefix: {ipv6_public_addr_prefix}"),
+            )?));
+        }
+
         if let Some(disable_ipv6) = self.disable_ipv6 {
             flags.enable_ipv6 = !disable_ipv6;
         }
@@ -801,6 +819,10 @@ impl NetworkConfig {
             flags.disable_upnp = disable_upnp;
         }
 
+        if let Some(disable_relay_data) = self.disable_relay_data {
+            flags.disable_relay_data = disable_relay_data;
+        }
+
         if let Some(disable_sym_hole_punching) = self.disable_sym_hole_punching {
             flags.disable_sym_hole_punching = disable_sym_hole_punching;
         }
@@ -865,6 +887,17 @@ impl NetworkConfig {
             result.virtual_ipv4 = Some(ipv4.address().to_string());
             result.network_length = Some(ipv4.network_length() as i32);
         }
+
+        if config.get_ipv6_public_addr_provider() != default_config.get_ipv6_public_addr_provider()
+        {
+            result.ipv6_public_addr_provider = Some(config.get_ipv6_public_addr_provider());
+        }
+        if config.get_ipv6_public_addr_auto() != default_config.get_ipv6_public_addr_auto() {
+            result.ipv6_public_addr_auto = Some(config.get_ipv6_public_addr_auto());
+        }
+        result.ipv6_public_addr_prefix = config
+            .get_ipv6_public_addr_prefix()
+            .map(|prefix| prefix.to_string());
 
         let peers = config.get_peers();
         result.networking_method = Some(NetworkingMethod::Manual as i32);
@@ -964,6 +997,7 @@ impl NetworkConfig {
         result.disable_tcp_hole_punching = Some(flags.disable_tcp_hole_punching);
         result.disable_udp_hole_punching = Some(flags.disable_udp_hole_punching);
         result.disable_upnp = Some(flags.disable_upnp);
+        result.disable_relay_data = Some(flags.disable_relay_data);
         result.disable_sym_hole_punching = Some(flags.disable_sym_hole_punching);
         result.enable_magic_dns = Some(flags.accept_dns);
         result.mtu = Some(flags.mtu as i32);

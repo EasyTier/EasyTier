@@ -160,7 +160,7 @@ impl From<RouteMessage> for Route {
 pub struct NetlinkIfConfiger {}
 
 impl NetlinkIfConfiger {
-    fn get_interface_index(name: &str) -> Result<u32, Error> {
+    pub(crate) fn get_interface_index(name: &str) -> Result<u32, Error> {
         let name = CString::new(name).with_context(|| "failed to convert interface name")?;
         match unsafe { libc::if_nametoindex(name.as_ptr()) } {
             0 => Err(std::io::Error::last_os_error().into()),
@@ -311,7 +311,7 @@ impl NetlinkIfConfiger {
         Self::set_flags_op(name, SIOCGIFFLAGS, InterfaceFlags::empty())
     }
 
-    fn list_routes() -> Result<Vec<RouteMessage>, Error> {
+    fn list_route_messages(address_family: AddressFamily) -> Result<Vec<RouteMessage>, Error> {
         let mut message = RouteMessage::default();
 
         message.header.table = RouteHeader::RT_TABLE_UNSPEC;
@@ -320,7 +320,7 @@ impl NetlinkIfConfiger {
         message.header.scope = RouteScope::Universe;
         message.header.kind = RouteType::Unicast;
 
-        message.header.address_family = AddressFamily::Inet;
+        message.header.address_family = address_family;
         message.header.destination_prefix_length = 0;
         message.header.source_prefix_length = 0;
 
@@ -366,6 +366,14 @@ impl NetlinkIfConfiger {
         }
 
         Ok(ret_vec)
+    }
+
+    fn list_routes() -> Result<Vec<RouteMessage>, Error> {
+        Self::list_route_messages(AddressFamily::Inet)
+    }
+
+    pub(crate) fn list_ipv6_route_messages() -> Result<Vec<RouteMessage>, Error> {
+        Self::list_route_messages(AddressFamily::Inet6)
     }
 }
 
@@ -551,12 +559,9 @@ impl IfConfiguerTrait for NetlinkIfConfiger {
         message.header.scope = RouteScope::Universe;
         message.header.kind = RouteType::Unicast;
 
-        // Add metric (cost) if specified
-        if let Some(cost) = cost {
-            message
-                .attributes
-                .push(RouteAttribute::Priority(cost as u32));
-        }
+        message
+            .attributes
+            .push(RouteAttribute::Priority(cost.unwrap_or(65535) as u32));
 
         message
             .attributes
@@ -564,9 +569,11 @@ impl IfConfiguerTrait for NetlinkIfConfiger {
                 name,
             )?));
 
-        message
-            .attributes
-            .push(RouteAttribute::Destination(RouteAddress::Inet6(address)));
+        if cidr_prefix != 0 {
+            message
+                .attributes
+                .push(RouteAttribute::Destination(RouteAddress::Inet6(address)));
+        }
 
         send_netlink_req_and_wait_one_resp(RouteNetlinkMessage::NewRoute(message), false)
     }
@@ -577,7 +584,7 @@ impl IfConfiguerTrait for NetlinkIfConfiger {
         address: std::net::Ipv6Addr,
         cidr_prefix: u8,
     ) -> Result<(), Error> {
-        let routes = Self::list_routes()?;
+        let routes = Self::list_route_messages(AddressFamily::Inet6)?;
         let ifidx = NetlinkIfConfiger::get_interface_index(name)?;
 
         for msg in routes {
@@ -598,29 +605,82 @@ impl IfConfiguerTrait for NetlinkIfConfiger {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::process::Command;
 
     const DUMMY_IFACE_NAME: &str = "dummy";
 
     fn run_cmd(cmd: &str) -> String {
-        let output = std::process::Command::new("sh")
+        let output = Command::new("sh")
             .arg("-c")
             .arg(cmd)
             .output()
             .expect("failed to execute process");
+        assert!(
+            output.status.success(),
+            "command failed: {cmd}\nstdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        );
         String::from_utf8(output.stdout).unwrap()
+    }
+
+    fn run_ip(args: &[&str]) {
+        let output = Command::new("ip")
+            .args(args)
+            .output()
+            .expect("failed to execute ip process");
+        assert!(
+            output.status.success(),
+            "ip command failed: {:?}\nstdout: {}\nstderr: {}",
+            args,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        );
+    }
+
+    fn test_iface_name(tag: &str) -> String {
+        format!("et{}{:x}", tag, std::process::id() & 0xffff)
+    }
+
+    struct ScopedDummyLink {
+        name: String,
+    }
+
+    impl ScopedDummyLink {
+        fn new(name: &str) -> Self {
+            let _ = Command::new("ip").args(["link", "del", name]).output();
+            run_ip(&["link", "add", name, "type", "dummy"]);
+            run_ip(&["link", "set", name, "up"]);
+            Self {
+                name: name.to_string(),
+            }
+        }
+    }
+
+    impl Drop for ScopedDummyLink {
+        fn drop(&mut self) {
+            let _ = Command::new("ip")
+                .args(["link", "del", &self.name])
+                .output();
+        }
     }
 
     struct PrepareEnv {}
     impl PrepareEnv {
         fn new() -> Self {
-            let _ = run_cmd(&format!("sudo ip link add {} type dummy", DUMMY_IFACE_NAME));
+            let _ = Command::new("ip")
+                .args(["link", "del", DUMMY_IFACE_NAME])
+                .output();
+            let _ = run_cmd(&format!("ip link add {} type dummy", DUMMY_IFACE_NAME));
             PrepareEnv {}
         }
     }
 
     impl Drop for PrepareEnv {
         fn drop(&mut self) {
-            let _ = run_cmd(&format!("sudo ip link del {}", DUMMY_IFACE_NAME));
+            let _ = Command::new("ip")
+                .args(["link", "del", DUMMY_IFACE_NAME])
+                .output();
         }
     }
 
@@ -700,5 +760,129 @@ mod tests {
             .map(|x| x.destination)
             .collect::<Vec<_>>();
         assert!(!routes.contains(&IpAddr::V4("10.5.5.0".parse().unwrap())));
+    }
+
+    #[serial_test::serial]
+    #[tokio::test]
+    async fn ipv6_addr_readback_test() {
+        let iface = test_iface_name("a");
+        let _link = ScopedDummyLink::new(&iface);
+        run_ip(&["-6", "addr", "add", "2001:db8:1234::2/64", "dev", &iface]);
+
+        let addrs = NetlinkIfConfiger::list_addresses(&iface).unwrap();
+        assert!(addrs.iter().any(|addr| {
+            addr.address() == IpAddr::V6("2001:db8:1234::2".parse().unwrap())
+                && addr.network_length() == 64
+        }));
+    }
+
+    #[serial_test::serial]
+    #[tokio::test]
+    async fn ipv6_route_readback_test() {
+        let wan_if = test_iface_name("rw");
+        let lan_if = test_iface_name("rl");
+        let _wan = ScopedDummyLink::new(&wan_if);
+        let _lan = ScopedDummyLink::new(&lan_if);
+        run_ip(&[
+            "-6",
+            "addr",
+            "add",
+            "2001:db8:100:ffff::2/64",
+            "dev",
+            &wan_if,
+        ]);
+        run_ip(&[
+            "-6",
+            "route",
+            "add",
+            "default",
+            "from",
+            "2001:db8:100::/56",
+            "dev",
+            &wan_if,
+        ]);
+        run_ip(&["-6", "route", "add", "2001:db8:100::/56", "dev", &lan_if]);
+
+        let wan_ifindex = NetlinkIfConfiger::get_interface_index(&wan_if).unwrap();
+        let lan_ifindex = NetlinkIfConfiger::get_interface_index(&lan_if).unwrap();
+        let routes = NetlinkIfConfiger::list_ipv6_route_messages().unwrap();
+
+        assert!(routes.iter().any(|route| {
+            route.header.kind == RouteType::Unicast
+                && route.header.source_prefix_length == 56
+                && route.attributes.iter().any(|attr| {
+                    matches!(
+                        attr,
+                        RouteAttribute::Source(RouteAddress::Inet6(addr))
+                            if *addr == "2001:db8:100::".parse::<std::net::Ipv6Addr>().unwrap()
+                    )
+                })
+                && route
+                    .attributes
+                    .iter()
+                    .any(|attr| matches!(attr, RouteAttribute::Oif(index) if *index == wan_ifindex))
+                && !route
+                    .attributes
+                    .iter()
+                    .any(|attr| matches!(attr, RouteAttribute::Destination(_)))
+        }));
+
+        assert!(routes.iter().any(|route| {
+            route.header.kind == RouteType::Unicast
+                && route.header.destination_prefix_length == 56
+                && route.attributes.iter().any(|attr| {
+                    matches!(
+                        attr,
+                        RouteAttribute::Destination(RouteAddress::Inet6(addr))
+                            if *addr == "2001:db8:100::".parse::<std::net::Ipv6Addr>().unwrap()
+                    )
+                })
+                && route
+                    .attributes
+                    .iter()
+                    .any(|attr| matches!(attr, RouteAttribute::Oif(index) if *index == lan_ifindex))
+        }));
+    }
+
+    #[serial_test::serial]
+    #[tokio::test]
+    async fn ipv6_route_remove_test() {
+        let iface = test_iface_name("rr");
+        let _link = ScopedDummyLink::new(&iface);
+        let ifcfg = NetlinkIfConfiger {};
+        let route_addr = "2001:db8:200::".parse::<std::net::Ipv6Addr>().unwrap();
+
+        ifcfg
+            .add_ipv6_route(&iface, route_addr, 56, None)
+            .await
+            .unwrap();
+
+        let ifindex = NetlinkIfConfiger::get_interface_index(&iface).unwrap();
+        let has_route = |routes: &[RouteMessage]| {
+            routes.iter().any(|route| {
+                route.header.destination_prefix_length == 56
+                    && route.attributes.iter().any(|attr| {
+                        matches!(
+                            attr,
+                            RouteAttribute::Destination(RouteAddress::Inet6(addr)) if *addr == route_addr
+                        )
+                    })
+                    && route
+                        .attributes
+                        .iter()
+                        .any(|attr| matches!(attr, RouteAttribute::Oif(index) if *index == ifindex))
+            })
+        };
+
+        let routes = NetlinkIfConfiger::list_ipv6_route_messages().unwrap();
+        assert!(has_route(&routes));
+
+        ifcfg
+            .remove_ipv6_route(&iface, route_addr, 56)
+            .await
+            .unwrap();
+
+        let routes = NetlinkIfConfiger::list_ipv6_route_messages().unwrap();
+        assert!(!has_route(&routes));
     }
 }

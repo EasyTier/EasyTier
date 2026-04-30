@@ -121,9 +121,8 @@ pub async fn socket_addrs(
 
 #[cfg(test)]
 mod tests {
-    use crate::defer;
-
     use super::*;
+    use guarden::defer;
 
     #[tokio::test]
     async fn test_socket_addrs() {
