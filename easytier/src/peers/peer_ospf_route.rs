@@ -1,6 +1,7 @@
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     fmt::Debug,
+    mem::discriminant,
     net::{IpAddr, Ipv4Addr, Ipv6Addr},
     sync::{
         Arc, Weak,
@@ -90,29 +91,24 @@ static REMOVE_UNREACHABLE_PEER_INFO_AFTER: Duration = Duration::from_secs(90);
 
 type Version = u32;
 
-/// Check if `child` CIDR is a subset of `parent` CIDR.
-/// Returns true if `child` is contained within `parent`, or if they are equal.
-fn cidr_is_subset(child: &IpCidr, parent: &IpCidr) -> bool {
-    match (child, parent) {
-        (IpCidr::V4(c), IpCidr::V4(p)) => {
-            p.first_address() <= c.first_address() && c.last_address() <= p.last_address()
-        }
-        (IpCidr::V6(c), IpCidr::V6(p)) => {
-            p.first_address() <= c.first_address() && c.last_address() <= p.last_address()
-        }
-        _ => false, // mixed v4/v6
+pub trait IpCidrExt {
+    fn covers(&self, other: &Self) -> bool;
+}
+
+impl IpCidrExt for IpCidr {
+    fn covers(&self, other: &Self) -> bool {
+        discriminant(other) == discriminant(self)
+            && self.first_address() <= other.first_address()
+            && other.last_address() <= self.last_address()
     }
 }
 
 /// Check if `child` CIDR is a subset of `parent` CIDR (both as string representations).
 fn cidr_is_subset_str(child: &str, parent: &str) -> bool {
-    let Ok(child_cidr) = child.parse::<IpCidr>() else {
+    let (Ok(c), Ok(p)) = (child.parse::<IpCidr>(), parent.parse::<IpCidr>()) else {
         return false;
     };
-    let Ok(parent_cidr) = parent.parse::<IpCidr>() else {
-        return false;
-    };
-    cidr_is_subset(&child_cidr, &parent_cidr)
+    p.covers(&c)
 }
 
 /// Patch specific fields in a raw DynamicMessage from a decoded RoutePeerInfo,
