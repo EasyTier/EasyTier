@@ -3,6 +3,7 @@
   "private": true,
   "pnpm": {
     "overrides": {
+      "caniuse-lite": "1.0.30001791",
       "minimatch": "10.2.4"
     }
   }
