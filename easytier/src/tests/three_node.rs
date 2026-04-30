@@ -3730,6 +3730,153 @@ pub async fn config_patch_test() {
     drop_insts(insts).await;
 }
 
+#[rstest::rstest]
+#[tokio::test]
+#[serial_test::serial]
+pub async fn config_patch_disable_relay_data_test() {
+    use crate::proto::api::config::InstanceConfigPatch;
+
+    let insts = init_three_node_ex(
+        "udp",
+        |cfg| {
+            cfg.set_ipv6(None);
+            cfg
+        },
+        false,
+    )
+    .await;
+
+    let relay_peer_id = insts[1].peer_id();
+    let dst_peer_id = insts[2].peer_id();
+    assert!(!insts[1].get_global_ctx().get_flags().disable_relay_data);
+    assert!(
+        !insts[1]
+            .get_global_ctx()
+            .get_feature_flags()
+            .avoid_relay_data
+    );
+
+    check_route_ex(
+        insts[0].get_peer_manager().list_routes().await,
+        dst_peer_id,
+        |route| {
+            assert_eq!(route.next_hop_peer_id, relay_peer_id);
+            true
+        },
+    );
+
+    wait_for_condition(
+        || async { ping_test("net_a", "10.144.144.3", None).await },
+        Duration::from_secs(5),
+    )
+    .await;
+
+    insts[1]
+        .get_config_patcher()
+        .apply_patch(InstanceConfigPatch {
+            disable_relay_data: Some(true),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+
+    assert!(insts[1].get_global_ctx().get_flags().disable_relay_data);
+    assert!(
+        insts[1]
+            .get_global_ctx()
+            .config
+            .get_flags()
+            .disable_relay_data
+    );
+    assert!(
+        insts[1]
+            .get_global_ctx()
+            .get_feature_flags()
+            .avoid_relay_data
+    );
+
+    wait_for_condition(
+        || {
+            let peer_mgr = insts[0].get_peer_manager().clone();
+            async move {
+                peer_mgr.list_routes().await.iter().any(|route| {
+                    route.peer_id == relay_peer_id
+                        && route
+                            .feature_flag
+                            .as_ref()
+                            .map(|flag| flag.avoid_relay_data)
+                            .unwrap_or(false)
+                })
+            }
+        },
+        Duration::from_secs(5),
+    )
+    .await;
+
+    check_route_ex(
+        insts[0].get_peer_manager().list_routes().await,
+        dst_peer_id,
+        |route| {
+            assert_eq!(route.next_hop_peer_id, relay_peer_id);
+            true
+        },
+    );
+    assert!(
+        !ping_test("net_a", "10.144.144.3", None).await,
+        "traffic from inst1 to inst3 should be blocked while inst2 relay data is disabled"
+    );
+
+    insts[1]
+        .get_config_patcher()
+        .apply_patch(InstanceConfigPatch {
+            disable_relay_data: Some(false),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+
+    assert!(!insts[1].get_global_ctx().get_flags().disable_relay_data);
+    assert!(
+        !insts[1]
+            .get_global_ctx()
+            .config
+            .get_flags()
+            .disable_relay_data
+    );
+    assert!(
+        !insts[1]
+            .get_global_ctx()
+            .get_feature_flags()
+            .avoid_relay_data
+    );
+
+    wait_for_condition(
+        || {
+            let peer_mgr = insts[0].get_peer_manager().clone();
+            async move {
+                peer_mgr.list_routes().await.iter().any(|route| {
+                    route.peer_id == relay_peer_id
+                        && route
+                            .feature_flag
+                            .as_ref()
+                            .map(|flag| !flag.avoid_relay_data)
+                            .unwrap_or(false)
+                })
+            }
+        },
+        Duration::from_secs(5),
+    )
+    .await;
+
+    wait_for_condition(
+        || async { ping_test("net_a", "10.144.144.3", None).await },
+        Duration::from_secs(5),
+    )
+    .await;
+
+    drop_insts(insts).await;
+}
+
 /// Generate SecureModeConfig with specified x25519 private key
 pub fn generate_secure_mode_config_with_key(
     private_key: &x25519_dalek::StaticSecret,

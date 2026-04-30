@@ -730,6 +730,17 @@ impl ZCPacket {
         }
     }
 
+    pub fn foreign_network_inner_packet_type(&self) -> Option<u8> {
+        if self.peer_manager_header()?.packet_type != PacketType::ForeignNetworkPacket as u8 {
+            return None;
+        }
+
+        let payload = self.payload();
+        let hdr = ForeignNetworkPacketHeader::ref_from_prefix(payload)?;
+        let inner_packet = payload.get(hdr.get_header_len()..)?;
+        PeerManagerHeader::ref_from_prefix(inner_packet).map(|hdr| hdr.packet_type)
+    }
+
     pub fn foreign_network_packet(mut self) -> Self {
         let hdr = self.foreign_network_hdr().unwrap();
         let foreign_hdr_len = hdr.get_header_len();
