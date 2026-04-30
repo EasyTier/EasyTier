@@ -217,7 +217,7 @@ pub struct GlobalCtx {
 
     flags: ArcSwap<Flags>,
 
-    // Caller-requested feature flags before config-derived fields are applied.
+    // Caller-requested feature flags before later config changes are applied.
     // In particular, avoid_relay_data has two sources: explicit feature updates
     // and the disable_relay_data config flag.
     base_feature_flags: AtomicCell<PeerFeatureFlag>,
@@ -588,15 +588,6 @@ impl GlobalCtx {
         self.feature_flags.load()
     }
 
-    fn store_base_feature_flags(&self, base_feature_flags: PeerFeatureFlag) {
-        self.base_feature_flags.store(base_feature_flags);
-        let flags = self.flags.load();
-        self.feature_flags.store(Self::derive_feature_flags(
-            flags.as_ref(),
-            base_feature_flags,
-        ));
-    }
-
     pub fn set_feature_flags(&self, flags: PeerFeatureFlag) {
         let mut base_feature_flags = flags;
         let current_feature_flags = self.feature_flags.load();
@@ -607,13 +598,23 @@ impl GlobalCtx {
         if flags.avoid_relay_data == current_feature_flags.avoid_relay_data {
             base_feature_flags.avoid_relay_data = self.base_feature_flags.load().avoid_relay_data;
         }
-        self.store_base_feature_flags(base_feature_flags);
+        self.base_feature_flags.store(base_feature_flags);
+
+        let mut effective_feature_flags = flags;
+        if self.flags.load().disable_relay_data {
+            effective_feature_flags.avoid_relay_data = true;
+        }
+        self.feature_flags.store(effective_feature_flags);
     }
 
     pub fn set_avoid_relay_data_feature_flag(&self, avoid_relay_data: bool) {
         let mut base_feature_flags = self.base_feature_flags.load();
         base_feature_flags.avoid_relay_data = avoid_relay_data;
-        self.store_base_feature_flags(base_feature_flags);
+        self.base_feature_flags.store(base_feature_flags);
+
+        let mut feature_flags = self.feature_flags.load();
+        feature_flags.avoid_relay_data = avoid_relay_data || self.flags.load().disable_relay_data;
+        self.feature_flags.store(feature_flags);
     }
 
     pub fn token_bucket_manager(&self) -> &TokenBucketManager {
@@ -852,6 +853,51 @@ pub mod tests {
         assert!(feature_flags.avoid_relay_data);
         assert!(feature_flags.is_public_server);
         assert!(!feature_flags.ipv6_public_addr_provider);
+    }
+
+    #[tokio::test]
+    async fn set_feature_flags_applies_current_advertised_values() {
+        let config = TomlConfigLoader::default();
+        let global_ctx = GlobalCtx::new(config);
+
+        let feature_flags = PeerFeatureFlag {
+            kcp_input: false,
+            no_relay_kcp: true,
+            quic_input: false,
+            no_relay_quic: true,
+            is_public_server: true,
+            ..Default::default()
+        };
+        global_ctx.set_feature_flags(feature_flags);
+
+        assert_eq!(global_ctx.get_feature_flags(), feature_flags);
+    }
+
+    #[tokio::test]
+    async fn set_feature_flags_keeps_disable_relay_data_effective() {
+        let config = TomlConfigLoader::default();
+        let global_ctx = GlobalCtx::new(config);
+
+        let mut flags = global_ctx.get_flags().clone();
+        flags.disable_relay_data = true;
+        global_ctx.set_flags(flags);
+
+        let mut feature_flags = global_ctx.get_feature_flags();
+        feature_flags.avoid_relay_data = false;
+        feature_flags.is_public_server = true;
+        global_ctx.set_feature_flags(feature_flags);
+
+        let advertised_feature_flags = global_ctx.get_feature_flags();
+        assert!(advertised_feature_flags.avoid_relay_data);
+        assert!(advertised_feature_flags.is_public_server);
+
+        let mut flags = global_ctx.get_flags().clone();
+        flags.disable_relay_data = false;
+        global_ctx.set_flags(flags);
+
+        let advertised_feature_flags = global_ctx.get_feature_flags();
+        assert!(!advertised_feature_flags.avoid_relay_data);
+        assert!(advertised_feature_flags.is_public_server);
     }
 
     #[tokio::test]
