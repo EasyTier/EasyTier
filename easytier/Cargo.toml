@@ -50,6 +50,7 @@ time = "0.3"
 toml = "0.8.12"
 chrono = { version = "0.4.37", features = ["serde"] }
 
+getset = "0.1.6"
 optional_struct = "0.5.2"
 
 guarden = "0.1"

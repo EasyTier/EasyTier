@@ -35,7 +35,7 @@ impl From<DnsConfigRaw> for DnsConfig {
         };
 
         let parsed = raw.clone().build(default);
-        Self::new(raw, parsed, ())
+        Self::new(parsed, raw, ())
     }
 }
 

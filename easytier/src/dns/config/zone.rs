@@ -79,7 +79,7 @@ impl TryFrom<ZoneConfigRaw> for ZoneConfig {
         let data = (&parsed).into();
         let _ = Zone::try_from(&data)?; // validation
 
-        Ok(Self::new(raw, parsed, data))
+        Ok(Self::new(parsed, raw, data))
     }
 }
 
@@ -107,6 +107,6 @@ impl ZoneConfig {
 
         let data = (&parsed).into();
 
-        Self::new(Default::default(), parsed, data)
+        Self::new(parsed, Default::default(), data)
     }
 }

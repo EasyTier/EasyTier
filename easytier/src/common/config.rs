@@ -16,6 +16,7 @@ use clap::ValueEnum;
 use clap::builder::PossibleValue;
 use derivative::Derivative;
 use derive_more::{Constructor, Deref};
+use getset::Getters;
 use optional_struct::Applicable;
 use serde::{Deserialize, Serialize};
 use std::fmt::{Debug, Display};
@@ -28,21 +29,23 @@ use std::{
 use strum::{Display, EnumString, VariantArray};
 use tokio::io::AsyncReadExt as _;
 
-#[derive(Derivative, Debug, Clone, Constructor, Deref, Deserialize)]
+#[derive(Derivative, Debug, Clone, Constructor, Getters, Deref, Deserialize)]
 #[derivative(PartialEq(bound = "Parsed: PartialEq"))]
 #[serde(try_from = "Raw")]
 #[serde(
     bound = "Raw: Deserialize<'de>, <ConfigBase<Raw, Parsed, Data> as TryFrom<Raw>>::Error: Display"
 )]
-pub struct ConfigBase<Raw, Parsed, Data>
+pub struct ConfigBase<Raw, Parsed, Data = ()>
 where
     Raw: Applicable<Base = Parsed>,
-    ConfigBase<Raw, Parsed, Data>: TryFrom<Raw, Error: Debug>,
+    ConfigBase<Raw, Parsed, Data>: TryFrom<Raw>,
 {
-    #[derivative(PartialEq = "ignore")]
-    raw: Raw,
     #[deref]
     parsed: Parsed,
+    #[getset(get)]
+    #[derivative(PartialEq = "ignore")]
+    raw: Raw,
+    #[getset(get)]
     #[derivative(PartialEq = "ignore")]
     data: Data,
 }
@@ -75,12 +78,12 @@ where
     Raw: Applicable<Base = Parsed>,
     ConfigBase<Raw, Parsed, Data>: TryFrom<Raw, Error: Debug>,
 {
-    pub fn into_raw(self) -> Raw {
-        self.raw
-    }
-
     pub fn into_parsed(self) -> Parsed {
         self.parsed
+    }
+
+    pub fn into_raw(self) -> Raw {
+        self.raw
     }
 
     pub fn into_data(self) -> Data {
