@@ -137,12 +137,13 @@ pub fn setup_socket_for_win<S: AsRawSocket>(
     }
 
     let socket = SOCKET(socket.as_raw_socket() as usize);
-    let optval = 1_i32.to_ne_bytes();
-    unsafe {
-        if setsockopt(socket, SOL_SOCKET, SO_EXCLUSIVEADDRUSE, Some(&optval)) == SOCKET_ERROR {
-            return Err(io::Error::last_os_error());
-        }
-    }
+
+    // let optval = 1_i32.to_ne_bytes();
+    // unsafe {
+    //     if setsockopt(socket, SOL_SOCKET, SO_EXCLUSIVEADDRUSE, Some(&optval)) == SOCKET_ERROR {
+    //         return Err(io::Error::last_os_error());
+    //     }
+    // }
 
     if let Some(iface) = bind_dev {
         set_ip_unicast_if(socket, bind_addr, &iface)?;
