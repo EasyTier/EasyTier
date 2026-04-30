@@ -217,6 +217,9 @@ pub struct GlobalCtx {
 
     flags: ArcSwap<Flags>,
 
+    // Caller-requested feature flags before config-derived fields are applied.
+    // In particular, avoid_relay_data has two sources: explicit feature updates
+    // and the disable_relay_data config flag.
     base_feature_flags: AtomicCell<PeerFeatureFlag>,
 
     feature_flags: AtomicCell<PeerFeatureFlag>,
@@ -597,6 +600,10 @@ impl GlobalCtx {
     pub fn set_feature_flags(&self, flags: PeerFeatureFlag) {
         let mut base_feature_flags = flags;
         let current_feature_flags = self.feature_flags.load();
+        // If the caller passes the current derived avoid_relay_data value, treat
+        // it as "unchanged" and preserve the base value. This lets
+        // disable_relay_data toggle the effective feature flag without erasing
+        // an explicit/non-whitelist avoid-relay preference.
         if flags.avoid_relay_data == current_feature_flags.avoid_relay_data {
             base_feature_flags.avoid_relay_data = self.base_feature_flags.load().avoid_relay_data;
         }

@@ -38,7 +38,7 @@ use crate::{
         route_trait::{ForeignNetworkRouteInfoMap, MockRoute, NextHopPolicy, RouteInterface},
         traffic_metrics::{
             InstanceLabelKind, LogicalTrafficMetrics, TrafficKind, TrafficMetricRecorder,
-            route_peer_info_instance_id, traffic_kind,
+            is_relay_data_packet_type, route_peer_info_instance_id, traffic_kind,
         },
     },
     proto::{
@@ -882,16 +882,7 @@ impl PeerManager {
     }
 
     fn is_relay_data_packet(packet_type: u8) -> bool {
-        packet_type == PacketType::Data as u8
-            || packet_type == PacketType::KcpSrc as u8
-            || packet_type == PacketType::KcpDst as u8
-            || packet_type == PacketType::QuicSrc as u8
-            || packet_type == PacketType::QuicDst as u8
-            || packet_type == PacketType::DataWithKcpSrcModified as u8
-            || packet_type == PacketType::DataWithQuicSrcModified as u8
-            || packet_type == PacketType::RelayHandshake as u8
-            || packet_type == PacketType::RelayHandshakeAck as u8
-            || packet_type == PacketType::ForeignNetworkPacket as u8
+        is_relay_data_packet_type(packet_type)
     }
 
     fn is_relay_data_zc_packet(packet: &ZCPacket) -> bool {
@@ -900,9 +891,14 @@ impl PeerManager {
         };
 
         if hdr.packet_type == PacketType::ForeignNetworkPacket as u8 {
-            return packet
-                .foreign_network_inner_packet_type()
-                .is_none_or(Self::is_relay_data_packet);
+            let inner_packet_type = packet.foreign_network_inner_packet_type();
+            if inner_packet_type.is_none() {
+                tracing::warn!(
+                    ?hdr,
+                    "foreign network packet has unparseable inner peer manager header"
+                );
+            }
+            return inner_packet_type.is_none_or(Self::is_relay_data_packet);
         }
 
         Self::is_relay_data_packet(hdr.packet_type)

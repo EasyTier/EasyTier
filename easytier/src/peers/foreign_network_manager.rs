@@ -56,7 +56,7 @@ use super::{
     route_trait::NextHopPolicy,
     traffic_metrics::{
         InstanceLabelKind, LogicalTrafficMetrics, TrafficKind, TrafficMetricRecorder,
-        route_peer_info_instance_id, traffic_kind,
+        is_relay_data_packet_type, route_peer_info_instance_id, traffic_kind,
     },
 };
 
@@ -69,12 +69,16 @@ pub trait GlobalForeignNetworkAccessor: Send + Sync + 'static {
 struct ForeignNetworkEntry {
     my_peer_id: PeerId,
 
+    // Node-global runtime flags, such as disable_relay_data, live on the parent
+    // context. The foreign context is scoped to the foreign network's OSPF view.
     parent_global_ctx: ArcGlobalCtx,
     global_ctx: ArcGlobalCtx,
     network: NetworkIdentity,
     peer_map: Arc<PeerMap>,
     relay_peer_map: Arc<RelayPeerMap>,
     peer_session_store: Arc<PeerSessionStore>,
+    // Static per-network permission from the whitelist check. disable_relay_data
+    // is the node-wide runtime override layered on top of this value.
     relay_data: bool,
     pm_packet_sender: Mutex<Option<PacketRecvChan>>,
 
@@ -96,13 +100,6 @@ struct ForeignNetworkEntry {
 }
 
 impl ForeignNetworkEntry {
-    fn is_relay_data_packet(packet_type: u8) -> bool {
-        traffic_kind(packet_type) == TrafficKind::Data
-            || packet_type == PacketType::RelayHandshake as u8
-            || packet_type == PacketType::RelayHandshakeAck as u8
-            || packet_type == PacketType::ForeignNetworkPacket as u8
-    }
-
     fn new(
         network: NetworkIdentity,
         // NOTICE: ospf route need my_peer_id be changed after restart.
@@ -240,6 +237,28 @@ impl ForeignNetworkEntry {
         }
     }
 
+    fn desired_avoid_relay_data_feature_flag(
+        parent_global_ctx: &ArcGlobalCtx,
+        relay_data: bool,
+    ) -> bool {
+        !relay_data || parent_global_ctx.get_feature_flags().avoid_relay_data
+    }
+
+    fn sync_parent_relay_data_feature_flag(
+        parent_global_ctx: &ArcGlobalCtx,
+        global_ctx: &ArcGlobalCtx,
+        relay_data: bool,
+    ) -> bool {
+        let avoid_relay_data =
+            Self::desired_avoid_relay_data_feature_flag(parent_global_ctx, relay_data);
+        if global_ctx.get_feature_flags().avoid_relay_data == avoid_relay_data {
+            return false;
+        }
+
+        global_ctx.set_avoid_relay_data_feature_flag(avoid_relay_data);
+        true
+    }
+
     fn build_foreign_global_ctx(
         network: &NetworkIdentity,
         global_ctx: ArcGlobalCtx,
@@ -267,9 +286,8 @@ impl ForeignNetworkEntry {
 
         let mut feature_flag = global_ctx.get_feature_flags();
         feature_flag.is_public_server = true;
-        if !relay_data {
-            feature_flag.avoid_relay_data = true;
-        }
+        feature_flag.avoid_relay_data =
+            Self::desired_avoid_relay_data_feature_flag(&global_ctx, relay_data);
         foreign_global_ctx.set_feature_flags(feature_flag);
 
         for u in global_ctx.get_running_listeners().into_iter() {
@@ -507,7 +525,7 @@ impl ForeignNetworkEntry {
                         "ignore packet in foreign network"
                     );
                 } else {
-                    if Self::is_relay_data_packet(packet_type) {
+                    if is_relay_data_packet_type(packet_type) {
                         let disable_relay_data = parent_global_ctx.flags_arc().disable_relay_data;
                         if !relay_data || disable_relay_data {
                             tracing::debug!(
@@ -604,10 +622,31 @@ impl ForeignNetworkEntry {
         });
     }
 
+    async fn run_parent_feature_flag_sync_routine(&self) {
+        let parent_global_ctx = self.parent_global_ctx.clone();
+        let global_ctx = self.global_ctx.clone();
+        let relay_data = self.relay_data;
+        self.tasks.lock().await.spawn(async move {
+            let mut parent_events = parent_global_ctx.subscribe();
+            loop {
+                ForeignNetworkEntry::sync_parent_relay_data_feature_flag(
+                    &parent_global_ctx,
+                    &global_ctx,
+                    relay_data,
+                );
+
+                if parent_events.recv().await.is_err() {
+                    parent_events = parent_global_ctx.subscribe();
+                }
+            }
+        });
+    }
+
     async fn prepare(&self, accessor: Box<dyn GlobalForeignNetworkAccessor>) {
         self.prepare_route(accessor).await;
         self.start_packet_recv().await;
         self.run_relay_session_gc_routine().await;
+        self.run_parent_feature_flag_sync_routine().await;
         self.peer_rpc.run();
         self.peer_center.init().await;
     }
@@ -1427,11 +1466,32 @@ pub mod tests {
         let mut flags = pm_center.get_global_ctx().get_flags();
         flags.disable_relay_data = true;
         pm_center.get_global_ctx().set_flags(flags);
+        pm_center
+            .get_global_ctx()
+            .issue_event(GlobalCtxEvent::ConfigPatched(Default::default()));
 
         let center_peer_id = pm_center
             .get_foreign_network_manager()
             .get_network_peer_id("net1")
             .unwrap();
+        wait_for_condition(
+            || {
+                let pma_net1 = pma_net1.clone();
+                async move {
+                    pma_net1.list_routes().await.iter().any(|route| {
+                        route.peer_id == center_peer_id
+                            && route
+                                .feature_flag
+                                .as_ref()
+                                .map(|flag| flag.avoid_relay_data)
+                                .unwrap_or(false)
+                    })
+                }
+            },
+            Duration::from_secs(5),
+        )
+        .await;
+
         let network_labels =
             LabelSet::new().with_label_type(LabelType::NetworkName("net1".to_string()));
         let forwarded_bytes_before = metric_value(
@@ -1739,6 +1799,81 @@ pub mod tests {
         assert!(ForeignNetworkManager::is_credential_pubkey_trusted(
             &entry, &pubkey
         ));
+    }
+
+    #[tokio::test]
+    async fn foreign_entry_feature_flag_tracks_parent_disable_relay_data_toggle() {
+        let global_ctx = get_mock_global_ctx_with_network(Some(NetworkIdentity::new(
+            "__access__".to_string(),
+            "access_secret".to_string(),
+        )));
+        let foreign_network = NetworkIdentity::new("net1".to_string(), "net1_secret".to_string());
+        let (pm_packet_sender, _pm_packet_recv) = create_packet_recv_chan();
+        let entry = ForeignNetworkEntry::new(
+            foreign_network,
+            1,
+            global_ctx.clone(),
+            true,
+            Arc::new(PeerSessionStore::new()),
+            pm_packet_sender,
+        );
+        assert!(!entry.global_ctx.get_feature_flags().avoid_relay_data);
+
+        entry.run_parent_feature_flag_sync_routine().await;
+
+        let mut flags = global_ctx.get_flags();
+        flags.disable_relay_data = true;
+        global_ctx.set_flags(flags);
+        global_ctx.issue_event(GlobalCtxEvent::ConfigPatched(Default::default()));
+
+        wait_for_condition(
+            || async { entry.global_ctx.get_feature_flags().avoid_relay_data },
+            Duration::from_secs(2),
+        )
+        .await;
+
+        let mut flags = global_ctx.get_flags();
+        flags.disable_relay_data = false;
+        global_ctx.set_flags(flags);
+        global_ctx.issue_event(GlobalCtxEvent::ConfigPatched(Default::default()));
+
+        wait_for_condition(
+            || async { !entry.global_ctx.get_feature_flags().avoid_relay_data },
+            Duration::from_secs(2),
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn foreign_entry_without_relay_data_keeps_avoid_feature_flag() {
+        let global_ctx = get_mock_global_ctx_with_network(Some(NetworkIdentity::new(
+            "__access__".to_string(),
+            "access_secret".to_string(),
+        )));
+        let foreign_network = NetworkIdentity::new("net1".to_string(), "net1_secret".to_string());
+        let (pm_packet_sender, _pm_packet_recv) = create_packet_recv_chan();
+        let entry = ForeignNetworkEntry::new(
+            foreign_network,
+            1,
+            global_ctx.clone(),
+            false,
+            Arc::new(PeerSessionStore::new()),
+            pm_packet_sender,
+        );
+
+        assert!(entry.global_ctx.get_feature_flags().avoid_relay_data);
+
+        let mut flags = global_ctx.get_flags();
+        flags.disable_relay_data = false;
+        global_ctx.set_flags(flags);
+
+        ForeignNetworkEntry::sync_parent_relay_data_feature_flag(
+            &global_ctx,
+            &entry.global_ctx,
+            entry.relay_data,
+        );
+
+        assert!(entry.global_ctx.get_feature_flags().avoid_relay_data);
     }
 
     #[test]
