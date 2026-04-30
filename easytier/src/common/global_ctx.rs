@@ -585,18 +585,28 @@ impl GlobalCtx {
         self.feature_flags.load()
     }
 
-    pub fn set_feature_flags(&self, flags: PeerFeatureFlag) {
-        let mut base_feature_flags = flags;
-        let current_feature_flags = self.feature_flags.load();
-        if flags.avoid_relay_data == current_feature_flags.avoid_relay_data {
-            base_feature_flags.avoid_relay_data = self.base_feature_flags.load().avoid_relay_data;
-        }
+    fn store_base_feature_flags(&self, base_feature_flags: PeerFeatureFlag) {
         self.base_feature_flags.store(base_feature_flags);
         let flags = self.flags.load();
         self.feature_flags.store(Self::derive_feature_flags(
             flags.as_ref(),
             base_feature_flags,
         ));
+    }
+
+    pub fn set_feature_flags(&self, flags: PeerFeatureFlag) {
+        let mut base_feature_flags = flags;
+        let current_feature_flags = self.feature_flags.load();
+        if flags.avoid_relay_data == current_feature_flags.avoid_relay_data {
+            base_feature_flags.avoid_relay_data = self.base_feature_flags.load().avoid_relay_data;
+        }
+        self.store_base_feature_flags(base_feature_flags);
+    }
+
+    pub fn set_avoid_relay_data_feature_flag(&self, avoid_relay_data: bool) {
+        let mut base_feature_flags = self.base_feature_flags.load();
+        base_feature_flags.avoid_relay_data = avoid_relay_data;
+        self.store_base_feature_flags(base_feature_flags);
     }
 
     pub fn token_bucket_manager(&self) -> &TokenBucketManager {

@@ -69,6 +69,7 @@ pub trait GlobalForeignNetworkAccessor: Send + Sync + 'static {
 struct ForeignNetworkEntry {
     my_peer_id: PeerId,
 
+    parent_global_ctx: ArcGlobalCtx,
     global_ctx: ArcGlobalCtx,
     network: NetworkIdentity,
     peer_map: Arc<PeerMap>,
@@ -95,6 +96,13 @@ struct ForeignNetworkEntry {
 }
 
 impl ForeignNetworkEntry {
+    fn is_relay_data_packet(packet_type: u8) -> bool {
+        traffic_kind(packet_type) == TrafficKind::Data
+            || packet_type == PacketType::RelayHandshake as u8
+            || packet_type == PacketType::RelayHandshakeAck as u8
+            || packet_type == PacketType::ForeignNetworkPacket as u8
+    }
+
     fn new(
         network: NetworkIdentity,
         // NOTICE: ospf route need my_peer_id be changed after restart.
@@ -205,6 +213,7 @@ impl ForeignNetworkEntry {
         Self {
             my_peer_id,
 
+            parent_global_ctx: global_ctx.clone(),
             global_ctx: foreign_global_ctx,
             network,
             peer_map,
@@ -412,6 +421,7 @@ impl ForeignNetworkEntry {
         let peer_map = self.peer_map.clone();
         let relay_peer_map = self.relay_peer_map.clone();
         let traffic_metrics = self.traffic_metrics.clone();
+        let parent_global_ctx = self.parent_global_ctx.clone();
         let relay_data = self.relay_data;
         let pm_sender = self.pm_packet_sender.lock().await.take().unwrap();
         let network_name = self.network.network_name.clone();
@@ -497,11 +507,16 @@ impl ForeignNetworkEntry {
                         "ignore packet in foreign network"
                     );
                 } else {
-                    if packet_type == PacketType::Data as u8
-                        || packet_type == PacketType::KcpSrc as u8
-                        || packet_type == PacketType::KcpDst as u8
-                    {
-                        if !relay_data {
+                    if Self::is_relay_data_packet(packet_type) {
+                        let disable_relay_data = parent_global_ctx.flags_arc().disable_relay_data;
+                        if !relay_data || disable_relay_data {
+                            tracing::debug!(
+                                ?from_peer_id,
+                                ?to_peer_id,
+                                packet_type,
+                                disable_relay_data,
+                                "drop foreign network relay data"
+                            );
                             continue;
                         }
                         if !bps_limiter.try_consume(len.into()) {
@@ -1398,6 +1413,71 @@ pub mod tests {
     }
 
     #[tokio::test]
+    async fn disable_relay_data_blocks_foreign_network_transit_data() {
+        let pm_center = create_mock_peer_manager_with_mock_stun(NatType::Unknown).await;
+        let pma_net1 = create_mock_peer_manager_for_foreign_network("net1").await;
+        let pmb_net1 = create_mock_peer_manager_for_foreign_network("net1").await;
+
+        connect_peer_manager(pma_net1.clone(), pm_center.clone()).await;
+        connect_peer_manager(pmb_net1.clone(), pm_center.clone()).await;
+        wait_route_appear(pma_net1.clone(), pmb_net1.clone())
+            .await
+            .unwrap();
+
+        let mut flags = pm_center.get_global_ctx().get_flags();
+        flags.disable_relay_data = true;
+        pm_center.get_global_ctx().set_flags(flags);
+
+        let center_peer_id = pm_center
+            .get_foreign_network_manager()
+            .get_network_peer_id("net1")
+            .unwrap();
+        let network_labels =
+            LabelSet::new().with_label_type(LabelType::NetworkName("net1".to_string()));
+        let forwarded_bytes_before = metric_value(
+            &pm_center,
+            MetricName::TrafficBytesForwarded,
+            network_labels.clone(),
+        );
+        let forwarded_packets_before = metric_value(
+            &pm_center,
+            MetricName::TrafficPacketsForwarded,
+            network_labels.clone(),
+        );
+
+        let mut transit_pkt = ZCPacket::new_with_payload(b"foreign-transit-disabled");
+        transit_pkt.fill_peer_manager_hdr(
+            pma_net1.my_peer_id(),
+            pmb_net1.my_peer_id(),
+            PacketType::Data as u8,
+        );
+        pma_net1
+            .get_foreign_network_client()
+            .send_msg(transit_pkt, center_peer_id)
+            .await
+            .unwrap();
+
+        tokio::time::sleep(Duration::from_millis(300)).await;
+
+        assert_eq!(
+            metric_value(
+                &pm_center,
+                MetricName::TrafficBytesForwarded,
+                network_labels.clone()
+            ),
+            forwarded_bytes_before
+        );
+        assert_eq!(
+            metric_value(
+                &pm_center,
+                MetricName::TrafficPacketsForwarded,
+                network_labels
+            ),
+            forwarded_packets_before
+        );
+    }
+
+    #[tokio::test]
     async fn foreign_network_transit_control_forwarding_records_control_forwarded_metrics() {
         let pm_center = create_mock_peer_manager_with_mock_stun(NatType::Unknown).await;
         let pma_net1 = create_mock_peer_manager_for_foreign_network("net1").await;
@@ -1408,6 +1488,10 @@ pub mod tests {
         wait_route_appear(pma_net1.clone(), pmb_net1.clone())
             .await
             .unwrap();
+
+        let mut flags = pm_center.get_global_ctx().get_flags();
+        flags.disable_relay_data = true;
+        pm_center.get_global_ctx().set_flags(flags);
 
         let center_peer_id = pm_center
             .get_foreign_network_manager()

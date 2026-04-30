@@ -263,9 +263,7 @@ impl PeerManager {
             .is_err()
         {
             // if local network is not in whitelist, avoid relay data when exist any other route path
-            let mut f = global_ctx.get_feature_flags();
-            f.avoid_relay_data = true;
-            global_ctx.set_feature_flags(f);
+            global_ctx.set_avoid_relay_data_feature_flag(true);
         }
 
         let is_secure_mode_enabled = global_ctx
@@ -784,10 +782,11 @@ impl PeerManager {
         let from_peer_id = pm_header.from_peer_id.get();
         let to_peer_id = pm_header.to_peer_id.get();
 
-        if disable_relay_data {
+        if disable_relay_data && Self::is_relay_data_zc_packet(&packet) {
             tracing::debug!(
                 ?from_peer_id,
                 ?to_peer_id,
+                inner_packet_type = ?packet.foreign_network_inner_packet_type(),
                 "drop foreign network relay data while relay data is disabled"
             );
             return Ok(());
@@ -895,6 +894,20 @@ impl PeerManager {
             || packet_type == PacketType::ForeignNetworkPacket as u8
     }
 
+    fn is_relay_data_zc_packet(packet: &ZCPacket) -> bool {
+        let Some(hdr) = packet.peer_manager_header() else {
+            return false;
+        };
+
+        if hdr.packet_type == PacketType::ForeignNetworkPacket as u8 {
+            return packet
+                .foreign_network_inner_packet_type()
+                .is_none_or(Self::is_relay_data_packet);
+        }
+
+        Self::is_relay_data_packet(hdr.packet_type)
+    }
+
     async fn start_peer_recv(&self) {
         let mut recv = self.packet_recv.lock().await.take().unwrap();
         let my_peer_id = self.my_peer_id;
@@ -962,6 +975,7 @@ impl PeerManager {
                 };
 
                 let buf_len = ret.buf_len();
+                let is_relay_data_packet = Self::is_relay_data_zc_packet(&ret);
                 let Some(hdr) = ret.mut_peer_manager_header() else {
                     tracing::warn!(?ret, "invalid packet, skip");
                     continue;
@@ -973,7 +987,7 @@ impl PeerManager {
                 let packet_type = hdr.packet_type;
                 let is_encrypted = hdr.is_encrypted();
                 if to_peer_id != my_peer_id {
-                    if disable_relay_data && Self::is_relay_data_packet(packet_type) {
+                    if disable_relay_data && is_relay_data_packet {
                         tracing::debug!(
                             ?from_peer_id,
                             ?to_peer_id,
@@ -2292,6 +2306,53 @@ mod tests {
         ] {
             assert!(!PeerManager::is_relay_data_packet(packet_type as u8));
         }
+    }
+
+    #[test]
+    fn disable_relay_data_inspects_foreign_network_inner_packet_type() {
+        let network_name = "net1".to_string();
+
+        let mut rpc_packet = ZCPacket::new_with_payload(b"rpc");
+        rpc_packet.fill_peer_manager_hdr(1, 2, PacketType::RpcReq as u8);
+        let mut foreign_rpc_packet =
+            ZCPacket::new_for_foreign_network(&network_name, 2, &rpc_packet);
+        foreign_rpc_packet.fill_peer_manager_hdr(10, 20, PacketType::ForeignNetworkPacket as u8);
+
+        assert_eq!(
+            foreign_rpc_packet.foreign_network_inner_packet_type(),
+            Some(PacketType::RpcReq as u8)
+        );
+        assert!(!PeerManager::is_relay_data_zc_packet(&foreign_rpc_packet));
+
+        let mut data_packet = ZCPacket::new_with_payload(b"data");
+        data_packet.fill_peer_manager_hdr(1, 2, PacketType::Data as u8);
+        let mut foreign_data_packet =
+            ZCPacket::new_for_foreign_network(&network_name, 2, &data_packet);
+        foreign_data_packet.fill_peer_manager_hdr(10, 20, PacketType::ForeignNetworkPacket as u8);
+
+        assert_eq!(
+            foreign_data_packet.foreign_network_inner_packet_type(),
+            Some(PacketType::Data as u8)
+        );
+        assert!(PeerManager::is_relay_data_zc_packet(&foreign_data_packet));
+    }
+
+    #[tokio::test]
+    async fn non_whitelisted_network_avoid_relay_survives_disable_relay_data_toggle() {
+        let global_ctx = get_mock_global_ctx();
+        let mut flags = global_ctx.get_flags();
+        flags.disable_relay_data = true;
+        flags.relay_network_whitelist = "other-network".to_string();
+        global_ctx.set_flags(flags);
+
+        let (packet_send, _packet_recv) = create_packet_recv_chan();
+        let _peer_mgr = PeerManager::new(RouteAlgoType::Ospf, global_ctx.clone(), packet_send);
+
+        let mut flags = global_ctx.get_flags();
+        flags.disable_relay_data = false;
+        global_ctx.set_flags(flags);
+
+        assert!(global_ctx.get_feature_flags().avoid_relay_data);
     }
 
     #[tokio::test]
