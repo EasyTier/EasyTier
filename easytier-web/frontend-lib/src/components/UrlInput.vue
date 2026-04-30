@@ -2,7 +2,7 @@
 import { AutoComplete, Button, Dialog, InputNumber, InputText } from 'primevue'
 import InputGroup from 'primevue/inputgroup'
 import InputGroupAddon from 'primevue/inputgroupaddon'
-import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 
 const props = defineProps<{
@@ -13,24 +13,7 @@ const props = defineProps<{
 const { t } = useI18n()
 const url = defineModel<string>({ required: true })
 const editing = ref(false)
-const container = ref<HTMLElement | null>(null)
-const internalCompact = ref(false)
 const hostFocused = ref(false)
-
-onMounted(() => {
-    if (container.value) {
-        const observer = new ResizeObserver(entries => {
-            for (const entry of entries) {
-                internalCompact.value = entry.contentRect.width < 400
-            }
-        })
-        observer.observe(container.value)
-
-        onUnmounted(() => {
-            observer.disconnect()
-        })
-    }
-})
 
 const parseUrl = (val: string | null | undefined): { proto: string; host: string; port: number | null } => {
     const getValidPort = (portStr: string, proto: string) => {
@@ -169,28 +152,30 @@ const onProtoChange = (newProto: string) => {
 </script>
 
 <template>
-    <div ref="container" class="w-full">
-        <InputGroup v-if="!internalCompact" class="w-full">
+    <div class="url-input-container w-full min-w-0 overflow-hidden">
+        <InputGroup class="url-input-full w-full min-w-0">
             <AutoComplete :model-value="internalValue.proto" :suggestions="filteredProtos" dropdown
                 class="max-w-32 proto-autocomplete-in-group" @complete="searchProtos"
                 @update:model-value="onProtoChange" />
-            <InputText v-model="internalValue.host" :placeholder="placeholder || '0.0.0.0'" class="grow"
+            <InputText v-model="internalValue.host" :placeholder="placeholder || '0.0.0.0'" class="grow min-w-0"
                 @focus="onHostFocus" @blur="onHostBlur" />
             <template v-if="!isNoPortProto">
                 <InputGroupAddon>
                     <span style="font-weight: bold">:</span>
                 </InputGroupAddon>
                 <InputNumber v-model="internalValue.port" :format="false" :min="1" :max="65535" class="max-w-24"
-                    :placeholder="String(protos[internalValue.proto] ?? 11010)"
-                    fluid />
+                    :placeholder="String(protos[internalValue.proto] ?? 11010)" fluid />
             </template>
+            <!-- Rendered in both responsive branches; keep action slot content free of side effects and duplicate IDs. -->
             <slot name="actions"></slot>
         </InputGroup>
 
-        <div v-else class="flex justify-between items-center p-2 border rounded w-full">
-            <span class="truncate mr-2">{{ url }}</span>
-            <div class="flex items-center">
-                <Button icon="pi pi-pencil" class="p-button-sm p-button-text" @click="editing = true" />
+        <div
+            class="url-input-compact flex justify-between items-center p-2 border rounded w-full min-w-0 overflow-hidden">
+            <span class="truncate mr-2 min-w-0 flex-1 overflow-hidden">{{ url }}</span>
+            <div class="flex items-center shrink-0">
+                <Button icon="pi pi-pencil" class="p-button-sm p-button-text" :aria-label="t('web.common.edit')"
+                    @click="editing = true" />
                 <slot name="actions"></slot>
             </div>
         </div>
@@ -222,6 +207,28 @@ const onProtoChange = (newProto: string) => {
 </template>
 
 <style scoped>
+.url-input-container {
+    container-type: inline-size;
+}
+
+.url-input-full {
+    display: none;
+}
+
+.url-input-compact {
+    display: flex;
+}
+
+@container (min-width: 400px) {
+    .url-input-full {
+        display: flex;
+    }
+
+    .url-input-compact {
+        display: none;
+    }
+}
+
 .proto-autocomplete-in-group,
 .proto-autocomplete-in-group :deep(.p-autocomplete-input),
 .proto-autocomplete-in-group :deep(.p-autocomplete-dropdown) {
