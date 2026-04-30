@@ -250,7 +250,6 @@ hickory-resolver = "0.26.0"
 hickory-server = { version = "0.26.0", features = ["resolver"], optional = true }
 
 bon = "3.9.1"
-derive_builder = "0.20.2"
 humantime-serde = "1.1.1"
 multimap = "0.10.1"
 version-compare = "0.2.0"

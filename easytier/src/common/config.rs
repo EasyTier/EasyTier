@@ -12,6 +12,7 @@ use crate::{
 };
 use anyhow::Context;
 use base64::{Engine as _, prelude::BASE64_STANDARD};
+use bon::Builder;
 use clap::ValueEnum;
 use clap::builder::PossibleValue;
 use derivative::Derivative;
@@ -509,11 +510,11 @@ pub struct ConsoleLoggerConfig {
     pub level: Option<String>,
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, derive_builder::Builder)]
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Builder)]
 pub struct LoggingConfig {
-    #[builder(setter(into, strip_option), default = None)]
+    #[builder(into)]
     pub file_logger: Option<FileLoggerConfig>,
-    #[builder(setter(into, strip_option), default = None)]
+    #[builder(into)]
     pub console_logger: Option<ConsoleLoggerConfig>,
 }
 
