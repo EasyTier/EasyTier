@@ -263,7 +263,7 @@ impl PeerManager {
             .is_err()
         {
             // if local network is not in whitelist, avoid relay data when exist any other route path
-            global_ctx.set_avoid_relay_data_feature_flag(true);
+            global_ctx.set_avoid_relay_data_preference(true);
         }
 
         let is_secure_mode_enabled = global_ctx
@@ -2129,7 +2129,7 @@ mod tests {
             },
         },
         proto::{
-            common::{CompressionAlgoPb, NatType, PeerFeatureFlag},
+            common::{CompressionAlgoPb, NatType},
             peer_rpc::SecureAuthLevel,
         },
         tunnel::{
@@ -3248,10 +3248,7 @@ mod tests {
         // when b's avoid_relay_data is true, a->c should route through d and e, cost is 3
         peer_mgr_b
             .get_global_ctx()
-            .set_feature_flags(PeerFeatureFlag {
-                avoid_relay_data: true,
-                ..Default::default()
-            });
+            .set_avoid_relay_data_preference(true);
         tokio::time::sleep(Duration::from_secs(2)).await;
         if wait_route_appear_with_cost(peer_mgr_a.clone(), peer_mgr_c.my_peer_id, Some(3))
             .await

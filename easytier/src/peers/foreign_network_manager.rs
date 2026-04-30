@@ -255,8 +255,7 @@ impl ForeignNetworkEntry {
             return false;
         }
 
-        global_ctx.set_avoid_relay_data_feature_flag(avoid_relay_data);
-        true
+        global_ctx.set_avoid_relay_data_preference(avoid_relay_data)
     }
 
     fn build_foreign_global_ctx(
@@ -288,7 +287,7 @@ impl ForeignNetworkEntry {
         feature_flag.is_public_server = true;
         feature_flag.avoid_relay_data =
             Self::desired_avoid_relay_data_feature_flag(&global_ctx, relay_data);
-        foreign_global_ctx.set_feature_flags(feature_flag);
+        foreign_global_ctx.set_base_advertised_feature_flags(feature_flag);
 
         for u in global_ctx.get_running_listeners().into_iter() {
             foreign_global_ctx.add_running_listener(u);

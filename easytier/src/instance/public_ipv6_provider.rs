@@ -361,16 +361,8 @@ fn apply_public_ipv6_provider_runtime_state(
     let prefix_changed = global_ctx.set_advertised_ipv6_public_addr_prefix(next_prefix);
 
     let next_provider_enabled = matches!(state, PublicIpv6ProviderRuntimeState::Active(_));
-    let feature_changed = {
-        let mut feature_flags = global_ctx.get_feature_flags();
-        if feature_flags.ipv6_public_addr_provider == next_provider_enabled {
-            false
-        } else {
-            feature_flags.ipv6_public_addr_provider = next_provider_enabled;
-            global_ctx.set_feature_flags(feature_flags);
-            true
-        }
-    };
+    let feature_changed =
+        global_ctx.set_ipv6_public_addr_provider_feature_flag(next_provider_enabled);
 
     prefix_changed || feature_changed
 }

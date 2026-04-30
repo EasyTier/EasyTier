@@ -501,10 +501,10 @@ async fn credential_relay_capability(#[case] allow_relay: bool) {
     // Create admin node
     let admin_config = create_admin_config("admin", Some("ns_adm"), "10.144.144.1", "fd00::1/64");
     let mut admin_inst = Instance::new(admin_config);
-    let mut ff = admin_inst.get_global_ctx().get_feature_flags();
     // if cred c allow relay, we set admin inst avoid relay (if other same-cost path available, admin will not relay data)
-    ff.avoid_relay_data = allow_relay;
-    admin_inst.get_global_ctx().set_feature_flags(ff);
+    admin_inst
+        .get_global_ctx()
+        .set_avoid_relay_data_preference(allow_relay);
     admin_inst.run().await.unwrap();
 
     let admin_peer_id = admin_inst.peer_id();
