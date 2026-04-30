@@ -271,6 +271,7 @@ fn create_need_p2p_admin_config() -> TomlConfigLoader {
     config
 }
 
+#[allow(clippy::too_many_arguments)]
 fn create_public_server_credential_config(
     credential_secret: &str,
     inst_name: &str,
