@@ -2283,8 +2283,6 @@ mod tests {
             PacketType::QuicDst,
             PacketType::DataWithKcpSrcModified,
             PacketType::DataWithQuicSrcModified,
-            PacketType::RelayHandshake,
-            PacketType::RelayHandshakeAck,
             PacketType::ForeignNetworkPacket,
         ] {
             assert!(PeerManager::is_relay_data_packet(packet_type as u8));
@@ -2299,6 +2297,8 @@ mod tests {
             PacketType::NoiseHandshakeMsg1,
             PacketType::NoiseHandshakeMsg2,
             PacketType::NoiseHandshakeMsg3,
+            PacketType::RelayHandshake,
+            PacketType::RelayHandshakeAck,
         ] {
             assert!(!PeerManager::is_relay_data_packet(packet_type as u8));
         }

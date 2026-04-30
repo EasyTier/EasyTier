@@ -14,12 +14,16 @@ use crate::{
     },
     instance::instance::Instance,
     tests::three_node::{generate_secure_mode_config, generate_secure_mode_config_with_key},
-    tunnel::{common::tests::wait_for_condition, tcp::TcpTunnelConnector},
+    tunnel::{common::tests::wait_for_condition, tcp::TcpTunnelConnector, udp::UdpTunnelConnector},
 };
 
 use super::{add_ns_to_bridge, create_netns, del_netns, drop_insts, ping_test};
 
 use rstest::rstest;
+
+const PUBLIC_SERVER_NETWORK_NAME: &str = "__public_server__";
+const PUBLIC_SERVER_SHARED_SECRET: &str = "public-server-shared-secret";
+const NEED_P2P_ADMIN_NETWORK_NAME: &str = "need_p2p_credential_test_network";
 
 /// Prepare network namespaces for credential tests
 /// Topology:
@@ -219,6 +223,296 @@ fn create_shared_config(
     ));
     config.set_secure_mode(Some(generate_secure_mode_config()));
     config
+}
+
+fn create_public_server_config() -> TomlConfigLoader {
+    let config = TomlConfigLoader::default();
+    config.set_inst_name(PUBLIC_SERVER_NETWORK_NAME.to_string());
+    config.set_hostname(Some("public-server".to_string()));
+    config.set_netns(Some("ns_adm".to_string()));
+    config.set_listeners(vec!["udp://0.0.0.0:11010".parse().unwrap()]);
+    config.set_network_identity(NetworkIdentity::new(
+        PUBLIC_SERVER_NETWORK_NAME.to_string(),
+        PUBLIC_SERVER_SHARED_SECRET.to_string(),
+    ));
+    config.set_secure_mode(Some(generate_secure_mode_config()));
+
+    let mut flags = config.get_flags();
+    flags.no_tun = true;
+    flags.private_mode = true;
+    flags.relay_all_peer_rpc = true;
+    flags.relay_network_whitelist = "".to_string();
+    config.set_flags(flags);
+
+    config
+}
+
+fn create_need_p2p_admin_config() -> TomlConfigLoader {
+    let config = TomlConfigLoader::default();
+    config.set_inst_name(NEED_P2P_ADMIN_NETWORK_NAME.to_string());
+    config.set_hostname(Some("need-p2p-admin".to_string()));
+    config.set_netns(Some("ns_c3".to_string()));
+    config.set_listeners(vec!["tcp://0.0.0.0:11020".parse().unwrap()]);
+    config.set_network_identity(NetworkIdentity::new(
+        NEED_P2P_ADMIN_NETWORK_NAME.to_string(),
+        PUBLIC_SERVER_SHARED_SECRET.to_string(),
+    ));
+    config.set_secure_mode(Some(generate_secure_mode_config()));
+
+    let mut flags = config.get_flags();
+    flags.no_tun = true;
+    flags.relay_all_peer_rpc = true;
+    flags.need_p2p = true;
+    flags.disable_udp_hole_punching = true;
+    flags.disable_tcp_hole_punching = true;
+    flags.disable_sym_hole_punching = true;
+    config.set_flags(flags);
+
+    config
+}
+
+fn create_public_server_credential_config(
+    credential_secret: &str,
+    inst_name: &str,
+    hostname: &str,
+    ns: &str,
+    ipv4: &str,
+    ipv6: &str,
+    tcp_listener_port: u16,
+    udp_listener_port: u16,
+    proxy_cidrs: &[&str],
+) -> TomlConfigLoader {
+    let config = create_credential_config_from_secret(
+        NEED_P2P_ADMIN_NETWORK_NAME.to_string(),
+        credential_secret,
+        inst_name,
+        Some(ns),
+        ipv4,
+        ipv6,
+    );
+    config.set_hostname(Some(hostname.to_string()));
+    config.set_listeners(vec![
+        format!("tcp://0.0.0.0:{tcp_listener_port}")
+            .parse()
+            .unwrap(),
+        format!("udp://0.0.0.0:{udp_listener_port}")
+            .parse()
+            .unwrap(),
+    ]);
+    for cidr in proxy_cidrs {
+        config
+            .add_proxy_cidr((*cidr).parse().unwrap(), None)
+            .unwrap();
+    }
+
+    let mut flags = config.get_flags();
+    flags.disable_p2p = true;
+    config.set_flags(flags);
+
+    config
+}
+
+async fn wait_direct_peer(inst: &Instance, peer_id: u32, timeout: Duration, label: &str) {
+    wait_for_condition(
+        || async {
+            let peers = inst.get_peer_manager().get_peer_map().list_peers();
+            let connected = peers.contains(&peer_id);
+            println!("{label}: direct peers={:?}, target={}", peers, peer_id);
+            connected
+        },
+        timeout,
+    )
+    .await;
+}
+
+async fn wait_route_cost(inst: &Instance, peer_id: u32, cost: i32, timeout: Duration, label: &str) {
+    wait_for_condition(
+        || async {
+            let routes = inst.get_peer_manager().list_routes().await;
+            let matched = routes
+                .iter()
+                .any(|route| route.peer_id == peer_id && route.cost == cost);
+            println!(
+                "{label}: routes={:?}, target={}, cost={}",
+                routes
+                    .iter()
+                    .map(|route| (route.peer_id, route.cost))
+                    .collect::<Vec<_>>(),
+                peer_id,
+                cost
+            );
+            matched
+        },
+        timeout,
+    )
+    .await;
+}
+
+async fn wait_foreign_network_count(inst: &Instance, expected: usize, timeout: Duration) {
+    wait_for_condition(
+        || async {
+            let foreign_networks = inst
+                .get_peer_manager()
+                .get_foreign_network_manager()
+                .list_foreign_networks()
+                .await
+                .foreign_networks;
+            println!("foreign networks: {:?}", foreign_networks);
+            foreign_networks.len() == expected
+        },
+        timeout,
+    )
+    .await;
+}
+
+/// Regression coverage for a public-server-mediated credential topology:
+/// Public server <- admin peer (need_p2p) <- two credential peers.
+///
+/// Credential peers set `disable_p2p=true`, while the admin peer advertises `need_p2p=true`.
+/// The credential peers should still proactively build direct TCP peers with the admin peer
+/// through peer RPC forwarded by the public server.
+#[tokio::test]
+#[serial_test::serial]
+async fn credential_peers_p2p_to_need_p2p_admin_through_public_server() {
+    prepare_credential_network();
+
+    let mut public_server_inst = Instance::new(create_public_server_config());
+    public_server_inst.run().await.unwrap();
+
+    let mut admin_inst = Instance::new(create_need_p2p_admin_config());
+    admin_inst.run().await.unwrap();
+    admin_inst
+        .get_conn_manager()
+        .add_connector(UdpTunnelConnector::new(
+            "udp://10.1.1.1:11010".parse().unwrap(),
+        ));
+
+    wait_foreign_network_count(&public_server_inst, 1, Duration::from_secs(10)).await;
+
+    let (_credential_a_id, credential_a_secret) = admin_inst
+        .get_global_ctx()
+        .get_credential_manager()
+        .generate_credential_with_options(
+            vec![],
+            false,
+            vec!["10.1.0.0/24".to_string()],
+            Duration::from_secs(3600),
+            Some("credential-peer-a".to_string()),
+            false,
+        );
+    let (_credential_b_id, credential_b_secret) = admin_inst
+        .get_global_ctx()
+        .get_credential_manager()
+        .generate_credential_with_options(
+            vec![],
+            false,
+            vec![],
+            Duration::from_secs(3600),
+            Some("credential-peer-b".to_string()),
+            false,
+        );
+    admin_inst
+        .get_global_ctx()
+        .issue_event(GlobalCtxEvent::CredentialChanged);
+
+    wait_foreign_network_count(&public_server_inst, 1, Duration::from_secs(10)).await;
+
+    let mut credential_a_inst = Instance::new(create_public_server_credential_config(
+        &credential_a_secret,
+        "credential-peer-a",
+        "credential-a",
+        "ns_c1",
+        "10.154.0.1",
+        "fd00::1/64",
+        11030,
+        11031,
+        &["10.1.0.0/24"],
+    ));
+    let mut credential_b_inst = Instance::new(create_public_server_credential_config(
+        &credential_b_secret,
+        "credential-peer-b",
+        "credential-b",
+        "ns_c2",
+        "10.154.0.2",
+        "fd00::2/64",
+        11040,
+        11041,
+        &[],
+    ));
+    credential_a_inst.run().await.unwrap();
+    credential_b_inst.run().await.unwrap();
+
+    credential_a_inst
+        .get_conn_manager()
+        .add_connector(UdpTunnelConnector::new(
+            "udp://10.1.1.1:11010".parse().unwrap(),
+        ));
+    credential_b_inst
+        .get_conn_manager()
+        .add_connector(UdpTunnelConnector::new(
+            "udp://10.1.1.1:11010".parse().unwrap(),
+        ));
+
+    let admin_peer_id = admin_inst.peer_id();
+    let credential_a_peer_id = credential_a_inst.peer_id();
+    let credential_b_peer_id = credential_b_inst.peer_id();
+    println!(
+        "admin={}, credential_a={}, credential_b={}",
+        admin_peer_id, credential_a_peer_id, credential_b_peer_id
+    );
+
+    wait_direct_peer(
+        &credential_a_inst,
+        admin_peer_id,
+        Duration::from_secs(30),
+        "credential_a -> admin",
+    )
+    .await;
+    wait_direct_peer(
+        &credential_b_inst,
+        admin_peer_id,
+        Duration::from_secs(30),
+        "credential_b -> admin",
+    )
+    .await;
+    wait_direct_peer(
+        &admin_inst,
+        credential_a_peer_id,
+        Duration::from_secs(10),
+        "admin -> credential_a",
+    )
+    .await;
+    wait_direct_peer(
+        &admin_inst,
+        credential_b_peer_id,
+        Duration::from_secs(10),
+        "admin -> credential_b",
+    )
+    .await;
+    wait_route_cost(
+        &credential_a_inst,
+        admin_peer_id,
+        1,
+        Duration::from_secs(10),
+        "credential_a route to admin",
+    )
+    .await;
+    wait_route_cost(
+        &credential_b_inst,
+        admin_peer_id,
+        1,
+        Duration::from_secs(10),
+        "credential_b route to admin",
+    )
+    .await;
+
+    drop_insts(vec![
+        public_server_inst,
+        admin_inst,
+        credential_a_inst,
+        credential_b_inst,
+    ])
+    .await;
 }
 
 fn create_generated_credential_config(
