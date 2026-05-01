@@ -35,7 +35,7 @@ pub(crate) struct PeerCenterInfoEntry {
     update_time: std::time::Instant,
 }
 
-#[derive(Default)]
+#[derive(Debug, Default)]
 pub(crate) struct PeerCenterServerGlobalData {
     pub(crate) global_peer_map: DashMap<SrcDstPeerPair, PeerCenterInfoEntry>,
     pub(crate) peer_report_time: DashMap<PeerId, std::time::Instant>,
@@ -58,27 +58,33 @@ pub(crate) fn get_global_data(node_id: PeerId) -> Arc<PeerCenterServerGlobalData
 pub struct PeerCenterServer {
     // every peer has its own server, so use per-struct dash map is ok.
     my_node_id: PeerId,
+    data: Arc<PeerCenterServerGlobalData>,
     tasks: Arc<JoinSet<()>>,
 }
 
 impl PeerCenterServer {
     pub fn new(my_node_id: PeerId) -> Self {
+        let data = get_global_data(my_node_id);
+        let weak_data = Arc::downgrade(&data);
         let mut tasks = JoinSet::new();
         tasks.spawn(async move {
             loop {
                 tokio::time::sleep(std::time::Duration::from_secs(10)).await;
-                PeerCenterServer::clean_outdated_peer(my_node_id).await;
+                let Some(data) = weak_data.upgrade() else {
+                    break;
+                };
+                PeerCenterServer::clean_outdated_peer_data(&data).await;
             }
         });
 
         PeerCenterServer {
             my_node_id,
+            data,
             tasks: Arc::new(tasks),
         }
     }
 
-    async fn clean_outdated_peer(my_node_id: PeerId) {
-        let data = get_global_data(my_node_id);
+    async fn clean_outdated_peer_data(data: &PeerCenterServerGlobalData) {
         data.peer_report_time.retain(|_, v| {
             std::time::Instant::now().duration_since(*v) < std::time::Duration::from_secs(180)
         });
@@ -88,8 +94,7 @@ impl PeerCenterServer {
         });
     }
 
-    fn calc_global_digest(my_node_id: PeerId) -> Digest {
-        let data = get_global_data(my_node_id);
+    fn calc_global_digest_data(data: &PeerCenterServerGlobalData) -> Digest {
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         data.global_peer_map
             .iter()
@@ -99,6 +104,18 @@ impl PeerCenterServer {
             .into_iter()
             .for_each(|v| v.hash(&mut hasher));
         hasher.finish()
+    }
+}
+
+impl Drop for PeerCenterServer {
+    fn drop(&mut self) {
+        if Arc::strong_count(&self.tasks) != 1 {
+            return;
+        }
+
+        GLOBAL_DATA.remove_if(&self.my_node_id, |_, data| {
+            Arc::ptr_eq(data, &self.data) && Arc::strong_count(data) <= 2
+        });
     }
 }
 
@@ -117,7 +134,7 @@ impl PeerCenterRpc for PeerCenterServer {
 
         tracing::debug!("receive report_peers");
 
-        let data = get_global_data(self.my_node_id);
+        let data = &self.data;
         data.peer_report_time
             .insert(my_peer_id, std::time::Instant::now());
 
@@ -134,7 +151,7 @@ impl PeerCenterRpc for PeerCenterServer {
         }
 
         data.digest
-            .store(PeerCenterServer::calc_global_digest(self.my_node_id));
+            .store(PeerCenterServer::calc_global_digest_data(data));
 
         Ok(ReportPeersResponse::default())
     }
@@ -147,7 +164,7 @@ impl PeerCenterRpc for PeerCenterServer {
     ) -> Result<GetGlobalPeerMapResponse, rpc_types::error::Error> {
         let digest = req.digest;
 
-        let data = get_global_data(self.my_node_id);
+        let data = &self.data;
         if digest == data.digest.load() && digest != 0 {
             return Ok(GetGlobalPeerMapResponse::default());
         }
@@ -169,5 +186,26 @@ impl PeerCenterRpc for PeerCenterServer {
             global_peer_map: global_peer_map.map,
             digest: Some(data.digest.load()),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn global_data_removed_when_last_server_drops() {
+        let peer_id = u32::MAX - 17;
+        GLOBAL_DATA.remove(&peer_id);
+
+        let server = PeerCenterServer::new(peer_id);
+        assert!(GLOBAL_DATA.contains_key(&peer_id));
+
+        let server_clone = server.clone();
+        drop(server);
+        assert!(GLOBAL_DATA.contains_key(&peer_id));
+
+        drop(server_clone);
+        assert!(!GLOBAL_DATA.contains_key(&peer_id));
     }
 }
