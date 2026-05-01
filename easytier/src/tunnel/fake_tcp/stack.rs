@@ -517,8 +517,11 @@ impl Stack {
                             {
                                 trace!(?tcp_packet, "Received SYN packet for port {}, ignoring", tcp_packet.get_destination());
                                 continue;
-                            } else if (tcp_packet.get_flags() & tcp::TcpFlags::RST) == 0 {
+                            } else if (tcp_packet.get_flags() & tcp::TcpFlags::RST) != 0 {
                                 info!("Unknown RST TCP packet from {}, ignoring", remote_addr);
+                                continue;
+                            } else {
+                                trace!("Unknown TCP packet from {}, ignoring", remote_addr);
                                 continue;
                             }
                         }

@@ -115,6 +115,7 @@ export interface NetworkConfig {
 
   use_smoltcp?: boolean
   disable_ipv6?: boolean
+  ipv6_public_addr_auto?: boolean
   enable_kcp_proxy?: boolean
   disable_kcp_input?: boolean
   enable_quic_proxy?: boolean
@@ -132,6 +133,7 @@ export interface NetworkConfig {
   disable_encryption?: boolean
   disable_tcp_hole_punching?: boolean
   disable_udp_hole_punching?: boolean
+  disable_upnp?: boolean
   disable_sym_hole_punching?: boolean
 
   enable_relay_network_whitelist?: boolean
@@ -192,6 +194,7 @@ export function DEFAULT_NETWORK_CONFIG(): NetworkConfig {
 
     use_smoltcp: false,
     disable_ipv6: false,
+    ipv6_public_addr_auto: false,
     enable_kcp_proxy: false,
     disable_kcp_input: false,
     enable_quic_proxy: false,
@@ -209,6 +212,7 @@ export function DEFAULT_NETWORK_CONFIG(): NetworkConfig {
     disable_encryption: false,
     disable_tcp_hole_punching: false,
     disable_udp_hole_punching: false,
+    disable_upnp: false,
     disable_sym_hole_punching: false,
     enable_relay_network_whitelist: false,
     relay_network_whitelist: [],
