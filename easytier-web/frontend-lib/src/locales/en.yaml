@@ -103,6 +103,9 @@ use_smoltcp_help: Use a user-space TCP/IP stack to avoid issues with operating s
 disable_ipv6: Disable IPv6
 disable_ipv6_help: Disable IPv6 functionality for this node, only use IPv4 for network communication.
 
+ipv6_public_addr_auto: Auto Public IPv6
+ipv6_public_addr_auto_help: Auto-obtain a public IPv6 address from a peer that shares its IPv6 subnet.
+
 enable_kcp_proxy: Enable KCP Proxy
 enable_kcp_proxy_help: Convert TCP traffic to KCP traffic to reduce latency and boost transmission speed.
 
@@ -155,6 +158,9 @@ disable_tcp_hole_punching_help: Disable tcp hole punching
 
 disable_udp_hole_punching: Disable UDP Hole Punching
 disable_udp_hole_punching_help: Disable udp hole punching
+
+disable_upnp: Disable UPnP
+disable_upnp_help: Disable runtime UPnP/NAT-PMP port mapping for eligible listeners; automatic port mapping is enabled by default.
 
 disable_sym_hole_punching: Disable Symmetric NAT Hole Punching
 disable_sym_hole_punching_help: Disable special hole punching handling for symmetric NAT (based on birthday attack), treat symmetric NAT as cone NAT
