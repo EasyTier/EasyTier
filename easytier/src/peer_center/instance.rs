@@ -65,7 +65,7 @@ impl PeerCenterBase {
             return Err(Error::Shutdown);
         };
         rpc_mgr.rpc_server().registry().register(
-            PeerCenterRpcServer::new(PeerCenterServer::new(self.peer_mgr.my_peer_id())),
+            PeerCenterRpcServer::new(PeerCenterServer::new()),
             &self.peer_mgr.get_global_ctx().get_network_name(),
         );
         Ok(())
@@ -486,7 +486,6 @@ impl PeerCenterPeerManagerTrait for PeerMapWithPeerRpcManager {
 #[cfg(test)]
 mod tests {
     use crate::{
-        peer_center::server::get_global_data,
         peers::tests::{connect_peer_manager, create_mock_peer_manager, wait_route_appear},
         tunnel::common::tests::wait_for_condition,
     };
@@ -514,25 +513,6 @@ mod tests {
         wait_route_appear(peer_mgr_a.clone(), peer_mgr_c.clone())
             .await
             .unwrap();
-
-        let center_peer = PeerCenterBase::select_center_peer(&peer_mgr_a)
-            .await
-            .unwrap();
-        let center_data = get_global_data(center_peer);
-
-        // wait center_data has 3 records for 10 seconds
-        wait_for_condition(
-            || async {
-                if center_data.global_peer_map.len() == 4 {
-                    println!("center data {:#?}", center_data.global_peer_map);
-                    true
-                } else {
-                    false
-                }
-            },
-            Duration::from_secs(20),
-        )
-        .await;
 
         let mut digest = None;
         for pc in peer_centers.iter() {
@@ -578,8 +558,5 @@ mod tests {
             route_cost.end_update();
             assert!(!route_cost.need_update());
         }
-
-        let global_digest = get_global_data(center_peer).digest.load();
-        assert_eq!(digest.as_ref().unwrap(), &global_digest);
     }
 }
