@@ -281,6 +281,7 @@ impl TunnelListener for FakeTcpTunnelListener {
 pub struct FakeTcpTunnelConnector {
     addr: url::Url,
     ip_to_if_name: IpToIfNameCache,
+    resolved_addr: Option<SocketAddr>,
 }
 
 impl FakeTcpTunnelConnector {
@@ -288,6 +289,7 @@ impl FakeTcpTunnelConnector {
         FakeTcpTunnelConnector {
             addr,
             ip_to_if_name: IpToIfNameCache::new(),
+            resolved_addr: None,
         }
     }
 }
@@ -314,7 +316,10 @@ fn get_local_ip_for_destination(destination: IpAddr) -> Option<IpAddr> {
 #[async_trait::async_trait]
 impl TunnelConnector for FakeTcpTunnelConnector {
     async fn connect(&mut self) -> Result<Box<dyn Tunnel>, TunnelError> {
-        let remote_addr = SocketAddr::from_url(self.addr.clone(), IpVersion::Both).await?;
+        let remote_addr = match self.resolved_addr {
+            Some(addr) => addr,
+            None => SocketAddr::from_url(self.addr.clone(), IpVersion::Both).await?,
+        };
         let local_ip = get_local_ip_for_destination(remote_addr.ip())
             .ok_or(TunnelError::InternalError("Failed to get local ip".into()))?;
 
@@ -389,6 +394,10 @@ impl TunnelConnector for FakeTcpTunnelConnector {
 
     fn remote_url(&self) -> url::Url {
         self.addr.clone()
+    }
+
+    fn set_resolved_addr(&mut self, addr: SocketAddr) {
+        self.resolved_addr = Some(addr);
     }
 }
 

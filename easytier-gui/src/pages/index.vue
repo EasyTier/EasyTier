@@ -16,7 +16,7 @@ import { useToast, useConfirm } from 'primevue'
 import { loadMode, saveMode, WebClientConfig, type Mode } from '~/composables/mode'
 import { saveLastNetworkInstanceId, loadLastNetworkInstanceId } from '~/composables/config'
 import ModeSwitcher from '~/components/ModeSwitcher.vue'
-import { getServiceStatus } from '~/composables/backend'
+import { getEasytierVersion, getServiceStatus } from '~/composables/backend'
 
 const { t, locale } = useI18n()
 const confirm = useConfirm()
@@ -85,6 +85,20 @@ async function onUninstallService() {
   });
 }
 
+function stripModeMetadata(mode: Mode) {
+  if (mode.mode !== 'service') {
+    return mode
+  }
+
+  const serviceConfig = { ...mode }
+  delete serviceConfig.installed_core_version
+  return serviceConfig
+}
+
+function modeConfigChanged(next: Mode) {
+  return JSON.stringify(stripModeMetadata(next)) !== JSON.stringify(stripModeMetadata(currentMode.value))
+}
+
 async function onStopService() {
   isModeSaving.value = true
   manualDisconnect.value = true
@@ -134,13 +148,14 @@ async function initWithMode(mode: Mode) {
       }
       url = mode.remote_rpc_address
       break;
-    case 'service':
+    case 'service': {
       if (!mode.config_dir || !mode.file_log_dir || !mode.file_log_level || !mode.rpc_portal) {
         toast.add({ severity: 'error', summary: t('error'), detail: t('mode.service_config_empty'), life: 10000 })
         return initWithMode({ ...mode, mode: 'normal' });
       }
       let serviceStatus = await getServiceStatus()
-      if (serviceStatus === "NotInstalled" || JSON.stringify(mode) !== JSON.stringify(currentMode.value)) {
+      const coreVersion = await getEasytierVersion()
+      if (serviceStatus === "NotInstalled" || modeConfigChanged(mode) || mode.installed_core_version !== coreVersion) {
         mode.config_server_url = mode.config_server_url || undefined
         await initService({
           config_dir: mode.config_dir,
@@ -149,6 +164,7 @@ async function initWithMode(mode: Mode) {
           rpc_portal: mode.rpc_portal,
           config_server: mode.config_server_url,
         })
+        mode.installed_core_version = coreVersion
         serviceStatus = await getServiceStatus()
       }
       if (serviceStatus === "Stopped") {
@@ -157,6 +173,7 @@ async function initWithMode(mode: Mode) {
       url = "tcp://" + mode.rpc_portal.replace("0.0.0.0", "127.0.0.1")
       retrys = 5
       break;
+    }
     case 'normal':
       url = mode.rpc_portal;
       break;

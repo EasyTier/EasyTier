@@ -51,13 +51,14 @@ use easytier::{
                 ListCredentialsRequest, ListCredentialsResponse, ListForeignNetworkRequest,
                 ListGlobalForeignNetworkRequest, ListMappedListenerRequest, ListPeerRequest,
                 ListPeerResponse, ListPortForwardRequest, ListPortForwardResponse,
-                ListRouteRequest, ListRouteResponse, MappedListener, MappedListenerManageRpc,
+                ListPublicIpv6InfoRequest, ListPublicIpv6InfoResponse, ListRouteRequest,
+                ListRouteResponse, MappedListener, MappedListenerManageRpc,
                 MappedListenerManageRpcClientFactory, MetricSnapshot, NodeInfo, PeerManageRpc,
                 PeerManageRpcClientFactory, PortForwardManageRpc,
-                PortForwardManageRpcClientFactory, RevokeCredentialRequest, ShowNodeInfoRequest,
-                StatsRpc, StatsRpcClientFactory, TcpProxyEntryState, TcpProxyEntryTransportType,
-                TcpProxyRpc, TcpProxyRpcClientFactory, TrustedKeySourcePb, VpnPortalInfo,
-                VpnPortalRpc, VpnPortalRpcClientFactory,
+                PortForwardManageRpcClientFactory, RevokeCredentialRequest, Route as ApiRoute,
+                ShowNodeInfoRequest, StatsRpc, StatsRpcClientFactory, TcpProxyEntryState,
+                TcpProxyEntryTransportType, TcpProxyRpc, TcpProxyRpcClientFactory,
+                TrustedKeySourcePb, VpnPortalInfo, VpnPortalRpc, VpnPortalRpcClientFactory,
                 instance_identifier::{InstanceSelector, Selector},
                 list_global_foreign_network_response, list_peer_route_pair,
             },
@@ -73,7 +74,7 @@ use easytier::{
         common::{NatType, PortForwardConfigPb, SocketType},
         peer_rpc::{GetGlobalPeerMapRequest, PeerCenterRpc, PeerCenterRpcClientFactory},
         rpc_impl::standalone::StandAloneClient,
-        rpc_types::controller::BaseController,
+        rpc_types::{controller::BaseController, error::Error as RpcError},
     },
     tunnel::{TunnelScheme, tcp::TcpTunnelConnector},
     utils::{PeerRoutePair, string::cost_to_str},
@@ -193,6 +194,7 @@ struct PeerArgs {
 #[derive(Subcommand, Debug)]
 enum PeerSubCommand {
     List,
+    Ipv6,
     ListForeign {
         #[arg(
             long,
@@ -524,6 +526,40 @@ type LocalBoxFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T, Error>> + 'a>
 type ForeignNetworkMap = BTreeMap<String, ForeignNetworkEntryPb>;
 type GlobalForeignNetworkMap = BTreeMap<u32, list_global_foreign_network_response::ForeignNetworks>;
 
+fn is_missing_web_client_service(error: &RpcError) -> bool {
+    matches!(
+        error,
+        RpcError::InvalidServiceKey(service_name, _)
+            if service_name.trim_matches('"') == "WebClientService"
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn missing_web_client_service_matches_raw_service_name() {
+        let error = RpcError::InvalidServiceKey("WebClientService".to_string(), "".to_string());
+
+        assert!(is_missing_web_client_service(&error));
+    }
+
+    #[test]
+    fn missing_web_client_service_matches_serialized_service_name() {
+        let error = RpcError::InvalidServiceKey("\"WebClientService\"".to_string(), "".to_string());
+
+        assert!(is_missing_web_client_service(&error));
+    }
+
+    #[test]
+    fn missing_web_client_service_rejects_other_services() {
+        let error = RpcError::InvalidServiceKey("PeerManageRpc".to_string(), "".to_string());
+
+        assert!(!is_missing_web_client_service(&error));
+    }
+}
+
 #[derive(serde::Serialize)]
 struct PeerListData {
     node_info: NodeInfo,
@@ -534,6 +570,12 @@ struct PeerListData {
 struct RouteListData {
     node_info: NodeInfo,
     peer_routes: Vec<PeerRoutePair>,
+}
+
+struct PeerIpv6DataRaw {
+    node_info: NodeInfo,
+    routes: Vec<ApiRoute>,
+    provider_info: ListPublicIpv6InfoResponse,
 }
 
 #[derive(serde::Serialize)]
@@ -591,9 +633,15 @@ impl<'a> CommandHandler<'a> {
         }
 
         let client = self.get_manage_client().await?;
-        let inst_ids = client
+        let list_response = match client
             .list_network_instance(BaseController::default(), ListNetworkInstanceRequest {})
-            .await?
+            .await
+        {
+            Ok(response) => response,
+            Err(error) if is_missing_web_client_service(&error) => return Ok(None),
+            Err(error) => return Err(error.into()),
+        };
+        let inst_ids = list_response
             .inst_ids
             .into_iter()
             .map(uuid::Uuid::from)
@@ -960,6 +1008,27 @@ impl<'a> CommandHandler<'a> {
         Ok(RouteListData {
             node_info: self.fetch_node_info().await?,
             peer_routes: self.list_peer_route_pair().await?,
+        })
+    }
+
+    async fn fetch_local_public_ipv6_info(&self) -> Result<ListPublicIpv6InfoResponse, Error> {
+        Ok(self
+            .get_peer_manager_client()
+            .await?
+            .list_public_ipv6_info(
+                BaseController::default(),
+                ListPublicIpv6InfoRequest {
+                    instance: Some(self.instance_selector.clone()),
+                },
+            )
+            .await?)
+    }
+
+    async fn fetch_peer_ipv6_data(&self) -> Result<PeerIpv6DataRaw, Error> {
+        Ok(PeerIpv6DataRaw {
+            node_info: self.fetch_node_info().await?,
+            routes: self.list_routes().await?.routes,
+            provider_info: self.fetch_local_public_ipv6_info().await?,
         })
     }
 
@@ -1372,6 +1441,154 @@ impl<'a> CommandHandler<'a> {
                 &["version", "tunnel", "nat", "tx", "rx", "loss", "lat(ms)"],
                 self.no_trunc,
             )
+        })
+    }
+
+    async fn handle_peer_ipv6(&self) -> Result<(), Error> {
+        #[derive(tabled::Tabled, serde::Serialize)]
+        struct PeerIpv6NodeRow {
+            peer_id: u32,
+            hostname: String,
+            inst_id: String,
+            ipv4: String,
+            public_ipv6_addr: String,
+            provider_prefix: String,
+        }
+
+        #[derive(tabled::Tabled, serde::Serialize)]
+        struct ProviderLeaseRow {
+            peer_id: u32,
+            inst_id: String,
+            leased_addr: String,
+            valid_until: String,
+            reused: bool,
+        }
+
+        #[derive(serde::Serialize)]
+        struct ProviderLeaseSection {
+            provider_prefix: String,
+            leases: Vec<ProviderLeaseRow>,
+        }
+
+        #[derive(serde::Serialize)]
+        struct PeerIpv6View {
+            nodes: Vec<PeerIpv6NodeRow>,
+            local_provider: Option<ProviderLeaseSection>,
+        }
+
+        fn fmt_ipv6_inet(value: Option<easytier::proto::common::Ipv6Inet>) -> String {
+            value
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "-".to_string())
+        }
+
+        fn fmt_valid_until(unix_seconds: i64) -> String {
+            chrono::DateTime::<chrono::Utc>::from_timestamp(unix_seconds, 0)
+                .map(|ts| {
+                    ts.with_timezone(&chrono::Local)
+                        .format("%Y-%m-%d %H:%M:%S")
+                        .to_string()
+                })
+                .unwrap_or_else(|| unix_seconds.to_string())
+        }
+
+        let build_view = |data: &PeerIpv6DataRaw| {
+            let mut nodes = Vec::with_capacity(data.routes.len() + 1);
+            nodes.push(PeerIpv6NodeRow {
+                peer_id: data.node_info.peer_id,
+                hostname: data.node_info.hostname.clone(),
+                inst_id: data.node_info.inst_id.clone(),
+                ipv4: data.node_info.ipv4_addr.clone(),
+                public_ipv6_addr: fmt_ipv6_inet(data.node_info.public_ipv6_addr),
+                provider_prefix: fmt_ipv6_inet(data.node_info.ipv6_public_addr_prefix),
+            });
+            nodes.extend(data.routes.iter().map(|route| {
+                PeerIpv6NodeRow {
+                    peer_id: route.peer_id,
+                    hostname: route.hostname.clone(),
+                    inst_id: route.inst_id.clone(),
+                    ipv4: route
+                        .ipv4_addr
+                        .map(|ipv4| ipv4.to_string())
+                        .unwrap_or_else(|| "-".to_string()),
+                    public_ipv6_addr: fmt_ipv6_inet(route.public_ipv6_addr),
+                    provider_prefix: fmt_ipv6_inet(route.ipv6_public_addr_prefix),
+                }
+            }));
+            nodes.sort_by_key(|row| {
+                (
+                    row.peer_id != data.node_info.peer_id,
+                    row.peer_id,
+                    row.inst_id.clone(),
+                )
+            });
+
+            let local_provider = data.provider_info.provider_prefix.map(|provider_prefix| {
+                let mut leases = data
+                    .provider_info
+                    .provider_leases
+                    .iter()
+                    .map(|lease| ProviderLeaseRow {
+                        peer_id: lease.peer_id,
+                        inst_id: lease.inst_id.clone(),
+                        leased_addr: fmt_ipv6_inet(lease.leased_addr),
+                        valid_until: fmt_valid_until(lease.valid_until_unix_seconds),
+                        reused: lease.reused,
+                    })
+                    .collect::<Vec<_>>();
+                leases.sort_by_key(|lease| {
+                    (
+                        lease.peer_id,
+                        lease.inst_id.clone(),
+                        lease.leased_addr.clone(),
+                    )
+                });
+                ProviderLeaseSection {
+                    provider_prefix: provider_prefix.to_string(),
+                    leases,
+                }
+            });
+
+            PeerIpv6View {
+                nodes,
+                local_provider,
+            }
+        };
+
+        let results = self
+            .collect_instance_results(|handler| Box::pin(handler.fetch_peer_ipv6_data()))
+            .await?;
+
+        if self.verbose || *self.output_format == OutputFormat::Json {
+            return self.print_json_results(
+                results
+                    .into_iter()
+                    .map(|result| result.map(|data| build_view(&data)))
+                    .collect(),
+            );
+        }
+
+        self.print_results(&results, |data| {
+            let view = build_view(data);
+            print_output(&view.nodes, self.output_format, &[], &[], self.no_trunc)?;
+
+            if let Some(local_provider) = view.local_provider {
+                println!();
+                println!("Local provider prefix: {}", local_provider.provider_prefix);
+                if local_provider.leases.is_empty() {
+                    println!("No active provider leases");
+                } else {
+                    print_output(
+                        &local_provider.leases,
+                        self.output_format,
+                        &[],
+                        &[],
+                        self.no_trunc,
+                    )?;
+                }
+            }
+
+            Ok(())
         })
     }
 
@@ -2651,6 +2868,9 @@ async fn main() -> Result<(), Error> {
         SubCommand::Peer(peer_args) => match &peer_args.sub_command {
             Some(PeerSubCommand::List) => {
                 handler.handle_peer_list().await?;
+            }
+            Some(PeerSubCommand::Ipv6) => {
+                handler.handle_peer_ipv6().await?;
             }
             Some(PeerSubCommand::ListForeign { trusted_keys }) => {
                 handler.handle_foreign_network_list(*trusted_keys).await?;

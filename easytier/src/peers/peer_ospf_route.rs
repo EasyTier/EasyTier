@@ -10,7 +10,7 @@ use std::{
 };
 
 use arc_swap::ArcSwap;
-use cidr::{IpCidr, Ipv4Cidr, Ipv6Cidr};
+use cidr::{IpCidr, Ipv4Cidr, Ipv6Cidr, Ipv6Inet};
 use crossbeam::atomic::AtomicCell;
 use dashmap::DashMap;
 use ordered_hash_map::OrderedHashMap;
@@ -46,9 +46,10 @@ use crate::{
         peer_rpc::{
             ForeignNetworkRouteInfoEntry, ForeignNetworkRouteInfoKey, OspfRouteRpc,
             OspfRouteRpcClientFactory, OspfRouteRpcServer, PeerGroupInfo, PeerIdVersion,
-            PeerIdentityType, RouteForeignNetworkInfos, RouteForeignNetworkSummary, RoutePeerInfo,
-            RoutePeerInfos, SyncRouteInfoError, SyncRouteInfoRequest, SyncRouteInfoResponse,
-            TrustedCredentialPubkey, TrustedCredentialPubkeyProof, route_foreign_network_infos,
+            PeerIdentityType, PublicIpv6AddrRpcServer, RouteForeignNetworkInfos,
+            RouteForeignNetworkSummary, RoutePeerInfo, RoutePeerInfos, SyncRouteInfoError,
+            SyncRouteInfoRequest, SyncRouteInfoResponse, TrustedCredentialPubkey,
+            TrustedCredentialPubkeyProof, route_foreign_network_infos,
             route_foreign_network_summary, sync_route_info_request::ConnInfo,
         },
         rpc_types::{
@@ -63,6 +64,9 @@ use super::{
     PeerPacketFilter,
     graph_algo::dijkstra_with_first_hop,
     peer_rpc::PeerRpcManager,
+    public_ipv6::{
+        PublicIpv6PeerRouteInfo, PublicIpv6RouteControl, PublicIpv6Service, PublicIpv6SyncTrigger,
+    },
     route_trait::{
         DefaultRouteCostCalculator, ForeignNetworkRouteInfoMap, NextHopPolicy, RouteCostCalculator,
         RouteCostCalculatorInterface,
@@ -137,6 +141,10 @@ fn raw_credential_bytes_from_route_info(
         .map(|credential| credential.encode_to_vec())
 }
 
+fn route_peer_inst_id(info: &RoutePeerInfo) -> Option<uuid::Uuid> {
+    info.inst_id.map(Into::into)
+}
+
 #[derive(Debug, Clone)]
 struct AtomicVersion(Arc<AtomicU32>);
 
@@ -205,6 +213,8 @@ impl RoutePeerInfo {
             quic_port: None,
             noise_static_pubkey: Vec::new(),
             trusted_credential_pubkeys: Vec::new(),
+            ipv6_public_addr_prefix: None,
+            ipv6_public_addr_lease: None,
         }
     }
 
@@ -221,6 +231,7 @@ impl RoutePeerInfo {
         my_peer_id: PeerId,
         peer_route_id: u64,
         global_ctx: &ArcGlobalCtx,
+        public_ipv6_addr_lease: Option<Ipv6Inet>,
     ) -> Self {
         let stun_info = global_ctx.get_stun_info_collector().get_stun_info();
         let noise_static_pubkey = global_ctx
@@ -259,6 +270,14 @@ impl RoutePeerInfo {
                 .unwrap_or(24),
 
             ipv6_addr: global_ctx.get_ipv6().map(|x| x.into()),
+            ipv6_public_addr_prefix: global_ctx.get_advertised_ipv6_public_addr_prefix().map(
+                |prefix| {
+                    Ipv6Inet::new(prefix.first_address(), prefix.network_length())
+                        .unwrap()
+                        .into()
+                },
+            ),
+            ipv6_public_addr_lease: public_ipv6_addr_lease.map(Into::into),
 
             groups: global_ctx.get_acl_groups(my_peer_id),
 
@@ -349,6 +368,8 @@ impl From<RoutePeerInfo> for crate::proto::api::instance::Route {
             path_latency_latency_first: None,
 
             ipv6_addr: val.ipv6_addr,
+            public_ipv6_addr: val.ipv6_public_addr_lease,
+            ipv6_public_addr_prefix: val.ipv6_public_addr_prefix,
         }
     }
 }
@@ -964,8 +985,14 @@ impl SyncedRouteInfo {
         my_peer_id: PeerId,
         my_peer_route_id: u64,
         global_ctx: &ArcGlobalCtx,
+        public_ipv6_addr_lease: Option<Ipv6Inet>,
     ) -> bool {
-        let mut new = RoutePeerInfo::new_updated_self(my_peer_id, my_peer_route_id, global_ctx);
+        let mut new = RoutePeerInfo::new_updated_self(
+            my_peer_id,
+            my_peer_route_id,
+            global_ctx,
+            public_ipv6_addr_lease,
+        );
         let mut guard = self.peer_infos.upgradable_read();
         let old = guard.get(&my_peer_id);
         let new_version = old.map(|x| x.version).unwrap_or(0) + 1;
@@ -1204,6 +1231,25 @@ impl SyncedRouteInfo {
     where
         F: FnMut(PeerId) -> bool,
     {
+        self.verify_and_update_credential_trusts_with_active_peers_protecting(
+            network_secret,
+            is_peer_active,
+            None,
+        )
+    }
+
+    fn verify_and_update_credential_trusts_with_active_peers_protecting<F>(
+        &self,
+        network_secret: Option<&str>,
+        is_peer_active: F,
+        protected_peer_id: Option<PeerId>,
+    ) -> (
+        Vec<PeerId>,
+        HashMap<Vec<u8>, crate::common::global_ctx::TrustedKeyMetadata>,
+    )
+    where
+        F: FnMut(PeerId) -> bool,
+    {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
@@ -1221,6 +1267,9 @@ impl SyncedRouteInfo {
         let mut untrusted_peers =
             Self::collect_revoked_credential_peers(&peer_infos, &prev_trusted, &all_trusted);
         untrusted_peers.extend(duplicate_untrusted_peers);
+        if let Some(protected_peer_id) = protected_peer_id {
+            untrusted_peers.remove(&protected_peer_id);
+        }
 
         // Remove untrusted peers from peer_infos so they won't appear in route graph
         if !untrusted_peers.is_empty() {
@@ -1578,6 +1627,21 @@ impl RouteTable {
             }
 
             if let Some(ipv6_addr) = info.ipv6_addr.and_then(|x| x.address) {
+                self.ipv6_peer_id_map
+                    .entry(ipv6_addr.into())
+                    .and_modify(|v| {
+                        if is_new_peer_better(v) {
+                            *v = peer_id_and_version;
+                        }
+                    })
+                    .or_insert(peer_id_and_version);
+            }
+
+            if let Some(ipv6_addr) = info
+                .ipv6_public_addr_lease
+                .as_ref()
+                .and_then(|addr| addr.address)
+            {
                 self.ipv6_peer_id_map
                     .entry(ipv6_addr.into())
                     .and_modify(|v| {
@@ -2019,6 +2083,8 @@ struct PeerRouteServiceImpl {
     foreign_network_owner_map: DashMap<NetworkIdentity, Vec<PeerId>>,
     foreign_network_my_peer_id_map: DashMap<(String, PeerId), PeerId>,
     synced_route_info: SyncedRouteInfo,
+    public_ipv6_service: std::sync::Mutex<Weak<PublicIpv6Service>>,
+    self_public_ipv6_addr_lease: std::sync::Mutex<Option<Ipv6Inet>>,
     cached_local_conn_map: std::sync::Mutex<RouteConnBitmap>,
     cached_local_conn_map_version: AtomicVersion,
     cached_interface_peer_snapshot: std::sync::Mutex<Arc<InterfacePeerSnapshot>>,
@@ -2081,6 +2147,8 @@ impl PeerRouteServiceImpl {
                 non_reusable_credential_owners: DashMap::new(),
                 version: AtomicVersion::new(),
             },
+            public_ipv6_service: std::sync::Mutex::new(Weak::new()),
+            self_public_ipv6_addr_lease: std::sync::Mutex::new(None),
             cached_local_conn_map: std::sync::Mutex::new(RouteConnBitmap::default()),
             cached_local_conn_map_version: AtomicVersion::new(),
             cached_interface_peer_snapshot: std::sync::Mutex::new(Arc::new(
@@ -2117,6 +2185,20 @@ impl PeerRouteServiceImpl {
                 .get_secure_mode()
                 .map(|c| c.enabled)
                 .unwrap_or(false)
+    }
+
+    fn set_public_ipv6_service(&self, service: Weak<PublicIpv6Service>) {
+        *self.public_ipv6_service.lock().unwrap() = service;
+    }
+
+    fn public_ipv6_service(&self) -> Option<Arc<PublicIpv6Service>> {
+        self.public_ipv6_service.lock().unwrap().upgrade()
+    }
+
+    fn notify_public_ipv6_route_change(&self) -> bool {
+        self.public_ipv6_service()
+            .map(|service| service.handle_route_change())
+            .unwrap_or(false)
     }
 
     fn get_or_create_session(&self, dst_peer_id: PeerId) -> Arc<SyncRouteSession> {
@@ -2230,6 +2312,7 @@ impl PeerRouteServiceImpl {
             self.my_peer_id,
             self.my_peer_route_id,
             &self.global_ctx,
+            *self.self_public_ipv6_addr_lease.lock().unwrap(),
         )
     }
 
@@ -2618,14 +2701,19 @@ impl PeerRouteServiceImpl {
             untrusted_changed = self.refresh_credential_trusts_and_disconnect().await;
         }
 
+        let mut public_ipv6_state_updated = false;
         if my_peer_info_updated || my_conn_info_updated || untrusted_changed {
             self.update_route_table_and_cached_local_conn_bitmap();
             self.update_foreign_network_owner_map();
+            public_ipv6_state_updated = self.notify_public_ipv6_route_change();
         }
         if my_peer_info_updated {
             self.update_peer_info_last_update();
         }
-        my_peer_info_updated || my_conn_info_updated || my_foreign_network_updated
+        my_peer_info_updated
+            || my_conn_info_updated
+            || my_foreign_network_updated
+            || public_ipv6_state_updated
     }
 
     async fn refresh_acl_groups(&self) -> bool {
@@ -2652,22 +2740,28 @@ impl PeerRouteServiceImpl {
         let untrusted = self.refresh_credential_trusts_with_current_topology();
         self.disconnect_untrusted_peers(&untrusted).await;
 
+        let mut public_ipv6_state_updated = false;
         if my_peer_info_updated || !untrusted.is_empty() {
             self.update_route_table_and_cached_local_conn_bitmap();
             self.update_foreign_network_owner_map();
+            public_ipv6_state_updated = self.notify_public_ipv6_route_change();
         }
         if my_peer_info_updated {
             self.update_peer_info_last_update();
         }
 
-        my_peer_info_updated || !untrusted.is_empty()
+        my_peer_info_updated || !untrusted.is_empty() || public_ipv6_state_updated
     }
 
     fn refresh_credential_trusts(&self) -> Vec<PeerId> {
         let network_identity = self.global_ctx.get_network_identity();
         let (untrusted, global_trusted_keys) = self
             .synced_route_info
-            .verify_and_update_credential_trusts(network_identity.network_secret.as_deref());
+            .verify_and_update_credential_trusts_with_active_peers_protecting(
+                network_identity.network_secret.as_deref(),
+                |_| true,
+                Some(self.my_peer_id),
+            );
         self.global_ctx
             .update_trusted_keys(global_trusted_keys, &network_identity.network_name);
 
@@ -2683,9 +2777,10 @@ impl PeerRouteServiceImpl {
 
         let (untrusted, global_trusted_keys) = self
             .synced_route_info
-            .verify_and_update_credential_trusts_with_active_peers(
+            .verify_and_update_credential_trusts_with_active_peers_protecting(
                 network_identity.network_secret.as_deref(),
                 |peer_id| self.is_active_non_reusable_credential_peer(peer_id),
+                Some(self.my_peer_id),
             );
         self.global_ctx
             .update_trusted_keys(global_trusted_keys, &network_identity.network_name);
@@ -2968,7 +3063,6 @@ impl PeerRouteServiceImpl {
                         session
                             .update_dst_saved_foreign_network_version(foreign_network, dst_peer_id);
                     }
-
                     session.update_last_sync_succ_timestamp(next_last_sync_succ_timestamp);
                 }
             }
@@ -3493,7 +3587,13 @@ impl RouteSessionManager {
         }
 
         if need_update_route_table || foreign_network_changed {
+            service_impl.update_route_table_and_cached_local_conn_bitmap();
             service_impl.update_foreign_network_owner_map();
+            if need_update_route_table
+                && let Some(public_ipv6_service) = service_impl.public_ipv6_service()
+            {
+                public_ipv6_service.handle_route_change();
+            }
         }
 
         tracing::debug!(
@@ -3534,12 +3634,86 @@ impl RouteSessionManager {
     }
 }
 
+struct OspfPublicIpv6RouteHandle {
+    service_impl: Weak<PeerRouteServiceImpl>,
+}
+
+impl PublicIpv6RouteControl for OspfPublicIpv6RouteHandle {
+    fn my_peer_id(&self) -> PeerId {
+        self.service_impl
+            .upgrade()
+            .map(|service_impl| service_impl.my_peer_id)
+            .unwrap_or_default()
+    }
+
+    fn peer_route_snapshot(&self) -> Vec<PublicIpv6PeerRouteInfo> {
+        let Some(service_impl) = self.service_impl.upgrade() else {
+            return Vec::new();
+        };
+
+        service_impl
+            .synced_route_info
+            .peer_infos
+            .read()
+            .iter()
+            .map(|(peer_id, info)| PublicIpv6PeerRouteInfo {
+                peer_id: *peer_id,
+                inst_id: route_peer_inst_id(info),
+                is_provider: info
+                    .feature_flag
+                    .as_ref()
+                    .map(|flags| flags.ipv6_public_addr_provider)
+                    .unwrap_or(false),
+                prefix: info
+                    .ipv6_public_addr_prefix
+                    .map(Into::into)
+                    .map(|prefix: Ipv6Inet| prefix.network()),
+                lease: info.ipv6_public_addr_lease.map(Into::into),
+                reachable: *peer_id == service_impl.my_peer_id
+                    || service_impl.route_table.peer_reachable(*peer_id),
+            })
+            .collect()
+    }
+
+    fn publish_self_public_ipv6_lease(&self, lease: Option<Ipv6Inet>) -> bool {
+        let Some(service_impl) = self.service_impl.upgrade() else {
+            return false;
+        };
+
+        let mut current = service_impl.self_public_ipv6_addr_lease.lock().unwrap();
+        if *current == lease {
+            return false;
+        }
+        *current = lease;
+        drop(current);
+
+        let changed = service_impl.update_my_peer_info();
+        if changed {
+            service_impl.update_route_table_and_cached_local_conn_bitmap();
+            service_impl.update_foreign_network_owner_map();
+        }
+        changed
+    }
+}
+
+#[derive(Clone)]
+struct OspfPublicIpv6SyncTrigger {
+    session_mgr: RouteSessionManager,
+}
+
+impl PublicIpv6SyncTrigger for OspfPublicIpv6SyncTrigger {
+    fn sync_now(&self, reason: &str) {
+        self.session_mgr.sync_now(reason);
+    }
+}
+
 pub struct PeerRoute {
     my_peer_id: PeerId,
     global_ctx: ArcGlobalCtx,
     peer_rpc: Weak<PeerRpcManager>,
 
     service_impl: Arc<PeerRouteServiceImpl>,
+    public_ipv6_service: Arc<PublicIpv6Service>,
     session_mgr: RouteSessionManager,
 
     tasks: std::sync::Mutex<JoinSet<()>>,
@@ -3563,6 +3737,17 @@ impl PeerRoute {
     ) -> Arc<Self> {
         let service_impl = Arc::new(PeerRouteServiceImpl::new(my_peer_id, global_ctx.clone()));
         let session_mgr = RouteSessionManager::new(service_impl.clone(), peer_rpc.clone());
+        let public_ipv6_service = Arc::new(PublicIpv6Service::new(
+            global_ctx.clone(),
+            Arc::downgrade(&peer_rpc),
+            Arc::new(OspfPublicIpv6RouteHandle {
+                service_impl: Arc::downgrade(&service_impl),
+            }),
+            Arc::new(OspfPublicIpv6SyncTrigger {
+                session_mgr: session_mgr.clone(),
+            }),
+        ));
+        service_impl.set_public_ipv6_service(Arc::downgrade(&public_ipv6_service));
 
         Arc::new(PeerRoute {
             my_peer_id,
@@ -3570,6 +3755,7 @@ impl PeerRoute {
             peer_rpc: Arc::downgrade(&peer_rpc),
 
             service_impl,
+            public_ipv6_service,
             session_mgr,
 
             tasks: std::sync::Mutex::new(JoinSet::new()),
@@ -3607,6 +3793,9 @@ impl PeerRoute {
                 tracing::debug!("cost_calculator_need_update");
                 service_impl.synced_route_info.version.inc();
                 service_impl.update_route_table();
+                if let Some(public_ipv6_service) = service_impl.public_ipv6_service() {
+                    public_ipv6_service.handle_route_change();
+                }
             }
 
             select! {
@@ -3631,9 +3820,14 @@ impl PeerRoute {
 
         // make sure my_peer_id is in the peer_infos.
         self.service_impl.update_my_infos().await;
+        self.public_ipv6_service.handle_route_change();
 
         peer_rpc.rpc_server().registry().register(
             OspfRouteRpcServer::new(self.session_mgr.clone()),
+            &self.global_ctx.get_network_name(),
+        );
+        peer_rpc.rpc_server().registry().register(
+            PublicIpv6AddrRpcServer::new(self.public_ipv6_service.rpc_server()),
             &self.global_ctx.get_network_name(),
         );
 
@@ -3657,6 +3851,16 @@ impl PeerRoute {
             .lock()
             .unwrap()
             .spawn(Self::clear_expired_peer(self.service_impl.clone()));
+
+        self.tasks
+            .lock()
+            .unwrap()
+            .spawn(self.public_ipv6_service.clone().provider_gc_routine());
+
+        self.tasks
+            .lock()
+            .unwrap()
+            .spawn(self.public_ipv6_service.clone().client_routine());
     }
 }
 
@@ -3675,6 +3879,10 @@ impl Drop for PeerRoute {
 
         peer_rpc.rpc_server().registry().unregister(
             OspfRouteRpcServer::new(self.session_mgr.clone()),
+            &self.global_ctx.get_network_name(),
+        );
+        peer_rpc.rpc_server().registry().unregister(
+            PublicIpv6AddrRpcServer::new(self.public_ipv6_service.rpc_server()),
             &self.global_ctx.get_network_name(),
         );
     }
@@ -3763,6 +3971,51 @@ impl Route for PeerRoute {
             .filter(|(_, pv)| pv.peer_id != my_peer_id)
             .map(|(cidr, _)| *cidr)
             .collect()
+    }
+
+    async fn list_public_ipv6_routes(&self) -> BTreeSet<Ipv6Inet> {
+        self.public_ipv6_service.list_routes()
+    }
+
+    async fn get_my_public_ipv6_addr(&self) -> Option<Ipv6Inet> {
+        self.public_ipv6_service.my_addr()
+    }
+
+    async fn get_public_ipv6_gateway_peer_id(&self) -> Option<PeerId> {
+        self.public_ipv6_service.provider_peer_id_for_client()
+    }
+
+    async fn get_local_public_ipv6_info(
+        &self,
+    ) -> crate::proto::api::instance::ListPublicIpv6InfoResponse {
+        let Some((provider, leases)) = self.public_ipv6_service.local_provider_state() else {
+            return crate::proto::api::instance::ListPublicIpv6InfoResponse::default();
+        };
+
+        crate::proto::api::instance::ListPublicIpv6InfoResponse {
+            provider_prefix: Some(
+                Ipv6Inet::new(
+                    provider.prefix.first_address(),
+                    provider.prefix.network_length(),
+                )
+                .unwrap()
+                .into(),
+            ),
+            provider_leases: leases
+                .into_iter()
+                .map(|lease| crate::proto::api::instance::PublicIpv6LeaseInfo {
+                    peer_id: lease.peer_id,
+                    inst_id: lease.inst_id.to_string(),
+                    leased_addr: Some(lease.addr.into()),
+                    valid_until_unix_seconds: lease
+                        .valid_until
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_secs() as i64,
+                    reused: lease.reused,
+                })
+                .collect(),
+        }
     }
 
     async fn get_peer_id_by_ipv4(&self, ipv4_addr: &Ipv4Addr) -> Option<PeerId> {
@@ -4822,6 +5075,58 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn credential_trust_refresh_does_not_remove_self_peer() {
+        let my_peer_id = 11;
+        let remote_peer_id = 12;
+        let credential_key = vec![8; 32];
+        let service_impl = PeerRouteServiceImpl::new(my_peer_id, get_mock_global_ctx());
+
+        let self_info = make_credential_route_peer_info(my_peer_id, &credential_key);
+        let remote_info = make_credential_route_peer_info(remote_peer_id, &credential_key);
+
+        {
+            let mut guard = service_impl.synced_route_info.peer_infos.write();
+            guard.insert(self_info.peer_id, self_info);
+            guard.insert(remote_info.peer_id, remote_info);
+        }
+        service_impl
+            .synced_route_info
+            .trusted_credential_pubkeys
+            .insert(
+                credential_key.clone(),
+                TrustedCredentialPubkey {
+                    pubkey: credential_key,
+                    expiry_unix: i64::MAX,
+                    ..Default::default()
+                },
+            );
+
+        let (untrusted_peers, _) = service_impl
+            .synced_route_info
+            .verify_and_update_credential_trusts_with_active_peers_protecting(
+                None,
+                |_| true,
+                Some(my_peer_id),
+            );
+
+        assert_eq!(untrusted_peers, vec![remote_peer_id]);
+        assert!(
+            service_impl
+                .synced_route_info
+                .peer_infos
+                .read()
+                .contains_key(&my_peer_id)
+        );
+        assert!(
+            !service_impl
+                .synced_route_info
+                .peer_infos
+                .read()
+                .contains_key(&remote_peer_id)
+        );
+    }
+
+    #[tokio::test]
     async fn credential_refresh_rebuilds_reachability_before_owner_election() {
         const NETWORK_SECRET: &str = "sec1";
         const SELF_PEER_ID: PeerId = 1;
@@ -5180,6 +5485,7 @@ mod tests {
             service_impl.my_peer_id,
             service_impl.my_peer_route_id,
             &service_impl.global_ctx,
+            None,
         );
         let mut self_info = self_info;
         self_info.version = 1;

@@ -104,6 +104,9 @@ use_smoltcp_help: 使用用户态 TCP/IP 协议栈，避免操作系统防火墙
 disable_ipv6: 禁用IPv6
 disable_ipv6_help: 禁用此节点的IPv6功能，仅使用IPv4进行网络通信。
 
+ipv6_public_addr_auto: 自动获取公网 IPv6
+ipv6_public_addr_auto_help: 自动从共享了 IPv6 子网的对等节点获取一个公网 IPv6 地址。
+
 enable_kcp_proxy: 启用 KCP 代理
 enable_kcp_proxy_help: 将 TCP 流量转为 KCP 流量，降低传输延迟，提升传输速度。
 
@@ -156,6 +159,9 @@ disable_tcp_hole_punching_help: 禁用TCP打洞功能
 
 disable_udp_hole_punching: 禁用UDP打洞
 disable_udp_hole_punching_help: 禁用UDP打洞功能
+
+disable_upnp: 禁用 UPnP
+disable_upnp_help: 禁用符合条件监听器的运行时 UPnP/NAT-PMP 端口映射；自动端口映射默认开启。
 
 disable_sym_hole_punching: 禁用对称NAT打洞
 disable_sym_hole_punching_help: 禁用对称NAT的打洞（生日攻击），将对称NAT视为锥形NAT处理

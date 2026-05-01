@@ -57,21 +57,21 @@ cfg_select! {
         pub mod windivert;
 
         pub fn create_tun(
-            _interface_name: &str,
-            _src_addr: Option<SocketAddr>,
-            local_addr: SocketAddr,
+            interface_name: &str,
+            src_addr: Option<SocketAddr>,
+            dst_addr: SocketAddr,
         ) -> io::Result<Arc<dyn super::stack::Tun>> {
-            match windivert::WinDivertTun::new(local_addr) {
+            match windivert::WinDivertTun::new(src_addr, dst_addr) {
                 Ok(tun) => Ok(Arc::new(tun)),
                 Err(e) => {
                     tracing::warn!(
                         ?e,
-                        ?local_addr,
+                        ?dst_addr,
                         "WinDivertTun init failed, falling back to PnetTun"
                     );
                     Ok(Arc::new(pnet::PnetTun::new(
-                        local_addr.to_string().as_str(),
-                        pnet::create_packet_filter(None, local_addr),
+                        interface_name,
+                        pnet::create_packet_filter(src_addr, dst_addr),
                     )?))
                 }
             }

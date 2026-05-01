@@ -9,6 +9,7 @@ use std::{
 };
 
 use anyhow::Context;
+use guarden::defer;
 use rand::{Rng, seq::SliceRandom};
 use tokio::{net::UdpSocket, sync::RwLock};
 use tokio_util::task::AbortOnDropHandle;
@@ -22,7 +23,6 @@ use crate::{
         },
         handle_rpc_result,
     },
-    defer,
     peers::peer_manager::PeerManager,
     proto::{
         peer_rpc::{

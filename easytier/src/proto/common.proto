@@ -75,6 +75,7 @@ message FlagsInConfig {
   bool need_p2p = 38;
   uint64 instance_recv_bps_limit = 39;
   bool disable_upnp = 40;
+  bool disable_relay_data = 41;
 }
 
 message RpcDescriptor {
@@ -225,6 +226,7 @@ message PeerFeatureFlag {
   bool is_credential_peer = 8;
   bool need_p2p = 9;
   bool disable_p2p = 10;
+  bool ipv6_public_addr_provider = 11;
 }
 
 enum SocketType {

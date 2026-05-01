@@ -1,19 +1,17 @@
-use std::{
-    net::{SocketAddr, SocketAddrV4, SocketAddrV6},
-    sync::Arc,
-};
+use std::net::{IpAddr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
 
 use crate::{
-    common::{error::Error, global_ctx::ArcGlobalCtx, idn, network::IPCollector},
+    common::{dns::socket_addrs, error::Error, global_ctx::ArcGlobalCtx, idn},
     connector::dns_connector::DnsTunnelConnector,
     proto::common::PeerFeatureFlag,
     tunnel::{
-        self, FromUrl, IpScheme, IpVersion, TunnelConnector, TunnelError, TunnelScheme,
+        self, IpScheme, IpVersion, TunnelConnector, TunnelError, TunnelScheme,
         ring::RingTunnelConnector, tcp::TcpTunnelConnector, udp::UdpTunnelConnector,
     },
     utils::BoxExt,
 };
 use http_connector::HttpTunnelConnector;
+use rand::seq::SliceRandom;
 
 pub mod direct;
 pub mod manual;
@@ -56,7 +54,7 @@ pub(crate) fn should_background_p2p_with_peer(
 async fn set_bind_addr_for_peer_connector(
     connector: &mut (impl TunnelConnector + ?Sized),
     is_ipv4: bool,
-    ip_collector: &Arc<IPCollector>,
+    global_ctx: &ArcGlobalCtx,
 ) {
     if cfg!(any(
         target_os = "android",
@@ -69,7 +67,7 @@ async fn set_bind_addr_for_peer_connector(
         return;
     }
 
-    let ips = ip_collector.collect_ip_addrs().await;
+    let ips = global_ctx.get_ip_collector().collect_ip_addrs().await;
     if is_ipv4 {
         let mut bind_addrs = vec![];
         for ipv4 in ips.interface_ipv4s {
@@ -80,12 +78,154 @@ async fn set_bind_addr_for_peer_connector(
     } else {
         let mut bind_addrs = vec![];
         for ipv6 in ips.interface_ipv6s.iter().chain(ips.public_ipv6.iter()) {
-            let socket_addr = SocketAddrV6::new(std::net::Ipv6Addr::from(*ipv6), 0, 0, 0).into();
+            let ipv6 = std::net::Ipv6Addr::from(*ipv6);
+            if global_ctx.is_ip_easytier_managed_ipv6(&ipv6) {
+                continue;
+            }
+            let socket_addr = SocketAddrV6::new(ipv6, 0, 0, 0).into();
             bind_addrs.push(socket_addr);
         }
         connector.set_bind_addrs(bind_addrs);
     }
     let _ = connector;
+}
+
+struct ResolvedConnectorAddr {
+    addr: SocketAddr,
+    ip_version: IpVersion,
+}
+
+fn connector_default_port(url: &url::Url) -> Option<u16> {
+    url.try_into()
+        .ok()
+        .and_then(|s: TunnelScheme| s.try_into().ok())
+        .map(IpScheme::default_port)
+}
+
+fn addr_matches_ip_version(addr: &SocketAddr, ip_version: IpVersion) -> bool {
+    match ip_version {
+        IpVersion::V4 => addr.is_ipv4(),
+        IpVersion::V6 => addr.is_ipv6(),
+        IpVersion::Both => true,
+    }
+}
+
+fn infer_effective_ip_version(addrs: &[SocketAddr], requested_ip_version: IpVersion) -> IpVersion {
+    match requested_ip_version {
+        IpVersion::Both if addrs.iter().all(SocketAddr::is_ipv4) => IpVersion::V4,
+        IpVersion::Both if addrs.iter().all(SocketAddr::is_ipv6) => IpVersion::V6,
+        _ => requested_ip_version,
+    }
+}
+
+async fn easytier_managed_ipv6_source_for_dst(
+    global_ctx: &ArcGlobalCtx,
+    dst_addr: SocketAddrV6,
+) -> Result<Option<Ipv6Addr>, Error> {
+    let socket = {
+        let _g = global_ctx.net_ns.guard();
+        tokio::net::UdpSocket::bind("[::]:0").await?
+    };
+    socket.connect(SocketAddr::V6(dst_addr)).await?;
+
+    let IpAddr::V6(local_ip) = socket.local_addr()?.ip() else {
+        return Ok(None);
+    };
+
+    Ok(global_ctx
+        .is_ip_easytier_managed_ipv6(&local_ip)
+        .then_some(local_ip))
+}
+
+async fn ipv6_connector_reject_reason(
+    url: &url::Url,
+    global_ctx: &ArcGlobalCtx,
+    v6_addr: SocketAddrV6,
+    skip_source_validation_errors: bool,
+) -> Result<Option<String>, Error> {
+    if global_ctx.is_ip_easytier_managed_ipv6(v6_addr.ip()) {
+        return Ok(Some(format!(
+            "{} resolves to EasyTier-managed IPv6 {}",
+            url,
+            v6_addr.ip()
+        )));
+    }
+
+    match easytier_managed_ipv6_source_for_dst(global_ctx, v6_addr).await {
+        Ok(Some(local_ip)) => Ok(Some(format!(
+            "{} would use EasyTier-managed IPv6 {} as local source for {}",
+            url, local_ip, v6_addr
+        ))),
+        Ok(None) => Ok(None),
+        Err(err) if skip_source_validation_errors => Ok(Some(format!(
+            "{} IPv6 candidate {} could not be validated: {}",
+            url, v6_addr, err
+        ))),
+        Err(err) => Err(err),
+    }
+}
+
+async fn resolve_connector_socket_addr(
+    url: &url::Url,
+    global_ctx: &ArcGlobalCtx,
+    ip_version: IpVersion,
+) -> Result<ResolvedConnectorAddr, Error> {
+    let addrs = socket_addrs(url, || connector_default_port(url))
+        .await
+        .map_err(|e| {
+            TunnelError::InvalidAddr(format!(
+                "failed to resolve socket addr, url: {}, error: {}",
+                url, e
+            ))
+        })?;
+
+    let mut usable_addrs = Vec::new();
+    let mut rejected_ipv6_reason = None;
+    let skip_source_validation_errors = ip_version == IpVersion::Both;
+    for addr in addrs
+        .into_iter()
+        .filter(|addr| addr_matches_ip_version(addr, ip_version))
+    {
+        if let SocketAddr::V6(v6_addr) = addr
+            && let Some(reason) = ipv6_connector_reject_reason(
+                url,
+                global_ctx,
+                v6_addr,
+                skip_source_validation_errors,
+            )
+            .await?
+        {
+            rejected_ipv6_reason = Some(reason);
+            continue;
+        }
+
+        usable_addrs.push(addr);
+    }
+
+    if usable_addrs.is_empty() {
+        if let Some(reason) = rejected_ipv6_reason {
+            return Err(Error::InvalidUrl(format!(
+                "{}, refusing overlay-backed underlay connection",
+                reason
+            )));
+        }
+
+        return Err(Error::TunnelError(TunnelError::NoDnsRecordFound(
+            ip_version,
+        )));
+    }
+
+    let effective_ip_version = infer_effective_ip_version(&usable_addrs, ip_version);
+
+    let addr = usable_addrs
+        .choose(&mut rand::thread_rng())
+        .copied()
+        .ok_or_else(|| Error::TunnelError(TunnelError::NoDnsRecordFound(ip_version)))?;
+
+    Ok(ResolvedConnectorAddr {
+        addr,
+        ip_version: effective_ip_version,
+    })
 }
 
 pub async fn create_connector_by_url(
@@ -98,9 +238,11 @@ pub async fn create_connector_by_url(
     let scheme = (&url)
         .try_into()
         .map_err(|_| TunnelError::InvalidProtocol(url.scheme().to_owned()))?;
+    let mut effective_connector_ip_version = ip_version;
     let mut connector: Box<dyn TunnelConnector + 'static> = match scheme {
         TunnelScheme::Ip(scheme) => {
-            let dst_addr = SocketAddr::from_url(url.clone(), ip_version).await?;
+            let resolved_addr = resolve_connector_socket_addr(&url, global_ctx, ip_version).await?;
+            effective_connector_ip_version = resolved_addr.ip_version;
             let mut connector: Box<dyn TunnelConnector> = match scheme {
                 IpScheme::Tcp => TcpTunnelConnector::new(url).boxed(),
                 IpScheme::Udp => UdpTunnelConnector::new(url).boxed(),
@@ -125,11 +267,12 @@ pub async fn create_connector_by_url(
                 #[cfg(feature = "faketcp")]
                 IpScheme::FakeTcp => tunnel::fake_tcp::FakeTcpTunnelConnector::new(url).boxed(),
             };
+            connector.set_resolved_addr(resolved_addr.addr);
             if global_ctx.config.get_flags().bind_device {
                 set_bind_addr_for_peer_connector(
                     &mut connector,
-                    dst_addr.is_ipv4(),
-                    &global_ctx.get_ip_collector(),
+                    resolved_addr.addr.is_ipv4(),
+                    global_ctx,
                 )
                 .await;
             }
@@ -151,16 +294,38 @@ pub async fn create_connector_by_url(
             DnsTunnelConnector::new(url, global_ctx.clone()).boxed()
         }
     };
-    connector.set_ip_version(ip_version);
+    connector.set_ip_version(effective_connector_ip_version);
 
     Ok(connector)
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::proto::common::PeerFeatureFlag;
+    use std::collections::BTreeSet;
 
-    use super::{should_background_p2p_with_peer, should_try_p2p_with_peer};
+    use crate::{
+        common::global_ctx::tests::get_mock_global_ctx, proto::common::PeerFeatureFlag,
+        tunnel::IpVersion,
+    };
+
+    use super::{
+        create_connector_by_url, should_background_p2p_with_peer, should_try_p2p_with_peer,
+    };
+
+    #[tokio::test]
+    async fn connector_rejects_easytier_managed_ipv6_destination() {
+        let global_ctx = get_mock_global_ctx();
+        let public_route: cidr::Ipv6Inet = "2001:db8::2/128".parse().unwrap();
+        global_ctx.set_public_ipv6_routes(BTreeSet::from([public_route]));
+
+        let ret =
+            create_connector_by_url("tcp://[2001:db8::2]:11010", &global_ctx, IpVersion::V6).await;
+
+        assert!(matches!(
+            ret,
+            Err(crate::common::error::Error::InvalidUrl(_))
+        ));
+    }
 
     #[test]
     fn lazy_background_p2p_requires_need_p2p() {

@@ -24,6 +24,10 @@ message InstanceConfigPatch {
   repeated ExitNodePatch exit_nodes = 8;
   repeated UrlPatch mapped_listeners = 9;
   repeated UrlPatch connectors = 10;
+  optional bool ipv6_public_addr_provider = 11;
+  optional bool ipv6_public_addr_auto = 12;
+  optional string ipv6_public_addr_prefix = 13;
+  optional bool disable_relay_data = 14;
 }
 
 message PortForwardPatch {

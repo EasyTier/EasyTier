@@ -241,6 +241,13 @@ pub(crate) fn traffic_kind(packet_type: u8) -> TrafficKind {
     }
 }
 
+pub(crate) fn is_relay_data_packet_type(packet_type: u8) -> bool {
+    // Relay handshakes are control-plane setup; payload data is blocked by its
+    // original packet type after the session exists.
+    traffic_kind(packet_type) == TrafficKind::Data
+        || packet_type == PacketType::ForeignNetworkPacket as u8
+}
+
 #[derive(Clone)]
 struct TrafficMetricGroup {
     data: Arc<LogicalTrafficMetrics>,

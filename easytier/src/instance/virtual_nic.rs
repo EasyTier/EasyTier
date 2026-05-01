@@ -735,9 +735,26 @@ impl VirtualNic {
     }
 
     pub async fn add_ipv6_route(&self, address: Ipv6Addr, cidr: u8) -> Result<(), Error> {
+        self.add_ipv6_route_with_cost(address, cidr, None).await
+    }
+
+    pub async fn add_ipv6_route_with_cost(
+        &self,
+        address: Ipv6Addr,
+        cidr: u8,
+        cost: Option<i32>,
+    ) -> Result<(), Error> {
         let _g = self.global_ctx.net_ns.guard();
         self.ifcfg
-            .add_ipv6_route(self.ifname(), address, cidr, None)
+            .add_ipv6_route(self.ifname(), address, cidr, cost)
+            .await?;
+        Ok(())
+    }
+
+    pub async fn remove_ipv6_route(&self, address: Ipv6Addr, cidr: u8) -> Result<(), Error> {
+        let _g = self.global_ctx.net_ns.guard();
+        self.ifcfg
+            .remove_ipv6_route(self.ifname(), address, cidr)
             .await?;
         Ok(())
     }
@@ -903,7 +920,7 @@ impl NicCtx {
             }
             let src_ipv6 = ipv6.get_source();
             let dst_ipv6 = ipv6.get_destination();
-            let my_ipv6 = mgr.get_global_ctx().get_ipv6().map(|x| x.address());
+            let is_local_src = mgr.get_global_ctx().is_ip_local_ipv6(&src_ipv6);
             tracing::trace!(
                 ?ret,
                 ?src_ipv6,
@@ -911,14 +928,14 @@ impl NicCtx {
                 "[USER_PACKET] recv new packet from tun device and forward to peers."
             );
 
-            if src_ipv6.is_unicast_link_local() && Some(src_ipv6) != my_ipv6 {
+            if src_ipv6.is_unicast_link_local() && !is_local_src {
                 // do not route link local packet to other nodes unless the address is assigned by user
                 return;
             }
 
             // TODO: use zero-copy
             let send_ret = mgr
-                .send_msg_by_ip(ret, IpAddr::V6(dst_ipv6), Some(src_ipv6) == my_ipv6)
+                .send_msg_by_ip(ret, IpAddr::V6(dst_ipv6), is_local_src)
                 .await;
             if send_ret.is_err() {
                 tracing::trace!(?send_ret, "[USER_PACKET] send_msg failed")
@@ -1039,6 +1056,44 @@ impl NicCtx {
         }
     }
 
+    async fn apply_public_ipv6_route_changes(
+        ifcfg: &impl IfConfiguerTrait,
+        ifname: &str,
+        net_ns: &crate::common::netns::NetNS,
+        cur_routes: &mut BTreeSet<cidr::Ipv6Inet>,
+        added: Vec<cidr::Ipv6Inet>,
+        removed: Vec<cidr::Ipv6Inet>,
+    ) {
+        for route in removed {
+            if !cur_routes.contains(&route) {
+                continue;
+            }
+            let _g = net_ns.guard();
+            let ret = ifcfg
+                .remove_ipv6_route(ifname, route.address(), route.network_length())
+                .await;
+            if ret.is_err() {
+                tracing::trace!(route = ?route, err = ?ret, "remove public ipv6 route failed");
+            }
+            cur_routes.remove(&route);
+        }
+
+        for route in added {
+            if cur_routes.contains(&route) {
+                continue;
+            }
+            let _g = net_ns.guard();
+            let ret = ifcfg
+                .add_ipv6_route(ifname, route.address(), route.network_length(), None)
+                .await;
+            if ret.is_err() {
+                tracing::trace!(route = ?route, err = ?ret, "add public ipv6 route failed");
+            } else {
+                cur_routes.insert(route);
+            }
+        }
+    }
+
     async fn run_proxy_cidrs_route_updater(&mut self) -> Result<(), Error> {
         let Some(peer_mgr) = self.peer_mgr.upgrade() else {
             return Err(anyhow::anyhow!("peer manager not available").into());
@@ -1114,6 +1169,137 @@ impl NicCtx {
         Ok(())
     }
 
+    async fn run_public_ipv6_route_updater(&mut self) -> Result<(), Error> {
+        let Some(peer_mgr) = self.peer_mgr.upgrade() else {
+            return Err(anyhow::anyhow!("peer manager not available").into());
+        };
+        let global_ctx = self.global_ctx.clone();
+        let net_ns = self.global_ctx.net_ns.clone();
+        let nic = self.nic.lock().await;
+        let ifcfg = nic.get_ifcfg();
+        let ifname = nic.ifname().to_owned();
+        let mut event_receiver = global_ctx.subscribe();
+
+        self.tasks.spawn(async move {
+            let mut cur_routes = BTreeSet::<cidr::Ipv6Inet>::new();
+            let initial_routes = peer_mgr.list_public_ipv6_routes().await;
+            let initial_added = initial_routes.iter().copied().collect::<Vec<_>>();
+            Self::apply_public_ipv6_route_changes(
+                &ifcfg,
+                &ifname,
+                &net_ns,
+                &mut cur_routes,
+                initial_added,
+                Vec::new(),
+            )
+            .await;
+
+            loop {
+                let event = match event_receiver.recv().await {
+                    Ok(event) => event,
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                        event_receiver = event_receiver.resubscribe();
+                        let latest = peer_mgr.list_public_ipv6_routes().await;
+                        let added = latest.difference(&cur_routes).copied().collect::<Vec<_>>();
+                        let removed = cur_routes.difference(&latest).copied().collect::<Vec<_>>();
+                        GlobalCtxEvent::PublicIpv6RoutesUpdated(added, removed)
+                    }
+                };
+
+                let (added, removed) = match event {
+                    GlobalCtxEvent::PublicIpv6RoutesUpdated(added, removed) => (added, removed),
+                    _ => continue,
+                };
+
+                Self::apply_public_ipv6_route_changes(
+                    &ifcfg,
+                    &ifname,
+                    &net_ns,
+                    &mut cur_routes,
+                    added,
+                    removed,
+                )
+                .await;
+            }
+        });
+
+        Ok(())
+    }
+
+    async fn run_public_ipv6_addr_updater(&mut self) -> Result<(), Error> {
+        let Some(peer_mgr) = self.peer_mgr.upgrade() else {
+            return Err(anyhow::anyhow!("peer manager not available").into());
+        };
+        let global_ctx = self.global_ctx.clone();
+        let nic = self.nic.clone();
+        let mut event_receiver = global_ctx.subscribe();
+
+        self.tasks.spawn(async move {
+            let mut current_addr = peer_mgr.get_my_public_ipv6_addr().await;
+            if let Some(addr) = current_addr {
+                let nic = nic.lock().await;
+                if let Err(err) = nic.link_up().await {
+                    tracing::warn!(?err, "failed to bring public ipv6 nic link up");
+                }
+                if let Err(err) = nic.add_ipv6(addr.address(), addr.network_length() as i32).await {
+                    tracing::warn!(addr = ?addr, ?err, "failed to add public ipv6 address");
+                }
+                if let Err(err) = nic
+                    .add_ipv6_route_with_cost(Ipv6Addr::UNSPECIFIED, 0, Some(5))
+                    .await
+                {
+                    tracing::warn!(route = %Ipv6Addr::UNSPECIFIED, prefix = 0, ?err, "failed to add default public ipv6 route");
+                }
+            }
+
+            loop {
+                let event = match event_receiver.recv().await {
+                    Ok(event) => event,
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                        event_receiver = event_receiver.resubscribe();
+                        let latest = peer_mgr.get_my_public_ipv6_addr().await;
+                        GlobalCtxEvent::PublicIpv6Changed(current_addr, latest)
+                    }
+                };
+
+                let (old, new) = match event {
+                    GlobalCtxEvent::PublicIpv6Changed(old, new) => (old, new),
+                    _ => continue,
+                };
+
+                current_addr = new;
+                let nic = nic.lock().await;
+                if let Err(err) = nic.link_up().await {
+                    tracing::warn!(?err, "failed to bring public ipv6 nic link up");
+                }
+                if let Some(old) = old {
+                    if let Err(err) = nic.remove_ipv6_route(Ipv6Addr::UNSPECIFIED, 0).await {
+                        tracing::warn!(route = %Ipv6Addr::UNSPECIFIED, prefix = 0, ?err, "failed to remove default public ipv6 route");
+                    }
+                    if let Err(err) = nic.remove_ipv6(Some(old)).await {
+                        tracing::warn!(addr = ?old, ?err, "failed to remove old public ipv6 address");
+                    }
+                }
+                if let Some(new) = new {
+                    if let Err(err) = nic.add_ipv6(new.address(), new.network_length() as i32).await
+                    {
+                        tracing::warn!(addr = ?new, ?err, "failed to add public ipv6 address");
+                    }
+                    if let Err(err) = nic
+                        .add_ipv6_route_with_cost(Ipv6Addr::UNSPECIFIED, 0, Some(5))
+                        .await
+                    {
+                        tracing::warn!(route = %Ipv6Addr::UNSPECIFIED, prefix = 0, ?err, "failed to add default public ipv6 route");
+                    }
+                }
+            }
+        });
+
+        Ok(())
+    }
+
     pub async fn run(
         &mut self,
         ipv4_addr: Option<cidr::Ipv4Inet>,
@@ -1169,6 +1355,10 @@ impl NicCtx {
         }
 
         self.run_proxy_cidrs_route_updater().await?;
+        self.run_public_ipv6_route_updater().await?;
+        // Keep the updater running so runtime config patches can enable auto mode
+        // without recreating the NIC.
+        self.run_public_ipv6_addr_updater().await?;
 
         Ok(())
     }
