@@ -87,7 +87,7 @@ struct ForeignNetworkEntry {
 
     packet_recv: Mutex<Option<PacketRecvChanReceiver>>,
 
-    bps_limiter: Arc<TokenBucket>,
+    bps_limiter: Option<Arc<TokenBucket>>,
 
     peer_center: Arc<PeerCenterInstance>,
 
@@ -191,14 +191,16 @@ impl ForeignNetworkEntry {
         );
 
         let relay_bps_limit = global_ctx.config.get_flags().foreign_relay_bps_limit;
-        let limiter_config = LimiterConfig {
-            burst_rate: None,
-            bps: Some(relay_bps_limit),
-            fill_duration_ms: None,
-        };
-        let bps_limiter = global_ctx
-            .token_bucket_manager()
-            .get_or_create(&network.network_name, limiter_config.into());
+        let bps_limiter = (relay_bps_limit != u64::MAX).then(|| {
+            let limiter_config = LimiterConfig {
+                burst_rate: None,
+                bps: Some(relay_bps_limit),
+                fill_duration_ms: None,
+            };
+            global_ctx
+                .token_bucket_manager()
+                .get_or_create(&network.network_name, limiter_config.into())
+        });
 
         let peer_center = Arc::new(PeerCenterInstance::new(Arc::new(
             PeerMapWithPeerRpcManager {
@@ -536,7 +538,9 @@ impl ForeignNetworkEntry {
                             );
                             continue;
                         }
-                        if !bps_limiter.try_consume(len.into()) {
+                        if let Some(bps_limiter) = bps_limiter.as_ref()
+                            && !bps_limiter.try_consume(len.into())
+                        {
                             continue;
                         }
                     }
@@ -713,6 +717,7 @@ impl ForeignNetworkManagerData {
     fn remove_network(&self, network_name: &String) {
         let _l = self.lock.lock().unwrap();
         if let Some(old) = self.network_peer_maps.remove(network_name) {
+            old.1.traffic_metrics.clear_peer_cache();
             let to_remove_peers = old.1.peer_map.list_peers();
             for p in to_remove_peers {
                 self.peer_network_map.remove_if(&p, |_, v| {
@@ -722,6 +727,9 @@ impl ForeignNetworkManagerData {
             }
         }
         self.network_peer_last_update.remove(network_name);
+        shrink_dashmap(&self.peer_network_map, None);
+        shrink_dashmap(&self.network_peer_maps, None);
+        shrink_dashmap(&self.network_peer_last_update, None);
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -994,12 +1002,14 @@ impl ForeignNetworkManager {
     async fn start_event_handler(&self, entry: &ForeignNetworkEntry) {
         let data = self.data.clone();
         let network_name = entry.network.network_name.clone();
+        let traffic_metrics = entry.traffic_metrics.clone();
         let mut s = entry.global_ctx.subscribe();
         self.tasks.lock().unwrap().spawn(async move {
             while let Ok(e) = s.recv().await {
                 match &e {
                     GlobalCtxEvent::PeerRemoved(peer_id) => {
                         tracing::info!(?e, "remove peer from foreign network manager");
+                        traffic_metrics.remove_peer(*peer_id);
                         data.remove_peer(*peer_id, &network_name);
                         data.network_peer_last_update
                             .insert(network_name.clone(), SystemTime::now());
@@ -1018,6 +1028,7 @@ impl ForeignNetworkManager {
             }
             // if lagged or recv done just remove the network
             tracing::error!("global event handler at foreign network manager exit");
+            traffic_metrics.clear_peer_cache();
             data.remove_network(&network_name);
         });
     }
@@ -1598,6 +1609,58 @@ pub mod tests {
                             network_labels.clone(),
                         ) > forwarded_packets_before
                 }
+            },
+            Duration::from_secs(5),
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn foreign_network_peer_removed_clears_traffic_metric_peer_cache() {
+        let pm_center = create_mock_peer_manager_with_mock_stun(NatType::Unknown).await;
+        let pma_net1 = create_mock_peer_manager_for_foreign_network("net1").await;
+
+        connect_peer_manager(pma_net1.clone(), pm_center.clone()).await;
+        wait_for_condition(
+            || {
+                let pm_center = pm_center.clone();
+                async move {
+                    pm_center
+                        .get_foreign_network_manager()
+                        .get_network_peer_id("net1")
+                        .is_some()
+                }
+            },
+            Duration::from_secs(5),
+        )
+        .await;
+
+        let entry = pm_center
+            .get_foreign_network_manager()
+            .data
+            .get_network_entry("net1")
+            .unwrap();
+
+        entry
+            .traffic_metrics
+            .record_rx(pma_net1.my_peer_id(), PacketType::Data as u8, 128)
+            .await;
+
+        assert!(
+            entry
+                .traffic_metrics
+                .contains_peer_cache(pma_net1.my_peer_id())
+        );
+
+        entry
+            .global_ctx
+            .issue_event(GlobalCtxEvent::PeerRemoved(pma_net1.my_peer_id()));
+
+        wait_for_condition(
+            || {
+                let entry = entry.clone();
+                let peer_id = pma_net1.my_peer_id();
+                async move { !entry.traffic_metrics.contains_peer_cache(peer_id) }
             },
             Duration::from_secs(5),
         )

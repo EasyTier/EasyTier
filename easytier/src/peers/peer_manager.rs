@@ -687,6 +687,11 @@ impl PeerManager {
         Ok(())
     }
 
+    fn release_reserved_peer_id(&self, network_name: &str) {
+        self.reserved_my_peer_id_map.remove(network_name);
+        shrink_dashmap(&self.reserved_my_peer_id_map, None);
+    }
+
     #[tracing::instrument(ret)]
     pub async fn add_tunnel_as_server(
         &self,
@@ -702,7 +707,8 @@ impl PeerManager {
             tunnel,
             self.peer_session_store.clone(),
         );
-        conn.do_handshake_as_server_ext(|peer, network_name:&str| {
+        let mut reserved_peer_id_network_name = None;
+        let handshake_ret = conn.do_handshake_as_server_ext(|peer, network_name:&str| {
             if network_name
                 == self.global_ctx.get_network_identity().network_name
             {
@@ -713,6 +719,7 @@ impl PeerManager {
                 .foreign_network_manager
                 .get_network_peer_id(network_name);
             if peer_id.is_none() {
+                reserved_peer_id_network_name = Some(network_name.to_string());
                 peer_id = Some(*self.reserved_my_peer_id_map.entry(network_name.to_string()).or_insert_with(|| {
                     rand::random::<PeerId>()
                 }).value());
@@ -728,7 +735,14 @@ impl PeerManager {
 
             Ok(())
         })
-        .await?;
+        .await;
+
+        if let Err(err) = handshake_ret {
+            if let Some(network_name) = reserved_peer_id_network_name {
+                self.release_reserved_peer_id(&network_name);
+            }
+            return Err(err);
+        }
 
         let peer_identity = conn.get_network_identity();
         let peer_network_name = peer_identity.network_name.clone();
@@ -747,6 +761,7 @@ impl PeerManager {
 
         if !is_local_network && self.global_ctx.get_flags().private_mode && !foreign_network_allowed
         {
+            self.release_reserved_peer_id(&peer_network_name);
             return Err(Error::SecretKeyError(
                 "private mode is turned on, foreign network secret mismatch".to_string(),
             ));
@@ -754,14 +769,18 @@ impl PeerManager {
 
         conn.set_is_hole_punched(!is_directly_connected);
 
-        if is_local_network {
-            self.add_new_peer_conn(conn).await?;
+        let add_peer_ret = if is_local_network {
+            self.add_new_peer_conn(conn).await
         } else {
-            self.foreign_network_manager.add_peer_conn(conn).await?;
+            self.foreign_network_manager.add_peer_conn(conn).await
+        };
+
+        if let Err(err) = add_peer_ret {
+            self.release_reserved_peer_id(&peer_network_name);
+            return Err(err);
         }
 
-        self.reserved_my_peer_id_map.remove(&peer_network_name);
-        shrink_dashmap(&self.reserved_my_peer_id_map, None);
+        self.release_reserved_peer_id(&peer_network_name);
 
         tracing::info!("add tunnel as server done");
         Ok(())
