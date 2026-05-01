@@ -2229,7 +2229,7 @@ checksum = "d0881ea181b1df73ff77ffaaf9c7544ecc11e82fba9b5f27b262a3c73a332555"
 
 [[package]]
 name = "easytier"
-version = "2.6.2"
+version = "2.6.3"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -2405,7 +2405,7 @@ dependencies = [
 
 [[package]]
 name = "easytier-gui"
-version = "2.6.2"
+version = "2.6.3"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2486,7 +2486,7 @@ dependencies = [
 
 [[package]]
 name = "easytier-web"
-version = "2.6.2"
+version = "2.6.3"
 dependencies = [
  "anyhow",
  "async-trait",
