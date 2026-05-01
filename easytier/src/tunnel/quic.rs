@@ -136,7 +136,9 @@ impl<Item> RwPool<Item> {
     }
 
     fn len(&self) -> usize {
-        self.persistent.read().len() + self.ephemeral.read().len()
+        let persistent_len = self.persistent.read().len();
+        let ephemeral_len = self.ephemeral.read().len();
+        persistent_len + ephemeral_len
     }
 
     /// try to push an item to the ephemeral pool, return the item if full
@@ -204,14 +206,15 @@ impl RwPool<Endpoint> {
     }
 
     fn contains_local_addr(&self, local_addr: SocketAddr) -> bool {
-        self.with_iter(|iter| {
-            for endpoint in iter {
-                if endpoint.local_addr().ok() == Some(local_addr) {
-                    return true;
-                }
-            }
-            false
-        })
+        self.persistent
+            .read()
+            .iter()
+            .any(|endpoint| endpoint.local_addr().ok() == Some(local_addr))
+            || self
+                .ephemeral
+                .read()
+                .iter()
+                .any(|endpoint| endpoint.local_addr().ok() == Some(local_addr))
     }
 }
 //endregion
