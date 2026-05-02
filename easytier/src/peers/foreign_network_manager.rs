@@ -279,7 +279,7 @@ impl ForeignNetworkEntry {
         flags.disable_relay_quic = !global_ctx.get_flags().enable_relay_foreign_network_quic;
         config.set_flags(flags);
 
-        config.set_mapped_listeners(Some(global_ctx.config.get_mapped_listeners()));
+        config.set_mapped_listener_configs(Some(global_ctx.config.get_mapped_listener_configs()));
 
         let foreign_global_ctx = Arc::new(GlobalCtx::new(config));
         foreign_global_ctx
@@ -291,8 +291,8 @@ impl ForeignNetworkEntry {
             Self::desired_avoid_relay_data_feature_flag(&global_ctx, relay_data);
         foreign_global_ctx.set_base_advertised_feature_flags(feature_flag);
 
-        for u in global_ctx.get_running_listeners().into_iter() {
-            foreign_global_ctx.add_running_listener(u);
+        for listener in global_ctx.get_running_listener_configs().into_iter() {
+            foreign_global_ctx.add_running_listener_with_priority(listener.url, listener.priority);
         }
 
         foreign_global_ctx

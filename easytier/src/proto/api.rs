@@ -141,6 +141,21 @@ pub mod instance {
             ret
         }
 
+        pub fn get_conn_priority(&self) -> Option<u32> {
+            let p = self.peer.as_ref()?;
+            let default_conn_id = p.default_conn_id.map(|id| id.to_string());
+            let mut ret = None;
+            for conn in p.conns.iter() {
+                if default_conn_id == Some(conn.conn_id.to_string()) {
+                    return Some(conn.priority);
+                }
+
+                ret.get_or_insert(conn.priority);
+            }
+
+            ret
+        }
+
         fn get_tunnel_proto_str(tunnel_info: &super::super::common::TunnelInfo) -> String {
             tunnel_info.display_tunnel_type()
         }

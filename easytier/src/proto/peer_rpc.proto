@@ -184,6 +184,12 @@ message GetIpListResponse {
   common.Ipv6Addr public_ipv6 = 3;
   repeated common.Ipv6Addr interface_ipv6s = 4;
   repeated common.Url listeners = 5;
+  repeated ListenerInfo listener_infos = 6;
+}
+
+message ListenerInfo {
+  common.Url url = 1;
+  uint32 priority = 2;
 }
 
 message SendUdpHolePunchPacketRequest {
@@ -314,6 +320,7 @@ message HandshakeRequest {
   repeated string features = 4;
   string network_name = 5;
   bytes network_secret_digest = 6;
+  uint32 connection_priority = 7;
 }
 
 message KcpConnData {
@@ -346,6 +353,7 @@ message PeerConnNoiseMsg1Pb {
   optional uint32 a_session_generation = 3;
   common.UUID a_conn_id = 4;
   string client_encryption_algorithm = 5;
+  uint32 connection_priority = 6;
 }
 
 message PeerConnNoiseMsg2Pb {
