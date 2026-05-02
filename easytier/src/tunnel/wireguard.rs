@@ -27,7 +27,7 @@ use anyhow::Context;
 use async_recursion::async_recursion;
 use async_trait::async_trait;
 use boringtun::{
-    noise::{Tunn, TunnResult, errors::WireGuardError},
+    noise::{Packet, Tunn, TunnResult, errors::WireGuardError, handshake::parse_handshake_anon},
     x25519::{PublicKey, StaticSecret},
 };
 use bytes::BytesMut;
@@ -87,6 +87,20 @@ impl WgConfig {
             peer_secret_key: client_cfg.my_secret_key,
             peer_public_key: client_cfg.my_public_key,
 
+            wg_type: WgType::ExternalUse,
+        }
+    }
+
+    pub fn new_for_portal_server(
+        server_secret_key: StaticSecret,
+        server_public_key: PublicKey,
+        peer_public_key: PublicKey,
+    ) -> Self {
+        Self {
+            my_secret_key: server_secret_key,
+            my_public_key: server_public_key,
+            peer_secret_key: StaticSecret::from([0u8; 32]),
+            peer_public_key,
             wg_type: WgType::ExternalUse,
         }
     }
@@ -347,17 +361,22 @@ struct WgPeer {
     tasks: JoinSet<()>,
 
     access_time: AtomicCell<std::time::Instant>,
+    tunn_index: u32,
 }
 
 impl WgPeer {
     fn new(udp: Arc<UdpSocket>, config: WgConfig, endpoint: SocketAddr) -> Self {
+        Self::new_with_index(udp, config, endpoint, rand::thread_rng().next_u32())
+    }
+
+    fn new_with_index(udp: Arc<UdpSocket>, config: WgConfig, endpoint: SocketAddr, tunn_index: u32) -> Self {
         WgPeer {
             tunn: Some(Mutex::new(Tunn::new(
                 config.my_secret_key.clone(),
                 config.peer_public_key,
                 None,
                 None,
-                rand::thread_rng().next_u32(),
+                tunn_index,
                 None,
             ))),
 
@@ -370,6 +389,7 @@ impl WgPeer {
             tasks: JoinSet::new(),
 
             access_time: AtomicCell::new(std::time::Instant::now()),
+            tunn_index,
         }
     }
 
@@ -452,15 +472,31 @@ impl WgPeer {
 type ConnSender = tokio::sync::mpsc::UnboundedSender<Box<dyn Tunnel>>;
 type ConnReceiver = tokio::sync::mpsc::UnboundedReceiver<Box<dyn Tunnel>>;
 
+#[derive(Clone)]
+pub struct WgPortalServerConfig {
+    pub server_secret_key: StaticSecret,
+    pub server_public_key: PublicKey,
+    pub clients: Arc<DashMap<PublicKey, String>>, // pubkey -> client name
+    pub next_index: Arc<std::sync::atomic::AtomicU32>,
+}
+
+#[derive(Clone, Debug)]
+pub struct WgClientInfo {
+    pub name: String,
+    pub pubkey: [u8; 32],
+}
+
 pub struct WgTunnelListener {
     addr: url::Url,
-    config: WgConfig,
+    config: Option<WgConfig>,
+    server_config: Option<WgPortalServerConfig>,
 
     udp: Option<Arc<UdpSocket>>,
     conn_recv: ConnReceiver,
     conn_send: Option<ConnSender>,
 
     wg_peer_map: Arc<DashMap<SocketAddr, Arc<WgPeer>>>,
+    wg_peer_by_idx: Arc<DashMap<u32, Arc<WgPeer>>>,
 
     tasks: JoinSet<()>,
 }
@@ -470,13 +506,33 @@ impl WgTunnelListener {
         let (conn_send, conn_recv) = tokio::sync::mpsc::unbounded_channel();
         WgTunnelListener {
             addr,
-            config,
+            config: Some(config),
+            server_config: None,
 
             udp: None,
             conn_recv,
             conn_send: Some(conn_send),
 
             wg_peer_map: Arc::new(DashMap::new()),
+            wg_peer_by_idx: Arc::new(DashMap::new()),
+
+            tasks: JoinSet::new(),
+        }
+    }
+
+    pub fn new_for_portal(addr: url::Url, server_config: WgPortalServerConfig) -> Self {
+        let (conn_send, conn_recv) = tokio::sync::mpsc::unbounded_channel();
+        WgTunnelListener {
+            addr,
+            config: None,
+            server_config: Some(server_config),
+
+            udp: None,
+            conn_recv,
+            conn_send: Some(conn_send),
+
+            wg_peer_map: Arc::new(DashMap::new()),
+            wg_peer_by_idx: Arc::new(DashMap::new()),
 
             tasks: JoinSet::new(),
         }
@@ -488,19 +544,26 @@ impl WgTunnelListener {
 
     async fn handle_udp_incoming(
         socket: Arc<UdpSocket>,
-        config: WgConfig,
+        config: Option<WgConfig>,
+        server_config: Option<WgPortalServerConfig>,
         conn_sender: ConnSender,
         peer_map: Arc<DashMap<SocketAddr, Arc<WgPeer>>>,
+        peer_by_idx: Arc<DashMap<u32, Arc<WgPeer>>>,
     ) {
         let mut tasks = JoinSet::new();
 
         let peer_map_clone: Arc<DashMap<SocketAddr, Arc<WgPeer>>> = peer_map.clone();
+        let peer_by_idx_clone = peer_by_idx.clone();
         tasks.spawn(async move {
             loop {
                 peer_map_clone.retain(|_, peer| {
                     peer.access_time.load().elapsed().as_secs() < 61 && !peer.stopped()
                 });
                 shrink_dashmap(&peer_map_clone, None);
+                peer_by_idx_clone.retain(|_, peer| {
+                    peer.access_time.load().elapsed().as_secs() < 61 && !peer.stopped()
+                });
+                shrink_dashmap(&peer_by_idx_clone, None);
                 tokio::time::sleep(Duration::from_secs(1)).await;
             }
         });
@@ -515,38 +578,140 @@ impl WgTunnelListener {
             let data = &buf[..n];
             tracing::trace!(?n, ?addr, "Received bytes from peer");
 
-            if !peer_map.contains_key(&addr) {
-                tracing::info!("New peer: {}", addr);
-                let mut wg = WgPeer::new(socket.clone(), config.clone(), addr);
-                let (stream, sink) = wg.start_and_get_tunnel().split();
-                let tunnel = Box::new(TunnelWrapper::new(
-                    stream,
-                    sink,
-                    Some(TunnelInfo {
-                        tunnel_type: "wg".to_owned(),
-                        local_addr: Some(
-                            build_url_from_socket_addr(
-                                &socket.local_addr().unwrap().to_string(),
-                                "wg",
-                            )
-                            .into(),
-                        ),
-                        remote_addr: Some(
-                            build_url_from_socket_addr(&addr.to_string(), "wg").into(),
-                        ),
-                        resolved_remote_addr: Some(
-                            build_url_from_socket_addr(&addr.to_string(), "wg").into(),
-                        ),
-                    }),
-                ));
-                if let Err(e) = conn_sender.send(tunnel) {
-                    tracing::error!("Failed to send tunnel to conn_sender: {}", e);
+            if let Some(ref srv_cfg) = server_config {
+                // Multi-client portal mode
+                match Tunn::parse_incoming_packet(data) {
+                    Ok(Packet::HandshakeInit(p)) => {
+                        if !peer_map.contains_key(&addr) {
+                            if let Ok(hh) = parse_handshake_anon(
+                                &srv_cfg.server_secret_key,
+                                &srv_cfg.server_public_key,
+                                &p,
+                            ) {
+                                let client_pubkey = PublicKey::from(hh.peer_static_public);
+                                if let Some(client_name) = srv_cfg.clients.get(&client_pubkey) {
+                                    tracing::info!(
+                                        "New wireguard peer: {}, client: {}, pubkey: {:?}",
+                                        addr,
+                                        client_name.value(),
+                                        client_pubkey
+                                    );
+                                    let idx = srv_cfg
+                                        .next_index
+                                        .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                                    let client_config = WgConfig::new_for_portal_server(
+                                        srv_cfg.server_secret_key.clone(),
+                                        srv_cfg.server_public_key.clone(),
+                                        client_pubkey,
+                                    );
+                                    let mut wg =
+                                        WgPeer::new_with_index(socket.clone(), client_config, addr, idx);
+                                    let (stream, sink) = wg.start_and_get_tunnel().split();
+                                    let client_info = WgClientInfo {
+                                        name: client_name.value().clone(),
+                                        pubkey: hh.peer_static_public,
+                                    };
+                                    let tunnel = Box::new(TunnelWrapper::new_with_associate_data(
+                                        stream,
+                                        sink,
+                                        Some(TunnelInfo {
+                                            tunnel_type: "wg".to_owned(),
+                                            local_addr: Some(
+                                                build_url_from_socket_addr(
+                                                    &socket.local_addr().unwrap().to_string(),
+                                                    "wg",
+                                                )
+                                                .into(),
+                                            ),
+                                            remote_addr: Some(
+                                                build_url_from_socket_addr(&addr.to_string(), "wg")
+                                                    .into(),
+                                            ),
+                                            resolved_remote_addr: Some(
+                                                build_url_from_socket_addr(&addr.to_string(), "wg")
+                                                    .into(),
+                                            ),
+                                        }),
+                                        Some(Box::new(client_info)),
+                                    ));
+                                    if let Err(e) = conn_sender.send(tunnel) {
+                                        tracing::error!("Failed to send tunnel to conn_sender: {}", e);
+                                    }
+                                    let wg = Arc::new(wg);
+                                    peer_map.insert(addr, wg.clone());
+                                    peer_by_idx.insert(idx, wg);
+                                } else {
+                                    tracing::debug!(?client_pubkey, "Unknown wireguard client pubkey");
+                                }
+                            }
+                        }
+                        if let Some(peer) = peer_map.get(&addr) {
+                            peer.handle_packet_from_peer(data).await;
+                        }
+                    }
+                    Ok(Packet::HandshakeResponse(p)) => {
+                        let idx = p.receiver_idx >> 8;
+                        if let Some(peer) = peer_by_idx.get(&idx) {
+                            peer.handle_packet_from_peer(data).await;
+                        } else {
+                            tracing::trace!(?idx, "No peer found for receiver_idx");
+                        }
+                    }
+                    Ok(Packet::PacketCookieReply(p)) => {
+                        let idx = p.receiver_idx >> 8;
+                        if let Some(peer) = peer_by_idx.get(&idx) {
+                            peer.handle_packet_from_peer(data).await;
+                        } else {
+                            tracing::trace!(?idx, "No peer found for receiver_idx");
+                        }
+                    }
+                    Ok(Packet::PacketData(p)) => {
+                        let idx = p.receiver_idx >> 8;
+                        if let Some(peer) = peer_by_idx.get(&idx) {
+                            peer.handle_packet_from_peer(data).await;
+                        } else {
+                            tracing::trace!(?idx, "No peer found for receiver_idx");
+                        }
+                    }
+                    Err(e) => {
+                        tracing::debug!("Failed to parse wireguard packet: {:?}", e);
+                    }
                 }
-                peer_map.insert(addr, Arc::new(wg));
-            }
+            } else if let Some(ref cfg) = config {
+                // Single-peer legacy mode
+                if !peer_map.contains_key(&addr) {
+                    tracing::info!("New peer: {}", addr);
+                    let mut wg = WgPeer::new(socket.clone(), cfg.clone(), addr);
+                    let (stream, sink) = wg.start_and_get_tunnel().split();
+                    let tunnel = Box::new(TunnelWrapper::new(
+                        stream,
+                        sink,
+                        Some(TunnelInfo {
+                            tunnel_type: "wg".to_owned(),
+                            local_addr: Some(
+                                build_url_from_socket_addr(
+                                    &socket.local_addr().unwrap().to_string(),
+                                    "wg",
+                                )
+                                .into(),
+                            ),
+                            remote_addr: Some(
+                                build_url_from_socket_addr(&addr.to_string(), "wg").into(),
+                            ),
+                            resolved_remote_addr: Some(
+                                build_url_from_socket_addr(&addr.to_string(), "wg").into(),
+                            ),
+                        }),
+                    ));
+                    if let Err(e) = conn_sender.send(tunnel) {
+                        tracing::error!("Failed to send tunnel to conn_sender: {}", e);
+                    }
+                    peer_map.insert(addr, Arc::new(wg));
+                }
 
-            let peer = peer_map.get(&addr).unwrap().clone();
-            peer.handle_packet_from_peer(data).await;
+                let peer = peer_map.get(&addr).unwrap().clone();
+                peer.handle_packet_from_peer(data).await;
+            }
         }
     }
 }
@@ -570,8 +735,10 @@ impl TunnelListener for WgTunnelListener {
         self.tasks.spawn(Self::handle_udp_incoming(
             self.get_udp_socket(),
             self.config.clone(),
+            self.server_config.clone(),
             self.conn_send.take().unwrap(),
             self.wg_peer_map.clone(),
+            self.wg_peer_by_idx.clone(),
         ));
 
         Ok(())
@@ -919,5 +1086,91 @@ pub mod tests {
         listener.listen().await.unwrap();
         let port = listener.local_url().port().unwrap();
         assert!(port > 0);
+    }
+
+    #[tokio::test]
+    async fn wg_multi_client_portal() {
+        use std::sync::atomic::AtomicU32;
+
+        let server_secret = x25519::StaticSecret::random_from_rng(rand::thread_rng());
+        let server_public = x25519::PublicKey::from(&server_secret);
+
+        let client1_secret = x25519::StaticSecret::random_from_rng(rand::thread_rng());
+        let client1_public = x25519::PublicKey::from(&client1_secret);
+
+        let client2_secret = x25519::StaticSecret::random_from_rng(rand::thread_rng());
+        let client2_public = x25519::PublicKey::from(&client2_secret);
+
+        let clients = Arc::new(DashMap::new());
+        clients.insert(client1_public, "client1".to_string());
+        clients.insert(client2_public, "client2".to_string());
+
+        let server_config = WgPortalServerConfig {
+            server_secret_key: server_secret.clone(),
+            server_public_key: server_public.clone(),
+            clients,
+            next_index: Arc::new(AtomicU32::new(1)),
+        };
+
+        let mut listener =
+            WgTunnelListener::new_for_portal("wg://127.0.0.1:5588".parse().unwrap(), server_config);
+        listener.listen().await.unwrap();
+
+        let client1_wg_cfg = WgConfig {
+            my_secret_key: client1_secret,
+            my_public_key: client1_public,
+            peer_secret_key: server_secret.clone(),
+            peer_public_key: server_public.clone(),
+            wg_type: WgType::ExternalUse,
+        };
+
+        let client2_wg_cfg = WgConfig {
+            my_secret_key: client2_secret,
+            my_public_key: client2_public,
+            peer_secret_key: server_secret.clone(),
+            peer_public_key: server_public.clone(),
+            wg_type: WgType::ExternalUse,
+        };
+
+        // Client 1 connects
+        let mut connector1 =
+            WgTunnelConnector::new("wg://127.0.0.1:5588".parse().unwrap(), client1_wg_cfg);
+        let t1 = connector1.connect().await;
+        assert!(t1.is_ok(), "client1 should connect");
+
+        // Client 2 connects
+        let mut connector2 =
+            WgTunnelConnector::new("wg://127.0.0.1:5588".parse().unwrap(), client2_wg_cfg);
+        let t2 = connector2.connect().await;
+        assert!(t2.is_ok(), "client2 should connect");
+
+        // Verify listener accepted both
+        let accepted1 = listener.accept().await;
+        assert!(accepted1.is_ok());
+
+        let accepted2 = listener.accept().await;
+        assert!(accepted2.is_ok());
+
+        // Verify peer_by_idx has both peers
+        assert_eq!(listener.wg_peer_by_idx.len(), 2);
+
+        // Unregistered client should fail to connect (timeout)
+        let unreg_secret = x25519::StaticSecret::random_from_rng(rand::thread_rng());
+        let unreg_public = x25519::PublicKey::from(&unreg_secret);
+        let unreg_cfg = WgConfig {
+            my_secret_key: unreg_secret,
+            my_public_key: unreg_public,
+            peer_secret_key: server_secret.clone(),
+            peer_public_key: server_public.clone(),
+            wg_type: WgType::ExternalUse,
+        };
+        let mut unreg_connector =
+            WgTunnelConnector::new("wg://127.0.0.1:5588".parse().unwrap(), unreg_cfg);
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            unreg_connector.connect(),
+        )
+        .await;
+        assert!(result.is_err() || result.unwrap().is_err(), "unregistered client should fail");
     }
 }

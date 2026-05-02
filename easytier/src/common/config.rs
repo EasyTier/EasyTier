@@ -1,6 +1,6 @@
 use std::{
     hash::Hasher,
-    net::{IpAddr, SocketAddr},
+    net::{IpAddr, Ipv4Addr, SocketAddr},
     path::PathBuf,
     sync::{Arc, Mutex},
 };
@@ -208,6 +208,10 @@ pub trait ConfigLoader: Send + Sync {
 
     fn get_vpn_portal_config(&self) -> Option<VpnPortalConfig>;
     fn set_vpn_portal_config(&self, config: VpnPortalConfig);
+
+    fn add_vpn_portal_client(&self, client: VpnPortalClientConfig) -> Result<(), anyhow::Error>;
+    fn remove_vpn_portal_client(&self, name: &str);
+    fn get_vpn_portal_clients(&self) -> Vec<VpnPortalClientConfig>;
 
     fn get_flags(&self) -> Flags;
     fn set_flags(&self, flags: Flags);
@@ -445,9 +449,21 @@ impl LoggingConfigLoader for &LoggingConfig {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+pub struct VpnPortalClientConfig {
+    pub name: String,
+    pub client_public_key: String, // base64 encoded x25519 public key
+    #[serde(default)]
+    pub assigned_ip: Option<Ipv4Addr>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 pub struct VpnPortalConfig {
     pub client_cidr: cidr::Ipv4Cidr,
     pub wireguard_listen: SocketAddr,
+    #[serde(default)]
+    pub wireguard_private_key: Option<String>, // base64 encoded. if None, derive from network identity for backward compat
+    #[serde(default)]
+    pub clients: Vec<VpnPortalClientConfig>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, Hash)]
@@ -891,6 +907,33 @@ impl ConfigLoader for TomlConfigLoader {
     }
     fn set_vpn_portal_config(&self, config: VpnPortalConfig) {
         self.config.lock().unwrap().vpn_portal_config = Some(config);
+    }
+
+    fn add_vpn_portal_client(&self, client: VpnPortalClientConfig) -> Result<(), anyhow::Error> {
+        let mut locked_config = self.config.lock().unwrap();
+        let portal = locked_config.vpn_portal_config.as_mut().ok_or_else(|| anyhow::anyhow!("vpn portal config is not set"))?;
+        if portal.clients.iter().any(|c| c.name == client.name) {
+            return Err(anyhow::anyhow!("vpn portal client with name '{}' already exists", client.name));
+        }
+        portal.clients.push(client);
+        Ok(())
+    }
+
+    fn remove_vpn_portal_client(&self, name: &str) {
+        let mut locked_config = self.config.lock().unwrap();
+        if let Some(portal) = locked_config.vpn_portal_config.as_mut() {
+            portal.clients.retain(|c| c.name != name);
+        }
+    }
+
+    fn get_vpn_portal_clients(&self) -> Vec<VpnPortalClientConfig> {
+        self.config
+            .lock()
+            .unwrap()
+            .vpn_portal_config
+            .as_ref()
+            .map(|p| p.clients.clone())
+            .unwrap_or_default()
     }
 
     fn get_flags(&self) -> Flags {

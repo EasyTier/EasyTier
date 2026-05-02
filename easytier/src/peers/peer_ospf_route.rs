@@ -245,14 +245,22 @@ impl RoutePeerInfo {
             inst_id: Some(global_ctx.get_id().into()),
             cost: 0,
             ipv4_addr: global_ctx.get_ipv4().map(|x| x.address().into()),
-            proxy_cidrs: global_ctx
-                .config
-                .get_proxy_cidrs()
-                .iter()
-                .map(|x| x.mapped_cidr.unwrap_or(x.cidr))
-                .chain(global_ctx.get_vpn_portal_cidr())
-                .map(|x| x.to_string())
-                .collect(),
+            proxy_cidrs: {
+                let mut cidrs: Vec<String> = global_ctx
+                    .config
+                    .get_proxy_cidrs()
+                    .iter()
+                    .map(|x| x.mapped_cidr.unwrap_or(x.cidr).to_string())
+                    .collect();
+                // Only advertise client_cidr as proxy when in legacy single-key mode.
+                // In multi-client mode, each online WG client is advertised as a virtual peer.
+                if let Some(vpn_cfg) = global_ctx.config.get_vpn_portal_config() {
+                    if vpn_cfg.clients.is_empty() {
+                        cidrs.push(vpn_cfg.client_cidr.to_string());
+                    }
+                }
+                cidrs
+            },
             hostname: Some(global_ctx.get_hostname()),
             udp_nat_type: stun_info.udp_nat_type,
             tcp_nat_type: stun_info.tcp_nat_type,
@@ -4150,6 +4158,65 @@ impl Route for PeerRoute {
     }
 }
 
+impl PeerRoute {
+    pub fn add_virtual_peer(&self, peer_id: PeerId, ipv4_addr: Ipv4Addr) -> bool {
+        let mut info = RoutePeerInfo::new();
+        info.peer_id = peer_id;
+        info.ipv4_addr = Some(ipv4_addr.into());
+        info.network_length = 32;
+        info.last_update = Some(SystemTime::now().into());
+        info.version = 1;
+
+        let mut guard = self.service_impl.synced_route_info.peer_infos.write();
+        let old = guard.get(&peer_id);
+        let new_version = old.map(|x| x.version).unwrap_or(0) + 1;
+        info.version = new_version;
+        guard.insert(peer_id, info);
+        drop(guard);
+
+        let mut guard = self.service_impl.synced_route_info.conn_map.write();
+        let mut connected_peers = BTreeSet::new();
+        connected_peers.insert(self.my_peer_id);
+        guard.insert(
+            peer_id,
+            RouteConnInfo {
+                connected_peers,
+                version: new_version.into(),
+                last_update: SystemTime::now(),
+            },
+        );
+        drop(guard);
+
+        self.service_impl.synced_route_info.version.inc();
+        true
+    }
+
+    pub fn remove_virtual_peer(&self, peer_id: PeerId) {
+        self.service_impl.synced_route_info.remove_peer(peer_id);
+    }
+
+    pub fn refresh_virtual_peer(&self, peer_id: PeerId) -> bool {
+        let mut guard = self.service_impl.synced_route_info.peer_infos.write();
+        let Some(info) = guard.get_mut(&peer_id) else {
+            return false;
+        };
+        info.version += 1;
+        info.last_update = Some(SystemTime::now().into());
+        drop(guard);
+
+        let mut guard = self.service_impl.synced_route_info.conn_map.write();
+        if let Some(conn) = guard.get_mut(&peer_id) {
+            let new_version = conn.version.inc();
+            conn.version.set(new_version);
+            conn.last_update = SystemTime::now();
+        }
+        drop(guard);
+
+        self.service_impl.synced_route_info.version.inc();
+        true
+    }
+}
+
 impl PeerPacketFilter for Arc<PeerRoute> {}
 
 #[cfg(test)]
@@ -6672,5 +6739,68 @@ mod tests {
                 .get_peer_id_for_proxy(&"10.11.0.1".parse::<IpAddr>().unwrap()),
             Some(from_peer_id)
         );
+    }
+
+    #[tokio::test]
+    async fn test_virtual_peer_lifecycle() {
+        let peer_mgr = create_mock_peer_manager().await;
+        let route = create_mock_route(peer_mgr.clone()).await;
+
+        let virtual_peer_id: PeerId = 0x80000001;
+        let virtual_ip: std::net::Ipv4Addr = "10.99.99.1".parse().unwrap();
+
+        // Add virtual peer
+        assert!(route.add_virtual_peer(virtual_peer_id, virtual_ip));
+
+        // Verify peer info exists
+        let info = route.service_impl.synced_route_info.peer_infos.read();
+        assert!(info.contains_key(&virtual_peer_id));
+        let peer_info = info.get(&virtual_peer_id).unwrap();
+        assert_eq!(peer_info.peer_id, virtual_peer_id);
+        assert_eq!(peer_info.ipv4_addr, Some(virtual_ip.into()));
+        assert_eq!(peer_info.network_length, 32);
+        drop(info);
+
+        // Verify conn map exists and connects to my_peer_id
+        let conn = route.service_impl.synced_route_info.conn_map.read();
+        assert!(conn.contains_key(&virtual_peer_id));
+        let conn_info = conn.get(&virtual_peer_id).unwrap();
+        assert!(conn_info.connected_peers.contains(&peer_mgr.my_peer_id()));
+        drop(conn);
+
+        // Refresh virtual peer
+        let old_version = route
+            .service_impl
+            .synced_route_info
+            .peer_infos
+            .read()
+            .get(&virtual_peer_id)
+            .unwrap()
+            .version;
+        assert!(route.refresh_virtual_peer(virtual_peer_id));
+        let new_version = route
+            .service_impl
+            .synced_route_info
+            .peer_infos
+            .read()
+            .get(&virtual_peer_id)
+            .unwrap()
+            .version;
+        assert!(new_version > old_version);
+
+        // Remove virtual peer
+        route.remove_virtual_peer(virtual_peer_id);
+        assert!(!route
+            .service_impl
+            .synced_route_info
+            .peer_infos
+            .read()
+            .contains_key(&virtual_peer_id));
+        assert!(!route
+            .service_impl
+            .synced_route_info
+            .conn_map
+            .read()
+            .contains_key(&virtual_peer_id));
     }
 }

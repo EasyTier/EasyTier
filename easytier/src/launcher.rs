@@ -637,6 +637,8 @@ impl NetworkConfig {
                         self.vpn_portal_listen_port
                     )
                 })?,
+                wireguard_private_key: None,
+                clients: vec![],
             });
         }
 
@@ -1168,6 +1170,8 @@ mod tests {
                 config.set_vpn_portal_config(crate::common::config::VpnPortalConfig {
                     client_cidr: vpn_network.parse().unwrap(),
                     wireguard_listen: format!("0.0.0.0:{}", vpn_port).parse().unwrap(),
+                    wireguard_private_key: None,
+                    clients: vec![],
                 });
             }
 

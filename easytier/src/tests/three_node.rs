@@ -1703,6 +1703,8 @@ pub async fn wireguard_vpn_portal(#[values(true, false)] test_v6: bool) {
         .set_vpn_portal_config(VpnPortalConfig {
             wireguard_listen: "0.0.0.0:22121".parse().unwrap(),
             client_cidr: "10.14.14.0/24".parse().unwrap(),
+            wireguard_private_key: None,
+            clients: vec![],
         });
     insts[2].run_vpn_portal().await.unwrap();
 

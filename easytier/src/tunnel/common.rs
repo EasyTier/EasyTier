@@ -66,6 +66,13 @@ where
     fn info(&self) -> Option<TunnelInfo> {
         self.info.clone()
     }
+
+    fn get_associate_data(&self) -> Option<&dyn std::any::Any> {
+        self.associate_data.as_ref().map(|d| {
+            let r: &dyn std::any::Any = d.as_ref();
+            r
+        })
+    }
 }
 
 // a length delimited codec for async reader

@@ -1404,6 +1404,27 @@ impl PeerManager {
         self.get_route().get_foreign_network_summary().await
     }
 
+    pub fn add_virtual_peer(&self, peer_id: PeerId, ipv4_addr: Ipv4Addr) -> bool {
+        match &self.route_algo_inst {
+            RouteAlgoInst::Ospf(route) => route.add_virtual_peer(peer_id, ipv4_addr),
+            RouteAlgoInst::None => false,
+        }
+    }
+
+    pub fn remove_virtual_peer(&self, peer_id: PeerId) {
+        match &self.route_algo_inst {
+            RouteAlgoInst::Ospf(route) => route.remove_virtual_peer(peer_id),
+            RouteAlgoInst::None => {}
+        }
+    }
+
+    pub fn refresh_virtual_peer(&self, peer_id: PeerId) -> bool {
+        match &self.route_algo_inst {
+            RouteAlgoInst::Ospf(route) => route.refresh_virtual_peer(peer_id),
+            RouteAlgoInst::None => false,
+        }
+    }
+
     async fn run_nic_packet_process_pipeline(&self, data: &mut ZCPacket) -> bool {
         // Enforce ACL for outbound (NIC-originated) packets. If ACL denies, stop processing.
         if !self.global_ctx.get_acl_filter().process_packet_with_acl(

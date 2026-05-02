@@ -985,6 +985,8 @@ impl NetworkOptions {
             cfg.set_vpn_portal_config(VpnPortalConfig {
                 wireguard_listen,
                 client_cidr,
+                wireguard_private_key: None,
+                clients: vec![],
             });
         }
 
