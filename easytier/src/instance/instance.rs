@@ -678,6 +678,17 @@ impl Instance {
             peer_manager.clone(),
         ));
 
+        // Set the weak reference to ManualConnectorManager in GlobalCtx
+        global_ctx.set_manual_connector_manager(Arc::downgrade(&conn_manager));
+        
+        // Register with global dynamic connector manager for auto-refresh
+        use crate::connector::dynamic_connector_manager::GlobalDynamicConnectorManager;
+        let global_dynamic_manager = GlobalDynamicConnectorManager::get_instance();
+        global_dynamic_manager.register_manual_manager(
+            global_ctx.inst_name.clone(),
+            conn_manager.clone(),
+        );
+
         let mut direct_conn_manager =
             DirectConnectorManager::new(global_ctx.clone(), peer_manager.clone());
         direct_conn_manager.run();

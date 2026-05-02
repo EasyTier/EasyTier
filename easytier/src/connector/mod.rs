@@ -20,6 +20,7 @@ pub mod udp_hole_punch;
 
 pub mod dns_connector;
 pub mod http_connector;
+pub mod dynamic_connector_manager;
 
 pub(crate) fn should_try_p2p_with_peer(
     feature_flag: Option<&PeerFeatureFlag>,
