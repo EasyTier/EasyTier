@@ -59,7 +59,6 @@ pub struct HttpTunnelConnector {
     ip_version: IpVersion,
     global_ctx: ArcGlobalCtx,
     redirect_type: HttpRedirectType,
-    dynamic_manager: Option<Arc<GlobalDynamicConnectorManager>>,
 }
 
 impl HttpTunnelConnector {
@@ -70,23 +69,6 @@ impl HttpTunnelConnector {
             ip_version: IpVersion::Both,
             global_ctx,
             redirect_type: HttpRedirectType::Unknown,
-            dynamic_manager: None,
-        }
-    }
-
-    /// 创建带有动态连接器管理器的 HTTP 连接器
-    pub fn with_dynamic_manager(
-        addr: url::Url,
-        global_ctx: ArcGlobalCtx,
-        dynamic_manager: Arc<GlobalDynamicConnectorManager>,
-    ) -> Self {
-        Self {
-            addr,
-            bind_addrs: Vec::new(),
-            ip_version: IpVersion::Both,
-            global_ctx,
-            redirect_type: HttpRedirectType::Unknown,
-            dynamic_manager: Some(dynamic_manager),
         }
     }
 
@@ -210,81 +192,7 @@ impl HttpTunnelConnector {
         let primary_url = first_valid_url.unwrap();
         tracing::info!("Using primary connector from HTTP response: {}", primary_url);
         
-        // Register with global dynamic connector manager for auto-refresh
-        self.register_for_auto_refresh();
-        
         create_connector_by_url(primary_url.as_str(), &self.global_ctx, self.ip_version).await
-    }
-
-    /// 注册到全局动态连接器管理器进行自动刷新
-    fn register_for_auto_refresh(&self) {
-        // 如果没有注入 dynamic_manager，则使用全局单例
-        let dynamic_manager = match &self.dynamic_manager {
-            Some(manager) => manager.clone(),
-            None => GlobalDynamicConnectorManager::get_instance().clone(),
-        };
-        
-        let source_url = self.addr.clone();
-        let ip_version = self.ip_version;
-        
-        // 从 URL 查询参数中读取 TTL，默认 300 秒
-        let ttl = self.extract_ttl_from_url();
-        
-        tokio::spawn(async move {
-            if let Err(e) = dynamic_manager.add_dynamic_connector(
-                source_url.clone(),
-                crate::connector::dynamic_connector_manager::DynamicConnectorType::Http,
-                ip_version,
-                ttl,
-            ).await {
-                tracing::warn!("Failed to register HTTP connector for auto-refresh: {:?}", e);
-            }
-        });
-    }
-
-    /// 从 URL 中提取 TTL 值（单位：秒）
-    /// 支持格式: http://example.com/nodes?ttl=120
-    /// 范围: 60-6000 秒，超出范围则使用默认值 300
-    fn extract_ttl_from_url(&self) -> u64 {
-        const DEFAULT_TTL: u64 = 300;
-        const MIN_TTL: u64 = 60;
-        const MAX_TTL: u64 = 6000;
-        
-        // 尝试从查询参数中获取 ttl
-        if let Some(ttl_param) = self.addr.query_pairs()
-            .find(|(key, _)| key.to_lowercase() == "ttl")
-            .map(|(_, value)| value)
-        {
-            match ttl_param.parse::<u64>() {
-                Ok(ttl) => {
-                    if ttl < MIN_TTL {
-                        tracing::warn!(
-                            "TTL {} is less than minimum {}, using default {}",
-                            ttl, MIN_TTL, DEFAULT_TTL
-                        );
-                        DEFAULT_TTL
-                    } else if ttl > MAX_TTL {
-                        tracing::warn!(
-                            "TTL {} exceeds maximum {}, using default {}",
-                            ttl, MAX_TTL, DEFAULT_TTL
-                        );
-                        DEFAULT_TTL
-                    } else {
-                        tracing::info!("Using custom TTL: {} seconds", ttl);
-                        ttl
-                    }
-                }
-                Err(_) => {
-                    tracing::warn!(
-                        "Invalid TTL parameter '{}', using default {}",
-                        ttl_param, DEFAULT_TTL
-                    );
-                    DEFAULT_TTL
-                }
-            }
-        } else {
-            DEFAULT_TTL
-        }
     }
 
     #[tracing::instrument(ret)]
