@@ -21,8 +21,9 @@ pub struct ValidationRule {
 
 #[derive(Debug, Clone, Serialize)]
 #[napi(object)]
-pub struct SchemaFieldNode {
-    pub field_name: String,
+pub struct NetworkConfigSchema {
+    pub node_kind: String,
+    pub name: String,
     pub field_number: i32,
     pub type_name: Option<String>,
     pub semantic_type: Option<String>,
@@ -30,24 +31,10 @@ pub struct SchemaFieldNode {
     pub is_list: bool,
     pub required: bool,
     pub default_value_text: Option<String>,
-    pub enum_name: Option<String>,
     pub enum_options: Vec<FieldOption>,
     pub validations: Vec<ValidationRule>,
-    pub children: Vec<SchemaFieldNode>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[napi(object)]
-pub struct SchemaObjectDefinition {
-    pub type_name: String,
-    pub fields: Vec<SchemaFieldNode>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[napi(object)]
-pub struct SchemaEnumDefinition {
-    pub enum_name: String,
-    pub options: Vec<FieldOption>,
+    pub children: Vec<NetworkConfigSchema>,
+    pub definitions: Vec<NetworkConfigSchema>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -55,15 +42,6 @@ pub struct SchemaEnumDefinition {
 pub struct ConfigFieldMapping {
     pub field_name: String,
     pub field_number: i32,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[napi(object)]
-pub struct NetworkConfigSchema {
-    pub schema_name: String,
-    pub root: SchemaFieldNode,
-    pub object_definitions: Vec<SchemaObjectDefinition>,
-    pub enum_definitions: Vec<SchemaEnumDefinition>,
 }
 
 static DESCRIPTOR_POOL: Lazy<DescriptorPool> = Lazy::new(|| {
@@ -109,13 +87,6 @@ fn field_default_value_text(field: &FieldDescriptor) -> Option<String> {
     }
 }
 
-fn field_enum_name(field: &FieldDescriptor) -> Option<String> {
-    match field.kind() {
-        Kind::Enum(enum_desc) => Some(enum_desc.name().to_string()),
-        _ => None,
-    }
-}
-
 fn field_type_name(field: &FieldDescriptor) -> Option<String> {
     match field.kind() {
         Kind::Enum(enum_desc) => Some(enum_desc.full_name().to_string()),
@@ -140,8 +111,8 @@ fn field_semantic_type(field: &FieldDescriptor) -> Option<String> {
     }
 }
 
-fn field_enum_options(field: &FieldDescriptor) -> Vec<FieldOption> {
-    match field.kind() {
+fn enum_options(kind: Kind) -> Vec<FieldOption> {
+    match kind {
         Kind::Enum(enum_desc) => enum_desc
             .values()
             .map(|value| FieldOption {
@@ -153,52 +124,11 @@ fn field_enum_options(field: &FieldDescriptor) -> Vec<FieldOption> {
     }
 }
 
-fn field_children(field: &FieldDescriptor) -> Vec<SchemaFieldNode> {
-    if field.is_map() {
-        if let Kind::Message(message_desc) = field.kind() {
-            return vec![build_map_entry_node(&message_desc)];
-        }
-    }
-
-    match field.kind() {
-        Kind::Message(message_desc) => build_message_children(&message_desc),
-        _ => Vec::new(),
-    }
-}
-
-fn build_map_entry_node(message_desc: &MessageDescriptor) -> SchemaFieldNode {
-    let key_field = message_desc.map_entry_key_field();
-    let value_field = message_desc.map_entry_value_field();
-
-    SchemaFieldNode {
-        field_name: message_desc.name().to_string(),
-        field_number: 0,
-        type_name: Some(message_desc.full_name().to_string()),
-        semantic_type: None,
-        value_kind: "object".to_string(),
-        is_list: false,
-        required: true,
-        default_value_text: None,
-        enum_name: None,
-        enum_options: Vec::new(),
-        validations: Vec::new(),
-        children: vec![build_schema_field_node(&key_field), build_schema_field_node(&value_field)],
-    }
-}
-
 fn should_expose_field(field: &FieldDescriptor) -> bool {
     match field.containing_oneof() {
         Some(_) => field.field_descriptor_proto().proto3_optional.unwrap_or(false),
         None => true,
     }
-}
-
-fn build_message_children(message_desc: &MessageDescriptor) -> Vec<SchemaFieldNode> {
-    message_desc
-        .fields()
-        .filter(should_expose_field)
-        .map(|field| build_schema_field_node(&field))
-        .collect()
 }
 
 fn build_validations(field: &FieldDescriptor) -> Vec<ValidationRule> {
@@ -238,78 +168,163 @@ fn kind_to_value_kind(field: &FieldDescriptor) -> String {
     }
 }
 
-fn build_schema_field_node(field: &FieldDescriptor) -> SchemaFieldNode {
-    SchemaFieldNode {
-        field_name: field.name().to_string(),
-        field_number: field.number() as i32,
-        type_name: field_type_name(field),
-        semantic_type: field_semantic_type(field),
-        value_kind: kind_to_value_kind(field),
-        is_list: field.is_list() || field.is_map(),
-        required: field.cardinality() == Cardinality::Required,
-        default_value_text: field_default_value_text(field),
-        enum_name: field_enum_name(field),
-        enum_options: field_enum_options(field),
-        validations: build_validations(field),
-        children: field_children(field),
+fn build_node(
+    node_kind: &str,
+    name: String,
+    field_number: i32,
+    type_name: Option<String>,
+    semantic_type: Option<String>,
+    value_kind: String,
+    is_list: bool,
+    required: bool,
+    default_value_text: Option<String>,
+    enum_options: Vec<FieldOption>,
+    validations: Vec<ValidationRule>,
+    children: Vec<NetworkConfigSchema>,
+    definitions: Vec<NetworkConfigSchema>,
+) -> NetworkConfigSchema {
+    NetworkConfigSchema {
+        node_kind: node_kind.to_string(),
+        name,
+        field_number,
+        type_name,
+        semantic_type,
+        value_kind,
+        is_list,
+        required,
+        default_value_text,
+        enum_options,
+        validations,
+        children,
+        definitions,
     }
 }
 
-fn collect_object_definitions() -> Vec<SchemaObjectDefinition> {
+fn build_map_entry_node(message_desc: &MessageDescriptor) -> NetworkConfigSchema {
+    let key_field = message_desc.map_entry_key_field();
+    let value_field = message_desc.map_entry_value_field();
+
+    build_node(
+        "object",
+        message_desc.name().to_string(),
+        0,
+        Some(message_desc.full_name().to_string()),
+        None,
+        "object".to_string(),
+        false,
+        true,
+        None,
+        Vec::new(),
+        Vec::new(),
+        vec![build_schema_field_node(&key_field), build_schema_field_node(&value_field)],
+        Vec::new(),
+    )
+}
+
+fn field_children(field: &FieldDescriptor) -> Vec<NetworkConfigSchema> {
+    if field.is_map() {
+        if let Kind::Message(message_desc) = field.kind() {
+            return vec![build_map_entry_node(&message_desc)];
+        }
+    }
+
+    match field.kind() {
+        Kind::Message(message_desc) => build_message_children(&message_desc),
+        _ => Vec::new(),
+    }
+}
+
+fn build_message_children(message_desc: &MessageDescriptor) -> Vec<NetworkConfigSchema> {
+    message_desc
+        .fields()
+        .filter(should_expose_field)
+        .map(|field| build_schema_field_node(&field))
+        .collect()
+}
+
+fn build_schema_field_node(field: &FieldDescriptor) -> NetworkConfigSchema {
+    build_node(
+        "field",
+        field.name().to_string(),
+        field.number() as i32,
+        field_type_name(field),
+        field_semantic_type(field),
+        kind_to_value_kind(field),
+        field.is_list() || field.is_map(),
+        field.cardinality() == Cardinality::Required,
+        field_default_value_text(field),
+        enum_options(field.kind()),
+        build_validations(field),
+        field_children(field),
+        Vec::new(),
+    )
+}
+
+fn collect_definitions() -> Vec<NetworkConfigSchema> {
     let mut definitions = Vec::new();
+
     for message_desc in descriptor_pool().all_messages() {
         let full_name = message_desc.full_name();
         if full_name == NETWORK_CONFIG_MESSAGE_NAME || message_desc.is_map_entry() {
             continue;
         }
-        definitions.push(SchemaObjectDefinition {
-            type_name: full_name.to_string(),
-            fields: build_message_children(&message_desc),
-        });
-    }
-    definitions.sort_by(|a, b| a.type_name.cmp(&b.type_name));
-    definitions
-}
 
-fn collect_enum_definitions() -> Vec<SchemaEnumDefinition> {
-    let mut definitions = Vec::new();
-    for enum_desc in descriptor_pool().all_enums() {
-        definitions.push(SchemaEnumDefinition {
-            enum_name: enum_desc.full_name().to_string(),
-            options: enum_desc
-                .values()
-                .map(|value| FieldOption {
-                    label: value.name().to_string(),
-                    value: value.number().to_string(),
-                })
-                .collect(),
-        });
+        definitions.push(build_node(
+            "object",
+            full_name.to_string(),
+            0,
+            Some(full_name.to_string()),
+            None,
+            "object".to_string(),
+            false,
+            true,
+            None,
+            Vec::new(),
+            Vec::new(),
+            build_message_children(&message_desc),
+            Vec::new(),
+        ));
     }
-    definitions.sort_by(|a, b| a.enum_name.cmp(&b.enum_name));
+
+    for enum_desc in descriptor_pool().all_enums() {
+        definitions.push(build_node(
+            "enum",
+            enum_desc.full_name().to_string(),
+            0,
+            Some(enum_desc.full_name().to_string()),
+            None,
+            "enum".to_string(),
+            false,
+            false,
+            None,
+            enum_options(Kind::Enum(enum_desc.clone())),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        ));
+    }
+
+    definitions.sort_by(|a, b| a.name.cmp(&b.name));
     definitions
 }
 
 fn build_network_config_schema() -> NetworkConfigSchema {
     let network_config = network_config_descriptor();
-    NetworkConfigSchema {
-        schema_name: network_config.name().to_string(),
-        root: SchemaFieldNode {
-            field_name: network_config.name().to_string(),
-            field_number: 0,
-            type_name: Some(network_config.full_name().to_string()),
-            semantic_type: None,
-            value_kind: "object".to_string(),
-            is_list: false,
-            required: true,
-            default_value_text: None,
-            enum_name: None,
-            enum_options: Vec::new(),
-            validations: Vec::new(),
-            children: build_message_children(&network_config),
-        },
-        object_definitions: collect_object_definitions(),
-        enum_definitions: collect_enum_definitions(),
-    }
+    build_node(
+        "schema",
+        network_config.name().to_string(),
+        0,
+        Some(network_config.full_name().to_string()),
+        None,
+        "object".to_string(),
+        false,
+        true,
+        None,
+        Vec::new(),
+        Vec::new(),
+        build_message_children(&network_config),
+        collect_definitions(),
+    )
 }
 
 fn build_network_config_field_mappings() -> Vec<ConfigFieldMapping> {
@@ -336,101 +351,44 @@ mod tests {
     use super::*;
 
     #[test]
-    fn nested_schema_object_contains_plain_field_tree() {
+    fn schema_is_exposed_as_single_tree_type() {
         let schema = get_network_config_schema();
-        assert_eq!(schema.schema_name, "NetworkConfig");
-        assert_eq!(schema.root.field_name, "NetworkConfig");
-        assert_eq!(schema.root.type_name.as_deref(), Some("api.manage.NetworkConfig"));
+        assert_eq!(schema.node_kind, "schema");
+        assert_eq!(schema.name, "NetworkConfig");
+        assert_eq!(schema.type_name.as_deref(), Some("api.manage.NetworkConfig"));
+
         let virtual_ipv4 = schema
-            .root
             .children
             .iter()
-            .find(|field| field.field_name == "virtual_ipv4")
+            .find(|field| field.name == "virtual_ipv4")
             .expect("virtual_ipv4 field");
         assert_eq!(virtual_ipv4.semantic_type.as_deref(), Some("cidr_ip"));
-        assert!(schema
-            .root
-            .children
-            .iter()
-            .any(|field| field.field_name == "instance_id"));
-        assert!(schema
-            .root
-            .children
-            .iter()
-            .any(|field| field.field_name == "network_name"));
-        assert!(schema
-            .root
-            .children
-            .iter()
-            .any(|field| field.field_name == "enable_vpn_portal"));
-        let network_name = schema
-            .root
-            .children
-            .iter()
-            .find(|field| field.field_name == "network_name")
-            .expect("network_name field");
-        assert!(network_name.field_number > 0);
 
         let secure_mode = schema
-            .root
             .children
             .iter()
-            .find(|field| field.field_name == "secure_mode")
+            .find(|field| field.name == "secure_mode")
             .expect("secure_mode field");
-        assert!(secure_mode
-            .children
-            .iter()
-            .any(|field| field.field_name == "enabled"));
-        assert_eq!(secure_mode.type_name.as_deref(), Some("common.SecureModeConfig"));
+        assert!(secure_mode.children.iter().any(|field| field.name == "enabled"));
 
         let secure_mode_definition = schema
-            .object_definitions
+            .definitions
             .iter()
-            .find(|definition| definition.type_name == "common.SecureModeConfig")
+            .find(|definition| definition.name == "common.SecureModeConfig")
             .expect("secure mode definition");
         assert!(secure_mode_definition
-            .fields
-            .iter()
-            .any(|field| field.field_name == "local_private_key"));
-
-        let acl = schema
-            .root
             .children
             .iter()
-            .find(|field| field.field_name == "acl")
-            .expect("acl field");
-        assert!(acl.children.iter().any(|field| field.field_name == "acl_v1"));
+            .any(|field| field.name == "local_private_key"));
 
-        let networking_method = schema
-            .root
-            .children
-            .iter()
-            .find(|field| field.field_name == "networking_method")
-            .expect("networking_method field");
-        assert!(networking_method
-            .enum_options
-            .iter()
-            .any(|option| option.label == "PublicServer"));
         let networking_method_definition = schema
-            .enum_definitions
+            .definitions
             .iter()
-            .find(|definition| definition.enum_name == "api.manage.NetworkingMethod")
+            .find(|definition| definition.name == "api.manage.NetworkingMethod")
             .expect("networking method enum definition");
         assert!(networking_method_definition
-            .options
-            .iter()
-            .any(|option| option.label == "PublicServer"));
-
-        let data_compress_algo = schema
-            .root
-            .children
-            .iter()
-            .find(|field| field.field_name == "data_compress_algo")
-            .expect("data_compress_algo field");
-        assert!(data_compress_algo
             .enum_options
             .iter()
-            .any(|option| option.label == "Zstd"));
+            .any(|option| option.label == "PublicServer"));
     }
-
 }

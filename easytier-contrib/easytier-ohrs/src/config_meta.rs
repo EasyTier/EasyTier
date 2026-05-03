@@ -226,6 +226,67 @@ pub fn upsert_config_meta(
     })
 }
 
+pub(crate) fn upsert_config_meta_in_tx(
+    tx: &rusqlite::Transaction<'_>,
+    config_id: String,
+    display_name: String,
+    favorite: bool,
+    temporary: bool,
+) -> Option<StoredConfigMeta> {
+    let now = now_ts_string();
+    let created_at = tx
+        .query_row(
+            "SELECT config_id, display_name, created_at, updated_at, favorite, temporary
+             FROM stored_configs WHERE config_id = ?1",
+            params![config_id],
+            row_to_meta,
+        )
+        .optional()
+        .ok()
+        .flatten()
+        .map(|record| record.created_at)
+        .unwrap_or_else(|| now.clone());
+
+    tx.execute(
+        "INSERT INTO stored_configs (
+             config_id, display_name, created_at, updated_at, favorite, temporary
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+         ON CONFLICT(config_id) DO UPDATE SET
+             display_name = excluded.display_name,
+             updated_at = excluded.updated_at,
+             favorite = excluded.favorite,
+             temporary = excluded.temporary",
+        params![
+            config_id,
+            display_name,
+            created_at,
+            now,
+            if favorite { 1 } else { 0 },
+            if temporary { 1 } else { 0 }
+        ],
+    )
+    .ok()?;
+
+    tx.query_row(
+        "SELECT config_id, display_name, created_at, updated_at, favorite, temporary
+         FROM stored_configs WHERE config_id = ?1",
+        params![config_id],
+        row_to_meta,
+    )
+    .optional()
+    .ok()
+    .flatten()
+    .map(to_meta)
+    .or(Some(StoredConfigMeta {
+        config_id,
+        display_name,
+        created_at,
+        updated_at: now,
+        favorite,
+        temporary,
+    }))
+}
+
 pub fn set_config_display_name(config_id: String, display_name: String) -> Option<StoredConfigMeta> {
     let conn = open_db()?;
     let mut record = load_meta_record(&conn, &config_id)?;

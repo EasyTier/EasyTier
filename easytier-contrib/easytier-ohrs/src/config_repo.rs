@@ -1,6 +1,6 @@
 use crate::config_meta::{
     delete_config_meta, get_config_meta, init_config_meta_store, list_config_meta_entries,
-    now_ts_string, open_db, upsert_config_meta,
+    now_ts_string, open_db, upsert_config_meta_in_tx,
 };
 use crate::stored_config::{ExportTomlResult, StoredConfigRecord};
 use easytier::common::config::ConfigLoader;
@@ -13,12 +13,17 @@ use std::sync::Mutex;
 
 static CONFIG_ROOT_DIR: Mutex<Option<PathBuf>> = Mutex::new(None);
 pub(crate) const CONFIG_DIR_NAME: &str = "easytier-configs";
+pub(crate) const KERNEL_SOCKET_FILE_NAME: &str = "easytier-kernel.sock";
 
-fn config_root_dir() -> Option<PathBuf> {
+pub(crate) fn config_root_dir() -> Option<PathBuf> {
     CONFIG_ROOT_DIR
         .lock()
         .ok()
         .and_then(|guard| guard.as_ref().cloned())
+}
+
+pub(crate) fn kernel_socket_path() -> Option<PathBuf> {
+    config_root_dir().map(|root| root.join(KERNEL_SOCKET_FILE_NAME))
 }
 
 pub(crate) fn legacy_config_file_path(config_id: &str) -> Option<PathBuf> {
@@ -152,7 +157,7 @@ pub fn save_config_record(
         .as_ref()
         .map(|meta| meta.temporary)
         .unwrap_or(false);
-    let meta = upsert_config_meta(config_id.clone(), display_name, favorite, temporary);
+    let meta = upsert_config_meta_in_tx(&tx, config_id.clone(), display_name, favorite, temporary)?;
 
     if let Err(e) = tx.execute(
         "DELETE FROM stored_config_fields WHERE config_id = ?1",

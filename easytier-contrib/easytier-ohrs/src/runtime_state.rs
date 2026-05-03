@@ -1,6 +1,9 @@
 use easytier::proto::{api, common};
 use napi_derive_ohos::napi;
+use serde::Serialize;
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 #[napi(object)]
 pub struct PeerConnStats {
     pub rx_bytes: i64,
@@ -10,6 +13,8 @@ pub struct PeerConnStats {
     pub latency_us: i64,
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 #[napi(object)]
 pub struct PeerConnInfo {
     pub conn_id: String,
@@ -29,6 +34,8 @@ pub struct PeerConnInfo {
     pub peer_identity_type: Option<i32>,
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 #[napi(object)]
 pub struct PeerInfo {
     pub peer_id: i64,
@@ -37,6 +44,8 @@ pub struct PeerInfo {
     pub conns: Vec<PeerConnInfo>,
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 #[napi(object)]
 pub struct RouteView {
     pub peer_id: i64,
@@ -55,6 +64,8 @@ pub struct RouteView {
     pub is_public_server: Option<bool>,
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 #[napi(object)]
 pub struct MyNodeInfo {
     pub virtual_ipv4: Option<String>,
@@ -68,6 +79,8 @@ pub struct MyNodeInfo {
     pub tcp_nat_type: Option<i32>,
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 #[napi(object)]
 pub struct RuntimeInstanceState {
     pub config_id: String,
@@ -76,6 +89,8 @@ pub struct RuntimeInstanceState {
     pub running: bool,
     pub tun_required: bool,
     pub tun_attached: bool,
+    pub magic_dns_enabled: bool,
+    pub need_exit_node: bool,
     pub error_message: Option<String>,
     pub my_node_info: Option<MyNodeInfo>,
     pub events: Vec<String>,
@@ -83,6 +98,8 @@ pub struct RuntimeInstanceState {
     pub peers: Vec<PeerInfo>,
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 #[napi(object)]
 pub struct TunAggregateState {
     pub active: bool,
@@ -92,6 +109,8 @@ pub struct TunAggregateState {
     pub need_rebuild: bool,
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 #[napi(object)]
 pub struct RuntimeAggregateState {
     pub instances: Vec<RuntimeInstanceState>,
@@ -139,7 +158,7 @@ fn route_to_view(route: api::instance::Route) -> RouteView {
         proxy_cidrs: route.proxy_cidrs,
         next_hop_peer_id: optional_u32_to_i64(route.next_hop_peer_id_latency_first)
             .or_else(|| Some(route.next_hop_peer_id as i64)),
-        cost: route.cost_latency_first.or(Some(route.cost)),
+        cost: Some(route.cost),
         path_latency: optional_i32_to_i64(route.path_latency_latency_first)
             .or_else(|| Some(route.path_latency as i64)),
         udp_nat_type: stun.as_ref().map(|info| info.udp_nat_type),
@@ -215,6 +234,8 @@ fn my_node_info_to_view(info: api::manage::MyNodeInfo) -> MyNodeInfo {
 pub fn runtime_instance_from_running_info(
     config_id: String,
     display_name: String,
+    magic_dns_enabled: bool,
+    need_exit_node: bool,
     info: api::manage::NetworkInstanceRunningInfo,
 ) -> RuntimeInstanceState {
     let tun_required = info.dev_name != "no_tun" && info.running;
@@ -227,6 +248,8 @@ pub fn runtime_instance_from_running_info(
         running: info.running,
         tun_required,
         tun_attached,
+        magic_dns_enabled,
+        need_exit_node,
         error_message: info.error_msg,
         my_node_info: info.my_node_info.map(my_node_info_to_view),
         events: info.events,
