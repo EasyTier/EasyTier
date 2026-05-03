@@ -1339,6 +1339,45 @@ mod tests {
         assert_eq!(result.matched_rule, Some(RuleId::Priority(70)));
     }
 
+    #[tokio::test]
+    async fn test_forward_acl_source_ip_whitelist() {
+        let mut acl_config = Acl::default();
+        let mut acl_v1 = AclV1::default();
+        let mut chain = Chain {
+            name: "subnet_proxy_protect".to_string(),
+            chain_type: ChainType::Forward as i32,
+            enabled: true,
+            default_action: Action::Drop as i32,
+            ..Default::default()
+        };
+
+        chain.rules.push(Rule {
+            name: "allow_my_devices".to_string(),
+            priority: 1000,
+            enabled: true,
+            action: Action::Allow as i32,
+            protocol: Protocol::Any as i32,
+            source_ips: vec!["10.172.192.2/32".to_string()],
+            ..Default::default()
+        });
+        acl_v1.chains.push(chain);
+        acl_config.acl_v1 = Some(acl_v1);
+
+        let processor = AclProcessor::new(acl_config);
+        let mut packet_info = create_test_packet_info();
+        packet_info.dst_ip = "192.168.1.10".parse().unwrap();
+
+        packet_info.src_ip = "10.172.192.2".parse().unwrap();
+        let result = processor.process_packet(&packet_info, ChainType::Forward);
+        assert_eq!(result.action, Action::Allow);
+        assert_eq!(result.matched_rule, Some(RuleId::Priority(1000)));
+
+        packet_info.src_ip = "10.172.192.3".parse().unwrap();
+        let result = processor.process_packet(&packet_info, ChainType::Forward);
+        assert_eq!(result.action, Action::Drop);
+        assert_eq!(result.matched_rule, Some(RuleId::Default));
+    }
+
     fn create_test_acl_config() -> Acl {
         let mut acl_config = Acl::default();
 
