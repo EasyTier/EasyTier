@@ -128,7 +128,6 @@ pub fn build_tcp_packet(
     eth_buf.freeze()
 }
 
-#[tracing::instrument(ret)]
 pub fn parse_ip_packet(
     buf: &Bytes,
 ) -> Option<(MacAddr, MacAddr, IPPacket<'_>, tcp::TcpPacket<'_>)> {

@@ -201,6 +201,11 @@ impl LogicalTrafficMetrics {
         self.per_peer.len()
     }
 
+    #[cfg(test)]
+    fn contains_peer_cache(&self, peer_id: PeerId) -> bool {
+        self.per_peer.contains_key(&peer_id)
+    }
+
     fn build_peer_counters(&self, instance_id: &str) -> TrafficCounters {
         let instance_label = match self.label_kind {
             InstanceLabelKind::To => LabelType::ToInstanceId(instance_id.to_string()),
@@ -239,6 +244,13 @@ pub(crate) fn traffic_kind(packet_type: u8) -> TrafficKind {
     } else {
         TrafficKind::Control
     }
+}
+
+pub(crate) fn is_relay_data_packet_type(packet_type: u8) -> bool {
+    // Relay handshakes are control-plane setup; payload data is blocked by its
+    // original packet type after the session exists.
+    traffic_kind(packet_type) == TrafficKind::Data
+        || packet_type == PacketType::ForeignNetworkPacket as u8
 }
 
 #[derive(Clone)]
@@ -324,6 +336,14 @@ impl TrafficMetricRecorder {
         self.tx_metrics.control.clear_peer_cache();
         self.rx_metrics.data.clear_peer_cache();
         self.rx_metrics.control.clear_peer_cache();
+    }
+
+    #[cfg(test)]
+    pub(crate) fn contains_peer_cache(&self, peer_id: PeerId) -> bool {
+        self.tx_metrics.data.contains_peer_cache(peer_id)
+            || self.tx_metrics.control.contains_peer_cache(peer_id)
+            || self.rx_metrics.data.contains_peer_cache(peer_id)
+            || self.rx_metrics.control.contains_peer_cache(peer_id)
     }
 
     fn resolve_instance_id(&self, peer_id: PeerId) -> BoxFuture<'static, Option<String>> {

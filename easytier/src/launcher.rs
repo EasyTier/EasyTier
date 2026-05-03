@@ -816,6 +816,10 @@ impl NetworkConfig {
             flags.disable_upnp = disable_upnp;
         }
 
+        if let Some(disable_relay_data) = self.disable_relay_data {
+            flags.disable_relay_data = disable_relay_data;
+        }
+
         if let Some(disable_sym_hole_punching) = self.disable_sym_hole_punching {
             flags.disable_sym_hole_punching = disable_sym_hole_punching;
         }
@@ -986,6 +990,7 @@ impl NetworkConfig {
         result.disable_tcp_hole_punching = Some(flags.disable_tcp_hole_punching);
         result.disable_udp_hole_punching = Some(flags.disable_udp_hole_punching);
         result.disable_upnp = Some(flags.disable_upnp);
+        result.disable_relay_data = Some(flags.disable_relay_data);
         result.disable_sym_hole_punching = Some(flags.disable_sym_hole_punching);
         result.mtu = Some(flags.mtu as i32);
         result.instance_recv_bps_limit =

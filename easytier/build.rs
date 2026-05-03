@@ -187,7 +187,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "#[derive(Hash, Eq)]",
         )
         .type_attribute("peer_rpc.RouteForeignNetworkSummary", "#[derive(Hash, Eq)]")
-        .type_attribute("common.RpcDescriptor", "#[derive(Hash, Eq)]");
+        .type_attribute("common.RpcDescriptor", "#[derive(Hash, Eq)]")
+        .type_attribute("acl.Acl", "#[serde(default)]")
+        .type_attribute("acl.AclV1", "#[serde(default)]")
+        .type_attribute("acl.Chain", "#[serde(default)]")
+        .type_attribute("acl.Rule", "#[serde(default)]")
+        .type_attribute("acl.GroupInfo", "#[serde(default)]");
 
     config.field_attribute("api.manage.NetworkConfig", "#[serde(default)]");
 

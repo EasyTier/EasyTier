@@ -281,6 +281,11 @@ impl InstanceConfigPatcher {
             global_ctx.set_ipv6(Some(ipv6.into()));
             global_ctx.config.set_ipv6(Some(ipv6.into()));
         }
+        if let Some(disable_relay_data) = patch.disable_relay_data {
+            let mut flags = global_ctx.get_flags();
+            flags.disable_relay_data = disable_relay_data;
+            global_ctx.set_flags(flags);
+        }
         if let Some(enabled) = patch.ipv6_public_addr_provider {
             global_ctx.config.set_ipv6_public_addr_provider(enabled);
             provider_config_changed = true;

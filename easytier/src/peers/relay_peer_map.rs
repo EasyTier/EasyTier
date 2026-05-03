@@ -9,7 +9,7 @@ use tokio::time::{Duration, timeout};
 use crate::peers::foreign_network_client::ForeignNetworkClient;
 use crate::{
     common::error::Error,
-    common::{PeerId, global_ctx::ArcGlobalCtx},
+    common::{PeerId, global_ctx::ArcGlobalCtx, shrink_dashmap},
     peers::peer_map::PeerMap,
     peers::peer_session::{PeerSession, PeerSessionAction, PeerSessionStore, SessionKey},
     peers::route_trait::NextHopPolicy,
@@ -652,6 +652,10 @@ impl RelayPeerMap {
             self.handshake_locks.remove(&peer_id);
             self.pending_packets.remove(&peer_id);
         }
+        shrink_dashmap(&self.states, None);
+        shrink_dashmap(&self.pending_handshakes, None);
+        shrink_dashmap(&self.handshake_locks, None);
+        shrink_dashmap(&self.pending_packets, None);
     }
 
     pub fn has_state(&self, peer_id: PeerId) -> bool {
@@ -679,6 +683,10 @@ impl RelayPeerMap {
         self.pending_handshakes.remove(&peer_id);
         self.handshake_locks.remove(&peer_id);
         self.pending_packets.remove(&peer_id);
+        shrink_dashmap(&self.states, None);
+        shrink_dashmap(&self.pending_handshakes, None);
+        shrink_dashmap(&self.handshake_locks, None);
+        shrink_dashmap(&self.pending_packets, None);
 
         tracing::debug!(?peer_id, "RelayPeerMap removed peer relay state");
     }

@@ -1247,6 +1247,25 @@ impl SyncedRouteInfo {
     where
         F: FnMut(PeerId) -> bool,
     {
+        self.verify_and_update_credential_trusts_with_active_peers_protecting(
+            network_secret,
+            is_peer_active,
+            None,
+        )
+    }
+
+    fn verify_and_update_credential_trusts_with_active_peers_protecting<F>(
+        &self,
+        network_secret: Option<&str>,
+        is_peer_active: F,
+        protected_peer_id: Option<PeerId>,
+    ) -> (
+        Vec<PeerId>,
+        HashMap<Vec<u8>, crate::common::global_ctx::TrustedKeyMetadata>,
+    )
+    where
+        F: FnMut(PeerId) -> bool,
+    {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
@@ -1264,6 +1283,9 @@ impl SyncedRouteInfo {
         let mut untrusted_peers =
             Self::collect_revoked_credential_peers(&peer_infos, &prev_trusted, &all_trusted);
         untrusted_peers.extend(duplicate_untrusted_peers);
+        if let Some(protected_peer_id) = protected_peer_id {
+            untrusted_peers.remove(&protected_peer_id);
+        }
 
         // Remove untrusted peers from peer_infos so they won't appear in route graph
         if !untrusted_peers.is_empty() {
@@ -2751,7 +2773,11 @@ impl PeerRouteServiceImpl {
         let network_identity = self.global_ctx.get_network_identity();
         let (untrusted, global_trusted_keys) = self
             .synced_route_info
-            .verify_and_update_credential_trusts(network_identity.network_secret.as_deref());
+            .verify_and_update_credential_trusts_with_active_peers_protecting(
+                network_identity.network_secret.as_deref(),
+                |_| true,
+                Some(self.my_peer_id),
+            );
         self.global_ctx
             .update_trusted_keys(global_trusted_keys, &network_identity.network_name);
 
@@ -2767,9 +2793,10 @@ impl PeerRouteServiceImpl {
 
         let (untrusted, global_trusted_keys) = self
             .synced_route_info
-            .verify_and_update_credential_trusts_with_active_peers(
+            .verify_and_update_credential_trusts_with_active_peers_protecting(
                 network_identity.network_secret.as_deref(),
                 |peer_id| self.is_active_non_reusable_credential_peer(peer_id),
+                Some(self.my_peer_id),
             );
         self.global_ctx
             .update_trusted_keys(global_trusted_keys, &network_identity.network_name);
@@ -5066,6 +5093,58 @@ mod tests {
                 .get(&credential_key)
                 .map(|entry| *entry.value()),
             Some(replacement_peer_id)
+        );
+    }
+
+    #[tokio::test]
+    async fn credential_trust_refresh_does_not_remove_self_peer() {
+        let my_peer_id = 11;
+        let remote_peer_id = 12;
+        let credential_key = vec![8; 32];
+        let service_impl = PeerRouteServiceImpl::new(my_peer_id, get_mock_global_ctx());
+
+        let self_info = make_credential_route_peer_info(my_peer_id, &credential_key);
+        let remote_info = make_credential_route_peer_info(remote_peer_id, &credential_key);
+
+        {
+            let mut guard = service_impl.synced_route_info.peer_infos.write();
+            guard.insert(self_info.peer_id, self_info);
+            guard.insert(remote_info.peer_id, remote_info);
+        }
+        service_impl
+            .synced_route_info
+            .trusted_credential_pubkeys
+            .insert(
+                credential_key.clone(),
+                TrustedCredentialPubkey {
+                    pubkey: credential_key,
+                    expiry_unix: i64::MAX,
+                    ..Default::default()
+                },
+            );
+
+        let (untrusted_peers, _) = service_impl
+            .synced_route_info
+            .verify_and_update_credential_trusts_with_active_peers_protecting(
+                None,
+                |_| true,
+                Some(my_peer_id),
+            );
+
+        assert_eq!(untrusted_peers, vec![remote_peer_id]);
+        assert!(
+            service_impl
+                .synced_route_info
+                .peer_infos
+                .read()
+                .contains_key(&my_peer_id)
+        );
+        assert!(
+            !service_impl
+                .synced_route_info
+                .peer_infos
+                .read()
+                .contains_key(&remote_peer_id)
         );
     }
 
