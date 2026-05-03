@@ -484,6 +484,10 @@ impl AclProcessor {
 
     /// Process a packet through ACL rules - Now lock-free!
     pub fn process_packet(&self, packet_info: &PacketInfo, chain_type: ChainType) -> AclResult {
+        if let Some(result) = self.check_reverse_connection(packet_info) {
+            return result;
+        }
+
         // Check cache first for performance
         let cache_key = AclCacheKey::from_packet_info(packet_info, chain_type);
 
@@ -739,19 +743,46 @@ impl AclProcessor {
         )
     }
 
+    fn reverse_conn_track_key(&self, packet_info: &PacketInfo) -> String {
+        format!(
+            "{}:{}->{}:{}",
+            packet_info.dst_ip,
+            packet_info.dst_port.unwrap_or(0),
+            packet_info.src_ip,
+            packet_info.src_port.unwrap_or(0)
+        )
+    }
+
+    fn check_reverse_connection(&self, packet_info: &PacketInfo) -> Option<AclResult> {
+        let reverse_key = self.reverse_conn_track_key(packet_info);
+        let mut entry = self.conn_track.get_mut(&reverse_key)?;
+        Self::update_conn_track_entry(entry.value_mut(), packet_info);
+        Some(AclResult {
+            action: Action::Allow,
+            matched_rule: Some(RuleId::Default),
+            should_log: false,
+            log_context: Some(AclLogContext::StatefulMatch {
+                src_ip: packet_info.src_ip,
+                dst_ip: packet_info.dst_ip,
+            }),
+        })
+    }
+
+    fn update_conn_track_entry(entry: &mut ConnTrackEntry, packet_info: &PacketInfo) {
+        entry.last_seen = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        entry.packet_count += 1;
+        entry.byte_count += packet_info.packet_size as u64;
+        entry.state = ConnState::Established as i32;
+    }
+
     /// Check connection state for stateful rules
     fn check_connection_state(&self, conn_track_key: &str, packet_info: &PacketInfo) {
         self.conn_track
             .entry(conn_track_key.to_string())
-            .and_modify(|x| {
-                x.last_seen = SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .unwrap()
-                    .as_secs();
-                x.packet_count += 1;
-                x.byte_count += packet_info.packet_size as u64;
-                x.state = ConnState::Established as i32;
-            })
+            .and_modify(|x| Self::update_conn_track_entry(x, packet_info))
             .or_insert_with(|| ConnTrackEntry {
                 src_addr: Some(
                     SocketAddr::new(packet_info.src_ip, packet_info.src_port.unwrap_or(0)).into(),
