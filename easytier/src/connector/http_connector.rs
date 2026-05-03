@@ -1,7 +1,7 @@
 use std::{
     net::SocketAddr,
     pin::Pin,
-    sync::{Arc, RwLock},
+    sync::Arc,
 };
 
 use anyhow::Context;
@@ -12,6 +12,7 @@ use url::Url;
 use crate::{
     VERSION,
     common::{error::Error, global_ctx::ArcGlobalCtx},
+    connector::dynamic_connector_manager::GlobalDynamicConnectorManager,
     tunnel::{IpVersion, Tunnel, TunnelConnector, TunnelError, ZCPacketSink, ZCPacketStream},
 };
 
@@ -58,6 +59,7 @@ pub struct HttpTunnelConnector {
     ip_version: IpVersion,
     global_ctx: ArcGlobalCtx,
     redirect_type: HttpRedirectType,
+    dynamic_manager: Option<Arc<GlobalDynamicConnectorManager>>,
 }
 
 impl HttpTunnelConnector {
@@ -68,6 +70,23 @@ impl HttpTunnelConnector {
             ip_version: IpVersion::Both,
             global_ctx,
             redirect_type: HttpRedirectType::Unknown,
+            dynamic_manager: None,
+        }
+    }
+
+    /// 创建带有动态连接器管理器的 HTTP 连接器
+    pub fn with_dynamic_manager(
+        addr: url::Url,
+        global_ctx: ArcGlobalCtx,
+        dynamic_manager: Arc<GlobalDynamicConnectorManager>,
+    ) -> Self {
+        Self {
+            addr,
+            bind_addrs: Vec::new(),
+            ip_version: IpVersion::Both,
+            global_ctx,
+            redirect_type: HttpRedirectType::Unknown,
+            dynamic_manager: Some(dynamic_manager),
         }
     }
 
@@ -199,9 +218,12 @@ impl HttpTunnelConnector {
 
     /// 注册到全局动态连接器管理器进行自动刷新
     fn register_for_auto_refresh(&self) {
-        use crate::connector::dynamic_connector_manager::{DynamicConnectorType, GlobalDynamicConnectorManager};
+        // 如果没有注入 dynamic_manager，则使用全局单例
+        let dynamic_manager = match &self.dynamic_manager {
+            Some(manager) => manager.clone(),
+            None => GlobalDynamicConnectorManager::get_instance().clone(),
+        };
         
-        let global_manager = GlobalDynamicConnectorManager::get_instance().clone();
         let source_url = self.addr.clone();
         let ip_version = self.ip_version;
         
@@ -209,9 +231,9 @@ impl HttpTunnelConnector {
         let ttl = self.extract_ttl_from_url();
         
         tokio::spawn(async move {
-            if let Err(e) = global_manager.add_dynamic_connector(
+            if let Err(e) = dynamic_manager.add_dynamic_connector(
                 source_url.clone(),
-                DynamicConnectorType::Http,
+                crate::connector::dynamic_connector_manager::DynamicConnectorType::Http,
                 ip_version,
                 ttl,
             ).await {

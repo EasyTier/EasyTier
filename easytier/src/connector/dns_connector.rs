@@ -8,6 +8,7 @@ use crate::{
         global_ctx::ArcGlobalCtx,
         log,
     },
+    connector::dynamic_connector_manager::GlobalDynamicConnectorManager,
     proto::common::TunnelInfo,
     tunnel::{IpScheme, IpVersion, Tunnel, TunnelConnector, TunnelError, TunnelScheme},
 };
@@ -40,6 +41,7 @@ pub struct DnsTunnelConnector {
     bind_addrs: Vec<SocketAddr>,
     global_ctx: ArcGlobalCtx,
     ip_version: IpVersion,
+    dynamic_manager: Option<Arc<GlobalDynamicConnectorManager>>,
 }
 
 impl DnsTunnelConnector {
@@ -50,6 +52,23 @@ impl DnsTunnelConnector {
             bind_addrs: Vec::new(),
             global_ctx,
             ip_version: IpVersion::Both,
+            dynamic_manager: None,
+        }
+    }
+
+    /// 创建带有动态连接器管理器的 DNS 连接器
+    pub fn with_dynamic_manager(
+        addr: url::Url,
+        global_ctx: ArcGlobalCtx,
+        dynamic_manager: Arc<GlobalDynamicConnectorManager>,
+    ) -> Self {
+        Self {
+            scheme: (&addr).try_into().unwrap(),
+            addr,
+            bind_addrs: Vec::new(),
+            global_ctx,
+            ip_version: IpVersion::Both,
+            dynamic_manager: Some(dynamic_manager),
         }
     }
 
@@ -112,16 +131,19 @@ impl DnsTunnelConnector {
 
     /// 注册 TXT 到全局动态连接器管理器
     fn register_for_auto_refresh_txt(&self) {
-        use crate::connector::dynamic_connector_manager::{DynamicConnectorType, GlobalDynamicConnectorManager};
+        // 如果没有注入 dynamic_manager，则使用全局单例
+        let dynamic_manager = match &self.dynamic_manager {
+            Some(manager) => manager.clone(),
+            None => GlobalDynamicConnectorManager::get_instance().clone(),
+        };
         
-        let global_manager = GlobalDynamicConnectorManager::get_instance().clone();
         let source_url = self.addr.clone();
         let ip_version = self.ip_version;
         
         tokio::spawn(async move {
-            if let Err(e) = global_manager.add_dynamic_connector(
+            if let Err(e) = dynamic_manager.add_dynamic_connector(
                 source_url.clone(),
-                DynamicConnectorType::Txt,
+                crate::connector::dynamic_connector_manager::DynamicConnectorType::Txt,
                 ip_version,
                 300,
             ).await {
@@ -236,16 +258,19 @@ impl DnsTunnelConnector {
 
     /// 注册 SRV 到全局动态连接器管理器
     fn register_for_auto_refresh_srv(&self) {
-        use crate::connector::dynamic_connector_manager::{DynamicConnectorType, GlobalDynamicConnectorManager};
+        // 如果没有注入 dynamic_manager，则使用全局单例
+        let dynamic_manager = match &self.dynamic_manager {
+            Some(manager) => manager.clone(),
+            None => GlobalDynamicConnectorManager::get_instance().clone(),
+        };
         
-        let global_manager = GlobalDynamicConnectorManager::get_instance().clone();
         let source_url = self.addr.clone();
         let ip_version = self.ip_version;
         
         tokio::spawn(async move {
-            if let Err(e) = global_manager.add_dynamic_connector(
+            if let Err(e) = dynamic_manager.add_dynamic_connector(
                 source_url.clone(),
-                DynamicConnectorType::Srv,
+                crate::connector::dynamic_connector_manager::DynamicConnectorType::Srv,
                 ip_version,
                 300,
             ).await {
