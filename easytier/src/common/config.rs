@@ -7,18 +7,18 @@ use crate::{
         api::manage::ConfigSource as RpcConfigSource,
         common::{CompressionAlgoPb, PortForwardConfigPb, SecureModeConfig, SocketType},
     },
-    tunnel::{IpScheme, TunnelScheme, generate_digest_from_str},
+    tunnel::{generate_digest_from_str, IpScheme, TunnelScheme},
     utils,
 };
 use anyhow::Context;
-use base64::{Engine as _, prelude::BASE64_STANDARD};
+use base64::{prelude::BASE64_STANDARD, Engine as _};
 use bon::Builder;
-use clap::ValueEnum;
 use clap::builder::PossibleValue;
+use clap::ValueEnum;
 use derivative::Derivative;
 use derive_more::{Constructor, Deref};
 use getset::Getters;
-use optional_struct::Applicable;
+use optionize::Optionized;
 use serde::{Deserialize, Serialize};
 use std::fmt::{Debug, Display};
 use std::{
@@ -38,7 +38,7 @@ use tokio::io::AsyncReadExt as _;
 )]
 pub struct ConfigBase<Raw, Parsed, Data = ()>
 where
-    Raw: Applicable<Base = Parsed>,
+    Raw: Optionized<Parsed>,
     ConfigBase<Raw, Parsed, Data>: TryFrom<Raw>,
 {
     #[deref]
@@ -53,7 +53,7 @@ where
 
 impl<Raw, Parsed, Data> Serialize for ConfigBase<Raw, Parsed, Data>
 where
-    Raw: Applicable<Base = Parsed> + Serialize,
+    Raw: Optionized<Parsed> + Serialize,
     ConfigBase<Raw, Parsed, Data>: TryFrom<Raw, Error: Debug>,
 {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
@@ -66,7 +66,7 @@ where
 
 impl<Raw, Parsed, Data> Default for ConfigBase<Raw, Parsed, Data>
 where
-    Raw: Applicable<Base = Parsed> + Default,
+    Raw: Optionized<Parsed> + Default,
     ConfigBase<Raw, Parsed, Data>: TryFrom<Raw, Error: Debug>,
 {
     fn default() -> Self {
@@ -76,7 +76,7 @@ where
 
 impl<Raw, Parsed, Data> ConfigBase<Raw, Parsed, Data>
 where
-    Raw: Applicable<Base = Parsed>,
+    Raw: Optionized<Parsed>,
     ConfigBase<Raw, Parsed, Data>: TryFrom<Raw, Error: Debug>,
 {
     pub fn into_parsed(self) -> Parsed {
@@ -93,7 +93,7 @@ where
 
     pub fn update(self, config: Raw) -> Result<Self, <Self as TryFrom<Raw>>::Error> {
         let mut raw = self.into_raw();
-        config.apply_to_opt(&mut raw);
+        raw.merge(config);
         raw.try_into()
     }
 }

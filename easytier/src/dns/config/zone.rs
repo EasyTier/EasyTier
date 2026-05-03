@@ -7,11 +7,11 @@ use derive_more::From;
 use hickory_proto::op::ResponseCode;
 use hickory_proto::rr::LowerName;
 use maplit::hashset;
-use optional_struct::{Applicable, optional_struct};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::convert::TryFrom;
 use std::net::{Ipv4Addr, Ipv6Addr};
+use optionize::{optionized, Optionizable};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Hash, From, Deserialize, Serialize)]
 #[serde(untagged)]
@@ -38,15 +38,16 @@ impl From<i32> for Fallthrough {
     }
 }
 
-#[optional_struct(ZoneConfigRaw)]
+#[optionized]
+#[optionize(name = "ZoneConfigRaw")]
 #[derive(Debug, Clone, Default, PartialEq, Deserialize, Serialize)]
 pub struct ZoneConfigParsed {
-    #[optional_skip_wrap]
+    #[optionize(flatten)]
     pub origin: LowerName,
     pub ttl: u32,
     pub records: Vec<String>,
     pub forwarders: NameServerAddrGroup,
-    #[optional_skip_wrap]
+    #[optionize(flatten)]
     #[serde(flatten)]
     pub policy: ZonePolicyConfig,
     pub fallthrough: HashSet<Fallthrough>,
@@ -70,15 +71,13 @@ impl TryFrom<ZoneConfigRaw> for ZoneConfig {
     type Error = anyhow::Error;
 
     fn try_from(raw: ZoneConfigRaw) -> Result<Self, Self::Error> {
-        let default = ZoneConfigParsed {
+        let mut parsed = ZoneConfigParsed {
             fallthrough: hashset! {Fallthrough::Any},
             ..Default::default()
         };
-
-        let parsed = raw.clone().build(default);
+        parsed.load(raw.clone());
         let data = (&parsed).into();
         let _ = Zone::try_from(&data)?; // validation
-
         Ok(Self::new(parsed, raw, data))
     }
 }

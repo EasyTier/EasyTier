@@ -5,19 +5,21 @@ use crate::dns::config::{DNS_DEFAULT_ADDRESSES, DNS_DEFAULT_DOMAIN};
 use crate::dns::utils::addr::NameServerAddrGroup;
 use crate::proto::dns::GetExportConfigResponse;
 use hickory_proto::rr::LowerName;
-use optional_struct::{Applicable, optional_struct};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use optionize::{optionized, Optionizable};
 
-#[optional_struct(DnsConfigRaw)]
+#[optionized]
+#[optionize(name = "DnsConfigRaw")]
 #[derive(Debug, Clone, Default, PartialEq, Deserialize, Serialize)]
 pub struct DnsConfigParsed {
     pub disabled: bool,
     #[serde(rename = "zone")]
     pub zones: Vec<ZoneConfig>,
-    #[optional_skip_wrap]
+    #[optionize(flatten)]
     #[serde(flatten)]
     pub policies: HashMap<LowerName, DnsPolicyConfig>,
+    #[optionize(flatten)]
     pub name: Option<LowerName>,
     pub domain: LowerName,
     pub addresses: NameServerAddrGroup,
@@ -28,13 +30,12 @@ pub type DnsConfig = ConfigBase<DnsConfigRaw, DnsConfigParsed, ()>;
 
 impl From<DnsConfigRaw> for DnsConfig {
     fn from(raw: DnsConfigRaw) -> Self {
-        let default = DnsConfigParsed {
+        let mut parsed = DnsConfigParsed {
             domain: DNS_DEFAULT_DOMAIN.clone(),
             addresses: DNS_DEFAULT_ADDRESSES.clone(),
             ..Default::default()
         };
-
-        let parsed = raw.clone().build(default);
+        parsed.load(raw.clone());
         Self::new(parsed, raw, ())
     }
 }
