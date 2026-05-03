@@ -1660,7 +1660,7 @@ impl RouteTable {
                         ?my_peer_id,
                         ?local_proxy_cidrs,
                         ?cidr,
-                        "skip remote proxy cidr covered by local announced proxy cidr while building route table"
+                        "skip remote proxy cidr identical to local announced proxy cidr while building route table"
                     );
                     continue;
                 }
