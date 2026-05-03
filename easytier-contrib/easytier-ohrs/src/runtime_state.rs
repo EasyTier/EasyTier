@@ -1,6 +1,30 @@
 use easytier::proto::{api, common};
 use napi_derive_ohos::napi;
 use serde::Serialize;
+use std::collections::HashSet;
+use std::sync::Mutex;
+
+static ATTACHED_TUN_INSTANCE_IDS: once_cell::sync::Lazy<Mutex<HashSet<String>>> =
+    once_cell::sync::Lazy::new(|| Mutex::new(HashSet::new()));
+
+pub fn mark_tun_attached(instance_id: &str) {
+    if let Ok(mut guard) = ATTACHED_TUN_INSTANCE_IDS.lock() {
+        guard.insert(instance_id.to_string());
+    }
+}
+
+pub fn clear_tun_attached(instance_id: &str) {
+    if let Ok(mut guard) = ATTACHED_TUN_INSTANCE_IDS.lock() {
+        guard.remove(instance_id);
+    }
+}
+
+pub fn is_tun_attached(instance_id: &str) -> bool {
+    ATTACHED_TUN_INSTANCE_IDS
+        .lock()
+        .map(|guard| guard.contains(instance_id))
+        .unwrap_or(false)
+}
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -238,8 +262,8 @@ pub fn runtime_instance_from_running_info(
     need_exit_node: bool,
     info: api::manage::NetworkInstanceRunningInfo,
 ) -> RuntimeInstanceState {
-    let tun_required = info.dev_name != "no_tun" && info.running;
-    let tun_attached = tun_required && !info.dev_name.is_empty();
+    let tun_attached = info.running && is_tun_attached(&config_id);
+    let tun_required = info.running && (info.dev_name != "no_tun" || tun_attached);
 
     RuntimeInstanceState {
         config_id: config_id.clone(),

@@ -1293,6 +1293,7 @@ dependencies = [
  "easytier",
  "flate2",
  "gethostname 1.1.0",
+ "ipnet",
  "napi-build-ohos",
  "napi-derive-ohos",
  "napi-ohos",

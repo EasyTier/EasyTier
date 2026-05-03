@@ -1,6 +1,6 @@
 mod config_meta;
 mod config_repo;
-mod local_socket_service;
+mod kernel_bridge;
 mod native_log;
 mod runtime_state;
 mod schema_service;
@@ -13,11 +13,15 @@ use config_repo::{
     get_default_config_json, import_toml_config, init_config_store as init_repo_store,
     list_config_meta_json, save_config_record, set_config_field_value, start_kernel_with_config_id,
 };
-use local_socket_service::{
+use kernel_bridge::{
+    aggregate_requested_tun_routes,
     start_local_socket_server as start_local_socket_server_inner,
     stop_local_socket_server as stop_local_socket_server_inner,
 };
-use runtime_state::{RuntimeAggregateState, TunAggregateState, runtime_instance_from_running_info};
+use runtime_state::{
+    RuntimeAggregateState, TunAggregateState, clear_tun_attached, mark_tun_attached,
+    runtime_instance_from_running_info,
+};
 use schema_service::{
     ConfigFieldMapping, NetworkConfigSchema,
     get_network_config_field_mappings as build_network_config_field_mappings,
@@ -36,7 +40,7 @@ use easytier::proto::api::manage::NetworkConfig;
 use easytier::proto::api::manage::NetworkingMethod;
 use easytier::web_client::{WebClient, WebClientHooks, run_web_client};
 use napi_derive_ohos::napi;
-use ohos_hilog_binding::hilog_error;
+use ohos_hilog_binding::{hilog_error, hilog_info};
 use std::collections::{HashMap, HashSet};
 use std::format;
 use std::sync::{Arc, Mutex};
@@ -345,6 +349,7 @@ pub fn start_kernel(config_id: String) -> bool {
 
 #[napi]
 pub fn stop_kernel(config_id: String) -> bool {
+    clear_tun_attached(&config_id);
     if stop_web_client(&config_id) {
         return true;
     }
@@ -422,12 +427,17 @@ pub fn collect_network_infos() -> Vec<KeyValuePair> {
 #[napi]
 pub fn set_tun_fd(config_id: String, fd: i32) -> bool {
     let Some(instance_id) = parse_instance_uuid(&config_id) else {
+        hilog_error!("[Rust] set_tun_fd invalid instance id: {}", config_id);
         return false;
     };
 
     INSTANCE_MANAGER
         .set_tun_fd(&instance_id, fd)
-        .map(|_| true)
+        .map(|_| {
+            mark_tun_attached(&config_id);
+            hilog_info!("[Rust] set_tun_fd success instance={} fd={} marked_attached=true", config_id, fd);
+            true
+        })
         .unwrap_or_else(|err| {
             hilog_error!("[Rust] set_tun_fd failed {}: {}", config_id, err);
             false
@@ -521,13 +531,10 @@ pub(crate) fn get_runtime_snapshot_inner() -> RuntimeAggregateState {
     instances.sort_by(|a, b| a.display_name.cmp(&b.display_name).then_with(|| a.instance_id.cmp(&b.instance_id)));
     let attached_instance_ids = instances
         .iter()
-        .filter(|instance| instance.tun_attached)
+        .filter(|instance| instance.tun_required)
         .map(|instance| instance.instance_id.clone())
         .collect::<Vec<_>>();
-    let aggregated_routes = instances
-        .iter()
-        .flat_map(|instance| instance.routes.iter().filter_map(|route| route.ipv4_cidr.clone().or(route.ipv6_cidr.clone())))
-        .collect::<Vec<_>>();
+    let aggregated_routes = aggregate_requested_tun_routes(&instances);
     let running_instance_count = instances.iter().filter(|instance| instance.running).count() as i32;
     let tun_active = !attached_instance_ids.is_empty();
 
