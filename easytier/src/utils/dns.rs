@@ -233,4 +233,23 @@ mod tests {
         assert_eq!(2, addrs.len(), "addrs: {:?}", addrs);
         println!("addrs2: {:?}", addrs);
     }
+
+    #[tokio::test]
+    async fn socket_addrs_preserves_explicit_zero_port() {
+        let cases = [
+            ("ws://127.0.0.1:0", 80, 0),
+            ("wss://127.0.0.1:0", 443, 0),
+            ("ws://127.0.0.1", 80, 80),
+            ("wss://127.0.0.1", 443, 443),
+        ];
+
+        for (raw_url, default_port, expected_port) in cases {
+            let url = url::Url::parse(raw_url).unwrap();
+            let addrs = socket_addrs(&url, || Some(default_port)).await.unwrap();
+            assert_eq!(
+                addrs,
+                vec![SocketAddr::from(([127, 0, 0, 1], expected_port))]
+            );
+        }
+    }
 }
