@@ -221,6 +221,7 @@ async-ringbuf = "0.3.1"
 service-manager = { git = "https://github.com/EasyTier/service-manager-rs.git", branch = "main" }
 
 zstd = { version = "0.13", optional = true }
+lzokay-native = { version = "0.1", optional = true }
 
 kcp-sys = { git = "https://github.com/EasyTier/kcp-sys", rev = "94964794caaed5d388463137da59b97499619e5f", optional = true }
 
@@ -358,6 +359,7 @@ default = [
     "faketcp",
     "magic-dns",
     "zstd",
+    "lzo",
 ]
 full = [
     "websocket",
@@ -372,6 +374,7 @@ full = [
     "faketcp",
     "magic-dns",
     "zstd",
+    "lzo",
 ]
 wireguard = ["dep:boringtun", "dep:ring"]
 quic = ["dep:quinn", "dep:quinn-plaintext", "dep:rustls", "dep:rcgen"]
@@ -402,5 +405,6 @@ tracing = ["tokio/tracing", "dep:console-subscriber"]
 magic-dns = ["dep:hickory-client", "dep:hickory-server"]
 faketcp = ["dep:flume"]
 zstd = ["dep:zstd"]
+lzo = ["dep:lzokay-native"]
 # For Network Extension on macOS
 macos-ne = []

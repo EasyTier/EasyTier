@@ -37,6 +37,15 @@ use crate::tunnel::IpScheme;
 #[cfg(feature = "jemalloc-prof")]
 use jemalloc_ctl::{Access as _, AsName as _, epoch, stats};
 
+fn supported_compression_algorithms() -> &'static str {
+    cfg_select! {
+        all(feature = "zstd", feature = "lzo") => "none, zstd, lzo",
+        feature = "zstd" => "none, zstd",
+        feature = "lzo" => "none, lzo",
+        _ => "none",
+    }
+}
+
 #[cfg(target_os = "windows")]
 windows_service::define_windows_service!(ffi_service_main, win_service_main);
 
@@ -1108,10 +1117,14 @@ impl NetworkOptions {
         if let Some(compression) = &self.compression {
             f.data_compress_algo = match compression.as_str() {
                 "none" => CompressionAlgoPb::None,
+                #[cfg(feature = "zstd")]
                 "zstd" => CompressionAlgoPb::Zstd,
+                #[cfg(feature = "lzo")]
+                "lzo" => CompressionAlgoPb::Lzo,
                 _ => panic!(
-                    "unknown compression algorithm: {}, supported: none, zstd",
-                    compression
+                    "unknown compression algorithm: {}, supported: {}",
+                    compression,
+                    supported_compression_algorithms()
                 ),
             }
             .into();
