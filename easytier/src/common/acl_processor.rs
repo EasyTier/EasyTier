@@ -1382,6 +1382,69 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn test_stateful_allows_reverse_traffic_before_default_drop() {
+        let mut acl_config = Acl::default();
+        let mut acl_v1 = AclV1::default();
+
+        let mut outbound_chain = Chain {
+            name: "outbound_stateful".to_string(),
+            chain_type: ChainType::Outbound as i32,
+            enabled: true,
+            default_action: Action::Drop as i32,
+            ..Default::default()
+        };
+        outbound_chain.rules.push(Rule {
+            name: "allow_out_stateful".to_string(),
+            priority: 100,
+            enabled: true,
+            action: Action::Allow as i32,
+            protocol: Protocol::Tcp as i32,
+            stateful: true,
+            ..Default::default()
+        });
+
+        let inbound_chain = Chain {
+            name: "inbound_default_drop".to_string(),
+            chain_type: ChainType::Inbound as i32,
+            enabled: true,
+            default_action: Action::Drop as i32,
+            ..Default::default()
+        };
+
+        acl_v1.chains.push(outbound_chain);
+        acl_v1.chains.push(inbound_chain);
+        acl_config.acl_v1 = Some(acl_v1);
+
+        let processor = AclProcessor::new(acl_config);
+        let outbound_packet = PacketInfo {
+            src_ip: IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)),
+            dst_ip: IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)),
+            src_port: Some(12345),
+            dst_port: Some(22),
+            protocol: Protocol::Tcp,
+            packet_size: 64,
+            src_groups: Arc::new(vec![]),
+            dst_groups: Arc::new(vec![]),
+        };
+        let inbound_reply = PacketInfo {
+            src_ip: outbound_packet.dst_ip,
+            dst_ip: outbound_packet.src_ip,
+            src_port: outbound_packet.dst_port,
+            dst_port: outbound_packet.src_port,
+            protocol: outbound_packet.protocol,
+            packet_size: 64,
+            src_groups: Arc::new(vec![]),
+            dst_groups: Arc::new(vec![]),
+        };
+
+        let outbound_result = processor.process_packet(&outbound_packet, ChainType::Outbound);
+        assert_eq!(outbound_result.action, Action::Allow);
+
+        let inbound_result = processor.process_packet(&inbound_reply, ChainType::Inbound);
+        assert_eq!(inbound_result.action, Action::Allow);
+    }
+
     #[test]
     fn test_acl_cache_key_creation() {
         let packet_info = create_test_packet_info();
