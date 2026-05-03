@@ -7,7 +7,7 @@ use pnet::packet::MutablePacket;
 use pnet::packet::Packet;
 use pnet::packet::ip::IpNextHeaderProtocols;
 use pnet::packet::ipv4::{Ipv4Packet, MutableIpv4Packet};
-use pnet::packet::tcp::{MutableTcpPacket, TcpPacket, ipv4_checksum};
+use pnet::packet::tcp::{MutableTcpPacket, TcpPacket};
 use socket2::{SockRef, TcpKeepalive};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4};
 use std::sync::atomic::{AtomicBool, AtomicU16};
@@ -24,6 +24,7 @@ use crate::common::error::Result;
 use crate::common::global_ctx::{ArcGlobalCtx, GlobalCtx};
 use crate::common::join_joinset_background;
 use crate::common::log;
+use crate::common::packet_checksum::{update_ip_packet_checksum, update_tcp_packet_checksum};
 use crate::common::stats_manager::{LabelSet, LabelType, MetricName};
 use crate::peers::peer_manager::PeerManager;
 use crate::peers::{NicPacketFilter, PeerPacketFilter};
@@ -429,9 +430,9 @@ impl<C: NatDstConnector> NicPacketFilter for TcpProxy<C> {
         let mut tcp_packet = MutableTcpPacket::new(ip_packet.payload_mut()).unwrap();
         tcp_packet.set_source(nat_entry.real_dst.port());
 
-        Self::update_tcp_packet_checksum(&mut tcp_packet, &ip, &dst);
+        update_tcp_packet_checksum(&mut tcp_packet, &ip, &dst);
         drop(tcp_packet);
-        Self::update_ip_packet_checksum(&mut ip_packet);
+        update_ip_packet_checksum(&mut ip_packet);
 
         tracing::trace!(dst_addr = ?dst_addr, nat_entry = ?nat_entry, packet = ?ip_packet, "tcp packet after modified");
 
@@ -473,22 +474,6 @@ impl<C: NatDstConnector> TcpProxy<C> {
 
     pub fn get_peer_manager(&self) -> Option<Arc<PeerManager>> {
         self.peer_manager.upgrade()
-    }
-
-    fn update_tcp_packet_checksum(
-        tcp_packet: &mut MutableTcpPacket,
-        ipv4_src: &Ipv4Addr,
-        ipv4_dst: &Ipv4Addr,
-    ) {
-        tcp_packet.set_checksum(ipv4_checksum(
-            &tcp_packet.to_immutable(),
-            ipv4_src,
-            ipv4_dst,
-        ));
-    }
-
-    fn update_ip_packet_checksum(ip_packet: &mut MutableIpv4Packet) {
-        ip_packet.set_checksum(pnet::packet::ipv4::checksum(&ip_packet.to_immutable()));
     }
 
     pub async fn start(self: &Arc<Self>, add_pipeline: bool) -> Result<()> {
@@ -976,9 +961,9 @@ impl<C: NatDstConnector> TcpProxy<C> {
         let mut tcp_packet = MutableTcpPacket::new(ip_packet.payload_mut()).unwrap();
         tcp_packet.set_destination(self.get_local_port());
 
-        Self::update_tcp_packet_checksum(&mut tcp_packet, &source, &ipv4_addr);
+        update_tcp_packet_checksum(&mut tcp_packet, &source, &ipv4_addr);
         drop(tcp_packet);
-        Self::update_ip_packet_checksum(&mut ip_packet);
+        update_ip_packet_checksum(&mut ip_packet);
 
         tracing::trace!(?source, ?ipv4_addr, ?packet, "tcp packet after modified");
 

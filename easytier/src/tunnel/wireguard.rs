@@ -369,7 +369,12 @@ impl WgPeer {
         Self::new_with_index(udp, config, endpoint, rand::thread_rng().next_u32())
     }
 
-    fn new_with_index(udp: Arc<UdpSocket>, config: WgConfig, endpoint: SocketAddr, tunn_index: u32) -> Self {
+    fn new_with_index(
+        udp: Arc<UdpSocket>,
+        config: WgConfig,
+        endpoint: SocketAddr,
+        tunn_index: u32,
+    ) -> Self {
         WgPeer {
             tunn: Some(Mutex::new(Tunn::new(
                 config.my_secret_key.clone(),
@@ -604,8 +609,12 @@ impl WgTunnelListener {
                                         srv_cfg.server_public_key.clone(),
                                         client_pubkey,
                                     );
-                                    let mut wg =
-                                        WgPeer::new_with_index(socket.clone(), client_config, addr, idx);
+                                    let mut wg = WgPeer::new_with_index(
+                                        socket.clone(),
+                                        client_config,
+                                        addr,
+                                        idx,
+                                    );
                                     let (stream, sink) = wg.start_and_get_tunnel().split();
                                     let client_info = WgClientInfo {
                                         name: client_name.value().clone(),
@@ -635,13 +644,19 @@ impl WgTunnelListener {
                                         Some(Box::new(client_info)),
                                     ));
                                     if let Err(e) = conn_sender.send(tunnel) {
-                                        tracing::error!("Failed to send tunnel to conn_sender: {}", e);
+                                        tracing::error!(
+                                            "Failed to send tunnel to conn_sender: {}",
+                                            e
+                                        );
                                     }
                                     let wg = Arc::new(wg);
                                     peer_map.insert(addr, wg.clone());
                                     peer_by_idx.insert(idx, wg);
                                 } else {
-                                    tracing::debug!(?client_pubkey, "Unknown wireguard client pubkey");
+                                    tracing::debug!(
+                                        ?client_pubkey,
+                                        "Unknown wireguard client pubkey"
+                                    );
                                 }
                             }
                         }
@@ -1166,11 +1181,12 @@ pub mod tests {
         };
         let mut unreg_connector =
             WgTunnelConnector::new("wg://127.0.0.1:5588".parse().unwrap(), unreg_cfg);
-        let result = tokio::time::timeout(
-            std::time::Duration::from_secs(2),
-            unreg_connector.connect(),
-        )
-        .await;
-        assert!(result.is_err() || result.unwrap().is_err(), "unregistered client should fail");
+        let result =
+            tokio::time::timeout(std::time::Duration::from_secs(2), unreg_connector.connect())
+                .await;
+        assert!(
+            result.is_err() || result.unwrap().is_err(),
+            "unregistered client should fail"
+        );
     }
 }

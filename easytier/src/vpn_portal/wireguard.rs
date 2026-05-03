@@ -18,9 +18,9 @@ use pnet::packet::{MutablePacket, Packet};
 use pnet::packet::{
     icmp::{IcmpPacket, IcmpTypes},
     ip::{IpNextHeaderProtocol, IpNextHeaderProtocols},
-    ipv4::{self, Ipv4Flags, Ipv4Packet, MutableIpv4Packet},
-    tcp::{self, MutableTcpPacket},
-    udp::{self, MutableUdpPacket},
+    ipv4::{Ipv4Flags, Ipv4Packet, MutableIpv4Packet},
+    tcp::MutableTcpPacket,
+    udp::MutableUdpPacket,
 };
 use tokio::task::JoinSet;
 use tracing::Level;
@@ -29,9 +29,15 @@ use crate::{
     common::{
         config::{NetworkIdentity, VpnPortalClientConfig},
         global_ctx::{ArcGlobalCtx, GlobalCtxEvent},
-        join_joinset_background, shrink_dashmap,
+        join_joinset_background,
+        packet_checksum::{
+            update_ip_packet_checksum, update_tcp_packet_checksum,
+            update_udp_packet_checksum_if_present,
+        },
+        shrink_dashmap,
     },
     peers::{PeerPacketFilter, peer_manager::PeerManager},
+    proto::common::{is_virtual_peer_id, to_virtual_peer_id},
     tunnel::{
         Tunnel, TunnelListener,
         mpsc::{MpscTunnel, MpscTunnelSender},
@@ -145,7 +151,7 @@ fn virtual_peer_id_from_pubkey(pubkey: &[u8]) -> u32 {
     let mut hasher = DefaultHasher::new();
     pubkey.hash(&mut hasher);
     let hash = hasher.finish();
-    (hash as u32) | 0x80000000
+    to_virtual_peer_id(hash as u32)
 }
 
 fn is_assignable_client_ip(cidr: cidr::Ipv4Cidr, ip: Ipv4Addr) -> bool {
@@ -170,10 +176,6 @@ fn ipv4_packet_total_len(packet: &[u8]) -> Result<usize, Ipv4NatError> {
     Ok(total_len)
 }
 
-fn update_ipv4_checksum(ipv4_packet: &mut MutableIpv4Packet) {
-    ipv4_packet.set_checksum(ipv4::checksum(&ipv4_packet.to_immutable()));
-}
-
 fn update_transport_checksum(ipv4_packet: &mut MutableIpv4Packet) -> Result<(), Ipv4NatError> {
     let source = ipv4_packet.get_source();
     let destination = ipv4_packet.get_destination();
@@ -183,22 +185,12 @@ fn update_transport_checksum(ipv4_packet: &mut MutableIpv4Packet) -> Result<(), 
         IpNextHeaderProtocols::Tcp => {
             let mut tcp_packet = MutableTcpPacket::new(ipv4_packet.payload_mut())
                 .ok_or(Ipv4NatError::InvalidTransportPacket)?;
-            tcp_packet.set_checksum(tcp::ipv4_checksum(
-                &tcp_packet.to_immutable(),
-                &source,
-                &destination,
-            ));
+            update_tcp_packet_checksum(&mut tcp_packet, &source, &destination);
         }
         IpNextHeaderProtocols::Udp => {
             let mut udp_packet = MutableUdpPacket::new(ipv4_packet.payload_mut())
                 .ok_or(Ipv4NatError::InvalidTransportPacket)?;
-            if udp_packet.get_checksum() != 0 {
-                udp_packet.set_checksum(udp::ipv4_checksum(
-                    &udp_packet.to_immutable(),
-                    &source,
-                    &destination,
-                ));
-            }
+            update_udp_packet_checksum_if_present(&mut udp_packet, &source, &destination);
         }
         IpNextHeaderProtocols::Icmp => {
             let icmp_packet = IcmpPacket::new(ipv4_packet.payload())
@@ -246,7 +238,7 @@ fn rewrite_ipv4_source(
     reject_fragmented_packet(&ipv4_packet)?;
     ipv4_packet.set_source(new_source);
     update_transport_checksum(&mut ipv4_packet)?;
-    update_ipv4_checksum(&mut ipv4_packet);
+    update_ip_packet_checksum(&mut ipv4_packet);
 
     Ok(())
 }
@@ -273,7 +265,7 @@ fn rewrite_ipv4_destination(
     reject_fragmented_packet(&ipv4_packet)?;
     ipv4_packet.set_destination(new_destination);
     update_transport_checksum(&mut ipv4_packet)?;
-    update_ipv4_checksum(&mut ipv4_packet);
+    update_ip_packet_checksum(&mut ipv4_packet);
 
     Ok(())
 }
@@ -771,7 +763,7 @@ impl WireGuardImpl {
                 .iter()
                 .filter_map(|entry| {
                     let virtual_peer_id = entry.value().virtual_peer_id;
-                    (virtual_peer_id != 0).then_some(virtual_peer_id)
+                    is_virtual_peer_id(virtual_peer_id).then_some(virtual_peer_id)
                 })
                 .collect();
             peer_mgr.refresh_virtual_peers(virtual_peer_ids);
@@ -967,9 +959,12 @@ PersistentKeepalive = 25
 mod tests {
     use super::*;
     use crate::common::config::ConfigLoader;
-    use pnet::packet::icmp::{self, MutableIcmpPacket};
     use pnet::packet::tcp::TcpPacket;
     use pnet::packet::udp::UdpPacket;
+    use pnet::packet::{
+        icmp::{self, MutableIcmpPacket},
+        ipv4, tcp, udp,
+    };
 
     fn build_tcp_packet(src: Ipv4Addr, dst: Ipv4Addr) -> BytesMut {
         let mut packet = BytesMut::new();
@@ -991,7 +986,7 @@ mod tests {
         tcp_packet.set_checksum(tcp::ipv4_checksum(&tcp_packet.to_immutable(), &src, &dst));
         drop(tcp_packet);
 
-        update_ipv4_checksum(&mut ipv4_packet);
+        update_ip_packet_checksum(&mut ipv4_packet);
         packet
     }
 
@@ -1017,7 +1012,7 @@ mod tests {
         }
         drop(udp_packet);
 
-        update_ipv4_checksum(&mut ipv4_packet);
+        update_ip_packet_checksum(&mut ipv4_packet);
         packet
     }
 
@@ -1041,7 +1036,7 @@ mod tests {
         icmp_packet.set_checksum(icmp::checksum(&icmp_packet.to_immutable()));
         drop(icmp_packet);
 
-        update_ipv4_checksum(&mut ipv4_packet);
+        update_ip_packet_checksum(&mut ipv4_packet);
         packet
     }
 
