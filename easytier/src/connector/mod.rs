@@ -20,6 +20,13 @@ pub mod udp_hole_punch;
 
 pub mod dns_connector;
 pub mod http_connector;
+pub mod dynamic_connector_manager;
+
+#[cfg(test)]
+mod http_connector_tests;
+
+#[cfg(test)]
+mod dynamic_connector_tests;
 
 pub(crate) fn should_try_p2p_with_peer(
     feature_flag: Option<&PeerFeatureFlag>,
@@ -281,7 +288,9 @@ pub async fn create_connector_by_url(
         #[cfg(unix)]
         TunnelScheme::Unix => tunnel::unix::UnixSocketTunnelConnector::new(url).boxed(),
         TunnelScheme::Http | TunnelScheme::Https => {
-            HttpTunnelConnector::new(url, global_ctx.clone()).boxed()
+            // 使用依赖注入，传入全局动态连接器管理器
+            let dynamic_manager = crate::connector::dynamic_connector_manager::GlobalDynamicConnectorManager::get_instance().clone();
+            HttpTunnelConnector::with_dynamic_manager(url, global_ctx.clone(), dynamic_manager).boxed()
         }
         TunnelScheme::Ring => RingTunnelConnector::new(url).boxed(),
         TunnelScheme::Txt | TunnelScheme::Srv => {
@@ -291,7 +300,9 @@ pub async fn create_connector_by_url(
                     url
                 )));
             }
-            DnsTunnelConnector::new(url, global_ctx.clone()).boxed()
+            // 使用依赖注入，传入全局动态连接器管理器
+            let dynamic_manager = crate::connector::dynamic_connector_manager::GlobalDynamicConnectorManager::get_instance().clone();
+            DnsTunnelConnector::with_dynamic_manager(url, global_ctx.clone(), dynamic_manager).boxed()
         }
     };
     connector.set_ip_version(effective_connector_ip_version);

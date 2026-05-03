@@ -8,6 +8,7 @@ use crate::{
         global_ctx::ArcGlobalCtx,
         log,
     },
+    connector::dynamic_connector_manager::GlobalDynamicConnectorManager,
     proto::common::TunnelInfo,
     tunnel::{IpScheme, IpVersion, Tunnel, TunnelConnector, TunnelError, TunnelScheme},
 };
@@ -40,6 +41,7 @@ pub struct DnsTunnelConnector {
     bind_addrs: Vec<SocketAddr>,
     global_ctx: ArcGlobalCtx,
     ip_version: IpVersion,
+    dynamic_manager: Option<Arc<GlobalDynamicConnectorManager>>,
 }
 
 impl DnsTunnelConnector {
@@ -50,6 +52,23 @@ impl DnsTunnelConnector {
             bind_addrs: Vec::new(),
             global_ctx,
             ip_version: IpVersion::Both,
+            dynamic_manager: None,
+        }
+    }
+
+    /// 创建带有动态连接器管理器的 DNS 连接器
+    pub fn with_dynamic_manager(
+        addr: url::Url,
+        global_ctx: ArcGlobalCtx,
+        dynamic_manager: Arc<GlobalDynamicConnectorManager>,
+    ) -> Self {
+        Self {
+            scheme: (&addr).try_into().unwrap(),
+            addr,
+            bind_addrs: Vec::new(),
+            global_ctx,
+            ip_version: IpVersion::Both,
+            dynamic_manager: Some(dynamic_manager),
         }
     }
 
@@ -62,25 +81,75 @@ impl DnsTunnelConnector {
             .await
             .with_context(|| format!("resolve txt record failed, domain_name: {}", domain_name))?;
 
-        let candidate_urls = txt_data
+        let mut candidate_urls = txt_data
             .split(" ")
             .map(|s| s.to_string())
             .filter_map(|s| url::Url::parse(s.as_str()).ok())
             .collect::<Vec<_>>();
 
-        // shuffle candidate_urls and get the first one
-        let url = candidate_urls
-            .choose(&mut rand::thread_rng())
-            .with_context(|| {
-                format!(
-                    "no valid url found, txt_data: {}, expecting an url list splitted by space",
-                    txt_data
-                )
-            })?;
+        if candidate_urls.is_empty() {
+            return Err(anyhow::anyhow!(
+                "no valid url found, txt_data: {}, expecting an url list splitted by space",
+                txt_data
+            ).into());
+        }
 
+        // shuffle candidate_urls for load balancing
+        candidate_urls.shuffle(&mut rand::thread_rng());
+
+        tracing::info!("Found {} valid URLs from TXT record", candidate_urls.len());
+
+        // Add all URLs except the first one to the manual connector manager
+        if candidate_urls.len() > 1 {
+            if let Some(conn_manager) = self.global_ctx.get_manual_connector_manager() {
+                for url in candidate_urls.iter().skip(1) {
+                    tracing::info!("Adding additional connector from TXT record: {}", url);
+                    if let Err(e) = conn_manager.add_connector_by_url(url.clone()).await {
+                        tracing::warn!("Failed to add connector {}: {:?}", url, e);
+                    }
+                }
+                tracing::info!(
+                    "Added {} additional connectors from TXT record",
+                    candidate_urls.len() - 1
+                );
+            } else {
+                tracing::warn!("ManualConnectorManager not available, cannot add additional connectors");
+            }
+        }
+
+        // Return the first URL as the primary connector
+        let primary_url = &candidate_urls[0];
+        tracing::info!("Using primary connector from TXT record: {}", primary_url);
+        
+        // Register with global dynamic connector manager for auto-refresh
+        self.register_for_auto_refresh_txt();
+        
         let connector =
-            create_connector_by_url(url.as_str(), &self.global_ctx, self.ip_version).await?;
+            create_connector_by_url(primary_url.as_str(), &self.global_ctx, self.ip_version).await?;
         Ok(connector)
+    }
+
+    /// 注册 TXT 到全局动态连接器管理器
+    fn register_for_auto_refresh_txt(&self) {
+        // 如果没有注入 dynamic_manager，则使用全局单例
+        let dynamic_manager = match &self.dynamic_manager {
+            Some(manager) => manager.clone(),
+            None => GlobalDynamicConnectorManager::get_instance().clone(),
+        };
+        
+        let source_url = self.addr.clone();
+        let ip_version = self.ip_version;
+        
+        tokio::spawn(async move {
+            if let Err(e) = dynamic_manager.add_dynamic_connector(
+                source_url.clone(),
+                crate::connector::dynamic_connector_manager::DynamicConnectorType::Txt,
+                ip_version,
+                300,
+            ).await {
+                tracing::warn!("Failed to register TXT connector for auto-refresh: {:?}", e);
+            }
+        });
     }
 
     fn handle_one_srv_record(record: &SRV, protocol: IpScheme) -> Result<(url::Url, u64), Error> {
@@ -149,16 +218,65 @@ impl DnsTunnelConnector {
             return Err(anyhow::anyhow!("no srv record found").into());
         }
 
-        let url = weighted_choice(srv_records.as_slice()).with_context(|| {
+        tracing::info!("Found {} valid SRV records", srv_records.len());
+
+        // Add all URLs except the first one to the manual connector manager
+        if srv_records.len() > 1 {
+            if let Some(conn_manager) = self.global_ctx.get_manual_connector_manager() {
+                for (url, _) in srv_records.iter().skip(1) {
+                    tracing::info!("Adding additional connector from SRV record: {}", url);
+                    if let Err(e) = conn_manager.add_connector_by_url(url.clone()).await {
+                        tracing::warn!("Failed to add connector {}: {:?}", url, e);
+                    }
+                }
+                tracing::info!(
+                    "Added {} additional connectors from SRV record",
+                    srv_records.len() - 1
+                );
+            } else {
+                tracing::warn!("ManualConnectorManager not available, cannot add additional connectors");
+            }
+        }
+
+        // Use weighted choice for the primary connector
+        let (primary_url, _) = weighted_choice(srv_records.as_slice()).with_context(|| {
             format!(
                 "failed to choose a srv record, domain_name: {}, srv_records: {:?}",
                 domain_name, srv_records
             )
         })?;
 
+        tracing::info!("Using primary connector from SRV record: {}", primary_url);
+        
+        // Register with global dynamic connector manager for auto-refresh
+        self.register_for_auto_refresh_srv();
+        
         let connector =
-            create_connector_by_url(url.as_str(), &self.global_ctx, self.ip_version).await?;
+            create_connector_by_url(primary_url.as_str(), &self.global_ctx, self.ip_version).await?;
         Ok(connector)
+    }
+
+    /// 注册 SRV 到全局动态连接器管理器
+    fn register_for_auto_refresh_srv(&self) {
+        // 如果没有注入 dynamic_manager，则使用全局单例
+        let dynamic_manager = match &self.dynamic_manager {
+            Some(manager) => manager.clone(),
+            None => GlobalDynamicConnectorManager::get_instance().clone(),
+        };
+        
+        let source_url = self.addr.clone();
+        let ip_version = self.ip_version;
+        
+        tokio::spawn(async move {
+            if let Err(e) = dynamic_manager.add_dynamic_connector(
+                source_url.clone(),
+                crate::connector::dynamic_connector_manager::DynamicConnectorType::Srv,
+                ip_version,
+                300,
+            ).await {
+                tracing::warn!("Failed to register SRV connector for auto-refresh: {:?}", e);
+            }
+        });
     }
 }
 

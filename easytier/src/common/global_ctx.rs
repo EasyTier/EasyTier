@@ -236,6 +236,9 @@ pub struct GlobalCtx {
     /// OSPF propagated trusted keys (peer pubkeys and admin credentials)
     /// Stored in ArcSwap for lock-free reads and atomic batch updates
     trusted_keys: Arc<TrustedKeyMapManager>,
+
+    /// Weak reference to ManualConnectorManager for adding connectors dynamically
+    manual_connector_manager: Mutex<Option<std::sync::Weak<crate::connector::manual::ManualConnectorManager>>>,
 }
 
 impl std::fmt::Debug for GlobalCtx {
@@ -347,6 +350,8 @@ impl GlobalCtx {
             credential_manager,
 
             trusted_keys: Arc::new(TrustedKeyMapManager::new()),
+            
+            manual_connector_manager: Mutex::new(None),
         }
     }
 
@@ -1027,5 +1032,24 @@ pub mod tests {
 
     pub fn get_mock_global_ctx() -> ArcGlobalCtx {
         get_mock_global_ctx_with_network(None)
+    }
+}
+
+impl GlobalCtx {
+    /// Set the weak reference to ManualConnectorManager
+    pub fn set_manual_connector_manager(
+        &self,
+        manager: std::sync::Weak<crate::connector::manual::ManualConnectorManager>,
+    ) {
+        let mut lock = self.manual_connector_manager.lock().unwrap();
+        *lock = Some(manager);
+    }
+
+    /// Get the ManualConnectorManager if available
+    pub fn get_manual_connector_manager(
+        &self,
+    ) -> Option<Arc<crate::connector::manual::ManualConnectorManager>> {
+        let lock = self.manual_connector_manager.lock().unwrap();
+        lock.as_ref().and_then(|weak| weak.upgrade())
     }
 }
