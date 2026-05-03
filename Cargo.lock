@@ -2669,6 +2669,7 @@ dependencies = [
  "hyper",
  "hyper-util",
  "idna",
+ "lzokay-native",
  "openssl",
  "optionize",
  "ordered_hash_map",
@@ -5275,6 +5276,16 @@ name = "lru-slab"
 version = "0.1.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4050469837a6ff301cd14c1f8f24f88549e6d548f24f64e2148eb0f72cebc51f"
+
+[[package]]
+name = "lzokay-native"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "792ba667add2798c6c3e988e630f4eb921b5cbc735044825b7111ef1582c8730"
+dependencies = [
+ "byteorder",
+ "thiserror 1.0.69",
+]
 
 [[package]]
 name = "lzma-rust2"

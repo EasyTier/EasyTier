@@ -74,6 +74,7 @@ full = [
     "websocket",
     "wireguard",
     "zstd",
+    "lzo",
     "json-rpc",
 ]
 api = ["core"]
@@ -107,6 +108,7 @@ utils = []
 websocket = []
 wireguard = []
 zstd = []
+lzo = []
 json-rpc = ["dep:prost-wkt-types"]
 
 [package.metadata.cargo-machete]
