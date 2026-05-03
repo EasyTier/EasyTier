@@ -1,6 +1,7 @@
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     fmt::Debug,
+    mem::discriminant,
     net::{IpAddr, Ipv4Addr, Ipv6Addr},
     sync::{
         Arc, Weak,
@@ -90,29 +91,24 @@ static REMOVE_UNREACHABLE_PEER_INFO_AFTER: Duration = Duration::from_secs(90);
 
 type Version = u32;
 
-/// Check if `child` CIDR is a subset of `parent` CIDR.
-/// Returns true if `child` is contained within `parent`, or if they are equal.
-fn cidr_is_subset(child: &IpCidr, parent: &IpCidr) -> bool {
-    match (child, parent) {
-        (IpCidr::V4(c), IpCidr::V4(p)) => {
-            p.first_address() <= c.first_address() && c.last_address() <= p.last_address()
-        }
-        (IpCidr::V6(c), IpCidr::V6(p)) => {
-            p.first_address() <= c.first_address() && c.last_address() <= p.last_address()
-        }
-        _ => false, // mixed v4/v6
+pub trait IpCidrExt {
+    fn covers(&self, other: &Self) -> bool;
+}
+
+impl IpCidrExt for IpCidr {
+    fn covers(&self, other: &Self) -> bool {
+        discriminant(other) == discriminant(self)
+            && self.first_address() <= other.first_address()
+            && other.last_address() <= self.last_address()
     }
 }
 
 /// Check if `child` CIDR is a subset of `parent` CIDR (both as string representations).
 fn cidr_is_subset_str(child: &str, parent: &str) -> bool {
-    let Ok(child_cidr) = child.parse::<IpCidr>() else {
+    let (Ok(c), Ok(p)) = (child.parse::<IpCidr>(), parent.parse::<IpCidr>()) else {
         return false;
     };
-    let Ok(parent_cidr) = parent.parse::<IpCidr>() else {
-        return false;
-    };
-    cidr_is_subset(&child_cidr, &parent_cidr)
+    p.covers(&c)
 }
 
 /// Patch specific fields in a raw DynamicMessage from a decoded RoutePeerInfo,
@@ -1551,7 +1547,7 @@ impl RouteTable {
             .into_iter()
             .flat_map(|info| &info.proxy_cidrs)
             .filter_map(|cidr| cidr.parse::<IpCidr>().ok())
-            .collect::<Vec<_>>();
+            .collect::<HashSet<_>>();
 
         // build next hop map
         let (graph, start_node) =
@@ -1658,17 +1654,13 @@ impl RouteTable {
                     continue;
                 };
 
-                if *peer_id != my_peer_id
-                    && local_proxy_cidrs
-                        .iter()
-                        .any(|local_cidr| cidr_is_subset(&cidr, local_cidr))
-                {
+                if *peer_id != my_peer_id && local_proxy_cidrs.contains(&cidr) {
                     tracing::debug!(
                         ?peer_id,
                         ?my_peer_id,
                         ?local_proxy_cidrs,
                         ?cidr,
-                        "skip remote proxy cidr covered by local announced proxy cidr while building route table"
+                        "skip remote proxy cidr identical to local announced proxy cidr while building route table"
                     );
                     continue;
                 }
@@ -6588,7 +6580,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn sync_route_info_prioritizes_local_over_remote_for_overlapped_proxy_cidrs() {
+    async fn sync_route_info_uses_lpm_for_overlapped_proxy_cidrs() {
         let peer_mgr = create_mock_pmgr().await;
         let route = create_mock_route(peer_mgr.clone()).await;
         let from_peer_id: PeerId = 11001;
@@ -6656,13 +6648,13 @@ mod tests {
         assert_eq!(stored.proxy_cidrs, sender_info.proxy_cidrs);
         drop(guard);
 
-        // Route-table filtering: local announced /16 should dominate remote equal/subset.
+        // Data plane uses LPM: remote /24 should win over local /16 for 10.10.1.1.
         assert_eq!(
             route
                 .service_impl
                 .route_table
                 .get_peer_id_for_proxy(&"10.10.1.1".parse::<IpAddr>().unwrap()),
-            Some(peer_mgr.my_peer_id())
+            Some(from_peer_id)
         );
         // Non-overlapped remote prefix should still route to remote.
         assert_eq!(
