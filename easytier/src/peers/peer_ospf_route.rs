@@ -42,7 +42,7 @@ use crate::{
     peers::route_trait::{Route, RouteInterfaceBox},
     proto::{
         acl::GroupIdentity,
-        common::{Ipv4Inet, NatType, StunInfo},
+        common::{Ipv4Inet, NatType, StunInfo, is_virtual_peer_id},
         peer_rpc::{
             ForeignNetworkRouteInfoEntry, ForeignNetworkRouteInfoKey, OspfRouteRpc,
             OspfRouteRpcClientFactory, OspfRouteRpcServer, PeerGroupInfo, PeerIdVersion,
@@ -145,6 +145,15 @@ fn route_peer_inst_id(info: &RoutePeerInfo) -> Option<uuid::Uuid> {
     info.inst_id.map(Into::into)
 }
 
+fn is_virtual_peer_info(peer_id: PeerId, info: &RoutePeerInfo) -> bool {
+    is_virtual_peer_id(peer_id)
+        && info.peer_id == peer_id
+        && info.version > 0
+        && info.peer_route_id == 0
+        && info.feature_flag.is_none()
+        && route_peer_inst_id(info).is_some_and(|inst_id| inst_id.is_nil())
+}
+
 #[derive(Debug, Clone)]
 struct AtomicVersion(Arc<AtomicU32>);
 
@@ -245,14 +254,22 @@ impl RoutePeerInfo {
             inst_id: Some(global_ctx.get_id().into()),
             cost: 0,
             ipv4_addr: global_ctx.get_ipv4().map(|x| x.address().into()),
-            proxy_cidrs: global_ctx
-                .config
-                .get_proxy_cidrs()
-                .iter()
-                .map(|x| x.mapped_cidr.unwrap_or(x.cidr))
-                .chain(global_ctx.get_vpn_portal_cidr())
-                .map(|x| x.to_string())
-                .collect(),
+            proxy_cidrs: {
+                let mut cidrs: Vec<String> = global_ctx
+                    .config
+                    .get_proxy_cidrs()
+                    .iter()
+                    .map(|x| x.mapped_cidr.unwrap_or(x.cidr).to_string())
+                    .collect();
+                // Only advertise client_cidr as proxy when in legacy single-key mode.
+                // In multi-client mode, each online WG client is advertised as a virtual peer.
+                if let Some(vpn_cfg) = global_ctx.config.get_vpn_portal_config() {
+                    if vpn_cfg.clients.is_empty() {
+                        cidrs.push(vpn_cfg.client_cidr.to_string());
+                    }
+                }
+                cidrs
+            },
             hostname: Some(global_ctx.get_hostname()),
             udp_nat_type: stun_info.udp_nat_type,
             tcp_nat_type: stun_info.tcp_nat_type,
@@ -296,6 +313,14 @@ impl RoutePeerInfo {
 
             ..Default::default()
         }
+    }
+
+    fn new_virtual_peer(peer_id: PeerId, ipv4_addr: Ipv4Addr) -> Self {
+        let mut info = Self::new();
+        info.peer_id = peer_id;
+        info.ipv4_addr = Some(ipv4_addr.into());
+        info.network_length = 32;
+        info
     }
 
     /// Attempts to update the `new` RoutePeerInfo based on the `old` RoutePeerInfo.
@@ -413,6 +438,52 @@ impl Default for RouteConnInfo {
             version: AtomicVersion::new(),
             last_update: SystemTime::now(),
         }
+    }
+}
+
+impl RouteConnInfo {
+    fn new(connected_peers: BTreeSet<PeerId>, version: Version, last_update: SystemTime) -> Self {
+        Self {
+            connected_peers,
+            version: version.into(),
+            last_update,
+        }
+    }
+
+    fn update_connected_peers(
+        &mut self,
+        connected_peers: BTreeSet<PeerId>,
+        last_update: SystemTime,
+    ) -> bool {
+        if self.connected_peers == connected_peers {
+            self.last_update = last_update;
+            return false;
+        }
+
+        self.connected_peers = connected_peers;
+        self.version.inc();
+        self.last_update = last_update;
+        true
+    }
+
+    fn ensure_connected_peer(&mut self, peer_id: PeerId, last_update: SystemTime) -> bool {
+        if !self.connected_peers.insert(peer_id) {
+            return false;
+        }
+
+        self.version.inc();
+        self.last_update = last_update;
+        true
+    }
+
+    fn remove_connected_peer(&mut self, peer_id: PeerId, last_update: SystemTime) -> bool {
+        if !self.connected_peers.remove(&peer_id) {
+            return false;
+        }
+
+        self.version.inc();
+        self.last_update = last_update;
+        true
     }
 }
 
@@ -708,6 +779,25 @@ impl SyncedRouteInfo {
             .map(|x| x.connected_peers.iter().copied().collect())
     }
 
+    fn get_local_virtual_peers(&self, my_peer_id: PeerId) -> BTreeSet<PeerId> {
+        let peer_infos = self.peer_infos.read();
+        self.conn_map
+            .read()
+            .iter()
+            .filter_map(|(peer_id, conn_info)| {
+                if peer_infos
+                    .get(peer_id)
+                    .is_some_and(|info| is_virtual_peer_info(*peer_id, info))
+                    && conn_info.connected_peers.contains(&my_peer_id)
+                {
+                    Some(*peer_id)
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }
+
     fn remove_peer(&self, peer_id: PeerId) {
         self.remove_peers([peer_id]);
     }
@@ -750,7 +840,7 @@ impl SyncedRouteInfo {
         self.version.inc();
     }
 
-    fn fill_empty_peer_info(&self, peer_ids: &BTreeSet<PeerId>) {
+    fn fill_empty_peer_info(&self, peer_ids: &BTreeSet<PeerId>) -> bool {
         let mut need_inc_version = false;
         for peer_id in peer_ids {
             let guard = self.peer_infos.upgradable_read();
@@ -776,6 +866,7 @@ impl SyncedRouteInfo {
         if need_inc_version {
             self.version.inc();
         }
+        need_inc_version
     }
 
     fn get_peer_info_version_with_default(&self, peer_id: PeerId) -> Version {
@@ -837,7 +928,7 @@ impl SyncedRouteInfo {
         dst_peer_id: PeerId,
         peer_infos: &[RoutePeerInfo],
         raw_peer_infos: &[DynamicMessage],
-    ) -> Result<(), Error> {
+    ) -> Result<bool, Error> {
         let mut need_inc_version = false;
         for (idx, route_info) in peer_infos.iter().enumerate() {
             let mut route_info = route_info.clone();
@@ -881,7 +972,7 @@ impl SyncedRouteInfo {
         if need_inc_version {
             self.version.inc();
         }
-        Ok(())
+        Ok(need_inc_version)
     }
 
     fn update_conn_info_one_peer(
@@ -908,22 +999,25 @@ impl SyncedRouteInfo {
         false
     }
 
-    fn update_conn_info_with_bitmap(&self, conn_bitmap: &RouteConnBitmap) {
-        self.fill_empty_peer_info(&conn_bitmap.peer_ids.iter().map(|x| x.peer_id).collect());
+    fn update_conn_info_with_bitmap(&self, conn_bitmap: &RouteConnBitmap) -> bool {
+        let mut changed =
+            self.fill_empty_peer_info(&conn_bitmap.peer_ids.iter().map(|x| x.peer_id).collect());
 
         let mut need_inc_version = false;
 
         for (peer_idx, peer_id_version) in conn_bitmap.peer_ids.iter().enumerate() {
             let connceted_peers = conn_bitmap.get_connected_peers(peer_idx);
-            self.fill_empty_peer_info(&connceted_peers);
+            changed |= self.fill_empty_peer_info(&connceted_peers);
             need_inc_version |= self.update_conn_info_one_peer(peer_id_version, connceted_peers);
         }
         if need_inc_version {
             self.version.inc();
         }
+        changed || need_inc_version
     }
 
-    fn update_conn_info_with_list(&self, conn_peer_list: &RouteConnPeerList) {
+    fn update_conn_info_with_list(&self, conn_peer_list: &RouteConnPeerList) -> bool {
+        let mut changed = false;
         let mut need_inc_version = false;
 
         for peer_conn_info in &conn_peer_list.peer_conn_infos {
@@ -933,21 +1027,21 @@ impl SyncedRouteInfo {
             let connected_peers: BTreeSet<PeerId> =
                 peer_conn_info.connected_peer_ids.iter().copied().collect();
 
-            self.fill_empty_peer_info(&connected_peers);
+            changed |= self.fill_empty_peer_info(&BTreeSet::from([peer_id_version.peer_id]));
+            changed |= self.fill_empty_peer_info(&connected_peers);
             need_inc_version |= self.update_conn_info_one_peer(&peer_id_version, connected_peers);
         }
         if need_inc_version {
             self.version.inc();
         }
+        changed || need_inc_version
     }
 
-    fn update_conn_info(&self, conn_info: &ConnInfo) {
+    fn update_conn_info(&self, conn_info: &ConnInfo) -> bool {
         match conn_info {
-            ConnInfo::ConnBitmap(conn_bitmap) => {
-                self.update_conn_info_with_bitmap(conn_bitmap);
-            }
+            ConnInfo::ConnBitmap(conn_bitmap) => self.update_conn_info_with_bitmap(conn_bitmap),
             ConnInfo::ConnPeerList(conn_peer_list) => {
-                self.update_conn_info_with_list(conn_peer_list);
+                self.update_conn_info_with_list(conn_peer_list)
             }
         }
     }
@@ -1027,7 +1121,12 @@ impl SyncedRouteInfo {
         }
     }
 
-    fn update_my_conn_info(&self, my_peer_id: PeerId, connected_peers: BTreeSet<PeerId>) -> bool {
+    fn update_my_conn_info(
+        &self,
+        my_peer_id: PeerId,
+        mut connected_peers: BTreeSet<PeerId>,
+    ) -> bool {
+        connected_peers.extend(self.get_local_virtual_peers(my_peer_id));
         self.fill_empty_peer_info(&connected_peers);
 
         let guard = self.conn_map.upgradable_read();
@@ -1049,6 +1148,125 @@ impl SyncedRouteInfo {
         } else {
             false
         }
+    }
+
+    fn update_virtual_peer_info(&self, peer_id: PeerId, ipv4_addr: Ipv4Addr) -> bool {
+        if !is_virtual_peer_id(peer_id) {
+            return false;
+        }
+
+        let now = SystemTime::now();
+        let mut new = RoutePeerInfo::new_virtual_peer(peer_id, ipv4_addr);
+        let mut guard = self.peer_infos.write();
+        let old = guard.get(&peer_id).cloned();
+        let new_version = old.as_ref().map(|x| x.version).unwrap_or(0) + 1;
+        let need_insert_new = if let Some(old) = old.as_ref() {
+            if !is_virtual_peer_info(peer_id, old) {
+                return false;
+            }
+            RoutePeerInfo::try_update_new_peer_info(old, &mut new)
+        } else {
+            true
+        };
+
+        if need_insert_new {
+            new.last_update = Some(now.into());
+            new.version = new_version;
+            guard.insert(peer_id, new);
+            drop(guard);
+            self.version.inc();
+            true
+        } else {
+            if let Some(info) = guard.get_mut(&peer_id) {
+                info.last_update = Some(now.into());
+            }
+            false
+        }
+    }
+
+    fn refresh_virtual_peer_infos<I>(&self, peer_ids: I) -> (Vec<PeerId>, bool)
+    where
+        I: IntoIterator<Item = PeerId>,
+    {
+        let now = SystemTime::now();
+        let mut refreshed_peer_ids = Vec::new();
+        let mut peer_info_changed = false;
+        let mut guard = self.peer_infos.write();
+
+        for peer_id in BTreeSet::from_iter(peer_ids) {
+            let Some(old) = guard.get(&peer_id).cloned() else {
+                continue;
+            };
+            if !is_virtual_peer_info(peer_id, &old) {
+                continue;
+            }
+
+            let Some(ipv4_addr) = old.ipv4_addr.map(Into::into) else {
+                continue;
+            };
+            let mut new = RoutePeerInfo::new_virtual_peer(peer_id, ipv4_addr);
+            if RoutePeerInfo::try_update_new_peer_info(&old, &mut new) {
+                new.last_update = Some(now.into());
+                new.version = old.version + 1;
+                guard.insert(peer_id, new);
+                peer_info_changed = true;
+            } else if let Some(info) = guard.get_mut(&peer_id) {
+                info.last_update = Some(now.into());
+            }
+            refreshed_peer_ids.push(peer_id);
+        }
+        drop(guard);
+
+        if peer_info_changed {
+            self.version.inc();
+        }
+        (refreshed_peer_ids, peer_info_changed)
+    }
+
+    fn ensure_conn_edge(
+        conn_map: &mut OrderedHashMap<PeerId, RouteConnInfo>,
+        peer_id: PeerId,
+        connected_peer_id: PeerId,
+        now: SystemTime,
+    ) -> bool {
+        if let Some(conn) = conn_map.get_mut(&peer_id) {
+            return conn.ensure_connected_peer(connected_peer_id, now);
+        }
+
+        conn_map.insert(
+            peer_id,
+            RouteConnInfo::new(BTreeSet::from([connected_peer_id]), 1, now),
+        );
+        true
+    }
+
+    fn refresh_virtual_peer_conns<I>(&self, my_peer_id: PeerId, peer_ids: I) -> bool
+    where
+        I: IntoIterator<Item = PeerId>,
+    {
+        let now = SystemTime::now();
+        let mut route_changed = false;
+        let expected_connected_peers = BTreeSet::from([my_peer_id]);
+        let mut guard = self.conn_map.write();
+
+        for peer_id in peer_ids {
+            if let Some(conn) = guard.get_mut(&peer_id) {
+                route_changed |= conn.update_connected_peers(expected_connected_peers.clone(), now);
+            } else {
+                guard.insert(
+                    peer_id,
+                    RouteConnInfo::new(expected_connected_peers.clone(), 1, now),
+                );
+                route_changed = true;
+            }
+            route_changed |= Self::ensure_conn_edge(&mut guard, my_peer_id, peer_id, now);
+        }
+        drop(guard);
+
+        if route_changed {
+            self.version.inc();
+        }
+        route_changed
     }
 
     fn update_my_foreign_network(
@@ -2538,16 +2756,7 @@ impl PeerRouteServiceImpl {
         let mut route_infos = Vec::new();
         let peer_infos = self.synced_route_info.peer_infos.read();
         let mut unreachable_peers_for_peer_info = session.unreachable_peers_for_peer_info.lock();
-        let last_sync_succ_timestamp = session.last_sync_succ_timestamp.load();
         for (peer_id, peer_info) in peer_infos.iter().rev() {
-            // stop iter if last_update of peer info is older than session.last_sync_succ_timestamp
-            if let Some(last_update) = peer_info.last_update {
-                let last_update = TryInto::<SystemTime>::try_into(last_update).unwrap();
-                if last_sync_succ_timestamp.is_some_and(|t| last_update < t) {
-                    break;
-                }
-            }
-
             if session.check_saved_peer_info_update_to_date(peer_info.peer_id, peer_info.version) {
                 continue;
             }
@@ -2591,7 +2800,6 @@ impl PeerRouteServiceImpl {
         session: &SyncRouteSession,
         estimated_size: &mut usize,
     ) -> Option<RouteConnPeerList> {
-        let last_sync_succ_timestamp = session.last_sync_succ_timestamp.load();
         let mut peer_conn_infos = Vec::new();
         *estimated_size = 0;
 
@@ -2611,12 +2819,6 @@ impl PeerRouteServiceImpl {
         };
 
         for (peer_id, conn_info) in conn_map.iter().rev() {
-            // stop iter if last_update of conn info is older than session.last_sync_succ_timestamp
-            let last_update = TryInto::<SystemTime>::try_into(conn_info.last_update).unwrap();
-            if last_sync_succ_timestamp.is_some_and(|t| last_update < t) {
-                break;
-            }
-
             if session.check_saved_conn_version_update_to_date(*peer_id, conn_info.version.get()) {
                 continue;
             }
@@ -2862,7 +3064,7 @@ impl PeerRouteServiceImpl {
         let mut to_remove = Vec::new();
         for (peer_id, peer_info) in self.synced_route_info.peer_infos.read().iter() {
             if let Ok(d) = now.duration_since(peer_info.last_update.unwrap().try_into().unwrap())
-                && (d > REMOVE_DEAD_PEER_INFO_AFTER
+                && ((!is_virtual_peer_info(*peer_id, peer_info) && d > REMOVE_DEAD_PEER_INFO_AFTER)
                     || (d > REMOVE_UNREACHABLE_PEER_INFO_AFTER
                         && !self.route_table.peer_reachable(*peer_id)))
             {
@@ -3516,6 +3718,7 @@ impl RouteSessionManager {
         session.update_dst_session_id(from_session_id);
 
         let mut need_update_route_table = false;
+        let mut need_rebuild_route_table = false;
         let mut untrusted_peers = Vec::new();
 
         if let Some(peer_infos) = &peer_infos {
@@ -3541,22 +3744,25 @@ impl RouteSessionManager {
                     .get_network_identity()
                     .network_secret
                     .is_none();
-                service_impl.synced_route_info.update_peer_infos(
+                let peer_info_changed = service_impl.synced_route_info.update_peer_infos(
                     my_peer_id,
                     service_impl.my_peer_route_id,
                     from_peer_id,
                     pi,
                     rpi,
                 )?;
-                service_impl
-                    .synced_route_info
-                    .verify_and_update_group_trusts(
-                        pi,
-                        &service_impl.global_ctx.get_acl_group_declarations(),
-                        trust_admin_groups_without_proof,
-                    );
+                if peer_info_changed {
+                    service_impl
+                        .synced_route_info
+                        .verify_and_update_group_trusts(
+                            pi,
+                            &service_impl.global_ctx.get_acl_group_declarations(),
+                            trust_admin_groups_without_proof,
+                        );
+                }
                 session.update_dst_saved_peer_info_version(pi, from_peer_id);
-                need_update_route_table = true;
+                need_update_route_table |= peer_info_changed;
+                need_rebuild_route_table = true;
             }
         }
 
@@ -3565,9 +3771,10 @@ impl RouteSessionManager {
             let accept_conn_info =
                 !from_is_credential || credential_info.map(|tc| tc.allow_relay).unwrap_or(false);
             if accept_conn_info {
-                service_impl.synced_route_info.update_conn_info(conn_info);
+                let conn_info_changed = service_impl.synced_route_info.update_conn_info(conn_info);
                 session.update_dst_saved_conn_info_version(conn_info, from_peer_id);
-                need_update_route_table = true;
+                need_update_route_table |= conn_info_changed;
+                need_rebuild_route_table = true;
             }
         }
 
@@ -3586,7 +3793,7 @@ impl RouteSessionManager {
             }
         }
 
-        if need_update_route_table || foreign_network_changed {
+        if need_rebuild_route_table || foreign_network_changed {
             service_impl.update_route_table_and_cached_local_conn_bitmap();
             service_impl.update_foreign_network_owner_map();
             if need_update_route_table
@@ -3920,6 +4127,24 @@ impl Route for PeerRoute {
             .map(|x| x.next_hop_peer_id)
     }
 
+    async fn is_local_virtual_peer(&self, peer_id: PeerId) -> bool {
+        let peer_infos = self.service_impl.synced_route_info.peer_infos.read();
+        if !peer_infos
+            .get(&peer_id)
+            .is_some_and(|info| is_virtual_peer_info(peer_id, info))
+        {
+            return false;
+        }
+        drop(peer_infos);
+
+        self.service_impl
+            .synced_route_info
+            .conn_map
+            .read()
+            .get(&peer_id)
+            .is_some_and(|conn| conn.connected_peers.contains(&self.my_peer_id))
+    }
+
     async fn list_routes(&self) -> Vec<crate::proto::api::instance::Route> {
         let route_table = &self.service_impl.route_table;
         let route_table_with_cost = &self.service_impl.route_table_with_cost;
@@ -4147,6 +4372,71 @@ impl Route for PeerRoute {
         if self.service_impl.refresh_acl_groups().await {
             self.session_mgr.sync_now("refresh_acl_groups");
         }
+    }
+}
+
+impl PeerRoute {
+    pub fn add_virtual_peer(&self, peer_id: PeerId, ipv4_addr: Ipv4Addr) -> bool {
+        let synced = &self.service_impl.synced_route_info;
+        synced.update_virtual_peer_info(peer_id, ipv4_addr);
+
+        let now = SystemTime::now();
+        let mut guard = synced.conn_map.write();
+        guard.insert(
+            peer_id,
+            RouteConnInfo::new(BTreeSet::from([self.my_peer_id]), 1, now),
+        );
+        SyncedRouteInfo::ensure_conn_edge(&mut guard, self.my_peer_id, peer_id, now);
+        drop(guard);
+
+        self.service_impl
+            .update_route_table_and_cached_local_conn_bitmap();
+        self.session_mgr.sync_now("add_virtual_peer");
+        true
+    }
+
+    pub fn remove_virtual_peer(&self, peer_id: PeerId) {
+        let now = SystemTime::now();
+        let removed_portal_edge = {
+            let mut guard = self.service_impl.synced_route_info.conn_map.write();
+            if let Some(conn) = guard.get_mut(&self.my_peer_id) {
+                conn.remove_connected_peer(peer_id, now)
+            } else {
+                false
+            }
+        };
+        if removed_portal_edge {
+            self.service_impl.synced_route_info.version.inc();
+        }
+        self.service_impl.synced_route_info.remove_peer(peer_id);
+        self.service_impl
+            .update_route_table_and_cached_local_conn_bitmap();
+        self.session_mgr.sync_now("remove_virtual_peer");
+    }
+
+    pub fn refresh_virtual_peer(&self, peer_id: PeerId) -> bool {
+        self.refresh_virtual_peers(std::iter::once(peer_id))
+    }
+
+    pub fn refresh_virtual_peers<I>(&self, peer_ids: I) -> bool
+    where
+        I: IntoIterator<Item = PeerId>,
+    {
+        let synced = &self.service_impl.synced_route_info;
+        let (existing_peer_ids, _peer_info_changed) = synced.refresh_virtual_peer_infos(peer_ids);
+
+        if existing_peer_ids.is_empty() {
+            return false;
+        }
+
+        let route_changed = synced.refresh_virtual_peer_conns(self.my_peer_id, existing_peer_ids);
+
+        if route_changed {
+            self.service_impl
+                .update_route_table_and_cached_local_conn_bitmap();
+            self.session_mgr.sync_now("refresh_virtual_peers");
+        }
+        route_changed
     }
 }
 
@@ -6671,6 +6961,116 @@ mod tests {
                 .route_table
                 .get_peer_id_for_proxy(&"10.11.0.1".parse::<IpAddr>().unwrap()),
             Some(from_peer_id)
+        );
+    }
+
+    #[tokio::test]
+    async fn test_virtual_peer_lifecycle() {
+        let peer_mgr = create_mock_peer_manager().await;
+        let route = create_mock_route(peer_mgr.clone()).await;
+
+        let virtual_peer_id: PeerId = 0x80000001;
+        let virtual_ip: std::net::Ipv4Addr = "10.99.99.1".parse().unwrap();
+
+        // Add virtual peer
+        assert!(route.add_virtual_peer(virtual_peer_id, virtual_ip));
+
+        // Verify peer info exists
+        let info = route.service_impl.synced_route_info.peer_infos.read();
+        assert!(info.contains_key(&virtual_peer_id));
+        let peer_info = info.get(&virtual_peer_id).unwrap();
+        assert_eq!(peer_info.peer_id, virtual_peer_id);
+        assert_eq!(peer_info.ipv4_addr, Some(virtual_ip.into()));
+        assert_eq!(peer_info.network_length, 32);
+        drop(info);
+
+        // Verify conn map exists and connects to my_peer_id
+        let conn = route.service_impl.synced_route_info.conn_map.read();
+        assert!(conn.contains_key(&virtual_peer_id));
+        let conn_info = conn.get(&virtual_peer_id).unwrap();
+        assert!(conn_info.connected_peers.contains(&peer_mgr.my_peer_id()));
+        let portal_conn_info = conn.get(&peer_mgr.my_peer_id()).unwrap();
+        assert!(portal_conn_info.connected_peers.contains(&virtual_peer_id));
+        drop(conn);
+
+        route
+            .service_impl
+            .update_route_table_and_cached_local_conn_bitmap();
+        assert!(
+            route
+                .service_impl
+                .route_table
+                .peer_reachable(virtual_peer_id)
+        );
+
+        // Refresh virtual peer
+        let old_version = route
+            .service_impl
+            .synced_route_info
+            .peer_infos
+            .read()
+            .get(&virtual_peer_id)
+            .unwrap()
+            .version;
+        let old_last_update: SystemTime = route
+            .service_impl
+            .synced_route_info
+            .peer_infos
+            .read()
+            .get(&virtual_peer_id)
+            .unwrap()
+            .last_update
+            .clone()
+            .unwrap()
+            .try_into()
+            .unwrap();
+        assert!(!route.refresh_virtual_peer(virtual_peer_id));
+        {
+            let guard = route.service_impl.synced_route_info.peer_infos.read();
+            let refreshed_peer_info = guard.get(&virtual_peer_id).unwrap();
+            assert_eq!(refreshed_peer_info.version, old_version);
+            let refreshed_last_update: SystemTime = refreshed_peer_info
+                .last_update
+                .clone()
+                .unwrap()
+                .try_into()
+                .unwrap();
+            assert!(refreshed_last_update > old_last_update);
+        }
+
+        route.service_impl.mark_interface_peers_dirty();
+        route.service_impl.update_my_conn_info().await;
+        let conn = route.service_impl.synced_route_info.conn_map.read();
+        let portal_conn_info = conn.get(&peer_mgr.my_peer_id()).unwrap();
+        assert!(portal_conn_info.connected_peers.contains(&virtual_peer_id));
+        drop(conn);
+
+        // Remove virtual peer
+        route.remove_virtual_peer(virtual_peer_id);
+        assert!(
+            !route
+                .service_impl
+                .synced_route_info
+                .peer_infos
+                .read()
+                .contains_key(&virtual_peer_id)
+        );
+        assert!(
+            !route
+                .service_impl
+                .synced_route_info
+                .conn_map
+                .read()
+                .contains_key(&virtual_peer_id)
+        );
+        assert!(
+            !route
+                .service_impl
+                .synced_route_info
+                .conn_map
+                .read()
+                .get(&peer_mgr.my_peer_id())
+                .is_some_and(|conn| conn.connected_peers.contains(&virtual_peer_id))
         );
     }
 }

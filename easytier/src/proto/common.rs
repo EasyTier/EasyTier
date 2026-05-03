@@ -11,6 +11,16 @@ use crate::tunnel::{IpScheme, packet_def::CompressorAlgo};
 
 include!(concat!(env!("OUT_DIR"), "/common.rs"));
 
+pub const VIRTUAL_PEER_ID_FLAG: u32 = 0x8000_0000;
+
+pub fn is_virtual_peer_id(peer_id: u32) -> bool {
+    peer_id & VIRTUAL_PEER_ID_FLAG != 0
+}
+
+pub fn to_virtual_peer_id(peer_id: u32) -> u32 {
+    peer_id | VIRTUAL_PEER_ID_FLAG
+}
+
 impl From<uuid::Uuid> for Uuid {
     fn from(uuid: uuid::Uuid) -> Self {
         let (high, low) = uuid.as_u64_pair();
