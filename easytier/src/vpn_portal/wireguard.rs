@@ -1,16 +1,27 @@
 use std::{
-    collections::{HashMap, hash_map::DefaultHasher},
+    collections::{HashMap, HashSet, hash_map::DefaultHasher},
     hash::{Hash, Hasher},
     net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV6},
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
 };
 
 use anyhow::Context;
 use base64::{Engine, prelude::BASE64_STANDARD};
+use bytes::BytesMut;
 use cidr::Ipv4Inet;
-use dashmap::DashMap;
+use dashmap::{DashMap, mapref::entry::Entry};
 use futures::StreamExt;
-use pnet::packet::ipv4::Ipv4Packet;
+use pnet::packet::{MutablePacket, Packet};
+use pnet::packet::{
+    icmp::{IcmpPacket, IcmpTypes},
+    ip::{IpNextHeaderProtocol, IpNextHeaderProtocols},
+    ipv4::{self, Ipv4Flags, Ipv4Packet, MutableIpv4Packet},
+    tcp::{self, MutableTcpPacket},
+    udp::{self, MutableUdpPacket},
+};
 use tokio::task::JoinSet;
 use tracing::Level;
 
@@ -32,6 +43,7 @@ use crate::{
 use super::VpnPortal;
 
 type WgPeerIpTable = Arc<DashMap<Ipv4Addr, Arc<ClientEntry>>>;
+static NEXT_CLIENT_CONNECTION_ID: AtomicU64 = AtomicU64::new(1);
 
 pub(crate) fn get_wg_config_for_portal(nid: &NetworkIdentity) -> WgConfig {
     let key_seed = format!(
@@ -43,11 +55,37 @@ pub(crate) fn get_wg_config_for_portal(nid: &NetworkIdentity) -> WgConfig {
 }
 
 struct ClientEntry {
+    connection_id: u64,
     endpoint_addr: Option<url::Url>,
     sink: MpscTunnelSender,
     name: String,
     assigned_ip: Ipv4Addr,
+    tunnel_ip: Ipv4Addr,
     virtual_peer_id: u32,
+}
+
+#[derive(Debug, Clone)]
+struct AssignedClient {
+    assigned_ip: Ipv4Addr,
+    tunnel_ip: Ipv4Addr,
+    virtual_peer_id: u32,
+    name: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Ipv4NatError {
+    InvalidPacket,
+    InvalidTransportPacket,
+    UnexpectedSource {
+        actual: Ipv4Addr,
+        expected: Ipv4Addr,
+    },
+    UnexpectedDestination {
+        actual: Ipv4Addr,
+        expected: Ipv4Addr,
+    },
+    UnsupportedFragment,
+    UnsupportedProtocol(IpNextHeaderProtocol),
 }
 
 struct IpAllocator {
@@ -63,21 +101,34 @@ impl IpAllocator {
         }
     }
 
+    fn is_assignable(&self, ip: Ipv4Addr) -> bool {
+        is_assignable_client_ip(self.cidr, ip)
+    }
+
+    fn try_claim(&self, ip: Ipv4Addr, client_name: &str) -> bool {
+        match self.allocated.entry(ip) {
+            Entry::Vacant(entry) => {
+                entry.insert(client_name.to_string());
+                true
+            }
+            Entry::Occupied(_) => false,
+        }
+    }
+
     fn allocate(&self, client_name: &str, preferred: Option<Ipv4Addr>) -> Option<Ipv4Addr> {
         if let Some(ip) = preferred {
-            if self.cidr.contains(&ip) && !self.allocated.contains_key(&ip) {
-                self.allocated.insert(ip, client_name.to_string());
+            if self.try_claim(ip, client_name) {
                 return Some(ip);
             }
+            return None;
         }
 
         for ip in self.cidr.iter() {
             let addr = ip.address();
-            if addr == self.cidr.first_address() || addr == self.cidr.last_address() {
+            if !self.is_assignable(addr) {
                 continue;
             }
-            if !self.allocated.contains_key(&addr) {
-                self.allocated.insert(addr, client_name.to_string());
+            if self.try_claim(addr, client_name) {
                 return Some(addr);
             }
         }
@@ -97,6 +148,198 @@ fn virtual_peer_id_from_pubkey(pubkey: &[u8]) -> u32 {
     (hash as u32) | 0x80000000
 }
 
+fn is_assignable_client_ip(cidr: cidr::Ipv4Cidr, ip: Ipv4Addr) -> bool {
+    cidr.contains(&ip) && ip != cidr.first_address() && ip != cidr.last_address()
+}
+
+fn ipv4_packet_total_len(packet: &[u8]) -> Result<usize, Ipv4NatError> {
+    let ipv4_packet = Ipv4Packet::new(packet).ok_or(Ipv4NatError::InvalidPacket)?;
+    if ipv4_packet.get_version() != 4 {
+        return Err(Ipv4NatError::InvalidPacket);
+    }
+
+    let header_len = ipv4_packet.get_header_length() as usize * 4;
+    let total_len = ipv4_packet.get_total_length() as usize;
+    if header_len < Ipv4Packet::minimum_packet_size()
+        || total_len < header_len
+        || total_len > packet.len()
+    {
+        return Err(Ipv4NatError::InvalidPacket);
+    }
+
+    Ok(total_len)
+}
+
+fn update_ipv4_checksum(ipv4_packet: &mut MutableIpv4Packet) {
+    ipv4_packet.set_checksum(ipv4::checksum(&ipv4_packet.to_immutable()));
+}
+
+fn update_transport_checksum(ipv4_packet: &mut MutableIpv4Packet) -> Result<(), Ipv4NatError> {
+    let source = ipv4_packet.get_source();
+    let destination = ipv4_packet.get_destination();
+    let protocol = ipv4_packet.get_next_level_protocol();
+
+    match protocol {
+        IpNextHeaderProtocols::Tcp => {
+            let mut tcp_packet = MutableTcpPacket::new(ipv4_packet.payload_mut())
+                .ok_or(Ipv4NatError::InvalidTransportPacket)?;
+            tcp_packet.set_checksum(tcp::ipv4_checksum(
+                &tcp_packet.to_immutable(),
+                &source,
+                &destination,
+            ));
+        }
+        IpNextHeaderProtocols::Udp => {
+            let mut udp_packet = MutableUdpPacket::new(ipv4_packet.payload_mut())
+                .ok_or(Ipv4NatError::InvalidTransportPacket)?;
+            if udp_packet.get_checksum() != 0 {
+                udp_packet.set_checksum(udp::ipv4_checksum(
+                    &udp_packet.to_immutable(),
+                    &source,
+                    &destination,
+                ));
+            }
+        }
+        IpNextHeaderProtocols::Icmp => {
+            let icmp_packet = IcmpPacket::new(ipv4_packet.payload())
+                .ok_or(Ipv4NatError::InvalidTransportPacket)?;
+            let icmp_type = icmp_packet.get_icmp_type();
+            if icmp_type != IcmpTypes::EchoRequest && icmp_type != IcmpTypes::EchoReply {
+                return Err(Ipv4NatError::UnsupportedProtocol(protocol));
+            }
+        }
+        _ => return Err(Ipv4NatError::UnsupportedProtocol(protocol)),
+    }
+
+    Ok(())
+}
+
+fn reject_fragmented_packet(ipv4_packet: &MutableIpv4Packet) -> Result<(), Ipv4NatError> {
+    if ipv4_packet.get_fragment_offset() != 0
+        || ipv4_packet.get_flags() & Ipv4Flags::MoreFragments != 0
+    {
+        return Err(Ipv4NatError::UnsupportedFragment);
+    }
+
+    Ok(())
+}
+
+fn rewrite_ipv4_source(
+    packet: &mut BytesMut,
+    expected_source: Ipv4Addr,
+    new_source: Ipv4Addr,
+) -> Result<(), Ipv4NatError> {
+    let total_len = ipv4_packet_total_len(packet.as_ref())?;
+    let mut ipv4_packet =
+        MutableIpv4Packet::new(&mut packet[..total_len]).ok_or(Ipv4NatError::InvalidPacket)?;
+    let actual_source = ipv4_packet.get_source();
+    if actual_source != expected_source {
+        return Err(Ipv4NatError::UnexpectedSource {
+            actual: actual_source,
+            expected: expected_source,
+        });
+    }
+    if actual_source == new_source {
+        return Ok(());
+    }
+
+    reject_fragmented_packet(&ipv4_packet)?;
+    ipv4_packet.set_source(new_source);
+    update_transport_checksum(&mut ipv4_packet)?;
+    update_ipv4_checksum(&mut ipv4_packet);
+
+    Ok(())
+}
+
+fn rewrite_ipv4_destination(
+    packet: &mut BytesMut,
+    expected_destination: Ipv4Addr,
+    new_destination: Ipv4Addr,
+) -> Result<(), Ipv4NatError> {
+    let total_len = ipv4_packet_total_len(packet.as_ref())?;
+    let mut ipv4_packet =
+        MutableIpv4Packet::new(&mut packet[..total_len]).ok_or(Ipv4NatError::InvalidPacket)?;
+    let actual_destination = ipv4_packet.get_destination();
+    if actual_destination != expected_destination {
+        return Err(Ipv4NatError::UnexpectedDestination {
+            actual: actual_destination,
+            expected: expected_destination,
+        });
+    }
+    if actual_destination == new_destination {
+        return Ok(());
+    }
+
+    reject_fragmented_packet(&ipv4_packet)?;
+    ipv4_packet.set_destination(new_destination);
+    update_transport_checksum(&mut ipv4_packet)?;
+    update_ipv4_checksum(&mut ipv4_packet);
+
+    Ok(())
+}
+
+fn build_client_config_map(
+    clients: &[VpnPortalClientConfig],
+    cidr: cidr::Ipv4Cidr,
+    server_ip: Option<Ipv4Addr>,
+) -> HashMap<String, VpnPortalClientConfig> {
+    let mut used_ips = HashSet::new();
+    if let Some(server_ip) = server_ip {
+        used_ips.insert(server_ip);
+    }
+
+    let mut client_configs = HashMap::new();
+    for client in clients {
+        let mut config = client.clone();
+        if let Some(ip) = config.assigned_ip
+            && !used_ips.insert(ip)
+        {
+            tracing::warn!(
+                client = %config.name,
+                %ip,
+                "Configured WireGuard virtual client IP is already reserved"
+            );
+            config.assigned_ip = None;
+        }
+        client_configs.insert(config.name.clone(), config);
+    }
+
+    for client in clients {
+        let Some(config) = client_configs.get_mut(&client.name) else {
+            continue;
+        };
+        if config.assigned_ip.is_some() {
+            continue;
+        }
+
+        let next_ip = cidr
+            .iter()
+            .map(|ip| ip.address())
+            .find(|ip| is_assignable_client_ip(cidr, *ip) && !used_ips.contains(ip));
+        if let Some(ip) = next_ip {
+            used_ips.insert(ip);
+            config.assigned_ip = Some(ip);
+        } else {
+            tracing::error!(
+                client = %config.name,
+                %cidr,
+                "No assignable WireGuard client IP is available"
+            );
+        }
+    }
+
+    for client in clients {
+        let Some(config) = client_configs.get_mut(&client.name) else {
+            continue;
+        };
+        if config.tunnel_ip.is_none() {
+            config.tunnel_ip = config.assigned_ip;
+        }
+    }
+
+    client_configs
+}
+
 struct WireGuardImpl {
     global_ctx: ArcGlobalCtx,
     peer_mgr: Arc<PeerManager>,
@@ -114,15 +357,11 @@ impl WireGuardImpl {
         let vpn_cfg = global_ctx.config.get_vpn_portal_config().unwrap();
         let listener_addr = vpn_cfg.wireguard_listen;
 
-        let mut client_configs = HashMap::new();
-        for c in &vpn_cfg.clients {
-            client_configs.insert(c.name.clone(), c.clone());
-        }
-
-        let (wg_config, server_config, ip_allocator) = if vpn_cfg.clients.is_empty() {
+        let (wg_config, server_config, ip_allocator, client_configs) = if vpn_cfg.clients.is_empty()
+        {
             let nid = global_ctx.get_network_identity();
             let wg_config = get_wg_config_for_portal(&nid);
-            (Some(wg_config), None, None)
+            (Some(wg_config), None, None, HashMap::new())
         } else {
             let server_secret_key = if let Some(ref key_b64) = vpn_cfg.wireguard_private_key {
                 let key_bytes = BASE64_STANDARD
@@ -146,11 +385,11 @@ impl WireGuardImpl {
 
             let clients = Arc::new(DashMap::new());
             for client in &vpn_cfg.clients {
-                if let Ok(pubkey_bytes) = BASE64_STANDARD.decode(&client.client_public_key) {
-                    if let Ok(pubkey_arr) = <[u8; 32]>::try_from(pubkey_bytes.as_slice()) {
-                        let pubkey = boringtun::x25519::PublicKey::from(pubkey_arr);
-                        clients.insert(pubkey, client.name.clone());
-                    }
+                if let Ok(pubkey_bytes) = BASE64_STANDARD.decode(&client.client_public_key)
+                    && let Ok(pubkey_arr) = <[u8; 32]>::try_from(pubkey_bytes.as_slice())
+                {
+                    let pubkey = boringtun::x25519::PublicKey::from(pubkey_arr);
+                    clients.insert(pubkey, client.name.clone());
                 }
             }
 
@@ -161,24 +400,27 @@ impl WireGuardImpl {
                 next_index: Arc::new(std::sync::atomic::AtomicU32::new(1)),
             };
 
-            let ip_allocator = {
-                let cidr = if let Some(ipv4) = global_ctx.get_ipv4() {
-                    cidr::Ipv4Cidr::new(ipv4.address(), ipv4.network_length())
-                        .unwrap_or(vpn_cfg.client_cidr)
-                } else {
-                    vpn_cfg.client_cidr
-                };
-                let allocator = IpAllocator::new(cidr);
-                // Reserve the server's own IP if it falls within the allocation range
-                if let Some(ipv4) = global_ctx.get_ipv4() {
-                    if cidr.contains(&ipv4.address()) {
-                        allocator.allocated.insert(ipv4.address(), "server".to_string());
-                    }
-                }
-                Some(Arc::new(allocator))
-            };
+            let local_ipv4 = global_ctx.get_ipv4();
+            let cidr = local_ipv4
+                .map(|ipv4| ipv4.network())
+                .unwrap_or(vpn_cfg.client_cidr);
+            let client_configs =
+                build_client_config_map(&vpn_cfg.clients, cidr, local_ipv4.map(|ip| ip.address()));
 
-            (None, Some(server_config), ip_allocator)
+            let allocator = IpAllocator::new(cidr);
+            // Reserve the server's own IP if it falls within the allocation range.
+            if let Some(ipv4) = local_ipv4 {
+                allocator
+                    .allocated
+                    .insert(ipv4.address(), "server".to_string());
+            }
+
+            (
+                None,
+                Some(server_config),
+                Some(Arc::new(allocator)),
+                client_configs,
+            )
         };
 
         Self {
@@ -214,19 +456,30 @@ impl WireGuardImpl {
         let assigned = if let (Some(allocator), Some(name), Some(pubkey)) =
             (&ip_allocator, &client_name, &client_pubkey)
         {
-            let preferred = client_configs.get(name).and_then(|c| c.assigned_ip);
-            let ip = allocator
-                .allocate(name, preferred)
-                .unwrap_or_else(|| {
-                    tracing::error!("Failed to allocate IP for client: {}", name);
-                    Ipv4Addr::new(0, 0, 0, 0)
-                });
+            let Some(config) = client_configs.get(name) else {
+                tracing::error!(client = %name, "No config is available for client");
+                return;
+            };
+            let Some(preferred) = config.assigned_ip else {
+                tracing::error!("No configured IP is available for client: {}", name);
+                return;
+            };
+            let tunnel_ip = config.tunnel_ip.unwrap_or(preferred);
+            let Some(ip) = allocator.allocate(name, Some(preferred)) else {
+                tracing::error!(
+                    client = %name,
+                    %preferred,
+                    "Failed to allocate configured virtual IP for WireGuard client"
+                );
+                return;
+            };
 
             let virtual_peer_id = virtual_peer_id_from_pubkey(pubkey);
             peer_mgr.add_virtual_peer(virtual_peer_id, ip);
 
-            peer_mgr.get_global_ctx().issue_event(
-                GlobalCtxEvent::VpnPortalClientConnected(
+            peer_mgr
+                .get_global_ctx()
+                .issue_event(GlobalCtxEvent::VpnPortalClientConnected(
                     info.local_addr.clone().unwrap_or_default().to_string(),
                     format!(
                         "{} ({} / {})",
@@ -234,21 +487,40 @@ impl WireGuardImpl {
                         name,
                         ip
                     ),
-                ),
-            );
+                ));
 
-            Some((ip, virtual_peer_id, name.clone()))
+            Some(AssignedClient {
+                assigned_ip: ip,
+                tunnel_ip,
+                virtual_peer_id,
+                name: name.clone(),
+            })
         } else {
-            peer_mgr.get_global_ctx().issue_event(
-                GlobalCtxEvent::VpnPortalClientConnected(
+            peer_mgr
+                .get_global_ctx()
+                .issue_event(GlobalCtxEvent::VpnPortalClientConnected(
                     info.local_addr.clone().unwrap_or_default().to_string(),
                     info.remote_addr.clone().unwrap_or_default().to_string(),
-                ),
-            );
+                ));
             None
         };
 
         let mut map_key = None;
+        if let Some(assigned) = &assigned {
+            let connection_id = NEXT_CLIENT_CONNECTION_ID.fetch_add(1, Ordering::Relaxed);
+            let client_entry = Arc::new(ClientEntry {
+                connection_id,
+                endpoint_addr: endpoint_addr.clone(),
+                sink: mpsc_tunnel.get_sink(),
+                name: assigned.name.clone(),
+                assigned_ip: assigned.assigned_ip,
+                tunnel_ip: assigned.tunnel_ip,
+                virtual_peer_id: assigned.virtual_peer_id,
+            });
+            map_key = Some((assigned.assigned_ip, connection_id));
+            wg_peer_ip_table.insert(assigned.assigned_ip, client_entry);
+            ip_registered = true;
+        }
 
         loop {
             let msg = match stream.next().await {
@@ -264,25 +536,67 @@ impl WireGuardImpl {
             };
 
             assert_eq!(msg.packet_type(), ZCPacketType::WG);
-            let inner = msg.inner();
-            let Some(i) = Ipv4Packet::new(&inner) else {
+            let mut inner = msg.inner();
+            let Some((src, dst)) = Ipv4Packet::new(&inner).and_then(|i| {
+                (i.get_version() == 4).then_some((i.get_source(), i.get_destination()))
+            }) else {
                 tracing::error!(?inner, "Failed to parse ipv4 packet");
                 continue;
             };
+
+            if let Some(assigned) = &assigned {
+                match rewrite_ipv4_source(&mut inner, assigned.tunnel_ip, assigned.assigned_ip) {
+                    Ok(()) => {}
+                    Err(Ipv4NatError::UnexpectedSource { actual, expected }) => {
+                        tracing::warn!(
+                            client = %assigned.name,
+                            src = %actual,
+                            expected = %expected,
+                            "Rejecting WireGuard client packet with unexpected source IP"
+                        );
+                        break;
+                    }
+                    Err(err) => {
+                        tracing::warn!(
+                            client = %assigned.name,
+                            ?err,
+                            "Dropping WireGuard client packet unsupported by VPN portal NAT"
+                        );
+                        continue;
+                    }
+                }
+            }
+
             if !ip_registered {
+                let assigned_ip = assigned
+                    .as_ref()
+                    .map(|assigned| assigned.assigned_ip)
+                    .unwrap_or(src);
+                let tunnel_ip = assigned
+                    .as_ref()
+                    .map(|assigned| assigned.tunnel_ip)
+                    .unwrap_or(src);
+                let connection_id = NEXT_CLIENT_CONNECTION_ID.fetch_add(1, Ordering::Relaxed);
                 let client_entry = Arc::new(ClientEntry {
+                    connection_id,
                     endpoint_addr: endpoint_addr.clone(),
                     sink: mpsc_tunnel.get_sink(),
-                    name: assigned.as_ref().map(|a| a.2.clone()).unwrap_or_default(),
-                    assigned_ip: assigned.as_ref().map(|a| a.0).unwrap_or_else(|| i.get_source()),
-                    virtual_peer_id: assigned.as_ref().map(|a| a.1).unwrap_or(0),
+                    name: assigned
+                        .as_ref()
+                        .map(|assigned| assigned.name.clone())
+                        .unwrap_or_default(),
+                    assigned_ip,
+                    tunnel_ip,
+                    virtual_peer_id: assigned
+                        .as_ref()
+                        .map(|assigned| assigned.virtual_peer_id)
+                        .unwrap_or(0),
                 });
-                map_key = Some(i.get_source());
-                wg_peer_ip_table.insert(i.get_source(), client_entry.clone());
+                map_key = Some((assigned_ip, connection_id));
+                wg_peer_ip_table.insert(assigned_ip, client_entry.clone());
                 ip_registered = true;
             }
-            tracing::trace!(?i, "Received from wg client");
-            let dst = i.get_destination();
+            tracing::trace!(?inner, "Received from wg client");
             let _ = peer_mgr
                 .send_msg_by_ip(
                     ZCPacket::new_with_payload(inner.as_ref()),
@@ -294,17 +608,17 @@ impl WireGuardImpl {
 
         if let Some(map_key) = map_key {
             match wg_peer_ip_table
-                .remove_if(&map_key, |_, entry| entry.endpoint_addr == endpoint_addr)
+                .remove_if(&map_key.0, |_, entry| entry.connection_id == map_key.1)
             {
                 Some((_, entry)) => {
                     tracing::info!(?map_key, "Removed wg client from table");
-                    if let Some((ip, virtual_peer_id, _)) = assigned {
-                        if entry.assigned_ip == ip {
-                            if let Some(ref allocator) = ip_allocator {
-                                allocator.release(&ip);
-                            }
-                            peer_mgr.remove_virtual_peer(virtual_peer_id);
+                    if let Some(assigned) = assigned
+                        && entry.assigned_ip == assigned.assigned_ip
+                    {
+                        if let Some(ref allocator) = ip_allocator {
+                            allocator.release(&assigned.assigned_ip);
                         }
+                        peer_mgr.remove_virtual_peer(assigned.virtual_peer_id);
                     }
                 }
                 None => tracing::info!(
@@ -313,6 +627,11 @@ impl WireGuardImpl {
                 ),
             }
             shrink_dashmap(&wg_peer_ip_table, None);
+        } else if let Some(assigned) = assigned {
+            if let Some(ref allocator) = ip_allocator {
+                allocator.release(&assigned.assigned_ip);
+            }
+            peer_mgr.remove_virtual_peer(assigned.virtual_peer_id);
         }
 
         peer_mgr
@@ -341,22 +660,30 @@ impl WireGuardImpl {
                 if ipv4.get_version() != 4 {
                     return Some(packet);
                 }
+                let destination = ipv4.get_destination();
 
-                let Some(entry) = self
-                    .wg_peer_ip_table
-                    .get(&ipv4.get_destination())
-                    .map(|f| f.clone())
-                else {
+                let Some(entry) = self.wg_peer_ip_table.get(&destination).map(|f| f.clone()) else {
                     return Some(packet);
                 };
 
                 tracing::trace!(?ipv4, "Packet filter for vpn portal");
 
                 let payload_offset = packet.packet_type().get_packet_offsets().payload_offset;
-                let packet = ZCPacket::new_from_buf(
-                    packet.inner().split_off(payload_offset),
-                    ZCPacketType::WG,
-                );
+                let mut inner = packet.inner().split_off(payload_offset);
+                if let Err(err) =
+                    rewrite_ipv4_destination(&mut inner, entry.assigned_ip, entry.tunnel_ip)
+                {
+                    tracing::warn!(
+                        client = %entry.name,
+                        assigned_ip = %entry.assigned_ip,
+                        tunnel_ip = %entry.tunnel_ip,
+                        ?err,
+                        "Dropping peer packet unsupported by VPN portal NAT"
+                    );
+                    return None;
+                }
+
+                let packet = ZCPacket::new_from_buf(inner, ZCPacketType::WG);
 
                 match entry.sink.try_send(packet) {
                     Ok(_) => {
@@ -408,16 +735,15 @@ impl WireGuardImpl {
                     break;
                 };
 
-                let (client_name, client_pubkey) =
-                    if let Some(data) = t.get_associate_data() {
-                        if let Some(info) = data.downcast_ref::<WgClientInfo>() {
-                            (Some(info.name.clone()), Some(info.pubkey.to_vec()))
-                        } else {
-                            (None, None)
-                        }
+                let (client_name, client_pubkey) = if let Some(data) = t.get_associate_data() {
+                    if let Some(info) = data.downcast_ref::<WgClientInfo>() {
+                        (Some(info.name.clone()), Some(info.pubkey.to_vec()))
                     } else {
                         (None, None)
-                    };
+                    }
+                } else {
+                    (None, None)
+                };
 
                 tasks.lock().unwrap().spawn(Self::handle_incoming_conn(
                     t,
@@ -437,19 +763,18 @@ impl WireGuardImpl {
         Ok(())
     }
 
-    async fn run_virtual_peer_refresh(
-        peer_mgr: Arc<PeerManager>,
-        wg_peer_ip_table: WgPeerIpTable,
-    ) {
+    async fn run_virtual_peer_refresh(peer_mgr: Arc<PeerManager>, wg_peer_ip_table: WgPeerIpTable) {
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(30));
         loop {
             interval.tick().await;
-            for entry in wg_peer_ip_table.iter() {
-                let virtual_peer_id = entry.value().virtual_peer_id;
-                if virtual_peer_id != 0 {
-                    peer_mgr.refresh_virtual_peer(virtual_peer_id);
-                }
-            }
+            let virtual_peer_ids: Vec<_> = wg_peer_ip_table
+                .iter()
+                .filter_map(|entry| {
+                    let virtual_peer_id = entry.value().virtual_peer_id;
+                    (virtual_peer_id != 0).then_some(virtual_peer_id)
+                })
+                .collect();
+            peer_mgr.refresh_virtual_peers(virtual_peer_ids);
         }
     }
 
@@ -474,10 +799,10 @@ impl WireGuardImpl {
         if self.server_config.is_some() {
             let peer_mgr = self.peer_mgr.clone();
             let wg_peer_ip_table = self.wg_peer_ip_table.clone();
-            self.tasks.lock().unwrap().spawn(Self::run_virtual_peer_refresh(
-                peer_mgr,
-                wg_peer_ip_table,
-            ));
+            self.tasks
+                .lock()
+                .unwrap()
+                .spawn(Self::run_virtual_peer_refresh(peer_mgr, wg_peer_ip_table));
         }
 
         join_joinset_background(self.tasks.clone(), "wireguard".to_string());
@@ -546,15 +871,33 @@ impl VpnPortal for WireGuard {
             // Multi-client mode: generate config for each registered client
             let mut output = String::new();
             for client in &vpn_cfg.clients {
+                let config = self
+                    .inner
+                    .as_ref()
+                    .unwrap()
+                    .client_configs
+                    .get(&client.name)
+                    .cloned();
+                let Some(config) = config else {
+                    output.push_str(&format!(
+                        "\n# Client: {}\n# ERROR: no available WireGuard client address\n",
+                        client.name
+                    ));
+                    continue;
+                };
+                let Some(tunnel_ip) = config.tunnel_ip.or(config.assigned_ip) else {
+                    output.push_str(&format!(
+                        "\n# Client: {}\n# ERROR: no available WireGuard client address\n",
+                        client.name
+                    ));
+                    continue;
+                };
+                let address = tunnel_ip.to_string() + "/32";
                 output.push_str(&format!("\n# Client: {}\n", client.name));
-                let assigned_ip = client
-                    .assigned_ip
-                    .map(|ip| ip.to_string() + "/32")
-                    .unwrap_or_else(|| "auto".to_string());
                 output.push_str(&format!(
                     r#"[Interface]
 PrivateKey = <your private key>
-Address = {assigned_ip}
+Address = {address}
 
 [Peer]
 PublicKey = {my_public_key}
@@ -603,14 +946,15 @@ PersistentKeepalive = 25
                     .map(|x| {
                         let entry = x.value();
                         format!(
-                            "{}: {} (ip: {})",
+                            "{}: {} (ip: {}, tunnel_ip: {})",
                             entry.name,
                             entry
                                 .endpoint_addr
                                 .as_ref()
                                 .map(|x| x.to_string())
                                 .unwrap_or_default(),
-                            entry.assigned_ip
+                            entry.assigned_ip,
+                            entry.tunnel_ip
                         )
                     })
                     .collect()
@@ -623,6 +967,88 @@ PersistentKeepalive = 25
 mod tests {
     use super::*;
     use crate::common::config::ConfigLoader;
+    use pnet::packet::icmp::{self, MutableIcmpPacket};
+    use pnet::packet::tcp::TcpPacket;
+    use pnet::packet::udp::UdpPacket;
+
+    fn build_tcp_packet(src: Ipv4Addr, dst: Ipv4Addr) -> BytesMut {
+        let mut packet = BytesMut::new();
+        packet.resize(44, 0);
+        let mut ipv4_packet = MutableIpv4Packet::new(&mut packet).unwrap();
+        ipv4_packet.set_version(4);
+        ipv4_packet.set_header_length(5);
+        ipv4_packet.set_total_length(44);
+        ipv4_packet.set_ttl(64);
+        ipv4_packet.set_next_level_protocol(IpNextHeaderProtocols::Tcp);
+        ipv4_packet.set_source(src);
+        ipv4_packet.set_destination(dst);
+
+        let mut tcp_packet = MutableTcpPacket::new(ipv4_packet.payload_mut()).unwrap();
+        tcp_packet.set_source(12345);
+        tcp_packet.set_destination(80);
+        tcp_packet.set_data_offset(5);
+        tcp_packet.payload_mut().copy_from_slice(&[1, 2, 3, 4]);
+        tcp_packet.set_checksum(tcp::ipv4_checksum(&tcp_packet.to_immutable(), &src, &dst));
+        drop(tcp_packet);
+
+        update_ipv4_checksum(&mut ipv4_packet);
+        packet
+    }
+
+    fn build_udp_packet(src: Ipv4Addr, dst: Ipv4Addr, checksum_enabled: bool) -> BytesMut {
+        let mut packet = BytesMut::new();
+        packet.resize(32, 0);
+        let mut ipv4_packet = MutableIpv4Packet::new(&mut packet).unwrap();
+        ipv4_packet.set_version(4);
+        ipv4_packet.set_header_length(5);
+        ipv4_packet.set_total_length(32);
+        ipv4_packet.set_ttl(64);
+        ipv4_packet.set_next_level_protocol(IpNextHeaderProtocols::Udp);
+        ipv4_packet.set_source(src);
+        ipv4_packet.set_destination(dst);
+
+        let mut udp_packet = MutableUdpPacket::new(ipv4_packet.payload_mut()).unwrap();
+        udp_packet.set_source(12345);
+        udp_packet.set_destination(53);
+        udp_packet.set_length(12);
+        udp_packet.payload_mut().copy_from_slice(&[1, 2, 3, 4]);
+        if checksum_enabled {
+            udp_packet.set_checksum(udp::ipv4_checksum(&udp_packet.to_immutable(), &src, &dst));
+        }
+        drop(udp_packet);
+
+        update_ipv4_checksum(&mut ipv4_packet);
+        packet
+    }
+
+    fn build_icmp_packet(src: Ipv4Addr, dst: Ipv4Addr, icmp_type: icmp::IcmpType) -> BytesMut {
+        let mut packet = BytesMut::new();
+        packet.resize(32, 0);
+        let mut ipv4_packet = MutableIpv4Packet::new(&mut packet).unwrap();
+        ipv4_packet.set_version(4);
+        ipv4_packet.set_header_length(5);
+        ipv4_packet.set_total_length(32);
+        ipv4_packet.set_ttl(64);
+        ipv4_packet.set_next_level_protocol(IpNextHeaderProtocols::Icmp);
+        ipv4_packet.set_source(src);
+        ipv4_packet.set_destination(dst);
+
+        let mut icmp_packet = MutableIcmpPacket::new(ipv4_packet.payload_mut()).unwrap();
+        icmp_packet.set_icmp_type(icmp_type);
+        icmp_packet
+            .payload_mut()
+            .copy_from_slice(&[0, 0, 0, 0, 1, 2, 3, 4]);
+        icmp_packet.set_checksum(icmp::checksum(&icmp_packet.to_immutable()));
+        drop(icmp_packet);
+
+        update_ipv4_checksum(&mut ipv4_packet);
+        packet
+    }
+
+    fn assert_ipv4_checksum(packet: &BytesMut) {
+        let ipv4_packet = Ipv4Packet::new(packet).unwrap();
+        assert_eq!(ipv4_packet.get_checksum(), ipv4::checksum(&ipv4_packet));
+    }
 
     #[test]
     fn test_ip_allocator_basic() {
@@ -660,9 +1086,35 @@ mod tests {
         let preferred = "10.14.14.100".parse().unwrap();
         allocator.allocate("client1", Some(preferred)).unwrap();
 
-        // preferred ip already taken, should allocate another one
-        let ip2 = allocator.allocate("client2", Some(preferred)).unwrap();
-        assert_ne!(ip2, preferred);
+        // preferred ip already taken, should reject the claim
+        assert_eq!(allocator.allocate("client2", Some(preferred)), None);
+    }
+
+    #[test]
+    fn test_ip_allocator_preferred_claim_is_atomic() {
+        use std::sync::Barrier;
+
+        let cidr = "10.14.14.0/30".parse().unwrap();
+        let allocator = Arc::new(IpAllocator::new(cidr));
+        let barrier = Arc::new(Barrier::new(16));
+        let preferred = "10.14.14.1".parse().unwrap();
+
+        let handles = (0..16)
+            .map(|idx| {
+                let allocator = allocator.clone();
+                let barrier = barrier.clone();
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    allocator.allocate(&format!("client{idx}"), Some(preferred))
+                })
+            })
+            .collect::<Vec<_>>();
+
+        let allocated = handles
+            .into_iter()
+            .filter_map(|handle| handle.join().unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(allocated, vec![preferred]);
     }
 
     #[test]
@@ -674,6 +1126,154 @@ mod tests {
 
         let ip = allocator.allocate("client1", None).unwrap();
         assert_ne!(ip, server_ip);
+    }
+
+    #[test]
+    fn test_build_client_config_map_assigns_missing_ips() {
+        let cidr = "10.14.14.0/24".parse().unwrap();
+        let clients = vec![
+            VpnPortalClientConfig {
+                name: "client1".to_string(),
+                client_public_key: "key1".to_string(),
+                assigned_ip: None,
+                tunnel_ip: None,
+            },
+            VpnPortalClientConfig {
+                name: "client2".to_string(),
+                client_public_key: "key2".to_string(),
+                assigned_ip: Some("10.14.14.10".parse().unwrap()),
+                tunnel_ip: None,
+            },
+        ];
+
+        let configs = build_client_config_map(&clients, cidr, Some("10.14.14.1".parse().unwrap()));
+
+        assert_eq!(
+            configs.get("client1").and_then(|c| c.assigned_ip),
+            Some("10.14.14.2".parse().unwrap())
+        );
+        assert_eq!(
+            configs.get("client2").and_then(|c| c.assigned_ip),
+            Some("10.14.14.10".parse().unwrap())
+        );
+        assert_eq!(
+            configs.get("client1").and_then(|c| c.tunnel_ip),
+            Some("10.14.14.2".parse().unwrap())
+        );
+        assert_eq!(
+            configs.get("client2").and_then(|c| c.tunnel_ip),
+            Some("10.14.14.10".parse().unwrap())
+        );
+    }
+
+    #[test]
+    fn test_build_client_config_map_preserves_tunnel_ip() {
+        let cidr = "10.14.14.0/24".parse().unwrap();
+        let clients = vec![VpnPortalClientConfig {
+            name: "client1".to_string(),
+            client_public_key: "key1".to_string(),
+            assigned_ip: Some("10.144.144.10".parse().unwrap()),
+            tunnel_ip: Some("10.14.14.10".parse().unwrap()),
+        }];
+
+        let configs = build_client_config_map(&clients, cidr, Some("10.14.14.1".parse().unwrap()));
+
+        assert_eq!(
+            configs.get("client1").and_then(|c| c.assigned_ip),
+            Some("10.144.144.10".parse().unwrap())
+        );
+        assert_eq!(
+            configs.get("client1").and_then(|c| c.tunnel_ip),
+            Some("10.14.14.10".parse().unwrap())
+        );
+    }
+
+    #[test]
+    fn test_rewrite_ipv4_source_updates_tcp_checksum() {
+        let tunnel_ip = "10.14.14.10".parse().unwrap();
+        let assigned_ip = "10.144.144.10".parse().unwrap();
+        let destination = "10.1.1.1".parse().unwrap();
+        let mut packet = build_tcp_packet(tunnel_ip, destination);
+
+        rewrite_ipv4_source(&mut packet, tunnel_ip, assigned_ip).unwrap();
+
+        let ipv4_packet = Ipv4Packet::new(&packet).unwrap();
+        assert_eq!(ipv4_packet.get_source(), assigned_ip);
+        assert_eq!(ipv4_packet.get_destination(), destination);
+        assert_ipv4_checksum(&packet);
+        let tcp_packet = TcpPacket::new(ipv4_packet.payload()).unwrap();
+        assert_eq!(
+            tcp_packet.get_checksum(),
+            tcp::ipv4_checksum(&tcp_packet, &assigned_ip, &destination)
+        );
+    }
+
+    #[test]
+    fn test_rewrite_ipv4_destination_updates_udp_checksum() {
+        let source = "10.1.1.1".parse().unwrap();
+        let assigned_ip = "10.144.144.10".parse().unwrap();
+        let tunnel_ip = "10.14.14.10".parse().unwrap();
+        let mut packet = build_udp_packet(source, assigned_ip, true);
+
+        rewrite_ipv4_destination(&mut packet, assigned_ip, tunnel_ip).unwrap();
+
+        let ipv4_packet = Ipv4Packet::new(&packet).unwrap();
+        assert_eq!(ipv4_packet.get_source(), source);
+        assert_eq!(ipv4_packet.get_destination(), tunnel_ip);
+        assert_ipv4_checksum(&packet);
+        let udp_packet = UdpPacket::new(ipv4_packet.payload()).unwrap();
+        assert_eq!(
+            udp_packet.get_checksum(),
+            udp::ipv4_checksum(&udp_packet, &source, &tunnel_ip)
+        );
+    }
+
+    #[test]
+    fn test_rewrite_ipv4_destination_preserves_zero_udp_checksum() {
+        let source = "10.1.1.1".parse().unwrap();
+        let assigned_ip = "10.144.144.10".parse().unwrap();
+        let tunnel_ip = "10.14.14.10".parse().unwrap();
+        let mut packet = build_udp_packet(source, assigned_ip, false);
+
+        rewrite_ipv4_destination(&mut packet, assigned_ip, tunnel_ip).unwrap();
+
+        let ipv4_packet = Ipv4Packet::new(&packet).unwrap();
+        let udp_packet = UdpPacket::new(ipv4_packet.payload()).unwrap();
+        assert_eq!(udp_packet.get_checksum(), 0);
+    }
+
+    #[test]
+    fn test_rewrite_ipv4_source_accepts_icmp_echo() {
+        let tunnel_ip = "10.14.14.10".parse().unwrap();
+        let assigned_ip = "10.144.144.10".parse().unwrap();
+        let destination = "10.1.1.1".parse().unwrap();
+        let mut packet = build_icmp_packet(tunnel_ip, destination, IcmpTypes::EchoRequest);
+        let original_icmp_checksum = IcmpPacket::new(Ipv4Packet::new(&packet).unwrap().payload())
+            .unwrap()
+            .get_checksum();
+
+        rewrite_ipv4_source(&mut packet, tunnel_ip, assigned_ip).unwrap();
+
+        let ipv4_packet = Ipv4Packet::new(&packet).unwrap();
+        let icmp_packet = IcmpPacket::new(ipv4_packet.payload()).unwrap();
+        assert_eq!(ipv4_packet.get_source(), assigned_ip);
+        assert_ipv4_checksum(&packet);
+        assert_eq!(icmp_packet.get_checksum(), original_icmp_checksum);
+    }
+
+    #[test]
+    fn test_rewrite_ipv4_rejects_non_first_fragment() {
+        let tunnel_ip = "10.14.14.10".parse().unwrap();
+        let assigned_ip = "10.144.144.10".parse().unwrap();
+        let destination = "10.1.1.1".parse().unwrap();
+        let mut packet = build_tcp_packet(tunnel_ip, destination);
+        let mut ipv4_packet = MutableIpv4Packet::new(&mut packet).unwrap();
+        ipv4_packet.set_fragment_offset(1);
+
+        assert_eq!(
+            rewrite_ipv4_source(&mut packet, tunnel_ip, assigned_ip),
+            Err(Ipv4NatError::UnsupportedFragment)
+        );
     }
 
     #[test]
@@ -733,6 +1333,9 @@ mod tests {
         let vpn_cfg = loader.get_vpn_portal_config().unwrap();
         assert_eq!(vpn_cfg.clients.len(), 2);
         assert_eq!(vpn_cfg.clients[0].name, "client1");
-        assert_eq!(vpn_cfg.clients[1].assigned_ip, Some("10.14.14.10".parse().unwrap()));
+        assert_eq!(
+            vpn_cfg.clients[1].assigned_ip,
+            Some("10.14.14.10".parse().unwrap())
+        );
     }
 }

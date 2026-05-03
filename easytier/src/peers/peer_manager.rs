@@ -1001,7 +1001,9 @@ impl PeerManager {
                 let to_peer_id = hdr.to_peer_id.get();
                 let packet_type = hdr.packet_type;
                 let is_encrypted = hdr.is_encrypted();
-                if to_peer_id != my_peer_id {
+                let is_local_destination =
+                    to_peer_id == my_peer_id || route.is_local_virtual_peer(to_peer_id).await;
+                if !is_local_destination {
                     if disable_relay_data && is_relay_data_packet {
                         tracing::debug!(
                             ?from_peer_id,
@@ -1425,6 +1427,16 @@ impl PeerManager {
         }
     }
 
+    pub fn refresh_virtual_peers<I>(&self, peer_ids: I) -> bool
+    where
+        I: IntoIterator<Item = PeerId>,
+    {
+        match &self.route_algo_inst {
+            RouteAlgoInst::Ospf(route) => route.refresh_virtual_peers(peer_ids),
+            RouteAlgoInst::None => false,
+        }
+    }
+
     async fn run_nic_packet_process_pipeline(&self, data: &mut ZCPacket) -> bool {
         // Enforce ACL for outbound (NIC-originated) packets. If ACL denies, stop processing.
         if !self.global_ctx.get_acl_filter().process_packet_with_acl(
@@ -1524,6 +1536,8 @@ impl PeerManager {
         let msg_len = msg.buf_len() as u64;
         let send_result = if peers.has_peer(dst_peer_id) {
             peers.send_msg_directly(msg, dst_peer_id).await
+        } else if peers.is_local_virtual_peer(dst_peer_id).await {
+            peers.send_msg_directly(msg, peers.my_peer_id()).await
         } else if foreign_network_client.has_next_hop(dst_peer_id) {
             foreign_network_client.send_msg(msg, dst_peer_id).await
         } else if let Some(gateway) = peers.get_gateway_peer_id(dst_peer_id, policy.clone()).await {

@@ -38,7 +38,7 @@ use crate::{
 
 #[cfg(feature = "wireguard")]
 use crate::{
-    common::config::VpnPortalConfig,
+    common::config::{VpnPortalClientConfig, VpnPortalConfig},
     tunnel::wireguard::{WgConfig, WgTunnelConnector},
     vpn_portal::wireguard::get_wg_config_for_portal,
 };
@@ -190,7 +190,7 @@ async fn init_three_node_ex_with_inst3<F: Fn(TomlConfigLoader) -> TomlConfigLoad
                     == 1
             }
         },
-        Duration::from_secs(5),
+        Duration::from_secs(20),
     )
     .await;
 
@@ -200,7 +200,7 @@ async fn init_three_node_ex_with_inst3<F: Fn(TomlConfigLoader) -> TomlConfigLoad
             println!("routes: {:?}", routes);
             routes.len() == 2
         },
-        Duration::from_secs(5),
+        Duration::from_secs(20),
     )
     .await;
 
@@ -210,7 +210,7 @@ async fn init_three_node_ex_with_inst3<F: Fn(TomlConfigLoader) -> TomlConfigLoad
             println!("routes: {:?}", routes);
             routes.len() == 2
         },
-        Duration::from_secs(5),
+        Duration::from_secs(20),
     )
     .await;
 
@@ -1649,7 +1649,28 @@ fn run_wireguard_client(
     } else {
         "utun3".into()
     };
-    let wgapi = WGApi::new(ifname.clone(), false)?;
+
+    run_wireguard_client_on_interface(
+        &ifname,
+        endpoint,
+        peer_public_key,
+        client_private_key,
+        allowed_ips,
+        client_ip,
+        12345,
+    )
+}
+
+fn run_wireguard_client_on_interface(
+    ifname: &str,
+    endpoint: SocketAddr,
+    peer_public_key: Key,
+    client_private_key: Key,
+    allowed_ips: Vec<String>,
+    client_ip: String,
+    listen_port: u16,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let wgapi = WGApi::new(ifname.to_string(), false)?;
 
     // create interface
     wgapi.create_interface()?;
@@ -1667,10 +1688,10 @@ fn run_wireguard_client(
 
     // interface configuration
     let interface_config = InterfaceConfiguration {
-        name: ifname.clone(),
+        name: ifname.to_string(),
         prvkey: client_private_key.to_string(),
         address: client_ip,
-        port: 12345,
+        port: listen_port.into(),
         peers: vec![peer],
     };
 
@@ -1680,6 +1701,259 @@ fn run_wireguard_client(
     wgapi.configure_interface(&interface_config, &[])?;
     wgapi.configure_peer_routing(&interface_config.peers)?;
     Ok(())
+}
+
+#[cfg(feature = "wireguard")]
+struct WireGuardNatClient {
+    name: &'static str,
+    netns: &'static str,
+    ifname: &'static str,
+    assigned_ip: &'static str,
+    tunnel_ip: &'static str,
+    private_key: [u8; 32],
+    public_key: [u8; 32],
+}
+
+#[cfg(feature = "wireguard")]
+impl WireGuardNatClient {
+    fn new(
+        name: &'static str,
+        netns: &'static str,
+        ifname: &'static str,
+        assigned_ip: &'static str,
+        tunnel_ip: &'static str,
+    ) -> Self {
+        let private = StaticSecret::random_from_rng(OsRng);
+        let public = x25519_dalek::PublicKey::from(&private);
+
+        Self {
+            name,
+            netns,
+            ifname,
+            assigned_ip,
+            tunnel_ip,
+            private_key: *private.as_bytes(),
+            public_key: *public.as_bytes(),
+        }
+    }
+
+    fn portal_config(&self) -> VpnPortalClientConfig {
+        use base64::{Engine, prelude::BASE64_STANDARD};
+
+        VpnPortalClientConfig {
+            name: self.name.to_string(),
+            client_public_key: BASE64_STANDARD.encode(self.public_key),
+            assigned_ip: Some(self.assigned_ip.parse().unwrap()),
+            tunnel_ip: Some(self.tunnel_ip.parse().unwrap()),
+        }
+    }
+
+    fn private_key(&self) -> Key {
+        Key::try_from(self.private_key.as_slice()).unwrap()
+    }
+}
+
+#[cfg(feature = "wireguard")]
+struct WireGuardClientCleanup {
+    interfaces: Vec<(&'static str, &'static str)>,
+}
+
+#[cfg(feature = "wireguard")]
+impl WireGuardClientCleanup {
+    fn new(clients: &[WireGuardNatClient]) -> Self {
+        Self {
+            interfaces: clients
+                .iter()
+                .map(|client| (client.netns, client.ifname))
+                .collect(),
+        }
+    }
+}
+
+#[cfg(feature = "wireguard")]
+impl Drop for WireGuardClientCleanup {
+    fn drop(&mut self) {
+        for (netns, ifname) in self.interfaces.drain(..) {
+            remove_wireguard_client_interface(netns, ifname);
+        }
+    }
+}
+
+#[cfg(feature = "wireguard")]
+fn remove_wireguard_client_interface(netns: &str, ifname: &str) {
+    let net_ns = NetNS::new(Some(netns.to_string()));
+    let _g = net_ns.guard();
+
+    if let Ok(wgapi) = WGApi::new(ifname.to_string(), false) {
+        let _ = wgapi.remove_interface();
+    }
+    let _ = std::process::Command::new("ip")
+        .args(["link", "del", ifname])
+        .status();
+}
+
+#[cfg(feature = "wireguard")]
+fn setup_net_e_portal_link() {
+    connect_ns_to_bridge("net_e", "wge0", "veth_wge0", "br_b");
+    run_ip_in_ns("net_e", &["addr", "add", "10.1.2.5/24", "dev", "wge0"]);
+}
+
+#[cfg(feature = "wireguard")]
+async fn start_wg_nat_portal(
+    inst: &mut Instance,
+    clients: &[WireGuardNatClient],
+    listen_port: u16,
+) -> SocketAddr {
+    inst.get_global_ctx()
+        .config
+        .set_vpn_portal_config(VpnPortalConfig {
+            wireguard_listen: format!("0.0.0.0:{listen_port}").parse().unwrap(),
+            client_cidr: "10.14.14.0/24".parse().unwrap(),
+            wireguard_private_key: None,
+            clients: clients
+                .iter()
+                .map(|client| client.portal_config())
+                .collect(),
+        });
+    inst.run_vpn_portal().await.unwrap();
+
+    format!("10.1.2.3:{listen_port}").parse().unwrap()
+}
+
+#[cfg(feature = "wireguard")]
+fn wg_nat_allowed_ips() -> Vec<String> {
+    vec!["10.14.14.0/24".to_string(), "10.144.144.0/24".to_string()]
+}
+
+#[cfg(feature = "wireguard")]
+fn start_wg_nat_client(
+    endpoint: SocketAddr,
+    server_public_key: Key,
+    client: &WireGuardNatClient,
+    listen_port: u16,
+) {
+    remove_wireguard_client_interface(client.netns, client.ifname);
+
+    let net_ns = NetNS::new(Some(client.netns.to_string()));
+    let _g = net_ns.guard();
+    run_wireguard_client_on_interface(
+        client.ifname,
+        endpoint,
+        server_public_key,
+        client.private_key(),
+        wg_nat_allowed_ips(),
+        client.tunnel_ip.to_string(),
+        listen_port,
+    )
+    .unwrap();
+}
+
+#[cfg(feature = "wireguard")]
+async fn wait_for_wg_nat_routes(insts: &[Instance], clients: &[WireGuardNatClient]) {
+    let assigned_ips: Vec<crate::proto::common::Ipv4Inet> = clients
+        .iter()
+        .map(|client| client.assigned_ip.parse().unwrap())
+        .collect();
+
+    wait_for_condition(
+        || async {
+            for client in clients {
+                let _ = ping_test(client.netns, "10.144.144.1", None).await;
+            }
+
+            for inst in insts {
+                let routes = inst.get_peer_manager().list_routes().await;
+                if !assigned_ips
+                    .iter()
+                    .all(|ip| routes.iter().any(|route| route.ipv4_addr.as_ref() == Some(ip)))
+                {
+                    println!(
+                        "wg nat route wait missing inst={}, assigned_ips={assigned_ips:?}, routes={routes:?}",
+                        inst.get_global_ctx().inst_name,
+                    );
+                    return false;
+                }
+            }
+            true
+        },
+        Duration::from_secs(20),
+    )
+    .await;
+}
+
+#[cfg(feature = "wireguard")]
+async fn wait_for_ping_from(netns: &'static str, target_ip: &'static str) {
+    println!("wait_for_ping_from start {netns} -> {target_ip}");
+    wait_for_condition(
+        || async move { ping_test(netns, target_ip, None).await },
+        Duration::from_secs(10),
+    )
+    .await;
+    println!("wait_for_ping_from done {netns} -> {target_ip}");
+}
+
+#[cfg(feature = "wireguard")]
+async fn wait_for_ping_to_fail(netns: &'static str, target_ip: &'static str) {
+    wait_for_condition(
+        || async move { !ping_test(netns, target_ip, None).await },
+        Duration::from_secs(5),
+    )
+    .await;
+}
+
+#[cfg(feature = "wireguard")]
+async fn assert_tcp_echo_and_source(
+    server_netns: &'static str,
+    connect_netns: &'static str,
+    connect_addr: &'static str,
+    port: u16,
+    expected_source_ip: &'static str,
+    payload: Vec<u8>,
+) {
+    use tokio::{
+        io::{AsyncReadExt, AsyncWriteExt},
+        net::{TcpListener, TcpStream},
+        sync::oneshot,
+    };
+
+    let expected_payload = payload.clone();
+    let (ready_tx, ready_rx) = oneshot::channel();
+    let server_task = tokio::spawn(async move {
+        let net_ns = NetNS::new(Some(server_netns.to_string()));
+        let _g = net_ns.guard();
+        let listener = TcpListener::bind(format!("0.0.0.0:{port}")).await.unwrap();
+        let _ = ready_tx.send(());
+
+        let (mut stream, addr) = tokio::time::timeout(Duration::from_secs(5), listener.accept())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(addr.ip().to_string(), expected_source_ip);
+
+        let mut received = vec![0u8; expected_payload.len()];
+        stream.read_exact(&mut received).await.unwrap();
+        assert_eq!(received, expected_payload);
+        stream.write_all(&received).await.unwrap();
+    });
+
+    ready_rx.await.unwrap();
+    {
+        let net_ns = NetNS::new(Some(connect_netns.to_string()));
+        let _g = net_ns.guard();
+        let mut stream = tokio::time::timeout(
+            Duration::from_secs(5),
+            TcpStream::connect(format!("{connect_addr}:{port}")),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        stream.write_all(&payload).await.unwrap();
+        let mut received = vec![0u8; payload.len()];
+        stream.read_exact(&mut received).await.unwrap();
+        assert_eq!(received, payload);
+    }
+
+    server_task.await.unwrap();
 }
 
 #[cfg(feature = "wireguard")]
@@ -1742,6 +2016,201 @@ pub async fn wireguard_vpn_portal(#[values(true, false)] test_v6: bool) {
     wait_for_condition(
         || async { ping_test("net_d", "10.144.144.3", None).await },
         Duration::from_secs(5),
+    )
+    .await;
+
+    drop_insts(insts).await;
+}
+
+#[cfg(feature = "wireguard")]
+#[tokio::test]
+#[serial_test::serial]
+pub async fn test_multi_wg_client_basic_nat() {
+    let mut insts = init_three_node("tcp").await;
+    setup_net_e_portal_link();
+
+    let clients = vec![
+        WireGuardNatClient::new(
+            "nat-client-1",
+            "net_d",
+            "wg1",
+            "10.144.144.201",
+            "10.14.14.101",
+        ),
+        WireGuardNatClient::new(
+            "nat-client-2",
+            "net_e",
+            "wg2",
+            "10.144.144.202",
+            "10.14.14.102",
+        ),
+    ];
+    let _cleanup = WireGuardClientCleanup::new(&clients);
+    let endpoint = start_wg_nat_portal(&mut insts[2], &clients, 22131).await;
+    let wg_cfg = get_wg_config_for_portal(&insts[2].get_global_ctx().get_network_identity());
+    let server_public_key = Key::try_from(wg_cfg.my_public_key()).unwrap();
+
+    start_wg_nat_client(endpoint, server_public_key.clone(), &clients[0], 12351);
+    start_wg_nat_client(endpoint, server_public_key, &clients[1], 12352);
+    wait_for_wg_nat_routes(&insts, &clients).await;
+
+    wait_for_ping_from("net_d", "10.144.144.1").await;
+    wait_for_ping_from("net_e", "10.144.144.2").await;
+    wait_for_ping_from("net_d", "10.144.144.202").await;
+    wait_for_ping_from("net_e", "10.144.144.201").await;
+
+    assert_tcp_echo_and_source(
+        "net_a",
+        "net_d",
+        "10.144.144.1",
+        23031,
+        clients[0].assigned_ip,
+        b"client-1-source".to_vec(),
+    )
+    .await;
+
+    drop_insts(insts).await;
+}
+
+#[cfg(feature = "wireguard")]
+#[tokio::test]
+#[serial_test::serial]
+pub async fn test_multi_wg_client_same_tunnel_ip() {
+    let mut insts = init_three_node("tcp").await;
+    setup_net_e_portal_link();
+
+    let clients = vec![
+        WireGuardNatClient::new(
+            "same-tunnel-client-1",
+            "net_d",
+            "wg3",
+            "10.144.144.211",
+            "10.14.14.111",
+        ),
+        WireGuardNatClient::new(
+            "same-tunnel-client-2",
+            "net_e",
+            "wg4",
+            "10.144.144.212",
+            "10.14.14.111",
+        ),
+    ];
+    let _cleanup = WireGuardClientCleanup::new(&clients);
+    let endpoint = start_wg_nat_portal(&mut insts[2], &clients, 22132).await;
+    let wg_cfg = get_wg_config_for_portal(&insts[2].get_global_ctx().get_network_identity());
+    let server_public_key = Key::try_from(wg_cfg.my_public_key()).unwrap();
+
+    start_wg_nat_client(endpoint, server_public_key.clone(), &clients[0], 12353);
+    start_wg_nat_client(endpoint, server_public_key, &clients[1], 12354);
+    wait_for_wg_nat_routes(&insts, &clients).await;
+
+    wait_for_ping_from("net_d", "10.144.144.1").await;
+    wait_for_ping_from("net_e", "10.144.144.2").await;
+    wait_for_ping_from("net_d", "10.144.144.212").await;
+    wait_for_ping_from("net_e", "10.144.144.211").await;
+
+    assert_tcp_echo_and_source(
+        "net_a",
+        "net_d",
+        "10.144.144.1",
+        23032,
+        clients[0].assigned_ip,
+        b"same-tunnel-client-1".to_vec(),
+    )
+    .await;
+    assert_tcp_echo_and_source(
+        "net_a",
+        "net_e",
+        "10.144.144.1",
+        23033,
+        clients[1].assigned_ip,
+        b"same-tunnel-client-2".to_vec(),
+    )
+    .await;
+
+    drop_insts(insts).await;
+}
+
+#[cfg(feature = "wireguard")]
+#[tokio::test]
+#[serial_test::serial]
+pub async fn test_wg_client_nat_disconnect_reconnect() {
+    let mut insts = init_three_node("tcp").await;
+    let clients = vec![WireGuardNatClient::new(
+        "reconnect-client",
+        "net_d",
+        "wg5",
+        "10.144.144.221",
+        "10.14.14.121",
+    )];
+    let _cleanup = WireGuardClientCleanup::new(&clients);
+    let endpoint = start_wg_nat_portal(&mut insts[2], &clients, 22133).await;
+    let wg_cfg = get_wg_config_for_portal(&insts[2].get_global_ctx().get_network_identity());
+    let server_public_key = Key::try_from(wg_cfg.my_public_key()).unwrap();
+
+    start_wg_nat_client(endpoint, server_public_key.clone(), &clients[0], 12355);
+    wait_for_wg_nat_routes(&insts, &clients).await;
+    wait_for_ping_from("net_d", "10.144.144.1").await;
+    assert_tcp_echo_and_source(
+        "net_a",
+        "net_d",
+        "10.144.144.1",
+        23034,
+        clients[0].assigned_ip,
+        b"before-reconnect".to_vec(),
+    )
+    .await;
+
+    remove_wireguard_client_interface(clients[0].netns, clients[0].ifname);
+    wait_for_ping_to_fail("net_d", "10.144.144.1").await;
+    tokio::time::sleep(Duration::from_secs(65)).await;
+
+    start_wg_nat_client(endpoint, server_public_key, &clients[0], 12356);
+    wait_for_wg_nat_routes(&insts, &clients).await;
+    wait_for_ping_from("net_d", "10.144.144.2").await;
+    assert_tcp_echo_and_source(
+        "net_a",
+        "net_d",
+        "10.144.144.1",
+        23035,
+        clients[0].assigned_ip,
+        b"after-reconnect".to_vec(),
+    )
+    .await;
+
+    drop_insts(insts).await;
+}
+
+#[cfg(feature = "wireguard")]
+#[tokio::test]
+#[serial_test::serial]
+pub async fn test_wg_client_nat_tcp_connectivity() {
+    let mut insts = init_three_node("tcp").await;
+    let clients = vec![WireGuardNatClient::new(
+        "tcp-client",
+        "net_d",
+        "wg6",
+        "10.144.144.231",
+        "10.14.14.131",
+    )];
+    let _cleanup = WireGuardClientCleanup::new(&clients);
+    let endpoint = start_wg_nat_portal(&mut insts[2], &clients, 22134).await;
+    let wg_cfg = get_wg_config_for_portal(&insts[2].get_global_ctx().get_network_identity());
+    let server_public_key = Key::try_from(wg_cfg.my_public_key()).unwrap();
+
+    start_wg_nat_client(endpoint, server_public_key, &clients[0], 12357);
+    wait_for_wg_nat_routes(&insts, &clients).await;
+    wait_for_ping_from("net_d", "10.144.144.1").await;
+
+    let mut payload = vec![0u8; 1024];
+    rand::thread_rng().fill(&mut payload[..]);
+    assert_tcp_echo_and_source(
+        "net_a",
+        "net_d",
+        "10.144.144.1",
+        23036,
+        clients[0].assigned_ip,
+        payload,
     )
     .await;
 

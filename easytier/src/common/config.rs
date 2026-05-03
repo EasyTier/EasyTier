@@ -454,6 +454,8 @@ pub struct VpnPortalClientConfig {
     pub client_public_key: String, // base64 encoded x25519 public key
     #[serde(default)]
     pub assigned_ip: Option<Ipv4Addr>,
+    #[serde(default)]
+    pub tunnel_ip: Option<Ipv4Addr>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
@@ -911,9 +913,15 @@ impl ConfigLoader for TomlConfigLoader {
 
     fn add_vpn_portal_client(&self, client: VpnPortalClientConfig) -> Result<(), anyhow::Error> {
         let mut locked_config = self.config.lock().unwrap();
-        let portal = locked_config.vpn_portal_config.as_mut().ok_or_else(|| anyhow::anyhow!("vpn portal config is not set"))?;
+        let portal = locked_config
+            .vpn_portal_config
+            .as_mut()
+            .ok_or_else(|| anyhow::anyhow!("vpn portal config is not set"))?;
         if portal.clients.iter().any(|c| c.name == client.name) {
-            return Err(anyhow::anyhow!("vpn portal client with name '{}' already exists", client.name));
+            return Err(anyhow::anyhow!(
+                "vpn portal client with name '{}' already exists",
+                client.name
+            ));
         }
         portal.clients.push(client);
         Ok(())
