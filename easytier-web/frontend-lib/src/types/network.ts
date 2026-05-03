@@ -383,8 +383,9 @@ export interface UrlPb {
 
 export interface TunnelInfo {
   tunnel_type: string
-  local_addr: UrlPb
-  remote_addr: UrlPb
+  local_addr?: UrlPb
+  remote_url?: UrlPb
+  remote_addr?: UrlPb
 }
 
 export interface PeerConnStats {

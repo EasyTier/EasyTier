@@ -229,10 +229,10 @@ async fn test_magic_dns_update_replaces_records_for_same_client() {
     ctrl.set_tunnel_info(Some(crate::proto::common::TunnelInfo {
         tunnel_type: "tcp".to_string(),
         local_addr: None,
-        remote_addr: Some(crate::proto::common::Url {
+        remote_url: Some(crate::proto::common::Url {
             url: "tcp://127.0.0.1:54321".to_string(),
         }),
-        resolved_remote_addr: None,
+        remote_addr: None,
     }));
 
     dns_server_inst
@@ -297,10 +297,10 @@ async fn test_magic_dns_update_replaces_records_for_same_client() {
     ctrl.set_tunnel_info(Some(crate::proto::common::TunnelInfo {
         tunnel_type: "tcp".to_string(),
         local_addr: None,
-        remote_addr: Some(crate::proto::common::Url {
+        remote_url: Some(crate::proto::common::Url {
             url: "tcp://127.0.0.1:54321".to_string(),
         }),
-        resolved_remote_addr: None,
+        remote_addr: None,
     }));
 
     dns_server_inst
