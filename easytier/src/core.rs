@@ -37,6 +37,38 @@ use crate::tunnel::IpScheme;
 #[cfg(feature = "jemalloc-prof")]
 use jemalloc_ctl::{Access as _, AsName as _, epoch, stats};
 
+fn supported_compression_algorithms() -> &'static str {
+    cfg_select! {
+        all(feature = "zstd", feature = "lzo") => "none, zstd, lzo",
+        feature = "zstd" => "none, zstd",
+        feature = "lzo" => "none, lzo",
+        _ => "none",
+    }
+}
+
+fn compression_help() -> String {
+    t!(
+        "core_clap.compression",
+        algorithms = supported_compression_algorithms()
+    )
+    .to_string()
+}
+
+fn parse_compression_algorithm(compression: &str) -> anyhow::Result<CompressionAlgoPb> {
+    match compression {
+        "none" => Ok(CompressionAlgoPb::None),
+        #[cfg(feature = "zstd")]
+        "zstd" => Ok(CompressionAlgoPb::Zstd),
+        #[cfg(feature = "lzo")]
+        "lzo" => Ok(CompressionAlgoPb::Lzo),
+        _ => anyhow::bail!(
+            "unknown compression algorithm: {}, supported: {}",
+            compression,
+            supported_compression_algorithms()
+        ),
+    }
+}
+
 #[cfg(target_os = "windows")]
 windows_service::define_windows_service!(ffi_service_main, win_service_main);
 
@@ -513,7 +545,7 @@ struct NetworkOptions {
     #[arg(
         long,
         env = "ET_COMPRESSION",
-        help = t!("core_clap.compression").to_string(),
+        help = compression_help(),
     )]
     compression: Option<String>,
 
@@ -1106,15 +1138,7 @@ impl NetworkOptions {
         f.need_p2p = self.need_p2p.unwrap_or(f.need_p2p);
         f.multi_thread = self.multi_thread.unwrap_or(f.multi_thread);
         if let Some(compression) = &self.compression {
-            f.data_compress_algo = match compression.as_str() {
-                "none" => CompressionAlgoPb::None,
-                "zstd" => CompressionAlgoPb::Zstd,
-                _ => panic!(
-                    "unknown compression algorithm: {}, supported: none, zstd",
-                    compression
-                ),
-            }
-            .into();
+            f.data_compress_algo = parse_compression_algorithm(compression)?.into();
         }
         f.bind_device = self.bind_device.unwrap_or(f.bind_device);
         f.enable_kcp_proxy = self.enable_kcp_proxy.unwrap_or(f.enable_kcp_proxy);
@@ -1626,6 +1650,21 @@ async fn validate_config(cli: &Cli) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_compression_help_uses_supported_algorithms() {
+        assert!(compression_help().contains(supported_compression_algorithms()));
+    }
+
+    #[test]
+    fn test_parse_compression_algorithm_rejects_unknown() {
+        let err = parse_compression_algorithm("snappy")
+            .unwrap_err()
+            .to_string();
+
+        assert!(err.contains("snappy"));
+        assert!(err.contains(supported_compression_algorithms()));
+    }
 
     #[test]
     fn test_parse_listeners() {

@@ -467,6 +467,8 @@ impl TryFrom<CompressionAlgoPb> for CompressorAlgo {
         match value {
             #[cfg(feature = "zstd")]
             CompressionAlgoPb::Zstd => Ok(CompressorAlgo::ZstdDefault),
+            #[cfg(feature = "lzo")]
+            CompressionAlgoPb::Lzo => Ok(CompressorAlgo::Lzo),
             CompressionAlgoPb::None => Ok(CompressorAlgo::None),
             _ => Err(anyhow::anyhow!("Invalid CompressionAlgoPb")),
         }
@@ -480,6 +482,8 @@ impl TryFrom<CompressorAlgo> for CompressionAlgoPb {
         match value {
             #[cfg(feature = "zstd")]
             CompressorAlgo::ZstdDefault => Ok(CompressionAlgoPb::Zstd),
+            #[cfg(feature = "lzo")]
+            CompressorAlgo::Lzo => Ok(CompressionAlgoPb::Lzo),
             CompressorAlgo::None => Ok(CompressionAlgoPb::None),
         }
     }
