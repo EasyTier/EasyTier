@@ -100,6 +100,7 @@ message NetworkConfig {
   optional bool ipv6_public_addr_auto = 63;
   optional string ipv6_public_addr_prefix = 64;
   optional bool disable_relay_data = 65;
+  optional string default_protocol = 66;
 }
 
 message PortForwardConfig {
