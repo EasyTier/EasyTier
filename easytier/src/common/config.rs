@@ -38,7 +38,7 @@ use tokio::io::AsyncReadExt as _;
 )]
 pub struct ConfigBase<Raw, Parsed, Data = ()>
 where
-    Raw: Optionized<Parsed>,
+    Raw: Optionized<Subject = Parsed>,
     ConfigBase<Raw, Parsed, Data>: TryFrom<Raw>,
 {
     #[deref]
@@ -53,7 +53,7 @@ where
 
 impl<Raw, Parsed, Data> Serialize for ConfigBase<Raw, Parsed, Data>
 where
-    Raw: Optionized<Parsed> + Serialize,
+    Raw: Optionized<Subject = Parsed> + Serialize,
     ConfigBase<Raw, Parsed, Data>: TryFrom<Raw, Error: Debug>,
 {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
@@ -66,7 +66,7 @@ where
 
 impl<Raw, Parsed, Data> Default for ConfigBase<Raw, Parsed, Data>
 where
-    Raw: Optionized<Parsed> + Default,
+    Raw: Optionized<Subject = Parsed> + Default,
     ConfigBase<Raw, Parsed, Data>: TryFrom<Raw, Error: Debug>,
 {
     fn default() -> Self {
@@ -76,7 +76,7 @@ where
 
 impl<Raw, Parsed, Data> ConfigBase<Raw, Parsed, Data>
 where
-    Raw: Optionized<Parsed>,
+    Raw: Optionized<Subject = Parsed>,
     ConfigBase<Raw, Parsed, Data>: TryFrom<Raw, Error: Debug>,
 {
     pub fn into_parsed(self) -> Parsed {
