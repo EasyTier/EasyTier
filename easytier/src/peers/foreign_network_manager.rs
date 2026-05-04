@@ -6,11 +6,15 @@ in the future, with the help wo peer center we can forward packets of peers that
 connected to any node in the local network.
 */
 use std::{
-    sync::{Arc, Weak},
+    sync::{
+        Arc, Weak,
+        atomic::{AtomicBool, Ordering},
+    },
     time::SystemTime,
 };
 
 use dashmap::{DashMap, DashSet};
+use guarden::defer;
 use tokio::{
     sync::{
         Mutex,
@@ -93,6 +97,7 @@ struct ForeignNetworkEntry {
 
     stats_mgr: Arc<StatsManager>,
     traffic_metrics: Arc<TrafficMetricRecorder>,
+    event_handler_started: AtomicBool,
 
     tasks: Mutex<JoinSet<()>>,
 
@@ -160,10 +165,11 @@ impl ForeignNetworkEntry {
                 InstanceLabelKind::From,
             )),
             {
-                let peer_map = peer_map.clone();
+                let peer_map = Arc::downgrade(&peer_map);
                 move |peer_id| {
                     let peer_map = peer_map.clone();
                     async move {
+                        let peer_map = peer_map.upgrade()?;
                         peer_map
                             .get_route_peer_info(peer_id)
                             .await
@@ -230,6 +236,7 @@ impl ForeignNetworkEntry {
 
             stats_mgr,
             traffic_metrics,
+            event_handler_started: AtomicBool::new(false),
 
             tasks: Mutex::new(JoinSet::new()),
 
@@ -939,6 +946,23 @@ impl ForeignNetworkManager {
             )
             .await;
 
+        defer!(rollback_new_entry => sync [
+            data = self.data.clone(),
+            network_name = entry.network.network_name.clone(),
+            peer_id = peer_conn.get_peer_id(),
+            should_rollback = new_added
+        ] {
+            if should_rollback {
+                tracing::warn!(
+                    %network_name,
+                    "rollback newly added foreign network entry after add_peer_conn returned error"
+                );
+                data.remove_peer(peer_id, &network_name);
+            }
+        });
+
+        self.ensure_event_handler_started(&entry);
+
         let same_identity = entry.network == peer_network;
         let peer_identity_type = peer_conn.get_peer_identity_type();
         let credential_peer_trusted = peer_digest_empty
@@ -952,10 +976,6 @@ impl ForeignNetworkManager {
             || credential_identity_mismatch
             || entry.my_peer_id != peer_conn.get_my_peer_id()
         {
-            if new_added {
-                self.data
-                    .remove_peer(peer_conn.get_peer_id(), &entry.network.network_name.clone());
-            }
             let err = if entry.my_peer_id != peer_conn.get_my_peer_id() {
                 anyhow::anyhow!(
                     "my peer id not match. exp: {:?} real: {:?}, need retry connect",
@@ -980,9 +1000,7 @@ impl ForeignNetworkManager {
             return Err(err.into());
         }
 
-        if new_added {
-            self.start_event_handler(&entry).await;
-        } else if let Some(peer) = entry.peer_map.get_peer_by_id(peer_conn.get_peer_id()) {
+        if !new_added && let Some(peer) = entry.peer_map.get_peer_by_id(peer_conn.get_peer_id()) {
             let direct_conns_len = peer.get_directly_connections().len();
             let max_count = use_global_var!(MAX_DIRECT_CONNS_PER_PEER_IN_FOREIGN_NETWORK);
             if direct_conns_len >= max_count as usize {
@@ -996,23 +1014,30 @@ impl ForeignNetworkManager {
         }
 
         entry.peer_map.add_new_peer_conn(peer_conn).await?;
+        let _ = rollback_new_entry.defuse();
         Ok(())
     }
 
-    async fn start_event_handler(&self, entry: &ForeignNetworkEntry) {
+    fn ensure_event_handler_started(&self, entry: &ForeignNetworkEntry) {
+        if entry.event_handler_started.swap(true, Ordering::AcqRel) {
+            return;
+        }
+
         let data = self.data.clone();
         let network_name = entry.network.network_name.clone();
-        let traffic_metrics = entry.traffic_metrics.clone();
+        let traffic_metrics = Arc::downgrade(&entry.traffic_metrics);
         let mut s = entry.global_ctx.subscribe();
         self.tasks.lock().unwrap().spawn(async move {
             while let Ok(e) = s.recv().await {
                 match &e {
                     GlobalCtxEvent::PeerRemoved(peer_id) => {
                         tracing::info!(?e, "remove peer from foreign network manager");
-                        traffic_metrics.remove_peer(*peer_id);
-                        data.remove_peer(*peer_id, &network_name);
+                        if let Some(traffic_metrics) = traffic_metrics.upgrade() {
+                            traffic_metrics.remove_peer(*peer_id);
+                        }
                         data.network_peer_last_update
                             .insert(network_name.clone(), SystemTime::now());
+                        data.remove_peer(*peer_id, &network_name);
                     }
                     GlobalCtxEvent::PeerConnRemoved(..) => {
                         tracing::info!(?e, "clear no conn peer from foreign network manager");
@@ -1028,7 +1053,9 @@ impl ForeignNetworkManager {
             }
             // if lagged or recv done just remove the network
             tracing::error!("global event handler at foreign network manager exit");
-            traffic_metrics.clear_peer_cache();
+            if let Some(traffic_metrics) = traffic_metrics.upgrade() {
+                traffic_metrics.clear_peer_cache();
+            }
             data.remove_network(&network_name);
         });
     }
