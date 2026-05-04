@@ -1,9 +1,8 @@
+use crate::common::global_ctx::{ArcGlobalCtx, GlobalCtxEvent};
+use crate::peers::peer_manager::PeerManager;
 use std::collections::BTreeSet;
 use std::sync::{Arc, Weak};
 use std::time::Instant;
-
-use crate::common::global_ctx::{ArcGlobalCtx, GlobalCtxEvent};
-use crate::peers::peer_manager::PeerManager;
 use tokio_util::task::AbortOnDropHandle;
 
 /// ProxyCidrsMonitor monitors changes in proxy CIDRs from peer routes

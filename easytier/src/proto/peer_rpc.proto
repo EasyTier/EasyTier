@@ -2,6 +2,7 @@ syntax = "proto3";
 
 import "google/protobuf/timestamp.proto";
 import "common.proto";
+import "dns.proto";
 
 package peer_rpc;
 
@@ -47,6 +48,8 @@ message RoutePeerInfo {
 
   // Trusted credential public keys published by admin nodes (holding network_secret)
   repeated TrustedCredentialPubkeyProof trusted_credential_pubkeys = 19;
+
+  bytes dns = 20;
 
   optional common.Ipv6Inet ipv6_public_addr_prefix = 22;
   optional common.Ipv6Inet ipv6_public_addr_lease = 24;

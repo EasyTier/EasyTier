@@ -22,8 +22,8 @@ use stun_codec::{Message, MessageClass, MessageDecoder, MessageEncoder};
 
 use crate::common::error::Error;
 
-use super::dns::resolve_txt_record;
 use super::stun_codec_ext::*;
+use crate::utils::dns::txt_resolve;
 
 const DEFAULT_UDP_STUN_SERVERS: &[&str] = &[
     "txt:stun.easytier.cn",
@@ -61,11 +61,6 @@ impl HostResolverIter {
         }
     }
 
-    async fn get_txt_record(domain_name: &str) -> Result<Vec<String>, Error> {
-        let txt_data = resolve_txt_record(domain_name).await?;
-        Ok(txt_data.split(" ").map(|x| x.to_string()).collect())
-    }
-
     #[async_recursion::async_recursion]
     async fn next(&mut self) -> Option<SocketAddr> {
         if self.ips.is_empty() {
@@ -82,7 +77,7 @@ impl HostResolverIter {
 
             if host.starts_with("txt:") {
                 let domain_name = host.trim_start_matches("txt:");
-                match Self::get_txt_record(domain_name).await {
+                match txt_resolve(domain_name).await {
                     Ok(hosts) => {
                         tracing::info!(
                             ?domain_name,

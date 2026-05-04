@@ -1,36 +1,114 @@
-use std::{
-    hash::Hasher,
-    net::{IpAddr, SocketAddr},
-    path::PathBuf,
-    sync::{Arc, Mutex},
-};
-
-use anyhow::Context;
-use base64::{Engine as _, prelude::BASE64_STANDARD};
-use clap::ValueEnum;
-use clap::builder::PossibleValue;
-use serde::{Deserialize, Serialize};
-use strum::{Display, EnumString, VariantArray};
-use tokio::io::AsyncReadExt as _;
-
+use super::env_parser;
+use crate::utils::dns::sanitize;
 use crate::{
     common::stun::StunInfoCollector,
-    instance::dns_server::DEFAULT_ET_DNS_ZONE,
     proto::{
         acl::Acl,
         api::manage::ConfigSource as RpcConfigSource,
         common::{CompressionAlgoPb, PortForwardConfigPb, SecureModeConfig, SocketType},
     },
     tunnel::{IpScheme, TunnelScheme, generate_digest_from_str},
+    utils,
 };
+use anyhow::Context;
+use base64::{Engine as _, prelude::BASE64_STANDARD};
+use bon::Builder;
+use clap::ValueEnum;
+use clap::builder::PossibleValue;
+use derivative::Derivative;
+use derive_more::{Constructor, Deref};
+use getset::Getters;
+use optionize::Optionized;
+use serde::{Deserialize, Serialize};
+use std::fmt::{Debug, Display};
+use std::{
+    hash::Hasher,
+    net::{IpAddr, SocketAddr},
+    path::PathBuf,
+    sync::{Arc, Mutex},
+};
+use strum::{Display, EnumString, VariantArray};
+use tokio::io::AsyncReadExt as _;
 
-use super::env_parser;
+#[derive(Derivative, Debug, Clone, Constructor, Getters, Deref, Deserialize)]
+#[derivative(PartialEq(bound = "Parsed: PartialEq"))]
+#[serde(try_from = "Raw")]
+#[serde(
+    bound = "Raw: Deserialize<'de>, <ConfigBase<Raw, Parsed, Data> as TryFrom<Raw>>::Error: Display"
+)]
+pub struct ConfigBase<Raw, Parsed, Data = ()>
+where
+    Raw: Optionized<Subject = Parsed>,
+    ConfigBase<Raw, Parsed, Data>: TryFrom<Raw>,
+{
+    #[deref]
+    parsed: Parsed,
+    #[getset(get)]
+    #[derivative(PartialEq = "ignore")]
+    raw: Raw,
+    #[getset(get)]
+    #[derivative(PartialEq = "ignore")]
+    data: Data,
+}
+
+impl<Raw, Parsed, Data> Serialize for ConfigBase<Raw, Parsed, Data>
+where
+    Raw: Optionized<Subject = Parsed> + Serialize,
+    ConfigBase<Raw, Parsed, Data>: TryFrom<Raw, Error: Debug>,
+{
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        self.raw.serialize(serializer)
+    }
+}
+
+impl<Raw, Parsed, Data> Default for ConfigBase<Raw, Parsed, Data>
+where
+    Raw: Optionized<Subject = Parsed> + Default,
+    ConfigBase<Raw, Parsed, Data>: TryFrom<Raw, Error: Debug>,
+{
+    fn default() -> Self {
+        Raw::default().try_into().unwrap()
+    }
+}
+
+impl<Raw, Parsed, Data> ConfigBase<Raw, Parsed, Data>
+where
+    Raw: Optionized<Subject = Parsed>,
+    ConfigBase<Raw, Parsed, Data>: TryFrom<Raw, Error: Debug>,
+{
+    pub fn into_parsed(self) -> Parsed {
+        self.parsed
+    }
+
+    pub fn into_raw(self) -> Raw {
+        self.raw
+    }
+
+    pub fn into_data(self) -> Data {
+        self.data
+    }
+
+    pub fn update(self, config: Raw) -> Result<Self, <Self as TryFrom<Raw>>::Error> {
+        let mut raw = self.into_raw();
+        raw.merge(config);
+        raw.try_into()
+    }
+}
 
 pub type Flags = crate::proto::common::FlagsInConfig;
 
 pub fn gen_default_flags() -> Flags {
-    #[allow(deprecated)]
     Flags {
+        #[allow(deprecated)]
+        quic_listen_port: u32::MAX,
+        #[allow(deprecated)]
+        accept_dns: false,
+        #[allow(deprecated)]
+        tld_dns_zone: "".to_string(),
+
         default_protocol: "tcp".to_string(),
         dev_name: "".to_string(),
         enable_encryption: true,
@@ -55,7 +133,6 @@ pub fn gen_default_flags() -> Flags {
         disable_kcp_input: false,
         disable_relay_kcp: false,
         enable_relay_foreign_network_kcp: false,
-        accept_dns: false,
         private_mode: false,
         enable_quic_proxy: false,
         disable_quic_input: false,
@@ -65,9 +142,6 @@ pub fn gen_default_flags() -> Flags {
         multi_thread_count: 2,
         encryption_algorithm: EncryptionAlgorithm::default().to_string(),
         disable_sym_hole_punching: false,
-        tld_dns_zone: DEFAULT_ET_DNS_ZONE.to_string(),
-
-        quic_listen_port: u32::MAX,
         need_p2p: false,
         instance_recv_bps_limit: u64::MAX,
         disable_upnp: false,
@@ -151,8 +225,19 @@ impl Default for EncryptionAlgorithm {
     }
 }
 
+cfg_select! {
+    feature = "magic-dns" => {
+        use crate::dns::config::{DnsConfig, DnsConfigLoaderExt};
+    }
+
+    _ => {
+        #[auto_impl::auto_impl(Box, &)]
+        pub trait DnsConfigLoaderExt {}
+    }
+}
+
 #[auto_impl::auto_impl(Box, &)]
-pub trait ConfigLoader: Send + Sync {
+pub trait ConfigLoader: Send + Sync + DnsConfigLoaderExt {
     fn get_id(&self) -> uuid::Uuid;
     fn set_id(&self, id: uuid::Uuid);
 
@@ -426,11 +511,11 @@ pub struct ConsoleLoggerConfig {
     pub level: Option<String>,
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, derive_builder::Builder)]
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Builder)]
 pub struct LoggingConfig {
-    #[builder(setter(into, strip_option), default = None)]
+    #[builder(into)]
     pub file_logger: Option<FileLoggerConfig>,
-    #[builder(setter(into, strip_option), default = None)]
+    #[builder(into)]
     pub console_logger: Option<ConsoleLoggerConfig>,
 }
 
@@ -541,6 +626,10 @@ struct Config {
     peer: Option<Vec<PeerConfig>>,
     proxy_network: Option<Vec<ProxyNetworkConfig>>,
 
+    #[cfg(feature = "magic-dns")]
+    #[serde(default)]
+    dns: DnsConfig,
+
     vpn_portal_config: Option<VpnPortalConfig>,
 
     routes: Option<Vec<cidr::Ipv4Cidr>>,
@@ -636,6 +725,21 @@ impl TomlConfigLoader {
     }
 }
 
+impl DnsConfigLoaderExt for TomlConfigLoader {
+    cfg_select! {
+        feature = "magic-dns" => {
+            fn get_dns(&self) -> DnsConfig {
+                self.config.lock().unwrap().dns.clone()
+            }
+            fn set_dns(&self, config: DnsConfig) {
+                self.config.lock().unwrap().dns = config;
+            }
+        }
+
+        _ => {}
+    }
+}
+
 impl ConfigLoader for TomlConfigLoader {
     fn get_inst_name(&self) -> String {
         self.config
@@ -651,26 +755,17 @@ impl ConfigLoader for TomlConfigLoader {
     }
 
     fn get_hostname(&self) -> String {
-        let hostname = self.config.lock().unwrap().hostname.clone();
+        let hostname = self
+            .config
+            .lock()
+            .unwrap()
+            .hostname
+            .as_ref()
+            .map(sanitize)
+            .filter(|h| !h.is_empty());
 
-        match hostname {
-            Some(hostname) => {
-                let hostname = hostname
-                    .chars()
-                    .filter(|c| !c.is_control())
-                    .take(32)
-                    .collect::<String>();
-
-                if !hostname.is_empty() {
-                    self.set_hostname(Some(hostname.clone()));
-                    hostname
-                } else {
-                    self.set_hostname(None);
-                    gethostname::gethostname().to_string_lossy().to_string()
-                }
-            }
-            None => gethostname::gethostname().to_string_lossy().to_string(),
-        }
+        self.set_hostname(hostname.clone());
+        hostname.unwrap_or_else(|| sanitize(utils::hostname()))
     }
 
     fn set_hostname(&self, name: Option<String>) {

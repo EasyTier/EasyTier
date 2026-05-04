@@ -2,7 +2,7 @@ use delegate::delegate;
 use derivative::Derivative;
 use derive_more::{Deref, DerefMut, From, IntoIterator};
 use prost::Message;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use sha2::{Digest, Sha256};
 
 /// Generates a stable digest strictly within the lifecycle of the current process.
@@ -36,18 +36,7 @@ where
 }
 
 #[derive(
-    Derivative,
-    Debug,
-    Clone,
-    PartialEq,
-    Eq,
-    Hash,
-    From,
-    Deref,
-    DerefMut,
-    Serialize,
-    Deserialize,
-    IntoIterator,
+    Derivative, Debug, Clone, PartialEq, Eq, Hash, From, Deref, DerefMut, Serialize, IntoIterator,
 )]
 #[derivative(Default(bound = ""))]
 #[serde(transparent)]

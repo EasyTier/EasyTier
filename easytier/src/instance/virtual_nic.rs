@@ -827,6 +827,34 @@ impl NicCtx {
         nic.ifname.as_ref().map(|s| s.to_owned())
     }
 
+    pub async fn add_ipv4_to_tun_device(&self, ipv4_addr: cidr::Ipv4Inet) -> Result<(), Error> {
+        let nic = self.nic.lock().await;
+        nic.add_ip(ipv4_addr.address(), ipv4_addr.network_length() as i32)
+            .await
+    }
+
+    pub async fn add_ipv6_to_tun_device(&self, ipv6_addr: cidr::Ipv6Inet) -> Result<(), Error> {
+        let nic = self.nic.lock().await;
+        nic.add_ipv6(ipv6_addr.address(), ipv6_addr.network_length() as i32)
+            .await
+    }
+
+    pub async fn remove_ipv4_from_tun_device(
+        &self,
+        ipv4_addr: cidr::Ipv4Inet,
+    ) -> Result<(), Error> {
+        let nic = self.nic.lock().await;
+        nic.remove_ip(Some(ipv4_addr)).await
+    }
+
+    pub async fn remove_ipv6_from_tun_device(
+        &self,
+        ipv6_addr: cidr::Ipv6Inet,
+    ) -> Result<(), Error> {
+        let nic = self.nic.lock().await;
+        nic.remove_ipv6(Some(ipv6_addr)).await
+    }
+
     pub async fn assign_ipv4_to_tun_device(&self, ipv4_addr: cidr::Ipv4Inet) -> Result<(), Error> {
         let nic = self.nic.lock().await;
         nic.link_up().await?;

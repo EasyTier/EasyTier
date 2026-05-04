@@ -1,13 +1,17 @@
+use arc_swap::ArcSwap;
+use crossbeam::atomic::AtomicCell;
+use dashmap::DashMap;
+use hmac::{Hmac, Mac};
+use sha2::Sha256;
+use socket2::Protocol;
 use std::{
     collections::{BTreeSet, HashMap, hash_map::DefaultHasher},
     hash::Hasher,
+    iter,
     net::{IpAddr, SocketAddr},
     sync::{Arc, Mutex},
     time::{SystemTime, UNIX_EPOCH},
 };
-
-use arc_swap::ArcSwap;
-use dashmap::DashMap;
 
 use super::{
     PeerId,
@@ -31,10 +35,11 @@ use crate::{
     rpc_service::protected_port,
     tunnel::matches_protocol,
 };
-use crossbeam::atomic::AtomicCell;
-use hmac::{Hmac, Mac};
-use sha2::Sha256;
-use socket2::Protocol;
+#[cfg(feature = "magic-dns")]
+use crate::{
+    dns::config::{DnsConfigLoaderExt, DnsExportConfig, DnsGlobalCtxExt, zone::ZoneConfig},
+    utils::dns,
+};
 
 pub type NetworkIdentity = crate::common::config::NetworkIdentity;
 
@@ -47,6 +52,8 @@ pub enum GlobalCtxEvent {
     PeerRemoved(PeerId),
     PeerConnAdded(PeerConnInfo),
     PeerConnRemoved(PeerConnInfo),
+
+    PeerInfoUpdated(Vec<PeerId>),
 
     ListenerAdded(url::Url),
     ListenerAddFailed(url::Url, String), // (url, error message)
@@ -250,7 +257,7 @@ impl std::fmt::Debug for GlobalCtx {
     }
 }
 
-pub type ArcGlobalCtx = std::sync::Arc<GlobalCtx>;
+pub type ArcGlobalCtx = Arc<GlobalCtx>;
 
 impl GlobalCtx {
     fn apply_disable_relay_data_flag(
@@ -486,7 +493,7 @@ impl GlobalCtx {
     }
 
     pub fn get_hostname(&self) -> String {
-        return self.hostname.lock().unwrap().clone();
+        self.hostname.lock().unwrap().clone()
     }
 
     pub fn set_hostname(&self, hostname: String) {
@@ -778,6 +785,39 @@ impl GlobalCtx {
         } else {
             false
         }
+    }
+}
+
+#[cfg(feature = "magic-dns")]
+impl DnsGlobalCtxExt for GlobalCtx {
+    fn dns_self_zone(&self) -> ZoneConfig {
+        use hickory_proto::rr::Name;
+        let dns = self.config.get_dns();
+        let name: Name = dns
+            .name
+            .clone()
+            .unwrap_or_else(|| dns::parse(self.get_hostname()))
+            .into();
+        let fqdn = name.append_domain(&dns.domain).unwrap_or_default().into();
+        let ipv4 = self.get_ipv4().map(|ip| ip.address());
+        let ipv6 = self.get_ipv6().map(|ip| ip.address());
+        let ipv6 = ipv6.map(|a| vec![a]).unwrap_or_default();
+
+        ZoneConfig::dedicated(fqdn, ipv4, ipv6)
+    }
+
+    fn dns_export_config(&self) -> DnsExportConfig {
+        DnsExportConfig {
+            zones: self
+                .dns_iter_zones()
+                .filter(|z| z.policy.export.as_ref().is_some_and(|f| !f.disabled)) // TODO: check policies of parent zones
+                .map(ZoneConfig::into_data)
+                .collect(),
+        }
+    }
+
+    fn dns_iter_zones(&self) -> impl Iterator<Item = ZoneConfig> {
+        iter::once(self.dns_self_zone()).chain(self.config.get_dns().into_parsed().zones)
     }
 }
 

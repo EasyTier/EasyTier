@@ -7,7 +7,7 @@ use dashmap::DashSet;
 use tokio::{sync::mpsc, task::JoinSet, time::timeout};
 
 use crate::{
-    common::{PeerId, dns::socket_addrs, join_joinset_background},
+    common::{PeerId, join_joinset_background},
     peers::peer_conn::PeerConnId,
     proto::{
         api::instance::{
@@ -20,6 +20,8 @@ use crate::{
     utils::weak_upgrade,
 };
 
+use super::create_connector_by_url;
+use crate::utils::dns::socket_addrs;
 use crate::{
     common::{
         error::Error,
@@ -29,8 +31,6 @@ use crate::{
     peers::peer_manager::PeerManager,
     use_global_var,
 };
-
-use super::create_connector_by_url;
 
 type ConnectorMap = Arc<DashSet<url::Url>>;
 

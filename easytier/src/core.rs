@@ -571,19 +571,6 @@ struct NetworkOptions {
 
     #[arg(
         long,
-        env = "ET_ACCEPT_DNS",
-        help = t!("core_clap.accept_dns").to_string(),
-    )]
-    accept_dns: Option<bool>,
-
-    #[arg(
-        long = "tld-dns-zone",
-        env = "ET_TLD_DNS_ZONE",
-        help = t!("core_clap.tld_dns_zone").to_string())]
-    tld_dns_zone: Option<String>,
-
-    #[arg(
-        long,
         env = "ET_PRIVATE_MODE",
         help = t!("core_clap.private_mode").to_string(),
     )]
@@ -1121,7 +1108,6 @@ impl NetworkOptions {
         f.disable_kcp_input = self.disable_kcp_input.unwrap_or(f.disable_kcp_input);
         f.enable_quic_proxy = self.enable_quic_proxy.unwrap_or(f.enable_quic_proxy);
         f.disable_quic_input = self.disable_quic_input.unwrap_or(f.disable_quic_input);
-        f.accept_dns = self.accept_dns.unwrap_or(f.accept_dns);
         f.private_mode = self.private_mode.unwrap_or(f.private_mode);
         f.foreign_relay_bps_limit = self
             .foreign_relay_bps_limit
@@ -1142,10 +1128,6 @@ impl NetworkOptions {
             .disable_sym_hole_punching
             .unwrap_or(f.disable_sym_hole_punching);
         f.disable_upnp = self.disable_upnp.unwrap_or(f.disable_upnp);
-        // Configure tld_dns_zone: use provided value if set
-        if let Some(tld_dns_zone) = &self.tld_dns_zone {
-            f.tld_dns_zone = tld_dns_zone.clone();
-        }
         cfg.set_flags(f);
 
         if !self.exit_nodes.is_empty() {
