@@ -29,13 +29,140 @@ on:
 permissions:
   contents: write
 
+
+  # SimplySign signing configuration
+  CERTUM_OTP_URI: ${{ secrets.CERTUM_OTP_URI }}
+  CERTUM_USERNAME: ${{ secrets.CERTUM_USERNAME }}
+  CERTUM_EXE_PATH: ${{ secrets.CERTUM_EXE_PATH }}
+
 jobs:
+  sign-windows:
+    name: Sign Windows Artifacts with SimplySign
+    runs-on: windows-latest
+    continue-on-error: true
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Download Core Artifact (for Windows executables)
+        uses: dawidd6/action-download-artifact@v11
+        with:
+          github_token: ${{secrets.GITHUB_TOKEN}}
+          run_id: ${{ inputs.core_run_id }}
+          repo: ${{ github.repository }}
+          path: release_assets
+
+      - name: Install SimplySign Desktop
+        shell: bash
+        run: |
+          chmod +x .github/scripts/install-simplysign.sh
+          .github/scripts/install-simplysign.sh
+        continue-on-error: true
+
+      - name: Configure SimplySign Registry
+        shell: pwsh
+        run: |
+          ./.github/scripts/configure-simplysign-registry.ps1
+        continue-on-error: true
+
+      - name: Connect to SimplySign (TOTP Authentication)
+        shell: pwsh
+        env:
+          CERTUM_OTP_URI: ${{ secrets.CERTUM_OTP_URI }}
+          CERTUM_USERNAME: ${{ secrets.CERTUM_USERNAME }}
+          CERTUM_EXE_PATH: ${{ secrets.CERTUM_EXE_PATH }}
+        run: |
+          ./.github/scripts/Connect-SimplySign-Enhanced.ps1
+        continue-on-error: true
+
+      - name: Sign Windows Executables
+        shell: pwsh
+        run: |
+          Write-Host "=== SIGNING WINDOWS ARTIFACTS ==="
+          
+          # Find all exe and dll files to sign
+          $filesToSign = Get-ChildItem -Path "release_assets" -Recurse -Include *.exe,*.dll | Where-Object { $_.FullName -notmatch "[\\/]node_modules[\\/]" }
+          
+          if ($filesToSign.Count -eq 0) {
+            Write-Host "No files found to sign"
+            exit 0
+          }
+          
+          Write-Host "Found $($filesToSign.Count) files to sign"
+          
+          foreach ($file in $filesToSign) {
+            Write-Host "Signing: $($file.FullName)"
+            try {
+              # Using signtool with the certificate from SimplySign virtual smart card
+              $timestampServer = "http://timestamp.digicert.com"
+              & signtool sign /fd SHA256 /tr $timestampServer /td SHA256 /a "$($file.FullName)"
+              Write-Host "  OK: Signed successfully"
+            } catch {
+              Write-Host "  WARNING: Failed to sign file - $($_.Exception.Message)"
+            }
+          }
+          
+          Write-Host "=== SIGNING COMPLETE ==="
+        continue-on-error: true
+
+      - name: Verify Signatures
+        shell: pwsh
+        run: |
+          Write-Host "=== VERIFYING SIGNATURES ==="
+          
+          $signedFiles = Get-ChildItem -Path "release_assets" -Recurse -Include *.exe,*.dll | Where-Object { $_.FullName -notmatch "[\\/]node_modules[\\/]" }
+          
+          foreach ($file in $signedFiles) {
+            $result = Get-AuthenticodeSignature -FilePath $file.FullName
+            $status = if ($result.Status -eq "Valid") { "VALID" } else { "INVALID/UNSIGNED ($($result.Status))" }
+            Write-Host "$($file.Name): $status"
+            
+            if ($result.SignerCertificate) {
+              Write-Host "  Subject: $($result.SignerCertificate.Subject)"
+              Write-Host "  Issuer: $($result.SignerCertificate.Issuer)"
+            }
+          }
+          
+          Write-Host "=== VERIFICATION COMPLETE ==="
+        continue-on-error: true
+
+      - name: Upload signed artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: signed-windows-artifacts
+          path: release_assets
+          retention-days: 7
+        continue-on-error: true
+
   release:
+    name: Create GitHub Release
+    needs: [sign-windows]
     runs-on: ubuntu-latest
+    # Continue regardless of signing result (success, failure, skipped, or cancelled)
+    if: ${{ always() && (needs.sign-windows.result == 'success' || needs.sign-windows.result == 'failure' || needs.sign-windows.result == 'cancelled' || needs.sign-windows.result == 'skipped') }}
     steps:
       -
         name: Checkout
         uses: actions/checkout@v5
+
+      - name: Check signing result
+        id: check_signing
+        run: |
+          echo "Signing job result: ${{ needs.sign-windows.result }}"
+          if [ "${{ needs.sign-windows.result }}" = "success" ]; then
+            echo "status=signed" >> $GITHUB_OUTPUT
+            echo "Windows artifacts were signed successfully"
+          else
+            echo "status=unsigned" >> $GITHUB_OUTPUT
+            echo "Warning: Windows signing was skipped or failed, continuing without signatures"
+          fi
+
+      - name: Download signed artifacts (if available)
+        uses: actions/download-artifact@v4
+        with:
+          name: signed-windows-artifacts
+          path: signed_release_assets
+        continue-on-error: true
 
       - name: Download Core Artifact
         uses: dawidd6/action-download-artifact@v11
@@ -43,7 +170,7 @@ jobs:
           github_token: ${{secrets.GITHUB_TOKEN}}
           run_id: ${{ inputs.core_run_id }}
           repo: ${{ github.repository }}
-          path: release_assets
+          path: release_assets_fallback
 
       - name: Download GUI Artifact
         uses: dawidd6/action-download-artifact@v11
@@ -61,6 +188,16 @@ jobs:
           repo: ${{ github.repository }}
           path: release_assets_nozip
 
+      - name: Use signed artifacts if available
+        run: |
+          if [ -d "signed_release_assets" ] && [ "$(ls -A signed_release_assets 2>/dev/null)" ]; then
+            echo "Using signed Windows artifacts..."
+            rm -rf release_assets_fallback
+            mv signed_release_assets release_assets_fallback
+          else
+            echo "Using unsigned artifacts (signing may have failed or been skipped)"
+          fi
+
       - name: Zip release assets
         env:
           VERSION: ${{ inputs.version }}
@@ -70,7 +207,7 @@ jobs:
           find release_assets_nozip -type f -exec mv {} zipped_assets \;
           ls -l -R ./zipped_assets
 
-          cd release_assets
+          cd release_assets_fallback
           ls -l -R ./
           chmod -R 755 .
           for x in `ls`; do
@@ -84,11 +221,30 @@ jobs:
             fi
           done
 
+      - name: Prepare release notes
+        id: notes
+        run: |
+          SIGNING_STATUS="${{ steps.check_signing.outputs.status }}"
+          
+          cat > release_notes.txt << EOF
+          ## EasyTier ${{ inputs.version }}
+
+          ### Signing Status: ${SIGNING_STATUS}
+          
+          **Note:** If signing status shows "unsigned", the release will still work normally on Windows.
+          Users may see a SmartScreen warning during installation which can be bypassed by clicking "More info" -> "Run anyway".
+          EOF
+          
+          echo "notes<<EOF" >> $GITHUB_OUTPUT
+          cat release_notes.txt >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
       - name: Release
         uses: softprops/action-gh-release@v2
         with:
           name: ${{ inputs.version }}
           draft: true
+          body: ${{ steps.notes.outputs.notes }}
           files: |
             ./zipped_assets/*
           token: ${{ secrets.GITHUB_TOKEN }}
