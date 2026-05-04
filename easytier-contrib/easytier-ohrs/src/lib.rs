@@ -1,14 +1,22 @@
-mod config_meta;
-mod config_repo;
+mod config;
+mod exports;
 mod kernel_bridge;
-mod native_log;
-mod runtime_state;
-mod schema_service;
-mod share_link_service;
-mod stored_config;
+mod platform;
+mod runtime;
 
-use config_meta::get_config_display_name;
-use config_repo::{
+use config::services::schema_service::{
+    ConfigFieldMapping, NetworkConfigSchema,
+    get_network_config_field_mappings as build_network_config_field_mappings,
+    get_network_config_schema as build_network_config_schema,
+};
+use config::services::share_link_service::{
+    build_config_share_link as build_config_share_link_inner,
+    import_config_share_link as import_config_share_link_inner,
+    parse_config_share_link as parse_config_share_link_inner,
+};
+use config::storage::config_meta::get_config_display_name;
+use config::types::stored_config::{KeyValuePair, SharedConfigLinkPayload};
+use config::repository::{
     create_config_record, delete_config_record, export_config_toml, get_config_field_value,
     get_default_config_json, import_toml_config, init_config_store as init_repo_store,
     list_config_meta_json, save_config_record, set_config_field_value, start_kernel_with_config_id,
@@ -18,21 +26,10 @@ use kernel_bridge::{
     start_local_socket_server as start_local_socket_server_inner,
     stop_local_socket_server as stop_local_socket_server_inner,
 };
-use runtime_state::{
+use runtime::state::runtime_state::{
     RuntimeAggregateState, TunAggregateState, clear_tun_attached, mark_tun_attached,
     runtime_instance_from_running_info,
 };
-use schema_service::{
-    ConfigFieldMapping, NetworkConfigSchema,
-    get_network_config_field_mappings as build_network_config_field_mappings,
-    get_network_config_schema as build_network_config_schema,
-};
-use share_link_service::{
-    build_config_share_link as build_config_share_link_inner,
-    import_config_share_link as import_config_share_link_inner,
-    parse_config_share_link as parse_config_share_link_inner,
-};
-use stored_config::{KeyValuePair, SharedConfigLinkPayload};
 use easytier::common::config::{ConfigFileControl, ConfigLoader, TomlConfigLoader};
 use easytier::common::constants::EASYTIER_VERSION;
 use easytier::instance_manager::NetworkInstanceManager;
@@ -279,12 +276,12 @@ fn parse_instance_uuid(config_id: &str) -> Option<Uuid> {
 
 #[napi]
 pub fn init_config_store(root_dir: String) -> bool {
-    init_repo_store(root_dir)
+    exports::config_api::init_config_store(root_dir)
 }
 
 #[napi]
 pub fn list_configs() -> String {
-    list_config_meta_json()
+    exports::config_api::list_configs()
 }
 
 #[napi]
@@ -294,88 +291,67 @@ pub fn get_config_display_name_by_id(config_id: String) -> Option<String> {
 
 #[napi]
 pub fn save_config(config_id: String, display_name: String, config_json: String) -> bool {
-    save_config_record(config_id, display_name, config_json).is_some()
+    exports::config_api::save_config(config_id, display_name, config_json)
 }
 
 #[napi]
 pub fn create_config(config_id: String, display_name: String) -> bool {
-    create_config_record(config_id, display_name).is_some()
+    exports::config_api::create_config(config_id, display_name)
 }
 
 #[napi]
 pub fn rename_stored_config(config_id: String, display_name: String) -> bool {
-    config_meta::set_config_display_name(config_id, display_name).is_some()
+    config::storage::config_meta::set_config_display_name(config_id, display_name).is_some()
 }
 
 #[napi]
 pub fn delete_stored_config_meta(config_id: String) -> bool {
-    delete_config_record(&config_id)
+    exports::config_api::delete_stored_config_meta(config_id)
 }
 
 #[napi]
 pub fn get_config(config_id: String) -> Option<String> {
-    config_repo::load_config_json(&config_id)
+    exports::config_api::get_config(config_id)
 }
 
 #[napi]
 pub fn get_default_config() -> Option<String> {
-    get_default_config_json()
+    exports::config_api::get_default_config()
 }
 
 #[napi]
 pub fn get_config_field(config_id: String, field: String) -> Option<String> {
-    get_config_field_value(&config_id, &field)
+    exports::config_api::get_config_field(config_id, field)
 }
 
 #[napi]
 pub fn set_config_field(config_id: String, field: String, json_value: String) -> bool {
-    set_config_field_value(&config_id, &field, &json_value)
+    exports::config_api::set_config_field(config_id, field, json_value)
 }
 
 #[napi]
 pub fn import_toml(toml_text: String, display_name: Option<String>) -> Option<String> {
-    import_toml_config(toml_text, display_name).map(|record| record.meta.config_id)
+    exports::config_api::import_toml(toml_text, display_name)
 }
 
 #[napi]
 pub fn export_toml(config_id: String) -> Option<String> {
-    export_config_toml(&config_id).map(|ret| ret.toml_text)
+    exports::config_api::export_toml(config_id)
 }
 
 #[napi]
 pub fn start_kernel(config_id: String) -> bool {
-    start_kernel_with_config_id(&config_id)
+    exports::runtime_api::start_kernel(config_id, start_kernel_with_config_id)
 }
 
 #[napi]
 pub fn stop_kernel(config_id: String) -> bool {
-    clear_tun_attached(&config_id);
-    if stop_web_client(&config_id) {
-        return true;
-    }
-
-    let Some(instance_id) = parse_instance_uuid(&config_id) else {
-        return false;
-    };
-
-    let ret = INSTANCE_MANAGER
-        .delete_network_instance(vec![instance_id])
-        .map(|_| true)
-        .unwrap_or_else(|err| {
-            hilog_error!("[Rust] stop_kernel failed {}: {}", config_id, err);
-            false
-        });
-    maybe_stop_local_socket_server();
-    ret
+    exports::runtime_api::stop_kernel(config_id, stop_web_client, parse_instance_uuid, maybe_stop_local_socket_server)
 }
 
 #[napi]
 pub fn stop_network_instance(config_ids: Vec<String>) -> bool {
-    let mut ok = true;
-    for config_id in config_ids {
-        ok = stop_kernel(config_id) && ok;
-    }
-    ok
+    exports::runtime_api::stop_network_instance(config_ids, stop_kernel)
 }
 
 #[napi]
@@ -406,42 +382,12 @@ pub fn run_network_instance(cfg_json: String) -> bool {
 
 #[napi]
 pub fn collect_network_infos() -> Vec<KeyValuePair> {
-    let infos = match INSTANCE_MANAGER.collect_network_infos_sync() {
-        Ok(infos) => infos,
-        Err(err) => {
-            hilog_error!("[Rust] collect network infos failed {}", err);
-            return vec![];
-        }
-    };
-
-    infos.into_iter()
-        .filter_map(|(key, value)| {
-            serde_json::to_string(&value).ok().map(|value_json| KeyValuePair {
-                key: key.to_string(),
-                value: value_json,
-            })
-        })
-        .collect()
+    exports::runtime_api::collect_network_infos()
 }
 
 #[napi]
 pub fn set_tun_fd(config_id: String, fd: i32) -> bool {
-    let Some(instance_id) = parse_instance_uuid(&config_id) else {
-        hilog_error!("[Rust] set_tun_fd invalid instance id: {}", config_id);
-        return false;
-    };
-
-    INSTANCE_MANAGER
-        .set_tun_fd(&instance_id, fd)
-        .map(|_| {
-            mark_tun_attached(&config_id);
-            hilog_info!("[Rust] set_tun_fd success instance={} fd={} marked_attached=true", config_id, fd);
-            true
-        })
-        .unwrap_or_else(|err| {
-            hilog_error!("[Rust] set_tun_fd failed {}: {}", config_id, err);
-            false
-        })
+    exports::runtime_api::set_tun_fd(config_id, fd, parse_instance_uuid)
 }
 
 #[napi]
@@ -481,74 +427,11 @@ mod tests {
 
 #[napi]
 pub fn get_runtime_snapshot() -> RuntimeAggregateState {
-    get_runtime_snapshot_inner()
+    exports::runtime_api::get_runtime_snapshot()
 }
 
 pub(crate) fn get_runtime_snapshot_inner() -> RuntimeAggregateState {
-    let infos = match INSTANCE_MANAGER.collect_network_infos_sync() {
-        Ok(infos) => infos,
-        Err(err) => {
-            hilog_error!("[Rust] collect network infos failed {}", err);
-            return RuntimeAggregateState {
-                instances: vec![],
-                tun: TunAggregateState {
-                    active: false,
-                    attached_instance_ids: vec![],
-                    aggregated_routes: vec![],
-                    dns_servers: vec![],
-                    need_rebuild: false,
-                },
-                running_instance_count: 0,
-            };
-        }
-    };
-
-    let mut instances = Vec::with_capacity(infos.len());
-    for (instance_uuid, info) in infos {
-        let config_id = instance_uuid.to_string();
-        let display_name = get_config_display_name(&config_id).unwrap_or_else(|| config_id.clone());
-        let config_json = config_repo::load_config_json(&config_id);
-        let stored_config = config_json
-            .as_deref()
-            .and_then(|raw| serde_json::from_str::<NetworkConfig>(raw).ok());
-        let magic_dns_enabled = stored_config
-            .as_ref()
-            .and_then(|cfg| cfg.enable_magic_dns)
-            .unwrap_or(false);
-        let need_exit_node = stored_config
-            .as_ref()
-            .map(|cfg| !cfg.exit_nodes.is_empty())
-            .unwrap_or(false);
-        instances.push(runtime_instance_from_running_info(
-            config_id,
-            display_name,
-            magic_dns_enabled,
-            need_exit_node,
-            info,
-        ));
-    }
-
-    instances.sort_by(|a, b| a.display_name.cmp(&b.display_name).then_with(|| a.instance_id.cmp(&b.instance_id)));
-    let attached_instance_ids = instances
-        .iter()
-        .filter(|instance| instance.tun_required)
-        .map(|instance| instance.instance_id.clone())
-        .collect::<Vec<_>>();
-    let aggregated_routes = aggregate_requested_tun_routes(&instances);
-    let running_instance_count = instances.iter().filter(|instance| instance.running).count() as i32;
-    let tun_active = !attached_instance_ids.is_empty();
-
-    RuntimeAggregateState {
-        instances,
-        tun: TunAggregateState {
-            active: tun_active,
-            attached_instance_ids,
-            aggregated_routes,
-            dns_servers: vec![],
-            need_rebuild: false,
-        },
-        running_instance_count,
-    }
+    exports::runtime_api::get_runtime_snapshot_inner()
 }
 
 #[napi]

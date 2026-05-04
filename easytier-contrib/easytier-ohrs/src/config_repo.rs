@@ -1,13 +1,14 @@
-use crate::config_meta::{
+use crate::config::storage::config_meta::{
     delete_config_meta, get_config_meta, init_config_meta_store, list_config_meta_entries,
-    now_ts_string, open_db, upsert_config_meta_in_tx,
+    open_db, upsert_config_meta_in_tx,
 };
-use crate::stored_config::{ExportTomlResult, StoredConfigRecord};
+use crate::config::types::stored_config::{ExportTomlResult, StoredConfigRecord};
+use super::{field_store, import_export, legacy_migration, validation};
 use easytier::common::config::ConfigLoader;
 use easytier::proto::api::manage::NetworkConfig;
 use ohos_hilog_binding::{hilog_debug, hilog_error};
 use rusqlite::params;
-use serde_json::{Map, Value};
+use serde_json::Value;
 use std::path::PathBuf;
 use std::sync::Mutex;
 
@@ -27,7 +28,7 @@ pub(crate) fn kernel_socket_path() -> Option<PathBuf> {
 }
 
 pub(crate) fn legacy_config_file_path(config_id: &str) -> Option<PathBuf> {
-    config_root_dir().map(|root| root.join(CONFIG_DIR_NAME).join(format!("{}.json", config_id)))
+    legacy_migration::legacy_config_file_path(&config_root_dir(), CONFIG_DIR_NAME, config_id)
 }
 
 pub fn init_config_store(root_dir: String) -> bool {
@@ -56,71 +57,8 @@ pub fn init_config_store(root_dir: String) -> bool {
     true
 }
 
-fn normalize_config_id(mut config: NetworkConfig, requested_id: String) -> Result<NetworkConfig, String> {
-    if requested_id.is_empty() {
-        return Err("config_id is required".to_string());
-    }
-    config.instance_id = Some(requested_id);
-    Ok(config)
-}
-
-fn validate_config_json(config_json: &str, config_id: String) -> Result<NetworkConfig, String> {
-    let config = serde_json::from_str::<NetworkConfig>(config_json)
-        .map_err(|e| format!("parse config json failed: {}", e))?;
-    let config = normalize_config_id(config, config_id)?;
-    config
-        .gen_config()
-        .map_err(|e| format!("generate toml failed: {}", e))?;
-    Ok(config)
-}
-
-fn config_to_top_level_map(config: &NetworkConfig) -> Option<Map<String, Value>> {
-    serde_json::to_value(config).ok()?.as_object().cloned()
-}
-
-fn load_config_map_from_db(config_id: &str) -> Option<Map<String, Value>> {
-    let conn = open_db()?;
-    let mut stmt = conn
-        .prepare(
-            "SELECT field_name, field_json
-             FROM stored_config_fields
-             WHERE config_id = ?1",
-        )
-        .ok()?;
-    let rows = stmt
-        .query_map(params![config_id], |row| {
-            let field_name: String = row.get(0)?;
-            let field_json: String = row.get(1)?;
-            Ok((field_name, field_json))
-        })
-        .ok()?;
-
-    let mut object = Map::new();
-    for row in rows {
-        let (field_name, field_json) = row.ok()?;
-        let value = serde_json::from_str::<Value>(&field_json).ok()?;
-        object.insert(field_name, value);
-    }
-
-    if object.is_empty() { None } else { Some(object) }
-}
-
 fn migrate_legacy_file_if_needed(config_id: &str) -> Option<()> {
-    let legacy_path = legacy_config_file_path(config_id)?;
-    if !legacy_path.exists() {
-        return Some(());
-    }
-
-    let raw = std::fs::read_to_string(&legacy_path).ok()?;
-    let display_name = get_config_meta(config_id)
-        .map(|meta| meta.display_name)
-        .unwrap_or_else(|| config_id.to_string());
-    save_config_record(config_id.to_string(), display_name, raw)?;
-
-    if let Err(e) = std::fs::remove_file(&legacy_path) {
-        hilog_error!("[Rust] failed to remove legacy config file {}: {}", legacy_path.display(), e);
-    }
-    Some(())
+    legacy_migration::migrate_legacy_file_if_needed(&config_root_dir(), CONFIG_DIR_NAME, config_id, save_config_record)
 }
 
 pub fn save_config_record(
@@ -128,7 +66,7 @@ pub fn save_config_record(
     display_name: String,
     config_json: String,
 ) -> Option<StoredConfigRecord> {
-    let config = match validate_config_json(&config_json, config_id.clone()) {
+    let config = match validation::validate_config_json(&config_json, config_id.clone()) {
         Ok(config) => config,
         Err(e) => {
             hilog_error!("[Rust] save_config_record failed {}", e);
@@ -144,7 +82,7 @@ pub fn save_config_record(
         }
     };
 
-    let fields = match config_to_top_level_map(&config) {
+    let fields = match validation::config_to_top_level_map(&config) {
         Some(fields) => fields,
         None => return None,
     };
@@ -159,25 +97,7 @@ pub fn save_config_record(
         .unwrap_or(false);
     let meta = upsert_config_meta_in_tx(&tx, config_id.clone(), display_name, favorite, temporary)?;
 
-    if let Err(e) = tx.execute(
-        "DELETE FROM stored_config_fields WHERE config_id = ?1",
-        params![config_id],
-    ) {
-        hilog_error!("[Rust] failed to clear existing config fields {}: {}", config_id, e);
-        return None;
-    }
-
-    for (field_name, value) in fields {
-        let field_json = serde_json::to_string(&value).ok()?;
-        if let Err(e) = tx.execute(
-            "INSERT INTO stored_config_fields (config_id, field_name, field_json, updated_at)
-             VALUES (?1, ?2, ?3, ?4)",
-            params![config_id, field_name, field_json, now_ts_string()],
-        ) {
-            hilog_error!("[Rust] failed to persist config field {}: {}", config_id, e);
-            return None;
-        }
-    }
+    field_store::replace_config_fields(&tx, &config_id, fields)?;
 
     tx.commit().ok()?;
 
@@ -195,7 +115,7 @@ pub fn save_config_record(
 
 pub fn load_config_json(config_id: &str) -> Option<String> {
     migrate_legacy_file_if_needed(config_id)?;
-    let object = load_config_map_from_db(config_id)?;
+    let object = field_store::load_config_map_from_db(config_id)?;
     serde_json::to_string(&Value::Object(object)).ok()
 }
 
@@ -304,40 +224,11 @@ pub fn delete_config_record(config_id: &str) -> bool {
 
 pub fn export_config_toml(config_id: &str) -> Option<ExportTomlResult> {
     let record = get_config_record(config_id)?;
-    let config = serde_json::from_str::<NetworkConfig>(&record.config_json).ok()?;
-    let toml = config.gen_config().ok()?;
-    Some(ExportTomlResult {
-        toml_text: toml.dump(),
-    })
+    import_export::export_config_toml_from_record(&record)
 }
 
 pub fn import_toml_config(toml_text: String, display_name: Option<String>) -> Option<StoredConfigRecord> {
-    let config = NetworkConfig::new_from_config(
-        easytier::common::config::TomlConfigLoader::new_from_str(&toml_text).ok()?,
-    )
-    .ok()?;
-
-    let config_id = config.instance_id.clone()?;
-    let name_from_toml = toml_text
-        .lines()
-        .find_map(|line| {
-            let trimmed = line.trim();
-            if !trimmed.starts_with("instance_name") {
-                return None;
-            }
-            trimmed
-                .split_once('=')
-                .map(|(_, value)| value.trim().trim_matches('"').trim_matches('\'').to_string())
-        })
-        .filter(|name| !name.is_empty());
-
-    let final_name = display_name
-        .filter(|name| !name.is_empty())
-        .or(name_from_toml)
-        .unwrap_or_else(|| config_id.clone());
-
-    let config_json = serde_json::to_string(&config).ok()?;
-    save_config_record(config_id, final_name, config_json)
+    import_export::import_toml_to_record(toml_text, display_name, save_config_record)
 }
 
 #[cfg(test)]
