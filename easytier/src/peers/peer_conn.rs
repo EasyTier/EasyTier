@@ -452,6 +452,11 @@ impl PeerConn {
         self.priority
     }
 
+    #[cfg(test)]
+    pub(crate) fn record_latency_for_test(&self, latency_us: u32) {
+        self.latency_stats.record_latency(latency_us);
+    }
+
     pub fn is_closed(&self) -> bool {
         self.close_event_notifier.is_closed()
     }
