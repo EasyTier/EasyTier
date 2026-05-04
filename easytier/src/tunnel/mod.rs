@@ -3,7 +3,7 @@ use std::{
 };
 
 use crate::{
-    common::{dns::socket_addrs, error::Error},
+    common::{config::DEFAULT_CONNECTION_PRIORITY, dns::socket_addrs, error::Error},
     proto::common::TunnelInfo,
 };
 use async_trait::async_trait;
@@ -139,9 +139,51 @@ pub trait TunnelListener: Send {
 pub trait TunnelConnector: Send {
     async fn connect(&mut self) -> Result<Box<dyn Tunnel>, TunnelError>;
     fn remote_url(&self) -> url::Url;
+    fn priority(&self) -> u32 {
+        DEFAULT_CONNECTION_PRIORITY
+    }
     fn set_bind_addrs(&mut self, _addrs: Vec<SocketAddr>) {}
     fn set_ip_version(&mut self, _ip_version: IpVersion) {}
     fn set_resolved_addr(&mut self, _addr: SocketAddr) {}
+}
+
+#[derive(Debug)]
+pub struct PrioritizedConnector<C> {
+    inner: C,
+    priority: u32,
+}
+
+impl<C> PrioritizedConnector<C> {
+    pub fn new(inner: C, priority: u32) -> Self {
+        Self { inner, priority }
+    }
+}
+
+#[async_trait]
+impl<C: TunnelConnector> TunnelConnector for PrioritizedConnector<C> {
+    async fn connect(&mut self) -> Result<Box<dyn Tunnel>, TunnelError> {
+        self.inner.connect().await
+    }
+
+    fn remote_url(&self) -> url::Url {
+        self.inner.remote_url()
+    }
+
+    fn priority(&self) -> u32 {
+        self.priority
+    }
+
+    fn set_bind_addrs(&mut self, addrs: Vec<SocketAddr>) {
+        self.inner.set_bind_addrs(addrs);
+    }
+
+    fn set_ip_version(&mut self, ip_version: IpVersion) {
+        self.inner.set_ip_version(ip_version);
+    }
+
+    fn set_resolved_addr(&mut self, addr: SocketAddr) {
+        self.inner.set_resolved_addr(addr);
+    }
 }
 
 pub fn build_url_from_socket_addr(addr: &String, scheme: &str) -> url::Url {

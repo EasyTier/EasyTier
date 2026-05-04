@@ -91,6 +91,7 @@ pub type ListenerCreator = Box<dyn ListenerCreatorTrait>;
 struct ListenerFactory {
     creator_fn: Arc<ListenerCreator>,
     must_succ: bool,
+    priority: u32,
 }
 
 pub struct ListenerManager<H> {
@@ -125,8 +126,9 @@ impl<H: TunnelHandlerForListener + Send + Sync + 'static + Debug> ListenerManage
         )
         .await?;
 
-        for l in self.global_ctx.config.get_listener_uris().iter() {
-            let l = l.clone();
+        for listener_cfg in self.global_ctx.config.get_listener_configs().iter() {
+            let l = listener_cfg.url.clone();
+            let priority = listener_cfg.priority;
             let Ok(_) = create_listener_by_url(&l, self.global_ctx.clone()) else {
                 let msg = format!("failed to get listener by url: {}, maybe not supported", l);
                 self.global_ctx
@@ -136,9 +138,10 @@ impl<H: TunnelHandlerForListener + Send + Sync + 'static + Debug> ListenerManage
             let ctx = self.global_ctx.clone();
 
             let listener = l.clone();
-            self.add_listener(
+            self.add_listener_with_priority(
                 move || create_listener_by_url(&listener, ctx.clone()).unwrap(),
                 true,
+                priority,
             )
             .await?;
 
@@ -153,9 +156,10 @@ impl<H: TunnelHandlerForListener + Send + Sync + 'static + Debug> ListenerManage
                     .set_host(Some("[::]".to_string().as_str()))
                     .with_context(|| format!("failed to set ipv6 host for listener: {}", l))?;
                 let ctx = self.global_ctx.clone();
-                self.add_listener(
+                self.add_listener_with_priority(
                     move || create_listener_by_url(&ipv6_listener, ctx.clone()).unwrap(),
                     false,
+                    priority,
                 )
                 .await?;
             }
@@ -169,9 +173,24 @@ impl<H: TunnelHandlerForListener + Send + Sync + 'static + Debug> ListenerManage
         creator: C,
         must_succ: bool,
     ) -> Result<(), Error> {
+        self.add_listener_with_priority(
+            creator,
+            must_succ,
+            crate::common::config::DEFAULT_CONNECTION_PRIORITY,
+        )
+        .await
+    }
+
+    pub async fn add_listener_with_priority<C: ListenerCreatorTrait + 'static>(
+        &mut self,
+        creator: C,
+        must_succ: bool,
+        priority: u32,
+    ) -> Result<(), Error> {
         self.listeners.push(ListenerFactory {
             creator_fn: Arc::new(Box::new(creator)),
             must_succ,
+            priority,
         });
         Ok(())
     }
@@ -181,6 +200,7 @@ impl<H: TunnelHandlerForListener + Send + Sync + 'static + Debug> ListenerManage
         creator: Arc<ListenerCreator>,
         peer_manager: Weak<H>,
         global_ctx: ArcGlobalCtx,
+        priority: u32,
     ) {
         let mut err_count = 0;
         loop {
@@ -189,7 +209,7 @@ impl<H: TunnelHandlerForListener + Send + Sync + 'static + Debug> ListenerManage
             match l.listen().await {
                 Ok(_) => {
                     err_count = 0;
-                    global_ctx.add_running_listener(l.local_url());
+                    global_ctx.add_running_listener_with_priority(l.local_url(), priority);
                     global_ctx.issue_event(GlobalCtxEvent::ListenerAdded(l.local_url()));
                 }
                 Err(e) => {
@@ -270,6 +290,7 @@ impl<H: TunnelHandlerForListener + Send + Sync + 'static + Debug> ListenerManage
                 listener.creator_fn.clone(),
                 self.peer_manager.clone(),
                 self.global_ctx.clone(),
+                listener.priority,
             ));
         }
 

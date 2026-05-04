@@ -188,23 +188,45 @@ impl Peer {
 
     async fn select_conn(&self) -> Option<ArcPeerConn> {
         let default_conn_id = self.default_conn_id.load();
-        if let Some(conn) = self.conns.get(&default_conn_id) {
-            return Some(conn.clone());
-        }
-
-        // find a conn with the smallest latency
-        let mut min_latency = u64::MAX;
-        for conn in self.conns.iter() {
-            let latency = conn.value().get_stats().latency_us;
-            if latency < min_latency {
-                min_latency = latency;
-                self.default_conn_id.store(conn.get_conn_id());
+        let latency_score = |latency_us| {
+            if latency_us == 0 {
+                u64::MAX
+            } else {
+                latency_us
             }
+        };
+        let selected_conn = self
+            .conns
+            .iter()
+            .filter(|conn| !conn.value().is_closed())
+            .min_by_key(|conn| {
+                (
+                    conn.value().priority(),
+                    latency_score(conn.value().get_stats().latency_us),
+                )
+            })
+            .map(|conn| {
+                (
+                    conn.get_conn_id(),
+                    conn.value().priority(),
+                    latency_score(conn.value().get_stats().latency_us),
+                )
+            });
+
+        let (selected_conn_id, selected_priority, selected_latency) = selected_conn?;
+
+        if let Some(default_conn) = self.conns.get(&default_conn_id)
+            && !default_conn.is_closed()
+            && (
+                default_conn.priority(),
+                latency_score(default_conn.get_stats().latency_us),
+            ) == (selected_priority, selected_latency)
+        {
+            return Some(default_conn.clone());
         }
 
-        self.conns
-            .get(&self.default_conn_id.load())
-            .map(|conn| conn.clone())
+        self.default_conn_id.store(selected_conn_id);
+        self.conns.get(&selected_conn_id).map(|conn| conn.clone())
     }
 
     pub async fn send_msg(&self, msg: ZCPacket) -> Result<(), Error> {
@@ -249,10 +271,24 @@ impl Peer {
         self.conns.iter().any(|entry| !entry.value().is_closed())
     }
 
+    pub fn has_conn_with_priority_at_most(&self, priority: u32) -> bool {
+        self.conns
+            .iter()
+            .any(|entry| !entry.value().is_closed() && entry.value().priority() <= priority)
+    }
+
     pub fn has_directly_connected_conn(&self) -> bool {
         self.conns
             .iter()
             .any(|entry| !entry.value().is_closed() && !entry.value().is_hole_punched())
+    }
+
+    pub fn has_directly_connected_conn_with_priority_at_most(&self, priority: u32) -> bool {
+        self.conns.iter().any(|entry| {
+            !entry.value().is_closed()
+                && !entry.value().is_hole_punched()
+                && entry.value().priority() <= priority
+        })
     }
 
     pub fn get_directly_connections(&self) -> DashSet<uuid::Uuid> {
@@ -298,7 +334,7 @@ mod tests {
 
     use crate::{
         common::{
-            config::{NetworkIdentity, PeerConfig},
+            config::{DEFAULT_CONNECTION_PRIORITY, NetworkIdentity, PeerConfig},
             global_ctx::{GlobalCtx, tests::get_mock_global_ctx},
             new_peer_id,
         },
@@ -381,6 +417,122 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn select_conn_prefers_priority_then_latency() {
+        let (packet_send, _packet_recv) = create_packet_recv_chan();
+        let global_ctx = get_mock_global_ctx();
+        let local_peer_id = new_peer_id();
+        let remote_peer_id = new_peer_id();
+        let peer = Peer::new(remote_peer_id, packet_send, global_ctx.clone());
+        let ps = Arc::new(PeerSessionStore::new());
+
+        let (low_client_tunnel, low_server_tunnel) = create_ring_tunnel_pair();
+        let mut low_client_conn = PeerConn::new(
+            local_peer_id,
+            global_ctx.clone(),
+            low_client_tunnel,
+            ps.clone(),
+        );
+        low_client_conn.set_priority(100);
+        low_client_conn.record_latency_for_test(1000);
+        let low_conn_id = low_client_conn.get_conn_id();
+        let mut low_server_conn = PeerConn::new(
+            remote_peer_id,
+            global_ctx.clone(),
+            low_server_tunnel,
+            ps.clone(),
+        );
+        let (client_ret, server_ret) = tokio::join!(
+            low_client_conn.do_handshake_as_client(),
+            low_server_conn.do_handshake_as_server()
+        );
+        client_ret.unwrap();
+        server_ret.unwrap();
+        peer.add_peer_conn(low_client_conn).await.unwrap();
+        assert_eq!(peer.select_conn().await.unwrap().get_conn_id(), low_conn_id);
+
+        let (same_priority_client_tunnel, same_priority_server_tunnel) = create_ring_tunnel_pair();
+        let mut same_priority_client_conn = PeerConn::new(
+            local_peer_id,
+            global_ctx.clone(),
+            same_priority_client_tunnel,
+            ps.clone(),
+        );
+        same_priority_client_conn.set_priority(100);
+        same_priority_client_conn.record_latency_for_test(10);
+        let same_priority_conn_id = same_priority_client_conn.get_conn_id();
+        let mut same_priority_server_conn = PeerConn::new(
+            remote_peer_id,
+            global_ctx.clone(),
+            same_priority_server_tunnel,
+            ps.clone(),
+        );
+        let (client_ret, server_ret) = tokio::join!(
+            same_priority_client_conn.do_handshake_as_client(),
+            same_priority_server_conn.do_handshake_as_server()
+        );
+        client_ret.unwrap();
+        server_ret.unwrap();
+        peer.add_peer_conn(same_priority_client_conn).await.unwrap();
+        assert_eq!(
+            peer.select_conn().await.unwrap().get_conn_id(),
+            same_priority_conn_id
+        );
+
+        let (unknown_latency_client_tunnel, unknown_latency_server_tunnel) =
+            create_ring_tunnel_pair();
+        let mut unknown_latency_client_conn = PeerConn::new(
+            local_peer_id,
+            global_ctx.clone(),
+            unknown_latency_client_tunnel,
+            ps.clone(),
+        );
+        unknown_latency_client_conn.set_priority(100);
+        let mut unknown_latency_server_conn = PeerConn::new(
+            remote_peer_id,
+            global_ctx.clone(),
+            unknown_latency_server_tunnel,
+            ps.clone(),
+        );
+        let (client_ret, server_ret) = tokio::join!(
+            unknown_latency_client_conn.do_handshake_as_client(),
+            unknown_latency_server_conn.do_handshake_as_server()
+        );
+        client_ret.unwrap();
+        server_ret.unwrap();
+        peer.add_peer_conn(unknown_latency_client_conn)
+            .await
+            .unwrap();
+        assert_eq!(
+            peer.select_conn().await.unwrap().get_conn_id(),
+            same_priority_conn_id
+        );
+
+        let (high_client_tunnel, high_server_tunnel) = create_ring_tunnel_pair();
+        let mut high_client_conn = PeerConn::new(
+            local_peer_id,
+            global_ctx.clone(),
+            high_client_tunnel,
+            ps.clone(),
+        );
+        high_client_conn.set_priority(DEFAULT_CONNECTION_PRIORITY);
+        let high_conn_id = high_client_conn.get_conn_id();
+        let mut high_server_conn =
+            PeerConn::new(remote_peer_id, global_ctx, high_server_tunnel, ps);
+        let (client_ret, server_ret) = tokio::join!(
+            high_client_conn.do_handshake_as_client(),
+            high_server_conn.do_handshake_as_server()
+        );
+        client_ret.unwrap();
+        server_ret.unwrap();
+        peer.add_peer_conn(high_client_conn).await.unwrap();
+
+        assert_eq!(
+            peer.select_conn().await.unwrap().get_conn_id(),
+            high_conn_id
+        );
+    }
+
+    #[tokio::test]
     async fn reject_peer_conn_with_mismatched_identity_type() {
         let (packet_send, _packet_recv) = create_packet_recv_chan();
         let global_ctx = get_mock_global_ctx();
@@ -423,6 +575,7 @@ mod tests {
                     .local_public_key
                     .unwrap(),
             ),
+            priority: crate::common::config::DEFAULT_CONNECTION_PRIORITY,
         }]);
         let mut shared_client_conn = PeerConn::new(
             local_peer_id,

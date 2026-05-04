@@ -28,6 +28,55 @@ use super::env_parser;
 
 pub type Flags = crate::proto::common::FlagsInConfig;
 
+pub const DEFAULT_CONNECTION_PRIORITY: u32 = 0;
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(untagged)]
+enum ListenerConfigDef {
+    Url(url::Url),
+    Config {
+        url: url::Url,
+        #[serde(default)]
+        priority: u32,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(from = "ListenerConfigDef")]
+pub struct ListenerConfig {
+    pub url: url::Url,
+    pub priority: u32,
+}
+
+impl ListenerConfig {
+    pub fn new(url: url::Url, priority: u32) -> Self {
+        Self { url, priority }
+    }
+
+    pub fn with_default_priority(url: url::Url) -> Self {
+        Self::new(url, DEFAULT_CONNECTION_PRIORITY)
+    }
+}
+
+impl From<url::Url> for ListenerConfig {
+    fn from(url: url::Url) -> Self {
+        Self::with_default_priority(url)
+    }
+}
+
+impl From<ListenerConfigDef> for ListenerConfig {
+    fn from(def: ListenerConfigDef) -> Self {
+        match def {
+            ListenerConfigDef::Url(url) => Self::with_default_priority(url),
+            ListenerConfigDef::Config { url, priority } => Self::new(url, priority),
+        }
+    }
+}
+
+fn listener_config_urls(listeners: Vec<ListenerConfig>) -> Vec<url::Url> {
+    listeners.into_iter().map(|listener| listener.url).collect()
+}
+
 pub fn gen_default_flags() -> Flags {
     #[allow(deprecated)]
     Flags {
@@ -196,6 +245,7 @@ pub trait ConfigLoader: Send + Sync {
     fn set_network_identity(&self, identity: NetworkIdentity);
 
     fn get_listener_uris(&self) -> Vec<url::Url>;
+    fn get_listener_configs(&self) -> Vec<ListenerConfig>;
 
     fn get_peers(&self) -> Vec<PeerConfig>;
     fn set_peers(&self, peers: Vec<PeerConfig>);
@@ -205,6 +255,8 @@ pub trait ConfigLoader: Send + Sync {
 
     fn get_mapped_listeners(&self) -> Vec<url::Url>;
     fn set_mapped_listeners(&self, listeners: Option<Vec<url::Url>>);
+    fn get_mapped_listener_configs(&self) -> Vec<ListenerConfig>;
+    fn set_mapped_listener_configs(&self, listeners: Option<Vec<ListenerConfig>>);
 
     fn get_vpn_portal_config(&self) -> Option<VpnPortalConfig>;
     fn set_vpn_portal_config(&self, config: VpnPortalConfig);
@@ -403,6 +455,8 @@ impl Default for NetworkIdentity {
 pub struct PeerConfig {
     pub uri: url::Url,
     pub peer_public_key: Option<String>,
+    #[serde(default)]
+    pub priority: u32,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
@@ -534,8 +588,8 @@ struct Config {
     ipv6_public_addr_prefix: Option<String>,
     dhcp: Option<bool>,
     network_identity: Option<NetworkIdentity>,
-    listeners: Option<Vec<url::Url>>,
-    mapped_listeners: Option<Vec<url::Url>>,
+    listeners: Option<Vec<ListenerConfig>>,
+    mapped_listeners: Option<Vec<ListenerConfig>>,
     exit_nodes: Option<Vec<IpAddr>>,
 
     peer: Option<Vec<PeerConfig>>,
@@ -849,6 +903,10 @@ impl ConfigLoader for TomlConfigLoader {
     }
 
     fn get_listener_uris(&self) -> Vec<url::Url> {
+        listener_config_urls(self.get_listener_configs())
+    }
+
+    fn get_listener_configs(&self) -> Vec<ListenerConfig> {
         self.config
             .lock()
             .unwrap()
@@ -866,14 +924,29 @@ impl ConfigLoader for TomlConfigLoader {
     }
 
     fn get_listeners(&self) -> Option<Vec<url::Url>> {
-        self.config.lock().unwrap().listeners.clone()
+        self.config
+            .lock()
+            .unwrap()
+            .listeners
+            .clone()
+            .map(listener_config_urls)
     }
 
     fn set_listeners(&self, listeners: Vec<url::Url>) {
-        self.config.lock().unwrap().listeners = Some(listeners);
+        self.config.lock().unwrap().listeners =
+            Some(listeners.into_iter().map(Into::into).collect());
     }
 
     fn get_mapped_listeners(&self) -> Vec<url::Url> {
+        listener_config_urls(self.get_mapped_listener_configs())
+    }
+
+    fn set_mapped_listeners(&self, listeners: Option<Vec<url::Url>>) {
+        self.config.lock().unwrap().mapped_listeners =
+            listeners.map(|listeners| listeners.into_iter().map(Into::into).collect());
+    }
+
+    fn get_mapped_listener_configs(&self) -> Vec<ListenerConfig> {
         self.config
             .lock()
             .unwrap()
@@ -882,7 +955,7 @@ impl ConfigLoader for TomlConfigLoader {
             .unwrap_or_default()
     }
 
-    fn set_mapped_listeners(&self, listeners: Option<Vec<url::Url>>) {
+    fn set_mapped_listener_configs(&self, listeners: Option<Vec<ListenerConfig>>) {
         self.config.lock().unwrap().mapped_listeners = listeners;
     }
 
@@ -1400,6 +1473,60 @@ members = ["admin"]
         let group = config.get_acl().unwrap().acl_v1.unwrap().group.unwrap();
         assert!(group.declares.is_empty());
         assert_eq!(group.members, vec!["admin"]);
+    }
+
+    #[test]
+    fn test_listener_priority_config_supports_old_and_structured_values() {
+        let config = TomlConfigLoader::new_from_str(
+            r#"
+listeners = [
+  "tcp://0.0.0.0:11010",
+  { url = "udp://0.0.0.0:11010", priority = 80 },
+]
+mapped_listeners = [
+  "tcp://example.com:11010",
+  { url = "tcp://frps.example.com:30001", priority = 100 },
+]
+
+[[peer]]
+uri = "tcp://proxy.example.com:443"
+priority = 100
+
+[[peer]]
+uri = "tcp://normal.example.com:11010"
+"#,
+        )
+        .unwrap();
+
+        let listeners = config.get_listener_configs();
+        assert_eq!(listeners[0].url.to_string(), "tcp://0.0.0.0:11010");
+        assert_eq!(listeners[0].priority, DEFAULT_CONNECTION_PRIORITY);
+        assert_eq!(listeners[1].url.to_string(), "udp://0.0.0.0:11010");
+        assert_eq!(listeners[1].priority, 80);
+
+        let mapped_listeners = config.get_mapped_listener_configs();
+        assert_eq!(
+            mapped_listeners[0].url.to_string(),
+            "tcp://example.com:11010"
+        );
+        assert_eq!(mapped_listeners[0].priority, DEFAULT_CONNECTION_PRIORITY);
+        assert_eq!(
+            mapped_listeners[1].url.to_string(),
+            "tcp://frps.example.com:30001"
+        );
+        assert_eq!(mapped_listeners[1].priority, 100);
+
+        let peers = config.get_peers();
+        assert_eq!(peers[0].uri.to_string(), "tcp://proxy.example.com:443");
+        assert_eq!(peers[0].priority, 100);
+        assert_eq!(peers[1].uri.to_string(), "tcp://normal.example.com:11010");
+        assert_eq!(peers[1].priority, DEFAULT_CONNECTION_PRIORITY);
+
+        let dumped = config.dump();
+        let reloaded = TomlConfigLoader::new_from_str(&dumped).unwrap();
+        assert_eq!(reloaded.get_listener_configs(), listeners);
+        assert_eq!(reloaded.get_mapped_listener_configs(), mapped_listeners);
+        assert_eq!(reloaded.get_peers(), peers);
     }
 
     #[test]

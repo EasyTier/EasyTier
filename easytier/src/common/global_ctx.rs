@@ -11,7 +11,7 @@ use dashmap::DashMap;
 
 use super::{
     PeerId,
-    config::{ConfigLoader, Flags},
+    config::{ConfigLoader, DEFAULT_CONNECTION_PRIORITY, Flags, ListenerConfig},
     netns::NetNS,
     network::IPCollector,
     stun::{StunInfoCollector, StunInfoCollectorTrait},
@@ -212,7 +212,7 @@ pub struct GlobalCtx {
 
     stun_info_collection: Mutex<Arc<dyn StunInfoCollectorTrait>>,
 
-    running_listeners: Mutex<Vec<url::Url>>,
+    running_listeners: Mutex<Vec<ListenerConfig>>,
     advertised_ipv6_public_addr_prefix: Mutex<Option<cidr::Ipv6Cidr>>,
 
     flags: ArcSwap<Flags>,
@@ -509,13 +509,28 @@ impl GlobalCtx {
     }
 
     pub fn get_running_listeners(&self) -> Vec<url::Url> {
+        self.running_listeners
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|listener| listener.url.clone())
+            .collect()
+    }
+
+    pub fn get_running_listener_configs(&self) -> Vec<ListenerConfig> {
         self.running_listeners.lock().unwrap().clone()
     }
 
     pub fn add_running_listener(&self, url: url::Url) {
+        self.add_running_listener_with_priority(url, DEFAULT_CONNECTION_PRIORITY);
+    }
+
+    pub fn add_running_listener_with_priority(&self, url: url::Url, priority: u32) {
         let mut l = self.running_listeners.lock().unwrap();
-        if !l.contains(&url) {
-            l.push(url);
+        if let Some(listener) = l.iter_mut().find(|listener| listener.url == url) {
+            listener.priority = priority;
+        } else {
+            l.push(ListenerConfig::new(url, priority));
         }
     }
 
@@ -744,11 +759,9 @@ impl GlobalCtx {
     }
 
     fn is_port_in_running_listeners(&self, port: u16, is_udp: bool) -> bool {
-        self.running_listeners
-            .lock()
-            .unwrap()
-            .iter()
-            .any(|x| x.port() == Some(port) && matches_protocol!(x, Protocol::UDP) == is_udp)
+        self.running_listeners.lock().unwrap().iter().any(|x| {
+            x.url.port() == Some(port) && matches_protocol!(&x.url, Protocol::UDP) == is_udp
+        })
     }
 
     #[tracing::instrument(ret, skip(self))]

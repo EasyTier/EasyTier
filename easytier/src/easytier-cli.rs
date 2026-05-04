@@ -43,7 +43,7 @@ use easytier::{
             },
             instance::{
                 AclManageRpc, AclManageRpcClientFactory, Connector, ConnectorManageRpc,
-                ConnectorManageRpcClientFactory, CredentialManageRpc,
+                ConnectorManageRpcClientFactory, ConnectorStatus, CredentialManageRpc,
                 CredentialManageRpcClientFactory, DumpRouteRequest, ForeignNetworkEntryPb,
                 GenerateCredentialRequest, GetAclStatsRequest, GetPrometheusStatsRequest,
                 GetStatsRequest, GetVpnPortalInfoRequest, GetWhitelistRequest,
@@ -236,6 +236,8 @@ enum ConnectorSubCommand {
     Add {
         #[arg(help = "connector url, e.g., tcp://1.2.3.4:11010")]
         url: String,
+        #[arg(short = 'p', long = "priority", default_value_t = easytier::common::config::DEFAULT_CONNECTION_PRIORITY, help = "connection priority; lower values are preferred")]
+        priority: u32,
     },
     /// Remove a connector
     Remove {
@@ -254,7 +256,11 @@ struct MappedListenerArgs {
 #[derive(Subcommand, Debug)]
 enum MappedListenerSubCommand {
     /// Add Mapped Listerner
-    Add { url: String },
+    Add {
+        url: String,
+        #[arg(short = 'p', long = "priority", default_value_t = easytier::common::config::DEFAULT_CONNECTION_PRIORITY, help = "listener priority; lower values are preferred")]
+        priority: u32,
+    },
     /// Remove Mapped Listener
     Remove { url: String },
     /// List Existing Mapped Listener
@@ -1247,6 +1253,7 @@ impl<'a> CommandHandler<'a> {
         &self,
         url: &str,
         action: ConfigPatchAction,
+        priority: Option<u32>,
     ) -> Result<(), Error> {
         let url = match action {
             ConfigPatchAction::Add => Self::connector_validate_url(url)?,
@@ -1267,6 +1274,7 @@ impl<'a> CommandHandler<'a> {
                 connectors: vec![UrlPatch {
                     action: action.into(),
                     url: Some(url.into()),
+                    priority,
                 }],
                 ..Default::default()
             }),
@@ -1281,11 +1289,12 @@ impl<'a> CommandHandler<'a> {
         &self,
         url: &str,
         action: ConfigPatchAction,
+        priority: Option<u32>,
     ) -> Result<(), Error> {
         let url = url.to_string();
         self.apply_to_instances(|handler| {
             let url = url.clone();
-            Box::pin(async move { handler.apply_connector_modify(&url, action).await })
+            Box::pin(async move { handler.apply_connector_modify(&url, action, priority).await })
         })
         .await
     }
@@ -1309,6 +1318,8 @@ impl<'a> CommandHandler<'a> {
             tx_bytes: String,
             #[tabled(rename = "tunnel")]
             tunnel_proto: String,
+            #[tabled(rename = "prio")]
+            priority: String,
             #[tabled(rename = "NAT")]
             nat_type: String,
             #[tabled(skip)]
@@ -1338,6 +1349,10 @@ impl<'a> CommandHandler<'a> {
                     rx_bytes: format_size(p.get_rx_bytes().unwrap_or(0), humansize::DECIMAL),
                     tx_bytes: format_size(p.get_tx_bytes().unwrap_or(0), humansize::DECIMAL),
                     tunnel_proto: p.get_conn_protos().unwrap_or_default().join(","),
+                    priority: p
+                        .get_conn_priority()
+                        .map(|priority| priority.to_string())
+                        .unwrap_or_else(|| "-".to_string()),
                     nat_type: p.get_udp_nat_type(),
                     id: route.peer_id.to_string(),
                     version: if route.version.is_empty() {
@@ -1363,6 +1378,7 @@ impl<'a> CommandHandler<'a> {
                     rx_bytes: "-".to_string(),
                     tx_bytes: "-".to_string(),
                     tunnel_proto: "-".to_string(),
+                    priority: "-".to_string(),
                     nat_type: if let Some(info) = p.stun_info {
                         info.udp_nat_type().as_str_name().to_string()
                     } else {
@@ -1826,6 +1842,29 @@ impl<'a> CommandHandler<'a> {
     }
 
     async fn handle_connector_list(&self) -> Result<(), Error> {
+        #[derive(tabled::Tabled, serde::Serialize)]
+        struct ConnectorTableItem {
+            url: String,
+            status: String,
+            priority: String,
+        }
+
+        impl From<Connector> for ConnectorTableItem {
+            fn from(connector: Connector) -> Self {
+                Self {
+                    url: connector
+                        .url
+                        .map(Into::<url::Url>::into)
+                        .map(|url| url.to_string())
+                        .unwrap_or_default(),
+                    status: ConnectorStatus::try_from(connector.status)
+                        .map(|status| format!("{:?}", status))
+                        .unwrap_or_else(|_| connector.status.to_string()),
+                    priority: connector.priority.to_string(),
+                }
+            }
+        }
+
         let results = self
             .collect_instance_results(|handler| Box::pin(handler.fetch_connector_list()))
             .await?;
@@ -1833,8 +1872,13 @@ impl<'a> CommandHandler<'a> {
             return self.print_json_results(results);
         }
         self.print_results(&results, |connectors| {
-            println!("response: {:#?}", connectors);
-            Ok(())
+            let mut items = connectors
+                .iter()
+                .cloned()
+                .map(ConnectorTableItem::from)
+                .collect::<Vec<_>>();
+            items.sort_by(|a, b| a.url.cmp(&b.url));
+            print_output(&items, self.output_format, &[], &[], self.no_trunc)
         })
     }
 
@@ -1873,6 +1917,7 @@ impl<'a> CommandHandler<'a> {
         &self,
         url: &str,
         action: ConfigPatchAction,
+        priority: Option<u32>,
     ) -> Result<(), Error> {
         let url = Self::mapped_listener_validate_url(url)?;
         let client = self.get_config_client().await?;
@@ -1882,6 +1927,7 @@ impl<'a> CommandHandler<'a> {
                 mapped_listeners: vec![UrlPatch {
                     action: action.into(),
                     url: Some(url.into()),
+                    priority,
                 }],
                 ..Default::default()
             }),
@@ -1896,11 +1942,16 @@ impl<'a> CommandHandler<'a> {
         &self,
         url: &str,
         action: ConfigPatchAction,
+        priority: Option<u32>,
     ) -> Result<(), Error> {
         let url = url.to_string();
         self.apply_to_instances(|handler| {
             let url = url.clone();
-            Box::pin(async move { handler.apply_mapped_listener_modify(&url, action).await })
+            Box::pin(async move {
+                handler
+                    .apply_mapped_listener_modify(&url, action, priority)
+                    .await
+            })
         })
         .await
     }
@@ -2883,15 +2934,17 @@ async fn main() -> Result<(), Error> {
             }
         },
         SubCommand::Connector(conn_args) => match conn_args.sub_command {
-            Some(ConnectorSubCommand::Add { url }) => {
+            Some(ConnectorSubCommand::Add { url, priority }) => {
                 handler
-                    .handle_connector_modify(&url, ConfigPatchAction::Add)
+                    .handle_connector_modify(&url, ConfigPatchAction::Add, Some(priority))
                     .await?;
-                println!("connector add applied to selected instance(s): {url}");
+                println!(
+                    "connector add applied to selected instance(s): {url}, priority: {priority}"
+                );
             }
             Some(ConnectorSubCommand::Remove { url }) => {
                 handler
-                    .handle_connector_modify(&url, ConfigPatchAction::Remove)
+                    .handle_connector_modify(&url, ConfigPatchAction::Remove, None)
                     .await?;
                 println!("connector remove applied to selected instance(s): {url}");
             }
@@ -2904,15 +2957,15 @@ async fn main() -> Result<(), Error> {
         },
         SubCommand::MappedListener(mapped_listener_args) => {
             match mapped_listener_args.sub_command {
-                Some(MappedListenerSubCommand::Add { url }) => {
+                Some(MappedListenerSubCommand::Add { url, priority }) => {
                     handler
-                        .handle_mapped_listener_modify(&url, ConfigPatchAction::Add)
+                        .handle_mapped_listener_modify(&url, ConfigPatchAction::Add, Some(priority))
                         .await?;
-                    println!("add mapped listener: {url}");
+                    println!("add mapped listener: {url}, priority: {priority}");
                 }
                 Some(MappedListenerSubCommand::Remove { url }) => {
                     handler
-                        .handle_mapped_listener_modify(&url, ConfigPatchAction::Remove)
+                        .handle_mapped_listener_modify(&url, ConfigPatchAction::Remove, None)
                         .await?;
                     println!("remove mapped listener: {url}");
                 }
