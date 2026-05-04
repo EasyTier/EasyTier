@@ -53,6 +53,11 @@ try {
 }
 
 $Base32 = $q['secret']
+if ([string]::IsNullOrWhiteSpace($Base32)) {
+    Write-Host "ERROR: OTP URI is missing required 'secret' query parameter"
+    exit 1
+}
+
 $Digits = if ($q['digits']) { [int]$q['digits'] } else { 6 }
 $Period = if ($q['period']) { [int]$q['period'] } else { 30 }
 $Algorithm = if ($q['algorithm']) { $q['algorithm'].ToUpper() } else { 'SHA256' }
