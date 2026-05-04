@@ -151,7 +151,8 @@ function Get-TotpCode {
 
 # Generate current TOTP code
 $otp = Get-TotpCode -Secret $Base32 -Digits $Digits -Period $Period -Algorithm $Algorithm
-Write-Host "Generated TOTP: $otp (using $Algorithm algorithm)"
+Write-Host "::add-mask::$otp"
+Write-Host "Generated TOTP for authentication (algorithm: $Algorithm, digits: $Digits, period: $Period seconds)"
 Write-Host ""
 
 # Launch SimplySign Desktop (registry should auto-open login dialog)
