@@ -29,7 +29,7 @@ on:
 permissions:
   contents: write
 
-env:
+
   # SimplySign signing configuration
   CERTUM_OTP_URI: ${{ secrets.CERTUM_OTP_URI }}
   CERTUM_USERNAME: ${{ secrets.CERTUM_USERNAME }}
@@ -138,8 +138,8 @@ jobs:
     name: Create GitHub Release
     needs: [sign-windows]
     runs-on: ubuntu-latest
-    # Continue even if signing fails or was skipped
-    if: always() && needs.sign-windows.result == 'success' || needs.sign-windows.result == 'skipped' || needs.sign-windows.result == 'failure'
+    # Continue regardless of signing result (success, failure, skipped, or cancelled)
+    if: ${{ always() && (needs.sign-windows.result == 'success' || needs.sign-windows.result == 'failure' || needs.sign-windows.result == 'cancelled' || needs.sign-windows.result == 'skipped') }}
     steps:
       -
         name: Checkout
