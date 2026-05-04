@@ -7,11 +7,11 @@ use derive_more::From;
 use hickory_proto::op::ResponseCode;
 use hickory_proto::rr::LowerName;
 use maplit::hashset;
+use optionize::{Optionizable, optionized};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::convert::TryFrom;
 use std::net::{Ipv4Addr, Ipv6Addr};
-use optionize::{optionized, Optionizable};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Hash, From, Deserialize, Serialize)]
 #[serde(untagged)]

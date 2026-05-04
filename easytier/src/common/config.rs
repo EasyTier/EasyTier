@@ -7,14 +7,14 @@ use crate::{
         api::manage::ConfigSource as RpcConfigSource,
         common::{CompressionAlgoPb, PortForwardConfigPb, SecureModeConfig, SocketType},
     },
-    tunnel::{generate_digest_from_str, IpScheme, TunnelScheme},
+    tunnel::{IpScheme, TunnelScheme, generate_digest_from_str},
     utils,
 };
 use anyhow::Context;
-use base64::{prelude::BASE64_STANDARD, Engine as _};
+use base64::{Engine as _, prelude::BASE64_STANDARD};
 use bon::Builder;
-use clap::builder::PossibleValue;
 use clap::ValueEnum;
+use clap::builder::PossibleValue;
 use derivative::Derivative;
 use derive_more::{Constructor, Deref};
 use getset::Getters;

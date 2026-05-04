@@ -5,9 +5,9 @@ use crate::dns::config::{DNS_DEFAULT_ADDRESSES, DNS_DEFAULT_DOMAIN};
 use crate::dns::utils::addr::NameServerAddrGroup;
 use crate::proto::dns::GetExportConfigResponse;
 use hickory_proto::rr::LowerName;
+use optionize::{Optionizable, optionized};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use optionize::{optionized, Optionizable};
 
 #[optionized]
 #[optionize(name = "DnsConfigRaw")]
