@@ -274,6 +274,9 @@ core_clap:
   check_config:
     en: Check config validity without starting the network
     zh-CN: 检查配置文件的有效性并退出
+  daemon:
+    en: Run in daemon mode
+    zh-CN: 以守护进程模式运行
   file_log_size_mb:
     en: "per file log size in MB, default is 100MB"
     zh-CN: "单个文件日志大小，单位 MB，默认值为 100MB"
