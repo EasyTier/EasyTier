@@ -461,10 +461,16 @@ struct InstallArgs {
     #[arg(long, help = "display name shown by the service manager")]
     display_name: Option<String>,
 
-    #[arg(long, help = "disable starting the service automatically on boot")]
+    #[arg(
+        long,
+        help = "whether to disable starting the service automatically on boot (true/false)"
+    )]
     disable_autostart: Option<bool>,
 
-    #[arg(long, help = "disable automatic restart when the service fails")]
+    #[arg(
+        long,
+        help = "whether to disable automatic restart when the service fails (true/false)"
+    )]
     disable_restart_on_failure: Option<bool>,
 
     #[arg(long, help = "path to easytier-core binary")]
