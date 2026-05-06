@@ -2,11 +2,12 @@ use std::sync::Arc;
 
 use crate::{
     common::{
+        MachineIdOptions,
         config::TomlConfigLoader,
         global_ctx::{ArcGlobalCtx, GlobalCtx},
         log,
         os_info::collect_device_os_info,
-        set_default_machine_id,
+        resolve_machine_id,
         stun::MockStunInfoCollector,
     },
     connector::create_connector_by_url,
@@ -81,6 +82,7 @@ impl WebClient {
     pub fn new<T: TunnelConnector + 'static, S: ToString, H: ToString>(
         connector: T,
         token: S,
+        machine_id: Uuid,
         hostname: H,
         secure_mode: bool,
         manager: Arc<NetworkInstanceManager>,
@@ -90,6 +92,7 @@ impl WebClient {
         let hooks = hooks.unwrap_or_else(|| Arc::new(DefaultHooks));
         let controller = Arc::new(controller::Controller::new(
             token.to_string(),
+            machine_id,
             hostname.to_string(),
             collect_device_os_info(),
             manager,
@@ -229,13 +232,14 @@ impl WebClient {
 
 pub async fn run_web_client(
     config_server_url_s: &str,
-    machine_id: Option<String>,
+    machine_id_opts: MachineIdOptions,
     hostname: Option<String>,
     secure_mode: bool,
     manager: Arc<NetworkInstanceManager>,
     hooks: Option<Arc<dyn WebClientHooks>>,
 ) -> Result<WebClient> {
-    set_default_machine_id(machine_id);
+    let machine_id = resolve_machine_id(&machine_id_opts)
+        .with_context(|| "failed to resolve machine id for web client")?;
     let config_server_url = match Url::parse(config_server_url_s) {
         Ok(u) => u,
         Err(_) => format!(
@@ -289,6 +293,7 @@ pub async fn run_web_client(
             global_ctx,
         },
         token.to_string(),
+        machine_id,
         hostname,
         secure_mode,
         manager,
@@ -300,14 +305,18 @@ pub async fn run_web_client(
 mod tests {
     use std::sync::{Arc, atomic::AtomicBool};
 
-    use crate::instance_manager::NetworkInstanceManager;
+    use crate::{common::MachineIdOptions, instance_manager::NetworkInstanceManager};
 
     #[tokio::test]
     async fn test_manager_wait() {
         let manager = Arc::new(NetworkInstanceManager::new());
+        let temp_dir = tempfile::tempdir().unwrap();
         let client = super::run_web_client(
             format!("ring://{}/test", uuid::Uuid::new_v4()).as_str(),
-            None,
+            MachineIdOptions {
+                explicit_machine_id: None,
+                state_dir: Some(temp_dir.path().to_path_buf()),
+            },
             None,
             false,
             manager.clone(),
@@ -335,9 +344,13 @@ mod tests {
     #[tokio::test]
     async fn test_run_web_client_with_unreachable_config_server() {
         let manager = Arc::new(NetworkInstanceManager::new());
+        let temp_dir = tempfile::tempdir().unwrap();
         let client = super::run_web_client(
             "udp://config-server.invalid:22020/test",
-            None,
+            MachineIdOptions {
+                explicit_machine_id: None,
+                state_dir: Some(temp_dir.path().to_path_buf()),
+            },
             None,
             false,
             manager,

@@ -490,10 +490,18 @@ async fn init_web_client(app: AppHandle, url: Option<String>) -> Result<(), Stri
         .ok_or_else(|| "Instance manager is not available".to_string())?;
 
     let hooks = Arc::new(manager::GuiHooks { app: app.clone() });
+    let machine_id_state_dir = app
+        .path()
+        .app_data_dir()
+        .with_context(|| "Failed to resolve machine id state directory")
+        .map_err(|e| format!("{:#}", e))?;
 
     let web_client = web_client::run_web_client(
         url.as_str(),
-        None,
+        easytier::common::MachineIdOptions {
+            explicit_machine_id: None,
+            state_dir: Some(machine_id_state_dir),
+        },
         None,
         false,
         instance_manager,
