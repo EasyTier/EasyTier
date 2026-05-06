@@ -157,6 +157,9 @@ jobs:
 
       - uses: mlugg/setup-zig@v2
         if: ${{ contains(matrix.OS, 'ubuntu') }}
+        with:
+          version: 0.16.0
+          use-cache: true
 
       - uses: taiki-e/install-action@v2
         if: ${{ contains(matrix.OS, 'ubuntu') }}
