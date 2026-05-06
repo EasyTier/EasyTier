@@ -132,9 +132,7 @@ fn read_state_machine_id(path: &Path) -> anyhow::Result<Option<uuid::Uuid>> {
 }
 
 fn read_legacy_machine_id_file() -> Option<uuid::Uuid> {
-    let Some(path) = legacy_machine_id_file_path() else {
-        return None;
-    };
+    let path = legacy_machine_id_file_path()?;
     read_legacy_machine_id_file_at(&path)
 }
 
@@ -200,7 +198,7 @@ fn resolve_new_machine_id() -> Option<uuid::Uuid> {
     #[cfg(target_os = "linux")]
     {
         let seed = linux_machine_id_seed(&seed);
-        return Some(digest_uuid_from_str(&seed));
+        Some(digest_uuid_from_str(&seed))
     }
 
     #[cfg(not(target_os = "linux"))]
@@ -368,7 +366,7 @@ impl MachineIdWriteLock {
 
         #[cfg(unix)]
         {
-            return Self::acquire_unix(path);
+            Self::acquire_unix(path)
         }
 
         #[cfg(not(unix))]
