@@ -22,6 +22,7 @@ use crate::{
     common::{
         PeerId,
         compressor::{Compressor as _, DefaultCompressor},
+        config::DEFAULT_CONNECTION_PRIORITY,
         constants::EASYTIER_VERSION,
         error::Error,
         global_ctx::{ArcGlobalCtx, GlobalCtxEvent, NetworkIdentity},
@@ -31,6 +32,7 @@ use crate::{
     },
     peers::{
         PeerPacketFilter,
+        peer::Peer,
         peer_conn::PeerConn,
         peer_rpc::PeerRpcManagerTransport,
         peer_session::PeerSessionStore,
@@ -595,6 +597,22 @@ impl PeerManager {
         is_directly_connected: bool,
         peer_id_hint: Option<PeerId>,
     ) -> Result<(PeerId, PeerConnId), Error> {
+        self.add_client_tunnel_with_peer_id_hint_and_priority(
+            tunnel,
+            is_directly_connected,
+            peer_id_hint,
+            DEFAULT_CONNECTION_PRIORITY,
+        )
+        .await
+    }
+
+    pub(crate) async fn add_client_tunnel_with_peer_id_hint_and_priority(
+        &self,
+        tunnel: Box<dyn Tunnel>,
+        is_directly_connected: bool,
+        peer_id_hint: Option<PeerId>,
+        priority: u32,
+    ) -> Result<(PeerId, PeerConnId), Error> {
         let mut peer = PeerConn::new_with_peer_id_hint(
             self.my_peer_id,
             self.global_ctx.clone(),
@@ -602,6 +620,7 @@ impl PeerManager {
             peer_id_hint,
             self.peer_session_store.clone(),
         );
+        peer.set_priority(priority);
         peer.set_is_hole_punched(!is_directly_connected);
         peer.do_handshake_as_client().await?;
         let conn_id = peer.get_conn_id();
@@ -616,12 +635,34 @@ impl PeerManager {
         Ok((peer_id, conn_id))
     }
 
+    fn get_peer_by_id(&self, peer_id: PeerId) -> Option<Arc<Peer>> {
+        self.peers.get_peer_by_id(peer_id).or_else(|| {
+            self.foreign_network_client
+                .get_peer_map()
+                .get_peer_by_id(peer_id)
+        })
+    }
+
     pub fn has_directly_connected_conn(&self, peer_id: PeerId) -> bool {
         if let Some(peer) = self.peers.get_peer_by_id(peer_id) {
             peer.has_directly_connected_conn()
         } else {
             self.foreign_network_client.get_peer_map().has_peer(peer_id)
         }
+    }
+
+    pub(crate) fn has_directly_connected_conn_with_priority_at_most(
+        &self,
+        peer_id: PeerId,
+        priority: u32,
+    ) -> bool {
+        self.get_peer_by_id(peer_id)
+            .is_some_and(|peer| peer.has_directly_connected_conn_with_priority_at_most(priority))
+    }
+
+    pub(crate) fn has_conn_with_priority_at_most(&self, peer_id: PeerId, priority: u32) -> bool {
+        self.get_peer_by_id(peer_id)
+            .is_some_and(|peer| peer.has_conn_with_priority_at_most(priority))
     }
 
     #[tracing::instrument]
@@ -642,11 +683,12 @@ impl PeerManager {
     where
         C: TunnelConnector + Debug,
     {
+        let priority = connector.priority();
         let ns = self.global_ctx.net_ns.clone();
         let t = ns
             .run_async(|| async move { connector.connect().await })
             .await?;
-        self.add_client_tunnel_with_peer_id_hint(t, true, peer_id_hint)
+        self.add_client_tunnel_with_peer_id_hint_and_priority(t, true, peer_id_hint, priority)
             .await
     }
 
@@ -3035,6 +3077,7 @@ mod tests {
             crate::common::config::PeerConfig {
                 uri: server_remote_url,
                 peer_public_key: Some(server_pub_b64.clone()),
+                priority: crate::common::config::DEFAULT_CONNECTION_PRIORITY,
             },
         ]);
 

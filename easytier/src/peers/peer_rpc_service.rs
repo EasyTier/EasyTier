@@ -5,7 +5,8 @@ use crate::{
     proto::{
         common::Void,
         peer_rpc::{
-            DirectConnectorRpc, GetIpListRequest, GetIpListResponse, SendUdpHolePunchPacketRequest,
+            DirectConnectorRpc, GetIpListRequest, GetIpListResponse, ListenerInfo,
+            SendUdpHolePunchPacketRequest,
         },
         rpc_types::{self, controller::BaseController},
     },
@@ -44,13 +45,23 @@ impl DirectConnectorRpc for DirectConnectorManagerRpcServer {
         _: GetIpListRequest,
     ) -> rpc_types::error::Result<GetIpListResponse> {
         let mut ret = self.global_ctx.get_ip_collector().collect_ip_addrs().await;
-        ret.listeners = self
+        let listener_configs = self
             .global_ctx
             .config
-            .get_mapped_listeners()
+            .get_mapped_listener_configs()
             .into_iter()
-            .chain(self.global_ctx.get_running_listeners())
-            .map(Into::into)
+            .chain(self.global_ctx.get_running_listener_configs())
+            .collect::<Vec<_>>();
+        ret.listeners = listener_configs
+            .iter()
+            .map(|listener| listener.url.clone().into())
+            .collect();
+        ret.listener_infos = listener_configs
+            .into_iter()
+            .map(|listener| ListenerInfo {
+                url: Some(listener.url.into()),
+                priority: listener.priority,
+            })
             .collect();
         remove_easytier_managed_ipv6s(&mut ret, &self.global_ctx);
         tracing::trace!(

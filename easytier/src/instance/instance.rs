@@ -560,16 +560,39 @@ impl InstanceConfigPatcher {
             return Ok(());
         }
         let global_ctx = weak_upgrade(&self.global_ctx)?;
-        let mut current_mapped_listeners = global_ctx.config.get_mapped_listeners();
+        let current_mapped_listener_configs = global_ctx.config.get_mapped_listener_configs();
+        let mut priority_by_url = current_mapped_listener_configs
+            .iter()
+            .map(|listener| (listener.url.clone(), listener.priority))
+            .collect::<std::collections::HashMap<_, _>>();
+        let mut current_mapped_listeners = current_mapped_listener_configs
+            .into_iter()
+            .map(|listener| listener.url)
+            .collect();
+        for patch in &mapped_listeners {
+            if let (Some(url), Some(priority)) = (&patch.url, patch.priority) {
+                priority_by_url.insert(url.clone().into(), priority);
+            }
+        }
         let patches = mapped_listeners.into_iter().map(Into::into).collect();
         InstanceConfigPatcher::trace_patchables(&patches);
         crate::proto::api::config::patch_vec(&mut current_mapped_listeners, patches);
         if current_mapped_listeners.is_empty() {
-            global_ctx.config.set_mapped_listeners(None);
+            global_ctx.config.set_mapped_listener_configs(None);
         } else {
+            let mapped_listener_configs = current_mapped_listeners
+                .into_iter()
+                .map(|url| {
+                    let priority = priority_by_url
+                        .get(&url)
+                        .copied()
+                        .unwrap_or(crate::common::config::DEFAULT_CONNECTION_PRIORITY);
+                    crate::common::config::ListenerConfig::new(url, priority)
+                })
+                .collect();
             global_ctx
                 .config
-                .set_mapped_listeners(Some(current_mapped_listeners));
+                .set_mapped_listener_configs(Some(mapped_listener_configs));
         }
         Ok(())
     }
@@ -590,7 +613,14 @@ impl InstanceConfigPatcher {
             match ConfigPatchAction::try_from(connector.action) {
                 Ok(ConfigPatchAction::Add) => {
                     tracing::info!("Connector added: {}", url);
-                    conn_manager.add_connector_by_url(url).await?;
+                    conn_manager
+                        .add_connector_by_url_with_priority(
+                            url,
+                            connector
+                                .priority
+                                .unwrap_or(crate::common::config::DEFAULT_CONNECTION_PRIORITY),
+                        )
+                        .await?;
                 }
                 Ok(ConfigPatchAction::Remove) => {
                     tracing::info!("Connector removed: {}", url);
@@ -742,7 +772,7 @@ impl Instance {
     async fn add_initial_peers(&self) -> Result<(), Error> {
         for peer in self.global_ctx.config.get_peers().iter() {
             self.get_conn_manager()
-                .add_connector_by_url(peer.uri.clone())
+                .add_connector_by_url_with_priority(peer.uri.clone(), peer.priority)
                 .await?;
         }
         Ok(())
@@ -1228,11 +1258,12 @@ impl Instance {
                 _request: ListMappedListenerRequest,
             ) -> Result<ListMappedListenerResponse, rpc_types::error::Error> {
                 let mut ret = ListMappedListenerResponse::default();
-                let urls = weak_upgrade(&self.0)?.config.get_mapped_listeners();
-                let mapped_listeners: Vec<MappedListener> = urls
+                let listener_configs = weak_upgrade(&self.0)?.config.get_mapped_listener_configs();
+                let mapped_listeners: Vec<MappedListener> = listener_configs
                     .into_iter()
-                    .map(|u| MappedListener {
-                        url: Some(u.into()),
+                    .map(|listener| MappedListener {
+                        url: Some(listener.url.into()),
+                        priority: listener.priority,
                     })
                     .collect();
                 ret.mappedlisteners = mapped_listeners;

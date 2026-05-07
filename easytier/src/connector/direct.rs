@@ -13,8 +13,8 @@ use std::{
 
 use crate::{
     common::{
-        PeerId, dns::socket_addrs, error::Error, global_ctx::ArcGlobalCtx,
-        stun::StunInfoCollectorTrait,
+        PeerId, config::DEFAULT_CONNECTION_PRIORITY, dns::socket_addrs, error::Error,
+        global_ctx::ArcGlobalCtx, stun::StunInfoCollectorTrait,
     },
     connector::udp_hole_punch::handle_rpc_result,
     peers::{
@@ -31,7 +31,7 @@ use crate::{
         },
         rpc_types::controller::BaseController,
     },
-    tunnel::{IpVersion, matches_protocol, udp::UdpTunnelConnector},
+    tunnel::{IpVersion, PrioritizedConnector, matches_protocol, udp::UdpTunnelConnector},
     use_global_var,
 };
 
@@ -48,6 +48,7 @@ use url::Host;
 
 pub const DIRECT_CONNECTOR_SERVICE_ID: u32 = 1;
 pub const DIRECT_CONNECTOR_BLACKLIST_TIMEOUT_SEC: u64 = 300;
+const DIRECT_CONNECTOR_LOW_PRIORITY_RETRY_TIMEOUT_SEC: u64 = 300;
 
 static TESTING: AtomicBool = AtomicBool::new(false);
 
@@ -131,11 +132,70 @@ struct DstBlackListItem(PeerId, String);
 #[derive(Hash, Eq, PartialEq, Clone)]
 struct DstListenerUrlBlackListItem(PeerId, String);
 
+#[derive(Clone, Debug)]
+struct AvailableListener {
+    url: url::Url,
+    priority: u32,
+}
+
+fn available_listeners_from_ip_list(
+    ip_list: &GetIpListResponse,
+    enable_ipv6: bool,
+) -> Vec<AvailableListener> {
+    let candidate_listeners: Vec<AvailableListener> = if ip_list.listener_infos.is_empty() {
+        ip_list
+            .listeners
+            .iter()
+            .map(|url| AvailableListener {
+                url: url.clone().into(),
+                priority: DEFAULT_CONNECTION_PRIORITY,
+            })
+            .collect()
+    } else {
+        ip_list
+            .listener_infos
+            .iter()
+            .filter_map(|info| {
+                info.url.as_ref().map(|url| AvailableListener {
+                    url: url.clone().into(),
+                    priority: info.priority,
+                })
+            })
+            .collect()
+    };
+
+    candidate_listeners
+        .into_iter()
+        .filter(|l| l.url.scheme() != "ring")
+        .filter(|l| {
+            mapped_listener_port(&l.url).is_some()
+                && l.url
+                    .host()
+                    .is_some_and(|host| enable_ipv6 || !matches!(host, Host::Ipv6(_)))
+        })
+        .collect()
+}
+
+fn sort_available_listeners(available_listeners: &mut [AvailableListener], default_protocol: &str) {
+    available_listeners.sort_by_key(|l| {
+        let scheme = l.url.scheme();
+        let protocol_priority = if scheme == default_protocol {
+            3
+        } else if scheme == "udp" {
+            2
+        } else {
+            1
+        };
+        (std::cmp::Reverse(l.priority), protocol_priority)
+    });
+}
+
 struct DirectConnectorManagerData {
     global_ctx: ArcGlobalCtx,
     peer_manager: Arc<PeerManager>,
     dst_listener_blacklist: timedmap::TimedMap<DstListenerUrlBlackListItem, ()>,
     peer_black_list: timedmap::TimedMap<PeerId, ()>,
+    low_priority_direct_retry_backoff: timedmap::TimedMap<PeerId, ()>,
 }
 
 impl DirectConnectorManagerData {
@@ -145,6 +205,7 @@ impl DirectConnectorManagerData {
             peer_manager,
             dst_listener_blacklist: timedmap::TimedMap::new(),
             peer_black_list: timedmap::TimedMap::new(),
+            low_priority_direct_retry_backoff: timedmap::TimedMap::new(),
         }
     }
 
@@ -201,6 +262,7 @@ impl DirectConnectorManagerData {
         &self,
         dst_peer_id: PeerId,
         remote_url: &url::Url,
+        priority: u32,
     ) -> Result<(PeerId, PeerConnId), Error> {
         let local_socket = Arc::new(
             UdpSocket::bind("[::]:0")
@@ -239,7 +301,12 @@ impl DirectConnectorManagerData {
 
         // NOTICE: must add as directly connected tunnel
         self.peer_manager
-            .add_client_tunnel_with_peer_id_hint(ret, true, Some(dst_peer_id))
+            .add_client_tunnel_with_peer_id_hint_and_priority(
+                ret,
+                true,
+                Some(dst_peer_id),
+                priority,
+            )
             .await
     }
 
@@ -247,6 +314,7 @@ impl DirectConnectorManagerData {
         &self,
         dst_peer_id: PeerId,
         remote_url: &url::Url,
+        priority: u32,
     ) -> Result<(PeerId, PeerConnId), Error> {
         let local_socket = {
             let _g = self.global_ctx.net_ns.guard();
@@ -275,21 +343,34 @@ impl DirectConnectorManagerData {
             .await?;
 
         self.peer_manager
-            .add_client_tunnel_with_peer_id_hint(ret, true, Some(dst_peer_id))
+            .add_client_tunnel_with_peer_id_hint_and_priority(
+                ret,
+                true,
+                Some(dst_peer_id),
+                priority,
+            )
             .await
     }
 
-    async fn do_try_connect_to_ip(&self, dst_peer_id: PeerId, addr: String) -> Result<(), Error> {
+    async fn do_try_connect_to_ip(
+        &self,
+        dst_peer_id: PeerId,
+        addr: String,
+        priority: u32,
+    ) -> Result<(), Error> {
         let connector = create_connector_by_url(&addr, &self.global_ctx, IpVersion::Both).await?;
         let remote_url = connector.remote_url();
         let (peer_id, conn_id) = if matches_scheme!(remote_url, TunnelScheme::Ip(IpScheme::Udp)) {
             match remote_url.host() {
                 Some(Host::Ipv6(_)) => {
-                    self.connect_to_public_ipv6(dst_peer_id, &remote_url)
+                    self.connect_to_public_ipv6(dst_peer_id, &remote_url, priority)
                         .await?
                 }
                 Some(Host::Ipv4(ip)) if is_public_ipv4(ip) => {
-                    match self.connect_to_public_ipv4(dst_peer_id, &remote_url).await {
+                    match self
+                        .connect_to_public_ipv4(dst_peer_id, &remote_url, priority)
+                        .await
+                    {
                         Ok(ret) => ret,
                         Err(err) => {
                             tracing::debug!(
@@ -300,7 +381,7 @@ impl DirectConnectorManagerData {
                             timeout(
                                 std::time::Duration::from_secs(3),
                                 self.peer_manager.try_direct_connect_with_peer_id_hint(
-                                    connector,
+                                    PrioritizedConnector::new(connector, priority),
                                     Some(dst_peer_id),
                                 ),
                             )
@@ -311,8 +392,10 @@ impl DirectConnectorManagerData {
                 _ => {
                     timeout(
                         std::time::Duration::from_secs(3),
-                        self.peer_manager
-                            .try_direct_connect_with_peer_id_hint(connector, Some(dst_peer_id)),
+                        self.peer_manager.try_direct_connect_with_peer_id_hint(
+                            PrioritizedConnector::new(connector, priority),
+                            Some(dst_peer_id),
+                        ),
                     )
                     .await??
                 }
@@ -320,8 +403,10 @@ impl DirectConnectorManagerData {
         } else {
             timeout(
                 std::time::Duration::from_secs(3),
-                self.peer_manager
-                    .try_direct_connect_with_peer_id_hint(connector, Some(dst_peer_id)),
+                self.peer_manager.try_direct_connect_with_peer_id_hint(
+                    PrioritizedConnector::new(connector, priority),
+                    Some(dst_peer_id),
+                ),
             )
             .await??
         };
@@ -345,6 +430,7 @@ impl DirectConnectorManagerData {
         self: Arc<DirectConnectorManagerData>,
         dst_peer_id: PeerId,
         addr: String,
+        priority: u32,
     ) -> Result<(), Error> {
         let mut rand_gen = rand::rngs::OsRng;
         let backoff_ms = [1000, 2000, 4000];
@@ -361,19 +447,26 @@ impl DirectConnectorManagerData {
             return Err(Error::UrlInBlacklist);
         }
 
+        let has_good_direct_conn = || {
+            self.peer_manager
+                .has_directly_connected_conn_with_priority_at_most(dst_peer_id, priority)
+        };
+
         loop {
-            if self.peer_manager.has_directly_connected_conn(dst_peer_id) {
+            if has_good_direct_conn() {
                 return Ok(());
             }
 
             tracing::debug!(?dst_peer_id, ?addr, "try_connect_to_ip start one round");
-            let ret = self.do_try_connect_to_ip(dst_peer_id, addr.clone()).await;
+            let ret = self
+                .do_try_connect_to_ip(dst_peer_id, addr.clone(), priority)
+                .await;
             tracing::debug!(?ret, ?dst_peer_id, ?addr, "try_connect_to_ip return");
             if ret.is_ok() {
                 return Ok(());
             }
 
-            if self.peer_manager.has_directly_connected_conn(dst_peer_id) {
+            if has_good_direct_conn() {
                 return Ok(());
             }
 
@@ -404,17 +497,19 @@ impl DirectConnectorManagerData {
         self: &Arc<DirectConnectorManagerData>,
         dst_peer_id: PeerId,
         ip_list: &GetIpListResponse,
-        listener: &url::Url,
+        listener: &AvailableListener,
         tasks: &mut JoinSet<Result<(), Error>>,
     ) {
-        let Ok(mut addrs) = resolve_mapped_listener_addrs(listener).await else {
+        let Ok(mut addrs) = resolve_mapped_listener_addrs(&listener.url).await else {
             tracing::error!(?listener, "failed to parse socket address from listener");
             return;
         };
         let listener_host = addrs.pop();
         tracing::info!(?listener_host, ?listener, "try direct connect to peer");
 
-        let is_udp = matches_protocol!(listener, Protocol::UDP);
+        let is_udp = matches_protocol!(&listener.url, Protocol::UDP);
+        let listener_url = &listener.url;
+        let priority = listener.priority;
         // Snapshot running listeners once; used for cheap port pre-checks before the
         // expensive should_deny_proxy call (which binds a socket per IP) in the
         // unspecified-address expansion loops below.
@@ -449,12 +544,13 @@ impl DirectConnectorManagerData {
                                 );
                                 return;
                             }
-                            let mut addr = (*listener).clone();
+                            let mut addr = listener_url.clone();
                             if addr.set_host(Some(ip.to_string().as_str())).is_ok() {
                                 tasks.spawn(Self::try_connect_to_ip(
                                     self.clone(),
                                     dst_peer_id,
                                     addr.to_string(),
+                                    priority,
                                 ));
                             } else {
                                 tracing::error!(
@@ -475,7 +571,8 @@ impl DirectConnectorManagerData {
                         tasks.spawn(Self::try_connect_to_ip(
                             self.clone(),
                             dst_peer_id,
-                            listener.to_string(),
+                            listener_url.to_string(),
+                            priority,
                         ));
                     }
                 }
@@ -504,12 +601,13 @@ impl DirectConnectorManagerData {
                                 );
                                 return;
                             }
-                            let mut addr = (*listener).clone();
+                            let mut addr = listener_url.clone();
                             if addr.set_host(Some(format!("[{}]", ip).as_str())).is_ok() {
                                 tasks.spawn(Self::try_connect_to_ip(
                                     self.clone(),
                                     dst_peer_id,
                                     addr.to_string(),
+                                    priority,
                                 ));
                             } else {
                                 tracing::error!(
@@ -535,7 +633,8 @@ impl DirectConnectorManagerData {
                         tasks.spawn(Self::try_connect_to_ip(
                             self.clone(),
                             dst_peer_id,
-                            listener.to_string(),
+                            listener_url.to_string(),
+                            priority,
                         ));
                     }
                 }
@@ -553,15 +652,7 @@ impl DirectConnectorManagerData {
         ip_list: GetIpListResponse,
     ) -> Result<(), Error> {
         let enable_ipv6 = self.global_ctx.get_flags().enable_ipv6;
-        let available_listeners = ip_list
-            .listeners
-            .clone()
-            .into_iter()
-            .map(Into::<url::Url>::into)
-            .filter_map(|l| if l.scheme() != "ring" { Some(l) } else { None })
-            .filter(|l| mapped_listener_port(l).is_some() && l.host().is_some())
-            .filter(|l| enable_ipv6 || !matches!(l.host().unwrap().to_owned(), Host::Ipv6(_)))
-            .collect::<Vec<_>>();
+        let mut available_listeners = available_listeners_from_ip_list(&ip_list, enable_ipv6);
 
         tracing::debug!(?available_listeners, "got available listeners");
 
@@ -570,35 +661,30 @@ impl DirectConnectorManagerData {
         }
 
         let default_protocol = self.global_ctx.get_flags().default_protocol;
-        // sort available listeners, default protocol has the highest priority, udp is second, others just random
-        // highest priority is in the last
-        let mut available_listeners = available_listeners;
-        available_listeners.sort_by_key(|l| {
-            let scheme = l.scheme();
-            if scheme == default_protocol {
-                3
-            } else if scheme == "udp" {
-                2
-            } else {
-                1
-            }
-        });
+        // Sort by configured priority first (lower is better), then prefer the
+        // default protocol and UDP. The best candidate group is in the last slot.
+        sort_available_listeners(&mut available_listeners, &default_protocol);
 
-        while !available_listeners.is_empty() {
+        while let Some(cur_listener) = available_listeners.last() {
             let mut tasks = JoinSet::new();
             let mut listener_list = vec![];
 
-            let cur_scheme = available_listeners.last().unwrap().scheme().to_owned();
+            let cur_priority = cur_listener.priority;
+            let cur_scheme = cur_listener.url.scheme().to_owned();
             while let Some(listener) = available_listeners.last() {
-                if listener.scheme() != cur_scheme {
+                if listener.priority != cur_priority || listener.url.scheme() != cur_scheme {
                     break;
                 }
 
-                tracing::debug!("try direct connect to peer with listener: {}", listener);
+                tracing::debug!(
+                    %cur_priority,
+                    "try direct connect to peer with listener: {}",
+                    listener.url
+                );
                 self.spawn_direct_connect_task(dst_peer_id, &ip_list, listener, &mut tasks)
                     .await;
 
-                listener_list.push(listener.clone().to_string());
+                listener_list.push(listener.url.to_string());
                 available_listeners.pop();
             }
 
@@ -606,12 +692,16 @@ impl DirectConnectorManagerData {
             tracing::debug!(
                 ?ret,
                 ?dst_peer_id,
+                ?cur_priority,
                 ?cur_scheme,
                 ?listener_list,
                 "all tasks finished for current scheme"
             );
 
-            if self.peer_manager.has_directly_connected_conn(dst_peer_id) {
+            if self
+                .peer_manager
+                .has_directly_connected_conn_with_priority_at_most(dst_peer_id, cur_priority)
+            {
                 tracing::info!(
                     "direct connect to peer {} success, has direct conn",
                     dst_peer_id
@@ -666,9 +756,25 @@ impl DirectConnectorManagerData {
                 .await;
             tracing::info!(?ret, ?dst_peer_id, "do_try_direct_connect return");
 
-            if peer_manager.has_directly_connected_conn(dst_peer_id) {
+            if peer_manager.has_directly_connected_conn_with_priority_at_most(
+                dst_peer_id,
+                DEFAULT_CONNECTION_PRIORITY,
+            ) {
                 tracing::info!(
                     "direct connect to peer {} success, has direct conn",
+                    dst_peer_id
+                );
+                return Ok(());
+            }
+
+            if peer_manager.has_directly_connected_conn(dst_peer_id) {
+                self.low_priority_direct_retry_backoff.insert(
+                    dst_peer_id,
+                    (),
+                    Duration::from_secs(DIRECT_CONNECTOR_LOW_PRIORITY_RETRY_TIMEOUT_SEC),
+                );
+                tracing::info!(
+                    "direct connect to peer {} skipped temporarily, only low-priority direct conn exists",
                     dst_peer_id
                 );
                 return Ok(());
@@ -715,6 +821,7 @@ impl PeerTaskLauncher for DirectConnectorLauncher {
 
     async fn collect_peers_need_task(&self, data: &Self::Data) -> Vec<Self::CollectPeerItem> {
         data.peer_black_list.cleanup();
+        data.low_priority_direct_retry_backoff.cleanup();
         let my_peer_id = data.peer_manager.my_peer_id();
         data.peer_manager
             .list_peers()
@@ -722,7 +829,13 @@ impl PeerTaskLauncher for DirectConnectorLauncher {
             .into_iter()
             .filter(|peer_id| {
                 *peer_id != my_peer_id
-                    && !data.peer_manager.has_directly_connected_conn(*peer_id)
+                    && !data
+                        .peer_manager
+                        .has_directly_connected_conn_with_priority_at_most(
+                            *peer_id,
+                            DEFAULT_CONNECTION_PRIORITY,
+                        )
+                    && !data.low_priority_direct_retry_backoff.contains(peer_id)
                     && !data.peer_black_list.contains(peer_id)
             })
             .collect()
@@ -813,12 +926,16 @@ mod tests {
             wait_route_appear_with_cost,
         },
         proto::peer_rpc::GetIpListResponse,
+        proto::peer_rpc::ListenerInfo,
         tunnel::{IpScheme, TunnelScheme, matches_scheme},
     };
 
     use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
-    use super::{TESTING, mapped_listener_port, resolve_mapped_listener_addrs};
+    use super::{
+        DEFAULT_CONNECTION_PRIORITY, TESTING, available_listeners_from_ip_list,
+        mapped_listener_port, resolve_mapped_listener_addrs, sort_available_listeners,
+    };
 
     #[tokio::test]
     async fn public_ipv6_candidate_rejects_easytier_managed_addr_even_in_tests() {
@@ -865,6 +982,68 @@ mod tests {
         assert_eq!(
             mapped_listener_port(&"udp://127.0.0.1".parse().unwrap()),
             Some(11010)
+        );
+    }
+
+    #[test]
+    fn available_listener_order_uses_priority_before_protocol() {
+        let ip_list = GetIpListResponse {
+            listener_infos: vec![
+                ListenerInfo {
+                    url: Some("tcp://127.0.0.1:11010".parse().unwrap()),
+                    priority: 100,
+                },
+                ListenerInfo {
+                    url: Some("udp://127.0.0.1:11011".parse().unwrap()),
+                    priority: 0,
+                },
+                ListenerInfo {
+                    url: Some("tcp://127.0.0.1:11012".parse().unwrap()),
+                    priority: 0,
+                },
+            ],
+            ..Default::default()
+        };
+
+        let mut listeners = available_listeners_from_ip_list(&ip_list, true);
+        sort_available_listeners(&mut listeners, "tcp");
+
+        let ordered_urls = listeners
+            .iter()
+            .rev()
+            .map(|listener| listener.url.to_string())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            ordered_urls,
+            vec![
+                "tcp://127.0.0.1:11012",
+                "udp://127.0.0.1:11011",
+                "tcp://127.0.0.1:11010",
+            ]
+        );
+    }
+
+    #[test]
+    fn available_listener_order_keeps_legacy_listeners_at_default_priority() {
+        let mut ip_list = GetIpListResponse::default();
+        ip_list
+            .listeners
+            .push("udp://127.0.0.1:11010".parse().unwrap());
+        ip_list
+            .listeners
+            .push("tcp://127.0.0.1:11011".parse().unwrap());
+
+        let mut listeners = available_listeners_from_ip_list(&ip_list, true);
+        sort_available_listeners(&mut listeners, "tcp");
+
+        assert!(
+            listeners
+                .iter()
+                .all(|listener| listener.priority == DEFAULT_CONNECTION_PRIORITY)
+        );
+        assert_eq!(
+            listeners.last().unwrap().url.to_string(),
+            "tcp://127.0.0.1:11011"
         );
     }
 

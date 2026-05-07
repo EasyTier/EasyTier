@@ -8,7 +8,8 @@ use anyhow::Context as _;
 use dashmap::DashMap;
 use easytier::{
     common::config::{
-        ConfigFileControl, ConfigLoader, NetworkIdentity, PeerConfig, TomlConfigLoader,
+        ConfigFileControl, ConfigLoader, DEFAULT_CONNECTION_PRIORITY, NetworkIdentity, PeerConfig,
+        TomlConfigLoader,
     },
     instance_manager::NetworkInstanceManager,
 };
@@ -360,6 +361,7 @@ impl HealthChecker {
             .parse()
             .with_context(|| "failed to parse peer uri")?,
             peer_public_key: None,
+            priority: DEFAULT_CONNECTION_PRIORITY,
         }]);
 
         let inst_id = inst_id.unwrap_or(uuid::Uuid::new_v4());

@@ -37,7 +37,7 @@ use crate::utils::BoxExt;
 use crate::{
     common::{
         PeerId,
-        config::{NetworkIdentity, NetworkSecretDigest},
+        config::{DEFAULT_CONNECTION_PRIORITY, NetworkIdentity, NetworkSecretDigest},
         error::Error,
         global_ctx::ArcGlobalCtx,
     },
@@ -305,6 +305,7 @@ pub struct PeerConn {
 
     // remote or local
     is_hole_punched: bool,
+    priority: u32,
 
     close_event_notifier: Arc<PeerConnCloseNotify>,
 
@@ -393,6 +394,7 @@ impl PeerConn {
             is_client: None,
 
             is_hole_punched: true,
+            priority: DEFAULT_CONNECTION_PRIORITY,
 
             close_event_notifier: Arc::new(PeerConnCloseNotify::new(conn_id)),
 
@@ -440,6 +442,19 @@ impl PeerConn {
 
     pub fn is_hole_punched(&self) -> bool {
         self.is_hole_punched
+    }
+
+    pub fn set_priority(&mut self, priority: u32) {
+        self.priority = priority;
+    }
+
+    pub fn priority(&self) -> u32 {
+        self.priority
+    }
+
+    #[cfg(test)]
+    pub(crate) fn record_latency_for_test(&self, latency_us: u32) {
+        self.latency_stats.record_latency(latency_us);
     }
 
     pub fn is_closed(&self) -> bool {
@@ -529,6 +544,7 @@ impl PeerConn {
             version: VERSION,
             features: Vec::new(),
             network_name: network.network_name.clone(),
+            connection_priority: self.priority,
             ..Default::default()
         };
 
@@ -821,6 +837,7 @@ impl PeerConn {
             a_session_generation,
             a_conn_id: Some(a_conn_id.into()),
             client_encryption_algorithm: self.my_encrypt_algo.clone(),
+            connection_priority: self.priority,
         };
 
         let mut hs = builder
@@ -1072,6 +1089,7 @@ impl PeerConn {
             Some(&mut hs),
             first_msg1,
         )?;
+        self.priority = msg1_pb.connection_priority;
         let remote_network_name = msg1_pb.a_network_name.clone();
         self.record_control_rx(&remote_network_name, first_msg1_len);
 
@@ -1227,6 +1245,7 @@ impl PeerConn {
 
             features: Vec::new(),
             network_secret_digest: noise.secret_digest.clone(),
+            connection_priority: self.priority,
         }
     }
 
@@ -1264,6 +1283,7 @@ impl PeerConn {
             self.is_client = Some(false);
         } else if hdr.packet_type == PacketType::HandShake as u8 {
             let rsp = Self::decode_handshake_packet(&first_pkt)?;
+            self.priority = rsp.connection_priority;
             handshake_recved(self, &rsp.network_name)?;
             tracing::info!("handshake request: {:?}", rsp);
             self.record_control_rx(&rsp.network_name, first_pkt.buf_len() as u64);
@@ -1566,6 +1586,7 @@ impl PeerConn {
                 .as_ref()
                 .map(|x| x.peer_identity_type as i32)
                 .unwrap_or(PeerIdentityType::Admin as i32),
+            priority: self.priority,
         }
     }
 
@@ -2088,6 +2109,7 @@ pub mod tests {
                     .local_public_key
                     .unwrap(),
             ),
+            priority: crate::common::config::DEFAULT_CONNECTION_PRIORITY,
         }]);
 
         let ps = Arc::new(PeerSessionStore::new());

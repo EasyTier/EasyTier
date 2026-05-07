@@ -43,6 +43,7 @@ message StringPatch {
 message UrlPatch {
   ConfigPatchAction action = 1;
   common.Url url = 2;
+  optional uint32 priority = 3;
 }
 
 message AclPatch {

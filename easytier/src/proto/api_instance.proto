@@ -45,6 +45,7 @@ message PeerConnInfo {
   bytes noise_remote_static_pubkey = 12;
   peer_rpc.SecureAuthLevel secure_auth_level = 13;
   peer_rpc.PeerIdentityType peer_identity_type = 14;
+  uint32 priority = 15;
 }
 
 message PeerInfo {
@@ -208,6 +209,7 @@ enum ConnectorStatus {
 message Connector {
   common.Url url = 1;
   ConnectorStatus status = 2;
+  uint32 priority = 3;
 }
 
 message ListConnectorRequest { InstanceIdentifier instance = 1; }
@@ -218,7 +220,10 @@ service ConnectorManageRpc {
   rpc ListConnector(ListConnectorRequest) returns (ListConnectorResponse);
 }
 
-message MappedListener { common.Url url = 1; }
+message MappedListener {
+  common.Url url = 1;
+  uint32 priority = 2;
+}
 
 message ListMappedListenerRequest { InstanceIdentifier instance = 1; }
 

@@ -474,7 +474,10 @@ impl PeerTaskLauncher for UdpHolePunchPeerTaskLauncher {
                 continue;
             }
 
-            if data.peer_mgr.get_peer_map().has_peer(peer_id) {
+            if data.peer_mgr.has_conn_with_priority_at_most(
+                peer_id,
+                crate::common::config::DEFAULT_CONNECTION_PRIORITY,
+            ) {
                 continue;
             }
 
