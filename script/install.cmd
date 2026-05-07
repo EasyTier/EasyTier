@@ -51,7 +51,7 @@ param(
 
     [Parameter(Mandatory = $false)]
     [Alias("ghp")]
-    [string]$GitHubProxy = "https://ghfast.top/",
+    [string]$GitHubProxy = "https://gh-proxy.org/",
 
     [Parameter(Mandatory = $false)]
     [Alias("up")]
