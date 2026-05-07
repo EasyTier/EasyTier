@@ -1338,6 +1338,71 @@ stun_servers = [
     }
 
     #[test]
+    fn test_acl_toml_rule_uses_defaults_for_omitted_fields() {
+        use crate::proto::acl::{Action, ChainType, Protocol};
+
+        let config_str = r#"
+[[acl.acl_v1.chains]]
+name = "subnet_proxy_protect"
+chain_type = 3
+enabled = true
+default_action = 2
+
+[[acl.acl_v1.chains.rules]]
+name = "allow_my_devices"
+priority = 1000
+action = 1
+source_ips = ["10.172.192.2/32"]
+protocol = 5
+enabled = true
+"#;
+
+        let config = TomlConfigLoader::new_from_str(config_str).unwrap();
+        let acl = config.get_acl().unwrap();
+        let acl_v1 = acl.acl_v1.unwrap();
+        let chain = &acl_v1.chains[0];
+        let rule = &chain.rules[0];
+
+        assert_eq!(chain.chain_type, ChainType::Forward as i32);
+        assert_eq!(chain.default_action, Action::Drop as i32);
+        assert_eq!(rule.action, Action::Allow as i32);
+        assert_eq!(rule.protocol, Protocol::Any as i32);
+        assert_eq!(rule.source_ips, vec!["10.172.192.2/32"]);
+        assert!(rule.ports.is_empty());
+        assert!(rule.source_ports.is_empty());
+        assert!(rule.destination_ips.is_empty());
+        assert!(rule.source_groups.is_empty());
+        assert!(rule.destination_groups.is_empty());
+        assert_eq!(rule.rate_limit, 0);
+        assert_eq!(rule.burst_limit, 0);
+        assert!(!rule.stateful);
+    }
+
+    #[test]
+    fn test_acl_toml_group_can_omit_declares_or_members() {
+        let declares_only = r#"
+[acl.acl_v1.group]
+
+[[acl.acl_v1.group.declares]]
+group_name = "admin"
+group_secret = "admin-pw"
+"#;
+        let config = TomlConfigLoader::new_from_str(declares_only).unwrap();
+        let group = config.get_acl().unwrap().acl_v1.unwrap().group.unwrap();
+        assert_eq!(group.declares.len(), 1);
+        assert!(group.members.is_empty());
+
+        let members_only = r#"
+[acl.acl_v1.group]
+members = ["admin"]
+"#;
+        let config = TomlConfigLoader::new_from_str(members_only).unwrap();
+        let group = config.get_acl().unwrap().acl_v1.unwrap().group.unwrap();
+        assert!(group.declares.is_empty());
+        assert_eq!(group.members, vec!["admin"]);
+    }
+
+    #[test]
     fn test_network_config_source_user_is_implicit() {
         let config = TomlConfigLoader::default();
         config.set_network_config_source(Some(ConfigSource::User));

@@ -7,7 +7,7 @@ use tokio::{
 };
 
 use crate::{
-    common::{constants::EASYTIER_VERSION, get_machine_id},
+    common::constants::EASYTIER_VERSION,
     proto::{
         rpc_impl::bidirect::BidirectRpcManager,
         rpc_types::controller::BaseController,
@@ -65,11 +65,13 @@ impl Session {
         tasks: &mut JoinSet<()>,
         ctx: HeartbeatCtx,
     ) {
-        let mid = get_machine_id();
+        let controller = controller.upgrade().unwrap();
+        let mid = controller.machine_id();
         let inst_id = uuid::Uuid::new_v4();
-        let token = controller.upgrade().unwrap().token();
-        let hostname = controller.upgrade().unwrap().hostname();
-        let device_os = controller.upgrade().unwrap().device_os();
+        let token = controller.token();
+        let hostname = controller.hostname();
+        let device_os = controller.device_os();
+        let controller = Arc::downgrade(&controller);
 
         let ctx_clone = ctx.clone();
         let mut tick = interval(std::time::Duration::from_secs(1));

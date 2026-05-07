@@ -1336,7 +1336,10 @@ async fn run_main(cli: Cli) -> anyhow::Result<()> {
     let _web_client = if let Some(config_server_url_s) = cli.config_server.as_ref() {
         let wc = web_client::run_web_client(
             config_server_url_s,
-            cli.machine_id.clone(),
+            crate::common::MachineIdOptions {
+                explicit_machine_id: cli.machine_id.clone(),
+                state_dir: None,
+            },
             cli.network_options.hostname.clone(),
             cli.network_options.secure_mode.unwrap_or(false),
             manager.clone(),

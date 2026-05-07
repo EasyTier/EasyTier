@@ -9,6 +9,7 @@ use crate::{
 
 pub struct Controller {
     token: String,
+    machine_id: uuid::Uuid,
     hostname: String,
     device_os: DeviceOsInfo,
     manager: Arc<NetworkInstanceManager>,
@@ -18,6 +19,7 @@ pub struct Controller {
 impl Controller {
     pub fn new(
         token: String,
+        machine_id: uuid::Uuid,
         hostname: String,
         device_os: DeviceOsInfo,
         manager: Arc<NetworkInstanceManager>,
@@ -25,6 +27,7 @@ impl Controller {
     ) -> Self {
         Controller {
             token,
+            machine_id,
             hostname,
             device_os,
             manager,
@@ -42,6 +45,10 @@ impl Controller {
 
     pub fn hostname(&self) -> String {
         self.hostname.clone()
+    }
+
+    pub fn machine_id(&self) -> uuid::Uuid {
+        self.machine_id
     }
 
     pub fn device_os(&self) -> DeviceOsInfo {
