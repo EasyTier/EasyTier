@@ -1,0 +1,42 @@
+refactor(connector): unify connector lifecycle with ManagedConnector
+
+Replace the asymmetric connector creation paths with a unified
+ManagedConnector that handles lifecycle management internally.
+
+Key changes:
+- Add ConnectorResolver trait and 5 implementations:
+  - StaticResolver: for literal IPs (never refreshes)
+  - DnsResolver: for hostnames (300s/TTL refresh)
+  - HttpResolver: for HTTP(S) URLs (300s refresh)
+  - TxtResolver: for DNS TXT records (300s refresh)
+  - SrvResolver: for DNS SRV records (300s refresh)
+
+- Add ManagedConnector: implements TunnelConnector, wraps any
+  ConnectorResolver, handles periodic refresh and candidate selection
+
+- Refactor create_connector_by_url() to return ManagedConnector
+  for all URL types, enabling consistent lifecycle management:
+  - tcp://1.2.3.4:11010  -> StaticResolver (1 candidate, never refresh)
+  - tcp://hostname:port  -> DnsResolver (multi A/AAAA, TTL refresh)
+  - http(s)://api/nodes  -> HttpResolver (multi from body, 300s)
+  - txt://domain         -> TxtResolver (multi from TXT, 300s)
+  - srv://domain         -> SrvResolver (weighted choice, 300s)
+
+- Add create_direct_connector() for creating leaf-level connectors
+  with resolved IP addresses (used by ManagedConnector.connect())
+
+Cleanup:
+- Remove GlobalDynamicConnectorManager and its tests
+- Remove dynamic_manager injection from HttpTunnelConnector
+- Remove dynamic_manager injection from DnsTunnelConnector
+- Remove multi-node injection side effects from connectors
+- Remove manual_connector_manager from GlobalCtx
+
+Benefits:
+- tcp:// with DDNS now properly refreshes on reconnect
+- All connector types support multi-node (load balancing)
+- No global singleton for connector lifecycle management
+- Static addresses are a special case of dynamic (never refresh)
+- Side-effect-free connect() implementation
+
+Breaking: None (create_connector_by_url signature unchanged)

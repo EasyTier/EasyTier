@@ -12,7 +12,6 @@ use url::Url;
 use crate::{
     VERSION,
     common::{error::Error, global_ctx::ArcGlobalCtx},
-    connector::dynamic_connector_manager::GlobalDynamicConnectorManager,
     tunnel::{IpVersion, Tunnel, TunnelConnector, TunnelError, ZCPacketSink, ZCPacketStream},
 };
 
@@ -169,24 +168,6 @@ impl HttpTunnelConnector {
         }
 
         self.redirect_type = HttpRedirectType::BodyUrls;
-
-        // Add all valid URLs to the manual connector manager (except the first one which will be returned)
-        if valid_urls.len() > 1 {
-            if let Some(conn_manager) = self.global_ctx.get_manual_connector_manager() {
-                for url in valid_urls.iter().skip(1) {
-                    tracing::info!("Adding additional connector from HTTP response: {}", url);
-                    if let Err(e) = conn_manager.add_connector_by_url(url.clone()).await {
-                        tracing::warn!("Failed to add connector {}: {:?}", url, e);
-                    }
-                }
-                tracing::info!(
-                    "Added {} additional connectors from HTTP response",
-                    valid_urls.len() - 1
-                );
-            } else {
-                tracing::warn!("ManualConnectorManager not available, cannot add additional connectors");
-            }
-        }
 
         // Return the first valid URL as the primary connector
         let primary_url = first_valid_url.unwrap();
@@ -449,25 +430,16 @@ mod tests {
         config_fs.set_inst_name(format!("test_{}", config_fs.get_id()));
         config_fs.set_network_identity(identity.clone());
         let peer_manager = Arc::new(PeerManager::new(config_fs, global_ctx.clone()));
-        let conn_manager = Arc::new(ManualConnectorManager::new(global_ctx.clone(), peer_manager.clone()));
-        
-        // Set the connector manager in global ctx
-        global_ctx.set_manual_connector_manager(Arc::downgrade(&conn_manager));
+        let _conn_manager = Arc::new(ManualConnectorManager::new(global_ctx.clone(), peer_manager.clone()));
         
         let mut connector = HttpTunnelConnector::new(test_url.clone(), global_ctx.clone());
 
-        // Connect should succeed and add additional connectors
+        // Connect should succeed
         let t = connector.connect().await.unwrap();
         assert_eq!(connector.redirect_type, HttpRedirectType::BodyUrls);
 
         let captured_name = http_task.await.unwrap().unwrap();
         assert_eq!(captured_name, network_name);
-
-        // Verify that additional connectors were added
-        let connectors = conn_manager.list_connectors().await;
-        tracing::info!("Connectors after HTTP multi-node test: {:?}", connectors);
-        // Should have 2 additional connectors (udp://127.0.0.1:25889 and tcp://127.0.0.1:25890)
-        assert_eq!(connectors.len(), 2, "Expected 2 additional connectors to be added");
 
         let info = t.info().unwrap();
         let remote_addr = info.remote_addr.unwrap();

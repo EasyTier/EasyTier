@@ -2,7 +2,6 @@ use std::net::{IpAddr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
 
 use crate::{
     common::{dns::socket_addrs, error::Error, global_ctx::ArcGlobalCtx, idn},
-    connector::dns_connector::DnsTunnelConnector,
     proto::common::PeerFeatureFlag,
     tunnel::{
         self, IpScheme, IpVersion, TunnelConnector, TunnelError, TunnelScheme,
@@ -10,8 +9,9 @@ use crate::{
     },
     utils::BoxExt,
 };
-use http_connector::HttpTunnelConnector;
+use managed::ManagedConnector;
 use rand::seq::SliceRandom;
+use resolver::{ConnectorResolver, ResolvedCandidate};
 
 pub mod direct;
 pub mod manual;
@@ -20,13 +20,12 @@ pub mod udp_hole_punch;
 
 pub mod dns_connector;
 pub mod http_connector;
-pub mod dynamic_connector_manager;
+
+pub mod resolver;
+pub mod managed;
 
 #[cfg(test)]
 mod http_connector_tests;
-
-#[cfg(test)]
-mod dynamic_connector_tests;
 
 pub(crate) fn should_try_p2p_with_peer(
     feature_flag: Option<&PeerFeatureFlag>,
@@ -235,27 +234,33 @@ async fn resolve_connector_socket_addr(
     })
 }
 
-pub async fn create_connector_by_url(
-    url: &str,
+/// Create a direct (non-managed) TunnelConnector for a concrete connection URL.
+///
+/// This is called by `ManagedConnector` after it has selected a candidate URL
+/// from its resolved list. The URL should contain a concrete IP address
+/// (e.g. "tcp://1.2.3.4:11010"), not a hostname that requires further resolution.
+///
+/// Unlike `create_connector_by_url`, this does NOT wrap the connector in
+/// a `ManagedConnector` — it creates the leaf-level tunnel connector directly.
+pub(crate) async fn create_direct_connector(
+    url: &url::Url,
     global_ctx: &ArcGlobalCtx,
     ip_version: IpVersion,
 ) -> Result<Box<dyn TunnelConnector + 'static>, Error> {
-    let url = url::Url::parse(url).map_err(|_| Error::InvalidUrl(url.to_owned()))?;
-    let url = idn::convert_idn_to_ascii(url)?;
-    let scheme = (&url)
+    let scheme: TunnelScheme = url
         .try_into()
         .map_err(|_| TunnelError::InvalidProtocol(url.scheme().to_owned()))?;
-    let mut effective_connector_ip_version = ip_version;
+
     let mut connector: Box<dyn TunnelConnector + 'static> = match scheme {
         TunnelScheme::Ip(scheme) => {
-            let resolved_addr = resolve_connector_socket_addr(&url, global_ctx, ip_version).await?;
-            effective_connector_ip_version = resolved_addr.ip_version;
-            let mut connector: Box<dyn TunnelConnector> = match scheme {
-                IpScheme::Tcp => TcpTunnelConnector::new(url).boxed(),
-                IpScheme::Udp => UdpTunnelConnector::new(url).boxed(),
+            let resolved_addr =
+                resolve_connector_socket_addr(url, global_ctx, ip_version).await?;
+            let mut inner: Box<dyn TunnelConnector> = match scheme {
+                IpScheme::Tcp => TcpTunnelConnector::new(url.clone()).boxed(),
+                IpScheme::Udp => UdpTunnelConnector::new(url.clone()).boxed(),
                 #[cfg(feature = "quic")]
                 IpScheme::Quic => {
-                    tunnel::quic::QuicTunnelConnector::new(url, global_ctx.clone()).boxed()
+                    tunnel::quic::QuicTunnelConnector::new(url.clone(), global_ctx.clone()).boxed()
                 }
                 #[cfg(feature = "wireguard")]
                 IpScheme::Wg => {
@@ -265,47 +270,109 @@ pub async fn create_connector_by_url(
                         &nid.network_name,
                         &nid.network_secret.unwrap_or_default(),
                     );
-                    WgTunnelConnector::new(url, wg_config).boxed()
+                    WgTunnelConnector::new(url.clone(), wg_config).boxed()
                 }
                 #[cfg(feature = "websocket")]
                 IpScheme::Ws | IpScheme::Wss => {
-                    tunnel::websocket::WsTunnelConnector::new(url).boxed()
+                    tunnel::websocket::WsTunnelConnector::new(url.clone()).boxed()
                 }
                 #[cfg(feature = "faketcp")]
-                IpScheme::FakeTcp => tunnel::fake_tcp::FakeTcpTunnelConnector::new(url).boxed(),
+                IpScheme::FakeTcp => {
+                    tunnel::fake_tcp::FakeTcpTunnelConnector::new(url.clone()).boxed()
+                }
             };
-            connector.set_resolved_addr(resolved_addr.addr);
+            inner.set_resolved_addr(resolved_addr.addr);
             if global_ctx.config.get_flags().bind_device {
                 set_bind_addr_for_peer_connector(
-                    &mut connector,
+                    &mut inner,
                     resolved_addr.addr.is_ipv4(),
                     global_ctx,
                 )
                 .await;
             }
-            connector
+            inner.set_ip_version(resolved_addr.ip_version);
+            inner
         }
         #[cfg(unix)]
-        TunnelScheme::Unix => tunnel::unix::UnixSocketTunnelConnector::new(url).boxed(),
-        TunnelScheme::Http | TunnelScheme::Https => {
-            // 使用依赖注入，传入全局动态连接器管理器
-            let dynamic_manager = crate::connector::dynamic_connector_manager::GlobalDynamicConnectorManager::get_instance().clone();
-            HttpTunnelConnector::with_dynamic_manager(url, global_ctx.clone(), dynamic_manager).boxed()
+        TunnelScheme::Unix => tunnel::unix::UnixSocketTunnelConnector::new(url.clone()).boxed(),
+        TunnelScheme::Ring => RingTunnelConnector::new(url.clone()).boxed(),
+        _ => {
+            return Err(Error::InvalidUrl(format!(
+                "create_direct_connector: unexpected scheme '{}' for url: {}",
+                url.scheme(),
+                url
+            )));
         }
-        TunnelScheme::Ring => RingTunnelConnector::new(url).boxed(),
-        TunnelScheme::Txt | TunnelScheme::Srv => {
+    };
+
+    Ok(connector)
+}
+
+pub async fn create_connector_by_url(
+    url: &str,
+    global_ctx: &ArcGlobalCtx,
+    ip_version: IpVersion,
+) -> Result<Box<dyn TunnelConnector + 'static>, Error> {
+    let url = url::Url::parse(url).map_err(|_| Error::InvalidUrl(url.to_owned()))?;
+    let url = idn::convert_idn_to_ascii(url)?;
+    let scheme: TunnelScheme = (&url)
+        .try_into()
+        .map_err(|_| TunnelError::InvalidProtocol(url.scheme().to_owned()))?;
+
+    let connector: Box<dyn TunnelConnector + 'static> = match scheme {
+        TunnelScheme::Ip(scheme) => {
+            let is_domain = matches!(url.host(), Some(url::Host::Domain(_)));
+            if is_domain {
+                let resolver = Box::new(resolver::dns::DnsResolver::new(
+                    url.clone(),
+                    scheme,
+                    ip_version,
+                    global_ctx.clone(),
+                ));
+                ManagedConnector::new(url, resolver, ip_version, global_ctx.clone()).boxed()
+            } else {
+                let resolver =
+                    Box::new(resolver::r#static::StaticResolver::new(url.clone()));
+                ManagedConnector::new(url, resolver, ip_version, global_ctx.clone()).boxed()
+            }
+        }
+        TunnelScheme::Http | TunnelScheme::Https => {
+            let resolver =
+                Box::new(resolver::http::HttpResolver::new(url.clone(), global_ctx.clone()));
+            ManagedConnector::new(url, resolver, ip_version, global_ctx.clone()).boxed()
+        }
+        TunnelScheme::Txt => {
             if url.host_str().is_none() {
                 return Err(Error::InvalidUrl(format!(
-                    "host should not be empty in txt or srv url: {}",
+                    "host should not be empty in txt url: {}",
                     url
                 )));
             }
-            // 使用依赖注入，传入全局动态连接器管理器
-            let dynamic_manager = crate::connector::dynamic_connector_manager::GlobalDynamicConnectorManager::get_instance().clone();
-            DnsTunnelConnector::with_dynamic_manager(url, global_ctx.clone(), dynamic_manager).boxed()
+            let resolver = Box::new(resolver::txt::TxtResolver::new(url.clone()));
+            ManagedConnector::new(url, resolver, ip_version, global_ctx.clone()).boxed()
+        }
+        TunnelScheme::Srv => {
+            if url.host_str().is_none() {
+                return Err(Error::InvalidUrl(format!(
+                    "host should not be empty in srv url: {}",
+                    url
+                )));
+            }
+            let resolver = Box::new(resolver::srv::SrvResolver::new(url.clone()));
+            ManagedConnector::new(url, resolver, ip_version, global_ctx.clone()).boxed()
+        }
+        #[cfg(unix)]
+        TunnelScheme::Unix => {
+            let resolver =
+                Box::new(resolver::r#static::StaticResolver::new(url.clone()));
+            ManagedConnector::new(url, resolver, ip_version, global_ctx.clone()).boxed()
+        }
+        TunnelScheme::Ring => {
+            let resolver =
+                Box::new(resolver::r#static::StaticResolver::new(url.clone()));
+            ManagedConnector::new(url, resolver, ip_version, global_ctx.clone()).boxed()
         }
     };
-    connector.set_ip_version(effective_connector_ip_version);
 
     Ok(connector)
 }
@@ -329,13 +396,13 @@ mod tests {
         let public_route: cidr::Ipv6Inet = "2001:db8::2/128".parse().unwrap();
         global_ctx.set_public_ipv6_routes(BTreeSet::from([public_route]));
 
-        let ret =
-            create_connector_by_url("tcp://[2001:db8::2]:11010", &global_ctx, IpVersion::V6).await;
+        let mut connector =
+            create_connector_by_url("tcp://[2001:db8::2]:11010", &global_ctx, IpVersion::V6)
+                .await
+                .unwrap();
 
-        assert!(matches!(
-            ret,
-            Err(crate::common::error::Error::InvalidUrl(_))
-        ));
+        let ret = connector.connect().await;
+        assert!(ret.is_err());
     }
 
     #[test]
