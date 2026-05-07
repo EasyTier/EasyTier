@@ -820,6 +820,10 @@ impl NetworkConfig {
             flags.disable_relay_data = disable_relay_data;
         }
 
+        if let Some(enable_udp_broadcast_relay) = self.enable_udp_broadcast_relay {
+            flags.enable_udp_broadcast_relay = enable_udp_broadcast_relay;
+        }
+
         if let Some(disable_sym_hole_punching) = self.disable_sym_hole_punching {
             flags.disable_sym_hole_punching = disable_sym_hole_punching;
         }
@@ -995,6 +999,7 @@ impl NetworkConfig {
         result.disable_udp_hole_punching = Some(flags.disable_udp_hole_punching);
         result.disable_upnp = Some(flags.disable_upnp);
         result.disable_relay_data = Some(flags.disable_relay_data);
+        result.enable_udp_broadcast_relay = Some(flags.enable_udp_broadcast_relay);
         result.disable_sym_hole_punching = Some(flags.disable_sym_hole_punching);
         result.enable_magic_dns = Some(flags.accept_dns);
         result.mtu = Some(flags.mtu as i32);
@@ -1263,6 +1268,7 @@ mod tests {
                 flags.disable_tcp_hole_punching = rng.gen_bool(0.2);
                 flags.disable_udp_hole_punching = rng.gen_bool(0.2);
                 flags.disable_upnp = rng.gen_bool(0.2);
+                flags.enable_udp_broadcast_relay = rng.gen_bool(0.2);
                 flags.accept_dns = rng.gen_bool(0.6);
                 flags.mtu = rng.gen_range(1200..1500);
                 flags.private_mode = rng.gen_bool(0.3);
