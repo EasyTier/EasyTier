@@ -10,6 +10,7 @@ use pnet::packet::{
 #[cfg(any(windows, test))]
 use {
     crate::{
+        common::global_ctx::GlobalCtxEvent,
         common::stats_manager::{CounterHandle, LabelSet, LabelType, MetricName},
         peers::peer_manager::PeerManager,
         tunnel::packet_def::ZCPacket,
@@ -721,6 +722,20 @@ fn open_capture_socket(_config: &BroadcastRelayConfig) -> anyhow::Result<Capture
 }
 
 #[cfg(any(windows, test))]
+fn issue_start_result_event(
+    peer_manager: &PeerManager,
+    capture_backend: Option<&str>,
+    error: Option<String>,
+) {
+    peer_manager
+        .get_global_ctx()
+        .issue_event(GlobalCtxEvent::UdpBroadcastRelayStartResult {
+            capture_backend: capture_backend.map(str::to_owned),
+            error,
+        });
+}
+
+#[cfg(any(windows, test))]
 async fn forward_normalized_packet(
     peer_manager: &PeerManager,
     normalized: NormalizedPacket,
@@ -850,18 +865,34 @@ pub(crate) fn start(
     peer_manager: Arc<PeerManager>,
     virtual_ipv4: Ipv4Inet,
 ) -> anyhow::Result<AbortOnDropHandle<()>> {
-    let physical_interfaces = collect_physical_interfaces(virtual_ipv4)?;
+    let physical_interfaces = match collect_physical_interfaces(virtual_ipv4) {
+        Ok(interfaces) => interfaces,
+        Err(err) => {
+            issue_start_result_event(&peer_manager, None, Some(format!("{err:#}")));
+            return Err(err);
+        }
+    };
     if physical_interfaces.is_empty() {
-        anyhow::bail!("no physical IPv4 interface is available for UDP broadcast relay");
+        let msg = "no physical IPv4 interface is available for UDP broadcast relay";
+        issue_start_result_event(&peer_manager, None, Some(msg.to_owned()));
+        anyhow::bail!(msg);
     }
 
     let config = BroadcastRelayConfig::new(virtual_ipv4, physical_interfaces);
-    let socket = open_capture_socket(&config)?;
+    let socket = match open_capture_socket(&config) {
+        Ok(socket) => socket,
+        Err(err) => {
+            issue_start_result_event(&peer_manager, None, Some(format!("{err:#}")));
+            return Err(err);
+        }
+    };
+    let capture_backend = socket.backend_name();
+    issue_start_result_event(&peer_manager, Some(capture_backend), None);
 
     tracing::debug!(
         virtual_ipv4 = %config.virtual_ipv4,
         physical_interfaces = ?config.physical_interfaces,
-        capture_backend = socket.backend_name(),
+        capture_backend,
         "starting Windows UDP broadcast relay"
     );
 

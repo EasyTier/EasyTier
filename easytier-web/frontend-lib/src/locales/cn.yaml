@@ -263,6 +263,7 @@ event:
   DhcpIpv4Conflicted: DHCP IPv4地址冲突
   PortForwardAdded: 端口转发添加
   ProxyCidrsUpdated: 子网代理CIDR更新
+  UdpBroadcastRelayStartResult: UDP广播中继启动结果
 
 web:
   login:

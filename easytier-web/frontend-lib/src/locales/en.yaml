@@ -263,6 +263,7 @@ event:
   DhcpIpv4Conflicted: DhcpIpv4Conflicted
   PortForwardAdded: PortForwardAdded
   ProxyCidrsUpdated: ProxyCidrsUpdated
+  UdpBroadcastRelayStartResult: UDP Broadcast Relay Start Result
 
 web:
   login:
