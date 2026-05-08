@@ -9,7 +9,11 @@ use pnet::packet::{
 
 #[cfg(any(windows, test))]
 use {
-    crate::{peers::peer_manager::PeerManager, tunnel::packet_def::ZCPacket},
+    crate::{
+        common::stats_manager::{CounterHandle, LabelSet, LabelType, MetricName},
+        peers::peer_manager::PeerManager,
+        tunnel::packet_def::ZCPacket,
+    },
     anyhow::Context,
     network_interface::{Addr, NetworkInterface, NetworkInterfaceConfig},
     socket2::{Domain, Protocol, SockAddr, Socket, Type},
@@ -131,6 +135,58 @@ struct ParsedUdpBroadcastPacket {
     udp_len: usize,
     normalized_destination: Ipv4Addr,
     summary: UdpPacketSummary,
+}
+
+#[cfg(any(windows, test))]
+#[derive(Clone)]
+struct BroadcastRelayStats {
+    packets_captured: CounterHandle,
+    packets_ignored: CounterHandle,
+    packets_forwarded: CounterHandle,
+    packets_forward_failed: CounterHandle,
+}
+
+#[cfg(any(windows, test))]
+impl BroadcastRelayStats {
+    fn new(peer_manager: &PeerManager) -> Self {
+        let global_ctx = peer_manager.get_global_ctx();
+        let label_set =
+            LabelSet::new().with_label_type(LabelType::NetworkName(global_ctx.get_network_name()));
+        let stats_manager = global_ctx.stats_manager();
+
+        Self {
+            packets_captured: stats_manager.get_counter(
+                MetricName::UdpBroadcastRelayPacketsCaptured,
+                label_set.clone(),
+            ),
+            packets_ignored: stats_manager.get_counter(
+                MetricName::UdpBroadcastRelayPacketsIgnored,
+                label_set.clone(),
+            ),
+            packets_forwarded: stats_manager.get_counter(
+                MetricName::UdpBroadcastRelayPacketsForwarded,
+                label_set.clone(),
+            ),
+            packets_forward_failed: stats_manager
+                .get_counter(MetricName::UdpBroadcastRelayPacketsForwardFailed, label_set),
+        }
+    }
+
+    fn record_captured(&self) {
+        self.packets_captured.inc();
+    }
+
+    fn record_ignored(&self) {
+        self.packets_ignored.inc();
+    }
+
+    fn record_forwarded(&self) {
+        self.packets_forwarded.inc();
+    }
+
+    fn record_forward_failed(&self) {
+        self.packets_forward_failed.inc();
+    }
 }
 
 fn should_ignore_interface_addr(addr: Ipv4Addr) -> bool {
@@ -433,7 +489,11 @@ fn open_capture_socket() -> anyhow::Result<RawUdpCaptureSocket> {
 }
 
 #[cfg(any(windows, test))]
-async fn forward_normalized_packet(peer_manager: &PeerManager, normalized: NormalizedPacket) {
+async fn forward_normalized_packet(
+    peer_manager: &PeerManager,
+    normalized: NormalizedPacket,
+    stats: &BroadcastRelayStats,
+) {
     let packet = ZCPacket::new_with_payload(&normalized.packet);
     let ret = peer_manager
         .send_msg_by_ip(packet, IpAddr::V4(normalized.destination), true)
@@ -442,6 +502,8 @@ async fn forward_normalized_packet(peer_manager: &PeerManager, normalized: Norma
     let summary = UdpPacketSummary::parse(&normalized.packet);
     match ret {
         Ok(_) => {
+            stats.record_forwarded();
+
             if let Some(summary) = summary {
                 tracing::debug!(
                     src = %summary.src,
@@ -465,6 +527,8 @@ async fn forward_normalized_packet(peer_manager: &PeerManager, normalized: Norma
             }
         }
         Err(err) => {
+            stats.record_forward_failed();
+
             if let Some(summary) = summary {
                 tracing::debug!(
                     src = %summary.src,
@@ -497,14 +561,20 @@ async fn capture_loop(
     peer_manager: Arc<PeerManager>,
     config: BroadcastRelayConfig,
     mut socket: RawUdpCaptureSocket,
+    stats: BroadcastRelayStats,
 ) {
     loop {
         let normalized = match socket.recv().await {
             Ok(packet) => {
+                stats.record_captured();
                 if tracing::enabled!(tracing::Level::DEBUG) {
                     log_captured_udp_packet(packet);
                 }
-                normalize_udp_broadcast_packet(packet, &config)
+                let normalized = normalize_udp_broadcast_packet(packet, &config);
+                if normalized.is_none() {
+                    stats.record_ignored();
+                }
+                normalized
             }
             Err(err) => {
                 tracing::warn!(?err, "Windows UDP broadcast raw socket receive failed");
@@ -513,7 +583,7 @@ async fn capture_loop(
         };
 
         if let Some(normalized) = normalized {
-            forward_normalized_packet(&peer_manager, normalized).await;
+            forward_normalized_packet(&peer_manager, normalized, &stats).await;
         }
     }
 }
@@ -536,7 +606,8 @@ pub(crate) fn start(
 
     let socket = open_capture_socket()?;
     let config = BroadcastRelayConfig::new(virtual_ipv4, physical_interfaces);
-    let task = tokio::spawn(capture_loop(peer_manager, config, socket));
+    let stats = BroadcastRelayStats::new(&peer_manager);
+    let task = tokio::spawn(capture_loop(peer_manager, config, socket, stats));
     Ok(AbortOnDropHandle::new(task))
 }
 
