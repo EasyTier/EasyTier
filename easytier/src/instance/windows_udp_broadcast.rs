@@ -63,7 +63,7 @@ impl BroadcastRelayConfig {
     }
 
     fn normalize_destination(&self, dst: Ipv4Addr) -> Option<Ipv4Addr> {
-        if dst.is_broadcast() {
+        if dst.is_broadcast() || dst.is_multicast() {
             return Some(dst);
         }
 
@@ -140,7 +140,7 @@ fn parse_udp_broadcast(
     }
 
     let normalized_destination = config.normalize_destination(dst)?;
-    if normalized_destination.is_multicast() || normalized_destination.is_loopback() {
+    if normalized_destination.is_loopback() {
         return None;
     }
 
@@ -410,6 +410,21 @@ mod tests {
             Ipv4Addr::new(10, 144, 144, 255)
         );
         assert_eq!(&ipv4_packet.payload()[8..], b"directed");
+        assert_valid_checksums(&normalized.packet);
+    }
+
+    #[test]
+    fn windows_udp_broadcast_preserves_multicast_destination() {
+        let multicast = Ipv4Addr::new(239, 255, 255, 250);
+        let packet = build_udp_packet(Ipv4Addr::new(192, 168, 1, 7), multicast, b"multicast");
+
+        let normalized = normalize_udp_broadcast_packet(&packet, &config()).unwrap();
+        let ipv4_packet = Ipv4Packet::new(&normalized.packet).unwrap();
+
+        assert_eq!(normalized.destination, multicast);
+        assert_eq!(ipv4_packet.get_source(), Ipv4Addr::new(10, 144, 144, 1));
+        assert_eq!(ipv4_packet.get_destination(), multicast);
+        assert_eq!(&ipv4_packet.payload()[8..], b"multicast");
         assert_valid_checksums(&normalized.packet);
     }
 
