@@ -4,6 +4,7 @@ use easytier::proto::api::manage::NetworkConfig;
 use ipnet::IpNet;
 use ohos_hilog_binding::hilog_debug;
 use std::collections::HashSet;
+use std::net::IpAddr;
 
 pub(crate) fn load_manual_routes(config_id: &str) -> Vec<String> {
     load_config_json(config_id)
@@ -13,10 +14,19 @@ pub(crate) fn load_manual_routes(config_id: &str) -> Vec<String> {
 }
 
 fn normalize_route_cidr(route: &str) -> Option<String> {
-    route.parse::<IpNet>().ok().map(|network| match network {
-        IpNet::V4(net) => net.trunc().to_string(),
-        IpNet::V6(net) => net.trunc().to_string(),
-    })
+    route
+        .parse::<IpNet>()
+        .ok()
+        .map(|network| match network {
+            IpNet::V4(net) => net.trunc().to_string(),
+            IpNet::V6(net) => net.trunc().to_string(),
+        })
+        .or_else(|| {
+            route.parse::<IpAddr>().ok().map(|addr| match addr {
+                IpAddr::V4(ip) => format!("{}/32", ip),
+                IpAddr::V6(ip) => format!("{}/128", ip),
+            })
+        })
 }
 
 fn simplify_routes(routes: Vec<String>) -> Vec<String> {
