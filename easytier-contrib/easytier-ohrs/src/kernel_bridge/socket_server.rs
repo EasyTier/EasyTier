@@ -1,8 +1,7 @@
-use super::protocol::{TunRequestPayload, broadcast_local_socket_message};
-use super::routing::aggregate_tun_routes;
+use super::protocol::{broadcast_local_socket_message, TunRequestPayload};
 use crate::config::repository::kernel_socket_path;
 use crate::get_runtime_snapshot_inner;
-use ohos_hilog_binding::hilog_error;
+use ohos_hilog_binding::{hilog_error, hilog_info};
 use once_cell::sync::Lazy;
 use std::collections::{HashMap, HashSet};
 use std::io::ErrorKind;
@@ -12,6 +11,7 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
+use crate::kernel_bridge::routing::aggregate_tun_routes;
 
 struct LocalSocketState {
     stop_flag: std::sync::Arc<AtomicBool>,

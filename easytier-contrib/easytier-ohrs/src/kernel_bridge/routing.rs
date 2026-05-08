@@ -2,6 +2,7 @@ use crate::config::repository::load_config_json;
 use crate::runtime::state::runtime_state::RuntimeInstanceState;
 use easytier::proto::api::manage::NetworkConfig;
 use ipnet::IpNet;
+use ohos_hilog_binding::hilog_debug;
 use std::collections::HashSet;
 
 pub(crate) fn load_manual_routes(config_id: &str) -> Vec<String> {
@@ -70,7 +71,14 @@ pub(crate) fn aggregate_tun_routes(instance: &RuntimeInstanceState) -> Vec<Strin
 
     raw_routes.extend(manual_routes.iter().cloned());
     raw_routes.extend(proxy_cidrs.iter().cloned());
-    simplify_routes(raw_routes)
+    let aggregated_routes = simplify_routes(raw_routes);
+    hilog_debug!(
+        "[Rust] aggregate_tun_routes instance={} proxy_cidrs={:?} aggregated_routes={:?}",
+        instance.instance_id,
+        proxy_cidrs,
+        aggregated_routes
+    );
+    aggregated_routes
 }
 
 pub(crate) fn aggregate_requested_tun_routes(instances: &[RuntimeInstanceState]) -> Vec<String> {
