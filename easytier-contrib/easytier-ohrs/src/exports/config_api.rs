@@ -37,7 +37,8 @@ pub(crate) fn set_config_field(config_id: String, field: String, json_value: Str
 }
 
 pub(crate) fn import_toml(toml_text: String, display_name: Option<String>) -> Option<String> {
-    config::repository::import_toml_config(toml_text, display_name).map(|record| record.meta.config_id)
+    config::repository::import_toml_config(toml_text, display_name)
+        .map(|record| record.meta.config_id)
 }
 
 pub(crate) fn export_toml(config_id: String) -> Option<String> {

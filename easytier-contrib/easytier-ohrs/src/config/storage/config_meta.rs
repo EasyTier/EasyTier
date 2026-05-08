@@ -67,7 +67,11 @@ pub(crate) fn open_db() -> Option<Connection> {
     };
 
     if let Err(e) = init_schema(&conn) {
-        hilog_error!("[Rust] failed to initialize config db {}: {}", path.display(), e);
+        hilog_error!(
+            "[Rust] failed to initialize config db {}: {}",
+            path.display(),
+            e
+        );
         return None;
     }
 
@@ -111,7 +115,11 @@ fn to_meta(record: StoredConfigMetaRecord) -> StoredConfigMeta {
 pub fn init_config_meta_store(root_dir: String) -> bool {
     let root = PathBuf::from(root_dir);
     if let Err(e) = std::fs::create_dir_all(&root) {
-        hilog_error!("[Rust] failed to create config db dir {}: {}", root.display(), e);
+        hilog_error!(
+            "[Rust] failed to create config db dir {}: {}",
+            root.display(),
+            e
+        );
         return false;
     }
 
@@ -287,7 +295,10 @@ pub(crate) fn upsert_config_meta_in_tx(
     }))
 }
 
-pub fn set_config_display_name(config_id: String, display_name: String) -> Option<StoredConfigMeta> {
+pub fn set_config_display_name(
+    config_id: String,
+    display_name: String,
+) -> Option<StoredConfigMeta> {
     let conn = open_db()?;
     let mut record = load_meta_record(&conn, &config_id)?;
     record.display_name = display_name;

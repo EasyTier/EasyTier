@@ -4,6 +4,11 @@ mod kernel_bridge;
 mod platform;
 mod runtime;
 
+use config::repository::{
+    create_config_record, delete_config_record, export_config_toml, get_config_field_value,
+    get_default_config_json, import_toml_config, init_config_store as init_repo_store,
+    list_config_meta_json, save_config_record, set_config_field_value, start_kernel_with_config_id,
+};
 use config::services::schema_service::{
     ConfigFieldMapping, NetworkConfigSchema,
     get_network_config_field_mappings as build_network_config_field_mappings,
@@ -16,28 +21,22 @@ use config::services::share_link_service::{
 };
 use config::storage::config_meta::get_config_display_name;
 use config::types::stored_config::{KeyValuePair, SharedConfigLinkPayload};
-use config::repository::{
-    create_config_record, delete_config_record, export_config_toml, get_config_field_value,
-    get_default_config_json, import_toml_config, init_config_store as init_repo_store,
-    list_config_meta_json, save_config_record, set_config_field_value, start_kernel_with_config_id,
-};
-use kernel_bridge::{
-    aggregate_requested_tun_routes,
-    start_local_socket_server as start_local_socket_server_inner,
-    stop_local_socket_server as stop_local_socket_server_inner,
-};
-use runtime::state::runtime_state::{
-    RuntimeAggregateState, TunAggregateState, clear_tun_attached, mark_tun_attached,
-    runtime_instance_from_running_info,
-};
 use easytier::common::config::{ConfigFileControl, ConfigLoader, TomlConfigLoader};
 use easytier::common::constants::EASYTIER_VERSION;
 use easytier::instance_manager::NetworkInstanceManager;
 use easytier::proto::api::manage::NetworkConfig;
 use easytier::proto::api::manage::NetworkingMethod;
 use easytier::web_client::{WebClient, WebClientHooks, run_web_client};
+use kernel_bridge::{
+    aggregate_requested_tun_routes, start_local_socket_server as start_local_socket_server_inner,
+    stop_local_socket_server as stop_local_socket_server_inner,
+};
 use napi_derive_ohos::napi;
 use ohos_hilog_binding::{hilog_error, hilog_info};
+use runtime::state::runtime_state::{
+    RuntimeAggregateState, TunAggregateState, clear_tun_attached, mark_tun_attached,
+    runtime_instance_from_running_info,
+};
 use std::collections::{HashMap, HashSet};
 use std::format;
 use std::sync::{Arc, Mutex};
@@ -86,7 +85,8 @@ impl WebClientHooks for TrackedWebClientHooks {
 
 fn is_config_server_config(config: &NetworkConfig) -> bool {
     matches!(
-        NetworkingMethod::try_from(config.networking_method.unwrap_or_default()).unwrap_or_default(),
+        NetworkingMethod::try_from(config.networking_method.unwrap_or_default())
+            .unwrap_or_default(),
         NetworkingMethod::PublicServer
     ) && config
         .public_server_url
@@ -124,7 +124,11 @@ fn stop_web_client(config_id: &str) -> bool {
         .delete_network_instance(tracked_ids)
         .map(|_| true)
         .unwrap_or_else(|err| {
-            hilog_error!("[Rust] stop config server instances failed {}: {}", config_id, err);
+            hilog_error!(
+                "[Rust] stop config server instances failed {}: {}",
+                config_id,
+                err
+            );
             false
         });
     maybe_stop_local_socket_server();
@@ -137,14 +141,22 @@ fn ensure_local_socket_server_started() -> bool {
 
 fn maybe_stop_local_socket_server() {
     let no_local_instances = INSTANCE_MANAGER.list_network_instance_ids().is_empty();
-    let no_web_clients = WEB_CLIENTS.lock().map(|guard| guard.is_empty()).unwrap_or(false);
+    let no_web_clients = WEB_CLIENTS
+        .lock()
+        .map(|guard| guard.is_empty())
+        .unwrap_or(false);
     if no_local_instances && no_web_clients {
         let _ = stop_local_socket_server_inner();
     }
 }
 
 fn run_config_server_instance(config_id: &str, config: &NetworkConfig) -> bool {
-    if INSTANCE_MANAGER.list_network_instance_ids().iter().next().is_some() {
+    if INSTANCE_MANAGER
+        .list_network_instance_ids()
+        .iter()
+        .next()
+        .is_some()
+    {
         hilog_error!("[Rust] there is a running instance!");
         return false;
     }
@@ -154,7 +166,11 @@ fn run_config_server_instance(config_id: &str, config: &NetworkConfig) -> bool {
         return false;
     };
     let hooks = Arc::new(TrackedWebClientHooks::default());
-    let secure_mode = config.secure_mode.as_ref().map(|mode| mode.enabled).unwrap_or(false);
+    let secure_mode = config
+        .secure_mode
+        .as_ref()
+        .map(|mode| mode.enabled)
+        .unwrap_or(false);
     let hostname = config.hostname.clone();
 
     if !ensure_local_socket_server_started() {
@@ -203,8 +219,10 @@ pub(crate) fn build_default_network_config_json() -> Result<String, String> {
 }
 
 fn convert_toml_to_network_config_inner(toml_text: &str) -> Result<String, String> {
-    let config = NetworkConfig::new_from_config(TomlConfigLoader::new_from_str(toml_text).map_err(|e| e.to_string())?)
-        .map_err(|e| e.to_string())?;
+    let config = NetworkConfig::new_from_config(
+        TomlConfigLoader::new_from_str(toml_text).map_err(|e| e.to_string())?,
+    )
+    .map_err(|e| e.to_string())?;
     serde_json::to_string(&config).map_err(|e| e.to_string())
 }
 
@@ -250,7 +268,10 @@ pub(crate) fn run_network_instance_from_json(cfg_json: &str) -> bool {
     }
 
     let inst_id = cfg.get_id();
-    if INSTANCE_MANAGER.list_network_instance_ids().contains(&inst_id) {
+    if INSTANCE_MANAGER
+        .list_network_instance_ids()
+        .contains(&inst_id)
+    {
         hilog_error!("[Rust] instance {} already exists", inst_id);
         return false;
     }
@@ -346,7 +367,12 @@ pub fn start_kernel(config_id: String) -> bool {
 
 #[napi]
 pub fn stop_kernel(config_id: String) -> bool {
-    exports::runtime_api::stop_kernel(config_id, stop_web_client, parse_instance_uuid, maybe_stop_local_socket_server)
+    exports::runtime_api::stop_kernel(
+        config_id,
+        stop_web_client,
+        parse_instance_uuid,
+        maybe_stop_local_socket_server,
+    )
 }
 
 #[napi]
@@ -366,8 +392,7 @@ pub fn default_network_config() -> String {
 
 #[napi]
 pub fn convert_toml_to_network_config(toml_text: String) -> String {
-    convert_toml_to_network_config_inner(&toml_text)
-        .unwrap_or_else(|err| format!("ERROR: {err}"))
+    convert_toml_to_network_config_inner(&toml_text).unwrap_or_else(|err| format!("ERROR: {err}"))
 }
 
 #[napi]
@@ -409,19 +434,23 @@ mod tests {
         let schema = get_network_config_schema();
         assert_eq!(schema.name, "NetworkConfig");
         assert_eq!(schema.node_kind, "schema");
-        assert!(schema
-            .children
-            .iter()
-            .any(|field| field.name == "network_name"));
+        assert!(
+            schema
+                .children
+                .iter()
+                .any(|field| field.name == "network_name")
+        );
         let secure_mode = schema
             .children
             .iter()
             .find(|field| field.name == "secure_mode")
             .expect("secure_mode field");
-        assert!(secure_mode
-            .children
-            .iter()
-            .any(|field| field.name == "enabled"));
+        assert!(
+            secure_mode
+                .children
+                .iter()
+                .any(|field| field.name == "enabled")
+        );
     }
 }
 

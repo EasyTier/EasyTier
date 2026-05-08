@@ -1,14 +1,23 @@
 use crate::config::repository::load_config_json;
-use crate::kernel_bridge::{aggregate_requested_tun_routes, start_local_socket_server as start_local_socket_server_inner, stop_local_socket_server as stop_local_socket_server_inner};
-use crate::runtime::state::runtime_state::{RuntimeAggregateState, TunAggregateState, clear_tun_attached, mark_tun_attached, runtime_instance_from_running_info};
-use crate::{ASYNC_RUNTIME, EASYTIER_VERSION, INSTANCE_MANAGER, WEB_CLIENTS};
 use crate::config::storage::config_meta::get_config_display_name;
 use crate::config::types::stored_config::KeyValuePair;
+use crate::kernel_bridge::{
+    aggregate_requested_tun_routes, start_local_socket_server as start_local_socket_server_inner,
+    stop_local_socket_server as stop_local_socket_server_inner,
+};
+use crate::runtime::state::runtime_state::{
+    RuntimeAggregateState, TunAggregateState, clear_tun_attached, mark_tun_attached,
+    runtime_instance_from_running_info,
+};
+use crate::{ASYNC_RUNTIME, EASYTIER_VERSION, INSTANCE_MANAGER, WEB_CLIENTS};
 use easytier::proto::api::manage::NetworkConfig;
 use ohos_hilog_binding::{hilog_error, hilog_info};
 use std::sync::Arc;
 
-pub(crate) fn start_kernel(config_id: String, start_kernel_with_config_id: impl Fn(&str) -> bool) -> bool {
+pub(crate) fn start_kernel(
+    config_id: String,
+    start_kernel_with_config_id: impl Fn(&str) -> bool,
+) -> bool {
     start_kernel_with_config_id(&config_id)
 }
 
@@ -58,12 +67,15 @@ pub(crate) fn collect_network_infos() -> Vec<KeyValuePair> {
         }
     };
 
-    infos.into_iter()
+    infos
+        .into_iter()
         .filter_map(|(key, value)| {
-            serde_json::to_string(&value).ok().map(|value_json| KeyValuePair {
-                key: key.to_string(),
-                value: value_json,
-            })
+            serde_json::to_string(&value)
+                .ok()
+                .map(|value_json| KeyValuePair {
+                    key: key.to_string(),
+                    value: value_json,
+                })
         })
         .collect()
 }
@@ -82,7 +94,11 @@ pub(crate) fn set_tun_fd(
         .set_tun_fd(&instance_id, fd)
         .map(|_| {
             mark_tun_attached(&config_id);
-            hilog_info!("[Rust] set_tun_fd success instance={} fd={} marked_attached=true", config_id, fd);
+            hilog_info!(
+                "[Rust] set_tun_fd success instance={} fd={} marked_attached=true",
+                config_id,
+                fd
+            );
             true
         })
         .unwrap_or_else(|err| {
@@ -139,14 +155,19 @@ pub(crate) fn get_runtime_snapshot_inner() -> RuntimeAggregateState {
         ));
     }
 
-    instances.sort_by(|a, b| a.display_name.cmp(&b.display_name).then_with(|| a.instance_id.cmp(&b.instance_id)));
+    instances.sort_by(|a, b| {
+        a.display_name
+            .cmp(&b.display_name)
+            .then_with(|| a.instance_id.cmp(&b.instance_id))
+    });
     let attached_instance_ids = instances
         .iter()
         .filter(|instance| instance.tun_required)
         .map(|instance| instance.instance_id.clone())
         .collect::<Vec<_>>();
     let aggregated_routes = aggregate_requested_tun_routes(&instances);
-    let running_instance_count = instances.iter().filter(|instance| instance.running).count() as i32;
+    let running_instance_count =
+        instances.iter().filter(|instance| instance.running).count() as i32;
     let tun_active = !attached_instance_ids.is_empty();
 
     RuntimeAggregateState {

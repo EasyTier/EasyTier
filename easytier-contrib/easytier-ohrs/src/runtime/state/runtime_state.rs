@@ -208,8 +208,14 @@ fn peer_conn_to_view(conn: api::instance::PeerConnInfo) -> PeerConnInfo {
         peer_id: conn.peer_id as i64,
         features: conn.features,
         tunnel_type: conn.tunnel.as_ref().map(|t| t.tunnel_type.clone()),
-        local_addr: conn.tunnel.as_ref().and_then(|t| stringify_url(t.local_addr.clone())),
-        remote_addr: conn.tunnel.as_ref().and_then(|t| stringify_url(t.remote_addr.clone())),
+        local_addr: conn
+            .tunnel
+            .as_ref()
+            .and_then(|t| stringify_url(t.local_addr.clone())),
+        remote_addr: conn
+            .tunnel
+            .as_ref()
+            .and_then(|t| stringify_url(t.remote_addr.clone())),
         resolved_remote_addr: conn
             .tunnel
             .as_ref()
@@ -248,7 +254,11 @@ fn my_node_info_to_view(info: api::manage::MyNodeInfo) -> MyNodeInfo {
         hostname: (!info.hostname.is_empty()).then_some(info.hostname),
         version: (!info.version.is_empty()).then_some(info.version),
         peer_id: Some(info.peer_id as i64),
-        listeners: info.listeners.into_iter().map(|url| url.to_string()).collect(),
+        listeners: info
+            .listeners
+            .into_iter()
+            .map(|url| url.to_string())
+            .collect(),
         vpn_portal_cfg: info.vpn_portal_cfg,
         udp_nat_type: info.stun_info.as_ref().map(|stun| stun.udp_nat_type),
         tcp_nat_type: info.stun_info.as_ref().map(|stun| stun.tcp_nat_type),

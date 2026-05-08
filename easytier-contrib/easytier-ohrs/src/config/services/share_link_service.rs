@@ -75,7 +75,9 @@ fn decompress_from_base64url(raw: &str) -> Result<String, String> {
     let compressed = URL_SAFE_NO_PAD.decode(raw).map_err(|err| err.to_string())?;
     let mut decoder = ZlibDecoder::new(compressed.as_slice());
     let mut out = String::new();
-    decoder.read_to_string(&mut out).map_err(|err| err.to_string())?;
+    decoder
+        .read_to_string(&mut out)
+        .map_err(|err| err.to_string())?;
     Ok(out)
 }
 
@@ -88,7 +90,9 @@ pub fn build_config_share_link(
     let config = serde_json::from_str::<NetworkConfig>(&record.config_json).ok()?;
     let mapped_json = map_config_json(&config).ok()?;
     let compressed = compress_to_base64url(&mapped_json).ok()?;
-    let final_name = display_name.or(Some(record.meta.display_name)).filter(|name| !name.is_empty());
+    let final_name = display_name
+        .or(Some(record.meta.display_name))
+        .filter(|name| !name.is_empty());
 
     let mut url = Url::parse(&format!("https://{SHARE_LINK_HOST}{SHARE_LINK_PATH}")).ok()?;
     url.query_pairs_mut().append_pair("cfg", &compressed);
@@ -107,7 +111,11 @@ pub fn parse_config_share_link(share_link: &str) -> Option<SharedConfigLinkPaylo
         return None;
     }
 
-    let cfg = url.query_pairs().find(|(key, _)| key == "cfg")?.1.to_string();
+    let cfg = url
+        .query_pairs()
+        .find(|(key, _)| key == "cfg")?
+        .1
+        .to_string();
     let mapped_json = decompress_from_base64url(&cfg).ok()?;
     let mut config = unmap_config_json(&mapped_json).ok()?;
     config.instance_id = Some(Uuid::new_v4().to_string());
@@ -171,11 +179,13 @@ mod tests {
     #[test]
     fn share_link_roundtrip_works() {
         assert!(init_config_store(test_root()));
-        create_config_record("cfg-share".to_string(), "share-demo".to_string()).expect("create config");
+        create_config_record("cfg-share".to_string(), "share-demo".to_string())
+            .expect("create config");
 
         let link = build_config_share_link("cfg-share", None, true).expect("share link");
         let payload = parse_config_share_link(&link).expect("parse link");
-        let config = serde_json::from_str::<NetworkConfig>(&payload.config_json).expect("config json");
+        let config =
+            serde_json::from_str::<NetworkConfig>(&payload.config_json).expect("config json");
 
         assert!(payload.only_start);
         assert_eq!(payload.display_name.as_deref(), Some("share-demo"));

@@ -82,7 +82,9 @@ fn field_default_value_text(field: &FieldDescriptor) -> Option<String> {
         | Kind::Fixed64
         | Kind::Float
         | Kind::Double => Some("0".to_string()),
-        Kind::Enum(enum_desc) => enum_desc.get_value(0).map(|value| value.number().to_string()),
+        Kind::Enum(enum_desc) => enum_desc
+            .get_value(0)
+            .map(|value| value.number().to_string()),
         Kind::Message(_) => None,
     }
 }
@@ -126,7 +128,10 @@ fn enum_options(kind: Kind) -> Vec<FieldOption> {
 
 fn should_expose_field(field: &FieldDescriptor) -> bool {
     match field.containing_oneof() {
-        Some(_) => field.field_descriptor_proto().proto3_optional.unwrap_or(false),
+        Some(_) => field
+            .field_descriptor_proto()
+            .proto3_optional
+            .unwrap_or(false),
         None => true,
     }
 }
@@ -216,7 +221,10 @@ fn build_map_entry_node(message_desc: &MessageDescriptor) -> NetworkConfigSchema
         None,
         Vec::new(),
         Vec::new(),
-        vec![build_schema_field_node(&key_field), build_schema_field_node(&value_field)],
+        vec![
+            build_schema_field_node(&key_field),
+            build_schema_field_node(&value_field),
+        ],
         Vec::new(),
     )
 }
@@ -355,7 +363,10 @@ mod tests {
         let schema = get_network_config_schema();
         assert_eq!(schema.node_kind, "schema");
         assert_eq!(schema.name, "NetworkConfig");
-        assert_eq!(schema.type_name.as_deref(), Some("api.manage.NetworkConfig"));
+        assert_eq!(
+            schema.type_name.as_deref(),
+            Some("api.manage.NetworkConfig")
+        );
 
         let virtual_ipv4 = schema
             .children
@@ -369,26 +380,35 @@ mod tests {
             .iter()
             .find(|field| field.name == "secure_mode")
             .expect("secure_mode field");
-        assert!(secure_mode.children.iter().any(|field| field.name == "enabled"));
+        assert!(
+            secure_mode
+                .children
+                .iter()
+                .any(|field| field.name == "enabled")
+        );
 
         let secure_mode_definition = schema
             .definitions
             .iter()
             .find(|definition| definition.name == "common.SecureModeConfig")
             .expect("secure mode definition");
-        assert!(secure_mode_definition
-            .children
-            .iter()
-            .any(|field| field.name == "local_private_key"));
+        assert!(
+            secure_mode_definition
+                .children
+                .iter()
+                .any(|field| field.name == "local_private_key")
+        );
 
         let networking_method_definition = schema
             .definitions
             .iter()
             .find(|definition| definition.name == "api.manage.NetworkingMethod")
             .expect("networking method enum definition");
-        assert!(networking_method_definition
-            .enum_options
-            .iter()
-            .any(|option| option.label == "PublicServer"));
+        assert!(
+            networking_method_definition
+                .enum_options
+                .iter()
+                .any(|option| option.label == "PublicServer")
+        );
     }
 }

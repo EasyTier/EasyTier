@@ -1,9 +1,9 @@
+use super::{field_store, import_export, legacy_migration, validation};
 use crate::config::storage::config_meta::{
-    delete_config_meta, get_config_meta, init_config_meta_store, list_config_meta_entries,
-    open_db, upsert_config_meta_in_tx,
+    delete_config_meta, get_config_meta, init_config_meta_store, list_config_meta_entries, open_db,
+    upsert_config_meta_in_tx,
 };
 use crate::config::types::stored_config::{ExportTomlResult, StoredConfigRecord};
-use super::{field_store, import_export, legacy_migration, validation};
 use easytier::common::config::ConfigLoader;
 use easytier::proto::api::manage::NetworkConfig;
 use ohos_hilog_binding::{hilog_debug, hilog_error};
@@ -35,7 +35,11 @@ pub fn init_config_store(root_dir: String) -> bool {
     let root = PathBuf::from(root_dir);
     let configs_dir = root.join(CONFIG_DIR_NAME);
     if let Err(e) = std::fs::create_dir_all(&configs_dir) {
-        hilog_error!("[Rust] failed to create config dir {}: {}", configs_dir.display(), e);
+        hilog_error!(
+            "[Rust] failed to create config dir {}: {}",
+            configs_dir.display(),
+            e
+        );
         return false;
     }
 
@@ -53,12 +57,20 @@ pub fn init_config_store(root_dir: String) -> bool {
         return false;
     }
 
-    hilog_debug!("[Rust] initialized config repo at {}", configs_dir.display());
+    hilog_debug!(
+        "[Rust] initialized config repo at {}",
+        configs_dir.display()
+    );
     true
 }
 
 fn migrate_legacy_file_if_needed(config_id: &str) -> Option<()> {
-    legacy_migration::migrate_legacy_file_if_needed(&config_root_dir(), CONFIG_DIR_NAME, config_id, save_config_record)
+    legacy_migration::migrate_legacy_file_if_needed(
+        &config_root_dir(),
+        CONFIG_DIR_NAME,
+        config_id,
+        save_config_record,
+    )
 }
 
 pub fn save_config_record(
@@ -77,7 +89,11 @@ pub fn save_config_record(
     let normalized_json = match serde_json::to_string(&config) {
         Ok(raw) => raw,
         Err(e) => {
-            hilog_error!("[Rust] failed to serialize normalized config {}: {}", config_id, e);
+            hilog_error!(
+                "[Rust] failed to serialize normalized config {}: {}",
+                config_id,
+                e
+            );
             return None;
         }
     };
@@ -90,7 +106,10 @@ pub fn save_config_record(
     let conn = open_db()?;
     let tx = conn.unchecked_transaction().ok()?;
     let existing_meta = get_config_meta(&config_id);
-    let favorite = existing_meta.as_ref().map(|meta| meta.favorite).unwrap_or(false);
+    let favorite = existing_meta
+        .as_ref()
+        .map(|meta| meta.favorite)
+        .unwrap_or(false);
     let temporary = existing_meta
         .as_ref()
         .map(|meta| meta.temporary)
@@ -227,7 +246,10 @@ pub fn export_config_toml(config_id: &str) -> Option<ExportTomlResult> {
     import_export::export_config_toml_from_record(&record)
 }
 
-pub fn import_toml_config(toml_text: String, display_name: Option<String>) -> Option<StoredConfigRecord> {
+pub fn import_toml_config(
+    toml_text: String,
+    display_name: Option<String>,
+) -> Option<StoredConfigRecord> {
     import_export::import_toml_to_record(toml_text, display_name, save_config_record)
 }
 
@@ -253,12 +275,8 @@ mod tests {
         assert!(init_config_store(root.clone()));
 
         let config_json = crate::build_default_network_config_json().expect("default config");
-        let saved = save_config_record(
-            "cfg-1".to_string(),
-            "test-config".to_string(),
-            config_json,
-        )
-        .expect("save config");
+        let saved = save_config_record("cfg-1".to_string(), "test-config".to_string(), config_json)
+            .expect("save config");
 
         assert_eq!(saved.meta.config_id, "cfg-1");
         assert_eq!(saved.meta.display_name, "test-config");

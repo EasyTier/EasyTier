@@ -1,6 +1,7 @@
-use super::protocol::{broadcast_local_socket_message, TunRequestPayload};
+use super::protocol::{TunRequestPayload, broadcast_local_socket_message};
 use crate::config::repository::kernel_socket_path;
 use crate::get_runtime_snapshot_inner;
+use crate::kernel_bridge::routing::aggregate_tun_routes;
 use ohos_hilog_binding::{hilog_error, hilog_info};
 use once_cell::sync::Lazy;
 use std::collections::{HashMap, HashSet};
@@ -11,7 +12,6 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
-use crate::kernel_bridge::routing::aggregate_tun_routes;
 
 struct LocalSocketState {
     stop_flag: std::sync::Arc<AtomicBool>,
@@ -46,7 +46,11 @@ pub fn start_local_socket_server() -> bool {
     let listener = match UnixListener::bind(&socket_path) {
         Ok(listener) => listener,
         Err(err) => {
-            hilog_error!("[Rust] bind localsocket failed {}: {}", socket_path.display(), err);
+            hilog_error!(
+                "[Rust] bind localsocket failed {}: {}",
+                socket_path.display(),
+                err
+            );
             return false;
         }
     };
@@ -91,7 +95,11 @@ pub fn start_local_socket_server() -> bool {
             };
 
             if accepted_client || snapshot_json != last_snapshot_json {
-                let _ = broadcast_local_socket_message(&mut clients, "runtime_snapshot", &snapshot_json);
+                let _ = broadcast_local_socket_message(
+                    &mut clients,
+                    "runtime_snapshot",
+                    &snapshot_json,
+                );
                 last_snapshot_json = snapshot_json;
             }
 
@@ -141,7 +149,8 @@ pub fn start_local_socket_server() -> bool {
                     };
                     if broadcast_local_socket_message(&mut clients, "tun_request", &payload_json) {
                         delivered_tun_requests.insert(instance.instance_id.clone());
-                        last_tun_route_signatures.insert(instance.instance_id.clone(), route_signature);
+                        last_tun_route_signatures
+                            .insert(instance.instance_id.clone(), route_signature);
                     }
                 } else {
                     delivered_tun_requests.remove(&instance.instance_id);

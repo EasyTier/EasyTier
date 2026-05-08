@@ -27,7 +27,11 @@ pub(super) fn load_config_map_from_db(config_id: &str) -> Option<Map<String, Val
         object.insert(field_name, value);
     }
 
-    if object.is_empty() { None } else { Some(object) }
+    if object.is_empty() {
+        None
+    } else {
+        Some(object)
+    }
 }
 
 pub(super) fn replace_config_fields(
@@ -39,7 +43,11 @@ pub(super) fn replace_config_fields(
         "DELETE FROM stored_config_fields WHERE config_id = ?1",
         params![config_id],
     ) {
-        hilog_error!("[Rust] failed to clear existing config fields {}: {}", config_id, e);
+        hilog_error!(
+            "[Rust] failed to clear existing config fields {}: {}",
+            config_id,
+            e
+        );
         return None;
     }
 
