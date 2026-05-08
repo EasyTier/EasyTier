@@ -15,10 +15,8 @@ use {
     socket2::{Domain, Protocol, SockAddr, Socket, Type},
     std::{
         io,
-        mem::MaybeUninit,
-        net::{IpAddr, SocketAddrV4},
+        net::{IpAddr, SocketAddrV4, UdpSocket as StdUdpSocket},
         sync::Arc,
-        time::Duration,
     },
     tokio_util::task::AbortOnDropHandle,
 };
@@ -244,11 +242,55 @@ fn open_raw_udp_socket() -> io::Result<Socket> {
     Ok(socket)
 }
 
+#[cfg(windows)]
+fn socket2_into_udp_socket(socket: Socket) -> StdUdpSocket {
+    use std::os::windows::io::{FromRawSocket, IntoRawSocket};
+
+    // The raw socket handle came from socket2 and is transferred exactly once.
+    unsafe { StdUdpSocket::from_raw_socket(socket.into_raw_socket()) }
+}
+
+#[cfg(all(not(windows), unix))]
+fn socket2_into_udp_socket(socket: Socket) -> StdUdpSocket {
+    use std::os::fd::{FromRawFd, IntoRawFd};
+
+    // The raw socket fd came from socket2 and is transferred exactly once.
+    unsafe { StdUdpSocket::from_raw_fd(socket.into_raw_fd()) }
+}
+
 #[cfg(any(windows, test))]
-fn open_capture_socket() -> anyhow::Result<Socket> {
-    open_raw_udp_socket().with_context(|| {
-        "failed to open Windows raw UDP broadcast listener; administrator privileges are required"
-    })
+struct RawUdpCaptureSocket {
+    socket: tokio::net::UdpSocket,
+    buf: Vec<u8>,
+}
+
+#[cfg(any(windows, test))]
+impl RawUdpCaptureSocket {
+    const MAX_PACKET_LEN: usize = 65_535;
+
+    fn open() -> anyhow::Result<Self> {
+        let socket = open_raw_udp_socket().with_context(|| {
+            "failed to open Windows raw UDP broadcast listener; administrator privileges are required"
+        })?;
+        let socket = socket2_into_udp_socket(socket);
+        let socket = tokio::net::UdpSocket::from_std(socket)
+            .context("failed to register Windows raw UDP broadcast listener with Tokio")?;
+
+        Ok(Self {
+            socket,
+            buf: vec![0; Self::MAX_PACKET_LEN],
+        })
+    }
+
+    async fn recv(&mut self) -> io::Result<&[u8]> {
+        let len = self.socket.recv(&mut self.buf).await?;
+        Ok(&self.buf[..len])
+    }
+}
+
+#[cfg(any(windows, test))]
+fn open_capture_socket() -> anyhow::Result<RawUdpCaptureSocket> {
+    RawUdpCaptureSocket::open()
 }
 
 #[cfg(any(windows, test))]
@@ -270,36 +312,19 @@ async fn forward_normalized_packet(peer_manager: &PeerManager, normalized: Norma
 async fn capture_loop(
     peer_manager: Arc<PeerManager>,
     config: BroadcastRelayConfig,
-    socket: Socket,
+    mut socket: RawUdpCaptureSocket,
 ) {
-    const MAX_PACKET_LEN: usize = 65_535;
-    const MAX_PACKETS_PER_TICK: usize = 64;
-
-    let mut buf = vec![MaybeUninit::<u8>::uninit(); MAX_PACKET_LEN];
-
     loop {
-        let mut received_any = false;
-
-        for _ in 0..MAX_PACKETS_PER_TICK {
-            let len = match socket.recv(&mut buf) {
-                Ok(0) => break,
-                Ok(len) => len,
-                Err(err) if err.kind() == io::ErrorKind::WouldBlock => break,
-                Err(err) => {
-                    tracing::warn!(?err, "Windows UDP broadcast raw socket receive failed");
-                    break;
-                }
-            };
-
-            received_any = true;
-            let packet = unsafe { std::slice::from_raw_parts(buf.as_ptr().cast::<u8>(), len) };
-            if let Some(normalized) = normalize_udp_broadcast_packet(packet, &config) {
-                forward_normalized_packet(&peer_manager, normalized).await;
+        let normalized = match socket.recv().await {
+            Ok(packet) => normalize_udp_broadcast_packet(packet, &config),
+            Err(err) => {
+                tracing::warn!(?err, "Windows UDP broadcast raw socket receive failed");
+                continue;
             }
-        }
+        };
 
-        if !received_any {
-            tokio::time::sleep(Duration::from_millis(10)).await;
+        if let Some(normalized) = normalized {
+            forward_normalized_packet(&peer_manager, normalized).await;
         }
     }
 }
