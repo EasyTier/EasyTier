@@ -323,7 +323,7 @@ pub(crate) fn start(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use pnet::packet::MutablePacket;
+    use pnet::packet::{MutablePacket, Packet};
 
     fn config() -> BroadcastRelayConfig {
         BroadcastRelayConfig::new(
