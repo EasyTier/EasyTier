@@ -82,16 +82,7 @@ struct NormalizedPacket {
 }
 
 fn should_ignore_interface_addr(addr: Ipv4Addr) -> bool {
-    addr.is_unspecified()
-        || addr.is_loopback()
-        || is_ipv4_link_local(addr)
-        || addr.is_multicast()
-        || addr.is_broadcast()
-}
-
-fn is_ipv4_link_local(addr: Ipv4Addr) -> bool {
-    let [a, b, _, _] = addr.octets();
-    a == 169 && b == 254
+    addr.is_unspecified() || addr.is_loopback() || addr.is_multicast() || addr.is_broadcast()
 }
 
 fn prefix_len_from_netmask(mask: Ipv4Addr) -> Option<u8> {
@@ -245,36 +236,20 @@ fn collect_physical_interfaces(virtual_ipv4: Ipv4Inet) -> anyhow::Result<Vec<Phy
 }
 
 #[cfg(any(windows, test))]
-fn open_raw_udp_socket(bind_ip: Ipv4Addr) -> io::Result<Socket> {
+fn open_raw_udp_socket() -> io::Result<Socket> {
     let socket = Socket::new(Domain::IPV4, Type::RAW, Some(Protocol::UDP))?;
+    // Match ubihazard/broadcast: use one raw UDP listener on loopback, then
+    // inspect the IPv4 header to identify the real physical source interface.
+    socket.bind(&SockAddr::from(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0)))?;
     socket.set_nonblocking(true)?;
-    socket.bind(&SockAddr::from(SocketAddrV4::new(bind_ip, 0)))?;
     Ok(socket)
 }
 
 #[cfg(any(windows, test))]
-fn open_capture_sockets(interfaces: &[PhysicalInterface]) -> anyhow::Result<Vec<Socket>> {
-    let mut sockets = Vec::new();
-    for iface in interfaces {
-        match open_raw_udp_socket(iface.addr) {
-            Ok(socket) => sockets.push(socket),
-            Err(err) => {
-                tracing::warn!(
-                    bind_ip = %iface.addr,
-                    ?err,
-                    "failed to open Windows raw UDP socket"
-                );
-            }
-        }
-    }
-
-    if sockets.is_empty() {
-        anyhow::bail!(
-            "failed to open any Windows raw UDP socket; administrator privileges are required"
-        );
-    }
-
-    Ok(sockets)
+fn open_capture_socket() -> anyhow::Result<Socket> {
+    open_raw_udp_socket().with_context(|| {
+        "failed to open Windows raw UDP broadcast listener; administrator privileges are required"
+    })
 }
 
 #[cfg(any(windows, test))]
@@ -296,33 +271,31 @@ async fn forward_normalized_packet(peer_manager: &PeerManager, normalized: Norma
 async fn capture_loop(
     peer_manager: Arc<PeerManager>,
     config: BroadcastRelayConfig,
-    sockets: Vec<Socket>,
+    socket: Socket,
 ) {
     const MAX_PACKET_LEN: usize = 65_535;
-    const MAX_PACKETS_PER_SOCKET_TICK: usize = 64;
+    const MAX_PACKETS_PER_TICK: usize = 64;
 
     let mut buf = vec![MaybeUninit::<u8>::uninit(); MAX_PACKET_LEN];
 
     loop {
         let mut received_any = false;
 
-        for socket_idx in 0..sockets.len() {
-            for _ in 0..MAX_PACKETS_PER_SOCKET_TICK {
-                let len = match sockets[socket_idx].recv(&mut buf) {
-                    Ok(0) => break,
-                    Ok(len) => len,
-                    Err(err) if err.kind() == io::ErrorKind::WouldBlock => break,
-                    Err(err) => {
-                        tracing::warn!(?err, "Windows UDP broadcast raw socket receive failed");
-                        break;
-                    }
-                };
-
-                received_any = true;
-                let packet = unsafe { std::slice::from_raw_parts(buf.as_ptr().cast::<u8>(), len) };
-                if let Some(normalized) = normalize_udp_broadcast_packet(packet, &config) {
-                    forward_normalized_packet(&peer_manager, normalized).await;
+        for _ in 0..MAX_PACKETS_PER_TICK {
+            let len = match socket.recv(&mut buf) {
+                Ok(0) => break,
+                Ok(len) => len,
+                Err(err) if err.kind() == io::ErrorKind::WouldBlock => break,
+                Err(err) => {
+                    tracing::warn!(?err, "Windows UDP broadcast raw socket receive failed");
+                    break;
                 }
+            };
+
+            received_any = true;
+            let packet = unsafe { std::slice::from_raw_parts(buf.as_ptr().cast::<u8>(), len) };
+            if let Some(normalized) = normalize_udp_broadcast_packet(packet, &config) {
+                forward_normalized_packet(&peer_manager, normalized).await;
             }
         }
 
@@ -342,9 +315,9 @@ pub(crate) fn start(
         anyhow::bail!("no physical IPv4 interface is available for UDP broadcast relay");
     }
 
-    let sockets = open_capture_sockets(&physical_interfaces)?;
+    let socket = open_capture_socket()?;
     let config = BroadcastRelayConfig::new(virtual_ipv4, physical_interfaces);
-    let task = tokio::spawn(capture_loop(peer_manager, config, sockets));
+    let task = tokio::spawn(capture_loop(peer_manager, config, socket));
     Ok(AbortOnDropHandle::new(task))
 }
 
@@ -497,9 +470,12 @@ mod tests {
     }
 
     #[test]
-    fn windows_udp_broadcast_ignores_link_local_interfaces() {
-        assert!(
-            PhysicalInterface::from_ip_and_prefix(Ipv4Addr::new(169, 254, 13, 10), 16).is_none()
+    fn windows_udp_broadcast_keeps_link_local_interfaces() {
+        let physical =
+            PhysicalInterface::from_ip_and_prefix(Ipv4Addr::new(169, 254, 13, 10), 16).unwrap();
+        assert_eq!(
+            physical.directed_broadcast,
+            Ipv4Addr::new(169, 254, 255, 255)
         );
     }
 }
