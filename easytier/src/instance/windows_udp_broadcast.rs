@@ -684,6 +684,18 @@ impl CaptureSocket {
             Self::WinDivert(_) => "windivert",
         }
     }
+
+    fn fallback_to_raw(&mut self) -> anyhow::Result<bool> {
+        #[cfg(all(windows, any(target_arch = "x86_64", target_arch = "x86")))]
+        {
+            if matches!(self, Self::WinDivert(_)) {
+                *self = Self::Raw(RawUdpCaptureSocket::open()?);
+                return Ok(true);
+            }
+        }
+
+        Ok(false)
+    }
 }
 
 #[cfg(all(windows, any(target_arch = "x86_64", target_arch = "x86")))]
@@ -783,7 +795,7 @@ async fn capture_loop(
     mut socket: CaptureSocket,
     stats: BroadcastRelayStats,
 ) {
-    let capture_backend = socket.backend_name();
+    let mut capture_backend = socket.backend_name();
 
     loop {
         let normalized = match socket.recv().await {
@@ -804,6 +816,25 @@ async fn capture_loop(
                     capture_backend,
                     "Windows UDP broadcast capture receive failed"
                 );
+                match socket.fallback_to_raw() {
+                    Ok(true) => {
+                        let old_backend = capture_backend;
+                        capture_backend = socket.backend_name();
+                        tracing::warn!(
+                            old_backend,
+                            new_backend = capture_backend,
+                            "Windows UDP broadcast capture backend fell back"
+                        );
+                    }
+                    Ok(false) => {}
+                    Err(fallback_err) => {
+                        tracing::error!(
+                            ?fallback_err,
+                            "Windows UDP broadcast raw socket fallback failed; stopping relay"
+                        );
+                        break;
+                    }
+                }
                 continue;
             }
         };
