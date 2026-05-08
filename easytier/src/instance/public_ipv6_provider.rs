@@ -1,6 +1,5 @@
-use std::{path::Path, sync::Arc};
+use std::sync::Arc;
 
-use anyhow::Context;
 use cidr::{Ipv6Cidr, Ipv6Inet};
 #[cfg(target_os = "linux")]
 use netlink_packet_route::route::{RouteAddress, RouteAttribute, RouteMessage, RouteType};
@@ -321,7 +320,7 @@ async fn resolve_public_ipv6_provider_runtime_state_linux(
 }
 
 async fn resolve_public_ipv6_provider_runtime_state(
-    global_ctx: &ArcGlobalCtx,
+    _global_ctx: &ArcGlobalCtx,
     config: PublicIpv6ProviderConfigSnapshot,
 ) -> PublicIpv6ProviderRuntimeState {
     if !config.provider_enabled {

@@ -2,7 +2,6 @@ use std::net::Ipv4Addr;
 
 use cidr::Ipv4Inet;
 use pnet::packet::{
-    Packet,
     ip::IpNextHeaderProtocols,
     ipv4::{self, Ipv4Flags, Ipv4Packet, MutableIpv4Packet},
     udp::{self, MutableUdpPacket, UdpPacket},
