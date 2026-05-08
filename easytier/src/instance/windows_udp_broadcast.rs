@@ -78,6 +78,61 @@ struct NormalizedPacket {
     destination: Ipv4Addr,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct UdpPacketSummary {
+    src: Ipv4Addr,
+    dst: Ipv4Addr,
+    src_port: u16,
+    dst_port: u16,
+    ip_len: usize,
+    udp_len: usize,
+    payload_len: usize,
+}
+
+impl UdpPacketSummary {
+    fn parse(packet: &[u8]) -> Option<Self> {
+        let ipv4_packet = Ipv4Packet::new(packet)?;
+        if ipv4_packet.get_version() != 4
+            || ipv4_packet.get_next_level_protocol() != IpNextHeaderProtocols::Udp
+        {
+            return None;
+        }
+
+        let header_len = usize::from(ipv4_packet.get_header_length()) * 4;
+        let total_len = usize::from(ipv4_packet.get_total_length());
+        if header_len < Ipv4Packet::minimum_packet_size()
+            || total_len < header_len + UdpPacket::minimum_packet_size()
+            || total_len > packet.len()
+        {
+            return None;
+        }
+
+        let udp_packet = UdpPacket::new(&packet[header_len..total_len])?;
+        let udp_len = usize::from(udp_packet.get_length());
+        if udp_len < UdpPacket::minimum_packet_size() || header_len + udp_len != total_len {
+            return None;
+        }
+
+        Some(Self {
+            src: ipv4_packet.get_source(),
+            dst: ipv4_packet.get_destination(),
+            src_port: udp_packet.get_source(),
+            dst_port: udp_packet.get_destination(),
+            ip_len: total_len,
+            udp_len,
+            payload_len: udp_len - UdpPacket::minimum_packet_size(),
+        })
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ParsedUdpBroadcastPacket {
+    header_len: usize,
+    udp_len: usize,
+    normalized_destination: Ipv4Addr,
+    summary: UdpPacketSummary,
+}
+
 fn should_ignore_interface_addr(addr: Ipv4Addr) -> bool {
     addr.is_unspecified() || addr.is_loopback() || addr.is_multicast() || addr.is_broadcast()
 }
@@ -109,14 +164,18 @@ fn directed_broadcast(addr: Ipv4Addr, prefix: u8) -> Option<Ipv4Addr> {
 fn parse_udp_broadcast(
     packet: &[u8],
     config: &BroadcastRelayConfig,
-) -> Option<(usize, usize, Ipv4Addr)> {
-    let ipv4_packet = Ipv4Packet::new(packet)?;
+) -> Result<ParsedUdpBroadcastPacket, &'static str> {
+    let ipv4_packet = Ipv4Packet::new(packet).ok_or("malformed_ipv4")?;
     if ipv4_packet.get_version() != 4
         || ipv4_packet.get_next_level_protocol() != IpNextHeaderProtocols::Udp
-        || ipv4_packet.get_fragment_offset() != 0
+    {
+        return Err("not_udp_ipv4");
+    }
+
+    if ipv4_packet.get_fragment_offset() != 0
         || ipv4_packet.get_flags() & Ipv4Flags::MoreFragments != 0
     {
-        return None;
+        return Err("fragmented");
     }
 
     let header_len = usize::from(ipv4_packet.get_header_length()) * 4;
@@ -125,37 +184,89 @@ fn parse_udp_broadcast(
         || total_len < header_len + UdpPacket::minimum_packet_size()
         || total_len > packet.len()
     {
-        return None;
+        return Err("bad_ipv4_length");
     }
 
     let src = ipv4_packet.get_source();
     let dst = ipv4_packet.get_destination();
-    if should_ignore_interface_addr(src)
-        || src == config.virtual_ipv4.address()
-        || !config.is_physical_source(src)
-    {
-        return None;
+    if should_ignore_interface_addr(src) {
+        return Err("ignored_source");
+    }
+    if src == config.virtual_ipv4.address() {
+        return Err("virtual_source_duplicate");
+    }
+    if !config.is_physical_source(src) {
+        return Err("non_physical_source");
     }
 
-    let normalized_destination = config.normalize_destination(dst)?;
+    let normalized_destination = config
+        .normalize_destination(dst)
+        .ok_or("unsupported_destination")?;
     if normalized_destination.is_loopback() {
-        return None;
+        return Err("loopback_destination");
     }
 
-    let udp_packet = UdpPacket::new(&packet[header_len..total_len])?;
+    let udp_packet = UdpPacket::new(&packet[header_len..total_len]).ok_or("malformed_udp")?;
     let udp_len = usize::from(udp_packet.get_length());
     if udp_len < UdpPacket::minimum_packet_size() || header_len + udp_len != total_len {
-        return None;
+        return Err("bad_udp_length");
     }
 
-    Some((header_len, udp_len, normalized_destination))
+    Ok(ParsedUdpBroadcastPacket {
+        header_len,
+        udp_len,
+        normalized_destination,
+        summary: UdpPacketSummary {
+            src,
+            dst,
+            src_port: udp_packet.get_source(),
+            dst_port: udp_packet.get_destination(),
+            ip_len: total_len,
+            udp_len,
+            payload_len: udp_len - UdpPacket::minimum_packet_size(),
+        },
+    })
+}
+
+fn log_ignored_udp_packet(packet: &[u8], reason: &'static str) {
+    if let Some(summary) = UdpPacketSummary::parse(packet) {
+        tracing::debug!(
+            src = %summary.src,
+            dst = %summary.dst,
+            src_port = summary.src_port,
+            dst_port = summary.dst_port,
+            ip_len = summary.ip_len,
+            udp_len = summary.udp_len,
+            payload_len = summary.payload_len,
+            reason,
+            "ignored Windows UDP broadcast packet"
+        );
+    } else {
+        tracing::debug!(
+            packet_len = packet.len(),
+            reason,
+            "ignored malformed Windows UDP raw packet"
+        );
+    }
 }
 
 fn normalize_udp_broadcast_packet(
     packet: &[u8],
     config: &BroadcastRelayConfig,
 ) -> Option<NormalizedPacket> {
-    let (header_len, udp_len, destination) = parse_udp_broadcast(packet, config)?;
+    let parsed = match parse_udp_broadcast(packet, config) {
+        Ok(parsed) => parsed,
+        Err(reason) => {
+            if tracing::enabled!(tracing::Level::DEBUG) {
+                log_ignored_udp_packet(packet, reason);
+            }
+            return None;
+        }
+    };
+    let header_len = parsed.header_len;
+    let udp_len = parsed.udp_len;
+    let destination = parsed.normalized_destination;
+    let summary = parsed.summary;
     let packet_len = header_len + udp_len;
     let virtual_ipv4 = config.virtual_ipv4.address();
     let mut normalized = packet[..packet_len].to_vec();
@@ -181,9 +292,16 @@ fn normalize_udp_broadcast_packet(
         ipv4_packet.set_checksum(checksum);
     }
 
-    tracing::trace!(
-        src = %virtual_ipv4,
-        dst = %destination,
+    tracing::debug!(
+        src = %summary.src,
+        dst = %summary.dst,
+        src_port = summary.src_port,
+        dst_port = summary.dst_port,
+        ip_len = summary.ip_len,
+        udp_len = summary.udp_len,
+        payload_len = summary.payload_len,
+        normalized_src = %virtual_ipv4,
+        normalized_dst = %destination,
         "normalized Windows UDP broadcast packet"
     );
 
@@ -191,6 +309,27 @@ fn normalize_udp_broadcast_packet(
         packet: normalized,
         destination,
     })
+}
+
+#[cfg(any(windows, test))]
+fn log_captured_udp_packet(packet: &[u8]) {
+    if let Some(summary) = UdpPacketSummary::parse(packet) {
+        tracing::debug!(
+            src = %summary.src,
+            dst = %summary.dst,
+            src_port = summary.src_port,
+            dst_port = summary.dst_port,
+            ip_len = summary.ip_len,
+            udp_len = summary.udp_len,
+            payload_len = summary.payload_len,
+            "captured Windows UDP raw packet"
+        );
+    } else {
+        tracing::debug!(
+            packet_len = packet.len(),
+            "captured malformed Windows UDP raw packet"
+        );
+    }
 }
 
 #[cfg(any(windows, test))]
@@ -299,12 +438,57 @@ async fn forward_normalized_packet(peer_manager: &PeerManager, normalized: Norma
     let ret = peer_manager
         .send_msg_by_ip(packet, IpAddr::V4(normalized.destination), true)
         .await;
-    if let Err(err) = ret {
-        tracing::trace!(
-            dst = %normalized.destination,
-            ?err,
-            "failed to forward Windows UDP broadcast packet"
-        );
+
+    let summary = UdpPacketSummary::parse(&normalized.packet);
+    match ret {
+        Ok(_) => {
+            if let Some(summary) = summary {
+                tracing::debug!(
+                    src = %summary.src,
+                    dst = %summary.dst,
+                    src_port = summary.src_port,
+                    dst_port = summary.dst_port,
+                    ip_len = summary.ip_len,
+                    udp_len = summary.udp_len,
+                    payload_len = summary.payload_len,
+                    peer_dst = %normalized.destination,
+                    broadcast = true,
+                    "forwarded Windows UDP broadcast packet"
+                );
+            } else {
+                tracing::debug!(
+                    packet_len = normalized.packet.len(),
+                    peer_dst = %normalized.destination,
+                    broadcast = true,
+                    "forwarded Windows UDP broadcast packet"
+                );
+            }
+        }
+        Err(err) => {
+            if let Some(summary) = summary {
+                tracing::debug!(
+                    src = %summary.src,
+                    dst = %summary.dst,
+                    src_port = summary.src_port,
+                    dst_port = summary.dst_port,
+                    ip_len = summary.ip_len,
+                    udp_len = summary.udp_len,
+                    payload_len = summary.payload_len,
+                    peer_dst = %normalized.destination,
+                    broadcast = true,
+                    ?err,
+                    "failed to forward Windows UDP broadcast packet"
+                );
+            } else {
+                tracing::debug!(
+                    packet_len = normalized.packet.len(),
+                    peer_dst = %normalized.destination,
+                    broadcast = true,
+                    ?err,
+                    "failed to forward Windows UDP broadcast packet"
+                );
+            }
+        }
     }
 }
 
@@ -316,7 +500,12 @@ async fn capture_loop(
 ) {
     loop {
         let normalized = match socket.recv().await {
-            Ok(packet) => normalize_udp_broadcast_packet(packet, &config),
+            Ok(packet) => {
+                if tracing::enabled!(tracing::Level::DEBUG) {
+                    log_captured_udp_packet(packet);
+                }
+                normalize_udp_broadcast_packet(packet, &config)
+            }
             Err(err) => {
                 tracing::warn!(?err, "Windows UDP broadcast raw socket receive failed");
                 continue;
@@ -338,6 +527,12 @@ pub(crate) fn start(
     if physical_interfaces.is_empty() {
         anyhow::bail!("no physical IPv4 interface is available for UDP broadcast relay");
     }
+
+    tracing::debug!(
+        virtual_ipv4 = %virtual_ipv4,
+        physical_interfaces = ?physical_interfaces,
+        "starting Windows UDP broadcast relay"
+    );
 
     let socket = open_capture_socket()?;
     let config = BroadcastRelayConfig::new(virtual_ipv4, physical_interfaces);
