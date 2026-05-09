@@ -4,7 +4,7 @@ use std::{
     time::Duration,
 };
 
-use anyhow::Context;
+use anyhow::{Context, anyhow, bail};
 use bytes::Bytes;
 use dashmap::DashMap;
 use guarden::defer;
@@ -15,12 +15,13 @@ use kcp_sys::{
     stream::KcpStream,
 };
 use prost::Message;
-use tokio::{select, task::JoinSet};
+use tokio::task::JoinSet;
 
 use super::{
     CidrSet,
     tcp_proxy::{NatDstConnector, NatDstTcpConnector, TcpProxy},
 };
+use crate::utils::task::HedgeExt;
 use crate::{
     common::{
         acl_processor::PacketInfo,
@@ -114,72 +115,57 @@ pub struct NatDstKcpConnector {
 impl NatDstConnector for NatDstKcpConnector {
     type DstStream = KcpStream;
 
-    async fn connect(&self, src: SocketAddr, nat_dst: SocketAddr) -> Result<Self::DstStream> {
+    async fn connect(
+        &self,
+        src: SocketAddr,
+        nat_dst: SocketAddr,
+    ) -> anyhow::Result<Self::DstStream> {
+        let peer_mgr = self
+            .peer_mgr
+            .upgrade()
+            .ok_or_else(|| anyhow!("peer manager is not available"))?;
+
+        let dst_peer = {
+            let SocketAddr::V4(addr) = nat_dst else {
+                bail!("ipv6 is not supported");
+            };
+            peer_mgr
+                .get_peer_map()
+                .get_peer_id_by_ipv4(addr.ip())
+                .await
+                .ok_or_else(|| anyhow!("no peer found for nat dst: {}", nat_dst))?
+        };
+
+        tracing::trace!(?nat_dst, ?dst_peer, "kcp nat");
+
         let conn_data = KcpConnData {
             src: Some(src.into()),
             dst: Some(nat_dst.into()),
         };
 
-        let Some(peer_mgr) = self.peer_mgr.upgrade() else {
-            return Err(anyhow::anyhow!("peer manager is not available").into());
-        };
+        let stream = (0..5)
+            .map(|_| {
+                let kcp_endpoint = self.kcp_endpoint.clone();
+                let my_peer_id = peer_mgr.my_peer_id();
 
-        let dst_peer_id = match nat_dst {
-            SocketAddr::V4(addr) => peer_mgr.get_peer_map().get_peer_id_by_ipv4(addr.ip()).await,
-            SocketAddr::V6(_) => return Err(anyhow::anyhow!("ipv6 is not supported").into()),
-        };
+                async move {
+                    let conn_id = kcp_endpoint
+                        .connect(
+                            Duration::from_secs(10),
+                            my_peer_id,
+                            dst_peer,
+                            Bytes::from(conn_data.encode_to_vec()),
+                        )
+                        .await?;
 
-        let Some(dst_peer) = dst_peer_id else {
-            return Err(anyhow::anyhow!("no peer found for nat dst: {}", nat_dst).into());
-        };
-
-        tracing::trace!("kcp nat dst: {:?}, dst peers: {:?}", nat_dst, dst_peer);
-
-        let mut connect_tasks: JoinSet<std::result::Result<ConnId, anyhow::Error>> = JoinSet::new();
-        let mut retry_remain = 5;
-        loop {
-            select! {
-                Some(Ok(Ok(ret))) = connect_tasks.join_next() => {
-                    // just wait for the previous connection to finish
-                    let stream = KcpStream::new(&self.kcp_endpoint, ret)
-                        .ok_or(anyhow::anyhow!("failed to create kcp stream"))?;
-                    return Ok(stream);
+                    KcpStream::new(&kcp_endpoint, conn_id).context("failed to create kcp stream")
                 }
-                _ = tokio::time::sleep(Duration::from_millis(200)), if !connect_tasks.is_empty() && retry_remain > 0 => {
-                    // no successful connection yet, trigger another connection attempt
-                }
-                else => {
-                    // got error in connect_tasks, continue to retry
-                    if retry_remain == 0 && connect_tasks.is_empty() {
-                        break;
-                    }
-                }
-            }
+            })
+            .hedge(Duration::from_millis(200))
+            .await
+            .context("failed to connect to peer")?;
 
-            // create a new connection task
-            if retry_remain == 0 {
-                continue;
-            }
-            retry_remain -= 1;
-
-            let kcp_endpoint = self.kcp_endpoint.clone();
-            let my_peer_id = peer_mgr.my_peer_id();
-            let conn_data_clone = conn_data;
-
-            connect_tasks.spawn(async move {
-                kcp_endpoint
-                    .connect(
-                        Duration::from_secs(10),
-                        my_peer_id,
-                        dst_peer,
-                        Bytes::from(conn_data_clone.encode_to_vec()),
-                    )
-                    .await
-                    .with_context(|| format!("failed to connect to nat dst: {}", nat_dst))
-            });
-        }
-
-        Err(anyhow::anyhow!("failed to connect to nat dst: {}", nat_dst).into())
+        Ok(stream)
     }
 
     fn check_packet_from_peer_fast(&self, _cidr_set: &CidrSet, _global_ctx: &GlobalCtx) -> bool {
