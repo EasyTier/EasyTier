@@ -21,11 +21,11 @@ use config::services::share_link_service::{
 };
 use config::storage::config_meta::get_config_display_name;
 use config::types::stored_config::{KeyValuePair, SharedConfigLinkPayload};
+use easytier::common::constants::EASYTIER_VERSION;
 use easytier::common::{
     MachineIdOptions,
     config::{ConfigFileControl, ConfigLoader, TomlConfigLoader},
 };
-use easytier::common::constants::EASYTIER_VERSION;
 use easytier::instance_manager::NetworkInstanceManager;
 use easytier::proto::api::manage::NetworkConfig;
 use easytier::proto::api::manage::NetworkingMethod;
