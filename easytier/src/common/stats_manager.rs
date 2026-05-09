@@ -85,6 +85,15 @@ pub enum MetricName {
     /// Traffic packets forwarded for foreign network, forward
     TrafficPacketsForeignForwardForwarded,
 
+    /// UDP broadcast relay packets captured from the raw socket
+    UdpBroadcastRelayPacketsCaptured,
+    /// UDP broadcast relay packets ignored before forwarding
+    UdpBroadcastRelayPacketsIgnored,
+    /// UDP broadcast relay packets forwarded
+    UdpBroadcastRelayPacketsForwarded,
+    /// UDP broadcast relay packets that failed to forward
+    UdpBroadcastRelayPacketsForwardFailed,
+
     /// Compression bytes before compression
     CompressionBytesRxBefore,
     /// Compression bytes after compression
@@ -165,6 +174,19 @@ impl fmt::Display for MetricName {
             }
             MetricName::TrafficPacketsForeignForwardForwarded => {
                 write!(f, "traffic_packets_foreign_forward_forwarded")
+            }
+
+            MetricName::UdpBroadcastRelayPacketsCaptured => {
+                write!(f, "udp_broadcast_relay_packets_captured")
+            }
+            MetricName::UdpBroadcastRelayPacketsIgnored => {
+                write!(f, "udp_broadcast_relay_packets_ignored")
+            }
+            MetricName::UdpBroadcastRelayPacketsForwarded => {
+                write!(f, "udp_broadcast_relay_packets_forwarded")
+            }
+            MetricName::UdpBroadcastRelayPacketsForwardFailed => {
+                write!(f, "udp_broadcast_relay_packets_forward_failed")
             }
 
             MetricName::CompressionBytesRxBefore => write!(f, "compression_bytes_rx_before"),

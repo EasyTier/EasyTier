@@ -1569,17 +1569,26 @@ impl PeerManager {
         ipv6_addr.is_multicast() || *ipv6_addr == ipv6_inet.last_address()
     }
 
+    fn select_ipv4_broadcast_peers<'a>(
+        routes: impl IntoIterator<Item = &'a instance::Route>,
+        my_peer_id: PeerId,
+    ) -> Vec<PeerId> {
+        routes
+            .into_iter()
+            .filter_map(|route| {
+                (route.peer_id != my_peer_id && route.ipv4_addr.is_some()).then_some(route.peer_id)
+            })
+            .collect()
+    }
+
     pub async fn get_msg_dst_peer_ipv4(&self, ipv4_addr: &Ipv4Addr) -> (Vec<PeerId>, bool) {
         let mut is_exit_node = false;
         let mut dst_peers = vec![];
         if self.is_all_peers_broadcast_ipv4(ipv4_addr) {
-            dst_peers.extend(self.peers.list_routes().await.iter().filter_map(|x| {
-                if *x.key() != self.my_peer_id {
-                    Some(*x.key())
-                } else {
-                    None
-                }
-            }));
+            dst_peers.extend(Self::select_ipv4_broadcast_peers(
+                &self.peers.list_route_infos().await,
+                self.my_peer_id,
+            ));
         } else if let Some(peer_id) = self.peers.get_peer_id_by_ipv4(ipv4_addr).await {
             dst_peers.push(peer_id);
         } else if !self
@@ -2197,6 +2206,32 @@ mod tests {
         assert!(PeerManager::should_mark_recent_traffic_for_fanout(0));
         assert!(PeerManager::should_mark_recent_traffic_for_fanout(1));
         assert!(!PeerManager::should_mark_recent_traffic_for_fanout(2));
+    }
+
+    fn route_with_ipv4(
+        peer_id: u32,
+        ipv4_addr: Option<std::net::Ipv4Addr>,
+    ) -> crate::proto::api::instance::Route {
+        crate::proto::api::instance::Route {
+            peer_id,
+            ipv4_addr: ipv4_addr.map(|addr| cidr::Ipv4Inet::new(addr, 24).unwrap().into()),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn ipv4_broadcast_peer_selection_skips_peers_without_ipv4() {
+        let routes = vec![
+            route_with_ipv4(1, Some(std::net::Ipv4Addr::new(10, 126, 126, 1))),
+            route_with_ipv4(2, None),
+            route_with_ipv4(3, Some(std::net::Ipv4Addr::new(10, 126, 126, 3))),
+            route_with_ipv4(4, None),
+        ];
+
+        assert_eq!(
+            PeerManager::select_ipv4_broadcast_peers(&routes, 3),
+            vec![1]
+        );
     }
 
     #[test]

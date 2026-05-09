@@ -35,6 +35,8 @@ use tokio::{
     task::JoinSet,
 };
 use tokio_util::bytes::Bytes;
+#[cfg(target_os = "windows")]
+use tokio_util::task::AbortOnDropHandle;
 use tun::{AbstractDevice, AsyncDevice, Configuration, Layer};
 use zerocopy::{NativeEndian, NetworkEndian};
 
@@ -801,6 +803,9 @@ pub struct NicCtx {
 
     nic: Arc<Mutex<VirtualNic>>,
     tasks: JoinSet<()>,
+
+    #[cfg(target_os = "windows")]
+    windows_udp_broadcast_relay: Option<AbortOnDropHandle<()>>,
 }
 
 impl NicCtx {
@@ -819,6 +824,9 @@ impl NicCtx {
 
             nic: Arc::new(Mutex::new(VirtualNic::new(global_ctx))),
             tasks: JoinSet::new(),
+
+            #[cfg(target_os = "windows")]
+            windows_udp_broadcast_relay: None,
         }
     }
 
@@ -1003,6 +1011,31 @@ impl NicCtx {
             close_notifier.notify_one();
             tracing::error!("nic closed when sending to it");
         });
+    }
+
+    #[cfg(target_os = "windows")]
+    fn start_windows_udp_broadcast_relay(&mut self, virtual_ipv4: Ipv4Inet) {
+        if !self.global_ctx.get_flags().enable_udp_broadcast_relay {
+            return;
+        }
+
+        let Some(peer_manager) = self.peer_mgr.upgrade() else {
+            tracing::warn!("peer manager is dropped, skip Windows UDP broadcast relay");
+            return;
+        };
+
+        match super::windows_udp_broadcast::start(peer_manager, virtual_ipv4) {
+            Ok(handle) => {
+                self.windows_udp_broadcast_relay = Some(handle);
+                tracing::info!("Windows UDP broadcast relay started");
+            }
+            Err(err) => {
+                tracing::warn!(
+                    ?err,
+                    "failed to start Windows UDP broadcast relay; administrator privileges are required"
+                );
+            }
+        }
     }
 
     async fn apply_route_changes(
@@ -1347,6 +1380,8 @@ impl NicCtx {
         // Assign IPv4 address if provided
         if let Some(ipv4_addr) = ipv4_addr {
             self.assign_ipv4_to_tun_device(ipv4_addr).await?;
+            #[cfg(target_os = "windows")]
+            self.start_windows_udp_broadcast_relay(ipv4_addr);
         }
 
         // Assign IPv6 address if provided
