@@ -1150,7 +1150,7 @@ checksum = "7454e41ff9012c00d53cf7f475c5e3afa3b91b7c90568495495e8d9bf47a1055"
 
 [[package]]
 name = "easytier"
-version = "2.6.3"
+version = "2.6.4"
 dependencies = [
  "anyhow",
  "arc-swap",

@@ -21,7 +21,7 @@ use config::services::share_link_service::{
 };
 use config::storage::config_meta::get_config_display_name;
 use config::types::stored_config::{KeyValuePair, SharedConfigLinkPayload};
-use easytier::common::config::{ConfigFileControl, ConfigLoader, TomlConfigLoader};
+use easytier::common::{MachineIdOptions, config::{ConfigFileControl, ConfigLoader, TomlConfigLoader}};
 use easytier::common::constants::EASYTIER_VERSION;
 use easytier::instance_manager::NetworkInstanceManager;
 use easytier::proto::api::manage::NetworkConfig;
@@ -179,7 +179,7 @@ fn run_config_server_instance(config_id: &str, config: &NetworkConfig) -> bool {
 
     let client = ASYNC_RUNTIME.block_on(run_web_client(
         &config_server_url,
-        None,
+        MachineIdOptions::default(),
         hostname,
         secure_mode,
         INSTANCE_MANAGER.clone(),
