@@ -7,7 +7,10 @@ use anyhow::anyhow;
 use dashmap::DashMap;
 
 use super::secure_datagram::{SecureDatagramDirection, SecureDatagramSession};
-use crate::{common::PeerId, tunnel::packet_def::ZCPacket};
+use crate::{
+    common::{PeerId, shrink_dashmap},
+    tunnel::packet_def::ZCPacket,
+};
 
 pub struct UpsertResponderSessionReturn {
     pub session: Arc<PeerSession>,
@@ -78,6 +81,7 @@ impl PeerSessionStore {
     pub fn evict_unused_sessions(&self) {
         self.sessions
             .retain(|_key, session| Arc::strong_count(session) > 1);
+        shrink_dashmap(&self.sessions, None);
     }
 
     #[tracing::instrument(skip(self))]

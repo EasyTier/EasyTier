@@ -636,18 +636,25 @@ impl PeerManager {
     #[tracing::instrument]
     pub async fn try_direct_connect_with_peer_id_hint<C>(
         &self,
-        mut connector: C,
+        connector: C,
         peer_id_hint: Option<PeerId>,
     ) -> Result<(PeerId, PeerConnId), Error>
     where
         C: TunnelConnector + Debug,
     {
-        let ns = self.global_ctx.net_ns.clone();
-        let t = ns
-            .run_async(|| async move { connector.connect().await })
-            .await?;
+        let t = self.connect_tunnel(connector).await?;
         self.add_client_tunnel_with_peer_id_hint(t, true, peer_id_hint)
             .await
+    }
+
+    pub(crate) async fn connect_tunnel<C>(&self, mut connector: C) -> Result<Box<dyn Tunnel>, Error>
+    where
+        C: TunnelConnector + Debug,
+    {
+        let ns = self.global_ctx.net_ns.clone();
+        Ok(ns
+            .run_async(|| async move { connector.connect().await })
+            .await?)
     }
 
     // avoid loop back to virtual network
@@ -687,6 +694,11 @@ impl PeerManager {
         Ok(())
     }
 
+    fn release_reserved_peer_id(&self, network_name: &str) {
+        self.reserved_my_peer_id_map.remove(network_name);
+        shrink_dashmap(&self.reserved_my_peer_id_map, None);
+    }
+
     #[tracing::instrument(ret)]
     pub async fn add_tunnel_as_server(
         &self,
@@ -702,7 +714,8 @@ impl PeerManager {
             tunnel,
             self.peer_session_store.clone(),
         );
-        conn.do_handshake_as_server_ext(|peer, network_name:&str| {
+        let mut reserved_peer_id_network_name = None;
+        let handshake_ret = conn.do_handshake_as_server_ext(|peer, network_name:&str| {
             if network_name
                 == self.global_ctx.get_network_identity().network_name
             {
@@ -713,6 +726,7 @@ impl PeerManager {
                 .foreign_network_manager
                 .get_network_peer_id(network_name);
             if peer_id.is_none() {
+                reserved_peer_id_network_name = Some(network_name.to_string());
                 peer_id = Some(*self.reserved_my_peer_id_map.entry(network_name.to_string()).or_insert_with(|| {
                     rand::random::<PeerId>()
                 }).value());
@@ -728,7 +742,14 @@ impl PeerManager {
 
             Ok(())
         })
-        .await?;
+        .await;
+
+        if let Err(err) = handshake_ret {
+            if let Some(network_name) = reserved_peer_id_network_name {
+                self.release_reserved_peer_id(&network_name);
+            }
+            return Err(err);
+        }
 
         let peer_identity = conn.get_network_identity();
         let peer_network_name = peer_identity.network_name.clone();
@@ -747,6 +768,7 @@ impl PeerManager {
 
         if !is_local_network && self.global_ctx.get_flags().private_mode && !foreign_network_allowed
         {
+            self.release_reserved_peer_id(&peer_network_name);
             return Err(Error::SecretKeyError(
                 "private mode is turned on, foreign network secret mismatch".to_string(),
             ));
@@ -754,14 +776,18 @@ impl PeerManager {
 
         conn.set_is_hole_punched(!is_directly_connected);
 
-        if is_local_network {
-            self.add_new_peer_conn(conn).await?;
+        let add_peer_ret = if is_local_network {
+            self.add_new_peer_conn(conn).await
         } else {
-            self.foreign_network_manager.add_peer_conn(conn).await?;
+            self.foreign_network_manager.add_peer_conn(conn).await
+        };
+
+        if let Err(err) = add_peer_ret {
+            self.release_reserved_peer_id(&peer_network_name);
+            return Err(err);
         }
 
-        self.reserved_my_peer_id_map.remove(&peer_network_name);
-        shrink_dashmap(&self.reserved_my_peer_id_map, None);
+        self.release_reserved_peer_id(&peer_network_name);
 
         tracing::info!("add tunnel as server done");
         Ok(())
@@ -1543,17 +1569,26 @@ impl PeerManager {
         ipv6_addr.is_multicast() || *ipv6_addr == ipv6_inet.last_address()
     }
 
+    fn select_ipv4_broadcast_peers<'a>(
+        routes: impl IntoIterator<Item = &'a instance::Route>,
+        my_peer_id: PeerId,
+    ) -> Vec<PeerId> {
+        routes
+            .into_iter()
+            .filter_map(|route| {
+                (route.peer_id != my_peer_id && route.ipv4_addr.is_some()).then_some(route.peer_id)
+            })
+            .collect()
+    }
+
     pub async fn get_msg_dst_peer_ipv4(&self, ipv4_addr: &Ipv4Addr) -> (Vec<PeerId>, bool) {
         let mut is_exit_node = false;
         let mut dst_peers = vec![];
         if self.is_all_peers_broadcast_ipv4(ipv4_addr) {
-            dst_peers.extend(self.peers.list_routes().await.iter().filter_map(|x| {
-                if *x.key() != self.my_peer_id {
-                    Some(*x.key())
-                } else {
-                    None
-                }
-            }));
+            dst_peers.extend(Self::select_ipv4_broadcast_peers(
+                &self.peers.list_route_infos().await,
+                self.my_peer_id,
+            ));
         } else if let Some(peer_id) = self.peers.get_peer_id_by_ipv4(ipv4_addr).await {
             dst_peers.push(peer_id);
         } else if !self
@@ -2171,6 +2206,32 @@ mod tests {
         assert!(PeerManager::should_mark_recent_traffic_for_fanout(0));
         assert!(PeerManager::should_mark_recent_traffic_for_fanout(1));
         assert!(!PeerManager::should_mark_recent_traffic_for_fanout(2));
+    }
+
+    fn route_with_ipv4(
+        peer_id: u32,
+        ipv4_addr: Option<std::net::Ipv4Addr>,
+    ) -> crate::proto::api::instance::Route {
+        crate::proto::api::instance::Route {
+            peer_id,
+            ipv4_addr: ipv4_addr.map(|addr| cidr::Ipv4Inet::new(addr, 24).unwrap().into()),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn ipv4_broadcast_peer_selection_skips_peers_without_ipv4() {
+        let routes = vec![
+            route_with_ipv4(1, Some(std::net::Ipv4Addr::new(10, 126, 126, 1))),
+            route_with_ipv4(2, None),
+            route_with_ipv4(3, Some(std::net::Ipv4Addr::new(10, 126, 126, 3))),
+            route_with_ipv4(4, None),
+        ];
+
+        assert_eq!(
+            PeerManager::select_ipv4_broadcast_peers(&routes, 3),
+            vec![1]
+        );
     }
 
     #[test]

@@ -134,6 +134,7 @@ export interface NetworkConfig {
   disable_tcp_hole_punching?: boolean
   disable_udp_hole_punching?: boolean
   disable_upnp?: boolean
+  enable_udp_broadcast_relay?: boolean
   disable_sym_hole_punching?: boolean
 
   enable_relay_network_whitelist?: boolean
@@ -213,6 +214,7 @@ export function DEFAULT_NETWORK_CONFIG(): NetworkConfig {
     disable_tcp_hole_punching: false,
     disable_udp_hole_punching: false,
     disable_upnp: false,
+    enable_udp_broadcast_relay: false,
     disable_sym_hole_punching: false,
     enable_relay_network_whitelist: false,
     relay_network_whitelist: [],
@@ -450,4 +452,6 @@ export enum EventType {
   PortForwardAdded = 'PortForwardAdded', // PortForwardConfigPb
 
   ProxyCidrsUpdated = 'ProxyCidrsUpdated', // string[], string[]
+
+  UdpBroadcastRelayStartResult = 'UdpBroadcastRelayStartResult', // { capture_backend?: string, error?: string }
 }

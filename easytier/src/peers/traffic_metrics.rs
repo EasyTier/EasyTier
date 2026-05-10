@@ -201,6 +201,11 @@ impl LogicalTrafficMetrics {
         self.per_peer.len()
     }
 
+    #[cfg(test)]
+    fn contains_peer_cache(&self, peer_id: PeerId) -> bool {
+        self.per_peer.contains_key(&peer_id)
+    }
+
     fn build_peer_counters(&self, instance_id: &str) -> TrafficCounters {
         let instance_label = match self.label_kind {
             InstanceLabelKind::To => LabelType::ToInstanceId(instance_id.to_string()),
@@ -331,6 +336,14 @@ impl TrafficMetricRecorder {
         self.tx_metrics.control.clear_peer_cache();
         self.rx_metrics.data.clear_peer_cache();
         self.rx_metrics.control.clear_peer_cache();
+    }
+
+    #[cfg(test)]
+    pub(crate) fn contains_peer_cache(&self, peer_id: PeerId) -> bool {
+        self.tx_metrics.data.contains_peer_cache(peer_id)
+            || self.tx_metrics.control.contains_peer_cache(peer_id)
+            || self.rx_metrics.data.contains_peer_cache(peer_id)
+            || self.rx_metrics.control.contains_peer_cache(peer_id)
     }
 
     fn resolve_instance_id(&self, peer_id: PeerId) -> BoxFuture<'static, Option<String>> {

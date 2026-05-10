@@ -247,12 +247,14 @@ fn create_public_server_config() -> TomlConfigLoader {
     config
 }
 
-fn create_need_p2p_admin_config() -> TomlConfigLoader {
+fn create_need_p2p_admin_config(listener_scheme: &str) -> TomlConfigLoader {
     let config = TomlConfigLoader::default();
     config.set_inst_name(NEED_P2P_ADMIN_NETWORK_NAME.to_string());
     config.set_hostname(Some("need-p2p-admin".to_string()));
     config.set_netns(Some("ns_c3".to_string()));
-    config.set_listeners(vec!["tcp://0.0.0.0:11020".parse().unwrap()]);
+    config.set_listeners(vec![
+        format!("{listener_scheme}://0.0.0.0:0").parse().unwrap(),
+    ]);
     config.set_network_identity(NetworkIdentity::new(
         NEED_P2P_ADMIN_NETWORK_NAME.to_string(),
         PUBLIC_SERVER_SHARED_SECRET.to_string(),
@@ -326,6 +328,21 @@ async fn wait_direct_peer(inst: &Instance, peer_id: u32, timeout: Duration, labe
     .await;
 }
 
+async fn wait_running_listener(inst: &Instance, scheme: &str, timeout: Duration, label: &str) {
+    wait_for_condition(
+        || async {
+            let listeners = inst.get_global_ctx().get_running_listeners();
+            let matched = listeners.iter().any(|listener| {
+                listener.scheme() == scheme && listener.port().is_some_and(|p| p != 0)
+            });
+            println!("{label}: running listeners={:?}", listeners);
+            matched
+        },
+        timeout,
+    )
+    .await;
+}
+
 async fn wait_route_cost(inst: &Instance, peer_id: u32, cost: i32, timeout: Duration, label: &str) {
     wait_for_condition(
         || async {
@@ -370,18 +387,32 @@ async fn wait_foreign_network_count(inst: &Instance, expected: usize, timeout: D
 /// Public server <- admin peer (need_p2p) <- two credential peers.
 ///
 /// Credential peers set `disable_p2p=true`, while the admin peer advertises `need_p2p=true`.
-/// The credential peers should still proactively build direct TCP peers with the admin peer
-/// through peer RPC forwarded by the public server.
+/// The credential peers should still proactively build direct peers with the admin peer through
+/// peer RPC forwarded by the public server, even when the admin listener binds an ephemeral port.
+#[rstest]
+#[case("quic")]
+#[case("wss")]
+#[case("tcp")]
+#[case("udp")]
 #[tokio::test]
 #[serial_test::serial]
-async fn credential_peers_p2p_to_need_p2p_admin_through_public_server() {
+async fn credential_peers_p2p_to_need_p2p_admin_through_public_server(
+    #[case] admin_listener_scheme: &str,
+) {
     prepare_credential_network();
 
     let mut public_server_inst = Instance::new(create_public_server_config());
     public_server_inst.run().await.unwrap();
 
-    let mut admin_inst = Instance::new(create_need_p2p_admin_config());
+    let mut admin_inst = Instance::new(create_need_p2p_admin_config(admin_listener_scheme));
     admin_inst.run().await.unwrap();
+    wait_running_listener(
+        &admin_inst,
+        admin_listener_scheme,
+        Duration::from_secs(10),
+        "admin ephemeral listener",
+    )
+    .await;
     admin_inst
         .get_conn_manager()
         .add_connector(UdpTunnelConnector::new(
@@ -458,8 +489,8 @@ async fn credential_peers_p2p_to_need_p2p_admin_through_public_server() {
     let credential_a_peer_id = credential_a_inst.peer_id();
     let credential_b_peer_id = credential_b_inst.peer_id();
     println!(
-        "admin={}, credential_a={}, credential_b={}",
-        admin_peer_id, credential_a_peer_id, credential_b_peer_id
+        "admin={}, credential_a={}, credential_b={}, admin_listener_scheme={}",
+        admin_peer_id, credential_a_peer_id, credential_b_peer_id, admin_listener_scheme
     );
 
     wait_direct_peer(

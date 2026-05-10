@@ -365,6 +365,7 @@ mod tests {
         let _c = WebClient::new(
             connector,
             "test",
+            uuid::Uuid::new_v4(),
             "test",
             false,
             Arc::new(NetworkInstanceManager::new()),

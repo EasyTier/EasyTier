@@ -1352,7 +1352,9 @@ impl PeerConn {
 
         let is_foreign_network = conn_info_for_instrument.network_name
             != self.global_ctx.get_network_identity().network_name;
-        let recv_limiter = if is_foreign_network {
+        let recv_limiter = if is_foreign_network
+            && self.global_ctx.get_flags().foreign_relay_bps_limit != u64::MAX
+        {
             let relay_network_bps_limit = self.global_ctx.get_flags().foreign_relay_bps_limit;
             let limiter_config = LimiterConfig {
                 burst_rate: None,

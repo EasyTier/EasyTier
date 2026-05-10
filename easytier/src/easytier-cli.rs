@@ -193,8 +193,11 @@ struct PeerArgs {
 
 #[derive(Subcommand, Debug)]
 enum PeerSubCommand {
+    /// List connected peers
     List,
+    /// Show public IPv6 address information
     Ipv6,
+    /// List foreign networks discovered by this instance
     ListForeign {
         #[arg(
             long,
@@ -203,6 +206,7 @@ enum PeerSubCommand {
         )]
         trusted_keys: bool,
     },
+    /// List global foreign networks from the peer center
     ListGlobalForeign,
 }
 
@@ -214,16 +218,18 @@ struct RouteArgs {
 
 #[derive(Subcommand, Debug)]
 enum RouteSubCommand {
+    /// List routes propagated by peers
     List,
+    /// Dump routes in CIDR format
     Dump,
 }
 
 #[derive(Args, Debug)]
 struct ConnectorArgs {
-    #[arg(short, long)]
+    #[arg(short, long, help = "filter connectors by virtual IPv4 address")]
     ipv4: Option<String>,
 
-    #[arg(short, long)]
+    #[arg(short, long, help = "filter connectors by peer URL")]
     peers: Vec<String>,
 
     #[command(subcommand)]
@@ -242,6 +248,7 @@ enum ConnectorSubCommand {
         #[arg(help = "connector url, e.g., tcp://1.2.3.4:11010")]
         url: String,
     },
+    /// List connectors
     List,
 }
 
@@ -283,6 +290,7 @@ struct AclArgs {
 
 #[derive(Subcommand, Debug)]
 enum AclSubCommand {
+    /// Show ACL rule hit statistics
     Stats,
 }
 
@@ -450,19 +458,25 @@ struct InstallArgs {
     #[arg(long, default_value = env!("CARGO_PKG_DESCRIPTION"), help = "service description")]
     description: String,
 
-    #[arg(long)]
+    #[arg(long, help = "display name shown by the service manager")]
     display_name: Option<String>,
 
-    #[arg(long)]
+    #[arg(
+        long,
+        help = "whether to disable starting the service automatically on boot (true/false)"
+    )]
     disable_autostart: Option<bool>,
 
-    #[arg(long)]
+    #[arg(
+        long,
+        help = "whether to disable automatic restart when the service fails (true/false)"
+    )]
     disable_restart_on_failure: Option<bool>,
 
     #[arg(long, help = "path to easytier-core binary")]
     core_path: Option<PathBuf>,
 
-    #[arg(long)]
+    #[arg(long, help = "working directory for the easytier-core service")]
     service_work_dir: Option<PathBuf>,
 
     #[arg(
