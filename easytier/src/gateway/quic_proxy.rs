@@ -31,7 +31,7 @@ use prost::Message;
 use quinn::udp::{EcnCodepoint, RecvMeta, Transmit};
 use quinn::{
     AsyncUdpSocket, Connection, ConnectionError, Endpoint, RecvStream, SendStream, StreamId,
-    UdpPoller, default_runtime,
+    UdpPoller, WriteError, default_runtime,
 };
 use std::cmp::min;
 use std::future::Future;
@@ -362,30 +362,48 @@ impl NatDstConnector for NatDstQuicConnector {
             reconnect().await?
         };
 
-        let mut stream: QuicStream = loop {
-            match connection.open_bi().await {
-                Ok(stream) => break stream.into(),
-                Err(error) => match error {
-                    ConnectionError::TransportError(_)
-                    | ConnectionError::ConnectionClosed(_)
-                    | ConnectionError::ApplicationClosed(_)
-                    | ConnectionError::Reset
-                        if !reconnected =>
-                    {
-                        debug!(?error, "failed to open quic stream, retrying...");
-                        reconnected = true;
-                        connection = reconnect().await?;
-                    }
-                    _ => {
-                        self.conn_map.invalidate(&dst_peer).await;
-                        bail!("failed to open quic stream: {:?}", error);
-                    }
-                },
+        loop {
+            let is_retryable = |error: &ConnectionError| {
+                matches!(
+                    error,
+                    ConnectionError::ConnectionClosed(_)
+                        | ConnectionError::ApplicationClosed(_)
+                        | ConnectionError::Reset
+                        | ConnectionError::TimedOut
+                )
+            };
+            let mut retry = !reconnected;
+            let header = header.clone();
+            let result = async {
+                let mut stream: QuicStream = connection
+                    .open_bi()
+                    .await
+                    .inspect_err(|error| retry &= is_retryable(error))?
+                    .into();
+                stream
+                    .writer_mut()
+                    .write_chunk(header)
+                    .await
+                    .inspect_err(|error| {
+                        retry &= matches!(error, WriteError::ConnectionLost(error) if is_retryable(error))
+                    })?;
+                Ok(stream.into())
             }
-        };
+                .await;
 
-        stream.writer_mut().write_chunk(header).await?;
-        Ok(stream.into())
+            if let Err(error) = &result {
+                if retry {
+                    debug!(?error, "failed to open quic stream, retrying...");
+                    reconnected = true;
+                    connection = reconnect().await?;
+                    continue;
+                } else {
+                    self.conn_map.invalidate(&dst_peer).await;
+                }
+            }
+
+            break result;
+        }
     }
 
     #[inline]
