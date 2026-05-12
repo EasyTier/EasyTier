@@ -89,6 +89,10 @@ pub trait Route {
         self.get_next_hop(peer_id).await
     }
 
+    async fn is_local_virtual_peer(&self, _peer_id: PeerId) -> bool {
+        false
+    }
+
     async fn list_routes(&self) -> Vec<crate::proto::api::instance::Route>;
 
     // TODO: rewrite route management, remove this
