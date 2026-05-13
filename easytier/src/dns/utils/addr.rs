@@ -1,5 +1,5 @@
 use crate::proto;
-use crate::proto::utils::RepeatedMessageModel;
+use crate::proto::utils::{RepeatedDeserialize, RepeatedMessageModel, RepeatedSerialize};
 use anyhow::{Error, anyhow};
 use hickory_net::xfer::Protocol;
 use hickory_resolver::config::{ConnectionConfig, NameServerConfig, ProtocolConfig};
@@ -149,8 +149,10 @@ impl From<u16> for NameServerAddrGroup {
     }
 }
 
-impl<'de> Deserialize<'de> for NameServerAddrGroup {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+impl RepeatedSerialize for NameServerAddr {}
+
+impl<'de> RepeatedDeserialize<'de> for NameServerAddr {
+    fn deserialize<D>(deserializer: D) -> Result<NameServerAddrGroup, D::Error>
     where
         D: Deserializer<'de>,
     {

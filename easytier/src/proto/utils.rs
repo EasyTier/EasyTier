@@ -2,7 +2,7 @@ use delegate::delegate;
 use derivative::Derivative;
 use derive_more::{AsMut, AsRef, Deref, DerefMut, From, IntoIterator};
 use prost::Message;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use sha2::{Digest, Sha256};
 
 /// Generates a stable digest strictly within the lifecycle of the current process.
@@ -36,43 +36,27 @@ where
 }
 
 #[derive(
-    Derivative,
-    Debug,
-    Clone,
-    PartialEq,
-    Eq,
-    Hash,
-    From,
-    Deref,
-    DerefMut,
-    AsRef,
-    AsMut,
-    Serialize,
-    Deserialize,
-    IntoIterator,
+    Derivative, Debug, Clone, PartialEq, Eq, Hash, From, Deref, DerefMut, AsRef, AsMut, IntoIterator,
 )]
 #[derivative(Default(bound = ""))]
 #[as_ref(forward)]
 #[as_mut(forward)]
-#[serde(transparent)]
 #[into_iterator(owned, ref, ref_mut)]
-pub struct RepeatedMessageModel<Model>(Vec<Model>);
-
-impl<Model> RepeatedMessageModel<Model> {
-    pub fn into_inner(self) -> Vec<Model> {
-        self.0
-    }
+pub struct RepeatedMessageModel<Model> {
+    pub models: Vec<Model>,
 }
 
 impl<Model> FromIterator<Model> for RepeatedMessageModel<Model> {
     fn from_iter<I: IntoIterator<Item = Model>>(iter: I) -> Self {
-        Self(iter.into_iter().collect())
+        Self {
+            models: iter.into_iter().collect(),
+        }
     }
 }
 
 impl<Model> Extend<Model> for RepeatedMessageModel<Model> {
     delegate! {
-        to self.0 {
+        to self.models {
             fn extend<T: IntoIterator<Item = Model>>(&mut self, iter: T);
         }
     }
@@ -97,5 +81,60 @@ where
 {
     fn from(value: RepeatedMessageModel<Model>) -> Self {
         value.into_iter().map(Into::into).collect()
+    }
+}
+
+pub trait RepeatedSerialize: Serialize + Sized {
+    fn serialize<S>(models: &RepeatedMessageModel<Self>, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        Serialize::serialize(&**models, serializer)
+    }
+}
+
+pub trait RepeatedDeserialize<'de>: Deserialize<'de> {
+    fn deserialize<D>(deserializer: D) -> Result<RepeatedMessageModel<Self>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        Vec::deserialize(deserializer).map(Into::into)
+    }
+
+    #[doc(hidden)]
+    fn deserialize_in_place<D>(
+        deserializer: D,
+        place: &mut RepeatedMessageModel<Self>,
+    ) -> Result<(), D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        Deserialize::deserialize_in_place(deserializer, &mut place.models)
+    }
+}
+
+impl<Model: RepeatedSerialize> Serialize for RepeatedMessageModel<Model> {
+    delegate! {
+        #[through(RepeatedSerialize)]
+        to self {
+            fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+            where
+                S: Serializer;
+        }
+    }
+}
+
+impl<'de, Model: RepeatedDeserialize<'de>> Deserialize<'de> for RepeatedMessageModel<Model> {
+    delegate! {
+        to RepeatedDeserialize {
+            fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+            where
+                D: Deserializer<'de>;
+
+            #[doc(hidden)]
+            fn deserialize_in_place<D>(deserializer: D, place: &mut Self) -> Result<(), D::Error>
+            where
+                D: Deserializer<'de>;
+        }
     }
 }
