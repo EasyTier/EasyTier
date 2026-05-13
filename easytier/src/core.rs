@@ -486,6 +486,15 @@ struct NetworkOptions {
 
     #[arg(
         long,
+        env = "ET_ENABLE_UDP_BROADCAST_RELAY",
+        help = t!("core_clap.enable_udp_broadcast_relay").to_string(),
+        num_args = 0..=1,
+        default_missing_value = "true"
+    )]
+    enable_udp_broadcast_relay: Option<bool>,
+
+    #[arg(
+        long,
         env = "ET_RELAY_ALL_PEER_RPC",
         help = t!("core_clap.relay_all_peer_rpc").to_string(),
         num_args = 0..=1,
@@ -1128,6 +1137,9 @@ impl NetworkOptions {
             .disable_sym_hole_punching
             .unwrap_or(f.disable_sym_hole_punching);
         f.disable_upnp = self.disable_upnp.unwrap_or(f.disable_upnp);
+        f.enable_udp_broadcast_relay = self
+            .enable_udp_broadcast_relay
+            .unwrap_or(f.enable_udp_broadcast_relay);
         cfg.set_flags(f);
 
         if !self.exit_nodes.is_empty() {
@@ -1318,7 +1330,10 @@ async fn run_main(cli: Cli) -> anyhow::Result<()> {
     let _web_client = if let Some(config_server_url_s) = cli.config_server.as_ref() {
         let wc = web_client::run_web_client(
             config_server_url_s,
-            cli.machine_id.clone(),
+            crate::common::MachineIdOptions {
+                explicit_machine_id: cli.machine_id.clone(),
+                state_dir: None,
+            },
             cli.network_options.hostname.clone(),
             cli.network_options.secure_mode.unwrap_or(false),
             manager.clone(),

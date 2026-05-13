@@ -84,6 +84,11 @@ pub enum GlobalCtxEvent {
 
     ProxyCidrsUpdated(Vec<cidr::Ipv4Cidr>, Vec<cidr::Ipv4Cidr>), // (added, removed)
 
+    UdpBroadcastRelayStartResult {
+        capture_backend: Option<String>,
+        error: Option<String>,
+    },
+
     CredentialChanged,
 }
 

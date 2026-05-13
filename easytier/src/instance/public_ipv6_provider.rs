@@ -1,5 +1,8 @@
-use std::{path::Path, sync::Arc};
+#[cfg(target_os = "linux")]
+use std::path::Path;
+use std::sync::Arc;
 
+#[cfg(target_os = "linux")]
 use anyhow::Context;
 use cidr::{Ipv6Cidr, Ipv6Inet};
 #[cfg(target_os = "linux")]
@@ -321,7 +324,7 @@ async fn resolve_public_ipv6_provider_runtime_state_linux(
 }
 
 async fn resolve_public_ipv6_provider_runtime_state(
-    global_ctx: &ArcGlobalCtx,
+    _global_ctx: &ArcGlobalCtx,
     config: PublicIpv6ProviderConfigSnapshot,
 ) -> PublicIpv6ProviderRuntimeState {
     if !config.provider_enabled {
@@ -331,7 +334,7 @@ async fn resolve_public_ipv6_provider_runtime_state(
     #[cfg(target_os = "linux")]
     {
         return resolve_public_ipv6_provider_runtime_state_linux(
-            global_ctx,
+            _global_ctx,
             config.configured_prefix,
         )
         .await;

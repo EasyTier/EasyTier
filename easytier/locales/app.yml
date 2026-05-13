@@ -12,9 +12,9 @@ core_clap:
       仅用户名：--config-server admin，将使用官方的服务器
   machine_id:
     en: |+
-      the machine id to identify this machine, used for config recovery after disconnection, must be unique and fixed. default is from system.
+      the machine id to identify this machine, used for config recovery after disconnection, must be unique and fixed. by default it is loaded from persisted local state; on first start it may be migrated from system information or generated, then remains fixed.
     zh-CN: |+
-      Web 配置服务器通过 machine id 来识别机器，用于断线重连后的配置恢复，需要保证唯一且固定不变。默认从系统获得。
+      Web 配置服务器通过 machine id 来识别机器，用于断线重连后的配置恢复，需要保证唯一且固定不变。默认从本地持久化状态读取；首次启动时可能基于系统信息迁移或生成，之后保持固定不变。
   config_file:
     en: "path to the config file, NOTE: the options set by cmdline args will override options in config file"
     zh-CN: "配置文件路径，注意：命令行中的配置的选项会覆盖配置文件中的选项"
@@ -184,6 +184,9 @@ core_clap:
   disable_upnp:
     en: "disable runtime UPnP/NAT-PMP port mapping for eligible listeners; automatic port mapping is enabled by default"
     zh-CN: "禁用符合条件监听器的运行时 UPnP/NAT-PMP 端口映射；自动端口映射默认开启"
+  enable_udp_broadcast_relay:
+    en: "Windows only: capture local UDP broadcast packets from physical interfaces and forward them to EasyTier peers. Helps games to find rooms in local network. Requires administrator privileges."
+    zh-CN: "仅 Windows：捕获物理网卡上的本机 UDP 广播包并转发给 EasyTier 对等节点，帮助局域网游戏发现房间。需要管理员权限。"
   relay_all_peer_rpc:
     en: "relay all peer rpc packets, even if the peer is not in the relay network whitelist. this can help peers not in relay network whitelist to establish p2p connection."
     zh-CN: "转发所有对等节点的RPC数据包，即使对等节点不在转发网络白名单中。这可以帮助白名单外网络中的对等节点建立P2P连接。"
@@ -268,6 +271,9 @@ core_clap:
   check_config:
     en: Check config validity without starting the network
     zh-CN: 检查配置文件的有效性并退出
+  daemon:
+    en: Run in daemon mode
+    zh-CN: 以守护进程模式运行
   file_log_size_mb:
     en: "per file log size in MB, default is 100MB"
     zh-CN: "单个文件日志大小，单位 MB，默认值为 100MB"

@@ -160,6 +160,9 @@ disable_tcp_hole_punching_help: 禁用TCP打洞功能
 disable_udp_hole_punching: 禁用UDP打洞
 disable_udp_hole_punching_help: 禁用UDP打洞功能
 
+enable_udp_broadcast_relay: UDP 广播中继
+enable_udp_broadcast_relay_help: "仅 Windows：捕获物理网卡上的本机 UDP 广播包并转发给 EasyTier 对等节点，帮助局域网游戏发现房间。需要管理员权限。"
+
 disable_upnp: 禁用 UPnP
 disable_upnp_help: 禁用符合条件监听器的运行时 UPnP/NAT-PMP 端口映射；自动端口映射默认开启。
 
@@ -260,6 +263,7 @@ event:
   DhcpIpv4Conflicted: DHCP IPv4地址冲突
   PortForwardAdded: 端口转发添加
   ProxyCidrsUpdated: 子网代理CIDR更新
+  UdpBroadcastRelayStartResult: UDP广播中继启动结果
 
 web:
   login:

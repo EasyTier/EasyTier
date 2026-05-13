@@ -159,6 +159,9 @@ disable_tcp_hole_punching_help: Disable tcp hole punching
 disable_udp_hole_punching: Disable UDP Hole Punching
 disable_udp_hole_punching_help: Disable udp hole punching
 
+enable_udp_broadcast_relay: UDP Broadcast Relay
+enable_udp_broadcast_relay_help: "Windows only: capture local UDP broadcast packets from physical interfaces and forward them to EasyTier peers. Helps games to find rooms in local network. Requires administrator privileges."
+
 disable_upnp: Disable UPnP
 disable_upnp_help: Disable runtime UPnP/NAT-PMP port mapping for eligible listeners; automatic port mapping is enabled by default.
 
@@ -260,6 +263,7 @@ event:
   DhcpIpv4Conflicted: DhcpIpv4Conflicted
   PortForwardAdded: PortForwardAdded
   ProxyCidrsUpdated: ProxyCidrsUpdated
+  UdpBroadcastRelayStartResult: UDP Broadcast Relay Start Result
 
 web:
   login:

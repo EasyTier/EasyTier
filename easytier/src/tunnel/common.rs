@@ -115,6 +115,12 @@ impl<R> FramedReader<R> {
             return Some(Err(TunnelError::InvalidPacket("body too long".to_string())));
         }
 
+        if body_len < PEER_MANAGER_HEADER_SIZE {
+            return Some(Err(TunnelError::InvalidPacket(
+                "body too short".to_string(),
+            )));
+        }
+
         if buf.len() < TCP_TUNNEL_HEADER_SIZE + body_len {
             // body is not complete
             return None;
@@ -554,6 +560,26 @@ pub mod tests {
         common::netns::NetNS,
         tunnel::{TunnelConnector, TunnelListener, packet_def::ZCPacket},
     };
+
+    #[cfg(test)]
+    use crate::tunnel::{
+        TunnelError,
+        packet_def::{PEER_MANAGER_HEADER_SIZE, TCP_TUNNEL_HEADER_SIZE},
+    };
+
+    #[test]
+    fn framed_reader_rejects_short_peer_manager_body() {
+        let mut buf = BytesMut::new();
+        buf.put_u32_le((PEER_MANAGER_HEADER_SIZE - 1) as u32);
+        buf.resize(TCP_TUNNEL_HEADER_SIZE + PEER_MANAGER_HEADER_SIZE - 1, 0);
+
+        let ret = super::FramedReader::<tokio::io::Empty>::extract_one_packet(&mut buf, 2000);
+
+        assert!(matches!(
+            ret,
+            Some(Err(TunnelError::InvalidPacket(msg))) if msg == "body too short"
+        ));
+    }
 
     pub async fn _tunnel_echo_server(tunnel: Box<dyn super::Tunnel>, once: bool) {
         let (mut recv, mut send) = tunnel.split();

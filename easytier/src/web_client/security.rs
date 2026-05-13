@@ -101,7 +101,11 @@ impl TunnelFilter for SecureDatagramTunnelFilter {
             Err(e) => return Some(Err(e)),
         };
 
-        let mut cipher = ZCPacket::new_with_payload(packet.payload());
+        let payload = match checked_payload(&packet, "secure packet") {
+            Ok(v) => v,
+            Err(e) => return Some(Err(e)),
+        };
+        let mut cipher = ZCPacket::new_with_payload(payload);
         cipher.fill_peer_manager_hdr(0, 0, PacketType::Data as u8);
         cipher
             .mut_peer_manager_header()
@@ -116,13 +120,25 @@ impl TunnelFilter for SecureDatagramTunnelFilter {
             ))));
         }
 
-        Some(Ok(ZCPacket::new_from_buf(
-            cipher.payload_bytes(),
-            ZCPacketType::DummyTunnel,
-        )))
+        let packet = ZCPacket::new_from_buf(cipher.payload_bytes(), ZCPacketType::DummyTunnel);
+        if packet.peer_manager_header().is_none() {
+            return Some(Err(TunnelError::InvalidPacket(
+                "decrypted secure packet too short".to_string(),
+            )));
+        }
+
+        Some(Ok(packet))
     }
 
     fn filter_output(&self) {}
+}
+
+fn checked_payload<'a>(packet: &'a ZCPacket, context: &str) -> Result<&'a [u8], TunnelError> {
+    if packet.peer_manager_header().is_none() {
+        return Err(TunnelError::InvalidPacket(format!("{context} too short")));
+    }
+
+    Ok(packet.payload())
 }
 
 fn pack_control_packet(payload: &[u8]) -> ZCPacket {
@@ -214,7 +230,8 @@ pub async fn upgrade_client_tunnel(
         Ok(None) => return Err(TunnelError::Shutdown),
         Err(error) => return Err(error.into()),
     };
-    let msg2_cipher = decode_noise_payload(msg2_packet.payload())
+    let msg2_payload = checked_payload(&msg2_packet, "noise msg2 packet")?;
+    let msg2_cipher = decode_noise_payload(msg2_payload)
         .ok_or_else(|| TunnelError::InvalidPacket("invalid noise msg2 magic".to_string()))?;
     let mut root_key_buf = [0u8; 32];
     let root_key_len = state
@@ -254,7 +271,8 @@ pub async fn accept_or_upgrade_server_tunnel(
             ));
         }
     };
-    let Some(msg1_cipher) = decode_noise_payload(first_packet.payload()) else {
+    let first_payload = checked_payload(&first_packet, "first packet")?;
+    let Some(msg1_cipher) = decode_noise_payload(first_payload) else {
         let stream = Box::pin(futures::stream::once(async move { Ok(first_packet) }).chain(stream));
         return Ok((
             Box::new(RawSplitTunnel::new(info, stream, sink)) as Box<dyn Tunnel>,
@@ -303,6 +321,7 @@ pub async fn accept_or_upgrade_server_tunnel(
 mod tests {
     use super::*;
     use crate::tunnel::ring::create_ring_tunnel_pair;
+    use bytes::BytesMut;
 
     #[test]
     fn web_secure_cipher_algorithm_matches_support_flag() {
@@ -336,6 +355,28 @@ mod tests {
 
         let err = upgrade_client_tunnel(client_tunnel).await.unwrap_err();
         assert!(matches!(err, TunnelError::Timeout(_)));
+    }
+
+    #[tokio::test]
+    async fn accept_secure_tunnel_rejects_short_first_packet() {
+        let (server_tunnel, client_tunnel) = create_ring_tunnel_pair();
+
+        let server_task =
+            tokio::spawn(async move { accept_or_upgrade_server_tunnel(server_tunnel).await });
+
+        let (_stream, mut sink) = client_tunnel.split();
+        sink.send(ZCPacket::new_from_buf(
+            BytesMut::from(&b"\x01"[..]),
+            ZCPacketType::TCP,
+        ))
+        .await
+        .unwrap();
+
+        let err = server_task.await.unwrap().unwrap_err();
+        assert!(matches!(
+            err,
+            TunnelError::InvalidPacket(msg) if msg == "first packet too short"
+        ));
     }
 
     #[tokio::test]
