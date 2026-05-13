@@ -8,10 +8,15 @@ use std::sync::{
 
 use dashmap::DashMap;
 use easytier::{
+    common::config::ConfigSource,
     proto::{
-        api::manage::WebClientService, rpc_types::controller::BaseController, web::HeartbeatRequest,
+        api::manage::{DeleteNetworkInstanceRequest, WebClientService},
+        rpc_types::controller::BaseController,
+        web::HeartbeatRequest,
     },
-    rpc_service::remote_client::{self, RemoteClientManager},
+    rpc_service::remote_client::{
+        self, ListNetworkProps, PersistentConfig as _, RemoteClientManager, Storage as _,
+    },
     tunnel::TunnelListener,
     web_client::security,
 };
@@ -20,7 +25,7 @@ use session::{Location, Session};
 use storage::{Storage, StorageToken};
 
 use crate::FeatureFlags;
-use crate::webhook::SharedWebhookConfig;
+use crate::webhook::{ManagedNetworkConfig, SharedWebhookConfig};
 use tokio::task::JoinSet;
 
 use crate::db::{Db, UserIdInDb, entity::user_running_network_configs};
@@ -195,6 +200,129 @@ impl ClientManager {
 
     pub async fn list_machine_by_user_id(&self, user_id: UserIdInDb) -> Vec<url::Url> {
         self.storage.list_user_clients(user_id)
+    }
+
+    pub async fn reconcile_managed_network_configs(
+        &self,
+        user_id: UserIdInDb,
+        machine_id: uuid::Uuid,
+        desired_configs: Vec<ManagedNetworkConfig>,
+    ) -> anyhow::Result<()> {
+        let previous_configs = self
+            .storage
+            .db()
+            .list_network_configs((user_id, machine_id), ListNetworkProps::All)
+            .await?;
+        let previous_webhook_ids = previous_configs
+            .iter()
+            .filter_map(|cfg| {
+                (cfg.get_runtime_network_config_source() == ConfigSource::Webhook)
+                    .then(|| uuid::Uuid::parse_str(cfg.get_network_inst_id()).ok())
+                    .flatten()
+            })
+            .collect::<std::collections::HashSet<_>>();
+
+        session::SessionRpcService::reconcile_webhook_source_configs(
+            &self.storage,
+            user_id,
+            machine_id,
+            desired_configs,
+        )
+        .await?;
+
+        let running_ids = match self.get_session_by_machine_id(user_id, &machine_id) {
+            Some(session) => session
+                .data()
+                .read()
+                .await
+                .req()
+                .map(|req| {
+                    req.running_network_instances
+                        .into_iter()
+                        .map(Into::<uuid::Uuid>::into)
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default(),
+            None => Vec::new(),
+        };
+        if running_ids.is_empty() {
+            return Ok(());
+        }
+
+        let configs = self
+            .storage
+            .db()
+            .list_network_configs((user_id, machine_id), ListNetworkProps::All)
+            .await?;
+        let desired_webhook_ids = configs
+            .iter()
+            .filter_map(|cfg| {
+                (cfg.get_runtime_network_config_source() == ConfigSource::Webhook)
+                    .then(|| uuid::Uuid::parse_str(cfg.get_network_inst_id()).ok())
+                    .flatten()
+            })
+            .collect::<std::collections::HashSet<_>>();
+
+        let running_webhook_ids = if let Some(client) = self.get_rpc_client((user_id, machine_id)) {
+            match client
+                .list_network_instance_meta(
+                    BaseController::default(),
+                    easytier::proto::api::manage::ListNetworkInstanceMetaRequest {
+                        inst_ids: running_ids.iter().copied().map(Into::into).collect(),
+                    },
+                )
+                .await
+            {
+                Ok(resp) => resp
+                    .metas
+                    .into_iter()
+                    .filter_map(|meta| {
+                        let inst_id = meta.inst_id.map(Into::<uuid::Uuid>::into)?;
+                        let source = ConfigSource::from_rpc(meta.source)?;
+                        (source == ConfigSource::Webhook).then_some(inst_id)
+                    })
+                    .collect::<std::collections::HashSet<_>>(),
+                Err(err) => {
+                    tracing::warn!(
+                        ?user_id,
+                        ?machine_id,
+                        %err,
+                        "failed to list running network metadata for managed cleanup"
+                    );
+                    running_ids
+                        .iter()
+                        .copied()
+                        .filter(|inst_id| previous_webhook_ids.contains(inst_id))
+                        .collect::<std::collections::HashSet<_>>()
+                }
+            }
+        } else {
+            running_ids
+                .iter()
+                .copied()
+                .filter(|inst_id| previous_webhook_ids.contains(inst_id))
+                .collect::<std::collections::HashSet<_>>()
+        };
+
+        let stale_running_ids = running_webhook_ids
+            .difference(&desired_webhook_ids)
+            .copied()
+            .collect::<Vec<_>>();
+        if stale_running_ids.is_empty() {
+            return Ok(());
+        }
+        let Some(client) = self.get_rpc_client((user_id, machine_id)) else {
+            return Ok(());
+        };
+        client
+            .delete_network_instance(
+                BaseController::default(),
+                DeleteNetworkInstanceRequest {
+                    inst_ids: stale_running_ids.into_iter().map(Into::into).collect(),
+                },
+            )
+            .await?;
+        Ok(())
     }
 
     pub async fn get_heartbeat_requests(&self, client_url: &url::Url) -> Option<HeartbeatRequest> {
