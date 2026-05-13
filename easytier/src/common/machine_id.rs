@@ -6,6 +6,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use crate::utils::hostname;
 use anyhow::Context as _;
 #[cfg(unix)]
 use nix::{
@@ -233,10 +234,7 @@ fn machine_uid_seed() -> Option<String> {
 fn linux_machine_id_seed(machine_uid: &str) -> String {
     let mut seed = format!("machine_uid={machine_uid}");
 
-    let hostname = gethostname::gethostname()
-        .to_string_lossy()
-        .trim()
-        .to_string();
+    let hostname = hostname();
     if !hostname.is_empty() {
         seed.push_str("\nhostname=");
         seed.push_str(&hostname);

@@ -2,7 +2,7 @@ use delegate::delegate;
 use derivative::Derivative;
 use derive_more::{AsMut, AsRef, Deref, DerefMut, From, IntoIterator};
 use prost::Message;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 /// Generates a stable digest strictly within the lifecycle of the current process.
