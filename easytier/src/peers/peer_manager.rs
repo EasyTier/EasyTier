@@ -503,6 +503,33 @@ impl PeerManager {
         });
     }
 
+    async fn close_untrusted_credential_peers(peer_map: &Arc<PeerMap>, global_ctx: &ArcGlobalCtx) {
+        let network_name = global_ctx.get_network_name();
+        for peer_id in peer_map.list_peers() {
+            if !matches!(
+                peer_map.get_peer_identity_type(peer_id),
+                Some(PeerIdentityType::Credential)
+            ) {
+                continue;
+            }
+            let Some(peer) = peer_map.get_peer_by_id(peer_id) else {
+                continue;
+            };
+            let Some(pubkey) = peer.get_peer_public_key() else {
+                continue;
+            };
+
+            if global_ctx.is_pubkey_trusted(&pubkey, &network_name) {
+                continue;
+            }
+
+            tracing::warn!(?peer_id, "closing untrusted credential peer");
+            if let Err(e) = peer_map.close_peer(peer_id).await {
+                tracing::warn!(?e, ?peer_id, "failed to close untrusted credential peer");
+            }
+        }
+    }
+
     fn build_foreign_network_manager_accessor(
         peer_map: &Arc<PeerMap>,
     ) -> Box<dyn GlobalForeignNetworkAccessor> {
@@ -1849,6 +1876,26 @@ impl PeerManager {
         });
     }
 
+    async fn run_credential_gc_routine(&self) {
+        let global_ctx = self.global_ctx.clone();
+        let peer_map = self.peers.clone();
+        self.tasks.lock().await.spawn(async move {
+            loop {
+                if global_ctx.get_network_identity().network_secret.is_some() {
+                    if global_ctx
+                        .get_credential_manager()
+                        .remove_expired_credentials()
+                    {
+                        global_ctx.issue_event(GlobalCtxEvent::CredentialChanged);
+                    }
+
+                    Self::close_untrusted_credential_peers(&peer_map, &global_ctx).await;
+                }
+                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+            }
+        });
+    }
+
     async fn run_traffic_metrics_gc_routine(&self) {
         let mut event_receiver = self.global_ctx.subscribe();
         let traffic_metrics = self.traffic_metrics.clone();
@@ -1897,6 +1944,7 @@ impl PeerManager {
         self.run_relay_session_gc_routine().await;
         self.run_recent_traffic_gc_routine().await;
         self.run_peer_session_gc_routine().await;
+        self.run_credential_gc_routine().await;
         self.run_traffic_metrics_gc_routine().await;
 
         self.run_foriegn_network().await;
@@ -2135,6 +2183,7 @@ impl PeerManager {
 
 #[cfg(test)]
 mod tests {
+    use base64::Engine;
     use std::{
         fmt::Debug,
         sync::Arc,
@@ -2164,7 +2213,7 @@ mod tests {
             },
         },
         proto::{
-            common::{CompressionAlgoPb, NatType},
+            common::{CompressionAlgoPb, NatType, SecureModeConfig},
             peer_rpc::SecureAuthLevel,
         },
         tunnel::{
@@ -3404,6 +3453,92 @@ mod tests {
         )
         .await;
         // a is client, b is server
+    }
+
+    #[tokio::test]
+    async fn expired_credential_peer_conn_is_closed_without_ospf() {
+        let (admin_ch, _admin_rx) = create_packet_recv_chan();
+        let admin_ctx = get_mock_global_ctx();
+        admin_ctx.config.set_network_identity(NetworkIdentity::new(
+            "net1".to_string(),
+            "secret".to_string(),
+        ));
+        set_secure_mode_cfg(&admin_ctx, true);
+        let admin = Arc::new(PeerManager::new(
+            RouteAlgoType::None,
+            admin_ctx.clone(),
+            admin_ch,
+        ));
+        admin.run().await.unwrap();
+
+        let (_cred_id, cred_secret) = admin_ctx.get_credential_manager().generate_credential(
+            vec![],
+            false,
+            vec![],
+            Duration::from_secs(1),
+        );
+        let privkey_bytes: [u8; 32] = base64::engine::general_purpose::STANDARD
+            .decode(&cred_secret)
+            .unwrap()
+            .try_into()
+            .unwrap();
+        let private = x25519_dalek::StaticSecret::from(privkey_bytes);
+        let public = x25519_dalek::PublicKey::from(&private);
+        let (credential_ch, _credential_rx) = create_packet_recv_chan();
+        let credential_ctx = get_mock_global_ctx();
+        credential_ctx
+            .config
+            .set_network_identity(NetworkIdentity::new_credential("net1".to_string()));
+        credential_ctx
+            .config
+            .set_secure_mode(Some(SecureModeConfig {
+                enabled: true,
+                local_private_key: Some(
+                    base64::engine::general_purpose::STANDARD.encode(private.as_bytes()),
+                ),
+                local_public_key: Some(
+                    base64::engine::general_purpose::STANDARD.encode(public.as_bytes()),
+                ),
+            }));
+        let credential = Arc::new(PeerManager::new(
+            RouteAlgoType::None,
+            credential_ctx,
+            credential_ch,
+        ));
+        credential.run().await.unwrap();
+        let credential_peer_id = credential.my_peer_id();
+
+        connect_peer_manager(credential.clone(), admin.clone()).await;
+
+        wait_for_condition(
+            || {
+                let admin = admin.clone();
+                async move {
+                    admin
+                        .get_peer_map()
+                        .list_peer_conns(credential_peer_id)
+                        .await
+                        .is_some_and(|conns| !conns.is_empty())
+                }
+            },
+            Duration::from_secs(5),
+        )
+        .await;
+
+        wait_for_condition(
+            || {
+                let admin = admin.clone();
+                async move {
+                    admin
+                        .get_peer_map()
+                        .list_peer_conns(credential_peer_id)
+                        .await
+                        .is_none_or(|conns| conns.is_empty())
+                }
+            },
+            Duration::from_secs(5),
+        )
+        .await;
     }
 
     #[tokio::test]
