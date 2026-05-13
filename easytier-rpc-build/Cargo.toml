@@ -12,8 +12,10 @@ license-file = "LICENSE"
 readme = "README.md"
 
 [dependencies]
-heck = "0.5"
+indoc = "2.0"
 prost-build = "0.13"
+proc-macro2 = "1"
+quote = "1"
 
 [features]
 default = []
