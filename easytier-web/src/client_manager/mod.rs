@@ -30,6 +30,18 @@ use tokio::task::JoinSet;
 
 use crate::db::{Db, UserIdInDb, entity::user_running_network_configs};
 
+fn managed_running_instance_id(
+    meta: easytier::proto::api::manage::NetworkMeta,
+    previous_webhook_ids: &std::collections::HashSet<uuid::Uuid>,
+) -> Option<uuid::Uuid> {
+    let inst_id = meta.inst_id.map(Into::<uuid::Uuid>::into)?;
+    if previous_webhook_ids.contains(&inst_id) {
+        return Some(inst_id);
+    }
+    let source = ConfigSource::from_rpc(meta.source)?;
+    (source == ConfigSource::Webhook).then_some(inst_id)
+}
+
 #[derive(rust_embed::Embed)]
 #[folder = "resources/"]
 #[include = "geoip2-cn.mmdb"]
@@ -276,11 +288,7 @@ impl ClientManager {
                 Ok(resp) => resp
                     .metas
                     .into_iter()
-                    .filter_map(|meta| {
-                        let inst_id = meta.inst_id.map(Into::<uuid::Uuid>::into)?;
-                        let source = ConfigSource::from_rpc(meta.source)?;
-                        (source == ConfigSource::Webhook).then_some(inst_id)
-                    })
+                    .filter_map(|meta| managed_running_instance_id(meta, &previous_webhook_ids))
                     .collect::<std::collections::HashSet<_>>(),
                 Err(err) => {
                     tracing::warn!(
@@ -456,10 +464,12 @@ impl
 
 #[cfg(test)]
 mod tests {
-    use std::{sync::Arc, time::Duration};
+    use std::{collections::HashSet, sync::Arc, time::Duration};
 
     use easytier::{
+        common::config::ConfigSource,
         instance_manager::NetworkInstanceManager,
+        proto::api::manage::{ConfigSource as RpcConfigSource, NetworkMeta},
         tunnel::{
             common::tests::wait_for_condition,
             udp::{UdpTunnelConnector, UdpTunnelListener},
@@ -469,6 +479,54 @@ mod tests {
     use sqlx::Executor;
 
     use crate::{FeatureFlags, client_manager::ClientManager, db::Db};
+
+    #[test]
+    fn managed_running_instance_id_keeps_previous_webhook_instance_with_user_runtime_source() {
+        let inst_id = uuid::Uuid::new_v4();
+        let previous_webhook_ids = HashSet::from([inst_id]);
+
+        assert_eq!(
+            super::managed_running_instance_id(
+                NetworkMeta {
+                    inst_id: Some(inst_id.into()),
+                    source: RpcConfigSource::User as i32,
+                    ..Default::default()
+                },
+                &previous_webhook_ids,
+            ),
+            Some(inst_id)
+        );
+    }
+
+    #[test]
+    fn managed_running_instance_id_uses_runtime_source_without_previous_db_signal() {
+        let webhook_inst_id = uuid::Uuid::new_v4();
+        let user_inst_id = uuid::Uuid::new_v4();
+        let previous_webhook_ids = HashSet::new();
+
+        assert_eq!(
+            super::managed_running_instance_id(
+                NetworkMeta {
+                    inst_id: Some(webhook_inst_id.into()),
+                    source: ConfigSource::Webhook.to_rpc(),
+                    ..Default::default()
+                },
+                &previous_webhook_ids,
+            ),
+            Some(webhook_inst_id)
+        );
+        assert_eq!(
+            super::managed_running_instance_id(
+                NetworkMeta {
+                    inst_id: Some(user_inst_id.into()),
+                    source: ConfigSource::User.to_rpc(),
+                    ..Default::default()
+                },
+                &previous_webhook_ids,
+            ),
+            None
+        );
+    }
 
     #[tokio::test]
     async fn test_client() {
