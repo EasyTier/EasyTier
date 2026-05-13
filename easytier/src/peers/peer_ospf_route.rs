@@ -441,6 +441,9 @@ struct SyncedRouteInfo {
     // Tracks the currently accepted peer for non-reusable credentials.
     // Maps credential pubkey bytes -> peer_id.
     non_reusable_credential_owners: DashMap<Vec<u8>, PeerId>,
+    // Duplicate non-reusable credential peers are kept for OSPF sync and topology
+    // reachability, but excluded from forwarding until owner election selects them.
+    suppressed_non_reusable_credential_peers: DashMap<PeerId, ()>,
 
     version: AtomicVersion,
 }
@@ -658,6 +661,36 @@ impl SyncedRouteInfo {
         for (pubkey, peer_id) in active_owners {
             self.non_reusable_credential_owners.insert(pubkey, peer_id);
         }
+    }
+
+    fn replace_suppressed_non_reusable_credential_peers(
+        &self,
+        suppressed_peers: BTreeSet<PeerId>,
+    ) -> bool {
+        let current: BTreeSet<_> = self
+            .suppressed_non_reusable_credential_peers
+            .iter()
+            .map(|entry| *entry.key())
+            .collect();
+        if current == suppressed_peers {
+            return false;
+        }
+
+        self.suppressed_non_reusable_credential_peers
+            .retain(|peer_id, _| suppressed_peers.contains(peer_id));
+
+        for peer_id in suppressed_peers {
+            self.suppressed_non_reusable_credential_peers
+                .insert(peer_id, ());
+        }
+
+        self.version.inc();
+        true
+    }
+
+    fn is_route_suppressed(&self, peer_id: PeerId) -> bool {
+        self.suppressed_non_reusable_credential_peers
+            .contains_key(&peer_id)
     }
 
     fn update_credential_groups(
@@ -1233,11 +1266,13 @@ impl SyncedRouteInfo {
     where
         F: FnMut(PeerId) -> bool,
     {
-        self.verify_and_update_credential_trusts_with_active_peers_protecting(
-            network_secret,
-            is_peer_active,
-            None,
-        )
+        let (untrusted_peers, global_trusted_keys, _) = self
+            .verify_and_update_credential_trusts_with_active_peers_protecting(
+                network_secret,
+                is_peer_active,
+                None,
+            );
+        (untrusted_peers, global_trusted_keys)
     }
 
     fn verify_and_update_credential_trusts_with_active_peers_protecting<F>(
@@ -1248,6 +1283,7 @@ impl SyncedRouteInfo {
     ) -> (
         Vec<PeerId>,
         HashMap<Vec<u8>, crate::common::global_ctx::TrustedKeyMetadata>,
+        bool,
     )
     where
         F: FnMut(PeerId) -> bool,
@@ -1261,14 +1297,18 @@ impl SyncedRouteInfo {
         let (all_trusted, global_trusted_keys) =
             self.collect_trusted_credentials(&peer_infos, network_secret, now);
         let prev_trusted = self.replace_trusted_credential_pubkeys(&all_trusted);
-        let (active_non_reusable_owners, duplicate_untrusted_peers) =
+        let (active_non_reusable_owners, mut duplicate_untrusted_peers) =
             self.collect_non_reusable_credential_owners(&peer_infos, &all_trusted, is_peer_active);
+        if let Some(protected_peer_id) = protected_peer_id {
+            duplicate_untrusted_peers.remove(&protected_peer_id);
+        }
         self.replace_non_reusable_credential_owners(active_non_reusable_owners);
+        let suppressed_changed =
+            self.replace_suppressed_non_reusable_credential_peers(duplicate_untrusted_peers);
         self.update_credential_groups(&peer_infos, &all_trusted);
 
         let mut untrusted_peers =
             Self::collect_revoked_credential_peers(&peer_infos, &prev_trusted, &all_trusted);
-        untrusted_peers.extend(duplicate_untrusted_peers);
         if let Some(protected_peer_id) = protected_peer_id {
             untrusted_peers.remove(&protected_peer_id);
         }
@@ -1282,7 +1322,11 @@ impl SyncedRouteInfo {
             self.remove_peers(untrusted_peers.iter().copied());
         }
 
-        (untrusted_peers.into_iter().collect(), global_trusted_keys)
+        (
+            untrusted_peers.into_iter().collect(),
+            global_trusted_keys,
+            suppressed_changed,
+        )
     }
 
     fn is_admin_peer(&self, info: &RoutePeerInfo) -> bool {
@@ -1327,6 +1371,7 @@ type NextHopMap = DashMap<PeerId, NextHopInfo>;
 struct RouteTable {
     peer_infos: DashMap<PeerId, RoutePeerInfo>,
     next_hop_map: NextHopMap,
+    suppressed_peer_ids: DashMap<PeerId, ()>,
     ipv4_peer_id_map: DashMap<Ipv4Addr, PeerIdVersion>,
     ipv6_peer_id_map: DashMap<Ipv6Addr, PeerIdVersion>,
     cidr_peer_id_map: ArcSwap<PrefixMap<Ipv4Cidr, PeerIdVersion>>,
@@ -1339,6 +1384,7 @@ impl RouteTable {
         RouteTable {
             peer_infos: DashMap::new(),
             next_hop_map: DashMap::new(),
+            suppressed_peer_ids: DashMap::new(),
             ipv4_peer_id_map: DashMap::new(),
             ipv6_peer_id_map: DashMap::new(),
             cidr_peer_id_map: ArcSwap::new(Arc::new(PrefixMap::new())),
@@ -1348,6 +1394,13 @@ impl RouteTable {
     }
 
     fn get_next_hop(&self, dst_peer_id: PeerId) -> Option<NextHopInfo> {
+        if self.suppressed_peer_ids.contains_key(&dst_peer_id) {
+            return None;
+        }
+        self.get_topology_next_hop(dst_peer_id)
+    }
+
+    fn get_topology_next_hop(&self, dst_peer_id: PeerId) -> Option<NextHopInfo> {
         let cur_version = self.next_hop_map_version.get();
         self.next_hop_map.get(&dst_peer_id).and_then(|x| {
             if x.version >= cur_version {
@@ -1360,6 +1413,18 @@ impl RouteTable {
 
     fn peer_reachable(&self, peer_id: PeerId) -> bool {
         self.get_next_hop(peer_id).is_some()
+    }
+
+    fn topology_peer_reachable(&self, peer_id: PeerId) -> bool {
+        self.get_topology_next_hop(peer_id).is_some()
+    }
+
+    fn sync_suppressed_peer_ids(&self, synced_info: &SyncedRouteInfo) {
+        self.suppressed_peer_ids
+            .retain(|peer_id, _| synced_info.is_route_suppressed(*peer_id));
+        for entry in synced_info.suppressed_non_reusable_credential_peers.iter() {
+            self.suppressed_peer_ids.insert(*entry.key(), ());
+        }
     }
 
     fn get_udp_nat_type(&self, peer_id: PeerId) -> Option<NatType> {
@@ -1431,20 +1496,21 @@ impl RouteTable {
             v.version >= cur_version
         });
         self.peer_infos.retain(|k, _| {
-            // remove peer info for peers we cannot reach.
-            self.next_hop_map.contains_key(k)
+            // remove peer info for peers we cannot forward to.
+            self.peer_reachable(*k)
         });
         self.ipv4_peer_id_map.retain(|_, v| {
-            // remove ipv4 map for peers we cannot reach.
-            self.next_hop_map.contains_key(&v.peer_id)
+            // remove ipv4 map for peers we cannot forward to.
+            self.peer_reachable(v.peer_id)
         });
         self.ipv6_peer_id_map.retain(|_, v| {
-            // remove ipv6 map for peers we cannot reach.
-            self.next_hop_map.contains_key(&v.peer_id)
+            // remove ipv6 map for peers we cannot forward to.
+            self.peer_reachable(v.peer_id)
         });
 
         shrink_dashmap(&self.peer_infos, None);
         shrink_dashmap(&self.next_hop_map, None);
+        shrink_dashmap(&self.suppressed_peer_ids, None);
         shrink_dashmap(&self.ipv4_peer_id_map, None);
         shrink_dashmap(&self.ipv6_peer_id_map, None);
     }
@@ -1545,6 +1611,7 @@ impl RouteTable {
         cost_calc: &T,
     ) {
         let version = synced_info.version.get();
+        self.sync_suppressed_peer_ids(synced_info);
 
         let local_proxy_cidrs = synced_info
             .peer_infos
@@ -1594,6 +1661,10 @@ impl RouteTable {
             }
 
             let peer_id = item.key();
+            if !self.peer_reachable(*peer_id) {
+                continue;
+            }
+
             let Some(info) = synced_info.peer_infos.read().get(peer_id).cloned() else {
                 continue;
             };
@@ -1717,6 +1788,7 @@ impl RouteTable {
             cidrs_v6 = ?self.cidr_v6_peer_id_map.load(),
             "update peer cidr map"
         );
+        self.clean_expired_route_info();
     }
 
     fn get_peer_id_for_proxy(&self, ip: &IpAddr) -> Option<PeerId> {
@@ -2147,6 +2219,7 @@ impl PeerRouteServiceImpl {
                 group_trust_map_cache: DashMap::new(),
                 trusted_credential_pubkeys: DashMap::new(),
                 non_reusable_credential_owners: DashMap::new(),
+                suppressed_non_reusable_credential_peers: DashMap::new(),
                 version: AtomicVersion::new(),
             },
             public_ipv6_service: std::sync::Mutex::new(Weak::new()),
@@ -2170,6 +2243,7 @@ impl PeerRouteServiceImpl {
         ni.network_secret_digest.map(|d| d.to_vec())
     }
 
+    #[cfg(test)]
     fn is_active_non_reusable_credential_peer(&self, peer_id: PeerId) -> bool {
         peer_id == self.my_peer_id
             || self.sessions.contains_key(&peer_id)
@@ -2488,7 +2562,7 @@ impl PeerRouteServiceImpl {
         };
         for item in self.synced_route_info.conn_map.read().iter() {
             let src_peer_id = *item.0;
-            if !self.route_table.peer_reachable(src_peer_id) {
+            if !self.route_table.topology_peer_reachable(src_peer_id) {
                 continue;
             }
             add_to_all_peer_ids(src_peer_id, item.1.version.get());
@@ -2555,7 +2629,7 @@ impl PeerRouteServiceImpl {
             }
 
             // do not send unreachable peer info to dst peer.
-            if !self.route_table.peer_reachable(*peer_id) {
+            if !self.route_table.topology_peer_reachable(*peer_id) {
                 unreachable_peers_for_peer_info.insert(*peer_id, peer_info.version);
                 continue;
             }
@@ -2573,7 +2647,7 @@ impl PeerRouteServiceImpl {
                 return false;
             };
 
-            if self.route_table.peer_reachable(*peer_id) {
+            if self.route_table.topology_peer_reachable(*peer_id) {
                 route_infos.push(peer_info.clone());
             }
 
@@ -2623,7 +2697,7 @@ impl PeerRouteServiceImpl {
                 continue;
             }
 
-            if !self.route_table.peer_reachable(*peer_id) {
+            if !self.route_table.topology_peer_reachable(*peer_id) {
                 unreachable_peers_for_conn_info.insert(*peer_id, conn_info.version.get());
                 continue;
             }
@@ -2641,7 +2715,7 @@ impl PeerRouteServiceImpl {
                 return false;
             };
 
-            if self.route_table.peer_reachable(*peer_id) {
+            if self.route_table.topology_peer_reachable(*peer_id) {
                 add_to_conn_peer_list(*peer_id, conn_info);
             }
 
@@ -2757,7 +2831,7 @@ impl PeerRouteServiceImpl {
 
     fn refresh_credential_trusts(&self) -> Vec<PeerId> {
         let network_identity = self.global_ctx.get_network_identity();
-        let (untrusted, global_trusted_keys) = self
+        let (untrusted, global_trusted_keys, _) = self
             .synced_route_info
             .verify_and_update_credential_trusts_with_active_peers_protecting(
                 network_identity.network_secret.as_deref(),
@@ -2777,17 +2851,21 @@ impl PeerRouteServiceImpl {
         // route table from the latest synced peer/conn state before checking active peers.
         self.update_route_table_and_cached_local_conn_bitmap();
 
-        let (untrusted, global_trusted_keys) = self
+        let (untrusted, global_trusted_keys, suppressed_changed) = self
             .synced_route_info
             .verify_and_update_credential_trusts_with_active_peers_protecting(
                 network_identity.network_secret.as_deref(),
-                |peer_id| self.is_active_non_reusable_credential_peer(peer_id),
+                |peer_id| {
+                    peer_id == self.my_peer_id
+                        || self.sessions.contains_key(&peer_id)
+                        || self.route_table.topology_peer_reachable(peer_id)
+                },
                 Some(self.my_peer_id),
             );
         self.global_ctx
             .update_trusted_keys(global_trusted_keys, &network_identity.network_name);
 
-        if !untrusted.is_empty() {
+        if !untrusted.is_empty() || suppressed_changed {
             self.update_route_table_and_cached_local_conn_bitmap();
         }
         untrusted
@@ -2866,7 +2944,7 @@ impl PeerRouteServiceImpl {
             if let Ok(d) = now.duration_since(peer_info.last_update.unwrap().try_into().unwrap())
                 && (d > REMOVE_DEAD_PEER_INFO_AFTER
                     || (d > REMOVE_UNREACHABLE_PEER_INFO_AFTER
-                        && !self.route_table.peer_reachable(*peer_id)))
+                        && !self.route_table.topology_peer_reachable(*peer_id)))
             {
                 to_remove.push(*peer_id);
             }
@@ -4173,7 +4251,9 @@ mod tests {
         time::{Duration, SystemTime},
     };
 
-    use super::{NextHopInfo, PeerRoute, REMOVE_DEAD_PEER_INFO_AFTER, RouteConnInfo};
+    use super::{
+        NextHopInfo, PeerRoute, REMOVE_DEAD_PEER_INFO_AFTER, RouteConnInfo, SyncRouteSession,
+    };
     use crate::proto::common::TimestampExt;
     use crate::{
         common::{
@@ -4436,6 +4516,31 @@ mod tests {
             ..Default::default()
         });
         peer_info
+    }
+
+    fn make_admin_route_peer_info(
+        peer_id: PeerId,
+        credential_key: &[u8],
+        network_secret: &str,
+        now: i64,
+    ) -> RoutePeerInfo {
+        let mut admin_info = RoutePeerInfo::new();
+        admin_info.peer_id = peer_id;
+        admin_info.version = 1;
+        admin_info.feature_flag = Some(PeerFeatureFlag {
+            is_credential_peer: false,
+            ..Default::default()
+        });
+        admin_info.trusted_credential_pubkeys = vec![TrustedCredentialPubkeyProof::new_signed(
+            TrustedCredentialPubkey {
+                pubkey: credential_key.to_vec(),
+                expiry_unix: now + 600,
+                reusable: Some(false),
+                ..Default::default()
+            },
+            network_secret,
+        )];
+        admin_info
     }
 
     fn make_route_conn_info<I>(connected_peers: I, last_update: SystemTime) -> RouteConnInfo
@@ -4887,22 +4992,7 @@ mod tests {
 
         let credential_key = vec![7; 32];
 
-        let mut admin_info = RoutePeerInfo::new();
-        admin_info.peer_id = 30;
-        admin_info.version = 1;
-        admin_info.feature_flag = Some(PeerFeatureFlag {
-            is_credential_peer: false,
-            ..Default::default()
-        });
-        admin_info.trusted_credential_pubkeys = vec![TrustedCredentialPubkeyProof::new_signed(
-            TrustedCredentialPubkey {
-                pubkey: credential_key.clone(),
-                expiry_unix: now + 600,
-                reusable: Some(false),
-                ..Default::default()
-            },
-            network_secret,
-        )];
+        let admin_info = make_admin_route_peer_info(30, &credential_key, network_secret, now);
 
         let mut original_peer = RoutePeerInfo::new();
         original_peer.peer_id = 41;
@@ -4953,9 +5043,9 @@ mod tests {
         let (second_untrusted, _) = service_impl
             .synced_route_info
             .verify_and_update_credential_trusts(Some(network_secret));
-        assert_eq!(second_untrusted, vec![41]);
+        assert!(second_untrusted.is_empty());
         assert!(
-            !service_impl
+            service_impl
                 .synced_route_info
                 .peer_infos
                 .read()
@@ -4976,6 +5066,8 @@ mod tests {
                 .map(|entry| *entry.value()),
             Some(39)
         );
+        assert!(service_impl.synced_route_info.is_route_suppressed(41));
+        assert!(!service_impl.synced_route_info.is_route_suppressed(39));
     }
 
     #[tokio::test]
@@ -4991,22 +5083,7 @@ mod tests {
         let stale_peer_id = 41;
         let replacement_peer_id = 39;
 
-        let mut admin_info = RoutePeerInfo::new();
-        admin_info.peer_id = 30;
-        admin_info.version = 1;
-        admin_info.feature_flag = Some(PeerFeatureFlag {
-            is_credential_peer: false,
-            ..Default::default()
-        });
-        admin_info.trusted_credential_pubkeys = vec![TrustedCredentialPubkeyProof::new_signed(
-            TrustedCredentialPubkey {
-                pubkey: credential_key.clone(),
-                expiry_unix: now + 600,
-                reusable: Some(false),
-                ..Default::default()
-            },
-            network_secret,
-        )];
+        let admin_info = make_admin_route_peer_info(30, &credential_key, network_secret, now);
 
         let mut stale_peer = RoutePeerInfo::new();
         stale_peer.peer_id = stale_peer_id;
@@ -5077,6 +5154,194 @@ mod tests {
                 .map(|entry| *entry.value()),
             Some(replacement_peer_id)
         );
+        assert!(
+            !service_impl
+                .synced_route_info
+                .is_route_suppressed(stale_peer_id)
+        );
+        assert!(
+            !service_impl
+                .synced_route_info
+                .is_route_suppressed(replacement_peer_id)
+        );
+    }
+
+    #[tokio::test]
+    async fn suppressed_non_reusable_credential_peer_stays_synced_and_can_be_reactivated() {
+        const NETWORK_SECRET: &str = "sec1";
+        const SELF_PEER_ID: PeerId = 1;
+        const ADMIN_PEER_ID: PeerId = 30;
+        const FIRST_PEER_ID: PeerId = 39;
+        const SECOND_PEER_ID: PeerId = 41;
+
+        let service_impl = PeerRouteServiceImpl::new(
+            SELF_PEER_ID,
+            get_mock_global_ctx_with_network(Some(NetworkIdentity::new(
+                "test-net".to_string(),
+                NETWORK_SECRET.to_string(),
+            ))),
+        );
+        let now_unix = SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+        let now = SystemTime::now();
+        let credential_key = vec![10; 32];
+
+        let mut self_info = RoutePeerInfo::new();
+        self_info.peer_id = SELF_PEER_ID;
+        self_info.version = 1;
+
+        let admin_info =
+            make_admin_route_peer_info(ADMIN_PEER_ID, &credential_key, NETWORK_SECRET, now_unix);
+        let mut first_peer = make_credential_route_peer_info(FIRST_PEER_ID, &credential_key);
+        first_peer.ipv4_addr = Some(std::net::Ipv4Addr::new(10, 144, 0, 39).into());
+        let mut second_peer = make_credential_route_peer_info(SECOND_PEER_ID, &credential_key);
+        second_peer.ipv4_addr = Some(std::net::Ipv4Addr::new(10, 144, 0, 41).into());
+        second_peer.proxy_cidrs.push("10.244.41.0/24".into());
+
+        {
+            let mut peer_infos = service_impl.synced_route_info.peer_infos.write();
+            peer_infos.insert(self_info.peer_id, self_info);
+            peer_infos.insert(admin_info.peer_id, admin_info);
+            peer_infos.insert(first_peer.peer_id, first_peer);
+            peer_infos.insert(second_peer.peer_id, second_peer);
+        }
+        {
+            let mut conn_map = service_impl.synced_route_info.conn_map.write();
+            conn_map.insert(SELF_PEER_ID, make_route_conn_info([ADMIN_PEER_ID], now));
+            conn_map.insert(
+                ADMIN_PEER_ID,
+                make_route_conn_info([SELF_PEER_ID, FIRST_PEER_ID, SECOND_PEER_ID], now),
+            );
+            conn_map.insert(FIRST_PEER_ID, make_route_conn_info([ADMIN_PEER_ID], now));
+            conn_map.insert(SECOND_PEER_ID, make_route_conn_info([ADMIN_PEER_ID], now));
+        }
+        service_impl.synced_route_info.version.set(1);
+
+        let first_untrusted = service_impl.refresh_credential_trusts_with_current_topology();
+        assert!(first_untrusted.is_empty());
+        assert_eq!(
+            service_impl
+                .synced_route_info
+                .non_reusable_credential_owners
+                .get(&credential_key)
+                .map(|entry| *entry.value()),
+            Some(FIRST_PEER_ID)
+        );
+        assert!(
+            service_impl
+                .synced_route_info
+                .peer_infos
+                .read()
+                .contains_key(&SECOND_PEER_ID)
+        );
+        assert!(
+            service_impl
+                .synced_route_info
+                .is_route_suppressed(SECOND_PEER_ID)
+        );
+        assert!(
+            service_impl
+                .route_table
+                .topology_peer_reachable(SECOND_PEER_ID)
+        );
+        assert!(service_impl.route_table.peer_reachable(FIRST_PEER_ID));
+        assert!(!service_impl.route_table.peer_reachable(SECOND_PEER_ID));
+        assert!(
+            service_impl
+                .route_table
+                .peer_infos
+                .contains_key(&FIRST_PEER_ID)
+        );
+        assert!(
+            !service_impl
+                .route_table
+                .peer_infos
+                .contains_key(&SECOND_PEER_ID)
+        );
+        assert_eq!(
+            service_impl
+                .route_table
+                .ipv4_peer_id_map
+                .get(&"10.144.0.41".parse().unwrap())
+                .map(|entry| entry.peer_id),
+            None
+        );
+        assert_eq!(
+            service_impl
+                .route_table
+                .get_peer_id_for_proxy(&"10.244.41.1".parse().unwrap()),
+            None
+        );
+        let sync_session = SyncRouteSession::new(SELF_PEER_ID, ADMIN_PEER_ID);
+        let sync_peer_ids: BTreeSet<_> = service_impl
+            .build_route_info(&sync_session)
+            .unwrap()
+            .into_iter()
+            .map(|info| info.peer_id)
+            .collect();
+        assert!(sync_peer_ids.contains(&SECOND_PEER_ID));
+
+        {
+            let mut conn_map = service_impl.synced_route_info.conn_map.write();
+            conn_map.insert(
+                ADMIN_PEER_ID,
+                make_route_conn_info([SELF_PEER_ID, SECOND_PEER_ID], now),
+            );
+            conn_map.insert(FIRST_PEER_ID, make_route_conn_info([], now));
+            conn_map.insert(SECOND_PEER_ID, make_route_conn_info([ADMIN_PEER_ID], now));
+        }
+        service_impl.synced_route_info.version.inc();
+
+        let second_untrusted = service_impl.refresh_credential_trusts_with_current_topology();
+        assert!(second_untrusted.is_empty());
+        assert_eq!(
+            service_impl
+                .synced_route_info
+                .non_reusable_credential_owners
+                .get(&credential_key)
+                .map(|entry| *entry.value()),
+            Some(SECOND_PEER_ID)
+        );
+        assert!(
+            !service_impl
+                .synced_route_info
+                .is_route_suppressed(SECOND_PEER_ID)
+        );
+        assert!(
+            service_impl
+                .route_table
+                .topology_peer_reachable(SECOND_PEER_ID)
+        );
+        assert!(!service_impl.route_table.peer_reachable(FIRST_PEER_ID));
+        assert!(service_impl.route_table.peer_reachable(SECOND_PEER_ID));
+        assert!(
+            !service_impl
+                .route_table
+                .peer_infos
+                .contains_key(&FIRST_PEER_ID)
+        );
+        assert!(
+            service_impl
+                .route_table
+                .peer_infos
+                .contains_key(&SECOND_PEER_ID)
+        );
+        assert_eq!(
+            service_impl
+                .route_table
+                .ipv4_peer_id_map
+                .get(&"10.144.0.41".parse().unwrap())
+                .map(|entry| entry.peer_id),
+            Some(SECOND_PEER_ID)
+        );
+        assert_eq!(
+            service_impl
+                .route_table
+                .get_peer_id_for_proxy(&"10.244.41.1".parse().unwrap()),
+            Some(SECOND_PEER_ID)
+        );
     }
 
     #[tokio::test]
@@ -5106,7 +5371,7 @@ mod tests {
                 },
             );
 
-        let (untrusted_peers, _) = service_impl
+        let (untrusted_peers, _, _) = service_impl
             .synced_route_info
             .verify_and_update_credential_trusts_with_active_peers_protecting(
                 None,
@@ -5157,22 +5422,8 @@ mod tests {
         self_info.peer_id = SELF_PEER_ID;
         self_info.version = 1;
 
-        let mut admin_info = RoutePeerInfo::new();
-        admin_info.peer_id = admin_peer_id;
-        admin_info.version = 1;
-        admin_info.feature_flag = Some(PeerFeatureFlag {
-            is_credential_peer: false,
-            ..Default::default()
-        });
-        admin_info.trusted_credential_pubkeys = vec![TrustedCredentialPubkeyProof::new_signed(
-            TrustedCredentialPubkey {
-                pubkey: credential_key.clone(),
-                expiry_unix: now + 600,
-                reusable: Some(false),
-                ..Default::default()
-            },
-            NETWORK_SECRET,
-        )];
+        let admin_info =
+            make_admin_route_peer_info(admin_peer_id, &credential_key, NETWORK_SECRET, now);
 
         let stale_peer = make_credential_route_peer_info(stale_peer_id, &credential_key);
         let replacement_peer =
