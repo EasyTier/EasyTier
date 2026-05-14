@@ -85,9 +85,45 @@ impl AddrTuple {
 
 struct Shared {
     tuples: RwLock<HashMap<AddrTuple, flume::Sender<Bytes>>>,
+    initial_tcp_state: RwLock<HashMap<AddrTuple, TcpInitialState>>,
     listening: RwLock<HashSet<u16>>,
     tun: Arc<dyn Tun>,
     tuples_purge: broadcast::Sender<AddrTuple>,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct TcpInitialState {
+    // Captured from kernel handshake packets before the fake socket is accepted.
+    seq: Option<u32>,
+    ack: Option<u32>,
+}
+
+fn record_initial_tcp_state(
+    initial_tcp_state: &RwLock<HashMap<AddrTuple, TcpInitialState>>,
+    tuple: AddrTuple,
+    tcp_packet: &tcp::TcpPacket<'_>,
+) {
+    if (tcp_packet.get_flags() & tcp::TcpFlags::RST) != 0 {
+        return;
+    }
+
+    let is_syn = (tcp_packet.get_flags() & tcp::TcpFlags::SYN) != 0;
+    let is_ack_only =
+        (tcp_packet.get_flags() & tcp::TcpFlags::ACK) != 0 && tcp_packet.payload().is_empty();
+
+    if !is_syn && !is_ack_only {
+        return;
+    }
+
+    let mut initial_tcp_state = initial_tcp_state.write().unwrap();
+    let state = initial_tcp_state.entry(tuple).or_default();
+    if is_syn {
+        // Header ACK tracks the peer kernel ISN, not fake payload progress.
+        state.ack = Some(tcp_packet.get_sequence().wrapping_add(1));
+    }
+    if is_ack_only {
+        state.seq = Some(tcp_packet.get_acknowledgement());
+    }
 }
 
 pub struct Stack {
@@ -254,9 +290,6 @@ impl Socket {
 
                     let payload = tcp_packet.payload();
 
-                    let new_ack = tcp_packet.get_sequence().wrapping_add(payload.len() as u32);
-                    self.ack.store(new_ack, Ordering::Relaxed);
-
                     for opt in tcp_packet.get_options_iter() {
                         if opt.get_number() == TcpOptionNumbers::SACK {
                             // SACK 选项类型为 5
@@ -300,6 +333,11 @@ impl Socket {
                         continue;
                     }
 
+                    // Zero-fill packets only pacify the TCP stack.
+                    if payload.iter().all(|&b| b == 0) {
+                        continue;
+                    }
+
                     buf.extend_from_slice(payload);
 
                     return Some(payload.len());
@@ -327,7 +365,7 @@ impl Socket {
                         self.seq
                             .store(tcp_packet.get_acknowledgement(), Ordering::Relaxed);
                         self.ack
-                            .store(tcp_packet.get_sequence() + 1, Ordering::Relaxed);
+                            .store(tcp_packet.get_sequence().wrapping_add(1), Ordering::Relaxed);
                         self.remote_mac.store(Some(src_mac));
                         self.state.store(State::Established);
                         return Some(0);
@@ -401,6 +439,7 @@ impl Stack {
         let (tuples_purge_tx, _tuples_purge_rx) = broadcast::channel(16);
         let shared = Arc::new(Shared {
             tuples: RwLock::new(HashMap::new()),
+            initial_tcp_state: RwLock::new(HashMap::new()),
             tun: tun.clone(),
             listening: RwLock::new(HashSet::new()),
             tuples_purge: tuples_purge_tx.clone(),
@@ -438,6 +477,15 @@ impl Stack {
         state: State,
     ) -> Socket {
         let tuple = AddrTuple::new(local_addr, remote_addr);
+        let initial_tcp_state = if state == State::Established {
+            self.shared
+                .initial_tcp_state
+                .write()
+                .unwrap()
+                .remove(&tuple)
+        } else {
+            None
+        };
         let mut tuples = self.shared.tuples.write().unwrap();
         let (sock, incoming) = Socket::new(
             self.shared.clone(),
@@ -447,9 +495,12 @@ impl Stack {
             remote_addr,
             self.local_mac,
             None,
-            Some(0), // Initial ACK
+            initial_tcp_state.and_then(|state| state.ack),
             state,
         );
+        if let Some(initial_seq) = initial_tcp_state.and_then(|state| state.seq) {
+            sock.seq.store(initial_seq, Ordering::Relaxed);
+        }
         assert!(tuples.insert(tuple, incoming).is_none());
         sock
     }
@@ -508,6 +559,12 @@ impl Stack {
                                 }
                             }
 
+                            record_initial_tcp_state(
+                                &shared.initial_tcp_state,
+                                tuple.clone(),
+                                &tcp_packet,
+                            );
+
                             if tcp_packet.get_flags() == tcp::TcpFlags::SYN
                                 && shared
                                     .listening
@@ -534,9 +591,308 @@ impl Stack {
                 tuple = tuples_purge.recv() => {
                     let tuple = tuple.unwrap();
                     tuples.remove(&tuple);
+                    shared.initial_tcp_state.write().unwrap().remove(&tuple);
                     trace!("Removed cached tuple: {:?}", tuple);
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use pnet::packet::ipv4;
+    use std::sync::Mutex;
+
+    struct MockTun {
+        sent: Mutex<Vec<Bytes>>,
+    }
+
+    impl MockTun {
+        fn new() -> Self {
+            Self {
+                sent: Mutex::new(Vec::new()),
+            }
+        }
+
+        fn sent_packets(&self) -> Vec<Bytes> {
+            self.sent.lock().unwrap().clone()
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl Tun for MockTun {
+        async fn recv(&self, _packet: &mut BytesMut) -> Result<usize, std::io::Error> {
+            std::future::pending::<Result<usize, std::io::Error>>().await
+        }
+
+        fn try_send(&self, packet: &Bytes) -> Result<(), std::io::Error> {
+            self.sent.lock().unwrap().push(packet.clone());
+            Ok(())
+        }
+
+        fn driver_type(&self) -> &'static str {
+            "mock"
+        }
+    }
+
+    fn test_mac(id: u8) -> MacAddr {
+        MacAddr::new(0, 1, 2, 3, 4, id)
+    }
+
+    fn socket_with_state(
+        ack: Option<u32>,
+        state: State,
+    ) -> (Socket, flume::Sender<Bytes>, Arc<MockTun>) {
+        let tun = Arc::new(MockTun::new());
+        let tun_trait: Arc<dyn Tun> = tun.clone();
+        let (tuples_purge, _) = broadcast::channel(16);
+        let shared = Arc::new(Shared {
+            tuples: RwLock::new(HashMap::new()),
+            initial_tcp_state: RwLock::new(HashMap::new()),
+            listening: RwLock::new(HashSet::new()),
+            tun: tun_trait.clone(),
+            tuples_purge,
+        });
+        let local_addr = "10.0.0.1:10000".parse().unwrap();
+        let remote_addr = "10.0.0.2:20000".parse().unwrap();
+        let (socket, incoming) = Socket::new(
+            shared.clone(),
+            tun_trait,
+            local_addr,
+            remote_addr,
+            test_mac(1),
+            Some(test_mac(2)),
+            ack,
+            state,
+        );
+        shared
+            .tuples
+            .write()
+            .unwrap()
+            .insert(AddrTuple::new(local_addr, remote_addr), incoming.clone());
+
+        (socket, incoming, tun)
+    }
+
+    fn inbound_packet(
+        socket: &Socket,
+        seq: u32,
+        ack: u32,
+        flags: u8,
+        payload: Option<&[u8]>,
+    ) -> Bytes {
+        build_tcp_packet(
+            test_mac(2),
+            test_mac(1),
+            socket.remote_addr,
+            socket.local_addr,
+            seq,
+            ack,
+            flags,
+            payload,
+        )
+    }
+
+    fn inbound_sack_packet(
+        socket: &Socket,
+        seq: u32,
+        ack: u32,
+        first_sack_left: u32,
+        first_sack_right: u32,
+        payload: &[u8],
+    ) -> Bytes {
+        const ETH_HEADER_LEN: usize = 14;
+        const IPV4_HEADER_LEN: usize = 20;
+        const TCP_HEADER_LEN: usize = 20;
+
+        let base = inbound_packet(socket, seq, ack, tcp::TcpFlags::ACK, Some(payload));
+        let tcp_start = ETH_HEADER_LEN + IPV4_HEADER_LEN;
+        let payload_start = tcp_start + TCP_HEADER_LEN;
+        let mut options = [0u8; 12];
+        options[0] = 5;
+        options[1] = 10;
+        options[2..6].copy_from_slice(&first_sack_left.to_be_bytes());
+        options[6..10].copy_from_slice(&first_sack_right.to_be_bytes());
+        options[10] = 1;
+        options[11] = 1;
+
+        let mut packet = Vec::with_capacity(base.len() + options.len());
+        packet.extend_from_slice(&base[..payload_start]);
+        packet.extend_from_slice(&options);
+        packet.extend_from_slice(&base[payload_start..]);
+
+        let total_len = (IPV4_HEADER_LEN + TCP_HEADER_LEN + options.len() + payload.len()) as u16;
+        packet[ETH_HEADER_LEN + 2..ETH_HEADER_LEN + 4].copy_from_slice(&total_len.to_be_bytes());
+        let tcp_header_words = ((TCP_HEADER_LEN + options.len()) / 4) as u8;
+        packet[tcp_start + 12] = tcp_header_words << 4;
+
+        {
+            let mut ipv4_packet =
+                ipv4::MutableIpv4Packet::new(&mut packet[ETH_HEADER_LEN..]).unwrap();
+            ipv4_packet.set_checksum(0);
+            let checksum = ipv4::checksum(&ipv4_packet.to_immutable());
+            ipv4_packet.set_checksum(checksum);
+        }
+
+        {
+            let mut tcp_packet = tcp::MutableTcpPacket::new(&mut packet[tcp_start..]).unwrap();
+            tcp_packet.set_checksum(0);
+            let (src, dst) = match (socket.remote_addr, socket.local_addr) {
+                (SocketAddr::V4(src), SocketAddr::V4(dst)) => (*src.ip(), *dst.ip()),
+                _ => unreachable!(),
+            };
+            let checksum = tcp::ipv4_checksum(&tcp_packet.to_immutable(), &src, &dst);
+            tcp_packet.set_checksum(checksum);
+        }
+
+        Bytes::from(packet)
+    }
+
+    #[tokio::test]
+    async fn fake_payload_does_not_advance_header_ack() {
+        let (socket, incoming, tun) = socket_with_state(Some(777), State::Established);
+
+        incoming
+            .send(inbound_packet(
+                &socket,
+                1001,
+                0,
+                tcp::TcpFlags::ACK,
+                Some(b"data"),
+            ))
+            .unwrap();
+
+        let mut buf = BytesMut::new();
+        assert_eq!(socket.recv(&mut buf).await, Some(4));
+        assert_eq!(&buf[..], b"data");
+        assert_eq!(socket.ack.load(Ordering::Relaxed), 777);
+
+        socket.try_send(b"reply").unwrap();
+        let sent = tun.sent_packets();
+        assert_eq!(sent.len(), 1);
+        let (_, _, _, tcp_packet) = parse_ip_packet(&sent[0]).unwrap();
+        assert_eq!(tcp_packet.get_acknowledgement(), 777);
+        assert_eq!(tcp_packet.payload(), b"reply");
+    }
+
+    #[tokio::test]
+    async fn server_established_socket_initializes_seq_from_recorded_syn_ack() {
+        let tun = Arc::new(MockTun::new());
+        let tun_trait: Arc<dyn Tun> = tun.clone();
+        let mut stack = Stack::new(
+            tun_trait,
+            "10.0.0.1".parse().unwrap(),
+            None,
+            Some(test_mac(1)),
+        );
+        let local_addr: SocketAddr = "10.0.0.1:10000".parse().unwrap();
+        let remote_addr: SocketAddr = "10.0.0.2:20000".parse().unwrap();
+        let tuple = AddrTuple::new(local_addr, remote_addr);
+
+        let syn = build_tcp_packet(
+            test_mac(2),
+            test_mac(1),
+            remote_addr,
+            local_addr,
+            1000,
+            0,
+            tcp::TcpFlags::SYN,
+            None,
+        );
+        let (_, _, _, syn_packet) = parse_ip_packet(&syn).unwrap();
+        record_initial_tcp_state(&stack.shared.initial_tcp_state, tuple.clone(), &syn_packet);
+
+        let final_ack = build_tcp_packet(
+            test_mac(2),
+            test_mac(1),
+            remote_addr,
+            local_addr,
+            1001,
+            6000,
+            tcp::TcpFlags::ACK,
+            None,
+        );
+        let (_, _, _, ack_packet) = parse_ip_packet(&final_ack).unwrap();
+        record_initial_tcp_state(&stack.shared.initial_tcp_state, tuple.clone(), &ack_packet);
+
+        let socket = stack
+            .alloc_established_socket(local_addr, remote_addr, State::Established)
+            .await;
+
+        assert_eq!(socket.seq.load(Ordering::Relaxed), 6000);
+        assert_eq!(socket.ack.load(Ordering::Relaxed), 1001);
+        assert!(
+            !stack
+                .shared
+                .initial_tcp_state
+                .read()
+                .unwrap()
+                .contains_key(&tuple)
+        );
+
+        socket.try_send(b"first").unwrap();
+        let sent = tun.sent_packets();
+        assert_eq!(sent.len(), 1);
+        let (_, _, _, tcp_packet) = parse_ip_packet(&sent[0]).unwrap();
+        assert_eq!(tcp_packet.get_sequence(), 6000);
+        assert_eq!(tcp_packet.get_acknowledgement(), 1001);
+        assert_eq!(tcp_packet.payload(), b"first");
+    }
+
+    #[tokio::test]
+    async fn sack_zero_fill_still_sends_filler() {
+        let (socket, incoming, tun) = socket_with_state(Some(1001), State::Established);
+
+        incoming
+            .send(inbound_sack_packet(
+                &socket, 1001, 5000, 5120, 5300, b"data",
+            ))
+            .unwrap();
+
+        let mut buf = BytesMut::new();
+        assert_eq!(socket.recv(&mut buf).await, Some(4));
+        assert_eq!(&buf[..], b"data");
+        assert_eq!(socket.ack.load(Ordering::Relaxed), 1001);
+
+        let sent = tun.sent_packets();
+        assert_eq!(sent.len(), 1);
+        let (_, _, _, tcp_packet) = parse_ip_packet(&sent[0]).unwrap();
+        assert_eq!(tcp_packet.get_sequence(), 5000);
+        assert_eq!(tcp_packet.get_acknowledgement(), 1001);
+        assert_eq!(tcp_packet.get_flags(), tcp::TcpFlags::ACK);
+        assert_eq!(tcp_packet.payload().len(), 120);
+        assert!(tcp_packet.payload().iter().all(|&b| b == 0));
+    }
+
+    #[tokio::test]
+    async fn zero_filler_payload_is_dropped_before_upper_layer() {
+        let (socket, incoming, _tun) = socket_with_state(Some(1001), State::Established);
+
+        incoming
+            .send(inbound_packet(
+                &socket,
+                4000,
+                0,
+                tcp::TcpFlags::ACK,
+                Some(&[0, 0, 0, 0]),
+            ))
+            .unwrap();
+        incoming
+            .send(inbound_packet(
+                &socket,
+                1001,
+                0,
+                tcp::TcpFlags::ACK,
+                Some(b"real"),
+            ))
+            .unwrap();
+
+        let mut buf = BytesMut::new();
+        assert_eq!(socket.recv(&mut buf).await, Some(4));
+        assert_eq!(&buf[..], b"real");
+        assert_eq!(socket.ack.load(Ordering::Relaxed), 1001);
     }
 }
