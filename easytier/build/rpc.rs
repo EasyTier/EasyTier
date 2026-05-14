@@ -18,11 +18,7 @@ fn doc(comments: &prost_build::Comments) -> TokenStream {
     quote! { #( #[doc = #doc] )* }
 }
 
-#[cfg(feature = "internal-namespace")]
 const NAMESPACE: &str = "crate::proto::rpc_types";
-
-#[cfg(not(feature = "internal-namespace"))]
-const NAMESPACE: &str = "easytier::proto::rpc_types";
 
 struct Method {
     index: u8,

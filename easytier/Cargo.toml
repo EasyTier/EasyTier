@@ -11,6 +11,7 @@ keywords = ["vpn", "p2p", "network", "easytier"]
 categories = ["network-programming", "command-line-utilities"]
 license-file = "LICENSE"
 readme = "README.md"
+build = "build/main.rs"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -316,15 +317,14 @@ jemalloc-sys = { package = "tikv-jemalloc-sys", version = "0.6.0", features = [
 
 [build-dependencies]
 cfg_aliases = "0.2.1"
-tonic-build = "0.12"
+indoc = "2.0"
 globwalk = "0.8.1"
 regex = "1"
 prost-build = "0.13.5"
 prost-wkt-build = "0.6"
-easytier-rpc-build = { path = "../easytier-rpc-build", features = [
-    "internal-namespace",
-] }
 prost-reflect-build = { version = "0.14.0" }
+proc-macro2 = "1"
+quote = "1"
 thunk-rs = { git = "https://github.com/easytier/thunk.git", default-features = false, features = [
     "win7",
 ] }
