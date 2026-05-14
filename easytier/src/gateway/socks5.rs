@@ -640,6 +640,7 @@ impl Socks5Server {
                     } else {
                         let _ = net.lock().await.take();
                     }
+                    port_forward_list_change_notifier.notify_waiters();
                 }
 
                 select! {
@@ -818,8 +819,29 @@ impl Socks5Server {
         let cancel_token = CancellationToken::new();
         self.cancel_tokens
             .insert(cfg.clone(), cancel_token.clone().drop_guard());
+        let port_forward_list_change_notifier = self.port_forward_list_change_notifier.clone();
 
         self.tasks.lock().unwrap().spawn(async move {
+            // Wait for SOCKS5 network stack to be ready before accepting connections
+            loop {
+                if net.lock().await.is_some() {
+                    break;
+                }
+                tracing::info!(
+                    "port forward for {:?} waiting for SOCKS5 network stack",
+                    bind_addr
+                );
+                tokio::select! {
+                    biased;
+                    _ = cancel_token.cancelled() => {
+                        tracing::info!("port forward for {:?} cancelled while waiting for network stack", bind_addr);
+                        return;
+                    }
+                    _ = port_forward_list_change_notifier.notified() => {}
+                    _ = tokio::time::sleep(Duration::from_secs(1)) => {}
+                }
+            }
+ 
             loop {
                 let (incoming_socket, addr) = select! {
                     biased;
@@ -888,8 +910,29 @@ impl Socks5Server {
         let cancel_token = CancellationToken::new();
         self.cancel_tokens
             .insert(cfg.clone(), cancel_token.clone().drop_guard());
+        let port_forward_list_change_notifier = self.port_forward_list_change_notifier.clone();
 
         self.tasks.lock().unwrap().spawn(async move {
+            // Wait for SOCKS5 network stack to be ready before accepting packets
+            loop {
+                if net.lock().await.is_some() {
+                    break;
+                }
+                tracing::info!(
+                    "udp port forward for {:?} waiting for SOCKS5 network stack",
+                    bind_addr
+                );
+                tokio::select! {
+                    biased;
+                    _ = cancel_token.cancelled() => {
+                        tracing::info!("udp port forward for {:?} cancelled while waiting for network stack", bind_addr);
+                        return;
+                    }
+                    _ = port_forward_list_change_notifier.notified() => {}
+                    _ = tokio::time::sleep(Duration::from_secs(1)) => {}
+                }
+            }
+ 
             loop {
                 // we set the max buffer size of smoltcp to 8192, so we need to use a buffer size that is less than 8192 here.
                 let mut buf = vec![0u8; 8192];
