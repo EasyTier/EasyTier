@@ -164,7 +164,7 @@ impl Drop for SessionData {
 pub type SharedSessionData = Arc<RwLock<SessionData>>;
 
 #[derive(Clone)]
-struct SessionRpcService {
+pub(super) struct SessionRpcService {
     data: SharedSessionData,
 }
 
@@ -193,7 +193,7 @@ impl SessionRpcService {
         Ok(serde_json::from_value::<NetworkConfig>(network_config)?)
     }
 
-    async fn reconcile_webhook_source_configs(
+    pub(super) async fn reconcile_webhook_source_configs(
         storage: &Storage,
         user_id: i32,
         machine_id: uuid::Uuid,
