@@ -62,24 +62,30 @@ impl DnsTunnelConnector {
             .await
             .with_context(|| format!("resolve txt record failed, domain_name: {}", domain_name))?;
 
-        let candidate_urls = txt_data
+        let mut candidate_urls = txt_data
             .split(" ")
             .map(|s| s.to_string())
             .filter_map(|s| url::Url::parse(s.as_str()).ok())
             .collect::<Vec<_>>();
 
-        // shuffle candidate_urls and get the first one
-        let url = candidate_urls
-            .choose(&mut rand::thread_rng())
-            .with_context(|| {
-                format!(
-                    "no valid url found, txt_data: {}, expecting an url list splitted by space",
-                    txt_data
-                )
-            })?;
+        if candidate_urls.is_empty() {
+            return Err(anyhow::anyhow!(
+                "no valid url found, txt_data: {}, expecting an url list splitted by space",
+                txt_data
+            ).into());
+        }
 
+        // shuffle candidate_urls for load balancing
+        candidate_urls.shuffle(&mut rand::thread_rng());
+
+        tracing::info!("Found {} valid URLs from TXT record", candidate_urls.len());
+
+        // Return the first URL as the primary connector
+        let primary_url = &candidate_urls[0];
+        tracing::info!("Using primary connector from TXT record: {}", primary_url);
+        
         let connector =
-            create_connector_by_url(url.as_str(), &self.global_ctx, self.ip_version).await?;
+            create_connector_by_url(primary_url.as_str(), &self.global_ctx, self.ip_version).await?;
         Ok(connector)
     }
 
@@ -149,17 +155,23 @@ impl DnsTunnelConnector {
             return Err(anyhow::anyhow!("no srv record found").into());
         }
 
-        let url = weighted_choice(srv_records.as_slice()).with_context(|| {
+        tracing::info!("Found {} valid SRV records", srv_records.len());
+
+        // Use weighted choice for the primary connector
+        let (primary_url, _) = weighted_choice(srv_records.as_slice()).with_context(|| {
             format!(
                 "failed to choose a srv record, domain_name: {}, srv_records: {:?}",
                 domain_name, srv_records
             )
         })?;
 
+        tracing::info!("Using primary connector from SRV record: {}", primary_url);
+        
         let connector =
-            create_connector_by_url(url.as_str(), &self.global_ctx, self.ip_version).await?;
+            create_connector_by_url(primary_url.as_str(), &self.global_ctx, self.ip_version).await?;
         Ok(connector)
     }
+
 }
 
 #[async_trait::async_trait]

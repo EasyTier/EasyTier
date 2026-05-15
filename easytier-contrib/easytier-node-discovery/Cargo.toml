@@ -1,0 +1,25 @@
+[package]
+name = "easytier-node-discovery"
+version = "0.1.0"
+edition = "2021"
+description = "Dynamic node discovery plugin for EasyTier"
+license = "AGPL-3.0"
+
+[dependencies]
+easytier = { path = "../easytier" }
+tokio = { version = "1", features = ["full"] }
+url = "2"
+tracing = "0.1"
+tracing-subscriber = "0.3"
+http_req = "0.11"
+trust-dns-resolver = "0.23"
+rand = "0.8"
+strum = { version = "0.26", features = ["derive"] }
+dashmap = "5"
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+reqwest = { version = "0.11", features = ["json"] }
+serde_json = "1"
+
+[dev-dependencies]
+tokio-test = "0.4"

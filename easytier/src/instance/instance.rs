@@ -678,6 +678,8 @@ impl Instance {
             peer_manager.clone(),
         ));
 
+        // Set the weak reference to ManualConnectorManager in GlobalCtx
+
         let mut direct_conn_manager =
             DirectConnectorManager::new(global_ctx.clone(), peer_manager.clone());
         direct_conn_manager.run();
