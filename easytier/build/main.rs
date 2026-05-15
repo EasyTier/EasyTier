@@ -1,3 +1,6 @@
+mod rpc;
+
+use crate::rpc::ServiceGenerator;
 use cfg_aliases::cfg_aliases;
 use prost_wkt_build::{FileDescriptorSet, Message as _};
 #[cfg(target_os = "windows")]
@@ -203,7 +206,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     config
         .btree_map(["."])
-        .service_generator(Box::new(easytier_rpc_build::ServiceGenerator::default()))
+        .service_generator(Box::new(ServiceGenerator::default()))
         .protoc_arg("--experimental_allow_proto3_optional")
         .file_descriptor_set_path(&descriptor_file)
         .compile_protos(&proto_files, &["src/proto/"])?;
