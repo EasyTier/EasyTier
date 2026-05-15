@@ -7,7 +7,7 @@ use futures::{Sink, Stream};
 use network_interface::NetworkInterfaceConfig;
 use pnet::util::MacAddr;
 use std::{
-    net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket},
+    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, UdpSocket},
     pin::Pin,
     sync::Arc,
     task::{Context as TaskContext, Poll},
@@ -294,6 +294,27 @@ impl FakeTcpTunnelConnector {
     }
 }
 
+fn bind_addr_for_remote(remote_addr: &SocketAddr) -> SocketAddr {
+    match remote_addr {
+        SocketAddr::V4(_) => SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0),
+        SocketAddr::V6(_) => SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), 0),
+    }
+}
+
+fn new_os_socket_for_remote(remote_addr: &SocketAddr) -> std::io::Result<tokio::net::TcpSocket> {
+    match remote_addr {
+        SocketAddr::V4(_) => tokio::net::TcpSocket::new_v4(),
+        SocketAddr::V6(_) => tokio::net::TcpSocket::new_v6(),
+    }
+}
+
+fn stack_ips_for_local_ip(local_ip: IpAddr) -> (Ipv4Addr, Option<Ipv6Addr>) {
+    match local_ip {
+        IpAddr::V4(ip) => (ip, None),
+        IpAddr::V6(ip) => (Ipv4Addr::UNSPECIFIED, Some(ip)),
+    }
+}
+
 fn get_local_ip_for_destination(destination: IpAddr) -> Option<IpAddr> {
     // 使用一个不可路由的、私有的、或回环地址创建一个临时的 socket，让内核自动选择源接口。
     // 对于 IPv4，使用 0.0.0.0; 对于 IPv6，使用 ::
@@ -323,8 +344,8 @@ impl TunnelConnector for FakeTcpTunnelConnector {
         let local_ip = get_local_ip_for_destination(remote_addr.ip())
             .ok_or(TunnelError::InternalError("Failed to get local ip".into()))?;
 
-        let os_socket = tokio::net::TcpSocket::new_v4()?;
-        os_socket.bind("0.0.0.0:0".parse().unwrap())?;
+        let os_socket = new_os_socket_for_remote(&remote_addr)?;
+        os_socket.bind(bind_addr_for_remote(&remote_addr))?;
         let local_port = os_socket.local_addr()?.port();
         let local_addr = SocketAddr::new(local_ip, local_port);
 
@@ -335,14 +356,10 @@ impl TunnelConnector for FakeTcpTunnelConnector {
                     "Failed to get interface name".into(),
                 ))?;
 
-        let (local_ip, local_ip6) = match local_ip {
-            IpAddr::V4(ip) => (Some(ip), None),
-            IpAddr::V6(ip) => (None, Some(ip)),
-        };
+        let (local_ip, local_ip6) = stack_ips_for_local_ip(local_ip);
 
         let tun =
             create_tun_off_runtime(interface_name.clone(), Some(remote_addr), local_addr).await?;
-        let local_ip = local_ip.unwrap_or("0.0.0.0".parse().unwrap());
         let mut stack = stack::Stack::new(tun, local_ip, local_ip6, mac);
         let driver_type = stack.driver_type();
 
@@ -540,6 +557,44 @@ mod tests {
     use crate::tunnel::common::tests::_tunnel_pingpong;
 
     use super::*;
+
+    #[test]
+    fn connector_uses_ipv4_socket_bind_addr_for_ipv4_remote() {
+        let remote_addr: SocketAddr = "192.0.2.1:443".parse().unwrap();
+
+        assert_eq!(
+            bind_addr_for_remote(&remote_addr),
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0)
+        );
+
+        let os_socket = new_os_socket_for_remote(&remote_addr).unwrap();
+        os_socket.bind(bind_addr_for_remote(&remote_addr)).unwrap();
+        assert!(os_socket.local_addr().unwrap().is_ipv4());
+    }
+
+    #[test]
+    fn connector_uses_ipv6_socket_bind_addr_for_ipv6_remote() {
+        let remote_addr: SocketAddr = "[2001:db8::1]:443".parse().unwrap();
+
+        assert_eq!(
+            bind_addr_for_remote(&remote_addr),
+            SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), 0)
+        );
+
+        let os_socket = new_os_socket_for_remote(&remote_addr).unwrap();
+        os_socket.bind(bind_addr_for_remote(&remote_addr)).unwrap();
+        assert!(os_socket.local_addr().unwrap().is_ipv6());
+    }
+
+    #[test]
+    fn stack_ips_preserve_ipv6_local_ip() {
+        let local_ip: IpAddr = "2001:db8::2".parse().unwrap();
+
+        let (local_ip4, local_ip6) = stack_ips_for_local_ip(local_ip);
+
+        assert_eq!(local_ip4, Ipv4Addr::UNSPECIFIED);
+        assert_eq!(local_ip6, Some("2001:db8::2".parse().unwrap()));
+    }
 
     #[tokio::test]
     async fn faketcp_pingpong() {
