@@ -81,7 +81,7 @@ impl PeerMap {
         let close_notifier = peer_conn.get_close_notifier();
         let alive_conns_weak = Arc::downgrade(&self.alive_client_urls);
         let conn_id = close_notifier.get_conn_id();
-        let alive_client_url: url::Url = conn_info.tunnel?.remote_addr?.into();
+        let alive_client_url: url::Url = conn_info.tunnel?.remote_url?.into();
         self.alive_client_urls
             .lock()
             .insert(alive_client_url.clone(), conn_id);
