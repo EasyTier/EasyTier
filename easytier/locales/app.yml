@@ -45,6 +45,12 @@ core_clap:
   ipv6_public_addr_auto:
     en: "auto-obtain a public IPv6 address from a peer that shares its IPv6 subnet"
     zh-CN: "自动从共享了 IPv6 子网的对等节点获取一个公网 IPv6 地址"
+  ipv6_public_addr_default_route:
+    en: "add the auto-obtained public IPv6 address as the default IPv6 route"
+    zh-CN: "将自动获取的公网 IPv6 地址添加为默认 IPv6 路由"
+  ipv6_public_addr_route_metric:
+    en: "route metric for the public IPv6 default route"
+    zh-CN: "公网 IPv6 默认路由的路由优先级"
   ipv6_public_addr_prefix:
     en: "manually specify the public IPv6 subnet to share, instead of auto-detecting from system routes"
     zh-CN: "手动指定要共享的公网 IPv6 子网，不自动从系统路由检测"

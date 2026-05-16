@@ -116,6 +116,8 @@ export interface NetworkConfig {
   use_smoltcp?: boolean
   disable_ipv6?: boolean
   ipv6_public_addr_auto?: boolean
+  ipv6_public_addr_default_route?: boolean
+  ipv6_public_addr_route_metric?: number
   enable_kcp_proxy?: boolean
   disable_kcp_input?: boolean
   enable_quic_proxy?: boolean
@@ -194,6 +196,8 @@ export function DEFAULT_NETWORK_CONFIG(): NetworkConfig {
     use_smoltcp: false,
     disable_ipv6: false,
     ipv6_public_addr_auto: false,
+    ipv6_public_addr_default_route: false,
+    ipv6_public_addr_route_metric: 5,
     enable_kcp_proxy: false,
     disable_kcp_input: false,
     enable_quic_proxy: false,
