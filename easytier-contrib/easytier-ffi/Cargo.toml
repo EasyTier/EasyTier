@@ -6,6 +6,10 @@ edition.workspace = true
 [lib]
 crate-type = ["cdylib"]
 
+[features]
+default = ["ffi-dataplane"]
+ffi-dataplane = ["easytier/ffi-dataplane"]
+
 [dependencies]
 easytier = { path = "../../easytier" }
 
@@ -15,3 +19,4 @@ dashmap = "6.0"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1"
 uuid = "1.17.0"
+tokio = { version = "1", features = ["rt-multi-thread", "io-util", "time"] }

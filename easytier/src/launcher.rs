@@ -2,6 +2,10 @@ use crate::common::config::{
     ConfigFileControl, ConfigSource, PortForwardConfig, parse_mapped_listener_urls,
     process_secure_mode_cfg,
 };
+#[cfg(feature = "ffi-dataplane")]
+use crate::gateway::socks5::Socks5Server;
+#[cfg(feature = "ffi-dataplane")]
+pub use crate::gateway::socks5::{EasyTierTcpStream, EasyTierUdpSocket};
 use crate::proto::api::{self, manage};
 use crate::proto::rpc_types::controller::BaseController;
 use crate::rpc_service::InstanceRpcService;
@@ -45,6 +49,8 @@ struct EasyTierData {
     tun_fd: (mpsc::Sender<TunFd>, Mutex<Option<mpsc::Receiver<TunFd>>>),
     event_subscriber: RwLock<broadcast::Sender<GlobalCtxEvent>>,
     instance_stop_notifier: Arc<tokio::sync::Notify>,
+    #[cfg(feature = "ffi-dataplane")]
+    data_plane: RwLock<Option<Arc<Socks5Server>>>,
 }
 
 impl Default for EasyTierData {
@@ -56,6 +62,8 @@ impl Default for EasyTierData {
             events: RwLock::new(VecDeque::new()),
             tun_fd: (sender, Mutex::new(Some(receiver))),
             instance_stop_notifier: Arc::new(tokio::sync::Notify::new()),
+            #[cfg(feature = "ffi-dataplane")]
+            data_plane: RwLock::new(None),
         }
     }
 }
@@ -160,6 +168,12 @@ impl EasyTierLauncher {
 
         instance.run().await?;
 
+        #[cfg(feature = "ffi-dataplane")]
+        data.data_plane
+            .write()
+            .unwrap()
+            .replace(instance.get_socks5_server());
+
         api_service
             .write()
             .unwrap()
@@ -262,6 +276,11 @@ impl EasyTierLauncher {
                 None
             }
         }
+    }
+
+    #[cfg(feature = "ffi-dataplane")]
+    pub fn get_data_plane(&self) -> Option<Arc<Socks5Server>> {
+        self.data.data_plane.read().unwrap().clone()
     }
 }
 
@@ -453,6 +472,38 @@ impl NetworkInstance {
         self.launcher
             .as_ref()
             .and_then(|launcher| launcher.get_api_service())
+    }
+
+    #[cfg(feature = "ffi-dataplane")]
+    fn data_plane(&self) -> anyhow::Result<Arc<Socks5Server>> {
+        self.launcher
+            .as_ref()
+            .and_then(|launcher| launcher.get_data_plane())
+            .ok_or_else(|| anyhow::anyhow!("data plane is not ready"))
+    }
+
+    #[cfg(feature = "ffi-dataplane")]
+    pub async fn data_plane_tcp_connect(
+        &self,
+        dst_addr: SocketAddr,
+        timeout_s: u64,
+    ) -> anyhow::Result<EasyTierTcpStream> {
+        self.data_plane()?
+            .data_plane_tcp_connect(dst_addr, timeout_s)
+            .await
+            .map_err(Into::into)
+    }
+
+    #[cfg(feature = "ffi-dataplane")]
+    pub async fn data_plane_udp_bind(
+        &self,
+        local_port: u16,
+        timeout_s: u64,
+    ) -> anyhow::Result<EasyTierUdpSocket> {
+        self.data_plane()?
+            .data_plane_udp_bind(local_port, timeout_s)
+            .await
+            .map_err(Into::into)
     }
 }
 

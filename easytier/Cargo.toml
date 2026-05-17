@@ -391,6 +391,7 @@ websocket = [
 ]
 smoltcp = ["dep:smoltcp"]
 socks5 = ["smoltcp"]
+ffi-dataplane = ["socks5"]
 jemalloc = ["dep:jemallocator", "dep:jemalloc-sys"]
 jemalloc-prof = [
     "jemalloc",

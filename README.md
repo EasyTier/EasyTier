@@ -1,3 +1,15 @@
+# EasyTier-FFI-DataPlane
+
+This fork extends EasyTier-FFI with data-plane interaction support on the FFI side, allowing FFI calls to send and receive data directly without going through a system network interface.
+
+The main goal is integration with Mihomo, but it can also be used in other scenarios that need direct network data handling.
+
+See `easytier-contrib/easytier-ffi/examples/go/easytier_test.go` for an example.
+
+**The original README follows below.**
+
+---
+
 # EasyTier
 
 [![Github release](https://img.shields.io/github/v/tag/EasyTier/EasyTier)](https://github.com/EasyTier/EasyTier/releases)

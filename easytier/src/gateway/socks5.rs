@@ -58,6 +58,13 @@ enum SocksUdpSocket {
 }
 
 impl SocksUdpSocket {
+    pub fn local_addr(&self) -> Result<SocketAddr, std::io::Error> {
+        match self {
+            SocksUdpSocket::UdpSocket(socket) => socket.local_addr(),
+            SocksUdpSocket::SmolUdpSocket(socket) => socket.local_addr(),
+        }
+    }
+
     pub async fn send_to(&self, buf: &[u8], addr: SocketAddr) -> Result<usize, std::io::Error> {
         match self {
             SocksUdpSocket::UdpSocket(socket) => socket.send_to(buf, addr).await,
@@ -131,6 +138,103 @@ impl AsyncWrite for SocksTcpStream {
             #[cfg(feature = "kcp")]
             SocksTcpStream::Kcp(stream) => std::pin::Pin::new(stream).poll_shutdown(cx),
         }
+    }
+}
+
+#[cfg(feature = "ffi-dataplane")]
+pub struct EasyTierTcpStream(SocksTcpStream);
+
+#[cfg(feature = "ffi-dataplane")]
+impl AsyncRead for EasyTierTcpStream {
+    fn poll_read(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::pin::Pin::new(&mut self.get_mut().0).poll_read(cx, buf)
+    }
+}
+
+#[cfg(feature = "ffi-dataplane")]
+impl AsyncWrite for EasyTierTcpStream {
+    fn poll_write(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &[u8],
+    ) -> std::task::Poll<Result<usize, std::io::Error>> {
+        std::pin::Pin::new(&mut self.get_mut().0).poll_write(cx, buf)
+    }
+
+    fn poll_flush(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<(), std::io::Error>> {
+        std::pin::Pin::new(&mut self.get_mut().0).poll_flush(cx)
+    }
+
+    fn poll_shutdown(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<(), std::io::Error>> {
+        std::pin::Pin::new(&mut self.get_mut().0).poll_shutdown(cx)
+    }
+}
+
+#[cfg(feature = "ffi-dataplane")]
+pub struct EasyTierUdpSocket {
+    socket: Arc<SocksUdpSocket>,
+    entries: Socks5EntrySet,
+    entry_count: Arc<AtomicUsize>,
+    entry: Socks5Entry,
+}
+
+#[cfg(feature = "ffi-dataplane")]
+impl EasyTierUdpSocket {
+    pub fn local_addr(&self) -> Result<SocketAddr, std::io::Error> {
+        self.socket.local_addr()
+    }
+
+    pub async fn send_to(&self, buf: &[u8], addr: SocketAddr) -> Result<usize, std::io::Error> {
+        let entry = Socks5Entry {
+            src: self.entry.src,
+            dst: addr,
+            entry_type: UDP_ENTRY,
+        };
+        if self
+            .entries
+            .insert(
+                entry,
+                Socks5EntryData::Udp((
+                    self.socket.clone(),
+                    UdpClientKey {
+                        client_addr: self.entry.src,
+                        dst_addr: addr,
+                    },
+                )),
+            )
+            .is_none()
+        {
+            self.entry_count.fetch_add(1, Ordering::Relaxed);
+        }
+        self.socket.send_to(buf, addr).await
+    }
+
+    pub async fn recv_from(&self, buf: &mut [u8]) -> Result<(usize, SocketAddr), std::io::Error> {
+        self.socket.recv_from(buf).await
+    }
+}
+
+#[cfg(feature = "ffi-dataplane")]
+impl Drop for EasyTierUdpSocket {
+    fn drop(&mut self) {
+        let local_addr = self.entry.src;
+        self.entries.retain(|entry, data| {
+            let keep = !(entry.entry_type == UDP_ENTRY && entry.src == local_addr);
+            if !keep && matches!(data, Socks5EntryData::Udp(_)) {
+                self.entry_count.fetch_sub(1, Ordering::Relaxed);
+            }
+            keep
+        });
     }
 }
 
@@ -477,6 +581,8 @@ pub struct Socks5Server {
     kcp_endpoint: Mutex<Option<Weak<KcpEndpoint>>>,
 
     socks5_enabled: Arc<AtomicBool>,
+    #[cfg(feature = "ffi-dataplane")]
+    data_plane_enabled: Arc<AtomicBool>,
     cancel_tokens: Arc<DashMap<PortForwardConfig, DropGuard>>,
     port_forward_list_change_notifier: Arc<Notify>,
     entry_count: Arc<AtomicUsize>,
@@ -591,9 +697,109 @@ impl Socks5Server {
             kcp_endpoint: Mutex::new(None),
 
             socks5_enabled: Arc::new(AtomicBool::new(false)),
+            #[cfg(feature = "ffi-dataplane")]
+            data_plane_enabled: Arc::new(AtomicBool::new(false)),
             cancel_tokens: Arc::new(DashMap::new()),
             port_forward_list_change_notifier: Arc::new(Notify::new()),
             entry_count: Arc::new(AtomicUsize::new(0)),
+        })
+    }
+
+    #[cfg(feature = "ffi-dataplane")]
+    pub fn enable_data_plane(&self) {
+        self.data_plane_enabled.store(true, Ordering::Relaxed);
+        self.port_forward_list_change_notifier.notify_one();
+    }
+
+    #[cfg(feature = "ffi-dataplane")]
+    async fn wait_data_plane_net(
+        &self,
+        timeout_s: u64,
+    ) -> Result<(cidr::Ipv4Inet, Arc<Net>), Error> {
+        let deadline = Instant::now() + Duration::from_secs(timeout_s.max(1));
+        loop {
+            if let Some(net) = self
+                .net
+                .lock()
+                .await
+                .as_ref()
+                .map(|net| (net.ipv4_addr, net.smoltcp_net.clone()))
+            {
+                return Ok(net);
+            }
+
+            if Instant::now() >= deadline {
+                return Err(anyhow::anyhow!("data plane net is not ready").into());
+            }
+
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    }
+
+    #[cfg(feature = "ffi-dataplane")]
+    pub async fn data_plane_tcp_connect(
+        &self,
+        dst_addr: SocketAddr,
+        timeout_s: u64,
+    ) -> Result<EasyTierTcpStream, Error> {
+        self.enable_data_plane();
+        let (ipv4_addr, smoltcp_net) = self.wait_data_plane_net(timeout_s).await?;
+        let peer_mgr = self.peer_manager.clone();
+        let connector = Socks5AutoConnector {
+            #[cfg(feature = "kcp")]
+            kcp_endpoint: self.kcp_endpoint.lock().await.clone(),
+            peer_mgr,
+            entries: self.entries.clone(),
+            smoltcp_net: Some(smoltcp_net.clone()),
+            src_addr: SocketAddr::new(IpAddr::V4(ipv4_addr.address()), smoltcp_net.get_port()),
+            entry_count: self.entry_count.clone(),
+            inner_connector: parking_lot::Mutex::new(None),
+        };
+
+        Ok(EasyTierTcpStream(
+            connector
+                .tcp_connect(dst_addr, timeout_s)
+                .await
+                .map_err(anyhow::Error::from)?,
+        ))
+    }
+
+    #[cfg(feature = "ffi-dataplane")]
+    pub async fn data_plane_udp_bind(
+        &self,
+        local_port: u16,
+        timeout_s: u64,
+    ) -> Result<EasyTierUdpSocket, Error> {
+        self.enable_data_plane();
+        let (ipv4_addr, smoltcp_net) = self.wait_data_plane_net(timeout_s).await?;
+        let local_addr = SocketAddr::new(IpAddr::V4(ipv4_addr.address()), local_port);
+        let socket = Arc::new(SocksUdpSocket::SmolUdpSocket(
+            smoltcp_net.udp_bind(local_addr).await?,
+        ));
+        let local_addr = socket.local_addr()?;
+        let entry = Socks5Entry {
+            src: local_addr,
+            dst: SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0),
+            entry_type: UDP_ENTRY,
+        };
+
+        self.entries.insert(
+            entry.clone(),
+            Socks5EntryData::Udp((
+                socket.clone(),
+                UdpClientKey {
+                    client_addr: local_addr,
+                    dst_addr: entry.dst,
+                },
+            )),
+        );
+        self.entry_count.fetch_add(1, Ordering::Relaxed);
+
+        Ok(EasyTierUdpSocket {
+            socket,
+            entries: self.entries.clone(),
+            entry_count: self.entry_count.clone(),
+            entry,
         })
     }
 
@@ -608,10 +814,21 @@ impl Socks5Server {
         let cancel_tokens = self.cancel_tokens.clone();
         let port_forward_list_change_notifier = self.port_forward_list_change_notifier.clone();
         let socks5_enabled = self.socks5_enabled.clone();
+        #[cfg(feature = "ffi-dataplane")]
+        let data_plane_enabled = self.data_plane_enabled.clone();
         self.tasks.lock().unwrap().spawn(async move {
             let mut prev_ipv4 = None;
             loop {
-                if cancel_tokens.is_empty() && !socks5_enabled.load(Ordering::Relaxed) {
+                if cancel_tokens.is_empty() && !socks5_enabled.load(Ordering::Relaxed) && {
+                    #[cfg(feature = "ffi-dataplane")]
+                    {
+                        !data_plane_enabled.load(Ordering::Relaxed)
+                    }
+                    #[cfg(not(feature = "ffi-dataplane"))]
+                    {
+                        true
+                    }
+                } {
                     let _ = net.lock().await.take();
                     port_forward_list_change_notifier.notified().await;
                     continue;
