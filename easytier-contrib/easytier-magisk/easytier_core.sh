@@ -99,7 +99,7 @@ while true; do
     # 启动后的扫尾工作
     if pgrep -f "${EASYTIER}" >/dev/null; then
         
-        if ! ip rule show | grep -q "lookup main"; then
+        if ! ip rule show | grep -qE '^[0-9]+:[[:space:]]+from all lookup main$'; then
             ip rule add from all lookup main
         fi
         
