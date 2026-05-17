@@ -6610,6 +6610,13 @@ mod tests {
             .config
             .add_proxy_cidr("10.10.0.0/16".parse().unwrap(), None)
             .unwrap();
+        route
+            .service_impl
+            .global_ctx
+            .config
+            .add_proxy_cidr("10.11.0.0/24".parse().unwrap(), None)
+            .unwrap();
+
         assert!(route.service_impl.update_my_peer_info());
 
         let mut sender_info = RoutePeerInfo::new();
@@ -6652,21 +6659,26 @@ mod tests {
         assert_eq!(stored.proxy_cidrs, sender_info.proxy_cidrs);
         drop(guard);
 
-        // Route-table filtering: local announced /16 should dominate remote equal/subset.
+        assert_eq!(
+            route
+                .service_impl
+                .route_table
+                .get_peer_id_for_proxy(&"10.10.0.1".parse::<IpAddr>().unwrap()),
+            Some(peer_mgr.my_peer_id())
+        );
         assert_eq!(
             route
                 .service_impl
                 .route_table
                 .get_peer_id_for_proxy(&"10.10.1.1".parse::<IpAddr>().unwrap()),
-            Some(peer_mgr.my_peer_id())
+            Some(from_peer_id)
         );
-        // Non-overlapped remote prefix should still route to remote.
         assert_eq!(
             route
                 .service_impl
                 .route_table
                 .get_peer_id_for_proxy(&"10.11.0.1".parse::<IpAddr>().unwrap()),
-            Some(from_peer_id)
+            Some(peer_mgr.my_peer_id())
         );
     }
 }
