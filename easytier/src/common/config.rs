@@ -6,10 +6,9 @@ use std::{
 };
 
 use anyhow::Context;
-use base64::{prelude::BASE64_STANDARD, Engine as _};
-use cfg_if::cfg_if;
-use clap::builder::PossibleValue;
+use base64::{Engine as _, prelude::BASE64_STANDARD};
 use clap::ValueEnum;
+use clap::builder::PossibleValue;
 use serde::{Deserialize, Serialize};
 use strum::{Display, EnumString, VariantArray};
 use tokio::io::AsyncReadExt as _;
@@ -19,9 +18,10 @@ use crate::{
     instance::dns_server::DEFAULT_ET_DNS_ZONE,
     proto::{
         acl::Acl,
+        api::manage::ConfigSource as RpcConfigSource,
         common::{CompressionAlgoPb, PortForwardConfigPb, SecureModeConfig, SocketType},
     },
-    tunnel::generate_digest_from_str,
+    tunnel::{IpScheme, TunnelScheme, generate_digest_from_str},
 };
 
 use super::env_parser;
@@ -70,7 +70,40 @@ pub fn gen_default_flags() -> Flags {
         quic_listen_port: u32::MAX,
         need_p2p: false,
         instance_recv_bps_limit: u64::MAX,
+        disable_upnp: false,
+        disable_relay_data: false,
+        enable_udp_broadcast_relay: false,
     }
+}
+
+fn mapped_listener_allows_implicit_port(url: &url::Url) -> bool {
+    TunnelScheme::try_from(url)
+        .ok()
+        .and_then(|scheme| IpScheme::try_from(scheme).ok())
+        .is_some()
+}
+
+pub fn validate_mapped_listener_url(url: &url::Url) -> Result<(), anyhow::Error> {
+    if url.port().is_none() && !mapped_listener_allows_implicit_port(url) {
+        anyhow::bail!("mapped listener port is missing: {}", url);
+    }
+
+    Ok(())
+}
+
+pub fn parse_mapped_listener_urls(
+    mapped_listeners: &[String],
+) -> Result<Vec<url::Url>, anyhow::Error> {
+    mapped_listeners
+        .iter()
+        .map(|s| {
+            let url: url::Url = s
+                .parse()
+                .with_context(|| format!("mapped listener is not a valid url: {}", s))?;
+            validate_mapped_listener_url(&url)?;
+            Ok(url)
+        })
+        .collect()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Display, EnumString, VariantArray)]
@@ -109,10 +142,9 @@ impl ValueEnum for EncryptionAlgorithm {
 #[allow(clippy::derivable_impls)]
 impl Default for EncryptionAlgorithm {
     fn default() -> Self {
-        cfg_if! {
-            if #[cfg(any(feature = "aes-gcm", feature = "wireguard", feature = "openssl-crypto"))] {
-                EncryptionAlgorithm::AesGcm
-            } else {
+        cfg_select! {
+            any(feature = "aes-gcm", feature = "wireguard", feature = "openssl-crypto") => EncryptionAlgorithm::AesGcm,
+            _ => {
                 crate::common::log::warn!("no AEAD encryption algorithm is available, using INSECURE XOR");
                 EncryptionAlgorithm::Xor
             }
@@ -139,6 +171,15 @@ pub trait ConfigLoader: Send + Sync {
 
     fn get_ipv6(&self) -> Option<cidr::Ipv6Inet>;
     fn set_ipv6(&self, addr: Option<cidr::Ipv6Inet>);
+
+    fn get_ipv6_public_addr_provider(&self) -> bool;
+    fn set_ipv6_public_addr_provider(&self, enabled: bool);
+
+    fn get_ipv6_public_addr_auto(&self) -> bool;
+    fn set_ipv6_public_addr_auto(&self, enabled: bool);
+
+    fn get_ipv6_public_addr_prefix(&self) -> Option<cidr::Ipv6Cidr>;
+    fn set_ipv6_public_addr_prefix(&self, prefix: Option<cidr::Ipv6Cidr>);
 
     fn get_dhcp(&self) -> bool;
     fn set_dhcp(&self, dhcp: bool);
@@ -207,6 +248,11 @@ pub trait ConfigLoader: Send + Sync {
     }
     fn set_credential_file(&self, _path: Option<std::path::PathBuf>) {}
 
+    fn get_network_config_source(&self) -> ConfigSource {
+        ConfigSource::User
+    }
+    fn set_network_config_source(&self, _source: Option<ConfigSource>) {}
+
     fn dump(&self) -> String;
 }
 
@@ -224,6 +270,55 @@ pub struct NetworkIdentity {
     pub network_secret: Option<String>,
     #[serde(skip)]
     pub network_secret_digest: Option<NetworkSecretDigest>,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ConfigSource {
+    #[default]
+    User,
+    Webhook,
+}
+
+impl ConfigSource {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::User => "user",
+            Self::Webhook => "webhook",
+        }
+    }
+
+    pub fn from_rpc(source: i32) -> Option<Self> {
+        match RpcConfigSource::try_from(source).ok() {
+            Some(RpcConfigSource::Webhook) => Some(Self::Webhook),
+            Some(RpcConfigSource::User) => Some(Self::User),
+            _ => None,
+        }
+    }
+
+    pub fn to_rpc(self) -> i32 {
+        match self {
+            Self::User => RpcConfigSource::User as i32,
+            Self::Webhook => RpcConfigSource::Webhook as i32,
+        }
+    }
+}
+
+impl std::str::FromStr for ConfigSource {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "user" => Ok(Self::User),
+            "webhook" => Ok(Self::Webhook),
+            other => Err(format!("unknown network config source: {other}")),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+struct ConfigSourceConfig {
+    source: ConfigSource,
 }
 
 #[derive(Eq, PartialEq, Hash)]
@@ -435,6 +530,9 @@ struct Config {
     instance_id: Option<uuid::Uuid>,
     ipv4: Option<String>,
     ipv6: Option<String>,
+    ipv6_public_addr_provider: Option<bool>,
+    ipv6_public_addr_auto: Option<bool>,
+    ipv6_public_addr_prefix: Option<String>,
     dhcp: Option<bool>,
     network_identity: Option<NetworkIdentity>,
     listeners: Option<Vec<url::Url>>,
@@ -467,6 +565,7 @@ struct Config {
     stun_servers_v6: Option<Vec<String>>,
 
     credential_file: Option<PathBuf>,
+    source: Option<ConfigSourceConfig>,
 }
 
 #[derive(Debug, Clone)]
@@ -481,9 +580,20 @@ impl Default for TomlConfigLoader {
 }
 
 impl TomlConfigLoader {
+    fn normalize_config_source(config: &mut Config) {
+        if matches!(
+            config.source.as_ref().map(|source| source.source),
+            Some(ConfigSource::User)
+        ) {
+            config.source = None;
+        }
+    }
+
     pub fn new_from_str(config_str: &str) -> Result<Self, anyhow::Error> {
         let mut config = toml::de::from_str::<Config>(config_str)
             .with_context(|| format!("failed to parse config file: {}", config_str))?;
+
+        Self::normalize_config_source(&mut config);
 
         config.flags_struct = Some(Self::gen_flags(config.flags.clone().unwrap_or_default()));
 
@@ -604,6 +714,43 @@ impl ConfigLoader for TomlConfigLoader {
         self.config.lock().unwrap().ipv6 = addr.map(|addr| addr.to_string());
     }
 
+    fn get_ipv6_public_addr_provider(&self) -> bool {
+        self.config
+            .lock()
+            .unwrap()
+            .ipv6_public_addr_provider
+            .unwrap_or_default()
+    }
+
+    fn set_ipv6_public_addr_provider(&self, enabled: bool) {
+        self.config.lock().unwrap().ipv6_public_addr_provider = Some(enabled);
+    }
+
+    fn get_ipv6_public_addr_auto(&self) -> bool {
+        self.config
+            .lock()
+            .unwrap()
+            .ipv6_public_addr_auto
+            .unwrap_or_default()
+    }
+
+    fn set_ipv6_public_addr_auto(&self, enabled: bool) {
+        self.config.lock().unwrap().ipv6_public_addr_auto = Some(enabled);
+    }
+
+    fn get_ipv6_public_addr_prefix(&self) -> Option<cidr::Ipv6Cidr> {
+        let locked_config = self.config.lock().unwrap();
+        locked_config
+            .ipv6_public_addr_prefix
+            .as_ref()
+            .and_then(|s| s.parse().ok())
+    }
+
+    fn set_ipv6_public_addr_prefix(&self, prefix: Option<cidr::Ipv6Cidr>) {
+        self.config.lock().unwrap().ipv6_public_addr_prefix =
+            prefix.map(|prefix| prefix.to_string());
+    }
+
     fn get_dhcp(&self) -> bool {
         self.config.lock().unwrap().dhcp.unwrap_or_default()
     }
@@ -621,14 +768,14 @@ impl ConfigLoader for TomlConfigLoader {
         if locked_config.proxy_network.is_none() {
             locked_config.proxy_network = Some(vec![]);
         }
-        if let Some(mapped_cidr) = mapped_cidr.as_ref() {
-            if cidr.network_length() != mapped_cidr.network_length() {
-                return Err(anyhow::anyhow!(
-                    "Mapped CIDR must have the same network length as the original CIDR: {} != {}",
-                    cidr.network_length(),
-                    mapped_cidr.network_length()
-                ));
-            }
+        if let Some(mapped_cidr) = mapped_cidr.as_ref()
+            && cidr.network_length() != mapped_cidr.network_length()
+        {
+            return Err(anyhow::anyhow!(
+                "Mapped CIDR must have the same network length as the original CIDR: {} != {}",
+                cidr.network_length(),
+                mapped_cidr.network_length()
+            ));
         }
         // insert if no duplicate
         if !locked_config
@@ -868,6 +1015,23 @@ impl ConfigLoader for TomlConfigLoader {
         self.config.lock().unwrap().credential_file = path;
     }
 
+    fn get_network_config_source(&self) -> ConfigSource {
+        self.config
+            .lock()
+            .unwrap()
+            .source
+            .as_ref()
+            .map(|source| source.source)
+            .unwrap_or(ConfigSource::User)
+    }
+
+    fn set_network_config_source(&self, source: Option<ConfigSource>) {
+        self.config.lock().unwrap().source = source.and_then(|source| match source {
+            ConfigSource::User => None,
+            other => Some(ConfigSourceConfig { source: other }),
+        });
+    }
+
     fn dump(&self) -> String {
         let default_flags_json = serde_json::to_string(&gen_default_flags()).unwrap();
         let default_flags_hashmap =
@@ -881,14 +1045,15 @@ impl ConfigLoader for TomlConfigLoader {
 
         let mut flag_map: serde_json::Map<String, serde_json::Value> = Default::default();
         for (key, value) in default_flags_hashmap {
-            if let Some(v) = cur_flags_hashmap.get(&key) {
-                if *v != value {
-                    flag_map.insert(key, v.clone());
-                }
+            if let Some(v) = cur_flags_hashmap.get(&key)
+                && *v != value
+            {
+                flag_map.insert(key, v.clone());
             }
         }
 
         let mut config = self.config.lock().unwrap().clone();
+        Self::normalize_config_source(&mut config);
         config.flags = Some(flag_map);
         if config.stun_servers == Some(StunInfoCollector::get_default_servers()) {
             config.stun_servers = None;
@@ -1089,6 +1254,7 @@ pub async fn load_config_from_file(
 #[cfg(test)]
 pub mod tests {
     use super::*;
+    use crate::tests::{remove_env_var, set_env_var};
     use std::io::Write;
     use std::path::PathBuf;
     use tempfile::NamedTempFile;
@@ -1124,6 +1290,162 @@ stun_servers = [
         assert_eq!(stun_servers[0], "stun.l.google.com:19302");
         assert_eq!(stun_servers[1], "stun1.l.google.com:19302");
         assert_eq!(stun_servers[2], "txt:stun.easytier.cn");
+    }
+
+    #[test]
+    fn test_network_config_source_toml_roundtrip() {
+        let config = TomlConfigLoader::default();
+        assert_eq!(config.get_network_config_source(), ConfigSource::User);
+
+        config.set_network_config_source(Some(ConfigSource::Webhook));
+        let dumped = config.dump();
+
+        assert!(dumped.contains("[source]"));
+        assert!(dumped.contains("source = \"webhook\""));
+
+        let loaded = TomlConfigLoader::new_from_str(&dumped).unwrap();
+        assert_eq!(loaded.get_network_config_source(), ConfigSource::Webhook);
+    }
+
+    #[test]
+    fn test_parse_mapped_listener_urls_allows_ws_without_port() {
+        let parsed = parse_mapped_listener_urls(&[
+            "ws://example.com".to_string(),
+            "wss://example.com/path".to_string(),
+        ])
+        .unwrap();
+
+        assert_eq!(parsed.len(), 2);
+        assert_eq!(parsed[0].scheme(), "ws");
+        assert_eq!(parsed[0].port(), None);
+        assert_eq!(parsed[1].scheme(), "wss");
+        assert_eq!(parsed[1].port(), None);
+    }
+
+    #[test]
+    fn test_parse_mapped_listener_urls_allows_tcp_without_port() {
+        let parsed = parse_mapped_listener_urls(&["tcp://127.0.0.1".to_string()]).unwrap();
+
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0].scheme(), "tcp");
+        assert_eq!(parsed[0].port(), None);
+    }
+
+    #[test]
+    fn test_parse_mapped_listener_urls_requires_port_for_non_ip_scheme() {
+        let err = parse_mapped_listener_urls(&["ring://peer-id".to_string()]).unwrap_err();
+
+        assert!(err.to_string().contains("mapped listener port is missing"));
+    }
+
+    #[test]
+    fn test_acl_toml_rule_uses_defaults_for_omitted_fields() {
+        use crate::proto::acl::{Action, ChainType, Protocol};
+
+        let config_str = r#"
+[[acl.acl_v1.chains]]
+name = "subnet_proxy_protect"
+chain_type = 3
+enabled = true
+default_action = 2
+
+[[acl.acl_v1.chains.rules]]
+name = "allow_my_devices"
+priority = 1000
+action = 1
+source_ips = ["10.172.192.2/32"]
+protocol = 5
+enabled = true
+"#;
+
+        let config = TomlConfigLoader::new_from_str(config_str).unwrap();
+        let acl = config.get_acl().unwrap();
+        let acl_v1 = acl.acl_v1.unwrap();
+        let chain = &acl_v1.chains[0];
+        let rule = &chain.rules[0];
+
+        assert_eq!(chain.chain_type, ChainType::Forward as i32);
+        assert_eq!(chain.default_action, Action::Drop as i32);
+        assert_eq!(rule.action, Action::Allow as i32);
+        assert_eq!(rule.protocol, Protocol::Any as i32);
+        assert_eq!(rule.source_ips, vec!["10.172.192.2/32"]);
+        assert!(rule.ports.is_empty());
+        assert!(rule.source_ports.is_empty());
+        assert!(rule.destination_ips.is_empty());
+        assert!(rule.source_groups.is_empty());
+        assert!(rule.destination_groups.is_empty());
+        assert_eq!(rule.rate_limit, 0);
+        assert_eq!(rule.burst_limit, 0);
+        assert!(!rule.stateful);
+    }
+
+    #[test]
+    fn test_acl_toml_group_can_omit_declares_or_members() {
+        let declares_only = r#"
+[acl.acl_v1.group]
+
+[[acl.acl_v1.group.declares]]
+group_name = "admin"
+group_secret = "admin-pw"
+"#;
+        let config = TomlConfigLoader::new_from_str(declares_only).unwrap();
+        let group = config.get_acl().unwrap().acl_v1.unwrap().group.unwrap();
+        assert_eq!(group.declares.len(), 1);
+        assert!(group.members.is_empty());
+
+        let members_only = r#"
+[acl.acl_v1.group]
+members = ["admin"]
+"#;
+        let config = TomlConfigLoader::new_from_str(members_only).unwrap();
+        let group = config.get_acl().unwrap().acl_v1.unwrap().group.unwrap();
+        assert!(group.declares.is_empty());
+        assert_eq!(group.members, vec!["admin"]);
+    }
+
+    #[test]
+    fn test_network_config_source_user_is_implicit() {
+        let config = TomlConfigLoader::default();
+        config.set_network_config_source(Some(ConfigSource::User));
+        let dumped = config.dump();
+
+        assert!(!dumped.contains("[source]"));
+
+        let loaded = TomlConfigLoader::new_from_str(&dumped).unwrap();
+        assert_eq!(loaded.get_network_config_source(), ConfigSource::User);
+
+        let explicit_user = TomlConfigLoader::new_from_str(
+            r#"
+[source]
+source = "user"
+"#,
+        )
+        .unwrap();
+        assert_eq!(
+            explicit_user.get_network_config_source(),
+            ConfigSource::User
+        );
+        assert!(!explicit_user.dump().contains("[source]"));
+    }
+
+    #[test]
+    fn test_ipv6_public_addr_config_roundtrip() {
+        let config = TomlConfigLoader::default();
+        let prefix: cidr::Ipv6Cidr = "2001:db8:100::/64".parse().unwrap();
+
+        config.set_ipv6_public_addr_provider(true);
+        config.set_ipv6_public_addr_auto(true);
+        config.set_ipv6_public_addr_prefix(Some(prefix));
+
+        assert!(config.get_ipv6_public_addr_provider());
+        assert!(config.get_ipv6_public_addr_auto());
+        assert_eq!(config.get_ipv6_public_addr_prefix(), Some(prefix));
+
+        let dumped = config.dump();
+        let loaded = TomlConfigLoader::new_from_str(&dumped).unwrap();
+        assert!(loaded.get_ipv6_public_addr_provider());
+        assert!(loaded.get_ipv6_public_addr_auto());
+        assert_eq!(loaded.get_ipv6_public_addr_prefix(), Some(prefix));
     }
 
     #[tokio::test]
@@ -1212,8 +1534,8 @@ proto = "tcp"
     #[tokio::test]
     async fn test_env_var_expansion_and_readonly_flag() {
         // 设置测试环境变量
-        std::env::set_var("TEST_SECRET", "my-test-secret-123");
-        std::env::set_var("TEST_NETWORK", "test-network");
+        set_env_var("TEST_SECRET", "my-test-secret-123");
+        set_env_var("TEST_NETWORK", "test-network");
 
         // 创建临时配置文件，包含环境变量占位符
         let mut temp_file = NamedTempFile::new().unwrap();
@@ -1253,8 +1575,8 @@ network_secret = "${TEST_SECRET}"
         );
 
         // 清理环境变量
-        std::env::remove_var("TEST_SECRET");
-        std::env::remove_var("TEST_NETWORK");
+        remove_env_var("TEST_SECRET");
+        remove_env_var("TEST_NETWORK");
     }
 
     /// RPC API 安全测试（只读配置保护）
@@ -1267,7 +1589,7 @@ network_secret = "${TEST_SECRET}"
     /// `easytier/src/rpc_service/instance_manage.rs` 中实现
     #[tokio::test]
     async fn test_readonly_config_api_protection() {
-        std::env::set_var("API_TEST_SECRET", "secret-value");
+        set_env_var("API_TEST_SECRET", "secret-value");
 
         // 创建包含环境变量的配置
         let mut temp_file = NamedTempFile::new().unwrap();
@@ -1298,7 +1620,7 @@ network_secret = "${API_TEST_SECRET}"
             "Permission flag should be set correctly"
         );
 
-        std::env::remove_var("API_TEST_SECRET");
+        remove_env_var("API_TEST_SECRET");
     }
 
     /// CLI 参数测试（--disable-env-parsing 开关）
@@ -1308,7 +1630,7 @@ network_secret = "${API_TEST_SECRET}"
     /// - 配置不会被标记为只读
     #[tokio::test]
     async fn test_disable_env_parsing_flag() {
-        std::env::set_var("DISABLED_TEST_VAR", "should-not-expand");
+        set_env_var("DISABLED_TEST_VAR", "should-not-expand");
 
         // 创建包含环境变量占位符的配置
         let mut temp_file = NamedTempFile::new().unwrap();
@@ -1346,7 +1668,7 @@ network_secret = "${DISABLED_TEST_VAR}"
             "Config should be NO_DELETE due to no config_dir, not env vars"
         );
 
-        std::env::remove_var("DISABLED_TEST_VAR");
+        remove_env_var("DISABLED_TEST_VAR");
     }
 
     /// 多实例隔离测试
@@ -1357,8 +1679,8 @@ network_secret = "${DISABLED_TEST_VAR}"
     #[tokio::test]
     async fn test_multiple_instances_with_different_env_vars() {
         // 实例1：使用第一组环境变量
-        std::env::set_var("INSTANCE_SECRET", "instance1-secret");
-        std::env::set_var("INSTANCE_NAME", "instance-one");
+        set_env_var("INSTANCE_SECRET", "instance1-secret");
+        set_env_var("INSTANCE_NAME", "instance-one");
 
         let mut temp_file1 = NamedTempFile::new().unwrap();
         let config_content = r#"
@@ -1388,8 +1710,8 @@ network_secret = "${INSTANCE_SECRET}"
         );
 
         // 实例2：修改环境变量后加载同一模板
-        std::env::set_var("INSTANCE_SECRET", "instance2-secret");
-        std::env::set_var("INSTANCE_NAME", "instance-two");
+        set_env_var("INSTANCE_SECRET", "instance2-secret");
+        set_env_var("INSTANCE_NAME", "instance-two");
 
         let mut temp_file2 = NamedTempFile::new().unwrap();
         temp_file2.write_all(config_content.as_bytes()).unwrap();
@@ -1419,8 +1741,8 @@ network_secret = "${INSTANCE_SECRET}"
         );
 
         // 清理
-        std::env::remove_var("INSTANCE_SECRET");
-        std::env::remove_var("INSTANCE_NAME");
+        remove_env_var("INSTANCE_SECRET");
+        remove_env_var("INSTANCE_NAME");
     }
 
     /// 实际配置字段测试（network_secret、peer.uri 等）
@@ -1433,11 +1755,11 @@ network_secret = "${INSTANCE_SECRET}"
     #[tokio::test]
     async fn test_real_config_fields_expansion() {
         // 设置各种实际场景的环境变量
-        std::env::set_var("ET_SECRET", "production-secret-key");
-        std::env::set_var("PEER_HOST", "peer.example.com");
-        std::env::set_var("PEER_PORT", "11011");
-        std::env::set_var("LISTEN_PORT", "11010");
-        std::env::set_var("NETWORK_NAME", "prod-network");
+        set_env_var("ET_SECRET", "production-secret-key");
+        set_env_var("PEER_HOST", "peer.example.com");
+        set_env_var("PEER_PORT", "11011");
+        set_env_var("LISTEN_PORT", "11010");
+        set_env_var("NETWORK_NAME", "prod-network");
 
         // 创建包含多个实际字段的完整配置
         let mut temp_file = NamedTempFile::new().unwrap();
@@ -1485,11 +1807,11 @@ uri = "tcp://${PEER_HOST}:${PEER_PORT}"
         assert!(control.is_no_delete());
 
         // 清理环境变量
-        std::env::remove_var("ET_SECRET");
-        std::env::remove_var("PEER_HOST");
-        std::env::remove_var("PEER_PORT");
-        std::env::remove_var("LISTEN_PORT");
-        std::env::remove_var("NETWORK_NAME");
+        remove_env_var("ET_SECRET");
+        remove_env_var("PEER_HOST");
+        remove_env_var("PEER_PORT");
+        remove_env_var("LISTEN_PORT");
+        remove_env_var("NETWORK_NAME");
     }
 
     /// 带默认值的环境变量
@@ -1499,8 +1821,8 @@ uri = "tcp://${PEER_HOST}:${PEER_PORT}"
     #[tokio::test]
     async fn test_env_var_with_default_value() {
         // 确保变量未定义
-        std::env::remove_var("UNDEFINED_PORT");
-        std::env::remove_var("UNDEFINED_SECRET");
+        remove_env_var("UNDEFINED_PORT");
+        remove_env_var("UNDEFINED_SECRET");
 
         let mut temp_file = NamedTempFile::new().unwrap();
         let config_content = r#"
@@ -1541,7 +1863,7 @@ network_secret = "${UNDEFINED_SECRET:-default-secret}"
     /// - 未定义的环境变量保持原样（shellexpand 的默认行为）
     #[tokio::test]
     async fn test_undefined_env_var_without_default() {
-        std::env::remove_var("COMPLETELY_UNDEFINED");
+        remove_env_var("COMPLETELY_UNDEFINED");
 
         let mut temp_file = NamedTempFile::new().unwrap();
         let config_content = r#"
@@ -1571,6 +1893,8 @@ network_secret = "${COMPLETELY_UNDEFINED}"
 
         // 注意：由于没有实际替换发生，控制标记不应因环境变量而设置
         // 但会因为其他原因（如没有 config_dir）被标记为 NO_DELETE
+        // 这里我们主要验证 NO_DELETE 标记的逻辑
+        // 由于没有 config_dir，文件会被标记为 NO_DELETE，但不是因为环境变量
         assert!(control.is_no_delete());
     }
 
@@ -1582,9 +1906,9 @@ network_secret = "${COMPLETELY_UNDEFINED}"
     #[tokio::test]
     async fn test_boolean_type_env_vars() {
         // 设置布尔类型的环境变量
-        std::env::set_var("ENABLE_DHCP", "true");
-        std::env::set_var("ENABLE_ENCRYPTION", "false");
-        std::env::set_var("ENABLE_IPV6", "true");
+        set_env_var("ENABLE_DHCP", "true");
+        set_env_var("ENABLE_ENCRYPTION", "false");
+        set_env_var("ENABLE_IPV6", "true");
 
         let mut temp_file = NamedTempFile::new().unwrap();
         let config_content = r#"
@@ -1622,9 +1946,9 @@ enable_ipv6 = ${ENABLE_IPV6}
         assert!(control.is_no_delete());
 
         // 清理
-        std::env::remove_var("ENABLE_DHCP");
-        std::env::remove_var("ENABLE_ENCRYPTION");
-        std::env::remove_var("ENABLE_IPV6");
+        remove_env_var("ENABLE_DHCP");
+        remove_env_var("ENABLE_ENCRYPTION");
+        remove_env_var("ENABLE_IPV6");
     }
 
     /// 数字类型环境变量
@@ -1635,8 +1959,8 @@ enable_ipv6 = ${ENABLE_IPV6}
     #[tokio::test]
     async fn test_numeric_type_env_vars() {
         // 设置数字类型的环境变量
-        std::env::set_var("MTU_VALUE", "1400");
-        std::env::set_var("THREAD_COUNT", "4");
+        set_env_var("MTU_VALUE", "1400");
+        set_env_var("THREAD_COUNT", "4");
 
         let mut temp_file = NamedTempFile::new().unwrap();
         let config_content = r#"
@@ -1671,8 +1995,8 @@ multi_thread_count = ${THREAD_COUNT}
         assert!(control.is_no_delete());
 
         // 清理
-        std::env::remove_var("MTU_VALUE");
-        std::env::remove_var("THREAD_COUNT");
+        remove_env_var("MTU_VALUE");
+        remove_env_var("THREAD_COUNT");
     }
 
     /// 混合类型环境变量
@@ -1684,12 +2008,12 @@ multi_thread_count = ${THREAD_COUNT}
     #[tokio::test]
     async fn test_mixed_type_env_vars() {
         // 设置不同类型的环境变量
-        std::env::set_var("MIXED_SECRET", "mixed-secret-key");
-        std::env::set_var("MIXED_NETWORK", "production");
-        std::env::set_var("MIXED_DHCP", "true");
-        std::env::set_var("MIXED_MTU", "1500");
-        std::env::set_var("MIXED_ENCRYPTION", "false");
-        std::env::set_var("MIXED_LISTEN_PORT", "12345");
+        set_env_var("MIXED_SECRET", "mixed-secret-key");
+        set_env_var("MIXED_NETWORK", "production");
+        set_env_var("MIXED_DHCP", "true");
+        set_env_var("MIXED_MTU", "1500");
+        set_env_var("MIXED_ENCRYPTION", "false");
+        set_env_var("MIXED_LISTEN_PORT", "12345");
 
         let mut temp_file = NamedTempFile::new().unwrap();
         let config_content = r#"
@@ -1741,11 +2065,11 @@ enable_encryption = ${MIXED_ENCRYPTION}
         assert!(control.is_no_delete());
 
         // 清理
-        std::env::remove_var("MIXED_SECRET");
-        std::env::remove_var("MIXED_NETWORK");
-        std::env::remove_var("MIXED_DHCP");
-        std::env::remove_var("MIXED_MTU");
-        std::env::remove_var("MIXED_ENCRYPTION");
-        std::env::remove_var("MIXED_LISTEN_PORT");
+        remove_env_var("MIXED_SECRET");
+        remove_env_var("MIXED_NETWORK");
+        remove_env_var("MIXED_DHCP");
+        remove_env_var("MIXED_MTU");
+        remove_env_var("MIXED_ENCRYPTION");
+        remove_env_var("MIXED_LISTEN_PORT");
     }
 }

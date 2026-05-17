@@ -6,17 +6,25 @@ on:
     paths:
       - "**/*.nix"
       - "flake.lock"
+      - "rust-toolchain.toml"
   pull_request:
     branches: ["main", "develop"]
+    types: [opened, synchronize, reopened, ready_for_review]
     paths:
       - "**/*.nix"
       - "flake.lock"
+      - "rust-toolchain.toml"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 jobs:
   check-full-shell:
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Install Nix
         uses: cachix/install-nix-action@v27
@@ -26,5 +34,11 @@ jobs:
       - name: Magic Nix Cache
         uses: DeterminateSystems/magic-nix-cache-action@v6
 
-      - name: Check full devShell
+      - name: Warm up full devShell
         run: nix develop .#full --command true
+
+      - name: Cargo check in flake environment
+        run: nix develop .#full --command cargo check
+
+      - name: Cargo build in flake environment
+        run: nix develop .#full --command cargo build

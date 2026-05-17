@@ -7,8 +7,8 @@ use std::mem;
 use std::net::IpAddr;
 use std::net::SocketAddr;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
-use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 use tokio::sync::Mutex;
 use tracing::{debug, info, warn};
 

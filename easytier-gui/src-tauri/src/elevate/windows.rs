@@ -11,11 +11,11 @@ use std::process::{ExitStatus, Output};
 use winapi::shared::minwindef::{DWORD, LPVOID};
 use winapi::um::processthreadsapi::{GetCurrentProcess, OpenProcessToken};
 use winapi::um::securitybaseapi::GetTokenInformation;
-use winapi::um::winnt::{TokenElevation, HANDLE, TOKEN_ELEVATION, TOKEN_QUERY};
-use windows::core::{w, HSTRING, PCWSTR};
+use winapi::um::winnt::{HANDLE, TOKEN_ELEVATION, TOKEN_QUERY, TokenElevation};
 use windows::Win32::Foundation::HWND;
 use windows::Win32::UI::Shell::ShellExecuteW;
 use windows::Win32::UI::WindowsAndMessaging::SW_HIDE;
+use windows::core::{HSTRING, PCWSTR, w};
 
 /// The implementation of state check and elevated executing varies on each platform
 impl Command {

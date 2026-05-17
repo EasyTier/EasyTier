@@ -81,6 +81,8 @@ message Route {
   optional int32 path_latency_latency_first = 14;
 
   common.Ipv6Inet ipv6_addr = 15;
+  common.Ipv6Inet public_ipv6_addr = 16;
+  common.Ipv6Inet ipv6_public_addr_prefix = 17;
 }
 
 message PeerRoutePair {
@@ -100,11 +102,28 @@ message NodeInfo {
   string version = 9;
   common.PeerFeatureFlag feature_flag = 10;
   peer_rpc.GetIpListResponse ip_list = 11;
+  common.Ipv6Inet public_ipv6_addr = 12;
+  common.Ipv6Inet ipv6_public_addr_prefix = 13;
 }
 
 message ShowNodeInfoRequest { InstanceIdentifier instance = 1; }
 
 message ShowNodeInfoResponse { NodeInfo node_info = 1; }
+
+message PublicIpv6LeaseInfo {
+  uint32 peer_id = 1;
+  string inst_id = 2;
+  common.Ipv6Inet leased_addr = 3;
+  int64 valid_until_unix_seconds = 4;
+  bool reused = 5;
+}
+
+message ListPublicIpv6InfoRequest { InstanceIdentifier instance = 1; }
+
+message ListPublicIpv6InfoResponse {
+  common.Ipv6Inet provider_prefix = 1;
+  repeated PublicIpv6LeaseInfo provider_leases = 2;
+}
 
 message ListRouteRequest { InstanceIdentifier instance = 1; }
 
@@ -167,6 +186,8 @@ message GetForeignNetworkSummaryResponse {
 
 service PeerManageRpc {
   rpc ListPeer(ListPeerRequest) returns (ListPeerResponse);
+  rpc ListPublicIpv6Info(ListPublicIpv6InfoRequest)
+      returns (ListPublicIpv6InfoResponse);
   rpc ListRoute(ListRouteRequest) returns (ListRouteResponse);
   rpc DumpRoute(DumpRouteRequest) returns (DumpRouteResponse);
   rpc ListForeignNetwork(ListForeignNetworkRequest)
@@ -318,6 +339,7 @@ message GenerateCredentialRequest {
   int64 ttl_seconds = 4;        // must be > 0: credential TTL in seconds (0 / omitted is invalid)
   optional string credential_id = 5; // optional: user-specified credential id, reused if already exists
   InstanceIdentifier instance = 6;   // target network instance
+  optional bool reusable = 7;   // default true: allow multiple peers to reuse this credential
 }
 
 message GenerateCredentialResponse {
@@ -344,6 +366,7 @@ message CredentialInfo {
   bool allow_relay = 3;
   int64 expiry_unix = 4;
   repeated string allowed_proxy_cidrs = 5;
+  optional bool reusable = 6;
 }
 
 message ListCredentialsResponse {

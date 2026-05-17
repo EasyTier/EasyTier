@@ -1,8 +1,11 @@
+mod rpc;
+
+use crate::rpc::ServiceGenerator;
+use cfg_aliases::cfg_aliases;
+use prost_wkt_build::{FileDescriptorSet, Message as _};
 #[cfg(target_os = "windows")]
 use std::io::Cursor;
 use std::{env, path::PathBuf};
-
-use prost_wkt_build::{FileDescriptorSet, Message as _};
 
 #[cfg(target_os = "windows")]
 struct WindowsBuild {}
@@ -86,7 +89,9 @@ impl WindowsBuild {
         } else {
             Self::download_protoc()
         };
-        std::env::set_var("PROTOC", protoc_path);
+        unsafe {
+            std::env::set_var("PROTOC", protoc_path);
+        }
     }
 }
 
@@ -130,12 +135,21 @@ fn check_locale() {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    cfg_aliases! {
+        mobile: {
+            any(
+                target_os = "android",
+                target_os = "ios",
+                all(target_os = "macos", feature = "macos-ne"),
+                target_env = "ohos"
+            )
+        }
+    }
+
+    let target_os = env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
+    let target_arch = env::var("CARGO_CFG_TARGET_ARCH").unwrap_or_default();
     // enable thunk-rs when target os is windows and arch is x86_64 or i686
-    #[cfg(target_os = "windows")]
-    if !std::env::var("TARGET")
-        .unwrap_or_default()
-        .contains("aarch64")
-    {
+    if target_os == "windows" && (target_arch == "x86" || target_arch == "x86_64") {
         thunk::thunk();
     }
 
@@ -180,8 +194,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
         .type_attribute("peer_rpc.RouteForeignNetworkSummary", "#[derive(Hash, Eq)]")
         .type_attribute("common.RpcDescriptor", "#[derive(Hash, Eq)]")
+        .type_attribute("acl.Acl", "#[serde(default)]")
+        .type_attribute("acl.AclV1", "#[serde(default)]")
+        .type_attribute("acl.Chain", "#[serde(default)]")
+        .type_attribute("acl.Rule", "#[serde(default)]")
+        .type_attribute("acl.GroupInfo", "#[serde(default)]")
         .field_attribute(".api.manage.NetworkConfig", "#[serde(default)]")
-        .service_generator(Box::new(easytier_rpc_build::ServiceGenerator::default()))
+        .service_generator(Box::new(ServiceGenerator::default()))
         .btree_map(["."])
         .skip_debug([".common.Ipv4Addr", ".common.Ipv6Addr", ".common.UUID"]);
 

@@ -1,13 +1,13 @@
 use std::path::Path;
 
 use async_trait::async_trait;
-use tokio::net::{unix::SocketAddr, UnixListener, UnixStream};
+use tokio::net::{UnixListener, UnixStream, unix::SocketAddr};
 
 use super::TunnelInfo;
 
 use super::{
-    common::{FramedReader, FramedWriter, TunnelWrapper},
     IpVersion, Tunnel, TunnelError, TunnelListener,
+    common::{FramedReader, FramedWriter, TunnelWrapper},
 };
 
 const MAX_PACKET_SIZE: usize = 4096;
@@ -43,7 +43,8 @@ impl UnixSocketTunnelListener {
         let info = TunnelInfo {
             tunnel_type: "unix".to_owned(),
             local_addr: Some(self.local_url().into()),
-            remote_addr: remote_addr.map(Into::into),
+            remote_addr: remote_addr.clone().map(Into::into),
+            resolved_remote_addr: remote_addr.map(Into::into),
         };
 
         let (r, w) = stream.into_split();
@@ -122,6 +123,7 @@ impl super::TunnelConnector for UnixSocketTunnelConnector {
             tunnel_type: "unix".to_owned(),
             local_addr: local_addr.map(Into::into),
             remote_addr: Some(self.addr.clone().into()),
+            resolved_remote_addr: Some(self.addr.clone().into()),
         };
 
         let (r, w) = stream.into_split();

@@ -1,7 +1,7 @@
 use easytier::proto::api::manage::{NetworkInstanceRunningInfo, NetworkInstanceRunningInfoMap};
+use jni::JNIEnv;
 use jni::objects::{JClass, JObjectArray, JString};
 use jni::sys::{jint, jstring};
-use jni::JNIEnv;
 use once_cell::sync::Lazy;
 use std::ffi::{CStr, CString};
 use std::ptr;
@@ -15,7 +15,7 @@ pub struct KeyValuePair {
 }
 
 // 声明外部 C 函数
-extern "C" {
+unsafe extern "C" {
     fn set_tun_fd(inst_name: *const std::ffi::c_char, fd: std::ffi::c_int) -> std::ffi::c_int;
     fn get_error_msg(out: *mut *const std::ffi::c_char);
     fn free_string(s: *const std::ffi::c_char);
@@ -68,7 +68,7 @@ fn throw_exception(env: &mut JNIEnv, message: &str) {
 }
 
 /// 设置 TUN 文件描述符
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "system" fn Java_com_easytier_jni_EasyTierJNI_setTunFd(
     mut env: JNIEnv,
     _class: JClass,
@@ -87,17 +87,17 @@ pub extern "system" fn Java_com_easytier_jni_EasyTierJNI_setTunFd(
 
     unsafe {
         let result = set_tun_fd(inst_name_cstr.as_ptr(), fd);
-        if result != 0 {
-            if let Some(error) = get_last_error() {
-                throw_exception(&mut env, &error);
-            }
+        if result != 0
+            && let Some(error) = get_last_error()
+        {
+            throw_exception(&mut env, &error);
         }
         result
     }
 }
 
 /// 解析配置
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "system" fn Java_com_easytier_jni_EasyTierJNI_parseConfig(
     mut env: JNIEnv,
     _class: JClass,
@@ -115,17 +115,17 @@ pub extern "system" fn Java_com_easytier_jni_EasyTierJNI_parseConfig(
 
     unsafe {
         let result = parse_config(config_cstr.as_ptr());
-        if result != 0 {
-            if let Some(error) = get_last_error() {
-                throw_exception(&mut env, &error);
-            }
+        if result != 0
+            && let Some(error) = get_last_error()
+        {
+            throw_exception(&mut env, &error);
         }
         result
     }
 }
 
 /// 运行网络实例
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "system" fn Java_com_easytier_jni_EasyTierJNI_runNetworkInstance(
     mut env: JNIEnv,
     _class: JClass,
@@ -143,17 +143,17 @@ pub extern "system" fn Java_com_easytier_jni_EasyTierJNI_runNetworkInstance(
 
     unsafe {
         let result = run_network_instance(config_cstr.as_ptr());
-        if result != 0 {
-            if let Some(error) = get_last_error() {
-                throw_exception(&mut env, &error);
-            }
+        if result != 0
+            && let Some(error) = get_last_error()
+        {
+            throw_exception(&mut env, &error);
         }
         result
     }
 }
 
 /// 保持网络实例
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "system" fn Java_com_easytier_jni_EasyTierJNI_retainNetworkInstance(
     mut env: JNIEnv,
     _class: JClass,
@@ -165,10 +165,10 @@ pub extern "system" fn Java_com_easytier_jni_EasyTierJNI_retainNetworkInstance(
     if instance_names.is_null() {
         unsafe {
             let result = retain_network_instance(ptr::null(), 0);
-            if result != 0 {
-                if let Some(error) = get_last_error() {
-                    throw_exception(&mut env, &error);
-                }
+            if result != 0
+                && let Some(error) = get_last_error()
+            {
+                throw_exception(&mut env, &error);
             }
             return result;
         }
@@ -187,10 +187,10 @@ pub extern "system" fn Java_com_easytier_jni_EasyTierJNI_retainNetworkInstance(
     if array_length == 0 {
         unsafe {
             let result = retain_network_instance(ptr::null(), 0);
-            if result != 0 {
-                if let Some(error) = get_last_error() {
-                    throw_exception(&mut env, &error);
-                }
+            if result != 0
+                && let Some(error) = get_last_error()
+            {
+                throw_exception(&mut env, &error);
             }
             return result;
         }
@@ -234,17 +234,17 @@ pub extern "system" fn Java_com_easytier_jni_EasyTierJNI_retainNetworkInstance(
 
     unsafe {
         let result = retain_network_instance(c_string_ptrs.as_ptr(), c_string_ptrs.len());
-        if result != 0 {
-            if let Some(error) = get_last_error() {
-                throw_exception(&mut env, &error);
-            }
+        if result != 0
+            && let Some(error) = get_last_error()
+        {
+            throw_exception(&mut env, &error);
         }
         result
     }
 }
 
 /// 收集网络信息
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "system" fn Java_com_easytier_jni_EasyTierJNI_collectNetworkInfos(
     mut env: JNIEnv,
     _class: JClass,
@@ -304,7 +304,7 @@ pub extern "system" fn Java_com_easytier_jni_EasyTierJNI_collectNetworkInfos(
 }
 
 /// 获取最后的错误信息
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "system" fn Java_com_easytier_jni_EasyTierJNI_getLastError(
     env: JNIEnv,
     _class: JClass,

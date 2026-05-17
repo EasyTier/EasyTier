@@ -232,6 +232,7 @@ async fn test_magic_dns_update_replaces_records_for_same_client() {
         remote_addr: Some(crate::proto::common::Url {
             url: "tcp://127.0.0.1:54321".to_string(),
         }),
+        resolved_remote_addr: None,
     }));
 
     dns_server_inst
@@ -299,6 +300,7 @@ async fn test_magic_dns_update_replaces_records_for_same_client() {
         remote_addr: Some(crate::proto::common::Url {
             url: "tcp://127.0.0.1:54321".to_string(),
         }),
+        resolved_remote_addr: None,
     }));
 
     dns_server_inst

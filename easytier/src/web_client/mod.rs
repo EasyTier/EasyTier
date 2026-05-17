@@ -2,16 +2,22 @@ use std::sync::Arc;
 
 use crate::{
     common::{
-        config::TomlConfigLoader, global_ctx::GlobalCtx, log, os_info::collect_device_os_info,
-        scoped_task::ScopedTask, set_default_machine_id, stun::MockStunInfoCollector,
+        MachineIdOptions,
+        config::TomlConfigLoader,
+        global_ctx::{ArcGlobalCtx, GlobalCtx},
+        log,
+        os_info::collect_device_os_info,
+        resolve_machine_id,
+        stun::MockStunInfoCollector,
     },
     connector::create_connector_by_url,
     instance_manager::{DaemonGuard, NetworkInstanceManager},
     proto::common::NatType,
-    tunnel::{IpVersion, TunnelConnector},
+    tunnel::{IpVersion, Tunnel, TunnelConnector, TunnelError, TunnelScheme},
 };
 use anyhow::{Context as _, Result};
 use async_trait::async_trait;
+use tokio_util::task::AbortOnDropHandle;
 use url::Url;
 use uuid::Uuid;
 
@@ -43,15 +49,40 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 pub struct WebClient {
     controller: Arc<controller::Controller>,
-    tasks: ScopedTask<()>,
+    tasks: AbortOnDropHandle<()>,
     manager_guard: DaemonGuard,
     connected: Arc<AtomicBool>,
+}
+
+struct ConfigServerConnector {
+    url: Url,
+    global_ctx: ArcGlobalCtx,
+}
+
+#[async_trait]
+impl TunnelConnector for ConfigServerConnector {
+    async fn connect(&mut self) -> std::result::Result<Box<dyn Tunnel>, TunnelError> {
+        let mut connector =
+            create_connector_by_url(self.url.as_str(), &self.global_ctx, IpVersion::Both)
+                .await
+                .map_err(|err| match err {
+                    crate::common::error::Error::TunnelError(err) => err,
+                    err => TunnelError::Anyhow(err.into()),
+                })?;
+
+        connector.connect().await
+    }
+
+    fn remote_url(&self) -> Url {
+        self.url.clone()
+    }
 }
 
 impl WebClient {
     pub fn new<T: TunnelConnector + 'static, S: ToString, H: ToString>(
         connector: T,
         token: S,
+        machine_id: Uuid,
         hostname: H,
         secure_mode: bool,
         manager: Arc<NetworkInstanceManager>,
@@ -61,6 +92,7 @@ impl WebClient {
         let hooks = hooks.unwrap_or_else(|| Arc::new(DefaultHooks));
         let controller = Arc::new(controller::Controller::new(
             token.to_string(),
+            machine_id,
             hostname.to_string(),
             collect_device_os_info(),
             manager,
@@ -70,7 +102,7 @@ impl WebClient {
 
         let controller_clone = controller.clone();
         let connected_clone = connected.clone();
-        let tasks = ScopedTask::from(tokio::spawn(async move {
+        let tasks = AbortOnDropHandle::new(tokio::spawn(async move {
             Self::routine(
                 controller_clone,
                 connected_clone,
@@ -126,7 +158,7 @@ impl WebClient {
                 }
             };
 
-            if support_encryption {
+            if support_encryption && security::web_secure_tunnel_supported() {
                 log::info!("Server supports encryption, reconnecting with secure tunnel");
                 drop(session);
 
@@ -159,10 +191,30 @@ impl WebClient {
                 continue;
             }
 
+            if support_encryption {
+                if secure_mode {
+                    connected.store(false, Ordering::Release);
+                    let wait = 1;
+                    log::warn!(
+                        "secure-mode enabled but local build lacks aes-gcm support for web secure tunnel, retrying in {} seconds...",
+                        wait
+                    );
+                    tokio::time::sleep(std::time::Duration::from_secs(wait)).await;
+                    continue;
+                }
+
+                log::warn!(
+                    "Server supports encryption but local build lacks aes-gcm support for web secure tunnel, falling back to legacy tunnel"
+                );
+            }
+
             if secure_mode {
                 connected.store(false, Ordering::Release);
                 let wait = 1;
-                log::warn!("secure-mode enabled but server does not support encryption, retrying in {} seconds...", wait);
+                log::warn!(
+                    "secure-mode enabled but server does not support encryption, retrying in {} seconds...",
+                    wait
+                );
                 tokio::time::sleep(std::time::Duration::from_secs(wait)).await;
                 continue;
             }
@@ -180,13 +232,14 @@ impl WebClient {
 
 pub async fn run_web_client(
     config_server_url_s: &str,
-    machine_id: Option<String>,
+    machine_id_opts: MachineIdOptions,
     hostname: Option<String>,
     secure_mode: bool,
     manager: Arc<NetworkInstanceManager>,
     hooks: Option<Arc<dyn WebClientHooks>>,
 ) -> Result<WebClient> {
-    set_default_machine_id(machine_id);
+    let machine_id = resolve_machine_id(&machine_id_opts)
+        .with_context(|| "failed to resolve machine id for web client")?;
     let config_server_url = match Url::parse(config_server_url_s) {
         Ok(u) => u,
         Err(_) => format!(
@@ -196,6 +249,13 @@ pub async fn run_web_client(
         .parse()
         .with_context(|| "failed to parse config server URL")?,
     };
+
+    TunnelScheme::try_from(&config_server_url).map_err(|_| {
+        anyhow::anyhow!(
+            "unsupported config server scheme: {}",
+            config_server_url.scheme()
+        )
+    })?;
 
     let mut c_url = config_server_url.clone();
     if !matches!(c_url.scheme(), "ws" | "wss") {
@@ -222,32 +282,41 @@ pub async fn run_web_client(
     let mut flags = global_ctx.get_flags();
     flags.bind_device = false;
     global_ctx.set_flags(flags);
+
     let hostname = match hostname {
         None => gethostname::gethostname().to_string_lossy().to_string(),
         Some(hostname) => hostname,
     };
     Ok(WebClient::new(
-        create_connector_by_url(c_url.as_str(), &global_ctx, IpVersion::Both).await?,
+        ConfigServerConnector {
+            url: c_url,
+            global_ctx,
+        },
         token.to_string(),
+        machine_id,
         hostname,
         secure_mode,
-        manager.clone(),
+        manager,
         hooks,
     ))
 }
 
 #[cfg(test)]
 mod tests {
-    use std::sync::{atomic::AtomicBool, Arc};
+    use std::sync::{Arc, atomic::AtomicBool};
 
-    use crate::instance_manager::NetworkInstanceManager;
+    use crate::{common::MachineIdOptions, instance_manager::NetworkInstanceManager};
 
     #[tokio::test]
     async fn test_manager_wait() {
         let manager = Arc::new(NetworkInstanceManager::new());
+        let temp_dir = tempfile::tempdir().unwrap();
         let client = super::run_web_client(
             format!("ring://{}/test", uuid::Uuid::new_v4()).as_str(),
-            None,
+            MachineIdOptions {
+                explicit_machine_id: None,
+                state_dir: Some(temp_dir.path().to_path_buf()),
+            },
             None,
             false,
             manager.clone(),
@@ -270,5 +339,28 @@ mod tests {
         manager.wait().await;
         assert!(sleep_finish.load(std::sync::atomic::Ordering::Relaxed));
         println!("Manager stopped.");
+    }
+
+    #[tokio::test]
+    async fn test_run_web_client_with_unreachable_config_server() {
+        let manager = Arc::new(NetworkInstanceManager::new());
+        let temp_dir = tempfile::tempdir().unwrap();
+        let client = super::run_web_client(
+            "udp://config-server.invalid:22020/test",
+            MachineIdOptions {
+                explicit_machine_id: None,
+                state_dir: Some(temp_dir.path().to_path_buf()),
+            },
+            None,
+            false,
+            manager,
+            None,
+        )
+        .await
+        .unwrap();
+
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        assert!(!client.is_connected());
+        drop(client);
     }
 }

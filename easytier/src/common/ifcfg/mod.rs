@@ -119,8 +119,8 @@ async fn run_shell_cmd(cmd: &str) -> Result<(), Error> {
             .creation_flags(CREATE_NO_WINDOW)
             .output()
             .await?;
-        stdout = crate::utils::utf8_or_gbk_to_string(cmd_out.stdout.as_slice());
-        stderr = crate::utils::utf8_or_gbk_to_string(cmd_out.stderr.as_slice());
+        stdout = crate::utils::string::utf8_or_gbk_to_string(cmd_out.stdout.as_slice());
+        stderr = crate::utils::string::utf8_or_gbk_to_string(cmd_out.stderr.as_slice());
     };
 
     #[cfg(not(target_os = "windows"))]
@@ -166,3 +166,14 @@ pub type IfConfiger = DummyIfConfiger;
 
 #[cfg(target_os = "windows")]
 pub use windows::RegistryManager;
+
+#[cfg(target_os = "linux")]
+pub(crate) fn list_ipv6_route_messages()
+-> Result<Vec<netlink_packet_route::route::RouteMessage>, Error> {
+    netlink::NetlinkIfConfiger::list_ipv6_route_messages()
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) fn get_interface_index(name: &str) -> Result<u32, Error> {
+    netlink::NetlinkIfConfiger::get_interface_index(name)
+}

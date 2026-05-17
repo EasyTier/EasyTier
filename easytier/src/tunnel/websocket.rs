@@ -1,10 +1,21 @@
+use super::{
+    FromUrl, IpVersion, Tunnel, TunnelConnector, TunnelError, TunnelListener,
+    common::{TunnelWrapper, wait_for_connect_futures},
+    insecure_tls::{get_insecure_tls_cert, init_crypto_provider},
+    packet_def::{ZCPacket, ZCPacketType},
+};
+use crate::tunnel::common::bind;
+use crate::{proto::common::TunnelInfo, tunnel::insecure_tls::get_insecure_tls_client_config};
 use anyhow::Context;
 use bytes::BytesMut;
 use forwarded_header_value::ForwardedHeaderValue;
-use futures::{stream::FuturesUnordered, SinkExt, StreamExt};
+use futures::{SinkExt, StreamExt, stream::FuturesUnordered};
 use pnet::ipnetwork::IpNetwork;
-use std::sync::LazyLock;
-use std::{net::SocketAddr, sync::Arc, time::Duration};
+use std::{
+    net::SocketAddr,
+    sync::{Arc, LazyLock},
+    time::Duration,
+};
 use tokio::{
     net::{TcpListener, TcpSocket, TcpStream},
     time::timeout,
@@ -13,16 +24,6 @@ use tokio_rustls::TlsAcceptor;
 use tokio_util::either::Either;
 use tokio_websockets::{ClientBuilder, Limits, MaybeTlsStream, Message, ServerBuilder};
 use zerocopy::AsBytes;
-
-use super::TunnelInfo;
-use crate::tunnel::insecure_tls::get_insecure_tls_client_config;
-
-use super::{
-    common::{setup_sokcet2, wait_for_connect_futures, TunnelWrapper},
-    insecure_tls::{get_insecure_tls_cert, init_crypto_provider},
-    packet_def::{ZCPacket, ZCPacketType},
-    FromUrl, IpVersion, Tunnel, TunnelConnector, TunnelError, TunnelListener,
-};
 
 fn is_wss(addr: &url::Url) -> Result<bool, TunnelError> {
     match addr.scheme() {
@@ -77,21 +78,23 @@ static TRUSTED_PROXIES: LazyLock<Vec<IpNetwork>> = LazyLock::new(|| {
 });
 
 #[derive(Debug)]
-pub struct WSTunnelListener {
+pub struct WsTunnelListener {
     addr: url::Url,
     listener: Option<TcpListener>,
 }
 
-impl WSTunnelListener {
+impl WsTunnelListener {
     pub fn new(addr: url::Url) -> Self {
-        WSTunnelListener {
+        WsTunnelListener {
             addr,
             listener: None,
         }
     }
 
     async fn try_accept(&self, stream: TcpStream) -> Result<Box<dyn Tunnel>, TunnelError> {
-        let mut remote_addr = stream.peer_addr()?;
+        let peer_addr = stream.peer_addr()?;
+        let mut remote_addr =
+            super::build_url_from_socket_addr(&peer_addr.to_string(), self.addr.scheme());
 
         let stream = if is_wss(&self.addr)? {
             init_crypto_provider();
@@ -114,9 +117,8 @@ impl WSTunnelListener {
 
         if TRUSTED_PROXIES
             .iter()
-            .any(|net| net.contains(remote_addr.ip()))
-        {
-            if let Some(forwarded) = request
+            .any(|net| net.contains(peer_addr.ip()))
+            && let Some(forwarded) = request
                 .headers()
                 .get("Forwarded")
                 .and_then(|f| f.to_str().ok())
@@ -128,25 +130,24 @@ impl WSTunnelListener {
                         .and_then(|f| f.to_str().ok())
                         .and_then(|f| ForwardedHeaderValue::from_x_forwarded_for(f).ok())
                 })
-            {
-                if let Some(ip) = forwarded.remotest_forwarded_for_ip() {
-                    remote_addr = SocketAddr::new(ip, 0);
-                }
-            }
+            && let Some(ip) = forwarded.remotest_forwarded_for_ip()
+        {
+            remote_addr
+                .set_host(Some(&ip.to_string()))
+                .map_err(|_| TunnelError::InvalidAddr(format!("invalid forwarded ip {}", ip)))?;
+            remote_addr
+                .query_pairs_mut()
+                .append_pair("proxy", &peer_addr.to_string());
         }
 
         let (write, read) = stream.split();
+        let remote_addr: crate::proto::common::Url = remote_addr.into();
 
         let info = TunnelInfo {
             tunnel_type: self.addr.scheme().to_owned(),
             local_addr: Some(self.local_url().into()),
-            remote_addr: Some(
-                super::build_url_from_socket_addr(
-                    &remote_addr.to_string(),
-                    self.addr.scheme().to_string().as_str(),
-                )
-                .into(),
-            ),
+            remote_addr: Some(remote_addr.clone()),
+            resolved_remote_addr: Some(remote_addr),
         };
 
         Ok(Box::new(TunnelWrapper::new(
@@ -158,22 +159,18 @@ impl WSTunnelListener {
 }
 
 #[async_trait::async_trait]
-impl TunnelListener for WSTunnelListener {
+impl TunnelListener for WsTunnelListener {
     async fn listen(&mut self) -> Result<(), TunnelError> {
+        self.listener = None;
+
         let addr = SocketAddr::from_url(self.addr.clone(), IpVersion::Both).await?;
-        let socket2_socket = socket2::Socket::new(
-            socket2::Domain::for_address(addr),
-            socket2::Type::STREAM,
-            Some(socket2::Protocol::TCP),
-        )?;
-        setup_sokcet2(&socket2_socket, &addr)?;
-        let socket = TcpSocket::from_std_stream(socket2_socket.into());
+        let listener = bind::<TcpListener>().addr(addr).only_v6(true).call()?;
 
         self.addr
-            .set_port(Some(socket.local_addr()?.port()))
+            .set_port(Some(listener.local_addr()?.port()))
             .unwrap();
+        self.listener = Some(listener);
 
-        self.listener = Some(socket.listen(1024)?);
         Ok(())
     }
 
@@ -198,18 +195,20 @@ impl TunnelListener for WSTunnelListener {
     }
 }
 
-pub struct WSTunnelConnector {
+pub struct WsTunnelConnector {
     addr: url::Url,
     ip_version: IpVersion,
+    resolved_addr: Option<SocketAddr>,
 
     bind_addrs: Vec<SocketAddr>,
 }
 
-impl WSTunnelConnector {
+impl WsTunnelConnector {
     pub fn new(addr: url::Url) -> Self {
-        WSTunnelConnector {
+        WsTunnelConnector {
             addr,
             ip_version: IpVersion::Both,
+            resolved_addr: None,
 
             bind_addrs: vec![],
         }
@@ -217,12 +216,14 @@ impl WSTunnelConnector {
 
     async fn connect_with(
         addr: url::Url,
-        ip_version: IpVersion,
+        socket_addr: SocketAddr,
         tcp_socket: TcpSocket,
     ) -> Result<Box<dyn Tunnel>, TunnelError> {
         let is_wss = is_wss(&addr)?;
-        let socket_addr = SocketAddr::from_url(addr.clone(), ip_version).await?;
         let stream = tcp_socket.connect(socket_addr).await?;
+        if let Err(error) = stream.set_nodelay(true) {
+            tracing::warn!(?error, "set_nodelay fail in ws connect");
+        }
 
         let info = TunnelInfo {
             tunnel_type: addr.scheme().to_owned(),
@@ -234,6 +235,9 @@ impl WSTunnelConnector {
                 .into(),
             ),
             remote_addr: Some(addr.clone().into()),
+            resolved_remote_addr: Some(
+                super::build_url_from_socket_addr(&socket_addr.to_string(), addr.scheme()).into(),
+            ),
         };
 
         let c = ClientBuilder::from_uri(http::Uri::try_from(addr.to_string()).unwrap());
@@ -270,7 +274,7 @@ impl WSTunnelConnector {
         } else {
             TcpSocket::new_v6()?
         };
-        Self::connect_with(self.addr.clone(), self.ip_version, socket).await
+        Self::connect_with(self.addr.clone(), addr, socket).await
     }
 
     async fn connect_with_custom_bind(
@@ -280,25 +284,14 @@ impl WSTunnelConnector {
         let futures = FuturesUnordered::new();
 
         for bind_addr in self.bind_addrs.iter() {
-            tracing::info!(bind_addr = ?bind_addr, ?addr, "bind addr");
-
-            let socket2_socket = socket2::Socket::new(
-                socket2::Domain::for_address(addr),
-                socket2::Type::STREAM,
-                Some(socket2::Protocol::TCP),
-            )?;
-
-            if let Err(e) = setup_sokcet2(&socket2_socket, bind_addr) {
-                tracing::error!(bind_addr = ?bind_addr, ?addr, "bind addr fail: {:?}", e);
-                continue;
+            tracing::info!(?bind_addr, ?addr, "bind addr");
+            match bind().addr(*bind_addr).only_v6(true).call() {
+                Ok(socket) => futures.push(Self::connect_with(self.addr.clone(), addr, socket)),
+                Err(error) => {
+                    tracing::error!(?bind_addr, ?addr, ?error, "bind addr fail");
+                    continue;
+                }
             }
-
-            let socket = TcpSocket::from_std_stream(socket2_socket.into());
-            futures.push(Self::connect_with(
-                self.addr.clone(),
-                self.ip_version,
-                socket,
-            ))
         }
 
         wait_for_connect_futures(futures).await
@@ -306,9 +299,12 @@ impl WSTunnelConnector {
 }
 
 #[async_trait::async_trait]
-impl TunnelConnector for WSTunnelConnector {
-    async fn connect(&mut self) -> Result<Box<dyn Tunnel>, super::TunnelError> {
-        let addr = SocketAddr::from_url(self.addr.clone(), self.ip_version).await?;
+impl TunnelConnector for WsTunnelConnector {
+    async fn connect(&mut self) -> Result<Box<dyn Tunnel>, TunnelError> {
+        let addr = match self.resolved_addr {
+            Some(addr) => addr,
+            None => SocketAddr::from_url(self.addr.clone(), self.ip_version).await?,
+        };
         if self.bind_addrs.is_empty() || addr.is_ipv6() {
             self.connect_with_default_bind(addr).await
         } else {
@@ -327,6 +323,10 @@ impl TunnelConnector for WSTunnelConnector {
     fn set_bind_addrs(&mut self, addrs: Vec<SocketAddr>) {
         self.bind_addrs = addrs;
     }
+
+    fn set_resolved_addr(&mut self, addr: SocketAddr) {
+        self.resolved_addr = Some(addr);
+    }
 }
 
 #[cfg(test)]
@@ -339,9 +339,9 @@ pub mod tests {
     #[tokio::test]
     #[serial_test::serial]
     async fn ws_pingpong(#[values("ws", "wss")] proto: &str) {
-        let listener = WSTunnelListener::new(format!("{}://0.0.0.0:25556", proto).parse().unwrap());
+        let listener = WsTunnelListener::new(format!("{}://0.0.0.0:25556", proto).parse().unwrap());
         let connector =
-            WSTunnelConnector::new(format!("{}://127.0.0.1:25556", proto).parse().unwrap());
+            WsTunnelConnector::new(format!("{}://127.0.0.1:25556", proto).parse().unwrap());
         _tunnel_pingpong(listener, connector).await
     }
 
@@ -349,9 +349,9 @@ pub mod tests {
     #[tokio::test]
     #[serial_test::serial]
     async fn ws_pingpong_bind(#[values("ws", "wss")] proto: &str) {
-        let listener = WSTunnelListener::new(format!("{}://0.0.0.0:25557", proto).parse().unwrap());
+        let listener = WsTunnelListener::new(format!("{}://0.0.0.0:25557", proto).parse().unwrap());
         let mut connector =
-            WSTunnelConnector::new(format!("{}://127.0.0.1:25557", proto).parse().unwrap());
+            WsTunnelConnector::new(format!("{}://127.0.0.1:25557", proto).parse().unwrap());
         connector.set_bind_addrs(vec!["127.0.0.1:0".parse().unwrap()]);
         _tunnel_pingpong(listener, connector).await
     }
@@ -370,16 +370,16 @@ pub mod tests {
 
     #[tokio::test]
     async fn ws_accept_wss() {
-        let mut listener = WSTunnelListener::new("wss://0.0.0.0:25558".parse().unwrap());
+        let mut listener = WsTunnelListener::new("wss://0.0.0.0:25558".parse().unwrap());
         listener.listen().await.unwrap();
         let j = tokio::spawn(async move {
             let _ = listener.accept().await;
         });
 
-        let mut connector = WSTunnelConnector::new("ws://127.0.0.1:25558".parse().unwrap());
+        let mut connector = WsTunnelConnector::new("ws://127.0.0.1:25558".parse().unwrap());
         connector.connect().await.unwrap_err();
 
-        let mut connector = WSTunnelConnector::new("wss://127.0.0.1:25558".parse().unwrap());
+        let mut connector = WsTunnelConnector::new("wss://127.0.0.1:25558".parse().unwrap());
         connector.connect().await.unwrap();
 
         j.abort();
@@ -387,7 +387,7 @@ pub mod tests {
 
     #[tokio::test]
     async fn ws_forwarded() {
-        let mut listener = WSTunnelListener::new("ws://127.0.0.1:25559".parse().unwrap());
+        let mut listener = WsTunnelListener::new("ws://127.0.0.1:25559".parse().unwrap());
         listener.listen().await.unwrap();
 
         let server_task = tokio::spawn(async move {
@@ -403,11 +403,22 @@ pub mod tests {
                 .unwrap();
 
             assert_eq!(remote_addr.host_str().unwrap(), "203.0.113.5");
+            let proxy_addr = remote_addr
+                .query_pairs()
+                .find(|(k, _)| k == "proxy")
+                .map(|(_, v)| v.into_owned())
+                .unwrap();
+            assert_eq!(proxy_addr, "127.0.0.1:25560");
 
             tunnel
         });
 
-        let mut stream = TcpStream::connect("127.0.0.1:25559").await.unwrap();
+        let socket = TcpSocket::new_v4().unwrap();
+        socket.bind("127.0.0.1:25560".parse().unwrap()).unwrap();
+        let mut stream = socket
+            .connect("127.0.0.1:25559".parse().unwrap())
+            .await
+            .unwrap();
 
         let handshake = "GET / HTTP/1.1\r\n\
                          Host: 127.0.0.1:25559\r\n\

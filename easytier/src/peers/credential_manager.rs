@@ -5,12 +5,23 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use base64::Engine;
+use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use serde::{Deserialize, Serialize};
 use x25519_dalek::{PublicKey, StaticSecret};
 
 use crate::proto::peer_rpc::{TrustedCredentialPubkey, TrustedCredentialPubkeyProof};
+
+fn default_true() -> bool {
+    true
+}
+
+fn current_unix_timestamp() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct CredentialEntry {
@@ -20,8 +31,41 @@ struct CredentialEntry {
     groups: Vec<String>,
     allow_relay: bool,
     allowed_proxy_cidrs: Vec<String>,
+    #[serde(default = "default_true")]
+    reusable: bool,
     expiry_unix: i64,
     created_at_unix: i64,
+}
+
+impl CredentialEntry {
+    fn is_active_at(&self, now: i64) -> bool {
+        self.expiry_unix > now
+    }
+
+    fn to_trusted_credential(&self) -> Option<TrustedCredentialPubkey> {
+        Some(TrustedCredentialPubkey {
+            pubkey: CredentialManager::decode_pubkey_b64(&self.pubkey)?,
+            groups: self.groups.clone(),
+            allow_relay: self.allow_relay,
+            expiry_unix: self.expiry_unix,
+            allowed_proxy_cidrs: self.allowed_proxy_cidrs.clone(),
+            reusable: Some(self.reusable),
+        })
+    }
+
+    fn to_api_credential_info(
+        &self,
+        credential_id: &str,
+    ) -> crate::proto::api::instance::CredentialInfo {
+        crate::proto::api::instance::CredentialInfo {
+            credential_id: credential_id.to_string(),
+            groups: self.groups.clone(),
+            allow_relay: self.allow_relay,
+            expiry_unix: self.expiry_unix,
+            allowed_proxy_cidrs: self.allowed_proxy_cidrs.clone(),
+            reusable: Some(self.reusable),
+        }
+    }
 }
 
 pub struct CredentialManager {
@@ -46,7 +90,14 @@ impl CredentialManager {
         allowed_proxy_cidrs: Vec<String>,
         ttl: Duration,
     ) -> (String, String) {
-        self.generate_credential_with_id(groups, allow_relay, allowed_proxy_cidrs, ttl, None)
+        self.generate_credential_with_options(
+            groups,
+            allow_relay,
+            allowed_proxy_cidrs,
+            ttl,
+            None,
+            true,
+        )
     }
 
     pub fn generate_credential_with_id(
@@ -57,22 +108,42 @@ impl CredentialManager {
         ttl: Duration,
         credential_id: Option<String>,
     ) -> (String, String) {
+        self.generate_credential_with_options(
+            groups,
+            allow_relay,
+            allowed_proxy_cidrs,
+            ttl,
+            credential_id,
+            true,
+        )
+    }
+
+    pub fn generate_credential_with_options(
+        &self,
+        groups: Vec<String>,
+        allow_relay: bool,
+        allowed_proxy_cidrs: Vec<String>,
+        ttl: Duration,
+        credential_id: Option<String>,
+        reusable: bool,
+    ) -> (String, String) {
         let mut credentials = self.credentials.lock().unwrap();
         let id = if let Some(id) = credential_id
             .map(|x| x.trim().to_string())
             .filter(|x| !x.is_empty())
         {
-            if let Some(existing) = credentials.get(&id) {
-                if !existing.secret.is_empty() {
-                    return (id, existing.secret.clone());
-                }
+            if let Some(existing) = credentials.get(&id)
+                && !existing.secret.is_empty()
+            {
+                return (id, existing.secret.clone());
             }
             id
         } else {
             uuid::Uuid::new_v4().to_string()
         };
 
-        let (entry, secret) = Self::build_entry(groups, allow_relay, allowed_proxy_cidrs, ttl);
+        let (entry, secret) =
+            Self::build_entry(groups, allow_relay, allowed_proxy_cidrs, reusable, ttl);
         credentials.insert(id.clone(), entry);
         drop(credentials);
         self.save_to_disk();
@@ -83,6 +154,7 @@ impl CredentialManager {
         groups: Vec<String>,
         allow_relay: bool,
         allowed_proxy_cidrs: Vec<String>,
+        reusable: bool,
         ttl: Duration,
     ) -> (CredentialEntry, String) {
         let private = StaticSecret::random_from_rng(rand::rngs::OsRng);
@@ -102,6 +174,7 @@ impl CredentialManager {
             groups,
             allow_relay,
             allowed_proxy_cidrs,
+            reusable,
             expiry_unix,
             created_at_unix: now,
         };
@@ -122,67 +195,41 @@ impl CredentialManager {
     }
 
     pub fn get_trusted_pubkeys(&self, network_secret: &str) -> Vec<TrustedCredentialPubkeyProof> {
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_secs() as i64;
+        let now = current_unix_timestamp();
 
         self.credentials
             .lock()
             .unwrap()
             .values()
-            .filter(|e| e.expiry_unix > now)
-            .map(|e| {
-                let credential = TrustedCredentialPubkey {
-                    pubkey: Self::decode_pubkey_b64(&e.pubkey).unwrap_or_default(),
-                    groups: e.groups.clone(),
-                    allow_relay: e.allow_relay,
-                    expiry_unix: e.expiry_unix,
-                    allowed_proxy_cidrs: e.allowed_proxy_cidrs.clone(),
-                };
-                TrustedCredentialPubkeyProof::new_signed(credential, network_secret)
-            })
-            .filter(|e| {
-                e.credential
-                    .as_ref()
-                    .map(|x| !x.pubkey.is_empty())
-                    .unwrap_or(false)
+            .filter(|entry| entry.is_active_at(now))
+            .filter_map(|entry| {
+                entry.to_trusted_credential().map(|credential| {
+                    TrustedCredentialPubkeyProof::new_signed(credential, network_secret)
+                })
             })
             .collect()
     }
 
     pub fn is_pubkey_trusted(&self, pubkey: &[u8]) -> bool {
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_secs() as i64;
+        let now = current_unix_timestamp();
 
         let encoded = BASE64_STANDARD.encode(pubkey);
         self.credentials
             .lock()
             .unwrap()
             .values()
-            .any(|e| e.pubkey == encoded && e.expiry_unix > now)
+            .any(|entry| entry.pubkey == encoded && entry.is_active_at(now))
     }
 
     pub fn list_credentials(&self) -> Vec<crate::proto::api::instance::CredentialInfo> {
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_secs() as i64;
+        let now = current_unix_timestamp();
 
         self.credentials
             .lock()
             .unwrap()
             .iter()
-            .filter(|(_, e)| e.expiry_unix > now)
-            .map(|(id, e)| crate::proto::api::instance::CredentialInfo {
-                credential_id: id.clone(),
-                groups: e.groups.clone(),
-                allow_relay: e.allow_relay,
-                expiry_unix: e.expiry_unix,
-                allowed_proxy_cidrs: e.allowed_proxy_cidrs.clone(),
-            })
+            .filter(|(_, entry)| entry.is_active_at(now))
+            .map(|(id, entry)| entry.to_api_credential_info(id))
             .collect()
     }
 
@@ -191,10 +238,10 @@ impl CredentialManager {
             return;
         };
         let creds = self.credentials.lock().unwrap();
-        if let Ok(json) = serde_json::to_string_pretty(&*creds) {
-            if let Err(e) = std::fs::write(path, json) {
-                tracing::warn!(?e, "failed to save credentials to disk");
-            }
+        if let Ok(json) = serde_json::to_string_pretty(&*creds)
+            && let Err(e) = std::fs::write(path, json)
+        {
+            tracing::warn!(?e, "failed to save credentials to disk");
         }
     }
 
@@ -254,6 +301,7 @@ mod tests {
             trusted[0].credential.as_ref().unwrap().groups,
             vec!["guest".to_string()]
         );
+        assert_eq!(trusted[0].credential.as_ref().unwrap().reusable, Some(true));
 
         assert!(mgr.revoke_credential(&id));
         assert!(!mgr.is_pubkey_trusted(&pubkey_bytes));
@@ -286,6 +334,7 @@ mod tests {
 
         let list = mgr.list_credentials();
         assert_eq!(list.len(), 2);
+        assert!(list.iter().all(|item| item.reusable == Some(true)));
     }
 
     #[test]
@@ -360,6 +409,7 @@ mod tests {
             trusted[0].credential.as_ref().unwrap().allowed_proxy_cidrs,
             vec!["10.0.0.0/8".to_string()]
         );
+        assert_eq!(trusted[0].credential.as_ref().unwrap().reusable, Some(true));
     }
 
     #[test]
@@ -384,13 +434,15 @@ mod tests {
             tc.credential.as_ref().unwrap().allowed_proxy_cidrs,
             vec!["192.168.0.0/16".to_string(), "10.0.0.0/8".to_string()]
         );
+        assert_eq!(tc.credential.as_ref().unwrap().reusable, Some(true));
         assert!(tc.credential.as_ref().unwrap().expiry_unix > 0);
         assert!(tc.verify_credential_hmac("sec"));
-        assert!(tc
-            .credential
-            .as_ref()
-            .map(|x| !x.pubkey.is_empty())
-            .unwrap_or(false));
+        assert!(
+            tc.credential
+                .as_ref()
+                .map(|x| !x.pubkey.is_empty())
+                .unwrap_or(false)
+        );
 
         let sk: [u8; 32] = BASE64_STANDARD.decode(&secret).unwrap().try_into().unwrap();
         let pk = PublicKey::from(&StaticSecret::from(sk)).as_bytes().to_vec();
@@ -430,6 +482,7 @@ mod tests {
             assert_eq!(list.len(), 1);
             assert_eq!(list[0].groups, vec!["persist_group".to_string()]);
             assert!(list[0].allow_relay);
+            assert_eq!(list[0].reusable, Some(true));
         }
     }
 
@@ -472,5 +525,62 @@ mod tests {
         assert_eq!(list[0].groups, vec!["group-a".to_string()]);
         assert!(!list[0].allow_relay);
         assert_eq!(list[0].allowed_proxy_cidrs, vec!["10.0.0.0/24".to_string()]);
+        assert_eq!(list[0].reusable, Some(true));
+    }
+
+    #[test]
+    fn test_generate_non_reusable_credential() {
+        let mgr = CredentialManager::new(None);
+        let (_id, secret) = mgr.generate_credential_with_options(
+            vec!["single".to_string()],
+            false,
+            vec![],
+            Duration::from_secs(3600),
+            None,
+            false,
+        );
+
+        let privkey_bytes: [u8; 32] = BASE64_STANDARD.decode(&secret).unwrap().try_into().unwrap();
+        let private = StaticSecret::from(privkey_bytes);
+        let pubkey_bytes = PublicKey::from(&private).as_bytes().to_vec();
+
+        let listed = mgr.list_credentials();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].reusable, Some(false));
+        assert!(mgr.is_pubkey_trusted(&pubkey_bytes));
+
+        let trusted = mgr.get_trusted_pubkeys("sec");
+        assert_eq!(trusted.len(), 1);
+        assert_eq!(
+            trusted[0].credential.as_ref().unwrap().reusable,
+            Some(false)
+        );
+    }
+
+    #[test]
+    fn test_load_old_credentials_default_to_reusable() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("legacy-creds.json");
+        std::fs::write(
+            &path,
+            r#"{
+  "legacy-id": {
+    "pubkey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+    "secret": "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB=",
+    "groups": ["legacy"],
+    "allow_relay": false,
+    "allowed_proxy_cidrs": [],
+    "expiry_unix": 4102444800,
+    "created_at_unix": 1700000000
+  }
+}"#,
+        )
+        .unwrap();
+
+        let mgr = CredentialManager::new(Some(path));
+        let list = mgr.list_credentials();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].credential_id, "legacy-id");
+        assert_eq!(list[0].reusable, Some(true));
     }
 }
