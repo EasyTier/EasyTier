@@ -142,6 +142,7 @@ export interface NetworkConfig {
 
   enable_manual_routes: boolean
   routes: string[]
+  local_routes: string[]
 
   exit_nodes: string[]
 
@@ -218,6 +219,7 @@ export function DEFAULT_NETWORK_CONFIG(): NetworkConfig {
     relay_network_whitelist: [],
     enable_manual_routes: false,
     routes: [],
+    local_routes: [],
     exit_nodes: [],
     enable_socks5: false,
     socks5_port: 1080,
@@ -247,6 +249,7 @@ export function normalizeNetworkConfig(config: NetworkConfig): NetworkConfig {
   const normalized: NetworkConfig = {
     ...config,
     peer_urls: cleanPeerUrls(config.peer_urls),
+    local_routes: cleanPeerUrls(config.local_routes),
   }
 
   const publicServerUrl = normalized.public_server_url?.trim() ?? ''

@@ -72,6 +72,12 @@ function searchWhitelistSuggestions(e: { query: string }) {
   whitelistSuggestions.value = ret
 }
 
+const localRouteSuggestions = ref([''])
+
+function searchLocalRouteSuggestions(e: { query: string }) {
+  localRouteSuggestions.value = [e.query]
+}
+
 interface BoolFlag {
   field: keyof NetworkConfig
   help: string
@@ -357,6 +363,19 @@ watch(() => curNetwork.value, syncNormalizedNetwork, { immediate: true, deep: fa
                         :suggestions="inetSuggestions" @complete="searchInetSuggestions" />
                     </div>
                   </div>
+                </div>
+              </div>
+
+              <div class="flex flex-row gap-x-9 flex-wrap ">
+                <div class="flex flex-col gap-2 grow">
+                  <div class="flex">
+                    <label for="local_routes">{{ t('local_routes') }}</label>
+                    <span class="pi pi-question-circle ml-2 self-center" v-tooltip="t('local_routes_help')"></span>
+                  </div>
+                  <AutoComplete id="local_routes" v-model="curNetwork.local_routes"
+                    :placeholder="t('chips_placeholder', ['10.6.0.0/16 via 100.88.88.1 metric 100'])"
+                    class="w-full" multiple fluid :suggestions="localRouteSuggestions"
+                    @complete="searchLocalRouteSuggestions" />
                 </div>
               </div>
 
