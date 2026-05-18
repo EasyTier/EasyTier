@@ -178,6 +178,12 @@ pub trait ConfigLoader: Send + Sync {
     fn get_ipv6_public_addr_auto(&self) -> bool;
     fn set_ipv6_public_addr_auto(&self, enabled: bool);
 
+    fn get_ipv6_public_addr_default_route(&self) -> bool;
+    fn set_ipv6_public_addr_default_route(&self, enabled: bool);
+
+    fn get_ipv6_public_addr_route_metric(&self) -> i32;
+    fn set_ipv6_public_addr_route_metric(&self, metric: i32);
+
     fn get_ipv6_public_addr_prefix(&self) -> Option<cidr::Ipv6Cidr>;
     fn set_ipv6_public_addr_prefix(&self, prefix: Option<cidr::Ipv6Cidr>);
 
@@ -532,6 +538,8 @@ struct Config {
     ipv6: Option<String>,
     ipv6_public_addr_provider: Option<bool>,
     ipv6_public_addr_auto: Option<bool>,
+    ipv6_public_addr_default_route: Option<bool>,
+    ipv6_public_addr_route_metric: Option<i32>,
     ipv6_public_addr_prefix: Option<String>,
     dhcp: Option<bool>,
     network_identity: Option<NetworkIdentity>,
@@ -736,6 +744,31 @@ impl ConfigLoader for TomlConfigLoader {
 
     fn set_ipv6_public_addr_auto(&self, enabled: bool) {
         self.config.lock().unwrap().ipv6_public_addr_auto = Some(enabled);
+    }
+
+    fn get_ipv6_public_addr_default_route(&self) -> bool {
+        self.config
+            .lock()
+            .unwrap()
+            .ipv6_public_addr_default_route
+            .unwrap_or_default()
+    }
+
+    fn set_ipv6_public_addr_default_route(&self, enabled: bool) {
+        self.config.lock().unwrap().ipv6_public_addr_default_route = Some(enabled);
+    }
+
+    fn get_ipv6_public_addr_route_metric(&self) -> i32 {
+        self.config
+            .lock()
+            .unwrap()
+            .ipv6_public_addr_route_metric
+            .unwrap_or(5)
+            .max(0)
+    }
+
+    fn set_ipv6_public_addr_route_metric(&self, metric: i32) {
+        self.config.lock().unwrap().ipv6_public_addr_route_metric = Some(metric);
     }
 
     fn get_ipv6_public_addr_prefix(&self) -> Option<cidr::Ipv6Cidr> {
@@ -1435,16 +1468,22 @@ source = "user"
 
         config.set_ipv6_public_addr_provider(true);
         config.set_ipv6_public_addr_auto(true);
+        config.set_ipv6_public_addr_default_route(true);
+        config.set_ipv6_public_addr_route_metric(3000);
         config.set_ipv6_public_addr_prefix(Some(prefix));
 
         assert!(config.get_ipv6_public_addr_provider());
         assert!(config.get_ipv6_public_addr_auto());
+        assert!(config.get_ipv6_public_addr_default_route());
+        assert_eq!(config.get_ipv6_public_addr_route_metric(), 3000);
         assert_eq!(config.get_ipv6_public_addr_prefix(), Some(prefix));
 
         let dumped = config.dump();
         let loaded = TomlConfigLoader::new_from_str(&dumped).unwrap();
         assert!(loaded.get_ipv6_public_addr_provider());
         assert!(loaded.get_ipv6_public_addr_auto());
+        assert!(loaded.get_ipv6_public_addr_default_route());
+        assert_eq!(loaded.get_ipv6_public_addr_route_metric(), 3000);
         assert_eq!(loaded.get_ipv6_public_addr_prefix(), Some(prefix));
     }
 

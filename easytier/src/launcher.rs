@@ -722,6 +722,14 @@ impl NetworkConfig {
             cfg.set_ipv6_public_addr_auto(ipv6_public_addr_auto);
         }
 
+        if let Some(ipv6_public_addr_default_route) = self.ipv6_public_addr_default_route {
+            cfg.set_ipv6_public_addr_default_route(ipv6_public_addr_default_route);
+        }
+
+        if let Some(ipv6_public_addr_route_metric) = self.ipv6_public_addr_route_metric {
+            cfg.set_ipv6_public_addr_route_metric(ipv6_public_addr_route_metric);
+        }
+
         if let Some(ipv6_public_addr_prefix) = self
             .ipv6_public_addr_prefix
             .as_ref()
@@ -895,6 +903,17 @@ impl NetworkConfig {
         }
         if config.get_ipv6_public_addr_auto() != default_config.get_ipv6_public_addr_auto() {
             result.ipv6_public_addr_auto = Some(config.get_ipv6_public_addr_auto());
+        }
+        if config.get_ipv6_public_addr_default_route()
+            != default_config.get_ipv6_public_addr_default_route()
+        {
+            result.ipv6_public_addr_default_route =
+                Some(config.get_ipv6_public_addr_default_route());
+        }
+        if config.get_ipv6_public_addr_route_metric()
+            != default_config.get_ipv6_public_addr_route_metric()
+        {
+            result.ipv6_public_addr_route_metric = Some(config.get_ipv6_public_addr_route_metric());
         }
         result.ipv6_public_addr_prefix = config
             .get_ipv6_public_addr_prefix()

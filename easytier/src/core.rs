@@ -191,6 +191,22 @@ struct NetworkOptions {
 
     #[arg(
         long,
+        env = "ET_IPV6_PUBLIC_ADDR_DEFAULT_ROUTE",
+        help = t!("core_clap.ipv6_public_addr_default_route").to_string(),
+        num_args = 0..=1,
+        default_missing_value = "true"
+    )]
+    ipv6_public_addr_default_route: Option<bool>,
+
+    #[arg(
+        long,
+        env = "ET_IPV6_PUBLIC_ADDR_ROUTE_METRIC",
+        help = t!("core_clap.ipv6_public_addr_route_metric").to_string()
+    )]
+    ipv6_public_addr_route_metric: Option<i32>,
+
+    #[arg(
+        long,
         env = "ET_IPV6_PUBLIC_ADDR_PREFIX",
         help = t!("core_clap.ipv6_public_addr_prefix").to_string()
     )]
@@ -915,6 +931,14 @@ impl NetworkOptions {
 
         if let Some(enabled) = self.ipv6_public_addr_auto {
             cfg.set_ipv6_public_addr_auto(enabled);
+        }
+
+        if let Some(enabled) = self.ipv6_public_addr_default_route {
+            cfg.set_ipv6_public_addr_default_route(enabled);
+        }
+
+        if let Some(metric) = self.ipv6_public_addr_route_metric {
+            cfg.set_ipv6_public_addr_route_metric(metric);
         }
 
         if let Some(prefix) = &self.ipv6_public_addr_prefix {

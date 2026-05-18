@@ -105,6 +105,10 @@ disable_ipv6_help: Disable IPv6 functionality for this node, only use IPv4 for n
 
 ipv6_public_addr_auto: Auto Public IPv6
 ipv6_public_addr_auto_help: Auto-obtain a public IPv6 address from a peer that shares its IPv6 subnet.
+ipv6_public_addr_default_route: Public IPv6 Default Route
+ipv6_public_addr_default_route_help: Add the auto-obtained public IPv6 address as the default IPv6 route.
+ipv6_public_addr_route_metric: Public IPv6 Route Metric
+ipv6_public_addr_route_metric_help: Route metric used when adding the public IPv6 default route.
 
 enable_kcp_proxy: Enable KCP Proxy
 enable_kcp_proxy_help: Convert TCP traffic to KCP traffic to reduce latency and boost transmission speed.

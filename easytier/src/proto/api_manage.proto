@@ -101,6 +101,8 @@ message NetworkConfig {
   optional string ipv6_public_addr_prefix = 64;
   optional bool disable_relay_data = 65;
   optional bool enable_udp_broadcast_relay = 66;
+  optional bool ipv6_public_addr_default_route = 67;
+  optional int32 ipv6_public_addr_route_metric = 68;
 }
 
 message PortForwardConfig {
