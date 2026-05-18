@@ -1,14 +1,14 @@
 use std::net::{IpAddr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
 
 use crate::{
-    common::{dns::socket_addrs, error::Error, global_ctx::ArcGlobalCtx, idn},
+    common::{error::Error, global_ctx::ArcGlobalCtx, idn},
     connector::dns_connector::DnsTunnelConnector,
     proto::common::PeerFeatureFlag,
     tunnel::{
         self, IpScheme, IpVersion, TunnelConnector, TunnelError, TunnelScheme,
         ring::RingTunnelConnector, tcp::TcpTunnelConnector, udp::UdpTunnelConnector,
     },
-    utils::BoxExt,
+    utils::{BoxExt, dns::socket_addrs},
 };
 use http_connector::HttpTunnelConnector;
 use rand::seq::SliceRandom;
