@@ -225,6 +225,31 @@ easytier-cli route
 ping 10.1.1.2
 ```
 
+#### 本地路由
+
+本地路由是只在当前节点生效的路由规则，用来把指定目的 CIDR 的流量转发到某个 EasyTier 虚拟 IPv4 地址。它适合让当前节点把某个远端节点作为下一跳，同时不把这条路由广播给整个虚拟网络。
+
+TOML 配置示例：
+
+```toml
+local_routes = [
+  "10.6.0.0/16 via 100.88.88.1",
+  "10.8.0.0/16 via 100.88.88.2 metric 100",
+]
+```
+
+也可以在运行时通过 CLI 管理：
+
+```bash
+easytier-cli route show
+easytier-cli route get 10.6.1.1
+easytier-cli route add 10.6.0.0/16 via 100.88.88.1 metric 100
+easytier-cli route del 10.6.0.0/16 via 100.88.88.1
+easytier-cli route flush
+```
+
+`easytier-cli route list` 和 `easytier-cli route dump` 仍然展示节点传播出来的路由信息。本地路由不会通过 OSPF 广播，也不会修改节点协议，因此新旧客户端可以混合组网。下一跳节点需要具备转发能力，通常需要启用 `--enable-exit-node`；旧版本客户端只要启用了 exit-node，也可以转发新客户端发送过来的本地路由流量。EasyTier 会把配置的本地路由 CIDR 安装到 TUN 路由表，但不会从操作系统路由表自动导入或同步路由。
+
 #### WireGuard 集成
 
 EasyTier 可以作为 WireGuard 服务器，允许任何安装了 WireGuard 客户端的设备（包括 iOS 和 Android）访问 EasyTier 网络。以下是设置示例：
