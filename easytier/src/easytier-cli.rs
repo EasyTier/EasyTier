@@ -2,7 +2,7 @@ use std::{
     collections::{BTreeMap, HashMap},
     ffi::OsString,
     future::Future,
-    net::{IpAddr, SocketAddr},
+    net::{IpAddr, Ipv4Addr, SocketAddr},
     path::PathBuf,
     pin::Pin,
     str::FromStr,
@@ -14,7 +14,7 @@ use std::{
 use anyhow::Context;
 use base64::Engine as _;
 use base64::prelude::BASE64_STANDARD;
-use cidr::Ipv4Inet;
+use cidr::{Ipv4Cidr, Ipv4Inet};
 use clap::{ArgAction, Args, CommandFactory, Parser, Subcommand, builder::BoolishValueParser};
 use dashmap::DashMap;
 use easytier::ShellType;
@@ -30,6 +30,7 @@ use tokio::time::timeout;
 
 use easytier::{
     common::{
+        config::{LocalRouteConfig, parse_local_route_config},
         constants::EASYTIER_VERSION,
         stun::{StunInfoCollector, StunInfoCollectorTrait},
     },
@@ -39,7 +40,8 @@ use easytier::{
         api::{
             config::{
                 AclPatch, ConfigPatchAction, ConfigRpc, ConfigRpcClientFactory,
-                InstanceConfigPatch, PatchConfigRequest, PortForwardPatch, StringPatch, UrlPatch,
+                GetConfigRequest, InstanceConfigPatch, LocalRoutePatch, PatchConfigRequest,
+                PortForwardPatch, StringPatch, UrlPatch,
             },
             instance::{
                 AclManageRpc, AclManageRpcClientFactory, Connector, ConnectorManageRpc,
@@ -67,8 +69,8 @@ use easytier::{
                 SetLoggerConfigRequest,
             },
             manage::{
-                ListNetworkInstanceMetaRequest, ListNetworkInstanceRequest, WebClientService,
-                WebClientServiceClientFactory,
+                ListNetworkInstanceMetaRequest, ListNetworkInstanceRequest, NetworkConfig,
+                WebClientService, WebClientServiceClientFactory,
             },
         },
         common::{NatType, PortForwardConfigPb, SocketType},
@@ -222,6 +224,36 @@ enum RouteSubCommand {
     List,
     /// Dump routes in CIDR format
     Dump,
+    /// Show configured local routes
+    Show,
+    /// Show the configured local route selected for an IPv4 address
+    Get {
+        destination: Ipv4Addr,
+    },
+    /// Add or replace a configured local route, e.g. 10.6.0.0/16 via 100.88.88.1 metric 100
+    Add {
+        #[arg(
+            required = true,
+            num_args = 1..,
+            allow_hyphen_values = true,
+            help = "route expression, e.g. 10.6.0.0/16 via 100.88.88.1 metric 100"
+        )]
+        route: Vec<String>,
+    },
+    /// Delete configured local routes by CIDR or CIDR plus via
+    #[command(alias = "delete")]
+    Del {
+        #[arg(
+            required = true,
+            num_args = 1..,
+            allow_hyphen_values = true,
+            help = "CIDR or route expression, e.g. 10.6.0.0/16 via 100.88.88.1"
+        )]
+        route: Vec<String>,
+    },
+    /// Clear all configured local routes
+    #[command(alias = "clear")]
+    Flush,
 }
 
 #[derive(Args, Debug)]
@@ -540,12 +572,125 @@ type LocalBoxFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T, Error>> + 'a>
 type ForeignNetworkMap = BTreeMap<String, ForeignNetworkEntryPb>;
 type GlobalForeignNetworkMap = BTreeMap<u32, list_global_foreign_network_response::ForeignNetworks>;
 
+#[derive(Clone, tabled::Tabled, serde::Serialize)]
+struct LocalRouteTableItem {
+    cidr: String,
+    via: String,
+    metric: String,
+    route: String,
+}
+
+#[derive(Clone, tabled::Tabled, serde::Serialize)]
+struct LocalRouteGetItem {
+    destination: String,
+    cidr: String,
+    via: String,
+    metric: String,
+    next_hop_peer_id: String,
+    next_hop_hostname: String,
+    next_hop_ipv4: String,
+}
+
 fn is_missing_web_client_service(error: &RpcError) -> bool {
     matches!(
         error,
         RpcError::InvalidServiceKey(service_name, _)
             if service_name.trim_matches('"') == "WebClientService"
     )
+}
+
+fn local_route_cidr_to_inet(cidr: Ipv4Cidr) -> easytier::proto::common::Ipv4Inet {
+    cidr::Ipv4Inet::new(cidr.first_address(), cidr.network_length())
+        .unwrap()
+        .into()
+}
+
+fn local_route_to_patch(route: &LocalRouteConfig, action: ConfigPatchAction) -> LocalRoutePatch {
+    LocalRoutePatch {
+        action: action.into(),
+        cidr: Some(local_route_cidr_to_inet(route.cidr)),
+        via: Some(route.via.into()),
+        metric: route.metric,
+        mtu: route.mtu,
+    }
+}
+
+fn parse_local_route_cli_args(route: &[String]) -> Result<LocalRouteConfig, Error> {
+    if route.is_empty() {
+        anyhow::bail!("route is required");
+    }
+    parse_local_route_config(&route.join(" "))
+}
+
+fn parse_local_route_delete_args(
+    route: &[String],
+) -> Result<(Ipv4Cidr, Option<Ipv4Addr>), Error> {
+    match route {
+        [] => anyhow::bail!("route is required"),
+        [cidr] => Ok((
+            cidr.parse()
+                .with_context(|| format!("invalid local route cidr: {}", cidr))?,
+            None,
+        )),
+        _ => {
+            let route = parse_local_route_cli_args(route)?;
+            Ok((route.cidr, Some(route.via)))
+        }
+    }
+}
+
+fn parse_config_local_routes(config: &NetworkConfig) -> Result<Vec<LocalRouteConfig>, Error> {
+    config
+        .local_routes
+        .iter()
+        .map(|route| parse_local_route_config(route))
+        .collect()
+}
+
+fn local_route_contains_ipv4(route: &LocalRouteConfig, destination: Ipv4Addr) -> bool {
+    route.cidr.first_address() <= destination && destination <= route.cidr.last_address()
+}
+
+fn select_local_route(
+    routes: &[LocalRouteConfig],
+    destination: Ipv4Addr,
+) -> Option<LocalRouteConfig> {
+    let mut routes = routes
+        .iter()
+        .filter(|route| local_route_contains_ipv4(route, destination))
+        .cloned()
+        .collect::<Vec<_>>();
+    routes.sort_by(|a, b| {
+        b.cidr
+            .network_length()
+            .cmp(&a.cidr.network_length())
+            .then_with(|| {
+                a.metric
+                    .unwrap_or(u32::MAX)
+                    .cmp(&b.metric.unwrap_or(u32::MAX))
+            })
+            .then_with(|| a.via.cmp(&b.via))
+    });
+    routes.into_iter().next()
+}
+
+fn local_route_table_item(route: &LocalRouteConfig) -> LocalRouteTableItem {
+    LocalRouteTableItem {
+        cidr: route.cidr.to_string(),
+        via: route.via.to_string(),
+        metric: route
+            .metric
+            .map(|metric| metric.to_string())
+            .unwrap_or_else(|| "-".to_string()),
+        route: route.to_string(),
+    }
+}
+
+fn peer_route_pair_ipv4(pair: &PeerRoutePair) -> Option<Ipv4Addr> {
+    let route = pair.route.as_ref()?;
+    let ipv4 = route.ipv4_addr?;
+    let addr = ipv4.address?;
+    Some(addr.into())
 }
 
 #[cfg(test)]
@@ -571,6 +716,41 @@ mod tests {
         let error = RpcError::InvalidServiceKey("PeerManageRpc".to_string(), "".to_string());
 
         assert!(!is_missing_web_client_service(&error));
+    }
+
+    #[test]
+    fn parse_local_route_delete_accepts_cidr_only() {
+        let route = vec!["10.6.0.0/16".to_string()];
+        let (cidr, via) = parse_local_route_delete_args(&route).unwrap();
+
+        assert_eq!(cidr, "10.6.0.0/16".parse::<Ipv4Cidr>().unwrap());
+        assert_eq!(via, None);
+    }
+
+    #[test]
+    fn parse_local_route_delete_accepts_cidr_via() {
+        let route = vec![
+            "10.6.0.0/16".to_string(),
+            "via".to_string(),
+            "100.88.88.1".to_string(),
+        ];
+        let (cidr, via) = parse_local_route_delete_args(&route).unwrap();
+
+        assert_eq!(cidr, "10.6.0.0/16".parse::<Ipv4Cidr>().unwrap());
+        assert_eq!(via, Some("100.88.88.1".parse().unwrap()));
+    }
+
+    #[test]
+    fn select_local_route_prefers_longest_prefix_then_metric() {
+        let routes = vec![
+            parse_local_route_config("10.0.0.0/8 via 100.88.88.1 metric 10").unwrap(),
+            parse_local_route_config("10.6.0.0/16 via 100.88.88.2 metric 50").unwrap(),
+            parse_local_route_config("10.6.0.0/16 via 100.88.88.3 metric 20").unwrap(),
+        ];
+
+        let selected = select_local_route(&routes, "10.6.1.1".parse().unwrap()).unwrap();
+
+        assert_eq!(selected.via, "100.88.88.3".parse::<Ipv4Addr>().unwrap());
     }
 }
 
@@ -984,6 +1164,70 @@ impl<'a> CommandHandler<'a> {
             )
             .await?
             .result)
+    }
+
+    async fn fetch_network_config(&self) -> Result<NetworkConfig, Error> {
+        Ok(self
+            .get_config_client()
+            .await?
+            .get_config(
+                BaseController::default(),
+                GetConfigRequest {
+                    instance: Some(self.instance_selector.clone()),
+                },
+            )
+            .await?
+            .config
+            .ok_or_else(|| anyhow::anyhow!("config not found"))?)
+    }
+
+    async fn fetch_local_routes(&self) -> Result<Vec<LocalRouteConfig>, Error> {
+        let config = self.fetch_network_config().await?;
+        parse_config_local_routes(&config)
+    }
+
+    async fn fetch_local_route_get(
+        &self,
+        destination: Ipv4Addr,
+    ) -> Result<LocalRouteGetItem, Error> {
+        let routes = self.fetch_local_routes().await?;
+        let Some(route) = select_local_route(&routes, destination) else {
+            return Ok(LocalRouteGetItem {
+                destination: destination.to_string(),
+                cidr: "-".to_string(),
+                via: "-".to_string(),
+                metric: "-".to_string(),
+                next_hop_peer_id: "-".to_string(),
+                next_hop_hostname: "-".to_string(),
+                next_hop_ipv4: "-".to_string(),
+            });
+        };
+
+        let route_pairs = self.list_peer_route_pair().await?;
+        let next_hop = route_pairs
+            .iter()
+            .find(|pair| peer_route_pair_ipv4(pair) == Some(route.via));
+        let next_hop_route = next_hop.and_then(|pair| pair.route.as_ref());
+
+        Ok(LocalRouteGetItem {
+            destination: destination.to_string(),
+            cidr: route.cidr.to_string(),
+            via: route.via.to_string(),
+            metric: route
+                .metric
+                .map(|metric| metric.to_string())
+                .unwrap_or_else(|| "-".to_string()),
+            next_hop_peer_id: next_hop_route
+                .map(|route| route.peer_id.to_string())
+                .unwrap_or_else(|| "-".to_string()),
+            next_hop_hostname: next_hop_route
+                .map(|route| route.hostname.clone())
+                .unwrap_or_else(|| "-".to_string()),
+            next_hop_ipv4: next_hop
+                .and_then(peer_route_pair_ipv4)
+                .map(|ipv4| ipv4.to_string())
+                .unwrap_or_else(|| "-".to_string()),
+        })
     }
 
     async fn fetch_foreign_networks(
@@ -1617,6 +1861,121 @@ impl<'a> CommandHandler<'a> {
             println!("response: {}", result);
             Ok(())
         })
+    }
+
+    async fn handle_route_show(&self) -> Result<(), Error> {
+        let results = self
+            .collect_instance_results(|handler| Box::pin(handler.fetch_local_routes()))
+            .await?;
+
+        let rows = results
+            .into_iter()
+            .map(|result| {
+                result.map(|routes| {
+                    routes
+                        .iter()
+                        .map(local_route_table_item)
+                        .collect::<Vec<_>>()
+                })
+            })
+            .collect::<Vec<_>>();
+
+        if self.verbose || *self.output_format == OutputFormat::Json {
+            return self.print_json_results(rows);
+        }
+
+        self.print_results(&rows, |rows| {
+            print_output(rows, self.output_format, &[], &[], self.no_trunc)
+        })
+    }
+
+    async fn handle_route_get(&self, destination: Ipv4Addr) -> Result<(), Error> {
+        let results = self
+            .collect_instance_results(|handler| Box::pin(handler.fetch_local_route_get(destination)))
+            .await?;
+
+        if self.verbose || *self.output_format == OutputFormat::Json {
+            return self.print_json_results(results);
+        }
+
+        self.print_results(&results, |row| {
+            print_output(std::slice::from_ref(row), self.output_format, &[], &[], self.no_trunc)
+        })
+    }
+
+    async fn apply_local_route_patch(&self, patch: LocalRoutePatch) -> Result<(), Error> {
+        let client = self.get_config_client().await?;
+        let request = PatchConfigRequest {
+            instance: Some(self.instance_selector.clone()),
+            patch: Some(InstanceConfigPatch {
+                local_routes: vec![patch],
+                ..Default::default()
+            }),
+        };
+        client
+            .patch_config(BaseController::default(), request)
+            .await?;
+        Ok(())
+    }
+
+    async fn handle_route_add(&self, route: &[String]) -> Result<(), Error> {
+        let route = parse_local_route_cli_args(route)?;
+        self.apply_to_instances(|handler| {
+            let route = route.clone();
+            Box::pin(async move {
+                handler
+                    .apply_local_route_patch(local_route_to_patch(&route, ConfigPatchAction::Add))
+                    .await
+            })
+        })
+        .await?;
+        println!("local route add applied to selected instance(s): {}", route);
+        Ok(())
+    }
+
+    async fn handle_route_del(&self, route: &[String]) -> Result<(), Error> {
+        let (cidr, via) = parse_local_route_delete_args(route)?;
+        self.apply_to_instances(|handler| {
+            Box::pin(async move {
+                handler
+                    .apply_local_route_patch(LocalRoutePatch {
+                        action: ConfigPatchAction::Remove.into(),
+                        cidr: Some(local_route_cidr_to_inet(cidr)),
+                        via: via.map(Into::into),
+                        metric: None,
+                        mtu: None,
+                    })
+                    .await
+            })
+        })
+        .await?;
+        let via = via
+            .map(|via| format!(" via {}", via))
+            .unwrap_or_else(String::new);
+        println!(
+            "local route delete applied to selected instance(s): {}{}",
+            cidr, via
+        );
+        Ok(())
+    }
+
+    async fn handle_route_flush(&self) -> Result<(), Error> {
+        self.apply_to_instances(|handler| {
+            Box::pin(async move {
+                handler
+                    .apply_local_route_patch(LocalRoutePatch {
+                        action: ConfigPatchAction::Clear.into(),
+                        cidr: None,
+                        via: None,
+                        metric: None,
+                        mtu: None,
+                    })
+                    .await
+            })
+        })
+        .await?;
+        println!("local route flush applied to selected instance(s)");
+        Ok(())
     }
 
     async fn handle_foreign_network_list(&self, include_trusted_keys: bool) -> Result<(), Error> {
@@ -2938,6 +3297,13 @@ async fn main() -> Result<(), Error> {
         SubCommand::Route(route_args) => match route_args.sub_command {
             Some(RouteSubCommand::List) | None => handler.handle_route_list().await?,
             Some(RouteSubCommand::Dump) => handler.handle_route_dump().await?,
+            Some(RouteSubCommand::Show) => handler.handle_route_show().await?,
+            Some(RouteSubCommand::Get { destination }) => {
+                handler.handle_route_get(destination).await?
+            }
+            Some(RouteSubCommand::Add { route }) => handler.handle_route_add(&route).await?,
+            Some(RouteSubCommand::Del { route }) => handler.handle_route_del(&route).await?,
+            Some(RouteSubCommand::Flush) => handler.handle_route_flush().await?,
         },
         SubCommand::Stun => {
             timeout(Duration::from_secs(25), async move {
