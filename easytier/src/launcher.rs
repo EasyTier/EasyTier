@@ -1,6 +1,6 @@
 use crate::common::config::{
     ConfigFileControl, ConfigSource, PortForwardConfig, parse_mapped_listener_urls,
-    process_secure_mode_cfg,
+    parse_local_route_config, process_secure_mode_cfg,
 };
 use crate::proto::api::{self, manage};
 use crate::proto::rpc_types::controller::BaseController;
@@ -652,6 +652,18 @@ impl NetworkConfig {
             cfg.set_routes(Some(routes));
         }
 
+        if !self.local_routes.is_empty() {
+            let local_routes = self
+                .local_routes
+                .iter()
+                .map(|route| {
+                    parse_local_route_config(route)
+                        .with_context(|| format!("failed to parse local route: {}", route))
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            cfg.set_local_routes(local_routes);
+        }
+
         if !self.exit_nodes.is_empty() {
             let mut exit_nodes = Vec::<std::net::IpAddr>::with_capacity(self.exit_nodes.len());
             for node in self.exit_nodes.iter() {
@@ -954,6 +966,11 @@ impl NetworkConfig {
         {
             result.enable_manual_routes = Some(true);
             result.routes = routes.iter().map(|r| r.to_string()).collect();
+        }
+
+        let local_routes = config.get_local_routes();
+        if !local_routes.is_empty() {
+            result.local_routes = local_routes.iter().map(|route| route.to_string()).collect();
         }
 
         let exit_nodes = config.get_exit_nodes();
