@@ -21,7 +21,8 @@ impl ProxyCidrsMonitor {
         }
     }
 
-    /// Collects current proxy_cidrs from peer routes, VPN portal config, and manual routes.
+    /// Collects current proxy_cidrs from peer routes, VPN portal config, manual routes,
+    /// and local route config.
     /// This is a static function that can be used for initial sync or recovery after Lagged errors.
     pub async fn diff_proxy_cidrs(
         peer_mgr: &PeerManager,
@@ -32,7 +33,7 @@ impl ProxyCidrsMonitor {
         Vec<cidr::Ipv4Cidr>,
         Vec<cidr::Ipv4Cidr>,
     ) {
-        let proxy_cidrs = if let Some(routes) = global_ctx.config.get_routes() {
+        let mut proxy_cidrs = if let Some(routes) = global_ctx.config.get_routes() {
             // If manual routes exist, override entire proxy_cidrs
             routes.into_iter().collect()
         } else {
@@ -46,6 +47,14 @@ impl ProxyCidrsMonitor {
 
             proxy_cidrs
         };
+
+        proxy_cidrs.extend(
+            global_ctx
+                .config
+                .get_local_routes()
+                .into_iter()
+                .map(|route| route.cidr),
+        );
 
         // Calculate diff
         if cur_proxy_cidrs == &proxy_cidrs {

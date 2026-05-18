@@ -1181,9 +1181,20 @@ impl NicCtx {
                     }
                 };
 
-                // Only handle ProxyCidrsUpdated events
                 let (added, removed) = match event {
                     GlobalCtxEvent::ProxyCidrsUpdated(added, removed) => (added, removed),
+                    GlobalCtxEvent::ConfigPatched(patch) => {
+                        if patch.routes.is_empty() && patch.local_routes.is_empty() {
+                            continue;
+                        }
+                        let (_, added, removed) = ProxyCidrsMonitor::diff_proxy_cidrs(
+                            peer_mgr.as_ref(),
+                            &global_ctx,
+                            &cur_proxy_cidrs,
+                        )
+                        .await;
+                        (added, removed)
+                    }
                     _ => continue,
                 };
 

@@ -22,6 +22,7 @@ use crate::{
     common::{
         PeerId,
         compressor::{Compressor as _, DefaultCompressor},
+        config::LocalRouteConfig,
         constants::EASYTIER_VERSION,
         error::Error,
         global_ctx::{ArcGlobalCtx, GlobalCtxEvent, NetworkIdentity},
@@ -1576,9 +1577,62 @@ impl PeerManager {
         routes
             .into_iter()
             .filter_map(|route| {
-                (route.peer_id != my_peer_id && route.ipv4_addr.is_some()).then_some(route.peer_id)
+                (route.peer_id != my_peer_id && route.ipv4_addr.is_some())
+                    .then_some(route.peer_id)
             })
             .collect()
+    }
+
+    fn route_contains_ipv4(cidr: cidr::Ipv4Cidr, ipv4_addr: &Ipv4Addr) -> bool {
+        cidr.first_address() <= *ipv4_addr && *ipv4_addr <= cidr.last_address()
+    }
+
+    pub async fn get_local_route_peer_ipv4(
+        &self,
+        ipv4_addr: &Ipv4Addr,
+    ) -> Option<(LocalRouteConfig, PeerId)> {
+        if self
+            .global_ctx
+            .is_ip_in_same_network(&std::net::IpAddr::V4(*ipv4_addr))
+        {
+            return None;
+        }
+
+        let mut local_routes = self.global_ctx.config.get_local_routes();
+        local_routes.retain(|route| Self::route_contains_ipv4(route.cidr, ipv4_addr));
+        local_routes.sort_by(|a, b| {
+            b.cidr
+                .network_length()
+                .cmp(&a.cidr.network_length())
+                .then_with(|| {
+                    a.metric
+                        .unwrap_or(u32::MAX)
+                        .cmp(&b.metric.unwrap_or(u32::MAX))
+                })
+                .then_with(|| a.via.cmp(&b.via))
+        });
+
+        if local_routes.is_empty() {
+            return None;
+        }
+
+        let route_infos = self.peers.list_route_infos().await;
+        for local_route in local_routes {
+            let Some(peer_id) = route_infos.iter().find_map(|route| {
+                let ipv4_addr: Ipv4Addr = route.ipv4_addr?.address?.into();
+                (ipv4_addr == local_route.via).then_some(route.peer_id)
+            }) else {
+                tracing::debug!(
+                    route = %local_route,
+                    "local route next hop is not available"
+                );
+                continue;
+            };
+
+            return Some((local_route, peer_id));
+        }
+
+        None
     }
 
     pub async fn get_msg_dst_peer_ipv4(&self, ipv4_addr: &Ipv4Addr) -> (Vec<PeerId>, bool) {
@@ -1589,6 +1643,10 @@ impl PeerManager {
                 &self.peers.list_route_infos().await,
                 self.my_peer_id,
             ));
+        } else if let Some((route, peer_id)) = self.get_local_route_peer_ipv4(ipv4_addr).await {
+            tracing::trace!(%route, ?peer_id, ?ipv4_addr, "matched local route");
+            dst_peers.push(peer_id);
+            is_exit_node = true;
         } else if let Some(peer_id) = self.peers.get_peer_id_by_ipv4(ipv4_addr).await {
             dst_peers.push(peer_id);
         } else if !self
