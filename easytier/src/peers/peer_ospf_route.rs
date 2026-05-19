@@ -4041,6 +4041,14 @@ impl Route for PeerRoute {
         None
     }
 
+    async fn get_exact_peer_id_by_ipv4(&self, ipv4_addr: &Ipv4Addr) -> Option<PeerId> {
+        let route_table = &self.service_impl.route_table;
+        route_table
+            .ipv4_peer_id_map
+            .get(ipv4_addr)
+            .map(|p| p.peer_id)
+    }
+
     async fn get_peer_id_by_ipv6(&self, ipv6_addr: &Ipv6Addr) -> Option<PeerId> {
         let route_table = &self.service_impl.route_table;
         if let Some(p) = route_table.ipv6_peer_id_map.get(ipv6_addr) {

@@ -1628,21 +1628,6 @@ impl PeerManager {
         local_routes.into_iter().next()
     }
 
-    fn route_info_ipv4(route: &instance::Route) -> Option<Ipv4Addr> {
-        let ipv4_addr = route.ipv4_addr?;
-        let address = ipv4_addr.address?;
-        Some(address.into())
-    }
-
-    fn get_exact_peer_id_from_route_infos(
-        route_infos: &[instance::Route],
-        ipv4_addr: &Ipv4Addr,
-    ) -> Option<PeerId> {
-        route_infos.iter().find_map(|route| {
-            (Self::route_info_ipv4(route)? == *ipv4_addr).then_some(route.peer_id)
-        })
-    }
-
     pub async fn decide_ipv4_route(&self, ipv4_addr: &Ipv4Addr) -> Ipv4RouteDecision {
         if self.is_all_peers_broadcast_ipv4(ipv4_addr) {
             return Ipv4RouteDecision {
@@ -1657,8 +1642,7 @@ impl PeerManager {
             };
         }
 
-        let route_infos = self.peers.list_route_infos().await;
-        if let Some(peer_id) = Self::get_exact_peer_id_from_route_infos(&route_infos, ipv4_addr) {
+        if let Some(peer_id) = self.peers.get_exact_peer_id_by_ipv4(ipv4_addr).await {
             return Ipv4RouteDecision {
                 source: Ipv4RouteDecisionSource::PeerIp,
                 dst_peers: vec![peer_id],
@@ -1677,8 +1661,7 @@ impl PeerManager {
                 ipv4_addr,
             );
             if let Some(local_route) = local_route {
-                let peer_id =
-                    Self::get_exact_peer_id_from_route_infos(&route_infos, &local_route.via);
+                let peer_id = self.peers.get_exact_peer_id_by_ipv4(&local_route.via).await;
                 if let Some(peer_id) = peer_id {
                     return Ipv4RouteDecision {
                         source: Ipv4RouteDecisionSource::LocalRoute,
@@ -1747,8 +1730,10 @@ impl PeerManager {
         if let Some(route) = decision.local_route.as_ref() {
             tracing::trace!(%route, ?ipv4_addr, ?decision, "matched local route");
         }
-        let dst_peers = decision.dst_peers;
-        let is_exit_node = decision.is_exit_node;
+        #[cfg(target_env = "ohos")]
+        let (mut dst_peers, mut is_exit_node) = (decision.dst_peers, decision.is_exit_node);
+        #[cfg(not(target_env = "ohos"))]
+        let (dst_peers, is_exit_node) = (decision.dst_peers, decision.is_exit_node);
         #[cfg(target_env = "ohos")]
         {
             if dst_peers.is_empty()
@@ -2360,6 +2345,66 @@ mod tests {
             decision.local_route.unwrap().via,
             "100.88.88.1".parse::<Ipv4Addr>().unwrap()
         );
+    }
+
+    #[tokio::test]
+    async fn decide_ipv4_route_prefers_exact_peer_over_local_route() {
+        let network_name = "local-route-exact-peer-priority".to_string();
+        let peer_mgr_a = create_mock_peer_manager_with_name(network_name.clone()).await;
+        let peer_mgr_b = create_mock_peer_manager_with_name(network_name).await;
+
+        peer_mgr_a
+            .get_global_ctx()
+            .set_ipv4(Some("100.88.88.10/24".parse().unwrap()));
+        peer_mgr_b
+            .get_global_ctx()
+            .set_ipv4(Some("100.0.0.7/24".parse().unwrap()));
+        peer_mgr_a.get_global_ctx().config.set_local_routes(vec![
+            parse_local_route_config("100.0.0.0/8 via 100.88.88.1").unwrap(),
+        ]);
+
+        connect_peer_manager(peer_mgr_a.clone(), peer_mgr_b.clone()).await;
+        wait_route_appear(peer_mgr_a.clone(), peer_mgr_b.clone())
+            .await
+            .unwrap();
+
+        wait_for_condition(
+            || {
+                let peer_mgr_a = peer_mgr_a.clone();
+                let peer_mgr_b = peer_mgr_b.clone();
+                async move {
+                    let decision = peer_mgr_a
+                        .decide_ipv4_route(&"100.0.0.7".parse().unwrap())
+                        .await;
+                    decision.source == Ipv4RouteDecisionSource::PeerIp
+                        && decision.dst_peers == vec![peer_mgr_b.my_peer_id()]
+                        && !decision.is_exit_node
+                }
+            },
+            Duration::from_secs(5),
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn decide_ipv4_route_skips_local_route_for_same_network_destination() {
+        let peer_mgr =
+            create_mock_peer_manager_with_name("local-route-same-network-destination".to_string())
+                .await;
+        peer_mgr
+            .get_global_ctx()
+            .set_ipv4(Some("10.6.0.10/16".parse().unwrap()));
+        peer_mgr.get_global_ctx().config.set_local_routes(vec![
+            parse_local_route_config("10.6.0.0/16 via 100.88.88.1").unwrap(),
+        ]);
+
+        let decision = peer_mgr
+            .decide_ipv4_route(&"10.6.1.1".parse().unwrap())
+            .await;
+
+        assert_eq!(decision.source, Ipv4RouteDecisionSource::None);
+        assert!(!decision.is_exit_node);
+        assert!(decision.local_route.is_none());
     }
 
     async fn create_lazy_peer_manager() -> Arc<PeerManager> {
