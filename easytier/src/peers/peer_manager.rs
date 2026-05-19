@@ -1602,7 +1602,7 @@ impl PeerManager {
     }
 
     fn route_contains_ipv4(cidr: cidr::Ipv4Cidr, ipv4_addr: &Ipv4Addr) -> bool {
-        cidr.first_address() <= *ipv4_addr && *ipv4_addr <= cidr.last_address()
+        cidr.contains(ipv4_addr)
     }
 
     pub(crate) fn select_local_route_for_ipv4(
@@ -1674,19 +1674,12 @@ impl PeerManager {
 
                 tracing::debug!(
                     route = %local_route,
-                    "local route next hop is not available"
+                    "local route next hop is not available, falling back to proxy or exit-node route"
                 );
-                return Ipv4RouteDecision {
-                    source: Ipv4RouteDecisionSource::LocalRoute,
-                    dst_peers: vec![],
-                    is_exit_node: true,
-                    local_route: Some(local_route),
-                    status: "unresolved",
-                };
             }
         }
 
-        if let Some(peer_id) = self.peers.get_peer_id_by_ipv4(ipv4_addr).await {
+        if let Some(peer_id) = self.peers.get_proxy_peer_id_by_ipv4(ipv4_addr).await {
             return Ipv4RouteDecision {
                 source: Ipv4RouteDecisionSource::OspfProxy,
                 dst_peers: vec![peer_id],
@@ -2337,14 +2330,95 @@ mod tests {
             .decide_ipv4_route(&"10.6.1.1".parse().unwrap())
             .await;
 
-        assert_eq!(decision.source, Ipv4RouteDecisionSource::LocalRoute);
-        assert!(decision.is_exit_node);
+        assert_eq!(decision.source, Ipv4RouteDecisionSource::None);
+        assert!(!decision.is_exit_node);
         assert!(decision.dst_peers.is_empty());
-        assert_eq!(decision.status, "unresolved");
-        assert_eq!(
-            decision.local_route.unwrap().via,
-            "100.88.88.1".parse::<Ipv4Addr>().unwrap()
-        );
+        assert_eq!(decision.status, "unreachable");
+        assert!(decision.local_route.is_none());
+    }
+
+    #[tokio::test]
+    async fn decide_ipv4_route_uses_resolved_local_route_as_exit_node() {
+        let network_name = "local-route-decision-resolved".to_string();
+        let peer_mgr_a = create_mock_peer_manager_with_name(network_name.clone()).await;
+        let peer_mgr_b = create_mock_peer_manager_with_name(network_name).await;
+
+        peer_mgr_a
+            .get_global_ctx()
+            .set_ipv4(Some("100.88.88.10/24".parse().unwrap()));
+        peer_mgr_b
+            .get_global_ctx()
+            .set_ipv4(Some("100.88.88.1/24".parse().unwrap()));
+        peer_mgr_a.get_global_ctx().config.set_local_routes(vec![
+            parse_local_route_config("10.6.0.0/16 via 100.88.88.1").unwrap(),
+        ]);
+
+        connect_peer_manager(peer_mgr_a.clone(), peer_mgr_b.clone()).await;
+        wait_route_appear(peer_mgr_a.clone(), peer_mgr_b.clone())
+            .await
+            .unwrap();
+
+        wait_for_condition(
+            || {
+                let peer_mgr_a = peer_mgr_a.clone();
+                let peer_mgr_b = peer_mgr_b.clone();
+                async move {
+                    let decision = peer_mgr_a
+                        .decide_ipv4_route(&"10.6.1.1".parse().unwrap())
+                        .await;
+                    decision.source == Ipv4RouteDecisionSource::LocalRoute
+                        && decision.dst_peers == vec![peer_mgr_b.my_peer_id()]
+                        && decision.is_exit_node
+                        && decision.status == "requires-exit-node"
+                }
+            },
+            Duration::from_secs(5),
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn decide_ipv4_route_falls_back_to_exit_node_when_local_route_unresolved() {
+        let network_name = "local-route-decision-fallback".to_string();
+        let peer_mgr_a = create_mock_peer_manager_with_name(network_name.clone()).await;
+        let peer_mgr_b = create_mock_peer_manager_with_name(network_name).await;
+
+        peer_mgr_a
+            .get_global_ctx()
+            .set_ipv4(Some("100.88.88.10/24".parse().unwrap()));
+        peer_mgr_b
+            .get_global_ctx()
+            .set_ipv4(Some("100.88.88.2/24".parse().unwrap()));
+        peer_mgr_a.get_global_ctx().config.set_local_routes(vec![
+            parse_local_route_config("10.6.0.0/16 via 100.88.88.1").unwrap(),
+        ]);
+        peer_mgr_a
+            .get_global_ctx()
+            .config
+            .set_exit_nodes(vec!["100.88.88.2".parse().unwrap()]);
+        peer_mgr_a.update_exit_nodes().await;
+
+        connect_peer_manager(peer_mgr_a.clone(), peer_mgr_b.clone()).await;
+        wait_route_appear(peer_mgr_a.clone(), peer_mgr_b.clone())
+            .await
+            .unwrap();
+
+        wait_for_condition(
+            || {
+                let peer_mgr_a = peer_mgr_a.clone();
+                let peer_mgr_b = peer_mgr_b.clone();
+                async move {
+                    let decision = peer_mgr_a
+                        .decide_ipv4_route(&"10.6.1.1".parse().unwrap())
+                        .await;
+                    decision.source == Ipv4RouteDecisionSource::ExitNode
+                        && decision.dst_peers == vec![peer_mgr_b.my_peer_id()]
+                        && decision.is_exit_node
+                }
+            },
+            Duration::from_secs(5),
+        )
+        .await;
     }
 
     #[tokio::test]

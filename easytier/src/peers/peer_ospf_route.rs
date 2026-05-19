@@ -4049,6 +4049,20 @@ impl Route for PeerRoute {
             .map(|p| p.peer_id)
     }
 
+    async fn get_proxy_peer_id_by_ipv4(&self, ipv4_addr: &Ipv4Addr) -> Option<PeerId> {
+        if self
+            .global_ctx
+            .is_ip_in_same_network(&std::net::IpAddr::V4(*ipv4_addr))
+        {
+            tracing::trace!(?ipv4_addr, "ipv4 addr is in same network with us");
+            return None;
+        }
+
+        self.service_impl
+            .route_table
+            .get_peer_id_for_proxy(&IpAddr::V4(*ipv4_addr))
+    }
+
     async fn get_peer_id_by_ipv6(&self, ipv6_addr: &Ipv6Addr) -> Option<PeerId> {
         let route_table = &self.service_impl.route_table;
         if let Some(p) = route_table.ipv6_peer_id_map.get(ipv6_addr) {
