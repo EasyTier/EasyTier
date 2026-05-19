@@ -451,7 +451,7 @@ export enum EventType {
 
   PortForwardAdded = 'PortForwardAdded', // PortForwardConfigPb
 
-  ProxyCidrsUpdated = 'ProxyCidrsUpdated', // string[], string[]
+  ProxyCidrsUpdated = 'ProxyCidrsUpdated', // cidr string[], cidr string[]
 
   UdpBroadcastRelayStartResult = 'UdpBroadcastRelayStartResult', // { capture_backend?: string, error?: string }
 }

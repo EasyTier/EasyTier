@@ -579,7 +579,7 @@ struct LocalRouteTableItem {
     metric: String,
     peer_id: String,
     hostname: String,
-    set_exit_node: bool,
+    exit_node: String,
     status: String,
 }
 
@@ -592,6 +592,8 @@ struct LocalRouteGetItem {
     status: String,
     local_route: String,
     via: String,
+    unresolved_local_route: String,
+    unresolved_via: String,
 }
 
 struct LocalRouteListData {
@@ -607,12 +609,21 @@ fn is_missing_web_client_service(error: &RpcError) -> bool {
     )
 }
 
+fn is_route_decision_unsupported_rpc(error: &RpcError) -> bool {
+    matches!(
+        error,
+        RpcError::InvalidMethodIndex(_, service_name) | RpcError::InvalidServiceKey(service_name, _)
+            if service_name.trim_matches('"') == "PeerManageRpc"
+    )
+}
+
 fn route_decision_rpc_error(error: RpcError) -> Error {
-    match error {
-        RpcError::InvalidMethodIndex(_, _) | RpcError::InvalidServiceKey(_, _) => anyhow::anyhow!(
+    if is_route_decision_unsupported_rpc(&error) {
+        anyhow::anyhow!(
             "route get is not supported by the target easytier-core; please upgrade easytier-core to a version that supports local_routes"
-        ),
-        error => error.into(),
+        )
+    } else {
+        error.into()
     }
 }
 
@@ -690,7 +701,7 @@ fn local_route_table_item(
         hostname: next_hop
             .map(|route| route.hostname.clone())
             .unwrap_or_else(|| "-".to_string()),
-        set_exit_node: true,
+        exit_node: "required".to_string(),
         status: if next_hop.is_some() {
             "requires-exit-node"
         } else {
@@ -750,6 +761,15 @@ fn local_route_get_item(
             .via
             .map(|via| via.to_string())
             .unwrap_or_else(|| "-".to_string()),
+        unresolved_local_route: if response.unresolved_local_route.is_empty() {
+            "-".to_string()
+        } else {
+            response.unresolved_local_route.clone()
+        },
+        unresolved_via: response
+            .unresolved_via
+            .map(|via| via.to_string())
+            .unwrap_or_else(|| "-".to_string()),
     }
 }
 
@@ -776,6 +796,20 @@ mod tests {
         let error = RpcError::InvalidServiceKey("PeerManageRpc".to_string(), "".to_string());
 
         assert!(!is_missing_web_client_service(&error));
+    }
+
+    #[test]
+    fn route_decision_unsupported_rpc_matches_peer_manage_method() {
+        let error = RpcError::InvalidMethodIndex(4, "PeerManageRpc".to_string());
+
+        assert!(is_route_decision_unsupported_rpc(&error));
+    }
+
+    #[test]
+    fn route_decision_unsupported_rpc_rejects_other_services() {
+        let error = RpcError::InvalidServiceKey("ConfigRpc".to_string(), "".to_string());
+
+        assert!(!is_route_decision_unsupported_rpc(&error));
     }
 
     #[test]

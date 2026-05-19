@@ -155,6 +155,8 @@ message GetRouteDecisionResponse {
   string status = 5;
   string local_route = 6;
   common.Ipv4Addr via = 7;
+  string unresolved_local_route = 8;
+  common.Ipv4Addr unresolved_via = 9;
 }
 
 message ListForeignNetworkRequest {

@@ -154,6 +154,7 @@ impl PeerManageRpc for PeerManagerRpcService {
         let decision = weak_upgrade(&self.peer_manager)?
             .decide_ipv4_route(&destination_ipv4)
             .await;
+        let unresolved_local_route = decision.unresolved_local_route.clone();
         Ok(GetRouteDecisionResponse {
             destination: Some(destination),
             source: Self::route_decision_source_to_pb(decision.source).into(),
@@ -166,6 +167,11 @@ impl PeerManageRpc for PeerManagerRpcService {
                 .map(|route| route.to_string())
                 .unwrap_or_default(),
             via: decision.local_route.map(|route| route.via.into()),
+            unresolved_local_route: unresolved_local_route
+                .as_ref()
+                .map(|route| route.to_string())
+                .unwrap_or_default(),
+            unresolved_via: unresolved_local_route.map(|route| route.via.into()),
         })
     }
 
