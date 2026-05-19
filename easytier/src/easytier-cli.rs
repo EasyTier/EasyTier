@@ -607,6 +607,15 @@ fn is_missing_web_client_service(error: &RpcError) -> bool {
     )
 }
 
+fn route_decision_rpc_error(error: RpcError) -> Error {
+    match error {
+        RpcError::InvalidMethodIndex(_, _) | RpcError::InvalidServiceKey(_, _) => anyhow::anyhow!(
+            "route get is not supported by the target easytier-core; please upgrade easytier-core to a version that supports local_routes"
+        ),
+        error => error.into(),
+    }
+}
+
 fn local_route_cidr_to_inet(cidr: Ipv4Cidr) -> easytier::proto::common::Ipv4Inet {
     cidr::Ipv4Inet::new(cidr.first_address(), cidr.network_length())
         .expect("Ipv4Cidr is always a valid Ipv4Inet")
@@ -1254,7 +1263,8 @@ impl<'a> CommandHandler<'a> {
                     destination: Some(destination.into()),
                 },
             )
-            .await?;
+            .await
+            .map_err(route_decision_rpc_error)?;
         Ok(local_route_get_item(destination, &response))
     }
 
