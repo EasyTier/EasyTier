@@ -133,6 +133,30 @@ message DumpRouteRequest { InstanceIdentifier instance = 1; }
 
 message DumpRouteResponse { string result = 1; }
 
+message GetRouteDecisionRequest {
+  InstanceIdentifier instance = 1;
+  common.Ipv4Addr destination = 2;
+}
+
+enum RouteDecisionSource {
+  ROUTE_DECISION_SOURCE_NONE = 0;
+  ROUTE_DECISION_SOURCE_BROADCAST = 1;
+  ROUTE_DECISION_SOURCE_PEER_IP = 2;
+  ROUTE_DECISION_SOURCE_LOCAL_ROUTE = 3;
+  ROUTE_DECISION_SOURCE_OSPF_PROXY = 4;
+  ROUTE_DECISION_SOURCE_EXIT_NODE = 5;
+}
+
+message GetRouteDecisionResponse {
+  common.Ipv4Addr destination = 1;
+  RouteDecisionSource source = 2;
+  repeated uint32 peer_ids = 3;
+  bool set_exit_node = 4;
+  string status = 5;
+  string local_route = 6;
+  common.Ipv4Addr via = 7;
+}
+
 message ListForeignNetworkRequest {
   InstanceIdentifier instance = 1;
   bool include_trusted_keys = 2;
@@ -190,6 +214,8 @@ service PeerManageRpc {
       returns (ListPublicIpv6InfoResponse);
   rpc ListRoute(ListRouteRequest) returns (ListRouteResponse);
   rpc DumpRoute(DumpRouteRequest) returns (DumpRouteResponse);
+  rpc GetRouteDecision(GetRouteDecisionRequest)
+      returns (GetRouteDecisionResponse);
   rpc ListForeignNetwork(ListForeignNetworkRequest)
       returns (ListForeignNetworkResponse);
   rpc ListGlobalForeignNetwork(ListGlobalForeignNetworkRequest)

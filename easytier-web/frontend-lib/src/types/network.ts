@@ -241,15 +241,15 @@ export function DEFAULT_NETWORK_CONFIG(): NetworkConfig {
   }
 }
 
-function cleanPeerUrls(urls: string[] | undefined): string[] {
-  return (urls ?? []).map((url) => url.trim()).filter((url) => url.length > 0)
+function cleanStringList(values: string[] | undefined): string[] {
+  return (values ?? []).map((value) => value.trim()).filter((value) => value.length > 0)
 }
 
 export function normalizeNetworkConfig(config: NetworkConfig): NetworkConfig {
   const normalized: NetworkConfig = {
     ...config,
-    peer_urls: cleanPeerUrls(config.peer_urls),
-    local_routes: cleanPeerUrls(config.local_routes),
+    peer_urls: cleanStringList(config.peer_urls),
+    local_routes: cleanStringList(config.local_routes),
   }
 
   const publicServerUrl = normalized.public_server_url?.trim() ?? ''

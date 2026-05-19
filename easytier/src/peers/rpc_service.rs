@@ -10,19 +10,21 @@ use crate::{
             AclManageRpc, CredentialManageRpc, DumpRouteRequest, DumpRouteResponse,
             GenerateCredentialRequest, GenerateCredentialResponse, GetAclStatsRequest,
             GetAclStatsResponse, GetForeignNetworkSummaryRequest, GetForeignNetworkSummaryResponse,
-            GetWhitelistRequest, GetWhitelistResponse, ListCredentialsRequest,
-            ListCredentialsResponse, ListForeignNetworkRequest, ListForeignNetworkResponse,
-            ListGlobalForeignNetworkRequest, ListGlobalForeignNetworkResponse, ListPeerRequest,
-            ListPeerResponse, ListPublicIpv6InfoRequest, ListPublicIpv6InfoResponse,
-            ListRouteRequest, ListRouteResponse, PeerInfo, PeerManageRpc, RevokeCredentialRequest,
-            RevokeCredentialResponse, ShowNodeInfoRequest, ShowNodeInfoResponse,
+            GetRouteDecisionRequest, GetRouteDecisionResponse, GetWhitelistRequest,
+            GetWhitelistResponse, ListCredentialsRequest, ListCredentialsResponse,
+            ListForeignNetworkRequest, ListForeignNetworkResponse, ListGlobalForeignNetworkRequest,
+            ListGlobalForeignNetworkResponse, ListPeerRequest, ListPeerResponse,
+            ListPublicIpv6InfoRequest, ListPublicIpv6InfoResponse, ListRouteRequest,
+            ListRouteResponse, PeerInfo, PeerManageRpc, RevokeCredentialRequest,
+            RevokeCredentialResponse, RouteDecisionSource, ShowNodeInfoRequest,
+            ShowNodeInfoResponse,
         },
         rpc_types::{self, controller::BaseController},
     },
     utils::weak_upgrade,
 };
 
-use super::peer_manager::PeerManager;
+use super::peer_manager::{Ipv4RouteDecisionSource, PeerManager};
 
 #[derive(Clone)]
 pub struct PeerManagerRpcService {
@@ -33,6 +35,17 @@ impl PeerManagerRpcService {
     pub fn new(peer_manager: Arc<PeerManager>) -> Self {
         PeerManagerRpcService {
             peer_manager: Arc::downgrade(&peer_manager),
+        }
+    }
+
+    fn route_decision_source_to_pb(source: Ipv4RouteDecisionSource) -> RouteDecisionSource {
+        match source {
+            Ipv4RouteDecisionSource::Broadcast => RouteDecisionSource::Broadcast,
+            Ipv4RouteDecisionSource::PeerIp => RouteDecisionSource::PeerIp,
+            Ipv4RouteDecisionSource::LocalRoute => RouteDecisionSource::LocalRoute,
+            Ipv4RouteDecisionSource::OspfProxy => RouteDecisionSource::OspfProxy,
+            Ipv4RouteDecisionSource::ExitNode => RouteDecisionSource::ExitNode,
+            Ipv4RouteDecisionSource::None => RouteDecisionSource::None,
         }
     }
 
@@ -129,6 +142,31 @@ impl PeerManageRpc for PeerManagerRpcService {
             result: weak_upgrade(&self.peer_manager)?.dump_route().await,
         };
         Ok(reply)
+    }
+
+    async fn get_route_decision(
+        &self,
+        _: BaseController,
+        request: GetRouteDecisionRequest,
+    ) -> Result<GetRouteDecisionResponse, rpc_types::error::Error> {
+        let destination = request.destination.unwrap_or_default();
+        let destination_ipv4 = destination.into();
+        let decision = weak_upgrade(&self.peer_manager)?
+            .decide_ipv4_route(&destination_ipv4)
+            .await;
+        Ok(GetRouteDecisionResponse {
+            destination: Some(destination),
+            source: Self::route_decision_source_to_pb(decision.source).into(),
+            peer_ids: decision.dst_peers,
+            set_exit_node: decision.is_exit_node,
+            status: decision.status.to_string(),
+            local_route: decision
+                .local_route
+                .as_ref()
+                .map(|route| route.to_string())
+                .unwrap_or_default(),
+            via: decision.local_route.map(|route| route.via.into()),
+        })
     }
 
     async fn list_foreign_network(

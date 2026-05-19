@@ -13,6 +13,26 @@ pub struct ProxyCidrsMonitor {
     global_ctx: ArcGlobalCtx,
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::common::config::ConfigLoader;
+
+    #[tokio::test]
+    async fn diff_proxy_cidrs_includes_local_routes() {
+        let peer_mgr = crate::peers::tests::create_mock_peer_manager().await;
+        let global_ctx = peer_mgr.get_global_ctx();
+        let local_route = "10.6.0.0/16 via 100.88.88.1".parse().unwrap();
+        global_ctx.config.set_local_routes(vec![local_route]);
+
+        let (_, added, removed) =
+            ProxyCidrsMonitor::diff_proxy_cidrs(&peer_mgr, &global_ctx, &BTreeSet::new()).await;
+
+        assert_eq!(added, vec!["10.6.0.0/16".parse().unwrap()]);
+        assert!(removed.is_empty());
+    }
+}
+
 impl ProxyCidrsMonitor {
     pub fn new(peer_mgr: Arc<PeerManager>, global_ctx: ArcGlobalCtx) -> Self {
         Self {

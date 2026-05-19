@@ -426,7 +426,6 @@ pub struct LocalRouteConfig {
     pub cidr: cidr::Ipv4Cidr,
     pub via: Ipv4Addr,
     pub metric: Option<u32>,
-    pub mtu: Option<u32>,
 }
 
 impl fmt::Display for LocalRouteConfig {
@@ -434,9 +433,6 @@ impl fmt::Display for LocalRouteConfig {
         write!(f, "{} via {}", self.cidr, self.via)?;
         if let Some(metric) = self.metric {
             write!(f, " metric {}", metric)?;
-        }
-        if let Some(mtu) = self.mtu {
-            write!(f, " mtu {}", mtu)?;
         }
         Ok(())
     }
@@ -497,12 +493,6 @@ pub fn parse_local_route_config(value: &str) -> Result<LocalRouteConfig, anyhow:
                 index += 2;
             }
             "mtu" => {
-                let Some(raw_mtu) = tokens.get(index + 1) else {
-                    anyhow::bail!("invalid local route '{}': mtu value is missing", value);
-                };
-                let _parsed_mtu = raw_mtu.parse::<u32>().with_context(|| {
-                    format!("invalid local route mtu '{}' in '{}'", raw_mtu, value)
-                })?;
                 anyhow::bail!(
                     "invalid local route '{}': per-route mtu is not supported by EasyTier yet",
                     value
@@ -524,12 +514,7 @@ pub fn parse_local_route_config(value: &str) -> Result<LocalRouteConfig, anyhow:
         }
     }
 
-    Ok(LocalRouteConfig {
-        cidr,
-        via,
-        metric,
-        mtu: None,
-    })
+    Ok(LocalRouteConfig { cidr, via, metric })
 }
 
 pub fn parse_local_route_configs(
@@ -703,6 +688,7 @@ struct Config {
 #[derive(Debug, Clone)]
 pub struct TomlConfigLoader {
     config: Arc<Mutex<Config>>,
+    local_routes: Arc<Mutex<Vec<LocalRouteConfig>>>,
 }
 
 impl Default for TomlConfigLoader {
@@ -728,10 +714,12 @@ impl TomlConfigLoader {
         Self::normalize_config_source(&mut config);
 
         config.flags_struct = Some(Self::gen_flags(config.flags.clone().unwrap_or_default()));
-        parse_local_route_configs(config.local_routes.as_deref().unwrap_or_default())?;
+        let local_routes =
+            parse_local_route_configs(config.local_routes.as_deref().unwrap_or_default())?;
 
         let config = TomlConfigLoader {
             config: Arc::new(Mutex::new(config)),
+            local_routes: Arc::new(Mutex::new(local_routes)),
         };
 
         let old_ns = config.get_network_identity();
@@ -1062,25 +1050,16 @@ impl ConfigLoader for TomlConfigLoader {
     }
 
     fn get_local_routes(&self) -> Vec<LocalRouteConfig> {
-        let routes = self
-            .config
-            .lock()
-            .unwrap()
-            .local_routes
-            .clone()
-            .unwrap_or_default();
-        parse_local_route_configs(&routes).unwrap_or_else(|err| {
-            tracing::warn!(?err, "stored local route config is invalid");
-            Vec::new()
-        })
+        self.local_routes.lock().unwrap().clone()
     }
 
     fn set_local_routes(&self, routes: Vec<LocalRouteConfig>) {
         self.config.lock().unwrap().local_routes = if routes.is_empty() {
             None
         } else {
-            Some(routes.into_iter().map(|route| route.to_string()).collect())
+            Some(routes.iter().map(|route| route.to_string()).collect())
         };
+        *self.local_routes.lock().unwrap() = routes;
     }
 
     fn add_local_route(&self, route: LocalRouteConfig) {
@@ -1104,6 +1083,7 @@ impl ConfigLoader for TomlConfigLoader {
 
     fn clear_local_routes(&self) {
         self.config.lock().unwrap().local_routes = None;
+        self.local_routes.lock().unwrap().clear();
     }
 
     fn get_socks5_portal(&self) -> Option<url::Url> {
@@ -1518,18 +1498,12 @@ stun_servers = [
 
     #[test]
     fn test_parse_local_route_config() {
-        let route: LocalRouteConfig = "10.6.0.0/16 via 100.88.88.1 metric 100"
-            .parse()
-            .unwrap();
+        let route: LocalRouteConfig = "10.6.0.0/16 via 100.88.88.1 metric 100".parse().unwrap();
 
         assert_eq!(route.cidr, "10.6.0.0/16".parse().unwrap());
         assert_eq!(route.via, "100.88.88.1".parse::<Ipv4Addr>().unwrap());
         assert_eq!(route.metric, Some(100));
-        assert_eq!(route.mtu, None);
-        assert_eq!(
-            route.to_string(),
-            "10.6.0.0/16 via 100.88.88.1 metric 100"
-        );
+        assert_eq!(route.to_string(), "10.6.0.0/16 via 100.88.88.1 metric 100");
     }
 
     #[test]
@@ -1550,9 +1524,7 @@ stun_servers = [
     #[test]
     fn test_local_route_config_roundtrip() {
         let config = TomlConfigLoader::default();
-        let route: LocalRouteConfig = "10.6.0.0/16 via 100.88.88.1 metric 100"
-            .parse()
-            .unwrap();
+        let route: LocalRouteConfig = "10.6.0.0/16 via 100.88.88.1 metric 100".parse().unwrap();
 
         config.add_local_route(route);
         assert_eq!(config.get_local_routes(), vec![route]);

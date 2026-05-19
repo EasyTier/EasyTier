@@ -73,7 +73,6 @@ message LocalRoutePatch {
   common.Ipv4Inet cidr = 2;
   common.Ipv4Addr via = 3;
   optional uint32 metric = 4;
-  optional uint32 mtu = 5;
 }
 
 message PatchConfigRequest {

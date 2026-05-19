@@ -559,18 +559,18 @@ impl InstanceConfigPatcher {
                 }
                 Ok(ConfigPatchAction::Remove) => {
                     let Some(cidr) = patch.cidr.map(Into::into) else {
-                        tracing::warn!("Local route cidr is None, skipping remove.");
-                        continue;
+                        anyhow::bail!("local route cidr is required for remove");
                     };
                     let via: Option<Ipv4Addr> = patch.via.map(Into::into);
-                    current_routes
-                        .retain(|route| route.cidr != cidr || via.is_some_and(|via| route.via != via));
+                    current_routes.retain(|route| {
+                        route.cidr != cidr || via.is_some_and(|via| route.via != via)
+                    });
                 }
                 Ok(ConfigPatchAction::Clear) => {
                     current_routes.clear();
                 }
                 Err(_) => {
-                    tracing::warn!("Invalid local route action: {}", patch.action);
+                    anyhow::bail!("invalid local route action: {}", patch.action);
                 }
             }
         }
@@ -587,14 +587,10 @@ impl InstanceConfigPatcher {
         let Some(via) = patch.via.map(Into::into) else {
             anyhow::bail!("local route via is required");
         };
-        if patch.mtu.is_some() {
-            anyhow::bail!("local route mtu is not supported yet");
-        }
         Ok(LocalRouteConfig {
             cidr,
             via,
             metric: patch.metric,
-            mtu: None,
         })
     }
 

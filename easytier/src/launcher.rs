@@ -1,6 +1,6 @@
 use crate::common::config::{
-    ConfigFileControl, ConfigSource, PortForwardConfig, parse_mapped_listener_urls,
-    parse_local_route_config, process_secure_mode_cfg,
+    ConfigFileControl, ConfigSource, PortForwardConfig, parse_local_route_config,
+    parse_mapped_listener_urls, process_secure_mode_cfg,
 };
 use crate::proto::api::{self, manage};
 use crate::proto::rpc_types::controller::BaseController;

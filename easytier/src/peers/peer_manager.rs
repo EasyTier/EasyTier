@@ -129,6 +129,25 @@ enum RouteAlgoInst {
     None,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Ipv4RouteDecisionSource {
+    Broadcast,
+    PeerIp,
+    LocalRoute,
+    OspfProxy,
+    ExitNode,
+    None,
+}
+
+#[derive(Debug, Clone)]
+pub struct Ipv4RouteDecision {
+    pub source: Ipv4RouteDecisionSource,
+    pub dst_peers: Vec<PeerId>,
+    pub is_exit_node: bool,
+    pub local_route: Option<LocalRouteConfig>,
+    pub status: &'static str,
+}
+
 impl Clone for RouteAlgoInst {
     fn clone(&self) -> Self {
         match self {
@@ -1577,8 +1596,7 @@ impl PeerManager {
         routes
             .into_iter()
             .filter_map(|route| {
-                (route.peer_id != my_peer_id && route.ipv4_addr.is_some())
-                    .then_some(route.peer_id)
+                (route.peer_id != my_peer_id && route.ipv4_addr.is_some()).then_some(route.peer_id)
             })
             .collect()
     }
@@ -1587,19 +1605,15 @@ impl PeerManager {
         cidr.first_address() <= *ipv4_addr && *ipv4_addr <= cidr.last_address()
     }
 
-    pub async fn get_local_route_peer_ipv4(
-        &self,
+    pub(crate) fn select_local_route_for_ipv4(
+        routes: &[LocalRouteConfig],
         ipv4_addr: &Ipv4Addr,
-    ) -> Option<(LocalRouteConfig, PeerId)> {
-        if self
-            .global_ctx
-            .is_ip_in_same_network(&std::net::IpAddr::V4(*ipv4_addr))
-        {
-            return None;
-        }
-
-        let mut local_routes = self.global_ctx.config.get_local_routes();
-        local_routes.retain(|route| Self::route_contains_ipv4(route.cidr, ipv4_addr));
+    ) -> Option<LocalRouteConfig> {
+        let mut local_routes = routes
+            .iter()
+            .filter(|route| Self::route_contains_ipv4(route.cidr, ipv4_addr))
+            .cloned()
+            .collect::<Vec<_>>();
         local_routes.sort_by(|a, b| {
             b.cidr
                 .network_length()
@@ -1611,45 +1625,95 @@ impl PeerManager {
                 })
                 .then_with(|| a.via.cmp(&b.via))
         });
+        local_routes.into_iter().next()
+    }
 
-        if local_routes.is_empty() {
-            return None;
+    fn route_info_ipv4(route: &instance::Route) -> Option<Ipv4Addr> {
+        let ipv4_addr = route.ipv4_addr?;
+        let address = ipv4_addr.address?;
+        Some(address.into())
+    }
+
+    fn get_exact_peer_id_from_route_infos(
+        route_infos: &[instance::Route],
+        ipv4_addr: &Ipv4Addr,
+    ) -> Option<PeerId> {
+        route_infos.iter().find_map(|route| {
+            (Self::route_info_ipv4(route)? == *ipv4_addr).then_some(route.peer_id)
+        })
+    }
+
+    pub async fn decide_ipv4_route(&self, ipv4_addr: &Ipv4Addr) -> Ipv4RouteDecision {
+        if self.is_all_peers_broadcast_ipv4(ipv4_addr) {
+            return Ipv4RouteDecision {
+                source: Ipv4RouteDecisionSource::Broadcast,
+                dst_peers: Self::select_ipv4_broadcast_peers(
+                    &self.peers.list_route_infos().await,
+                    self.my_peer_id,
+                ),
+                is_exit_node: false,
+                local_route: None,
+                status: "reachable",
+            };
         }
 
         let route_infos = self.peers.list_route_infos().await;
-        for local_route in local_routes {
-            let Some(peer_id) = route_infos.iter().find_map(|route| {
-                let ipv4_addr: Ipv4Addr = route.ipv4_addr?.address?.into();
-                (ipv4_addr == local_route.via).then_some(route.peer_id)
-            }) else {
+        if let Some(peer_id) = Self::get_exact_peer_id_from_route_infos(&route_infos, ipv4_addr) {
+            return Ipv4RouteDecision {
+                source: Ipv4RouteDecisionSource::PeerIp,
+                dst_peers: vec![peer_id],
+                is_exit_node: false,
+                local_route: None,
+                status: "reachable",
+            };
+        }
+
+        if !self
+            .global_ctx
+            .is_ip_in_same_network(&std::net::IpAddr::V4(*ipv4_addr))
+        {
+            let local_route = Self::select_local_route_for_ipv4(
+                &self.global_ctx.config.get_local_routes(),
+                ipv4_addr,
+            );
+            if let Some(local_route) = local_route {
+                let peer_id =
+                    Self::get_exact_peer_id_from_route_infos(&route_infos, &local_route.via);
+                if let Some(peer_id) = peer_id {
+                    return Ipv4RouteDecision {
+                        source: Ipv4RouteDecisionSource::LocalRoute,
+                        dst_peers: vec![peer_id],
+                        is_exit_node: true,
+                        local_route: Some(local_route),
+                        status: "requires-exit-node",
+                    };
+                }
+
                 tracing::debug!(
                     route = %local_route,
                     "local route next hop is not available"
                 );
-                continue;
-            };
-
-            return Some((local_route, peer_id));
+                return Ipv4RouteDecision {
+                    source: Ipv4RouteDecisionSource::LocalRoute,
+                    dst_peers: vec![],
+                    is_exit_node: true,
+                    local_route: Some(local_route),
+                    status: "unresolved",
+                };
+            }
         }
 
-        None
-    }
+        if let Some(peer_id) = self.peers.get_peer_id_by_ipv4(ipv4_addr).await {
+            return Ipv4RouteDecision {
+                source: Ipv4RouteDecisionSource::OspfProxy,
+                dst_peers: vec![peer_id],
+                is_exit_node: false,
+                local_route: None,
+                status: "reachable",
+            };
+        }
 
-    pub async fn get_msg_dst_peer_ipv4(&self, ipv4_addr: &Ipv4Addr) -> (Vec<PeerId>, bool) {
-        let mut is_exit_node = false;
-        let mut dst_peers = vec![];
-        if self.is_all_peers_broadcast_ipv4(ipv4_addr) {
-            dst_peers.extend(Self::select_ipv4_broadcast_peers(
-                &self.peers.list_route_infos().await,
-                self.my_peer_id,
-            ));
-        } else if let Some((route, peer_id)) = self.get_local_route_peer_ipv4(ipv4_addr).await {
-            tracing::trace!(%route, ?peer_id, ?ipv4_addr, "matched local route");
-            dst_peers.push(peer_id);
-            is_exit_node = true;
-        } else if let Some(peer_id) = self.peers.get_peer_id_by_ipv4(ipv4_addr).await {
-            dst_peers.push(peer_id);
-        } else if !self
+        if !self
             .global_ctx
             .is_ip_in_same_network(&std::net::IpAddr::V4(*ipv4_addr))
         {
@@ -1658,12 +1722,33 @@ impl PeerManager {
                     continue;
                 };
                 if let Some(peer_id) = self.peers.get_peer_id_by_ipv4(exit_node).await {
-                    dst_peers.push(peer_id);
-                    is_exit_node = true;
-                    break;
+                    return Ipv4RouteDecision {
+                        source: Ipv4RouteDecisionSource::ExitNode,
+                        dst_peers: vec![peer_id],
+                        is_exit_node: true,
+                        local_route: None,
+                        status: "reachable",
+                    };
                 }
             }
         }
+
+        Ipv4RouteDecision {
+            source: Ipv4RouteDecisionSource::None,
+            dst_peers: vec![],
+            is_exit_node: false,
+            local_route: None,
+            status: "unreachable",
+        }
+    }
+
+    pub async fn get_msg_dst_peer_ipv4(&self, ipv4_addr: &Ipv4Addr) -> (Vec<PeerId>, bool) {
+        let decision = self.decide_ipv4_route(ipv4_addr).await;
+        if let Some(route) = decision.local_route.as_ref() {
+            tracing::trace!(%route, ?ipv4_addr, ?decision, "matched local route");
+        }
+        let dst_peers = decision.dst_peers;
+        let is_exit_node = decision.is_exit_node;
         #[cfg(target_env = "ohos")]
         {
             if dst_peers.is_empty()
@@ -2195,13 +2280,14 @@ impl PeerManager {
 mod tests {
     use std::{
         fmt::Debug,
+        net::Ipv4Addr,
         sync::Arc,
         time::{Duration, Instant},
     };
 
     use crate::{
         common::{
-            config::Flags,
+            config::{Flags, parse_local_route_config},
             global_ctx::{NetworkIdentity, tests::get_mock_global_ctx},
             stats_manager::{LabelSet, LabelType, MetricName},
         },
@@ -2235,6 +2321,21 @@ mod tests {
     };
 
     use super::PeerManager;
+
+    #[test]
+    fn select_local_route_prefers_longest_prefix_then_metric() {
+        let routes = vec![
+            parse_local_route_config("10.0.0.0/8 via 100.88.88.1 metric 10").unwrap(),
+            parse_local_route_config("10.6.0.0/16 via 100.88.88.2 metric 50").unwrap(),
+            parse_local_route_config("10.6.0.0/16 via 100.88.88.3 metric 20").unwrap(),
+        ];
+
+        let selected =
+            PeerManager::select_local_route_for_ipv4(&routes, &"10.6.1.1".parse().unwrap())
+                .unwrap();
+
+        assert_eq!(selected.via, "100.88.88.3".parse::<Ipv4Addr>().unwrap());
+    }
 
     async fn create_lazy_peer_manager() -> Arc<PeerManager> {
         let peer_mgr = create_mock_peer_manager_with_mock_stun(NatType::Unknown).await;
