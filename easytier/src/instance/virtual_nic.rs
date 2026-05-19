@@ -1068,6 +1068,7 @@ impl NicCtx {
                     err = ?ret,
                     "remove route failed.",
                 );
+                continue;
             }
             cur_proxy_routes.remove(&route.cidr);
         }
@@ -1093,6 +1094,7 @@ impl NicCtx {
                     err = ?ret,
                     "add route failed.",
                 );
+                continue;
             }
             cur_proxy_routes.insert(route.cidr, route.metric);
         }
@@ -1438,9 +1440,167 @@ impl NicCtx {
 
 #[cfg(test)]
 mod tests {
-    use crate::common::{error::Error, global_ctx::tests::get_mock_global_ctx};
+    use std::{
+        collections::BTreeMap,
+        net::Ipv4Addr,
+        sync::{Arc, Mutex},
+    };
 
-    use super::VirtualNic;
+    use async_trait::async_trait;
+
+    use crate::common::{
+        error::Error, global_ctx::tests::get_mock_global_ctx, ifcfg::IfConfiguerTrait, netns::NetNS,
+    };
+
+    use super::{NicCtx, ProxyRoute, VirtualNic};
+
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    enum RouteOp {
+        Add {
+            address: Ipv4Addr,
+            prefix: u8,
+            cost: Option<i32>,
+        },
+        Remove {
+            address: Ipv4Addr,
+            prefix: u8,
+        },
+    }
+
+    #[derive(Default)]
+    struct MockIfConfiger {
+        ops: Arc<Mutex<Vec<RouteOp>>>,
+        fail_add: bool,
+        fail_remove: bool,
+    }
+
+    impl MockIfConfiger {
+        fn ops(&self) -> Vec<RouteOp> {
+            self.ops.lock().unwrap().clone()
+        }
+    }
+
+    #[async_trait]
+    impl IfConfiguerTrait for MockIfConfiger {
+        async fn add_ipv4_route(
+            &self,
+            _name: &str,
+            address: Ipv4Addr,
+            cidr_prefix: u8,
+            cost: Option<i32>,
+        ) -> Result<(), Error> {
+            self.ops.lock().unwrap().push(RouteOp::Add {
+                address,
+                prefix: cidr_prefix,
+                cost,
+            });
+            if self.fail_add {
+                Err(Error::Unknown)
+            } else {
+                Ok(())
+            }
+        }
+
+        async fn remove_ipv4_route(
+            &self,
+            _name: &str,
+            address: Ipv4Addr,
+            cidr_prefix: u8,
+        ) -> Result<(), Error> {
+            self.ops.lock().unwrap().push(RouteOp::Remove {
+                address,
+                prefix: cidr_prefix,
+            });
+            if self.fail_remove {
+                Err(Error::Unknown)
+            } else {
+                Ok(())
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn apply_route_changes_updates_state_only_after_success() {
+        let net_ns = NetNS::new(None);
+        let mut current = BTreeMap::new();
+
+        let add_route = ProxyRoute {
+            cidr: "10.6.0.0/16".parse().unwrap(),
+            metric: Some(100),
+        };
+        let add_ifcfg = MockIfConfiger::default();
+        NicCtx::apply_route_changes(
+            &add_ifcfg,
+            "tun0",
+            &net_ns,
+            &mut current,
+            vec![add_route],
+            vec![],
+        )
+        .await;
+        assert_eq!(current.get(&add_route.cidr), Some(&Some(100)));
+        assert_eq!(
+            add_ifcfg.ops(),
+            vec![RouteOp::Add {
+                address: "10.6.0.0".parse().unwrap(),
+                prefix: 16,
+                cost: Some(100),
+            }]
+        );
+
+        let failed_add = ProxyRoute {
+            cidr: "10.8.0.0/16".parse().unwrap(),
+            metric: Some(200),
+        };
+        let fail_add_ifcfg = MockIfConfiger {
+            fail_add: true,
+            ..Default::default()
+        };
+        NicCtx::apply_route_changes(
+            &fail_add_ifcfg,
+            "tun0",
+            &net_ns,
+            &mut current,
+            vec![failed_add],
+            vec![],
+        )
+        .await;
+        assert!(!current.contains_key(&failed_add.cidr));
+
+        let fail_remove_ifcfg = MockIfConfiger {
+            fail_remove: true,
+            ..Default::default()
+        };
+        NicCtx::apply_route_changes(
+            &fail_remove_ifcfg,
+            "tun0",
+            &net_ns,
+            &mut current,
+            vec![],
+            vec![add_route],
+        )
+        .await;
+        assert_eq!(current.get(&add_route.cidr), Some(&Some(100)));
+
+        let remove_ifcfg = MockIfConfiger::default();
+        NicCtx::apply_route_changes(
+            &remove_ifcfg,
+            "tun0",
+            &net_ns,
+            &mut current,
+            vec![],
+            vec![add_route],
+        )
+        .await;
+        assert!(!current.contains_key(&add_route.cidr));
+        assert_eq!(
+            remove_ifcfg.ops(),
+            vec![RouteOp::Remove {
+                address: "10.6.0.0".parse().unwrap(),
+                prefix: 16,
+            }]
+        );
+    }
 
     async fn run_test_helper() -> Result<VirtualNic, Error> {
         let mut dev = VirtualNic::new(get_mock_global_ctx());
