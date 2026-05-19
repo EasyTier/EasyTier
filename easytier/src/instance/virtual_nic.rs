@@ -43,6 +43,8 @@ use zerocopy::{NativeEndian, NetworkEndian};
 #[cfg(target_os = "windows")]
 use crate::common::ifcfg::RegistryManager;
 
+const PROXY_ROUTE_RETRY_INTERVAL: std::time::Duration = std::time::Duration::from_secs(30);
+
 pin_project! {
     pub struct TunStream {
         #[pin]
@@ -1045,8 +1047,9 @@ impl NicCtx {
         cur_proxy_routes: &mut BTreeMap<cidr::Ipv4Cidr, Option<i32>>,
         added: Vec<ProxyRoute>,
         removed: Vec<ProxyRoute>,
-    ) {
+    ) -> bool {
         tracing::debug!(?added, ?removed, "applying proxy_cidrs route changes");
+        let mut has_error = false;
 
         // Remove routes
         for route in removed {
@@ -1068,6 +1071,7 @@ impl NicCtx {
                     err = ?ret,
                     "remove route failed.",
                 );
+                has_error = true;
                 continue;
             }
             cur_proxy_routes.remove(&route.cidr);
@@ -1094,10 +1098,13 @@ impl NicCtx {
                     err = ?ret,
                     "add route failed.",
                 );
+                has_error = true;
                 continue;
             }
             cur_proxy_routes.insert(route.cidr, route.metric);
         }
+
+        has_error
     }
 
     async fn apply_public_ipv6_route_changes(
@@ -1159,7 +1166,7 @@ impl NicCtx {
                 &cur_proxy_routes,
             )
             .await;
-            Self::apply_route_changes(
+            let mut pending_retry = Self::apply_route_changes(
                 &ifcfg,
                 &ifname,
                 &net_ns,
@@ -1168,25 +1175,33 @@ impl NicCtx {
                 removed,
             )
             .await;
+            let mut retry_interval = tokio::time::interval_at(
+                tokio::time::Instant::now() + PROXY_ROUTE_RETRY_INTERVAL,
+                PROXY_ROUTE_RETRY_INTERVAL,
+            );
+            retry_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
             loop {
-                let should_sync = match event_receiver.recv().await {
-                    Ok(GlobalCtxEvent::ProxyCidrsUpdated(_, _)) => true,
-                    Ok(GlobalCtxEvent::ConfigPatched(patch)) => {
-                        !patch.routes.is_empty() || !patch.local_routes.is_empty()
-                    }
-                    Ok(_) => false,
-                    Err(tokio::sync::broadcast::error::RecvError::Closed) => {
-                        tracing::debug!("event bus closed, stopping proxy_cidrs route updater");
-                        break;
-                    }
-                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
-                        tracing::warn!(
-                            "event bus lagged in proxy_cidrs route updater, doing full sync"
-                        );
-                        event_receiver = event_receiver.resubscribe();
-                        true
-                    }
+                let should_sync = tokio::select! {
+                    event = event_receiver.recv() => match event {
+                        Ok(GlobalCtxEvent::ProxyCidrsUpdated(_, _)) => true,
+                        Ok(GlobalCtxEvent::ConfigPatched(patch)) => {
+                            !patch.routes.is_empty() || !patch.local_routes.is_empty()
+                        }
+                        Ok(_) => false,
+                        Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                            tracing::debug!("event bus closed, stopping proxy_cidrs route updater");
+                            break;
+                        }
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                            tracing::warn!(
+                                "event bus lagged in proxy_cidrs route updater, doing full sync"
+                            );
+                            event_receiver = event_receiver.resubscribe();
+                            true
+                        }
+                    },
+                    _ = retry_interval.tick() => pending_retry,
                 };
 
                 if !should_sync {
@@ -1200,7 +1215,7 @@ impl NicCtx {
                 )
                 .await;
 
-                Self::apply_route_changes(
+                pending_retry = Self::apply_route_changes(
                     &ifcfg,
                     &ifname,
                     &net_ns,
@@ -1529,7 +1544,7 @@ mod tests {
             metric: Some(100),
         };
         let add_ifcfg = MockIfConfiger::default();
-        NicCtx::apply_route_changes(
+        let has_error = NicCtx::apply_route_changes(
             &add_ifcfg,
             "tun0",
             &net_ns,
@@ -1538,6 +1553,7 @@ mod tests {
             vec![],
         )
         .await;
+        assert!(!has_error);
         assert_eq!(current.get(&add_route.cidr), Some(&Some(100)));
         assert_eq!(
             add_ifcfg.ops(),
@@ -1556,7 +1572,7 @@ mod tests {
             fail_add: true,
             ..Default::default()
         };
-        NicCtx::apply_route_changes(
+        let has_error = NicCtx::apply_route_changes(
             &fail_add_ifcfg,
             "tun0",
             &net_ns,
@@ -1565,13 +1581,35 @@ mod tests {
             vec![],
         )
         .await;
+        assert!(has_error);
         assert!(!current.contains_key(&failed_add.cidr));
+
+        let retry_add_ifcfg = MockIfConfiger::default();
+        let has_error = NicCtx::apply_route_changes(
+            &retry_add_ifcfg,
+            "tun0",
+            &net_ns,
+            &mut current,
+            vec![failed_add],
+            vec![],
+        )
+        .await;
+        assert!(!has_error);
+        assert_eq!(current.get(&failed_add.cidr), Some(&Some(200)));
+        assert_eq!(
+            retry_add_ifcfg.ops(),
+            vec![RouteOp::Add {
+                address: "10.8.0.0".parse().unwrap(),
+                prefix: 16,
+                cost: Some(200),
+            }]
+        );
 
         let fail_remove_ifcfg = MockIfConfiger {
             fail_remove: true,
             ..Default::default()
         };
-        NicCtx::apply_route_changes(
+        let has_error = NicCtx::apply_route_changes(
             &fail_remove_ifcfg,
             "tun0",
             &net_ns,
@@ -1580,10 +1618,11 @@ mod tests {
             vec![add_route],
         )
         .await;
+        assert!(has_error);
         assert_eq!(current.get(&add_route.cidr), Some(&Some(100)));
 
         let remove_ifcfg = MockIfConfiger::default();
-        NicCtx::apply_route_changes(
+        let has_error = NicCtx::apply_route_changes(
             &remove_ifcfg,
             "tun0",
             &net_ns,
@@ -1592,6 +1631,7 @@ mod tests {
             vec![add_route],
         )
         .await;
+        assert!(!has_error);
         assert!(!current.contains_key(&add_route.cidr));
         assert_eq!(
             remove_ifcfg.ops(),
