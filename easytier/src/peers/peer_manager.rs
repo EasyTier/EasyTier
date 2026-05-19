@@ -2320,7 +2320,7 @@ mod tests {
         },
     };
 
-    use super::PeerManager;
+    use super::{Ipv4RouteDecisionSource, PeerManager};
 
     #[test]
     fn select_local_route_prefers_longest_prefix_then_metric() {
@@ -2335,6 +2335,31 @@ mod tests {
                 .unwrap();
 
         assert_eq!(selected.via, "100.88.88.3".parse::<Ipv4Addr>().unwrap());
+    }
+
+    #[tokio::test]
+    async fn decide_ipv4_route_marks_local_route_as_exit_node_when_unresolved() {
+        let peer_mgr =
+            create_mock_peer_manager_with_name("local-route-decision-unresolved".to_string()).await;
+        peer_mgr
+            .get_global_ctx()
+            .set_ipv4(Some("100.88.88.10/24".parse().unwrap()));
+        peer_mgr.get_global_ctx().config.set_local_routes(vec![
+            parse_local_route_config("10.6.0.0/16 via 100.88.88.1").unwrap(),
+        ]);
+
+        let decision = peer_mgr
+            .decide_ipv4_route(&"10.6.1.1".parse().unwrap())
+            .await;
+
+        assert_eq!(decision.source, Ipv4RouteDecisionSource::LocalRoute);
+        assert!(decision.is_exit_node);
+        assert!(decision.dst_peers.is_empty());
+        assert_eq!(decision.status, "unresolved");
+        assert_eq!(
+            decision.local_route.unwrap().via,
+            "100.88.88.1".parse::<Ipv4Addr>().unwrap()
+        );
     }
 
     async fn create_lazy_peer_manager() -> Arc<PeerManager> {
