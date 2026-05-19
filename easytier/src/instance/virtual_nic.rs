@@ -43,7 +43,8 @@ use zerocopy::{NativeEndian, NetworkEndian};
 #[cfg(target_os = "windows")]
 use crate::common::ifcfg::RegistryManager;
 
-const PROXY_ROUTE_RETRY_INTERVAL: std::time::Duration = std::time::Duration::from_secs(30);
+const PROXY_ROUTE_RETRY_INITIAL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(30);
+const PROXY_ROUTE_RETRY_MAX_INTERVAL: std::time::Duration = std::time::Duration::from_secs(300);
 
 pin_project! {
     pub struct TunStream {
@@ -811,6 +812,43 @@ pub struct NicCtx {
 }
 
 impl NicCtx {
+    fn next_proxy_route_retry_delay(delay: std::time::Duration) -> std::time::Duration {
+        delay
+            .checked_mul(2)
+            .unwrap_or(PROXY_ROUTE_RETRY_MAX_INTERVAL)
+            .min(PROXY_ROUTE_RETRY_MAX_INTERVAL)
+    }
+
+    fn update_proxy_route_retry_state(
+        has_error: bool,
+        retry_delay: &mut std::time::Duration,
+        retry_deadline: &mut Option<tokio::time::Instant>,
+    ) {
+        if has_error {
+            *retry_deadline = Some(tokio::time::Instant::now() + *retry_delay);
+            *retry_delay = Self::next_proxy_route_retry_delay(*retry_delay);
+        } else {
+            *retry_deadline = None;
+            *retry_delay = PROXY_ROUTE_RETRY_INITIAL_INTERVAL;
+        }
+    }
+
+    fn route_change_error_is_idempotent(error: &Error, is_add: bool) -> bool {
+        let message = error.to_string().to_ascii_lowercase();
+        if is_add {
+            matches!(error, Error::IOError(err) if err.kind() == std::io::ErrorKind::AlreadyExists)
+                || message.contains("already exists")
+                || message.contains("file exists")
+                || message.contains("object already exists")
+        } else {
+            matches!(error, Error::NotFound)
+                || matches!(error, Error::IOError(err) if err.kind() == std::io::ErrorKind::NotFound)
+                || message.contains("not found")
+                || message.contains("no such process")
+                || message.contains("not in table")
+        }
+    }
+
     pub fn new(
         global_ctx: ArcGlobalCtx,
         peer_manager: &Arc<PeerManager>,
@@ -1065,10 +1103,19 @@ impl NicCtx {
                 )
                 .await;
 
-            if ret.is_err() {
+            if let Err(err) = ret {
+                if Self::route_change_error_is_idempotent(&err, false) {
+                    tracing::trace!(
+                        route = ?route,
+                        err = ?err,
+                        "remove route already applied.",
+                    );
+                    cur_proxy_routes.remove(&route.cidr);
+                    continue;
+                }
                 tracing::trace!(
                     route = ?route,
-                    err = ?ret,
+                    err = ?err,
                     "remove route failed.",
                 );
                 has_error = true;
@@ -1092,10 +1139,19 @@ impl NicCtx {
                 )
                 .await;
 
-            if ret.is_err() {
+            if let Err(err) = ret {
+                if Self::route_change_error_is_idempotent(&err, true) {
+                    tracing::trace!(
+                        route = ?route,
+                        err = ?err,
+                        "add route already applied.",
+                    );
+                    cur_proxy_routes.insert(route.cidr, route.metric);
+                    continue;
+                }
                 tracing::trace!(
                     route = ?route,
-                    err = ?ret,
+                    err = ?err,
                     "add route failed.",
                 );
                 has_error = true;
@@ -1166,7 +1222,9 @@ impl NicCtx {
                 &cur_proxy_routes,
             )
             .await;
-            let mut pending_retry = Self::apply_route_changes(
+            let mut retry_delay = PROXY_ROUTE_RETRY_INITIAL_INTERVAL;
+            let mut retry_deadline = None;
+            let has_error = Self::apply_route_changes(
                 &ifcfg,
                 &ifname,
                 &net_ns,
@@ -1175,13 +1233,10 @@ impl NicCtx {
                 removed,
             )
             .await;
-            let mut retry_interval = tokio::time::interval_at(
-                tokio::time::Instant::now() + PROXY_ROUTE_RETRY_INTERVAL,
-                PROXY_ROUTE_RETRY_INTERVAL,
-            );
-            retry_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            Self::update_proxy_route_retry_state(has_error, &mut retry_delay, &mut retry_deadline);
 
             loop {
+                let route_retry_deadline = retry_deadline;
                 let should_sync = tokio::select! {
                     event = event_receiver.recv() => match event {
                         Ok(GlobalCtxEvent::ProxyCidrsUpdated(_, _)) => true,
@@ -1201,7 +1256,12 @@ impl NicCtx {
                             true
                         }
                     },
-                    _ = retry_interval.tick() => pending_retry,
+                    _ = async move {
+                        match route_retry_deadline {
+                            Some(deadline) => tokio::time::sleep_until(deadline).await,
+                            None => std::future::pending::<()>().await,
+                        }
+                    } => true,
                 };
 
                 if !should_sync {
@@ -1215,7 +1275,7 @@ impl NicCtx {
                 )
                 .await;
 
-                pending_retry = Self::apply_route_changes(
+                let has_error = Self::apply_route_changes(
                     &ifcfg,
                     &ifname,
                     &net_ns,
@@ -1224,6 +1284,11 @@ impl NicCtx {
                     removed,
                 )
                 .await;
+                Self::update_proxy_route_retry_state(
+                    has_error,
+                    &mut retry_delay,
+                    &mut retry_deadline,
+                );
             }
         });
 
@@ -1467,7 +1532,10 @@ mod tests {
         error::Error, global_ctx::tests::get_mock_global_ctx, ifcfg::IfConfiguerTrait, netns::NetNS,
     };
 
-    use super::{NicCtx, ProxyRoute, VirtualNic};
+    use super::{
+        NicCtx, PROXY_ROUTE_RETRY_INITIAL_INTERVAL, PROXY_ROUTE_RETRY_MAX_INTERVAL, ProxyRoute,
+        VirtualNic,
+    };
 
     #[derive(Clone, Debug, PartialEq, Eq)]
     enum RouteOp {
@@ -1487,6 +1555,8 @@ mod tests {
         ops: Arc<Mutex<Vec<RouteOp>>>,
         fail_add: bool,
         fail_remove: bool,
+        add_error: Option<&'static str>,
+        remove_error: Option<&'static str>,
     }
 
     impl MockIfConfiger {
@@ -1511,6 +1581,8 @@ mod tests {
             });
             if self.fail_add {
                 Err(Error::Unknown)
+            } else if let Some(error) = self.add_error {
+                Err(Error::ShellCommandError(error.to_string()))
             } else {
                 Ok(())
             }
@@ -1528,6 +1600,8 @@ mod tests {
             });
             if self.fail_remove {
                 Err(Error::Unknown)
+            } else if let Some(error) = self.remove_error {
+                Err(Error::ShellCommandError(error.to_string()))
             } else {
                 Ok(())
             }
@@ -1605,6 +1679,26 @@ mod tests {
             }]
         );
 
+        let already_exists_route = ProxyRoute {
+            cidr: "10.9.0.0/16".parse().unwrap(),
+            metric: Some(300),
+        };
+        let already_exists_ifcfg = MockIfConfiger {
+            add_error: Some("RTNETLINK answers: File exists"),
+            ..Default::default()
+        };
+        let has_error = NicCtx::apply_route_changes(
+            &already_exists_ifcfg,
+            "tun0",
+            &net_ns,
+            &mut current,
+            vec![already_exists_route],
+            vec![],
+        )
+        .await;
+        assert!(!has_error);
+        assert_eq!(current.get(&already_exists_route.cidr), Some(&Some(300)));
+
         let fail_remove_ifcfg = MockIfConfiger {
             fail_remove: true,
             ..Default::default()
@@ -1620,6 +1714,22 @@ mod tests {
         .await;
         assert!(has_error);
         assert_eq!(current.get(&add_route.cidr), Some(&Some(100)));
+
+        let already_removed_ifcfg = MockIfConfiger {
+            remove_error: Some("route not in table"),
+            ..Default::default()
+        };
+        let has_error = NicCtx::apply_route_changes(
+            &already_removed_ifcfg,
+            "tun0",
+            &net_ns,
+            &mut current,
+            vec![],
+            vec![already_exists_route],
+        )
+        .await;
+        assert!(!has_error);
+        assert!(!current.contains_key(&already_exists_route.cidr));
 
         let remove_ifcfg = MockIfConfiger::default();
         let has_error = NicCtx::apply_route_changes(
@@ -1640,6 +1750,28 @@ mod tests {
                 prefix: 16,
             }]
         );
+    }
+
+    #[test]
+    fn proxy_route_retry_state_backs_off_and_disables_after_success() {
+        let mut retry_delay = PROXY_ROUTE_RETRY_INITIAL_INTERVAL;
+        let mut retry_deadline = None;
+
+        NicCtx::update_proxy_route_retry_state(true, &mut retry_delay, &mut retry_deadline);
+        assert!(retry_deadline.is_some());
+        assert_eq!(retry_delay, std::time::Duration::from_secs(60));
+
+        NicCtx::update_proxy_route_retry_state(true, &mut retry_delay, &mut retry_deadline);
+        assert!(retry_deadline.is_some());
+        assert_eq!(retry_delay, std::time::Duration::from_secs(120));
+
+        retry_delay = PROXY_ROUTE_RETRY_MAX_INTERVAL;
+        NicCtx::update_proxy_route_retry_state(true, &mut retry_delay, &mut retry_deadline);
+        assert_eq!(retry_delay, PROXY_ROUTE_RETRY_MAX_INTERVAL);
+
+        NicCtx::update_proxy_route_retry_state(false, &mut retry_delay, &mut retry_deadline);
+        assert!(retry_deadline.is_none());
+        assert_eq!(retry_delay, PROXY_ROUTE_RETRY_INITIAL_INTERVAL);
     }
 
     async fn run_test_helper() -> Result<VirtualNic, Error> {
