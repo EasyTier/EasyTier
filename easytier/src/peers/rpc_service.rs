@@ -16,15 +16,15 @@ use crate::{
             ListGlobalForeignNetworkResponse, ListPeerRequest, ListPeerResponse,
             ListPublicIpv6InfoRequest, ListPublicIpv6InfoResponse, ListRouteRequest,
             ListRouteResponse, PeerInfo, PeerManageRpc, RevokeCredentialRequest,
-            RevokeCredentialResponse, RouteDecisionSource, ShowNodeInfoRequest,
-            ShowNodeInfoResponse,
+            RevokeCredentialResponse, RouteDecisionSource, RouteDecisionStatus,
+            ShowNodeInfoRequest, ShowNodeInfoResponse,
         },
         rpc_types::{self, controller::BaseController},
     },
     utils::weak_upgrade,
 };
 
-use super::peer_manager::{Ipv4RouteDecisionSource, PeerManager};
+use super::peer_manager::{Ipv4RouteDecisionSource, Ipv4RouteDecisionStatus, PeerManager};
 
 #[derive(Clone)]
 pub struct PeerManagerRpcService {
@@ -46,6 +46,20 @@ impl PeerManagerRpcService {
             Ipv4RouteDecisionSource::OspfProxy => RouteDecisionSource::OspfProxy,
             Ipv4RouteDecisionSource::ExitNode => RouteDecisionSource::ExitNode,
             Ipv4RouteDecisionSource::None => RouteDecisionSource::None,
+        }
+    }
+
+    fn route_decision_status_to_pb(status: Ipv4RouteDecisionStatus) -> RouteDecisionStatus {
+        match status {
+            Ipv4RouteDecisionStatus::Reachable => RouteDecisionStatus::Reachable,
+            Ipv4RouteDecisionStatus::RequiresExitNode => RouteDecisionStatus::RequiresExitNode,
+            Ipv4RouteDecisionStatus::FallbackLocalRouteUnresolved => {
+                RouteDecisionStatus::FallbackLocalRouteUnresolved
+            }
+            Ipv4RouteDecisionStatus::LocalRouteUnresolved => {
+                RouteDecisionStatus::LocalRouteUnresolved
+            }
+            Ipv4RouteDecisionStatus::Unreachable => RouteDecisionStatus::Unreachable,
         }
     }
 
@@ -160,7 +174,7 @@ impl PeerManageRpc for PeerManagerRpcService {
             source: Self::route_decision_source_to_pb(decision.source).into(),
             peer_ids: decision.dst_peers,
             set_exit_node: decision.is_exit_node,
-            status: decision.status.to_string(),
+            status: decision.status.as_str().to_string(),
             local_route: decision
                 .local_route
                 .as_ref()
@@ -172,6 +186,7 @@ impl PeerManageRpc for PeerManagerRpcService {
                 .map(|route| route.to_string())
                 .unwrap_or_default(),
             unresolved_via: unresolved_local_route.map(|route| route.via.into()),
+            status_code: Self::route_decision_status_to_pb(decision.status).into(),
         })
     }
 

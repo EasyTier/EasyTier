@@ -147,6 +147,15 @@ enum RouteDecisionSource {
   ROUTE_DECISION_SOURCE_EXIT_NODE = 5;
 }
 
+enum RouteDecisionStatus {
+  ROUTE_DECISION_STATUS_UNSPECIFIED = 0;
+  ROUTE_DECISION_STATUS_REACHABLE = 1;
+  ROUTE_DECISION_STATUS_REQUIRES_EXIT_NODE = 2;
+  ROUTE_DECISION_STATUS_FALLBACK_LOCAL_ROUTE_UNRESOLVED = 3;
+  ROUTE_DECISION_STATUS_LOCAL_ROUTE_UNRESOLVED = 4;
+  ROUTE_DECISION_STATUS_UNREACHABLE = 5;
+}
+
 message GetRouteDecisionResponse {
   common.Ipv4Addr destination = 1;
   RouteDecisionSource source = 2;
@@ -157,6 +166,7 @@ message GetRouteDecisionResponse {
   common.Ipv4Addr via = 7;
   string unresolved_local_route = 8;
   common.Ipv4Addr unresolved_via = 9;
+  RouteDecisionStatus status_code = 10;
 }
 
 message ListForeignNetworkRequest {

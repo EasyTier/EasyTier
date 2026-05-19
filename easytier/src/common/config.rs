@@ -8,6 +8,7 @@ use std::{
 };
 
 use anyhow::Context;
+use arc_swap::ArcSwap;
 use base64::{Engine as _, prelude::BASE64_STANDARD};
 use clap::ValueEnum;
 use clap::builder::PossibleValue;
@@ -221,6 +222,9 @@ pub trait ConfigLoader: Send + Sync {
     fn get_routes(&self) -> Option<Vec<cidr::Ipv4Cidr>>;
     fn set_routes(&self, routes: Option<Vec<cidr::Ipv4Cidr>>);
 
+    fn has_local_routes(&self) -> bool {
+        !self.get_local_routes().is_empty()
+    }
     fn get_local_routes(&self) -> Vec<LocalRouteConfig>;
     fn set_local_routes(&self, routes: Vec<LocalRouteConfig>);
     fn add_local_route(&self, route: LocalRouteConfig);
@@ -688,7 +692,7 @@ struct Config {
 #[derive(Debug, Clone)]
 pub struct TomlConfigLoader {
     config: Arc<Mutex<Config>>,
-    local_routes: Arc<Mutex<Vec<LocalRouteConfig>>>,
+    local_routes: Arc<ArcSwap<Vec<LocalRouteConfig>>>,
 }
 
 impl Default for TomlConfigLoader {
@@ -719,7 +723,7 @@ impl TomlConfigLoader {
 
         let config = TomlConfigLoader {
             config: Arc::new(Mutex::new(config)),
-            local_routes: Arc::new(Mutex::new(local_routes)),
+            local_routes: Arc::new(ArcSwap::from_pointee(local_routes)),
         };
 
         let old_ns = config.get_network_identity();
@@ -1049,8 +1053,12 @@ impl ConfigLoader for TomlConfigLoader {
         self.config.lock().unwrap().routes = routes;
     }
 
+    fn has_local_routes(&self) -> bool {
+        !self.local_routes.load().is_empty()
+    }
+
     fn get_local_routes(&self) -> Vec<LocalRouteConfig> {
-        self.local_routes.lock().unwrap().clone()
+        self.local_routes.load_full().as_ref().clone()
     }
 
     fn set_local_routes(&self, routes: Vec<LocalRouteConfig>) {
@@ -1059,7 +1067,7 @@ impl ConfigLoader for TomlConfigLoader {
         } else {
             Some(routes.iter().map(|route| route.to_string()).collect())
         };
-        *self.local_routes.lock().unwrap() = routes;
+        self.local_routes.store(Arc::new(routes));
     }
 
     fn add_local_route(&self, route: LocalRouteConfig) {
@@ -1083,7 +1091,7 @@ impl ConfigLoader for TomlConfigLoader {
 
     fn clear_local_routes(&self) {
         self.config.lock().unwrap().local_routes = None;
-        self.local_routes.lock().unwrap().clear();
+        self.local_routes.store(Arc::new(Vec::new()));
     }
 
     fn get_socks5_portal(&self) -> Option<url::Url> {

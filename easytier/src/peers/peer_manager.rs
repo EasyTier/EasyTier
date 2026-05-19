@@ -139,6 +139,27 @@ pub enum Ipv4RouteDecisionSource {
     None,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Ipv4RouteDecisionStatus {
+    Reachable,
+    RequiresExitNode,
+    FallbackLocalRouteUnresolved,
+    LocalRouteUnresolved,
+    Unreachable,
+}
+
+impl Ipv4RouteDecisionStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Reachable => "reachable",
+            Self::RequiresExitNode => "requires-exit-node",
+            Self::FallbackLocalRouteUnresolved => "fallback-local-route-unresolved",
+            Self::LocalRouteUnresolved => "local-route-unresolved",
+            Self::Unreachable => "unreachable",
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Ipv4RouteDecision {
     pub source: Ipv4RouteDecisionSource,
@@ -146,7 +167,7 @@ pub struct Ipv4RouteDecision {
     pub is_exit_node: bool,
     pub local_route: Option<LocalRouteConfig>,
     pub unresolved_local_route: Option<LocalRouteConfig>,
-    pub status: &'static str,
+    pub status: Ipv4RouteDecisionStatus,
 }
 
 impl Clone for RouteAlgoInst {
@@ -1640,7 +1661,7 @@ impl PeerManager {
                 is_exit_node: false,
                 local_route: None,
                 unresolved_local_route: None,
-                status: "reachable",
+                status: Ipv4RouteDecisionStatus::Reachable,
             };
         }
 
@@ -1651,14 +1672,15 @@ impl PeerManager {
                 is_exit_node: false,
                 local_route: None,
                 unresolved_local_route: None,
-                status: "reachable",
+                status: Ipv4RouteDecisionStatus::Reachable,
             };
         }
 
         let mut unresolved_local_route = None;
-        if !self
-            .global_ctx
-            .is_ip_in_same_network(&std::net::IpAddr::V4(*ipv4_addr))
+        if self.global_ctx.config.has_local_routes()
+            && !self
+                .global_ctx
+                .is_ip_in_same_network(&std::net::IpAddr::V4(*ipv4_addr))
         {
             let local_route = Self::select_local_route_for_ipv4(
                 &self.global_ctx.config.get_local_routes(),
@@ -1673,7 +1695,7 @@ impl PeerManager {
                         is_exit_node: true,
                         local_route: Some(local_route),
                         unresolved_local_route: None,
-                        status: "requires-exit-node",
+                        status: Ipv4RouteDecisionStatus::RequiresExitNode,
                     };
                 }
 
@@ -1687,9 +1709,9 @@ impl PeerManager {
 
         if let Some(peer_id) = self.peers.get_proxy_peer_id_by_ipv4(ipv4_addr).await {
             let status = if unresolved_local_route.is_some() {
-                "fallback-local-route-unresolved"
+                Ipv4RouteDecisionStatus::FallbackLocalRouteUnresolved
             } else {
-                "reachable"
+                Ipv4RouteDecisionStatus::Reachable
             };
             return Ipv4RouteDecision {
                 source: Ipv4RouteDecisionSource::OspfProxy,
@@ -1711,9 +1733,9 @@ impl PeerManager {
                 };
                 if let Some(peer_id) = self.peers.get_peer_id_by_ipv4(exit_node).await {
                     let status = if unresolved_local_route.is_some() {
-                        "fallback-local-route-unresolved"
+                        Ipv4RouteDecisionStatus::FallbackLocalRouteUnresolved
                     } else {
-                        "reachable"
+                        Ipv4RouteDecisionStatus::Reachable
                     };
                     return Ipv4RouteDecision {
                         source: Ipv4RouteDecisionSource::ExitNode,
@@ -1728,9 +1750,9 @@ impl PeerManager {
         }
 
         let status = if unresolved_local_route.is_some() {
-            "local-route-unresolved"
+            Ipv4RouteDecisionStatus::LocalRouteUnresolved
         } else {
-            "unreachable"
+            Ipv4RouteDecisionStatus::Unreachable
         };
         Ipv4RouteDecision {
             source: Ipv4RouteDecisionSource::None,
@@ -2322,7 +2344,7 @@ mod tests {
         },
     };
 
-    use super::{Ipv4RouteDecisionSource, PeerManager};
+    use super::{Ipv4RouteDecisionSource, Ipv4RouteDecisionStatus, PeerManager};
 
     #[test]
     fn select_local_route_prefers_longest_prefix_then_metric() {
@@ -2357,7 +2379,10 @@ mod tests {
         assert_eq!(decision.source, Ipv4RouteDecisionSource::None);
         assert!(!decision.is_exit_node);
         assert!(decision.dst_peers.is_empty());
-        assert_eq!(decision.status, "local-route-unresolved");
+        assert_eq!(
+            decision.status,
+            Ipv4RouteDecisionStatus::LocalRouteUnresolved
+        );
         assert!(decision.local_route.is_none());
         assert_eq!(
             decision
@@ -2400,7 +2425,7 @@ mod tests {
                     decision.source == Ipv4RouteDecisionSource::LocalRoute
                         && decision.dst_peers == vec![peer_mgr_b.my_peer_id()]
                         && decision.is_exit_node
-                        && decision.status == "requires-exit-node"
+                        && decision.status == Ipv4RouteDecisionStatus::RequiresExitNode
                         && decision.unresolved_local_route.is_none()
                 }
             },
@@ -2446,7 +2471,7 @@ mod tests {
                     decision.source == Ipv4RouteDecisionSource::ExitNode
                         && decision.dst_peers == vec![peer_mgr_b.my_peer_id()]
                         && decision.is_exit_node
-                        && decision.status == "fallback-local-route-unresolved"
+                        && decision.status == Ipv4RouteDecisionStatus::FallbackLocalRouteUnresolved
                         && decision
                             .unresolved_local_route
                             .as_ref()
@@ -2496,7 +2521,7 @@ mod tests {
                     decision.source == Ipv4RouteDecisionSource::OspfProxy
                         && decision.dst_peers == vec![peer_mgr_b.my_peer_id()]
                         && !decision.is_exit_node
-                        && decision.status == "fallback-local-route-unresolved"
+                        && decision.status == Ipv4RouteDecisionStatus::FallbackLocalRouteUnresolved
                         && decision
                             .unresolved_local_route
                             .as_ref()
