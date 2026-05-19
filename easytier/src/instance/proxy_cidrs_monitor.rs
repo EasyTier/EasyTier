@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, Weak};
 use std::time::Instant;
 
-use crate::common::global_ctx::{ArcGlobalCtx, GlobalCtxEvent, ProxyRoute};
+use crate::common::global_ctx::{ArcGlobalCtx, GlobalCtxEvent};
 use crate::peers::peer_manager::PeerManager;
 use tokio_util::task::AbortOnDropHandle;
 
@@ -11,6 +11,12 @@ use tokio_util::task::AbortOnDropHandle;
 pub struct ProxyCidrsMonitor {
     peer_mgr: Weak<PeerManager>,
     global_ctx: ArcGlobalCtx,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ProxyRoute {
+    pub cidr: cidr::Ipv4Cidr,
+    pub metric: Option<i32>,
 }
 
 #[cfg(test)]
@@ -123,10 +129,14 @@ impl ProxyCidrsMonitor {
         (added, removed)
     }
 
+    fn proxy_route_cidrs(routes: &[ProxyRoute]) -> Vec<cidr::Ipv4Cidr> {
+        routes.iter().map(|route| route.cidr).collect()
+    }
+
     /// Collects current proxy routes from peer routes, VPN portal config, manual routes,
     /// and local route config.
     /// This is a static function that can be used for initial sync or recovery after Lagged errors.
-    pub async fn diff_proxy_routes(
+    pub(crate) async fn diff_proxy_routes(
         peer_mgr: &PeerManager,
         global_ctx: &ArcGlobalCtx,
         cur_proxy_routes: &BTreeMap<cidr::Ipv4Cidr, Option<i32>>,
@@ -202,7 +212,10 @@ impl ProxyCidrsMonitor {
                     continue;
                 }
                 self.global_ctx
-                    .issue_event(GlobalCtxEvent::ProxyCidrsUpdated(added, removed));
+                    .issue_event(GlobalCtxEvent::ProxyCidrsUpdated(
+                        Self::proxy_route_cidrs(&added),
+                        Self::proxy_route_cidrs(&removed),
+                    ));
             }
         }))
     }

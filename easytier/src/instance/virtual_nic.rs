@@ -10,11 +10,11 @@ use std::{
 use crate::{
     common::{
         error::Error,
-        global_ctx::{ArcGlobalCtx, GlobalCtxEvent, ProxyRoute},
+        global_ctx::{ArcGlobalCtx, GlobalCtxEvent},
         ifcfg::{IfConfiger, IfConfiguerTrait},
         log,
     },
-    instance::proxy_cidrs_monitor::ProxyCidrsMonitor,
+    instance::proxy_cidrs_monitor::{ProxyCidrsMonitor, ProxyRoute},
     peers::{PacketRecvChanReceiver, peer_manager::PeerManager, recv_packet_from_chan},
     tunnel::{
         StreamItem, Tunnel, TunnelError, ZCPacketSink, ZCPacketStream,
@@ -1168,8 +1168,12 @@ impl NicCtx {
             .await;
 
             loop {
-                let event = match event_receiver.recv().await {
-                    Ok(event) => event,
+                let should_sync = match event_receiver.recv().await {
+                    Ok(GlobalCtxEvent::ProxyCidrsUpdated(_, _)) => true,
+                    Ok(GlobalCtxEvent::ConfigPatched(patch)) => {
+                        !patch.routes.is_empty() || !patch.local_routes.is_empty()
+                    }
+                    Ok(_) => false,
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => {
                         tracing::debug!("event bus closed, stopping proxy_cidrs route updater");
                         break;
@@ -1179,33 +1183,20 @@ impl NicCtx {
                             "event bus lagged in proxy_cidrs route updater, doing full sync"
                         );
                         event_receiver = event_receiver.resubscribe();
-                        // Full sync after lagged to recover consistent state
-                        let (_, added, removed) = ProxyCidrsMonitor::diff_proxy_routes(
-                            peer_mgr.as_ref(),
-                            &global_ctx,
-                            &cur_proxy_routes,
-                        )
-                        .await;
-                        GlobalCtxEvent::ProxyCidrsUpdated(added, removed)
+                        true
                     }
                 };
 
-                let (added, removed) = match event {
-                    GlobalCtxEvent::ProxyCidrsUpdated(added, removed) => (added, removed),
-                    GlobalCtxEvent::ConfigPatched(patch) => {
-                        if patch.routes.is_empty() && patch.local_routes.is_empty() {
-                            continue;
-                        }
-                        let (_, added, removed) = ProxyCidrsMonitor::diff_proxy_routes(
-                            peer_mgr.as_ref(),
-                            &global_ctx,
-                            &cur_proxy_routes,
-                        )
-                        .await;
-                        (added, removed)
-                    }
-                    _ => continue,
-                };
+                if !should_sync {
+                    continue;
+                }
+
+                let (_, added, removed) = ProxyCidrsMonitor::diff_proxy_routes(
+                    peer_mgr.as_ref(),
+                    &global_ctx,
+                    &cur_proxy_routes,
+                )
+                .await;
 
                 Self::apply_route_changes(
                     &ifcfg,
