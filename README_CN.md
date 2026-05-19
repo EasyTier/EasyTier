@@ -248,7 +248,7 @@ easytier-cli route del 10.6.0.0/16 via 100.88.88.1
 easytier-cli route flush
 ```
 
-`easytier-cli route list` 和 `easytier-cli route dump` 仍然展示节点传播出来的路由信息。本地路由不会通过 OSPF 广播，也不会修改节点协议，因此新旧客户端可以混合组网。下一跳节点需要具备转发能力，通常需要启用 `--enable-exit-node`；旧版本客户端只要启用了 exit-node，也可以转发新客户端发送过来的本地路由流量。EasyTier 会把配置的本地路由 CIDR 安装到 TUN 路由表，但不会从操作系统路由表自动导入或同步路由。
+`easytier-cli route list` 和 `easytier-cli route dump` 仍然展示节点传播出来的路由信息。本地路由不会通过 OSPF 广播，也不会修改节点协议，因此新旧客户端可以混合组网。IPv4 转发按以下顺序选择路由：节点虚拟 IP 精确匹配、本地路由、OSPF proxy route、exit-node。下一跳节点需要具备转发能力，通常需要启用 `--enable-exit-node`；旧版本客户端只要启用了 exit-node，也可以转发新客户端发送过来的本地路由流量。`route show` 中的 `requires-exit-node` 表示下一跳可达，并且数据包会带上 EasyTier 现有的 exit-node 标志；它不会远程验证下一跳节点是否已经启用 exit-node 转发。EasyTier 会把配置的本地路由 CIDR 安装到 TUN 路由表，并在系统支持时把 `metric` 传给系统路由，但不会从操作系统路由表自动导入或同步路由。
 
 #### WireGuard 集成
 

@@ -38,6 +38,12 @@ use socket2::Protocol;
 
 pub type NetworkIdentity = crate::common::config::NetworkIdentity;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ProxyRoute {
+    pub cidr: cidr::Ipv4Cidr,
+    pub metric: Option<i32>,
+}
+
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum GlobalCtxEvent {
     TunDeviceReady(String),
@@ -75,7 +81,7 @@ pub enum GlobalCtxEvent {
 
     ConfigPatched(InstanceConfigPatch),
 
-    ProxyCidrsUpdated(Vec<cidr::Ipv4Cidr>, Vec<cidr::Ipv4Cidr>), // (added, removed)
+    ProxyCidrsUpdated(Vec<ProxyRoute>, Vec<ProxyRoute>), // (added, removed)
 
     UdpBroadcastRelayStartResult {
         capture_backend: Option<String>,

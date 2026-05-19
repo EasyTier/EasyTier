@@ -250,7 +250,7 @@ easytier-cli route del 10.6.0.0/16 via 100.88.88.1
 easytier-cli route flush
 ```
 
-`easytier-cli route list` and `easytier-cli route dump` still show peer-propagated route information. Local routes are not propagated through OSPF and do not change the peer protocol, so new and old clients can run in the same network. The next-hop node must be able to forward the traffic, usually by enabling `--enable-exit-node`; an old client with exit-node enabled can forward traffic sent by a new client. EasyTier installs the configured local-route CIDRs to the TUN route table, but it does not import or synchronize routes from the operating system route table.
+`easytier-cli route list` and `easytier-cli route dump` still show peer-propagated route information. Local routes are not propagated through OSPF and do not change the peer protocol, so new and old clients can run in the same network. IPv4 forwarding chooses routes in this order: exact peer virtual IP, local route, OSPF proxy route, then exit node. The next-hop node must be able to forward the traffic, usually by enabling `--enable-exit-node`; an old client with exit-node enabled can forward traffic sent by a new client. `route show` reports `requires-exit-node` when the next hop is reachable and the packet will be sent with EasyTier's exit-node flag; it does not remotely verify that the next-hop node has enabled exit-node forwarding. EasyTier installs the configured local-route CIDRs to the TUN route table and passes `metric` to the system route when supported, but it does not import or synchronize routes from the operating system route table.
 
 #### WireGuard Integration
 

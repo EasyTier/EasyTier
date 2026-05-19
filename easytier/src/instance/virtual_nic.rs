@@ -1,5 +1,5 @@
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     io,
     net::{IpAddr, Ipv4Addr, Ipv6Addr},
     pin::Pin,
@@ -10,7 +10,7 @@ use std::{
 use crate::{
     common::{
         error::Error,
-        global_ctx::{ArcGlobalCtx, GlobalCtxEvent},
+        global_ctx::{ArcGlobalCtx, GlobalCtxEvent, ProxyRoute},
         ifcfg::{IfConfiger, IfConfiguerTrait},
         log,
     },
@@ -1042,50 +1042,59 @@ impl NicCtx {
         ifcfg: &impl IfConfiguerTrait,
         ifname: &str,
         net_ns: &crate::common::netns::NetNS,
-        cur_proxy_cidrs: &mut BTreeSet<cidr::Ipv4Cidr>,
-        added: Vec<cidr::Ipv4Cidr>,
-        removed: Vec<cidr::Ipv4Cidr>,
+        cur_proxy_routes: &mut BTreeMap<cidr::Ipv4Cidr, Option<i32>>,
+        added: Vec<ProxyRoute>,
+        removed: Vec<ProxyRoute>,
     ) {
         tracing::debug!(?added, ?removed, "applying proxy_cidrs route changes");
 
         // Remove routes
-        for cidr in removed {
-            if !cur_proxy_cidrs.contains(&cidr) {
+        for route in removed {
+            if cur_proxy_routes.get(&route.cidr) != Some(&route.metric) {
                 continue;
             }
             let _g = net_ns.guard();
             let ret = ifcfg
-                .remove_ipv4_route(ifname, cidr.first_address(), cidr.network_length())
+                .remove_ipv4_route(
+                    ifname,
+                    route.cidr.first_address(),
+                    route.cidr.network_length(),
+                )
                 .await;
 
             if ret.is_err() {
                 tracing::trace!(
-                    cidr = ?cidr,
+                    route = ?route,
                     err = ?ret,
                     "remove route failed.",
                 );
             }
-            cur_proxy_cidrs.remove(&cidr);
+            cur_proxy_routes.remove(&route.cidr);
         }
 
         // Add routes
-        for cidr in added {
-            if cur_proxy_cidrs.contains(&cidr) {
+        for route in added {
+            if cur_proxy_routes.get(&route.cidr) == Some(&route.metric) {
                 continue;
             }
             let _g = net_ns.guard();
             let ret = ifcfg
-                .add_ipv4_route(ifname, cidr.first_address(), cidr.network_length(), None)
+                .add_ipv4_route(
+                    ifname,
+                    route.cidr.first_address(),
+                    route.cidr.network_length(),
+                    route.metric,
+                )
                 .await;
 
             if ret.is_err() {
                 tracing::trace!(
-                    cidr = ?cidr,
+                    route = ?route,
                     err = ?ret,
                     "add route failed.",
                 );
             }
-            cur_proxy_cidrs.insert(cidr);
+            cur_proxy_routes.insert(route.cidr, route.metric);
         }
     }
 
@@ -1139,20 +1148,20 @@ impl NicCtx {
         let mut event_receiver = global_ctx.subscribe();
 
         self.tasks.spawn(async move {
-            let mut cur_proxy_cidrs = BTreeSet::<cidr::Ipv4Cidr>::new();
+            let mut cur_proxy_routes = BTreeMap::<cidr::Ipv4Cidr, Option<i32>>::new();
 
             // Initial sync: get current proxy_cidrs state and apply routes
-            let (_, added, removed) = ProxyCidrsMonitor::diff_proxy_cidrs(
+            let (_, added, removed) = ProxyCidrsMonitor::diff_proxy_routes(
                 peer_mgr.as_ref(),
                 &global_ctx,
-                &cur_proxy_cidrs,
+                &cur_proxy_routes,
             )
             .await;
             Self::apply_route_changes(
                 &ifcfg,
                 &ifname,
                 &net_ns,
-                &mut cur_proxy_cidrs,
+                &mut cur_proxy_routes,
                 added,
                 removed,
             )
@@ -1171,10 +1180,10 @@ impl NicCtx {
                         );
                         event_receiver = event_receiver.resubscribe();
                         // Full sync after lagged to recover consistent state
-                        let (_, added, removed) = ProxyCidrsMonitor::diff_proxy_cidrs(
+                        let (_, added, removed) = ProxyCidrsMonitor::diff_proxy_routes(
                             peer_mgr.as_ref(),
                             &global_ctx,
-                            &cur_proxy_cidrs,
+                            &cur_proxy_routes,
                         )
                         .await;
                         GlobalCtxEvent::ProxyCidrsUpdated(added, removed)
@@ -1187,10 +1196,10 @@ impl NicCtx {
                         if patch.routes.is_empty() && patch.local_routes.is_empty() {
                             continue;
                         }
-                        let (_, added, removed) = ProxyCidrsMonitor::diff_proxy_cidrs(
+                        let (_, added, removed) = ProxyCidrsMonitor::diff_proxy_routes(
                             peer_mgr.as_ref(),
                             &global_ctx,
-                            &cur_proxy_cidrs,
+                            &cur_proxy_routes,
                         )
                         .await;
                         (added, removed)
@@ -1202,7 +1211,7 @@ impl NicCtx {
                     &ifcfg,
                     &ifname,
                     &net_ns,
-                    &mut cur_proxy_cidrs,
+                    &mut cur_proxy_routes,
                     added,
                     removed,
                 )
