@@ -188,7 +188,7 @@ manual_routes_help: |
 
 local_routes: Local Routes
 local_routes_help: |
-  Add local-only routes that are forwarded through a remote EasyTier virtual IPv4 address. Format: 10.6.0.0/16 via 100.88.88.1 metric 100. The remote node must be able to forward the traffic, usually by enabling exit-node.
+  Add local-only routes that are forwarded through a remote EasyTier virtual IPv4 address. Fill network, gateway, and optional metric for each entry. The remote node must be able to forward the traffic, usually by enabling exit-node.
 
 socks5: Socks5 Server
 socks5_help: |

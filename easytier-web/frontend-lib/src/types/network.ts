@@ -82,6 +82,16 @@ export interface Acl {
   acl_v1?: AclV1
 }
 
+export interface LocalRouteEntry {
+  network: string
+  gateway: string
+  metric?: number | null
+}
+
+export interface LocalRouteConfig {
+  entries: LocalRouteEntry[]
+}
+
 export interface NetworkConfig {
   instance_id: string
 
@@ -142,7 +152,7 @@ export interface NetworkConfig {
 
   enable_manual_routes: boolean
   routes: string[]
-  local_routes: string[]
+  local_routes: LocalRouteConfig
 
   exit_nodes: string[]
 
@@ -219,7 +229,7 @@ export function DEFAULT_NETWORK_CONFIG(): NetworkConfig {
     relay_network_whitelist: [],
     enable_manual_routes: false,
     routes: [],
-    local_routes: [],
+    local_routes: { entries: [] },
     exit_nodes: [],
     enable_socks5: false,
     socks5_port: 1080,
@@ -245,11 +255,23 @@ function cleanStringList(values: string[] | undefined): string[] {
   return (values ?? []).map((value) => value.trim()).filter((value) => value.length > 0)
 }
 
+function cleanLocalRouteConfig(config: LocalRouteConfig | undefined): LocalRouteConfig {
+  return {
+    entries: (config?.entries ?? [])
+      .map((entry) => ({
+        network: entry.network.trim(),
+        gateway: entry.gateway.trim(),
+        metric: entry.metric ?? null,
+      }))
+      .filter((entry) => entry.network.length > 0 && entry.gateway.length > 0),
+  }
+}
+
 export function normalizeNetworkConfig(config: NetworkConfig): NetworkConfig {
   const normalized: NetworkConfig = {
     ...config,
     peer_urls: cleanStringList(config.peer_urls),
-    local_routes: cleanStringList(config.local_routes),
+    local_routes: cleanLocalRouteConfig(config.local_routes),
   }
 
   const publicServerUrl = normalized.public_server_url?.trim() ?? ''
