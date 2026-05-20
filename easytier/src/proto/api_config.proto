@@ -70,8 +70,8 @@ message ExitNodePatch {
 
 message LocalRoutePatch {
   ConfigPatchAction action = 1;
-  common.Ipv4Inet cidr = 2;
-  common.Ipv4Addr via = 3;
+  common.Ipv4Inet network = 2;
+  common.Ipv4Addr gateway = 3;
   optional uint32 metric = 4;
 }
 

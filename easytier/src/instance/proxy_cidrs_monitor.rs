@@ -167,7 +167,7 @@ impl ProxyCidrsMonitor {
         for route in global_ctx.config.get_local_routes() {
             Self::insert_proxy_route(
                 &mut proxy_routes,
-                route.cidr,
+                route.network,
                 Self::route_metric_to_cost(route.metric),
             );
         }

@@ -548,22 +548,22 @@ impl InstanceConfigPatcher {
             match ConfigPatchAction::try_from(patch.action) {
                 Ok(ConfigPatchAction::Add) => {
                     let route = Self::local_route_from_patch(&patch)?;
-                    if let Some(existing) = current_routes
-                        .iter_mut()
-                        .find(|existing| existing.cidr == route.cidr && existing.via == route.via)
-                    {
+                    if let Some(existing) = current_routes.iter_mut().find(|existing| {
+                        existing.network == route.network && existing.gateway == route.gateway
+                    }) {
                         *existing = route;
                     } else {
                         current_routes.push(route);
                     }
                 }
                 Ok(ConfigPatchAction::Remove) => {
-                    let Some(cidr) = patch.cidr.map(Into::into) else {
-                        anyhow::bail!("local route cidr is required for remove");
+                    let Some(network) = patch.network.map(Into::into) else {
+                        anyhow::bail!("local route network is required for remove");
                     };
-                    let via: Option<Ipv4Addr> = patch.via.map(Into::into);
+                    let gateway: Option<Ipv4Addr> = patch.gateway.map(Into::into);
                     current_routes.retain(|route| {
-                        route.cidr != cidr || via.is_some_and(|via| route.via != via)
+                        route.network != network
+                            || gateway.is_some_and(|gateway| route.gateway != gateway)
                     });
                 }
                 Ok(ConfigPatchAction::Clear) => {
@@ -581,15 +581,15 @@ impl InstanceConfigPatcher {
     fn local_route_from_patch(
         patch: &crate::proto::api::config::LocalRoutePatch,
     ) -> Result<LocalRouteConfig, anyhow::Error> {
-        let Some(cidr) = patch.cidr.map(Into::into) else {
-            anyhow::bail!("local route cidr is required");
+        let Some(network) = patch.network.map(Into::into) else {
+            anyhow::bail!("local route network is required");
         };
-        let Some(via) = patch.via.map(Into::into) else {
-            anyhow::bail!("local route via is required");
+        let Some(gateway) = patch.gateway.map(Into::into) else {
+            anyhow::bail!("local route gateway is required");
         };
         Ok(LocalRouteConfig {
-            cidr,
-            via,
+            network,
+            gateway,
             metric: patch.metric,
         })
     }

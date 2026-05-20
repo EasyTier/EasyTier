@@ -163,9 +163,9 @@ message GetRouteDecisionResponse {
   bool set_exit_node = 4;
   string status = 5;
   string local_route = 6;
-  common.Ipv4Addr via = 7;
+  common.Ipv4Addr gateway = 7;
   string unresolved_local_route = 8;
-  common.Ipv4Addr unresolved_via = 9;
+  common.Ipv4Addr unresolved_gateway = 9;
   RouteDecisionStatus status_code = 10;
 }
 

@@ -180,12 +180,12 @@ impl PeerManageRpc for PeerManagerRpcService {
                 .as_ref()
                 .map(|route| route.to_string())
                 .unwrap_or_default(),
-            via: decision.local_route.map(|route| route.via.into()),
+            gateway: decision.local_route.map(|route| route.gateway.into()),
             unresolved_local_route: unresolved_local_route
                 .as_ref()
                 .map(|route| route.to_string())
                 .unwrap_or_default(),
-            unresolved_via: unresolved_local_route.map(|route| route.via.into()),
+            unresolved_gateway: unresolved_local_route.map(|route| route.gateway.into()),
             status_code: Self::route_decision_status_to_pb(decision.status).into(),
         })
     }

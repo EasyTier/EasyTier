@@ -1633,19 +1633,19 @@ impl PeerManager {
     ) -> Option<LocalRouteConfig> {
         let mut local_routes = routes
             .iter()
-            .filter(|route| Self::route_contains_ipv4(route.cidr, ipv4_addr))
+            .filter(|route| Self::route_contains_ipv4(route.network, ipv4_addr))
             .cloned()
             .collect::<Vec<_>>();
         local_routes.sort_by(|a, b| {
-            b.cidr
+            b.network
                 .network_length()
-                .cmp(&a.cidr.network_length())
+                .cmp(&a.network.network_length())
                 .then_with(|| {
                     a.metric
                         .unwrap_or(u32::MAX)
                         .cmp(&b.metric.unwrap_or(u32::MAX))
                 })
-                .then_with(|| a.via.cmp(&b.via))
+                .then_with(|| a.gateway.cmp(&b.gateway))
         });
         local_routes.into_iter().next()
     }
@@ -1687,7 +1687,10 @@ impl PeerManager {
                 ipv4_addr,
             );
             if let Some(local_route) = local_route {
-                let peer_id = self.peers.get_exact_peer_id_by_ipv4(&local_route.via).await;
+                let peer_id = self
+                    .peers
+                    .get_exact_peer_id_by_ipv4(&local_route.gateway)
+                    .await;
                 if let Some(peer_id) = peer_id {
                     return Ipv4RouteDecision {
                         source: Ipv4RouteDecisionSource::LocalRoute,
@@ -2358,7 +2361,7 @@ mod tests {
             PeerManager::select_local_route_for_ipv4(&routes, &"10.6.1.1".parse().unwrap())
                 .unwrap();
 
-        assert_eq!(selected.via, "100.88.88.3".parse::<Ipv4Addr>().unwrap());
+        assert_eq!(selected.gateway, "100.88.88.3".parse::<Ipv4Addr>().unwrap());
     }
 
     #[tokio::test]

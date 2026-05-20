@@ -71,8 +71,9 @@ use easytier::{
                 SetLoggerConfigRequest,
             },
             manage::{
-                ListNetworkInstanceMetaRequest, ListNetworkInstanceRequest, NetworkConfig,
-                WebClientService, WebClientServiceClientFactory,
+                ListNetworkInstanceMetaRequest, ListNetworkInstanceRequest,
+                LocalRouteEntry as LocalRouteEntryPb, NetworkConfig, WebClientService,
+                WebClientServiceClientFactory,
             },
         },
         common::{NatType, PortForwardConfigPb, SocketType},
@@ -574,8 +575,8 @@ type GlobalForeignNetworkMap = BTreeMap<u32, list_global_foreign_network_respons
 
 #[derive(Clone, tabled::Tabled, serde::Serialize)]
 struct LocalRouteTableItem {
-    cidr: String,
-    via: String,
+    network: String,
+    gateway: String,
     metric: String,
     peer_id: String,
     hostname: String,
@@ -591,9 +592,9 @@ struct LocalRouteGetItem {
     set_exit_node: bool,
     status: String,
     local_route: String,
-    via: String,
+    gateway: String,
     unresolved_local_route: String,
-    unresolved_via: String,
+    unresolved_gateway: String,
 }
 
 struct LocalRouteListData {
@@ -627,8 +628,8 @@ fn route_decision_rpc_error(error: RpcError) -> Error {
     }
 }
 
-fn local_route_cidr_to_inet(cidr: Ipv4Cidr) -> easytier::proto::common::Ipv4Inet {
-    cidr::Ipv4Inet::new(cidr.first_address(), cidr.network_length())
+fn local_route_network_to_inet(network: Ipv4Cidr) -> easytier::proto::common::Ipv4Inet {
+    cidr::Ipv4Inet::new(network.first_address(), network.network_length())
         .expect("Ipv4Cidr is always a valid Ipv4Inet")
         .into()
 }
@@ -636,8 +637,8 @@ fn local_route_cidr_to_inet(cidr: Ipv4Cidr) -> easytier::proto::common::Ipv4Inet
 fn local_route_to_patch(route: &LocalRouteConfig, action: ConfigPatchAction) -> LocalRoutePatch {
     LocalRoutePatch {
         action: action.into(),
-        cidr: Some(local_route_cidr_to_inet(route.cidr)),
-        via: Some(route.via.into()),
+        network: Some(local_route_network_to_inet(route.network)),
+        gateway: Some(route.gateway.into()),
         metric: route.metric,
     }
 }
@@ -667,7 +668,7 @@ fn parse_local_route_delete_args(route: &[String]) -> Result<(Ipv4Cidr, Option<I
         )),
         _ => {
             let route = parse_local_route_cli_args(route)?;
-            Ok((route.cidr, Some(route.via)))
+            Ok((route.network, Some(route.gateway)))
         }
     }
 }
@@ -675,9 +676,28 @@ fn parse_local_route_delete_args(route: &[String]) -> Result<(Ipv4Cidr, Option<I
 fn parse_config_local_routes(config: &NetworkConfig) -> Result<Vec<LocalRouteConfig>, Error> {
     config
         .local_routes
+        .as_ref()
+        .map(|local_routes| local_routes.entries.as_slice())
+        .unwrap_or_default()
         .iter()
-        .map(|route| parse_local_route_config(route))
+        .map(local_route_from_pb)
         .collect()
+}
+
+fn local_route_from_pb(route: &LocalRouteEntryPb) -> Result<LocalRouteConfig, Error> {
+    let network = route
+        .network
+        .parse()
+        .with_context(|| format!("invalid local route network: {}", route.network))?;
+    let gateway = route
+        .gateway
+        .parse()
+        .with_context(|| format!("invalid local route gateway: {}", route.gateway))?;
+    Ok(LocalRouteConfig {
+        network,
+        gateway,
+        metric: route.metric,
+    })
 }
 
 fn local_route_table_item(
@@ -686,11 +706,11 @@ fn local_route_table_item(
 ) -> LocalRouteTableItem {
     let next_hop = peer_routes
         .iter()
-        .find(|pair| peer_route_pair_ipv4(pair) == Some(route.via))
+        .find(|pair| peer_route_pair_ipv4(pair) == Some(route.gateway))
         .and_then(|pair| pair.route.as_ref());
     LocalRouteTableItem {
-        cidr: route.cidr.to_string(),
-        via: route.via.to_string(),
+        network: route.network.to_string(),
+        gateway: route.gateway.to_string(),
         metric: route
             .metric
             .map(|metric| metric.to_string())
@@ -730,7 +750,9 @@ fn route_decision_source_name(source: i32) -> &'static str {
 }
 
 fn local_route_matches(route: &LocalRouteConfig, expected: &LocalRouteConfig) -> bool {
-    route.cidr == expected.cidr && route.via == expected.via && route.metric == expected.metric
+    route.network == expected.network
+        && route.gateway == expected.gateway
+        && route.metric == expected.metric
 }
 
 fn local_route_get_item(
@@ -757,18 +779,18 @@ fn local_route_get_item(
         } else {
             response.local_route.clone()
         },
-        via: response
-            .via
-            .map(|via| via.to_string())
+        gateway: response
+            .gateway
+            .map(|gateway| gateway.to_string())
             .unwrap_or_else(|| "-".to_string()),
         unresolved_local_route: if response.unresolved_local_route.is_empty() {
             "-".to_string()
         } else {
             response.unresolved_local_route.clone()
         },
-        unresolved_via: response
-            .unresolved_via
-            .map(|via| via.to_string())
+        unresolved_gateway: response
+            .unresolved_gateway
+            .map(|gateway| gateway.to_string())
             .unwrap_or_else(|| "-".to_string()),
     }
 }
@@ -1317,13 +1339,13 @@ impl<'a> CommandHandler<'a> {
 
     async fn verify_local_route_removed(
         &self,
-        cidr: Ipv4Cidr,
-        via: Option<Ipv4Addr>,
+        network: Ipv4Cidr,
+        gateway: Option<Ipv4Addr>,
     ) -> Result<(), Error> {
         let routes = self.fetch_local_routes().await?;
-        let still_exists = routes
-            .iter()
-            .any(|route| route.cidr == cidr && via.is_none_or(|via| route.via == via));
+        let still_exists = routes.iter().any(|route| {
+            route.network == network && gateway.is_none_or(|gateway| route.gateway == gateway)
+        });
         if !still_exists {
             return Ok(());
         }
@@ -2055,27 +2077,27 @@ impl<'a> CommandHandler<'a> {
     }
 
     async fn handle_route_del(&self, route: &[String]) -> Result<(), Error> {
-        let (cidr, via) = parse_local_route_delete_args(route)?;
+        let (network, gateway) = parse_local_route_delete_args(route)?;
         self.apply_to_instances(|handler| {
             Box::pin(async move {
                 handler
                     .apply_local_route_patch(LocalRoutePatch {
                         action: ConfigPatchAction::Remove.into(),
-                        cidr: Some(local_route_cidr_to_inet(cidr)),
-                        via: via.map(Into::into),
+                        network: Some(local_route_network_to_inet(network)),
+                        gateway: gateway.map(Into::into),
                         metric: None,
                     })
                     .await?;
-                handler.verify_local_route_removed(cidr, via).await
+                handler.verify_local_route_removed(network, gateway).await
             })
         })
         .await?;
-        let via = via
-            .map(|via| format!(" via {}", via))
+        let gateway = gateway
+            .map(|gateway| format!(" via {}", gateway))
             .unwrap_or_else(String::new);
         println!(
             "local route delete applied to selected instance(s): {}{}",
-            cidr, via
+            network, gateway
         );
         Ok(())
     }
@@ -2086,8 +2108,8 @@ impl<'a> CommandHandler<'a> {
                 handler
                     .apply_local_route_patch(LocalRoutePatch {
                         action: ConfigPatchAction::Clear.into(),
-                        cidr: None,
-                        via: None,
+                        network: None,
+                        gateway: None,
                         metric: None,
                     })
                     .await?;
