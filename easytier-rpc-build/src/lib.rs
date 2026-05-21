@@ -29,6 +29,7 @@ impl prost_build::ServiceGenerator for ServiceGenerator {
         let method_descriptor_name = format!("{}MethodDescriptor", service.name);
 
         let mut trait_methods = String::new();
+        let mut weak_impl_methods = String::new();
         let mut enum_methods = String::new();
         let mut list_enum_methods = String::new();
         let mut client_methods = String::new();
@@ -40,6 +41,8 @@ impl prost_build::ServiceGenerator for ServiceGenerator {
         let mut match_output_type_methods = String::new();
         let mut match_output_proto_type_methods = String::new();
         let mut match_handle_methods = String::new();
+        // generate trait default method Xxx::json_call_method match branch
+        let mut match_trait_json_methods = String::new();
 
         let mut match_method_try_from = String::new();
 
@@ -60,6 +63,21 @@ impl prost_build::ServiceGenerator for ServiceGenerator {
                 trait_methods,
                 r#"    async fn {name}(&self, ctrl: Self::Controller, input: {input_type}) -> {namespace}::error::Result<{output_type}>;"#,
                 name = method.name,
+                input_type = method.input_type,
+                output_type = method.output_type,
+                namespace = NAMESPACE,
+            )
+            .unwrap();
+
+            writeln!(
+                weak_impl_methods,
+                r#"    async fn {method_name}(&self, ctrl: Self::Controller, input: {input_type}) -> {namespace}::error::Result<{output_type}> {{
+        let Some(service) = self.upgrade() else {{
+            return Err({namespace}::error::Error::Shutdown);
+        }};
+        service.{method_name}(ctrl, input).await
+    }}"#,
+                method_name = method.name,
                 input_type = method.input_type,
                 output_type = method.output_type,
                 namespace = NAMESPACE,
@@ -164,6 +182,22 @@ impl prost_build::ServiceGenerator for ServiceGenerator {
                 namespace = NAMESPACE,
             )
             .unwrap();
+
+            write!(
+                match_trait_json_methods,
+                r#"            "{name}" | "{proto_name}" => {{
+                let req: {input_type} = ::serde_json::from_value(json).map_err(|e| {namespace}::error::Error::MalformatRpcPacket(format!("json error: {{}}", e)))?;
+                let resp = self.{typed_method}(ctrl, req).await?;
+                Ok(::serde_json::to_value(resp).map_err(|e| {namespace}::error::Error::MalformatRpcPacket(format!("json error: {{}}", e)))?)
+            }}
+"#,
+                name = method.name,
+                proto_name = method.proto_name,
+                input_type = method.input_type,
+                typed_method = method.name,
+                namespace = NAMESPACE,
+            )
+            .unwrap();
         }
 
         ServiceGenerator::write_comments(&mut buf, 0, &service.comments).unwrap();
@@ -176,6 +210,29 @@ pub trait {name} {{
     type Controller: {namespace}::controller::Controller;
 
     {trait_methods}
+
+    async fn json_call_method(
+        &self,
+        ctrl: Self::Controller,
+        method_name: &str,
+        json: ::serde_json::Value,
+    ) -> {namespace}::error::Result<::serde_json::Value> {{
+        match method_name {{
+{match_trait_json_methods}
+            _ => Err({namespace}::error::Error::InvalidMethodIndex(0, method_name.to_string())),
+        }}
+    }}
+}}
+
+#[async_trait::async_trait]
+impl<T> {name} for ::std::sync::Weak<T>
+where
+    T: Send + Sync + 'static,
+    ::std::sync::Arc<T>: {name},
+{{
+    type Controller = <::std::sync::Arc<T> as {name}>::Controller;
+
+    {weak_impl_methods}
 }}
 
 /// A service descriptor for a `{name}`.
@@ -235,7 +292,7 @@ impl<C: {namespace}::controller::Controller> Clone for {client_name}Factory<C> {
 
 impl<C> {namespace}::__rt::RpcClientFactory for {client_name}Factory<C> where C: {namespace}::controller::Controller {{
     type Descriptor = {descriptor_name};
-    type ClientImpl = Box<dyn {name}<Controller = C> + Send + 'static>;
+    type ClientImpl = Box<dyn {name}<Controller = C> + Send + Sync + 'static>;
     type Controller = C;
 
     fn new(handler: impl {namespace}::handler::Handler<Descriptor = Self::Descriptor, Controller = Self::Controller>) -> Self::ClientImpl {{
@@ -249,6 +306,16 @@ impl<C> {namespace}::__rt::RpcClientFactory for {client_name}Factory<C> where C:
 /// supplied `{name}`.
 #[derive(Clone, Debug)]
 pub struct {server_name}<A>(A) where A: {name} + Clone + Send + 'static;
+
+impl<T> {server_name}<::std::sync::Weak<T>>
+where
+    T: Send + Sync + 'static,
+    ::std::sync::Arc<T>: {name},
+{{
+    pub fn new_arc(service: ::std::sync::Arc<T>) -> {server_name}<::std::sync::Weak<T>> {{
+        {server_name}(::std::sync::Arc::downgrade(&service))
+    }}
+}}
 
 impl<A> {server_name}<A> where A: {name} + Clone + Send + 'static {{
     /// Creates a new server instance that dispatches all calls to the supplied service.
@@ -345,6 +412,7 @@ impl {namespace}::descriptor::MethodDescriptor for {method_descriptor_name} {{
             proto_name = service.proto_name,
             package = service.package,
             trait_methods = trait_methods,
+            weak_impl_methods = weak_impl_methods,
             enum_methods = enum_methods,
             list_enum_methods = list_enum_methods,
             client_own_methods = client_own_methods,
@@ -356,6 +424,7 @@ impl {namespace}::descriptor::MethodDescriptor for {method_descriptor_name} {{
             match_output_type_methods = match_output_type_methods,
             match_output_proto_type_methods = match_output_proto_type_methods,
             match_handle_methods = match_handle_methods,
+            match_trait_json_methods = match_trait_json_methods,
             namespace = NAMESPACE,
         ).unwrap();
     }

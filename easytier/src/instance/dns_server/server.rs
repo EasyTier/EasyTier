@@ -5,11 +5,11 @@ use hickory_proto::rr::LowerName;
 use hickory_resolver::config::ResolverOpts;
 use hickory_resolver::name_server::TokioConnectionProvider;
 use hickory_resolver::system_conf::read_system_conf;
+use hickory_server::ServerFuture;
 use hickory_server::authority::{AuthorityObject, Catalog, ZoneType};
 use hickory_server::server::{Request, RequestHandler, ResponseHandler, ResponseInfo};
 use hickory_server::store::forwarder::ForwardConfig;
 use hickory_server::store::{forwarder::ForwardAuthority, in_memory::InMemoryAuthority};
-use hickory_server::ServerFuture;
 use std::io;
 use std::net::SocketAddr;
 use std::str::FromStr;
@@ -67,7 +67,7 @@ impl RequestHandler for CatalogRequestHandler {
 
 pub fn build_authority(domain: &str, records: &[Record]) -> Result<InMemoryAuthority> {
     let zone = rr::Name::from_str(domain)?;
-    let mut authority = InMemoryAuthority::empty(zone.clone(), ZoneType::Primary, false);
+    let mut authority = InMemoryAuthority::empty(zone, ZoneType::Primary, false);
     for record in records.iter() {
         let r = record.try_into()?;
         authority.upsert_mut(r, 0);

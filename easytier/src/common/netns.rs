@@ -1,7 +1,7 @@
 use futures::Future;
 
 #[cfg(target_os = "linux")]
-use nix::sched::{setns, CloneFlags};
+use nix::sched::{CloneFlags, setns};
 #[cfg(target_os = "linux")]
 use std::os::fd::AsFd;
 
@@ -74,7 +74,7 @@ impl NetNSGuard {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct NetNS {
     name: Option<String>,
 }

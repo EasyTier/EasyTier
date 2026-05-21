@@ -1,6 +1,6 @@
 use std::{
     net::{Ipv4Addr, SocketAddr, SocketAddrV4},
-    sync::{atomic::AtomicBool, Arc},
+    sync::{Arc, Weak, atomic::AtomicBool},
     time::Duration,
 };
 
@@ -9,32 +9,33 @@ use cidr::Ipv4Inet;
 use crossbeam::atomic::AtomicCell;
 use dashmap::DashMap;
 use pnet::packet::{
+    Packet,
     ip::IpNextHeaderProtocols,
     ipv4::Ipv4Packet,
     udp::{self, MutableUdpPacket},
-    Packet,
 };
-use tokio::sync::mpsc::{channel, error::TrySendError, Receiver, Sender};
+use tokio::sync::mpsc::{Receiver, Sender, channel, error::TrySendError};
 use tokio::{
     net::UdpSocket,
     sync::Mutex,
     task::{JoinHandle, JoinSet},
     time::timeout,
 };
+use tokio_util::task::AbortOnDropHandle;
 
 use tracing::Level;
 
+use super::{CidrSet, ip_reassembler::IpReassembler};
+use crate::tunnel::common::bind;
 use crate::{
-    common::{error::Error, global_ctx::ArcGlobalCtx, scoped_task::ScopedTask, PeerId},
-    gateway::ip_reassembler::{compose_ipv4_packet, ComposeIpv4PacketArgs},
-    peers::{peer_manager::PeerManager, PeerPacketFilter},
+    common::{PeerId, error::Error, global_ctx::ArcGlobalCtx},
+    gateway::ip_reassembler::{ComposeIpv4PacketArgs, compose_ipv4_packet},
+    peers::{PeerPacketFilter, peer_manager::PeerManager},
     tunnel::{
-        common::{reserve_buf, setup_sokcet2},
+        common::reserve_buf,
         packet_def::{PacketType, ZCPacket},
     },
 };
-
-use super::{ip_reassembler::IpReassembler, CidrSet};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 struct UdpNatKey {
@@ -46,25 +47,26 @@ struct UdpNatEntry {
     src_peer_id: PeerId,
     my_peer_id: PeerId,
     src_socket: SocketAddr,
-    socket: UdpSocket,
+    socket: Option<UdpSocket>,
     forward_task: Mutex<Option<JoinHandle<()>>>,
     stopped: AtomicBool,
     start_time: std::time::Instant,
     last_active_time: AtomicCell<std::time::Instant>,
+    denied: bool,
 }
 
 impl UdpNatEntry {
     #[tracing::instrument(err(level = Level::WARN))]
-    fn new(src_peer_id: PeerId, my_peer_id: PeerId, src_socket: SocketAddr) -> Result<Self, Error> {
+    fn new(
+        src_peer_id: PeerId,
+        my_peer_id: PeerId,
+        src_socket: SocketAddr,
+        denied: bool,
+    ) -> Result<Self, Error> {
         // TODO: try use src port, so we will be ip restricted nat type
-        let socket2_socket = socket2::Socket::new(
-            socket2::Domain::IPV4,
-            socket2::Type::DGRAM,
-            Some(socket2::Protocol::UDP),
-        )?;
-        let dst_socket_addr = "0.0.0.0:0".parse().unwrap();
-        setup_sokcet2(&socket2_socket, &dst_socket_addr)?;
-        let socket = UdpSocket::from_std(socket2_socket.into())?;
+        let socket = (!denied)
+            .then(|| bind().addr("0.0.0.0:0".parse().unwrap()).call())
+            .transpose()?;
 
         Ok(Self {
             src_peer_id,
@@ -75,6 +77,7 @@ impl UdpNatEntry {
             stopped: AtomicBool::new(false),
             start_time: std::time::Instant::now(),
             last_active_time: AtomicCell::new(std::time::Instant::now()),
+            denied,
         })
     }
 
@@ -85,7 +88,7 @@ impl UdpNatEntry {
 
     async fn compose_ipv4_packet(
         self: &Arc<Self>,
-        packet_sender: &mut Sender<ZCPacket>,
+        packet_sender: &Sender<ZCPacket>,
         buf: &mut [u8],
         src_v4: &SocketAddrV4,
         payload_len: usize,
@@ -139,7 +142,7 @@ impl UdpNatEntry {
 
     async fn forward_task(
         self: Arc<Self>,
-        mut packet_sender: Sender<ZCPacket>,
+        packet_sender: Sender<ZCPacket>,
         virtual_ipv4: Ipv4Addr,
         real_ipv4: Ipv4Addr,
         mapped_ipv4: Ipv4Addr,
@@ -147,7 +150,7 @@ impl UdpNatEntry {
         let (s, mut r) = channel(128);
 
         let self_clone = self.clone();
-        let recv_task = ScopedTask::from(tokio::spawn(async move {
+        let recv_task = AbortOnDropHandle::new(tokio::spawn(async move {
             let mut cur_buf = BytesMut::new();
             loop {
                 if self_clone
@@ -165,7 +168,11 @@ impl UdpNatEntry {
 
                 let (len, src_socket) = match timeout(
                     Duration::from_secs(120),
-                    self_clone.socket.recv_buf_from(&mut cur_buf),
+                    self_clone
+                        .socket
+                        .as_ref()
+                        .unwrap()
+                        .recv_buf_from(&mut cur_buf),
                 )
                 .await
                 {
@@ -188,7 +195,7 @@ impl UdpNatEntry {
         }));
 
         let self_clone = self.clone();
-        let send_task = ScopedTask::from(tokio::spawn(async move {
+        let send_task = AbortOnDropHandle::new(tokio::spawn(async move {
             let mut ip_id = 1;
             while let Some((mut packet, len, src_socket)) = r.recv().await {
                 let SocketAddr::V4(mut src_v4) = src_socket else {
@@ -207,7 +214,7 @@ impl UdpNatEntry {
 
                 let Ok(_) = Self::compose_ipv4_packet(
                     &self_clone,
-                    &mut packet_sender,
+                    &packet_sender,
                     &mut packet,
                     &src_v4,
                     len,
@@ -239,7 +246,7 @@ impl UdpNatEntry {
 #[derive(Debug)]
 pub struct UdpProxy {
     global_ctx: ArcGlobalCtx,
-    peer_manager: Arc<PeerManager>,
+    peer_manager: Weak<PeerManager>,
 
     cidr_set: CidrSet,
 
@@ -298,6 +305,15 @@ impl UdpProxy {
             udp::UdpPacket::new(ipv4.payload())?
         };
 
+        // TODO: should it be async.
+        let dst_socket = if self.global_ctx.is_ip_local_virtual_ip(&real_dst_ip.into()) {
+            format!("127.0.0.1:{}", udp_packet.get_destination())
+                .parse()
+                .unwrap()
+        } else {
+            SocketAddr::new(real_dst_ip.into(), udp_packet.get_destination())
+        };
+
         tracing::trace!(
             ?packet,
             ?ipv4,
@@ -313,15 +329,28 @@ impl UdpProxy {
             .entry(nat_key)
             .or_try_insert_with::<Error>(|| {
                 tracing::info!(?packet, ?ipv4, ?udp_packet, "udp nat table entry created");
+                let denied = self.global_ctx.should_deny_proxy(
+                    &SocketAddr::new(real_dst_ip.into(), udp_packet.get_destination()),
+                    true,
+                );
                 let _g = self.global_ctx.net_ns.guard();
                 Ok(Arc::new(UdpNatEntry::new(
                     hdr.from_peer_id.get(),
                     hdr.to_peer_id.get(),
                     nat_key.src_socket,
+                    denied,
                 )?))
             })
             .ok()?
             .clone();
+
+        if nat_entry.denied {
+            tracing::debug!(
+                dst_port = udp_packet.get_destination(),
+                "dst socket is in running listeners, ignore it"
+            );
+            return Some(());
+        }
 
         if nat_entry.forward_task.lock().await.is_none() {
             nat_entry
@@ -339,21 +368,12 @@ impl UdpProxy {
 
         nat_entry.mark_active();
 
-        // TODO: should it be async.
-        let dst_socket = if Some(ipv4.get_destination())
-            == self.global_ctx.get_ipv4().as_ref().map(Ipv4Inet::address)
-        {
-            format!("127.0.0.1:{}", udp_packet.get_destination())
-                .parse()
-                .unwrap()
-        } else {
-            SocketAddr::new(real_dst_ip.into(), udp_packet.get_destination())
-        };
-
         let send_ret = {
             let _g = self.global_ctx.net_ns.guard();
             nat_entry
                 .socket
+                .as_ref()
+                .unwrap()
                 .send_to(udp_packet.payload(), dst_socket)
                 .await
         };
@@ -375,11 +395,10 @@ impl UdpProxy {
 #[async_trait::async_trait]
 impl PeerPacketFilter for UdpProxy {
     async fn try_process_packet_from_peer(&self, packet: ZCPacket) -> Option<ZCPacket> {
-        if self.try_handle_packet(&packet).await.is_some() {
-            return None;
-        } else {
-            return Some(packet);
-        }
+        self.try_handle_packet(&packet)
+            .await
+            .is_none()
+            .then_some(packet)
     }
 }
 
@@ -392,7 +411,7 @@ impl UdpProxy {
         let (sender, receiver) = channel(1024);
         let ret = Self {
             global_ctx,
-            peer_manager,
+            peer_manager: Arc::downgrade(&peer_manager),
             cidr_set,
             nat_table: Arc::new(DashMap::new()),
             sender,
@@ -404,7 +423,10 @@ impl UdpProxy {
     }
 
     pub async fn start(self: &Arc<Self>) -> Result<(), Error> {
-        self.peer_manager
+        let Some(peer_manager) = self.peer_manager.upgrade() else {
+            return Err(anyhow::anyhow!("peer manager is gone").into());
+        };
+        peer_manager
             .add_packet_process_pipeline(Box::new(self.clone()))
             .await;
 
@@ -437,14 +459,18 @@ impl UdpProxy {
         // forward packets to peer manager
         let mut receiver = self.receiver.lock().await.take().unwrap();
         let peer_manager = self.peer_manager.clone();
-        let is_latency_first = self.global_ctx.get_flags().latency_first;
+        let is_latency_first = self.global_ctx.latency_first();
         self.tasks.lock().await.spawn(async move {
             while let Some(mut msg) = receiver.recv().await {
                 let hdr = msg.mut_peer_manager_header().unwrap();
                 hdr.set_latency_first(is_latency_first);
                 let to_peer_id = hdr.to_peer_id.into();
                 tracing::trace!(?msg, ?to_peer_id, "udp nat packet response send");
-                let ret = peer_manager.send_msg_for_proxy(msg, to_peer_id).await;
+                let Some(pm) = peer_manager.upgrade() else {
+                    tracing::warn!("peer manager is gone, udp proxy send loop exit");
+                    return;
+                };
+                let ret = pm.send_msg_for_proxy(msg, to_peer_id).await;
                 if ret.is_err() {
                     tracing::error!("send icmp packet to peer failed: {:?}", ret);
                 }

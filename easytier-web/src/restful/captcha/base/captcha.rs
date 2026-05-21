@@ -2,8 +2,8 @@ use super::super::base::randoms::Randoms;
 
 use super::super::utils::color::Color;
 use super::super::utils::font;
-use base64::prelude::BASE64_STANDARD;
 use base64::Engine;
+use base64::prelude::BASE64_STANDARD;
 
 use rusttype::Font;
 use std::fmt::Debug;

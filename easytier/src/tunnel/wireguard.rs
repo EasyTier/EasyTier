@@ -2,42 +2,40 @@ use std::{
     fmt::{Debug, Formatter},
     net::SocketAddr,
     pin::Pin,
-    sync::{atomic::AtomicBool, Arc},
+    sync::{Arc, atomic::AtomicBool},
     time::Duration,
 };
 
-use anyhow::Context;
-use async_recursion::async_recursion;
-use async_trait::async_trait;
-use boringtun::{
-    noise::{errors::WireGuardError, Tunn, TunnResult},
-    x25519::{PublicKey, StaticSecret},
+use super::{
+    FromUrl, IpVersion, Tunnel, TunnelError, TunnelInfo, TunnelListener, TunnelUrl, ZCPacketSink,
+    ZCPacketStream,
+    common::wait_for_connect_futures,
+    generate_digest_from_str,
+    packet_def::{PEER_MANAGER_HEADER_SIZE, ZCPacketType},
+    ring::create_ring_tunnel_pair,
 };
-use bytes::BytesMut;
-use crossbeam::atomic::AtomicCell;
-use dashmap::DashMap;
-use futures::{stream::FuturesUnordered, SinkExt, StreamExt};
-use rand::RngCore;
-use tokio::{net::UdpSocket, sync::Mutex, task::JoinSet};
-
-use super::TunnelInfo;
+use crate::tunnel::common::{BindDev, bind};
 use crate::{
     common::shrink_dashmap,
     tunnel::{
         build_url_from_socket_addr,
         common::TunnelWrapper,
-        packet_def::{ZCPacket, WG_TUNNEL_HEADER_SIZE},
+        packet_def::{WG_TUNNEL_HEADER_SIZE, ZCPacket},
     },
 };
-
-use super::{
-    check_scheme_and_get_socket_addr,
-    common::{setup_sokcet2, setup_sokcet2_ext, wait_for_connect_futures},
-    generate_digest_from_str,
-    packet_def::{ZCPacketType, PEER_MANAGER_HEADER_SIZE},
-    ring::create_ring_tunnel_pair,
-    IpVersion, Tunnel, TunnelError, TunnelListener, TunnelUrl, ZCPacketSink, ZCPacketStream,
+use anyhow::Context;
+use async_recursion::async_recursion;
+use async_trait::async_trait;
+use boringtun::{
+    noise::{Tunn, TunnResult, errors::WireGuardError},
+    x25519::{PublicKey, StaticSecret},
 };
+use bytes::BytesMut;
+use crossbeam::atomic::AtomicCell;
+use dashmap::DashMap;
+use futures::{SinkExt, StreamExt, stream::FuturesUnordered};
+use rand::RngCore;
+use tokio::{net::UdpSocket, sync::Mutex, task::JoinSet};
 
 const MAX_PACKET: usize = 2048;
 
@@ -202,7 +200,10 @@ impl WgPeerData {
                 match self.udp.send_to(packet, self.endpoint).await {
                     Ok(_) => {}
                     Err(e) => {
-                        tracing::error!("Failed to send decapsulation-instructed packet to WireGuard endpoint: {:?}", e);
+                        tracing::error!(
+                            "Failed to send decapsulation-instructed packet to WireGuard endpoint: {:?}",
+                            e
+                        );
                         return;
                     }
                 };
@@ -214,7 +215,10 @@ impl WgPeerData {
                             match self.udp.send_to(packet, self.endpoint).await {
                                 Ok(_) => {}
                                 Err(e) => {
-                                    tracing::error!("Failed to send decapsulation-instructed packet to WireGuard endpoint: {:?}", e);
+                                    tracing::error!(
+                                        "Failed to send decapsulation-instructed packet to WireGuard endpoint: {:?}",
+                                        e
+                                    );
                                     break;
                                 }
                             };
@@ -327,11 +331,7 @@ impl WgPeerData {
     }
 
     fn remove_ip_header<'a>(&self, packet: &'a [u8], is_v4: bool) -> &'a [u8] {
-        if is_v4 {
-            &packet[20..]
-        } else {
-            &packet[40..]
-        }
+        if is_v4 { &packet[20..] } else { &packet[40..] }
     }
 }
 
@@ -534,6 +534,9 @@ impl WgTunnelListener {
                         remote_addr: Some(
                             build_url_from_socket_addr(&addr.to_string(), "wg").into(),
                         ),
+                        resolved_remote_addr: Some(
+                            build_url_from_socket_addr(&addr.to_string(), "wg").into(),
+                        ),
                     }),
                 ));
                 if let Err(e) = conn_sender.send(tunnel) {
@@ -550,24 +553,16 @@ impl WgTunnelListener {
 
 #[async_trait]
 impl TunnelListener for WgTunnelListener {
-    async fn listen(&mut self) -> Result<(), super::TunnelError> {
-        let addr =
-            check_scheme_and_get_socket_addr::<SocketAddr>(&self.addr, "wg", IpVersion::Both)
-                .await?;
-        let socket2_socket = socket2::Socket::new(
-            socket2::Domain::for_address(addr),
-            socket2::Type::DGRAM,
-            Some(socket2::Protocol::UDP),
-        )?;
-
+    async fn listen(&mut self) -> Result<(), TunnelError> {
+        let addr = SocketAddr::from_url(self.addr.clone(), IpVersion::Both).await?;
         let tunnel_url: TunnelUrl = self.addr.clone().into();
-        if let Some(bind_dev) = tunnel_url.bind_dev() {
-            setup_sokcet2_ext(&socket2_socket, &addr, Some(bind_dev))?;
-        } else {
-            setup_sokcet2(&socket2_socket, &addr)?;
-        }
-
-        self.udp = Some(Arc::new(UdpSocket::from_std(socket2_socket.into())?));
+        self.udp = Some(Arc::new(
+            bind()
+                .addr(addr)
+                .only_v6(true)
+                .maybe_dev(tunnel_url.bind_dev())
+                .call()?,
+        ));
         self.addr
             .set_port(Some(self.udp.as_ref().unwrap().local_addr()?.port()))
             .unwrap();
@@ -603,6 +598,7 @@ pub struct WgTunnelConnector {
 
     bind_addrs: Vec<SocketAddr>,
     ip_version: IpVersion,
+    resolved_addr: Option<SocketAddr>,
 }
 
 impl Debug for WgTunnelConnector {
@@ -622,6 +618,7 @@ impl WgTunnelConnector {
             udp: None,
             bind_addrs: vec![],
             ip_version: IpVersion::Both,
+            resolved_addr: None,
         }
     }
 
@@ -683,6 +680,9 @@ impl WgTunnelConnector {
                 tunnel_type: "wg".to_owned(),
                 local_addr: Some(super::build_url_from_socket_addr(&local_addr, "wg").into()),
                 remote_addr: Some(addr_url.into()),
+                resolved_remote_addr: Some(
+                    super::build_url_from_socket_addr(&addr.to_string(), "wg").into(),
+                ),
             }),
             Some(Box::new(wg_peer)),
         ));
@@ -690,17 +690,12 @@ impl WgTunnelConnector {
         Ok(ret)
     }
 
-    async fn connect_with_ipv6(
-        &mut self,
-        addr: SocketAddr,
-    ) -> Result<Box<dyn Tunnel>, TunnelError> {
-        let socket2_socket = socket2::Socket::new(
-            socket2::Domain::for_address(addr),
-            socket2::Type::DGRAM,
-            Some(socket2::Protocol::UDP),
-        )?;
-        setup_sokcet2_ext(&socket2_socket, &"[::]:0".parse().unwrap(), None)?;
-        let socket = UdpSocket::from_std(socket2_socket.into())?;
+    async fn connect_with_ipv6(&self, addr: SocketAddr) -> Result<Box<dyn Tunnel>, TunnelError> {
+        let socket = bind()
+            .addr("[::]:0".parse().unwrap())
+            .dev(BindDev::Disabled)
+            .only_v6(true)
+            .call()?;
         Self::connect_with_socket(self.addr.clone(), self.config.clone(), socket, addr).await
     }
 }
@@ -708,13 +703,11 @@ impl WgTunnelConnector {
 #[async_trait]
 impl super::TunnelConnector for WgTunnelConnector {
     #[tracing::instrument]
-    async fn connect(&mut self) -> Result<Box<dyn super::Tunnel>, super::TunnelError> {
-        let addr = super::check_scheme_and_get_socket_addr::<SocketAddr>(
-            &self.addr,
-            "wg",
-            self.ip_version,
-        )
-        .await?;
+    async fn connect(&mut self) -> Result<Box<dyn Tunnel>, TunnelError> {
+        let addr = match self.resolved_addr {
+            Some(addr) => addr,
+            None => SocketAddr::from_url(self.addr.clone(), self.ip_version).await?,
+        };
 
         if addr.is_ipv6() {
             return self.connect_with_ipv6(addr).await;
@@ -727,29 +720,19 @@ impl super::TunnelConnector for WgTunnelConnector {
         };
         let futures = FuturesUnordered::new();
         for bind_addr in bind_addrs.into_iter() {
-            let socket2_socket = socket2::Socket::new(
-                socket2::Domain::for_address(bind_addr),
-                socket2::Type::DGRAM,
-                Some(socket2::Protocol::UDP),
-            )?;
-            if let Err(e) = setup_sokcet2(&socket2_socket, &bind_addr) {
-                tracing::error!(bind_addr = ?bind_addr, ?addr, "bind addr fail: {:?}", e);
-                continue;
-            }
-            let socket = match UdpSocket::from_std(socket2_socket.into()) {
-                Ok(s) => s,
-                Err(e) => {
-                    tracing::error!(bind_addr = ?bind_addr, ?addr, "create udp socket fail: {:?}", e);
+            tracing::info!(?bind_addr, ?addr, "bind addr");
+            match bind().addr(bind_addr).only_v6(true).call() {
+                Ok(socket) => futures.push(Self::connect_with_socket(
+                    self.addr.clone(),
+                    self.config.clone(),
+                    socket,
+                    addr,
+                )),
+                Err(error) => {
+                    tracing::error!(?error, ?bind_addr, ?addr, "bind addr fail");
                     continue;
                 }
-            };
-            tracing::info!(?bind_addr, ?self.addr, "prepare wg connect task");
-            futures.push(Self::connect_with_socket(
-                self.addr.clone(),
-                self.config.clone(),
-                socket,
-                addr,
-            ));
+            }
         }
 
         wait_for_connect_futures(futures).await
@@ -766,14 +749,18 @@ impl super::TunnelConnector for WgTunnelConnector {
     fn set_ip_version(&mut self, ip_version: IpVersion) {
         self.ip_version = ip_version;
     }
+
+    fn set_resolved_addr(&mut self, addr: SocketAddr) {
+        self.resolved_addr = Some(addr);
+    }
 }
 
 #[cfg(test)]
 pub mod tests {
     use super::*;
     use crate::tunnel::{
-        common::tests::{_tunnel_bench, _tunnel_pingpong},
         TunnelConnector,
+        common::tests::{_tunnel_bench, _tunnel_pingpong},
     };
     use boringtun::*;
 

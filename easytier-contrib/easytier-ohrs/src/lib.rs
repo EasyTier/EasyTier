@@ -3,6 +3,7 @@ mod native_log;
 use easytier::common::config::{ConfigFileControl, ConfigLoader, TomlConfigLoader};
 use easytier::common::constants::EASYTIER_VERSION;
 use easytier::instance_manager::NetworkInstanceManager;
+use easytier::proto::api::manage::NetworkConfig;
 use napi_derive_ohos::napi;
 use ohos_hilog_binding::{hilog_debug, hilog_error};
 use std::format;
@@ -43,9 +44,46 @@ pub fn set_tun_fd(inst_id: String, fd: i32) -> bool {
 }
 
 #[napi]
-pub fn parse_config(cfg_str: String) -> bool {
+pub fn default_network_config() -> String {
+    match NetworkConfig::new_from_config(TomlConfigLoader::default()) {
+        Ok(result) => serde_json::to_string(&result).unwrap_or_else(|e| format!("ERROR {}", e)),
+        Err(e) => {
+            hilog_error!("[Rust] default_network_config failed {}", e);
+            format!("ERROR {}", e)
+        }
+    }
+}
+
+#[napi]
+pub fn convert_toml_to_network_config(cfg_str: String) -> String {
     match TomlConfigLoader::new_from_str(&cfg_str) {
-        Ok(_) => true,
+        Ok(cfg) => match NetworkConfig::new_from_config(cfg) {
+            Ok(result) => serde_json::to_string(&result).unwrap_or_else(|e| format!("ERROR {}", e)),
+            Err(e) => {
+                hilog_error!("[Rust] convert_toml_to_network_config failed {}", e);
+                format!("ERROR {}", e)
+            }
+        },
+        Err(e) => {
+            hilog_error!("[Rust] convert_toml_to_network_config failed {}", e);
+            format!("ERROR {}", e)
+        }
+    }
+}
+
+#[napi]
+pub fn parse_network_config(cfg_json: String) -> bool {
+    match serde_json::from_str::<NetworkConfig>(&cfg_json) {
+        Ok(cfg) => match cfg.gen_config() {
+            Ok(toml) => {
+                hilog_debug!("[Rust] Convert to Toml {}", toml.dump());
+                true
+            }
+            Err(e) => {
+                hilog_error!("[Rust] parse config failed {}", e);
+                false
+            }
+        },
         Err(e) => {
             hilog_error!("[Rust] parse config failed {}", e);
             false
@@ -54,9 +92,15 @@ pub fn parse_config(cfg_str: String) -> bool {
 }
 
 #[napi]
-pub fn run_network_instance(cfg_str: String) -> bool {
-    let cfg = match TomlConfigLoader::new_from_str(&cfg_str) {
-        Ok(cfg) => cfg,
+pub fn run_network_instance(cfg_json: String) -> bool {
+    let cfg = match serde_json::from_str::<NetworkConfig>(&cfg_json) {
+        Ok(cfg) => match cfg.gen_config() {
+            Ok(toml) => toml,
+            Err(e) => {
+                hilog_error!("[Rust] parse config failed {}", e);
+                return false;
+            }
+        },
         Err(e) => {
             hilog_error!("[Rust] parse config failed {}", e);
             return false;

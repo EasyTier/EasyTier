@@ -14,20 +14,22 @@ pub mod acl_processor;
 pub mod compressor;
 pub mod config;
 pub mod constants;
-pub mod defer;
 pub mod dns;
+pub mod env_parser;
 pub mod error;
 pub mod global_ctx;
 pub mod idn;
 pub mod ifcfg;
+pub mod log;
 pub mod netns;
 pub mod network;
-pub mod scoped_task;
+pub mod os_info;
 pub mod stats_manager;
 pub mod stun;
 pub mod stun_codec_ext;
 pub mod token_bucket;
 pub mod tracing_rolling_appender;
+pub mod upnp;
 
 pub fn get_logger_timer<F: time::formatting::Formattable>(
     format: F,
@@ -38,8 +40,8 @@ pub fn get_logger_timer<F: time::formatting::Formattable>(
     tracing_subscriber::fmt::time::OffsetTime::new(local_offset, format)
 }
 
-pub fn get_logger_timer_rfc3339(
-) -> tracing_subscriber::fmt::time::OffsetTime<time::format_description::well_known::Rfc3339> {
+pub fn get_logger_timer_rfc3339()
+-> tracing_subscriber::fmt::time::OffsetTime<time::format_description::well_known::Rfc3339> {
     get_logger_timer(time::format_description::well_known::Rfc3339)
 }
 
@@ -100,6 +102,9 @@ pub fn set_default_machine_id(mid: Option<String>) {
 
 pub fn get_machine_id() -> uuid::Uuid {
     if let Some(default_mid) = use_global_var!(MACHINE_UID) {
+        if let Ok(mid) = uuid::Uuid::parse_str(default_mid.trim()) {
+            return mid;
+        }
         let mut b = [0u8; 16];
         crate::tunnel::generate_digest_from_str("", &default_mid, &mut b);
         return uuid::Uuid::from_bytes(b);
@@ -111,15 +116,15 @@ pub fn get_machine_id() -> uuid::Uuid {
         .unwrap_or_else(|_| std::path::PathBuf::from("et_machine_id"));
 
     // try load from local file
-    if let Ok(mid) = std::fs::read_to_string(&machine_id_file) {
-        if let Ok(mid) = uuid::Uuid::parse_str(mid.trim()) {
-            return mid;
-        }
+    if let Ok(mid) = std::fs::read_to_string(&machine_id_file)
+        && let Ok(mid) = uuid::Uuid::parse_str(mid.trim())
+    {
+        return mid;
     }
 
     #[cfg(any(
         target_os = "linux",
-        target_os = "macos",
+        all(target_os = "macos", not(feature = "macos-ne")),
         target_os = "windows",
         target_os = "freebsd"
     ))]
@@ -136,7 +141,7 @@ pub fn get_machine_id() -> uuid::Uuid {
 
     #[cfg(not(any(
         target_os = "linux",
-        target_os = "macos",
+        all(target_os = "macos", not(feature = "macos-ne")),
         target_os = "windows",
         target_os = "freebsd"
     )))]
@@ -204,5 +209,13 @@ mod tests {
         tokio::time::sleep(std::time::Duration::from_secs(2)).await;
         assert_eq!(weak_js.weak_count(), 0);
         assert_eq!(weak_js.strong_count(), 0);
+    }
+
+    #[test]
+    fn test_get_machine_id_uses_uuid_seed_verbatim() {
+        let raw = "33333333-3333-3333-3333-333333333333".to_string();
+        set_default_machine_id(Some(raw.clone()));
+        assert_eq!(get_machine_id(), uuid::Uuid::parse_str(&raw).unwrap());
+        set_default_machine_id(None);
     }
 }

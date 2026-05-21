@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -30,4 +32,13 @@ pub struct StartVpnRequest {
 #[serde(rename_all = "camelCase")]
 pub struct Status {
     pub error_msg: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VpnStatus {
+    pub running: bool,
+    pub ipv4_addr: Option<String>,
+    pub routes: Option<Vec<String>>,
+    pub dns: Option<String>,
 }

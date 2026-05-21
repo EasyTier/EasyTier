@@ -1,4 +1,5 @@
 use hmac::{Hmac, Mac};
+use prost::Message;
 use sha2::Sha256;
 
 use crate::common::PeerId;
@@ -35,6 +36,57 @@ impl PeerGroupInfo {
         verifier.update(&data_to_sign);
 
         verifier.verify_slice(&self.group_proof).is_ok()
+    }
+}
+
+impl TrustedCredentialPubkeyProof {
+    pub fn generate_credential_hmac_from_bytes(
+        credential_bytes: &[u8],
+        network_secret: &str,
+    ) -> Vec<u8> {
+        let mut mac = Hmac::<Sha256>::new_from_slice(network_secret.as_bytes())
+            .expect("HMAC can take key of any size");
+        mac.update(b"easytier credential proof");
+        mac.update(credential_bytes);
+        mac.finalize().into_bytes().to_vec()
+    }
+
+    pub fn generate_credential_hmac(
+        credential: &TrustedCredentialPubkey,
+        network_secret: &str,
+    ) -> Vec<u8> {
+        Self::generate_credential_hmac_from_bytes(&credential.encode_to_vec(), network_secret)
+    }
+
+    pub fn new_signed(credential: TrustedCredentialPubkey, network_secret: &str) -> Self {
+        let credential_hmac = Self::generate_credential_hmac(&credential, network_secret);
+        Self {
+            credential: Some(credential),
+            credential_hmac,
+        }
+    }
+
+    pub fn verify_credential_hmac(&self, network_secret: &str) -> bool {
+        let Some(credential) = self.credential.as_ref() else {
+            return false;
+        };
+        self.verify_credential_hmac_with_bytes(&credential.encode_to_vec(), network_secret)
+    }
+
+    pub fn verify_credential_hmac_with_bytes(
+        &self,
+        credential_bytes: &[u8],
+        network_secret: &str,
+    ) -> bool {
+        if self.credential_hmac.is_empty() {
+            return false;
+        }
+
+        let mut mac = Hmac::<Sha256>::new_from_slice(network_secret.as_bytes())
+            .expect("HMAC can take key of any size");
+        mac.update(b"easytier credential proof");
+        mac.update(credential_bytes);
+        mac.verify_slice(&self.credential_hmac).is_ok()
     }
 }
 
@@ -243,7 +295,7 @@ mod tests {
         let iterations = 100000;
 
         let peer_group_info =
-            PeerGroupInfo::generate_with_proof(group_name.clone(), group_secret.clone(), peer_id);
+            PeerGroupInfo::generate_with_proof(group_name, group_secret.clone(), peer_id);
 
         let start = std::time::Instant::now();
         for _ in 0..iterations {
@@ -253,5 +305,69 @@ mod tests {
 
         println!("verify took {:?} for {} iterations", duration, iterations);
         println!("Avg time per iteration: {:?}", duration / iterations as u32);
+    }
+
+    #[test]
+    fn test_trusted_credential_pubkey_hmac_valid() {
+        let credential = TrustedCredentialPubkey {
+            pubkey: vec![7u8; 32],
+            groups: vec!["ops".to_string(), "guest".to_string()],
+            allow_relay: true,
+            expiry_unix: 123456,
+            allowed_proxy_cidrs: vec!["10.0.0.0/24".to_string()],
+            reusable: Some(true),
+        };
+        let tc = TrustedCredentialPubkeyProof::new_signed(credential, "sec-1");
+
+        assert!(tc.verify_credential_hmac("sec-1"));
+        assert!(!tc.verify_credential_hmac("sec-2"));
+    }
+
+    #[test]
+    fn test_trusted_credential_pubkey_hmac_tampered() {
+        let credential = TrustedCredentialPubkey {
+            pubkey: vec![8u8; 32],
+            groups: vec!["g1".to_string()],
+            allow_relay: false,
+            expiry_unix: 1,
+            allowed_proxy_cidrs: vec![],
+            reusable: Some(true),
+        };
+        let tc = TrustedCredentialPubkeyProof::new_signed(credential, "sec-1");
+
+        let mut tampered = tc.clone();
+        tampered.credential.as_mut().unwrap().allow_relay = true;
+        assert!(!tampered.verify_credential_hmac("sec-1"));
+    }
+
+    #[test]
+    fn test_trusted_credential_pubkey_hmac_with_raw_bytes() {
+        let credential = TrustedCredentialPubkey {
+            pubkey: vec![9u8; 32],
+            groups: vec!["raw".to_string()],
+            allow_relay: true,
+            expiry_unix: 123456,
+            allowed_proxy_cidrs: vec![],
+            reusable: Some(true),
+        };
+
+        let mut raw_credential_bytes = credential.encode_to_vec();
+        prost::encoding::encode_key(
+            9999,
+            prost::encoding::WireType::Varint,
+            &mut raw_credential_bytes,
+        );
+        prost::encoding::encode_varint(42, &mut raw_credential_bytes);
+
+        let proof = TrustedCredentialPubkeyProof {
+            credential: Some(credential),
+            credential_hmac: TrustedCredentialPubkeyProof::generate_credential_hmac_from_bytes(
+                &raw_credential_bytes,
+                "sec-1",
+            ),
+        };
+
+        assert!(proof.verify_credential_hmac_with_bytes(&raw_credential_bytes, "sec-1"));
+        assert!(!proof.verify_credential_hmac("sec-1"));
     }
 }

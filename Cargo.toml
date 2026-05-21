@@ -15,6 +15,10 @@ exclude = [
     "easytier-contrib/easytier-ohrs", # it needs ohrs sdk
 ]
 
+[workspace.package]
+edition = "2024"
+rust-version = "1.95"
+
 [profile.dev]
 panic = "unwind"
 debug = 2

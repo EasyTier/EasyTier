@@ -9,14 +9,14 @@ use super::super::{CaptchaFont, NewCaptcha};
 
 use image::{ImageBuffer, Rgba};
 use imageproc::drawing;
-use rand::{rngs::ThreadRng, Rng};
+use rand::{Rng, rngs::ThreadRng};
 use rusttype::{Font, Scale};
 use std::io::{Cursor, Write};
 use std::sync::Arc;
 
 mod color {
     use image::Rgba;
-    use rand::{rngs::ThreadRng, Rng};
+    use rand::{Rng, rngs::ThreadRng};
     pub fn gen_background_color(rng: &mut ThreadRng) -> Rgba<u8> {
         let red = rng.gen_range(200..=255);
         let green = rng.gen_range(200..=255);
@@ -133,7 +133,7 @@ impl<'a, 'b> CaptchaBuilder<'a, 'b> {
 
     fn draw_line(&self, image: &mut ImageBuffer<Rgba<u8>, Vec<u8>>, rng: &mut ThreadRng) {
         let line_color = color::gen_line_color(rng);
-        let is_h = rng.gen();
+        let is_h = rng.r#gen();
         let (start, end) = if is_h {
             let xa = rng.gen_range(0.0..(self.width as f32) / 2.0);
             let ya = rng.gen_range(0.0..(self.height as f32));

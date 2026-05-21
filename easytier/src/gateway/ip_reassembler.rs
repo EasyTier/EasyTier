@@ -1,7 +1,7 @@
 use dashmap::DashMap;
+use pnet::packet::Packet;
 use pnet::packet::ip::IpNextHeaderProtocol;
 use pnet::packet::ipv4::{self, Ipv4Flags, Ipv4Packet, MutableIpv4Packet};
-use pnet::packet::Packet;
 use std::net::Ipv4Addr;
 use std::time::{Duration, Instant};
 
@@ -45,13 +45,25 @@ impl IpPacket {
         // make sure the fragment doesn't overlap with existing fragments
         for f in &self.fragments {
             if f.offset <= fragment.offset && fragment.offset < f.offset + f.data.len() as u16 {
-                tracing::trace!("fragment overlap 1, f.offset = {}, fragment.offset = {}, f.data.len() = {}, fragment.data.len() = {}", f.offset, fragment.offset, f.data.len(), fragment.data.len());
+                tracing::trace!(
+                    "fragment overlap 1, f.offset = {}, fragment.offset = {}, f.data.len() = {}, fragment.data.len() = {}",
+                    f.offset,
+                    fragment.offset,
+                    f.data.len(),
+                    fragment.data.len()
+                );
                 return;
             }
             if fragment.offset <= f.offset
                 && f.offset < fragment.offset + fragment.data.len() as u16
             {
-                tracing::trace!("fragment overlap 2, f.offset = {}, fragment.offset = {}, f.data.len() = {}, fragment.data.len() = {}", f.offset, fragment.offset, f.data.len(), fragment.data.len());
+                tracing::trace!(
+                    "fragment overlap 2, f.offset = {}, fragment.offset = {}, f.data.len() = {}, fragment.data.len() = {}",
+                    f.offset,
+                    fragment.offset,
+                    f.data.len(),
+                    fragment.data.len()
+                );
                 return;
             }
         }

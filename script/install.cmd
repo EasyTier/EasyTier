@@ -2,47 +2,187 @@
 @ECHO off
 SETLOCAL EnableDelayedExpansion
 TITLE Initializing Script...
-CD /d %~dp0   
-SET ScriptPath=\^"%~f0\^"
-SET ScriptRoot=%~dp0
-SET ScriptRoot=\^"!ScriptRoot:~0,-1!\^"
-SET Args=%*
-IF DEFINED Args (SET Args=!Args:"=\"!)
+CD /d %~dp0
 <NUL SET /p="Checking PowerShell ... "
 WHERE /q PowerShell 
-IF !ERRORLEVEL! NEQ 0 (ECHO PowerShell is not installed. & PAUSE & EXIT)
+IF !ERRORLEVEL! NEQ 0 ( ECHO PowerShell is not installed. & PAUSE & EXIT )
+ECHO OK
+<NUL SET /p="Checking PowerShell version ... "
 PowerShell -Command "if ($PSVersionTable.PSVersion.Major -lt 3) { exit 1 }"
-IF !ERRORLEVEL! NEQ 0 (ECHO Requires PowerShell 3 or later. & PAUSE & EXIT)
+IF !ERRORLEVEL! NEQ 0 ( ECHO Requires PowerShell 3 or later. & PAUSE & EXIT )
 ECHO OK
 <NUL SET /p="Checking execute permissions ... "
 PowerShell -Command "if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) { exit 1 }"
-IF !ERRORLEVEL! NEQ 0 (CLS & ECHO Restart with administrator privileges ... & PowerShell -Command "Start-Process cmd.exe -Verb RunAs -ArgumentList '/k CD /d !ScriptRoot! && !ScriptPath! !Args!'" & EXIT)
+IF !ERRORLEVEL! NEQ 0 (
+    ECHO Fail
+    ECHO Restart with administrator privileges ... 
+    SET args=%*
+    IF DEFINED args (
+        SET args=!args:'=''!
+        SET args=!args:"=\"!
+    )
+    PowerShell -NoProfile -Command "Start-Process 'cmd.exe' -Verb RunAs -WorkingDirectory '%~dp0' -ArgumentList '/d /s /k \"\"%~f0\" !args!\"'"
+    EXIT
+)
 ECHO OK
 <NUL SET /p="Extract embedded script ... "
-PowerShell -Command "$content = (Get-Content -Path '%~f0' -Encoding UTF8 | Out-String) -replace '(?s)' + [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('OjpCQVRDSF9TVEFSVA==')) + '.*?' + [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('OjpCQVRDSF9FTkQ=')); Set-Content -Path '%~f0.ps1' -Value $content.Trim() -Encoding UTF8"
-IF !ERRORLEVEL! NEQ 0 (ECHO Embedded script section not found. & PAUSE & EXIT)
+PowerShell -Command "$content = (Get-Content -Path '%~f0' -Encoding UTF8 | Out-String) -replace '(?s)' + [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('OjpCQVRDSF9TVEFSVA==')) + '.*?' + [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('OjpCQVRDSF9FTkQ=')); Set-Content -Path '%~n0.ps1' -Value $content -Encoding UTF8"
+IF !ERRORLEVEL! NEQ 0 ( ECHO Embedded script section not found. & PAUSE & EXIT )
 ECHO OK
-<NUL SET /p="Execute script ... "
-PowerShell -NoProfile -ExecutionPolicy Bypass -File "%~f0.ps1" %*
-ECHO OK
+ECHO Execute script
+PowerShell -NoProfile -ExecutionPolicy Bypass -File "%~n0.ps1" %*
 <NUL SET /p="Delete script ... "
-DEL /f /q "%~f0.ps1"
+DEL /f /q "%~n0.ps1"
 ECHO OK
 EXIT
 ::BATCH_END
 param(
     [Parameter(Mandatory = $false)]
-    [string]$ServiceName = "EasyTierService",
+    [Alias("h", "?")]
+    [switch]$Help,
+
     [Parameter(Mandatory = $false)]
-    [switch]$Uninstall
+    [Alias("u")]
+    [switch]$Update,
+
+    [Parameter(Mandatory = $false)]
+    [Alias("x")]
+    [switch]$Uninstall,
+    
+    [Parameter(Mandatory = $false)]
+    [Alias("ughp")]
+    [switch]$UseGitHubProxy = $false,
+
+    [Parameter(Mandatory = $false)]
+    [Alias("ghp")]
+    [string]$GitHubProxy = "https://ghfast.top/",
+
+    [Parameter(Mandatory = $false)]
+    [Alias("up")]
+    [switch]$UseProxy = $false,
+
+    [Parameter(Mandatory = $false)]
+    [Alias("p")]
+    [string]$Proxy = "http://127.0.0.1:7890",
+
+    [Parameter(Mandatory = $false)]
+    [Alias("c")]
+    [string]$ConfigType,
+
+    [Parameter(Mandatory = $false)]
+    [Alias("n")]
+    [string]$ServiceName = "EasyTierService",
+
+    [Parameter(ValueFromRemainingArguments = $true)]
+    [string[]]$ServiceArgs
 )
-[System.Threading.Thread]::CurrentThread.CurrentCulture = [System.Globalization.CultureInfo]::GetCultureInfo("zh-CN")
-[System.Threading.Thread]::CurrentThread.CurrentUICulture = [System.Globalization.CultureInfo]::GetCultureInfo("zh-CN")
+
+try {
+    $culture = [System.Globalization.CultureInfo]::CurrentCulture
+    [System.Threading.Thread]::CurrentThread.CurrentCulture = $culture
+    [System.Threading.Thread]::CurrentThread.CurrentUICulture = $culture
+    [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+}
+catch {
+    throw "环境初始化未成功，若运行正常请无视此消息`n$_"
+}
+function Invoke-WebRequestCompatible {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Uri,
+        [Parameter(Mandatory = $false)]
+        [string]$OutFile
+    )
+
+    if ($PSVersionTable.PSVersion.Major -lt 5) {
+        try {
+            $client = New-Object System.Net.WebClient
+            if ($UseProxy) {
+                $client.Proxy = New-Object System.Net.WebProxy($Proxy)
+            }
+            if ($OutFile) {
+                $client.DownloadFile($Uri, $OutFile)
+                return $null
+            }
+            else {
+                $response = $client.DownloadString($Uri)
+                return $response
+            }
+        }
+        catch {
+            throw "[兼容模式]Invoke-WebRequest`n$_"
+        }
+    }
+    else {
+        $params = @{
+            Uri             = $Uri
+            UseBasicParsing = $true
+        }
+        if ($UseProxy) {
+            $params.Proxy = $Proxy
+        }
+        if ($OutFile) {
+            $params.OutFile = $OutFile
+            Invoke-WebRequest @params
+        }
+        else {
+            Invoke-WebRequest @params
+        }
+    }
+}
+function Invoke-RestMethodCompatible {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Uri
+    )
+
+    if ($PSVersionTable.PSVersion.Major -lt 5) {
+        $rawJson = Invoke-WebRequestCompatible -Uri $Uri
+        try {
+            return $rawJson | ConvertFrom-Json
+        }
+        catch {
+            throw "[兼容模式]Invoke-RestMethod`n$_"
+        }
+    }
+    else {
+        $params = @{
+            Uri             = $Uri
+            UseBasicParsing = $true
+        }
+        if ($UseProxy) {
+            $params.Proxy = $Proxy
+        }
+        return Invoke-RestMethod @params
+    }
+}
+function Expand-ZipFile {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$ZipPath,
+        [Parameter(Mandatory = $true)]
+        [string]$DestinationPath
+    )
+
+    if ($PSVersionTable.PSVersion.Major -lt 5) {
+        try {
+            Add-Type -AssemblyName System.IO.Compression.FileSystem -ErrorAction SilentlyContinue
+            [System.IO.Compression.ZipFile]::ExtractToDirectory($ZipPath, $DestinationPath)
+        }
+        catch {
+            throw "[兼容模式]Expand-Archive`n$_"
+        }
+    }
+    else {
+        Expand-Archive -Path $ZipPath -DestinationPath $DestinationPath -Force
+    }
+}
 function Show-Pause {
     [CmdletBinding()]
     param(
-        [Parameter(Position = 0)]
-        [string]$Text = "按任意键继续...",
+        [Parameter(Mandatory = $false)]
+        [string]$Text = "请按任意键继续...",
+        [Parameter(Mandatory = $false)]
         [string]$Color = "Cyan"
     )
     Write-Host "$Text" -ForegroundColor $Color
@@ -74,219 +214,6 @@ function Show-YesNoPrompt {
         return $false
     }
 }
-function Show-MultipleChoicePrompt {
-    [CmdletBinding()]
-    param(
-        [Parameter(Mandatory = $true, Position = 0)]
-        [ValidateNotNullOrEmpty()]
-        [string]$Message,
-        [Parameter(Mandatory = $true, Position = 1)]
-        [ValidateNotNullOrEmpty()]
-        [string[]]$Options,
-        [string[]]$Helps = @(),
-        [string]$Title = "",
-        [int]$DefaultIndex = 0
-    )
-    if ($Helps.Count -eq 0) {
-        $Helps = @("")
-        for ($i = 1; $i -lt $Options.Count; $i++) {
-            $Helps += ""
-        }
-    }
-    if ($Options.Count -ne $Helps.Count) {
-        throw "Options 和 Helps 的数量必须相同。"
-    }
-    if ($DefaultIndex -ge $Options.Count) {
-        $DefaultIndex = $Options.Count - 1
-    }
-    $currentSelection = $DefaultIndex
-    function Show-Menu {
-        param(
-            [int]$highlightIndex,
-            [string]$title,
-            [string]$message,
-            [string[]]$options,
-            [string[]]$helps,
-            [int]$prevIndex = -1
-        )
-        try {
-            # 首次显示时绘制完整菜单
-            if ($prevIndex -eq -1) {
-                Clear-Host
-                if (-not [string]::IsNullOrEmpty($title)) {
-                    Write-Host "$title`n" -ForegroundColor Blue
-                }
-                Write-Host "$message" -ForegroundColor Yellow
-                # 保存初始光标位置
-                $script:menuTop = [Console]::CursorTop
-                # 首次绘制所有选项
-                for ($i = 0; $i -lt $options.Count; $i++) {
-                    $prefix = if ($i -eq $highlightIndex) { "[>]" } else { "[ ]" }
-                    $color = if ($i -eq $highlightIndex) { "Green" } else { "Gray" }
-                    Write-Host "$prefix $($options[$i])" -ForegroundColor $color -NoNewline
-                    Write-Host $(if (-not [string]::IsNullOrEmpty($helps[$i])) { " - $($helps[$i])" } else { "" }) -ForegroundColor DarkGray
-                }
-            }
-            # 只更新变化的选项
-            if ($prevIndex -ne -1) {
-                $safePrevPos = [Math]::Min([Console]::WindowHeight - 1, $menuTop + $prevIndex)
-                [Console]::SetCursorPosition(0, $safePrevPos)
-                Write-Host "[ ] $($options[$prevIndex])" -ForegroundColor Gray -NoNewline
-                Write-Host $(if (-not [string]::IsNullOrEmpty($helps[$prevIndex])) { " - $($helps[$prevIndex])" } else { "" }) -ForegroundColor DarkGray
-            }
-            $safeHighlightPos = [Math]::Min([Console]::WindowHeight - 1, $menuTop + $highlightIndex)
-            [Console]::SetCursorPosition(0, $safeHighlightPos)
-            Write-Host "[>] $($options[$highlightIndex])" -ForegroundColor Green -NoNewline
-            Write-Host $(if (-not [string]::IsNullOrEmpty($helps[$highlightIndex])) { " - $($helps[$highlightIndex])" } else { "" }) -ForegroundColor DarkGray
-            # 首次显示时绘制操作提示
-            if ($prevIndex -eq -1) {
-                $safePos = [Math]::Min([Console]::WindowHeight - 2, $menuTop + $options.Count)
-                [Console]::SetCursorPosition(0, $safePos)
-                Write-Host "操作: 使用 ↑ / ↓ 移动 | Enter - 确认"
-            }
-        }
-        finally {
-            # 将光标移动到操作提示下方等待位置
-            $waitPos = [Math]::Min([Console]::WindowHeight - 1, $menuTop + $options.Count + 1)
-            [Console]::SetCursorPosition(0, $waitPos)
-        }
-    }
-    $prevSelection = -1
-    while ($true) {
-        Show-Menu -highlightIndex $currentSelection -title $Title -message $Message -options $Options -helps $Helps -prevIndex $prevSelection
-        $prevSelection = $currentSelection
-        $key = [System.Console]::ReadKey($true)
-        switch ($key.Key) {
-            { $_ -eq [ConsoleKey]::UpArrow } {
-                $currentSelection = [Math]::Max(0, $currentSelection - 1)
-            }
-            { $_ -eq [ConsoleKey]::DownArrow } {
-                $currentSelection = [Math]::Min($Options.Count - 1, $currentSelection + 1)
-            }
-            { $_ -eq [ConsoleKey]::Enter } {
-                Clear-Host
-                return $currentSelection
-            }
-        }
-    }
-}
-function Show-MultiSelectPrompt {
-    [CmdletBinding()]
-    param(
-        [Parameter(Mandatory = $true, Position = 0)]
-        [ValidateNotNullOrEmpty()]
-        [string]$Message,
-        [Parameter(Mandatory = $true, Position = 1)]
-        [ValidateNotNullOrEmpty()]
-        [string[]]$Options,
-        [string[]]$Helps = @(),
-        [string]$Title = "",
-        [int[]]$DefaultSelections = @()
-    )
-    if ($Helps.Count -eq 0) {
-        $Helps = @("")
-        for ($i = 1; $i -lt $Options.Count; $i++) {
-            $Helps += ""
-        }
-    }
-    if ($Options.Count -ne $Helps.Count) {
-        throw "Options 和 Helps 的数量必须相同。"
-    }
-    $selectedIndices = [System.Collections.Generic.List[int]]::new($DefaultSelections)
-    $currentSelection = 0
-    function Show-Menu {
-        param(
-            [int]$highlightIndex,
-            [System.Collections.Generic.List[int]]$selectedItems,
-            [int]$prevIndex = -1,
-            [int]$prevHighlight = -1
-        )
-        try {
-            # 首次显示时绘制完整菜单
-            if ($prevIndex -eq -1) {
-                Clear-Host
-                if (-not [string]::IsNullOrEmpty($Title)) {
-                    Write-Host "$Title`n" -ForegroundColor Blue
-                }
-                Write-Host "$Message" -ForegroundColor Yellow
-                # 保存初始光标位置
-                $script:menuTop = [Console]::CursorTop
-                # 首次绘制所有选项
-                for ($i = 0; $i -lt $Options.Count; $i++) {
-                    $isSelected = $selectedItems -contains $i
-                    $prefix = if ($isSelected) { "[#]" } else { "[ ]" }
-                    $color = if ($i -eq $highlightIndex) { "Green" } elseif ($isSelected) { "Cyan" } else { "Gray" }
-                    Write-Host "$prefix $($Options[$i])" -ForegroundColor $color -NoNewline
-                    Write-Host $(if (-not [string]::IsNullOrEmpty($Helps[$i])) { " - $($Helps[$i])" } else { "" }) -ForegroundColor DarkGray
-                }
-            }
-            # 只更新变化的选项
-            if ($prevIndex -ne -1) {
-                $safePrevPos = [Math]::Min([Console]::WindowHeight - 1, $menuTop + $prevIndex)
-                [Console]::SetCursorPosition(0, $safePrevPos)
-                $isPrevSelected = $selectedItems -contains $prevIndex
-                $prefix = if ($isPrevSelected) { "[#]" } else { "[ ]" }
-                Write-Host "$prefix $($Options[$prevIndex])" -ForegroundColor $(if ($isPrevSelected) { "Cyan" } else { "Gray" }) -NoNewline
-                Write-Host $(if (-not [string]::IsNullOrEmpty($Helps[$prevIndex])) { " - $($Helps[$prevIndex])" } else { "" }) -ForegroundColor DarkGray
-            }
-            if ($prevHighlight -ne -1 -and $prevHighlight -ne $highlightIndex) {
-                $safePrevHighlightPos = [Math]::Min([Console]::WindowHeight - 1, $menuTop + $prevHighlight)
-                [Console]::SetCursorPosition(0, $safePrevHighlightPos)
-                $isPrevHighlightSelected = $selectedItems -contains $prevHighlight
-                $prefix = if ($isPrevHighlightSelected) { "[#]" } else { "[ ]" }
-                Write-Host "$prefix $($Options[$prevHighlight])" -ForegroundColor $(if ($isPrevHighlightSelected) { "Cyan" } else { "Gray" }) -NoNewline
-                Write-Host $(if (-not [string]::IsNullOrEmpty($Helps[$prevHighlight])) { " - $($Helps[$prevHighlight])" } else { "" }) -ForegroundColor DarkGray
-            }
-            $safeHighlightPos = [Math]::Min([Console]::WindowHeight - 1, $menuTop + $highlightIndex)
-            [Console]::SetCursorPosition(0, $safeHighlightPos)
-            $isSelected = $selectedItems -contains $highlightIndex
-            $prefix = if ($isSelected) { "[#]" } else { "[ ]" }
-            Write-Host "$prefix $($Options[$highlightIndex])" -ForegroundColor "Green" -NoNewline
-            Write-Host $(if (-not [string]::IsNullOrEmpty($Helps[$highlightIndex])) { " - $($Helps[$highlightIndex])" } else { "" }) -ForegroundColor DarkGray
-            # 首次显示时绘制操作提示
-            if ($prevIndex -eq -1) {
-                $safePos = [Math]::Min([Console]::WindowHeight - 2, $menuTop + $Options.Count)
-                [Console]::SetCursorPosition(0, $safePos)
-                Write-Host "操作: 使用 ↑ / ↓ 移动 | Space - 选中/取消 | Enter - 确认"
-            }
-        }
-        finally {
-            # 将光标移动到操作提示下方等待位置
-            $waitPos = [Math]::Min([Console]::WindowHeight - 1, $menuTop + $Options.Count + 1)
-            [Console]::SetCursorPosition(0, $waitPos)
-        }
-    }
-    $prevSelection = -1
-    $prevHighlight = -1
-    while ($true) {
-        Show-Menu -highlightIndex $currentSelection -selectedItems $selectedIndices -prevIndex $prevSelection -prevHighlight $prevHighlight
-        $prevHighlight = $currentSelection
-        $key = [System.Console]::ReadKey($true)
-        switch ($key.Key) {
-            { $_ -eq [ConsoleKey]::UpArrow } {
-                $prevSelection = $currentSelection
-                $currentSelection = [Math]::Max(0, $currentSelection - 1)
-            }
-            { $_ -eq [ConsoleKey]::DownArrow } {
-                $prevSelection = $currentSelection
-                $currentSelection = [Math]::Min($Options.Count - 1, $currentSelection + 1)
-            }
-            { $_ -eq [ConsoleKey]::Spacebar } {
-                $prevSelection = $currentSelection
-                if ($selectedIndices.Contains($currentSelection)) {
-                    $selectedIndices.Remove($currentSelection)
-                }
-                else {
-                    $selectedIndices.Add($currentSelection)
-                }
-            }
-            { $_ -eq [ConsoleKey]::Enter } {
-                Clear-Host
-                return $selectedIndices
-            }
-        }
-    }
-}
 function Get-InputWithNoNullOrWhiteSpace {
     [CmdletBinding()]
     param(
@@ -298,11 +225,8 @@ function Get-InputWithNoNullOrWhiteSpace {
         try {
             $response = Read-Host "请输入${Prompt}(必填)"
             if ([string]::IsNullOrWhiteSpace($response)) {
-                Write-Host "${Prompt}不能为空！" -ForegroundColor Red
+                Write-Host "${Prompt}不能为空!" -ForegroundColor Red
                 continue
-            }
-            if ($response -match '^(?!").*(?<!")(?=.*\s).*$') {
-                $response = "`"$response`""
             }
             return $response.Trim()
         }
@@ -358,402 +282,467 @@ function Get-InputWithDefault {
         return $DefaultValue
     }
 }
-function Get-BasicNetworkConfig {
-    [CmdletBinding()]
-    param()
-    $options = @()
-    $options += "--network-name $(Get-InputWithNoNullOrWhiteSpace -Prompt "网络名称")"
-    $options += "--network-secret $(Get-InputWithNoNullOrWhiteSpace -Prompt "网络密钥")"
-    if (Show-YesNoPrompt -Message "是否指定当前设备名称？" -DefaultIndex 1) {
-        $options += "--hostname $(Get-InputWithNoNullOrWhiteSpace -Prompt "设备名称")"
+function Initialize-RegistryEntryExists {
+    if (-not (Test-Path $RegistryPath)) {
+        New-Item -Path $RegistryPath -Force | Out-Null
     }
-    if (Show-YesNoPrompt -Message "是否使用公共共享节点来发现对等节点？") {
-        $options += "--external-node $(Get-InputWithDefault -Prompt "公共节点地址(格式:协议://IP:端口)" -DefaultValue "tcp://public.easytier.cn:11010")"
+    try {
+        $null = Get-ItemProperty -Path $RegistryPath -Name $RegistryName -ErrorAction Stop
     }
-    if (Show-YesNoPrompt -Message "是否添加对等节点？") {
-        $peers = @()
-        do {
-            $peers += Get-InputWithDefault -Prompt "对等节点地址" -DefaultValue "tcp://public.easytier.cn:11010"
-        } while (Show-YesNoPrompt -Message "是否继续添加对等节点？" -DefaultIndex 1)
-        if ($peers.Count -gt 0) {
-            $options += ($peers | ForEach-Object { "--peers $($_.Trim())" }) -join ' '
-        }
+    catch {
+        New-ItemProperty -Path $RegistryPath -Name $RegistryName -Value @() -PropertyType MultiString -Force | Out-Null
     }
-    $ipChoice = Show-MultipleChoicePrompt -Message "请选择IP分配方式" `
-        -Options @("手动指定IPv4", "自动DHCP", "不设置IP") `
-        -Helps @("自定义此节点的IPv4地址，如果为空则仅转发数据包", "由Easytier自动确定并设置IP地址", "将仅转发数据包，不会创建TUN设备") `
-        -DefaultIndex 1
-    switch ($ipChoice) {
-        0 { $options += "--ipv4 $(Get-InputWithNoNullOrWhiteSpace -Prompt "IPv4地址")" }
-        1 { $options += "--dhcp" }
-        2 { break }
-    }
-    return $options
 }
-function Get-AdvancedConfig {
-    [CmdletBinding()]
-    param()
-    $options = @()
-    # 设备配置
-    if (Show-YesNoPrompt -Message "是否指定TUN接口名称？" -DefaultIndex 1) {
-        $options += "--dev-name $(Get-InputWithNoNullOrWhiteSpace -Prompt "TUN接口名称(可选)")"
+function Get-ServiceNames {
+    Initialize-RegistryEntryExists
+    try {
+        $value = (Get-ItemProperty -Path $RegistryPath -Name $RegistryName).$RegistryName
     }
-    # 网络白名单
-    if (Show-YesNoPrompt -Message "是否设置转发网络白名单？" -DefaultIndex 1) {
-        $whitelist = Get-InputWithDefault -Prompt "白名单网络(空格分隔,*=所有,def*=以def开头的网络)" -DefaultValue "*"
-        $options += "--relay-network-whitelist $whitelist"
+    catch {
+        return @()
     }
-    # 监听器配置
-    if (Show-YesNoPrompt -Message "是否启用端口监听？" -DefaultIndex 1) {
-        $listeners = @()
-        do {
-            $listener = Get-InputWithNoNullOrWhiteSpace -Prompt "监听器地址（格式：协议://IP:端口）"
-            $listeners += $listener
-        } while (Show-YesNoPrompt -Message "是否添加更多监听器？" -DefaultIndex 1)
-        $options += "--listeners $($listeners -join ' ')"
-        if (Show-YesNoPrompt -Message "是否手动指定公网映射地址？") {
-            $mapped = Get-InputWithNoNullOrWhiteSpace -Prompt "公网地址（格式：协议://IP:端口）"
-            $options += "--mapped-listeners $mapped"
-        }
+    if ($null -eq $value -or $value.Count -eq 0) {
+        return @()
     }
-    else {
-        $options += "--no-listener"
-    }
-    # 性能选项
-    $performanceOptions = @(
-        "启用多线程运行",
-        "启用延迟优先模式",
-        "通过系统内核转发",
-        "启用KCP代理"
-    )
-    $performanceHelps = @(
-        "使用多线程运行时(默认为单线程)",
-        "延迟优先模式(默认使用最短路径)",
-        "通过系统内核转发子网代理数据包(禁用内置NAT)",
-        "使用KCP代理TCP流(提高UDP丢包网络性能)"
-    )
-    $selectedPerformance = Show-MultiSelectPrompt -Message "请选择性能选项:" -Options $performanceOptions -Helps $performanceHelps
-    # 处理选中的性能选项
-    foreach ($index in $selectedPerformance) {
-        switch ($index) {
-            0 { $options += "--multi-thread" }
-            1 { $options += "--latency-first" }
-            2 { $options += "--proxy-forward-by-system" }
-            3 { $options += "--enable-kcp-proxy" }
-        }
-    }
-    return $options
-}
-function Get-EasyTierConfig {
-    [CmdletBinding()]
-    param()
-    $options = @()
-    $configChoice = Show-MultipleChoicePrompt -Message "请选择配置方案:" `
-        -Options @("命令行", "配置文件", "配置服务器") `
-        -Helps @("使用命令行参数进行配置", "使用本地配置文件", "使用服务器集中管理") `
-        -DefaultIndex 0
-    switch ($configChoice) {
-        0 {
-            # 基本网络配置
-            $options += Get-BasicNetworkConfig
-            # 高级配置
-            $options += Get-AdvancedConfig
-            # 专家选项
-            if (Show-YesNoPrompt -Message "是否调整专家选项？" -DefaultIndex 1) {
-                $options += Get-ExtraAdvancedOptions
-            }
-        }
-        1 {
-            $options += "--config-file $(Get-InputWithFileValidation -Prompt "配置文件路径(或将文件拖动到此处)")"
-        }
-        2 {
-            if (Show-YesNoPrompt -Message "是否使用自定义管理服务器？" -DefaultIndex 1) {
-                $configServer = Get-InputWithNoNullOrWhiteSpace -Prompt "自定义管理服务器（格式：协议://IP:端口/用户）" 
-            }
-            else {
-                $configServer = Get-InputWithNoNullOrWhiteSpace -Prompt "官方服务器用户名"
-            }
-            $options += "--config-server $configServer"
-        }
-    }
-    return $options
-}
-function Get-ExtraAdvancedOptions {
-    [CmdletBinding()]
-    param()
-    $options = @()
-    # 检查并添加缺失的--no-tun参数
-    if (Show-YesNoPrompt -Message "是否不创建TUN设备？" -DefaultIndex 1) {
-        $options += "--no-tun"
-    }
-    # 检查并添加缺失的--mtu参数
-    if (Show-YesNoPrompt -Message "是否自定义TUN设备MTU？" -DefaultIndex 1) {
-        $mtu = Get-InputWithDefault -Prompt "MTU值(默认:加密1360/非加密1380)" -DefaultValue ""
-        if (-not [string]::IsNullOrEmpty($mtu)) {
-            $options += "--mtu $mtu"
-        }
-    }
-    # 日志配置
-    if (Show-YesNoPrompt -Message "是否配置日志选项？" -DefaultIndex 1) {
-        $logLevels = @("trace", "debug", "info", "warn", "error", "critical")
-        $consoleLog = Show-MultipleChoicePrompt -Message "选择控制台日志级别" -Options $logLevels -DefaultIndex 2
-        $fileLog = Show-MultipleChoicePrompt -Message "选择文件日志级别" -Options $logLevels -DefaultIndex 2
-        $options += "--console-log-level $($logLevels[$consoleLog])"
-        $options += "--file-log-level $($logLevels[$fileLog])"
-        if (Show-YesNoPrompt -Message "是否指定日志目录？" -DefaultIndex 1) {
-            $logDir = Get-InputWithDefault -Prompt "日志目录路径" -DefaultValue "$env:ProgramData\EasyTier\logs"
-            $options += "--file-log-dir `"$logDir`""
-        }
-    }
-    # 实例配置
-    if (Show-YesNoPrompt -Message "是否指定实例名称？" -DefaultIndex 1) {
-        $options += "--instance-name $(Get-InputWithNoNullOrWhiteSpace -Prompt "实例名称")"
-    }
-    # 网络高级选项
-    $networkOptions = @(
-        "禁用IPv6",
-        "禁用加密",
-        "禁用P2P通信",
-        "禁用UDP打洞",
-        "启用私有模式",
-        "转发所有对等节点RPC"
-    )
-    $networkHelps = @(
-        "不使用IPv6",
-        "禁用对等节点通信的加密",
-        "只通过--peers指定的节点转发数据包",
-        "禁用UDP打洞功能",
-        "不允许不同网络的节点通过本节点中转",
-        "转发所有对等节点的RPC数据包"
-    )
-    $selectedNetwork = Show-MultiSelectPrompt -Message "请选择网络高级选项:" -Options $networkOptions -Helps $networkHelps
-    foreach ($index in $selectedNetwork) {
-        switch ($index) {
-            0 { $options += "--disable-ipv6" }
-            1 { $options += "--disable-encryption" }
-            2 { $options += "--disable-p2p" }
-            3 { $options += "--disable-udp-hole-punching" }
-            4 { $options += "--private-mode" }
-            5 { $options += "--relay-all-peer-rpc" }
-        }
-    }
-    # 端口转发
-    if (Show-YesNoPrompt -Message "是否设置端口转发？" -DefaultIndex 1) {
-        $forwards = @()
-        do {
-            Write-Host "`n格式示例: udp://0.0.0.0:12345/10.126.126.1:23456" -ForegroundColor DarkGray
-            $forward = Get-InputWithNoNullOrWhiteSpace -Prompt "端口转发(格式:协议://本地IP:端口/虚拟IP:端口)"
-            $forwards += $forward
-        } while (Show-YesNoPrompt -Message "是否添加更多端口转发？" -DefaultIndex 1)
-        $options += "--port-forward $($forwards -join ' ')"
-    }
-    # SOCKS5代理
-    if (Show-YesNoPrompt -Message "是否启用SOCKS5代理？" -DefaultIndex 1) {
-        $port = Get-InputWithDefault -Prompt "SOCKS5端口号" -DefaultValue "1080"
-        $options += "--socks5 $port"
-    }
-    # 其他选项
-    if (Show-YesNoPrompt -Message "是否配置其他高级选项？" -DefaultIndex 1) {
-        $otherOptions = @(
-            "使用smoltcp堆栈",
-            "启用魔法DNS", 
-            "绑定物理设备",
-            "启用KCP代理",
-            "禁用KCP输入",
-            "设置VPN门户",
-            "设置默认协议",
-            "设置压缩算法",
-            "手动分配路由CIDR",
-            "启用出口节点"
-        )
-        $otherHelps = @(
-            "为子网代理和KCP代理启用smoltcp堆栈",
-            "启用魔法DNS(hostname.et.net)",
-            "将套接字绑定到物理设备避免路由问题",
-            "使用KCP代理TCP流提高UDP网络性能",
-            "不允许其他节点使用KCP代理到此节点",
-            "定义VPN门户URL(wg://IP:端口/网络)",
-            "设置连接对等节点的默认协议",
-            "设置压缩算法(none/zstd)",
-            "手动分配路由CIDR(将禁用子网代理和wireguard路由)",
-            "允许此节点成为出口节点"
-        )
-        $selectedOther = Show-MultiSelectPrompt -Message "请选择其他高级选项:" -Options $otherOptions -Helps $otherHelps
-        foreach ($index in $selectedOther) {
-            switch ($index) {
-                0 { $options += "--use-smoltcp" }
-                1 { $options += "--accept-dns" }
-                2 { $options += "--bind-device" }
-                3 { $options += "--enable-kcp-proxy" }
-                4 { $options += "--disable-kcp-input" }
-                5 { 
-                    Write-Host "`n格式示例: wg://0.0.0.0:11010/10.14.14.0/24" -ForegroundColor DarkGray
-                    $vpnPortal = Get-InputWithNoNullOrWhiteSpace -Prompt "VPN门户URL(格式:wg://IP:端口/网络)"
-                    $options += "--vpn-portal `"$vpnPortal`"" 
-                }
-                6 {
-                    $protocols = @("tcp", "udp", "ws", "wss", "wg", "ring")
-                    $protoIndex = Show-MultipleChoicePrompt -Message "选择默认协议" -Options $protocols
-                    $options += "--default-protocol $($protocols[$protoIndex])"
-                }
-                7 {
-                    $algorithms = @("none", "zstd")
-                    $algoIndex = Show-MultipleChoicePrompt -Message "选择压缩算法" -Options $algorithms
-                    $options += "--compression $($algorithms[$algoIndex])"
-                }
-                8 {
-                    $routes = @()
-                    do {
-                        $route = Get-InputWithNoNullOrWhiteSpace -Prompt "手动路由CIDR(如192.168.0.0/16)"
-                        $routes += $route
-                    } while (Show-YesNoPrompt -Message "是否添加更多手动路由？" -DefaultIndex 1)
-                    $options += "--manual-routes $($routes -join ' ')"
-                }
-                9 {
-                    $options += "--enable-exit-node"
-                    if (Show-YesNoPrompt -Message "是否指定出口节点？" -DefaultIndex 1) {
-                        $exitNodes = @()
-                        do {
-                            $exitNode = Get-InputWithNoNullOrWhiteSpace -Prompt "出口节点虚拟IPv4地址"
-                            $exitNodes += $exitNode
-                        } while (Show-YesNoPrompt -Message "是否添加更多出口节点？" -DefaultIndex 1)
-                        $options += "--exit-nodes $($exitNodes -join ' ')"
-                    }
-                }
-            }
-        }
-    }
-    return $options
+    return $value
 }
 function Save-ServiceName {
     [CmdletBinding()]
     param (
         [Parameter(Mandatory = $true)]
-        [string]$FilePath,
-        [Parameter(Mandatory = $true)]
-        [string]$ServiceName
+        [string]$Name
     )
-    if (-not (Test-ServiceNameExists -FilePath $FilePath -ServiceName $ServiceName)) {
-        $uniqueLines = @()
-        $uniqueLines += Get-Content -Path $FilePath 
-        $uniqueLines += $ServiceName | Sort-Object -Unique
-        Set-Content -Path $FilePath -Value ($uniqueLines -join [Environment]::NewLine) -Encoding UTF8 -Force
+    $existing = Get-ServiceNames
+    if ($existing -notcontains $Name) {
+        $existing += $Name
+        Set-ItemProperty -Path $RegistryPath -Name $RegistryName -Value $existing -Force
     }
 }
 function Remove-ServiceName {
     [CmdletBinding()]
     param (
         [Parameter(Mandatory = $true)]
-        [string]$FilePath,
-        [Parameter(Mandatory = $true)]
-        [string]$ServiceName
+        [string]$Name
     )
-    if (Test-ServiceNameExists -FilePath $FilePath -ServiceName $ServiceName) {
-        $uniqueLines = Get-Content -Path $FilePath | Where-Object { $_ -ne $ServiceName } | Sort-Object -Unique
-        Set-Content -Path $FilePath -Value ($uniqueLines -join [Environment]::NewLine) -Encoding UTF8 -Force
+    $existing = Get-ServiceNames
+    if ($existing -contains $Name) {
+        $updated = $existing | Where-Object { $_ -ne $Name }
+        Set-ItemProperty -Path $RegistryPath -Name $RegistryName -Value $updated -Force
     }
 }
 function Test-ServiceNameExists {
     [CmdletBinding()]
     param (
         [Parameter(Mandatory = $true)]
-        [string]$FilePath,
-        [Parameter(Mandatory = $true)]
-        [string]$ServiceName
+        [string]$Name
     )
-    if (-Not (Test-Path $FilePath)) {
-        Set-Content -Path $FilePath -Value "" -Encoding UTF8 -Force
-        return $false
-    }
-    $uniqueLines = Get-Content -Path $FilePath | Sort-Object -Unique
-    return $uniqueLines -contains $ServiceName
+    $existing = Get-ServiceNames
+    return $existing -contains $Name
 }
-$host.ui.rawui.WindowTitle = if ($Uninstall) { "卸载EasyTier服务" } else { "安装EasyTier服务" }  
+function Remove-ServiceCompatible {
+    param (
+        [Parameter(Mandatory = $true)]
+        [string]$Name
+    )
+    if (Get-Command -Name Remove-Service -ErrorAction SilentlyContinue) {
+        Remove-Service -Name $Name -Force
+    }
+    else {
+        sc.exe delete "$Name" > $null 2>&1
+    }
+}
+function Get-SystemArchitecture {
+    try {
+        $platform = [System.Environment]::OSVersion.Platform
+        if ($platform -ne [System.PlatformID]::Win32NT) {
+            throw "Unsupported OS: Non-Windows platform detected ($platform)"
+        }
+    }
+    catch {
+        throw "Unsupported OS: Unable to determine platform."
+    }
+    if ($env:PROCESSOR_ARCHITEW6432) {
+        $arch = $env:PROCESSOR_ARCHITEW6432
+    }
+    else {
+        $arch = $env:PROCESSOR_ARCHITECTURE
+    }
+    switch ($arch) {
+        "AMD64" { return "windows-x86_64" }
+        "ARM64" { return "windows-arm64" }
+        "x86" { return "windows-i686" }
+        default { throw "Unsupported architecture: windows-$arch" }
+    }
+}
+function Get-LocalVersion {
+    param([string]$CorePath)
+    if (-not (Test-Path $CorePath)) {
+        Write-Host "未找到本地程序!" -ForegroundColor Yellow
+        return [System.Version]"0.0.0"
+    }
+    try {
+        $versionOutput = & $CorePath --version 2>$null
+        if ($versionOutput -match "easytier-core\s+([0-9]+\.[0-9]+\.[0-9]+)") {
+            return [System.Version]$matches[1]
+        }
+        else {
+            throw "无法解析返回值: $versionOutput"
+        }
+    }
+    catch {
+        throw "获取本地版本失败`n$_"
+    }
+}
+function Get-RemoteVersion {
+    param([PSCustomObject]$response)
+    try {
+        return [System.Version]$response.tag_name.TrimStart("v")
+    }
+    catch {
+        throw "无法从 GitHub 获取最新版本信息`n$response"
+    }
+}
+function Get-EasyTier {
+    $Arch = Get-SystemArchitecture
+
+    $tempDirectory = Join-Path $ScriptRoot "easytier_update"
+
+    try {
+        if (-not (Test-Path $tempDirectory)) {
+            New-Item -ItemType Directory -Path $tempDirectory | Out-Null
+        }
+    }
+    catch {
+        throw "无法创建文件夹 $tempDirectory`n$_"
+    }
+
+    try {
+        Write-Host "检查最新版本..." -ForegroundColor Green
+        $response = Invoke-RestMethodCompatible -Uri "https://api.github.com/repos/EasyTier/EasyTier/releases/latest"
+        $latestVersion = Get-RemoteVersion($response)
+    }
+    catch {
+        throw "获取最新版本失败。请检查网络连接或API请求达到上限`n$_"
+    }
+
+    $localVersion = Get-LocalVersion($EasyTierPath)
+    if ($localVersion -ge $latestVersion) {
+        Write-Host "EasyTier 已是最新版本 $localVersion" -ForegroundColor Green
+        return
+    }
+
+    $asset = $response.assets | Where-Object { $_.name -like "easytier-$Arch*.zip" } | Select-Object -First 1
+    if ($asset) {
+        Write-Output "发现新版本 $latestVersion"
+        $downloadUrl = $asset.browser_download_url
+        if ($UseGitHubProxy) {
+            $downloadUrl = "$GitHubProxy$downloadUrl"
+        }
+    }
+    else {
+        throw "未适配当前平台!"
+    }
+
+    $updateFile = Join-Path $tempDirectory $asset.name
+
+    try {
+        Write-Output "开始下载: $downloadUrl"
+        Invoke-WebRequestCompatible -Uri $downloadUrl -OutFile $updateFile
+    }
+    catch {
+        throw "下载失败!`n$_"
+    }
+
+    try {
+        Expand-ZipFile -ZipPath $updateFile -DestinationPath $tempDirectory
+        $extractedRoot = Get-ChildItem -Path $tempDirectory -Directory | Select-Object -First 1
+        $updateFileDirectory = $extractedRoot.FullName
+    }
+    catch {
+        throw "解压失败!`n$_"
+    }
+
+    Write-Host "准备就绪，开始更新..." -ForegroundColor Green
+            
+    $activeServices = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue | Where-Object { $_.Status -eq "Running" }
+    if ($activeServices) {
+        try {
+            Write-Host "发现正在运行的服务: $ServiceName" -ForegroundColor Yellow
+            Write-Host "停止 EasyTier 服务..." -ForegroundColor Yellow
+            $activeServices | Stop-Service -Force
+        }
+        catch {
+            throw "停止服务失败!`n$_"
+        }
+    }
+
+    try {
+        Write-Host "更新文件..."
+        Get-ChildItem -Path $updateFileDirectory | Copy-Item -Destination $ScriptRoot -Recurse -Force
+    }
+    catch {
+        throw "更新文件失败!`n$_"
+    }
+
+    $localVersion = Get-LocalVersion($EasyTierPath)
+    if ($localVersion -ge $latestVersion) {
+        if ($activeServices) {
+            try {
+                Write-Host "启动服务..." -ForegroundColor Green
+                $activeServices | Start-Service
+            }
+            catch {
+                throw "服务启动失败!`n$_"
+            }
+        }
+        Write-Host "EasyTier 已成功更新到版本 $latestVersion" -ForegroundColor Green
+    }
+    else {
+        throw "更新文件失败! 请检查脚本是否过时或者文件/文件夹是否被其他程序占用"
+    }
+    Remove-Item -Recurse -Force $tempDirectory
+}
+
+$HelpText = @"
+EasyTier 服务管理脚本
+
+【使用方式】
+直接双击运行或在命令行中执行:
+
+    install.cmd [参数]
+
+【可用参数】
+
+    -H / -? / -Help
+        显示此帮助信息并退出。
+
+    -U / -Update
+        更新 EasyTier 到最新版本
+
+    -X / -Uninstall
+        卸载 EasyTier 服务
+
+    -UGHP / -UseGitHubProxy
+        使用 GitHub 镜像代理下载 (默认: $false)
+
+    -GHP / -GitHubProxy <代理地址>
+        指定 GitHub 镜像代理地址 (默认: https://ghfast.top/)
+
+    -UP / -UseProxy
+        使用自定义代理 (默认: $false)
+
+    -P / -Proxy <代理地址>
+        指定自定义代理地址 (默认: http://127.0.0.1:7890)
+
+    -C / -ConfigType <类型>
+        指定配置模式，可选值: 
+        * File   本地配置文件
+        * Remote 远程服务器集中管理
+        * CLI    使用命令行直接传参
+
+    -N / -ServiceName <名称>
+        指定安装的服务名称 (默认: EasyTierService)
+
+    <其他参数...>
+        当选择 CLI 模式时，用于传递自定义参数
+
+【运行要求】
+    * 已安装 PowerShell 3.0 或更高版本
+    * 管理员权限 (自动检测并可请求提升)
+
+【配置模式说明】
+    1. File 模式: 
+        从指定的本地配置文件加载运行参数
+        脚本会提示输入配置文件路径 (可拖入文件)
+
+    2. Remote 模式: 
+        从服务器集中管理配置，可输入自定义管理服务器地址
+        (例如: udp://x.x.x.x:22020/admin)
+
+    3. CLI 模式: 
+        直接通过命令行参数传递任意配置
+
+【代理设置说明】
+    * UseGitHubProxy 和 UseProxy 参数不能同时使用
+    * 使用 GitHub 镜像代理可加速下载
+
+【示例】
+    1. 使用本地配置文件安装: 
+        install.cmd -ConfigType File
+
+    2. 使用远程服务器并设定服务名称: 
+        install.cmd -ConfigType Remote -ServiceName EasyTierService
+
+    3. 使用命令行传参: 
+        install.cmd -ConfigType CLI --ipv4 x.x.x.x --network-name xxx --network-secret yyy --peers tcp://peer_host:11010
+
+    4. 使用 GitHub 镜像代理更新: 
+        install.cmd -Update -UseGitHubProxy
+
+    5. 使用系统代理安装: 
+        install.cmd -UseProxy -Proxy http://127.0.0.1:8080
+
+    6. 卸载服务: 
+        install.cmd -Uninstall
+
+    7. 显示帮助信息: 
+        install.cmd -Help
+"@
+$WatchDogTemplate = @"
+<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <RegistrationInfo>
+    <Date>$((Get-Date).ToString("s"))</Date>
+    <URI>\EasyTierWatchDog</URI>
+  </RegistrationInfo>
+  <Triggers>
+    <EventTrigger>
+      <Enabled>true</Enabled>
+      <Subscription>&lt;QueryList&gt;&lt;Query Id="0" Path="System"&gt;&lt;Select Path="System"&gt;*[System[Provider[@Name='Microsoft-Windows-Kernel-Power'] and EventID=107]]&lt;/Select&gt;&lt;/Query&gt;&lt;/QueryList&gt;</Subscription>
+    </EventTrigger>
+    <EventTrigger>
+      <Enabled>true</Enabled>
+      <Subscription>&lt;QueryList&gt;&lt;Query Id="0" Path="Microsoft-Windows-WLAN-AutoConfig/Operational"&gt;&lt;Select Path="Microsoft-Windows-WLAN-AutoConfig/Operational"&gt;*[System[Provider[@Name='Microsoft-Windows-WLAN-AutoConfig'] and EventID=8001]]&lt;/Select&gt;&lt;/Query&gt;&lt;/QueryList&gt;</Subscription>
+    </EventTrigger>
+  </Triggers>
+  <Principals>
+    <Principal id="Author">
+      <UserId>SYSTEM</UserId>
+      <RunLevel>HighestAvailable</RunLevel>
+    </Principal>
+  </Principals>
+  <Settings>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <AllowHardTerminate>true</AllowHardTerminate>
+    <StartWhenAvailable>true</StartWhenAvailable>
+    <Enabled>true</Enabled>
+  </Settings>
+  <Actions Context="Author">
+    <Exec>
+      <Command>cmd.exe</Command>
+      <Arguments>/c "net stop %#ServiceName#% &amp; net start %#ServiceName#%"</Arguments>
+    </Exec>
+  </Actions>
+</Task>
+"@
+
+$host.ui.rawui.WindowTitle = "安装/卸载/更新 EasyTier 服务"
 Clear-Host
 $ScriptRoot = (Get-Location).Path
-$ServicesPath = Join-Path $ScriptRoot "services"
-$RequiredFiles = @("easytier-core.exe", "easytier-cli.exe", "nssm.exe", "Packet.dll", "wintun.dll")
-foreach ($file in $RequiredFiles) {
-    if (-not (Test-Path (Join-Path $ScriptRoot $file))) {
-        Write-Host "缺少必要文件: ${file}" -ForegroundColor Red
-        Show-Pause -Text "按任意键退出..."
-        exit 1
-    }
-}
+$RegistryPath = "HKLM:\SOFTWARE\EasyTierServiceManage"
+$RegistryName = "Services"
+$EasyTierPath = Join-Path $ScriptRoot "easytier-core.exe"
+$OPTIONS = @()
+
+$ErrorActionPreference = "Stop"
 try {
-    $nssm = Join-Path $ScriptRoot "nssm.exe"
+    if ($Help) {
+        Write-Host $HelpText
+        Show-Pause -Text "按任意键退出..."
+        exit 0
+    }
+    if ($UseProxy -and $UseGitHubProxy) {
+        throw "UseProxy 和 UseGitHubProxy 参数不能同时使用，请选择其中一种代理方式。"
+    }
     if ($Uninstall) {
-        $Force = $false
-        $Action = "designation"
-        if (-not (Test-ServiceNameExists -FilePath $ServicesPath -ServiceName $ServiceName)) {
+        $services = Get-ServiceNames
+        if ($services.Count -lt 1 -and (-not (Test-ServiceNameExists -Name $ServiceName))) {
             Write-Host "服务未安装" -ForegroundColor Red
-            if (Show-YesNoPrompt -Message "是否强制卸载？" -DefaultIndex 1) {
-                $Force = $true
-                $Action = "all"
+            if (Show-YesNoPrompt -Message "是否尝试强制卸载？" -DefaultIndex 1) {
+                Write-Host "正在停止服务 $ServiceName ..."
+                Stop-Service -Name $ServiceName -Force -ErrorAction SilentlyContinue
+                Write-Host "正在移除服务 $ServiceName ..."
+                Remove-ServiceCompatible -Name "$ServiceName" -ErrorAction SilentlyContinue
+                Remove-ServiceName -Name $ServiceName -ErrorAction SilentlyContinue
+                Write-Host "服务 $ServiceName 已卸载" -ForegroundColor Green
+            }
+        }
+        else {
+            foreach ($service in $services) {
+                if (Get-Service -Name $service -ErrorAction SilentlyContinue) {
+                    Write-Host "正在停止服务 $service ..."
+                    Stop-Service -Name $service -Force
+                    Write-Host "正在移除服务 $service ..."
+                    Remove-ServiceCompatible -Name "$service"
+                    Remove-ServiceName -Name $service
+                }
+                Write-Host "服务 $service 已卸载" -ForegroundColor Green
+            }
+        }
+        Show-Pause -Text "按任意键退出..."
+        Unregister-ScheduledTask -TaskName "EasyTierWatchDog" -Confirm:$false -ErrorAction SilentlyContinue | Out-Null
+        exit 0
+    }
+    if ($Update) {
+        Get-EasyTier
+        Show-Pause -Text "按任意键退出..."
+        exit 0
+    }
+    if (-not (Test-Path $EasyTierPath)) {
+        Get-EasyTier
+    }
+    if (-not $ConfigType) {
+        $choices = @(
+            [System.Management.Automation.Host.ChoiceDescription]::new("&File", "本地配置文件"),
+            [System.Management.Automation.Host.ChoiceDescription]::new("&Remote", "服务器集中管理"),
+            [System.Management.Automation.Host.ChoiceDescription]::new("&CLI", "命令行传参")
+        )
+        $selected = $Host.UI.PromptForChoice("您准备如何配置EasyTier?", "请选择: ", $choices, 0)
+        $ConfigType = @("File", "Remote", "CLI")[$selected]
+    }
+    switch ($ConfigType) {
+        "File" {
+            $OPTIONS += "--config-file $(Get-InputWithFileValidation -Prompt "配置文件路径(或将文件拖动到此处)")"
+        }
+        "Remote" {
+            if (Show-YesNoPrompt -Message "是否使用自定义管理服务器？" -DefaultIndex 1) {
+                $configServer = Get-InputWithNoNullOrWhiteSpace -Prompt "自定义管理服务器(格式: 协议://IP:端口/用户)" 
             }
             else {
-                Show-Pause -Text "按任意键退出..."    
-                exit 1
+                $configServer = Get-InputWithNoNullOrWhiteSpace -Prompt "官方服务器用户名"
+            }
+            $OPTIONS += "--config-server $configServer"
+        } 
+        "CLI" {
+            if (-not $ServiceArgs -or $ServiceArgs.Count -eq 0) {
+                $OPTIONS += Get-InputWithNoNullOrWhiteSpace -Prompt "自定义启动参数" 
+            }
+            else {
+                $OPTIONS += $ServiceArgs
             }
         }
-        # 参数处理
-        if ($Action -eq "all") {
-            if (-not $Force) {
-                if (-not (Show-YesNoPrompt -Message "确定要完全卸载所有服务吗？" -DefaultIndex 1)) {
-                    Write-Host "已取消卸载操作" -ForegroundColor Yellow
-                    Show-Pause -Text "按任意键退出..."
-                    exit 0
-                }
-            }
-            Write-Host "正在卸载所有服务..." -ForegroundColor Cyan
-            # 读取所有服务名
-            $services = Get-Content $ServicesPath | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
-            if (-not $services) {
-                $services = @($ServiceName)
-            }
+        default {
+            throw "未知配置类型: $ConfigType"
         }
-        else {
-            $services = @($ServiceName)
+    }
+    $BinaryPath = "`"$EasyTierPath`" $($OPTIONS -join ' ')" 
+    Write-Host "生成的配置参数如下: " -ForegroundColor Yellow
+    Write-Host ($OPTIONS -join " ") -ForegroundColor DarkGray
+    if (Show-YesNoPrompt -Message "确认安装配置？" -DefaultIndex 1) {
+        if (Get-Service -Name $ServiceName -ErrorAction SilentlyContinue) {
+            Stop-Service -Name $ServiceName -Force | Out-Null
+            Remove-ServiceCompatible -Name $ServiceName
         }
-        foreach ($service in $services) {
-            # 停止服务
-            Write-Host "正在停止服务 $service ..."
-            & $nssm stop $service
-            # 删除服务（自动确认）
-            Write-Host "正在移除服务 $service ..."
-            & $nssm remove $service confirm
-            Remove-ServiceName -FilePath $ServicesPath -ServiceName $service
-            Write-Host "服务 $service 已卸载" -ForegroundColor Green
-        }
-        # 如果是完全卸载，删除服务记录文件
-        if ($Action -eq "all") {
-            Remove-Item $ServicesPath -Force
-            Write-Host "已删除服务列表文件" -ForegroundColor Green
-        }
-    } 
-    else { 
-        $OPTIONS = Get-EasyTierConfig
-        $arguments = $OPTIONS -join ' '
-        Write-Host "生成的配置参数如下：" -ForegroundColor Yellow
-        Write-Host ($OPTIONS -join " ") -ForegroundColor DarkGray
-        if (Show-YesNoPrompt -Message "确认安装配置？" -DefaultIndex 1) {
-            & $nssm install $ServiceName (Join-Path $ScriptRoot "easytier-core.exe")
-            & $nssm set $ServiceName AppParameters $arguments
-            & $nssm set $ServiceName Description "EasyTier 核心服务"
-            & $nssm set $ServiceName AppDirectory $ScriptRoot
-            & $nssm set $ServiceName Start SERVICE_AUTO_START
-            & $nssm start $ServiceName
-            Save-ServiceName -FilePath $ServicesPath -ServiceName $ServiceName
-            Write-Host "服务安装完成。" -ForegroundColor Green
-        }
-        else {
-            Write-Host "安装已取消。" -ForegroundColor Yellow
-        }
-    }  
+        New-Service -Name $ServiceName -DisplayName "EasyTier" `
+            -Description "EasyTier 核心服务" `
+            -StartupType Automatic `
+            -BinaryPathName $BinaryPath | Out-Null
+        Start-Service -Name $ServiceName | Out-Null
+
+        Register-ScheduledTask -TaskName "EasyTierWatchDog" -User "SYSTEM" -Xml $WatchDogTemplate.Replace("%#ServiceName#%", $ServiceName) -Force | Out-Null
+        Save-ServiceName -Name $ServiceName
+        Write-Host "安装完成。" -ForegroundColor Green
+    }
+    else {
+        Write-Host "安装已取消。" -ForegroundColor Yellow
+    }
+    Show-Pause -Text "按任意键退出..."
 }
 catch {
-    Write-Host "$($host.ui.rawui.WindowTitle)发生错误: $_" -ForegroundColor Red
+    Write-Host "发生错误: $_" -ForegroundColor Red
+    Show-Pause -Text "按任意键退出..."
+    Unregister-ScheduledTask -TaskName "EasyTierWatchDog" -Confirm:$false -ErrorAction SilentlyContinue
     exit 1
 }
-Show-Pause -Text "按任意键退出..."
-exit
+

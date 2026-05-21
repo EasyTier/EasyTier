@@ -1,3 +1,5 @@
 MODDIR=${0%/*}
-pkill easytier-core # 结束 easytier-core 进程
-rm -rf $MODDIR/*
+pkill -f "${MODDIR}/easytier-core"
+
+# 使用 ${MODDIR:?} 确保变量非空，避免执行 rm -rf /*
+rm -rf "${MODDIR:?}/"*

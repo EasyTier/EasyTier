@@ -6,11 +6,12 @@ use std::{
 
 use anyhow::Context;
 use tokio::sync::Mutex;
+use tokio_util::task::AbortOnDropHandle;
 
 use crate::{
-    common::{scoped_task::ScopedTask, stun::StunInfoCollectorTrait, PeerId},
+    common::{PeerId, stun::StunInfoCollectorTrait},
     connector::udp_hole_punch::common::{
-        try_connect_with_socket, UdpHolePunchListener, HOLE_PUNCH_PACKET_BODY_LEN,
+        HOLE_PUNCH_PACKET_BODY_LEN, UdpHolePunchListener, try_connect_with_socket,
     },
     connector::udp_hole_punch::handle_rpc_result,
     peers::peer_manager::PeerManager,
@@ -21,7 +22,7 @@ use crate::{
         },
         rpc_types::{self, controller::BaseController},
     },
-    tunnel::{udp::new_hole_punch_packet, Tunnel},
+    tunnel::{Tunnel, udp::new_hole_punch_packet},
 };
 
 use super::common::{PunchHoleServerCommon, UdpNatType, UdpSocketArray};
@@ -32,7 +33,7 @@ const REMOTE_WAIT_TIME_MS: u64 = 5000;
 
 pub(crate) struct PunchBothEasySymHoleServer {
     common: Arc<PunchHoleServerCommon>,
-    task: Mutex<Option<ScopedTask<()>>>,
+    task: Mutex<Option<AbortOnDropHandle<()>>>,
 }
 
 impl PunchBothEasySymHoleServer {
@@ -161,7 +162,7 @@ impl PunchBothEasySymHoleServer {
             }
         });
 
-        *locked_task = Some(task.into());
+        *locked_task = Some(AbortOnDropHandle::new(task));
         return Ok(SendPunchPacketBothEasySymResponse {
             is_busy: false,
             base_mapped_addr: Some(cur_mapped_addr.into()),
@@ -340,7 +341,7 @@ impl PunchBothEasySymHoleClient {
 #[cfg(test)]
 pub mod tests {
     use std::{
-        sync::{atomic::AtomicU32, Arc},
+        sync::{Arc, atomic::AtomicU32},
         time::Duration,
     };
 
@@ -349,7 +350,7 @@ pub mod tests {
     use crate::connector::udp_hole_punch::RUN_TESTING;
     use crate::{
         connector::udp_hole_punch::{
-            tests::create_mock_peer_manager_with_mock_stun, UdpHolePunchConnector,
+            UdpHolePunchConnector, tests::create_mock_peer_manager_with_mock_stun,
         },
         peers::tests::{connect_peer_manager, wait_route_appear},
         proto::common::NatType,

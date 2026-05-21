@@ -1,16 +1,18 @@
 <script setup lang="ts">
+import { AutoComplete, Button, Checkbox, Dialog, Divider, InputNumber, InputText, Panel, Password, SelectButton, ToggleButton } from 'primevue'
 import InputGroup from 'primevue/inputgroup'
 import InputGroupAddon from 'primevue/inputgroupaddon'
-import { SelectButton, Checkbox, InputText, InputNumber, AutoComplete, Panel, Divider, ToggleButton, Button, Password, Dialog } from 'primevue'
 import {
   addRow,
   DEFAULT_NETWORK_CONFIG,
   NetworkConfig,
-  NetworkingMethod,
+  normalizeNetworkConfig,
   removeRow
 } from '../types/network'
-import { defineProps, defineEmits, ref, onMounted } from 'vue'
+import { ref, onMounted, onUnmounted, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
+import AclManager from './acl/AclManager.vue'
+import UrlListInput from './UrlListInput.vue'
 
 const props = defineProps<{
   configInvalid?: boolean
@@ -26,63 +28,18 @@ const curNetwork = defineModel('curNetwork', {
 
 const { t } = useI18n()
 
-const networking_methods = ref([
-  { value: NetworkingMethod.PublicServer, label: () => t('public_server') },
-  { value: NetworkingMethod.Manual, label: () => t('manual') },
-  { value: NetworkingMethod.Standalone, label: () => t('standalone') },
-])
-
-const protos: { [proto: string]: number } = { tcp: 11010, udp: 11010, wg: 11011, ws: 11011, wss: 11012 }
-
-function searchUrlSuggestions(e: { query: string }): string[] {
-  const query = e.query
-  const ret = []
-  // if query match "^\w+:.*", then no proto prefix
-  if (query.match(/^\w+:.*/)) {
-    // if query is a valid url, then add to suggestions
-    try {
-      // eslint-disable-next-line no-new
-      new URL(query)
-      ret.push(query)
-    }
-    catch { }
-  }
-  else {
-    for (const proto in protos) {
-      let item = `${proto}://${query}`
-      // if query match ":\d+$", then no port suffix
-      if (!query.match(/:\d+$/)) {
-        item += `:${protos[proto]}`
-      }
-      ret.push(item)
-    }
-  }
-
-  return ret
-}
-
-const publicServerSuggestions = ref([''])
-
-function searchPresetPublicServers(e: { query: string }) {
-  const presetPublicServers = [
-    'tcp://public.easytier.top:11010',
-  ]
-
-  const query = e.query
-  // if query is sub string of presetPublicServers, add to suggestions
-  let ret = presetPublicServers.filter(item => item.includes(query))
-  // add additional suggestions
-  if (query.length > 0) {
-    ret = ret.concat(searchUrlSuggestions(e))
-  }
-
-  publicServerSuggestions.value = ret
-}
-
-const peerSuggestions = ref([''])
-
-function searchPeerSuggestions(e: { query: string }) {
-  peerSuggestions.value = searchUrlSuggestions(e)
+const protos: { [proto: string]: number } = {
+  tcp: 11010,
+  udp: 11010,
+  wg: 11011,
+  ws: 11011,
+  wss: 11012,
+  quic: 11012,
+  faketcp: 11013,
+  http: 80,
+  https: 443,
+  txt: 0,
+  srv: 0,
 }
 
 const inetSuggestions = ref([''])
@@ -98,34 +55,6 @@ function searchInetSuggestions(e: { query: string }) {
     inetSuggestions.value = ret
   }
 }
-
-const listenerSuggestions = ref([''])
-
-function searchListenerSuggestions(e: { query: string }) {
-  const ret = []
-
-  for (const proto in protos) {
-    let item = `${proto}://0.0.0.0:`
-    // if query is a number, use it as port
-    if (e.query.match(/^\d+$/)) {
-      item += e.query
-    }
-    else {
-      item += protos[proto]
-    }
-
-    if (item.includes(e.query)) {
-      ret.push(item)
-    }
-  }
-
-  if (ret.length === 0) {
-    ret.push(e.query)
-  }
-
-  listenerSuggestions.value = ret
-}
-
 
 const exitNodesSuggestions = ref([''])
 
@@ -152,19 +81,25 @@ const bool_flags: BoolFlag[] = [
   { field: 'latency_first', help: 'latency_first_help' },
   { field: 'use_smoltcp', help: 'use_smoltcp_help' },
   { field: 'disable_ipv6', help: 'disable_ipv6_help' },
+  { field: 'ipv6_public_addr_auto', help: 'ipv6_public_addr_auto_help' },
   { field: 'enable_kcp_proxy', help: 'enable_kcp_proxy_help' },
   { field: 'disable_kcp_input', help: 'disable_kcp_input_help' },
   { field: 'enable_quic_proxy', help: 'enable_quic_proxy_help' },
   { field: 'disable_quic_input', help: 'disable_quic_input_help' },
   { field: 'disable_p2p', help: 'disable_p2p_help' },
+  { field: 'p2p_only', help: 'p2p_only_help' },
+  { field: 'lazy_p2p', help: 'lazy_p2p_help' },
   { field: 'bind_device', help: 'bind_device_help' },
   { field: 'no_tun', help: 'no_tun_help' },
   { field: 'enable_exit_node', help: 'enable_exit_node_help' },
   { field: 'relay_all_peer_rpc', help: 'relay_all_peer_rpc_help' },
+  { field: 'need_p2p', help: 'need_p2p_help' },
   { field: 'multi_thread', help: 'multi_thread_help' },
   { field: 'proxy_forward_by_system', help: 'proxy_forward_by_system_help' },
   { field: 'disable_encryption', help: 'disable_encryption_help' },
+  { field: 'disable_tcp_hole_punching', help: 'disable_tcp_hole_punching_help' },
   { field: 'disable_udp_hole_punching', help: 'disable_udp_hole_punching_help' },
+  { field: 'disable_upnp', help: 'disable_upnp_help' },
   { field: 'disable_sym_hole_punching', help: 'disable_sym_hole_punching_help' },
   { field: 'enable_magic_dns', help: 'enable_magic_dns_help' },
   { field: 'enable_private_mode', help: 'enable_private_mode_help' },
@@ -208,13 +143,23 @@ onMounted(() => {
     });
     resizeObserver.observe(portForwardContainer.value);
 
-    return () => {
+    onUnmounted(() => {
       if (resizeObserver && portForwardContainer.value) {
         resizeObserver.unobserve(portForwardContainer.value);
       }
-    }
+    });
   }
 });
+
+function syncNormalizedNetwork(network: NetworkConfig | undefined): void {
+  if (!network) {
+    return
+  }
+
+  Object.assign(network, normalizeNetworkConfig(network))
+}
+
+watch(() => curNetwork.value, syncNormalizedNetwork, { immediate: true, deep: false })
 </script>
 
 <template>
@@ -261,17 +206,14 @@ onMounted(() => {
 
               <div class="flex flex-row gap-x-9 flex-wrap">
                 <div class="flex flex-col gap-2 basis-5/12 grow">
-                  <label for="nm">{{ t('networking_method') }}</label>
-                  <SelectButton v-model="curNetwork.networking_method" :options="networking_methods"
-                    :option-label="(v) => v.label()" option-value="value" />
-                  <div class="items-center flex flex-row p-fluid gap-x-1">
-                    <AutoComplete v-if="curNetwork.networking_method === NetworkingMethod.Manual" id="chips"
-                      v-model="curNetwork.peer_urls" :placeholder="t('chips_placeholder', ['tcp://8.8.8.8:11010'])"
-                      class="grow" multiple fluid :suggestions="peerSuggestions" @complete="searchPeerSuggestions" />
-
-                    <AutoComplete v-if="curNetwork.networking_method === NetworkingMethod.PublicServer"
-                      v-model="curNetwork.public_server_url" :suggestions="publicServerSuggestions" class="grow"
-                      dropdown :complete-on-focus="false" @complete="searchPresetPublicServers" />
+                  <div class="flex items-center">
+                    <label for="initial_nodes">{{ t('initial_nodes') }}</label>
+                    <span class="pi pi-question-circle ml-2 self-center" v-tooltip="t('initial_nodes_help')"></span>
+                  </div>
+                  <div class="items-center flex flex-col p-fluid gap-y-2">
+                    <UrlListInput id="initial_nodes" v-model="curNetwork.peer_urls" :protos="protos"
+                      defaultUrl="tcp://:11010" :add-label="t('add_initial_node')"
+                      :placeholder="t('initial_node_placeholder')" />
                   </div>
                 </div>
               </div>
@@ -343,10 +285,8 @@ onMounted(() => {
               <div class="flex flex-row gap-x-9 flex-wrap">
                 <div class="flex flex-col gap-2 grow p-fluid">
                   <label for="listener_urls">{{ t('listener_urls') }}</label>
-                  <AutoComplete id="listener_urls" v-model="curNetwork.listener_urls" :suggestions="listenerSuggestions"
-                    class="w-full" dropdown :complete-on-focus="true"
-                    :placeholder="t('chips_placeholder', ['tcp://1.1.1.1:11010'])" multiple
-                    @complete="searchListenerSuggestions" />
+                  <UrlListInput v-model="curNetwork.listener_urls" :protos="protos" :add-label="t('add_listener_url')"
+                    placeholder="0.0.0.0" />
                 </div>
               </div>
 
@@ -366,6 +306,19 @@ onMounted(() => {
                   </div>
                   <InputNumber id="mtu" v-model="curNetwork.mtu" aria-describedby="mtu-help" :format="false"
                     :placeholder="t('mtu_placeholder')" :min="400" :max="1380" fluid />
+                </div>
+              </div>
+
+              <div class="flex flex-row gap-x-9 flex-wrap">
+                <div class="flex flex-col gap-2 basis-5/12 grow">
+                  <div class="flex">
+                    <label for="instance_recv_bps_limit">{{ t('instance_recv_bps_limit') }}</label>
+                    <span class="pi pi-question-circle ml-2 self-center"
+                      v-tooltip="t('instance_recv_bps_limit_help')"></span>
+                  </div>
+                  <InputNumber id="instance_recv_bps_limit" v-model="curNetwork.instance_recv_bps_limit"
+                    aria-describedby="instance_recv_bps_limit-help" :format="false"
+                    :placeholder="t('instance_recv_bps_limit_placeholder')" :min="1" fluid />
                 </div>
               </div>
 
@@ -441,9 +394,8 @@ onMounted(() => {
                     <label for="mapped_listeners">{{ t('mapped_listeners') }}</label>
                     <span class="pi pi-question-circle ml-2 self-center" v-tooltip="t('mapped_listeners_help')"></span>
                   </div>
-                  <AutoComplete id="mapped_listeners" v-model="curNetwork.mapped_listeners"
-                    :placeholder="t('chips_placeholder', ['tcp://123.123.123.123:11223'])" class="w-full" multiple fluid
-                    :suggestions="peerSuggestions" @complete="searchPeerSuggestions" />
+                  <UrlListInput v-model="curNetwork.mapped_listeners" :protos="protos"
+                    :add-label="t('add_mapped_listener')" />
                 </div>
               </div>
 
@@ -536,6 +488,18 @@ onMounted(() => {
                   </Dialog>
                 </div>
               </div>
+            </div>
+          </Panel>
+
+          <Divider />
+
+          <Panel :header="t('acl.title')" toggleable collapsed>
+            <div v-if="curNetwork.acl" class="flex flex-col gap-y-2">
+              <AclManager v-model="curNetwork.acl" />
+            </div>
+            <div v-else class="flex justify-center p-4">
+              <Button :label="t('acl.enabled')"
+                @click="curNetwork.acl = { acl_v1: { chains: [], group: { declares: [], members: [] } } }" />
             </div>
           </Panel>
 

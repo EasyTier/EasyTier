@@ -6,13 +6,12 @@ use std::{
     io,
     net::{IpAddr, SocketAddr},
     sync::{
-        atomic::{AtomicU16, Ordering},
         Arc,
+        atomic::{AtomicU16, Ordering},
     },
 };
 
 use device::BufferDevice;
-use futures::Future;
 use reactor::Reactor;
 pub use smoltcp;
 use smoltcp::{
@@ -23,6 +22,7 @@ use smoltcp::{
 pub use socket::{TcpListener, TcpStream, UdpSocket};
 pub use socket_allocator::BufferSize;
 use tokio::sync::Notify;
+use tokio_util::task::AbortOnDropHandle;
 
 /// The async devices.
 pub mod channel_device;
@@ -78,6 +78,7 @@ pub struct Net {
     ip_addr: IpCidr,
     from_port: AtomicU16,
     stopper: Arc<Notify>,
+    fut: AbortOnDropHandle<io::Result<()>>,
 }
 
 impl std::fmt::Debug for Net {
@@ -92,15 +93,10 @@ impl std::fmt::Debug for Net {
 impl Net {
     /// Creates a new `Net` instance. It panics if the medium is not supported.
     pub fn new<D: device::AsyncDevice + 'static>(device: D, config: NetConfig) -> Net {
-        let (net, fut) = Self::new2(device, config);
-        tokio::spawn(fut);
-        net
+        Self::new2(device, config)
     }
 
-    fn new2<D: device::AsyncDevice + 'static>(
-        device: D,
-        config: NetConfig,
-    ) -> (Net, impl Future<Output = io::Result<()>> + Send) {
+    fn new2<D: device::AsyncDevice + 'static>(device: D, config: NetConfig) -> Net {
         let mut buffer_device = BufferDevice::new(device.capabilities().clone());
         let mut iface = Interface::new(config.interface_config, &mut buffer_device, Instant::now());
         let ip_addr = config.ip_addr;
@@ -129,15 +125,13 @@ impl Net {
             stopper.clone(),
         );
 
-        (
-            Net {
-                reactor: Arc::new(reactor),
-                ip_addr: config.ip_addr,
-                from_port: AtomicU16::new(10001),
-                stopper,
-            },
-            fut,
-        )
+        Net {
+            reactor: Arc::new(reactor),
+            ip_addr: config.ip_addr,
+            from_port: AtomicU16::new(10001),
+            stopper,
+            fut: AbortOnDropHandle::new(tokio::spawn(fut)),
+        }
     }
     pub fn get_address(&self) -> IpAddr {
         self.ip_addr.address().into()

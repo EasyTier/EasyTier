@@ -1,10 +1,10 @@
+use super::Socks5Command;
 use super::new_udp_header;
 use super::parse_udp_request;
 use super::read_exact;
 use super::util::stream::tcp_connect_with_timeout;
-use super::util::target_addr::{read_address, TargetAddr};
-use super::Socks5Command;
-use super::{consts, AuthenticationMethod, ReplyError, Result, SocksError};
+use super::util::target_addr::{TargetAddr, read_address};
+use super::{AuthenticationMethod, ReplyError, Result, SocksError, consts};
 use anyhow::Context;
 use std::io;
 use std::net::IpAddr;

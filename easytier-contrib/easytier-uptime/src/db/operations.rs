@@ -1,8 +1,8 @@
 use crate::api::CreateNodeRequest;
-use crate::db::entity::*;
 use crate::db::Db;
 use crate::db::HealthStats;
 use crate::db::HealthStatus;
+use crate::db::entity::*;
 use sea_orm::*;
 use std::collections::{HashMap, HashSet};
 

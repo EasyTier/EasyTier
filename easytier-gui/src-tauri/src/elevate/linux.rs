@@ -4,12 +4,10 @@
  *--------------------------------------------------------------------------------------------*/
 
 use super::Command;
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use std::env;
 use std::ffi::OsStr;
-use std::path::PathBuf;
 use std::process::{Command as StdCommand, Output};
-use std::str::FromStr;
 
 /// The implementation of state check and elevated executing varies on each platform
 impl Command {
@@ -24,8 +22,7 @@ impl Command {
     /// Prompting the user with a graphical OS dialog for the root password,
     /// excuting the command with escalated privileges, and return the output
     pub fn output(&self) -> Result<Output> {
-        let pkexec = PathBuf::from_str("/bin/pkexec")?;
-        let mut command = StdCommand::new(pkexec);
+        let mut command = StdCommand::new("pkexec");
         let display = env::var("DISPLAY");
         let xauthority = env::var("XAUTHORITY");
         let home = env::var("HOME");

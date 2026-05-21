@@ -1,9 +1,9 @@
 use bytes::Bytes;
 use bytes::BytesMut;
-use zerocopy::byteorder::*;
 use zerocopy::AsBytes;
 use zerocopy::FromBytes;
 use zerocopy::FromZeroes;
+use zerocopy::byteorder::*;
 
 type DefaultEndian = LittleEndian;
 
@@ -28,8 +28,17 @@ pub enum UdpPacketType {
     Data = 3,
     Fin = 4,
     HolePunch = 5,
-    V6HolePunch = 6, // when receiving v6 hole punch packet, the packet contains a socket addr of other peer, we
+    V4HolePunch = 6, // when receiving v4 hole punch packet, the packet contains a socket addr of other peer, we
+    // will send a hole punch packet to that peer. we only accept this packet from loopback interface.
+    V6HolePunch = 7, // when receiving v6 hole punch packet, the packet contains a socket addr of other peer, we
                      // will send a hole punch packet to that peer. we only accept this packet from lookback interface.
+}
+
+#[repr(C, packed)]
+#[derive(AsBytes, FromBytes, FromZeroes, Clone, Debug, Default)]
+pub struct V4HolePunchPacket {
+    pub dst_ipv4: [u8; 4],
+    pub dst_port: U16<DefaultEndian>,
 }
 
 #[repr(C, packed)]
@@ -56,7 +65,7 @@ pub struct WGTunnelHeader {
 }
 pub const WG_TUNNEL_HEADER_SIZE: usize = std::mem::size_of::<WGTunnelHeader>();
 
-#[derive(AsBytes, FromZeroes, Clone, Debug)]
+#[derive(AsBytes, FromZeroes, Copy, Clone, Debug)]
 #[repr(u8)]
 pub enum PacketType {
     Invalid = 0,
@@ -72,6 +81,17 @@ pub enum PacketType {
     ForeignNetworkPacket = 10,
     KcpSrc = 11,
     KcpDst = 12,
+    QuicSrc = 16,
+    QuicDst = 17,
+    NoiseHandshakeMsg1 = 13,
+    NoiseHandshakeMsg2 = 14,
+    NoiseHandshakeMsg3 = 15,
+    RelayHandshake = 20,
+    RelayHandshakeAck = 21,
+
+    // used internally,
+    DataWithKcpSrcModified = 18,
+    DataWithQuicSrcModified = 19,
 }
 
 bitflags::bitflags! {
@@ -81,7 +101,9 @@ bitflags::bitflags! {
         const EXIT_NODE = 0b0000_0100;
         const NO_PROXY = 0b0000_1000;
         const COMPRESSED = 0b0001_0000;
-        const KCP_SRC_MODIFIED = 0b0010_0000;
+        // deprecated flags, can be reused.
+        // const KCP_SRC_MODIFIED = 0b0010_0000;
+        // const QUIC_SRC_MODIFIED = 0b1000_0000;
         const NOT_SEND_TO_TUN = 0b0100_0000;
 
         const _ = !0;
@@ -186,21 +208,24 @@ impl PeerManagerHeader {
         self
     }
 
-    pub fn set_kcp_src_modified(&mut self, modified: bool) -> &mut Self {
-        let mut flags = PeerManagerHeaderFlags::from_bits(self.flags).unwrap();
-        if modified {
-            flags.insert(PeerManagerHeaderFlags::KCP_SRC_MODIFIED);
-        } else {
-            flags.remove(PeerManagerHeaderFlags::KCP_SRC_MODIFIED);
-        }
-        self.flags = flags.bits();
+    pub fn mark_kcp_src_modified(&mut self) -> &mut Self {
+        assert_eq!(self.packet_type, PacketType::Data as u8);
+        self.packet_type = PacketType::DataWithKcpSrcModified as u8;
         self
     }
 
     pub fn is_kcp_src_modified(&self) -> bool {
-        PeerManagerHeaderFlags::from_bits(self.flags)
-            .unwrap()
-            .contains(PeerManagerHeaderFlags::KCP_SRC_MODIFIED)
+        self.packet_type == PacketType::DataWithKcpSrcModified as u8
+    }
+
+    pub fn mark_quic_src_modified(&mut self) -> &mut Self {
+        assert_eq!(self.packet_type, PacketType::Data as u8);
+        self.packet_type = PacketType::DataWithQuicSrcModified as u8;
+        self
+    }
+
+    pub fn is_quic_src_modified(&self) -> bool {
+        self.packet_type == PacketType::DataWithQuicSrcModified as u8
     }
 
     pub fn set_not_send_to_tun(&mut self, not_send_to_tun: bool) -> &mut Self {
@@ -261,19 +286,28 @@ impl ForeignNetworkPacketHeader {
     }
 }
 
-// reserve the space for aes tag and nonce
+// reserve space for AEAD authentication tag and nonce
 #[repr(C, packed)]
-#[derive(AsBytes, FromBytes, FromZeroes, Clone, Debug, Default)]
-pub struct AesGcmTail {
-    pub tag: [u8; 16],
-    pub nonce: [u8; 12],
+#[derive(AsBytes, FromBytes, FromZeroes, Clone, Debug)]
+pub struct AeadTail<const TAG_SIZE: usize, const NONCE_SIZE: usize> {
+    pub tag: [u8; TAG_SIZE],
+    pub nonce: [u8; NONCE_SIZE],
 }
-pub const AES_GCM_ENCRYPTION_RESERVED: usize = std::mem::size_of::<AesGcmTail>();
+
+impl<const TAG_SIZE: usize, const NONCE_SIZE: usize> AeadTail<TAG_SIZE, NONCE_SIZE> {
+    pub const TAG_SIZE: usize = TAG_SIZE;
+    pub const NONCE_SIZE: usize = NONCE_SIZE;
+
+    pub const SIZE: usize = std::mem::size_of::<Self>();
+}
+
+pub type StandardAeadTail = AeadTail<16, 12>;
 
 #[derive(AsBytes, FromZeroes, Clone, Debug, Copy, PartialEq, Hash, Eq)]
 #[repr(u8)]
 pub enum CompressorAlgo {
     None = 0,
+    #[cfg(feature = "zstd")]
     ZstdDefault = 1,
 }
 
@@ -287,6 +321,7 @@ pub const COMPRESSOR_TAIL_SIZE: usize = std::mem::size_of::<CompressorTail>();
 impl CompressorTail {
     pub fn get_algo(&self) -> Option<CompressorAlgo> {
         match self.algo {
+            #[cfg(feature = "zstd")]
             1 => Some(CompressorAlgo::ZstdDefault),
             _ => None,
         }
@@ -297,7 +332,7 @@ impl CompressorTail {
     }
 }
 
-pub const TAIL_RESERVED_SIZE: usize = max(AES_GCM_ENCRYPTION_RESERVED, COMPRESSOR_TAIL_SIZE);
+pub const TAIL_RESERVED_SIZE: usize = max(StandardAeadTail::SIZE, COMPRESSOR_TAIL_SIZE);
 
 #[derive(Default, Debug)]
 pub struct ZCPacketOffsets {
@@ -421,6 +456,14 @@ pub struct ZCPacket {
 }
 
 impl ZCPacket {
+    fn bytes_from_offset(&self, offset: usize) -> Option<&[u8]> {
+        self.inner.get(offset..)
+    }
+
+    fn mut_bytes_from_offset(&mut self, offset: usize) -> Option<&mut [u8]> {
+        self.inner.get_mut(offset..)
+    }
+
     pub fn new_nic_packet() -> Self {
         Self {
             inner: BytesMut::new(),
@@ -501,39 +544,39 @@ impl ZCPacket {
     }
 
     pub fn mut_peer_manager_header(&mut self) -> Option<&mut PeerManagerHeader> {
-        PeerManagerHeader::mut_from_prefix(
-            &mut self.inner[self
-                .packet_type
-                .get_packet_offsets()
-                .peer_manager_header_offset..],
-        )
+        let offset = self
+            .packet_type
+            .get_packet_offsets()
+            .peer_manager_header_offset;
+        let bytes = self.mut_bytes_from_offset(offset)?;
+        PeerManagerHeader::mut_from_prefix(bytes)
     }
 
     pub fn mut_tcp_tunnel_header(&mut self) -> Option<&mut TCPTunnelHeader> {
-        TCPTunnelHeader::mut_from_prefix(
-            &mut self.inner[self
-                .packet_type
-                .get_packet_offsets()
-                .tcp_tunnel_header_offset..],
-        )
+        let offset = self
+            .packet_type
+            .get_packet_offsets()
+            .tcp_tunnel_header_offset;
+        let bytes = self.mut_bytes_from_offset(offset)?;
+        TCPTunnelHeader::mut_from_prefix(bytes)
     }
 
     pub fn mut_udp_tunnel_header(&mut self) -> Option<&mut UDPTunnelHeader> {
-        UDPTunnelHeader::mut_from_prefix(
-            &mut self.inner[self
-                .packet_type
-                .get_packet_offsets()
-                .udp_tunnel_header_offset..],
-        )
+        let offset = self
+            .packet_type
+            .get_packet_offsets()
+            .udp_tunnel_header_offset;
+        let bytes = self.mut_bytes_from_offset(offset)?;
+        UDPTunnelHeader::mut_from_prefix(bytes)
     }
 
     pub fn mut_wg_tunnel_header(&mut self) -> Option<&mut WGTunnelHeader> {
-        WGTunnelHeader::mut_from_prefix(
-            &mut self.inner[self
-                .packet_type
-                .get_packet_offsets()
-                .wg_tunnel_header_offset..],
-        )
+        let offset = self
+            .packet_type
+            .get_packet_offsets()
+            .wg_tunnel_header_offset;
+        let bytes = self.mut_bytes_from_offset(offset)?;
+        WGTunnelHeader::mut_from_prefix(bytes)
     }
 
     // ref versions
@@ -546,30 +589,30 @@ impl ZCPacket {
     }
 
     pub fn peer_manager_header(&self) -> Option<&PeerManagerHeader> {
-        PeerManagerHeader::ref_from_prefix(
-            &self.inner[self
-                .packet_type
-                .get_packet_offsets()
-                .peer_manager_header_offset..],
-        )
+        let offset = self
+            .packet_type
+            .get_packet_offsets()
+            .peer_manager_header_offset;
+        let bytes = self.bytes_from_offset(offset)?;
+        PeerManagerHeader::ref_from_prefix(bytes)
     }
 
     pub fn tcp_tunnel_header(&self) -> Option<&TCPTunnelHeader> {
-        TCPTunnelHeader::ref_from_prefix(
-            &self.inner[self
-                .packet_type
-                .get_packet_offsets()
-                .tcp_tunnel_header_offset..],
-        )
+        let offset = self
+            .packet_type
+            .get_packet_offsets()
+            .tcp_tunnel_header_offset;
+        let bytes = self.bytes_from_offset(offset)?;
+        TCPTunnelHeader::ref_from_prefix(bytes)
     }
 
     pub fn udp_tunnel_header(&self) -> Option<&UDPTunnelHeader> {
-        UDPTunnelHeader::ref_from_prefix(
-            &self.inner[self
-                .packet_type
-                .get_packet_offsets()
-                .udp_tunnel_header_offset..],
-        )
+        let offset = self
+            .packet_type
+            .get_packet_offsets()
+            .udp_tunnel_header_offset;
+        let bytes = self.bytes_from_offset(offset)?;
+        UDPTunnelHeader::ref_from_prefix(bytes)
     }
 
     pub fn udp_payload(&self) -> &[u8] {
@@ -687,6 +730,17 @@ impl ZCPacket {
         }
     }
 
+    pub fn foreign_network_inner_packet_type(&self) -> Option<u8> {
+        if self.peer_manager_header()?.packet_type != PacketType::ForeignNetworkPacket as u8 {
+            return None;
+        }
+
+        let payload = self.payload();
+        let hdr = ForeignNetworkPacketHeader::ref_from_prefix(payload)?;
+        let inner_packet = payload.get(hdr.get_header_len()..)?;
+        PeerManagerHeader::ref_from_prefix(inner_packet).map(|hdr| hdr.packet_type)
+    }
+
     pub fn foreign_network_packet(mut self) -> Self {
         let hdr = self.foreign_network_hdr().unwrap();
         let foreign_hdr_len = hdr.get_header_len();
@@ -734,5 +788,25 @@ mod tests {
         let tcp_packet = packet.convert_type(ZCPacketType::TCP).into_bytes();
         assert_eq!(&tcp_packet[..1], b"\x0b");
         println!("{:?}", tcp_packet);
+    }
+
+    #[test]
+    fn test_short_tcp_packet_header_access_is_safe() {
+        let mut packet = ZCPacket::new_from_buf(BytesMut::from(&b"\x01"[..]), ZCPacketType::TCP);
+
+        assert!(packet.peer_manager_header().is_none());
+        assert!(packet.tcp_tunnel_header().is_none());
+        assert!(packet.udp_tunnel_header().is_none());
+        assert!(packet.mut_peer_manager_header().is_none());
+        assert!(packet.mut_tcp_tunnel_header().is_none());
+        assert!(packet.mut_udp_tunnel_header().is_none());
+        assert!(packet.mut_wg_tunnel_header().is_none());
+    }
+
+    #[test]
+    fn test_invalid_converted_header_offset_is_safe() {
+        let mut packet = ZCPacket::new_from_buf(BytesMut::from(&b"\x01"[..]), ZCPacketType::UDP);
+
+        assert!(packet.mut_wg_tunnel_header().is_none());
     }
 }

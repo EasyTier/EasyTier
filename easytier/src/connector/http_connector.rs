@@ -10,6 +10,7 @@ use rand::seq::SliceRandom as _;
 use url::Url;
 
 use crate::{
+    VERSION,
     common::{error::Error, global_ctx::ArcGlobalCtx},
     tunnel::{IpVersion, Tunnel, TunnelConnector, TunnelError, ZCPacketSink, ZCPacketStream},
 };
@@ -169,13 +170,21 @@ impl HttpTunnelConnector {
 
         let original_url_clone = original_url.to_string();
         let body_clone = body.clone();
+        let network_name = self.global_ctx.network.network_name.clone();
+        let user_agent = format!("easytier/{}", VERSION);
         let res = tokio::task::spawn_blocking(move || {
             let uri = http_req::uri::Uri::try_from(original_url_clone.as_ref())
                 .with_context(|| format!("parsing url failed. url: {}", original_url_clone))?;
 
-            tracing::info!("sending http request to {}", uri);
+            tracing::info!(
+                "sending http request to {}, network_name: {}",
+                uri,
+                network_name
+            );
 
             Request::new(&uri)
+                .header("User-Agent", &user_agent)
+                .header("X-Network-Name", &network_name)
                 .redirect_policy(RedirectPolicy::Limit(0))
                 .timeout(std::time::Duration::from_secs(20))
                 .send(&mut *body_clone.write().unwrap())
@@ -220,11 +229,11 @@ impl super::TunnelConnector for HttpTunnelConnector {
             TunnelInfo {
                 local_addr: info.local_addr.clone(),
                 remote_addr: Some(self.addr.clone().into()),
-                tunnel_type: format!(
-                    "{:?}-{}",
-                    self.redirect_type,
-                    info.remote_addr.unwrap_or_default()
-                ),
+                resolved_remote_addr: info
+                    .resolved_remote_addr
+                    .clone()
+                    .or(info.remote_addr.clone()),
+                tunnel_type: format!("{}-{}", self.addr.scheme(), info.tunnel_type),
             },
         )))
     }
@@ -244,18 +253,38 @@ impl super::TunnelConnector for HttpTunnelConnector {
 
 #[cfg(test)]
 mod tests {
-    use tokio::{io::AsyncWriteExt as _, net::TcpListener};
+    use tokio::{io::AsyncReadExt as _, io::AsyncWriteExt as _, net::TcpListener};
 
     use crate::{
-        common::global_ctx::tests::get_mock_global_ctx,
-        tunnel::{tcp::TcpTunnelListener, TunnelConnector, TunnelListener},
+        common::global_ctx::tests::get_mock_global_ctx_with_network,
+        tunnel::{TunnelConnector, TunnelListener, tcp::TcpTunnelListener},
     };
 
     use super::*;
 
-    async fn run_http_redirect_server(port: u16, test_type: HttpRedirectType) -> Result<(), Error> {
-        let listener = TcpListener::bind(format!("0.0.0.0:{}", port)).await?;
+    async fn run_http_redirect_server(
+        port: u16,
+        test_type: HttpRedirectType,
+    ) -> Result<String, Error> {
+        let listener = TcpListener::bind(format!("127.0.0.1:{}", port)).await?;
         let (mut stream, _) = listener.accept().await?;
+
+        let mut buf = [0u8; 4096];
+        let n = stream.read(&mut buf).await?;
+        let req = String::from_utf8_lossy(&buf[..n]);
+
+        let mut captured_network_name = String::new();
+        for line in req.lines() {
+            if line.to_lowercase().starts_with("x-network-name:") {
+                captured_network_name = line
+                    .split_once(':')
+                    .map(|x| x.1)
+                    .unwrap_or_default()
+                    .trim()
+                    .to_string();
+                break;
+            }
+        }
 
         match test_type {
             HttpRedirectType::RedirectToQuery => {
@@ -276,7 +305,7 @@ mod tests {
             }
         }
 
-        Ok(())
+        Ok(captured_network_name)
     }
 
     #[rstest::rstest]
@@ -292,13 +321,20 @@ mod tests {
         )]
         test_type: HttpRedirectType,
     ) {
+        let network_name = format!("net_{}", rand::random::<u32>());
         let http_task = tokio::spawn(run_http_redirect_server(35888, test_type));
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         let test_url: url::Url = "http://127.0.0.1:35888".parse().unwrap();
-        let global_ctx = get_mock_global_ctx();
+
+        let identity = crate::common::config::NetworkIdentity {
+            network_name: network_name.clone(),
+            ..Default::default()
+        };
+        let global_ctx = get_mock_global_ctx_with_network(Some(identity));
+
         let mut flags = global_ctx.config.get_flags();
         flags.bind_device = false;
-        global_ctx.config.set_flags(flags);
+        global_ctx.set_flags(flags);
         let mut connector = HttpTunnelConnector::new(test_url.clone(), global_ctx.clone());
 
         let mut listener = TcpTunnelListener::new("tcp://0.0.0.0:25888".parse().unwrap());
@@ -310,11 +346,16 @@ mod tests {
 
         let t = connector.connect().await.unwrap();
         assert_eq!(connector.redirect_type, test_type);
+
+        let captured_name = http_task.await.unwrap().unwrap();
+        assert_eq!(captured_name, network_name);
+
         let info = t.info().unwrap();
         let remote_addr = info.remote_addr.unwrap();
         assert_eq!(remote_addr, test_url.into());
+        let resolved_remote_addr = info.resolved_remote_addr.unwrap();
+        assert_eq!(resolved_remote_addr.url, "tcp://127.0.0.1:25888");
 
         tokio::join!(task).0.unwrap();
-        tokio::join!(http_task).0.unwrap().unwrap();
     }
 }

@@ -11,9 +11,8 @@ use tokio_stream::StreamExt;
 
 use crate::{
     common::{
-        join_joinset_background,
+        PeerId, join_joinset_background,
         stats_manager::{LabelSet, LabelType, MetricName, StatsManager},
-        PeerId,
     },
     proto::{
         common::{
@@ -24,16 +23,16 @@ use crate::{
         rpc_types::{controller::Controller, error::Result},
     },
     tunnel::{
+        Tunnel, ZCPacketStream,
         mpsc::{MpscTunnel, MpscTunnelSender},
         ring::create_ring_tunnel_pair,
-        Tunnel, ZCPacketStream,
     },
 };
 
 use super::{
-    packet::{build_rpc_packet, compress_packet, decompress_packet, PacketMerger},
-    service_registry::ServiceRegistry,
     RpcController, Transport,
+    packet::{PacketMerger, build_rpc_packet, compress_packet, decompress_packet},
+    service_registry::ServiceRegistry,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -301,7 +300,6 @@ impl Server {
                 accepted_algo: CompressionAlgoPb::Zstd.into(),
             },
         });
-
         for packet in packets {
             if let Err(err) = sender.send(packet).await {
                 tracing::error!(?err, "Failed to send response packet");

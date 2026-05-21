@@ -1,5 +1,9 @@
-use std::result::Result;
-use std::sync::{Arc, Mutex};
+use std::{
+    result::Result,
+    sync::{Arc, Mutex, atomic::Ordering},
+};
+
+use atomic_shim::AtomicU64;
 
 use async_trait::async_trait;
 use dashmap::DashMap;
@@ -7,10 +11,43 @@ use tokio::select;
 use tokio::sync::Notify;
 use tokio::task::JoinHandle;
 
-use crate::common::scoped_task::ScopedTask;
 use anyhow::Error;
+use tokio_util::task::AbortOnDropHandle;
 
 use super::peer_manager::PeerManager;
+
+pub struct ExternalTaskSignal {
+    version: AtomicU64,
+    notify: Notify,
+}
+
+impl Default for ExternalTaskSignal {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl ExternalTaskSignal {
+    pub fn new() -> Self {
+        Self {
+            version: AtomicU64::new(0),
+            notify: Notify::new(),
+        }
+    }
+
+    pub fn notify(&self) {
+        self.version.fetch_add(1, Ordering::Relaxed);
+        self.notify.notify_waiters();
+    }
+
+    pub fn version(&self) -> u64 {
+        self.version.load(Ordering::Relaxed)
+    }
+
+    pub fn notified(&self) -> impl std::future::Future<Output = ()> + '_ {
+        self.notify.notified()
+    }
+}
 
 #[async_trait]
 pub trait PeerTaskLauncher: Send + Sync + Clone + 'static {
@@ -35,9 +72,9 @@ pub trait PeerTaskLauncher: Send + Sync + Clone + 'static {
 
 pub struct PeerTaskManager<Launcher: PeerTaskLauncher> {
     launcher: Launcher,
-    peer_mgr: Arc<PeerManager>,
-    main_loop_task: Mutex<Option<ScopedTask<()>>>,
+    main_loop_task: Mutex<Option<AbortOnDropHandle<()>>>,
     run_signal: Arc<Notify>,
+    external_signal: Option<Arc<ExternalTaskSignal>>,
     data: Launcher::Data,
 }
 
@@ -49,28 +86,42 @@ where
     L: PeerTaskLauncher<Data = D, CollectPeerItem = C, TaskRet = T> + 'static,
 {
     pub fn new(launcher: L, peer_mgr: Arc<PeerManager>) -> Self {
+        Self::new_with_external_signal(launcher, peer_mgr, None)
+    }
+
+    pub fn new_with_external_signal(
+        launcher: L,
+        peer_mgr: Arc<PeerManager>,
+        external_signal: Option<Arc<ExternalTaskSignal>>,
+    ) -> Self {
         let data = launcher.new_data(peer_mgr.clone());
         Self {
             launcher,
-            peer_mgr,
             main_loop_task: Mutex::new(None),
             run_signal: Arc::new(Notify::new()),
+            external_signal,
             data,
         }
     }
 
     pub fn start(&self) {
-        let task = tokio::spawn(Self::main_loop(
+        let task = AbortOnDropHandle::new(tokio::spawn(Self::main_loop(
             self.launcher.clone(),
             self.data.clone(),
             self.run_signal.clone(),
-        ))
-        .into();
+            self.external_signal.clone(),
+        )));
         self.main_loop_task.lock().unwrap().replace(task);
     }
 
-    async fn main_loop(launcher: L, data: D, signal: Arc<Notify>) {
-        let peer_task_map = Arc::new(DashMap::<C, ScopedTask<Result<T, Error>>>::new());
+    async fn main_loop(
+        launcher: L,
+        data: D,
+        signal: Arc<Notify>,
+        external_signal: Option<Arc<ExternalTaskSignal>>,
+    ) {
+        let peer_task_map = Arc::new(DashMap::<C, AbortOnDropHandle<Result<T, Error>>>::new());
+        let mut external_signal_version = external_signal.as_ref().map(|signal| signal.version());
 
         loop {
             let peers_to_connect = launcher.collect_peers_need_task(&data).await;
@@ -106,18 +157,40 @@ where
                     }
 
                     tracing::debug!(?item, "launch hole punching task");
-                    peer_task_map
-                        .insert(item.clone(), launcher.launch_task(&data, item).await.into());
+                    peer_task_map.insert(
+                        item.clone(),
+                        AbortOnDropHandle::new(launcher.launch_task(&data, item).await),
+                    );
                 }
             } else if peer_task_map.is_empty() {
                 launcher.all_task_done(&data).await;
             }
 
-            select! {
-                _ = tokio::time::sleep(std::time::Duration::from_millis(
-                    launcher.loop_interval_ms(),
-                )) => {},
-                _ = signal.notified() => {}
+            if let Some(external_signal) = external_signal.as_ref() {
+                let notified = external_signal.notified();
+                tokio::pin!(notified);
+                let cur_version = external_signal.version();
+                if external_signal_version != Some(cur_version) {
+                    external_signal_version = Some(cur_version);
+                    continue;
+                }
+
+                select! {
+                    _ = tokio::time::sleep(std::time::Duration::from_millis(
+                        launcher.loop_interval_ms(),
+                    )) => {},
+                    _ = signal.notified() => {},
+                    _ = &mut notified => {
+                        external_signal_version = Some(external_signal.version());
+                    }
+                }
+            } else {
+                select! {
+                    _ = tokio::time::sleep(std::time::Duration::from_millis(
+                        launcher.loop_interval_ms(),
+                    )) => {},
+                    _ = signal.notified() => {}
+                }
             }
         }
     }

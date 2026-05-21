@@ -5,11 +5,12 @@ use std::{pin::Pin, time::Duration};
 use anyhow::Context;
 use tokio::time::timeout;
 
-use crate::{common::scoped_task::ScopedTask, proto::common::TunnelInfo};
+use crate::proto::common::TunnelInfo;
 
-use super::{packet_def::ZCPacket, Tunnel, TunnelError, ZCPacketSink, ZCPacketStream};
+use super::{Tunnel, TunnelError, ZCPacketSink, ZCPacketStream, packet_def::ZCPacket};
 
-use tokio::sync::mpsc::{channel, error::TrySendError, Receiver, Sender};
+use tokio::sync::mpsc::{Receiver, Sender, channel, error::TrySendError};
+use tokio_util::task::AbortOnDropHandle;
 // use tachyonix::{channel, Receiver, Sender, TrySendError};
 
 use futures::SinkExt;
@@ -37,7 +38,7 @@ pub struct MpscTunnel<T> {
     tunnel: T,
     stream: Option<Pin<Box<dyn ZCPacketStream>>>,
 
-    task: ScopedTask<()>,
+    task: AbortOnDropHandle<()>,
 }
 
 impl<T: Tunnel> MpscTunnel<T> {
@@ -61,7 +62,7 @@ impl<T: Tunnel> MpscTunnel<T> {
             tx: Some(tx),
             tunnel,
             stream: Some(stream),
-            task: task.into(),
+            task: AbortOnDropHandle::new(task),
         }
     }
 
@@ -141,9 +142,9 @@ mod tests {
     use futures::StreamExt;
 
     use crate::tunnel::{
-        ring::{create_ring_tunnel_pair, RING_TUNNEL_CAP},
-        tcp::{TcpTunnelConnector, TcpTunnelListener},
         TunnelConnector, TunnelListener,
+        ring::{RING_TUNNEL_CAP, create_ring_tunnel_pair},
+        tcp::{TcpTunnelConnector, TcpTunnelListener},
     };
 
     use super::*;

@@ -12,7 +12,7 @@ use tokio::task::JoinSet;
 use tracing::Instrument;
 
 use crate::{
-    common::{global_ctx::GlobalCtx, PeerId},
+    common::{PeerId, global_ctx::GlobalCtx},
     peers::{
         peer_manager::PeerManager,
         peer_map::PeerMap,
@@ -30,7 +30,7 @@ use crate::{
     },
 };
 
-use super::{server::PeerCenterServer, Digest, Error};
+use super::{Digest, Error, server::PeerCenterServer};
 
 #[async_trait::async_trait]
 #[auto_impl::auto_impl(&, Arc, Box)]
@@ -65,7 +65,7 @@ impl PeerCenterBase {
             return Err(Error::Shutdown);
         };
         rpc_mgr.rpc_server().registry().register(
-            PeerCenterRpcServer::new(PeerCenterServer::new(self.peer_mgr.my_peer_id())),
+            PeerCenterRpcServer::new(PeerCenterServer::new()),
             &self.peer_mgr.get_global_ctx().get_network_name(),
         );
         Ok(())
@@ -97,12 +97,12 @@ impl PeerCenterBase {
         &self,
         job_ctx: T,
         job_fn: impl Fn(
-                Box<dyn PeerCenterRpc<Controller = BaseController> + Send>,
-                Arc<PeridicJobCtx<T>>,
-            ) -> Fut
-            + Send
-            + Sync
-            + 'static,
+            Box<dyn PeerCenterRpc<Controller = BaseController> + Send>,
+            Arc<PeridicJobCtx<T>>,
+        ) -> Fut
+        + Send
+        + Sync
+        + 'static,
     ) {
         let my_peer_id = self.my_peer_id;
         let peer_mgr = self.peer_mgr.clone();
@@ -442,7 +442,7 @@ impl PeerCenterPeerManagerTrait for PeerMapWithPeerRpcManager {
         // TODO: currently latency between public server cannot be calculated because one public-server pair
         // has no connection between them. (hard to get latency from peer manager because it's hard to transfrom the peer id)
         // but it's fine because we don't want to too much traffic between public servers.
-        let peers = self.peer_map.list_peers().await;
+        let peers = self.peer_map.list_peers();
         let mut ret = PeerInfoForGlobalMap::default();
         for peer in peers {
             if let Some(conns) = self.peer_map.list_peer_conns(peer).await {
@@ -486,7 +486,6 @@ impl PeerCenterPeerManagerTrait for PeerMapWithPeerRpcManager {
 #[cfg(test)]
 mod tests {
     use crate::{
-        peer_center::server::get_global_data,
         peers::tests::{connect_peer_manager, create_mock_peer_manager, wait_route_appear},
         tunnel::common::tests::wait_for_condition,
     };
@@ -515,25 +514,6 @@ mod tests {
             .await
             .unwrap();
 
-        let center_peer = PeerCenterBase::select_center_peer(&peer_mgr_a)
-            .await
-            .unwrap();
-        let center_data = get_global_data(center_peer);
-
-        // wait center_data has 3 records for 10 seconds
-        wait_for_condition(
-            || async {
-                if center_data.global_peer_map.len() == 4 {
-                    println!("center data {:#?}", center_data.global_peer_map);
-                    true
-                } else {
-                    false
-                }
-            },
-            Duration::from_secs(20),
-        )
-        .await;
-
         let mut digest = None;
         for pc in peer_centers.iter() {
             let rpc_service = pc.get_rpc_service();
@@ -545,11 +525,12 @@ mod tests {
 
             println!("rpc service ready, {:#?}", rpc_service.global_peer_map);
 
-            if digest.is_none() {
-                digest = Some(rpc_service.global_peer_map_digest.load());
-            } else {
+            if let Some(prev) = digest {
                 let v = rpc_service.global_peer_map_digest.load();
-                assert_eq!(digest.unwrap(), v);
+                assert_eq!(prev, v);
+                digest = Some(prev);
+            } else {
+                digest = Some(rpc_service.global_peer_map_digest.load());
             }
 
             let mut route_cost = pc.get_cost_calculator();
@@ -577,8 +558,5 @@ mod tests {
             route_cost.end_update();
             assert!(!route_cost.need_update());
         }
-
-        let global_digest = get_global_data(center_peer).digest.load();
-        assert_eq!(digest.as_ref().unwrap(), &global_digest);
     }
 }

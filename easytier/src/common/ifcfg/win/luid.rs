@@ -740,10 +740,6 @@ impl InterfaceLuid {
 
         // SAFETY: TODO
         let ret = unsafe { SetIpInterfaceEntry(&mut row) };
-        if NO_ERROR == ret {
-            Ok(())
-        } else {
-            Err(ret)
-        }
+        if NO_ERROR == ret { Ok(()) } else { Err(ret) }
     }
 }

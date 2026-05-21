@@ -14,6 +14,9 @@ class TauriVpnService : VpnService() {
     companion object {
         @JvmField var triggerCallback: (String, JSObject) -> Unit = { _, _ -> }
         @JvmField var self: TauriVpnService? = null
+        @JvmField var ipv4Addr: String? = null
+        @JvmField var routes: Array<String> = emptyArray()
+        @JvmField var dns: String? = null
 
         const val IPV4_ADDR = "IPV4_ADDR"
         const val ROUTES = "ROUTES"
@@ -27,6 +30,9 @@ class TauriVpnService : VpnService() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         println("vpn on start command ${intent?.getExtras()} $intent")
         var args = intent?.getExtras()
+        ipv4Addr = args?.getString(IPV4_ADDR)
+        routes = args?.getStringArray(ROUTES) ?: emptyArray()
+        dns = args?.getString(DNS)
 
         vpnInterface = createVpnInterface(args)
         println("vpn created ${vpnInterface.fd}")
@@ -63,6 +69,13 @@ class TauriVpnService : VpnService() {
             triggerCallback("vpn_service_stop", JSObject())
             vpnInterface.close()
         }
+        clearStatus()
+    }
+
+    private fun clearStatus() {
+        ipv4Addr = null
+        routes = emptyArray()
+        dns = null
     }
 
     private fun createVpnInterface(args: Bundle?): ParcelFileDescriptor {
@@ -72,7 +85,7 @@ class TauriVpnService : VpnService() {
         
         var mtu = args?.getInt(MTU) ?: 1500
         var ipv4Addr = args?.getString(IPV4_ADDR) ?: "10.126.126.1/24"
-        var dns = args?.getString(DNS) ?: "114.114.114.114"
+        var dns: String? = args?.getString(DNS)
         var routes = args?.getStringArray(ROUTES) ?: emptyArray()
         var disallowedApplications = args?.getStringArray(DISALLOWED_APPLICATIONS) ?: emptyArray()
 
@@ -83,9 +96,10 @@ class TauriVpnService : VpnService() {
         val ipParts = ipv4Addr.split("/")
         if (ipParts.size != 2) throw IllegalArgumentException("Invalid IP addr string")
         builder.addAddress(ipParts[0], ipParts[1].toInt())
+        builder.addAddress("fd00::1", 128)
 
         builder.setMtu(mtu)
-        builder.addDnsServer(dns)
+        dns?.let { builder.addDnsServer(it) }
 
         for (route in routes) {
             val ipParts = route.split("/")

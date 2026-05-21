@@ -30,7 +30,12 @@ serde_json = "1.0.125"
 tracing-subscriber = "0.3.19"
 tracing-core = "0.1.33"
 tracing = "0.1.41"
-uuid = { version = "1.17.0", features = ["v4"] }
+uuid = { version = "1.5.0", features = [
+    "v4",
+    "fast-rng",
+    "macro-diagnostics",
+    "serde",
+] }
 
 [build-dependencies]
 napi-build-ohos = "1.1"

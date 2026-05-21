@@ -29,17 +29,24 @@
             allowUnfree = true;
           };
         };
-        rustVersion = "1.89.0";
         makeRust =
           features:
-          pkgs.rust-bin.stable.${rustVersion}.default.override {
+          let
+            rustTarget = pkgs.stdenv.hostPlatform.config;
+            muslTarget = pkgs.lib.replaceStrings [ "gnu" ] [ "musl" ] rustTarget;
+            muslTargets = if pkgs.stdenv.isLinux then [ muslTarget ] else [ ];
+            toolchain = pkgs.rust-bin.fromRustupToolchainFile ./rust-toolchain.toml;
+          in
+          toolchain.override {
             extensions = [
               "rust-src"
               "rust-analyzer"
+              "rustfmt"
+              "clippy"
             ]
             ++ (if builtins.elem "android" features then android.rust.extensions else [ ]);
 
-            targets = if builtins.elem "android" features then android.rust.targets else [ ];
+            targets = muslTargets ++ (if builtins.elem "android" features then android.rust.targets else []);
           };
 
         android = import ./android.nix {
@@ -62,6 +69,7 @@
                   rust
                   protobuf
                   clang
+                  mold
                   pkg-config
                   bridge-utils # for three node test
                 ]
@@ -76,6 +84,7 @@
               );
 
             buildInputs = with pkgs; ([
+              jemalloc
               zstd
               openssl
               libclang
@@ -90,6 +99,11 @@
             LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath (flattenPaths (buildInputs ++ nativeBuildInputs));
             ZSTD_SYS_USE_PKG_CONFIG = true;
             KCP_SYS_EXTRA_HEADER_PATH = "${pkgs.libclang.lib}/lib/clang/19/include:${pkgs.glibc.dev}/include";
+            JEMALLOC_OVERRIDE = "${pkgs.jemalloc}/lib/libjemalloc.so";
+          }
+          // pkgs.lib.optionalAttrs pkgs.stdenv.isLinux {
+            CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER = "clang";
+            CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER = "clang";
           }
           // (if hasFeature "android" then android.envVars else { }));
       in

@@ -1,14 +1,16 @@
 use std::net::{Ipv4Addr, Ipv6Addr};
-use std::sync::atomic::{AtomicU16, Ordering};
+use std::sync::atomic::Ordering;
+use std::time::Instant;
 use std::{
     net::IpAddr,
-    sync::{atomic::AtomicBool, Arc},
+    sync::{Arc, atomic::AtomicBool},
 };
 
 use arc_swap::ArcSwap;
+use dashmap::DashMap;
 use pnet::packet::ipv6::Ipv6Packet;
 use pnet::packet::{
-    ip::IpNextHeaderProtocols, ipv4::Ipv4Packet, tcp::TcpPacket, udp::UdpPacket, Packet as _,
+    Packet as _, ip::IpNextHeaderProtocols, ipv4::Ipv4Packet, tcp::TcpPacket, udp::UdpPacket,
 };
 
 use crate::proto::acl::{AclStats, Protocol};
@@ -18,6 +20,38 @@ use crate::{
     proto::acl::{Acl, Action, ChainType},
     tunnel::packet_def::ZCPacket,
 };
+use tokio_util::task::AbortOnDropHandle;
+
+#[derive(Debug, Eq, PartialEq, Hash)]
+struct OutboundAllowRecord {
+    src_ip: IpAddr,
+    dst_ip: IpAddr,
+    src_port: Option<u16>,
+    dst_port: Option<u16>,
+    protocol: Protocol,
+}
+
+impl OutboundAllowRecord {
+    fn new_from_inbound_packet(p: &PacketInfo) -> Self {
+        Self {
+            src_ip: p.src_ip,
+            dst_ip: p.dst_ip,
+            src_port: p.src_port,
+            dst_port: p.dst_port,
+            protocol: p.protocol,
+        }
+    }
+
+    fn new_from_outbound_packet(p: &PacketInfo) -> Self {
+        Self {
+            src_ip: p.dst_ip,
+            dst_ip: p.src_ip,
+            src_port: p.dst_port,
+            dst_port: p.src_port,
+            protocol: p.protocol,
+        }
+    }
+}
 
 /// ACL filter that can be inserted into the packet processing pipeline
 /// Optimized with lock-free hot reloading via atomic processor replacement
@@ -25,7 +59,11 @@ pub struct AclFilter {
     // Use ArcSwap for lock-free atomic replacement during hot reload
     acl_processor: ArcSwap<AclProcessor>,
     acl_enabled: Arc<AtomicBool>,
-    quic_udp_port: AtomicU16,
+
+    // Track allowed outbound packets and automatically allow their corresponding inbound response
+    // packets, even if they would normally be dropped by ACL rules
+    outbound_allow_records: Arc<DashMap<OutboundAllowRecord, Instant>>,
+    clean_task: AbortOnDropHandle<()>,
 }
 
 impl Default for AclFilter {
@@ -36,10 +74,19 @@ impl Default for AclFilter {
 
 impl AclFilter {
     pub fn new() -> Self {
+        let outbound_allow_records = Arc::new(DashMap::new());
+        let record_clone = outbound_allow_records.clone();
         Self {
             acl_processor: ArcSwap::from(Arc::new(AclProcessor::new(Acl::default()))),
             acl_enabled: Arc::new(AtomicBool::new(false)),
-            quic_udp_port: AtomicU16::new(0),
+            outbound_allow_records,
+            clean_task: AbortOnDropHandle::new(tokio::spawn(async move {
+                let max_life = std::time::Duration::from_secs(30);
+                loop {
+                    record_clone.retain(|_, v| v.elapsed() < max_life);
+                    tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+                }
+            })),
         }
     }
 
@@ -47,6 +94,8 @@ impl AclFilter {
     /// Preserves connection tracking and rate limiting state across reloads
     /// Now lock-free and doesn't require &mut self!
     pub fn reload_rules(&self, acl_config: Option<&Acl>) {
+        self.outbound_allow_records.clear();
+
         let Some(acl_config) = acl_config else {
             self.acl_enabled.store(false, Ordering::Relaxed);
             return;
@@ -190,23 +239,23 @@ impl AclFilter {
         chain_type: ChainType,
         processor: &AclProcessor,
     ) {
-        if result.should_log {
-            if let Some(ref log_context) = result.log_context {
-                let log_message = log_context.to_message();
-                tracing::info!(
-                    src_ip = %packet_info.src_ip,
-                    dst_ip = %packet_info.dst_ip,
-                    src_port = packet_info.src_port,
-                    dst_port = packet_info.dst_port,
-                    src_group = packet_info.src_groups.join(","),
-                    dst_group = packet_info.dst_groups.join(","),
-                    protocol = ?packet_info.protocol,
-                    action = ?result.action,
-                    rule = result.matched_rule_str().as_deref().unwrap_or("unknown"),
-                    chain_type = ?chain_type,
-                    "ACL: {}", log_message
-                );
-            }
+        if result.should_log
+            && let Some(ref log_context) = result.log_context
+        {
+            let log_message = log_context.to_message();
+            tracing::info!(
+                src_ip = %packet_info.src_ip,
+                dst_ip = %packet_info.dst_ip,
+                src_port = packet_info.src_port,
+                dst_port = packet_info.dst_port,
+                src_group = packet_info.src_groups.join(","),
+                dst_group = packet_info.dst_groups.join(","),
+                protocol = ?packet_info.protocol,
+                action = ?result.action,
+                rule = result.matched_rule_str().as_deref().unwrap_or("unknown"),
+                chain_type = ?chain_type,
+                "ACL: {}", log_message
+            );
         }
 
         // Update global statistics in the ACL processor
@@ -245,38 +294,24 @@ impl AclFilter {
         processor.increment_stat(AclStatKey::PacketsTotal);
     }
 
-    fn check_is_quic_packet(
-        &self,
+    fn classify_chain_type(
+        is_in: bool,
         packet_info: &PacketInfo,
-        my_ipv4: &Option<Ipv4Addr>,
-        my_ipv6: &Option<Ipv6Addr>,
-    ) -> bool {
-        if packet_info.protocol != Protocol::Udp {
-            return false;
+        my_ipv4: Option<Ipv4Addr>,
+        is_local_ipv6: impl Fn(Ipv6Addr) -> bool,
+    ) -> ChainType {
+        if !is_in {
+            return ChainType::Outbound;
         }
 
-        let quic_port = self.get_quic_udp_port();
-        if quic_port == 0 {
-            return false;
-        }
+        let is_local_dst = packet_info.dst_ip == my_ipv4.unwrap_or(Ipv4Addr::UNSPECIFIED)
+            || matches!(packet_info.dst_ip, IpAddr::V6(dst) if is_local_ipv6(dst));
 
-        // quic input
-        if packet_info.dst_port == Some(quic_port)
-            && (packet_info.dst_ip == my_ipv4.unwrap_or(Ipv4Addr::UNSPECIFIED)
-                || packet_info.dst_ip == my_ipv6.unwrap_or(Ipv6Addr::UNSPECIFIED))
-        {
-            return true;
+        if is_local_dst {
+            ChainType::Inbound
+        } else {
+            ChainType::Forward
         }
-
-        // quic output
-        if packet_info.src_port == Some(quic_port)
-            && (packet_info.src_ip == my_ipv4.unwrap_or(Ipv4Addr::UNSPECIFIED)
-                || packet_info.src_ip == my_ipv6.unwrap_or(Ipv6Addr::UNSPECIFIED))
-        {
-            return true;
-        }
-
-        false
     }
 
     /// Common ACL processing logic
@@ -285,7 +320,7 @@ impl AclFilter {
         packet: &ZCPacket,
         is_in: bool,
         my_ipv4: Option<Ipv4Addr>,
-        my_ipv6: Option<Ipv6Addr>,
+        is_local_ipv6: impl Fn(Ipv6Addr) -> bool,
         route: &(dyn super::route_trait::Route + Send + Sync + 'static),
     ) -> bool {
         if !self.acl_enabled.load(Ordering::Relaxed) {
@@ -310,21 +345,7 @@ impl AclFilter {
             }
         };
 
-        if self.check_is_quic_packet(&packet_info, &my_ipv4, &my_ipv6) {
-            return true;
-        }
-
-        let chain_type = if is_in {
-            if packet_info.dst_ip == my_ipv4.unwrap_or(Ipv4Addr::UNSPECIFIED)
-                || packet_info.dst_ip == my_ipv6.unwrap_or(Ipv6Addr::UNSPECIFIED)
-            {
-                ChainType::Inbound
-            } else {
-                ChainType::Forward
-            }
-        } else {
-            ChainType::Outbound
-        };
+        let chain_type = Self::classify_chain_type(is_in, &packet_info, my_ipv4, is_local_ipv6);
 
         // Get current processor atomically
         let processor = self.get_processor();
@@ -336,8 +357,32 @@ impl AclFilter {
 
         // Check if packet should be allowed
         match acl_result.action {
-            Action::Allow | Action::Noop => true,
+            Action::Allow | Action::Noop => {
+                if matches!(chain_type, ChainType::Outbound) {
+                    self.outbound_allow_records.insert(
+                        OutboundAllowRecord::new_from_outbound_packet(&packet_info),
+                        Instant::now(),
+                    );
+                }
+                true
+            }
             Action::Drop => {
+                if is_in {
+                    let record = OutboundAllowRecord::new_from_inbound_packet(&packet_info);
+                    let entry = self.outbound_allow_records.entry(record);
+                    if let dashmap::Entry::Occupied(mut entry) = entry {
+                        entry.insert(Instant::now());
+                        tracing::trace!(
+                            "ACL: Allowing {:?} packet from {} to {} because of existing allow record, chain_type: {:?}",
+                            packet_info.protocol,
+                            packet_info.src_ip,
+                            packet_info.dst_ip,
+                            chain_type,
+                        );
+                        return true;
+                    }
+                }
+
                 tracing::trace!(
                     "ACL: Dropping {:?} packet from {} to {}, chain_type: {:?}",
                     packet_info.protocol,
@@ -350,12 +395,93 @@ impl AclFilter {
             }
         }
     }
+}
 
-    pub fn get_quic_udp_port(&self) -> u16 {
-        self.quic_udp_port.load(Ordering::Relaxed)
+#[cfg(test)]
+mod tests {
+    use std::{
+        net::{IpAddr, Ipv4Addr, Ipv6Addr},
+        sync::Arc,
+        time::Instant,
+    };
+
+    use crate::{
+        common::acl_processor::PacketInfo,
+        proto::acl::{Acl, ChainType, Protocol},
+    };
+
+    use super::{AclFilter, OutboundAllowRecord};
+
+    fn packet_info(dst_ip: IpAddr) -> PacketInfo {
+        PacketInfo {
+            src_ip: IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)),
+            dst_ip,
+            src_port: Some(1234),
+            dst_port: Some(80),
+            protocol: Protocol::Tcp,
+            packet_size: 64,
+            src_groups: Arc::new(Vec::new()),
+            dst_groups: Arc::new(Vec::new()),
+        }
     }
 
-    pub fn set_quic_udp_port(&self, port: u16) {
-        self.quic_udp_port.store(port, Ordering::Relaxed);
+    #[test]
+    fn classify_chain_type_treats_public_ipv6_lease_as_inbound() {
+        let leased_ipv6 = Ipv6Addr::new(0x2001, 0xdb8, 0x100, 0, 0, 0, 0, 0x123);
+        let packet_info = packet_info(IpAddr::V6(leased_ipv6));
+
+        let chain =
+            AclFilter::classify_chain_type(true, &packet_info, None, |ip| ip == leased_ipv6);
+
+        assert_eq!(chain, ChainType::Inbound);
+    }
+
+    #[test]
+    fn classify_chain_type_keeps_non_local_ipv6_as_forward() {
+        let leased_ipv6 = Ipv6Addr::new(0x2001, 0xdb8, 0x100, 0, 0, 0, 0, 0x123);
+        let packet_info = packet_info(IpAddr::V6(Ipv6Addr::new(
+            0x2001, 0xdb8, 0xffff, 2, 0, 0, 0, 0x100,
+        )));
+
+        let chain =
+            AclFilter::classify_chain_type(true, &packet_info, None, |ip| ip == leased_ipv6);
+
+        assert_eq!(chain, ChainType::Forward);
+    }
+
+    #[tokio::test]
+    async fn reload_rules_clears_outbound_allow_records() {
+        let filter = AclFilter::new();
+        filter.outbound_allow_records.insert(
+            OutboundAllowRecord {
+                src_ip: IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)),
+                dst_ip: IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)),
+                src_port: Some(1234),
+                dst_port: Some(80),
+                protocol: Protocol::Tcp,
+            },
+            Instant::now(),
+        );
+        assert_eq!(filter.outbound_allow_records.len(), 1);
+
+        filter.reload_rules(Some(&Acl::default()));
+
+        assert_eq!(filter.outbound_allow_records.len(), 0);
+
+        filter.outbound_allow_records.insert(
+            OutboundAllowRecord {
+                src_ip: IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)),
+                dst_ip: IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)),
+                src_port: Some(4321),
+                dst_port: Some(443),
+                protocol: Protocol::Tcp,
+            },
+            Instant::now(),
+        );
+        assert_eq!(filter.outbound_allow_records.len(), 1);
+
+        filter.reload_rules(None);
+
+        assert_eq!(filter.outbound_allow_records.len(), 0);
     }
 }
