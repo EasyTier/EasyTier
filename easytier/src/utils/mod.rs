@@ -3,8 +3,13 @@ pub mod panic;
 pub mod string;
 pub mod task;
 
+use shlex::split;
+use std::ffi::OsStr;
+use std::io;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener};
+use std::process::Output;
 use std::sync::{Arc, Weak};
+use tokio::process::Command;
 
 pub type PeerRoutePair = crate::proto::api::instance::PeerRoutePair;
 
@@ -29,3 +34,22 @@ pub trait BoxExt: Sized {
 }
 
 impl<T> BoxExt for T {}
+
+pub async fn execute<E, K, V>(command: impl AsRef<str>, environment: E) -> io::Result<Output>
+where
+    E: IntoIterator<Item = (K, V)>,
+    K: AsRef<OsStr>,
+    V: AsRef<OsStr>,
+{
+    let args = split(command.as_ref())
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "failed to parse command"))?;
+    let (program, args) = args
+        .split_first()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "empty command"))?;
+    Command::new(program)
+        .args(args)
+        .envs(environment)
+        .kill_on_drop(true)
+        .output()
+        .await
+}
