@@ -910,6 +910,15 @@ impl Session {
             .scoped_client::<F>(1, 1, "".to_string())
     }
 
+    pub fn scoped_client_with_domain<F: rpc_types::__rt::RpcClientFactory>(
+        &self,
+        domain_name: String,
+    ) -> F::ClientImpl {
+        self.rpc_mgr
+            .rpc_client()
+            .scoped_client::<F>(1, 1, domain_name)
+    }
+
     pub fn scoped_rpc_client(&self) -> SessionRpcClient {
         self.scoped_client::<WebClientServiceClientFactory<BaseController>>()
     }
