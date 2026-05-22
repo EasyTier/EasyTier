@@ -240,7 +240,7 @@ impl AsyncTcpConnector for Socks5KcpConnector {
         let ret = c
             .connect(self.src_addr, addr)
             .await
-            .map_err(|e| super::fast_socks5::SocksError::Other(e.into()))?;
+            .map_err(super::fast_socks5::SocksError::Other)?;
         Ok(SocksTcpStream::Kcp(ret))
     }
 }

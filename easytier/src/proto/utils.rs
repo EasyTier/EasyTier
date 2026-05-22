@@ -1,6 +1,6 @@
 use delegate::delegate;
 use derivative::Derivative;
-use derive_more::{Deref, DerefMut, From, IntoIterator};
+use derive_more::{AsMut, AsRef, Deref, DerefMut, From, IntoIterator};
 use prost::Message;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -45,11 +45,15 @@ where
     From,
     Deref,
     DerefMut,
+    AsRef,
+    AsMut,
     Serialize,
     Deserialize,
     IntoIterator,
 )]
 #[derivative(Default(bound = ""))]
+#[as_ref(forward)]
+#[as_mut(forward)]
 #[serde(transparent)]
 #[into_iterator(owned, ref, ref_mut)]
 pub struct RepeatedMessageModel<Model>(Vec<Model>);
@@ -70,22 +74,6 @@ impl<Model> Extend<Model> for RepeatedMessageModel<Model> {
     delegate! {
         to self.0 {
             fn extend<T: IntoIterator<Item = Model>>(&mut self, iter: T);
-        }
-    }
-}
-
-impl<Model> AsRef<[Model]> for RepeatedMessageModel<Model> {
-    delegate! {
-        to self.0 {
-            fn as_ref(&self) -> &[Model];
-        }
-    }
-}
-
-impl<Model> AsMut<[Model]> for RepeatedMessageModel<Model> {
-    delegate! {
-        to self.0 {
-            fn as_mut(&mut self) -> &mut [Model];
         }
     }
 }

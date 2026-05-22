@@ -1,5 +1,4 @@
 use std::{io, result};
-
 use thiserror::Error;
 
 use crate::tunnel;
@@ -54,5 +53,7 @@ pub enum Error {
 }
 
 pub type Result<T> = result::Result<T, Error>;
+
+pub type ErrorCollection = crate::utils::error::ErrorCollection<Error>;
 
 // impl From for std::

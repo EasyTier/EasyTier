@@ -1,7 +1,7 @@
 use crate::config::types::stored_config::{StoredConfigList, StoredConfigMeta};
 use ohos_hilog_binding::{hilog_debug, hilog_error};
 use rusqlite::{Connection, OptionalExtension, params};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -101,6 +101,110 @@ fn load_meta_record(conn: &Connection, config_id: &str) -> Option<StoredConfigMe
     .flatten()
 }
 
+fn validate_snapshot_schema(conn: &Connection) -> bool {
+    let has_stored_configs = conn
+        .query_row(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'stored_configs'",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .optional()
+        .ok()
+        .flatten()
+        .is_some();
+    let has_stored_fields = conn
+        .query_row(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'stored_config_fields'",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .optional()
+        .ok()
+        .flatten()
+        .is_some();
+    has_stored_configs && has_stored_fields
+}
+
+fn copy_snapshot_tables(src: &Connection, dst: &mut Connection) -> rusqlite::Result<()> {
+    let mut meta_rows = Vec::<StoredConfigMetaRecord>::new();
+    {
+        let mut stmt = src.prepare(
+            "SELECT config_id, display_name, created_at, updated_at, favorite, temporary
+             FROM stored_configs",
+        )?;
+        let rows = stmt.query_map([], row_to_meta)?;
+        for row in rows {
+            meta_rows.push(row?);
+        }
+    }
+
+    let mut field_rows = Vec::<(String, String, String, String)>::new();
+    {
+        let mut stmt = src.prepare(
+            "SELECT config_id, field_name, field_json, updated_at
+             FROM stored_config_fields",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+            ))
+        })?;
+        for row in rows {
+            field_rows.push(row?);
+        }
+    }
+
+    let tx = dst.unchecked_transaction()?;
+    tx.execute("DELETE FROM stored_config_fields", [])?;
+    tx.execute("DELETE FROM stored_configs", [])?;
+
+    for row in meta_rows {
+        tx.execute(
+            "INSERT INTO stored_configs (
+                 config_id, display_name, created_at, updated_at, favorite, temporary
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![
+                row.config_id,
+                row.display_name,
+                row.created_at,
+                row.updated_at,
+                if row.favorite { 1 } else { 0 },
+                if row.temporary { 1 } else { 0 }
+            ],
+        )?;
+    }
+
+    for (config_id, field_name, field_json, updated_at) in field_rows {
+        tx.execute(
+            "INSERT INTO stored_config_fields (config_id, field_name, field_json, updated_at)
+             VALUES (?1, ?2, ?3, ?4)",
+            params![config_id, field_name, field_json, updated_at],
+        )?;
+    }
+
+    tx.commit()
+}
+
+fn ensure_parent_dir(path: &Path) -> bool {
+    match path.parent() {
+        Some(parent) => match std::fs::create_dir_all(parent) {
+            Ok(_) => true,
+            Err(e) => {
+                hilog_error!(
+                    "[Rust] failed to create snapshot parent {}: {}",
+                    parent.display(),
+                    e
+                );
+                false
+            }
+        },
+        None => true,
+    }
+}
+
 fn to_meta(record: StoredConfigMetaRecord) -> StoredConfigMeta {
     StoredConfigMeta {
         config_id: record.config_id,
@@ -140,6 +244,79 @@ pub fn init_config_meta_store(root_dir: String) -> bool {
 
     hilog_debug!("[Rust] initialized config db at {}", db_path.display());
     true
+}
+
+pub fn export_config_store_snapshot(target_path: String) -> bool {
+    let target = PathBuf::from(target_path);
+    if !ensure_parent_dir(&target) {
+        return false;
+    }
+    let Some(src) = open_db() else {
+        return false;
+    };
+    let mut dst = match Connection::open(&target) {
+        Ok(conn) => conn,
+        Err(e) => {
+            hilog_error!(
+                "[Rust] failed to open snapshot target {}: {}",
+                target.display(),
+                e
+            );
+            return false;
+        }
+    };
+    if let Err(e) = init_schema(&dst) {
+        hilog_error!(
+            "[Rust] failed to init snapshot schema {}: {}",
+            target.display(),
+            e
+        );
+        return false;
+    }
+    match copy_snapshot_tables(&src, &mut dst) {
+        Ok(_) => true,
+        Err(e) => {
+            hilog_error!(
+                "[Rust] failed to export snapshot {}: {}",
+                target.display(),
+                e
+            );
+            false
+        }
+    }
+}
+
+pub fn import_config_store_snapshot(source_path: String) -> bool {
+    let source = PathBuf::from(source_path);
+    let src = match Connection::open(&source) {
+        Ok(conn) => conn,
+        Err(e) => {
+            hilog_error!(
+                "[Rust] failed to open snapshot source {}: {}",
+                source.display(),
+                e
+            );
+            return false;
+        }
+    };
+    if !validate_snapshot_schema(&src) {
+        hilog_error!("[Rust] invalid snapshot schema {}", source.display());
+        return false;
+    }
+    let Some(mut dst) = open_db() else {
+        return false;
+    };
+    match copy_snapshot_tables(&src, &mut dst) {
+        Ok(_) => true,
+        Err(e) => {
+            hilog_error!(
+                "[Rust] failed to import snapshot {}: {}",
+                source.display(),
+                e
+            );
+            false
+        }
+    }
 }
 
 pub fn list_config_meta_entries() -> StoredConfigList {

@@ -18,7 +18,8 @@ use crate::tunnel::packet_def::{
     PacketType, PeerManagerHeader, TAIL_RESERVED_SIZE, ZCPacket, ZCPacketType,
 };
 use crate::tunnel::quic::{client_config, endpoint_config, server_config};
-use anyhow::{Context, Error, anyhow};
+use crate::utils::task::HedgeExt;
+use anyhow::{Context, Error, anyhow, bail, ensure};
 use atomic_refcell::AtomicRefCell;
 use bytes::{BufMut, Bytes, BytesMut};
 use dashmap::DashMap;
@@ -29,7 +30,8 @@ use moka::future::Cache;
 use prost::Message;
 use quinn::udp::{EcnCodepoint, RecvMeta, Transmit};
 use quinn::{
-    AsyncUdpSocket, Endpoint, RecvStream, SendStream, StreamId, UdpPoller, default_runtime,
+    AsyncUdpSocket, Connection, ConnectionError, Endpoint, RecvStream, SendStream, StreamId,
+    UdpPoller, WriteError, default_runtime,
 };
 use std::cmp::min;
 use std::future::Future;
@@ -280,7 +282,7 @@ impl From<(SendStream, RecvStream)> for QuicStream {
 pub struct NatDstQuicConnector {
     pub(crate) endpoint: Endpoint,
     pub(crate) peer_mgr: Weak<PeerManager>,
-    pub(crate) conn_map: Cache<PeerId, quinn::Connection>,
+    pub(crate) conn_map: Cache<PeerId, Connection>,
 }
 
 #[async_trait::async_trait]
@@ -291,20 +293,25 @@ impl NatDstConnector for NatDstQuicConnector {
         &self,
         src: SocketAddr,
         nat_dst: SocketAddr,
-    ) -> crate::common::error::Result<Self::DstStream> {
-        let Some(peer_mgr) = self.peer_mgr.upgrade() else {
-            return Err(anyhow::anyhow!("peer manager is not available").into());
+    ) -> anyhow::Result<Self::DstStream> {
+        let peer_mgr = self
+            .peer_mgr
+            .upgrade()
+            .ok_or_else(|| anyhow!("peer manager is not available"))?;
+
+        let dst_peer = {
+            let SocketAddr::V4(addr) = nat_dst else {
+                bail!("ipv6 is not supported");
+            };
+            peer_mgr
+                .get_peer_map()
+                .get_peer_id_by_ipv4(addr.ip())
+                .await
+                .ok_or_else(|| anyhow!("no peer found for nat dst: {}", nat_dst))?
         };
 
-        let Some(dst_peer_id) = (match nat_dst {
-            SocketAddr::V4(addr) => peer_mgr.get_peer_map().get_peer_id_by_ipv4(addr.ip()).await,
-            SocketAddr::V6(_) => return Err(anyhow::anyhow!("ipv6 is not supported").into()),
-        }) else {
-            return Err(anyhow::anyhow!("no peer found for nat dst: {}", nat_dst).into());
-        };
+        tracing::trace!(?nat_dst, ?dst_peer, "quic nat");
 
-        trace!("quic nat dst: {:?}, dst peers: {:?}", nat_dst, dst_peer_id);
-        let addr = QuicAddr::new(dst_peer_id, PacketType::QuicSrc).into();
         let header = {
             let conn_data = QuicConnData {
                 src: Some(src.into()),
@@ -312,77 +319,91 @@ impl NatDstConnector for NatDstQuicConnector {
             };
 
             let len = conn_data.encoded_len();
-            if len > (u16::MAX as usize) {
-                return Err(anyhow!("conn data too large: {:?}", len).into());
-            }
+            ensure!(len <= u16::MAX as usize, "conn data too large: {len}");
 
             let mut buf = BytesMut::with_capacity(2 + len);
 
             buf.put_u16(len as u16);
-            conn_data.encode(&mut buf).unwrap();
+            conn_data.encode(&mut buf)?;
 
             buf.freeze()
         };
 
-        for attempt in 0..2 {
-            let endpoint = self.endpoint.clone();
+        let reconnect = || async move {
+            self.conn_map.invalidate(&dst_peer).await;
 
-            let connection = match self
-                .conn_map
-                .try_get_with(dst_peer_id, async move {
-                    endpoint
-                        .connect(addr, "")
-                        .map_err(|e| anyhow!("quic connect: {:#}", e))?
-                        .await
-                        .map_err(|e| anyhow!("quic connection: {:#}", e))
-                })
-                .await
-            {
-                Ok(conn) => conn,
-                Err(e) => {
-                    if attempt == 0 {
-                        debug!("quic connect failed, retrying: {:#}", e);
-                        tokio::time::sleep(Duration::from_millis(300)).await;
-                        continue;
+            let connect = (0..5)
+                .map(|_| {
+                    let endpoint = self.endpoint.clone();
+                    async move {
+                        endpoint
+                            .connect(QuicAddr::new(dst_peer, PacketType::QuicSrc).into(), "")
+                            .context("failed to create connection")?
+                            .await
+                            .context("connection failed")
                     }
-                    return Err(anyhow!("{:#}", e).into());
-                }
-            };
+                })
+                .hedge(Duration::from_millis(200));
 
-            let stream: Result<QuicStreamInner, anyhow::Error> = async {
+            self.conn_map
+                .try_get_with(dst_peer, connect)
+                .await
+                .context("failed to connect to peer")
+        };
+
+        let mut reconnected = false;
+
+        let mut connection = if let Some(connection) = self.conn_map.get(&dst_peer).await
+            && connection.close_reason().is_none()
+        {
+            connection
+        } else {
+            reconnected = true;
+            reconnect().await?
+        };
+
+        loop {
+            let is_retryable = |error: &ConnectionError| {
+                matches!(
+                    error,
+                    ConnectionError::ConnectionClosed(_)
+                        | ConnectionError::ApplicationClosed(_)
+                        | ConnectionError::Reset
+                        | ConnectionError::TimedOut
+                )
+            };
+            let mut retry = !reconnected;
+            let header = header.clone();
+            let result = async {
                 let mut stream: QuicStream = connection
                     .open_bi()
                     .await
-                    .map_err(|e| anyhow!("open bi: {:#}", e))?
+                    .inspect_err(|error| retry &= is_retryable(error))?
                     .into();
-                stream.writer_mut().write_chunk(header.clone()).await?;
+                stream
+                    .writer_mut()
+                    .write_chunk(header)
+                    .await
+                    .inspect_err(|error| {
+                        retry &= matches!(error, WriteError::ConnectionLost(error) if is_retryable(error))
+                    })?;
                 Ok(stream.into())
             }
-            .await;
+                .await;
 
-            match stream {
-                Ok(stream) => return Ok(stream),
-                Err(error) => {
-                    debug!(
-                        ?dst_peer_id,
-                        attempt,
-                        ?error,
-                        "quic connect: stream setup failed"
-                    );
+            if let Err(error) = &result {
+                if retry {
+                    debug!(?error, "failed to open quic stream, retrying...");
+                    reconnected = true;
+                    connection = reconnect().await?;
+                    continue;
+                } else {
+                    self.conn_map.invalidate(&dst_peer).await;
                 }
             }
 
-            // Evict stale connection;
-            self.conn_map.invalidate(&dst_peer_id).await;
+            break result;
         }
-
-        Err(anyhow!(
-            "quic connect: failed after {} attempts, dst_peer_id={}, nat_dst={}",
-            2,
-            dst_peer_id,
-            nat_dst
-        )
-        .into())
     }
 
     #[inline]
@@ -839,7 +860,7 @@ impl QuicProxy {
             Arc::new(socket),
             default_runtime().unwrap(),
         )
-        .unwrap();
+        .unwrap(); // TODO: maybe a different transport config
         endpoint.set_default_client_config(client_config());
         self.endpoint = Some(endpoint.clone());
 
@@ -863,26 +884,15 @@ impl QuicProxy {
                 return;
             }
 
-            let conn_map = Cache::builder()
-                .max_capacity(u8::MAX.into()) // same with max_concurrent_bidi_streams, can be increased
-                .time_to_idle(Duration::from_secs(600))
-                .build();
-
-            let conn_map_bg = conn_map.clone();
-            self.tasks.spawn(async move {
-                let mut interval = tokio::time::interval(Duration::from_secs(60));
-                loop {
-                    interval.tick().await;
-                    conn_map_bg.run_pending_tasks().await;
-                }
-            });
-
             let tcp_proxy = TcpProxyForQuicSrc(TcpProxy::new(
                 peer_mgr.clone(),
                 NatDstQuicConnector {
                     endpoint: endpoint.clone(),
                     peer_mgr: Arc::downgrade(&peer_mgr),
-                    conn_map,
+                    conn_map: Cache::builder()
+                        .max_capacity(u8::MAX.into()) // cf. quinn transport config (max_concurrent_bidi_streams)
+                        .time_to_idle(Duration::from_secs(600)) // cf. quinn transport config (max_idle_timeout)
+                        .build(),
                 },
             ));
 
