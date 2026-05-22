@@ -2236,7 +2236,6 @@ dependencies = [
  "arc-swap",
  "async-recursion",
  "async-ringbuf",
- "async-stream",
  "async-trait",
  "atomic-shim",
  "atomic_refcell",
@@ -8678,8 +8677,9 @@ dependencies = [
 
 [[package]]
 name = "smoltcp"
-version = "0.12.0"
-source = "git+https://github.com/smoltcp-rs/smoltcp.git?rev=0a926767a68bc88d5512afefa7529c5ecdade4ea#0a926767a68bc88d5512afefa7529c5ecdade4ea"
+version = "0.13.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5f73d40463bba65efc9adc6370b56df76d563cc46e2482bba58351b4afb7535e"
 dependencies = [
  "bitflags 1.3.2",
  "byteorder",
