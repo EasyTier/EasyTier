@@ -42,4 +42,7 @@ EXPOSE 11011/tcp
 # wss
 EXPOSE 11012/tcp
 
+HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
+    CMD easytier-cli node info >/dev/null || exit 1
+
 ENTRYPOINT ["/sbin/tini", "--", "easytier-core"]
