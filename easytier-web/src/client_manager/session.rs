@@ -269,6 +269,25 @@ impl SessionRpcService {
         Ok(())
     }
 
+    fn managed_configs_for_revision(
+        applied_config_revision: Option<&str>,
+        resp: crate::webhook::ValidateTokenResponse,
+    ) -> anyhow::Result<(Vec<crate::webhook::ManagedNetworkConfig>, String)> {
+        let config_revision = resp.config_revision;
+        let managed_configs = match resp.managed_network_configs {
+            Some(configs) => configs,
+            None if applied_config_revision == Some(config_revision.as_str()) => Vec::new(),
+            None => {
+                anyhow::bail!(
+                    "Webhook token validation response omitted managed configs for changed revision {:?}",
+                    config_revision
+                );
+            }
+        };
+
+        Ok((managed_configs, config_revision))
+    }
+
     async fn handle_heartbeat(
         &self,
         req: HeartbeatRequest,
@@ -311,6 +330,7 @@ impl SessionRpcService {
                 os_distribution: req.device_os.as_ref().map(|info| info.distribution.clone()),
                 web_instance_id: webhook_config.web_instance_id.clone(),
                 web_instance_api_base_url: webhook_config.web_instance_api_base_url.clone(),
+                applied_config_revision: applied_config_revision.clone(),
             };
             let resp = webhook_config
                 .validate_token(&webhook_req)
@@ -332,12 +352,16 @@ impl SessionRpcService {
                             format!("Failed to auto-create webhook user: {:?}", req.user_token)
                         })?,
                 };
+                let binding_version = resp.binding_version;
+                let (webhook_source_configs, webhook_config_revision) =
+                    Self::managed_configs_for_revision(applied_config_revision.as_deref(), resp)
+                        .map_err(rpc_types::error::Error::from)?;
                 (
                     user_id,
-                    resp.managed_network_configs,
-                    resp.config_revision,
+                    webhook_source_configs,
+                    webhook_config_revision,
                     true,
-                    Some(resp.binding_version),
+                    Some(binding_version),
                 )
             } else {
                 return Err(anyhow::anyhow!(
@@ -1071,6 +1095,62 @@ mod tests {
             .await
             .unwrap();
         assert!(web_owned.is_none());
+    }
+
+    #[test]
+    fn validate_token_request_includes_applied_config_revision() {
+        let req = crate::webhook::ValidateTokenRequest {
+            token: "token".to_string(),
+            machine_id: "machine".to_string(),
+            public_ip: Some("127.0.0.1".to_string()),
+            hostname: "host".to_string(),
+            version: "1.0.0".to_string(),
+            os_type: None,
+            os_version: None,
+            os_distribution: None,
+            web_instance_id: Some("web-1".to_string()),
+            web_instance_api_base_url: Some("http://console".to_string()),
+            applied_config_revision: Some("rev-1".to_string()),
+        };
+
+        let value = serde_json::to_value(req).unwrap();
+        assert_eq!(
+            value
+                .get("applied_config_revision")
+                .and_then(|v| v.as_str()),
+            Some("rev-1")
+        );
+    }
+
+    #[test]
+    fn validate_token_response_without_configs_reuses_same_revision() {
+        let resp = crate::webhook::ValidateTokenResponse {
+            valid: true,
+            pre_approved: true,
+            binding_version: 1,
+            managed_network_configs: None,
+            config_revision: "rev-1".to_string(),
+        };
+
+        let (configs, revision) =
+            SessionRpcService::managed_configs_for_revision(Some("rev-1"), resp).unwrap();
+        assert!(configs.is_empty());
+        assert_eq!(revision, "rev-1");
+    }
+
+    #[test]
+    fn validate_token_response_without_configs_rejects_changed_revision() {
+        let resp = crate::webhook::ValidateTokenResponse {
+            valid: true,
+            pre_approved: true,
+            binding_version: 1,
+            managed_network_configs: None,
+            config_revision: "rev-2".to_string(),
+        };
+
+        let err = SessionRpcService::managed_configs_for_revision(Some("rev-1"), resp)
+            .expect_err("omitted configs with a changed revision must fail");
+        assert!(err.to_string().contains("omitted managed configs"));
     }
 
     #[tokio::test]
