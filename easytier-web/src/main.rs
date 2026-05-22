@@ -41,23 +41,32 @@ rust_i18n::i18n!("locales", fallback = "en");
 #[derive(Parser, Debug)]
 #[command(name = "easytier-web", author, version = EASYTIER_VERSION , about, long_about = None)]
 struct Cli {
-    #[arg(short, long, default_value = "et.db", help = t!("cli.db").to_string())]
+    #[arg(
+        short,
+        long,
+        env = "ET_WEB_DB",
+        default_value = "et.db",
+        help = t!("cli.db").to_string()
+    )]
     db: String,
 
     #[arg(
         long,
+        env = "ET_WEB_CONSOLE_LOG_LEVEL",
         help = t!("cli.console_log_level").to_string(),
     )]
     console_log_level: Option<String>,
 
     #[arg(
         long,
+        env = "ET_WEB_FILE_LOG_LEVEL",
         help = t!("cli.file_log_level").to_string(),
     )]
     file_log_level: Option<String>,
 
     #[arg(
         long,
+        env = "ET_WEB_FILE_LOG_DIR",
         help = t!("cli.file_log_dir").to_string(),
     )]
     file_log_dir: Option<String>,
@@ -65,6 +74,7 @@ struct Cli {
     #[arg(
         long,
         short='c',
+        env = "ET_CONFIG_SERVER_PORT",
         default_value = "22020",
         help = t!("cli.config_server_port").to_string(),
     )]
@@ -73,6 +83,7 @@ struct Cli {
     #[arg(
         long,
         short='p',
+        env = "ET_CONFIG_SERVER_PROTOCOL",
         default_value = "udp",
         help = t!("cli.config_server_protocol").to_string(),
     )]
@@ -81,6 +92,7 @@ struct Cli {
     #[arg(
         long,
         short='a',
+        env = "ET_API_SERVER_PORT",
         default_value = "11211",
         help = t!("cli.api_server_port").to_string(),
     )]
@@ -88,6 +100,7 @@ struct Cli {
 
     #[arg(
         long,
+        env = "ET_API_SERVER_ADDR",
         default_value = "0.0.0.0",
         help = t!("cli.api_server_addr").to_string(),
     )]
@@ -95,6 +108,7 @@ struct Cli {
 
     #[arg(
         long,
+        env = "ET_GEOIP_DB",
         help = t!("cli.geoip_db").to_string(),
     )]
     geoip_db: Option<String>,
@@ -103,6 +117,7 @@ struct Cli {
     #[arg(
         long,
         short='l',
+        env = "ET_WEB_SERVER_PORT",
         help = t!("cli.web_server_port").to_string(),
     )]
     web_server_port: Option<u16>,
@@ -110,6 +125,7 @@ struct Cli {
     #[cfg(feature = "embed")]
     #[arg(
         long,
+        env = "ET_WEB_SERVER_ADDR",
         default_value = "0.0.0.0",
         help = t!("cli.web_server_addr").to_string(),
     )]
@@ -118,6 +134,7 @@ struct Cli {
     #[cfg(feature = "embed")]
     #[arg(
         long,
+        env = "ET_NO_WEB",
         help = t!("cli.no_web").to_string(),
         default_value = "false"
     )]
@@ -126,6 +143,7 @@ struct Cli {
     #[cfg(feature = "embed")]
     #[arg(
         long,
+        env = "ET_API_HOST",
         help = t!("cli.api_host").to_string()
     )]
     api_host: Option<url::Url>,
@@ -144,35 +162,45 @@ struct Cli {
 pub struct WebhookOptions {
     /// Base URL of the webhook endpoint for token validation and event delivery.
     /// When set, incoming tokens are validated via this webhook before local fallback.
-    #[arg(long)]
+    #[arg(long, env = "ET_WEBHOOK_URL")]
     pub webhook_url: Option<String>,
 
     /// Shared secret used to authenticate outbound webhook calls.
-    #[arg(long)]
+    #[arg(long, env = "ET_WEBHOOK_SECRET")]
     pub webhook_secret: Option<String>,
 
     /// Token for X-Internal-Auth header. When set, API requests with this header
     /// bypass session authentication.
-    #[arg(long)]
+    #[arg(long, env = "ET_INTERNAL_AUTH_TOKEN")]
     pub internal_auth_token: Option<String>,
 
     /// Stable identifier for this easytier-web instance when routing webhook callbacks.
-    #[arg(long)]
+    #[arg(long, env = "ET_WEB_INSTANCE_ID")]
     pub web_instance_id: Option<String>,
 
     /// Reachable base URL for this easytier-web instance's internal REST API.
-    #[arg(long)]
+    #[arg(long, env = "ET_WEB_INSTANCE_API_BASE_URL")]
     pub web_instance_api_base_url: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, clap::Args)]
 pub struct FeatureFlags {
     /// Whether user registration via the web UI is disabled.
-    #[arg(long, default_value = "false", help = t!("cli.disable_registration").to_string())]
+    #[arg(
+        long,
+        env = "ET_DISABLE_REGISTRATION",
+        default_value = "false",
+        help = t!("cli.disable_registration").to_string()
+    )]
     pub disable_registration: bool,
 
     /// Whether to auto-create users when they connect via heartbeat with an unknown token.
-    #[arg(long, default_value = "false", help = t!("cli.allow_auto_create_user").to_string())]
+    #[arg(
+        long,
+        env = "ET_ALLOW_AUTO_CREATE_USER",
+        default_value = "false",
+        help = t!("cli.allow_auto_create_user").to_string()
+    )]
     pub allow_auto_create_user: bool,
 }
 
