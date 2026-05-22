@@ -166,12 +166,12 @@ pub struct WebhookOptions {
     pub webhook_url: Option<String>,
 
     /// Shared secret used to authenticate outbound webhook calls.
-    #[arg(long, env = "ET_WEBHOOK_SECRET")]
+    #[arg(long, env = "ET_WEBHOOK_SECRET", hide_env_values = true)]
     pub webhook_secret: Option<String>,
 
     /// Token for X-Internal-Auth header. When set, API requests with this header
     /// bypass session authentication.
-    #[arg(long, env = "ET_INTERNAL_AUTH_TOKEN")]
+    #[arg(long, env = "ET_INTERNAL_AUTH_TOKEN", hide_env_values = true)]
     pub internal_auth_token: Option<String>,
 
     /// Stable identifier for this easytier-web instance when routing webhook callbacks.
