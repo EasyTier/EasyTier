@@ -10,9 +10,11 @@ use easytier::{
     common::config::ConfigSource,
     proto::{
         api::manage::{
-            ConfigSource as RpcConfigSource, NetworkConfig, NetworkMeta, RunNetworkInstanceRequest,
+            ConfigSource as RpcConfigSource, DeleteNetworkInstanceRequest,
+            ListNetworkInstanceMetaRequest, NetworkConfig, NetworkMeta, RunNetworkInstanceRequest,
             WebClientService, WebClientServiceClientFactory,
         },
+        common::Uuid as RpcUuid,
         rpc_impl::bidirect::BidirectRpcManager,
         rpc_types::{self, controller::BaseController},
         web::{HeartbeatRequest, HeartbeatResponse, WebServerService, WebServerServiceServer},
@@ -291,11 +293,19 @@ impl SessionRpcService {
         &self,
         req: HeartbeatRequest,
     ) -> rpc_types::error::Result<HeartbeatResponse> {
-        let mut data = self.data.write().await;
-
-        let Ok(storage) = Storage::try_from(data.storage.clone()) else {
-            tracing::error!("Failed to get storage");
-            return Ok(HeartbeatResponse {});
+        let (storage, feature_flags, webhook_config, client_url, applied_config_revision) = {
+            let data = self.data.read().await;
+            let Ok(storage) = Storage::try_from(data.storage.clone()) else {
+                tracing::error!("Failed to get storage");
+                return Ok(HeartbeatResponse {});
+            };
+            (
+                storage,
+                data.feature_flags.clone(),
+                data.webhook_config.clone(),
+                data.client_url.clone(),
+                data.applied_config_revision.clone(),
+            )
         };
 
         let machine_id: uuid::Uuid = req.machine_id.map(Into::into).ok_or(anyhow::anyhow!(
@@ -309,21 +319,20 @@ impl SessionRpcService {
             webhook_config_revision,
             webhook_validated,
             binding_version,
-        ) = if data.webhook_config.is_enabled() {
+        ) = if webhook_config.is_enabled() {
             let webhook_req = crate::webhook::ValidateTokenRequest {
                 token: req.user_token.clone(),
                 machine_id: machine_id.to_string(),
-                public_ip: data.client_url.host_str().map(str::to_string),
+                public_ip: client_url.host_str().map(str::to_string),
                 hostname: req.hostname.clone(),
                 version: req.easytier_version.clone(),
                 os_type: req.device_os.as_ref().map(|info| info.os_type.clone()),
                 os_version: req.device_os.as_ref().map(|info| info.version.clone()),
                 os_distribution: req.device_os.as_ref().map(|info| info.distribution.clone()),
-                web_instance_id: data.webhook_config.web_instance_id.clone(),
-                web_instance_api_base_url: data.webhook_config.web_instance_api_base_url.clone(),
+                web_instance_id: webhook_config.web_instance_id.clone(),
+                web_instance_api_base_url: webhook_config.web_instance_api_base_url.clone(),
             };
-            let resp = data
-                .webhook_config
+            let resp = webhook_config
                 .validate_token(&webhook_req)
                 .await
                 .map_err(|e| anyhow::anyhow!("Webhook token validation failed: {:?}", e))?;
@@ -370,7 +379,7 @@ impl SessionRpcService {
                     )
                 })? {
                 Some(id) => id,
-                None if data.feature_flags.allow_auto_create_user => storage
+                None if feature_flags.allow_auto_create_user => storage
                     .auto_create_user(&req.user_token)
                     .await
                     .with_context(|| format!("Failed to auto-create user: {:?}", req.user_token))?,
@@ -383,9 +392,9 @@ impl SessionRpcService {
             (user_id, Vec::new(), String::new(), false, None)
         };
 
-        if webhook_validated
-            && data.applied_config_revision.as_deref() != Some(webhook_config_revision.as_str())
-        {
+        let should_reconcile = webhook_validated
+            && applied_config_revision.as_deref() != Some(webhook_config_revision.as_str());
+        if should_reconcile {
             Self::reconcile_webhook_source_configs(
                 &storage,
                 user_id,
@@ -394,50 +403,68 @@ impl SessionRpcService {
             )
             .await
             .map_err(rpc_types::error::Error::from)?;
-            data.applied_config_revision = Some(webhook_config_revision);
         }
 
-        if data.req.replace(req.clone()).is_none() {
-            assert!(data.storage_token.is_none());
-            data.storage_token = Some(StorageToken {
-                token: req.user_token.clone(),
-                client_url: data.client_url.clone(),
-                machine_id,
-                user_id,
-            });
-            data.binding_version = binding_version;
+        let mut connect_notification = None;
+        let (storage_token, notifier) = {
+            let mut data = self.data.write().await;
 
-            // Notify the webhook receiver on the first successful heartbeat.
-            if data.webhook_config.is_enabled() {
-                let webhook = data.webhook_config.clone();
-                let connect_req = crate::webhook::NodeConnectedRequest {
-                    machine_id: machine_id.to_string(),
-                    token: req.user_token.clone(),
-                    user_id: Some(user_id),
-                    hostname: req.hostname.clone(),
-                    version: req.easytier_version.clone(),
-                    os_type: req.device_os.as_ref().map(|info| info.os_type.clone()),
-                    os_version: req.device_os.as_ref().map(|info| info.version.clone()),
-                    os_distribution: req.device_os.as_ref().map(|info| info.distribution.clone()),
-                    web_instance_id: webhook.web_instance_id.clone(),
-                    binding_version,
-                };
-                tokio::spawn(async move {
-                    webhook.notify_node_connected(&connect_req).await;
-                });
+            if should_reconcile {
+                data.applied_config_revision = Some(webhook_config_revision);
             }
+
+            if data.req.replace(req.clone()).is_none() {
+                assert!(data.storage_token.is_none());
+                data.storage_token = Some(StorageToken {
+                    token: req.user_token.clone(),
+                    client_url: data.client_url.clone(),
+                    machine_id,
+                    user_id,
+                });
+                data.binding_version = binding_version;
+
+                if data.webhook_config.is_enabled() {
+                    connect_notification = Some((
+                        data.webhook_config.clone(),
+                        crate::webhook::NodeConnectedRequest {
+                            machine_id: machine_id.to_string(),
+                            token: req.user_token.clone(),
+                            user_id: Some(user_id),
+                            hostname: req.hostname.clone(),
+                            version: req.easytier_version.clone(),
+                            os_type: req.device_os.as_ref().map(|info| info.os_type.clone()),
+                            os_version: req.device_os.as_ref().map(|info| info.version.clone()),
+                            os_distribution: req
+                                .device_os
+                                .as_ref()
+                                .map(|info| info.distribution.clone()),
+                            web_instance_id: data.webhook_config.web_instance_id.clone(),
+                            binding_version,
+                        },
+                    ));
+                }
+            }
+
+            let Some(storage_token) = data.storage_token.as_ref().cloned() else {
+                tracing::error!("Heartbeat succeeded before session token was initialized");
+                return Ok(HeartbeatResponse {});
+            };
+            (storage_token, data.notifier.clone())
+        };
+
+        if let Some((webhook, connect_req)) = connect_notification {
+            tokio::spawn(async move {
+                webhook.notify_node_connected(&connect_req).await;
+            });
         }
 
         let Ok(report_time) = chrono::DateTime::<chrono::Local>::from_str(&req.report_time) else {
             tracing::error!("Failed to parse report time: {:?}", req.report_time);
             return Ok(HeartbeatResponse {});
         };
-        storage.update_client(
-            data.storage_token.as_ref().unwrap().clone(),
-            report_time.timestamp(),
-        );
+        storage.update_client(storage_token, report_time.timestamp());
 
-        let _ = data.notifier.send(req);
+        let _ = notifier.send(req);
         Ok(HeartbeatResponse {})
     }
 }
@@ -476,7 +503,7 @@ pub struct Session {
 
     data: SharedSessionData,
 
-    run_network_on_start_task: Option<AbortOnDropHandle<()>>,
+    config_reconcile_task: Option<AbortOnDropHandle<()>>,
 }
 
 impl Debug for Session {
@@ -510,7 +537,7 @@ impl Session {
         Session {
             rpc_mgr,
             data,
-            run_network_on_start_task: None,
+            config_reconcile_task: None,
         }
     }
 
@@ -518,9 +545,9 @@ impl Session {
         self.rpc_mgr.run_with_tunnel(tunnel);
 
         let data = self.data.read().await;
-        self.run_network_on_start_task
+        self.config_reconcile_task
             .replace(AbortOnDropHandle::new(tokio::spawn(
-                Self::run_network_on_start(
+                Self::reconcile_network_configs_on_heartbeat(
                     data.heartbeat_waiter(),
                     data.storage.clone(),
                     self.scoped_rpc_client(),
@@ -528,19 +555,49 @@ impl Session {
             )));
     }
 
-    fn collect_webhook_source_instance_ids(
-        metas: Vec<easytier::proto::api::manage::NetworkMeta>,
-    ) -> HashSet<String> {
+    fn collect_webhook_source_instance_ids(metas: &[NetworkMeta]) -> HashSet<String> {
         metas
-            .into_iter()
+            .iter()
             .filter_map(|meta| {
                 (RpcConfigSource::try_from(meta.source).ok() == Some(RpcConfigSource::Webhook))
                     .then(|| {
                         meta.inst_id
-                            .map(|inst_id| Into::<uuid::Uuid>::into(inst_id).to_string())
+                            .as_ref()
+                            .map(|inst_id| Into::<uuid::Uuid>::into(*inst_id).to_string())
                     })
                     .flatten()
             })
+            .collect()
+    }
+
+    fn desired_webhook_source_instance_ids(
+        local_configs: &[crate::db::entity::user_running_network_configs::Model],
+    ) -> HashSet<String> {
+        local_configs
+            .iter()
+            .filter(|cfg| cfg.get_runtime_network_config_source() == ConfigSource::Webhook)
+            .map(|cfg| cfg.network_instance_id.clone())
+            .collect()
+    }
+
+    fn running_webhook_source_instance_ids(
+        running_inst_ids: &HashSet<String>,
+        db_webhook_inst_ids: &HashSet<String>,
+        running_metas: Option<&[NetworkMeta]>,
+    ) -> HashSet<String> {
+        match running_metas {
+            Some(metas) => Self::collect_webhook_source_instance_ids(metas),
+            None => running_inst_ids
+                .intersection(db_webhook_inst_ids)
+                .cloned()
+                .collect(),
+        }
+    }
+
+    fn parse_instance_ids(instance_ids: impl Iterator<Item = String>) -> Vec<RpcUuid> {
+        instance_ids
+            .filter_map(|inst_id| uuid::Uuid::parse_str(&inst_id).ok())
+            .map(Into::into)
             .collect()
     }
 
@@ -648,14 +705,25 @@ impl Session {
         Ok(true)
     }
 
-    async fn run_network_on_start(
+    async fn reconcile_network_configs_on_heartbeat(
         mut heartbeat_waiter: broadcast::Receiver<HeartbeatRequest>,
         storage: WeakRefStorage,
         rpc_client: SessionRpcClient,
     ) {
+        // This is a per-session background task. It starts when the RPC session is
+        // created, then reconciles after each heartbeat reports the client's runtime
+        // instances. It is deliberately best-effort: a failed round is retried by a
+        // later heartbeat instead of blocking heartbeat handling itself.
         let mut cleaned_webhook_source_instances = false;
+        // This is only an in-memory guard for RPC cleanup, not a second source of
+        // truth. The DB still owns desired state; the cache lets us avoid listing
+        // and deleting runtime instances on every heartbeat when desired webhook
+        // configs have not changed.
         let mut last_desired_webhook_inst_ids: Option<HashSet<String>> = None;
         loop {
+            // Drop any heartbeat backlog accumulated while the previous reconcile
+            // round was doing DB/RPC IO. The newest heartbeat has the freshest
+            // runtime instance list, which is all this task needs.
             heartbeat_waiter = heartbeat_waiter.resubscribe();
             let req = heartbeat_waiter.recv().await;
             if req.is_err() {
@@ -718,12 +786,10 @@ impl Session {
                     rpc_client
                         .list_network_instance_meta(
                             BaseController::default(),
-                            easytier::proto::api::manage::ListNetworkInstanceMetaRequest {
-                                inst_ids: running_inst_ids
-                                    .iter()
-                                    .filter_map(|inst_id| uuid::Uuid::parse_str(inst_id).ok())
-                                    .map(Into::into)
-                                    .collect(),
+                            ListNetworkInstanceMetaRequest {
+                                inst_ids: Self::parse_instance_ids(
+                                    running_inst_ids.iter().cloned(),
+                                ),
                             },
                         )
                         .await
@@ -781,6 +847,9 @@ impl Session {
                 None
             };
 
+            // Rows created before `source` existed are ambiguous. Once webhook
+            // reconciliation has had a chance to adopt matching rows, remaining
+            // legacy rows are treated as user-owned so they can keep auto-starting.
             match Self::repair_legacy_running_config_sources(
                 &storage.db,
                 user_id,
@@ -819,67 +888,50 @@ impl Session {
                 }
             }
 
-            let mut has_failed = false;
-            let should_be_alive_webhook_inst_ids = local_configs
-                .iter()
-                .filter(|cfg| cfg.get_runtime_network_config_source() == ConfigSource::Webhook)
-                .map(|cfg| cfg.network_instance_id.clone())
-                .collect::<HashSet<_>>();
+            let should_be_alive_webhook_inst_ids =
+                Self::desired_webhook_source_instance_ids(&local_configs);
             let desired_changed = last_desired_webhook_inst_ids
                 .as_ref()
                 .is_none_or(|last| last != &should_be_alive_webhook_inst_ids);
 
+            let mut has_failed = false;
             if !cleaned_webhook_source_instances || desired_changed {
                 let db_webhook_inst_ids = match storage
                     .db
                     .list_network_configs((user_id, machine_id.into()), ListNetworkProps::All)
                     .await
                 {
-                    Ok(configs) => configs
-                        .iter()
-                        .filter(|cfg| {
-                            cfg.get_runtime_network_config_source() == ConfigSource::Webhook
-                        })
-                        .map(|cfg| cfg.network_instance_id.clone())
-                        .collect::<HashSet<_>>(),
+                    Ok(configs) => Self::desired_webhook_source_instance_ids(&configs),
                     Err(e) => {
                         tracing::error!("Failed to list all network configs, error: {:?}", e);
                         return;
                     }
                 };
 
-                let running_webhook_inst_ids = if let Some(metas) = running_metas.as_ref() {
-                    Self::collect_webhook_source_instance_ids(metas.clone())
-                } else {
-                    running_inst_ids
-                        .intersection(&db_webhook_inst_ids)
-                        .cloned()
-                        .collect()
-                };
+                let running_webhook_inst_ids = Self::running_webhook_source_instance_ids(
+                    &running_inst_ids,
+                    &db_webhook_inst_ids,
+                    running_metas.as_deref(),
+                );
 
-                let should_delete_inst_ids = running_webhook_inst_ids
-                    .difference(&should_be_alive_webhook_inst_ids)
-                    .cloned()
-                    .collect::<HashSet<_>>();
-
-                let should_delete_ids = should_delete_inst_ids
-                    .iter()
-                    .filter_map(|inst_id| uuid::Uuid::parse_str(inst_id).ok())
-                    .map(Into::into)
-                    .collect::<Vec<_>>();
+                let should_delete_ids = Self::parse_instance_ids(
+                    running_webhook_inst_ids
+                        .difference(&should_be_alive_webhook_inst_ids)
+                        .cloned(),
+                );
 
                 if !should_delete_ids.is_empty() {
                     let ret = rpc_client
                         .delete_network_instance(
                             BaseController::default(),
-                            easytier::proto::api::manage::DeleteNetworkInstanceRequest {
+                            DeleteNetworkInstanceRequest {
                                 inst_ids: should_delete_ids,
                             },
                         )
                         .await;
                     tracing::info!(
                         ?user_id,
-                        "Clean stale webhook-source network instances on start: {:?}, user_token: {:?}",
+                        "Clean stale webhook-source network instances on heartbeat: {:?}, user_token: {:?}",
                         ret,
                         req.user_token
                     );
@@ -892,6 +944,8 @@ impl Session {
                 }
             }
 
+            // After stale webhook-owned instances are removed, start every enabled
+            // config that the latest heartbeat did not report as running.
             for c in local_configs {
                 if running_inst_ids.contains(&c.network_instance_id) {
                     continue;

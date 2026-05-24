@@ -146,20 +146,7 @@ impl ClientManager {
     }
 
     pub async fn list_sessions(&self) -> Vec<StorageToken> {
-        let sessions = self
-            .client_sessions
-            .iter()
-            .map(|item| item.value().clone())
-            .collect::<Vec<_>>();
-
-        let mut ret: Vec<StorageToken> = vec![];
-        for s in sessions {
-            if let Some(t) = s.get_token().await {
-                ret.push(t);
-            }
-        }
-
-        ret
+        self.storage.list_clients()
     }
 
     pub fn get_session_by_machine_id(
