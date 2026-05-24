@@ -654,7 +654,7 @@ mod manager {
     #[derive(Default)]
     pub(super) enum PersistedConfigSource {
         User,
-        Webhook,
+        Web,
         #[serde(other)]
         #[default]
         Legacy,
@@ -664,15 +664,15 @@ mod manager {
         pub(super) fn from_runtime_source(source: ConfigSource) -> Self {
             match source {
                 ConfigSource::User => Self::User,
-                ConfigSource::Webhook => Self::Webhook,
+                ConfigSource::Web => Self::Web,
             }
         }
 
         fn merge_persisted(self, incoming: Self) -> Self {
             match (self, incoming) {
                 // Older runtimes report missing source as `user`. Keep the stronger persisted
-                // ownership until webhook sync or an explicit user save repairs it.
-                (Self::Webhook, Self::User) | (Self::Legacy, Self::User) => self,
+                // ownership until web sync or an explicit user save repairs it.
+                (Self::Web, Self::User) | (Self::Legacy, Self::User) => self,
                 (_, next) => next,
             }
         }
@@ -680,13 +680,13 @@ mod manager {
         fn to_runtime_source(self) -> ConfigSource {
             match self {
                 Self::User | Self::Legacy => ConfigSource::User,
-                Self::Webhook => ConfigSource::Webhook,
+                Self::Web => ConfigSource::Web,
             }
         }
 
         #[cfg(any(test, target_os = "android"))]
-        fn is_webhook_like(self) -> bool {
-            matches!(self, Self::Webhook)
+        fn is_web_like(self) -> bool {
+            matches!(self, Self::Web)
         }
     }
 
@@ -918,7 +918,7 @@ mod manager {
         }
 
         #[cfg(target_os = "android")]
-        pub fn get_enabled_instances_with_webhook_like_tun_ids(
+        pub fn get_enabled_instances_with_web_like_tun_ids(
             &self,
         ) -> impl Iterator<Item = uuid::Uuid> + '_ {
             self.storage
@@ -926,7 +926,7 @@ mod manager {
                 .iter()
                 .filter(|v| self.storage.enabled_networks.contains(v.key()))
                 .filter(|v| !v.config.no_tun())
-                .filter(|v| v.source.is_webhook_like())
+                .filter(|v| v.source.is_web_like())
                 .filter_map(|c| c.config.instance_id().parse::<uuid::Uuid>().ok())
         }
 
@@ -934,12 +934,11 @@ mod manager {
         pub(super) async fn disable_instances_with_tun(
             &self,
             app: &AppHandle,
-            webhook_only: bool,
+            web_only: bool,
         ) -> Result<(), easytier::rpc_service::remote_client::RemoteClientError<anyhow::Error>>
         {
-            let inst_ids: Vec<uuid::Uuid> = if webhook_only {
-                self.get_enabled_instances_with_webhook_like_tun_ids()
-                    .collect()
+            let inst_ids: Vec<uuid::Uuid> = if web_only {
+                self.get_enabled_instances_with_web_like_tun_ids().collect()
             } else {
                 self.get_enabled_instances_with_tun_ids().collect()
             };
@@ -977,7 +976,7 @@ mod manager {
                             .await
                             .map_err(|e| e.to_string())?;
                     }
-                    PersistedConfigSource::Webhook => {
+                    PersistedConfigSource::Web => {
                         self.disable_instances_with_tun(app, true)
                             .await
                             .map_err(|e| e.to_string())?;
@@ -1187,26 +1186,26 @@ mod manager {
         }
 
         #[test]
-        fn persisted_source_merge_keeps_legacy_and_webhook_over_ambiguous_user() {
+        fn persisted_source_merge_keeps_legacy_and_web_over_ambiguous_user() {
             assert_eq!(
                 PersistedConfigSource::Legacy.merge_persisted(PersistedConfigSource::User),
                 PersistedConfigSource::Legacy
             );
             assert_eq!(
-                PersistedConfigSource::Webhook.merge_persisted(PersistedConfigSource::User),
-                PersistedConfigSource::Webhook
+                PersistedConfigSource::Web.merge_persisted(PersistedConfigSource::User),
+                PersistedConfigSource::Web
             );
             assert_eq!(
-                PersistedConfigSource::Legacy.merge_persisted(PersistedConfigSource::Webhook),
-                PersistedConfigSource::Webhook
+                PersistedConfigSource::Legacy.merge_persisted(PersistedConfigSource::Web),
+                PersistedConfigSource::Web
             );
         }
 
         #[test]
-        fn only_webhook_configs_are_webhook_like() {
-            assert!(!PersistedConfigSource::Legacy.is_webhook_like());
-            assert!(!PersistedConfigSource::User.is_webhook_like());
-            assert!(PersistedConfigSource::Webhook.is_webhook_like());
+        fn only_web_configs_are_web_like() {
+            assert!(!PersistedConfigSource::Legacy.is_web_like());
+            assert!(!PersistedConfigSource::User.is_web_like());
+            assert!(PersistedConfigSource::Web.is_web_like());
         }
     }
 }

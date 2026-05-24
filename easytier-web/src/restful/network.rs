@@ -143,10 +143,11 @@ impl NetworkApi {
         Json(payload): Json<RunNetworkJsonReq>,
     ) -> Result<Json<Void>, HttpHandleError> {
         client_mgr
-            .handle_run_network_instance(
+            .handle_run_network_instance_with_source(
                 (Self::get_user_id(&auth_session)?, machine_id),
                 payload.config,
                 payload.save,
+                RuntimeConfigSource::Web,
             )
             .await
             .map_err(convert_error)?;
@@ -287,10 +288,11 @@ impl NetworkApi {
             ));
         }
         client_mgr
-            .handle_save_network_config(
+            .handle_save_network_config_with_source(
                 (Self::get_user_id(&auth_session)?, machine_id),
                 inst_id,
                 payload.config,
+                RuntimeConfigSource::Web,
             )
             .await
             .map_err(convert_error)
@@ -318,7 +320,7 @@ impl NetworkApi {
         let source = payload
             .source
             .and_then(RuntimeConfigSource::from_rpc)
-            .unwrap_or(RuntimeConfigSource::Webhook);
+            .unwrap_or(RuntimeConfigSource::Web);
         client_mgr
             .handle_run_network_instance_with_source(
                 (user_id, machine_id),

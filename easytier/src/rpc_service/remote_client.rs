@@ -285,13 +285,19 @@ where
         inst_id: uuid::Uuid,
         config: NetworkConfig,
     ) -> Result<(), RemoteClientError<E>> {
+        self.handle_save_network_config_with_source(identify, inst_id, config, ConfigSource::User)
+            .await
+    }
+
+    async fn handle_save_network_config_with_source(
+        &self,
+        identify: T,
+        inst_id: uuid::Uuid,
+        config: NetworkConfig,
+        source: ConfigSource,
+    ) -> Result<(), RemoteClientError<E>> {
         self.get_storage()
-            .insert_or_update_user_network_config(
-                identify.clone(),
-                inst_id,
-                config,
-                ConfigSource::User,
-            )
+            .insert_or_update_user_network_config(identify.clone(), inst_id, config, source)
             .await
             .map_err(RemoteClientError::PersistentError)?;
         self.get_storage()

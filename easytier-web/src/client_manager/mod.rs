@@ -190,7 +190,7 @@ impl ClientManager {
         machine_id: uuid::Uuid,
         desired_configs: Vec<ManagedNetworkConfig>,
     ) -> anyhow::Result<()> {
-        session::SessionRpcService::reconcile_webhook_source_configs(
+        session::SessionRpcService::reconcile_web_source_configs(
             &self.storage,
             user_id,
             machine_id,
