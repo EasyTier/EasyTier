@@ -1,15 +1,3 @@
-# EasyTier-FFI-DataPlane
-
-本 fork 在 EasyTier-FFI 的基础上，添加了在 FFI 侧进行数据平面交互的功能，允许从 FFI 调用直接发送和接收数据包，而不需要通过系统网络接口。
-
-主要目的是接入 Mihomo，但也可以用于其他需要直接处理网络数据包的场景。
-
-可以查看 `easytier-contrib/easytier-ffi/examples/go/easytier_test.go` 来了解一个例子。
-
-**（以下为原 README 内容）**
-
----
-
 # EasyTier
 
 [![Github release](https://img.shields.io/github/v/tag/EasyTier/EasyTier)](https://github.com/EasyTier/EasyTier/releases)
