@@ -123,13 +123,14 @@ func (n *Native) ListenPacketTimeout(instance string, localPort uint16, timeout 
 	var outIP unsafe.Pointer
 	outIPArg := unsafe.Pointer(&outIP)
 	var outPort uint16
+	outPortArg := unsafe.Pointer(&outPort)
 	err := n.udpBind.call(
 		unsafe.Pointer(&handle),
 		unsafe.Pointer(&instPtr),
 		unsafe.Pointer(&localPort),
 		unsafe.Pointer(&timeoutMS),
 		unsafe.Pointer(&outIPArg),
-		unsafe.Pointer(&outPort),
+		unsafe.Pointer(&outPortArg),
 	)
 	runtime.KeepAlive(inst)
 	if err != nil {
@@ -152,6 +153,7 @@ func (n *Native) TCPConnect(instance, ip string, port uint16, timeout time.Durat
 	var outIP unsafe.Pointer
 	outIPArg := unsafe.Pointer(&outIP)
 	var outPort uint16
+	outPortArg := unsafe.Pointer(&outPort)
 	err := n.tcpConnect.call(
 		unsafe.Pointer(&handle),
 		unsafe.Pointer(&instPtr),
@@ -159,7 +161,7 @@ func (n *Native) TCPConnect(instance, ip string, port uint16, timeout time.Durat
 		unsafe.Pointer(&port),
 		unsafe.Pointer(&timeoutMS),
 		unsafe.Pointer(&outIPArg),
-		unsafe.Pointer(&outPort),
+		unsafe.Pointer(&outPortArg),
 	)
 	runtime.KeepAlive(inst)
 	runtime.KeepAlive(dst)
@@ -254,8 +256,9 @@ func (n *Native) UDPRecvFrom(handle uint64, buf []byte, timeout time.Duration) (
 	var outIP unsafe.Pointer
 	outIPArg := unsafe.Pointer(&outIP)
 	var outPort uint16
+	outPortArg := unsafe.Pointer(&outPort)
 	var ret int32
-	err := n.udpRecvFrom.call(unsafe.Pointer(&ret), unsafe.Pointer(&handle), unsafe.Pointer(&bufPtr), unsafe.Pointer(&length), unsafe.Pointer(&outIPArg), unsafe.Pointer(&outPort), unsafe.Pointer(&timeoutMS))
+	err := n.udpRecvFrom.call(unsafe.Pointer(&ret), unsafe.Pointer(&handle), unsafe.Pointer(&bufPtr), unsafe.Pointer(&length), unsafe.Pointer(&outIPArg), unsafe.Pointer(&outPortArg), unsafe.Pointer(&timeoutMS))
 	runtime.KeepAlive(buf)
 	if err != nil {
 		return 0, nil, err
