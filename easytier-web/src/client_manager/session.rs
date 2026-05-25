@@ -88,6 +88,7 @@ pub struct SessionData {
     notifier: broadcast::Sender<HeartbeatRequest>,
     req: Option<HeartbeatRequest>,
     location: Option<Location>,
+    heartbeat_count: std::sync::atomic::AtomicU32,
 }
 
 impl SessionData {
@@ -111,6 +112,7 @@ impl SessionData {
             notifier: tx,
             req: None,
             location,
+            heartbeat_count: std::sync::atomic::AtomicU32::new(0),
         }
     }
 
@@ -312,6 +314,19 @@ impl SessionRpcService {
             req.machine_id
         ))?;
 
+        // First heartbeat must validate token through webhook;
+        // afterwards only every 10th heartbeat calls the webhook.
+        let (should_call_webhook, cached_storage_token) = {
+            let data = self.data.read().await;
+            let count = data
+                .heartbeat_count
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+                + 1;
+            let is_first = data.req.is_none();
+            let should_call = webhook_config.is_enabled() && (is_first || count % 10 == 1);
+            (should_call, data.storage_token.clone())
+        };
+
         let (
             user_id,
             webhook_source_configs,
@@ -319,57 +334,74 @@ impl SessionRpcService {
             webhook_validated,
             binding_version,
         ) = if webhook_config.is_enabled() {
-            let webhook_req = crate::webhook::ValidateTokenRequest {
-                token: req.user_token.clone(),
-                machine_id: machine_id.to_string(),
-                public_ip: client_url.host_str().map(str::to_string),
-                hostname: req.hostname.clone(),
-                version: req.easytier_version.clone(),
-                os_type: req.device_os.as_ref().map(|info| info.os_type.clone()),
-                os_version: req.device_os.as_ref().map(|info| info.version.clone()),
-                os_distribution: req.device_os.as_ref().map(|info| info.distribution.clone()),
-                web_instance_id: webhook_config.web_instance_id.clone(),
-                web_instance_api_base_url: webhook_config.web_instance_api_base_url.clone(),
-                applied_config_revision: applied_config_revision.clone(),
-            };
-            let resp = webhook_config
-                .validate_token(&webhook_req)
-                .await
-                .map_err(|e| anyhow::anyhow!("Webhook token validation failed: {:?}", e))?;
-
-            if resp.valid {
-                let user_id = match storage
-                    .db()
-                    .get_user_id_by_token(req.user_token.clone())
-                    .await
-                    .map_err(|e| anyhow::anyhow!("DB error: {:?}", e))?
-                {
-                    Some(id) => id,
-                    None => storage
-                        .auto_create_user(&req.user_token)
-                        .await
-                        .with_context(|| {
-                            format!("Failed to auto-create webhook user: {:?}", req.user_token)
-                        })?,
+            if should_call_webhook {
+                let webhook_req = crate::webhook::ValidateTokenRequest {
+                    token: req.user_token.clone(),
+                    machine_id: machine_id.to_string(),
+                    public_ip: client_url.host_str().map(str::to_string),
+                    hostname: req.hostname.clone(),
+                    version: req.easytier_version.clone(),
+                    os_type: req.device_os.as_ref().map(|info| info.os_type.clone()),
+                    os_version: req.device_os.as_ref().map(|info| info.version.clone()),
+                    os_distribution: req.device_os.as_ref().map(|info| info.distribution.clone()),
+                    web_instance_id: webhook_config.web_instance_id.clone(),
+                    web_instance_api_base_url: webhook_config.web_instance_api_base_url.clone(),
+                    applied_config_revision: applied_config_revision.clone(),
                 };
-                let binding_version = resp.binding_version;
-                let (webhook_source_configs, webhook_config_revision) =
-                    Self::managed_configs_for_revision(applied_config_revision.as_deref(), resp)
+                let resp = webhook_config
+                    .validate_token(&webhook_req)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("Webhook token validation failed: {:?}", e))?;
+
+                if resp.valid {
+                    let user_id = match storage
+                        .db()
+                        .get_user_id_by_token(req.user_token.clone())
+                        .await
+                        .map_err(|e| anyhow::anyhow!("DB error: {:?}", e))?
+                    {
+                        Some(id) => id,
+                        None => storage
+                            .auto_create_user(&req.user_token)
+                            .await
+                            .with_context(|| {
+                                format!("Failed to auto-create webhook user: {:?}", req.user_token)
+                            })?,
+                    };
+                    let binding_version = resp.binding_version;
+                    let (webhook_source_configs, webhook_config_revision) =
+                        Self::managed_configs_for_revision(
+                            applied_config_revision.as_deref(),
+                            resp,
+                        )
                         .map_err(rpc_types::error::Error::from)?;
-                (
-                    user_id,
-                    webhook_source_configs,
-                    webhook_config_revision,
-                    true,
-                    Some(binding_version),
-                )
+                    (
+                        user_id,
+                        webhook_source_configs,
+                        webhook_config_revision,
+                        true,
+                        Some(binding_version),
+                    )
+                } else {
+                    return Err(anyhow::anyhow!(
+                        "Webhook rejected token for machine {:?}: {:?}",
+                        machine_id,
+                        req.user_token
+                    )
+                    .into());
+                }
             } else {
-                return Err(anyhow::anyhow!(
-                    "Webhook rejected token for machine {:?}: {:?}",
-                    machine_id,
-                    req.user_token
-                )
-                .into());
+                let user_id = cached_storage_token
+                    .as_ref()
+                    .ok_or_else(|| {
+                        anyhow::anyhow!("Storage token not found for non-first heartbeat")
+                    })?
+                    .user_id;
+                let binding_version = {
+                    let data = self.data.read().await;
+                    data.binding_version
+                };
+                (user_id, Vec::new(), String::new(), false, binding_version)
             }
         } else {
             let user_id = match storage
