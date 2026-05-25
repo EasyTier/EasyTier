@@ -364,6 +364,16 @@ pub fn export_toml(config_id: String) -> Option<String> {
 }
 
 #[napi]
+pub fn export_config_store_snapshot(target_path: String) -> bool {
+    exports::config_api::export_config_store_snapshot(target_path)
+}
+
+#[napi]
+pub fn import_config_store_snapshot(source_path: String) -> bool {
+    exports::config_api::import_config_store_snapshot(source_path)
+}
+
+#[napi]
 pub fn start_kernel(config_id: String) -> bool {
     exports::runtime_api::start_kernel(config_id, start_kernel_with_config_id)
 }

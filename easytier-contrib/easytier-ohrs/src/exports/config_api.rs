@@ -44,3 +44,11 @@ pub(crate) fn import_toml(toml_text: String, display_name: Option<String>) -> Op
 pub(crate) fn export_toml(config_id: String) -> Option<String> {
     config::repository::export_config_toml(&config_id).map(|ret| ret.toml_text)
 }
+
+pub(crate) fn export_config_store_snapshot(target_path: String) -> bool {
+    config::storage::config_meta::export_config_store_snapshot(target_path)
+}
+
+pub(crate) fn import_config_store_snapshot(source_path: String) -> bool {
+    config::storage::config_meta::import_config_store_snapshot(source_path)
+}
