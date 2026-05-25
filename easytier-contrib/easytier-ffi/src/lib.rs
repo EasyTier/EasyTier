@@ -29,8 +29,10 @@ static INSTANCE_MANAGER: once_cell::sync::Lazy<NetworkInstanceManager> =
     once_cell::sync::Lazy::new(NetworkInstanceManager::new);
 
 thread_local! {
-    // Per-thread last-error buffer; `Handle::block_on` polls the top-level
-    // future on the calling thread, so set_error_msg always runs on the same
+    // # Thread Safety
+    // set_error_msg and get_error_msg must be called on the same thread to
+    // get correct error. And since `Handle::block_on` polls the top-level
+    // future on the calling thread, set_error_msg always runs on the same
     // thread as the corresponding get_error_msg.
     static ERROR_MSG: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
 }
@@ -43,7 +45,6 @@ static DATA_PLANE_HANDLES: once_cell::sync::Lazy<DashMap<u64, DataPlaneHandle>> 
 #[cfg(feature = "ffi-dataplane")]
 struct DataPlaneHandle {
     instance_id: uuid::Uuid,
-    // Runtime owning the IO resources; reused for every subsequent op.
     runtime: tokio::runtime::Handle,
     // Cancelled by close() to wake any in-flight op on this handle.
     close_token: CancellationToken,
@@ -52,9 +53,12 @@ struct DataPlaneHandle {
 
 #[cfg(feature = "ffi-dataplane")]
 struct TcpHalves {
+    // Split the TCP stream into read/write halves to allow concurrent reads and writes.
     read: tokio::sync::Mutex<ReadHalf<EasyTierTcpStream>>,
     write: tokio::sync::Mutex<WriteHalf<EasyTierTcpStream>>,
+    // A trigger that notifies the smoltcp net to check whether it can be torn down when dropped.
     _data_plane_ref: DataPlaneRef,
+    // 
     _route_guard: Box<dyn std::any::Any + Send + Sync>,
 }
 
@@ -120,6 +124,19 @@ fn parse_socket_addr(host: &str, port: u16) -> Option<SocketAddr> {
     Some(SocketAddr::new(ip, port))
 }
 
+/// Encode an IP address for FFI return. Returns `*mut c_char` to match
+/// `CString::into_raw`; caller releases it via `free_string`.
+#[cfg(feature = "ffi-dataplane")]
+fn into_ffi_ip_cstring(ip: IpAddr) -> Option<*mut std::ffi::c_char> {
+    match std::ffi::CString::new(ip.to_string()) {
+        Ok(s) => Some(s.into_raw()),
+        Err(e) => {
+            set_error_msg(&format!("failed to encode ip: {}", e));
+            None
+        }
+    }
+}
+
 #[cfg(feature = "ffi-dataplane")]
 fn get_runtime_handle(inst_id: &uuid::Uuid) -> Option<tokio::runtime::Handle> {
     let Some(rt) = INSTANCE_MANAGER.data_plane_runtime_handle(inst_id) else {
@@ -167,8 +184,8 @@ fn get_udp_socket(
     }
 }
 
-/// Run an IO op on the resource's owning runtime, racing against the per-handle
-/// cancellation token so that `close()` can wake any in-flight call.
+/// Run an IO op on the resource's owning runtime, supporting
+/// timeout and cancellation.
 #[cfg(feature = "ffi-dataplane")]
 async fn run_with_cancel<T, F>(
     close_token: &CancellationToken,
@@ -192,26 +209,6 @@ where
                 None
             }
         }
-    }
-}
-
-#[cfg(feature = "ffi-dataplane")]
-async fn data_plane_io<F>(
-    close_token: &CancellationToken,
-    timeout_ms: u64,
-    error_prefix: &str,
-    op: F,
-) -> std::ffi::c_int
-where
-    F: Future<Output = Result<usize, std::io::Error>>,
-{
-    match run_with_cancel(close_token, timeout_ms, error_prefix, op).await {
-        Some(Ok(n)) => n as std::ffi::c_int,
-        Some(Err(e)) => {
-            set_error_msg(&format!("{}: {}", error_prefix, e));
-            -1
-        }
-        None => -1,
     }
 }
 
@@ -254,8 +251,6 @@ pub unsafe extern "C" fn get_error_msg(out: *mut *const std::ffi::c_char) {
         if buf.is_empty() {
             None
         } else {
-            // .ok() so an interior NUL surfaces as a null pointer instead of
-            // panicking across the FFI boundary.
             std::ffi::CString::new(&buf[..]).ok()
         }
     });
@@ -377,6 +372,10 @@ pub unsafe extern "C" fn retain_network_instance(
     }
 
     INSTANCE_NAME_ID_MAP.retain(|k, _| inst_names.contains(k));
+
+    // FIXME: `DATA_PLANE_HANDLES.retain()` could trigger drop and cleanup of TCP halves, 
+    // but `retain_network_instance()` has shutdown the server.
+    // Maybe move this line before `retain_network_instance` to allow graceful close of TCP (TCP FIN)?
     #[cfg(feature = "ffi-dataplane")]
     DATA_PLANE_HANDLES.retain(|_, handle| inst_ids.contains(&handle.instance_id));
 
@@ -530,13 +529,21 @@ pub unsafe extern "C" fn data_plane_tcp_read(
     let buf = unsafe { std::slice::from_raw_parts_mut(buf, len as usize) };
     runtime.block_on(async move {
         let mut rd = halves.read.lock().await;
-        data_plane_io(
+        match run_with_cancel(
             &close_token,
             timeout_ms,
             "failed to read tcp data plane",
             rd.read(buf),
         )
         .await
+        {
+            Some(Ok(n)) => n as std::ffi::c_int,
+            Some(Err(e)) => {
+                set_error_msg(&format!("failed to read tcp data plane: {}", e));
+                -1
+            }
+            None => -1,
+        }
     })
 }
 
@@ -585,32 +592,16 @@ pub unsafe extern "C" fn data_plane_tcp_write(
 }
 
 #[cfg(feature = "ffi-dataplane")]
-fn remove_handle_of_kind(
-    handle: u64,
-    kind_ok: impl Fn(&DataPlaneResource) -> bool,
-    not_found: &str,
-    wrong_kind: &str,
-) -> Option<DataPlaneHandle> {
-    if let Some((_, h)) = DATA_PLANE_HANDLES.remove_if(&handle, |_, e| kind_ok(&e.resource)) {
-        return Some(h);
-    }
-    set_error_msg(if DATA_PLANE_HANDLES.contains_key(&handle) {
-        wrong_kind
-    } else {
-        not_found
-    });
-    None
-}
-
-#[cfg(feature = "ffi-dataplane")]
 #[unsafe(no_mangle)]
 pub extern "C" fn data_plane_tcp_close(handle: u64) -> std::ffi::c_int {
-    let Some(h) = remove_handle_of_kind(
-        handle,
-        |r| matches!(r, DataPlaneResource::Tcp(_)),
-        "tcp stream handle not found",
-        "handle is not a tcp stream",
-    ) else {
+    let Some((_, h)) =
+        DATA_PLANE_HANDLES.remove_if(&handle, |_, e| matches!(e.resource, DataPlaneResource::Tcp(_)))
+    else {
+        set_error_msg(if DATA_PLANE_HANDLES.contains_key(&handle) {
+            "handle is not a tcp stream"
+        } else {
+            "tcp stream handle not found"
+        });
         return -1;
     };
     h.close_token.cancel();
@@ -717,12 +708,23 @@ pub unsafe extern "C" fn data_plane_udp_send_to(
     let total = len as usize;
     // Safety: caller-owned buffer outlives this blocking call.
     let buf = unsafe { std::slice::from_raw_parts(buf, total) };
-    runtime.block_on(data_plane_io(
-        &close_token,
-        timeout_ms,
-        "failed to send udp data plane",
-        socket.send_to(buf, dst_addr),
-    ))
+    runtime.block_on(async move {
+        match run_with_cancel(
+            &close_token,
+            timeout_ms,
+            "failed to send udp data plane",
+            socket.send_to(buf, dst_addr),
+        )
+        .await
+        {
+            Some(Ok(n)) => n as std::ffi::c_int,
+            Some(Err(e)) => {
+                set_error_msg(&format!("failed to send udp data plane: {}", e));
+                -1
+            }
+            None => -1,
+        }
+    })
 }
 
 /// # Safety
@@ -779,31 +781,18 @@ pub unsafe extern "C" fn data_plane_udp_recv_from(
 #[cfg(feature = "ffi-dataplane")]
 #[unsafe(no_mangle)]
 pub extern "C" fn data_plane_udp_close(handle: u64) -> std::ffi::c_int {
-    let Some(h) = remove_handle_of_kind(
-        handle,
-        |r| matches!(r, DataPlaneResource::Udp(_)),
-        "udp socket handle not found",
-        "handle is not a udp socket",
-    ) else {
+    let Some((_, h)) =
+        DATA_PLANE_HANDLES.remove_if(&handle, |_, e| matches!(e.resource, DataPlaneResource::Udp(_)))
+    else {
+        set_error_msg(if DATA_PLANE_HANDLES.contains_key(&handle) {
+            "handle is not a udp socket"
+        } else {
+            "udp socket handle not found"
+        });
         return -1;
     };
-    // smoltcp UDP has no explicit shutdown; cancelling the token wakes any
-    // in-flight op and dropping the Arc releases the socket.
     h.close_token.cancel();
     0
-}
-
-/// Encode an IP address for FFI return. Returns `*mut c_char` to match
-/// `CString::into_raw`; caller releases it via `free_string`.
-#[cfg(feature = "ffi-dataplane")]
-fn into_ffi_ip_cstring(ip: IpAddr) -> Option<*mut std::ffi::c_char> {
-    match std::ffi::CString::new(ip.to_string()) {
-        Ok(s) => Some(s.into_raw()),
-        Err(e) => {
-            set_error_msg(&format!("failed to encode ip: {}", e));
-            None
-        }
-    }
 }
 
 #[cfg(test)]
