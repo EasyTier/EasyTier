@@ -187,6 +187,31 @@ socks5: socks5服务器
 socks5_help: |
   启用 socks5 服务器，允许 socks5 客户端访问虚拟网络. 格式: <端口>，例如：1080
 
+flow_policy: 流量策略
+flow_policy_monthly_reset_day: 每月重置日期
+flow_policy_monthly_reset_day_help: 每月重置流量统计的日期（1-31）
+bandwidth_limit_current: 当前网络限速
+bandwidth_limit_other: 其他网络限速
+flow_policy_rules: 流量策略规则
+flow_policy_rules_help: 配置流量阈值和对应的操作
+flow_policy_traffic_threshold: 流量阈值（GB）
+flow_policy_action: 操作
+flow_policy_bandwidth_limit: 带宽限制（Mbps）
+flow_policy_add_rule: 添加规则
+flow_policy_action_limit_bandwidth: 限制带宽
+flow_policy_action_disable_relay: 关闭中转
+flow_policy_action_disable_public_forward: 关闭公共转发
+
+report_config: 上报配置
+report_heartbeat_interval: 心跳间隔（分钟）
+report_heartbeat_interval_help: 发送心跳上报的时间间隔
+report_endpoints: 上报端点
+report_endpoints_help: 每个端点包含独立的上报地址和密钥
+report_url: 上报地址
+report_token: 密钥
+report_url_placeholder: "例如：https://example.com/api/report"
+report_add_endpoint: 添加端点
+
 exit_nodes: 出口节点列表
 exit_nodes_help: 转发所有流量的出口节点，虚拟IPv4地址，优先级由列表顺序决定
   

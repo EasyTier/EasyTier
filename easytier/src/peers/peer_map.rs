@@ -39,6 +39,11 @@ pub struct PeerMap {
 }
 
 impl PeerMap {
+    /// 获取全局上下文引用
+    pub fn global_ctx(&self) -> &ArcGlobalCtx {
+        &self.global_ctx
+    }
+
     pub fn new(packet_send: PacketRecvChan, global_ctx: ArcGlobalCtx, my_peer_id: PeerId) -> Self {
         PeerMap {
             global_ctx,
@@ -133,6 +138,16 @@ impl PeerMap {
     }
 
     pub async fn send_msg_directly(&self, msg: ZCPacket, dst_peer_id: PeerId) -> Result<(), Error> {
+        // 检查流量策略 - 带宽限制（同步调用，避免热路径 .await）
+        if let Some(manager) = self.global_ctx().policy_container().get_flow_policy_manager_sync() {
+            if let Some(limiter) = manager.should_limit_bandwidth() {
+                let packet_size = msg.buf_len() as u64;
+                if !limiter.try_consume(packet_size) {
+                    return Err(Error::Unknown);
+                }
+            }
+        }
+
         if dst_peer_id == self.my_peer_id {
             let packet_send = self.packet_send.clone();
             tokio::spawn(async move {

@@ -62,8 +62,8 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            health-check-cli/target
-          key: ${{ runner.os }}-cargo-${{ matrix.target }}-${{ hashFiles('health-check-cli/Cargo.lock') }}
+            target
+          key: ${{ runner.os }}-cargo-${{ matrix.target }}-${{ hashFiles('Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-cargo-${{ matrix.target }}-
             ${{ runner.os }}-cargo-
@@ -79,19 +79,59 @@ jobs:
           fi
         shell: bash
 
+      - name: Check project structure
+        run: |
+          echo "Current directory: $(pwd)"
+          echo "Project structure:"
+          ls -la
+          echo "Cargo.toml exists: $(test -f Cargo.toml && echo 'YES' || echo 'NO')"
+          echo "Cargo.lock exists: $(test -f Cargo.lock && echo 'YES' || echo 'NO')"
+
+      - name: Check network connectivity
+        run: |
+          echo "Testing network connectivity to GitHub..."
+          if curl -s --head https://github.com/EasyTier/EasyTier.git | head -n 1 | grep "200\|302"; then
+            echo "GitHub connectivity OK"
+          else
+            echo "GitHub connectivity issue detected"
+          fi
+
+      - name: Check Cargo dependencies
+        run: |
+          echo "Checking Cargo.toml dependencies..."
+          cat Cargo.toml
+          echo ""
+          echo "Attempting to fetch dependencies..."
+          cargo fetch --verbose || echo "Fetch failed, continuing..."
+
       - name: Build release binary
-        run: cargo build --release --target ${{ matrix.target }} --verbose
+        run: |
+          echo "Starting build process..."
+          set -x
+          cargo build --release --target ${{ matrix.target }} --verbose
+          if [ $? -ne 0 ]; then
+            echo "Build failed, attempting with offline mode..."
+            cargo build --release --target ${{ matrix.target }} --offline --verbose || exit 1
+          fi
 
       - name: Check if binary exists
         run: |
           echo "Checking for binary..."
-          ls -la target/${{ matrix.target }}/release/
+          echo "Current directory: $(pwd)"
+          echo "Target directory structure:"
+          ls -la target/ || echo "No target directory"
+          if [ -d "target/${{ matrix.target }}" ]; then
+            ls -la target/${{ matrix.target }}/
+            if [ -d "target/${{ matrix.target }}/release" ]; then
+              ls -la target/${{ matrix.target }}/release/
+            fi
+          fi
           if [ -f "target/${{ matrix.target }}/release/${{ matrix.binary_name }}" ]; then
             echo "Binary found successfully"
           else
             echo "Binary not found"
-            echo "Build artifacts:"
-            find target/${{ matrix.target }}/ -name "*health*" -o -name "*check*" 2>/dev/null || echo "No artifacts found"
+            echo "Searching for any build artifacts:"
+            find . -name "*health*" -o -name "*check*" 2>/dev/null || echo "No artifacts found"
             exit 1
           fi
 

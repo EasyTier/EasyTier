@@ -165,7 +165,7 @@ const loadCurrentNetworkConfig = async () => {
     }
 
     let ret = await props.api.get_network_config(selectedInstanceId.value!.uuid);
-    currentNetworkConfig.value = ret;
+    currentNetworkConfig.value = NetworkTypes.ensureNetworkConfigDefaults(ret);
 }
 
 const stopNetwork = async () => {
@@ -273,7 +273,7 @@ const editNetwork = async () => {
     try {
         let ret = await props.api.get_network_config(instanceId.value!);
         console.debug("editNetwork", ret);
-        currentNetworkConfig.value = ret;
+        currentNetworkConfig.value = NetworkTypes.ensureNetworkConfigDefaults(ret);
         isEditingNetwork.value = true; // Switch to editing mode instead
     } catch (e: any) {
         console.error(e);
@@ -346,7 +346,7 @@ const handleFileUpload = (event: Event) => {
             if (!config) return;
 
             config.instance_id = currentNetworkConfig.value?.instance_id ?? config?.instance_id;
-            currentNetworkConfig.value = config;
+            currentNetworkConfig.value = NetworkTypes.ensureNetworkConfigDefaults(config);
             toast.add({ severity: 'success', summary: 'Import Success', detail: "Config file import success", life: 2000 });
         } catch (error) {
             toast.add({ severity: 'error', summary: 'Error', detail: 'Config file parse error: ' + error, life: 2000 });
@@ -387,7 +387,7 @@ const syncTomlConfig = async (tomlConfig: string): Promise<void> => {
         throw new Error("Parsed config is empty");
     }
     config.instance_id = currentNetworkConfig.value?.instance_id ?? config?.instance_id;
-    currentNetworkConfig.value = config;
+    currentNetworkConfig.value = NetworkTypes.ensureNetworkConfigDefaults(config);
 }
 
 // 响应式屏幕宽度

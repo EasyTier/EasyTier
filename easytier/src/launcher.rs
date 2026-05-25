@@ -160,6 +160,32 @@ impl EasyTierLauncher {
 
         instance.run().await?;
 
+        // 设置流量策略管理器和上报管理器到GlobalCtx
+        let global_ctx = instance.get_global_ctx();
+
+        if let Some(manager) = instance.get_flow_policy_manager() {
+            global_ctx.policy_container()
+                .set_flow_policy_manager_sync(Some(manager.clone()));
+            // 应用直接带宽限制配置
+            let bw_limit = global_ctx.config.get_bandwidth_limit();
+            if bw_limit.is_some() {
+                let mgr = manager.clone();
+                tokio::spawn(async move {
+                    mgr.set_bandwidth_limit(bw_limit).await;
+                    tracing::info!("Direct bandwidth limit applied");
+                });
+            }
+            tracing::info!("Flow policy manager initialized");
+        }
+
+        if let Some(manager) = instance.get_report_manager() {
+            // 设置PolicyContainer引用，使ReportManager能直接读取策略状态
+            manager.set_policy_container(global_ctx.policy_container().clone());
+            global_ctx.policy_container()
+                .set_report_manager_sync(Some(manager));
+            tracing::info!("Report manager initialized");
+        }
+
         api_service
             .write()
             .unwrap()
@@ -859,6 +885,11 @@ impl NetworkConfig {
         }
 
         cfg.set_flags(flags);
+
+        // Note: flow_policy and report_config are not stored in TOML config
+        // They are only used for network management and monitoring
+        // The actual implementation will be handled by the instance manager
+
         Ok(cfg)
     }
 
@@ -1018,6 +1049,10 @@ impl NetworkConfig {
                     .collect();
             }
         }
+
+        // Load flow_policy and report_config from ConfigLoader
+        result.flow_policy = config.get_flow_policy();
+        result.report_config = config.get_report_config();
 
         Ok(result)
     }

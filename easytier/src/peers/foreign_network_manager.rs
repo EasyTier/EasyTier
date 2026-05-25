@@ -1100,6 +1100,18 @@ impl ForeignNetworkManager {
         dst_peer_id: PeerId,
         msg: ZCPacket,
     ) -> Result<(), Error> {
+        // 检查是否禁用公共转发（同步调用，避免热路径 .await）
+        if let Some(manager) = self.global_ctx.policy_container().get_flow_policy_manager_sync() {
+            if manager.should_block_public_forward_for_network(network_name) {
+                tracing::debug!(
+                    ?network_name,
+                    ?dst_peer_id,
+                    "Public forward blocked by flow policy (network not whitelisted)"
+                );
+                return Err(Error::Unknown);
+            }
+        }
+
         if let Some(entry) = self.data.get_network_entry(network_name) {
             let packet_type = msg
                 .peer_manager_header()

@@ -601,6 +601,36 @@ impl HealthChecker {
                 node_records.insert(node_id, new_record);
             }
         }
+        // 等待实例完全启动
+        let mut startup_retries = 0;
+        let max_startup_wait = 30; // 最多等待30秒
+        while startup_retries < max_startup_wait {
+            if instance_mgr.get_network_info(&inst_id).await.is_some() {
+                info!("Health check node {} started successfully", node_id);
+                break;
+            }
+            tokio::time::sleep(Duration::from_secs(1)).await;
+            startup_retries += 1;
+        }
+
+        if startup_retries >= max_startup_wait {
+            error!(
+                "Health check node {} failed to start within {} seconds",
+                node_id, max_startup_wait
+            );
+            // 记录启动失败状态
+            record_health_status(
+                &db,
+                &node_records,
+                node_id,
+                HealthStatus::Unhealthy,
+                None,
+                Some(format!("inst id: {}, err: failed to start within {} seconds", inst_id, max_startup_wait)),
+            )
+            .await;
+            return;
+        }
+
         let mut tick = tokio::time::interval(Duration::from_secs(5));
         let mut counter: u64 = 0;
         loop {
