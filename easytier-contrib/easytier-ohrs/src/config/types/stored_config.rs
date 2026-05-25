@@ -66,3 +66,13 @@ pub struct KeyValuePair {
     pub key: String,
     pub value: String,
 }
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+#[napi(object)]
+pub struct SnapshotImportResult {
+    pub ok: bool,
+    pub error_code: String,
+    pub error_message: String,
+    pub snapshot_invalid: bool,
+}

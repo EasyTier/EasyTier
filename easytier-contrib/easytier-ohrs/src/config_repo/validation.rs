@@ -1,13 +1,25 @@
 use easytier::proto::api::manage::NetworkConfig;
 use serde_json::{Map, Value};
+use uuid::Uuid;
+
+pub(super) fn validate_config_id(config_id: &str) -> Result<(), String> {
+    if config_id.is_empty() {
+        return Err("config_id is required".to_string());
+    }
+    Uuid::parse_str(config_id)
+        .map(|_| ())
+        .map_err(|e| format!("invalid config_id {}: {}", config_id, e))
+}
+
+pub(super) fn is_valid_config_id(config_id: &str) -> bool {
+    validate_config_id(config_id).is_ok()
+}
 
 pub(super) fn normalize_config_id(
     mut config: NetworkConfig,
     requested_id: String,
 ) -> Result<NetworkConfig, String> {
-    if requested_id.is_empty() {
-        return Err("config_id is required".to_string());
-    }
+    validate_config_id(&requested_id)?;
     config.instance_id = Some(requested_id);
     Ok(config)
 }

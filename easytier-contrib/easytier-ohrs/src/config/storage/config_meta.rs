@@ -1,4 +1,6 @@
-use crate::config::types::stored_config::{StoredConfigList, StoredConfigMeta};
+use crate::config::types::stored_config::{
+    SnapshotImportResult, StoredConfigList, StoredConfigMeta,
+};
 use ohos_hilog_binding::{hilog_debug, hilog_error};
 use rusqlite::{Connection, OptionalExtension, params};
 use std::path::{Path, PathBuf};
@@ -16,6 +18,30 @@ struct StoredConfigMetaRecord {
     updated_at: String,
     favorite: bool,
     temporary: bool,
+}
+
+type SnapshotFieldRow = (String, String, String, String);
+
+fn snapshot_import_ok() -> SnapshotImportResult {
+    SnapshotImportResult {
+        ok: true,
+        error_code: String::new(),
+        error_message: String::new(),
+        snapshot_invalid: false,
+    }
+}
+
+fn snapshot_import_err(
+    error_code: &str,
+    error_message: impl Into<String>,
+    snapshot_invalid: bool,
+) -> SnapshotImportResult {
+    SnapshotImportResult {
+        ok: false,
+        error_code: error_code.to_string(),
+        error_message: error_message.into(),
+        snapshot_invalid,
+    }
 }
 
 pub(crate) fn now_ts_string() -> String {
@@ -125,38 +151,64 @@ fn validate_snapshot_schema(conn: &Connection) -> bool {
     has_stored_configs && has_stored_fields
 }
 
-fn copy_snapshot_tables(src: &Connection, dst: &mut Connection) -> rusqlite::Result<()> {
+fn read_snapshot_tables(
+    src: &Connection,
+) -> rusqlite::Result<(Vec<StoredConfigMetaRecord>, Vec<SnapshotFieldRow>)> {
+    src.execute_batch("BEGIN DEFERRED TRANSACTION")?;
+
     let mut meta_rows = Vec::<StoredConfigMetaRecord>::new();
-    {
-        let mut stmt = src.prepare(
-            "SELECT config_id, display_name, created_at, updated_at, favorite, temporary
-             FROM stored_configs",
-        )?;
-        let rows = stmt.query_map([], row_to_meta)?;
-        for row in rows {
-            meta_rows.push(row?);
+    let mut field_rows = Vec::<SnapshotFieldRow>::new();
+
+    let read_result = (|| -> rusqlite::Result<()> {
+        {
+            let mut stmt = src.prepare(
+                "SELECT config_id, display_name, created_at, updated_at, favorite, temporary
+                 FROM stored_configs",
+            )?;
+            let rows = stmt.query_map([], row_to_meta)?;
+            for row in rows {
+                meta_rows.push(row?);
+            }
+        }
+
+        {
+            let mut stmt = src.prepare(
+                "SELECT config_id, field_name, field_json, updated_at
+                 FROM stored_config_fields",
+            )?;
+            let rows = stmt.query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                ))
+            })?;
+            for row in rows {
+                field_rows.push(row?);
+            }
+        }
+
+        Ok(())
+    })();
+
+    match read_result {
+        Ok(()) => {
+            src.execute_batch("COMMIT")?;
+            Ok((meta_rows, field_rows))
+        }
+        Err(err) => {
+            let _ = src.execute_batch("ROLLBACK");
+            Err(err)
         }
     }
+}
 
-    let mut field_rows = Vec::<(String, String, String, String)>::new();
-    {
-        let mut stmt = src.prepare(
-            "SELECT config_id, field_name, field_json, updated_at
-             FROM stored_config_fields",
-        )?;
-        let rows = stmt.query_map([], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, String>(2)?,
-                row.get::<_, String>(3)?,
-            ))
-        })?;
-        for row in rows {
-            field_rows.push(row?);
-        }
-    }
-
+fn write_snapshot_tables(
+    dst: &mut Connection,
+    meta_rows: Vec<StoredConfigMetaRecord>,
+    field_rows: Vec<SnapshotFieldRow>,
+) -> rusqlite::Result<()> {
     let tx = dst.unchecked_transaction()?;
     tx.execute("DELETE FROM stored_config_fields", [])?;
     tx.execute("DELETE FROM stored_configs", [])?;
@@ -186,6 +238,11 @@ fn copy_snapshot_tables(src: &Connection, dst: &mut Connection) -> rusqlite::Res
     }
 
     tx.commit()
+}
+
+fn copy_snapshot_tables(src: &Connection, dst: &mut Connection) -> rusqlite::Result<()> {
+    let (meta_rows, field_rows) = read_snapshot_tables(src)?;
+    write_snapshot_tables(dst, meta_rows, field_rows)
 }
 
 fn ensure_parent_dir(path: &Path) -> bool {
@@ -286,7 +343,7 @@ pub fn export_config_store_snapshot(target_path: String) -> bool {
     }
 }
 
-pub fn import_config_store_snapshot(source_path: String) -> bool {
+pub fn import_config_store_snapshot_with_result(source_path: String) -> SnapshotImportResult {
     let source = PathBuf::from(source_path);
     let src = match Connection::open(&source) {
         Ok(conn) => conn,
@@ -296,27 +353,50 @@ pub fn import_config_store_snapshot(source_path: String) -> bool {
                 source.display(),
                 e
             );
-            return false;
+            return snapshot_import_err("source_open_failed", e.to_string(), false);
         }
     };
     if !validate_snapshot_schema(&src) {
         hilog_error!("[Rust] invalid snapshot schema {}", source.display());
-        return false;
+        return snapshot_import_err(
+            "invalid_snapshot_schema",
+            format!("invalid snapshot schema: {}", source.display()),
+            true,
+        );
     }
-    let Some(mut dst) = open_db() else {
-        return false;
+    let (meta_rows, field_rows) = match read_snapshot_tables(&src) {
+        Ok(rows) => rows,
+        Err(e) => {
+            hilog_error!(
+                "[Rust] failed to read snapshot source {}: {}",
+                source.display(),
+                e
+            );
+            return snapshot_import_err("invalid_snapshot_data", e.to_string(), true);
+        }
     };
-    match copy_snapshot_tables(&src, &mut dst) {
-        Ok(_) => true,
+    let Some(mut dst) = open_db() else {
+        return snapshot_import_err(
+            "destination_open_failed",
+            "failed to open local config store",
+            false,
+        );
+    };
+    match write_snapshot_tables(&mut dst, meta_rows, field_rows) {
+        Ok(_) => snapshot_import_ok(),
         Err(e) => {
             hilog_error!(
                 "[Rust] failed to import snapshot {}: {}",
                 source.display(),
                 e
             );
-            false
+            snapshot_import_err("destination_write_failed", e.to_string(), false)
         }
     }
+}
+
+pub fn import_config_store_snapshot(source_path: String) -> bool {
+    import_config_store_snapshot_with_result(source_path).ok
 }
 
 pub fn list_config_meta_entries() -> StoredConfigList {
@@ -490,6 +570,49 @@ pub fn set_config_display_name(
     .ok()?;
 
     Some(to_meta(record))
+}
+
+pub fn set_config_favorite(config_id: String, favorite: bool) -> Option<StoredConfigMeta> {
+    let conn = open_db()?;
+    let now = now_ts_string();
+    let tx = conn.unchecked_transaction().ok()?;
+
+    if favorite {
+        tx.execute(
+            "UPDATE stored_configs
+             SET favorite = 0,
+                 updated_at = CASE WHEN favorite != 0 THEN ?1 ELSE updated_at END
+             WHERE favorite != 0 AND config_id <> ?2",
+            params![now, config_id.clone()],
+        )
+        .ok()?;
+    }
+
+    let rows = tx
+        .execute(
+            "UPDATE stored_configs
+             SET favorite = ?2, updated_at = ?3
+             WHERE config_id = ?1",
+            params![config_id.clone(), if favorite { 1 } else { 0 }, now],
+        )
+        .ok()?;
+    if rows == 0 {
+        return None;
+    }
+
+    let meta = tx
+        .query_row(
+            "SELECT config_id, display_name, created_at, updated_at, favorite, temporary
+             FROM stored_configs WHERE config_id = ?1",
+            params![config_id],
+            row_to_meta,
+        )
+        .optional()
+        .ok()
+        .flatten()
+        .map(to_meta)?;
+    tx.commit().ok()?;
+    Some(meta)
 }
 
 pub fn delete_config_meta(config_id: &str) -> bool {
