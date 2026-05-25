@@ -58,7 +58,8 @@ struct TcpHalves {
     write: tokio::sync::Mutex<WriteHalf<EasyTierTcpStream>>,
     // A trigger that notifies the smoltcp net to check whether it can be torn down when dropped.
     _data_plane_ref: DataPlaneRef,
-    // 
+    // Holds the Socks5AutoConnector (which holds the smoltcp route entry) to keep the route alive 
+    // for the lifetime of the TCP stream. Otherwise,the route could be invalidated immediately.
     _route_guard: Box<dyn std::any::Any + Send + Sync>,
 }
 

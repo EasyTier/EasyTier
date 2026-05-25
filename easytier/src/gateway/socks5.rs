@@ -764,9 +764,6 @@ impl Socks5Server {
         .await
         .with_context(|| "data plane tcp connect timeout")?
         .map_err(anyhow::Error::from)?;
-        // Keep the connector (and its Socks5Entry route guard) alive for the
-        // lifetime of the returned stream; dropping it removes the smoltcp
-        // routing entry and stalls inbound traffic.
         Ok((stream, local_addr, data_plane_ref, Box::new(connector)))
     }
 
