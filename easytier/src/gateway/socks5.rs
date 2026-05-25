@@ -726,7 +726,15 @@ impl Socks5Server {
         &self,
         dst_addr: SocketAddr,
         timeout: Duration,
-    ) -> Result<(EasyTierTcpStream, SocketAddr, DataPlaneRef), Error> {
+    ) -> Result<
+        (
+            EasyTierTcpStream,
+            SocketAddr,
+            DataPlaneRef,
+            Box<dyn std::any::Any + Send + Sync>,
+        ),
+        Error,
+    > {
         let data_plane_ref = self.acquire_data_plane_ref();
         let deadline = Instant::now() + timeout;
         let (ipv4_addr, smoltcp_net) = self.wait_data_plane_net(deadline).await?;
@@ -756,7 +764,10 @@ impl Socks5Server {
         .await
         .with_context(|| "data plane tcp connect timeout")?
         .map_err(anyhow::Error::from)?;
-        Ok((stream, local_addr, data_plane_ref))
+        // Keep the connector (and its Socks5Entry route guard) alive for the
+        // lifetime of the returned stream; dropping it removes the smoltcp
+        // routing entry and stalls inbound traffic.
+        Ok((stream, local_addr, data_plane_ref, Box::new(connector)))
     }
 
     #[cfg(feature = "ffi-dataplane")]

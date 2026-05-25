@@ -55,6 +55,7 @@ struct TcpHalves {
     read: tokio::sync::Mutex<ReadHalf<EasyTierTcpStream>>,
     write: tokio::sync::Mutex<WriteHalf<EasyTierTcpStream>>,
     _data_plane_ref: DataPlaneRef,
+    _route_guard: Box<dyn std::any::Any + Send + Sync>,
 }
 
 #[cfg(feature = "ffi-dataplane")]
@@ -475,7 +476,7 @@ pub unsafe extern "C" fn data_plane_tcp_connect(
         &inst_id, dst_addr, timeout,
     ));
     match result {
-        Ok((stream, local_addr, data_plane_ref)) => {
+        Ok((stream, local_addr, data_plane_ref, route_guard)) => {
             let Some(local_ip) = into_ffi_ip_cstring(local_addr.ip()) else {
                 return 0;
             };
@@ -491,6 +492,7 @@ pub unsafe extern "C" fn data_plane_tcp_connect(
                         read: tokio::sync::Mutex::new(rd),
                         write: tokio::sync::Mutex::new(wr),
                         _data_plane_ref: data_plane_ref,
+                        _route_guard: route_guard,
                     })),
                 },
             );

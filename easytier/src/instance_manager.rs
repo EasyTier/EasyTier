@@ -179,7 +179,15 @@ impl NetworkInstanceManager {
         instance_id: &uuid::Uuid,
         dst_addr: std::net::SocketAddr,
         timeout: std::time::Duration,
-    ) -> Result<(EasyTierTcpStream, std::net::SocketAddr, DataPlaneRef), anyhow::Error> {
+    ) -> Result<
+        (
+            EasyTierTcpStream,
+            std::net::SocketAddr,
+            DataPlaneRef,
+            Box<dyn std::any::Any + Send + Sync>,
+        ),
+        anyhow::Error,
+    > {
         let instance = self
             .instance_map
             .get(instance_id)

@@ -496,7 +496,12 @@ impl NetworkInstance {
         &self,
         dst_addr: SocketAddr,
         timeout: std::time::Duration,
-    ) -> anyhow::Result<(EasyTierTcpStream, SocketAddr, DataPlaneRef)> {
+    ) -> anyhow::Result<(
+        EasyTierTcpStream,
+        SocketAddr,
+        DataPlaneRef,
+        Box<dyn std::any::Any + Send + Sync>,
+    )> {
         self.data_plane()?
             .data_plane_tcp_connect(dst_addr, timeout)
             .await
