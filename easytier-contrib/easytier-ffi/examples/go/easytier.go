@@ -10,7 +10,6 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"time"
 	"unsafe"
@@ -40,7 +39,6 @@ type Native struct {
 type symCall struct {
 	fn  unsafe.Pointer
 	cif types.CallInterface
-	mu  sync.Mutex
 }
 
 type Dialer struct {
@@ -52,6 +50,7 @@ type Dialer struct {
 type Conn struct {
 	native *Native
 	handle uint64
+	local  net.Addr
 	remote net.Addr
 	closed atomic.Bool
 	rd     atomicDeadline
@@ -121,11 +120,16 @@ func (n *Native) ListenPacketTimeout(instance string, localPort uint16, timeout 
 	instPtr := unsafe.Pointer(&inst[0])
 	timeoutMS := uint64(timeout / time.Millisecond)
 	var handle uint64
+	var outIP unsafe.Pointer
+	outIPArg := unsafe.Pointer(&outIP)
+	var outPort uint16
 	err := n.udpBind.call(
 		unsafe.Pointer(&handle),
 		unsafe.Pointer(&instPtr),
 		unsafe.Pointer(&localPort),
 		unsafe.Pointer(&timeoutMS),
+		unsafe.Pointer(&outIPArg),
+		unsafe.Pointer(&outPort),
 	)
 	runtime.KeepAlive(inst)
 	if err != nil {
@@ -134,36 +138,39 @@ func (n *Native) ListenPacketTimeout(instance string, localPort uint16, timeout 
 	if handle == 0 {
 		return nil, n.LastError()
 	}
-	return &PacketConn{
-		native: n,
-		handle: handle,
-		local:  newEasyTierAddr("udp", fmt.Sprintf("0.0.0.0:%d", localPort)),
-	}, nil
+	local := takeUDPAddr(n, outIP, outPort)
+	return &PacketConn{native: n, handle: handle, local: local}, nil
 }
 
-func (n *Native) TCPConnect(instance, ip string, port uint16, timeout time.Duration) (uint64, error) {
+func (n *Native) TCPConnect(instance, ip string, port uint16, timeout time.Duration) (uint64, *net.TCPAddr, error) {
 	inst := cString(instance)
 	dst := cString(ip)
 	instPtr := unsafe.Pointer(&inst[0])
 	dstPtr := unsafe.Pointer(&dst[0])
 	timeoutMS := uint64(timeout / time.Millisecond)
 	var handle uint64
+	var outIP unsafe.Pointer
+	outIPArg := unsafe.Pointer(&outIP)
+	var outPort uint16
 	err := n.tcpConnect.call(
 		unsafe.Pointer(&handle),
 		unsafe.Pointer(&instPtr),
 		unsafe.Pointer(&dstPtr),
 		unsafe.Pointer(&port),
 		unsafe.Pointer(&timeoutMS),
+		unsafe.Pointer(&outIPArg),
+		unsafe.Pointer(&outPort),
 	)
 	runtime.KeepAlive(inst)
 	runtime.KeepAlive(dst)
 	if err != nil {
-		return 0, err
+		return 0, nil, err
 	}
 	if handle == 0 {
-		return 0, n.LastError()
+		return 0, nil, n.LastError()
 	}
-	return handle, nil
+	local := takeTCPAddr(n, outIP, outPort)
+	return handle, local, nil
 }
 
 func (n *Native) TCPRead(handle uint64, buf []byte, timeout time.Duration) (int, error) {
@@ -172,8 +179,9 @@ func (n *Native) TCPRead(handle uint64, buf []byte, timeout time.Duration) (int,
 	}
 	var ret int32
 	bufPtr := unsafe.Pointer(&buf[0])
+	length := uint32(len(buf))
 	timeoutMS := uint64(timeout / time.Millisecond)
-	err := n.callWithBufferLen(&n.tcpRead, unsafe.Pointer(&ret), handle, bufPtr, len(buf), timeoutMS)
+	err := n.tcpRead.call(unsafe.Pointer(&ret), unsafe.Pointer(&handle), unsafe.Pointer(&bufPtr), unsafe.Pointer(&length), unsafe.Pointer(&timeoutMS))
 	runtime.KeepAlive(buf)
 	if err != nil {
 		return 0, err
@@ -190,8 +198,9 @@ func (n *Native) TCPWrite(handle uint64, buf []byte, timeout time.Duration) (int
 	}
 	var ret int32
 	bufPtr := unsafe.Pointer(&buf[0])
+	length := uint32(len(buf))
 	timeoutMS := uint64(timeout / time.Millisecond)
-	err := n.callWithBufferLen(&n.tcpWrite, unsafe.Pointer(&ret), handle, bufPtr, len(buf), timeoutMS)
+	err := n.tcpWrite.call(unsafe.Pointer(&ret), unsafe.Pointer(&handle), unsafe.Pointer(&bufPtr), unsafe.Pointer(&length), unsafe.Pointer(&timeoutMS))
 	runtime.KeepAlive(buf)
 	if err != nil {
 		return 0, err
@@ -220,9 +229,10 @@ func (n *Native) UDPSendTo(handle uint64, ip string, port uint16, buf []byte, ti
 	dst := cString(ip)
 	dstPtr := unsafe.Pointer(&dst[0])
 	bufPtr := unsafe.Pointer(&buf[0])
+	length := uint32(len(buf))
 	timeoutMS := uint64(timeout / time.Millisecond)
 	var ret int32
-	err := n.callWithBufferLenAndAddr(&n.udpSendTo, unsafe.Pointer(&ret), handle, dstPtr, port, bufPtr, len(buf), timeoutMS)
+	err := n.udpSendTo.call(unsafe.Pointer(&ret), unsafe.Pointer(&handle), unsafe.Pointer(&dstPtr), unsafe.Pointer(&port), unsafe.Pointer(&bufPtr), unsafe.Pointer(&length), unsafe.Pointer(&timeoutMS))
 	runtime.KeepAlive(dst)
 	runtime.KeepAlive(buf)
 	if err != nil {
@@ -239,12 +249,13 @@ func (n *Native) UDPRecvFrom(handle uint64, buf []byte, timeout time.Duration) (
 		return 0, nil, nil
 	}
 	bufPtr := unsafe.Pointer(&buf[0])
+	length := uint32(len(buf))
 	timeoutMS := uint64(timeout / time.Millisecond)
 	var outIP unsafe.Pointer
-	outIPPtr := unsafe.Pointer(&outIP)
+	outIPArg := unsafe.Pointer(&outIP)
 	var outPort uint16
 	var ret int32
-	err := n.callRecvFrom(unsafe.Pointer(&ret), handle, bufPtr, len(buf), outIPPtr, &outPort, timeoutMS)
+	err := n.udpRecvFrom.call(unsafe.Pointer(&ret), unsafe.Pointer(&handle), unsafe.Pointer(&bufPtr), unsafe.Pointer(&length), unsafe.Pointer(&outIPArg), unsafe.Pointer(&outPort), unsafe.Pointer(&timeoutMS))
 	runtime.KeepAlive(buf)
 	if err != nil {
 		return 0, nil, err
@@ -252,9 +263,7 @@ func (n *Native) UDPRecvFrom(handle uint64, buf []byte, timeout time.Duration) (
 	if ret < 0 {
 		return 0, nil, n.LastError()
 	}
-	addr := &net.UDPAddr{IP: net.ParseIP(readCString(outIP)), Port: int(outPort)}
-	_ = n.freeCString(outIP)
-	return int(ret), addr, nil
+	return int(ret), takeUDPAddr(n, outIP, outPort), nil
 }
 
 func (n *Native) UDPClose(handle uint64) error {
@@ -309,11 +318,11 @@ func (d *Dialer) DialContext(ctx context.Context, network, address string) (net.
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	handle, err := d.Native.TCPConnect(d.Instance, ip.String(), uint16(port), timeout)
+	handle, local, err := d.Native.TCPConnect(d.Instance, ip.String(), uint16(port), timeout)
 	if err != nil {
 		return nil, err
 	}
-	return &Conn{native: d.Native, handle: handle, remote: &net.TCPAddr{IP: ip, Port: port}}, nil
+	return &Conn{native: d.Native, handle: handle, local: local, remote: &net.TCPAddr{IP: ip, Port: port}}, nil
 }
 
 func (c *Conn) Read(b []byte) (int, error) {
@@ -348,7 +357,7 @@ func (c *Conn) Close() error {
 	return c.native.TCPClose(c.handle)
 }
 
-func (c *Conn) LocalAddr() net.Addr                { return newEasyTierAddr("tcp", "0.0.0.0:0") }
+func (c *Conn) LocalAddr() net.Addr                { return c.local }
 func (c *Conn) RemoteAddr() net.Addr               { return c.remote }
 func (c *Conn) SetDeadline(t time.Time) error      { c.rd.set(t); c.wd.set(t); return nil }
 func (c *Conn) SetReadDeadline(t time.Time) error  { c.rd.set(t); return nil }
@@ -397,13 +406,13 @@ func (n *Native) bind() error {
 		n.bindSym(&n.runNetworkInstance, "run_network_instance", types.SInt32TypeDescriptor, types.PointerTypeDescriptor),
 		n.bindSym(&n.getErrorMsg, "get_error_msg", types.VoidTypeDescriptor, types.PointerTypeDescriptor),
 		n.bindSym(&n.freeString, "free_string", types.VoidTypeDescriptor, types.PointerTypeDescriptor),
-		n.bindSym(&n.tcpConnect, "data_plane_tcp_connect", types.UInt64TypeDescriptor, types.PointerTypeDescriptor, types.PointerTypeDescriptor, types.UInt16TypeDescriptor, types.UInt64TypeDescriptor),
-		n.bindSym(&n.tcpRead, "data_plane_tcp_read", types.SInt32TypeDescriptor, types.UInt64TypeDescriptor, types.PointerTypeDescriptor, cULongType(), types.UInt64TypeDescriptor),
-		n.bindSym(&n.tcpWrite, "data_plane_tcp_write", types.SInt32TypeDescriptor, types.UInt64TypeDescriptor, types.PointerTypeDescriptor, cULongType(), types.UInt64TypeDescriptor),
+		n.bindSym(&n.tcpConnect, "data_plane_tcp_connect", types.UInt64TypeDescriptor, types.PointerTypeDescriptor, types.PointerTypeDescriptor, types.UInt16TypeDescriptor, types.UInt64TypeDescriptor, types.PointerTypeDescriptor, types.PointerTypeDescriptor),
+		n.bindSym(&n.tcpRead, "data_plane_tcp_read", types.SInt32TypeDescriptor, types.UInt64TypeDescriptor, types.PointerTypeDescriptor, types.UInt32TypeDescriptor, types.UInt64TypeDescriptor),
+		n.bindSym(&n.tcpWrite, "data_plane_tcp_write", types.SInt32TypeDescriptor, types.UInt64TypeDescriptor, types.PointerTypeDescriptor, types.UInt32TypeDescriptor, types.UInt64TypeDescriptor),
 		n.bindSym(&n.tcpClose, "data_plane_tcp_close", types.SInt32TypeDescriptor, types.UInt64TypeDescriptor),
-		n.bindSym(&n.udpBind, "data_plane_udp_bind", types.UInt64TypeDescriptor, types.PointerTypeDescriptor, types.UInt16TypeDescriptor, types.UInt64TypeDescriptor),
-		n.bindSym(&n.udpSendTo, "data_plane_udp_send_to", types.SInt32TypeDescriptor, types.UInt64TypeDescriptor, types.PointerTypeDescriptor, types.UInt16TypeDescriptor, types.PointerTypeDescriptor, cULongType(), types.UInt64TypeDescriptor),
-		n.bindSym(&n.udpRecvFrom, "data_plane_udp_recv_from", types.SInt32TypeDescriptor, types.UInt64TypeDescriptor, types.PointerTypeDescriptor, cULongType(), types.PointerTypeDescriptor, types.PointerTypeDescriptor, types.UInt64TypeDescriptor),
+		n.bindSym(&n.udpBind, "data_plane_udp_bind", types.UInt64TypeDescriptor, types.PointerTypeDescriptor, types.UInt16TypeDescriptor, types.UInt64TypeDescriptor, types.PointerTypeDescriptor, types.PointerTypeDescriptor),
+		n.bindSym(&n.udpSendTo, "data_plane_udp_send_to", types.SInt32TypeDescriptor, types.UInt64TypeDescriptor, types.PointerTypeDescriptor, types.UInt16TypeDescriptor, types.PointerTypeDescriptor, types.UInt32TypeDescriptor, types.UInt64TypeDescriptor),
+		n.bindSym(&n.udpRecvFrom, "data_plane_udp_recv_from", types.SInt32TypeDescriptor, types.UInt64TypeDescriptor, types.PointerTypeDescriptor, types.UInt32TypeDescriptor, types.PointerTypeDescriptor, types.PointerTypeDescriptor, types.UInt64TypeDescriptor),
 		n.bindSym(&n.udpClose, "data_plane_udp_close", types.SInt32TypeDescriptor, types.UInt64TypeDescriptor),
 	)
 }
@@ -421,36 +430,12 @@ func (n *Native) bindSym(dst *symCall, name string, ret *types.TypeDescriptor, a
 }
 
 func (s *symCall) call(ret unsafe.Pointer, args ...unsafe.Pointer) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	// `ffi.CallFunction` (and the underlying libffi `ffi_call`) is safe to
+	// invoke concurrently as long as the prepared call interface (`cif`) is
+	// only read. We populate `cif` once during `bindSym` and never mutate it
+	// afterwards, so a per-symbol mutex would only serialize unrelated
+	// connections (e.g. blocking one TCP read until another finishes).
 	return ffi.CallFunction(&s.cif, s.fn, ret, args)
-}
-
-func (n *Native) callWithBufferLen(s *symCall, ret unsafe.Pointer, handle uint64, buf unsafe.Pointer, length int, timeoutMS uint64) error {
-	if runtime.GOOS == "windows" {
-		l := uint32(length)
-		return s.call(ret, unsafe.Pointer(&handle), unsafe.Pointer(&buf), unsafe.Pointer(&l), unsafe.Pointer(&timeoutMS))
-	}
-	l := uint64(length)
-	return s.call(ret, unsafe.Pointer(&handle), unsafe.Pointer(&buf), unsafe.Pointer(&l), unsafe.Pointer(&timeoutMS))
-}
-
-func (n *Native) callWithBufferLenAndAddr(s *symCall, ret unsafe.Pointer, handle uint64, ip unsafe.Pointer, port uint16, buf unsafe.Pointer, length int, timeoutMS uint64) error {
-	if runtime.GOOS == "windows" {
-		l := uint32(length)
-		return s.call(ret, unsafe.Pointer(&handle), unsafe.Pointer(&ip), unsafe.Pointer(&port), unsafe.Pointer(&buf), unsafe.Pointer(&l), unsafe.Pointer(&timeoutMS))
-	}
-	l := uint64(length)
-	return s.call(ret, unsafe.Pointer(&handle), unsafe.Pointer(&ip), unsafe.Pointer(&port), unsafe.Pointer(&buf), unsafe.Pointer(&l), unsafe.Pointer(&timeoutMS))
-}
-
-func (n *Native) callRecvFrom(ret unsafe.Pointer, handle uint64, buf unsafe.Pointer, length int, outIP unsafe.Pointer, outPort *uint16, timeoutMS uint64) error {
-	if runtime.GOOS == "windows" {
-		l := uint32(length)
-		return n.udpRecvFrom.call(ret, unsafe.Pointer(&handle), unsafe.Pointer(&buf), unsafe.Pointer(&l), unsafe.Pointer(&outIP), unsafe.Pointer(&outPort), unsafe.Pointer(&timeoutMS))
-	}
-	l := uint64(length)
-	return n.udpRecvFrom.call(ret, unsafe.Pointer(&handle), unsafe.Pointer(&buf), unsafe.Pointer(&l), unsafe.Pointer(&outIP), unsafe.Pointer(&outPort), unsafe.Pointer(&timeoutMS))
 }
 
 func (n *Native) freeCString(ptr unsafe.Pointer) error {
@@ -458,6 +443,26 @@ func (n *Native) freeCString(ptr unsafe.Pointer) error {
 		return nil
 	}
 	return n.freeString.call(nil, unsafe.Pointer(&ptr))
+}
+
+// takeTCPAddr converts an FFI-allocated ip C string + port into a net.TCPAddr
+// and releases the C string. Returns nil when the pointer is null.
+func takeTCPAddr(n *Native, ipPtr unsafe.Pointer, port uint16) *net.TCPAddr {
+	if ipPtr == nil {
+		return nil
+	}
+	ip := net.ParseIP(readCString(ipPtr))
+	_ = n.freeCString(ipPtr)
+	return &net.TCPAddr{IP: ip, Port: int(port)}
+}
+
+func takeUDPAddr(n *Native, ipPtr unsafe.Pointer, port uint16) *net.UDPAddr {
+	if ipPtr == nil {
+		return nil
+	}
+	ip := net.ParseIP(readCString(ipPtr))
+	_ = n.freeCString(ipPtr)
+	return &net.UDPAddr{IP: ip, Port: int(port)}
 }
 
 func (d *atomicDeadline) set(t time.Time) {
@@ -483,14 +488,6 @@ func (d *atomicDeadline) timeout(fallback time.Duration) time.Duration {
 func (e timeoutError) Error() string   { return string(e) }
 func (e timeoutError) Timeout() bool   { return true }
 func (e timeoutError) Temporary() bool { return true }
-
-type easyTierAddr string
-
-func newEasyTierAddr(network, address string) easyTierAddr {
-	return easyTierAddr(network + "|" + address)
-}
-func (a easyTierAddr) Network() string { return strings.SplitN(string(a), "|", 2)[0] }
-func (a easyTierAddr) String() string  { parts := strings.SplitN(string(a), "|", 2); return parts[1] }
 
 func opError(op string, addr net.Addr, err error) error {
 	return &net.OpError{Op: op, Net: "easytier", Addr: addr, Err: err}
@@ -531,13 +528,6 @@ func readCString(ptr unsafe.Pointer) string {
 		}
 		b = append(b, c)
 	}
-}
-
-func cULongType() *types.TypeDescriptor {
-	if runtime.GOOS == "windows" {
-		return types.UInt32TypeDescriptor
-	}
-	return types.UInt64TypeDescriptor
 }
 
 func defaultLibraryPath() string {

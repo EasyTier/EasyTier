@@ -5,7 +5,7 @@ use crate::common::config::{
 #[cfg(feature = "ffi-dataplane")]
 use crate::gateway::socks5::Socks5Server;
 #[cfg(feature = "ffi-dataplane")]
-pub use crate::gateway::socks5::{EasyTierTcpStream, EasyTierUdpSocket};
+pub use crate::gateway::socks5::{DataPlaneRef, EasyTierTcpStream, EasyTierUdpSocket};
 use crate::proto::api::{self, manage};
 use crate::proto::rpc_types::controller::BaseController;
 use crate::rpc_service::InstanceRpcService;
@@ -50,7 +50,9 @@ struct EasyTierData {
     event_subscriber: RwLock<broadcast::Sender<GlobalCtxEvent>>,
     instance_stop_notifier: Arc<tokio::sync::Notify>,
     #[cfg(feature = "ffi-dataplane")]
-    data_plane: RwLock<Option<Arc<Socks5Server>>>,
+    data_plane: std::sync::OnceLock<Arc<Socks5Server>>,
+    #[cfg(feature = "ffi-dataplane")]
+    runtime_handle: std::sync::OnceLock<tokio::runtime::Handle>,
 }
 
 impl Default for EasyTierData {
@@ -63,7 +65,9 @@ impl Default for EasyTierData {
             tun_fd: (sender, Mutex::new(Some(receiver))),
             instance_stop_notifier: Arc::new(tokio::sync::Notify::new()),
             #[cfg(feature = "ffi-dataplane")]
-            data_plane: RwLock::new(None),
+            data_plane: std::sync::OnceLock::new(),
+            #[cfg(feature = "ffi-dataplane")]
+            runtime_handle: std::sync::OnceLock::new(),
         }
     }
 }
@@ -169,10 +173,7 @@ impl EasyTierLauncher {
         instance.run().await?;
 
         #[cfg(feature = "ffi-dataplane")]
-        data.data_plane
-            .write()
-            .unwrap()
-            .replace(instance.get_socks5_server());
+        let _ = data.data_plane.set(instance.get_socks5_server());
 
         api_service
             .write()
@@ -228,6 +229,9 @@ impl EasyTierLauncher {
             }
             .unwrap();
 
+            #[cfg(feature = "ffi-dataplane")]
+            let _ = data.runtime_handle.set(rt.handle().clone());
+
             let stop_notifier = Arc::new(tokio::sync::Notify::new());
 
             let stop_notifier_clone = stop_notifier.clone();
@@ -280,7 +284,12 @@ impl EasyTierLauncher {
 
     #[cfg(feature = "ffi-dataplane")]
     pub fn get_data_plane(&self) -> Option<Arc<Socks5Server>> {
-        self.data.data_plane.read().unwrap().clone()
+        self.data.data_plane.get().cloned()
+    }
+
+    #[cfg(feature = "ffi-dataplane")]
+    pub fn get_runtime_handle(&self) -> Option<tokio::runtime::Handle> {
+        self.data.runtime_handle.get().cloned()
     }
 }
 
@@ -486,10 +495,10 @@ impl NetworkInstance {
     pub async fn data_plane_tcp_connect(
         &self,
         dst_addr: SocketAddr,
-        timeout_s: u64,
-    ) -> anyhow::Result<EasyTierTcpStream> {
+        timeout: std::time::Duration,
+    ) -> anyhow::Result<(EasyTierTcpStream, SocketAddr, DataPlaneRef)> {
         self.data_plane()?
-            .data_plane_tcp_connect(dst_addr, timeout_s)
+            .data_plane_tcp_connect(dst_addr, timeout)
             .await
             .map_err(Into::into)
     }
@@ -498,12 +507,19 @@ impl NetworkInstance {
     pub async fn data_plane_udp_bind(
         &self,
         local_port: u16,
-        timeout_s: u64,
-    ) -> anyhow::Result<EasyTierUdpSocket> {
+        timeout: std::time::Duration,
+    ) -> anyhow::Result<(EasyTierUdpSocket, SocketAddr)> {
         self.data_plane()?
-            .data_plane_udp_bind(local_port, timeout_s)
+            .data_plane_udp_bind(local_port, timeout)
             .await
             .map_err(Into::into)
+    }
+
+    #[cfg(feature = "ffi-dataplane")]
+    pub fn get_runtime_handle(&self) -> Option<tokio::runtime::Handle> {
+        self.launcher
+            .as_ref()
+            .and_then(|launcher| launcher.get_runtime_handle())
     }
 }
 

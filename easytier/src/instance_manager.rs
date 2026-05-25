@@ -1,5 +1,5 @@
 #[cfg(feature = "ffi-dataplane")]
-use crate::launcher::{EasyTierTcpStream, EasyTierUdpSocket};
+use crate::launcher::{DataPlaneRef, EasyTierTcpStream, EasyTierUdpSocket};
 use dashmap::DashMap;
 use std::fmt::{Display, Formatter};
 use std::{collections::BTreeMap, path::PathBuf, sync::Arc};
@@ -178,13 +178,13 @@ impl NetworkInstanceManager {
         &self,
         instance_id: &uuid::Uuid,
         dst_addr: std::net::SocketAddr,
-        timeout_s: u64,
-    ) -> Result<EasyTierTcpStream, anyhow::Error> {
+        timeout: std::time::Duration,
+    ) -> Result<(EasyTierTcpStream, std::net::SocketAddr, DataPlaneRef), anyhow::Error> {
         let instance = self
             .instance_map
             .get(instance_id)
             .ok_or_else(|| anyhow::anyhow!("instance {} not found", instance_id))?;
-        instance.data_plane_tcp_connect(dst_addr, timeout_s).await
+        instance.data_plane_tcp_connect(dst_addr, timeout).await
     }
 
     #[cfg(feature = "ffi-dataplane")]
@@ -192,13 +192,23 @@ impl NetworkInstanceManager {
         &self,
         instance_id: &uuid::Uuid,
         local_port: u16,
-        timeout_s: u64,
-    ) -> Result<EasyTierUdpSocket, anyhow::Error> {
+        timeout: std::time::Duration,
+    ) -> Result<(EasyTierUdpSocket, std::net::SocketAddr), anyhow::Error> {
         let instance = self
             .instance_map
             .get(instance_id)
             .ok_or_else(|| anyhow::anyhow!("instance {} not found", instance_id))?;
-        instance.data_plane_udp_bind(local_port, timeout_s).await
+        instance.data_plane_udp_bind(local_port, timeout).await
+    }
+
+    #[cfg(feature = "ffi-dataplane")]
+    pub fn data_plane_runtime_handle(
+        &self,
+        instance_id: &uuid::Uuid,
+    ) -> Option<tokio::runtime::Handle> {
+        self.instance_map
+            .get(instance_id)
+            .and_then(|inst| inst.get_runtime_handle())
     }
 
     pub async fn get_network_info(
