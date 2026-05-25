@@ -863,14 +863,27 @@ impl Session {
                     continue;
                 }
                 let source = PersistedConfigSource::from_db(&c.source).auto_run_rpc_source();
+                let network_config = match serde_json::from_str::<NetworkConfig>(&c.network_config)
+                {
+                    Ok(cfg) => cfg,
+                    Err(e) => {
+                        tracing::error!(
+                            ?user_id,
+                            ?machine_id,
+                            instance_id = %c.network_instance_id,
+                            "Failed to deserialize network config, skipping: {:?}",
+                            e
+                        );
+                        has_failed = true;
+                        continue;
+                    }
+                };
                 let ret = rpc_client
                     .run_network_instance(
                         BaseController::default(),
                         RunNetworkInstanceRequest {
                             inst_id: Some(c.network_instance_id.clone().into()),
-                            config: Some(
-                                serde_json::from_str::<NetworkConfig>(&c.network_config).unwrap(),
-                            ),
+                            config: Some(network_config),
                             overwrite: false,
                             source: source as i32,
                         },
