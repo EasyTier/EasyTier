@@ -330,7 +330,7 @@ impl TunnelConnector for FakeTcpTunnelConnector {
         // The actual FakeTCP payload travels via crafted segments written
         // straight to the TUN device, which the kernel doesn't tag with
         // SO_MARK. Operators relying on fwmark for FakeTCP must mark the
-        // TUN device's traffic with a separate iptables rule.
+        // TUN device's traffic with a separate nftables/iptables rule.
         crate::tunnel::common::apply_socket_mark(
             &socket2::SockRef::from(&os_socket),
             self.socket_mark,
