@@ -142,6 +142,9 @@ pub trait TunnelConnector: Send {
     fn set_bind_addrs(&mut self, _addrs: Vec<SocketAddr>) {}
     fn set_ip_version(&mut self, _ip_version: IpVersion) {}
     fn set_resolved_addr(&mut self, _addr: SocketAddr) {}
+    /// Linux SO_MARK to apply to outbound sockets. 0 = disabled. Default impl
+    /// is a no-op; IP-based connectors override.
+    fn set_socket_mark(&mut self, _socket_mark: u32) {}
 }
 
 pub fn build_url_from_socket_addr(addr: &String, scheme: &str) -> url::Url {

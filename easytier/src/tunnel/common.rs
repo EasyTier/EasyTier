@@ -417,6 +417,7 @@ fn setup_socket2_ext(
     bind_addr: &SocketAddr,
     #[allow(unused_variables)] bind_dev: Option<String>,
     only_v6: bool,
+    #[allow(unused_variables)] socket_mark: u32,
 ) -> Result<(), TunnelError> {
     #[cfg(target_os = "windows")]
     {
@@ -430,6 +431,12 @@ fn setup_socket2_ext(
 
     socket2_socket.set_nonblocking(true)?;
     socket2_socket.set_reuse_address(!cfg!(target_os = "windows"))?;
+
+    // SO_MARK must be set before bind() so the kernel applies the mark to
+    // any source-address selection bind() triggers on unspecified binds.
+    // Accepted child sockets inherit the mark from the listener on Linux.
+    apply_socket_mark(socket2_socket, socket_mark)?;
+
     if let Err(e) = socket2_socket.bind(&socket2::SockAddr::from(*bind_addr)) {
         if bind_addr.is_ipv4() {
             return Err(e.into());
@@ -473,6 +480,23 @@ fn setup_socket2_ext(
         socket2_socket.bind_device(Some(dev_name.as_bytes()))?;
     }
 
+    Ok(())
+}
+
+/// Apply Linux SO_MARK (a.k.a. fwmark) to a `socket2::Socket`. A `socket_mark`
+/// of 0 is a no-op. On non-Linux platforms this is unconditionally a no-op.
+///
+/// Exposed so transports that bypass [`bind`] (currently the WebSocket
+/// default-bind path and FakeTCP) can apply the same mark.
+pub fn apply_socket_mark(
+    #[allow(unused_variables)] socket: &socket2::Socket,
+    #[allow(unused_variables)] socket_mark: u32,
+) -> Result<(), TunnelError> {
+    #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
+    if socket_mark != 0 {
+        tracing::trace!(socket_mark, "set SO_MARK on socket");
+        socket.set_mark(socket_mark)?;
+    }
     Ok(())
 }
 
@@ -529,6 +553,9 @@ pub fn bind<B: Bindable>(
     #[builder(default, into)] dev: BindDev,
     net_ns: Option<NetNS>,
     #[builder(default)] only_v6: bool,
+    /// Linux SO_MARK (fwmark) to apply to the socket. 0 = disabled.
+    #[builder(default)]
+    socket_mark: u32,
 ) -> Result<B, TunnelError> {
     let _g = net_ns.map(|n| n.guard());
     let dev = match dev {
@@ -537,7 +564,7 @@ pub fn bind<B: Bindable>(
         BindDev::Custom(s) => Some(s),
     };
     let socket = socket2::Socket::new(socket2::Domain::for_address(addr), B::TYPE, B::PROTOCOL)?;
-    setup_socket2_ext(&socket, &addr, dev, only_v6)?;
+    setup_socket2_ext(&socket, &addr, dev, only_v6, socket_mark)?;
     B::finalize(socket)
 }
 
@@ -566,6 +593,51 @@ pub mod tests {
         TunnelError,
         packet_def::{PEER_MANAGER_HEADER_SIZE, TCP_TUNNEL_HEADER_SIZE},
     };
+
+    #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
+    #[test]
+    fn apply_socket_mark_zero_is_noop_and_does_not_error() {
+        let socket = socket2::Socket::new(
+            socket2::Domain::IPV4,
+            socket2::Type::DGRAM,
+            Some(socket2::Protocol::UDP),
+        )
+        .unwrap();
+        super::apply_socket_mark(&socket, 0).unwrap();
+        // mark=0 must not error and must not require CAP_NET_ADMIN.
+        // We don't readback SO_MARK here because the kernel default is 0, which
+        // is indistinguishable from "we set 0"; the contract under test is
+        // "no syscall is made and no error is returned".
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    #[ignore = "requires CAP_NET_ADMIN; run as root or with sudo -E cargo test"]
+    fn apply_socket_mark_sets_so_mark_when_capable() {
+        use nix::libc;
+        use std::os::fd::AsRawFd;
+        let socket = socket2::Socket::new(
+            socket2::Domain::IPV4,
+            socket2::Type::DGRAM,
+            Some(socket2::Protocol::UDP),
+        )
+        .unwrap();
+        super::apply_socket_mark(&socket, 0x1234).expect("set_mark failed; need CAP_NET_ADMIN");
+
+        let mut value: libc::c_int = 0;
+        let mut len = std::mem::size_of::<libc::c_int>() as libc::socklen_t;
+        let r = unsafe {
+            libc::getsockopt(
+                socket.as_raw_fd(),
+                libc::SOL_SOCKET,
+                libc::SO_MARK,
+                &mut value as *mut _ as *mut libc::c_void,
+                &mut len,
+            )
+        };
+        assert_eq!(r, 0, "getsockopt(SO_MARK) failed");
+        assert_eq!(value as u32, 0x1234);
+    }
 
     #[test]
     fn framed_reader_rejects_short_peer_manager_body() {

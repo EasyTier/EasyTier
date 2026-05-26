@@ -535,6 +535,13 @@ struct NetworkOptions {
 
     #[arg(
         long,
+        env = "ET_SOCKET_MARK",
+        help = t!("core_clap.socket_mark").to_string()
+    )]
+    socket_mark: Option<u32>,
+
+    #[arg(
+        long,
         env = "ET_ENABLE_KCP_PROXY",
         help = t!("core_clap.enable_kcp_proxy").to_string(),
         num_args = 0..=1,
@@ -1126,6 +1133,7 @@ impl NetworkOptions {
             .into();
         }
         f.bind_device = self.bind_device.unwrap_or(f.bind_device);
+        f.socket_mark = self.socket_mark.unwrap_or(f.socket_mark);
         f.enable_kcp_proxy = self.enable_kcp_proxy.unwrap_or(f.enable_kcp_proxy);
         f.disable_kcp_input = self.disable_kcp_input.unwrap_or(f.disable_kcp_input);
         f.enable_quic_proxy = self.enable_quic_proxy.unwrap_or(f.enable_quic_proxy);

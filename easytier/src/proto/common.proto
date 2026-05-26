@@ -77,6 +77,11 @@ message FlagsInConfig {
   bool disable_upnp = 40;
   bool disable_relay_data = 41;
   bool enable_udp_broadcast_relay = 42;
+
+  // Linux-only: SO_MARK (fwmark) value applied to every outbound underlay
+  // socket (TCP/UDP/QUIC/WS/WG connectors and listeners). 0 disables.
+  // Requires CAP_NET_ADMIN; silently ignored on non-Linux platforms.
+  uint32 socket_mark = 43;
 }
 
 message RpcDescriptor {
