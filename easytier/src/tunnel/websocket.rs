@@ -22,7 +22,7 @@ use tokio::{
 };
 use tokio_rustls::TlsAcceptor;
 use tokio_util::either::Either;
-use tokio_websockets::{ClientBuilder, Limits, MaybeTlsStream, Message, ServerBuilder};
+use tokio_websockets::{ClientBuilder, Limits, MaybeTlsStream, Message, ServerBuilder, WebSocketStream};
 use zerocopy::AsBytes;
 
 fn is_wss(addr: &url::Url) -> Result<bool, TunnelError> {
@@ -61,6 +61,85 @@ async fn map_from_ws_message(
         BytesMut::from(msg.into_payload().as_bytes()),
         ZCPacketType::DummyTunnel,
     )))
+}
+
+/// Manually perform WebSocket HTTP upgrade handshake.
+/// This bypasses tokio-websockets' built-in httparse which has a hardcoded 100 header limit,
+/// allowing it to work through proxies like GitHub Codespace that add many headers.
+async fn manual_ws_upgrade<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>(
+    builder: &ClientBuilder<'_>,
+    mut stream: S,
+    addr: &url::Url,
+) -> Result<WebSocketStream<S>, TunnelError> {
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+
+    // Generate WebSocket key
+    let key = {
+        let random_bytes: [u8; 16] = rand::random();
+        base64::Engine::encode(&base64::engine::general_purpose::STANDARD, random_bytes)
+    };
+
+    // Build host and path from URL
+    let host = addr.host_str().unwrap_or("");
+    let path = addr.path();
+    let query = addr.query();
+    let path_and_query = match query {
+        Some(q) => format!("{}?{}", path, q),
+        None => path.to_string(),
+    };
+
+    let request = format!(
+        "GET {path_and_query} HTTP/1.1\r\n\
+         Host: {host}\r\n\
+         Upgrade: websocket\r\n\
+         Connection: Upgrade\r\n\
+         Sec-WebSocket-Key: {key}\r\n\
+         Sec-WebSocket-Version: 13\r\n\
+         \r\n"
+    );
+
+    // Send request
+    stream
+        .write_all(request.as_bytes())
+        .await
+        .map_err(|e| TunnelError::IOError(e))?;
+    stream
+        .flush()
+        .await
+        .map_err(|e| TunnelError::IOError(e))?;
+
+    // Read response line by line to handle any number of headers
+    let mut reader = BufReader::new(&mut stream);
+    let mut status_line = String::new();
+    reader
+        .read_line(&mut status_line)
+        .await
+        .map_err(|e| TunnelError::IOError(e))?;
+
+    // Check status is 101
+    if !status_line.contains("101") {
+        return Err(TunnelError::WebSocketError(
+            tokio_websockets::Error::Upgrade(
+                tokio_websockets::upgrade::Error::DidNotSwitchProtocols(0),
+            ),
+        ));
+    }
+
+    // Read all headers until empty line (no limit on header count)
+    loop {
+        let mut line = String::new();
+        reader
+            .read_line(&mut line)
+            .await
+            .map_err(|e| TunnelError::IOError(e))?;
+
+        if line == "\r\n" || line == "\n" {
+            break;
+        }
+    }
+
+    // Use take_over to skip the built-in handshake
+    Ok(builder.take_over(stream))
 }
 
 static TRUSTED_PROXIES: LazyLock<Vec<IpNetwork>> = LazyLock::new(|| {
@@ -258,7 +337,9 @@ impl WsTunnelConnector {
             MaybeTlsStream::Plain(stream)
         };
 
-        let (client, _) = c.connect_on(stream).await?;
+        // Manually perform HTTP upgrade to handle proxies with many headers (e.g. GitHub Codespace)
+        // tokio-websockets' built-in connect_on uses httparse which has a hardcoded 100 header limit
+        let client = manual_ws_upgrade(&c, stream, &addr).await?;
         let (write, read) = client.split();
         let read = read.filter_map(map_from_ws_message);
         let write = write.with(sink_from_zc_packet);
