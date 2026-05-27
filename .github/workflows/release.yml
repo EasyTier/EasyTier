@@ -29,28 +29,36 @@ on:
 permissions:
   contents: write
 
-
-  # SimplySign signing configuration
-  CERTUM_OTP_URI: ${{ secrets.CERTUM_OTP_URI }}
-  CERTUM_USERNAME: ${{ secrets.CERTUM_USERNAME }}
-  CERTUM_EXE_PATH: ${{ secrets.CERTUM_EXE_PATH }}
-
 jobs:
-  sign-windows:
-    name: Sign Windows Artifacts with SimplySign
+  sign:
+    name: Sign Windows & Android Artifacts (Certum SimplySign)
     runs-on: windows-latest
     continue-on-error: true
     steps:
       - name: Checkout repository
         uses: actions/checkout@v5
 
-      - name: Download Core Artifact (for Windows executables)
+      - name: Download Core Artifact (Windows executables)
         uses: dawidd6/action-download-artifact@v11
         with:
           github_token: ${{secrets.GITHUB_TOKEN}}
           run_id: ${{ inputs.core_run_id }}
           repo: ${{ github.repository }}
           path: release_assets
+
+      - name: Download Mobile Artifact (APKs)
+        uses: dawidd6/action-download-artifact@v11
+        with:
+          github_token: ${{secrets.GITHUB_TOKEN}}
+          run_id: ${{ inputs.mobile_run_id }}
+          repo: ${{ github.repository }}
+          path: mobile_assets
+
+      - name: Setup JDK (for jarsigner)
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
 
       - name: Install SimplySign Desktop
         shell: bash
@@ -75,12 +83,11 @@ jobs:
           ./.github/scripts/Connect-SimplySign-Enhanced.ps1
         continue-on-error: true
 
-      - name: Sign Windows Executables
+      - name: Sign Windows Executables (signtool)
         shell: pwsh
         run: |
           Write-Host "=== SIGNING WINDOWS ARTIFACTS ==="
           
-          # Find all exe and dll files to sign
           $filesToSign = Get-ChildItem -Path "release_assets" -Recurse -Include *.exe,*.dll | Where-Object { $_.FullName -notmatch "[\\/]node_modules[\\/]" }
           
           if ($filesToSign.Count -eq 0) {
@@ -93,7 +100,6 @@ jobs:
           foreach ($file in $filesToSign) {
             Write-Host "Signing: $($file.FullName)"
             try {
-              # Using signtool with the certificate from SimplySign virtual smart card
               $timestampServer = "http://timestamp.digicert.com"
               & signtool sign /fd SHA256 /tr $timestampServer /td SHA256 /a "$($file.FullName)"
               Write-Host "  OK: Signed successfully"
@@ -102,13 +108,65 @@ jobs:
             }
           }
           
-          Write-Host "=== SIGNING COMPLETE ==="
+          Write-Host "=== WINDOWS SIGNING COMPLETE ==="
         continue-on-error: true
 
-      - name: Verify Signatures
+      - name: Sign Android APKs (jarsigner + PKCS#11)
         shell: pwsh
         run: |
-          Write-Host "=== VERIFYING SIGNATURES ==="
+          Write-Host "=== SIGNING ANDROID APKs WITH CERTUM CLOUD CERTIFICATE (PKCS#11) ==="
+          
+          # Create PKCS#11 config file for Certum SimplySign
+          $pkcs11Config = @"
+          name = CertumSimplySign
+          library = C:\Program Files\Certum\SimplySign Desktop\cryptoCertum3PKCS.dll
+          slot = 0
+          "@
+          $pkcs11Config | Out-File -FilePath "pkcs11.cfg" -Encoding ASCII
+          
+          Write-Host "PKCS#11 config created"
+          
+          # Find all APK files
+          $apkFiles = Get-ChildItem -Path "mobile_assets" -Recurse -Include *.apk
+          
+          if ($apkFiles.Count -eq 0) {
+            Write-Host "No APK files found to sign"
+            exit 0
+          }
+          
+          Write-Host "Found $($apkFiles.Count) APK files to sign"
+          
+          # Certum SimplySign default key alias is "1"
+          $keyAlias = "1"
+          
+          foreach ($apk in $apkFiles) {
+            Write-Host "Signing APK: $($apk.FullName)"
+            try {
+              & jarsigner -verbose `
+                -keystore NONE `
+                -storetype PKCS11 `
+                -providerClass sun.security.pkcs11.SunPKCS11 `
+                -providerArg pkcs11.cfg `
+                -tsa http://time.certum.pl `
+                -signedjar "$($apk.DirectoryName)\signed-$($apk.Name)" `
+                "$($apk.FullName)" `
+                $keyAlias
+              
+              # Replace original with signed version
+              Move-Item -Path "$($apk.DirectoryName)\signed-$($apk.Name)" -Destination $apk.FullName -Force
+              Write-Host "  OK: APK signed successfully"
+            } catch {
+              Write-Host "  WARNING: Failed to sign APK - $($_.Exception.Message)"
+            }
+          }
+          
+          Write-Host "=== ANDROID APK SIGNING COMPLETE ==="
+        continue-on-error: true
+
+      - name: Verify Windows Signatures
+        shell: pwsh
+        run: |
+          Write-Host "=== VERIFYING WINDOWS SIGNATURES ==="
           
           $signedFiles = Get-ChildItem -Path "release_assets" -Recurse -Include *.exe,*.dll | Where-Object { $_.FullName -notmatch "[\\/]node_modules[\\/]" }
           
@@ -126,7 +184,17 @@ jobs:
           Write-Host "=== VERIFICATION COMPLETE ==="
         continue-on-error: true
 
-      - name: Upload signed artifacts
+      - name: Verify APK Signatures
+        shell: pwsh
+        run: |
+          $apkFiles = Get-ChildItem -Path "mobile_assets" -Recurse -Include *.apk
+          foreach ($apk in $apkFiles) {
+            Write-Host "Verifying: $($apk.Name)"
+            & jarsigner -verify -verbose -certs "$($apk.FullName)" 2>&1 | Select-Object -First 10
+          }
+        continue-on-error: true
+
+      - name: Upload signed Windows artifacts
         uses: actions/upload-artifact@v4
         with:
           name: signed-windows-artifacts
@@ -134,37 +202,52 @@ jobs:
           retention-days: 7
         continue-on-error: true
 
+      - name: Upload signed Mobile artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: signed-mobile-artifacts
+          path: mobile_assets
+          retention-days: 7
+        continue-on-error: true
+
   release:
     name: Create GitHub Release
-    needs: [sign-windows]
+    needs: [sign]
     runs-on: ubuntu-latest
-    # Continue regardless of signing result (success, failure, skipped, or cancelled)
-    if: ${{ always() && (needs.sign-windows.result == 'success' || needs.sign-windows.result == 'failure' || needs.sign-windows.result == 'cancelled' || needs.sign-windows.result == 'skipped') }}
+    if: always()
     steps:
-      -
-        name: Checkout
+      - name: Checkout
         uses: actions/checkout@v5
 
       - name: Check signing result
         id: check_signing
         run: |
-          echo "Signing job result: ${{ needs.sign-windows.result }}"
-          if [ "${{ needs.sign-windows.result }}" = "success" ]; then
+          echo "Signing job result: ${{ needs.sign.result }}"
+          if [ "${{ needs.sign.result }}" = "success" ]; then
             echo "status=signed" >> $GITHUB_OUTPUT
-            echo "Windows artifacts were signed successfully"
+            echo "Artifacts were signed successfully"
           else
             echo "status=unsigned" >> $GITHUB_OUTPUT
-            echo "Warning: Windows signing was skipped or failed, continuing without signatures"
+            echo "Warning: Signing was skipped or failed, continuing without signatures"
           fi
 
-      - name: Download signed artifacts (if available)
+      - name: Download signed Windows artifacts (if available)
+        id: download-signed-win
         uses: actions/download-artifact@v4
         with:
           name: signed-windows-artifacts
           path: signed_release_assets
         continue-on-error: true
 
-      - name: Download Core Artifact
+      - name: Download signed Mobile artifacts (if available)
+        id: download-signed-mobile
+        uses: actions/download-artifact@v4
+        with:
+          name: signed-mobile-artifacts
+          path: signed_mobile_assets
+        continue-on-error: true
+
+      - name: Download Core Artifact (fallback)
         uses: dawidd6/action-download-artifact@v11
         with:
           github_token: ${{secrets.GITHUB_TOKEN}}
@@ -180,22 +263,33 @@ jobs:
           repo: ${{ github.repository }}
           path: release_assets_nozip
 
-      - name: Download Mobile Artifact
+      - name: Download Mobile Artifact (fallback)
         uses: dawidd6/action-download-artifact@v11
         with:
           github_token: ${{secrets.GITHUB_TOKEN}}
           run_id: ${{ inputs.mobile_run_id }}
           repo: ${{ github.repository }}
-          path: release_assets_nozip
+          path: mobile_assets_fallback
 
       - name: Use signed artifacts if available
         run: |
+          # Use signed Windows artifacts if available
           if [ -d "signed_release_assets" ] && [ "$(ls -A signed_release_assets 2>/dev/null)" ]; then
             echo "Using signed Windows artifacts..."
             rm -rf release_assets_fallback
             mv signed_release_assets release_assets_fallback
           else
-            echo "Using unsigned artifacts (signing may have failed or been skipped)"
+            echo "Using unsigned Windows artifacts (signing may have failed or been skipped)"
+          fi
+          
+          # Use signed Mobile artifacts if available
+          if [ -d "signed_mobile_assets" ] && [ "$(ls -A signed_mobile_assets 2>/dev/null)" ]; then
+            echo "Using signed Mobile artifacts..."
+            # Move signed APKs to nozip for release
+            find signed_mobile_assets -name "*.apk" -exec mv {} release_assets_nozip/ \;
+          else
+            echo "Using unsigned Mobile artifacts"
+            find mobile_assets_fallback -name "*.apk" -exec mv {} release_assets_nozip/ \;
           fi
 
       - name: Zip release assets
@@ -249,3 +343,4 @@ jobs:
             ./zipped_assets/*
           token: ${{ secrets.GITHUB_TOKEN }}
           tag_name: ${{ inputs.version }}
+          make_latest: ${{ inputs.make_latest }}
