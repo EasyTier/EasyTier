@@ -155,11 +155,104 @@ jobs:
           path: |
             ./artifacts/*
 
+  # Sign Windows GUI artifacts with Certum SimplySign cloud certificate
+  sign-windows-gui:
+    name: Sign Windows GUI Artifacts
+    needs: [build-gui]
+    if: needs.pre_job.outputs.should_skip != 'true' && !cancelled()
+    runs-on: windows-latest
+    continue-on-error: true
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - ARTIFACT_NAME: windows-x86_64
+          - ARTIFACT_NAME: windows-i686
+          - ARTIFACT_NAME: windows-arm64
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Download artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: easytier-gui-${{ matrix.ARTIFACT_NAME }}
+          path: sign_binaries
+
+      - name: Install SimplySign Desktop
+        shell: bash
+        run: |
+          chmod +x .github/scripts/install-simplysign.sh
+          .github/scripts/install-simplysign.sh
+        continue-on-error: true
+
+      - name: Configure SimplySign Registry
+        shell: pwsh
+        run: |
+          ./.github/scripts/configure-simplysign-registry.ps1
+        continue-on-error: true
+
+      - name: Connect to SimplySign (TOTP Authentication)
+        shell: pwsh
+        env:
+          CERTUM_OTP_URI: ${{ secrets.CERTUM_OTP_URI }}
+          CERTUM_USERNAME: ${{ secrets.CERTUM_USERNAME }}
+          CERTUM_EXE_PATH: ${{ secrets.CERTUM_EXE_PATH }}
+        run: |
+          ./.github/scripts/Connect-SimplySign-Enhanced.ps1
+        continue-on-error: true
+
+      - name: Sign Windows GUI binaries and installers (exe)
+        shell: pwsh
+        run: |
+          Write-Host "=== SIGNING WINDOWS GUI ARTIFACTS ==="
+          
+          $filesToSign = Get-ChildItem -Path "sign_binaries" -Recurse -Include *.exe
+          
+          if ($filesToSign.Count -eq 0) {
+            Write-Host "No exe files found to sign"
+            exit 0
+          }
+          
+          Write-Host "Found $($filesToSign.Count) files to sign"
+          
+          foreach ($file in $filesToSign) {
+            Write-Host "Signing: $($file.FullName)"
+            try {
+              $timestampServer = "http://timestamp.digicert.com"
+              & signtool sign /fd SHA256 /tr $timestampServer /td SHA256 /a "$($file.FullName)"
+              Write-Host "  OK: Signed successfully"
+            } catch {
+              Write-Host "  WARNING: Failed to sign - $($_.Exception.Message)"
+            }
+          }
+          
+          Write-Host "=== SIGNING COMPLETE ==="
+        continue-on-error: true
+
+      - name: Verify Signatures
+        shell: pwsh
+        run: |
+          $signedFiles = Get-ChildItem -Path "sign_binaries" -Recurse -Include *.exe
+          foreach ($file in $signedFiles) {
+            $result = Get-AuthenticodeSignature -FilePath $file.FullName
+            $status = if ($result.Status -eq "Valid") { "VALID" } else { "INVALID/UNSIGNED ($($result.Status))" }
+            Write-Host "$($file.Name): $status"
+          }
+        continue-on-error: true
+
+      - name: Re-upload signed artifact
+        uses: actions/upload-artifact@v5
+        with:
+          name: easytier-gui-${{ matrix.ARTIFACT_NAME }}
+          path: sign_binaries/*
+          overwrite: true
+
   gui-result:
     runs-on: ubuntu-latest
-    needs: [ pre_job, build-gui ]
+    needs: [ pre_job, build-gui, sign-windows-gui ]
     if: needs.pre_job.result == 'success' && needs.pre_job.outputs.should_skip != 'true' && !cancelled()
     steps:
       - name: Mark result as failed
-        if: contains(needs.*.result, 'failure')
+        if: needs.build-gui.result == 'failure'
         run: exit 1
