@@ -2,7 +2,7 @@ use crate::common::PeerId;
 use crate::common::acl_processor::PacketInfo;
 use crate::common::global_ctx::{ArcGlobalCtx, GlobalCtx};
 use crate::gateway::CidrSet;
-use crate::gateway::tcp_proxy::{NatDstConnector, TcpProxy};
+use crate::gateway::tcp_proxy::{NatDstConnector, TcpProxy, normalize_dst_for_local_virtual_ip};
 use crate::gateway::wrapped_proxy::{ProxyAclHandler, TcpProxyForWrappedSrcTrait};
 use crate::peers::PeerPacketFilter;
 use crate::peers::peer_manager::PeerManager;
@@ -748,9 +748,7 @@ impl QuicStreamReceiver {
         }
 
         let send_to_self = global_ctx.is_ip_local_virtual_ip(&dst_ip);
-        if send_to_self && global_ctx.no_tun() {
-            dst_socket = format!("127.0.0.1:{}", dst_socket.port()).parse()?;
-        }
+        dst_socket = normalize_dst_for_local_virtual_ip(&global_ctx, dst_socket);
 
         let acl_handler = ProxyAclHandler {
             acl_filter: global_ctx.get_acl_filter().clone(),

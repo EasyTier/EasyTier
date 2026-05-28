@@ -9,7 +9,7 @@ use pnet::packet::ip::IpNextHeaderProtocols;
 use pnet::packet::ipv4::{Ipv4Packet, MutableIpv4Packet};
 use pnet::packet::tcp::{MutableTcpPacket, TcpPacket, ipv4_checksum};
 use socket2::{SockRef, TcpKeepalive};
-use std::net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4};
 use std::sync::atomic::{AtomicBool, AtomicU16};
 use std::sync::{Arc, Weak};
 use std::time::{Duration, Instant};
@@ -39,6 +39,20 @@ use super::CidrSet;
 
 #[cfg(feature = "smoltcp")]
 use super::tokio_smoltcp::{self, Net, NetConfig, channel_device};
+
+pub(crate) fn normalize_dst_for_local_virtual_ip(
+    global_ctx: &GlobalCtx,
+    dst: SocketAddr,
+) -> SocketAddr {
+    if !global_ctx.is_ip_local_virtual_ip(&dst.ip()) {
+        return dst;
+    }
+
+    match dst {
+        SocketAddr::V4(addr) => SocketAddr::new(Ipv4Addr::LOCALHOST.into(), addr.port()),
+        SocketAddr::V6(addr) => SocketAddr::new(Ipv6Addr::LOCALHOST.into(), addr.port()),
+    }
+}
 
 #[async_trait::async_trait]
 pub(crate) trait NatDstConnector: Send + Sync + Clone + 'static {
@@ -762,13 +776,7 @@ impl<C: NatDstConnector> TcpProxy<C> {
             return;
         }
 
-        let nat_dst = if global_ctx.is_ip_local_virtual_ip(&nat_entry.real_dst.ip()) {
-            format!("127.0.0.1:{}", nat_entry.real_dst.port())
-                .parse()
-                .unwrap()
-        } else {
-            nat_entry.real_dst
-        };
+        let nat_dst = normalize_dst_for_local_virtual_ip(&global_ctx, nat_entry.real_dst);
 
         global_ctx
             .stats_manager()
@@ -1031,5 +1039,124 @@ impl<C: NatDstConnector> TcpProxyRpcService<C> {
         Self {
             tcp_proxy: Arc::downgrade(&tcp_proxy),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::net::{Ipv4Addr, SocketAddr};
+
+    use super::normalize_dst_for_local_virtual_ip;
+
+    #[tokio::test]
+    async fn normalize_dst_for_local_virtual_ip_maps_to_loopback() {
+        let global_ctx = crate::common::global_ctx::tests::get_mock_global_ctx();
+        global_ctx.set_ipv4(Some("10.254.229.6/24".parse().unwrap()));
+
+        let local_virtual = SocketAddr::from(([10, 254, 229, 6], 22));
+        let normalized = normalize_dst_for_local_virtual_ip(&global_ctx, local_virtual);
+        assert_eq!(normalized, SocketAddr::from((Ipv4Addr::LOCALHOST, 22)));
+
+        let remote_virtual = SocketAddr::from(([10, 254, 229, 7], 22));
+        assert_eq!(
+            normalize_dst_for_local_virtual_ip(&global_ctx, remote_virtual),
+            remote_virtual
+        );
+    }
+}
+
+#[cfg(all(test, target_os = "macos", feature = "tun"))]
+mod macos_utun_tests {
+    use std::{net::SocketAddr, sync::Arc, time::Duration};
+
+    use tokio::net::{TcpListener, TcpStream};
+
+    use super::{NatDstConnector as _, NatDstTcpConnector, normalize_dst_for_local_virtual_ip};
+    use crate::{
+        common::config::{ConfigLoader, TomlConfigLoader},
+        instance::instance::Instance,
+    };
+
+    async fn run_instance_with_utun(ipv4: &str, enable_kcp: bool, enable_quic: bool) -> Instance {
+        let config = TomlConfigLoader::default();
+        config.set_inst_name(format!("macos-utun-tcp-proxy-repro-{ipv4}"));
+        config.set_ipv4(Some(ipv4.parse().unwrap()));
+        config.set_ipv6(None);
+        config.set_listeners(Vec::new());
+
+        let mut flags = config.get_flags();
+        flags.enable_kcp_proxy = enable_kcp;
+        flags.enable_quic_proxy = enable_quic;
+        flags.use_smoltcp = false;
+        config.set_flags(flags);
+
+        let mut instance = Instance::new(config);
+        instance.run().await.expect(
+            "failed to create macOS utun device; run this ignored reproducer with root privileges",
+        );
+        instance
+    }
+
+    async fn assert_wildcard_listener_reachable_via_local_virtual_ip(
+        ipv4: &str,
+        enable_kcp: bool,
+        enable_quic: bool,
+    ) {
+        let mut instance = run_instance_with_utun(ipv4, enable_kcp, enable_quic).await;
+        let virtual_ip = instance.get_global_ctx().get_ipv4().unwrap().address();
+
+        let listener = Arc::new(TcpListener::bind("0.0.0.0:0").await.unwrap());
+        let port = listener.local_addr().unwrap().port();
+
+        let baseline_listener = listener.clone();
+        let baseline_accept = tokio::spawn(async move { baseline_listener.accept().await });
+        let baseline_connect = TcpStream::connect((std::net::Ipv4Addr::LOCALHOST, port));
+        let (baseline_connect, baseline_accept) = tokio::join!(baseline_connect, baseline_accept);
+        baseline_connect.unwrap();
+        baseline_accept.unwrap().unwrap();
+
+        let test_listener = listener.clone();
+        let mut accept = tokio::spawn(async move { test_listener.accept().await });
+        let dst = SocketAddr::new(virtual_ip.into(), port);
+        let dst = normalize_dst_for_local_virtual_ip(&instance.get_global_ctx(), dst);
+        assert_eq!(dst.ip(), std::net::Ipv4Addr::LOCALHOST);
+        let connect = NatDstTcpConnector {}.connect("0.0.0.0:0".parse().unwrap(), dst);
+
+        let connect = tokio::time::timeout(Duration::from_secs(3), connect).await;
+        let accept_result = tokio::time::timeout(Duration::from_secs(1), &mut accept).await;
+
+        if accept_result.is_err() {
+            accept.abort();
+        }
+        instance.clear_resources().await;
+
+        match connect {
+            Ok(Ok(_)) => {}
+            Ok(Err(error)) => panic!("connect to local EasyTier virtual IP failed: {error:?}"),
+            Err(_) => panic!("connect to local EasyTier virtual IP timed out"),
+        }
+
+        match accept_result {
+            Ok(Ok(Ok(_))) => {}
+            Ok(Ok(Err(error))) => panic!("listener accept failed: {error:?}"),
+            Ok(Err(error)) => panic!("listener task failed: {error:?}"),
+            Err(_) => panic!(
+                "listener did not accept connection to local EasyTier virtual IP {virtual_ip}:{port}"
+            ),
+        }
+    }
+
+    #[tokio::test]
+    #[ignore = "requires root and a real macOS utun device; covers issue #2296"]
+    async fn macos_utun_kcp_proxy_dst_local_virtual_ip_reaches_wildcard_listener() {
+        assert_wildcard_listener_reachable_via_local_virtual_ip("10.254.229.6/24", true, false)
+            .await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires root and a real macOS utun device; covers issue #2296"]
+    async fn macos_utun_quic_proxy_dst_local_virtual_ip_reaches_wildcard_listener() {
+        assert_wildcard_listener_reachable_via_local_virtual_ip("10.254.230.6/24", false, true)
+            .await;
     }
 }

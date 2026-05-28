@@ -19,7 +19,9 @@ use tokio::task::JoinSet;
 
 use super::{
     CidrSet,
-    tcp_proxy::{NatDstConnector, NatDstTcpConnector, TcpProxy},
+    tcp_proxy::{
+        NatDstConnector, NatDstTcpConnector, TcpProxy, normalize_dst_for_local_virtual_ip,
+    },
 };
 use crate::utils::task::HedgeExt;
 use crate::{
@@ -369,9 +371,7 @@ impl KcpProxyDst {
         }
 
         let send_to_self = global_ctx.is_ip_local_virtual_ip(&dst_ip);
-        if send_to_self && global_ctx.no_tun() {
-            dst_socket = format!("127.0.0.1:{}", dst_socket.port()).parse().unwrap();
-        }
+        dst_socket = normalize_dst_for_local_virtual_ip(&global_ctx, dst_socket);
 
         let acl_handler = ProxyAclHandler {
             acl_filter: global_ctx.get_acl_filter().clone(),
