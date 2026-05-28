@@ -233,12 +233,12 @@ impl QuicEndpointManager {
     fn try_create(
         addr: SocketAddr,
         dual_stack: bool,
-        socket_mark: u32,
+        socket_mark: Option<u32>,
     ) -> Result<Endpoint, TunnelError> {
         let socket = bind::<UdpSocket>()
             .addr(addr)
             .only_v6(addr.is_ipv6() && !dual_stack)
-            .socket_mark(socket_mark)
+            .maybe_socket_mark(socket_mark)
             .call()?;
         let runtime = default_runtime().ok_or(TunnelError::InternalError(
             "no async runtime found".to_owned(),
@@ -255,7 +255,7 @@ impl QuicEndpointManager {
 
     fn create<F>(
         &self,
-        socket_mark: u32,
+        socket_mark: Option<u32>,
         mut selector: F,
     ) -> Result<(&RwPool<Endpoint>, Option<Endpoint>), TunnelError>
     where
@@ -361,7 +361,7 @@ impl QuicEndpointManager {
     fn client_endpoint(
         &self,
         ip_version: IpVersion,
-        socket_mark: u32,
+        socket_mark: Option<u32>,
     ) -> Result<Endpoint, TunnelError> {
         let (pool, endpoint) = self.create(socket_mark, |mgr| {
             let dual_stack = mgr.both.is_enabled();
@@ -425,7 +425,7 @@ impl QuicEndpointManager {
         &self,
         addr: SocketAddr,
         ip_version: IpVersion,
-        socket_mark: u32,
+        socket_mark: Option<u32>,
     ) -> Result<(Endpoint, Connection), TunnelError> {
         let max_endpoint_stopping_retries = self.client_pool(ip_version).len().saturating_add(1);
         let mut endpoint_stopping_retries = 0;
@@ -659,7 +659,7 @@ mod tests {
     fn stopped_client_endpoint() -> (Endpoint, SocketAddr) {
         let rt = Builder::new_current_thread().enable_all().build().unwrap();
         let endpoint = rt.block_on(async {
-            QuicEndpointManager::try_create((Ipv4Addr::UNSPECIFIED, 0).into(), false, 0).unwrap()
+            QuicEndpointManager::try_create((Ipv4Addr::UNSPECIFIED, 0).into(), false, None).unwrap()
         });
         let local_addr = endpoint.local_addr().unwrap();
         drop(rt);
@@ -776,7 +776,7 @@ mod tests {
             assert!(mgr.contains_local_addr(stopped_addr_b));
 
             let err = mgr
-                .connect_with_ip_version("127.0.0.1:0".parse().unwrap(), IpVersion::V4, 0)
+                .connect_with_ip_version("127.0.0.1:0".parse().unwrap(), IpVersion::V4, None)
                 .await
                 .unwrap_err();
             let err = format!("{:?}", err);

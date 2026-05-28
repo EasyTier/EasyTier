@@ -81,7 +81,7 @@ static TRUSTED_PROXIES: LazyLock<Vec<IpNetwork>> = LazyLock::new(|| {
 pub struct WsTunnelListener {
     addr: url::Url,
     listener: Option<TcpListener>,
-    socket_mark: u32,
+    socket_mark: Option<u32>,
 }
 
 impl WsTunnelListener {
@@ -89,11 +89,11 @@ impl WsTunnelListener {
         WsTunnelListener {
             addr,
             listener: None,
-            socket_mark: 0,
+            socket_mark: None,
         }
     }
 
-    pub fn set_socket_mark(&mut self, socket_mark: u32) {
+    pub fn set_socket_mark(&mut self, socket_mark: Option<u32>) {
         self.socket_mark = socket_mark;
     }
 
@@ -173,7 +173,7 @@ impl TunnelListener for WsTunnelListener {
         let listener = bind::<TcpListener>()
             .addr(addr)
             .only_v6(true)
-            .socket_mark(self.socket_mark)
+            .maybe_socket_mark(self.socket_mark)
             .call()?;
 
         self.addr
@@ -211,7 +211,7 @@ pub struct WsTunnelConnector {
     resolved_addr: Option<SocketAddr>,
 
     bind_addrs: Vec<SocketAddr>,
-    socket_mark: u32,
+    socket_mark: Option<u32>,
 }
 
 impl WsTunnelConnector {
@@ -222,7 +222,7 @@ impl WsTunnelConnector {
             resolved_addr: None,
 
             bind_addrs: vec![],
-            socket_mark: 0,
+            socket_mark: None,
         }
     }
 
@@ -304,7 +304,7 @@ impl WsTunnelConnector {
             match bind()
                 .addr(*bind_addr)
                 .only_v6(true)
-                .socket_mark(self.socket_mark)
+                .maybe_socket_mark(self.socket_mark)
                 .call()
             {
                 Ok(socket) => futures.push(Self::connect_with(self.addr.clone(), addr, socket)),
@@ -349,7 +349,7 @@ impl TunnelConnector for WsTunnelConnector {
         self.resolved_addr = Some(addr);
     }
 
-    fn set_socket_mark(&mut self, socket_mark: u32) {
+    fn set_socket_mark(&mut self, socket_mark: Option<u32>) {
         self.socket_mark = socket_mark;
     }
 }

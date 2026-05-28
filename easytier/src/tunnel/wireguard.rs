@@ -463,7 +463,7 @@ pub struct WgTunnelListener {
     wg_peer_map: Arc<DashMap<SocketAddr, Arc<WgPeer>>>,
 
     tasks: JoinSet<()>,
-    socket_mark: u32,
+    socket_mark: Option<u32>,
 }
 
 impl WgTunnelListener {
@@ -480,11 +480,11 @@ impl WgTunnelListener {
             wg_peer_map: Arc::new(DashMap::new()),
 
             tasks: JoinSet::new(),
-            socket_mark: 0,
+            socket_mark: None,
         }
     }
 
-    pub fn set_socket_mark(&mut self, socket_mark: u32) {
+    pub fn set_socket_mark(&mut self, socket_mark: Option<u32>) {
         self.socket_mark = socket_mark;
     }
 
@@ -567,7 +567,7 @@ impl TunnelListener for WgTunnelListener {
                 .addr(addr)
                 .only_v6(true)
                 .maybe_dev(tunnel_url.bind_dev())
-                .socket_mark(self.socket_mark)
+                .maybe_socket_mark(self.socket_mark)
                 .call()?,
         ));
         self.addr
@@ -606,7 +606,7 @@ pub struct WgTunnelConnector {
     bind_addrs: Vec<SocketAddr>,
     ip_version: IpVersion,
     resolved_addr: Option<SocketAddr>,
-    socket_mark: u32,
+    socket_mark: Option<u32>,
 }
 
 impl Debug for WgTunnelConnector {
@@ -627,7 +627,7 @@ impl WgTunnelConnector {
             bind_addrs: vec![],
             ip_version: IpVersion::Both,
             resolved_addr: None,
-            socket_mark: 0,
+            socket_mark: None,
         }
     }
 
@@ -704,7 +704,7 @@ impl WgTunnelConnector {
             .addr("[::]:0".parse().unwrap())
             .dev(BindDev::Disabled)
             .only_v6(true)
-            .socket_mark(self.socket_mark)
+            .maybe_socket_mark(self.socket_mark)
             .call()?;
         Self::connect_with_socket(self.addr.clone(), self.config.clone(), socket, addr).await
     }
@@ -734,7 +734,7 @@ impl super::TunnelConnector for WgTunnelConnector {
             match bind()
                 .addr(bind_addr)
                 .only_v6(true)
-                .socket_mark(self.socket_mark)
+                .maybe_socket_mark(self.socket_mark)
                 .call()
             {
                 Ok(socket) => futures.push(Self::connect_with_socket(
@@ -769,7 +769,7 @@ impl super::TunnelConnector for WgTunnelConnector {
         self.resolved_addr = Some(addr);
     }
 
-    fn set_socket_mark(&mut self, socket_mark: u32) {
+    fn set_socket_mark(&mut self, socket_mark: Option<u32>) {
         self.socket_mark = socket_mark;
     }
 }

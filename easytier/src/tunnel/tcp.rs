@@ -17,7 +17,7 @@ const TCP_MTU_BYTES: usize = 2000;
 pub struct TcpTunnelListener {
     addr: url::Url,
     listener: Option<TcpListener>,
-    socket_mark: u32,
+    socket_mark: Option<u32>,
 }
 
 impl TcpTunnelListener {
@@ -25,11 +25,11 @@ impl TcpTunnelListener {
         TcpTunnelListener {
             addr,
             listener: None,
-            socket_mark: 0,
+            socket_mark: None,
         }
     }
 
-    pub fn set_socket_mark(&mut self, socket_mark: u32) {
+    pub fn set_socket_mark(&mut self, socket_mark: Option<u32>) {
         self.socket_mark = socket_mark;
     }
 
@@ -70,7 +70,7 @@ impl TunnelListener for TcpTunnelListener {
         let listener = bind::<TcpListener>()
             .addr(addr)
             .only_v6(true)
-            .socket_mark(self.socket_mark)
+            .maybe_socket_mark(self.socket_mark)
             .call()?;
 
         self.addr
@@ -140,7 +140,7 @@ pub struct TcpTunnelConnector {
     bind_addrs: Vec<SocketAddr>,
     ip_version: IpVersion,
     resolved_addr: Option<SocketAddr>,
-    socket_mark: u32,
+    socket_mark: Option<u32>,
 }
 
 impl TcpTunnelConnector {
@@ -150,7 +150,7 @@ impl TcpTunnelConnector {
             bind_addrs: vec![],
             ip_version: IpVersion::Both,
             resolved_addr: None,
-            socket_mark: 0,
+            socket_mark: None,
         }
     }
 
@@ -159,7 +159,7 @@ impl TcpTunnelConnector {
         addr: SocketAddr,
     ) -> Result<Box<dyn Tunnel>, super::TunnelError> {
         tracing::info!(url = ?self.addr, ?addr, "connect tcp start, bind addrs: {:?}", self.bind_addrs);
-        let stream = if self.socket_mark != 0 {
+        let stream = if self.socket_mark.is_some() {
             // SO_MARK requires applying the option on the socket before
             // connect, so go through TcpSocket rather than TcpStream::connect.
             let socket = if addr.is_ipv4() {
@@ -187,7 +187,7 @@ impl TcpTunnelConnector {
             match bind::<TcpSocket>()
                 .addr(*bind_addr)
                 .only_v6(true)
-                .socket_mark(self.socket_mark)
+                .maybe_socket_mark(self.socket_mark)
                 .call()
             {
                 Ok(socket) => futures.push(socket.connect(addr)),
@@ -233,7 +233,7 @@ impl super::TunnelConnector for TcpTunnelConnector {
         self.resolved_addr = Some(addr);
     }
 
-    fn set_socket_mark(&mut self, socket_mark: u32) {
+    fn set_socket_mark(&mut self, socket_mark: Option<u32>) {
         self.socket_mark = socket_mark;
     }
 }

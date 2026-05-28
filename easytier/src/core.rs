@@ -533,6 +533,10 @@ struct NetworkOptions {
     )]
     bind_device: Option<bool>,
 
+    // SO_MARK (fwmark) is a Linux-family kernel feature. Gate the flag out
+    // entirely on other targets so users on Windows/macOS/BSD don't see a
+    // `--socket-mark` they can't act on.
+    #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
     #[arg(
         long,
         env = "ET_SOCKET_MARK",
@@ -1133,7 +1137,10 @@ impl NetworkOptions {
             .into();
         }
         f.bind_device = self.bind_device.unwrap_or(f.bind_device);
-        f.socket_mark = self.socket_mark.unwrap_or(f.socket_mark);
+        #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
+        {
+            f.socket_mark = self.socket_mark.or(f.socket_mark);
+        }
         f.enable_kcp_proxy = self.enable_kcp_proxy.unwrap_or(f.enable_kcp_proxy);
         f.disable_kcp_input = self.disable_kcp_input.unwrap_or(f.disable_kcp_input);
         f.enable_quic_proxy = self.enable_quic_proxy.unwrap_or(f.enable_quic_proxy);

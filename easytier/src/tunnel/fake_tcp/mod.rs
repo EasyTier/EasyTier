@@ -282,7 +282,7 @@ pub struct FakeTcpTunnelConnector {
     addr: url::Url,
     ip_to_if_name: IpToIfNameCache,
     resolved_addr: Option<SocketAddr>,
-    socket_mark: u32,
+    socket_mark: Option<u32>,
 }
 
 impl FakeTcpTunnelConnector {
@@ -291,7 +291,7 @@ impl FakeTcpTunnelConnector {
             addr,
             ip_to_if_name: IpToIfNameCache::new(),
             resolved_addr: None,
-            socket_mark: 0,
+            socket_mark: None,
         }
     }
 }
@@ -411,7 +411,7 @@ impl TunnelConnector for FakeTcpTunnelConnector {
         self.resolved_addr = Some(addr);
     }
 
-    fn set_socket_mark(&mut self, socket_mark: u32) {
+    fn set_socket_mark(&mut self, socket_mark: Option<u32>) {
         self.socket_mark = socket_mark;
     }
 }
