@@ -1,3 +1,19 @@
+//! Data-plane access built on top of the `Socks5Server` smoltcp stack.
+//!
+//! This module exposes TCP streams and UDP sockets (mainly for FFI callers that
+//! send traffic through EasyTier without creating OS-level proxy listeners).
+//!
+//! Typical usage:
+//!
+//! ```ignore
+//! let instance = Instance::new(cfg);
+//! instance.run().await?;
+//! let socks5_server = instance.get_socks5_server();
+//!
+//! let socket = socks5_server.data_plane_udp_bind(local_port, timeout).await?;
+//! socket.send_to(buf, peer_addr).await?;
+//! ```
+
 use std::{
     net::{IpAddr, SocketAddr},
     pin::Pin,
