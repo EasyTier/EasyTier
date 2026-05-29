@@ -2,24 +2,11 @@ package easytierffi
 
 import (
 	"context"
-	"net"
 	"os"
 	"strings"
 	"testing"
 	"time"
 )
-
-func TestInterfaces(t *testing.T) {
-	var _ net.Conn = (*Conn)(nil)
-	var _ net.PacketConn = (*PacketConn)(nil)
-}
-
-func TestParseIPPortRejectsNames(t *testing.T) {
-	_, _, err := parseIPPort("example.com:22")
-	if err == nil || !strings.Contains(err.Error(), "requires an IP address") {
-		t.Fatalf("expected IP-only error, got %v", err)
-	}
-}
 
 func TestSSHIntegration(t *testing.T) {
 	config := os.Getenv("EASYTIER_FFI_CONFIG")
@@ -44,28 +31,29 @@ func TestSSHIntegration(t *testing.T) {
 
 	var lastErr error
 	for attempt := 1; ctx.Err() == nil; attempt++ {
-		conn, err := (&Dialer{Native: n, Instance: instance, Timeout: 10 * time.Second}).DialContext(ctx, "tcp", target)
+		conn, err := n.DialContext(ctx, instance, "tcp", target)
 		if err != nil {
 			lastErr = err
 			t.Logf("attempt %d: dial failed: %v", attempt, err)
 			time.Sleep(3 * time.Second)
 			continue
 		}
+
 		_ = conn.SetReadDeadline(time.Now().Add(10 * time.Second))
 		buf := make([]byte, 128)
 		nn, err := conn.Read(buf)
+		_ = conn.Close()
 		if err != nil {
 			lastErr = err
 			t.Logf("attempt %d: read failed: %v", attempt, err)
-			conn.Close()
 			time.Sleep(3 * time.Second)
 			continue
 		}
-		conn.Close()
-		if !strings.HasPrefix(string(buf[:nn]), "SSH-") {
-			t.Fatalf("attempt %d: expected SSH banner, got %q", attempt, string(buf[:nn]))
+		banner := string(buf[:nn])
+		if !strings.HasPrefix(banner, "SSH-") {
+			t.Fatalf("attempt %d: expected SSH banner, got %q", attempt, banner)
 		}
-		t.Logf("attempt %d: got banner %q", attempt, strings.TrimRight(string(buf[:nn]), "\r\n"))
+		t.Logf("attempt %d: got banner %q", attempt, strings.TrimRight(banner, "\r\n"))
 		return
 	}
 	t.Fatalf("never got SSH banner, last err: %v", lastErr)
