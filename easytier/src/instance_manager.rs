@@ -1,5 +1,5 @@
 #[cfg(feature = "ffi-dataplane")]
-use crate::launcher::{DataPlaneRef, EasyTierTcpStream, EasyTierUdpSocket};
+use crate::launcher::{DataPlaneTcpStream, DataPlaneUdpSocket};
 use dashmap::DashMap;
 use std::fmt::{Display, Formatter};
 use std::{collections::BTreeMap, path::PathBuf, sync::Arc};
@@ -179,15 +179,7 @@ impl NetworkInstanceManager {
         instance_id: &uuid::Uuid,
         dst_addr: std::net::SocketAddr,
         timeout: std::time::Duration,
-    ) -> Result<
-        (
-            EasyTierTcpStream,
-            std::net::SocketAddr,
-            DataPlaneRef,
-            Box<dyn std::any::Any + Send + Sync>,
-        ),
-        anyhow::Error,
-    > {
+    ) -> Result<DataPlaneTcpStream, anyhow::Error> {
         let instance = self
             .instance_map
             .get(instance_id)
@@ -201,7 +193,7 @@ impl NetworkInstanceManager {
         instance_id: &uuid::Uuid,
         local_port: u16,
         timeout: std::time::Duration,
-    ) -> Result<(EasyTierUdpSocket, std::net::SocketAddr), anyhow::Error> {
+    ) -> Result<DataPlaneUdpSocket, anyhow::Error> {
         let instance = self
             .instance_map
             .get(instance_id)

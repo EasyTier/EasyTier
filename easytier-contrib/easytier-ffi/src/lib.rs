@@ -13,7 +13,7 @@ use std::{
 
 use dashmap::DashMap;
 #[cfg(feature = "ffi-dataplane")]
-use easytier::launcher::{DataPlaneRef, EasyTierTcpStream, EasyTierUdpSocket};
+use easytier::launcher::{DataPlaneTcpStream, DataPlaneUdpSocket};
 use easytier::{
     common::config::{ConfigFileControl, ConfigLoader as _, TomlConfigLoader},
     instance_manager::NetworkInstanceManager,
@@ -53,20 +53,14 @@ struct DataPlaneHandle {
 
 #[cfg(feature = "ffi-dataplane")]
 struct TcpHalves {
-    // Split the TCP stream into read/write halves to allow concurrent reads and writes.
-    read: tokio::sync::Mutex<ReadHalf<EasyTierTcpStream>>,
-    write: tokio::sync::Mutex<WriteHalf<EasyTierTcpStream>>,
-    // A trigger that notifies the smoltcp net to check whether it can be torn down when dropped.
-    _data_plane_ref: DataPlaneRef,
-    // Holds the Socks5AutoConnector (which holds the smoltcp route entry) to keep the route alive 
-    // for the lifetime of the TCP stream. Otherwise,the route could be invalidated immediately.
-    _route_guard: Box<dyn std::any::Any + Send + Sync>,
+    read: tokio::sync::Mutex<ReadHalf<DataPlaneTcpStream>>,
+    write: tokio::sync::Mutex<WriteHalf<DataPlaneTcpStream>>,
 }
 
 #[cfg(feature = "ffi-dataplane")]
 enum DataPlaneResource {
     Tcp(Arc<TcpHalves>),
-    Udp(Arc<EasyTierUdpSocket>),
+    Udp(Arc<DataPlaneUdpSocket>),
 }
 
 #[repr(C)]
@@ -169,7 +163,7 @@ fn get_tcp_stream(
 #[cfg(feature = "ffi-dataplane")]
 fn get_udp_socket(
     handle: u64,
-) -> Option<(Arc<EasyTierUdpSocket>, tokio::runtime::Handle, CancellationToken)> {
+) -> Option<(Arc<DataPlaneUdpSocket>, tokio::runtime::Handle, CancellationToken)> {
     let Some(h) = DATA_PLANE_HANDLES.get(&handle) else {
         set_error_msg("udp socket handle not found");
         return None;
@@ -476,7 +470,8 @@ pub unsafe extern "C" fn data_plane_tcp_connect(
         &inst_id, dst_addr, timeout,
     ));
     match result {
-        Ok((stream, local_addr, data_plane_ref, route_guard)) => {
+        Ok(stream) => {
+            let local_addr = stream.local_addr();
             let Some(local_ip) = into_ffi_ip_cstring(local_addr.ip()) else {
                 return 0;
             };
@@ -491,8 +486,6 @@ pub unsafe extern "C" fn data_plane_tcp_connect(
                     resource: DataPlaneResource::Tcp(Arc::new(TcpHalves {
                         read: tokio::sync::Mutex::new(rd),
                         write: tokio::sync::Mutex::new(wr),
-                        _data_plane_ref: data_plane_ref,
-                        _route_guard: route_guard,
                     })),
                 },
             );
@@ -654,7 +647,8 @@ pub unsafe extern "C" fn data_plane_udp_bind(
         timeout,
     ));
     match result {
-        Ok((socket, local_addr)) => {
+        Ok(socket) => {
+            let local_addr = socket.local_addr();
             let Some(local_ip) = into_ffi_ip_cstring(local_addr.ip()) else {
                 return 0;
             };
