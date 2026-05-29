@@ -26,6 +26,7 @@ use std::{
 };
 
 use anyhow::Context as _;
+use dashmap::mapref::entry::Entry;
 use tokio::io::{AsyncRead, AsyncWrite};
 
 use crate::{common::error::Error, gateway::fast_socks5::server::AsyncTcpConnector};
@@ -55,7 +56,6 @@ pub struct DataPlaneUdpSocket {
     entries: Socks5EntrySet,
     entry_count: Arc<AtomicUsize>,
     local_addr: SocketAddr,
-    inserted_entries: parking_lot::Mutex<std::collections::HashSet<Socks5Entry>>,
     _data_plane_ref: DataPlaneRef,
 }
 
@@ -115,21 +115,16 @@ impl DataPlaneUdpSocket {
             dst: addr,
             entry_type: UDP_ENTRY,
         };
-        let mut inserted = self.inserted_entries.lock();
-        if inserted.insert(key.clone()) {
-            self.entries.insert(
-                key.clone(),
-                Socks5EntryData::Udp((
-                    self.socket.clone(),
-                    UdpClientKey {
-                        client_addr: self.local_addr,
-                        dst_addr: addr,
-                    },
-                )),
-            );
+        if let Entry::Vacant(entry) = self.entries.entry(key) {
+            entry.insert(Socks5EntryData::Udp((
+                self.socket.clone(),
+                UdpClientKey {
+                    client_addr: self.local_addr,
+                    dst_addr: addr,
+                },
+            )));
             self.entry_count.fetch_add(1, Ordering::Relaxed);
         }
-        drop(inserted);
         self.socket.send_to(buf, addr).await
     }
 
@@ -140,11 +135,13 @@ impl DataPlaneUdpSocket {
 
 impl Drop for DataPlaneUdpSocket {
     fn drop(&mut self) {
-        for key in self.inserted_entries.lock().drain() {
-            if self.entries.remove(&key).is_some() {
+        self.entries.retain(|_, data| match data {
+            Socks5EntryData::Udp((socket, _)) if Arc::ptr_eq(socket, &self.socket) => {
                 self.entry_count.fetch_sub(1, Ordering::Relaxed);
+                false
             }
-        }
+            _ => true,
+        });
     }
 }
 
@@ -242,7 +239,6 @@ impl Socks5Server {
             entries: self.entries.clone(),
             entry_count: self.entry_count.clone(),
             local_addr,
-            inserted_entries: parking_lot::Mutex::new(Default::default()),
             _data_plane_ref: data_plane_ref,
         })
     }
