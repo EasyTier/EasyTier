@@ -84,6 +84,7 @@ func (n *Native) Close() error {
 }
 
 func (n *Native) RunNetworkInstance(config string) error {
+	defer pinErrorThread()()
 	cfg := cString(config)
 	cfgPtr := unsafe.Pointer(&cfg[0])
 	var ret int32
@@ -249,6 +250,7 @@ func (s *symCall) call(ret unsafe.Pointer, args ...unsafe.Pointer) error {
 }
 
 func (n *Native) tcpConnectTo(instance, ip string, port uint16, timeout time.Duration) (uint64, *net.TCPAddr, error) {
+	defer pinErrorThread()()
 	inst := cString(instance)
 	dst := cString(ip)
 	instPtr := unsafe.Pointer(&inst[0])
@@ -280,6 +282,7 @@ func (n *Native) tcpConnectTo(instance, ip string, port uint16, timeout time.Dur
 }
 
 func (n *Native) tcpBindTo(instance string, port uint16, timeout time.Duration) (uint64, *net.TCPAddr, error) {
+	defer pinErrorThread()()
 	inst := cString(instance)
 	instPtr := unsafe.Pointer(&inst[0])
 	timeoutMS := uint64(timeout / time.Millisecond)
@@ -307,6 +310,7 @@ func (n *Native) tcpBindTo(instance string, port uint16, timeout time.Duration) 
 }
 
 func (n *Native) tcpAcceptFrom(handle uint64, timeout time.Duration) (uint64, *net.TCPAddr, *net.TCPAddr, error) {
+	defer pinErrorThread()()
 	timeoutMS := uint64(timeout / time.Millisecond)
 	var stream uint64
 	var outLocalIP unsafe.Pointer
@@ -339,6 +343,7 @@ func (n *Native) tcpReadFrom(handle uint64, buf []byte, timeout time.Duration) (
 	if len(buf) == 0 {
 		return 0, nil
 	}
+	defer pinErrorThread()()
 	var ret int32
 	bufPtr := unsafe.Pointer(&buf[0])
 	length := uint32(len(buf))
@@ -358,6 +363,7 @@ func (n *Native) tcpWriteTo(handle uint64, buf []byte, timeout time.Duration) (i
 	if len(buf) == 0 {
 		return 0, nil
 	}
+	defer pinErrorThread()()
 	var ret int32
 	bufPtr := unsafe.Pointer(&buf[0])
 	length := uint32(len(buf))
@@ -374,6 +380,7 @@ func (n *Native) tcpWriteTo(handle uint64, buf []byte, timeout time.Duration) (i
 }
 
 func (n *Native) tcpCloseHandle(handle uint64) error {
+	defer pinErrorThread()()
 	var ret int32
 	if err := n.tcpClose.call(unsafe.Pointer(&ret), unsafe.Pointer(&handle)); err != nil {
 		return err
@@ -385,6 +392,7 @@ func (n *Native) tcpCloseHandle(handle uint64) error {
 }
 
 func (n *Native) tcpListenerCloseHandle(handle uint64) error {
+	defer pinErrorThread()()
 	var ret int32
 	if err := n.tcpListenerClose.call(unsafe.Pointer(&ret), unsafe.Pointer(&handle)); err != nil {
 		return err
@@ -393,6 +401,15 @@ func (n *Native) tcpListenerCloseHandle(handle uint64) error {
 		return n.lastError()
 	}
 	return nil
+}
+
+// pinErrorThread ties an FFI op to the get_error_msg that reads its result: the
+// Rust side stores the last error in a thread-local, so the goroutine must not
+// migrate to another OS thread between the two calls. Use as `defer pinErrorThread()()`
+// at the start of any wrapper that reports failures through lastError.
+func pinErrorThread() func() {
+	runtime.LockOSThread()
+	return runtime.UnlockOSThread
 }
 
 func (n *Native) lastError() error {
