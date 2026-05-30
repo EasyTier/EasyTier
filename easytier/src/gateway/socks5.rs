@@ -56,7 +56,7 @@ use crate::{
 mod dataplane;
 
 #[cfg(feature = "ffi-dataplane")]
-pub use dataplane::{DataPlaneTcpStream, DataPlaneUdpSocket};
+pub use dataplane::{DataPlaneTcpListener, DataPlaneTcpStream, DataPlaneUdpSocket};
 
 enum SocksUdpSocket {
     UdpSocket(Arc<tokio::net::UdpSocket>),
@@ -142,11 +142,17 @@ impl AsyncWrite for SocksTcpStream {
 
 enum Socks5EntryData {
     Tcp(TcpListener), // hold a binded socket to hold the tcp port
+    #[cfg(feature = "ffi-dataplane")]
+    // a data-plane routing entry that owns no resource. the entry_type in the
+    // key distinguishes a listen route from an actively outbound route.
+    DataPlaneRoute,
     Udp((Arc<SocksUdpSocket>, UdpClientKey)), // hold the socket to send data to dst
 }
 
 const UDP_ENTRY: u8 = 1;
 const TCP_ENTRY: u8 = 2;
+#[cfg(feature = "ffi-dataplane")]
+const TCP_LISTEN_ENTRY: u8 = 3;
 
 #[derive(Debug, Eq, PartialEq, Hash, Clone)]
 struct Socks5Entry {
@@ -562,6 +568,23 @@ impl PeerPacketFilter for Socks5Server {
         };
 
         if !self.entries.contains_key(&entry_key) {
+            // a new inbound tcp connection has no precise route yet; route it to
+            // smoltcp if a data-plane listener owns the wildcard listen route.
+            #[cfg(feature = "ffi-dataplane")]
+            if entry_key.entry_type == TCP_ENTRY {
+                let listen_key = Socks5Entry {
+                    src: entry_key.src,
+                    dst: SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0),
+                    entry_type: TCP_LISTEN_ENTRY,
+                };
+                // check if there is a TCP listener for this dst port.
+                if self.entries.contains_key(&listen_key) {
+                    tracing::trace!(?listen_key, ?ipv4, "socks5 found data-plane tcp listener");
+                    let _ = self.packet_sender.try_send(packet).ok();
+                    return None;
+                }
+            }
+
             return Some(packet);
         }
 

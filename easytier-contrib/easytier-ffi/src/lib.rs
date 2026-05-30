@@ -13,7 +13,7 @@ use std::{
 
 use dashmap::DashMap;
 #[cfg(feature = "ffi-dataplane")]
-use easytier::launcher::{DataPlaneTcpStream, DataPlaneUdpSocket};
+use easytier::launcher::{DataPlaneTcpListener, DataPlaneTcpStream, DataPlaneUdpSocket};
 use easytier::{
     common::config::{ConfigFileControl, ConfigLoader as _, TomlConfigLoader},
     instance_manager::NetworkInstanceManager,
@@ -60,6 +60,7 @@ struct TcpHalves {
 #[cfg(feature = "ffi-dataplane")]
 enum DataPlaneResource {
     Tcp(Arc<TcpHalves>),
+    TcpListener(Arc<tokio::sync::Mutex<DataPlaneTcpListener>>),
     Udp(Arc<DataPlaneUdpSocket>),
 }
 
@@ -142,6 +143,29 @@ fn get_runtime_handle(inst_id: &uuid::Uuid) -> Option<tokio::runtime::Handle> {
 }
 
 #[cfg(feature = "ffi-dataplane")]
+fn insert_tcp_stream_handle(
+    instance_id: uuid::Uuid,
+    runtime: tokio::runtime::Handle,
+    stream: DataPlaneTcpStream,
+) -> u64 {
+    let (rd, wr) = tokio::io::split(stream);
+    let handle = next_handle();
+    DATA_PLANE_HANDLES.insert(
+        handle,
+        DataPlaneHandle {
+            instance_id,
+            runtime,
+            close_token: CancellationToken::new(),
+            resource: DataPlaneResource::Tcp(Arc::new(TcpHalves {
+                read: tokio::sync::Mutex::new(rd),
+                write: tokio::sync::Mutex::new(wr),
+            })),
+        },
+    );
+    handle
+}
+
+#[cfg(feature = "ffi-dataplane")]
 fn get_tcp_stream(
     handle: u64,
 ) -> Option<(Arc<TcpHalves>, tokio::runtime::Handle, CancellationToken)> {
@@ -153,8 +177,35 @@ fn get_tcp_stream(
         DataPlaneResource::Tcp(halves) => {
             Some((halves.clone(), h.runtime.clone(), h.close_token.clone()))
         }
-        DataPlaneResource::Udp(_) => {
+        DataPlaneResource::TcpListener(_) | DataPlaneResource::Udp(_) => {
             set_error_msg("handle is not a tcp stream");
+            None
+        }
+    }
+}
+
+#[cfg(feature = "ffi-dataplane")]
+fn get_tcp_listener(
+    handle: u64,
+) -> Option<(
+    Arc<tokio::sync::Mutex<DataPlaneTcpListener>>,
+    tokio::runtime::Handle,
+    CancellationToken,
+    uuid::Uuid,
+)> {
+    let Some(h) = DATA_PLANE_HANDLES.get(&handle) else {
+        set_error_msg("tcp listener handle not found");
+        return None;
+    };
+    match &h.resource {
+        DataPlaneResource::TcpListener(listener) => Some((
+            listener.clone(),
+            h.runtime.clone(),
+            h.close_token.clone(),
+            h.instance_id,
+        )),
+        DataPlaneResource::Tcp(_) | DataPlaneResource::Udp(_) => {
+            set_error_msg("handle is not a tcp listener");
             None
         }
     }
@@ -172,7 +223,7 @@ fn get_udp_socket(
         DataPlaneResource::Udp(socket) => {
             Some((socket.clone(), h.runtime.clone(), h.close_token.clone()))
         }
-        DataPlaneResource::Tcp(_) => {
+        DataPlaneResource::Tcp(_) | DataPlaneResource::TcpListener(_) => {
             set_error_msg("handle is not a udp socket");
             None
         }
@@ -368,7 +419,7 @@ pub unsafe extern "C" fn retain_network_instance(
 
     INSTANCE_NAME_ID_MAP.retain(|k, _| inst_names.contains(k));
 
-    // FIXME: `DATA_PLANE_HANDLES.retain()` could trigger drop and cleanup of TCP halves, 
+    // FIXME: `DATA_PLANE_HANDLES.retain()` could trigger drop and cleanup of TCP halves,
     // but `retain_network_instance()` has shutdown the server.
     // Maybe move this line before `retain_network_instance` to allow graceful close of TCP (TCP FIN)?
     #[cfg(feature = "ffi-dataplane")]
@@ -475,20 +526,7 @@ pub unsafe extern "C" fn data_plane_tcp_connect(
             let Some(local_ip) = into_ffi_ip_cstring(local_addr.ip()) else {
                 return 0;
             };
-            let (rd, wr) = tokio::io::split(stream);
-            let handle = next_handle();
-            DATA_PLANE_HANDLES.insert(
-                handle,
-                DataPlaneHandle {
-                    instance_id: inst_id,
-                    runtime,
-                    close_token: CancellationToken::new(),
-                    resource: DataPlaneResource::Tcp(Arc::new(TcpHalves {
-                        read: tokio::sync::Mutex::new(rd),
-                        write: tokio::sync::Mutex::new(wr),
-                    })),
-                },
-            );
+            let handle = insert_tcp_stream_handle(inst_id, runtime, stream);
             unsafe {
                 *out_local_ip = local_ip as *const std::ffi::c_char;
                 *out_local_port = local_addr.port();
@@ -499,6 +537,135 @@ pub unsafe extern "C" fn data_plane_tcp_connect(
             set_error_msg(&format!("failed to connect tcp data plane: {}", e));
             0
         }
+    }
+}
+
+/// # Safety
+/// Bind a TCP listener through an EasyTier instance data plane. Returns 0 on
+/// failure. The local address actually bound is written into `out_local_ip` /
+/// `out_local_port`; the caller must release `*out_local_ip` via `free_string`.
+#[cfg(feature = "ffi-dataplane")]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn data_plane_tcp_bind(
+    inst_name: *const std::ffi::c_char,
+    local_port: std::ffi::c_ushort,
+    timeout_ms: u64,
+    out_local_ip: *mut *const std::ffi::c_char,
+    out_local_port: *mut std::ffi::c_ushort,
+) -> u64 {
+    if out_local_ip.is_null() || out_local_port.is_null() {
+        set_error_msg("output pointer is null");
+        return 0;
+    }
+    let Some(inst_name) = (unsafe { cstr_to_string(inst_name, "inst_name") }) else {
+        return 0;
+    };
+    let Some(inst_id) = get_instance_id(&inst_name) else {
+        set_error_msg("instance not found");
+        return 0;
+    };
+    let Some(runtime) = get_runtime_handle(&inst_id) else {
+        return 0;
+    };
+
+    let timeout = timeout_duration(timeout_ms);
+    let result = runtime.block_on(INSTANCE_MANAGER.data_plane_tcp_bind(
+        &inst_id,
+        local_port as u16,
+        timeout,
+    ));
+    match result {
+        Ok(listener) => {
+            let local_addr = listener.local_addr();
+            let Some(local_ip) = into_ffi_ip_cstring(local_addr.ip()) else {
+                return 0;
+            };
+            let handle = next_handle();
+            DATA_PLANE_HANDLES.insert(
+                handle,
+                DataPlaneHandle {
+                    instance_id: inst_id,
+                    runtime,
+                    close_token: CancellationToken::new(),
+                    resource: DataPlaneResource::TcpListener(Arc::new(tokio::sync::Mutex::new(
+                        listener,
+                    ))),
+                },
+            );
+            unsafe {
+                *out_local_ip = local_ip as *const std::ffi::c_char;
+                *out_local_port = local_addr.port();
+            }
+            handle
+        }
+        Err(e) => {
+            set_error_msg(&format!("failed to bind tcp data plane: {}", e));
+            0
+        }
+    }
+}
+
+/// # Safety
+/// Accept one connection from a TCP data-plane listener. Returns a TCP stream
+/// handle, or 0 on failure. Local and peer addresses are written into out
+/// parameters; returned IP strings must be released via `free_string`.
+#[cfg(feature = "ffi-dataplane")]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn data_plane_tcp_accept(
+    handle: u64,
+    timeout_ms: u64,
+    out_local_ip: *mut *const std::ffi::c_char,
+    out_local_port: *mut std::ffi::c_ushort,
+    out_peer_ip: *mut *const std::ffi::c_char,
+    out_peer_port: *mut std::ffi::c_ushort,
+) -> u64 {
+    if out_local_ip.is_null()
+        || out_local_port.is_null()
+        || out_peer_ip.is_null()
+        || out_peer_port.is_null()
+    {
+        set_error_msg("output pointer is null");
+        return 0;
+    }
+    let Some((listener, runtime, close_token, instance_id)) = get_tcp_listener(handle) else {
+        return 0;
+    };
+
+    let ret = runtime.block_on(async move {
+        let mut listener = listener.lock().await;
+        run_with_cancel(
+            &close_token,
+            timeout_ms,
+            "tcp data plane accept",
+            listener.accept(),
+        )
+        .await
+    });
+
+    match ret {
+        Some(Ok((stream, peer_addr))) => {
+            let local_addr = stream.local_addr();
+            let Some(local_ip) = into_ffi_ip_cstring(local_addr.ip()) else {
+                return 0;
+            };
+            let Some(peer_ip) = into_ffi_ip_cstring(peer_addr.ip()) else {
+                let _ = free_string(local_ip);
+                return 0;
+            };
+            let stream_handle = insert_tcp_stream_handle(instance_id, runtime, stream);
+            unsafe {
+                *out_local_ip = local_ip as *const std::ffi::c_char;
+                *out_local_port = local_addr.port();
+                *out_peer_ip = peer_ip as *const std::ffi::c_char;
+                *out_peer_port = peer_addr.port();
+            }
+            stream_handle
+        }
+        Some(Err(e)) => {
+            set_error_msg(&format!("failed to accept tcp data plane: {}", e));
+            0
+        }
+        None => 0,
     }
 }
 
@@ -608,6 +775,23 @@ pub extern "C" fn data_plane_tcp_close(handle: u64) -> std::ffi::c_int {
             }
         });
     }
+    0
+}
+
+#[cfg(feature = "ffi-dataplane")]
+#[unsafe(no_mangle)]
+pub extern "C" fn data_plane_tcp_listener_close(handle: u64) -> std::ffi::c_int {
+    let Some((_, h)) = DATA_PLANE_HANDLES.remove_if(&handle, |_, e| {
+        matches!(e.resource, DataPlaneResource::TcpListener(_))
+    }) else {
+        set_error_msg(if DATA_PLANE_HANDLES.contains_key(&handle) {
+            "handle is not a tcp listener"
+        } else {
+            "tcp listener handle not found"
+        });
+        return -1;
+    };
+    h.close_token.cancel();
     0
 }
 

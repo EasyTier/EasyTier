@@ -2,7 +2,10 @@ package easytierffi
 
 import (
 	"context"
+	"io"
+	"net"
 	"os"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -57,4 +60,93 @@ func TestSSHIntegration(t *testing.T) {
 		return
 	}
 	t.Fatalf("never got SSH banner, last err: %v", lastErr)
+}
+
+func TestTCPListenIntegration(t *testing.T) {
+	config := os.Getenv("EASYTIER_FFI_LISTEN_CONFIG")
+	instance := os.Getenv("EASYTIER_FFI_LISTEN_INSTANCE")
+	listenPort := os.Getenv("EASYTIER_FFI_LISTEN_PORT")
+	if config == "" || instance == "" || listenPort == "" {
+		t.Skip("set EASYTIER_FFI_LISTEN_CONFIG, EASYTIER_FFI_LISTEN_INSTANCE and EASYTIER_FFI_LISTEN_PORT to run integration test")
+	}
+	port, err := strconv.ParseUint(listenPort, 10, 16)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	n, err := Open(defaultLibraryPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer n.Close()
+
+	if err := n.RunNetworkInstance(config); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+
+	// Data-plane readiness is asynchronous: the instance must finish starting
+	// before the data plane accepts binds. Retry until ready or ctx expires.
+	var listener net.Listener
+	for attempt := 1; ; attempt++ {
+		listener, err = n.ListenContext(ctx, instance, "tcp", net.JoinHostPort("0.0.0.0", strconv.Itoa(int(port))))
+		if err == nil {
+			break
+		}
+		if ctx.Err() != nil {
+			t.Fatalf("bind never succeeded, last err: %v", err)
+		}
+		t.Logf("attempt %d: bind failed: %v", attempt, err)
+		time.Sleep(3 * time.Second)
+	}
+	t.Logf("listening on %s; connect from another EasyTier peer and send ping", listener.Addr())
+
+	accepted := make(chan error, 1)
+	go func() {
+		conn, err := listener.Accept()
+		if err != nil {
+			accepted <- err
+			return
+		}
+		defer conn.Close()
+
+		_ = conn.SetDeadline(time.Now().Add(10 * time.Second))
+		buf := make([]byte, 4)
+		if _, err := io.ReadFull(conn, buf); err != nil {
+			accepted <- err
+			return
+		}
+		if string(buf) != "ping" {
+			accepted <- errUnexpectedPayload("ping", string(buf))
+			return
+		}
+		_, err = conn.Write([]byte("pong"))
+		accepted <- err
+	}()
+
+	select {
+	case err := <-accepted:
+		_ = listener.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-ctx.Done():
+		_ = listener.Close()
+		t.Fatal(ctx.Err())
+	}
+}
+
+func errUnexpectedPayload(want, got string) error {
+	return &unexpectedPayloadError{want: want, got: got}
+}
+
+type unexpectedPayloadError struct {
+	want string
+	got  string
+}
+
+func (e *unexpectedPayloadError) Error() string {
+	return "expected " + strconv.Quote(e.want) + ", got " + strconv.Quote(e.got)
 }

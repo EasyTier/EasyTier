@@ -27,9 +27,12 @@ type Native struct {
 	getErrorMsg        symCall
 	freeString         symCall
 	tcpConnect         symCall
+	tcpBind            symCall
+	tcpAccept          symCall
 	tcpRead            symCall
 	tcpWrite           symCall
 	tcpClose           symCall
+	tcpListenerClose   symCall
 }
 
 type Conn struct {
@@ -40,6 +43,13 @@ type Conn struct {
 	closed atomic.Bool
 	rd     atomicDeadline
 	wd     atomicDeadline
+}
+
+type Listener struct {
+	native *Native
+	handle uint64
+	addr   net.Addr
+	closed atomic.Bool
 }
 
 type symCall struct {
@@ -113,6 +123,31 @@ func (n *Native) DialContext(ctx context.Context, instance, network, address str
 	return &Conn{native: n, handle: handle, local: local, remote: &net.TCPAddr{IP: ip, Port: port}}, nil
 }
 
+func (n *Native) ListenContext(ctx context.Context, instance, network, address string) (net.Listener, error) {
+	if network != "tcp" && network != "tcp4" && network != "tcp6" {
+		return nil, net.UnknownNetworkError(network)
+	}
+	port, err := parseListenPort(address)
+	if err != nil {
+		return nil, err
+	}
+	timeout := defaultTimeout
+	if deadline, ok := ctx.Deadline(); ok {
+		timeout = time.Until(deadline)
+	}
+	if timeout <= 0 {
+		return nil, context.DeadlineExceeded
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	handle, local, err := n.tcpBindTo(instance, uint16(port), timeout)
+	if err != nil {
+		return nil, err
+	}
+	return &Listener{native: n, handle: handle, addr: local}, nil
+}
+
 func (c *Conn) Read(b []byte) (int, error) {
 	if c.closed.Load() {
 		return 0, net.ErrClosed
@@ -151,15 +186,47 @@ func (c *Conn) SetDeadline(t time.Time) error      { c.rd.set(t); c.wd.set(t); r
 func (c *Conn) SetReadDeadline(t time.Time) error  { c.rd.set(t); return nil }
 func (c *Conn) SetWriteDeadline(t time.Time) error { c.wd.set(t); return nil }
 
+func (l *Listener) Accept() (net.Conn, error) {
+	if l.closed.Load() {
+		return nil, net.ErrClosed
+	}
+	for {
+		handle, local, peer, err := l.native.tcpAcceptFrom(l.handle, defaultTimeout)
+		if err == nil {
+			return &Conn{native: l.native, handle: handle, local: local, remote: peer}, nil
+		}
+		if l.closed.Load() {
+			return nil, net.ErrClosed
+		}
+		var netErr net.Error
+		if errors.As(err, &netErr) && netErr.Timeout() {
+			continue
+		}
+		return nil, opError("accept", l.addr, err)
+	}
+}
+
+func (l *Listener) Close() error {
+	if !l.closed.CompareAndSwap(false, true) {
+		return net.ErrClosed
+	}
+	return l.native.tcpListenerCloseHandle(l.handle)
+}
+
+func (l *Listener) Addr() net.Addr { return l.addr }
+
 func (n *Native) bind() error {
 	return errors.Join(
 		n.bindSym(&n.runNetworkInstance, "run_network_instance", types.SInt32TypeDescriptor, types.PointerTypeDescriptor),
 		n.bindSym(&n.getErrorMsg, "get_error_msg", types.VoidTypeDescriptor, types.PointerTypeDescriptor),
 		n.bindSym(&n.freeString, "free_string", types.VoidTypeDescriptor, types.PointerTypeDescriptor),
 		n.bindSym(&n.tcpConnect, "data_plane_tcp_connect", types.UInt64TypeDescriptor, types.PointerTypeDescriptor, types.PointerTypeDescriptor, types.UInt16TypeDescriptor, types.UInt64TypeDescriptor, types.PointerTypeDescriptor, types.PointerTypeDescriptor),
+		n.bindSym(&n.tcpBind, "data_plane_tcp_bind", types.UInt64TypeDescriptor, types.PointerTypeDescriptor, types.UInt16TypeDescriptor, types.UInt64TypeDescriptor, types.PointerTypeDescriptor, types.PointerTypeDescriptor),
+		n.bindSym(&n.tcpAccept, "data_plane_tcp_accept", types.UInt64TypeDescriptor, types.UInt64TypeDescriptor, types.UInt64TypeDescriptor, types.PointerTypeDescriptor, types.PointerTypeDescriptor, types.PointerTypeDescriptor, types.PointerTypeDescriptor),
 		n.bindSym(&n.tcpRead, "data_plane_tcp_read", types.SInt32TypeDescriptor, types.UInt64TypeDescriptor, types.PointerTypeDescriptor, types.UInt32TypeDescriptor, types.UInt64TypeDescriptor),
 		n.bindSym(&n.tcpWrite, "data_plane_tcp_write", types.SInt32TypeDescriptor, types.UInt64TypeDescriptor, types.PointerTypeDescriptor, types.UInt32TypeDescriptor, types.UInt64TypeDescriptor),
 		n.bindSym(&n.tcpClose, "data_plane_tcp_close", types.SInt32TypeDescriptor, types.UInt64TypeDescriptor),
+		n.bindSym(&n.tcpListenerClose, "data_plane_tcp_listener_close", types.SInt32TypeDescriptor, types.UInt64TypeDescriptor),
 	)
 }
 
@@ -212,6 +279,62 @@ func (n *Native) tcpConnectTo(instance, ip string, port uint16, timeout time.Dur
 	return handle, n.takeTCPAddr(outIP, outPort), nil
 }
 
+func (n *Native) tcpBindTo(instance string, port uint16, timeout time.Duration) (uint64, *net.TCPAddr, error) {
+	inst := cString(instance)
+	instPtr := unsafe.Pointer(&inst[0])
+	timeoutMS := uint64(timeout / time.Millisecond)
+	var handle uint64
+	var outIP unsafe.Pointer
+	outIPArg := unsafe.Pointer(&outIP)
+	var outPort uint16
+	outPortArg := unsafe.Pointer(&outPort)
+	err := n.tcpBind.call(
+		unsafe.Pointer(&handle),
+		unsafe.Pointer(&instPtr),
+		unsafe.Pointer(&port),
+		unsafe.Pointer(&timeoutMS),
+		unsafe.Pointer(&outIPArg),
+		unsafe.Pointer(&outPortArg),
+	)
+	runtime.KeepAlive(inst)
+	if err != nil {
+		return 0, nil, err
+	}
+	if handle == 0 {
+		return 0, nil, n.lastError()
+	}
+	return handle, n.takeTCPAddr(outIP, outPort), nil
+}
+
+func (n *Native) tcpAcceptFrom(handle uint64, timeout time.Duration) (uint64, *net.TCPAddr, *net.TCPAddr, error) {
+	timeoutMS := uint64(timeout / time.Millisecond)
+	var stream uint64
+	var outLocalIP unsafe.Pointer
+	outLocalIPArg := unsafe.Pointer(&outLocalIP)
+	var outLocalPort uint16
+	outLocalPortArg := unsafe.Pointer(&outLocalPort)
+	var outPeerIP unsafe.Pointer
+	outPeerIPArg := unsafe.Pointer(&outPeerIP)
+	var outPeerPort uint16
+	outPeerPortArg := unsafe.Pointer(&outPeerPort)
+	err := n.tcpAccept.call(
+		unsafe.Pointer(&stream),
+		unsafe.Pointer(&handle),
+		unsafe.Pointer(&timeoutMS),
+		unsafe.Pointer(&outLocalIPArg),
+		unsafe.Pointer(&outLocalPortArg),
+		unsafe.Pointer(&outPeerIPArg),
+		unsafe.Pointer(&outPeerPortArg),
+	)
+	if err != nil {
+		return 0, nil, nil, err
+	}
+	if stream == 0 {
+		return 0, nil, nil, n.lastError()
+	}
+	return stream, n.takeTCPAddr(outLocalIP, outLocalPort), n.takeTCPAddr(outPeerIP, outPeerPort), nil
+}
+
 func (n *Native) tcpReadFrom(handle uint64, buf []byte, timeout time.Duration) (int, error) {
 	if len(buf) == 0 {
 		return 0, nil
@@ -253,6 +376,17 @@ func (n *Native) tcpWriteTo(handle uint64, buf []byte, timeout time.Duration) (i
 func (n *Native) tcpCloseHandle(handle uint64) error {
 	var ret int32
 	if err := n.tcpClose.call(unsafe.Pointer(&ret), unsafe.Pointer(&handle)); err != nil {
+		return err
+	}
+	if ret != 0 {
+		return n.lastError()
+	}
+	return nil
+}
+
+func (n *Native) tcpListenerCloseHandle(handle uint64) error {
+	var ret int32
+	if err := n.tcpListenerClose.call(unsafe.Pointer(&ret), unsafe.Pointer(&handle)); err != nil {
 		return err
 	}
 	if ret != 0 {
@@ -338,6 +472,27 @@ func parseIPPort(address string) (net.IP, int, error) {
 	return ip, int(port), nil
 }
 
+func parseListenPort(address string) (int, error) {
+	host, portStr, err := net.SplitHostPort(address)
+	if err != nil {
+		return 0, err
+	}
+	if host != "" {
+		ip := net.ParseIP(host)
+		if ip == nil {
+			return 0, fmt.Errorf("easytier ffi requires an IP address, got %q", host)
+		}
+		if !ip.IsUnspecified() {
+			return 0, fmt.Errorf("easytier ffi listen address must be unspecified, got %q", host)
+		}
+	}
+	port, err := strconv.ParseUint(portStr, 10, 16)
+	if err != nil {
+		return 0, err
+	}
+	return int(port), nil
+}
+
 func cString(s string) []byte {
 	if strings.ContainsRune(s, 0) {
 		panic("easytier ffi string contains NUL")
@@ -374,3 +529,4 @@ func defaultLibraryPath() string {
 }
 
 var _ net.Conn = (*Conn)(nil)
+var _ net.Listener = (*Listener)(nil)

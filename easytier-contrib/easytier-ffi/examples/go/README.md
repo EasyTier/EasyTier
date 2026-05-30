@@ -1,7 +1,8 @@
 # 1. Go FFI Demo
 
-This demo wraps EasyTier FFI data-plane TCP as a Go `net.Conn`, then connects to
-an SSH server through EasyTier and reads its banner.
+This demo wraps EasyTier FFI data-plane TCP as Go `net.Conn` and `net.Listener`.
+It can connect to an SSH server through EasyTier and read its banner, or accept a
+TCP connection from another EasyTier peer and run a small ping/pong exchange.
 
 ## 1.1. Build the FFI library
 
@@ -46,6 +47,25 @@ export EASYTIER_FFI_INSTANCE=default
 export EASYTIER_FFI_TARGET=10.0.0.2:22
 ```
 
+To run the TCP listen integration test in the same `go test` process as the SSH
+test, use a separate instance name and config:
+
+```sh
+export EASYTIER_FFI_LISTEN_CONFIG='instance_name = "listener"
+ipv4 = "10.0.0.3"
+peers = ["tcp://123.123.123.123:11010"]
+
+[network_identity]
+network_name = "testnet"
+network_secret = "mysecret"
+
+[flags]
+no_tun = true
+'
+export EASYTIER_FFI_LISTEN_INSTANCE=listener
+export EASYTIER_FFI_LISTEN_PORT=12345
+```
+
 ## 1.3. Run the demo
 
 `goffi` is built without cgo on Linux, so run the test with `CGO_ENABLED=0`:
@@ -63,3 +83,7 @@ attempt 1: dial failed: instance runtime is not ready
 attempt X: got banner "SSH-2.0-..."
 PASS
 ```
+
+For `TestTCPListenIntegration`, connect from another EasyTier peer to the local
+EasyTier IPv4 address and `EASYTIER_FFI_LISTEN_PORT`, send `ping`, and expect
+`pong` in response.

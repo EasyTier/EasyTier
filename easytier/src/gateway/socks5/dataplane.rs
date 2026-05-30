@@ -15,7 +15,7 @@
 //! ```
 
 use std::{
-    net::{IpAddr, SocketAddr},
+    net::{IpAddr, Ipv4Addr, SocketAddr},
     pin::Pin,
     sync::{
         Arc,
@@ -33,22 +33,103 @@ use crate::{common::error::Error, gateway::fast_socks5::server::AsyncTcpConnecto
 
 use super::{
     Socks5AutoConnector, Socks5Entry, Socks5EntryData, Socks5EntrySet, Socks5Server,
-    SocksTcpStream, SocksUdpSocket, UDP_ENTRY, UdpClientKey,
+    SocksTcpStream, SocksUdpSocket, TCP_ENTRY, TCP_LISTEN_ENTRY, UDP_ENTRY, UdpClientKey,
 };
-use crate::gateway::tokio_smoltcp::Net;
+use crate::gateway::tokio_smoltcp::{Net, TcpListener};
 
 struct DataPlaneRef {
     refs: Arc<AtomicUsize>,
     notifier: Arc<tokio::sync::Notify>,
 }
 
-type DataPlaneRouteGuard = Socks5AutoConnector;
+/// A route-table entry whose lifetime is tied to this value: constructing it
+/// reserves the route and bumps the active-entry count, dropping it removes the
+/// route and drops the count back.
+struct OwnedRouteEntry {
+    entries: Socks5EntrySet,
+    entry_count: Arc<AtomicUsize>,
+    entry: Socks5Entry,
+}
 
+impl OwnedRouteEntry {
+    /// Inserts the route, replacing any existing entry for the same key.
+    fn register(
+        entries: Socks5EntrySet,
+        entry_count: Arc<AtomicUsize>,
+        entry: Socks5Entry,
+    ) -> Self {
+        if entries
+            .insert(entry.clone(), Socks5EntryData::DataPlaneRoute)
+            .is_none()
+        {
+            entry_count.fetch_add(1, Ordering::Relaxed);
+        }
+        Self {
+            entries,
+            entry_count,
+            entry,
+        }
+    }
+
+    /// Inserts the route only if the key is free, returning `None` on conflict.
+    fn try_register(
+        entries: Socks5EntrySet,
+        entry_count: Arc<AtomicUsize>,
+        entry: Socks5Entry,
+    ) -> Option<Self> {
+        match entries.entry(entry.clone()) {
+            Entry::Occupied(_) => return None,
+            Entry::Vacant(vacant) => {
+                vacant.insert(Socks5EntryData::DataPlaneRoute);
+                entry_count.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+        Some(Self {
+            entries,
+            entry_count,
+            entry,
+        })
+    }
+}
+
+impl Drop for OwnedRouteEntry {
+    fn drop(&mut self) {
+        if self.entries.remove(&self.entry).is_some() {
+            self.entry_count.fetch_sub(1, Ordering::Relaxed);
+        }
+    }
+}
+
+/// Tracks how an established data-plane TCP stream keeps its inbound route alive.
+///
+/// The two variants capture the intrinsic asymmetry between the connect and
+/// accept paths. An outbound stream reserved a source port through the
+/// [`Socks5AutoConnector`], which owns the matching route entry and clears it on
+/// drop. An accepted stream instead inherits its port and peer from the
+/// listener, so it carries merely an [`OwnedRouteEntry`].
+enum DataPlaneTcpStreamRoute {
+    Outbound(Socks5AutoConnector),
+    Accepted(OwnedRouteEntry),
+}
+
+/// A TCP stream created by the data plane API.
+/// Can be either an actively requested outbound connection or an outbound request accepted from a TCP listener.
 pub struct DataPlaneTcpStream {
     stream: SocksTcpStream,
     local_addr: SocketAddr,
     _data_plane_ref: DataPlaneRef,
-    _route_guard: DataPlaneRouteGuard,
+    _route: DataPlaneTcpStreamRoute,
+}
+
+/// A TCP listener created by the data plane API.
+/// It accepts inbound connections and produces [`DataPlaneTcpStream`]s.
+pub struct DataPlaneTcpListener {
+    listener: TcpListener,
+    local_addr: SocketAddr,
+    entries: Socks5EntrySet,
+    entry_count: Arc<AtomicUsize>,
+    _listen_route: OwnedRouteEntry,
+    _data_plane_ref: DataPlaneRef,
 }
 
 pub struct DataPlaneUdpSocket {
@@ -70,6 +151,33 @@ impl Drop for DataPlaneRef {
 impl DataPlaneTcpStream {
     pub fn local_addr(&self) -> SocketAddr {
         self.local_addr
+    }
+}
+
+impl DataPlaneTcpListener {
+    pub fn local_addr(&self) -> SocketAddr {
+        self.local_addr
+    }
+
+    pub async fn accept(&mut self) -> Result<(DataPlaneTcpStream, SocketAddr), std::io::Error> {
+        let (stream, peer_addr) = self.listener.accept().await?;
+        let local_addr = stream.local_addr()?;
+        let route = OwnedRouteEntry::register(
+            self.entries.clone(),
+            self.entry_count.clone(),
+            Socks5Entry {
+                src: local_addr,
+                dst: peer_addr,
+                entry_type: TCP_ENTRY,
+            },
+        );
+        let accepted = DataPlaneTcpStream {
+            stream: SocksTcpStream::SmolTcp(stream),
+            local_addr,
+            _data_plane_ref: self._data_plane_ref.clone(),
+            _route: DataPlaneTcpStreamRoute::Accepted(route),
+        };
+        Ok((accepted, peer_addr))
     }
 }
 
@@ -145,6 +253,16 @@ impl Drop for DataPlaneUdpSocket {
     }
 }
 
+impl Clone for DataPlaneRef {
+    fn clone(&self) -> Self {
+        self.refs.fetch_add(1, Ordering::Relaxed);
+        Self {
+            refs: self.refs.clone(),
+            notifier: self.notifier.clone(),
+        }
+    }
+}
+
 impl Socks5Server {
     fn acquire_data_plane_ref(&self) -> DataPlaneRef {
         self.data_plane_refs.fetch_add(1, Ordering::Relaxed);
@@ -217,7 +335,39 @@ impl Socks5Server {
             stream,
             local_addr,
             _data_plane_ref: data_plane_ref,
-            _route_guard: connector,
+            _route: DataPlaneTcpStreamRoute::Outbound(connector),
+        })
+    }
+
+    pub async fn data_plane_tcp_bind(
+        &self,
+        local_port: u16,
+        timeout: Duration,
+    ) -> Result<DataPlaneTcpListener, Error> {
+        let data_plane_ref = self.acquire_data_plane_ref();
+        let deadline = Instant::now() + timeout;
+        let (ipv4_addr, smoltcp_net) = self.wait_data_plane_net(deadline).await?;
+        let bind_addr = SocketAddr::new(IpAddr::V4(ipv4_addr.address()), local_port);
+        let listener = smoltcp_net.tcp_bind(bind_addr).await?;
+        let local_addr = listener.local_addr()?;
+        let listen_route = OwnedRouteEntry::try_register(
+            self.entries.clone(),
+            self.entry_count.clone(),
+            Socks5Entry {
+                src: local_addr,
+                dst: SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0),
+                entry_type: TCP_LISTEN_ENTRY,
+            },
+        )
+        .ok_or_else(|| anyhow::anyhow!("data plane tcp listener already exists"))?;
+
+        Ok(DataPlaneTcpListener {
+            listener,
+            local_addr,
+            entries: self.entries.clone(),
+            entry_count: self.entry_count.clone(),
+            _listen_route: listen_route,
+            _data_plane_ref: data_plane_ref,
         })
     }
 

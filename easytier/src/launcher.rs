@@ -5,7 +5,7 @@ use crate::common::config::{
 #[cfg(feature = "ffi-dataplane")]
 use crate::gateway::socks5::Socks5Server;
 #[cfg(feature = "ffi-dataplane")]
-pub use crate::gateway::socks5::{DataPlaneTcpStream, DataPlaneUdpSocket};
+pub use crate::gateway::socks5::{DataPlaneTcpListener, DataPlaneTcpStream, DataPlaneUdpSocket};
 use crate::proto::api::{self, manage};
 use crate::proto::rpc_types::controller::BaseController;
 use crate::rpc_service::InstanceRpcService;
@@ -499,6 +499,18 @@ impl NetworkInstance {
     ) -> anyhow::Result<DataPlaneTcpStream> {
         self.data_plane()?
             .data_plane_tcp_connect(dst_addr, timeout)
+            .await
+            .map_err(Into::into)
+    }
+
+    #[cfg(feature = "ffi-dataplane")]
+    pub async fn data_plane_tcp_bind(
+        &self,
+        local_port: u16,
+        timeout: std::time::Duration,
+    ) -> anyhow::Result<DataPlaneTcpListener> {
+        self.data_plane()?
+            .data_plane_tcp_bind(local_port, timeout)
             .await
             .map_err(Into::into)
     }
