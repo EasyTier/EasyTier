@@ -86,11 +86,6 @@ fn next_handle() -> u64 {
 }
 
 #[cfg(feature = "ffi-dataplane")]
-fn timeout_duration(timeout_ms: u64) -> Duration {
-    Duration::from_millis(timeout_ms)
-}
-
-#[cfg(feature = "ffi-dataplane")]
 unsafe fn cstr_to_string(ptr: *const std::ffi::c_char, name: &str) -> Option<String> {
     if ptr.is_null() {
         set_error_msg(&format!("{} is null", name));
@@ -248,7 +243,7 @@ where
             set_error_msg(&format!("{}: handle closed", error_prefix));
             None
         }
-        res = tokio::time::timeout(timeout_duration(timeout_ms), op) => match res {
+        res = tokio::time::timeout(Duration::from_millis(timeout_ms), op) => match res {
             Ok(r) => Some(r),
             Err(_) => {
                 set_error_msg(&format!("{} timed out", error_prefix));
@@ -516,7 +511,7 @@ pub unsafe extern "C" fn data_plane_tcp_connect(
         return 0;
     };
 
-    let timeout = timeout_duration(timeout_ms);
+    let timeout = Duration::from_millis(timeout_ms);
     let result = runtime.block_on(INSTANCE_MANAGER.data_plane_tcp_connect(
         &inst_id, dst_addr, timeout,
     ));
@@ -568,7 +563,7 @@ pub unsafe extern "C" fn data_plane_tcp_bind(
         return 0;
     };
 
-    let timeout = timeout_duration(timeout_ms);
+    let timeout = Duration::from_millis(timeout_ms);
     let result = runtime.block_on(INSTANCE_MANAGER.data_plane_tcp_bind(
         &inst_id,
         local_port as u16,
@@ -824,7 +819,7 @@ pub unsafe extern "C" fn data_plane_udp_bind(
         return 0;
     };
 
-    let timeout = timeout_duration(timeout_ms);
+    let timeout = Duration::from_millis(timeout_ms);
     let result = runtime.block_on(INSTANCE_MANAGER.data_plane_udp_bind(
         &inst_id,
         local_port as u16,
