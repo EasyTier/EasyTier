@@ -525,14 +525,27 @@ impl PeerPacketFilter for Socks5Server {
                 let Some(tcp_packet) = TcpPacket::new(ipv4.payload()) else {
                     return Some(packet);
                 };
-                Socks5Entry {
+                let entry = Socks5Entry {
                     dst: SocketAddr::new(ipv4.get_source().into(), tcp_packet.get_source()),
                     src: SocketAddr::new(
                         ipv4.get_destination().into(),
                         tcp_packet.get_destination(),
                     ),
                     entry_type: TCP_ENTRY,
-                }
+                };
+                #[cfg(feature = "ffi-dataplane")]
+                let entry = if self.entries.contains_key(&entry) {
+                    // Case 1: it is an established connection that has an exactly matched inbound.
+                    entry
+                } else {
+                    // Case 2: it could be a new TCP SYN packet that has not been accepted.
+                    Socks5Entry {
+                        src: entry.src,
+                        dst: SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0),
+                        entry_type: TCP_LISTEN_ENTRY,
+                    }
+                };
+                entry
             }
 
             IpNextHeaderProtocols::Udp => {
@@ -571,23 +584,6 @@ impl PeerPacketFilter for Socks5Server {
         };
 
         if !self.entries.contains_key(&entry_key) {
-            // a new inbound tcp connection has no precise route yet; route it to
-            // smoltcp if a data-plane listener owns the wildcard listen route.
-            #[cfg(feature = "ffi-dataplane")]
-            if entry_key.entry_type == TCP_ENTRY {
-                let listen_key = Socks5Entry {
-                    src: entry_key.src,
-                    dst: SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0),
-                    entry_type: TCP_LISTEN_ENTRY,
-                };
-                // check if there is a TCP listener for this dst port.
-                if self.entries.contains_key(&listen_key) {
-                    tracing::trace!(?listen_key, ?ipv4, "socks5 found data-plane tcp listener");
-                    let _ = self.packet_sender.try_send(packet).ok();
-                    return None;
-                }
-            }
-
             return Some(packet);
         }
 
