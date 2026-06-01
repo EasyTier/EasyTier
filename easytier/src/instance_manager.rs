@@ -216,13 +216,14 @@ impl NetworkInstanceManager {
     }
 
     #[cfg(feature = "ffi-dataplane")]
-    pub fn data_plane_runtime_handle(
+    pub fn data_plane_wait_runtime_handle(
         &self,
         instance_id: &uuid::Uuid,
+        timeout: std::time::Duration,
     ) -> Option<tokio::runtime::Handle> {
         self.instance_map
             .get(instance_id)
-            .and_then(|inst| inst.get_runtime_handle())
+            .and_then(|inst| inst.wait_runtime_handle(timeout))
     }
 
     pub async fn get_network_info(

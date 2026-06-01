@@ -134,8 +134,12 @@ fn into_ffi_ip_cstring(ip: IpAddr) -> Option<*mut std::ffi::c_char> {
 }
 
 #[cfg(feature = "ffi-dataplane")]
-fn get_runtime_handle(inst_id: &uuid::Uuid) -> Option<tokio::runtime::Handle> {
-    let Some(rt) = INSTANCE_MANAGER.data_plane_runtime_handle(inst_id) else {
+fn get_runtime_handle(
+    inst_id: &uuid::Uuid,
+    deadline: std::time::Instant,
+) -> Option<tokio::runtime::Handle> {
+    let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+    let Some(rt) = INSTANCE_MANAGER.data_plane_wait_runtime_handle(inst_id, remaining) else {
         set_error_msg("instance runtime is not ready");
         return None;
     };
@@ -512,13 +516,14 @@ pub unsafe extern "C" fn data_plane_tcp_connect(
     let Some(dst_addr) = parse_socket_addr(&dst_ip, dst_port as u16) else {
         return 0;
     };
-    let Some(runtime) = get_runtime_handle(&inst_id) else {
+    let deadline = std::time::Instant::now() + timeout_duration(timeout_ms);
+    let Some(runtime) = get_runtime_handle(&inst_id, deadline) else {
         return 0;
     };
 
-    let timeout = timeout_duration(timeout_ms);
+    let remaining = deadline.saturating_duration_since(std::time::Instant::now());
     let result = runtime.block_on(INSTANCE_MANAGER.data_plane_tcp_connect(
-        &inst_id, dst_addr, timeout,
+        &inst_id, dst_addr, remaining,
     ));
     match result {
         Ok(stream) => {
@@ -564,15 +569,16 @@ pub unsafe extern "C" fn data_plane_tcp_bind(
         set_error_msg("instance not found");
         return 0;
     };
-    let Some(runtime) = get_runtime_handle(&inst_id) else {
+    let deadline = std::time::Instant::now() + timeout_duration(timeout_ms);
+    let Some(runtime) = get_runtime_handle(&inst_id, deadline) else {
         return 0;
     };
 
-    let timeout = timeout_duration(timeout_ms);
+    let remaining = deadline.saturating_duration_since(std::time::Instant::now());
     let result = runtime.block_on(INSTANCE_MANAGER.data_plane_tcp_bind(
         &inst_id,
         local_port as u16,
-        timeout,
+        remaining,
     ));
     match result {
         Ok(listener) => {
@@ -820,15 +826,16 @@ pub unsafe extern "C" fn data_plane_udp_bind(
         set_error_msg("instance not found");
         return 0;
     };
-    let Some(runtime) = get_runtime_handle(&inst_id) else {
+    let deadline = std::time::Instant::now() + timeout_duration(timeout_ms);
+    let Some(runtime) = get_runtime_handle(&inst_id, deadline) else {
         return 0;
     };
 
-    let timeout = timeout_duration(timeout_ms);
+    let remaining = deadline.saturating_duration_since(std::time::Instant::now());
     let result = runtime.block_on(INSTANCE_MANAGER.data_plane_udp_bind(
         &inst_id,
         local_port as u16,
-        timeout,
+        remaining,
     ));
     match result {
         Ok(socket) => {

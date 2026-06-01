@@ -78,9 +78,7 @@ CGO_ENABLED=0 go test -v ./...
 Expected output includes an SSH banner similar to:
 
 ```text
-attempt 1: dial failed: instance runtime is not ready
-...
-attempt X: got banner "SSH-2.0-..."
+attempt 1: got banner "SSH-2.0-..."
 PASS
 ```
 
