@@ -393,3 +393,132 @@ impl Socks5Server {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    use super::Socks5Server;
+    use crate::peers::peer_manager::PeerManager;
+    use crate::peers::tests::{connect_peer_manager, create_mock_peer_manager};
+    use crate::tunnel::common::tests::wait_for_condition;
+
+    /// A peer and its data-plane server. `Socks5Server` only holds a `Weak`
+    /// reference to the `PeerManager`, so the manager must be kept alive by the
+    /// test for the server's smoltcp <-> peer routing to work.
+    struct Endpoint {
+        _peer: std::sync::Arc<PeerManager>,
+        server: std::sync::Arc<Socks5Server>,
+        ip: cidr::Ipv4Inet,
+    }
+
+    /// Brings up two peers connected by a ring tunnel, each with a virtual IPv4
+    /// and a running `Socks5Server`, and waits until the route to `b`'s IPv4 is
+    /// visible from `a`. `run(None)` leaves the kcp endpoint unset, so the
+    /// connect path goes through smoltcp, matching the listener side under test.
+    async fn setup_pair() -> (Endpoint, Endpoint) {
+        let a = create_mock_peer_manager().await;
+        let b = create_mock_peer_manager().await;
+        connect_peer_manager(a.clone(), b.clone()).await;
+
+        let a_ip: cidr::Ipv4Inet = "10.126.126.1/24".parse().unwrap();
+        let b_ip: cidr::Ipv4Inet = "10.126.126.2/24".parse().unwrap();
+        a.get_global_ctx().set_ipv4(Some(a_ip));
+        b.get_global_ctx().set_ipv4(Some(b_ip));
+
+        let server_a = Socks5Server::new(a.get_global_ctx(), a.clone(), None);
+        let server_b = Socks5Server::new(b.get_global_ctx(), b.clone(), None);
+        server_a.run(None).await.unwrap();
+        server_b.run(None).await.unwrap();
+
+        wait_for_condition(
+            || async { a.get_route().get_peer_id_by_ipv4(&b_ip.address()).await.is_some() },
+            Duration::from_secs(10),
+        )
+        .await;
+
+        (
+            Endpoint { _peer: a, server: server_a, ip: a_ip },
+            Endpoint { _peer: b, server: server_b, ip: b_ip },
+        )
+    }
+
+    #[tokio::test]
+    async fn data_plane_tcp_pingpong() {
+        let (ep_a, ep_b) = setup_pair().await;
+        let (server_a, server_b, b_ip) = (ep_a.server, ep_b.server, ep_b.ip);
+        let timeout = Duration::from_secs(10);
+
+        let mut listener = server_b.data_plane_tcp_bind(0, timeout).await.unwrap();
+        let listen_addr =
+            std::net::SocketAddr::new(b_ip.address().into(), listener.local_addr().port());
+
+        let accept = tokio::spawn(async move {
+            let (mut stream, _peer) = listener.accept().await.unwrap();
+            let mut buf = [0u8; 4];
+            stream.read_exact(&mut buf).await.unwrap();
+            assert_eq!(&buf, b"ping");
+            stream.write_all(b"pong").await.unwrap();
+            stream.flush().await.unwrap();
+            // Hold the listener and stream until the client has read the reply.
+            tokio::time::sleep(Duration::from_secs(1)).await;
+        });
+
+        let mut client = server_a
+            .data_plane_tcp_connect(listen_addr, timeout)
+            .await
+            .unwrap();
+        client.write_all(b"ping").await.unwrap();
+        client.flush().await.unwrap();
+        let mut buf = [0u8; 4];
+        client.read_exact(&mut buf).await.unwrap();
+        assert_eq!(&buf, b"pong");
+
+        accept.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn data_plane_udp_pingpong() {
+        let (ep_a, ep_b) = setup_pair().await;
+        let (server_a, a_ip, server_b, b_ip) = (ep_a.server, ep_a.ip, ep_b.server, ep_b.ip);
+        let timeout = Duration::from_secs(10);
+
+        let sock_a = server_a.data_plane_udp_bind(0, timeout).await.unwrap();
+        let sock_b = server_b.data_plane_udp_bind(0, timeout).await.unwrap();
+        let addr_a = std::net::SocketAddr::new(a_ip.address().into(), sock_a.local_addr().port());
+        let addr_b = std::net::SocketAddr::new(b_ip.address().into(), sock_b.local_addr().port());
+
+        // UDP data-plane routes are connected-style: a socket only accepts
+        // inbound datagrams from a peer it has already sent to, because the
+        // route entry is registered by `send_to`. Prime b's route toward a so
+        // the upcoming ping is routed instead of dropped at b's packet filter.
+        // This datagram is dropped at a (a has no route yet) and is not awaited.
+        sock_b.send_to(b"warmup", addr_a).await.unwrap();
+
+        sock_a.send_to(b"ping", addr_b).await.unwrap();
+        let mut buf = [0u8; 16];
+        let (n, from) = tokio::time::timeout(timeout, sock_b.recv_from(&mut buf))
+            .await
+            .expect("recv ping timed out")
+            .unwrap();
+        assert_eq!(&buf[..n], b"ping");
+        assert_eq!(from, addr_a);
+
+        sock_b.send_to(b"pong", addr_a).await.unwrap();
+        // a may also receive the stray warmup datagram (it arrives once a has
+        // registered its route by sending the ping above), so skip anything
+        // that is not the reply.
+        loop {
+            let (n, from) = tokio::time::timeout(timeout, sock_a.recv_from(&mut buf))
+                .await
+                .expect("recv pong timed out")
+                .unwrap();
+            if &buf[..n] == b"pong" {
+                assert_eq!(from, addr_b);
+                break;
+            }
+        }
+    }
+}
