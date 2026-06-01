@@ -491,6 +491,9 @@ pub struct Socks5Server {
     socks5_enabled: Arc<AtomicBool>,
     #[cfg(feature = "ffi-dataplane")]
     data_plane_refs: Arc<AtomicUsize>,
+    // Signals data-plane waiters that the smoltcp `net` has just been (re)built.
+    #[cfg(feature = "ffi-dataplane")]
+    data_plane_net_ready: tokio::sync::watch::Sender<()>,
     cancel_tokens: Arc<DashMap<PortForwardConfig, DropGuard>>,
     port_forward_list_change_notifier: Arc<Notify>,
     entry_count: Arc<AtomicUsize>,
@@ -624,6 +627,8 @@ impl Socks5Server {
             socks5_enabled: Arc::new(AtomicBool::new(false)),
             #[cfg(feature = "ffi-dataplane")]
             data_plane_refs: Arc::new(AtomicUsize::new(0)),
+            #[cfg(feature = "ffi-dataplane")]
+            data_plane_net_ready: tokio::sync::watch::channel(()).0,
             cancel_tokens: Arc::new(DashMap::new()),
             port_forward_list_change_notifier: Arc::new(Notify::new()),
             entry_count: Arc::new(AtomicUsize::new(0)),
@@ -643,6 +648,8 @@ impl Socks5Server {
         let socks5_enabled = self.socks5_enabled.clone();
         #[cfg(feature = "ffi-dataplane")]
         let data_plane_refs = self.data_plane_refs.clone();
+        #[cfg(feature = "ffi-dataplane")]
+        let data_plane_net_ready = self.data_plane_net_ready.clone();
         self.tasks.lock().unwrap().spawn(async move {
             let mut prev_ipv4 = None;
             loop {
@@ -683,7 +690,7 @@ impl Socks5Server {
                         // Wake any data-plane callers waiting in
                         // `wait_data_plane_net` for the smoltcp net to appear.
                         #[cfg(feature = "ffi-dataplane")]
-                        port_forward_list_change_notifier.notify_waiters();
+                        let _ = data_plane_net_ready.send_replace(());
                     } else {
                         let _ = net.lock().await.take();
                     }

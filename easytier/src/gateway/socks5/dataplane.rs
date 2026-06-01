@@ -277,7 +277,7 @@ impl Socks5Server {
         &self,
         deadline: Instant,
     ) -> Result<(cidr::Ipv4Inet, Arc<Net>), Error> {
-        let notifier = self.port_forward_list_change_notifier.clone();
+        let mut ready = self.data_plane_net_ready.subscribe();
         loop {
             if let Some(net) = self
                 .net
@@ -293,7 +293,7 @@ impl Socks5Server {
             if now >= deadline {
                 return Err(anyhow::anyhow!("data plane net is not ready").into());
             }
-            let _ = tokio::time::timeout(deadline - now, notifier.notified()).await;
+            let _ = tokio::time::timeout(deadline - now, ready.changed()).await;
         }
     }
 
