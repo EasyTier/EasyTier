@@ -238,14 +238,14 @@ impl TunnelListener for FakeTcpTunnelListener {
         let info = TunnelInfo {
             tunnel_type: get_faketcp_tunnel_type_str(stack.lock().await.driver_type()),
             local_addr: Some(self.local_url().into()),
-            remote_addr: Some(
+            remote_url: Some(
                 crate::tunnel::build_url_from_socket_addr(
                     &socket.remote_addr().to_string(),
                     "faketcp",
                 )
                 .into(),
             ),
-            resolved_remote_addr: Some(
+            remote_addr: Some(
                 crate::tunnel::build_url_from_socket_addr(
                     &socket.remote_addr().to_string(),
                     "faketcp",
@@ -373,8 +373,8 @@ impl TunnelConnector for FakeTcpTunnelConnector {
                 )
                 .into(),
             ),
-            remote_addr: Some(self.addr.clone().into()),
-            resolved_remote_addr: Some(
+            remote_url: Some(self.addr.clone().into()),
+            remote_addr: Some(
                 crate::tunnel::build_url_from_socket_addr(&remote_addr.to_string(), "faketcp")
                     .into(),
             ),

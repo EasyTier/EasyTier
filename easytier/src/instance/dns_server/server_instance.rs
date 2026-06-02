@@ -191,7 +191,7 @@ impl MagicDnsServerRpc for MagicDnsServerInstanceData {
         let Some(tunnel_info) = ctrl.get_tunnel_info() else {
             return Err(anyhow::anyhow!("No tunnel info").into());
         };
-        let Some(remote_addr) = &tunnel_info.remote_addr else {
+        let Some(remote_addr) = &tunnel_info.remote_url else {
             return Err(anyhow::anyhow!("No remote addr").into());
         };
         let zone = input.zone.clone();
@@ -461,7 +461,7 @@ impl RpcServerHook for MagicDnsServerInstanceData {
         let Some(tunnel_info) = tunnel_info else {
             return;
         };
-        let Some(remote_addr) = tunnel_info.remote_addr else {
+        let Some(remote_addr) = tunnel_info.remote_url else {
             return;
         };
         let remote_addr = remote_addr.into();

@@ -21,7 +21,10 @@ use crate::{
         api::manage::ConfigSource as RpcConfigSource,
         common::{CompressionAlgoPb, PortForwardConfigPb, SecureModeConfig, SocketType},
     },
-    tunnel::{IpScheme, TunnelScheme, generate_digest_from_str},
+    tunnel::{
+        generate_digest_from_str,
+        scheme::{IpScheme, TunnelScheme},
+    },
 };
 
 use super::env_parser;
