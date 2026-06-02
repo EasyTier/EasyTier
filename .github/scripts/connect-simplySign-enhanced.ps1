@@ -25,7 +25,11 @@ function Find-CertificateByThumbprint {
     }
 
     $all = Get-ChildItem -Path "Cert:\CurrentUser\My", "Cert:\LocalMachine\My" -ErrorAction SilentlyContinue
-    return @($all | Where-Object { $_.Thumbprint -eq $Thumbprint })
+    # 对证书库中的 Thumbprint 同样做规范化（去除不可见字符、统一大写），避免 BOM 或格式差异导致匹配失败
+    return @($all | Where-Object {
+        $normalizedStoreThumbprint = ($_.Thumbprint -replace "[^a-fA-F0-9]", "").ToUpperInvariant()
+        $normalizedStoreThumbprint -eq $Thumbprint
+    })
 }
 
 # Validate required parameters
@@ -215,11 +219,13 @@ $focused = $false
 
 # Method 1: Use Win32 API to find and activate window
 $mainWindowHandle = $proc.MainWindowHandle
-if ($mainWindowHandle -ne [IntPtr]::Zero) {
+if ($mainWindowHandle -ne $null -and $mainWindowHandle -ne [IntPtr]::Zero) {
     [Win32]::ShowWindow($mainWindowHandle, [Win32]::SW_RESTORE) | Out-Null
     [Win32]::SetForegroundWindow($mainWindowHandle) | Out-Null
     $focused = $true
     Write-Host "Focused via MainWindowHandle"
+} else {
+    Write-Host "MainWindowHandle not available yet, will try other methods..."
 }
 
 # Method 2: Find window by title
@@ -259,9 +265,8 @@ for ($i = 0; (-not $focused) -and ($i -lt 20); $i++) {
 }
 
 if (-not $focused) {
-    Write-Host "ERROR: Could not bring SimplySign Desktop to foreground"
-    Write-Host "Login dialog may not be visible for credential injection"
-    exit 1
+    Write-Host "WARNING: Could not bring SimplySign Desktop to foreground via window handle"
+    Write-Host "SimplySign Desktop may be running as a background/tray process - proceeding with credential injection anyway"
 }
 
 Write-Host ""

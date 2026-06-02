@@ -48,7 +48,11 @@ function Find-TargetCertificate {
     param([string]$Thumbprint)
 
     $all = Get-ChildItem -Path "Cert:\CurrentUser\My", "Cert:\LocalMachine\My" -ErrorAction SilentlyContinue
-    return @($all | Where-Object { $_.Thumbprint -eq $Thumbprint })
+    # 对证书库中的 Thumbprint 同样做规范化（去除不可见字符、统一大写），避免 BOM 或格式差异导致匹配失败
+    return @($all | Where-Object {
+        $normalizedStoreThumprint = ($_.Thumbprint -replace "[^a-fA-F0-9]", "").ToUpperInvariant()
+        $normalizedStoreThumprint -eq $Thumbprint
+    })
 }
 
 function Show-PrivateKeyCertificateHints {
@@ -110,12 +114,12 @@ if (-not $signTool) {
 
 Write-Host "Found signtool: $signTool"
 
-Write-Host "Scanning for Windows binaries to sign (.exe, .dll, .sys)..."
+Write-Host "Scanning for Windows binaries to sign (.exe, .dll)..."
 $filesToSign = Get-ChildItem -Path $TargetDirectory -Recurse -File |
-    Where-Object { $_.Extension -iin @(".exe", ".dll", ".sys") }
+    Where-Object { $_.Extension -iin @(".exe", ".dll") }
 
 if (($null -eq $filesToSign) -or ($filesToSign.Count -eq 0)) {
-    Write-Host "WARNING: No signable files (.exe, .dll, .sys) found to sign"
+    Write-Host "WARNING: No signable files (.exe, .dll) found to sign"
     exit 0
 }
 
@@ -128,9 +132,10 @@ foreach ($file in $filesToSign) {
     Write-Host "Path: $($file.FullName)"
 
     $attempts = @(
-        @{ Name = "Direct SHA1 + /td"; Args = @("sign", "/sha1", $normalizedSha1, "/tr", $TimestampServer, "/td", "SHA256", "/fd", "SHA256", "/v", $file.FullName) },
-        @{ Name = "Direct SHA1 in CurrentUser\\My"; Args = @("sign", "/sha1", $normalizedSha1, "/s", "My", "/tr", $TimestampServer, "/td", "SHA256", "/fd", "SHA256", "/v", $file.FullName) },
-        @{ Name = "Direct SHA1 in LocalMachine\\My"; Args = @("sign", "/sha1", $normalizedSha1, "/sm", "/s", "My", "/tr", $TimestampServer, "/td", "SHA256", "/fd", "SHA256", "/v", $file.FullName) }
+        @{ Name = "SHA1 thumbprint + /td SHA256"; Args = @("sign", "/sha1", $normalizedSha1, "/tr", $TimestampServer, "/td", "SHA256", "/fd", "SHA256", "/v", $file.FullName) },
+        @{ Name = "SHA1 thumbprint in CurrentUser\\My"; Args = @("sign", "/sha1", $normalizedSha1, "/s", "My", "/tr", $TimestampServer, "/td", "SHA256", "/fd", "SHA256", "/v", $file.FullName) },
+        @{ Name = "SHA1 thumbprint in LocalMachine\\My"; Args = @("sign", "/sha1", $normalizedSha1, "/sm", "/s", "My", "/tr", $TimestampServer, "/td", "SHA256", "/fd", "SHA256", "/v", $file.FullName) },
+        @{ Name = "Auto-select cert (fallback)"; Args = @("sign", "/a", "/tr", $TimestampServer, "/td", "SHA256", "/fd", "SHA256", "/v", $file.FullName) }
     )
 
     $signed = $false
