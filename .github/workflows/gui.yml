@@ -155,11 +155,100 @@ jobs:
           path: |
             ./artifacts/*
 
+  # Sign Windows GUI artifacts with Certum SimplySign cloud certificate
+  sign-windows-gui:
+    name: Sign Windows GUI Artifacts
+    needs: [build-gui]
+    if: needs.pre_job.outputs.should_skip != 'true' && !cancelled()
+    runs-on: windows-latest
+    continue-on-error: true
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - ARTIFACT_NAME: windows-x86_64
+          - ARTIFACT_NAME: windows-i686
+          - ARTIFACT_NAME: windows-arm64
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Download artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: easytier-gui-${{ matrix.ARTIFACT_NAME }}
+          path: sign_binaries
+
+      - name: Setup Certum Code Signing (Windows)
+        shell: bash
+        run: |
+          echo "=== SETTING UP CERTUM CODE SIGNING FOR WINDOWS ==="
+          chmod +x ./.github/scripts/install-simplysign.sh
+          ./.github/scripts/install-simplysign.sh
+          echo "Configuring registry for automatic login dialog..."
+          powershell -ExecutionPolicy Bypass -File "./.github/scripts/configure-simplysign-registry.ps1"
+          echo "Certum signing environment ready"
+        continue-on-error: true
+
+      - name: Authenticate Certum (Windows)
+        shell: bash
+        env:
+          CERTUM_OTP_URI: ${{ secrets.CERTUM_OTP_URI }}
+          CERTUM_USERNAME: ${{ secrets.CERTUM_USERNAME }}
+          CERTUM_CERTIFICATE_SHA1: ${{ secrets.CERTUM_CERTIFICATE_SHA1 }}
+          CERTUM_EXE_PATH: ${{ secrets.CERTUM_EXE_PATH }}
+        run: |
+          echo "=== CERTUM AUTHENTICATION ==="
+          for attempt in 1 2 3; do
+            echo "Authentication attempt ${attempt}/3"
+            if powershell -ExecutionPolicy Bypass -File "./.github/scripts/connect-simplySign-enhanced.ps1"; then
+              echo "Authentication completed"
+              exit 0
+            fi
+            if [ "$attempt" -lt 3 ]; then
+              echo "Authentication attempt failed, retrying in 10 seconds..."
+              sleep 10
+            fi
+          done
+          echo "ERROR: Certum authentication failed after 3 attempts"
+          exit 1
+        continue-on-error: true
+
+      - name: Sign Windows GUI binaries and installers (exe)
+        shell: bash
+        env:
+          CERTUM_CERTIFICATE_SHA1: ${{ secrets.CERTUM_CERTIFICATE_SHA1 }}
+        run: |
+          echo "=== CERTIFICATE VERIFICATION AND WINDOWS GUI BINARY SIGNING ==="
+          echo "Allowing connection to stabilize..."
+          sleep 10
+          powershell -ExecutionPolicy Bypass -File "./.github/scripts/sign-windows.ps1" -TargetDirectory "sign_binaries"
+          echo "Windows GUI binary signing completed"
+        continue-on-error: true
+
+      - name: Verify Signatures
+        shell: pwsh
+        run: |
+          $signedFiles = Get-ChildItem -Path "sign_binaries" -Recurse -Include *.exe
+          foreach ($file in $signedFiles) {
+            $result = Get-AuthenticodeSignature -FilePath $file.FullName
+            $status = if ($result.Status -eq "Valid") { "VALID" } else { "INVALID/UNSIGNED ($($result.Status))" }
+            Write-Host "$($file.Name): $status"
+          }
+        continue-on-error: true
+
+      - name: Re-upload signed artifact
+        uses: actions/upload-artifact@v5
+        with:
+          name: easytier-gui-${{ matrix.ARTIFACT_NAME }}
+          path: sign_binaries/*
+          overwrite: true
+
   gui-result:
     runs-on: ubuntu-latest
-    needs: [ pre_job, build-gui ]
+    needs: [ pre_job, build-gui, sign-windows-gui ]
     if: needs.pre_job.result == 'success' && needs.pre_job.outputs.should_skip != 'true' && !cancelled()
     steps:
       - name: Mark result as failed
-        if: contains(needs.*.result, 'failure')
+        if: needs.build-gui.result == 'failure'
         run: exit 1

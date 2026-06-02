@@ -31,21 +31,23 @@ permissions:
 
 jobs:
   release:
+    name: Create GitHub Release
     runs-on: ubuntu-latest
     steps:
-      -
-        name: Checkout
+      - name: Checkout
         uses: actions/checkout@v5
 
-      - name: Download Core Artifact
+      # Core artifacts are already signed in core.yml workflow
+      - name: Download Core Artifact (already signed)
         uses: dawidd6/action-download-artifact@v11
         with:
           github_token: ${{secrets.GITHUB_TOKEN}}
           run_id: ${{ inputs.core_run_id }}
           repo: ${{ github.repository }}
-          path: release_assets
+          path: release_assets_fallback
 
-      - name: Download GUI Artifact
+      # GUI artifacts are already signed in gui.yml workflow
+      - name: Download GUI Artifact (already signed)
         uses: dawidd6/action-download-artifact@v11
         with:
           github_token: ${{secrets.GITHUB_TOKEN}}
@@ -70,7 +72,7 @@ jobs:
           find release_assets_nozip -type f -exec mv {} zipped_assets \;
           ls -l -R ./zipped_assets
 
-          cd release_assets
+          cd release_assets_fallback
           ls -l -R ./
           chmod -R 755 .
           for x in `ls`; do
@@ -84,12 +86,27 @@ jobs:
             fi
           done
 
+      - name: Prepare release notes
+        id: notes
+        run: |
+          cat > release_notes.txt << EOF
+          ## EasyTier ${{ inputs.version }}
+
+          Windows binaries are code-signed with Certum cloud certificate.
+          EOF
+          
+          echo "notes<<EOF" >> $GITHUB_OUTPUT
+          cat release_notes.txt >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
       - name: Release
         uses: softprops/action-gh-release@v2
         with:
           name: ${{ inputs.version }}
           draft: true
+          body: ${{ steps.notes.outputs.notes }}
           files: |
             ./zipped_assets/*
           token: ${{ secrets.GITHUB_TOKEN }}
           tag_name: ${{ inputs.version }}
+          make_latest: ${{ inputs.make_latest }}
