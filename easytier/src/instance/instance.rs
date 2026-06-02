@@ -352,6 +352,14 @@ impl InstanceConfigPatcher {
         if let Some(enabled) = patch.ipv6_public_addr_auto {
             global_ctx.config.set_ipv6_public_addr_auto(enabled);
         }
+        if let Some(enabled) = patch.ipv6_public_addr_default_route {
+            global_ctx
+                .config
+                .set_ipv6_public_addr_default_route(enabled);
+        }
+        if let Some(metric) = patch.ipv6_public_addr_route_metric {
+            global_ctx.config.set_ipv6_public_addr_route_metric(metric);
+        }
         if let Some(prefix) = parsed_ipv6_public_addr_prefix {
             global_ctx.config.set_ipv6_public_addr_prefix(prefix);
             provider_config_changed = true;

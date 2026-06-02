@@ -82,6 +82,7 @@ const bool_flags: BoolFlag[] = [
   { field: 'use_smoltcp', help: 'use_smoltcp_help' },
   { field: 'disable_ipv6', help: 'disable_ipv6_help' },
   { field: 'ipv6_public_addr_auto', help: 'ipv6_public_addr_auto_help' },
+  { field: 'ipv6_public_addr_default_route', help: 'ipv6_public_addr_default_route_help' },
   { field: 'enable_kcp_proxy', help: 'enable_kcp_proxy_help' },
   { field: 'disable_kcp_input', help: 'disable_kcp_input_help' },
   { field: 'enable_quic_proxy', help: 'enable_quic_proxy_help' },
@@ -296,6 +297,19 @@ watch(() => curNetwork.value, syncNormalizedNetwork, { immediate: true, deep: fa
                   <label for="dev_name">{{ t('dev_name') }}</label>
                   <InputText id="dev_name" v-model="curNetwork.dev_name" aria-describedby="dev_name-help" :format="true"
                     :placeholder="t('dev_name_placeholder')" />
+                </div>
+              </div>
+
+              <div class="flex flex-row gap-x-9 flex-wrap">
+                <div class="flex flex-col gap-2 basis-5/12 grow">
+                  <div class="flex">
+                    <label for="ipv6_public_addr_route_metric">{{ t('ipv6_public_addr_route_metric') }}</label>
+                    <span class="pi pi-question-circle ml-2 self-center"
+                      v-tooltip="t('ipv6_public_addr_route_metric_help')"></span>
+                  </div>
+                  <InputNumber id="ipv6_public_addr_route_metric" v-model="curNetwork.ipv6_public_addr_route_metric"
+                    aria-describedby="ipv6_public_addr_route_metric-help" :format="false" :min="0"
+                    :disabled="!curNetwork.ipv6_public_addr_default_route" fluid />
                 </div>
               </div>
 

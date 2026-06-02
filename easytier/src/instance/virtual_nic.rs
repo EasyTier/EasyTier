@@ -753,6 +753,19 @@ impl VirtualNic {
         Ok(())
     }
 
+    async fn add_public_ipv6_default_route(&self) -> Result<(), Error> {
+        if !self.global_ctx.config.get_ipv6_public_addr_default_route() {
+            return Ok(());
+        }
+
+        self.add_ipv6_route_with_cost(
+            Ipv6Addr::UNSPECIFIED,
+            0,
+            Some(self.global_ctx.config.get_ipv6_public_addr_route_metric()),
+        )
+        .await
+    }
+
     pub async fn remove_ipv6_route(&self, address: Ipv6Addr, cidr: u8) -> Result<(), Error> {
         let _g = self.global_ctx.net_ns.guard();
         self.ifcfg
@@ -1270,6 +1283,8 @@ impl NicCtx {
 
         self.tasks.spawn(async move {
             let mut current_addr = peer_mgr.get_my_public_ipv6_addr().await;
+            let mut current_default_route =
+                current_addr.is_some() && global_ctx.config.get_ipv6_public_addr_default_route();
             if let Some(addr) = current_addr {
                 let nic = nic.lock().await;
                 if let Err(err) = nic.link_up().await {
@@ -1278,10 +1293,7 @@ impl NicCtx {
                 if let Err(err) = nic.add_ipv6(addr.address(), addr.network_length() as i32).await {
                     tracing::warn!(addr = ?addr, ?err, "failed to add public ipv6 address");
                 }
-                if let Err(err) = nic
-                    .add_ipv6_route_with_cost(Ipv6Addr::UNSPECIFIED, 0, Some(5))
-                    .await
-                {
+                if let Err(err) = nic.add_public_ipv6_default_route().await {
                     tracing::warn!(route = %Ipv6Addr::UNSPECIFIED, prefix = 0, ?err, "failed to add default public ipv6 route");
                 }
             }
@@ -1299,6 +1311,24 @@ impl NicCtx {
 
                 let (old, new) = match event {
                     GlobalCtxEvent::PublicIpv6Changed(old, new) => (old, new),
+                    GlobalCtxEvent::ConfigPatched(patch)
+                        if current_addr.is_some()
+                            && (patch.ipv6_public_addr_default_route.is_some()
+                                || patch.ipv6_public_addr_route_metric.is_some()) =>
+                    {
+                        let nic = nic.lock().await;
+                        if current_default_route
+                            && let Err(err) =
+                                nic.remove_ipv6_route(Ipv6Addr::UNSPECIFIED, 0).await
+                        {
+                            tracing::warn!(route = %Ipv6Addr::UNSPECIFIED, prefix = 0, ?err, "failed to remove default public ipv6 route");
+                        }
+                        current_default_route = global_ctx.config.get_ipv6_public_addr_default_route();
+                        if let Err(err) = nic.add_public_ipv6_default_route().await {
+                            tracing::warn!(route = %Ipv6Addr::UNSPECIFIED, prefix = 0, ?err, "failed to add default public ipv6 route");
+                        }
+                        continue;
+                    }
                     _ => continue,
                 };
 
@@ -1308,7 +1338,9 @@ impl NicCtx {
                     tracing::warn!(?err, "failed to bring public ipv6 nic link up");
                 }
                 if let Some(old) = old {
-                    if let Err(err) = nic.remove_ipv6_route(Ipv6Addr::UNSPECIFIED, 0).await {
+                    if current_default_route
+                        && let Err(err) = nic.remove_ipv6_route(Ipv6Addr::UNSPECIFIED, 0).await
+                    {
                         tracing::warn!(route = %Ipv6Addr::UNSPECIFIED, prefix = 0, ?err, "failed to remove default public ipv6 route");
                     }
                     if let Err(err) = nic.remove_ipv6(Some(old)).await {
@@ -1320,12 +1352,12 @@ impl NicCtx {
                     {
                         tracing::warn!(addr = ?new, ?err, "failed to add public ipv6 address");
                     }
-                    if let Err(err) = nic
-                        .add_ipv6_route_with_cost(Ipv6Addr::UNSPECIFIED, 0, Some(5))
-                        .await
-                    {
+                    current_default_route = global_ctx.config.get_ipv6_public_addr_default_route();
+                    if let Err(err) = nic.add_public_ipv6_default_route().await {
                         tracing::warn!(route = %Ipv6Addr::UNSPECIFIED, prefix = 0, ?err, "failed to add default public ipv6 route");
                     }
+                } else {
+                    current_default_route = false;
                 }
             }
         });
