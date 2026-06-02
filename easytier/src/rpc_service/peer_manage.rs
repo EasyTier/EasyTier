@@ -70,6 +70,17 @@ impl PeerManageRpc for PeerManageRpcService {
             .await
     }
 
+    async fn get_route_decision(
+        &self,
+        ctrl: Self::Controller,
+        req: crate::proto::api::instance::GetRouteDecisionRequest,
+    ) -> crate::proto::rpc_types::error::Result<instance::GetRouteDecisionResponse> {
+        super::get_instance_service(&self.instance_manager, &req.instance)?
+            .get_peer_manage_service()
+            .get_route_decision(ctrl, req)
+            .await
+    }
+
     async fn list_foreign_network(
         &self,
         ctrl: Self::Controller,

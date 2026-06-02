@@ -126,6 +126,26 @@ function addPortForward() {
   }
 }
 
+function ensureLocalRoutes() {
+  if (!curNetwork.value.local_routes) {
+    curNetwork.value.local_routes = { entries: [] }
+  }
+}
+
+function addLocalRoute() {
+  ensureLocalRoutes()
+  curNetwork.value.local_routes.entries.push({
+    network: '',
+    gateway: '',
+    metric: null,
+  })
+}
+
+function removeLocalRoute(index: number) {
+  ensureLocalRoutes()
+  curNetwork.value.local_routes.entries.splice(index, 1)
+}
+
 function savePortForward() {
   curNetwork.value.port_forwards[editingPortForwardIndex.value] = editingPortForwardData.value;
   editingPortForward.value = false;
@@ -356,6 +376,25 @@ watch(() => curNetwork.value, syncNormalizedNetwork, { immediate: true, deep: fa
                         :placeholder="t('chips_placeholder', ['192.168.0.0/16'])" class="w-full" multiple fluid
                         :suggestions="inetSuggestions" @complete="searchInetSuggestions" />
                     </div>
+                  </div>
+                </div>
+              </div>
+
+              <div class="flex flex-row gap-x-9 flex-wrap ">
+                <div class="flex flex-col gap-2 grow">
+                  <div class="flex">
+                    <label for="local_routes">{{ t('local_routes') }}</label>
+                    <span class="pi pi-question-circle ml-2 self-center" v-tooltip="t('local_routes_help')"></span>
+                  </div>
+                  <div id="local_routes" class="flex flex-col gap-2">
+                    <div v-for="(row, index) in curNetwork.local_routes?.entries ?? []" :key="index"
+                      class="grid grid-cols-1 md:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_8rem_2.5rem] gap-2 items-center">
+                      <InputText v-model="row.network" placeholder="10.6.0.0/16" />
+                      <InputText v-model="row.gateway" placeholder="100.88.88.1" />
+                      <InputNumber v-model="row.metric" :format="false" :min="0" placeholder="metric" fluid />
+                      <Button icon="pi pi-trash" severity="danger" text rounded @click="removeLocalRoute(index)" />
+                    </div>
+                    <Button icon="pi pi-plus" severity="success" text rounded @click="addLocalRoute" />
                   </div>
                 </div>
               </div>

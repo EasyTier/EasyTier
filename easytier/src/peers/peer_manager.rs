@@ -22,6 +22,7 @@ use crate::{
     common::{
         PeerId,
         compressor::{Compressor as _, DefaultCompressor},
+        config::LocalRouteConfig,
         constants::EASYTIER_VERSION,
         error::Error,
         global_ctx::{ArcGlobalCtx, GlobalCtxEvent, NetworkIdentity},
@@ -126,6 +127,47 @@ pub enum RouteAlgoType {
 enum RouteAlgoInst {
     Ospf(Arc<PeerRoute>),
     None,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Ipv4RouteDecisionSource {
+    Broadcast,
+    PeerIp,
+    LocalRoute,
+    OspfProxy,
+    ExitNode,
+    None,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Ipv4RouteDecisionStatus {
+    Reachable,
+    RequiresExitNode,
+    FallbackLocalRouteUnresolved,
+    LocalRouteUnresolved,
+    Unreachable,
+}
+
+impl Ipv4RouteDecisionStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Reachable => "reachable",
+            Self::RequiresExitNode => "requires-exit-node",
+            Self::FallbackLocalRouteUnresolved => "fallback-local-route-unresolved",
+            Self::LocalRouteUnresolved => "local-route-unresolved",
+            Self::Unreachable => "unreachable",
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct Ipv4RouteDecision {
+    pub source: Ipv4RouteDecisionSource,
+    pub dst_peers: Vec<PeerId>,
+    pub is_exit_node: bool,
+    pub local_route: Option<LocalRouteConfig>,
+    pub unresolved_local_route: Option<LocalRouteConfig>,
+    pub status: Ipv4RouteDecisionStatus,
 }
 
 impl Clone for RouteAlgoInst {
@@ -1581,17 +1623,110 @@ impl PeerManager {
             .collect()
     }
 
-    pub async fn get_msg_dst_peer_ipv4(&self, ipv4_addr: &Ipv4Addr) -> (Vec<PeerId>, bool) {
-        let mut is_exit_node = false;
-        let mut dst_peers = vec![];
+    fn route_contains_ipv4(cidr: cidr::Ipv4Cidr, ipv4_addr: &Ipv4Addr) -> bool {
+        cidr.contains(ipv4_addr)
+    }
+
+    pub(crate) fn select_local_route_for_ipv4(
+        routes: &[LocalRouteConfig],
+        ipv4_addr: &Ipv4Addr,
+    ) -> Option<LocalRouteConfig> {
+        let mut local_routes = routes
+            .iter()
+            .filter(|route| Self::route_contains_ipv4(route.network, ipv4_addr))
+            .cloned()
+            .collect::<Vec<_>>();
+        local_routes.sort_by(|a, b| {
+            b.network
+                .network_length()
+                .cmp(&a.network.network_length())
+                .then_with(|| {
+                    a.metric
+                        .unwrap_or(u32::MAX)
+                        .cmp(&b.metric.unwrap_or(u32::MAX))
+                })
+                .then_with(|| a.gateway.cmp(&b.gateway))
+        });
+        local_routes.into_iter().next()
+    }
+
+    pub async fn decide_ipv4_route(&self, ipv4_addr: &Ipv4Addr) -> Ipv4RouteDecision {
         if self.is_all_peers_broadcast_ipv4(ipv4_addr) {
-            dst_peers.extend(Self::select_ipv4_broadcast_peers(
-                &self.peers.list_route_infos().await,
-                self.my_peer_id,
-            ));
-        } else if let Some(peer_id) = self.peers.get_peer_id_by_ipv4(ipv4_addr).await {
-            dst_peers.push(peer_id);
-        } else if !self
+            return Ipv4RouteDecision {
+                source: Ipv4RouteDecisionSource::Broadcast,
+                dst_peers: Self::select_ipv4_broadcast_peers(
+                    &self.peers.list_route_infos().await,
+                    self.my_peer_id,
+                ),
+                is_exit_node: false,
+                local_route: None,
+                unresolved_local_route: None,
+                status: Ipv4RouteDecisionStatus::Reachable,
+            };
+        }
+
+        if let Some(peer_id) = self.peers.get_exact_peer_id_by_ipv4(ipv4_addr).await {
+            return Ipv4RouteDecision {
+                source: Ipv4RouteDecisionSource::PeerIp,
+                dst_peers: vec![peer_id],
+                is_exit_node: false,
+                local_route: None,
+                unresolved_local_route: None,
+                status: Ipv4RouteDecisionStatus::Reachable,
+            };
+        }
+
+        let mut unresolved_local_route = None;
+        if self.global_ctx.config.has_local_routes()
+            && !self
+                .global_ctx
+                .is_ip_in_same_network(&std::net::IpAddr::V4(*ipv4_addr))
+        {
+            let local_route = Self::select_local_route_for_ipv4(
+                &self.global_ctx.config.get_local_routes(),
+                ipv4_addr,
+            );
+            if let Some(local_route) = local_route {
+                let peer_id = self
+                    .peers
+                    .get_exact_peer_id_by_ipv4(&local_route.gateway)
+                    .await;
+                if let Some(peer_id) = peer_id {
+                    return Ipv4RouteDecision {
+                        source: Ipv4RouteDecisionSource::LocalRoute,
+                        dst_peers: vec![peer_id],
+                        is_exit_node: true,
+                        local_route: Some(local_route),
+                        unresolved_local_route: None,
+                        status: Ipv4RouteDecisionStatus::RequiresExitNode,
+                    };
+                }
+
+                tracing::debug!(
+                    route = %local_route,
+                    "local route next hop is not available, falling back to proxy or exit-node route"
+                );
+                unresolved_local_route = Some(local_route);
+            }
+        }
+
+        if let Some(peer_id) = self.peers.get_proxy_peer_id_by_ipv4(ipv4_addr).await {
+            let status = if unresolved_local_route.is_some() {
+                Ipv4RouteDecisionStatus::FallbackLocalRouteUnresolved
+            } else {
+                Ipv4RouteDecisionStatus::Reachable
+            };
+            return Ipv4RouteDecision {
+                source: Ipv4RouteDecisionSource::OspfProxy,
+                dst_peers: vec![peer_id],
+                is_exit_node: false,
+                local_route: None,
+                unresolved_local_route,
+                status,
+            };
+        }
+
+        if !self
             .global_ctx
             .is_ip_in_same_network(&std::net::IpAddr::V4(*ipv4_addr))
         {
@@ -1600,12 +1735,47 @@ impl PeerManager {
                     continue;
                 };
                 if let Some(peer_id) = self.peers.get_peer_id_by_ipv4(exit_node).await {
-                    dst_peers.push(peer_id);
-                    is_exit_node = true;
-                    break;
+                    let status = if unresolved_local_route.is_some() {
+                        Ipv4RouteDecisionStatus::FallbackLocalRouteUnresolved
+                    } else {
+                        Ipv4RouteDecisionStatus::Reachable
+                    };
+                    return Ipv4RouteDecision {
+                        source: Ipv4RouteDecisionSource::ExitNode,
+                        dst_peers: vec![peer_id],
+                        is_exit_node: true,
+                        local_route: None,
+                        unresolved_local_route,
+                        status,
+                    };
                 }
             }
         }
+
+        let status = if unresolved_local_route.is_some() {
+            Ipv4RouteDecisionStatus::LocalRouteUnresolved
+        } else {
+            Ipv4RouteDecisionStatus::Unreachable
+        };
+        Ipv4RouteDecision {
+            source: Ipv4RouteDecisionSource::None,
+            dst_peers: vec![],
+            is_exit_node: false,
+            local_route: None,
+            unresolved_local_route,
+            status,
+        }
+    }
+
+    pub async fn get_msg_dst_peer_ipv4(&self, ipv4_addr: &Ipv4Addr) -> (Vec<PeerId>, bool) {
+        let decision = self.decide_ipv4_route(ipv4_addr).await;
+        if let Some(route) = decision.local_route.as_ref() {
+            tracing::trace!(%route, ?ipv4_addr, ?decision, "matched local route");
+        }
+        #[cfg(target_env = "ohos")]
+        let (mut dst_peers, mut is_exit_node) = (decision.dst_peers, decision.is_exit_node);
+        #[cfg(not(target_env = "ohos"))]
+        let (dst_peers, is_exit_node) = (decision.dst_peers, decision.is_exit_node);
         #[cfg(target_env = "ohos")]
         {
             if dst_peers.is_empty()
@@ -2137,13 +2307,14 @@ impl PeerManager {
 mod tests {
     use std::{
         fmt::Debug,
+        net::Ipv4Addr,
         sync::Arc,
         time::{Duration, Instant},
     };
 
     use crate::{
         common::{
-            config::Flags,
+            config::{ConfigLoader, Flags, parse_local_route_config},
             global_ctx::{NetworkIdentity, tests::get_mock_global_ctx},
             stats_manager::{LabelSet, LabelType, MetricName},
         },
@@ -2176,7 +2347,255 @@ mod tests {
         },
     };
 
-    use super::PeerManager;
+    use super::{Ipv4RouteDecisionSource, Ipv4RouteDecisionStatus, PeerManager};
+
+    #[test]
+    fn select_local_route_prefers_longest_prefix_then_metric() {
+        let routes = vec![
+            parse_local_route_config("10.0.0.0/8 via 100.88.88.1 metric 10").unwrap(),
+            parse_local_route_config("10.6.0.0/16 via 100.88.88.2 metric 50").unwrap(),
+            parse_local_route_config("10.6.0.0/16 via 100.88.88.3 metric 20").unwrap(),
+        ];
+
+        let selected =
+            PeerManager::select_local_route_for_ipv4(&routes, &"10.6.1.1".parse().unwrap())
+                .unwrap();
+
+        assert_eq!(selected.gateway, "100.88.88.3".parse::<Ipv4Addr>().unwrap());
+    }
+
+    #[tokio::test]
+    async fn decide_ipv4_route_records_unresolved_local_route_without_fallback() {
+        let peer_mgr =
+            create_mock_peer_manager_with_name("local-route-decision-unresolved".to_string()).await;
+        peer_mgr
+            .get_global_ctx()
+            .set_ipv4(Some("100.88.88.10/24".parse().unwrap()));
+        peer_mgr.get_global_ctx().config.set_local_routes(vec![
+            parse_local_route_config("10.6.0.0/16 via 100.88.88.1").unwrap(),
+        ]);
+
+        let decision = peer_mgr
+            .decide_ipv4_route(&"10.6.1.1".parse().unwrap())
+            .await;
+
+        assert_eq!(decision.source, Ipv4RouteDecisionSource::None);
+        assert!(!decision.is_exit_node);
+        assert!(decision.dst_peers.is_empty());
+        assert_eq!(
+            decision.status,
+            Ipv4RouteDecisionStatus::LocalRouteUnresolved
+        );
+        assert!(decision.local_route.is_none());
+        assert_eq!(
+            decision
+                .unresolved_local_route
+                .as_ref()
+                .map(ToString::to_string),
+            Some("10.6.0.0/16 via 100.88.88.1".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn decide_ipv4_route_uses_resolved_local_route_as_exit_node() {
+        let network_name = "local-route-decision-resolved".to_string();
+        let peer_mgr_a = create_mock_peer_manager_with_name(network_name.clone()).await;
+        let peer_mgr_b = create_mock_peer_manager_with_name(network_name).await;
+
+        peer_mgr_a
+            .get_global_ctx()
+            .set_ipv4(Some("100.88.88.10/24".parse().unwrap()));
+        peer_mgr_b
+            .get_global_ctx()
+            .set_ipv4(Some("100.88.88.1/24".parse().unwrap()));
+        peer_mgr_a.get_global_ctx().config.set_local_routes(vec![
+            parse_local_route_config("10.6.0.0/16 via 100.88.88.1").unwrap(),
+        ]);
+
+        connect_peer_manager(peer_mgr_a.clone(), peer_mgr_b.clone()).await;
+        wait_route_appear(peer_mgr_a.clone(), peer_mgr_b.clone())
+            .await
+            .unwrap();
+
+        wait_for_condition(
+            || {
+                let peer_mgr_a = peer_mgr_a.clone();
+                let peer_mgr_b = peer_mgr_b.clone();
+                async move {
+                    let decision = peer_mgr_a
+                        .decide_ipv4_route(&"10.6.1.1".parse().unwrap())
+                        .await;
+                    decision.source == Ipv4RouteDecisionSource::LocalRoute
+                        && decision.dst_peers == vec![peer_mgr_b.my_peer_id()]
+                        && decision.is_exit_node
+                        && decision.status == Ipv4RouteDecisionStatus::RequiresExitNode
+                        && decision.unresolved_local_route.is_none()
+                }
+            },
+            Duration::from_secs(5),
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn decide_ipv4_route_falls_back_to_exit_node_when_local_route_unresolved() {
+        let network_name = "local-route-decision-fallback".to_string();
+        let peer_mgr_a = create_mock_peer_manager_with_name(network_name.clone()).await;
+        let peer_mgr_b = create_mock_peer_manager_with_name(network_name).await;
+
+        peer_mgr_a
+            .get_global_ctx()
+            .set_ipv4(Some("100.88.88.10/24".parse().unwrap()));
+        peer_mgr_b
+            .get_global_ctx()
+            .set_ipv4(Some("100.88.88.2/24".parse().unwrap()));
+        peer_mgr_a.get_global_ctx().config.set_local_routes(vec![
+            parse_local_route_config("10.6.0.0/16 via 100.88.88.1").unwrap(),
+        ]);
+        peer_mgr_a
+            .get_global_ctx()
+            .config
+            .set_exit_nodes(vec!["100.88.88.2".parse().unwrap()]);
+        peer_mgr_a.update_exit_nodes().await;
+
+        connect_peer_manager(peer_mgr_a.clone(), peer_mgr_b.clone()).await;
+        wait_route_appear(peer_mgr_a.clone(), peer_mgr_b.clone())
+            .await
+            .unwrap();
+
+        wait_for_condition(
+            || {
+                let peer_mgr_a = peer_mgr_a.clone();
+                let peer_mgr_b = peer_mgr_b.clone();
+                async move {
+                    let decision = peer_mgr_a
+                        .decide_ipv4_route(&"10.6.1.1".parse().unwrap())
+                        .await;
+                    decision.source == Ipv4RouteDecisionSource::ExitNode
+                        && decision.dst_peers == vec![peer_mgr_b.my_peer_id()]
+                        && decision.is_exit_node
+                        && decision.status == Ipv4RouteDecisionStatus::FallbackLocalRouteUnresolved
+                        && decision
+                            .unresolved_local_route
+                            .as_ref()
+                            .map(ToString::to_string)
+                            == Some("10.6.0.0/16 via 100.88.88.1".to_string())
+                }
+            },
+            Duration::from_secs(5),
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn decide_ipv4_route_falls_back_to_ospf_when_local_route_unresolved() {
+        let network_name = "local-route-decision-ospf-fallback".to_string();
+        let peer_mgr_a = create_mock_peer_manager_with_name(network_name.clone()).await;
+        let peer_mgr_b = create_mock_peer_manager_with_name(network_name).await;
+
+        peer_mgr_a
+            .get_global_ctx()
+            .set_ipv4(Some("100.88.88.10/24".parse().unwrap()));
+        peer_mgr_b
+            .get_global_ctx()
+            .set_ipv4(Some("100.88.88.2/24".parse().unwrap()));
+        peer_mgr_a.get_global_ctx().config.set_local_routes(vec![
+            parse_local_route_config("10.6.0.0/16 via 100.88.88.1").unwrap(),
+        ]);
+        peer_mgr_b
+            .get_global_ctx()
+            .config
+            .add_proxy_cidr("10.6.0.0/16".parse().unwrap(), None)
+            .unwrap();
+
+        connect_peer_manager(peer_mgr_a.clone(), peer_mgr_b.clone()).await;
+        wait_route_appear(peer_mgr_a.clone(), peer_mgr_b.clone())
+            .await
+            .unwrap();
+
+        wait_for_condition(
+            || {
+                let peer_mgr_a = peer_mgr_a.clone();
+                let peer_mgr_b = peer_mgr_b.clone();
+                async move {
+                    let decision = peer_mgr_a
+                        .decide_ipv4_route(&"10.6.1.1".parse().unwrap())
+                        .await;
+                    decision.source == Ipv4RouteDecisionSource::OspfProxy
+                        && decision.dst_peers == vec![peer_mgr_b.my_peer_id()]
+                        && !decision.is_exit_node
+                        && decision.status == Ipv4RouteDecisionStatus::FallbackLocalRouteUnresolved
+                        && decision
+                            .unresolved_local_route
+                            .as_ref()
+                            .map(ToString::to_string)
+                            == Some("10.6.0.0/16 via 100.88.88.1".to_string())
+                }
+            },
+            Duration::from_secs(5),
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn decide_ipv4_route_prefers_exact_peer_over_local_route() {
+        let network_name = "local-route-exact-peer-priority".to_string();
+        let peer_mgr_a = create_mock_peer_manager_with_name(network_name.clone()).await;
+        let peer_mgr_b = create_mock_peer_manager_with_name(network_name).await;
+
+        peer_mgr_a
+            .get_global_ctx()
+            .set_ipv4(Some("100.88.88.10/24".parse().unwrap()));
+        peer_mgr_b
+            .get_global_ctx()
+            .set_ipv4(Some("100.0.0.7/24".parse().unwrap()));
+        peer_mgr_a.get_global_ctx().config.set_local_routes(vec![
+            parse_local_route_config("100.0.0.0/8 via 100.88.88.1").unwrap(),
+        ]);
+
+        connect_peer_manager(peer_mgr_a.clone(), peer_mgr_b.clone()).await;
+        wait_route_appear(peer_mgr_a.clone(), peer_mgr_b.clone())
+            .await
+            .unwrap();
+
+        wait_for_condition(
+            || {
+                let peer_mgr_a = peer_mgr_a.clone();
+                let peer_mgr_b = peer_mgr_b.clone();
+                async move {
+                    let decision = peer_mgr_a
+                        .decide_ipv4_route(&"100.0.0.7".parse().unwrap())
+                        .await;
+                    decision.source == Ipv4RouteDecisionSource::PeerIp
+                        && decision.dst_peers == vec![peer_mgr_b.my_peer_id()]
+                        && !decision.is_exit_node
+                }
+            },
+            Duration::from_secs(5),
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn decide_ipv4_route_skips_local_route_for_same_network_destination() {
+        let peer_mgr =
+            create_mock_peer_manager_with_name("local-route-same-network-destination".to_string())
+                .await;
+        peer_mgr
+            .get_global_ctx()
+            .set_ipv4(Some("10.6.0.10/16".parse().unwrap()));
+        peer_mgr.get_global_ctx().config.set_local_routes(vec![
+            parse_local_route_config("10.6.0.0/16 via 100.88.88.1").unwrap(),
+        ]);
+
+        let decision = peer_mgr
+            .decide_ipv4_route(&"10.6.1.1".parse().unwrap())
+            .await;
+
+        assert_eq!(decision.source, Ipv4RouteDecisionSource::None);
+        assert!(!decision.is_exit_node);
+        assert!(decision.local_route.is_none());
+    }
 
     async fn create_lazy_peer_manager() -> Arc<PeerManager> {
         let peer_mgr = create_mock_peer_manager_with_mock_stun(NatType::Unknown).await;

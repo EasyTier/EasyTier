@@ -117,6 +117,14 @@ pub trait Route {
         None
     }
 
+    async fn get_exact_peer_id_by_ipv4(&self, _ipv4: &Ipv4Addr) -> Option<PeerId> {
+        None
+    }
+
+    async fn get_proxy_peer_id_by_ipv4(&self, _ipv4: &Ipv4Addr) -> Option<PeerId> {
+        None
+    }
+
     async fn get_peer_id_by_ipv6(&self, _ipv6: &Ipv6Addr) -> Option<PeerId> {
         None
     }

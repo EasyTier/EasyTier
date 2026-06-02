@@ -1,6 +1,6 @@
 use crate::common::config::{
-    ConfigFileControl, ConfigSource, PortForwardConfig, parse_mapped_listener_urls,
-    process_secure_mode_cfg,
+    ConfigFileControl, ConfigSource, LocalRouteConfig, PortForwardConfig,
+    parse_mapped_listener_urls, process_secure_mode_cfg,
 };
 use crate::proto::api::{self, manage};
 use crate::proto::rpc_types::controller::BaseController;
@@ -652,6 +652,29 @@ impl NetworkConfig {
             cfg.set_routes(Some(routes));
         }
 
+        if let Some(local_routes) = self.local_routes.as_ref()
+            && !local_routes.entries.is_empty()
+        {
+            let local_routes = local_routes
+                .entries
+                .iter()
+                .map(|route| {
+                    let network = route.network.parse().with_context(|| {
+                        format!("failed to parse local route network: {}", route.network)
+                    })?;
+                    let gateway = route.gateway.parse().with_context(|| {
+                        format!("failed to parse local route gateway: {}", route.gateway)
+                    })?;
+                    Ok(LocalRouteConfig {
+                        network,
+                        gateway,
+                        metric: route.metric,
+                    })
+                })
+                .collect::<Result<Vec<_>, anyhow::Error>>()?;
+            cfg.set_local_routes(local_routes);
+        }
+
         if !self.exit_nodes.is_empty() {
             let mut exit_nodes = Vec::<std::net::IpAddr>::with_capacity(self.exit_nodes.len());
             for node in self.exit_nodes.iter() {
@@ -954,6 +977,20 @@ impl NetworkConfig {
         {
             result.enable_manual_routes = Some(true);
             result.routes = routes.iter().map(|r| r.to_string()).collect();
+        }
+
+        let local_routes = config.get_local_routes();
+        if !local_routes.is_empty() {
+            result.local_routes = Some(manage::LocalRouteConfig {
+                entries: local_routes
+                    .iter()
+                    .map(|route| manage::LocalRouteEntry {
+                        network: route.network.to_string(),
+                        gateway: route.gateway.to_string(),
+                        metric: route.metric,
+                    })
+                    .collect(),
+            });
         }
 
         let exit_nodes = config.get_exit_nodes();

@@ -1,11 +1,14 @@
 use std::{
+    fmt,
     hash::Hasher,
-    net::{IpAddr, SocketAddr},
+    net::{IpAddr, Ipv4Addr, SocketAddr},
     path::PathBuf,
+    str::FromStr,
     sync::{Arc, Mutex},
 };
 
 use anyhow::Context;
+use arc_swap::ArcSwap;
 use base64::{Engine as _, prelude::BASE64_STANDARD};
 use clap::ValueEnum;
 use clap::builder::PossibleValue;
@@ -219,6 +222,15 @@ pub trait ConfigLoader: Send + Sync {
     fn get_routes(&self) -> Option<Vec<cidr::Ipv4Cidr>>;
     fn set_routes(&self, routes: Option<Vec<cidr::Ipv4Cidr>>);
 
+    fn has_local_routes(&self) -> bool {
+        !self.get_local_routes().is_empty()
+    }
+    fn get_local_routes(&self) -> Vec<LocalRouteConfig>;
+    fn set_local_routes(&self, routes: Vec<LocalRouteConfig>);
+    fn add_local_route(&self, route: LocalRouteConfig);
+    fn remove_local_route(&self, network: cidr::Ipv4Cidr, gateway: Option<Ipv4Addr>);
+    fn clear_local_routes(&self);
+
     fn get_socks5_portal(&self) -> Option<url::Url>;
     fn set_socks5_portal(&self, addr: Option<url::Url>);
 
@@ -413,6 +425,111 @@ pub struct ProxyNetworkConfig {
     pub allow: Option<Vec<String>>,
 }
 
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct LocalRouteConfig {
+    pub network: cidr::Ipv4Cidr,
+    pub gateway: Ipv4Addr,
+    pub metric: Option<u32>,
+}
+
+impl fmt::Display for LocalRouteConfig {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{} via {}", self.network, self.gateway)?;
+        if let Some(metric) = self.metric {
+            write!(f, " metric {}", metric)?;
+        }
+        Ok(())
+    }
+}
+
+impl FromStr for LocalRouteConfig {
+    type Err = anyhow::Error;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        parse_local_route_config(value)
+    }
+}
+
+pub fn parse_local_route_config(value: &str) -> Result<LocalRouteConfig, anyhow::Error> {
+    if value.contains("->") {
+        anyhow::bail!(
+            "invalid local route '{}': use '<CIDR> via <PEER_VIRTUAL_IP> [metric <N>]'",
+            value
+        );
+    }
+
+    let tokens = value.split_whitespace().collect::<Vec<_>>();
+    if tokens.len() < 3 {
+        anyhow::bail!(
+            "invalid local route '{}': expected '<CIDR> via <PEER_VIRTUAL_IP>'",
+            value
+        );
+    }
+
+    if tokens[1] != "via" {
+        anyhow::bail!(
+            "invalid local route '{}': expected 'via' after destination CIDR",
+            value
+        );
+    }
+
+    let network = tokens[0]
+        .parse::<cidr::Ipv4Cidr>()
+        .with_context(|| format!("invalid local route destination CIDR in '{}'", value))?;
+    let gateway = tokens[2]
+        .parse::<Ipv4Addr>()
+        .with_context(|| format!("invalid local route next-hop IP in '{}'", value))?;
+
+    let mut metric = None;
+    let mut index = 3;
+    while index < tokens.len() {
+        match tokens[index] {
+            "metric" => {
+                if metric.is_some() {
+                    anyhow::bail!("invalid local route '{}': duplicate metric", value);
+                }
+                let Some(raw_metric) = tokens.get(index + 1) else {
+                    anyhow::bail!("invalid local route '{}': metric value is missing", value);
+                };
+                metric = Some(raw_metric.parse::<u32>().with_context(|| {
+                    format!("invalid local route metric '{}' in '{}'", raw_metric, value)
+                })?);
+                index += 2;
+            }
+            "mtu" => {
+                anyhow::bail!(
+                    "invalid local route '{}': per-route mtu is not supported by EasyTier yet",
+                    value
+                );
+            }
+            "dev" => {
+                anyhow::bail!(
+                    "invalid local route '{}': dev is not supported; EasyTier manages the TUN device",
+                    value
+                );
+            }
+            token => {
+                anyhow::bail!(
+                    "invalid local route '{}': unsupported token '{}'",
+                    value,
+                    token
+                );
+            }
+        }
+    }
+
+    Ok(LocalRouteConfig {
+        network,
+        gateway,
+        metric,
+    })
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Default)]
+struct LocalRouteSection {
+    entries: Vec<LocalRouteConfig>,
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Default)]
 pub struct FileLoggerConfig {
     pub level: Option<String>,
@@ -545,6 +662,7 @@ struct Config {
     vpn_portal_config: Option<VpnPortalConfig>,
 
     routes: Option<Vec<cidr::Ipv4Cidr>>,
+    local_route: Option<LocalRouteSection>,
 
     socks5_proxy: Option<url::Url>,
 
@@ -571,6 +689,7 @@ struct Config {
 #[derive(Debug, Clone)]
 pub struct TomlConfigLoader {
     config: Arc<Mutex<Config>>,
+    local_routes: Arc<ArcSwap<Vec<LocalRouteConfig>>>,
 }
 
 impl Default for TomlConfigLoader {
@@ -590,15 +709,35 @@ impl TomlConfigLoader {
     }
 
     pub fn new_from_str(config_str: &str) -> Result<Self, anyhow::Error> {
+        if let Some(value) = toml::de::from_str::<toml::Value>(config_str)
+            .ok()
+            .and_then(|value| {
+                value
+                    .as_table()
+                    .and_then(|table| table.get("local_routes"))
+                    .cloned()
+            })
+        {
+            anyhow::bail!(
+                "legacy local_routes config is not supported: {value}; use [local_route] [[local_route.entries]] instead"
+            );
+        }
+
         let mut config = toml::de::from_str::<Config>(config_str)
             .with_context(|| format!("failed to parse config file: {}", config_str))?;
 
         Self::normalize_config_source(&mut config);
 
         config.flags_struct = Some(Self::gen_flags(config.flags.clone().unwrap_or_default()));
+        let local_routes = config
+            .local_route
+            .as_ref()
+            .map(|local_route| local_route.entries.clone())
+            .unwrap_or_default();
 
         let config = TomlConfigLoader {
             config: Arc::new(Mutex::new(config)),
+            local_routes: Arc::new(ArcSwap::from_pointee(local_routes)),
         };
 
         let old_ns = config.get_network_identity();
@@ -926,6 +1065,51 @@ impl ConfigLoader for TomlConfigLoader {
 
     fn set_routes(&self, routes: Option<Vec<cidr::Ipv4Cidr>>) {
         self.config.lock().unwrap().routes = routes;
+    }
+
+    fn has_local_routes(&self) -> bool {
+        !self.local_routes.load().is_empty()
+    }
+
+    fn get_local_routes(&self) -> Vec<LocalRouteConfig> {
+        self.local_routes.load_full().as_ref().clone()
+    }
+
+    fn set_local_routes(&self, routes: Vec<LocalRouteConfig>) {
+        self.config.lock().unwrap().local_route = if routes.is_empty() {
+            None
+        } else {
+            Some(LocalRouteSection {
+                entries: routes.clone(),
+            })
+        };
+        self.local_routes.store(Arc::new(routes));
+    }
+
+    fn add_local_route(&self, route: LocalRouteConfig) {
+        let mut routes = self.get_local_routes();
+        if let Some(existing) = routes
+            .iter_mut()
+            .find(|existing| existing.network == route.network && existing.gateway == route.gateway)
+        {
+            *existing = route;
+        } else {
+            routes.push(route);
+        }
+        self.set_local_routes(routes);
+    }
+
+    fn remove_local_route(&self, network: cidr::Ipv4Cidr, gateway: Option<Ipv4Addr>) {
+        let mut routes = self.get_local_routes();
+        routes.retain(|route| {
+            route.network != network || gateway.is_some_and(|gateway| route.gateway != gateway)
+        });
+        self.set_local_routes(routes);
+    }
+
+    fn clear_local_routes(&self) {
+        self.config.lock().unwrap().local_route = None;
+        self.local_routes.store(Arc::new(Vec::new()));
     }
 
     fn get_socks5_portal(&self) -> Option<url::Url> {
@@ -1336,6 +1520,97 @@ stun_servers = [
         let err = parse_mapped_listener_urls(&["ring://peer-id".to_string()]).unwrap_err();
 
         assert!(err.to_string().contains("mapped listener port is missing"));
+    }
+
+    #[test]
+    fn test_parse_local_route_config() {
+        let route: LocalRouteConfig = "10.6.0.0/16 via 100.88.88.1 metric 100".parse().unwrap();
+
+        assert_eq!(route.network, "10.6.0.0/16".parse().unwrap());
+        assert_eq!(route.gateway, "100.88.88.1".parse::<Ipv4Addr>().unwrap());
+        assert_eq!(route.metric, Some(100));
+        assert_eq!(route.to_string(), "10.6.0.0/16 via 100.88.88.1 metric 100");
+    }
+
+    #[test]
+    fn test_parse_local_route_config_rejects_unsupported_forms() {
+        for route in [
+            "10.6.0.0/16->100.88.88.1",
+            "10.6.0.0/16 100.88.88.1",
+            "10.6.0.0/16 via 100.88.88.1 dev eth0",
+            "10.6.0.0/16 via 100.88.88.1 mtu 1280",
+        ] {
+            assert!(
+                parse_local_route_config(route).is_err(),
+                "route should be rejected: {route}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_local_route_config_roundtrip() {
+        let config = TomlConfigLoader::default();
+        let route: LocalRouteConfig = "10.6.0.0/16 via 100.88.88.1 metric 100".parse().unwrap();
+
+        config.add_local_route(route);
+        assert_eq!(config.get_local_routes(), vec![route]);
+
+        let dumped = config.dump();
+        assert!(dumped.contains("[[local_route.entries]]"));
+        assert!(dumped.contains("network = \"10.6.0.0/16\""));
+        assert!(dumped.contains("gateway = \"100.88.88.1\""));
+        assert!(dumped.contains("metric = 100"));
+
+        let loaded = TomlConfigLoader::new_from_str(&dumped).unwrap();
+        assert_eq!(loaded.get_local_routes(), vec![route]);
+    }
+
+    #[test]
+    fn test_local_route_config_loads_structured_toml() {
+        let config_str = r#"
+[local_route]
+
+[[local_route.entries]]
+network = "10.6.0.0/16"
+gateway = "100.88.88.1"
+
+[[local_route.entries]]
+network = "10.8.0.0/16"
+gateway = "100.88.88.2"
+metric = 100
+"#;
+
+        let loaded = TomlConfigLoader::new_from_str(config_str).unwrap();
+
+        assert_eq!(
+            loaded.get_local_routes(),
+            vec![
+                LocalRouteConfig {
+                    network: "10.6.0.0/16".parse().unwrap(),
+                    gateway: "100.88.88.1".parse().unwrap(),
+                    metric: None,
+                },
+                LocalRouteConfig {
+                    network: "10.8.0.0/16".parse().unwrap(),
+                    gateway: "100.88.88.2".parse().unwrap(),
+                    metric: Some(100),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn test_local_route_config_rejects_legacy_string_array() {
+        let config_str = r#"
+local_routes = ["10.6.0.0/16 via 100.88.88.1"]
+"#;
+
+        let err = TomlConfigLoader::new_from_str(config_str).unwrap_err();
+
+        assert!(
+            err.to_string()
+                .contains("legacy local_routes config is not supported")
+        );
     }
 
     #[test]

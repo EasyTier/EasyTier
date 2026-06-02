@@ -19,7 +19,7 @@ use tokio_util::task::AbortOnDropHandle;
 
 use crate::common::PeerId;
 use crate::common::acl_processor::AclRuleBuilder;
-use crate::common::config::ConfigLoader;
+use crate::common::config::{ConfigLoader, LocalRouteConfig};
 use crate::common::error::Error;
 use crate::common::global_ctx::{ArcGlobalCtx, GlobalCtx, GlobalCtxEvent};
 use crate::connector::direct::DirectConnectorManager;
@@ -320,6 +320,7 @@ impl InstanceConfigPatcher {
         self.patch_acl(patch.acl).await?;
         self.patch_proxy_networks(patch.proxy_networks).await?;
         self.patch_routes(patch.routes).await?;
+        self.patch_local_routes(patch.local_routes).await?;
         self.patch_exit_nodes(patch.exit_nodes).await?;
         self.patch_mapped_listeners(patch.mapped_listeners).await?;
         self.patch_connector(patch.connectors).await?;
@@ -531,6 +532,66 @@ impl InstanceConfigPatcher {
             global_ctx.config.set_routes(Some(current_routes));
         }
         Ok(())
+    }
+
+    async fn patch_local_routes(
+        &self,
+        local_routes: Vec<crate::proto::api::config::LocalRoutePatch>,
+    ) -> Result<(), anyhow::Error> {
+        if local_routes.is_empty() {
+            return Ok(());
+        }
+
+        let global_ctx = weak_upgrade(&self.global_ctx)?;
+        let mut current_routes = global_ctx.config.get_local_routes();
+        for patch in local_routes {
+            match ConfigPatchAction::try_from(patch.action) {
+                Ok(ConfigPatchAction::Add) => {
+                    let route = Self::local_route_from_patch(&patch)?;
+                    if let Some(existing) = current_routes.iter_mut().find(|existing| {
+                        existing.network == route.network && existing.gateway == route.gateway
+                    }) {
+                        *existing = route;
+                    } else {
+                        current_routes.push(route);
+                    }
+                }
+                Ok(ConfigPatchAction::Remove) => {
+                    let Some(network) = patch.network.map(Into::into) else {
+                        anyhow::bail!("local route network is required for remove");
+                    };
+                    let gateway: Option<Ipv4Addr> = patch.gateway.map(Into::into);
+                    current_routes.retain(|route| {
+                        route.network != network
+                            || gateway.is_some_and(|gateway| route.gateway != gateway)
+                    });
+                }
+                Ok(ConfigPatchAction::Clear) => {
+                    current_routes.clear();
+                }
+                Err(_) => {
+                    anyhow::bail!("invalid local route action: {}", patch.action);
+                }
+            }
+        }
+        global_ctx.config.set_local_routes(current_routes);
+        Ok(())
+    }
+
+    fn local_route_from_patch(
+        patch: &crate::proto::api::config::LocalRoutePatch,
+    ) -> Result<LocalRouteConfig, anyhow::Error> {
+        let Some(network) = patch.network.map(Into::into) else {
+            anyhow::bail!("local route network is required");
+        };
+        let Some(gateway) = patch.gateway.map(Into::into) else {
+            anyhow::bail!("local route gateway is required");
+        };
+        Ok(LocalRouteConfig {
+            network,
+            gateway,
+            metric: patch.metric,
+        })
     }
 
     async fn patch_exit_nodes(

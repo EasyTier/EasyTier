@@ -28,6 +28,7 @@ message InstanceConfigPatch {
   optional bool ipv6_public_addr_auto = 12;
   optional string ipv6_public_addr_prefix = 13;
   optional bool disable_relay_data = 14;
+  repeated LocalRoutePatch local_routes = 15;
 }
 
 message PortForwardPatch {
@@ -65,6 +66,13 @@ message RoutePatch {
 message ExitNodePatch {
   ConfigPatchAction action = 1;
   common.IpAddr node = 2;
+}
+
+message LocalRoutePatch {
+  ConfigPatchAction action = 1;
+  common.Ipv4Inet network = 2;
+  common.Ipv4Addr gateway = 3;
+  optional uint32 metric = 4;
 }
 
 message PatchConfigRequest {

@@ -227,6 +227,37 @@ easytier-cli route
 ping 10.1.1.2
 ```
 
+#### Local Routes
+
+Local routes are local-only routing rules that send selected destination CIDRs to a specific EasyTier virtual IPv4 address. They are useful when you want this node to use a remote node as the next hop without advertising the route to the whole virtual network.
+
+Example TOML configuration:
+
+```toml
+[local_route]
+
+[[local_route.entries]]
+network = "10.6.0.0/16"
+gateway = "100.88.88.1"
+
+[[local_route.entries]]
+network = "10.8.0.0/16"
+gateway = "100.88.88.2"
+metric = 100
+```
+
+You can also manage local routes at runtime:
+
+```bash
+easytier-cli route show
+easytier-cli route get 10.6.1.1
+easytier-cli route add 10.6.0.0/16 via 100.88.88.1 metric 100
+easytier-cli route del 10.6.0.0/16 via 100.88.88.1
+easytier-cli route flush
+```
+
+`easytier-cli route list` and `easytier-cli route dump` still show peer-propagated route information. Local routes are not propagated through OSPF and do not change the peer protocol, so new and old clients can run in the same network. IPv4 forwarding chooses routes in this order: exact peer virtual IP, local route, OSPF proxy route, then exit node. The next-hop node must be able to forward the traffic, usually by enabling `--enable-exit-node`; an old client with exit-node enabled can forward traffic sent by a new client. `route show` marks the configured next hop as `exit_node=required`; this means the local node will use EasyTier's exit-node packet flag when that local route is selected, but it does not remotely verify that the next-hop node has enabled exit-node forwarding. If a matching local route cannot resolve its next hop, `route get` reports the unresolved route and shows the OSPF or exit-node fallback that will be used, if any. Use a current CLI or Web UI when editing `local_route.entries`; older UIs may not render this field. EasyTier installs the configured local-route CIDRs to the TUN route table and passes `metric` to the system route when supported, but it does not import or synchronize routes from the operating system route table.
+
 #### WireGuard Integration
 
 EasyTier can act as a WireGuard server, allowing any device with a WireGuard client (including iOS and Android) to access the EasyTier network. Here's an example setup:

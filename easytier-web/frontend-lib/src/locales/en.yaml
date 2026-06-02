@@ -186,6 +186,10 @@ manual_routes: Manual Route
 manual_routes_help: |
   Assign routes cidr manually, will disable subnet proxy and wireguard routes propagated from peers. e.g.:192.168.0.0/16
 
+local_routes: Local Routes
+local_routes_help: |
+  Add local-only routes that are forwarded through a remote EasyTier virtual IPv4 address. Fill network, gateway, and optional metric for each entry. The remote node must be able to forward the traffic, usually by enabling exit-node.
+
 socks5: Socks5 Server
 socks5_help: |
   Enable socks5 server, allow socks5 client to access virtual network. format: <port>, e.g.: 1080

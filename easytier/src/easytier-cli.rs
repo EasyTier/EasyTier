@@ -2,7 +2,7 @@ use std::{
     collections::{BTreeMap, HashMap},
     ffi::OsString,
     future::Future,
-    net::{IpAddr, SocketAddr},
+    net::{IpAddr, Ipv4Addr, SocketAddr},
     path::PathBuf,
     pin::Pin,
     str::FromStr,
@@ -14,7 +14,7 @@ use std::{
 use anyhow::Context;
 use base64::Engine as _;
 use base64::prelude::BASE64_STANDARD;
-use cidr::Ipv4Inet;
+use cidr::{Ipv4Cidr, Ipv4Inet};
 use clap::{ArgAction, Args, CommandFactory, Parser, Subcommand, builder::BoolishValueParser};
 use dashmap::DashMap;
 use easytier::ShellType;
@@ -30,6 +30,7 @@ use tokio::time::timeout;
 
 use easytier::{
     common::{
+        config::{LocalRouteConfig, parse_local_route_config},
         constants::EASYTIER_VERSION,
         stun::{StunInfoCollector, StunInfoCollectorTrait},
     },
@@ -38,17 +39,19 @@ use easytier::{
         acl::AclStats,
         api::{
             config::{
-                AclPatch, ConfigPatchAction, ConfigRpc, ConfigRpcClientFactory,
-                InstanceConfigPatch, PatchConfigRequest, PortForwardPatch, StringPatch, UrlPatch,
+                AclPatch, ConfigPatchAction, ConfigRpc, ConfigRpcClientFactory, GetConfigRequest,
+                InstanceConfigPatch, LocalRoutePatch, PatchConfigRequest, PortForwardPatch,
+                StringPatch, UrlPatch,
             },
             instance::{
                 AclManageRpc, AclManageRpcClientFactory, Connector, ConnectorManageRpc,
                 ConnectorManageRpcClientFactory, CredentialManageRpc,
                 CredentialManageRpcClientFactory, DumpRouteRequest, ForeignNetworkEntryPb,
                 GenerateCredentialRequest, GetAclStatsRequest, GetPrometheusStatsRequest,
-                GetStatsRequest, GetVpnPortalInfoRequest, GetWhitelistRequest,
-                GetWhitelistResponse, InstanceIdentifier, ListConnectorRequest,
-                ListCredentialsRequest, ListCredentialsResponse, ListForeignNetworkRequest,
+                GetRouteDecisionRequest, GetRouteDecisionResponse, GetStatsRequest,
+                GetVpnPortalInfoRequest, GetWhitelistRequest, GetWhitelistResponse,
+                InstanceIdentifier, ListConnectorRequest, ListCredentialsRequest,
+                ListCredentialsResponse, ListForeignNetworkRequest,
                 ListGlobalForeignNetworkRequest, ListMappedListenerRequest, ListPeerRequest,
                 ListPeerResponse, ListPortForwardRequest, ListPortForwardResponse,
                 ListPublicIpv6InfoRequest, ListPublicIpv6InfoResponse, ListRouteRequest,
@@ -56,9 +59,10 @@ use easytier::{
                 MappedListenerManageRpcClientFactory, MetricSnapshot, NodeInfo, PeerManageRpc,
                 PeerManageRpcClientFactory, PortForwardManageRpc,
                 PortForwardManageRpcClientFactory, RevokeCredentialRequest, Route as ApiRoute,
-                ShowNodeInfoRequest, StatsRpc, StatsRpcClientFactory, TcpProxyEntryState,
-                TcpProxyEntryTransportType, TcpProxyRpc, TcpProxyRpcClientFactory,
-                TrustedKeySourcePb, VpnPortalInfo, VpnPortalRpc, VpnPortalRpcClientFactory,
+                RouteDecisionSource, ShowNodeInfoRequest, StatsRpc, StatsRpcClientFactory,
+                TcpProxyEntryState, TcpProxyEntryTransportType, TcpProxyRpc,
+                TcpProxyRpcClientFactory, TrustedKeySourcePb, VpnPortalInfo, VpnPortalRpc,
+                VpnPortalRpcClientFactory,
                 instance_identifier::{InstanceSelector, Selector},
                 list_global_foreign_network_response, list_peer_route_pair,
             },
@@ -67,7 +71,8 @@ use easytier::{
                 SetLoggerConfigRequest,
             },
             manage::{
-                ListNetworkInstanceMetaRequest, ListNetworkInstanceRequest, WebClientService,
+                ListNetworkInstanceMetaRequest, ListNetworkInstanceRequest,
+                LocalRouteEntry as LocalRouteEntryPb, NetworkConfig, WebClientService,
                 WebClientServiceClientFactory,
             },
         },
@@ -222,6 +227,34 @@ enum RouteSubCommand {
     List,
     /// Dump routes in CIDR format
     Dump,
+    /// Show configured local routes
+    Show,
+    /// Show the IPv4 route decision for a destination address
+    Get { destination: Ipv4Addr },
+    /// Add or replace a configured local route, e.g. 10.6.0.0/16 via 100.88.88.1 metric 100
+    Add {
+        #[arg(
+            required = true,
+            num_args = 1..,
+            allow_hyphen_values = true,
+            help = "route expression, e.g. 10.6.0.0/16 via 100.88.88.1 metric 100"
+        )]
+        route: Vec<String>,
+    },
+    /// Delete configured local routes by CIDR or CIDR plus via
+    #[command(alias = "delete")]
+    Del {
+        #[arg(
+            required = true,
+            num_args = 1..,
+            allow_hyphen_values = true,
+            help = "CIDR or route expression, e.g. 10.6.0.0/16 via 100.88.88.1"
+        )]
+        route: Vec<String>,
+    },
+    /// Clear all configured local routes
+    #[command(alias = "clear")]
+    Flush,
 }
 
 #[derive(Args, Debug)]
@@ -540,12 +573,226 @@ type LocalBoxFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T, Error>> + 'a>
 type ForeignNetworkMap = BTreeMap<String, ForeignNetworkEntryPb>;
 type GlobalForeignNetworkMap = BTreeMap<u32, list_global_foreign_network_response::ForeignNetworks>;
 
+#[derive(Clone, tabled::Tabled, serde::Serialize)]
+struct LocalRouteTableItem {
+    network: String,
+    gateway: String,
+    metric: String,
+    peer_id: String,
+    hostname: String,
+    exit_node: String,
+    status: String,
+}
+
+#[derive(Clone, tabled::Tabled, serde::Serialize)]
+struct LocalRouteGetItem {
+    destination: String,
+    source: String,
+    peer_ids: String,
+    set_exit_node: bool,
+    status: String,
+    local_route: String,
+    gateway: String,
+    unresolved_local_route: String,
+    unresolved_gateway: String,
+}
+
+struct LocalRouteListData {
+    local_routes: Vec<LocalRouteConfig>,
+    peer_routes: Vec<PeerRoutePair>,
+}
+
 fn is_missing_web_client_service(error: &RpcError) -> bool {
     matches!(
         error,
         RpcError::InvalidServiceKey(service_name, _)
             if service_name.trim_matches('"') == "WebClientService"
     )
+}
+
+fn is_route_decision_unsupported_rpc(error: &RpcError) -> bool {
+    matches!(
+        error,
+        RpcError::InvalidMethodIndex(_, service_name) | RpcError::InvalidServiceKey(service_name, _)
+            if service_name.trim_matches('"') == "PeerManageRpc"
+    )
+}
+
+fn route_decision_rpc_error(error: RpcError) -> Error {
+    if is_route_decision_unsupported_rpc(&error) {
+        anyhow::anyhow!(
+            "route get is not supported by the target easytier-core; please upgrade easytier-core to a version that supports local_routes"
+        )
+    } else {
+        error.into()
+    }
+}
+
+fn local_route_network_to_inet(network: Ipv4Cidr) -> easytier::proto::common::Ipv4Inet {
+    cidr::Ipv4Inet::new(network.first_address(), network.network_length())
+        .expect("Ipv4Cidr is always a valid Ipv4Inet")
+        .into()
+}
+
+fn local_route_to_patch(route: &LocalRouteConfig, action: ConfigPatchAction) -> LocalRoutePatch {
+    LocalRoutePatch {
+        action: action.into(),
+        network: Some(local_route_network_to_inet(route.network)),
+        gateway: Some(route.gateway.into()),
+        metric: route.metric,
+    }
+}
+
+fn parse_local_route_cli_args(route: &[String]) -> Result<LocalRouteConfig, Error> {
+    if route.is_empty() {
+        anyhow::bail!("route is required");
+    }
+    parse_local_route_config(&route.join(" "))
+}
+
+fn parse_local_route_delete_args(route: &[String]) -> Result<(Ipv4Cidr, Option<Ipv4Addr>), Error> {
+    match route {
+        [] => anyhow::bail!("route is required"),
+        [cidr] => Ok((
+            cidr.parse()
+                .with_context(|| format!("invalid local route cidr: {}", cidr))?,
+            None,
+        )),
+        [cidr, via] if via != "via" => Ok((
+            cidr.parse()
+                .with_context(|| format!("invalid local route cidr: {}", cidr))?,
+            Some(
+                via.parse()
+                    .with_context(|| format!("invalid local route via: {}", via))?,
+            ),
+        )),
+        _ => {
+            let route = parse_local_route_cli_args(route)?;
+            Ok((route.network, Some(route.gateway)))
+        }
+    }
+}
+
+fn parse_config_local_routes(config: &NetworkConfig) -> Result<Vec<LocalRouteConfig>, Error> {
+    config
+        .local_routes
+        .as_ref()
+        .map(|local_routes| local_routes.entries.as_slice())
+        .unwrap_or_default()
+        .iter()
+        .map(local_route_from_pb)
+        .collect()
+}
+
+fn local_route_from_pb(route: &LocalRouteEntryPb) -> Result<LocalRouteConfig, Error> {
+    let network = route
+        .network
+        .parse()
+        .with_context(|| format!("invalid local route network: {}", route.network))?;
+    let gateway = route
+        .gateway
+        .parse()
+        .with_context(|| format!("invalid local route gateway: {}", route.gateway))?;
+    Ok(LocalRouteConfig {
+        network,
+        gateway,
+        metric: route.metric,
+    })
+}
+
+fn local_route_table_item(
+    route: &LocalRouteConfig,
+    peer_routes: &[PeerRoutePair],
+) -> LocalRouteTableItem {
+    let next_hop = peer_routes
+        .iter()
+        .find(|pair| peer_route_pair_ipv4(pair) == Some(route.gateway))
+        .and_then(|pair| pair.route.as_ref());
+    LocalRouteTableItem {
+        network: route.network.to_string(),
+        gateway: route.gateway.to_string(),
+        metric: route
+            .metric
+            .map(|metric| metric.to_string())
+            .unwrap_or_else(|| "-".to_string()),
+        peer_id: next_hop
+            .map(|route| route.peer_id.to_string())
+            .unwrap_or_else(|| "-".to_string()),
+        hostname: next_hop
+            .map(|route| route.hostname.clone())
+            .unwrap_or_else(|| "-".to_string()),
+        exit_node: "required".to_string(),
+        status: if next_hop.is_some() {
+            "requires-exit-node"
+        } else {
+            "unresolved"
+        }
+        .to_string(),
+    }
+}
+
+fn peer_route_pair_ipv4(pair: &PeerRoutePair) -> Option<Ipv4Addr> {
+    let route = pair.route.as_ref()?;
+    let ipv4 = route.ipv4_addr?;
+    let addr = ipv4.address?;
+    Some(addr.into())
+}
+
+fn route_decision_source_name(source: i32) -> &'static str {
+    match RouteDecisionSource::try_from(source).unwrap_or(RouteDecisionSource::None) {
+        RouteDecisionSource::None => "none",
+        RouteDecisionSource::Broadcast => "broadcast",
+        RouteDecisionSource::PeerIp => "peer-ip",
+        RouteDecisionSource::LocalRoute => "local-route",
+        RouteDecisionSource::OspfProxy => "ospf-proxy",
+        RouteDecisionSource::ExitNode => "exit-node",
+    }
+}
+
+fn local_route_matches(route: &LocalRouteConfig, expected: &LocalRouteConfig) -> bool {
+    route.network == expected.network
+        && route.gateway == expected.gateway
+        && route.metric == expected.metric
+}
+
+fn local_route_get_item(
+    destination: Ipv4Addr,
+    response: &GetRouteDecisionResponse,
+) -> LocalRouteGetItem {
+    LocalRouteGetItem {
+        destination: destination.to_string(),
+        source: route_decision_source_name(response.source).to_string(),
+        peer_ids: if response.peer_ids.is_empty() {
+            "-".to_string()
+        } else {
+            response
+                .peer_ids
+                .iter()
+                .map(|peer_id| peer_id.to_string())
+                .collect::<Vec<_>>()
+                .join(",")
+        },
+        set_exit_node: response.set_exit_node,
+        status: response.status.clone(),
+        local_route: if response.local_route.is_empty() {
+            "-".to_string()
+        } else {
+            response.local_route.clone()
+        },
+        gateway: response
+            .gateway
+            .map(|gateway| gateway.to_string())
+            .unwrap_or_else(|| "-".to_string()),
+        unresolved_local_route: if response.unresolved_local_route.is_empty() {
+            "-".to_string()
+        } else {
+            response.unresolved_local_route.clone()
+        },
+        unresolved_gateway: response
+            .unresolved_gateway
+            .map(|gateway| gateway.to_string())
+            .unwrap_or_else(|| "-".to_string()),
+    }
 }
 
 #[cfg(test)]
@@ -571,6 +818,51 @@ mod tests {
         let error = RpcError::InvalidServiceKey("PeerManageRpc".to_string(), "".to_string());
 
         assert!(!is_missing_web_client_service(&error));
+    }
+
+    #[test]
+    fn route_decision_unsupported_rpc_matches_peer_manage_method() {
+        let error = RpcError::InvalidMethodIndex(4, "PeerManageRpc".to_string());
+
+        assert!(is_route_decision_unsupported_rpc(&error));
+    }
+
+    #[test]
+    fn route_decision_unsupported_rpc_rejects_other_services() {
+        let error = RpcError::InvalidServiceKey("ConfigRpc".to_string(), "".to_string());
+
+        assert!(!is_route_decision_unsupported_rpc(&error));
+    }
+
+    #[test]
+    fn parse_local_route_delete_accepts_cidr_only() {
+        let route = vec!["10.6.0.0/16".to_string()];
+        let (cidr, via) = parse_local_route_delete_args(&route).unwrap();
+
+        assert_eq!(cidr, "10.6.0.0/16".parse::<Ipv4Cidr>().unwrap());
+        assert_eq!(via, None);
+    }
+
+    #[test]
+    fn parse_local_route_delete_accepts_cidr_via() {
+        let route = vec![
+            "10.6.0.0/16".to_string(),
+            "via".to_string(),
+            "100.88.88.1".to_string(),
+        ];
+        let (cidr, via) = parse_local_route_delete_args(&route).unwrap();
+
+        assert_eq!(cidr, "10.6.0.0/16".parse::<Ipv4Cidr>().unwrap());
+        assert_eq!(via, Some("100.88.88.1".parse().unwrap()));
+    }
+
+    #[test]
+    fn parse_local_route_delete_accepts_cidr_ip() {
+        let route = vec!["10.6.0.0/16".to_string(), "100.88.88.1".to_string()];
+        let (cidr, via) = parse_local_route_delete_args(&route).unwrap();
+
+        assert_eq!(cidr, "10.6.0.0/16".parse::<Ipv4Cidr>().unwrap());
+        assert_eq!(via, Some("100.88.88.1".parse().unwrap()));
     }
 }
 
@@ -984,6 +1276,92 @@ impl<'a> CommandHandler<'a> {
             )
             .await?
             .result)
+    }
+
+    async fn fetch_network_config(&self) -> Result<NetworkConfig, Error> {
+        Ok(self
+            .get_config_client()
+            .await?
+            .get_config(
+                BaseController::default(),
+                GetConfigRequest {
+                    instance: Some(self.instance_selector.clone()),
+                },
+            )
+            .await?
+            .config
+            .ok_or_else(|| anyhow::anyhow!("config not found"))?)
+    }
+
+    async fn fetch_local_routes(&self) -> Result<Vec<LocalRouteConfig>, Error> {
+        let config = self.fetch_network_config().await?;
+        parse_config_local_routes(&config)
+    }
+
+    async fn fetch_local_route_list_data(&self) -> Result<LocalRouteListData, Error> {
+        Ok(LocalRouteListData {
+            local_routes: self.fetch_local_routes().await?,
+            peer_routes: self.list_peer_route_pair().await?,
+        })
+    }
+
+    async fn fetch_local_route_get(
+        &self,
+        destination: Ipv4Addr,
+    ) -> Result<LocalRouteGetItem, Error> {
+        let response = self
+            .get_peer_manager_client()
+            .await?
+            .get_route_decision(
+                BaseController::default(),
+                GetRouteDecisionRequest {
+                    instance: Some(self.instance_selector.clone()),
+                    destination: Some(destination.into()),
+                },
+            )
+            .await
+            .map_err(route_decision_rpc_error)?;
+        Ok(local_route_get_item(destination, &response))
+    }
+
+    async fn verify_local_route_added(&self, route: &LocalRouteConfig) -> Result<(), Error> {
+        let routes = self.fetch_local_routes().await?;
+        if routes
+            .iter()
+            .any(|candidate| local_route_matches(candidate, route))
+        {
+            return Ok(());
+        }
+        anyhow::bail!(
+            "local route patch did not take effect; target easytier-core may not support local_routes"
+        );
+    }
+
+    async fn verify_local_route_removed(
+        &self,
+        network: Ipv4Cidr,
+        gateway: Option<Ipv4Addr>,
+    ) -> Result<(), Error> {
+        let routes = self.fetch_local_routes().await?;
+        let still_exists = routes.iter().any(|route| {
+            route.network == network && gateway.is_none_or(|gateway| route.gateway == gateway)
+        });
+        if !still_exists {
+            return Ok(());
+        }
+        anyhow::bail!(
+            "local route remove did not take effect; target easytier-core may not support local_routes"
+        );
+    }
+
+    async fn verify_local_routes_flushed(&self) -> Result<(), Error> {
+        let routes = self.fetch_local_routes().await?;
+        if routes.is_empty() {
+            return Ok(());
+        }
+        anyhow::bail!(
+            "local route flush did not take effect; target easytier-core may not support local_routes"
+        );
     }
 
     async fn fetch_foreign_networks(
@@ -1617,6 +1995,130 @@ impl<'a> CommandHandler<'a> {
             println!("response: {}", result);
             Ok(())
         })
+    }
+
+    async fn handle_route_show(&self) -> Result<(), Error> {
+        let results = self
+            .collect_instance_results(|handler| Box::pin(handler.fetch_local_route_list_data()))
+            .await?;
+
+        let rows = results
+            .into_iter()
+            .map(|result| {
+                result.map(|data| {
+                    data.local_routes
+                        .iter()
+                        .map(|route| local_route_table_item(route, &data.peer_routes))
+                        .collect::<Vec<_>>()
+                })
+            })
+            .collect::<Vec<_>>();
+
+        if self.verbose || *self.output_format == OutputFormat::Json {
+            return self.print_json_results(rows);
+        }
+
+        self.print_results(&rows, |rows| {
+            print_output(rows, self.output_format, &[], &[], self.no_trunc)
+        })
+    }
+
+    async fn handle_route_get(&self, destination: Ipv4Addr) -> Result<(), Error> {
+        let results = self
+            .collect_instance_results(|handler| {
+                Box::pin(handler.fetch_local_route_get(destination))
+            })
+            .await?;
+
+        if self.verbose || *self.output_format == OutputFormat::Json {
+            return self.print_json_results(results);
+        }
+
+        self.print_results(&results, |row| {
+            print_output(
+                std::slice::from_ref(row),
+                self.output_format,
+                &[],
+                &[],
+                self.no_trunc,
+            )
+        })
+    }
+
+    async fn apply_local_route_patch(&self, patch: LocalRoutePatch) -> Result<(), Error> {
+        let client = self.get_config_client().await?;
+        let request = PatchConfigRequest {
+            instance: Some(self.instance_selector.clone()),
+            patch: Some(InstanceConfigPatch {
+                local_routes: vec![patch],
+                ..Default::default()
+            }),
+        };
+        client
+            .patch_config(BaseController::default(), request)
+            .await?;
+        Ok(())
+    }
+
+    async fn handle_route_add(&self, route: &[String]) -> Result<(), Error> {
+        let route = parse_local_route_cli_args(route)?;
+        self.apply_to_instances(|handler| {
+            let route = route.clone();
+            Box::pin(async move {
+                handler
+                    .apply_local_route_patch(local_route_to_patch(&route, ConfigPatchAction::Add))
+                    .await?;
+                handler.verify_local_route_added(&route).await
+            })
+        })
+        .await?;
+        println!("local route add applied to selected instance(s): {}", route);
+        Ok(())
+    }
+
+    async fn handle_route_del(&self, route: &[String]) -> Result<(), Error> {
+        let (network, gateway) = parse_local_route_delete_args(route)?;
+        self.apply_to_instances(|handler| {
+            Box::pin(async move {
+                handler
+                    .apply_local_route_patch(LocalRoutePatch {
+                        action: ConfigPatchAction::Remove.into(),
+                        network: Some(local_route_network_to_inet(network)),
+                        gateway: gateway.map(Into::into),
+                        metric: None,
+                    })
+                    .await?;
+                handler.verify_local_route_removed(network, gateway).await
+            })
+        })
+        .await?;
+        let gateway = gateway
+            .map(|gateway| format!(" via {}", gateway))
+            .unwrap_or_else(String::new);
+        println!(
+            "local route delete applied to selected instance(s): {}{}",
+            network, gateway
+        );
+        Ok(())
+    }
+
+    async fn handle_route_flush(&self) -> Result<(), Error> {
+        self.apply_to_instances(|handler| {
+            Box::pin(async move {
+                handler
+                    .apply_local_route_patch(LocalRoutePatch {
+                        action: ConfigPatchAction::Clear.into(),
+                        network: None,
+                        gateway: None,
+                        metric: None,
+                    })
+                    .await?;
+                handler.verify_local_routes_flushed().await
+            })
+        })
+        .await?;
+        println!("local route flush applied to selected instance(s)");
+        Ok(())
     }
 
     async fn handle_foreign_network_list(&self, include_trusted_keys: bool) -> Result<(), Error> {
@@ -2938,6 +3440,13 @@ async fn main() -> Result<(), Error> {
         SubCommand::Route(route_args) => match route_args.sub_command {
             Some(RouteSubCommand::List) | None => handler.handle_route_list().await?,
             Some(RouteSubCommand::Dump) => handler.handle_route_dump().await?,
+            Some(RouteSubCommand::Show) => handler.handle_route_show().await?,
+            Some(RouteSubCommand::Get { destination }) => {
+                handler.handle_route_get(destination).await?
+            }
+            Some(RouteSubCommand::Add { route }) => handler.handle_route_add(&route).await?,
+            Some(RouteSubCommand::Del { route }) => handler.handle_route_del(&route).await?,
+            Some(RouteSubCommand::Flush) => handler.handle_route_flush().await?,
         },
         SubCommand::Stun => {
             timeout(Duration::from_secs(25), async move {
