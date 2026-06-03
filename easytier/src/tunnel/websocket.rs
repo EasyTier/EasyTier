@@ -81,6 +81,7 @@ static TRUSTED_PROXIES: LazyLock<Vec<IpNetwork>> = LazyLock::new(|| {
 pub struct WsTunnelListener {
     addr: url::Url,
     listener: Option<TcpListener>,
+    socket_mark: Option<u32>,
 }
 
 impl WsTunnelListener {
@@ -88,7 +89,12 @@ impl WsTunnelListener {
         WsTunnelListener {
             addr,
             listener: None,
+            socket_mark: None,
         }
+    }
+
+    pub fn set_socket_mark(&mut self, socket_mark: Option<u32>) {
+        self.socket_mark = socket_mark;
     }
 
     async fn try_accept(&self, stream: TcpStream) -> Result<Box<dyn Tunnel>, TunnelError> {
@@ -164,7 +170,11 @@ impl TunnelListener for WsTunnelListener {
         self.listener = None;
 
         let addr = SocketAddr::from_url(self.addr.clone(), IpVersion::Both).await?;
-        let listener = bind::<TcpListener>().addr(addr).only_v6(true).call()?;
+        let listener = bind::<TcpListener>()
+            .addr(addr)
+            .only_v6(true)
+            .maybe_socket_mark(self.socket_mark)
+            .call()?;
 
         self.addr
             .set_port(Some(listener.local_addr()?.port()))
@@ -201,6 +211,7 @@ pub struct WsTunnelConnector {
     resolved_addr: Option<SocketAddr>,
 
     bind_addrs: Vec<SocketAddr>,
+    socket_mark: Option<u32>,
 }
 
 impl WsTunnelConnector {
@@ -211,6 +222,7 @@ impl WsTunnelConnector {
             resolved_addr: None,
 
             bind_addrs: vec![],
+            socket_mark: None,
         }
     }
 
@@ -274,6 +286,10 @@ impl WsTunnelConnector {
         } else {
             TcpSocket::new_v6()?
         };
+        crate::tunnel::common::apply_socket_mark(
+            &socket2::SockRef::from(&socket),
+            self.socket_mark,
+        )?;
         Self::connect_with(self.addr.clone(), addr, socket).await
     }
 
@@ -285,7 +301,12 @@ impl WsTunnelConnector {
 
         for bind_addr in self.bind_addrs.iter() {
             tracing::info!(?bind_addr, ?addr, "bind addr");
-            match bind().addr(*bind_addr).only_v6(true).call() {
+            match bind()
+                .addr(*bind_addr)
+                .only_v6(true)
+                .maybe_socket_mark(self.socket_mark)
+                .call()
+            {
                 Ok(socket) => futures.push(Self::connect_with(self.addr.clone(), addr, socket)),
                 Err(error) => {
                     tracing::error!(?bind_addr, ?addr, ?error, "bind addr fail");
@@ -326,6 +347,10 @@ impl TunnelConnector for WsTunnelConnector {
 
     fn set_resolved_addr(&mut self, addr: SocketAddr) {
         self.resolved_addr = Some(addr);
+    }
+
+    fn set_socket_mark(&mut self, socket_mark: Option<u32>) {
+        self.socket_mark = socket_mark;
     }
 }
 
