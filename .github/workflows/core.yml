@@ -265,22 +265,27 @@ jobs:
     if: needs.pre_job.outputs.should_skip != 'true' && !cancelled()
     runs-on: windows-latest
     continue-on-error: true
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - ARTIFACT_NAME: windows-x86_64
-          - ARTIFACT_NAME: windows-i686
-          - ARTIFACT_NAME: windows-arm64
     steps:
       - name: Checkout
         uses: actions/checkout@v5
 
-      - name: Download artifact
+      - name: Download Windows x86_64 artifact
         uses: actions/download-artifact@v4
         with:
-          name: easytier-${{ matrix.ARTIFACT_NAME }}
-          path: sign_binaries
+          name: easytier-windows-x86_64
+          path: sign_binaries/windows-x86_64
+
+      - name: Download Windows i686 artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: easytier-windows-i686
+          path: sign_binaries/windows-i686
+
+      - name: Download Windows arm64 artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: easytier-windows-arm64
+          path: sign_binaries/windows-arm64
 
       - name: Setup Certum Code Signing (Windows)
         shell: bash
@@ -302,22 +307,22 @@ jobs:
           CERTUM_EXE_PATH: ${{ secrets.CERTUM_EXE_PATH }}
         run: |
           echo "=== CERTUM AUTHENTICATION ==="
-          for attempt in 1 2 3; do
-            echo "Authentication attempt ${attempt}/3"
+          for attempt in $(seq 1 10); do
+            echo "Authentication attempt ${attempt}/10"
             if powershell -ExecutionPolicy Bypass -File "./.github/scripts/connect-simplySign-enhanced.ps1"; then
               echo "Authentication completed"
               exit 0
             fi
-            if [ "$attempt" -lt 3 ]; then
+            if [ "$attempt" -lt 10 ]; then
               echo "Authentication attempt failed, retrying in 10 seconds..."
               sleep 10
             fi
           done
-          echo "ERROR: Certum authentication failed after 3 attempts"
+          echo "ERROR: Certum authentication failed after 10 attempts"
           exit 1
         continue-on-error: true
 
-      - name: Sign Windows binaries (exe, dll, sys)
+      - name: Sign Windows binaries (exe, dll)
         shell: bash
         env:
           CERTUM_CERTIFICATE_SHA1: ${{ secrets.CERTUM_CERTIFICATE_SHA1 }}
@@ -325,14 +330,17 @@ jobs:
           echo "=== CERTIFICATE VERIFICATION AND WINDOWS BINARY SIGNING ==="
           echo "Allowing connection to stabilize..."
           sleep 10
-          powershell -ExecutionPolicy Bypass -File "./.github/scripts/sign-windows.ps1" -TargetDirectory "sign_binaries"
+          for arch_dir in windows-x86_64 windows-i686 windows-arm64; do
+            echo "--- Signing ${arch_dir} ---"
+            powershell -ExecutionPolicy Bypass -File "./.github/scripts/sign-windows.ps1" -TargetDirectory "sign_binaries/${arch_dir}"
+          done
           echo "Windows binary signing completed"
         continue-on-error: true
 
       - name: Verify Signatures
         shell: pwsh
         run: |
-          $signedFiles = Get-ChildItem -Path "sign_binaries" -Recurse -Include *.exe,*.dll,*.sys
+          $signedFiles = Get-ChildItem -Path "sign_binaries" -Recurse -Include *.exe,*.dll
           foreach ($file in $signedFiles) {
             $result = Get-AuthenticodeSignature -FilePath $file.FullName
             $status = if ($result.Status -eq "Valid") { "VALID" } else { "INVALID/UNSIGNED ($($result.Status))" }
@@ -340,11 +348,25 @@ jobs:
           }
         continue-on-error: true
 
-      - name: Re-upload signed artifact
+      - name: Re-upload signed Windows x86_64 artifact
         uses: actions/upload-artifact@v5
         with:
-          name: easytier-${{ matrix.ARTIFACT_NAME }}
-          path: sign_binaries/*
+          name: easytier-windows-x86_64
+          path: sign_binaries/windows-x86_64/*
+          overwrite: true
+
+      - name: Re-upload signed Windows i686 artifact
+        uses: actions/upload-artifact@v5
+        with:
+          name: easytier-windows-i686
+          path: sign_binaries/windows-i686/*
+          overwrite: true
+
+      - name: Re-upload signed Windows arm64 artifact
+        uses: actions/upload-artifact@v5
+        with:
+          name: easytier-windows-arm64
+          path: sign_binaries/windows-arm64/*
           overwrite: true
 
   build_magisk:

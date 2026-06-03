@@ -168,22 +168,6 @@ function Get-TotpCode {
     [Totp]::Now($Secret, $Digits, $Period, $Algorithm)
 }
 
-# Generate current TOTP code
-$otp = Get-TotpCode -Secret $Base32 -Digits $Digits -Period $Period -Algorithm $Algorithm
-Write-Host "Generated TOTP code successfully (masked) using $Algorithm algorithm"
-Write-Host ""
-
-# Launch SimplySign Desktop (registry should auto-open login dialog)
-Write-Host "Launching SimplySign Desktop..."
-Write-Host "Registry pre-configuration should auto-open login dialog"
-$proc = Start-Process -FilePath $ExePath -PassThru
-Write-Host "Process started with ID: $($proc.Id)"
-Write-Host ""
-
-# Wait for the application to fully initialize (longer wait for CI environments)
-Write-Host "Waiting for SimplySign Desktop to initialize..."
-Start-Sleep -Seconds 10
-
 # Add Win32 API for force foreground window
 Add-Type @"
 using System;
@@ -207,93 +191,7 @@ public static class Win32 {
 }
 "@
 
-# Allow our process to set foreground window
-[Win32]::AllowSetForegroundWindow($proc.Id) | Out-Null
-
-# Create WScript.Shell for window interaction
-$wshell = New-Object -ComObject WScript.Shell
-
-# Try to focus the SimplySign Desktop window using multiple methods
-Write-Host "Attempting to focus SimplySign Desktop window..."
-$focused = $false
-
-# Method 1: Use Win32 API to find and activate window
-$mainWindowHandle = $proc.MainWindowHandle
-if ($mainWindowHandle -ne $null -and $mainWindowHandle -ne [IntPtr]::Zero) {
-    [Win32]::ShowWindow($mainWindowHandle, [Win32]::SW_RESTORE) | Out-Null
-    [Win32]::SetForegroundWindow($mainWindowHandle) | Out-Null
-    $focused = $true
-    Write-Host "Focused via MainWindowHandle"
-} else {
-    Write-Host "MainWindowHandle not available yet, will try other methods..."
-}
-
-# Method 2: Find window by title
-if (-not $focused) {
-    $hwnd = [Win32]::FindWindow($null, "SimplySign Desktop")
-    if ($hwnd -ne [IntPtr]::Zero) {
-        [Win32]::ShowWindow($hwnd, [Win32]::SW_RESTORE) | Out-Null
-        [Win32]::SetForegroundWindow($hwnd) | Out-Null
-        $focused = $true
-        Write-Host "Focused via FindWindow"
-    }
-}
-
-# Method 3: AppActivate with extended retries
-for ($i = 0; (-not $focused) -and ($i -lt 20); $i++) {
-    Start-Sleep -Milliseconds 1000
-    
-    # Refresh process handle
-    $proc.Refresh()
-    $mainWindowHandle = $proc.MainWindowHandle
-    if ($mainWindowHandle -ne [IntPtr]::Zero) {
-        [Win32]::ShowWindow($mainWindowHandle, [Win32]::SW_RESTORE) | Out-Null
-        [Win32]::SetForegroundWindow($mainWindowHandle) | Out-Null
-        $focused = $true
-        Write-Host "Focused via MainWindowHandle (attempt $($i + 1))"
-        break
-    }
-    
-    $focused = $wshell.AppActivate($proc.Id)
-    if (-not $focused) {
-        $focused = $wshell.AppActivate('SimplySign Desktop')
-    }
-    if (-not $focused) {
-        $focused = $wshell.AppActivate('SimplySign')
-    }
-    Write-Host "Focus attempt $($i + 1): $focused"
-}
-
-if (-not $focused) {
-    Write-Host "WARNING: Could not bring SimplySign Desktop to foreground via window handle"
-    Write-Host "SimplySign Desktop may be running as a background/tray process - proceeding with credential injection anyway"
-}
-
-Write-Host ""
-
-# Small delay to ensure window is ready for input
-Start-Sleep -Milliseconds 400
-
-# Inject credentials: Username + TAB + TOTP + ENTER
-Write-Host "Injecting credentials into login dialog..."
-Write-Host "Sending: Username -> TAB -> TOTP -> ENTER"
-
-# Send the credential sequence
-$wshell.SendKeys($UserId)
-Start-Sleep -Milliseconds 200
-$wshell.SendKeys("{TAB}")
-Start-Sleep -Milliseconds 200
-$wshell.SendKeys($otp)
-Start-Sleep -Milliseconds 200
-$wshell.SendKeys("{ENTER}")
-
-Write-Host "Credentials injected successfully"
-Write-Host ""
-
-# Wait for authentication to process
-Write-Host "Waiting for authentication to complete..."
-Start-Sleep -Seconds 5
-
+# 预先验证证书 SHA1
 $normalizedExpectedSha1 = Normalize-Sha1 -InputSha1 $ExpectedCertificateSHA1
 if ($normalizedExpectedSha1) {
     if ($normalizedExpectedSha1.Length -ne 40) {
@@ -301,35 +199,179 @@ if ($normalizedExpectedSha1) {
         Write-Host "Raw length: $($ExpectedCertificateSHA1.Length), normalized length: $($normalizedExpectedSha1.Length)"
         exit 1
     }
+}
 
-    Write-Host "Validating certificate availability for expected signing certificate"
-    $ready = $false
-    $withPrivateKey = $false
+# === 认证重试循环（最多 10 次） ===
+$maxAttempts = 10
+$authSuccess = $false
 
-    for ($i = 0; $i -lt 30; $i++) {
-        $matched = Find-CertificateByThumbprint -Thumbprint $normalizedExpectedSha1
-        if ($matched.Count -gt 0) {
-            $ready = $true
-            $withPrivateKey = ($matched | Where-Object { $_.HasPrivateKey }).Count -gt 0
-            if ($withPrivateKey) {
-                Write-Host "Certificate is available and has private key"
-                break
-            }
+for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
+    Write-Host ""
+    Write-Host "=========================================="
+    Write-Host "=== AUTHENTICATION ATTEMPT $attempt / $maxAttempts ==="
+    Write-Host "=========================================="
+    Write-Host ""
+
+    # 每次重试都重新生成 TOTP（确保验证码有效）
+    $otp = Get-TotpCode -Secret $Base32 -Digits $Digits -Period $Period -Algorithm $Algorithm
+    Write-Host "Generated TOTP code successfully (masked) using $Algorithm algorithm"
+    Write-Host ""
+
+    # 终止之前可能残留的 SimplySign Desktop 进程
+    Get-Process -Name "SimplySignDesktop" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+    Start-Sleep -Seconds 2
+
+    # 启动 SimplySign Desktop
+    Write-Host "Launching SimplySign Desktop..."
+    Write-Host "Registry pre-configuration should auto-open login dialog"
+    $proc = Start-Process -FilePath $ExePath -PassThru
+    Write-Host "Process started with ID: $($proc.Id)"
+    Write-Host ""
+
+    # 等待应用初始化
+    Write-Host "Waiting for SimplySign Desktop to initialize..."
+    Start-Sleep -Seconds 10
+
+    # Allow our process to set foreground window
+    [Win32]::AllowSetForegroundWindow($proc.Id) | Out-Null
+
+    # Create WScript.Shell for window interaction
+    $wshell = New-Object -ComObject WScript.Shell
+
+    # 尝试聚焦 SimplySign Desktop 窗口
+    Write-Host "Attempting to focus SimplySign Desktop window..."
+    $focused = $false
+
+    # Method 1: Use Win32 API to find and activate window
+    $mainWindowHandle = $proc.MainWindowHandle
+    if ($mainWindowHandle -ne $null -and $mainWindowHandle -ne [IntPtr]::Zero) {
+        [Win32]::ShowWindow($mainWindowHandle, [Win32]::SW_RESTORE) | Out-Null
+        [Win32]::SetForegroundWindow($mainWindowHandle) | Out-Null
+        $focused = $true
+        Write-Host "Focused via MainWindowHandle"
+    } else {
+        Write-Host "MainWindowHandle not available yet, will try other methods..."
+    }
+
+    # Method 2: Find window by title
+    if (-not $focused) {
+        $hwnd = [Win32]::FindWindow($null, "SimplySign Desktop")
+        if ($hwnd -ne [IntPtr]::Zero) {
+            [Win32]::ShowWindow($hwnd, [Win32]::SW_RESTORE) | Out-Null
+            [Win32]::SetForegroundWindow($hwnd) | Out-Null
+            $focused = $true
+            Write-Host "Focused via FindWindow"
         }
-        Start-Sleep -Seconds 2
     }
 
-    if (-not $ready) {
-        Write-Host "ERROR: Target certificate was not found in Cert:\CurrentUser\My or Cert:\LocalMachine\My"
-        Write-Host "Authentication likely failed or CERTUM_CERTIFICATE_SHA1 is incorrect"
-        exit 1
+    # Method 3: AppActivate with extended retries
+    for ($i = 0; (-not $focused) -and ($i -lt 20); $i++) {
+        Start-Sleep -Milliseconds 1000
+
+        # Refresh process handle
+        $proc.Refresh()
+        $mainWindowHandle = $proc.MainWindowHandle
+        if ($mainWindowHandle -ne [IntPtr]::Zero) {
+            [Win32]::ShowWindow($mainWindowHandle, [Win32]::SW_RESTORE) | Out-Null
+            [Win32]::SetForegroundWindow($mainWindowHandle) | Out-Null
+            $focused = $true
+            Write-Host "Focused via MainWindowHandle (attempt $($i + 1))"
+            break
+        }
+
+        $focused = $wshell.AppActivate($proc.Id)
+        if (-not $focused) {
+            $focused = $wshell.AppActivate('SimplySign Desktop')
+        }
+        if (-not $focused) {
+            $focused = $wshell.AppActivate('SimplySign')
+        }
+        Write-Host "Focus attempt $($i + 1): $focused"
     }
 
-    if (-not $withPrivateKey) {
-        Write-Host "ERROR: Target certificate found but no private key is available"
-        Write-Host "Signing cannot continue without private key access"
-        exit 1
+    if (-not $focused) {
+        Write-Host "WARNING: Could not bring SimplySign Desktop to foreground via window handle"
+        Write-Host "SimplySign Desktop may be running as a background/tray process - proceeding with credential injection anyway"
     }
+
+    Write-Host ""
+
+    # Small delay to ensure window is ready for input
+    Start-Sleep -Milliseconds 400
+
+    # 注入凭据: Username + TAB + TOTP + ENTER
+    Write-Host "Injecting credentials into login dialog..."
+    Write-Host "Sending: Username -> TAB -> TOTP -> ENTER"
+
+    $wshell.SendKeys($UserId)
+    Start-Sleep -Milliseconds 200
+    $wshell.SendKeys("{TAB}")
+    Start-Sleep -Milliseconds 200
+    $wshell.SendKeys($otp)
+    Start-Sleep -Milliseconds 200
+    $wshell.SendKeys("{ENTER}")
+
+    Write-Host "Credentials injected successfully"
+    Write-Host ""
+
+    # 等待认证处理
+    Write-Host "Waiting for authentication to complete..."
+    Start-Sleep -Seconds 5
+
+    # 验证证书是否可用
+    if ($normalizedExpectedSha1) {
+        Write-Host "Validating certificate availability for expected signing certificate"
+        $ready = $false
+        $withPrivateKey = $false
+
+        for ($i = 0; $i -lt 15; $i++) {
+            $matched = Find-CertificateByThumbprint -Thumbprint $normalizedExpectedSha1
+            if ($matched.Count -gt 0) {
+                $ready = $true
+                $withPrivateKey = ($matched | Where-Object { $_.HasPrivateKey }).Count -gt 0
+                if ($withPrivateKey) {
+                    Write-Host "Certificate is available and has private key"
+                    break
+                }
+            }
+            Start-Sleep -Seconds 2
+        }
+
+        if ($ready -and $withPrivateKey) {
+            $authSuccess = $true
+            Write-Host "SUCCESS: Authentication verified - certificate with private key is available"
+            break
+        }
+
+        # 认证失败，准备重试
+        if (-not $ready) {
+            Write-Host "WARNING: Target certificate was not found after attempt $attempt"
+        } elseif (-not $withPrivateKey) {
+            Write-Host "WARNING: Target certificate found but no private key available after attempt $attempt"
+        }
+    } else {
+        # 没有指定证书 SHA1，无法验证，假设成功
+        $authSuccess = $true
+        break
+    }
+
+    # 如果不是最后一次尝试，等待后重试
+    if ($attempt -lt $maxAttempts) {
+        Write-Host "Authentication attempt $attempt failed, will retry in 5 seconds..."
+        # 终止当前 SimplySign Desktop 进程
+        $stillRunning = Get-Process -Id $proc.Id -ErrorAction SilentlyContinue
+        if ($stillRunning) {
+            Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+        }
+        Start-Sleep -Seconds 5
+    }
+}
+
+if (-not $authSuccess) {
+    Write-Host ""
+    Write-Host "ERROR: Authentication failed after $maxAttempts attempts"
+    Write-Host "All TOTP injection attempts were unsuccessful"
+    exit 1
 }
 
 # Verify SimplySign Desktop is still running
