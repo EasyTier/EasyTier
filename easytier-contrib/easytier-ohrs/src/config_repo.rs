@@ -65,6 +65,9 @@ pub fn init_config_store(root_dir: String) -> bool {
 }
 
 fn migrate_legacy_file_if_needed(config_id: &str) -> Option<()> {
+    if validation::validate_config_id(config_id).is_err() {
+        return None;
+    }
     legacy_migration::migrate_legacy_file_if_needed(
         &config_root_dir(),
         CONFIG_DIR_NAME,
@@ -133,18 +136,21 @@ pub fn save_config_record(
 }
 
 pub fn load_config_json(config_id: &str) -> Option<String> {
+    validation::validate_config_id(config_id).ok()?;
     migrate_legacy_file_if_needed(config_id)?;
     let object = field_store::load_config_map_from_db(config_id)?;
     serde_json::to_string(&Value::Object(object)).ok()
 }
 
 pub fn get_config_record(config_id: &str) -> Option<StoredConfigRecord> {
+    validation::validate_config_id(config_id).ok()?;
     let config_json = load_config_json(config_id)?;
     let meta = get_config_meta(config_id)?;
     Some(StoredConfigRecord { meta, config_json })
 }
 
 pub fn get_config_field_value(config_id: &str, field: &str) -> Option<String> {
+    validation::validate_config_id(config_id).ok()?;
     migrate_legacy_file_if_needed(config_id)?;
     let conn = open_db()?;
     conn.query_row(
@@ -157,6 +163,9 @@ pub fn get_config_field_value(config_id: &str, field: &str) -> Option<String> {
 }
 
 pub fn set_config_field_value(config_id: &str, field: &str, json_value: &str) -> bool {
+    if validation::validate_config_id(config_id).is_err() {
+        return false;
+    }
     if field.contains('.') {
         return false;
     }
@@ -192,6 +201,7 @@ pub fn set_config_field_value(config_id: &str, field: &str, json_value: &str) ->
 }
 
 pub fn get_display_name(config_id: &str) -> Option<String> {
+    validation::validate_config_id(config_id).ok()?;
     get_config_meta(config_id).map(|meta| meta.display_name)
 }
 
@@ -200,6 +210,7 @@ pub fn get_default_config_json() -> Option<String> {
 }
 
 pub fn create_config_record(config_id: String, display_name: String) -> Option<StoredConfigRecord> {
+    validation::validate_config_id(&config_id).ok()?;
     let raw = get_default_config_json()?;
     let mut config = serde_json::from_str::<NetworkConfig>(&raw).ok()?;
     config.instance_id = Some(config_id.clone());
@@ -208,6 +219,9 @@ pub fn create_config_record(config_id: String, display_name: String) -> Option<S
 }
 
 pub fn start_kernel_with_config_id(config_id: &str) -> bool {
+    if validation::validate_config_id(config_id).is_err() {
+        return false;
+    }
     let raw = match load_config_json(config_id) {
         Some(raw) => raw,
         None => return false,
@@ -220,6 +234,9 @@ pub fn list_config_meta_json() -> String {
 }
 
 pub fn delete_config_record(config_id: &str) -> bool {
+    if validation::validate_config_id(config_id).is_err() {
+        return false;
+    }
     if let Some(path) = legacy_config_file_path(config_id) {
         if path.exists() {
             let _ = std::fs::remove_file(path);
@@ -242,6 +259,7 @@ pub fn delete_config_record(config_id: &str) -> bool {
 }
 
 pub fn export_config_toml(config_id: &str) -> Option<ExportTomlResult> {
+    validation::validate_config_id(config_id).ok()?;
     let record = get_config_record(config_id)?;
     import_export::export_config_toml_from_record(&record)
 }

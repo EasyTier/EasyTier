@@ -282,6 +282,7 @@ pub struct FakeTcpTunnelConnector {
     addr: url::Url,
     ip_to_if_name: IpToIfNameCache,
     resolved_addr: Option<SocketAddr>,
+    socket_mark: Option<u32>,
 }
 
 impl FakeTcpTunnelConnector {
@@ -290,6 +291,7 @@ impl FakeTcpTunnelConnector {
             addr,
             ip_to_if_name: IpToIfNameCache::new(),
             resolved_addr: None,
+            socket_mark: None,
         }
     }
 }
@@ -324,6 +326,15 @@ impl TunnelConnector for FakeTcpTunnelConnector {
             .ok_or(TunnelError::InternalError("Failed to get local ip".into()))?;
 
         let os_socket = tokio::net::TcpSocket::new_v4()?;
+        // SO_MARK applies only to the kernel-visible "decoy" socket below.
+        // The actual FakeTCP payload travels via crafted segments written
+        // straight to the TUN device, which the kernel doesn't tag with
+        // SO_MARK. Operators relying on fwmark for FakeTCP must mark the
+        // TUN device's traffic with a separate nftables/iptables rule.
+        crate::tunnel::common::apply_socket_mark(
+            &socket2::SockRef::from(&os_socket),
+            self.socket_mark,
+        )?;
         os_socket.bind("0.0.0.0:0".parse().unwrap())?;
         let local_port = os_socket.local_addr()?.port();
         let local_addr = SocketAddr::new(local_ip, local_port);
@@ -398,6 +409,10 @@ impl TunnelConnector for FakeTcpTunnelConnector {
 
     fn set_resolved_addr(&mut self, addr: SocketAddr) {
         self.resolved_addr = Some(addr);
+    }
+
+    fn set_socket_mark(&mut self, socket_mark: Option<u32>) {
+        self.socket_mark = socket_mark;
     }
 }
 

@@ -2,11 +2,17 @@ use crate::config::storage::config_meta::get_config_meta;
 use ohos_hilog_binding::hilog_error;
 use std::path::PathBuf;
 
+use super::validation;
+
 pub(super) fn legacy_config_file_path(
     root_dir: &Option<PathBuf>,
     config_dir_name: &str,
     config_id: &str,
 ) -> Option<PathBuf> {
+    if !validation::is_valid_config_id(config_id) {
+        hilog_error!("[Rust] invalid legacy config_id {}", config_id);
+        return None;
+    }
     root_dir.as_ref().map(|root| {
         root.join(config_dir_name)
             .join(format!("{}.json", config_id))

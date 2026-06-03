@@ -268,6 +268,7 @@ pub async fn create_connector_by_url(
                 IpScheme::FakeTcp => tunnel::fake_tcp::FakeTcpTunnelConnector::new(url).boxed(),
             };
             connector.set_resolved_addr(resolved_addr.addr);
+            connector.set_socket_mark(global_ctx.config.get_flags().socket_mark);
             if global_ctx.config.get_flags().bind_device {
                 set_bind_addr_for_peer_connector(
                     &mut connector,

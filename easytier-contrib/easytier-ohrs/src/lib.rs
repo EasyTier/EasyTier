@@ -20,7 +20,7 @@ use config::services::share_link_service::{
     parse_config_share_link as parse_config_share_link_inner,
 };
 use config::storage::config_meta::get_config_display_name;
-use config::types::stored_config::{KeyValuePair, SharedConfigLinkPayload};
+use config::types::stored_config::{KeyValuePair, SharedConfigLinkPayload, SnapshotImportResult};
 use easytier::common::constants::EASYTIER_VERSION;
 use easytier::common::{
     MachineIdOptions,
@@ -354,6 +354,11 @@ pub fn set_config_field(config_id: String, field: String, json_value: String) ->
 }
 
 #[napi]
+pub fn set_config_favorite(config_id: String, favorite: bool) -> bool {
+    exports::config_api::set_config_favorite(config_id, favorite)
+}
+
+#[napi]
 pub fn import_toml(toml_text: String, display_name: Option<String>) -> Option<String> {
     exports::config_api::import_toml(toml_text, display_name)
 }
@@ -371,6 +376,11 @@ pub fn export_config_store_snapshot(target_path: String) -> bool {
 #[napi]
 pub fn import_config_store_snapshot(source_path: String) -> bool {
     exports::config_api::import_config_store_snapshot(source_path)
+}
+
+#[napi]
+pub fn import_config_store_snapshot_with_result(source_path: String) -> SnapshotImportResult {
+    exports::config_api::import_config_store_snapshot_with_result(source_path)
 }
 
 #[napi]

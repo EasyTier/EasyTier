@@ -567,6 +567,7 @@ pub struct UdpTunnelListener {
     data: UdpTunnelListenerData,
     forward_tasks: Arc<std::sync::Mutex<JoinSet<()>>>,
     close_event_recv: Option<UdpCloseEventReceiver>,
+    socket_mark: Option<u32>,
 }
 
 impl UdpTunnelListener {
@@ -580,7 +581,12 @@ impl UdpTunnelListener {
             data: UdpTunnelListenerData::new(addr, conn_send, close_event_send),
             forward_tasks: Arc::new(std::sync::Mutex::new(JoinSet::new())),
             close_event_recv: Some(close_event_recv),
+            socket_mark: None,
         }
+    }
+
+    pub fn set_socket_mark(&mut self, socket_mark: Option<u32>) {
+        self.socket_mark = socket_mark;
     }
 
     pub fn new_with_socket(addr: url::Url, socket: Arc<UdpSocket>) -> Self {
@@ -605,6 +611,7 @@ impl TunnelListener for UdpTunnelListener {
                     .addr(addr)
                     .only_v6(true)
                     .maybe_dev(tunnel_url.bind_dev())
+                    .maybe_socket_mark(self.socket_mark)
                     .call()?,
             ));
         }
@@ -683,6 +690,7 @@ pub struct UdpTunnelConnector {
     bind_addrs: Vec<SocketAddr>,
     ip_version: IpVersion,
     resolved_addr: Option<SocketAddr>,
+    socket_mark: Option<u32>,
 }
 
 impl UdpTunnelConnector {
@@ -692,6 +700,7 @@ impl UdpTunnelConnector {
             bind_addrs: vec![],
             ip_version: IpVersion::Both,
             resolved_addr: None,
+            socket_mark: None,
         }
     }
 
@@ -876,11 +885,18 @@ impl UdpTunnelConnector {
         &self,
         addr: SocketAddr,
     ) -> Result<Box<dyn Tunnel>, super::TunnelError> {
-        let socket = if addr.is_ipv4() {
-            UdpSocket::bind("0.0.0.0:0").await?
+        // Route through bind() so socket_mark is applied consistently for
+        // both the None (no-op) and Some(_) paths.
+        let bind_addr: SocketAddr = if addr.is_ipv4() {
+            "0.0.0.0:0".parse().unwrap()
         } else {
-            UdpSocket::bind("[::]:0").await?
+            "[::]:0".parse().unwrap()
         };
+        let socket = bind::<UdpSocket>()
+            .addr(bind_addr)
+            .only_v6(true)
+            .maybe_socket_mark(self.socket_mark)
+            .call()?;
 
         return self.try_connect_with_socket(Arc::new(socket), addr).await;
     }
@@ -893,7 +909,12 @@ impl UdpTunnelConnector {
 
         for bind_addr in self.bind_addrs.iter() {
             tracing::info!(?bind_addr, ?addr, "bind addr");
-            match bind().addr(*bind_addr).only_v6(true).call() {
+            match bind()
+                .addr(*bind_addr)
+                .only_v6(true)
+                .maybe_socket_mark(self.socket_mark)
+                .call()
+            {
                 Ok(socket) => futures.push(self.try_connect_with_socket(Arc::new(socket), addr)),
                 Err(error) => {
                     tracing::error!(?error, ?bind_addr, ?addr, "bind addr fail");
@@ -933,6 +954,10 @@ impl super::TunnelConnector for UdpTunnelConnector {
 
     fn set_resolved_addr(&mut self, addr: SocketAddr) {
         self.resolved_addr = Some(addr);
+    }
+
+    fn set_socket_mark(&mut self, socket_mark: Option<u32>) {
+        self.socket_mark = socket_mark;
     }
 }
 

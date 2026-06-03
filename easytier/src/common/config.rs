@@ -73,6 +73,7 @@ pub fn gen_default_flags() -> Flags {
         disable_upnp: false,
         disable_relay_data: false,
         enable_udp_broadcast_relay: false,
+        socket_mark: None,
     }
 }
 
@@ -1258,6 +1259,57 @@ pub mod tests {
     use std::io::Write;
     use std::path::PathBuf;
     use tempfile::NamedTempFile;
+
+    #[test]
+    fn socket_mark_config_file_roundtrip_none_some_and_zero() {
+        // Omitting the flag leaves socket_mark unset (None) -> SO_MARK untouched.
+        let cfg = TomlConfigLoader::new_from_str(
+            r#"
+[network_identity]
+network_name = "n"
+network_secret = "s"
+"#,
+        )
+        .unwrap();
+        assert_eq!(cfg.get_flags().socket_mark, None);
+
+        // socket_mark = 0 is a legitimate value distinct from "unset".
+        let cfg = TomlConfigLoader::new_from_str(
+            r#"
+[network_identity]
+network_name = "n"
+network_secret = "s"
+
+[flags]
+socket_mark = 0
+"#,
+        )
+        .unwrap();
+        assert_eq!(cfg.get_flags().socket_mark, Some(0));
+
+        // A non-zero mark round-trips as Some(v).
+        let cfg = TomlConfigLoader::new_from_str(
+            r#"
+[network_identity]
+network_name = "n"
+network_secret = "s"
+
+[flags]
+socket_mark = 66
+"#,
+        )
+        .unwrap();
+        assert_eq!(cfg.get_flags().socket_mark, Some(66));
+
+        // set_flags(None) must serialize back through gen_config without
+        // resurrecting a value (guards the gen_flags merge against dropping
+        // the key when the serialized default is null).
+        cfg.set_flags(Flags {
+            socket_mark: None,
+            ..cfg.get_flags()
+        });
+        assert_eq!(cfg.get_flags().socket_mark, None);
+    }
 
     #[test]
     fn test_stun_servers_config() {
