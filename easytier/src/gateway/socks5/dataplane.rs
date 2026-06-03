@@ -293,7 +293,7 @@ impl Socks5Server {
             if now >= deadline {
                 return Err(anyhow::anyhow!("data plane net is not ready").into());
             }
-            let _ = tokio::time::timeout(deadline - now, ready.changed()).await;
+            let _ = tokio::time::timeout(deadline - now, ready.wait_for(|ready| *ready)).await;
         }
     }
 

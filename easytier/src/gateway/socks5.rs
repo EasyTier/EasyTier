@@ -491,9 +491,9 @@ pub struct Socks5Server {
     socks5_enabled: Arc<AtomicBool>,
     #[cfg(feature = "ffi-dataplane")]
     data_plane_refs: Arc<AtomicUsize>,
-    // Signals data-plane waiters that the smoltcp `net` has just been (re)built.
+    // Tracks whether the smoltcp `net` is ready for data-plane callers.
     #[cfg(feature = "ffi-dataplane")]
-    data_plane_net_ready: tokio::sync::watch::Sender<()>,
+    data_plane_net_ready: tokio::sync::watch::Sender<bool>,
     cancel_tokens: Arc<DashMap<PortForwardConfig, DropGuard>>,
     port_forward_list_change_notifier: Arc<Notify>,
     entry_count: Arc<AtomicUsize>,
@@ -624,7 +624,7 @@ impl Socks5Server {
             #[cfg(feature = "ffi-dataplane")]
             data_plane_refs: Arc::new(AtomicUsize::new(0)),
             #[cfg(feature = "ffi-dataplane")]
-            data_plane_net_ready: tokio::sync::watch::channel(()).0,
+            data_plane_net_ready: tokio::sync::watch::channel(false).0,
             cancel_tokens: Arc::new(DashMap::new()),
             port_forward_list_change_notifier: Arc::new(Notify::new()),
             entry_count: Arc::new(AtomicUsize::new(0)),
@@ -659,6 +659,8 @@ impl Socks5Server {
                     && !data_plane_active
                 {
                     let _ = net.lock().await.take();
+                    #[cfg(feature = "ffi-dataplane")]
+                    let _ = data_plane_net_ready.send_replace(false);
                     port_forward_list_change_notifier.notified().await;
                     continue;
                 }
@@ -686,9 +688,11 @@ impl Socks5Server {
                         // Wake any data-plane callers waiting in
                         // `wait_data_plane_net` for the smoltcp net to appear.
                         #[cfg(feature = "ffi-dataplane")]
-                        let _ = data_plane_net_ready.send_replace(());
+                        let _ = data_plane_net_ready.send_replace(true);
                     } else {
                         let _ = net.lock().await.take();
+                        #[cfg(feature = "ffi-dataplane")]
+                        let _ = data_plane_net_ready.send_replace(false);
                     }
                 }
 
