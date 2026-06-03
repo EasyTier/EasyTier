@@ -1,5 +1,5 @@
 use super::env_parser;
-use crate::utils::dns::sanitize;
+use crate::utils::dns;
 use crate::{
     common::stun::StunInfoCollector,
     proto::{
@@ -324,6 +324,14 @@ pub trait ConfigLoader: Send + Sync + DnsConfigLoaderExt {
 
     fn get_stun_servers_v6(&self) -> Option<Vec<String>>;
     fn set_stun_servers_v6(&self, servers: Option<Vec<String>>);
+
+    fn get_dns_resolvers(&self) -> Vec<String> {
+        dns::get_default_dns_resolvers()
+    }
+    fn get_dns_resolvers_config(&self) -> Option<Vec<String>> {
+        None
+    }
+    fn set_dns_resolvers(&self, _resolvers: Option<Vec<String>>) {}
 
     fn get_secure_mode(&self) -> Option<SecureModeConfig>;
     fn set_secure_mode(&self, secure_mode: Option<SecureModeConfig>);
@@ -652,6 +660,7 @@ struct Config {
     udp_whitelist: Option<Vec<String>>,
     stun_servers: Option<Vec<String>>,
     stun_servers_v6: Option<Vec<String>>,
+    dns_resolvers: Option<Vec<String>>,
 
     credential_file: Option<PathBuf>,
     source: Option<ConfigSourceConfig>,
@@ -685,6 +694,10 @@ impl TomlConfigLoader {
         Self::normalize_config_source(&mut config);
 
         config.flags_struct = Some(Self::gen_flags(config.flags.clone().unwrap_or_default()));
+        if let Some(dns_resolvers) = &config.dns_resolvers {
+            dns::validate_dns_resolvers(dns_resolvers)
+                .with_context(|| "invalid dns_resolvers config")?;
+        }
 
         let config = TomlConfigLoader {
             config: Arc::new(Mutex::new(config)),
@@ -766,7 +779,7 @@ impl ConfigLoader for TomlConfigLoader {
             .filter(|h| !h.is_empty());
 
         self.set_hostname(hostname.clone());
-        hostname.unwrap_or_else(|| sanitize(utils::hostname()))
+        hostname.unwrap_or_else(|| utils::dns::sanitize(utils::hostname()))
     }
 
     fn set_hostname(&self, name: Option<String>) {
@@ -1094,6 +1107,23 @@ impl ConfigLoader for TomlConfigLoader {
         self.config.lock().unwrap().stun_servers_v6 = servers;
     }
 
+    fn get_dns_resolvers(&self) -> Vec<String> {
+        self.config
+            .lock()
+            .unwrap()
+            .dns_resolvers
+            .clone()
+            .unwrap_or_else(dns::get_default_dns_resolvers)
+    }
+
+    fn get_dns_resolvers_config(&self) -> Option<Vec<String>> {
+        self.config.lock().unwrap().dns_resolvers.clone()
+    }
+
+    fn set_dns_resolvers(&self, resolvers: Option<Vec<String>>) {
+        self.config.lock().unwrap().dns_resolvers = resolvers;
+    }
+
     fn get_secure_mode(&self) -> Option<SecureModeConfig> {
         self.config.lock().unwrap().secure_mode.clone()
     }
@@ -1155,6 +1185,9 @@ impl ConfigLoader for TomlConfigLoader {
         }
         if config.stun_servers_v6 == Some(StunInfoCollector::get_default_servers_v6()) {
             config.stun_servers_v6 = None;
+        }
+        if config.dns_resolvers == Some(dns::get_default_dns_resolvers()) {
+            config.dns_resolvers = None;
         }
         toml::to_string_pretty(&config).unwrap()
     }
@@ -1385,6 +1418,51 @@ stun_servers = [
         assert_eq!(stun_servers[0], "stun.l.google.com:19302");
         assert_eq!(stun_servers[1], "stun1.l.google.com:19302");
         assert_eq!(stun_servers[2], "txt:stun.easytier.cn");
+    }
+
+    #[test]
+    fn test_dns_resolvers_default_and_roundtrip() {
+        let config = TomlConfigLoader::default();
+        assert_eq!(config.get_dns_resolvers_config(), None);
+        assert_eq!(config.get_dns_resolvers(), vec!["system".to_string()]);
+        assert!(!config.dump().contains("dns_resolvers"));
+
+        let config = TomlConfigLoader::new_from_str(
+            r#"
+dns_resolvers = ["system", "https://dns.alidns.com/dns-query"]
+"#,
+        )
+        .unwrap();
+        assert_eq!(
+            config.get_dns_resolvers_config().unwrap(),
+            vec![
+                "system".to_string(),
+                "https://dns.alidns.com/dns-query".to_string()
+            ]
+        );
+        assert_eq!(
+            config.get_dns_resolvers(),
+            vec![
+                "system".to_string(),
+                "https://dns.alidns.com/dns-query".to_string()
+            ]
+        );
+
+        let dumped = config.dump();
+        assert!(dumped.contains("dns_resolvers"));
+        let loaded = TomlConfigLoader::new_from_str(&dumped).unwrap();
+        assert_eq!(loaded.get_dns_resolvers(), config.get_dns_resolvers());
+    }
+
+    #[test]
+    fn test_dns_resolvers_reject_unknown_doh_without_bootstrap() {
+        let err = TomlConfigLoader::new_from_str(
+            r#"
+dns_resolvers = ["https://example.com/dns-query"]
+"#,
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("invalid dns_resolvers"));
     }
 
     #[test]

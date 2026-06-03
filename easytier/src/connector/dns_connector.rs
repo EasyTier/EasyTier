@@ -9,7 +9,7 @@ use crate::{
 };
 use anyhow::Context;
 use dashmap::DashSet;
-use hickory_resolver::proto::rr::rdata::SRV;
+use hickory_proto::rr::rdata::SRV;
 use rand::{Rng as _, seq::SliceRandom};
 use strum::VariantArray;
 

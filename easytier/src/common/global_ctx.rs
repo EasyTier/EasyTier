@@ -294,6 +294,12 @@ impl GlobalCtx {
 
         let (event_bus, _) = tokio::sync::broadcast::channel(16);
 
+        if let Some(dns_resolvers) = config_fs.get_dns_resolvers_config()
+            && let Err(e) = crate::utils::dns::set_dns_resolvers(dns_resolvers)
+        {
+            crate::common::log::warn!("failed to set dns resolvers: {:?}", e);
+        }
+
         let stun_info_collector = StunInfoCollector::new_with_default_servers();
 
         if let Some(stun_servers) = config_fs.get_stun_servers() {
