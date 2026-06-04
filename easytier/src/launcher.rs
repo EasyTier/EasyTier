@@ -176,7 +176,8 @@ impl EasyTierLauncher {
         instance.run().await?;
 
         #[cfg(feature = "ffi-dataplane")]
-        data.data_plane.send_replace(Some(instance.get_socks5_server()));
+        data.data_plane
+            .send_replace(Some(instance.get_socks5_server()));
 
         api_service
             .write()
@@ -305,7 +306,10 @@ impl EasyTierLauncher {
             if let Some(server) = rx.borrow_and_update().clone() {
                 return Some(server);
             }
-            if tokio::time::timeout_at(deadline, rx.changed()).await.is_err() {
+            if tokio::time::timeout_at(deadline, rx.changed())
+                .await
+                .is_err()
+            {
                 return None;
             }
         }

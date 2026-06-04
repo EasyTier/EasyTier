@@ -324,13 +324,11 @@ impl Socks5Server {
 
         let remaining = deadline.saturating_duration_since(Instant::now());
         let inner_timeout_s = remaining.as_secs().saturating_add(1);
-        let stream = tokio::time::timeout(
-            remaining,
-            connector.tcp_connect(dst_addr, inner_timeout_s),
-        )
-        .await
-        .with_context(|| "data plane tcp connect timeout")?
-        .map_err(anyhow::Error::from)?;
+        let stream =
+            tokio::time::timeout(remaining, connector.tcp_connect(dst_addr, inner_timeout_s))
+                .await
+                .with_context(|| "data plane tcp connect timeout")?
+                .map_err(anyhow::Error::from)?;
         Ok(DataPlaneTcpStream {
             stream,
             local_addr,
@@ -434,14 +432,27 @@ mod tests {
         server_b.run(None).await.unwrap();
 
         wait_for_condition(
-            || async { a.get_route().get_peer_id_by_ipv4(&b_ip.address()).await.is_some() },
+            || async {
+                a.get_route()
+                    .get_peer_id_by_ipv4(&b_ip.address())
+                    .await
+                    .is_some()
+            },
             Duration::from_secs(10),
         )
         .await;
 
         (
-            Endpoint { _peer: a, server: server_a, ip: a_ip },
-            Endpoint { _peer: b, server: server_b, ip: b_ip },
+            Endpoint {
+                _peer: a,
+                server: server_a,
+                ip: a_ip,
+            },
+            Endpoint {
+                _peer: b,
+                server: server_b,
+                ip: b_ip,
+            },
         )
     }
 

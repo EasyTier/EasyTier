@@ -218,7 +218,11 @@ fn get_tcp_listener(
 #[cfg(feature = "ffi-dataplane")]
 fn get_udp_socket(
     handle: u64,
-) -> Option<(Arc<DataPlaneUdpSocket>, tokio::runtime::Handle, CancellationToken)> {
+) -> Option<(
+    Arc<DataPlaneUdpSocket>,
+    tokio::runtime::Handle,
+    CancellationToken,
+)> {
     let Some(h) = DATA_PLANE_HANDLES.get(&handle) else {
         set_error_msg("udp socket handle not found");
         return None;
@@ -513,7 +517,7 @@ pub unsafe extern "C" fn data_plane_tcp_connect(
         set_error_msg("instance not found");
         return 0;
     };
-    let Some(dst_addr) = parse_socket_addr(&dst_ip, dst_port as u16) else {
+    let Some(dst_addr) = parse_socket_addr(&dst_ip, dst_port) else {
         return 0;
     };
     let deadline = std::time::Instant::now() + timeout_duration(timeout_ms);
@@ -522,9 +526,8 @@ pub unsafe extern "C" fn data_plane_tcp_connect(
     };
 
     let remaining = deadline.saturating_duration_since(std::time::Instant::now());
-    let result = runtime.block_on(INSTANCE_MANAGER.data_plane_tcp_connect(
-        &inst_id, dst_addr, remaining,
-    ));
+    let result =
+        runtime.block_on(INSTANCE_MANAGER.data_plane_tcp_connect(&inst_id, dst_addr, remaining));
     match result {
         Ok(stream) => {
             let local_addr = stream.local_addr();
@@ -575,11 +578,8 @@ pub unsafe extern "C" fn data_plane_tcp_bind(
     };
 
     let remaining = deadline.saturating_duration_since(std::time::Instant::now());
-    let result = runtime.block_on(INSTANCE_MANAGER.data_plane_tcp_bind(
-        &inst_id,
-        local_port as u16,
-        remaining,
-    ));
+    let result =
+        runtime.block_on(INSTANCE_MANAGER.data_plane_tcp_bind(&inst_id, local_port, remaining));
     match result {
         Ok(listener) => {
             let local_addr = listener.local_addr();
@@ -655,7 +655,7 @@ pub unsafe extern "C" fn data_plane_tcp_accept(
                 return 0;
             };
             let Some(peer_ip) = into_ffi_ip_cstring(peer_addr.ip()) else {
-                let _ = free_string(local_ip);
+                free_string(local_ip);
                 return 0;
             };
             let stream_handle = insert_tcp_stream_handle(instance_id, runtime, stream);
@@ -761,9 +761,9 @@ pub unsafe extern "C" fn data_plane_tcp_write(
 #[cfg(feature = "ffi-dataplane")]
 #[unsafe(no_mangle)]
 pub extern "C" fn data_plane_tcp_close(handle: u64) -> std::ffi::c_int {
-    let Some((_, h)) =
-        DATA_PLANE_HANDLES.remove_if(&handle, |_, e| matches!(e.resource, DataPlaneResource::Tcp(_)))
-    else {
+    let Some((_, h)) = DATA_PLANE_HANDLES.remove_if(&handle, |_, e| {
+        matches!(e.resource, DataPlaneResource::Tcp(_))
+    }) else {
         set_error_msg(if DATA_PLANE_HANDLES.contains_key(&handle) {
             "handle is not a tcp stream"
         } else {
@@ -832,11 +832,8 @@ pub unsafe extern "C" fn data_plane_udp_bind(
     };
 
     let remaining = deadline.saturating_duration_since(std::time::Instant::now());
-    let result = runtime.block_on(INSTANCE_MANAGER.data_plane_udp_bind(
-        &inst_id,
-        local_port as u16,
-        remaining,
-    ));
+    let result =
+        runtime.block_on(INSTANCE_MANAGER.data_plane_udp_bind(&inst_id, local_port, remaining));
     match result {
         Ok(socket) => {
             let local_addr = socket.local_addr();
@@ -885,7 +882,7 @@ pub unsafe extern "C" fn data_plane_udp_send_to(
     let Some(dst_ip) = (unsafe { cstr_to_string(dst_ip, "dst_ip") }) else {
         return -1;
     };
-    let Some(dst_addr) = parse_socket_addr(&dst_ip, dst_port as u16) else {
+    let Some(dst_addr) = parse_socket_addr(&dst_ip, dst_port) else {
         return -1;
     };
     let Some((socket, runtime, close_token)) = get_udp_socket(handle) else {
@@ -967,9 +964,9 @@ pub unsafe extern "C" fn data_plane_udp_recv_from(
 #[cfg(feature = "ffi-dataplane")]
 #[unsafe(no_mangle)]
 pub extern "C" fn data_plane_udp_close(handle: u64) -> std::ffi::c_int {
-    let Some((_, h)) =
-        DATA_PLANE_HANDLES.remove_if(&handle, |_, e| matches!(e.resource, DataPlaneResource::Udp(_)))
-    else {
+    let Some((_, h)) = DATA_PLANE_HANDLES.remove_if(&handle, |_, e| {
+        matches!(e.resource, DataPlaneResource::Udp(_))
+    }) else {
         set_error_msg(if DATA_PLANE_HANDLES.contains_key(&handle) {
             "handle is not a udp socket"
         } else {
