@@ -73,7 +73,9 @@ use super::{
     },
 };
 
+use crate::proto::common::TimestampExt;
 use atomic_shim::AtomicU64;
+use prost_wkt_types::Timestamp;
 
 static SERVICE_ID: u32 = 7;
 static UPDATE_PEER_INFO_PERIOD: Duration = Duration::from_secs(3600);
@@ -757,7 +759,7 @@ impl SyncedRouteInfo {
             if !guard.contains_key(peer_id) {
                 let mut peer_info = RoutePeerInfo::new();
                 let mut guard = RwLockUpgradableReadGuard::upgrade(guard);
-                peer_info.last_update = Some(SystemTime::now().into());
+                peer_info.last_update = Some(Timestamp::now());
                 guard.insert(*peer_id, peer_info);
                 need_inc_version = true;
             } else {
@@ -867,7 +869,7 @@ impl SyncedRouteInfo {
             let mut guard = self.peer_infos.write();
             // time between peers may not be synchronized, so update last_update to local now.
             // note only last_update with larger version will be updated to local saved peer info.
-            route_info.last_update = Some(SystemTime::now().into());
+            route_info.last_update = Some(Timestamp::now());
             if guard
                 .get_mut(&route_info.peer_id)
                 .is_none_or(|old| route_info.version > old.version)
@@ -962,7 +964,7 @@ impl SyncedRouteInfo {
                 continue;
             };
 
-            entry.last_update = Some(SystemTime::now().into());
+            entry.last_update = Some(Timestamp::now());
 
             self.foreign_network
                 .entry(key.clone())
@@ -1010,7 +1012,7 @@ impl SyncedRouteInfo {
             };
 
             guard.with_upgraded(|peer_infos| {
-                new.last_update = Some(SystemTime::now().into());
+                new.last_update = Some(Timestamp::now());
                 new.version = new_version;
                 peer_infos.insert(my_peer_id, new)
             });
@@ -1086,7 +1088,7 @@ impl SyncedRouteInfo {
                 foreign_networks.remove(key).unwrap();
             } else if !item.foreign_peer_ids.is_empty() {
                 item.foreign_peer_ids.clear();
-                item.last_update = Some(SystemTime::now().into());
+                item.last_update = Some(Timestamp::now());
                 item.version = std::cmp::max(item.version + 1, now_version);
                 updated = true;
             }
@@ -2542,7 +2544,7 @@ impl PeerRouteServiceImpl {
         for (peer_id, peer_info) in peer_infos.iter().rev() {
             // stop iter if last_update of peer info is older than session.last_sync_succ_timestamp
             if let Some(last_update) = peer_info.last_update {
-                let last_update = TryInto::<SystemTime>::try_into(last_update).unwrap();
+                let last_update = SystemTime::try_from(last_update).unwrap();
                 if last_sync_succ_timestamp.is_some_and(|t| last_update < t) {
                     break;
                 }
@@ -4158,7 +4160,9 @@ mod tests {
     use dashmap::DashMap;
     use parking_lot::Mutex;
     use prefix_trie::PrefixMap;
+    use prost::Message;
     use prost_reflect::{DynamicMessage, ReflectMessage};
+    use prost_wkt_types::Timestamp;
     use std::net::IpAddr;
     use std::{
         collections::{BTreeSet, HashMap},
@@ -4170,6 +4174,7 @@ mod tests {
     };
 
     use super::{NextHopInfo, PeerRoute, REMOVE_DEAD_PEER_INFO_AFTER, RouteConnInfo};
+    use crate::proto::common::TimestampExt;
     use crate::{
         common::{
             PeerId,
@@ -4198,7 +4203,7 @@ mod tests {
         },
         tunnel::common::tests::wait_for_condition,
     };
-    use prost::Message;
+
     struct AuthOnlyInterface {
         my_peer_id: PeerId,
         identity_type: DashMap<PeerId, PeerIdentityType>,
@@ -5489,7 +5494,7 @@ mod tests {
         );
         let mut self_info = self_info;
         self_info.version = 1;
-        self_info.last_update = Some(SystemTime::now().into());
+        self_info.last_update = Some(Timestamp::now());
         {
             let mut guard = service_impl.synced_route_info.peer_infos.write();
             guard.insert(service_impl.my_peer_id, self_info);

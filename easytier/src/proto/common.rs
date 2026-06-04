@@ -1,15 +1,26 @@
+use anyhow::Context;
+use base64::{Engine as _, prelude::BASE64_STANDARD};
+use std::time::SystemTime;
 use std::{
     fmt::{self, Display},
     str::FromStr,
 };
-
-use anyhow::Context;
-use base64::{Engine as _, prelude::BASE64_STANDARD};
 use strum::VariantArray;
 
 use crate::tunnel::{IpScheme, packet_def::CompressorAlgo};
 
 include!(concat!(env!("OUT_DIR"), "/common.rs"));
+include!(concat!(env!("OUT_DIR"), "/common.serde.rs"));
+
+pub trait TimestampExt {
+    fn now() -> Self;
+}
+
+impl TimestampExt for prost_wkt_types::Timestamp {
+    fn now() -> Self {
+        SystemTime::now().into()
+    }
+}
 
 impl From<uuid::Uuid> for Uuid {
     fn from(uuid: uuid::Uuid) -> Self {
