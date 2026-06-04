@@ -53,6 +53,17 @@ where
         config: NetworkConfig,
         save: bool,
     ) -> Result<(), RemoteClientError<E>> {
+        self.handle_run_network_instance_with_source(identify, config, save, ConfigSource::User)
+            .await
+    }
+
+    async fn handle_run_network_instance_with_source(
+        &self,
+        identify: T,
+        config: NetworkConfig,
+        save: bool,
+        source: ConfigSource,
+    ) -> Result<(), RemoteClientError<E>> {
         let client = self
             .get_rpc_client(identify.clone())
             .ok_or(RemoteClientError::ClientNotFound)?;
@@ -63,7 +74,7 @@ where
                     inst_id: None,
                     config: Some(config.clone()),
                     overwrite: true,
-                    source: ConfigSource::User.to_rpc(),
+                    source: source.to_rpc(),
                 },
             )
             .await?;
@@ -74,7 +85,7 @@ where
                     identify,
                     resp.inst_id.unwrap_or_default().into(),
                     config,
-                    ConfigSource::User,
+                    source,
                 )
                 .await
                 .map_err(RemoteClientError::PersistentError)?;
