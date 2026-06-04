@@ -900,6 +900,10 @@ impl NetworkConfig {
             flags.bind_device = bind_device;
         }
 
+        if self.socket_mark.is_some() {
+            flags.socket_mark = self.socket_mark;
+        }
+
         if let Some(no_tun) = self.no_tun {
             flags.no_tun = no_tun;
         }
@@ -1120,6 +1124,7 @@ impl NetworkConfig {
         result.p2p_only = Some(flags.p2p_only);
         result.lazy_p2p = Some(flags.lazy_p2p);
         result.bind_device = Some(flags.bind_device);
+        result.socket_mark = flags.socket_mark;
         result.no_tun = Some(flags.no_tun);
         result.enable_exit_node = Some(flags.enable_exit_node);
         result.relay_all_peer_rpc = Some(flags.relay_all_peer_rpc);

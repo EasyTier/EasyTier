@@ -205,6 +205,9 @@ core_clap:
   bind_device:
     en: "bind the connector socket to physical devices to avoid routing issues. e.g.: subnet proxy segment conflicts with a node's segment, after binding the physical device, it can communicate with the node normally."
     zh-CN: "将连接器的套接字绑定到物理设备以避免路由问题。比如子网代理网段与某节点的网段冲突，绑定物理设备后可以与该节点正常通信。"
+  socket_mark:
+    en: "Linux only: set SO_MARK (fwmark) on EasyTier's underlay sockets (TCP, UDP, QUIC, WebSocket, WireGuard, and the FakeTCP decoy socket) so the host can policy-route or filter them with 'ip rule fwmark ...', nftables ('meta mark'), or iptables ('-m mark'). Any value is applied verbatim (0 is a valid mark); omit the flag to leave SO_MARK untouched. Requires CAP_NET_ADMIN. Note: FakeTCP payload travels via raw TUN writes which the kernel does not tag — mark those separately on the TUN device if needed."
+    zh-CN: "仅 Linux: 在 EasyTier 的底层套接字 (TCP、UDP、QUIC、WebSocket、WireGuard 以及 FakeTCP 诱饵套接字) 上设置 SO_MARK (fwmark)，使主机能用 'ip rule fwmark ...'、nftables ('meta mark') 或 iptables ('-m mark') 策略路由/过滤这些数据包。任何值都会原样应用 (0 也是合法的 mark)；不传该参数即保持 SO_MARK 不变。需要 CAP_NET_ADMIN 权限。注意：FakeTCP 的实际载荷通过原始 TUN 写入，内核不会为其打标记；如有需要请在 TUN 设备上单独打标记。"
   enable_kcp_proxy:
     en: "proxy tcp streams with kcp, improving the latency and throughput on the network with udp packet loss."
     zh-CN: "使用 KCP 代理 TCP 流，提高在 UDP 丢包网络上的延迟和吞吐量。"

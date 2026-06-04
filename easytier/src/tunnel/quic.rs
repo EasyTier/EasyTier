@@ -230,10 +230,15 @@ pub struct QuicEndpointManager {
 static QUIC_ENDPOINT_MANAGER: OnceLock<QuicEndpointManager> = OnceLock::new();
 
 impl QuicEndpointManager {
-    fn try_create(addr: SocketAddr, dual_stack: bool) -> Result<Endpoint, TunnelError> {
+    fn try_create(
+        addr: SocketAddr,
+        dual_stack: bool,
+        socket_mark: Option<u32>,
+    ) -> Result<Endpoint, TunnelError> {
         let socket = bind::<UdpSocket>()
             .addr(addr)
             .only_v6(addr.is_ipv6() && !dual_stack)
+            .maybe_socket_mark(socket_mark)
             .call()?;
         let runtime = default_runtime().ok_or(TunnelError::InternalError(
             "no async runtime found".to_owned(),
@@ -250,6 +255,7 @@ impl QuicEndpointManager {
 
     fn create<F>(
         &self,
+        socket_mark: Option<u32>,
         mut selector: F,
     ) -> Result<(&RwPool<Endpoint>, Option<Endpoint>), TunnelError>
     where
@@ -261,7 +267,7 @@ impl QuicEndpointManager {
                 return Ok((pool, None));
             };
 
-            let endpoint = Self::try_create(addr, dual_stack);
+            let endpoint = Self::try_create(addr, dual_stack, socket_mark);
             if let Err(error) = endpoint.as_ref()
                 && dual_stack
             {
@@ -331,8 +337,9 @@ impl QuicEndpointManager {
     /// * `addr`: listen address
     fn server(global_ctx: &ArcGlobalCtx, addr: SocketAddr) -> Result<Endpoint, TunnelError> {
         let mgr = Self::load(global_ctx);
+        let socket_mark = global_ctx.config.get_flags().socket_mark;
 
-        let (pool, endpoint) = mgr.create(|mgr| {
+        let (pool, endpoint) = mgr.create(socket_mark, |mgr| {
             let dual_stack = addr.ip() == Ipv6Addr::UNSPECIFIED && mgr.both.is_enabled();
             let pool = if addr.is_ipv4() {
                 &mgr.ipv4
@@ -351,8 +358,12 @@ impl QuicEndpointManager {
         Ok(endpoint)
     }
 
-    fn client_endpoint(&self, ip_version: IpVersion) -> Result<Endpoint, TunnelError> {
-        let (pool, endpoint) = self.create(|mgr| {
+    fn client_endpoint(
+        &self,
+        ip_version: IpVersion,
+        socket_mark: Option<u32>,
+    ) -> Result<Endpoint, TunnelError> {
+        let (pool, endpoint) = self.create(socket_mark, |mgr| {
             let dual_stack = mgr.both.is_enabled();
             let (pool, addr) = match ip_version {
                 IpVersion::V4 if !dual_stack => (&mgr.ipv4, (Ipv4Addr::UNSPECIFIED, 0).into()),
@@ -404,8 +415,9 @@ impl QuicEndpointManager {
         } else {
             IpVersion::V6
         };
+        let socket_mark = global_ctx.config.get_flags().socket_mark;
         Self::load(global_ctx)
-            .connect_with_ip_version(addr, ip_version)
+            .connect_with_ip_version(addr, ip_version, socket_mark)
             .await
     }
 
@@ -413,12 +425,13 @@ impl QuicEndpointManager {
         &self,
         addr: SocketAddr,
         ip_version: IpVersion,
+        socket_mark: Option<u32>,
     ) -> Result<(Endpoint, Connection), TunnelError> {
         let max_endpoint_stopping_retries = self.client_pool(ip_version).len().saturating_add(1);
         let mut endpoint_stopping_retries = 0;
 
         loop {
-            let endpoint = self.client_endpoint(ip_version)?;
+            let endpoint = self.client_endpoint(ip_version, socket_mark)?;
             let connecting = match endpoint.connect(addr, "localhost") {
                 Ok(connecting) => connecting,
                 Err(ConnectError::EndpointStopping) => {
@@ -646,7 +659,7 @@ mod tests {
     fn stopped_client_endpoint() -> (Endpoint, SocketAddr) {
         let rt = Builder::new_current_thread().enable_all().build().unwrap();
         let endpoint = rt.block_on(async {
-            QuicEndpointManager::try_create((Ipv4Addr::UNSPECIFIED, 0).into(), false).unwrap()
+            QuicEndpointManager::try_create((Ipv4Addr::UNSPECIFIED, 0).into(), false, None).unwrap()
         });
         let local_addr = endpoint.local_addr().unwrap();
         drop(rt);
@@ -763,7 +776,7 @@ mod tests {
             assert!(mgr.contains_local_addr(stopped_addr_b));
 
             let err = mgr
-                .connect_with_ip_version("127.0.0.1:0".parse().unwrap(), IpVersion::V4)
+                .connect_with_ip_version("127.0.0.1:0".parse().unwrap(), IpVersion::V4, None)
                 .await
                 .unwrap_err();
             let err = format!("{:?}", err);
