@@ -52,6 +52,12 @@ use crate::{
     peers::{PeerPacketFilter, peer_manager::PeerManager},
 };
 
+#[cfg(feature = "ffi-dataplane")]
+mod dataplane;
+
+#[cfg(feature = "ffi-dataplane")]
+pub use dataplane::{DataPlaneTcpListener, DataPlaneTcpStream, DataPlaneUdpSocket};
+
 enum SocksUdpSocket {
     UdpSocket(Arc<tokio::net::UdpSocket>),
     SmolUdpSocket(super::tokio_smoltcp::UdpSocket),
@@ -136,11 +142,17 @@ impl AsyncWrite for SocksTcpStream {
 
 enum Socks5EntryData {
     Tcp(TcpListener), // hold a binded socket to hold the tcp port
+    #[cfg(feature = "ffi-dataplane")]
+    // a data-plane routing entry that owns no resource. the entry_type in the
+    // key distinguishes a listen route from an actively outbound route.
+    DataPlaneRoute,
     Udp((Arc<SocksUdpSocket>, UdpClientKey)), // hold the socket to send data to dst
 }
 
 const UDP_ENTRY: u8 = 1;
 const TCP_ENTRY: u8 = 2;
+#[cfg(feature = "ffi-dataplane")]
+const TCP_LISTEN_ENTRY: u8 = 3;
 
 #[derive(Debug, Eq, PartialEq, Hash, Clone)]
 struct Socks5Entry {
@@ -477,6 +489,11 @@ pub struct Socks5Server {
     kcp_endpoint: Mutex<Option<Weak<KcpEndpoint>>>,
 
     socks5_enabled: Arc<AtomicBool>,
+    #[cfg(feature = "ffi-dataplane")]
+    data_plane_refs: Arc<AtomicUsize>,
+    // Tracks whether the smoltcp `net` is ready for data-plane callers.
+    #[cfg(feature = "ffi-dataplane")]
+    data_plane_net_ready: tokio::sync::watch::Sender<bool>,
     cancel_tokens: Arc<DashMap<PortForwardConfig, DropGuard>>,
     port_forward_list_change_notifier: Arc<Notify>,
     entry_count: Arc<AtomicUsize>,
@@ -508,14 +525,27 @@ impl PeerPacketFilter for Socks5Server {
                 let Some(tcp_packet) = TcpPacket::new(ipv4.payload()) else {
                     return Some(packet);
                 };
-                Socks5Entry {
+                let entry = Socks5Entry {
                     dst: SocketAddr::new(ipv4.get_source().into(), tcp_packet.get_source()),
                     src: SocketAddr::new(
                         ipv4.get_destination().into(),
                         tcp_packet.get_destination(),
                     ),
                     entry_type: TCP_ENTRY,
-                }
+                };
+                #[cfg(feature = "ffi-dataplane")]
+                let entry = if self.entries.contains_key(&entry) {
+                    // Case 1: it is an established connection that has an exactly matched inbound.
+                    entry
+                } else {
+                    // Case 2: it could be a new TCP SYN packet that has not been accepted.
+                    Socks5Entry {
+                        src: entry.src,
+                        dst: SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0),
+                        entry_type: TCP_LISTEN_ENTRY,
+                    }
+                };
+                entry
             }
 
             IpNextHeaderProtocols::Udp => {
@@ -591,6 +621,10 @@ impl Socks5Server {
             kcp_endpoint: Mutex::new(None),
 
             socks5_enabled: Arc::new(AtomicBool::new(false)),
+            #[cfg(feature = "ffi-dataplane")]
+            data_plane_refs: Arc::new(AtomicUsize::new(0)),
+            #[cfg(feature = "ffi-dataplane")]
+            data_plane_net_ready: tokio::sync::watch::channel(false).0,
             cancel_tokens: Arc::new(DashMap::new()),
             port_forward_list_change_notifier: Arc::new(Notify::new()),
             entry_count: Arc::new(AtomicUsize::new(0)),
@@ -608,11 +642,25 @@ impl Socks5Server {
         let cancel_tokens = self.cancel_tokens.clone();
         let port_forward_list_change_notifier = self.port_forward_list_change_notifier.clone();
         let socks5_enabled = self.socks5_enabled.clone();
+        #[cfg(feature = "ffi-dataplane")]
+        let data_plane_refs = self.data_plane_refs.clone();
+        #[cfg(feature = "ffi-dataplane")]
+        let data_plane_net_ready = self.data_plane_net_ready.clone();
         self.tasks.lock().unwrap().spawn(async move {
             let mut prev_ipv4 = None;
             loop {
-                if cancel_tokens.is_empty() && !socks5_enabled.load(Ordering::Relaxed) {
+                #[cfg(feature = "ffi-dataplane")]
+                let data_plane_active = data_plane_refs.load(Ordering::Relaxed) > 0;
+                #[cfg(not(feature = "ffi-dataplane"))]
+                let data_plane_active = false;
+
+                if cancel_tokens.is_empty()
+                    && !socks5_enabled.load(Ordering::Relaxed)
+                    && !data_plane_active
+                {
                     let _ = net.lock().await.take();
+                    #[cfg(feature = "ffi-dataplane")]
+                    let _ = data_plane_net_ready.send_replace(false);
                     port_forward_list_change_notifier.notified().await;
                     continue;
                 }
@@ -637,8 +685,14 @@ impl Socks5Server {
                             packet_recv.clone(),
                             entries.clone(),
                         ));
+                        // Wake any data-plane callers waiting in
+                        // `wait_data_plane_net` for the smoltcp net to appear.
+                        #[cfg(feature = "ffi-dataplane")]
+                        let _ = data_plane_net_ready.send_replace(true);
                     } else {
                         let _ = net.lock().await.take();
+                        #[cfg(feature = "ffi-dataplane")]
+                        let _ = data_plane_net_ready.send_replace(false);
                     }
                 }
 
