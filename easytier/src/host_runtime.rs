@@ -32,9 +32,8 @@ use crate::{
 
 /// Process-wide native implementation of the host capabilities consumed by core.
 ///
-/// Instance-specific policy is carried by each request's socket context. Keeping
-/// this object stateless prevents a socket operation from capturing one
-/// instance's namespace or mark.
+/// Instance-specific policy is carried by each request's socket context so a
+/// process-wide service never captures one instance's namespace or mark.
 #[derive(Debug)]
 pub struct NativeHostRuntime {
     udp_sockets: RuntimeUdpSocketFactory,
