@@ -891,17 +891,20 @@ impl NetworkOptions {
         }
 
         let old_ns = cfg.get_network_identity();
-        let network_name = self.network_name.clone().unwrap_or(old_ns.network_name);
+        let network_name = self
+            .network_name
+            .clone()
+            .unwrap_or_else(|| old_ns.network_name.clone());
 
         if self.credential.is_some() {
             // Credential mode: no network_secret, authenticate via credential keypair
             cfg.set_network_identity(NetworkIdentity::new_credential(network_name));
-        } else {
-            let network_secret = self
-                .network_secret
-                .clone()
-                .unwrap_or(old_ns.network_secret.unwrap_or_default());
+        } else if let Some(network_secret) = &self.network_secret {
+            cfg.set_network_identity(NetworkIdentity::new(network_name, network_secret.clone()));
+        } else if let Some(network_secret) = old_ns.network_secret {
             cfg.set_network_identity(NetworkIdentity::new(network_name, network_secret));
+        } else {
+            cfg.set_network_identity(NetworkIdentity::new_credential(network_name));
         }
 
         if let Some(dhcp) = self.dhcp {
@@ -1738,5 +1741,34 @@ mod tests {
                 input
             );
         }
+    }
+
+    #[test]
+    fn test_network_options_merge_preserves_credential_identity() {
+        let cfg = TomlConfigLoader::new_from_str(
+            r#"
+[network_identity]
+network_name = "credential-network"
+network_secret = ""
+
+[secure_mode]
+enabled = true
+"#,
+        )
+        .unwrap();
+        assert_eq!(cfg.get_network_identity().network_secret, None);
+
+        NetworkOptions {
+            hostname: Some("override-host".to_string()),
+            ..Default::default()
+        }
+        .merge_into(&cfg)
+        .unwrap();
+
+        let identity = cfg.get_network_identity();
+        assert_eq!(identity.network_name, "credential-network");
+        assert_eq!(identity.network_secret, None);
+        assert_eq!(identity.network_secret_digest, None);
+        assert_eq!(cfg.get_hostname(), "override-host");
     }
 }
