@@ -964,10 +964,6 @@ impl NetworkConfig {
             flags.disable_sym_hole_punching = disable_sym_hole_punching;
         }
 
-        if let Some(enable_magic_dns) = self.enable_magic_dns {
-            flags.accept_dns = enable_magic_dns;
-        }
-
         if let Some(mtu) = self.mtu {
             flags.mtu = mtu as u32;
         }
@@ -1138,7 +1134,6 @@ impl NetworkConfig {
         result.disable_relay_data = Some(flags.disable_relay_data);
         result.enable_udp_broadcast_relay = Some(flags.enable_udp_broadcast_relay);
         result.disable_sym_hole_punching = Some(flags.disable_sym_hole_punching);
-        result.enable_magic_dns = Some(flags.accept_dns);
         result.mtu = Some(flags.mtu as i32);
         result.instance_recv_bps_limit =
             (flags.instance_recv_bps_limit != u64::MAX).then_some(flags.instance_recv_bps_limit);
@@ -1406,7 +1401,6 @@ mod tests {
                 flags.disable_udp_hole_punching = rng.gen_bool(0.2);
                 flags.disable_upnp = rng.gen_bool(0.2);
                 flags.enable_udp_broadcast_relay = rng.gen_bool(0.2);
-                flags.accept_dns = rng.gen_bool(0.6);
                 flags.mtu = rng.gen_range(1200..1500);
                 flags.private_mode = rng.gen_bool(0.3);
 
