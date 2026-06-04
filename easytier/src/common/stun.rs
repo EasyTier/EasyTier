@@ -21,6 +21,7 @@ use stun_codec::rfc5389::methods::BINDING;
 use stun_codec::{Message, MessageClass, MessageDecoder, MessageEncoder};
 
 use super::stun_codec_ext::*;
+use crate::common::error::Error;
 use crate::utils::dns::{resolve_host, txt_resolve};
 
 const DEFAULT_UDP_STUN_SERVERS: &[&str] = &[

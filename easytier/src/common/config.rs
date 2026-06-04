@@ -775,7 +775,7 @@ impl ConfigLoader for TomlConfigLoader {
             .unwrap()
             .hostname
             .as_ref()
-            .map(sanitize)
+            .map(|hostname| dns::sanitize(hostname))
             .filter(|h| !h.is_empty());
 
         self.set_hostname(hostname.clone());

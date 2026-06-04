@@ -12,8 +12,8 @@ use idna::AsciiDenyList;
 use once_cell::sync::Lazy;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
 use std::sync::RwLock;
+use std::sync::atomic::AtomicBool;
 use tokio::net::lookup_host;
 
 const SYSTEM_DNS_RESOLVER: &str = "system";
@@ -55,7 +55,8 @@ fn build_hickory_resolver(
     Ok(Arc::new(
         TokioResolver::builder_with_config(config, TokioRuntimeProvider::default())
             .with_options(opts)
-            .build()?,
+            .build()
+            .context("failed to build DNS resolver")?,
     ))
 }
 
@@ -84,14 +85,11 @@ fn build_doh_resolver(raw: &str) -> Result<DnsResolver, Error> {
     let name_servers = ips
         .into_iter()
         .map(|ip| {
-            NameServerConfig::new(
-                SocketAddr::new(ip, port),
-                true,
-                vec![ConnectionConfig::https(
-                    server_name.clone(),
-                    http_endpoint.clone(),
-                )],
-            )
+            let mut connection =
+                ConnectionConfig::https(server_name.clone(), http_endpoint.clone());
+            connection.port = port;
+
+            NameServerConfig::new(ip, true, vec![connection])
         })
         .collect::<Vec<_>>();
 
