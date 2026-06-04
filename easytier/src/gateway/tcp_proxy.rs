@@ -44,7 +44,7 @@ use super::tokio_smoltcp::{self, Net, NetConfig, channel_device};
 pub(crate) trait NatDstConnector: Send + Sync + Clone + 'static {
     type DstStream: AsyncRead + AsyncWrite + Unpin + Send;
 
-    async fn connect(&self, src: SocketAddr, dst: SocketAddr) -> Result<Self::DstStream>;
+    async fn connect(&self, src: SocketAddr, dst: SocketAddr) -> anyhow::Result<Self::DstStream>;
     fn check_packet_from_peer_fast(&self, cidr_set: &CidrSet, global_ctx: &GlobalCtx) -> bool;
     fn check_packet_from_peer(
         &self,
@@ -63,14 +63,13 @@ pub struct NatDstTcpConnector;
 #[async_trait::async_trait]
 impl NatDstConnector for NatDstTcpConnector {
     type DstStream = TcpStream;
-    async fn connect(&self, _src: SocketAddr, nat_dst: SocketAddr) -> Result<Self::DstStream> {
-        let socket = match TcpSocket::new_v4() {
-            Ok(s) => s,
-            Err(error) => {
-                log::error!(?error, "create v4 socket failed");
-                return Err(error.into());
-            }
-        };
+    async fn connect(
+        &self,
+        _src: SocketAddr,
+        nat_dst: SocketAddr,
+    ) -> anyhow::Result<Self::DstStream> {
+        let socket = TcpSocket::new_v4()
+            .inspect_err(|error| log::error!(?error, "create v4 socket failed"))?;
 
         let stream = timeout(Duration::from_secs(10), socket.connect(nat_dst))
             .await?

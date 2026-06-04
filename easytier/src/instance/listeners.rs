@@ -27,10 +27,20 @@ pub fn create_listener_by_url(
     l: &url::Url,
     global_ctx: ArcGlobalCtx,
 ) -> Result<Box<dyn TunnelListener>, Error> {
+    use crate::common::config::ConfigLoader;
+    let socket_mark = global_ctx.config.get_flags().socket_mark;
     Ok(match l.try_into()? {
         TunnelScheme::Ip(scheme) => match scheme {
-            IpScheme::Tcp => TcpTunnelListener::new(l.clone()).boxed(),
-            IpScheme::Udp => UdpTunnelListener::new(l.clone()).boxed(),
+            IpScheme::Tcp => {
+                let mut l = TcpTunnelListener::new(l.clone());
+                l.set_socket_mark(socket_mark);
+                l.boxed()
+            }
+            IpScheme::Udp => {
+                let mut l = UdpTunnelListener::new(l.clone());
+                l.set_socket_mark(socket_mark);
+                l.boxed()
+            }
             #[cfg(feature = "wireguard")]
             IpScheme::Wg => {
                 use crate::tunnel::wireguard::{WgConfig, WgTunnelListener};
@@ -39,15 +49,20 @@ pub fn create_listener_by_url(
                     &nid.network_name,
                     &nid.network_secret.unwrap_or_default(),
                 );
-                WgTunnelListener::new(l.clone(), wg_config).boxed()
+                let mut l = WgTunnelListener::new(l.clone(), wg_config);
+                l.set_socket_mark(socket_mark);
+                l.boxed()
             }
             #[cfg(feature = "quic")]
             IpScheme::Quic => {
+                // QUIC reads socket_mark from global_ctx in QuicEndpointManager
                 tunnel::quic::QuicTunnelListener::new(l.clone(), global_ctx.clone()).boxed()
             }
             #[cfg(feature = "websocket")]
             IpScheme::Ws | IpScheme::Wss => {
-                tunnel::websocket::WsTunnelListener::new(l.clone()).boxed()
+                let mut l = tunnel::websocket::WsTunnelListener::new(l.clone());
+                l.set_socket_mark(socket_mark);
+                l.boxed()
             }
             #[cfg(feature = "faketcp")]
             IpScheme::FakeTcp => tunnel::fake_tcp::FakeTcpTunnelListener::new(l.clone()).boxed(),

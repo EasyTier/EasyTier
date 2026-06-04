@@ -284,6 +284,10 @@ impl ForeignNetworkEntry {
         let mut flags = config.get_flags();
         flags.disable_relay_kcp = !global_ctx.get_flags().enable_relay_foreign_network_kcp;
         flags.disable_relay_quic = !global_ctx.get_flags().enable_relay_foreign_network_quic;
+        // socket_mark is a host-wide socket option: propagate from parent so
+        // outbound sockets the foreign-network entry initiates inherit the same
+        // mark as the rest of the node.
+        flags.socket_mark = global_ctx.get_flags().socket_mark;
         config.set_flags(flags);
 
         config.set_mapped_listeners(Some(global_ctx.config.get_mapped_listeners()));

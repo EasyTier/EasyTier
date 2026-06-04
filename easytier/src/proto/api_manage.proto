@@ -101,12 +101,15 @@ message NetworkConfig {
   optional string ipv6_public_addr_prefix = 64;
   optional bool disable_relay_data = 65;
 
+  optional bool enable_udp_broadcast_relay = 66;
+  optional uint32 socket_mark = 67;
+  
   // Listeners that are only accessible via a reverse proxy (e.g. frp, cloudflared tunnel).
   // Connections accepted on these listeners will NOT be treated as directly-connected, which
   // causes EasyTier to attempt P2P hole-punching to establish a real direct connection.
   // These listener URLs will NOT be advertised to peers via the IP-list RPC so that peers
   // do not try to directly reach them.
-  repeated string rproxy_listeners = 66;
+  repeated string rproxy_listeners = 68;
 }
 
 message PortForwardConfig {

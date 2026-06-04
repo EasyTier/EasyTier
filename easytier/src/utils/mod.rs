@@ -1,3 +1,4 @@
+pub mod error;
 pub mod panic;
 pub mod string;
 pub mod task;

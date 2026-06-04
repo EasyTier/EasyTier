@@ -1,6 +1,6 @@
 [package]
 name = "easytier-web"
-version = "2.6.3"
+version = "2.6.4"
 edition.workspace = true
 description = "Config server for easytier. easytier-core gets config from this and web frontend use it as restful api server."
 
@@ -53,6 +53,7 @@ clap = { version = "4.4.8", features = [
     "unicode",
     "derive",
     "wrap_help",
+    "env",
 ] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"

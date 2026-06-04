@@ -495,6 +495,15 @@ struct NetworkOptions {
 
     #[arg(
         long,
+        env = "ET_ENABLE_UDP_BROADCAST_RELAY",
+        help = t!("core_clap.enable_udp_broadcast_relay").to_string(),
+        num_args = 0..=1,
+        default_missing_value = "true"
+    )]
+    enable_udp_broadcast_relay: Option<bool>,
+
+    #[arg(
+        long,
         env = "ET_RELAY_ALL_PEER_RPC",
         help = t!("core_clap.relay_all_peer_rpc").to_string(),
         num_args = 0..=1,
@@ -532,6 +541,17 @@ struct NetworkOptions {
         help = t!("core_clap.bind_device").to_string()
     )]
     bind_device: Option<bool>,
+
+    // SO_MARK (fwmark) is a Linux-family kernel feature. Gate the flag out
+    // entirely on other targets so users on Windows/macOS/BSD don't see a
+    // `--socket-mark` they can't act on.
+    #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
+    #[arg(
+        long,
+        env = "ET_SOCKET_MARK",
+        help = t!("core_clap.socket_mark").to_string()
+    )]
+    socket_mark: Option<u32>,
 
     #[arg(
         long,
@@ -1157,6 +1177,10 @@ impl NetworkOptions {
             .into();
         }
         f.bind_device = self.bind_device.unwrap_or(f.bind_device);
+        #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
+        {
+            f.socket_mark = self.socket_mark.or(f.socket_mark);
+        }
         f.enable_kcp_proxy = self.enable_kcp_proxy.unwrap_or(f.enable_kcp_proxy);
         f.disable_kcp_input = self.disable_kcp_input.unwrap_or(f.disable_kcp_input);
         f.enable_quic_proxy = self.enable_quic_proxy.unwrap_or(f.enable_quic_proxy);
@@ -1182,6 +1206,9 @@ impl NetworkOptions {
             .disable_sym_hole_punching
             .unwrap_or(f.disable_sym_hole_punching);
         f.disable_upnp = self.disable_upnp.unwrap_or(f.disable_upnp);
+        f.enable_udp_broadcast_relay = self
+            .enable_udp_broadcast_relay
+            .unwrap_or(f.enable_udp_broadcast_relay);
         // Configure tld_dns_zone: use provided value if set
         if let Some(tld_dns_zone) = &self.tld_dns_zone {
             f.tld_dns_zone = tld_dns_zone.clone();

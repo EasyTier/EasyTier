@@ -11,9 +11,8 @@ use windows::{
             NET_FW_RULE_DIR_OUT,
         },
         Networking::WinSock::{
-            IP_UNICAST_IF, IPPROTO_IP, IPPROTO_IPV6, IPV6_UNICAST_IF, SIO_UDP_CONNRESET,
-            SO_EXCLUSIVEADDRUSE, SOCKET, SOCKET_ERROR, SOL_SOCKET, WSAGetLastError, WSAIoctl,
-            htonl, setsockopt,
+            IP_UNICAST_IF, IPPROTO_IP, IPPROTO_IPV6, IPV6_UNICAST_IF, SIO_UDP_CONNRESET, SOCKET,
+            SOCKET_ERROR, WSAGetLastError, WSAIoctl, htonl, setsockopt,
         },
         System::Com::{
             CLSCTX_ALL, COINIT_MULTITHREADED, CoCreateInstance, CoInitializeEx, CoUninitialize,

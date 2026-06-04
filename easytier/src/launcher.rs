@@ -789,6 +789,10 @@ impl NetworkConfig {
             flags.bind_device = bind_device;
         }
 
+        if self.socket_mark.is_some() {
+            flags.socket_mark = self.socket_mark;
+        }
+
         if let Some(no_tun) = self.no_tun {
             flags.no_tun = no_tun;
         }
@@ -839,6 +843,10 @@ impl NetworkConfig {
 
         if let Some(disable_relay_data) = self.disable_relay_data {
             flags.disable_relay_data = disable_relay_data;
+        }
+
+        if let Some(enable_udp_broadcast_relay) = self.enable_udp_broadcast_relay {
+            flags.enable_udp_broadcast_relay = enable_udp_broadcast_relay;
         }
 
         if let Some(disable_sym_hole_punching) = self.disable_sym_hole_punching {
@@ -1010,6 +1018,7 @@ impl NetworkConfig {
         result.p2p_only = Some(flags.p2p_only);
         result.lazy_p2p = Some(flags.lazy_p2p);
         result.bind_device = Some(flags.bind_device);
+        result.socket_mark = flags.socket_mark;
         result.no_tun = Some(flags.no_tun);
         result.enable_exit_node = Some(flags.enable_exit_node);
         result.relay_all_peer_rpc = Some(flags.relay_all_peer_rpc);
@@ -1021,6 +1030,7 @@ impl NetworkConfig {
         result.disable_udp_hole_punching = Some(flags.disable_udp_hole_punching);
         result.disable_upnp = Some(flags.disable_upnp);
         result.disable_relay_data = Some(flags.disable_relay_data);
+        result.enable_udp_broadcast_relay = Some(flags.enable_udp_broadcast_relay);
         result.disable_sym_hole_punching = Some(flags.disable_sym_hole_punching);
         result.enable_magic_dns = Some(flags.accept_dns);
         result.mtu = Some(flags.mtu as i32);
@@ -1289,6 +1299,7 @@ mod tests {
                 flags.disable_tcp_hole_punching = rng.gen_bool(0.2);
                 flags.disable_udp_hole_punching = rng.gen_bool(0.2);
                 flags.disable_upnp = rng.gen_bool(0.2);
+                flags.enable_udp_broadcast_relay = rng.gen_bool(0.2);
                 flags.accept_dns = rng.gen_bool(0.6);
                 flags.mtu = rng.gen_range(1200..1500);
                 flags.private_mode = rng.gen_bool(0.3);

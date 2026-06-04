@@ -2245,7 +2245,7 @@ checksum = "d0881ea181b1df73ff77ffaaf9c7544ecc11e82fba9b5f27b262a3c73a332555"
 
 [[package]]
 name = "easytier"
-version = "2.6.3"
+version = "2.6.4"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -2280,7 +2280,6 @@ dependencies = [
  "derivative",
  "derive_builder",
  "derive_more 2.1.1",
- "easytier-rpc-build",
  "encoding",
  "flume 0.12.0",
  "forwarded-header-value",
@@ -2306,6 +2305,7 @@ dependencies = [
  "machine-uid",
  "maplit",
  "mimalloc",
+ "moka",
  "multimap",
  "netlink-packet-core 0.7.0",
  "netlink-packet-route 0.21.0",
@@ -2323,6 +2323,7 @@ dependencies = [
  "pin-project-lite",
  "pnet",
  "prefix-trie",
+ "proc-macro2",
  "prost",
  "prost-build",
  "prost-reflect",
@@ -2332,7 +2333,12 @@ dependencies = [
  "prost-wkt-types",
  "quinn",
  "quinn-plaintext",
+<<<<<<< HEAD
  "rand 0.8.6",
+=======
+ "quote",
+ "rand 0.8.5",
+>>>>>>> upstream/main
  "rcgen",
  "regex",
  "reqwest 0.12.28",
@@ -2370,8 +2376,12 @@ dependencies = [
  "tokio-stream",
  "tokio-util",
  "tokio-websockets",
+<<<<<<< HEAD
  "toml 0.8.23",
  "tonic-build",
+=======
+ "toml 0.8.19",
+>>>>>>> upstream/main
  "tracing",
  "tracing-subscriber",
  "tun-easytier",
@@ -2419,7 +2429,11 @@ dependencies = [
 
 [[package]]
 name = "easytier-gui"
+<<<<<<< HEAD
 version = "2.6.1"
+=======
+version = "2.6.4"
+>>>>>>> upstream/main
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2448,14 +2462,6 @@ dependencies = [
  "uuid",
  "winapi",
  "windows 0.52.0",
-]
-
-[[package]]
-name = "easytier-rpc-build"
-version = "0.1.0"
-dependencies = [
- "heck 0.5.0",
- "prost-build",
 ]
 
 [[package]]
@@ -2500,7 +2506,11 @@ dependencies = [
 
 [[package]]
 name = "easytier-web"
+<<<<<<< HEAD
 version = "2.6.1"
+=======
+version = "2.6.4"
+>>>>>>> upstream/main
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4614,7 +4624,7 @@ dependencies = [
 [[package]]
 name = "kcp-sys"
 version = "0.1.0"
-source = "git+https://github.com/EasyTier/kcp-sys?rev=94964794caaed5d388463137da59b97499619e5f#94964794caaed5d388463137da59b97499619e5f"
+source = "git+https://github.com/EasyTier/kcp-sys?rev=d7427c22d764deb1860a7d37acc446ed5033464c#d7427c22d764deb1860a7d37acc446ed5033464c"
 dependencies = [
  "anyhow",
  "auto_impl",
@@ -5071,10 +5081,17 @@ version = "0.12.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "957228ad12042ee839f93c8f257b62b4c0ab5eaae1d4fa60de53b27c9d7c5046"
 dependencies = [
+ "async-lock",
  "crossbeam-channel",
  "crossbeam-epoch",
  "crossbeam-utils",
+<<<<<<< HEAD
  "equivalent",
+=======
+ "event-listener",
+ "futures-util",
+ "loom",
+>>>>>>> upstream/main
  "parking_lot",
  "portable-atomic",
  "smallvec",
@@ -10112,6 +10129,7 @@ dependencies = [
 ]
 
 [[package]]
+<<<<<<< HEAD
 name = "tonic-build"
 version = "0.12.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -10126,6 +10144,8 @@ dependencies = [
 ]
 
 [[package]]
+=======
+>>>>>>> upstream/main
 name = "tower"
 version = "0.4.13"
 source = "registry+https://github.com/rust-lang/crates.io-index"

@@ -474,6 +474,28 @@ fn handle_event(
                         );
                     }
 
+                    GlobalCtxEvent::UdpBroadcastRelayStartResult {
+                        capture_backend,
+                        error,
+                    } => {
+                        if let Some(error) = error {
+                            event!(
+                                warn,
+                                ?capture_backend,
+                                %error,
+                                "[{}] UDP broadcast relay start failed",
+                                instance_id
+                            );
+                        } else {
+                            event!(
+                                info,
+                                ?capture_backend,
+                                "[{}] UDP broadcast relay started",
+                                instance_id
+                            );
+                        }
+                    }
+
                     GlobalCtxEvent::CredentialChanged => {
                         event!(info, "[{}] credential changed", instance_id);
                     }
