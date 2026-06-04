@@ -373,16 +373,16 @@ impl Drop for Socket {
     fn drop(&mut self) {
         let tuple = AddrTuple::new(self.local_addr, self.remote_addr);
         // dissociates ourself from the dispatch map
-        if self
-            .shared
-            .state
-            .write()
-            .unwrap()
-            .tuples
-            .remove(&tuple)
-            .is_none()
-        {
-            trace!("Fake TCP tuple already removed: {:?}", tuple);
+        let (removed, closed) = {
+            let mut state = self.shared.state.write().unwrap();
+            (state.tuples.remove(&tuple).is_some(), state.closed)
+        };
+        if !removed {
+            if closed {
+                trace!(?tuple, "Fake TCP tuple already removed after stack closed");
+            } else {
+                warn!(?tuple, "Fake TCP tuple missing while dropping socket");
+            }
         }
         // purge cache
         let _ = self.shared.tuples_purge.send(tuple);
@@ -595,7 +595,13 @@ impl Stack {
                             trace!("Removed cached tuple: {:?}", tuple);
                         }
                         Err(broadcast::error::RecvError::Lagged(skipped)) => {
-                            warn!(skipped, "fake_tcp tuples purge receiver lagged");
+                            let cached_tuple_count = tuples.len();
+                            tuples.clear();
+                            warn!(
+                                skipped,
+                                cached_tuple_count,
+                                "fake_tcp tuples purge receiver lagged, cleared local cache"
+                            );
                         }
                         Err(broadcast::error::RecvError::Closed) => {
                             let shared_tuple_count = shared.mark_closed_and_clear_tuples();
