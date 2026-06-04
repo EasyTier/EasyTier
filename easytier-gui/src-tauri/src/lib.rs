@@ -654,6 +654,7 @@ mod manager {
     #[derive(Default)]
     pub(super) enum PersistedConfigSource {
         User,
+        #[serde(alias = "webhook")]
         Web,
         #[serde(other)]
         #[default]
@@ -1180,6 +1181,26 @@ mod manager {
         fn stored_gui_config_defaults_missing_source_to_legacy() {
             let stored: StoredGuiConfig = serde_json::from_value(serde_json::json!({
                 "config": NetworkConfig::default(),
+            }))
+            .unwrap();
+            assert_eq!(stored.source, PersistedConfigSource::Legacy);
+        }
+
+        #[test]
+        fn stored_gui_config_deserializes_webhook_source_as_web() {
+            let stored: StoredGuiConfig = serde_json::from_value(serde_json::json!({
+                "config": NetworkConfig::default(),
+                "source": "webhook",
+            }))
+            .unwrap();
+            assert_eq!(stored.source, PersistedConfigSource::Web);
+        }
+
+        #[test]
+        fn stored_gui_config_defaults_unknown_source_to_legacy() {
+            let stored: StoredGuiConfig = serde_json::from_value(serde_json::json!({
+                "config": NetworkConfig::default(),
+                "source": "unknown",
             }))
             .unwrap();
             assert_eq!(stored.source, PersistedConfigSource::Legacy);
