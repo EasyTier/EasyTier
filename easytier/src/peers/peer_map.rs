@@ -190,6 +190,16 @@ impl PeerMap {
         None
     }
 
+    pub async fn is_local_virtual_peer(&self, peer_id: PeerId) -> bool {
+        for route in self.routes.read().await.iter() {
+            if route.is_local_virtual_peer(peer_id).await {
+                return true;
+            }
+        }
+
+        false
+    }
+
     pub async fn list_peers_own_foreign_network(
         &self,
         network_identity: &NetworkIdentity,
