@@ -2,6 +2,7 @@ package easytierffi
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"net"
 	"os"
@@ -119,7 +120,7 @@ func TestTCPListenIntegration(t *testing.T) {
 			return
 		}
 		if string(buf) != "ping" {
-			accepted <- errUnexpectedPayload("ping", string(buf))
+			accepted <- fmt.Errorf("expected %q, got %q", "ping", string(buf))
 			return
 		}
 		_, err = conn.Write([]byte("pong"))
@@ -136,17 +137,4 @@ func TestTCPListenIntegration(t *testing.T) {
 		_ = listener.Close()
 		t.Fatal(ctx.Err())
 	}
-}
-
-func errUnexpectedPayload(want, got string) error {
-	return &unexpectedPayloadError{want: want, got: got}
-}
-
-type unexpectedPayloadError struct {
-	want string
-	got  string
-}
-
-func (e *unexpectedPayloadError) Error() string {
-	return "expected " + strconv.Quote(e.want) + ", got " + strconv.Quote(e.got)
 }
