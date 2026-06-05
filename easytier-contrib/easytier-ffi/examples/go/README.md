@@ -3,6 +3,8 @@
 This demo wraps EasyTier FFI data-plane TCP as Go `net.Conn` and `net.Listener`.
 It can connect to an SSH server through EasyTier and read its banner, or accept a
 TCP connection from another EasyTier peer and run a small ping/pong exchange.
+The async op-handle wrapper is in `easytier_async.go`; the original synchronous
+wrapper stays in `easytier.go`.
 
 ## 1.1. Build the FFI library
 
@@ -75,6 +77,13 @@ cd easytier-contrib/easytier-ffi/examples/go
 CGO_ENABLED=0 go test -v ./...
 ```
 
+To verify that the async symbols are exported by the FFI library:
+
+```sh
+cd easytier-contrib/easytier-ffi/examples/go
+EASYTIER_FFI_BIND_ASYNC_SYMBOLS=1 CGO_ENABLED=0 go test -run TestAsyncSymbolBinding -v ./...
+```
+
 Expected output includes an SSH banner similar to:
 
 ```text
@@ -85,3 +94,33 @@ PASS
 For `TestTCPListenIntegration`, connect from another EasyTier peer to the local
 EasyTier IPv4 address and `EASYTIER_FFI_LISTEN_PORT`, send `ping`, and expect
 `pong` in response.
+
+The async tests use the same TCP environment variables with `TestAsync*` names.
+The UDP async test uses:
+
+```sh
+export EASYTIER_FFI_UDP_CONFIG="$EASYTIER_FFI_CONFIG"
+export EASYTIER_FFI_UDP_INSTANCE="$EASYTIER_FFI_INSTANCE"
+export EASYTIER_FFI_UDP_TARGET=10.0.0.2:9000
+CGO_ENABLED=0 go test -run TestAsyncUDPIntegration -v ./...
+```
+
+## 1.4. C async example
+
+The C async example is kept separate from the basic C example:
+
+```sh
+cargo build -p easytier-ffi --features ffi-dataplane
+cc -Wall -Wextra -pedantic \
+  ../example_data_plane_async.c \
+  -L ../../../../target/debug -leasytier_ffi \
+  -Wl,-rpath,../../../../target/debug \
+  -o /tmp/easytier_data_plane_async
+
+/tmp/easytier_data_plane_async
+```
+
+Without environment variables it prints usage and exits successfully. With
+`EASYTIER_FFI_CONFIG`, `EASYTIER_FFI_INSTANCE`, and one of
+`EASYTIER_FFI_TARGET`, `EASYTIER_FFI_LISTEN_PORT`, or `EASYTIER_FFI_UDP_TARGET`,
+it runs the corresponding async data-plane flow.

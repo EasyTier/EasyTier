@@ -127,15 +127,6 @@ pub(crate) fn get_runtime_handle(
 }
 
 #[cfg(feature = "ffi-dataplane")]
-pub(crate) fn get_runtime_handle_now(inst_id: &uuid::Uuid) -> Option<tokio::runtime::Handle> {
-    let Some(rt) = INSTANCE_MANAGER.data_plane_wait_runtime_handle(inst_id, Duration::ZERO) else {
-        set_error_msg("instance runtime is not ready");
-        return None;
-    };
-    Some(rt)
-}
-
-#[cfg(feature = "ffi-dataplane")]
 pub(crate) fn insert_tcp_stream_handle(
     instance_id: uuid::Uuid,
     runtime: tokio::runtime::Handle,

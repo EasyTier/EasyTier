@@ -23,10 +23,10 @@ use uuid::Uuid;
 #[cfg(feature = "ffi-dataplane")]
 use crate::{
     data_plane::{
-        TcpHalves, cstr_to_string, enter_data_plane_operation, get_instance_id,
-        get_runtime_handle_now, get_tcp_listener, get_tcp_stream_with_instance,
-        get_udp_socket_with_instance, insert_tcp_listener_handle, insert_tcp_stream_handle,
-        insert_udp_socket_handle, into_ffi_ip_cstring, parse_socket_addr, timeout_duration,
+        TcpHalves, cstr_to_string, enter_data_plane_operation, get_instance_id, get_tcp_listener,
+        get_tcp_stream_with_instance, get_udp_socket_with_instance, insert_tcp_listener_handle,
+        insert_tcp_stream_handle, insert_udp_socket_handle, into_ffi_ip_cstring, parse_socket_addr,
+        timeout_duration,
     },
     error::{free_string, set_error_msg},
     state::INSTANCE_MANAGER,
@@ -46,6 +46,9 @@ static NEXT_DATA_PLANE_OP: AtomicU64 = AtomicU64::new(1);
 #[cfg(feature = "ffi-dataplane")]
 static DATA_PLANE_OPS: once_cell::sync::Lazy<DashMap<u64, Arc<DataPlaneAsyncOp>>> =
     once_cell::sync::Lazy::new(DashMap::new);
+
+#[cfg(feature = "ffi-dataplane")]
+const MAX_ASYNC_READ_LEN: u32 = 16 * 1024 * 1024;
 
 #[cfg(feature = "ffi-dataplane")]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -157,6 +160,62 @@ fn complete_op(op: &DataPlaneAsyncOp, result: Result<DataPlaneAsyncOpResult, Str
         Err(err) => DataPlaneAsyncOpState::Failed(err),
     };
     op.ready.notify_all();
+}
+
+#[cfg(feature = "ffi-dataplane")]
+fn cancel_pending_op(op: &DataPlaneAsyncOp, reason: &str) {
+    op.cancel_token.cancel();
+    let Ok(mut state) = op.state.lock() else {
+        return;
+    };
+    if matches!(*state, DataPlaneAsyncOpState::Pending) {
+        *state = DataPlaneAsyncOpState::Failed(reason.to_string());
+        op.ready.notify_all();
+    }
+}
+
+#[cfg(feature = "ffi-dataplane")]
+fn validate_max_len(max_len: u32) -> bool {
+    if max_len > MAX_ASYNC_READ_LEN {
+        set_error_msg(&format!(
+            "max_len exceeds async data plane limit of {} bytes",
+            MAX_ASYNC_READ_LEN
+        ));
+        false
+    } else {
+        true
+    }
+}
+
+#[cfg(feature = "ffi-dataplane")]
+fn spawn_instance_runtime_op<Fut, F>(
+    op: Arc<DataPlaneAsyncOp>,
+    instance_id: Uuid,
+    timeout_ms: u64,
+    build: F,
+) where
+    Fut: Future<Output = Result<DataPlaneAsyncOpResult, String>> + Send + 'static,
+    F: FnOnce(tokio::runtime::Handle) -> Fut + Send + 'static,
+{
+    std::thread::spawn(move || {
+        let Some(runtime) = INSTANCE_MANAGER
+            .data_plane_wait_runtime_handle(&instance_id, timeout_duration(timeout_ms))
+        else {
+            complete_op(&op, Err("instance runtime is not ready".to_string()));
+            return;
+        };
+        if op.cancel_token.is_cancelled() {
+            complete_op(&op, Err("data plane async op canceled".to_string()));
+            return;
+        }
+
+        let runtime_for_task = runtime.clone();
+        let op_for_complete = op.clone();
+        runtime.spawn(async move {
+            let result = build(runtime_for_task).await;
+            complete_op(&op_for_complete, result);
+        });
+    });
 }
 
 #[cfg(feature = "ffi-dataplane")]
@@ -290,7 +349,10 @@ pub(crate) fn cancel_ops_for_handle(handle: u64) {
         .map(|entry| entry.value().clone())
         .collect::<Vec<_>>();
     for op in ops {
-        op.cancel_token.cancel();
+        cancel_pending_op(
+            &op,
+            "data plane async op canceled because handle was closed",
+        );
     }
 }
 
@@ -352,7 +414,7 @@ pub(crate) fn data_plane_async_op_cancel(handle: u64) -> std::ffi::c_int {
     let Some(op) = DATA_PLANE_OPS.get(&handle).map(|op| op.clone()) else {
         return DATA_PLANE_OP_INVALID;
     };
-    op.cancel_token.cancel();
+    cancel_pending_op(&op, "data plane async op canceled");
     0
 }
 
@@ -404,34 +466,35 @@ pub(crate) unsafe fn data_plane_tcp_connect_start(
     let Some(dst_addr) = parse_socket_addr(&dst_ip, dst_port) else {
         return 0;
     };
-    let Some(runtime) = get_runtime_handle_now(&instance_id) else {
-        return 0;
-    };
 
     let (handle, op) = new_op(DataPlaneAsyncOpKind::TcpConnect, Some(instance_id), None);
-    let runtime_for_result = runtime.clone();
-    runtime.spawn(async move {
-        let result = run_with_cancel(
-            &op.cancel_token,
-            "failed to connect tcp data plane",
-            INSTANCE_MANAGER.data_plane_tcp_connect(
-                &instance_id,
-                dst_addr,
-                timeout_duration(timeout_ms),
-            ),
-        )
-        .await
-        .map(|stream| {
-            let local_addr = stream.local_addr();
-            DataPlaneAsyncOpResult::TcpConnect {
-                instance_id,
-                runtime: runtime_for_result,
-                stream,
-                local_addr,
-            }
-        });
-        complete_op(&op, result);
-    });
+    let op_for_task = op.clone();
+    spawn_instance_runtime_op(
+        op,
+        instance_id,
+        timeout_ms,
+        move |runtime_for_result| async move {
+            run_with_cancel(
+                &op_for_task.cancel_token,
+                "failed to connect tcp data plane",
+                INSTANCE_MANAGER.data_plane_tcp_connect(
+                    &instance_id,
+                    dst_addr,
+                    timeout_duration(timeout_ms),
+                ),
+            )
+            .await
+            .map(|stream| {
+                let local_addr = stream.local_addr();
+                DataPlaneAsyncOpResult::TcpConnect {
+                    instance_id,
+                    runtime: runtime_for_result,
+                    stream,
+                    local_addr,
+                }
+            })
+        },
+    );
     handle
 }
 
@@ -445,6 +508,10 @@ pub(crate) unsafe fn data_plane_tcp_connect_finish(
         set_error_msg("output pointer is null");
         return 0;
     }
+    let _data_plane_usage_guard = match enter_data_plane_operation() {
+        Some(guard) => guard,
+        None => return 0,
+    };
     let Some(result) = take_completed_op(op_handle, DataPlaneAsyncOpKind::TcpConnect) else {
         return 0;
     };
@@ -481,34 +548,35 @@ pub(crate) unsafe fn data_plane_tcp_bind_start(
         set_error_msg("instance not found");
         return 0;
     };
-    let Some(runtime) = get_runtime_handle_now(&instance_id) else {
-        return 0;
-    };
 
     let (handle, op) = new_op(DataPlaneAsyncOpKind::TcpBind, Some(instance_id), None);
-    let runtime_for_result = runtime.clone();
-    runtime.spawn(async move {
-        let result = run_with_cancel(
-            &op.cancel_token,
-            "failed to bind tcp data plane",
-            INSTANCE_MANAGER.data_plane_tcp_bind(
-                &instance_id,
-                local_port,
-                timeout_duration(timeout_ms),
-            ),
-        )
-        .await
-        .map(|listener| {
-            let local_addr = listener.local_addr();
-            DataPlaneAsyncOpResult::TcpBind {
-                instance_id,
-                runtime: runtime_for_result,
-                listener,
-                local_addr,
-            }
-        });
-        complete_op(&op, result);
-    });
+    let op_for_task = op.clone();
+    spawn_instance_runtime_op(
+        op,
+        instance_id,
+        timeout_ms,
+        move |runtime_for_result| async move {
+            run_with_cancel(
+                &op_for_task.cancel_token,
+                "failed to bind tcp data plane",
+                INSTANCE_MANAGER.data_plane_tcp_bind(
+                    &instance_id,
+                    local_port,
+                    timeout_duration(timeout_ms),
+                ),
+            )
+            .await
+            .map(|listener| {
+                let local_addr = listener.local_addr();
+                DataPlaneAsyncOpResult::TcpBind {
+                    instance_id,
+                    runtime: runtime_for_result,
+                    listener,
+                    local_addr,
+                }
+            })
+        },
+    );
     handle
 }
 
@@ -522,6 +590,10 @@ pub(crate) unsafe fn data_plane_tcp_bind_finish(
         set_error_msg("output pointer is null");
         return 0;
     }
+    let _data_plane_usage_guard = match enter_data_plane_operation() {
+        Some(guard) => guard,
+        None => return 0,
+    };
     let Some(result) = take_completed_op(op_handle, DataPlaneAsyncOpKind::TcpBind) else {
         return 0;
     };
@@ -599,6 +671,10 @@ pub(crate) unsafe fn data_plane_tcp_accept_finish(
         set_error_msg("output pointer is null");
         return 0;
     }
+    let _data_plane_usage_guard = match enter_data_plane_operation() {
+        Some(guard) => guard,
+        None => return 0,
+    };
     let Some(result) = take_completed_op(op_handle, DataPlaneAsyncOpKind::TcpAccept) else {
         return 0;
     };
@@ -629,6 +705,9 @@ pub(crate) unsafe fn data_plane_tcp_read_start(handle: u64, max_len: u32, timeou
         Some(guard) => guard,
         None => return 0,
     };
+    if !validate_max_len(max_len) {
+        return 0;
+    }
     let Some((halves, runtime, close_token, instance_id)) = get_tcp_stream_with_instance(handle)
     else {
         return 0;
@@ -778,34 +857,35 @@ pub(crate) unsafe fn data_plane_udp_bind_start(
         set_error_msg("instance not found");
         return 0;
     };
-    let Some(runtime) = get_runtime_handle_now(&instance_id) else {
-        return 0;
-    };
 
     let (handle, op) = new_op(DataPlaneAsyncOpKind::UdpBind, Some(instance_id), None);
-    let runtime_for_result = runtime.clone();
-    runtime.spawn(async move {
-        let result = run_with_cancel(
-            &op.cancel_token,
-            "failed to bind udp data plane",
-            INSTANCE_MANAGER.data_plane_udp_bind(
-                &instance_id,
-                local_port,
-                timeout_duration(timeout_ms),
-            ),
-        )
-        .await
-        .map(|socket| {
-            let local_addr = socket.local_addr();
-            DataPlaneAsyncOpResult::UdpBind {
-                instance_id,
-                runtime: runtime_for_result,
-                socket,
-                local_addr,
-            }
-        });
-        complete_op(&op, result);
-    });
+    let op_for_task = op.clone();
+    spawn_instance_runtime_op(
+        op,
+        instance_id,
+        timeout_ms,
+        move |runtime_for_result| async move {
+            run_with_cancel(
+                &op_for_task.cancel_token,
+                "failed to bind udp data plane",
+                INSTANCE_MANAGER.data_plane_udp_bind(
+                    &instance_id,
+                    local_port,
+                    timeout_duration(timeout_ms),
+                ),
+            )
+            .await
+            .map(|socket| {
+                let local_addr = socket.local_addr();
+                DataPlaneAsyncOpResult::UdpBind {
+                    instance_id,
+                    runtime: runtime_for_result,
+                    socket,
+                    local_addr,
+                }
+            })
+        },
+    );
     handle
 }
 
@@ -819,6 +899,10 @@ pub(crate) unsafe fn data_plane_udp_bind_finish(
         set_error_msg("output pointer is null");
         return 0;
     }
+    let _data_plane_usage_guard = match enter_data_plane_operation() {
+        Some(guard) => guard,
+        None => return 0,
+    };
     let Some(result) = take_completed_op(op_handle, DataPlaneAsyncOpKind::UdpBind) else {
         return 0;
     };
@@ -913,6 +997,9 @@ pub(crate) unsafe fn data_plane_udp_recv_from_start(
         Some(guard) => guard,
         None => return 0,
     };
+    if !validate_max_len(max_len) {
+        return 0;
+    }
     let Some((socket, runtime, close_token, instance_id)) = get_udp_socket_with_instance(handle)
     else {
         return 0;
@@ -972,4 +1059,26 @@ pub(crate) unsafe fn data_plane_udp_recv_from_finish(
         *out_len = len;
     }
     len as std::ffi::c_int
+}
+
+#[cfg(all(test, feature = "ffi-dataplane"))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cancel_marks_pending_op_failed_and_consumable() {
+        let (handle, _op) = new_op(DataPlaneAsyncOpKind::TcpRead, None, None);
+
+        assert_eq!(data_plane_async_op_status(handle), DATA_PLANE_OP_PENDING);
+        assert_eq!(data_plane_async_op_cancel(handle), 0);
+        assert_eq!(data_plane_async_op_wait(handle, 0), DATA_PLANE_OP_FAILED);
+        assert!(take_completed_op(handle, DataPlaneAsyncOpKind::TcpRead).is_none());
+        assert_eq!(data_plane_async_op_status(handle), DATA_PLANE_OP_INVALID);
+    }
+
+    #[test]
+    fn max_len_limit_rejects_oversized_async_reads() {
+        assert!(validate_max_len(MAX_ASYNC_READ_LEN));
+        assert!(!validate_max_len(MAX_ASYNC_READ_LEN + 1));
+    }
 }

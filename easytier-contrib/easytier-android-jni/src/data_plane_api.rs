@@ -138,6 +138,27 @@ fn new_handle_addr_result(
     }
 }
 
+fn close_tcp_stream_on_null(result: jobject, handle: u64) -> jobject {
+    if result.is_null() {
+        let _ = data_plane_tcp_close(handle);
+    }
+    result
+}
+
+fn close_tcp_listener_on_null(result: jobject, handle: u64) -> jobject {
+    if result.is_null() {
+        let _ = data_plane_tcp_listener_close(handle);
+    }
+    result
+}
+
+fn close_udp_socket_on_null(result: jobject, handle: u64) -> jobject {
+    if result.is_null() {
+        let _ = data_plane_udp_close(handle);
+    }
+    result
+}
+
 fn read_owned_bytes(ptr: *const u8, len: u32) -> Vec<u8> {
     if ptr.is_null() || len == 0 {
         return Vec::new();
@@ -215,12 +236,15 @@ pub(crate) fn tcp_connect_finish_jni(mut env: JNIEnv, _class: JClass, op: jlong)
         throw_last(&mut env);
         return ptr::null_mut();
     }
-    new_handle_addr_result(
-        &mut env,
-        TCP_CONNECT_RESULT_CLASS,
+    close_tcp_stream_on_null(
+        new_handle_addr_result(
+            &mut env,
+            TCP_CONNECT_RESULT_CLASS,
+            handle,
+            unsafe { take_ffi_string(ip) },
+            port,
+        ),
         handle,
-        unsafe { take_ffi_string(ip) },
-        port,
     )
 }
 
@@ -262,12 +286,15 @@ pub(crate) fn tcp_bind_finish_jni(mut env: JNIEnv, _class: JClass, op: jlong) ->
         throw_last(&mut env);
         return ptr::null_mut();
     }
-    new_handle_addr_result(
-        &mut env,
-        TCP_BIND_RESULT_CLASS,
+    close_tcp_listener_on_null(
+        new_handle_addr_result(
+            &mut env,
+            TCP_BIND_RESULT_CLASS,
+            handle,
+            unsafe { take_ffi_string(ip) },
+            port,
+        ),
         handle,
-        unsafe { take_ffi_string(ip) },
-        port,
     )
 }
 
@@ -306,10 +333,12 @@ pub(crate) fn tcp_accept_finish_jni(mut env: JNIEnv, _class: JClass, op: jlong) 
         new_socket_addr(&mut env, unsafe { take_ffi_string(local_ip) }, local_port)
     else {
         free_string(peer_ip);
+        let _ = data_plane_tcp_close(handle);
         return ptr::null_mut();
     };
     let Some(peer_addr) = new_socket_addr(&mut env, unsafe { take_ffi_string(peer_ip) }, peer_port)
     else {
+        let _ = data_plane_tcp_close(handle);
         return ptr::null_mut();
     };
     let class = match env.find_class(TCP_ACCEPT_RESULT_CLASS) {
@@ -319,10 +348,11 @@ pub(crate) fn tcp_accept_finish_jni(mut env: JNIEnv, _class: JClass, op: jlong) 
                 &mut env,
                 &format!("Failed to find accept result class: {:?}", err),
             );
+            let _ = data_plane_tcp_close(handle);
             return ptr::null_mut();
         }
     };
-    match env.new_object(
+    let result = match env.new_object(
         class,
         format!("(JL{};L{};)V", SOCKET_ADDR_CLASS, SOCKET_ADDR_CLASS),
         &[
@@ -339,7 +369,8 @@ pub(crate) fn tcp_accept_finish_jni(mut env: JNIEnv, _class: JClass, op: jlong) 
             );
             ptr::null_mut()
         }
-    }
+    };
+    close_tcp_stream_on_null(result, handle)
 }
 
 pub(crate) fn tcp_read_start_jni(
@@ -478,12 +509,15 @@ pub(crate) fn udp_bind_finish_jni(mut env: JNIEnv, _class: JClass, op: jlong) ->
         throw_last(&mut env);
         return ptr::null_mut();
     }
-    new_handle_addr_result(
-        &mut env,
-        UDP_BIND_RESULT_CLASS,
+    close_udp_socket_on_null(
+        new_handle_addr_result(
+            &mut env,
+            UDP_BIND_RESULT_CLASS,
+            handle,
+            unsafe { take_ffi_string(ip) },
+            port,
+        ),
         handle,
-        unsafe { take_ffi_string(ip) },
-        port,
     )
 }
 
