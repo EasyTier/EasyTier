@@ -238,6 +238,9 @@ pub trait ConfigLoader: Send + Sync {
     fn get_stun_servers(&self) -> Option<Vec<String>>;
     fn set_stun_servers(&self, servers: Option<Vec<String>>);
 
+    fn get_tcp_stun_servers(&self) -> Option<Vec<String>>;
+    fn set_tcp_stun_servers(&self, servers: Option<Vec<String>>);
+
     fn get_stun_servers_v6(&self) -> Option<Vec<String>>;
     fn set_stun_servers_v6(&self, servers: Option<Vec<String>>);
 
@@ -563,6 +566,7 @@ struct Config {
     tcp_whitelist: Option<Vec<String>>,
     udp_whitelist: Option<Vec<String>>,
     stun_servers: Option<Vec<String>>,
+    tcp_stun_servers: Option<Vec<String>>,
     stun_servers_v6: Option<Vec<String>>,
 
     credential_file: Option<PathBuf>,
@@ -1000,6 +1004,14 @@ impl ConfigLoader for TomlConfigLoader {
         self.config.lock().unwrap().stun_servers = servers;
     }
 
+    fn get_tcp_stun_servers(&self) -> Option<Vec<String>> {
+        self.config.lock().unwrap().tcp_stun_servers.clone()
+    }
+
+    fn set_tcp_stun_servers(&self, servers: Option<Vec<String>>) {
+        self.config.lock().unwrap().tcp_stun_servers = servers;
+    }
+
     fn get_stun_servers_v6(&self) -> Option<Vec<String>> {
         self.config.lock().unwrap().stun_servers_v6.clone()
     }
@@ -1066,6 +1078,9 @@ impl ConfigLoader for TomlConfigLoader {
         config.flags = Some(flag_map);
         if config.stun_servers == Some(StunInfoCollector::get_default_servers()) {
             config.stun_servers = None;
+        }
+        if config.tcp_stun_servers == Some(StunInfoCollector::get_default_tcp_servers()) {
+            config.tcp_stun_servers = None;
         }
         if config.stun_servers_v6 == Some(StunInfoCollector::get_default_servers_v6()) {
             config.stun_servers_v6 = None;
@@ -1341,15 +1356,20 @@ stun_servers = [
     "stun.l.google.com:19302",
     "stun1.l.google.com:19302",
     "txt:stun.easytier.cn"
+]
+tcp_stun_servers = [
+    "tcp-stun.example.com:3478"
 ]"#;
 
         let config = TomlConfigLoader::new_from_str(config_str).unwrap();
         let stun_servers = config.get_stun_servers().unwrap();
+        let tcp_stun_servers = config.get_tcp_stun_servers().unwrap();
 
         assert_eq!(stun_servers.len(), 3);
         assert_eq!(stun_servers[0], "stun.l.google.com:19302");
         assert_eq!(stun_servers[1], "stun1.l.google.com:19302");
         assert_eq!(stun_servers[2], "txt:stun.easytier.cn");
+        assert_eq!(tcp_stun_servers, vec!["tcp-stun.example.com:3478"]);
     }
 
     #[test]

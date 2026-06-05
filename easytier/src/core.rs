@@ -695,6 +695,15 @@ struct NetworkOptions {
 
     #[arg(
         long,
+        env = "ET_TCP_STUN_SERVERS",
+        value_delimiter = ',',
+        help = t!("core_clap.tcp_stun_servers").to_string(),
+        num_args = 0..
+    )]
+    tcp_stun_servers: Option<Vec<String>>,
+
+    #[arg(
+        long,
         env = "ET_SECURE_MODE",
         help = t!("core_clap.secure_mode").to_string(),
         num_args = 0..=1,
@@ -1201,6 +1210,12 @@ impl NetworkOptions {
             old_stun_servers_v6.extend(stun_servers_v6.iter().cloned());
             cfg.set_stun_servers_v6(Some(old_stun_servers_v6));
         }
+
+        if let Some(tcp_stun_servers) = &self.tcp_stun_servers {
+            let mut old_tcp_stun_servers = cfg.get_tcp_stun_servers().unwrap_or_default();
+            old_tcp_stun_servers.extend(tcp_stun_servers.iter().cloned());
+            cfg.set_tcp_stun_servers(Some(old_tcp_stun_servers));
+        }
         Ok(())
     }
 }
@@ -1306,6 +1321,9 @@ fn parse_cli() -> Cli {
     }
     if let Some(stun_servers_v6) = &mut cli.network_options.stun_servers_v6 {
         stun_servers_v6.retain(|s| !s.trim().is_empty());
+    }
+    if let Some(tcp_stun_servers) = &mut cli.network_options.tcp_stun_servers {
+        tcp_stun_servers.retain(|s| !s.trim().is_empty());
     }
     cli
 }

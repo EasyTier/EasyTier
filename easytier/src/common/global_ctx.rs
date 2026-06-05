@@ -295,6 +295,12 @@ impl GlobalCtx {
             stun_info_collector.set_stun_servers(StunInfoCollector::get_default_servers());
         }
 
+        stun_info_collector.set_tcp_stun_servers(
+            config_fs
+                .get_tcp_stun_servers()
+                .unwrap_or_else(StunInfoCollector::get_default_tcp_servers),
+        );
+
         if let Some(stun_servers) = config_fs.get_stun_servers_v6() {
             stun_info_collector.set_stun_servers_v6(stun_servers);
         } else {
