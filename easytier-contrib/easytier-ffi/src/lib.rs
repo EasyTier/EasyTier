@@ -28,6 +28,8 @@
 //! - `data_plane_udp_send_to`: send one UDP data-plane datagram.
 //! - `data_plane_udp_recv_from`: receive one UDP data-plane datagram.
 //! - `data_plane_udp_close`: close a UDP data-plane socket.
+//! - `data_plane_*_start` / `data_plane_*_finish`: asynchronous data-plane operations.
+//! - `data_plane_async_op_*`: poll, wait, cancel, and free asynchronous operations.
 //!
 //! Shared FFI helper APIs:
 //! - `get_error_msg`: copy the last FFI or config-server callback error message.
@@ -35,6 +37,8 @@
 
 mod config_server;
 mod data_plane;
+#[cfg(feature = "ffi-dataplane")]
+mod data_plane_async;
 mod error;
 mod instance_api;
 mod state;
@@ -488,6 +492,215 @@ pub unsafe extern "C" fn data_plane_udp_recv_from(
 #[cfg_attr(feature = "c-abi", unsafe(no_mangle))]
 pub extern "C" fn data_plane_udp_close(handle: u64) -> c_int {
     data_plane::data_plane_udp_close(handle)
+}
+
+// ===== Async Data Plane API =====
+
+#[cfg(feature = "ffi-dataplane")]
+#[cfg_attr(feature = "c-abi", unsafe(no_mangle))]
+pub extern "C" fn data_plane_async_op_status(handle: u64) -> c_int {
+    data_plane_async::data_plane_async_op_status(handle)
+}
+
+#[cfg(feature = "ffi-dataplane")]
+#[cfg_attr(feature = "c-abi", unsafe(no_mangle))]
+pub extern "C" fn data_plane_async_op_wait(handle: u64, timeout_ms: u64) -> c_int {
+    data_plane_async::data_plane_async_op_wait(handle, timeout_ms)
+}
+
+#[cfg(feature = "ffi-dataplane")]
+#[cfg_attr(feature = "c-abi", unsafe(no_mangle))]
+pub extern "C" fn data_plane_async_op_cancel(handle: u64) -> c_int {
+    data_plane_async::data_plane_async_op_cancel(handle)
+}
+
+#[cfg(feature = "ffi-dataplane")]
+#[cfg_attr(feature = "c-abi", unsafe(no_mangle))]
+pub extern "C" fn data_plane_async_op_free(handle: u64) -> c_int {
+    data_plane_async::data_plane_async_op_free(handle)
+}
+
+#[cfg(feature = "ffi-dataplane")]
+#[cfg_attr(feature = "c-abi", unsafe(no_mangle))]
+pub extern "C" fn data_plane_free_bytes(ptr: *const c_uchar, len: u32) {
+    data_plane_async::data_plane_free_bytes(ptr, len)
+}
+
+#[cfg(feature = "ffi-dataplane")]
+#[cfg_attr(feature = "c-abi", unsafe(no_mangle))]
+pub unsafe extern "C" fn data_plane_tcp_connect_start(
+    inst_name: *const c_char,
+    dst_ip: *const c_char,
+    dst_port: c_ushort,
+    timeout_ms: u64,
+) -> u64 {
+    unsafe {
+        data_plane_async::data_plane_tcp_connect_start(inst_name, dst_ip, dst_port, timeout_ms)
+    }
+}
+
+#[cfg(feature = "ffi-dataplane")]
+#[cfg_attr(feature = "c-abi", unsafe(no_mangle))]
+pub unsafe extern "C" fn data_plane_tcp_connect_finish(
+    op_handle: u64,
+    out_local_ip: *mut *const c_char,
+    out_local_port: *mut c_ushort,
+) -> u64 {
+    unsafe {
+        data_plane_async::data_plane_tcp_connect_finish(op_handle, out_local_ip, out_local_port)
+    }
+}
+
+#[cfg(feature = "ffi-dataplane")]
+#[cfg_attr(feature = "c-abi", unsafe(no_mangle))]
+pub unsafe extern "C" fn data_plane_tcp_bind_start(
+    inst_name: *const c_char,
+    local_port: c_ushort,
+    timeout_ms: u64,
+) -> u64 {
+    unsafe { data_plane_async::data_plane_tcp_bind_start(inst_name, local_port, timeout_ms) }
+}
+
+#[cfg(feature = "ffi-dataplane")]
+#[cfg_attr(feature = "c-abi", unsafe(no_mangle))]
+pub unsafe extern "C" fn data_plane_tcp_bind_finish(
+    op_handle: u64,
+    out_local_ip: *mut *const c_char,
+    out_local_port: *mut c_ushort,
+) -> u64 {
+    unsafe { data_plane_async::data_plane_tcp_bind_finish(op_handle, out_local_ip, out_local_port) }
+}
+
+#[cfg(feature = "ffi-dataplane")]
+#[cfg_attr(feature = "c-abi", unsafe(no_mangle))]
+pub unsafe extern "C" fn data_plane_tcp_accept_start(handle: u64, timeout_ms: u64) -> u64 {
+    unsafe { data_plane_async::data_plane_tcp_accept_start(handle, timeout_ms) }
+}
+
+#[cfg(feature = "ffi-dataplane")]
+#[cfg_attr(feature = "c-abi", unsafe(no_mangle))]
+pub unsafe extern "C" fn data_plane_tcp_accept_finish(
+    op_handle: u64,
+    out_local_ip: *mut *const c_char,
+    out_local_port: *mut c_ushort,
+    out_peer_ip: *mut *const c_char,
+    out_peer_port: *mut c_ushort,
+) -> u64 {
+    unsafe {
+        data_plane_async::data_plane_tcp_accept_finish(
+            op_handle,
+            out_local_ip,
+            out_local_port,
+            out_peer_ip,
+            out_peer_port,
+        )
+    }
+}
+
+#[cfg(feature = "ffi-dataplane")]
+#[cfg_attr(feature = "c-abi", unsafe(no_mangle))]
+pub unsafe extern "C" fn data_plane_tcp_read_start(
+    handle: u64,
+    max_len: u32,
+    timeout_ms: u64,
+) -> u64 {
+    unsafe { data_plane_async::data_plane_tcp_read_start(handle, max_len, timeout_ms) }
+}
+
+#[cfg(feature = "ffi-dataplane")]
+#[cfg_attr(feature = "c-abi", unsafe(no_mangle))]
+pub unsafe extern "C" fn data_plane_tcp_read_finish(
+    op_handle: u64,
+    out_buf: *mut *const c_uchar,
+    out_len: *mut u32,
+) -> c_int {
+    unsafe { data_plane_async::data_plane_tcp_read_finish(op_handle, out_buf, out_len) }
+}
+
+#[cfg(feature = "ffi-dataplane")]
+#[cfg_attr(feature = "c-abi", unsafe(no_mangle))]
+pub unsafe extern "C" fn data_plane_tcp_write_start(
+    handle: u64,
+    buf: *const c_uchar,
+    len: u32,
+    timeout_ms: u64,
+) -> u64 {
+    unsafe { data_plane_async::data_plane_tcp_write_start(handle, buf, len, timeout_ms) }
+}
+
+#[cfg(feature = "ffi-dataplane")]
+#[cfg_attr(feature = "c-abi", unsafe(no_mangle))]
+pub extern "C" fn data_plane_tcp_write_finish(op_handle: u64) -> c_int {
+    data_plane_async::data_plane_tcp_write_finish(op_handle)
+}
+
+#[cfg(feature = "ffi-dataplane")]
+#[cfg_attr(feature = "c-abi", unsafe(no_mangle))]
+pub unsafe extern "C" fn data_plane_udp_bind_start(
+    inst_name: *const c_char,
+    local_port: c_ushort,
+    timeout_ms: u64,
+) -> u64 {
+    unsafe { data_plane_async::data_plane_udp_bind_start(inst_name, local_port, timeout_ms) }
+}
+
+#[cfg(feature = "ffi-dataplane")]
+#[cfg_attr(feature = "c-abi", unsafe(no_mangle))]
+pub unsafe extern "C" fn data_plane_udp_bind_finish(
+    op_handle: u64,
+    out_local_ip: *mut *const c_char,
+    out_local_port: *mut c_ushort,
+) -> u64 {
+    unsafe { data_plane_async::data_plane_udp_bind_finish(op_handle, out_local_ip, out_local_port) }
+}
+
+#[cfg(feature = "ffi-dataplane")]
+#[cfg_attr(feature = "c-abi", unsafe(no_mangle))]
+pub unsafe extern "C" fn data_plane_udp_send_to_start(
+    handle: u64,
+    dst_ip: *const c_char,
+    dst_port: c_ushort,
+    buf: *const c_uchar,
+    len: u32,
+    timeout_ms: u64,
+) -> u64 {
+    unsafe {
+        data_plane_async::data_plane_udp_send_to_start(
+            handle, dst_ip, dst_port, buf, len, timeout_ms,
+        )
+    }
+}
+
+#[cfg(feature = "ffi-dataplane")]
+#[cfg_attr(feature = "c-abi", unsafe(no_mangle))]
+pub extern "C" fn data_plane_udp_send_to_finish(op_handle: u64) -> c_int {
+    data_plane_async::data_plane_udp_send_to_finish(op_handle)
+}
+
+#[cfg(feature = "ffi-dataplane")]
+#[cfg_attr(feature = "c-abi", unsafe(no_mangle))]
+pub unsafe extern "C" fn data_plane_udp_recv_from_start(
+    handle: u64,
+    max_len: u32,
+    timeout_ms: u64,
+) -> u64 {
+    unsafe { data_plane_async::data_plane_udp_recv_from_start(handle, max_len, timeout_ms) }
+}
+
+#[cfg(feature = "ffi-dataplane")]
+#[cfg_attr(feature = "c-abi", unsafe(no_mangle))]
+pub unsafe extern "C" fn data_plane_udp_recv_from_finish(
+    op_handle: u64,
+    out_buf: *mut *const c_uchar,
+    out_len: *mut u32,
+    out_ip: *mut *const c_char,
+    out_port: *mut c_ushort,
+) -> c_int {
+    unsafe {
+        data_plane_async::data_plane_udp_recv_from_finish(
+            op_handle, out_buf, out_len, out_ip, out_port,
+        )
+    }
 }
 
 // ===== Shared FFI Helper API =====

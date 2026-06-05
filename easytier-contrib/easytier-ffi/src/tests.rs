@@ -447,6 +447,34 @@ fn config_server_callback_context_rejects_nested_blocking_ffi_calls() {
             -1
         );
         assert_eq!(data_plane_udp_close(0), -1);
+        assert_eq!(data_plane_async_op_status(0), -2);
+        assert_eq!(data_plane_async_op_wait(0, 0), -2);
+        assert_eq!(data_plane_async_op_cancel(0), -2);
+        assert_eq!(data_plane_async_op_free(0), -2);
+        data_plane_free_bytes(std::ptr::null(), 0);
+        assert_eq!(
+            unsafe { data_plane_tcp_connect_start(std::ptr::null(), std::ptr::null(), 0, 0) },
+            0
+        );
+        assert_eq!(
+            unsafe { data_plane_tcp_bind_start(std::ptr::null(), 0, 0) },
+            0
+        );
+        assert_eq!(unsafe { data_plane_tcp_accept_start(0, 0) }, 0);
+        assert_eq!(unsafe { data_plane_tcp_read_start(0, 0, 0) }, 0);
+        assert_eq!(
+            unsafe { data_plane_tcp_write_start(0, std::ptr::null(), 0, 0) },
+            0
+        );
+        assert_eq!(
+            unsafe { data_plane_udp_bind_start(std::ptr::null(), 0, 0) },
+            0
+        );
+        assert_eq!(
+            unsafe { data_plane_udp_send_to_start(0, std::ptr::null(), 0, std::ptr::null(), 0, 0) },
+            0
+        );
+        assert_eq!(unsafe { data_plane_udp_recv_from_start(0, 0, 0) }, 0);
     }
 }
 
@@ -472,6 +500,21 @@ fn active_config_server_rejects_data_plane() {
         unsafe { data_plane_tcp_read(0, std::ptr::null_mut(), 0, 0) },
         -1
     );
+    assert_eq!(
+        unsafe { data_plane_tcp_connect_start(std::ptr::null(), std::ptr::null(), 0, 0) },
+        0
+    );
+    assert_eq!(unsafe { data_plane_tcp_read_start(0, 0, 0) }, 0);
 
     set_active_for_test(false);
+}
+
+#[cfg(feature = "ffi-dataplane")]
+#[test]
+fn async_op_invalid_handle_helpers_are_stable() {
+    assert_eq!(data_plane_async_op_status(u64::MAX), -2);
+    assert_eq!(data_plane_async_op_wait(u64::MAX, 1), -2);
+    assert_eq!(data_plane_async_op_cancel(u64::MAX), -2);
+    assert_eq!(data_plane_async_op_free(u64::MAX), -2);
+    data_plane_free_bytes(std::ptr::null(), 0);
 }
