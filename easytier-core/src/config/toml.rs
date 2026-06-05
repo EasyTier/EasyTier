@@ -13,7 +13,10 @@ use ariadne::{CharSet, Config as AriadneConfig, IndexType, Label, Report, Report
 use serde::{Deserialize, Serialize};
 
 #[cfg(feature = "config-write")]
-use crate::config::{DEFAULT_UDP_STUN_SERVERS, DEFAULT_UDP_V6_STUN_SERVERS, default_stun_servers};
+use crate::config::{
+    DEFAULT_TCP_STUN_SERVERS, DEFAULT_UDP_STUN_SERVERS, DEFAULT_UDP_V6_STUN_SERVERS,
+    default_stun_servers,
+};
 use crate::proto::{
     acl::Acl,
     common::{CompressionAlgoPb, SecureModeConfig},
@@ -30,6 +33,11 @@ pub(crate) fn default_instance_name() -> String {
 #[cfg(feature = "config-write")]
 fn default_udp_stun_servers() -> Vec<String> {
     default_stun_servers(DEFAULT_UDP_STUN_SERVERS)
+}
+
+#[cfg(feature = "config-write")]
+fn default_tcp_stun_servers() -> Vec<String> {
+    default_stun_servers(DEFAULT_TCP_STUN_SERVERS)
 }
 
 #[cfg(feature = "config-write")]
@@ -266,6 +274,9 @@ pub trait ConfigLoader: Send + Sync {
     fn get_stun_servers(&self) -> Option<Vec<String>>;
     fn set_stun_servers(&self, servers: Option<Vec<String>>);
 
+    fn get_tcp_stun_servers(&self) -> Option<Vec<String>>;
+    fn set_tcp_stun_servers(&self, servers: Option<Vec<String>>);
+
     fn get_stun_servers_v6(&self) -> Option<Vec<String>>;
     fn set_stun_servers_v6(&self, servers: Option<Vec<String>>);
 
@@ -489,6 +500,7 @@ struct Config {
     tcp_whitelist: Option<Vec<String>>,
     udp_whitelist: Option<Vec<String>>,
     stun_servers: Option<Vec<String>>,
+    tcp_stun_servers: Option<Vec<String>>,
     stun_servers_v6: Option<Vec<String>>,
 
     credential_file: Option<PathBuf>,
@@ -981,6 +993,14 @@ impl ConfigLoader for TomlConfig {
         self.config.lock().unwrap().stun_servers = servers;
     }
 
+    fn get_tcp_stun_servers(&self) -> Option<Vec<String>> {
+        self.config.lock().unwrap().tcp_stun_servers.clone()
+    }
+
+    fn set_tcp_stun_servers(&self, servers: Option<Vec<String>>) {
+        self.config.lock().unwrap().tcp_stun_servers = servers;
+    }
+
     fn get_stun_servers_v6(&self) -> Option<Vec<String>> {
         self.config.lock().unwrap().stun_servers_v6.clone()
     }
@@ -1030,6 +1050,9 @@ impl ConfigLoader for TomlConfig {
             config.flags = Some(flags_diff_from_default(&self.get_flags()));
             if config.stun_servers == Some(default_udp_stun_servers()) {
                 config.stun_servers = None;
+            }
+            if config.tcp_stun_servers == Some(default_tcp_stun_servers()) {
+                config.tcp_stun_servers = None;
             }
             if config.stun_servers_v6 == Some(default_udp_v6_stun_servers()) {
                 config.stun_servers_v6 = None;

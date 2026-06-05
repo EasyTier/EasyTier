@@ -338,6 +338,9 @@ impl CoreInstanceConfig {
                     udp_servers: config
                         .get_stun_servers()
                         .unwrap_or_else(|| StunServerConfig::default().udp_servers),
+                    tcp_servers: config
+                        .get_tcp_stun_servers()
+                        .unwrap_or_else(|| StunServerConfig::default().tcp_servers),
                     udp_v6_servers: config
                         .get_stun_servers_v6()
                         .unwrap_or_else(|| StunServerConfig::default().udp_v6_servers),
