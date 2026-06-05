@@ -91,7 +91,7 @@ impl MagicDnsServerInstanceData {
                 .rr_type(RecordType::A)
                 .name(format!("{}.{}", route.hostname, zone))
                 .value(ipv4_addr.to_string())
-                .ttl(Duration::from_secs(1))
+                .ttl(Duration::from_secs(30))
                 .build()?;
 
             // check record name valid for dns
@@ -372,16 +372,33 @@ impl MagicDnsServerInstanceData {
         let response_payload = {
             let response_payload_arc = Arc::new(Mutex::new(Vec::with_capacity(512)));
 
-            self.dns_server
-                .read_catalog()
-                .await
-                .handle_request(
-                    &request,
-                    ResponseWrapper {
-                        response: response_payload_arc.clone(),
-                    },
-                )
-                .await;
+            // Wrap handle_request with a timeout to prevent the NIC processing pipeline
+            // from being stalled if the ForwardAuthority DNS forward hangs.
+            // A typical upstream DNS query completes well under 3 seconds; 15-second stalls
+            // were observed when forwarding looped back through the stub resolver.
+            let timeout_result = tokio::time::timeout(
+                Duration::from_secs(3),
+                async {
+                    self.dns_server
+                        .read_catalog()
+                        .await
+                        .handle_request(
+                            &request,
+                            ResponseWrapper {
+                                response: response_payload_arc.clone(),
+                            },
+                        )
+                        .await;
+                },
+            )
+            .await;
+
+            if timeout_result.is_err() {
+                tracing::warn!(
+                    "DNS query handling timed out after 3s; dropping DNS packet to unblock NIC pipeline"
+                );
+                return None;
+            }
 
             Arc::into_inner(response_payload_arc)?.into_inner().ok()?
         };
@@ -522,7 +539,16 @@ impl MagicDnsServerInstance {
 
         let dns_config = RunConfigBuilder::default()
             .general(GeneralConfigBuilder::default().build()?)
-            .excluded_forward_nameservers(vec![fake_ip.into()])
+            .excluded_forward_nameservers(vec![
+                fake_ip.into(),
+                // Exclude common stub resolver addresses to prevent DNS forwarding loops.
+                // When systemd-resolved is active, /etc/resolv.conf points to 127.0.0.53.
+                // Forwarding to 127.0.0.53 would route back through EasyTier's fake_ip,
+                // creating a loop that takes ~15 seconds to time out.
+                Ipv4Addr::new(127, 0, 0, 53).into(),
+                Ipv4Addr::new(127, 0, 0, 1).into(),
+            ])
+            .disable_forwarding(true)
             .build()?;
         let mut dns_server = Server::new(dns_config);
         dns_server.run().await?;
