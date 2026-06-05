@@ -1,3 +1,5 @@
+#[cfg(feature = "ffi-dataplane")]
+use crate::launcher::{DataPlaneTcpListener, DataPlaneTcpStream, DataPlaneUdpSocket};
 use dashmap::DashMap;
 use std::fmt::{Display, Formatter};
 use std::{collections::BTreeMap, path::PathBuf, sync::Arc};
@@ -169,6 +171,59 @@ impl NetworkInstanceManager {
         &self,
     ) -> Result<BTreeMap<uuid::Uuid, NetworkInstanceRunningInfo>, anyhow::Error> {
         tokio::runtime::Runtime::new()?.block_on(self.collect_network_infos())
+    }
+
+    #[cfg(feature = "ffi-dataplane")]
+    pub async fn data_plane_tcp_connect(
+        &self,
+        instance_id: &uuid::Uuid,
+        dst_addr: std::net::SocketAddr,
+        timeout: std::time::Duration,
+    ) -> Result<DataPlaneTcpStream, anyhow::Error> {
+        let instance = self
+            .instance_map
+            .get(instance_id)
+            .ok_or_else(|| anyhow::anyhow!("instance {} not found", instance_id))?;
+        instance.data_plane_tcp_connect(dst_addr, timeout).await
+    }
+
+    #[cfg(feature = "ffi-dataplane")]
+    pub async fn data_plane_tcp_bind(
+        &self,
+        instance_id: &uuid::Uuid,
+        local_port: u16,
+        timeout: std::time::Duration,
+    ) -> Result<DataPlaneTcpListener, anyhow::Error> {
+        let instance = self
+            .instance_map
+            .get(instance_id)
+            .ok_or_else(|| anyhow::anyhow!("instance {} not found", instance_id))?;
+        instance.data_plane_tcp_bind(local_port, timeout).await
+    }
+
+    #[cfg(feature = "ffi-dataplane")]
+    pub async fn data_plane_udp_bind(
+        &self,
+        instance_id: &uuid::Uuid,
+        local_port: u16,
+        timeout: std::time::Duration,
+    ) -> Result<DataPlaneUdpSocket, anyhow::Error> {
+        let instance = self
+            .instance_map
+            .get(instance_id)
+            .ok_or_else(|| anyhow::anyhow!("instance {} not found", instance_id))?;
+        instance.data_plane_udp_bind(local_port, timeout).await
+    }
+
+    #[cfg(feature = "ffi-dataplane")]
+    pub fn data_plane_wait_runtime_handle(
+        &self,
+        instance_id: &uuid::Uuid,
+        timeout: std::time::Duration,
+    ) -> Option<tokio::runtime::Handle> {
+        self.instance_map
+            .get(instance_id)
+            .and_then(|inst| inst.wait_runtime_handle(timeout))
     }
 
     pub async fn get_network_info(

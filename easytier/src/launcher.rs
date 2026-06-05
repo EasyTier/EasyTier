@@ -2,6 +2,10 @@ use crate::common::config::{
     ConfigFileControl, ConfigSource, PortForwardConfig, parse_mapped_listener_urls,
     process_secure_mode_cfg,
 };
+#[cfg(feature = "ffi-dataplane")]
+use crate::gateway::socks5::Socks5Server;
+#[cfg(feature = "ffi-dataplane")]
+pub use crate::gateway::socks5::{DataPlaneTcpListener, DataPlaneTcpStream, DataPlaneUdpSocket};
 use crate::proto::api::{self, manage};
 use crate::proto::rpc_types::controller::BaseController;
 use crate::rpc_service::InstanceRpcService;
@@ -45,6 +49,13 @@ struct EasyTierData {
     tun_fd: (mpsc::Sender<TunFd>, Mutex<Option<mpsc::Receiver<TunFd>>>),
     event_subscriber: RwLock<broadcast::Sender<GlobalCtxEvent>>,
     instance_stop_notifier: Arc<tokio::sync::Notify>,
+    #[cfg(feature = "ffi-dataplane")]
+    data_plane: tokio::sync::watch::Sender<Option<Arc<Socks5Server>>>,
+    #[cfg(feature = "ffi-dataplane")]
+    runtime_handle: (
+        parking_lot::Mutex<Option<tokio::runtime::Handle>>,
+        parking_lot::Condvar,
+    ),
 }
 
 impl Default for EasyTierData {
@@ -56,6 +67,10 @@ impl Default for EasyTierData {
             events: RwLock::new(VecDeque::new()),
             tun_fd: (sender, Mutex::new(Some(receiver))),
             instance_stop_notifier: Arc::new(tokio::sync::Notify::new()),
+            #[cfg(feature = "ffi-dataplane")]
+            data_plane: tokio::sync::watch::channel(None).0,
+            #[cfg(feature = "ffi-dataplane")]
+            runtime_handle: (parking_lot::Mutex::new(None), parking_lot::Condvar::new()),
         }
     }
 }
@@ -160,6 +175,10 @@ impl EasyTierLauncher {
 
         instance.run().await?;
 
+        #[cfg(feature = "ffi-dataplane")]
+        data.data_plane
+            .send_replace(Some(instance.get_socks5_server()));
+
         api_service
             .write()
             .unwrap()
@@ -214,6 +233,13 @@ impl EasyTierLauncher {
             }
             .unwrap();
 
+            #[cfg(feature = "ffi-dataplane")]
+            {
+                let (lock, cvar) = &data.runtime_handle;
+                *lock.lock() = Some(rt.handle().clone());
+                cvar.notify_all();
+            }
+
             let stop_notifier = Arc::new(tokio::sync::Notify::new());
 
             let stop_notifier_clone = stop_notifier.clone();
@@ -262,6 +288,43 @@ impl EasyTierLauncher {
                 None
             }
         }
+    }
+
+    #[cfg(feature = "ffi-dataplane")]
+    pub fn get_data_plane(&self) -> Option<Arc<Socks5Server>> {
+        self.data.data_plane.borrow().clone()
+    }
+
+    /// Waits up to `deadline` for the data-plane server to be published.
+    #[cfg(feature = "ffi-dataplane")]
+    pub async fn wait_data_plane(
+        &self,
+        deadline: tokio::time::Instant,
+    ) -> Option<Arc<Socks5Server>> {
+        let mut rx = self.data.data_plane.subscribe();
+        loop {
+            if let Some(server) = rx.borrow_and_update().clone() {
+                return Some(server);
+            }
+            if tokio::time::timeout_at(deadline, rx.changed())
+                .await
+                .is_err()
+            {
+                return None;
+            }
+        }
+    }
+
+    /// Blocks up to `timeout` for the runtime handle to be published.
+    #[cfg(feature = "ffi-dataplane")]
+    pub fn wait_runtime_handle(
+        &self,
+        timeout: std::time::Duration,
+    ) -> Option<tokio::runtime::Handle> {
+        let (lock, cvar) = &self.data.runtime_handle;
+        let mut guard = lock.lock();
+        cvar.wait_while_for(&mut guard, |h| h.is_none(), timeout);
+        guard.clone()
     }
 }
 
@@ -453,6 +516,75 @@ impl NetworkInstance {
         self.launcher
             .as_ref()
             .and_then(|launcher| launcher.get_api_service())
+    }
+
+    /// Waits up to `timeout` for the data-plane server to come up, returning it
+    /// together with the deadline so the caller can spend the remaining budget
+    /// on the actual operation.
+    #[cfg(feature = "ffi-dataplane")]
+    async fn wait_data_plane(
+        &self,
+        timeout: std::time::Duration,
+    ) -> anyhow::Result<(Arc<Socks5Server>, tokio::time::Instant)> {
+        let deadline = tokio::time::Instant::now() + timeout;
+        let launcher = self
+            .launcher
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("data plane is not ready"))?;
+        let server = launcher
+            .wait_data_plane(deadline)
+            .await
+            .ok_or_else(|| anyhow::anyhow!("data plane is not ready"))?;
+        Ok((server, deadline))
+    }
+
+    #[cfg(feature = "ffi-dataplane")]
+    pub async fn data_plane_tcp_connect(
+        &self,
+        dst_addr: SocketAddr,
+        timeout: std::time::Duration,
+    ) -> anyhow::Result<DataPlaneTcpStream> {
+        let (server, deadline) = self.wait_data_plane(timeout).await?;
+        server
+            .data_plane_tcp_connect(dst_addr, deadline - tokio::time::Instant::now())
+            .await
+            .map_err(Into::into)
+    }
+
+    #[cfg(feature = "ffi-dataplane")]
+    pub async fn data_plane_tcp_bind(
+        &self,
+        local_port: u16,
+        timeout: std::time::Duration,
+    ) -> anyhow::Result<DataPlaneTcpListener> {
+        let (server, deadline) = self.wait_data_plane(timeout).await?;
+        server
+            .data_plane_tcp_bind(local_port, deadline - tokio::time::Instant::now())
+            .await
+            .map_err(Into::into)
+    }
+
+    #[cfg(feature = "ffi-dataplane")]
+    pub async fn data_plane_udp_bind(
+        &self,
+        local_port: u16,
+        timeout: std::time::Duration,
+    ) -> anyhow::Result<DataPlaneUdpSocket> {
+        let (server, deadline) = self.wait_data_plane(timeout).await?;
+        server
+            .data_plane_udp_bind(local_port, deadline - tokio::time::Instant::now())
+            .await
+            .map_err(Into::into)
+    }
+
+    #[cfg(feature = "ffi-dataplane")]
+    pub fn wait_runtime_handle(
+        &self,
+        timeout: std::time::Duration,
+    ) -> Option<tokio::runtime::Handle> {
+        self.launcher
+            .as_ref()
+            .and_then(|launcher| launcher.wait_runtime_handle(timeout))
     }
 }
 

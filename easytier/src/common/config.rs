@@ -601,16 +601,33 @@ impl TomlConfigLoader {
         Self::normalize_config_source(&mut config);
 
         config.flags_struct = Some(Self::gen_flags(config.flags.clone().unwrap_or_default()));
+        let has_network_identity = config.network_identity.is_some();
 
         let config = TomlConfigLoader {
             config: Arc::new(Mutex::new(config)),
         };
 
         let old_ns = config.get_network_identity();
-        config.set_network_identity(NetworkIdentity::new(
-            old_ns.network_name,
-            old_ns.network_secret.unwrap_or_default(),
-        ));
+
+        // Detect credential mode: secure_mode enabled + no network_secret in TOML
+        let is_credential = has_network_identity
+            && config
+                .get_secure_mode()
+                .map(|sm| sm.enabled)
+                .unwrap_or(false)
+            && old_ns
+                .network_secret
+                .as_deref()
+                .is_none_or(|s| s.is_empty());
+
+        if is_credential {
+            config.set_network_identity(NetworkIdentity::new_credential(old_ns.network_name));
+        } else {
+            config.set_network_identity(NetworkIdentity::new(
+                old_ns.network_name,
+                old_ns.network_secret.unwrap_or_default(),
+            ));
+        }
 
         Ok(config)
     }
@@ -1374,6 +1391,45 @@ stun_servers = [
 
         let loaded = TomlConfigLoader::new_from_str(&dumped).unwrap();
         assert_eq!(loaded.get_network_config_source(), ConfigSource::Webhook);
+    }
+
+    #[test]
+    fn test_toml_credential_mode_omits_network_secret() {
+        for network_secret in ["", r#"network_secret = """#] {
+            let config = TomlConfigLoader::new_from_str(&format!(
+                r#"
+[network_identity]
+network_name = "credential-network"
+{network_secret}
+
+[secure_mode]
+enabled = true
+"#
+            ))
+            .unwrap();
+
+            let identity = config.get_network_identity();
+            assert_eq!(identity.network_name, "credential-network");
+            assert_eq!(identity.network_secret, None);
+            assert_eq!(identity.network_secret_digest, None);
+            assert!(!config.dump().contains("network_secret"));
+        }
+    }
+
+    #[test]
+    fn test_toml_secure_mode_without_network_identity_uses_default_secret() {
+        let config = TomlConfigLoader::new_from_str(
+            r#"
+[secure_mode]
+enabled = true
+"#,
+        )
+        .unwrap();
+
+        let identity = config.get_network_identity();
+        assert_eq!(identity.network_name, "default");
+        assert_eq!(identity.network_secret.as_deref(), Some(""));
+        assert!(identity.network_secret_digest.is_some());
     }
 
     #[test]
