@@ -1397,7 +1397,7 @@ impl PeerManager {
             let f = OneForeignNetwork {
                 network_name: info.key.as_ref().unwrap().network_name.clone(),
                 peer_ids: route_info.foreign_peer_ids.clone(),
-                last_updated: format!("{}", route_info.last_update.unwrap()),
+                last_updated: serde_json::to_string(&route_info.last_update.unwrap()).unwrap(),
                 version: route_info.version,
             };
 
