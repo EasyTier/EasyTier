@@ -1463,21 +1463,24 @@ impl RouteTable {
         }
 
         for item in peer_id_to_node_index.iter() {
-            let src_peer_id = item.key();
+            let src_peer_id = *item.key();
+            if src_peer_id != my_peer_id && synced_info.is_route_suppressed(src_peer_id) {
+                continue;
+            }
             let src_node_idx = item.value();
             let connected_peers: BTreeSet<_> = synced_info
-                .get_connected_peers(*src_peer_id)
+                .get_connected_peers(src_peer_id)
                 .unwrap_or_default();
 
             // if avoid relay, just set all outgoing edges to a large value: AVOID_RELAY_COST.
-            let peer_avoid_relay_data = synced_info.get_avoid_relay_data(*src_peer_id);
+            let peer_avoid_relay_data = synced_info.get_avoid_relay_data(src_peer_id);
 
             for dst_peer_id in connected_peers.iter() {
                 let Some(dst_node_idx) = peer_id_to_node_index.get(dst_peer_id) else {
                     continue;
                 };
 
-                let mut cost = cost_calc.calculate_cost(*src_peer_id, *dst_peer_id) as usize;
+                let mut cost = cost_calc.calculate_cost(src_peer_id, *dst_peer_id) as usize;
                 if peer_avoid_relay_data {
                     cost += AVOID_RELAY_COST;
                 }
@@ -5341,6 +5344,104 @@ mod tests {
                 .route_table
                 .get_peer_id_for_proxy(&"10.244.41.1".parse().unwrap()),
             Some(SECOND_PEER_ID)
+        );
+    }
+
+    #[tokio::test]
+    async fn suppressed_non_reusable_credential_peer_is_not_transit_next_hop() {
+        const NETWORK_SECRET: &str = "sec1";
+        const SELF_PEER_ID: PeerId = 1;
+        const ADMIN_PEER_ID: PeerId = 30;
+        const FIRST_PEER_ID: PeerId = 39;
+        const SECOND_PEER_ID: PeerId = 41;
+        const DOWNSTREAM_PEER_ID: PeerId = 50;
+
+        let service_impl = PeerRouteServiceImpl::new(
+            SELF_PEER_ID,
+            get_mock_global_ctx_with_network(Some(NetworkIdentity::new(
+                "test-net".to_string(),
+                NETWORK_SECRET.to_string(),
+            ))),
+        );
+        let now_unix = SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+        let now = SystemTime::now();
+        let credential_key = vec![10; 32];
+
+        let mut self_info = RoutePeerInfo::new();
+        self_info.peer_id = SELF_PEER_ID;
+        self_info.version = 1;
+
+        let admin_info =
+            make_admin_route_peer_info(ADMIN_PEER_ID, &credential_key, NETWORK_SECRET, now_unix);
+        let first_peer = make_credential_route_peer_info(FIRST_PEER_ID, &credential_key);
+        let second_peer = make_credential_route_peer_info(SECOND_PEER_ID, &credential_key);
+        let mut downstream_peer = RoutePeerInfo::new();
+        downstream_peer.peer_id = DOWNSTREAM_PEER_ID;
+        downstream_peer.version = 1;
+
+        {
+            let mut peer_infos = service_impl.synced_route_info.peer_infos.write();
+            peer_infos.insert(self_info.peer_id, self_info);
+            peer_infos.insert(admin_info.peer_id, admin_info);
+            peer_infos.insert(first_peer.peer_id, first_peer);
+            peer_infos.insert(second_peer.peer_id, second_peer);
+            peer_infos.insert(downstream_peer.peer_id, downstream_peer);
+        }
+        {
+            let mut conn_map = service_impl.synced_route_info.conn_map.write();
+            conn_map.insert(SELF_PEER_ID, make_route_conn_info([ADMIN_PEER_ID], now));
+            conn_map.insert(
+                ADMIN_PEER_ID,
+                make_route_conn_info([SELF_PEER_ID, FIRST_PEER_ID, SECOND_PEER_ID], now),
+            );
+            conn_map.insert(FIRST_PEER_ID, make_route_conn_info([ADMIN_PEER_ID], now));
+            conn_map.insert(
+                SECOND_PEER_ID,
+                make_route_conn_info([ADMIN_PEER_ID, DOWNSTREAM_PEER_ID], now),
+            );
+            conn_map.insert(
+                DOWNSTREAM_PEER_ID,
+                make_route_conn_info([SECOND_PEER_ID], now),
+            );
+        }
+        service_impl.synced_route_info.version.set(1);
+
+        let untrusted = service_impl.refresh_credential_trusts_with_current_topology();
+        assert!(untrusted.is_empty());
+        assert_eq!(
+            service_impl
+                .synced_route_info
+                .non_reusable_credential_owners
+                .get(&credential_key)
+                .map(|entry| *entry.value()),
+            Some(FIRST_PEER_ID)
+        );
+        assert!(
+            service_impl
+                .synced_route_info
+                .is_route_suppressed(SECOND_PEER_ID)
+        );
+        assert!(
+            service_impl
+                .route_table
+                .topology_peer_reachable(SECOND_PEER_ID)
+        );
+        assert!(!service_impl.route_table.peer_reachable(SECOND_PEER_ID));
+        assert!(!service_impl.route_table.peer_reachable(DOWNSTREAM_PEER_ID));
+        assert!(
+            service_impl
+                .route_table
+                .get_next_hop(DOWNSTREAM_PEER_ID)
+                .is_none()
+        );
+        assert!(
+            !service_impl
+                .route_table
+                .peer_infos
+                .contains_key(&DOWNSTREAM_PEER_ID)
         );
     }
 
