@@ -214,11 +214,23 @@ impl UdpNatEntry {
 
                 self_clone.mark_active();
 
-                if real_ipv4 != mapped_ipv4 && *src_v4.ip() == real_ipv4 {
-                    src_v4.set_ip(mapped_ipv4);
-                } else if src_v4.ip().is_loopback() {
-                    src_v4.set_ip(virtual_ipv4);
+                let has_mapped_dst = real_ipv4 != mapped_ipv4;
+                let mut reply_src_ip = *src_v4.ip();
+
+                // Preserve the existing priority for proxy rules that expose a
+                // real loopback address as a mapped address. Other loopback
+                // replies come from local delivery to 127.0.0.1 for the local
+                // virtual IP and may need the mapped rewrite below.
+                if has_mapped_dst && reply_src_ip == real_ipv4 {
+                    reply_src_ip = mapped_ipv4;
+                } else if reply_src_ip.is_loopback() {
+                    reply_src_ip = virtual_ipv4;
                 }
+
+                if has_mapped_dst && reply_src_ip == real_ipv4 {
+                    reply_src_ip = mapped_ipv4;
+                }
+                src_v4.set_ip(reply_src_ip);
 
                 let Ok(_) = Self::compose_ipv4_packet(
                     &self_clone,
@@ -638,6 +650,93 @@ mod tests {
         for addr in nat_socket_addrs {
             let _ = wake_socket.send_to(b"wake", addr).await;
         }
+    }
+
+    #[tokio::test]
+    async fn udp_proxy_rewrites_unmapped_loopback_reply_to_virtual_ip() {
+        let global_ctx = get_mock_global_ctx();
+        global_ctx.set_ipv4(Some("10.144.144.204/24".parse().unwrap()));
+        global_ctx
+            .config
+            .add_proxy_cidr("127.0.0.1/32".parse().unwrap(), None)
+            .unwrap();
+
+        let (packet_sender, _packet_receiver) = create_packet_recv_chan();
+        let peer_manager = Arc::new(PeerManager::new(
+            RouteAlgoType::Ospf,
+            global_ctx.clone(),
+            packet_sender,
+        ));
+        let proxy = UdpProxy::new(global_ctx, peer_manager).unwrap();
+        wait_proxy_cidr_loaded(&proxy).await;
+        let mut response_receiver = proxy.receiver.lock().await.take().unwrap();
+
+        let real_dst = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+        let real_dst_port = real_dst.local_addr().unwrap().port();
+        let dst_socket = SocketAddr::from((Ipv4Addr::LOCALHOST, real_dst_port));
+        let src_ip = Ipv4Addr::new(10, 144, 144, 206);
+        let src_port = 53864;
+
+        let packet = build_udp_proxy_packet(src_ip, src_port, dst_socket, b"request");
+        assert!(proxy.try_handle_packet(&packet).await.is_some());
+        let (payload, nat_socket) = recv_payload(&real_dst).await;
+        assert_eq!(payload, b"request");
+
+        real_dst.send_to(b"reply", nat_socket).await.unwrap();
+        assert_udp_response(
+            recv_response_packet(&mut response_receiver).await,
+            SocketAddr::from((Ipv4Addr::new(10, 144, 144, 204), real_dst_port)),
+            src_ip,
+            src_port,
+            b"reply",
+        );
+
+        stop_nat_entries(&proxy).await;
+    }
+
+    #[tokio::test]
+    async fn udp_proxy_maps_local_virtual_destination_reply_to_mapped_source() {
+        let global_ctx = get_mock_global_ctx();
+        global_ctx.set_ipv4(Some("10.144.144.204/24".parse().unwrap()));
+        global_ctx
+            .config
+            .add_proxy_cidr(
+                "10.144.144.204/32".parse().unwrap(),
+                Some("10.10.10.3/32".parse().unwrap()),
+            )
+            .unwrap();
+
+        let (packet_sender, _packet_receiver) = create_packet_recv_chan();
+        let peer_manager = Arc::new(PeerManager::new(
+            RouteAlgoType::Ospf,
+            global_ctx.clone(),
+            packet_sender,
+        ));
+        let proxy = UdpProxy::new(global_ctx, peer_manager).unwrap();
+        wait_proxy_cidr_loaded(&proxy).await;
+        let mut response_receiver = proxy.receiver.lock().await.take().unwrap();
+
+        let real_dst = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+        let real_dst_port = real_dst.local_addr().unwrap().port();
+        let mapped_dst = SocketAddr::from((Ipv4Addr::new(10, 10, 10, 3), real_dst_port));
+        let src_ip = Ipv4Addr::new(10, 144, 144, 206);
+        let src_port = 53864;
+
+        let packet = build_udp_proxy_packet(src_ip, src_port, mapped_dst, b"request");
+        assert!(proxy.try_handle_packet(&packet).await.is_some());
+        let (payload, nat_socket) = recv_payload(&real_dst).await;
+        assert_eq!(payload, b"request");
+
+        real_dst.send_to(b"reply", nat_socket).await.unwrap();
+        assert_udp_response(
+            recv_response_packet(&mut response_receiver).await,
+            mapped_dst,
+            src_ip,
+            src_port,
+            b"reply",
+        );
+
+        stop_nat_entries(&proxy).await;
     }
 
     #[tokio::test]
