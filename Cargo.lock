@@ -2385,6 +2385,7 @@ version = "0.1.0"
 dependencies = [
  "android_logger",
  "easytier",
+ "easytier-ffi",
  "jni",
  "log",
  "once_cell",
@@ -2396,13 +2397,17 @@ dependencies = [
 name = "easytier-ffi"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "dashmap",
  "easytier",
+ "log",
  "once_cell",
+ "percent-encoding",
  "serde",
  "serde_json",
  "tokio",
  "tokio-util",
+ "url",
  "uuid",
 ]
 

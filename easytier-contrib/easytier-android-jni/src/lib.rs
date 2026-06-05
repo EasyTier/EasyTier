@@ -1,319 +1,203 @@
-use easytier::proto::api::manage::{NetworkInstanceRunningInfo, NetworkInstanceRunningInfoMap};
+//! JNI facade for Android callers of EasyTier.
+//!
+//! This file intentionally lists every Java-visible native method exported by
+//! `libeasytier_android_jni.so`. The implementation details live in sibling
+//! modules so this facade stays readable as an API map.
+//!
+//! Network management APIs:
+//! - `setTunFd(instanceName, fd)`: attach an Android TUN fd to an instance.
+//! - `parseConfig(config)`: validate TOML config text.
+//! - `runNetworkInstance(config)`: start a local network instance.
+//! - `retainNetworkInstance(instanceNames)`: retain named instances and stop the rest.
+//! - `collectNetworkInfos()`: return running instance info as a JSON string.
+//!
+//! Config server client APIs:
+//! - `startConfigServerClient(url, hostname, machineId, secureMode, callback)`:
+//!   start the managed remote config client.
+//! - `stopConfigServerClient()`: stop the managed client and release its Java callback.
+//! - `isConfigServerClientConnected()`: return whether the managed client is connected.
+//!
+//! Error API:
+//! - `getLastError()`: return the latest FFI/JNI error string for the calling thread.
+
+mod callback;
+mod config_server_api;
+mod error;
+mod logger;
+mod network_api;
+mod strings;
+
 use jni::JNIEnv;
-use jni::objects::{JClass, JObjectArray, JString};
-use jni::sys::{jint, jstring};
-use once_cell::sync::Lazy;
-use std::ffi::{CStr, CString};
-use std::ptr;
+use jni::objects::{JClass, JObject, JObjectArray, JString};
+use jni::sys::{jboolean, jint, jstring};
 
-// 定义 KeyValuePair 结构体
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct KeyValuePair {
-    pub key: *const std::ffi::c_char,
-    pub value: *const std::ffi::c_char,
-}
-
-// 声明外部 C 函数
-unsafe extern "C" {
-    fn set_tun_fd(inst_name: *const std::ffi::c_char, fd: std::ffi::c_int) -> std::ffi::c_int;
-    fn get_error_msg(out: *mut *const std::ffi::c_char);
-    fn free_string(s: *const std::ffi::c_char);
-    fn parse_config(cfg_str: *const std::ffi::c_char) -> std::ffi::c_int;
-    fn run_network_instance(cfg_str: *const std::ffi::c_char) -> std::ffi::c_int;
-    fn retain_network_instance(
-        inst_names: *const *const std::ffi::c_char,
-        length: usize,
-    ) -> std::ffi::c_int;
-    fn collect_network_infos(infos: *mut KeyValuePair, max_length: usize) -> std::ffi::c_int;
-}
-
-// 初始化 Android 日志
-static LOGGER_INIT: Lazy<()> = Lazy::new(|| {
-    android_logger::init_once(
-        android_logger::Config::default()
-            .with_max_level(log::LevelFilter::Debug)
-            .with_tag("EasyTier-JNI"),
-    );
-});
-
-// 辅助函数：从 Java String 转换为 CString
-fn jstring_to_cstring(env: &mut JNIEnv, jstr: &JString) -> Result<CString, String> {
-    let java_str = env
-        .get_string(jstr)
-        .map_err(|e| format!("Failed to get string: {:?}", e))?;
-    let rust_str = java_str.to_str().map_err(|_| "Invalid UTF-8".to_string())?;
-    CString::new(rust_str).map_err(|_| "String contains null byte".to_string())
-}
-
-// 辅助函数：获取错误消息
-fn get_last_error() -> Option<String> {
-    unsafe {
-        let mut error_ptr: *const std::ffi::c_char = ptr::null();
-        get_error_msg(&mut error_ptr);
-        if error_ptr.is_null() {
-            None
-        } else {
-            let error_cstr = CStr::from_ptr(error_ptr);
-            let error_str = error_cstr.to_string_lossy().into_owned();
-            free_string(error_ptr);
-            Some(error_str)
-        }
-    }
-}
-
-// 辅助函数：抛出 Java 异常
-fn throw_exception(env: &mut JNIEnv, message: &str) {
-    let _ = env.throw_new("java/lang/RuntimeException", message);
-}
-
-/// 设置 TUN 文件描述符
+/// Attach a TUN file descriptor to an EasyTier network instance.
+///
+/// Java signature:
+/// `EasyTierJNI.setTunFd(instanceName: String, fd: Int): Int`
+///
+/// `instanceName` must name an instance known to the shared FFI instance cache.
+/// The `fd` must be a valid Android TUN file descriptor. On failure this
+/// returns `-1` and throws `RuntimeException` with the FFI error message when
+/// one is available.
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_com_easytier_jni_EasyTierJNI_setTunFd(
-    mut env: JNIEnv,
-    _class: JClass,
+    env: JNIEnv,
+    class: JClass,
     inst_name: JString,
     fd: jint,
 ) -> jint {
-    Lazy::force(&LOGGER_INIT);
-
-    let inst_name_cstr = match jstring_to_cstring(&mut env, &inst_name) {
-        Ok(cstr) => cstr,
-        Err(e) => {
-            throw_exception(&mut env, &format!("Invalid instance name: {}", e));
-            return -1;
-        }
-    };
-
-    unsafe {
-        let result = set_tun_fd(inst_name_cstr.as_ptr(), fd);
-        if result != 0
-            && let Some(error) = get_last_error()
-        {
-            throw_exception(&mut env, &error);
-        }
-        result
-    }
+    logger::init();
+    network_api::set_tun_fd_jni(env, class, inst_name, fd)
 }
 
-/// 解析配置
+/// Validate a TOML network config string.
+///
+/// Java signature:
+/// `EasyTierJNI.parseConfig(config: String): Int`
+///
+/// This only validates the config text; it does not start or mutate any
+/// instance. On failure this returns `-1` and throws `RuntimeException`.
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_com_easytier_jni_EasyTierJNI_parseConfig(
-    mut env: JNIEnv,
-    _class: JClass,
+    env: JNIEnv,
+    class: JClass,
     config: JString,
 ) -> jint {
-    Lazy::force(&LOGGER_INIT);
-
-    let config_cstr = match jstring_to_cstring(&mut env, &config) {
-        Ok(cstr) => cstr,
-        Err(e) => {
-            throw_exception(&mut env, &format!("Invalid config string: {}", e));
-            return -1;
-        }
-    };
-
-    unsafe {
-        let result = parse_config(config_cstr.as_ptr());
-        if result != 0
-            && let Some(error) = get_last_error()
-        {
-            throw_exception(&mut env, &error);
-        }
-        result
-    }
+    logger::init();
+    network_api::parse_config_jni(env, class, config)
 }
 
-/// 运行网络实例
+/// Start one local EasyTier network instance from TOML config text.
+///
+/// Java signature:
+/// `EasyTierJNI.runNetworkInstance(config: String): Int`
+///
+/// The instance name in the config must be unique in the FFI instance cache.
+/// On failure this returns `-1` and throws `RuntimeException`.
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_com_easytier_jni_EasyTierJNI_runNetworkInstance(
-    mut env: JNIEnv,
-    _class: JClass,
+    env: JNIEnv,
+    class: JClass,
     config: JString,
 ) -> jint {
-    Lazy::force(&LOGGER_INIT);
-
-    let config_cstr = match jstring_to_cstring(&mut env, &config) {
-        Ok(cstr) => cstr,
-        Err(e) => {
-            throw_exception(&mut env, &format!("Invalid config string: {}", e));
-            return -1;
-        }
-    };
-
-    unsafe {
-        let result = run_network_instance(config_cstr.as_ptr());
-        if result != 0
-            && let Some(error) = get_last_error()
-        {
-            throw_exception(&mut env, &error);
-        }
-        result
-    }
+    logger::init();
+    network_api::run_network_instance_jni(env, class, config)
 }
 
-/// 保持网络实例
+/// Retain the named network instances and stop all other instances.
+///
+/// Java signature:
+/// `EasyTierJNI.retainNetworkInstance(instanceNames: Array<String>?): Int`
+///
+/// Passing `null` or an empty array stops all instances. Null elements inside a
+/// non-empty array are skipped. On failure this returns `-1` and throws
+/// `RuntimeException`.
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_com_easytier_jni_EasyTierJNI_retainNetworkInstance(
-    mut env: JNIEnv,
-    _class: JClass,
+    env: JNIEnv,
+    class: JClass,
     instance_names: JObjectArray,
 ) -> jint {
-    Lazy::force(&LOGGER_INIT);
-
-    // 处理 null 数组的情况
-    if instance_names.is_null() {
-        unsafe {
-            let result = retain_network_instance(ptr::null(), 0);
-            if result != 0
-                && let Some(error) = get_last_error()
-            {
-                throw_exception(&mut env, &error);
-            }
-            return result;
-        }
-    }
-
-    // 获取数组长度
-    let array_length = match env.get_array_length(&instance_names) {
-        Ok(len) => len as usize,
-        Err(e) => {
-            throw_exception(&mut env, &format!("Failed to get array length: {:?}", e));
-            return -1;
-        }
-    };
-
-    // 如果数组为空，停止所有实例
-    if array_length == 0 {
-        unsafe {
-            let result = retain_network_instance(ptr::null(), 0);
-            if result != 0
-                && let Some(error) = get_last_error()
-            {
-                throw_exception(&mut env, &error);
-            }
-            return result;
-        }
-    }
-
-    // 转换 Java 字符串数组为 C 字符串数组
-    let mut c_strings = Vec::with_capacity(array_length);
-    let mut c_string_ptrs = Vec::with_capacity(array_length);
-
-    for i in 0..array_length {
-        let java_string = match env.get_object_array_element(&instance_names, i as i32) {
-            Ok(obj) => obj,
-            Err(e) => {
-                throw_exception(
-                    &mut env,
-                    &format!("Failed to get array element {}: {:?}", i, e),
-                );
-                return -1;
-            }
-        };
-
-        if java_string.is_null() {
-            continue; // 跳过 null 元素
-        }
-
-        let jstring = JString::from(java_string);
-        let c_string = match jstring_to_cstring(&mut env, &jstring) {
-            Ok(cstr) => cstr,
-            Err(e) => {
-                throw_exception(
-                    &mut env,
-                    &format!("Invalid instance name at index {}: {}", i, e),
-                );
-                return -1;
-            }
-        };
-
-        c_string_ptrs.push(c_string.as_ptr());
-        c_strings.push(c_string); // 保持 CString 的所有权
-    }
-
-    unsafe {
-        let result = retain_network_instance(c_string_ptrs.as_ptr(), c_string_ptrs.len());
-        if result != 0
-            && let Some(error) = get_last_error()
-        {
-            throw_exception(&mut env, &error);
-        }
-        result
-    }
+    logger::init();
+    network_api::retain_network_instance_jni(env, class, instance_names)
 }
 
-/// 收集网络信息
+/// Collect running network instance information.
+///
+/// Java signature:
+/// `EasyTierJNI.collectNetworkInfos(maxLength: Int): String?`
+///
+/// Returns a JSON string containing `NetworkInstanceRunningInfoMap`, or null if
+/// collection fails. `maxLength` limits how many FFI entries are collected. On
+/// failure this throws `RuntimeException` when an error message is available.
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_com_easytier_jni_EasyTierJNI_collectNetworkInfos(
-    mut env: JNIEnv,
-    _class: JClass,
+    env: JNIEnv,
+    class: JClass,
+    max_length: jint,
 ) -> jstring {
-    Lazy::force(&LOGGER_INIT);
-
-    const MAX_INFOS: usize = 100;
-    let mut infos = vec![
-        KeyValuePair {
-            key: ptr::null(),
-            value: ptr::null(),
-        };
-        MAX_INFOS
-    ];
-
-    unsafe {
-        let count = collect_network_infos(infos.as_mut_ptr(), MAX_INFOS);
-        if count < 0 {
-            if let Some(error) = get_last_error() {
-                throw_exception(&mut env, &error);
-            }
-            return ptr::null_mut();
-        }
-
-        let mut ret = NetworkInstanceRunningInfoMap::default();
-
-        // 使用 serde_json 构建 JSON
-        for info in infos.iter().take(count as usize) {
-            let key_ptr = info.key;
-            let val_ptr = info.value;
-            if key_ptr.is_null() || val_ptr.is_null() {
-                break;
-            }
-
-            let key = CStr::from_ptr(key_ptr).to_string_lossy();
-            let val = CStr::from_ptr(val_ptr).to_string_lossy();
-            let value = match serde_json::from_str::<NetworkInstanceRunningInfo>(val.as_ref()) {
-                Ok(v) => v,
-                Err(_) => {
-                    throw_exception(&mut env, "Failed to parse JSON");
-                    continue;
-                }
-            };
-            ret.map.insert(key.to_string(), value);
-        }
-
-        let json_str = serde_json::to_string(&ret).unwrap_or_else(|_| "{}".to_string());
-
-        match env.new_string(&json_str) {
-            Ok(jstr) => jstr.into_raw(),
-            Err(_) => {
-                throw_exception(&mut env, "Failed to create JSON string");
-                ptr::null_mut()
-            }
-        }
-    }
+    logger::init();
+    network_api::collect_network_infos_jni(env, class, max_length)
 }
 
-/// 获取最后的错误信息
+/// Return the latest FFI/JNI error string for the calling thread.
+///
+/// Java signature:
+/// `EasyTierJNI.getLastError(): String?`
+///
+/// This combines the FFI thread-local error with any pending config-server Java
+/// callback error. It returns null when no error is available.
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_com_easytier_jni_EasyTierJNI_getLastError(
     env: JNIEnv,
-    _class: JClass,
+    class: JClass,
 ) -> jstring {
-    match get_last_error() {
-        Some(error) => match env.new_string(&error) {
-            Ok(jstr) => jstr.into_raw(),
-            Err(_) => ptr::null_mut(),
-        },
-        None => ptr::null_mut(),
-    }
+    error::get_last_error_jni(env, class)
+}
+
+/// Start the managed config-server client.
+///
+/// Java signature:
+/// `EasyTierJNI.startConfigServerClient(url, hostname, machineId, secureMode, callback): Int`
+///
+/// JNI only converts Java values and keeps the Java callback alive. The FFI
+/// layer owns singleton lifecycle, config-server/data-plane mutual exclusion,
+/// remote instance tracking, and callback event timing. If `callback` is
+/// non-null, each remote apply/delete event is delivered to
+/// `ConfigServerEventCallback.onEvent(eventJson)`.
+///
+/// On failure this returns `-1` and throws `RuntimeException`.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_easytier_jni_EasyTierJNI_startConfigServerClient(
+    mut env: JNIEnv,
+    _class: JClass,
+    config_server_url: JString,
+    hostname: JString,
+    machine_id: JString,
+    secure_mode: jboolean,
+    callback: JObject,
+) -> jint {
+    logger::init();
+    config_server_api::start_config_server_client_jni(
+        &mut env,
+        config_server_url,
+        hostname,
+        machine_id,
+        secure_mode,
+        callback,
+    )
+}
+
+/// Stop the managed config-server client.
+///
+/// Java signature:
+/// `EasyTierJNI.stopConfigServerClient(): Int`
+///
+/// The FFI layer performs the actual stop and managed instance cleanup. JNI
+/// releases the Java callback reference after FFI stop succeeds. On failure
+/// this returns `-1` and throws `RuntimeException`.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_easytier_jni_EasyTierJNI_stopConfigServerClient(
+    env: JNIEnv,
+    class: JClass,
+) -> jint {
+    logger::init();
+    config_server_api::stop_config_server_client_jni(env, class)
+}
+
+/// Report whether the managed config-server client is connected.
+///
+/// Java signature:
+/// `EasyTierJNI.isConfigServerClientConnected(): Boolean`
+///
+/// Returns `JNI_TRUE` only when the FFI config-server client exists and reports
+/// connected.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_easytier_jni_EasyTierJNI_isConfigServerClientConnected(
+    env: JNIEnv,
+    class: JClass,
+) -> jboolean {
+    logger::init();
+    config_server_api::is_config_server_client_connected_jni(env, class)
 }

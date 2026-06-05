@@ -500,6 +500,10 @@ impl NetworkInstance {
         &self.config_file_control
     }
 
+    pub fn get_config(&self) -> TomlConfigLoader {
+        self.config.clone()
+    }
+
     pub fn get_network_config_source(&self) -> ConfigSource {
         self.config.get_network_config_source()
     }
