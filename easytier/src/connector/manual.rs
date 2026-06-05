@@ -359,9 +359,7 @@ impl ManualConnectorManager {
         tracing::info!("reconnect succ: {} {} {}", peer_id, conn_id, dead_url);
         // Record the URL → peer_id so collect_dead_conns can suppress reconnects
         // when the peer is still reachable via a P2P tunnel.
-        if let Ok(parsed_url) = dead_url.parse::<url::Url>() {
-            data.connected_url_peer_ids.insert(parsed_url, peer_id);
-        }
+        data.connected_url_peer_ids.insert(dead_url.clone(), peer_id);
         Ok(ReconnResult {
             dead_url: dead_url.to_string(),
             peer_id,

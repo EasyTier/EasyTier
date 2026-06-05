@@ -677,24 +677,19 @@ impl NetworkConfig {
         }
 
         if !self.rproxy_listeners.is_empty() {
-            cfg.set_rproxy_listeners(Some(
-                self.rproxy_listeners
-                    .iter()
-                    .map(|s| {
-                        s.parse()
-                            .with_context(|| {
-                                format!("rproxy listener is not a valid url: {}", s)
-                            })
-                            .unwrap()
-                    })
-                    .map(|s: url::Url| {
-                        if s.port().is_none() {
-                            panic!("rproxy listener port is missing: {}", s);
-                        }
-                        s
-                    })
-                    .collect(),
-            ));
+            let mut rproxy_listeners = Vec::<url::Url>::with_capacity(self.rproxy_listeners.len());
+            for listener in self.rproxy_listeners.iter() {
+                let url: url::Url = listener
+                    .parse()
+                    .with_context(|| {
+                        format!("rproxy listener is not a valid url: {}", listener)
+                    })?;
+                if url.port().is_none() {
+                    anyhow::bail!("rproxy listener port is missing: {}", url);
+                }
+                rproxy_listeners.push(url);
+            }
+            cfg.set_rproxy_listeners(Some(rproxy_listeners));
         }
 
         if let Some(credential_file) = self

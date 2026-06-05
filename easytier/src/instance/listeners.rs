@@ -114,8 +114,11 @@ impl TunnelHandlerForListener for RproxyTunnelHandler {
     }
 }
 
-pub trait ListenerCreatorTrait: Fn() -> Box<dyn TunnelListener> + Send + Sync {}
-impl<T: Send + Sync> ListenerCreatorTrait for T where T: Fn() -> Box<dyn TunnelListener> + Send {}
+pub trait ListenerCreatorTrait: Fn() -> Result<Box<dyn TunnelListener>, Error> + Send + Sync {}
+impl<T: Send + Sync> ListenerCreatorTrait for T where
+    T: Fn() -> Result<Box<dyn TunnelListener>, Error> + Send
+{
+}
 pub type ListenerCreator = Box<dyn ListenerCreatorTrait>;
 
 #[derive(Clone)]
@@ -148,9 +151,9 @@ impl<H: TunnelHandlerForListener + Send + Sync + 'static + Debug> ListenerManage
         let self_id = self.global_ctx.get_id();
         self.add_listener(
             move || {
-                Box::new(RingTunnelListener::new(
-                    format!("ring://{}", self_id).parse().unwrap(),
-                ))
+                Ok(Box::new(RingTunnelListener::new(
+                    format!("ring://{}", self_id).parse().map_err(|e| Error::InvalidUrl(format!("ring://{self_id}: {e}")))?,
+                )) as Box<dyn TunnelListener>)
             },
             true,
         )
@@ -174,7 +177,7 @@ impl<H: TunnelHandlerForListener + Send + Sync + 'static + Debug> ListenerManage
         let ctx = self.global_ctx.clone();
         let listener = l.clone();
         self.add_listener(
-            move || create_listener_by_url(&listener, ctx.clone()).unwrap(),
+            move || create_listener_by_url(&listener, ctx.clone()),
             must_succ,
         )
         .await?;
@@ -192,7 +195,7 @@ impl<H: TunnelHandlerForListener + Send + Sync + 'static + Debug> ListenerManage
                 .with_context(|| format!("failed to set ipv6 host for listener: {}", l))?;
             let ctx = self.global_ctx.clone();
             self.add_listener(
-                move || create_listener_by_url(&ipv6_listener, ctx.clone()).unwrap(),
+                move || create_listener_by_url(&ipv6_listener, ctx.clone()),
                 false,
             )
             .await?;
@@ -220,7 +223,18 @@ impl<H: TunnelHandlerForListener + Send + Sync + 'static + Debug> ListenerManage
     ) {
         let mut err_count = 0;
         loop {
-            let mut l = (creator)();
+            let mut l = match (creator)() {
+                Ok(l) => l,
+                Err(e) => {
+                    tracing::error!(?e, "failed to create tunnel listener, retrying...");
+                    err_count += 1;
+                    if err_count > 5 {
+                        return;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                    continue;
+                }
+            };
             let _g = global_ctx.net_ns.guard();
             match l.listen().await {
                 Ok(_) => {
@@ -295,7 +309,8 @@ impl<H: TunnelHandlerForListener + Send + Sync + 'static + Debug> ListenerManage
         for listener in &self.listeners {
             if listener.must_succ {
                 // try listen once
-                let mut l = (listener.creator_fn)();
+                let mut l = (listener.creator_fn)()
+                    .context("failed to create listener")?;
                 let _g = self.net_ns.guard();
                 l.listen()
                     .await
@@ -362,7 +377,7 @@ mod tests {
         let ring_id_clone = ring_id.clone();
         listener_mgr
             .add_listener(
-                move || Box::new(RingTunnelListener::new(ring_id_clone.parse().unwrap())),
+                move || Ok(Box::new(RingTunnelListener::new(ring_id_clone.parse().unwrap())) as Box<dyn TunnelListener>),
                 true,
             )
             .await
@@ -429,10 +444,10 @@ mod tests {
         listener_mgr
             .add_listener(
                 move || {
-                    Box::new(MockListener {
+                    Ok(Box::new(MockListener {
                         counter: counter_clone.clone(),
                         drop_counter: drop_counter_clone.clone(),
-                    })
+                    }) as Box<dyn TunnelListener>)
                 },
                 true,
             )

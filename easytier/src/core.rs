@@ -980,24 +980,21 @@ impl NetworkOptions {
 
         if !self.rproxy_listeners.is_empty() {
             let mut errs = Vec::new();
-            cfg.set_rproxy_listeners(Some(
-                self.rproxy_listeners
-                    .iter()
-                    .map(|s| {
-                        s.parse()
-                            .with_context(|| {
-                                format!("rproxy listener is not a valid url: {}", s)
-                            })
-                            .unwrap()
-                    })
-                    .map(|s: url::Url| {
-                        if s.port().is_none() {
-                            errs.push(anyhow::anyhow!("rproxy listener port is missing: {}", s));
+            let mut urls = Vec::new();
+            for s in &self.rproxy_listeners {
+                match s.parse::<url::Url>() {
+                    Ok(url) => {
+                        if url.port().is_none() {
+                            errs.push(anyhow::anyhow!("rproxy listener port is missing: {}", url));
+                        } else {
+                            urls.push(url);
                         }
-                        s
-                    })
-                    .collect::<Vec<_>>(),
-            ));
+                    }
+                    Err(e) => {
+                        errs.push(anyhow::anyhow!("rproxy listener is not a valid url: {}: {}", s, e));
+                    }
+                }
+            }
             if !errs.is_empty() {
                 return Err(anyhow::anyhow!(
                     "{}",
@@ -1007,6 +1004,7 @@ impl NetworkOptions {
                         .join("\n")
                 ));
             }
+            cfg.set_rproxy_listeners(Some(urls));
         }
 
         for n in self.proxy_networks.iter() {
