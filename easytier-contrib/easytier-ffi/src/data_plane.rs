@@ -294,6 +294,10 @@ pub(crate) fn remove_data_plane_handles_by_instance_ids(ids: &[Uuid]) {
         return;
     }
 
+    let _data_plane_usage_guard = DATA_PLANE_USAGE_LOCK
+        .write()
+        .unwrap_or_else(|err| err.into_inner());
+
     DATA_PLANE_HANDLES.retain(|_, handle| {
         if ids.contains(&handle.instance_id) {
             handle.close_token.cancel();
@@ -904,5 +908,21 @@ mod tests {
         drop(read_guard);
         done_rx.recv_timeout(Duration::from_secs(5)).unwrap();
         waiter.join().unwrap();
+    }
+
+    #[test]
+    fn instance_cleanup_waits_for_data_plane_operation() {
+        let read_guard = DATA_PLANE_USAGE_LOCK.read().unwrap();
+        let instance_id = Uuid::new_v4();
+        let (done_tx, done_rx) = mpsc::channel();
+        let cleaner = std::thread::spawn(move || {
+            remove_data_plane_handles_by_instance_ids(&[instance_id]);
+            done_tx.send(()).unwrap();
+        });
+
+        assert!(done_rx.recv_timeout(Duration::from_millis(100)).is_err());
+        drop(read_guard);
+        done_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        cleaner.join().unwrap();
     }
 }
