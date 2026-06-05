@@ -116,7 +116,7 @@ impl Server {
                 TokioConnectionProvider::default(),
             )
             .build()
-            .unwrap();
+            .map_err(|e| anyhow::anyhow!("failed to build ForwardAuthority: {}", e))?;
             catalog.upsert(rr::Name::from_str(".")?.into(), vec![Arc::new(auth)]);
         }
 

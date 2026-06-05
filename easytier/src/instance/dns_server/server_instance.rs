@@ -38,9 +38,10 @@ use crate::{
 use anyhow::Context;
 use cidr::Ipv4Inet;
 use dashmap::DashMap;
+use hickory_proto::op::{Header, ResponseCode};
 use hickory_proto::rr::LowerName;
 use hickory_proto::serialize::binary::{BinDecodable, BinEncoder};
-use hickory_server::authority::{MessageRequest, MessageResponse};
+use hickory_server::authority::{MessageRequest, MessageResponse, MessageResponseBuilder};
 use hickory_server::server::{Request, RequestHandler, ResponseHandler, ResponseInfo};
 use multimap::MultiMap;
 use pnet::packet::icmp::{IcmpTypes, MutableIcmpPacket};
@@ -57,6 +58,10 @@ use std::sync::Mutex;
 use std::{collections::BTreeMap, io, net::Ipv4Addr, str::FromStr, sync::Arc, time::Duration};
 
 static NIC_PIPELINE_NAME: &str = "magic_dns_server";
+
+/// Timeout for a single DNS query handled by the Magic DNS server.
+/// Prevents the NIC pipeline from being stalled by a slow or looping ForwardAuthority.
+const DNS_QUERY_TIMEOUT_SECS: u64 = 3;
 
 pub(super) struct MagicDnsServerInstanceData {
     dns_server: Server,
@@ -374,10 +379,9 @@ impl MagicDnsServerInstanceData {
 
             // Wrap handle_request with a timeout to prevent the NIC processing pipeline
             // from being stalled if the ForwardAuthority DNS forward hangs.
-            // A typical upstream DNS query completes well under 3 seconds; 15-second stalls
-            // were observed when forwarding looped back through the stub resolver.
+            // 15-second stalls were observed when forwarding looped back through the stub resolver.
             let timeout_result = tokio::time::timeout(
-                Duration::from_secs(3),
+                Duration::from_secs(DNS_QUERY_TIMEOUT_SECS),
                 async {
                     self.dns_server
                         .read_catalog()
@@ -395,9 +399,19 @@ impl MagicDnsServerInstanceData {
 
             if timeout_result.is_err() {
                 tracing::warn!(
-                    "DNS query handling timed out after 3s; dropping DNS packet to unblock NIC pipeline"
+                    "DNS query handling timed out after {}s; returning SERVFAIL to unblock NIC pipeline",
+                    DNS_QUERY_TIMEOUT_SECS
                 );
-                return None;
+                // Return SERVFAIL so the client fails fast instead of waiting its own retry timeout.
+                if let Ok(mut buf) = response_payload_arc.lock() {
+                    buf.clear();
+                    let builder = MessageResponseBuilder::from_message_request(&request);
+                    let mut header = Header::response_from_request(request.header());
+                    header.set_response_code(ResponseCode::ServFail);
+                    let servfail = builder.build_no_records(header);
+                    let mut encoder = BinEncoder::new(&mut *buf);
+                    let _ = servfail.destructive_emit(&mut encoder);
+                }
             }
 
             Arc::into_inner(response_payload_arc)?.into_inner().ok()?
@@ -539,15 +553,6 @@ impl MagicDnsServerInstance {
 
         let dns_config = RunConfigBuilder::default()
             .general(GeneralConfigBuilder::default().build()?)
-            .excluded_forward_nameservers(vec![
-                fake_ip.into(),
-                // Exclude common stub resolver addresses to prevent DNS forwarding loops.
-                // When systemd-resolved is active, /etc/resolv.conf points to 127.0.0.53.
-                // Forwarding to 127.0.0.53 would route back through EasyTier's fake_ip,
-                // creating a loop that takes ~15 seconds to time out.
-                Ipv4Addr::new(127, 0, 0, 53).into(),
-                Ipv4Addr::new(127, 0, 0, 1).into(),
-            ])
             .disable_forwarding(true)
             .build()?;
         let mut dns_server = Server::new(dns_config);
