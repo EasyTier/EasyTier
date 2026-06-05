@@ -6,7 +6,7 @@ use std::{
         Arc, Condvar, Mutex,
         atomic::{AtomicU64, Ordering},
     },
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 #[cfg(feature = "ffi-dataplane")]
@@ -195,12 +195,14 @@ fn spawn_instance_runtime_op<Fut, F>(
     build: F,
 ) where
     Fut: Future<Output = Result<DataPlaneAsyncOpResult, String>> + Send + 'static,
-    F: FnOnce(tokio::runtime::Handle) -> Fut + Send + 'static,
+    F: FnOnce(tokio::runtime::Handle, Duration) -> Fut + Send + 'static,
 {
+    let deadline = Instant::now() + timeout_duration(timeout_ms);
     std::thread::spawn(move || {
-        let Some(runtime) = INSTANCE_MANAGER
-            .data_plane_wait_runtime_handle(&instance_id, timeout_duration(timeout_ms))
-        else {
+        let Some(runtime) = INSTANCE_MANAGER.data_plane_wait_runtime_handle(
+            &instance_id,
+            deadline.saturating_duration_since(Instant::now()),
+        ) else {
             complete_op(&op, Err("instance runtime is not ready".to_string()));
             return;
         };
@@ -212,7 +214,8 @@ fn spawn_instance_runtime_op<Fut, F>(
         let runtime_for_task = runtime.clone();
         let op_for_complete = op.clone();
         runtime.spawn(async move {
-            let result = build(runtime_for_task).await;
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            let result = build(runtime_for_task, remaining).await;
             complete_op(&op_for_complete, result);
         });
     });
@@ -233,17 +236,27 @@ fn take_completed_op(
     handle: u64,
     expected: DataPlaneAsyncOpKind,
 ) -> Option<DataPlaneAsyncOpResult> {
-    let Some(op) = DATA_PLANE_OPS.get(&handle).map(|op| op.clone()) else {
-        set_error_msg("data plane async op not found");
-        return None;
-    };
-    if op.kind != expected {
-        set_error_msg("data plane async op type mismatch");
-        return None;
-    }
-
-    let completed = {
-        let Ok(mut state) = op.state.lock() else {
+    let Some((_, op)) = DATA_PLANE_OPS.remove_if(&handle, |_, op| {
+        if op.kind != expected {
+            return false;
+        }
+        let Ok(state) = op.state.lock() else {
+            return false;
+        };
+        match &*state {
+            DataPlaneAsyncOpState::Ready(_) | DataPlaneAsyncOpState::Failed(_) => true,
+            DataPlaneAsyncOpState::Pending | DataPlaneAsyncOpState::Consumed => false,
+        }
+    }) else {
+        let Some(op) = DATA_PLANE_OPS.get(&handle).map(|op| op.clone()) else {
+            set_error_msg("data plane async op not found");
+            return None;
+        };
+        if op.kind != expected {
+            set_error_msg("data plane async op type mismatch");
+            return None;
+        }
+        let Ok(state) = op.state.lock() else {
             set_error_msg("failed to lock data plane async op");
             return None;
         };
@@ -256,12 +269,21 @@ fn take_completed_op(
                 set_error_msg("data plane async op already consumed");
                 return None;
             }
-            DataPlaneAsyncOpState::Ready(_) | DataPlaneAsyncOpState::Failed(_) => {}
+            DataPlaneAsyncOpState::Ready(_) | DataPlaneAsyncOpState::Failed(_) => {
+                set_error_msg("data plane async op was consumed concurrently");
+            }
         }
+        return None;
+    };
+
+    let completed = {
+        let Ok(mut state) = op.state.lock() else {
+            set_error_msg("failed to lock data plane async op");
+            return None;
+        };
         std::mem::replace(&mut *state, DataPlaneAsyncOpState::Consumed)
     };
 
-    DATA_PLANE_OPS.remove(&handle);
     match completed {
         DataPlaneAsyncOpState::Ready(result) => Some(result),
         DataPlaneAsyncOpState::Failed(err) => {
@@ -473,15 +495,11 @@ pub(crate) unsafe fn data_plane_tcp_connect_start(
         op,
         instance_id,
         timeout_ms,
-        move |runtime_for_result| async move {
+        move |runtime_for_result, remaining| async move {
             run_with_cancel(
                 &op_for_task.cancel_token,
                 "failed to connect tcp data plane",
-                INSTANCE_MANAGER.data_plane_tcp_connect(
-                    &instance_id,
-                    dst_addr,
-                    timeout_duration(timeout_ms),
-                ),
+                INSTANCE_MANAGER.data_plane_tcp_connect(&instance_id, dst_addr, remaining),
             )
             .await
             .map(|stream| {
@@ -555,15 +573,11 @@ pub(crate) unsafe fn data_plane_tcp_bind_start(
         op,
         instance_id,
         timeout_ms,
-        move |runtime_for_result| async move {
+        move |runtime_for_result, remaining| async move {
             run_with_cancel(
                 &op_for_task.cancel_token,
                 "failed to bind tcp data plane",
-                INSTANCE_MANAGER.data_plane_tcp_bind(
-                    &instance_id,
-                    local_port,
-                    timeout_duration(timeout_ms),
-                ),
+                INSTANCE_MANAGER.data_plane_tcp_bind(&instance_id, local_port, remaining),
             )
             .await
             .map(|listener| {
@@ -864,15 +878,11 @@ pub(crate) unsafe fn data_plane_udp_bind_start(
         op,
         instance_id,
         timeout_ms,
-        move |runtime_for_result| async move {
+        move |runtime_for_result, remaining| async move {
             run_with_cancel(
                 &op_for_task.cancel_token,
                 "failed to bind udp data plane",
-                INSTANCE_MANAGER.data_plane_udp_bind(
-                    &instance_id,
-                    local_port,
-                    timeout_duration(timeout_ms),
-                ),
+                INSTANCE_MANAGER.data_plane_udp_bind(&instance_id, local_port, remaining),
             )
             .await
             .map(|socket| {
@@ -1080,5 +1090,15 @@ mod tests {
     fn max_len_limit_rejects_oversized_async_reads() {
         assert!(validate_max_len(MAX_ASYNC_READ_LEN));
         assert!(!validate_max_len(MAX_ASYNC_READ_LEN + 1));
+    }
+
+    #[test]
+    fn free_consumes_ready_op_before_finish_can_take_it() {
+        let (handle, op) = new_op(DataPlaneAsyncOpKind::TcpRead, None, None);
+        complete_op(&op, Ok(DataPlaneAsyncOpResult::TcpRead { data: vec![1] }));
+
+        assert_eq!(data_plane_async_op_free(handle), 0);
+        assert!(take_completed_op(handle, DataPlaneAsyncOpKind::TcpRead).is_none());
+        assert_eq!(data_plane_async_op_status(handle), DATA_PLANE_OP_INVALID);
     }
 }
