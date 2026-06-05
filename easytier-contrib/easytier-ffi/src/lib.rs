@@ -8,6 +8,7 @@
 //! - `parse_config`: validate a TOML network config string.
 //! - `run_network_instance`: start one local network instance from TOML.
 //! - `retain_network_instance`: keep named instances and stop all others.
+//! - `delete_network_instance`: stop named local network instances.
 //! - `collect_network_infos`: collect running instance info as key/value pairs.
 //! - `set_tun_fd`: attach a TUN file descriptor to a named instance.
 //!
@@ -113,6 +114,30 @@ pub unsafe extern "C" fn retain_network_instance(
     length: usize,
 ) -> c_int {
     unsafe { instance_api::retain_network_instance(inst_names, length) }
+}
+
+/// Stop the named network instances.
+///
+/// Passing `length == 0` is a no-op. When `length > 0`, `inst_names` must point
+/// to an array of `length` non-null C strings. Unknown names are ignored.
+/// Removed instances are also removed from the FFI name cache and any related
+/// data-plane handles are closed.
+///
+/// This API fails if called from a config-server event callback.
+///
+/// # Safety
+/// If `length > 0`, `inst_names` must be a non-null pointer to an array of
+/// `length` non-null pointers to null-terminated UTF-8 strings.
+///
+/// # Return
+/// Returns `0` on success, or `-1` on failure. On failure, call
+/// `get_error_msg` on the same thread to retrieve details.
+#[cfg_attr(feature = "c-abi", unsafe(no_mangle))]
+pub unsafe extern "C" fn delete_network_instance(
+    inst_names: *const *const c_char,
+    length: usize,
+) -> c_int {
+    unsafe { instance_api::delete_network_instance(inst_names, length) }
 }
 
 /// Collect running network instance information.

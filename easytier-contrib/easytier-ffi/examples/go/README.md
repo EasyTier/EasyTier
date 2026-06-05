@@ -29,7 +29,6 @@ To use another library path, export `EASYTIER_FFI_LIB=/path/to/libeasytier_ffi.s
 ```sh
 export EASYTIER_FFI_CONFIG='instance_name = "default"
 ipv4 = "10.0.0.1"
-peers = ["tcp://123.123.123.123:11010"]
 
 [network_identity]
 network_name = "testnet"
@@ -37,6 +36,10 @@ network_secret = "mysecret"
 
 [flags]
 no_tun = true # disable tun device to avoid permission issues.
+bind_device = false # allow loopback peers in local examples.
+
+[[peer]]
+uri = "tcp://123.123.123.123:11010"
 '
 ```
 
@@ -55,7 +58,6 @@ test, use a separate instance name and config:
 ```sh
 export EASYTIER_FFI_LISTEN_CONFIG='instance_name = "listener"
 ipv4 = "10.0.0.3"
-peers = ["tcp://123.123.123.123:11010"]
 
 [network_identity]
 network_name = "testnet"
@@ -63,6 +65,10 @@ network_secret = "mysecret"
 
 [flags]
 no_tun = true
+bind_device = false
+
+[[peer]]
+uri = "tcp://123.123.123.123:11010"
 '
 export EASYTIER_FFI_LISTEN_INSTANCE=listener
 export EASYTIER_FFI_LISTEN_PORT=12345
@@ -70,21 +76,27 @@ export EASYTIER_FFI_LISTEN_PORT=12345
 
 ## 1.3. Run the demo
 
-`goffi` is built without cgo on Linux, so run the test with `CGO_ENABLED=0`:
+`goffi` is built without cgo on Linux, so run the tests with `CGO_ENABLED=0`:
 
 ```sh
 cd easytier-contrib/easytier-ffi/examples/go
 CGO_ENABLED=0 go test -v ./...
 ```
 
-To verify that the async symbols are exported by the FFI library:
+The synchronous tests use the environment variables above. The async Go tests
+are self-contained: they start two local EasyTier instances in the same test
+process with `no_tun = true` and `bind_device = false`, then run TCP and UDP
+ping/pong over the async data-plane API.
+
+To run only the async tests:
 
 ```sh
 cd easytier-contrib/easytier-ffi/examples/go
-EASYTIER_FFI_BIND_ASYNC_SYMBOLS=1 CGO_ENABLED=0 go test -run TestAsyncSymbolBinding -v ./...
+CGO_ENABLED=0 go test -run 'TestAsync' -v ./...
 ```
 
-Expected output includes an SSH banner similar to:
+When the SSH integration environment variables are set, expected synchronous
+test output includes an SSH banner similar to:
 
 ```text
 attempt 1: got banner "SSH-2.0-..."
@@ -95,15 +107,8 @@ For `TestTCPListenIntegration`, connect from another EasyTier peer to the local
 EasyTier IPv4 address and `EASYTIER_FFI_LISTEN_PORT`, send `ping`, and expect
 `pong` in response.
 
-The async tests use the same TCP environment variables with `TestAsync*` names.
-The UDP async test uses:
-
-```sh
-export EASYTIER_FFI_UDP_CONFIG="$EASYTIER_FFI_CONFIG"
-export EASYTIER_FFI_UDP_INSTANCE="$EASYTIER_FFI_INSTANCE"
-export EASYTIER_FFI_UDP_TARGET=10.0.0.2:9000
-CGO_ENABLED=0 go test -run TestAsyncUDPIntegration -v ./...
-```
+The async test output should include local TCP bind/connect log lines and finish
+with `PASS` without any extra environment variables.
 
 ## 1.4. C async example
 

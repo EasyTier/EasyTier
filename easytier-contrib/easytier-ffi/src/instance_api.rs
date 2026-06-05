@@ -181,6 +181,63 @@ pub(crate) unsafe fn retain_network_instance(
 }
 
 /// # Safety
+/// Delete named network instances.
+pub(crate) unsafe fn delete_network_instance(
+    inst_names: *const *const std::ffi::c_char,
+    length: usize,
+) -> std::ffi::c_int {
+    if in_config_server_callback() {
+        set_error_msg("cannot delete network instances from config server callback");
+        return -1;
+    }
+
+    wait_for_config_server_delivery();
+    let _remote_mutation_guard = lock_remote_instance_mutation();
+    let _mutation_guard = match INSTANCE_MUTATION_LOCK.lock() {
+        Ok(guard) => guard,
+        Err(err) => {
+            set_error_msg(&format!("failed to lock instance mutation: {}", err));
+            return -1;
+        }
+    };
+
+    if length == 0 {
+        return 0;
+    }
+
+    let inst_names = unsafe {
+        assert!(!inst_names.is_null());
+        std::slice::from_raw_parts(inst_names, length)
+            .iter()
+            .map(|&name| {
+                assert!(!name.is_null());
+                std::ffi::CStr::from_ptr(name)
+                    .to_string_lossy()
+                    .into_owned()
+            })
+            .collect::<Vec<_>>()
+    };
+
+    let removed_ids = inst_names
+        .iter()
+        .filter_map(|name| INSTANCE_NAME_ID_MAP.get(name).map(|id| *id.value()))
+        .collect::<Vec<_>>();
+
+    if let Err(e) = INSTANCE_MANAGER.delete_network_instance(removed_ids.clone()) {
+        set_error_msg(&format!("failed to delete instances: {}", e));
+        return -1;
+    }
+
+    remove_config_server_tracked_instance_ids(&removed_ids);
+    remove_data_plane_handles_by_instance_ids(&removed_ids);
+    for name in inst_names {
+        INSTANCE_NAME_ID_MAP.remove(&name);
+    }
+
+    0
+}
+
+/// # Safety
 /// Collect the network infos
 pub(crate) unsafe fn collect_network_infos(
     infos: *mut KeyValuePair,

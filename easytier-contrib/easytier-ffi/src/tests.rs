@@ -305,6 +305,42 @@ fn find_instance_id_by_name_resolves_uncommitted_manager_instance_name() {
 }
 
 #[test]
+fn delete_network_instance_removes_only_named_instances() {
+    let keep_id = Uuid::new_v4();
+    let delete_id = Uuid::new_v4();
+    let keep_name = format!("keep-{}", keep_id);
+    let delete_name = format!("delete-{}", delete_id);
+
+    for (id, name) in [
+        (keep_id, keep_name.clone()),
+        (delete_id, delete_name.clone()),
+    ] {
+        let cfg = TomlConfigLoader::default();
+        cfg.set_id(id);
+        cfg.set_inst_name(name.clone());
+        INSTANCE_MANAGER
+            .run_network_instance(cfg, false, ConfigFileControl::STATIC_CONFIG)
+            .unwrap();
+        INSTANCE_NAME_ID_MAP.insert(name, id);
+    }
+
+    let delete_name = CString::new(delete_name.clone()).unwrap();
+    let inst_names = [delete_name.as_ptr()];
+    assert_eq!(
+        unsafe { delete_network_instance(inst_names.as_ptr(), inst_names.len()) },
+        0
+    );
+
+    assert_eq!(find_instance_id_by_name(&keep_name), Some(keep_id));
+    assert!(find_instance_id_by_name(delete_name.to_str().unwrap()).is_none());
+
+    INSTANCE_MANAGER
+        .delete_network_instance(vec![keep_id])
+        .unwrap();
+    remove_instance_name_ids(&[keep_id]);
+}
+
+#[test]
 fn ffi_remote_mutation_lock_uses_manager_lock() {
     let manager_guard = INSTANCE_MANAGER
         .remote_mutation_lock()
@@ -350,6 +386,7 @@ fn config_server_callback_context_rejects_nested_blocking_ffi_calls() {
     let cfg = CString::new("inst_name = \"callback-test\"\nlisteners = []").unwrap();
     assert_eq!(unsafe { run_network_instance(cfg.as_ptr()) }, -1);
     assert_eq!(unsafe { retain_network_instance(std::ptr::null(), 0) }, -1);
+    assert_eq!(unsafe { delete_network_instance(std::ptr::null(), 0) }, -1);
     let url = CString::new("ring://test/token").unwrap();
     let machine_id = CString::new("test-machine").unwrap();
     assert_eq!(

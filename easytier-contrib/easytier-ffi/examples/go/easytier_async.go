@@ -29,6 +29,7 @@ type AsyncNative struct {
 	lib unsafe.Pointer
 
 	runNetworkInstance symCall
+	deleteNetworkInst  symCall
 	getErrorMsg        symCall
 	freeString         symCall
 	freeBytes          symCall
@@ -115,6 +116,34 @@ func (n *AsyncNative) RunNetworkInstance(config string) error {
 	var ret int32
 	err := n.runNetworkInstance.call(unsafe.Pointer(&ret), unsafe.Pointer(&cfgPtr))
 	runtime.KeepAlive(cfg)
+	if err != nil {
+		return err
+	}
+	if ret != 0 {
+		return n.lastError()
+	}
+	return nil
+}
+
+func (n *AsyncNative) deleteNetworkInstances(names []string) error {
+	defer pinErrorThread()()
+
+	cNames := make([][]byte, len(names))
+	namePtrs := make([]unsafe.Pointer, len(names))
+	for i, name := range names {
+		cNames[i] = cString(name)
+		namePtrs[i] = unsafe.Pointer(&cNames[i][0])
+	}
+
+	var namesPtr unsafe.Pointer
+	if len(namePtrs) > 0 {
+		namesPtr = unsafe.Pointer(&namePtrs[0])
+	}
+	length := uint64(len(names))
+	var ret int32
+	err := n.deleteNetworkInst.call(unsafe.Pointer(&ret), unsafe.Pointer(&namesPtr), unsafe.Pointer(&length))
+	runtime.KeepAlive(cNames)
+	runtime.KeepAlive(namePtrs)
 	if err != nil {
 		return err
 	}
@@ -385,6 +414,7 @@ func (s *AsyncUDPSocket) LocalAddr() *net.UDPAddr { return s.addr }
 func (n *AsyncNative) bind() error {
 	return errors.Join(
 		n.bindSym(&n.runNetworkInstance, "run_network_instance", types.SInt32TypeDescriptor, types.PointerTypeDescriptor),
+		n.bindSym(&n.deleteNetworkInst, "delete_network_instance", types.SInt32TypeDescriptor, types.PointerTypeDescriptor, types.UInt64TypeDescriptor),
 		n.bindSym(&n.getErrorMsg, "get_error_msg", types.VoidTypeDescriptor, types.PointerTypeDescriptor),
 		n.bindSym(&n.freeString, "free_string", types.VoidTypeDescriptor, types.PointerTypeDescriptor),
 		n.bindSym(&n.freeBytes, "data_plane_free_bytes", types.VoidTypeDescriptor, types.PointerTypeDescriptor, types.UInt32TypeDescriptor),
