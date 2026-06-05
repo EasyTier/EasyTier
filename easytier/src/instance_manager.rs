@@ -34,6 +34,7 @@ pub struct NetworkInstanceManager {
     instance_error_messages: Arc<DashMap<uuid::Uuid, String>>,
     config_dir: Option<PathBuf>,
     guard_counter: Arc<()>,
+    remote_mutation_lock: Arc<tokio::sync::Mutex<()>>,
 }
 
 impl Default for NetworkInstanceManager {
@@ -51,12 +52,17 @@ impl NetworkInstanceManager {
             instance_error_messages: Arc::new(DashMap::new()),
             config_dir: None,
             guard_counter: Arc::new(()),
+            remote_mutation_lock: Arc::new(tokio::sync::Mutex::new(())),
         }
     }
 
     pub fn with_config_path(mut self, config_dir: Option<PathBuf>) -> Self {
         self.config_dir = config_dir;
         self
+    }
+
+    pub fn remote_mutation_lock(&self) -> Arc<tokio::sync::Mutex<()>> {
+        self.remote_mutation_lock.clone()
     }
 
     fn start_instance_task(&self, instance_id: uuid::Uuid) -> Result<(), anyhow::Error> {
@@ -270,6 +276,12 @@ impl NetworkInstanceManager {
         self.instance_map
             .get(instance_id)
             .map(|instance| instance.value().get_config_file_control().clone())
+    }
+
+    pub fn get_instance_config(&self, instance_id: &uuid::Uuid) -> Option<TomlConfigLoader> {
+        self.instance_map
+            .get(instance_id)
+            .map(|instance| instance.value().get_config())
     }
 
     pub fn get_instance_network_config_source(

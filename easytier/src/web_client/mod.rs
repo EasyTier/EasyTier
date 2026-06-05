@@ -23,6 +23,10 @@ use uuid::Uuid;
 
 #[async_trait]
 pub trait WebClientHooks: Send + Sync {
+    fn manages_remote_config_instances(&self) -> bool {
+        false
+    }
+
     async fn pre_run_network_instance(&self, _cfg: &TomlConfigLoader) -> Result<(), String> {
         Ok(())
     }
