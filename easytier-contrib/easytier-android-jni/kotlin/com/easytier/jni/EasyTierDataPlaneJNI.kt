@@ -9,12 +9,48 @@ import kotlinx.coroutines.withContext
 /**
  * EasyTier data-plane API for Android.
  *
- * This file intentionally keeps the data-plane surface out of [EasyTierJNI]
- * because these APIs are lower-level and less commonly needed than instance
- * lifecycle, TUN, and config-server management. Typical callers should use
- * [EasyTierDataPlane] and the socket/stream classes below. [EasyTierDataPlaneJNI]
- * exposes the raw native op-handle ABI for advanced callers and for the
- * coroutine wrappers in this file.
+ * Use this file only after an EasyTier network instance has already been
+ * started through [EasyTierJNI]. Pass that instance name to [EasyTierDataPlane]
+ * when connecting or binding. Most callers should use [EasyTierDataPlane] and
+ * the socket/stream classes below; [EasyTierDataPlaneJNI] is the low-level
+ * native op-handle ABI used by the coroutine wrappers.
+ *
+ * TCP client usage:
+ * ```
+ * val stream = EasyTierDataPlane.tcpConnect("default", "10.144.0.2", 8080, 5_000)
+ * try {
+ *     stream.write("ping".toByteArray(), 5_000)
+ *     val reply = stream.read(4096, 5_000)
+ * } finally {
+ *     stream.close()
+ * }
+ * ```
+ *
+ * TCP server usage:
+ * ```
+ * val listener = EasyTierDataPlane.tcpBind("default", 8080, 5_000)
+ * try {
+ *     val stream = listener.accept(30_000)
+ *     try {
+ *         stream.write(stream.read(4096, 5_000), 5_000)
+ *     } finally {
+ *         stream.close()
+ *     }
+ * } finally {
+ *     listener.close()
+ * }
+ * ```
+ *
+ * UDP usage:
+ * ```
+ * val socket = EasyTierDataPlane.udpBind("default", 0, 5_000)
+ * try {
+ *     socket.sendTo("10.144.0.2", 9000, "ping".toByteArray(), 5_000)
+ *     val packet = socket.recvFrom(4096, 5_000)
+ * } finally {
+ *     socket.close()
+ * }
+ * ```
  *
  * Operation model:
  * - Each suspend function starts one native async op, waits on Dispatchers.IO,
