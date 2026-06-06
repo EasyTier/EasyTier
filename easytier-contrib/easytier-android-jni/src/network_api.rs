@@ -113,7 +113,11 @@ pub(crate) fn retain_network_instance_jni(
         };
 
         if java_string.is_null() {
-            continue;
+            throw_exception(
+                &mut env,
+                &format!("Invalid instance name at index {}: null", i),
+            );
+            return -1;
         }
 
         let jstring = JString::from(java_string);

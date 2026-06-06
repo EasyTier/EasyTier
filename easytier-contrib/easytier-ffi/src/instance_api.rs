@@ -112,6 +112,34 @@ pub(crate) unsafe fn run_network_instance(cfg_str: *const std::ffi::c_char) -> s
     0
 }
 
+unsafe fn parse_instance_names(
+    inst_names: *const *const c_char,
+    length: usize,
+) -> Option<Vec<String>> {
+    if length == 0 {
+        return Some(Vec::new());
+    }
+    if inst_names.is_null() {
+        set_error_msg("inst_names is null");
+        return None;
+    }
+
+    let names = unsafe { std::slice::from_raw_parts(inst_names, length) };
+    let mut parsed = Vec::with_capacity(length);
+    for (index, &name) in names.iter().enumerate() {
+        if name.is_null() {
+            set_error_msg(&format!("inst_names[{}] is null", index));
+            return None;
+        }
+        parsed.push(
+            unsafe { std::ffi::CStr::from_ptr(name) }
+                .to_string_lossy()
+                .into_owned(),
+        );
+    }
+    Some(parsed)
+}
+
 /// # Safety
 /// Retain the network instance
 pub(crate) unsafe fn retain_network_instance(
@@ -145,17 +173,8 @@ pub(crate) unsafe fn retain_network_instance(
         return 0;
     }
 
-    let inst_names = unsafe {
-        assert!(!inst_names.is_null());
-        std::slice::from_raw_parts(inst_names, length)
-            .iter()
-            .map(|&name| {
-                assert!(!name.is_null());
-                std::ffi::CStr::from_ptr(name)
-                    .to_string_lossy()
-                    .into_owned()
-            })
-            .collect::<Vec<_>>()
+    let Some(inst_names) = (unsafe { parse_instance_names(inst_names, length) }) else {
+        return -1;
     };
 
     let removed_ids = INSTANCE_MANAGER
@@ -176,6 +195,54 @@ pub(crate) unsafe fn retain_network_instance(
     remove_config_server_tracked_instance_ids(&removed_ids);
     remove_data_plane_handles_by_instance_ids(&removed_ids);
     INSTANCE_NAME_ID_MAP.retain(|k, _| inst_names.contains(k));
+
+    0
+}
+
+/// # Safety
+/// Delete named network instances.
+pub(crate) unsafe fn delete_network_instance(
+    inst_names: *const *const std::ffi::c_char,
+    length: usize,
+) -> std::ffi::c_int {
+    if in_config_server_callback() {
+        set_error_msg("cannot delete network instances from config server callback");
+        return -1;
+    }
+
+    wait_for_config_server_delivery();
+    let _remote_mutation_guard = lock_remote_instance_mutation();
+    let _mutation_guard = match INSTANCE_MUTATION_LOCK.lock() {
+        Ok(guard) => guard,
+        Err(err) => {
+            set_error_msg(&format!("failed to lock instance mutation: {}", err));
+            return -1;
+        }
+    };
+
+    if length == 0 {
+        return 0;
+    }
+
+    let Some(inst_names) = (unsafe { parse_instance_names(inst_names, length) }) else {
+        return -1;
+    };
+
+    let removed_ids = inst_names
+        .iter()
+        .filter_map(|name| INSTANCE_NAME_ID_MAP.get(name).map(|id| *id.value()))
+        .collect::<Vec<_>>();
+
+    if let Err(e) = INSTANCE_MANAGER.delete_network_instance(removed_ids.clone()) {
+        set_error_msg(&format!("failed to delete instances: {}", e));
+        return -1;
+    }
+
+    remove_config_server_tracked_instance_ids(&removed_ids);
+    remove_data_plane_handles_by_instance_ids(&removed_ids);
+    for name in inst_names {
+        INSTANCE_NAME_ID_MAP.remove(&name);
+    }
 
     0
 }

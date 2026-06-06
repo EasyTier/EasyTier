@@ -37,22 +37,22 @@ static DATA_PLANE_USAGE_LOCK: once_cell::sync::Lazy<RwLock<()>> =
     once_cell::sync::Lazy::new(|| RwLock::new(()));
 
 #[cfg(feature = "ffi-dataplane")]
-struct DataPlaneHandle {
-    instance_id: uuid::Uuid,
-    runtime: tokio::runtime::Handle,
+pub(crate) struct DataPlaneHandle {
+    pub(crate) instance_id: uuid::Uuid,
+    pub(crate) runtime: tokio::runtime::Handle,
     // Cancelled by close() to wake any in-flight op on this handle.
-    close_token: CancellationToken,
-    resource: DataPlaneResource,
+    pub(crate) close_token: CancellationToken,
+    pub(crate) resource: DataPlaneResource,
 }
 
 #[cfg(feature = "ffi-dataplane")]
-struct TcpHalves {
-    read: tokio::sync::Mutex<ReadHalf<DataPlaneTcpStream>>,
-    write: tokio::sync::Mutex<WriteHalf<DataPlaneTcpStream>>,
+pub(crate) struct TcpHalves {
+    pub(crate) read: tokio::sync::Mutex<ReadHalf<DataPlaneTcpStream>>,
+    pub(crate) write: tokio::sync::Mutex<WriteHalf<DataPlaneTcpStream>>,
 }
 
 #[cfg(feature = "ffi-dataplane")]
-enum DataPlaneResource {
+pub(crate) enum DataPlaneResource {
     Tcp(Arc<TcpHalves>),
     TcpListener(Arc<tokio::sync::Mutex<DataPlaneTcpListener>>),
     Udp(Arc<DataPlaneUdpSocket>),
@@ -61,17 +61,17 @@ enum DataPlaneResource {
 // Several helper functions for FFI data plane operations to facilitate logic reuse.
 
 #[cfg(feature = "ffi-dataplane")]
-fn next_handle() -> u64 {
+pub(crate) fn next_handle() -> u64 {
     NEXT_DATA_PLANE_HANDLE.fetch_add(1, Ordering::Relaxed)
 }
 
 #[cfg(feature = "ffi-dataplane")]
-fn timeout_duration(timeout_ms: u64) -> Duration {
+pub(crate) fn timeout_duration(timeout_ms: u64) -> Duration {
     Duration::from_millis(timeout_ms)
 }
 
 #[cfg(feature = "ffi-dataplane")]
-unsafe fn cstr_to_string(ptr: *const std::ffi::c_char, name: &str) -> Option<String> {
+pub(crate) unsafe fn cstr_to_string(ptr: *const std::ffi::c_char, name: &str) -> Option<String> {
     if ptr.is_null() {
         set_error_msg(&format!("{} is null", name));
         return None;
@@ -84,12 +84,12 @@ unsafe fn cstr_to_string(ptr: *const std::ffi::c_char, name: &str) -> Option<Str
 }
 
 #[cfg(feature = "ffi-dataplane")]
-fn get_instance_id(inst_name: &str) -> Option<uuid::Uuid> {
+pub(crate) fn get_instance_id(inst_name: &str) -> Option<uuid::Uuid> {
     INSTANCE_NAME_ID_MAP.get(inst_name).map(|id| *id.value())
 }
 
 #[cfg(feature = "ffi-dataplane")]
-fn parse_socket_addr(host: &str, port: u16) -> Option<SocketAddr> {
+pub(crate) fn parse_socket_addr(host: &str, port: u16) -> Option<SocketAddr> {
     let ip = match host.parse::<IpAddr>() {
         Ok(ip) => ip,
         Err(e) => {
@@ -103,7 +103,7 @@ fn parse_socket_addr(host: &str, port: u16) -> Option<SocketAddr> {
 /// Encode an IP address for FFI return. Returns `*mut c_char` to match
 /// `CString::into_raw`; caller releases it via `free_string`.
 #[cfg(feature = "ffi-dataplane")]
-fn into_ffi_ip_cstring(ip: IpAddr) -> Option<*mut std::ffi::c_char> {
+pub(crate) fn into_ffi_ip_cstring(ip: IpAddr) -> Option<*mut std::ffi::c_char> {
     match std::ffi::CString::new(ip.to_string()) {
         Ok(s) => Some(s.into_raw()),
         Err(e) => {
@@ -114,7 +114,7 @@ fn into_ffi_ip_cstring(ip: IpAddr) -> Option<*mut std::ffi::c_char> {
 }
 
 #[cfg(feature = "ffi-dataplane")]
-fn get_runtime_handle(
+pub(crate) fn get_runtime_handle(
     inst_id: &uuid::Uuid,
     deadline: std::time::Instant,
 ) -> Option<tokio::runtime::Handle> {
@@ -127,7 +127,7 @@ fn get_runtime_handle(
 }
 
 #[cfg(feature = "ffi-dataplane")]
-fn insert_tcp_stream_handle(
+pub(crate) fn insert_tcp_stream_handle(
     instance_id: uuid::Uuid,
     runtime: tokio::runtime::Handle,
     stream: DataPlaneTcpStream,
@@ -150,17 +150,71 @@ fn insert_tcp_stream_handle(
 }
 
 #[cfg(feature = "ffi-dataplane")]
-fn get_tcp_stream(
+pub(crate) fn insert_tcp_listener_handle(
+    instance_id: uuid::Uuid,
+    runtime: tokio::runtime::Handle,
+    listener: DataPlaneTcpListener,
+) -> u64 {
+    let handle = next_handle();
+    DATA_PLANE_HANDLES.insert(
+        handle,
+        DataPlaneHandle {
+            instance_id,
+            runtime,
+            close_token: CancellationToken::new(),
+            resource: DataPlaneResource::TcpListener(Arc::new(tokio::sync::Mutex::new(listener))),
+        },
+    );
+    handle
+}
+
+#[cfg(feature = "ffi-dataplane")]
+pub(crate) fn insert_udp_socket_handle(
+    instance_id: uuid::Uuid,
+    runtime: tokio::runtime::Handle,
+    socket: DataPlaneUdpSocket,
+) -> u64 {
+    let handle = next_handle();
+    DATA_PLANE_HANDLES.insert(
+        handle,
+        DataPlaneHandle {
+            instance_id,
+            runtime,
+            close_token: CancellationToken::new(),
+            resource: DataPlaneResource::Udp(Arc::new(socket)),
+        },
+    );
+    handle
+}
+
+#[cfg(feature = "ffi-dataplane")]
+pub(crate) fn get_tcp_stream(
     handle: u64,
 ) -> Option<(Arc<TcpHalves>, tokio::runtime::Handle, CancellationToken)> {
+    get_tcp_stream_with_instance(handle)
+        .map(|(halves, runtime, close_token, _)| (halves, runtime, close_token))
+}
+
+#[cfg(feature = "ffi-dataplane")]
+pub(crate) fn get_tcp_stream_with_instance(
+    handle: u64,
+) -> Option<(
+    Arc<TcpHalves>,
+    tokio::runtime::Handle,
+    CancellationToken,
+    uuid::Uuid,
+)> {
     let Some(h) = DATA_PLANE_HANDLES.get(&handle) else {
         set_error_msg("tcp stream handle not found");
         return None;
     };
     match &h.resource {
-        DataPlaneResource::Tcp(halves) => {
-            Some((halves.clone(), h.runtime.clone(), h.close_token.clone()))
-        }
+        DataPlaneResource::Tcp(halves) => Some((
+            halves.clone(),
+            h.runtime.clone(),
+            h.close_token.clone(),
+            h.instance_id,
+        )),
         DataPlaneResource::TcpListener(_) | DataPlaneResource::Udp(_) => {
             set_error_msg("handle is not a tcp stream");
             None
@@ -169,7 +223,7 @@ fn get_tcp_stream(
 }
 
 #[cfg(feature = "ffi-dataplane")]
-fn get_tcp_listener(
+pub(crate) fn get_tcp_listener(
     handle: u64,
 ) -> Option<(
     Arc<tokio::sync::Mutex<DataPlaneTcpListener>>,
@@ -196,21 +250,37 @@ fn get_tcp_listener(
 }
 
 #[cfg(feature = "ffi-dataplane")]
-fn get_udp_socket(
+pub(crate) fn get_udp_socket(
     handle: u64,
 ) -> Option<(
     Arc<DataPlaneUdpSocket>,
     tokio::runtime::Handle,
     CancellationToken,
 )> {
+    get_udp_socket_with_instance(handle)
+        .map(|(socket, runtime, close_token, _)| (socket, runtime, close_token))
+}
+
+#[cfg(feature = "ffi-dataplane")]
+pub(crate) fn get_udp_socket_with_instance(
+    handle: u64,
+) -> Option<(
+    Arc<DataPlaneUdpSocket>,
+    tokio::runtime::Handle,
+    CancellationToken,
+    uuid::Uuid,
+)> {
     let Some(h) = DATA_PLANE_HANDLES.get(&handle) else {
         set_error_msg("udp socket handle not found");
         return None;
     };
     match &h.resource {
-        DataPlaneResource::Udp(socket) => {
-            Some((socket.clone(), h.runtime.clone(), h.close_token.clone()))
-        }
+        DataPlaneResource::Udp(socket) => Some((
+            socket.clone(),
+            h.runtime.clone(),
+            h.close_token.clone(),
+            h.instance_id,
+        )),
         DataPlaneResource::Tcp(_) | DataPlaneResource::TcpListener(_) => {
             set_error_msg("handle is not a udp socket");
             None
@@ -224,6 +294,10 @@ pub(crate) fn remove_data_plane_handles_by_instance_ids(ids: &[Uuid]) {
         return;
     }
 
+    let _data_plane_usage_guard = DATA_PLANE_USAGE_LOCK
+        .write()
+        .unwrap_or_else(|err| err.into_inner());
+
     DATA_PLANE_HANDLES.retain(|_, handle| {
         if ids.contains(&handle.instance_id) {
             handle.close_token.cancel();
@@ -232,13 +306,14 @@ pub(crate) fn remove_data_plane_handles_by_instance_ids(ids: &[Uuid]) {
             true
         }
     });
+    crate::data_plane_async::remove_ops_by_instance_ids(ids);
 }
 
 #[cfg(not(feature = "ffi-dataplane"))]
 pub(crate) fn remove_data_plane_handles_by_instance_ids(_ids: &[uuid::Uuid]) {}
 
 #[cfg(feature = "ffi-dataplane")]
-fn data_plane_rejected() -> bool {
+pub(crate) fn data_plane_rejected() -> bool {
     if in_config_server_callback() {
         set_error_msg("cannot use data plane from config server callback");
         true
@@ -251,7 +326,7 @@ fn data_plane_rejected() -> bool {
 }
 
 #[cfg(feature = "ffi-dataplane")]
-fn enter_data_plane_operation() -> Option<std::sync::RwLockReadGuard<'static, ()>> {
+pub(crate) fn enter_data_plane_operation() -> Option<std::sync::RwLockReadGuard<'static, ()>> {
     if data_plane_rejected() {
         return None;
     }
@@ -303,7 +378,7 @@ pub(crate) fn lock_for_config_server_start()
     let guard = DATA_PLANE_USAGE_LOCK
         .write()
         .map_err(|err| format!("failed to lock data plane usage: {}", err))?;
-    if !DATA_PLANE_HANDLES.is_empty() {
+    if !DATA_PLANE_HANDLES.is_empty() || crate::data_plane_async::has_live_ops() {
         return Err("cannot start config server client while data plane is in use".to_string());
     }
     Ok(guard)
@@ -413,18 +488,7 @@ pub(crate) unsafe fn data_plane_tcp_bind(
             let Some(local_ip) = into_ffi_ip_cstring(local_addr.ip()) else {
                 return 0;
             };
-            let handle = next_handle();
-            DATA_PLANE_HANDLES.insert(
-                handle,
-                DataPlaneHandle {
-                    instance_id: inst_id,
-                    runtime,
-                    close_token: CancellationToken::new(),
-                    resource: DataPlaneResource::TcpListener(Arc::new(tokio::sync::Mutex::new(
-                        listener,
-                    ))),
-                },
-            );
+            let handle = insert_tcp_listener_handle(inst_id, runtime, listener);
             unsafe {
                 *out_local_ip = local_ip as *const std::ffi::c_char;
                 *out_local_port = local_addr.port();
@@ -600,6 +664,7 @@ pub(crate) fn data_plane_tcp_close(handle: u64) -> std::ffi::c_int {
         Some(guard) => guard,
         None => return -1,
     };
+    crate::data_plane_async::cancel_ops_for_handle(handle);
     let Some((_, h)) = DATA_PLANE_HANDLES.remove_if(&handle, |_, e| {
         matches!(e.resource, DataPlaneResource::Tcp(_))
     }) else {
@@ -629,6 +694,7 @@ pub(crate) fn data_plane_tcp_listener_close(handle: u64) -> std::ffi::c_int {
         Some(guard) => guard,
         None => return -1,
     };
+    crate::data_plane_async::cancel_ops_for_handle(handle);
     let Some((_, h)) = DATA_PLANE_HANDLES.remove_if(&handle, |_, e| {
         matches!(e.resource, DataPlaneResource::TcpListener(_))
     }) else {
@@ -685,16 +751,7 @@ pub(crate) unsafe fn data_plane_udp_bind(
             let Some(local_ip) = into_ffi_ip_cstring(local_addr.ip()) else {
                 return 0;
             };
-            let handle = next_handle();
-            DATA_PLANE_HANDLES.insert(
-                handle,
-                DataPlaneHandle {
-                    instance_id: inst_id,
-                    runtime,
-                    close_token: CancellationToken::new(),
-                    resource: DataPlaneResource::Udp(Arc::new(socket)),
-                },
-            );
+            let handle = insert_udp_socket_handle(inst_id, runtime, socket);
             unsafe {
                 *out_local_ip = local_ip as *const std::ffi::c_char;
                 *out_local_port = local_addr.port();
@@ -818,6 +875,7 @@ pub(crate) fn data_plane_udp_close(handle: u64) -> std::ffi::c_int {
         Some(guard) => guard,
         None => return -1,
     };
+    crate::data_plane_async::cancel_ops_for_handle(handle);
     let Some((_, h)) = DATA_PLANE_HANDLES.remove_if(&handle, |_, e| {
         matches!(e.resource, DataPlaneResource::Udp(_))
     }) else {
@@ -850,5 +908,21 @@ mod tests {
         drop(read_guard);
         done_rx.recv_timeout(Duration::from_secs(5)).unwrap();
         waiter.join().unwrap();
+    }
+
+    #[test]
+    fn instance_cleanup_waits_for_data_plane_operation() {
+        let read_guard = DATA_PLANE_USAGE_LOCK.read().unwrap();
+        let instance_id = Uuid::new_v4();
+        let (done_tx, done_rx) = mpsc::channel();
+        let cleaner = std::thread::spawn(move || {
+            remove_data_plane_handles_by_instance_ids(&[instance_id]);
+            done_tx.send(()).unwrap();
+        });
+
+        assert!(done_rx.recv_timeout(Duration::from_millis(100)).is_err());
+        drop(read_guard);
+        done_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        cleaner.join().unwrap();
     }
 }
