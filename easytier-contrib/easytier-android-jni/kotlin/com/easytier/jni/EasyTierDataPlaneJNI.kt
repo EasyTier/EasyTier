@@ -9,15 +9,43 @@ import kotlinx.coroutines.withContext
 /**
  * EasyTier data-plane API for Android.
  *
- * Use this file only after an EasyTier network instance has already been
- * started through [EasyTierJNI]. Pass that instance name to [EasyTierDataPlane]
- * when connecting or binding. Most callers should use [EasyTierDataPlane] and
- * the socket/stream classes below; [EasyTierDataPlaneJNI] is the low-level
+ * Dataplane APIs do not create or start an EasyTier instance by themselves.
+ * Start an instance with [EasyTierJNI.runNetworkInstance] first, then pass the
+ * same `instanceName` to [EasyTierDataPlane.tcpConnect],
+ * [EasyTierDataPlane.tcpBind], or [EasyTierDataPlane.udpBind]. If that instance
+ * is not running, the native start call fails and the coroutine wrapper throws
+ * the last EasyTier FFI error.
+ *
+ * Typical setup:
+ * ```
+ * val instanceName = "android-dataplane-demo"
+ * val config = """
+ *     instance_name = "$instanceName"
+ *     ipv4 = "10.144.0.1"
+ *     listeners = ["tcp://0.0.0.0:11010"]
+ *
+ *     [network_identity]
+ *     network_name = "android-dataplane-demo"
+ *     network_secret = "replace-with-a-real-secret"
+ *
+ *     [[peer]]
+ *     uri = "tcp://peer.example.com:11010"
+ *
+ *     [flags]
+ *     no_tun = true
+ *     bind_device = false
+ * """.trimIndent()
+ *
+ * EasyTierJNI.runNetworkInstance(config)
+ * ```
+ *
+ * After the instance is running, most callers should use [EasyTierDataPlane]
+ * and the socket/stream classes below. [EasyTierDataPlaneJNI] is the low-level
  * native op-handle ABI used by the coroutine wrappers.
  *
  * TCP client usage:
  * ```
- * val stream = EasyTierDataPlane.tcpConnect("default", "10.144.0.2", 8080, 5_000)
+ * val stream = EasyTierDataPlane.tcpConnect(instanceName, "10.144.0.2", 8080, 5_000)
  * try {
  *     stream.write("ping".toByteArray(), 5_000)
  *     val reply = stream.read(4096, 5_000)
@@ -28,7 +56,7 @@ import kotlinx.coroutines.withContext
  *
  * TCP server usage:
  * ```
- * val listener = EasyTierDataPlane.tcpBind("default", 8080, 5_000)
+ * val listener = EasyTierDataPlane.tcpBind(instanceName, 8080, 5_000)
  * try {
  *     val stream = listener.accept(30_000)
  *     try {
@@ -43,7 +71,7 @@ import kotlinx.coroutines.withContext
  *
  * UDP usage:
  * ```
- * val socket = EasyTierDataPlane.udpBind("default", 0, 5_000)
+ * val socket = EasyTierDataPlane.udpBind(instanceName, 0, 5_000)
  * try {
  *     socket.sendTo("10.144.0.2", 9000, "ping".toByteArray(), 5_000)
  *     val packet = socket.recvFrom(4096, 5_000)
