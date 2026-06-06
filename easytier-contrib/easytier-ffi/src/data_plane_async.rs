@@ -29,7 +29,7 @@ use crate::{
         timeout_duration,
     },
     error::{free_string, set_error_msg},
-    state::INSTANCE_MANAGER,
+    state::{ASYNC_RUNTIME, INSTANCE_MANAGER},
 };
 
 #[cfg(feature = "ffi-dataplane")]
@@ -49,6 +49,8 @@ static DATA_PLANE_OPS: once_cell::sync::Lazy<DashMap<u64, Arc<DataPlaneAsyncOp>>
 
 #[cfg(feature = "ffi-dataplane")]
 const MAX_ASYNC_READ_LEN: u32 = 16 * 1024 * 1024;
+#[cfg(feature = "ffi-dataplane")]
+const MAX_ASYNC_WRITE_LEN: u32 = std::ffi::c_int::MAX as u32;
 
 #[cfg(feature = "ffi-dataplane")]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -188,6 +190,33 @@ fn validate_max_len(max_len: u32) -> bool {
 }
 
 #[cfg(feature = "ffi-dataplane")]
+fn validate_write_len(len: u32) -> bool {
+    if len > MAX_ASYNC_WRITE_LEN {
+        set_error_msg(&format!(
+            "len exceeds async data plane write limit of {} bytes",
+            MAX_ASYNC_WRITE_LEN
+        ));
+        false
+    } else {
+        true
+    }
+}
+
+#[cfg(feature = "ffi-dataplane")]
+fn usize_to_c_int(value: usize, name: &str) -> Option<std::ffi::c_int> {
+    if value > std::ffi::c_int::MAX as usize {
+        set_error_msg(&format!(
+            "{} exceeds c_int limit of {}",
+            name,
+            std::ffi::c_int::MAX
+        ));
+        None
+    } else {
+        Some(value as std::ffi::c_int)
+    }
+}
+
+#[cfg(feature = "ffi-dataplane")]
 fn spawn_instance_runtime_op<Fut, F>(
     op: Arc<DataPlaneAsyncOp>,
     instance_id: Uuid,
@@ -198,13 +227,24 @@ fn spawn_instance_runtime_op<Fut, F>(
     F: FnOnce(tokio::runtime::Handle, Duration) -> Fut + Send + 'static,
 {
     let deadline = Instant::now() + timeout_duration(timeout_ms);
-    std::thread::spawn(move || {
-        let Some(runtime) = INSTANCE_MANAGER.data_plane_wait_runtime_handle(
-            &instance_id,
-            deadline.saturating_duration_since(Instant::now()),
-        ) else {
-            complete_op(&op, Err("instance runtime is not ready".to_string()));
-            return;
+    ASYNC_RUNTIME.spawn_blocking(move || {
+        let runtime = loop {
+            if op.cancel_token.is_cancelled() {
+                complete_op(&op, Err("data plane async op canceled".to_string()));
+                return;
+            }
+
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            let wait_for = remaining.min(Duration::from_millis(50));
+            if let Some(runtime) =
+                INSTANCE_MANAGER.data_plane_wait_runtime_handle(&instance_id, wait_for)
+            {
+                break runtime;
+            }
+            if remaining.is_zero() || Instant::now() >= deadline {
+                complete_op(&op, Err("instance runtime is not ready".to_string()));
+                return;
+            }
         };
         if op.cancel_token.is_cancelled() {
             complete_op(&op, Err("data plane async op canceled".to_string()));
@@ -800,6 +840,9 @@ pub(crate) unsafe fn data_plane_tcp_write_start(
         set_error_msg("buf is null");
         return 0;
     }
+    if !validate_write_len(len) {
+        return 0;
+    }
     let Some((halves, runtime, close_token, instance_id)) = get_tcp_stream_with_instance(handle)
     else {
         return 0;
@@ -851,7 +894,7 @@ pub(crate) fn data_plane_tcp_write_finish(op_handle: u64) -> std::ffi::c_int {
         set_error_msg("data plane async op result type mismatch");
         return -1;
     };
-    written as std::ffi::c_int
+    usize_to_c_int(written, "tcp write byte count").unwrap_or(-1)
 }
 
 #[cfg(feature = "ffi-dataplane")]
@@ -949,6 +992,9 @@ pub(crate) unsafe fn data_plane_udp_send_to_start(
         set_error_msg("buf is null");
         return 0;
     }
+    if !validate_write_len(len) {
+        return 0;
+    }
     let Some(dst_ip) = (unsafe { cstr_to_string(dst_ip, "dst_ip") }) else {
         return 0;
     };
@@ -994,7 +1040,7 @@ pub(crate) fn data_plane_udp_send_to_finish(op_handle: u64) -> std::ffi::c_int {
         set_error_msg("data plane async op result type mismatch");
         return -1;
     };
-    sent as std::ffi::c_int
+    usize_to_c_int(sent, "udp send byte count").unwrap_or(-1)
 }
 
 #[cfg(feature = "ffi-dataplane")]
@@ -1090,6 +1136,18 @@ mod tests {
     fn max_len_limit_rejects_oversized_async_reads() {
         assert!(validate_max_len(MAX_ASYNC_READ_LEN));
         assert!(!validate_max_len(MAX_ASYNC_READ_LEN + 1));
+    }
+
+    #[test]
+    fn write_len_limit_rejects_values_that_c_int_cannot_return() {
+        assert!(validate_write_len(MAX_ASYNC_WRITE_LEN));
+        assert!(!validate_write_len(MAX_ASYNC_WRITE_LEN + 1));
+    }
+
+    #[test]
+    fn finish_return_count_must_fit_c_int() {
+        assert_eq!(usize_to_c_int(123, "test byte count"), Some(123));
+        assert!(usize_to_c_int(std::ffi::c_int::MAX as usize + 1, "test byte count").is_none());
     }
 
     #[test]

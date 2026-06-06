@@ -125,9 +125,10 @@ fn new_handle_addr_result(
             return ptr::null_mut();
         }
     };
+    let sig = format!("(JL{};)V", SOCKET_ADDR_CLASS);
     match env.new_object(
         class,
-        format!("(JL{};)V", SOCKET_ADDR_CLASS),
+        sig.as_str(),
         &[JValue::Long(handle as jlong), JValue::Object(&addr)],
     ) {
         Ok(result) => result.into_raw(),
@@ -352,9 +353,10 @@ pub(crate) fn tcp_accept_finish_jni(mut env: JNIEnv, _class: JClass, op: jlong) 
             return ptr::null_mut();
         }
     };
+    let sig = format!("(JL{};L{};)V", SOCKET_ADDR_CLASS, SOCKET_ADDR_CLASS);
     let result = match env.new_object(
         class,
-        format!("(JL{};L{};)V", SOCKET_ADDR_CLASS, SOCKET_ADDR_CLASS),
+        sig.as_str(),
         &[
             JValue::Long(handle as jlong),
             JValue::Object(&local_addr),
@@ -629,9 +631,10 @@ pub(crate) fn udp_recv_from_finish_jni(mut env: JNIEnv, _class: JClass, op: jlon
             return ptr::null_mut();
         }
     };
+    let sig = format!("([BL{};)V", SOCKET_ADDR_CLASS);
     match env.new_object(
         class,
-        format!("([BL{};)V", SOCKET_ADDR_CLASS),
+        sig.as_str(),
         &[JValue::Object(&array), JValue::Object(&peer_addr)],
     ) {
         Ok(result) => result.into_raw(),

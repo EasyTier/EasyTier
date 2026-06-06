@@ -96,7 +96,7 @@ pub extern "system" fn Java_com_easytier_jni_EasyTierJNI_runNetworkInstance(
 /// `EasyTierJNI.retainNetworkInstance(instanceNames: Array<String>?): Int`
 ///
 /// Passing `null` or an empty array stops all instances. Null elements inside a
-/// non-empty array are skipped. On failure this returns `-1` and throws
+/// non-empty array are invalid. On failure this returns `-1` and throws
 /// `RuntimeException`.
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_com_easytier_jni_EasyTierJNI_retainNetworkInstance(

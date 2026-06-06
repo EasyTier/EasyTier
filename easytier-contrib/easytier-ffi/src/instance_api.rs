@@ -112,6 +112,34 @@ pub(crate) unsafe fn run_network_instance(cfg_str: *const std::ffi::c_char) -> s
     0
 }
 
+unsafe fn parse_instance_names(
+    inst_names: *const *const c_char,
+    length: usize,
+) -> Option<Vec<String>> {
+    if length == 0 {
+        return Some(Vec::new());
+    }
+    if inst_names.is_null() {
+        set_error_msg("inst_names is null");
+        return None;
+    }
+
+    let names = unsafe { std::slice::from_raw_parts(inst_names, length) };
+    let mut parsed = Vec::with_capacity(length);
+    for (index, &name) in names.iter().enumerate() {
+        if name.is_null() {
+            set_error_msg(&format!("inst_names[{}] is null", index));
+            return None;
+        }
+        parsed.push(
+            unsafe { std::ffi::CStr::from_ptr(name) }
+                .to_string_lossy()
+                .into_owned(),
+        );
+    }
+    Some(parsed)
+}
+
 /// # Safety
 /// Retain the network instance
 pub(crate) unsafe fn retain_network_instance(
@@ -145,17 +173,8 @@ pub(crate) unsafe fn retain_network_instance(
         return 0;
     }
 
-    let inst_names = unsafe {
-        assert!(!inst_names.is_null());
-        std::slice::from_raw_parts(inst_names, length)
-            .iter()
-            .map(|&name| {
-                assert!(!name.is_null());
-                std::ffi::CStr::from_ptr(name)
-                    .to_string_lossy()
-                    .into_owned()
-            })
-            .collect::<Vec<_>>()
+    let Some(inst_names) = (unsafe { parse_instance_names(inst_names, length) }) else {
+        return -1;
     };
 
     let removed_ids = INSTANCE_MANAGER
@@ -205,17 +224,8 @@ pub(crate) unsafe fn delete_network_instance(
         return 0;
     }
 
-    let inst_names = unsafe {
-        assert!(!inst_names.is_null());
-        std::slice::from_raw_parts(inst_names, length)
-            .iter()
-            .map(|&name| {
-                assert!(!name.is_null());
-                std::ffi::CStr::from_ptr(name)
-                    .to_string_lossy()
-                    .into_owned()
-            })
-            .collect::<Vec<_>>()
+    let Some(inst_names) = (unsafe { parse_instance_names(inst_names, length) }) else {
+        return -1;
     };
 
     let removed_ids = inst_names

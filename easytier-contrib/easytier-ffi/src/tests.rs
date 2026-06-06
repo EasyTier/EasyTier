@@ -341,6 +341,22 @@ fn delete_network_instance_removes_only_named_instances() {
 }
 
 #[test]
+fn retain_and_delete_network_instance_reject_invalid_name_pointers() {
+    assert_eq!(unsafe { retain_network_instance(std::ptr::null(), 1) }, -1);
+    assert_eq!(unsafe { delete_network_instance(std::ptr::null(), 1) }, -1);
+
+    let inst_names = [std::ptr::null()];
+    assert_eq!(
+        unsafe { retain_network_instance(inst_names.as_ptr(), inst_names.len()) },
+        -1
+    );
+    assert_eq!(
+        unsafe { delete_network_instance(inst_names.as_ptr(), inst_names.len()) },
+        -1
+    );
+}
+
+#[test]
 fn ffi_remote_mutation_lock_uses_manager_lock() {
     let manager_guard = INSTANCE_MANAGER
         .remote_mutation_lock()
