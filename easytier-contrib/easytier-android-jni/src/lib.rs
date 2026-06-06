@@ -19,6 +19,10 @@
 //!
 //! Error API:
 //! - `getLastError()`: return the latest FFI/JNI error string for the calling thread.
+//!
+//! Data-plane APIs:
+//! - `EasyTierDataPlaneJNI.*`: low-level async op-handle data-plane JNI.
+//! - `EasyTierJNI.dataPlane*`: compatibility exports for older callers.
 
 mod callback;
 mod config_server_api;
@@ -202,6 +206,276 @@ pub extern "system" fn Java_com_easytier_jni_EasyTierJNI_isConfigServerClientCon
     logger::init();
     config_server_api::is_config_server_client_connected_jni(env, class)
 }
+
+macro_rules! export_data_plane_jni {
+    (
+        $op_status:ident,
+        $op_wait:ident,
+        $op_cancel:ident,
+        $op_free:ident,
+        $tcp_connect_start:ident,
+        $tcp_connect_finish:ident,
+        $tcp_bind_start:ident,
+        $tcp_bind_finish:ident,
+        $tcp_accept_start:ident,
+        $tcp_accept_finish:ident,
+        $tcp_read_start:ident,
+        $tcp_read_finish:ident,
+        $tcp_write_start:ident,
+        $tcp_write_finish:ident,
+        $udp_bind_start:ident,
+        $udp_bind_finish:ident,
+        $udp_send_to_start:ident,
+        $udp_send_to_finish:ident,
+        $udp_recv_from_start:ident,
+        $udp_recv_from_finish:ident,
+        $tcp_close:ident,
+        $tcp_listener_close:ident,
+        $udp_close:ident
+    ) => {
+        #[unsafe(no_mangle)]
+        pub extern "system" fn $op_status(env: JNIEnv, class: JClass, handle: jlong) -> jint {
+            logger::init();
+            data_plane_api::async_op_status_jni(env, class, handle)
+        }
+
+        #[unsafe(no_mangle)]
+        pub extern "system" fn $op_wait(
+            env: JNIEnv,
+            class: JClass,
+            handle: jlong,
+            timeout_ms: jlong,
+        ) -> jint {
+            logger::init();
+            data_plane_api::async_op_wait_jni(env, class, handle, timeout_ms)
+        }
+
+        #[unsafe(no_mangle)]
+        pub extern "system" fn $op_cancel(env: JNIEnv, class: JClass, handle: jlong) -> jint {
+            logger::init();
+            data_plane_api::async_op_cancel_jni(env, class, handle)
+        }
+
+        #[unsafe(no_mangle)]
+        pub extern "system" fn $op_free(env: JNIEnv, class: JClass, handle: jlong) -> jint {
+            logger::init();
+            data_plane_api::async_op_free_jni(env, class, handle)
+        }
+
+        #[unsafe(no_mangle)]
+        pub extern "system" fn $tcp_connect_start(
+            env: JNIEnv,
+            class: JClass,
+            inst_name: JString,
+            dst_ip: JString,
+            dst_port: jint,
+            timeout_ms: jlong,
+        ) -> jlong {
+            logger::init();
+            data_plane_api::tcp_connect_start_jni(
+                env, class, inst_name, dst_ip, dst_port, timeout_ms,
+            )
+        }
+
+        #[unsafe(no_mangle)]
+        pub extern "system" fn $tcp_connect_finish(
+            env: JNIEnv,
+            class: JClass,
+            op: jlong,
+        ) -> jobject {
+            logger::init();
+            data_plane_api::tcp_connect_finish_jni(env, class, op)
+        }
+
+        #[unsafe(no_mangle)]
+        pub extern "system" fn $tcp_bind_start(
+            env: JNIEnv,
+            class: JClass,
+            inst_name: JString,
+            local_port: jint,
+            timeout_ms: jlong,
+        ) -> jlong {
+            logger::init();
+            data_plane_api::tcp_bind_start_jni(env, class, inst_name, local_port, timeout_ms)
+        }
+
+        #[unsafe(no_mangle)]
+        pub extern "system" fn $tcp_bind_finish(env: JNIEnv, class: JClass, op: jlong) -> jobject {
+            logger::init();
+            data_plane_api::tcp_bind_finish_jni(env, class, op)
+        }
+
+        #[unsafe(no_mangle)]
+        pub extern "system" fn $tcp_accept_start(
+            env: JNIEnv,
+            class: JClass,
+            handle: jlong,
+            timeout_ms: jlong,
+        ) -> jlong {
+            logger::init();
+            data_plane_api::tcp_accept_start_jni(env, class, handle, timeout_ms)
+        }
+
+        #[unsafe(no_mangle)]
+        pub extern "system" fn $tcp_accept_finish(
+            env: JNIEnv,
+            class: JClass,
+            op: jlong,
+        ) -> jobject {
+            logger::init();
+            data_plane_api::tcp_accept_finish_jni(env, class, op)
+        }
+
+        #[unsafe(no_mangle)]
+        pub extern "system" fn $tcp_read_start(
+            env: JNIEnv,
+            class: JClass,
+            handle: jlong,
+            max_len: jint,
+            timeout_ms: jlong,
+        ) -> jlong {
+            logger::init();
+            data_plane_api::tcp_read_start_jni(env, class, handle, max_len, timeout_ms)
+        }
+
+        #[unsafe(no_mangle)]
+        pub extern "system" fn $tcp_read_finish(env: JNIEnv, class: JClass, op: jlong) -> jobject {
+            logger::init();
+            data_plane_api::tcp_read_finish_jni(env, class, op)
+        }
+
+        #[unsafe(no_mangle)]
+        pub extern "system" fn $tcp_write_start(
+            env: JNIEnv,
+            class: JClass,
+            handle: jlong,
+            data: JByteArray,
+            timeout_ms: jlong,
+        ) -> jlong {
+            logger::init();
+            data_plane_api::tcp_write_start_jni(env, class, handle, data, timeout_ms)
+        }
+
+        #[unsafe(no_mangle)]
+        pub extern "system" fn $tcp_write_finish(env: JNIEnv, class: JClass, op: jlong) -> jint {
+            logger::init();
+            data_plane_api::tcp_write_finish_jni(env, class, op)
+        }
+
+        #[unsafe(no_mangle)]
+        pub extern "system" fn $udp_bind_start(
+            env: JNIEnv,
+            class: JClass,
+            inst_name: JString,
+            local_port: jint,
+            timeout_ms: jlong,
+        ) -> jlong {
+            logger::init();
+            data_plane_api::udp_bind_start_jni(env, class, inst_name, local_port, timeout_ms)
+        }
+
+        #[unsafe(no_mangle)]
+        pub extern "system" fn $udp_bind_finish(env: JNIEnv, class: JClass, op: jlong) -> jobject {
+            logger::init();
+            data_plane_api::udp_bind_finish_jni(env, class, op)
+        }
+
+        #[unsafe(no_mangle)]
+        pub extern "system" fn $udp_send_to_start(
+            env: JNIEnv,
+            class: JClass,
+            handle: jlong,
+            dst_ip: JString,
+            dst_port: jint,
+            data: JByteArray,
+            timeout_ms: jlong,
+        ) -> jlong {
+            logger::init();
+            data_plane_api::udp_send_to_start_jni(
+                env, class, handle, dst_ip, dst_port, data, timeout_ms,
+            )
+        }
+
+        #[unsafe(no_mangle)]
+        pub extern "system" fn $udp_send_to_finish(env: JNIEnv, class: JClass, op: jlong) -> jint {
+            logger::init();
+            data_plane_api::udp_send_to_finish_jni(env, class, op)
+        }
+
+        #[unsafe(no_mangle)]
+        pub extern "system" fn $udp_recv_from_start(
+            env: JNIEnv,
+            class: JClass,
+            handle: jlong,
+            max_len: jint,
+            timeout_ms: jlong,
+        ) -> jlong {
+            logger::init();
+            data_plane_api::udp_recv_from_start_jni(env, class, handle, max_len, timeout_ms)
+        }
+
+        #[unsafe(no_mangle)]
+        pub extern "system" fn $udp_recv_from_finish(
+            env: JNIEnv,
+            class: JClass,
+            op: jlong,
+        ) -> jobject {
+            logger::init();
+            data_plane_api::udp_recv_from_finish_jni(env, class, op)
+        }
+
+        #[unsafe(no_mangle)]
+        pub extern "system" fn $tcp_close(env: JNIEnv, class: JClass, handle: jlong) -> jint {
+            logger::init();
+            data_plane_api::tcp_close_jni(env, class, handle)
+        }
+
+        #[unsafe(no_mangle)]
+        pub extern "system" fn $tcp_listener_close(
+            env: JNIEnv,
+            class: JClass,
+            handle: jlong,
+        ) -> jint {
+            logger::init();
+            data_plane_api::tcp_listener_close_jni(env, class, handle)
+        }
+
+        #[unsafe(no_mangle)]
+        pub extern "system" fn $udp_close(env: JNIEnv, class: JClass, handle: jlong) -> jint {
+            logger::init();
+            data_plane_api::udp_close_jni(env, class, handle)
+        }
+    };
+}
+
+export_data_plane_jni!(
+    Java_com_easytier_jni_EasyTierDataPlaneJNI_dataPlaneAsyncOpStatus,
+    Java_com_easytier_jni_EasyTierDataPlaneJNI_dataPlaneAsyncOpWait,
+    Java_com_easytier_jni_EasyTierDataPlaneJNI_dataPlaneAsyncOpCancel,
+    Java_com_easytier_jni_EasyTierDataPlaneJNI_dataPlaneAsyncOpFree,
+    Java_com_easytier_jni_EasyTierDataPlaneJNI_dataPlaneTcpConnectStart,
+    Java_com_easytier_jni_EasyTierDataPlaneJNI_dataPlaneTcpConnectFinish,
+    Java_com_easytier_jni_EasyTierDataPlaneJNI_dataPlaneTcpBindStart,
+    Java_com_easytier_jni_EasyTierDataPlaneJNI_dataPlaneTcpBindFinish,
+    Java_com_easytier_jni_EasyTierDataPlaneJNI_dataPlaneTcpAcceptStart,
+    Java_com_easytier_jni_EasyTierDataPlaneJNI_dataPlaneTcpAcceptFinish,
+    Java_com_easytier_jni_EasyTierDataPlaneJNI_dataPlaneTcpReadStart,
+    Java_com_easytier_jni_EasyTierDataPlaneJNI_dataPlaneTcpReadFinish,
+    Java_com_easytier_jni_EasyTierDataPlaneJNI_dataPlaneTcpWriteStart,
+    Java_com_easytier_jni_EasyTierDataPlaneJNI_dataPlaneTcpWriteFinish,
+    Java_com_easytier_jni_EasyTierDataPlaneJNI_dataPlaneUdpBindStart,
+    Java_com_easytier_jni_EasyTierDataPlaneJNI_dataPlaneUdpBindFinish,
+    Java_com_easytier_jni_EasyTierDataPlaneJNI_dataPlaneUdpSendToStart,
+    Java_com_easytier_jni_EasyTierDataPlaneJNI_dataPlaneUdpSendToFinish,
+    Java_com_easytier_jni_EasyTierDataPlaneJNI_dataPlaneUdpRecvFromStart,
+    Java_com_easytier_jni_EasyTierDataPlaneJNI_dataPlaneUdpRecvFromFinish,
+    Java_com_easytier_jni_EasyTierDataPlaneJNI_dataPlaneTcpClose,
+    Java_com_easytier_jni_EasyTierDataPlaneJNI_dataPlaneTcpListenerClose,
+    Java_com_easytier_jni_EasyTierDataPlaneJNI_dataPlaneUdpClose
+);
+
+// Compatibility exports for older Kotlin/Java callers that used EasyTierJNI
+// directly for data-plane operations.
 
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_com_easytier_jni_EasyTierJNI_dataPlaneAsyncOpStatus(
