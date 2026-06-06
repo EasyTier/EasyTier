@@ -1,3 +1,60 @@
+// Package easytierffi contains a small Go wrapper around the EasyTier FFI
+// examples. This file documents the async data-plane surface; the synchronous
+// wrapper lives in easytier.go.
+//
+// Public async entry points:
+//
+//   - OpenAsync(path) loads the EasyTier FFI dynamic library and binds the
+//     async dataplane symbols. Close releases only the dynamic library handle;
+//     network instances started through RunNetworkInstance are process-global
+//     EasyTier state.
+//
+//   - (*AsyncNative).RunNetworkInstance(config) starts one EasyTier instance
+//     from TOML. The instance name in the config is used by all dataplane calls.
+//
+//   - (*AsyncNative).DialContext(ctx, instance, "tcp", "ip:port") starts an
+//     async TCP connect and returns an AsyncConn implementing net.Conn.
+//
+//   - (*AsyncNative).ListenContext(ctx, instance, "tcp", "0.0.0.0:port") starts
+//     an async TCP bind and returns an AsyncListener implementing net.Listener.
+//
+//   - AsyncConn implements net.Conn. Read and Write each start one native async
+//     read/write op and wait for completion. Deadlines are mapped to operation
+//     timeouts. Close closes the underlying dataplane stream handle.
+//
+//   - AsyncListener implements net.Listener. Accept starts one native async
+//     accept op and waits for a stream. Close closes the listener handle.
+//
+//   - (*AsyncNative).UDPBindContext(ctx, instance, port) returns an
+//     AsyncUDPSocket. AsyncUDPSocket.SendTo and RecvFrom start one native async
+//     UDP send/receive op and wait for completion. Close closes the socket
+//     handle.
+//
+//   - TCPConnectContext/TCPBindContext/TCPAcceptContext/TCPReadContext/
+//     TCPWriteContext and UDPSendToContext/UDPRecvFromContext are lower-level
+//     handle helpers used by the examples and tests. External callers should
+//     prefer DialContext, ListenContext, AsyncConn, AsyncListener, and
+//     AsyncUDPSocket because raw handle close helpers are intentionally internal
+//     to this example package.
+//
+// Async operation semantics:
+//
+//   - Each Context method starts a native async op, polls data_plane_async_op_wait
+//     in short intervals, then calls the matching finish function. Finish is
+//     single-consume on the native side.
+//
+//   - If the context is canceled or its deadline expires before completion, the
+//     wrapper cancels and frees the native op and returns the context error.
+//
+//   - Read and RecvFrom copy Rust-owned output buffers into Go slices and free
+//     the native allocation before returning.
+//
+//   - Write and SendTo keep the Go input buffer alive for the start call. The
+//     native async API copies the input buffer during start, so callers do not
+//     need to keep it alive after the Go method returns.
+//
+//   - FFI calls that read the Rust thread-local error string pin the goroutine
+//     to one OS thread from the failing call through get_error_msg.
 package easytierffi
 
 import (
