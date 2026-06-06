@@ -4,9 +4,8 @@ fun interface ConfigServerEventCallback {
     fun onEvent(eventJson: String)
 }
 
-/** EasyTier JNI 接口类 提供 Android 应用调用 EasyTier 网络功能的接口 */
+/** EasyTier JNI 接口类 提供 Android 应用调用 EasyTier 核心网络功能的接口 */
 object EasyTierJNI {
-
     init {
         // 加载本地库
         System.loadLibrary("easytier_android_jni")

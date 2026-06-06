@@ -465,7 +465,7 @@ pub(crate) unsafe fn start_config_server_client(
     clear_last_callback_error();
 
     #[cfg(feature = "ffi-dataplane")]
-    let _data_plane_usage_guard = match crate::data_plane::lock_for_config_server_start() {
+    let data_plane_usage_guard = match crate::data_plane::lock_for_config_server_start() {
         Ok(guard) => guard,
         Err(err) => {
             set_error_msg(&err);
@@ -474,6 +474,9 @@ pub(crate) unsafe fn start_config_server_client(
     };
 
     CONFIG_SERVER_CLIENT_ACTIVE.store(true, Ordering::Release);
+    #[cfg(feature = "ffi-dataplane")]
+    drop(data_plane_usage_guard);
+
     let hooks = Arc::new(ManagedConfigServerClientHooks::new(callback, user_data));
     let client = match ASYNC_RUNTIME.block_on(run_web_client(
         &config_server_url,

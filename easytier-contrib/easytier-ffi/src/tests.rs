@@ -305,6 +305,58 @@ fn find_instance_id_by_name_resolves_uncommitted_manager_instance_name() {
 }
 
 #[test]
+fn delete_network_instance_removes_only_named_instances() {
+    let keep_id = Uuid::new_v4();
+    let delete_id = Uuid::new_v4();
+    let keep_name = format!("keep-{}", keep_id);
+    let delete_name = format!("delete-{}", delete_id);
+
+    for (id, name) in [
+        (keep_id, keep_name.clone()),
+        (delete_id, delete_name.clone()),
+    ] {
+        let cfg = TomlConfigLoader::default();
+        cfg.set_id(id);
+        cfg.set_inst_name(name.clone());
+        INSTANCE_MANAGER
+            .run_network_instance(cfg, false, ConfigFileControl::STATIC_CONFIG)
+            .unwrap();
+        INSTANCE_NAME_ID_MAP.insert(name, id);
+    }
+
+    let delete_name = CString::new(delete_name.clone()).unwrap();
+    let inst_names = [delete_name.as_ptr()];
+    assert_eq!(
+        unsafe { delete_network_instance(inst_names.as_ptr(), inst_names.len()) },
+        0
+    );
+
+    assert_eq!(find_instance_id_by_name(&keep_name), Some(keep_id));
+    assert!(find_instance_id_by_name(delete_name.to_str().unwrap()).is_none());
+
+    INSTANCE_MANAGER
+        .delete_network_instance(vec![keep_id])
+        .unwrap();
+    remove_instance_name_ids(&[keep_id]);
+}
+
+#[test]
+fn retain_and_delete_network_instance_reject_invalid_name_pointers() {
+    assert_eq!(unsafe { retain_network_instance(std::ptr::null(), 1) }, -1);
+    assert_eq!(unsafe { delete_network_instance(std::ptr::null(), 1) }, -1);
+
+    let inst_names = [std::ptr::null()];
+    assert_eq!(
+        unsafe { retain_network_instance(inst_names.as_ptr(), inst_names.len()) },
+        -1
+    );
+    assert_eq!(
+        unsafe { delete_network_instance(inst_names.as_ptr(), inst_names.len()) },
+        -1
+    );
+}
+
+#[test]
 fn ffi_remote_mutation_lock_uses_manager_lock() {
     let manager_guard = INSTANCE_MANAGER
         .remote_mutation_lock()
@@ -350,6 +402,7 @@ fn config_server_callback_context_rejects_nested_blocking_ffi_calls() {
     let cfg = CString::new("inst_name = \"callback-test\"\nlisteners = []").unwrap();
     assert_eq!(unsafe { run_network_instance(cfg.as_ptr()) }, -1);
     assert_eq!(unsafe { retain_network_instance(std::ptr::null(), 0) }, -1);
+    assert_eq!(unsafe { delete_network_instance(std::ptr::null(), 0) }, -1);
     let url = CString::new("ring://test/token").unwrap();
     let machine_id = CString::new("test-machine").unwrap();
     assert_eq!(
@@ -447,6 +500,34 @@ fn config_server_callback_context_rejects_nested_blocking_ffi_calls() {
             -1
         );
         assert_eq!(data_plane_udp_close(0), -1);
+        assert_eq!(data_plane_async_op_status(0), -2);
+        assert_eq!(data_plane_async_op_wait(0, 0), -2);
+        assert_eq!(data_plane_async_op_cancel(0), -2);
+        assert_eq!(data_plane_async_op_free(0), -2);
+        data_plane_free_bytes(std::ptr::null(), 0);
+        assert_eq!(
+            unsafe { data_plane_tcp_connect_start(std::ptr::null(), std::ptr::null(), 0, 0) },
+            0
+        );
+        assert_eq!(
+            unsafe { data_plane_tcp_bind_start(std::ptr::null(), 0, 0) },
+            0
+        );
+        assert_eq!(unsafe { data_plane_tcp_accept_start(0, 0) }, 0);
+        assert_eq!(unsafe { data_plane_tcp_read_start(0, 0, 0) }, 0);
+        assert_eq!(
+            unsafe { data_plane_tcp_write_start(0, std::ptr::null(), 0, 0) },
+            0
+        );
+        assert_eq!(
+            unsafe { data_plane_udp_bind_start(std::ptr::null(), 0, 0) },
+            0
+        );
+        assert_eq!(
+            unsafe { data_plane_udp_send_to_start(0, std::ptr::null(), 0, std::ptr::null(), 0, 0) },
+            0
+        );
+        assert_eq!(unsafe { data_plane_udp_recv_from_start(0, 0, 0) }, 0);
     }
 }
 
@@ -472,6 +553,21 @@ fn active_config_server_rejects_data_plane() {
         unsafe { data_plane_tcp_read(0, std::ptr::null_mut(), 0, 0) },
         -1
     );
+    assert_eq!(
+        unsafe { data_plane_tcp_connect_start(std::ptr::null(), std::ptr::null(), 0, 0) },
+        0
+    );
+    assert_eq!(unsafe { data_plane_tcp_read_start(0, 0, 0) }, 0);
 
     set_active_for_test(false);
+}
+
+#[cfg(feature = "ffi-dataplane")]
+#[test]
+fn async_op_invalid_handle_helpers_are_stable() {
+    assert_eq!(data_plane_async_op_status(u64::MAX), -2);
+    assert_eq!(data_plane_async_op_wait(u64::MAX, 1), -2);
+    assert_eq!(data_plane_async_op_cancel(u64::MAX), -2);
+    assert_eq!(data_plane_async_op_free(u64::MAX), -2);
+    data_plane_free_bytes(std::ptr::null(), 0);
 }
