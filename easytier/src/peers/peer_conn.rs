@@ -672,7 +672,7 @@ impl PeerConn {
             .and_then(|p| p.peer_public_key)
     }
 
-    async fn send_noise_msg<Msg: prost::Message>(
+    async fn send_noise_msg<Msg: prost::Message + Debug>(
         &self,
         pb: Msg,
         packet_type: PacketType,

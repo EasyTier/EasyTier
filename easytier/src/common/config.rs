@@ -640,21 +640,12 @@ impl TomlConfigLoader {
         Ok(ret)
     }
 
-    fn gen_flags(mut flags_hashmap: serde_json::Map<String, serde_json::Value>) -> Flags {
-        let default_flags_json = serde_json::to_string(&gen_default_flags()).unwrap();
-        let default_flags_hashmap =
-            serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(&default_flags_json)
-                .unwrap();
-
-        let mut merged_hashmap = serde_json::Map::new();
-        for (key, value) in default_flags_hashmap {
-            if let Some(v) = flags_hashmap.remove(&key) {
-                merged_hashmap.insert(key, v);
-            } else {
-                merged_hashmap.insert(key, value);
-            }
-        }
-
+    fn gen_flags(flags_hashmap: serde_json::Map<String, serde_json::Value>) -> Flags {
+        let mut merged_hashmap = match serde_json::to_value(gen_default_flags()) {
+            Ok(serde_json::Value::Object(map)) => map,
+            _ => serde_json::Map::new(),
+        };
+        merged_hashmap.extend(flags_hashmap);
         serde_json::from_value(serde_json::Value::Object(merged_hashmap)).unwrap()
     }
 }

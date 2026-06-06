@@ -1,6 +1,7 @@
 use std::fmt::Display;
 
 include!(concat!(env!("OUT_DIR"), "/acl.rs"));
+include!(concat!(env!("OUT_DIR"), "/acl.serde.rs"));
 
 impl Acl {
     pub fn is_empty(&self) -> bool {
