@@ -6,49 +6,84 @@ import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
 
+/**
+ * EasyTier data-plane API for Android.
+ *
+ * This file intentionally keeps the data-plane surface out of [EasyTierJNI]
+ * because these APIs are lower-level and less commonly needed than instance
+ * lifecycle, TUN, and config-server management. Typical callers should use
+ * [EasyTierDataPlane] and the socket/stream classes below. [EasyTierDataPlaneJNI]
+ * exposes the raw native op-handle ABI for advanced callers and for the
+ * coroutine wrappers in this file.
+ *
+ * Operation model:
+ * - Each suspend function starts one native async op, waits on Dispatchers.IO,
+ *   then consumes the op with the matching finish call.
+ * - Coroutine cancellation cancels and frees the native op.
+ * - Returned stream/listener/socket handles must be closed by the caller.
+ * - Input ByteArray data is copied by the native start call; output data is
+ *   copied into Kotlin ByteArray before the native buffer is freed.
+ */
+
+/** Data-plane IPv4/port pair returned by EasyTier FFI. */
 data class DataPlaneSocketAddress(val ip: String, val port: Int)
 
+/** Result of a completed TCP connect op. */
 data class DataPlaneTcpConnectResult(val handle: Long, val localAddress: DataPlaneSocketAddress)
 
+/** Result of a completed TCP bind op. */
 data class DataPlaneTcpBindResult(val handle: Long, val localAddress: DataPlaneSocketAddress)
 
+/** Result of a completed TCP accept op. */
 data class DataPlaneTcpAcceptResult(
         val handle: Long,
         val localAddress: DataPlaneSocketAddress,
         val peerAddress: DataPlaneSocketAddress
 )
 
+/** Result of a completed TCP read op. */
 data class DataPlaneTcpReadResult(val data: ByteArray)
 
+/** Result of a completed UDP bind op. */
 data class DataPlaneUdpBindResult(val handle: Long, val localAddress: DataPlaneSocketAddress)
 
+/** Result of a completed UDP recv_from op. */
 data class DataPlaneUdpRecvResult(
         val data: ByteArray,
         val peerAddress: DataPlaneSocketAddress
 )
 
+/** TCP data-plane stream handle. Call [close] when the stream is no longer needed. */
 class DataPlaneTcpStream(
         val handle: Long,
         val localAddress: DataPlaneSocketAddress? = null,
         val peerAddress: DataPlaneSocketAddress? = null
 ) {
+    /** Read up to [maxLength] bytes, waiting at most [timeoutMs] in native code. */
     suspend fun read(maxLength: Int, timeoutMs: Long): ByteArray =
             EasyTierDataPlane.tcpRead(this, maxLength, timeoutMs)
 
+    /** Write [data], waiting at most [timeoutMs] in native code. */
     suspend fun write(data: ByteArray, timeoutMs: Long): Int =
             EasyTierDataPlane.tcpWrite(this, data, timeoutMs)
 
+    /** Close the native TCP stream handle. */
     fun close(): Int = EasyTierDataPlaneJNI.dataPlaneTcpClose(handle)
 }
 
+/** TCP data-plane listener handle. Call [close] when the listener is no longer needed. */
 class DataPlaneTcpListener(val handle: Long, val localAddress: DataPlaneSocketAddress) {
+    /** Accept one TCP data-plane stream. */
     suspend fun accept(timeoutMs: Long): DataPlaneTcpStream =
             EasyTierDataPlane.tcpAccept(this, timeoutMs)
 
+    /** Close the native TCP listener handle. */
     fun close(): Int = EasyTierDataPlaneJNI.dataPlaneTcpListenerClose(handle)
 }
 
+/** UDP data-plane socket handle. Call [close] when the socket is no longer needed. */
 class DataPlaneUdpSocket(val handle: Long, val localAddress: DataPlaneSocketAddress) {
+    /** Send one UDP datagram to [dstIp]:[dstPort]. */
     suspend fun sendTo(
             dstIp: String,
             dstPort: Int,
@@ -56,13 +91,21 @@ class DataPlaneUdpSocket(val handle: Long, val localAddress: DataPlaneSocketAddr
             timeoutMs: Long
     ): Int = EasyTierDataPlane.udpSendTo(this, dstIp, dstPort, data, timeoutMs)
 
+    /** Receive one UDP datagram and its peer address. */
     suspend fun recvFrom(maxLength: Int, timeoutMs: Long): DataPlaneUdpRecvResult =
             EasyTierDataPlane.udpRecvFrom(this, maxLength, timeoutMs)
 
+    /** Close the native UDP socket handle. */
     fun close(): Int = EasyTierDataPlaneJNI.dataPlaneUdpClose(handle)
 }
 
-/** Low-level native data-plane JNI entry points. Prefer EasyTierDataPlane. */
+/**
+ * Low-level native data-plane JNI entry points.
+ *
+ * These functions mirror the Rust FFI op-handle ABI directly. They are exposed
+ * for completeness, but most Android callers should use [EasyTierDataPlane]
+ * instead so coroutine cancellation and op cleanup are handled consistently.
+ */
 object EasyTierDataPlaneJNI {
     init {
         System.loadLibrary("easytier_android_jni")
@@ -146,6 +189,7 @@ object EasyTierDataPlane {
     private const val DATA_PLANE_OP_INVALID = -2
     private const val DATA_PLANE_WAIT_SLICE_MS = 50L
 
+    /** Connect to a TCP endpoint through the named EasyTier instance. */
     @JvmStatic
     suspend fun tcpConnect(
             instanceName: String,
@@ -168,6 +212,7 @@ object EasyTierDataPlane {
         return DataPlaneTcpStream(result.handle, result.localAddress)
     }
 
+    /** Bind a TCP data-plane listener on [localPort]. Port 0 asks EasyTier to allocate one. */
     @JvmStatic
     suspend fun tcpBind(
             instanceName: String,
@@ -188,6 +233,7 @@ object EasyTierDataPlane {
         return DataPlaneTcpListener(result.handle, result.localAddress)
     }
 
+    /** Accept one TCP stream from [listener]. */
     @JvmStatic
     suspend fun tcpAccept(listener: DataPlaneTcpListener, timeoutMs: Long): DataPlaneTcpStream {
         val op =
@@ -200,6 +246,7 @@ object EasyTierDataPlane {
         return DataPlaneTcpStream(result.handle, result.localAddress, result.peerAddress)
     }
 
+    /** Read up to [maxLength] bytes from [stream]. */
     @JvmStatic
     suspend fun tcpRead(
             stream: DataPlaneTcpStream,
@@ -220,6 +267,7 @@ object EasyTierDataPlane {
         }
     }
 
+    /** Write [data] to [stream]. */
     @JvmStatic
     suspend fun tcpWrite(stream: DataPlaneTcpStream, data: ByteArray, timeoutMs: Long): Int {
         val op =
@@ -233,6 +281,7 @@ object EasyTierDataPlane {
         return awaitOp(op) { EasyTierDataPlaneJNI.dataPlaneTcpWriteFinish(it) }
     }
 
+    /** Bind a UDP data-plane socket on [localPort]. Port 0 asks EasyTier to allocate one. */
     @JvmStatic
     suspend fun udpBind(
             instanceName: String,
@@ -253,6 +302,7 @@ object EasyTierDataPlane {
         return DataPlaneUdpSocket(result.handle, result.localAddress)
     }
 
+    /** Send one UDP datagram through [socket]. */
     @JvmStatic
     suspend fun udpSendTo(
             socket: DataPlaneUdpSocket,
@@ -274,6 +324,7 @@ object EasyTierDataPlane {
         return awaitOp(op) { EasyTierDataPlaneJNI.dataPlaneUdpSendToFinish(it) }
     }
 
+    /** Receive one UDP datagram through [socket]. */
     @JvmStatic
     suspend fun udpRecvFrom(
             socket: DataPlaneUdpSocket,
