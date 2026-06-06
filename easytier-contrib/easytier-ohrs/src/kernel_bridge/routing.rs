@@ -1,20 +1,12 @@
-use crate::config::repository::load_config_json;
+use crate::config::repository::get_runtime_config_route_overrides;
 use crate::runtime::state::runtime_state::RuntimeInstanceState;
-use easytier::proto::api::manage::NetworkConfig;
 use ipnet::IpNet;
-use ohos_hilog_binding::hilog_debug;
 use std::collections::HashSet;
 use std::net::IpAddr;
 
-pub(crate) fn load_manual_routes(config_id: &str) -> Vec<String> {
-    load_config_json(config_id)
-        .and_then(|raw| serde_json::from_str::<NetworkConfig>(&raw).ok())
-        .map(|config| config.routes)
-        .unwrap_or_default()
-}
-
 fn normalize_route_cidr(route: &str) -> Option<String> {
-    route
+    let normalized = route.split("->").next().unwrap_or(route).trim();
+    normalized
         .parse::<IpNet>()
         .ok()
         .map(|network| match network {
@@ -22,7 +14,7 @@ fn normalize_route_cidr(route: &str) -> Option<String> {
             IpNet::V6(net) => net.trunc().to_string(),
         })
         .or_else(|| {
-            route.parse::<IpAddr>().ok().map(|addr| match addr {
+            normalized.parse::<IpAddr>().ok().map(|addr| match addr {
                 IpAddr::V4(ip) => format!("{}/32", ip),
                 IpAddr::V6(ip) => format!("{}/128", ip),
             })
@@ -67,8 +59,9 @@ pub(crate) fn aggregate_tun_routes(instance: &RuntimeInstanceState) -> Vec<Strin
         .my_node_info
         .as_ref()
         .and_then(|info| info.virtual_ipv4_cidr.clone());
-    let manual_routes = load_manual_routes(&instance.config_id);
-    let proxy_cidrs = instance
+    let (manual_routes, config_proxy_cidrs) =
+        get_runtime_config_route_overrides(&instance.config_id);
+    let runtime_proxy_cidrs = instance
         .routes
         .iter()
         .flat_map(|route| route.proxy_cidrs.iter().cloned())
@@ -80,15 +73,9 @@ pub(crate) fn aggregate_tun_routes(instance: &RuntimeInstanceState) -> Vec<Strin
     }
 
     raw_routes.extend(manual_routes.iter().cloned());
-    raw_routes.extend(proxy_cidrs.iter().cloned());
-    let aggregated_routes = simplify_routes(raw_routes);
-    hilog_debug!(
-        "[Rust] aggregate_tun_routes instance={} proxy_cidrs={:?} aggregated_routes={:?}",
-        instance.instance_id,
-        proxy_cidrs,
-        aggregated_routes
-    );
-    aggregated_routes
+    raw_routes.extend(config_proxy_cidrs.iter().cloned());
+    raw_routes.extend(runtime_proxy_cidrs.iter().cloned());
+    simplify_routes(raw_routes)
 }
 
 pub(crate) fn aggregate_requested_tun_routes(instances: &[RuntimeInstanceState]) -> Vec<String> {
