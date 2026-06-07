@@ -20,7 +20,7 @@ use session::{Location, Session};
 use storage::{Storage, StorageToken};
 
 use crate::FeatureFlags;
-use crate::webhook::SharedWebhookConfig;
+use crate::webhook::{ManagedNetworkConfig, SharedWebhookConfig};
 use tokio::task::JoinSet;
 
 use crate::db::{Db, UserIdInDb, entity::user_running_network_configs};
@@ -146,20 +146,7 @@ impl ClientManager {
     }
 
     pub async fn list_sessions(&self) -> Vec<StorageToken> {
-        let sessions = self
-            .client_sessions
-            .iter()
-            .map(|item| item.value().clone())
-            .collect::<Vec<_>>();
-
-        let mut ret: Vec<StorageToken> = vec![];
-        for s in sessions {
-            if let Some(t) = s.get_token().await {
-                ret.push(t);
-            }
-        }
-
-        ret
+        self.storage.list_clients()
     }
 
     pub fn get_session_by_machine_id(
@@ -195,6 +182,22 @@ impl ClientManager {
 
     pub async fn list_machine_by_user_id(&self, user_id: UserIdInDb) -> Vec<url::Url> {
         self.storage.list_user_clients(user_id)
+    }
+
+    pub async fn reconcile_managed_network_configs(
+        &self,
+        user_id: UserIdInDb,
+        machine_id: uuid::Uuid,
+        desired_configs: Vec<ManagedNetworkConfig>,
+    ) -> anyhow::Result<()> {
+        session::SessionRpcService::reconcile_web_source_configs(
+            &self.storage,
+            user_id,
+            machine_id,
+            desired_configs,
+        )
+        .await?;
+        Ok(())
     }
 
     pub async fn get_heartbeat_requests(&self, client_url: &url::Url) -> Option<HeartbeatRequest> {
