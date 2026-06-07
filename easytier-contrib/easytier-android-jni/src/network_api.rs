@@ -2,7 +2,7 @@ use std::{ffi::CStr, ptr};
 
 use easytier::proto::api::manage::{NetworkInstanceRunningInfo, NetworkInstanceRunningInfoMap};
 use easytier_ffi::{
-    KeyValuePair, collect_network_infos, parse_config, retain_network_instance,
+    KeyValuePair, collect_network_infos, free_string, parse_config, retain_network_instance,
     run_network_instance, set_tun_fd,
 };
 use jni::JNIEnv;
@@ -190,16 +190,18 @@ pub(crate) fn collect_network_infos_jni(
                 break;
             }
 
-            let key = CStr::from_ptr(key_ptr).to_string_lossy();
-            let val = CStr::from_ptr(val_ptr).to_string_lossy();
-            let value = match serde_json::from_str::<NetworkInstanceRunningInfo>(val.as_ref()) {
+            let key = CStr::from_ptr(key_ptr).to_string_lossy().into_owned();
+            let val = CStr::from_ptr(val_ptr).to_string_lossy().into_owned();
+            free_string(key_ptr);
+            free_string(val_ptr);
+            let value = match serde_json::from_str::<NetworkInstanceRunningInfo>(&val) {
                 Ok(v) => v,
                 Err(_) => {
                     throw_exception(&mut env, "Failed to parse JSON");
                     continue;
                 }
             };
-            ret.map.insert(key.to_string(), value);
+            ret.map.insert(key, value);
         }
 
         let json_str = serde_json::to_string(&ret).unwrap_or_else(|_| "{}".to_string());

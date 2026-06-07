@@ -199,11 +199,14 @@ impl ManagedConfigServerClientHooks {
         let Some(callback) = self.callback else {
             return Ok(());
         };
-
+        let instance_name = INSTANCE_MANAGER.get_instance_name(&instance_id).unwrap_or_default();
+        let network_name = INSTANCE_MANAGER.get_network_name(&instance_id).unwrap_or_default();
         let event_json = serde_json::json!({
             "event": event,
             "success": true,
             "instance_id": instance_id.to_string(),
+            "instance_name": instance_name,
+            "network_name": network_name,
             "error": null,
         })
         .to_string();
