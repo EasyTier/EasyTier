@@ -348,6 +348,11 @@ pub fn init_config_store(root_dir: String) -> bool {
 }
 
 #[napi]
+pub fn reset_config_store() -> bool {
+    exports::config_api::reset_config_store()
+}
+
+#[napi]
 pub fn list_configs() -> String {
     exports::config_api::list_configs()
 }

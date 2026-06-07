@@ -1,7 +1,7 @@
 use super::{field_store, import_export, legacy_migration, validation};
 use crate::config::storage::config_meta::{
     get_config_meta, init_config_meta_store, list_config_meta_entries, open_db,
-    upsert_config_meta_in_tx,
+    reset_config_meta_store, upsert_config_meta_in_tx,
 };
 use crate::config::types::stored_config::{ExportTomlResult, StoredConfigRecord};
 use easytier::common::config::ConfigLoader;
@@ -115,6 +115,16 @@ pub fn init_config_store(root_dir: String) -> bool {
         "[Rust] initialized config repo at {}",
         configs_dir.display()
     );
+    true
+}
+
+pub fn reset_config_store() -> bool {
+    if !reset_config_meta_store() {
+        return false;
+    }
+    if let Ok(mut guard) = RUNTIME_CONFIG_SNAPSHOTS.lock() {
+        guard.clear();
+    }
     true
 }
 
