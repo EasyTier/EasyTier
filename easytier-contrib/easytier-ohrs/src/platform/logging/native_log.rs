@@ -39,7 +39,11 @@ pub fn init_tracing_subscriber() {
 
 fn tracing_callback(event: &Event, fields: HashMap<String, String>) {
     let metadata = event.metadata();
-    let loc = metadata.target().split("::").last().unwrap_or(metadata.target());
+    let loc = metadata
+        .target()
+        .split("::")
+        .last()
+        .unwrap_or(metadata.target());
     let level = match *metadata.level() {
         Level::TRACE => 2,
         Level::DEBUG => 3,

@@ -63,8 +63,7 @@ use easytier::proto::api::manage::NetworkConfig;
 use easytier::proto::api::manage::NetworkingMethod;
 use easytier::web_client::{WebClient, WebClientHooks, run_web_client};
 use kernel_bridge::{
-    set_snapshot_broadcast_enabled,
-    start_local_socket_server as start_local_socket_server_inner,
+    set_snapshot_broadcast_enabled, start_local_socket_server as start_local_socket_server_inner,
     stop_local_socket_server as stop_local_socket_server_inner,
 };
 use napi_derive_ohos::napi;

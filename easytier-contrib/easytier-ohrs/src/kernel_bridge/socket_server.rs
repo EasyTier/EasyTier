@@ -185,8 +185,9 @@ pub fn start_local_socket_server() -> bool {
                 tun_bootstrap_done = false;
                 tun_fast_until = now + TUN_FAST_CHECK_WINDOW;
             }
-            let should_collect_snapshot =
-                snapshot_enabled || accepted_client || (!tun_bootstrap_done && now < tun_fast_until);
+            let should_collect_snapshot = snapshot_enabled
+                || accepted_client
+                || (!tun_bootstrap_done && now < tun_fast_until);
             if !should_collect_snapshot {
                 if !last_snapshot_json.is_empty() {
                     last_snapshot_json.clear();

@@ -4,8 +4,8 @@ use std::collections::VecDeque;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const LOG_DIR_NAME: &str = "easytier-logs";
@@ -90,7 +90,12 @@ fn sorted_log_files(dir: &Path) -> Vec<PathBuf> {
         left.file_name()
             .and_then(|name| name.to_str())
             .unwrap_or_default()
-            .cmp(right.file_name().and_then(|name| name.to_str()).unwrap_or_default())
+            .cmp(
+                right
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .unwrap_or_default(),
+            )
     });
     files
 }
@@ -228,7 +233,10 @@ pub fn drain_log_lines() -> Vec<String> {
 
 #[napi]
 pub fn export_log_archive(target_path: String) -> bool {
-    let log_dir = LOG_MANAGER.lock().ok().and_then(|guard| guard.log_dir.clone());
+    let log_dir = LOG_MANAGER
+        .lock()
+        .ok()
+        .and_then(|guard| guard.log_dir.clone());
     let Some(log_dir) = log_dir else {
         return false;
     };

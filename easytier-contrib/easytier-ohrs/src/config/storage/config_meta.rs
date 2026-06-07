@@ -585,7 +585,10 @@ pub fn reset_config_meta_store() -> bool {
     let tx = match conn.unchecked_transaction() {
         Ok(tx) => tx,
         Err(e) => {
-            ohrs_log_error!("[Rust] failed to start config store reset transaction: {}", e);
+            ohrs_log_error!(
+                "[Rust] failed to start config store reset transaction: {}",
+                e
+            );
             return false;
         }
     };
