@@ -1,7 +1,7 @@
 use napi_derive_ohos::napi;
 use once_cell::sync::Lazy;
 use std::collections::VecDeque;
-use std::fs::{self, OpenOptions};
+use std::fs::{self, Metadata, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -13,6 +13,16 @@ const LOG_FILE_PREFIX: &str = "easytier-";
 const LOG_FILE_SUFFIX: &str = ".log";
 const MAX_LOG_FILES: usize = 10;
 const MAX_MEMORY_LINES: usize = 500;
+
+#[derive(Debug, Clone)]
+#[napi(object)]
+pub struct LogFileInfo {
+    pub file_name: String,
+    pub display_name: String,
+    pub size_bytes: i64,
+    pub modified_ms: i64,
+    pub active: bool,
+}
 
 #[derive(Clone)]
 struct LogOptions {
@@ -98,6 +108,55 @@ fn sorted_log_files(dir: &Path) -> Vec<PathBuf> {
             )
     });
     files
+}
+
+fn current_log_state() -> Option<(PathBuf, Option<PathBuf>)> {
+    LOG_MANAGER.lock().ok().and_then(|guard| {
+        guard
+            .log_dir
+            .clone()
+            .map(|dir| (dir, guard.active_file.clone()))
+    })
+}
+
+fn file_name(path: &Path) -> Option<String> {
+    path.file_name()
+        .and_then(|value| value.to_str())
+        .map(|value| value.to_string())
+}
+
+fn latest_process_log_file(dir: &Path, process_name: &str) -> Option<PathBuf> {
+    let suffix = format!("-{}{}", sanitize_name(process_name), LOG_FILE_SUFFIX);
+    sorted_log_files(dir).into_iter().rev().find(|path| {
+        path.file_name()
+            .and_then(|value| value.to_str())
+            .map(|value| value.ends_with(&suffix))
+            .unwrap_or(false)
+    })
+}
+
+fn modified_millis(metadata: &Metadata) -> i64 {
+    metadata
+        .modified()
+        .ok()
+        .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
+        .map(|duration| duration.as_millis().min(i64::MAX as u128) as i64)
+        .unwrap_or(0)
+}
+
+fn resolve_log_file(dir: &Path, requested_name: &str) -> Option<PathBuf> {
+    if requested_name.contains('/')
+        || requested_name.contains('\\')
+        || requested_name.contains("..")
+    {
+        return None;
+    }
+    sorted_log_files(dir).into_iter().find(|path| {
+        path.file_name()
+            .and_then(|value| value.to_str())
+            .map(|value| value == requested_name)
+            .unwrap_or(false)
+    })
 }
 
 fn cleanup_old_logs(dir: &Path) {
@@ -187,14 +246,28 @@ pub fn init_log_manager(root_dir: String, process_name: String) -> bool {
         return true;
     }
 
-    let active_file = dir.join(format!(
-        "{}{}-{}-{}{}",
-        LOG_FILE_PREFIX,
-        now_millis(),
-        std::process::id(),
-        sanitize_name(&process_name),
-        LOG_FILE_SUFFIX
-    ));
+    let sanitized_process_name = sanitize_name(&process_name);
+    let active_file = if sanitized_process_name == "ui" {
+        dir.join(format!(
+            "{}{}-{}-{}{}",
+            LOG_FILE_PREFIX,
+            now_millis(),
+            std::process::id(),
+            sanitized_process_name,
+            LOG_FILE_SUFFIX
+        ))
+    } else if let Some(path) = latest_process_log_file(&dir, "ui") {
+        path
+    } else {
+        dir.join(format!(
+            "{}{}-{}-{}{}",
+            LOG_FILE_PREFIX,
+            now_millis(),
+            std::process::id(),
+            sanitized_process_name,
+            LOG_FILE_SUFFIX
+        ))
+    };
     if OpenOptions::new()
         .create(true)
         .append(true)
@@ -229,6 +302,60 @@ pub fn drain_log_lines() -> Vec<String> {
         .lock()
         .map(|mut guard| guard.lines.drain(..).collect())
         .unwrap_or_default()
+}
+
+#[napi]
+pub fn list_log_files() -> Vec<LogFileInfo> {
+    let Some((log_dir, active_file)) = current_log_state() else {
+        return Vec::new();
+    };
+
+    let active_name = active_file.as_ref().and_then(|path| file_name(path));
+    let mut files = sorted_log_files(&log_dir);
+    files.reverse();
+    files
+        .into_iter()
+        .filter_map(|path| {
+            let file_name = file_name(&path)?;
+            let active = active_name
+                .as_ref()
+                .map(|name| name == &file_name)
+                .unwrap_or(false);
+            let metadata = fs::metadata(&path).ok();
+            Some(LogFileInfo {
+                file_name,
+                display_name: if active {
+                    "当前启动日志".to_string()
+                } else {
+                    "历史日志".to_string()
+                },
+                size_bytes: metadata
+                    .as_ref()
+                    .map(|value| value.len().min(i64::MAX as u64) as i64)
+                    .unwrap_or(0),
+                modified_ms: metadata.as_ref().map(modified_millis).unwrap_or_default(),
+                active,
+            })
+        })
+        .collect()
+}
+
+#[napi]
+pub fn read_log_file(file_name: String) -> Option<String> {
+    let (log_dir, _) = current_log_state()?;
+    let path = resolve_log_file(&log_dir, &file_name)?;
+    fs::read_to_string(path).ok()
+}
+
+#[napi]
+pub fn export_log_file(file_name: String, target_path: String) -> bool {
+    let Some((log_dir, _)) = current_log_state() else {
+        return false;
+    };
+    let Some(path) = resolve_log_file(&log_dir, &file_name) else {
+        return false;
+    };
+    fs::copy(path, target_path).is_ok()
 }
 
 #[napi]
