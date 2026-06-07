@@ -1,4 +1,4 @@
-use std::ffi::{c_char, c_int};
+use std::ffi::{CString, c_char, c_int};
 
 use easytier::common::config::{ConfigFileControl, ConfigLoader as _, TomlConfigLoader};
 
@@ -300,4 +300,67 @@ pub(crate) unsafe fn collect_network_infos(
     }
 
     index as std::ffi::c_int
+}
+
+/// # Safety
+/// List the instance names and IDs known by the FFI instance manager.
+pub(crate) unsafe fn list_instance(infos: *mut KeyValuePair, max_length: usize) -> std::ffi::c_int {
+    if in_config_server_callback() {
+        set_error_msg("cannot list instances from config server callback");
+        return -1;
+    }
+
+    if max_length == 0 {
+        return 0;
+    }
+
+    if infos.is_null() {
+        set_error_msg("infos is null");
+        return -1;
+    }
+
+    let infos = unsafe { std::slice::from_raw_parts_mut(infos, max_length) };
+    let mut instances = INSTANCE_MANAGER
+        .list_network_instance_ids()
+        .into_iter()
+        .filter_map(|id| {
+            INSTANCE_MANAGER
+                .get_instance_name(&id)
+                .map(|name| (name, id))
+        })
+        .collect::<Vec<_>>();
+    instances.sort_by(|(left_name, left_id), (right_name, right_id)| {
+        left_name
+            .cmp(right_name)
+            .then_with(|| left_id.to_string().cmp(&right_id.to_string()))
+    });
+
+    let encoded_instances = match instances
+        .into_iter()
+        .take(max_length)
+        .map(|(name, id)| {
+            let key = CString::new(name)
+                .map_err(|err| format!("failed to encode instance name: {}", err))?;
+            let value = CString::new(id.to_string())
+                .map_err(|err| format!("failed to encode instance id: {}", err))?;
+            Ok((key, value))
+        })
+        .collect::<Result<Vec<_>, String>>()
+    {
+        Ok(value) => value,
+        Err(err) => {
+            set_error_msg(&err);
+            return -1;
+        }
+    };
+
+    let count = encoded_instances.len();
+    for (index, (key, value)) in encoded_instances.into_iter().enumerate() {
+        infos[index] = KeyValuePair {
+            key: key.into_raw(),
+            value: value.into_raw(),
+        };
+    }
+
+    count as std::ffi::c_int
 }

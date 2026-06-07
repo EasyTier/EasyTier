@@ -88,6 +88,13 @@ are self-contained: they start two local EasyTier instances in the same test
 process with `no_tun = true` and `bind_device = false`, then run TCP and UDP
 ping/pong over the async data-plane API.
 
+The synchronous wrapper also exposes `CallJSONRPC(service, method, domain,
+payload)` for non-lifecycle EasyTier RPCs. For example,
+`CallJSONRPC("api.logger.LoggerRpcService", "get_logger_config", "", "{}")`
+returns the logger config as protobuf JSON. Instance lifecycle management RPCs
+are intentionally filtered; use the dedicated FFI APIs for starting and
+stopping instances.
+
 To run only the async tests:
 
 ```sh
