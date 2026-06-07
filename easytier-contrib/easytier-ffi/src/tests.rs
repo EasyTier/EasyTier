@@ -73,6 +73,123 @@ unsafe extern "C" fn record_config_server_event(event_json: *const c_char, user_
     );
 }
 
+fn take_last_error() -> Option<String> {
+    unsafe {
+        let mut error_ptr: *const c_char = std::ptr::null();
+        get_error_msg(&mut error_ptr);
+        if error_ptr.is_null() {
+            None
+        } else {
+            let error = CStr::from_ptr(error_ptr).to_string_lossy().into_owned();
+            free_string(error_ptr);
+            Some(error)
+        }
+    }
+}
+
+#[test]
+fn call_json_rpc_returns_logger_response() {
+    let service = CString::new("api.logger.LoggerRpcService").unwrap();
+    let method = CString::new("get_logger_config").unwrap();
+    let payload = CString::new("{}").unwrap();
+    let mut response_ptr: *const c_char = std::ptr::null();
+
+    assert_eq!(
+        unsafe {
+            call_json_rpc(
+                service.as_ptr(),
+                method.as_ptr(),
+                std::ptr::null(),
+                payload.as_ptr(),
+                &mut response_ptr,
+            )
+        },
+        0
+    );
+    assert!(!response_ptr.is_null());
+    let response = unsafe { CStr::from_ptr(response_ptr) }
+        .to_string_lossy()
+        .into_owned();
+    free_string(response_ptr);
+    let response: Value = serde_json::from_str(&response).unwrap();
+    assert!(response.get("level").is_some());
+}
+
+#[test]
+fn call_json_rpc_rejects_instance_management_service() {
+    let service = CString::new("api.manage.WebClientService").unwrap();
+    let method = CString::new("list_network_instance").unwrap();
+    let payload = CString::new("{}").unwrap();
+    let mut response_ptr: *const c_char = std::ptr::null();
+
+    assert_eq!(
+        unsafe {
+            call_json_rpc(
+                service.as_ptr(),
+                method.as_ptr(),
+                std::ptr::null(),
+                payload.as_ptr(),
+                &mut response_ptr,
+            )
+        },
+        -1
+    );
+    assert!(response_ptr.is_null());
+    assert!(take_last_error().unwrap().contains("not exposed"));
+}
+
+#[test]
+fn call_json_rpc_rejects_malformed_payload_json() {
+    let service = CString::new("api.logger.LoggerRpcService").unwrap();
+    let method = CString::new("get_logger_config").unwrap();
+    let payload = CString::new("{").unwrap();
+    let mut response_ptr: *const c_char = std::ptr::null();
+
+    assert_eq!(
+        unsafe {
+            call_json_rpc(
+                service.as_ptr(),
+                method.as_ptr(),
+                std::ptr::null(),
+                payload.as_ptr(),
+                &mut response_ptr,
+            )
+        },
+        -1
+    );
+    assert!(response_ptr.is_null());
+    assert!(
+        take_last_error()
+            .unwrap()
+            .contains("failed to parse payload_json")
+    );
+}
+
+#[test]
+fn call_json_rpc_rejects_null_output_pointer() {
+    let service = CString::new("api.logger.LoggerRpcService").unwrap();
+    let method = CString::new("get_logger_config").unwrap();
+    let payload = CString::new("{}").unwrap();
+
+    assert_eq!(
+        unsafe {
+            call_json_rpc(
+                service.as_ptr(),
+                method.as_ptr(),
+                std::ptr::null(),
+                payload.as_ptr(),
+                std::ptr::null_mut(),
+            )
+        },
+        -1
+    );
+    assert!(
+        take_last_error()
+            .unwrap()
+            .contains("out_response_json is null")
+    );
+}
+
 #[tokio::test]
 async fn config_server_hooks_emit_run_event() {
     let events: Mutex<Vec<String>> = Mutex::new(Vec::new());
@@ -395,6 +512,23 @@ async fn config_server_hooks_suppress_late_run_events_while_stopping() {
 fn config_server_callback_context_rejects_nested_blocking_ffi_calls() {
     let _callback_scope = ConfigServerCallbackScope::enter();
     assert_eq!(is_config_server_client_connected(), 0);
+    let service = CString::new("api.logger.LoggerRpcService").unwrap();
+    let method = CString::new("get_logger_config").unwrap();
+    let payload = CString::new("{}").unwrap();
+    let mut response_ptr: *const c_char = std::ptr::null();
+    assert_eq!(
+        unsafe {
+            call_json_rpc(
+                service.as_ptr(),
+                method.as_ptr(),
+                std::ptr::null(),
+                payload.as_ptr(),
+                &mut response_ptr,
+            )
+        },
+        -1
+    );
+    assert!(response_ptr.is_null());
     assert_eq!(
         unsafe { collect_network_infos(std::ptr::null_mut(), 0) },
         -1

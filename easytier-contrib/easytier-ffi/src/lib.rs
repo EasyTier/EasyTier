@@ -11,6 +11,7 @@
 //! - `delete_network_instance`: stop named local network instances.
 //! - `collect_network_infos`: collect running instance info as key/value pairs.
 //! - `set_tun_fd`: attach a TUN file descriptor to a named instance.
+//! - `call_json_rpc`: call an exposed EasyTier RPC service with JSON payload.
 //!
 //! Config server client APIs:
 //! - `start_config_server_client`: start the managed remote config client.
@@ -42,6 +43,7 @@ mod data_plane;
 mod data_plane_async;
 mod error;
 mod instance_api;
+mod json_rpc;
 mod state;
 mod strings;
 mod types;
@@ -179,6 +181,50 @@ pub unsafe extern "C" fn collect_network_infos(
 #[cfg_attr(feature = "c-abi", unsafe(no_mangle))]
 pub unsafe extern "C" fn set_tun_fd(inst_name: *const c_char, fd: c_int) -> c_int {
     unsafe { instance_api::set_tun_fd(inst_name, fd) }
+}
+
+/// Call an exposed EasyTier RPC method using protobuf JSON.
+///
+/// This generic bridge intentionally excludes instance lifecycle management
+/// RPCs. Use the dedicated FFI APIs for starting, retaining, deleting, and
+/// collecting instances. `payload_json` must contain the protobuf JSON request,
+/// including any `instance` selector required by the target RPC.
+///
+/// `domain_name` may be null or empty. It is only used by
+/// `api.instance.TcpProxyRpcService`; null or empty defaults to `tcp`, and the
+/// only accepted explicit values are `tcp`, `kcp_src`, `kcp_dst`, `quic_src`,
+/// and `quic_dst`.
+///
+/// On success, writes a newly allocated JSON response string to
+/// `out_response_json`. The caller must release it with `free_string`.
+///
+/// This API fails if called from a config-server event callback.
+///
+/// # Safety
+/// `service_name`, `method_name`, `payload_json`, and `out_response_json` must
+/// be non-null. String pointers must point to null-terminated UTF-8 strings.
+/// `domain_name` may be null.
+///
+/// # Return
+/// Returns `0` on success, or `-1` on failure. On failure, call
+/// `get_error_msg` on the same thread to retrieve details.
+#[cfg_attr(feature = "c-abi", unsafe(no_mangle))]
+pub unsafe extern "C" fn call_json_rpc(
+    service_name: *const c_char,
+    method_name: *const c_char,
+    domain_name: *const c_char,
+    payload_json: *const c_char,
+    out_response_json: *mut *const c_char,
+) -> c_int {
+    unsafe {
+        json_rpc::call_json_rpc(
+            service_name,
+            method_name,
+            domain_name,
+            payload_json,
+            out_response_json,
+        )
+    }
 }
 
 // ===== Config Server Client API =====

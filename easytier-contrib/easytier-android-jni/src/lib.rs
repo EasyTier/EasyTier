@@ -10,6 +10,7 @@
 //! - `runNetworkInstance(config)`: start a local network instance.
 //! - `retainNetworkInstance(instanceNames)`: retain named instances and stop the rest.
 //! - `collectNetworkInfos()`: return running instance info as a JSON string.
+//! - `callJsonRpc(...)`: call an exposed EasyTier RPC service with JSON payload.
 //!
 //! Config server client APIs:
 //! - `startConfigServerClient(url, hostname, machineId, secureMode, callback)`:
@@ -28,6 +29,7 @@ mod callback;
 mod config_server_api;
 mod data_plane_api;
 mod error;
+mod json_rpc_api;
 mod logger;
 mod network_api;
 mod strings;
@@ -124,6 +126,35 @@ pub extern "system" fn Java_com_easytier_jni_EasyTierJNI_collectNetworkInfos(
 ) -> jstring {
     logger::init();
     network_api::collect_network_infos_jni(env, class, max_length)
+}
+
+/// Call an exposed EasyTier RPC method using protobuf JSON.
+///
+/// Java signature:
+/// `EasyTierJNI.callJsonRpc(serviceName, methodName, domainName, payloadJson): String?`
+///
+/// Instance lifecycle management RPCs are intentionally not exposed here. Use
+/// the dedicated EasyTierJNI instance APIs for start/retain/delete/collect.
+/// `payloadJson` must include any `instance` selector required by the target
+/// RPC. On failure this returns null and throws `RuntimeException`.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_easytier_jni_EasyTierJNI_callJsonRpc(
+    env: JNIEnv,
+    class: JClass,
+    service_name: JString,
+    method_name: JString,
+    domain_name: JString,
+    payload_json: JString,
+) -> jstring {
+    logger::init();
+    json_rpc_api::call_json_rpc_jni(
+        env,
+        class,
+        service_name,
+        method_name,
+        domain_name,
+        payload_json,
+    )
 }
 
 /// Return the latest FFI/JNI error string for the calling thread.

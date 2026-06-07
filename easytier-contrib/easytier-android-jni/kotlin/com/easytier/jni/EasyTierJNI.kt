@@ -82,6 +82,35 @@ object EasyTierJNI {
     @JvmStatic external fun collectNetworkInfos(maxLength: Int): String?
 
     /**
+     * 调用暴露的 EasyTier RPC 方法，输入和输出均为 protobuf JSON 字符串。
+     *
+     * 不支持 api.manage.WebClientService；实例启动、保留、删除、信息收集请继续使用专用 JNI API。
+     * payloadJson 需要包含目标 RPC 所需的 instance selector。
+     *
+     * @param serviceName RPC 服务名，例如 api.instance.PeerManageRpcService
+     * @param methodName RPC 方法名，支持 snake_case 或 proto 方法名
+     * @param domainName 仅 TcpProxyRpcService 使用；传 null 或空字符串默认 tcp
+     * @param payloadJson protobuf JSON 请求体
+     * @return protobuf JSON 响应体
+     * @throws RuntimeException 当 RPC 调用失败时抛出异常
+     */
+    @JvmStatic
+    external fun callJsonRpc(
+            serviceName: String,
+            methodName: String,
+            domainName: String?,
+            payloadJson: String
+    ): String?
+
+    /**
+     * 调用不需要 domainName 的 EasyTier RPC 方法。
+     */
+    @JvmStatic
+    fun callJsonRpc(serviceName: String, methodName: String, payloadJson: String): String? {
+        return callJsonRpc(serviceName, methodName, null, payloadJson)
+    }
+
+    /**
      * 获取最后的错误消息
      * @return 错误消息字符串，如果没有错误则返回 null
      */
