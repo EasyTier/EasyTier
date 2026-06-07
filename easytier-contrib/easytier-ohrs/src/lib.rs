@@ -40,12 +40,7 @@ mod kernel_bridge;
 mod platform;
 mod runtime;
 
-use config::repository::{
-    cache_runtime_config_snapshot, create_config_record, delete_config_record, export_config_toml,
-    get_config_field_value, get_default_config_json, import_toml_config,
-    init_config_store as init_repo_store, list_config_meta_json, save_config_record,
-    set_config_field_value, start_kernel_with_config_id,
-};
+use config::repository::{cache_runtime_config_snapshot, start_kernel_with_config_id};
 use config::services::schema_service::{
     ConfigFieldMapping, NetworkConfigSchema,
     get_network_config_field_mappings as build_network_config_field_mappings,
@@ -68,15 +63,12 @@ use easytier::proto::api::manage::NetworkConfig;
 use easytier::proto::api::manage::NetworkingMethod;
 use easytier::web_client::{WebClient, WebClientHooks, run_web_client};
 use kernel_bridge::{
-    aggregate_requested_tun_routes, set_snapshot_broadcast_enabled,
+    set_snapshot_broadcast_enabled,
     start_local_socket_server as start_local_socket_server_inner,
     stop_local_socket_server as stop_local_socket_server_inner,
 };
 use napi_derive_ohos::napi;
-use runtime::state::runtime_state::{
-    RuntimeAggregateState, TunAggregateState, clear_tun_attached, mark_tun_attached,
-    runtime_instance_from_running_info,
-};
+use runtime::state::runtime_state::RuntimeAggregateState;
 use std::collections::{HashMap, HashSet};
 use std::format;
 use std::sync::{Arc, Mutex};
@@ -345,6 +337,11 @@ fn parse_instance_uuid(config_id: &str) -> Option<Uuid> {
 #[napi]
 pub fn init_config_store(root_dir: String) -> bool {
     exports::config_api::init_config_store(root_dir)
+}
+
+#[napi]
+pub fn reset_config_store() -> bool {
+    exports::config_api::reset_config_store()
 }
 
 #[napi]

@@ -1,10 +1,9 @@
 use super::{field_store, import_export, legacy_migration, validation};
 use crate::config::storage::config_meta::{
     get_config_meta, init_config_meta_store, list_config_meta_entries, open_db,
-    upsert_config_meta_in_tx,
+    reset_config_meta_store, upsert_config_meta_in_tx,
 };
 use crate::config::types::stored_config::{ExportTomlResult, StoredConfigRecord};
-use easytier::common::config::ConfigLoader;
 use easytier::proto::api::manage::NetworkConfig;
 use once_cell::sync::Lazy;
 use rusqlite::params;
@@ -115,6 +114,16 @@ pub fn init_config_store(root_dir: String) -> bool {
         "[Rust] initialized config repo at {}",
         configs_dir.display()
     );
+    true
+}
+
+pub fn reset_config_store() -> bool {
+    if !reset_config_meta_store() {
+        return false;
+    }
+    if let Ok(mut guard) = RUNTIME_CONFIG_SNAPSHOTS.lock() {
+        guard.clear();
+    }
     true
 }
 
@@ -268,11 +277,6 @@ pub fn set_config_field_value(config_id: &str, field: &str, json_value: &str) ->
         .unwrap_or_else(|| config_id.to_string());
 
     save_config_record(config_id.to_string(), display_name, normalized).is_some()
-}
-
-pub fn get_display_name(config_id: &str) -> Option<String> {
-    validation::validate_config_id(config_id).ok()?;
-    get_config_meta(config_id).map(|meta| meta.display_name)
 }
 
 pub fn get_default_config_json() -> Option<String> {
