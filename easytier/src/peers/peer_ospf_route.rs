@@ -2248,9 +2248,7 @@ impl PeerRouteServiceImpl {
 
     #[cfg(test)]
     fn is_active_non_reusable_credential_peer(&self, peer_id: PeerId) -> bool {
-        peer_id == self.my_peer_id
-            || self.sessions.contains_key(&peer_id)
-            || self.route_table.peer_reachable(peer_id)
+        peer_id == self.my_peer_id || self.route_table.topology_peer_reachable(peer_id)
     }
 
     fn is_credential_node(&self) -> bool {
@@ -2859,9 +2857,7 @@ impl PeerRouteServiceImpl {
             .verify_and_update_credential_trusts_with_active_peers_protecting(
                 network_identity.network_secret.as_deref(),
                 |peer_id| {
-                    peer_id == self.my_peer_id
-                        || self.sessions.contains_key(&peer_id)
-                        || self.route_table.topology_peer_reachable(peer_id)
+                    peer_id == self.my_peer_id || self.route_table.topology_peer_reachable(peer_id)
                 },
                 Some(self.my_peer_id),
             );
