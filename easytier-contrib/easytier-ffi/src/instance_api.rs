@@ -1,4 +1,4 @@
-use std::ffi::{c_char, c_int};
+use std::ffi::{CString, c_char, c_int};
 
 use easytier::common::config::{ConfigFileControl, ConfigLoader as _, TomlConfigLoader};
 
@@ -335,29 +335,32 @@ pub(crate) unsafe fn list_instance(infos: *mut KeyValuePair, max_length: usize) 
             .then_with(|| left_id.to_string().cmp(&right_id.to_string()))
     });
 
-    let mut index = 0;
-    for (name, id) in instances.into_iter().take(max_length) {
-        let key = match std::ffi::CString::new(name) {
-            Ok(value) => value,
-            Err(err) => {
-                set_error_msg(&format!("failed to encode instance name: {}", err));
-                return -1;
-            }
-        };
-        let value = match std::ffi::CString::new(id.to_string()) {
-            Ok(value) => value,
-            Err(err) => {
-                set_error_msg(&format!("failed to encode instance id: {}", err));
-                return -1;
-            }
-        };
+    let encoded_instances = match instances
+        .into_iter()
+        .take(max_length)
+        .map(|(name, id)| {
+            let key = CString::new(name)
+                .map_err(|err| format!("failed to encode instance name: {}", err))?;
+            let value = CString::new(id.to_string())
+                .map_err(|err| format!("failed to encode instance id: {}", err))?;
+            Ok((key, value))
+        })
+        .collect::<Result<Vec<_>, String>>()
+    {
+        Ok(value) => value,
+        Err(err) => {
+            set_error_msg(&err);
+            return -1;
+        }
+    };
 
+    let count = encoded_instances.len();
+    for (index, (key, value)) in encoded_instances.into_iter().enumerate() {
         infos[index] = KeyValuePair {
             key: key.into_raw(),
             value: value.into_raw(),
         };
-        index += 1;
     }
 
-    index as std::ffi::c_int
+    count as std::ffi::c_int
 }
