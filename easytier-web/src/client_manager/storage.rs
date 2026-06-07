@@ -114,6 +114,20 @@ impl Storage {
             .unwrap_or_default()
     }
 
+    pub fn list_clients(&self) -> Vec<StorageToken> {
+        self.0
+            .user_clients_map
+            .iter()
+            .flat_map(|user_clients| {
+                user_clients
+                    .value()
+                    .iter()
+                    .map(|info| info.value().storage_token.clone())
+                    .collect::<Vec<_>>()
+            })
+            .collect()
+    }
+
     pub fn db(&self) -> &Db {
         &self.0.db
     }
@@ -173,5 +187,26 @@ mod tests {
         storage.remove_client(&user2_token);
 
         assert_eq!(storage.get_client_url_by_machine_id(2, &machine_id), None);
+    }
+
+    #[tokio::test]
+    async fn list_clients_returns_current_storage_tokens() {
+        let storage = Storage::new(Db::memory_db().await);
+        let user1_token = make_storage_token(1, uuid::Uuid::new_v4(), "tcp://127.0.0.1:1001");
+        let user2_token = make_storage_token(2, uuid::Uuid::new_v4(), "tcp://127.0.0.1:1002");
+
+        storage.update_client(user1_token.clone(), 10);
+        storage.update_client(user2_token.clone(), 20);
+
+        let tokens = storage.list_clients();
+        assert_eq!(tokens.len(), 2);
+        assert!(tokens.iter().any(|token| token.token == user1_token.token));
+        assert!(tokens.iter().any(|token| token.token == user2_token.token));
+
+        storage.remove_client(&user1_token);
+
+        let tokens = storage.list_clients();
+        assert_eq!(tokens.len(), 1);
+        assert_eq!(tokens[0].token, user2_token.token);
     }
 }

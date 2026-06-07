@@ -16,7 +16,7 @@ enum NetworkingMethod {
 enum ConfigSource {
   ConfigSourceUnspecified = 0;
   ConfigSourceUser = 1;
-  ConfigSourceWebhook = 2;
+  ConfigSourceWeb = 2;
 }
 
 message NetworkConfig {

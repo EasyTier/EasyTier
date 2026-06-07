@@ -78,7 +78,7 @@ struct DataPlaneAsyncOp {
 #[cfg(feature = "ffi-dataplane")]
 enum DataPlaneAsyncOpState {
     Pending,
-    Ready(DataPlaneAsyncOpResult),
+    Ready(Box<DataPlaneAsyncOpResult>),
     Failed(String),
     Consumed,
 }
@@ -158,7 +158,7 @@ fn complete_op(op: &DataPlaneAsyncOp, result: Result<DataPlaneAsyncOpResult, Str
         return;
     }
     *state = match result {
-        Ok(result) => DataPlaneAsyncOpState::Ready(result),
+        Ok(result) => DataPlaneAsyncOpState::Ready(Box::new(result)),
         Err(err) => DataPlaneAsyncOpState::Failed(err),
     };
     op.ready.notify_all();
@@ -325,7 +325,7 @@ fn take_completed_op(
     };
 
     match completed {
-        DataPlaneAsyncOpState::Ready(result) => Some(result),
+        DataPlaneAsyncOpState::Ready(result) => Some(*result),
         DataPlaneAsyncOpState::Failed(err) => {
             set_error_msg(&err);
             None
