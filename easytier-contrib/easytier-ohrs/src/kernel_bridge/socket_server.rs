@@ -23,7 +23,7 @@ struct LocalSocketState {
 }
 
 static LOCAL_SOCKET_STATE: Lazy<Mutex<Option<LocalSocketState>>> = Lazy::new(|| Mutex::new(None));
-static SNAPSHOT_BROADCAST_ENABLED: AtomicBool = AtomicBool::new(true);
+static SNAPSHOT_BROADCAST_ENABLED: AtomicBool = AtomicBool::new(false);
 const SOCKET_TICK_INTERVAL: Duration = Duration::from_millis(250);
 const TUN_FAST_CHECK_WINDOW: Duration = Duration::from_secs(8);
 const EVENT_RECEIVER_SYNC_INTERVAL: Duration = Duration::from_secs(1);
