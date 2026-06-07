@@ -2776,7 +2776,7 @@ impl PeerRouteServiceImpl {
         let my_conn_info_updated = self.update_my_conn_info().await;
         let my_foreign_network_updated = self.update_my_foreign_network().await;
         let mut untrusted_changed = false;
-        if my_peer_info_updated {
+        if my_peer_info_updated || my_conn_info_updated {
             untrusted_changed = self.refresh_credential_trusts_and_disconnect().await;
         }
 
@@ -4286,6 +4286,8 @@ mod tests {
         },
         tunnel::common::tests::wait_for_condition,
     };
+    use base64::Engine as _;
+    use base64::prelude::BASE64_STANDARD;
 
     struct AuthOnlyInterface {
         my_peer_id: PeerId,
@@ -5582,6 +5584,97 @@ mod tests {
                 .map(|entry| *entry.value()),
             Some(replacement_peer_id)
         );
+    }
+
+    #[tokio::test]
+    async fn update_my_infos_refreshes_non_reusable_owner_on_conn_change() {
+        const NETWORK_SECRET: &str = "sec1";
+        const ADMIN_PEER_ID: PeerId = 30;
+        const FIRST_PEER_ID: PeerId = 39;
+        const SECOND_PEER_ID: PeerId = 41;
+
+        let global_ctx = get_mock_global_ctx_with_network(Some(NetworkIdentity::new(
+            "test-net".to_string(),
+            NETWORK_SECRET.to_string(),
+        )));
+        let (_credential_id, credential_secret) = global_ctx
+            .get_credential_manager()
+            .generate_credential_with_options(
+                vec![],
+                false,
+                vec![],
+                Duration::from_secs(3600),
+                None,
+                false,
+            );
+        let credential_secret_bytes: [u8; 32] = BASE64_STANDARD
+            .decode(&credential_secret)
+            .unwrap()
+            .try_into()
+            .unwrap();
+        let credential_secret = x25519_dalek::StaticSecret::from(credential_secret_bytes);
+        let credential_key = x25519_dalek::PublicKey::from(&credential_secret)
+            .as_bytes()
+            .to_vec();
+
+        let service_impl = PeerRouteServiceImpl::new(ADMIN_PEER_ID, global_ctx);
+        let peers = Arc::new(Mutex::new(vec![FIRST_PEER_ID, SECOND_PEER_ID]));
+        let peer_identity_types = Arc::new(Mutex::new(HashMap::from([
+            (FIRST_PEER_ID, Some(PeerIdentityType::Credential)),
+            (SECOND_PEER_ID, Some(PeerIdentityType::Credential)),
+        ])));
+        *service_impl.interface.lock().await = Some(Box::new(CountingInterface {
+            my_peer_id: ADMIN_PEER_ID,
+            peers: peers.clone(),
+            peer_identity_types,
+            list_peers_calls: Arc::new(AtomicU32::new(0)),
+            get_peer_identity_type_calls: Arc::new(AtomicU32::new(0)),
+        }));
+
+        {
+            let mut peer_infos = service_impl.synced_route_info.peer_infos.write();
+            peer_infos.insert(
+                FIRST_PEER_ID,
+                make_credential_route_peer_info(FIRST_PEER_ID, &credential_key),
+            );
+            peer_infos.insert(
+                SECOND_PEER_ID,
+                make_credential_route_peer_info(SECOND_PEER_ID, &credential_key),
+            );
+        }
+        let now = SystemTime::now();
+        {
+            let mut conn_map = service_impl.synced_route_info.conn_map.write();
+            conn_map.insert(FIRST_PEER_ID, make_route_conn_info([ADMIN_PEER_ID], now));
+            conn_map.insert(SECOND_PEER_ID, make_route_conn_info([ADMIN_PEER_ID], now));
+        }
+
+        assert!(service_impl.update_my_infos().await);
+        assert_eq!(
+            service_impl
+                .synced_route_info
+                .non_reusable_credential_owners
+                .get(&credential_key)
+                .map(|entry| *entry.value()),
+            Some(FIRST_PEER_ID)
+        );
+        assert!(service_impl.route_table.peer_reachable(FIRST_PEER_ID));
+        assert!(!service_impl.route_table.peer_reachable(SECOND_PEER_ID));
+
+        *peers.lock() = vec![SECOND_PEER_ID];
+        service_impl.handle_global_ctx_event(&GlobalCtxEvent::PeerConnRemoved(Default::default()));
+
+        assert!(service_impl.update_my_infos().await);
+        assert_eq!(
+            service_impl
+                .synced_route_info
+                .non_reusable_credential_owners
+                .get(&credential_key)
+                .map(|entry| *entry.value()),
+            Some(SECOND_PEER_ID)
+        );
+        assert!(!service_impl.route_table.peer_reachable(FIRST_PEER_ID));
+        assert!(service_impl.route_table.peer_reachable(SECOND_PEER_ID));
     }
 
     #[tokio::test]
