@@ -82,6 +82,14 @@ object EasyTierJNI {
     @JvmStatic external fun collectNetworkInfos(maxLength: Int): String?
 
     /**
+     * 列出当前运行的实例名称和实例 ID。
+     * @param maxLength 最大返回条目数
+     * @return JSON 对象，key 为 instance name，value 为 instance id
+     * @throws RuntimeException 当操作失败时抛出异常
+     */
+    @JvmStatic external fun listInstances(maxLength: Int): String?
+
+    /**
      * 调用暴露的 EasyTier RPC 方法，输入和输出均为 protobuf JSON 字符串。
      *
      * 不支持 api.manage.WebClientService；实例启动、保留、删除、信息收集请继续使用专用 JNI API。

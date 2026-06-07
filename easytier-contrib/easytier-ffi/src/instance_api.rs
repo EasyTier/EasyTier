@@ -301,3 +301,63 @@ pub(crate) unsafe fn collect_network_infos(
 
     index as std::ffi::c_int
 }
+
+/// # Safety
+/// List the instance names and IDs known by the FFI instance manager.
+pub(crate) unsafe fn list_instance(infos: *mut KeyValuePair, max_length: usize) -> std::ffi::c_int {
+    if in_config_server_callback() {
+        set_error_msg("cannot list instances from config server callback");
+        return -1;
+    }
+
+    if max_length == 0 {
+        return 0;
+    }
+
+    if infos.is_null() {
+        set_error_msg("infos is null");
+        return -1;
+    }
+
+    let infos = unsafe { std::slice::from_raw_parts_mut(infos, max_length) };
+    let mut instances = INSTANCE_MANAGER
+        .list_network_instance_ids()
+        .into_iter()
+        .filter_map(|id| {
+            INSTANCE_MANAGER
+                .get_instance_name(&id)
+                .map(|name| (name, id))
+        })
+        .collect::<Vec<_>>();
+    instances.sort_by(|(left_name, left_id), (right_name, right_id)| {
+        left_name
+            .cmp(right_name)
+            .then_with(|| left_id.to_string().cmp(&right_id.to_string()))
+    });
+
+    let mut index = 0;
+    for (name, id) in instances.into_iter().take(max_length) {
+        let key = match std::ffi::CString::new(name) {
+            Ok(value) => value,
+            Err(err) => {
+                set_error_msg(&format!("failed to encode instance name: {}", err));
+                return -1;
+            }
+        };
+        let value = match std::ffi::CString::new(id.to_string()) {
+            Ok(value) => value,
+            Err(err) => {
+                set_error_msg(&format!("failed to encode instance id: {}", err));
+                return -1;
+            }
+        };
+
+        infos[index] = KeyValuePair {
+            key: key.into_raw(),
+            value: value.into_raw(),
+        };
+        index += 1;
+    }
+
+    index as std::ffi::c_int
+}

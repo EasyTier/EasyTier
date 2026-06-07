@@ -87,6 +87,64 @@ fn take_last_error() -> Option<String> {
     }
 }
 
+fn free_key_value_pairs(infos: &[KeyValuePair]) {
+    for info in infos {
+        free_string(info.key);
+        free_string(info.value);
+    }
+}
+
+#[test]
+fn list_instance_returns_instance_names_and_ids() {
+    let instance_id = Uuid::new_v4();
+    let instance_name = format!("list-instance-{}", instance_id);
+    let cfg = TomlConfigLoader::default();
+    cfg.set_id(instance_id);
+    cfg.set_inst_name(instance_name.clone());
+    INSTANCE_MANAGER
+        .run_network_instance(cfg, false, ConfigFileControl::STATIC_CONFIG)
+        .unwrap();
+    INSTANCE_NAME_ID_MAP.insert(instance_name.clone(), instance_id);
+
+    let mut infos = vec![
+        KeyValuePair {
+            key: std::ptr::null(),
+            value: std::ptr::null(),
+        };
+        16
+    ];
+    let count = unsafe { list_instance(infos.as_mut_ptr(), infos.len()) };
+    assert!(count > 0);
+
+    let mut found = false;
+    for info in infos.iter().take(count as usize) {
+        let key = unsafe { CStr::from_ptr(info.key) }.to_string_lossy();
+        let value = unsafe { CStr::from_ptr(info.value) }.to_string_lossy();
+        if key == instance_name {
+            assert_eq!(value, instance_id.to_string());
+            found = true;
+        }
+    }
+
+    free_key_value_pairs(&infos[..count as usize]);
+    INSTANCE_MANAGER
+        .delete_network_instance(vec![instance_id])
+        .unwrap();
+    remove_instance_name_ids(&[instance_id]);
+    assert!(found);
+}
+
+#[test]
+fn list_instance_allows_zero_length() {
+    assert_eq!(unsafe { list_instance(std::ptr::null_mut(), 0) }, 0);
+}
+
+#[test]
+fn list_instance_rejects_null_output_pointer() {
+    assert_eq!(unsafe { list_instance(std::ptr::null_mut(), 1) }, -1);
+    assert!(take_last_error().unwrap().contains("infos is null"));
+}
+
 #[test]
 fn call_json_rpc_returns_logger_response() {
     let service = CString::new("api.logger.LoggerRpcService").unwrap();
@@ -533,6 +591,7 @@ fn config_server_callback_context_rejects_nested_blocking_ffi_calls() {
         unsafe { collect_network_infos(std::ptr::null_mut(), 0) },
         -1
     );
+    assert_eq!(unsafe { list_instance(std::ptr::null_mut(), 0) }, -1);
     let cfg = CString::new("inst_name = \"callback-test\"\nlisteners = []").unwrap();
     assert_eq!(unsafe { run_network_instance(cfg.as_ptr()) }, -1);
     assert_eq!(unsafe { retain_network_instance(std::ptr::null(), 0) }, -1);

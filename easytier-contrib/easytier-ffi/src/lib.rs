@@ -9,6 +9,7 @@
 //! - `run_network_instance`: start one local network instance from TOML.
 //! - `retain_network_instance`: keep named instances and stop all others.
 //! - `delete_network_instance`: stop named local network instances.
+//! - `list_instance`: list running instance names and IDs.
 //! - `collect_network_infos`: collect running instance info as key/value pairs.
 //! - `set_tun_fd`: attach a TUN file descriptor to a named instance.
 //! - `call_json_rpc`: call an exposed EasyTier RPC service with JSON payload.
@@ -140,6 +141,27 @@ pub unsafe extern "C" fn delete_network_instance(
     length: usize,
 ) -> c_int {
     unsafe { instance_api::delete_network_instance(inst_names, length) }
+}
+
+/// List running network instance names and IDs.
+///
+/// Writes up to `max_length` entries into `infos`. Each returned key is the
+/// instance name and each returned value is the instance ID string. Returned
+/// key/value strings are allocated by this library and must be released with
+/// `free_string`.
+///
+/// This API fails if called from a config-server event callback.
+///
+/// # Safety
+/// If `max_length > 0`, `infos` must be a non-null pointer to writable storage
+/// for at least `max_length` `KeyValuePair` values.
+///
+/// # Return
+/// Returns the number of entries written, or `-1` on failure. On failure, call
+/// `get_error_msg` on the same thread to retrieve details.
+#[cfg_attr(feature = "c-abi", unsafe(no_mangle))]
+pub unsafe extern "C" fn list_instance(infos: *mut KeyValuePair, max_length: usize) -> c_int {
+    unsafe { instance_api::list_instance(infos, max_length) }
 }
 
 /// Collect running network instance information.

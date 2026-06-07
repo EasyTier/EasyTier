@@ -9,6 +9,7 @@
 //! - `parseConfig(config)`: validate TOML config text.
 //! - `runNetworkInstance(config)`: start a local network instance.
 //! - `retainNetworkInstance(instanceNames)`: retain named instances and stop the rest.
+//! - `listInstances()`: return running instance names and IDs as JSON.
 //! - `collectNetworkInfos()`: return running instance info as a JSON string.
 //! - `callJsonRpc(...)`: call an exposed EasyTier RPC service with JSON payload.
 //!
@@ -126,6 +127,24 @@ pub extern "system" fn Java_com_easytier_jni_EasyTierJNI_collectNetworkInfos(
 ) -> jstring {
     logger::init();
     network_api::collect_network_infos_jni(env, class, max_length)
+}
+
+/// List running network instance names and IDs.
+///
+/// Java signature:
+/// `EasyTierJNI.listInstances(maxLength: Int): String?`
+///
+/// Returns a JSON object whose keys are instance names and whose values are
+/// instance ID strings. On failure this returns null and throws
+/// `RuntimeException`.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_easytier_jni_EasyTierJNI_listInstances(
+    env: JNIEnv,
+    class: JClass,
+    max_length: jint,
+) -> jstring {
+    logger::init();
+    network_api::list_instances_jni(env, class, max_length)
 }
 
 /// Call an exposed EasyTier RPC method using protobuf JSON.
