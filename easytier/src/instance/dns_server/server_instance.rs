@@ -7,28 +7,28 @@
 // all the clients will exit and let the easytier instance to launch a new server instance.
 
 use super::{
+    MAGIC_DNS_INSTANCE_ADDR,
     config::{GeneralConfigBuilder, RunConfigBuilder},
     server::Server,
     system_config::{OSConfig, SystemConfig},
-    MAGIC_DNS_INSTANCE_ADDR,
 };
 use crate::{
     common::{
-        ifcfg::{IfConfiger, IfConfiguerTrait},
         PeerId,
+        ifcfg::{IfConfiger, IfConfiguerTrait},
     },
     instance::dns_server::{
         config::{Record, RecordBuilder, RecordType},
         server::build_authority,
     },
-    peers::{peer_manager::PeerManager, NicPacketFilter},
+    peers::{NicPacketFilter, peer_manager::PeerManager},
     proto::{
         api::instance::Route,
         common::{TunnelInfo, Void},
         magic_dns::{
-            dns_record::{self},
             DnsRecord, DnsRecordA, DnsRecordList, GetDnsRecordResponse, HandshakeRequest,
             HandshakeResponse, MagicDnsServerRpc, MagicDnsServerRpcServer, UpdateDnsRecordRequest,
+            dns_record::{self},
         },
         rpc_impl::standalone::{RpcServerHook, StandAloneServer},
         rpc_types::controller::{BaseController, Controller},
@@ -47,11 +47,10 @@ use pnet::packet::icmp::{IcmpTypes, MutableIcmpPacket};
 use pnet::packet::ipv4::Ipv4Packet;
 use pnet::packet::udp::UdpPacket;
 use pnet::packet::{
-    icmp,
+    MutablePacket, Packet, icmp,
     ip::IpNextHeaderProtocols,
     ipv4::{self, MutableIpv4Packet},
     udp::{self, MutableUdpPacket},
-    MutablePacket, Packet,
 };
 use std::net::{SocketAddr, SocketAddrV4};
 use std::sync::Mutex;
@@ -528,18 +527,18 @@ impl MagicDnsServerInstance {
         let mut dns_server = Server::new(dns_config);
         dns_server.run().await?;
 
-        if !tun_inet.contains(&fake_ip) {
-            if let Some(tun_dev_name) = &tun_dev {
-                let cost = if cfg!(target_os = "windows") {
-                    Some(4)
-                } else {
-                    None
-                };
-                let ifcfg = IfConfiger {};
-                ifcfg
-                    .add_ipv4_route(tun_dev_name, fake_ip, 32, cost)
-                    .await?;
-            }
+        if !tun_inet.contains(&fake_ip)
+            && let Some(tun_dev_name) = &tun_dev
+        {
+            let cost = if cfg!(target_os = "windows") {
+                Some(4)
+            } else {
+                None
+            };
+            let ifcfg = IfConfiger {};
+            ifcfg
+                .add_ipv4_route(tun_dev_name, fake_ip, 32, cost)
+                .await?;
         }
 
         let data = Arc::new(MagicDnsServerInstanceData {
@@ -587,13 +586,13 @@ impl MagicDnsServerInstance {
             if let Err(e) = ret {
                 tracing::error!("Failed to close system config: {:?}", e);
             }
-            if !self.tun_inet.contains(&self.data.fake_ip) {
-                if let Some(tun_dev_name) = &self.data.tun_dev {
-                    let ifcfg = IfConfiger {};
-                    let _ = ifcfg
-                        .remove_ipv4_route(tun_dev_name, self.data.fake_ip, 32)
-                        .await;
-                }
+            if !self.tun_inet.contains(&self.data.fake_ip)
+                && let Some(tun_dev_name) = &self.data.tun_dev
+            {
+                let ifcfg = IfConfiger {};
+                let _ = ifcfg
+                    .remove_ipv4_route(tun_dev_name, self.data.fake_ip, 32)
+                    .await;
             }
         }
 

@@ -1,9 +1,9 @@
 use bytes::Bytes;
 use bytes::BytesMut;
-use zerocopy::byteorder::*;
 use zerocopy::AsBytes;
 use zerocopy::FromBytes;
 use zerocopy::FromZeroes;
+use zerocopy::byteorder::*;
 
 type DefaultEndian = LittleEndian;
 
@@ -28,8 +28,17 @@ pub enum UdpPacketType {
     Data = 3,
     Fin = 4,
     HolePunch = 5,
-    V6HolePunch = 6, // when receiving v6 hole punch packet, the packet contains a socket addr of other peer, we
+    V4HolePunch = 6, // when receiving v4 hole punch packet, the packet contains a socket addr of other peer, we
+    // will send a hole punch packet to that peer. we only accept this packet from loopback interface.
+    V6HolePunch = 7, // when receiving v6 hole punch packet, the packet contains a socket addr of other peer, we
                      // will send a hole punch packet to that peer. we only accept this packet from lookback interface.
+}
+
+#[repr(C, packed)]
+#[derive(AsBytes, FromBytes, FromZeroes, Clone, Debug, Default)]
+pub struct V4HolePunchPacket {
+    pub dst_ipv4: [u8; 4],
+    pub dst_port: U16<DefaultEndian>,
 }
 
 #[repr(C, packed)]
@@ -719,6 +728,17 @@ impl ZCPacket {
         } else {
             None
         }
+    }
+
+    pub fn foreign_network_inner_packet_type(&self) -> Option<u8> {
+        if self.peer_manager_header()?.packet_type != PacketType::ForeignNetworkPacket as u8 {
+            return None;
+        }
+
+        let payload = self.payload();
+        let hdr = ForeignNetworkPacketHeader::ref_from_prefix(payload)?;
+        let inner_packet = payload.get(hdr.get_header_len()..)?;
+        PeerManagerHeader::ref_from_prefix(inner_packet).map(|hdr| hdr.packet_type)
     }
 
     pub fn foreign_network_packet(mut self) -> Self {

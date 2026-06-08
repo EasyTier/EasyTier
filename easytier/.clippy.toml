@@ -1,0 +1,11 @@
+disallowed-methods = [
+    { path = "itertools::Itertools::map_into", reason = "Blocks underlying iterator optimizations. Use the native `.map(Into::into)` instead." },
+    { path = "itertools::Itertools::map_ok", reason = "Blocks underlying iterator optimizations. Use the native `.map(|r| r.map(f))` instead." },
+    { path = "itertools::Itertools::filter_ok", reason = "Blocks underlying iterator optimizations. Use a native approach, e.g., `.filter(|r| r.as_ref().map_or(true, condition))`." },
+    { path = "itertools::Itertools::filter_map_ok", reason = "Blocks underlying iterator optimizations. Use native `.map()` and `.flatten()`, or extract logic into a standard `.filter_map()`." },
+
+    { path = "itertools::Itertools::collect_vec", reason = "Non-standard idiom. Directly use the standard library's `.collect::<Vec<_>>()`." },
+    { path = "itertools::Itertools::try_collect", reason = "Non-standard idiom. Standard `collect()` already supports Result/Option inversion; use `.collect::<Result<_, _>>()`." },
+    { path = "itertools::Itertools::set_from", reason = "Non-standard idiom. Directly use the `.extend()` method provided by the standard library's `Extend` trait." },
+    { path = "itertools::Itertools::concat", reason = "Non-standard idiom. Use native `.flatten().collect()` or a slice's `.concat()` instead." }
+]

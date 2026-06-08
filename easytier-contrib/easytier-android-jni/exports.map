@@ -1,0 +1,7 @@
+{
+    global:
+        Java_com_easytier_jni_EasyTierJNI_*;
+        Java_com_easytier_jni_EasyTierDataPlaneJNI_*;
+    local:
+        *;
+};

@@ -1,6 +1,5 @@
 // translated from tailscale #32ce1bdb48078ec4cedaeeb5b1b2ff9c0ef61a49
 
-use crate::defer;
 use anyhow::{Context, Result};
 use dbus::blocking::stdintf::org_freedesktop_dbus::Properties as _;
 use std::fs;
@@ -167,6 +166,7 @@ fn new_os_configurator(_interface_name: String) -> Result<()> {
     Ok(())
 }
 
+use guarden::defer;
 use std::io::{self, BufRead, Cursor};
 
 /// 返回 `resolv.conf` 内容的拥有者（"systemd-resolved"、"NetworkManager"、"resolvconf" 或空字符串）

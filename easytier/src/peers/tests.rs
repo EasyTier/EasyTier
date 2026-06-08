@@ -5,13 +5,13 @@ use base64::Engine as _;
 
 use crate::{
     common::{
+        PeerId,
         error::Error,
         global_ctx::{
+            NetworkIdentity, TrustedKeySource,
             tests::{get_mock_global_ctx, get_mock_global_ctx_with_network},
-            NetworkIdentity,
         },
         stats_manager::{LabelSet, LabelType, MetricName},
-        PeerId,
     },
     proto::api::instance::TrustedKeySourcePb,
     tunnel::{
@@ -324,12 +324,14 @@ async fn private_mode_rejects_foreign_network_with_different_secret() {
     );
     let _ = client_ret;
     wait_for_public_peers_empty(client).await;
-    assert!(server
-        .get_foreign_network_manager()
-        .list_foreign_networks()
-        .await
-        .foreign_networks
-        .is_empty());
+    assert!(
+        server
+            .get_foreign_network_manager()
+            .list_foreign_networks()
+            .await
+            .foreign_networks
+            .is_empty()
+    );
 }
 
 #[tokio::test]
@@ -968,8 +970,8 @@ pub async fn create_mock_peer_manager_credential(
 ) -> Arc<PeerManager> {
     use crate::common::config::NetworkIdentity;
     use crate::proto::common::SecureModeConfig;
-    use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
     use base64::Engine;
+    use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 
     let (s, _r) = create_packet_recv_chan();
     let g = get_mock_global_ctx_with_network(Some(NetworkIdentity::new_credential(network_name)));
@@ -1127,10 +1129,12 @@ async fn credential_revocation_removes_from_routes() {
     .await;
 
     // Now revoke the credential
-    assert!(admin_a
-        .get_global_ctx()
-        .get_credential_manager()
-        .revoke_credential(&cred_id));
+    assert!(
+        admin_a
+            .get_global_ctx()
+            .get_credential_manager()
+            .revoke_credential(&cred_id)
+    );
     // Issue event to trigger OSPF sync
     admin_a
         .get_global_ctx()
@@ -1216,9 +1220,6 @@ async fn credential_expiry_disconnects_from_all_admins() {
     .await;
 
     tokio::time::sleep(Duration::from_secs(3)).await;
-    admin_a
-        .get_global_ctx()
-        .issue_event(crate::common::global_ctx::GlobalCtxEvent::CredentialChanged);
 
     wait_for_condition(
         || {
@@ -1304,6 +1305,107 @@ async fn credential_node_group_assignment() {
             async move {
                 let g = admin_b.get_route().get_peer_groups(cred_c_id);
                 g.contains(&"guest".to_string()) && g.contains(&"limited".to_string())
+            }
+        },
+        Duration::from_secs(10),
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn credential_node_connected_via_admin_b_trusts_admin_a_groups() {
+    use crate::proto::acl::{Acl, AclV1, GroupIdentity, GroupInfo};
+
+    let admin_a = create_mock_peer_manager_secure("net1".to_string(), "secret".to_string()).await;
+    let admin_b = create_mock_peer_manager_secure("net1".to_string(), "secret".to_string()).await;
+
+    let group_declares = vec![GroupIdentity {
+        group_name: "platform-admin".to_string(),
+        group_secret: "platform-admin-secret".to_string(),
+    }];
+    admin_a.get_global_ctx().config.set_acl(Some(Acl {
+        acl_v1: Some(AclV1 {
+            group: Some(GroupInfo {
+                declares: group_declares.clone(),
+                members: vec!["platform-admin".to_string()],
+            }),
+            ..Default::default()
+        }),
+    }));
+    admin_b.get_global_ctx().config.set_acl(Some(Acl {
+        acl_v1: Some(AclV1 {
+            group: Some(GroupInfo {
+                declares: group_declares,
+                members: vec![],
+            }),
+            ..Default::default()
+        }),
+    }));
+
+    connect_peer_manager(admin_a.clone(), admin_b.clone()).await;
+    wait_route_appear(admin_a.clone(), admin_b.clone())
+        .await
+        .unwrap();
+
+    let (_cred_id, cred_secret) = admin_a
+        .get_global_ctx()
+        .get_credential_manager()
+        .generate_credential(vec![], false, vec![], std::time::Duration::from_secs(3600));
+    admin_a
+        .get_global_ctx()
+        .issue_event(crate::common::global_ctx::GlobalCtxEvent::CredentialChanged);
+
+    let privkey_bytes: [u8; 32] = base64::engine::general_purpose::STANDARD
+        .decode(&cred_secret)
+        .unwrap()
+        .try_into()
+        .unwrap();
+    let private = x25519_dalek::StaticSecret::from(privkey_bytes);
+    let credential_pubkey = x25519_dalek::PublicKey::from(&private).as_bytes().to_vec();
+
+    wait_for_condition(
+        || {
+            let admin_b = admin_b.clone();
+            let credential_pubkey = credential_pubkey.clone();
+            async move {
+                admin_b.get_global_ctx().is_pubkey_trusted_with_source(
+                    &credential_pubkey,
+                    "net1",
+                    TrustedKeySource::OspfCredential,
+                )
+            }
+        },
+        Duration::from_secs(10),
+    )
+    .await;
+
+    let cred_c = create_mock_peer_manager_credential("net1".to_string(), &private).await;
+    connect_peer_manager(cred_c.clone(), admin_b.clone()).await;
+
+    let admin_a_id = admin_a.my_peer_id();
+    wait_for_condition(
+        || {
+            let cred_c = cred_c.clone();
+            async move {
+                cred_c
+                    .list_routes()
+                    .await
+                    .iter()
+                    .any(|r| r.peer_id == admin_a_id)
+            }
+        },
+        Duration::from_secs(10),
+    )
+    .await;
+
+    wait_for_condition(
+        || {
+            let cred_c = cred_c.clone();
+            async move {
+                cred_c
+                    .get_route()
+                    .get_peer_groups(admin_a_id)
+                    .contains(&"platform-admin".to_string())
             }
         },
         Duration::from_secs(10),
@@ -1416,10 +1518,12 @@ async fn multi_admin_multi_credential_route_and_revocation_isolation() {
     )
     .await;
 
-    assert!(admin_a
-        .get_global_ctx()
-        .get_credential_manager()
-        .revoke_credential(&cred1_id));
+    assert!(
+        admin_a
+            .get_global_ctx()
+            .get_credential_manager()
+            .revoke_credential(&cred1_id)
+    );
     admin_a
         .get_global_ctx()
         .issue_event(crate::common::global_ctx::GlobalCtxEvent::CredentialChanged);

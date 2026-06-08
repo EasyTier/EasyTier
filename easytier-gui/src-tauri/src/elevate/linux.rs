@@ -4,7 +4,7 @@
  *--------------------------------------------------------------------------------------------*/
 
 use super::Command;
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use std::env;
 use std::ffi::OsStr;
 use std::process::{Command as StdCommand, Output};

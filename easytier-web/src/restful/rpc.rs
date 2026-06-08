@@ -1,21 +1,22 @@
 use axum::{
+    Json, Router,
     extract::{Path, State},
     http::StatusCode,
     routing::post,
-    Json, Router,
 };
 use axum_login::AuthUser as _;
 use easytier::proto::rpc_types::controller::BaseController;
 
 use crate::db::UserIdInDb;
 
-use super::{other_error, AppState, HttpHandleError};
+use super::{AppState, HttpHandleError, other_error};
 
 #[derive(Debug, serde::Deserialize)]
 pub struct ProxyRpcRequest {
     pub service_name: String,
     pub method_name: String,
     pub payload: serde_json::Value,
+    pub scope: Option<String>,
 }
 
 macro_rules! match_service {
@@ -35,6 +36,7 @@ async fn handle_proxy_rpc_by_session(
         service_name,
         method_name,
         payload,
+        scope,
     } = req;
 
     let resp = match service_name.as_str() {
@@ -74,12 +76,20 @@ async fn handle_proxy_rpc_by_session(
             payload,
             session
         ),
-        "api.instance.TcpProxyRpcService" => match_service!(
-            easytier::proto::api::instance::TcpProxyRpcClientFactory<BaseController>,
-            method_name,
-            payload,
-            session
-        ),
+        "api.instance.TcpProxyRpcService" => {
+            let client = if let Some(ref domain) = scope {
+                session.scoped_client_with_domain::<
+                    easytier::proto::api::instance::TcpProxyRpcClientFactory<BaseController>,
+                >(domain.clone())
+            } else {
+                session.scoped_client::<
+                    easytier::proto::api::instance::TcpProxyRpcClientFactory<BaseController>,
+                >()
+            };
+            client
+                .json_call_method(BaseController::default(), &method_name, payload)
+                .await
+        }
         "api.instance.AclManageRpcService" => match_service!(
             easytier::proto::api::instance::AclManageRpcClientFactory<BaseController>,
             method_name,
@@ -120,7 +130,7 @@ async fn handle_proxy_rpc_by_session(
             return Err((
                 StatusCode::BAD_REQUEST,
                 other_error(format!("Unknown service: {}", service_name)).into(),
-            ))
+            ));
         }
     };
 

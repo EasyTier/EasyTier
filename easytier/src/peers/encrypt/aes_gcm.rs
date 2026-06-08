@@ -137,7 +137,7 @@ impl Encryptor for AesGcmCipher {
 #[cfg(test)]
 mod tests {
     use crate::{
-        peers::encrypt::{aes_gcm::AesGcmCipher, Encryptor},
+        peers::encrypt::{Encryptor, aes_gcm::AesGcmCipher},
         tunnel::packet_def::{StandardAeadTail, ZCPacket},
     };
     use zerocopy::FromBytes;

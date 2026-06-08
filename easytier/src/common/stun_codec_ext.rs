@@ -1,13 +1,13 @@
 use std::net::SocketAddr;
 
 use bytecodec::fixnum::{U32beDecoder, U32beEncoder};
-use stun_codec::net::{socket_addr_xor, SocketAddrDecoder, SocketAddrEncoder};
+use stun_codec::net::{SocketAddrDecoder, SocketAddrEncoder, socket_addr_xor};
 
 use stun_codec::rfc5389::attributes::{
     MappedAddress, Software, XorMappedAddress, XorMappedAddress2,
 };
 use stun_codec::rfc5780::attributes::{OtherAddress, ResponseOrigin};
-use stun_codec::{define_attribute_enums, AttributeType, Message, TransactionId};
+use stun_codec::{AttributeType, Message, TransactionId, define_attribute_enums};
 
 use bytecodec::{ByteCount, Decode, Encode, Eos, Result, SizedEncode, TryTaggedDecode};
 

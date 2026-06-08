@@ -85,9 +85,8 @@ impl SocketAlloctor {
             vec![udp::PacketMetadata::EMPTY; self.buffer_size.udp_tx_meta_size],
             vec![0; self.buffer_size.udp_tx_size],
         );
-        let udp = udp::Socket::new(rx_buffer, tx_buffer);
 
-        udp
+        udp::Socket::new(rx_buffer, tx_buffer)
     }
 }
 

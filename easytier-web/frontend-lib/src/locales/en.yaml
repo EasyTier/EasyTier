@@ -103,6 +103,9 @@ use_smoltcp_help: Use a user-space TCP/IP stack to avoid issues with operating s
 disable_ipv6: Disable IPv6
 disable_ipv6_help: Disable IPv6 functionality for this node, only use IPv4 for network communication.
 
+ipv6_public_addr_auto: Auto Public IPv6
+ipv6_public_addr_auto_help: Auto-obtain a public IPv6 address from a peer that shares its IPv6 subnet.
+
 enable_kcp_proxy: Enable KCP Proxy
 enable_kcp_proxy_help: Convert TCP traffic to KCP traffic to reduce latency and boost transmission speed.
 
@@ -116,7 +119,7 @@ disable_quic_input: Disable QUIC Input
 disable_quic_input_help: Disable inbound QUIC traffic, while nodes with QUIC proxy enabled continue to connect using TCP.
 
 disable_p2p: Disable P2P
-disable_p2p_help: Disable P2P mode; route all traffic through a manually specified relay server.
+disable_p2p_help: Disable ordinary automatic P2P. Nodes with need-p2p enabled can still establish P2P with this node.
 
 p2p_only: P2P Only
 p2p_only_help: Only communicate with peers that have already established P2P connections, do not relay through other nodes.
@@ -155,6 +158,12 @@ disable_tcp_hole_punching_help: Disable tcp hole punching
 
 disable_udp_hole_punching: Disable UDP Hole Punching
 disable_udp_hole_punching_help: Disable udp hole punching
+
+enable_udp_broadcast_relay: UDP Broadcast Relay
+enable_udp_broadcast_relay_help: "Windows only: capture local UDP broadcast packets from physical interfaces and forward them to EasyTier peers. Helps games to find rooms in local network. Requires administrator privileges."
+
+disable_upnp: Disable UPnP
+disable_upnp_help: Disable runtime UPnP/NAT-PMP port mapping for eligible listeners; automatic port mapping is enabled by default.
 
 disable_sym_hole_punching: Disable Symmetric NAT Hole Punching
 disable_sym_hole_punching_help: Disable special hole punching handling for symmetric NAT (based on birthday attack), treat symmetric NAT as cone NAT
@@ -254,6 +263,7 @@ event:
   DhcpIpv4Conflicted: DhcpIpv4Conflicted
   PortForwardAdded: PortForwardAdded
   ProxyCidrsUpdated: ProxyCidrsUpdated
+  UdpBroadcastRelayStartResult: UDP Broadcast Relay Start Result
 
 web:
   login:
@@ -355,6 +365,7 @@ web:
     delete: Delete
     edit: Edit
     refresh: Refresh
+    add: Add
     loading: Loading...
     error: Error
     success: Success
@@ -422,3 +433,46 @@ config-server:
 client:
   not_running: Unable to connect to remote client.
   retry: Retry
+
+acl:
+  title: Access Control (ACL)
+  help: Access control list to restrict communication between nodes.
+  enabled: Enable ACL
+  default_action: Default Action
+  chains: Rule Chains
+  inbound: Inbound
+  outbound: Outbound
+  forward: Forward
+  rules: Rules
+  add_rule: Add Rule
+  edit_rule: Edit Rule
+  rule:
+    name: Rule Name
+    description: Description
+    enabled: Enabled
+    protocol: Protocol
+    action: Action
+    src_ips: Source IPs
+    dst_ips: Destination IPs
+    src_ports: Source Ports
+    dst_ports: Destination Ports
+    rate_limit: Rate Limit (pps)
+    burst_limit: Burst Limit
+    stateful: Stateful
+    src_groups: Source Groups
+    dst_groups: Destination Groups
+  groups: Groups
+  group:
+    declares: Declared Groups
+    members: Node Memberships
+    name: Group Name
+    secret: Group Secret
+    help: Define group identities in the network to use them in rules.
+  any: Any
+  allow: Allow
+  drop: Drop
+  delete_chain_confirm: Are you sure you want to delete this rule chain and all its rules?
+  chain:
+    name: Name
+    type: Type
+  match: Match

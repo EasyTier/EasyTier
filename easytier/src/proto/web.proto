@@ -21,6 +21,7 @@ message HeartbeatRequest {
 
   repeated common.UUID running_network_instances = 7;
   DeviceOsInfo device_os = 8;
+  bool support_config_source = 9;
 }
 
 message HeartbeatResponse {}

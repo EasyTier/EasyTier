@@ -1,13 +1,15 @@
+#[cfg(feature = "ffi-dataplane")]
+use crate::launcher::{DataPlaneTcpListener, DataPlaneTcpStream, DataPlaneUdpSocket};
 use dashmap::DashMap;
 use std::fmt::{Display, Formatter};
 use std::{collections::BTreeMap, path::PathBuf, sync::Arc};
+use tokio_util::task::AbortOnDropHandle;
 
 use crate::{
     common::{
-        config::{ConfigFileControl, ConfigLoader, TomlConfigLoader},
+        config::{ConfigFileControl, ConfigLoader, ConfigSource, TomlConfigLoader},
         global_ctx::{EventBusSubscriber, GlobalCtxEvent},
         log,
-        scoped_task::ScopedTask,
     },
     launcher::{NetworkInstance, NetworkInstanceRunningInfo},
     proto::{self},
@@ -27,11 +29,12 @@ impl Drop for DaemonGuard {
 
 pub struct NetworkInstanceManager {
     instance_map: Arc<DashMap<uuid::Uuid, NetworkInstance>>,
-    instance_stop_tasks: Arc<DashMap<uuid::Uuid, ScopedTask<()>>>,
+    instance_stop_tasks: Arc<DashMap<uuid::Uuid, AbortOnDropHandle<()>>>,
     stop_check_notifier: Arc<tokio::sync::Notify>,
     instance_error_messages: Arc<DashMap<uuid::Uuid, String>>,
     config_dir: Option<PathBuf>,
     guard_counter: Arc<()>,
+    remote_mutation_lock: Arc<tokio::sync::Mutex<()>>,
 }
 
 impl Default for NetworkInstanceManager {
@@ -49,12 +52,17 @@ impl NetworkInstanceManager {
             instance_error_messages: Arc::new(DashMap::new()),
             config_dir: None,
             guard_counter: Arc::new(()),
+            remote_mutation_lock: Arc::new(tokio::sync::Mutex::new(())),
         }
     }
 
     pub fn with_config_path(mut self, config_dir: Option<PathBuf>) -> Self {
         self.config_dir = config_dir;
         self
+    }
+
+    pub fn remote_mutation_lock(&self) -> Arc<tokio::sync::Mutex<()>> {
+        self.remote_mutation_lock.clone()
     }
 
     fn start_instance_task(&self, instance_id: uuid::Uuid) -> Result<(), anyhow::Error> {
@@ -78,18 +86,18 @@ impl NetworkInstanceManager {
         let stop_check_notifier = self.stop_check_notifier.clone();
         self.instance_stop_tasks.insert(
             instance_id,
-            ScopedTask::from(tokio::spawn(async move {
+            AbortOnDropHandle::new(tokio::spawn(async move {
                 let Some(instance_stop_notifier) = instance_stop_notifier else {
                     return;
                 };
                 let _t = instance_event_receiver
-                    .map(|event| ScopedTask::from(handle_event(instance_id, event)));
+                    .map(|event| AbortOnDropHandle::new(handle_event(instance_id, event)));
                 instance_stop_notifier.notified().await;
-                if let Some(instance) = instance_map.get(&instance_id) {
-                    if let Some(error) = instance.get_latest_error_msg() {
-                        log::error!(%error, "instance {} stopped", instance_id);
-                        instance_error_messages.insert(instance_id, error);
-                    }
+                if let Some(instance) = instance_map.get(&instance_id)
+                    && let Some(error) = instance.get_latest_error_msg()
+                {
+                    log::error!(%error, "instance {} stopped", instance_id);
+                    instance_error_messages.insert(instance_id, error);
                 }
                 stop_check_notifier.notify_one();
                 instance_stop_tasks.remove(&instance_id);
@@ -171,6 +179,59 @@ impl NetworkInstanceManager {
         tokio::runtime::Runtime::new()?.block_on(self.collect_network_infos())
     }
 
+    #[cfg(feature = "ffi-dataplane")]
+    pub async fn data_plane_tcp_connect(
+        &self,
+        instance_id: &uuid::Uuid,
+        dst_addr: std::net::SocketAddr,
+        timeout: std::time::Duration,
+    ) -> Result<DataPlaneTcpStream, anyhow::Error> {
+        let instance = self
+            .instance_map
+            .get(instance_id)
+            .ok_or_else(|| anyhow::anyhow!("instance {} not found", instance_id))?;
+        instance.data_plane_tcp_connect(dst_addr, timeout).await
+    }
+
+    #[cfg(feature = "ffi-dataplane")]
+    pub async fn data_plane_tcp_bind(
+        &self,
+        instance_id: &uuid::Uuid,
+        local_port: u16,
+        timeout: std::time::Duration,
+    ) -> Result<DataPlaneTcpListener, anyhow::Error> {
+        let instance = self
+            .instance_map
+            .get(instance_id)
+            .ok_or_else(|| anyhow::anyhow!("instance {} not found", instance_id))?;
+        instance.data_plane_tcp_bind(local_port, timeout).await
+    }
+
+    #[cfg(feature = "ffi-dataplane")]
+    pub async fn data_plane_udp_bind(
+        &self,
+        instance_id: &uuid::Uuid,
+        local_port: u16,
+        timeout: std::time::Duration,
+    ) -> Result<DataPlaneUdpSocket, anyhow::Error> {
+        let instance = self
+            .instance_map
+            .get(instance_id)
+            .ok_or_else(|| anyhow::anyhow!("instance {} not found", instance_id))?;
+        instance.data_plane_udp_bind(local_port, timeout).await
+    }
+
+    #[cfg(feature = "ffi-dataplane")]
+    pub fn data_plane_wait_runtime_handle(
+        &self,
+        instance_id: &uuid::Uuid,
+        timeout: std::time::Duration,
+    ) -> Option<tokio::runtime::Handle> {
+        self.instance_map
+            .get(instance_id)
+            .and_then(|inst| inst.wait_runtime_handle(timeout))
+    }
+
     pub async fn get_network_info(
         &self,
         instance_id: &uuid::Uuid,
@@ -215,6 +276,21 @@ impl NetworkInstanceManager {
         self.instance_map
             .get(instance_id)
             .map(|instance| instance.value().get_config_file_control().clone())
+    }
+
+    pub fn get_instance_config(&self, instance_id: &uuid::Uuid) -> Option<TomlConfigLoader> {
+        self.instance_map
+            .get(instance_id)
+            .map(|instance| instance.value().get_config())
+    }
+
+    pub fn get_instance_network_config_source(
+        &self,
+        instance_id: &uuid::Uuid,
+    ) -> Option<ConfigSource> {
+        self.instance_map
+            .get(instance_id)
+            .map(|instance| instance.value().get_network_config_source())
     }
 
     pub fn get_instance_service(
@@ -355,6 +431,21 @@ fn handle_event(
                         event!(info, category: "CONNECTION", local, remote, err, "[{}] connection error", instance_id);
                     }
 
+                    GlobalCtxEvent::ListenerPortMappingEstablished {
+                        local_listener,
+                        mapped_listener,
+                        backend,
+                    } => {
+                        event!(
+                            info,
+                            %local_listener,
+                            %mapped_listener,
+                            backend,
+                            "[{}] listener port mapping established",
+                            instance_id
+                        );
+                    }
+
                     GlobalCtxEvent::TunDeviceReady(dev) => {
                         event!(info, dev, "[{}] tun device ready", instance_id);
                     }
@@ -411,6 +502,20 @@ fn handle_event(
                         event!(info, ?ip, "[{}] dhcp ip conflict", instance_id);
                     }
 
+                    GlobalCtxEvent::PublicIpv6Changed(old, new) => {
+                        event!(info, ?old, ?new, "[{}] public ipv6 changed", instance_id);
+                    }
+
+                    GlobalCtxEvent::PublicIpv6RoutesUpdated(added, removed) => {
+                        event!(
+                            info,
+                            ?added,
+                            ?removed,
+                            "[{}] public ipv6 routes updated",
+                            instance_id
+                        );
+                    }
+
                     GlobalCtxEvent::PortForwardAdded(cfg) => {
                         event!(
                             info,
@@ -434,6 +539,28 @@ fn handle_event(
                             "[{}] proxy CIDRs updated",
                             instance_id
                         );
+                    }
+
+                    GlobalCtxEvent::UdpBroadcastRelayStartResult {
+                        capture_backend,
+                        error,
+                    } => {
+                        if let Some(error) = error {
+                            event!(
+                                warn,
+                                ?capture_backend,
+                                %error,
+                                "[{}] UDP broadcast relay start failed",
+                                instance_id
+                            );
+                        } else {
+                            event!(
+                                info,
+                                ?capture_backend,
+                                "[{}] UDP broadcast relay started",
+                                instance_id
+                            );
+                        }
                     }
 
                     GlobalCtxEvent::CredentialChanged => {
@@ -543,45 +670,57 @@ mod tests {
 
         let port = crate::utils::find_free_tcp_port(10012..65534).expect("no free tcp port found");
 
-        assert!(manager
-            .run_network_instance(
-                TomlConfigLoader::new_from_str(cfg_str).unwrap(),
-                true,
-                ConfigFileControl::STATIC_CONFIG
-            )
-            .is_err());
-        assert!(manager
-            .run_network_instance(
-                TomlConfigLoader::new_from_str(cfg_str).unwrap(),
-                true,
-                ConfigFileControl::STATIC_CONFIG
-            )
-            .is_err());
-        assert!(manager
-            .run_network_instance(
-                TomlConfigLoader::new_from_str(cfg_str)
-                    .inspect(|c| {
-                        c.set_listeners(vec![format!("tcp://0.0.0.0:{}", port).parse().unwrap()]);
-                    })
-                    .unwrap(),
-                false,
-                ConfigFileControl::STATIC_CONFIG
-            )
-            .is_ok());
-        assert!(manager
-            .run_network_instance(
-                TomlConfigLoader::new_from_str(cfg_str).unwrap(),
-                true,
-                ConfigFileControl::STATIC_CONFIG
-            )
-            .is_err());
-        assert!(manager
-            .run_network_instance(
-                TomlConfigLoader::new_from_str(cfg_str).unwrap(),
-                false,
-                ConfigFileControl::STATIC_CONFIG
-            )
-            .is_ok());
+        assert!(
+            manager
+                .run_network_instance(
+                    TomlConfigLoader::new_from_str(cfg_str).unwrap(),
+                    true,
+                    ConfigFileControl::STATIC_CONFIG
+                )
+                .is_err()
+        );
+        assert!(
+            manager
+                .run_network_instance(
+                    TomlConfigLoader::new_from_str(cfg_str).unwrap(),
+                    true,
+                    ConfigFileControl::STATIC_CONFIG
+                )
+                .is_err()
+        );
+        assert!(
+            manager
+                .run_network_instance(
+                    TomlConfigLoader::new_from_str(cfg_str)
+                        .inspect(|c| {
+                            c.set_listeners(vec![
+                                format!("tcp://0.0.0.0:{}", port).parse().unwrap(),
+                            ]);
+                        })
+                        .unwrap(),
+                    false,
+                    ConfigFileControl::STATIC_CONFIG
+                )
+                .is_ok()
+        );
+        assert!(
+            manager
+                .run_network_instance(
+                    TomlConfigLoader::new_from_str(cfg_str).unwrap(),
+                    true,
+                    ConfigFileControl::STATIC_CONFIG
+                )
+                .is_err()
+        );
+        assert!(
+            manager
+                .run_network_instance(
+                    TomlConfigLoader::new_from_str(cfg_str).unwrap(),
+                    false,
+                    ConfigFileControl::STATIC_CONFIG
+                )
+                .is_ok()
+        );
 
         std::thread::sleep(std::time::Duration::from_secs(1)); // wait instance actually started
 

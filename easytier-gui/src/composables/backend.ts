@@ -1,7 +1,7 @@
 import { invoke } from '@tauri-apps/api/core'
 import { Api, NetworkTypes } from 'easytier-frontend-lib'
 import { GetNetworkMetasResponse } from 'node_modules/easytier-frontend-lib/dist/modules/api'
-
+import { type ConfigSource, normalizeConfigSource } from './config_source'
 
 type NetworkConfig = NetworkTypes.NetworkConfig
 type ValidateConfigResponse = Api.ValidateConfigResponse
@@ -15,6 +15,39 @@ interface ServiceOptions {
 }
 
 export type ServiceStatus = "Running" | "Stopped" | "NotInstalled"
+
+interface StoredGuiConfig {
+  config: NetworkConfig
+  source: ConfigSource
+}
+
+function parseStoredConfigs(raw: string | null): StoredGuiConfig[] {
+  const parsed: unknown = JSON.parse(raw || '[]')
+  if (!Array.isArray(parsed)) {
+    return []
+  }
+
+  return parsed.flatMap((entry): StoredGuiConfig[] => {
+    if (entry && typeof entry === 'object' && 'config' in entry) {
+      const { config, source } = entry as {
+        config?: NetworkConfig
+        source?: unknown
+      }
+      if (!config) {
+        return []
+      }
+      return [{
+        config: NetworkTypes.normalizeNetworkConfig(config),
+        source: normalizeConfigSource(source),
+      }]
+    }
+
+    return [{
+      config: NetworkTypes.normalizeNetworkConfig(entry as NetworkConfig),
+      source: 'legacy',
+    }]
+  })
+}
 
 export async function parseNetworkConfig(cfg: NetworkConfig) {
   return invoke<string>('parse_network_config', { cfg: NetworkTypes.toBackendNetworkConfig(cfg) })
@@ -71,9 +104,12 @@ export async function getConfig(instanceId: string) {
 }
 
 export async function sendConfigs(enabledNetworks: string[]) {
-  const networkList: NetworkConfig[] = JSON.parse(localStorage.getItem('networkList') || '[]');
+  const networkList = parseStoredConfigs(localStorage.getItem('networkList'))
   return await invoke('load_configs', {
-    configs: networkList.map((config) => NetworkTypes.toBackendNetworkConfig(NetworkTypes.normalizeNetworkConfig(config))),
+    configs: networkList.map(({ config, source }) => ({
+      config: NetworkTypes.toBackendNetworkConfig(config),
+      source,
+    })),
     enabledNetworks
   })
 }

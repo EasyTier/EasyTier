@@ -9,7 +9,7 @@ use tokio::sync::Mutex;
 use windivert::error::WinDivertError;
 use windivert::packet::WinDivertPacket;
 use windivert::prelude::{WinDivertFlags, WinDivertShutdownMode};
-use windivert::{layer, WinDivert};
+use windivert::{WinDivert, layer};
 
 use crate::tunnel::fake_tcp::stack;
 
@@ -68,10 +68,10 @@ pub struct WinDivertTun {
 
 impl Drop for WinDivertTun {
     fn drop(&mut self) {
-        if let Ok(mut sender) = self.sender.lock() {
-            if let Err(e) = sender.close(windivert::CloseAction::Nothing) {
-                tracing::error!("WinDivertSender close failed: {:?}", e);
-            }
+        if let Ok(mut sender) = self.sender.lock()
+            && let Err(e) = sender.close(windivert::CloseAction::Nothing)
+        {
+            tracing::error!("WinDivertSender close failed: {:?}", e);
         }
         if let Err(e) = self.reader.shutdown() {
             tracing::error!("WinDivertReader shutdown failed: {:?}", e);
@@ -80,22 +80,17 @@ impl Drop for WinDivertTun {
 }
 
 impl WinDivertTun {
-    pub fn new(local_addr: SocketAddr) -> io::Result<Self> {
+    pub fn new(src_addr: Option<SocketAddr>, dst_addr: SocketAddr) -> io::Result<Self> {
         let (tx, rx) = tokio::sync::mpsc::channel(1024);
 
-        let ip_filter = match local_addr {
-            SocketAddr::V4(addr) => format!("ip.DstAddr == {}", addr.ip()),
-            SocketAddr::V6(addr) => format!("ipv6.DstAddr == {}", addr.ip()),
-        };
-        // Filter: DstIP == LocalIP AND TCP.
-        let filter = format!("{} and tcp", ip_filter);
+        let filter = build_filter(src_addr, dst_addr)?;
+        tracing::debug!(%filter, "WinDivertTun created with filter");
 
         // Sniff mode: 1 (WINDIVERT_FLAG_SNIFF)
         // Layer: Network (0)
         // Priority: 0
         let flags = WinDivertFlags::default().set_sniff();
-        let reader = WinDivert::network(&filter, 0, flags)
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+        let reader = WinDivert::network(&filter, 0, flags).map_err(io::Error::other)?;
         let reader = Arc::new(WinDivertReader::new(reader));
         let reader_clone = reader.clone();
 
@@ -109,7 +104,7 @@ impl WinDivertTun {
 
                         let mut eth_data = vec![0u8; 14 + data.len()];
                         // Set EtherType
-                        if data.len() > 0 && data[0] >> 4 == 4 {
+                        if !data.is_empty() && data[0] >> 4 == 4 {
                             eth_data[12] = 0x08;
                             eth_data[13] = 0x00;
                         } else {
@@ -118,12 +113,12 @@ impl WinDivertTun {
                         }
                         eth_data[14..].copy_from_slice(data);
 
-                        if let Err(_) = tx.blocking_send(eth_data) {
+                        if tx.blocking_send(eth_data).is_err() {
                             break;
                         }
                     }
-                    Err(_) => {
-                        // log error?
+                    Err(error) => {
+                        tracing::error!(?error, "WinDivert recv failed");
                         break;
                     }
                 }
@@ -133,8 +128,8 @@ impl WinDivertTun {
         // Sender: non-sniff, empty filter?
         // Use "false" to avoid capturing anything.
         // Flags: 0
-        let sender = WinDivert::network("false", 0, WinDivertFlags::default())
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+        let sender =
+            WinDivert::network("false", 0, WinDivertFlags::default()).map_err(io::Error::other)?;
 
         Ok(Self {
             recv_queue: Mutex::new(rx),
@@ -142,6 +137,46 @@ impl WinDivertTun {
             reader,
         })
     }
+}
+
+fn build_filter(src_addr: Option<SocketAddr>, dst_addr: SocketAddr) -> io::Result<String> {
+    if let Some(src_addr) = src_addr
+        && src_addr.is_ipv4() != dst_addr.is_ipv4()
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "src/dst addr family mismatch",
+        ));
+    }
+
+    let mut filters = Vec::with_capacity(5);
+    filters.push("tcp".to_owned());
+
+    match dst_addr {
+        SocketAddr::V4(addr) => {
+            filters.push(format!("ip.DstAddr == {}", addr.ip()));
+            filters.push(format!("tcp.DstPort == {}", addr.port()));
+        }
+        SocketAddr::V6(addr) => {
+            filters.push(format!("ipv6.DstAddr == {}", addr.ip()));
+            filters.push(format!("tcp.DstPort == {}", addr.port()));
+        }
+    }
+
+    if let Some(src_addr) = src_addr {
+        match src_addr {
+            SocketAddr::V4(addr) => {
+                filters.push(format!("ip.SrcAddr == {}", addr.ip()));
+                filters.push(format!("tcp.SrcPort == {}", addr.port()));
+            }
+            SocketAddr::V6(addr) => {
+                filters.push(format!("ipv6.SrcAddr == {}", addr.ip()));
+                filters.push(format!("tcp.SrcPort == {}", addr.port()));
+            }
+        }
+    }
+
+    Ok(filters.join(" and "))
 }
 
 #[async_trait::async_trait]
@@ -171,21 +206,15 @@ impl stack::Tun for WinDivertTun {
         let ip_data = &packet[14..];
 
         let Ok(sender) = self.sender.try_lock() else {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                "WinDivert sender lock failed",
-            ));
+            return Err(std::io::Error::other("WinDivert sender lock failed"));
         };
 
         let mut pkt = unsafe { WinDivertPacket::<layer::NetworkLayer>::new(ip_data.to_vec()) };
         pkt.address.set_outbound(true);
 
-        sender.send(&pkt).map_err(|e| {
-            std::io::Error::new(
-                std::io::ErrorKind::Other,
-                format!("WinDivert send failed: {}", e),
-            )
-        })?;
+        sender
+            .send(&pkt)
+            .map_err(|e| std::io::Error::other(format!("WinDivert send failed: {}", e)))?;
 
         Ok(())
     }

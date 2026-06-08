@@ -2,10 +2,12 @@ mod acl_manage;
 mod config;
 mod connector_manage;
 mod credential_manage;
+mod json_rpc;
 mod mapped_listener_manage;
 mod peer_center;
 mod peer_manage;
 mod port_forward_manage;
+pub(crate) mod protected_port;
 mod proxy;
 mod stats;
 mod vpn_portal;
@@ -16,6 +18,7 @@ pub mod logger;
 pub mod remote_client;
 
 pub type ApiRpcServer<T> = self::api::ApiRpcServer<T>;
+pub use json_rpc::call_json_rpc;
 
 pub trait InstanceRpcService: Sync + Send {
     fn get_peer_manage_service(
@@ -100,12 +103,10 @@ fn get_instance_service(
                 if let Some(api::instance::instance_identifier::Selector::InstanceSelector(
                     selector,
                 )) = selector
+                    && let Some(name) = selector.name.as_ref()
+                    && v.get_inst_name() != *name
                 {
-                    if let Some(name) = selector.name.as_ref() {
-                        if v.get_inst_name() != *name {
-                            return false;
-                        }
-                    }
+                    return false;
                 }
                 true
             })
@@ -118,7 +119,7 @@ fn get_instance_service(
                 return Err(anyhow::anyhow!(
                     "{} instances match the selector, please specify the instance ID",
                     ids.len()
-                ))
+                ));
             }
         }
     };

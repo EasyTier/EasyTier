@@ -3,14 +3,15 @@ name = "easytier"
 description = "A full meshed p2p VPN, connecting all your devices in one network with one command."
 homepage = "https://github.com/EasyTier/EasyTier"
 repository = "https://github.com/EasyTier/EasyTier"
-version = "2.6.0"
-edition = "2021"
+version = "2.6.4"
+edition.workspace = true
+rust-version.workspace = true
 authors = ["kkrainbow"]
 keywords = ["vpn", "p2p", "network", "easytier"]
 categories = ["network-programming", "command-line-utilities"]
-rust-version = "1.93.0"
 license-file = "LICENSE"
 readme = "README.md"
+build = "build/main.rs"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -50,7 +51,9 @@ time = "0.3"
 toml = "0.8.12"
 chrono = { version = "0.4.37", features = ["serde"] }
 
-cfg-if = "1.0"
+guarden = "0.1"
+
+delegate = "0.13.5"
 
 itertools = "0.14.0"
 
@@ -62,12 +65,13 @@ futures = { version = "0.3", features = ["bilock", "unstable"] }
 
 tokio = { version = "1", features = ["full"] }
 tokio-stream = "0.1"
-tokio-util = { version = "0.7.9", features = ["codec", "net", "io"] }
+tokio-util = { version = "0.7.9", features = ["codec", "net", "io", "rt"] }
 
 async-stream = "0.3.5"
 async-trait = "0.1.74"
 
 dashmap = "6.0"
+moka = { version = "0.12", features = ["future"] }
 timedmap = "=1.0.1"
 
 # for full-path zero-copy
@@ -123,9 +127,11 @@ uuid = { version = "1.5.0", features = [
 once_cell = "1.18.0"
 
 # for rpc
-prost = "0.13.5"
-prost-wkt = "0.6"
-prost-wkt-types = "0.6"
+prost = "0.14.3"
+prost-reflect = { version = "0.16.4", default-features = false, features = ["derive"] }
+prost-wkt-types = "0.7.1"
+pbjson = "0.9.0"
+
 anyhow = "1.0"
 
 url = { version = "2.5", features = ["serde"] }
@@ -165,7 +171,6 @@ network-interface = "2.0"
 
 # for ospf route
 petgraph = "0.8.1"
-hashbrown = "0.15.3"
 ordered_hash_map = "0.5.0"
 
 # for wireguard
@@ -221,11 +226,7 @@ service-manager = { git = "https://github.com/EasyTier/service-manager-rs.git", 
 
 zstd = { version = "0.13", optional = true }
 
-kcp-sys = { git = "https://github.com/EasyTier/kcp-sys", rev = "94964794caaed5d388463137da59b97499619e5f", optional = true }
-
-prost-reflect = { version = "0.14.5", default-features = false, features = [
-    "derive",
-] }
+kcp-sys = { git = "https://github.com/EasyTier/kcp-sys", rev = "d7427c22d764deb1860a7d37acc446ed5033464c", optional = true }
 
 # for http connector
 http_req = { git = "https://github.com/EasyTier/http_req.git", default-features = false, features = [
@@ -242,6 +243,7 @@ hickory-server = { version = "0.25.2", features = [
     "resolver",
 ], optional = true }
 
+bon = "3.9.1"
 derive_builder = "0.20.2"
 humantime-serde = "1.1.1"
 multimap = "0.10.1"
@@ -252,6 +254,8 @@ shellexpand = "3.1.1"
 
 # for fake tcp
 flume = { version = "0.12", optional = true }
+igd-next = { version = "0.17.0", features = ["aio_tokio"] }
+natpmp = "0.5.0"
 
 [target.'cfg(any(target_os = "linux", target_os = "macos", target_os = "windows", target_os = "freebsd"))'.dependencies]
 machine-uid = "0.5.3"
@@ -272,11 +276,15 @@ windivert = { git = "https://github.com/EasyTier/windivert-rust.git", rev = "adc
 ] }
 
 [target.'cfg(windows)'.dependencies]
-windows = { version = "0.52.0", features = [
+windows = { version = "0.62.2", features = [
     "Win32_Foundation",
+    "Win32_NetworkManagement_IpHelper",
+    "Win32_NetworkManagement_Ndis",
     "Win32_NetworkManagement_WindowsFirewall",
-    "Win32_System_Com",
     "Win32_Networking",
+    "Win32_System_Com",
+    "Win32_System_Diagnostics",
+    "Win32_System_Diagnostics_Debug",
     "Win32_System_Ole",
     "Win32_System_Variant",
     "Win32_Networking_WinSock",
@@ -285,14 +293,6 @@ windows = { version = "0.52.0", features = [
 encoding = "0.2"
 winreg = "0.52"
 windows-service = "0.7.0"
-windows-sys = { version = "0.52", features = [
-    "Win32_NetworkManagement_IpHelper",
-    "Win32_NetworkManagement_Ndis",
-    "Win32_Networking_WinSock",
-    "Win32_Foundation",
-    "Win32_System_Diagnostics",
-    "Win32_System_Diagnostics_Debug",
-] }
 winapi = { version = "0.3.9", features = ["impl-default"] }
 
 [target.'cfg(not(windows))'.dependencies]
@@ -315,30 +315,21 @@ jemalloc-sys = { package = "tikv-jemalloc-sys", version = "0.6.0", features = [
 
 [build-dependencies]
 cfg_aliases = "0.2.1"
-tonic-build = "0.12"
+indoc = "2.0"
 globwalk = "0.8.1"
 regex = "1"
-prost-build = "0.13.5"
-prost-wkt-build = "0.6"
-easytier-rpc-build = { path = "../easytier-rpc-build", features = [
-    "internal-namespace",
+prost-build = "0.14.3"
+prost-reflect-build = "0.16.0"
+pbjson-build = "0.9.0"
+proc-macro2 = "1"
+quote = "1"
+thunk-rs = { git = "https://github.com/easytier/thunk.git", default-features = false, features = [
+    "win7",
 ] }
-prost-reflect-build = { version = "0.14.0" }
 
 [target.'cfg(windows)'.build-dependencies]
 reqwest = { version = "0.12.12", features = ["blocking"] }
 zip = "4.0.0"
-
-# enable thunk-rs when compiling for x86_64 or i686 windows
-[target.x86_64-pc-windows-msvc.build-dependencies]
-thunk-rs = { git = "https://github.com/easytier/thunk.git", default-features = false, features = [
-    "win7",
-] }
-
-[target.i686-pc-windows-msvc.build-dependencies]
-thunk-rs = { git = "https://github.com/easytier/thunk.git", default-features = false, features = [
-    "win7",
-] }
 
 
 [dev-dependencies]
@@ -347,6 +338,7 @@ rstest = "0.25.0"
 futures-util = "0.3.31"
 maplit = "1.0.2"
 tempfile = "3.22.0"
+ctor = "0.8.0"
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
 defguard_wireguard_rs = "0.4.2"
@@ -397,6 +389,7 @@ websocket = [
 ]
 smoltcp = ["dep:smoltcp"]
 socks5 = ["smoltcp"]
+ffi-dataplane = ["socks5"]
 jemalloc = ["dep:jemallocator", "dep:jemalloc-sys"]
 jemalloc-prof = [
     "jemalloc",

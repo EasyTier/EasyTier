@@ -1,14 +1,15 @@
 use axum::{
+    Router,
     extract::State,
     http::header,
     response::{IntoResponse, Response},
-    routing, Router,
+    routing,
 };
 use axum_embed::ServeEmbed;
-use easytier::common::scoped_task::ScopedTask;
 use rust_embed::RustEmbed;
 use std::net::SocketAddr;
 use tokio::net::TcpListener;
+use tokio_util::task::AbortOnDropHandle;
 
 /// Embed assets for web dashboard, build frontend first
 #[derive(RustEmbed, Clone)]
@@ -58,7 +59,7 @@ pub fn build_router(api_host: Option<url::Url>) -> Router {
 pub struct WebServer {
     bind_addr: SocketAddr,
     router: Router,
-    serve_task: Option<ScopedTask<()>>,
+    serve_task: Option<AbortOnDropHandle<()>>,
 }
 
 impl WebServer {
@@ -70,14 +71,13 @@ impl WebServer {
         })
     }
 
-    pub async fn start(self) -> Result<ScopedTask<()>, anyhow::Error> {
+    pub async fn start(self) -> Result<AbortOnDropHandle<()>, anyhow::Error> {
         let listener = TcpListener::bind(self.bind_addr).await?;
         let app = self.router;
 
-        let task = tokio::spawn(async move {
+        let task = AbortOnDropHandle::new(tokio::spawn(async move {
             axum::serve(listener, app).await.unwrap();
-        })
-        .into();
+        }));
 
         Ok(task)
     }

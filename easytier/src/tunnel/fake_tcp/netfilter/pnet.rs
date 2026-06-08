@@ -2,8 +2,8 @@ use std::{
     io,
     net::{IpAddr, SocketAddr},
     sync::{
-        atomic::{AtomicU32, Ordering},
         Arc, Weak,
+        atomic::{AtomicU32, Ordering},
     },
 };
 
@@ -25,10 +25,10 @@ fn filter_tcp_packet(
     src_addr: Option<&SocketAddr>,
     dst_addr: Option<&SocketAddr>,
 ) -> bool {
+    use pnet::packet::Packet;
     use pnet::packet::ethernet::EthernetPacket;
     use pnet::packet::ipv4::Ipv4Packet;
     use pnet::packet::tcp::TcpPacket;
-    use pnet::packet::Packet;
 
     let ethernet = if let Some(ethernet) = EthernetPacket::new(packet) {
         ethernet

@@ -10,22 +10,23 @@ use tokio::sync::RwLock;
 
 use crate::{
     common::{
+        PeerId,
         error::Error,
         global_ctx::{ArcGlobalCtx, GlobalCtxEvent, NetworkIdentity},
-        shrink_dashmap, PeerId,
+        shrink_dashmap,
     },
     proto::{
         api::instance::{self, PeerConnInfo},
         peer_rpc::{PeerIdentityType, RoutePeerInfo},
     },
-    tunnel::{packet_def::ZCPacket, TunnelError},
+    tunnel::{TunnelError, packet_def::ZCPacket},
 };
 
 use super::{
+    PacketRecvChan,
     peer::Peer,
     peer_conn::{PeerConn, PeerConnId},
     route_trait::{ArcRoute, NextHopPolicy},
-    PacketRecvChan,
 };
 
 pub struct PeerMap {

@@ -1,5 +1,7 @@
 pub mod config {
     include!(concat!(env!("OUT_DIR"), "/api.config.rs"));
+    include!(concat!(env!("OUT_DIR"), "/api.config.serde.rs"));
+
     pub struct Patchable<T> {
         pub action: Option<ConfigPatchAction>,
         pub value: Option<T>,
@@ -77,6 +79,7 @@ pub mod config {
 
 pub mod instance {
     include!(concat!(env!("OUT_DIR"), "/api.instance.rs"));
+    include!(concat!(env!("OUT_DIR"), "/api.instance.serde.rs"));
 
     impl PeerRoutePair {
         pub fn get_latency_ms(&self) -> Option<f64> {
@@ -110,11 +113,7 @@ pub mod instance {
                 ret += stats.rx_bytes;
             }
 
-            if ret == 0 {
-                None
-            } else {
-                Some(ret)
-            }
+            if ret == 0 { None } else { Some(ret) }
         }
 
         pub fn get_tx_bytes(&self) -> Option<u64> {
@@ -127,11 +126,7 @@ pub mod instance {
                 ret += stats.tx_bytes;
             }
 
-            if ret == 0 {
-                None
-            } else {
-                Some(ret)
-            }
+            if ret == 0 { None } else { Some(ret) }
         }
 
         pub fn get_loss_rate(&self) -> Option<f64> {
@@ -149,23 +144,8 @@ pub mod instance {
             ret
         }
 
-        fn is_tunnel_ipv6(tunnel_info: &super::super::common::TunnelInfo) -> bool {
-            let Some(local_addr) = &tunnel_info.local_addr else {
-                return false;
-            };
-
-            let u: url::Url = local_addr.clone().into();
-            u.host()
-                .map(|h| matches!(h, url::Host::Ipv6(_)))
-                .unwrap_or(false)
-        }
-
         fn get_tunnel_proto_str(tunnel_info: &super::super::common::TunnelInfo) -> String {
-            if Self::is_tunnel_ipv6(tunnel_info) {
-                format!("{}6", tunnel_info.tunnel_type)
-            } else {
-                tunnel_info.tunnel_type.clone()
-            }
+            tunnel_info.display_tunnel_type()
         }
 
         pub fn get_conn_protos(&self) -> Option<Vec<String>> {
@@ -182,11 +162,7 @@ pub mod instance {
                 }
             }
 
-            if ret.is_empty() {
-                None
-            } else {
-                Some(ret)
-            }
+            if ret.is_empty() { None } else { Some(ret) }
         }
 
         pub fn get_udp_nat_type(&self) -> String {
@@ -256,10 +232,12 @@ pub mod instance {
 
 pub mod logger {
     include!(concat!(env!("OUT_DIR"), "/api.logger.rs"));
+    include!(concat!(env!("OUT_DIR"), "/api.logger.serde.rs"));
 }
 
 pub mod manage {
     include!(concat!(env!("OUT_DIR"), "/api.manage.rs"));
+    include!(concat!(env!("OUT_DIR"), "/api.manage.serde.rs"));
 }
 
 #[cfg(test)]
@@ -381,9 +359,10 @@ mod tests {
             ..Default::default()
         };
 
-        assert!(pair
-            .get_loss_rate()
-            .is_some_and(|loss_rate| (loss_rate - 0.4).abs() < 1e-6));
+        assert!(
+            pair.get_loss_rate()
+                .is_some_and(|loss_rate| (loss_rate - 0.4).abs() < 1e-6)
+        );
     }
 
     #[test]

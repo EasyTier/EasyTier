@@ -18,6 +18,7 @@ export interface ServiceMode extends WebClientConfig {
     rpc_portal: string
     file_log_level: 'off' | 'warn' | 'info' | 'debug' | 'trace'
     file_log_dir: string
+    installed_core_version?: string
 }
 
 export interface RemoteMode {

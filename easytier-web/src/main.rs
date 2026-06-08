@@ -7,7 +7,7 @@ use std::net::IpAddr;
 use std::sync::Arc;
 
 use clap::Parser;
-use easytier::tunnel::websocket::WSTunnelListener;
+use easytier::tunnel::websocket::WsTunnelListener;
 use easytier::{
     common::{
         config::{ConsoleLoggerConfig, FileLoggerConfig, LoggingConfigLoader},
@@ -16,10 +16,12 @@ use easytier::{
         log,
         network::{local_ipv4, local_ipv6},
     },
-    tunnel::{tcp::TcpTunnelListener, udp::UdpTunnelListener, TunnelListener},
-    utils::setup_panic_handler,
+    tunnel::{TunnelListener, tcp::TcpTunnelListener, udp::UdpTunnelListener},
+    utils::panic::setup_panic_handler,
 };
 
+use easytier::tunnel::IpScheme;
+use easytier::utils::BoxExt;
 use mimalloc::MiMalloc;
 
 mod client_manager;
@@ -39,23 +41,32 @@ rust_i18n::i18n!("locales", fallback = "en");
 #[derive(Parser, Debug)]
 #[command(name = "easytier-web", author, version = EASYTIER_VERSION , about, long_about = None)]
 struct Cli {
-    #[arg(short, long, default_value = "et.db", help = t!("cli.db").to_string())]
+    #[arg(
+        short,
+        long,
+        env = "ET_WEB_DB",
+        default_value = "et.db",
+        help = t!("cli.db").to_string()
+    )]
     db: String,
 
     #[arg(
         long,
+        env = "ET_WEB_CONSOLE_LOG_LEVEL",
         help = t!("cli.console_log_level").to_string(),
     )]
     console_log_level: Option<String>,
 
     #[arg(
         long,
+        env = "ET_WEB_FILE_LOG_LEVEL",
         help = t!("cli.file_log_level").to_string(),
     )]
     file_log_level: Option<String>,
 
     #[arg(
         long,
+        env = "ET_WEB_FILE_LOG_DIR",
         help = t!("cli.file_log_dir").to_string(),
     )]
     file_log_dir: Option<String>,
@@ -63,6 +74,7 @@ struct Cli {
     #[arg(
         long,
         short='c',
+        env = "ET_CONFIG_SERVER_PORT",
         default_value = "22020",
         help = t!("cli.config_server_port").to_string(),
     )]
@@ -71,6 +83,7 @@ struct Cli {
     #[arg(
         long,
         short='p',
+        env = "ET_CONFIG_SERVER_PROTOCOL",
         default_value = "udp",
         help = t!("cli.config_server_protocol").to_string(),
     )]
@@ -79,6 +92,7 @@ struct Cli {
     #[arg(
         long,
         short='a',
+        env = "ET_API_SERVER_PORT",
         default_value = "11211",
         help = t!("cli.api_server_port").to_string(),
     )]
@@ -86,6 +100,7 @@ struct Cli {
 
     #[arg(
         long,
+        env = "ET_API_SERVER_ADDR",
         default_value = "0.0.0.0",
         help = t!("cli.api_server_addr").to_string(),
     )]
@@ -93,6 +108,7 @@ struct Cli {
 
     #[arg(
         long,
+        env = "ET_GEOIP_DB",
         help = t!("cli.geoip_db").to_string(),
     )]
     geoip_db: Option<String>,
@@ -101,6 +117,7 @@ struct Cli {
     #[arg(
         long,
         short='l',
+        env = "ET_WEB_SERVER_PORT",
         help = t!("cli.web_server_port").to_string(),
     )]
     web_server_port: Option<u16>,
@@ -108,6 +125,7 @@ struct Cli {
     #[cfg(feature = "embed")]
     #[arg(
         long,
+        env = "ET_WEB_SERVER_ADDR",
         default_value = "0.0.0.0",
         help = t!("cli.web_server_addr").to_string(),
     )]
@@ -116,6 +134,7 @@ struct Cli {
     #[cfg(feature = "embed")]
     #[arg(
         long,
+        env = "ET_NO_WEB",
         help = t!("cli.no_web").to_string(),
         default_value = "false"
     )]
@@ -124,6 +143,7 @@ struct Cli {
     #[cfg(feature = "embed")]
     #[arg(
         long,
+        env = "ET_API_HOST",
         help = t!("cli.api_host").to_string()
     )]
     api_host: Option<url::Url>,
@@ -142,35 +162,45 @@ struct Cli {
 pub struct WebhookOptions {
     /// Base URL of the webhook endpoint for token validation and event delivery.
     /// When set, incoming tokens are validated via this webhook before local fallback.
-    #[arg(long)]
+    #[arg(long, env = "ET_WEBHOOK_URL")]
     pub webhook_url: Option<String>,
 
     /// Shared secret used to authenticate outbound webhook calls.
-    #[arg(long)]
+    #[arg(long, env = "ET_WEBHOOK_SECRET", hide_env_values = true)]
     pub webhook_secret: Option<String>,
 
     /// Token for X-Internal-Auth header. When set, API requests with this header
     /// bypass session authentication.
-    #[arg(long)]
+    #[arg(long, env = "ET_INTERNAL_AUTH_TOKEN", hide_env_values = true)]
     pub internal_auth_token: Option<String>,
 
     /// Stable identifier for this easytier-web instance when routing webhook callbacks.
-    #[arg(long)]
+    #[arg(long, env = "ET_WEB_INSTANCE_ID")]
     pub web_instance_id: Option<String>,
 
     /// Reachable base URL for this easytier-web instance's internal REST API.
-    #[arg(long)]
+    #[arg(long, env = "ET_WEB_INSTANCE_API_BASE_URL")]
     pub web_instance_api_base_url: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, clap::Args)]
 pub struct FeatureFlags {
     /// Whether user registration via the web UI is disabled.
-    #[arg(long, default_value = "false", help = t!("cli.disable_registration").to_string())]
+    #[arg(
+        long,
+        env = "ET_DISABLE_REGISTRATION",
+        default_value = "false",
+        help = t!("cli.disable_registration").to_string()
+    )]
     pub disable_registration: bool,
 
     /// Whether to auto-create users when they connect via heartbeat with an unknown token.
-    #[arg(long, default_value = "false", help = t!("cli.allow_auto_create_user").to_string())]
+    #[arg(
+        long,
+        env = "ET_ALLOW_AUTO_CREATE_USER",
+        default_value = "false",
+        help = t!("cli.allow_auto_create_user").to_string()
+    )]
     pub allow_auto_create_user: bool,
 }
 
@@ -192,14 +222,12 @@ impl LoggingConfigLoader for &Cli {
     }
 }
 
-pub fn get_listener_by_url(l: &url::Url) -> Result<Box<dyn TunnelListener>, Error> {
-    Ok(match l.scheme() {
-        "tcp" => Box::new(TcpTunnelListener::new(l.clone())),
-        "udp" => Box::new(UdpTunnelListener::new(l.clone())),
-        "ws" => Box::new(WSTunnelListener::new(l.clone())),
-        _ => {
-            return Err(Error::InvalidUrl(l.to_string()));
-        }
+pub fn get_listener_by_url(scheme: IpScheme, l: &url::Url) -> Option<Box<dyn TunnelListener>> {
+    Some(match scheme {
+        IpScheme::Tcp => TcpTunnelListener::new(l.clone()).boxed(),
+        IpScheme::Udp => UdpTunnelListener::new(l.clone()).boxed(),
+        IpScheme::Ws => WsTunnelListener::new(l.clone()).boxed(),
+        _ => return None,
     })
 }
 
@@ -213,15 +241,23 @@ async fn get_dual_stack_listener(
     ),
     Error,
 > {
-    let is_protocol_support_dual_stack =
-        protocol.trim().to_lowercase() == "tcp" || protocol.trim().to_lowercase() == "udp";
-    let v6_listener = if is_protocol_support_dual_stack && local_ipv6().await.is_ok() {
-        get_listener_by_url(&format!("{}://[::0]:{}", protocol, port).parse().unwrap()).ok()
-    } else {
-        None
-    };
+    let scheme = protocol
+        .parse()
+        .map_err(|_| Error::InvalidUrl(protocol.to_string()))?;
+    let v6_listener =
+        if local_ipv6().await.is_ok() && matches!(scheme, IpScheme::Tcp | IpScheme::Udp) {
+            get_listener_by_url(
+                scheme,
+                &format!("{protocol}://[::]:{port}").parse().unwrap(),
+            )
+        } else {
+            None
+        };
     let v4_listener = if local_ipv4().await.is_ok() {
-        get_listener_by_url(&format!("{}://0.0.0.0:{}", protocol, port).parse().unwrap()).ok()
+        get_listener_by_url(
+            scheme,
+            &format!("{protocol}://0.0.0.0:{port}").parse().unwrap(),
+        )
     } else {
         None
     };

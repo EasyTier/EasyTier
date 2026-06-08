@@ -1,7 +1,7 @@
 use std::ops::{Div, Mul};
 
-use axum::extract::{Path, State};
 use axum::Json;
+use axum::extract::{Path, State};
 use sea_orm::{
     ColumnTrait, Condition, EntityTrait, IntoActiveModel, ModelTrait, Order, PaginatorTrait,
     QueryFilter, QueryOrder, QuerySelect, Set, TryIntoModel,
@@ -14,7 +14,7 @@ use crate::api::{
     models::*,
 };
 use crate::db::entity::{self, health_records, shared_nodes};
-use crate::db::{operations::*, Db};
+use crate::db::{Db, operations::*};
 use crate::health_checker_manager::HealthCheckerManager;
 use axum_extra::extract::Query;
 use std::sync::Arc;
@@ -273,7 +273,7 @@ pub struct InstanceFilterParams {
 use crate::config::AppConfig;
 use axum::http::{HeaderMap, StatusCode};
 use chrono::{Duration, Utc};
-use jsonwebtoken::{decode, encode, DecodingKey, EncodingKey, Header, Validation};
+use jsonwebtoken::{DecodingKey, EncodingKey, Header, Validation, decode, encode};
 use serde::Serialize;
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -370,19 +370,19 @@ pub async fn admin_get_nodes(
         let ids = NodeOperations::filter_node_ids_by_tag(&app_state.db, &tag).await?;
         filtered_ids = Some(ids);
     }
-    if let Some(tags) = filters.tags {
-        if !tags.is_empty() {
-            let ids_any = NodeOperations::filter_node_ids_by_tags_any(&app_state.db, &tags).await?;
-            filtered_ids = match filtered_ids {
-                Some(mut existing) => {
-                    existing.extend(ids_any);
-                    existing.sort();
-                    existing.dedup();
-                    Some(existing)
-                }
-                None => Some(ids_any),
-            };
-        }
+    if let Some(tags) = filters.tags
+        && !tags.is_empty()
+    {
+        let ids_any = NodeOperations::filter_node_ids_by_tags_any(&app_state.db, &tags).await?;
+        filtered_ids = match filtered_ids {
+            Some(mut existing) => {
+                existing.extend(ids_any);
+                existing.sort();
+                existing.dedup();
+                Some(existing)
+            }
+            None => Some(ids_any),
+        };
     }
     if let Some(ids) = filtered_ids {
         if ids.is_empty() {
