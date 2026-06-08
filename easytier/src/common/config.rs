@@ -185,6 +185,9 @@ pub trait ConfigLoader: Send + Sync {
     fn get_dhcp(&self) -> bool;
     fn set_dhcp(&self, dhcp: bool);
 
+    fn get_dhcp_cidr(&self) -> Option<cidr::Ipv4Cidr>;
+    fn set_dhcp_cidr(&self, cidr: Option<cidr::Ipv4Cidr>);
+
     fn add_proxy_cidr(
         &self,
         cidr: cidr::Ipv4Cidr,
@@ -535,6 +538,7 @@ struct Config {
     ipv6_public_addr_auto: Option<bool>,
     ipv6_public_addr_prefix: Option<String>,
     dhcp: Option<bool>,
+    dhcp_cidr: Option<String>,
     network_identity: Option<NetworkIdentity>,
     listeners: Option<Vec<url::Url>>,
     mapped_listeners: Option<Vec<url::Url>>,
@@ -766,6 +770,18 @@ impl ConfigLoader for TomlConfigLoader {
 
     fn set_dhcp(&self, dhcp: bool) {
         self.config.lock().unwrap().dhcp = Some(dhcp);
+    }
+
+    fn get_dhcp_cidr(&self) -> Option<cidr::Ipv4Cidr> {
+        let locked_config = self.config.lock().unwrap();
+        locked_config
+            .dhcp_cidr
+            .as_ref()
+            .and_then(|s| s.parse().ok())
+    }
+
+    fn set_dhcp_cidr(&self, cidr: Option<cidr::Ipv4Cidr>) {
+        self.config.lock().unwrap().dhcp_cidr = cidr.map(|c| c.to_string());
     }
 
     fn add_proxy_cidr(

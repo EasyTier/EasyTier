@@ -637,6 +637,11 @@ impl NetworkConfig {
         );
         cfg.set_hostname(self.hostname.clone());
         cfg.set_dhcp(self.dhcp.unwrap_or_default());
+        if let Some(ref dhcp_cidr) = self.dhcp_cidr {
+            if let Ok(cidr) = dhcp_cidr.parse::<cidr::Ipv4Cidr>() {
+                cfg.set_dhcp_cidr(Some(cidr));
+            }
+        }
         cfg.set_inst_name(self.network_name.clone().unwrap_or_default());
 
         // The web UI does not expose credential inputs directly, but imported/saved
@@ -1019,6 +1024,7 @@ impl NetworkConfig {
         }
 
         result.dhcp = Some(config.get_dhcp());
+        result.dhcp_cidr = config.get_dhcp_cidr().map(|c| c.to_string());
 
         let network_identity = config.get_network_identity();
         result.network_name = Some(network_identity.network_name.clone());

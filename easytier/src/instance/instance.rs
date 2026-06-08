@@ -829,7 +829,11 @@ impl Instance {
         let nic_ctx = self.nic_ctx.clone();
         let _peer_packet_receiver = self.peer_packet_receiver.clone();
         tokio::spawn(async move {
-            let default_ipv4_addr = Ipv4Inet::new(Ipv4Addr::new(10, 126, 126, 0), 24).unwrap();
+            let default_ipv4_addr = if let Some(dhcp_cidr) = global_ctx_c.config.get_dhcp_cidr() {
+                Ipv4Inet::new(dhcp_cidr.first_address(), dhcp_cidr.network_length()).unwrap()
+            } else {
+                Ipv4Inet::new(Ipv4Addr::new(10, 126, 126, 0), 24).unwrap()
+            };
             let mut current_dhcp_ip: Option<Ipv4Inet> = None;
             let mut next_sleep_time = 0;
             let nic_closed_notifier = Arc::new(Notify::new());
@@ -864,7 +868,11 @@ impl Instance {
                     used_ipv4.insert(peer_ipv4_addr.into());
                 }
 
-                let dhcp_inet = used_ipv4.iter().next().unwrap_or(&default_ipv4_addr);
+                let dhcp_inet = if global_ctx_c.config.get_dhcp_cidr().is_some() {
+                    &default_ipv4_addr
+                } else {
+                    used_ipv4.iter().next().unwrap_or(&default_ipv4_addr)
+                };
                 // if old ip is already in this subnet and not conflicted, use it
                 if let Some(ip) = current_dhcp_ip
                     && ip.network() == dhcp_inet.network()

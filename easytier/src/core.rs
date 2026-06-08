@@ -204,7 +204,7 @@ struct NetworkOptions {
         num_args = 0..=1,
         default_missing_value = "true"
     )]
-    dhcp: Option<bool>,
+    dhcp: Option<String>,
 
     #[arg(
         short,
@@ -907,8 +907,19 @@ impl NetworkOptions {
             cfg.set_network_identity(NetworkIdentity::new_credential(network_name));
         }
 
-        if let Some(dhcp) = self.dhcp {
-            cfg.set_dhcp(dhcp);
+        if let Some(ref dhcp) = self.dhcp {
+            if dhcp == "true" || dhcp == "1" {
+                cfg.set_dhcp(true);
+            } else if dhcp == "false" || dhcp == "0" {
+                cfg.set_dhcp(false);
+            } else {
+                // Treat as CIDR, e.g. "10.0.0.0/24"
+                cfg.set_dhcp(true);
+                let cidr: cidr::Ipv4Cidr = dhcp.parse().with_context(|| {
+                    format!("failed to parse dhcp cidr: {}", dhcp)
+                })?;
+                cfg.set_dhcp_cidr(Some(cidr));
+            }
         }
 
         if let Some(ipv4) = &self.ipv4 {
