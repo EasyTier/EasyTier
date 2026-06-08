@@ -331,7 +331,7 @@ mod tests {
             (user_id, device_id),
             inst_id,
             network_config,
-            ConfigSource::Webhook,
+            ConfigSource::Web,
         )
         .await
         .unwrap();
@@ -344,10 +344,10 @@ mod tests {
             .unwrap();
         println!("device: {}, {:?}", device_id, result2);
         assert_eq!(result2.network_config, network_config_json);
-        assert_eq!(result2.get_network_config_source(), ConfigSource::Webhook);
+        assert_eq!(result2.get_network_config_source(), ConfigSource::Web);
         assert_eq!(
             result2.get_runtime_network_config_source(),
-            ConfigSource::Webhook
+            ConfigSource::Web
         );
 
         assert_eq!(result.create_time, result2.create_time);
@@ -373,7 +373,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_legacy_network_config_defaults_to_user_runtime_source() {
+    async fn test_unknown_network_config_source_defaults_to_user_runtime_source() {
         let db = Db::memory_db().await;
         let user_id = 1;
         let inst_id = uuid::Uuid::new_v4();
@@ -384,11 +384,11 @@ mod tests {
             device_id: Set(device_id.to_string()),
             network_instance_id: Set(inst_id.to_string()),
             network_config: Set(serde_json::to_string(&NetworkConfig {
-                network_name: Some("legacy".to_string()),
+                network_name: Some("unknown-source".to_string()),
                 ..Default::default()
             })
             .unwrap()),
-            source: Set("legacy".to_string()),
+            source: Set("unknown".to_string()),
             disabled: Set(false),
             create_time: Set(sqlx::types::chrono::Local::now().fixed_offset()),
             update_time: Set(sqlx::types::chrono::Local::now().fixed_offset()),

@@ -57,6 +57,8 @@ pub struct ValidateTokenRequest {
     pub os_distribution: Option<String>,
     pub web_instance_id: Option<String>,
     pub web_instance_api_base_url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub applied_config_revision: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -66,7 +68,8 @@ pub struct ValidateTokenResponse {
     pub pre_approved: bool,
     #[serde(default)]
     pub binding_version: u64,
-    pub managed_network_configs: Vec<ManagedNetworkConfig>,
+    #[serde(default)]
+    pub managed_network_configs: Option<Vec<ManagedNetworkConfig>>,
     pub config_revision: String,
 }
 
@@ -184,3 +187,17 @@ impl WebhookConfig {
 }
 
 pub type SharedWebhookConfig = Arc<WebhookConfig>;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn validate_token_response_allows_missing_managed_configs() {
+        let resp: ValidateTokenResponse =
+            serde_json::from_str(r#"{"valid":true,"config_revision":"rev-1"}"#).unwrap();
+        assert!(resp.valid);
+        assert_eq!(resp.config_revision, "rev-1");
+        assert!(resp.managed_network_configs.is_none());
+    }
+}

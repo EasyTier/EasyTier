@@ -9,8 +9,10 @@
 //! - `run_network_instance`: start one local network instance from TOML.
 //! - `retain_network_instance`: keep named instances and stop all others.
 //! - `delete_network_instance`: stop named local network instances.
+//! - `list_instance`: list running instance names and IDs.
 //! - `collect_network_infos`: collect running instance info as key/value pairs.
 //! - `set_tun_fd`: attach a TUN file descriptor to a named instance.
+//! - `call_json_rpc`: call an exposed EasyTier RPC service with JSON payload.
 //!
 //! Config server client APIs:
 //! - `start_config_server_client`: start the managed remote config client.
@@ -42,6 +44,7 @@ mod data_plane;
 mod data_plane_async;
 mod error;
 mod instance_api;
+mod json_rpc;
 mod state;
 mod strings;
 mod types;
@@ -140,6 +143,27 @@ pub unsafe extern "C" fn delete_network_instance(
     unsafe { instance_api::delete_network_instance(inst_names, length) }
 }
 
+/// List running network instance names and IDs.
+///
+/// Writes up to `max_length` entries into `infos`. Each returned key is the
+/// instance name and each returned value is the instance ID string. Returned
+/// key/value strings are allocated by this library and must be released with
+/// `free_string`.
+///
+/// This API fails if called from a config-server event callback.
+///
+/// # Safety
+/// If `max_length > 0`, `infos` must be a non-null pointer to writable storage
+/// for at least `max_length` `KeyValuePair` values.
+///
+/// # Return
+/// Returns the number of entries written, or `-1` on failure. On failure, call
+/// `get_error_msg` on the same thread to retrieve details.
+#[cfg_attr(feature = "c-abi", unsafe(no_mangle))]
+pub unsafe extern "C" fn list_instance(infos: *mut KeyValuePair, max_length: usize) -> c_int {
+    unsafe { instance_api::list_instance(infos, max_length) }
+}
+
 /// Collect running network instance information.
 ///
 /// Writes up to `max_length` entries into `infos`. Each returned key is the
@@ -179,6 +203,50 @@ pub unsafe extern "C" fn collect_network_infos(
 #[cfg_attr(feature = "c-abi", unsafe(no_mangle))]
 pub unsafe extern "C" fn set_tun_fd(inst_name: *const c_char, fd: c_int) -> c_int {
     unsafe { instance_api::set_tun_fd(inst_name, fd) }
+}
+
+/// Call an exposed EasyTier RPC method using protobuf JSON.
+///
+/// This generic bridge intentionally excludes instance lifecycle management
+/// RPCs. Use the dedicated FFI APIs for starting, retaining, deleting, and
+/// collecting instances. `payload_json` must contain the protobuf JSON request,
+/// including any `instance` selector required by the target RPC.
+///
+/// `domain_name` may be null or empty. It is only used by
+/// `api.instance.TcpProxyRpcService`; null or empty defaults to `tcp`, and the
+/// only accepted explicit values are `tcp`, `kcp_src`, `kcp_dst`, `quic_src`,
+/// and `quic_dst`.
+///
+/// On success, writes a newly allocated JSON response string to
+/// `out_response_json`. The caller must release it with `free_string`.
+///
+/// This API fails if called from a config-server event callback.
+///
+/// # Safety
+/// `service_name`, `method_name`, `payload_json`, and `out_response_json` must
+/// be non-null. String pointers must point to null-terminated UTF-8 strings.
+/// `domain_name` may be null.
+///
+/// # Return
+/// Returns `0` on success, or `-1` on failure. On failure, call
+/// `get_error_msg` on the same thread to retrieve details.
+#[cfg_attr(feature = "c-abi", unsafe(no_mangle))]
+pub unsafe extern "C" fn call_json_rpc(
+    service_name: *const c_char,
+    method_name: *const c_char,
+    domain_name: *const c_char,
+    payload_json: *const c_char,
+    out_response_json: *mut *const c_char,
+) -> c_int {
+    unsafe {
+        json_rpc::call_json_rpc(
+            service_name,
+            method_name,
+            domain_name,
+            payload_json,
+            out_response_json,
+        )
+    }
 }
 
 // ===== Config Server Client API =====
@@ -551,6 +619,15 @@ pub extern "C" fn data_plane_free_bytes(ptr: *const c_uchar, len: u32) {
     data_plane_async::data_plane_free_bytes(ptr, len)
 }
 
+/// Start an asynchronous TCP data-plane connection.
+///
+/// # Safety
+/// `inst_name` and `dst_ip` must be non-null pointers to null-terminated UTF-8
+/// strings. The strings only need to remain valid for the duration of this
+/// call.
+///
+/// # Return
+/// Returns a non-zero async operation handle on success, or `0` on failure.
 #[cfg(feature = "ffi-dataplane")]
 #[cfg_attr(feature = "c-abi", unsafe(no_mangle))]
 pub unsafe extern "C" fn data_plane_tcp_connect_start(
@@ -564,6 +641,18 @@ pub unsafe extern "C" fn data_plane_tcp_connect_start(
     }
 }
 
+/// Finish an asynchronous TCP data-plane connection.
+///
+/// On success, writes the stream local address into `out_local_ip` and
+/// `out_local_port`. The returned IP string is allocated by this library and
+/// must be released with `free_string`.
+///
+/// # Safety
+/// `out_local_ip` and `out_local_port` must be non-null pointers to writable
+/// storage.
+///
+/// # Return
+/// Returns a non-zero TCP stream handle on success, or `0` on failure.
 #[cfg(feature = "ffi-dataplane")]
 #[cfg_attr(feature = "c-abi", unsafe(no_mangle))]
 pub unsafe extern "C" fn data_plane_tcp_connect_finish(
@@ -576,6 +665,14 @@ pub unsafe extern "C" fn data_plane_tcp_connect_finish(
     }
 }
 
+/// Start an asynchronous TCP data-plane bind.
+///
+/// # Safety
+/// `inst_name` must be a non-null pointer to a null-terminated UTF-8 string.
+/// The string only needs to remain valid for the duration of this call.
+///
+/// # Return
+/// Returns a non-zero async operation handle on success, or `0` on failure.
 #[cfg(feature = "ffi-dataplane")]
 #[cfg_attr(feature = "c-abi", unsafe(no_mangle))]
 pub unsafe extern "C" fn data_plane_tcp_bind_start(
@@ -586,6 +683,18 @@ pub unsafe extern "C" fn data_plane_tcp_bind_start(
     unsafe { data_plane_async::data_plane_tcp_bind_start(inst_name, local_port, timeout_ms) }
 }
 
+/// Finish an asynchronous TCP data-plane bind.
+///
+/// On success, writes the listener local address into `out_local_ip` and
+/// `out_local_port`. The returned IP string is allocated by this library and
+/// must be released with `free_string`.
+///
+/// # Safety
+/// `out_local_ip` and `out_local_port` must be non-null pointers to writable
+/// storage.
+///
+/// # Return
+/// Returns a non-zero TCP listener handle on success, or `0` on failure.
 #[cfg(feature = "ffi-dataplane")]
 #[cfg_attr(feature = "c-abi", unsafe(no_mangle))]
 pub unsafe extern "C" fn data_plane_tcp_bind_finish(
@@ -596,12 +705,33 @@ pub unsafe extern "C" fn data_plane_tcp_bind_finish(
     unsafe { data_plane_async::data_plane_tcp_bind_finish(op_handle, out_local_ip, out_local_port) }
 }
 
+/// Start an asynchronous TCP data-plane accept on a listener handle.
+///
+/// # Safety
+/// `handle` must be a valid TCP listener handle returned by
+/// `data_plane_tcp_bind` or `data_plane_tcp_bind_finish`.
+///
+/// # Return
+/// Returns a non-zero async operation handle on success, or `0` on failure.
 #[cfg(feature = "ffi-dataplane")]
 #[cfg_attr(feature = "c-abi", unsafe(no_mangle))]
 pub unsafe extern "C" fn data_plane_tcp_accept_start(handle: u64, timeout_ms: u64) -> u64 {
     unsafe { data_plane_async::data_plane_tcp_accept_start(handle, timeout_ms) }
 }
 
+/// Finish an asynchronous TCP data-plane accept.
+///
+/// On success, writes the accepted stream local address into `out_local_ip` and
+/// `out_local_port`, and the peer address into `out_peer_ip` and
+/// `out_peer_port`. Returned IP strings are allocated by this library and must
+/// be released with `free_string`.
+///
+/// # Safety
+/// `out_local_ip`, `out_local_port`, `out_peer_ip`, and `out_peer_port` must be
+/// non-null pointers to writable storage.
+///
+/// # Return
+/// Returns a non-zero TCP stream handle on success, or `0` on failure.
 #[cfg(feature = "ffi-dataplane")]
 #[cfg_attr(feature = "c-abi", unsafe(no_mangle))]
 pub unsafe extern "C" fn data_plane_tcp_accept_finish(
@@ -622,6 +752,14 @@ pub unsafe extern "C" fn data_plane_tcp_accept_finish(
     }
 }
 
+/// Start an asynchronous TCP data-plane read.
+///
+/// # Safety
+/// `handle` must be a valid TCP stream handle returned by
+/// `data_plane_tcp_connect_finish` or `data_plane_tcp_accept_finish`.
+///
+/// # Return
+/// Returns a non-zero async operation handle on success, or `0` on failure.
 #[cfg(feature = "ffi-dataplane")]
 #[cfg_attr(feature = "c-abi", unsafe(no_mangle))]
 pub unsafe extern "C" fn data_plane_tcp_read_start(
@@ -632,6 +770,17 @@ pub unsafe extern "C" fn data_plane_tcp_read_start(
     unsafe { data_plane_async::data_plane_tcp_read_start(handle, max_len, timeout_ms) }
 }
 
+/// Finish an asynchronous TCP data-plane read.
+///
+/// On success, writes the received buffer pointer and length into `out_buf` and
+/// `out_len`. The returned buffer is allocated by this library and must be
+/// released with `data_plane_free_bytes`.
+///
+/// # Safety
+/// `out_buf` and `out_len` must be non-null pointers to writable storage.
+///
+/// # Return
+/// Returns the number of bytes read, or `-1` on failure.
 #[cfg(feature = "ffi-dataplane")]
 #[cfg_attr(feature = "c-abi", unsafe(no_mangle))]
 pub unsafe extern "C" fn data_plane_tcp_read_finish(
@@ -642,6 +791,17 @@ pub unsafe extern "C" fn data_plane_tcp_read_finish(
     unsafe { data_plane_async::data_plane_tcp_read_finish(op_handle, out_buf, out_len) }
 }
 
+/// Start an asynchronous TCP data-plane write.
+///
+/// The input bytes are copied before this function returns.
+///
+/// # Safety
+/// `handle` must be a valid TCP stream handle returned by
+/// `data_plane_tcp_connect_finish` or `data_plane_tcp_accept_finish`. If `len`
+/// is non-zero, `buf` must be non-null and readable for `len` bytes.
+///
+/// # Return
+/// Returns a non-zero async operation handle on success, or `0` on failure.
 #[cfg(feature = "ffi-dataplane")]
 #[cfg_attr(feature = "c-abi", unsafe(no_mangle))]
 pub unsafe extern "C" fn data_plane_tcp_write_start(
@@ -659,6 +819,14 @@ pub extern "C" fn data_plane_tcp_write_finish(op_handle: u64) -> c_int {
     data_plane_async::data_plane_tcp_write_finish(op_handle)
 }
 
+/// Start an asynchronous UDP data-plane bind.
+///
+/// # Safety
+/// `inst_name` must be a non-null pointer to a null-terminated UTF-8 string.
+/// The string only needs to remain valid for the duration of this call.
+///
+/// # Return
+/// Returns a non-zero async operation handle on success, or `0` on failure.
 #[cfg(feature = "ffi-dataplane")]
 #[cfg_attr(feature = "c-abi", unsafe(no_mangle))]
 pub unsafe extern "C" fn data_plane_udp_bind_start(
@@ -669,6 +837,18 @@ pub unsafe extern "C" fn data_plane_udp_bind_start(
     unsafe { data_plane_async::data_plane_udp_bind_start(inst_name, local_port, timeout_ms) }
 }
 
+/// Finish an asynchronous UDP data-plane bind.
+///
+/// On success, writes the socket local address into `out_local_ip` and
+/// `out_local_port`. The returned IP string is allocated by this library and
+/// must be released with `free_string`.
+///
+/// # Safety
+/// `out_local_ip` and `out_local_port` must be non-null pointers to writable
+/// storage.
+///
+/// # Return
+/// Returns a non-zero UDP socket handle on success, or `0` on failure.
 #[cfg(feature = "ffi-dataplane")]
 #[cfg_attr(feature = "c-abi", unsafe(no_mangle))]
 pub unsafe extern "C" fn data_plane_udp_bind_finish(
@@ -679,6 +859,18 @@ pub unsafe extern "C" fn data_plane_udp_bind_finish(
     unsafe { data_plane_async::data_plane_udp_bind_finish(op_handle, out_local_ip, out_local_port) }
 }
 
+/// Start an asynchronous UDP data-plane send.
+///
+/// The input bytes are copied before this function returns.
+///
+/// # Safety
+/// `handle` must be a valid UDP socket handle returned by
+/// `data_plane_udp_bind_finish`. `dst_ip` must be a non-null pointer to a
+/// null-terminated UTF-8 string. If `len` is non-zero, `buf` must be non-null
+/// and readable for `len` bytes.
+///
+/// # Return
+/// Returns a non-zero async operation handle on success, or `0` on failure.
 #[cfg(feature = "ffi-dataplane")]
 #[cfg_attr(feature = "c-abi", unsafe(no_mangle))]
 pub unsafe extern "C" fn data_plane_udp_send_to_start(
@@ -702,6 +894,14 @@ pub extern "C" fn data_plane_udp_send_to_finish(op_handle: u64) -> c_int {
     data_plane_async::data_plane_udp_send_to_finish(op_handle)
 }
 
+/// Start an asynchronous UDP data-plane receive.
+///
+/// # Safety
+/// `handle` must be a valid UDP socket handle returned by
+/// `data_plane_udp_bind_finish`.
+///
+/// # Return
+/// Returns a non-zero async operation handle on success, or `0` on failure.
 #[cfg(feature = "ffi-dataplane")]
 #[cfg_attr(feature = "c-abi", unsafe(no_mangle))]
 pub unsafe extern "C" fn data_plane_udp_recv_from_start(
@@ -712,6 +912,19 @@ pub unsafe extern "C" fn data_plane_udp_recv_from_start(
     unsafe { data_plane_async::data_plane_udp_recv_from_start(handle, max_len, timeout_ms) }
 }
 
+/// Finish an asynchronous UDP data-plane receive.
+///
+/// On success, writes the received buffer into `out_buf` and `out_len`, and
+/// the peer address into `out_ip` and `out_port`. The returned buffer is
+/// allocated by this library and must be released with `data_plane_free_bytes`;
+/// the returned IP string must be released with `free_string`.
+///
+/// # Safety
+/// `out_buf`, `out_len`, `out_ip`, and `out_port` must be non-null pointers to
+/// writable storage.
+///
+/// # Return
+/// Returns the number of bytes received, or `-1` on failure.
 #[cfg(feature = "ffi-dataplane")]
 #[cfg_attr(feature = "c-abi", unsafe(no_mangle))]
 pub unsafe extern "C" fn data_plane_udp_recv_from_finish(

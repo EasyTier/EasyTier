@@ -3,4 +3,6 @@ mod routing;
 mod socket_server;
 
 pub(crate) use routing::aggregate_requested_tun_routes;
-pub use socket_server::{start_local_socket_server, stop_local_socket_server};
+pub use socket_server::{
+    set_snapshot_broadcast_enabled, start_local_socket_server, stop_local_socket_server,
+};
