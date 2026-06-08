@@ -1818,4 +1818,83 @@ mod tests {
 
         assert!(InstanceConfigPatcher::validate_public_ipv6_patch(&global_ctx, &patch).is_ok());
     }
+
+    #[tokio::test]
+    async fn test_dhcp_cidr_allocates_ip_in_specified_subnet() {
+        use std::time::Duration;
+
+        use crate::common::config::{ConfigLoader, TomlConfigLoader};
+        use crate::instance::instance::Instance;
+        use crate::tunnel::common::tests::wait_for_condition;
+        use crate::tunnel::ring::RingTunnelConnector;
+
+        // inst1: static IP, no DHCP (acts as a peer so DHCP on inst2 can proceed)
+        let config1 = TomlConfigLoader::default();
+        config1.set_inst_name("dhcp_test_inst1".to_owned());
+        config1.set_ipv4(Some("192.168.200.1/24".parse().unwrap()));
+        let mut flags1 = config1.get_flags();
+        flags1.no_tun = true;
+        config1.set_flags(flags1);
+        config1.set_listeners(vec![]);
+
+        // inst2: DHCP enabled with specific CIDR
+        let config2 = TomlConfigLoader::default();
+        config2.set_inst_name("dhcp_test_inst2".to_owned());
+        config2.set_dhcp(true);
+        config2.set_dhcp_cidr(Some("172.20.0.0/24".parse().unwrap()));
+        let mut flags2 = config2.get_flags();
+        flags2.no_tun = true;
+        config2.set_flags(flags2);
+        config2.set_listeners(vec![]);
+
+        let mut inst1 = Instance::new(config1);
+        let mut inst2 = Instance::new(config2);
+
+        inst1.run().await.unwrap();
+        inst2.run().await.unwrap();
+
+        // Connect inst2 to inst1 via ring tunnel
+        inst2
+            .get_conn_manager()
+            .add_connector(RingTunnelConnector::new(
+                format!("ring://{}", inst1.id()).parse().unwrap(),
+            ));
+
+        // Wait for inst2 to see inst1 in routes
+        let pm2 = inst2.get_peer_manager();
+        wait_for_condition(
+            || async {
+                let routes = pm2.list_routes().await;
+                !routes.is_empty()
+            },
+            Duration::from_secs(5),
+        )
+        .await;
+
+        // Wait for DHCP to allocate an IP on inst2
+        let global_ctx2 = inst2.get_global_ctx();
+        wait_for_condition(
+            || async { global_ctx2.get_ipv4().is_some() },
+            Duration::from_secs(15),
+        )
+        .await;
+
+        // Verify allocated IP is within the specified CIDR 172.20.0.0/24
+        let allocated_ip = global_ctx2.get_ipv4().unwrap();
+        let expected_cidr: cidr::Ipv4Cidr = "172.20.0.0/24".parse().unwrap();
+        assert!(
+            expected_cidr.contains(&allocated_ip.address()),
+            "Allocated IP {:?} is not in expected CIDR {:?}",
+            allocated_ip,
+            expected_cidr
+        );
+        // Verify the network prefix length matches
+        assert_eq!(
+            allocated_ip.network_length(),
+            expected_cidr.network_length(),
+            "Allocated IP network length {} does not match expected {}",
+            allocated_ip.network_length(),
+            expected_cidr.network_length()
+        );
+    }
 }
