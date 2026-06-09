@@ -262,6 +262,60 @@ fn detect_public_ipv6_prefix_from_routes(
 }
 
 #[cfg(target_os = "linux")]
+fn detect_public_ipv6_prefix_from_interfaces() -> Option<Ipv6Cidr> {
+    use nix::ifaddrs::getifaddrs;
+    use nix::sys::socket::SockaddrLike;
+    use pnet::ipnetwork::ip_mask_to_prefix;
+
+    let interfaces = getifaddrs().ok()?;
+
+    let candidates: Vec<Ipv6Cidr> = interfaces
+        .filter_map(|iface| {
+            let address = iface.address?;
+            let netmask = iface.netmask?;
+
+            if address.family()? != nix::sys::socket::AddressFamily::Inet6 {
+                return None;
+            }
+
+            let ipv6_addr = address.as_sockaddr_in6()?.ip();
+
+            // filter out non-global addresses: loopback, multicast, link-local,
+            // unique-local (fc00::/7, fd00::/8), and unspecified
+            if ipv6_addr.is_loopback()
+                || ipv6_addr.is_multicast()
+                || ipv6_addr.is_unicast_link_local()
+                || ipv6_addr.is_unique_local()
+                || ipv6_addr.is_unspecified()
+            {
+                return None;
+            }
+
+            let netmask_ip = netmask.as_sockaddr_in6()?.ip();
+            let prefix_len = ip_mask_to_prefix(std::net::IpAddr::V6(netmask_ip)).ok()?;
+
+            // ISP-assigned prefixes are /64 or shorter; /128 is a single host address
+            if prefix_len > 64 {
+                return None;
+            }
+
+            // Ipv6Cidr::new() rejects addresses with host bits set (which is
+            // always the case for interface addresses). Use Ipv6Inet::new()
+            // instead, which accepts host addresses and can extract the
+            // containing network.
+            cidr::Ipv6Inet::new(ipv6_addr, prefix_len)
+                .ok()
+                .map(|inet| inet.network())
+        })
+        .collect();
+
+    // prefer the shortest prefix (widest scope)
+    candidates
+        .into_iter()
+        .min_by_key(|cidr| cidr.network_length())
+}
+
+#[cfg(target_os = "linux")]
 async fn detect_public_ipv6_prefix_linux() -> Result<Option<Ipv6Cidr>, Error> {
     let routes = list_ipv6_route_messages().with_context(|| "failed to query linux ipv6 routes")?;
     let routes = routes
@@ -272,10 +326,15 @@ async fn detect_public_ipv6_prefix_linux() -> Result<Option<Ipv6Cidr>, Error> {
     let loopback_ifindex =
         get_interface_index("lo").with_context(|| "failed to resolve linux loopback ifindex")?;
 
-    Ok(detect_public_ipv6_prefix_from_routes(
-        &routes,
-        loopback_ifindex,
-    ))
+    if let Some(prefix) = detect_public_ipv6_prefix_from_routes(&routes, loopback_ifindex) {
+        return Ok(Some(prefix));
+    }
+
+    // Fallback: scan interface addresses for DHCPv6 IA_NA / SLAAC direct
+    // assignment, where the prefix is on the WAN interface itself rather
+    // than delegated to a LAN interface via Prefix Delegation (PD).
+    // See https://github.com/EasyTier/EasyTier/issues/2333
+    Ok(detect_public_ipv6_prefix_from_interfaces())
 }
 
 #[cfg(not(target_os = "linux"))]
@@ -515,7 +574,8 @@ mod tests {
 
     #[cfg(target_os = "linux")]
     use super::{
-        DetectedIpv6Route, detect_public_ipv6_prefix_from_routes, detect_public_ipv6_prefix_linux,
+        DetectedIpv6Route, detect_public_ipv6_prefix_from_interfaces,
+        detect_public_ipv6_prefix_from_routes, detect_public_ipv6_prefix_linux,
         ensure_linux_ipv6_forwarding_at_paths, ensure_public_ipv6_provider_supported,
         public_ipv6_provider_auto_detect_error,
     };
@@ -857,6 +917,110 @@ mod tests {
             detect_public_ipv6_prefix_linux().await.unwrap(),
             Some("2001:db8:100::/56".parse().unwrap())
         );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[serial_test::serial]
+    #[tokio::test]
+    async fn test_detect_public_ipv6_prefix_linux_dhcpv6_ia_na_fallback() {
+        // DHCPv6 IA_NA scenario: prefix is directly on the WAN interface,
+        // with no delegated route on a LAN interface.
+        // The route-based detection should fail, and the interface-scanning
+        // fallback should pick up the prefix from the WAN address.
+        let wan_if = test_iface_name("ia");
+        let _wan = ScopedDummyLink::new(&wan_if);
+
+        run_ip(&[
+            "-6",
+            "addr",
+            "add",
+            "2001:db8:aaaa:ffff::1/64",
+            "dev",
+            &wan_if,
+        ]);
+        run_ip(&[
+            "-6",
+            "route",
+            "add",
+            "default",
+            "from",
+            "2001:db8:aaaa::/64",
+            "dev",
+            &wan_if,
+        ]);
+        // Also add a /48 address+route pair to verify shortest-prefix preference
+        run_ip(&["-6", "addr", "add", "2001:db8:bbbb::1/48", "dev", &wan_if]);
+        run_ip(&[
+            "-6",
+            "route",
+            "add",
+            "default",
+            "from",
+            "2001:db8::/48",
+            "dev",
+            &wan_if,
+        ]);
+
+        // NO delegated route on a LAN interface — this is the IA_NA case
+        // The fallback should find both prefixes via interface scanning and
+        // prefer the shorter /48.
+        assert_eq!(
+            detect_public_ipv6_prefix_linux().await.unwrap(),
+            Some("2001:db8::/48".parse().unwrap())
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[serial_test::serial]
+    #[tokio::test]
+    async fn test_detect_public_ipv6_prefix_linux_dhcpv6_ia_na_single_prefix() {
+        // DHCPv6 IA_NA with a single /64 prefix on the WAN interface.
+        // No delegated route exists — the route-based detection must fall
+        // back to interface addresses.
+        let wan_if = test_iface_name("ib");
+        let _wan = ScopedDummyLink::new(&wan_if);
+
+        run_ip(&[
+            "-6",
+            "addr",
+            "add",
+            "2001:db8:cccc:ffff::1/64",
+            "dev",
+            &wan_if,
+        ]);
+        run_ip(&[
+            "-6",
+            "route",
+            "add",
+            "default",
+            "from",
+            "2001:db8:cccc::/64",
+            "dev",
+            &wan_if,
+        ]);
+
+        assert_eq!(
+            detect_public_ipv6_prefix_linux().await.unwrap(),
+            Some("2001:db8:cccc::/64".parse().unwrap())
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[serial_test::serial]
+    #[tokio::test]
+    async fn test_detect_public_ipv6_prefix_from_interfaces_skips_non_global() {
+        // Create a dummy interface with only a link-local address.
+        // The interface fallback should return None because there is no
+        // global unicast address.
+        let iface = test_iface_name("ng");
+        let _link = ScopedDummyLink::new(&iface);
+
+        // Bring up the interface so it auto-configures a link-local address
+        run_ip(&["link", "set", &iface, "up"]);
+
+        // No global address added — only link-local should be present
+        let result = detect_public_ipv6_prefix_from_interfaces();
+        assert_eq!(result, None);
     }
 
     #[cfg(target_os = "linux")]
