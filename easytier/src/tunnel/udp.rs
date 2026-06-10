@@ -38,7 +38,7 @@ use crate::{
     },
 };
 
-pub const UDP_DATA_MTU: usize = 2000;
+pub const UDP_MAX_PACKET_SIZE: usize = 1 << 16;
 
 type UdpCloseEventSender = UnboundedSender<(SocketAddr, Option<TunnelError>)>;
 type UdpCloseEventReceiver = UnboundedReceiver<(SocketAddr, Option<TunnelError>)>;
@@ -307,7 +307,7 @@ async fn udp_recv_from_socket_forward_task(
     allow_stun: bool,
 ) -> Result<(ZCPacket, SocketAddr), TunnelError> {
     loop {
-        reserve_buf(buf, UDP_DATA_MTU, UDP_DATA_MTU * 4);
+        reserve_buf(buf, UDP_MAX_PACKET_SIZE, UDP_MAX_PACKET_SIZE * 4);
         let (dg_size, addr) = match socket.recv_buf_from(buf).await {
             Ok(v) => v,
             Err(e) => {
@@ -711,7 +711,7 @@ impl UdpTunnelConnector {
         magic: u64,
     ) -> Result<SocketAddr, TunnelError> {
         let mut buf = BytesMut::new();
-        buf.reserve(UDP_DATA_MTU);
+        buf.reserve(UDP_MAX_PACKET_SIZE);
 
         let (usize, recv_addr) = tokio::time::timeout(
             tokio::time::Duration::from_secs(3),

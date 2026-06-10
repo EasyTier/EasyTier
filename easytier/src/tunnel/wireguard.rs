@@ -37,7 +37,7 @@ use futures::{SinkExt, StreamExt, stream::FuturesUnordered};
 use rand::RngCore;
 use tokio::{net::UdpSocket, sync::Mutex, task::JoinSet};
 
-const MAX_PACKET: usize = 2048;
+const WG_PACKET_MAX_SIZE: usize = 1 << 16;
 
 #[derive(Debug, Clone)]
 enum WgType {
@@ -129,7 +129,7 @@ impl Debug for WgPeerData {
 impl WgPeerData {
     #[tracing::instrument]
     async fn handle_one_packet_from_me(&self, zc_packet: ZCPacket) -> Result<(), anyhow::Error> {
-        let mut send_buf = vec![0u8; MAX_PACKET];
+        let mut send_buf = vec![0u8; WG_PACKET_MAX_SIZE];
 
         let packet = if matches!(self.wg_type, WgType::InternalUse) {
             let mut zc_packet = zc_packet.convert_type(ZCPacketType::WG);
@@ -186,7 +186,7 @@ impl WgPeerData {
         mut sink: S,
         recv_buf: &[u8],
     ) {
-        let mut send_buf = vec![0u8; MAX_PACKET];
+        let mut send_buf = vec![0u8; WG_PACKET_MAX_SIZE];
         let data = recv_buf;
         let decapsulate_result = {
             let mut peer = self.tunn.lock().await;
@@ -209,7 +209,7 @@ impl WgPeerData {
                 };
                 let mut peer = self.tunn.lock().await;
                 loop {
-                    let mut send_buf = vec![0u8; MAX_PACKET];
+                    let mut send_buf = vec![0u8; WG_PACKET_MAX_SIZE];
                     match peer.decapsulate(None, &[], &mut send_buf) {
                         TunnResult::WriteToNetwork(packet) => {
                             match self.udp.send_to(packet, self.endpoint).await {
@@ -280,7 +280,7 @@ impl WgPeerData {
             TunnResult::Err(WireGuardError::ConnectionExpired) => {
                 tracing::warn!("Wireguard handshake has expired!");
 
-                let mut buf = vec![0u8; MAX_PACKET];
+                let mut buf = vec![0u8; WG_PACKET_MAX_SIZE];
                 let result = self
                     .tunn
                     .lock()
@@ -309,7 +309,7 @@ impl WgPeerData {
     /// WireGuard Routine task. Handles Handshake, keep-alive, etc.
     pub async fn routine_task(self) {
         loop {
-            let mut send_buf = vec![0u8; MAX_PACKET];
+            let mut send_buf = vec![0u8; WG_PACKET_MAX_SIZE];
             let tun_result = { self.tunn.lock().await.update_timers(&mut send_buf) };
             self.handle_routine_tun_result(tun_result).await;
         }
@@ -511,7 +511,7 @@ impl WgTunnelListener {
             }
         });
 
-        let mut buf = vec![0u8; MAX_PACKET];
+        let mut buf = vec![0u8; WG_PACKET_MAX_SIZE];
         loop {
             let Ok((n, addr)) = socket.recv_from(&mut buf).await else {
                 tracing::error!("Failed to receive from UDP socket");
@@ -650,7 +650,7 @@ impl WgTunnelConnector {
         // do handshake here so we will return after receive first packet
         let handshake = wg_peer.create_handshake_init().await;
         udp.send_to(&handshake, addr).await?;
-        let mut buf = [0u8; MAX_PACKET];
+        let mut buf = [0u8; WG_PACKET_MAX_SIZE];
         let (n, recv_addr) = match udp.recv_from(&mut buf).await {
             Ok(ret) => ret,
             Err(e) => {
@@ -669,7 +669,7 @@ impl WgTunnelConnector {
         wg_peer.tasks.spawn(async move {
             data.handle_one_packet_from_peer(&mut sink, &buf[..n]).await;
             loop {
-                let mut buf = vec![0u8; MAX_PACKET];
+                let mut buf = vec![0u8; WG_PACKET_MAX_SIZE];
                 let (n, _) = match udp.recv_from(&mut buf).await {
                     Ok(ret) => ret,
                     Err(e) => {

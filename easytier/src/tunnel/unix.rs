@@ -11,7 +11,7 @@ use super::{
     common::{FramedWriter, TunnelWrapper},
 };
 
-const MAX_PACKET_SIZE: usize = 4096;
+const UNIX_MAX_PACKET_SIZE: usize = 1 << 16;
 
 fn url_from_unix_socket_addr(addr: SocketAddr) -> Option<url::Url> {
     addr.as_pathname()
@@ -53,7 +53,7 @@ impl UnixSocketTunnelListener {
             FramedRead::new(
                 r,
                 TunnelCodec {
-                    max_packet_size: MAX_PACKET_SIZE,
+                    max_packet_size: UNIX_MAX_PACKET_SIZE,
                 },
             ),
             FramedWriter::new(w),
@@ -137,7 +137,7 @@ impl super::TunnelConnector for UnixSocketTunnelConnector {
             FramedRead::new(
                 r,
                 TunnelCodec {
-                    max_packet_size: MAX_PACKET_SIZE,
+                    max_packet_size: UNIX_MAX_PACKET_SIZE,
                 },
             ),
             FramedWriter::new(w),

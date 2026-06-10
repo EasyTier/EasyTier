@@ -11,7 +11,7 @@ use futures::stream::FuturesUnordered;
 use tokio::net::{TcpListener, TcpSocket, TcpStream};
 use tokio_util::codec::FramedRead;
 
-const TCP_MTU_BYTES: usize = 2000;
+const TCP_MAX_PACKET_SIZE: usize = 1 << 16;
 
 #[derive(Debug)]
 pub struct TcpTunnelListener {
@@ -57,7 +57,7 @@ impl TcpTunnelListener {
             FramedRead::new(
                 r,
                 TunnelCodec {
-                    max_packet_size: TCP_MTU_BYTES,
+                    max_packet_size: TCP_MAX_PACKET_SIZE,
                 },
             ),
             FramedWriter::new(w),
@@ -135,7 +135,7 @@ fn get_tunnel_with_tcp_stream(
         FramedRead::new(
             r,
             TunnelCodec {
-                max_packet_size: TCP_MTU_BYTES,
+                max_packet_size: TCP_MAX_PACKET_SIZE,
             },
         ),
         FramedWriter::new(w),

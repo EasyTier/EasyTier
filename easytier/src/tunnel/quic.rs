@@ -23,6 +23,8 @@ use std::{net::SocketAddr, sync::Arc, time::Duration};
 use tokio::net::UdpSocket;
 use tokio_util::codec::FramedRead;
 
+const QUIC_MAX_PACKET_SIZE: usize = 1 << 16;
+
 // region config
 pub fn transport_config() -> Arc<TransportConfig> {
     let mut config = TransportConfig::default();
@@ -522,7 +524,7 @@ impl QuicTunnelListener {
             FramedRead::new(
                 r,
                 TunnelCodec {
-                    max_packet_size: 2000,
+                    max_packet_size: QUIC_MAX_PACKET_SIZE,
                 },
             ),
             FramedWriter::new(w),
@@ -623,7 +625,7 @@ impl TunnelConnector for QuicTunnelConnector {
             FramedRead::new(
                 r,
                 TunnelCodec {
-                    max_packet_size: 4500,
+                    max_packet_size: QUIC_MAX_PACKET_SIZE,
                 },
             ),
             FramedWriter::new(w),
