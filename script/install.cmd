@@ -26,10 +26,10 @@ IF !ERRORLEVEL! NEQ 0 (
 )
 ECHO OK
 <NUL SET /p="Extract embedded script ... "
-powershell -NoP -C "$c=gc '%~f0' -Raw -En UTF8;if(($s=$c.IndexOf('<'+'# : '+'batch'))-ge 0 -and ($e=$c.IndexOf(':: '+'#'+'>',$s))-ge 0){$c.Substring($e+6)|sc '%~n0.ps1' -En UTF8}else{exit 1}"
+powershell -NoP -C "$c=gc '%~f0' -Raw -En UTF8;if(($s=$c.IndexOf('<'+'# : '+'batch'))-ge 0 -and ($e=$c.IndexOf(':: '+'#'+'>',$s))-ge 0){$c.Substring($e+6)|sc '%~n0.embed.ps1' -En UTF8}else{exit 1}"
 IF !ERRORLEVEL! NEQ 0 ( ECHO Embedded script section not found. & PAUSE & EXIT )
 ECHO OK
-PowerShell -NoP -EP Bypass -File "%~n0.ps1" %*
+PowerShell -NoP -EP Bypass -File "%~n0.embed.ps1" %*
 EXIT
 :: #>
 param(
@@ -1776,5 +1776,8 @@ finally {
     Unregister-ScheduledTaskCompatible -TaskName "EasyTierWatchDog"
     if ($lockAcquired) {
         Remove-Mutex -Path $RegistryPath -Name $LockName
+    }
+    if ($PSCommandPath -and (Test-Path -LiteralPath $PSCommandPath)) {
+        Remove-Item -LiteralPath $PSCommandPath -Force -ErrorAction SilentlyContinue
     }
 }
