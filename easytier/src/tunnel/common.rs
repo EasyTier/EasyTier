@@ -14,11 +14,11 @@ use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use super::TunnelInfo;
 use super::{
     SinkItem, StreamItem, Tunnel, TunnelError, ZCPacketSink, ZCPacketStream,
-    buf::BufList,
     packet_def::{TCP_TUNNEL_HEADER_SIZE, TCPTunnelHeader, ZCPacketType},
 };
 use crate::common::netns::NetNS;
 use crate::tunnel::packet_def::{PEER_MANAGER_HEADER_SIZE, ZCPacket};
+use crate::utils::buf::BufList;
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 use tokio::net::{TcpListener, TcpSocket, UdpSocket};
 use tokio_stream::StreamExt;
@@ -274,10 +274,10 @@ where
         cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Result<(), Self::Error>> {
         let max_buffer_count = self.max_buffer_count();
-        if self.sending_bufs.bufs_cnt() >= max_buffer_count {
+        if self.sending_bufs.len() >= max_buffer_count {
             self.as_mut().poll_flush(cx)
         } else {
-            tracing::trace!(bufs_cnt = self.sending_bufs.bufs_cnt(), "ready to send");
+            tracing::trace!(bufs_cnt = self.sending_bufs.len(), "ready to send");
             Poll::Ready(Ok(()))
         }
     }
