@@ -155,6 +155,14 @@ $I18N = @{
         ExitPrompt                   = "按任意键退出..."
         LatestVersion                = "最新"
         SpecifiedVersion             = "指定({0})"
+        LabelInstall                 = "安装(&Install)"
+        LabelUninstall               = "卸载(&Uninstall)"
+        LabelUpdate                  = "更新(Up&date)"
+        LabelFile                    = "配置文件(&File)"
+        LabelRemote                  = "远程管理(&Remote)"
+        LabelCLI                     = "命令行(&CLI)"
+        LabelExit                    = "退出(&Exit)"
+        ExitHelp                     = "退出脚本"
         FileModeHelp                 = "本地配置文件"
         RemoteModeHelp               = "服务器集中管理"
         CLIModeHelp                  = "命令行传参"
@@ -189,6 +197,7 @@ $I18N = @{
         ExtractMethodWarn            = "  [警告] 方案 {0} 失败: {1}"
         TagNotFound                  = "版本 {0} 不存在！请检查版本标签是否正确（例如 v2.4.5）"
         RetryFetch                   = "拉取失败，正在进行第 {0} 次重试..."
+        AnotherInstanceRunning       = "另一个安装程序正在运行，请稍后重试。"
     }
     "en-US" = @{
         PressAnyKey                  = "Press any key to continue..."
@@ -268,6 +277,14 @@ $I18N = @{
         ExitPrompt                   = "Press any key to exit..."
         LatestVersion                = "latest"
         SpecifiedVersion             = "specified({0})"
+        LabelInstall                 = "&Install"
+        LabelUninstall               = "&Uninstall"
+        LabelUpdate                  = "Up&date"
+        LabelFile                    = "&File"
+        LabelRemote                  = "&Remote"
+        LabelCLI                     = "&CLI"
+        LabelExit                    = "E&xit"
+        ExitHelp                     = "Exit script"
         FileModeHelp                 = "Local configuration file"
         RemoteModeHelp               = "Remote server centralized management"
         CLIModeHelp                  = "Command line arguments"
@@ -302,6 +319,7 @@ $I18N = @{
         ExtractMethodWarn            = "  [WARN] Method {0} failed: {1}"
         TagNotFound                  = "Version {0} does not exist! Check the version tag (e.g., v2.4.5)"
         RetryFetch                   = "Fetch failed, retry {0}..."
+        AnotherInstanceRunning       = "Another installer is already running, please try again later."
     }
 }
 
@@ -674,6 +692,34 @@ function Show-YesNoPrompt {
         return $false
     }
 }
+function Show-MenuPrompt {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true, Position = 0)]
+        [ValidateNotNullOrEmpty()]
+        [string]$Message,
+        [string]$Title = "",
+        [Parameter(Mandatory = $true)]
+        [string[]]$Labels,
+        [Parameter(Mandatory = $true)]
+        [string[]]$Helps,
+        [ValidateRange(0, 99)]
+        [int]$DefaultIndex = 0
+    )
+    if ($Labels.Count -ne $Helps.Count) {
+        throw (T "LabelsHelpsCountMismatch")
+    }
+    $choices = for ($i = 0; $i -lt $Labels.Count; $i++) {
+        [System.Management.Automation.Host.ChoiceDescription]::new($Labels[$i], $Helps[$i])
+    }
+    try {
+        return $Host.UI.PromptForChoice($Title, $Message, $choices, $DefaultIndex)
+    }
+    catch {
+        Write-Error (T "ShowChoiceError" $_)
+        return $DefaultIndex
+    }
+}
 function Get-InputWithNoNullOrWhiteSpace {
     [CmdletBinding()]
     param(
@@ -799,6 +845,48 @@ function Test-ServiceNameExists {
     $existing = Get-ServiceNames
     return $existing -contains $Name
 }
+function New-Mutex {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Path,
+        [Parameter(Mandatory = $true)]
+        [string]$Name
+    )
+    try {
+        $existing = Get-ItemProperty -Path $Path -Name $Name -ErrorAction SilentlyContinue
+        if ($existing -and $existing.$Name) {
+            $parts = "$($existing.$Name)" -split ';'
+            if ($parts.Count -eq 2) {
+                $lockPID = [int]$parts[0]
+                $proc = Get-Process -Id $lockPID -ErrorAction SilentlyContinue
+                if ($proc) { return $false }
+            }
+        }
+        Set-ItemProperty -Path $Path -Name $Name -Value "$PID;$([datetime]::UtcNow.Ticks)" -Force -ErrorAction Stop
+        return $true
+    }
+    catch { return $true }
+}
+function Remove-Mutex {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Path,
+        [Parameter(Mandatory = $true)]
+        [string]$Name
+    )
+    try {
+        $current = Get-ItemProperty -Path $Path -Name $Name -ErrorAction SilentlyContinue
+        if ($current -and $current.$Name) {
+            $parts = "$($current.$Name)" -split ';'
+            if ($parts.Count -eq 2 -and [int]$parts[0] -eq $PID) {
+                Remove-ItemProperty -Path $Path -Name $Name -Force -ErrorAction SilentlyContinue
+            }
+        }
+    }
+    catch { }
+}
 function Remove-ServiceCompatible {
     param (
         [Parameter(Mandatory = $true)]
@@ -823,22 +911,49 @@ function Unregister-ScheduledTaskCompatible {
         schtasks.exe /Delete /TN "$TaskName" /F > $null 2>&1
     }
 }
+function Get-WmiObjectWithFallback {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$ClassName,
+        [Parameter(Mandatory = $false)]
+        [string]$Filter,
+        [Parameter(Mandatory = $false)]
+        [switch]$Stop
+    )
+    $errorAction = if ($Stop) { "Stop" } else { "SilentlyContinue" }
+    try {
+        if ($Filter) {
+            return Get-CimInstance -ClassName $ClassName -Filter $Filter -ErrorAction $errorAction
+        }
+        else {
+            return Get-CimInstance -ClassName $ClassName -ErrorAction $errorAction
+        }
+    }
+    catch {
+        try {
+            if ($Filter) {
+                return Get-WmiObject -Class $ClassName -Filter $Filter -ErrorAction $errorAction
+            }
+            else {
+                return Get-WmiObject -Class $ClassName -ErrorAction $errorAction
+            }
+        }
+        catch {
+            if ($Stop) { throw }
+            return $null
+        }
+    }
+}
 function Find-EasyTierService {
     [CmdletBinding()]
     param()
     Write-Host (T "ServiceDiscoveringSCM") -ForegroundColor Green
     $discovered = [System.Collections.ArrayList]@()
-    try {
-        $allServices = Get-WmiObject -Class Win32_Service -ErrorAction Stop
-    }
-    catch {
-        try {
-            $allServices = Get-CimInstance -ClassName Win32_Service -ErrorAction Stop
-        }
-        catch {
-            Write-Host (T "ServiceDiscoveringSCM") -ForegroundColor Red
-            return $discovered
-        }
+    $allServices = Get-WmiObjectWithFallback -ClassName "Win32_Service"
+    if (-not $allServices) {
+        Write-Host (T "ServiceDiscoveringSCM") -ForegroundColor Red
+        return $discovered
     }
     $easyTierExe = [System.IO.Path]::GetFileName($EasyTierPath)
     $scriptRootLower = $ScriptRoot.ToLowerInvariant()
@@ -863,30 +978,14 @@ function Get-ServiceInfo {
         [Parameter(Mandatory = $true)]
         [string]$Name
     )
-    try {
-        $svc = Get-WmiObject -Class Win32_Service -Filter "Name='$Name'" -ErrorAction Stop
-        if ($svc) {
-            return [PSCustomObject]@{
-                Name        = $svc.Name
-                State       = $svc.State
-                PathName    = if ($svc.PathName) { $svc.PathName } else { "" }
-                DisplayName = if ($svc.DisplayName) { $svc.DisplayName } else { "" }
-            }
+    $svc = Get-WmiObjectWithFallback -ClassName "Win32_Service" -Filter "Name='$Name'"
+    if ($svc) {
+        return [PSCustomObject]@{
+            Name        = $svc.Name
+            State       = $svc.State
+            PathName    = if ($svc.PathName) { $svc.PathName } else { "" }
+            DisplayName = if ($svc.DisplayName) { $svc.DisplayName } else { "" }
         }
-    }
-    catch {
-        try {
-            $svc = Get-CimInstance -ClassName Win32_Service -Filter "Name='$Name'" -ErrorAction Stop
-            if ($svc) {
-                return [PSCustomObject]@{
-                    Name        = $svc.Name
-                    State       = $svc.State
-                    PathName    = if ($svc.PathName) { $svc.PathName } else { "" }
-                    DisplayName = if ($svc.DisplayName) { $svc.DisplayName } else { "" }
-                }
-            }
-        }
-        catch { }
     }
     return $null
 }
@@ -941,7 +1040,7 @@ function Stop-ServiceForce {
     if (-not $stopped) {
         Write-Host (T "ServiceForceStop" $Name) -ForegroundColor Red
         try {
-            $processId = (Get-WmiObject -Class Win32_Service -Filter "Name='$Name'" -ErrorAction SilentlyContinue).ProcessId
+            $processId = (Get-WmiObjectWithFallback -ClassName "Win32_Service" -Filter "Name='$Name'").ProcessId
             if ($processId -and $processId -gt 0) {
                 Stop-Process -Id $processId -Force -ErrorAction SilentlyContinue
                 Start-Sleep -Seconds 2
@@ -972,7 +1071,7 @@ function Remove-ServiceForce {
     }
     if ($svc.Status -ne "Stopped") {
         try {
-            Stop-ServiceForce -Name $Name
+            $null = Stop-ServiceForce -Name $Name
         }
         catch {
             Write-Host (T "ServiceNotStopped" $Name) -ForegroundColor Yellow
@@ -1073,56 +1172,47 @@ function Start-ServiceIfWasRunning {
     }
 }
 function Stop-LockingProcesses {
+    [CmdletBinding()]
+    param()
     Write-Host (T "FileOccupiedScan") -ForegroundColor Yellow
-    $lockedFiles = @()
-    $scriptFiles = Get-ChildItem -Path $ScriptRoot -File -Recurse -ErrorAction SilentlyContinue
-    foreach ($file in $scriptFiles) {
-        try {
-            $stream = $file.Open([System.IO.FileMode]::Open, [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::None)
-            $stream.Close()
-        }
-        catch {
-            $lockedFiles += $file.FullName
-        }
-    }
+
     $killedServices = [System.Collections.ArrayList]@()
-    if ($lockedFiles.Count -gt 0) {
+    $normalizedRoot = $ScriptRoot.ToLowerInvariant()
+
+    # Directly query processes whose command line references the script root.
+    # This is more efficient than scanning all files for locks (O(n) file I/O)
+    # and catches all processes that may interfere with file updates.
+    $processes = Get-WmiObjectWithFallback -ClassName "Win32_Process"
+    if (-not $processes) { return , $killedServices }
+
+    foreach ($proc in $processes) {
+        if (-not $proc.CommandLine) { continue }
+        if ($proc.CommandLine.ToLowerInvariant() -notlike "*$normalizedRoot*") { continue }
+
         try {
-            $processes = Get-CimInstance -ClassName Win32_Process -ErrorAction SilentlyContinue
+            # Determine the display name: use service name if available,
+            # otherwise fall back to process name.
+            $svcName = $null
+            $svc = Get-WmiObjectWithFallback -ClassName "Win32_Service" -Filter "ProcessId = $($proc.ProcessId)"
+            if ($svc) {
+                $svcName = $svc.Name
+            }
+            elseif ($proc.Name -eq "easytier-core.exe") {
+                $svcName = "$ServiceName(unknown)"
+            }
+            else {
+                $svcName = $proc.ProcessName
+            }
+
+            Write-Host (T "FileOccupiedStopService" $svcName) -ForegroundColor Yellow
+            Stop-Process -Id $proc.ProcessId -Force -ErrorAction SilentlyContinue
+            [void]$killedServices.Add($svcName)
         }
         catch {
-            $processes = Get-WmiObject -Class Win32_Process -ErrorAction SilentlyContinue
-        }
-        foreach ($lockedFile in $lockedFiles) {
-            foreach ($proc in $processes) {
-                if ($proc.CommandLine -and $proc.CommandLine -like "*$ScriptRoot*") {
-                    try {
-                        $svcName = $null
-                        if ($proc.Name -eq "easytier-core.exe") {
-                            try {
-                                $svc = Get-CimInstance -ClassName Win32_Service -Filter "ProcessId = $($proc.ProcessId)" -ErrorAction SilentlyContinue
-                                if ($svc) { $svcName = $svc.Name }
-                            }
-                            catch {
-                                $svc = Get-WmiObject -Class Win32_Service -Filter "ProcessId = $($proc.ProcessId)" -ErrorAction SilentlyContinue
-                                if ($svc) { $svcName = $svc.Name }
-                            }
-                            if (-not $svcName) { $svcName = "$ServiceName(unknown)" }
-                        }
-                        else {
-                            $svcName = $proc.ProcessName
-                        }
-                        Write-Host (T "FileOccupiedStopService" $svcName) -ForegroundColor Yellow
-                        Stop-Process -Id $proc.ProcessId -Force -ErrorAction SilentlyContinue
-                        [void]$killedServices.Add($svcName)
-                    }
-                    catch {
-                        Write-Host (T "StopServiceFail" $_) -ForegroundColor Red
-                    }
-                }
-            }
+            Write-Host (T "StopServiceFail" $_) -ForegroundColor Red
         }
     }
+
     return , $killedServices
 }
 function Get-SystemArchitecture {
@@ -1415,7 +1505,7 @@ function Uninstall-EasyTier {
             }
             Write-Host (T "ServiceStopping" $name) -ForegroundColor Yellow
             try {
-                Stop-ServiceForce -Name $name
+                $null = Stop-ServiceForce -Name $name
             }
             catch {
                 Write-Host (T "ServiceNotStopped" $name) -ForegroundColor Yellow
@@ -1472,7 +1562,7 @@ function Set-EasyTier {
                     Write-Host (T "ServiceConflictFound" $svc.Name $svc.PathName) -ForegroundColor Yellow
                     if (Show-YesNoPrompt -Message (T "ServiceConflictResolve" $svc.Name) -DefaultIndex 0) {
                         Write-Host (T "ServiceStopping" $svc.Name) -ForegroundColor Yellow
-                        try { Stop-ServiceForce -Name $svc.Name } catch {}
+                        try { $null = Stop-ServiceForce -Name $svc.Name } catch {}
                         Write-Host (T "ServiceRemoving" $svc.Name) -ForegroundColor Yellow
                         Remove-ServiceForce -Name $svc.Name
                         $resolvedConflicts = $true
@@ -1485,7 +1575,7 @@ function Set-EasyTier {
         }
         if (Get-Service -Name $ServiceName -ErrorAction SilentlyContinue) {
             Write-Host (T "ServiceConflictResolve" $ServiceName) -ForegroundColor Yellow
-            try { Stop-ServiceForce -Name $ServiceName } catch {}
+            try { $null = Stop-ServiceForce -Name $ServiceName } catch {}
             Remove-ServiceForce -Name $ServiceName
         }
         try {
@@ -1609,10 +1699,20 @@ Clear-Host
 $ScriptRoot = (Get-Location).Path
 $RegistryPath = "HKLM:\SOFTWARE\EasyTierServiceManage"
 $RegistryName = "Services"
+$LockName = "Mutex"
 $EasyTierPath = Join-Path $ScriptRoot "easytier-core.exe"
 $OPTIONS = @()
 $ErrorActionPreference = "Stop"
+
+$lockAcquired = $false
 try {
+    $lockAcquired = New-Mutex -Path $RegistryPath -Name $LockName
+    if (-not $lockAcquired) {
+        Write-Host (T "AnotherInstanceRunning") -ForegroundColor Red
+        Show-Pause -Text (T "ExitPrompt")
+        exit 1
+    }
+
     if ($Help) {
         Write-Host $HelpText
         Show-Pause -Text (T "ExitPrompt")
@@ -1635,29 +1735,15 @@ try {
         Get-EasyTier | Install-EasyTier
     }
     if (-not $ConfigType) {
-        $choices = @(
-            New-Object System.Management.Automation.Host.ChoiceDescription "&Install", (T "InstallHelp")
-            New-Object System.Management.Automation.Host.ChoiceDescription "U&ninstall", (T "UninstallHelp")
-            New-Object System.Management.Automation.Host.ChoiceDescription "&Update", (T "UpdateHelp")
-        )
-        $selected = $Host.UI.PromptForChoice(
-            (T "ChooseAction"),
-            (T "SelectPrompt"),
-            $choices,
-            0
-        )
+        $selected = Show-MenuPrompt -Title (T "ChooseAction") -Message (T "SelectPrompt") `
+            -Labels @((T "LabelInstall"), (T "LabelUninstall"), (T "LabelUpdate"), (T "LabelExit")) `
+            -Helps @((T "InstallHelp"), (T "UninstallHelp"), (T "UpdateHelp"), (T "ExitHelp"))
         switch ($selected) {
             0 {
-                $ConfigType = @("File", "Remote", "CLI")[$Host.UI.PromptForChoice(
-                    (T "ChooseConfig"),
-                    (T "SelectPrompt"),
-                    @(
-                        New-Object System.Management.Automation.Host.ChoiceDescription "&File", (T "FileModeHelp")
-                        New-Object System.Management.Automation.Host.ChoiceDescription "&Remote", (T "RemoteModeHelp")
-                        New-Object System.Management.Automation.Host.ChoiceDescription "&CLI", (T "CLIModeHelp")
-                    ),
-                    0
-                )]
+                $configIndex = Show-MenuPrompt -Title (T "ChooseConfig") -Message (T "SelectPrompt") `
+                    -Labels @((T "LabelFile"), (T "LabelRemote"), (T "LabelCLI")) `
+                    -Helps @((T "FileModeHelp"), (T "RemoteModeHelp"), (T "CLIModeHelp"))
+                $ConfigType = @("File", "Remote", "CLI")[$configIndex]
             } 
             1 {
                 Uninstall-EasyTier
@@ -1672,6 +1758,9 @@ try {
                 Show-Pause -Text (T "ExitPrompt")
                 exit 0
             }
+            3 {
+                exit 0
+            }
         }
     }
     Set-EasyTier
@@ -1679,8 +1768,13 @@ try {
     exit 0
 }
 catch {
-    Unregister-ScheduledTaskCompatible -TaskName "EasyTierWatchDog"
     Write-Host (T "Error" $_) -ForegroundColor Red
     Show-Pause -Text (T "ExitPrompt")
     exit 1
+}
+finally {
+    Unregister-ScheduledTaskCompatible -TaskName "EasyTierWatchDog"
+    if ($lockAcquired) {
+        Remove-Mutex -Path $RegistryPath -Name $LockName
+    }
 }
