@@ -47,6 +47,7 @@ pub struct V6HolePunchPacket {
     pub dst_ipv6: [u8; 16],
     pub dst_port: U16<DefaultEndian>,
     pub preferred_src_ipv6: [u8; 16],
+    pub preferred_src_ifindex: U32<DefaultEndian>,
 }
 
 #[repr(C, packed)]

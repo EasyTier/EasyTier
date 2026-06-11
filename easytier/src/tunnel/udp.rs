@@ -48,6 +48,12 @@ pub const UDP_DATA_MTU: usize = 2000;
 type UdpCloseEventSender = UnboundedSender<(SocketAddr, Option<TunnelError>)>;
 type UdpCloseEventReceiver = UnboundedReceiver<(SocketAddr, Option<TunnelError>)>;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PreferredIpv6Source {
+    pub ip: Ipv6Addr,
+    pub ifindex: u32,
+}
+
 fn new_udp_packet<F>(f: F, udp_body: Option<&[u8]>) -> ZCPacket
 where
     F: FnOnce(&mut UDPTunnelHeader),
@@ -104,14 +110,15 @@ pub fn new_hole_punch_packet(tid: u32, buf_len: u16) -> ZCPacket {
 
 pub fn new_v6_hole_punch_packet(
     dst: &SocketAddrV6,
-    preferred_src_ipv6: Option<Ipv6Addr>,
+    preferred_src: Option<PreferredIpv6Source>,
 ) -> ZCPacket {
     // generate a 128 bytes vec with random data
     let mut body = V6HolePunchPacket::default();
     body.dst_ipv6.copy_from_slice(&dst.ip().octets());
     body.dst_port.set(dst.port());
-    if let Some(src_ip) = preferred_src_ipv6 {
-        body.preferred_src_ipv6.copy_from_slice(&src_ip.octets());
+    if let Some(src) = preferred_src {
+        body.preferred_src_ipv6.copy_from_slice(&src.ip.octets());
+        body.preferred_src_ifindex.set(src.ifindex);
     }
     new_udp_packet(
         |header| {
@@ -147,14 +154,17 @@ fn extract_dst_addr_from_v4_hole_punch_packet(buf: &[u8]) -> Option<SocketAddrV4
     Some(SocketAddrV4::new(ip, body.dst_port.get()))
 }
 
-fn extract_v6_hole_punch_packet(buf: &[u8]) -> Option<(SocketAddrV6, Option<Ipv6Addr>)> {
+fn extract_v6_hole_punch_packet(buf: &[u8]) -> Option<(SocketAddrV6, Option<PreferredIpv6Source>)> {
     let body = V6HolePunchPacket::ref_from_prefix(buf)?;
     let ip = Ipv6Addr::from(body.dst_ipv6);
     let preferred_src_ipv6 = Ipv6Addr::from(body.preferred_src_ipv6);
-    let preferred_src_ipv6 = (!preferred_src_ipv6.is_unspecified()).then_some(preferred_src_ipv6);
+    let preferred_src = (!preferred_src_ipv6.is_unspecified()).then_some(PreferredIpv6Source {
+        ip: preferred_src_ipv6,
+        ifindex: body.preferred_src_ifindex.get(),
+    });
     Some((
         SocketAddrV6::new(ip, body.dst_port.get(), 0, 0),
-        preferred_src_ipv6,
+        preferred_src,
     ))
 }
 
@@ -168,10 +178,10 @@ fn is_stun_packet(b: &[u8]) -> bool {
 pub async fn send_v6_hole_punch_packet(
     listener_port: u16,
     dst_addr: SocketAddrV6,
-    preferred_src_ipv6: Option<Ipv6Addr>,
+    preferred_src: Option<PreferredIpv6Source>,
 ) -> Result<(), TunnelError> {
     let local_socket = UdpSocket::bind("[::1]:0").await?;
-    let udp_packet = new_v6_hole_punch_packet(&dst_addr, preferred_src_ipv6);
+    let udp_packet = new_v6_hole_punch_packet(&dst_addr, preferred_src);
     let remote_addr = format!("[::1]:{}", listener_port)
         .parse::<SocketAddr>()
         .unwrap();
@@ -565,7 +575,7 @@ impl UdpTunnelListenerData {
                 tracing::warn!(?addr, "v6 hole punch packet should be sent from ipv6");
                 return;
             }
-            let Some((dst_addr, preferred_src_ipv6)) =
+            let Some((dst_addr, preferred_src)) =
                 extract_v6_hole_punch_packet(zc_packet.udp_payload())
             else {
                 tracing::warn!("invalid v6 hole punch packet");
@@ -574,11 +584,17 @@ impl UdpTunnelListenerData {
             let socket = self.socket.as_ref().unwrap().clone();
             let udp_packet = new_hole_punch_packet(1, 32);
             let udp_packet = udp_packet.into_bytes();
-            let sent_with_src = if let Some(src_ip) = preferred_src_ipv6 {
-                match udp_src::send_to_with_src_ipv6(&socket, src_ip, dst_addr, &udp_packet) {
+            let sent_with_src = if let Some(src) = preferred_src {
+                match udp_src::send_to_with_src_ipv6(
+                    &socket,
+                    src.ip,
+                    src.ifindex,
+                    dst_addr,
+                    &udp_packet,
+                ) {
                     Ok(ret) => {
                         tracing::debug!(
-                            ?src_ip,
+                            ?src,
                             ?dst_addr,
                             ?ret,
                             "udp forward packet send hole punch packet with preferred ipv6 source"
@@ -587,7 +603,7 @@ impl UdpTunnelListenerData {
                     }
                     Err(e) => {
                         tracing::debug!(
-                            ?src_ip,
+                            ?src,
                             ?dst_addr,
                             ?e,
                             "udp forward packet preferred ipv6 source failed, falling back"
@@ -605,7 +621,7 @@ impl UdpTunnelListenerData {
             }
             tracing::debug!(
                 ?dst_addr,
-                ?preferred_src_ipv6,
+                ?preferred_src,
                 "udp forward packet send hole punch packet"
             );
         } else if header.msg_type != UdpPacketType::HolePunch as u8 {
@@ -1324,6 +1340,22 @@ mod tests {
             Duration::from_secs(1),
         )
         .await;
+    }
+
+    #[test]
+    fn v6_hole_punch_packet_preserves_preferred_source_ifindex() {
+        let dst_addr = "[2001:db8::1]:10001".parse::<SocketAddrV6>().unwrap();
+        let preferred_src = PreferredIpv6Source {
+            ip: "2001:db8::2".parse().unwrap(),
+            ifindex: 42,
+        };
+
+        let packet = new_v6_hole_punch_packet(&dst_addr, Some(preferred_src));
+        let (parsed_dst_addr, parsed_preferred_src) =
+            extract_v6_hole_punch_packet(packet.udp_payload()).unwrap();
+
+        assert_eq!(parsed_dst_addr, dst_addr);
+        assert_eq!(parsed_preferred_src, Some(preferred_src));
     }
 
     #[tokio::test]

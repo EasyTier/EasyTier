@@ -9,6 +9,7 @@ use tokio::net::UdpSocket;
 pub(crate) fn send_to_with_src_ipv6(
     socket: &UdpSocket,
     src_ip: Ipv6Addr,
+    src_ifindex: u32,
     dst_addr: SocketAddrV6,
     buf: &[u8],
 ) -> io::Result<usize> {
@@ -18,7 +19,7 @@ pub(crate) fn send_to_with_src_ipv6(
     use nix::sys::socket::{ControlMessage, MsgFlags, SockaddrIn6, sendmsg};
 
     let pktinfo = libc::in6_pktinfo {
-        ipi6_ifindex: 0,
+        ipi6_ifindex: src_ifindex,
         ipi6_addr: libc::in6_addr {
             s6_addr: src_ip.octets(),
         },
@@ -41,6 +42,7 @@ pub(crate) fn send_to_with_src_ipv6(
 pub(crate) fn send_to_with_src_ipv6(
     socket: &UdpSocket,
     src_ip: Ipv6Addr,
+    src_ifindex: u32,
     dst_addr: SocketAddrV6,
     buf: &[u8],
 ) -> io::Result<usize> {
@@ -108,7 +110,7 @@ pub(crate) fn send_to_with_src_ipv6(
                 Byte: src_ip.octets(),
             },
         },
-        ipi6_ifindex: dst_addr.scope_id(),
+        ipi6_ifindex: src_ifindex,
     };
 
     unsafe {
@@ -139,6 +141,7 @@ pub(crate) fn send_to_with_src_ipv6(
 pub(crate) fn send_to_with_src_ipv6(
     _socket: &UdpSocket,
     _src_ip: Ipv6Addr,
+    _src_ifindex: u32,
     _dst_addr: SocketAddrV6,
     _buf: &[u8],
 ) -> io::Result<usize> {

@@ -1,7 +1,7 @@
-use std::net::{Ipv6Addr, SocketAddr};
+use std::net::{IpAddr, Ipv6Addr, SocketAddr};
 
 use crate::{
-    common::global_ctx::ArcGlobalCtx,
+    common::{global_ctx::ArcGlobalCtx, network::IPCollector},
     proto::{
         common::Void,
         peer_rpc::{
@@ -42,7 +42,7 @@ fn is_usable_preferred_src_ipv6(ip: &Ipv6Addr, global_ctx: &ArcGlobalCtx) -> boo
 async fn local_preferred_src_ipv6(
     global_ctx: &ArcGlobalCtx,
     preferred_src_ipv6: Option<crate::proto::common::Ipv6Addr>,
-) -> Option<Ipv6Addr> {
+) -> Option<udp::PreferredIpv6Source> {
     let preferred_src_ipv6 = preferred_src_ipv6.map(Ipv6Addr::from)?;
     if !is_usable_preferred_src_ipv6(&preferred_src_ipv6, global_ctx) {
         tracing::debug!(
@@ -52,23 +52,30 @@ async fn local_preferred_src_ipv6(
         return None;
     }
 
-    let mut ip_list = global_ctx.get_ip_collector().collect_ip_addrs().await;
-    remove_easytier_managed_ipv6s(&mut ip_list, global_ctx);
-    let is_local = ip_list
-        .interface_ipv6s
-        .iter()
-        .chain(ip_list.public_ipv6.iter())
-        .map(|ip| Ipv6Addr::from(*ip))
-        .any(|ip| ip == preferred_src_ipv6);
-    if is_local {
-        Some(preferred_src_ipv6)
-    } else {
-        tracing::debug!(
-            ?preferred_src_ipv6,
-            "ignore non-local preferred IPv6 source for udp hole punch"
-        );
-        None
+    let ifaces = IPCollector::collect_interfaces(global_ctx.net_ns.clone(), false).await;
+    for iface in ifaces {
+        let is_local = iface.ips.iter().any(|ip| match ip.ip() {
+            IpAddr::V6(v6) => v6 == preferred_src_ipv6,
+            IpAddr::V4(_) => false,
+        });
+        if is_local {
+            tracing::debug!(
+                ?preferred_src_ipv6,
+                ifindex = iface.index,
+                "use preferred IPv6 source for udp hole punch"
+            );
+            return Some(udp::PreferredIpv6Source {
+                ip: preferred_src_ipv6,
+                ifindex: iface.index,
+            });
+        }
     }
+
+    tracing::debug!(
+        ?preferred_src_ipv6,
+        "ignore non-local preferred IPv6 source for udp hole punch"
+    );
+    None
 }
 
 fn connector_addrs_from_request(
