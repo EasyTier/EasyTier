@@ -32,6 +32,13 @@ pub(crate) fn send_local_socket_message(
     Ok(())
 }
 
+fn shrink_clients_if_sparse(clients: &mut Vec<UnixStream>) {
+    let sparse_limit = clients.len().saturating_mul(2).max(4);
+    if clients.capacity() > sparse_limit {
+        clients.shrink_to_fit();
+    }
+}
+
 pub(crate) fn broadcast_local_socket_message(
     clients: &mut Vec<UnixStream>,
     message_type: &str,
@@ -45,6 +52,7 @@ pub(crate) fn broadcast_local_socket_message(
             active_clients.push(client);
         }
     }
+    shrink_clients_if_sparse(&mut active_clients);
     *clients = active_clients;
     delivered
 }
@@ -79,6 +87,7 @@ pub(crate) fn broadcast_local_socket_json_payload_message(
             active_clients.push(client);
         }
     }
+    shrink_clients_if_sparse(&mut active_clients);
     *clients = active_clients;
     delivered
 }

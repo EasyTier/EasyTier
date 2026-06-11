@@ -324,7 +324,7 @@ fn route_to_view(route: api::instance::Route) -> RouteView {
     }
 }
 
-fn peer_conn_to_view(conn: api::instance::PeerConnInfo) -> PeerConnInfo {
+pub(crate) fn peer_conn_to_view(conn: api::instance::PeerConnInfo) -> PeerConnInfo {
     let stats = conn.stats.map(|stats| PeerConnStats {
         rx_bytes: stats.rx_bytes as i64,
         tx_bytes: stats.tx_bytes as i64,
