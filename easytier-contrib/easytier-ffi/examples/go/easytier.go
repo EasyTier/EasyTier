@@ -24,6 +24,7 @@ type Native struct {
 	lib unsafe.Pointer
 
 	runNetworkInstance symCall
+	callJSONRPC        symCall
 	getErrorMsg        symCall
 	freeString         symCall
 	tcpConnect         symCall
@@ -97,6 +98,48 @@ func (n *Native) RunNetworkInstance(config string) error {
 		return n.lastError()
 	}
 	return nil
+}
+
+func (n *Native) CallJSONRPC(serviceName, methodName, domainName, payloadJSON string) (string, error) {
+	defer pinErrorThread()()
+	service := cString(serviceName)
+	method := cString(methodName)
+	payload := cString(payloadJSON)
+	servicePtr := unsafe.Pointer(&service[0])
+	methodPtr := unsafe.Pointer(&method[0])
+	payloadPtr := unsafe.Pointer(&payload[0])
+	var domain []byte
+	var domainPtr unsafe.Pointer
+	if domainName != "" {
+		domain = cString(domainName)
+		domainPtr = unsafe.Pointer(&domain[0])
+	}
+	var response unsafe.Pointer
+	responseArg := unsafe.Pointer(&response)
+	var ret int32
+	err := n.callJSONRPC.call(
+		unsafe.Pointer(&ret),
+		unsafe.Pointer(&servicePtr),
+		unsafe.Pointer(&methodPtr),
+		unsafe.Pointer(&domainPtr),
+		unsafe.Pointer(&payloadPtr),
+		unsafe.Pointer(&responseArg),
+	)
+	runtime.KeepAlive(service)
+	runtime.KeepAlive(method)
+	runtime.KeepAlive(domain)
+	runtime.KeepAlive(payload)
+	if err != nil {
+		return "", err
+	}
+	if ret != 0 {
+		return "", n.lastError()
+	}
+	if response == nil {
+		return "", errors.New("easytier ffi JSON RPC returned nil response")
+	}
+	defer func() { _ = n.freeCString(response) }()
+	return readCString(response), nil
 }
 
 func (n *Native) DialContext(ctx context.Context, instance, network, address string) (net.Conn, error) {
@@ -219,6 +262,7 @@ func (l *Listener) Addr() net.Addr { return l.addr }
 func (n *Native) bind() error {
 	return errors.Join(
 		n.bindSym(&n.runNetworkInstance, "run_network_instance", types.SInt32TypeDescriptor, types.PointerTypeDescriptor),
+		n.bindSym(&n.callJSONRPC, "call_json_rpc", types.SInt32TypeDescriptor, types.PointerTypeDescriptor, types.PointerTypeDescriptor, types.PointerTypeDescriptor, types.PointerTypeDescriptor, types.PointerTypeDescriptor),
 		n.bindSym(&n.getErrorMsg, "get_error_msg", types.VoidTypeDescriptor, types.PointerTypeDescriptor),
 		n.bindSym(&n.freeString, "free_string", types.VoidTypeDescriptor, types.PointerTypeDescriptor),
 		n.bindSym(&n.tcpConnect, "data_plane_tcp_connect", types.UInt64TypeDescriptor, types.PointerTypeDescriptor, types.PointerTypeDescriptor, types.UInt16TypeDescriptor, types.UInt64TypeDescriptor, types.PointerTypeDescriptor, types.PointerTypeDescriptor),
