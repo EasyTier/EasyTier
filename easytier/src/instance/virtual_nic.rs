@@ -28,6 +28,7 @@ use bytes::{BufMut, BytesMut};
 use cidr::{Ipv4Inet, Ipv6Inet};
 use futures::{SinkExt, Stream, StreamExt, lock::BiLock, ready};
 use pin_project_lite::pin_project;
+use pnet::packet::ethernet::{EtherType, EtherTypes};
 use pnet::packet::{ipv4::Ipv4Packet, ipv6::Ipv6Packet};
 use tokio::{
     io::{AsyncRead, AsyncWrite, ReadBuf},
@@ -105,70 +106,50 @@ impl Stream for TunStream {
     }
 }
 
-#[derive(Debug, Clone, Copy, Default)]
-enum PacketProtocol {
-    #[default]
-    IPv4,
-    IPv6,
-    Other(u8),
+trait ProtoExt {
+    fn infer(payload: &[u8]) -> Self;
+    fn into_pi(self) -> Result<u16, io::Error>;
 }
 
-// Note: the protocol in the packet information header is platform dependent.
-impl PacketProtocol {
-    #[cfg(any(target_os = "linux", target_os = "android", target_env = "ohos"))]
-    fn into_pi_field(self) -> Result<u16, io::Error> {
-        use nix::libc;
-        match self {
-            PacketProtocol::IPv4 => Ok(libc::ETH_P_IP as u16),
-            PacketProtocol::IPv6 => Ok(libc::ETH_P_IPV6 as u16),
-            PacketProtocol::Other(_) => Err(io::Error::other("neither an IPv4 nor IPv6 packet")),
+impl ProtoExt for EtherType {
+    fn infer(payload: &[u8]) -> Self {
+        if payload.is_empty() {
+            return EtherType(0xFFFF);
+        }
+        match payload[0] >> 4 {
+            4 => EtherTypes::Ipv4,
+            6 => EtherTypes::Ipv6,
+            _ => EtherType(0xFFFF),
         }
     }
 
-    #[cfg(any(target_os = "macos", target_os = "ios", target_os = "freebsd"))]
-    fn into_pi_field(self) -> Result<u16, io::Error> {
-        use nix::libc;
+    fn into_pi(self) -> Result<u16, io::Error> {
+        let (ipv4, ipv6) = cfg_select! {
+            any(target_os = "linux", target_os = "android", target_env = "ohos") => {{
+                use nix::libc;
+                (libc::ETH_P_IP, libc::ETH_P_IPV6)
+            }}
+            any(target_os = "macos", target_os = "ios", target_os = "freebsd") => {{
+                use nix::libc;
+                (libc::PF_INET, libc::PF_INET6)
+            }}
+            _ => unimplemented!(),
+        };
         match self {
-            PacketProtocol::IPv4 => Ok(libc::PF_INET as u16),
-            PacketProtocol::IPv6 => Ok(libc::PF_INET6 as u16),
-            PacketProtocol::Other(_) => Err(io::Error::other("neither an IPv4 nor IPv6 packet")),
+            EtherTypes::Ipv4 => Ok(ipv4 as u16),
+            EtherTypes::Ipv6 => Ok(ipv6 as u16),
+            _ => Err(io::Error::other("neither an IPv4 nor IPv6 packet")),
         }
-    }
-
-    #[cfg(target_os = "windows")]
-    fn into_pi_field(self) -> Result<u16, io::Error> {
-        unimplemented!()
-    }
-}
-
-/// Infer the protocol based on the first nibble in the packet buffer.
-fn infer_proto(buf: &[u8]) -> PacketProtocol {
-    match buf[0] >> 4 {
-        4 => PacketProtocol::IPv4,
-        6 => PacketProtocol::IPv6,
-        p => PacketProtocol::Other(p),
     }
 }
 
 struct TunZCPacketToBytes {
-    has_packet_info: bool,
+    has_pi: bool,
 }
 
 impl TunZCPacketToBytes {
-    pub fn new(has_packet_info: bool) -> Self {
-        Self { has_packet_info }
-    }
-
-    pub fn fill_packet_info(
-        &self,
-        mut buf: &mut [u8],
-        proto: PacketProtocol,
-    ) -> Result<(), io::Error> {
-        // flags is always 0
-        buf.write_u16::<NativeEndian>(0)?;
-        // write the protocol as network byte order
-        buf.write_u16::<NetworkEndian>(proto.into_pi_field()?)?;
-        Ok(())
+    pub fn new(has_pi: bool) -> Self {
+        Self { has_pi }
     }
 }
 
@@ -176,21 +157,21 @@ impl ZCPacketToBytes for TunZCPacketToBytes {
     fn zcpacket_into_bytes(&self, zc_packet: ZCPacket) -> Result<Bytes, TunnelError> {
         let payload_offset = zc_packet.payload_offset();
         let mut inner = zc_packet.inner();
-        // we have peer manager header, so payload offset must larger than 4
         assert!(payload_offset >= 4);
 
-        let ret = if self.has_packet_info {
-            let mut inner = inner.split_off(payload_offset - 4);
-            let proto = infer_proto(&inner[4..]);
-            self.fill_packet_info(&mut inner[0..4], proto)?;
-            inner
-        } else {
-            inner.split_off(payload_offset)
-        };
+        let hdr_len = if self.has_pi { 4 } else { 0 };
+
+        let mut ret = inner.split_off(payload_offset - hdr_len);
+        let proto = EtherType::infer(&ret[hdr_len..]);
+
+        if self.has_pi {
+            let mut pi = &mut ret[..hdr_len];
+            pi.write_u16::<NativeEndian>(0)?;
+            pi.write_u16::<NetworkEndian>(proto.into_pi()?)?;
+        }
 
         tracing::debug!(?ret, ?payload_offset, "convert zc packet to tun packet");
-
-        Ok(ret.into())
+        Ok(ret.freeze())
     }
 }
 
