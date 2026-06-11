@@ -1134,6 +1134,8 @@ mod tests {
         packet
     }
 
+    fn assert_sync_packet_handler(_: fn(&mut UdpConnection, ZCPacket) -> Result<(), TunnelError>) {}
+
     #[tokio::test]
     async fn udp_pingpong() {
         let listener = UdpTunnelListener::new("udp://0.0.0.0:5556".parse().unwrap());
@@ -1142,7 +1144,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn udp_connection_drops_when_ring_is_full_without_awaiting_capacity() {
+    async fn udp_connection_handler_uses_sync_nonblocking_ring_delivery() {
+        assert_sync_packet_handler(UdpConnection::handle_packet_from_remote);
+
         let socket = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
         let dst_addr = "127.0.0.1:1".parse().unwrap();
         let ring_for_send_udp = Arc::new(RingTunnel::new(8));
