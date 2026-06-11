@@ -9,7 +9,7 @@ use anyhow::Context;
 use async_trait::async_trait;
 use bytes::BytesMut;
 use dashmap::DashMap;
-use futures::{SinkExt, StreamExt, stream::FuturesUnordered};
+use futures::{StreamExt, stream::FuturesUnordered};
 use rand::{Rng, SeedableRng};
 use zerocopy::{AsBytes, FromBytes};
 
@@ -396,10 +396,7 @@ impl UdpConnection {
         }
     }
 
-    pub async fn handle_packet_from_remote(
-        &mut self,
-        zc_packet: ZCPacket,
-    ) -> Result<(), TunnelError> {
+    pub fn handle_packet_from_remote(&mut self, zc_packet: ZCPacket) -> Result<(), TunnelError> {
         let header = zc_packet.udp_tunnel_header().unwrap();
         let conn_id = header.conn_id.get();
 
@@ -411,7 +408,13 @@ impl UdpConnection {
             return Err(TunnelError::ConnIdNotMatch(self.conn_id, conn_id));
         }
 
-        self.ring_sender.send(zc_packet).await?;
+        if zc_packet.is_lossy() {
+            if let Err(e) = self.ring_sender.try_send(zc_packet) {
+                tracing::trace!(?e, "ring sender full, drop lossy packet");
+            }
+        } else if let Err(e) = self.ring_sender.force_send(zc_packet) {
+            tracing::trace!(?e, "ring sender full, drop non-lossy packet");
+        }
 
         Ok(())
     }
@@ -538,7 +541,7 @@ impl UdpTunnelListenerData {
         }
     }
 
-    async fn do_forward_one_packet_to_conn(&self, zc_packet: ZCPacket, addr: SocketAddr) {
+    fn do_forward_one_packet_to_conn(&self, zc_packet: ZCPacket, addr: SocketAddr) {
         let header = zc_packet.udp_tunnel_header().unwrap();
         if header.msg_type == UdpPacketType::Syn as u8 {
             tokio::spawn(Self::handle_new_connect(self.clone(), addr, zc_packet));
@@ -636,7 +639,7 @@ impl UdpTunnelListenerData {
                 tracing::trace!(?header, "udp forward packet error, connection not found");
                 return;
             };
-            if let Err(e) = conn.handle_packet_from_remote(zc_packet).await {
+            if let Err(e) = conn.handle_packet_from_remote(zc_packet) {
                 tracing::trace!(?e, "udp forward packet error");
             }
         } else {
@@ -649,7 +652,7 @@ impl UdpTunnelListenerData {
         let mut buf = BytesMut::new();
         loop {
             match udp_recv_from_socket_forward_task(&socket, &mut buf, true).await {
-                Ok((zc_packet, addr)) => self.do_forward_one_packet_to_conn(zc_packet, addr).await,
+                Ok((zc_packet, addr)) => self.do_forward_one_packet_to_conn(zc_packet, addr),
                 Err(e) => {
                     tracing::error!(?e, "udp recv packet error");
                     break;
@@ -924,7 +927,7 @@ impl UdpTunnelConnector {
                 match udp_recv_from_socket_forward_task(&socket_clone, &mut buf, false).await {
                     Ok((zc_packet, addr)) => {
                         tracing::trace!(?addr, "connector udp forward task done");
-                        if let Err(e) = udp_conn.handle_packet_from_remote(zc_packet).await {
+                        if let Err(e) = udp_conn.handle_packet_from_remote(zc_packet) {
                             tracing::trace!(?e, ?addr, "udp forward packet error");
                         }
                     }
@@ -1116,14 +1119,52 @@ mod tests {
                 get_interface_name_by_ip,
                 tests::{_tunnel_bench, _tunnel_echo_server, _tunnel_pingpong, wait_for_condition},
             },
+            packet_def::PacketType,
         },
     };
+
+    fn new_udp_data_packet(conn_id: u32, packet_type: PacketType) -> ZCPacket {
+        let mut packet = ZCPacket::new_with_payload(b"udp-data").convert_type(ZCPacketType::UDP);
+        packet.fill_peer_manager_hdr(1, 2, packet_type as u8);
+        let udp_payload_len = packet.udp_payload().len();
+        let header = packet.mut_udp_tunnel_header().unwrap();
+        header.conn_id.set(conn_id);
+        header.msg_type = UdpPacketType::Data as u8;
+        header.len.set(udp_payload_len as u16);
+        packet
+    }
 
     #[tokio::test]
     async fn udp_pingpong() {
         let listener = UdpTunnelListener::new("udp://0.0.0.0:5556".parse().unwrap());
         let connector = UdpTunnelConnector::new("udp://127.0.0.1:5556".parse().unwrap());
         _tunnel_pingpong(listener, connector).await;
+    }
+
+    #[tokio::test]
+    async fn udp_connection_drops_when_ring_is_full_without_awaiting_capacity() {
+        let socket = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let dst_addr = "127.0.0.1:1".parse().unwrap();
+        let ring_for_send_udp = Arc::new(RingTunnel::new(8));
+        let ring_for_recv_udp = Arc::new(RingTunnel::new(8));
+        let (close_event_sender, _close_event_recv) = tokio::sync::mpsc::unbounded_channel();
+        let mut conn = UdpConnection::new(
+            socket,
+            7,
+            dst_addr,
+            RingSink::new(ring_for_recv_udp),
+            RingStream::new(ring_for_send_udp),
+            close_event_sender,
+        );
+
+        for _ in 0..16 {
+            conn.handle_packet_from_remote(new_udp_data_packet(7, PacketType::Data))
+                .unwrap();
+        }
+        for _ in 0..16 {
+            conn.handle_packet_from_remote(new_udp_data_packet(7, PacketType::Ping))
+                .unwrap();
+        }
     }
 
     #[tokio::test]
