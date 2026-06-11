@@ -452,6 +452,7 @@ pub fn reserve_buf(buf: &mut BytesMut, min_size: usize, max_size: usize) {
 pub mod tests {
     use atomic_shim::AtomicU64;
     use futures::{Future, SinkExt, StreamExt};
+    use std::time::Duration;
     use std::{sync::Arc, time::Instant};
     use tokio_util::bytes::{BufMut, Bytes, BytesMut};
 
@@ -724,14 +725,16 @@ pub mod tests {
             let (mut r, _s) = ret.split();
             let now = Instant::now();
             let mut count = 0;
+            let warmup = Duration::from_secs(1);
             while let Some(Ok(p)) = r.next().await {
+                let elapsed = now.elapsed();
+                if elapsed < warmup {
+                    continue;
+                }
                 count += p.payload_len();
-                let elapsed_sec = now.elapsed().as_secs();
-                if elapsed_sec > 0 {
-                    bps_clone.store(
-                        count as u64 / now.elapsed().as_secs(),
-                        std::sync::atomic::Ordering::Relaxed,
-                    );
+                let elapsed = (elapsed - warmup).as_secs();
+                if elapsed >= 1 {
+                    bps_clone.store(count as u64 / elapsed, std::sync::atomic::Ordering::Relaxed);
                 }
             }
         });
