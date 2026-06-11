@@ -118,11 +118,7 @@ pub(crate) fn set_tun_fd(
         })
 }
 
-pub(crate) fn get_runtime_snapshot() -> RuntimeAggregateState {
-    get_runtime_snapshot_inner()
-}
-
-pub(crate) fn get_runtime_snapshot_inner() -> RuntimeAggregateState {
+pub(crate) fn collect_runtime_state() -> RuntimeAggregateState {
     let infos = match ASYNC_RUNTIME.block_on(INSTANCE_MANAGER.collect_network_infos()) {
         Ok(infos) => infos,
         Err(err) => {

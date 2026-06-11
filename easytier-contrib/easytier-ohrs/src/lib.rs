@@ -63,7 +63,7 @@ use easytier::proto::api::manage::NetworkConfig;
 use easytier::proto::api::manage::NetworkingMethod;
 use easytier::web_client::{WebClient, WebClientHooks, run_web_client};
 use kernel_bridge::{
-    set_snapshot_broadcast_enabled, start_local_socket_server as start_local_socket_server_inner,
+    start_local_socket_server as start_local_socket_server_inner,
     stop_local_socket_server as stop_local_socket_server_inner,
 };
 use napi_derive_ohos::napi;
@@ -517,18 +517,8 @@ mod tests {
     }
 }
 
-#[napi]
-pub fn get_runtime_snapshot() -> RuntimeAggregateState {
-    exports::runtime_api::get_runtime_snapshot()
-}
-
-#[napi]
-pub fn set_kernel_snapshot_enabled(enabled: bool) {
-    set_snapshot_broadcast_enabled(enabled);
-}
-
-pub(crate) fn get_runtime_snapshot_inner() -> RuntimeAggregateState {
-    exports::runtime_api::get_runtime_snapshot_inner()
+pub(crate) fn collect_runtime_state_inner() -> RuntimeAggregateState {
+    exports::runtime_api::collect_runtime_state()
 }
 
 #[napi]
