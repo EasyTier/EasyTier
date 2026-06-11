@@ -2,6 +2,7 @@ use std::{
     fmt::Debug,
     net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6},
     sync::{Arc, Weak},
+    time::Duration,
 };
 
 use anyhow::Context;
@@ -14,7 +15,10 @@ use zerocopy::{AsBytes, FromBytes};
 
 use tokio::{
     net::UdpSocket,
-    sync::mpsc::{Receiver, Sender, UnboundedReceiver, UnboundedSender},
+    sync::{
+        mpsc::{Receiver, Sender, UnboundedReceiver, UnboundedSender},
+        watch,
+    },
     task::JoinSet,
 };
 use tokio_util::task::AbortOnDropHandle;
@@ -35,6 +39,7 @@ use crate::{
         common::{TunnelWrapper, reserve_buf},
         packet_def::{UdpPacketType, ZCPacket, ZCPacketType},
         ring::RingTunnel,
+        udp_src,
     },
 };
 
@@ -97,11 +102,17 @@ pub fn new_hole_punch_packet(tid: u32, buf_len: u16) -> ZCPacket {
     )
 }
 
-pub fn new_v6_hole_punch_packet(dst: &SocketAddrV6) -> ZCPacket {
+pub fn new_v6_hole_punch_packet(
+    dst: &SocketAddrV6,
+    preferred_src_ipv6: Option<Ipv6Addr>,
+) -> ZCPacket {
     // generate a 128 bytes vec with random data
     let mut body = V6HolePunchPacket::default();
     body.dst_ipv6.copy_from_slice(&dst.ip().octets());
     body.dst_port.set(dst.port());
+    if let Some(src_ip) = preferred_src_ipv6 {
+        body.preferred_src_ipv6.copy_from_slice(&src_ip.octets());
+    }
     new_udp_packet(
         |header| {
             header.msg_type = UdpPacketType::V6HolePunch as u8;
@@ -136,10 +147,15 @@ fn extract_dst_addr_from_v4_hole_punch_packet(buf: &[u8]) -> Option<SocketAddrV4
     Some(SocketAddrV4::new(ip, body.dst_port.get()))
 }
 
-fn extrace_dst_addr_from_hole_punch_packet(buf: &[u8]) -> Option<SocketAddrV6> {
+fn extract_v6_hole_punch_packet(buf: &[u8]) -> Option<(SocketAddrV6, Option<Ipv6Addr>)> {
     let body = V6HolePunchPacket::ref_from_prefix(buf)?;
     let ip = Ipv6Addr::from(body.dst_ipv6);
-    Some(SocketAddrV6::new(ip, body.dst_port.get(), 0, 0))
+    let preferred_src_ipv6 = Ipv6Addr::from(body.preferred_src_ipv6);
+    let preferred_src_ipv6 = (!preferred_src_ipv6.is_unspecified()).then_some(preferred_src_ipv6);
+    Some((
+        SocketAddrV6::new(ip, body.dst_port.get(), 0, 0),
+        preferred_src_ipv6,
+    ))
 }
 
 fn is_stun_packet(b: &[u8]) -> bool {
@@ -152,9 +168,10 @@ fn is_stun_packet(b: &[u8]) -> bool {
 pub async fn send_v6_hole_punch_packet(
     listener_port: u16,
     dst_addr: SocketAddrV6,
+    preferred_src_ipv6: Option<Ipv6Addr>,
 ) -> Result<(), TunnelError> {
     let local_socket = UdpSocket::bind("[::1]:0").await?;
-    let udp_packet = new_v6_hole_punch_packet(&dst_addr);
+    let udp_packet = new_v6_hole_punch_packet(&dst_addr, preferred_src_ipv6);
     let remote_addr = format!("[::1]:{}", listener_port)
         .parse::<SocketAddr>()
         .unwrap();
@@ -431,8 +448,15 @@ impl UdpTunnelListenerData {
         let socket = self.socket.as_ref().unwrap().clone();
 
         let sack_buf = new_sack_packet(conn_id, magic).into_bytes();
-        if let Err(e) = socket.send_to(&sack_buf, remote_addr).await {
-            tracing::error!(?e, "udp send sack packet error");
+        if self
+            .sock_map
+            .get(&remote_addr)
+            .is_some_and(|conn| conn.conn_id == conn_id)
+        {
+            if let Err(e) = socket.send_to(&sack_buf, remote_addr).await {
+                tracing::error!(?e, "udp resend sack packet error");
+            }
+            tracing::debug!(?conn_id, ?remote_addr, "udp duplicate syn, resent sack");
             return;
         }
 
@@ -452,7 +476,28 @@ impl UdpTunnelListenerData {
             RingStream::new(ring_for_send_udp.clone()),
             self.close_event_sender.clone(),
         );
-        self.sock_map.insert(remote_addr, internal_conn);
+        match self.sock_map.entry(remote_addr) {
+            dashmap::mapref::entry::Entry::Occupied(entry) if entry.get().conn_id == conn_id => {
+                if let Err(e) = socket.send_to(&sack_buf, remote_addr).await {
+                    tracing::error!(?e, "udp resend sack packet error");
+                }
+                tracing::debug!(?conn_id, ?remote_addr, "udp duplicate syn, resent sack");
+                return;
+            }
+            dashmap::mapref::entry::Entry::Occupied(mut entry) => {
+                entry.insert(internal_conn);
+            }
+            dashmap::mapref::entry::Entry::Vacant(entry) => {
+                entry.insert(internal_conn);
+            }
+        }
+
+        if let Err(e) = socket.send_to(&sack_buf, remote_addr).await {
+            self.sock_map
+                .remove_if(&remote_addr, |_, conn| conn.conn_id == conn_id);
+            tracing::error!(?e, "udp send sack packet error");
+            return;
+        }
 
         let conn = Box::new(TunnelWrapper::new(
             Box::new(RingStream::new(ring_for_recv_udp)),
@@ -520,17 +565,49 @@ impl UdpTunnelListenerData {
                 tracing::warn!(?addr, "v6 hole punch packet should be sent from ipv6");
                 return;
             }
-            let Some(dst_addr) = extrace_dst_addr_from_hole_punch_packet(zc_packet.udp_payload())
+            let Some((dst_addr, preferred_src_ipv6)) =
+                extract_v6_hole_punch_packet(zc_packet.udp_payload())
             else {
                 tracing::warn!("invalid v6 hole punch packet");
                 return;
             };
             let socket = self.socket.as_ref().unwrap().clone();
             let udp_packet = new_hole_punch_packet(1, 32);
-            if let Err(e) = socket.try_send_to(&udp_packet.into_bytes(), SocketAddr::V6(dst_addr)) {
+            let udp_packet = udp_packet.into_bytes();
+            let sent_with_src = if let Some(src_ip) = preferred_src_ipv6 {
+                match udp_src::send_to_with_src_ipv6(&socket, src_ip, dst_addr, &udp_packet) {
+                    Ok(ret) => {
+                        tracing::debug!(
+                            ?src_ip,
+                            ?dst_addr,
+                            ?ret,
+                            "udp forward packet send hole punch packet with preferred ipv6 source"
+                        );
+                        true
+                    }
+                    Err(e) => {
+                        tracing::debug!(
+                            ?src_ip,
+                            ?dst_addr,
+                            ?e,
+                            "udp forward packet preferred ipv6 source failed, falling back"
+                        );
+                        false
+                    }
+                }
+            } else {
+                false
+            };
+            if !sent_with_src
+                && let Err(e) = socket.try_send_to(&udp_packet, SocketAddr::V6(dst_addr))
+            {
                 tracing::error!(?e, "udp send hole punch packet error");
             }
-            tracing::debug!(?dst_addr, "udp forward packet send hole punch packet");
+            tracing::debug!(
+                ?dst_addr,
+                ?preferred_src_ipv6,
+                "udp forward packet send hole punch packet"
+            );
         } else if header.msg_type != UdpPacketType::HolePunch as u8 {
             let Some(mut conn) = self.sock_map.get_mut(&addr) else {
                 tracing::trace!(?header, "udp forward packet error, connection not found");
@@ -710,6 +787,7 @@ impl UdpTunnelConnector {
         addr: SocketAddr,
         conn_id: u32,
         magic: u64,
+        resend_addr_sender: &watch::Sender<SocketAddr>,
     ) -> Result<SocketAddr, TunnelError> {
         let mut buf = BytesMut::new();
         buf.reserve(UDP_DATA_MTU);
@@ -720,11 +798,26 @@ impl UdpTunnelConnector {
         )
         .await??;
         let zc_packet = get_zcpacket_from_buf(buf.split(), false)?;
+        let header = zc_packet.udp_tunnel_header().unwrap();
+        if header.msg_type == UdpPacketType::HolePunch as u8 {
+            tracing::debug!(?recv_addr, ?addr, "udp wait sack got hole punch packet");
+            if recv_addr.port() == addr.port() && recv_addr.is_ipv6() == addr.is_ipv6() {
+                let _ = resend_addr_sender.send(recv_addr);
+                let udp_packet = new_syn_packet(conn_id, magic).into_bytes();
+                match socket.send_to(&udp_packet, recv_addr).await {
+                    Ok(ret) => {
+                        tracing::debug!(?recv_addr, ?ret, "udp send syn to hole punch source")
+                    }
+                    Err(e) => {
+                        tracing::debug!(?recv_addr, ?e, "udp send syn to hole punch source failed")
+                    }
+                }
+            }
+            return Err(TunnelError::InvalidPacket("not sack packet".to_owned()));
+        }
         if recv_addr != addr {
             tracing::warn!(?recv_addr, ?addr, ?usize, "udp wait sack addr not match");
         }
-
-        let header = zc_packet.udp_tunnel_header().unwrap();
 
         if header.conn_id.get() != conn_id {
             return Err(super::TunnelError::ConnIdNotMatch(
@@ -759,9 +852,10 @@ impl UdpTunnelConnector {
         addr: SocketAddr,
         conn_id: u32,
         magic: u64,
+        resend_addr_sender: watch::Sender<SocketAddr>,
     ) -> Result<SocketAddr, super::TunnelError> {
         loop {
-            let ret = Self::wait_sack(socket, addr, conn_id, magic).await;
+            let ret = Self::wait_sack(socket, addr, conn_id, magic, &resend_addr_sender).await;
             if ret.is_err() {
                 tracing::debug!(?ret, "udp wait sack error");
                 continue;
@@ -868,19 +962,39 @@ impl UdpTunnelConnector {
         let udp_packet = new_syn_packet(conn_id, magic).into_bytes();
         let ret = socket.send_to(&udp_packet, &addr).await?;
         tracing::warn!(?udp_packet, ?ret, "udp send syn");
+        let (resend_addr_sender, resend_addr_receiver) = watch::channel(addr);
+        let resend_task = AbortOnDropHandle::new(tokio::spawn({
+            let socket = socket.clone();
+            let resend_addr_receiver = resend_addr_receiver;
+            let udp_packet = udp_packet.clone();
+            async move {
+                loop {
+                    tokio::time::sleep(Duration::from_millis(200)).await;
+                    let resend_addr = *resend_addr_receiver.borrow();
+                    match socket.send_to(&udp_packet, &resend_addr).await {
+                        Ok(ret) => tracing::trace!(?ret, ?resend_addr, "udp resend syn"),
+                        Err(e) => {
+                            tracing::debug!(?e, ?resend_addr, "udp resend syn failed");
+                            break;
+                        }
+                    }
+                }
+            }
+        }));
 
         // wait sack
         let recv_addr = tokio::time::timeout(
             tokio::time::Duration::from_secs(3),
-            Self::wait_sack_loop(&socket, addr, conn_id, magic),
+            Self::wait_sack_loop(&socket, addr, conn_id, magic, resend_addr_sender),
         )
         .await??;
+        drop(resend_task);
 
         if recv_addr != addr {
             tracing::debug!(?recv_addr, ?addr, "udp connect addr not match");
         }
 
-        self.build_tunnel(socket, addr, conn_id).await
+        self.build_tunnel(socket, recv_addr, conn_id).await
     }
 
     async fn connect_with_default_bind(
@@ -1238,6 +1352,7 @@ mod tests {
                 std::net::SocketAddr::V6(addr_v6) => addr_v6,
                 _ => panic!("Expected an IPv6 address"),
             },
+            None,
         )
         .await
         .unwrap();
