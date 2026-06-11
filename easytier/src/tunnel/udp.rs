@@ -478,28 +478,35 @@ impl UdpTunnelListenerData {
             "udp build tunnel for listener"
         );
 
-        let internal_conn = UdpConnection::new(
-            socket.clone(),
-            conn_id,
-            remote_addr,
-            RingSink::new(ring_for_recv_udp.clone()),
-            RingStream::new(ring_for_send_udp.clone()),
-            self.close_event_sender.clone(),
-        );
-        match self.sock_map.entry(remote_addr) {
+        let new_internal_conn = || {
+            UdpConnection::new(
+                socket.clone(),
+                conn_id,
+                remote_addr,
+                RingSink::new(ring_for_recv_udp.clone()),
+                RingStream::new(ring_for_send_udp.clone()),
+                self.close_event_sender.clone(),
+            )
+        };
+        let duplicate_syn = match self.sock_map.entry(remote_addr) {
             dashmap::mapref::entry::Entry::Occupied(entry) if entry.get().conn_id == conn_id => {
-                if let Err(e) = socket.send_to(&sack_buf, remote_addr).await {
-                    tracing::error!(?e, "udp resend sack packet error");
-                }
-                tracing::debug!(?conn_id, ?remote_addr, "udp duplicate syn, resent sack");
-                return;
+                true
             }
             dashmap::mapref::entry::Entry::Occupied(mut entry) => {
-                entry.insert(internal_conn);
+                entry.insert(new_internal_conn());
+                false
             }
             dashmap::mapref::entry::Entry::Vacant(entry) => {
-                entry.insert(internal_conn);
+                entry.insert(new_internal_conn());
+                false
             }
+        };
+        if duplicate_syn {
+            if let Err(e) = socket.send_to(&sack_buf, remote_addr).await {
+                tracing::error!(?e, "udp resend sack packet error");
+            }
+            tracing::debug!(?conn_id, ?remote_addr, "udp duplicate syn, resent sack");
+            return;
         }
 
         if let Err(e) = socket.send_to(&sack_buf, remote_addr).await {
