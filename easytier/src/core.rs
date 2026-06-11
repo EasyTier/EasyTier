@@ -915,9 +915,15 @@ impl NetworkOptions {
             } else {
                 // Treat as CIDR, e.g. "10.0.0.0/24"
                 cfg.set_dhcp(true);
-                let cidr: cidr::Ipv4Cidr = dhcp.parse().with_context(|| {
-                    format!("failed to parse dhcp cidr: {}", dhcp)
-                })?;
+                let cidr: cidr::Ipv4Cidr = dhcp
+                    .parse()
+                    .with_context(|| format!("failed to parse dhcp cidr: {}", dhcp))?;
+                if cidr.network_length() > 30 {
+                    anyhow::bail!(
+                        "dhcp cidr prefix length must be <= 30, got /{}",
+                        cidr.network_length()
+                    );
+                }
                 cfg.set_dhcp_cidr(Some(cidr));
             }
         }

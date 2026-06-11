@@ -765,7 +765,8 @@ impl ConfigLoader for TomlConfigLoader {
     }
 
     fn get_dhcp(&self) -> bool {
-        self.config.lock().unwrap().dhcp.unwrap_or_default()
+        let config = self.config.lock().unwrap();
+        config.dhcp.unwrap_or_default() || config.dhcp_cidr.is_some()
     }
 
     fn set_dhcp(&self, dhcp: bool) {

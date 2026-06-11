@@ -638,9 +638,16 @@ impl NetworkConfig {
         cfg.set_hostname(self.hostname.clone());
         cfg.set_dhcp(self.dhcp.unwrap_or_default());
         if let Some(ref dhcp_cidr) = self.dhcp_cidr {
-            let cidr = dhcp_cidr.parse::<cidr::Ipv4Cidr>().with_context(|| {
-                format!("failed to parse dhcp_cidr: {}", dhcp_cidr)
-            })?;
+            let cidr = dhcp_cidr
+                .parse::<cidr::Ipv4Cidr>()
+                .with_context(|| format!("failed to parse dhcp_cidr: {}", dhcp_cidr))?;
+            if cidr.network_length() > 30 {
+                anyhow::bail!(
+                    "dhcp_cidr prefix length must be <= 30, got /{}",
+                    cidr.network_length()
+                );
+            }
+            cfg.set_dhcp(true);
             cfg.set_dhcp_cidr(Some(cidr));
         }
         cfg.set_inst_name(self.network_name.clone().unwrap_or_default());

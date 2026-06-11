@@ -49,8 +49,8 @@ core_clap:
     en: "manually specify the public IPv6 subnet to share, instead of auto-detecting from system routes"
     zh-CN: "手动指定要共享的公网 IPv6 子网，不自动从系统路由检测"
   dhcp:
-    en: "automatically determine and set IP address by Easytier, and the IP address starts from 10.0.0.1 by default. Warning, if there is an IP conflict in the network when using DHCP, the IP will be automatically changed. Optionally specify a CIDR subnet (e.g. -d 10.0.0.0/24) to fix the DHCP address range."
-    zh-CN: "由Easytier自动确定并设置IP地址，默认从10.0.0.1开始。警告：在使用DHCP时，如果网络中出现IP冲突，IP将自动更改。可选指定CIDR子网（如 -d 10.0.0.0/24）来固定DHCP地址范围。"
+    en: "automatically determine and set IP address by Easytier. The subnet is derived from a connected peer's IPv4 or defaults to 10.126.126.0/24. Warning, if there is an IP conflict in the network when using DHCP, the IP will be automatically changed. Optionally specify a CIDR subnet (e.g. -d 10.0.0.0/24, prefix <= /30) to pin the DHCP address range."
+    zh-CN: "由Easytier自动确定并设置IP地址。子网从已连接对等节点的IPv4派生，或默认使用10.126.126.0/24。警告：在使用DHCP时，如果网络中出现IP冲突，IP将自动更改。可选指定CIDR子网（如 -d 10.0.0.0/24，前缀 <= /30）来固定DHCP地址范围。"
   peers:
     en: "peers to connect initially"
     zh-CN: "最初要连接的对等节点"
