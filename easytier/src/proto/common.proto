@@ -84,6 +84,7 @@ message FlagsInConfig {
   // applied via setsockopt. Requires CAP_NET_ADMIN; silently ignored on
   // non-Linux platforms.
   optional uint32 socket_mark = 43;
+  bool gso = 44;
 }
 
 message RpcDescriptor {
