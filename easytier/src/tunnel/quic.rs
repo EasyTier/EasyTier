@@ -500,12 +500,11 @@ impl QuicTunnelListener {
             .unwrap()
             .accept()
             .await
-            .ok_or_else(|| anyhow::anyhow!("accept failed, no incoming"))?;
-        let conn = conn.await.with_context(|| "accept connection failed")?;
+            .ok_or_else(|| anyhow::anyhow!("accept failed, no incoming"))?
+            .await
+            .with_context(|| "accept connection failed")?;
         let remote_addr = conn.remote_address();
         let (w, r) = conn.accept_bi().await.with_context(|| "accept_bi failed")?;
-
-        let arc_conn = Arc::new(ConnWrapper { conn });
 
         let info = TunnelInfo {
             tunnel_type: "quic".to_owned(),
@@ -519,8 +518,8 @@ impl QuicTunnelListener {
         };
 
         Ok(Box::new(TunnelWrapper::new(
-            FramedReader::new_with_associate_data(r, 2000, Some(Box::new(arc_conn.clone()))),
-            FramedWriter::new_with_associate_data(w, Some(Box::new(arc_conn))),
+            FramedReader::new(r, 2000),
+            FramedWriter::new(w),
             Some(info),
         )))
     }
@@ -614,10 +613,9 @@ impl TunnelConnector for QuicTunnelConnector {
             ),
         };
 
-        let arc_conn = Arc::new(ConnWrapper { conn: connection });
         Ok(Box::new(TunnelWrapper::new(
-            FramedReader::new_with_associate_data(r, 4500, Some(Box::new(arc_conn.clone()))),
-            FramedWriter::new_with_associate_data(w, Some(Box::new(arc_conn))),
+            FramedReader::new(r, 4500),
+            FramedWriter::new(w),
             Some(info),
         )))
     }
