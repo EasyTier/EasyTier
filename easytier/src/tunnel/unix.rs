@@ -1,13 +1,14 @@
 use std::path::Path;
 
+use super::TunnelInfo;
+use crate::tunnel::common::TunnelCodec;
 use async_trait::async_trait;
 use tokio::net::{UnixListener, UnixStream, unix::SocketAddr};
-
-use super::TunnelInfo;
+use tokio_util::codec::FramedRead;
 
 use super::{
     IpVersion, Tunnel, TunnelError, TunnelListener,
-    common::{FramedReader, FramedWriter, TunnelWrapper},
+    common::{FramedWriter, TunnelWrapper},
 };
 
 const MAX_PACKET_SIZE: usize = 4096;
@@ -49,7 +50,12 @@ impl UnixSocketTunnelListener {
 
         let (r, w) = stream.into_split();
         Ok(Box::new(TunnelWrapper::new(
-            FramedReader::new(r, MAX_PACKET_SIZE),
+            FramedRead::new(
+                r,
+                TunnelCodec {
+                    max_packet_size: MAX_PACKET_SIZE,
+                },
+            ),
             FramedWriter::new(w),
             Some(info),
         )))
@@ -128,7 +134,12 @@ impl super::TunnelConnector for UnixSocketTunnelConnector {
 
         let (r, w) = stream.into_split();
         Ok(Box::new(TunnelWrapper::new(
-            FramedReader::new(r, MAX_PACKET_SIZE),
+            FramedRead::new(
+                r,
+                TunnelCodec {
+                    max_packet_size: MAX_PACKET_SIZE,
+                },
+            ),
             FramedWriter::new(w),
             Some(info),
         )))

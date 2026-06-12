@@ -4,10 +4,10 @@
 
 use super::{FromUrl, IpVersion, Tunnel, TunnelConnector, TunnelError, TunnelListener};
 use crate::common::global_ctx::ArcGlobalCtx;
-use crate::tunnel::common::bind;
+use crate::tunnel::common::{TunnelCodec, bind};
 use crate::tunnel::{
     TunnelInfo,
-    common::{FramedReader, FramedWriter, TunnelWrapper},
+    common::{FramedWriter, TunnelWrapper},
 };
 use anyhow::Context;
 use derivative::Derivative;
@@ -21,6 +21,7 @@ use std::net::{Ipv4Addr, Ipv6Addr};
 use std::sync::OnceLock;
 use std::{net::SocketAddr, sync::Arc, time::Duration};
 use tokio::net::UdpSocket;
+use tokio_util::codec::FramedRead;
 
 // region config
 pub fn transport_config() -> Arc<TransportConfig> {
@@ -518,7 +519,12 @@ impl QuicTunnelListener {
         };
 
         Ok(Box::new(TunnelWrapper::new(
-            FramedReader::new(r, 2000),
+            FramedRead::new(
+                r,
+                TunnelCodec {
+                    max_packet_size: 2000,
+                },
+            ),
             FramedWriter::new(w),
             Some(info),
         )))
@@ -614,7 +620,12 @@ impl TunnelConnector for QuicTunnelConnector {
         };
 
         Ok(Box::new(TunnelWrapper::new(
-            FramedReader::new(r, 4500),
+            FramedRead::new(
+                r,
+                TunnelCodec {
+                    max_packet_size: 4500,
+                },
+            ),
             FramedWriter::new(w),
             Some(info),
         )))

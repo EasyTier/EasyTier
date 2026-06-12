@@ -274,8 +274,8 @@ impl VirtualNic {
         // Check if TUN kernel module is available
         let tun_module_available = tokio::fs::metadata("/proc/net/dev").await.is_ok()
             && (tokio::fs::read_to_string("/proc/modules").await)
-                .map(|content| content.contains("tun"))
-                .unwrap_or(false);
+            .map(|content| content.contains("tun"))
+            .unwrap_or(false);
 
         if !tun_module_available {
             log::warn!("TUN kernel module may not be available.");
@@ -588,7 +588,7 @@ impl VirtualNic {
         let (a, b) = BiLock::new(dev);
         let ft = TunnelWrapper::new(
             TunStream::new(a, has_packet_info),
-            FramedWriter::new_with_converter(
+            FramedWriter::with_converter(
                 TunAsyncWrite { l: b },
                 TunZCPacketToBytes::new(has_packet_info),
             ),
@@ -664,7 +664,7 @@ impl VirtualNic {
         let (a, b) = BiLock::new(dev);
         let ft = TunnelWrapper::new(
             TunStream::new(a, has_packet_info),
-            FramedWriter::new_with_converter(
+            FramedWriter::with_converter(
                 TunAsyncWrite { l: b },
                 TunZCPacketToBytes::new(has_packet_info),
             ),
@@ -1128,7 +1128,7 @@ impl NicCtx {
                 &global_ctx,
                 &cur_proxy_cidrs,
             )
-            .await;
+                .await;
             Self::apply_route_changes(
                 &ifcfg,
                 &ifname,
@@ -1137,7 +1137,7 @@ impl NicCtx {
                 added,
                 removed,
             )
-            .await;
+                .await;
 
             loop {
                 let event = match event_receiver.recv().await {
@@ -1157,7 +1157,7 @@ impl NicCtx {
                             &global_ctx,
                             &cur_proxy_cidrs,
                         )
-                        .await;
+                            .await;
                         GlobalCtxEvent::ProxyCidrsUpdated(added, removed)
                     }
                 };
@@ -1176,7 +1176,7 @@ impl NicCtx {
                     added,
                     removed,
                 )
-                .await;
+                    .await;
             }
         });
 
@@ -1206,7 +1206,7 @@ impl NicCtx {
                 initial_added,
                 Vec::new(),
             )
-            .await;
+                .await;
 
             loop {
                 let event = match event_receiver.recv().await {
@@ -1234,7 +1234,7 @@ impl NicCtx {
                     added,
                     removed,
                 )
-                .await;
+                    .await;
             }
         });
 

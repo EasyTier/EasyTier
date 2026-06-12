@@ -1,15 +1,15 @@
 use std::net::SocketAddr;
 
 use super::{FromUrl, TunnelInfo};
-use crate::tunnel::common::{apply_socket_mark, bind};
+use super::{
+    IpVersion, Tunnel, TunnelError, TunnelListener,
+    common::{FramedWriter, TunnelWrapper, wait_for_connect_futures},
+};
+use crate::tunnel::common::{TunnelCodec, apply_socket_mark, bind};
 use async_trait::async_trait;
 use futures::stream::FuturesUnordered;
 use tokio::net::{TcpListener, TcpSocket, TcpStream};
-
-use super::{
-    IpVersion, Tunnel, TunnelError, TunnelListener,
-    common::{FramedReader, FramedWriter, TunnelWrapper, wait_for_connect_futures},
-};
+use tokio_util::codec::FramedRead;
 
 const TCP_MTU_BYTES: usize = 2000;
 
@@ -54,7 +54,12 @@ impl TcpTunnelListener {
 
         let (r, w) = stream.into_split();
         Ok(Box::new(TunnelWrapper::new(
-            FramedReader::new(r, TCP_MTU_BYTES),
+            FramedRead::new(
+                r,
+                TunnelCodec {
+                    max_packet_size: TCP_MTU_BYTES,
+                },
+            ),
             FramedWriter::new(w),
             Some(info),
         )))
@@ -127,7 +132,12 @@ fn get_tunnel_with_tcp_stream(
 
     let (r, w) = stream.into_split();
     Ok(Box::new(TunnelWrapper::new(
-        FramedReader::new(r, TCP_MTU_BYTES),
+        FramedRead::new(
+            r,
+            TunnelCodec {
+                max_packet_size: TCP_MTU_BYTES,
+            },
+        ),
         FramedWriter::new(w),
         Some(info),
     )))
