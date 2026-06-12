@@ -2,6 +2,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     net::{Ipv4Addr, Ipv6Addr},
     sync::Arc,
+    sync::atomic::{AtomicBool, Ordering},
 };
 
 use cidr::{Ipv4Inet, Ipv6Inet};
@@ -232,6 +233,7 @@ impl SharedIfConfig {
 pub struct SharedVirtualNic {
     nic: Arc<Mutex<VirtualNic>>,
     ifcfg: SharedIfConfig,
+    valid: Arc<AtomicBool>,
 }
 
 impl SharedVirtualNic {
@@ -239,7 +241,16 @@ impl SharedVirtualNic {
         Self {
             nic: Arc::new(Mutex::new(VirtualNic::new(config))),
             ifcfg: SharedIfConfig::default(),
+            valid: Arc::new(AtomicBool::new(true)),
         }
+    }
+
+    pub fn mark_invalid(&self) {
+        self.valid.store(false, Ordering::Release);
+    }
+
+    pub fn is_valid(&self) -> bool {
+        self.valid.load(Ordering::Acquire)
     }
 
     pub fn ifcfg(&self) -> &SharedIfConfig {
@@ -252,6 +263,65 @@ impl SharedVirtualNic {
 
     pub fn nic(&self) -> Arc<Mutex<VirtualNic>> {
         self.nic.clone()
+    }
+
+    fn valid_flag(&self) -> Arc<AtomicBool> {
+        self.valid.clone()
+    }
+}
+
+#[derive(Default)]
+pub struct SharedVirtualNicRegistry {
+    nics: BTreeMap<String, SharedVirtualNicRegistryEntry>,
+}
+
+struct SharedVirtualNicRegistryEntry {
+    nic: Arc<Mutex<SharedVirtualNic>>,
+    valid: Arc<AtomicBool>,
+}
+
+impl SharedVirtualNicRegistryEntry {
+    fn new(nic: SharedVirtualNic) -> Self {
+        Self {
+            valid: nic.valid_flag(),
+            nic: Arc::new(Mutex::new(nic)),
+        }
+    }
+
+    fn is_valid(&self) -> bool {
+        self.valid.load(Ordering::Acquire)
+    }
+
+    fn nic(&self) -> Arc<Mutex<SharedVirtualNic>> {
+        self.nic.clone()
+    }
+}
+
+impl SharedVirtualNicRegistry {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn get(&self, dev_name: &str) -> Option<Arc<Mutex<SharedVirtualNic>>> {
+        self.nics
+            .get(dev_name)
+            .filter(|entry| entry.is_valid())
+            .map(|entry| entry.nic())
+    }
+
+    pub fn get_or_create(
+        &mut self,
+        dev_name: String,
+        config: VirtualNicConfig,
+    ) -> Arc<Mutex<SharedVirtualNic>> {
+        if let Some(nic) = self.get(&dev_name) {
+            return nic;
+        }
+
+        let entry = SharedVirtualNicRegistryEntry::new(SharedVirtualNic::new(config));
+        let nic = entry.nic();
+        self.nics.insert(dev_name, entry);
+        nic
     }
 }
 
@@ -484,5 +554,41 @@ mod tests {
             BTreeSet::from([member])
         );
         drop(shared_nic.nic());
+    }
+
+    #[test]
+    fn registry_reuses_shared_virtual_nic_for_same_dev_name() {
+        let mut registry = SharedVirtualNicRegistry::new();
+
+        let first = registry.get_or_create("et0".to_string(), virtual_nic_config());
+        let second = registry.get_or_create("et0".to_string(), virtual_nic_config());
+
+        assert!(Arc::ptr_eq(&first, &second));
+    }
+
+    #[test]
+    fn registry_keeps_different_dev_names_separate() {
+        let mut registry = SharedVirtualNicRegistry::new();
+
+        let first = registry.get_or_create("et0".to_string(), virtual_nic_config());
+        let second = registry.get_or_create("et1".to_string(), virtual_nic_config());
+
+        assert!(!Arc::ptr_eq(&first, &second));
+    }
+
+    #[test]
+    fn registry_replaces_invalid_shared_virtual_nic() {
+        let mut registry = SharedVirtualNicRegistry::new();
+
+        let first = registry.get_or_create("et0".to_string(), virtual_nic_config());
+        first.try_lock().unwrap().mark_invalid();
+        let second = registry.get_or_create("et0".to_string(), virtual_nic_config());
+
+        assert!(!Arc::ptr_eq(&first, &second));
+        assert!(
+            registry
+                .get("et0")
+                .is_some_and(|nic| Arc::ptr_eq(&nic, &second))
+        );
     }
 }
