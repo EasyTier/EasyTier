@@ -258,11 +258,11 @@ jobs:
           path: |
             ./artifacts/*
 
-  # Sign Windows artifacts with Certum SimplySign cloud certificate
+  # Sign Windows artifacts with Certum SimplySign cloud certificate (only on release)
   sign-windows:
     name: Sign Windows Core Artifacts
     needs: [build]
-    if: needs.pre_job.outputs.should_skip != 'true' && !cancelled()
+    if: needs.pre_job.outputs.should_skip != 'true' && !cancelled() && (github.ref_type == 'tag' || startsWith(github.ref_name, 'releases/'))
     runs-on: windows-latest
     continue-on-error: true
     steps:
