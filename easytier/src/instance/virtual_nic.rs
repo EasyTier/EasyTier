@@ -800,17 +800,22 @@ impl VirtualNic {
         Ok(())
     }
 
-    pub fn get_ifcfg(&self) -> impl IfConfiguerTrait + use<> {
+    pub fn get_ifcfg(&self) -> IfConfiger {
         IfConfiger {}
     }
 }
 
+#[derive(Clone)]
 pub enum NicBackend {
     Dedicated(Arc<Mutex<VirtualNic>>),
     Shared(SharedVirtualNicMember),
 }
 
 impl NicBackend {
+    fn shared_not_implemented(operation: &str) -> Error {
+        anyhow::anyhow!("shared virtual nic {} is not implemented", operation).into()
+    }
+
     pub fn dedicated(nic: Arc<Mutex<VirtualNic>>) -> Self {
         Self::Dedicated(nic)
     }
@@ -822,6 +827,17 @@ impl NicBackend {
     pub async fn create_dev(&self) -> Result<Box<dyn Tunnel>, Error> {
         match self {
             Self::Dedicated(nic) => nic.lock().await.create_dev().await,
+            Self::Shared(member) => member.create_dev().await,
+        }
+    }
+
+    #[cfg(mobile)]
+    pub async fn create_dev_for_mobile(
+        &self,
+        tun_fd: std::os::fd::RawFd,
+    ) -> Result<Box<dyn Tunnel>, Error> {
+        match self {
+            Self::Dedicated(nic) => nic.lock().await.create_dev_for_mobile(tun_fd).await,
             Self::Shared(member) => member.create_dev().await,
         }
     }
@@ -848,6 +864,89 @@ impl NicBackend {
             }
         }
     }
+
+    pub async fn ifcfg_and_ifname(&self) -> Result<(IfConfiger, String), Error> {
+        match self {
+            Self::Dedicated(nic) => {
+                let nic = nic.lock().await;
+                Ok((nic.get_ifcfg(), nic.ifname().to_owned()))
+            }
+            Self::Shared(_) => Err(Self::shared_not_implemented("ifcfg")),
+        }
+    }
+
+    pub async fn link_up(&self) -> Result<(), Error> {
+        match self {
+            Self::Dedicated(nic) => nic.lock().await.link_up().await,
+            Self::Shared(_) => Err(Self::shared_not_implemented("link_up")),
+        }
+    }
+
+    pub async fn add_route(&self, address: Ipv4Addr, cidr: u8) -> Result<(), Error> {
+        match self {
+            Self::Dedicated(nic) => nic.lock().await.add_route(address, cidr).await,
+            Self::Shared(_) => Err(Self::shared_not_implemented("add_route")),
+        }
+    }
+
+    pub async fn add_ipv6_route(&self, address: Ipv6Addr, cidr: u8) -> Result<(), Error> {
+        match self {
+            Self::Dedicated(nic) => nic.lock().await.add_ipv6_route(address, cidr).await,
+            Self::Shared(_) => Err(Self::shared_not_implemented("add_ipv6_route")),
+        }
+    }
+
+    pub async fn add_ipv6_route_with_cost(
+        &self,
+        address: Ipv6Addr,
+        cidr: u8,
+        cost: Option<i32>,
+    ) -> Result<(), Error> {
+        match self {
+            Self::Dedicated(nic) => {
+                nic.lock()
+                    .await
+                    .add_ipv6_route_with_cost(address, cidr, cost)
+                    .await
+            }
+            Self::Shared(_) => Err(Self::shared_not_implemented("add_ipv6_route_with_cost")),
+        }
+    }
+
+    pub async fn remove_ipv6_route(&self, address: Ipv6Addr, cidr: u8) -> Result<(), Error> {
+        match self {
+            Self::Dedicated(nic) => nic.lock().await.remove_ipv6_route(address, cidr).await,
+            Self::Shared(_) => Err(Self::shared_not_implemented("remove_ipv6_route")),
+        }
+    }
+
+    pub async fn remove_ip(&self, ip: Option<Ipv4Inet>) -> Result<(), Error> {
+        match self {
+            Self::Dedicated(nic) => nic.lock().await.remove_ip(ip).await,
+            Self::Shared(_) => Err(Self::shared_not_implemented("remove_ip")),
+        }
+    }
+
+    pub async fn remove_ipv6(&self, ip: Option<Ipv6Inet>) -> Result<(), Error> {
+        match self {
+            Self::Dedicated(nic) => nic.lock().await.remove_ipv6(ip).await,
+            Self::Shared(_) => Err(Self::shared_not_implemented("remove_ipv6")),
+        }
+    }
+
+    pub async fn add_ip(&self, ip: Ipv4Addr, cidr: i32) -> Result<(), Error> {
+        match self {
+            Self::Dedicated(nic) => nic.lock().await.add_ip(ip, cidr).await,
+            Self::Shared(_) => Err(Self::shared_not_implemented("add_ip")),
+        }
+    }
+
+    pub async fn add_ipv6(&self, ip: Ipv6Addr, cidr: i32) -> Result<(), Error> {
+        match self {
+            Self::Dedicated(nic) => nic.lock().await.add_ipv6(ip, cidr).await,
+            Self::Shared(_) => Err(Self::shared_not_implemented("add_ipv6")),
+        }
+    }
 }
 
 pub struct NicCtx {
@@ -857,7 +956,7 @@ pub struct NicCtx {
 
     close_notifier: Arc<Notify>,
 
-    nic: Arc<Mutex<VirtualNic>>,
+    backend: NicBackend,
     tasks: JoinSet<()>,
 
     #[cfg(target_os = "windows")]
@@ -890,7 +989,7 @@ impl NicCtx {
 
             close_notifier,
 
-            nic: Arc::new(Mutex::new(VirtualNic::new(nic_config))),
+            backend: NicBackend::dedicated(Arc::new(Mutex::new(VirtualNic::new(nic_config)))),
             tasks: JoinSet::new(),
 
             #[cfg(target_os = "windows")]
@@ -899,39 +998,40 @@ impl NicCtx {
     }
 
     pub async fn ifname(&self) -> Option<String> {
-        let nic = self.nic.lock().await;
-        nic.ifname.as_ref().map(|s| s.to_owned())
+        self.backend.ifname().await
     }
 
     pub async fn assign_ipv4_to_tun_device(&self, ipv4_addr: cidr::Ipv4Inet) -> Result<(), Error> {
-        let nic = self.nic.lock().await;
-        nic.link_up().await?;
-        nic.remove_ip(None).await?;
-        nic.add_ip(ipv4_addr.address(), ipv4_addr.network_length() as i32)
+        self.backend.link_up().await?;
+        self.backend.remove_ip(None).await?;
+        self.backend
+            .add_ip(ipv4_addr.address(), ipv4_addr.network_length() as i32)
             .await?;
         #[cfg(any(
             all(target_os = "macos", not(feature = "macos-ne")),
             target_os = "freebsd"
         ))]
         {
-            nic.add_route(ipv4_addr.first_address(), ipv4_addr.network_length())
+            self.backend
+                .add_route(ipv4_addr.first_address(), ipv4_addr.network_length())
                 .await?;
         }
         Ok(())
     }
 
     pub async fn assign_ipv6_to_tun_device(&self, ipv6_addr: cidr::Ipv6Inet) -> Result<(), Error> {
-        let nic = self.nic.lock().await;
-        nic.link_up().await?;
-        nic.remove_ipv6(None).await?;
-        nic.add_ipv6(ipv6_addr.address(), ipv6_addr.network_length() as i32)
+        self.backend.link_up().await?;
+        self.backend.remove_ipv6(None).await?;
+        self.backend
+            .add_ipv6(ipv6_addr.address(), ipv6_addr.network_length() as i32)
             .await?;
         #[cfg(any(
             all(target_os = "macos", not(feature = "macos-ne")),
             target_os = "freebsd"
         ))]
         {
-            nic.add_ipv6_route(ipv6_addr.first_address(), ipv6_addr.network_length())
+            self.backend
+                .add_ipv6_route(ipv6_addr.first_address(), ipv6_addr.network_length())
                 .await?;
         }
         Ok(())
@@ -1201,9 +1301,7 @@ impl NicCtx {
         };
         let global_ctx = self.global_ctx.clone();
         let net_ns = self.global_ctx.net_ns.clone();
-        let nic = self.nic.lock().await;
-        let ifcfg = nic.get_ifcfg();
-        let ifname = nic.ifname().to_owned();
+        let (ifcfg, ifname) = self.backend.ifcfg_and_ifname().await?;
         let mut event_receiver = global_ctx.subscribe();
 
         self.tasks.spawn(async move {
@@ -1276,9 +1374,7 @@ impl NicCtx {
         };
         let global_ctx = self.global_ctx.clone();
         let net_ns = self.global_ctx.net_ns.clone();
-        let nic = self.nic.lock().await;
-        let ifcfg = nic.get_ifcfg();
-        let ifname = nic.ifname().to_owned();
+        let (ifcfg, ifname) = self.backend.ifcfg_and_ifname().await?;
         let mut event_receiver = global_ctx.subscribe();
 
         self.tasks.spawn(async move {
@@ -1333,20 +1429,22 @@ impl NicCtx {
             return Err(anyhow::anyhow!("peer manager not available").into());
         };
         let global_ctx = self.global_ctx.clone();
-        let nic = self.nic.clone();
+        let backend = self.backend.clone();
         let mut event_receiver = global_ctx.subscribe();
 
         self.tasks.spawn(async move {
             let mut current_addr = peer_mgr.get_my_public_ipv6_addr().await;
             if let Some(addr) = current_addr {
-                let nic = nic.lock().await;
-                if let Err(err) = nic.link_up().await {
+                if let Err(err) = backend.link_up().await {
                     tracing::warn!(?err, "failed to bring public ipv6 nic link up");
                 }
-                if let Err(err) = nic.add_ipv6(addr.address(), addr.network_length() as i32).await {
+                if let Err(err) = backend
+                    .add_ipv6(addr.address(), addr.network_length() as i32)
+                    .await
+                {
                     tracing::warn!(addr = ?addr, ?err, "failed to add public ipv6 address");
                 }
-                if let Err(err) = nic
+                if let Err(err) = backend
                     .add_ipv6_route_with_cost(Ipv6Addr::UNSPECIFIED, 0, Some(5))
                     .await
                 {
@@ -1371,24 +1469,28 @@ impl NicCtx {
                 };
 
                 current_addr = new;
-                let nic = nic.lock().await;
-                if let Err(err) = nic.link_up().await {
+                if let Err(err) = backend.link_up().await {
                     tracing::warn!(?err, "failed to bring public ipv6 nic link up");
                 }
                 if let Some(old) = old {
-                    if let Err(err) = nic.remove_ipv6_route(Ipv6Addr::UNSPECIFIED, 0).await {
+                    if let Err(err) = backend
+                        .remove_ipv6_route(Ipv6Addr::UNSPECIFIED, 0)
+                        .await
+                    {
                         tracing::warn!(route = %Ipv6Addr::UNSPECIFIED, prefix = 0, ?err, "failed to remove default public ipv6 route");
                     }
-                    if let Err(err) = nic.remove_ipv6(Some(old)).await {
+                    if let Err(err) = backend.remove_ipv6(Some(old)).await {
                         tracing::warn!(addr = ?old, ?err, "failed to remove old public ipv6 address");
                     }
                 }
                 if let Some(new) = new {
-                    if let Err(err) = nic.add_ipv6(new.address(), new.network_length() as i32).await
+                    if let Err(err) = backend
+                        .add_ipv6(new.address(), new.network_length() as i32)
+                        .await
                     {
                         tracing::warn!(addr = ?new, ?err, "failed to add public ipv6 address");
                     }
-                    if let Err(err) = nic
+                    if let Err(err) = backend
                         .add_ipv6_route_with_cost(Ipv6Addr::UNSPECIFIED, 0, Some(5))
                         .await
                     {
@@ -1406,42 +1508,44 @@ impl NicCtx {
         ipv4_addr: Option<cidr::Ipv4Inet>,
         ipv6_addr: Option<cidr::Ipv6Inet>,
     ) -> Result<(), Error> {
-        let tunnel = {
-            let mut nic = self.nic.lock().await;
-            match nic.create_dev().await {
-                Ok(ret) => {
-                    #[cfg(target_os = "windows")]
-                    {
-                        let dev_name = nic.ifname().to_string();
-                        let mut flags = self.global_ctx.get_flags();
-                        if flags.dev_name.is_empty() {
-                            flags.dev_name = dev_name.clone();
-                            self.global_ctx.set_flags(flags);
-                        }
-                        let _ = RegistryManager::reg_change_catrgory_in_profile(&dev_name);
-                    }
+        let tunnel = match self.backend.create_dev().await {
+            Ok(ret) => {
+                let ifname = self
+                    .backend
+                    .ifname()
+                    .await
+                    .ok_or_else(|| anyhow::anyhow!("tun device has no interface name"))?;
 
-                    #[cfg(any(
-                        all(target_os = "macos", not(feature = "macos-ne")),
-                        target_os = "freebsd"
-                    ))]
-                    {
-                        // remove the 10.0.0.0/24 route (which is added by rust-tun by default)
-                        let _ = nic
-                            .ifcfg
-                            .remove_ipv4_route(nic.ifname(), "10.0.0.0".parse().unwrap(), 24)
-                            .await;
+                #[cfg(target_os = "windows")]
+                {
+                    let mut flags = self.global_ctx.get_flags();
+                    if flags.dev_name.is_empty() {
+                        flags.dev_name = ifname.clone();
+                        self.global_ctx.set_flags(flags);
                     }
+                    let _ = RegistryManager::reg_change_catrgory_in_profile(&ifname);
+                }
 
-                    self.global_ctx
-                        .issue_event(GlobalCtxEvent::TunDeviceReady(nic.ifname().to_string()));
-                    ret
+                #[cfg(any(
+                    all(target_os = "macos", not(feature = "macos-ne")),
+                    target_os = "freebsd"
+                ))]
+                {
+                    // remove the 10.0.0.0/24 route (which is added by rust-tun by default)
+                    let (ifcfg, ifname) = self.backend.ifcfg_and_ifname().await?;
+                    let _ = ifcfg
+                        .remove_ipv4_route(&ifname, "10.0.0.0".parse().unwrap(), 24)
+                        .await;
                 }
-                Err(err) => {
-                    self.global_ctx
-                        .issue_event(GlobalCtxEvent::TunDeviceError(err.to_string()));
-                    return Err(err);
-                }
+
+                self.global_ctx
+                    .issue_event(GlobalCtxEvent::TunDeviceReady(ifname));
+                ret
+            }
+            Err(err) => {
+                self.global_ctx
+                    .issue_event(GlobalCtxEvent::TunDeviceError(err.to_string()));
+                return Err(err);
             }
         };
 
@@ -1473,19 +1577,21 @@ impl NicCtx {
 
     #[cfg(mobile)]
     pub async fn run_for_mobile(&mut self, tun_fd: std::os::fd::RawFd) -> Result<(), Error> {
-        let tunnel = {
-            let mut nic = self.nic.lock().await;
-            match nic.create_dev_for_mobile(tun_fd).await {
-                Ok(ret) => {
-                    self.global_ctx
-                        .issue_event(GlobalCtxEvent::TunDeviceReady(nic.ifname().to_string()));
-                    ret
-                }
-                Err(err) => {
-                    self.global_ctx
-                        .issue_event(GlobalCtxEvent::TunDeviceError(err.to_string()));
-                    return Err(err);
-                }
+        let tunnel = match self.backend.create_dev_for_mobile(tun_fd).await {
+            Ok(ret) => {
+                let ifname = self
+                    .backend
+                    .ifname()
+                    .await
+                    .ok_or_else(|| anyhow::anyhow!("tun device has no interface name"))?;
+                self.global_ctx
+                    .issue_event(GlobalCtxEvent::TunDeviceReady(ifname));
+                ret
+            }
+            Err(err) => {
+                self.global_ctx
+                    .issue_event(GlobalCtxEvent::TunDeviceError(err.to_string()));
+                return Err(err);
             }
         };
 
