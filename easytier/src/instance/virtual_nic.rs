@@ -13,6 +13,7 @@ use crate::{
         global_ctx::{ArcGlobalCtx, GlobalCtxEvent},
         ifcfg::{IfConfiger, IfConfiguerTrait},
         log,
+        netns::NetNS,
     },
     instance::proxy_cidrs_monitor::ProxyCidrsMonitor,
     peers::{PacketRecvChanReceiver, peer_manager::PeerManager, recv_packet_from_chan},
@@ -239,8 +240,24 @@ impl AsyncWrite for TunAsyncWrite {
     }
 }
 
+pub struct VirtualNicConfig {
+    dev_name: String,
+    mtu: u32,
+    net_ns: NetNS,
+}
+
+impl VirtualNicConfig {
+    pub fn new(dev_name: String, mtu: u32, net_ns: NetNS) -> Self {
+        Self {
+            dev_name,
+            mtu,
+            net_ns,
+        }
+    }
+}
+
 pub struct VirtualNic {
-    global_ctx: ArcGlobalCtx,
+    config: VirtualNicConfig,
 
     ifname: Option<String>,
     ifcfg: Box<dyn IfConfiguerTrait + Send + Sync + 'static>,
@@ -265,9 +282,9 @@ impl Drop for VirtualNic {
 }
 
 impl VirtualNic {
-    pub fn new(global_ctx: ArcGlobalCtx) -> Self {
+    pub fn new(config: VirtualNicConfig) -> Self {
         Self {
-            global_ctx,
+            config,
             ifname: None,
             ifcfg: Box::new(IfConfiger {}),
         }
@@ -492,14 +509,14 @@ impl VirtualNic {
         Ok(())
     }
 
-    async fn create_tun(&self) -> Result<tun::platform::Device, Error> {
+    async fn create_tun(&mut self) -> Result<tun::platform::Device, Error> {
         let mut config = Configuration::default();
         config.layer(Layer::L3);
 
         // FreeBSD specific: Check and restore TUN interfaces before creating new one
         #[cfg(target_os = "freebsd")]
         {
-            let dev_name = self.global_ctx.get_flags().dev_name;
+            let dev_name = self.config.dev_name.clone();
 
             if !dev_name.is_empty() {
                 // Restore TUN interface name if needed, ignoring errors as it's not critical
@@ -512,7 +529,7 @@ impl VirtualNic {
             // Check and create TUN device node if necessary (Linux only)
             Self::ensure_tun_device_node().await;
 
-            let dev_name = self.global_ctx.get_flags().dev_name;
+            let dev_name = self.config.dev_name.clone();
             if !dev_name.is_empty() {
                 config.tun_name(&dev_name);
             }
@@ -526,7 +543,7 @@ impl VirtualNic {
 
         #[cfg(target_os = "windows")]
         {
-            let dev_name = self.global_ctx.get_flags().dev_name;
+            let dev_name = self.config.dev_name.clone();
 
             match crate::arch::windows::add_self_to_firewall_allowlist() {
                 Ok(_) => tracing::info!("add_self_to_firewall_allowlist successful!"),
@@ -558,10 +575,7 @@ impl VirtualNic {
 
                 let random_dev_name = format!("et_{}_{}", c, s);
                 config.tun_name(random_dev_name.clone());
-
-                let mut flags = self.global_ctx.get_flags();
-                flags.dev_name = random_dev_name.clone();
-                self.global_ctx.set_flags(flags);
+                self.config.dev_name = random_dev_name;
             }
 
             config.platform_config(|config| {
@@ -575,7 +589,7 @@ impl VirtualNic {
 
         config.up();
 
-        let _g = self.global_ctx.net_ns.guard();
+        let _g = self.config.net_ns.guard();
         Ok(tun::create(&config)?)
     }
 
@@ -632,7 +646,7 @@ impl VirtualNic {
         // FreeBSD TUN interface rename functionality
         #[cfg(target_os = "freebsd")]
         {
-            let dev_name = self.global_ctx.get_flags().dev_name;
+            let dev_name = self.config.dev_name.clone();
 
             if !dev_name.is_empty() && dev_name != ifname {
                 // Use ifconfig to rename the TUN interface
@@ -668,15 +682,10 @@ impl VirtualNic {
 
         let dev = AsyncDevice::new(dev)?;
 
-        let flags = self.global_ctx.config.get_flags();
-        let mut mtu_in_config = flags.mtu;
-        if flags.enable_encryption {
-            mtu_in_config -= 20;
-        }
         {
             // set mtu by ourselves, rust-tun does not handle it correctly on windows
-            let _g = self.global_ctx.net_ns.guard();
-            self.ifcfg.set_mtu(ifname.as_str(), mtu_in_config).await?;
+            let _g = self.config.net_ns.guard();
+            self.ifcfg.set_mtu(ifname.as_str(), self.config.mtu).await?;
         }
 
         let has_packet_info = cfg!(all(target_os = "macos", not(feature = "macos-ne")));
@@ -723,13 +732,13 @@ impl VirtualNic {
     }
 
     pub async fn link_up(&self) -> Result<(), Error> {
-        let _g = self.global_ctx.net_ns.guard();
+        let _g = self.config.net_ns.guard();
         self.ifcfg.set_link_status(self.ifname(), true).await?;
         Ok(())
     }
 
     pub async fn add_route(&self, address: Ipv4Addr, cidr: u8) -> Result<(), Error> {
-        let _g = self.global_ctx.net_ns.guard();
+        let _g = self.config.net_ns.guard();
         self.ifcfg
             .add_ipv4_route(self.ifname(), address, cidr, None)
             .await?;
@@ -746,7 +755,7 @@ impl VirtualNic {
         cidr: u8,
         cost: Option<i32>,
     ) -> Result<(), Error> {
-        let _g = self.global_ctx.net_ns.guard();
+        let _g = self.config.net_ns.guard();
         self.ifcfg
             .add_ipv6_route(self.ifname(), address, cidr, cost)
             .await?;
@@ -754,7 +763,7 @@ impl VirtualNic {
     }
 
     pub async fn remove_ipv6_route(&self, address: Ipv6Addr, cidr: u8) -> Result<(), Error> {
-        let _g = self.global_ctx.net_ns.guard();
+        let _g = self.config.net_ns.guard();
         self.ifcfg
             .remove_ipv6_route(self.ifname(), address, cidr)
             .await?;
@@ -762,19 +771,19 @@ impl VirtualNic {
     }
 
     pub async fn remove_ip(&self, ip: Option<Ipv4Inet>) -> Result<(), Error> {
-        let _g = self.global_ctx.net_ns.guard();
+        let _g = self.config.net_ns.guard();
         self.ifcfg.remove_ip(self.ifname(), ip).await?;
         Ok(())
     }
 
     pub async fn remove_ipv6(&self, ip: Option<Ipv6Inet>) -> Result<(), Error> {
-        let _g = self.global_ctx.net_ns.guard();
+        let _g = self.config.net_ns.guard();
         self.ifcfg.remove_ipv6(self.ifname(), ip).await?;
         Ok(())
     }
 
     pub async fn add_ip(&self, ip: Ipv4Addr, cidr: i32) -> Result<(), Error> {
-        let _g = self.global_ctx.net_ns.guard();
+        let _g = self.config.net_ns.guard();
         self.ifcfg
             .add_ipv4_ip(self.ifname(), ip, cidr as u8)
             .await?;
@@ -782,7 +791,7 @@ impl VirtualNic {
     }
 
     pub async fn add_ipv6(&self, ip: Ipv6Addr, cidr: i32) -> Result<(), Error> {
-        let _g = self.global_ctx.net_ns.guard();
+        let _g = self.config.net_ns.guard();
         self.ifcfg
             .add_ipv6_ip(self.ifname(), ip, cidr as u8)
             .await?;
@@ -809,12 +818,24 @@ pub struct NicCtx {
 }
 
 impl NicCtx {
+    fn virtual_nic_config(global_ctx: &ArcGlobalCtx) -> VirtualNicConfig {
+        let flags = global_ctx.get_flags();
+        let mut mtu = flags.mtu;
+        if flags.enable_encryption {
+            mtu -= 20;
+        }
+
+        VirtualNicConfig::new(flags.dev_name, mtu, global_ctx.net_ns.clone())
+    }
+
     pub fn new(
         global_ctx: ArcGlobalCtx,
         peer_manager: &Arc<PeerManager>,
         peer_packet_receiver: Arc<Mutex<PacketRecvChanReceiver>>,
         close_notifier: Arc<Notify>,
     ) -> Self {
+        let nic_config = Self::virtual_nic_config(&global_ctx);
+
         NicCtx {
             global_ctx: global_ctx.clone(),
             peer_mgr: Arc::downgrade(peer_manager),
@@ -822,7 +843,7 @@ impl NicCtx {
 
             close_notifier,
 
-            nic: Arc::new(Mutex::new(VirtualNic::new(global_ctx))),
+            nic: Arc::new(Mutex::new(VirtualNic::new(nic_config))),
             tasks: JoinSet::new(),
 
             #[cfg(target_os = "windows")]
@@ -1344,7 +1365,12 @@ impl NicCtx {
                 Ok(ret) => {
                     #[cfg(target_os = "windows")]
                     {
-                        let dev_name = self.global_ctx.get_flags().dev_name;
+                        let dev_name = nic.ifname().to_string();
+                        let mut flags = self.global_ctx.get_flags();
+                        if flags.dev_name.is_empty() {
+                            flags.dev_name = dev_name.clone();
+                            self.global_ctx.set_flags(flags);
+                        }
                         let _ = RegistryManager::reg_change_catrgory_in_profile(&dev_name);
                     }
 
@@ -1429,10 +1455,11 @@ impl NicCtx {
 mod tests {
     use crate::common::{error::Error, global_ctx::tests::get_mock_global_ctx};
 
-    use super::VirtualNic;
+    use super::{NicCtx, VirtualNic};
 
     async fn run_test_helper() -> Result<VirtualNic, Error> {
-        let mut dev = VirtualNic::new(get_mock_global_ctx());
+        let global_ctx = get_mock_global_ctx();
+        let mut dev = VirtualNic::new(NicCtx::virtual_nic_config(&global_ctx));
         let _tunnel = dev.create_dev().await?;
 
         tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;

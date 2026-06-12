@@ -7,9 +7,7 @@ use std::{
 use cidr::{Ipv4Inet, Ipv6Inet};
 use tokio::sync::Mutex;
 
-use crate::common::global_ctx::ArcGlobalCtx;
-
-use super::virtual_nic::VirtualNic;
+use super::virtual_nic::{VirtualNic, VirtualNicConfig};
 
 pub type SharedVirtualNicMemberId = uuid::Uuid;
 
@@ -237,38 +235,19 @@ pub struct SharedVirtualNic {
 }
 
 impl SharedVirtualNic {
-    pub fn new(global_ctx: ArcGlobalCtx) -> Self {
+    pub fn new(config: VirtualNicConfig) -> Self {
         Self {
-            nic: Arc::new(Mutex::new(VirtualNic::new(global_ctx))),
+            nic: Arc::new(Mutex::new(VirtualNic::new(config))),
             ifcfg: SharedIfConfig::default(),
         }
     }
 
-    pub fn attach_member(
-        &mut self,
-        member_id: SharedVirtualNicMemberId,
-        claims: SharedIfConfigClaims,
-    ) -> SharedIfConfigDelta {
-        self.ifcfg.apply_member_claims(member_id, claims)
-    }
-
-    pub fn update_member_claims(
-        &mut self,
-        member_id: SharedVirtualNicMemberId,
-        claims: SharedIfConfigClaims,
-    ) -> SharedIfConfigDelta {
-        self.ifcfg.apply_member_claims(member_id, claims)
-    }
-
-    pub fn detach_member(
-        &mut self,
-        member_id: SharedVirtualNicMemberId,
-    ) -> Option<SharedIfConfigDelta> {
-        self.ifcfg.remove_member(member_id)
-    }
-
     pub fn ifcfg(&self) -> &SharedIfConfig {
         &self.ifcfg
+    }
+
+    pub fn ifcfg_mut(&mut self) -> &mut SharedIfConfig {
+        &mut self.ifcfg
     }
 
     pub fn nic(&self) -> Arc<Mutex<VirtualNic>> {
@@ -389,7 +368,7 @@ where
 mod tests {
     use std::str::FromStr as _;
 
-    use crate::common::global_ctx::tests::get_mock_global_ctx;
+    use crate::common::netns::NetNS;
 
     use super::*;
 
@@ -403,6 +382,10 @@ mod tests {
             mtu,
             ..Default::default()
         }
+    }
+
+    fn virtual_nic_config() -> VirtualNicConfig {
+        VirtualNicConfig::new(String::new(), 1500, NetNS::new(None))
     }
 
     #[test]
@@ -486,13 +469,15 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn shared_virtual_nic_wraps_virtual_nic_and_tracks_ifcfg() {
-        let mut shared_nic = SharedVirtualNic::new(get_mock_global_ctx());
+    #[test]
+    fn shared_virtual_nic_wraps_virtual_nic_and_tracks_ifcfg() {
+        let mut shared_nic = SharedVirtualNic::new(virtual_nic_config());
         let member = member_id(1);
         let route = SharedIpv4Route::new(Ipv4Addr::new(10, 40, 0, 0), 24, None);
 
-        shared_nic.attach_member(member, claims_with_ipv4_route(route.clone(), None));
+        shared_nic
+            .ifcfg_mut()
+            .apply_member_claims(member, claims_with_ipv4_route(route.clone(), None));
 
         assert_eq!(
             shared_nic.ifcfg().owners_of_ipv4_route(&route),
