@@ -44,7 +44,9 @@ use zerocopy::{NativeEndian, NetworkEndian};
 #[cfg(target_os = "windows")]
 use crate::common::ifcfg::RegistryManager;
 
-use super::shared_virtual_nic::SharedVirtualNicMember;
+use super::shared_virtual_nic::{
+    SharedVirtualNicMember, SharedVirtualNicMemberId, SharedVirtualNicRegistry,
+};
 
 pin_project! {
     pub struct TunStream {
@@ -964,14 +966,54 @@ pub struct NicCtx {
 }
 
 impl NicCtx {
-    fn virtual_nic_config(global_ctx: &ArcGlobalCtx) -> VirtualNicConfig {
-        let flags = global_ctx.get_flags();
-        let mut mtu = flags.mtu;
-        if flags.enable_encryption {
+    fn virtual_nic_config_from_parts(
+        dev_name: String,
+        mut mtu: u32,
+        enable_encryption: bool,
+        net_ns: NetNS,
+    ) -> VirtualNicConfig {
+        if enable_encryption {
             mtu -= 20;
         }
 
-        VirtualNicConfig::new(flags.dev_name, mtu, global_ctx.net_ns.clone())
+        VirtualNicConfig::new(dev_name, mtu, net_ns)
+    }
+
+    fn virtual_nic_config(global_ctx: &ArcGlobalCtx) -> VirtualNicConfig {
+        let flags = global_ctx.get_flags();
+        Self::virtual_nic_config_from_parts(
+            flags.dev_name,
+            flags.mtu,
+            flags.enable_encryption,
+            global_ctx.net_ns.clone(),
+        )
+    }
+
+    fn dedicated_backend(global_ctx: &ArcGlobalCtx) -> NicBackend {
+        let nic_config = Self::virtual_nic_config(global_ctx);
+        NicBackend::dedicated(Arc::new(Mutex::new(VirtualNic::new(nic_config))))
+    }
+
+    fn new_with_backend(
+        global_ctx: ArcGlobalCtx,
+        peer_manager: &Arc<PeerManager>,
+        peer_packet_receiver: Arc<Mutex<PacketRecvChanReceiver>>,
+        close_notifier: Arc<Notify>,
+        backend: NicBackend,
+    ) -> Self {
+        NicCtx {
+            global_ctx: global_ctx.clone(),
+            peer_mgr: Arc::downgrade(peer_manager),
+            peer_packet_receiver,
+
+            close_notifier,
+
+            backend,
+            tasks: JoinSet::new(),
+
+            #[cfg(target_os = "windows")]
+            windows_udp_broadcast_relay: None,
+        }
     }
 
     pub fn new(
@@ -980,21 +1022,52 @@ impl NicCtx {
         peer_packet_receiver: Arc<Mutex<PacketRecvChanReceiver>>,
         close_notifier: Arc<Notify>,
     ) -> Self {
-        let nic_config = Self::virtual_nic_config(&global_ctx);
+        let backend = Self::dedicated_backend(&global_ctx);
 
-        NicCtx {
-            global_ctx: global_ctx.clone(),
-            peer_mgr: Arc::downgrade(peer_manager),
+        Self::new_with_backend(
+            global_ctx,
+            peer_manager,
             peer_packet_receiver,
-
             close_notifier,
+            backend,
+        )
+    }
 
-            backend: NicBackend::dedicated(Arc::new(Mutex::new(VirtualNic::new(nic_config)))),
-            tasks: JoinSet::new(),
-
-            #[cfg(target_os = "windows")]
-            windows_udp_broadcast_relay: None,
+    pub async fn new_shared(
+        global_ctx: ArcGlobalCtx,
+        peer_manager: &Arc<PeerManager>,
+        peer_packet_receiver: Arc<Mutex<PacketRecvChanReceiver>>,
+        close_notifier: Arc<Notify>,
+        registry: Arc<Mutex<SharedVirtualNicRegistry>>,
+        member_id: SharedVirtualNicMemberId,
+    ) -> Result<Self, Error> {
+        let flags = global_ctx.get_flags();
+        let dev_name = flags.dev_name.clone();
+        if dev_name.is_empty() {
+            return Err(anyhow::anyhow!("shared virtual nic requires dev_name").into());
         }
+        let nic_config = Self::virtual_nic_config_from_parts(
+            dev_name.clone(),
+            flags.mtu,
+            flags.enable_encryption,
+            global_ctx.net_ns.clone(),
+        );
+
+        let member = registry.lock().await.create_member(
+            dev_name,
+            nic_config,
+            member_id,
+            close_notifier.clone(),
+        );
+        let backend = NicBackend::shared(member);
+
+        Ok(Self::new_with_backend(
+            global_ctx,
+            peer_manager,
+            peer_packet_receiver,
+            close_notifier,
+            backend,
+        ))
     }
 
     pub async fn ifname(&self) -> Option<String> {
