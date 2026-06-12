@@ -2,7 +2,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     net::{Ipv4Addr, Ipv6Addr},
     sync::{
-        Arc, Mutex as StdMutex,
+        Arc,
         atomic::{AtomicBool, Ordering},
     },
 };
@@ -17,22 +17,11 @@ use crate::{
 
 use super::virtual_nic::{VirtualNic, VirtualNicConfig};
 
+mod dispatcher;
+
+use dispatcher::{SharedVirtualNicDispatcher, SharedVirtualNicMemberTunnelTable};
+
 pub type SharedVirtualNicMemberId = uuid::Uuid;
-
-#[derive(Clone, Default)]
-struct SharedVirtualNicMemberTunnelTable {
-    tunnels: Arc<StdMutex<BTreeMap<SharedVirtualNicMemberId, Box<dyn Tunnel>>>>,
-}
-
-impl SharedVirtualNicMemberTunnelTable {
-    fn register(&self, member_id: SharedVirtualNicMemberId, tunnel: Box<dyn Tunnel>) {
-        self.tunnels.lock().unwrap().insert(member_id, tunnel);
-    }
-
-    fn unregister(&self, member_id: SharedVirtualNicMemberId) {
-        self.tunnels.lock().unwrap().remove(&member_id);
-    }
-}
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct SharedIpv4Route {
@@ -257,6 +246,7 @@ pub struct SharedVirtualNic {
     ifcfg: SharedIfConfig,
     valid: Arc<AtomicBool>,
     member_tunnel_table: SharedVirtualNicMemberTunnelTable,
+    dispatcher: Option<SharedVirtualNicDispatcher>,
 }
 
 impl SharedVirtualNic {
@@ -266,6 +256,7 @@ impl SharedVirtualNic {
             ifcfg: SharedIfConfig::default(),
             valid: Arc::new(AtomicBool::new(true)),
             member_tunnel_table: SharedVirtualNicMemberTunnelTable::default(),
+            dispatcher: None,
         }
     }
 
@@ -296,6 +287,24 @@ impl SharedVirtualNic {
     fn valid_flag(&self) -> Arc<AtomicBool> {
         self.valid.clone()
     }
+
+    async fn ensure_dispatcher(&mut self) -> Result<(), Error> {
+        if !self.is_valid() {
+            return Err(anyhow::anyhow!("shared virtual nic is invalid").into());
+        }
+
+        if self.dispatcher.is_some() {
+            return Ok(());
+        }
+
+        let tunnel = self.nic.lock().await.create_dev().await?;
+        self.dispatcher = Some(SharedVirtualNicDispatcher::start(
+            tunnel,
+            self.member_tunnel_table.clone(),
+            self.valid.clone(),
+        ));
+        Ok(())
+    }
 }
 
 struct SharedVirtualNicMemberRegistration {
@@ -304,8 +313,13 @@ struct SharedVirtualNicMemberRegistration {
 }
 
 impl SharedVirtualNicMemberRegistration {
-    fn register_tunnel(&self, tunnel: Box<dyn Tunnel>) {
-        self.member_tunnel_table.register(self.member_id, tunnel);
+    fn register_tunnel(
+        &self,
+        tunnel: Box<dyn Tunnel>,
+        close_notifier: Arc<Notify>,
+    ) -> Result<(), Error> {
+        self.member_tunnel_table
+            .register(self.member_id, tunnel, close_notifier)
     }
 }
 
@@ -355,7 +369,12 @@ impl SharedVirtualNicMember {
 
     pub async fn create_dev(&self) -> Result<Box<dyn Tunnel>, Error> {
         let (member_tunnel, shared_tunnel) = create_ring_tunnel_pair();
-        self.registration.register_tunnel(shared_tunnel);
+        {
+            let mut shared_nic = self.shared_nic.lock().await;
+            shared_nic.ensure_dispatcher().await?;
+        }
+        self.registration
+            .register_tunnel(shared_tunnel, self.close_notifier.clone())?;
         Ok(member_tunnel)
     }
 }
