@@ -1,5 +1,6 @@
 pub mod buf;
 pub mod error;
+pub mod net;
 pub mod panic;
 pub mod string;
 pub mod task;

@@ -85,9 +85,8 @@ pub enum TunnelError {
     TunError(String),
 }
 
-pub type StreamT = packet_def::ZCPacket;
-pub type StreamItem = Result<StreamT, TunnelError>;
-pub type SinkItem = packet_def::ZCPacket;
+pub type StreamItem = Result<ZCPacket, TunnelError>;
+pub type SinkItem = ZCPacket;
 pub type SinkError = TunnelError;
 
 pub trait ZCPacketStream: Stream<Item = StreamItem> + Send {}
