@@ -1,18 +1,38 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     net::{Ipv4Addr, Ipv6Addr},
-    sync::Arc,
-    sync::atomic::{AtomicBool, Ordering},
+    sync::{
+        Arc, Mutex as StdMutex,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 
 use cidr::{Ipv4Inet, Ipv6Inet};
 use tokio::sync::{Mutex, Notify};
 
-use crate::{common::error::Error, tunnel::Tunnel};
+use crate::{
+    common::error::Error,
+    tunnel::{Tunnel, ring::create_ring_tunnel_pair},
+};
 
 use super::virtual_nic::{VirtualNic, VirtualNicConfig};
 
 pub type SharedVirtualNicMemberId = uuid::Uuid;
+
+#[derive(Clone, Default)]
+struct SharedVirtualNicMemberTunnelTable {
+    tunnels: Arc<StdMutex<BTreeMap<SharedVirtualNicMemberId, Box<dyn Tunnel>>>>,
+}
+
+impl SharedVirtualNicMemberTunnelTable {
+    fn register(&self, member_id: SharedVirtualNicMemberId, tunnel: Box<dyn Tunnel>) {
+        self.tunnels.lock().unwrap().insert(member_id, tunnel);
+    }
+
+    fn unregister(&self, member_id: SharedVirtualNicMemberId) {
+        self.tunnels.lock().unwrap().remove(&member_id);
+    }
+}
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct SharedIpv4Route {
@@ -236,6 +256,7 @@ pub struct SharedVirtualNic {
     nic: Arc<Mutex<VirtualNic>>,
     ifcfg: SharedIfConfig,
     valid: Arc<AtomicBool>,
+    member_tunnel_table: SharedVirtualNicMemberTunnelTable,
 }
 
 impl SharedVirtualNic {
@@ -244,6 +265,7 @@ impl SharedVirtualNic {
             nic: Arc::new(Mutex::new(VirtualNic::new(config))),
             ifcfg: SharedIfConfig::default(),
             valid: Arc::new(AtomicBool::new(true)),
+            member_tunnel_table: SharedVirtualNicMemberTunnelTable::default(),
         }
     }
 
@@ -267,8 +289,29 @@ impl SharedVirtualNic {
         self.nic.clone()
     }
 
+    fn member_tunnel_table(&self) -> SharedVirtualNicMemberTunnelTable {
+        self.member_tunnel_table.clone()
+    }
+
     fn valid_flag(&self) -> Arc<AtomicBool> {
         self.valid.clone()
+    }
+}
+
+struct SharedVirtualNicMemberRegistration {
+    member_id: SharedVirtualNicMemberId,
+    member_tunnel_table: SharedVirtualNicMemberTunnelTable,
+}
+
+impl SharedVirtualNicMemberRegistration {
+    fn register_tunnel(&self, tunnel: Box<dyn Tunnel>) {
+        self.member_tunnel_table.register(self.member_id, tunnel);
+    }
+}
+
+impl Drop for SharedVirtualNicMemberRegistration {
+    fn drop(&mut self) {
+        self.member_tunnel_table.unregister(self.member_id);
     }
 }
 
@@ -277,18 +320,24 @@ pub struct SharedVirtualNicMember {
     member_id: SharedVirtualNicMemberId,
     shared_nic: Arc<Mutex<SharedVirtualNic>>,
     close_notifier: Arc<Notify>,
+    registration: Arc<SharedVirtualNicMemberRegistration>,
 }
 
 impl SharedVirtualNicMember {
-    pub fn new(
+    fn new(
         member_id: SharedVirtualNicMemberId,
         shared_nic: Arc<Mutex<SharedVirtualNic>>,
         close_notifier: Arc<Notify>,
+        member_tunnel_table: SharedVirtualNicMemberTunnelTable,
     ) -> Self {
         Self {
             member_id,
             shared_nic,
             close_notifier,
+            registration: Arc::new(SharedVirtualNicMemberRegistration {
+                member_id,
+                member_tunnel_table,
+            }),
         }
     }
 
@@ -305,7 +354,9 @@ impl SharedVirtualNicMember {
     }
 
     pub async fn create_dev(&self) -> Result<Box<dyn Tunnel>, Error> {
-        Err(anyhow::anyhow!("shared virtual nic member tunnel is not implemented").into())
+        let (member_tunnel, shared_tunnel) = create_ring_tunnel_pair();
+        self.registration.register_tunnel(shared_tunnel);
+        Ok(member_tunnel)
     }
 }
 
@@ -317,12 +368,14 @@ pub struct SharedVirtualNicRegistry {
 struct SharedVirtualNicRegistryEntry {
     nic: Arc<Mutex<SharedVirtualNic>>,
     valid: Arc<AtomicBool>,
+    member_tunnel_table: SharedVirtualNicMemberTunnelTable,
 }
 
 impl SharedVirtualNicRegistryEntry {
     fn new(nic: SharedVirtualNic) -> Self {
         Self {
             valid: nic.valid_flag(),
+            member_tunnel_table: nic.member_tunnel_table(),
             nic: Arc::new(Mutex::new(nic)),
         }
     }
@@ -333,6 +386,10 @@ impl SharedVirtualNicRegistryEntry {
 
     fn nic(&self) -> Arc<Mutex<SharedVirtualNic>> {
         self.nic.clone()
+    }
+
+    fn member_tunnel_table(&self) -> SharedVirtualNicMemberTunnelTable {
+        self.member_tunnel_table.clone()
     }
 }
 
@@ -353,14 +410,26 @@ impl SharedVirtualNicRegistry {
         dev_name: String,
         config: VirtualNicConfig,
     ) -> Arc<Mutex<SharedVirtualNic>> {
-        if let Some(nic) = self.get(&dev_name) {
-            return nic;
+        self.get_or_create_entry(dev_name, config).nic()
+    }
+
+    fn get_or_create_entry(
+        &mut self,
+        dev_name: String,
+        config: VirtualNicConfig,
+    ) -> &SharedVirtualNicRegistryEntry {
+        let needs_new_entry = self
+            .nics
+            .get(&dev_name)
+            .map_or(true, |entry| !entry.is_valid());
+        if needs_new_entry {
+            let entry = SharedVirtualNicRegistryEntry::new(SharedVirtualNic::new(config));
+            self.nics.insert(dev_name.clone(), entry);
         }
 
-        let entry = SharedVirtualNicRegistryEntry::new(SharedVirtualNic::new(config));
-        let nic = entry.nic();
-        self.nics.insert(dev_name, entry);
-        nic
+        self.nics
+            .get(&dev_name)
+            .expect("shared virtual nic registry entry should exist")
     }
 
     pub fn create_member(
@@ -370,8 +439,13 @@ impl SharedVirtualNicRegistry {
         member_id: SharedVirtualNicMemberId,
         close_notifier: Arc<Notify>,
     ) -> SharedVirtualNicMember {
-        let shared_nic = self.get_or_create(dev_name, config);
-        SharedVirtualNicMember::new(member_id, shared_nic, close_notifier)
+        let entry = self.get_or_create_entry(dev_name, config);
+        SharedVirtualNicMember::new(
+            member_id,
+            entry.nic(),
+            close_notifier,
+            entry.member_tunnel_table(),
+        )
     }
 }
 
