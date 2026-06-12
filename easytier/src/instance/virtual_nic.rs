@@ -44,6 +44,8 @@ use zerocopy::{NativeEndian, NetworkEndian};
 #[cfg(target_os = "windows")]
 use crate::common::ifcfg::RegistryManager;
 
+use super::shared_virtual_nic::SharedVirtualNicMember;
+
 pin_project! {
     pub struct TunStream {
         #[pin]
@@ -800,6 +802,51 @@ impl VirtualNic {
 
     pub fn get_ifcfg(&self) -> impl IfConfiguerTrait + use<> {
         IfConfiger {}
+    }
+}
+
+pub enum NicBackend {
+    Dedicated(Arc<Mutex<VirtualNic>>),
+    Shared(SharedVirtualNicMember),
+}
+
+impl NicBackend {
+    pub fn dedicated(nic: Arc<Mutex<VirtualNic>>) -> Self {
+        Self::Dedicated(nic)
+    }
+
+    pub fn shared(member: SharedVirtualNicMember) -> Self {
+        Self::Shared(member)
+    }
+
+    pub async fn create_dev(&self) -> Result<Box<dyn Tunnel>, Error> {
+        match self {
+            Self::Dedicated(nic) => nic.lock().await.create_dev().await,
+            Self::Shared(member) => member.create_dev().await,
+        }
+    }
+
+    pub async fn ifname(&self) -> Option<String> {
+        match self {
+            Self::Dedicated(nic) => nic
+                .lock()
+                .await
+                .ifname
+                .as_ref()
+                .map(|ifname| ifname.to_owned()),
+            Self::Shared(member) => {
+                let shared_nic = member.shared_nic();
+                let nic = {
+                    let shared_nic = shared_nic.lock().await;
+                    shared_nic.nic()
+                };
+                nic.lock()
+                    .await
+                    .ifname
+                    .as_ref()
+                    .map(|ifname| ifname.to_owned())
+            }
+        }
     }
 }
 

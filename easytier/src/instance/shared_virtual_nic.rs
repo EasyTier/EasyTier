@@ -6,7 +6,9 @@ use std::{
 };
 
 use cidr::{Ipv4Inet, Ipv6Inet};
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, Notify};
+
+use crate::{common::error::Error, tunnel::Tunnel};
 
 use super::virtual_nic::{VirtualNic, VirtualNicConfig};
 
@@ -270,6 +272,43 @@ impl SharedVirtualNic {
     }
 }
 
+#[derive(Clone)]
+pub struct SharedVirtualNicMember {
+    member_id: SharedVirtualNicMemberId,
+    shared_nic: Arc<Mutex<SharedVirtualNic>>,
+    close_notifier: Arc<Notify>,
+}
+
+impl SharedVirtualNicMember {
+    pub fn new(
+        member_id: SharedVirtualNicMemberId,
+        shared_nic: Arc<Mutex<SharedVirtualNic>>,
+        close_notifier: Arc<Notify>,
+    ) -> Self {
+        Self {
+            member_id,
+            shared_nic,
+            close_notifier,
+        }
+    }
+
+    pub fn member_id(&self) -> SharedVirtualNicMemberId {
+        self.member_id.clone()
+    }
+
+    pub fn shared_nic(&self) -> Arc<Mutex<SharedVirtualNic>> {
+        self.shared_nic.clone()
+    }
+
+    pub fn close_notifier(&self) -> Arc<Notify> {
+        self.close_notifier.clone()
+    }
+
+    pub async fn create_dev(&self) -> Result<Box<dyn Tunnel>, Error> {
+        Err(anyhow::anyhow!("shared virtual nic member tunnel is not implemented").into())
+    }
+}
+
 #[derive(Default)]
 pub struct SharedVirtualNicRegistry {
     nics: BTreeMap<String, SharedVirtualNicRegistryEntry>,
@@ -322,6 +361,17 @@ impl SharedVirtualNicRegistry {
         let nic = entry.nic();
         self.nics.insert(dev_name, entry);
         nic
+    }
+
+    pub fn create_member(
+        &mut self,
+        dev_name: String,
+        config: VirtualNicConfig,
+        member_id: SharedVirtualNicMemberId,
+        close_notifier: Arc<Notify>,
+    ) -> SharedVirtualNicMember {
+        let shared_nic = self.get_or_create(dev_name, config);
+        SharedVirtualNicMember::new(member_id, shared_nic, close_notifier)
     }
 }
 
@@ -439,6 +489,7 @@ mod tests {
     use std::str::FromStr as _;
 
     use crate::common::netns::NetNS;
+    use tokio::sync::Notify;
 
     use super::*;
 
@@ -590,5 +641,22 @@ mod tests {
                 .get("et0")
                 .is_some_and(|nic| Arc::ptr_eq(&nic, &second))
         );
+    }
+
+    #[test]
+    fn registry_create_member_uses_registered_shared_virtual_nic() {
+        let mut registry = SharedVirtualNicRegistry::new();
+        let member_id = member_id(1);
+
+        let member = registry.create_member(
+            "et0".to_string(),
+            virtual_nic_config(),
+            member_id,
+            Arc::new(Notify::new()),
+        );
+        let shared_nic = registry.get("et0").unwrap();
+
+        assert_eq!(member.member_id(), member_id);
+        assert!(Arc::ptr_eq(&member.shared_nic(), &shared_nic));
     }
 }
