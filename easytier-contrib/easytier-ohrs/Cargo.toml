@@ -11,7 +11,6 @@ async-trait = "0.1"
 base64 = "0.22"
 flate2 = "1.1"
 gethostname = "1.1"
-ohos-hilog-binding = {version = "*", features = ["redirect"]}
 easytier = { path = "../../easytier" }
 napi-derive-ohos = "1.1"
 napi-ohos = { version = "1.1", default-features = false, features = [

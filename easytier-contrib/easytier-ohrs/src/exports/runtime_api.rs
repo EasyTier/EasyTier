@@ -1,18 +1,15 @@
-use crate::config::repository::load_config_json;
-use crate::config::storage::config_meta::get_config_display_name;
+use crate::config::repository::{clear_runtime_config_snapshot, get_runtime_config_snapshot};
 use crate::config::types::stored_config::KeyValuePair;
 use crate::kernel_bridge::{
     aggregate_requested_tun_routes, start_local_socket_server as start_local_socket_server_inner,
     stop_local_socket_server as stop_local_socket_server_inner,
 };
 use crate::runtime::state::runtime_state::{
-    RuntimeAggregateState, TunAggregateState, clear_tun_attached, mark_tun_attached,
+    RuntimeAggregateState, RuntimeInstanceState, TunAggregateState, clear_tun_attached,
+    is_tun_attached, mark_tun_attached, runtime_instance_from_config_snapshot,
     runtime_instance_from_running_info,
 };
-use crate::{ASYNC_RUNTIME, EASYTIER_VERSION, INSTANCE_MANAGER, WEB_CLIENTS};
-use easytier::proto::api::manage::NetworkConfig;
-use ohos_hilog_binding::{hilog_error, hilog_info};
-use std::sync::Arc;
+use crate::{ASYNC_RUNTIME, INSTANCE_MANAGER, WEB_CLIENTS};
 
 pub(crate) fn start_kernel(
     config_id: String,
@@ -29,8 +26,11 @@ pub(crate) fn stop_kernel(
 ) -> bool {
     clear_tun_attached(&config_id);
     if stop_web_client(&config_id) {
+        clear_runtime_config_snapshot(&config_id);
         return true;
     }
+
+    let _ = stop_local_socket_server_inner();
 
     let Some(instance_id) = parse_instance_uuid(&config_id) else {
         return false;
@@ -40,9 +40,20 @@ pub(crate) fn stop_kernel(
         .delete_network_instance(vec![instance_id])
         .map(|_| true)
         .unwrap_or_else(|err| {
-            hilog_error!("[Rust] stop_kernel failed {}: {}", config_id, err);
+            ohrs_log_error!("[Rust] stop_kernel failed {}: {}", config_id, err);
             false
         });
+    if ret {
+        clear_runtime_config_snapshot(&config_id);
+    }
+    let has_active_instances = !INSTANCE_MANAGER.list_network_instance_ids().is_empty();
+    let has_web_clients = WEB_CLIENTS
+        .lock()
+        .map(|guard| !guard.is_empty())
+        .unwrap_or(false);
+    if has_active_instances || has_web_clients {
+        let _ = start_local_socket_server_inner();
+    }
     maybe_stop_local_socket_server();
     ret
 }
@@ -59,10 +70,10 @@ pub(crate) fn stop_network_instance(
 }
 
 pub(crate) fn collect_network_infos() -> Vec<KeyValuePair> {
-    let infos = match INSTANCE_MANAGER.collect_network_infos_sync() {
+    let infos = match ASYNC_RUNTIME.block_on(INSTANCE_MANAGER.collect_network_infos()) {
         Ok(infos) => infos,
         Err(err) => {
-            hilog_error!("[Rust] collect network infos failed {}", err);
+            ohrs_log_error!("[Rust] collect network infos failed {}", err);
             return vec![];
         }
     };
@@ -86,7 +97,7 @@ pub(crate) fn set_tun_fd(
     parse_instance_uuid: impl Fn(&str) -> Option<uuid::Uuid>,
 ) -> bool {
     let Some(instance_id) = parse_instance_uuid(&config_id) else {
-        hilog_error!("[Rust] set_tun_fd invalid instance id: {}", config_id);
+        ohrs_log_error!("[Rust] set_tun_fd invalid instance id: {}", config_id);
         return false;
     };
 
@@ -94,7 +105,7 @@ pub(crate) fn set_tun_fd(
         .set_tun_fd(&instance_id, fd)
         .map(|_| {
             mark_tun_attached(&config_id);
-            hilog_info!(
+            ohrs_log_info!(
                 "[Rust] set_tun_fd success instance={} fd={} marked_attached=true",
                 config_id,
                 fd
@@ -102,20 +113,16 @@ pub(crate) fn set_tun_fd(
             true
         })
         .unwrap_or_else(|err| {
-            hilog_error!("[Rust] set_tun_fd failed {}: {}", config_id, err);
+            ohrs_log_error!("[Rust] set_tun_fd failed {}: {}", config_id, err);
             false
         })
 }
 
-pub(crate) fn get_runtime_snapshot() -> RuntimeAggregateState {
-    get_runtime_snapshot_inner()
-}
-
-pub(crate) fn get_runtime_snapshot_inner() -> RuntimeAggregateState {
-    let infos = match INSTANCE_MANAGER.collect_network_infos_sync() {
+pub(crate) fn collect_runtime_state() -> RuntimeAggregateState {
+    let infos = match ASYNC_RUNTIME.block_on(INSTANCE_MANAGER.collect_network_infos()) {
         Ok(infos) => infos,
         Err(err) => {
-            hilog_error!("[Rust] collect network infos failed {}", err);
+            ohrs_log_error!("[Rust] collect network infos failed {}", err);
             return RuntimeAggregateState {
                 instances: vec![],
                 tun: TunAggregateState {
@@ -129,30 +136,67 @@ pub(crate) fn get_runtime_snapshot_inner() -> RuntimeAggregateState {
             };
         }
     };
+    let mut live_infos = infos
+        .into_iter()
+        .map(|(instance_id, info)| (instance_id.to_string(), info))
+        .collect::<std::collections::HashMap<_, _>>();
+    let mut active_config_ids = live_infos.keys().cloned().collect::<Vec<_>>();
+    if let Ok(guard) = WEB_CLIENTS.lock() {
+        for config_id in guard.keys() {
+            if !active_config_ids.iter().any(|value| value == config_id) {
+                active_config_ids.push(config_id.clone());
+            }
+        }
+    }
 
-    let mut instances = Vec::with_capacity(infos.len());
-    for (instance_uuid, info) in infos {
-        let config_id = instance_uuid.to_string();
-        let display_name = get_config_display_name(&config_id).unwrap_or_else(|| config_id.clone());
-        let config_json = load_config_json(&config_id);
-        let stored_config = config_json
-            .as_deref()
-            .and_then(|raw| serde_json::from_str::<NetworkConfig>(raw).ok());
-        let magic_dns_enabled = stored_config
-            .as_ref()
-            .and_then(|cfg| cfg.enable_magic_dns)
-            .unwrap_or(false);
-        let need_exit_node = stored_config
-            .as_ref()
-            .map(|cfg| !cfg.exit_nodes.is_empty())
-            .unwrap_or(false);
-        instances.push(runtime_instance_from_running_info(
-            config_id,
-            display_name,
-            magic_dns_enabled,
-            need_exit_node,
-            info,
-        ));
+    let mut instances = Vec::with_capacity(active_config_ids.len());
+    for config_id in active_config_ids {
+        if let Some(info) = live_infos.remove(&config_id) {
+            let snapshot = get_runtime_config_snapshot(&config_id);
+            let display_name = snapshot
+                .as_ref()
+                .map(|snapshot| snapshot.display_name.clone())
+                .unwrap_or_else(|| config_id.clone());
+            let magic_dns_enabled = snapshot
+                .as_ref()
+                .and_then(|snapshot| snapshot.config.enable_magic_dns)
+                .unwrap_or(false);
+            let need_exit_node = snapshot
+                .as_ref()
+                .map(|snapshot| !snapshot.config.exit_nodes.is_empty())
+                .unwrap_or(false);
+            instances.push(runtime_instance_from_running_info(
+                config_id,
+                display_name,
+                magic_dns_enabled,
+                need_exit_node,
+                info,
+            ));
+        } else if let Some(snapshot) = get_runtime_config_snapshot(&config_id) {
+            instances.push(runtime_instance_from_config_snapshot(
+                config_id,
+                snapshot.display_name,
+                snapshot.config,
+                true,
+            ));
+        } else {
+            let tun_attached = is_tun_attached(&config_id);
+            instances.push(RuntimeInstanceState {
+                config_id: config_id.clone(),
+                instance_id: config_id.clone(),
+                display_name: config_id.clone(),
+                running: true,
+                tun_required: tun_attached,
+                tun_attached,
+                magic_dns_enabled: false,
+                need_exit_node: false,
+                error_message: None,
+                my_node_info: None,
+                events: Vec::new(),
+                routes: Vec::new(),
+                peers: Vec::new(),
+            });
+        }
     }
 
     instances.sort_by(|a, b| {

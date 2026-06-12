@@ -278,20 +278,20 @@ pub struct NetworkIdentity {
 pub enum ConfigSource {
     #[default]
     User,
-    Webhook,
+    Web,
 }
 
 impl ConfigSource {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::User => "user",
-            Self::Webhook => "webhook",
+            Self::Web => "web",
         }
     }
 
     pub fn from_rpc(source: i32) -> Option<Self> {
         match RpcConfigSource::try_from(source).ok() {
-            Some(RpcConfigSource::Webhook) => Some(Self::Webhook),
+            Some(RpcConfigSource::Web) => Some(Self::Web),
             Some(RpcConfigSource::User) => Some(Self::User),
             _ => None,
         }
@@ -300,7 +300,7 @@ impl ConfigSource {
     pub fn to_rpc(self) -> i32 {
         match self {
             Self::User => RpcConfigSource::User as i32,
-            Self::Webhook => RpcConfigSource::Webhook as i32,
+            Self::Web => RpcConfigSource::Web as i32,
         }
     }
 }
@@ -311,7 +311,7 @@ impl std::str::FromStr for ConfigSource {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
             "user" => Ok(Self::User),
-            "webhook" => Ok(Self::Webhook),
+            "web" => Ok(Self::Web),
             other => Err(format!("unknown network config source: {other}")),
         }
     }
@@ -597,16 +597,33 @@ impl TomlConfigLoader {
         Self::normalize_config_source(&mut config);
 
         config.flags_struct = Some(Self::gen_flags(config.flags.clone().unwrap_or_default()));
+        let has_network_identity = config.network_identity.is_some();
 
         let config = TomlConfigLoader {
             config: Arc::new(Mutex::new(config)),
         };
 
         let old_ns = config.get_network_identity();
-        config.set_network_identity(NetworkIdentity::new(
-            old_ns.network_name,
-            old_ns.network_secret.unwrap_or_default(),
-        ));
+
+        // Detect credential mode: secure_mode enabled + no network_secret in TOML
+        let is_credential = has_network_identity
+            && config
+                .get_secure_mode()
+                .map(|sm| sm.enabled)
+                .unwrap_or(false)
+            && old_ns
+                .network_secret
+                .as_deref()
+                .is_none_or(|s| s.is_empty());
+
+        if is_credential {
+            config.set_network_identity(NetworkIdentity::new_credential(old_ns.network_name));
+        } else {
+            config.set_network_identity(NetworkIdentity::new(
+                old_ns.network_name,
+                old_ns.network_secret.unwrap_or_default(),
+            ));
+        }
 
         Ok(config)
     }
@@ -619,21 +636,12 @@ impl TomlConfigLoader {
         Ok(ret)
     }
 
-    fn gen_flags(mut flags_hashmap: serde_json::Map<String, serde_json::Value>) -> Flags {
-        let default_flags_json = serde_json::to_string(&gen_default_flags()).unwrap();
-        let default_flags_hashmap =
-            serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(&default_flags_json)
-                .unwrap();
-
-        let mut merged_hashmap = serde_json::Map::new();
-        for (key, value) in default_flags_hashmap {
-            if let Some(v) = flags_hashmap.remove(&key) {
-                merged_hashmap.insert(key, v);
-            } else {
-                merged_hashmap.insert(key, value);
-            }
-        }
-
+    fn gen_flags(flags_hashmap: serde_json::Map<String, serde_json::Value>) -> Flags {
+        let mut merged_hashmap = match serde_json::to_value(gen_default_flags()) {
+            Ok(serde_json::Value::Object(map)) => map,
+            _ => serde_json::Map::new(),
+        };
+        merged_hashmap.extend(flags_hashmap);
         serde_json::from_value(serde_json::Value::Object(merged_hashmap)).unwrap()
     }
 }
@@ -1349,14 +1357,53 @@ stun_servers = [
         let config = TomlConfigLoader::default();
         assert_eq!(config.get_network_config_source(), ConfigSource::User);
 
-        config.set_network_config_source(Some(ConfigSource::Webhook));
+        config.set_network_config_source(Some(ConfigSource::Web));
         let dumped = config.dump();
 
         assert!(dumped.contains("[source]"));
-        assert!(dumped.contains("source = \"webhook\""));
+        assert!(dumped.contains("source = \"web\""));
 
         let loaded = TomlConfigLoader::new_from_str(&dumped).unwrap();
-        assert_eq!(loaded.get_network_config_source(), ConfigSource::Webhook);
+        assert_eq!(loaded.get_network_config_source(), ConfigSource::Web);
+    }
+
+    #[test]
+    fn test_toml_credential_mode_omits_network_secret() {
+        for network_secret in ["", r#"network_secret = """#] {
+            let config = TomlConfigLoader::new_from_str(&format!(
+                r#"
+[network_identity]
+network_name = "credential-network"
+{network_secret}
+
+[secure_mode]
+enabled = true
+"#
+            ))
+            .unwrap();
+
+            let identity = config.get_network_identity();
+            assert_eq!(identity.network_name, "credential-network");
+            assert_eq!(identity.network_secret, None);
+            assert_eq!(identity.network_secret_digest, None);
+            assert!(!config.dump().contains("network_secret"));
+        }
+    }
+
+    #[test]
+    fn test_toml_secure_mode_without_network_identity_uses_default_secret() {
+        let config = TomlConfigLoader::new_from_str(
+            r#"
+[secure_mode]
+enabled = true
+"#,
+        )
+        .unwrap();
+
+        let identity = config.get_network_identity();
+        assert_eq!(identity.network_name, "default");
+        assert_eq!(identity.network_secret.as_deref(), Some(""));
+        assert!(identity.network_secret_digest.is_some());
     }
 
     #[test]

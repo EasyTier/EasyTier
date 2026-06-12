@@ -14,3 +14,4 @@ android_logger = "0.13"
 serde = { version = "1.0.220", features = ["derive"] }
 serde_json = "1.0"
 easytier = { path = "../../easytier" }
+easytier-ffi = { path = "../easytier-ffi", default-features = false, features = ["ffi-dataplane"] }

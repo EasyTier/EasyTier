@@ -1143,6 +1143,11 @@ impl Instance {
         self.peer_manager.clone()
     }
 
+    #[cfg(feature = "ffi-dataplane")]
+    pub fn get_socks5_server(&self) -> Arc<Socks5Server> {
+        self.socks5_server.clone()
+    }
+
     pub async fn close_peer_conn(
         &mut self,
         peer_id: PeerId,

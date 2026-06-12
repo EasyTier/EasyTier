@@ -10,9 +10,11 @@ use easytier::{
     common::config::ConfigSource,
     proto::{
         api::manage::{
-            ConfigSource as RpcConfigSource, NetworkConfig, NetworkMeta, RunNetworkInstanceRequest,
+            ConfigSource as RpcConfigSource, DeleteNetworkInstanceRequest,
+            ListNetworkInstanceMetaRequest, NetworkConfig, NetworkMeta, RunNetworkInstanceRequest,
             WebClientService, WebClientServiceClientFactory,
         },
+        common::Uuid as RpcUuid,
         rpc_impl::bidirect::BidirectRpcManager,
         rpc_types::{self, controller::BaseController},
         web::{HeartbeatRequest, HeartbeatResponse, WebServerService, WebServerServiceServer},
@@ -27,21 +29,17 @@ use super::storage::{Storage, StorageToken, WeakRefStorage};
 use crate::FeatureFlags;
 use crate::webhook::SharedWebhookConfig;
 
-const LEGACY_NETWORK_CONFIG_SOURCE: &str = "legacy";
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PersistedConfigSource {
     User,
-    Webhook,
-    Legacy,
+    Web,
 }
 
 impl PersistedConfigSource {
     fn from_db(source: &str) -> Self {
         match source {
-            "webhook" => Self::Webhook,
+            "web" => Self::Web,
             "user" => Self::User,
-            LEGACY_NETWORK_CONFIG_SOURCE => Self::Legacy,
             _ => Self::User,
         }
     }
@@ -49,24 +47,23 @@ impl PersistedConfigSource {
     fn should_update_from_runtime(self, runtime_source: ConfigSource) -> bool {
         match (self, runtime_source) {
             // Older clients report missing source as `user`, which is not authoritative enough
-            // to downgrade an existing webhook-owned or legacy row.
-            (Self::Webhook | Self::Legacy, ConfigSource::User) => false,
+            // to downgrade an existing web-owned row.
+            (Self::Web, ConfigSource::User) => false,
             _ => self.as_runtime_source() != runtime_source,
         }
     }
 
     fn as_runtime_source(self) -> ConfigSource {
         match self {
-            Self::User | Self::Legacy => ConfigSource::User,
-            Self::Webhook => ConfigSource::Webhook,
+            Self::User => ConfigSource::User,
+            Self::Web => ConfigSource::Web,
         }
     }
 
-    fn auto_run_rpc_source(self) -> Option<RpcConfigSource> {
+    fn auto_run_rpc_source(self) -> RpcConfigSource {
         match self {
-            Self::User => Some(RpcConfigSource::User),
-            Self::Webhook => Some(RpcConfigSource::Webhook),
-            Self::Legacy => None,
+            Self::User => RpcConfigSource::User,
+            Self::Web => RpcConfigSource::Web,
         }
     }
 }
@@ -91,6 +88,7 @@ pub struct SessionData {
     notifier: broadcast::Sender<HeartbeatRequest>,
     req: Option<HeartbeatRequest>,
     location: Option<Location>,
+    heartbeat_count: std::sync::atomic::AtomicU32,
 }
 
 impl SessionData {
@@ -114,6 +112,7 @@ impl SessionData {
             notifier: tx,
             req: None,
             location,
+            heartbeat_count: std::sync::atomic::AtomicU32::new(0),
         }
     }
 
@@ -164,7 +163,7 @@ impl Drop for SessionData {
 pub type SharedSessionData = Arc<RwLock<SessionData>>;
 
 #[derive(Clone)]
-struct SessionRpcService {
+pub(super) struct SessionRpcService {
     data: SharedSessionData,
 }
 
@@ -193,7 +192,7 @@ impl SessionRpcService {
         Ok(serde_json::from_value::<NetworkConfig>(network_config)?)
     }
 
-    async fn reconcile_webhook_source_configs(
+    pub(super) async fn reconcile_web_source_configs(
         storage: &Storage,
         user_id: i32,
         machine_id: uuid::Uuid,
@@ -212,10 +211,10 @@ impl SessionRpcService {
                     .map(|inst_id| (inst_id, PersistedConfigSource::from_db(&cfg.source)))
             })
             .collect::<HashMap<_, _>>();
-        let existing_webhook_ids = existing_sources
+        let existing_web_ids = existing_sources
             .iter()
             .filter_map(|(inst_id, source)| {
-                (*source == PersistedConfigSource::Webhook).then_some(*inst_id)
+                (*source == PersistedConfigSource::Web).then_some(*inst_id)
             })
             .collect::<HashSet<_>>();
 
@@ -224,29 +223,18 @@ impl SessionRpcService {
         for desired in desired_configs {
             let inst_id = uuid::Uuid::parse_str(&desired.instance_id).with_context(|| {
                 format!(
-                    "invalid desired webhook config instance id: {}",
+                    "invalid desired web config instance id: {}",
                     desired.instance_id
                 )
             })?;
-            match existing_sources.get(&inst_id) {
-                Some(PersistedConfigSource::User) => {
-                    tracing::warn!(
-                        ?user_id,
-                        ?machine_id,
-                        instance_id = %inst_id,
-                        "skip webhook config because a user-owned config already exists"
-                    );
-                    continue;
-                }
-                Some(PersistedConfigSource::Legacy) => {
-                    tracing::info!(
-                        ?user_id,
-                        ?machine_id,
-                        instance_id = %inst_id,
-                        "adopt legacy config as webhook-owned during reconciliation"
-                    );
-                }
-                _ => {}
+            if let Some(PersistedConfigSource::User) = existing_sources.get(&inst_id) {
+                tracing::warn!(
+                    ?user_id,
+                    ?machine_id,
+                    instance_id = %inst_id,
+                    "skip web config because a user-owned config already exists"
+                );
+                continue;
             }
             let config = Self::normalize_network_config(desired.network_config, inst_id)?;
             desired_ids.insert(inst_id);
@@ -260,19 +248,15 @@ impl SessionRpcService {
                     (user_id, machine_id),
                     inst_id,
                     config,
-                    ConfigSource::Webhook,
+                    ConfigSource::Web,
                 )
                 .await
                 .map_err(|e| {
-                    anyhow::anyhow!(
-                        "failed to persist webhook network config {}: {:?}",
-                        inst_id,
-                        e
-                    )
+                    anyhow::anyhow!("failed to persist web network config {}: {:?}", inst_id, e)
                 })?;
         }
 
-        let stale_ids = existing_webhook_ids
+        let stale_ids = existing_web_ids
             .difference(&desired_ids)
             .copied()
             .collect::<Vec<_>>();
@@ -287,15 +271,42 @@ impl SessionRpcService {
         Ok(())
     }
 
+    fn managed_configs_for_revision(
+        applied_config_revision: Option<&str>,
+        resp: crate::webhook::ValidateTokenResponse,
+    ) -> anyhow::Result<(Vec<crate::webhook::ManagedNetworkConfig>, String)> {
+        let config_revision = resp.config_revision;
+        let managed_configs = match resp.managed_network_configs {
+            Some(configs) => configs,
+            None if applied_config_revision == Some(config_revision.as_str()) => Vec::new(),
+            None => {
+                anyhow::bail!(
+                    "Webhook token validation response omitted managed configs for changed revision {:?}",
+                    config_revision
+                );
+            }
+        };
+
+        Ok((managed_configs, config_revision))
+    }
+
     async fn handle_heartbeat(
         &self,
         req: HeartbeatRequest,
     ) -> rpc_types::error::Result<HeartbeatResponse> {
-        let mut data = self.data.write().await;
-
-        let Ok(storage) = Storage::try_from(data.storage.clone()) else {
-            tracing::error!("Failed to get storage");
-            return Ok(HeartbeatResponse {});
+        let (storage, feature_flags, webhook_config, client_url, applied_config_revision) = {
+            let data = self.data.read().await;
+            let Ok(storage) = Storage::try_from(data.storage.clone()) else {
+                tracing::error!("Failed to get storage");
+                return Ok(HeartbeatResponse {});
+            };
+            (
+                storage,
+                data.feature_flags.clone(),
+                data.webhook_config.clone(),
+                data.client_url.clone(),
+                data.applied_config_revision.clone(),
+            )
         };
 
         let machine_id: uuid::Uuid = req.machine_id.map(Into::into).ok_or(anyhow::anyhow!(
@@ -303,60 +314,94 @@ impl SessionRpcService {
             req.machine_id
         ))?;
 
+        // First heartbeat must validate token through webhook;
+        // afterwards only every 10th heartbeat calls the webhook.
+        let (should_call_webhook, cached_storage_token) = {
+            let data = self.data.read().await;
+            let count = data
+                .heartbeat_count
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+                + 1;
+            let is_first = data.req.is_none();
+            let should_call = webhook_config.is_enabled() && (is_first || count % 10 == 1);
+            (should_call, data.storage_token.clone())
+        };
+
         let (
             user_id,
             webhook_source_configs,
             webhook_config_revision,
             webhook_validated,
             binding_version,
-        ) = if data.webhook_config.is_enabled() {
-            let webhook_req = crate::webhook::ValidateTokenRequest {
-                token: req.user_token.clone(),
-                machine_id: machine_id.to_string(),
-                public_ip: data.client_url.host_str().map(str::to_string),
-                hostname: req.hostname.clone(),
-                version: req.easytier_version.clone(),
-                os_type: req.device_os.as_ref().map(|info| info.os_type.clone()),
-                os_version: req.device_os.as_ref().map(|info| info.version.clone()),
-                os_distribution: req.device_os.as_ref().map(|info| info.distribution.clone()),
-                web_instance_id: data.webhook_config.web_instance_id.clone(),
-                web_instance_api_base_url: data.webhook_config.web_instance_api_base_url.clone(),
-            };
-            let resp = data
-                .webhook_config
-                .validate_token(&webhook_req)
-                .await
-                .map_err(|e| anyhow::anyhow!("Webhook token validation failed: {:?}", e))?;
-
-            if resp.valid {
-                let user_id = match storage
-                    .db()
-                    .get_user_id_by_token(req.user_token.clone())
-                    .await
-                    .map_err(|e| anyhow::anyhow!("DB error: {:?}", e))?
-                {
-                    Some(id) => id,
-                    None => storage
-                        .auto_create_user(&req.user_token)
-                        .await
-                        .with_context(|| {
-                            format!("Failed to auto-create webhook user: {:?}", req.user_token)
-                        })?,
+        ) = if webhook_config.is_enabled() {
+            if should_call_webhook {
+                let webhook_req = crate::webhook::ValidateTokenRequest {
+                    token: req.user_token.clone(),
+                    machine_id: machine_id.to_string(),
+                    public_ip: client_url.host_str().map(str::to_string),
+                    hostname: req.hostname.clone(),
+                    version: req.easytier_version.clone(),
+                    os_type: req.device_os.as_ref().map(|info| info.os_type.clone()),
+                    os_version: req.device_os.as_ref().map(|info| info.version.clone()),
+                    os_distribution: req.device_os.as_ref().map(|info| info.distribution.clone()),
+                    web_instance_id: webhook_config.web_instance_id.clone(),
+                    web_instance_api_base_url: webhook_config.web_instance_api_base_url.clone(),
+                    applied_config_revision: applied_config_revision.clone(),
                 };
-                (
-                    user_id,
-                    resp.managed_network_configs,
-                    resp.config_revision,
-                    true,
-                    Some(resp.binding_version),
-                )
+                let resp = webhook_config
+                    .validate_token(&webhook_req)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("Webhook token validation failed: {:?}", e))?;
+
+                if resp.valid {
+                    let user_id = match storage
+                        .db()
+                        .get_user_id_by_token(req.user_token.clone())
+                        .await
+                        .map_err(|e| anyhow::anyhow!("DB error: {:?}", e))?
+                    {
+                        Some(id) => id,
+                        None => storage
+                            .auto_create_user(&req.user_token)
+                            .await
+                            .with_context(|| {
+                                format!("Failed to auto-create webhook user: {:?}", req.user_token)
+                            })?,
+                    };
+                    let binding_version = resp.binding_version;
+                    let (webhook_source_configs, webhook_config_revision) =
+                        Self::managed_configs_for_revision(
+                            applied_config_revision.as_deref(),
+                            resp,
+                        )
+                        .map_err(rpc_types::error::Error::from)?;
+                    (
+                        user_id,
+                        webhook_source_configs,
+                        webhook_config_revision,
+                        true,
+                        Some(binding_version),
+                    )
+                } else {
+                    return Err(anyhow::anyhow!(
+                        "Webhook rejected token for machine {:?}: {:?}",
+                        machine_id,
+                        req.user_token
+                    )
+                    .into());
+                }
             } else {
-                return Err(anyhow::anyhow!(
-                    "Webhook rejected token for machine {:?}: {:?}",
-                    machine_id,
-                    req.user_token
-                )
-                .into());
+                let user_id = cached_storage_token
+                    .as_ref()
+                    .ok_or_else(|| {
+                        anyhow::anyhow!("Storage token not found for non-first heartbeat")
+                    })?
+                    .user_id;
+                let binding_version = {
+                    let data = self.data.read().await;
+                    data.binding_version
+                };
+                (user_id, Vec::new(), String::new(), false, binding_version)
             }
         } else {
             let user_id = match storage
@@ -370,7 +415,7 @@ impl SessionRpcService {
                     )
                 })? {
                 Some(id) => id,
-                None if data.feature_flags.allow_auto_create_user => storage
+                None if feature_flags.allow_auto_create_user => storage
                     .auto_create_user(&req.user_token)
                     .await
                     .with_context(|| format!("Failed to auto-create user: {:?}", req.user_token))?,
@@ -383,10 +428,10 @@ impl SessionRpcService {
             (user_id, Vec::new(), String::new(), false, None)
         };
 
-        if webhook_validated
-            && data.applied_config_revision.as_deref() != Some(webhook_config_revision.as_str())
-        {
-            Self::reconcile_webhook_source_configs(
+        let should_reconcile = webhook_validated
+            && applied_config_revision.as_deref() != Some(webhook_config_revision.as_str());
+        if should_reconcile {
+            Self::reconcile_web_source_configs(
                 &storage,
                 user_id,
                 machine_id,
@@ -394,50 +439,68 @@ impl SessionRpcService {
             )
             .await
             .map_err(rpc_types::error::Error::from)?;
-            data.applied_config_revision = Some(webhook_config_revision);
         }
 
-        if data.req.replace(req.clone()).is_none() {
-            assert!(data.storage_token.is_none());
-            data.storage_token = Some(StorageToken {
-                token: req.user_token.clone(),
-                client_url: data.client_url.clone(),
-                machine_id,
-                user_id,
-            });
-            data.binding_version = binding_version;
+        let mut connect_notification = None;
+        let (storage_token, notifier) = {
+            let mut data = self.data.write().await;
 
-            // Notify the webhook receiver on the first successful heartbeat.
-            if data.webhook_config.is_enabled() {
-                let webhook = data.webhook_config.clone();
-                let connect_req = crate::webhook::NodeConnectedRequest {
-                    machine_id: machine_id.to_string(),
-                    token: req.user_token.clone(),
-                    user_id: Some(user_id),
-                    hostname: req.hostname.clone(),
-                    version: req.easytier_version.clone(),
-                    os_type: req.device_os.as_ref().map(|info| info.os_type.clone()),
-                    os_version: req.device_os.as_ref().map(|info| info.version.clone()),
-                    os_distribution: req.device_os.as_ref().map(|info| info.distribution.clone()),
-                    web_instance_id: webhook.web_instance_id.clone(),
-                    binding_version,
-                };
-                tokio::spawn(async move {
-                    webhook.notify_node_connected(&connect_req).await;
-                });
+            if should_reconcile {
+                data.applied_config_revision = Some(webhook_config_revision);
             }
+
+            if data.req.replace(req.clone()).is_none() {
+                assert!(data.storage_token.is_none());
+                data.storage_token = Some(StorageToken {
+                    token: req.user_token.clone(),
+                    client_url: data.client_url.clone(),
+                    machine_id,
+                    user_id,
+                });
+                data.binding_version = binding_version;
+
+                if data.webhook_config.is_enabled() {
+                    connect_notification = Some((
+                        data.webhook_config.clone(),
+                        crate::webhook::NodeConnectedRequest {
+                            machine_id: machine_id.to_string(),
+                            token: req.user_token.clone(),
+                            user_id: Some(user_id),
+                            hostname: req.hostname.clone(),
+                            version: req.easytier_version.clone(),
+                            os_type: req.device_os.as_ref().map(|info| info.os_type.clone()),
+                            os_version: req.device_os.as_ref().map(|info| info.version.clone()),
+                            os_distribution: req
+                                .device_os
+                                .as_ref()
+                                .map(|info| info.distribution.clone()),
+                            web_instance_id: data.webhook_config.web_instance_id.clone(),
+                            binding_version,
+                        },
+                    ));
+                }
+            }
+
+            let Some(storage_token) = data.storage_token.as_ref().cloned() else {
+                tracing::error!("Heartbeat succeeded before session token was initialized");
+                return Ok(HeartbeatResponse {});
+            };
+            (storage_token, data.notifier.clone())
+        };
+
+        if let Some((webhook, connect_req)) = connect_notification {
+            tokio::spawn(async move {
+                webhook.notify_node_connected(&connect_req).await;
+            });
         }
 
         let Ok(report_time) = chrono::DateTime::<chrono::Local>::from_str(&req.report_time) else {
             tracing::error!("Failed to parse report time: {:?}", req.report_time);
             return Ok(HeartbeatResponse {});
         };
-        storage.update_client(
-            data.storage_token.as_ref().unwrap().clone(),
-            report_time.timestamp(),
-        );
+        storage.update_client(storage_token, report_time.timestamp());
 
-        let _ = data.notifier.send(req);
+        let _ = notifier.send(req);
         Ok(HeartbeatResponse {})
     }
 }
@@ -476,7 +539,7 @@ pub struct Session {
 
     data: SharedSessionData,
 
-    run_network_on_start_task: Option<AbortOnDropHandle<()>>,
+    config_reconcile_task: Option<AbortOnDropHandle<()>>,
 }
 
 impl Debug for Session {
@@ -510,7 +573,7 @@ impl Session {
         Session {
             rpc_mgr,
             data,
-            run_network_on_start_task: None,
+            config_reconcile_task: None,
         }
     }
 
@@ -518,9 +581,9 @@ impl Session {
         self.rpc_mgr.run_with_tunnel(tunnel);
 
         let data = self.data.read().await;
-        self.run_network_on_start_task
+        self.config_reconcile_task
             .replace(AbortOnDropHandle::new(tokio::spawn(
-                Self::run_network_on_start(
+                Self::reconcile_network_configs_on_heartbeat(
                     data.heartbeat_waiter(),
                     data.storage.clone(),
                     self.scoped_rpc_client(),
@@ -528,19 +591,49 @@ impl Session {
             )));
     }
 
-    fn collect_webhook_source_instance_ids(
-        metas: Vec<easytier::proto::api::manage::NetworkMeta>,
-    ) -> HashSet<String> {
+    fn collect_web_source_instance_ids(metas: &[NetworkMeta]) -> HashSet<String> {
         metas
-            .into_iter()
+            .iter()
             .filter_map(|meta| {
-                (RpcConfigSource::try_from(meta.source).ok() == Some(RpcConfigSource::Webhook))
+                (RpcConfigSource::try_from(meta.source).ok() == Some(RpcConfigSource::Web))
                     .then(|| {
                         meta.inst_id
-                            .map(|inst_id| Into::<uuid::Uuid>::into(inst_id).to_string())
+                            .as_ref()
+                            .map(|inst_id| Into::<uuid::Uuid>::into(*inst_id).to_string())
                     })
                     .flatten()
             })
+            .collect()
+    }
+
+    fn desired_web_source_instance_ids(
+        local_configs: &[crate::db::entity::user_running_network_configs::Model],
+    ) -> HashSet<String> {
+        local_configs
+            .iter()
+            .filter(|cfg| cfg.get_runtime_network_config_source() == ConfigSource::Web)
+            .map(|cfg| cfg.network_instance_id.clone())
+            .collect()
+    }
+
+    fn running_web_source_instance_ids(
+        running_inst_ids: &HashSet<String>,
+        db_web_inst_ids: &HashSet<String>,
+        running_metas: Option<&[NetworkMeta]>,
+    ) -> HashSet<String> {
+        match running_metas {
+            Some(metas) => Self::collect_web_source_instance_ids(metas),
+            None => running_inst_ids
+                .intersection(db_web_inst_ids)
+                .cloned()
+                .collect(),
+        }
+    }
+
+    fn parse_instance_ids(instance_ids: impl Iterator<Item = String>) -> Vec<RpcUuid> {
+        instance_ids
+            .filter_map(|inst_id| uuid::Uuid::parse_str(&inst_id).ok())
+            .map(Into::into)
             .collect()
     }
 
@@ -597,65 +690,25 @@ impl Session {
         Ok(())
     }
 
-    async fn repair_legacy_running_config_sources(
-        db: &crate::db::Db,
-        user_id: i32,
-        machine_id: uuid::Uuid,
-        local_configs: &[crate::db::entity::user_running_network_configs::Model],
-    ) -> anyhow::Result<bool> {
-        let legacy_configs = local_configs
-            .iter()
-            .filter(|cfg| {
-                PersistedConfigSource::from_db(&cfg.source) == PersistedConfigSource::Legacy
-            })
-            .collect::<Vec<_>>();
-
-        if legacy_configs.is_empty() {
-            return Ok(false);
-        }
-
-        for local_cfg in legacy_configs {
-            let inst_id =
-                uuid::Uuid::parse_str(&local_cfg.network_instance_id).with_context(|| {
-                    format!(
-                        "failed to parse legacy network config instance id {}",
-                        local_cfg.network_instance_id
-                    )
-                })?;
-
-            db.insert_or_update_user_network_config(
-                (user_id, machine_id),
-                inst_id,
-                local_cfg.get_network_config().map_err(|e| {
-                    anyhow::anyhow!(
-                        "failed to decode legacy network config {}: {:?}",
-                        inst_id,
-                        e
-                    )
-                })?,
-                ConfigSource::User,
-            )
-            .await
-            .map_err(|e| {
-                anyhow::anyhow!(
-                    "failed to repair legacy network config source {}: {:?}",
-                    inst_id,
-                    e
-                )
-            })?;
-        }
-
-        Ok(true)
-    }
-
-    async fn run_network_on_start(
+    async fn reconcile_network_configs_on_heartbeat(
         mut heartbeat_waiter: broadcast::Receiver<HeartbeatRequest>,
         storage: WeakRefStorage,
         rpc_client: SessionRpcClient,
     ) {
-        let mut cleaned_webhook_source_instances = false;
-        let mut last_desired_webhook_inst_ids: Option<HashSet<String>> = None;
+        // This is a per-session background task. It starts when the RPC session is
+        // created, then reconciles after each heartbeat reports the client's runtime
+        // instances. It is deliberately best-effort: a failed round is retried by a
+        // later heartbeat instead of blocking heartbeat handling itself.
+        let mut cleaned_web_source_instances = false;
+        // This is only an in-memory guard for RPC cleanup, not a second source of
+        // truth. The DB still owns desired state; the cache lets us avoid listing
+        // and deleting runtime instances on every heartbeat when desired web-owned
+        // configs have not changed.
+        let mut last_desired_web_inst_ids: Option<HashSet<String>> = None;
         loop {
+            // Drop any heartbeat backlog accumulated while the previous reconcile
+            // round was doing DB/RPC IO. The newest heartbeat has the freshest
+            // runtime instance list, which is all this task needs.
             heartbeat_waiter = heartbeat_waiter.resubscribe();
             let req = heartbeat_waiter.recv().await;
             if req.is_err() {
@@ -718,12 +771,10 @@ impl Session {
                     rpc_client
                         .list_network_instance_meta(
                             BaseController::default(),
-                            easytier::proto::api::manage::ListNetworkInstanceMetaRequest {
-                                inst_ids: running_inst_ids
-                                    .iter()
-                                    .filter_map(|inst_id| uuid::Uuid::parse_str(inst_id).ok())
-                                    .map(Into::into)
-                                    .collect(),
+                            ListNetworkInstanceMetaRequest {
+                                inst_ids: Self::parse_instance_ids(
+                                    running_inst_ids.iter().cloned(),
+                                ),
                             },
                         )
                         .await
@@ -781,105 +832,50 @@ impl Session {
                 None
             };
 
-            match Self::repair_legacy_running_config_sources(
-                &storage.db,
-                user_id,
-                machine_id.into(),
-                &local_configs,
-            )
-            .await
-            {
-                Ok(true) => {
-                    local_configs = match storage
-                        .db
-                        .list_network_configs(
-                            (user_id, machine_id.into()),
-                            ListNetworkProps::EnabledOnly,
-                        )
-                        .await
-                    {
-                        Ok(configs) => configs,
-                        Err(e) => {
-                            tracing::error!(
-                                "Failed to reload network configs after legacy source repair, error: {:?}",
-                                e
-                            );
-                            return;
-                        }
-                    };
-                }
-                Ok(false) => {}
-                Err(e) => {
-                    tracing::warn!(
-                        ?user_id,
-                        ?machine_id,
-                        %e,
-                        "Failed to repair legacy running network config sources"
-                    );
-                }
-            }
+            let should_be_alive_web_inst_ids =
+                Self::desired_web_source_instance_ids(&local_configs);
+            let desired_changed = last_desired_web_inst_ids
+                .as_ref()
+                .is_none_or(|last| last != &should_be_alive_web_inst_ids);
 
             let mut has_failed = false;
-            let should_be_alive_webhook_inst_ids = local_configs
-                .iter()
-                .filter(|cfg| cfg.get_runtime_network_config_source() == ConfigSource::Webhook)
-                .map(|cfg| cfg.network_instance_id.clone())
-                .collect::<HashSet<_>>();
-            let desired_changed = last_desired_webhook_inst_ids
-                .as_ref()
-                .is_none_or(|last| last != &should_be_alive_webhook_inst_ids);
-
-            if !cleaned_webhook_source_instances || desired_changed {
-                let db_webhook_inst_ids = match storage
+            if !cleaned_web_source_instances || desired_changed {
+                let db_web_inst_ids = match storage
                     .db
                     .list_network_configs((user_id, machine_id.into()), ListNetworkProps::All)
                     .await
                 {
-                    Ok(configs) => configs
-                        .iter()
-                        .filter(|cfg| {
-                            cfg.get_runtime_network_config_source() == ConfigSource::Webhook
-                        })
-                        .map(|cfg| cfg.network_instance_id.clone())
-                        .collect::<HashSet<_>>(),
+                    Ok(configs) => Self::desired_web_source_instance_ids(&configs),
                     Err(e) => {
                         tracing::error!("Failed to list all network configs, error: {:?}", e);
                         return;
                     }
                 };
 
-                let running_webhook_inst_ids = if let Some(metas) = running_metas.as_ref() {
-                    Self::collect_webhook_source_instance_ids(metas.clone())
-                } else {
-                    running_inst_ids
-                        .intersection(&db_webhook_inst_ids)
-                        .cloned()
-                        .collect()
-                };
+                let running_web_inst_ids = Self::running_web_source_instance_ids(
+                    &running_inst_ids,
+                    &db_web_inst_ids,
+                    running_metas.as_deref(),
+                );
 
-                let should_delete_inst_ids = running_webhook_inst_ids
-                    .difference(&should_be_alive_webhook_inst_ids)
-                    .cloned()
-                    .collect::<HashSet<_>>();
-
-                let should_delete_ids = should_delete_inst_ids
-                    .iter()
-                    .filter_map(|inst_id| uuid::Uuid::parse_str(inst_id).ok())
-                    .map(Into::into)
-                    .collect::<Vec<_>>();
+                let should_delete_ids = Self::parse_instance_ids(
+                    running_web_inst_ids
+                        .difference(&should_be_alive_web_inst_ids)
+                        .cloned(),
+                );
 
                 if !should_delete_ids.is_empty() {
                     let ret = rpc_client
                         .delete_network_instance(
                             BaseController::default(),
-                            easytier::proto::api::manage::DeleteNetworkInstanceRequest {
+                            DeleteNetworkInstanceRequest {
                                 inst_ids: should_delete_ids,
                             },
                         )
                         .await;
                     tracing::info!(
                         ?user_id,
-                        "Clean stale webhook-source network instances on start: {:?}, user_token: {:?}",
+                        "Clean stale web-source network instances on heartbeat: {:?}, user_token: {:?}",
                         ret,
                         req.user_token
                     );
@@ -887,33 +883,39 @@ impl Session {
                 }
 
                 if !has_failed {
-                    cleaned_webhook_source_instances = true;
-                    last_desired_webhook_inst_ids = Some(should_be_alive_webhook_inst_ids.clone());
+                    cleaned_web_source_instances = true;
+                    last_desired_web_inst_ids = Some(should_be_alive_web_inst_ids.clone());
                 }
             }
 
+            // After stale web-owned instances are removed, start every enabled
+            // config that the latest heartbeat did not report as running.
             for c in local_configs {
                 if running_inst_ids.contains(&c.network_instance_id) {
                     continue;
                 }
-                let Some(source) = PersistedConfigSource::from_db(&c.source).auto_run_rpc_source()
-                else {
-                    tracing::warn!(
-                        ?user_id,
-                        ?machine_id,
-                        instance_id = %c.network_instance_id,
-                        "skip auto-run for legacy config until source ownership is repaired"
-                    );
-                    continue;
+                let source = PersistedConfigSource::from_db(&c.source).auto_run_rpc_source();
+                let network_config = match serde_json::from_str::<NetworkConfig>(&c.network_config)
+                {
+                    Ok(cfg) => cfg,
+                    Err(e) => {
+                        tracing::error!(
+                            ?user_id,
+                            ?machine_id,
+                            instance_id = %c.network_instance_id,
+                            "Failed to deserialize network config, skipping: {:?}",
+                            e
+                        );
+                        has_failed = true;
+                        continue;
+                    }
                 };
                 let ret = rpc_client
                     .run_network_instance(
                         BaseController::default(),
                         RunNetworkInstanceRequest {
                             inst_id: Some(c.network_instance_id.clone().into()),
-                            config: Some(
-                                serde_json::from_str::<NetworkConfig>(&c.network_config).unwrap(),
-                            ),
+                            config: Some(network_config),
                             overwrite: false,
                             source: source as i32,
                         },
@@ -930,7 +932,7 @@ impl Session {
             }
 
             if !has_failed {
-                last_desired_webhook_inst_ids = Some(should_be_alive_webhook_inst_ids);
+                last_desired_web_inst_ids = Some(should_be_alive_web_inst_ids);
             }
         }
     }
@@ -953,6 +955,15 @@ impl Session {
             .scoped_client::<F>(1, 1, "".to_string())
     }
 
+    pub fn scoped_client_with_domain<F: rpc_types::__rt::RpcClientFactory>(
+        &self,
+        domain_name: String,
+    ) -> F::ClientImpl {
+        self.rpc_mgr
+            .rpc_client()
+            .scoped_client::<F>(1, 1, domain_name)
+    }
+
     pub fn scoped_rpc_client(&self) -> SessionRpcClient {
         self.scoped_client::<WebClientServiceClientFactory<BaseController>>()
     }
@@ -972,20 +983,14 @@ mod tests {
         common::config::ConfigSource,
         rpc_service::remote_client::{ListNetworkProps, PersistentConfig as _, Storage as _},
     };
-    use sea_orm::{ActiveModelTrait, Set};
     use serde_json::json;
 
     use super::{super::storage::Storage, *};
 
     #[tokio::test]
-    async fn reconcile_webhook_source_configs_upserts_and_deletes_exact_set() {
+    async fn reconcile_web_source_configs_upserts_and_deletes_exact_set() {
         let storage = Storage::new(crate::db::Db::memory_db().await);
-        let user_id = storage
-            .db()
-            .auto_create_user("webhook-user")
-            .await
-            .unwrap()
-            .id;
+        let user_id = storage.db().auto_create_user("web-user").await.unwrap().id;
         let machine_id = uuid::Uuid::new_v4();
         let keep_id = uuid::Uuid::new_v4();
         let stale_id = uuid::Uuid::new_v4();
@@ -1000,7 +1005,7 @@ mod tests {
                     network_name: Some("old-name".to_string()),
                     ..Default::default()
                 },
-                ConfigSource::Webhook,
+                ConfigSource::Web,
             )
             .await
             .unwrap();
@@ -1013,12 +1018,12 @@ mod tests {
                     network_name: Some("stale".to_string()),
                     ..Default::default()
                 },
-                ConfigSource::Webhook,
+                ConfigSource::Web,
             )
             .await
             .unwrap();
 
-        SessionRpcService::reconcile_webhook_source_configs(
+        SessionRpcService::reconcile_web_source_configs(
             &storage,
             user_id,
             machine_id,
@@ -1069,24 +1074,21 @@ mod tests {
             updated_keep_config.network_name.as_deref(),
             Some("updated-name")
         );
-        assert_eq!(
-            updated_keep.get_network_config_source(),
-            ConfigSource::Webhook
-        );
+        assert_eq!(updated_keep.get_network_config_source(), ConfigSource::Web);
     }
 
     #[tokio::test]
-    async fn reconcile_webhook_source_configs_keep_user_owned_configs() {
+    async fn reconcile_web_source_configs_keep_user_owned_configs() {
         let storage = Storage::new(crate::db::Db::memory_db().await);
         let user_id = storage
             .db()
-            .auto_create_user("webhook-user-keep-user")
+            .auto_create_user("web-user-keep-user")
             .await
             .unwrap()
             .id;
         let machine_id = uuid::Uuid::new_v4();
         let user_owned_id = uuid::Uuid::new_v4();
-        let webhook_owned_id = uuid::Uuid::new_v4();
+        let web_owned_id = uuid::Uuid::new_v4();
 
         storage
             .db()
@@ -1105,17 +1107,17 @@ mod tests {
             .db()
             .insert_or_update_user_network_config(
                 (user_id, machine_id),
-                webhook_owned_id,
+                web_owned_id,
                 NetworkConfig {
-                    network_name: Some("webhook-owned".to_string()),
+                    network_name: Some("web-owned".to_string()),
                     ..Default::default()
                 },
-                ConfigSource::Webhook,
+                ConfigSource::Web,
             )
             .await
             .unwrap();
 
-        SessionRpcService::reconcile_webhook_source_configs(
+        SessionRpcService::reconcile_web_source_configs(
             &storage,
             user_id,
             machine_id,
@@ -1123,7 +1125,7 @@ mod tests {
                 instance_id: user_owned_id.to_string(),
                 network_config: json!({
                     "instance_id": user_owned_id.to_string(),
-                    "network_name": "webhook-tries-to-take-over"
+                    "network_name": "web-tries-to-take-over"
                 }),
             }],
         )
@@ -1141,100 +1143,68 @@ mod tests {
             serde_json::from_str(&user_owned.network_config).unwrap();
         assert_eq!(user_owned_cfg.network_name.as_deref(), Some("user-owned"));
 
-        let webhook_owned = storage
+        let web_owned = storage
             .db()
-            .get_network_config((user_id, machine_id), &webhook_owned_id.to_string())
+            .get_network_config((user_id, machine_id), &web_owned_id.to_string())
             .await
             .unwrap();
-        assert!(webhook_owned.is_none());
+        assert!(web_owned.is_none());
     }
 
-    #[tokio::test]
-    async fn reconcile_webhook_source_configs_adopts_legacy_rows_for_webhook() {
-        let storage = Storage::new(crate::db::Db::memory_db().await);
-        let user_id = storage
-            .db()
-            .auto_create_user("webhook-user-legacy")
-            .await
-            .unwrap()
-            .id;
-        let machine_id = uuid::Uuid::new_v4();
-        let legacy_match_id = uuid::Uuid::new_v4();
-        let legacy_user_id = uuid::Uuid::new_v4();
+    #[test]
+    fn validate_token_request_includes_applied_config_revision() {
+        let req = crate::webhook::ValidateTokenRequest {
+            token: "token".to_string(),
+            machine_id: "machine".to_string(),
+            public_ip: Some("127.0.0.1".to_string()),
+            hostname: "host".to_string(),
+            version: "1.0.0".to_string(),
+            os_type: None,
+            os_version: None,
+            os_distribution: None,
+            web_instance_id: Some("web-1".to_string()),
+            web_instance_api_base_url: Some("http://console".to_string()),
+            applied_config_revision: Some("rev-1".to_string()),
+        };
 
-        crate::db::entity::user_running_network_configs::ActiveModel {
-            user_id: Set(user_id),
-            device_id: Set(machine_id.to_string()),
-            network_instance_id: Set(legacy_match_id.to_string()),
-            network_config: Set(serde_json::to_string(&NetworkConfig {
-                network_name: Some("legacy-webhook".to_string()),
-                ..Default::default()
-            })
-            .unwrap()),
-            source: Set(LEGACY_NETWORK_CONFIG_SOURCE.to_string()),
-            disabled: Set(false),
-            create_time: Set(sqlx::types::chrono::Local::now().fixed_offset()),
-            update_time: Set(sqlx::types::chrono::Local::now().fixed_offset()),
-            ..Default::default()
-        }
-        .insert(storage.db().orm_db())
-        .await
-        .unwrap();
-
-        crate::db::entity::user_running_network_configs::ActiveModel {
-            user_id: Set(user_id),
-            device_id: Set(machine_id.to_string()),
-            network_instance_id: Set(legacy_user_id.to_string()),
-            network_config: Set(serde_json::to_string(&NetworkConfig {
-                network_name: Some("legacy-user".to_string()),
-                ..Default::default()
-            })
-            .unwrap()),
-            source: Set(LEGACY_NETWORK_CONFIG_SOURCE.to_string()),
-            disabled: Set(false),
-            create_time: Set(sqlx::types::chrono::Local::now().fixed_offset()),
-            update_time: Set(sqlx::types::chrono::Local::now().fixed_offset()),
-            ..Default::default()
-        }
-        .insert(storage.db().orm_db())
-        .await
-        .unwrap();
-
-        SessionRpcService::reconcile_webhook_source_configs(
-            &storage,
-            user_id,
-            machine_id,
-            vec![crate::webhook::ManagedNetworkConfig {
-                instance_id: legacy_match_id.to_string(),
-                network_config: json!({
-                    "instance_id": legacy_match_id.to_string(),
-                    "network_name": "managed-by-webhook"
-                }),
-            }],
-        )
-        .await
-        .unwrap();
-
-        let adopted = storage
-            .db()
-            .get_network_config((user_id, machine_id), &legacy_match_id.to_string())
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(adopted.source, ConfigSource::Webhook.as_str());
-        let adopted_cfg: NetworkConfig = serde_json::from_str(&adopted.network_config).unwrap();
+        let value = serde_json::to_value(req).unwrap();
         assert_eq!(
-            adopted_cfg.network_name.as_deref(),
-            Some("managed-by-webhook")
+            value
+                .get("applied_config_revision")
+                .and_then(|v| v.as_str()),
+            Some("rev-1")
         );
+    }
 
-        let untouched_legacy = storage
-            .db()
-            .get_network_config((user_id, machine_id), &legacy_user_id.to_string())
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(untouched_legacy.source, LEGACY_NETWORK_CONFIG_SOURCE);
+    #[test]
+    fn validate_token_response_without_configs_reuses_same_revision() {
+        let resp = crate::webhook::ValidateTokenResponse {
+            valid: true,
+            pre_approved: true,
+            binding_version: 1,
+            managed_network_configs: None,
+            config_revision: "rev-1".to_string(),
+        };
+
+        let (configs, revision) =
+            SessionRpcService::managed_configs_for_revision(Some("rev-1"), resp).unwrap();
+        assert!(configs.is_empty());
+        assert_eq!(revision, "rev-1");
+    }
+
+    #[test]
+    fn validate_token_response_without_configs_rejects_changed_revision() {
+        let resp = crate::webhook::ValidateTokenResponse {
+            valid: true,
+            pre_approved: true,
+            binding_version: 1,
+            managed_network_configs: None,
+            config_revision: "rev-2".to_string(),
+        };
+
+        let err = SessionRpcService::managed_configs_for_revision(Some("rev-1"), resp)
+            .expect_err("omitted configs with a changed revision must fail");
+        assert!(err.to_string().contains("omitted managed configs"));
     }
 
     #[tokio::test]
@@ -1242,7 +1212,7 @@ mod tests {
         let storage = Storage::new(crate::db::Db::memory_db().await);
         let user_id = storage
             .db()
-            .auto_create_user("webhook-user-sync-source")
+            .auto_create_user("web-user-sync-source")
             .await
             .unwrap()
             .id;
@@ -1255,10 +1225,10 @@ mod tests {
                 (user_id, machine_id),
                 inst_id,
                 NetworkConfig {
-                    network_name: Some("webhook-owned".to_string()),
+                    network_name: Some("web-owned".to_string()),
                     ..Default::default()
                 },
-                ConfigSource::Webhook,
+                ConfigSource::Web,
             )
             .await
             .unwrap();
@@ -1288,134 +1258,18 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(updated.get_network_config_source(), ConfigSource::Webhook);
-    }
-
-    #[tokio::test]
-    async fn sync_running_config_sources_keeps_legacy_rows_when_runtime_source_is_user() {
-        let storage = Storage::new(crate::db::Db::memory_db().await);
-        let user_id = storage
-            .db()
-            .auto_create_user("webhook-user-sync-legacy")
-            .await
-            .unwrap()
-            .id;
-        let machine_id = uuid::Uuid::new_v4();
-        let inst_id = uuid::Uuid::new_v4();
-
-        crate::db::entity::user_running_network_configs::ActiveModel {
-            user_id: Set(user_id),
-            device_id: Set(machine_id.to_string()),
-            network_instance_id: Set(inst_id.to_string()),
-            network_config: Set(serde_json::to_string(&NetworkConfig {
-                network_name: Some("legacy".to_string()),
-                ..Default::default()
-            })
-            .unwrap()),
-            source: Set(LEGACY_NETWORK_CONFIG_SOURCE.to_string()),
-            disabled: Set(false),
-            create_time: Set(sqlx::types::chrono::Local::now().fixed_offset()),
-            update_time: Set(sqlx::types::chrono::Local::now().fixed_offset()),
-            ..Default::default()
-        }
-        .insert(storage.db().orm_db())
-        .await
-        .unwrap();
-
-        let local_configs = storage
-            .db()
-            .list_network_configs((user_id, machine_id), ListNetworkProps::EnabledOnly)
-            .await
-            .unwrap();
-        Session::sync_running_config_sources(
-            storage.db(),
-            user_id,
-            machine_id,
-            &local_configs,
-            &[easytier::proto::api::manage::NetworkMeta {
-                inst_id: Some(inst_id.into()),
-                source: RpcConfigSource::User as i32,
-                ..Default::default()
-            }],
-        )
-        .await
-        .unwrap();
-
-        let updated = storage
-            .db()
-            .get_network_config((user_id, machine_id), &inst_id.to_string())
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(updated.source, LEGACY_NETWORK_CONFIG_SOURCE);
-    }
-
-    #[tokio::test]
-    async fn repair_legacy_running_config_sources_promotes_remaining_legacy_rows_to_user() {
-        let storage = Storage::new(crate::db::Db::memory_db().await);
-        let user_id = storage
-            .db()
-            .auto_create_user("webhook-user-repair-legacy")
-            .await
-            .unwrap()
-            .id;
-        let machine_id = uuid::Uuid::new_v4();
-        let inst_id = uuid::Uuid::new_v4();
-
-        crate::db::entity::user_running_network_configs::ActiveModel {
-            user_id: Set(user_id),
-            device_id: Set(machine_id.to_string()),
-            network_instance_id: Set(inst_id.to_string()),
-            network_config: Set(serde_json::to_string(&NetworkConfig {
-                network_name: Some("legacy".to_string()),
-                ..Default::default()
-            })
-            .unwrap()),
-            source: Set(LEGACY_NETWORK_CONFIG_SOURCE.to_string()),
-            disabled: Set(false),
-            create_time: Set(sqlx::types::chrono::Local::now().fixed_offset()),
-            update_time: Set(sqlx::types::chrono::Local::now().fixed_offset()),
-            ..Default::default()
-        }
-        .insert(storage.db().orm_db())
-        .await
-        .unwrap();
-
-        let local_configs = storage
-            .db()
-            .list_network_configs((user_id, machine_id), ListNetworkProps::EnabledOnly)
-            .await
-            .unwrap();
-        assert!(
-            Session::repair_legacy_running_config_sources(
-                storage.db(),
-                user_id,
-                machine_id,
-                &local_configs,
-            )
-            .await
-            .unwrap()
-        );
-
-        let updated = storage
-            .db()
-            .get_network_config((user_id, machine_id), &inst_id.to_string())
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(updated.source, ConfigSource::User.as_str());
+        assert_eq!(updated.get_network_config_source(), ConfigSource::Web);
     }
 
     #[test]
-    fn legacy_configs_are_not_auto_run_until_repaired() {
-        assert_eq!(PersistedConfigSource::Legacy.auto_run_rpc_source(), None);
+    fn persisted_sources_map_to_rpc_sources() {
         assert_eq!(
-            PersistedConfigSource::Webhook.auto_run_rpc_source(),
-            Some(RpcConfigSource::Webhook)
+            PersistedConfigSource::Web.auto_run_rpc_source(),
+            RpcConfigSource::Web
         );
         assert_eq!(
             PersistedConfigSource::User.auto_run_rpc_source(),
-            Some(RpcConfigSource::User)
+            RpcConfigSource::User
         );
     }
 }

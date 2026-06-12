@@ -1,14 +1,46 @@
+macro_rules! ohrs_log_error {
+    ($($arg:tt)*) => {{
+        if $crate::platform::logging::log_manager::app_log_enabled(5) {
+            $crate::platform::logging::log_manager::record_app_log(
+                5,
+                "RustOhrs",
+                &std::format!($($arg)*),
+            );
+        }
+    }};
+}
+
+macro_rules! ohrs_log_info {
+    ($($arg:tt)*) => {{
+        if $crate::platform::logging::log_manager::app_log_enabled(4) {
+            $crate::platform::logging::log_manager::record_app_log(
+                4,
+                "RustOhrs",
+                &std::format!($($arg)*),
+            );
+        }
+    }};
+}
+
+macro_rules! ohrs_log_debug {
+    ($($arg:tt)*) => {{
+        if $crate::platform::logging::log_manager::app_log_enabled(3) {
+            $crate::platform::logging::log_manager::record_app_log(
+                3,
+                "RustOhrs",
+                &std::format!($($arg)*),
+            );
+        }
+    }};
+}
+
 mod config;
 mod exports;
 mod kernel_bridge;
 mod platform;
 mod runtime;
 
-use config::repository::{
-    create_config_record, delete_config_record, export_config_toml, get_config_field_value,
-    get_default_config_json, import_toml_config, init_config_store as init_repo_store,
-    list_config_meta_json, save_config_record, set_config_field_value, start_kernel_with_config_id,
-};
+use config::repository::{cache_runtime_config_snapshot, start_kernel_with_config_id};
 use config::services::schema_service::{
     ConfigFieldMapping, NetworkConfigSchema,
     get_network_config_field_mappings as build_network_config_field_mappings,
@@ -31,15 +63,11 @@ use easytier::proto::api::manage::NetworkConfig;
 use easytier::proto::api::manage::NetworkingMethod;
 use easytier::web_client::{WebClient, WebClientHooks, run_web_client};
 use kernel_bridge::{
-    aggregate_requested_tun_routes, start_local_socket_server as start_local_socket_server_inner,
+    start_local_socket_server as start_local_socket_server_inner,
     stop_local_socket_server as stop_local_socket_server_inner,
 };
 use napi_derive_ohos::napi;
-use ohos_hilog_binding::{hilog_error, hilog_info};
-use runtime::state::runtime_state::{
-    RuntimeAggregateState, TunAggregateState, clear_tun_attached, mark_tun_attached,
-    runtime_instance_from_running_info,
-};
+use runtime::state::runtime_state::RuntimeAggregateState;
 use std::collections::{HashMap, HashSet};
 use std::format;
 use std::sync::{Arc, Mutex};
@@ -101,7 +129,7 @@ fn stop_web_client(config_id: &str) -> bool {
     let managed = match WEB_CLIENTS.lock() {
         Ok(mut guard) => guard.remove(config_id),
         Err(err) => {
-            hilog_error!("[Rust] stop_web_client lock failed {}", err);
+            ohrs_log_error!("[Rust] stop_web_client lock failed {}", err);
             return false;
         }
     };
@@ -127,7 +155,7 @@ fn stop_web_client(config_id: &str) -> bool {
         .delete_network_instance(tracked_ids)
         .map(|_| true)
         .unwrap_or_else(|err| {
-            hilog_error!(
+            ohrs_log_error!(
                 "[Rust] stop config server instances failed {}: {}",
                 config_id,
                 err
@@ -160,12 +188,12 @@ fn run_config_server_instance(config_id: &str, config: &NetworkConfig) -> bool {
         .next()
         .is_some()
     {
-        hilog_error!("[Rust] there is a running instance!");
+        ohrs_log_error!("[Rust] there is a running instance!");
         return false;
     }
 
     let Some(config_server_url) = config.public_server_url.clone() else {
-        hilog_error!("[Rust] public_server_url missing for config server mode");
+        ohrs_log_error!("[Rust] public_server_url missing for config server mode");
         return false;
     };
     let hooks = Arc::new(TrackedWebClientHooks::default());
@@ -192,7 +220,7 @@ fn run_config_server_instance(config_id: &str, config: &NetworkConfig) -> bool {
     let client = match client {
         Ok(client) => client,
         Err(err) => {
-            hilog_error!("[Rust] start config server failed {}", err);
+            ohrs_log_error!("[Rust] start config server failed {}", err);
             return false;
         }
     };
@@ -209,7 +237,7 @@ fn run_config_server_instance(config_id: &str, config: &NetworkConfig) -> bool {
             true
         }
         Err(err) => {
-            hilog_error!("[Rust] store config server client failed {}", err);
+            ohrs_log_error!("[Rust] store config server client failed {}", err);
             false
         }
     }
@@ -240,29 +268,33 @@ pub(crate) fn run_network_instance_from_json(cfg_json: &str) -> bool {
     let config = match serde_json::from_str::<NetworkConfig>(cfg_json) {
         Ok(cfg) => cfg,
         Err(e) => {
-            hilog_error!("[Rust] parse config failed {}", e);
+            ohrs_log_error!("[Rust] parse config failed {}", e);
             return false;
         }
     };
 
     if is_config_server_config(&config) {
         let Some(config_id) = config.instance_id.as_deref() else {
-            hilog_error!("[Rust] config server config missing instance id");
+            ohrs_log_error!("[Rust] config server config missing instance id");
             return false;
         };
-        return run_config_server_instance(config_id, &config);
+        let started = run_config_server_instance(config_id, &config);
+        if started {
+            cache_runtime_config_snapshot(config_id.to_string(), config_id.to_string(), config);
+        }
+        return started;
     }
 
     let cfg = match config.gen_config() {
         Ok(toml) => toml,
         Err(e) => {
-            hilog_error!("[Rust] parse config failed {}", e);
+            ohrs_log_error!("[Rust] parse config failed {}", e);
             return false;
         }
     };
 
     if !INSTANCE_MANAGER.list_network_instance_ids().is_empty() {
-        hilog_error!("[Rust] there is a running instance!");
+        ohrs_log_error!("[Rust] there is a running instance!");
         return false;
     }
 
@@ -275,14 +307,17 @@ pub(crate) fn run_network_instance_from_json(cfg_json: &str) -> bool {
         .list_network_instance_ids()
         .contains(&inst_id)
     {
-        hilog_error!("[Rust] instance {} already exists", inst_id);
+        ohrs_log_error!("[Rust] instance {} already exists", inst_id);
         return false;
     }
 
     match INSTANCE_MANAGER.run_network_instance(cfg, false, ConfigFileControl::STATIC_CONFIG) {
-        Ok(_) => true,
+        Ok(_) => {
+            cache_runtime_config_snapshot(inst_id.to_string(), inst_id.to_string(), config);
+            true
+        }
         Err(err) => {
-            hilog_error!("[Rust] start_kernel failed for {}: {}", inst_id, err);
+            ohrs_log_error!("[Rust] start_kernel failed for {}: {}", inst_id, err);
             false
         }
     }
@@ -292,7 +327,7 @@ fn parse_instance_uuid(config_id: &str) -> Option<Uuid> {
     match Uuid::parse_str(config_id) {
         Ok(uuid) => Some(uuid),
         Err(err) => {
-            hilog_error!("[Rust] invalid config_id {}: {}", config_id, err);
+            ohrs_log_error!("[Rust] invalid config_id {}: {}", config_id, err);
             None
         }
     }
@@ -301,6 +336,11 @@ fn parse_instance_uuid(config_id: &str) -> Option<Uuid> {
 #[napi]
 pub fn init_config_store(root_dir: String) -> bool {
     exports::config_api::init_config_store(root_dir)
+}
+
+#[napi]
+pub fn reset_config_store() -> bool {
+    exports::config_api::reset_config_store()
 }
 
 #[napi]
@@ -477,13 +517,8 @@ mod tests {
     }
 }
 
-#[napi]
-pub fn get_runtime_snapshot() -> RuntimeAggregateState {
-    exports::runtime_api::get_runtime_snapshot()
-}
-
-pub(crate) fn get_runtime_snapshot_inner() -> RuntimeAggregateState {
-    exports::runtime_api::get_runtime_snapshot_inner()
+pub(crate) fn collect_runtime_state_inner() -> RuntimeAggregateState {
+    exports::runtime_api::collect_runtime_state()
 }
 
 #[napi]

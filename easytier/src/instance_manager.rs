@@ -1,3 +1,5 @@
+#[cfg(feature = "ffi-dataplane")]
+use crate::launcher::{DataPlaneTcpListener, DataPlaneTcpStream, DataPlaneUdpSocket};
 use dashmap::DashMap;
 use std::fmt::{Display, Formatter};
 use std::{collections::BTreeMap, path::PathBuf, sync::Arc};
@@ -32,6 +34,7 @@ pub struct NetworkInstanceManager {
     instance_error_messages: Arc<DashMap<uuid::Uuid, String>>,
     config_dir: Option<PathBuf>,
     guard_counter: Arc<()>,
+    remote_mutation_lock: Arc<tokio::sync::Mutex<()>>,
 }
 
 impl Default for NetworkInstanceManager {
@@ -49,12 +52,17 @@ impl NetworkInstanceManager {
             instance_error_messages: Arc::new(DashMap::new()),
             config_dir: None,
             guard_counter: Arc::new(()),
+            remote_mutation_lock: Arc::new(tokio::sync::Mutex::new(())),
         }
     }
 
     pub fn with_config_path(mut self, config_dir: Option<PathBuf>) -> Self {
         self.config_dir = config_dir;
         self
+    }
+
+    pub fn remote_mutation_lock(&self) -> Arc<tokio::sync::Mutex<()>> {
+        self.remote_mutation_lock.clone()
     }
 
     fn start_instance_task(&self, instance_id: uuid::Uuid) -> Result<(), anyhow::Error> {
@@ -171,6 +179,59 @@ impl NetworkInstanceManager {
         tokio::runtime::Runtime::new()?.block_on(self.collect_network_infos())
     }
 
+    #[cfg(feature = "ffi-dataplane")]
+    pub async fn data_plane_tcp_connect(
+        &self,
+        instance_id: &uuid::Uuid,
+        dst_addr: std::net::SocketAddr,
+        timeout: std::time::Duration,
+    ) -> Result<DataPlaneTcpStream, anyhow::Error> {
+        let instance = self
+            .instance_map
+            .get(instance_id)
+            .ok_or_else(|| anyhow::anyhow!("instance {} not found", instance_id))?;
+        instance.data_plane_tcp_connect(dst_addr, timeout).await
+    }
+
+    #[cfg(feature = "ffi-dataplane")]
+    pub async fn data_plane_tcp_bind(
+        &self,
+        instance_id: &uuid::Uuid,
+        local_port: u16,
+        timeout: std::time::Duration,
+    ) -> Result<DataPlaneTcpListener, anyhow::Error> {
+        let instance = self
+            .instance_map
+            .get(instance_id)
+            .ok_or_else(|| anyhow::anyhow!("instance {} not found", instance_id))?;
+        instance.data_plane_tcp_bind(local_port, timeout).await
+    }
+
+    #[cfg(feature = "ffi-dataplane")]
+    pub async fn data_plane_udp_bind(
+        &self,
+        instance_id: &uuid::Uuid,
+        local_port: u16,
+        timeout: std::time::Duration,
+    ) -> Result<DataPlaneUdpSocket, anyhow::Error> {
+        let instance = self
+            .instance_map
+            .get(instance_id)
+            .ok_or_else(|| anyhow::anyhow!("instance {} not found", instance_id))?;
+        instance.data_plane_udp_bind(local_port, timeout).await
+    }
+
+    #[cfg(feature = "ffi-dataplane")]
+    pub fn data_plane_wait_runtime_handle(
+        &self,
+        instance_id: &uuid::Uuid,
+        timeout: std::time::Duration,
+    ) -> Option<tokio::runtime::Handle> {
+        self.instance_map
+            .get(instance_id)
+            .and_then(|inst| inst.wait_runtime_handle(timeout))
+    }
+
     pub async fn get_network_info(
         &self,
         instance_id: &uuid::Uuid,
@@ -215,6 +276,12 @@ impl NetworkInstanceManager {
         self.instance_map
             .get(instance_id)
             .map(|instance| instance.value().get_config_file_control().clone())
+    }
+
+    pub fn get_instance_config(&self, instance_id: &uuid::Uuid) -> Option<TomlConfigLoader> {
+        self.instance_map
+            .get(instance_id)
+            .map(|instance| instance.value().get_config())
     }
 
     pub fn get_instance_network_config_source(
