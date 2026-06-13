@@ -4,7 +4,6 @@ use std::collections::HashSet;
 use std::net::{IpAddr, Ipv4Addr};
 #[cfg(feature = "tun")]
 use std::sync::OnceLock;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Weak};
 #[cfg(all(feature = "tun", not(mobile)))]
 use std::time::Duration;
@@ -85,7 +84,14 @@ struct IpProxy {
     icmp_proxy: Arc<IcmpProxy>,
     udp_proxy: Arc<UdpProxy>,
     global_ctx: ArcGlobalCtx,
-    started: Arc<AtomicBool>,
+    start_state: Arc<Mutex<IpProxyStartState>>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum IpProxyStartState {
+    Idle,
+    Started,
+    Failed,
 }
 
 impl IpProxy {
@@ -100,27 +106,44 @@ impl IpProxy {
             icmp_proxy,
             udp_proxy,
             global_ctx,
-            started: Arc::new(AtomicBool::new(false)),
+            start_state: Arc::new(Mutex::new(IpProxyStartState::Idle)),
         })
     }
 
-    async fn start(&self) -> Result<(), Error> {
-        if (self.global_ctx.config.get_proxy_cidrs().is_empty()
-            || self.started.load(Ordering::Relaxed))
-            && !self.global_ctx.enable_exit_node()
-            && !self.global_ctx.no_tun()
-        {
-            return Ok(());
-        }
-
-        // Actually, if this node is enabled as an exit node,
-        // we still can use the system stack to forward packets.
+    fn should_start(&self) -> bool {
         if self.global_ctx.proxy_forward_by_system() && !self.global_ctx.no_tun() {
+            return false;
+        }
+
+        self.global_ctx.enable_exit_node()
+            || self.global_ctx.no_tun()
+            || !self.global_ctx.config.get_proxy_cidrs().is_empty()
+    }
+
+    async fn start(&self) -> Result<(), Error> {
+        if !self.should_start() {
             return Ok(());
         }
 
-        self.started.store(true, Ordering::Relaxed);
-        self.tcp_proxy.start(true).await?;
+        let mut start_state = self.start_state.lock().await;
+        match *start_state {
+            IpProxyStartState::Idle => {}
+            IpProxyStartState::Started => return Ok(()),
+            IpProxyStartState::Failed => {
+                return Err(anyhow::anyhow!("ip proxy start previously failed").into());
+            }
+        }
+
+        if let Err(err) = self.start_components().await {
+            *start_state = IpProxyStartState::Failed;
+            return Err(err);
+        }
+
+        *start_state = IpProxyStartState::Started;
+        Ok(())
+    }
+
+    async fn start_components(&self) -> Result<(), Error> {
         if let Err(e) = self.icmp_proxy.start().await {
             tracing::error!("start icmp proxy failed: {:?}", e);
             if cfg!(not(any(
@@ -135,8 +158,36 @@ impl IpProxy {
                 return Err(e);
             }
         }
+        self.tcp_proxy.start(true).await?;
         self.udp_proxy.start().await?;
         Ok(())
+    }
+
+    fn watch_config_patches(&self) -> AbortOnDropHandle<()> {
+        let ip_proxy = self.clone();
+        let mut event_receiver = self.global_ctx.subscribe();
+        AbortOnDropHandle::new(tokio::spawn(async move {
+            loop {
+                match event_receiver.recv().await {
+                    Ok(GlobalCtxEvent::ConfigPatched(_)) => {
+                        if let Err(err) = ip_proxy.start().await {
+                            tracing::warn!(?err, "failed to start ip proxy after config patch");
+                        }
+                    }
+                    Ok(_) => {}
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                        event_receiver = event_receiver.resubscribe();
+                        if let Err(err) = ip_proxy.start().await {
+                            tracing::warn!(
+                                ?err,
+                                "failed to start ip proxy after missed config patch"
+                            );
+                        }
+                    }
+                }
+            }
+        }))
     }
 }
 
@@ -645,6 +696,7 @@ pub struct Instance {
     tcp_hole_puncher: Arc<Mutex<TcpHolePunchConnector>>,
 
     ip_proxy: Option<IpProxy>,
+    ip_proxy_config_watcher: Option<AbortOnDropHandle<()>>,
 
     #[cfg(feature = "kcp")]
     kcp_proxy_src: Option<KcpProxySrc>,
@@ -735,6 +787,7 @@ impl Instance {
             tcp_hole_puncher,
 
             ip_proxy: None,
+            ip_proxy_config_watcher: None,
             #[cfg(feature = "kcp")]
             kcp_proxy_src: None,
             #[cfg(feature = "kcp")]
@@ -1165,6 +1218,10 @@ impl Instance {
             self.get_peer_manager(),
         )?);
         self.run_ip_proxy().await?;
+        self.ip_proxy_config_watcher = self
+            .ip_proxy
+            .as_ref()
+            .map(|proxy| proxy.watch_config_patches());
 
         self.udp_hole_puncher.lock().await.run().await?;
         self.tcp_hole_puncher.lock().await.run().await?;

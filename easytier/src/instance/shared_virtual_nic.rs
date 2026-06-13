@@ -351,16 +351,18 @@ impl SharedVirtualNic {
         let nic = self.nic.lock().await;
 
         for route in &delta.ipv4_routes.removed {
-            nic.remove_route(route.address, route.prefix).await?;
+            ignore_removed_ifcfg_not_found(nic.remove_route(route.address, route.prefix).await)?;
         }
         for route in &delta.ipv6_routes.removed {
-            nic.remove_ipv6_route(route.address, route.prefix).await?;
+            ignore_removed_ifcfg_not_found(
+                nic.remove_ipv6_route(route.address, route.prefix).await,
+            )?;
         }
         for ip in &delta.ipv4_addresses.removed {
-            nic.remove_ip(Some(*ip)).await?;
+            ignore_removed_ifcfg_not_found(nic.remove_ip(Some(*ip)).await)?;
         }
         for ip in &delta.ipv6_addresses.removed {
-            nic.remove_ipv6(Some(*ip)).await?;
+            ignore_removed_ifcfg_not_found(nic.remove_ipv6(Some(*ip)).await)?;
         }
 
         for ip in &delta.ipv4_addresses.added {
@@ -509,6 +511,13 @@ impl SharedVirtualNic {
             dispatcher.remove_sources(member_id).await?;
         }
         Ok(())
+    }
+}
+
+fn ignore_removed_ifcfg_not_found(result: Result<(), Error>) -> Result<(), Error> {
+    match result {
+        Err(Error::NotFound) => Ok(()),
+        other => other,
     }
 }
 

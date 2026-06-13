@@ -323,6 +323,76 @@ async fn wait_tun_ready(
 }
 
 #[cfg(feature = "tun")]
+fn proxy_route_exists(
+    routes: &[crate::proto::api::instance::Route],
+    peer_id: PeerId,
+    proxy_cidr: &str,
+) -> bool {
+    let proxy_cidr = proxy_cidr.to_owned();
+    routes
+        .iter()
+        .any(|route| route.peer_id == peer_id && route.proxy_cidrs.contains(&proxy_cidr))
+}
+
+#[cfg(feature = "tun")]
+async fn wait_proxy_route_to_peer(
+    mgr: &std::sync::Arc<PeerManager>,
+    ipv4: &str,
+    dst_peer_id: PeerId,
+    proxy_cidr: &str,
+) {
+    let proxy_cidr = proxy_cidr.to_owned();
+    wait_for_condition(
+        || async {
+            let routes = mgr.list_routes().await;
+            let route_found = routes.iter().any(|route| {
+                route.peer_id == dst_peer_id
+                    && route.ipv4_addr == Some(ipv4.parse().unwrap())
+                    && route.proxy_cidrs.contains(&proxy_cidr)
+            });
+            route_found
+        },
+        Duration::from_secs(8),
+    )
+    .await;
+}
+
+#[cfg(feature = "tun")]
+async fn wait_proxy_route_absent(
+    mgr: &std::sync::Arc<PeerManager>,
+    dst_peer_id: PeerId,
+    proxy_cidr: &str,
+) {
+    wait_for_condition(
+        || async {
+            let routes = mgr.list_routes().await;
+            !proxy_route_exists(&routes, dst_peer_id, proxy_cidr)
+        },
+        Duration::from_secs(8),
+    )
+    .await;
+}
+
+#[cfg(feature = "tun")]
+async fn patch_proxy_cidr(
+    inst: &Instance,
+    action: crate::proto::api::config::ConfigPatchAction,
+    cidr: &str,
+) {
+    inst.get_config_patcher()
+        .apply_patch(crate::proto::api::config::InstanceConfigPatch {
+            proxy_networks: vec![crate::proto::api::config::ProxyNetworkPatch {
+                action: action as i32,
+                cidr: Some(cidr.parse().unwrap()),
+                mapped_cidr: None,
+            }],
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+}
+
+#[cfg(feature = "tun")]
 struct SharedTunProxyCidrTopology {
     insts: Vec<Instance>,
     source_idx: usize,
@@ -824,6 +894,268 @@ pub async fn shared_tun_proxy_cidr_reaches_member_network() {
     .await;
 
     drop_insts(vec![center, shared_1, shared_2, remote]).await;
+}
+
+#[cfg(feature = "tun")]
+#[tokio::test]
+#[serial_test::serial]
+pub async fn shared_tun_duplicate_proxy_cidr_survives_member_departure() {
+    prepare_linux_namespaces();
+
+    let source_dev = shared_tun_test_dev_name();
+    let mut destination_dev = shared_tun_test_dev_name();
+    while destination_dev == source_dev {
+        destination_dev = shared_tun_test_dev_name();
+    }
+    let network_name = "shared_duplicate_proxy_network";
+    let network_secret = "shared_duplicate_proxy_secret";
+    let proxy_cidr = "10.1.2.0/24";
+    let target_ip = "10.1.2.4";
+
+    let mut source = Instance::new(shared_tun_test_config(
+        "shared_duplicate_proxy_source",
+        network_name,
+        network_secret,
+        Some("net_a"),
+        Some(&source_dev),
+        "10.144.245.1/24",
+        false,
+    ));
+
+    let primary_cfg = shared_tun_test_config(
+        "shared_duplicate_proxy_primary",
+        network_name,
+        network_secret,
+        Some("net_c"),
+        Some(&destination_dev),
+        "10.144.245.2/24",
+        false,
+    );
+    primary_cfg
+        .add_proxy_cidr(proxy_cidr.parse().unwrap(), None)
+        .unwrap();
+    let mut primary = Instance::new(primary_cfg);
+
+    let backup_cfg = shared_tun_test_config(
+        "shared_duplicate_proxy_backup",
+        network_name,
+        network_secret,
+        Some("net_c"),
+        Some(&destination_dev),
+        "10.144.245.3/24",
+        false,
+    );
+    backup_cfg
+        .add_proxy_cidr(proxy_cidr.parse().unwrap(), None)
+        .unwrap();
+    let mut backup = Instance::new(backup_cfg);
+
+    let mut source_events = source.get_global_ctx().subscribe();
+    let mut primary_events = primary.get_global_ctx().subscribe();
+    let mut backup_events = backup.get_global_ctx().subscribe();
+
+    source.run().await.unwrap();
+    primary.run().await.unwrap();
+    backup.run().await.unwrap();
+
+    assert_eq!(wait_tun_ready(&mut source_events).await, source_dev);
+    assert_eq!(wait_tun_ready(&mut primary_events).await, destination_dev);
+    assert_eq!(wait_tun_ready(&mut backup_events).await, destination_dev);
+
+    primary
+        .get_conn_manager()
+        .add_connector(RingTunnelConnector::new(
+            format!("ring://{}", source.id()).parse().unwrap(),
+        ));
+    backup
+        .get_conn_manager()
+        .add_connector(RingTunnelConnector::new(
+            format!("ring://{}", source.id()).parse().unwrap(),
+        ));
+
+    wait_for_condition(
+        || async {
+            source.get_peer_manager().list_routes().await.len() == 2
+                && primary.get_peer_manager().list_routes().await.len() == 2
+                && backup.get_peer_manager().list_routes().await.len() == 2
+        },
+        Duration::from_secs(8),
+    )
+    .await;
+
+    wait_proxy_route_to_peer(
+        &source.get_peer_manager(),
+        "10.144.245.2/24",
+        primary.peer_id(),
+        proxy_cidr,
+    )
+    .await;
+    wait_proxy_route_to_peer(
+        &source.get_peer_manager(),
+        "10.144.245.3/24",
+        backup.peer_id(),
+        proxy_cidr,
+    )
+    .await;
+    wait_for_condition(
+        || async { ping_test("net_a", target_ip, None).await },
+        Duration::from_secs(8),
+    )
+    .await;
+
+    let primary_peer_id = primary.peer_id();
+    primary.clear_resources().await;
+    drop(primary);
+
+    wait_proxy_route_absent(&source.get_peer_manager(), primary_peer_id, proxy_cidr).await;
+    wait_proxy_route_to_peer(
+        &source.get_peer_manager(),
+        "10.144.245.3/24",
+        backup.peer_id(),
+        proxy_cidr,
+    )
+    .await;
+    wait_for_condition(
+        || async {
+            ipv4_route_exists_in_ns("net_a", &format!("{proxy_cidr} dev {source_dev}"))
+                && ping_test("net_a", target_ip, None).await
+        },
+        Duration::from_secs(8),
+    )
+    .await;
+
+    drop_insts(vec![source, backup]).await;
+}
+
+#[cfg(feature = "tun")]
+#[tokio::test]
+#[serial_test::serial]
+pub async fn shared_tun_proxy_cidr_runtime_patch_adds_and_removes_route() {
+    prepare_linux_namespaces();
+
+    let source_dev = shared_tun_test_dev_name();
+    let mut destination_dev = shared_tun_test_dev_name();
+    while destination_dev == source_dev {
+        destination_dev = shared_tun_test_dev_name();
+    }
+    let network_name = "shared_dynamic_proxy_network";
+    let network_secret = "shared_dynamic_proxy_secret";
+    let proxy_cidr = "10.1.2.0/24";
+    let target_ip = "10.1.2.4";
+
+    let mut source = Instance::new(shared_tun_test_config(
+        "shared_dynamic_proxy_source",
+        network_name,
+        network_secret,
+        Some("net_a"),
+        Some(&source_dev),
+        "10.144.244.1/24",
+        false,
+    ));
+    let mut destination = Instance::new(shared_tun_test_config(
+        "shared_dynamic_proxy_destination",
+        network_name,
+        network_secret,
+        Some("net_c"),
+        Some(&destination_dev),
+        "10.144.244.2/24",
+        false,
+    ));
+
+    let mut source_events = source.get_global_ctx().subscribe();
+    let mut destination_events = destination.get_global_ctx().subscribe();
+
+    source.run().await.unwrap();
+    destination.run().await.unwrap();
+
+    assert_eq!(wait_tun_ready(&mut source_events).await, source_dev);
+    assert_eq!(
+        wait_tun_ready(&mut destination_events).await,
+        destination_dev
+    );
+
+    destination
+        .get_conn_manager()
+        .add_connector(RingTunnelConnector::new(
+            format!("ring://{}", source.id()).parse().unwrap(),
+        ));
+
+    wait_for_condition(
+        || async {
+            source.get_peer_manager().list_routes().await.len() == 1
+                && destination.get_peer_manager().list_routes().await.len() == 1
+        },
+        Duration::from_secs(8),
+    )
+    .await;
+    assert!(
+        !proxy_route_exists(
+            &source.get_peer_manager().list_routes().await,
+            destination.peer_id(),
+            proxy_cidr,
+        ),
+        "proxy route should not exist before runtime patch"
+    );
+
+    patch_proxy_cidr(
+        &destination,
+        crate::proto::api::config::ConfigPatchAction::Add,
+        proxy_cidr,
+    )
+    .await;
+    wait_proxy_route_to_peer(
+        &source.get_peer_manager(),
+        "10.144.244.2/24",
+        destination.peer_id(),
+        proxy_cidr,
+    )
+    .await;
+    wait_for_condition(
+        || async {
+            source
+                .get_peer_manager()
+                .list_proxy_cidrs()
+                .await
+                .contains(&proxy_cidr.parse().unwrap())
+        },
+        Duration::from_secs(10),
+    )
+    .await;
+    wait_for_condition(
+        || async { ipv4_route_exists_in_ns("net_a", &format!("{proxy_cidr} dev {source_dev}")) },
+        Duration::from_secs(10),
+    )
+    .await;
+    wait_for_condition(
+        || async { ping_test("net_a", target_ip, None).await },
+        Duration::from_secs(10),
+    )
+    .await;
+
+    patch_proxy_cidr(
+        &destination,
+        crate::proto::api::config::ConfigPatchAction::Remove,
+        proxy_cidr,
+    )
+    .await;
+    wait_proxy_route_absent(
+        &source.get_peer_manager(),
+        destination.peer_id(),
+        proxy_cidr,
+    )
+    .await;
+    wait_for_condition(
+        || async { !ipv4_route_exists_in_ns("net_a", &format!("{proxy_cidr} dev {source_dev}")) },
+        Duration::from_secs(10),
+    )
+    .await;
+    wait_for_condition(
+        || async { !ping_test("net_a", target_ip, None).await },
+        Duration::from_secs(8),
+    )
+    .await;
+
+    drop_insts(vec![source, destination]).await;
 }
 
 #[cfg(feature = "tun")]
@@ -1542,7 +1874,6 @@ fn route_exists_in_ns(ns: &str, needle: &str) -> bool {
         .any(|line| line.contains(needle))
 }
 
-#[cfg(all(feature = "tun", feature = "magic-dns"))]
 fn ipv4_route_exists_in_ns(ns: &str, needle: &str) -> bool {
     run_ip_in_ns_output(ns, &["route", "show"])
         .lines()

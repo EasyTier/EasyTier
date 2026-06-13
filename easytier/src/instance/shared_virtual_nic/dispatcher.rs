@@ -675,9 +675,10 @@ fn read_ipv6_addr(payload: &[u8], start: usize) -> [u8; 16] {
 
 #[cfg(test)]
 mod tests {
-    use std::net::Ipv6Addr;
+    use std::{net::Ipv6Addr, time::Duration};
 
     use super::*;
+    use crate::tunnel::{TunnelError, common::TunnelWrapper, ring::create_ring_tunnel_pair};
 
     fn ipv6_packet(src: Ipv6Addr, dst: Ipv6Addr) -> ZCPacket {
         let mut payload = vec![0; IPV6_HEADER_LEN];
@@ -777,5 +778,41 @@ mod tests {
             .await;
 
         assert!(fallback_receiver.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn dispatcher_invalidates_shared_nic_when_tun_read_fails() {
+        let member_id = uuid::Uuid::from_u128(1);
+        let (tun_tx, tun_rx) = mpsc::unbounded_channel();
+        let tun_stream = tokio_stream::wrappers::UnboundedReceiverStream::new(tun_rx);
+        let tun_sink = futures::sink::unfold((), |(), _packet: ZCPacket| async {
+            Ok::<(), TunnelError>(())
+        });
+        let tunnel = TunnelWrapper::new(tun_stream, tun_sink, None);
+        let member_tunnel_table = SharedVirtualNicMemberTunnelTable::default();
+        let valid = Arc::new(AtomicBool::new(true));
+        let dispatcher = SharedVirtualNicDispatcher::start(
+            Box::new(tunnel),
+            member_tunnel_table.clone(),
+            valid.clone(),
+        );
+        let close_notifier = Arc::new(Notify::new());
+        let (_member_tunnel, shared_tunnel) = create_ring_tunnel_pair();
+
+        member_tunnel_table
+            .register(member_id, shared_tunnel, close_notifier.clone())
+            .unwrap();
+        dispatcher
+            .update_sources(member_id, &BTreeSet::new(), &BTreeSet::new())
+            .await
+            .unwrap();
+
+        tun_tx.send(Err(TunnelError::Shutdown)).unwrap();
+
+        tokio::time::timeout(Duration::from_secs(1), close_notifier.notified())
+            .await
+            .unwrap();
+        assert!(!valid.load(Ordering::Acquire));
+        assert!(member_tunnel_table.dispatcher_channels().is_none());
     }
 }
