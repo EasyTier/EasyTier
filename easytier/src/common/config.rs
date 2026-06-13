@@ -596,7 +596,10 @@ impl TomlConfigLoader {
 
         Self::normalize_config_source(&mut config);
 
-        config.flags_struct = Some(Self::gen_flags(config.flags.clone().unwrap_or_default()));
+        config.flags_struct = Some(
+            Self::gen_flags(config.flags.clone().unwrap_or_default())
+                .context("failed to parse flags")?,
+        );
         let has_network_identity = config.network_identity.is_some();
 
         let config = TomlConfigLoader {
@@ -636,13 +639,15 @@ impl TomlConfigLoader {
         Ok(ret)
     }
 
-    fn gen_flags(flags_hashmap: serde_json::Map<String, serde_json::Value>) -> Flags {
+    fn gen_flags(
+        flags_hashmap: serde_json::Map<String, serde_json::Value>,
+    ) -> serde_json::Result<Flags> {
         let mut merged_hashmap = match serde_json::to_value(gen_default_flags()) {
             Ok(serde_json::Value::Object(map)) => map,
             _ => serde_json::Map::new(),
         };
         merged_hashmap.extend(flags_hashmap);
-        serde_json::from_value(serde_json::Value::Object(merged_hashmap)).unwrap()
+        serde_json::from_value(serde_json::Value::Object(merged_hashmap))
     }
 }
 
