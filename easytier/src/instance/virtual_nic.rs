@@ -742,9 +742,26 @@ impl VirtualNic {
     }
 
     pub async fn add_route(&self, address: Ipv4Addr, cidr: u8) -> Result<(), Error> {
+        self.add_route_with_cost(address, cidr, None).await
+    }
+
+    pub async fn add_route_with_cost(
+        &self,
+        address: Ipv4Addr,
+        cidr: u8,
+        cost: Option<i32>,
+    ) -> Result<(), Error> {
         let _g = self.config.net_ns.guard();
         self.ifcfg
-            .add_ipv4_route(self.ifname(), address, cidr, None)
+            .add_ipv4_route(self.ifname(), address, cidr, cost)
+            .await?;
+        Ok(())
+    }
+
+    pub async fn remove_route(&self, address: Ipv4Addr, cidr: u8) -> Result<(), Error> {
+        let _g = self.config.net_ns.guard();
+        self.ifcfg
+            .remove_ipv4_route(self.ifname(), address, cidr)
             .await?;
         Ok(())
     }
@@ -802,6 +819,16 @@ impl VirtualNic {
         Ok(())
     }
 
+    pub async fn set_mtu(&self, mtu: u32) -> Result<(), Error> {
+        let _g = self.config.net_ns.guard();
+        self.ifcfg.set_mtu(self.ifname(), mtu).await?;
+        Ok(())
+    }
+
+    pub fn configured_mtu(&self) -> u32 {
+        self.config.mtu
+    }
+
     pub fn get_ifcfg(&self) -> IfConfiger {
         IfConfiger {}
     }
@@ -814,10 +841,6 @@ pub enum NicBackend {
 }
 
 impl NicBackend {
-    fn shared_not_implemented(operation: &str) -> Error {
-        anyhow::anyhow!("shared virtual nic {} is not implemented", operation).into()
-    }
-
     pub fn dedicated(nic: Arc<Mutex<VirtualNic>>) -> Self {
         Self::Dedicated(nic)
     }
@@ -867,34 +890,46 @@ impl NicBackend {
         }
     }
 
+    #[cfg(not(target_os = "linux"))]
+    /// Returns a raw ifcfg handle and interface name for platform cleanup.
+    ///
+    /// This does not carry `VirtualNic`'s netns guard. Use the typed
+    /// `NicBackend` methods for normal IP and route configuration.
     pub async fn ifcfg_and_ifname(&self) -> Result<(IfConfiger, String), Error> {
         match self {
             Self::Dedicated(nic) => {
                 let nic = nic.lock().await;
                 Ok((nic.get_ifcfg(), nic.ifname().to_owned()))
             }
-            Self::Shared(_) => Err(Self::shared_not_implemented("ifcfg")),
+            Self::Shared(member) => member.ifcfg_and_ifname().await,
         }
     }
 
     pub async fn link_up(&self) -> Result<(), Error> {
         match self {
             Self::Dedicated(nic) => nic.lock().await.link_up().await,
-            Self::Shared(_) => Err(Self::shared_not_implemented("link_up")),
+            Self::Shared(member) => member.link_up().await,
         }
     }
 
     pub async fn add_route(&self, address: Ipv4Addr, cidr: u8) -> Result<(), Error> {
         match self {
             Self::Dedicated(nic) => nic.lock().await.add_route(address, cidr).await,
-            Self::Shared(_) => Err(Self::shared_not_implemented("add_route")),
+            Self::Shared(member) => member.add_route(address, cidr).await,
+        }
+    }
+
+    pub async fn remove_route(&self, address: Ipv4Addr, cidr: u8) -> Result<(), Error> {
+        match self {
+            Self::Dedicated(nic) => nic.lock().await.remove_route(address, cidr).await,
+            Self::Shared(member) => member.remove_route(address, cidr).await,
         }
     }
 
     pub async fn add_ipv6_route(&self, address: Ipv6Addr, cidr: u8) -> Result<(), Error> {
         match self {
             Self::Dedicated(nic) => nic.lock().await.add_ipv6_route(address, cidr).await,
-            Self::Shared(_) => Err(Self::shared_not_implemented("add_ipv6_route")),
+            Self::Shared(member) => member.add_ipv6_route(address, cidr).await,
         }
     }
 
@@ -911,42 +946,42 @@ impl NicBackend {
                     .add_ipv6_route_with_cost(address, cidr, cost)
                     .await
             }
-            Self::Shared(_) => Err(Self::shared_not_implemented("add_ipv6_route_with_cost")),
+            Self::Shared(member) => member.add_ipv6_route_with_cost(address, cidr, cost).await,
         }
     }
 
     pub async fn remove_ipv6_route(&self, address: Ipv6Addr, cidr: u8) -> Result<(), Error> {
         match self {
             Self::Dedicated(nic) => nic.lock().await.remove_ipv6_route(address, cidr).await,
-            Self::Shared(_) => Err(Self::shared_not_implemented("remove_ipv6_route")),
+            Self::Shared(member) => member.remove_ipv6_route(address, cidr).await,
         }
     }
 
     pub async fn remove_ip(&self, ip: Option<Ipv4Inet>) -> Result<(), Error> {
         match self {
             Self::Dedicated(nic) => nic.lock().await.remove_ip(ip).await,
-            Self::Shared(_) => Err(Self::shared_not_implemented("remove_ip")),
+            Self::Shared(member) => member.remove_ip(ip).await,
         }
     }
 
     pub async fn remove_ipv6(&self, ip: Option<Ipv6Inet>) -> Result<(), Error> {
         match self {
             Self::Dedicated(nic) => nic.lock().await.remove_ipv6(ip).await,
-            Self::Shared(_) => Err(Self::shared_not_implemented("remove_ipv6")),
+            Self::Shared(member) => member.remove_ipv6(ip).await,
         }
     }
 
     pub async fn add_ip(&self, ip: Ipv4Addr, cidr: i32) -> Result<(), Error> {
         match self {
             Self::Dedicated(nic) => nic.lock().await.add_ip(ip, cidr).await,
-            Self::Shared(_) => Err(Self::shared_not_implemented("add_ip")),
+            Self::Shared(member) => member.add_ip(ip, cidr).await,
         }
     }
 
     pub async fn add_ipv6(&self, ip: Ipv6Addr, cidr: i32) -> Result<(), Error> {
         match self {
             Self::Dedicated(nic) => nic.lock().await.add_ipv6(ip, cidr).await,
-            Self::Shared(_) => Err(Self::shared_not_implemented("add_ipv6")),
+            Self::Shared(member) => member.add_ipv6(ip, cidr).await,
         }
     }
 }
@@ -1280,9 +1315,7 @@ impl NicCtx {
     }
 
     async fn apply_route_changes(
-        ifcfg: &impl IfConfiguerTrait,
-        ifname: &str,
-        net_ns: &crate::common::netns::NetNS,
+        backend: &NicBackend,
         cur_proxy_cidrs: &mut BTreeSet<cidr::Ipv4Cidr>,
         added: Vec<cidr::Ipv4Cidr>,
         removed: Vec<cidr::Ipv4Cidr>,
@@ -1294,9 +1327,8 @@ impl NicCtx {
             if !cur_proxy_cidrs.contains(&cidr) {
                 continue;
             }
-            let _g = net_ns.guard();
-            let ret = ifcfg
-                .remove_ipv4_route(ifname, cidr.first_address(), cidr.network_length())
+            let ret = backend
+                .remove_route(cidr.first_address(), cidr.network_length())
                 .await;
 
             if ret.is_err() {
@@ -1314,9 +1346,8 @@ impl NicCtx {
             if cur_proxy_cidrs.contains(&cidr) {
                 continue;
             }
-            let _g = net_ns.guard();
-            let ret = ifcfg
-                .add_ipv4_route(ifname, cidr.first_address(), cidr.network_length(), None)
+            let ret = backend
+                .add_route(cidr.first_address(), cidr.network_length())
                 .await;
 
             if ret.is_err() {
@@ -1331,9 +1362,7 @@ impl NicCtx {
     }
 
     async fn apply_public_ipv6_route_changes(
-        ifcfg: &impl IfConfiguerTrait,
-        ifname: &str,
-        net_ns: &crate::common::netns::NetNS,
+        backend: &NicBackend,
         cur_routes: &mut BTreeSet<cidr::Ipv6Inet>,
         added: Vec<cidr::Ipv6Inet>,
         removed: Vec<cidr::Ipv6Inet>,
@@ -1342,9 +1371,8 @@ impl NicCtx {
             if !cur_routes.contains(&route) {
                 continue;
             }
-            let _g = net_ns.guard();
-            let ret = ifcfg
-                .remove_ipv6_route(ifname, route.address(), route.network_length())
+            let ret = backend
+                .remove_ipv6_route(route.address(), route.network_length())
                 .await;
             if ret.is_err() {
                 tracing::trace!(route = ?route, err = ?ret, "remove public ipv6 route failed");
@@ -1356,9 +1384,8 @@ impl NicCtx {
             if cur_routes.contains(&route) {
                 continue;
             }
-            let _g = net_ns.guard();
-            let ret = ifcfg
-                .add_ipv6_route(ifname, route.address(), route.network_length(), None)
+            let ret = backend
+                .add_ipv6_route(route.address(), route.network_length())
                 .await;
             if ret.is_err() {
                 tracing::trace!(route = ?route, err = ?ret, "add public ipv6 route failed");
@@ -1373,8 +1400,7 @@ impl NicCtx {
             return Err(anyhow::anyhow!("peer manager not available").into());
         };
         let global_ctx = self.global_ctx.clone();
-        let net_ns = self.global_ctx.net_ns.clone();
-        let (ifcfg, ifname) = self.backend.ifcfg_and_ifname().await?;
+        let backend = self.backend.clone();
         let mut event_receiver = global_ctx.subscribe();
 
         self.tasks.spawn(async move {
@@ -1387,15 +1413,7 @@ impl NicCtx {
                 &cur_proxy_cidrs,
             )
             .await;
-            Self::apply_route_changes(
-                &ifcfg,
-                &ifname,
-                &net_ns,
-                &mut cur_proxy_cidrs,
-                added,
-                removed,
-            )
-            .await;
+            Self::apply_route_changes(&backend, &mut cur_proxy_cidrs, added, removed).await;
 
             loop {
                 let event = match event_receiver.recv().await {
@@ -1426,15 +1444,7 @@ impl NicCtx {
                     _ => continue,
                 };
 
-                Self::apply_route_changes(
-                    &ifcfg,
-                    &ifname,
-                    &net_ns,
-                    &mut cur_proxy_cidrs,
-                    added,
-                    removed,
-                )
-                .await;
+                Self::apply_route_changes(&backend, &mut cur_proxy_cidrs, added, removed).await;
             }
         });
 
@@ -1446,8 +1456,7 @@ impl NicCtx {
             return Err(anyhow::anyhow!("peer manager not available").into());
         };
         let global_ctx = self.global_ctx.clone();
-        let net_ns = self.global_ctx.net_ns.clone();
-        let (ifcfg, ifname) = self.backend.ifcfg_and_ifname().await?;
+        let backend = self.backend.clone();
         let mut event_receiver = global_ctx.subscribe();
 
         self.tasks.spawn(async move {
@@ -1455,9 +1464,7 @@ impl NicCtx {
             let initial_routes = peer_mgr.list_public_ipv6_routes().await;
             let initial_added = initial_routes.iter().copied().collect::<Vec<_>>();
             Self::apply_public_ipv6_route_changes(
-                &ifcfg,
-                &ifname,
-                &net_ns,
+                &backend,
                 &mut cur_routes,
                 initial_added,
                 Vec::new(),
@@ -1482,15 +1489,8 @@ impl NicCtx {
                     _ => continue,
                 };
 
-                Self::apply_public_ipv6_route_changes(
-                    &ifcfg,
-                    &ifname,
-                    &net_ns,
-                    &mut cur_routes,
-                    added,
-                    removed,
-                )
-                .await;
+                Self::apply_public_ipv6_route_changes(&backend, &mut cur_routes, added, removed)
+                    .await;
             }
         });
 

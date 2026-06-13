@@ -17,6 +17,9 @@ use crate::{
 
 use super::virtual_nic::{VirtualNic, VirtualNicConfig};
 
+#[cfg(not(target_os = "linux"))]
+use crate::common::ifcfg::IfConfiger;
+
 mod dispatcher;
 
 use dispatcher::{SharedVirtualNicDispatcher, SharedVirtualNicMemberTunnelTable};
@@ -239,6 +242,13 @@ impl SharedIfConfig {
             effective_mtu: self.effective_mtu(),
         }
     }
+
+    fn claims_of(&self, member_id: SharedVirtualNicMemberId) -> SharedIfConfigClaims {
+        self.member_claims
+            .get(&member_id)
+            .cloned()
+            .unwrap_or_default()
+    }
 }
 
 pub struct SharedVirtualNic {
@@ -280,6 +290,97 @@ impl SharedVirtualNic {
         self.nic.clone()
     }
 
+    #[cfg(not(target_os = "linux"))]
+    async fn ifcfg_and_ifname(&self) -> Result<(IfConfiger, String), Error> {
+        self.ensure_valid()?;
+        let nic = self.nic.lock().await;
+        Ok((nic.get_ifcfg(), nic.ifname().to_owned()))
+    }
+
+    async fn link_up(&self) -> Result<(), Error> {
+        self.ensure_valid()?;
+        self.nic.lock().await.link_up().await
+    }
+
+    async fn apply_member_claims(
+        &mut self,
+        member_id: SharedVirtualNicMemberId,
+        claims: SharedIfConfigClaims,
+    ) -> Result<(), Error> {
+        self.ensure_valid()?;
+
+        let mut next_ifcfg = self.ifcfg.clone();
+        let delta = next_ifcfg.apply_member_claims(member_id, claims);
+        self.apply_ifcfg_delta(&delta).await?;
+        self.ifcfg = next_ifcfg;
+
+        Ok(())
+    }
+
+    async fn remove_member_claims(
+        &mut self,
+        member_id: SharedVirtualNicMemberId,
+    ) -> Result<(), Error> {
+        self.ensure_valid()?;
+
+        let mut next_ifcfg = self.ifcfg.clone();
+        let Some(delta) = next_ifcfg.remove_member(member_id) else {
+            return Ok(());
+        };
+        self.apply_ifcfg_delta(&delta).await?;
+        self.ifcfg = next_ifcfg;
+
+        Ok(())
+    }
+
+    async fn apply_ifcfg_delta(&self, delta: &SharedIfConfigDelta) -> Result<(), Error> {
+        let nic = self.nic.lock().await;
+
+        for route in &delta.ipv4_routes.removed {
+            nic.remove_route(route.address, route.prefix).await?;
+        }
+        for route in &delta.ipv6_routes.removed {
+            nic.remove_ipv6_route(route.address, route.prefix).await?;
+        }
+        for ip in &delta.ipv4_addresses.removed {
+            nic.remove_ip(Some(*ip)).await?;
+        }
+        for ip in &delta.ipv6_addresses.removed {
+            nic.remove_ipv6(Some(*ip)).await?;
+        }
+
+        for ip in &delta.ipv4_addresses.added {
+            nic.add_ip(ip.address(), ip.network_length() as i32).await?;
+        }
+        for ip in &delta.ipv6_addresses.added {
+            nic.add_ipv6(ip.address(), ip.network_length() as i32)
+                .await?;
+        }
+        for route in &delta.ipv4_routes.added {
+            nic.add_route_with_cost(route.address, route.prefix, route.cost)
+                .await?;
+        }
+        for route in &delta.ipv6_routes.added {
+            nic.add_ipv6_route_with_cost(route.address, route.prefix, route.cost)
+                .await?;
+        }
+
+        if let Some(mtu) = &delta.mtu {
+            nic.set_mtu(mtu.new.unwrap_or_else(|| nic.configured_mtu()))
+                .await?;
+        }
+
+        Ok(())
+    }
+
+    fn ensure_valid(&self) -> Result<(), Error> {
+        if self.is_valid() {
+            return Ok(());
+        }
+
+        Err(anyhow::anyhow!("shared virtual nic is invalid").into())
+    }
+
     fn member_tunnel_table(&self) -> SharedVirtualNicMemberTunnelTable {
         self.member_tunnel_table.clone()
     }
@@ -289,9 +390,7 @@ impl SharedVirtualNic {
     }
 
     async fn ensure_dispatcher(&mut self) -> Result<(), Error> {
-        if !self.is_valid() {
-            return Err(anyhow::anyhow!("shared virtual nic is invalid").into());
-        }
+        self.ensure_valid()?;
 
         if self.dispatcher.is_some() {
             return Ok(());
@@ -309,6 +408,7 @@ impl SharedVirtualNic {
 
 struct SharedVirtualNicMemberRegistration {
     member_id: SharedVirtualNicMemberId,
+    shared_nic: Arc<Mutex<SharedVirtualNic>>,
     member_tunnel_table: SharedVirtualNicMemberTunnelTable,
 }
 
@@ -326,6 +426,27 @@ impl SharedVirtualNicMemberRegistration {
 impl Drop for SharedVirtualNicMemberRegistration {
     fn drop(&mut self) {
         self.member_tunnel_table.unregister(self.member_id);
+        let shared_nic = self.shared_nic.clone();
+        let member_id = self.member_id;
+
+        let Ok(handle) = tokio::runtime::Handle::try_current() else {
+            tracing::warn!(
+                ?member_id,
+                "skip shared virtual nic member claim cleanup without tokio runtime"
+            );
+            return;
+        };
+
+        handle.spawn(async move {
+            let mut shared_nic = shared_nic.lock().await;
+            if let Err(err) = shared_nic.remove_member_claims(member_id).await {
+                tracing::warn!(
+                    ?member_id,
+                    ?err,
+                    "failed to clean shared virtual nic member claims"
+                );
+            }
+        });
     }
 }
 
@@ -346,10 +467,11 @@ impl SharedVirtualNicMember {
     ) -> Self {
         Self {
             member_id,
-            shared_nic,
+            shared_nic: shared_nic.clone(),
             close_notifier,
             registration: Arc::new(SharedVirtualNicMemberRegistration {
                 member_id,
+                shared_nic: shared_nic.clone(),
                 member_tunnel_table,
             }),
         }
@@ -376,6 +498,119 @@ impl SharedVirtualNicMember {
         self.registration
             .register_tunnel(shared_tunnel, self.close_notifier.clone())?;
         Ok(member_tunnel)
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    pub async fn ifcfg_and_ifname(&self) -> Result<(IfConfiger, String), Error> {
+        self.shared_nic.lock().await.ifcfg_and_ifname().await
+    }
+
+    pub async fn link_up(&self) -> Result<(), Error> {
+        self.shared_nic.lock().await.link_up().await
+    }
+
+    pub async fn add_ip(&self, ip: Ipv4Addr, cidr: i32) -> Result<(), Error> {
+        let ip = ipv4_inet(ip, cidr)?;
+        self.update_claims(|claims| {
+            claims.ipv4_addresses.insert(ip);
+        })
+        .await
+    }
+
+    pub async fn remove_ip(&self, ip: Option<Ipv4Inet>) -> Result<(), Error> {
+        self.update_claims(|claims| match ip {
+            Some(ip) => {
+                claims.ipv4_addresses.remove(&ip);
+            }
+            None => {
+                claims.ipv4_addresses.clear();
+            }
+        })
+        .await
+    }
+
+    pub async fn add_ipv6(&self, ip: Ipv6Addr, cidr: i32) -> Result<(), Error> {
+        let ip = ipv6_inet(ip, cidr)?;
+        self.update_claims(|claims| {
+            claims.ipv6_addresses.insert(ip);
+        })
+        .await
+    }
+
+    pub async fn remove_ipv6(&self, ip: Option<Ipv6Inet>) -> Result<(), Error> {
+        self.update_claims(|claims| match ip {
+            Some(ip) => {
+                claims.ipv6_addresses.remove(&ip);
+            }
+            None => {
+                claims.ipv6_addresses.clear();
+            }
+        })
+        .await
+    }
+
+    pub async fn add_route(&self, address: Ipv4Addr, cidr: u8) -> Result<(), Error> {
+        self.add_route_with_cost(address, cidr, None).await
+    }
+
+    pub async fn add_route_with_cost(
+        &self,
+        address: Ipv4Addr,
+        cidr: u8,
+        cost: Option<i32>,
+    ) -> Result<(), Error> {
+        self.update_claims(|claims| {
+            claims
+                .ipv4_routes
+                .insert(SharedIpv4Route::new(address, cidr, cost));
+        })
+        .await
+    }
+
+    pub async fn remove_route(&self, address: Ipv4Addr, cidr: u8) -> Result<(), Error> {
+        self.update_claims(|claims| {
+            claims
+                .ipv4_routes
+                .retain(|route| route.address != address || route.prefix != cidr);
+        })
+        .await
+    }
+
+    pub async fn add_ipv6_route(&self, address: Ipv6Addr, cidr: u8) -> Result<(), Error> {
+        self.add_ipv6_route_with_cost(address, cidr, None).await
+    }
+
+    pub async fn add_ipv6_route_with_cost(
+        &self,
+        address: Ipv6Addr,
+        cidr: u8,
+        cost: Option<i32>,
+    ) -> Result<(), Error> {
+        self.update_claims(|claims| {
+            claims
+                .ipv6_routes
+                .insert(SharedIpv6Route::new(address, cidr, cost));
+        })
+        .await
+    }
+
+    pub async fn remove_ipv6_route(&self, address: Ipv6Addr, cidr: u8) -> Result<(), Error> {
+        self.update_claims(|claims| {
+            claims
+                .ipv6_routes
+                .retain(|route| route.address != address || route.prefix != cidr);
+        })
+        .await
+    }
+
+    async fn update_claims<F>(&self, update: F) -> Result<(), Error>
+    where
+        F: FnOnce(&mut SharedIfConfigClaims) + Send,
+    {
+        let mut shared_nic = self.shared_nic.lock().await;
+        let mut claims = shared_nic.ifcfg.claims_of(self.member_id);
+        update(&mut claims);
+        shared_nic.apply_member_claims(self.member_id, claims).await
     }
 }
 
@@ -575,6 +810,22 @@ where
     T: Ord,
 {
     owners.get(item).cloned().unwrap_or_default()
+}
+
+fn ipv4_inet(address: Ipv4Addr, prefix: i32) -> Result<Ipv4Inet, Error> {
+    let prefix = u8::try_from(prefix)
+        .map_err(|_| anyhow::anyhow!("invalid IPv4 prefix length {}", prefix))?;
+    Ipv4Inet::new(address, prefix).map_err(|err| {
+        anyhow::anyhow!("invalid IPv4 address {}/{}: {:?}", address, prefix, err).into()
+    })
+}
+
+fn ipv6_inet(address: Ipv6Addr, prefix: i32) -> Result<Ipv6Inet, Error> {
+    let prefix = u8::try_from(prefix)
+        .map_err(|_| anyhow::anyhow!("invalid IPv6 prefix length {}", prefix))?;
+    Ipv6Inet::new(address, prefix).map_err(|err| {
+        anyhow::anyhow!("invalid IPv6 address {}/{}: {:?}", address, prefix, err).into()
+    })
 }
 
 #[cfg(test)]
