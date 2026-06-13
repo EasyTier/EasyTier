@@ -863,7 +863,7 @@ impl NicBackend {
     ) -> Result<Box<dyn Tunnel>, Error> {
         match self {
             Self::Dedicated(nic) => nic.lock().await.create_dev_for_mobile(tun_fd).await,
-            Self::Shared(member) => member.create_dev().await,
+            Self::Shared(member) => member.create_dev_for_mobile(tun_fd).await,
         }
     }
 

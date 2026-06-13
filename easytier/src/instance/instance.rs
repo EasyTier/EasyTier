@@ -4,15 +4,17 @@ use std::collections::HashSet;
 use std::net::{IpAddr, Ipv4Addr};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Weak};
-#[cfg(feature = "tun")]
+#[cfg(all(feature = "tun", not(mobile)))]
 use std::time::Duration;
 
 use anyhow::Context;
 use cidr::{IpCidr, Ipv4Inet};
 use futures::FutureExt;
+#[cfg(all(feature = "tun", not(mobile)))]
+use tokio::sync::oneshot;
 use tokio::sync::{Mutex, Notify};
 #[cfg(feature = "tun")]
-use tokio::{sync::oneshot, task::JoinSet};
+use tokio::task::JoinSet;
 #[cfg(feature = "magic-dns")]
 use tokio_util::sync::CancellationToken;
 use tokio_util::task::AbortOnDropHandle;
@@ -1588,12 +1590,19 @@ impl Instance {
             .await
             .with_context(|| "add ip failed")?;
 
+        #[cfg(feature = "magic-dns")]
         let magic_dns_runner = if let Some(ipv4) = global_ctx.get_ipv4() {
             Self::create_magic_dns_runner(peer_manager.clone(), None, ipv4)
         } else {
             None
         };
-        Self::use_new_nic_ctx(nic_ctx.clone(), new_nic_ctx, magic_dns_runner).await;
+        Self::use_new_nic_ctx(
+            nic_ctx.clone(),
+            new_nic_ctx,
+            #[cfg(feature = "magic-dns")]
+            magic_dns_runner,
+        )
+        .await;
         Ok(())
     }
 

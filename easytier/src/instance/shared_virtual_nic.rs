@@ -404,6 +404,26 @@ impl SharedVirtualNic {
         ));
         Ok(())
     }
+
+    #[cfg(mobile)]
+    async fn ensure_dispatcher_for_mobile(
+        &mut self,
+        tun_fd: std::os::fd::RawFd,
+    ) -> Result<(), Error> {
+        self.ensure_valid()?;
+
+        if self.dispatcher.is_some() {
+            return Ok(());
+        }
+
+        let tunnel = self.nic.lock().await.create_dev_for_mobile(tun_fd).await?;
+        self.dispatcher = Some(SharedVirtualNicDispatcher::start(
+            tunnel,
+            self.member_tunnel_table.clone(),
+            self.valid.clone(),
+        ));
+        Ok(())
+    }
 }
 
 struct SharedVirtualNicMemberRegistration {
@@ -494,6 +514,21 @@ impl SharedVirtualNicMember {
         {
             let mut shared_nic = self.shared_nic.lock().await;
             shared_nic.ensure_dispatcher().await?;
+        }
+        self.registration
+            .register_tunnel(shared_tunnel, self.close_notifier.clone())?;
+        Ok(member_tunnel)
+    }
+
+    #[cfg(mobile)]
+    pub async fn create_dev_for_mobile(
+        &self,
+        tun_fd: std::os::fd::RawFd,
+    ) -> Result<Box<dyn Tunnel>, Error> {
+        let (member_tunnel, shared_tunnel) = create_ring_tunnel_pair();
+        {
+            let mut shared_nic = self.shared_nic.lock().await;
+            shared_nic.ensure_dispatcher_for_mobile(tun_fd).await?;
         }
         self.registration
             .register_tunnel(shared_tunnel, self.close_notifier.clone())?;
