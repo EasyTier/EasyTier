@@ -310,8 +310,21 @@ impl SharedVirtualNic {
         self.ensure_valid()?;
 
         let mut next_ifcfg = self.ifcfg.clone();
+        let old_claims = self.ifcfg.claims_of(member_id);
+        let next_claims = claims.clone();
         let delta = next_ifcfg.apply_member_claims(member_id, claims);
-        self.apply_ifcfg_delta(&delta).await?;
+        self.sync_dispatcher_sources_for_ifcfg_update(member_id, &old_claims, &next_claims)
+            .await?;
+
+        if let Err(err) = self.apply_ifcfg_delta(&delta).await {
+            let _ = self
+                .sync_dispatcher_sources_for_member(member_id, &old_claims)
+                .await;
+            return Err(err);
+        }
+
+        self.sync_dispatcher_sources_for_member(member_id, &next_claims)
+            .await?;
         self.ifcfg = next_ifcfg;
 
         Ok(())
@@ -328,6 +341,7 @@ impl SharedVirtualNic {
             return Ok(());
         };
         self.apply_ifcfg_delta(&delta).await?;
+        self.remove_dispatcher_sources_for_member(member_id).await?;
         self.ifcfg = next_ifcfg;
 
         Ok(())
@@ -397,11 +411,13 @@ impl SharedVirtualNic {
         }
 
         let tunnel = self.nic.lock().await.create_dev().await?;
-        self.dispatcher = Some(SharedVirtualNicDispatcher::start(
+        let dispatcher = SharedVirtualNicDispatcher::start(
             tunnel,
             self.member_tunnel_table.clone(),
             self.valid.clone(),
-        ));
+        );
+        self.sync_dispatcher_sources(&dispatcher).await?;
+        self.dispatcher = Some(dispatcher);
         Ok(())
     }
 
@@ -417,11 +433,81 @@ impl SharedVirtualNic {
         }
 
         let tunnel = self.nic.lock().await.create_dev_for_mobile(tun_fd).await?;
-        self.dispatcher = Some(SharedVirtualNicDispatcher::start(
+        let dispatcher = SharedVirtualNicDispatcher::start(
             tunnel,
             self.member_tunnel_table.clone(),
             self.valid.clone(),
-        ));
+        );
+        self.sync_dispatcher_sources(&dispatcher).await?;
+        self.dispatcher = Some(dispatcher);
+        Ok(())
+    }
+
+    async fn sync_dispatcher_sources(
+        &self,
+        dispatcher: &SharedVirtualNicDispatcher,
+    ) -> Result<(), Error> {
+        for (member_id, claims) in &self.ifcfg.member_claims {
+            dispatcher
+                .update_sources(*member_id, &claims.ipv4_addresses, &claims.ipv6_addresses)
+                .await?;
+        }
+        Ok(())
+    }
+
+    async fn sync_dispatcher_sources_for_ifcfg_update(
+        &self,
+        member_id: SharedVirtualNicMemberId,
+        old_claims: &SharedIfConfigClaims,
+        next_claims: &SharedIfConfigClaims,
+    ) -> Result<(), Error> {
+        let mut active_ipv4_addresses = old_claims.ipv4_addresses.clone();
+        active_ipv4_addresses.extend(next_claims.ipv4_addresses.iter().copied());
+        let mut active_ipv6_addresses = old_claims.ipv6_addresses.clone();
+        active_ipv6_addresses.extend(next_claims.ipv6_addresses.iter().copied());
+
+        self.sync_dispatcher_sources_for_addresses(
+            member_id,
+            &active_ipv4_addresses,
+            &active_ipv6_addresses,
+        )
+        .await
+    }
+
+    async fn sync_dispatcher_sources_for_member(
+        &self,
+        member_id: SharedVirtualNicMemberId,
+        claims: &SharedIfConfigClaims,
+    ) -> Result<(), Error> {
+        self.sync_dispatcher_sources_for_addresses(
+            member_id,
+            &claims.ipv4_addresses,
+            &claims.ipv6_addresses,
+        )
+        .await
+    }
+
+    async fn sync_dispatcher_sources_for_addresses(
+        &self,
+        member_id: SharedVirtualNicMemberId,
+        ipv4_addresses: &BTreeSet<Ipv4Inet>,
+        ipv6_addresses: &BTreeSet<Ipv6Inet>,
+    ) -> Result<(), Error> {
+        if let Some(dispatcher) = &self.dispatcher {
+            dispatcher
+                .update_sources(member_id, ipv4_addresses, ipv6_addresses)
+                .await?;
+        }
+        Ok(())
+    }
+
+    async fn remove_dispatcher_sources_for_member(
+        &self,
+        member_id: SharedVirtualNicMemberId,
+    ) -> Result<(), Error> {
+        if let Some(dispatcher) = &self.dispatcher {
+            dispatcher.remove_sources(member_id).await?;
+        }
         Ok(())
     }
 }

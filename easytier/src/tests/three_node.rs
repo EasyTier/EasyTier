@@ -258,6 +258,356 @@ pub async fn drop_insts(insts: Vec<Instance>) {
     while set.join_next().await.is_some() {}
 }
 
+#[cfg(feature = "tun")]
+fn shared_tun_test_dev_name() -> String {
+    format!("st{:08x}", rand::random::<u32>())
+}
+
+#[cfg(feature = "tun")]
+fn shared_tun_test_netns(prefix: &str) -> String {
+    format!("{prefix}{:04x}", rand::random::<u16>())
+}
+
+#[cfg(feature = "tun")]
+fn shared_tun_test_config(
+    inst_name: &str,
+    network_name: &str,
+    network_secret: &str,
+    netns: Option<&str>,
+    dev_name: Option<&str>,
+    ipv4: &str,
+    no_tun: bool,
+) -> TomlConfigLoader {
+    let config = TomlConfigLoader::default();
+    config.set_inst_name(inst_name.to_owned());
+    config.set_network_identity(NetworkIdentity::new(
+        network_name.to_string(),
+        network_secret.to_string(),
+    ));
+    config.set_netns(netns.map(str::to_owned));
+    config.set_ipv4(Some(ipv4.parse().unwrap()));
+    config.set_ipv6(None);
+    config.set_dhcp(false);
+    config.set_listeners(vec![]);
+    config.set_socks5_portal(None);
+
+    let mut flags = config.get_flags();
+    flags.dev_name = dev_name.unwrap_or_default().to_string();
+    flags.enable_ipv6 = false;
+    flags.no_tun = no_tun;
+    config.set_flags(flags);
+
+    config
+}
+
+#[cfg(feature = "tun")]
+async fn wait_tun_ready(
+    receiver: &mut tokio::sync::broadcast::Receiver<crate::common::global_ctx::GlobalCtxEvent>,
+) -> String {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            match receiver.recv().await.unwrap() {
+                crate::common::global_ctx::GlobalCtxEvent::TunDeviceReady(ifname) => return ifname,
+                crate::common::global_ctx::GlobalCtxEvent::TunDeviceError(err) => {
+                    panic!("tun device error: {err}")
+                }
+                _ => {}
+            }
+        }
+    })
+    .await
+    .expect("timed out waiting for tun ready")
+}
+
+#[cfg(feature = "tun")]
+#[tokio::test]
+#[serial_test::serial]
+pub async fn shared_tun_instances_with_same_dev_name_can_communicate() {
+    let dev_name = shared_tun_test_dev_name();
+    let ns_a = shared_tun_test_netns("stna");
+    let ns_b = shared_tun_test_netns("stnb");
+    let _ns_a_guard = TestNetnsGuard::new(&ns_a, "10.231.1.2/24", "fd31::2/64");
+    let _ns_b_guard = TestNetnsGuard::new(&ns_b, "10.231.2.2/24", "fd32::2/64");
+
+    let mut first = Instance::new(shared_tun_test_config(
+        "shared_tun_first",
+        "shared_tun_network_a",
+        "shared_tun_secret_a",
+        None,
+        Some(&dev_name),
+        "10.144.250.1/24",
+        false,
+    ));
+    let mut second = Instance::new(shared_tun_test_config(
+        "shared_tun_second",
+        "shared_tun_network_b",
+        "shared_tun_secret_b",
+        None,
+        Some(&dev_name),
+        "10.144.251.1/24",
+        false,
+    ));
+    let mut first_peer = Instance::new(shared_tun_test_config(
+        "shared_tun_first_peer",
+        "shared_tun_network_a",
+        "shared_tun_secret_a",
+        Some(&ns_a),
+        None,
+        "10.144.250.2/24",
+        false,
+    ));
+    let mut second_peer = Instance::new(shared_tun_test_config(
+        "shared_tun_second_peer",
+        "shared_tun_network_b",
+        "shared_tun_secret_b",
+        Some(&ns_b),
+        None,
+        "10.144.251.2/24",
+        false,
+    ));
+    let mut first_events = first.get_global_ctx().subscribe();
+    let mut second_events = second.get_global_ctx().subscribe();
+
+    first.run().await.unwrap();
+    let first_ifname = wait_tun_ready(&mut first_events).await;
+    second.run().await.unwrap();
+    let second_ifname = wait_tun_ready(&mut second_events).await;
+    first_peer.run().await.unwrap();
+    second_peer.run().await.unwrap();
+
+    assert_eq!(first_ifname, dev_name);
+    assert_eq!(second_ifname, dev_name);
+
+    first_peer
+        .get_conn_manager()
+        .add_connector(RingTunnelConnector::new(
+            format!("ring://{}", first.id()).parse().unwrap(),
+        ));
+    second_peer
+        .get_conn_manager()
+        .add_connector(RingTunnelConnector::new(
+            format!("ring://{}", second.id()).parse().unwrap(),
+        ));
+
+    wait_for_condition(
+        || async {
+            first.get_peer_manager().list_routes().await.len() == 1
+                && first_peer.get_peer_manager().list_routes().await.len() == 1
+                && second.get_peer_manager().list_routes().await.len() == 1
+                && second_peer.get_peer_manager().list_routes().await.len() == 1
+        },
+        Duration::from_secs(5),
+    )
+    .await;
+
+    wait_for_condition(
+        || async { ping_test(&ns_a, "10.144.250.1", None).await },
+        Duration::from_secs(5),
+    )
+    .await;
+    wait_for_condition(
+        || async { ping_test(&ns_b, "10.144.251.1", None).await },
+        Duration::from_secs(5),
+    )
+    .await;
+
+    drop_insts(vec![first, second, first_peer, second_peer]).await;
+}
+
+#[cfg(feature = "tun")]
+#[tokio::test]
+#[serial_test::serial]
+pub async fn no_tun_instance_does_not_block_shared_tun_communication() {
+    let dev_name = shared_tun_test_dev_name();
+    let ns = shared_tun_test_netns("stnc");
+    let _ns_guard = TestNetnsGuard::new(&ns, "10.231.3.2/24", "fd33::2/64");
+
+    let mut no_tun_inst = Instance::new(shared_tun_test_config(
+        "shared_tun_no_tun",
+        "shared_tun_no_tun_network",
+        "shared_tun_no_tun_secret",
+        None,
+        Some(&dev_name),
+        "10.144.252.1/24",
+        true,
+    ));
+    let mut tun_inst = Instance::new(shared_tun_test_config(
+        "shared_tun_enabled",
+        "shared_tun_enabled_network",
+        "shared_tun_enabled_secret",
+        None,
+        Some(&dev_name),
+        "10.144.253.1/24",
+        false,
+    ));
+    let mut tun_peer = Instance::new(shared_tun_test_config(
+        "shared_tun_enabled_peer",
+        "shared_tun_enabled_network",
+        "shared_tun_enabled_secret",
+        Some(&ns),
+        None,
+        "10.144.253.2/24",
+        false,
+    ));
+    let mut tun_events = tun_inst.get_global_ctx().subscribe();
+
+    no_tun_inst.run().await.unwrap();
+    tun_inst.run().await.unwrap();
+    let ifname = wait_tun_ready(&mut tun_events).await;
+    tun_peer.run().await.unwrap();
+
+    assert_eq!(ifname, dev_name);
+
+    tun_peer
+        .get_conn_manager()
+        .add_connector(RingTunnelConnector::new(
+            format!("ring://{}", tun_inst.id()).parse().unwrap(),
+        ));
+
+    wait_for_condition(
+        || async {
+            tun_inst.get_peer_manager().list_routes().await.len() == 1
+                && tun_peer.get_peer_manager().list_routes().await.len() == 1
+        },
+        Duration::from_secs(5),
+    )
+    .await;
+    wait_for_condition(
+        || async { ping_test(&ns, "10.144.253.1", None).await },
+        Duration::from_secs(5),
+    )
+    .await;
+
+    drop_insts(vec![no_tun_inst, tun_inst, tun_peer]).await;
+}
+
+#[cfg(feature = "tun")]
+#[tokio::test]
+#[serial_test::serial]
+pub async fn shared_tun_proxy_cidr_reaches_member_network() {
+    prepare_linux_namespaces();
+
+    let dev_name = shared_tun_test_dev_name();
+    let center_cfg = get_inst_config(
+        "shared_proxy_center",
+        Some("net_a"),
+        "10.144.254.1",
+        "fd00:254::1/64",
+    );
+    center_cfg.set_ipv6(None);
+    center_cfg.set_listeners(vec![]);
+    center_cfg.set_socks5_portal(None);
+    let mut center = Instance::new(center_cfg);
+
+    let shared_cfg_1 = get_inst_config(
+        "shared_proxy_first",
+        Some("net_c"),
+        "10.144.254.2",
+        "fd00:254::2/64",
+    );
+    shared_cfg_1.set_ipv6(None);
+    shared_cfg_1.set_listeners(vec![]);
+    shared_cfg_1.set_socks5_portal(None);
+    shared_cfg_1
+        .add_proxy_cidr("10.1.2.0/24".parse().unwrap(), None)
+        .unwrap();
+    let mut shared_flags = shared_cfg_1.get_flags();
+    shared_flags.dev_name = dev_name.clone();
+    shared_cfg_1.set_flags(shared_flags.clone());
+    let mut shared_1 = Instance::new(shared_cfg_1);
+
+    let shared_cfg_2 = get_inst_config(
+        "shared_proxy_second",
+        Some("net_c"),
+        "10.144.254.3",
+        "fd00:254::3/64",
+    );
+    shared_cfg_2.set_ipv6(None);
+    shared_cfg_2.set_listeners(vec![]);
+    shared_cfg_2.set_socks5_portal(None);
+    shared_cfg_2.set_flags(shared_flags);
+    let mut shared_2 = Instance::new(shared_cfg_2);
+
+    let remote_cfg = get_inst_config(
+        "shared_proxy_remote",
+        Some("net_b"),
+        "10.144.254.4",
+        "fd00:254::4/64",
+    );
+    remote_cfg.set_ipv6(None);
+    remote_cfg.set_listeners(vec![]);
+    remote_cfg.set_socks5_portal(None);
+    let mut remote = Instance::new(remote_cfg);
+
+    let mut shared_1_events = shared_1.get_global_ctx().subscribe();
+    let mut shared_2_events = shared_2.get_global_ctx().subscribe();
+
+    center.run().await.unwrap();
+    shared_1.run().await.unwrap();
+    shared_2.run().await.unwrap();
+    remote.run().await.unwrap();
+
+    let shared_1_ifname = wait_tun_ready(&mut shared_1_events).await;
+    let shared_2_ifname = wait_tun_ready(&mut shared_2_events).await;
+    assert_eq!(shared_1_ifname, dev_name);
+    assert_eq!(shared_2_ifname, dev_name);
+
+    shared_1
+        .get_conn_manager()
+        .add_connector(RingTunnelConnector::new(
+            format!("ring://{}", center.id()).parse().unwrap(),
+        ));
+    shared_2
+        .get_conn_manager()
+        .add_connector(RingTunnelConnector::new(
+            format!("ring://{}", center.id()).parse().unwrap(),
+        ));
+    remote
+        .get_conn_manager()
+        .add_connector(RingTunnelConnector::new(
+            format!("ring://{}", center.id()).parse().unwrap(),
+        ));
+
+    wait_for_condition(
+        || async {
+            center.get_peer_manager().list_routes().await.len() == 3
+                && shared_1.get_peer_manager().list_routes().await.len() == 3
+                && shared_2.get_peer_manager().list_routes().await.len() == 3
+                && remote.get_peer_manager().list_routes().await.len() == 3
+        },
+        Duration::from_secs(8),
+    )
+    .await;
+
+    wait_proxy_route_appear(
+        &center.get_peer_manager(),
+        "10.144.254.2/24",
+        shared_1.peer_id(),
+        "10.1.2.0/24",
+    )
+    .await;
+    wait_proxy_route_appear(
+        &remote.get_peer_manager(),
+        "10.144.254.2/24",
+        shared_1.peer_id(),
+        "10.1.2.0/24",
+    )
+    .await;
+
+    wait_for_condition(
+        || async { ping_test("net_a", "10.1.2.4", None).await },
+        Duration::from_secs(8),
+    )
+    .await;
+    wait_for_condition(
+        || async { ping_test("net_b", "10.1.2.4", None).await },
+        Duration::from_secs(8),
+    )
+    .await;
+
+    drop_insts(vec![center, shared_1, shared_2, remote]).await;
+}
+
 mod direct_connector_mapped_listener_tests {
     use std::sync::Arc;
 
@@ -922,6 +1272,123 @@ pub async fn public_ipv6_auto_addr_reconnect_reuses_same_address() {
     .await;
 
     drop_insts(vec![provider, client]).await;
+}
+
+#[cfg(feature = "tun")]
+#[tokio::test]
+#[serial_test::serial]
+pub async fn shared_tun_public_ipv6_auto_addr_end_to_end() {
+    let lab = PublicIpv6Lab::setup();
+    let provider_dev = shared_tun_test_dev_name();
+    let client_dev = shared_tun_test_dev_name();
+
+    let provider_cfg = get_public_ipv6_config(
+        "provider_shared_public_ipv6",
+        PublicIpv6Lab::PROVIDER_NS,
+        "10.144.144.1",
+        &provider_dev,
+        uuid::Uuid::parse_str("44444444-4444-4444-4444-444444444444").unwrap(),
+    );
+    provider_cfg.set_ipv6_public_addr_provider(true);
+
+    let client_cfg = get_public_ipv6_config(
+        "client_shared_public_ipv6",
+        PublicIpv6Lab::CLIENT_NS,
+        "10.144.144.2",
+        &client_dev,
+        uuid::Uuid::parse_str("55555555-5555-5555-5555-555555555555").unwrap(),
+    );
+    client_cfg.set_ipv6_public_addr_auto(true);
+
+    let client_peer_cfg = get_public_ipv6_config(
+        "client_shared_public_ipv6_peer",
+        PublicIpv6Lab::CLIENT_NS,
+        "10.144.144.3",
+        &client_dev,
+        uuid::Uuid::parse_str("66666666-6666-6666-6666-666666666666").unwrap(),
+    );
+    client_peer_cfg.set_listeners(vec![]);
+
+    let mut provider = Instance::new(provider_cfg);
+    let mut client = Instance::new(client_cfg);
+    let mut client_peer = Instance::new(client_peer_cfg);
+    let mut client_events = client.get_global_ctx().subscribe();
+    let mut client_peer_events = client_peer.get_global_ctx().subscribe();
+
+    provider.run().await.unwrap();
+    client.run().await.unwrap();
+    client_peer.run().await.unwrap();
+
+    let shared_ifname = wait_tun_ready(&mut client_events).await;
+    assert_eq!(shared_ifname, wait_tun_ready(&mut client_peer_events).await);
+    assert_eq!(shared_ifname, client_dev);
+
+    provider
+        .get_conn_manager()
+        .add_connector(TcpTunnelConnector::new(
+            "tcp://10.1.1.2:11010".parse().unwrap(),
+        ));
+
+    wait_for_condition(
+        || async {
+            provider.get_peer_manager().list_routes().await.len() == 1
+                && client.get_peer_manager().list_routes().await.len() == 1
+        },
+        Duration::from_secs(8),
+    )
+    .await;
+
+    wait_for_condition(
+        || async {
+            provider
+                .get_global_ctx()
+                .get_advertised_ipv6_public_addr_prefix()
+                == Some(PublicIpv6Lab::PROVIDER_PREFIX.parse().unwrap())
+        },
+        Duration::from_secs(10),
+    )
+    .await;
+
+    let leased = wait_for_public_ipv6_addr(&client).await;
+    wait_for_public_ipv6_route(&provider, leased).await;
+
+    wait_for_condition(
+        || async {
+            addr_exists_in_ns(PublicIpv6Lab::CLIENT_NS, &client_dev, &leased.to_string())
+                && route_exists_in_ns(
+                    PublicIpv6Lab::CLIENT_NS,
+                    &format!("default dev {client_dev}"),
+                )
+                && route_exists_in_ns(
+                    PublicIpv6Lab::PROVIDER_NS,
+                    &format!("{} dev {provider_dev}", leased.address()),
+                )
+        },
+        Duration::from_secs(10),
+    )
+    .await;
+
+    wait_for_condition(
+        || async { ping6_test(PublicIpv6Lab::CLIENT_NS, PublicIpv6Lab::SERVER_IP, None).await },
+        Duration::from_secs(10),
+    )
+    .await;
+
+    wait_for_condition(
+        || async {
+            ping6_test(
+                PublicIpv6Lab::SERVER_NS,
+                leased.address().to_string().as_str(),
+                None,
+            )
+            .await
+        },
+        Duration::from_secs(10),
+    )
+    .await;
+
+    drop_insts(vec![provider, client, client_peer]).await;
+    drop(lab);
 }
 
 #[rstest::rstest]

@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, HashMap, VecDeque},
+    collections::{BTreeMap, BTreeSet, HashMap, VecDeque},
     pin::Pin,
     sync::{
         Arc, Mutex as StdMutex,
@@ -7,6 +7,7 @@ use std::{
     },
 };
 
+use cidr::{Ipv4Inet, Ipv6Inet};
 use futures::{SinkExt, StreamExt};
 use tokio::sync::{Notify, mpsc, oneshot};
 use tokio_util::task::AbortOnDropHandle;
@@ -39,6 +40,11 @@ enum SharedVirtualNicControl {
     },
     Unregister {
         member_id: SharedVirtualNicMemberId,
+    },
+    UpdateSources {
+        member_id: SharedVirtualNicMemberId,
+        sources: BTreeSet<SharedVirtualNicFlowAddr>,
+        ack: oneshot::Sender<()>,
     },
 }
 
@@ -168,7 +174,7 @@ impl SharedVirtualNicMemberTunnelTable {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 enum SharedVirtualNicFlowAddr {
     V4(u32),
     V6([u8; 16]),
@@ -302,6 +308,7 @@ impl SharedVirtualNicFlowTable {
 
 pub(super) struct SharedVirtualNicDispatcher {
     _task: AbortOnDropHandle<()>,
+    control_sender: mpsc::UnboundedSender<SharedVirtualNicControl>,
 }
 
 impl SharedVirtualNicDispatcher {
@@ -313,7 +320,7 @@ impl SharedVirtualNicDispatcher {
         let (tun_stream, tun_sink) = tunnel.split();
         let (to_tun_sender, to_tun_receiver) = mpsc::channel(MEMBER_TUNNEL_BUFFER_SIZE);
         let (control_sender, control_receiver) = mpsc::unbounded_channel();
-        member_tunnel_table.attach_dispatcher(to_tun_sender, control_sender);
+        member_tunnel_table.attach_dispatcher(to_tun_sender, control_sender.clone());
 
         let task = SharedVirtualNicDispatcherTask {
             tun_stream,
@@ -327,7 +334,42 @@ impl SharedVirtualNicDispatcher {
 
         Self {
             _task: AbortOnDropHandle::new(tokio::spawn(task.run())),
+            control_sender,
         }
+    }
+
+    pub(super) async fn update_sources(
+        &self,
+        member_id: SharedVirtualNicMemberId,
+        ipv4_addresses: &BTreeSet<Ipv4Inet>,
+        ipv6_addresses: &BTreeSet<Ipv6Inet>,
+    ) -> Result<(), Error> {
+        let (ack, rx) = oneshot::channel();
+        self.control_sender
+            .send(SharedVirtualNicControl::UpdateSources {
+                member_id,
+                sources: sources_from_addresses(ipv4_addresses, ipv6_addresses),
+                ack,
+            })
+            .map_err(|_| anyhow::anyhow!("shared virtual nic dispatcher is not running"))?;
+        rx.await
+            .map_err(|_| anyhow::anyhow!("shared virtual nic dispatcher is not running").into())
+    }
+
+    pub(super) async fn remove_sources(
+        &self,
+        member_id: SharedVirtualNicMemberId,
+    ) -> Result<(), Error> {
+        let (ack, rx) = oneshot::channel();
+        self.control_sender
+            .send(SharedVirtualNicControl::UpdateSources {
+                member_id,
+                sources: BTreeSet::new(),
+                ack,
+            })
+            .map_err(|_| anyhow::anyhow!("shared virtual nic dispatcher is not running"))?;
+        rx.await
+            .map_err(|_| anyhow::anyhow!("shared virtual nic dispatcher is not running").into())
     }
 }
 
@@ -398,6 +440,7 @@ impl SharedVirtualNicDispatcherTask {
 struct SharedVirtualNicDispatcherState {
     members: BTreeMap<SharedVirtualNicMemberId, SharedVirtualNicMemberTunnelEntry>,
     flow_table: SharedVirtualNicFlowTable,
+    source_table: SharedVirtualNicSourceTable,
 }
 
 impl SharedVirtualNicDispatcherState {
@@ -408,6 +451,14 @@ impl SharedVirtualNicDispatcherState {
             }
             SharedVirtualNicControl::Unregister { member_id } => {
                 self.unregister(member_id);
+            }
+            SharedVirtualNicControl::UpdateSources {
+                member_id,
+                sources,
+                ack,
+            } => {
+                self.source_table.update_member_sources(member_id, sources);
+                let _ = ack.send(());
             }
         }
     }
@@ -430,6 +481,7 @@ impl SharedVirtualNicDispatcherState {
     fn close_all(&mut self) {
         let members = std::mem::take(&mut self.members);
         self.flow_table.clear();
+        self.source_table.clear();
 
         for entry in members.into_values() {
             entry.close_notifier.notify_one();
@@ -441,25 +493,29 @@ impl SharedVirtualNicDispatcherState {
     }
 
     async fn forward_tun_packet_to_member(&mut self, packet: ZCPacket) {
-        let member_id = self.flow_table.owner_of(&packet);
-        if !self.send_packet(member_id, packet).await {
+        if !self.send_packet(packet).await {
             tracing::trace!("shared virtual nic dropped packet without active member");
         }
     }
 
-    async fn send_packet(
-        &mut self,
-        preferred_member_id: Option<SharedVirtualNicMemberId>,
-        packet: ZCPacket,
-    ) -> bool {
+    async fn send_packet(&mut self, packet: ZCPacket) -> bool {
         let mut packet = packet;
-        if let Some(member_id) = preferred_member_id {
+
+        if let Some(member_id) = self.flow_table.owner_of(&packet) {
             match self.send_packet_to_member(member_id, packet).await {
                 Ok(()) => return true,
                 Err(packet_on_failure) => {
                     packet = packet_on_failure;
                 }
             }
+        }
+
+        match self.source_table.owner_of_source(&packet, &self.members) {
+            SourceOwner::Active(member_id) => {
+                return self.send_packet_to_member(member_id, packet).await.is_ok();
+            }
+            SourceOwner::Inactive => return false,
+            SourceOwner::None => {}
         }
 
         let Some(member_id) = self.members.keys().next().copied() else {
@@ -492,6 +548,108 @@ impl SharedVirtualNicDispatcherState {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SourceOwner {
+    Active(SharedVirtualNicMemberId),
+    Inactive,
+    None,
+}
+
+#[derive(Default)]
+struct SharedVirtualNicSourceTable {
+    member_sources: BTreeMap<SharedVirtualNicMemberId, BTreeSet<SharedVirtualNicFlowAddr>>,
+    source_owners: BTreeMap<SharedVirtualNicFlowAddr, BTreeSet<SharedVirtualNicMemberId>>,
+}
+
+impl SharedVirtualNicSourceTable {
+    fn update_member_sources(
+        &mut self,
+        member_id: SharedVirtualNicMemberId,
+        sources: BTreeSet<SharedVirtualNicFlowAddr>,
+    ) {
+        let old_sources = self.member_sources.remove(&member_id).unwrap_or_default();
+
+        for source in old_sources.difference(&sources) {
+            self.remove_source_owner(*source, member_id);
+        }
+        for source in sources.difference(&old_sources) {
+            self.source_owners
+                .entry(*source)
+                .or_default()
+                .insert(member_id);
+        }
+
+        if !sources.is_empty() {
+            self.member_sources.insert(member_id, sources);
+        }
+    }
+
+    fn remove_owner(&mut self, member_id: SharedVirtualNicMemberId) {
+        let Some(sources) = self.member_sources.remove(&member_id) else {
+            return;
+        };
+
+        for source in sources {
+            self.remove_source_owner(source, member_id);
+        }
+    }
+
+    fn clear(&mut self) {
+        self.member_sources.clear();
+        self.source_owners.clear();
+    }
+
+    fn owner_of_source(
+        &self,
+        packet: &ZCPacket,
+        active_members: &BTreeMap<SharedVirtualNicMemberId, SharedVirtualNicMemberTunnelEntry>,
+    ) -> SourceOwner {
+        let Some(source) = SharedVirtualNicFlowKey::from_packet(packet).map(|key| key.src) else {
+            return SourceOwner::None;
+        };
+        let Some(owners) = self.source_owners.get(&source) else {
+            return SourceOwner::None;
+        };
+
+        owners
+            .iter()
+            .find(|member_id| active_members.contains_key(member_id))
+            .copied()
+            .map(SourceOwner::Active)
+            .unwrap_or(SourceOwner::Inactive)
+    }
+
+    fn remove_source_owner(
+        &mut self,
+        source: SharedVirtualNicFlowAddr,
+        member_id: SharedVirtualNicMemberId,
+    ) {
+        let Some(owners) = self.source_owners.get_mut(&source) else {
+            return;
+        };
+
+        owners.remove(&member_id);
+        if owners.is_empty() {
+            self.source_owners.remove(&source);
+        }
+    }
+}
+
+fn sources_from_addresses(
+    ipv4_addresses: &BTreeSet<Ipv4Inet>,
+    ipv6_addresses: &BTreeSet<Ipv6Inet>,
+) -> BTreeSet<SharedVirtualNicFlowAddr> {
+    ipv4_addresses
+        .iter()
+        .map(|addr| SharedVirtualNicFlowAddr::V4(u32::from_be_bytes(addr.address().octets())))
+        .chain(
+            ipv6_addresses
+                .iter()
+                .map(|addr| SharedVirtualNicFlowAddr::V6(addr.address().octets())),
+        )
+        .collect()
+}
+
 fn transport_ports(protocol: u8, payload: &[u8]) -> Option<SharedVirtualNicTransportPorts> {
     let min_len = match protocol {
         TCP_PROTOCOL => TCP_HEADER_MIN_LEN,
@@ -513,4 +671,111 @@ fn read_ipv6_addr(payload: &[u8], start: usize) -> [u8; 16] {
     let mut addr = [0; 16];
     addr.copy_from_slice(&payload[start..start + 16]);
     addr
+}
+
+#[cfg(test)]
+mod tests {
+    use std::net::Ipv6Addr;
+
+    use super::*;
+
+    fn ipv6_packet(src: Ipv6Addr, dst: Ipv6Addr) -> ZCPacket {
+        let mut payload = vec![0; IPV6_HEADER_LEN];
+        payload[0] = 0x60;
+        payload[6] = 58;
+        payload[8..24].copy_from_slice(&src.octets());
+        payload[24..40].copy_from_slice(&dst.octets());
+        ZCPacket::new_with_payload(&payload)
+    }
+
+    fn member_entry(sender: mpsc::Sender<ZCPacket>) -> SharedVirtualNicMemberTunnelEntry {
+        SharedVirtualNicMemberTunnelEntry {
+            sender,
+            close_notifier: Arc::new(Notify::new()),
+            _tasks: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn source_table_selects_ipv6_source_owner() {
+        let first = uuid::Uuid::from_u128(1);
+        let second = uuid::Uuid::from_u128(2);
+        let first_addr = "2001:db8::1".parse::<Ipv6Addr>().unwrap();
+        let second_addr = "2001:db8::2".parse::<Ipv6Addr>().unwrap();
+        let dst = "2001:db8:ffff::1".parse::<Ipv6Addr>().unwrap();
+        let mut table = SharedVirtualNicSourceTable::default();
+        let (first_sender, _first_receiver) = mpsc::channel(1);
+        let (second_sender, _second_receiver) = mpsc::channel(1);
+        let mut members = BTreeMap::new();
+        members.insert(first, member_entry(first_sender));
+        members.insert(second, member_entry(second_sender));
+
+        table.update_member_sources(
+            first,
+            BTreeSet::from([SharedVirtualNicFlowAddr::V6(first_addr.octets())]),
+        );
+        table.update_member_sources(
+            second,
+            BTreeSet::from([SharedVirtualNicFlowAddr::V6(second_addr.octets())]),
+        );
+
+        assert_eq!(
+            table.owner_of_source(&ipv6_packet(second_addr, dst), &members),
+            SourceOwner::Active(second)
+        );
+
+        table.remove_owner(second);
+        assert_eq!(
+            table.owner_of_source(&ipv6_packet(second_addr, dst), &members),
+            SourceOwner::None
+        );
+    }
+
+    #[tokio::test]
+    async fn dispatcher_prefers_source_owner_over_fallback_member() {
+        let fallback = uuid::Uuid::from_u128(1);
+        let owner = uuid::Uuid::from_u128(2);
+        let source = "2001:db8::2".parse::<Ipv6Addr>().unwrap();
+        let dst = "2001:db8:ffff::1".parse::<Ipv6Addr>().unwrap();
+        let (fallback_sender, mut fallback_receiver) = mpsc::channel(1);
+        let (owner_sender, mut owner_receiver) = mpsc::channel(1);
+        let mut state = SharedVirtualNicDispatcherState::default();
+
+        state.register(fallback, member_entry(fallback_sender));
+        state.register(owner, member_entry(owner_sender));
+        state.source_table.update_member_sources(
+            owner,
+            BTreeSet::from([SharedVirtualNicFlowAddr::V6(source.octets())]),
+        );
+        state
+            .forward_tun_packet_to_member(ipv6_packet(source, dst))
+            .await;
+
+        assert!(fallback_receiver.try_recv().is_err());
+        assert!(owner_receiver.try_recv().is_ok());
+    }
+
+    #[tokio::test]
+    async fn dispatcher_drops_inactive_source_owner_without_fallback() {
+        let fallback = uuid::Uuid::from_u128(1);
+        let owner = uuid::Uuid::from_u128(2);
+        let source = "2001:db8::2".parse::<Ipv6Addr>().unwrap();
+        let dst = "2001:db8:ffff::1".parse::<Ipv6Addr>().unwrap();
+        let (fallback_sender, mut fallback_receiver) = mpsc::channel(1);
+        let (owner_sender, _owner_receiver) = mpsc::channel(1);
+        let mut state = SharedVirtualNicDispatcherState::default();
+
+        state.register(fallback, member_entry(fallback_sender));
+        state.register(owner, member_entry(owner_sender));
+        state.source_table.update_member_sources(
+            owner,
+            BTreeSet::from([SharedVirtualNicFlowAddr::V6(source.octets())]),
+        );
+        state.unregister(owner);
+        state
+            .forward_tun_packet_to_member(ipv6_packet(source, dst))
+            .await;
+
+        assert!(fallback_receiver.try_recv().is_err());
+    }
 }
