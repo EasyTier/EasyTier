@@ -1,6 +1,5 @@
 use std::{
-    collections::BTreeMap,
-    net::IpAddr,
+    collections::{BTreeMap, HashMap},
     pin::Pin,
     sync::{
         Arc, Mutex as StdMutex,
@@ -9,9 +8,6 @@ use std::{
 };
 
 use futures::{SinkExt, StreamExt};
-use pnet::packet::{
-    Packet as _, ipv4::Ipv4Packet, ipv6::Ipv6Packet, tcp::TcpPacket, udp::UdpPacket,
-};
 use tokio::sync::{Notify, mpsc, oneshot};
 use tokio_util::task::AbortOnDropHandle;
 
@@ -24,6 +20,12 @@ use super::SharedVirtualNicMemberId;
 
 const MEMBER_TUNNEL_BUFFER_SIZE: usize = 1024;
 const FLOW_OWNER_LIMIT: usize = 4096;
+const IPV4_HEADER_MIN_LEN: usize = 20;
+const IPV6_HEADER_LEN: usize = 40;
+const TCP_HEADER_MIN_LEN: usize = 20;
+const UDP_HEADER_LEN: usize = 8;
+const TCP_PROTOCOL: u8 = 6;
+const UDP_PROTOCOL: u8 = 17;
 
 struct SharedVirtualNicMemberPacket {
     member_id: SharedVirtualNicMemberId,
@@ -166,13 +168,33 @@ impl SharedVirtualNicMemberTunnelTable {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+enum SharedVirtualNicFlowAddr {
+    V4(u32),
+    V6([u8; 16]),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+struct SharedVirtualNicTransportPorts {
+    src: u16,
+    dst: u16,
+}
+
+impl SharedVirtualNicTransportPorts {
+    fn reversed(self) -> Self {
+        Self {
+            src: self.dst,
+            dst: self.src,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 struct SharedVirtualNicFlowKey {
-    src: IpAddr,
-    dst: IpAddr,
+    src: SharedVirtualNicFlowAddr,
+    dst: SharedVirtualNicFlowAddr,
     protocol: u8,
-    src_port: Option<u16>,
-    dst_port: Option<u16>,
+    ports: Option<SharedVirtualNicTransportPorts>,
 }
 
 impl SharedVirtualNicFlowKey {
@@ -180,33 +202,44 @@ impl SharedVirtualNicFlowKey {
         let payload = packet.payload();
         let version = payload.first()? >> 4;
         match version {
-            4 => Self::from_ipv4_packet(Ipv4Packet::new(payload)?),
-            6 => Self::from_ipv6_packet(Ipv6Packet::new(payload)?),
+            4 => Self::from_ipv4_payload(payload),
+            6 => Self::from_ipv6_payload(payload),
             _ => None,
         }
     }
 
-    fn from_ipv4_packet(packet: Ipv4Packet<'_>) -> Option<Self> {
-        let protocol = packet.get_next_level_protocol().0;
-        let (src_port, dst_port) = transport_ports(protocol, packet.payload());
+    fn from_ipv4_payload(payload: &[u8]) -> Option<Self> {
+        if payload.len() < IPV4_HEADER_MIN_LEN {
+            return None;
+        }
+
+        let header_len = usize::from(payload[0] & 0x0f) * 4;
+        if header_len < IPV4_HEADER_MIN_LEN || payload.len() < header_len {
+            return None;
+        }
+
+        let protocol = payload[9];
+        let src = u32::from_be_bytes([payload[12], payload[13], payload[14], payload[15]]);
+        let dst = u32::from_be_bytes([payload[16], payload[17], payload[18], payload[19]]);
         Some(Self {
-            src: IpAddr::V4(packet.get_source()),
-            dst: IpAddr::V4(packet.get_destination()),
+            src: SharedVirtualNicFlowAddr::V4(src),
+            dst: SharedVirtualNicFlowAddr::V4(dst),
             protocol,
-            src_port,
-            dst_port,
+            ports: transport_ports(protocol, &payload[header_len..]),
         })
     }
 
-    fn from_ipv6_packet(packet: Ipv6Packet<'_>) -> Option<Self> {
-        let protocol = packet.get_next_header().0;
-        let (src_port, dst_port) = transport_ports(protocol, packet.payload());
+    fn from_ipv6_payload(payload: &[u8]) -> Option<Self> {
+        if payload.len() < IPV6_HEADER_LEN {
+            return None;
+        }
+
+        let protocol = payload[6];
         Some(Self {
-            src: IpAddr::V6(packet.get_source()),
-            dst: IpAddr::V6(packet.get_destination()),
+            src: SharedVirtualNicFlowAddr::V6(read_ipv6_addr(payload, 8)),
+            dst: SharedVirtualNicFlowAddr::V6(read_ipv6_addr(payload, 24)),
             protocol,
-            src_port,
-            dst_port,
+            ports: transport_ports(protocol, &payload[IPV6_HEADER_LEN..]),
         })
     }
 
@@ -215,15 +248,14 @@ impl SharedVirtualNicFlowKey {
             src: self.dst,
             dst: self.src,
             protocol: self.protocol,
-            src_port: self.dst_port,
-            dst_port: self.src_port,
+            ports: self.ports.map(|ports| ports.reversed()),
         }
     }
 }
 
 #[derive(Default)]
 struct SharedVirtualNicFlowTable {
-    owners: BTreeMap<SharedVirtualNicFlowKey, SharedVirtualNicMemberId>,
+    owners: HashMap<SharedVirtualNicFlowKey, SharedVirtualNicMemberId>,
 }
 
 impl SharedVirtualNicFlowTable {
@@ -234,9 +266,7 @@ impl SharedVirtualNicFlowTable {
         };
 
         if !self.owners.contains_key(&key) && self.owners.len() >= FLOW_OWNER_LIMIT {
-            if let Some(oldest_key) = self.owners.keys().next().cloned() {
-                self.owners.remove(&oldest_key);
-            }
+            self.owners.clear();
         }
         self.owners.insert(key, member_id);
     }
@@ -248,6 +278,10 @@ impl SharedVirtualNicFlowTable {
 
     fn remove_owner(&mut self, member_id: SharedVirtualNicMemberId) {
         self.owners.retain(|_, owner| *owner != member_id);
+    }
+
+    fn clear(&mut self) {
+        self.owners.clear();
     }
 }
 
@@ -380,7 +414,7 @@ impl SharedVirtualNicDispatcherState {
 
     fn close_all(&mut self) {
         let members = std::mem::take(&mut self.members);
-        self.flow_table.owners.clear();
+        self.flow_table.clear();
 
         for entry in members.into_values() {
             entry.close_notifier.notify_one();
@@ -443,14 +477,25 @@ impl SharedVirtualNicDispatcherState {
     }
 }
 
-fn transport_ports(protocol: u8, payload: &[u8]) -> (Option<u16>, Option<u16>) {
-    match protocol {
-        6 => TcpPacket::new(payload)
-            .map(|packet| (Some(packet.get_source()), Some(packet.get_destination())))
-            .unwrap_or((None, None)),
-        17 => UdpPacket::new(payload)
-            .map(|packet| (Some(packet.get_source()), Some(packet.get_destination())))
-            .unwrap_or((None, None)),
-        _ => (None, None),
+fn transport_ports(protocol: u8, payload: &[u8]) -> Option<SharedVirtualNicTransportPorts> {
+    let min_len = match protocol {
+        TCP_PROTOCOL => TCP_HEADER_MIN_LEN,
+        UDP_PROTOCOL => UDP_HEADER_LEN,
+        _ => return None,
+    };
+
+    if payload.len() < min_len {
+        return None;
     }
+
+    Some(SharedVirtualNicTransportPorts {
+        src: u16::from_be_bytes([payload[0], payload[1]]),
+        dst: u16::from_be_bytes([payload[2], payload[3]]),
+    })
+}
+
+fn read_ipv6_addr(payload: &[u8], start: usize) -> [u8; 16] {
+    let mut addr = [0; 16];
+    addr.copy_from_slice(&payload[start..start + 16]);
+    addr
 }
