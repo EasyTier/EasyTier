@@ -13,6 +13,9 @@ use x25519_dalek::StaticSecret;
 
 use super::*;
 
+#[cfg(all(feature = "tun", feature = "magic-dns"))]
+use crate::instance::dns_server::{DEFAULT_ET_DNS_ZONE, MAGIC_DNS_FAKE_IP};
+
 // TODO: 需要加一个单测，确保 socks5 + exit node == self || proxy_cidr == 0.0.0.0/0 时，可以实现出口节点的能力。
 
 use crate::{
@@ -608,6 +611,146 @@ pub async fn shared_tun_proxy_cidr_reaches_member_network() {
     drop_insts(vec![center, shared_1, shared_2, remote]).await;
 }
 
+#[cfg(all(feature = "tun", feature = "magic-dns"))]
+#[tokio::test]
+#[serial_test::serial]
+pub async fn shared_tun_magic_dns_same_namespace_real_tun() {
+    prepare_linux_namespaces();
+
+    let dev_name = shared_tun_test_dev_name();
+    let network_name = "shared_tun_magic_dns_network";
+    let network_secret = "shared_tun_magic_dns_secret";
+
+    let center_cfg = shared_tun_test_config(
+        "shared_dns_center",
+        network_name,
+        network_secret,
+        Some("net_a"),
+        None,
+        "10.144.255.1/24",
+        false,
+    );
+    let mut center = Instance::new(center_cfg);
+
+    let shared_cfg_1 = shared_tun_test_config(
+        "shared_dns_first",
+        network_name,
+        network_secret,
+        Some("net_b"),
+        Some(&dev_name),
+        "10.144.255.2/24",
+        false,
+    );
+    shared_cfg_1.set_hostname(Some("shared-dns-1".to_string()));
+    let mut shared_flags = shared_cfg_1.get_flags();
+    shared_flags.accept_dns = true;
+    shared_cfg_1.set_flags(shared_flags.clone());
+    let mut shared_1 = Instance::new(shared_cfg_1);
+
+    let shared_cfg_2 = shared_tun_test_config(
+        "shared_dns_second",
+        network_name,
+        network_secret,
+        Some("net_b"),
+        Some(&dev_name),
+        "10.144.255.3/24",
+        false,
+    );
+    shared_cfg_2.set_hostname(Some("shared-dns-2".to_string()));
+    shared_cfg_2.set_flags(shared_flags);
+    let mut shared_2 = Instance::new(shared_cfg_2);
+
+    let remote_cfg = shared_tun_test_config(
+        "shared_dns_remote",
+        network_name,
+        network_secret,
+        Some("net_c"),
+        None,
+        "10.144.255.4/24",
+        false,
+    );
+    remote_cfg.set_hostname(Some("shared-dns-remote".to_string()));
+    let mut remote = Instance::new(remote_cfg);
+
+    let mut shared_1_events = shared_1.get_global_ctx().subscribe();
+    let mut shared_2_events = shared_2.get_global_ctx().subscribe();
+
+    center.run().await.unwrap();
+    shared_1.run().await.unwrap();
+    shared_2.run().await.unwrap();
+    remote.run().await.unwrap();
+
+    let shared_1_ifname = wait_tun_ready(&mut shared_1_events).await;
+    let shared_2_ifname = wait_tun_ready(&mut shared_2_events).await;
+    assert_eq!(shared_1_ifname, dev_name);
+    assert_eq!(shared_2_ifname, dev_name);
+
+    shared_1
+        .get_conn_manager()
+        .add_connector(RingTunnelConnector::new(
+            format!("ring://{}", center.id()).parse().unwrap(),
+        ));
+    shared_2
+        .get_conn_manager()
+        .add_connector(RingTunnelConnector::new(
+            format!("ring://{}", center.id()).parse().unwrap(),
+        ));
+    remote
+        .get_conn_manager()
+        .add_connector(RingTunnelConnector::new(
+            format!("ring://{}", center.id()).parse().unwrap(),
+        ));
+
+    wait_for_condition(
+        || async {
+            center.get_peer_manager().list_routes().await.len() == 3
+                && shared_1.get_peer_manager().list_routes().await.len() == 3
+                && shared_2.get_peer_manager().list_routes().await.len() == 3
+                && remote.get_peer_manager().list_routes().await.len() == 3
+        },
+        Duration::from_secs(8),
+    )
+    .await;
+
+    wait_for_condition(
+        || async { ping_test("net_c", "10.144.255.2", None).await },
+        Duration::from_secs(8),
+    )
+    .await;
+    wait_for_condition(
+        || async { ping_test("net_c", "10.144.255.3", None).await },
+        Duration::from_secs(8),
+    )
+    .await;
+    wait_for_condition(
+        || async { ping_test("net_b", "10.144.255.4", None).await },
+        Duration::from_secs(8),
+    )
+    .await;
+
+    wait_for_condition(
+        || async { magic_dns_record_matches("net_b", "shared-dns-1", "10.144.255.2").await },
+        Duration::from_secs(8),
+    )
+    .await;
+    wait_for_condition(
+        || async { magic_dns_record_matches("net_b", "shared-dns-2", "10.144.255.3").await },
+        Duration::from_secs(8),
+    )
+    .await;
+    wait_for_condition(
+        || async { magic_dns_record_matches("net_b", "shared-dns-remote", "10.144.255.4").await },
+        Duration::from_secs(8),
+    )
+    .await;
+
+    drop_insts(vec![center, shared_1, shared_2, remote]).await;
+    assert!(
+        !ipv4_route_exists_in_ns("net_b", &format!("{MAGIC_DNS_FAKE_IP} dev {dev_name}")),
+        "magic dns fake-ip route should be removed with the shared tun member"
+    );
+}
+
 mod direct_connector_mapped_listener_tests {
     use std::sync::Arc;
 
@@ -750,6 +893,35 @@ async fn ping6_test(from_netns: &str, target_ip: &str, payload_size: Option<usiz
         .await
         .unwrap();
     code.code().unwrap() == 0
+}
+
+#[cfg(all(feature = "tun", feature = "magic-dns"))]
+async fn magic_dns_record_matches(from_netns: &str, hostname: &str, expected_ip: &str) -> bool {
+    let _g = NetNS::new(Some(ROOT_NETNS_NAME.to_owned())).guard();
+    let server = format!("@{}", MAGIC_DNS_FAKE_IP);
+    let domain = format!("{}.{DEFAULT_ET_DNS_ZONE}", hostname);
+    let output = tokio::process::Command::new("ip")
+        .arg("netns")
+        .arg("exec")
+        .arg(from_netns)
+        .arg("dig")
+        .arg(server)
+        .arg(domain)
+        .arg("A")
+        .arg("+short")
+        .arg("+tries=1")
+        .arg("+time=1")
+        .output()
+        .await
+        .unwrap();
+
+    if !output.status.success() {
+        return false;
+    }
+
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .any(|line| line.trim() == expected_ip)
 }
 
 fn run_cmd(program: &str, args: &[&str]) {
@@ -1098,6 +1270,13 @@ async fn wait_for_public_ipv6_route(inst: &Instance, target: cidr::Ipv6Inet) {
 
 fn route_exists_in_ns(ns: &str, needle: &str) -> bool {
     run_ip_in_ns_output(ns, &["-6", "route", "show"])
+        .lines()
+        .any(|line| line.contains(needle))
+}
+
+#[cfg(all(feature = "tun", feature = "magic-dns"))]
+fn ipv4_route_exists_in_ns(ns: &str, needle: &str) -> bool {
+    run_ip_in_ns_output(ns, &["route", "show"])
         .lines()
         .any(|line| line.contains(needle))
 }

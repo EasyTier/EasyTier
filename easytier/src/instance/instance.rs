@@ -817,11 +817,12 @@ impl Instance {
             return None;
         }
 
-        let runner = DnsRunner::new(
+        let runner = DnsRunner::new_with_netns(
             peer_mgr,
             tun_dev,
             tun_ip,
             MAGIC_DNS_FAKE_IP.parse().unwrap(),
+            ctx.net_ns.name(),
         );
         Some(runner)
     }
@@ -1695,9 +1696,9 @@ impl Instance {
     }
 
     pub async fn clear_resources(&mut self) {
-        self.peer_manager.clear_resources().await;
         #[cfg(feature = "tun")]
-        let _ = self.nic_ctx.lock().await.take();
+        Self::clear_nic_ctx(self.nic_ctx.clone(), self.peer_packet_receiver.clone()).await;
+        self.peer_manager.clear_resources().await;
     }
 }
 
@@ -1707,9 +1708,11 @@ impl Drop for Instance {
         let pm = Arc::downgrade(&self.peer_manager);
         #[cfg(feature = "tun")]
         let nic_ctx = self.nic_ctx.clone();
+        #[cfg(feature = "tun")]
+        let peer_packet_receiver = self.peer_packet_receiver.clone();
         tokio::spawn(async move {
             #[cfg(feature = "tun")]
-            nic_ctx.lock().await.take();
+            Self::clear_nic_ctx(nic_ctx, peer_packet_receiver).await;
             if let Some(pm) = pm.upgrade() {
                 pm.clear_resources().await;
             };

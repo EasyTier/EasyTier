@@ -15,7 +15,9 @@ use super::{
 use crate::{
     common::{
         PeerId,
+        error::Error as EtError,
         ifcfg::{IfConfiger, IfConfiguerTrait},
+        netns::NetNS,
     },
     instance::dns_server::{
         config::{Record, RecordBuilder, RecordType},
@@ -61,6 +63,7 @@ static NIC_PIPELINE_NAME: &str = "magic_dns_server";
 pub(super) struct MagicDnsServerInstanceData {
     dns_server: Server,
     tun_dev: Option<String>,
+    netns: Option<String>,
     tun_ip: Ipv4Addr,
     fake_ip: Ipv4Addr,
     my_peer_id: PeerId,
@@ -510,11 +513,54 @@ fn get_system_config(
 }
 
 impl MagicDnsServerInstance {
+    async fn add_fake_ip_route(
+        tun_dev_name: &str,
+        fake_ip: Ipv4Addr,
+        netns: Option<String>,
+        cost: Option<i32>,
+    ) -> Result<(), anyhow::Error> {
+        let ifcfg = IfConfiger {};
+        let _guard = NetNS::new(netns).guard();
+        match ifcfg.add_ipv4_route(tun_dev_name, fake_ip, 32, cost).await {
+            Err(EtError::IOError(err)) if err.kind() == io::ErrorKind::AlreadyExists => {
+                ifcfg.remove_ipv4_route(tun_dev_name, fake_ip, 32).await?;
+                ifcfg
+                    .add_ipv4_route(tun_dev_name, fake_ip, 32, cost)
+                    .await?;
+                Ok(())
+            }
+            ret => ret.map_err(Into::into),
+        }
+    }
+
+    async fn remove_fake_ip_route(tun_dev_name: &str, fake_ip: Ipv4Addr, netns: Option<String>) {
+        let ifcfg = IfConfiger {};
+        let _guard = NetNS::new(netns).guard();
+        if let Err(err) = ifcfg.remove_ipv4_route(tun_dev_name, fake_ip, 32).await {
+            tracing::warn!(
+                ?err,
+                ?tun_dev_name,
+                ?fake_ip,
+                "remove magic dns route failed"
+            );
+        }
+    }
+
     pub async fn new(
         peer_mgr: Arc<PeerManager>,
         tun_dev: Option<String>,
         tun_inet: Ipv4Inet,
         fake_ip: Ipv4Addr,
+    ) -> Result<Self, anyhow::Error> {
+        Self::new_with_netns(peer_mgr, tun_dev, tun_inet, fake_ip, None).await
+    }
+
+    pub async fn new_with_netns(
+        peer_mgr: Arc<PeerManager>,
+        tun_dev: Option<String>,
+        tun_inet: Ipv4Inet,
+        fake_ip: Ipv4Addr,
+        netns: Option<String>,
     ) -> Result<Self, anyhow::Error> {
         let tcp_listener = TcpTunnelListener::new(MAGIC_DNS_INSTANCE_ADDR.parse()?);
         let mut rpc_server = StandAloneServer::new(tcp_listener);
@@ -535,15 +581,13 @@ impl MagicDnsServerInstance {
             } else {
                 None
             };
-            let ifcfg = IfConfiger {};
-            ifcfg
-                .add_ipv4_route(tun_dev_name, fake_ip, 32, cost)
-                .await?;
+            Self::add_fake_ip_route(tun_dev_name, fake_ip, netns.clone(), cost).await?;
         }
 
         let data = Arc::new(MagicDnsServerInstanceData {
             dns_server,
             tun_dev: tun_dev.clone(),
+            netns,
             tun_ip: tun_inet.address(),
             fake_ip,
             my_peer_id: peer_mgr.my_peer_id(),
@@ -586,14 +630,13 @@ impl MagicDnsServerInstance {
             if let Err(e) = ret {
                 tracing::error!("Failed to close system config: {:?}", e);
             }
-            if !self.tun_inet.contains(&self.data.fake_ip)
-                && let Some(tun_dev_name) = &self.data.tun_dev
-            {
-                let ifcfg = IfConfiger {};
-                let _ = ifcfg
-                    .remove_ipv4_route(tun_dev_name, self.data.fake_ip, 32)
-                    .await;
-            }
+        }
+
+        if !self.tun_inet.contains(&self.data.fake_ip)
+            && let Some(tun_dev_name) = &self.data.tun_dev
+        {
+            Self::remove_fake_ip_route(tun_dev_name, self.data.fake_ip, self.data.netns.clone())
+                .await;
         }
 
         let _ = self

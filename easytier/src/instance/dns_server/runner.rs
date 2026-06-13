@@ -13,6 +13,7 @@ pub struct DnsRunner {
     server: Option<MagicDnsServerInstance>,
     peer_mgr: Arc<PeerManager>,
     tun_dev: Option<String>,
+    netns: Option<String>,
     tun_inet: Ipv4Inet,
     fake_ip: Ipv4Addr,
 }
@@ -29,9 +30,22 @@ impl DnsRunner {
             server: None,
             peer_mgr,
             tun_dev,
+            netns: None,
             tun_inet,
             fake_ip,
         }
+    }
+
+    pub fn new_with_netns(
+        peer_mgr: Arc<PeerManager>,
+        tun_dev: Option<String>,
+        tun_inet: Ipv4Inet,
+        fake_ip: Ipv4Addr,
+        netns: Option<String>,
+    ) -> Self {
+        let mut runner = Self::new(peer_mgr, tun_dev, tun_inet, fake_ip);
+        runner.netns = netns;
+        runner
     }
 
     async fn clean_env(&mut self) {
@@ -43,11 +57,12 @@ impl DnsRunner {
 
     async fn run_once(&mut self) -> anyhow::Result<()> {
         // try server first
-        match MagicDnsServerInstance::new(
+        match MagicDnsServerInstance::new_with_netns(
             self.peer_mgr.clone(),
             self.tun_dev.clone(),
             self.tun_inet,
             self.fake_ip,
+            self.netns.clone(),
         )
         .await
         {
