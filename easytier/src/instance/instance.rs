@@ -1737,11 +1737,90 @@ impl Drop for Instance {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(feature = "tun")]
+    use std::sync::Arc;
+
+    #[cfg(feature = "tun")]
+    use tokio::sync::{Mutex, Notify};
+
     use crate::{
         common::global_ctx::tests::get_mock_global_ctx,
         instance::instance::{InstanceConfigPatcher, InstanceRpcServerHook},
         proto::{api::config::InstanceConfigPatch, rpc_impl::standalone::RpcServerHook},
     };
+    #[cfg(feature = "tun")]
+    use crate::{
+        instance::shared_virtual_nic::SharedVirtualNicRegistry,
+        peers::{
+            create_packet_recv_chan,
+            peer_manager::{PeerManager, RouteAlgoType},
+        },
+    };
+
+    #[cfg(feature = "tun")]
+    async fn new_test_nic_ctx(
+        dev_name: &str,
+        registry: super::ArcSharedVirtualNicRegistry,
+    ) -> super::NicCtx {
+        let global_ctx = get_mock_global_ctx();
+        set_dev_name(&global_ctx, dev_name);
+
+        let (packet_sender, packet_receiver) = create_packet_recv_chan();
+        let peer_manager = Arc::new(PeerManager::new(
+            RouteAlgoType::Ospf,
+            global_ctx.clone(),
+            packet_sender,
+        ));
+
+        super::Instance::new_nic_ctx(
+            global_ctx,
+            &peer_manager,
+            Arc::new(Mutex::new(packet_receiver)),
+            Arc::new(Notify::new()),
+            registry,
+        )
+        .await
+        .unwrap()
+    }
+
+    #[cfg(feature = "tun")]
+    fn set_dev_name(global_ctx: &crate::common::global_ctx::ArcGlobalCtx, dev_name: &str) {
+        let mut flags = global_ctx.get_flags();
+        flags.dev_name = dev_name.to_string();
+        global_ctx.set_flags(flags);
+    }
+
+    #[cfg(feature = "tun")]
+    #[tokio::test]
+    async fn new_nic_ctx_keeps_empty_dev_name_dedicated() {
+        let registry = Arc::new(Mutex::new(SharedVirtualNicRegistry::new()));
+
+        let nic_ctx = new_test_nic_ctx("", registry).await;
+
+        assert!(nic_ctx.is_dedicated_backend_for_test());
+        assert!(nic_ctx.shared_member_id_for_test().is_none());
+        assert!(nic_ctx.shared_nic_for_test().is_none());
+    }
+
+    #[cfg(feature = "tun")]
+    #[tokio::test]
+    async fn new_nic_ctx_shares_dev_name_with_fresh_members() {
+        let registry = Arc::new(Mutex::new(SharedVirtualNicRegistry::new()));
+
+        let first = new_test_nic_ctx("et-shared", registry.clone()).await;
+        let second = new_test_nic_ctx("et-shared", registry.clone()).await;
+
+        let first_member = first.shared_member_id_for_test().unwrap();
+        let second_member = second.shared_member_id_for_test().unwrap();
+        assert_ne!(first_member, second_member);
+
+        let first_shared_nic = first.shared_nic_for_test().unwrap();
+        let second_shared_nic = second.shared_nic_for_test().unwrap();
+        assert!(Arc::ptr_eq(&first_shared_nic, &second_shared_nic));
+
+        let registered_nic = registry.lock().await.get("et-shared").unwrap();
+        assert!(Arc::ptr_eq(&registered_nic, &first_shared_nic));
+    }
 
     #[tokio::test]
     async fn test_rpc_portal_whitelist() {

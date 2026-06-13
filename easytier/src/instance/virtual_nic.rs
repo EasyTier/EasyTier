@@ -44,6 +44,8 @@ use zerocopy::{NativeEndian, NetworkEndian};
 #[cfg(target_os = "windows")]
 use crate::common::ifcfg::RegistryManager;
 
+#[cfg(test)]
+use super::shared_virtual_nic::SharedVirtualNic;
 use super::shared_virtual_nic::{
     SharedVirtualNicMember, SharedVirtualNicMemberId, SharedVirtualNicRegistry,
 };
@@ -1001,6 +1003,27 @@ pub struct NicCtx {
 }
 
 impl NicCtx {
+    #[cfg(test)]
+    pub(crate) fn is_dedicated_backend_for_test(&self) -> bool {
+        matches!(self.backend, NicBackend::Dedicated(_))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn shared_member_id_for_test(&self) -> Option<SharedVirtualNicMemberId> {
+        match &self.backend {
+            NicBackend::Dedicated(_) => None,
+            NicBackend::Shared(member) => Some(member.member_id()),
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn shared_nic_for_test(&self) -> Option<Arc<Mutex<SharedVirtualNic>>> {
+        match &self.backend {
+            NicBackend::Dedicated(_) => None,
+            NicBackend::Shared(member) => Some(member.shared_nic()),
+        }
+    }
+
     fn virtual_nic_config_from_parts(
         dev_name: String,
         mut mtu: u32,
