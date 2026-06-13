@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, HashMap, VecDeque},
     pin::Pin,
     sync::{
         Arc, Mutex as StdMutex,
@@ -256,6 +256,7 @@ impl SharedVirtualNicFlowKey {
 #[derive(Default)]
 struct SharedVirtualNicFlowTable {
     owners: HashMap<SharedVirtualNicFlowKey, SharedVirtualNicMemberId>,
+    insert_order: VecDeque<SharedVirtualNicFlowKey>,
 }
 
 impl SharedVirtualNicFlowTable {
@@ -265,8 +266,9 @@ impl SharedVirtualNicFlowTable {
             return;
         };
 
-        if !self.owners.contains_key(&key) && self.owners.len() >= FLOW_OWNER_LIMIT {
-            self.owners.clear();
+        if !self.owners.contains_key(&key) {
+            self.evict_before_insert();
+            self.insert_order.push_back(key);
         }
         self.owners.insert(key, member_id);
     }
@@ -278,10 +280,23 @@ impl SharedVirtualNicFlowTable {
 
     fn remove_owner(&mut self, member_id: SharedVirtualNicMemberId) {
         self.owners.retain(|_, owner| *owner != member_id);
+        self.insert_order
+            .retain(|key| self.owners.contains_key(key));
     }
 
     fn clear(&mut self) {
         self.owners.clear();
+        self.insert_order.clear();
+    }
+
+    fn evict_before_insert(&mut self) {
+        while self.owners.len() >= FLOW_OWNER_LIMIT {
+            let Some(key) = self.insert_order.pop_front() else {
+                self.owners.clear();
+                return;
+            };
+            self.owners.remove(&key);
+        }
     }
 }
 
