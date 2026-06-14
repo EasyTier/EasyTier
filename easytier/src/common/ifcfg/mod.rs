@@ -140,6 +140,7 @@ async fn run_shell_cmd(cmd: &str) -> Result<(), Error> {
     Ok(())
 }
 
+#[derive(Default)]
 pub struct DummyIfConfiger {}
 #[async_trait]
 impl IfConfiguerTrait for DummyIfConfiger {}

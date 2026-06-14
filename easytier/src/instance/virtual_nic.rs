@@ -292,7 +292,7 @@ impl VirtualNic {
         Self {
             config,
             ifname: None,
-            ifcfg: Box::new(IfConfiger {}),
+            ifcfg: Box::new(IfConfiger::default()),
         }
     }
 
@@ -832,7 +832,7 @@ impl VirtualNic {
     }
 
     pub fn get_ifcfg(&self) -> IfConfiger {
-        IfConfiger {}
+        IfConfiger::default()
     }
 }
 
