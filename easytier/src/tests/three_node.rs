@@ -345,12 +345,11 @@ async fn wait_proxy_route_to_peer(
     wait_for_condition(
         || async {
             let routes = mgr.list_routes().await;
-            let route_found = routes.iter().any(|route| {
+            routes.iter().any(|route| {
                 route.peer_id == dst_peer_id
                     && route.ipv4_addr == Some(ipv4.parse().unwrap())
                     && route.proxy_cidrs.contains(&proxy_cidr)
-            });
-            route_found
+            })
         },
         Duration::from_secs(8),
     )

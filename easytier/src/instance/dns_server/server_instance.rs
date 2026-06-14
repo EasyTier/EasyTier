@@ -519,7 +519,7 @@ impl MagicDnsServerInstance {
         netns: Option<String>,
         cost: Option<i32>,
     ) -> Result<(), anyhow::Error> {
-        let ifcfg = IfConfiger {};
+        let ifcfg = IfConfiger::default();
         let _guard = NetNS::new(netns).guard();
         match ifcfg.add_ipv4_route(tun_dev_name, fake_ip, 32, cost).await {
             Err(EtError::IOError(err)) if err.kind() == io::ErrorKind::AlreadyExists => {
@@ -534,7 +534,7 @@ impl MagicDnsServerInstance {
     }
 
     async fn remove_fake_ip_route(tun_dev_name: &str, fake_ip: Ipv4Addr, netns: Option<String>) {
-        let ifcfg = IfConfiger {};
+        let ifcfg = IfConfiger::default();
         let _guard = NetNS::new(netns).guard();
         if let Err(err) = ifcfg.remove_ipv4_route(tun_dev_name, fake_ip, 32).await {
             tracing::warn!(

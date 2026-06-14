@@ -953,8 +953,9 @@ mod manager {
                 return Vec::new();
             };
 
-            let (first_id, Some(shared_dev_name)) = first else {
-                return vec![first.0];
+            let (first_id, shared_dev_name) = first;
+            let Some(shared_dev_name) = shared_dev_name else {
+                return vec![first_id];
             };
 
             let ids: Vec<uuid::Uuid> = self

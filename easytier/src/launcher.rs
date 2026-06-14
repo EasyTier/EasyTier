@@ -129,7 +129,7 @@ impl EasyTierLauncher {
                 let Some(tun_fd) = tun_fd_receiver.recv().await.flatten() else {
                     return;
                 };
-                let _ = Instance::setup_nic_ctx_for_mobile(
+                if let Err(err) = Instance::setup_nic_ctx_for_mobile(
                     nic_ctx.clone(),
                     global_ctx.clone(),
                     peer_mgr.clone(),
@@ -137,7 +137,10 @@ impl EasyTierLauncher {
                     shared_virtual_nic_registry.clone(),
                     tun_fd,
                 )
-                .await;
+                .await
+                {
+                    tracing::error!(?err, tun_fd, "setup mobile nic ctx failed");
+                }
             }
         });
     }

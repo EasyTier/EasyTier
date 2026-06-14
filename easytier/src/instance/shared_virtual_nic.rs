@@ -698,7 +698,7 @@ impl SharedVirtualNicMember {
     }
 
     pub fn member_id(&self) -> SharedVirtualNicMemberId {
-        self.member_id.clone()
+        self.member_id
     }
 
     pub fn shared_nic(&self) -> Arc<Mutex<SharedVirtualNic>> {
@@ -957,7 +957,7 @@ impl SharedVirtualNicRegistry {
         let needs_new_entry = self
             .nics
             .get(&dev_name)
-            .map_or(true, |entry| !entry.is_valid());
+            .is_none_or(|entry| !entry.is_valid());
         if needs_new_entry {
             let entry = SharedVirtualNicRegistryEntry::new(SharedVirtualNic::new(config));
             self.nics.insert(dev_name.clone(), entry);

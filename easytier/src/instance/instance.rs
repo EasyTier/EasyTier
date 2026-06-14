@@ -1737,18 +1737,16 @@ impl Instance {
             .with_context(|| "add ip failed")?;
 
         #[cfg(feature = "magic-dns")]
-        let magic_dns_runner = if let Some(ipv4) = global_ctx.get_ipv4() {
-            Self::create_magic_dns_runner(peer_manager.clone(), None, ipv4)
-        } else {
-            None
-        };
-        Self::use_new_nic_ctx(
-            nic_ctx.clone(),
-            new_nic_ctx,
-            #[cfg(feature = "magic-dns")]
-            magic_dns_runner,
-        )
-        .await;
+        {
+            let magic_dns_runner = if let Some(ipv4) = global_ctx.get_ipv4() {
+                Self::create_magic_dns_runner(peer_manager.clone(), None, ipv4)
+            } else {
+                None
+            };
+            Self::use_new_nic_ctx(nic_ctx.clone(), new_nic_ctx, magic_dns_runner).await;
+        }
+        #[cfg(not(feature = "magic-dns"))]
+        Self::use_new_nic_ctx(nic_ctx.clone(), new_nic_ctx).await;
         Ok(())
     }
 
