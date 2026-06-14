@@ -279,6 +279,42 @@ impl GlobalCtx {
         Self::apply_disable_relay_data_flag(flags, feature_flags)
     }
 
+    fn resolve_stun_servers(
+        config_fs: &impl ConfigLoader,
+    ) -> (Vec<String>, Vec<String>, Vec<String>) {
+        Self::resolve_stun_servers_with_defaults(
+            config_fs.get_stun_servers(),
+            config_fs.get_tcp_stun_servers(),
+            config_fs.get_stun_servers_v6(),
+            StunInfoCollector::get_default_servers(),
+            StunInfoCollector::get_default_tcp_servers(),
+            StunInfoCollector::get_default_servers_v6(),
+        )
+    }
+
+    fn resolve_stun_servers_with_defaults(
+        stun_servers: Option<Vec<String>>,
+        tcp_stun_servers: Option<Vec<String>>,
+        stun_servers_v6: Option<Vec<String>>,
+        default_stun_servers: Vec<String>,
+        default_tcp_stun_servers: Vec<String>,
+        default_stun_servers_v6: Vec<String>,
+    ) -> (Vec<String>, Vec<String>, Vec<String>) {
+        let resolved_stun_servers = stun_servers.clone().unwrap_or(default_stun_servers);
+        let resolved_tcp_stun_servers = tcp_stun_servers
+            .or_else(|| stun_servers.clone())
+            .unwrap_or(default_tcp_stun_servers);
+        let resolved_stun_servers_v6 = stun_servers_v6
+            .or_else(|| stun_servers.as_ref().map(|_| Vec::new()))
+            .unwrap_or(default_stun_servers_v6);
+
+        (
+            resolved_stun_servers,
+            resolved_tcp_stun_servers,
+            resolved_stun_servers_v6,
+        )
+    }
+
     pub fn new(config_fs: impl ConfigLoader + 'static) -> Self {
         let id = config_fs.get_id();
         let network = config_fs.get_network_identity();
@@ -287,28 +323,10 @@ impl GlobalCtx {
 
         let (event_bus, _) = tokio::sync::broadcast::channel(16);
 
-        let stun_info_collector = StunInfoCollector::new_with_default_servers();
-
-        let stun_servers = config_fs.get_stun_servers();
-
-        if let Some(stun_servers) = stun_servers.clone() {
-            stun_info_collector.set_stun_servers(stun_servers);
-        } else {
-            stun_info_collector.set_stun_servers(StunInfoCollector::get_default_servers());
-        }
-
-        stun_info_collector.set_tcp_stun_servers(
-            config_fs
-                .get_tcp_stun_servers()
-                .or(stun_servers)
-                .unwrap_or_else(StunInfoCollector::get_default_tcp_servers),
-        );
-
-        if let Some(stun_servers) = config_fs.get_stun_servers_v6() {
-            stun_info_collector.set_stun_servers_v6(stun_servers);
-        } else {
-            stun_info_collector.set_stun_servers_v6(StunInfoCollector::get_default_servers_v6());
-        }
+        let (stun_servers, tcp_stun_servers, stun_servers_v6) =
+            Self::resolve_stun_servers(&config_fs);
+        let stun_info_collector =
+            StunInfoCollector::new(stun_servers, tcp_stun_servers, stun_servers_v6);
 
         let stun_info_collector = Arc::new(stun_info_collector);
 
@@ -870,6 +888,21 @@ pub mod tests {
         (server_addr, AbortOnDropHandle::new(task))
     }
 
+    fn resolve_stun_servers_for_test(
+        stun_servers: Option<Vec<String>>,
+        tcp_stun_servers: Option<Vec<String>>,
+        stun_servers_v6: Option<Vec<String>>,
+    ) -> (Vec<String>, Vec<String>, Vec<String>) {
+        GlobalCtx::resolve_stun_servers_with_defaults(
+            stun_servers,
+            tcp_stun_servers,
+            stun_servers_v6,
+            vec!["default-udp.example.com:3478".to_string()],
+            vec!["default-tcp.example.com:3478".to_string()],
+            vec!["default-v6.example.com:3478".to_string()],
+        )
+    }
+
     #[tokio::test]
     async fn test_global_ctx() {
         let config = TomlConfigLoader::default();
@@ -898,6 +931,50 @@ pub mod tests {
             subscriber.recv().await.unwrap(),
             GlobalCtxEvent::PeerConnRemoved(PeerConnInfo::default())
         );
+    }
+
+    #[test]
+    fn resolve_stun_servers_uses_defaults_when_unset() {
+        let (udp, tcp, v6) = resolve_stun_servers_for_test(None, None, None);
+
+        assert_eq!(udp, vec!["default-udp.example.com:3478"]);
+        assert_eq!(tcp, vec!["default-tcp.example.com:3478"]);
+        assert_eq!(v6, vec!["default-v6.example.com:3478"]);
+    }
+
+    #[test]
+    fn resolve_stun_servers_disable_default_v6_when_stun_servers_set() {
+        let (udp, tcp, v6) = resolve_stun_servers_for_test(
+            Some(vec!["custom.example.com:3478".to_string()]),
+            None,
+            None,
+        );
+
+        assert_eq!(udp, vec!["custom.example.com:3478"]);
+        assert_eq!(tcp, vec!["custom.example.com:3478"]);
+        assert!(v6.is_empty());
+    }
+
+    #[test]
+    fn resolve_stun_servers_uses_explicit_v6_with_stun_servers() {
+        let (udp, tcp, v6) = resolve_stun_servers_for_test(
+            Some(vec!["custom.example.com:3478".to_string()]),
+            None,
+            Some(vec!["custom-v6.example.com:3478".to_string()]),
+        );
+
+        assert_eq!(udp, vec!["custom.example.com:3478"]);
+        assert_eq!(tcp, vec!["custom.example.com:3478"]);
+        assert_eq!(v6, vec!["custom-v6.example.com:3478"]);
+    }
+
+    #[test]
+    fn resolve_stun_servers_empty_stun_servers_disable_tcp_and_v6_defaults() {
+        let (udp, tcp, v6) = resolve_stun_servers_for_test(Some(Vec::new()), None, None);
+
+        assert!(udp.is_empty());
+        assert!(tcp.is_empty());
+        assert!(v6.is_empty());
     }
 
     #[tokio::test]
