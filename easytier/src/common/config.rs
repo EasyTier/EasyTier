@@ -1339,6 +1339,7 @@ socket_mark = 66
         let config = TomlConfigLoader::default();
         let stun_servers = config.get_stun_servers();
         assert!(stun_servers.is_none());
+        assert!(config.get_tcp_stun_servers().is_none());
 
         // Test setting custom stun servers
         let custom_servers = vec!["txt:stun.easytier.cn".to_string()];
@@ -1346,6 +1347,12 @@ socket_mark = 66
 
         let retrieved_servers = config.get_stun_servers();
         assert_eq!(retrieved_servers.unwrap(), custom_servers);
+
+        let custom_tcp_servers = vec!["tcp-stun.example.com:3478".to_string()];
+        config.set_tcp_stun_servers(Some(custom_tcp_servers.clone()));
+
+        let retrieved_tcp_servers = config.get_tcp_stun_servers();
+        assert_eq!(retrieved_tcp_servers.unwrap(), custom_tcp_servers);
     }
 
     #[test]
@@ -1370,6 +1377,19 @@ tcp_stun_servers = [
         assert_eq!(stun_servers[1], "stun1.l.google.com:19302");
         assert_eq!(stun_servers[2], "txt:stun.easytier.cn");
         assert_eq!(tcp_stun_servers, vec!["tcp-stun.example.com:3478"]);
+    }
+
+    #[test]
+    fn test_empty_tcp_stun_servers_toml_parsing() {
+        let config = TomlConfigLoader::new_from_str(
+            r#"
+instance_name = "test"
+tcp_stun_servers = []
+"#,
+        )
+        .unwrap();
+
+        assert_eq!(config.get_tcp_stun_servers(), Some(Vec::new()));
     }
 
     #[test]
