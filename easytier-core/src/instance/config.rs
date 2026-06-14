@@ -323,6 +323,7 @@ impl CoreInstanceConfig {
                 provider_supported: host.public_ipv6_provider_supported,
             },
         };
+        let stun_servers = config.get_stun_servers();
 
         Ok(Self {
             instance_name: config.get_inst_name(),
@@ -335,15 +336,16 @@ impl CoreInstanceConfig {
                     gateway: host.gateway_enabled,
                 },
                 stun: StunServerConfig {
-                    udp_servers: config
-                        .get_stun_servers()
+                    udp_servers: stun_servers
+                        .clone()
                         .unwrap_or_else(|| StunServerConfig::default().udp_servers),
                     tcp_servers: config
                         .get_tcp_stun_servers()
-                        .or_else(|| config.get_stun_servers())
+                        .or_else(|| stun_servers.clone())
                         .unwrap_or_else(|| StunServerConfig::default().tcp_servers),
                     udp_v6_servers: config
                         .get_stun_servers_v6()
+                        .or_else(|| stun_servers.as_ref().map(|_| Vec::new()))
                         .unwrap_or_else(|| StunServerConfig::default().udp_v6_servers),
                     ..StunServerConfig::default()
                 },
@@ -417,6 +419,31 @@ tcp_stun_servers = []
         .unwrap();
         let normalized = CoreInstanceConfig::from_toml(&disabled).unwrap();
         assert!(normalized.connectivity.stun.tcp_servers.is_empty());
+    }
+
+    #[test]
+    fn custom_udp_stun_servers_disable_default_ipv6_servers() {
+        let config = TomlConfig::new_from_str(
+            r#"
+stun_servers = ["custom.example.com:3478"]
+"#,
+        )
+        .unwrap();
+        let normalized = CoreInstanceConfig::from_toml(&config).unwrap();
+        assert!(normalized.connectivity.stun.udp_v6_servers.is_empty());
+
+        let config = TomlConfig::new_from_str(
+            r#"
+stun_servers = ["custom.example.com:3478"]
+stun_servers_v6 = ["custom-v6.example.com:3478"]
+"#,
+        )
+        .unwrap();
+        let normalized = CoreInstanceConfig::from_toml(&config).unwrap();
+        assert_eq!(
+            normalized.connectivity.stun.udp_v6_servers,
+            ["custom-v6.example.com:3478"]
+        );
     }
 
     #[test]
