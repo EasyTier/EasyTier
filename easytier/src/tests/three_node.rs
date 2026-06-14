@@ -1343,10 +1343,27 @@ pub async fn shared_tun_magic_dns_same_namespace_real_tun() {
     )
     .await;
 
-    drop_insts(vec![center, shared_1, shared_2, remote]).await;
+    drop_insts(vec![shared_1]).await;
+    let routes_after_first_drop = run_ip_in_ns_output("net_b", &["route", "show"]);
+    assert!(
+        ipv4_route_exists_in_ns("net_b", &format!("{MAGIC_DNS_FAKE_IP} dev {dev_name}")),
+        "magic dns fake-ip route should remain while another shared tun member owns it: {routes_after_first_drop}"
+    );
+    wait_for_condition(
+        || async { magic_dns_record_matches("net_b", "shared-dns-2", "10.144.255.3").await },
+        Duration::from_secs(8),
+    )
+    .await;
+    wait_for_condition(
+        || async { magic_dns_record_matches("net_b", "shared-dns-remote", "10.144.255.4").await },
+        Duration::from_secs(8),
+    )
+    .await;
+
+    drop_insts(vec![center, shared_2, remote]).await;
     assert!(
         !ipv4_route_exists_in_ns("net_b", &format!("{MAGIC_DNS_FAKE_IP} dev {dev_name}")),
-        "magic dns fake-ip route should be removed with the shared tun member"
+        "magic dns fake-ip route should be removed with the last shared tun member"
     );
 }
 

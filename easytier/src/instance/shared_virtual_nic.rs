@@ -312,13 +312,20 @@ impl SharedVirtualNic {
     ) -> Result<(), Error> {
         self.ensure_valid()?;
 
-        match self.member_registrations.insert(member_id, registration_id) {
-            Some(old_registration_id) if old_registration_id != registration_id => {
-                self.remove_member_claims(member_id).await?;
+        match self.member_registrations.get(&member_id).copied() {
+            Some(old_registration_id) if old_registration_id == registration_id => {
+                return Ok(());
             }
-            _ => {}
+            Some(_) => {
+                if let Err(err) = self.remove_member_claims(member_id).await {
+                    self.invalidate_and_shutdown_dispatcher().await;
+                    return Err(err);
+                }
+            }
+            None => {}
         }
 
+        self.member_registrations.insert(member_id, registration_id);
         Ok(())
     }
 
@@ -366,8 +373,15 @@ impl SharedVirtualNic {
             return Ok(());
         }
 
+        if let Err(err) = self.remove_member_claims(member_id).await {
+            self.member_registrations.remove(&member_id);
+            self.invalidate_and_shutdown_dispatcher().await;
+            return Err(err);
+        }
+
         self.member_registrations.remove(&member_id);
-        self.remove_member_claims(member_id).await
+        self.shutdown_dispatcher_if_idle().await;
+        Ok(())
     }
 
     async fn apply_member_claims(
@@ -384,7 +398,7 @@ impl SharedVirtualNic {
         self.sync_dispatcher_sources_for_ifcfg_update(member_id, &old_claims, &next_claims)
             .await?;
 
-        if let Err(err) = self.apply_ifcfg_delta(&delta).await {
+        if let Err(err) = self.apply_ifcfg_delta(&delta, &next_ifcfg).await {
             let _ = self
                 .sync_dispatcher_sources_for_member(member_id, &old_claims)
                 .await;
@@ -417,6 +431,37 @@ impl SharedVirtualNic {
         Ok(())
     }
 
+    async fn apply_member_mtu_for_registration(
+        &mut self,
+        member_id: SharedVirtualNicMemberId,
+        registration_id: SharedVirtualNicMemberRegistrationId,
+        mtu: u32,
+    ) -> Result<(), Error> {
+        if !self.is_current_member_registration(member_id, registration_id) {
+            return Ok(());
+        }
+
+        let mut claims = self.ifcfg.claims_of(member_id);
+        claims.mtu = Some(mtu);
+        self.apply_member_claims(member_id, claims).await
+    }
+
+    #[cfg(mobile)]
+    async fn apply_member_mtu_for_mobile_registration(
+        &mut self,
+        member_id: SharedVirtualNicMemberId,
+        registration_id: SharedVirtualNicMemberRegistrationId,
+        mtu: u32,
+    ) -> Result<(), Error> {
+        if !self.is_current_member_registration(member_id, registration_id) {
+            return Ok(());
+        }
+
+        let mut claims = self.ifcfg.claims_of(member_id);
+        claims.mtu = Some(mtu);
+        self.apply_member_claims_for_mobile(member_id, claims).await
+    }
+
     async fn remove_member_claims(
         &mut self,
         member_id: SharedVirtualNicMemberId,
@@ -428,7 +473,7 @@ impl SharedVirtualNic {
             return Ok(());
         };
         #[cfg(not(mobile))]
-        self.apply_ifcfg_delta(&delta).await?;
+        self.apply_ifcfg_delta(&delta, &next_ifcfg).await?;
         #[cfg(mobile)]
         drop(delta);
         self.remove_dispatcher_sources_for_member(member_id).await?;
@@ -437,7 +482,30 @@ impl SharedVirtualNic {
         Ok(())
     }
 
-    async fn apply_ifcfg_delta(&self, delta: &SharedIfConfigDelta) -> Result<(), Error> {
+    async fn shutdown_dispatcher_if_idle(&mut self) {
+        if !self.member_registrations.is_empty() {
+            return;
+        }
+
+        self.shutdown_dispatcher().await;
+    }
+
+    async fn invalidate_and_shutdown_dispatcher(&mut self) {
+        self.mark_invalid();
+        self.shutdown_dispatcher().await;
+    }
+
+    async fn shutdown_dispatcher(&mut self) {
+        if let Some(dispatcher) = self.dispatcher.take() {
+            dispatcher.shutdown_without_invalidation().await;
+        }
+    }
+
+    async fn apply_ifcfg_delta(
+        &self,
+        delta: &SharedIfConfigDelta,
+        _next_ifcfg: &SharedIfConfig,
+    ) -> Result<(), Error> {
         let nic = self.nic.lock().await;
 
         for route in &delta.ipv4_routes.removed {
@@ -474,6 +542,26 @@ impl SharedVirtualNic {
         if let Some(mtu) = &delta.mtu {
             nic.set_mtu(mtu.new.unwrap_or_else(|| nic.configured_mtu()))
                 .await?;
+        }
+
+        #[cfg(target_os = "linux")]
+        if !delta.ipv4_addresses.removed.is_empty() {
+            for route in _next_ifcfg.ipv4_route_owners.keys() {
+                ignore_added_ifcfg_already_exists(
+                    nic.add_route_with_cost(route.address, route.prefix, route.cost)
+                        .await,
+                )?;
+            }
+        }
+
+        #[cfg(target_os = "linux")]
+        if !delta.ipv6_addresses.removed.is_empty() {
+            for route in _next_ifcfg.ipv6_route_owners.keys() {
+                ignore_added_ifcfg_already_exists(
+                    nic.add_ipv6_route_with_cost(route.address, route.prefix, route.cost)
+                        .await,
+                )?;
+            }
         }
 
         Ok(())
@@ -614,6 +702,14 @@ fn ignore_removed_ifcfg_not_found(result: Result<(), Error>) -> Result<(), Error
     }
 }
 
+#[cfg(target_os = "linux")]
+fn ignore_added_ifcfg_already_exists(result: Result<(), Error>) -> Result<(), Error> {
+    match result {
+        Err(Error::IOError(err)) if err.kind() == std::io::ErrorKind::AlreadyExists => Ok(()),
+        other => other,
+    }
+}
+
 struct SharedVirtualNicMemberRegistration {
     member_id: SharedVirtualNicMemberId,
     registration_id: SharedVirtualNicMemberRegistrationId,
@@ -671,6 +767,7 @@ impl Drop for SharedVirtualNicMemberRegistration {
 #[derive(Clone)]
 pub struct SharedVirtualNicMember {
     member_id: SharedVirtualNicMemberId,
+    configured_mtu: u32,
     shared_nic: Arc<Mutex<SharedVirtualNic>>,
     close_notifier: Arc<Notify>,
     registration: Arc<SharedVirtualNicMemberRegistration>,
@@ -679,6 +776,7 @@ pub struct SharedVirtualNicMember {
 impl SharedVirtualNicMember {
     fn new(
         member_id: SharedVirtualNicMemberId,
+        configured_mtu: u32,
         shared_nic: Arc<Mutex<SharedVirtualNic>>,
         close_notifier: Arc<Notify>,
         member_tunnel_table: SharedVirtualNicMemberTunnelTable,
@@ -686,6 +784,7 @@ impl SharedVirtualNicMember {
         let registration_id = uuid::Uuid::new_v4();
         Self {
             member_id,
+            configured_mtu,
             shared_nic: shared_nic.clone(),
             close_notifier,
             registration: Arc::new(SharedVirtualNicMemberRegistration {
@@ -709,6 +808,11 @@ impl SharedVirtualNicMember {
         self.close_notifier.clone()
     }
 
+    #[cfg(test)]
+    fn configured_mtu_for_test(&self) -> u32 {
+        self.configured_mtu
+    }
+
     pub async fn create_dev(&self) -> Result<Box<dyn Tunnel>, Error> {
         let (member_tunnel, shared_tunnel) = create_ring_tunnel_pair();
         {
@@ -717,6 +821,13 @@ impl SharedVirtualNicMember {
                 .attach_member_registration(self.member_id, self.registration.registration_id)
                 .await?;
             shared_nic.ensure_dispatcher().await?;
+            shared_nic
+                .apply_member_mtu_for_registration(
+                    self.member_id,
+                    self.registration.registration_id,
+                    self.configured_mtu,
+                )
+                .await?;
         }
         self.registration
             .register_tunnel(shared_tunnel, self.close_notifier.clone())?;
@@ -735,6 +846,13 @@ impl SharedVirtualNicMember {
                 .attach_member_registration(self.member_id, self.registration.registration_id)
                 .await?;
             shared_nic.ensure_dispatcher_for_mobile(tun_fd).await?;
+            shared_nic
+                .apply_member_mtu_for_mobile_registration(
+                    self.member_id,
+                    self.registration.registration_id,
+                    self.configured_mtu,
+                )
+                .await?;
         }
         self.registration
             .register_tunnel(shared_tunnel, self.close_notifier.clone())?;
@@ -898,7 +1016,22 @@ impl SharedVirtualNicMember {
 
 #[derive(Default)]
 pub struct SharedVirtualNicRegistry {
-    nics: BTreeMap<String, SharedVirtualNicRegistryEntry>,
+    nics: BTreeMap<SharedVirtualNicRegistryKey, SharedVirtualNicRegistryEntry>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct SharedVirtualNicRegistryKey {
+    net_ns: Option<String>,
+    dev_name: String,
+}
+
+impl SharedVirtualNicRegistryKey {
+    fn new(dev_name: String, config: &VirtualNicConfig) -> Self {
+        Self {
+            net_ns: config.net_ns_name(),
+            dev_name,
+        }
+    }
 }
 
 struct SharedVirtualNicRegistryEntry {
@@ -934,11 +1067,30 @@ impl SharedVirtualNicRegistry {
         Self::default()
     }
 
-    pub fn get(&self, dev_name: &str) -> Option<Arc<Mutex<SharedVirtualNic>>> {
+    pub fn get(
+        &self,
+        dev_name: &str,
+        config: &VirtualNicConfig,
+    ) -> Option<Arc<Mutex<SharedVirtualNic>>> {
+        let key = SharedVirtualNicRegistryKey::new(dev_name.to_owned(), config);
         self.nics
-            .get(dev_name)
+            .get(&key)
             .filter(|entry| entry.is_valid())
             .map(|entry| entry.nic())
+    }
+
+    #[cfg(test)]
+    pub fn get_by_dev_name_for_test(&self, dev_name: &str) -> Option<Arc<Mutex<SharedVirtualNic>>> {
+        let mut matches = self
+            .nics
+            .iter()
+            .filter(|(key, entry)| key.dev_name == dev_name && entry.is_valid())
+            .map(|(_, entry)| entry.nic());
+        let first = matches.next()?;
+        if matches.next().is_some() {
+            return None;
+        }
+        Some(first)
     }
 
     pub fn get_or_create(
@@ -954,17 +1106,15 @@ impl SharedVirtualNicRegistry {
         dev_name: String,
         config: VirtualNicConfig,
     ) -> &SharedVirtualNicRegistryEntry {
-        let needs_new_entry = self
-            .nics
-            .get(&dev_name)
-            .is_none_or(|entry| !entry.is_valid());
+        let key = SharedVirtualNicRegistryKey::new(dev_name, &config);
+        let needs_new_entry = self.nics.get(&key).is_none_or(|entry| !entry.is_valid());
         if needs_new_entry {
             let entry = SharedVirtualNicRegistryEntry::new(SharedVirtualNic::new(config));
-            self.nics.insert(dev_name.clone(), entry);
+            self.nics.insert(key.clone(), entry);
         }
 
         self.nics
-            .get(&dev_name)
+            .get(&key)
             .expect("shared virtual nic registry entry should exist")
     }
 
@@ -975,9 +1125,11 @@ impl SharedVirtualNicRegistry {
         member_id: SharedVirtualNicMemberId,
         close_notifier: Arc<Notify>,
     ) -> SharedVirtualNicMember {
+        let configured_mtu = config.mtu();
         let entry = self.get_or_create_entry(dev_name, config);
         SharedVirtualNicMember::new(
             member_id,
+            configured_mtu,
             entry.nic(),
             close_notifier,
             entry.member_tunnel_table(),
@@ -1114,10 +1266,19 @@ fn ipv6_inet(address: Ipv6Addr, prefix: i32) -> Result<Ipv6Inet, Error> {
 mod tests {
     use std::str::FromStr as _;
 
-    use crate::common::netns::NetNS;
+    use crate::common::{ifcfg::IfConfiguerTrait, netns::NetNS};
     use tokio::sync::Notify;
 
     use super::*;
+
+    struct FailingRemoveIpIfConfiger;
+
+    #[async_trait::async_trait]
+    impl IfConfiguerTrait for FailingRemoveIpIfConfiger {
+        async fn remove_ip(&self, _name: &str, _ip: Option<Ipv4Inet>) -> Result<(), Error> {
+            Err(anyhow::anyhow!("forced remove_ip failure").into())
+        }
+    }
 
     fn member_id(n: u128) -> SharedVirtualNicMemberId {
         uuid::Uuid::from_u128(n)
@@ -1133,6 +1294,14 @@ mod tests {
 
     fn virtual_nic_config() -> VirtualNicConfig {
         VirtualNicConfig::new(String::new(), 1500, NetNS::new(None))
+    }
+
+    fn virtual_nic_config_with_mtu(mtu: u32) -> VirtualNicConfig {
+        VirtualNicConfig::new(String::new(), mtu, NetNS::new(None))
+    }
+
+    fn virtual_nic_config_in_netns(net_ns: &str) -> VirtualNicConfig {
+        VirtualNicConfig::new(String::new(), 1500, NetNS::new(Some(net_ns.to_owned())))
     }
 
     #[test]
@@ -1267,14 +1436,95 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn failed_member_registration_cleanup_invalidates_shared_nic() {
+        let mut shared_nic = SharedVirtualNic::new(virtual_nic_config());
+        let member = member_id(1);
+        let registration = uuid::Uuid::from_u128(10);
+        let ip = Ipv4Inet::from_str("10.60.0.2/24").unwrap();
+
+        shared_nic.member_registrations.insert(member, registration);
+        shared_nic.ifcfg_mut().apply_member_claims(
+            member,
+            SharedIfConfigClaims {
+                ipv4_addresses: BTreeSet::from([ip]),
+                ..Default::default()
+            },
+        );
+        let nic = shared_nic.nic();
+        let mut nic = nic.lock().await;
+        nic.set_ifname_for_test("et0".to_string());
+        nic.set_ifcfg_for_test(Box::new(FailingRemoveIpIfConfiger));
+        drop(nic);
+
+        let result = shared_nic
+            .remove_member_registration_claims(member, registration)
+            .await;
+
+        assert!(result.is_err());
+        assert!(!shared_nic.is_valid());
+        assert!(!shared_nic.member_registrations.contains_key(&member));
+        assert_eq!(
+            shared_nic.ifcfg().owners_of_ipv4_address(&ip),
+            BTreeSet::from([member])
+        );
+    }
+
+    #[tokio::test]
+    async fn failed_registration_replacement_keeps_old_registration_and_invalidates() {
+        let mut shared_nic = SharedVirtualNic::new(virtual_nic_config());
+        let member = member_id(1);
+        let old_registration = uuid::Uuid::from_u128(10);
+        let next_registration = uuid::Uuid::from_u128(11);
+        let ip = Ipv4Inet::from_str("10.70.0.2/24").unwrap();
+
+        shared_nic
+            .member_registrations
+            .insert(member, old_registration);
+        shared_nic.ifcfg_mut().apply_member_claims(
+            member,
+            SharedIfConfigClaims {
+                ipv4_addresses: BTreeSet::from([ip]),
+                ..Default::default()
+            },
+        );
+        let nic = shared_nic.nic();
+        let mut nic = nic.lock().await;
+        nic.set_ifname_for_test("et0".to_string());
+        nic.set_ifcfg_for_test(Box::new(FailingRemoveIpIfConfiger));
+        drop(nic);
+
+        let result = shared_nic
+            .attach_member_registration(member, next_registration)
+            .await;
+
+        assert!(result.is_err());
+        assert!(!shared_nic.is_valid());
+        assert_eq!(
+            shared_nic.member_registrations.get(&member),
+            Some(&old_registration)
+        );
+    }
+
     #[test]
-    fn registry_reuses_shared_virtual_nic_for_same_dev_name() {
+    fn registry_reuses_shared_virtual_nic_for_same_dev_name_and_netns() {
         let mut registry = SharedVirtualNicRegistry::new();
 
         let first = registry.get_or_create("et0".to_string(), virtual_nic_config());
         let second = registry.get_or_create("et0".to_string(), virtual_nic_config());
 
         assert!(Arc::ptr_eq(&first, &second));
+    }
+
+    #[test]
+    fn registry_keeps_same_dev_name_in_different_netns_separate() {
+        let mut registry = SharedVirtualNicRegistry::new();
+
+        let first = registry.get_or_create("et0".to_string(), virtual_nic_config_in_netns("net-a"));
+        let second =
+            registry.get_or_create("et0".to_string(), virtual_nic_config_in_netns("net-b"));
+
+        assert!(!Arc::ptr_eq(&first, &second));
     }
 
     #[test]
@@ -1298,7 +1548,7 @@ mod tests {
         assert!(!Arc::ptr_eq(&first, &second));
         assert!(
             registry
-                .get("et0")
+                .get("et0", &virtual_nic_config())
                 .is_some_and(|nic| Arc::ptr_eq(&nic, &second))
         );
     }
@@ -1314,9 +1564,31 @@ mod tests {
             member_id,
             Arc::new(Notify::new()),
         );
-        let shared_nic = registry.get("et0").unwrap();
+        let shared_nic = registry.get("et0", &virtual_nic_config()).unwrap();
 
         assert_eq!(member.member_id(), member_id);
         assert!(Arc::ptr_eq(&member.shared_nic(), &shared_nic));
+    }
+
+    #[test]
+    fn registry_create_member_keeps_member_configured_mtu() {
+        let mut registry = SharedVirtualNicRegistry::new();
+
+        let first = registry.create_member(
+            "et0".to_string(),
+            virtual_nic_config_with_mtu(1400),
+            member_id(1),
+            Arc::new(Notify::new()),
+        );
+        let second = registry.create_member(
+            "et0".to_string(),
+            virtual_nic_config_with_mtu(1300),
+            member_id(2),
+            Arc::new(Notify::new()),
+        );
+
+        assert_eq!(first.configured_mtu_for_test(), 1400);
+        assert_eq!(second.configured_mtu_for_test(), 1300);
+        assert!(Arc::ptr_eq(&first.shared_nic(), &second.shared_nic()));
     }
 }

@@ -864,6 +864,7 @@ impl Instance {
         peer_mgr: Arc<PeerManager>,
         tun_dev: Option<String>,
         tun_ip: Ipv4Inet,
+        #[cfg(feature = "tun")] route_backend: Option<super::virtual_nic::NicBackend>,
     ) -> Option<DnsRunner> {
         let ctx = peer_mgr.get_global_ctx();
         if !ctx.config.get_flags().accept_dns {
@@ -877,6 +878,12 @@ impl Instance {
             MAGIC_DNS_FAKE_IP.parse().unwrap(),
             ctx.net_ns.name(),
         );
+        #[cfg(feature = "tun")]
+        let runner = if let Some(route_backend) = route_backend {
+            runner.with_route_backend(route_backend)
+        } else {
+            runner
+        };
         Some(runner)
     }
 
@@ -1042,12 +1049,19 @@ impl Instance {
                             continue;
                         }
                         #[cfg(feature = "magic-dns")]
+                        let route_backend = new_nic_ctx.shared_route_backend_for_dns();
+                        #[cfg(feature = "magic-dns")]
                         let ifname = new_nic_ctx.ifname().await;
                         Self::use_new_nic_ctx(
                             nic_ctx.clone(),
                             new_nic_ctx,
                             #[cfg(feature = "magic-dns")]
-                            Self::create_magic_dns_runner(peer_manager_c.clone(), ifname, ip),
+                            Self::create_magic_dns_runner(
+                                peer_manager_c.clone(),
+                                ifname,
+                                ip,
+                                route_backend,
+                            ),
                         )
                         .await;
                     }
@@ -1128,9 +1142,10 @@ impl Instance {
                     // Create Magic DNS runner only if we have IPv4
                     #[cfg(feature = "magic-dns")]
                     {
+                        let route_backend = new_nic_ctx.shared_route_backend_for_dns();
                         let ifname = new_nic_ctx.ifname().await;
                         let dns_runner = if let Some(ipv4) = ipv4_addr {
-                            Self::create_magic_dns_runner(peer_mgr, ifname, ipv4)
+                            Self::create_magic_dns_runner(peer_mgr, ifname, ipv4, route_backend)
                         } else {
                             None
                         };
@@ -1738,8 +1753,9 @@ impl Instance {
 
         #[cfg(feature = "magic-dns")]
         {
+            let route_backend = new_nic_ctx.shared_route_backend_for_dns();
             let magic_dns_runner = if let Some(ipv4) = global_ctx.get_ipv4() {
-                Self::create_magic_dns_runner(peer_manager.clone(), None, ipv4)
+                Self::create_magic_dns_runner(peer_manager.clone(), None, ipv4, route_backend)
             } else {
                 None
             };
@@ -1876,7 +1892,11 @@ mod tests {
         let second_shared_nic = second.shared_nic_for_test().unwrap();
         assert!(Arc::ptr_eq(&first_shared_nic, &second_shared_nic));
 
-        let registered_nic = registry.lock().await.get("et-shared").unwrap();
+        let registered_nic = registry
+            .lock()
+            .await
+            .get_by_dev_name_for_test("et-shared")
+            .unwrap();
         assert!(Arc::ptr_eq(&registered_nic, &first_shared_nic));
     }
 

@@ -12,6 +12,8 @@ use super::{
     server::Server,
     system_config::{OSConfig, SystemConfig},
 };
+#[cfg(feature = "tun")]
+use crate::instance::virtual_nic::NicBackend;
 use crate::{
     common::{
         PeerId,
@@ -66,6 +68,9 @@ pub(super) struct MagicDnsServerInstanceData {
     netns: Option<String>,
     tun_ip: Ipv4Addr,
     fake_ip: Ipv4Addr,
+    #[cfg(feature = "tun")]
+    route_backend: Option<NicBackend>,
+    manage_fake_ip_route: bool,
     my_peer_id: PeerId,
 
     // zone -> (tunnel remote addr -> route)
@@ -513,12 +518,27 @@ fn get_system_config(
 }
 
 impl MagicDnsServerInstance {
-    async fn add_fake_ip_route(
+    pub(super) async fn add_fake_ip_route(
         tun_dev_name: &str,
         fake_ip: Ipv4Addr,
         netns: Option<String>,
         cost: Option<i32>,
+        #[cfg(feature = "tun")] route_backend: Option<&NicBackend>,
     ) -> Result<(), anyhow::Error> {
+        #[cfg(feature = "tun")]
+        if let Some(route_backend) = route_backend {
+            match route_backend.add_route_with_cost(fake_ip, 32, cost).await {
+                Err(EtError::IOError(err)) if err.kind() == io::ErrorKind::AlreadyExists => {
+                    let ifcfg = IfConfiger::default();
+                    let _guard = NetNS::new(netns).guard();
+                    ifcfg.remove_ipv4_route(tun_dev_name, fake_ip, 32).await?;
+                    route_backend.add_route_with_cost(fake_ip, 32, cost).await?;
+                    return Ok(());
+                }
+                ret => return ret.map_err(Into::into),
+            }
+        }
+
         let ifcfg = IfConfiger::default();
         let _guard = NetNS::new(netns).guard();
         match ifcfg.add_ipv4_route(tun_dev_name, fake_ip, 32, cost).await {
@@ -533,7 +553,25 @@ impl MagicDnsServerInstance {
         }
     }
 
-    async fn remove_fake_ip_route(tun_dev_name: &str, fake_ip: Ipv4Addr, netns: Option<String>) {
+    pub(super) async fn remove_fake_ip_route(
+        tun_dev_name: &str,
+        fake_ip: Ipv4Addr,
+        netns: Option<String>,
+        #[cfg(feature = "tun")] route_backend: Option<&NicBackend>,
+    ) {
+        #[cfg(feature = "tun")]
+        if let Some(route_backend) = route_backend {
+            if let Err(err) = route_backend.remove_route(fake_ip, 32).await {
+                tracing::warn!(
+                    ?err,
+                    ?tun_dev_name,
+                    ?fake_ip,
+                    "remove magic dns route failed"
+                );
+            }
+            return;
+        }
+
         let ifcfg = IfConfiger::default();
         let _guard = NetNS::new(netns).guard();
         if let Err(err) = ifcfg.remove_ipv4_route(tun_dev_name, fake_ip, 32).await {
@@ -562,6 +600,60 @@ impl MagicDnsServerInstance {
         fake_ip: Ipv4Addr,
         netns: Option<String>,
     ) -> Result<Self, anyhow::Error> {
+        Self::new_inner(
+            peer_mgr,
+            tun_dev,
+            tun_inet,
+            fake_ip,
+            netns,
+            #[cfg(feature = "tun")]
+            None,
+            true,
+        )
+        .await
+    }
+
+    #[cfg(feature = "tun")]
+    pub async fn new_with_route_backend(
+        peer_mgr: Arc<PeerManager>,
+        tun_dev: Option<String>,
+        tun_inet: Ipv4Inet,
+        fake_ip: Ipv4Addr,
+        netns: Option<String>,
+        route_backend: Option<NicBackend>,
+    ) -> Result<Self, anyhow::Error> {
+        Self::new_inner(
+            peer_mgr,
+            tun_dev,
+            tun_inet,
+            fake_ip,
+            netns,
+            route_backend,
+            true,
+        )
+        .await
+    }
+
+    #[cfg(feature = "tun")]
+    pub async fn new_with_external_fake_ip_route(
+        peer_mgr: Arc<PeerManager>,
+        tun_dev: Option<String>,
+        tun_inet: Ipv4Inet,
+        fake_ip: Ipv4Addr,
+        netns: Option<String>,
+    ) -> Result<Self, anyhow::Error> {
+        Self::new_inner(peer_mgr, tun_dev, tun_inet, fake_ip, netns, None, false).await
+    }
+
+    async fn new_inner(
+        peer_mgr: Arc<PeerManager>,
+        tun_dev: Option<String>,
+        tun_inet: Ipv4Inet,
+        fake_ip: Ipv4Addr,
+        netns: Option<String>,
+        #[cfg(feature = "tun")] route_backend: Option<NicBackend>,
+        manage_fake_ip_route: bool,
+    ) -> Result<Self, anyhow::Error> {
         let tcp_listener = TcpTunnelListener::new(MAGIC_DNS_INSTANCE_ADDR.parse()?);
         let mut rpc_server = StandAloneServer::new(tcp_listener);
         rpc_server.serve().await?;
@@ -573,7 +665,8 @@ impl MagicDnsServerInstance {
         let mut dns_server = Server::new(dns_config);
         dns_server.run().await?;
 
-        if !tun_inet.contains(&fake_ip)
+        if manage_fake_ip_route
+            && !tun_inet.contains(&fake_ip)
             && let Some(tun_dev_name) = &tun_dev
         {
             let cost = if cfg!(target_os = "windows") {
@@ -581,7 +674,15 @@ impl MagicDnsServerInstance {
             } else {
                 None
             };
-            Self::add_fake_ip_route(tun_dev_name, fake_ip, netns.clone(), cost).await?;
+            Self::add_fake_ip_route(
+                tun_dev_name,
+                fake_ip,
+                netns.clone(),
+                cost,
+                #[cfg(feature = "tun")]
+                route_backend.as_ref(),
+            )
+            .await?;
         }
 
         let data = Arc::new(MagicDnsServerInstanceData {
@@ -590,6 +691,9 @@ impl MagicDnsServerInstance {
             netns,
             tun_ip: tun_inet.address(),
             fake_ip,
+            #[cfg(feature = "tun")]
+            route_backend,
+            manage_fake_ip_route,
             my_peer_id: peer_mgr.my_peer_id(),
             route_infos: DashMap::new(),
             system_config: get_system_config(tun_dev.as_deref())?,
@@ -632,11 +736,18 @@ impl MagicDnsServerInstance {
             }
         }
 
-        if !self.tun_inet.contains(&self.data.fake_ip)
+        if self.data.manage_fake_ip_route
+            && !self.tun_inet.contains(&self.data.fake_ip)
             && let Some(tun_dev_name) = &self.data.tun_dev
         {
-            Self::remove_fake_ip_route(tun_dev_name, self.data.fake_ip, self.data.netns.clone())
-                .await;
+            Self::remove_fake_ip_route(
+                tun_dev_name,
+                self.data.fake_ip,
+                self.data.netns.clone(),
+                #[cfg(feature = "tun")]
+                self.data.route_backend.as_ref(),
+            )
+            .await;
         }
 
         let _ = self

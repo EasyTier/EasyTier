@@ -260,6 +260,14 @@ impl VirtualNicConfig {
             net_ns,
         }
     }
+
+    pub fn mtu(&self) -> u32 {
+        self.mtu
+    }
+
+    pub fn net_ns_name(&self) -> Option<String> {
+        self.net_ns.name()
+    }
 }
 
 pub struct VirtualNic {
@@ -836,6 +844,19 @@ impl VirtualNic {
         self.config.mtu
     }
 
+    #[cfg(test)]
+    pub(crate) fn set_ifname_for_test(&mut self, ifname: String) {
+        self.ifname = Some(ifname);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_ifcfg_for_test(
+        &mut self,
+        ifcfg: Box<dyn IfConfiguerTrait + Send + Sync + 'static>,
+    ) {
+        self.ifcfg = ifcfg;
+    }
+
     pub fn get_ifcfg(&self) -> IfConfiger {
         IfConfiger::default()
     }
@@ -923,6 +944,23 @@ impl NicBackend {
         match self {
             Self::Dedicated(nic) => nic.lock().await.add_route(address, cidr).await,
             Self::Shared(member) => member.add_route(address, cidr).await,
+        }
+    }
+
+    pub async fn add_route_with_cost(
+        &self,
+        address: Ipv4Addr,
+        cidr: u8,
+        cost: Option<i32>,
+    ) -> Result<(), Error> {
+        match self {
+            Self::Dedicated(nic) => {
+                nic.lock()
+                    .await
+                    .add_route_with_cost(address, cidr, cost)
+                    .await
+            }
+            Self::Shared(member) => member.add_route_with_cost(address, cidr, cost).await,
         }
     }
 
@@ -1066,6 +1104,14 @@ impl NicCtx {
             flags.enable_encryption,
             global_ctx.net_ns.clone(),
         )
+    }
+
+    #[cfg(feature = "magic-dns")]
+    pub(crate) fn shared_route_backend_for_dns(&self) -> Option<NicBackend> {
+        match self.backend {
+            NicBackend::Dedicated(_) => None,
+            NicBackend::Shared(_) => Some(self.backend.clone()),
+        }
     }
 
     fn dedicated_backend(global_ctx: &ArcGlobalCtx) -> NicBackend {
