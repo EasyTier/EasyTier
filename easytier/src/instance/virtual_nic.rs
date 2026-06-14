@@ -600,6 +600,11 @@ impl VirtualNic {
     }
 
     #[cfg(mobile)]
+    pub fn set_mobile_tun_fd_name(&mut self, tun_fd: std::os::fd::RawFd) {
+        self.ifname = Some(format!("tunfd_{}", tun_fd));
+    }
+
+    #[cfg(mobile)]
     pub async fn create_dev_for_mobile(
         &mut self,
         tun_fd: std::os::fd::RawFd,
@@ -634,7 +639,7 @@ impl VirtualNic {
             None,
         );
 
-        self.ifname = Some(format!("tunfd_{}", tun_fd));
+        self.set_mobile_tun_fd_name(tun_fd);
 
         Ok(Box::new(ft))
     }
@@ -984,6 +989,22 @@ impl NicBackend {
         match self {
             Self::Dedicated(nic) => nic.lock().await.add_ipv6(ip, cidr).await,
             Self::Shared(member) => member.add_ipv6(ip, cidr).await,
+        }
+    }
+
+    #[cfg(mobile)]
+    pub async fn add_mobile_source_ip(&self, ip: Ipv4Addr, cidr: i32) -> Result<(), Error> {
+        match self {
+            Self::Dedicated(_) => Ok(()),
+            Self::Shared(member) => member.add_mobile_source_ip(ip, cidr).await,
+        }
+    }
+
+    #[cfg(mobile)]
+    pub async fn add_mobile_source_ipv6(&self, ip: Ipv6Addr, cidr: i32) -> Result<(), Error> {
+        match self {
+            Self::Dedicated(_) => Ok(()),
+            Self::Shared(member) => member.add_mobile_source_ipv6(ip, cidr).await,
         }
     }
 }
@@ -1673,16 +1694,14 @@ impl NicCtx {
 
     #[cfg(mobile)]
     pub async fn run_for_mobile(&mut self, tun_fd: std::os::fd::RawFd) -> Result<(), Error> {
-        let tunnel = match self.backend.create_dev_for_mobile(tun_fd).await {
+        let (tunnel, ifname) = match self.backend.create_dev_for_mobile(tun_fd).await {
             Ok(ret) => {
                 let ifname = self
                     .backend
                     .ifname()
                     .await
                     .ok_or_else(|| anyhow::anyhow!("tun device has no interface name"))?;
-                self.global_ctx
-                    .issue_event(GlobalCtxEvent::TunDeviceReady(ifname));
-                ret
+                (ret, ifname)
             }
             Err(err) => {
                 self.global_ctx
@@ -1690,6 +1709,20 @@ impl NicCtx {
                 return Err(err);
             }
         };
+
+        if let Some(ipv4_addr) = self.global_ctx.get_ipv4() {
+            self.backend
+                .add_mobile_source_ip(ipv4_addr.address(), ipv4_addr.network_length() as i32)
+                .await?;
+        }
+        if let Some(ipv6_addr) = self.global_ctx.get_ipv6() {
+            self.backend
+                .add_mobile_source_ipv6(ipv6_addr.address(), ipv6_addr.network_length() as i32)
+                .await?;
+        }
+
+        self.global_ctx
+            .issue_event(GlobalCtxEvent::TunDeviceReady(ifname));
 
         let (stream, sink) = tunnel.split();
 

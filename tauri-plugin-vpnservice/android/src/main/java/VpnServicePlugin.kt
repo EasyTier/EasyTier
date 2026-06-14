@@ -12,6 +12,7 @@ import app.tauri.plugin.Invoke
 import app.tauri.plugin.JSObject
 import app.tauri.plugin.Plugin
 import android.webkit.WebView
+import org.json.JSONArray
 
 @InvokeArg
 class PingArgs {
@@ -21,6 +22,7 @@ class PingArgs {
 @InvokeArg
 class StartVpnArgs {
     var ipv4Addr: String? = null
+    var ipv4Addrs: Array<String> = emptyArray()
     var routes: Array<String> = emptyArray()
     var dns: String? = null
     var disallowedApplications: Array<String> = emptyArray()
@@ -85,6 +87,7 @@ class VpnServicePlugin(private val activity: Activity) : Plugin(activity) {
             } else {
                 val intent = Intent(activity, TauriVpnService::class.java)
                 intent.putExtra(TauriVpnService.IPV4_ADDR, args.ipv4Addr)
+                intent.putExtra(TauriVpnService.IPV4_ADDRS, args.ipv4Addrs)
                 intent.putExtra(TauriVpnService.ROUTES, args.routes)
                 intent.putExtra(TauriVpnService.DNS, args.dns)
                 intent.putExtra(TauriVpnService.DISALLOWED_APPLICATIONS, args.disallowedApplications)
@@ -112,7 +115,8 @@ class VpnServicePlugin(private val activity: Activity) : Plugin(activity) {
         val ret = JSObject()
         ret.put("running", TauriVpnService.self != null)
         ret.put("ipv4Addr", TauriVpnService.ipv4Addr)
-        ret.put("routes", TauriVpnService.routes)
+        ret.put("ipv4Addrs", JSONArray(TauriVpnService.ipv4Addrs))
+        ret.put("routes", JSONArray(TauriVpnService.routes))
         ret.put("dns", TauriVpnService.dns)
         invoke.resolve(ret)
     }

@@ -160,14 +160,31 @@ async fn set_tun_fd(fd: i32) -> Result<(), String> {
     let Some(instance_manager) = INSTANCE_MANAGER.read().await.clone() else {
         return Err("set_tun_fd is not supported in remote mode".to_string());
     };
-    if let Some(uuid) = get_client_manager!()?
-        .get_enabled_instances_with_tun_ids()
-        .next()
-    {
-        instance_manager
-            .set_tun_fd(&uuid, fd)
-            .map_err(|e| e.to_string())?;
+
+    let mut success_count = 0;
+    let mut errors = Vec::new();
+    for uuid in get_client_manager!()?.get_enabled_instances_for_tun_fd() {
+        match instance_manager.set_tun_fd(&uuid, fd) {
+            Ok(()) => {
+                success_count += 1;
+            }
+            Err(err) => {
+                errors.push(format!("{}: {}", uuid, err));
+            }
+        }
     }
+
+    if success_count == 0 && !errors.is_empty() {
+        return Err(format!(
+            "failed to set tun fd for all instances: {}",
+            errors.join("; ")
+        ));
+    }
+
+    for err in errors {
+        eprintln!("set_tun_fd skipped instance: {err}");
+    }
+
     Ok(())
 }
 
@@ -918,32 +935,98 @@ mod manager {
                 .filter_map(|c| c.config.instance_id().parse::<uuid::Uuid>().ok())
         }
 
+        pub fn get_enabled_instances_for_tun_fd(&self) -> Vec<uuid::Uuid> {
+            let Some(first) = self
+                .storage
+                .network_configs
+                .iter()
+                .filter(|v| self.storage.enabled_networks.contains(v.key()))
+                .filter(|v| !v.config.no_tun())
+                .find_map(|c| {
+                    c.config
+                        .instance_id()
+                        .parse::<uuid::Uuid>()
+                        .ok()
+                        .map(|id| (id, Self::shared_tun_dev_name(&c.config).map(str::to_owned)))
+                })
+            else {
+                return Vec::new();
+            };
+
+            let (first_id, Some(shared_dev_name)) = first else {
+                return vec![first.0];
+            };
+
+            let ids: Vec<uuid::Uuid> = self
+                .storage
+                .network_configs
+                .iter()
+                .filter(|v| self.storage.enabled_networks.contains(v.key()))
+                .filter(|v| Self::shared_tun_dev_name(&v.config) == Some(shared_dev_name.as_str()))
+                .filter_map(|c| c.config.instance_id().parse::<uuid::Uuid>().ok())
+                .collect();
+            if ids.is_empty() { vec![first_id] } else { ids }
+        }
+
+        fn shared_tun_dev_name(config: &NetworkConfig) -> Option<&str> {
+            if config.no_tun() {
+                return None;
+            }
+            config
+                .dev_name
+                .as_deref()
+                .filter(|dev_name| !dev_name.is_empty())
+        }
+
         #[cfg(target_os = "android")]
-        pub fn get_enabled_instances_with_web_like_tun_ids(
+        fn runtime_shared_tun_dev_name(
+            cfg: &easytier::common::config::TomlConfigLoader,
+        ) -> Option<String> {
+            let flags = cfg.get_flags();
+            if flags.no_tun || flags.dev_name.is_empty() {
+                None
+            } else {
+                Some(flags.dev_name)
+            }
+        }
+
+        #[cfg(target_os = "android")]
+        fn is_compatible_android_tun(
+            config: &NetworkConfig,
+            shared_dev_name: Option<&str>,
+        ) -> bool {
+            matches!(
+                (Self::shared_tun_dev_name(config), shared_dev_name),
+                (Some(existing), Some(next)) if existing == next
+            )
+        }
+
+        #[cfg(target_os = "android")]
+        fn enabled_incompatible_tun_ids(
             &self,
-        ) -> impl Iterator<Item = uuid::Uuid> + '_ {
+            web_only: bool,
+            shared_dev_name: Option<&str>,
+        ) -> Vec<uuid::Uuid> {
             self.storage
                 .network_configs
                 .iter()
                 .filter(|v| self.storage.enabled_networks.contains(v.key()))
                 .filter(|v| !v.config.no_tun())
-                .filter(|v| v.source.is_web_like())
+                .filter(|v| !web_only || v.source.is_web_like())
+                .filter(|v| !Self::is_compatible_android_tun(&v.config, shared_dev_name))
                 .filter_map(|c| c.config.instance_id().parse::<uuid::Uuid>().ok())
+                .collect()
         }
 
         #[cfg(target_os = "android")]
-        pub(super) async fn disable_instances_with_tun(
+        pub(super) async fn disable_incompatible_instances_with_tun(
             &self,
             app: &AppHandle,
             web_only: bool,
+            shared_dev_name: Option<&str>,
         ) -> Result<(), easytier::rpc_service::remote_client::RemoteClientError<anyhow::Error>>
         {
-            let inst_ids: Vec<uuid::Uuid> = if web_only {
-                self.get_enabled_instances_with_web_like_tun_ids().collect()
-            } else {
-                self.get_enabled_instances_with_tun_ids().collect()
-            };
-            for inst_id in inst_ids {
+            for inst_id in self.enabled_incompatible_tun_ids(web_only, shared_dev_name) {
                 self.handle_update_network_state(app.clone(), inst_id, true)
                     .await?;
             }
@@ -951,11 +1034,20 @@ mod manager {
         }
 
         pub(super) fn notify_vpn_stop_if_no_tun(&self, app: &AppHandle) -> Result<(), String> {
-            let has_tun = self.get_enabled_instances_with_tun_ids().any(|_| true);
-            if !has_tun {
-                app.emit("vpn_service_stop", "")
+            #[cfg(target_os = "android")]
+            if let Some(instance_id) = self.get_enabled_instances_with_tun_ids().next() {
+                app.emit("vpn_service_config_changed", instance_id.to_string())
                     .map_err(|e| e.to_string())?;
+                return Ok(());
             }
+
+            #[cfg(not(target_os = "android"))]
+            if self.get_enabled_instances_with_tun_ids().next().is_some() {
+                return Ok(());
+            }
+
+            app.emit("vpn_service_stop", "")
+                .map_err(|e| e.to_string())?;
             Ok(())
         }
 
@@ -971,19 +1063,31 @@ mod manager {
 
             #[cfg(target_os = "android")]
             if !cfg.get_flags().no_tun {
+                let shared_dev_name = Self::runtime_shared_tun_dev_name(cfg);
                 match source {
                     PersistedConfigSource::User | PersistedConfigSource::Legacy => {
-                        self.disable_instances_with_tun(app, false)
-                            .await
-                            .map_err(|e| e.to_string())?;
+                        self.disable_incompatible_instances_with_tun(
+                            app,
+                            false,
+                            shared_dev_name.as_deref(),
+                        )
+                        .await
+                        .map_err(|e| e.to_string())?;
                     }
                     PersistedConfigSource::Web => {
-                        self.disable_instances_with_tun(app, true)
-                            .await
-                            .map_err(|e| e.to_string())?;
-                        if self.get_enabled_instances_with_tun_ids().next().is_some() {
+                        self.disable_incompatible_instances_with_tun(
+                            app,
+                            true,
+                            shared_dev_name.as_deref(),
+                        )
+                        .await
+                        .map_err(|e| e.to_string())?;
+                        if !self
+                            .enabled_incompatible_tun_ids(false, shared_dev_name.as_deref())
+                            .is_empty()
+                        {
                             return Err(
-                                "Android only supports one active TUN network; user-managed VPN remains active"
+                                "Android only supports one active TUN device; user-managed VPN remains active with an incompatible dev_name"
                                     .to_string(),
                             );
                         }

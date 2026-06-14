@@ -25,6 +25,7 @@ mod dispatcher;
 use dispatcher::{SharedVirtualNicDispatcher, SharedVirtualNicMemberTunnelTable};
 
 pub type SharedVirtualNicMemberId = uuid::Uuid;
+pub(super) type SharedVirtualNicMemberRegistrationId = uuid::Uuid;
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct SharedIpv4Route {
@@ -256,6 +257,7 @@ pub struct SharedVirtualNic {
     ifcfg: SharedIfConfig,
     valid: Arc<AtomicBool>,
     member_tunnel_table: SharedVirtualNicMemberTunnelTable,
+    member_registrations: BTreeMap<SharedVirtualNicMemberId, SharedVirtualNicMemberRegistrationId>,
     dispatcher: Option<SharedVirtualNicDispatcher>,
 }
 
@@ -266,6 +268,7 @@ impl SharedVirtualNic {
             ifcfg: SharedIfConfig::default(),
             valid: Arc::new(AtomicBool::new(true)),
             member_tunnel_table: SharedVirtualNicMemberTunnelTable::default(),
+            member_registrations: BTreeMap::new(),
             dispatcher: None,
         }
     }
@@ -302,6 +305,71 @@ impl SharedVirtualNic {
         self.nic.lock().await.link_up().await
     }
 
+    async fn attach_member_registration(
+        &mut self,
+        member_id: SharedVirtualNicMemberId,
+        registration_id: SharedVirtualNicMemberRegistrationId,
+    ) -> Result<(), Error> {
+        self.ensure_valid()?;
+
+        match self.member_registrations.insert(member_id, registration_id) {
+            Some(old_registration_id) if old_registration_id != registration_id => {
+                self.remove_member_claims(member_id).await?;
+            }
+            _ => {}
+        }
+
+        Ok(())
+    }
+
+    fn is_current_member_registration(
+        &self,
+        member_id: SharedVirtualNicMemberId,
+        registration_id: SharedVirtualNicMemberRegistrationId,
+    ) -> bool {
+        self.member_registrations
+            .get(&member_id)
+            .is_some_and(|current| *current == registration_id)
+    }
+
+    async fn apply_member_claims_for_registration(
+        &mut self,
+        member_id: SharedVirtualNicMemberId,
+        registration_id: SharedVirtualNicMemberRegistrationId,
+        claims: SharedIfConfigClaims,
+    ) -> Result<(), Error> {
+        if !self.is_current_member_registration(member_id, registration_id) {
+            return Ok(());
+        }
+        self.apply_member_claims(member_id, claims).await
+    }
+
+    #[cfg(mobile)]
+    async fn apply_member_claims_for_mobile_registration(
+        &mut self,
+        member_id: SharedVirtualNicMemberId,
+        registration_id: SharedVirtualNicMemberRegistrationId,
+        claims: SharedIfConfigClaims,
+    ) -> Result<(), Error> {
+        if !self.is_current_member_registration(member_id, registration_id) {
+            return Ok(());
+        }
+        self.apply_member_claims_for_mobile(member_id, claims).await
+    }
+
+    async fn remove_member_registration_claims(
+        &mut self,
+        member_id: SharedVirtualNicMemberId,
+        registration_id: SharedVirtualNicMemberRegistrationId,
+    ) -> Result<(), Error> {
+        if !self.is_current_member_registration(member_id, registration_id) {
+            return Ok(());
+        }
+
+        self.member_registrations.remove(&member_id);
+        self.remove_member_claims(member_id).await
+    }
+
     async fn apply_member_claims(
         &mut self,
         member_id: SharedVirtualNicMemberId,
@@ -330,6 +398,25 @@ impl SharedVirtualNic {
         Ok(())
     }
 
+    #[cfg(mobile)]
+    async fn apply_member_claims_for_mobile(
+        &mut self,
+        member_id: SharedVirtualNicMemberId,
+        claims: SharedIfConfigClaims,
+    ) -> Result<(), Error> {
+        self.ensure_valid()?;
+
+        let mut next_ifcfg = self.ifcfg.clone();
+        let next_claims = claims.clone();
+        next_ifcfg.apply_member_claims(member_id, claims);
+
+        self.sync_dispatcher_sources_for_member(member_id, &next_claims)
+            .await?;
+        self.ifcfg = next_ifcfg;
+
+        Ok(())
+    }
+
     async fn remove_member_claims(
         &mut self,
         member_id: SharedVirtualNicMemberId,
@@ -340,7 +427,10 @@ impl SharedVirtualNic {
         let Some(delta) = next_ifcfg.remove_member(member_id) else {
             return Ok(());
         };
+        #[cfg(not(mobile))]
         self.apply_ifcfg_delta(&delta).await?;
+        #[cfg(mobile)]
+        drop(delta);
         self.remove_dispatcher_sources_for_member(member_id).await?;
         self.ifcfg = next_ifcfg;
 
@@ -430,13 +520,16 @@ impl SharedVirtualNic {
     ) -> Result<(), Error> {
         self.ensure_valid()?;
 
-        if self.dispatcher.is_some() {
+        if let Some(dispatcher) = &self.dispatcher {
+            dispatcher.update_mobile_tun_fd(tun_fd);
+            self.nic.lock().await.set_mobile_tun_fd_name(tun_fd);
             return Ok(());
         }
 
-        let tunnel = self.nic.lock().await.create_dev_for_mobile(tun_fd).await?;
-        let dispatcher = SharedVirtualNicDispatcher::start(
-            tunnel,
+        self.nic.lock().await.set_mobile_tun_fd_name(tun_fd);
+        let dispatcher = SharedVirtualNicDispatcher::start_for_mobile(
+            self.nic.clone(),
+            tun_fd,
             self.member_tunnel_table.clone(),
             self.valid.clone(),
         );
@@ -523,6 +616,7 @@ fn ignore_removed_ifcfg_not_found(result: Result<(), Error>) -> Result<(), Error
 
 struct SharedVirtualNicMemberRegistration {
     member_id: SharedVirtualNicMemberId,
+    registration_id: SharedVirtualNicMemberRegistrationId,
     shared_nic: Arc<Mutex<SharedVirtualNic>>,
     member_tunnel_table: SharedVirtualNicMemberTunnelTable,
 }
@@ -533,16 +627,22 @@ impl SharedVirtualNicMemberRegistration {
         tunnel: Box<dyn Tunnel>,
         close_notifier: Arc<Notify>,
     ) -> Result<(), Error> {
-        self.member_tunnel_table
-            .register(self.member_id, tunnel, close_notifier)
+        self.member_tunnel_table.register(
+            self.member_id,
+            self.registration_id,
+            tunnel,
+            close_notifier,
+        )
     }
 }
 
 impl Drop for SharedVirtualNicMemberRegistration {
     fn drop(&mut self) {
-        self.member_tunnel_table.unregister(self.member_id);
+        self.member_tunnel_table
+            .unregister(self.member_id, self.registration_id);
         let shared_nic = self.shared_nic.clone();
         let member_id = self.member_id;
+        let registration_id = self.registration_id;
 
         let Ok(handle) = tokio::runtime::Handle::try_current() else {
             tracing::warn!(
@@ -554,7 +654,10 @@ impl Drop for SharedVirtualNicMemberRegistration {
 
         handle.spawn(async move {
             let mut shared_nic = shared_nic.lock().await;
-            if let Err(err) = shared_nic.remove_member_claims(member_id).await {
+            if let Err(err) = shared_nic
+                .remove_member_registration_claims(member_id, registration_id)
+                .await
+            {
                 tracing::warn!(
                     ?member_id,
                     ?err,
@@ -580,12 +683,14 @@ impl SharedVirtualNicMember {
         close_notifier: Arc<Notify>,
         member_tunnel_table: SharedVirtualNicMemberTunnelTable,
     ) -> Self {
+        let registration_id = uuid::Uuid::new_v4();
         Self {
             member_id,
             shared_nic: shared_nic.clone(),
             close_notifier,
             registration: Arc::new(SharedVirtualNicMemberRegistration {
                 member_id,
+                registration_id,
                 shared_nic: shared_nic.clone(),
                 member_tunnel_table,
             }),
@@ -608,6 +713,9 @@ impl SharedVirtualNicMember {
         let (member_tunnel, shared_tunnel) = create_ring_tunnel_pair();
         {
             let mut shared_nic = self.shared_nic.lock().await;
+            shared_nic
+                .attach_member_registration(self.member_id, self.registration.registration_id)
+                .await?;
             shared_nic.ensure_dispatcher().await?;
         }
         self.registration
@@ -623,6 +731,9 @@ impl SharedVirtualNicMember {
         let (member_tunnel, shared_tunnel) = create_ring_tunnel_pair();
         {
             let mut shared_nic = self.shared_nic.lock().await;
+            shared_nic
+                .attach_member_registration(self.member_id, self.registration.registration_id)
+                .await?;
             shared_nic.ensure_dispatcher_for_mobile(tun_fd).await?;
         }
         self.registration
@@ -662,6 +773,24 @@ impl SharedVirtualNicMember {
     pub async fn add_ipv6(&self, ip: Ipv6Addr, cidr: i32) -> Result<(), Error> {
         let ip = ipv6_inet(ip, cidr)?;
         self.update_claims(|claims| {
+            claims.ipv6_addresses.insert(ip);
+        })
+        .await
+    }
+
+    #[cfg(mobile)]
+    pub async fn add_mobile_source_ip(&self, ip: Ipv4Addr, cidr: i32) -> Result<(), Error> {
+        let ip = ipv4_inet(ip, cidr)?;
+        self.update_claims_for_mobile(|claims| {
+            claims.ipv4_addresses.insert(ip);
+        })
+        .await
+    }
+
+    #[cfg(mobile)]
+    pub async fn add_mobile_source_ipv6(&self, ip: Ipv6Addr, cidr: i32) -> Result<(), Error> {
+        let ip = ipv6_inet(ip, cidr)?;
+        self.update_claims_for_mobile(|claims| {
             claims.ipv6_addresses.insert(ip);
         })
         .await
@@ -740,7 +869,30 @@ impl SharedVirtualNicMember {
         let mut shared_nic = self.shared_nic.lock().await;
         let mut claims = shared_nic.ifcfg.claims_of(self.member_id);
         update(&mut claims);
-        shared_nic.apply_member_claims(self.member_id, claims).await
+        shared_nic
+            .apply_member_claims_for_registration(
+                self.member_id,
+                self.registration.registration_id,
+                claims,
+            )
+            .await
+    }
+
+    #[cfg(mobile)]
+    async fn update_claims_for_mobile<F>(&self, update: F) -> Result<(), Error>
+    where
+        F: FnOnce(&mut SharedIfConfigClaims) + Send,
+    {
+        let mut shared_nic = self.shared_nic.lock().await;
+        let mut claims = shared_nic.ifcfg.claims_of(self.member_id);
+        update(&mut claims);
+        shared_nic
+            .apply_member_claims_for_mobile_registration(
+                self.member_id,
+                self.registration.registration_id,
+                claims,
+            )
+            .await
     }
 }
 
@@ -1079,6 +1231,40 @@ mod tests {
             BTreeSet::from([member])
         );
         drop(shared_nic.nic());
+    }
+
+    #[tokio::test]
+    async fn stale_member_registration_cleanup_keeps_current_claims() {
+        let mut shared_nic = SharedVirtualNic::new(virtual_nic_config());
+        let member = member_id(1);
+        let old_registration = uuid::Uuid::from_u128(10);
+        let current_registration = uuid::Uuid::from_u128(11);
+        let ip = Ipv4Inet::from_str("10.50.0.2/24").unwrap();
+
+        shared_nic
+            .member_registrations
+            .insert(member, current_registration);
+        shared_nic.ifcfg_mut().apply_member_claims(
+            member,
+            SharedIfConfigClaims {
+                ipv4_addresses: BTreeSet::from([ip]),
+                ..Default::default()
+            },
+        );
+
+        shared_nic
+            .remove_member_registration_claims(member, old_registration)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            shared_nic.ifcfg().owners_of_ipv4_address(&ip),
+            BTreeSet::from([member])
+        );
+        assert_eq!(
+            shared_nic.member_registrations.get(&member),
+            Some(&current_registration)
+        );
     }
 
     #[test]
