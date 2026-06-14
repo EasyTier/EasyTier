@@ -289,7 +289,9 @@ impl GlobalCtx {
 
         let stun_info_collector = StunInfoCollector::new_with_default_servers();
 
-        if let Some(stun_servers) = config_fs.get_stun_servers() {
+        let stun_servers = config_fs.get_stun_servers();
+
+        if let Some(stun_servers) = stun_servers.clone() {
             stun_info_collector.set_stun_servers(stun_servers);
         } else {
             stun_info_collector.set_stun_servers(StunInfoCollector::get_default_servers());
@@ -298,6 +300,7 @@ impl GlobalCtx {
         stun_info_collector.set_tcp_stun_servers(
             config_fs
                 .get_tcp_stun_servers()
+                .or(stun_servers)
                 .unwrap_or_else(StunInfoCollector::get_default_tcp_servers),
         );
 
@@ -795,11 +798,77 @@ impl GlobalCtx {
 #[cfg(test)]
 pub mod tests {
     use crate::{
-        common::{config::TomlConfigLoader, new_peer_id, stun::MockStunInfoCollector},
+        common::{
+            config::TomlConfigLoader, new_peer_id, stun::MockStunInfoCollector,
+            stun_codec_ext::Attribute,
+        },
         proto::common::NatType,
     };
+    use bytecodec::{DecodeExt, EncodeExt};
+    use std::net::Ipv4Addr;
+    use stun_codec::{
+        Message, MessageClass, MessageDecoder, MessageEncoder,
+        rfc5389::{attributes::XorMappedAddress, methods::BINDING},
+    };
+    use tokio::{
+        io::{AsyncReadExt, AsyncWriteExt},
+        net::{TcpListener, TcpStream},
+    };
+    use tokio_util::task::AbortOnDropHandle;
 
     use super::*;
+
+    async fn read_tcp_stun_message(stream: &mut TcpStream) -> anyhow::Result<Message<Attribute>> {
+        let mut header = [0u8; 20];
+        stream.read_exact(&mut header).await?;
+
+        let msg_len = u16::from_be_bytes([header[2], header[3]]) as usize;
+        let total_size = 20 + msg_len;
+        let mut buf = vec![0u8; total_size];
+        buf[..20].copy_from_slice(&header);
+        if msg_len > 0 {
+            stream.read_exact(&mut buf[20..]).await?;
+        }
+
+        let mut decoder = MessageDecoder::<Attribute>::new();
+        match decoder.decode_from_bytes(&buf)? {
+            Ok(msg) => Ok(msg),
+            Err(e) => Err(anyhow::anyhow!("invalid tcp stun message: {:?}", e)),
+        }
+    }
+
+    async fn spawn_tcp_stun_server() -> (SocketAddr, AbortOnDropHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let server_addr = listener.local_addr().unwrap();
+
+        let task = tokio::spawn(async move {
+            for _ in 0..16 {
+                let Ok((mut stream, peer_addr)) = listener.accept().await else {
+                    break;
+                };
+                let Ok(req) = read_tcp_stun_message(&mut stream).await else {
+                    continue;
+                };
+
+                let mut resp_msg = Message::<Attribute>::new(
+                    MessageClass::SuccessResponse,
+                    BINDING,
+                    req.transaction_id(),
+                );
+                resp_msg.add_attribute(Attribute::XorMappedAddress(XorMappedAddress::new(
+                    peer_addr,
+                )));
+
+                let mut encoder = MessageEncoder::new();
+                let Ok(rsp_buf) = encoder.encode_into_bytes(resp_msg) else {
+                    continue;
+                };
+                let _ = stream.write_all(rsp_buf.as_slice()).await;
+            }
+        });
+
+        (server_addr, AbortOnDropHandle::new(task))
+    }
 
     #[tokio::test]
     async fn test_global_ctx() {
@@ -829,6 +898,68 @@ pub mod tests {
             subscriber.recv().await.unwrap(),
             GlobalCtxEvent::PeerConnRemoved(PeerConnInfo::default())
         );
+    }
+
+    #[tokio::test]
+    async fn tcp_stun_uses_stun_servers_when_tcp_servers_unset() {
+        let (server_addr, _server) = spawn_tcp_stun_server().await;
+        let config =
+            TomlConfigLoader::new_from_str(&format!(r#"stun_servers = ["{}"]"#, server_addr))
+                .unwrap();
+
+        let global_ctx = GlobalCtx::new(config);
+        let mapped = global_ctx
+            .get_stun_info_collector()
+            .get_tcp_port_mapping(0)
+            .await
+            .unwrap();
+
+        assert_eq!(mapped.ip(), IpAddr::V4(Ipv4Addr::LOCALHOST));
+        assert!(mapped.port() > 0);
+    }
+
+    #[tokio::test]
+    async fn tcp_stun_servers_override_stun_servers() {
+        let (server_addr, _server) = spawn_tcp_stun_server().await;
+        let config = TomlConfigLoader::new_from_str(&format!(
+            r#"
+stun_servers = ["127.0.0.1:9"]
+tcp_stun_servers = ["{}"]
+"#,
+            server_addr
+        ))
+        .unwrap();
+
+        let global_ctx = GlobalCtx::new(config);
+        let mapped = global_ctx
+            .get_stun_info_collector()
+            .get_tcp_port_mapping(0)
+            .await
+            .unwrap();
+
+        assert_eq!(mapped.ip(), IpAddr::V4(Ipv4Addr::LOCALHOST));
+        assert!(mapped.port() > 0);
+    }
+
+    #[tokio::test]
+    async fn empty_tcp_stun_servers_override_stun_servers() {
+        let (server_addr, _server) = spawn_tcp_stun_server().await;
+        let config = TomlConfigLoader::new_from_str(&format!(
+            r#"
+stun_servers = ["{}"]
+tcp_stun_servers = []
+"#,
+            server_addr
+        ))
+        .unwrap();
+
+        let global_ctx = GlobalCtx::new(config);
+        let ret = global_ctx
+            .get_stun_info_collector()
+            .get_tcp_port_mapping(0)
+            .await;
+
+        assert!(ret.is_err());
     }
 
     #[tokio::test]
