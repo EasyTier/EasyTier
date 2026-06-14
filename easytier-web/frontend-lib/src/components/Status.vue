@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { useTimeAgo } from '@vueuse/core'
 import { IPv4 } from 'ip-num/IPNumber'
-import { NetworkInstance, type TunnelInfo, type NodeInfo, type PeerRoutePair } from '../types/network'
+import { NetworkInstance, NatType, parseEnum, type TunnelInfo, type NodeInfo, type PeerRoutePair } from '../types/network'
 import { useI18n } from 'vue-i18n';
 import { computed, onMounted, onUnmounted, ref } from 'vue';
 import { ipv4InetToString, ipv4ToString, ipv6ToString } from '../modules/utils';
@@ -44,13 +44,21 @@ function resolveObjPath(path: string, obj = globalThis, separator = '.') {
   return properties.reduce((prev, curr) => prev?.[curr], obj)
 }
 
+function toNumber(v: any): number {
+  if (typeof v === 'string')
+    return Number(v)
+  if (typeof v === 'number')
+    return v
+  return 0
+}
+
 function statsCommon(info: any, field: string): number | undefined {
   if (!info.peer)
     return undefined
 
   const conns = info.peer.conns
   return conns.reduce((acc: number, conn: any) => {
-    return acc + resolveObjPath(field, conn)
+    return acc + toNumber(resolveObjPath(field, conn))
   }, 0)
 }
 
@@ -146,22 +154,8 @@ interface Chip {
   icon: string
 }
 
-// udp nat type
-enum NatType {
-  // has NAT; but own a single public IP, port is not changed
-  Unknown = 0,
-  OpenInternet = 1,
-  NoPAT = 2,
-  FullCone = 3,
-  Restricted = 4,
-  PortRestricted = 5,
-  Symmetric = 6,
-  SymUdpFirewall = 7,
-  SymmetricEasyInc = 8,
-  SymmetricEasyDec = 9,
-};
 
-const udpNatTypeStrMap = {
+const udpNatTypeStrMap: Record<number, string> = {
   [NatType.Unknown]: 'Unknown',
   [NatType.OpenInternet]: 'Open Internet',
   [NatType.NoPAT]: 'No PAT',
@@ -248,7 +242,7 @@ const myNodeInfoChips = computed(() => {
     } as Chip)
   }
 
-  const udpNatType: NatType = my_node_info.stun_info?.udp_nat_type
+  const udpNatType = parseEnum(NatType, my_node_info.stun_info?.udp_nat_type, undefined)
   if (udpNatType !== undefined) {
     chips.push({
       label: `UDP NAT Type: ${udpNatTypeStrMap[udpNatType]}`,
@@ -281,11 +275,8 @@ function rxGlobalSum() {
 }
 
 function natType(info: PeerRoutePair): string {
-  const udpNatType = info.route?.stun_info?.udp_nat_type;
-  if (udpNatType !== undefined)
-    return udpNatTypeStrMap[udpNatType as NatType]
-
-  return ''
+  const udpNatType = parseEnum(NatType, info.route?.stun_info?.udp_nat_type, undefined)
+  return udpNatType !== undefined ? udpNatTypeStrMap[udpNatType] : ''
 }
 
 const peerCount = computed(() => {

@@ -36,6 +36,14 @@ export enum AclChainType {
   Forward = 3,
 }
 
+export function parseEnum(enumObj: Record<string, any>, v: string | number | null | undefined, fallback: number): number
+export function parseEnum(enumObj: Record<string, any>, v: string | number | null | undefined, fallback?: number): number | undefined
+export function parseEnum(enumObj: Record<string, any>, v: string | number | null | undefined, fallback?: number): number | undefined {
+  if (v == null) return fallback
+  if (typeof v === 'string') return (enumObj[v] as number | undefined) ?? fallback
+  return v
+}
+
 export interface AclRule {
   name: string
   description: string
@@ -94,7 +102,7 @@ export interface NetworkConfig {
   credential_file?: string
   secure_mode?: SecureModeConfig
 
-  networking_method: NetworkingMethod
+  networking_method: NetworkingMethod | string
 
   public_server_url: string
   peer_urls: string[]
@@ -243,6 +251,17 @@ function cleanPeerUrls(urls: string[] | undefined): string[] {
   return (urls ?? []).map((url) => url.trim()).filter((url) => url.length > 0)
 }
 
+function convertEnumToName(enumObj: Record<string, any>, value: any, defaultKey: number): string {
+  if (value == null) return enumObj[defaultKey]
+  if (typeof value === 'number') return enumObj[value] ?? enumObj[defaultKey]
+  if (typeof value === 'string') {
+    if (typeof enumObj[value] === 'number') return value
+    const n = Number(value)
+    if (!Number.isNaN(n)) return enumObj[n] ?? enumObj[defaultKey]
+  }
+  return enumObj[defaultKey]
+}
+
 export function normalizeNetworkConfig(config: NetworkConfig): NetworkConfig {
   const normalized: NetworkConfig = {
     ...config,
@@ -251,25 +270,99 @@ export function normalizeNetworkConfig(config: NetworkConfig): NetworkConfig {
 
   const publicServerUrl = normalized.public_server_url?.trim() ?? ''
 
-  switch (normalized.networking_method) {
-    case NetworkingMethod.PublicServer:
+  // pbjson encodes enum fields as string names (proto3 JSON mapping).
+  // The old prost_wkt_build serde and the client-side enum constants both
+  // use integers. Convert to the string name so pbjson can deserialise it.
+  const rawMethod: any = normalized.networking_method
+  const methodStr: string =
+    typeof rawMethod === 'number' ? NetworkingMethod[rawMethod] ?? 'Manual'
+    : typeof rawMethod === 'string' ? rawMethod
+    : 'Manual'
+
+  switch (methodStr) {
+    case 'PublicServer':
       normalized.peer_urls = publicServerUrl ? [publicServerUrl] : []
       break
-    case NetworkingMethod.Manual:
+    case 'Manual':
       break
-    case NetworkingMethod.Standalone:
+    case 'Standalone':
     default:
       normalized.peer_urls = []
       break
   }
 
-  normalized.networking_method = NetworkingMethod.Manual
+  normalized.networking_method = methodStr as any
   normalized.public_server_url = ''
+
+  // Normalize ACL enum fields from pbjson string names to numeric values.
+  const aclV1 = normalized.acl?.acl_v1
+  if (aclV1) {
+    for (const chain of aclV1.chains) {
+      chain.chain_type = parseEnum(AclChainType, chain.chain_type, AclChainType.UnspecifiedChain)
+      chain.default_action = parseEnum(AclAction, chain.default_action, AclAction.Allow)
+      for (const rule of chain.rules) {
+        rule.protocol = parseEnum(AclProtocol, rule.protocol, AclProtocol.Any)
+        rule.action = parseEnum(AclAction, rule.action, AclAction.Allow)
+      }
+    }
+  }
+
+  // instance_recv_bps_limit is uint64 in proto, pbjson encodes it as string.
+  // Convert to number for UI InputNumber; pbjson can deserialize either form.
+  const rawRecvBpsLimit: any = normalized.instance_recv_bps_limit
+  if (typeof rawRecvBpsLimit === 'string') {
+    const n = Number(rawRecvBpsLimit)
+    normalized.instance_recv_bps_limit = Number.isNaN(n) ? null : n
+  }
+
   return normalized
 }
 
 export function toBackendNetworkConfig(config: NetworkConfig): NetworkConfig {
-  return normalizeNetworkConfig(config)
+  const backend: NetworkConfig = JSON.parse(JSON.stringify(config))
+
+  backend.peer_urls = cleanPeerUrls(backend.peer_urls)
+
+  const publicServerUrl = backend.public_server_url?.trim() ?? ''
+  const rawMethod: any = backend.networking_method
+  const methodStr: string =
+    typeof rawMethod === 'number' ? NetworkingMethod[rawMethod] ?? 'Manual'
+    : typeof rawMethod === 'string' ? rawMethod
+    : 'Manual'
+
+  switch (methodStr) {
+    case 'PublicServer':
+      backend.peer_urls = publicServerUrl ? [publicServerUrl] : []
+      break
+    case 'Manual':
+      break
+    case 'Standalone':
+    default:
+      backend.peer_urls = []
+      break
+  }
+
+  backend.networking_method = methodStr as any
+  backend.public_server_url = ''
+
+  const aclV1 = backend.acl?.acl_v1
+  if (aclV1) {
+    for (const chain of aclV1.chains) {
+      chain.chain_type = convertEnumToName(AclChainType, chain.chain_type, AclChainType.UnspecifiedChain) as any
+      chain.default_action = convertEnumToName(AclAction, chain.default_action, AclAction.Allow) as any
+      for (const rule of chain.rules) {
+        rule.protocol = convertEnumToName(AclProtocol, rule.protocol, AclProtocol.Any) as any
+        rule.action = convertEnumToName(AclAction, rule.action, AclAction.Allow) as any
+      }
+    }
+  }
+
+  const rawLimit: any = backend.instance_recv_bps_limit
+  if (rawLimit != null) {
+    backend.instance_recv_bps_limit = String(rawLimit) as any
+  }
+
+  return backend
 }
 
 export interface NetworkInstance {
@@ -340,10 +433,23 @@ export interface NodeInfo {
   peer_id: number
 }
 
+export enum NatType {
+  Unknown = 0,
+  OpenInternet = 1,
+  NoPAT = 2,
+  FullCone = 3,
+  Restricted = 4,
+  PortRestricted = 5,
+  Symmetric = 6,
+  SymUdpFirewall = 7,
+  SymmetricEasyInc = 8,
+  SymmetricEasyDec = 9,
+}
+
 export interface StunInfo {
-  udp_nat_type: number
-  tcp_nat_type: number
-  last_update_time: number
+  udp_nat_type: string | number
+  tcp_nat_type: string | number
+  last_update_time: string | number
 }
 
 export interface Route {
@@ -390,11 +496,11 @@ export interface TunnelInfo {
 }
 
 export interface PeerConnStats {
-  rx_bytes: number
-  tx_bytes: number
-  rx_packets: number
-  tx_packets: number
-  latency_us: number
+  rx_bytes: string | number
+  tx_bytes: string | number
+  rx_packets: string | number
+  tx_packets: string | number
+  latency_us: string | number
 }
 
 export interface PortForwardConfig {

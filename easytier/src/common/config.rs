@@ -1058,11 +1058,17 @@ impl ConfigLoader for TomlConfigLoader {
                 .unwrap();
 
         let mut flag_map: serde_json::Map<String, serde_json::Value> = Default::default();
-        for (key, value) in default_flags_hashmap {
-            if let Some(v) = cur_flags_hashmap.get(&key)
-                && *v != value
+        let all_keys: std::collections::BTreeSet<&String> = default_flags_hashmap
+            .keys()
+            .chain(cur_flags_hashmap.keys())
+            .collect();
+        for key in all_keys {
+            let default_val = default_flags_hashmap.get(key);
+            let cur_val = cur_flags_hashmap.get(key);
+            if default_val != cur_val
+                && let Some(v) = cur_val
             {
-                flag_map.insert(key, v.clone());
+                flag_map.insert(key.clone(), v.clone());
             }
         }
 
