@@ -238,8 +238,10 @@ pub trait ConfigLoader: Send + Sync {
     fn get_stun_servers(&self) -> Option<Vec<String>>;
     fn set_stun_servers(&self, servers: Option<Vec<String>>);
 
-    fn get_tcp_stun_servers(&self) -> Option<Vec<String>>;
-    fn set_tcp_stun_servers(&self, servers: Option<Vec<String>>);
+    fn get_tcp_stun_servers(&self) -> Option<Vec<String>> {
+        None
+    }
+    fn set_tcp_stun_servers(&self, _servers: Option<Vec<String>>) {}
 
     fn get_stun_servers_v6(&self) -> Option<Vec<String>>;
     fn set_stun_servers_v6(&self, servers: Option<Vec<String>>);
