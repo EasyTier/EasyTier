@@ -340,6 +340,7 @@ impl CoreInstanceConfig {
                         .unwrap_or_else(|| StunServerConfig::default().udp_servers),
                     tcp_servers: config
                         .get_tcp_stun_servers()
+                        .or_else(|| config.get_stun_servers())
                         .unwrap_or_else(|| StunServerConfig::default().tcp_servers),
                     udp_v6_servers: config
                         .get_stun_servers_v6()
@@ -379,6 +380,44 @@ impl CoreInstanceConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tcp_stun_servers_follow_toml_override_rules() {
+        let fallback = TomlConfig::new_from_str(
+            r#"
+stun_servers = ["fallback.example.com:3478"]
+"#,
+        )
+        .unwrap();
+        let normalized = CoreInstanceConfig::from_toml(&fallback).unwrap();
+        assert_eq!(
+            normalized.connectivity.stun.tcp_servers,
+            ["fallback.example.com:3478"]
+        );
+
+        let overridden = TomlConfig::new_from_str(
+            r#"
+stun_servers = ["fallback.example.com:3478"]
+tcp_stun_servers = ["tcp.example.com:3478"]
+"#,
+        )
+        .unwrap();
+        let normalized = CoreInstanceConfig::from_toml(&overridden).unwrap();
+        assert_eq!(
+            normalized.connectivity.stun.tcp_servers,
+            ["tcp.example.com:3478"]
+        );
+
+        let disabled = TomlConfig::new_from_str(
+            r#"
+stun_servers = ["fallback.example.com:3478"]
+tcp_stun_servers = []
+"#,
+        )
+        .unwrap();
+        let normalized = CoreInstanceConfig::from_toml(&disabled).unwrap();
+        assert!(normalized.connectivity.stun.tcp_servers.is_empty());
+    }
 
     #[test]
     fn shared_toml_normalizes_instance_identity_and_connectivity() {
