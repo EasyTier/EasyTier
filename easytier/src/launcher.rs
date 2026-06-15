@@ -924,6 +924,20 @@ impl NetworkConfig {
             flags.need_p2p = need_p2p;
         }
 
+        if let Some(peer_conn_max_heartbeat_interval_secs) =
+            self.peer_conn_max_heartbeat_interval_secs
+        {
+            flags.peer_conn_max_heartbeat_interval_secs = peer_conn_max_heartbeat_interval_secs;
+        }
+
+        if let Some(peer_conn_max_missed_heartbeats) = self.peer_conn_max_missed_heartbeats {
+            flags.peer_conn_max_missed_heartbeats = peer_conn_max_missed_heartbeats;
+        }
+
+        if let Some(peer_conn_pong_timeout_secs) = self.peer_conn_pong_timeout_secs {
+            flags.peer_conn_pong_timeout_secs = peer_conn_pong_timeout_secs;
+        }
+
         if let Some(multi_thread) = self.multi_thread {
             flags.multi_thread = multi_thread;
         }
@@ -1133,6 +1147,10 @@ impl NetworkConfig {
         result.enable_exit_node = Some(flags.enable_exit_node);
         result.relay_all_peer_rpc = Some(flags.relay_all_peer_rpc);
         result.need_p2p = Some(flags.need_p2p);
+        result.peer_conn_max_heartbeat_interval_secs =
+            Some(flags.peer_conn_max_heartbeat_interval_secs);
+        result.peer_conn_max_missed_heartbeats = Some(flags.peer_conn_max_missed_heartbeats);
+        result.peer_conn_pong_timeout_secs = Some(flags.peer_conn_pong_timeout_secs);
         result.multi_thread = Some(flags.multi_thread);
         result.proxy_forward_by_system = Some(flags.proxy_forward_by_system);
         result.disable_encryption = Some(!flags.enable_encryption);
@@ -1403,6 +1421,9 @@ mod tests {
                 flags.enable_exit_node = rng.gen_bool(0.4);
                 flags.relay_all_peer_rpc = rng.gen_bool(0.5);
                 flags.need_p2p = rng.gen_bool(0.3);
+                flags.peer_conn_max_heartbeat_interval_secs = rng.gen_range(1..120);
+                flags.peer_conn_max_missed_heartbeats = rng.gen_range(1..10);
+                flags.peer_conn_pong_timeout_secs = rng.gen_range(1..10);
                 flags.multi_thread = rng.gen_bool(0.7);
                 flags.proxy_forward_by_system = rng.gen_bool(0.3);
                 flags.enable_encryption = rng.gen_bool(0.8);
@@ -1450,6 +1471,36 @@ mod tests {
                 serde_json::to_string(&network_config).unwrap()
             );
         }
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_network_config_peer_conn_ping_flags() -> Result<(), anyhow::Error> {
+        let network_config = super::NetworkConfig {
+            networking_method: Some(super::NetworkingMethod::Standalone as i32),
+            peer_conn_max_heartbeat_interval_secs: Some(12),
+            peer_conn_max_missed_heartbeats: Some(3),
+            peer_conn_pong_timeout_secs: Some(1),
+            ..Default::default()
+        };
+
+        let generated_config = network_config.gen_config()?;
+        let flags = generated_config.get_flags();
+        assert_eq!(flags.peer_conn_max_heartbeat_interval_secs, 12);
+        assert_eq!(flags.peer_conn_max_missed_heartbeats, 3);
+        assert_eq!(flags.peer_conn_pong_timeout_secs, 1);
+
+        let parsed_network_config = super::NetworkConfig::new_from_config(&generated_config)?;
+        assert_eq!(
+            parsed_network_config.peer_conn_max_heartbeat_interval_secs,
+            Some(12)
+        );
+        assert_eq!(
+            parsed_network_config.peer_conn_max_missed_heartbeats,
+            Some(3)
+        );
+        assert_eq!(parsed_network_config.peer_conn_pong_timeout_secs, Some(1));
 
         Ok(())
     }

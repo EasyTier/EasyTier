@@ -102,6 +102,9 @@ message NetworkConfig {
   optional bool disable_relay_data = 65;
   optional bool enable_udp_broadcast_relay = 66;
   optional uint32 socket_mark = 67;
+  optional uint32 peer_conn_max_heartbeat_interval_secs = 68;
+  optional uint32 peer_conn_max_missed_heartbeats = 69;
+  optional uint32 peer_conn_pong_timeout_secs = 70;
 }
 
 message PortForwardConfig {

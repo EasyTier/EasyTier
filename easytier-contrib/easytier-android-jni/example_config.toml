@@ -54,3 +54,11 @@ network = "my_easytier_network"
 
 # 延迟优先 (可选)
 # latency_first = false
+
+[flags]
+# PeerConn 最大心跳间隔，单位秒。默认 32；0 表示使用默认值
+peer_conn_max_heartbeat_interval_secs = 32
+# 连续丢失多少次 Pong 后关闭 PeerConn。默认 5；0 表示使用默认值
+peer_conn_max_missed_heartbeats = 5
+# 单次等待 Pong 的超时时间，单位秒。默认 2；0 表示使用默认值
+peer_conn_pong_timeout_secs = 2

@@ -128,6 +128,9 @@ export interface NetworkConfig {
   enable_exit_node?: boolean
   relay_all_peer_rpc?: boolean
   need_p2p?: boolean
+  peer_conn_max_heartbeat_interval_secs?: number
+  peer_conn_max_missed_heartbeats?: number
+  peer_conn_pong_timeout_secs?: number
   multi_thread?: boolean
   proxy_forward_by_system?: boolean
   disable_encryption?: boolean
@@ -206,6 +209,9 @@ export function DEFAULT_NETWORK_CONFIG(): NetworkConfig {
     enable_exit_node: false,
     relay_all_peer_rpc: false,
     need_p2p: false,
+    peer_conn_max_heartbeat_interval_secs: 32,
+    peer_conn_max_missed_heartbeats: 5,
+    peer_conn_pong_timeout_secs: 2,
     multi_thread: true,
     proxy_forward_by_system: false,
     disable_encryption: false,
@@ -247,6 +253,9 @@ export function normalizeNetworkConfig(config: NetworkConfig): NetworkConfig {
   const normalized: NetworkConfig = {
     ...config,
     peer_urls: cleanPeerUrls(config.peer_urls),
+    peer_conn_max_heartbeat_interval_secs: config.peer_conn_max_heartbeat_interval_secs ?? 32,
+    peer_conn_max_missed_heartbeats: config.peer_conn_max_missed_heartbeats ?? 5,
+    peer_conn_pong_timeout_secs: config.peer_conn_pong_timeout_secs ?? 2,
   }
 
   const publicServerUrl = normalized.public_server_url?.trim() ?? ''

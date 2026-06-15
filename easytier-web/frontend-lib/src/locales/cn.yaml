@@ -145,6 +145,15 @@ relay_all_peer_rpc_help: |
 need_p2p: 需要 P2P
 need_p2p_help: 即使其他节点启用了 lazy p2p，也要求它们主动与当前节点建立 P2P 连接。
 
+peer_conn_max_heartbeat_interval_secs: PeerConn 最大心跳间隔
+peer_conn_max_heartbeat_interval_secs_help: PeerConn 心跳退避后的最大间隔，单位秒。默认 32，填 0 表示使用默认值。
+
+peer_conn_max_missed_heartbeats: PeerConn 最大失败次数
+peer_conn_max_missed_heartbeats_help: 连续多少次未收到 Pong 后关闭 PeerConn。默认 5，填 0 表示使用默认值。
+
+peer_conn_pong_timeout_secs: PeerConn Pong 超时
+peer_conn_pong_timeout_secs_help: 单次等待 Pong 响应的超时时间，单位秒。默认 2，填 0 表示使用默认值。
+
 multi_thread: 启用多线程
 multi_thread_help: 使用多线程运行时
 
