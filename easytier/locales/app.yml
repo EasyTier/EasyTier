@@ -172,6 +172,15 @@ core_clap:
   need_p2p:
     en: "announce that other peers should proactively establish p2p connections to this node even when they enable lazy-p2p"
     zh-CN: "声明即使其他节点启用了 lazy-p2p，也应主动与当前节点建立P2P连接"
+  peer_conn_max_heartbeat_interval_secs:
+    en: "maximum PeerConn heartbeat interval in seconds. default is 32; 0 means default"
+    zh-CN: "PeerConn 最大心跳间隔，单位秒。默认 32；0 表示使用默认值"
+  peer_conn_max_missed_heartbeats:
+    en: "close a PeerConn after this many consecutive missed Pong responses. default is 5; 0 means default"
+    zh-CN: "连续丢失多少次 Pong 后关闭 PeerConn。默认 5；0 表示使用默认值"
+  peer_conn_pong_timeout_secs:
+    en: "single Pong wait timeout in seconds. default is 2; 0 means default"
+    zh-CN: "单次等待 Pong 的超时时间，单位秒。默认 2；0 表示使用默认值"
   disable_tcp_hole_punching:
     en: "disable tcp hole punching"
     zh-CN: "禁用TCP打洞功能"

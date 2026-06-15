@@ -511,6 +511,27 @@ struct NetworkOptions {
     )]
     need_p2p: Option<bool>,
 
+    #[arg(
+        long,
+        env = "ET_PEER_CONN_MAX_HEARTBEAT_INTERVAL_SECS",
+        help = t!("core_clap.peer_conn_max_heartbeat_interval_secs").to_string(),
+    )]
+    peer_conn_max_heartbeat_interval_secs: Option<u32>,
+
+    #[arg(
+        long,
+        env = "ET_PEER_CONN_MAX_MISSED_HEARTBEATS",
+        help = t!("core_clap.peer_conn_max_missed_heartbeats").to_string(),
+    )]
+    peer_conn_max_missed_heartbeats: Option<u32>,
+
+    #[arg(
+        long,
+        env = "ET_PEER_CONN_PONG_TIMEOUT_SECS",
+        help = t!("core_clap.peer_conn_pong_timeout_secs").to_string(),
+    )]
+    peer_conn_pong_timeout_secs: Option<u32>,
+
     #[cfg(feature = "socks5")]
     #[arg(
         long,
@@ -1127,6 +1148,15 @@ impl NetworkOptions {
             .unwrap_or(f.disable_udp_hole_punching);
         f.relay_all_peer_rpc = self.relay_all_peer_rpc.unwrap_or(f.relay_all_peer_rpc);
         f.need_p2p = self.need_p2p.unwrap_or(f.need_p2p);
+        f.peer_conn_max_heartbeat_interval_secs = self
+            .peer_conn_max_heartbeat_interval_secs
+            .unwrap_or(f.peer_conn_max_heartbeat_interval_secs);
+        f.peer_conn_max_missed_heartbeats = self
+            .peer_conn_max_missed_heartbeats
+            .unwrap_or(f.peer_conn_max_missed_heartbeats);
+        f.peer_conn_pong_timeout_secs = self
+            .peer_conn_pong_timeout_secs
+            .unwrap_or(f.peer_conn_pong_timeout_secs);
         f.multi_thread = self.multi_thread.unwrap_or(f.multi_thread);
         if let Some(compression) = &self.compression {
             f.data_compress_algo = match compression.as_str() {

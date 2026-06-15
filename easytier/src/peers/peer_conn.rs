@@ -29,7 +29,7 @@ use snow::{HandshakeState, params::NoiseParams};
 
 use super::{
     PacketRecvChan,
-    peer_conn_ping::PeerConnPinger,
+    peer_conn_ping::{PeerConnPingConfig, PeerConnPinger},
     peer_session::{PeerSession, PeerSessionAction},
     traffic_metrics::AggregateTrafficMetrics,
 };
@@ -1437,6 +1437,12 @@ impl PeerConn {
     }
 
     pub fn start_pingpong(&mut self) {
+        let flags = self.global_ctx.get_flags();
+        let ping_config = PeerConnPingConfig::new(
+            flags.peer_conn_max_heartbeat_interval_secs,
+            flags.peer_conn_max_missed_heartbeats,
+            flags.peer_conn_pong_timeout_secs,
+        );
         let mut pingpong = PeerConnPinger::new(
             self.my_peer_id,
             self.get_peer_id(),
@@ -1446,6 +1452,7 @@ impl PeerConn {
             self.loss_rate_stats.clone(),
             self.throughput.clone(),
             self.control_metrics(&self.get_conn_info().network_name),
+            ping_config,
         );
 
         let close_event_notifier = self.close_event_notifier.clone();
