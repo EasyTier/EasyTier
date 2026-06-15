@@ -66,6 +66,9 @@ static RPC_SERVER: once_cell::sync::Lazy<Mutex<Option<RpcServer>>> =
 static WEB_CLIENT: once_cell::sync::Lazy<RwLock<Option<WebClient>>> =
     once_cell::sync::Lazy::new(|| RwLock::new(None));
 
+#[cfg(target_os = "android")]
+const ANDROID_SHARED_TUN_DEV_NAME: &str = "easytier-shared";
+
 macro_rules! get_client_manager {
     () => {{
         let guard = CLIENT_MANAGER
@@ -74,6 +77,17 @@ macro_rules! get_client_manager {
         RwLockReadGuard::try_map(guard, |cm| cm.as_ref())
             .map_err(|_| "RPC connection not initialized".to_string())
     }};
+}
+
+fn normalize_network_config_for_runtime(cfg: &mut NetworkConfig) {
+    #[cfg(target_os = "android")]
+    {
+        if !cfg.no_tun() && cfg.dev_name.as_deref().map(str::is_empty).unwrap_or(true) {
+            cfg.dev_name = Some(ANDROID_SHARED_TUN_DEV_NAME.to_owned());
+        }
+    }
+    #[cfg(not(target_os = "android"))]
+    let _ = cfg;
 }
 
 #[tauri::command]
@@ -100,6 +114,8 @@ fn set_dock_visibility(app: tauri::AppHandle, visible: bool) -> Result<(), Strin
 
 #[tauri::command]
 fn parse_network_config(cfg: NetworkConfig) -> Result<String, String> {
+    let mut cfg = cfg;
+    normalize_network_config_for_runtime(&mut cfg);
     let toml = cfg.gen_config().map_err(|e| e.to_string())?;
     Ok(toml.dump())
 }
@@ -117,6 +133,8 @@ async fn run_network_instance(
     cfg: NetworkConfig,
     save: bool,
 ) -> Result<(), String> {
+    let mut cfg = cfg;
+    normalize_network_config_for_runtime(&mut cfg);
     let client_manager = get_client_manager!()?;
     let toml_config = cfg.gen_config().map_err(|e| e.to_string())?;
     client_manager
@@ -155,16 +173,84 @@ async fn set_logging_level(level: String) -> Result<(), String> {
     Ok(())
 }
 
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[allow(dead_code)]
+struct TunFdInstanceSources {
+    instance_id: String,
+    ipv4_addrs: Vec<String>,
+    #[serde(default)]
+    ipv6_addrs: Vec<String>,
+    #[serde(default)]
+    ipv4_routes: Vec<String>,
+    #[serde(default)]
+    ipv6_routes: Vec<String>,
+}
+
+#[cfg(mobile)]
+fn parse_tun_fd_instance_sources(
+    instance_sources: Vec<TunFdInstanceSources>,
+) -> Result<
+    std::collections::HashMap<uuid::Uuid, easytier::instance::virtual_nic::MobileTunSources>,
+    String,
+> {
+    instance_sources
+        .into_iter()
+        .map(|source| {
+            let instance_id = source
+                .instance_id
+                .parse::<uuid::Uuid>()
+                .map_err(|err| format!("invalid instance id {}: {err}", source.instance_id))?;
+            let sources = easytier::instance::virtual_nic::MobileTunSources::parse(
+                source.ipv4_addrs,
+                source.ipv6_addrs,
+                source.ipv4_routes,
+                source.ipv6_routes,
+            )
+            .map_err(|err| err.to_string())?;
+            Ok((instance_id, sources))
+        })
+        .collect()
+}
+
 #[tauri::command]
-async fn set_tun_fd(fd: i32) -> Result<(), String> {
+async fn set_tun_fd(
+    fd: i32,
+    instance_ids: Option<Vec<String>>,
+    instance_sources: Option<Vec<TunFdInstanceSources>>,
+) -> Result<(), String> {
     let Some(instance_manager) = INSTANCE_MANAGER.read().await.clone() else {
         return Err("set_tun_fd is not supported in remote mode".to_string());
     };
 
+    let target_ids = match instance_ids {
+        Some(instance_ids) if !instance_ids.is_empty() => instance_ids
+            .into_iter()
+            .map(|id| {
+                id.parse::<uuid::Uuid>()
+                    .map_err(|err| format!("invalid instance id {id}: {err}"))
+            })
+            .collect::<Result<Vec<_>, _>>()?,
+        _ => get_client_manager!()?.get_enabled_instances_for_tun_fd(),
+    };
+
+    #[cfg(mobile)]
+    let mut source_map = parse_tun_fd_instance_sources(instance_sources.unwrap_or_default())?;
+    #[cfg(not(mobile))]
+    let _ = instance_sources;
+
     let mut success_count = 0;
     let mut errors = Vec::new();
-    for uuid in get_client_manager!()?.get_enabled_instances_for_tun_fd() {
-        match instance_manager.set_tun_fd(&uuid, fd) {
+    for uuid in target_ids {
+        #[cfg(mobile)]
+        let set_result = match source_map.remove(&uuid) {
+            Some(sources) => instance_manager.set_tun_fd(&uuid, fd, sources),
+            None => Err(anyhow::anyhow!("missing tun sources for instance {uuid}")),
+        };
+        #[cfg(not(mobile))]
+        let set_result = instance_manager.set_tun_fd(&uuid, fd);
+
+        match set_result {
             Ok(()) => {
                 success_count += 1;
             }
@@ -1210,10 +1296,12 @@ mod manager {
         ) -> anyhow::Result<()> {
             self.storage.network_configs.clear();
             for stored in configs {
-                let instance_id = stored.config.instance_id();
+                let mut config = stored.config;
+                normalize_network_config_for_runtime(&mut config);
+                let instance_id = config.instance_id();
                 self.storage.network_configs.insert(
                     instance_id.parse()?,
-                    GUIConfig::new(instance_id.to_string(), stored.config, stored.source),
+                    GUIConfig::new(instance_id.to_string(), config, stored.source),
                 );
             }
 

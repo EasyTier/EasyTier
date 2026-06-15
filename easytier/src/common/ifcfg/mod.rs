@@ -31,6 +31,16 @@ pub trait IfConfiguerTrait: Send + Sync {
     ) -> Result<(), Error> {
         Ok(())
     }
+    async fn add_ipv4_route_with_source_hint(
+        &self,
+        name: &str,
+        address: Ipv4Addr,
+        cidr_prefix: u8,
+        cost: Option<i32>,
+        _source_hint: Option<Ipv4Addr>,
+    ) -> Result<(), Error> {
+        self.add_ipv4_route(name, address, cidr_prefix, cost).await
+    }
     async fn remove_ipv4_route(
         &self,
         _name: &str,
@@ -38,6 +48,16 @@ pub trait IfConfiguerTrait: Send + Sync {
         _cidr_prefix: u8,
     ) -> Result<(), Error> {
         Ok(())
+    }
+    async fn remove_ipv4_route_with_cost_and_source_hint(
+        &self,
+        name: &str,
+        address: Ipv4Addr,
+        cidr_prefix: u8,
+        _cost: Option<i32>,
+        _source_hint: Option<Ipv4Addr>,
+    ) -> Result<(), Error> {
+        self.remove_ipv4_route(name, address, cidr_prefix).await
     }
     async fn add_ipv4_ip(
         &self,

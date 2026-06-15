@@ -302,6 +302,28 @@ impl NetworkInstanceManager {
             .and_then(|instance| instance.value().get_api_service())
     }
 
+    #[cfg(mobile)]
+    pub fn set_tun_fd(
+        &self,
+        instance_id: &uuid::Uuid,
+        fd: i32,
+        sources: crate::instance::virtual_nic::MobileTunSources,
+    ) -> Result<(), anyhow::Error> {
+        let sender = self
+            .instance_map
+            .get(instance_id)
+            .ok_or_else(|| anyhow::anyhow!("instance not found"))?
+            .get_tun_fd_sender()
+            .ok_or_else(|| anyhow::anyhow!("tun fd sender not found"))?;
+
+        sender
+            .try_send(Some(crate::launcher::MobileTunFd { fd, sources }))
+            .map_err(|e| anyhow::anyhow!("failed to send tun fd: {}", e))?;
+
+        Ok(())
+    }
+
+    #[cfg(not(mobile))]
     pub fn set_tun_fd(&self, instance_id: &uuid::Uuid, fd: i32) -> Result<(), anyhow::Error> {
         let sender = self
             .instance_map

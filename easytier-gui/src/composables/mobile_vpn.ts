@@ -2,6 +2,7 @@ import type { NetworkTypes } from 'easytier-frontend-lib'
 import { addPluginListener } from '@tauri-apps/api/core'
 import { Utils } from 'easytier-frontend-lib'
 import { get_vpn_status, prepare_vpn, start_vpn, stop_vpn } from 'tauri-plugin-vpnservice-api'
+import type { TunFdInstanceSources } from './backend'
 
 type Route = NetworkTypes.Route
 
@@ -12,6 +13,8 @@ interface vpnStatus {
   ipv4Cidr: number | null | undefined
   routes: string[]
   dns: string | null | undefined
+  instanceIds: string[]
+  instanceSources: TunFdInstanceSources[]
 }
 
 let dhcpPollingTimer: NodeJS.Timeout | null = null
@@ -26,6 +29,8 @@ const curVpnStatus: vpnStatus = {
   ipv4Cidr: undefined,
   routes: [],
   dns: undefined,
+  instanceIds: [],
+  instanceSources: [],
 }
 
 async function requestVpnPermission() {
@@ -50,6 +55,8 @@ function resetVpnConfigStatus() {
   curVpnStatus.ipv4Cidr = undefined
   curVpnStatus.routes = []
   curVpnStatus.dns = undefined
+  curVpnStatus.instanceIds = []
+  curVpnStatus.instanceSources = []
 }
 
 function syncVpnStatusFromNative(status: Awaited<ReturnType<typeof get_vpn_status>>) {
@@ -59,13 +66,14 @@ function syncVpnStatusFromNative(status: Awaited<ReturnType<typeof get_vpn_statu
     return
   }
 
-  curVpnStatus.ipv4Addrs = status?.ipv4Addrs?.length
+  const nativeIpv4Addrs = status?.ipv4Addrs?.length
     ? [...status.ipv4Addrs]
     : status?.ipv4Addr
       ? [status.ipv4Addr]
       : []
+  curVpnStatus.ipv4Addrs = nativeIpv4Addrs
 
-  const ipv4WithCidr = status?.ipv4Addr
+  const ipv4WithCidr = curVpnStatus.ipv4Addrs[0]
   if (ipv4WithCidr?.length) {
     const [ipv4Addr, cidr] = ipv4WithCidr.split('/')
     curVpnStatus.ipv4Addr = ipv4Addr
@@ -107,14 +115,22 @@ async function doStopVpn(force = false) {
   resetVpnConfigStatus()
 }
 
-async function doStartVpn(ipv4Addrs: string[], routes: string[], dns?: string) {
+async function doStartVpn(
+  ipv4Addrs: string[],
+  routes: string[],
+  dns: string | undefined,
+  instanceIds: string[],
+  instanceSources: TunFdInstanceSources[],
+) {
   if (curVpnStatus.running) {
     return
   }
 
   const primaryIpv4 = ipv4Addrs[0]
-  const [ipv4Addr, cidr] = primaryIpv4.split('/')
-  console.log('start vpn service', ipv4Addrs, routes, dns)
+  const [ipv4Addr, cidr] = ipv4Addrs[0].split('/')
+  curVpnStatus.instanceIds = [...instanceIds]
+  curVpnStatus.instanceSources = [...instanceSources]
+  console.log('start vpn service', ipv4Addrs, routes, dns, instanceIds)
   const request = {
     ipv4Addr: primaryIpv4,
     ipv4Addrs,
@@ -145,6 +161,8 @@ async function doStartVpn(ipv4Addrs: string[], routes: string[], dns?: string) {
   curVpnStatus.ipv4Cidr = Number(cidr)
   curVpnStatus.routes = routes
   curVpnStatus.dns = dns
+  curVpnStatus.instanceIds = [...instanceIds]
+  curVpnStatus.instanceSources = [...instanceSources]
 }
 
 function scheduleVpnConfigRetry(instanceId: string) {
@@ -164,7 +182,7 @@ async function onVpnServiceStart(payload: any) {
   console.log('vpn service start', JSON.stringify(payload))
   curVpnStatus.running = true
   if (payload.fd) {
-    await setTunFd(payload.fd).catch((e) => {
+    await setTunFd(payload.fd, curVpnStatus.instanceIds, curVpnStatus.instanceSources).catch((e) => {
       console.error('set tun fd failed', e)
     })
   }
@@ -218,10 +236,71 @@ function getRoutesForVpn(routes: Route[], node_config: NetworkTypes.NetworkConfi
   return Array.from(new Set(ret)).sort()
 }
 
+function ipv4CidrToRoute(cidr: string): string | undefined {
+  const [address, prefixText] = cidr.split('/')
+  const prefix = Number(prefixText)
+  const octets = address?.split('.').map(octet => Number(octet))
+
+  if (
+    octets?.length !== 4
+    || !Number.isInteger(prefix)
+    || prefix < 0
+    || prefix > 32
+    || octets.some((octet) => {
+      return !Number.isInteger(octet) || octet < 0 || octet > 255
+    })
+  ) {
+    return undefined
+  }
+
+  const ip = (
+    octets[0] * 0x1000000
+    + octets[1] * 0x10000
+    + octets[2] * 0x100
+    + octets[3]
+  ) >>> 0
+  const mask = prefix === 0 ? 0 : (0xFFFFFFFF << (32 - prefix)) >>> 0
+  const network = (ip & mask) >>> 0
+  const route = [
+    (network >>> 24) & 0xFF,
+    (network >>> 16) & 0xFF,
+    (network >>> 8) & 0xFF,
+    network & 0xFF,
+  ].join('.')
+
+  return `${route}/${prefix}`
+}
+
 function getCollectedNetworkInfo(response: Awaited<ReturnType<typeof collectNetworkInfo>>, instanceId: string) {
   const info = response.info as any
   const map = info?.map ?? info
   return map?.[instanceId]
+}
+
+function sortInstanceSources(sources: TunFdInstanceSources[]): TunFdInstanceSources[] {
+  return sources
+    .map(source => ({
+      instanceId: source.instanceId,
+      ipv4Addrs: [...source.ipv4Addrs].sort(),
+      ipv6Addrs: [...(source.ipv6Addrs ?? [])].sort(),
+      ipv4Routes: [...(source.ipv4Routes ?? [])].sort(),
+      ipv6Routes: [...(source.ipv6Routes ?? [])].sort(),
+    }))
+    .sort((a, b) => a.instanceId.localeCompare(b.instanceId))
+}
+
+function splitRoutesByFamily(routes: string[]) {
+  const ipv4Routes: string[] = []
+  const ipv6Routes: string[] = []
+  routes.forEach((route) => {
+    if (route.includes(':')) {
+      ipv6Routes.push(route)
+    }
+    else {
+      ipv4Routes.push(route)
+    }
+  })
+  return { ipv4Routes, ipv6Routes }
 }
 
 export async function onNetworkInstanceChange(instanceId: string) {
@@ -273,6 +352,7 @@ async function applyNetworkInstanceChange(instanceId: string) {
   }
 
   const ipv4Addrs: string[] = []
+  const instanceSources: TunFdInstanceSources[] = []
   const routes = new Set<string>()
   let dns: string | undefined
   const retryInstanceIds: string[] = []
@@ -308,8 +388,26 @@ async function applyNetworkInstanceChange(instanceId: string) {
       network_length = 24
     }
 
-    ipv4Addrs.push(`${virtual_ip}/${network_length}`)
-    getRoutesForVpn(curNetworkInfo?.routes, config).forEach(route => routes.add(route))
+    const sourceIpv4 = `${virtual_ip}/${network_length}`
+    ipv4Addrs.push(sourceIpv4)
+    const instanceRoutes = new Set<string>()
+    const localRoute = ipv4CidrToRoute(sourceIpv4)
+    if (localRoute) {
+      routes.add(localRoute)
+      instanceRoutes.add(localRoute)
+    }
+    getRoutesForVpn(curNetworkInfo?.routes, config).forEach((route) => {
+      routes.add(route)
+      instanceRoutes.add(route)
+    })
+    const { ipv4Routes, ipv6Routes } = splitRoutesByFamily([...instanceRoutes])
+    instanceSources.push({
+      instanceId,
+      ipv4Addrs: [sourceIpv4],
+      ipv6Addrs: [],
+      ipv4Routes,
+      ipv6Routes,
+    })
     if (config.enable_magic_dns) {
       dns = '100.100.100.101'
     }
@@ -330,10 +428,14 @@ async function applyNetworkInstanceChange(instanceId: string) {
 
   const sortedIpv4Addrs = [...ipv4Addrs].sort()
   const sortedRoutes = Array.from(routes).sort()
+  const sortedInstanceIds = group.map(({ instanceId }) => instanceId).sort()
+  const sortedInstanceSources = sortInstanceSources(instanceSources)
   const ipChanged = JSON.stringify(sortedIpv4Addrs) !== JSON.stringify(curVpnStatus.ipv4Addrs)
   const routesChanged = JSON.stringify(sortedRoutes) !== JSON.stringify(curVpnStatus.routes)
-  const dnsChanged = dns != curVpnStatus.dns
-  const configChanged = ipChanged || routesChanged || dnsChanged
+  const dnsChanged = dns !== curVpnStatus.dns
+  const instanceIdsChanged = JSON.stringify(sortedInstanceIds) !== JSON.stringify(curVpnStatus.instanceIds)
+  const instanceSourcesChanged = JSON.stringify(sortedInstanceSources) !== JSON.stringify(sortInstanceSources(curVpnStatus.instanceSources))
+  const configChanged = ipChanged || routesChanged || dnsChanged || instanceIdsChanged || instanceSourcesChanged
   const shouldStartVpn = !curVpnStatus.running
 
   if (shouldStartVpn || configChanged) {
@@ -357,7 +459,7 @@ async function applyNetworkInstanceChange(instanceId: string) {
     }
 
     try {
-      await doStartVpn(sortedIpv4Addrs, sortedRoutes, dns)
+      await doStartVpn(sortedIpv4Addrs, sortedRoutes, dns, sortedInstanceIds, sortedInstanceSources)
     }
     catch (e) {
       if (e instanceof Error && e.message === 'need_prepare') {

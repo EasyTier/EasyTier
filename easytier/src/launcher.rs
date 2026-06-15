@@ -6,6 +6,8 @@ use crate::common::config::{
 use crate::gateway::socks5::Socks5Server;
 #[cfg(feature = "ffi-dataplane")]
 pub use crate::gateway::socks5::{DataPlaneTcpListener, DataPlaneTcpStream, DataPlaneUdpSocket};
+#[cfg(mobile)]
+use crate::instance::virtual_nic::MobileTunSources;
 use crate::proto::api::{self, manage};
 use crate::proto::rpc_types::controller::BaseController;
 use crate::rpc_service::InstanceRpcService;
@@ -36,6 +38,16 @@ use tokio::{
 pub type MyNodeInfo = crate::proto::api::manage::MyNodeInfo;
 
 type ArcMutApiService = Arc<RwLock<Option<Arc<dyn InstanceRpcService>>>>;
+#[cfg(mobile)]
+#[derive(Clone, Debug)]
+pub struct MobileTunFd {
+    pub fd: i32,
+    pub sources: MobileTunSources,
+}
+
+#[cfg(mobile)]
+type TunFd = Option<MobileTunFd>;
+#[cfg(not(mobile))]
 type TunFd = Option<i32>;
 
 #[derive(serde::Serialize, Clone)]
@@ -135,11 +147,12 @@ impl EasyTierLauncher {
                     peer_mgr.clone(),
                     peer_packet_receiver.clone(),
                     shared_virtual_nic_registry.clone(),
-                    tun_fd,
+                    tun_fd.fd,
+                    tun_fd.sources,
                 )
                 .await
                 {
-                    tracing::error!(?err, tun_fd, "setup mobile nic ctx failed");
+                    tracing::error!(?err, fd = tun_fd.fd, "setup mobile nic ctx failed");
                 }
             }
         });

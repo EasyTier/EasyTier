@@ -70,8 +70,23 @@ export async function setLoggingLevel(level: string) {
   return await invoke('set_logging_level', { level })
 }
 
-export async function setTunFd(fd: number) {
-  return await invoke('set_tun_fd', { fd })
+export interface TunFdInstanceSources {
+  instanceId: string
+  ipv4Addrs: string[]
+  ipv6Addrs?: string[]
+  ipv4Routes?: string[]
+  ipv6Routes?: string[]
+}
+
+export async function setTunFd(fd: number, instanceIds?: string[], instanceSources?: TunFdInstanceSources[]) {
+  const args: { fd: number, instanceIds?: string[], instanceSources?: TunFdInstanceSources[] } = { fd }
+  if (instanceIds?.length) {
+    args.instanceIds = instanceIds
+  }
+  if (instanceSources?.length) {
+    args.instanceSources = instanceSources
+  }
+  return await invoke('set_tun_fd', args)
 }
 
 export async function getEasytierVersion() {
@@ -110,7 +125,7 @@ export async function sendConfigs(enabledNetworks: string[]) {
       config: NetworkTypes.toBackendNetworkConfig(config),
       source,
     })),
-    enabledNetworks
+    enabledNetworks,
   })
 }
 

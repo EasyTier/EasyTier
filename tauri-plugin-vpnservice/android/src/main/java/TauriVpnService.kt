@@ -5,6 +5,7 @@ import android.net.VpnService
 import android.os.Build
 import android.os.ParcelFileDescriptor
 import android.os.Bundle
+import android.system.OsConstants.AF_INET6
 import java.net.InetAddress
 import java.util.Arrays
 
@@ -115,7 +116,7 @@ class TauriVpnService : VpnService() {
             if (ipParts.size != 2) throw IllegalArgumentException("Invalid IP addr string")
             builder.addAddress(ipParts[0], ipParts[1].toInt())
         }
-        builder.addAddress("fd00::1", 128)
+        builder.allowFamily(AF_INET6)
 
         builder.setMtu(mtu)
         dns?.let { builder.addDnsServer(it) }

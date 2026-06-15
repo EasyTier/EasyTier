@@ -193,6 +193,8 @@ impl IpProxy {
 
 #[cfg(feature = "tun")]
 type NicCtx = super::virtual_nic::NicCtx;
+#[cfg(all(feature = "tun", mobile))]
+use super::virtual_nic::MobileTunSources;
 
 #[cfg(feature = "magic-dns")]
 struct MagicDnsContainer {
@@ -910,7 +912,8 @@ impl Instance {
         close_notifier: Arc<Notify>,
         shared_virtual_nic_registry: ArcSharedVirtualNicRegistry,
     ) -> Result<NicCtx, Error> {
-        if global_ctx.get_flags().dev_name.is_empty() {
+        let flags = global_ctx.get_flags();
+        if flags.dev_name.is_empty() {
             return Ok(NicCtx::new(
                 global_ctx,
                 peer_manager,
@@ -1730,6 +1733,7 @@ impl Instance {
         peer_packet_receiver: Arc<Mutex<PacketRecvChanReceiver>>,
         shared_virtual_nic_registry: ArcSharedVirtualNicRegistry,
         fd: i32,
+        sources: MobileTunSources,
     ) -> Result<(), anyhow::Error> {
         tracing::info!("setup_nic_ctx_for_mobile, fd: {}", fd);
         Self::clear_nic_ctx(nic_ctx.clone(), peer_packet_receiver.clone()).await;
@@ -1747,7 +1751,7 @@ impl Instance {
         .await
         .with_context(|| "create nic ctx failed")?;
         new_nic_ctx
-            .run_for_mobile(fd)
+            .run_for_mobile(fd, sources)
             .await
             .with_context(|| "add ip failed")?;
 

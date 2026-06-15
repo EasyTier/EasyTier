@@ -46,12 +46,28 @@ impl IfConfiguerTrait for MacIfConfiger {
         cidr_prefix: u8,
         cost: Option<i32>,
     ) -> Result<(), Error> {
+        self.add_ipv4_route_with_source_hint(name, address, cidr_prefix, cost, None)
+            .await
+    }
+
+    async fn add_ipv4_route_with_source_hint(
+        &self,
+        name: &str,
+        address: Ipv4Addr,
+        cidr_prefix: u8,
+        cost: Option<i32>,
+        source_hint: Option<Ipv4Addr>,
+    ) -> Result<(), Error> {
+        let source_hint = source_hint
+            .map(|source| format!(" -ifa {}", source))
+            .unwrap_or_default();
         run_shell_cmd(
             format!(
-                "route -n add {} -netmask {} -interface {} -hopcount {}",
+                "route -n add {} -netmask {} -interface {}{} -hopcount {}",
                 address,
                 cidr_to_subnet_mask(cidr_prefix),
                 name,
+                source_hint,
                 cost.unwrap_or(7)
             )
             .as_str(),

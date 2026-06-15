@@ -96,6 +96,9 @@ pub struct SharedIfConfigDelta {
     pub ipv4_addresses: OwnedItemDelta<Ipv4Inet>,
     pub ipv6_addresses: OwnedItemDelta<Ipv6Inet>,
     pub ipv4_routes: OwnedItemDelta<SharedIpv4Route>,
+    pub ipv4_route_removed_old_source_hints: BTreeMap<SharedIpv4Route, Option<Ipv4Addr>>,
+    pub ipv4_route_source_changed: BTreeSet<SharedIpv4Route>,
+    pub ipv4_route_source_changed_old_hints: BTreeMap<SharedIpv4Route, Option<Ipv4Addr>>,
     pub ipv6_routes: OwnedItemDelta<SharedIpv6Route>,
     pub mtu: Option<SharedMtuChange>,
 }
@@ -131,6 +134,12 @@ impl SharedIfConfig {
             .cloned()
             .unwrap_or_default();
         let old_mtu = self.effective_mtu();
+        let source_change_candidates = old_claims
+            .ipv4_routes
+            .union(&claims.ipv4_routes)
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        let old_ipv4_route_sources = self.ipv4_route_sources(&source_change_candidates);
 
         let ipv4_addresses = update_owned_items(
             &mut self.ipv4_address_owners,
@@ -159,11 +168,22 @@ impl SharedIfConfig {
 
         update_member_mtu(&mut self.member_mtu, member_id, claims.mtu);
         self.member_claims.insert(member_id, claims);
+        let ipv4_route_removed_old_source_hints =
+            old_ipv4_route_hints(&old_ipv4_route_sources, &ipv4_routes.removed);
+        let ipv4_route_source_changed_old_hints =
+            self.changed_ipv4_route_sources(&old_ipv4_route_sources, &ipv4_routes);
+        let ipv4_route_source_changed = ipv4_route_source_changed_old_hints
+            .keys()
+            .cloned()
+            .collect();
 
         SharedIfConfigDelta {
             ipv4_addresses,
             ipv6_addresses,
             ipv4_routes,
+            ipv4_route_removed_old_source_hints,
+            ipv4_route_source_changed,
+            ipv4_route_source_changed_old_hints,
             ipv6_routes,
             mtu: mtu_delta(old_mtu, self.effective_mtu()),
         }
@@ -173,8 +193,10 @@ impl SharedIfConfig {
         &mut self,
         member_id: SharedVirtualNicMemberId,
     ) -> Option<SharedIfConfigDelta> {
-        let old_claims = self.member_claims.remove(&member_id)?;
+        let old_claims = self.member_claims.get(&member_id).cloned()?;
         let old_mtu = self.effective_mtu();
+        let old_ipv4_route_sources = self.ipv4_route_sources(&old_claims.ipv4_routes);
+        self.member_claims.remove(&member_id);
 
         let ipv4_addresses = remove_owned_items(
             &mut self.ipv4_address_owners,
@@ -198,11 +220,22 @@ impl SharedIfConfig {
         );
 
         self.member_mtu.remove(&member_id);
+        let ipv4_route_removed_old_source_hints =
+            old_ipv4_route_hints(&old_ipv4_route_sources, &ipv4_routes.removed);
+        let ipv4_route_source_changed_old_hints =
+            self.changed_ipv4_route_sources(&old_ipv4_route_sources, &ipv4_routes);
+        let ipv4_route_source_changed = ipv4_route_source_changed_old_hints
+            .keys()
+            .cloned()
+            .collect();
 
         Some(SharedIfConfigDelta {
             ipv4_addresses,
             ipv6_addresses,
             ipv4_routes,
+            ipv4_route_removed_old_source_hints,
+            ipv4_route_source_changed,
+            ipv4_route_source_changed_old_hints,
             ipv6_routes,
             mtu: mtu_delta(old_mtu, self.effective_mtu()),
         })
@@ -249,6 +282,57 @@ impl SharedIfConfig {
             .get(&member_id)
             .cloned()
             .unwrap_or_default()
+    }
+
+    fn ipv4_route_source_hint(&self, route: &SharedIpv4Route) -> Option<Ipv4Addr> {
+        let owners = self.ipv4_route_owners.get(route)?;
+        let route_inet = Ipv4Inet::new(route.address, route.prefix).ok();
+        let mut fallback = None;
+
+        for owner in owners {
+            let Some(claims) = self.member_claims.get(owner) else {
+                continue;
+            };
+
+            for address in &claims.ipv4_addresses {
+                fallback.get_or_insert(address.address());
+                if route_inet
+                    .as_ref()
+                    .is_some_and(|route_inet| route_inet.contains(&address.address()))
+                {
+                    return Some(address.address());
+                }
+            }
+        }
+
+        fallback
+    }
+
+    fn ipv4_route_sources(
+        &self,
+        routes: &BTreeSet<SharedIpv4Route>,
+    ) -> BTreeMap<SharedIpv4Route, Option<Ipv4Addr>> {
+        routes
+            .iter()
+            .map(|route| (route.clone(), self.ipv4_route_source_hint(route)))
+            .collect()
+    }
+
+    fn changed_ipv4_route_sources(
+        &self,
+        old_sources: &BTreeMap<SharedIpv4Route, Option<Ipv4Addr>>,
+        route_delta: &OwnedItemDelta<SharedIpv4Route>,
+    ) -> BTreeMap<SharedIpv4Route, Option<Ipv4Addr>> {
+        old_sources
+            .iter()
+            .filter(|(route, old_source)| {
+                !route_delta.added.contains(*route)
+                    && !route_delta.removed.contains(*route)
+                    && self.ipv4_route_owners.contains_key(*route)
+                    && self.ipv4_route_source_hint(route) != **old_source
+            })
+            .map(|(route, old_source)| (route.clone(), *old_source))
+            .collect()
     }
 }
 
@@ -509,7 +593,24 @@ impl SharedVirtualNic {
         let nic = self.nic.lock().await;
 
         for route in &delta.ipv4_routes.removed {
-            ignore_removed_ifcfg_not_found(nic.remove_route(route.address, route.prefix).await)?;
+            let source_hint = delta
+                .ipv4_route_removed_old_source_hints
+                .get(route)
+                .copied()
+                .flatten();
+            ignore_removed_ifcfg_not_found(
+                remove_shared_ipv4_route(&nic, route, source_hint).await,
+            )?;
+        }
+        for route in &delta.ipv4_route_source_changed {
+            let source_hint = delta
+                .ipv4_route_source_changed_old_hints
+                .get(route)
+                .copied()
+                .flatten();
+            ignore_removed_ifcfg_not_found(
+                remove_shared_ipv4_route(&nic, route, source_hint).await,
+            )?;
         }
         for route in &delta.ipv6_routes.removed {
             ignore_removed_ifcfg_not_found(
@@ -531,8 +632,10 @@ impl SharedVirtualNic {
                 .await?;
         }
         for route in &delta.ipv4_routes.added {
-            nic.add_route_with_cost(route.address, route.prefix, route.cost)
-                .await?;
+            add_shared_ipv4_route(&nic, route, _next_ifcfg).await?;
+        }
+        for route in &delta.ipv4_route_source_changed {
+            add_shared_ipv4_route(&nic, route, _next_ifcfg).await?;
         }
         for route in &delta.ipv6_routes.added {
             nic.add_ipv6_route_with_cost(route.address, route.prefix, route.cost)
@@ -548,8 +651,7 @@ impl SharedVirtualNic {
         if !delta.ipv4_addresses.removed.is_empty() {
             for route in _next_ifcfg.ipv4_route_owners.keys() {
                 ignore_added_ifcfg_already_exists(
-                    nic.add_route_with_cost(route.address, route.prefix, route.cost)
-                        .await,
+                    add_shared_ipv4_route(&nic, route, _next_ifcfg).await,
                 )?;
             }
         }
@@ -631,9 +733,7 @@ impl SharedVirtualNic {
         dispatcher: &SharedVirtualNicDispatcher,
     ) -> Result<(), Error> {
         for (member_id, claims) in &self.ifcfg.member_claims {
-            dispatcher
-                .update_sources(*member_id, &claims.ipv4_addresses, &claims.ipv6_addresses)
-                .await?;
+            dispatcher.update_sources(*member_id, claims).await?;
         }
         Ok(())
     }
@@ -644,17 +744,9 @@ impl SharedVirtualNic {
         old_claims: &SharedIfConfigClaims,
         next_claims: &SharedIfConfigClaims,
     ) -> Result<(), Error> {
-        let mut active_ipv4_addresses = old_claims.ipv4_addresses.clone();
-        active_ipv4_addresses.extend(next_claims.ipv4_addresses.iter().copied());
-        let mut active_ipv6_addresses = old_claims.ipv6_addresses.clone();
-        active_ipv6_addresses.extend(next_claims.ipv6_addresses.iter().copied());
-
-        self.sync_dispatcher_sources_for_addresses(
-            member_id,
-            &active_ipv4_addresses,
-            &active_ipv6_addresses,
-        )
-        .await
+        let active_claims = dispatcher_claims_for_ifcfg_transition(old_claims, next_claims);
+        self.sync_dispatcher_sources_for_claims(member_id, &active_claims)
+            .await
     }
 
     async fn sync_dispatcher_sources_for_member(
@@ -662,24 +754,17 @@ impl SharedVirtualNic {
         member_id: SharedVirtualNicMemberId,
         claims: &SharedIfConfigClaims,
     ) -> Result<(), Error> {
-        self.sync_dispatcher_sources_for_addresses(
-            member_id,
-            &claims.ipv4_addresses,
-            &claims.ipv6_addresses,
-        )
-        .await
+        self.sync_dispatcher_sources_for_claims(member_id, claims)
+            .await
     }
 
-    async fn sync_dispatcher_sources_for_addresses(
+    async fn sync_dispatcher_sources_for_claims(
         &self,
         member_id: SharedVirtualNicMemberId,
-        ipv4_addresses: &BTreeSet<Ipv4Inet>,
-        ipv6_addresses: &BTreeSet<Ipv6Inet>,
+        claims: &SharedIfConfigClaims,
     ) -> Result<(), Error> {
         if let Some(dispatcher) = &self.dispatcher {
-            dispatcher
-                .update_sources(member_id, ipv4_addresses, ipv6_addresses)
-                .await?;
+            dispatcher.update_sources(member_id, claims).await?;
         }
         Ok(())
     }
@@ -693,6 +778,75 @@ impl SharedVirtualNic {
         }
         Ok(())
     }
+}
+
+fn dispatcher_claims_for_ifcfg_transition(
+    old_claims: &SharedIfConfigClaims,
+    next_claims: &SharedIfConfigClaims,
+) -> SharedIfConfigClaims {
+    let mut claims = SharedIfConfigClaims::default();
+    claims
+        .ipv4_addresses
+        .extend(old_claims.ipv4_addresses.iter().copied());
+    claims
+        .ipv4_addresses
+        .extend(next_claims.ipv4_addresses.iter().copied());
+    claims
+        .ipv6_addresses
+        .extend(old_claims.ipv6_addresses.iter().copied());
+    claims
+        .ipv6_addresses
+        .extend(next_claims.ipv6_addresses.iter().copied());
+    claims
+        .ipv4_routes
+        .extend(old_claims.ipv4_routes.iter().cloned());
+    claims
+        .ipv4_routes
+        .extend(next_claims.ipv4_routes.iter().cloned());
+    claims
+        .ipv6_routes
+        .extend(old_claims.ipv6_routes.iter().cloned());
+    claims
+        .ipv6_routes
+        .extend(next_claims.ipv6_routes.iter().cloned());
+    claims
+}
+
+async fn add_shared_ipv4_route(
+    nic: &VirtualNic,
+    route: &SharedIpv4Route,
+    ifcfg: &SharedIfConfig,
+) -> Result<(), Error> {
+    nic.add_route_with_cost_and_source_hint(
+        route.address,
+        route.prefix,
+        route.cost,
+        ifcfg.ipv4_route_source_hint(route),
+    )
+    .await
+}
+
+async fn remove_shared_ipv4_route(
+    nic: &VirtualNic,
+    route: &SharedIpv4Route,
+    source_hint: Option<Ipv4Addr>,
+) -> Result<(), Error> {
+    nic.remove_route_with_cost_and_source_hint(route.address, route.prefix, route.cost, source_hint)
+        .await
+}
+
+fn old_ipv4_route_hints(
+    old_sources: &BTreeMap<SharedIpv4Route, Option<Ipv4Addr>>,
+    routes: &BTreeSet<SharedIpv4Route>,
+) -> BTreeMap<SharedIpv4Route, Option<Ipv4Addr>> {
+    routes
+        .iter()
+        .filter_map(|route| {
+            old_sources
+                .get(route)
+                .map(|source_hint| (route.clone(), *source_hint))
+        })
+        .collect()
 }
 
 fn ignore_removed_ifcfg_not_found(result: Result<(), Error>) -> Result<(), Error> {
@@ -897,8 +1051,7 @@ impl SharedVirtualNicMember {
     }
 
     #[cfg(mobile)]
-    pub async fn add_mobile_source_ip(&self, ip: Ipv4Addr, cidr: i32) -> Result<(), Error> {
-        let ip = ipv4_inet(ip, cidr)?;
+    pub async fn add_mobile_source_ip(&self, ip: Ipv4Inet) -> Result<(), Error> {
         self.update_claims_for_mobile(|claims| {
             claims.ipv4_addresses.insert(ip);
         })
@@ -906,10 +1059,25 @@ impl SharedVirtualNicMember {
     }
 
     #[cfg(mobile)]
-    pub async fn add_mobile_source_ipv6(&self, ip: Ipv6Addr, cidr: i32) -> Result<(), Error> {
-        let ip = ipv6_inet(ip, cidr)?;
+    pub async fn add_mobile_source_ipv6(&self, ip: Ipv6Inet) -> Result<(), Error> {
         self.update_claims_for_mobile(|claims| {
             claims.ipv6_addresses.insert(ip);
+        })
+        .await
+    }
+
+    #[cfg(mobile)]
+    pub async fn add_mobile_source_ipv4_route(&self, route: SharedIpv4Route) -> Result<(), Error> {
+        self.update_claims_for_mobile(|claims| {
+            claims.ipv4_routes.insert(route);
+        })
+        .await
+    }
+
+    #[cfg(mobile)]
+    pub async fn add_mobile_source_ipv6_route(&self, route: SharedIpv6Route) -> Result<(), Error> {
+        self.update_claims_for_mobile(|claims| {
+            claims.ipv6_routes.insert(route);
         })
         .await
     }
@@ -1292,6 +1460,17 @@ mod tests {
         }
     }
 
+    fn claims_with_ipv4_address_and_route(
+        address: Ipv4Inet,
+        route: SharedIpv4Route,
+    ) -> SharedIfConfigClaims {
+        SharedIfConfigClaims {
+            ipv4_addresses: BTreeSet::from([address]),
+            ipv4_routes: BTreeSet::from([route]),
+            ..Default::default()
+        }
+    }
+
     fn virtual_nic_config() -> VirtualNicConfig {
         VirtualNicConfig::new(String::new(), 1500, NetNS::new(None))
     }
@@ -1382,6 +1561,140 @@ mod tests {
         assert_eq!(
             ifcfg.owners_of_ipv4_address(&second_ip),
             BTreeSet::from([member])
+        );
+    }
+
+    #[test]
+    fn ipv4_route_source_hint_prefers_address_inside_route() {
+        let route = SharedIpv4Route::new(Ipv4Addr::new(10, 90, 1, 0), 24, None);
+        let member = member_id(1);
+        let mut ifcfg = SharedIfConfig::default();
+
+        ifcfg.apply_member_claims(
+            member,
+            SharedIfConfigClaims {
+                ipv4_addresses: BTreeSet::from([
+                    Ipv4Inet::from_str("10.1.1.1/24").unwrap(),
+                    Ipv4Inet::from_str("10.90.1.1/24").unwrap(),
+                ]),
+                ipv4_routes: BTreeSet::from([route.clone()]),
+                ..Default::default()
+            },
+        );
+
+        assert_eq!(
+            ifcfg.ipv4_route_source_hint(&route),
+            Some(Ipv4Addr::new(10, 90, 1, 1))
+        );
+    }
+
+    #[test]
+    fn adding_better_ipv4_route_owner_marks_source_change() {
+        let route = SharedIpv4Route::new(Ipv4Addr::new(10, 90, 2, 0), 24, None);
+        let first = member_id(1);
+        let second = member_id(2);
+        let mut ifcfg = SharedIfConfig::default();
+        ifcfg.apply_member_claims(
+            first,
+            claims_with_ipv4_address_and_route(
+                Ipv4Inet::from_str("10.1.2.1/24").unwrap(),
+                route.clone(),
+            ),
+        );
+
+        let delta = ifcfg.apply_member_claims(
+            second,
+            claims_with_ipv4_address_and_route(
+                Ipv4Inet::from_str("10.90.2.1/24").unwrap(),
+                route.clone(),
+            ),
+        );
+
+        assert!(delta.ipv4_routes.added.is_empty());
+        assert_eq!(
+            delta.ipv4_route_source_changed,
+            BTreeSet::from([route.clone()])
+        );
+        assert_eq!(
+            delta.ipv4_route_source_changed_old_hints,
+            BTreeMap::from([(route.clone(), Some(Ipv4Addr::new(10, 1, 2, 1)))])
+        );
+        assert_eq!(
+            ifcfg.ipv4_route_source_hint(&route),
+            Some(Ipv4Addr::new(10, 90, 2, 1))
+        );
+    }
+
+    #[test]
+    fn removing_ipv4_route_owner_marks_source_change_when_route_remains() {
+        let route = SharedIpv4Route::new(Ipv4Addr::new(10, 90, 3, 0), 24, None);
+        let first = member_id(1);
+        let second = member_id(2);
+        let mut ifcfg = SharedIfConfig::default();
+        ifcfg.apply_member_claims(
+            first,
+            claims_with_ipv4_address_and_route(
+                Ipv4Inet::from_str("10.1.3.1/24").unwrap(),
+                route.clone(),
+            ),
+        );
+        ifcfg.apply_member_claims(
+            second,
+            claims_with_ipv4_address_and_route(
+                Ipv4Inet::from_str("10.90.3.1/24").unwrap(),
+                route.clone(),
+            ),
+        );
+
+        let delta = ifcfg.remove_member(second).unwrap();
+
+        assert!(delta.ipv4_routes.removed.is_empty());
+        assert_eq!(
+            delta.ipv4_route_source_changed,
+            BTreeSet::from([route.clone()])
+        );
+        assert_eq!(
+            delta.ipv4_route_source_changed_old_hints,
+            BTreeMap::from([(route.clone(), Some(Ipv4Addr::new(10, 90, 3, 1)))])
+        );
+        assert_eq!(
+            ifcfg.ipv4_route_source_hint(&route),
+            Some(Ipv4Addr::new(10, 1, 3, 1))
+        );
+    }
+
+    #[test]
+    fn removing_ipv4_route_records_old_source_hint_per_cost() {
+        let kept_route = SharedIpv4Route::new(Ipv4Addr::new(10, 90, 4, 0), 24, Some(10));
+        let removed_route = SharedIpv4Route::new(Ipv4Addr::new(10, 90, 4, 0), 24, Some(20));
+        let member = member_id(1);
+        let address = Ipv4Inet::from_str("10.90.4.1/24").unwrap();
+        let mut ifcfg = SharedIfConfig::default();
+        ifcfg.apply_member_claims(
+            member,
+            SharedIfConfigClaims {
+                ipv4_addresses: BTreeSet::from([address]),
+                ipv4_routes: BTreeSet::from([kept_route.clone(), removed_route.clone()]),
+                ..Default::default()
+            },
+        );
+
+        let delta = ifcfg.apply_member_claims(
+            member,
+            SharedIfConfigClaims {
+                ipv4_addresses: BTreeSet::from([address]),
+                ipv4_routes: BTreeSet::from([kept_route.clone()]),
+                ..Default::default()
+            },
+        );
+
+        assert_eq!(
+            delta.ipv4_routes.removed,
+            BTreeSet::from([removed_route.clone()])
+        );
+        assert_eq!(
+            delta.ipv4_route_removed_old_source_hints,
+            BTreeMap::from([(removed_route, Some(Ipv4Addr::new(10, 90, 4, 1)))])
         );
     }
 

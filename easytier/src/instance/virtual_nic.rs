@@ -46,9 +46,81 @@ use crate::common::ifcfg::RegistryManager;
 
 #[cfg(test)]
 use super::shared_virtual_nic::SharedVirtualNic;
+#[cfg(mobile)]
+use super::shared_virtual_nic::{SharedIpv4Route, SharedIpv6Route};
 use super::shared_virtual_nic::{
     SharedVirtualNicMember, SharedVirtualNicMemberId, SharedVirtualNicRegistry,
 };
+
+#[cfg(mobile)]
+#[derive(Clone, Debug, Default)]
+pub struct MobileTunSources {
+    pub ipv4: Vec<Ipv4Inet>,
+    pub ipv6: Vec<Ipv6Inet>,
+    pub ipv4_routes: Vec<SharedIpv4Route>,
+    pub ipv6_routes: Vec<SharedIpv6Route>,
+}
+
+#[cfg(mobile)]
+impl MobileTunSources {
+    pub fn parse(
+        ipv4: Vec<String>,
+        ipv6: Vec<String>,
+        ipv4_routes: Vec<String>,
+        ipv6_routes: Vec<String>,
+    ) -> Result<Self, Error> {
+        let ipv4 = ipv4
+            .into_iter()
+            .map(|addr| {
+                addr.parse::<Ipv4Inet>()
+                    .map_err(|err| anyhow::anyhow!("invalid IPv4 source {addr}: {err}").into())
+            })
+            .collect::<Result<Vec<_>, Error>>()?;
+        let ipv6 = ipv6
+            .into_iter()
+            .map(|addr| {
+                addr.parse::<Ipv6Inet>()
+                    .map_err(|err| anyhow::anyhow!("invalid IPv6 source {addr}: {err}").into())
+            })
+            .collect::<Result<Vec<_>, Error>>()?;
+        let ipv4_routes = ipv4_routes
+            .into_iter()
+            .map(|route| {
+                let route = route.parse::<Ipv4Inet>().map_err(|err| {
+                    let err: Error =
+                        anyhow::anyhow!("invalid IPv4 route source {route}: {err}").into();
+                    err
+                })?;
+                Ok(SharedIpv4Route::new(
+                    route.address(),
+                    route.network_length(),
+                    None,
+                ))
+            })
+            .collect::<Result<Vec<_>, Error>>()?;
+        let ipv6_routes = ipv6_routes
+            .into_iter()
+            .map(|route| {
+                let route = route.parse::<Ipv6Inet>().map_err(|err| {
+                    let err: Error =
+                        anyhow::anyhow!("invalid IPv6 route source {route}: {err}").into();
+                    err
+                })?;
+                Ok(SharedIpv6Route::new(
+                    route.address(),
+                    route.network_length(),
+                    None,
+                ))
+            })
+            .collect::<Result<Vec<_>, Error>>()?;
+        Ok(Self {
+            ipv4,
+            ipv6,
+            ipv4_routes,
+            ipv6_routes,
+        })
+    }
+}
 
 pin_project! {
     pub struct TunStream {
@@ -766,9 +838,20 @@ impl VirtualNic {
         cidr: u8,
         cost: Option<i32>,
     ) -> Result<(), Error> {
+        self.add_route_with_cost_and_source_hint(address, cidr, cost, None)
+            .await
+    }
+
+    pub async fn add_route_with_cost_and_source_hint(
+        &self,
+        address: Ipv4Addr,
+        cidr: u8,
+        cost: Option<i32>,
+        source_hint: Option<Ipv4Addr>,
+    ) -> Result<(), Error> {
         let _g = self.config.net_ns.guard();
         self.ifcfg
-            .add_ipv4_route(self.ifname(), address, cidr, cost)
+            .add_ipv4_route_with_source_hint(self.ifname(), address, cidr, cost, source_hint)
             .await?;
         Ok(())
     }
@@ -777,6 +860,26 @@ impl VirtualNic {
         let _g = self.config.net_ns.guard();
         self.ifcfg
             .remove_ipv4_route(self.ifname(), address, cidr)
+            .await?;
+        Ok(())
+    }
+
+    pub async fn remove_route_with_cost_and_source_hint(
+        &self,
+        address: Ipv4Addr,
+        cidr: u8,
+        cost: Option<i32>,
+        source_hint: Option<Ipv4Addr>,
+    ) -> Result<(), Error> {
+        let _g = self.config.net_ns.guard();
+        self.ifcfg
+            .remove_ipv4_route_with_cost_and_source_hint(
+                self.ifname(),
+                address,
+                cidr,
+                cost,
+                source_hint,
+            )
             .await?;
         Ok(())
     }
@@ -1031,18 +1134,34 @@ impl NicBackend {
     }
 
     #[cfg(mobile)]
-    pub async fn add_mobile_source_ip(&self, ip: Ipv4Addr, cidr: i32) -> Result<(), Error> {
+    pub async fn add_mobile_source_ip(&self, ip: Ipv4Inet) -> Result<(), Error> {
         match self {
             Self::Dedicated(_) => Ok(()),
-            Self::Shared(member) => member.add_mobile_source_ip(ip, cidr).await,
+            Self::Shared(member) => member.add_mobile_source_ip(ip).await,
         }
     }
 
     #[cfg(mobile)]
-    pub async fn add_mobile_source_ipv6(&self, ip: Ipv6Addr, cidr: i32) -> Result<(), Error> {
+    pub async fn add_mobile_source_ipv6(&self, ip: Ipv6Inet) -> Result<(), Error> {
         match self {
             Self::Dedicated(_) => Ok(()),
-            Self::Shared(member) => member.add_mobile_source_ipv6(ip, cidr).await,
+            Self::Shared(member) => member.add_mobile_source_ipv6(ip).await,
+        }
+    }
+
+    #[cfg(mobile)]
+    pub async fn add_mobile_source_ipv4_route(&self, route: SharedIpv4Route) -> Result<(), Error> {
+        match self {
+            Self::Dedicated(_) => Ok(()),
+            Self::Shared(member) => member.add_mobile_source_ipv4_route(route).await,
+        }
+    }
+
+    #[cfg(mobile)]
+    pub async fn add_mobile_source_ipv6_route(&self, route: SharedIpv6Route) -> Result<(), Error> {
+        match self {
+            Self::Dedicated(_) => Ok(()),
+            Self::Shared(member) => member.add_mobile_source_ipv6_route(route).await,
         }
     }
 }
@@ -1739,7 +1858,11 @@ impl NicCtx {
     }
 
     #[cfg(mobile)]
-    pub async fn run_for_mobile(&mut self, tun_fd: std::os::fd::RawFd) -> Result<(), Error> {
+    pub async fn run_for_mobile(
+        &mut self,
+        tun_fd: std::os::fd::RawFd,
+        sources: MobileTunSources,
+    ) -> Result<(), Error> {
         let (tunnel, ifname) = match self.backend.create_dev_for_mobile(tun_fd).await {
             Ok(ret) => {
                 let ifname = self
@@ -1756,14 +1879,20 @@ impl NicCtx {
             }
         };
 
-        if let Some(ipv4_addr) = self.global_ctx.get_ipv4() {
+        for ipv4_addr in sources.ipv4 {
+            self.backend.add_mobile_source_ip(ipv4_addr).await?;
+        }
+        for ipv6_addr in sources.ipv6 {
+            self.backend.add_mobile_source_ipv6(ipv6_addr).await?;
+        }
+        for ipv4_route in sources.ipv4_routes {
             self.backend
-                .add_mobile_source_ip(ipv4_addr.address(), ipv4_addr.network_length() as i32)
+                .add_mobile_source_ipv4_route(ipv4_route)
                 .await?;
         }
-        if let Some(ipv6_addr) = self.global_ctx.get_ipv6() {
+        for ipv6_route in sources.ipv6_routes {
             self.backend
-                .add_mobile_source_ipv6(ipv6_addr.address(), ipv6_addr.network_length() as i32)
+                .add_mobile_source_ipv6_route(ipv6_route)
                 .await?;
         }
 
