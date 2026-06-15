@@ -119,7 +119,9 @@ fn sync_tun_event_receivers(receivers: &mut HashMap<String, EventBusSubscriber>)
 fn event_needs_tun_refresh(event: &GlobalCtxEvent) -> bool {
     matches!(
         event,
-        GlobalCtxEvent::DhcpIpv4Changed(_, _) | GlobalCtxEvent::ProxyCidrsUpdated(_, _)
+        GlobalCtxEvent::DhcpIpv4Changed(_, _)
+            | GlobalCtxEvent::ProxyCidrsUpdated(_, _)
+            | GlobalCtxEvent::PublicIpv6RoutesUpdated(_, _)
     )
 }
 
@@ -476,89 +478,68 @@ pub fn start_local_socket_server() -> bool {
                 .retain(|instance_id, _| active_tun_candidate_ids.contains(instance_id));
             shrink_hash_set_if_sparse(&mut delivered_tun_requests);
             shrink_hash_map_if_sparse(&mut last_tun_route_signatures);
-            let has_undelivered_tun_candidate = active_tun_candidate_ids
-                .iter()
-                .any(|instance_id| !delivered_tun_requests.contains(instance_id));
-            let should_evaluate_tun =
-                tun_refresh || !tun_bootstrap_done || has_undelivered_tun_candidate;
             let mut saw_running_instance = false;
             let mut saw_tun_candidate = false;
-            if should_evaluate_tun {
-                for instance in snapshot.instances.iter() {
-                    if instance.running {
-                        saw_running_instance = true;
-                    }
-                    if instance.running && instance.tun_required {
-                        saw_tun_candidate = true;
-                        let virtual_ipv4 = instance
-                            .my_node_info
-                            .as_ref()
-                            .and_then(|info| info.virtual_ipv4.clone());
-                        let virtual_ipv4_cidr = instance
-                            .my_node_info
-                            .as_ref()
-                            .and_then(|info| info.virtual_ipv4_cidr.clone());
-                        if clients.is_empty() {
-                            continue;
-                        }
-                        if virtual_ipv4.is_none() || virtual_ipv4_cidr.is_none() {
-                            continue;
-                        }
-                        let aggregated_routes = aggregate_tun_routes(instance);
-                        let route_signature = serde_json::to_string(&(
-                            &virtual_ipv4,
-                            &virtual_ipv4_cidr,
-                            &aggregated_routes,
-                            instance.magic_dns_enabled,
-                            instance.need_exit_node,
-                        ))
-                        .unwrap_or_else(|_| "[]".to_string());
-                        let allow_route_signature_refresh = tun_refresh || !tun_bootstrap_done;
-                        let should_send = !delivered_tun_requests.contains(&instance.instance_id)
-                            || (allow_route_signature_refresh
-                                && last_tun_route_signatures
-                                    .get(&instance.instance_id)
-                                    .map(|value| value != &route_signature)
-                                    .unwrap_or(true));
-                        if !should_send {
-                            continue;
-                        }
-                        let payload = TunRequestPayload {
-                            config_id: instance.config_id.clone(),
-                            instance_id: instance.instance_id.clone(),
-                            display_name: instance.display_name.clone(),
-                            virtual_ipv4,
-                            virtual_ipv4_cidr,
-                            aggregated_routes,
-                            magic_dns_enabled: instance.magic_dns_enabled,
-                            need_exit_node: instance.need_exit_node,
-                        };
-                        let payload_json = match serde_json::to_string(&payload) {
-                            Ok(json) => json,
-                            Err(err) => {
-                                ohrs_log_error!("[Rust] serialize tun request failed: {}", err);
-                                continue;
-                            }
-                        };
-                        if broadcast_local_socket_message(
-                            &mut clients,
-                            "tun_request",
-                            &payload_json,
-                        ) {
-                            delivered_tun_requests.insert(instance.instance_id.clone());
-                            last_tun_route_signatures
-                                .insert(instance.instance_id.clone(), route_signature);
-                        }
-                    }
+            for instance in snapshot.instances.iter() {
+                if instance.running {
+                    saw_running_instance = true;
                 }
-            } else {
-                for instance in snapshot.instances.iter() {
-                    if instance.running {
-                        saw_running_instance = true;
+                if !(instance.running && instance.tun_required) {
+                    continue;
+                }
+
+                saw_tun_candidate = true;
+                let virtual_ipv4 = instance
+                    .my_node_info
+                    .as_ref()
+                    .and_then(|info| info.virtual_ipv4.clone());
+                let virtual_ipv4_cidr = instance
+                    .my_node_info
+                    .as_ref()
+                    .and_then(|info| info.virtual_ipv4_cidr.clone());
+                if clients.is_empty() {
+                    continue;
+                }
+                if virtual_ipv4.is_none() || virtual_ipv4_cidr.is_none() {
+                    continue;
+                }
+                let aggregated_routes = aggregate_tun_routes(instance);
+                let route_signature = serde_json::to_string(&(
+                    &virtual_ipv4,
+                    &virtual_ipv4_cidr,
+                    &aggregated_routes,
+                    instance.magic_dns_enabled,
+                    instance.need_exit_node,
+                ))
+                .unwrap_or_else(|_| "[]".to_string());
+                let should_send = !delivered_tun_requests.contains(&instance.instance_id)
+                    || last_tun_route_signatures
+                        .get(&instance.instance_id)
+                        .map(|value| value != &route_signature)
+                        .unwrap_or(true);
+                if !should_send {
+                    continue;
+                }
+                let payload = TunRequestPayload {
+                    config_id: instance.config_id.clone(),
+                    instance_id: instance.instance_id.clone(),
+                    display_name: instance.display_name.clone(),
+                    virtual_ipv4,
+                    virtual_ipv4_cidr,
+                    aggregated_routes,
+                    magic_dns_enabled: instance.magic_dns_enabled,
+                    need_exit_node: instance.need_exit_node,
+                };
+                let payload_json = match serde_json::to_string(&payload) {
+                    Ok(json) => json,
+                    Err(err) => {
+                        ohrs_log_error!("[Rust] serialize tun request failed: {}", err);
+                        continue;
                     }
-                    if instance.running && instance.tun_required {
-                        saw_tun_candidate = true;
-                    }
+                };
+                if broadcast_local_socket_message(&mut clients, "tun_request", &payload_json) {
+                    delivered_tun_requests.insert(instance.instance_id.clone());
+                    last_tun_route_signatures.insert(instance.instance_id.clone(), route_signature);
                 }
             }
             if !delivered_tun_requests.is_empty()
