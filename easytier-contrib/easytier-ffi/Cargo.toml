@@ -10,6 +10,7 @@ crate-type = ["cdylib", "rlib"]
 default = ["c-abi", "ffi-dataplane"]
 c-abi = []
 ffi-dataplane = ["easytier/ffi-dataplane"]
+macos-ne = ["easytier/macos-ne"]
 
 [dependencies]
 easytier = { path = "../../easytier" }
