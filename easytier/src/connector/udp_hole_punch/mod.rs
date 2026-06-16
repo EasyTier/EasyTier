@@ -474,7 +474,10 @@ impl PeerTaskLauncher for UdpHolePunchPeerTaskLauncher {
                 continue;
             }
 
-            if data.peer_mgr.get_peer_map().has_peer(peer_id) {
+            // Skip peers that already have a real (non-rproxy) direct or P2P connection.
+            // Peers connected *only* via an rproxy listener are NOT skipped so that
+            // hole-punching can replace the relay path with a real P2P tunnel.
+            if data.peer_mgr.has_non_rproxy_conn(peer_id) {
                 continue;
             }
 

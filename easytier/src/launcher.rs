@@ -812,6 +812,22 @@ impl NetworkConfig {
             cfg.set_mapped_listeners(Some(mapped_listeners));
         }
 
+        if !self.rproxy_listeners.is_empty() {
+            let mut rproxy_listeners = Vec::<url::Url>::with_capacity(self.rproxy_listeners.len());
+            for listener in self.rproxy_listeners.iter() {
+                let url: url::Url = listener
+                    .parse()
+                    .with_context(|| {
+                        format!("rproxy listener is not a valid url: {}", listener)
+                    })?;
+                if url.port().is_none() {
+                    anyhow::bail!("rproxy listener port is missing: {}", url);
+                }
+                rproxy_listeners.push(url);
+            }
+            cfg.set_rproxy_listeners(Some(rproxy_listeners));
+        }
+
         if let Some(credential_file) = self
             .credential_file
             .as_ref()
@@ -1109,6 +1125,11 @@ impl NetworkConfig {
         let mapped_listeners = config.get_mapped_listeners();
         if !mapped_listeners.is_empty() {
             result.mapped_listeners = mapped_listeners.iter().map(|l| l.to_string()).collect();
+        }
+
+        let rproxy_listeners = config.get_rproxy_listeners();
+        if !rproxy_listeners.is_empty() {
+            result.rproxy_listeners = rproxy_listeners.iter().map(|l| l.to_string()).collect();
         }
 
         result.secure_mode = config.get_secure_mode();

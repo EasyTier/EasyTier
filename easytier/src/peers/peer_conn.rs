@@ -92,6 +92,9 @@ struct NoiseHandshakeResult {
 
     my_encrypt_algo: String,
     remote_encrypt_algo: String,
+
+    // Whether the server accepted this connection on an rproxy listener
+    accepted_as_rproxy: bool,
 }
 
 #[derive(Clone)]
@@ -305,6 +308,8 @@ pub struct PeerConn {
 
     // remote or local
     is_hole_punched: bool,
+    // connection came in through a reverse-proxy listener (e.g. frp / cloudflare tunnel)
+    is_rproxy: bool,
 
     close_event_notifier: Arc<PeerConnCloseNotify>,
 
@@ -393,6 +398,7 @@ impl PeerConn {
             is_client: None,
 
             is_hole_punched: true,
+            is_rproxy: false,
 
             close_event_notifier: Arc::new(PeerConnCloseNotify::new(conn_id)),
 
@@ -440,6 +446,18 @@ impl PeerConn {
 
     pub fn is_hole_punched(&self) -> bool {
         self.is_hole_punched
+    }
+
+    /// Mark this connection as having been accepted on a reverse-proxy listener.
+    pub fn set_is_rproxy(&mut self, is_rproxy: bool) {
+        self.is_rproxy = is_rproxy;
+    }
+
+    /// Returns `true` if this connection came in through an `rproxy_listeners` port
+    /// (e.g. frp, cloudflare tunnel).  Such connections should be replaced by a real
+    /// P2P connection once hole-punching succeeds.
+    pub fn is_rproxy(&self) -> bool {
+        self.is_rproxy
     }
 
     pub fn is_closed(&self) -> bool {
@@ -979,6 +997,7 @@ impl PeerConn {
 
             my_encrypt_algo: self.my_encrypt_algo.clone(),
             remote_encrypt_algo: msg2_pb.server_encryption_algorithm.clone(),
+            accepted_as_rproxy: msg2_pb.accepted_as_rproxy,
         })
     }
 
@@ -1121,6 +1140,7 @@ impl PeerConn {
             a_conn_id_echo: msg1_pb.a_conn_id,
             secret_proof_32,
             server_encryption_algorithm: algo,
+            accepted_as_rproxy: self.is_rproxy,
         };
         self.send_noise_msg(
             msg2_pb,
@@ -1214,6 +1234,7 @@ impl PeerConn {
 
             my_encrypt_algo: self.my_encrypt_algo.clone(),
             remote_encrypt_algo: msg1_pb.client_encryption_algorithm.clone(),
+            accepted_as_rproxy: false,
         })
     }
 
@@ -1296,6 +1317,9 @@ impl PeerConn {
     pub async fn do_handshake_as_client(&mut self) -> Result<(), Error> {
         if self.is_secure_mode_enabled() {
             let noise = self.do_noise_handshake_as_client().await?;
+            if noise.accepted_as_rproxy {
+                self.is_rproxy = true;
+            }
             self.session_filter.set_session(noise.session.clone());
             self.session_filter.set_peer_id(noise.peer_id);
 

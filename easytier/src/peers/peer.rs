@@ -255,6 +255,23 @@ impl Peer {
             .any(|entry| !entry.value().is_closed() && !entry.value().is_hole_punched())
     }
 
+    /// Returns `true` if the peer has at least one live connection that did **not** come
+    /// through a reverse-proxy listener (i.e. a real direct or hole-punched P2P tunnel).
+    pub fn has_non_rproxy_conn(&self) -> bool {
+        self.conns
+            .iter()
+            .any(|entry| !entry.value().is_closed() && !entry.value().is_rproxy())
+    }
+
+    /// Returns the connection IDs of all live rproxy connections to this peer.
+    pub fn get_rproxy_conn_ids(&self) -> Vec<PeerConnId> {
+        self.conns
+            .iter()
+            .filter(|entry| !entry.value().is_closed() && entry.value().is_rproxy())
+            .map(|entry| entry.value().get_conn_id())
+            .collect()
+    }
+
     pub fn get_directly_connections(&self) -> DashSet<uuid::Uuid> {
         self.conns
             .iter()

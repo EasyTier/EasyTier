@@ -602,7 +602,23 @@ impl PeerManager {
             ));
         }
         let peer_id = peer_conn.get_peer_id();
+        let is_non_rproxy = !peer_conn.is_rproxy();
         self.peers.add_new_peer_conn(peer_conn).await?;
+        // When a real (non-rproxy) connection is added, close any lingering rproxy
+        // connections to the same peer so traffic migrates to the P2P tunnel.
+        if is_non_rproxy {
+            if let Some(peer) = self.peers.get_peer_by_id(peer_id) {
+                let rproxy_ids = peer.get_rproxy_conn_ids();
+                for conn_id in rproxy_ids {
+                    tracing::info!(
+                        ?peer_id,
+                        ?conn_id,
+                        "closing rproxy conn after real P2P connection established"
+                    );
+                    let _ = peer.close_peer_conn(&conn_id).await;
+                }
+            }
+        }
         self.clear_recent_traffic(peer_id);
         Ok(())
     }
@@ -648,6 +664,17 @@ impl PeerManager {
             peer.has_directly_connected_conn()
         } else {
             self.foreign_network_client.get_peer_map().has_peer(peer_id)
+        }
+    }
+
+    /// Returns `true` if the peer has at least one live connection that is **not** an
+    /// rproxy connection (i.e. a direct TCP/UDP connection or a hole-punched P2P tunnel).
+    /// Used by the hole-punch collectors to decide whether to skip a peer.
+    pub fn has_non_rproxy_conn(&self, peer_id: PeerId) -> bool {
+        if let Some(peer) = self.peers.get_peer_by_id(peer_id) {
+            peer.has_non_rproxy_conn()
+        } else {
+            false
         }
     }
 
@@ -731,6 +758,7 @@ impl PeerManager {
         &self,
         tunnel: Box<dyn Tunnel>,
         is_directly_connected: bool,
+        is_rproxy: bool,
     ) -> Result<(), Error> {
         tracing::info!("add tunnel as server start");
         self.check_remote_addr_not_from_virtual_network(&tunnel)?;
@@ -802,6 +830,10 @@ impl PeerManager {
         }
 
         conn.set_is_hole_punched(!is_directly_connected);
+        // Only connections accepted on rproxy listeners are flagged as rproxy.
+        // Regular hole-punched connections (UDP / TCP) are NOT rproxy even though
+        // they also have is_directly_connected = false.
+        conn.set_is_rproxy(is_rproxy);
 
         let add_peer_ret = if is_local_network {
             self.add_new_peer_conn(conn).await
@@ -2348,7 +2380,7 @@ mod tests {
         let (a_ring, b_ring) = create_ring_tunnel_pair();
         let (client_ret, server_ret) = tokio::join!(
             peer_mgr_a.add_client_tunnel(a_ring, true),
-            peer_mgr_b.add_tunnel_as_server(b_ring, true)
+            peer_mgr_b.add_tunnel_as_server(b_ring, true, false)
         );
         client_ret.unwrap();
         server_ret.unwrap();
@@ -3064,7 +3096,7 @@ mod tests {
         let (a_ring, b_ring) = create_ring_tunnel_pair();
         let (a_ret, b_ret) = tokio::join!(
             peer_mgr_a.add_client_tunnel(a_ring, false),
-            peer_mgr_b.add_tunnel_as_server(b_ring, true)
+            peer_mgr_b.add_tunnel_as_server(b_ring, true, false)
         );
         let (peer_b_id, _) = a_ret.unwrap();
         b_ret.unwrap();
@@ -3144,7 +3176,7 @@ mod tests {
         let (c_ring, s_ring) = create_ring_tunnel_pair();
         let (c_ret, s_ret) = tokio::join!(
             peer_mgr_client.add_client_tunnel(c_ring, false),
-            peer_mgr_server.add_tunnel_as_server(s_ring, true)
+            peer_mgr_server.add_tunnel_as_server(s_ring, true, false)
         );
         let _ = c_ret;
         assert!(
@@ -3259,7 +3291,7 @@ mod tests {
 
         let (c_ret, s_ret) = tokio::join!(
             peer_mgr_client.add_client_tunnel(a_ring, false),
-            peer_mgr_server.add_tunnel_as_server(b_ring, true)
+            peer_mgr_server.add_tunnel_as_server(b_ring, true, false)
         );
         c_ret.unwrap();
         s_ret.unwrap();
@@ -3538,7 +3570,7 @@ mod tests {
         });
         let b_mgr_copy = peer_mgr_b.clone();
         tokio::spawn(async move {
-            b_mgr_copy.add_tunnel_as_server(b_ring, true).await.unwrap();
+            b_mgr_copy.add_tunnel_as_server(b_ring, true, false).await.unwrap();
         });
 
         wait_for_condition(
