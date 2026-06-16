@@ -245,37 +245,53 @@ impl ClientManager {
         }
 
         let location = if let Some(db) = &*geoip_db {
-            match db.lookup::<geoip2::City>(ip) {
-                Ok(city) => {
+            match db.lookup(ip).and_then(|result| result.decode::<geoip2::City>()) {
+                Ok(Some(city)) => {
                     let country = city
                         .country
-                        .and_then(|c| c.names)
-                        .and_then(|n| {
-                            n.get("zh-CN")
-                                .or_else(|| n.get("en"))
-                                .map(|s| s.to_string())
-                        })
+                        .names
+                        .simplified_chinese
+                        .or(city.country.names.english)
+                        .map(|s| s.to_string())
                         .unwrap_or_else(|| "海外".to_string());
 
-                    let city_name = city.city.and_then(|c| c.names).and_then(|n| {
-                        n.get("zh-CN")
-                            .or_else(|| n.get("en"))
-                            .map(|s| s.to_string())
-                    });
+                    let city_name = city
+                        .city
+                        .names
+                        .simplified_chinese
+                        .or(city.city.names.english)
+                        .map(|s| s.to_string());
 
-                    let region = city.subdivisions.map(|r| {
-                        r.iter()
-                            .filter_map(|x| x.names.as_ref())
-                            .filter_map(|x| x.get("zh-CN").or_else(|| x.get("en")))
+                    let region = if city.subdivisions.is_empty() {
+                        None
+                    } else {
+                        let region = city
+                            .subdivisions
+                            .iter()
+                            .filter_map(|x| x.names.simplified_chinese.or(x.names.english))
                             .map(|x| x.to_string())
                             .collect::<Vec<_>>()
-                            .join(",")
-                    });
+                            .join(",");
+
+                        if region.is_empty() {
+                            None
+                        } else {
+                            Some(region)
+                        }
+                    };
 
                     Location {
                         country,
                         city: city_name,
                         region,
+                    }
+                }
+                Ok(None) => {
+                    tracing::debug!("GeoIP data not found for {}", ip);
+                    Location {
+                        country: "海外".to_string(),
+                        city: None,
+                        region: None,
                     }
                 }
                 Err(err) => {
