@@ -92,12 +92,11 @@ impl TryFrom<&Record> for rr::Record {
 
     fn try_from(value: &Record) -> Result<Self, Self::Error> {
         let name = value.name()?;
-        let mut record = Self::update0(name, value.ttl.as_secs() as u32, value.rr_type());
-        record.set_dns_class(rr::DNSClass::IN);
+        let ttl = value.ttl.as_secs() as u32;
         match value.rr_type {
             RecordType::A => {
                 let addr: Ipv4Addr = value.value.parse()?;
-                record.set_data(RData::A(rr::rdata::a::A(addr)));
+                Ok(Self::from_rdata(name, ttl, RData::A(rr::rdata::a::A(addr))))
             }
             RecordType::SOA => {
                 let soa = value.value.split_whitespace().collect::<Vec<_>>();
@@ -111,7 +110,7 @@ impl TryFrom<&Record> for rr::Record {
                 let retry: u32 = soa[4].parse()?;
                 let expire: u32 = soa[5].parse()?;
                 let minimum: u32 = soa[6].parse()?;
-                record.set_data(RData::SOA(rr::rdata::soa::SOA::new(
+                Ok(Self::from_rdata(name, ttl, RData::SOA(rr::rdata::soa::SOA::new(
                     mname,
                     rname,
                     serial,
@@ -119,11 +118,10 @@ impl TryFrom<&Record> for rr::Record {
                     retry.try_into().unwrap(),
                     expire.try_into().unwrap(),
                     minimum,
-                )));
+                ))))
             }
             _ => todo!(),
         }
-        Ok(record)
     }
 }
 

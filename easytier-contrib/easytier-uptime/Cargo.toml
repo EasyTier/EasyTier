@@ -33,7 +33,7 @@ sea-orm-migration = { version = "1.1" }
 sqlx = { version = "0.8", features = ["sqlite", "runtime-tokio-rustls", "chrono", "uuid"] }
 
 # Validation
-validator = { version = "0.18", features = ["derive"] }
+validator = { version = "0.20", features = ["derive"] }
 thiserror = "1.0"
 jsonwebtoken = "9.0"
 

@@ -39,9 +39,10 @@ use anyhow::Context;
 use cidr::Ipv4Inet;
 use dashmap::DashMap;
 use hickory_proto::rr::LowerName;
-use hickory_proto::serialize::binary::{BinDecodable, BinEncoder};
-use hickory_server::authority::{MessageRequest, MessageResponse};
+use hickory_proto::serialize::binary::BinEncoder;
+use hickory_server::net::{NetError, udp as dns_udp, xfer::Protocol};
 use hickory_server::server::{Request, RequestHandler, ResponseHandler, ResponseInfo};
+use hickory_server::zone_handler::MessageResponse;
 use multimap::MultiMap;
 use pnet::packet::icmp::{IcmpTypes, MutableIcmpPacket};
 use pnet::packet::ipv4::Ipv4Packet;
@@ -54,7 +55,7 @@ use pnet::packet::{
 };
 use std::net::{SocketAddr, SocketAddrV4};
 use std::sync::Mutex;
-use std::{collections::BTreeMap, io, net::Ipv4Addr, str::FromStr, sync::Arc, time::Duration};
+use std::{collections::BTreeMap, net::Ipv4Addr, str::FromStr, sync::Arc, time::Duration};
 
 static NIC_PIPELINE_NAME: &str = "magic_dns_server";
 
@@ -266,25 +267,21 @@ impl ResponseHandler for ResponseWrapper {
             impl RecordIter<'a>,
             impl RecordIter<'a>,
         >,
-    ) -> io::Result<ResponseInfo> {
+    ) -> Result<ResponseInfo, NetError> {
         let mut buffer = self
             .response
             .lock()
-            .map_err(|_| io::Error::other("lock poisoned"))?;
+            .map_err(|_| NetError::Msg("lock poisoned".to_string()))?;
 
         let mut encoder = BinEncoder::new(&mut buffer);
 
         // `max_size` should be u16::MAX for protocol other than UDP.
-        let max_size = if let Some(edns) = response.get_edns() {
-            edns.max_payload()
-        } else {
-            hickory_proto::udp::MAX_RECEIVE_BUFFER_SIZE as u16
-        };
+        let max_size = dns_udp::MAX_RECEIVE_BUFFER_SIZE as u16;
 
         encoder.set_max_size(max_size);
         response
             .destructive_emit(&mut encoder)
-            .map_err(io::Error::other)
+            .map_err(NetError::from)
     }
 }
 
@@ -360,11 +357,12 @@ impl MagicDnsServerInstanceData {
             (
                 src_port,
                 dst_port,
-                Request::new(
-                    MessageRequest::from_bytes(request_payload).ok()?,
+                Request::from_bytes(
+                    request_payload.to_vec(),
                     SocketAddr::from(SocketAddrV4::new(src_ip, src_port)),
-                    hickory_proto::xfer::Protocol::Udp,
-                ),
+                    Protocol::Udp,
+                )
+                .ok()?,
                 request_payload.len(),
             )
         };
@@ -375,7 +373,7 @@ impl MagicDnsServerInstanceData {
             self.dns_server
                 .read_catalog()
                 .await
-                .handle_request(
+                .handle_request::<ResponseWrapper, hickory_server::net::runtime::TokioTime>(
                     &request,
                     ResponseWrapper {
                         response: response_payload_arc.clone(),

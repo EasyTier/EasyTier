@@ -1,0 +1,3 @@
+[advisories]
+# openidconnect 4.0.1 depends on rsa 0.9.10, and RUSTSEC-2023-0071 has no fixed upgrade.
+ignore = ["RUSTSEC-2023-0071"]
