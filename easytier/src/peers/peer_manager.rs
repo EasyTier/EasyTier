@@ -1533,9 +1533,22 @@ impl PeerManager {
     ) -> Result<(), Error> {
         let policy =
             Self::get_next_hop_policy(msg.peer_manager_header().unwrap().is_latency_first());
+        let is_latency_first = msg.peer_manager_header().unwrap().is_latency_first();
         let packet_type = msg.peer_manager_header().unwrap().packet_type;
         let msg_len = msg.buf_len() as u64;
-        let send_result = if peers.has_peer(dst_peer_id) {
+        let latency_first_gateway = if is_latency_first {
+            peers
+                .get_gateway_peer_id(dst_peer_id, policy.clone())
+                .await
+                .filter(|gateway| *gateway != dst_peer_id)
+        } else {
+            None
+        };
+        let send_result = if let Some(gateway) = latency_first_gateway
+            && (peers.has_peer(gateway) || foreign_network_client.has_next_hop(gateway))
+        {
+            relay_peer_map.send_msg(msg, dst_peer_id, policy).await
+        } else if peers.has_peer(dst_peer_id) {
             peers.send_msg_directly(msg, dst_peer_id).await
         } else if foreign_network_client.has_next_hop(dst_peer_id) {
             foreign_network_client.send_msg(msg, dst_peer_id).await
@@ -2185,6 +2198,7 @@ impl PeerManager {
 mod tests {
     use base64::Engine;
     use std::{
+        collections::HashMap,
         fmt::Debug,
         sync::Arc,
         time::{Duration, Instant},
@@ -2192,6 +2206,7 @@ mod tests {
 
     use crate::{
         common::{
+            PeerId,
             config::Flags,
             global_ctx::{NetworkIdentity, tests::get_mock_global_ctx},
             stats_manager::{LabelSet, LabelType, MetricName},
@@ -2206,7 +2221,7 @@ mod tests {
             peer_conn::tests::set_secure_mode_cfg,
             peer_manager::RouteAlgoType,
             peer_rpc::tests::register_service,
-            route_trait::NextHopPolicy,
+            route_trait::{NextHopPolicy, RouteCostCalculatorInterface},
             tests::{
                 connect_peer_manager, create_mock_peer_manager_with_name, wait_route_appear,
                 wait_route_appear_with_cost,
@@ -2248,6 +2263,16 @@ mod tests {
         LabelSet::new().with_label_type(LabelType::NetworkName(
             peer_mgr.get_global_ctx().get_network_name(),
         ))
+    }
+
+    struct TestCostCalculator {
+        costs: HashMap<(PeerId, PeerId), i32>,
+    }
+
+    impl RouteCostCalculatorInterface for TestCostCalculator {
+        fn calculate_cost(&self, src: PeerId, dst: PeerId) -> i32 {
+            *self.costs.get(&(src, dst)).unwrap_or(&1)
+        }
     }
 
     #[test]
@@ -2650,6 +2675,109 @@ mod tests {
                         >= a_data_tx_before + pkt_len
                         && metric_value(&peer_mgr_b, MetricName::TrafficBytesRx, &b_network_labels)
                             >= b_data_rx_before + pkt_len
+                }
+            },
+            Duration::from_secs(5),
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn send_msg_internal_uses_latency_first_gateway_for_direct_peer() {
+        let peer_mgr_a = create_mock_peer_manager_with_mock_stun(NatType::Unknown).await;
+        let peer_mgr_b = create_mock_peer_manager_with_mock_stun(NatType::Unknown).await;
+        let peer_mgr_c = create_mock_peer_manager_with_mock_stun(NatType::Unknown).await;
+
+        connect_peer_manager(peer_mgr_a.clone(), peer_mgr_b.clone()).await;
+        connect_peer_manager(peer_mgr_b.clone(), peer_mgr_c.clone()).await;
+        connect_peer_manager(peer_mgr_a.clone(), peer_mgr_c.clone()).await;
+        wait_route_appear(peer_mgr_a.clone(), peer_mgr_b.clone())
+            .await
+            .unwrap();
+        wait_route_appear(peer_mgr_b.clone(), peer_mgr_c.clone())
+            .await
+            .unwrap();
+        wait_route_appear(peer_mgr_a.clone(), peer_mgr_c.clone())
+            .await
+            .unwrap();
+
+        peer_mgr_a
+            .get_route()
+            .set_route_cost_fn(Box::new(TestCostCalculator {
+                costs: HashMap::from([
+                    ((peer_mgr_a.my_peer_id(), peer_mgr_c.my_peer_id()), 100),
+                    ((peer_mgr_a.my_peer_id(), peer_mgr_b.my_peer_id()), 1),
+                    ((peer_mgr_b.my_peer_id(), peer_mgr_c.my_peer_id()), 1),
+                ]),
+            }))
+            .await;
+
+        wait_for_condition(
+            || {
+                let peer_mgr_a = peer_mgr_a.clone();
+                let peer_mgr_b = peer_mgr_b.clone();
+                let peer_mgr_c = peer_mgr_c.clone();
+                async move {
+                    peer_mgr_a
+                        .get_route()
+                        .get_next_hop_with_policy(peer_mgr_c.my_peer_id(), NextHopPolicy::LeastCost)
+                        .await
+                        == Some(peer_mgr_b.my_peer_id())
+                }
+            },
+            Duration::from_secs(5),
+        )
+        .await;
+
+        let b_network_labels = network_labels(&peer_mgr_b);
+        let forwarded_bytes_before = metric_value(
+            &peer_mgr_b,
+            MetricName::TrafficBytesForwarded,
+            &b_network_labels,
+        );
+        let forwarded_packets_before = metric_value(
+            &peer_mgr_b,
+            MetricName::TrafficPacketsForwarded,
+            &b_network_labels,
+        );
+
+        let mut pkt = ZCPacket::new_with_payload(b"latency-first");
+        pkt.fill_peer_manager_hdr(
+            peer_mgr_a.my_peer_id(),
+            peer_mgr_c.my_peer_id(),
+            PacketType::Data as u8,
+        );
+        pkt.mut_peer_manager_header()
+            .unwrap()
+            .set_latency_first(true);
+        let pkt_len = pkt.buf_len() as u64;
+
+        PeerManager::send_msg_internal(
+            &peer_mgr_a.peers,
+            &peer_mgr_a.foreign_network_client,
+            &peer_mgr_a.relay_peer_map,
+            Some(&peer_mgr_a.traffic_metrics),
+            pkt,
+            peer_mgr_c.my_peer_id(),
+        )
+        .await
+        .unwrap();
+
+        wait_for_condition(
+            || {
+                let peer_mgr_b = peer_mgr_b.clone();
+                let b_network_labels = b_network_labels.clone();
+                async move {
+                    metric_value(
+                        &peer_mgr_b,
+                        MetricName::TrafficBytesForwarded,
+                        &b_network_labels,
+                    ) >= forwarded_bytes_before + pkt_len
+                        && metric_value(
+                            &peer_mgr_b,
+                            MetricName::TrafficPacketsForwarded,
+                            &b_network_labels,
+                        ) > forwarded_packets_before
                 }
             },
             Duration::from_secs(5),
