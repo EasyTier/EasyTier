@@ -904,6 +904,21 @@ impl Instance {
         tracing::debug!("nic ctx updated.");
     }
 
+    #[cfg(all(feature = "tun", feature = "magic-dns"))]
+    async fn use_new_nic_ctx_with_magic_dns(
+        arc_nic_ctx: ArcNicCtx,
+        peer_mgr: Arc<PeerManager>,
+        nic_ctx: NicCtx,
+        tun_dev: Option<String>,
+        tun_ip: Option<Ipv4Inet>,
+    ) {
+        let route_backend = nic_ctx.shared_route_backend_for_dns();
+        let magic_dns = tun_ip.and_then(|tun_ip| {
+            Self::create_magic_dns_runner(peer_mgr, tun_dev, tun_ip, route_backend)
+        });
+        Self::use_new_nic_ctx(arc_nic_ctx, nic_ctx, magic_dns).await;
+    }
+
     #[cfg(feature = "tun")]
     async fn new_nic_ctx(
         global_ctx: ArcGlobalCtx,
@@ -1052,21 +1067,19 @@ impl Instance {
                             continue;
                         }
                         #[cfg(feature = "magic-dns")]
-                        let route_backend = new_nic_ctx.shared_route_backend_for_dns();
-                        #[cfg(feature = "magic-dns")]
-                        let ifname = new_nic_ctx.ifname().await;
-                        Self::use_new_nic_ctx(
-                            nic_ctx.clone(),
-                            new_nic_ctx,
-                            #[cfg(feature = "magic-dns")]
-                            Self::create_magic_dns_runner(
+                        {
+                            let ifname = new_nic_ctx.ifname().await;
+                            Self::use_new_nic_ctx_with_magic_dns(
+                                nic_ctx.clone(),
                                 peer_manager_c.clone(),
+                                new_nic_ctx,
                                 ifname,
-                                ip,
-                                route_backend,
-                            ),
-                        )
-                        .await;
+                                Some(ip),
+                            )
+                            .await;
+                        }
+                        #[cfg(not(feature = "magic-dns"))]
+                        Self::use_new_nic_ctx(nic_ctx.clone(), new_nic_ctx).await;
                     }
 
                     current_dhcp_ip = Some(ip);
@@ -1145,14 +1158,15 @@ impl Instance {
                     // Create Magic DNS runner only if we have IPv4
                     #[cfg(feature = "magic-dns")]
                     {
-                        let route_backend = new_nic_ctx.shared_route_backend_for_dns();
                         let ifname = new_nic_ctx.ifname().await;
-                        let dns_runner = if let Some(ipv4) = ipv4_addr {
-                            Self::create_magic_dns_runner(peer_mgr, ifname, ipv4, route_backend)
-                        } else {
-                            None
-                        };
-                        Self::use_new_nic_ctx(nic_ctx.clone(), new_nic_ctx, dns_runner).await;
+                        Self::use_new_nic_ctx_with_magic_dns(
+                            nic_ctx.clone(),
+                            peer_mgr,
+                            new_nic_ctx,
+                            ifname,
+                            ipv4_addr,
+                        )
+                        .await;
                     }
                     #[cfg(not(feature = "magic-dns"))]
                     Self::use_new_nic_ctx(nic_ctx.clone(), new_nic_ctx).await;
@@ -1757,13 +1771,14 @@ impl Instance {
 
         #[cfg(feature = "magic-dns")]
         {
-            let route_backend = new_nic_ctx.shared_route_backend_for_dns();
-            let magic_dns_runner = if let Some(ipv4) = global_ctx.get_ipv4() {
-                Self::create_magic_dns_runner(peer_manager.clone(), None, ipv4, route_backend)
-            } else {
-                None
-            };
-            Self::use_new_nic_ctx(nic_ctx.clone(), new_nic_ctx, magic_dns_runner).await;
+            Self::use_new_nic_ctx_with_magic_dns(
+                nic_ctx.clone(),
+                peer_manager.clone(),
+                new_nic_ctx,
+                None,
+                global_ctx.get_ipv4(),
+            )
+            .await;
         }
         #[cfg(not(feature = "magic-dns"))]
         Self::use_new_nic_ctx(nic_ctx.clone(), new_nic_ctx).await;

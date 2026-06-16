@@ -1318,6 +1318,13 @@ impl NicCtx {
         self.backend.ifname().await
     }
 
+    async fn tun_ifname(&self) -> Result<String, Error> {
+        self.backend
+            .ifname()
+            .await
+            .ok_or_else(|| anyhow::anyhow!("tun device has no interface name").into())
+    }
+
     pub async fn assign_ipv4_to_tun_device(&self, ipv4_addr: cidr::Ipv4Inet) -> Result<(), Error> {
         self.backend.link_up().await?;
         self.backend.remove_ip(None).await?;
@@ -1496,6 +1503,15 @@ impl NicCtx {
             close_notifier.notify_one();
             tracing::error!("nic closed when sending to it");
         });
+    }
+
+    fn start_tunnel_forwarding(&mut self, tunnel: Box<dyn Tunnel>) -> Result<(), Error> {
+        let (stream, sink) = tunnel.split();
+
+        self.do_forward_nic_to_peers_task(stream)?;
+        self.do_forward_peers_to_nic(sink);
+
+        Ok(())
     }
 
     #[cfg(target_os = "windows")]
@@ -1792,11 +1808,7 @@ impl NicCtx {
     ) -> Result<(), Error> {
         let tunnel = match self.backend.create_dev().await {
             Ok(ret) => {
-                let ifname = self
-                    .backend
-                    .ifname()
-                    .await
-                    .ok_or_else(|| anyhow::anyhow!("tun device has no interface name"))?;
+                let ifname = self.tun_ifname().await?;
 
                 #[cfg(target_os = "windows")]
                 {
@@ -1831,10 +1843,7 @@ impl NicCtx {
             }
         };
 
-        let (stream, sink) = tunnel.split();
-
-        self.do_forward_nic_to_peers_task(stream)?;
-        self.do_forward_peers_to_nic(sink);
+        self.start_tunnel_forwarding(tunnel)?;
 
         // Assign IPv4 address if provided
         if let Some(ipv4_addr) = ipv4_addr {
@@ -1865,11 +1874,7 @@ impl NicCtx {
     ) -> Result<(), Error> {
         let (tunnel, ifname) = match self.backend.create_dev_for_mobile(tun_fd).await {
             Ok(ret) => {
-                let ifname = self
-                    .backend
-                    .ifname()
-                    .await
-                    .ok_or_else(|| anyhow::anyhow!("tun device has no interface name"))?;
+                let ifname = self.tun_ifname().await?;
                 (ret, ifname)
             }
             Err(err) => {
@@ -1899,10 +1904,7 @@ impl NicCtx {
         self.global_ctx
             .issue_event(GlobalCtxEvent::TunDeviceReady(ifname));
 
-        let (stream, sink) = tunnel.split();
-
-        self.do_forward_nic_to_peers_task(stream)?;
-        self.do_forward_peers_to_nic(sink);
+        self.start_tunnel_forwarding(tunnel)?;
 
         Ok(())
     }

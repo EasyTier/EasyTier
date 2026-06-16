@@ -103,6 +103,13 @@ pub struct SharedIfConfigDelta {
     pub mtu: Option<SharedMtuChange>,
 }
 
+struct SharedIfConfigOwnerDeltas {
+    ipv4_addresses: OwnedItemDelta<Ipv4Inet>,
+    ipv6_addresses: OwnedItemDelta<Ipv6Inet>,
+    ipv4_routes: OwnedItemDelta<SharedIpv4Route>,
+    ipv6_routes: OwnedItemDelta<SharedIpv6Route>,
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct SharedIfConfigSnapshot {
     pub ipv4_addresses: BTreeMap<Ipv4Inet, BTreeSet<SharedVirtualNicMemberId>>,
@@ -134,59 +141,13 @@ impl SharedIfConfig {
             .cloned()
             .unwrap_or_default();
         let old_mtu = self.effective_mtu();
-        let source_change_candidates = old_claims
-            .ipv4_routes
-            .union(&claims.ipv4_routes)
-            .cloned()
-            .collect::<BTreeSet<_>>();
+        let source_change_candidates = merged_items(&old_claims.ipv4_routes, &claims.ipv4_routes);
         let old_ipv4_route_sources = self.ipv4_route_sources(&source_change_candidates);
-
-        let ipv4_addresses = update_owned_items(
-            &mut self.ipv4_address_owners,
-            member_id,
-            &old_claims.ipv4_addresses,
-            &claims.ipv4_addresses,
-        );
-        let ipv6_addresses = update_owned_items(
-            &mut self.ipv6_address_owners,
-            member_id,
-            &old_claims.ipv6_addresses,
-            &claims.ipv6_addresses,
-        );
-        let ipv4_routes = update_owned_items(
-            &mut self.ipv4_route_owners,
-            member_id,
-            &old_claims.ipv4_routes,
-            &claims.ipv4_routes,
-        );
-        let ipv6_routes = update_owned_items(
-            &mut self.ipv6_route_owners,
-            member_id,
-            &old_claims.ipv6_routes,
-            &claims.ipv6_routes,
-        );
+        let owner_deltas = self.update_owner_deltas(member_id, &old_claims, &claims);
 
         update_member_mtu(&mut self.member_mtu, member_id, claims.mtu);
         self.member_claims.insert(member_id, claims);
-        let ipv4_route_removed_old_source_hints =
-            old_ipv4_route_hints(&old_ipv4_route_sources, &ipv4_routes.removed);
-        let ipv4_route_source_changed_old_hints =
-            self.changed_ipv4_route_sources(&old_ipv4_route_sources, &ipv4_routes);
-        let ipv4_route_source_changed = ipv4_route_source_changed_old_hints
-            .keys()
-            .cloned()
-            .collect();
-
-        SharedIfConfigDelta {
-            ipv4_addresses,
-            ipv6_addresses,
-            ipv4_routes,
-            ipv4_route_removed_old_source_hints,
-            ipv4_route_source_changed,
-            ipv4_route_source_changed_old_hints,
-            ipv6_routes,
-            mtu: mtu_delta(old_mtu, self.effective_mtu()),
-        }
+        self.build_delta(old_mtu, &old_ipv4_route_sources, owner_deltas)
     }
 
     pub fn remove_member(
@@ -197,48 +158,100 @@ impl SharedIfConfig {
         let old_mtu = self.effective_mtu();
         let old_ipv4_route_sources = self.ipv4_route_sources(&old_claims.ipv4_routes);
         self.member_claims.remove(&member_id);
-
-        let ipv4_addresses = remove_owned_items(
-            &mut self.ipv4_address_owners,
-            member_id,
-            &old_claims.ipv4_addresses,
-        );
-        let ipv6_addresses = remove_owned_items(
-            &mut self.ipv6_address_owners,
-            member_id,
-            &old_claims.ipv6_addresses,
-        );
-        let ipv4_routes = remove_owned_items(
-            &mut self.ipv4_route_owners,
-            member_id,
-            &old_claims.ipv4_routes,
-        );
-        let ipv6_routes = remove_owned_items(
-            &mut self.ipv6_route_owners,
-            member_id,
-            &old_claims.ipv6_routes,
-        );
-
+        let owner_deltas = self.remove_owner_deltas(member_id, &old_claims);
         self.member_mtu.remove(&member_id);
+
+        Some(self.build_delta(old_mtu, &old_ipv4_route_sources, owner_deltas))
+    }
+
+    fn update_owner_deltas(
+        &mut self,
+        member_id: SharedVirtualNicMemberId,
+        old_claims: &SharedIfConfigClaims,
+        claims: &SharedIfConfigClaims,
+    ) -> SharedIfConfigOwnerDeltas {
+        SharedIfConfigOwnerDeltas {
+            ipv4_addresses: update_owned_items(
+                &mut self.ipv4_address_owners,
+                member_id,
+                &old_claims.ipv4_addresses,
+                &claims.ipv4_addresses,
+            ),
+            ipv6_addresses: update_owned_items(
+                &mut self.ipv6_address_owners,
+                member_id,
+                &old_claims.ipv6_addresses,
+                &claims.ipv6_addresses,
+            ),
+            ipv4_routes: update_owned_items(
+                &mut self.ipv4_route_owners,
+                member_id,
+                &old_claims.ipv4_routes,
+                &claims.ipv4_routes,
+            ),
+            ipv6_routes: update_owned_items(
+                &mut self.ipv6_route_owners,
+                member_id,
+                &old_claims.ipv6_routes,
+                &claims.ipv6_routes,
+            ),
+        }
+    }
+
+    fn remove_owner_deltas(
+        &mut self,
+        member_id: SharedVirtualNicMemberId,
+        old_claims: &SharedIfConfigClaims,
+    ) -> SharedIfConfigOwnerDeltas {
+        SharedIfConfigOwnerDeltas {
+            ipv4_addresses: remove_owned_items(
+                &mut self.ipv4_address_owners,
+                member_id,
+                &old_claims.ipv4_addresses,
+            ),
+            ipv6_addresses: remove_owned_items(
+                &mut self.ipv6_address_owners,
+                member_id,
+                &old_claims.ipv6_addresses,
+            ),
+            ipv4_routes: remove_owned_items(
+                &mut self.ipv4_route_owners,
+                member_id,
+                &old_claims.ipv4_routes,
+            ),
+            ipv6_routes: remove_owned_items(
+                &mut self.ipv6_route_owners,
+                member_id,
+                &old_claims.ipv6_routes,
+            ),
+        }
+    }
+
+    fn build_delta(
+        &self,
+        old_mtu: Option<u32>,
+        old_ipv4_route_sources: &BTreeMap<SharedIpv4Route, Option<Ipv4Addr>>,
+        owner_deltas: SharedIfConfigOwnerDeltas,
+    ) -> SharedIfConfigDelta {
         let ipv4_route_removed_old_source_hints =
-            old_ipv4_route_hints(&old_ipv4_route_sources, &ipv4_routes.removed);
+            old_ipv4_route_hints(old_ipv4_route_sources, &owner_deltas.ipv4_routes.removed);
         let ipv4_route_source_changed_old_hints =
-            self.changed_ipv4_route_sources(&old_ipv4_route_sources, &ipv4_routes);
+            self.changed_ipv4_route_sources(old_ipv4_route_sources, &owner_deltas.ipv4_routes);
         let ipv4_route_source_changed = ipv4_route_source_changed_old_hints
             .keys()
             .cloned()
             .collect();
 
-        Some(SharedIfConfigDelta {
-            ipv4_addresses,
-            ipv6_addresses,
-            ipv4_routes,
+        SharedIfConfigDelta {
+            ipv4_addresses: owner_deltas.ipv4_addresses,
+            ipv6_addresses: owner_deltas.ipv6_addresses,
+            ipv4_routes: owner_deltas.ipv4_routes,
             ipv4_route_removed_old_source_hints,
             ipv4_route_source_changed,
             ipv4_route_source_changed_old_hints,
-            ipv6_routes,
+            ipv6_routes: owner_deltas.ipv6_routes,
             mtu: mtu_delta(old_mtu, self.effective_mtu()),
-        })
+        }
     }
 
     pub fn effective_mtu(&self) -> Option<u32> {
@@ -784,32 +797,13 @@ fn dispatcher_claims_for_ifcfg_transition(
     old_claims: &SharedIfConfigClaims,
     next_claims: &SharedIfConfigClaims,
 ) -> SharedIfConfigClaims {
-    let mut claims = SharedIfConfigClaims::default();
-    claims
-        .ipv4_addresses
-        .extend(old_claims.ipv4_addresses.iter().copied());
-    claims
-        .ipv4_addresses
-        .extend(next_claims.ipv4_addresses.iter().copied());
-    claims
-        .ipv6_addresses
-        .extend(old_claims.ipv6_addresses.iter().copied());
-    claims
-        .ipv6_addresses
-        .extend(next_claims.ipv6_addresses.iter().copied());
-    claims
-        .ipv4_routes
-        .extend(old_claims.ipv4_routes.iter().cloned());
-    claims
-        .ipv4_routes
-        .extend(next_claims.ipv4_routes.iter().cloned());
-    claims
-        .ipv6_routes
-        .extend(old_claims.ipv6_routes.iter().cloned());
-    claims
-        .ipv6_routes
-        .extend(next_claims.ipv6_routes.iter().cloned());
-    claims
+    SharedIfConfigClaims {
+        ipv4_addresses: merged_items(&old_claims.ipv4_addresses, &next_claims.ipv4_addresses),
+        ipv6_addresses: merged_items(&old_claims.ipv6_addresses, &next_claims.ipv6_addresses),
+        ipv4_routes: merged_items(&old_claims.ipv4_routes, &next_claims.ipv4_routes),
+        ipv6_routes: merged_items(&old_claims.ipv6_routes, &next_claims.ipv6_routes),
+        mtu: None,
+    }
 }
 
 async fn add_shared_ipv4_route(
@@ -847,6 +841,27 @@ fn old_ipv4_route_hints(
                 .map(|source_hint| (route.clone(), *source_hint))
         })
         .collect()
+}
+
+fn merged_items<T>(old_items: &BTreeSet<T>, new_items: &BTreeSet<T>) -> BTreeSet<T>
+where
+    T: Ord + Clone,
+{
+    old_items.union(new_items).cloned().collect()
+}
+
+fn remove_claimed_item<T>(items: &mut BTreeSet<T>, item: Option<T>)
+where
+    T: Ord,
+{
+    match item {
+        Some(item) => {
+            items.remove(&item);
+        }
+        None => {
+            items.clear();
+        }
+    }
 }
 
 fn ignore_removed_ifcfg_not_found(result: Result<(), Error>) -> Result<(), Error> {
@@ -1031,13 +1046,8 @@ impl SharedVirtualNicMember {
     }
 
     pub async fn remove_ip(&self, ip: Option<Ipv4Inet>) -> Result<(), Error> {
-        self.update_claims(|claims| match ip {
-            Some(ip) => {
-                claims.ipv4_addresses.remove(&ip);
-            }
-            None => {
-                claims.ipv4_addresses.clear();
-            }
+        self.update_claims(|claims| {
+            remove_claimed_item(&mut claims.ipv4_addresses, ip);
         })
         .await
     }
@@ -1083,13 +1093,8 @@ impl SharedVirtualNicMember {
     }
 
     pub async fn remove_ipv6(&self, ip: Option<Ipv6Inet>) -> Result<(), Error> {
-        self.update_claims(|claims| match ip {
-            Some(ip) => {
-                claims.ipv6_addresses.remove(&ip);
-            }
-            None => {
-                claims.ipv6_addresses.clear();
-            }
+        self.update_claims(|claims| {
+            remove_claimed_item(&mut claims.ipv6_addresses, ip);
         })
         .await
     }

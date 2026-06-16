@@ -168,11 +168,12 @@ impl SharedVirtualNicMemberTunnelTable {
                 }
             }
 
-            let _ = reader_control_sender.send(SharedVirtualNicControl::Unregister {
+            notify_member_tunnel_closed(
+                &reader_control_sender,
+                &reader_close_notifier,
                 member_id,
                 registration_id,
-            });
-            reader_close_notifier.notify_one();
+            );
         }));
 
         let writer_control_sender = control_sender.clone();
@@ -181,11 +182,12 @@ impl SharedVirtualNicMemberTunnelTable {
             while let Some(packet) = to_member_receiver.recv().await {
                 if let Err(err) = member_sink.send(packet).await {
                     tracing::error!(?member_id, ?err, "shared member tunnel write failed");
-                    let _ = writer_control_sender.send(SharedVirtualNicControl::Unregister {
+                    notify_member_tunnel_closed(
+                        &writer_control_sender,
+                        &writer_close_notifier,
                         member_id,
                         registration_id,
-                    });
-                    writer_close_notifier.notify_one();
+                    );
                     break;
                 }
             }
@@ -232,6 +234,19 @@ impl SharedVirtualNicMemberTunnelTable {
     fn control_sender(&self) -> Option<mpsc::UnboundedSender<SharedVirtualNicControl>> {
         self.state.lock().unwrap().control_sender.clone()
     }
+}
+
+fn notify_member_tunnel_closed(
+    control_sender: &mpsc::UnboundedSender<SharedVirtualNicControl>,
+    close_notifier: &Notify,
+    member_id: SharedVirtualNicMemberId,
+    registration_id: SharedVirtualNicMemberRegistrationId,
+) {
+    let _ = control_sender.send(SharedVirtualNicControl::Unregister {
+        member_id,
+        registration_id,
+    });
+    close_notifier.notify_one();
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -609,27 +624,31 @@ impl SharedVirtualNicDispatcher {
         member_id: SharedVirtualNicMemberId,
         claims: &SharedIfConfigClaims,
     ) -> Result<(), Error> {
-        let (ack, rx) = oneshot::channel();
-        self.control_sender
-            .send(SharedVirtualNicControl::UpdateSources {
-                member_id,
-                sources: SharedVirtualNicMemberSources::from_claims(claims),
-                ack,
-            })
-            .map_err(|_| anyhow::anyhow!("shared virtual nic dispatcher is not running"))?;
-        rx.await
-            .map_err(|_| anyhow::anyhow!("shared virtual nic dispatcher is not running").into())
+        self.send_source_update(
+            member_id,
+            SharedVirtualNicMemberSources::from_claims(claims),
+        )
+        .await
     }
 
     pub(super) async fn remove_sources(
         &self,
         member_id: SharedVirtualNicMemberId,
     ) -> Result<(), Error> {
+        self.send_source_update(member_id, SharedVirtualNicMemberSources::default())
+            .await
+    }
+
+    async fn send_source_update(
+        &self,
+        member_id: SharedVirtualNicMemberId,
+        sources: SharedVirtualNicMemberSources,
+    ) -> Result<(), Error> {
         let (ack, rx) = oneshot::channel();
         self.control_sender
             .send(SharedVirtualNicControl::UpdateSources {
                 member_id,
-                sources: SharedVirtualNicMemberSources::default(),
+                sources,
                 ack,
             })
             .map_err(|_| anyhow::anyhow!("shared virtual nic dispatcher is not running"))?;
@@ -659,6 +678,43 @@ impl SharedVirtualNicDispatcher {
     }
 }
 
+enum DispatcherControlResult {
+    Continue,
+    Stop {
+        invalidate: bool,
+        ack: Option<oneshot::Sender<()>>,
+    },
+}
+
+fn handle_dispatcher_control(
+    state: &mut SharedVirtualNicDispatcherState,
+    control: Option<SharedVirtualNicControl>,
+) -> DispatcherControlResult {
+    let Some(control) = control else {
+        return DispatcherControlResult::Stop {
+            invalidate: true,
+            ack: None,
+        };
+    };
+
+    match control {
+        SharedVirtualNicControl::Shutdown { invalidate, ack } => DispatcherControlResult::Stop {
+            invalidate,
+            ack: Some(ack),
+        },
+        other => {
+            state.handle_control(other);
+            DispatcherControlResult::Continue
+        }
+    }
+}
+
+fn acknowledge_dispatcher_shutdown(ack: Option<oneshot::Sender<()>>) {
+    if let Some(ack) = ack {
+        let _ = ack.send(());
+    }
+}
+
 struct SharedVirtualNicDispatcherTask {
     tun_stream: Pin<Box<dyn ZCPacketStream>>,
     tun_sink: Pin<Box<dyn ZCPacketSink>>,
@@ -674,16 +730,12 @@ impl SharedVirtualNicDispatcherTask {
         loop {
             tokio::select! {
                 control = self.control_receiver.recv() => {
-                    let Some(control) = control else {
-                        break;
-                    };
-                    match control {
-                        SharedVirtualNicControl::Shutdown { invalidate, ack } => {
-                            self.cleanup(invalidate);
-                            let _ = ack.send(());
-                            return;
-                        }
-                        other => self.state.handle_control(other),
+                    if let DispatcherControlResult::Stop { invalidate, ack } =
+                        handle_dispatcher_control(&mut self.state, control)
+                    {
+                        self.cleanup(invalidate);
+                        acknowledge_dispatcher_shutdown(ack);
+                        return;
                     }
                 }
                 member_packet = self.to_tun_receiver.recv() => {
@@ -900,20 +952,12 @@ impl SharedVirtualNicMobileDispatcherTask {
     }
 
     fn handle_control(&mut self, control: Option<SharedVirtualNicControl>) -> bool {
-        let Some(control) = control else {
-            self.cleanup(true);
-            return false;
-        };
-
-        match control {
-            SharedVirtualNicControl::Shutdown { invalidate, ack } => {
+        match handle_dispatcher_control(&mut self.state, control) {
+            DispatcherControlResult::Continue => true,
+            DispatcherControlResult::Stop { invalidate, ack } => {
                 self.cleanup(invalidate);
-                let _ = ack.send(());
+                acknowledge_dispatcher_shutdown(ack);
                 false
-            }
-            other => {
-                self.state.handle_control(other);
-                true
             }
         }
     }
