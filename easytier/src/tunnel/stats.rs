@@ -1,7 +1,4 @@
-use std::{
-    cell::UnsafeCell,
-    sync::atomic::{AtomicU32, Ordering::Relaxed},
-};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering::Relaxed};
 
 pub struct WindowLatency {
     latency_us_window: Vec<AtomicU32>,
@@ -63,34 +60,30 @@ impl WindowLatency {
 
 #[derive(Debug)]
 pub struct Throughput {
-    tx_bytes: UnsafeCell<u64>,
-    rx_bytes: UnsafeCell<u64>,
-    tx_packets: UnsafeCell<u64>,
-    rx_packets: UnsafeCell<u64>,
+    tx_bytes: AtomicU64,
+    rx_bytes: AtomicU64,
+    tx_packets: AtomicU64,
+    rx_packets: AtomicU64,
 }
 
 impl Clone for Throughput {
     fn clone(&self) -> Self {
         Self {
-            tx_bytes: UnsafeCell::new(unsafe { *self.tx_bytes.get() }),
-            rx_bytes: UnsafeCell::new(unsafe { *self.rx_bytes.get() }),
-            tx_packets: UnsafeCell::new(unsafe { *self.tx_packets.get() }),
-            rx_packets: UnsafeCell::new(unsafe { *self.rx_packets.get() }),
+            tx_bytes: AtomicU64::new(self.tx_bytes()),
+            rx_bytes: AtomicU64::new(self.rx_bytes()),
+            tx_packets: AtomicU64::new(self.tx_packets()),
+            rx_packets: AtomicU64::new(self.rx_packets()),
         }
     }
 }
 
-// add sync::Send and sync::Sync traits to Throughput
-unsafe impl Send for Throughput {}
-unsafe impl Sync for Throughput {}
-
 impl Default for Throughput {
     fn default() -> Self {
         Self {
-            tx_bytes: UnsafeCell::new(0),
-            rx_bytes: UnsafeCell::new(0),
-            tx_packets: UnsafeCell::new(0),
-            rx_packets: UnsafeCell::new(0),
+            tx_bytes: AtomicU64::new(0),
+            rx_bytes: AtomicU64::new(0),
+            tx_packets: AtomicU64::new(0),
+            rx_packets: AtomicU64::new(0),
         }
     }
 }
@@ -101,32 +94,68 @@ impl Throughput {
     }
 
     pub fn tx_bytes(&self) -> u64 {
-        unsafe { *self.tx_bytes.get() }
+        self.tx_bytes.load(Relaxed)
     }
 
     pub fn rx_bytes(&self) -> u64 {
-        unsafe { *self.rx_bytes.get() }
+        self.rx_bytes.load(Relaxed)
     }
 
     pub fn tx_packets(&self) -> u64 {
-        unsafe { *self.tx_packets.get() }
+        self.tx_packets.load(Relaxed)
     }
 
     pub fn rx_packets(&self) -> u64 {
-        unsafe { *self.rx_packets.get() }
+        self.rx_packets.load(Relaxed)
     }
 
     pub fn record_tx_bytes(&self, bytes: u64) {
-        unsafe {
-            *self.tx_bytes.get() += bytes;
-            *self.tx_packets.get() += 1;
-        }
+        self.tx_bytes.fetch_add(bytes, Relaxed);
+        self.tx_packets.fetch_add(1, Relaxed);
     }
 
     pub fn record_rx_bytes(&self, bytes: u64) {
-        unsafe {
-            *self.rx_bytes.get() += bytes;
-            *self.rx_packets.get() += 1;
-        }
+        self.rx_bytes.fetch_add(bytes, Relaxed);
+        self.rx_packets.fetch_add(1, Relaxed);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Throughput;
+    use std::sync::Arc;
+
+    #[test]
+    fn throughput_records_concurrent_tx_and_rx() {
+        const THREADS: usize = 8;
+        const RECORDS_PER_THREAD: usize = 10_000;
+        const TX_BYTES_PER_RECORD: u64 = 3;
+        const RX_BYTES_PER_RECORD: u64 = 7;
+
+        let throughput = Arc::new(Throughput::new());
+
+        std::thread::scope(|scope| {
+            for _ in 0..THREADS {
+                let throughput = Arc::clone(&throughput);
+                scope.spawn(move || {
+                    for _ in 0..RECORDS_PER_THREAD {
+                        throughput.record_tx_bytes(TX_BYTES_PER_RECORD);
+                        throughput.record_rx_bytes(RX_BYTES_PER_RECORD);
+                    }
+                });
+            }
+        });
+
+        let expected_packets = (THREADS * RECORDS_PER_THREAD) as u64;
+        assert_eq!(throughput.tx_packets(), expected_packets);
+        assert_eq!(throughput.rx_packets(), expected_packets);
+        assert_eq!(
+            throughput.tx_bytes(),
+            expected_packets * TX_BYTES_PER_RECORD
+        );
+        assert_eq!(
+            throughput.rx_bytes(),
+            expected_packets * RX_BYTES_PER_RECORD
+        );
     }
 }
