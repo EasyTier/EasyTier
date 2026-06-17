@@ -13,11 +13,15 @@ use crate::common::ifcfg::{get_interface_index, list_ipv6_route_messages};
 use crate::common::{
     error::Error,
     global_ctx::{ArcGlobalCtx, GlobalCtxEvent},
+    log,
 };
 
 const PUBLIC_IPV6_PROVIDER_RECONCILE_INTERVAL: std::time::Duration =
     std::time::Duration::from_secs(5);
 const PUBLIC_IPV6_PROVIDER_RECONCILE_MAX_RETRIES: usize = 3;
+
+#[cfg(target_os = "linux")]
+static NDP_WAN_IFINDEX: std::sync::Mutex<Option<u32>> = std::sync::Mutex::new(None);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum PublicIpv6ProviderRuntimeState {
@@ -262,14 +266,14 @@ fn detect_public_ipv6_prefix_from_routes(
 }
 
 #[cfg(target_os = "linux")]
-fn detect_public_ipv6_prefix_from_interfaces() -> Option<Ipv6Cidr> {
+fn detect_public_ipv6_prefix_from_interfaces() -> Option<(Ipv6Cidr, u32)> {
     use nix::ifaddrs::getifaddrs;
     use nix::sys::socket::SockaddrLike;
     use pnet::ipnetwork::ip_mask_to_prefix;
 
     let interfaces = getifaddrs().ok()?;
 
-    let candidates: Vec<Ipv6Cidr> = interfaces
+    let candidates: Vec<(Ipv6Cidr, u32)> = interfaces
         .filter_map(|iface| {
             let address = iface.address?;
             let netmask = iface.netmask?;
@@ -303,16 +307,25 @@ fn detect_public_ipv6_prefix_from_interfaces() -> Option<Ipv6Cidr> {
             // always the case for interface addresses). Use Ipv6Inet::new()
             // instead, which accepts host addresses and can extract the
             // containing network.
-            cidr::Ipv6Inet::new(ipv6_addr, prefix_len)
+            let cidr = Ipv6Inet::new(ipv6_addr, prefix_len)
                 .ok()
-                .map(|inet| inet.network())
+                .map(|inet| inet.network())?;
+
+            let ifindex = unsafe {
+                nix::libc::if_nametoindex(iface.interface_name.as_ptr().cast())
+            };
+            if ifindex == 0 {
+                return None;
+            }
+
+            Some((cidr, ifindex))
         })
         .collect();
 
     // prefer the shortest prefix (widest scope)
     candidates
         .into_iter()
-        .min_by_key(|cidr| cidr.network_length())
+        .min_by_key(|(cidr, _)| cidr.network_length())
 }
 
 #[cfg(target_os = "linux")]
@@ -327,14 +340,27 @@ async fn detect_public_ipv6_prefix_linux() -> Result<Option<Ipv6Cidr>, Error> {
         get_interface_index("lo").with_context(|| "failed to resolve linux loopback ifindex")?;
 
     if let Some(prefix) = detect_public_ipv6_prefix_from_routes(&routes, loopback_ifindex) {
+        #[cfg(target_os = "linux")]
+        {
+            let wan_ifindex = routes
+                .iter()
+                .find(|r| is_ipv6_default_route(r.dst) && r.src == Some(prefix))
+                .and_then(|r| r.ifindex)
+                .unwrap_or(0);
+            *NDP_WAN_IFINDEX.lock().unwrap() = Some(wan_ifindex);
+        }
         return Ok(Some(prefix));
     }
 
-    // Fallback: scan interface addresses for DHCPv6 IA_NA / SLAAC direct
-    // assignment, where the prefix is on the WAN interface itself rather
-    // than delegated to a LAN interface via Prefix Delegation (PD).
-    // See https://github.com/EasyTier/EasyTier/issues/2333
-    Ok(detect_public_ipv6_prefix_from_interfaces())
+    // Fallback for DHCPv6 IA_NA / SLAAC — see https://github.com/EasyTier/EasyTier/issues/2333
+    let result = detect_public_ipv6_prefix_from_interfaces();
+    #[cfg(target_os = "linux")]
+    {
+        if let Some((_, wan_ifindex)) = result {
+            *NDP_WAN_IFINDEX.lock().unwrap() = Some(wan_ifindex);
+        }
+    }
+    Ok(result.map(|(cidr, _)| cidr))
 }
 
 #[cfg(not(target_os = "linux"))]
@@ -489,12 +515,142 @@ pub(super) async fn reconcile_public_ipv6_provider_runtime(global_ctx: &ArcGloba
         .1
 }
 
+// --- NDP proxy helper ---
+
+#[cfg(target_os = "linux")]
+fn ifindex_to_name(ifindex: u32) -> Option<String> {
+    let mut buf = [0u8; nix::libc::IFNAMSIZ as usize];
+    let ptr = unsafe { nix::libc::if_indextoname(ifindex, buf.as_mut_ptr().cast()) };
+    if ptr.is_null() {
+        return None;
+    }
+    unsafe {
+        Some(
+            std::ffi::CStr::from_ptr(buf.as_ptr().cast())
+                .to_string_lossy()
+                .into_owned(),
+        )
+    }
+}
+
+/// Periodically sync NDP proxy entries for SLAAC / DHCPv6 IA_NA scenarios.
+/// The ISP treats the IPv6 prefix as on-link and uses NDP to resolve MAC
+/// addresses.  Since EasyTier-assigned /128 addresses live on the tun
+/// interface, we proxy NDP for them on the WAN interface.
+#[cfg(target_os = "linux")]
+fn run_ndp_proxy_sync_task() {
+    tokio::spawn(async move {
+        let wan_ifindex = loop {
+            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+            if let Some(idx) = *NDP_WAN_IFINDEX.lock().unwrap() {
+                if idx > 0 {
+                    break idx;
+                }
+            }
+        };
+        let Ok(tun_ifindex) = get_interface_index("tun0") else { return };
+        let wan_iface =
+            ifindex_to_name(wan_ifindex).unwrap_or_else(|| "unknown".to_string());
+
+        let path = Path::new("/proc/sys/net/ipv6/conf")
+            .join(&wan_iface)
+            .join("proxy_ndp");
+        if !read_linux_proc_bool(&path).unwrap_or(false) {
+            let _ = write_linux_proc_bool(&path, true);
+            log::info!("enabled NDP proxy on {}", wan_iface);
+        }
+
+        log::info!("NDP proxy sync started on {} (wan ifindex={})", wan_iface, wan_ifindex);
+
+        let mut interval =
+            tokio::time::interval(std::time::Duration::from_secs(30));
+
+        loop {
+            interval.tick().await;
+
+            let mut wanted =
+                std::collections::BTreeSet::<std::net::Ipv6Addr>::new();
+            if let Ok(routes) = list_ipv6_route_messages() {
+                for msg in &routes {
+                    if msg.header.destination_prefix_length != 128
+                        || msg.header.kind
+                            != netlink_packet_route::route::RouteType::Unicast
+                    {
+                        continue;
+                    }
+                    let oif_matches = msg.attributes.iter().any(|attr| {
+                        matches!(
+                            attr,
+                            netlink_packet_route::route::RouteAttribute::Oif(idx)
+                                if *idx == tun_ifindex
+                        )
+                    });
+                    if !oif_matches {
+                        continue;
+                    }
+                    if let Some(addr) =
+                        msg.attributes.iter().find_map(|attr| match attr {
+                            netlink_packet_route::route::RouteAttribute::Destination(
+                                netlink_packet_route::route::RouteAddress::Inet6(a),
+                            ) => Some(*a),
+                            _ => None,
+                        })
+                    {
+                        if !addr.is_unicast_link_local() {
+                            wanted.insert(addr);
+                        }
+                    }
+                }
+            }
+
+            let mut current =
+                std::collections::BTreeSet::<std::net::Ipv6Addr>::new();
+            if let Ok(output) = std::process::Command::new("ip")
+                .args(["-6", "neigh", "show", "proxy", "dev", &wan_iface])
+                .output()
+            {
+                for line in String::from_utf8_lossy(&output.stdout).lines() {
+                    if let Ok(addr) = line
+                        .split_whitespace()
+                        .next()
+                        .unwrap_or("")
+                        .parse::<std::net::Ipv6Addr>()
+                    {
+                        current.insert(addr);
+                    }
+                }
+            }
+
+            for addr in wanted.difference(&current) {
+                let _ = std::process::Command::new("ip")
+                    .args([
+                        "-6", "neigh", "add", "proxy",
+                        &addr.to_string(), "dev", &wan_iface,
+                    ])
+                    .output();
+            }
+
+            for addr in current.difference(&wanted) {
+                let _ = std::process::Command::new("ip")
+                    .args([
+                        "-6", "neigh", "del", "proxy",
+                        &addr.to_string(), "dev", &wan_iface,
+                    ])
+                    .output();
+            }
+        }
+    });
+}
+
 pub(super) fn run_public_ipv6_provider_reconcile_task(global_ctx: &ArcGlobalCtx) {
     if !should_run_public_ipv6_provider_reconcile_task(read_public_ipv6_provider_config_snapshot(
         global_ctx,
     )) {
         return;
     }
+
+    #[cfg(target_os = "linux")]
+    run_ndp_proxy_sync_task();
 
     let global_ctx = Arc::downgrade(global_ctx);
     tokio::spawn(async move {
@@ -1020,7 +1176,7 @@ mod tests {
 
         // No global address added — only link-local should be present
         let result = detect_public_ipv6_prefix_from_interfaces();
-        assert_eq!(result, None);
+        assert_eq!(result.map(|(c, _)| c), None);
     }
 
     #[cfg(target_os = "linux")]
