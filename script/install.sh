@@ -236,18 +236,21 @@ INIT() {
     exit 1
   fi
 
-  # Generate a unique random network secret so this node forms its own private
-  # network by default instead of silently joining the shared public "default"
-  # network (see issue #1539). Replace network_name / network_secret with your
-  # own values before starting the service.
-  if [ -r /proc/sys/kernel/random/uuid ]; then
-    NETWORK_SECRET="$(cat /proc/sys/kernel/random/uuid)"
-  else
-    NETWORK_SECRET="$(head -c 16 /dev/urandom | od -An -tx1 | tr -d ' \n')"
-  fi
+  # Write a default example config, but never overwrite an existing one so a
+  # re-run keeps the user's edits (and their network_secret). The node is NOT
+  # started automatically; see the message printed at the end.
+  if [ ! -f "$INSTALL_PATH/config/default.conf" ]; then
+    # Generate a unique random network secret so this node forms its own private
+    # network by default instead of silently joining the shared public "default"
+    # network (see issue #1539). Replace network_name / network_secret with your
+    # own values before starting the service.
+    if [ -r /proc/sys/kernel/random/uuid ]; then
+      NETWORK_SECRET="$(cat /proc/sys/kernel/random/uuid)"
+    else
+      NETWORK_SECRET="$(head -c 16 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+    fi
 
-  # Create default example config (not started automatically; see below)
-  cat >$INSTALL_PATH/config/default.conf <<EOF
+    cat >$INSTALL_PATH/config/default.conf <<EOF
 instance_name = "default"
 dhcp = true
 listeners = [
@@ -285,6 +288,7 @@ disable_tcp_hole_punching = false
 disable_udp_hole_punching = false
 
 EOF
+  fi
 
   # Create init script
   if [ "$INIT_SYSTEM" = "openrc" ]; then
