@@ -311,11 +311,7 @@ fn detect_public_ipv6_prefix_from_interfaces() -> Option<(Ipv6Cidr, u32)> {
                 .ok()
                 .map(|inet| inet.network())?;
 
-            let ifindex = unsafe {
-                nix::libc::if_nametoindex(iface.interface_name.as_ptr().cast())
-            };
-            // Tolerate ifindex 0 — the prefix is still valid for the state
-            // machine even when we cannot map the interface name to an index.
+            let ifindex = get_interface_index(&iface.interface_name).unwrap_or(0);
 
             Some((cidr, ifindex))
         })
