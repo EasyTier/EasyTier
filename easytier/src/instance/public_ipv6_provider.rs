@@ -314,9 +314,8 @@ fn detect_public_ipv6_prefix_from_interfaces() -> Option<(Ipv6Cidr, u32)> {
             let ifindex = unsafe {
                 nix::libc::if_nametoindex(iface.interface_name.as_ptr().cast())
             };
-            if ifindex == 0 {
-                return None;
-            }
+            // Tolerate ifindex 0 — the prefix is still valid for the state
+            // machine even when we cannot map the interface name to an index.
 
             Some((cidr, ifindex))
         })
