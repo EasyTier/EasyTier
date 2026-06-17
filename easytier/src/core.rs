@@ -1349,14 +1349,109 @@ fn win_service_main(arg: Vec<std::ffi::OsString>) {
     win_service_event_loop(stop_notify_recv, cli, status_handle);
 }
 
+/// Resolve the process-wide RPC portal from the loaded config files.
+///
+/// `rpc_portal` is global to the easytier-core process while each config file
+/// describes a single network instance, so at most one value can take effect.
+/// The first non-empty `rpc_portal` wins; if another config file requests a
+/// different value, a warning is logged and the first one is kept. Returns
+/// `None` when no config file sets it, preserving the default behavior.
+async fn resolve_rpc_portal_from_config_files(
+    config_files: &[(PathBuf, ConfigFileSource)],
+    config_dir: Option<&PathBuf>,
+    disable_env_parsing: bool,
+) -> Option<String> {
+    let mut resolved: Option<String> = None;
+    for (config_file, _source) in config_files {
+        // stdin ("-") can only be consumed once, by the real load later on.
+        if config_file.as_os_str() == "-" {
+            continue;
+        }
+        // Ignore load/parse errors here; the real load reports them later.
+        let Ok((cfg, _control)) =
+            load_config_from_file(config_file, config_dir, disable_env_parsing).await
+        else {
+            continue;
+        };
+        let Some(portal) = cfg.get_rpc_portal().filter(|p| !p.trim().is_empty()) else {
+            continue;
+        };
+        match resolved.as_ref() {
+            None => resolved = Some(portal),
+            Some(existing) if *existing != portal => {
+                log::warn!(
+                    "config file {:?} sets rpc_portal = {:?}, but {:?} is already in use; \
+                     the RPC portal is process-global, so this value is ignored. \
+                     Use --rpc-portal / ET_RPC_PORTAL to set it explicitly.",
+                    config_file,
+                    portal,
+                    existing
+                );
+            }
+            _ => {}
+        }
+    }
+    resolved
+}
+
 async fn run_main(cli: Cli) -> anyhow::Result<()> {
     defer!(dump_profile(0););
     log::init(&cli.logging_options, true)?;
 
     let manager = Arc::new(NetworkInstanceManager::new().with_config_path(cli.config_dir.clone()));
 
+    let explicit_config_file_count = cli.config_file.as_ref().map_or(0, |files| files.len());
+    let mut config_dir_file_count = 0;
+    let mut config_files: Vec<(PathBuf, ConfigFileSource)> = if let Some(v) = cli.config_file {
+        v.iter()
+            .cloned()
+            .map(|path| (path, ConfigFileSource::CliConfigFile))
+            .collect()
+    } else {
+        vec![]
+    };
+    if let Some(config_dir) = cli.config_dir.as_ref() {
+        if !config_dir.is_dir() {
+            anyhow::bail!("config_dir {} is not a directory", config_dir.display());
+        }
+
+        for entry in std::fs::read_dir(config_dir)? {
+            let entry = entry?;
+            let path = entry.path();
+            if !path.is_file() {
+                continue;
+            }
+            let Some(ext) = path.extension() else {
+                continue;
+            };
+            if ext != "toml" {
+                continue;
+            }
+            config_dir_file_count += 1;
+            config_files.push((path, ConfigFileSource::ConfigDir));
+        }
+    }
+
+    // The RPC portal is global to the easytier-core process (a single
+    // ApiRpcServer manages every network instance), while each `-c <file>`
+    // describes one instance. Resolve the portal with this precedence: the
+    // `--rpc-portal` flag / `ET_RPC_PORTAL` env first, otherwise the first
+    // non-empty `rpc_portal` set in a loaded config file. Falling back to None
+    // keeps the previous default (bind 0.0.0.0 on the first free port).
+    let rpc_portal = match cli.rpc_portal_options.rpc_portal {
+        Some(portal) => Some(portal),
+        None => {
+            resolve_rpc_portal_from_config_files(
+                &config_files,
+                cli.config_dir.as_ref(),
+                cli.disable_env_parsing,
+            )
+            .await
+        }
+    };
+
     let _rpc_server = ApiRpcServer::new(
-        cli.rpc_portal_options.rpc_portal,
+        rpc_portal,
         cli.rpc_portal_options.rpc_portal_whitelist,
         manager.clone(),
     )?
@@ -1396,37 +1491,6 @@ async fn run_main(cli: Cli) -> anyhow::Result<()> {
         None
     };
 
-    let explicit_config_file_count = cli.config_file.as_ref().map_or(0, |files| files.len());
-    let mut config_dir_file_count = 0;
-    let mut config_files = if let Some(v) = cli.config_file {
-        v.iter()
-            .cloned()
-            .map(|path| (path, ConfigFileSource::CliConfigFile))
-            .collect()
-    } else {
-        vec![]
-    };
-    if let Some(config_dir) = cli.config_dir.as_ref() {
-        if !config_dir.is_dir() {
-            anyhow::bail!("config_dir {} is not a directory", config_dir.display());
-        }
-
-        for entry in std::fs::read_dir(config_dir)? {
-            let entry = entry?;
-            let path = entry.path();
-            if !path.is_file() {
-                continue;
-            }
-            let Some(ext) = path.extension() else {
-                continue;
-            };
-            if ext != "toml" {
-                continue;
-            }
-            config_dir_file_count += 1;
-            config_files.push((path, ConfigFileSource::ConfigDir));
-        }
-    }
     let config_file_count = config_files.len();
     let mut crate_cli_network = {
         if cli.daemon {
