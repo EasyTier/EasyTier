@@ -21,7 +21,7 @@ const PUBLIC_IPV6_PROVIDER_RECONCILE_INTERVAL: std::time::Duration =
 const PUBLIC_IPV6_PROVIDER_RECONCILE_MAX_RETRIES: usize = 3;
 
 #[cfg(target_os = "linux")]
-static NDP_WAN_IFINDEX: std::sync::Mutex<Option<u32>> = std::sync::Mutex::new(None);
+static NDP_WAN_IFACE: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum PublicIpv6ProviderRuntimeState {
@@ -346,7 +346,8 @@ async fn detect_public_ipv6_prefix_linux() -> Result<Option<Ipv6Cidr>, Error> {
                 .find(|r| is_ipv6_default_route(r.dst) && r.src == Some(prefix))
                 .and_then(|r| r.ifindex)
                 .unwrap_or(0);
-            *NDP_WAN_IFINDEX.lock().unwrap() = Some(wan_ifindex);
+            let _ = ifindex_to_name(wan_ifindex)
+                .map(|name| *NDP_WAN_IFACE.lock().unwrap() = Some(name));
         }
         return Ok(Some(prefix));
     }
@@ -356,7 +357,8 @@ async fn detect_public_ipv6_prefix_linux() -> Result<Option<Ipv6Cidr>, Error> {
     #[cfg(target_os = "linux")]
     {
         if let Some((_, wan_ifindex)) = result {
-            *NDP_WAN_IFINDEX.lock().unwrap() = Some(wan_ifindex);
+            let _ = ifindex_to_name(wan_ifindex)
+                .map(|name| *NDP_WAN_IFACE.lock().unwrap() = Some(name));
         }
     }
     Ok(result.map(|(cidr, _)| cidr))
@@ -539,17 +541,15 @@ fn ifindex_to_name(ifindex: u32) -> Option<String> {
 #[cfg(target_os = "linux")]
 fn run_ndp_proxy_sync_task() {
     tokio::spawn(async move {
-        let wan_ifindex = loop {
+        let wan_iface = loop {
             tokio::time::sleep(std::time::Duration::from_secs(5)).await;
-            if let Some(idx) = *NDP_WAN_IFINDEX.lock().unwrap() {
-                if idx > 0 {
-                    break idx;
+            if let Some(ref name) = *NDP_WAN_IFACE.lock().unwrap() {
+                if !name.is_empty() {
+                    break name.clone();
                 }
             }
         };
         let Ok(tun_ifindex) = get_interface_index("tun0") else { return };
-        let wan_iface =
-            ifindex_to_name(wan_ifindex).unwrap_or_else(|| "unknown".to_string());
 
         let path = Path::new("/proc/sys/net/ipv6/conf")
             .join(&wan_iface)
@@ -559,7 +559,7 @@ fn run_ndp_proxy_sync_task() {
             log::info!("enabled NDP proxy on {}", wan_iface);
         }
 
-        log::info!("NDP proxy sync started on {} (wan ifindex={})", wan_iface, wan_ifindex);
+        log::info!("NDP proxy sync started on {}", wan_iface);
 
         let mut interval =
             tokio::time::interval(std::time::Duration::from_secs(30));
