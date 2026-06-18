@@ -40,8 +40,14 @@ export function parseEnum(enumObj: Record<string, any>, v: string | number | nul
 export function parseEnum(enumObj: Record<string, any>, v: string | number | null | undefined, fallback?: number): number | undefined
 export function parseEnum(enumObj: Record<string, any>, v: string | number | null | undefined, fallback?: number): number | undefined {
   if (v == null) return fallback
-  if (typeof v === 'string') return (enumObj[v] as number | undefined) ?? fallback
-  return v
+  if (typeof v === 'number') return v
+  // string
+  const direct = enumObj[v]
+  if (typeof direct === 'number') return direct
+  // handle numeric strings like "1"
+  const n = Number(v)
+  if (!Number.isNaN(n) && typeof enumObj[n] === 'string') return n
+  return fallback
 }
 
 export interface AclRule {
@@ -276,8 +282,8 @@ export function normalizeNetworkConfig(config: NetworkConfig): NetworkConfig {
   const rawMethod: any = normalized.networking_method
   const methodStr: string =
     typeof rawMethod === 'number' ? NetworkingMethod[rawMethod] ?? 'Manual'
-    : typeof rawMethod === 'string' ? rawMethod
-    : 'Manual'
+      : typeof rawMethod === 'string' ? rawMethod
+        : 'Manual'
 
   switch (methodStr) {
     case 'PublicServer':
@@ -327,8 +333,8 @@ export function toBackendNetworkConfig(config: NetworkConfig): NetworkConfig {
   const rawMethod: any = backend.networking_method
   const methodStr: string =
     typeof rawMethod === 'number' ? NetworkingMethod[rawMethod] ?? 'Manual'
-    : typeof rawMethod === 'string' ? rawMethod
-    : 'Manual'
+      : typeof rawMethod === 'string' ? rawMethod
+        : 'Manual'
 
   switch (methodStr) {
     case 'PublicServer':

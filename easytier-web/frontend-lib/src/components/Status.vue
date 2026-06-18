@@ -45,10 +45,12 @@ function resolveObjPath(path: string, obj = globalThis, separator = '.') {
 }
 
 function toNumber(v: any): number {
-  if (typeof v === 'string')
-    return Number(v)
   if (typeof v === 'number')
-    return v
+    return Number.isFinite(v) ? v : 0
+  if (typeof v === 'string') {
+    const n = Number(v)
+    return Number.isFinite(n) ? n : 0
+  }
   return 0
 }
 
