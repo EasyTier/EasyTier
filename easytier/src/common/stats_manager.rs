@@ -23,6 +23,8 @@ pub enum MetricName {
     PeerRpcDuration,
     /// RPC errors
     PeerRpcErrors,
+    /// RPC/control packets dropped because the peer RPC queue is unavailable
+    PeerRpcPacketQueueDrops,
 
     /// Data-plane traffic bytes sent
     TrafficBytesTx,
@@ -116,6 +118,7 @@ impl fmt::Display for MetricName {
             MetricName::PeerRpcServerRx => write!(f, "peer_rpc_server_rx"),
             MetricName::PeerRpcDuration => write!(f, "peer_rpc_duration_ms"),
             MetricName::PeerRpcErrors => write!(f, "peer_rpc_errors"),
+            MetricName::PeerRpcPacketQueueDrops => write!(f, "peer_rpc_packet_queue_drops"),
 
             MetricName::TrafficBytesTx => write!(f, "traffic_bytes_tx"),
             MetricName::TrafficBytesTxByInstance => write!(f, "traffic_bytes_tx_by_instance"),
