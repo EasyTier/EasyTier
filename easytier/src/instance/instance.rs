@@ -650,6 +650,7 @@ pub struct Instance {
 impl Instance {
     pub fn new(config: impl ConfigLoader + 'static) -> Self {
         let global_ctx = Arc::new(GlobalCtx::new(config));
+        global_ctx.set_global_ctx_after_init();
 
         tracing::info!(
             "[INIT] instance creating. config: {}",

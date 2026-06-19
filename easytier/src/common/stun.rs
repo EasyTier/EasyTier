@@ -23,7 +23,24 @@ use stun_codec::{Message, MessageClass, MessageDecoder, MessageEncoder};
 use crate::common::error::Error;
 
 use super::dns::resolve_txt_record;
+use super::global_ctx::ArcGlobalCtx;
 use super::stun_codec_ext::*;
+
+/// Find the bind address of the physical network interface.
+/// This helps avoid using virtual network interfaces (like those created by EasyTier).
+fn find_physical_bind_addr() -> Option<IpAddr> {
+    // Connect to a common external address to determine the physical interface
+    let sock = std::net::UdpSocket::bind("0.0.0.0:0").ok()?;
+    sock.connect("8.8.8.8:53").ok()?;
+    let local_addr = sock.local_addr().ok()?;
+
+    // Skip loopback addresses
+    if local_addr.ip().is_loopback() {
+        return None;
+    }
+
+    Some(local_addr.ip())
+}
 
 const DEFAULT_UDP_STUN_SERVERS: &[&str] = &[
     "txt:stun.easytier.cn",
@@ -766,14 +783,19 @@ impl TcpStunClient {
     }
 
     async fn connect(&self) -> Result<tokio::net::TcpStream, Error> {
+        // Try to bind to the physical interface address to avoid virtual network interfaces
+        let physical_ip = find_physical_bind_addr();
         let bind_addr = match self.stun_server {
             SocketAddr::V4(_) => {
-                SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), self.source_port)
+                let ip = physical_ip.unwrap_or(IpAddr::V4(Ipv4Addr::UNSPECIFIED));
+                SocketAddr::new(ip, self.source_port)
             }
             SocketAddr::V6(_) => {
                 SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), self.source_port)
             }
         };
+
+        tracing::debug!(?bind_addr, ?physical_ip, "tcp stun client binding to addr");
 
         let socket2_socket = socket2::Socket::new(
             socket2::Domain::for_address(self.stun_server),
@@ -862,6 +884,15 @@ impl TcpNatTypeDetector {
         &self,
         source_port: u16,
     ) -> Result<StunNatTypeDetectResult, Error> {
+        self.detect_nat_type_with_upnp(source_port, None).await
+    }
+
+    #[tracing::instrument(skip(self, global_ctx))]
+    pub async fn detect_nat_type_with_upnp(
+        &self,
+        source_port: u16,
+        global_ctx: Option<ArcGlobalCtx>,
+    ) -> Result<StunNatTypeDetectResult, Error> {
         let mut stun_servers = vec![];
         let mut host_resolver = HostResolverIter::new(
             self.stun_server_hosts.clone(),
@@ -879,6 +910,31 @@ impl TcpNatTypeDetector {
         } else {
             Some(source_port)
         };
+
+        // Create UPnP mapping for the port before NAT detection
+        // This prevents router firewall from blocking TCP connections
+        // If source_port is 0, we'll create the mapping after the first STUN request
+        let mut _port_mapping_lease = if let Some(ref ctx) = global_ctx {
+            let port = selected_source_port.unwrap_or(0);
+            if port != 0 {
+                let listener_url = format!("tcp://0.0.0.0:{}", port).parse().unwrap();
+                match crate::common::upnp::resolve_tcp_public_addr(ctx.clone(), &listener_url, port).await {
+                    Ok((_mapped_addr, lease)) => {
+                        tracing::info!(?port, "tcp nat detection: upnp mapping created");
+                        lease
+                    }
+                    Err(e) => {
+                        tracing::debug!(?e, ?port, "tcp nat detection: upnp mapping failed, continuing without");
+                        None
+                    }
+                }
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
         for server in stun_servers.iter() {
             let resp = TcpStunClient::new(*server, selected_source_port.unwrap_or(0))
                 .bind_request()
@@ -886,6 +942,21 @@ impl TcpNatTypeDetector {
             if let Ok(resp) = resp {
                 if selected_source_port.is_none() {
                     selected_source_port = Some(resp.local_addr.port());
+
+                    // Create UPnP mapping now that we have a port
+                    if let Some(ref ctx) = global_ctx {
+                        let port = resp.local_addr.port();
+                        let listener_url = format!("tcp://0.0.0.0:{}", port).parse().unwrap();
+                        match crate::common::upnp::resolve_tcp_public_addr(ctx.clone(), &listener_url, port).await {
+                            Ok((_mapped_addr, lease)) => {
+                                tracing::info!(?port, "tcp nat detection: upnp mapping created after first STUN");
+                                _port_mapping_lease = lease;
+                            }
+                            Err(e) => {
+                                tracing::debug!(?e, ?port, "tcp nat detection: upnp mapping failed, continuing without");
+                            }
+                        }
+                    }
                 }
                 source_addr.get_or_insert(resp.local_addr);
                 bind_resps.push(resp);
@@ -916,6 +987,7 @@ pub trait StunInfoCollectorTrait: Send + Sync {
         udp: Arc<UdpSocket>,
     ) -> Result<SocketAddr, Error>;
     async fn get_tcp_port_mapping(&self, local_port: u16) -> Result<SocketAddr, Error>;
+    fn as_any(&self) -> &dyn std::any::Any;
 }
 
 pub struct StunInfoCollector {
@@ -929,6 +1001,8 @@ pub struct StunInfoCollector {
     redetect_notify: Arc<tokio::sync::Notify>,
     tasks: std::sync::Mutex<JoinSet<()>>,
     started: AtomicBool,
+    // Optional global context for UPnP support during NAT detection
+    global_ctx: Arc<std::sync::Mutex<Option<ArcGlobalCtx>>>,
 }
 
 #[async_trait::async_trait]
@@ -1071,6 +1145,10 @@ impl StunInfoCollectorTrait for StunInfoCollector {
 
         Err(Error::NotFound)
     }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
 }
 
 impl StunInfoCollector {
@@ -1090,6 +1168,7 @@ impl StunInfoCollector {
             redetect_notify: Arc::new(tokio::sync::Notify::new()),
             tasks: std::sync::Mutex::new(JoinSet::new()),
             started: AtomicBool::new(false),
+            global_ctx: Arc::new(std::sync::Mutex::new(None)),
         }
     }
 
@@ -1114,6 +1193,11 @@ impl StunInfoCollector {
     pub fn set_tcp_stun_servers(&self, stun_servers: Vec<String>) {
         let mut g = self.tcp_stun_servers.write().unwrap();
         *g = stun_servers;
+    }
+
+    pub fn set_global_ctx(&self, global_ctx: ArcGlobalCtx) {
+        let mut g = self.global_ctx.lock().unwrap();
+        *g = Some(global_ctx);
     }
 
     pub fn get_default_servers() -> Vec<String> {
@@ -1242,6 +1326,7 @@ impl StunInfoCollector {
         let tcp_nat_test_result = self.tcp_nat_test_result.clone();
         let nat_test_time = self.nat_test_result_time.clone();
         let redetect_notify = self.redetect_notify.clone();
+        let global_ctx = self.global_ctx.clone();
         self.tasks.lock().unwrap().spawn(async move {
             loop {
                 let tcp_servers = tcp_stun_servers.read().unwrap().clone();
@@ -1253,7 +1338,9 @@ impl StunInfoCollector {
                     .collect();
 
                 let tcp_detector = TcpNatTypeDetector::new(tcp_servers, 1);
-                let tcp_ret = tcp_detector.detect_nat_type(0).await;
+                // Use UPnP during NAT detection to bypass router firewall
+                let ctx = global_ctx.lock().unwrap().clone();
+                let tcp_ret = tcp_detector.detect_nat_type_with_upnp(0, ctx).await;
                 tracing::debug!(?tcp_ret, "finish tcp nat type detect");
 
                 let mut sleep_sec = 10;
@@ -1338,6 +1425,10 @@ impl StunInfoCollectorTrait for MockStunInfoCollector {
             port = 40144;
         }
         Ok(format!("127.0.0.1:{}", port).parse().unwrap())
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
     }
 }
 

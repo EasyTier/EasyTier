@@ -355,6 +355,18 @@ impl GlobalCtx {
         }
     }
 
+    /// Call this after wrapping GlobalCtx in Arc to enable UPnP during NAT detection
+    pub fn set_global_ctx_after_init(self: &Arc<Self>) {
+        let collector = self.stun_info_collection.lock().unwrap().clone();
+        // Downcast to StunInfoCollector to call set_global_ctx
+        if let Some(collector) = collector.as_any().downcast_ref::<StunInfoCollector>() {
+            collector.set_global_ctx(self.clone());
+            tracing::info!("set global context for stun info collector to enable UPnP during NAT detection");
+        } else {
+            tracing::warn!("cannot set global context: stun info collector is not StunInfoCollector");
+        }
+    }
+
     pub fn subscribe(&self) -> EventBusSubscriber {
         self.event_bus.subscribe()
     }

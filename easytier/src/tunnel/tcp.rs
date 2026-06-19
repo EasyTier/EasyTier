@@ -29,6 +29,16 @@ impl TcpTunnelListener {
         }
     }
 
+    /// Create a TcpTunnelListener from an existing TcpListener.
+    /// This avoids TOCTOU when converting from TcpSocket to listener.
+    pub fn from_listener(listener: TcpListener, addr: url::Url) -> Self {
+        TcpTunnelListener {
+            addr,
+            listener: Some(listener),
+            socket_mark: None,
+        }
+    }
+
     pub fn set_socket_mark(&mut self, socket_mark: Option<u32>) {
         self.socket_mark = socket_mark;
     }
@@ -106,7 +116,7 @@ impl TunnelListener for TcpTunnelListener {
     }
 }
 
-fn get_tunnel_with_tcp_stream(
+pub fn get_tunnel_with_tcp_stream(
     stream: TcpStream,
     remote_url: url::Url,
 ) -> Result<Box<dyn Tunnel>, super::TunnelError> {

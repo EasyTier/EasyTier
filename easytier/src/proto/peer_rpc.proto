@@ -273,7 +273,10 @@ service UdpHolePunchRpc {
 
 message TcpHolePunchRequest { common.SocketAddr connector_mapped_addr = 1; }
 
-message TcpHolePunchResponse { common.SocketAddr listener_mapped_addr = 1; }
+message TcpHolePunchResponse {
+  common.SocketAddr listener_mapped_addr = 1;
+  common.NatType tcp_nat_type = 2;
+}
 
 service TcpHolePunchRpc {
   rpc ExchangeMappedAddr(TcpHolePunchRequest) returns (TcpHolePunchResponse);
