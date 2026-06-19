@@ -1379,6 +1379,19 @@ pub mod tests {
     }
 
     #[test]
+    fn invalid_toml_error_handles_non_ascii_before_error_on_same_line() {
+        let error = TomlConfigLoader::new_from_str("hostname = \"节点\" dhcp = \"yes\"")
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("failed to parse config TOML"));
+        assert!(error.contains("inline config:1:"));
+        assert!(error.contains("hostname = \"节点\" dhcp = \"yes\""));
+        assert!(error.contains("^"));
+        assert!(!error.contains("<unknown>"));
+    }
+
+    #[test]
     fn invalid_file_flags_error_includes_config_source_in_display() {
         let mut config_file = NamedTempFile::new().unwrap();
         writeln!(config_file, "[flags]").unwrap();
