@@ -626,9 +626,10 @@ impl TomlConfigLoader {
 
     pub fn new(config_path: &PathBuf) -> Result<Self, anyhow::Error> {
         let config_str = std::fs::read_to_string(config_path)
-            .with_context(|| format!("failed to read config file: {:?}", config_path))?;
+            .with_context(|| format!("failed to read config file: {}", config_path.display()))?;
 
-        Self::new_from_str_with_source(&format!("{:?}", config_path), &config_str)
+        let source_name = config_path.display().to_string();
+        Self::new_from_str_with_source(&source_name, &config_str)
     }
 
     pub(crate) fn new_from_str_with_source(
@@ -1255,7 +1256,7 @@ pub async fn load_config_from_file(
 
     let config_str = tokio::fs::read_to_string(config_file)
         .await
-        .with_context(|| format!("failed to read config file: {:?}", config_file))?;
+        .with_context(|| format!("failed to read config file: {}", config_file.display()))?;
 
     let (expanded_config_str, uses_env_vars) = if disable_env_parsing {
         (config_str.clone(), false)
@@ -1277,10 +1278,8 @@ pub async fn load_config_from_file(
         );
     }
 
-    let config = TomlConfigLoader::new_from_str_with_source(
-        &format!("{:?}", config_file),
-        &expanded_config_str,
-    )?;
+    let source_name = config_file.display().to_string();
+    let config = TomlConfigLoader::new_from_str_with_source(&source_name, &expanded_config_str)?;
 
     let mut control = ConfigFileControl::from_path(config_file.clone()).await;
 

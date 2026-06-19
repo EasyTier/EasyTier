@@ -1644,7 +1644,10 @@ async fn validate_config(cli: &Cli) -> anyhow::Result<()> {
     for config_file in config_files {
         if config_file == &PathBuf::from("-") {
             let mut stdin = String::new();
-            _ = tokio::io::stdin().read_to_string(&mut stdin).await?;
+            _ = tokio::io::stdin()
+                .read_to_string(&mut stdin)
+                .await
+                .context("failed to read config from stdin")?;
             TomlConfigLoader::new_from_str_with_source("stdin", stdin.as_str())?;
         } else {
             TomlConfigLoader::new(config_file)?;
