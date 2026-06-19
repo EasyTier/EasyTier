@@ -1645,11 +1645,9 @@ async fn validate_config(cli: &Cli) -> anyhow::Result<()> {
         if config_file == &PathBuf::from("-") {
             let mut stdin = String::new();
             _ = tokio::io::stdin().read_to_string(&mut stdin).await?;
-            TomlConfigLoader::new_from_str(stdin.as_str())
-                .with_context(|| "config source: stdin")?;
+            TomlConfigLoader::new_from_str_with_source("stdin", stdin.as_str())?;
         } else {
-            TomlConfigLoader::new(config_file)
-                .with_context(|| format!("config source: {:?}", config_file))?;
+            TomlConfigLoader::new(config_file)?;
         };
     }
 
