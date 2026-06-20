@@ -1426,7 +1426,7 @@ pub fn get_physical_ipv4_addr() -> Option<Ipv4Addr> {
 
     match local_addr.ip() {
         std::net::IpAddr::V4(ip) if !ip.is_loopback() && !ip.is_unspecified() => {
-            tracing::info!(?ip, "found physical interface ipv4 addr");
+            tracing::debug!(?ip, "found physical interface ipv4 addr");
             Some(ip)
         }
         _ => None,

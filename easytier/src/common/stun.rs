@@ -35,7 +35,7 @@ fn get_physical_ipv4() -> Option<IpAddr> {
 
     match local_addr.ip() {
         std::net::IpAddr::V4(ip) if !ip.is_loopback() && !ip.is_unspecified() => {
-            tracing::info!(?ip, "stun: found physical interface ipv4 addr");
+            tracing::debug!(?ip, "stun: found physical interface ipv4 addr");
             Some(IpAddr::V4(ip))
         }
         _ => None,
@@ -795,7 +795,7 @@ impl TcpStunClient {
             }
         };
 
-        tracing::info!(?bind_addr, ?physical_ip, "tcp stun client binding to addr");
+        tracing::debug!(?bind_addr, ?physical_ip, "tcp stun client binding to addr");
 
         let socket2_socket = socket2::Socket::new(
             socket2::Domain::for_address(self.stun_server),
@@ -920,11 +920,11 @@ impl TcpNatTypeDetector {
                 let listener_url = format!("tcp://0.0.0.0:{}", port).parse().unwrap();
                 match crate::common::upnp::resolve_tcp_public_addr(ctx.clone(), &listener_url, port).await {
                     Ok((_mapped_addr, lease)) => {
-                        tracing::info!(?port, "tcp nat detection: upnp mapping created");
+                        tracing::debug!(?port, "tcp nat detection: upnp mapping created");
                         lease
                     }
                     Err(e) => {
-                        tracing::info!(?e, ?port, "tcp nat detection: upnp mapping failed, continuing without");
+                        tracing::debug!(?e, ?port, "tcp nat detection: upnp mapping failed, continuing without");
                         None
                     }
                 }
@@ -949,11 +949,11 @@ impl TcpNatTypeDetector {
                         let listener_url = format!("tcp://0.0.0.0:{}", port).parse().unwrap();
                         match crate::common::upnp::resolve_tcp_public_addr(ctx.clone(), &listener_url, port).await {
                             Ok((_mapped_addr, lease)) => {
-                                tracing::info!(?port, "tcp nat detection: upnp mapping created after first STUN");
+                                tracing::debug!(?port, "tcp nat detection: upnp mapping created after first STUN");
                                 _port_mapping_lease = lease;
                             }
                             Err(e) => {
-                                tracing::info!(?e, ?port, "tcp nat detection: upnp mapping failed, continuing without");
+                                tracing::debug!(?e, ?port, "tcp nat detection: upnp mapping failed, continuing without");
                             }
                         }
                     }
@@ -1349,7 +1349,7 @@ impl StunInfoCollector {
                 // Use UPnP during NAT detection to bypass router firewall
                 let ctx = global_ctx.lock().unwrap().clone();
                 let tcp_ret = tcp_detector.detect_nat_type_with_upnp(0, ctx).await;
-                tracing::info!(?tcp_ret, "finish tcp nat type detect");
+                tracing::debug!(?tcp_ret, "finish tcp nat type detect");
 
                 let mut sleep_sec = 10;
                 if let Ok(resp) = &tcp_ret {
