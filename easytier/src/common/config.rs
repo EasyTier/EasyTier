@@ -586,7 +586,7 @@ fn format_toml_parse_error(source_name: &str, config_str: &str, error: &toml::de
                 .with_index_type(IndexType::Byte),
         )
         .with_message(&message)
-        .with_label(Label::new((source_name, span)).with_message(error.to_string()))
+        .with_label(Label::new((source_name, span)).with_message(error.message()))
         .finish();
 
     if report
@@ -1387,7 +1387,7 @@ pub mod tests {
         assert!(error.contains("failed to parse config TOML"));
         assert!(error.contains("inline config:1:"));
         assert!(error.contains("hostname = \"节点\" dhcp = \"yes\""));
-        assert!(error.contains("^"));
+        assert!(error.contains("expected newline"));
         assert!(!error.contains("<unknown>"));
     }
 

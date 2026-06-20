@@ -1614,7 +1614,7 @@ pub async fn main() -> ExitCode {
     // Verify configurations
     if cli.check_config {
         if let Err(error) = validate_config(&cli).await {
-            log::error!(?error, "Config validation failed");
+            log::error!(%error, "Config validation failed");
             return ExitCode::FAILURE;
         } else {
             return ExitCode::SUCCESS;
@@ -1624,7 +1624,7 @@ pub async fn main() -> ExitCode {
     let mut ret_code = 0;
 
     if let Err(error) = run_main(cli).await {
-        log::error!(?error);
+        log::error!(%error);
         ret_code = 1;
     }
 
