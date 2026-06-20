@@ -23,23 +23,23 @@ use stun_codec::{Message, MessageClass, MessageDecoder, MessageEncoder};
 use crate::common::error::Error;
 
 use super::dns::resolve_txt_record;
-use super::global_ctx::ArcGlobalCtx;
+use super::global_ctx::{ArcGlobalCtx, GlobalCtxEvent};
 use super::stun_codec_ext::*;
 
-/// Find the bind address of the physical network interface.
-/// This helps avoid using virtual network interfaces (like those created by EasyTier).
-fn find_physical_bind_addr() -> Option<IpAddr> {
-    // Connect to a common external address to determine the physical interface
+/// Get the local IPv4 address of the physical network interface.
+/// Connects to 8.8.8.8 to determine the correct interface (same method as EasyTier's local_ipv4).
+fn get_physical_ipv4() -> Option<IpAddr> {
     let sock = std::net::UdpSocket::bind("0.0.0.0:0").ok()?;
-    sock.connect("8.8.8.8:53").ok()?;
+    sock.connect("8.8.8.8:80").ok()?;
     let local_addr = sock.local_addr().ok()?;
 
-    // Skip loopback addresses
-    if local_addr.ip().is_loopback() {
-        return None;
+    match local_addr.ip() {
+        std::net::IpAddr::V4(ip) if !ip.is_loopback() && !ip.is_unspecified() => {
+            tracing::info!(?ip, "stun: found physical interface ipv4 addr");
+            Some(IpAddr::V4(ip))
+        }
+        _ => None,
     }
-
-    Some(local_addr.ip())
 }
 
 const DEFAULT_UDP_STUN_SERVERS: &[&str] = &[
@@ -784,7 +784,7 @@ impl TcpStunClient {
 
     async fn connect(&self) -> Result<tokio::net::TcpStream, Error> {
         // Try to bind to the physical interface address to avoid virtual network interfaces
-        let physical_ip = find_physical_bind_addr();
+        let physical_ip = get_physical_ipv4();
         let bind_addr = match self.stun_server {
             SocketAddr::V4(_) => {
                 let ip = physical_ip.unwrap_or(IpAddr::V4(Ipv4Addr::UNSPECIFIED));
@@ -795,7 +795,7 @@ impl TcpStunClient {
             }
         };
 
-        tracing::debug!(?bind_addr, ?physical_ip, "tcp stun client binding to addr");
+        tracing::info!(?bind_addr, ?physical_ip, "tcp stun client binding to addr");
 
         let socket2_socket = socket2::Socket::new(
             socket2::Domain::for_address(self.stun_server),
@@ -924,7 +924,7 @@ impl TcpNatTypeDetector {
                         lease
                     }
                     Err(e) => {
-                        tracing::debug!(?e, ?port, "tcp nat detection: upnp mapping failed, continuing without");
+                        tracing::info!(?e, ?port, "tcp nat detection: upnp mapping failed, continuing without");
                         None
                     }
                 }
@@ -953,7 +953,7 @@ impl TcpNatTypeDetector {
                                 _port_mapping_lease = lease;
                             }
                             Err(e) => {
-                                tracing::debug!(?e, ?port, "tcp nat detection: upnp mapping failed, continuing without");
+                                tracing::info!(?e, ?port, "tcp nat detection: upnp mapping failed, continuing without");
                             }
                         }
                     }
@@ -987,6 +987,8 @@ pub trait StunInfoCollectorTrait: Send + Sync {
         udp: Arc<UdpSocket>,
     ) -> Result<SocketAddr, Error>;
     async fn get_tcp_port_mapping(&self, local_port: u16) -> Result<SocketAddr, Error>;
+    /// Get the TCP port mapping from NAT detection phase (the first UPnP mapping created)
+    fn get_nat_detection_tcp_port(&self) -> Option<u16>;
     fn as_any(&self) -> &dyn std::any::Any;
 }
 
@@ -1144,6 +1146,12 @@ impl StunInfoCollectorTrait for StunInfoCollector {
         }
 
         Err(Error::NotFound)
+    }
+
+    /// Get the TCP port from NAT detection phase (the first UPnP mapping created)
+    fn get_nat_detection_tcp_port(&self) -> Option<u16> {
+        let tcp_result = self.tcp_nat_test_result.read().unwrap();
+        tcp_result.as_ref().map(|r| r.source_addr.port())
     }
 
     fn as_any(&self) -> &dyn std::any::Any {
@@ -1341,13 +1349,30 @@ impl StunInfoCollector {
                 // Use UPnP during NAT detection to bypass router firewall
                 let ctx = global_ctx.lock().unwrap().clone();
                 let tcp_ret = tcp_detector.detect_nat_type_with_upnp(0, ctx).await;
-                tracing::debug!(?tcp_ret, "finish tcp nat type detect");
+                tracing::info!(?tcp_ret, "finish tcp nat type detect");
 
                 let mut sleep_sec = 10;
                 if let Ok(resp) = &tcp_ret {
+                    let old_result = tcp_nat_test_result.read().unwrap().clone();
+                    let old_nat_type = old_result.as_ref().map(|r| r.nat_type()).unwrap_or(NatType::Unknown);
+                    let new_nat_type = resp.nat_type();
+
                     nat_test_time.store(Local::now());
                     *tcp_nat_test_result.write().unwrap() = Some(resp.clone());
-                    if resp.nat_type() != NatType::Unknown {
+
+                    // If NAT type changed from Unknown to a known type, notify TCP hole punch
+                    if old_nat_type == NatType::Unknown && new_nat_type != NatType::Unknown {
+                        tracing::info!(
+                            ?old_nat_type,
+                            ?new_nat_type,
+                            "TCP NAT type changed from Unknown, notifying TCP hole punch"
+                        );
+                        if let Some(ctx) = global_ctx.lock().unwrap().as_ref() {
+                            ctx.issue_event(GlobalCtxEvent::TcpNatTypeDetected);
+                        }
+                    }
+
+                    if new_nat_type != NatType::Unknown {
                         sleep_sec = 600;
                     }
                 }
@@ -1425,6 +1450,10 @@ impl StunInfoCollectorTrait for MockStunInfoCollector {
             port = 40144;
         }
         Ok(format!("127.0.0.1:{}", port).parse().unwrap())
+    }
+
+    fn get_nat_detection_tcp_port(&self) -> Option<u16> {
+        None
     }
 
     fn as_any(&self) -> &dyn std::any::Any {

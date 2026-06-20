@@ -563,6 +563,10 @@ fn handle_event(
                         }
                     }
 
+                    GlobalCtxEvent::TcpNatTypeDetected => {
+                        event!(debug, "[{}] TCP NAT type detected", instance_id);
+                    }
+
                     GlobalCtxEvent::CredentialChanged => {
                         event!(info, "[{}] credential changed", instance_id);
                     }

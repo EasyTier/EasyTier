@@ -1,4 +1,4 @@
-use std::{
+﻿use std::{
     net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
     sync::Arc,
     time::{Duration, Instant},
@@ -9,7 +9,7 @@ use dashmap;
 use tokio::task::JoinSet;
 
 use crate::{
-    common::{PeerId, join_joinset_background, stun::StunInfoCollectorTrait, upnp},
+    common::{PeerId, join_joinset_background, stun::StunInfoCollectorTrait, upnp, global_ctx::GlobalCtxEvent},
     connector::udp_hole_punch::BackOff,
     peers::{
         peer_manager::PeerManager,
@@ -32,6 +32,30 @@ use crate::{
 use crate::connector::{should_background_p2p_with_peer, should_try_p2p_with_peer};
 
 pub const BLACKLIST_TIMEOUT_SEC: u64 = 3600;
+
+/// Custom error type for TCP hole punch that carries the allocated port
+/// so it can be reused on retry or cleaned up on failure.
+#[derive(Debug)]
+struct HolePunchError {
+    error: anyhow::Error,
+    allocated_port: Option<u16>,
+}
+
+impl std::fmt::Display for HolePunchError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.error)
+    }
+}
+
+impl std::error::Error for HolePunchError {}
+
+impl HolePunchError {
+    fn new(error: anyhow::Error, port: Option<u16>) -> Self {
+        Self { error, allocated_port: port }
+    }
+}
+
+type HolePunchResult<T> = Result<T, HolePunchError>;
 
 fn handle_rpc_result<T>(
     ret: Result<T, rpc_types::error::Error>,
@@ -61,8 +85,8 @@ fn bind_addr_for_port(port: u16, is_v6: bool) -> SocketAddr {
         SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), port)
     } else {
         // Try to bind to the physical interface address to avoid using virtual network interfaces
-        let physical_addr = upnp::find_physical_interface_bind_addr()
-            .map(|addr| addr.ip())
+        let physical_addr = upnp::get_physical_ipv4_addr()
+            .map(|ip| IpAddr::V4(ip))
             .unwrap_or(IpAddr::V4(Ipv4Addr::UNSPECIFIED));
         SocketAddr::new(physical_addr, port)
     }
@@ -78,6 +102,13 @@ async fn create_bound_socket(peer_mgr: &Arc<PeerManager>, is_v6: bool) -> Result
     } else {
         tokio::net::TcpSocket::new_v4()?
     };
+
+    // Set SO_REUSEADDR to allow rebinding to the same port
+    // This is required because STUN verification may also try to bind to this port
+    socket.set_reuseaddr(true)?;
+    #[cfg(unix)]
+    socket.set_reuseport(true)?;
+
     socket.bind(bind_addr_for_port(0, is_v6))?;
     let local_port = socket.local_addr()?.port();
     tracing::debug!(is_v6, local_port, "tcp hole punch created bound socket");
@@ -163,6 +194,8 @@ struct TcpHolePunchServer {
     // Track peers we're already connecting to, to avoid duplicate tasks
     // DashSet::insert returns true if value was newly inserted (atomic operation)
     connecting_peers: Arc<dashmap::DashSet<SocketAddr>>,
+    // Store active UPnP port mapping leases to keep them alive
+    port_mapping_leases: Arc<tokio::sync::Mutex<std::collections::HashMap<u16, upnp::TcpPortMappingLease>>>,
 }
 
 impl TcpHolePunchServer {
@@ -173,7 +206,15 @@ impl TcpHolePunchServer {
             peer_mgr,
             tasks,
             connecting_peers: Arc::new(dashmap::DashSet::new()),
+            port_mapping_leases: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
         })
+    }
+
+    /// Store a UPnP port mapping lease to keep it alive
+    async fn store_port_mapping_lease(&self, port: u16, lease: upnp::TcpPortMappingLease) {
+        let mut leases = self.port_mapping_leases.lock().await;
+        tracing::info!(?port, "storing UPnP port mapping lease on server");
+        leases.insert(port, lease);
     }
 }
 
@@ -195,7 +236,7 @@ impl TcpHolePunchRpc for TcpHolePunchServer {
                 .tcp_nat_type,
         )
         .unwrap_or(NatType::Unknown);
-        tracing::debug!(?my_tcp_nat_type, "tcp hole punch rpc received");
+        tracing::info!(?my_tcp_nat_type, "tcp hole punch rpc received");
         if matches!(my_tcp_nat_type, NatType::Unknown) {
             tracing::warn!(?my_tcp_nat_type, "tcp hole punch rpc rejected (unknown)");
             return Err(anyhow::anyhow!("tcp nat type unknown not supported").into());
@@ -213,23 +254,70 @@ impl TcpHolePunchRpc for TcpHolePunchServer {
 
         let is_v6 = a_mapped_addr.is_ipv6();
 
-        // Create bound socket (no TOCTOU - port stays locked)
-        let (socket, local_port) = create_bound_socket(&self.peer_mgr, is_v6).await?;
+        // NAT4 (Symmetric NAT) cannot be reached from outside.
+        // No point doing UPnP or STUN - just bind a port and connect directly.
+        let is_symmetric = is_symmetric_tcp_nat(my_tcp_nat_type);
 
-        let listener_url = format!("tcp://0.0.0.0:{}", local_port).parse().unwrap();
-        let (mapped_addr, _port_mapping_lease) = upnp::resolve_tcp_public_addr(
-            self.peer_mgr.get_global_ctx().clone(),
-            &listener_url,
-            local_port,
-        )
-        .await
-        .with_context(|| "failed to get tcp port mapping")?;
+        // Step 1: Create socket and bind to a port
+        let (socket, local_port, mapped_addr) = {
+            let _g = self.peer_mgr.get_global_ctx().net_ns.guard();
+            let socket = if is_v6 {
+                tokio::net::TcpSocket::new_v6().map_err(|e| anyhow::anyhow!(e))?
+            } else {
+                tokio::net::TcpSocket::new_v4().map_err(|e| anyhow::anyhow!(e))?
+            };
+            socket.set_reuseaddr(true).map_err(|e| anyhow::anyhow!(e))?;
+            #[cfg(unix)]
+            socket.set_reuseport(true).map_err(|e| anyhow::anyhow!(e))?;
+
+            // Check if NAT detection already created a TCP port mapping
+            let nat_detection_port = if !is_v6 {
+                self.peer_mgr.get_global_ctx().get_stun_info_collector().get_nat_detection_tcp_port()
+            } else {
+                None
+            };
+
+            // Bind to the NAT detection port if available, otherwise use port 0
+            let bind_port = nat_detection_port.unwrap_or(0);
+            socket.bind(bind_addr_for_port(bind_port, is_v6)).map_err(|e| anyhow::anyhow!(e))?;
+            let local_port = socket.local_addr().map_err(|e| anyhow::anyhow!(e))?.port();
+
+            if is_symmetric {
+                // Symmetric NAT: skip UPnP/STUN, return dummy mapped addr
+                // NAT4 will connect directly to NAT1's address
+                tracing::info!(
+                    ?my_tcp_nat_type,
+                    local_port,
+                    "symmetric NAT: skipping UPnP/STUN, will connect directly"
+                );
+                (socket, local_port, SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0))
+            } else {
+                // Non-symmetric NAT: do UPnP + STUN to get public address
+                let listener_url = format!("tcp://0.0.0.0:{}", local_port).parse().unwrap();
+                let (mapped_addr, port_mapping_lease) = upnp::resolve_tcp_public_addr(
+                    self.peer_mgr.get_global_ctx().clone(),
+                    &listener_url,
+                    local_port,
+                )
+                .await
+                .with_context(|| "failed to get tcp port mapping")?;
+
+                // Store the lease to keep UPnP mapping alive
+                if let Some(lease) = port_mapping_lease {
+                    self.store_port_mapping_lease(local_port, lease).await;
+                }
+
+                tracing::info!(?local_port, ?nat_detection_port, "tcp hole punch server reusing NAT detection port");
+                (socket, local_port, mapped_addr)
+            }
+        };
 
         tracing::info!(
             ?a_mapped_addr,
             local_port,
             ?mapped_addr,
-            "tcp hole punch rpc responding with listener mapped addr and start connecting"
+            ?my_tcp_nat_type,
+            "tcp hole punch rpc responding with mapped addr and start connecting"
         );
 
         // Atomic dedup: DashSet::insert returns true if value was newly inserted
@@ -265,6 +353,11 @@ struct TcpHolePunchConnectorData {
     // Track peers we're already connecting to, to avoid duplicate tasks
     // DashSet::insert returns true if value was newly inserted (atomic operation)
     connecting_peers: Arc<dashmap::DashSet<PeerId>>,
+    // Flag to force TCP hole punch even if peer already connected (e.g., via relay)
+    force_hole_punch: Arc<std::sync::atomic::AtomicBool>,
+    // Store active UPnP port mapping leases to keep them alive
+    // Key: local port, Value: lease (keeps mapping alive until dropped)
+    port_mapping_leases: Arc<tokio::sync::Mutex<std::collections::HashMap<u16, upnp::TcpPortMappingLease>>>,
 }
 
 impl TcpHolePunchConnectorData {
@@ -273,7 +366,38 @@ impl TcpHolePunchConnectorData {
             peer_mgr,
             blacklist: Arc::new(timedmap::TimedMap::new()),
             connecting_peers: Arc::new(dashmap::DashSet::new()),
+            force_hole_punch: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            port_mapping_leases: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
         })
+    }
+
+    fn set_force_hole_punch(&self, force: bool) {
+        self.force_hole_punch.store(force, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    fn should_force_hole_punch(&self) -> bool {
+        self.force_hole_punch.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Store a UPnP port mapping lease to keep it alive
+    async fn store_port_mapping_lease(&self, port: u16, lease: upnp::TcpPortMappingLease) {
+        let mut leases = self.port_mapping_leases.lock().await;
+        tracing::info!(?port, "storing UPnP port mapping lease");
+        leases.insert(port, lease);
+    }
+
+    /// Remove a UPnP port mapping lease (will delete the mapping)
+    async fn remove_port_mapping_lease(&self, port: &u16) {
+        let mut leases = self.port_mapping_leases.lock().await;
+        if leases.remove(port).is_some() {
+            tracing::info!(?port, "removed UPnP port mapping lease");
+        }
+    }
+
+    /// Check if we have a UPnP port mapping lease for the given port
+    async fn has_port_mapping_lease(&self, port: &u16) -> bool {
+        let leases = self.port_mapping_leases.lock().await;
+        leases.contains_key(port)
     }
 
     async fn punch_as_initiator(self: Arc<Self>, dst_peer_id: PeerId) -> Result<(), Error> {
@@ -286,12 +410,44 @@ impl TcpHolePunchConnectorData {
             return Ok(());
         }
 
-        let mut backoff = BackOff::new(vec![1000, 1000, 4000, 8000]);
+        // Allocate port ONCE and reuse across retries to avoid UPnP lease leaks
+        let mut reused_port: Option<u16> = None;
+
+            let mut backoff = BackOff::new(vec![1000, 1000, 4000, 8000]);
+        let mut success = false;
 
         loop {
             backoff.sleep_for_next_backoff().await;
-            if self.do_punch_as_initiator(dst_peer_id).await.is_ok() {
-                break;
+            match self.do_punch_as_initiator(dst_peer_id, reused_port).await {
+                Ok((port, _lease)) => {
+                    // Save port for potential cleanup if needed
+                    reused_port = Some(port);
+                    success = true;
+                    break;
+                }
+                Err(err) => {
+                    // Save port even on failure for reuse in next attempt
+                    if let Some(port) = err.allocated_port {
+                        if reused_port.is_none() {
+                            tracing::info!(?port, "saving port for reuse in next attempt");
+                            reused_port = Some(port);
+                        }
+                    }
+
+                    let e = err.error;
+                    // If NAT type is unknown, don't retry - will be picked up on next collect cycle
+                    if e.to_string().contains("NAT type unknown") {
+                        tracing::info!(dst_peer_id, "tcp hole punch waiting for NAT detection");
+                        break;
+                    }
+                    // For symmetric NAT, don't retry
+                    if e.to_string().contains("symmetric NAT") {
+                        tracing::info!(dst_peer_id, "tcp hole punch skipped (symmetric NAT)");
+                        break;
+                    }
+                    // For other errors, continue retrying
+                    tracing::warn!(dst_peer_id, ?e, "tcp hole punch attempt failed, retrying");
+                }
             }
 
             if self.blacklist.contains(&dst_peer_id) {
@@ -303,14 +459,22 @@ impl TcpHolePunchConnectorData {
             }
         }
 
+        // Clean up: remove UPnP mapping if hole punch didn't succeed
+        if !success {
+            if let Some(port) = reused_port {
+                tracing::info!(?port, "cleaning up UPnP mapping after failed hole punch");
+                self.remove_port_mapping_lease(&port).await;
+            }
+        }
+
         // Remove from connecting set
         self.connecting_peers.remove(&dst_peer_id);
 
         Ok(())
     }
 
-    #[tracing::instrument(skip(self), fields(dst_peer_id), err)]
-    async fn do_punch_as_initiator(&self, dst_peer_id: PeerId) -> Result<(), Error> {
+    #[tracing::instrument(skip(self), fields(dst_peer_id))]
+    async fn do_punch_as_initiator(&self, dst_peer_id: PeerId, reused_port: Option<u16>) -> HolePunchResult<(u16, Option<upnp::TcpPortMappingLease>)> {
         let global_ctx = self.peer_mgr.get_global_ctx();
         let my_tcp_nat_type = NatType::try_from(
             global_ctx
@@ -319,22 +483,99 @@ impl TcpHolePunchConnectorData {
                 .tcp_nat_type,
         )
         .unwrap_or(NatType::Unknown);
-        tracing::debug!(?my_tcp_nat_type, "tcp hole punch initiator start");
-        if is_symmetric_tcp_nat(my_tcp_nat_type) || my_tcp_nat_type == NatType::Unknown {
-            tracing::debug!("tcp hole punch initiator skipped (symmetric)");
-            return Ok(());
+        tracing::info!(?my_tcp_nat_type, "tcp hole punch initiator start");
+
+        // Skip only for symmetric NAT (NAT4)
+        if is_symmetric_tcp_nat(my_tcp_nat_type) {
+            tracing::info!("tcp hole punch initiator skipped (symmetric)");
+            return Err(HolePunchError::new(anyhow::anyhow!("symmetric NAT, skip"), None));
         }
 
-        // Create bound socket for simultaneous open (no TOCTOU)
-        let (socket, local_port) = create_bound_socket(&self.peer_mgr, false).await?;
-        let listener_url = format!("tcp://0.0.0.0:{}", local_port).parse().unwrap();
-        let (mapped_addr, _port_mapping_lease) = upnp::resolve_tcp_public_addr(
-            global_ctx.clone(),
-            &listener_url,
-            local_port,
-        )
-        .await
-        .with_context(|| "failed to get tcp port mapping")?;
+        // If NAT type is Unknown, return error to retry later
+        if my_tcp_nat_type == NatType::Unknown {
+            tracing::info!("tcp hole punch initiator skipped (unknown, waiting for NAT detection)");
+            return Err(HolePunchError::new(anyhow::anyhow!("NAT type unknown, retry later"), None));
+        }
+
+        // Step 1: Get or reuse port
+        let local_port = match reused_port {
+            Some(port) => {
+                tracing::info!(?port, "reusing existing port for retry");
+                port
+            }
+            None => {
+                // Check if NAT detection already created a TCP port mapping
+                let nat_detection_port = global_ctx.get_stun_info_collector().get_nat_detection_tcp_port();
+                if let Some(port) = nat_detection_port {
+                    tracing::info!(?port, "reusing NAT detection port for UPnP mapping");
+                    port
+                } else {
+                    // No existing mapping, allocate a new port
+                    let _g = self.peer_mgr.get_global_ctx().net_ns.guard();
+                    let temp_socket = match tokio::net::TcpSocket::new_v4() {
+                        Ok(s) => s,
+                        Err(e) => return Err(HolePunchError::new(anyhow::anyhow!("create socket failed: {:?}", e), None)),
+                    };
+                    if let Err(e) = temp_socket.bind(SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0)) {
+                        return Err(HolePunchError::new(anyhow::anyhow!("bind failed: {:?}", e), None));
+                    }
+                    let port = match temp_socket.local_addr() {
+                        Ok(addr) => addr.port(),
+                        Err(e) => return Err(HolePunchError::new(anyhow::anyhow!("local_addr failed: {:?}", e), None)),
+                    };
+                    drop(temp_socket);
+                    port
+                }
+            }
+        };
+
+        // Step 2: UPnP mapping + STUN verification
+        // SKIP UPnP if reusing port (mapping already exists from first attempt)
+        let mapped_addr = if reused_port.is_some() {
+            // Reuse existing mapping - just do STUN to get mapped address
+            match global_ctx.get_stun_info_collector().get_tcp_port_mapping(local_port).await {
+                Ok(addr) => addr,
+                Err(e) => return Err(HolePunchError::new(anyhow::anyhow!("STUN failed: {:?}", e), Some(local_port))),
+            }
+        } else {
+            // First attempt - create UPnP mapping + STUN
+            let listener_url = format!("tcp://0.0.0.0:{}", local_port).parse().unwrap();
+            let (mapped_addr, port_mapping_lease) = match upnp::resolve_tcp_public_addr(
+                global_ctx.clone(),
+                &listener_url,
+                local_port,
+            ).await {
+                Ok(result) => result,
+                Err(e) => return Err(HolePunchError::new(anyhow::anyhow!("UPnP/STUN failed: {:?}", e), Some(local_port))),
+            };
+
+            // Store the lease to keep UPnP mapping alive
+            if let Some(lease) = port_mapping_lease {
+                self.store_port_mapping_lease(local_port, lease).await;
+            }
+
+            mapped_addr
+        };
+
+        // Step 3: Create persistent socket for hole punch (re-bind to same port)
+        let socket = {
+            let _g = self.peer_mgr.get_global_ctx().net_ns.guard();
+            let socket = match tokio::net::TcpSocket::new_v4() {
+                Ok(s) => s,
+                Err(e) => return Err(HolePunchError::new(anyhow::anyhow!("create socket failed: {:?}", e), Some(local_port))),
+            };
+            if let Err(e) = socket.set_reuseaddr(true) {
+                    return Err(HolePunchError::new(anyhow::anyhow!("set_reuseaddr failed: {:?}", e), Some(local_port)));
+            }
+            #[cfg(unix)]
+            if let Err(e) = socket.set_reuseport(true) {
+                    return Err(HolePunchError::new(anyhow::anyhow!("set_reuseport failed: {:?}", e), Some(local_port)));
+            }
+            if let Err(e) = socket.bind(SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), local_port)) {
+                    return Err(HolePunchError::new(anyhow::anyhow!("bind failed: {:?}", e), Some(local_port)));
+            }
+            socket
+        };
 
         tracing::info!(
             dst_peer_id,
@@ -364,11 +605,14 @@ impl TcpHolePunchConnectorData {
                 },
             )
             .await;
-        let resp = handle_rpc_result(resp, dst_peer_id, &self.blacklist)?;
-        let remote_mapped_addr = resp
-            .listener_mapped_addr
-            .ok_or(anyhow::anyhow!("listener_mapped_addr is required"))?;
-        let remote_mapped_addr: SocketAddr = remote_mapped_addr.into();
+        let resp = match handle_rpc_result(resp, dst_peer_id, &self.blacklist) {
+            Ok(resp) => resp,
+            Err(e) => return Err(HolePunchError::new(anyhow::anyhow!("RPC error: {:?}", e), Some(local_port))),
+        };
+        let remote_mapped_addr = match resp.listener_mapped_addr {
+            Some(addr) => SocketAddr::from(addr),
+            None => return Err(HolePunchError::new(anyhow::anyhow!("listener_mapped_addr is required"), Some(local_port))),
+        };
         let remote_tcp_nat_type = NatType::try_from(resp.tcp_nat_type).unwrap_or(NatType::Unknown);
         tracing::info!(
             dst_peer_id,
@@ -377,43 +621,98 @@ impl TcpHolePunchConnectorData {
             "tcp hole punch initiator rpc returned"
         );
 
-        // If we are symmetric NAT (NAT4) and remote is FullCone (NAT1),
-        // add a small delay to let the remote side establish their mapping first
-        if is_symmetric_tcp_nat(my_tcp_nat_type) && remote_tcp_nat_type == NatType::FullCone {
+        // Key optimization: When remote is Symmetric NAT, skip simultaneous open
+        // because Symmetric NAT allocates different ports per destination.
+        // Instead, go directly to STUN traversal mode (NAT1 listens, NAT4 connects).
+        let skip_simultaneous_open = is_symmetric_tcp_nat(remote_tcp_nat_type);
+
+        if skip_simultaneous_open {
             tracing::info!(
                 dst_peer_id,
                 ?my_tcp_nat_type,
                 ?remote_tcp_nat_type,
-                "tcp hole punch initiator: symmetric NAT waiting for fullcone peer"
+                "tcp hole punch initiator: remote is symmetric, skipping simultaneous open"
             );
-            tokio::time::sleep(Duration::from_millis(500)).await;
-        }
 
-        // Use the pre-bound socket for simultaneous open
-        if let Ok(()) = try_connect_with_socket(
-            self.peer_mgr.clone(),
-            socket,
-            remote_mapped_addr,
-            local_port,
-            false,
-        )
-        .await
-        {
+            // When skipping simultaneous open, we need to listen on the port immediately
+            // so NAT4 can connect to us. Convert socket to listener.
+            if my_tcp_nat_type == NatType::FullCone {
+                tracing::info!(
+                    dst_peer_id,
+                    local_port,
+                    ?mapped_addr,
+                    "tcp hole punch initiator: NAT1 listening for NAT4 connection"
+                );
+
+                // Convert TcpSocket to TcpListener - port stays bound and now listens
+                let tcp_listener = match socket.listen(128) {
+                    Ok(l) => l,
+                    Err(e) => return Err(HolePunchError::new(anyhow::anyhow!("listen failed: {:?}", e), Some(local_port))),
+                };
+                let listener_url = format!("tcp://0.0.0.0:{}", local_port).parse().unwrap();
+                let mut listener = TcpTunnelListener::from_listener(tcp_listener, listener_url);
+
+                // Wait for NAT4 to connect (with timeout)
+                let accept_timeout = Duration::from_secs(15);
+                match tokio::time::timeout(accept_timeout, listener.accept()).await {
+                    Ok(Ok(tunnel)) => {
+                        tracing::info!(local_port, "listener accepted connection from NAT4");
+                        if let Err(e) = self.peer_mgr.add_tunnel_as_server(tunnel, false).await {
+                            tracing::error!(?e, "listener failed to add tunnel");
+                            return Err(HolePunchError::new(anyhow::anyhow!("failed to add tunnel: {:?}", e), Some(local_port)));
+                        }
+                        tracing::info!(local_port, "listener added tunnel successfully");
+                        return Ok((local_port, None));
+                    }
+                    Ok(Err(e)) => {
+                        tracing::warn!(?e, local_port, "listener accept error");
+                        return Err(HolePunchError::new(anyhow::anyhow!("accept error: {:?}", e), Some(local_port)));
+                    }
+                    Err(_) => {
+                        tracing::warn!(local_port, "listener accept timeout, NAT4 did not connect");
+                        return Err(HolePunchError::new(anyhow::anyhow!("accept timeout"), Some(local_port)));
+                    }
+                }
+            }
+        } else {
+            // If we are symmetric NAT (NAT4) and remote is FullCone (NAT1),
+            // add a small delay to let the remote side establish their mapping first
+            if is_symmetric_tcp_nat(my_tcp_nat_type) && remote_tcp_nat_type == NatType::FullCone {
+                tracing::info!(
+                    dst_peer_id,
+                    ?my_tcp_nat_type,
+                    ?remote_tcp_nat_type,
+                    "tcp hole punch initiator: symmetric NAT waiting for fullcone peer"
+                );
+                tokio::time::sleep(Duration::from_millis(500)).await;
+            }
+
+            // Try simultaneous open
+            if let Ok(()) = try_connect_with_socket(
+                self.peer_mgr.clone(),
+                socket,
+                remote_mapped_addr,
+                local_port,
+                false,
+            )
+            .await
+            {
+                tracing::info!(
+                    dst_peer_id,
+                    local_port,
+                    ?remote_mapped_addr,
+                    "tcp hole punch initiator connected to remote mapped addr with simultaneous connection"
+                );
+                return Ok((local_port, None));
+            }
+
             tracing::info!(
                 dst_peer_id,
                 local_port,
                 ?remote_mapped_addr,
-                "tcp hole punch initiator connected to remote mapped addr with simultaneous connection"
+                "tcp hole punch initiator simultaneous open failed"
             );
-            return Ok(());
         }
-
-        tracing::debug!(
-            dst_peer_id,
-            local_port,
-            ?remote_mapped_addr,
-            "tcp hole punch initiator simultaneous open failed"
-        );
 
         // If we are NAT1 (FullCone), try STUN traversal with a DIFFERENT port
         // Using a different port avoids conflicts between simultaneous open and listening
@@ -425,15 +724,24 @@ impl TcpHolePunchConnectorData {
             );
 
             // Create a bound socket for STUN traversal
-            let (stun_socket, stun_port) = create_bound_socket(&self.peer_mgr, false).await?;
+            let (stun_socket, stun_port) = match create_bound_socket(&self.peer_mgr, false).await {
+                Ok(result) => result,
+                Err(e) => return Err(HolePunchError::new(anyhow::anyhow!("create_bound_socket failed: {:?}", e), Some(local_port))),
+            };
             let stun_listener_url = format!("tcp://0.0.0.0:{}", stun_port).parse().unwrap();
-            let (public_addr, _stun_lease) = upnp::resolve_tcp_public_addr(
+            let (public_addr, stun_lease) = match upnp::resolve_tcp_public_addr(
                 global_ctx.clone(),
                 &stun_listener_url,
                 stun_port,
-            )
-            .await
-            .with_context(|| "failed to get tcp port mapping for STUN")?;
+            ).await {
+                Ok(result) => result,
+                Err(e) => return Err(HolePunchError::new(anyhow::anyhow!("STUN failed: {:?}", e), Some(stun_port))),
+            };
+
+            // Store the lease to keep UPnP mapping alive
+            if let Some(lease) = stun_lease {
+                self.store_port_mapping_lease(stun_port, lease).await;
+            }
 
             tracing::info!(
                 dst_peer_id,
@@ -443,7 +751,10 @@ impl TcpHolePunchConnectorData {
             );
 
             // Convert TcpSocket to TcpListener directly - port is never released
-            let tcp_listener = stun_socket.listen(128)?;
+            let tcp_listener = match stun_socket.listen(128) {
+                Ok(l) => l,
+                Err(e) => return Err(HolePunchError::new(anyhow::anyhow!("listen failed: {:?}", e), Some(stun_port))),
+            };
             let mut listener = TcpTunnelListener::from_listener(tcp_listener, stun_listener_url);
 
             // Report the public listening address to other nodes via RPC
@@ -490,50 +801,31 @@ impl TcpHolePunchConnectorData {
                 }
             }
 
-            // Spawn a task to accept connections on the STUN listener
-            // This keeps the listener alive and accepts incoming connections
-            let peer_mgr_clone = self.peer_mgr.clone();
-            tokio::spawn(async move {
-                let timeout = Duration::from_secs(30);
-                let start = tokio::time::Instant::now();
-
-                loop {
-                    if start.elapsed() >= timeout {
-                        tracing::info!(stun_port, "stun listener accept loop timeout, shutting down");
-                        break;
+            // Wait for NAT4 to connect (with timeout)
+            let accept_timeout = Duration::from_secs(15);
+            match tokio::time::timeout(accept_timeout, listener.accept()).await {
+                Ok(Ok(tunnel)) => {
+                    tracing::info!(stun_port, "stun listener accepted connection from NAT4");
+                    if let Err(e) = self.peer_mgr.add_tunnel_as_server(tunnel, false).await {
+                        tracing::error!(?e, "stun listener failed to add tunnel");
+                            return Err(HolePunchError::new(anyhow::anyhow!("failed to add tunnel: {:?}", e), Some(stun_port)));
                     }
-
-                    match tokio::time::timeout(Duration::from_secs(5), listener.accept()).await {
-                        Ok(Ok(tunnel)) => {
-                            tracing::info!(stun_port, "stun listener accepted connection");
-                            if let Err(e) = peer_mgr_clone.add_tunnel_as_server(tunnel, false).await {
-                                tracing::error!(?e, "stun listener failed to add tunnel");
-                            } else {
-                                tracing::info!(stun_port, "stun listener added tunnel successfully");
-                                break; // Successfully connected, exit loop
-                            }
-                        }
-                        Ok(Err(e)) => {
-                            tracing::warn!(?e, stun_port, "stun listener accept error");
-                            break;
-                        }
-                        Err(_) => {
-                            // Timeout, continue loop
-                            continue;
-                        }
-                    }
+                    tracing::info!(stun_port, "stun listener added tunnel successfully");
+                        return Ok((stun_port, None));
                 }
-
-                tracing::info!(stun_port, "stun listener accept loop exited");
-            });
-
-            return Ok(());
+                Ok(Err(e)) => {
+                    tracing::warn!(?e, stun_port, "stun listener accept error");
+                        return Err(HolePunchError::new(anyhow::anyhow!("accept error: {:?}", e), Some(stun_port)));
+                }
+                Err(_) => {
+                    tracing::warn!(stun_port, "stun listener accept timeout, NAT4 did not connect");
+                        return Err(HolePunchError::new(anyhow::anyhow!("accept timeout"), Some(stun_port)));
+                }
+            }
         }
 
-        Err(anyhow::anyhow!("tcp hole punch simultaneous open failed"))
+        Err(HolePunchError::new(anyhow::anyhow!("tcp hole punch simultaneous open failed"), Some(local_port)))
     }
-
-
 }
 
 #[derive(Clone, Debug, Hash, Eq, PartialEq)]
@@ -566,10 +858,22 @@ impl PeerTaskLauncher for TcpHolePunchPeerTaskLauncher {
                 .tcp_nat_type,
         )
         .unwrap_or(NatType::Unknown);
-        if is_symmetric_tcp_nat(my_tcp_nat_type) || my_tcp_nat_type == NatType::Unknown {
+
+        // Skip only for symmetric NAT (NAT4), not for Unknown
+        // Unknown means NAT detection hasn't completed yet, we should retry later
+        if is_symmetric_tcp_nat(my_tcp_nat_type) {
             tracing::trace!(
                 ?my_tcp_nat_type,
                 "tcp hole punch task collect skipped (symmetric)"
+            );
+            return vec![];
+        }
+
+        // If NAT type is Unknown, log and return empty (will retry on next loop)
+        if my_tcp_nat_type == NatType::Unknown {
+            tracing::trace!(
+                ?my_tcp_nat_type,
+                "tcp hole punch task collect skipped (unknown, waiting for NAT detection)"
             );
             return vec![];
         }
@@ -609,6 +913,8 @@ impl PeerTaskLauncher for TcpHolePunchPeerTaskLauncher {
                 continue;
             }
 
+            // Skip peers that are already connected
+            // Even with force_hole_punch, we don't want to punch again if already connected
             if data.peer_mgr.get_peer_map().has_peer(peer_id) {
                 tracing::trace!(peer_id, "tcp hole punch task collect skip already has peer");
                 continue;
@@ -626,6 +932,15 @@ impl PeerTaskLauncher for TcpHolePunchPeerTaskLauncher {
                     peer_id,
                     ?peer_tcp_nat_type,
                     "tcp hole punch task collect skip peer unknown"
+                );
+                continue;
+            }
+
+            // Skip peers that are already in the connecting set (another task is working on it)
+            if data.connecting_peers.contains(&peer_id) {
+                tracing::debug!(
+                    peer_id,
+                    "tcp hole punch task collect skip already connecting"
                 );
                 continue;
             }
@@ -708,6 +1023,31 @@ impl TcpHolePunchConnector {
             );
             return Ok(());
         }
+
+        // Subscribe to TCP NAT type detection events
+        let mut event_rx = self.peer_mgr.get_global_ctx().subscribe();
+        let p2p_demand_notify = self.peer_mgr.p2p_demand_notify();
+        let data = self.client.data();
+        tokio::spawn(async move {
+            loop {
+                match event_rx.recv().await {
+                    Ok(GlobalCtxEvent::TcpNatTypeDetected) => {
+                        tracing::info!("TCP NAT type detected, forcing TCP hole punch for all peers");
+                        // Set force flag to bypass has_peer check
+                        data.set_force_hole_punch(true);
+                        p2p_demand_notify.notify();
+                        // Reset force flag after a delay
+                        tokio::time::sleep(Duration::from_secs(30)).await;
+                        data.set_force_hole_punch(false);
+                    }
+                    Ok(_) => {}
+                    Err(e) => {
+                        tracing::warn!(?e, "event receiver error, stopping listener");
+                        break;
+                    }
+                }
+            }
+        });
 
         self.run_as_client().await?;
         self.run_as_server().await?;

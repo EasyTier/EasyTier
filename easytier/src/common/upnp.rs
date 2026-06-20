@@ -1,6 +1,6 @@
 use std::{
     fmt,
-    net::{Ipv4Addr, SocketAddr, SocketAddrV4},
+    net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4},
     sync::Arc,
     time::Duration,
 };
@@ -1414,6 +1414,23 @@ pub fn find_physical_interface_bind_addr() -> Option<SocketAddr> {
 
     tracing::debug!(?local_addr, "found physical interface bind addr");
     Some(local_addr)
+}
+
+/// Get the local IPv4 address of the physical network interface.
+/// Uses EasyTier's existing `local_ipv4` function which connects to 8.8.8.8 to determine the correct interface.
+pub fn get_physical_ipv4_addr() -> Option<Ipv4Addr> {
+    // Use a blocking call to get the local IPv4 address
+    let socket = std::net::UdpSocket::bind("0.0.0.0:0").ok()?;
+    socket.connect("8.8.8.8:80").ok()?;
+    let local_addr = socket.local_addr().ok()?;
+
+    match local_addr.ip() {
+        std::net::IpAddr::V4(ip) if !ip.is_loopback() && !ip.is_unspecified() => {
+            tracing::info!(?ip, "found physical interface ipv4 addr");
+            Some(ip)
+        }
+        _ => None,
+    }
 }
 
 #[cfg(test)]

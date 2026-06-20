@@ -71,6 +71,9 @@ pub enum GlobalCtxEvent {
     PublicIpv6Changed(Option<cidr::Ipv6Inet>, Option<cidr::Ipv6Inet>), // (old, new)
     PublicIpv6RoutesUpdated(Vec<cidr::Ipv6Inet>, Vec<cidr::Ipv6Inet>), // (added, removed)
 
+    // TCP NAT type detection completed, can trigger TCP hole punch
+    TcpNatTypeDetected,
+
     PortForwardAdded(PortForwardConfigPb),
 
     ConfigPatched(InstanceConfigPatch),
