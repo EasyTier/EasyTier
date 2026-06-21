@@ -537,48 +537,58 @@ fn should_run_port_mapping_in_dedicated_thread(global_ctx: &ArcGlobalCtx) -> boo
     global_ctx.net_ns.name().is_some()
 }
 
+async fn add_mapping_port_igd(
+    gateway: &TokioGateway,
+    local_addr: SocketAddr,
+    local_listener: &url::Url,
+    protocol: PortMappingProtocol,
+) -> anyhow::Result<u16> {
+    match protocol {
+        PortMappingProtocol::UDP => {
+            match gateway
+                .add_any_port(protocol, local_addr, UPNP_LEASE_DURATION_SECS, UPNP_DESCRIPTION)
+                .await
+            {
+                Ok(external_port) => Ok(external_port),
+                Err(AddAnyPortError::RequestError(err)) => {
+                    tracing::debug!(
+                        ?err,
+                        %local_listener,
+                        gateway = %gateway.addr,
+                        %local_addr,
+                        "igd any-port mapping failed, retry with same-port mapping"
+                    );
+                    gateway
+                        .add_port(protocol, local_addr.port(), local_addr, UPNP_LEASE_DURATION_SECS, UPNP_DESCRIPTION)
+                        .await
+                        .map(|_| local_addr.port())
+                        .map_err(|same_port_err| {
+                            anyhow!(
+                                "igd mapping failed for {local_listener}: any-port error: {err}; same-port error: {same_port_err}"
+                            )
+                        })
+                }
+                Err(err) => Err(err.into()),
+            }
+        }
+        PortMappingProtocol::TCP => {
+            gateway
+                .add_port(protocol, local_addr.port(), local_addr, UPNP_LEASE_DURATION_SECS, UPNP_DESCRIPTION)
+                .await
+                .map(|_| local_addr.port())
+                .map_err(|err| {
+                    anyhow!("igd tcp mapping failed for {local_listener}: {err}")
+                })
+        }
+    }
+}
+
 async fn add_udp_mapping_port_igd(
     gateway: &TokioGateway,
     local_addr: SocketAddr,
     local_listener: &url::Url,
 ) -> anyhow::Result<u16> {
-    match gateway
-        .add_any_port(
-            PortMappingProtocol::UDP,
-            local_addr,
-            UPNP_LEASE_DURATION_SECS,
-            UPNP_DESCRIPTION,
-        )
-        .await
-    {
-        Ok(external_port) => Ok(external_port),
-        Err(AddAnyPortError::RequestError(err)) => {
-            tracing::debug!(
-                ?err,
-                %local_listener,
-                gateway = %gateway.addr,
-                %local_addr,
-                "igd any-port udp mapping failed, retry with same-port mapping"
-            );
-
-            gateway
-                .add_port(
-                    PortMappingProtocol::UDP,
-                    local_addr.port(),
-                    local_addr,
-                    UPNP_LEASE_DURATION_SECS,
-                    UPNP_DESCRIPTION,
-                )
-                .await
-                .map(|_| local_addr.port())
-                .map_err(|same_port_err| {
-                    anyhow!(
-                        "igd udp mapping failed for {local_listener}: any-port error: {err}; same-port error: {same_port_err}"
-                    )
-                })
-        }
-        Err(err) => Err(err.into()),
-    }
+    add_mapping_port_igd(gateway, local_addr, local_listener, PortMappingProtocol::UDP).await
 }
 
 async fn add_udp_mapping_port_nat_pmp(
@@ -734,22 +744,38 @@ async fn resolve_internal_addr(
     Ok(SocketAddr::new(ip.into(), port))
 }
 
+async fn renew_mapping_igd(
+    gateway: &TokioGateway,
+    local_addr: SocketAddr,
+    external_port: u16,
+    local_listener: &url::Url,
+    protocol: PortMappingProtocol,
+) -> anyhow::Result<()> {
+    gateway
+        .add_port(protocol, external_port, local_addr, UPNP_LEASE_DURATION_SECS, UPNP_DESCRIPTION)
+        .await
+        .with_context(|| format!("renew {:?} port mapping {local_listener}", protocol))
+}
+
 async fn renew_udp_mapping_igd(
     gateway: &TokioGateway,
     local_addr: SocketAddr,
     external_port: u16,
     local_listener: &url::Url,
 ) -> anyhow::Result<()> {
+    renew_mapping_igd(gateway, local_addr, external_port, local_listener, PortMappingProtocol::UDP).await
+}
+
+async fn remove_mapping_igd(
+    gateway: &TokioGateway,
+    external_port: u16,
+    local_listener: &url::Url,
+    protocol: PortMappingProtocol,
+) -> anyhow::Result<()> {
     gateway
-        .add_port(
-            PortMappingProtocol::UDP,
-            external_port,
-            local_addr,
-            UPNP_LEASE_DURATION_SECS,
-            UPNP_DESCRIPTION,
-        )
+        .remove_port(protocol, external_port)
         .await
-        .with_context(|| format!("renew udp port mapping {local_listener}"))
+        .with_context(|| format!("remove {:?} port mapping {local_listener}", protocol))
 }
 
 async fn remove_udp_mapping_igd(
@@ -757,10 +783,7 @@ async fn remove_udp_mapping_igd(
     external_port: u16,
     local_listener: &url::Url,
 ) -> anyhow::Result<()> {
-    gateway
-        .remove_port(PortMappingProtocol::UDP, external_port)
-        .await
-        .with_context(|| format!("remove udp port mapping {local_listener}"))
+    remove_mapping_igd(gateway, external_port, local_listener, PortMappingProtocol::UDP).await
 }
 
 #[cfg(test)]
