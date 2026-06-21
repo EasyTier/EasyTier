@@ -228,6 +228,8 @@ impl TcpHolePunchRpc for TcpHolePunchServer {
 struct TcpHolePunchConnectorData {
     peer_mgr: Arc<PeerManager>,
     blacklist: Arc<timedmap::TimedMap<PeerId, ()>>,
+    upnp_lease: tokio::sync::Mutex<Option<upnp::UdpPortMappingLease>>,
+    fixed_local_port: tokio::sync::Mutex<Option<u16>>,
 }
 
 impl TcpHolePunchConnectorData {
@@ -235,6 +237,8 @@ impl TcpHolePunchConnectorData {
         Arc::new(Self {
             peer_mgr,
             blacklist: Arc::new(timedmap::TimedMap::new()),
+            upnp_lease: tokio::sync::Mutex::new(None),
+            fixed_local_port: tokio::sync::Mutex::new(None),
         })
     }
 
@@ -275,11 +279,29 @@ impl TcpHolePunchConnectorData {
             return Ok(());
         }
 
-        let local_port = select_local_port(&self.peer_mgr, false).await?;
+        // Reuse the same port across hole punch attempts to avoid creating new UPnP mappings.
+        let local_port = {
+            let mut port_guard = self.fixed_local_port.lock().await;
+            if let Some(port) = *port_guard {
+                port
+            } else {
+                let port = select_local_port(&self.peer_mgr, false).await?;
+                *port_guard = Some(port);
+                port
+            }
+        };
 
         // Open router firewall via UPnP so inbound connections can reach this port.
         // Failure is non-blocking: we fall back to STUN-only.
-        let _upnp_lease = upnp::try_open_tcp_port(&global_ctx, local_port).await;
+        // Only create mapping once; the lease is stored to keep it alive for the node lifetime.
+        {
+            let mut lease_guard = self.upnp_lease.lock().await;
+            if lease_guard.is_none() {
+                if let Ok(Some(lease)) = upnp::try_open_tcp_port(&global_ctx, local_port).await {
+                    *lease_guard = Some(lease);
+                }
+            }
+        }
 
         let mapped_addr = global_ctx
             .get_stun_info_collector()
