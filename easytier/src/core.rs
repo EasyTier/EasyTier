@@ -1614,7 +1614,7 @@ pub async fn main() -> ExitCode {
     // Verify configurations
     if cli.check_config {
         if let Err(error) = validate_config(&cli).await {
-            log::error!(?error, "Config validation failed");
+            log::error!(%error, "Config validation failed");
             return ExitCode::FAILURE;
         } else {
             return ExitCode::SUCCESS;
@@ -1624,7 +1624,7 @@ pub async fn main() -> ExitCode {
     let mut ret_code = 0;
 
     if let Err(error) = run_main(cli).await {
-        log::error!(?error);
+        log::error!(%error);
         ret_code = 1;
     }
 
@@ -1644,12 +1644,13 @@ async fn validate_config(cli: &Cli) -> anyhow::Result<()> {
     for config_file in config_files {
         if config_file == &PathBuf::from("-") {
             let mut stdin = String::new();
-            _ = tokio::io::stdin().read_to_string(&mut stdin).await?;
-            TomlConfigLoader::new_from_str(stdin.as_str())
-                .with_context(|| "config source: stdin")?;
+            _ = tokio::io::stdin()
+                .read_to_string(&mut stdin)
+                .await
+                .context("failed to read config from stdin")?;
+            TomlConfigLoader::new_from_str_with_source("stdin", stdin.as_str())?;
         } else {
-            TomlConfigLoader::new(config_file)
-                .with_context(|| format!("config source: {:?}", config_file))?;
+            TomlConfigLoader::new(config_file)?;
         };
     }
 
