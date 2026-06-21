@@ -591,36 +591,60 @@ async fn add_udp_mapping_port_igd(
     add_mapping_port_igd(gateway, local_addr, local_listener, PortMappingProtocol::UDP).await
 }
 
-async fn add_udp_mapping_port_nat_pmp(
+async fn add_mapping_port_nat_pmp(
     gateway: Ipv4Addr,
     local_addr: SocketAddr,
     local_listener: &url::Url,
+    protocol: PortMappingProtocol,
 ) -> anyhow::Result<u16> {
-    match request_nat_pmp_mapping(gateway, local_addr.port(), 0, UPNP_LEASE_DURATION_SECS).await {
-        Ok(external_port) => Ok(external_port),
-        Err(any_port_err) => {
-            tracing::debug!(
-                ?any_port_err,
-                %local_listener,
-                gateway = %gateway,
-                %local_addr,
-                "nat-pmp any-port udp mapping failed, retry with same-port mapping"
-            );
+    let nat_pmp_protocol = match protocol {
+        PortMappingProtocol::UDP => NatPmpProtocol::UDP,
+        PortMappingProtocol::TCP => NatPmpProtocol::TCP,
+        _ => bail!("unsupported protocol for nat-pmp: {:?}", protocol),
+    };
 
+    match protocol {
+        PortMappingProtocol::TCP => {
             request_nat_pmp_mapping(
                 gateway,
                 local_addr.port(),
                 local_addr.port(),
                 UPNP_LEASE_DURATION_SECS,
+                nat_pmp_protocol,
             )
             .await
-            .map_err(|same_port_err| {
-                anyhow!(
-                    "nat-pmp udp mapping failed for {local_listener}: any-port error: {any_port_err}; same-port error: {same_port_err}"
-                )
+            .map_err(|err| {
+                anyhow!("nat-pmp tcp mapping failed for {local_listener}: {err}")
             })
         }
+        _ => {
+            match request_nat_pmp_mapping(gateway, local_addr.port(), 0, UPNP_LEASE_DURATION_SECS, nat_pmp_protocol).await {
+                Ok(external_port) => Ok(external_port),
+                Err(any_port_err) => {
+                    tracing::debug!(
+                        ?any_port_err,
+                        %local_listener,
+                        gateway = %gateway,
+                        %local_addr,
+                        "nat-pmp any-port mapping failed, retry with same-port mapping"
+                    );
+                    request_nat_pmp_mapping(gateway, local_addr.port(), local_addr.port(), UPNP_LEASE_DURATION_SECS, nat_pmp_protocol)
+                        .await
+                        .map_err(|same_port_err| {
+                            anyhow!("nat-pmp mapping failed for {local_listener}: any-port error: {any_port_err}; same-port error: {same_port_err}")
+                        })
+                }
+            }
+        }
     }
+}
+
+async fn add_udp_mapping_port_nat_pmp(
+    gateway: Ipv4Addr,
+    local_addr: SocketAddr,
+    local_listener: &url::Url,
+) -> anyhow::Result<u16> {
+    add_mapping_port_nat_pmp(gateway, local_addr, local_listener, PortMappingProtocol::UDP).await
 }
 
 async fn request_nat_pmp_mapping(
@@ -628,21 +652,18 @@ async fn request_nat_pmp_mapping(
     private_port: u16,
     public_port: u16,
     lifetime_secs: u32,
+    protocol: NatPmpProtocol,
 ) -> anyhow::Result<u16> {
     let client = new_tokio_natpmp_with(gateway)
         .await
         .with_context(|| format!("create nat-pmp client for gateway {gateway}"))?;
     client
-        .send_port_mapping_request(
-            NatPmpProtocol::UDP,
-            private_port,
-            public_port,
-            lifetime_secs,
-        )
+        .send_port_mapping_request(protocol, private_port, public_port, lifetime_secs)
         .await
         .with_context(|| {
             format!(
-                "send nat-pmp udp mapping request private_port={private_port} public_port={public_port} gateway={gateway}"
+                "send nat-pmp {:?} mapping request private_port={private_port} public_port={public_port} gateway={gateway}",
+                protocol
             )
         })?;
 
@@ -650,22 +671,60 @@ async fn request_nat_pmp_mapping(
         .await
         .with_context(|| {
             format!(
-                "wait nat-pmp udp mapping response private_port={private_port} gateway={gateway}"
+                "wait nat-pmp {:?} mapping response private_port={private_port} gateway={gateway}",
+                protocol
             )
         })?
         .map_err(anyhow::Error::from)
         .with_context(|| {
             format!(
-                "read nat-pmp udp mapping response private_port={private_port} gateway={gateway}"
+                "read nat-pmp {:?} mapping response private_port={private_port} gateway={gateway}",
+                protocol
             )
         })?;
 
     match response {
         NatPmpResponse::UDP(mapping) | NatPmpResponse::TCP(mapping) => Ok(mapping.public_port()),
         NatPmpResponse::Gateway(_) => {
-            bail!("unexpected nat-pmp gateway response for udp mapping request")
+            bail!("unexpected nat-pmp gateway response for {:?} mapping request", protocol)
         }
     }
+}
+
+async fn renew_mapping_nat_pmp(
+    gateway: Ipv4Addr,
+    local_addr: SocketAddr,
+    external_port: u16,
+    local_listener: &url::Url,
+    protocol: PortMappingProtocol,
+) -> anyhow::Result<()> {
+    let nat_pmp_protocol = match protocol {
+        PortMappingProtocol::UDP => NatPmpProtocol::UDP,
+        PortMappingProtocol::TCP => NatPmpProtocol::TCP,
+        _ => bail!("unsupported protocol for nat-pmp: {:?}", protocol),
+    };
+    request_nat_pmp_mapping(gateway, local_addr.port(), external_port, UPNP_LEASE_DURATION_SECS, nat_pmp_protocol)
+        .await
+        .map(|_| ())
+        .with_context(|| format!("renew {:?} port mapping {local_listener}", protocol))
+}
+
+async fn remove_mapping_nat_pmp(
+    gateway: Ipv4Addr,
+    local_addr: SocketAddr,
+    external_port: u16,
+    local_listener: &url::Url,
+    protocol: PortMappingProtocol,
+) -> anyhow::Result<()> {
+    let nat_pmp_protocol = match protocol {
+        PortMappingProtocol::UDP => NatPmpProtocol::UDP,
+        PortMappingProtocol::TCP => NatPmpProtocol::TCP,
+        _ => bail!("unsupported protocol for nat-pmp: {:?}", protocol),
+    };
+    request_nat_pmp_mapping(gateway, local_addr.port(), external_port, 0, nat_pmp_protocol)
+        .await
+        .map(|_| ())
+        .with_context(|| format!("remove {:?} port mapping {local_listener}", protocol))
 }
 
 async fn renew_udp_mapping_nat_pmp(
@@ -674,15 +733,7 @@ async fn renew_udp_mapping_nat_pmp(
     external_port: u16,
     local_listener: &url::Url,
 ) -> anyhow::Result<()> {
-    request_nat_pmp_mapping(
-        gateway,
-        local_addr.port(),
-        external_port,
-        UPNP_LEASE_DURATION_SECS,
-    )
-    .await
-    .map(|_| ())
-    .with_context(|| format!("renew udp port mapping {local_listener}"))
+    renew_mapping_nat_pmp(gateway, local_addr, external_port, local_listener, PortMappingProtocol::UDP).await
 }
 
 async fn remove_udp_mapping_nat_pmp(
@@ -691,10 +742,7 @@ async fn remove_udp_mapping_nat_pmp(
     external_port: u16,
     local_listener: &url::Url,
 ) -> anyhow::Result<()> {
-    request_nat_pmp_mapping(gateway, local_addr.port(), external_port, 0)
-        .await
-        .map(|_| ())
-        .with_context(|| format!("remove udp port mapping {local_listener}"))
+    remove_mapping_nat_pmp(gateway, local_addr, external_port, local_listener, PortMappingProtocol::UDP).await
 }
 
 fn should_map_udp_listener(local_listener: &url::Url) -> bool {
