@@ -358,6 +358,32 @@ pub async fn resolve_tcp_public_addr(
     Ok((mapped_addr, port_mapping))
 }
 
+pub async fn try_open_tcp_port(
+    global_ctx: &ArcGlobalCtx,
+    local_port: u16,
+) -> anyhow::Result<Option<UdpPortMappingLease>> {
+    let local_listener: url::Url = format!("tcp://0.0.0.0:{}", local_port).parse().unwrap();
+    match try_start_port_mapping(global_ctx, &local_listener, PortMappingProtocol::TCP).await {
+        Ok(Some(lease)) => {
+            tracing::info!(
+                local_port,
+                backend = lease.backend(),
+                gateway_external_port = lease.gateway_external_port(),
+                "tcp upnp port mapping established"
+            );
+            Ok(Some(lease))
+        }
+        Ok(None) => {
+            tracing::debug!(local_port, "tcp upnp port mapping not needed or disabled");
+            Ok(None)
+        }
+        Err(err) => {
+            tracing::debug!(?err, local_port, "tcp upnp port mapping failed, continuing without");
+            Ok(None)
+        }
+    }
+}
+
 async fn try_start_port_mapping(
     global_ctx: &ArcGlobalCtx,
     local_listener: &url::Url,

@@ -153,18 +153,13 @@ async fn try_connect_to_remote(
 struct TcpHolePunchServer {
     peer_mgr: Arc<PeerManager>,
     tasks: Arc<std::sync::Mutex<JoinSet<()>>>,
-    leases: std::sync::Mutex<std::collections::HashMap<u16, upnp::UdpPortMappingLease>>,
 }
 
 impl TcpHolePunchServer {
     fn new(peer_mgr: Arc<PeerManager>) -> Arc<Self> {
         let tasks = Arc::new(std::sync::Mutex::new(JoinSet::new()));
         join_joinset_background(tasks.clone(), "tcp hole punch server".to_string());
-        Arc::new(Self {
-            peer_mgr,
-            tasks,
-            leases: std::sync::Mutex::new(std::collections::HashMap::new()),
-        })
+        Arc::new(Self { peer_mgr, tasks })
     }
 }
 
@@ -204,40 +199,6 @@ impl TcpHolePunchRpc for TcpHolePunchServer {
 
         let is_v6 = a_mapped_addr.is_ipv6();
         let local_port = select_local_port(&self.peer_mgr, is_v6).await?;
-
-        // Clear old UPnP mapping for this port (if any)
-        self.leases.lock().unwrap().remove(&local_port);
-
-        // Create UPnP TCP port mapping to open router firewall
-        let local_listener_url: url::Url = format!("tcp://0.0.0.0:{}", local_port).parse().unwrap();
-        match upnp::resolve_tcp_public_addr(
-            self.peer_mgr.get_global_ctx(),
-            &local_listener_url,
-        )
-        .await
-        {
-            Ok((_mapped_addr, Some(lease))) => {
-                tracing::info!(
-                    local_port,
-                    "tcp hole punch server upnp tcp port mapping established"
-                );
-                self.leases.lock().unwrap().insert(local_port, lease);
-            }
-            Ok((_mapped_addr, None)) => {
-                tracing::debug!(
-                    local_port,
-                    "tcp hole punch server no upnp mapping created"
-                );
-            }
-            Err(err) => {
-                tracing::warn!(
-                    ?err,
-                    local_port,
-                    "tcp hole punch server failed to create upnp tcp mapping, continuing without"
-                );
-            }
-        }
-
         let mapped_addr = self
             .peer_mgr
             .get_global_ctx()
@@ -315,6 +276,11 @@ impl TcpHolePunchConnectorData {
         }
 
         let local_port = select_local_port(&self.peer_mgr, false).await?;
+
+        // Open router firewall via UPnP so inbound connections can reach this port.
+        // Failure is non-blocking: we fall back to STUN-only.
+        let _upnp_lease = upnp::try_open_tcp_port(&global_ctx, local_port).await;
+
         let mapped_addr = global_ctx
             .get_stun_info_collector()
             .get_tcp_port_mapping(local_port)
