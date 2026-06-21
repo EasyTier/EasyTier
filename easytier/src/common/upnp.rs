@@ -23,6 +23,7 @@ use tokio::{net::UdpSocket, sync::oneshot};
 
 use super::{
     global_ctx::{ArcGlobalCtx, GlobalCtxEvent},
+    network::local_ipv4,
     stun::StunInfoCollectorTrait as _,
 };
 use crate::tunnel::build_url_from_socket_addr;
@@ -119,7 +120,17 @@ impl ActiveUdpPortMapping {
         local_listener: &url::Url,
     ) -> anyhow::Result<(TokioGateway, SocketAddr)> {
         let _g = global_ctx.net_ns.guard();
+
+        // Bind SSDP socket to LAN IP so multicast goes through the correct interface.
+        // Without this, Windows may send multicast via the wrong NIC (similar to
+        // miniupnpc's GetBestInterface + IP_MULTICAST_IF behavior).
+        let bind_addr = match local_ipv4().await {
+            Ok(ip) => SocketAddr::new(ip.into(), 0),
+            Err(_) => SocketAddr::new([0, 0, 0, 0].into(), 0),
+        };
+
         let gateway = search_gateway(SearchOptions {
+            bind_addr,
             timeout: Some(UPNP_SEARCH_TIMEOUT),
             single_search_timeout: Some(UPNP_SEARCH_RESPONSE_TIMEOUT),
             ..Default::default()
@@ -295,13 +306,64 @@ pub async fn resolve_udp_public_addr(
     Ok((mapped_addr, port_mapping))
 }
 
+pub async fn resolve_tcp_public_addr(
+    global_ctx: ArcGlobalCtx,
+    local_listener: &url::Url,
+) -> anyhow::Result<(SocketAddr, Option<UdpPortMappingLease>)> {
+    let port_mapping = match try_start_port_mapping(&global_ctx, local_listener, PortMappingProtocol::TCP).await {
+        Ok(mapping) => mapping,
+        Err(err) => {
+            tracing::warn!(
+                ?err,
+                %local_listener,
+                "failed to establish tcp port mapping, fallback to stun-only public addr resolution"
+            );
+            None
+        }
+    };
+
+    let local_port = local_listener
+        .port()
+        .ok_or_else(|| anyhow!("tcp listener port is missing"))?;
+
+    let mapped_addr = global_ctx
+        .get_stun_info_collector()
+        .get_tcp_port_mapping(local_port)
+        .await
+        .map_err(anyhow::Error::from)
+        .with_context(|| format!("resolve tcp public addr for {local_listener}"))?;
+
+    if let Some(port_mapping) = port_mapping.as_ref() {
+        let mapped_listener = build_url_from_socket_addr(&mapped_addr.to_string(), "tcp");
+        global_ctx.issue_event(GlobalCtxEvent::ListenerPortMappingEstablished {
+            local_listener: local_listener.clone(),
+            mapped_listener,
+            backend: port_mapping.backend().to_string(),
+        });
+        tracing::info!(
+            %local_listener,
+            backend = port_mapping.backend(),
+            gateway_external_port = port_mapping.gateway_external_port(),
+            stun_mapped_addr = %mapped_addr,
+            "tcp public addr resolved after port mapping"
+        );
+    } else {
+        tracing::debug!(
+            %local_listener,
+            stun_mapped_addr = %mapped_addr,
+            "tcp public addr resolved without port mapping"
+        );
+    }
+
+    Ok((mapped_addr, port_mapping))
+}
+
 async fn try_start_port_mapping(
     global_ctx: &ArcGlobalCtx,
     local_listener: &url::Url,
     protocol: PortMappingProtocol,
 ) -> anyhow::Result<Option<UdpPortMappingLease>> {
-    // TODO: Replace with should_map_listener in Task 4
-    if global_ctx.get_flags().disable_upnp || !should_map_udp_listener(local_listener) {
+    if global_ctx.get_flags().disable_upnp || !should_map_listener(local_listener) {
         return Ok(None);
     }
 
@@ -845,6 +907,23 @@ fn should_map_udp_listener(local_listener: &url::Url) -> bool {
     host.is_unspecified() || host.is_private() || host.is_link_local()
 }
 
+fn should_map_listener(local_listener: &url::Url) -> bool {
+    let scheme = local_listener.scheme();
+    if scheme != "udp" && scheme != "tcp" {
+        return false;
+    }
+
+    let Some(host) = listener_ipv4_host(local_listener) else {
+        return false;
+    };
+
+    if host.is_loopback() || host.is_broadcast() {
+        return false;
+    }
+
+    host.is_unspecified() || host.is_private() || host.is_link_local()
+}
+
 fn listener_ipv4_host(local_listener: &url::Url) -> Option<Ipv4Addr> {
     local_listener.host_str()?.parse().ok()
 }
@@ -937,5 +1016,15 @@ mod tests {
         assert!(!super::should_map_udp_listener(
             &"tcp://0.0.0.0:11010".parse().unwrap()
         ));
+    }
+
+    #[test]
+    fn tcp_mapping_requires_private_or_unspecified_ipv4_listener() {
+        assert!(super::should_map_listener(&"tcp://0.0.0.0:11010".parse().unwrap()));
+        assert!(super::should_map_listener(&"tcp://192.168.1.10:11010".parse().unwrap()));
+        assert!(!super::should_map_listener(&"tcp://127.0.0.1:11010".parse().unwrap()));
+        assert!(!super::should_map_listener(&"tcp://8.8.8.8:11010".parse().unwrap()));
+        assert!(super::should_map_listener(&"udp://0.0.0.0:11010".parse().unwrap()));
+        assert!(!super::should_map_listener(&"wg://0.0.0.0:11010".parse().unwrap()));
     }
 }
