@@ -1,3 +1,5 @@
+#![cfg(feature = "cli")]
+
 use std::{
     collections::{BTreeMap, HashMap},
     ffi::OsString,
