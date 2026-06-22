@@ -77,10 +77,9 @@ export const pbjsonParseNetworkMeta = (json: any): NetworkMeta =>
 
 export function pbjsonSerializeNetworkConfig(config: NetworkConfig): any {
   const inst = proto.api.manage.NetworkConfig.fromObject(config)
-  // defaults:false omits fields whose value equals the proto3 default
-  // (false/0/""/[]).  This is safe because proto3 defines absent == default:
-  // the backend treats a missing "dhcp" key exactly the same as "dhcp":false.
-  return proto.api.manage.NetworkConfig.toObject(inst, { enums: String, longs: String, defaults: false })
+  // Keep explicit empty repeated fields. The backend uses empty lists to clear
+  // persisted values such as peer_urls when a network is saved or disabled.
+  return proto.api.manage.NetworkConfig.toObject(inst, { enums: String, longs: String, defaults: false, arrays: true })
 }
 
 // ==========================================================================
@@ -89,6 +88,41 @@ export function pbjsonSerializeNetworkConfig(config: NetworkConfig): any {
 
 function cleanPeerUrls(urls: string[] | undefined): string[] {
   return (urls ?? []).map((url) => url.trim()).filter((url) => url.length > 0)
+}
+
+function normalizeAclRule(rule: AclRule): AclRule {
+  return {
+    ...rule,
+    ports: rule.ports ?? [],
+    source_ips: rule.source_ips ?? [],
+    destination_ips: rule.destination_ips ?? [],
+    source_ports: rule.source_ports ?? [],
+    source_groups: rule.source_groups ?? [],
+    destination_groups: rule.destination_groups ?? [],
+  }
+}
+
+function normalizeAcl(acl: Acl | undefined): Acl | undefined {
+  if (!acl) {
+    return undefined
+  }
+
+  const aclV1 = acl.acl_v1 ?? { chains: [], group: { declares: [], members: [] } }
+  return {
+    ...acl,
+    acl_v1: {
+      ...aclV1,
+      chains: (aclV1.chains ?? []).map((chain) => ({
+        ...chain,
+        rules: (chain.rules ?? []).map(normalizeAclRule),
+      })),
+      group: {
+        ...aclV1.group,
+        declares: aclV1.group?.declares ?? [],
+        members: aclV1.group?.members ?? [],
+      },
+    },
+  }
 }
 
 export function DEFAULT_NETWORK_CONFIG(): NetworkConfig {
@@ -124,15 +158,20 @@ export function DEFAULT_NETWORK_CONFIG(): NetworkConfig {
 }
 
 export function normalizeNetworkConfig(config: NetworkConfig): NetworkConfig {
-  const normalized: NetworkConfig = { ...config, peer_urls: cleanPeerUrls(config.peer_urls) }
-  const publicServerUrl = (normalized.public_server_url ?? '').trim()
-  switch (normalized.networking_method) {
-    case NetworkingMethod.PublicServer: normalized.peer_urls = publicServerUrl ? [publicServerUrl] : []; break
-    case NetworkingMethod.Manual: break
-    default: normalized.peer_urls = []; break
+  const normalized: NetworkConfig = {
+    ...config,
+    networking_method: NetworkingMethod.Manual,
+    public_server_url: '',
+    peer_urls: cleanPeerUrls(config.peer_urls),
+    proxy_cidrs: config.proxy_cidrs ?? [],
+    listener_urls: config.listener_urls ?? [],
+    relay_network_whitelist: config.relay_network_whitelist ?? [],
+    routes: config.routes ?? [],
+    exit_nodes: config.exit_nodes ?? [],
+    mapped_listeners: config.mapped_listeners ?? [],
+    port_forwards: config.port_forwards ?? [],
+    acl: normalizeAcl(config.acl),
   }
-  normalized.networking_method = NetworkingMethod.Manual
-  normalized.public_server_url = ''
   return normalized
 }
 

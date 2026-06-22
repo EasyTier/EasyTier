@@ -18,6 +18,12 @@ const editingGroupIndex = ref(-1)
 const showGroupDialog = ref(false)
 const oldGroupName = ref('')
 
+function ensureGroupLists(): Required<GroupInfo> {
+  group.value.declares ??= []
+  group.value.members ??= []
+  return group.value as Required<GroupInfo>
+}
+
 function addGroup() {
   editingGroupIndex.value = -1
   editingGroup.value = {
@@ -29,30 +35,32 @@ function addGroup() {
 }
 
 function editGroup(index: number) {
+  const groupInfo = ensureGroupLists()
   editingGroupIndex.value = index
-  editingGroup.value = JSON.parse(JSON.stringify(group.value.declares![index]))
+  editingGroup.value = JSON.parse(JSON.stringify(groupInfo.declares[index]))
   oldGroupName.value = editingGroup.value?.group_name || ''
   showGroupDialog.value = true
 }
 
 function deleteGroup(index: number) {
-  group.value.declares!.splice(index, 1)
+  ensureGroupLists().declares.splice(index, 1)
 }
 
 function saveGroup() {
   if (!editingGroup.value) return
+  const groupInfo = ensureGroupLists()
   const newName = editingGroup.value.group_name
 
   if (editingGroupIndex.value === -1) {
-    group.value.declares!.push(editingGroup.value)
+    groupInfo.declares.push(editingGroup.value)
   } else {
     if (oldGroupName.value && newName && oldGroupName.value !== newName) {
       // Sync in members
-      group.value.members = (group.value.members ?? []).map(m => m === oldGroupName.value ? newName : m)
+      groupInfo.members = groupInfo.members.map(m => m === oldGroupName.value ? newName : m)
       // Notify parent to sync in rules
       emit('rename-group', { oldName: oldGroupName.value, newName })
     }
-    group.value.declares![editingGroupIndex.value] = editingGroup.value
+    groupInfo.declares[editingGroupIndex.value] = editingGroup.value
   }
   showGroupDialog.value = false
 }

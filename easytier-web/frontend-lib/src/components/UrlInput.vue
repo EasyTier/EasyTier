@@ -68,6 +68,9 @@ const buildUrlValue = (value: { proto: string, host: string, port: number | null
     const proto = value.proto || 'tcp'
     const rawHost = (value.host ?? '').trim()
     const host = rawHost || (forceDefaultHost ? defaultHost : '')
+    if (!host && value.port !== null && props.protos[proto] !== 0) {
+        return `${proto}://:${value.port}`
+    }
     if (!host) {
         return null
     }

@@ -25,6 +25,7 @@
     "chart.js": "^4.5.0",
     "floating-vue": "^5.2",
     "ip-num": "1.5.1",
+    "long": "^5.3.2",
     "primeicons": "^7.0.0",
     "protobufjs": "^8.6.4",
     "tailwindcss-primeui": "^0.3.4",

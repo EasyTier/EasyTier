@@ -2,7 +2,7 @@
 import { Button, Menu, Tab, TabList, TabPanel, TabPanels, Tabs } from 'primevue'
 import { computed, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { Acl, AclAction, AclChainType } from '../../types/network'
+import { Acl, AclAction, AclChain, AclChainType, GroupInfo } from '../../types/network'
 import AclChainEditor from './AclChainEditor.vue'
 import AclGroupEditor from './AclGroupEditor.vue'
 
@@ -19,10 +19,22 @@ const addMenuModel = ref([
   { label: () => t('acl.forward'), command: () => addChain(AclChainType.Forward) },
 ])
 
-function addChain(type: AclChainType) {
+function ensureAclV1(): { chains: AclChain[], group: GroupInfo } {
   if (!acl.value.acl_v1) {
     acl.value.acl_v1 = { chains: [], group: { declares: [], members: [] } }
   }
+  acl.value.acl_v1.chains ??= []
+  acl.value.acl_v1.group ??= { declares: [], members: [] }
+  acl.value.acl_v1.group.declares ??= []
+  acl.value.acl_v1.group.members ??= []
+  return {
+    chains: acl.value.acl_v1.chains,
+    group: acl.value.acl_v1.group,
+  }
+}
+
+function addChain(type: AclChainType) {
+  const aclV1 = ensureAclV1()
 
   let defaultName = ''
   switch (type) {
@@ -31,7 +43,7 @@ function addChain(type: AclChainType) {
     case AclChainType.Forward: defaultName = 'Forward'; break;
   }
 
-  acl.value.acl_v1!.chains!.push({
+  aclV1.chains.push({
     name: defaultName,
     chain_type: type,
     description: '',
@@ -40,24 +52,24 @@ function addChain(type: AclChainType) {
     default_action: AclAction.Allow
   })
 
-  activeTab.value = acl.value.acl_v1!.chains!.length - 1
+  activeTab.value = aclV1.chains.length - 1
 }
 
 function removeChain(index: number) {
   if (confirm(t('acl.delete_chain_confirm'))) {
-    acl.value.acl_v1?.chains!.splice(index, 1)
-    if (activeTab.value >= (acl.value.acl_v1?.chains!.length || 0)) {
-      activeTab.value = Math.max(0, (acl.value.acl_v1?.chains!.length || 0))
+    const chains = ensureAclV1().chains
+    chains.splice(index, 1)
+    if (activeTab.value >= chains.length) {
+      activeTab.value = Math.max(0, chains.length)
     }
   }
 }
 
 function handleRenameGroup({ oldName, newName }: { oldName: string, newName: string }) {
-  if (!acl.value.acl_v1) return
-  acl.value.acl_v1!.chains!.forEach(chain => {
-    chain.rules!.forEach(rule => {
-      rule.source_groups = rule.source_groups!.map(g => g === oldName ? newName : g)
-      rule.destination_groups = rule.destination_groups!.map(g => g === oldName ? newName : g)
+  ensureAclV1().chains.forEach(chain => {
+    (chain.rules ?? []).forEach(rule => {
+      rule.source_groups = (rule.source_groups ?? []).map(g => g === oldName ? newName : g)
+      rule.destination_groups = (rule.destination_groups ?? []).map(g => g === oldName ? newName : g)
     })
   })
 }

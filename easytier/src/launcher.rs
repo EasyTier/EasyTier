@@ -1508,4 +1508,23 @@ mod tests {
 
         Ok(())
     }
+
+    #[test]
+    fn test_network_config_disable_upnp_dumps_flag() -> Result<(), anyhow::Error> {
+        let config = super::NetworkConfig {
+            networking_method: Some(super::NetworkingMethod::Manual as i32),
+            disable_upnp: Some(true),
+            ..Default::default()
+        };
+
+        let dumped = config.gen_config()?.dump();
+
+        assert!(
+            dumped.contains("disable_upnp = true"),
+            "generated TOML should include disable_upnp flag, got:\n{}",
+            dumped
+        );
+
+        Ok(())
+    }
 }

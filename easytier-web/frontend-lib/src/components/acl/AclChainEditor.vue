@@ -13,11 +13,16 @@ const chain = defineModel<AclChain>({ required: true })
 
 const { t } = useI18n()
 
-watch(() => chain.value.rules!, (newRules) => {
+function ensureRules() {
+  chain.value.rules ??= []
+  return chain.value.rules
+}
+
+watch(() => chain.value.rules, (newRules) => {
   if (!newRules) return
   const isSorted = newRules.every((rule, i) => i === 0 || (rule.priority || 0) <= (newRules[i - 1].priority || 0))
   if (!isSorted) {
-    chain.value.rules!.sort((a, b) => (b.priority || 0) - (a.priority || 0))
+    ensureRules().sort((a, b) => (b.priority || 0) - (a.priority || 0))
   }
 }, { deep: true, immediate: true })
 
@@ -56,11 +61,12 @@ function getActionLabel(action: AclAction) {
 }
 
 function addRule() {
+  const rules = ensureRules()
   editingRuleIndex.value = -1
   editingRule.value = {
     name: '',
     description: '',
-    priority: chain.value.rules!.length,
+    priority: rules.length,
     enabled: true,
     protocol: AclProtocol.Any,
     ports: [],
@@ -78,29 +84,31 @@ function addRule() {
 }
 
 function editRule(index: number) {
+  const rules = ensureRules()
   editingRuleIndex.value = index
-  editingRule.value = JSON.parse(JSON.stringify(chain.value.rules![index]))
+  editingRule.value = JSON.parse(JSON.stringify(rules[index]))
   showRuleDialog.value = true
 }
 
 function deleteRule(index: number) {
-  chain.value.rules!.splice(index, 1)
+  ensureRules().splice(index, 1)
 }
 
 function saveRule(rule: AclRule) {
+  const rules = ensureRules()
   if (editingRuleIndex.value === -1) {
-    chain.value.rules!.push(rule)
+    rules.push(rule)
   } else {
-    chain.value.rules![editingRuleIndex.value] = rule
+    rules[editingRuleIndex.value] = rule
   }
-  chain.value.rules!.sort((a, b) => (b.priority || 0) - (a.priority || 0))
+  rules.sort((a, b) => (b.priority || 0) - (a.priority || 0))
 }
 
 function onRowReorder(event: any) {
   chain.value.rules! = event.value
   // Update priorities based on new order (higher priority at top)
-  chain.value.rules!.forEach((rule, index) => {
-    rule.priority = chain.value.rules!.length - index - 1
+  ensureRules().forEach((rule, index, rules) => {
+    rule.priority = rules.length - index - 1
   })
 }
 </script>

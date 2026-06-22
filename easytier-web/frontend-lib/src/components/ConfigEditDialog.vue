@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, ref, watch } from 'vue';
+import { nextTick, onMounted, ref, watch } from 'vue';
 import { NetworkConfig } from '../types/network';
 import { Divider, Button, Dialog, Textarea } from 'primevue'
 import { useI18n } from 'vue-i18n'
@@ -26,44 +26,39 @@ const curNetwork = defineModel('curNetwork', {
     required: true,
 })
 
-const visible = defineModel('visible', {
-    type: Boolean,
-    default: false,
-})
-watch([visible, curNetwork], async ([newVisible, newCurNetwork]) => {
-    if (!newVisible) {
+const refreshTomlConfig = async (config: NetworkConfig | undefined) => {
+    if (!config) {
         tomlConfig.value = '';
         return;
     }
-    if (!newCurNetwork) {
-        tomlConfig.value = '';
-        return;
-    }
-    const config = newCurNetwork;
+
+    await nextTick();
+    const configSnapshot = JSON.parse(JSON.stringify(config)) as NetworkConfig;
     try {
         errorMessage.value = '';
-        tomlConfig.value = await props.generateConfig(config);
+        tomlConfig.value = await props.generateConfig(configSnapshot);
     } catch (e) {
         errorMessage.value = 'Failed to generate config: ' + (e instanceof Error ? e.message : String(e));
         tomlConfig.value = '';
     }
+}
+
+const visible = defineModel('visible', {
+    type: Boolean,
+    default: false,
+})
+watch([visible, () => curNetwork.value?.instance_id], async ([newVisible]) => {
+    if (!newVisible) {
+        tomlConfig.value = '';
+        return;
+    }
+    await refreshTomlConfig(curNetwork.value);
 })
 onMounted(async () => {
     if (!visible.value) {
         return;
     }
-    if (!curNetwork.value) {
-        tomlConfig.value = '';
-        return;
-    }
-    const config = curNetwork.value;
-    try {
-        tomlConfig.value = await props.generateConfig(config);
-        errorMessage.value = '';
-    } catch (e) {
-        errorMessage.value = 'Failed to generate config: ' + (e instanceof Error ? e.message : String(e));
-        tomlConfig.value = '';
-    }
+    await refreshTomlConfig(curNetwork.value);
 });
 
 const handleConfigSave = async () => {

@@ -112,22 +112,29 @@ const editingPortForward = ref(false);
 const editingPortForwardIndex = ref(-1);
 const editingPortForwardData = ref();
 
+function ensurePortForwards() {
+  curNetwork.value.port_forwards ??= []
+  return curNetwork.value.port_forwards
+}
+
 function openPortForwardEditor(index: number) {
+  const portForwards = ensurePortForwards()
   editingPortForwardIndex.value = index;
   // deep copy
-  editingPortForwardData.value = JSON.parse(JSON.stringify(curNetwork.value.port_forwards![index]));
+  editingPortForwardData.value = JSON.parse(JSON.stringify(portForwards[index]));
   editingPortForward.value = true;
 }
 
 function addPortForward() {
-  addRow(curNetwork.value.port_forwards!)
+  const portForwards = ensurePortForwards()
+  addRow(portForwards)
   if (isCompact.value) {
-    openPortForwardEditor(curNetwork.value.port_forwards!.length - 1)
+    openPortForwardEditor(portForwards.length - 1)
   }
 }
 
 function savePortForward() {
-  curNetwork.value.port_forwards![editingPortForwardIndex.value] = editingPortForwardData.value;
+  ensurePortForwards()[editingPortForwardIndex.value] = editingPortForwardData.value;
   editingPortForward.value = false;
 }
 

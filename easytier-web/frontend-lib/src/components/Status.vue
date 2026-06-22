@@ -44,13 +44,20 @@ function resolveObjPath(path: string, obj = globalThis, separator = '.') {
   return properties.reduce((prev, curr) => prev?.[curr], obj)
 }
 
+// Backend pbjson can carry uint64 stats such as latency_us/tx_bytes as strings.
+// Convert before summing, otherwise JS '+' concatenates strings and inflates values.
+function numericStat(value: unknown): number {
+  const numericValue = typeof value === 'number' ? value : typeof value === 'string' ? Number(value) : 0
+  return Number.isFinite(numericValue) ? numericValue : 0
+}
+
 function statsCommon(info: any, field: string): number | undefined {
   if (!info.peer)
     return undefined
 
   const conns = info.peer!.conns
   return conns.reduce((acc: number, conn: any) => {
-    return acc + resolveObjPath(field, conn)
+    return acc + numericStat(resolveObjPath(field, conn))
   }, 0)
 }
 
@@ -78,7 +85,10 @@ function latencyMs(info: PeerRoutePair) {
   let lat_us_sum = statsCommon(info, 'stats.latency_us')
   if (lat_us_sum === undefined)
     return ''
-  lat_us_sum = lat_us_sum / 1000 / info.peer!.conns!.length
+  const connCount = info.peer?.conns?.length ?? 0
+  if (connCount === 0)
+    return ''
+  lat_us_sum = lat_us_sum / 1000 / connCount
   return `${lat_us_sum % 1 > 0 ? Math.round(lat_us_sum) + 1 : Math.round(lat_us_sum)}ms`
 }
 

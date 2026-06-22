@@ -10,6 +10,7 @@ use ariadne::{CharSet, Config as AriadneConfig, IndexType, Label, Report, Report
 use base64::{Engine as _, prelude::BASE64_STANDARD};
 use clap::ValueEnum;
 use clap::builder::PossibleValue;
+use prost_reflect::{Kind, ReflectMessage, Value as ReflectValue};
 use serde::{Deserialize, Serialize};
 use strum::{Display, EnumString, VariantArray};
 use tokio::io::AsyncReadExt as _;
@@ -695,6 +696,39 @@ impl TomlConfigLoader {
         merged_hashmap.extend(flags_hashmap);
         serde_json::from_value(serde_json::Value::Object(merged_hashmap))
     }
+
+    fn reflect_value_to_json(value: &ReflectValue, kind: &Kind) -> Option<serde_json::Value> {
+        match (value, kind) {
+            (ReflectValue::Bool(value), _) => Some(serde_json::Value::Bool(*value)),
+            (ReflectValue::I32(value), _) => Some((*value).into()),
+            (ReflectValue::I64(value), _) => Some(value.to_string().into()),
+            (ReflectValue::U32(value), _) => Some((*value).into()),
+            (ReflectValue::U64(value), _) => Some(value.to_string().into()),
+            (ReflectValue::F32(value), _) => {
+                serde_json::Number::from_f64((*value).into()).map(serde_json::Value::Number)
+            }
+            (ReflectValue::F64(value), _) => {
+                serde_json::Number::from_f64(*value).map(serde_json::Value::Number)
+            }
+            (ReflectValue::String(value), _) => Some(value.clone().into()),
+            (ReflectValue::Bytes(value), _) => Some(BASE64_STANDARD.encode(value).into()),
+            (ReflectValue::EnumNumber(value), Kind::Enum(enum_desc)) => {
+                if let Some(enum_value) = enum_desc.get_value(*value) {
+                    Some(enum_value.name().into())
+                } else {
+                    Some((*value).into())
+                }
+            }
+            (ReflectValue::List(values), _) => Some(
+                values
+                    .iter()
+                    .filter_map(|value| Self::reflect_value_to_json(value, kind))
+                    .collect::<Vec<_>>()
+                    .into(),
+            ),
+            _ => None,
+        }
+    }
 }
 
 impl ConfigLoader for TomlConfigLoader {
@@ -1093,22 +1127,20 @@ impl ConfigLoader for TomlConfigLoader {
     }
 
     fn dump(&self) -> String {
-        let default_flags_json = serde_json::to_string(&gen_default_flags()).unwrap();
-        let default_flags_hashmap =
-            serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(&default_flags_json)
-                .unwrap();
-
-        let cur_flags_json = serde_json::to_string(&self.get_flags()).unwrap();
-        let cur_flags_hashmap =
-            serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(&cur_flags_json)
-                .unwrap();
-
+        let default_flags = gen_default_flags().transcode_to_dynamic();
+        let cur_flags = self.get_flags().transcode_to_dynamic();
         let mut flag_map: serde_json::Map<String, serde_json::Value> = Default::default();
-        for (key, value) in default_flags_hashmap {
-            if let Some(v) = cur_flags_hashmap.get(&key)
-                && *v != value
+        for field in cur_flags.descriptor().fields() {
+            let cur_value = cur_flags.get_field(&field);
+            let default_value = default_flags.get_field(&field);
+            let value_differs = cur_value.as_ref() != default_value.as_ref();
+            let presence_differs = field.supports_presence()
+                && cur_flags.has_field(&field) != default_flags.has_field(&field);
+
+            if (value_differs || presence_differs)
+                && let Some(value) = Self::reflect_value_to_json(cur_value.as_ref(), &field.kind())
             {
-                flag_map.insert(key, v.clone());
+                flag_map.insert(field.name().to_string(), value.clone());
             }
         }
 
@@ -1458,6 +1490,32 @@ socket_mark = 66
             ..cfg.get_flags()
         });
         assert_eq!(cfg.get_flags().socket_mark, None);
+    }
+
+    #[test]
+    fn dump_preserves_flags_changed_from_default_true_to_false() {
+        let cfg = TomlConfigLoader::new_from_str(
+            r#"
+[network_identity]
+network_name = "n"
+network_secret = "s"
+"#,
+        )
+        .unwrap();
+
+        let mut flags = cfg.get_flags();
+        flags.enable_encryption = false;
+        cfg.set_flags(flags);
+
+        let dumped = cfg.dump();
+        assert!(
+            dumped.contains("enable_encryption = false"),
+            "dumped TOML should include false value for default-true flag:\n{}",
+            dumped
+        );
+
+        let reparsed = TomlConfigLoader::new_from_str(&dumped).unwrap();
+        assert!(!reparsed.get_flags().enable_encryption);
     }
 
     #[test]
