@@ -1,5 +1,6 @@
 import { UUID } from './utils';
-import { NetworkConfig, NetworkInstanceRunningInfo } from '../types/network';
+import { NetworkConfig, NetworkInstanceRunningInfo, NetworkMeta } from '../types/network';
+export type { NetworkMeta };
 
 export interface ValidateConfigResponse {
     toml_config: string;
@@ -42,11 +43,6 @@ export namespace ConfigFilePermission {
     export function isDeletable(perm: Flags): boolean {
         return !hasPermission(perm, NO_DELETE);
     }
-}
-
-export interface NetworkMeta {
-    network_name: string;
-    config_permission: ConfigFilePermission.Flags;
 }
 
 export interface GetNetworkMetasResponse {

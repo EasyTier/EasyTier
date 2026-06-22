@@ -13,11 +13,11 @@ const chain = defineModel<AclChain>({ required: true })
 
 const { t } = useI18n()
 
-watch(() => chain.value.rules, (newRules) => {
+watch(() => chain.value.rules!, (newRules) => {
   if (!newRules) return
   const isSorted = newRules.every((rule, i) => i === 0 || (rule.priority || 0) <= (newRules[i - 1].priority || 0))
   if (!isSorted) {
-    chain.value.rules.sort((a, b) => (b.priority || 0) - (a.priority || 0))
+    chain.value.rules!.sort((a, b) => (b.priority || 0) - (a.priority || 0))
   }
 }, { deep: true, immediate: true })
 
@@ -60,7 +60,7 @@ function addRule() {
   editingRule.value = {
     name: '',
     description: '',
-    priority: chain.value.rules.length,
+    priority: chain.value.rules!.length,
     enabled: true,
     protocol: AclProtocol.Any,
     ports: [],
@@ -79,28 +79,28 @@ function addRule() {
 
 function editRule(index: number) {
   editingRuleIndex.value = index
-  editingRule.value = JSON.parse(JSON.stringify(chain.value.rules[index]))
+  editingRule.value = JSON.parse(JSON.stringify(chain.value.rules![index]))
   showRuleDialog.value = true
 }
 
 function deleteRule(index: number) {
-  chain.value.rules.splice(index, 1)
+  chain.value.rules!.splice(index, 1)
 }
 
 function saveRule(rule: AclRule) {
   if (editingRuleIndex.value === -1) {
-    chain.value.rules.push(rule)
+    chain.value.rules!.push(rule)
   } else {
-    chain.value.rules[editingRuleIndex.value] = rule
+    chain.value.rules![editingRuleIndex.value] = rule
   }
-  chain.value.rules.sort((a, b) => (b.priority || 0) - (a.priority || 0))
+  chain.value.rules!.sort((a, b) => (b.priority || 0) - (a.priority || 0))
 }
 
 function onRowReorder(event: any) {
-  chain.value.rules = event.value
+  chain.value.rules! = event.value
   // Update priorities based on new order (higher priority at top)
-  chain.value.rules.forEach((rule, index) => {
-    rule.priority = chain.value.rules.length - index - 1
+  chain.value.rules!.forEach((rule, index) => {
+    rule.priority = chain.value.rules!.length - index - 1
   })
 }
 </script>
@@ -143,7 +143,7 @@ function onRowReorder(event: any) {
       <Button icon="pi pi-plus" :label="t('acl.add_rule')" severity="success" size="small" @click="addRule" />
     </div>
 
-    <DataTable :value="chain.rules" @row-reorder="onRowReorder" responsiveLayout="scroll">
+    <DataTable :value="chain.rules!" @row-reorder="onRowReorder" responsiveLayout="scroll">
       <Column rowReorder headerStyle="width: 3rem" />
       <Column field="enabled" :header="t('acl.rule.enabled')">
         <template #body="{ data }">

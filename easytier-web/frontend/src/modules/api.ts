@@ -218,7 +218,9 @@ class WebRemoteClient implements Api.RemoteClient {
     }
     async get_network_info(inst_id: string): Promise<NetworkTypes.NetworkInstanceRunningInfo | undefined> {
         const response = await this.client.get<any, Api.CollectNetworkInfoResponse>('/machines/' + this.machine_id + '/networks/info/' + inst_id);
-        return response.info.map[inst_id];
+        const raw = response.info.map[inst_id];
+        if (!raw) return undefined;
+        return NetworkTypes.pbjsonParseNetworkInstanceRunningInfo(raw);
     }
     async list_network_instance_ids(): Promise<Api.ListNetworkInstanceIdResponse> {
         const response = await this.client.get<any, ListNetworkInstanceIdResponse>('/machines/' + this.machine_id + '/networks');
@@ -238,8 +240,9 @@ class WebRemoteClient implements Api.RemoteClient {
         });
     }
     async get_network_config(inst_id: string): Promise<NetworkTypes.NetworkConfig> {
-        const response = await this.client.get<any, NetworkTypes.NetworkConfig>('/machines/' + this.machine_id + '/networks/config/' + inst_id);
-        return NetworkTypes.normalizeNetworkConfig(response);
+        const response = await this.client.get<any, any>('/machines/' + this.machine_id + '/networks/config/' + inst_id);
+        const parsed = NetworkTypes.pbjsonParseNetworkConfig(response);
+        return NetworkTypes.normalizeNetworkConfig(parsed);
     }
     async generate_config(config: NetworkTypes.NetworkConfig): Promise<Api.GenerateConfigResponse> {
         try {
@@ -258,7 +261,8 @@ class WebRemoteClient implements Api.RemoteClient {
         try {
             const response = await this.client.post<any, ParseConfigResponse>('/parse-config', { toml_config });
             if (response.config) {
-                response.config = NetworkTypes.normalizeNetworkConfig(response.config);
+                const parsed = NetworkTypes.pbjsonParseNetworkConfig(response.config);
+                response.config = NetworkTypes.normalizeNetworkConfig(parsed);
             }
             return response;
         } catch (error) {
@@ -269,10 +273,19 @@ class WebRemoteClient implements Api.RemoteClient {
         }
     }
     async get_network_metas(instance_ids: string[]): Promise<Api.GetNetworkMetasResponse> {
-        const response = await this.client.post<any, Api.GetNetworkMetasResponse>(`/machines/${this.machine_id}/networks/metas`, {
+        const response = await this.client.post<any, { metas: Record<string, any> }>(`/machines/${this.machine_id}/networks/metas`, {
             instance_ids: instance_ids
         });
-        return response;
+        const parsedMetas: Record<string, NetworkTypes.NetworkMeta> = {};
+        for (const [key, rawMeta] of Object.entries(response.metas)) {
+            try {
+                parsedMetas[key] = NetworkTypes.pbjsonParseNetworkMeta(rawMeta);
+            } catch (e) {
+                console.error(`Failed to parse NetworkMeta for ${key}:`, e)
+                // skip corrupt entry, continue parsing others
+            }
+        }
+        return { metas: parsedMetas };
     }
 }
 

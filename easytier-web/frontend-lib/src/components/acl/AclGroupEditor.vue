@@ -30,13 +30,13 @@ function addGroup() {
 
 function editGroup(index: number) {
   editingGroupIndex.value = index
-  editingGroup.value = JSON.parse(JSON.stringify(group.value.declares[index]))
+  editingGroup.value = JSON.parse(JSON.stringify(group.value.declares![index]))
   oldGroupName.value = editingGroup.value?.group_name || ''
   showGroupDialog.value = true
 }
 
 function deleteGroup(index: number) {
-  group.value.declares.splice(index, 1)
+  group.value.declares!.splice(index, 1)
 }
 
 function saveGroup() {
@@ -44,15 +44,15 @@ function saveGroup() {
   const newName = editingGroup.value.group_name
 
   if (editingGroupIndex.value === -1) {
-    group.value.declares.push(editingGroup.value)
+    group.value.declares!.push(editingGroup.value)
   } else {
-    if (oldGroupName.value && oldGroupName.value !== newName) {
+    if (oldGroupName.value && newName && oldGroupName.value !== newName) {
       // Sync in members
-      group.value.members = group.value.members.map(m => m === oldGroupName.value ? newName : m)
+      group.value.members = (group.value.members ?? []).map(m => m === oldGroupName.value ? newName : m)
       // Notify parent to sync in rules
       emit('rename-group', { oldName: oldGroupName.value, newName })
     }
-    group.value.declares[editingGroupIndex.value] = editingGroup.value
+    group.value.declares![editingGroupIndex.value] = editingGroup.value
   }
   showGroupDialog.value = false
 }

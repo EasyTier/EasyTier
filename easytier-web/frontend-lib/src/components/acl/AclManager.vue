@@ -31,7 +31,7 @@ function addChain(type: AclChainType) {
     case AclChainType.Forward: defaultName = 'Forward'; break;
   }
 
-  acl.value.acl_v1.chains.push({
+  acl.value.acl_v1!.chains!.push({
     name: defaultName,
     chain_type: type,
     description: '',
@@ -40,30 +40,30 @@ function addChain(type: AclChainType) {
     default_action: AclAction.Allow
   })
 
-  activeTab.value = acl.value.acl_v1.chains.length - 1
+  activeTab.value = acl.value.acl_v1!.chains!.length - 1
 }
 
 function removeChain(index: number) {
   if (confirm(t('acl.delete_chain_confirm'))) {
-    acl.value.acl_v1?.chains.splice(index, 1)
-    if (activeTab.value >= (acl.value.acl_v1?.chains.length || 0)) {
-      activeTab.value = Math.max(0, (acl.value.acl_v1?.chains.length || 0))
+    acl.value.acl_v1?.chains!.splice(index, 1)
+    if (activeTab.value >= (acl.value.acl_v1?.chains!.length || 0)) {
+      activeTab.value = Math.max(0, (acl.value.acl_v1?.chains!.length || 0))
     }
   }
 }
 
 function handleRenameGroup({ oldName, newName }: { oldName: string, newName: string }) {
   if (!acl.value.acl_v1) return
-  acl.value.acl_v1.chains.forEach(chain => {
-    chain.rules.forEach(rule => {
-      rule.source_groups = rule.source_groups.map(g => g === oldName ? newName : g)
-      rule.destination_groups = rule.destination_groups.map(g => g === oldName ? newName : g)
+  acl.value.acl_v1!.chains!.forEach(chain => {
+    chain.rules!.forEach(rule => {
+      rule.source_groups = rule.source_groups!.map(g => g === oldName ? newName : g)
+      rule.destination_groups = rule.destination_groups!.map(g => g === oldName ? newName : g)
     })
   })
 }
 
 const groupNames = computed(() => {
-  return acl.value.acl_v1?.group?.declares.map(g => g.group_name) || []
+  return acl.value.acl_v1?.group?.declares?.map(g => g.group_name!) || []
 })
 
 const tabs = computed(() => {
@@ -124,8 +124,8 @@ const tabs = computed(() => {
           </div>
 
           <!-- Rule Chains -->
-          <div v-if="tab.type === 'chain' && acl.acl_v1 && acl.acl_v1.chains[tab.index]" class="py-4">
-            <AclChainEditor v-model="acl.acl_v1.chains[tab.index]" :group-names="groupNames" />
+          <div v-if="tab.type === 'chain' && acl.acl_v1 && acl.acl_v1!.chains![tab.index]" class="py-4">
+            <AclChainEditor v-model="acl.acl_v1!.chains![tab.index]" :group-names="groupNames" />
           </div>
 
           <!-- Group Management -->

@@ -212,23 +212,23 @@ const saveAndRunNewNetwork = async (config?: NetworkTypes.NetworkConfig) => {
         return;
     }
 
-    const targetInstanceId = instanceId.value ?? cfg.instance_id;
-    if (targetInstanceId && cfg.instance_id !== targetInstanceId) {
+    const targetInstanceId = instanceId.value ?? cfg.instance_id!;
+    if (targetInstanceId && cfg.instance_id! !== targetInstanceId) {
         cfg.instance_id = targetInstanceId;
     }
 
     try {
         if (networkIsDisabled.value) {
             await props.api.save_config(cfg);
-            await props.api.update_network_instance_state(cfg.instance_id, false);
+            await props.api.update_network_instance_state(cfg.instance_id!, false);
         } else {
             await props.api.run_network(cfg, currentNetworkControl.remoteSave.value);
         }
 
-        delete networkMetaCache.value[cfg.instance_id];
-        await loadNetworkMetas([cfg.instance_id]);
+        delete networkMetaCache.value[cfg.instance_id!];
+        await loadNetworkMetas([cfg.instance_id!]);
 
-        selectedInstanceId.value = { uuid: cfg.instance_id };
+        selectedInstanceId.value = { uuid: cfg.instance_id! };
         await loadNetworkInstanceIds();
         await loadCurrentNetworkInfo();
     } catch (e: any) {
@@ -247,8 +247,8 @@ const saveNetworkConfig = async () => {
     }
     await props.api.save_config(currentNetworkConfig.value);
 
-    delete networkMetaCache.value[currentNetworkConfig.value.instance_id];
-    await loadNetworkMetas([currentNetworkConfig.value.instance_id]);
+    delete networkMetaCache.value[currentNetworkConfig.value.instance_id!];
+    await loadNetworkMetas([currentNetworkConfig.value.instance_id!]);
 
     toast.add({ severity: 'success', summary: t("web.common.success"), detail: t("web.device_management.config_saved"), life: 2000 });
 }
@@ -345,7 +345,7 @@ const handleFileUpload = (event: Event) => {
             const config = resp.config;
             if (!config) return;
 
-            config.instance_id = currentNetworkConfig.value?.instance_id ?? config?.instance_id;
+            config.instance_id = currentNetworkConfig.value?.instance_id ?? config.instance_id;
             currentNetworkConfig.value = config;
             toast.add({ severity: 'success', summary: 'Import Success', detail: "Config file import success", life: 2000 });
         } catch (error) {
@@ -386,7 +386,7 @@ const syncTomlConfig = async (tomlConfig: string): Promise<void> => {
     if (!config) {
         throw new Error("Parsed config is empty");
     }
-    config.instance_id = currentNetworkConfig.value?.instance_id ?? config?.instance_id;
+    config.instance_id = currentNetworkConfig.value?.instance_id ?? config.instance_id;
     currentNetworkConfig.value = config;
 }
 

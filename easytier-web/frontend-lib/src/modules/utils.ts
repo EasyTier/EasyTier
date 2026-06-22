@@ -1,8 +1,16 @@
 import { IPv4, IPv6 } from 'ip-num/IPNumber'
 import { Ipv4Addr, Ipv4Inet, Ipv6Addr } from '../types/network'
 
+// The non-null assertions (!) on scalar fields below are safe because all
+// Ipv4Addr / Ipv6Addr data originates from pbjsonParse*() which uses
+// parse() with {defaults:true}.  Proto3 scalar defaults (0 for uint32) are
+// always filled in, so addr/part1-4 are never undefined at runtime.
+// If objects are ever manually constructed without going through parse(),
+// these assertions would silently mask missing fields — add a guard if that
+// invariant changes.
+
 export function ipv4ToString(ip: Ipv4Addr) {
-    return IPv4.fromNumber(ip.addr).toString()
+    return IPv4.fromNumber(ip.addr!).toString()
 }
 
 export function ipv4InetToString(ip: Ipv4Inet | undefined) {
@@ -14,10 +22,10 @@ export function ipv4InetToString(ip: Ipv4Inet | undefined) {
 
 export function ipv6ToString(ip: Ipv6Addr) {
     return IPv6.fromBigInt(
-        (BigInt(ip.part1) << BigInt(96))
-        + (BigInt(ip.part2) << BigInt(64))
-        + (BigInt(ip.part3) << BigInt(32))
-        + BigInt(ip.part4),
+        (BigInt(ip.part1!) << BigInt(96))
+        + (BigInt(ip.part2!) << BigInt(64))
+        + (BigInt(ip.part3!) << BigInt(32))
+        + BigInt(ip.part4!),
     )
 }
 

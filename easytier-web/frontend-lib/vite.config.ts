@@ -8,6 +8,7 @@ import ViteYaml from '@modyfi/vite-plugin-yaml';
 export default defineConfig({
   plugins: [vue(), dts({
     tsconfigPath: './tsconfig.app.json',
+    copyDtsFiles: true,
   }), ViteYaml()],
   build: {
     lib: {

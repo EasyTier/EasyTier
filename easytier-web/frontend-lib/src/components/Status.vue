@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { useTimeAgo } from '@vueuse/core'
 import { IPv4 } from 'ip-num/IPNumber'
-import { NetworkInstance, type TunnelInfo, type NodeInfo, type PeerRoutePair } from '../types/network'
+import { NetworkInstance, NatType, type TunnelInfo, type NodeInfo, type PeerRoutePair } from '../types/network'
 import { useI18n } from 'vue-i18n';
 import { computed, onMounted, onUnmounted, ref } from 'vue';
 import { ipv4InetToString, ipv4ToString, ipv6ToString } from '../modules/utils';
@@ -48,7 +48,7 @@ function statsCommon(info: any, field: string): number | undefined {
   if (!info.peer)
     return undefined
 
-  const conns = info.peer.conns
+  const conns = info.peer!.conns
   return conns.reduce((acc: number, conn: any) => {
     return acc + resolveObjPath(field, conn)
   }, 0)
@@ -78,7 +78,7 @@ function latencyMs(info: PeerRoutePair) {
   let lat_us_sum = statsCommon(info, 'stats.latency_us')
   if (lat_us_sum === undefined)
     return ''
-  lat_us_sum = lat_us_sum / 1000 / info.peer!.conns.length
+  lat_us_sum = lat_us_sum / 1000 / info.peer!.conns!.length
   return `${lat_us_sum % 1 > 0 ? Math.round(lat_us_sum) + 1 : Math.round(lat_us_sum)}ms`
 }
 
@@ -98,14 +98,14 @@ function lossRate(info: PeerRoutePair) {
 }
 
 function version(info: PeerRoutePair) {
-  return info.route.version === '' ? 'unknown' : info.route.version
+  return info.route!.version === '' ? 'unknown' : info.route!.version
 }
 
 function ipFormat(info: PeerRoutePair) {
-  const ip = info.route.ipv4_addr
+  const ip = info.route!.ipv4_addr
   if (typeof ip === 'string')
     return ip
-  return ip ? `${IPv4.fromNumber(ip.address.addr)}/${ip.network_length}` : ''
+  return ip ? `${IPv4.fromNumber(ip!.address!.addr!)}/${ip.network_length}` : ''
 }
 
 function oneTunnelProto(tunnel?: TunnelInfo): string {
@@ -125,13 +125,13 @@ function oneTunnelProto(tunnel?: TunnelInfo): string {
     }
   }
   if (isIPv6)
-    return `${tunnel.tunnel_type}6`
+    return `${tunnel.tunnel_type ?? ''}6`
   else
-    return tunnel.tunnel_type
+    return tunnel.tunnel_type ?? ''
 }
 
 function tunnelProto(info: PeerRoutePair) {
-  return [...new Set(info.peer?.conns.map(c => oneTunnelProto(c.tunnel)))].join(',')
+  return [...new Set(info.peer?.conns?.map(c => oneTunnelProto(c.tunnel)))].join(',')
 }
 
 const myNodeInfo = computed(() => {
@@ -146,22 +146,7 @@ interface Chip {
   icon: string
 }
 
-// udp nat type
-enum NatType {
-  // has NAT; but own a single public IP, port is not changed
-  Unknown = 0,
-  OpenInternet = 1,
-  NoPAT = 2,
-  FullCone = 3,
-  Restricted = 4,
-  PortRestricted = 5,
-  Symmetric = 6,
-  SymUdpFirewall = 7,
-  SymmetricEasyInc = 8,
-  SymmetricEasyDec = 9,
-};
-
-const udpNatTypeStrMap = {
+const udpNatTypeStrMap: Record<number, string> = {
   [NatType.Unknown]: 'Unknown',
   [NatType.OpenInternet]: 'Open Internet',
   [NatType.NoPAT]: 'No PAT',
@@ -206,7 +191,7 @@ const myNodeInfoChips = computed(() => {
 
   // local ipv4s
   const local_ipv4s = my_node_info.ips?.interface_ipv4s
-  for (const [idx, ip] of local_ipv4s?.entries()) {
+  for (const [idx, ip] of local_ipv4s?.entries() ?? []) {
     chips.push({
       label: `Local IPv4 ${idx}: ${ipv4ToString(ip)}`,
       icon: '',
@@ -215,7 +200,7 @@ const myNodeInfoChips = computed(() => {
 
   // local ipv6s
   const local_ipv6s = my_node_info.ips?.interface_ipv6s
-  for (const [idx, ip] of local_ipv6s?.entries()) {
+  for (const [idx, ip] of local_ipv6s?.entries() ?? []) {
     chips.push({
       label: `Local IPv6 ${idx}: ${ipv6ToString(ip)}`,
       icon: '',
@@ -226,7 +211,7 @@ const myNodeInfoChips = computed(() => {
   const public_ip = my_node_info.ips?.public_ipv4
   if (public_ip) {
     chips.push({
-      label: `Public IP: ${IPv4.fromNumber(public_ip.addr)}`,
+      label: `Public IP: ${ipv4ToString(public_ip)}`,
       icon: '',
     } as Chip)
   }
@@ -241,14 +226,14 @@ const myNodeInfoChips = computed(() => {
 
   // listeners:
   const listeners = my_node_info.listeners
-  for (const [idx, listener] of listeners?.entries()) {
+  for (const [idx, listener] of listeners?.entries() ?? []) {
     chips.push({
       label: `Listener ${idx}: ${listener.url}`,
       icon: '',
     } as Chip)
   }
 
-  const udpNatType: NatType = my_node_info.stun_info?.udp_nat_type
+  const udpNatType = my_node_info.stun_info?.udp_nat_type
   if (udpNatType !== undefined) {
     chips.push({
       label: `UDP NAT Type: ${udpNatTypeStrMap[udpNatType]}`,
@@ -342,7 +327,7 @@ function showEventLogs() {
   if (!detail)
     return
 
-  dialogContent.value = detail.events.map((event: string) => JSON.parse(event))
+  dialogContent.value = detail.events?.map((event: string) => JSON.parse(event)) ?? []
   dialogHeader.value = 'event_log'
   dialogVisible.value = true
 }
