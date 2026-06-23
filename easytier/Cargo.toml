@@ -51,7 +51,7 @@ time = "0.3"
 toml = "0.8.12"
 chrono = { version = "0.4.37", features = ["serde"] }
 
-guarden = "0.1"
+guarden = "0.2"
 
 delegate = "0.13.5"
 
@@ -91,7 +91,7 @@ rustls = { version = "0.23.0", features = [
 rcgen = { version = "0.12.1", optional = true }
 
 # for websocket
-tokio-websockets = { version = "0.13.2", optional = true, features = [
+tokio-websockets = { version = "0.13.2", git = "https://github.com/EasyTier/tokio-websockets", optional = true, features = [
     "rustls-webpki-roots",
     "client",
     "server",
@@ -134,6 +134,7 @@ prost-wkt-types = "0.7.1"
 pbjson = "0.9.0"
 
 anyhow = "1.0"
+ariadne = "0.5"
 
 url = { version = "2.5", features = ["serde"] }
 percent-encoding = "2.3.1"

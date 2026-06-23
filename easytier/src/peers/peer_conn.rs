@@ -33,7 +33,6 @@ use super::{
     peer_session::{PeerSession, PeerSessionAction},
     traffic_metrics::AggregateTrafficMetrics,
 };
-use crate::utils::BoxExt;
 use crate::{
     common::{
         PeerId,
@@ -380,9 +379,9 @@ impl PeerConn {
             session_filter,
             noise_handshake_result: None,
 
-            tunnel: Arc::new(Mutex::new(
-                guard!([mut mpsc_tunnel] mpsc_tunnel.close()).boxed(),
-            )),
+            tunnel: Arc::new(Mutex::new(Box::new(
+                guard!([mut mpsc_tunnel] mpsc_tunnel.close()),
+            ))),
             sink,
             recv: Mutex::new(Some(recv)),
             tunnel_info,
