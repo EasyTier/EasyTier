@@ -84,6 +84,13 @@ message FlagsInConfig {
   // applied via setsockopt. Requires CAP_NET_ADMIN; silently ignored on
   // non-Linux platforms.
   optional uint32 socket_mark = 43;
+
+  // PeerConn heartbeat maximum interval in seconds. 0 means default.
+  uint32 peer_conn_max_heartbeat_interval_secs = 44;
+  // Close a PeerConn after this many consecutive missed Pong responses. 0 means default.
+  uint32 peer_conn_max_missed_heartbeats = 45;
+  // Single Pong wait timeout in seconds. 0 means default.
+  uint32 peer_conn_pong_timeout_secs = 46;
 }
 
 message RpcDescriptor {

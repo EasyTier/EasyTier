@@ -242,6 +242,49 @@ watch(() => curNetwork.value, syncNormalizedNetwork, { immediate: true, deep: fa
               </div>
 
               <div class="flex flex-row gap-x-9 flex-wrap">
+                <div class="flex flex-col gap-2 basis-3/12 grow">
+                  <div class="flex">
+                    <label for="peer_conn_max_heartbeat_interval_secs">
+                      {{ t('peer_conn_max_heartbeat_interval_secs') }}
+                    </label>
+                    <span class="pi pi-question-circle ml-2 self-center"
+                      v-tooltip="t('peer_conn_max_heartbeat_interval_secs_help')"></span>
+                  </div>
+                  <InputNumber id="peer_conn_max_heartbeat_interval_secs"
+                    v-model="curNetwork.peer_conn_max_heartbeat_interval_secs"
+                    aria-describedby="peer_conn_max_heartbeat_interval_secs-help" :format="false" :allow-empty="false"
+                    :min="0" fluid />
+                </div>
+
+                <div class="flex flex-col gap-2 basis-3/12 grow">
+                  <div class="flex">
+                    <label for="peer_conn_max_missed_heartbeats">
+                      {{ t('peer_conn_max_missed_heartbeats') }}
+                    </label>
+                    <span class="pi pi-question-circle ml-2 self-center"
+                      v-tooltip="t('peer_conn_max_missed_heartbeats_help')"></span>
+                  </div>
+                  <InputNumber id="peer_conn_max_missed_heartbeats"
+                    v-model="curNetwork.peer_conn_max_missed_heartbeats"
+                    aria-describedby="peer_conn_max_missed_heartbeats-help" :format="false" :allow-empty="false"
+                    :min="0" fluid />
+                </div>
+
+                <div class="flex flex-col gap-2 basis-3/12 grow">
+                  <div class="flex">
+                    <label for="peer_conn_pong_timeout_secs">
+                      {{ t('peer_conn_pong_timeout_secs') }}
+                    </label>
+                    <span class="pi pi-question-circle ml-2 self-center"
+                      v-tooltip="t('peer_conn_pong_timeout_secs_help')"></span>
+                  </div>
+                  <InputNumber id="peer_conn_pong_timeout_secs" v-model="curNetwork.peer_conn_pong_timeout_secs"
+                    aria-describedby="peer_conn_pong_timeout_secs-help" :format="false" :allow-empty="false" :min="0"
+                    fluid />
+                </div>
+              </div>
+
+              <div class="flex flex-row gap-x-9 flex-wrap">
                 <div class="flex flex-col gap-2 basis-5/12 grow">
                   <label for="hostname">{{ t('hostname') }}</label>
                   <InputText id="hostname" v-model="curNetwork.hostname" aria-describedby="hostname-help" :format="true"

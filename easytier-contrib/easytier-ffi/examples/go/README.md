@@ -37,6 +37,9 @@ network_secret = "mysecret"
 [flags]
 no_tun = true # disable tun device to avoid permission issues.
 bind_device = false # allow loopback peers in local examples.
+peer_conn_max_heartbeat_interval_secs = 32
+peer_conn_max_missed_heartbeats = 5
+peer_conn_pong_timeout_secs = 2
 
 [[peer]]
 uri = "tcp://123.123.123.123:11010"
@@ -66,6 +69,9 @@ network_secret = "mysecret"
 [flags]
 no_tun = true
 bind_device = false
+peer_conn_max_heartbeat_interval_secs = 32
+peer_conn_max_missed_heartbeats = 5
+peer_conn_pong_timeout_secs = 2
 
 [[peer]]
 uri = "tcp://123.123.123.123:11010"

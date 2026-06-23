@@ -75,6 +75,9 @@ pub fn gen_default_flags() -> Flags {
         disable_relay_data: false,
         enable_udp_broadcast_relay: false,
         socket_mark: None,
+        peer_conn_max_heartbeat_interval_secs: 32,
+        peer_conn_max_missed_heartbeats: 5,
+        peer_conn_pong_timeout_secs: 2,
     }
 }
 

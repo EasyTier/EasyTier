@@ -273,6 +273,9 @@ p2p_only = false
 relay_all_peer_rpc = false
 disable_tcp_hole_punching = false
 disable_udp_hole_punching = false
+peer_conn_max_heartbeat_interval_secs = 32
+peer_conn_max_missed_heartbeats = 5
+peer_conn_pong_timeout_secs = 2
 
 EOF
 

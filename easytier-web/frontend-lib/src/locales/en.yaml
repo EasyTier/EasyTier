@@ -144,6 +144,15 @@ relay_all_peer_rpc_help: |
 need_p2p: Need P2P
 need_p2p_help: Ask other peers to proactively establish P2P connections to this node even when they enable lazy P2P.
 
+peer_conn_max_heartbeat_interval_secs: PeerConn Max Heartbeat Interval
+peer_conn_max_heartbeat_interval_secs_help: Maximum PeerConn heartbeat interval after backoff, in seconds. Default is 32; 0 means default.
+
+peer_conn_max_missed_heartbeats: PeerConn Max Missed Heartbeats
+peer_conn_max_missed_heartbeats_help: Close a PeerConn after this many consecutive missing Pong responses. Default is 5; 0 means default.
+
+peer_conn_pong_timeout_secs: PeerConn Pong Timeout
+peer_conn_pong_timeout_secs_help: Single Pong response wait timeout, in seconds. Default is 2; 0 means default.
+
 multi_thread: Multi Thread
 multi_thread_help: Use multi-thread runtime
 
