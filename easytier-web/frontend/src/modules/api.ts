@@ -282,7 +282,11 @@ class WebRemoteClient implements Api.RemoteClient {
                 parsedMetas[key] = NetworkTypes.pbjsonParseNetworkMeta(rawMeta);
             } catch (e) {
                 console.error(`Failed to parse NetworkMeta for ${key}:`, e)
-                // skip corrupt entry, continue parsing others
+                parsedMetas[key] = {
+                    network_name: key,
+                    instance_name: key,
+                    config_permission: 0,
+                } as NetworkTypes.NetworkMeta;
             }
         }
         return { metas: parsedMetas };

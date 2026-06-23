@@ -17,6 +17,7 @@ const editingGroup = ref<GroupIdentity | null>(null)
 const editingGroupIndex = ref(-1)
 const showGroupDialog = ref(false)
 const oldGroupName = ref('')
+const groupNameInvalid = ref(false)
 
 function ensureGroupLists(): Required<GroupInfo> {
   group.value.declares ??= []
@@ -31,6 +32,7 @@ function addGroup() {
     group_secret: '',
   }
   oldGroupName.value = ''
+  groupNameInvalid.value = false
   showGroupDialog.value = true
 }
 
@@ -39,6 +41,7 @@ function editGroup(index: number) {
   editingGroupIndex.value = index
   editingGroup.value = JSON.parse(JSON.stringify(groupInfo.declares[index]))
   oldGroupName.value = editingGroup.value?.group_name || ''
+  groupNameInvalid.value = false
   showGroupDialog.value = true
 }
 
@@ -49,12 +52,17 @@ function deleteGroup(index: number) {
 function saveGroup() {
   if (!editingGroup.value) return
   const groupInfo = ensureGroupLists()
-  const newName = editingGroup.value.group_name
+  const newName = editingGroup.value.group_name?.trim() ?? ''
+  if (!newName) {
+    groupNameInvalid.value = true
+    return
+  }
+  editingGroup.value.group_name = newName
 
   if (editingGroupIndex.value === -1) {
     groupInfo.declares.push(editingGroup.value)
   } else {
-    if (oldGroupName.value && newName && oldGroupName.value !== newName) {
+    if (oldGroupName.value && oldGroupName.value !== newName) {
       // Sync in members
       groupInfo.members = groupInfo.members.map(m => m === oldGroupName.value ? newName : m)
       // Notify parent to sync in rules
@@ -107,7 +115,8 @@ function saveGroup() {
       <div v-if="editingGroup" class="flex flex-col gap-4 pt-2">
         <div class="flex flex-col gap-2">
           <label class="font-bold">{{ t('acl.group.name') }}</label>
-          <InputText v-model="editingGroup.group_name" fluid />
+          <InputText v-model="editingGroup.group_name" fluid :invalid="groupNameInvalid"
+            @update:model-value="groupNameInvalid = false" />
         </div>
         <div class="flex flex-col gap-2">
           <label class="font-bold">{{ t('acl.group.secret') }}</label>

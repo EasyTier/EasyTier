@@ -63,7 +63,18 @@ export async function runNetworkInstance(cfg: NetworkConfig, save: boolean) {
 }
 
 export async function collectNetworkInfo(instanceId: string) {
-  return await invoke<Api.CollectNetworkInfoResponse>('collect_network_info', { instanceId })
+  const response = await invoke<Api.CollectNetworkInfoResponse>('collect_network_info', { instanceId })
+  const parsedMap = Object.fromEntries(Object.entries(response.info?.map ?? {}).map(([key, value]) => [
+    key,
+    value ? NetworkTypes.pbjsonParseNetworkInstanceRunningInfo(value) : undefined,
+  ]))
+  return {
+    ...response,
+    info: {
+      ...response.info,
+      map: parsedMap,
+    },
+  }
 }
 
 export async function setLoggingLevel(level: string) {

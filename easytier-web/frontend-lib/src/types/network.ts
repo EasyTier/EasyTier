@@ -97,15 +97,19 @@ function cleanPeerUrls(urls: string[] | undefined): string[] {
   return (urls ?? []).map((url) => url.trim()).filter((url) => url.length > 0)
 }
 
+export function ensureAclRuleLists(rule: AclRule): AclRule {
+  rule.ports ??= []
+  rule.source_ips ??= []
+  rule.destination_ips ??= []
+  rule.source_ports ??= []
+  rule.source_groups ??= []
+  rule.destination_groups ??= []
+  return rule
+}
+
 function normalizeAclRule(rule: AclRule): AclRule {
   return {
-    ...rule,
-    ports: rule.ports ?? [],
-    source_ips: rule.source_ips ?? [],
-    destination_ips: rule.destination_ips ?? [],
-    source_ports: rule.source_ports ?? [],
-    source_groups: rule.source_groups ?? [],
-    destination_groups: rule.destination_groups ?? [],
+    ...ensureAclRuleLists(rule),
   }
 }
 
@@ -165,7 +169,9 @@ export function DEFAULT_NETWORK_CONFIG(): NetworkConfig {
 }
 
 export function normalizeNetworkConfig(config: NetworkConfig): NetworkConfig {
+  const defaults = DEFAULT_NETWORK_CONFIG()
   const normalized: NetworkConfig = {
+    ...defaults,
     ...config,
     networking_method: NetworkingMethod.Manual,
     public_server_url: '',
@@ -177,7 +183,7 @@ export function normalizeNetworkConfig(config: NetworkConfig): NetworkConfig {
     exit_nodes: config.exit_nodes ?? [],
     mapped_listeners: config.mapped_listeners ?? [],
     port_forwards: config.port_forwards ?? [],
-    acl: normalizeAcl(config.acl),
+    acl: normalizeAcl(config.acl ?? defaults.acl),
   }
   return normalized
 }

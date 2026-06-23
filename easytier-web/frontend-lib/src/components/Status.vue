@@ -55,7 +55,7 @@ function statsCommon(info: any, field: string): number | undefined {
   if (!info.peer)
     return undefined
 
-  const conns = info.peer!.conns
+  const conns = info.peer.conns ?? []
   return conns.reduce((acc: number, conn: any) => {
     return acc + numericStat(resolveObjPath(field, conn))
   }, 0)
@@ -112,10 +112,14 @@ function version(info: PeerRoutePair) {
 }
 
 function ipFormat(info: PeerRoutePair) {
-  const ip = info.route!.ipv4_addr
+  const ip = info.route?.ipv4_addr
   if (typeof ip === 'string')
     return ip
-  return ip ? `${IPv4.fromNumber(ip!.address!.addr!)}/${ip.network_length}` : ''
+  const addr = ip?.address?.addr
+  const networkLength = ip?.network_length
+  return typeof addr === 'number' && typeof networkLength === 'number'
+    ? `${IPv4.fromNumber(addr)}/${networkLength}`
+    : ''
 }
 
 function oneTunnelProto(tunnel?: TunnelInfo): string {
