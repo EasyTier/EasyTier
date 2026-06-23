@@ -61,19 +61,26 @@ export type AclChainType = proto.acl.ChainType
 // 2. Pbjson conversion
 // ==========================================================================
 
-// Parse backend pbjson → typed plain object.
-// fromObject converts enum strings→numbers, toObject({defaults:true,longs:Number})
-// fills proto3 defaults and converts int64 strings→numbers.
-function parse(cls: any, json: any): any {
+// Parse backend pbjson -> typed plain object.
+// fromObject converts enum strings -> numbers; toObject converts int64 strings
+// to numbers. NetworkConfig must preserve proto optional presence so a load/save
+// roundtrip does not turn absent fields into explicit false/0/empty values.
+function parsePreservingPresence(cls: any, json: any): any {
+  return cls.toObject(cls.fromObject(json), { defaults: false, arrays: true, longs: Number })
+}
+
+// Runtime/status messages are easier for the UI to consume with proto3 scalar
+// defaults filled in.
+function parseWithDefaults(cls: any, json: any): any {
   return cls.toObject(cls.fromObject(json), { defaults: true, longs: Number })
 }
 
 export const pbjsonParseNetworkConfig = (json: any): NetworkConfig =>
-  parse(proto.api.manage.NetworkConfig, json) as NetworkConfig
+  parsePreservingPresence(proto.api.manage.NetworkConfig, json) as NetworkConfig
 export const pbjsonParseNetworkInstanceRunningInfo = (json: any): NetworkInstanceRunningInfo =>
-  parse(proto.api.manage.NetworkInstanceRunningInfo, json) as NetworkInstanceRunningInfo
+  parseWithDefaults(proto.api.manage.NetworkInstanceRunningInfo, json) as NetworkInstanceRunningInfo
 export const pbjsonParseNetworkMeta = (json: any): NetworkMeta =>
-  parse(proto.api.manage.NetworkMeta, json) as NetworkMeta
+  parseWithDefaults(proto.api.manage.NetworkMeta, json) as NetworkMeta
 
 export function pbjsonSerializeNetworkConfig(config: NetworkConfig): any {
   const inst = proto.api.manage.NetworkConfig.fromObject(config)

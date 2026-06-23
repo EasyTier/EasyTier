@@ -217,28 +217,35 @@ const saveAndRunNewNetwork = async (config?: NetworkTypes.NetworkConfig) => {
         cfg.instance_id = targetInstanceId;
     }
 
+    const wasDisabled = networkIsDisabled.value;
+
     try {
-        if (networkIsDisabled.value) {
+        if (wasDisabled) {
             await props.api.save_config(cfg);
             await props.api.update_network_instance_state(cfg.instance_id!, false);
         } else {
             await props.api.run_network(cfg, currentNetworkControl.remoteSave.value);
         }
-
-        delete networkMetaCache.value[cfg.instance_id!];
-        await loadNetworkMetas([cfg.instance_id!]);
-
-        selectedInstanceId.value = { uuid: cfg.instance_id! };
-        await loadNetworkInstanceIds();
-        await loadCurrentNetworkInfo();
     } catch (e: any) {
         console.error(e);
         toast.add({ severity: 'error', summary: 'Error', detail: 'Failed to run network, error: ' + JSON.stringify(e.response?.data ?? e), life: 2000 });
         return;
     }
 
+    delete networkMetaCache.value[cfg.instance_id!];
+    selectedInstanceId.value = { uuid: cfg.instance_id! };
     emits('update');
     isEditingNetwork.value = false;
+
+    // Starting a TUN-backed instance can succeed before running-info is ready.
+    // Keep the start result successful and let the periodic refresh pick up status.
+    try {
+        await loadNetworkMetas([cfg.instance_id!]);
+        await loadNetworkInstanceIds();
+        await loadCurrentNetworkInfo();
+    } catch (e) {
+        console.debug('Network started, but failed to refresh status immediately', e);
+    }
 }
 
 const saveNetworkConfig = async () => {
