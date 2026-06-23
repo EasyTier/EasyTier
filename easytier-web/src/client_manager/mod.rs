@@ -1,3 +1,5 @@
+mod managed_config;
+mod runtime_reconcile;
 pub mod session;
 pub mod storage;
 
@@ -5,6 +7,7 @@ use std::sync::{
     Arc,
     atomic::{AtomicU32, Ordering},
 };
+use std::time::Duration;
 
 use dashmap::DashMap;
 use easytier::{
@@ -63,12 +66,14 @@ pub struct ClientManager {
     webhook_config: SharedWebhookConfig,
 
     geoip_db: Arc<Option<maxminddb::Reader<Vec<u8>>>>,
+    heartbeat_min_response_delay: Duration,
 }
 
 impl ClientManager {
     pub fn new(
         db: Db,
         geoip_db: Option<String>,
+        heartbeat_min_response_delay: Duration,
         feature_flags: Arc<FeatureFlags>,
         webhook_config: SharedWebhookConfig,
     ) -> Self {
@@ -92,6 +97,7 @@ impl ClientManager {
             webhook_config,
 
             geoip_db: Arc::new(load_geoip_db(geoip_db)),
+            heartbeat_min_response_delay,
         }
     }
 
@@ -105,6 +111,7 @@ impl ClientManager {
         let storage = self.storage.weak_ref();
         let listeners_cnt = self.listeners_cnt.clone();
         let geoip_db = self.geoip_db.clone();
+        let heartbeat_min_response_delay = self.heartbeat_min_response_delay;
         let feature_flags = self.feature_flags.clone();
         let webhook_config = self.webhook_config.clone();
         self.tasks.spawn(async move {
@@ -129,6 +136,7 @@ impl ClientManager {
                     storage.clone(),
                     client_url.clone(),
                     location,
+                    heartbeat_min_response_delay,
                     feature_flags.clone(),
                     webhook_config.clone(),
                 );
@@ -147,6 +155,10 @@ impl ClientManager {
 
     pub async fn list_sessions(&self) -> Vec<StorageToken> {
         self.storage.list_clients()
+    }
+
+    pub async fn list_all_sessions(&self) -> Vec<StorageToken> {
+        self.storage.list_all_clients()
     }
 
     pub fn get_session_by_machine_id(
@@ -169,7 +181,7 @@ impl ClientManager {
     ) -> bool {
         let Some(client_url) = self
             .storage
-            .get_client_url_by_machine_id(user_id, machine_id)
+            .get_client_url_by_machine_id_with_auth(user_id, machine_id, false)
         else {
             return false;
         };
@@ -189,14 +201,30 @@ impl ClientManager {
         user_id: UserIdInDb,
         machine_id: uuid::Uuid,
         desired_configs: Vec<ManagedNetworkConfig>,
+        config_revision: Option<String>,
+        expected_config_revision: Option<String>,
     ) -> anyhow::Result<()> {
-        session::SessionRpcService::reconcile_web_source_configs(
+        let expected_config_revision = match expected_config_revision.as_deref().map(str::trim) {
+            None => managed_config::ExpectedConfigRevision::Any,
+            Some("") => managed_config::ExpectedConfigRevision::Exact(None),
+            Some(revision) => managed_config::ExpectedConfigRevision::Exact(Some(revision)),
+        };
+        managed_config::reconcile_web_source_configs(
             &self.storage,
             user_id,
             machine_id,
             desired_configs,
+            config_revision.as_deref(),
+            expected_config_revision,
         )
         .await?;
+        if let Some(config_revision) = config_revision
+            && let Some(session) = self.get_session_by_machine_id(user_id, &machine_id)
+        {
+            session
+                .notify_config_revision_changed(user_id, machine_id, config_revision)
+                .await;
+        }
         Ok(())
     }
 
@@ -351,6 +379,7 @@ mod tests {
         let mut mgr = ClientManager::new(
             Db::memory_db().await,
             None,
+            Duration::ZERO,
             Arc::new(FeatureFlags::default()),
             Arc::new(crate::webhook::WebhookConfig::new(
                 None, None, None, None, None,

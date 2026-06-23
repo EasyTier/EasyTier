@@ -141,6 +141,110 @@ impl Db {
     ) -> Result<Option<UserIdInDb>, DbErr> {
         self.get_user_id(token).await
     }
+
+    pub async fn get_managed_config_revision(
+        &self,
+        (user_id, device_id): (UserIdInDb, Uuid),
+    ) -> Result<Option<String>, DbErr> {
+        use entity::managed_config_revisions as mcr;
+
+        let revision = mcr::Entity::find()
+            .filter(mcr::Column::UserId.eq(user_id))
+            .filter(mcr::Column::DeviceId.eq(device_id.to_string()))
+            .one(self.orm_db())
+            .await?;
+
+        Ok(revision.map(|row| row.config_revision))
+    }
+
+    pub async fn set_managed_config_revision(
+        &self,
+        (user_id, device_id): (UserIdInDb, Uuid),
+        config_revision: &str,
+    ) -> Result<(), DbErr> {
+        use entity::managed_config_revisions as mcr;
+
+        let now = chrono::Local::now().fixed_offset();
+        let on_conflict = OnConflict::columns([mcr::Column::UserId, mcr::Column::DeviceId])
+            .update_columns([mcr::Column::ConfigRevision, mcr::Column::UpdateTime])
+            .to_owned();
+        let insert_m = mcr::ActiveModel {
+            user_id: Set(user_id),
+            device_id: Set(device_id.to_string()),
+            config_revision: Set(config_revision.to_string()),
+            create_time: Set(now),
+            update_time: Set(now),
+            ..Default::default()
+        };
+
+        mcr::Entity::insert(insert_m)
+            .on_conflict(on_conflict)
+            .do_nothing()
+            .exec(self.orm_db())
+            .await?;
+        Ok(())
+    }
+
+    pub async fn insert_or_update_web_network_config(
+        &self,
+        (user_id, device_id): (UserIdInDb, Uuid),
+        network_inst_id: Uuid,
+        network_config: NetworkConfig,
+    ) -> Result<bool, DbErr> {
+        let now = chrono::Local::now().fixed_offset();
+        let network_config =
+            serde_json::to_string(&network_config).map_err(|e| DbErr::Json(e.to_string()))?;
+        let source = ConfigSource::Web.as_str();
+        let result = sqlx::query(
+            r#"
+            INSERT INTO user_running_network_configs (
+                user_id, device_id, network_instance_id, network_config,
+                source, disabled, create_time, update_time
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(user_id, device_id, network_instance_id) DO UPDATE SET
+                network_config = excluded.network_config,
+                source = excluded.source,
+                disabled = excluded.disabled,
+                update_time = excluded.update_time
+            WHERE user_running_network_configs.source = ?
+            "#,
+        )
+        .bind(user_id)
+        .bind(device_id.to_string())
+        .bind(network_inst_id.to_string())
+        .bind(network_config)
+        .bind(source)
+        .bind(false)
+        .bind(now)
+        .bind(now)
+        .bind(source)
+        .execute(&self.db)
+        .await
+        .map_err(|e| DbErr::Custom(e.to_string()))?;
+
+        Ok(result.rows_affected() > 0)
+    }
+
+    pub async fn delete_web_network_configs(
+        &self,
+        (user_id, device_id): (UserIdInDb, Uuid),
+        network_inst_ids: &[Uuid],
+    ) -> Result<(), DbErr> {
+        use entity::user_running_network_configs as urnc;
+
+        urnc::Entity::delete_many()
+            .filter(urnc::Column::UserId.eq(user_id))
+            .filter(urnc::Column::DeviceId.eq(device_id.to_string()))
+            .filter(urnc::Column::Source.eq(ConfigSource::Web.as_str()))
+            .filter(
+                urnc::Column::NetworkInstanceId
+                    .is_in(network_inst_ids.iter().map(|id| id.to_string())),
+            )
+            .exec(self.orm_db())
+            .await?;
+
+        Ok(())
+    }
 }
 
 #[async_trait]
@@ -467,5 +571,47 @@ mod tests {
             .unwrap();
         assert_eq!(device1_configs.len(), 1);
         assert_eq!(device2_configs.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_web_network_config_does_not_replace_user_owned_config() {
+        let db = Db::memory_db().await;
+        let user_id = db.auto_create_user("user-web-race").await.unwrap().id;
+        let device_id = uuid::Uuid::new_v4();
+        let inst_id = uuid::Uuid::new_v4();
+
+        db.insert_or_update_user_network_config(
+            (user_id, device_id),
+            inst_id,
+            NetworkConfig {
+                network_name: Some("user-owned".to_string()),
+                ..Default::default()
+            },
+            ConfigSource::User,
+        )
+        .await
+        .unwrap();
+
+        let updated = db
+            .insert_or_update_web_network_config(
+                (user_id, device_id),
+                inst_id,
+                NetworkConfig {
+                    network_name: Some("web-owned".to_string()),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+
+        assert!(!updated);
+        let saved = db
+            .get_network_config((user_id, device_id), &inst_id.to_string())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(saved.get_network_config_source(), ConfigSource::User);
+        let saved_config = saved.get_network_config().unwrap();
+        assert_eq!(saved_config.network_name.as_deref(), Some("user-owned"));
     }
 }
