@@ -277,7 +277,10 @@ impl ResponseHandler for ResponseWrapper {
         let mut encoder = BinEncoder::new(&mut buffer);
 
         // `max_size` should be u16::MAX for protocol other than UDP.
-        let max_size = dns_udp::MAX_RECEIVE_BUFFER_SIZE as u16;
+        let max_size = response
+            .edns()
+            .map(|edns| edns.max_payload())
+            .unwrap_or(dns_udp::MAX_RECEIVE_BUFFER_SIZE as u16);
 
         encoder.set_max_size(max_size);
         response
