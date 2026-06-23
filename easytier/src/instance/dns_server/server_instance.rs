@@ -272,6 +272,7 @@ impl ResponseHandler for ResponseWrapper {
             .response
             .lock()
             .map_err(|_| NetError::Msg("lock poisoned".to_string()))?;
+        buffer.clear();
 
         let mut encoder = BinEncoder::new(&mut buffer);
 

@@ -5,7 +5,7 @@ use hickory_proto::rr::LowerName;
 use hickory_resolver::config::ResolverOpts;
 use hickory_resolver::net::runtime::TokioRuntimeProvider;
 use hickory_resolver::system_conf::read_system_conf;
-use hickory_server::net::runtime::{Time, TokioTime};
+use hickory_server::net::runtime::TokioTime;
 use hickory_server::server::Server as HickoryServer;
 use hickory_server::server::{Request, RequestHandler, ResponseHandler, ResponseInfo};
 use hickory_server::store::forwarder::ForwardConfig;
@@ -221,7 +221,7 @@ impl Server {
             .update(
                 update,
                 response_edns.as_ref(),
-                TokioTime::current_time(),
+                <TokioTime as hickory_server::net::runtime::Time>::current_time(),
                 response_handle,
             )
             .await
@@ -243,7 +243,7 @@ impl Server {
             .lookup(
                 request,
                 response_edns.as_ref(),
-                TokioTime::current_time(),
+                <TokioTime as hickory_server::net::runtime::Time>::current_time(),
                 response_handle,
             )
             .await

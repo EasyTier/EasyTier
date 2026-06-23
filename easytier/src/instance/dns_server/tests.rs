@@ -10,6 +10,7 @@ use hickory_resolver::config::{
     ConnectionConfig, NameServerConfig, ResolverConfig, ResolverOpts,
 };
 use hickory_resolver::net::runtime::TokioRuntimeProvider;
+use hickory_resolver::net::{DnsError, NetError};
 use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
 
@@ -92,8 +93,12 @@ pub async fn check_dns_record_missing(fake_ip: &Ipv4Addr, domain: &str) {
     let response = resolver
         .lookup(rr::Name::from_str(domain).unwrap(), rr::RecordType::A)
         .await;
-    if let Ok(response) = response {
-        assert!(response.answers().is_empty(), "{:?}", response);
+    match response {
+        Ok(response) => assert!(response.answers().is_empty(), "{:?}", response),
+        Err(NetError::Dns(DnsError::NoRecordsFound(_))) => {}
+        Err(e) => {
+            panic!("DNS query for missing record failed unexpectedly for domain '{domain}': {e}")
+        }
     }
 }
 
