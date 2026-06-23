@@ -483,18 +483,22 @@ impl InstanceConfigPatcher {
         }
         let global_ctx = weak_upgrade(&self.global_ctx)?;
         for proxy_network_patch in proxy_networks {
-            let Some(cidr) = proxy_network_patch.cidr.map(|c| c.into()) else {
-                tracing::warn!("Proxy network cidr is None, skipping.");
-                continue;
-            };
-            let mapped_cidr: Option<cidr::Ipv4Cidr> =
-                proxy_network_patch.mapped_cidr.map(|s| s.into());
             match ConfigPatchAction::try_from(proxy_network_patch.action) {
                 Ok(ConfigPatchAction::Add) => {
+                    let Some(cidr) = proxy_network_patch.cidr.map(|c| c.into()) else {
+                        tracing::warn!("Proxy network cidr is None, skipping add.");
+                        continue;
+                    };
+                    let mapped_cidr: Option<cidr::Ipv4Cidr> =
+                        proxy_network_patch.mapped_cidr.map(|s| s.into());
                     tracing::info!("Proxy network added: {}", cidr);
                     global_ctx.config.add_proxy_cidr(cidr, mapped_cidr)?;
                 }
                 Ok(ConfigPatchAction::Remove) => {
+                    let Some(cidr) = proxy_network_patch.cidr.map(|c| c.into()) else {
+                        tracing::warn!("Proxy network cidr is None, skipping remove.");
+                        continue;
+                    };
                     tracing::info!("Proxy network removed: {}", cidr);
                     global_ctx.config.remove_proxy_cidr(cidr);
                 }

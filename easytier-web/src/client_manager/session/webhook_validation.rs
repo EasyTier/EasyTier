@@ -69,9 +69,6 @@ async fn request_heartbeat_validation(
     if !resp.valid {
         return Ok(None);
     }
-    if resp.config_revision.trim().is_empty() {
-        anyhow::bail!("Webhook token validation response missing config_revision");
-    }
 
     Ok(Some(WebhookHeartbeatValidation {
         config_revision: resp.config_revision,

@@ -8,7 +8,7 @@ use easytier::{
         api::{
             config::{
                 AclPatch, ConfigPatchAction, InstanceConfigPatch, PatchConfigRequest,
-                PortForwardPatch,
+                PortForwardPatch, ProxyNetworkPatch,
             },
             instance::{InstanceIdentifier, instance_identifier},
             manage::{
@@ -16,7 +16,7 @@ use easytier::{
                 RunNetworkInstanceRequest,
             },
         },
-        common::CompressionAlgoPb,
+        common::{CompressionAlgoPb, Ipv4Inet as RpcIpv4Inet},
         rpc_types::controller::BaseController,
     },
 };
@@ -30,6 +30,12 @@ pub(super) enum RuntimeReconcileAction {
         overwrite: bool,
     },
     Patch(InstanceConfigPatch),
+}
+
+#[derive(Clone, PartialEq)]
+struct RuntimeProxyNetwork {
+    cidr: String,
+    mapped_cidr: Option<String>,
 }
 
 fn instance_identifier(inst_id: &str) -> anyhow::Result<InstanceIdentifier> {
@@ -52,6 +58,8 @@ fn hot_patch_base(config: &NetworkConfig) -> anyhow::Result<NetworkConfig> {
             .is_some_and(|key| !key.is_empty());
     config.acl = None;
     config.port_forwards.clear();
+    config.proxy_cidrs.clear();
+    config.disable_relay_data = None;
     if config.dhcp.unwrap_or_default() {
         config.virtual_ipv4 = None;
         config.network_length = None;
@@ -116,6 +124,38 @@ fn unique_port_forwards(
     unique
 }
 
+fn parse_rpc_ipv4_inet(value: &str) -> anyhow::Result<RpcIpv4Inet> {
+    value
+        .parse::<RpcIpv4Inet>()
+        .with_context(|| format!("failed to parse runtime ipv4 cidr: {value}"))
+}
+
+fn diff_proxy_networks(
+    current: &[RuntimeProxyNetwork],
+    desired: &[RuntimeProxyNetwork],
+) -> anyhow::Result<Vec<ProxyNetworkPatch>> {
+    if current == desired {
+        return Ok(Vec::new());
+    }
+
+    let mut patches = vec![ProxyNetworkPatch {
+        action: ConfigPatchAction::Clear as i32,
+        ..Default::default()
+    }];
+    for proxy_network in desired {
+        patches.push(ProxyNetworkPatch {
+            action: ConfigPatchAction::Add as i32,
+            cidr: Some(parse_rpc_ipv4_inet(&proxy_network.cidr)?),
+            mapped_cidr: proxy_network
+                .mapped_cidr
+                .as_deref()
+                .map(parse_rpc_ipv4_inet)
+                .transpose()?,
+        });
+    }
+    Ok(patches)
+}
+
 fn normalized_acl(acl: &Option<Acl>) -> Option<Acl> {
     let acl = acl.clone().unwrap_or_default();
     (acl != Acl::default()).then_some(acl)
@@ -132,6 +172,22 @@ fn normalized_port_forwards(
             RuntimePortForwardConfig::from(easytier::proto::common::PortForwardConfigPb::from(cfg))
         })
         .collect())
+}
+
+fn normalized_proxy_networks(config: &NetworkConfig) -> anyhow::Result<Vec<RuntimeProxyNetwork>> {
+    Ok(config
+        .gen_config()?
+        .get_proxy_cidrs()
+        .into_iter()
+        .map(|proxy_network| RuntimeProxyNetwork {
+            cidr: proxy_network.cidr.to_string(),
+            mapped_cidr: proxy_network.mapped_cidr.map(|cidr| cidr.to_string()),
+        })
+        .collect())
+}
+
+fn normalized_disable_relay_data(config: &NetworkConfig) -> anyhow::Result<bool> {
+    Ok(config.gen_config()?.get_flags().disable_relay_data)
 }
 
 fn web_source_runtime_patch(
@@ -170,9 +226,22 @@ fn web_source_runtime_patch(
         patch.port_forwards = diff_port_forwards(&current_port_forwards, &desired_port_forwards);
     }
 
-    if patch.acl.is_none() && patch.port_forwards.is_empty() {
-        return Ok(Some(patch));
+    let current_proxy_networks = normalized_proxy_networks(current)?;
+    let desired_proxy_networks = normalized_proxy_networks(desired)?;
+    if current_proxy_networks != desired_proxy_networks {
+        if current_proxy_networks.is_empty() || desired_proxy_networks.is_empty() {
+            return Ok(None);
+        }
+        patch.proxy_networks =
+            diff_proxy_networks(&current_proxy_networks, &desired_proxy_networks)?;
     }
+
+    let current_disable_relay_data = normalized_disable_relay_data(current)?;
+    let desired_disable_relay_data = normalized_disable_relay_data(desired)?;
+    if current_disable_relay_data != desired_disable_relay_data {
+        patch.disable_relay_data = Some(desired_disable_relay_data);
+    }
+
     Ok(Some(patch))
 }
 
@@ -208,7 +277,7 @@ async fn run_web_source_instance(
     Ok(())
 }
 
-async fn get_runtime_config(
+pub(super) async fn get_runtime_config(
     rpc_client: &mut SessionRpcClient,
     inst_id: &str,
 ) -> anyhow::Result<NetworkConfig> {
@@ -239,6 +308,13 @@ pub(super) async fn prepare_web_source_runtime_reconcile(
 
     let current_config = get_runtime_config(rpc_client, inst_id).await?;
 
+    prepare_web_source_runtime_reconcile_from_current(&current_config, desired_config)
+}
+
+pub(super) fn prepare_web_source_runtime_reconcile_from_current(
+    current_config: &NetworkConfig,
+    desired_config: NetworkConfig,
+) -> anyhow::Result<RuntimeReconcileAction> {
     let Some(patch) = web_source_runtime_patch(&current_config, &desired_config)? else {
         return Ok(RuntimeReconcileAction::Run {
             config: desired_config,
@@ -258,11 +334,12 @@ pub(super) async fn apply_web_source_runtime_reconcile(
     inst_id: &str,
     desired_config: NetworkConfig,
     action: RuntimeReconcileAction,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<NetworkConfig> {
     match action {
-        RuntimeReconcileAction::None => Ok(()),
+        RuntimeReconcileAction::None => Ok(desired_config),
         RuntimeReconcileAction::Run { config, overwrite } => {
-            run_web_source_instance(rpc_client, inst_id, config, overwrite).await
+            run_web_source_instance(rpc_client, inst_id, config, overwrite).await?;
+            Ok(desired_config)
         }
         RuntimeReconcileAction::Patch(patch) => {
             config_client
@@ -276,27 +353,9 @@ pub(super) async fn apply_web_source_runtime_reconcile(
                 .await?;
             let current_config = get_runtime_config(rpc_client, inst_id).await?;
             ensure_runtime_config_converged(&current_config, &desired_config)?;
-            Ok(())
+            Ok(current_config)
         }
     }
-}
-
-pub(super) async fn reconcile_web_source_runtime_config(
-    rpc_client: &mut SessionRpcClient,
-    config_client: &mut SessionConfigClient,
-    inst_id: &str,
-    desired_config: NetworkConfig,
-    is_running: bool,
-) -> anyhow::Result<()> {
-    let action = prepare_web_source_runtime_reconcile(
-        rpc_client,
-        inst_id,
-        desired_config.clone(),
-        is_running,
-    )
-    .await?;
-    apply_web_source_runtime_reconcile(rpc_client, config_client, inst_id, desired_config, action)
-        .await
 }
 
 #[cfg(test)]
@@ -340,6 +399,14 @@ mod tests {
             cfg.bind_addr.as_ref().expect("bind addr").port,
             cfg.dst_addr.as_ref().expect("dst addr").port,
             cfg.socket_type,
+        )
+    }
+
+    fn patch_proxy_network(patch: &ProxyNetworkPatch) -> (i32, String, Option<String>) {
+        (
+            patch.action,
+            patch.cidr.map(|cidr| cidr.to_string()).unwrap_or_default(),
+            patch.mapped_cidr.map(|cidr| cidr.to_string()),
         )
     }
 
@@ -466,6 +533,135 @@ mod tests {
         let current = config_with_port_forwards(Vec::new());
         let mut desired = current.clone();
         desired.network_secret = Some("new-secret".to_string());
+
+        let patch = web_source_runtime_patch(&current, &desired).expect("build patch");
+
+        assert!(patch.is_none());
+    }
+
+    #[test]
+    fn runtime_patch_rejects_routes_change() {
+        let mut current = config_with_port_forwards(Vec::new());
+        current.enable_manual_routes = Some(true);
+        current.routes = vec!["10.1.0.0/16".to_string(), "10.2.0.0/16".to_string()];
+        let mut desired = config_with_port_forwards(Vec::new());
+        desired.enable_manual_routes = Some(true);
+        desired.routes = vec!["10.2.0.0/16".to_string(), "10.3.0.0/16".to_string()];
+
+        let patch = web_source_runtime_patch(&current, &desired).expect("build patch");
+
+        assert!(patch.is_none());
+    }
+
+    #[test]
+    fn runtime_patch_replaces_proxy_networks() {
+        let mut current = config_with_port_forwards(Vec::new());
+        current.proxy_cidrs = vec![
+            "10.1.0.0/16".to_string(),
+            "10.2.0.0/16->10.20.0.0/16".to_string(),
+        ];
+        let mut desired = config_with_port_forwards(Vec::new());
+        desired.proxy_cidrs = vec![
+            "10.2.0.0/16->10.21.0.0/16".to_string(),
+            "10.3.0.0/16".to_string(),
+        ];
+
+        let patch = web_source_runtime_patch(&current, &desired)
+            .expect("build patch")
+            .expect("hot patch");
+
+        assert_eq!(patch.proxy_networks.len(), 3);
+        assert_eq!(
+            patch_proxy_network(&patch.proxy_networks[0]),
+            (ConfigPatchAction::Clear as i32, String::new(), None)
+        );
+        assert_eq!(
+            patch_proxy_network(&patch.proxy_networks[1]),
+            (
+                ConfigPatchAction::Add as i32,
+                "10.2.0.0/16".to_string(),
+                Some("10.21.0.0/16".to_string())
+            )
+        );
+        assert_eq!(
+            patch_proxy_network(&patch.proxy_networks[2]),
+            (
+                ConfigPatchAction::Add as i32,
+                "10.3.0.0/16".to_string(),
+                None
+            )
+        );
+    }
+
+    #[test]
+    fn runtime_patch_replaces_proxy_networks_with_same_source_cidr() {
+        let mut current = config_with_port_forwards(Vec::new());
+        current.proxy_cidrs = vec![
+            "10.1.2.0/24".to_string(),
+            "10.1.2.0/24->10.1.3.0/24".to_string(),
+        ];
+        let mut desired = config_with_port_forwards(Vec::new());
+        desired.proxy_cidrs = vec!["10.1.2.0/24->10.1.3.0/24".to_string()];
+
+        let patch = web_source_runtime_patch(&current, &desired)
+            .expect("build patch")
+            .expect("hot patch");
+
+        assert_eq!(patch.proxy_networks.len(), 2);
+        assert_eq!(
+            patch_proxy_network(&patch.proxy_networks[0]),
+            (ConfigPatchAction::Clear as i32, String::new(), None)
+        );
+        assert_eq!(
+            patch_proxy_network(&patch.proxy_networks[1]),
+            (
+                ConfigPatchAction::Add as i32,
+                "10.1.2.0/24".to_string(),
+                Some("10.1.3.0/24".to_string())
+            )
+        );
+    }
+
+    #[test]
+    fn runtime_patch_rejects_proxy_network_empty_to_nonempty() {
+        let current = config_with_port_forwards(Vec::new());
+        let mut desired = config_with_port_forwards(Vec::new());
+        desired.proxy_cidrs = vec!["10.1.2.0/24".to_string()];
+
+        let patch = web_source_runtime_patch(&current, &desired).expect("build patch");
+
+        assert!(patch.is_none());
+    }
+
+    #[test]
+    fn runtime_patch_rejects_proxy_network_nonempty_to_empty() {
+        let mut current = config_with_port_forwards(Vec::new());
+        current.proxy_cidrs = vec!["10.1.2.0/24".to_string()];
+        let desired = config_with_port_forwards(Vec::new());
+
+        let patch = web_source_runtime_patch(&current, &desired).expect("build patch");
+
+        assert!(patch.is_none());
+    }
+
+    #[test]
+    fn runtime_patch_updates_disable_relay_data() {
+        let current = config_with_port_forwards(Vec::new());
+        let mut desired = current.clone();
+        desired.disable_relay_data = Some(true);
+
+        let patch = web_source_runtime_patch(&current, &desired)
+            .expect("build patch")
+            .expect("hot patch");
+
+        assert_eq!(patch.disable_relay_data, Some(true));
+    }
+
+    #[test]
+    fn runtime_patch_still_rejects_unsupported_flag_change() {
+        let current = config_with_port_forwards(Vec::new());
+        let mut desired = current.clone();
+        desired.no_tun = Some(true);
 
         let patch = web_source_runtime_patch(&current, &desired).expect("build patch");
 

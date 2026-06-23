@@ -768,9 +768,9 @@ mod tests {
     }
 
     #[test]
-    fn validate_token_reject_response_allows_missing_config_revision() {
-        let resp: ValidateTokenResponse = serde_json::from_str(r#"{"valid":false}"#).unwrap();
-        assert!(!resp.valid);
+    fn validate_token_response_allows_missing_config_revision() {
+        let resp: ValidateTokenResponse = serde_json::from_str(r#"{"valid":true}"#).unwrap();
+        assert!(resp.valid);
         assert!(resp.config_revision.is_empty());
     }
 }
