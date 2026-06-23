@@ -18,7 +18,7 @@ use guarden::{Guard, defer};
 use tokio::{
     sync::{
         Mutex,
-        mpsc::{self, UnboundedReceiver, UnboundedSender},
+        mpsc::{self, Receiver, Sender, error::TrySendError},
     },
     task::JoinSet,
 };
@@ -30,7 +30,7 @@ use crate::{
         error::Error,
         global_ctx::{ArcGlobalCtx, GlobalCtx, GlobalCtxEvent, NetworkIdentity, TrustedKeySource},
         join_joinset_background, shrink_dashmap,
-        stats_manager::{LabelSet, LabelType, MetricName, StatsManager},
+        stats_manager::{CounterHandle, LabelSet, LabelType, MetricName, StatsManager},
         token_bucket::TokenBucket,
     },
     peer_center::instance::{PeerCenterInstance, PeerMapWithPeerRpcManager},
@@ -64,6 +64,35 @@ use super::{
     },
 };
 
+const PEER_RPC_PACKET_QUEUE_CAPACITY: usize = 1024;
+
+fn try_enqueue_peer_rpc_packet(
+    sender: &Sender<ZCPacket>,
+    packet: ZCPacket,
+    dropped_packets: &CounterHandle,
+    queue_name: &'static str,
+) -> bool {
+    match sender.try_send(packet) {
+        Ok(()) => true,
+        Err(TrySendError::Full(_)) => {
+            dropped_packets.inc();
+            tracing::warn!(
+                queue = queue_name,
+                "drop peer rpc/control packet because queue is full"
+            );
+            false
+        }
+        Err(TrySendError::Closed(_)) => {
+            dropped_packets.inc();
+            tracing::warn!(
+                queue = queue_name,
+                "drop peer rpc/control packet because receiver is closed"
+            );
+            false
+        }
+    }
+}
+
 #[async_trait::async_trait]
 #[auto_impl::auto_impl(&, Box, Arc)]
 pub trait GlobalForeignNetworkAccessor: Send + Sync + 'static {
@@ -87,7 +116,7 @@ struct ForeignNetworkEntry {
     pm_packet_sender: Mutex<Option<PacketRecvChan>>,
 
     peer_rpc: Arc<PeerRpcManager>,
-    rpc_sender: UnboundedSender<ZCPacket>,
+    rpc_sender: Sender<ZCPacket>,
 
     packet_recv: Mutex<Option<PacketRecvChanReceiver>>,
 
@@ -312,12 +341,12 @@ impl ForeignNetworkEntry {
     fn build_rpc_tspt(
         my_peer_id: PeerId,
         peer_map: Arc<PeerMap>,
-    ) -> (Arc<PeerRpcManager>, UnboundedSender<ZCPacket>) {
+    ) -> (Arc<PeerRpcManager>, Sender<ZCPacket>) {
         struct RpcTransport {
             my_peer_id: PeerId,
             peer_map: Weak<PeerMap>,
 
-            packet_recv: Mutex<UnboundedReceiver<ZCPacket>>,
+            packet_recv: Mutex<Receiver<ZCPacket>>,
         }
 
         #[async_trait::async_trait]
@@ -359,7 +388,8 @@ impl ForeignNetworkEntry {
             }
         }
 
-        let (rpc_transport_sender, peer_rpc_tspt_recv) = mpsc::unbounded_channel();
+        let (rpc_transport_sender, peer_rpc_tspt_recv) =
+            mpsc::channel(PEER_RPC_PACKET_QUEUE_CAPACITY);
         let tspt = RpcTransport {
             my_peer_id,
             peer_map: Arc::downgrade(&peer_map),
@@ -478,6 +508,9 @@ impl ForeignNetworkEntry {
         let rx_packets = self
             .stats_mgr
             .get_counter(MetricName::TrafficPacketsRx, label_set.clone());
+        let rpc_queue_drops = self
+            .stats_mgr
+            .get_counter(MetricName::PeerRpcPacketQueueDrops, label_set.clone());
 
         self.tasks.lock().await.spawn(async move {
             while let Ok(mut zc_packet) = recv_packet_from_chan(&mut recv).await {
@@ -526,7 +559,12 @@ impl ForeignNetworkEntry {
                     {
                         rx_bytes.add(buf_len as u64);
                         rx_packets.inc();
-                        rpc_sender.send(zc_packet).unwrap();
+                        try_enqueue_peer_rpc_packet(
+                            &rpc_sender,
+                            zc_packet,
+                            &rpc_queue_drops,
+                            "foreign_network_peer_rpc",
+                        );
                         continue;
                     }
                     tracing::trace!(
@@ -1236,7 +1274,7 @@ impl Drop for ForeignNetworkManager {
 pub mod tests {
     use crate::{
         common::global_ctx::tests::get_mock_global_ctx_with_network,
-        common::stats_manager::{LabelSet, LabelType, MetricName},
+        common::stats_manager::{LabelSet, LabelType, MetricName, StatsManager},
         connector::udp_hole_punch::tests::{
             create_mock_peer_manager_with_mock_stun, replace_stun_info_collector,
         },
@@ -1253,6 +1291,7 @@ pub mod tests {
         },
     };
     use std::{collections::HashMap, time::Duration};
+    use tokio::sync::mpsc;
 
     use super::*;
 
@@ -1263,6 +1302,59 @@ pub mod tests {
             .get_metric(metric, &labels)
             .map(|metric| metric.value)
             .unwrap_or(0)
+    }
+
+    #[tokio::test]
+    async fn peer_rpc_queue_helper_enqueues_when_available() {
+        let (sender, mut receiver) = mpsc::channel(1);
+        let stats_manager = StatsManager::new();
+        let dropped_packets = stats_manager.get_simple_counter(MetricName::PeerRpcPacketQueueDrops);
+
+        assert!(try_enqueue_peer_rpc_packet(
+            &sender,
+            ZCPacket::new_with_payload(b"rpc"),
+            &dropped_packets,
+            "test_foreign_peer_rpc",
+        ));
+
+        assert_eq!(dropped_packets.get(), 0);
+        assert!(receiver.try_recv().is_ok());
+    }
+
+    #[tokio::test]
+    async fn peer_rpc_queue_helper_drops_when_full() {
+        let (sender, _receiver) = mpsc::channel(1);
+        sender
+            .try_send(ZCPacket::new_with_payload(b"existing"))
+            .unwrap();
+        let stats_manager = StatsManager::new();
+        let dropped_packets = stats_manager.get_simple_counter(MetricName::PeerRpcPacketQueueDrops);
+
+        assert!(!try_enqueue_peer_rpc_packet(
+            &sender,
+            ZCPacket::new_with_payload(b"overflow"),
+            &dropped_packets,
+            "test_foreign_peer_rpc",
+        ));
+
+        assert_eq!(dropped_packets.get(), 1);
+    }
+
+    #[tokio::test]
+    async fn peer_rpc_queue_helper_drops_when_closed() {
+        let (sender, receiver) = mpsc::channel(1);
+        drop(receiver);
+        let stats_manager = StatsManager::new();
+        let dropped_packets = stats_manager.get_simple_counter(MetricName::PeerRpcPacketQueueDrops);
+
+        assert!(!try_enqueue_peer_rpc_packet(
+            &sender,
+            ZCPacket::new_with_payload(b"closed"),
+            &dropped_packets,
+            "test_foreign_peer_rpc",
+        ));
+
+        assert_eq!(dropped_packets.get(), 1);
     }
 
     async fn create_mock_peer_manager_for_foreign_network_ext(
