@@ -114,11 +114,11 @@ core_clap:
     en: "encryption algorithm to use, supported: '', 'xor', 'chacha20', 'aes-gcm', 'aes-gcm-256', 'openssl-aes128-gcm', 'openssl-aes256-gcm', 'openssl-chacha20'. Empty string means default (aes-gcm)"
     zh-CN: "要使用的加密算法，支持：''（默认aes-gcm）、'xor'、'chacha20'、'aes-gcm'、'aes-gcm-256'、'openssl-aes128-gcm'、'openssl-aes256-gcm'、'openssl-chacha20'"
   multi_thread:
-    en: "use multi-thread runtime, default is single-thread"
-    zh-CN: "使用多线程运行时，默认为单线程"
+    en: "multi-thread tokio runtime (default on). Only affects launcher-based deployments (GUI/mobile/web/Windows service); the easytier-core CLI always runs single-threaded."
+    zh-CN: "多线程 tokio 运行时（默认开启）。仅对 launcher 部署（GUI/移动端/web/Windows 服务）生效；easytier-core CLI 始终为单线程。"
   multi_thread_count:
-    en: "the number of threads to use, default is 2, only effective when multi-thread is enabled, must be greater than 2"
-    zh-CN: "使用的线程数，默认为2，仅在多线程模式下有效。取值必须大于2"
+    en: "the number of worker threads, default 2, only effective when multi-thread is enabled, minimum 2"
+    zh-CN: "worker 线程数，默认 2，仅在启用多线程时生效，最小为 2"
   disable_ipv6:
     en: "do not use ipv6"
     zh-CN: "不使用IPv6"

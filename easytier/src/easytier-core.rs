@@ -23,6 +23,9 @@ pub static malloc_conf: &[u8] = b"retain:false\0";
 
 rust_i18n::i18n!("locales", fallback = "en");
 
+// The easytier-core CLI intentionally uses a single-thread runtime. The
+// `multi_thread` flag only affects launcher-based deployments (GUI / mobile /
+// web / Windows service); see launcher.rs:223.
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> std::process::ExitCode {
     core::main().await
