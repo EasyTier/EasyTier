@@ -218,8 +218,8 @@ impl Counter for UnsafeCellCounter {
 // timestamp), which is what actually runs per packet in `peer_manager`.
 // ---------------------------------------------------------------------------
 
-// The real production `CounterHandle`. `CounterHandle::add` does a sharded
-// `fetch_add` then a lock-free atomic-millis `touch`.
+// The real production `CounterHandle`. `CounterHandle::add` does a single
+// `AtomicU64::fetch_add` then a lock-free fastant `touch`.
 impl Counter for CounterHandle {
     #[inline(always)]
     fn add(&self, delta: u64) {
