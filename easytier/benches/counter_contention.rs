@@ -83,9 +83,11 @@ impl Default for CasSaturating {
 impl Counter for CasSaturating {
     #[inline(always)]
     fn add(&self, delta: u64) {
-        let _ = self.0.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |c| {
-            Some(c.saturating_add(delta))
-        });
+        let _ = self
+            .0
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |c| {
+                Some(c.saturating_add(delta))
+            });
     }
     #[inline(always)]
     fn get(&self) -> u64 {
@@ -257,9 +259,11 @@ impl Counter for BaselineHandle {
     #[inline(always)]
     fn add(&self, delta: u64) {
         if self.use_cas {
-            let _ = self.counter.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |c| {
-                Some(c.saturating_add(delta))
-            });
+            let _ = self
+                .counter
+                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |c| {
+                    Some(c.saturating_add(delta))
+                });
         } else {
             self.counter.fetch_add(delta, Ordering::Relaxed);
         }
