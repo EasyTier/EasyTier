@@ -1,10 +1,10 @@
 use dashmap::DashMap;
-use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::sync::Arc;
+use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use tokio::time::interval;
 use tokio_util::task::AbortOnDropHandle;
 
@@ -402,11 +402,7 @@ impl UnsafeCounter {
 
     /// Increment the counter by the given amount
     pub fn add(&self, delta: u64) {
-        let _ = self
-            .value
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
-                Some(current.saturating_add(delta))
-            });
+        self.value.fetch_add(delta, Ordering::Relaxed);
     }
 
     /// Increment the counter by 1
@@ -430,36 +426,52 @@ impl UnsafeCounter {
     }
 }
 
+/// Epoch used to convert a monotonic clock reading into a storable `u64`
+/// millisecond count for `MetricData::last_updated`. Lazily initialized on first
+/// use. Backed by `fastant`, which uses the TSC on x86_64 Linux (and falls back
+/// to `std::time::Instant` elsewhere), making `now_millis()` cheap enough to
+/// call per packet.
+fn time_base() -> fastant::Instant {
+    static BASE: OnceLock<fastant::Instant> = OnceLock::new();
+    *BASE.get_or_init(fastant::Instant::now)
+}
+
+fn now_millis() -> u64 {
+    fastant::Instant::now()
+        .saturating_duration_since(time_base())
+        .as_millis() as u64
+}
+
 /// MetricData contains both the counter and last update timestamp
 #[derive(Debug)]
 struct MetricData {
     counter: UnsafeCounter,
-    last_updated: Mutex<Instant>,
+    last_updated: AtomicU64,
 }
 
 impl MetricData {
     fn new() -> Self {
         Self {
             counter: UnsafeCounter::new(),
-            last_updated: Mutex::new(Instant::now()),
+            last_updated: AtomicU64::new(now_millis()),
         }
     }
 
     fn new_with_value(initial: u64) -> Self {
         Self {
             counter: UnsafeCounter::new_with_value(initial),
-            last_updated: Mutex::new(Instant::now()),
+            last_updated: AtomicU64::new(now_millis()),
         }
     }
 
-    /// Update the last_updated timestamp
+    /// Update the last_updated timestamp. Lock-free.
     fn touch(&self) {
-        *self.last_updated.lock() = Instant::now();
+        self.last_updated.store(now_millis(), Ordering::Relaxed);
     }
 
-    /// Get the last updated timestamp
-    fn get_last_updated(&self) -> Instant {
-        *self.last_updated.lock()
+    /// Last update time as milliseconds since `time_base()`.
+    fn last_updated_millis(&self) -> u64 {
+        self.last_updated.load(Ordering::Relaxed)
     }
 }
 
@@ -565,9 +577,9 @@ impl StatsManager {
             loop {
                 interval.tick().await;
 
-                let Some(cutoff_time) = Instant::now().checked_sub(Duration::from_secs(180)) else {
-                    continue;
-                };
+                // Drop metrics untouched for 180s and with no live handles.
+                // Compare in the millis-since-base domain; no Instant alloc.
+                let cutoff_millis = now_millis().saturating_sub(180_000);
 
                 let Some(counters) = counters_clone.upgrade() else {
                     break;
@@ -575,7 +587,7 @@ impl StatsManager {
 
                 counters.retain(|_, metric_data: &mut Arc<MetricData>| {
                     Arc::strong_count(metric_data) > 1
-                        || metric_data.get_last_updated() > cutoff_time
+                        || metric_data.last_updated_millis() > cutoff_millis
                 });
                 counters.shrink_to_fit();
             }
@@ -896,11 +908,14 @@ mod tests {
         let counter = stats.get_simple_counter(MetricName::TrafficBytesForwarded);
         counter.set(1);
 
-        let cutoff_time = Instant::now().checked_add(Duration::from_secs(1)).unwrap();
+        // Cutoff 1s in the future, so nothing is stale by timestamp; only live
+        // handles keep a metric.
+        let cutoff_millis = now_millis() + 1_000;
         stats
             .counters
             .retain(|_, metric_data: &mut Arc<MetricData>| {
-                Arc::strong_count(metric_data) > 1 || metric_data.get_last_updated() > cutoff_time
+                Arc::strong_count(metric_data) > 1
+                    || metric_data.last_updated_millis() > cutoff_millis
             });
 
         assert_eq!(stats.metric_count(), 1);
@@ -910,7 +925,8 @@ mod tests {
         stats
             .counters
             .retain(|_, metric_data: &mut Arc<MetricData>| {
-                Arc::strong_count(metric_data) > 1 || metric_data.get_last_updated() > cutoff_time
+                Arc::strong_count(metric_data) > 1
+                    || metric_data.last_updated_millis() > cutoff_millis
             });
         assert_eq!(stats.metric_count(), 0);
     }

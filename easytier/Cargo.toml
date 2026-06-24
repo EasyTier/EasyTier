@@ -215,6 +215,7 @@ smoltcp = { git = "https://github.com/smoltcp-rs/smoltcp.git", rev = "0a926767a6
     "async",
 ] }
 parking_lot = { version = "0.12.0" }
+fastant = "0.1"
 
 wildmatch = "2.3.4"
 
