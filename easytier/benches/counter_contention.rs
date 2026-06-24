@@ -94,7 +94,9 @@ impl Counter for CasSaturating {
 
 // ---------------------------------------------------------------------------
 // 3. ShardedAtomic: 16 cache-aligned shards + per-thread shard index.
-//    Mirrors production `stats_manager::UnsafeCounter`.
+//    Comparison-only variant (production `stats_manager::Counter` is
+//    single-atomic; sharding was evaluated and dropped as no benefit for the
+//    default 1-16 worker deployments).
 // ---------------------------------------------------------------------------
 
 thread_local! {

@@ -375,19 +375,19 @@ impl Default for LabelSet {
     }
 }
 
-/// UnsafeCounter provides a high-performance atomic counter
+/// Counter provides a high-performance atomic counter
 #[derive(Debug)]
-pub struct UnsafeCounter {
+pub struct Counter {
     value: AtomicU64,
 }
 
-impl Default for UnsafeCounter {
+impl Default for Counter {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl UnsafeCounter {
+impl Counter {
     pub fn new() -> Self {
         Self {
             value: AtomicU64::new(0),
@@ -445,21 +445,21 @@ fn now_millis() -> u64 {
 /// MetricData contains both the counter and last update timestamp
 #[derive(Debug)]
 struct MetricData {
-    counter: UnsafeCounter,
+    counter: Counter,
     last_updated: AtomicU64,
 }
 
 impl MetricData {
     fn new() -> Self {
         Self {
-            counter: UnsafeCounter::new(),
+            counter: Counter::new(),
             last_updated: AtomicU64::new(now_millis()),
         }
     }
 
     fn new_with_value(initial: u64) -> Self {
         Self {
-            counter: UnsafeCounter::new_with_value(initial),
+            counter: Counter::new_with_value(initial),
             last_updated: AtomicU64::new(now_millis()),
         }
     }
@@ -757,7 +757,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_unsafe_counter() {
-        let counter = UnsafeCounter::new();
+        let counter = Counter::new();
 
         assert_eq!(counter.get(), 0);
         counter.inc();
