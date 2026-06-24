@@ -7,14 +7,11 @@
 //!   - `single_thread_write`: per-`add` cost with no contention (floor cost).
 //!   - `read_cost`          : per-`get()` cost.
 //!   - `counter_handle`     : the REAL production hot path. Measures the actual
-//!     `stats_manager::CounterHandle::add` (sharded `fetch_add` + lock-free
-//!     atomic-millis `touch`) against reconstructed baselines:
-//!       * `prod`                   - real `CounterHandle` (this code's version)
-//!       * `baseline_cas_mutex`     - pre-optimization design: single
-//!                                    `AtomicU64` with `fetch_update` (CAS) +
-//!                                    `Mutex<Instant>` touch
-//!       * `baseline_fetchadd_mutex`- `fetch_add` + `Mutex<Instant>` touch
-//!                                    (isolates the sharding + lock-free touch)
+//!     `stats_manager::CounterHandle::add` (single-atomic `fetch_add` + lock-free
+//!     fastant `touch`) against reconstructed baselines:
+//!       * `prod` - real `CounterHandle` (this code's version)
+//!       * `baseline_cas_mutex` - pre-optimization: single `AtomicU64` with `fetch_update` (CAS) + `Mutex<Instant>` touch
+//!       * `baseline_fetchadd_mutex` - `fetch_add` + `Mutex<Instant>` touch (isolates the lock-free fastant touch)
 //!
 //! Run: `cargo bench -p easytier --bench counter_contention`
 
@@ -153,7 +150,7 @@ impl Counter for ShardedAtomic {
 // ---------------------------------------------------------------------------
 
 thread_local! {
-    static TLS_DELTA: Cell<u64> = Cell::new(0);
+    static TLS_DELTA: Cell<u64> = const { Cell::new(0) };
 }
 
 struct ThreadLocalCell {
