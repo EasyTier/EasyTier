@@ -342,6 +342,11 @@ futures-util = "0.3.31"
 maplit = "1.0.2"
 tempfile = "3.22.0"
 ctor = "0.8.0"
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[[bench]]
+name = "counter_contention"
+harness = false
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
 defguard_wireguard_rs = "0.4.2"
