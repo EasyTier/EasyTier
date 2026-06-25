@@ -31,8 +31,9 @@ use parking_lot::Mutex;
 
 const COUNTER_SHARDS: usize = 16;
 const TOTAL_WORK: u64 = 8_000_000;
-// The handle path calls `Instant::now()` per `add`, so it is far heavier per op
-// than the counter-only groups; use a smaller total to keep the bench fast.
+// The handle path does a counter update plus a timestamp `touch` per `add`,
+// so it is heavier per op than the counter-only groups; use a smaller total to
+// keep the bench fast.
 const HANDLE_TOTAL_WORK: u64 = 2_000_000;
 const TASK_COUNTS: &[usize] = &[1, 2, 4, 8, 16, 32];
 

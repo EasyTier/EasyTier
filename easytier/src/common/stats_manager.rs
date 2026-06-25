@@ -578,7 +578,8 @@ impl StatsManager {
                 interval.tick().await;
 
                 // Drop metrics untouched for 180s and with no live handles.
-                // Compare in the millis-since-base domain; no Instant alloc.
+                // Compare in the millis-since-base domain so neither the hot
+                // path nor GC reconstructs an `Instant` or locks.
                 let cutoff_millis = now_millis().saturating_sub(180_000);
 
                 let Some(counters) = counters_clone.upgrade() else {
@@ -756,7 +757,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_unsafe_counter() {
+    async fn test_counter() {
         let counter = Counter::new();
 
         assert_eq!(counter.get(), 0);
@@ -908,8 +909,8 @@ mod tests {
         let counter = stats.get_simple_counter(MetricName::TrafficBytesForwarded);
         counter.set(1);
 
-        // Cutoff 1s in the future, so nothing is stale by timestamp; only live
-        // handles keep a metric.
+        // Cutoff 1s in the future, so every metric is stale by timestamp; only
+        // a live handle keeps a metric.
         let cutoff_millis = now_millis() + 1_000;
         stats
             .counters
