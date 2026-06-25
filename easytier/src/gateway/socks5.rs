@@ -28,7 +28,7 @@ use crate::{
         ip_reassembler::IpReassembler,
         tokio_smoltcp::{BufferSize, Net, NetConfig, channel_device},
     },
-    tunnel::packet_def::{PacketType, ZCPacket},
+    tunnel::packet_def::{PacketType, ZCPacket, ZCPacketType},
 };
 use anyhow::Context;
 use dashmap::DashMap;
@@ -377,13 +377,19 @@ impl Socks5ServerNet {
                     "receive from smoltcp stack and send to peer mgr packet, len = {}",
                     data.len()
                 );
-                let Some(ipv4) = Ipv4Packet::new(&data) else {
-                    tracing::error!(?data, "smoltcp stack stream get non ipv4 packet");
+                let packet = ZCPacket::new_from_buf(
+                    bytes::BytesMut::from(bytes::Bytes::from(data)),
+                    ZCPacketType::NIC,
+                );
+                let Some(ipv4) = Ipv4Packet::new(packet.payload()) else {
+                    tracing::error!(
+                        payload_len = packet.payload_len(),
+                        "smoltcp stack stream get non ipv4 packet"
+                    );
                     continue;
                 };
 
                 let dst = ipv4.get_destination();
-                let packet = ZCPacket::new_with_payload(&data);
                 let Some(peer_manager) = peer_manager.upgrade() else {
                     tracing::warn!("peer manager is gone, smoltcp sender exited");
                     return;
@@ -412,7 +418,8 @@ impl Socks5ServerNet {
                     tcp_tx_size: 1024 * 128,
                     ..Default::default()
                 }),
-            ),
+            )
+            .with_packet_tx_headroom(ZCPacketType::NIC.get_packet_offsets().payload_offset),
         );
 
         let forward_tasks = Arc::new(std::sync::Mutex::new(forward_tasks));

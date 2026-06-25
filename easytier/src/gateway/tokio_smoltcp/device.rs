@@ -33,6 +33,7 @@ where
 pub struct BufferDevice {
     caps: DeviceCapabilities,
     max_burst_size: usize,
+    tx_headroom: usize,
     recv_queue: VecDeque<Packet>,
     send_queue: VecDeque<Packet>,
 }
@@ -59,8 +60,9 @@ impl<'d> TxToken for BufferTxToken<'d> {
     where
         F: FnOnce(&mut [u8]) -> R,
     {
-        let mut buffer = vec![0u8; len];
-        let result = f(&mut buffer);
+        let tx_headroom = self.0.tx_headroom;
+        let mut buffer = vec![0u8; tx_headroom + len];
+        let result = f(&mut buffer[tx_headroom..]);
 
         self.0.send_queue.push_back(buffer);
 
@@ -98,11 +100,12 @@ impl Device for BufferDevice {
 }
 
 impl BufferDevice {
-    pub(crate) fn new(caps: DeviceCapabilities) -> BufferDevice {
+    pub(crate) fn new(caps: DeviceCapabilities, tx_headroom: usize) -> BufferDevice {
         let max_burst_size = caps.max_burst_size.unwrap_or(DEFAULT_MAX_BURST_SIZE);
         BufferDevice {
             caps,
             max_burst_size,
+            tx_headroom,
             recv_queue: VecDeque::with_capacity(max_burst_size),
             send_queue: VecDeque::with_capacity(max_burst_size),
         }
@@ -121,5 +124,29 @@ impl BufferDevice {
     }
     pub(crate) fn need_wait(&self) -> bool {
         self.recv_queue.is_empty()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn buffer_device_reserves_tx_headroom() {
+        let mut caps = DeviceCapabilities::default();
+        caps.max_burst_size = Some(1);
+        let mut device = BufferDevice::new(caps, 16);
+
+        let token = device.transmit(Instant::now()).unwrap();
+        token.consume(4, |buf| {
+            assert_eq!(buf.len(), 4);
+            buf.copy_from_slice(&[1, 2, 3, 4]);
+        });
+
+        let mut queue = device.take_send_queue();
+        let packet = queue.pop_front().unwrap();
+        assert_eq!(packet.len(), 20);
+        assert_eq!(&packet[..16], &[0; 16]);
+        assert_eq!(&packet[16..], &[1, 2, 3, 4]);
     }
 }
