@@ -8,6 +8,52 @@ import {
   type NetworkConfig,
 } from '../src/types/network'
 
+const CONFIG_FLAG_FIELDS = [
+  'latency_first',
+  'use_smoltcp',
+  'disable_ipv6',
+  'ipv6_public_addr_auto',
+  'enable_kcp_proxy',
+  'disable_kcp_input',
+  'enable_quic_proxy',
+  'disable_quic_input',
+  'disable_p2p',
+  'p2p_only',
+  'lazy_p2p',
+  'bind_device',
+  'no_tun',
+  'enable_exit_node',
+  'relay_all_peer_rpc',
+  'need_p2p',
+  'multi_thread',
+  'proxy_forward_by_system',
+  'disable_encryption',
+  'disable_tcp_hole_punching',
+  'disable_udp_hole_punching',
+  'enable_udp_broadcast_relay',
+  'disable_upnp',
+  'disable_sym_hole_punching',
+  'enable_magic_dns',
+  'enable_private_mode',
+] as const satisfies readonly (keyof NetworkConfig)[]
+
+const CONFIG_CHECKBOX_FIELDS = [
+  ['dhcp', '#virtual_ip_auto'],
+  ...CONFIG_FLAG_FIELDS.map((field) => [field, `#${field}`] as const),
+] as const satisfies readonly (readonly [keyof NetworkConfig, string])[]
+
+const CONFIG_TOGGLE_FIELDS = [
+  'enable_vpn_portal',
+  'enable_relay_network_whitelist',
+  'enable_manual_routes',
+  'enable_socks5',
+] as const satisfies readonly (keyof NetworkConfig)[]
+
+const CONFIG_UI_BOOLEAN_FIELDS = [
+  ...CONFIG_CHECKBOX_FIELDS.map(([field]) => field),
+  ...CONFIG_TOGGLE_FIELDS,
+] as const satisfies readonly (keyof NetworkConfig)[]
+
 vi.mock('vue-i18n', () => ({
   useI18n: () => ({
     t: (key: string, values?: unknown[]) => values ? `${key}:${values.join(',')}` : key,
@@ -440,6 +486,44 @@ describe('Config.vue network config projection', () => {
         dst_port: 9090,
       }],
     })
+  })
+
+  it('round-trips every visible boolean config control into backend JSON', async () => {
+    const config = makeConfig()
+    const originalFlagValues = new Map(
+      CONFIG_UI_BOOLEAN_FIELDS.map((field, index) => {
+        const value = index % 2 === 0
+        config[field] = value
+        return [field, value]
+      }),
+    )
+
+    const { curNetwork, wrapper } = mountConfig(config)
+    await nextTick()
+
+    for (const [field, selector] of CONFIG_CHECKBOX_FIELDS) {
+      const value = originalFlagValues.get(field)
+      expect(input(wrapper, selector).checked, `${field} should project into UI`).toBe(value)
+      await wrapper.find(selector).setValue(!value)
+      await nextTick()
+    }
+
+    const toggleButtons = wrapper.findAll('button[data-stub="toggle-button"]')
+    expect(toggleButtons).toHaveLength(CONFIG_TOGGLE_FIELDS.length)
+    for (const [index, field] of CONFIG_TOGGLE_FIELDS.entries()) {
+      const value = originalFlagValues.get(field)
+      expect(toggleButtons[index].attributes('aria-pressed'), `${field} should project into UI`)
+        .toBe(String(value))
+      await toggleButtons[index].trigger('click')
+      await nextTick()
+    }
+
+    const backend = toBackendNetworkConfig(curNetwork) as Record<string, unknown>
+    for (const [field, value] of originalFlagValues) {
+      const expectedValue = !value
+      expect(curNetwork[field], `${field} should update config`).toBe(expectedValue)
+      expect(backend[field], `${field} should be preserved in backend JSON`).toBe(expectedValue)
+    }
   })
 
   it('keeps uint64 input editable without losing large values', async () => {

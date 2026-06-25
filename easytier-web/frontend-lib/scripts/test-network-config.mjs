@@ -23,6 +23,43 @@ const {
   toBackendNetworkConfig,
 } = NetworkTypes
 
+const BOOLEAN_CONFIG_FIELDS = [
+  'dhcp',
+  'enable_vpn_portal',
+  'advanced_settings',
+  'latency_first',
+  'use_smoltcp',
+  'disable_ipv6',
+  'enable_kcp_proxy',
+  'disable_kcp_input',
+  'disable_p2p',
+  'bind_device',
+  'no_tun',
+  'enable_exit_node',
+  'relay_all_peer_rpc',
+  'multi_thread',
+  'enable_relay_network_whitelist',
+  'enable_manual_routes',
+  'proxy_forward_by_system',
+  'disable_encryption',
+  'enable_socks5',
+  'disable_udp_hole_punching',
+  'enable_magic_dns',
+  'enable_private_mode',
+  'enable_quic_proxy',
+  'disable_quic_input',
+  'disable_sym_hole_punching',
+  'p2p_only',
+  'lazy_p2p',
+  'need_p2p',
+  'disable_upnp',
+  'ipv6_public_addr_provider',
+  'ipv6_public_addr_auto',
+  'disable_relay_data',
+  'enable_udp_broadcast_relay',
+  'disable_tcp_hole_punching',
+]
+
 function readGeneratedNetworkConfigFields() {
   const source = ts.createSourceFile(
     generatedApiManagePath,
@@ -234,6 +271,25 @@ function assertFullFieldRoundTrip() {
   assert.equal(backend.socket_mark, 1234)
 }
 
+function assertBooleanFieldValuesPreserved() {
+  const input = allFieldFixture()
+  const normalized = normalizeNetworkConfig(input)
+  const backend = toBackendNetworkConfig(normalized)
+
+  for (const field of BOOLEAN_CONFIG_FIELDS) {
+    assert.equal(
+      normalized[field],
+      input[field],
+      `normalized config should preserve boolean field ${field}`,
+    )
+    assert.equal(
+      backend[field],
+      input[field],
+      `backend JSON should preserve boolean field ${field}`,
+    )
+  }
+}
+
 function assertEnumCompatibility() {
   const normalized = normalizeNetworkConfig({
     ...DEFAULT_NETWORK_CONFIG(),
@@ -409,6 +465,7 @@ function assertNumberBoundaries() {
 const tests = [
   assertFixtureCoversGeneratedFields,
   assertFullFieldRoundTrip,
+  assertBooleanFieldValuesPreserved,
   assertEnumCompatibility,
   assertAclDefaultsAndExplicitZero,
   assertNetworkingMethodNormalization,
