@@ -10,6 +10,7 @@ use ariadne::{CharSet, Config as AriadneConfig, IndexType, Label, Report, Report
 use base64::{Engine as _, prelude::BASE64_STANDARD};
 use clap::ValueEnum;
 use clap::builder::PossibleValue;
+use prost_reflect::{DynamicMessage, ReflectMessage, SerializeOptions};
 use serde::{Deserialize, Serialize};
 use strum::{Display, EnumString, VariantArray};
 use tokio::io::AsyncReadExt as _;
@@ -76,6 +77,54 @@ pub fn gen_default_flags() -> Flags {
         enable_udp_broadcast_relay: false,
         socket_mark: None,
     }
+}
+
+fn flags_to_dynamic_message(flags: &Flags) -> DynamicMessage {
+    let mut message = DynamicMessage::new(flags.descriptor());
+    message
+        .transcode_from(flags)
+        .expect("FlagsInConfig should transcode to DynamicMessage");
+    message
+}
+
+fn flags_to_full_json_map(flags: &DynamicMessage) -> serde_json::Map<String, serde_json::Value> {
+    let options = SerializeOptions::new()
+        .use_proto_field_name(true)
+        .skip_default_fields(false);
+
+    match flags
+        .serialize_with_options(serde_json::value::Serializer, &options)
+        .expect("FlagsInConfig should serialize to JSON")
+    {
+        serde_json::Value::Object(map) => map,
+        _ => unreachable!("FlagsInConfig should serialize to a JSON object"),
+    }
+}
+
+fn flags_diff_from_default(flags: &Flags) -> serde_json::Map<String, serde_json::Value> {
+    let default_flags = gen_default_flags();
+    let default_message = flags_to_dynamic_message(&default_flags);
+    let current_message = flags_to_dynamic_message(flags);
+    let default_map = flags_to_full_json_map(&default_message);
+    let current_map = flags_to_full_json_map(&current_message);
+
+    current_message
+        .descriptor()
+        .fields()
+        .filter_map(|field| {
+            let key = field.name();
+            let value_changed = default_map.get(key) != current_map.get(key);
+            let presence_changed =
+                default_message.has_field(&field) != current_message.has_field(&field);
+            if value_changed || presence_changed {
+                current_map
+                    .get(key)
+                    .map(|value| (key.to_string(), value.clone()))
+            } else {
+                None
+            }
+        })
+        .collect()
 }
 
 fn mapped_listener_allows_implicit_port(url: &url::Url) -> bool {
@@ -1093,28 +1142,9 @@ impl ConfigLoader for TomlConfigLoader {
     }
 
     fn dump(&self) -> String {
-        let default_flags_json = serde_json::to_string(&gen_default_flags()).unwrap();
-        let default_flags_hashmap =
-            serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(&default_flags_json)
-                .unwrap();
-
-        let cur_flags_json = serde_json::to_string(&self.get_flags()).unwrap();
-        let cur_flags_hashmap =
-            serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(&cur_flags_json)
-                .unwrap();
-
-        let mut flag_map: serde_json::Map<String, serde_json::Value> = Default::default();
-        for (key, value) in default_flags_hashmap {
-            if let Some(v) = cur_flags_hashmap.get(&key)
-                && *v != value
-            {
-                flag_map.insert(key, v.clone());
-            }
-        }
-
         let mut config = self.config.lock().unwrap().clone();
         Self::normalize_config_source(&mut config);
-        config.flags = Some(flag_map);
+        config.flags = Some(flags_diff_from_default(&self.get_flags()));
         if config.stun_servers == Some(StunInfoCollector::get_default_servers()) {
             config.stun_servers = None;
         }
@@ -1458,6 +1488,49 @@ socket_mark = 66
             ..cfg.get_flags()
         });
         assert_eq!(cfg.get_flags().socket_mark, None);
+    }
+
+    #[test]
+    fn dump_preserves_flags_that_differ_from_easytier_defaults() {
+        let cfg = TomlConfigLoader::default();
+        let mut flags = gen_default_flags();
+        flags.dev_name = "et_test".to_string();
+        flags.enable_quic_proxy = true;
+        flags.disable_tcp_hole_punching = true;
+        flags.disable_sym_hole_punching = true;
+        flags.multi_thread = false;
+        flags.bind_device = false;
+        flags.enable_ipv6 = false;
+        flags.relay_network_whitelist = "".to_string();
+        flags.mtu = 0;
+        flags.socket_mark = Some(0);
+        cfg.set_flags(flags);
+
+        let dumped = cfg.dump();
+
+        assert!(dumped.contains("dev_name = \"et_test\""));
+        assert!(dumped.contains("enable_quic_proxy = true"));
+        assert!(dumped.contains("disable_tcp_hole_punching = true"));
+        assert!(dumped.contains("disable_sym_hole_punching = true"));
+        assert!(dumped.contains("multi_thread = false"));
+        assert!(dumped.contains("bind_device = false"));
+        assert!(dumped.contains("enable_ipv6 = false"));
+        assert!(dumped.contains("relay_network_whitelist = \"\""));
+        assert!(dumped.contains("mtu = 0"));
+        assert!(dumped.contains("socket_mark = 0"));
+
+        let reloaded = TomlConfigLoader::new_from_str(&dumped).unwrap();
+        let reloaded_flags = reloaded.get_flags();
+        assert_eq!(reloaded_flags.dev_name, "et_test");
+        assert!(reloaded_flags.enable_quic_proxy);
+        assert!(reloaded_flags.disable_tcp_hole_punching);
+        assert!(reloaded_flags.disable_sym_hole_punching);
+        assert!(!reloaded_flags.multi_thread);
+        assert!(!reloaded_flags.bind_device);
+        assert!(!reloaded_flags.enable_ipv6);
+        assert_eq!(reloaded_flags.relay_network_whitelist, "");
+        assert_eq!(reloaded_flags.mtu, 0);
+        assert_eq!(reloaded_flags.socket_mark, Some(0));
     }
 
     #[test]
