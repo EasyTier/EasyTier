@@ -1,0 +1,13 @@
+# Automatically generated - DO NOT EDIT!
+
+"$schema" = "../../schemas/schema.json"
+
+[[permission]]
+identifier = "allow-get-vpn-status"
+description = "Enables the get_vpn_status command without any pre-configured scope."
+commands.allow = ["get_vpn_status"]
+
+[[permission]]
+identifier = "deny-get-vpn-status"
+description = "Denies the get_vpn_status command without any pre-configured scope."
+commands.deny = ["get_vpn_status"]

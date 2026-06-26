@@ -10,29 +10,33 @@ use crate::{
         api::{
             config::ConfigRpcServer,
             instance::{
-                AclManageRpcServer, ConnectorManageRpcServer, MappedListenerManageRpcServer,
-                PeerManageRpcServer, PortForwardManageRpcServer, StatsRpcServer, TcpProxyRpcServer,
-                VpnPortalRpcServer,
+                AclManageRpcServer, ConnectorManageRpcServer, CredentialManageRpcServer,
+                MappedListenerManageRpcServer, PeerManageRpcServer, PortForwardManageRpcServer,
+                StatsRpcServer, TcpProxyRpcServer, VpnPortalRpcServer,
             },
             logger::LoggerRpcServer,
             manage::WebClientServiceServer,
         },
+        peer_rpc::PeerCenterRpcServer,
         rpc_impl::{service_registry::ServiceRegistry, standalone::StandAloneServer},
         rpc_types::error::Error,
     },
     rpc_service::{
         acl_manage::AclManageRpcService, config::ConfigRpcService,
-        connector_manage::ConnectorManageRpcService, instance_manage::InstanceManageRpcService,
-        logger::LoggerRpcService, mapped_listener_manage::MappedListenerManageRpcService,
-        peer_manage::PeerManageRpcService, port_forward_manage::PortForwardManageRpcService,
+        connector_manage::ConnectorManageRpcService, credential_manage::CredentialManageRpcService,
+        instance_manage::InstanceManageRpcService, logger::LoggerRpcService,
+        mapped_listener_manage::MappedListenerManageRpcService,
+        peer_center::PeerCenterManageRpcService, peer_manage::PeerManageRpcService,
+        port_forward_manage::PortForwardManageRpcService, protected_port,
         proxy::TcpProxyRpcService, stats::StatsRpcService, vpn_portal::VpnPortalRpcService,
     },
-    tunnel::{tcp::TcpTunnelListener, TunnelListener},
-    web_client::DefaultHooks,
+    tunnel::{TunnelListener, tcp::TcpTunnelListener},
+    web_client::{DefaultHooks, WebClientHooks},
 };
 
 pub struct ApiRpcServer<T: TunnelListener + 'static> {
     rpc_server: StandAloneServer<T>,
+    protected_tcp_port: Option<u16>,
 }
 
 impl ApiRpcServer<TcpTunnelListener> {
@@ -41,14 +45,17 @@ impl ApiRpcServer<TcpTunnelListener> {
         rpc_portal_whitelist: Option<Vec<IpCidr>>,
         instance_manager: Arc<NetworkInstanceManager>,
     ) -> anyhow::Result<Self> {
+        let rpc_addr = parse_rpc_portal(rpc_portal)?;
         let mut server = Self::from_tunnel(
             TcpTunnelListener::new(
-                format!("tcp://{}", parse_rpc_portal(rpc_portal)?)
+                format!("tcp://{}", rpc_addr)
                     .parse()
                     .context("failed to parse rpc portal address")?,
             ),
             instance_manager,
         );
+        protected_port::register_protected_tcp_port(rpc_addr.port());
+        server.protected_tcp_port = Some(rpc_addr.port());
 
         server
             .rpc_server
@@ -61,8 +68,11 @@ impl ApiRpcServer<TcpTunnelListener> {
 impl<T: TunnelListener + 'static> ApiRpcServer<T> {
     pub fn from_tunnel(tunnel: T, instance_manager: Arc<NetworkInstanceManager>) -> Self {
         let rpc_server = StandAloneServer::new(tunnel);
-        register_api_rpc_service(&instance_manager, rpc_server.registry());
-        Self { rpc_server }
+        register_api_rpc_service(&instance_manager, rpc_server.registry(), None);
+        Self {
+            rpc_server,
+            protected_tcp_port: None,
+        }
     }
 }
 
@@ -80,13 +90,17 @@ impl<T: TunnelListener + 'static> ApiRpcServer<T> {
 
 impl<T: TunnelListener + 'static> Drop for ApiRpcServer<T> {
     fn drop(&mut self) {
+        if let Some(port) = self.protected_tcp_port.take() {
+            protected_port::unregister_protected_tcp_port(port);
+        }
         self.rpc_server.registry().unregister_all();
     }
 }
 
-fn register_api_rpc_service(
+pub fn register_api_rpc_service(
     instance_manager: &Arc<NetworkInstanceManager>,
     registry: &ServiceRegistry,
+    hooks: Option<Arc<dyn WebClientHooks>>,
 ) {
     registry.register(
         PeerManageRpcServer::new(PeerManageRpcService::new(instance_manager.clone())),
@@ -145,8 +159,18 @@ fn register_api_rpc_service(
     registry.register(
         WebClientServiceServer::new(InstanceManageRpcService::new(
             instance_manager.clone(),
-            Arc::new(DefaultHooks),
+            hooks.unwrap_or(Arc::new(DefaultHooks)),
         )),
+        "",
+    );
+
+    registry.register(
+        PeerCenterRpcServer::new(PeerCenterManageRpcService::new(instance_manager.clone())),
+        "",
+    );
+
+    registry.register(
+        CredentialManageRpcServer::new(CredentialManageRpcService::new(instance_manager.clone())),
         "",
     );
 }

@@ -1,8 +1,9 @@
 use axum::extract::Path;
 use axum::http::StatusCode;
 use axum::routing::{delete, post};
-use axum::{extract::State, routing::get, Json, Router};
+use axum::{Json, Router, extract::State, routing::get};
 use axum_login::AuthUser;
+use easytier::common::config::ConfigSource as RuntimeConfigSource;
 use easytier::launcher::NetworkConfig;
 use easytier::proto::common::Void;
 use easytier::proto::{api::manage::*, web::*};
@@ -16,7 +17,7 @@ use crate::db::UserIdInDb;
 
 use super::users::AuthSession;
 use super::{
-    convert_db_error, other_error, AppState, AppStateInner, Error, HttpHandleError, RpcError,
+    AppState, AppStateInner, Error, HttpHandleError, RpcError, convert_db_error, other_error,
 };
 
 fn convert_rpc_error(e: RpcError) -> (StatusCode, Json<Error>) {
@@ -60,6 +61,7 @@ struct SaveNetworkJsonReq {
 struct RunNetworkJsonReq {
     config: NetworkConfig,
     save: bool,
+    source: Option<i32>,
 }
 
 #[derive(Debug, serde::Deserialize, serde::Serialize)]
@@ -80,6 +82,17 @@ struct GetNetworkMetasJsonReq {
 #[derive(Debug, serde::Deserialize, serde::Serialize)]
 struct RemoveNetworkJsonReq {
     inst_ids: Vec<uuid::Uuid>,
+}
+
+#[derive(Debug, serde::Deserialize, serde::Serialize)]
+struct ManagedNetworkConfigJson {
+    instance_id: uuid::Uuid,
+    network_config: serde_json::Value,
+}
+
+#[derive(Debug, serde::Deserialize, serde::Serialize)]
+struct ReconcileManagedNetworkConfigsJsonReq {
+    managed_network_configs: Vec<ManagedNetworkConfigJson>,
 }
 
 #[derive(Debug, serde::Deserialize, serde::Serialize)]
@@ -130,10 +143,11 @@ impl NetworkApi {
         Json(payload): Json<RunNetworkJsonReq>,
     ) -> Result<Json<Void>, HttpHandleError> {
         client_mgr
-            .handle_run_network_instance(
+            .handle_run_network_instance_with_source(
                 (Self::get_user_id(&auth_session)?, machine_id),
                 payload.config,
                 payload.save,
+                RuntimeConfigSource::Web,
             )
             .await
             .map_err(convert_error)?;
@@ -274,10 +288,11 @@ impl NetworkApi {
             ));
         }
         client_mgr
-            .handle_save_network_config(
+            .handle_save_network_config_with_source(
                 (Self::get_user_id(&auth_session)?, machine_id),
                 inst_id,
                 payload.config,
+                RuntimeConfigSource::Web,
             )
             .await
             .map_err(convert_error)
@@ -293,6 +308,105 @@ impl NetworkApi {
             .await
             .map_err(convert_error)?
             .into())
+    }
+
+    // --- Token-authenticated machine-scoped handlers (no AuthSession) ---
+
+    async fn handle_run_network_instance_internal(
+        State(client_mgr): AppState,
+        Path((user_id, machine_id)): Path<(UserIdInDb, uuid::Uuid)>,
+        Json(payload): Json<RunNetworkJsonReq>,
+    ) -> Result<Json<Void>, HttpHandleError> {
+        let source = payload
+            .source
+            .and_then(RuntimeConfigSource::from_rpc)
+            .unwrap_or(RuntimeConfigSource::Web);
+        client_mgr
+            .handle_run_network_instance_with_source(
+                (user_id, machine_id),
+                payload.config,
+                payload.save,
+                source,
+            )
+            .await
+            .map_err(convert_error)?;
+        Ok(Void::default().into())
+    }
+
+    async fn handle_remove_network_instance_internal(
+        State(client_mgr): AppState,
+        Path((user_id, machine_id, inst_id)): Path<(UserIdInDb, uuid::Uuid, uuid::Uuid)>,
+    ) -> Result<(), HttpHandleError> {
+        client_mgr
+            .handle_remove_network_instances((user_id, machine_id), vec![inst_id])
+            .await
+            .map_err(convert_error)
+    }
+
+    async fn handle_reconcile_managed_network_configs_internal(
+        State(client_mgr): AppState,
+        Path((user_id, machine_id)): Path<(UserIdInDb, uuid::Uuid)>,
+        Json(payload): Json<ReconcileManagedNetworkConfigsJsonReq>,
+    ) -> Result<Json<Void>, HttpHandleError> {
+        let desired = payload
+            .managed_network_configs
+            .into_iter()
+            .map(|item| crate::webhook::ManagedNetworkConfig {
+                instance_id: item.instance_id.to_string(),
+                network_config: item.network_config,
+            })
+            .collect();
+        client_mgr
+            .reconcile_managed_network_configs(user_id, machine_id, desired)
+            .await
+            .map_err(|err| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    other_error(err.to_string()).into(),
+                )
+            })?;
+        Ok(Void::default().into())
+    }
+
+    async fn handle_list_network_instance_ids_internal(
+        State(client_mgr): AppState,
+        Path((user_id, machine_id)): Path<(UserIdInDb, uuid::Uuid)>,
+    ) -> Result<Json<ListNetworkInstanceIdsJsonResp>, HttpHandleError> {
+        Ok(client_mgr
+            .handle_list_network_instance_ids((user_id, machine_id))
+            .await
+            .map_err(convert_error)?
+            .into())
+    }
+
+    async fn handle_collect_network_info_internal(
+        State(client_mgr): AppState,
+        Path((user_id, machine_id)): Path<(UserIdInDb, uuid::Uuid)>,
+        Json(payload): Json<CollectNetworkInfoJsonReq>,
+    ) -> Result<Json<CollectNetworkInfoResponse>, HttpHandleError> {
+        Ok(client_mgr
+            .handle_collect_network_info((user_id, machine_id), payload.inst_ids)
+            .await
+            .map_err(convert_error)?
+            .into())
+    }
+
+    pub fn build_route_internal() -> Router<AppStateInner> {
+        Router::new()
+            .route(
+                "/api/internal/users/:user-id/machines/:machine-id/networks",
+                post(Self::handle_run_network_instance_internal)
+                    .put(Self::handle_reconcile_managed_network_configs_internal)
+                    .get(Self::handle_list_network_instance_ids_internal),
+            )
+            .route(
+                "/api/internal/users/:user-id/machines/:machine-id/networks/:inst-id",
+                delete(Self::handle_remove_network_instance_internal),
+            )
+            .route(
+                "/api/internal/users/:user-id/machines/:machine-id/networks/info",
+                get(Self::handle_collect_network_info_internal),
+            )
     }
 
     pub fn build_route() -> Router<AppStateInner> {

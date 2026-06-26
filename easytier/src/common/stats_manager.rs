@@ -5,8 +5,7 @@ use std::fmt;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::time::interval;
-
-use crate::common::scoped_task::ScopedTask;
+use tokio_util::task::AbortOnDropHandle;
 
 /// Predefined metric names for type safety
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -24,12 +23,26 @@ pub enum MetricName {
     /// RPC errors
     PeerRpcErrors,
 
-    /// Traffic bytes sent
+    /// Data-plane traffic bytes sent
     TrafficBytesTx,
-    /// Traffic bytes received
+    /// Data-plane traffic bytes sent, grouped by destination instance
+    TrafficBytesTxByInstance,
+    /// Data-plane traffic bytes received
     TrafficBytesRx,
+    /// Data-plane traffic bytes received, grouped by source instance
+    TrafficBytesRxByInstance,
+    /// Control-plane traffic bytes sent
+    TrafficControlBytesTx,
+    /// Control-plane traffic bytes sent, grouped by destination instance
+    TrafficControlBytesTxByInstance,
+    /// Control-plane traffic bytes received
+    TrafficControlBytesRx,
+    /// Control-plane traffic bytes received, grouped by source instance
+    TrafficControlBytesRxByInstance,
     /// Traffic bytes forwarded
     TrafficBytesForwarded,
+    /// Control-plane traffic bytes forwarded
+    TrafficControlBytesForwarded,
     /// Traffic bytes sent to self
     TrafficBytesSelfTx,
     /// Traffic bytes received from self
@@ -41,12 +54,26 @@ pub enum MetricName {
     /// Traffic bytes forwarded for foreign network, forward
     TrafficBytesForeignForwardForwarded,
 
-    /// Traffic packets sent
+    /// Data-plane traffic packets sent
     TrafficPacketsTx,
-    /// Traffic packets received
+    /// Data-plane traffic packets sent, grouped by destination instance
+    TrafficPacketsTxByInstance,
+    /// Data-plane traffic packets received
     TrafficPacketsRx,
+    /// Data-plane traffic packets received, grouped by source instance
+    TrafficPacketsRxByInstance,
+    /// Control-plane traffic packets sent
+    TrafficControlPacketsTx,
+    /// Control-plane traffic packets sent, grouped by destination instance
+    TrafficControlPacketsTxByInstance,
+    /// Control-plane traffic packets received
+    TrafficControlPacketsRx,
+    /// Control-plane traffic packets received, grouped by source instance
+    TrafficControlPacketsRxByInstance,
     /// Traffic packets forwarded
     TrafficPacketsForwarded,
+    /// Control-plane traffic packets forwarded
+    TrafficControlPacketsForwarded,
     /// Traffic packets sent to self
     TrafficPacketsSelfTx,
     /// Traffic packets received from self
@@ -57,6 +84,15 @@ pub enum MetricName {
     TrafficPacketsForeignForwardTx,
     /// Traffic packets forwarded for foreign network, forward
     TrafficPacketsForeignForwardForwarded,
+
+    /// UDP broadcast relay packets captured from the raw socket
+    UdpBroadcastRelayPacketsCaptured,
+    /// UDP broadcast relay packets ignored before forwarding
+    UdpBroadcastRelayPacketsIgnored,
+    /// UDP broadcast relay packets forwarded
+    UdpBroadcastRelayPacketsForwarded,
+    /// UDP broadcast relay packets that failed to forward
+    UdpBroadcastRelayPacketsForwardFailed,
 
     /// Compression bytes before compression
     CompressionBytesRxBefore,
@@ -81,8 +117,21 @@ impl fmt::Display for MetricName {
             MetricName::PeerRpcErrors => write!(f, "peer_rpc_errors"),
 
             MetricName::TrafficBytesTx => write!(f, "traffic_bytes_tx"),
+            MetricName::TrafficBytesTxByInstance => write!(f, "traffic_bytes_tx_by_instance"),
             MetricName::TrafficBytesRx => write!(f, "traffic_bytes_rx"),
+            MetricName::TrafficBytesRxByInstance => write!(f, "traffic_bytes_rx_by_instance"),
+            MetricName::TrafficControlBytesTx => write!(f, "traffic_control_bytes_tx"),
+            MetricName::TrafficControlBytesTxByInstance => {
+                write!(f, "traffic_control_bytes_tx_by_instance")
+            }
+            MetricName::TrafficControlBytesRx => write!(f, "traffic_control_bytes_rx"),
+            MetricName::TrafficControlBytesRxByInstance => {
+                write!(f, "traffic_control_bytes_rx_by_instance")
+            }
             MetricName::TrafficBytesForwarded => write!(f, "traffic_bytes_forwarded"),
+            MetricName::TrafficControlBytesForwarded => {
+                write!(f, "traffic_control_bytes_forwarded")
+            }
             MetricName::TrafficBytesSelfTx => write!(f, "traffic_bytes_self_tx"),
             MetricName::TrafficBytesSelfRx => write!(f, "traffic_bytes_self_rx"),
             MetricName::TrafficBytesForeignForwardRx => {
@@ -96,8 +145,25 @@ impl fmt::Display for MetricName {
             }
 
             MetricName::TrafficPacketsTx => write!(f, "traffic_packets_tx"),
+            MetricName::TrafficPacketsTxByInstance => {
+                write!(f, "traffic_packets_tx_by_instance")
+            }
             MetricName::TrafficPacketsRx => write!(f, "traffic_packets_rx"),
+            MetricName::TrafficPacketsRxByInstance => {
+                write!(f, "traffic_packets_rx_by_instance")
+            }
+            MetricName::TrafficControlPacketsTx => write!(f, "traffic_control_packets_tx"),
+            MetricName::TrafficControlPacketsTxByInstance => {
+                write!(f, "traffic_control_packets_tx_by_instance")
+            }
+            MetricName::TrafficControlPacketsRx => write!(f, "traffic_control_packets_rx"),
+            MetricName::TrafficControlPacketsRxByInstance => {
+                write!(f, "traffic_control_packets_rx_by_instance")
+            }
             MetricName::TrafficPacketsForwarded => write!(f, "traffic_packets_forwarded"),
+            MetricName::TrafficControlPacketsForwarded => {
+                write!(f, "traffic_control_packets_forwarded")
+            }
             MetricName::TrafficPacketsSelfTx => write!(f, "traffic_packets_self_tx"),
             MetricName::TrafficPacketsSelfRx => write!(f, "traffic_packets_self_rx"),
             MetricName::TrafficPacketsForeignForwardRx => {
@@ -108,6 +174,19 @@ impl fmt::Display for MetricName {
             }
             MetricName::TrafficPacketsForeignForwardForwarded => {
                 write!(f, "traffic_packets_foreign_forward_forwarded")
+            }
+
+            MetricName::UdpBroadcastRelayPacketsCaptured => {
+                write!(f, "udp_broadcast_relay_packets_captured")
+            }
+            MetricName::UdpBroadcastRelayPacketsIgnored => {
+                write!(f, "udp_broadcast_relay_packets_ignored")
+            }
+            MetricName::UdpBroadcastRelayPacketsForwarded => {
+                write!(f, "udp_broadcast_relay_packets_forwarded")
+            }
+            MetricName::UdpBroadcastRelayPacketsForwardFailed => {
+                write!(f, "udp_broadcast_relay_packets_forward_failed")
             }
 
             MetricName::CompressionBytesRxBefore => write!(f, "compression_bytes_rx_before"),
@@ -125,6 +204,10 @@ impl fmt::Display for MetricName {
 pub enum LabelType {
     /// Network Name
     NetworkName(String),
+    /// Destination instance ID
+    ToInstanceId(String),
+    /// Source instance ID
+    FromInstanceId(String),
     /// Source peer ID
     SrcPeerId(u32),
     /// Destination peer ID
@@ -153,6 +236,8 @@ impl fmt::Display for LabelType {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             LabelType::NetworkName(name) => write!(f, "network_name={}", name),
+            LabelType::ToInstanceId(id) => write!(f, "to_instance_id={}", id),
+            LabelType::FromInstanceId(id) => write!(f, "from_instance_id={}", id),
             LabelType::SrcPeerId(id) => write!(f, "src_peer_id={}", id),
             LabelType::DstPeerId(id) => write!(f, "dst_peer_id={}", id),
             LabelType::ServiceName(name) => write!(f, "service_name={}", name),
@@ -172,6 +257,8 @@ impl LabelType {
     pub fn key(&self) -> &'static str {
         match self {
             LabelType::NetworkName(_) => "network_name",
+            LabelType::ToInstanceId(_) => "to_instance_id",
+            LabelType::FromInstanceId(_) => "from_instance_id",
             LabelType::SrcPeerId(_) => "src_peer_id",
             LabelType::DstPeerId(_) => "dst_peer_id",
             LabelType::ServiceName(_) => "service_name",
@@ -189,6 +276,8 @@ impl LabelType {
     pub fn value(&self) -> String {
         match self {
             LabelType::NetworkName(name) => name.clone(),
+            LabelType::ToInstanceId(id) => id.clone(),
+            LabelType::FromInstanceId(id) => id.clone(),
             LabelType::SrcPeerId(id) => id.to_string(),
             LabelType::DstPeerId(id) => id.to_string(),
             LabelType::ServiceName(name) => name.clone(),
@@ -316,7 +405,9 @@ impl UnsafeCounter {
     /// that no other thread is accessing this counter simultaneously.
     pub unsafe fn add(&self, delta: u64) {
         let ptr = self.value.get();
-        *ptr = (*ptr).saturating_add(delta);
+        unsafe {
+            *ptr = (*ptr).saturating_add(delta);
+        }
     }
 
     /// Increment the counter by 1
@@ -324,7 +415,9 @@ impl UnsafeCounter {
     /// This method is unsafe because it uses UnsafeCell. The caller must ensure
     /// that no other thread is accessing this counter simultaneously.
     pub unsafe fn inc(&self) {
-        self.add(1);
+        unsafe {
+            self.add(1);
+        }
     }
 
     /// Get the current value of the counter
@@ -333,7 +426,7 @@ impl UnsafeCounter {
     /// that no other thread is modifying this counter simultaneously.
     pub unsafe fn get(&self) -> u64 {
         let ptr = self.value.get();
-        *ptr
+        unsafe { *ptr }
     }
 
     /// Reset the counter to zero
@@ -342,7 +435,9 @@ impl UnsafeCounter {
     /// that no other thread is accessing this counter simultaneously.
     pub unsafe fn reset(&self) {
         let ptr = self.value.get();
-        *ptr = 0;
+        unsafe {
+            *ptr = 0;
+        }
     }
 
     /// Set the counter to a specific value
@@ -351,7 +446,9 @@ impl UnsafeCounter {
     /// that no other thread is accessing this counter simultaneously.
     pub unsafe fn set(&self, value: u64) {
         let ptr = self.value.get();
-        *ptr = value;
+        unsafe {
+            *ptr = value;
+        }
     }
 }
 
@@ -388,7 +485,9 @@ impl MetricData {
     /// that no other thread is accessing this timestamp simultaneously.
     unsafe fn touch(&self) {
         let ptr = self.last_updated.get();
-        *ptr = Instant::now();
+        unsafe {
+            *ptr = Instant::now();
+        }
     }
 
     /// Get the last updated timestamp
@@ -397,7 +496,7 @@ impl MetricData {
     /// that no other thread is modifying this timestamp simultaneously.
     unsafe fn get_last_updated(&self) -> Instant {
         let ptr = self.last_updated.get();
-        *ptr
+        unsafe { *ptr }
     }
 }
 
@@ -500,7 +599,7 @@ impl MetricSnapshot {
 /// StatsManager manages global statistics with high performance counters
 pub struct StatsManager {
     counters: Arc<DashMap<MetricKey, Arc<MetricData>>>,
-    cleanup_task: ScopedTask<()>,
+    cleanup_task: AbortOnDropHandle<()>,
 }
 
 impl StatsManager {
@@ -523,9 +622,9 @@ impl StatsManager {
                     break;
                 };
 
-                // Remove entries that haven't been updated for 3 minutes
-                counters.retain(|_, metric_data: &mut Arc<MetricData>| unsafe {
-                    metric_data.get_last_updated() > cutoff_time
+                counters.retain(|_, metric_data: &mut Arc<MetricData>| {
+                    Arc::strong_count(metric_data) > 1
+                        || unsafe { metric_data.get_last_updated() > cutoff_time }
                 });
                 counters.shrink_to_fit();
             }
@@ -533,7 +632,7 @@ impl StatsManager {
 
         Self {
             counters,
-            cleanup_task: cleanup_task.into(),
+            cleanup_task: AbortOnDropHandle::new(cleanup_task),
         }
     }
 
@@ -677,6 +776,20 @@ mod tests {
             .with_label("method", "ping");
 
         assert_eq!(labels.to_key(), "method=ping,peer_id=peer1");
+
+        let instance_labels = LabelSet::new()
+            .with_label_type(LabelType::NetworkName("default".to_string()))
+            .with_label_type(LabelType::ToInstanceId(
+                "87ede5a2-9c3d-492d-9bbe-989b9d07e742".to_string(),
+            ))
+            .with_label_type(LabelType::FromInstanceId(
+                "9b7d4368-b688-4897-a1f4-b6caaed9e8a6".to_string(),
+            ));
+
+        assert_eq!(
+            instance_labels.to_key(),
+            "from_instance_id=9b7d4368-b688-4897-a1f4-b6caaed9e8a6,network_name=default,to_instance_id=87ede5a2-9c3d-492d-9bbe-989b9d07e742"
+        );
     }
 
     #[tokio::test]
@@ -745,12 +858,24 @@ mod tests {
         let counter2 = stats.get_counter(MetricName::PeerRpcClientTx, labels);
         counter2.set(50);
 
+        let traffic_labels = LabelSet::new()
+            .with_label_type(LabelType::NetworkName("default".to_string()))
+            .with_label_type(LabelType::ToInstanceId(
+                "87ede5a2-9c3d-492d-9bbe-989b9d07e742".to_string(),
+            ));
+        let counter3 = stats.get_counter(MetricName::TrafficBytesTxByInstance, traffic_labels);
+        counter3.set(25);
+
         let prometheus_output = stats.export_prometheus();
 
         assert!(prometheus_output.contains("# TYPE peer_rpc_client_tx counter"));
         assert!(prometheus_output.contains("peer_rpc_client_tx{status=\"success\"} 50"));
         assert!(prometheus_output.contains("# TYPE traffic_bytes_tx counter"));
         assert!(prometheus_output.contains("traffic_bytes_tx 100"));
+        assert!(prometheus_output.contains("# TYPE traffic_bytes_tx_by_instance counter"));
+        assert!(prometheus_output.contains(
+            "traffic_bytes_tx_by_instance{network_name=\"default\",to_instance_id=\"87ede5a2-9c3d-492d-9bbe-989b9d07e742\"} 25"
+        ));
     }
 
     #[tokio::test]
@@ -814,6 +939,33 @@ mod tests {
 
         counter2.add(5);
         assert_eq!(counter2.get(), 25);
+    }
+
+    #[tokio::test]
+    async fn test_cleanup_keeps_metrics_with_live_handles() {
+        let stats = StatsManager::new();
+        let counter = stats.get_simple_counter(MetricName::TrafficBytesForwarded);
+        counter.set(1);
+
+        let cutoff_time = Instant::now().checked_add(Duration::from_secs(1)).unwrap();
+        stats
+            .counters
+            .retain(|_, metric_data: &mut Arc<MetricData>| {
+                Arc::strong_count(metric_data) > 1
+                    || unsafe { metric_data.get_last_updated() > cutoff_time }
+            });
+
+        assert_eq!(stats.metric_count(), 1);
+        assert_eq!(stats.get_all_metrics().len(), 1);
+
+        drop(counter);
+        stats
+            .counters
+            .retain(|_, metric_data: &mut Arc<MetricData>| {
+                Arc::strong_count(metric_data) > 1
+                    || unsafe { metric_data.get_last_updated() > cutoff_time }
+            });
+        assert_eq!(stats.metric_count(), 0);
     }
 
     #[tokio::test]

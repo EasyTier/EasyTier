@@ -1,41 +1,44 @@
+use crossbeam::atomic::AtomicCell;
+use futures::{StreamExt, TryFutureExt};
 use std::{
     any::Any,
     fmt::Debug,
     pin::Pin,
     sync::{
-        atomic::{AtomicU32, Ordering},
         Arc,
+        atomic::{AtomicU32, Ordering},
     },
 };
 
-use arc_swap::ArcSwapOption;
-use crossbeam::atomic::AtomicCell;
-use futures::{StreamExt, TryFutureExt};
-
-use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use base64::Engine as _;
+use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
+use guarden::guard;
 use hmac::Mac;
 use prost::Message;
 
 use tokio::{
-    sync::{broadcast, Mutex},
+    sync::{Mutex, broadcast},
     task::JoinSet,
-    time::{timeout, Duration},
+    time::{Duration, timeout},
 };
 
 use tracing::Instrument;
 use zerocopy::AsBytes;
 
-use snow::{params::NoiseParams, HandshakeState};
+use snow::{HandshakeState, params::NoiseParams};
 
+use super::{
+    PacketRecvChan,
+    peer_conn_ping::PeerConnPinger,
+    peer_session::{PeerSession, PeerSessionAction},
+    traffic_metrics::AggregateTrafficMetrics,
+};
 use crate::{
     common::{
+        PeerId,
         config::{NetworkIdentity, NetworkSecretDigest},
-        defer,
         error::Error,
         global_ctx::ArcGlobalCtx,
-        stats_manager::{CounterHandle, LabelSet, LabelType, MetricName},
-        PeerId,
     },
     peers::peer_session::{PeerSessionStore, SessionKey, UpsertResponderSessionReturn},
     proto::{
@@ -43,23 +46,17 @@ use crate::{
         common::{LimiterConfig, SecureModeConfig, TunnelInfo},
         peer_rpc::{
             HandshakeRequest, PeerConnNoiseMsg1Pb, PeerConnNoiseMsg2Pb, PeerConnNoiseMsg3Pb,
-            PeerConnSessionActionPb, SecureAuthLevel,
+            PeerConnSessionActionPb, PeerIdentityType, SecureAuthLevel,
         },
     },
     tunnel::{
+        Tunnel, TunnelError, ZCPacketStream,
         filter::{StatsRecorderTunnelFilter, TunnelFilter, TunnelFilterChain, TunnelWithFilter},
         mpsc::{MpscTunnel, MpscTunnelSender},
         packet_def::{PacketType, ZCPacket},
         stats::{Throughput, WindowLatency},
-        Tunnel, TunnelError, ZCPacketStream,
     },
     use_global_var,
-};
-
-use super::{
-    peer_conn_ping::PeerConnPinger,
-    peer_session::{PeerSession, PeerSessionAction},
-    PacketRecvChan,
 };
 
 pub type PeerConnId = uuid::Uuid;
@@ -83,6 +80,7 @@ struct NoiseHandshakeResult {
     remote_static_pubkey: Vec<u8>,
     handshake_hash: Vec<u8>,
     secure_auth_level: SecureAuthLevel,
+    peer_identity_type: PeerIdentityType,
     remote_network_name: String,
 
     secret_digest: Vec<u8>,
@@ -138,6 +136,8 @@ impl PeerSessionTunnelFilter {
         hdr.packet_type == PacketType::NoiseHandshakeMsg1 as u8
             || hdr.packet_type == PacketType::NoiseHandshakeMsg2 as u8
             || hdr.packet_type == PacketType::NoiseHandshakeMsg3 as u8
+            || hdr.packet_type == PacketType::RelayHandshake as u8
+            || hdr.packet_type == PacketType::RelayHandshakeAck as u8
             || hdr.packet_type == PacketType::Ping as u8
             || hdr.packet_type == PacketType::Pong as u8
     }
@@ -169,9 +169,19 @@ impl TunnelFilter for PeerSessionTunnelFilter {
         };
 
         let my_peer_id = self.my_peer_id.load();
-        session
-            .encrypt_payload(my_peer_id, peer_id, &mut data)
-            .ok()?;
+        if my_peer_id != hdr.from_peer_id.get() {
+            return Some(data);
+        }
+
+        if let Err(e) = session.encrypt_payload(my_peer_id, peer_id, &mut data) {
+            tracing::warn!(
+                ?my_peer_id,
+                ?peer_id,
+                ?e,
+                "PeerSessionTunnelFilter: encrypt failed, dropping packet"
+            );
+            return None;
+        }
 
         Some(data)
     }
@@ -198,7 +208,14 @@ impl TunnelFilter for PeerSessionTunnelFilter {
         if from_peer_id == 0 {
             return Some(Ok(data));
         }
-        self.peer_id.store(Some(from_peer_id));
+
+        let Some(peer_id) = self.peer_id.load() else {
+            return Some(Ok(data));
+        };
+
+        if from_peer_id != peer_id {
+            return Some(Ok(data));
+        }
 
         let mut guard = self.session.lock().unwrap();
         let Some(session) = guard.as_mut() else {
@@ -206,7 +223,22 @@ impl TunnelFilter for PeerSessionTunnelFilter {
         };
 
         let my_peer_id = self.my_peer_id.load();
-        let _ = session.decrypt_payload(from_peer_id, my_peer_id, &mut data);
+        if hdr.to_peer_id.get() != my_peer_id {
+            return Some(Ok(data));
+        }
+
+        if let Err(e) = session.decrypt_payload(from_peer_id, my_peer_id, &mut data) {
+            if !session.is_valid() {
+                // Session auto-invalidated after too many consecutive failures.
+                // Close the connection to trigger reconnection with a fresh handshake.
+                tracing::error!(?e, "session invalidated, closing connection");
+                return Some(Err(TunnelError::InternalError(
+                    "session invalidated due to consecutive decrypt failures".to_string(),
+                )));
+            }
+            // Transient failure, drop this packet but keep the connection alive.
+            return None;
+        }
 
         Some(Ok(data))
     }
@@ -249,13 +281,6 @@ impl PeerConnCloseNotify {
     }
 }
 
-struct PeerConnCounter {
-    traffic_tx_bytes: CounterHandle,
-    traffic_rx_bytes: CounterHandle,
-    traffic_tx_packets: CounterHandle,
-    traffic_rx_packets: CounterHandle,
-}
-
 pub struct PeerConn {
     conn_id: PeerConnId,
 
@@ -287,8 +312,6 @@ pub struct PeerConn {
     latency_stats: Arc<WindowLatency>,
     throughput: Arc<Throughput>,
     loss_rate_stats: Arc<AtomicU32>,
-
-    counters: ArcSwapOption<PeerConnCounter>,
 
     peer_session_store: Arc<PeerSessionStore>,
     my_encrypt_algo: String,
@@ -356,9 +379,9 @@ impl PeerConn {
             session_filter,
             noise_handshake_result: None,
 
-            tunnel: Arc::new(Mutex::new(Box::new(defer::Defer::new(move || {
-                mpsc_tunnel.close()
-            })))),
+            tunnel: Arc::new(Mutex::new(Box::new(
+                guard!([mut mpsc_tunnel] mpsc_tunnel.close()),
+            ))),
             sink,
             recv: Mutex::new(Some(recv)),
             tunnel_info,
@@ -377,8 +400,6 @@ impl PeerConn {
             latency_stats: Arc::new(WindowLatency::new(15)),
             throughput,
             loss_rate_stats: Arc::new(AtomicU32::new(0)),
-
-            counters: ArcSwapOption::new(None),
 
             peer_session_store,
             my_encrypt_algo,
@@ -420,6 +441,10 @@ impl PeerConn {
         self.is_hole_punched
     }
 
+    pub fn is_closed(&self) -> bool {
+        self.close_event_notifier.is_closed()
+    }
+
     async fn wait_handshake(&self, need_retry: &mut bool) -> Result<HandshakeRequest, Error> {
         *need_retry = false;
 
@@ -431,16 +456,17 @@ impl PeerConn {
                 return Err(Error::WaitRespError(format!(
                     "conn recv error during wait handshake response, err: {:?}",
                     e
-                )))
+                )));
             }
             None => {
                 return Err(Error::WaitRespError(
                     "conn closed during wait handshake response".to_owned(),
-                ))
+                ));
             }
         };
 
         *need_retry = true;
+        let rsp_len = rsp.buf_len() as u64;
 
         let Some(peer_mgr_hdr) = rsp.peer_manager_header() else {
             return Err(Error::WaitRespError(format!(
@@ -466,6 +492,8 @@ impl PeerConn {
             ));
         }
 
+        self.record_control_rx(&rsp.network_name, rsp_len);
+
         Ok(rsp)
     }
 
@@ -488,7 +516,11 @@ impl PeerConn {
         .await?
     }
 
-    async fn send_handshake(&self, send_secret_digest: bool) -> Result<(), Error> {
+    async fn send_handshake(
+        &self,
+        send_secret_digest: bool,
+        metric_network_name: &str,
+    ) -> Result<(), Error> {
         let network = self.global_ctx.get_network_identity();
         let mut req = HandshakeRequest {
             magic: MAGIC,
@@ -516,11 +548,13 @@ impl PeerConn {
             PeerId::default(),
             PacketType::HandShake as u8,
         );
+        let pkt_len = zc_packet.buf_len() as u64;
 
         self.sink.send(zc_packet).await.map_err(|e| {
             tracing::warn!("send handshake request error: {:?}", e);
             Error::WaitRespError("send handshake request error".to_owned())
         })?;
+        self.record_control_tx(metric_network_name, pkt_len);
 
         // yield to send the response packet
         tokio::task::yield_now().await;
@@ -574,7 +608,7 @@ impl PeerConn {
                     return Err(Error::WaitRespError(format!(
                         "conn recv error during wait handshake response, err: {:?}",
                         e
-                    )))
+                    )));
                 }
             };
 
@@ -619,11 +653,12 @@ impl PeerConn {
             .and_then(|p| p.peer_public_key)
     }
 
-    async fn send_noise_msg<Msg: prost::Message>(
+    async fn send_noise_msg<Msg: prost::Message + Debug>(
         &self,
         pb: Msg,
         packet_type: PacketType,
         remote_peer_id: PeerId,
+        metric_network_name: &str,
         hs: &mut snow::HandshakeState,
     ) -> Result<(), Error> {
         tracing::info!(
@@ -640,7 +675,118 @@ impl PeerConn {
             .map_err(|e| Error::WaitRespError(format!("noise write msg1 failed: {e:?}")))?;
         let mut pkt = ZCPacket::new_with_payload(&msg[..msg_len]);
         pkt.fill_peer_manager_hdr(self.my_peer_id, remote_peer_id, packet_type as u8);
-        Ok(self.sink.send(pkt).await?)
+        let pkt_len = pkt.buf_len() as u64;
+        self.sink.send(pkt).await?;
+        self.record_control_tx(metric_network_name, pkt_len);
+        Ok(())
+    }
+
+    /// Unified remote peer authentication verification.
+    ///
+    /// Auth outcome matrix (current behavior):
+    ///
+    /// | Client role | Server role | Typical credential condition | Client auth level | Server auth level | Client sees server type | Server sees client type |
+    /// | --- | --- | --- | --- | --- | --- | --- |
+    /// | Admin | Admin | same network_secret, proof verified | NetworkSecretConfirmed | NetworkSecretConfirmed | Admin | Admin |
+    /// | Credential | Admin | client pubkey is trusted by admin | EncryptedUnauthenticated | PeerVerified | Admin | Credential |
+    /// | Credential | Admin | client pubkey is unknown | handshake may fail | handshake reject | unknown | unknown |
+    /// | Admin | SharedNode | pinned key match | PeerVerified | EncryptedUnauthenticated | SharedNode | Admin |
+    /// | Admin | SharedNode | local has no pinned key requirement | EncryptedUnauthenticated | EncryptedUnauthenticated | SharedNode | Admin |
+    /// | Credential | SharedNode | no pin and not trusted | EncryptedUnauthenticated | EncryptedUnauthenticated | SharedNode | Credential |
+    /// | Credential | Credential | should reject | handshake reject | handshake reject | unknown | unknown |
+    ///
+    /// Logic (in priority order):
+    /// 1. **NetworkSecretConfirmed**: proof verification succeeds
+    /// 2. **PeerVerified**: pinned_pubkey matches and is in trusted list
+    ///    (if no network_secret, pinned_pubkey must be in trusted list)
+    /// 3. **PeerVerified**: pubkey is in trusted list
+    /// 4. **EncryptedUnauthenticated**: initiator without network_secret
+    /// 5. **Reject**: none of the above
+    #[allow(clippy::too_many_arguments)]
+    fn verify_remote_auth(
+        &self,
+        proof: Option<&[u8]>,
+        handshake_hash: &[u8],
+        remote_pubkey: &[u8],
+        pinned_pubkey: Option<&[u8]>,
+        has_network_secret: bool,
+        is_initiator: bool,
+        remote_network_name: &str,
+    ) -> Result<SecureAuthLevel, Error> {
+        // 1. Verify proof
+        if let Some(proof) = proof
+            && let Some(mac) = self.global_ctx.get_secret_proof(handshake_hash)
+            && mac.verify_slice(proof).is_ok()
+        {
+            return Ok(SecureAuthLevel::NetworkSecretConfirmed);
+        }
+
+        // 2. Check pinned pubkey
+        if let Some(pinned) = pinned_pubkey {
+            if pinned != remote_pubkey {
+                return Err(Error::WaitRespError(
+                    "pinned remote static pubkey mismatch".to_owned(),
+                ));
+            }
+            // If no network_secret, pinned key must be in trusted list
+            if !has_network_secret
+                && !self
+                    .global_ctx
+                    .is_pubkey_trusted(remote_pubkey, remote_network_name)
+            {
+                return Err(Error::WaitRespError(
+                    "pinned pubkey not in trusted list".to_owned(),
+                ));
+            }
+            return Ok(SecureAuthLevel::PeerVerified);
+        }
+
+        // 3. Check if pubkey is in trusted list
+        if self
+            .global_ctx
+            .is_pubkey_trusted(remote_pubkey, remote_network_name)
+        {
+            return Ok(SecureAuthLevel::PeerVerified);
+        }
+
+        // 4. If we are the initiator without network_secret, keep encrypted channel only.
+        if is_initiator && !has_network_secret {
+            return Ok(SecureAuthLevel::EncryptedUnauthenticated);
+        }
+
+        // 5. Reject
+        Err(Error::WaitRespError(
+            "authentication failed: invalid proof and unknown credential".to_owned(),
+        ))
+    }
+
+    fn classify_remote_identity(
+        &self,
+        remote_network_name: &str,
+        secure_auth_level: SecureAuthLevel,
+        remote_role_hint_is_same_network: bool,
+        remote_sent_secret_proof: bool,
+        is_client: bool,
+    ) -> PeerIdentityType {
+        if !remote_role_hint_is_same_network
+            || remote_network_name != self.global_ctx.get_network_name()
+        {
+            if is_client {
+                PeerIdentityType::SharedNode
+            } else if remote_sent_secret_proof {
+                PeerIdentityType::Admin
+            } else {
+                PeerIdentityType::Credential
+            }
+        } else {
+            if matches!(secure_auth_level, SecureAuthLevel::NetworkSecretConfirmed)
+                || remote_sent_secret_proof
+            {
+                return PeerIdentityType::Admin;
+            }
+
+            PeerIdentityType::Credential
+        }
     }
 
     async fn do_noise_handshake_as_client(&self) -> Result<NoiseHandshakeResult, Error> {
@@ -681,12 +827,11 @@ impl PeerConn {
             .local_private_key(&local_private_key)?
             .build_initiator()?;
 
-        let mut secure_auth_level = SecureAuthLevel::EncryptedUnauthenticated;
-
         self.send_noise_msg(
             msg1_pb,
             PacketType::NoiseHandshakeMsg1,
             PeerId::default(),
+            &network.network_name,
             &mut hs,
         )
         .await?;
@@ -698,11 +843,12 @@ impl PeerConn {
             self.recv_next_peer_manager_packet(Some(PacketType::NoiseHandshakeMsg2)),
         )
         .await??;
+        self.record_control_rx(&network.network_name, msg2.buf_len() as u64);
         let remote_peer_id = msg2.get_src_peer_id().expect("missing src peer id");
-        if let Some(hint) = self.peer_id_hint {
-            if hint != remote_peer_id {
-                return Err(Error::WaitRespError("peer_id mismatch".to_owned()));
-            }
+        if let Some(hint) = self.peer_id_hint
+            && hint != remote_peer_id
+        {
+            return Err(Error::WaitRespError("peer_id mismatch".to_owned()));
         }
         let msg2_pb = Self::decode_handshake_message::<PeerConnNoiseMsg2Pb>(
             PacketType::NoiseHandshakeMsg2,
@@ -717,29 +863,12 @@ impl PeerConn {
         let action = PeerConnSessionActionPb::try_from(msg2_pb.action)
             .map_err(|_| Error::WaitRespError("invalid session action".to_owned()))?;
         let remote_network_name = msg2_pb.b_network_name.clone();
+        let remote_sent_secret_proof = msg2_pb.secret_proof_32.is_some();
 
-        if remote_network_name == network.network_name {
-            if msg2_pb.role_hint != 1 {
-                return Err(Error::WaitRespError(
-                    "role_hint must be 1 when network_name is same".to_owned(),
-                ));
-            }
-            let Some(secret_proof_32) = msg2_pb.secret_proof_32 else {
-                return Err(Error::WaitRespError(
-                    "secret_proof_32 must be present when role_hint is 1".to_owned(),
-                ));
-            };
-            let verify_result = self
-                .global_ctx
-                .get_secret_proof(&server_handshake_hash)
-                .map(|mac| mac.verify_slice(&secret_proof_32).is_ok());
-            if verify_result != Some(true) {
-                return Err(Error::WaitRespError(format!(
-                    "secret_proof_32 verify failed: {verify_result:?}"
-                )));
-            }
-
-            secure_auth_level = secure_auth_level.max(SecureAuthLevel::NetworkSecretConfirmed);
+        if remote_network_name == network.network_name && msg2_pb.role_hint != 1 {
+            return Err(Error::WaitRespError(
+                "role_hint must be 1 when network_name is same".to_owned(),
+            ));
         }
 
         let handshake_hash_for_proof = hs.get_handshake_hash().to_vec();
@@ -767,6 +896,7 @@ impl PeerConn {
             msg3_pb,
             PacketType::NoiseHandshakeMsg3,
             remote_peer_id,
+            &network.network_name,
             &mut hs,
         )
         .await?;
@@ -775,17 +905,35 @@ impl PeerConn {
             .get_remote_static()
             .map(|x: &[u8]| x.to_vec())
             .unwrap_or_default();
+        let remote_static_key = if remote_static.len() == 32 {
+            let mut key = [0u8; 32];
+            key.copy_from_slice(&remote_static);
+            Some(key)
+        } else {
+            None
+        };
 
-        if let Some(pinned) = pinned_remote_pubkey.as_ref() {
-            if pinned.as_slice() == remote_static.as_slice() {
-                secure_auth_level =
-                    secure_auth_level.max(SecureAuthLevel::SharedNodePubkeyVerified);
-            } else {
-                return Err(Error::WaitRespError(
-                    "pinned remote static pubkey mismatch".to_owned(),
-                ));
-            }
-        }
+        // Verify server authentication using unified logic
+        let secure_auth_level = if msg2_pb.role_hint != 1 && pinned_remote_pubkey.is_none() {
+            SecureAuthLevel::EncryptedUnauthenticated
+        } else {
+            self.verify_remote_auth(
+                msg2_pb.secret_proof_32.as_deref(),
+                &server_handshake_hash,
+                &remote_static,
+                pinned_remote_pubkey.as_deref(),
+                network.network_secret.is_some(),
+                true, // is_initiator
+                &remote_network_name,
+            )?
+        };
+        let peer_identity_type = self.classify_remote_identity(
+            &remote_network_name,
+            secure_auth_level,
+            msg2_pb.role_hint == 1,
+            remote_sent_secret_proof,
+            true,
+        );
 
         let handshake_hash = hs.get_handshake_hash().to_vec();
 
@@ -812,6 +960,7 @@ impl PeerConn {
             msg2_pb.initial_epoch,
             algo,
             msg2_pb.server_encryption_algorithm.clone(),
+            remote_static_key,
         )?;
 
         Ok(NoiseHandshakeResult {
@@ -821,6 +970,7 @@ impl PeerConn {
             remote_static_pubkey: remote_static,
             handshake_hash,
             secure_auth_level,
+            peer_identity_type,
             remote_network_name,
             // we have authorized the peer with noise handshake, so just set secret digest same as us even remote is a shared node.
             secret_digest,
@@ -914,6 +1064,7 @@ impl PeerConn {
         let remote_peer_id = first_msg1
             .get_src_peer_id()
             .expect("msg1 must have src peer id");
+        let first_msg1_len = first_msg1.buf_len() as u64;
 
         let msg1_pb = Self::decode_handshake_message::<PeerConnNoiseMsg1Pb>(
             PacketType::NoiseHandshakeMsg1,
@@ -921,6 +1072,7 @@ impl PeerConn {
             first_msg1,
         )?;
         let remote_network_name = msg1_pb.a_network_name.clone();
+        self.record_control_rx(&remote_network_name, first_msg1_len);
 
         // this may update my peer id
         handshake_recved(self, &remote_network_name)?;
@@ -949,6 +1101,7 @@ impl PeerConn {
             msg1_pb.a_session_generation,
             algo.clone(),
             msg1_pb.client_encryption_algorithm.clone(),
+            None,
         )?;
 
         let b_conn_id = uuid::Uuid::new_v4();
@@ -972,6 +1125,7 @@ impl PeerConn {
             msg2_pb,
             PacketType::NoiseHandshakeMsg2,
             remote_peer_id,
+            &remote_network_name,
             &mut hs,
         )
         .await?;
@@ -983,6 +1137,7 @@ impl PeerConn {
             self.recv_next_peer_manager_packet(Some(PacketType::NoiseHandshakeMsg3)),
         )
         .await??;
+        self.record_control_rx(&remote_network_name, msg3_pkt.buf_len() as u64);
         let msg3_pb = Self::decode_handshake_message::<PeerConnNoiseMsg3Pb>(
             PacketType::NoiseHandshakeMsg3,
             Some(&mut hs),
@@ -1000,28 +1155,44 @@ impl PeerConn {
             ));
         }
 
-        let mut secure_auth_level = SecureAuthLevel::EncryptedUnauthenticated;
-        let Some(proof) = msg3_pb.secret_proof_32.as_ref() else {
-            return Err(Error::WaitRespError(
-                "noise msg3 secret_proof_32 is required".to_owned(),
-            ));
-        };
-
-        if role_hint == 1 {
-            if let Some(mac) = self.global_ctx.get_secret_proof(&handshake_hash_for_proof) {
-                if mac.verify_slice(proof).is_ok() {
-                    secure_auth_level =
-                        secure_auth_level.max(SecureAuthLevel::NetworkSecretConfirmed);
-                } else {
-                    return Err(Error::WaitRespError("invalid secret_proof".to_owned()));
-                }
-            }
-        }
-
         let remote_static = hs
             .get_remote_static()
             .map(|x: &[u8]| x.to_vec())
             .unwrap_or_default();
+        let remote_static_key = if remote_static.len() == 32 {
+            let mut key = [0u8; 32];
+            key.copy_from_slice(&remote_static);
+            Some(key)
+        } else {
+            None
+        };
+        session.check_or_set_peer_static_pubkey(remote_static_key)?;
+
+        // Verify client authentication using unified logic
+        // Note: Server doesn't use pinned_pubkey since it's the responder
+        let secure_auth_level = if role_hint == 1 {
+            self.verify_remote_auth(
+                msg3_pb.secret_proof_32.as_deref(),
+                &handshake_hash_for_proof,
+                &remote_static,
+                None, // Server doesn't have pinned_remote_pubkey
+                self.global_ctx
+                    .get_network_identity()
+                    .network_secret
+                    .is_some(),
+                false, // is_initiator
+                &remote_network_name,
+            )?
+        } else {
+            SecureAuthLevel::EncryptedUnauthenticated
+        };
+        let peer_identity_type = self.classify_remote_identity(
+            &remote_network_name,
+            secure_auth_level,
+            role_hint == 1,
+            msg3_pb.secret_proof_32.is_some(),
+            false,
+        );
 
         let handshake_hash = hs.get_handshake_hash().to_vec();
 
@@ -1032,11 +1203,12 @@ impl PeerConn {
             remote_static_pubkey: remote_static,
             handshake_hash,
             secure_auth_level,
+            peer_identity_type,
             remote_network_name,
             secret_digest: msg3_pb.secret_digest,
-            client_secret_proof: Some(SecretProof {
+            client_secret_proof: msg3_pb.secret_proof_32.as_ref().map(|p| SecretProof {
                 challenge: handshake_hash_for_proof,
-                proof: proof.clone(),
+                proof: p.clone(),
             }),
 
             my_encrypt_algo: self.my_encrypt_algo.clone(),
@@ -1093,11 +1265,13 @@ impl PeerConn {
             let rsp = Self::decode_handshake_packet(&first_pkt)?;
             handshake_recved(self, &rsp.network_name)?;
             tracing::info!("handshake request: {:?}", rsp);
+            self.record_control_rx(&rsp.network_name, first_pkt.buf_len() as u64);
             self.info = Some(rsp);
             self.is_client = Some(false);
 
             let send_digest = self.get_network_identity() == self.global_ctx.get_network_identity();
-            self.send_handshake(send_digest).await?;
+            self.send_handshake(send_digest, &self.get_network_identity().network_name)
+                .await?;
         } else {
             return Err(Error::WaitRespError(format!(
                 "unexpected packet type during handshake: {}",
@@ -1129,7 +1303,8 @@ impl PeerConn {
             self.info = Some(handshake_rsp);
             self.is_client = Some(true);
         } else {
-            self.send_handshake(true).await?;
+            let network = self.global_ctx.get_network_identity();
+            self.send_handshake(true, &network.network_name).await?;
             tracing::info!("waiting for handshake request from server");
             let rsp = self.wait_handshake_loop().await?;
             tracing::info!("handshake response: {:?}", rsp);
@@ -1150,6 +1325,21 @@ impl PeerConn {
         self.info.is_some()
     }
 
+    fn control_metrics(&self, network_name: &str) -> AggregateTrafficMetrics {
+        AggregateTrafficMetrics::control(
+            self.global_ctx.stats_manager().clone(),
+            network_name.to_string(),
+        )
+    }
+
+    fn record_control_tx(&self, network_name: &str, bytes: u64) {
+        self.control_metrics(network_name).record_tx(bytes);
+    }
+
+    fn record_control_rx(&self, network_name: &str, bytes: u64) {
+        self.control_metrics(network_name).record_rx(bytes);
+    }
+
     pub async fn start_recv_loop(&mut self, packet_recv_chan: PacketRecvChan) {
         let mut stream = self.recv.lock().await.take().unwrap();
         let sink = self.sink.clone();
@@ -1157,23 +1347,13 @@ impl PeerConn {
         let close_event_notifier = self.close_event_notifier.clone();
         let ctrl_sender = self.ctrl_resp_sender.clone();
         let conn_info_for_instrument = self.get_conn_info();
-
-        let stats_mgr = self.global_ctx.stats_manager();
-        let label_set = LabelSet::new().with_label_type(LabelType::NetworkName(
-            conn_info_for_instrument.network_name.clone(),
-        ));
-        let counters = PeerConnCounter {
-            traffic_tx_bytes: stats_mgr.get_counter(MetricName::TrafficBytesTx, label_set.clone()),
-            traffic_rx_bytes: stats_mgr.get_counter(MetricName::TrafficBytesRx, label_set.clone()),
-            traffic_tx_packets: stats_mgr
-                .get_counter(MetricName::TrafficPacketsTx, label_set.clone()),
-            traffic_rx_packets: stats_mgr.get_counter(MetricName::TrafficPacketsRx, label_set),
-        };
-        self.counters.store(Some(Arc::new(counters)));
+        let control_metrics = self.control_metrics(&conn_info_for_instrument.network_name);
 
         let is_foreign_network = conn_info_for_instrument.network_name
             != self.global_ctx.get_network_identity().network_name;
-        let recv_limiter = if is_foreign_network {
+        let recv_limiter = if is_foreign_network
+            && self.global_ctx.get_flags().foreign_relay_bps_limit != u64::MAX
+        {
             let relay_network_bps_limit = self.global_ctx.get_flags().foreign_relay_bps_limit;
             let limiter_config = LimiterConfig {
                 burst_rate: None,
@@ -1184,11 +1364,20 @@ impl PeerConn {
                 &format!("{}:recv", conn_info_for_instrument.network_name),
                 limiter_config.into(),
             ))
+        } else if self.global_ctx.get_flags().instance_recv_bps_limit != u64::MAX {
+            let limiter_config = LimiterConfig {
+                burst_rate: None,
+                bps: Some(self.global_ctx.get_flags().instance_recv_bps_limit),
+                fill_duration_ms: None,
+            };
+            Some(
+                self.global_ctx
+                    .token_bucket_manager()
+                    .get_or_create("instance:recv", limiter_config.into()),
+            )
         } else {
             None
         };
-
-        let counters = self.counters.load_full().unwrap();
 
         self.tasks.spawn(
             async move {
@@ -1203,10 +1392,6 @@ impl PeerConn {
 
                     let mut zc_packet = ret.unwrap();
                     let buf_len = zc_packet.buf_len() as u64;
-
-                    counters.traffic_rx_bytes.add(buf_len);
-                    counters.traffic_rx_packets.inc();
-
                     let Some(peer_mgr_hdr) = zc_packet.mut_peer_manager_header() else {
                         tracing::error!(
                             "unexpected packet: {:?}, cannot decode peer manager hdr",
@@ -1216,11 +1401,15 @@ impl PeerConn {
                     };
 
                     if peer_mgr_hdr.packet_type == PacketType::Ping as u8 {
+                        control_metrics.record_rx(buf_len);
                         peer_mgr_hdr.packet_type = PacketType::Pong as u8;
                         if let Err(e) = sink.send(zc_packet).await {
                             tracing::error!(?e, "peer conn send req error");
+                        } else {
+                            control_metrics.record_tx(buf_len);
                         }
                     } else if peer_mgr_hdr.packet_type == PacketType::Pong as u8 {
+                        control_metrics.record_rx(buf_len);
                         if let Err(e) = ctrl_sender.send(zc_packet) {
                             tracing::error!(?e, "peer conn send ctrl resp error");
                         }
@@ -1255,6 +1444,7 @@ impl PeerConn {
             self.latency_stats.clone(),
             self.loss_rate_stats.clone(),
             self.throughput.clone(),
+            self.control_metrics(&self.get_conn_info().network_name),
         );
 
         let close_event_notifier = self.close_event_notifier.clone();
@@ -1271,11 +1461,6 @@ impl PeerConn {
     }
 
     pub async fn send_msg(&self, msg: ZCPacket) -> Result<(), Error> {
-        let counters = self.counters.load();
-        if let Some(ref counters) = *counters {
-            counters.traffic_tx_bytes.add(msg.buf_len() as u64);
-            counters.traffic_tx_packets.inc();
-        }
         Ok(self.sink.send(msg).await?)
     }
 
@@ -1287,14 +1472,48 @@ impl PeerConn {
         let info = self.info.as_ref().unwrap();
         let mut ret = NetworkIdentity {
             network_name: info.network_name.clone(),
-            ..Default::default()
+            network_secret: None,
+            network_secret_digest: Some([0u8; 32]),
         };
-        ret.network_secret_digest = Some([0u8; 32]);
         ret.network_secret_digest
             .as_mut()
             .unwrap()
             .copy_from_slice(&info.network_secret_digest);
         ret
+    }
+
+    fn network_secret_digest_is_empty(network: &NetworkIdentity) -> bool {
+        network
+            .network_secret_digest
+            .as_ref()
+            .is_none_or(|digest| digest.iter().all(|byte| *byte == 0))
+    }
+
+    fn matches_local_secret_proof(&self) -> bool {
+        let Some(secret_proof) = self
+            .noise_handshake_result
+            .as_ref()
+            .and_then(|noise| noise.client_secret_proof.as_ref())
+        else {
+            return false;
+        };
+
+        self.global_ctx
+            .get_secret_proof(&secret_proof.challenge)
+            .is_some_and(|mac| mac.verify_slice(&secret_proof.proof).is_ok())
+    }
+
+    pub(crate) fn matches_local_network_secret(&self) -> bool {
+        if self.matches_local_secret_proof() {
+            return true;
+        }
+
+        let my_identity = self.global_ctx.get_network_identity();
+        let peer_identity = self.get_network_identity();
+
+        !Self::network_secret_digest_is_empty(&my_identity)
+            && !Self::network_secret_digest_is_empty(&peer_identity)
+            && my_identity.network_secret_digest == peer_identity.network_secret_digest
     }
 
     pub fn get_close_notifier(&self) -> Arc<PeerConnCloseNotify> {
@@ -1341,7 +1560,19 @@ impl PeerConn {
                 .as_ref()
                 .map(|x| x.secure_auth_level as i32)
                 .unwrap_or_default(),
+            peer_identity_type: self
+                .noise_handshake_result
+                .as_ref()
+                .map(|x| x.peer_identity_type as i32)
+                .unwrap_or(PeerIdentityType::Admin as i32),
         }
+    }
+
+    pub fn get_peer_identity_type(&self) -> PeerIdentityType {
+        self.noise_handshake_result
+            .as_ref()
+            .map(|x| x.peer_identity_type)
+            .unwrap_or(PeerIdentityType::Admin)
     }
 
     pub fn set_peer_id(&mut self, peer_id: PeerId) {
@@ -1366,21 +1597,23 @@ impl Drop for PeerConn {
 
 #[cfg(test)]
 pub mod tests {
-    use std::sync::Arc;
+    use std::{sync::Arc, time::Duration};
 
     use rand::rngs::OsRng;
 
     use super::*;
     use crate::common::config::PeerConfig;
-    use crate::common::global_ctx::tests::get_mock_global_ctx;
     use crate::common::global_ctx::GlobalCtx;
+    use crate::common::global_ctx::tests::get_mock_global_ctx;
     use crate::common::new_peer_id;
-    use crate::common::scoped_task::ScopedTask;
+    use crate::common::stats_manager::{LabelSet, LabelType, MetricName};
     use crate::peers::create_packet_recv_chan;
     use crate::peers::recv_packet_from_chan;
-    use crate::tunnel::filter::tests::DropSendTunnelFilter;
+    use crate::tunnel::common::tests::wait_for_condition;
     use crate::tunnel::filter::PacketRecorderTunnelFilter;
+    use crate::tunnel::filter::tests::DropSendTunnelFilter;
     use crate::tunnel::ring::create_ring_tunnel_pair;
+    use tokio_util::task::AbortOnDropHandle;
 
     pub fn set_secure_mode_cfg(global_ctx: &GlobalCtx, enabled: bool) {
         if !enabled {
@@ -1396,6 +1629,17 @@ pub mod tests {
                 local_public_key: Some(BASE64_STANDARD.encode(public.as_bytes())),
             }));
         }
+    }
+
+    fn metric_value(global_ctx: &GlobalCtx, metric: MetricName, network_name: &str) -> u64 {
+        global_ctx
+            .stats_manager()
+            .get_metric(
+                metric,
+                &LabelSet::new().with_label_type(LabelType::NetworkName(network_name.to_string())),
+            )
+            .map(|metric| metric.value)
+            .unwrap_or(0)
     }
 
     #[tokio::test]
@@ -1431,10 +1675,12 @@ pub mod tests {
         let s_peer_id = new_peer_id();
 
         let ps = Arc::new(PeerSessionStore::new());
+        let c_ctx = get_mock_global_ctx();
+        let s_ctx = get_mock_global_ctx();
 
-        let mut c_peer = PeerConn::new(c_peer_id, get_mock_global_ctx(), Box::new(c), ps.clone());
+        let mut c_peer = PeerConn::new(c_peer_id, c_ctx.clone(), Box::new(c), ps.clone());
 
-        let mut s_peer = PeerConn::new(s_peer_id, get_mock_global_ctx(), Box::new(s), ps.clone());
+        let mut s_peer = PeerConn::new(s_peer_id, s_ctx.clone(), Box::new(s), ps.clone());
 
         let (c_ret, s_ret) = tokio::join!(
             c_peer.do_handshake_as_client(),
@@ -1450,10 +1696,59 @@ pub mod tests {
         assert_eq!(s_recorder.sent.lock().unwrap().len(), 1);
         assert_eq!(s_recorder.received.lock().unwrap().len(), 1);
 
+        assert_eq!(
+            metric_value(&c_ctx, MetricName::TrafficControlBytesTx, "default"),
+            c_recorder
+                .sent
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|pkt| pkt.buf_len() as u64)
+                .sum::<u64>()
+        );
+        assert_eq!(
+            metric_value(&c_ctx, MetricName::TrafficControlBytesRx, "default"),
+            c_recorder
+                .received
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|pkt| pkt.buf_len() as u64)
+                .sum::<u64>()
+        );
+        assert_eq!(
+            metric_value(&s_ctx, MetricName::TrafficControlBytesTx, "default"),
+            s_recorder
+                .sent
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|pkt| pkt.buf_len() as u64)
+                .sum::<u64>()
+        );
+        assert_eq!(
+            metric_value(&s_ctx, MetricName::TrafficControlBytesRx, "default"),
+            s_recorder
+                .received
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|pkt| pkt.buf_len() as u64)
+                .sum::<u64>()
+        );
+
         assert_eq!(c_peer.get_peer_id(), s_peer_id);
         assert_eq!(s_peer.get_peer_id(), c_peer_id);
         assert_eq!(c_peer.get_network_identity(), s_peer.get_network_identity());
-        assert_eq!(c_peer.get_network_identity(), NetworkIdentity::default());
+        assert_eq!(
+            c_peer.get_network_identity().network_name,
+            NetworkIdentity::default().network_name
+        );
+        assert_eq!(c_peer.get_network_identity().network_secret, None);
+        assert_eq!(
+            c_peer.get_network_identity().network_secret_digest,
+            NetworkIdentity::default().network_secret_digest
+        );
     }
 
     #[tokio::test]
@@ -1485,6 +1780,47 @@ pub mod tests {
 
         c_ret.unwrap();
         s_ret.unwrap();
+
+        assert_eq!(
+            metric_value(&c_ctx, MetricName::TrafficControlBytesTx, "default"),
+            c_recorder
+                .sent
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|pkt| pkt.buf_len() as u64)
+                .sum::<u64>()
+        );
+        assert_eq!(
+            metric_value(&c_ctx, MetricName::TrafficControlBytesRx, "default"),
+            c_recorder
+                .received
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|pkt| pkt.buf_len() as u64)
+                .sum::<u64>()
+        );
+        assert_eq!(
+            metric_value(&s_ctx, MetricName::TrafficControlBytesTx, "default"),
+            s_recorder
+                .sent
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|pkt| pkt.buf_len() as u64)
+                .sum::<u64>()
+        );
+        assert_eq!(
+            metric_value(&s_ctx, MetricName::TrafficControlBytesRx, "default"),
+            s_recorder
+                .received
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|pkt| pkt.buf_len() as u64)
+                .sum::<u64>()
+        );
 
         let c_info = c_peer.get_conn_info();
         let s_info = s_peer.get_conn_info();
@@ -1707,6 +2043,14 @@ pub mod tests {
             s_peer.get_conn_info().secure_auth_level,
             SecureAuthLevel::NetworkSecretConfirmed as i32,
         );
+        assert_eq!(
+            c_peer.get_conn_info().peer_identity_type,
+            PeerIdentityType::Admin as i32,
+        );
+        assert_eq!(
+            s_peer.get_conn_info().peer_identity_type,
+            PeerIdentityType::Admin as i32,
+        );
     }
 
     #[tokio::test]
@@ -1758,7 +2102,66 @@ pub mod tests {
 
         assert_eq!(
             c_peer.get_conn_info().secure_auth_level,
-            SecureAuthLevel::SharedNodePubkeyVerified as i32,
+            SecureAuthLevel::PeerVerified as i32,
+        );
+        assert_eq!(
+            c_peer.get_conn_info().peer_identity_type,
+            PeerIdentityType::SharedNode as i32,
+        );
+        assert_eq!(
+            s_peer.get_conn_info().peer_identity_type,
+            PeerIdentityType::Admin as i32,
+        );
+    }
+
+    #[tokio::test]
+    async fn peer_conn_secure_mode_shared_node_without_pin_is_unauthenticated() {
+        let (c, s) = create_ring_tunnel_pair();
+
+        let c_peer_id = new_peer_id();
+        let s_peer_id = new_peer_id();
+
+        let c_ctx = get_mock_global_ctx();
+        let s_ctx = get_mock_global_ctx();
+
+        c_ctx
+            .config
+            .set_network_identity(NetworkIdentity::new("net1".to_string(), "sec2".to_string()));
+        s_ctx.config.set_network_identity(NetworkIdentity {
+            network_name: "net2".to_string(),
+            network_secret: None,
+            network_secret_digest: None,
+        });
+
+        set_secure_mode_cfg(&c_ctx, true);
+        set_secure_mode_cfg(&s_ctx, true);
+
+        let ps = Arc::new(PeerSessionStore::new());
+        let mut c_peer = PeerConn::new(c_peer_id, c_ctx, Box::new(c), ps.clone());
+        let mut s_peer = PeerConn::new(s_peer_id, s_ctx, Box::new(s), ps.clone());
+
+        let (c_ret, s_ret) = tokio::join!(
+            c_peer.do_handshake_as_client(),
+            s_peer.do_handshake_as_server()
+        );
+        c_ret.unwrap();
+        s_ret.unwrap();
+
+        assert_eq!(
+            c_peer.get_conn_info().secure_auth_level,
+            SecureAuthLevel::EncryptedUnauthenticated as i32,
+        );
+        assert_eq!(
+            s_peer.get_conn_info().secure_auth_level,
+            SecureAuthLevel::EncryptedUnauthenticated as i32,
+        );
+        assert_eq!(
+            c_peer.get_conn_info().peer_identity_type,
+            PeerIdentityType::SharedNode as i32,
+        );
+        assert_eq!(
+            s_peer.get_conn_info().peer_identity_type,
+            PeerIdentityType::Admin as i32,
         );
     }
 
@@ -1797,7 +2200,7 @@ pub mod tests {
         c_peer.start_recv_loop(create_packet_recv_chan().0).await;
 
         let throughput = c_peer.throughput.clone();
-        let _t = ScopedTask::from(tokio::spawn(async move {
+        let _t = AbortOnDropHandle::new(tokio::spawn(async move {
             // if not drop both, we mock some rx traffic for client peer to test pinger
             if drop_both {
                 return;
@@ -1815,6 +2218,47 @@ pub mod tests {
         } else {
             assert!(!close_notifier.is_closed());
         }
+    }
+
+    #[tokio::test]
+    async fn peer_conn_pingpong_records_control_metrics() {
+        let (c, s) = create_ring_tunnel_pair();
+
+        let c_peer_id = new_peer_id();
+        let s_peer_id = new_peer_id();
+
+        let c_ctx = get_mock_global_ctx();
+        let s_ctx = get_mock_global_ctx();
+        let ps = Arc::new(PeerSessionStore::new());
+        let mut c_peer = PeerConn::new(c_peer_id, c_ctx.clone(), Box::new(c), ps.clone());
+        let mut s_peer = PeerConn::new(s_peer_id, s_ctx.clone(), Box::new(s), ps.clone());
+
+        let (c_ret, s_ret) = tokio::join!(
+            c_peer.do_handshake_as_client(),
+            s_peer.do_handshake_as_server()
+        );
+
+        assert!(c_ret.is_ok());
+        assert!(s_ret.is_ok());
+
+        s_peer.start_recv_loop(create_packet_recv_chan().0).await;
+        c_peer.start_pingpong();
+        c_peer.start_recv_loop(create_packet_recv_chan().0).await;
+
+        wait_for_condition(
+            || {
+                let c_ctx = c_ctx.clone();
+                let s_ctx = s_ctx.clone();
+                async move {
+                    metric_value(&c_ctx, MetricName::TrafficControlBytesTx, "default") > 0
+                        && metric_value(&c_ctx, MetricName::TrafficControlBytesRx, "default") > 0
+                        && metric_value(&s_ctx, MetricName::TrafficControlBytesTx, "default") > 0
+                        && metric_value(&s_ctx, MetricName::TrafficControlBytesRx, "default") > 0
+                }
+            },
+            Duration::from_secs(5),
+        )
+        .await;
     }
 
     #[tokio::test]
@@ -1851,5 +2295,230 @@ pub mod tests {
             .unwrap()
             .unwrap_err();
         let _ = tokio::join!(j);
+    }
+
+    /// Helper: set up a credential node's GlobalCtx with a specific private key
+    /// (no network_secret, secure mode enabled with the given keypair)
+    fn set_credential_mode_cfg(
+        global_ctx: &GlobalCtx,
+        network_name: &str,
+        private_key: &x25519_dalek::StaticSecret,
+    ) {
+        use crate::common::config::NetworkIdentity;
+        let public = x25519_dalek::PublicKey::from(private_key);
+        global_ctx
+            .config
+            .set_network_identity(NetworkIdentity::new_credential(network_name.to_string()));
+        global_ctx.config.set_secure_mode(Some(SecureModeConfig {
+            enabled: true,
+            local_private_key: Some(BASE64_STANDARD.encode(private_key.as_bytes())),
+            local_public_key: Some(BASE64_STANDARD.encode(public.as_bytes())),
+        }));
+    }
+
+    /// Test: credential node connects to admin node, admin has credential in trusted list.
+    /// Handshake should succeed with PeerVerified auth level on server side.
+    #[tokio::test]
+    async fn peer_conn_credential_node_connects_to_admin() {
+        let (c, s) = create_ring_tunnel_pair();
+
+        let c_peer_id = new_peer_id();
+        let s_peer_id = new_peer_id();
+
+        // Admin node (server) has network_secret
+        let s_ctx = get_mock_global_ctx();
+        s_ctx.config.set_network_identity(NetworkIdentity::new(
+            "net1".to_string(),
+            "secret".to_string(),
+        ));
+        set_secure_mode_cfg(&s_ctx, true);
+
+        // Generate a credential on admin and get the private key for the client
+        let (cred_id, cred_secret) = s_ctx.get_credential_manager().generate_credential(
+            vec!["guest".to_string()],
+            false,
+            vec![],
+            std::time::Duration::from_secs(3600),
+        );
+
+        // Credential node (client) uses credential private key
+        let c_ctx = get_mock_global_ctx();
+        let privkey_bytes: [u8; 32] = BASE64_STANDARD
+            .decode(&cred_secret)
+            .unwrap()
+            .try_into()
+            .unwrap();
+        let private = x25519_dalek::StaticSecret::from(privkey_bytes);
+        set_credential_mode_cfg(&c_ctx, "net1", &private);
+
+        let ps = Arc::new(PeerSessionStore::new());
+        let mut c_peer = PeerConn::new(c_peer_id, c_ctx, Box::new(c), ps.clone());
+        let mut s_peer = PeerConn::new(s_peer_id, s_ctx, Box::new(s), ps.clone());
+
+        let (c_ret, s_ret) = tokio::join!(
+            c_peer.do_handshake_as_client(),
+            s_peer.do_handshake_as_server()
+        );
+
+        c_ret.unwrap();
+        s_ret.unwrap();
+
+        // Server should see credential node as PeerVerified
+        assert_eq!(
+            s_peer.get_conn_info().secure_auth_level,
+            SecureAuthLevel::PeerVerified as i32,
+        );
+        assert_eq!(
+            s_peer.get_conn_info().peer_identity_type,
+            PeerIdentityType::Credential as i32,
+        );
+
+        // Client (credential node) keeps encrypted unauthenticated level
+        assert_eq!(
+            c_peer.get_conn_info().secure_auth_level,
+            SecureAuthLevel::EncryptedUnauthenticated as i32,
+        );
+        assert_eq!(
+            c_peer.get_conn_info().peer_identity_type,
+            PeerIdentityType::Admin as i32,
+        );
+
+        // Verify credential ID matches
+        let _ = cred_id; // just to use it
+    }
+
+    /// Test: unknown credential node (not in trusted list) is rejected by admin.
+    #[tokio::test]
+    async fn peer_conn_unknown_credential_rejected() {
+        let (c, s) = create_ring_tunnel_pair();
+
+        let c_peer_id = new_peer_id();
+        let s_peer_id = new_peer_id();
+
+        // Admin node (server) with no credentials generated
+        let s_ctx = get_mock_global_ctx();
+        s_ctx.config.set_network_identity(NetworkIdentity::new(
+            "net1".to_string(),
+            "secret".to_string(),
+        ));
+        set_secure_mode_cfg(&s_ctx, true);
+
+        // Unknown credential node (client) with random key, not in admin's trusted list
+        let c_ctx = get_mock_global_ctx();
+        let random_private = x25519_dalek::StaticSecret::random_from_rng(OsRng);
+        set_credential_mode_cfg(&c_ctx, "net1", &random_private);
+
+        let ps = Arc::new(PeerSessionStore::new());
+        let mut c_peer = PeerConn::new(c_peer_id, c_ctx, Box::new(c), ps.clone());
+        let mut s_peer = PeerConn::new(s_peer_id, s_ctx, Box::new(s), ps.clone());
+
+        let (c_ret, s_ret) = tokio::join!(
+            c_peer.do_handshake_as_client(),
+            s_peer.do_handshake_as_server()
+        );
+
+        // Server should reject the unknown credential
+        assert!(s_ret.is_err(), "server should reject unknown credential");
+        // Client may also fail due to connection being closed
+        let _ = c_ret;
+    }
+
+    /// Test: two admin nodes with same network_secret still get NetworkSecretConfirmed.
+    /// (Regression test: credential system should not break normal admin-to-admin auth)
+    #[tokio::test]
+    async fn peer_conn_admin_to_admin_still_works() {
+        let (c, s) = create_ring_tunnel_pair();
+
+        let c_peer_id = new_peer_id();
+        let s_peer_id = new_peer_id();
+
+        let c_ctx = get_mock_global_ctx();
+        let s_ctx = get_mock_global_ctx();
+
+        c_ctx.config.set_network_identity(NetworkIdentity::new(
+            "net1".to_string(),
+            "secret".to_string(),
+        ));
+        s_ctx.config.set_network_identity(NetworkIdentity::new(
+            "net1".to_string(),
+            "secret".to_string(),
+        ));
+
+        set_secure_mode_cfg(&c_ctx, true);
+        set_secure_mode_cfg(&s_ctx, true);
+
+        let ps = Arc::new(PeerSessionStore::new());
+        let mut c_peer = PeerConn::new(c_peer_id, c_ctx, Box::new(c), ps.clone());
+        let mut s_peer = PeerConn::new(s_peer_id, s_ctx, Box::new(s), ps.clone());
+
+        let (c_ret, s_ret) = tokio::join!(
+            c_peer.do_handshake_as_client(),
+            s_peer.do_handshake_as_server()
+        );
+
+        c_ret.unwrap();
+        s_ret.unwrap();
+
+        assert_eq!(
+            c_peer.get_conn_info().secure_auth_level,
+            SecureAuthLevel::NetworkSecretConfirmed as i32,
+        );
+        assert_eq!(
+            s_peer.get_conn_info().secure_auth_level,
+            SecureAuthLevel::NetworkSecretConfirmed as i32,
+        );
+    }
+
+    /// Test: revoked credential is rejected on new connection attempt.
+    #[tokio::test]
+    async fn peer_conn_revoked_credential_rejected() {
+        // Admin generates credential, then revokes it
+        let admin_ctx = get_mock_global_ctx();
+        admin_ctx.config.set_network_identity(NetworkIdentity::new(
+            "net1".to_string(),
+            "secret".to_string(),
+        ));
+        set_secure_mode_cfg(&admin_ctx, true);
+
+        let (cred_id, cred_secret) = admin_ctx.get_credential_manager().generate_credential(
+            vec![],
+            false,
+            vec![],
+            std::time::Duration::from_secs(3600),
+        );
+
+        // Revoke the credential
+        assert!(
+            admin_ctx
+                .get_credential_manager()
+                .revoke_credential(&cred_id)
+        );
+
+        // Now try to connect with the revoked credential
+        let (c, s) = create_ring_tunnel_pair();
+        let c_peer_id = new_peer_id();
+        let s_peer_id = new_peer_id();
+
+        let c_ctx = get_mock_global_ctx();
+        let privkey_bytes: [u8; 32] = BASE64_STANDARD
+            .decode(&cred_secret)
+            .unwrap()
+            .try_into()
+            .unwrap();
+        let private = x25519_dalek::StaticSecret::from(privkey_bytes);
+        set_credential_mode_cfg(&c_ctx, "net1", &private);
+
+        let ps = Arc::new(PeerSessionStore::new());
+        let mut c_peer = PeerConn::new(c_peer_id, c_ctx, Box::new(c), ps.clone());
+        let mut s_peer = PeerConn::new(s_peer_id, admin_ctx, Box::new(s), ps.clone());
+
+        let (c_ret, s_ret) = tokio::join!(
+            c_peer.do_handshake_as_client(),
+            s_peer.do_handshake_as_server()
+        );
+
+        // Server should reject the revoked credential
+        assert!(s_ret.is_err(), "server should reject revoked credential");
+        let _ = c_ret;
     }
 }

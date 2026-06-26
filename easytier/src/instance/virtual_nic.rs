@@ -12,20 +12,21 @@ use crate::{
         error::Error,
         global_ctx::{ArcGlobalCtx, GlobalCtxEvent},
         ifcfg::{IfConfiger, IfConfiguerTrait},
+        log,
     },
     instance::proxy_cidrs_monitor::ProxyCidrsMonitor,
-    peers::{peer_manager::PeerManager, recv_packet_from_chan, PacketRecvChanReceiver},
+    peers::{PacketRecvChanReceiver, peer_manager::PeerManager, recv_packet_from_chan},
     tunnel::{
-        common::{reserve_buf, FramedWriter, TunnelWrapper, ZCPacketToBytes},
-        packet_def::{ZCPacket, ZCPacketType, TAIL_RESERVED_SIZE},
         StreamItem, Tunnel, TunnelError, ZCPacketSink, ZCPacketStream,
+        common::{FramedWriter, TunnelWrapper, ZCPacketToBytes, reserve_buf},
+        packet_def::{TAIL_RESERVED_SIZE, ZCPacket, ZCPacketType},
     },
 };
 
 use byteorder::WriteBytesExt as _;
 use bytes::{BufMut, BytesMut};
 use cidr::{Ipv4Inet, Ipv6Inet};
-use futures::{lock::BiLock, ready, SinkExt, Stream, StreamExt};
+use futures::{SinkExt, Stream, StreamExt, lock::BiLock, ready};
 use pin_project_lite::pin_project;
 use pnet::packet::{ipv4::Ipv4Packet, ipv6::Ipv6Packet};
 use tokio::{
@@ -34,6 +35,8 @@ use tokio::{
     task::JoinSet,
 };
 use tokio_util::bytes::Bytes;
+#[cfg(target_os = "windows")]
+use tokio_util::task::AbortOnDropHandle;
 use tun::{AbstractDevice, AsyncDevice, Configuration, Layer};
 use zerocopy::{NativeEndian, NetworkEndian};
 
@@ -95,7 +98,7 @@ impl Stream for TunStream {
         match ret {
             Ok(_) => Poll::Ready(Some(Ok(ZCPacket::new_from_buf(ret_buf, ZCPacketType::NIC)))),
             Err(err) => {
-                println!("tun stream error: {:?}", err);
+                log::error!("tun stream error: {:?}", err);
                 Poll::Ready(None)
             }
         }
@@ -249,10 +252,11 @@ impl Drop for VirtualNic {
         {
             if let Some(ref ifname) = self.ifname {
                 // Try to clean up firewall rules, but don't panic in destructor
-                if let Err(e) = crate::arch::windows::remove_interface_firewall_rules(ifname) {
-                    eprintln!(
-                        "Warning: Failed to remove firewall rules for interface {}: {}",
-                        ifname, e
+                if let Err(error) = crate::arch::windows::remove_interface_firewall_rules(ifname) {
+                    log::warn!(
+                        %error,
+                        "failed to remove firewall rules for interface {}",
+                        ifname
                     );
                 }
             }
@@ -293,25 +297,20 @@ impl VirtualNic {
                 .unwrap_or(false);
 
         if !tun_module_available {
-            tracing::warn!("TUN kernel module may not be loaded");
-            println!("⚠ Warning: TUN kernel module may not be available.");
-            println!("  You may need to load it with: sudo modprobe tun");
+            log::warn!("TUN kernel module may not be available.");
+            log::warn!("\tYou may need to load it with: sudo modprobe tun.");
         }
 
         // Try to create /dev/net directory if it doesn't exist
         if tokio::fs::metadata(TUN_DIR_PATH).await.is_err() {
-            if let Err(e) = tokio::fs::create_dir_all(TUN_DIR_PATH).await {
-                tracing::warn!(
-                    "Failed to create directory {}: {}. Continuing anyway.",
-                    TUN_DIR_PATH,
-                    e
-                );
-                println!(
-                    "⚠ Warning: Failed to create directory {}. TUN device creation may fail.",
+            if let Err(error) = tokio::fs::create_dir_all(TUN_DIR_PATH).await {
+                log::warn!(
+                    ?error,
+                    "Failed to create directory {}. TUN device creation may fail. Continuing anyway.",
                     TUN_DIR_PATH
                 );
-                println!(
-                    "  You may need to run with root privileges or manually create the TUN device."
+                log::warn!(
+                    "\tYou may need to run with root privileges or manually create the TUN device."
                 );
                 Self::print_troubleshooting_info();
                 return;
@@ -330,20 +329,14 @@ impl VirtualNic {
             dev_node,
         ) {
             Ok(_) => {
-                tracing::info!("Successfully created TUN device node {}", TUN_DEV_PATH);
-                println!("✓ Created TUN device node {}", TUN_DEV_PATH);
+                log::info!("Successfully created TUN device node {}", TUN_DEV_PATH);
             }
-            Err(e) => {
+            Err(error) => {
                 tracing::warn!(
-                    "Failed to create TUN device node {}: {}. Continuing anyway.",
+                    %error,
+                    "Failed to create TUN device node {}. Continuing anyway.",
                     TUN_DEV_PATH,
-                    e
                 );
-                println!(
-                    "⚠ Warning: Failed to create TUN device node {}.",
-                    TUN_DEV_PATH
-                );
-                println!("  Error: {}", e);
                 Self::print_troubleshooting_info();
             }
         }
@@ -352,13 +345,15 @@ impl VirtualNic {
     /// Print troubleshooting information for TUN device issues
     #[cfg(target_os = "linux")]
     fn print_troubleshooting_info() {
-        println!("  Possible solutions:");
-        println!("  1. Run with root privileges: sudo ./easytier-core [options]");
-        println!("  2. Manually create TUN device: sudo mkdir -p /dev/net && sudo mknod /dev/net/tun c 10 200");
-        println!("  3. Load TUN kernel module: sudo modprobe tun");
-        println!("  4. Use --no-tun flag if TUN functionality is not needed");
-        println!("  5. Check if your system/container supports TUN devices");
-        println!("  Note: TUN functionality may still work if the kernel supports dynamic device creation.");
+        log::info!(
+            "Possible solutions:\
+            \n\t1. Run with root privileges: sudo ./easytier-core [options]\
+            \n\t2. Manually create TUN device: sudo mkdir -p /dev/net && sudo mknod /dev/net/tun c 10 200\
+            \n\t3. Load TUN kernel module: sudo modprobe tun\
+            \n\t4. Use --no-tun flag if TUN functionality is not needed\
+            \n\t5. Check if your system/container supports TUN devices\
+            \nNote: TUN functionality may still work if the kernel supports dynamic device creation."
+        );
     }
 
     /// For non-Linux systems, this is a no-op
@@ -523,7 +518,7 @@ impl VirtualNic {
             }
         }
 
-        #[cfg(target_os = "macos")]
+        #[cfg(all(target_os = "macos", not(feature = "macos-ne")))]
         config.platform_config(|config| {
             // disable packet information so we can process the header by ourselves, see tun2 impl for more details
             config.packet_information(false);
@@ -535,10 +530,11 @@ impl VirtualNic {
 
             match crate::arch::windows::add_self_to_firewall_allowlist() {
                 Ok(_) => tracing::info!("add_self_to_firewall_allowlist successful!"),
-                Err(e) => {
-                    println!("Failed to add Easytier to firewall allowlist, Subnet proxy and KCP proxy may not work properly. error: {}", e);
-                    println!("You can add firewall rules manually, or use --use-smoltcp to run with user-space TCP/IP stack.");
-                    println!();
+                Err(error) => {
+                    log::warn!(%error, "Failed to add Easytier to firewall allowlist, Subnet proxy and KCP proxy may not work properly.");
+                    log::warn!(
+                        "You can add firewall rules manually, or use --use-smoltcp to run with user-space TCP/IP stack."
+                    );
                 }
             }
 
@@ -583,16 +579,16 @@ impl VirtualNic {
         Ok(tun::create(&config)?)
     }
 
-    #[cfg(any(target_os = "android", target_os = "ios", target_env = "ohos"))]
+    #[cfg(mobile)]
     pub async fn create_dev_for_mobile(
         &mut self,
         tun_fd: std::os::fd::RawFd,
     ) -> Result<Box<dyn Tunnel>, Error> {
-        println!("tun_fd: {}", tun_fd);
+        log::debug!(%tun_fd);
         let mut config = Configuration::default();
         config.layer(Layer::L3);
 
-        #[cfg(target_os = "ios")]
+        #[cfg(any(target_os = "ios", all(target_os = "macos", feature = "macos-ne")))]
         config.platform_config(|config| {
             // disable packet information so we can process the header by ourselves, see tun2 impl for more details
             config.packet_information(false);
@@ -602,7 +598,10 @@ impl VirtualNic {
         config.close_fd_on_drop(false);
         config.up();
 
-        let has_packet_info = cfg!(target_os = "ios");
+        let has_packet_info = cfg!(any(
+            target_os = "ios",
+            all(target_os = "macos", feature = "macos-ne")
+        ));
         let dev = tun::create(&config)?;
         let dev = AsyncDevice::new(dev)?;
         let (a, b) = BiLock::new(dev);
@@ -680,7 +679,7 @@ impl VirtualNic {
             self.ifcfg.set_mtu(ifname.as_str(), mtu_in_config).await?;
         }
 
-        let has_packet_info = cfg!(target_os = "macos");
+        let has_packet_info = cfg!(all(target_os = "macos", not(feature = "macos-ne")));
         let (a, b) = BiLock::new(dev);
         let ft = TunnelWrapper::new(
             TunStream::new(a, has_packet_info),
@@ -707,19 +706,11 @@ impl VirtualNic {
                         ifname
                     );
                 }
-                Err(e) => {
-                    tracing::warn!("Failed to configure Windows Firewall for {}: {}", ifname, e);
-                    println!(
-                        "⚠ Warning: Failed to configure Windows Firewall for interface {}.",
-                        ifname
-                    );
-                    println!("  This may cause connectivity issues with ping and other network functions.");
-                    println!(
-                        "  Please run as Administrator or manually configure Windows Firewall."
-                    );
-                    println!(
-                        "  Alternatively, you can disable Windows Firewall for testing purposes."
-                    );
+                Err(error) => {
+                    log::warn!(%error, "Failed to configure Windows Firewall for interface {}\
+                    \n\tThis may cause connectivity issues with ping and other network functions.\
+                    \n\tPlease run as Administrator or manually configure Windows Firewall.\
+                    \n\tAlternatively, you can disable Windows Firewall for testing purposes.", ifname);
                 }
             }
         }
@@ -746,9 +737,26 @@ impl VirtualNic {
     }
 
     pub async fn add_ipv6_route(&self, address: Ipv6Addr, cidr: u8) -> Result<(), Error> {
+        self.add_ipv6_route_with_cost(address, cidr, None).await
+    }
+
+    pub async fn add_ipv6_route_with_cost(
+        &self,
+        address: Ipv6Addr,
+        cidr: u8,
+        cost: Option<i32>,
+    ) -> Result<(), Error> {
         let _g = self.global_ctx.net_ns.guard();
         self.ifcfg
-            .add_ipv6_route(self.ifname(), address, cidr, None)
+            .add_ipv6_route(self.ifname(), address, cidr, cost)
+            .await?;
+        Ok(())
+    }
+
+    pub async fn remove_ipv6_route(&self, address: Ipv6Addr, cidr: u8) -> Result<(), Error> {
+        let _g = self.global_ctx.net_ns.guard();
+        self.ifcfg
+            .remove_ipv6_route(self.ifname(), address, cidr)
             .await?;
         Ok(())
     }
@@ -781,7 +789,7 @@ impl VirtualNic {
         Ok(())
     }
 
-    pub fn get_ifcfg(&self) -> impl IfConfiguerTrait {
+    pub fn get_ifcfg(&self) -> impl IfConfiguerTrait + use<> {
         IfConfiger {}
     }
 }
@@ -795,6 +803,9 @@ pub struct NicCtx {
 
     nic: Arc<Mutex<VirtualNic>>,
     tasks: JoinSet<()>,
+
+    #[cfg(target_os = "windows")]
+    windows_udp_broadcast_relay: Option<AbortOnDropHandle<()>>,
 }
 
 impl NicCtx {
@@ -813,6 +824,9 @@ impl NicCtx {
 
             nic: Arc::new(Mutex::new(VirtualNic::new(global_ctx))),
             tasks: JoinSet::new(),
+
+            #[cfg(target_os = "windows")]
+            windows_udp_broadcast_relay: None,
         }
     }
 
@@ -827,7 +841,10 @@ impl NicCtx {
         nic.remove_ip(None).await?;
         nic.add_ip(ipv4_addr.address(), ipv4_addr.network_length() as i32)
             .await?;
-        #[cfg(any(target_os = "macos", target_os = "freebsd"))]
+        #[cfg(any(
+            all(target_os = "macos", not(feature = "macos-ne")),
+            target_os = "freebsd"
+        ))]
         {
             nic.add_route(ipv4_addr.first_address(), ipv4_addr.network_length())
                 .await?;
@@ -841,7 +858,10 @@ impl NicCtx {
         nic.remove_ipv6(None).await?;
         nic.add_ipv6(ipv6_addr.address(), ipv6_addr.network_length() as i32)
             .await?;
-        #[cfg(any(target_os = "macos", target_os = "freebsd"))]
+        #[cfg(any(
+            all(target_os = "macos", not(feature = "macos-ne")),
+            target_os = "freebsd"
+        ))]
         {
             nic.add_ipv6_route(ipv6_addr.first_address(), ipv6_addr.network_length())
                 .await?;
@@ -908,7 +928,7 @@ impl NicCtx {
             }
             let src_ipv6 = ipv6.get_source();
             let dst_ipv6 = ipv6.get_destination();
-            let my_ipv6 = mgr.get_global_ctx().get_ipv6().map(|x| x.address());
+            let is_local_src = mgr.get_global_ctx().is_ip_local_ipv6(&src_ipv6);
             tracing::trace!(
                 ?ret,
                 ?src_ipv6,
@@ -916,14 +936,14 @@ impl NicCtx {
                 "[USER_PACKET] recv new packet from tun device and forward to peers."
             );
 
-            if src_ipv6.is_unicast_link_local() && Some(src_ipv6) != my_ipv6 {
+            if src_ipv6.is_unicast_link_local() && !is_local_src {
                 // do not route link local packet to other nodes unless the address is assigned by user
                 return;
             }
 
             // TODO: use zero-copy
             let send_ret = mgr
-                .send_msg_by_ip(ret, IpAddr::V6(dst_ipv6), Some(src_ipv6) == my_ipv6)
+                .send_msg_by_ip(ret, IpAddr::V6(dst_ipv6), is_local_src)
                 .await;
             if send_ret.is_err() {
                 tracing::trace!(?send_ret, "[USER_PACKET] send_msg failed")
@@ -993,6 +1013,31 @@ impl NicCtx {
         });
     }
 
+    #[cfg(target_os = "windows")]
+    fn start_windows_udp_broadcast_relay(&mut self, virtual_ipv4: Ipv4Inet) {
+        if !self.global_ctx.get_flags().enable_udp_broadcast_relay {
+            return;
+        }
+
+        let Some(peer_manager) = self.peer_mgr.upgrade() else {
+            tracing::warn!("peer manager is dropped, skip Windows UDP broadcast relay");
+            return;
+        };
+
+        match super::windows_udp_broadcast::start(peer_manager, virtual_ipv4) {
+            Ok(handle) => {
+                self.windows_udp_broadcast_relay = Some(handle);
+                tracing::info!("Windows UDP broadcast relay started");
+            }
+            Err(err) => {
+                tracing::warn!(
+                    ?err,
+                    "failed to start Windows UDP broadcast relay; administrator privileges are required"
+                );
+            }
+        }
+    }
+
     async fn apply_route_changes(
         ifcfg: &impl IfConfiguerTrait,
         ifname: &str,
@@ -1041,6 +1086,44 @@ impl NicCtx {
                 );
             }
             cur_proxy_cidrs.insert(cidr);
+        }
+    }
+
+    async fn apply_public_ipv6_route_changes(
+        ifcfg: &impl IfConfiguerTrait,
+        ifname: &str,
+        net_ns: &crate::common::netns::NetNS,
+        cur_routes: &mut BTreeSet<cidr::Ipv6Inet>,
+        added: Vec<cidr::Ipv6Inet>,
+        removed: Vec<cidr::Ipv6Inet>,
+    ) {
+        for route in removed {
+            if !cur_routes.contains(&route) {
+                continue;
+            }
+            let _g = net_ns.guard();
+            let ret = ifcfg
+                .remove_ipv6_route(ifname, route.address(), route.network_length())
+                .await;
+            if ret.is_err() {
+                tracing::trace!(route = ?route, err = ?ret, "remove public ipv6 route failed");
+            }
+            cur_routes.remove(&route);
+        }
+
+        for route in added {
+            if cur_routes.contains(&route) {
+                continue;
+            }
+            let _g = net_ns.guard();
+            let ret = ifcfg
+                .add_ipv6_route(ifname, route.address(), route.network_length(), None)
+                .await;
+            if ret.is_err() {
+                tracing::trace!(route = ?route, err = ?ret, "add public ipv6 route failed");
+            } else {
+                cur_routes.insert(route);
+            }
         }
     }
 
@@ -1119,6 +1202,137 @@ impl NicCtx {
         Ok(())
     }
 
+    async fn run_public_ipv6_route_updater(&mut self) -> Result<(), Error> {
+        let Some(peer_mgr) = self.peer_mgr.upgrade() else {
+            return Err(anyhow::anyhow!("peer manager not available").into());
+        };
+        let global_ctx = self.global_ctx.clone();
+        let net_ns = self.global_ctx.net_ns.clone();
+        let nic = self.nic.lock().await;
+        let ifcfg = nic.get_ifcfg();
+        let ifname = nic.ifname().to_owned();
+        let mut event_receiver = global_ctx.subscribe();
+
+        self.tasks.spawn(async move {
+            let mut cur_routes = BTreeSet::<cidr::Ipv6Inet>::new();
+            let initial_routes = peer_mgr.list_public_ipv6_routes().await;
+            let initial_added = initial_routes.iter().copied().collect::<Vec<_>>();
+            Self::apply_public_ipv6_route_changes(
+                &ifcfg,
+                &ifname,
+                &net_ns,
+                &mut cur_routes,
+                initial_added,
+                Vec::new(),
+            )
+            .await;
+
+            loop {
+                let event = match event_receiver.recv().await {
+                    Ok(event) => event,
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                        event_receiver = event_receiver.resubscribe();
+                        let latest = peer_mgr.list_public_ipv6_routes().await;
+                        let added = latest.difference(&cur_routes).copied().collect::<Vec<_>>();
+                        let removed = cur_routes.difference(&latest).copied().collect::<Vec<_>>();
+                        GlobalCtxEvent::PublicIpv6RoutesUpdated(added, removed)
+                    }
+                };
+
+                let (added, removed) = match event {
+                    GlobalCtxEvent::PublicIpv6RoutesUpdated(added, removed) => (added, removed),
+                    _ => continue,
+                };
+
+                Self::apply_public_ipv6_route_changes(
+                    &ifcfg,
+                    &ifname,
+                    &net_ns,
+                    &mut cur_routes,
+                    added,
+                    removed,
+                )
+                .await;
+            }
+        });
+
+        Ok(())
+    }
+
+    async fn run_public_ipv6_addr_updater(&mut self) -> Result<(), Error> {
+        let Some(peer_mgr) = self.peer_mgr.upgrade() else {
+            return Err(anyhow::anyhow!("peer manager not available").into());
+        };
+        let global_ctx = self.global_ctx.clone();
+        let nic = self.nic.clone();
+        let mut event_receiver = global_ctx.subscribe();
+
+        self.tasks.spawn(async move {
+            let mut current_addr = peer_mgr.get_my_public_ipv6_addr().await;
+            if let Some(addr) = current_addr {
+                let nic = nic.lock().await;
+                if let Err(err) = nic.link_up().await {
+                    tracing::warn!(?err, "failed to bring public ipv6 nic link up");
+                }
+                if let Err(err) = nic.add_ipv6(addr.address(), addr.network_length() as i32).await {
+                    tracing::warn!(addr = ?addr, ?err, "failed to add public ipv6 address");
+                }
+                if let Err(err) = nic
+                    .add_ipv6_route_with_cost(Ipv6Addr::UNSPECIFIED, 0, Some(5))
+                    .await
+                {
+                    tracing::warn!(route = %Ipv6Addr::UNSPECIFIED, prefix = 0, ?err, "failed to add default public ipv6 route");
+                }
+            }
+
+            loop {
+                let event = match event_receiver.recv().await {
+                    Ok(event) => event,
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                        event_receiver = event_receiver.resubscribe();
+                        let latest = peer_mgr.get_my_public_ipv6_addr().await;
+                        GlobalCtxEvent::PublicIpv6Changed(current_addr, latest)
+                    }
+                };
+
+                let (old, new) = match event {
+                    GlobalCtxEvent::PublicIpv6Changed(old, new) => (old, new),
+                    _ => continue,
+                };
+
+                current_addr = new;
+                let nic = nic.lock().await;
+                if let Err(err) = nic.link_up().await {
+                    tracing::warn!(?err, "failed to bring public ipv6 nic link up");
+                }
+                if let Some(old) = old {
+                    if let Err(err) = nic.remove_ipv6_route(Ipv6Addr::UNSPECIFIED, 0).await {
+                        tracing::warn!(route = %Ipv6Addr::UNSPECIFIED, prefix = 0, ?err, "failed to remove default public ipv6 route");
+                    }
+                    if let Err(err) = nic.remove_ipv6(Some(old)).await {
+                        tracing::warn!(addr = ?old, ?err, "failed to remove old public ipv6 address");
+                    }
+                }
+                if let Some(new) = new {
+                    if let Err(err) = nic.add_ipv6(new.address(), new.network_length() as i32).await
+                    {
+                        tracing::warn!(addr = ?new, ?err, "failed to add public ipv6 address");
+                    }
+                    if let Err(err) = nic
+                        .add_ipv6_route_with_cost(Ipv6Addr::UNSPECIFIED, 0, Some(5))
+                        .await
+                    {
+                        tracing::warn!(route = %Ipv6Addr::UNSPECIFIED, prefix = 0, ?err, "failed to add default public ipv6 route");
+                    }
+                }
+            }
+        });
+
+        Ok(())
+    }
+
     pub async fn run(
         &mut self,
         ipv4_addr: Option<cidr::Ipv4Inet>,
@@ -1134,7 +1348,10 @@ impl NicCtx {
                         let _ = RegistryManager::reg_change_catrgory_in_profile(&dev_name);
                     }
 
-                    #[cfg(any(target_os = "macos", target_os = "freebsd"))]
+                    #[cfg(any(
+                        all(target_os = "macos", not(feature = "macos-ne")),
+                        target_os = "freebsd"
+                    ))]
                     {
                         // remove the 10.0.0.0/24 route (which is added by rust-tun by default)
                         let _ = nic
@@ -1163,6 +1380,8 @@ impl NicCtx {
         // Assign IPv4 address if provided
         if let Some(ipv4_addr) = ipv4_addr {
             self.assign_ipv4_to_tun_device(ipv4_addr).await?;
+            #[cfg(target_os = "windows")]
+            self.start_windows_udp_broadcast_relay(ipv4_addr);
         }
 
         // Assign IPv6 address if provided
@@ -1171,11 +1390,15 @@ impl NicCtx {
         }
 
         self.run_proxy_cidrs_route_updater().await?;
+        self.run_public_ipv6_route_updater().await?;
+        // Keep the updater running so runtime config patches can enable auto mode
+        // without recreating the NIC.
+        self.run_public_ipv6_addr_updater().await?;
 
         Ok(())
     }
 
-    #[cfg(any(target_os = "android", target_os = "ios", target_env = "ohos"))]
+    #[cfg(mobile)]
     pub async fn run_for_mobile(&mut self, tun_fd: std::os::fd::RawFd) -> Result<(), Error> {
         let tunnel = {
             let mut nic = self.nic.lock().await;

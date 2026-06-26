@@ -3,8 +3,22 @@ mod three_node;
 
 mod ipv6_test;
 
+#[cfg(target_os = "linux")]
+mod credential_tests;
+
+#[cfg(target_os = "linux")]
+mod upnp_test;
+
 use crate::common::PeerId;
 use crate::peers::peer_manager::PeerManager;
+
+pub fn set_env_var<K: AsRef<std::ffi::OsStr>, V: AsRef<std::ffi::OsStr>>(key: K, value: V) {
+    unsafe { std::env::set_var(key, value) }
+}
+
+pub fn remove_env_var<K: AsRef<std::ffi::OsStr>>(key: K) {
+    unsafe { std::env::remove_var(key) }
+}
 
 pub fn get_guest_veth_name(net_ns: &str) -> &str {
     Box::leak(format!("veth_{}_g", net_ns).into_boxed_str())
@@ -94,6 +108,58 @@ pub fn create_netns(name: &str, ipv4: &str, ipv6: &str) {
     }
 }
 
+pub struct TestNetnsGuard {
+    name: String,
+    host_ipv4: Option<String>,
+}
+
+impl TestNetnsGuard {
+    fn run_ip(args: &[&str]) {
+        let status = std::process::Command::new("ip")
+            .args(args)
+            .status()
+            .unwrap();
+        assert!(status.success(), "ip command failed: {:?}", args);
+    }
+
+    pub fn new(name: &str, guest_ipv4: &str, guest_ipv6: &str) -> Self {
+        del_netns(name);
+        create_netns(name, guest_ipv4, guest_ipv6);
+        Self {
+            name: name.to_string(),
+            host_ipv4: None,
+        }
+    }
+
+    pub fn set_host_ipv4(&mut self, host_ipv4: &str) {
+        Self::run_ip(&[
+            "addr",
+            "add",
+            host_ipv4,
+            "dev",
+            get_host_veth_name(&self.name),
+        ]);
+        self.host_ipv4 = Some(host_ipv4.to_string());
+    }
+}
+
+impl Drop for TestNetnsGuard {
+    fn drop(&mut self) {
+        if let Some(host_ipv4) = self.host_ipv4.as_deref() {
+            let _ = std::process::Command::new("ip")
+                .args([
+                    "addr",
+                    "del",
+                    host_ipv4,
+                    "dev",
+                    get_host_veth_name(&self.name),
+                ])
+                .status();
+        }
+        del_netns(&self.name);
+    }
+}
+
 pub fn prepare_bridge(name: &str) {
     // del bridge with brctl
     let _ = std::process::Command::new("brctl")
@@ -118,18 +184,6 @@ pub fn add_ns_to_bridge(br_name: &str, ns_name: &str) {
         .args(["link", "set", br_name, "up"])
         .output()
         .unwrap();
-}
-
-pub fn enable_log() {
-    let filter = tracing_subscriber::EnvFilter::builder()
-        .with_default_directive(tracing::level_filters::LevelFilter::TRACE.into())
-        .from_env()
-        .unwrap()
-        .add_directive("tarpc=error".parse().unwrap());
-    tracing_subscriber::fmt::fmt()
-        .pretty()
-        .with_env_filter(filter)
-        .init();
 }
 
 fn check_route(ipv4: &str, dst_peer_id: PeerId, routes: Vec<crate::proto::api::instance::Route>) {
@@ -199,4 +253,46 @@ fn set_link_status(net_ns: &str, up: bool) {
         .output()
         .unwrap();
     tracing::info!("set link status: {:?}, net_ns: {}, up: {}", ret, net_ns, up);
+}
+
+pub async fn drop_insts(insts: Vec<crate::instance::instance::Instance>) {
+    let mut set = tokio::task::JoinSet::new();
+    for mut inst in insts {
+        set.spawn(async move {
+            inst.clear_resources().await;
+            let pm = std::sync::Arc::downgrade(&inst.get_peer_manager());
+            drop(inst);
+            let now = std::time::Instant::now();
+            while now.elapsed().as_secs() < 5 && pm.strong_count() > 0 {
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            }
+            assert_eq!(pm.strong_count(), 0, "PeerManager should be dropped");
+        });
+    }
+    while set.join_next().await.is_some() {}
+}
+
+pub async fn ping_test(from_netns: &str, target_ip: &str, payload_size: Option<usize>) -> bool {
+    use crate::common::netns::{NetNS, ROOT_NETNS_NAME};
+    let _g = NetNS::new(Some(ROOT_NETNS_NAME.to_owned())).guard();
+    let code = tokio::process::Command::new("ip")
+        .args([
+            "netns",
+            "exec",
+            from_netns,
+            "ping",
+            "-c",
+            "1",
+            "-s",
+            payload_size.unwrap_or(56).to_string().as_str(),
+            "-W",
+            "1",
+            target_ip.to_string().as_str(),
+        ])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .await
+        .unwrap();
+    code.code().unwrap() == 0
 }

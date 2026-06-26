@@ -7,28 +7,28 @@
 // all the clients will exit and let the easytier instance to launch a new server instance.
 
 use super::{
+    MAGIC_DNS_INSTANCE_ADDR,
     config::{GeneralConfigBuilder, RunConfigBuilder},
     server::Server,
     system_config::{OSConfig, SystemConfig},
-    MAGIC_DNS_INSTANCE_ADDR,
 };
 use crate::{
     common::{
-        ifcfg::{IfConfiger, IfConfiguerTrait},
         PeerId,
+        ifcfg::{IfConfiger, IfConfiguerTrait},
     },
     instance::dns_server::{
         config::{Record, RecordBuilder, RecordType},
         server::build_authority,
     },
-    peers::{peer_manager::PeerManager, NicPacketFilter},
+    peers::{NicPacketFilter, peer_manager::PeerManager},
     proto::{
         api::instance::Route,
         common::{TunnelInfo, Void},
         magic_dns::{
-            dns_record::{self},
             DnsRecord, DnsRecordA, DnsRecordList, GetDnsRecordResponse, HandshakeRequest,
             HandshakeResponse, MagicDnsServerRpc, MagicDnsServerRpcServer, UpdateDnsRecordRequest,
+            dns_record::{self},
         },
         rpc_impl::standalone::{RpcServerHook, StandAloneServer},
         rpc_types::controller::{BaseController, Controller},
@@ -47,11 +47,10 @@ use pnet::packet::icmp::{IcmpTypes, MutableIcmpPacket};
 use pnet::packet::ipv4::Ipv4Packet;
 use pnet::packet::udp::UdpPacket;
 use pnet::packet::{
-    icmp,
+    MutablePacket, Packet, icmp,
     ip::IpNextHeaderProtocols,
     ipv4::{self, MutableIpv4Packet},
     udp::{self, MutableUdpPacket},
-    MutablePacket, Packet,
 };
 use std::net::{SocketAddr, SocketAddrV4};
 use std::sync::Mutex;
@@ -140,6 +139,19 @@ impl MagicDnsServerInstanceData {
         }
     }
 
+    async fn keep_zone_authoritative(&self, zone: &str) {
+        if let Err(e) = self
+            .update_dns_records(std::iter::empty::<&Route>(), zone)
+            .await
+        {
+            tracing::error!(
+                "Failed to keep DNS zone {} authoritative after route prune: {:?}",
+                zone,
+                e
+            );
+        }
+    }
+
     fn do_system_config(&self, zone: &str) -> Result<(), anyhow::Error> {
         if let Some(c) = &self.system_config {
             c.set_dns(&OSConfig {
@@ -183,10 +195,25 @@ impl MagicDnsServerRpc for MagicDnsServerInstanceData {
             return Err(anyhow::anyhow!("No remote addr").into());
         };
         let zone = input.zone.clone();
-        self.route_infos
-            .entry(zone.clone())
-            .or_default()
-            .insert_many(remote_addr.clone().into(), input.routes);
+        let remote_addr: url::Url = remote_addr.clone().into();
+        let mut zone_removed = false;
+
+        if let Some(mut routes_by_addr) = self.route_infos.get_mut(&zone) {
+            routes_by_addr.remove(&remote_addr);
+            if !input.routes.is_empty() {
+                routes_by_addr.insert_many(remote_addr, input.routes);
+            }
+            zone_removed = routes_by_addr.is_empty();
+        } else if !input.routes.is_empty() {
+            let mut routes_by_addr = MultiMap::new();
+            routes_by_addr.insert_many(remote_addr, input.routes);
+            self.route_infos.insert(zone.clone(), routes_by_addr);
+        }
+
+        if zone_removed {
+            self.route_infos.remove(&zone);
+            self.keep_zone_authoritative(&zone).await;
+        }
 
         self.update().await;
         Ok(Default::default())
@@ -438,11 +465,19 @@ impl RpcServerHook for MagicDnsServerInstanceData {
             return;
         };
         let remote_addr = remote_addr.into();
+        let mut removed_zones = vec![];
         for mut item in self.route_infos.iter_mut() {
             item.value_mut().remove(&remote_addr);
+            if item.value().is_empty() {
+                removed_zones.push(item.key().clone());
+            }
         }
-        self.route_infos.retain(|_, v| !v.is_empty());
-        self.route_infos.shrink_to_fit();
+        for zone in &removed_zones {
+            self.route_infos.remove(zone);
+        }
+        for zone in removed_zones {
+            self.keep_zone_authoritative(&zone).await;
+        }
         self.update().await;
     }
 }
@@ -464,7 +499,7 @@ fn get_system_config(
         return Ok(Some(Box::new(WindowsDNSManager::new(tun_name)?)));
     }
 
-    #[cfg(target_os = "macos")]
+    #[cfg(all(target_os = "macos", not(feature = "macos-ne")))]
     {
         use super::system_config::darwin::DarwinConfigurator;
         return Ok(Some(Box::new(DarwinConfigurator::new())));
@@ -492,18 +527,18 @@ impl MagicDnsServerInstance {
         let mut dns_server = Server::new(dns_config);
         dns_server.run().await?;
 
-        if !tun_inet.contains(&fake_ip) {
-            if let Some(tun_dev_name) = &tun_dev {
-                let cost = if cfg!(target_os = "windows") {
-                    Some(4)
-                } else {
-                    None
-                };
-                let ifcfg = IfConfiger {};
-                ifcfg
-                    .add_ipv4_route(tun_dev_name, fake_ip, 32, cost)
-                    .await?;
-            }
+        if !tun_inet.contains(&fake_ip)
+            && let Some(tun_dev_name) = &tun_dev
+        {
+            let cost = if cfg!(target_os = "windows") {
+                Some(4)
+            } else {
+                None
+            };
+            let ifcfg = IfConfiger {};
+            ifcfg
+                .add_ipv4_route(tun_dev_name, fake_ip, 32, cost)
+                .await?;
         }
 
         let data = Arc::new(MagicDnsServerInstanceData {
@@ -551,13 +586,13 @@ impl MagicDnsServerInstance {
             if let Err(e) = ret {
                 tracing::error!("Failed to close system config: {:?}", e);
             }
-            if !self.tun_inet.contains(&self.data.fake_ip) {
-                if let Some(tun_dev_name) = &self.data.tun_dev {
-                    let ifcfg = IfConfiger {};
-                    let _ = ifcfg
-                        .remove_ipv4_route(tun_dev_name, self.data.fake_ip, 32)
-                        .await;
-                }
+            if !self.tun_inet.contains(&self.data.fake_ip)
+                && let Some(tun_dev_name) = &self.data.tun_dev
+            {
+                let ifcfg = IfConfiger {};
+                let _ = ifcfg
+                    .remove_ipv4_route(tun_dev_name, self.data.fake_ip, 32)
+                    .await;
             }
         }
 

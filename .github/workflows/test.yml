@@ -6,6 +6,10 @@ on:
   pull_request:
     branches: [ "develop", "main" ]
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 env:
   CARGO_TERM_COLOR: always
 #  RUSTC_WRAPPER: "sccache"
@@ -30,7 +34,7 @@ jobs:
           # All of these options are optional, so you can remove them if you are happy with the defaults
           concurrent_skipping: 'never'
           skip_after_successful_duplicate: 'true'
-          paths: '["Cargo.toml", "Cargo.lock", "easytier/**", ".github/workflows/test.yml", ".github/workflows/install_gui_dep.sh", ".github/workflows/install_rust.sh"]'
+          paths: '["Cargo.toml", "Cargo.lock", "easytier/**", ".github/workflows/test.yml", ".github/actions/**"]'
 
   check:
     name: Run linters & check
@@ -38,34 +42,41 @@ jobs:
     needs: pre_job
     if: needs.pre_job.outputs.should_skip != 'true'
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v5
 
       - name: Prepare build environment
         uses: ./.github/actions/prepare-build
         with:
           gui: true
-          web: true
+          pnpm: true
           token: ${{ secrets.GITHUB_TOKEN }}
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          components: rustfmt,clippy
+          rustflags: ''
 
-      - name: Install rustfmt and clippy
-        run: |
-          rustup component add rustfmt
-          rustup component add clippy
-
-      - name: Install cargo-hack
-        run: cargo install cargo-hack --locked
+      - uses: taiki-e/install-action@cargo-hack
 
       - name: Check formatting
+        if: ${{ !cancelled() }}
         run: cargo fmt --all -- --check
 
       - name: Check Clippy
-        run: cargo clippy --all-targets --all-features --all -- -D warnings
+        if: ${{ !cancelled() }}
+        run: cargo clippy --all-targets --features full --all -- -D warnings
 
       - name: Check features
         if: ${{ !cancelled() }}
-        run: cargo hack check --package easytier --each-feature --features aes-gcm --verbose
+        run: cargo hack check --package easytier --each-feature --exclude-features macos-ne --verbose
+
+      - name: Check Cargo.lock is up to date
+        if: ${{ !cancelled() }}
+        run: |
+          if ! cargo metadata --format-version 1 --locked > /dev/null; then
+            echo "::error::Cargo.lock is out of date. Run cargo generate-lockfile or cargo build locally, then commit Cargo.lock."
+            exit 1
+          fi
 
   pre-test:
     name: Build test
@@ -73,13 +84,13 @@ jobs:
     needs: pre_job
     if: needs.pre_job.outputs.should_skip != 'true'
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v5
 
       - name: Prepare build environment
         uses: ./.github/actions/prepare-build
         with:
           gui: true
-          web: true
+          pnpm: true
           token: ${{ secrets.GITHUB_TOKEN }}
 
       - uses: Swatinem/rust-cache@v2
@@ -87,9 +98,9 @@ jobs:
       - uses: taiki-e/install-action@nextest
 
       - name: Archive test
-        run: cargo nextest archive --archive-file tests.tar.zst --package easytier --all-features
+        run: cargo nextest archive --archive-file tests.tar.zst --package easytier --features full
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         with:
           name: tests
           path: tests.tar.zst
@@ -105,21 +116,22 @@ jobs:
       matrix:
         include:
           - name: "easytier"
-            opts: "-E 'not test(connector::dns_connector::tests) and not test(tests::three_node)' --test-threads 1 --no-fail-fast"
+            opts: "-E 'not test(tests::three_node)' --test-threads 1 --no-fail-fast"
 
-          - name: "easytier::connector::dns_connector::tests"
-            opts: "-E 'test(connector::dns_connector::tests)' --test-threads 1 --no-fail-fast"
-
-          - name: "easytier::tests::three_node"
+          - name: "three_node"
             opts: "-E 'test(tests::three_node) and not test(subnet_proxy_three_node_test)' --test-threads 1 --no-fail-fast"
 
-          - name: "easytier::tests::three_node::subnet_proxy_three_node_test"
+          - name: "three_node::subnet_proxy_three_node_test"
             opts: "-E 'test(subnet_proxy_three_node_test)' --test-threads 1 --no-fail-fast"
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v5
 
       - name: Setup tools for test
         run: sudo apt install bridge-utils
+      - name: Setup upnpd for test
+        run: |
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y miniupnpd miniupnpd-iptables iptables
 
       - name: Setup system for test
         run: |
@@ -143,9 +155,9 @@ jobs:
 
   test:
     runs-on: ubuntu-latest
-    needs: [ pre_job, test_matrix ]
-    if: needs.pre_job.outputs.should_skip != 'true' && always()
+    needs: [ pre_job, check, test_matrix ]
+    if: needs.pre_job.result == 'success' && needs.pre_job.outputs.should_skip != 'true' && !cancelled()
     steps:
       - name: Mark result as failed
-        if: needs.test_matrix.result != 'success'
+        if: contains(needs.*.result, 'failure')
         run: exit 1

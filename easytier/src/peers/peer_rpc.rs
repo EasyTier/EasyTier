@@ -4,7 +4,7 @@ use futures::{SinkExt as _, StreamExt};
 use tokio::task::JoinSet;
 
 use crate::{
-    common::{error::Error, stats_manager::StatsManager, PeerId},
+    common::{PeerId, error::Error, stats_manager::StatsManager},
     proto::rpc_impl::{self, bidirect::BidirectRpcManager},
     tunnel::packet_def::ZCPacket,
 };
@@ -109,7 +109,7 @@ pub mod tests {
     use tokio::sync::Mutex;
 
     use crate::{
-        common::{error::Error, new_peer_id, PeerId},
+        common::{PeerId, error::Error, new_peer_id},
         peers::{
             peer_rpc::PeerRpcManager,
             tests::{connect_peer_manager, create_mock_peer_manager, wait_route_appear},
@@ -119,16 +119,16 @@ pub mod tests {
             tests::{GreetingClientFactory, GreetingServer, GreetingService, SayHelloRequest},
         },
         tunnel::{
-            packet_def::ZCPacket, ring::create_ring_tunnel_pair, Tunnel, ZCPacketSink,
-            ZCPacketStream,
+            Tunnel, ZCPacketSink, ZCPacketStream, packet_def::ZCPacket,
+            ring::create_ring_tunnel_pair,
         },
     };
 
     use super::PeerRpcManagerTransport;
 
     fn random_string(len: usize) -> String {
-        use rand::distributions::Alphanumeric;
         use rand::Rng;
+        use rand::distributions::Alphanumeric;
         let mut rng = rand::thread_rng();
         let s: Vec<u8> = std::iter::repeat(())
             .map(|()| rng.sample(Alphanumeric))

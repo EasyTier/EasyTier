@@ -3,8 +3,8 @@ use std::sync::{Arc, Weak};
 use std::time::Instant;
 
 use crate::common::global_ctx::{ArcGlobalCtx, GlobalCtxEvent};
-use crate::common::scoped_task::ScopedTask;
 use crate::peers::peer_manager::PeerManager;
+use tokio_util::task::AbortOnDropHandle;
 
 /// ProxyCidrsMonitor monitors changes in proxy CIDRs from peer routes
 /// and emits GlobalCtxEvent::ProxyCidrsUpdated with added/removed diffs.
@@ -32,42 +32,34 @@ impl ProxyCidrsMonitor {
         Vec<cidr::Ipv4Cidr>,
         Vec<cidr::Ipv4Cidr>,
     ) {
-        // Collect proxy_cidrs from routes
-        let mut proxy_cidrs = BTreeSet::new();
-        let routes = peer_mgr.list_routes().await;
-        for r in routes {
-            for cidr in r.proxy_cidrs {
-                let Ok(cidr) = cidr.parse::<cidr::Ipv4Cidr>() else {
-                    continue;
-                };
-                proxy_cidrs.insert(cidr);
+        let proxy_cidrs = if let Some(routes) = global_ctx.config.get_routes() {
+            // If manual routes exist, override entire proxy_cidrs
+            routes.into_iter().collect()
+        } else {
+            // Collect proxy_cidrs from routes
+            let mut proxy_cidrs = peer_mgr.list_proxy_cidrs().await;
+
+            // Add VPN portal cidr to proxy_cidrs
+            if let Some(vpn_cfg) = global_ctx.config.get_vpn_portal_config() {
+                proxy_cidrs.insert(vpn_cfg.client_cidr);
             }
-        }
 
-        // Add VPN portal cidr to proxy_cidrs
-        if let Some(vpn_cfg) = global_ctx.config.get_vpn_portal_config() {
-            proxy_cidrs.insert(vpn_cfg.client_cidr);
-        }
-
-        // If has manual routes, override entire proxy_cidrs
-        if let Some(routes) = global_ctx.config.get_routes() {
-            proxy_cidrs = routes.into_iter().collect();
-        }
+            proxy_cidrs
+        };
 
         // Calculate diff
         if cur_proxy_cidrs == &proxy_cidrs {
             return (proxy_cidrs, Vec::new(), Vec::new());
         }
-        let added: Vec<cidr::Ipv4Cidr> = proxy_cidrs.difference(cur_proxy_cidrs).cloned().collect();
-        let removed: Vec<cidr::Ipv4Cidr> =
-            cur_proxy_cidrs.difference(&proxy_cidrs).cloned().collect();
+        let added = proxy_cidrs.difference(cur_proxy_cidrs).cloned().collect();
+        let removed = cur_proxy_cidrs.difference(&proxy_cidrs).cloned().collect();
 
         (proxy_cidrs, added, removed)
     }
 
     /// Starts monitoring proxy_cidrs changes and emits events with diffs
-    pub fn start(self) -> ScopedTask<()> {
-        ScopedTask::from(tokio::spawn(async move {
+    pub fn start(self) -> AbortOnDropHandle<()> {
+        AbortOnDropHandle::new(tokio::spawn(async move {
             let mut cur_proxy_cidrs = BTreeSet::new();
             let mut last_update = None::<Instant>;
 

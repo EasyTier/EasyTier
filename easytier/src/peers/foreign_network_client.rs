@@ -1,11 +1,12 @@
 use std::sync::{Arc, Mutex};
 
 use crate::{
-    common::{error::Error, global_ctx::ArcGlobalCtx, scoped_task::ScopedTask, PeerId},
+    common::{PeerId, error::Error, global_ctx::ArcGlobalCtx},
     tunnel::packet_def::ZCPacket,
 };
+use tokio_util::task::AbortOnDropHandle;
 
-use super::{peer_conn::PeerConn, peer_map::PeerMap, peer_rpc::PeerRpcManager, PacketRecvChan};
+use super::{PacketRecvChan, peer_conn::PeerConn, peer_map::PeerMap, peer_rpc::PeerRpcManager};
 
 pub struct ForeignNetworkClient {
     global_ctx: ArcGlobalCtx,
@@ -13,7 +14,7 @@ pub struct ForeignNetworkClient {
     my_peer_id: PeerId,
 
     peer_map: Arc<PeerMap>,
-    task: Mutex<Option<ScopedTask<()>>>,
+    task: Mutex<Option<AbortOnDropHandle<()>>>,
 }
 
 impl ForeignNetworkClient {
@@ -38,7 +39,7 @@ impl ForeignNetworkClient {
         }
     }
 
-    pub async fn add_new_peer_conn(&self, peer_conn: PeerConn) {
+    pub async fn add_new_peer_conn(&self, peer_conn: PeerConn) -> Result<(), Error> {
         tracing::warn!(peer_conn = ?peer_conn.get_conn_info(), network = ?peer_conn.get_network_identity(), "add new peer conn in foreign network client");
         self.peer_map.add_new_peer_conn(peer_conn).await
     }
@@ -82,18 +83,15 @@ impl ForeignNetworkClient {
 
     pub async fn run(&self) {
         let peer_map = Arc::downgrade(&self.peer_map);
-        *self.task.lock().unwrap() = Some(
-            tokio::spawn(async move {
-                loop {
-                    tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
-                    let Some(peer_map) = peer_map.upgrade() else {
-                        break;
-                    };
-                    peer_map.clean_peer_without_conn().await;
-                }
-            })
-            .into(),
-        );
+        *self.task.lock().unwrap() = Some(AbortOnDropHandle::new(tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+                let Some(peer_map) = peer_map.upgrade() else {
+                    break;
+                };
+                peer_map.clean_peer_without_conn().await;
+            }
+        })));
     }
 
     pub fn get_peer_map(&self) -> Arc<PeerMap> {

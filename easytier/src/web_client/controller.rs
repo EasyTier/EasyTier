@@ -2,12 +2,16 @@ use std::sync::Arc;
 
 use crate::{
     instance_manager::NetworkInstanceManager,
-    rpc_service::instance_manage::InstanceManageRpcService, web_client::WebClientHooks,
+    proto::{rpc_impl::service_registry::ServiceRegistry, web::DeviceOsInfo},
+    rpc_service::api::register_api_rpc_service,
+    web_client::WebClientHooks,
 };
 
 pub struct Controller {
     token: String,
+    machine_id: uuid::Uuid,
     hostname: String,
+    device_os: DeviceOsInfo,
     manager: Arc<NetworkInstanceManager>,
     hooks: Arc<dyn WebClientHooks>,
 }
@@ -15,13 +19,17 @@ pub struct Controller {
 impl Controller {
     pub fn new(
         token: String,
+        machine_id: uuid::Uuid,
         hostname: String,
+        device_os: DeviceOsInfo,
         manager: Arc<NetworkInstanceManager>,
         hooks: Arc<dyn WebClientHooks>,
     ) -> Self {
         Controller {
             token,
+            machine_id,
             hostname,
+            device_os,
             manager,
             hooks,
         }
@@ -39,8 +47,16 @@ impl Controller {
         self.hostname.clone()
     }
 
-    pub fn get_rpc_service(&self) -> InstanceManageRpcService {
-        InstanceManageRpcService::new(self.manager.clone(), self.hooks.clone())
+    pub fn machine_id(&self) -> uuid::Uuid {
+        self.machine_id
+    }
+
+    pub fn device_os(&self) -> DeviceOsInfo {
+        self.device_os.clone()
+    }
+
+    pub fn register_api_rpc_service(&self, registry: &ServiceRegistry) {
+        register_api_rpc_service(&self.manager, registry, Some(self.hooks.clone()));
     }
 
     pub(super) fn notify_manager_stopping(&self) {

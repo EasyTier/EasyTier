@@ -70,6 +70,20 @@ message FlagsInConfig {
   bool p2p_only = 32;
 
   bool disable_tcp_hole_punching = 34;
+
+  bool lazy_p2p = 37;
+  bool need_p2p = 38;
+  uint64 instance_recv_bps_limit = 39;
+  bool disable_upnp = 40;
+  bool disable_relay_data = 41;
+  bool enable_udp_broadcast_relay = 42;
+
+  // Linux-only: SO_MARK (fwmark) value applied to every outbound underlay
+  // socket (TCP/UDP/QUIC/WS/WG connectors and listeners). Unset = leave
+  // SO_MARK untouched (kernel default 0). Any set value (including 0) is
+  // applied via setsockopt. Requires CAP_NET_ADMIN; silently ignored on
+  // non-Linux platforms.
+  optional uint32 socket_mark = 43;
 }
 
 message RpcDescriptor {
@@ -197,6 +211,7 @@ message TunnelInfo {
   string tunnel_type = 1;
   common.Url local_addr = 2;
   common.Url remote_addr = 3;
+  common.Url resolved_remote_addr = 4;
 }
 
 message StunInfo {
@@ -216,6 +231,10 @@ message PeerFeatureFlag {
   bool support_conn_list_sync = 5;
   bool quic_input = 6;
   bool no_relay_quic = 7;
+  bool is_credential_peer = 8;
+  bool need_p2p = 9;
+  bool disable_p2p = 10;
+  bool ipv6_public_addr_provider = 11;
 }
 
 enum SocketType {

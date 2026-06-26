@@ -8,29 +8,29 @@ use std::{
 
 use anyhow::Context;
 use pnet::packet::{
-    icmp::{self, echo_reply::MutableEchoReplyPacket, IcmpCode, IcmpTypes, MutableIcmpPacket},
+    Packet,
+    icmp::{self, IcmpCode, IcmpTypes, MutableIcmpPacket, echo_reply::MutableEchoReplyPacket},
     ip::IpNextHeaderProtocols,
     ipv4::Ipv4Packet,
-    Packet,
 };
 use socket2::Socket;
 use tokio::{
-    sync::{mpsc::UnboundedSender, Mutex},
+    sync::{Mutex, mpsc::UnboundedSender},
     task::JoinSet,
 };
 
 use tracing::Instrument;
 
 use crate::{
-    common::{error::Error, global_ctx::ArcGlobalCtx, PeerId},
+    common::{PeerId, error::Error, global_ctx::ArcGlobalCtx},
     gateway::ip_reassembler::ComposeIpv4PacketArgs,
-    peers::{peer_manager::PeerManager, PeerPacketFilter},
+    peers::{PeerPacketFilter, peer_manager::PeerManager},
     tunnel::packet_def::{PacketType, ZCPacket},
 };
 
 use super::{
-    ip_reassembler::{compose_ipv4_packet, IpReassembler},
     CidrSet,
+    ip_reassembler::{IpReassembler, compose_ipv4_packet},
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

@@ -5,6 +5,20 @@ import "common.proto";
 
 package peer_rpc;
 
+message TrustedCredentialPubkey {
+  bytes pubkey = 1;              // X25519 public key (32 bytes)
+  repeated string groups = 2;   // ACL groups this credential belongs to
+  bool allow_relay = 3;         // whether this credential node can relay data
+  int64 expiry_unix = 4;        // expiry time (Unix timestamp)
+  repeated string allowed_proxy_cidrs = 5; // allowed proxy_cidrs ranges
+  optional bool reusable = 6;   // whether multiple peers may use the same credential concurrently
+}
+
+message TrustedCredentialPubkeyProof {
+  TrustedCredentialPubkey credential = 1;
+  bytes credential_hmac = 2;
+}
+
 message RoutePeerInfo {
   // means next hop in route table.
   uint32 peer_id = 1;
@@ -29,6 +43,13 @@ message RoutePeerInfo {
   repeated PeerGroupInfo groups = 16;
 
   common.NatType tcp_nat_type = 17;
+  bytes noise_static_pubkey = 18;
+
+  // Trusted credential public keys published by admin nodes (holding network_secret)
+  repeated TrustedCredentialPubkeyProof trusted_credential_pubkeys = 19;
+
+  optional common.Ipv6Inet ipv6_public_addr_prefix = 22;
+  optional common.Ipv6Inet ipv6_public_addr_lease = 24;
 }
 
 message PeerIdVersion {
@@ -115,6 +136,46 @@ service OspfRouteRpc {
   rpc SyncRouteInfo(SyncRouteInfoRequest) returns (SyncRouteInfoResponse);
 }
 
+message AcquireIpv6PublicAddrLeaseRequest {
+  uint32 peer_id = 1;
+  common.UUID inst_id = 2;
+}
+
+message RenewIpv6PublicAddrLeaseRequest {
+  uint32 peer_id = 1;
+  common.UUID inst_id = 2;
+  common.Ipv6Inet leased_addr = 3;
+}
+
+message ReleaseIpv6PublicAddrLeaseRequest {
+  uint32 peer_id = 1;
+  common.UUID inst_id = 2;
+}
+
+message GetIpv6PublicAddrLeaseRequest {
+  uint32 peer_id = 1;
+  common.UUID inst_id = 2;
+}
+
+message Ipv6PublicAddrLeaseReply {
+  uint32 provider_peer_id = 1;
+  common.UUID provider_inst_id = 2;
+  common.Ipv6Inet provider_prefix = 3;
+  common.Ipv6Inet leased_addr = 4;
+  google.protobuf.Timestamp valid_until = 5;
+  bool reused = 6;
+  optional string error_msg = 7;
+}
+
+service PublicIpv6AddrRpc {
+  rpc AcquireLease(AcquireIpv6PublicAddrLeaseRequest)
+      returns (Ipv6PublicAddrLeaseReply);
+  rpc RenewLease(RenewIpv6PublicAddrLeaseRequest)
+      returns (Ipv6PublicAddrLeaseReply);
+  rpc ReleaseLease(ReleaseIpv6PublicAddrLeaseRequest) returns (common.Void);
+  rpc GetLease(GetIpv6PublicAddrLeaseRequest) returns (Ipv6PublicAddrLeaseReply);
+}
+
 message GetIpListRequest {}
 
 message GetIpListResponse {
@@ -125,18 +186,19 @@ message GetIpListResponse {
   repeated common.Url listeners = 5;
 }
 
-message SendV6HolePunchPacketRequest {
+message SendUdpHolePunchPacketRequest {
   common.SocketAddr connector_addr = 1;
   uint32 listener_port = 2;
 }
 
 service DirectConnectorRpc {
   rpc GetIpList(GetIpListRequest) returns (GetIpListResponse);
-  rpc SendV6HolePunchPacket(SendV6HolePunchPacketRequest) returns (common.Void);
+  rpc SendUdpHolePunchPacket(SendUdpHolePunchPacketRequest) returns (common.Void);
 }
 
 message SelectPunchListenerRequest {
   bool force_new = 1;
+  bool prefer_port_mapping = 2;
 }
 
 message SelectPunchListenerResponse {
@@ -262,8 +324,14 @@ message KcpConnData {
 enum SecureAuthLevel {
   None = 0;
   EncryptedUnauthenticated = 1;
-  SharedNodePubkeyVerified = 2;
+  PeerVerified = 2;
   NetworkSecretConfirmed = 3;
+}
+
+enum PeerIdentityType {
+  Admin = 0;
+  Credential = 1;
+  SharedNode = 2;
 }
 
 enum PeerConnSessionActionPb {
@@ -290,6 +358,23 @@ message PeerConnNoiseMsg2Pb {
   common.UUID b_conn_id = 7;
   common.UUID a_conn_id_echo = 8;
   optional bytes secret_proof_32 = 9;
+  string server_encryption_algorithm = 10;
+}
+
+message RelayNoiseMsg1Pb {
+  uint32 version = 1;
+  optional uint32 a_session_generation = 3;
+  common.UUID a_conn_id = 4;
+  string client_encryption_algorithm = 5;
+}
+
+message RelayNoiseMsg2Pb {
+  PeerConnSessionActionPb action = 3;
+  uint32 b_session_generation = 4;
+  optional bytes root_key_32 = 5;
+  uint32 initial_epoch = 6;
+  common.UUID b_conn_id = 7;
+  common.UUID a_conn_id_echo = 8;
   string server_encryption_algorithm = 10;
 }
 

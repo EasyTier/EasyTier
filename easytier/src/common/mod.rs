@@ -1,34 +1,35 @@
 use std::{
     fmt::Debug,
     future,
-    io::Write as _,
     sync::{Arc, Mutex},
 };
 use time::util::refresh_tz;
 use tokio::{task::JoinSet, time::timeout};
 use tracing::Instrument;
 
-use crate::{set_global_var, use_global_var};
-
 pub mod acl_processor;
 pub mod compressor;
 pub mod config;
 pub mod constants;
-pub mod defer;
 pub mod dns;
 pub mod env_parser;
 pub mod error;
 pub mod global_ctx;
 pub mod idn;
 pub mod ifcfg;
+pub mod log;
+pub mod machine_id;
 pub mod netns;
 pub mod network;
-pub mod scoped_task;
+pub mod os_info;
 pub mod stats_manager;
 pub mod stun;
 pub mod stun_codec_ext;
 pub mod token_bucket;
 pub mod tracing_rolling_appender;
+pub mod upnp;
+
+pub use machine_id::{MachineIdOptions, resolve_machine_id};
 
 pub fn get_logger_timer<F: time::formatting::Formattable>(
     format: F,
@@ -39,8 +40,8 @@ pub fn get_logger_timer<F: time::formatting::Formattable>(
     tracing_subscriber::fmt::time::OffsetTime::new(local_offset, format)
 }
 
-pub fn get_logger_timer_rfc3339(
-) -> tracing_subscriber::fmt::time::OffsetTime<time::format_description::well_known::Rfc3339> {
+pub fn get_logger_timer_rfc3339()
+-> tracing_subscriber::fmt::time::OffsetTime<time::format_description::well_known::Rfc3339> {
     get_logger_timer(time::format_description::well_known::Rfc3339)
 }
 
@@ -93,68 +94,6 @@ pub fn join_joinset_background<T: Debug + Send + Sync + 'static>(
             origin = origin
         )),
     );
-}
-
-pub fn set_default_machine_id(mid: Option<String>) {
-    set_global_var!(MACHINE_UID, mid);
-}
-
-pub fn get_machine_id() -> uuid::Uuid {
-    if let Some(default_mid) = use_global_var!(MACHINE_UID) {
-        let mut b = [0u8; 16];
-        crate::tunnel::generate_digest_from_str("", &default_mid, &mut b);
-        return uuid::Uuid::from_bytes(b);
-    }
-
-    // a path same as the binary
-    let machine_id_file = std::env::current_exe()
-        .map(|x| x.with_file_name("et_machine_id"))
-        .unwrap_or_else(|_| std::path::PathBuf::from("et_machine_id"));
-
-    // try load from local file
-    if let Ok(mid) = std::fs::read_to_string(&machine_id_file) {
-        if let Ok(mid) = uuid::Uuid::parse_str(mid.trim()) {
-            return mid;
-        }
-    }
-
-    #[cfg(any(
-        target_os = "linux",
-        target_os = "macos",
-        target_os = "windows",
-        target_os = "freebsd"
-    ))]
-    let gen_mid = machine_uid::get()
-        .map(|x| {
-            if x.is_empty() {
-                return uuid::Uuid::new_v4();
-            }
-            let mut b = [0u8; 16];
-            crate::tunnel::generate_digest_from_str("", x.as_str(), &mut b);
-            uuid::Uuid::from_bytes(b)
-        })
-        .ok();
-
-    #[cfg(not(any(
-        target_os = "linux",
-        target_os = "macos",
-        target_os = "windows",
-        target_os = "freebsd"
-    )))]
-    let gen_mid = None;
-
-    if let Some(mid) = gen_mid {
-        return mid;
-    }
-
-    let gen_mid = uuid::Uuid::new_v4();
-
-    // try save to local file
-    if let Ok(mut file) = std::fs::File::create(machine_id_file) {
-        let _ = file.write_all(gen_mid.to_string().as_bytes());
-    }
-
-    gen_mid
 }
 
 pub fn shrink_dashmap<K: Eq + std::hash::Hash, V>(

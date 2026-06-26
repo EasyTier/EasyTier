@@ -2,8 +2,8 @@ use std::{
     io,
     net::{IpAddr, SocketAddr},
     sync::{
-        atomic::{AtomicU32, Ordering},
         Arc, Weak,
+        atomic::{AtomicU32, Ordering},
     },
 };
 
@@ -25,10 +25,10 @@ fn filter_tcp_packet(
     src_addr: Option<&SocketAddr>,
     dst_addr: Option<&SocketAddr>,
 ) -> bool {
+    use pnet::packet::Packet;
     use pnet::packet::ethernet::EthernetPacket;
     use pnet::packet::ipv4::Ipv4Packet;
     use pnet::packet::tcp::TcpPacket;
-    use pnet::packet::Packet;
 
     let ethernet = if let Some(ethernet) = EthernetPacket::new(packet) {
         ethernet
@@ -221,7 +221,8 @@ fn get_or_create_worker(interface_name: &str) -> io::Result<Arc<InterfaceWorker>
 
     // But creation is rare.
     // Let's find interface first.
-    let interfaces = datalink::interfaces();
+    let interfaces = std::panic::catch_unwind(datalink::interfaces)
+        .map_err(|_| io::Error::other("failed to enumerate network interfaces: pnet panicked"))?;
     let interface = interfaces
         .into_iter()
         .find(|iface| iface.name == interface_name)

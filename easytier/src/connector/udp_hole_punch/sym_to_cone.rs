@@ -2,28 +2,27 @@ use std::{
     net::Ipv4Addr,
     ops::{Div, Mul},
     sync::{
-        atomic::{AtomicBool, Ordering},
         Arc,
+        atomic::{AtomicBool, Ordering},
     },
     time::{Duration, Instant},
 };
 
 use anyhow::Context;
-use rand::{seq::SliceRandom, Rng};
+use guarden::defer;
+use rand::{Rng, seq::SliceRandom};
 use tokio::{net::UdpSocket, sync::RwLock};
+use tokio_util::task::AbortOnDropHandle;
 use tracing::Level;
 
 use crate::{
-    common::{
-        global_ctx::ArcGlobalCtx, scoped_task::ScopedTask, stun::StunInfoCollectorTrait, PeerId,
-    },
+    common::{PeerId, global_ctx::ArcGlobalCtx, stun::StunInfoCollectorTrait},
     connector::udp_hole_punch::{
         common::{
-            send_symmetric_hole_punch_packet, try_connect_with_socket, HOLE_PUNCH_PACKET_BODY_LEN,
+            HOLE_PUNCH_PACKET_BODY_LEN, send_symmetric_hole_punch_packet, try_connect_with_socket,
         },
         handle_rpc_result,
     },
-    defer,
     peers::peer_manager::PeerManager,
     proto::{
         peer_rpc::{
@@ -33,7 +32,7 @@ use crate::{
         },
         rpc_types::{self, controller::BaseController},
     },
-    tunnel::{udp::new_hole_punch_packet, Tunnel},
+    tunnel::{Tunnel, udp::new_hole_punch_packet},
 };
 
 use super::common::{PunchHoleServerCommon, UdpNatType, UdpSocketArray};
@@ -342,7 +341,8 @@ impl PunchSymToConeHoleClient {
     async fn get_rpc_stub(
         &self,
         dst_peer_id: PeerId,
-    ) -> Box<dyn UdpHolePunchRpc<Controller = BaseController> + std::marker::Send + 'static> {
+    ) -> Box<dyn UdpHolePunchRpc<Controller = BaseController> + std::marker::Send + Sync + 'static>
+    {
         self.peer_mgr
             .get_peer_rpc_mgr()
             .rpc_client()
@@ -359,7 +359,7 @@ impl PunchSymToConeHoleClient {
         packet: &[u8],
         tid: u32,
         remote_mapped_addr: crate::proto::common::SocketAddr,
-        scoped_punch_task: &ScopedTask<T>,
+        punch_task: &AbortOnDropHandle<T>,
     ) -> Result<Option<Box<dyn Tunnel>>, anyhow::Error> {
         // no matter what the result is, we should check if we received any hole punching packet
         let mut ret_tunnel: Option<Box<dyn Tunnel>> = None;
@@ -371,7 +371,7 @@ impl PunchSymToConeHoleClient {
 
             tokio::time::sleep(Duration::from_millis(200)).await;
 
-            if finish_time.is_none() && (*scoped_punch_task).is_finished() {
+            if finish_time.is_none() && punch_task.is_finished() {
                 finish_time = Some(Instant::now());
             }
 
@@ -433,7 +433,10 @@ impl PunchSymToConeHoleClient {
         let resp = rpc_stub
             .select_punch_listener(
                 BaseController::default(),
-                SelectPunchListenerRequest { force_new: false },
+                SelectPunchListenerRequest {
+                    force_new: false,
+                    prefer_port_mapping: true,
+                },
             )
             .await;
 
@@ -444,16 +447,15 @@ impl PunchSymToConeHoleClient {
         ))?;
 
         // try direct connect first
-        if self.try_direct_connect.load(Ordering::Relaxed) {
-            if let Ok(tunnel) = try_connect_with_socket(
+        if self.try_direct_connect.load(Ordering::Relaxed)
+            && let Ok(tunnel) = try_connect_with_socket(
                 global_ctx.clone(),
                 Arc::new(UdpSocket::bind("0.0.0.0:0").await?),
                 remote_mapped_addr.into(),
             )
             .await
-            {
-                return Ok(Some(tunnel));
-            }
+        {
+            return Ok(Some(tunnel));
         }
 
         let stun_info = global_ctx.get_stun_info_collector().get_stun_info();
@@ -466,7 +468,7 @@ impl PunchSymToConeHoleClient {
             return Err(anyhow::anyhow!("failed to get public ips"));
         }
 
-        let tid = rand::thread_rng().gen();
+        let tid = rand::thread_rng().r#gen();
         let packet = new_hole_punch_packet(tid, HOLE_PUNCH_PACKET_BODY_LEN).into_bytes();
         udp_array.add_intreast_tid(tid);
         defer! { udp_array.remove_intreast_tid(tid);}
@@ -479,27 +481,27 @@ impl PunchSymToConeHoleClient {
 
         if self.punch_predicablely.load(Ordering::Relaxed) && base_port_for_easy_sym.is_some() {
             let rpc_stub = self.get_rpc_stub(dst_peer_id).await;
-            let scoped_punch_task: ScopedTask<()> =
-                tokio::spawn(Self::remote_send_hole_punch_packet_predicable(
+            let punch_task = AbortOnDropHandle::new(tokio::spawn(
+                Self::remote_send_hole_punch_packet_predicable(
                     rpc_stub,
                     base_port_for_easy_sym,
                     my_nat_info,
                     remote_mapped_addr,
                     public_ips.clone(),
                     tid,
-                ))
-                .into();
+                ),
+            ));
             let ret_tunnel = Self::check_hole_punch_result(
                 global_ctx.clone(),
                 &udp_array,
                 &packet,
                 tid,
                 remote_mapped_addr,
-                &scoped_punch_task,
+                &punch_task,
             )
             .await?;
 
-            let task_ret = scoped_punch_task.await;
+            let task_ret = punch_task.await;
             tracing::debug!(?ret_tunnel, ?task_ret, "predictable punch task got result");
             if let Some(tunnel) = ret_tunnel {
                 return Ok(Some(tunnel));
@@ -507,27 +509,26 @@ impl PunchSymToConeHoleClient {
         }
 
         let rpc_stub = self.get_rpc_stub(dst_peer_id).await;
-        let scoped_punch_task: ScopedTask<Option<u32>> =
-            tokio::spawn(Self::remote_send_hole_punch_packet_random(
+        let punch_task =
+            AbortOnDropHandle::new(tokio::spawn(Self::remote_send_hole_punch_packet_random(
                 rpc_stub,
                 remote_mapped_addr,
                 public_ips.clone(),
                 tid,
                 round,
                 port_index,
-            ))
-            .into();
+            )));
         let ret_tunnel = Self::check_hole_punch_result(
             global_ctx,
             &udp_array,
             &packet,
             tid,
             remote_mapped_addr,
-            &scoped_punch_task,
+            &punch_task,
         )
         .await?;
 
-        let punch_task_result = scoped_punch_task.await;
+        let punch_task_result = punch_task.await;
         tracing::debug!(?punch_task_result, ?ret_tunnel, "punch task got result");
 
         if let Ok(Some(next_port_idx)) = punch_task_result {
@@ -543,7 +544,7 @@ impl PunchSymToConeHoleClient {
 #[cfg(test)]
 pub mod tests {
     use std::{
-        sync::{atomic::AtomicU32, Arc},
+        sync::{Arc, atomic::AtomicU32},
         time::Duration,
     };
 
@@ -551,7 +552,7 @@ pub mod tests {
 
     use crate::{
         connector::udp_hole_punch::{
-            tests::create_mock_peer_manager_with_mock_stun, UdpHolePunchConnector, RUN_TESTING,
+            RUN_TESTING, UdpHolePunchConnector, tests::create_mock_peer_manager_with_mock_stun,
         },
         peers::tests::{connect_peer_manager, wait_route_appear, wait_route_appear_with_cost},
         proto::common::NatType,
@@ -616,7 +617,7 @@ pub mod tests {
                     .await
                     .is_ok()
             },
-            Duration::from_secs(10),
+            Duration::from_secs(60),
         )
         .await;
         println!("{:?}", p_a.list_routes().await);
@@ -641,7 +642,7 @@ pub mod tests {
     #[tokio::test]
     #[serial_test::serial(hole_punch)]
     async fn hole_punching_symmetric_only_predict(#[values("true", "false")] is_inc: bool) {
-        use crate::common::scoped_task::ScopedTask;
+        use tokio_util::task::AbortOnDropHandle;
 
         RUN_TESTING.store(true, std::sync::atomic::Ordering::Relaxed);
 
@@ -691,12 +692,12 @@ pub mod tests {
 
         let counter = Arc::new(AtomicU32::new(0));
 
-        let mut tasks: Vec<ScopedTask<()>> = vec![];
+        let mut tasks: Vec<AbortOnDropHandle<()>> = vec![];
 
         // all these sockets should receive hole punching packet
         for udp in udps.iter().map(Arc::clone) {
             let counter = counter.clone();
-            tasks.push(ScopedTask::from(tokio::spawn(async move {
+            tasks.push(AbortOnDropHandle::new(tokio::spawn(async move {
                 let mut buf = [0u8; 1024];
                 let (len, addr) = udp.recv_from(&mut buf).await.unwrap();
                 println!(

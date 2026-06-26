@@ -4,7 +4,7 @@ use std::{
 };
 
 use anyhow::Context;
-use base64::{prelude::BASE64_STANDARD, Engine};
+use base64::{Engine, prelude::BASE64_STANDARD};
 use cidr::Ipv4Inet;
 use dashmap::DashMap;
 use futures::StreamExt;
@@ -18,12 +18,12 @@ use crate::{
         global_ctx::{ArcGlobalCtx, GlobalCtxEvent},
         join_joinset_background, shrink_dashmap,
     },
-    peers::{peer_manager::PeerManager, PeerPacketFilter},
+    peers::{PeerPacketFilter, peer_manager::PeerManager},
     tunnel::{
+        Tunnel, TunnelListener,
         mpsc::{MpscTunnel, MpscTunnelSender},
         packet_def::{PacketType, ZCPacket, ZCPacketType},
         wireguard::{WgConfig, WgTunnelListener},
-        Tunnel, TunnelListener,
     },
 };
 
@@ -256,17 +256,17 @@ impl WireGuardImpl {
 
         self.start_listener(&self.listener_addr).await?;
         // if binding to v4 unspecified, also start a listener on v6 unspecified
-        if let SocketAddr::V4(v4) = &self.listener_addr {
-            if v4.ip().is_unspecified() {
-                let _ = self
-                    .start_listener(&SocketAddr::V6(SocketAddrV6::new(
-                        Ipv6Addr::UNSPECIFIED,
-                        v4.port(),
-                        0,
-                        0,
-                    )))
-                    .await;
-            }
+        if let SocketAddr::V4(v4) = &self.listener_addr
+            && v4.ip().is_unspecified()
+        {
+            let _ = self
+                .start_listener(&SocketAddr::V6(SocketAddrV6::new(
+                    Ipv6Addr::UNSPECIFIED,
+                    v4.port(),
+                    0,
+                    0,
+                )))
+                .await;
         };
 
         join_joinset_background(self.tasks.clone(), "wireguard".to_string());

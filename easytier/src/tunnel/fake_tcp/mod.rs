@@ -2,22 +2,28 @@ mod netfilter;
 mod packet;
 mod stack;
 
-use std::net::{IpAddr, Ipv4Addr, UdpSocket};
-use std::sync::Arc;
-use std::{net::SocketAddr, pin::Pin};
-
 use bytes::BytesMut;
-use pnet::datalink;
+use futures::{Sink, Stream};
+use network_interface::NetworkInterfaceConfig;
 use pnet::util::MacAddr;
-use tokio::io::AsyncReadExt;
-use tokio::net::TcpStream;
-use tokio::sync::Mutex;
+use std::{
+    net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket},
+    pin::Pin,
+    sync::Arc,
+    task::{Context as TaskContext, Poll},
+};
+use tokio::{io::AsyncReadExt, net::TcpStream};
 
-use crate::common::scoped_task::ScopedTask;
-use crate::tunnel::fake_tcp::netfilter::create_tun;
-use crate::tunnel::{common::TunnelWrapper, Tunnel, TunnelError, TunnelInfo, TunnelListener};
+use crate::tunnel::{
+    FromUrl, IpVersion, SinkError, SinkItem, StreamItem, Tunnel, TunnelConnector, TunnelError,
+    TunnelInfo, TunnelListener,
+    common::TunnelWrapper,
+    fake_tcp::netfilter::create_tun,
+    packet_def::{PEER_MANAGER_HEADER_SIZE, TCP_TUNNEL_HEADER_SIZE, ZCPacket, ZCPacketType},
+};
 
 use futures::Future;
+use tokio_util::task::AbortOnDropHandle;
 
 use dashmap::DashMap;
 
@@ -34,11 +40,18 @@ impl IpToIfNameCache {
 
     fn reload_ip_to_ifname(&self) {
         self.ip_to_ifname.clear();
-        let interfaces = datalink::interfaces();
+        let Ok(interfaces) = network_interface::NetworkInterface::show() else {
+            tracing::warn!("failed to enumerate interfaces when reloading faketcp ip cache");
+            return;
+        };
         for iface in interfaces {
-            for ip in iface.ips.iter() {
-                self.ip_to_ifname
-                    .insert(ip.ip(), (iface.name.clone(), iface.mac));
+            let mac = iface.mac_addr.as_deref().and_then(|mac| {
+                mac.parse::<MacAddr>().map_err(|e| {
+                    tracing::debug!(iface = %iface.name, mac, ?e, "failed to parse interface mac")
+                }).ok()
+            });
+            for ip in iface.addr.iter() {
+                self.ip_to_ifname.insert(ip.ip(), (iface.name.clone(), mac));
             }
         }
     }
@@ -57,11 +70,22 @@ fn get_faketcp_tunnel_type_str(driver_type: &str) -> String {
     format!("faketcp_{}", driver_type)
 }
 
+async fn create_tun_off_runtime(
+    interface_name: String,
+    src_addr: Option<SocketAddr>,
+    dst_addr: SocketAddr,
+) -> Result<Arc<dyn stack::Tun>, TunnelError> {
+    tokio::task::spawn_blocking(move || create_tun(&interface_name, src_addr, dst_addr))
+        .await
+        .map_err(|e| TunnelError::InternalError(format!("faketcp create_tun task failed: {e}")))?
+        .map_err(Into::into)
+}
+
 pub struct FakeTcpTunnelListener {
     addr: url::Url,
     os_listener: Option<tokio::net::TcpListener>,
     // interface_name -> fake tcp stack
-    stack_map: DashMap<String, Arc<Mutex<stack::Stack>>>,
+    stack_map: DashMap<String, Arc<stack::Stack>>,
     // a cache from ip addr to interface name
     ip_to_ifname: IpToIfNameCache,
 }
@@ -124,7 +148,7 @@ impl FakeTcpTunnelListener {
     async fn get_stack(
         &self,
         accept_result: &AcceptResult,
-    ) -> Result<Arc<Mutex<stack::Stack>>, TunnelError> {
+    ) -> Result<Arc<stack::Stack>, TunnelError> {
         let local_socket_addr = accept_result.local_addr;
 
         let interface_name = &accept_result.interface_name;
@@ -134,32 +158,43 @@ impl FakeTcpTunnelListener {
             IpAddr::V6(ip) => (None, Some(ip)),
         };
 
-        let ret = match self.stack_map.entry(interface_name.to_string()) {
-            dashmap::Entry::Occupied(entry) => entry.get().clone(),
-            dashmap::Entry::Vacant(entry) => {
-                let tun = create_tun(interface_name, None, local_socket_addr)?;
-                tracing::info!(
-                    ?local_socket_addr,
-                    "create new stack with interface_name: {:?}",
-                    interface_name
-                );
-                let stack = Arc::new(Mutex::new(stack::Stack::new(
-                    tun,
-                    local_ip.unwrap_or(Ipv4Addr::UNSPECIFIED),
-                    local_ip6,
-                    accept_result.mac,
-                )));
-                entry.insert(stack.clone());
-                stack
-            }
-        };
+        if let Some(entry) = self.stack_map.get(interface_name) {
+            let stack = entry.clone();
+            drop(entry);
 
-        Ok(ret)
+            if !stack.is_closed() {
+                return Ok(stack);
+            }
+
+            tracing::warn!(
+                interface_name,
+                "fake_tcp stack reader_task finished, recreating stack"
+            );
+            self.stack_map.remove(interface_name);
+        }
+
+        let tun =
+            create_tun_off_runtime(interface_name.to_string(), None, local_socket_addr).await?;
+        tracing::info!(
+            ?local_socket_addr,
+            "create new stack with interface_name: {:?}",
+            interface_name
+        );
+        let stack = Arc::new(stack::Stack::new(
+            tun,
+            local_ip.unwrap_or(Ipv4Addr::UNSPECIFIED),
+            local_ip6,
+            accept_result.mac,
+        ));
+        self.stack_map
+            .insert(interface_name.to_string(), stack.clone());
+
+        Ok(stack)
     }
 }
 
-fn build_os_socket_reader_task(mut socket: TcpStream) -> ScopedTask<()> {
-    let os_socket_reader_task: ScopedTask<()> = tokio::spawn(async move {
+fn build_os_socket_reader_task(mut socket: TcpStream) -> AbortOnDropHandle<()> {
+    AbortOnDropHandle::new(tokio::spawn(async move {
         // read the os socket until it's closed
         let mut buf = [0u8; 1024];
         while let Ok(size) = socket.read(&mut buf).await {
@@ -169,9 +204,7 @@ fn build_os_socket_reader_task(mut socket: TcpStream) -> ScopedTask<()> {
             }
         }
         tracing::info!("FakeTcpTunnelListener os socket closed");
-    })
-    .into();
-    os_socket_reader_task
+    }))
 }
 
 #[derive(Debug)]
@@ -187,28 +220,33 @@ struct AcceptResult {
 impl TunnelListener for FakeTcpTunnelListener {
     async fn listen(&mut self) -> Result<(), TunnelError> {
         let port = self.addr.port().unwrap_or(0);
-        let bind_addr = crate::tunnel::check_scheme_and_get_socket_addr::<SocketAddr>(
-            &self.addr,
-            "faketcp",
-            crate::tunnel::IpVersion::Both,
-        )
-        .await?;
+        let bind_addr = SocketAddr::from_url(self.addr.clone(), IpVersion::Both).await?;
         let os_listener = tokio::net::TcpListener::bind(bind_addr).await?;
         tracing::info!(port, "FakeTcpTunnelListener listening");
         self.os_listener = Some(os_listener);
-        // self.stack.lock().await.listen(port);
         Ok(())
     }
 
     async fn accept(&mut self) -> Result<Box<dyn Tunnel>, TunnelError> {
         tracing::debug!("FakeTcpTunnelListener waiting for accept");
-        let res = self.do_accept().await?;
-        let stack = self.get_stack(&res).await?;
-        let socket = stack
-            .lock()
-            .await
-            .alloc_established_socket(res.local_addr, res.remote_addr, stack::State::Established)
-            .await;
+        let (res, stack, socket) = loop {
+            let res = self.do_accept().await?;
+            let stack = self.get_stack(&res).await?;
+            let socket = stack.try_alloc_established_socket(
+                res.local_addr,
+                res.remote_addr,
+                stack::State::Established,
+            );
+            let Some(socket) = socket else {
+                tracing::warn!(
+                    interface_name = res.interface_name,
+                    "fake_tcp stack closed while accepting connection, dropping accepted socket"
+                );
+                self.stack_map.remove(&res.interface_name);
+                continue;
+            };
+            break (res, stack, socket);
+        };
 
         tracing::info!(
             ?res,
@@ -217,9 +255,16 @@ impl TunnelListener for FakeTcpTunnelListener {
         );
 
         let info = TunnelInfo {
-            tunnel_type: get_faketcp_tunnel_type_str(stack.lock().await.driver_type()),
+            tunnel_type: get_faketcp_tunnel_type_str(stack.driver_type()),
             local_addr: Some(self.local_url().into()),
             remote_addr: Some(
+                crate::tunnel::build_url_from_socket_addr(
+                    &socket.remote_addr().to_string(),
+                    "faketcp",
+                )
+                .into(),
+            ),
+            resolved_remote_addr: Some(
                 crate::tunnel::build_url_from_socket_addr(
                     &socket.remote_addr().to_string(),
                     "faketcp",
@@ -255,6 +300,8 @@ impl TunnelListener for FakeTcpTunnelListener {
 pub struct FakeTcpTunnelConnector {
     addr: url::Url,
     ip_to_if_name: IpToIfNameCache,
+    resolved_addr: Option<SocketAddr>,
+    socket_mark: Option<u32>,
 }
 
 impl FakeTcpTunnelConnector {
@@ -262,6 +309,8 @@ impl FakeTcpTunnelConnector {
         FakeTcpTunnelConnector {
             addr,
             ip_to_if_name: IpToIfNameCache::new(),
+            resolved_addr: None,
+            socket_mark: None,
         }
     }
 }
@@ -286,18 +335,25 @@ fn get_local_ip_for_destination(destination: IpAddr) -> Option<IpAddr> {
 }
 
 #[async_trait::async_trait]
-impl crate::tunnel::TunnelConnector for FakeTcpTunnelConnector {
+impl TunnelConnector for FakeTcpTunnelConnector {
     async fn connect(&mut self) -> Result<Box<dyn Tunnel>, TunnelError> {
-        let remote_addr = crate::tunnel::check_scheme_and_get_socket_addr::<SocketAddr>(
-            &self.addr,
-            "faketcp",
-            crate::tunnel::IpVersion::Both,
-        )
-        .await?;
+        let remote_addr = match self.resolved_addr {
+            Some(addr) => addr,
+            None => SocketAddr::from_url(self.addr.clone(), IpVersion::Both).await?,
+        };
         let local_ip = get_local_ip_for_destination(remote_addr.ip())
             .ok_or(TunnelError::InternalError("Failed to get local ip".into()))?;
 
         let os_socket = tokio::net::TcpSocket::new_v4()?;
+        // SO_MARK applies only to the kernel-visible "decoy" socket below.
+        // The actual FakeTCP payload travels via crafted segments written
+        // straight to the TUN device, which the kernel doesn't tag with
+        // SO_MARK. Operators relying on fwmark for FakeTCP must mark the
+        // TUN device's traffic with a separate nftables/iptables rule.
+        crate::tunnel::common::apply_socket_mark(
+            &socket2::SockRef::from(&os_socket),
+            self.socket_mark,
+        )?;
         os_socket.bind("0.0.0.0:0".parse().unwrap())?;
         let local_port = os_socket.local_addr()?.port();
         let local_addr = SocketAddr::new(local_ip, local_port);
@@ -314,14 +370,17 @@ impl crate::tunnel::TunnelConnector for FakeTcpTunnelConnector {
             IpAddr::V6(ip) => (None, Some(ip)),
         };
 
-        let tun = create_tun(&interface_name, Some(remote_addr), local_addr)?;
+        let tun =
+            create_tun_off_runtime(interface_name.clone(), Some(remote_addr), local_addr).await?;
         let local_ip = local_ip.unwrap_or("0.0.0.0".parse().unwrap());
-        let mut stack = stack::Stack::new(tun, local_ip, local_ip6, mac);
+        let stack = stack::Stack::new(tun, local_ip, local_ip6, mac);
         let driver_type = stack.driver_type();
 
         let socket = stack
-            .alloc_established_socket(local_addr, remote_addr, stack::State::SynSent)
-            .await;
+            .try_alloc_established_socket(local_addr, remote_addr, stack::State::SynSent)
+            .ok_or(TunnelError::InternalError(
+                "FakeTCP stack closed while allocating socket".into(),
+            ))?;
 
         let os_stream = os_socket.connect(remote_addr).await?;
 
@@ -347,6 +406,10 @@ impl crate::tunnel::TunnelConnector for FakeTcpTunnelConnector {
                 .into(),
             ),
             remote_addr: Some(self.addr.clone().into()),
+            resolved_remote_addr: Some(
+                crate::tunnel::build_url_from_socket_addr(&remote_addr.to_string(), "faketcp")
+                    .into(),
+            ),
         };
 
         let socket = Arc::new(socket);
@@ -364,12 +427,15 @@ impl crate::tunnel::TunnelConnector for FakeTcpTunnelConnector {
     fn remote_url(&self) -> url::Url {
         self.addr.clone()
     }
-}
 
-use crate::tunnel::packet_def::{ZCPacket, ZCPacketType};
-use crate::tunnel::{SinkError, SinkItem, StreamItem};
-use futures::{Sink, Stream};
-use std::task::{Context as TaskContext, Poll};
+    fn set_resolved_addr(&mut self, addr: SocketAddr) {
+        self.resolved_addr = Some(addr);
+    }
+
+    fn set_socket_mark(&mut self, socket_mark: Option<u32>) {
+        self.socket_mark = socket_mark;
+    }
+}
 
 type RecvFut = Pin<Box<dyn Future<Output = Option<(BytesMut, usize)>> + Send + Sync>>;
 
@@ -407,7 +473,18 @@ impl Stream for FakeTcpStream {
                     let packet = ZCPacket::new_from_buf(buf, ZCPacketType::TCP);
                     if let Some(tcp_hdr) = packet.tcp_tunnel_header() {
                         let expected_payload_len = tcp_hdr.len.get() as usize;
-                        if expected_payload_len <= buf_len && expected_payload_len != 0 {
+                        let min_packet_len = TCP_TUNNEL_HEADER_SIZE + PEER_MANAGER_HEADER_SIZE;
+                        if expected_payload_len < min_packet_len {
+                            tracing::warn!(
+                                "drop fake tcp packet with invalid length: expected_payload_len={}, min_required={}",
+                                expected_payload_len,
+                                min_packet_len
+                            );
+                            s.state = FakeTcpStreamState::Closed;
+                            return Poll::Ready(None);
+                        }
+
+                        if expected_payload_len <= buf_len {
                             let mut buf = packet.inner();
                             let new_inner = buf.split_to(expected_payload_len);
                             s.state = FakeTcpStreamState::ConsumingBuf(buf);

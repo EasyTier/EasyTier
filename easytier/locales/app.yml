@@ -12,9 +12,9 @@ core_clap:
       仅用户名：--config-server admin，将使用官方的服务器
   machine_id:
     en: |+
-      the machine id to identify this machine, used for config recovery after disconnection, must be unique and fixed. default is from system.
+      the machine id to identify this machine, used for config recovery after disconnection, must be unique and fixed. by default it is loaded from persisted local state; on first start it may be migrated from system information or generated, then remains fixed.
     zh-CN: |+
-      Web 配置服务器通过 machine id 来识别机器，用于断线重连后的配置恢复，需要保证唯一且固定不变。默认从系统获得。
+      Web 配置服务器通过 machine id 来识别机器，用于断线重连后的配置恢复，需要保证唯一且固定不变。默认从本地持久化状态读取；首次启动时可能基于系统信息迁移或生成，之后保持固定不变。
   config_file:
     en: "path to the config file, NOTE: the options set by cmdline args will override options in config file"
     zh-CN: "配置文件路径，注意：命令行中的配置的选项会覆盖配置文件中的选项"
@@ -39,6 +39,15 @@ core_clap:
   ipv6:
     en: "ipv6 address of this vpn node, can be used together with ipv4 for dual-stack operation"
     zh-CN: "此VPN节点的IPv6地址，可与IPv4一起使用以进行双栈操作"
+  ipv6_public_addr_provider:
+    en: "share this node's public IPv6 subnet with other peers so they can obtain public IPv6 addresses (Linux only)"
+    zh-CN: "将此节点的公网 IPv6 子网共享给其他节点，使它们也能获得公网 IPv6 地址（仅 Linux 支持）"
+  ipv6_public_addr_auto:
+    en: "auto-obtain a public IPv6 address from a peer that shares its IPv6 subnet"
+    zh-CN: "自动从共享了 IPv6 子网的对等节点获取一个公网 IPv6 地址"
+  ipv6_public_addr_prefix:
+    en: "manually specify the public IPv6 subnet to share, instead of auto-detecting from system routes"
+    zh-CN: "手动指定要共享的公网 IPv6 子网，不自动从系统路由检测"
   dhcp:
     en: "automatically determine and set IP address by Easytier, and the IP address starts from 10.0.0.1 by default. Warning, if there is an IP conflict in the network when using DHCP, the IP will be automatically changed."
     zh-CN: "由Easytier自动确定并设置IP地址，默认从10.0.0.1开始。警告：在使用DHCP时，如果网络中出现IP冲突，IP将自动更改。"
@@ -152,11 +161,17 @@ core_clap:
         如果该参数为空，则禁用转发。默认允许所有网络。
         例如：'*'（所有网络），'def*'（以def为前缀的网络），'net1 net2'（只允许net1和net2）"
   disable_p2p:
-    en: "disable p2p communication, will only relay packets with peers specified by --peers"
-    zh-CN: "禁用P2P通信，只通过--peers指定的节点转发数据包"
+    en: "disable ordinary automatic p2p; still establish p2p with peers marked as need-p2p, and other peers should not proactively connect to this node"
+    zh-CN: "禁用普通自动P2P；仍会与标记为 need-p2p 的节点建立P2P连接，其他节点不应主动与当前节点建立P2P"
   p2p_only:
     en: "only communicate with peers that already establish p2p connection"
     zh-CN: "仅与已经建立P2P连接的对等节点通信"
+  lazy_p2p:
+    en: "only try to establish p2p when traffic actually needs the peer; peers marked as need-p2p are still connected proactively"
+    zh-CN: "仅在实际流量需要某个对等节点时才尝试建立P2P；被标记为 need-p2p 的节点仍会主动建立连接"
+  need_p2p:
+    en: "announce that other peers should proactively establish p2p connections to this node even when they enable lazy-p2p"
+    zh-CN: "声明即使其他节点启用了 lazy-p2p，也应主动与当前节点建立P2P连接"
   disable_tcp_hole_punching:
     en: "disable tcp hole punching"
     zh-CN: "禁用TCP打洞功能"
@@ -166,6 +181,12 @@ core_clap:
   disable_sym_hole_punching:
     en: "if true, disable udp nat hole punching for symmetric nat (NAT4), which is based on birthday attack and may be blocked by ISP."
     zh-CN: "如果为true，则禁用基于生日攻击的对称NAT (NAT4) UDP 打洞功能，该打洞方式可能会被运营商封锁"
+  disable_upnp:
+    en: "disable runtime UPnP/NAT-PMP port mapping for eligible listeners; automatic port mapping is enabled by default"
+    zh-CN: "禁用符合条件监听器的运行时 UPnP/NAT-PMP 端口映射；自动端口映射默认开启"
+  enable_udp_broadcast_relay:
+    en: "Windows only: capture local UDP broadcast packets from physical interfaces and forward them to EasyTier peers. Helps games to find rooms in local network. Requires administrator privileges."
+    zh-CN: "仅 Windows：捕获物理网卡上的本机 UDP 广播包并转发给 EasyTier 对等节点，帮助局域网游戏发现房间。需要管理员权限。"
   relay_all_peer_rpc:
     en: "relay all peer rpc packets, even if the peer is not in the relay network whitelist. this can help peers not in relay network whitelist to establish p2p connection."
     zh-CN: "转发所有对等节点的RPC数据包，即使对等节点不在转发网络白名单中。这可以帮助白名单外网络中的对等节点建立P2P连接。"
@@ -184,6 +205,9 @@ core_clap:
   bind_device:
     en: "bind the connector socket to physical devices to avoid routing issues. e.g.: subnet proxy segment conflicts with a node's segment, after binding the physical device, it can communicate with the node normally."
     zh-CN: "将连接器的套接字绑定到物理设备以避免路由问题。比如子网代理网段与某节点的网段冲突，绑定物理设备后可以与该节点正常通信。"
+  socket_mark:
+    en: "Linux only: set SO_MARK (fwmark) on EasyTier's underlay sockets (TCP, UDP, QUIC, WebSocket, WireGuard, and the FakeTCP decoy socket) so the host can policy-route or filter them with 'ip rule fwmark ...', nftables ('meta mark'), or iptables ('-m mark'). Any value is applied verbatim (0 is a valid mark); omit the flag to leave SO_MARK untouched. Requires CAP_NET_ADMIN. Note: FakeTCP payload travels via raw TUN writes which the kernel does not tag — mark those separately on the TUN device if needed."
+    zh-CN: "仅 Linux: 在 EasyTier 的底层套接字 (TCP、UDP、QUIC、WebSocket、WireGuard 以及 FakeTCP 诱饵套接字) 上设置 SO_MARK (fwmark)，使主机能用 'ip rule fwmark ...'、nftables ('meta mark') 或 iptables ('-m mark') 策略路由/过滤这些数据包。任何值都会原样应用 (0 也是合法的 mark)；不传该参数即保持 SO_MARK 不变。需要 CAP_NET_ADMIN 权限。注意：FakeTCP 的实际载荷通过原始 TUN 写入，内核不会为其打标记；如有需要请在 TUN 设备上单独打标记。"
   enable_kcp_proxy:
     en: "proxy tcp streams with kcp, improving the latency and throughput on the network with udp packet loss."
     zh-CN: "使用 KCP 代理 TCP 流，提高在 UDP 丢包网络上的延迟和吞吐量。"
@@ -206,11 +230,14 @@ core_clap:
     en: "specify the top-level domain zone for magic DNS. if not provided, defaults to the value from dns_server module (et.net.). only used when accept_dns is true."
     zh-CN: "指定魔法DNS的顶级域名区域。如果未提供，默认使用dns_server模块中的值（et.net.）。仅在accept_dns为true时使用。"
   private_mode:
-    en: "if true, nodes with different network names or passwords from this network are not allowed to perform handshake or relay through this node."
-    zh-CN: "如果为true，则不允许使用了与本网络不相同的网络名称和密码的节点通过本节点进行握手或中转"
+    en: "if true, foreign networks are only allowed when this node can verify they use the same network secret, or when a foreign credential node is already trusted via admin-issued credential propagation; different or missing secrets are otherwise rejected."
+    zh-CN: "如果为true，则仅允许两类 foreign network 接入：本节点能验证其使用相同 network secret 的节点，或已通过 foreign network 管理节点传播而被信任的 credential 节点；否则 secret 不同或缺失时会被拒绝。"
   foreign_relay_bps_limit:
     en: "the maximum bps limit for foreign network relay, default is no limit. unit: BPS (bytes per second)"
     zh-CN: "作为共享节点时，限制非本地网络的流量转发速率，默认无限制，单位 BPS （字节每秒）"
+  instance_recv_bps_limit:
+    en: "the maximum total receive bps limit for this instance, default is no limit. unit: BPS (bytes per second)"
+    zh-CN: "限制当前网络实例整体入站流量的总接收速率，默认无限制，单位 BPS （字节每秒）"
   tcp_whitelist:
     en: "tcp port whitelist. Supports single ports (80) and ranges (8000-9000)"
     zh-CN: "TCP 端口白名单。支持单个端口（80）和范围（8000-9000）"
@@ -244,9 +271,18 @@ core_clap:
   local_public_key:
     en: "local public key for secure mode. if not provided, a random key will be generated, or use local private key to derive public key"
     zh-CN: "安全模式下的本地公钥。如果未提供，则会随机生成一个密钥，或者使用本地私钥派生公钥"
+  credential:
+    en: "credential secret (base64-encoded private key) for joining network as a temporary node without network_secret"
+    zh-CN: "凭据密钥（base64编码的私钥），用于作为临时节点加入网络，无需 network_secret"
+  credential_file:
+    en: "path to credential storage file for persisting generated credentials across restarts (admin nodes)"
+    zh-CN: "凭据存储文件路径，用于在管理节点重启后保留已生成的凭据"
   check_config:
     en: Check config validity without starting the network
     zh-CN: 检查配置文件的有效性并退出
+  daemon:
+    en: Run in daemon mode
+    zh-CN: 以守护进程模式运行
   file_log_size_mb:
     en: "per file log size in MB, default is 100MB"
     zh-CN: "单个文件日志大小，单位 MB，默认值为 100MB"

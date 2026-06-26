@@ -1,7 +1,7 @@
 import { invoke } from '@tauri-apps/api/core'
-import { Api, type NetworkTypes } from 'easytier-frontend-lib'
+import { Api, NetworkTypes } from 'easytier-frontend-lib'
 import { GetNetworkMetasResponse } from 'node_modules/easytier-frontend-lib/dist/modules/api'
-
+import { type ConfigSource, normalizeConfigSource } from './config_source'
 
 type NetworkConfig = NetworkTypes.NetworkConfig
 type ValidateConfigResponse = Api.ValidateConfigResponse
@@ -16,16 +16,50 @@ interface ServiceOptions {
 
 export type ServiceStatus = "Running" | "Stopped" | "NotInstalled"
 
+interface StoredGuiConfig {
+  config: NetworkConfig
+  source: ConfigSource
+}
+
+function parseStoredConfigs(raw: string | null): StoredGuiConfig[] {
+  const parsed: unknown = JSON.parse(raw || '[]')
+  if (!Array.isArray(parsed)) {
+    return []
+  }
+
+  return parsed.flatMap((entry): StoredGuiConfig[] => {
+    if (entry && typeof entry === 'object' && 'config' in entry) {
+      const { config, source } = entry as {
+        config?: NetworkConfig
+        source?: unknown
+      }
+      if (!config) {
+        return []
+      }
+      return [{
+        config: NetworkTypes.normalizeNetworkConfig(config),
+        source: normalizeConfigSource(source),
+      }]
+    }
+
+    return [{
+      config: NetworkTypes.normalizeNetworkConfig(entry as NetworkConfig),
+      source: 'legacy',
+    }]
+  })
+}
+
 export async function parseNetworkConfig(cfg: NetworkConfig) {
-  return invoke<string>('parse_network_config', { cfg })
+  return invoke<string>('parse_network_config', { cfg: NetworkTypes.toBackendNetworkConfig(cfg) })
 }
 
 export async function generateNetworkConfig(tomlConfig: string) {
-  return invoke<NetworkConfig>('generate_network_config', { tomlConfig })
+  const config = await invoke<NetworkConfig>('generate_network_config', { tomlConfig })
+  return NetworkTypes.normalizeNetworkConfig(config)
 }
 
 export async function runNetworkInstance(cfg: NetworkConfig, save: boolean) {
-  return invoke('run_network_instance', { cfg, save })
+  return invoke('run_network_instance', { cfg: NetworkTypes.toBackendNetworkConfig(cfg), save })
 }
 
 export async function collectNetworkInfo(instanceId: string) {
@@ -57,20 +91,27 @@ export async function updateNetworkConfigState(instanceId: string, disabled: boo
 }
 
 export async function saveNetworkConfig(cfg: NetworkConfig) {
-  return await invoke('save_network_config', { cfg })
+  return await invoke('save_network_config', { cfg: NetworkTypes.toBackendNetworkConfig(cfg) })
 }
 
 export async function validateConfig(cfg: NetworkConfig) {
-  return await invoke<ValidateConfigResponse>('validate_config', { cfg })
+  return await invoke<ValidateConfigResponse>('validate_config', { cfg: NetworkTypes.toBackendNetworkConfig(cfg) })
 }
 
 export async function getConfig(instanceId: string) {
-  return await invoke<NetworkConfig>('get_config', { instanceId })
+  const config = await invoke<NetworkConfig>('get_config', { instanceId })
+  return NetworkTypes.normalizeNetworkConfig(config)
 }
 
 export async function sendConfigs(enabledNetworks: string[]) {
-  let networkList: NetworkConfig[] = JSON.parse(localStorage.getItem('networkList') || '[]');
-  return await invoke('load_configs', { configs: networkList, enabledNetworks })
+  const networkList = parseStoredConfigs(localStorage.getItem('networkList'))
+  return await invoke('load_configs', {
+    configs: networkList.map(({ config, source }) => ({
+      config: NetworkTypes.toBackendNetworkConfig(config),
+      source,
+    })),
+    enabledNetworks
+  })
 }
 
 export async function getNetworkMetas(instanceIds: string[]) {

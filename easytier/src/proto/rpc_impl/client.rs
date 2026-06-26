@@ -4,23 +4,22 @@ use std::sync::{Arc, Mutex};
 
 use bytes::Bytes;
 use dashmap::DashMap;
+use guarden::defer;
 use prost::Message;
 use tokio::sync::mpsc;
 use tokio::task::JoinSet;
 use tokio::time::timeout;
 use tokio_stream::StreamExt;
 
-use crate::common::shrink_dashmap;
 use crate::common::{
+    PeerId, shrink_dashmap,
     stats_manager::{LabelSet, LabelType, MetricName, StatsManager},
-    PeerId,
 };
-use crate::defer;
 use crate::proto::common::{
     CompressionAlgoPb, RpcCompressionInfo, RpcDescriptor, RpcPacket, RpcRequest, RpcResponse,
 };
 use crate::proto::rpc_impl::packet::{
-    build_rpc_packet, compress_packet, decompress_packet, BuildRpcPacketArgs,
+    BuildRpcPacketArgs, build_rpc_packet, compress_packet, decompress_packet,
 };
 use crate::proto::rpc_types::controller::Controller;
 use crate::proto::rpc_types::descriptor::MethodDescriptor;
@@ -306,7 +305,6 @@ impl Client {
                         accepted_algo: CompressionAlgoPb::Zstd.into(),
                     },
                 });
-
                 let timeout_dur = std::time::Duration::from_millis(ctrl.timeout_ms() as u64);
                 let mut rpc_packet = timeout(timeout_dur, self.do_rpc(packets, &mut rx)).await??;
 

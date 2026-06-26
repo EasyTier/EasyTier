@@ -38,24 +38,23 @@
 //! and [`server.rs`](https://github.com/dndx/phantun/blob/main/phantun/src/bin/server.rs) files
 //! from the `phantun` crate for how to use this library in client/server mode, respectively.
 
-use crate::common::scoped_task::ScopedTask;
-
 use super::packet::*;
 use bytes::{Bytes, BytesMut};
 use crossbeam::atomic::AtomicCell;
 use pnet::packet::tcp::TcpOptionNumbers;
-use pnet::packet::{tcp, Packet};
+use pnet::packet::{Packet, tcp};
 use pnet::util::MacAddr;
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::sync::{
-    atomic::{AtomicU32, Ordering},
     Arc, RwLock,
+    atomic::{AtomicU32, Ordering},
 };
 use tokio::sync::broadcast;
 use tokio::time;
-use tracing::{info, trace, warn};
+use tokio_util::task::AbortOnDropHandle;
+use tracing::{error, info, trace, warn};
 
 const TIMEOUT: time::Duration = time::Duration::from_secs(1);
 const RETRIES: usize = 6;
@@ -84,11 +83,31 @@ impl AddrTuple {
     }
 }
 
+#[derive(Default)]
+struct StackState {
+    tuples: HashMap<AddrTuple, flume::Sender<Bytes>>,
+    closed: bool,
+}
+
 struct Shared {
-    tuples: RwLock<HashMap<AddrTuple, flume::Sender<Bytes>>>,
+    state: RwLock<StackState>,
     listening: RwLock<HashSet<u16>>,
     tun: Arc<dyn Tun>,
     tuples_purge: broadcast::Sender<AddrTuple>,
+}
+
+impl Shared {
+    fn is_closed(&self) -> bool {
+        self.state.read().unwrap().closed
+    }
+
+    fn mark_closed_and_clear_tuples(&self) -> usize {
+        let mut state = self.state.write().unwrap();
+        state.closed = true;
+        let len = state.tuples.len();
+        state.tuples.clear();
+        len
+    }
 }
 
 pub struct Stack {
@@ -96,7 +115,7 @@ pub struct Stack {
     local_ip: Ipv4Addr,
     local_ip6: Option<Ipv6Addr>,
     local_mac: MacAddr,
-    reader_task: ScopedTask<()>,
+    reader_task: AbortOnDropHandle<()>,
 }
 
 #[derive(Hash, Eq, PartialEq, Clone, Copy, Debug)]
@@ -223,8 +242,12 @@ impl Socket {
                         return None;
                     };
 
-                    let (src_mac, dst_mac, _v4_packet, tcp_packet) =
-                        parse_ip_packet(&raw_buf).unwrap();
+                    let Some((src_mac, dst_mac, _v4_packet, tcp_packet)) =
+                        parse_ip_packet(&raw_buf)
+                    else {
+                        trace!("Dropping malformed fake tcp packet for established socket");
+                        continue;
+                    };
 
                     tracing::trace!(
                         "Socket received TCP packet from {}({:?}) to {}({:?}): {:?}",
@@ -307,8 +330,11 @@ impl Socket {
                         info!("Waiting for client SYN + ACK timed out");
                         return None;
                     };
-                    let (src_mac, _dst_mac, _v4_packet, tcp_packet) =
-                        parse_ip_packet(&buf).unwrap();
+                    let Some((src_mac, _dst_mac, _v4_packet, tcp_packet)) = parse_ip_packet(&buf)
+                    else {
+                        trace!("Dropping malformed fake tcp packet during handshake");
+                        continue;
+                    };
 
                     if (tcp_packet.get_flags() & tcp::TcpFlags::RST) != 0 {
                         tracing::trace!("Connection {} reset by peer", self);
@@ -347,7 +373,17 @@ impl Drop for Socket {
     fn drop(&mut self) {
         let tuple = AddrTuple::new(self.local_addr, self.remote_addr);
         // dissociates ourself from the dispatch map
-        assert!(self.shared.tuples.write().unwrap().remove(&tuple).is_some());
+        let (removed, closed) = {
+            let mut state = self.shared.state.write().unwrap();
+            (state.tuples.remove(&tuple).is_some(), state.closed)
+        };
+        if !removed {
+            if closed {
+                trace!(?tuple, "Fake TCP tuple already removed after stack closed");
+            } else {
+                warn!(?tuple, "Fake TCP tuple missing while dropping socket");
+            }
+        }
         // purge cache
         let _ = self.shared.tuples_purge.send(tuple);
 
@@ -394,7 +430,7 @@ impl Stack {
     ) -> Stack {
         let (tuples_purge_tx, _tuples_purge_rx) = broadcast::channel(16);
         let shared = Arc::new(Shared {
-            tuples: RwLock::new(HashMap::new()),
+            state: RwLock::new(StackState::default()),
             tun: tun.clone(),
             listening: RwLock::new(HashSet::new()),
             tuples_purge: tuples_purge_tx.clone(),
@@ -411,7 +447,7 @@ impl Stack {
             local_ip,
             local_ip6,
             local_mac: local_mac.unwrap_or(MacAddr::zero()),
-            reader_task: t.into(),
+            reader_task: AbortOnDropHandle::new(t),
         }
     }
 
@@ -420,19 +456,31 @@ impl Stack {
         self.shared.tun.driver_type()
     }
 
+    pub fn is_closed(&self) -> bool {
+        self.shared.is_closed() || self.reader_task.is_finished()
+    }
+
     /// Listens for incoming connections on the given `port`.
     pub fn listen(&mut self, port: u16) {
         assert!(self.shared.listening.write().unwrap().insert(port));
     }
 
-    pub async fn alloc_established_socket(
-        &mut self,
+    pub fn try_alloc_established_socket(
+        &self,
         local_addr: SocketAddr,
         remote_addr: SocketAddr,
         state: State,
-    ) -> Socket {
+    ) -> Option<Socket> {
         let tuple = AddrTuple::new(local_addr, remote_addr);
-        let mut tuples = self.shared.tuples.write().unwrap();
+        let mut stack_state = self.shared.state.write().unwrap();
+        if stack_state.closed || self.reader_task.is_finished() {
+            stack_state.closed = true;
+            warn!(
+                ?tuple,
+                "fake_tcp stack is closed, refusing to allocate socket"
+            );
+            return None;
+        }
         let (sock, incoming) = Socket::new(
             self.shared.clone(),
             // self.shared.tun.choose(&mut rng).unwrap().clone(),
@@ -444,8 +492,8 @@ impl Stack {
             Some(0), // Initial ACK
             state,
         );
-        assert!(tuples.insert(tuple, incoming).is_none());
-        sock
+        assert!(stack_state.tuples.insert(tuple, incoming).is_none());
+        Some(sock)
     }
 
     async fn reader_task(
@@ -460,7 +508,22 @@ impl Stack {
 
             tokio::select! {
                 size = tun.recv(&mut buf) => {
-                    let size = size.unwrap();
+                    let size = match size {
+                        Ok(size) => size,
+                        Err(e) => {
+                            let shared_tuple_count = shared.mark_closed_and_clear_tuples();
+                            let cached_tuple_count = tuples.len();
+                            tuples.clear();
+                            error!(
+                                ?e,
+                                driver_type = tun.driver_type(),
+                                shared_tuple_count,
+                                cached_tuple_count,
+                                "fake_tcp tun recv failed, reader_task exiting"
+                            );
+                            break;
+                        }
+                    };
                     tracing::trace!(len = size, ?buf, "PnetTun received packet");
                     let buf = buf.split().freeze();
 
@@ -488,8 +551,8 @@ impl Stack {
                             } else {
                                 trace!("Cache miss, checking the shared tuples table for connection");
                                 let sender = {
-                                    let tuples = shared.tuples.read().unwrap();
-                                    tuples.get(&tuple).cloned()
+                                    let state = shared.state.read().unwrap();
+                                    state.tuples.get(&tuple).cloned()
                                 };
 
                                 if let Some(c) = sender {
@@ -511,8 +574,11 @@ impl Stack {
                             {
                                 trace!(?tcp_packet, "Received SYN packet for port {}, ignoring", tcp_packet.get_destination());
                                 continue;
-                            } else if (tcp_packet.get_flags() & tcp::TcpFlags::RST) == 0 {
+                            } else if (tcp_packet.get_flags() & tcp::TcpFlags::RST) != 0 {
                                 info!("Unknown RST TCP packet from {}, ignoring", remote_addr);
+                                continue;
+                            } else {
+                                trace!("Unknown TCP packet from {}, ignoring", remote_addr);
                                 continue;
                             }
                         }
@@ -523,11 +589,107 @@ impl Stack {
                     }
                 },
                 tuple = tuples_purge.recv() => {
-                    let tuple = tuple.unwrap();
-                    tuples.remove(&tuple);
-                    trace!("Removed cached tuple: {:?}", tuple);
+                    match tuple {
+                        Ok(tuple) => {
+                            tuples.remove(&tuple);
+                            trace!("Removed cached tuple: {:?}", tuple);
+                        }
+                        Err(broadcast::error::RecvError::Lagged(skipped)) => {
+                            let cached_tuple_count = tuples.len();
+                            tuples.clear();
+                            warn!(
+                                skipped,
+                                cached_tuple_count,
+                                "fake_tcp tuples purge receiver lagged, cleared local cache"
+                            );
+                        }
+                        Err(broadcast::error::RecvError::Closed) => {
+                            let shared_tuple_count = shared.mark_closed_and_clear_tuples();
+                            let cached_tuple_count = tuples.len();
+                            tuples.clear();
+                            warn!(
+                                shared_tuple_count,
+                                cached_tuple_count,
+                                "fake_tcp tuples purge channel closed, reader_task exiting"
+                            );
+                            break;
+                        }
+                    }
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io;
+    use tokio::{
+        sync::Notify,
+        time::{Duration, timeout},
+    };
+
+    #[derive(Default)]
+    struct FailingTun {
+        fail: Notify,
+    }
+
+    impl FailingTun {
+        fn fail(&self) {
+            self.fail.notify_one();
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl Tun for FailingTun {
+        async fn recv(&self, _packet: &mut BytesMut) -> Result<usize, io::Error> {
+            self.fail.notified().await;
+            Err(io::Error::new(io::ErrorKind::BrokenPipe, "test tun closed"))
+        }
+
+        fn try_send(&self, _packet: &Bytes) -> Result<(), io::Error> {
+            Ok(())
+        }
+
+        fn driver_type(&self) -> &'static str {
+            "test"
+        }
+    }
+
+    #[tokio::test]
+    async fn reader_task_closes_sockets_on_tun_recv_error() {
+        let tun = Arc::new(FailingTun::default());
+        let mut stack = Stack::new(tun.clone(), Ipv4Addr::LOCALHOST, None, None);
+        let socket = stack
+            .try_alloc_established_socket(
+                SocketAddr::new(Ipv4Addr::LOCALHOST.into(), 10_000),
+                SocketAddr::new(Ipv4Addr::new(192, 0, 2, 1).into(), 20_000),
+                State::Established,
+            )
+            .expect("socket allocation should succeed before tun failure");
+
+        tun.fail();
+
+        let join_result = timeout(Duration::from_secs(1), &mut stack.reader_task)
+            .await
+            .expect("reader task should exit after tun recv error");
+        assert!(join_result.is_ok());
+        assert!(stack.is_closed());
+
+        let mut buf = BytesMut::new();
+        let recv_result = timeout(Duration::from_secs(1), socket.recv(&mut buf))
+            .await
+            .expect("socket recv should not hang after reader task exits");
+        assert_eq!(recv_result, None);
+
+        let new_socket = stack.try_alloc_established_socket(
+            SocketAddr::new(Ipv4Addr::LOCALHOST.into(), 10_001),
+            SocketAddr::new(Ipv4Addr::new(192, 0, 2, 1).into(), 20_001),
+            State::Established,
+        );
+        assert!(new_socket.is_none());
+
+        drop(socket);
     }
 }

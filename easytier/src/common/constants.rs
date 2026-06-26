@@ -23,8 +23,6 @@ define_global_var!(MANUAL_CONNECTOR_RECONNECT_INTERVAL_MS, u64, 1000);
 
 define_global_var!(OSPF_UPDATE_MY_GLOBAL_FOREIGN_NETWORK_INTERVAL_SEC, u64, 10);
 
-define_global_var!(MACHINE_UID, Option<String>, None);
-
 define_global_var!(MAX_DIRECT_CONNS_PER_PEER_IN_FOREIGN_NETWORK, u32, 3);
 
 define_global_var!(DIRECT_CONNECT_TO_PUBLIC_SERVER, bool, true);

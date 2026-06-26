@@ -4,19 +4,19 @@ use std::{
 };
 
 use pnet::packet::{
+    Packet as _,
     ip::IpNextHeaderProtocols,
     ipv4::Ipv4Packet,
     tcp::{TcpFlags, TcpPacket},
-    Packet as _,
 };
-use tokio::io::{copy_bidirectional, AsyncRead, AsyncWrite};
+use tokio::io::{AsyncRead, AsyncWrite, copy_bidirectional};
 use tokio_util::io::InspectReader;
 
 use crate::tunnel::packet_def::{PacketType, PeerManagerHeader};
 use crate::{
     common::{acl_processor::PacketInfo, error::Result},
     gateway::tcp_proxy::{NatDstConnector, TcpProxy},
-    peers::{acl_filter::AclFilter, NicPacketFilter},
+    peers::{NicPacketFilter, acl_filter::AclFilter},
     proto::acl::{Action, ChainType},
     tunnel::packet_def::ZCPacket,
 };

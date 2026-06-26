@@ -1,12 +1,12 @@
-use std::sync::{atomic::AtomicBool, Arc, Mutex};
+use std::sync::{Arc, Mutex, atomic::AtomicBool};
 
 use futures::{SinkExt as _, StreamExt};
+use guarden::defer;
 use tokio::{task::JoinSet, time::timeout};
 
 use crate::{
-    defer,
     proto::rpc_types::error::Error,
-    tunnel::{packet_def::PacketType, ring::create_ring_tunnel_pair, Tunnel},
+    tunnel::{Tunnel, packet_def::PacketType, ring::create_ring_tunnel_pair},
 };
 
 use super::{client::Client, server::Server, service_registry::ServiceRegistry};

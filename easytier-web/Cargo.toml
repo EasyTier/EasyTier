@@ -1,7 +1,7 @@
 [package]
 name = "easytier-web"
-version = "2.5.0"
-edition = "2021"
+version = "2.6.4"
+edition.workspace = true
 description = "Config server for easytier. easytier-core gets config from this and web frontend use it as restful api server."
 
 [dependencies]
@@ -10,6 +10,7 @@ tracing = { version = "0.1", features = ["log"] }
 anyhow = { version = "1.0" }
 thiserror = "1.0"
 tokio = { version = "1", features = ["full"] }
+tokio-util = { version = "0.7", features = ["rt"] }
 dashmap = "6.1"
 url = "2.2"
 async-trait = "0.1"
@@ -52,6 +53,7 @@ clap = { version = "4.4.8", features = [
     "unicode",
     "derive",
     "wrap_help",
+    "env",
 ] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
@@ -63,16 +65,17 @@ uuid = { version = "1.5.0", features = [
 ] }
 
 chrono = { version = "0.4.37", features = ["serde"] }
+openidconnect = { version = "4.0", default-features = false, features = ["accept-rfc3339-timestamps", "reqwest"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+subtle = "2.6"
 
 mimalloc = { version = "*" }
+
+[build-dependencies]
+thunk-rs = { git = "https://github.com/easytier/thunk.git", default-features = false, features = [
+    "win7",
+] }
 
 [features]
 default = []
 embed = ["dep:axum-embed"]
-
-# enable thunk-rs when compiling for x86_64 or i686 windows
-[target.x86_64-pc-windows-msvc.build-dependencies]
-thunk-rs = { git = "https://github.com/easytier/thunk.git", default-features = false, features = ["win7"] }
-
-[target.i686-pc-windows-msvc.build-dependencies]
-thunk-rs = { git = "https://github.com/easytier/thunk.git", default-features = false, features = ["win7"] }
