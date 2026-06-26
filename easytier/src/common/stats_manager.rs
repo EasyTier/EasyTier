@@ -580,7 +580,12 @@ impl StatsManager {
                 // Drop metrics untouched for 180s and with no live handles.
                 // Compare in the millis-since-base domain so neither the hot
                 // path nor GC reconstructs an `Instant` or locks.
-                let cutoff_millis = now_millis().saturating_sub(180_000);
+                //
+                // Use an age-based check (`now - last < STALE`) rather than
+                // `last > now - STALE`: early in process life `now_millis()` is
+                // tiny, so `now - STALE` saturates to 0 and a metric stamped at
+                // 0 would fail a strict `> 0` test and be wrongly evicted.
+                let now = now_millis();
 
                 let Some(counters) = counters_clone.upgrade() else {
                     break;
@@ -588,7 +593,7 @@ impl StatsManager {
 
                 counters.retain(|_, metric_data: &mut Arc<MetricData>| {
                     Arc::strong_count(metric_data) > 1
-                        || metric_data.last_updated_millis() > cutoff_millis
+                        || now.saturating_sub(metric_data.last_updated_millis()) < 180_000
                 });
                 counters.shrink_to_fit();
             }
