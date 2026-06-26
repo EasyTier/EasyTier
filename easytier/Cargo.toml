@@ -52,7 +52,7 @@ toml = "0.8.12"
 chrono = { version = "0.4.37", features = ["serde"] }
 
 guarden = "0.2"
-hotpath = { version = "0.18", default-features = false }
+hotpath = { version = "0.18", default-features = false, optional = true }
 
 delegate = "0.13.5"
 
@@ -403,6 +403,7 @@ jemalloc-prof = [
 ]
 tracing = ["tokio/tracing", "dep:console-subscriber"]
 hotpath = [
+    "dep:hotpath",
     "hotpath/hotpath",
     "hotpath/tokio",
     "hotpath/parking_lot",
