@@ -483,8 +483,16 @@ impl ZCPacket {
         let payload_off = ret.packet_type.get_packet_offsets().payload_offset;
         let total_len = payload_off + payload.len();
         ret.inner.reserve(total_len);
-        unsafe { ret.inner.set_len(total_len) };
-        ret.mut_payload()[..payload.len()].copy_from_slice(payload);
+
+        // SAFETY: `reserve` guarantees capacity >= total_len.
+        // We zero the header region and copy payload before advancing length,
+        // so every byte in [0..total_len) is initialized before any read.
+        unsafe {
+            let ptr = ret.inner.as_mut_ptr();
+            std::ptr::write_bytes(ptr, 0, payload_off);
+            std::ptr::copy_nonoverlapping(payload.as_ptr(), ptr.add(payload_off), payload.len());
+            ret.inner.set_len(total_len);
+        }
         ret
     }
 
@@ -492,12 +500,12 @@ impl ZCPacket {
         let mut ret = Self::new_nic_packet();
         ret.inner.reserve(cap);
         let total_len = ret.packet_type.get_packet_offsets().payload_offset - packet_info_len;
-        unsafe { ret.inner.set_len(total_len) };
+        ret.inner.resize(total_len, 0);
         ret
     }
 
     pub fn new_for_foreign_network(
-        network_name: &String,
+        network_name: &str,
         dst_peer_id: u32,
         foreign_zc_packet: &ZCPacket,
     ) -> Self {
@@ -506,26 +514,71 @@ impl ZCPacket {
             foreign_network_hdr.get_header_len() + foreign_zc_packet.tunnel_payload().len();
 
         let mut ret = Self::new_nic_packet();
-        let payload_off = ret.packet_type.get_packet_offsets().payload_offset;
-        ret.inner.reserve(payload_off + total_payload_len);
-        unsafe { ret.inner.set_len(payload_off + total_payload_len) };
+        let offsets = ret.packet_type.get_packet_offsets();
+        let payload_off = offsets.payload_offset;
+        let pm_hdr_off = offsets.peer_manager_header_offset;
+        let total_len = payload_off + total_payload_len;
+        ret.inner.reserve(total_len);
 
         let fixed_hdr_len = std::mem::size_of::<ForeignNetworkPacketHeader>();
-        ret.mut_payload()[..fixed_hdr_len].copy_from_slice(foreign_network_hdr.as_bytes());
-
         let name_offset = foreign_network_hdr.network_name_offset.get() as usize;
         let name_len = foreign_network_hdr.network_name_len.get() as usize;
-        ret.mut_payload()[name_offset..name_offset + name_len]
-            .copy_from_slice(network_name.as_bytes());
+        let foreign_payload = foreign_zc_packet.tunnel_payload();
 
-        ret.mut_payload()[foreign_network_hdr.get_header_len()..]
-            .copy_from_slice(foreign_zc_packet.tunnel_payload());
+        // Construct the PeerManagerHeader on the stack so we can write it
+        // directly into the buffer, avoiding a separate mut_peer_manager_header()
+        // call after set_len.
+        let pm_hdr = PeerManagerHeader {
+            from_peer_id: 0.into(),
+            to_peer_id: 0.into(),
+            packet_type: PacketType::ForeignNetworkPacket as u8,
+            flags: 0,
+            forward_counter: 0,
+            reserved: 0,
+            len: U32::new(total_payload_len as u32),
+        };
 
-        let hdr = ret.mut_peer_manager_header().unwrap();
-        hdr.from_peer_id = 0.into();
-        hdr.to_peer_id = 0.into();
-        hdr.packet_type = PacketType::ForeignNetworkPacket as u8;
-        hdr.len.set(total_payload_len as u32);
+        // SAFETY: `reserve` guarantees capacity >= total_len.
+        // We zero only the tunnel-header reserved space [0..pm_hdr_off], write
+        // the PeerManagerHeader directly at pm_hdr_off, then copy the foreign
+        // network header, network name, and payload. Every byte in [0..total_len)
+        // is initialized before set_len.
+        unsafe {
+            let ptr = ret.inner.as_mut_ptr();
+
+            // Zero the tunnel header reserved space only (not the PM header region)
+            std::ptr::write_bytes(ptr, 0, pm_hdr_off);
+
+            // Write PeerManagerHeader directly
+            std::ptr::copy_nonoverlapping(
+                pm_hdr.as_bytes().as_ptr(),
+                ptr.add(pm_hdr_off),
+                std::mem::size_of::<PeerManagerHeader>(),
+            );
+
+            // Copy foreign network fixed header
+            std::ptr::copy_nonoverlapping(
+                foreign_network_hdr.as_bytes().as_ptr(),
+                ptr.add(payload_off),
+                fixed_hdr_len,
+            );
+
+            // Copy network name
+            std::ptr::copy_nonoverlapping(
+                network_name.as_ptr(),
+                ptr.add(payload_off + name_offset),
+                name_len,
+            );
+
+            // Copy foreign payload
+            std::ptr::copy_nonoverlapping(
+                foreign_payload.as_ptr(),
+                ptr.add(payload_off + foreign_network_hdr.get_header_len()),
+                foreign_payload.len(),
+            );
+
+            ret.inner.set_len(total_len);
+        }
 
         ret
     }
@@ -695,7 +748,7 @@ impl ZCPacket {
                 .get_packet_offsets()
                 .peer_manager_header_offset;
             let mut buf = BytesMut::with_capacity(new_pm_offset + tunnel_payload.len());
-            unsafe { buf.set_len(new_pm_offset) };
+            buf.resize(new_pm_offset, 0);
             buf.extend_from_slice(tunnel_payload);
             return Self::new_from_buf(buf, target_packet_type);
         }
