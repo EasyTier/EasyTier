@@ -287,17 +287,35 @@ const loadNetworkInstanceIds = async () => {
 }
 
 const loadCurrentNetworkInfo = async () => {
-    if (!selectedInstanceId.value) {
+    const selected = selectedInstanceId.value?.uuid;
+    if (!selected) {
+        curNetworkInfo.value = null;
         return;
     }
     if (!needShowNetworkStatus.value) {
+        curNetworkInfo.value = null;
+        return;
+    }
+    if (curNetworkInfo.value?.instance_id !== selected) {
+        curNetworkInfo.value = null;
+    }
+
+    let network_info = await props.api.get_network_info(selected);
+    if (selectedInstanceId.value?.uuid !== selected) {
         return;
     }
 
-    let network_info = await props.api.get_network_info(selectedInstanceId.value.uuid);
+    if (!network_info) {
+        curNetworkInfo.value = {
+            instance_id: selected,
+            running: false,
+            error_msg: t('web.device_management.network_info_unavailable'),
+        } as NetworkTypes.NetworkInstance;
+        return;
+    }
 
     curNetworkInfo.value = {
-        instance_id: selectedInstanceId.value.uuid,
+        instance_id: selected,
         running: network_info?.running ?? false,
         error_msg: network_info?.error_msg ?? '',
         detail: network_info,
@@ -569,10 +587,13 @@ onUnmounted(() => {
                     <h2 class="text-xl font-medium">{{ t('web.device_management.network_status') }}</h2>
                 </div>
 
-                <Status v-if="(curNetworkInfo?.error_msg ?? '') === ''" v-bind:cur-network-inst="curNetworkInfo"
+                <Status v-if="curNetworkInfo && curNetworkInfo.error_msg === ''" v-bind:cur-network-inst="curNetworkInfo"
                     class="mb-4">
                 </Status>
-                <Message v-else severity="error" class="mb-4">{{ curNetworkInfo?.error_msg }}</Message>
+                <Message v-else-if="curNetworkInfo?.error_msg" severity="error" class="mb-4">{{
+                    curNetworkInfo.error_msg }}</Message>
+                <Message v-else severity="info" class="mb-4">{{ t('web.device_management.loading_network_status') }}
+                </Message>
 
                 <div class="text-center mt-4">
                     <Button @click="stopNetwork" :disabled="!currentNetworkControl.deletable.value"

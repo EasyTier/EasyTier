@@ -188,6 +188,15 @@ function normalizeAcl(acl: Acl | undefined): Acl {
   }
 }
 
+function isGroupInfoEmpty(group: GroupInfo | undefined): boolean {
+  return (group?.declares?.length ?? 0) === 0 && (group?.members?.length ?? 0) === 0
+}
+
+function isAclEmpty(acl: Acl | undefined): boolean {
+  const aclV1 = acl?.acl_v1
+  return !aclV1 || ((aclV1.chains?.length ?? 0) === 0 && isGroupInfoEmpty(aclV1.group))
+}
+
 function normalizeUint64ForInput(v: bigint | number | string | null | undefined): number | string | null {
   if (v == null) return null
 
@@ -255,7 +264,7 @@ export function normalizeNetworkConfig(config: NetworkConfig): NetworkConfig {
   normalized.exit_nodes ??= []
   normalized.mapped_listeners ??= []
   normalized.port_forwards ??= []
-  normalized.acl = normalizeAcl(normalized.acl)
+  normalized.acl = config.acl === undefined ? undefined : normalizeAcl(normalized.acl)
 
   return normalized
 }
@@ -268,6 +277,9 @@ export function toBackendNetworkConfig(config: NetworkConfig): NetworkConfig {
   applyNetworkingMethod(backend)
   backend.mtu = normalizeNumberForInput(config.mtu) ?? undefined
   backend.instance_recv_bps_limit = toBackendUint64(config.instance_recv_bps_limit)
+  if (config.acl === undefined || isAclEmpty(config.acl)) {
+    backend.acl = undefined
+  }
 
   return NetworkConfigPb.toJson(backend, {
     useProtoFieldName: true,
