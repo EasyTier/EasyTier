@@ -1,3 +1,4 @@
+use bytes::BytesMut;
 use futures::{Sink, Stream};
 pub use smoltcp::phy::DeviceCapabilities;
 use smoltcp::{
@@ -10,7 +11,7 @@ use std::{collections::VecDeque, io};
 pub const DEFAULT_MAX_BURST_SIZE: usize = 100;
 
 /// A packet used in `AsyncDevice`.
-pub type Packet = Vec<u8>;
+pub type Packet = BytesMut;
 
 /// A device that send and receive packets asynchronously.
 pub trait AsyncDevice:
@@ -42,13 +43,11 @@ pub struct BufferDevice {
 pub struct BufferRxToken(Packet);
 
 impl RxToken for BufferRxToken {
-    fn consume<R, F>(mut self, f: F) -> R
+    fn consume<R, F>(self, f: F) -> R
     where
         F: FnOnce(&[u8]) -> R,
     {
-        let p = &mut self.0;
-
-        f(p)
+        f(&self.0[..])
     }
 }
 
@@ -61,7 +60,8 @@ impl<'d> TxToken for BufferTxToken<'d> {
         F: FnOnce(&mut [u8]) -> R,
     {
         let tx_headroom = self.0.tx_headroom;
-        let mut buffer = vec![0u8; tx_headroom + len];
+        let mut buffer = BytesMut::with_capacity(tx_headroom + len);
+        buffer.resize(tx_headroom + len, 0);
         let result = f(&mut buffer[tx_headroom..]);
 
         self.0.send_queue.push_back(buffer);

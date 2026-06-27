@@ -563,7 +563,10 @@ impl<C: NatDstConnector> TcpProxy<C> {
             self.tasks.lock().unwrap().spawn(async move {
                 while let Some(packet) = smoltcp_stack_receiver.recv().await {
                     tracing::trace!(?packet, "receive from peer send to smoltcp packet");
-                    if let Err(e) = stack_sink.send(Ok(packet.payload().to_vec())).await {
+                    if let Err(e) = stack_sink
+                        .send(Ok(bytes::BytesMut::from(packet.payload())))
+                        .await
+                    {
                         tracing::error!("send to smoltcp stack failed: {:?}", e);
                     }
                 }
@@ -577,10 +580,7 @@ impl<C: NatDstConnector> TcpProxy<C> {
                         ?data,
                         "receive from smoltcp stack and send to peer mgr packet"
                     );
-                    let packet = ZCPacket::new_from_buf(
-                        bytes::BytesMut::from(bytes::Bytes::from(data)),
-                        ZCPacketType::NIC,
-                    );
+                    let packet = ZCPacket::new_from_buf(data, ZCPacketType::NIC);
                     let Some(ipv4) = Ipv4Packet::new(packet.payload()) else {
                         tracing::error!(
                             payload_len = packet.payload_len(),

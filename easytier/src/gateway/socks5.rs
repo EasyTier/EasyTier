@@ -363,7 +363,10 @@ impl Socks5ServerNet {
             let mut smoltcp_stack_receiver = packet_recv.lock().await;
             while let Some(packet) = smoltcp_stack_receiver.recv().await {
                 tracing::trace!(?packet, "receive from peer send to smoltcp packet");
-                if let Err(e) = stack_sink.send(Ok(packet.payload().to_vec())).await {
+                if let Err(e) = stack_sink
+                    .send(Ok(bytes::BytesMut::from(packet.payload())))
+                    .await
+                {
                     tracing::error!("send to smoltcp stack failed: {:?}", e);
                 }
             }
@@ -377,10 +380,7 @@ impl Socks5ServerNet {
                     "receive from smoltcp stack and send to peer mgr packet, len = {}",
                     data.len()
                 );
-                let packet = ZCPacket::new_from_buf(
-                    bytes::BytesMut::from(bytes::Bytes::from(data)),
-                    ZCPacketType::NIC,
-                );
+                let packet = ZCPacket::new_from_buf(data, ZCPacketType::NIC);
                 let Some(ipv4) = Ipv4Packet::new(packet.payload()) else {
                     tracing::error!(
                         payload_len = packet.payload_len(),
