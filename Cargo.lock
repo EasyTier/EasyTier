@@ -2435,6 +2435,7 @@ dependencies = [
  "tempfile",
  "terminal_size",
  "thiserror 1.0.63",
+ "thread_local",
  "thunk-rs",
  "tikv-jemalloc-ctl",
  "tikv-jemalloc-sys",

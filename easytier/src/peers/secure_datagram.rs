@@ -990,13 +990,9 @@ mod tests {
 
         s.sync_root_key(root_key, 2, 2, true);
         assert!(s.check_replay_for_test(2, 0, SecureDatagramDirection::AToB, now + 2));
+        let expires_at = s.sync_rx_grace_expires_at_ms.load(Ordering::Relaxed);
 
-        assert!(!s.check_replay_for_test(
-            0,
-            1,
-            SecureDatagramDirection::AToB,
-            now + SecureDatagramSession::SYNC_RX_GRACE_AFTER_MS + 3
-        ));
+        assert!(!s.check_replay_for_test(0, 1, SecureDatagramDirection::AToB, expires_at + 1));
     }
 
     #[test]
