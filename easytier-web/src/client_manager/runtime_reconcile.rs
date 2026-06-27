@@ -26,10 +26,10 @@ use super::session::{SessionConfigClient, SessionRpcClient};
 pub(super) enum RuntimeReconcileAction {
     None,
     Run {
-        config: NetworkConfig,
+        config: Box<NetworkConfig>,
         overwrite: bool,
     },
-    Patch(InstanceConfigPatch),
+    Patch(Box<InstanceConfigPatch>),
 }
 
 #[derive(Clone, PartialEq)]
@@ -301,7 +301,7 @@ pub(super) async fn prepare_web_source_runtime_reconcile(
 ) -> anyhow::Result<RuntimeReconcileAction> {
     if !is_running {
         return Ok(RuntimeReconcileAction::Run {
-            config: desired_config,
+            config: Box::new(desired_config),
             overwrite: false,
         });
     }
@@ -315,9 +315,9 @@ pub(super) fn prepare_web_source_runtime_reconcile_from_current(
     current_config: &NetworkConfig,
     desired_config: NetworkConfig,
 ) -> anyhow::Result<RuntimeReconcileAction> {
-    let Some(patch) = web_source_runtime_patch(&current_config, &desired_config)? else {
+    let Some(patch) = web_source_runtime_patch(current_config, &desired_config)? else {
         return Ok(RuntimeReconcileAction::Run {
-            config: desired_config,
+            config: Box::new(desired_config),
             overwrite: true,
         });
     };
@@ -325,7 +325,7 @@ pub(super) fn prepare_web_source_runtime_reconcile_from_current(
         return Ok(RuntimeReconcileAction::None);
     }
 
-    Ok(RuntimeReconcileAction::Patch(patch))
+    Ok(RuntimeReconcileAction::Patch(Box::new(patch)))
 }
 
 pub(super) async fn apply_web_source_runtime_reconcile(
@@ -338,7 +338,7 @@ pub(super) async fn apply_web_source_runtime_reconcile(
     match action {
         RuntimeReconcileAction::None => Ok(desired_config),
         RuntimeReconcileAction::Run { config, overwrite } => {
-            run_web_source_instance(rpc_client, inst_id, config, overwrite).await?;
+            run_web_source_instance(rpc_client, inst_id, *config, overwrite).await?;
             Ok(desired_config)
         }
         RuntimeReconcileAction::Patch(patch) => {
@@ -347,7 +347,7 @@ pub(super) async fn apply_web_source_runtime_reconcile(
                     BaseController::default(),
                     PatchConfigRequest {
                         instance: Some(instance_identifier(inst_id)?),
-                        patch: Some(patch),
+                        patch: Some(*patch),
                     },
                 )
                 .await?;

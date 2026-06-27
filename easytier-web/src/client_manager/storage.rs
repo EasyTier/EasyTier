@@ -59,9 +59,9 @@ impl Storage {
                 let same_client = e.storage_token.client_url
                     == client_info.storage_token.client_url
                     && e.storage_token.user_id == client_info.storage_token.user_id;
-                let should_replace = if same_client && e.authorized != client_info.authorized {
-                    true
-                } else if !e.authorized && client_info.authorized {
+                let should_replace = if (same_client && e.authorized != client_info.authorized)
+                    || (!e.authorized && client_info.authorized)
+                {
                     true
                 } else if e.authorized && !client_info.authorized && !same_client {
                     false

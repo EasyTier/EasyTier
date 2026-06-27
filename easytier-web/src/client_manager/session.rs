@@ -478,29 +478,26 @@ impl SessionRpcService {
                 .map_err(rpc_types::error::Error::from)?;
         }
 
-        let user_id = {
-            let user_id = match storage
-                .db()
-                .get_user_id_by_token(req.user_token.clone())
+        let user_id = match storage
+            .db()
+            .get_user_id_by_token(req.user_token.clone())
+            .await
+            .with_context(|| {
+                format!(
+                    "Failed to get user id by token from db: {:?}",
+                    req.user_token
+                )
+            })? {
+            Some(id) => id,
+            None if feature_flags.allow_auto_create_user => storage
+                .auto_create_user(&req.user_token)
                 .await
-                .with_context(|| {
-                    format!(
-                        "Failed to get user id by token from db: {:?}",
-                        req.user_token
-                    )
-                })? {
-                Some(id) => id,
-                None if feature_flags.allow_auto_create_user => storage
-                    .auto_create_user(&req.user_token)
-                    .await
-                    .with_context(|| format!("Failed to auto-create user: {:?}", req.user_token))?,
-                None => {
-                    return Err(
-                        anyhow::anyhow!("User not found by token: {:?}", req.user_token).into(),
-                    );
-                }
-            };
-            user_id
+                .with_context(|| format!("Failed to auto-create user: {:?}", req.user_token))?,
+            None => {
+                return Err(
+                    anyhow::anyhow!("User not found by token: {:?}", req.user_token).into(),
+                );
+            }
         };
 
         let (storage_token, notifier, runtime_req) = {

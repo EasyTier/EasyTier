@@ -60,8 +60,11 @@ impl PersistedConfigSource {
     }
 }
 
+type ManagedConfigReconcileKey = (i32, uuid::Uuid);
+type ManagedConfigReconcileLock = Arc<tokio::sync::Mutex<()>>;
+
 static MANAGED_CONFIG_RECONCILE_LOCKS: std::sync::LazyLock<
-    DashMap<(i32, uuid::Uuid), Arc<tokio::sync::Mutex<()>>>,
+    DashMap<ManagedConfigReconcileKey, ManagedConfigReconcileLock>,
 > = std::sync::LazyLock::new(DashMap::new);
 
 fn snake_to_lower_camel(key: &str) -> Option<String> {
