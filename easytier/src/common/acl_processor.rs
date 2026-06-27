@@ -109,7 +109,7 @@ impl AclCacheKey {
 
 // Cache entry with timestamp for LRU cleanup
 #[derive(Debug, Clone)]
-pub struct AclCacheEntry {
+pub(crate) struct AclCacheEntry {
     pub action: Action,
     pub matched_rule: RuleId,
     pub last_access: Instant,
@@ -433,7 +433,7 @@ impl AclProcessor {
         );
     }
 
-    pub fn process_packet_with_cache_entry(
+    pub(crate) fn process_packet_with_cache_entry(
         &self,
         packet_info: &PacketInfo,
         cache_entry: &AclCacheEntry,

@@ -66,14 +66,14 @@ impl std::fmt::Debug for InflightRequest {
 }
 
 #[derive(Debug, Clone, Default)]
-pub struct PeerInfo {
+pub(crate) struct PeerInfo {
     pub peer_id: PeerId,
     pub compression_info: RpcCompressionInfo,
     pub last_active: Option<Instant>,
 }
 
 type InflightRequestTable = Arc<DashMap<InflightRequestKey, InflightRequest>>;
-pub type PeerInfoTable = Arc<DashMap<PeerId, PeerInfo>>;
+pub(crate) type PeerInfoTable = Arc<DashMap<PeerId, PeerInfo>>;
 
 pub struct Client {
     mpsc: Mutex<MpscTunnel<Box<dyn Tunnel>>>,
@@ -386,7 +386,7 @@ impl Client {
         self.inflight_requests.len()
     }
 
-    pub fn peer_info_table(&self) -> PeerInfoTable {
+    pub(crate) fn peer_info_table(&self) -> PeerInfoTable {
         self.peer_info.clone()
     }
 }

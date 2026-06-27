@@ -2205,12 +2205,7 @@ impl PeerManager {
 #[cfg(test)]
 mod tests {
     use base64::Engine;
-    use std::{
-        collections::HashMap,
-        fmt::Debug,
-        sync::Arc,
-        time::Duration,
-    };
+    use std::{collections::HashMap, fmt::Debug, sync::Arc, time::Duration};
 
     use hotpath::instant::Instant;
 

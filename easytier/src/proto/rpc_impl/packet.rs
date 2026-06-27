@@ -44,7 +44,7 @@ pub async fn decompress_packet(
     Ok(decompressed)
 }
 
-pub struct PacketMerger {
+pub(crate) struct PacketMerger {
     first_piece: Option<RpcPacket>,
     pieces: Vec<RpcPacket>,
     last_updated: Instant,
@@ -139,7 +139,7 @@ impl PacketMerger {
         Ok(self.try_merge_pieces())
     }
 
-    pub fn last_updated(&self) -> Instant {
+    pub(crate) fn last_updated(&self) -> Instant {
         self.last_updated
     }
 }

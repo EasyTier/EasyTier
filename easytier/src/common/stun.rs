@@ -1313,7 +1313,7 @@ impl StunInfoCollectorTrait for MockStunInfoCollector {
         StunInfo {
             udp_nat_type: self.udp_nat_type as i32,
             tcp_nat_type: NatType::Unknown as i32,
-            last_update_time: Instant::now().elapsed().as_secs() as i64,
+            last_update_time: Local::now().timestamp(),
             min_port: 100,
             max_port: 200,
             public_ip: vec!["127.0.0.1".to_string(), "::1".to_string()],
