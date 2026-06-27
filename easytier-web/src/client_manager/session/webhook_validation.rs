@@ -120,6 +120,14 @@ async fn wait_for_input(
         let notify = {
             let session_data = session_data.upgrade()?;
             let mut data = session_data.write().await;
+            if matches!(data.auth_state, SessionAuthState::Invalid) {
+                data.webhook_validation_dirty = false;
+                tracing::info!(
+                    client_url = %data.client_url,
+                    "webhook validation stopped for invalid session; reconnect is required before revalidation"
+                );
+                return None;
+            }
             if data.webhook_validation_dirty {
                 data.webhook_validation_dirty = false;
                 let req = data.req.clone()?;
@@ -200,6 +208,14 @@ async fn mark_dirty_if_current(
         if req.machine_id.map(uuid::Uuid::from) != Some(machine_id) {
             return;
         }
+        if matches!(data.auth_state, SessionAuthState::Invalid) {
+            data.webhook_validation_dirty = false;
+            tracing::debug!(
+                %machine_id,
+                "skip webhook validation retry for invalid session"
+            );
+            return;
+        }
         SessionRpcService::mark_webhook_validation_dirty_locked(&mut data)
     };
     notify.notify_one();
@@ -223,7 +239,13 @@ pub(super) async fn apply_rejected(
         }) {
             return;
         }
+        tracing::info!(
+            machine_id = %input.machine_id,
+            client_url = %data.client_url,
+            "webhook token rejected; marking session invalid and requiring client reconnect"
+        );
         data.auth_state = SessionAuthState::Invalid;
+        data.webhook_validation_dirty = false;
         data.binding_version = None;
         data.applied_config_revision = None;
         let storage_token = data.storage_token.clone();
@@ -278,6 +300,14 @@ pub(super) async fn apply_success(
             &input.req.user_token,
             input.machine_id,
         ) {
+            return;
+        }
+        if matches!(data.auth_state, SessionAuthState::Invalid) {
+            tracing::info!(
+                machine_id = %input.machine_id,
+                client_url = %data.client_url,
+                "ignore webhook validation success for invalid session; reconnect is required before revalidation"
+            );
             return;
         }
 

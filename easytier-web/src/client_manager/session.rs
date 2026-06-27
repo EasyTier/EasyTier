@@ -411,6 +411,13 @@ impl SessionRpcService {
             let mut data = self.data.write().await;
             Self::ensure_session_identity_locked(&mut data, &req, machine_id)
                 .map_err(rpc_types::error::Error::from)?;
+            if matches!(data.auth_state, SessionAuthState::Invalid) {
+                tracing::info!(
+                    %machine_id,
+                    "webhook session is invalid; failing heartbeat to require client reconnect"
+                );
+                return Err(anyhow::anyhow!("webhook session is invalid").into());
+            }
             let runtime_req = Self::store_latest_heartbeat_req(&mut data, req);
             let heartbeat_count = data
                 .heartbeat_count
@@ -1112,6 +1119,7 @@ mod tests {
         data.session_identity = Some(SessionRpcService::heartbeat_identity(&req, machine_id));
         data.req = Some(req.clone());
         data.auth_state = SessionAuthState::Authorized;
+        data.webhook_validation_dirty = true;
         data.webhook_connected_binding_version = Some(3);
         let session_data = Arc::new(RwLock::new(data));
 
@@ -1133,6 +1141,7 @@ mod tests {
         let data = session_data.read().await;
         assert!(data.storage_token.is_some());
         assert_eq!(data.auth_state, SessionAuthState::Invalid);
+        assert!(!data.webhook_validation_dirty);
         assert_eq!(data.webhook_connected_binding_version, None);
         drop(data);
         assert_eq!(
@@ -1146,7 +1155,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn webhook_reject_can_reauthorize_same_session() {
+    async fn webhook_reject_prevents_reauthorize_same_session() {
         let machine_id = uuid::Uuid::new_v4();
         let req = heartbeat_request("token", machine_id);
         let storage = Storage::new(crate::db::Db::memory_db().await);
@@ -1217,18 +1226,22 @@ mod tests {
 
         let data = session_data.read().await;
         assert!(data.storage_token.is_some());
-        assert_eq!(data.auth_state, SessionAuthState::Authorized);
-        assert_eq!(data.binding_version, Some(7));
-        assert_eq!(data.webhook_connected_binding_version, Some(7));
+        assert_eq!(data.auth_state, SessionAuthState::Invalid);
+        assert_eq!(data.binding_version, None);
+        assert_eq!(data.webhook_connected_binding_version, None);
         drop(data);
         assert_eq!(
             storage.get_client_url_by_machine_id(user_id, &machine_id),
+            None
+        );
+        assert_eq!(
+            storage.get_client_url_by_machine_id_with_auth(user_id, &machine_id, false),
             Some(client_url)
         );
     }
 
     #[tokio::test]
-    async fn invalid_webhook_session_revalidates_periodically() {
+    async fn invalid_webhook_session_does_not_revalidate_on_same_connection() {
         let machine_id = uuid::Uuid::new_v4();
         let req = heartbeat_request("token", machine_id);
         let storage = Storage::new(crate::db::Db::memory_db().await);
@@ -1266,15 +1279,18 @@ mod tests {
             heartbeat_min_response_delay: Duration::ZERO,
         };
 
-        service.handle_heartbeat(req).await.unwrap();
+        service
+            .handle_heartbeat(req)
+            .await
+            .expect_err("invalid webhook session must fail heartbeat");
 
         let data = session_data.read().await;
-        assert!(data.webhook_validation_dirty);
+        assert!(!data.webhook_validation_dirty);
         assert_eq!(data.auth_state, SessionAuthState::Invalid);
     }
 
     #[tokio::test]
-    async fn invalid_webhook_heartbeat_keeps_storage_unauthorized() {
+    async fn invalid_webhook_heartbeat_returns_error() {
         let machine_id = uuid::Uuid::new_v4();
         let req = heartbeat_request("token", machine_id);
         let storage = Storage::new(crate::db::Db::memory_db().await);
@@ -1286,7 +1302,7 @@ mod tests {
             machine_id,
             user_id,
         };
-        storage.update_client(storage_token.clone(), 1, true);
+        storage.update_client(storage_token.clone(), 1, false);
         let mut data = SessionData::new(
             storage.weak_ref(),
             client_url.clone(),
@@ -1309,7 +1325,10 @@ mod tests {
             heartbeat_min_response_delay: Duration::ZERO,
         };
 
-        service.handle_heartbeat(req).await.unwrap();
+        service
+            .handle_heartbeat(req)
+            .await
+            .expect_err("invalid webhook heartbeat must fail");
 
         assert_eq!(
             storage.get_client_url_by_machine_id(user_id, &machine_id),
