@@ -44,14 +44,33 @@ function resolveObjPath(path: string, obj = globalThis, separator = '.') {
   return properties.reduce((prev, curr) => prev?.[curr], obj)
 }
 
+function numericValue(value: unknown): number | undefined {
+  if (typeof value === 'number')
+    return Number.isFinite(value) ? value : undefined
+
+  if (typeof value !== 'string' || value.trim() === '')
+    return undefined
+
+  const parsed = Number(value)
+  return Number.isFinite(parsed) ? parsed : undefined
+}
+
 function statsCommon(info: any, field: string): number | undefined {
   if (!info.peer)
     return undefined
 
   const conns = info.peer.conns
-  return conns.reduce((acc: number, conn: any) => {
-    return acc + resolveObjPath(field, conn)
-  }, 0)
+  let sum = 0
+  let hasValue = false
+  for (const conn of conns) {
+    const value = numericValue(resolveObjPath(field, conn))
+    if (value === undefined)
+      continue
+
+    sum += value
+    hasValue = true
+  }
+  return hasValue ? sum : undefined
 }
 
 function humanFileSize(bytes: number, si = false, dp = 1) {
@@ -74,12 +93,59 @@ function humanFileSize(bytes: number, si = false, dp = 1) {
   return `${bytes.toFixed(dp)} ${units[u]}`
 }
 
+function peerConns(info: PeerRoutePair) {
+  return info.peer?.conns || []
+}
+
+function defaultConnId(info: PeerRoutePair) {
+  const defaultConn = info.peer?.default_conn_id
+  if (!defaultConn)
+    return undefined
+
+  const part1 = defaultConn.part1 ?? 0
+  const part2 = defaultConn.part2 ?? 0
+  const part3 = defaultConn.part3 ?? 0
+  const part4 = defaultConn.part4 ?? 0
+  if (part1 === 0 && part2 === 0 && part3 === 0 && part4 === 0)
+    return undefined
+
+  const toHex = (value: number) => value.toString(16).padStart(8, '0')
+  const part1Hex = toHex(part1)
+  const part2Hex = toHex(part2)
+  const part3Hex = toHex(part3)
+  const part4Hex = toHex(part4)
+  return `${part1Hex}-${part2Hex.slice(0, 4)}-${part2Hex.slice(4, 8)}-${part3Hex.slice(0, 4)}-${part3Hex.slice(4, 8)}${part4Hex}`
+}
+
+function defaultConnFirst(info: PeerRoutePair) {
+  const conns = peerConns(info)
+  const connId = defaultConnId(info)
+  if (!connId)
+    return conns
+
+  const defaultConn = conns.find(conn => conn.conn_id === connId)
+  return defaultConn ? [defaultConn, ...conns.filter(conn => conn !== defaultConn)] : conns
+}
+
 function latencyMs(info: PeerRoutePair) {
-  let lat_us_sum = statsCommon(info, 'stats.latency_us')
-  if (lat_us_sum === undefined)
+  const connId = defaultConnId(info)
+  let minLatencyUs: number | undefined
+
+  for (const conn of peerConns(info)) {
+    if (!conn.stats)
+      continue
+
+    const latencyUs = numericValue(conn.stats.latency_us) ?? 0
+    if (connId === conn.conn_id)
+      return `${Math.ceil(latencyUs / 1000)}ms`
+
+    minLatencyUs = Math.min(minLatencyUs ?? latencyUs, latencyUs)
+  }
+
+  if (minLatencyUs === undefined)
     return ''
-  lat_us_sum = lat_us_sum / 1000 / info.peer!.conns.length
-  return `${lat_us_sum % 1 > 0 ? Math.round(lat_us_sum) + 1 : Math.round(lat_us_sum)}ms`
+
+  return `${Math.ceil(minLatencyUs / 1000)}ms`
 }
 
 function txBytes(info: PeerRoutePair) {
@@ -93,8 +159,11 @@ function rxBytes(info: PeerRoutePair) {
 }
 
 function lossRate(info: PeerRoutePair) {
-  const lossRate = statsCommon(info, 'loss_rate')
-  return lossRate !== undefined ? `${Math.round(lossRate * 100)}%` : ''
+  for (const conn of defaultConnFirst(info)) {
+    return `${Math.round((numericValue(conn.loss_rate) ?? 0) * 100)}%`
+  }
+
+  return ''
 }
 
 function version(info: PeerRoutePair) {
@@ -131,7 +200,7 @@ function oneTunnelProto(tunnel?: TunnelInfo): string {
 }
 
 function tunnelProto(info: PeerRoutePair) {
-  return [...new Set(info.peer?.conns.map(c => oneTunnelProto(c.tunnel)))].join(',')
+  return [...new Set(peerConns(info).map(c => oneTunnelProto(c.tunnel)))].join(',')
 }
 
 const myNodeInfo = computed(() => {

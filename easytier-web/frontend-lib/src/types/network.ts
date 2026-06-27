@@ -293,6 +293,7 @@ export interface Route {
 export interface PeerInfo {
   peer_id: number
   conns: PeerConnInfo[]
+  default_conn_id?: CommonUuid
 }
 
 export interface PeerConnInfo {
@@ -303,7 +304,7 @@ export interface PeerConnInfo {
   features: string[]
   tunnel?: TunnelInfo
   stats?: PeerConnStats
-  loss_rate: number
+  loss_rate?: number | string
 }
 
 export interface PeerRoutePair {
@@ -322,11 +323,18 @@ export interface TunnelInfo {
 }
 
 export interface PeerConnStats {
-  rx_bytes: number
-  tx_bytes: number
-  rx_packets: number
-  tx_packets: number
-  latency_us: number
+  rx_bytes: number | string
+  tx_bytes: number | string
+  rx_packets: number | string
+  tx_packets: number | string
+  latency_us: number | string
+}
+
+export interface CommonUuid {
+  part1?: number
+  part2?: number
+  part3?: number
+  part4?: number
 }
 
 // 添加新行
