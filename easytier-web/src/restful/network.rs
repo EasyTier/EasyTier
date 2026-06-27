@@ -368,7 +368,7 @@ impl NetworkApi {
             )
             .await
             .map_err(|err| {
-                let status = if err.to_string().contains("managed config revision changed") {
+                let status = if crate::client_manager::is_managed_config_revision_conflict(&err) {
                     StatusCode::CONFLICT
                 } else {
                     StatusCode::INTERNAL_SERVER_ERROR

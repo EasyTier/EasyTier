@@ -33,6 +33,10 @@ use crate::db::{Db, UserIdInDb, entity::user_running_network_configs};
 #[include = "geoip2-cn.mmdb"]
 struct GeoipDb;
 
+pub fn is_managed_config_revision_conflict(error: &anyhow::Error) -> bool {
+    managed_config::is_revision_conflict(error)
+}
+
 fn load_geoip_db(geoip_db: Option<String>) -> Option<maxminddb::Reader<Vec<u8>>> {
     if let Some(path) = geoip_db {
         match maxminddb::Reader::open_readfile(&path) {

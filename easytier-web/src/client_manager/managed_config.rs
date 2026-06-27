@@ -1,10 +1,10 @@
 use std::{
     collections::{HashMap, HashSet},
-    sync::Arc,
+    sync::{Arc, Weak},
 };
 
 use anyhow::Context as _;
-use dashmap::DashMap;
+use dashmap::{DashMap, mapref::entry::Entry};
 use easytier::{
     common::config::ConfigSource,
     proto::{
@@ -25,6 +25,17 @@ pub(super) enum PersistedConfigSource {
 pub(super) enum ExpectedConfigRevision<'a> {
     Any,
     Exact(Option<&'a str>),
+}
+
+#[derive(Debug, thiserror::Error)]
+pub(super) enum ManagedConfigError {
+    #[error(
+        "managed config revision changed while reconciling: expected {expected:?}, current {current:?}"
+    )]
+    RevisionConflict {
+        expected: Option<String>,
+        current: Option<String>,
+    },
 }
 
 impl PersistedConfigSource {
@@ -61,11 +72,45 @@ impl PersistedConfigSource {
 }
 
 type ManagedConfigReconcileKey = (i32, uuid::Uuid);
-type ManagedConfigReconcileLock = Arc<tokio::sync::Mutex<()>>;
+type ManagedConfigReconcileLock = tokio::sync::Mutex<()>;
+type ManagedConfigReconcileLockRef = Arc<ManagedConfigReconcileLock>;
+type ManagedConfigReconcileLockWeak = Weak<ManagedConfigReconcileLock>;
 
 static MANAGED_CONFIG_RECONCILE_LOCKS: std::sync::LazyLock<
-    DashMap<ManagedConfigReconcileKey, ManagedConfigReconcileLock>,
+    DashMap<ManagedConfigReconcileKey, ManagedConfigReconcileLockWeak>,
 > = std::sync::LazyLock::new(DashMap::new);
+
+fn managed_config_reconcile_lock(key: ManagedConfigReconcileKey) -> ManagedConfigReconcileLockRef {
+    match MANAGED_CONFIG_RECONCILE_LOCKS.entry(key) {
+        Entry::Occupied(mut entry) => match entry.get().upgrade() {
+            Some(lock) => lock,
+            None => {
+                let lock = Arc::new(tokio::sync::Mutex::new(()));
+                entry.insert(Arc::downgrade(&lock));
+                lock
+            }
+        },
+        Entry::Vacant(entry) => {
+            let lock = Arc::new(tokio::sync::Mutex::new(()));
+            entry.insert(Arc::downgrade(&lock));
+            lock
+        }
+    }
+}
+
+fn remove_unused_managed_config_reconcile_lock(
+    key: ManagedConfigReconcileKey,
+    lock: &ManagedConfigReconcileLockRef,
+) {
+    let expected_lock = Arc::downgrade(lock);
+    MANAGED_CONFIG_RECONCILE_LOCKS.remove_if(&key, |_, current_lock| {
+        current_lock.ptr_eq(&expected_lock) && current_lock.strong_count() == 1
+    });
+}
+
+pub(super) fn is_revision_conflict(error: &anyhow::Error) -> bool {
+    error.downcast_ref::<ManagedConfigError>().is_some()
+}
 
 fn snake_to_lower_camel(key: &str) -> Option<String> {
     if !key.contains('_') {
@@ -166,11 +211,11 @@ async fn ensure_expected_config_revision(
         .await
         .map_err(|e| anyhow::anyhow!("failed to get managed config revision: {:?}", e))?;
     if current.as_deref() != expected {
-        anyhow::bail!(
-            "managed config revision changed while reconciling: expected {:?}, current {:?}",
-            expected,
-            current
-        );
+        return Err(ManagedConfigError::RevisionConflict {
+            expected: expected.map(str::to_string),
+            current,
+        }
+        .into());
     }
 
     Ok(())
@@ -321,33 +366,37 @@ pub(super) async fn reconcile_web_source_configs(
     config_revision: Option<&str>,
     expected_config_revision: ExpectedConfigRevision<'_>,
 ) -> anyhow::Result<()> {
-    let reconcile_lock = MANAGED_CONFIG_RECONCILE_LOCKS
-        .entry((user_id, machine_id))
-        .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
-        .clone();
-    let _guard = reconcile_lock.lock().await;
+    let key = (user_id, machine_id);
+    let reconcile_lock = managed_config_reconcile_lock(key);
+    let result = async {
+        let _guard = reconcile_lock.lock().await;
 
-    ensure_expected_config_revision(storage, user_id, machine_id, expected_config_revision).await?;
-    let existing = load_existing_config_sources(storage, user_id, machine_id).await?;
-    let normalized = normalize_desired_web_configs(
-        user_id,
-        machine_id,
-        desired_configs,
-        config_revision,
-        &existing.sources,
-    )?;
-    upsert_web_configs(storage, user_id, machine_id, normalized.configs).await?;
-    delete_stale_web_configs(
-        storage,
-        user_id,
-        machine_id,
-        &existing.web_ids,
-        &normalized.desired_ids,
-    )
-    .await?;
-    persist_config_revision(storage, user_id, machine_id, config_revision).await?;
+        ensure_expected_config_revision(storage, user_id, machine_id, expected_config_revision)
+            .await?;
+        let existing = load_existing_config_sources(storage, user_id, machine_id).await?;
+        let normalized = normalize_desired_web_configs(
+            user_id,
+            machine_id,
+            desired_configs,
+            config_revision,
+            &existing.sources,
+        )?;
+        upsert_web_configs(storage, user_id, machine_id, normalized.configs).await?;
+        delete_stale_web_configs(
+            storage,
+            user_id,
+            machine_id,
+            &existing.web_ids,
+            &normalized.desired_ids,
+        )
+        .await?;
+        persist_config_revision(storage, user_id, machine_id, config_revision).await?;
 
-    Ok(())
+        Ok(())
+    }
+    .await;
+    remove_unused_managed_config_reconcile_lock(key, &reconcile_lock);
+    result
 }
 
 fn collect_web_source_instance_ids(metas: &[NetworkMeta]) -> HashSet<String> {
@@ -754,7 +803,16 @@ mod tests {
         .await
         .unwrap_err();
 
-        assert!(err.to_string().contains("managed config revision changed"));
+        assert!(is_revision_conflict(&err));
+        let conflict = err
+            .downcast_ref::<ManagedConfigError>()
+            .expect("expected typed revision conflict");
+        match conflict {
+            ManagedConfigError::RevisionConflict { expected, current } => {
+                assert_eq!(expected.as_deref(), Some("rev-old"));
+                assert_eq!(current.as_deref(), Some("rev-new"));
+            }
+        }
         assert_eq!(
             storage
                 .db()
@@ -772,6 +830,48 @@ mod tests {
                 .unwrap()
                 .is_none()
         );
+    }
+
+    #[test]
+    fn managed_config_reconcile_lock_reuses_live_entry_and_replaces_stale_entry() {
+        let key = (i32::MIN, uuid::Uuid::new_v4());
+        MANAGED_CONFIG_RECONCILE_LOCKS.remove(&key);
+
+        let first = managed_config_reconcile_lock(key);
+        let second = managed_config_reconcile_lock(key);
+        assert!(Arc::ptr_eq(&first, &second));
+
+        let stale = Arc::downgrade(&first);
+        drop(first);
+        drop(second);
+        assert!(stale.upgrade().is_none());
+
+        let third = managed_config_reconcile_lock(key);
+        let stored = MANAGED_CONFIG_RECONCILE_LOCKS
+            .get(&key)
+            .and_then(|lock| lock.upgrade())
+            .expect("expected refreshed reconcile lock");
+        assert!(Arc::ptr_eq(&third, &stored));
+        drop(stored);
+
+        remove_unused_managed_config_reconcile_lock(key, &third);
+        assert!(!MANAGED_CONFIG_RECONCILE_LOCKS.contains_key(&key));
+    }
+
+    #[test]
+    fn managed_config_reconcile_lock_cleanup_keeps_live_waiters() {
+        let key = (i32::MIN + 1, uuid::Uuid::new_v4());
+        MANAGED_CONFIG_RECONCILE_LOCKS.remove(&key);
+
+        let current = managed_config_reconcile_lock(key);
+        let waiter = managed_config_reconcile_lock(key);
+
+        remove_unused_managed_config_reconcile_lock(key, &current);
+        assert!(MANAGED_CONFIG_RECONCILE_LOCKS.contains_key(&key));
+
+        drop(waiter);
+        remove_unused_managed_config_reconcile_lock(key, &current);
+        assert!(!MANAGED_CONFIG_RECONCILE_LOCKS.contains_key(&key));
     }
 
     #[test]
