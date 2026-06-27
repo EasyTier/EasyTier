@@ -337,6 +337,7 @@ impl PeerSession {
         }
     }
 
+    #[cfg_attr(feature = "hotpath", hotpath::measure(impl_type = "PeerSession"))]
     pub fn encrypt_payload(
         &self,
         sender_peer_id: PeerId,
@@ -350,6 +351,7 @@ impl PeerSession {
             .encrypt_payload(Self::dir_for_sender(sender_peer_id, receiver_peer_id), pkt)
     }
 
+    #[cfg_attr(feature = "hotpath", hotpath::measure(impl_type = "PeerSession"))]
     pub fn decrypt_payload(
         &self,
         sender_peer_id: PeerId,

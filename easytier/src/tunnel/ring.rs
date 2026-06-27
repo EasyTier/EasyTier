@@ -196,7 +196,8 @@ pub struct RingTunnelListener {
 
 impl RingTunnelListener {
     pub fn new(key: url::Url) -> Self {
-        let (conn_sender, conn_receiver) = tokio::sync::mpsc::unbounded_channel();
+        let (conn_sender, conn_receiver) =
+            hotpath::channel!(tokio::sync::mpsc::unbounded_channel());
         RingTunnelListener {
             listener_addr: key,
             conn_sender,

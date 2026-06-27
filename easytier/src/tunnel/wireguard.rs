@@ -468,7 +468,7 @@ pub struct WgTunnelListener {
 
 impl WgTunnelListener {
     pub fn new(addr: url::Url, config: WgConfig) -> Self {
-        let (conn_send, conn_recv) = tokio::sync::mpsc::unbounded_channel();
+        let (conn_send, conn_recv) = hotpath::channel!(tokio::sync::mpsc::unbounded_channel());
         WgTunnelListener {
             addr,
             config,
