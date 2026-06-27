@@ -140,6 +140,7 @@ fn diff_proxy_networks(
 
     let mut patches = vec![ProxyNetworkPatch {
         action: ConfigPatchAction::Clear as i32,
+        cidr: Some(clear_proxy_network_cidr(current, desired)?),
         ..Default::default()
     }];
     for proxy_network in desired {
@@ -154,6 +155,18 @@ fn diff_proxy_networks(
         });
     }
     Ok(patches)
+}
+
+fn clear_proxy_network_cidr(
+    current: &[RuntimeProxyNetwork],
+    desired: &[RuntimeProxyNetwork],
+) -> anyhow::Result<RpcIpv4Inet> {
+    let cidr = desired
+        .first()
+        .or_else(|| current.first())
+        .map(|proxy_network| proxy_network.cidr.as_str())
+        .unwrap_or("0.0.0.0/0");
+    parse_rpc_ipv4_inet(cidr)
 }
 
 fn normalized_acl(acl: &Option<Acl>) -> Option<Acl> {
@@ -229,7 +242,7 @@ fn web_source_runtime_patch(
     let current_proxy_networks = normalized_proxy_networks(current)?;
     let desired_proxy_networks = normalized_proxy_networks(desired)?;
     if current_proxy_networks != desired_proxy_networks {
-        if current_proxy_networks.is_empty() || desired_proxy_networks.is_empty() {
+        if current_proxy_networks.is_empty() {
             return Ok(None);
         }
         patch.proxy_networks =
@@ -573,7 +586,11 @@ mod tests {
         assert_eq!(patch.proxy_networks.len(), 3);
         assert_eq!(
             patch_proxy_network(&patch.proxy_networks[0]),
-            (ConfigPatchAction::Clear as i32, String::new(), None)
+            (
+                ConfigPatchAction::Clear as i32,
+                "10.2.0.0/16".to_string(),
+                None
+            )
         );
         assert_eq!(
             patch_proxy_network(&patch.proxy_networks[1]),
@@ -610,7 +627,11 @@ mod tests {
         assert_eq!(patch.proxy_networks.len(), 2);
         assert_eq!(
             patch_proxy_network(&patch.proxy_networks[0]),
-            (ConfigPatchAction::Clear as i32, String::new(), None)
+            (
+                ConfigPatchAction::Clear as i32,
+                "10.1.2.0/24".to_string(),
+                None
+            )
         );
         assert_eq!(
             patch_proxy_network(&patch.proxy_networks[1]),
@@ -634,14 +655,24 @@ mod tests {
     }
 
     #[test]
-    fn runtime_patch_rejects_proxy_network_nonempty_to_empty() {
+    fn runtime_patch_clears_proxy_networks_with_legacy_compatible_cidr() {
         let mut current = config_with_port_forwards(Vec::new());
         current.proxy_cidrs = vec!["10.1.2.0/24".to_string()];
         let desired = config_with_port_forwards(Vec::new());
 
-        let patch = web_source_runtime_patch(&current, &desired).expect("build patch");
+        let patch = web_source_runtime_patch(&current, &desired)
+            .expect("build patch")
+            .expect("hot patch");
 
-        assert!(patch.is_none());
+        assert_eq!(patch.proxy_networks.len(), 1);
+        assert_eq!(
+            patch_proxy_network(&patch.proxy_networks[0]),
+            (
+                ConfigPatchAction::Clear as i32,
+                "10.1.2.0/24".to_string(),
+                None
+            )
+        );
     }
 
     #[test]
