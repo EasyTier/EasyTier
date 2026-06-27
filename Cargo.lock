@@ -2362,6 +2362,7 @@ dependencies = [
  "prost-reflect",
  "prost-reflect-build",
  "prost-wkt-types",
+ "quanta",
  "quinn",
  "quinn-proto",
  "quote",

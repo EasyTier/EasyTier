@@ -1018,6 +1018,7 @@ impl TcpProxyRpc for QuicProxyDstRpcService {
 mod tests {
     use super::*;
     use bytes::Buf;
+    use hotpath::instant::Instant;
 
     /// Helper function: Create a pair of interconnected QuicSockets.
     /// Data sent by socket_a will enter socket_b's rx, and vice versa.
@@ -1197,7 +1198,7 @@ mod tests {
                 // Accept unidirectional stream
                 let mut recv = connection.accept_uni().await.unwrap();
 
-                let start = std::time::Instant::now();
+                let start = Instant::now();
                 let mut received = 0;
 
                 // Loop read until the stream ends
@@ -1234,7 +1235,7 @@ mod tests {
         let bytes_data = Bytes::from(data_chunk); // Use Bytes to avoid repeated allocation
 
         println!("Client: Start sending {} MB...", TOTAL_SIZE / 1024 / 1024);
-        let start_send = std::time::Instant::now();
+        let start_send = Instant::now();
 
         let chunks = TOTAL_SIZE / CHUNK_SIZE;
         for _ in 0..chunks {
@@ -1276,7 +1277,7 @@ mod tests {
                 println!("Server: Accepted connection");
 
                 let mut stream_handles = Vec::new();
-                let start = std::time::Instant::now();
+                let start = Instant::now();
 
                 // Accept an expected number of streams
                 for i in 0..STREAM_COUNT {
@@ -1346,7 +1347,7 @@ mod tests {
             STREAM_COUNT
         );
 
-        let start_send = std::time::Instant::now();
+        let start_send = Instant::now();
         let mut client_tasks = Vec::new();
 
         // Start sending tasks concurrently

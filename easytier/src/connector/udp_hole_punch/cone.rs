@@ -1,9 +1,10 @@
 use std::{
     sync::Arc,
-    time::{Duration, Instant},
+    time::Duration,
 };
 
 use anyhow::Context;
+use hotpath::instant::Instant;
 use tokio::net::UdpSocket;
 use tokio_util::task::AbortOnDropHandle;
 

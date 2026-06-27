@@ -5,6 +5,7 @@ use std::sync::{Arc, Mutex};
 use bytes::Bytes;
 use dashmap::DashMap;
 use guarden::defer;
+use hotpath::instant::Instant;
 use prost::Message;
 use tokio::sync::mpsc;
 use tokio::task::JoinSet;
@@ -52,7 +53,7 @@ struct InflightRequestKey {
 struct InflightRequest {
     sender: RpcPacketSender,
     merger: PacketMerger,
-    start_time: std::time::Instant,
+    start_time: Instant,
 }
 
 impl std::fmt::Debug for InflightRequest {
@@ -68,7 +69,7 @@ impl std::fmt::Debug for InflightRequest {
 pub struct PeerInfo {
     pub peer_id: PeerId,
     pub compression_info: RpcCompressionInfo,
-    pub last_active: Option<std::time::Instant>,
+    pub last_active: Option<Instant>,
 }
 
 type InflightRequestTable = Arc<DashMap<InflightRequestKey, InflightRequest>>;
@@ -123,7 +124,7 @@ impl Client {
         tasks.spawn(async move {
             loop {
                 tokio::time::sleep(std::time::Duration::from_secs(30)).await;
-                let now = std::time::Instant::now();
+                let now = Instant::now();
                 peer_infos.retain(|_, v| {
                     if let Some(last_active) = v.last_active {
                         return now.duration_since(last_active)
@@ -230,7 +231,7 @@ impl Client {
                 method: <Self::Descriptor as ServiceDescriptor>::Method,
                 input: bytes::Bytes,
             ) -> Result<bytes::Bytes> {
-                let start_time = std::time::Instant::now();
+                let start_time = Instant::now();
                 let transaction_id = CUR_TID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 let (tx, mut rx) = mpsc::unbounded_channel();
                 let key = InflightRequestKey {
@@ -314,7 +315,7 @@ impl Client {
                         PeerInfo {
                             peer_id: self.to_peer_id,
                             compression_info,
-                            last_active: Some(std::time::Instant::now()),
+                            last_active: Some(Instant::now()),
                         },
                     );
 

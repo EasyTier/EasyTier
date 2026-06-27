@@ -2,12 +2,13 @@ use anyhow::Context;
 use async_trait::async_trait;
 use cidr::{Ipv4Cidr, Ipv6Cidr};
 use dashmap::DashMap;
+use hotpath::instant::Instant;
 use std::collections::BTreeSet;
 use std::{
     fmt::Debug,
     net::{IpAddr, Ipv4Addr, Ipv6Addr},
     sync::{Arc, Weak, atomic::AtomicBool},
-    time::{Duration, Instant, SystemTime},
+    time::{Duration, SystemTime},
 };
 
 #[cfg(feature = "hotpath")]
@@ -2208,8 +2209,10 @@ mod tests {
         collections::HashMap,
         fmt::Debug,
         sync::Arc,
-        time::{Duration, Instant},
+        time::Duration,
     };
+
+    use hotpath::instant::Instant;
 
     use crate::{
         common::{

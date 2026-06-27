@@ -53,6 +53,7 @@ chrono = { version = "0.4.37", features = ["serde"] }
 
 guarden = "0.2"
 hotpath = { version = "0.18", default-features = false, optional = true }
+quanta = "0.12"
 
 delegate = "0.13.5"
 

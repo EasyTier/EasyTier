@@ -3,8 +3,10 @@ use std::{
     net::{IpAddr, SocketAddr},
     str::FromStr as _,
     sync::Arc,
-    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
+
+use hotpath::instant::Instant;
 
 use crate::common::{config::ConfigLoader, global_ctx::ArcGlobalCtx, token_bucket::TokenBucket};
 use crate::proto::acl::*;
@@ -110,7 +112,7 @@ impl AclCacheKey {
 pub struct AclCacheEntry {
     pub action: Action,
     pub matched_rule: RuleId,
-    pub last_access: std::time::Instant,
+    pub last_access: Instant,
     // New fields to track rule characteristics for proper cache behavior
     pub conn_track_key: Option<String>,
     pub rate_limit_keys: Vec<RateLimitKey>,
@@ -410,7 +412,7 @@ impl AclProcessor {
         }
 
         // Remove oldest entries (LRU cleanup)
-        let mut entries: Vec<(AclCacheKey, std::time::Instant)> = cache
+        let mut entries: Vec<(AclCacheKey, Instant)> = cache
             .iter()
             .map(|entry| (entry.key().clone(), entry.value().last_access))
             .collect();

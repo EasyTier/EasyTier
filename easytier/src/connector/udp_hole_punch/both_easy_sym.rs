@@ -1,10 +1,11 @@
 use std::{
     net::{IpAddr, SocketAddr, SocketAddrV4},
     sync::Arc,
-    time::{Duration, Instant},
+    time::Duration,
 };
 
 use anyhow::Context;
+use hotpath::instant::Instant;
 use tokio::sync::Mutex;
 use tokio_util::task::AbortOnDropHandle;
 

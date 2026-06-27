@@ -5,10 +5,11 @@ use std::{
         Arc, Weak,
         atomic::{AtomicBool, AtomicUsize, Ordering},
     },
-    time::{Duration, Instant},
+    time::Duration,
 };
 
 use crossbeam::atomic::AtomicCell;
+use hotpath::instant::Instant;
 #[cfg(feature = "kcp")]
 use kcp_sys::{endpoint::KcpEndpoint, stream::KcpStream};
 use tokio_util::sync::{CancellationToken, DropGuard};
