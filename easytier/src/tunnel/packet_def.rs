@@ -814,15 +814,30 @@ mod tests {
     fn bench_smoltcp_zcpacket_construct(payload_len: usize, iterations: usize) {
         let nic_offset = ZCPacketType::NIC.get_packet_offsets().payload_offset;
 
+        // Correctness check (outside the timed section): both construction paths
+        // must yield equivalent payloads for the perf comparison to be meaningful.
+        {
+            let data = vec![7u8; payload_len];
+            let p_copy = ZCPacket::new_with_payload(&data);
+
+            let mut buf = BytesMut::with_capacity(nic_offset + payload_len);
+            buf.resize(nic_offset + payload_len, 0);
+            buf[nic_offset..].fill(7);
+            let p_zero = ZCPacket::new_from_buf(buf, ZCPacketType::NIC);
+
+            assert_eq!(p_copy.payload(), p_zero.payload());
+        }
+
         // copy path: smoltcp emits a bare payload buf; socks5/tcp_proxy copy it
         // via ZCPacket::new_with_payload (pre-f5ce0848 behavior).
         let now = Instant::now();
         let mut checksum = 0usize;
         for _ in 0..iterations {
-            let mut data = vec![0u8; payload_len];
-            data.fill(7);
+            let data = vec![7u8; payload_len];
             let p = ZCPacket::new_with_payload(black_box(&data));
-            checksum = checksum.wrapping_add(p.payload_len());
+            // black_box forces the side-effect-free construction to be emitted;
+            // payload_len is stable per run so it cannot skew the numbers.
+            checksum = checksum.wrapping_add(black_box(&p).payload_len());
         }
         let copy_elapsed = now.elapsed().as_secs_f64();
 
@@ -835,7 +850,7 @@ mod tests {
             buf.resize(nic_offset + payload_len, 0);
             buf[nic_offset..].fill(7);
             let p = ZCPacket::new_from_buf(black_box(buf), ZCPacketType::NIC);
-            checksum2 = checksum2.wrapping_add(p.payload_len());
+            checksum2 = checksum2.wrapping_add(black_box(&p).payload_len());
         }
         let zerocopy_elapsed = now.elapsed().as_secs_f64();
 

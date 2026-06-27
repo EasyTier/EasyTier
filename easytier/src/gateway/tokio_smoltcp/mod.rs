@@ -51,7 +51,7 @@ pub struct NetConfig {
     pub ip_addr: IpCidr,
     pub gateway: Vec<IpAddress>,
     pub buffer_size: BufferSize,
-    pub packet_tx_headroom: usize,
+    pub(crate) packet_tx_headroom: usize,
 }
 
 impl NetConfig {
