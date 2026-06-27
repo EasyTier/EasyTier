@@ -561,22 +561,33 @@ struct NdpProxyRuntime {
 
 #[cfg(target_os = "linux")]
 impl NdpProxyRuntime {
-    fn reconcile(&mut self, global_ctx: &ArcGlobalCtx, state: &PublicIpv6ProviderRuntimeState) {
+    fn reconcile(
+        &mut self,
+        global_ctx: &ArcGlobalCtx,
+        state: &PublicIpv6ProviderRuntimeState,
+    ) -> bool {
         let Some((prefix, target)) = ndp_proxy_target(state) else {
-            self.clear_current(global_ctx);
-            return;
+            return self.clear_current(global_ctx);
         };
 
         let Some(tun_iface) = global_ctx.get_tun_device_name() else {
             self.clear_current(global_ctx);
             tracing::debug!("waiting for tun device before syncing NDP proxy entries");
-            return;
+            return self.cleanup_pending();
         };
 
         let _g = global_ctx.net_ns.guard();
 
         if self.wan_iface.as_deref() != Some(target.wan_iface.as_str()) {
-            self.clear_current_locked();
+            if !self.clear_current_locked() {
+                tracing::warn!(
+                    old_wan_iface = ?self.wan_iface,
+                    new_wan_iface = %target.wan_iface,
+                    remaining_entries = self.applied.len(),
+                    "waiting to remove old NDP proxy entries before switching WAN interface"
+                );
+                return true;
+            }
             self.wan_iface = Some(target.wan_iface.clone());
         }
 
@@ -593,30 +604,104 @@ impl NdpProxyRuntime {
                 "failed to sync NDP proxy entries"
             );
         }
+        self.cleanup_pending()
     }
 
-    fn clear_current(&mut self, global_ctx: &ArcGlobalCtx) {
+    fn clear_current(&mut self, global_ctx: &ArcGlobalCtx) -> bool {
         let _g = global_ctx.net_ns.guard();
-        self.clear_current_locked();
+        !self.clear_current_locked()
     }
 
-    fn clear_current_locked(&mut self) {
-        let Some(wan_iface) = self.wan_iface.take() else {
-            self.applied.clear();
-            return;
+    fn clear_current_locked(&mut self) -> bool {
+        let Some(wan_iface) = self.wan_iface.clone() else {
+            return self.applied.is_empty();
         };
 
-        for addr in std::mem::take(&mut self.applied) {
-            if let Err(err) = remove_ipv6_ndp_proxy(wan_iface.as_str(), addr) {
+        match list_ipv6_ndp_proxy(wan_iface.as_str()) {
+            Ok(current) => {
+                let candidates = self.applied.iter().copied().collect::<Vec<_>>();
+                clear_owned_ndp_proxy_entries(
+                    wan_iface.as_str(),
+                    &current,
+                    &mut self.applied,
+                    candidates,
+                );
+            }
+            Err(err) if is_linux_missing_netlink_object_error(&err) => {
+                tracing::trace!(
+                    wan_iface = %wan_iface,
+                    ?err,
+                    "forgetting NDP proxy ownership because WAN interface is gone"
+                );
+                self.applied.clear();
+            }
+            Err(err) => {
+                tracing::trace!(
+                    wan_iface = %wan_iface,
+                    ?err,
+                    "failed to list NDP proxy entries before cleanup"
+                );
+            }
+        }
+
+        if self.applied.is_empty() {
+            self.wan_iface = None;
+            true
+        } else {
+            false
+        }
+    }
+
+    fn cleanup_pending(&self) -> bool {
+        self.wan_iface.is_some() && !self.applied.is_empty()
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn is_linux_missing_netlink_object_error(err: &Error) -> bool {
+    match err {
+        Error::IOError(err) => {
+            err.kind() == std::io::ErrorKind::NotFound
+                || matches!(
+                    err.raw_os_error(),
+                    Some(nix::libc::ESRCH | nix::libc::ENODEV | nix::libc::ENXIO)
+                )
+        }
+        _ => false,
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn clear_owned_ndp_proxy_entries(
+    wan_iface: &str,
+    current: &std::collections::BTreeSet<std::net::Ipv6Addr>,
+    applied: &mut std::collections::BTreeSet<std::net::Ipv6Addr>,
+    candidates: Vec<std::net::Ipv6Addr>,
+) -> Option<Error> {
+    let mut first_err = None;
+    for addr in candidates {
+        if !current.contains(&addr) {
+            applied.remove(&addr);
+            continue;
+        }
+
+        if let Err(err) = remove_ipv6_ndp_proxy(wan_iface, addr) {
+            if is_linux_missing_netlink_object_error(&err) {
+                applied.remove(&addr);
+            } else {
                 tracing::trace!(
                     wan_iface = %wan_iface,
                     addr = %addr,
                     ?err,
                     "failed to remove NDP proxy entry"
                 );
+                first_err.get_or_insert(err);
             }
+        } else {
+            applied.remove(&addr);
         }
     }
+    first_err
 }
 
 #[cfg(target_os = "linux")]
@@ -685,17 +770,25 @@ fn sync_ndp_proxy_entries(
 
     for addr in wanted.difference(&current) {
         add_ipv6_ndp_proxy(wan_iface, *addr)?;
+        applied.insert(*addr);
         tracing::debug!(wan_iface = %wan_iface, addr = %addr, "added NDP proxy entry");
     }
 
-    for addr in applied.difference(&wanted) {
-        if current.contains(addr) {
-            remove_ipv6_ndp_proxy(wan_iface, *addr)?;
-            tracing::debug!(wan_iface = %wan_iface, addr = %addr, "removed NDP proxy entry");
-        }
+    let stale = applied.difference(&wanted).copied().collect::<Vec<_>>();
+    let stale_cleanup_err =
+        clear_owned_ndp_proxy_entries(wan_iface, &current, applied, stale.clone());
+    if !stale.is_empty() {
+        tracing::debug!(
+            wan_iface = %wan_iface,
+            stale_count = stale.len(),
+            remaining_count = stale.iter().filter(|addr| applied.contains(addr)).count(),
+            "synced stale NDP proxy entries"
+        );
+    }
+    if let Some(err) = stale_cleanup_err {
+        return Err(err);
     }
 
-    *applied = wanted;
     Ok(())
 }
 
@@ -704,8 +797,8 @@ fn reconcile_ndp_proxy_runtime(
     runtime: &mut NdpProxyRuntime,
     global_ctx: &ArcGlobalCtx,
     state: &PublicIpv6ProviderRuntimeState,
-) {
-    runtime.reconcile(global_ctx, state);
+) -> bool {
+    runtime.reconcile(global_ctx, state)
 }
 
 #[cfg(not(target_os = "linux"))]
@@ -713,7 +806,8 @@ fn reconcile_ndp_proxy_runtime(
     _runtime: &mut (),
     _global_ctx: &ArcGlobalCtx,
     _state: &PublicIpv6ProviderRuntimeState,
-) {
+) -> bool {
+    false
 }
 
 #[cfg(target_os = "linux")]
@@ -830,13 +924,14 @@ pub(super) fn run_public_ipv6_provider_reconcile_task(global_ctx: &ArcGlobalCtx)
             let (next_state, changed) =
                 reconcile_public_ipv6_provider_runtime_with_state(&global_ctx).await;
             log_public_ipv6_provider_state_change(last_state.as_ref(), &next_state, changed);
-            reconcile_ndp_proxy_runtime(&mut ndp_proxy_runtime, &global_ctx, &next_state);
+            let ndp_cleanup_pending =
+                reconcile_ndp_proxy_runtime(&mut ndp_proxy_runtime, &global_ctx, &next_state);
             last_state = Some(next_state);
 
             let immediate_only = matches!(
                 last_state.as_ref(),
                 Some(PublicIpv6ProviderRuntimeState::Disabled)
-            );
+            ) && !ndp_cleanup_pending;
             if !wait_for_public_ipv6_provider_reconcile_event(&mut event_receiver, immediate_only)
                 .await
             {
@@ -877,6 +972,7 @@ mod tests {
     use super::{ensure_public_ipv6_provider_supported, public_ipv6_provider_auto_detect_error};
     use crate::common::{
         config::{ConfigLoader, TomlConfigLoader},
+        error::Error,
         global_ctx::GlobalCtx,
     };
 
@@ -1385,6 +1481,98 @@ mod tests {
                 .contains(&addr)
         );
         assert!(!applied.contains(&addr));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[serial_test::serial]
+    #[tokio::test]
+    async fn test_ndp_proxy_sync_does_not_delete_preexisting_proxy_entry() {
+        let wan_if = test_iface_name("pw");
+        let tun_if = test_iface_name("pt");
+        let _wan = ScopedDummyLink::new(&wan_if);
+        let _tun = ScopedDummyLink::new(&tun_if);
+        let addr = "2001:db8:beef::123".parse::<std::net::Ipv6Addr>().unwrap();
+        let prefix = "2001:db8:beef::/64".parse().unwrap();
+        let mut applied = std::collections::BTreeSet::new();
+
+        super::ensure_linux_ndp_proxy_enabled(&wan_if).unwrap();
+        crate::common::ifcfg::add_ipv6_ndp_proxy(&wan_if, addr).unwrap();
+        run_ip(&["-6", "route", "add", &format!("{addr}/128"), "dev", &tun_if]);
+
+        sync_ndp_proxy_entries(&wan_if, &tun_if, prefix, &mut applied).unwrap();
+        assert!(
+            crate::common::ifcfg::list_ipv6_ndp_proxy(&wan_if)
+                .unwrap()
+                .contains(&addr)
+        );
+        assert!(!applied.contains(&addr));
+
+        run_ip(&["-6", "route", "del", &format!("{addr}/128"), "dev", &tun_if]);
+        sync_ndp_proxy_entries(&wan_if, &tun_if, prefix, &mut applied).unwrap();
+        assert!(
+            crate::common::ifcfg::list_ipv6_ndp_proxy(&wan_if)
+                .unwrap()
+                .contains(&addr)
+        );
+        assert!(!applied.contains(&addr));
+
+        crate::common::ifcfg::remove_ipv6_ndp_proxy(&wan_if, addr).unwrap();
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn test_missing_netlink_object_errors_release_ndp_ownership() {
+        for errno in [
+            nix::libc::ENOENT,
+            nix::libc::ESRCH,
+            nix::libc::ENODEV,
+            nix::libc::ENXIO,
+        ] {
+            let err = Error::IOError(std::io::Error::from_raw_os_error(errno));
+            assert!(super::is_linux_missing_netlink_object_error(&err));
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn test_clear_owned_ndp_proxy_entries_forgets_already_absent_entry() {
+        let addr = "2001:db8:dead::111".parse::<std::net::Ipv6Addr>().unwrap();
+        let mut applied = std::collections::BTreeSet::from([addr]);
+        let current = std::collections::BTreeSet::new();
+
+        assert!(
+            super::clear_owned_ndp_proxy_entries("missing", &current, &mut applied, vec![addr],)
+                .is_none()
+        );
+        assert!(!applied.contains(&addr));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn test_ndp_proxy_runtime_forgets_entries_when_wan_interface_is_gone() {
+        let addr = "2001:db8:dead::123".parse::<std::net::Ipv6Addr>().unwrap();
+        let mut runtime = super::NdpProxyRuntime {
+            wan_iface: Some(test_iface_name("missing")),
+            applied: std::collections::BTreeSet::from([addr]),
+        };
+
+        assert!(runtime.clear_current_locked());
+        assert!(runtime.wan_iface.is_none());
+        assert!(runtime.applied.is_empty());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn test_ndp_proxy_runtime_finishes_cleanup_when_wan_interface_is_gone_after_disable() {
+        let addr = "2001:db8:dead::456".parse::<std::net::Ipv6Addr>().unwrap();
+        let global_ctx = test_global_ctx();
+        let mut runtime = super::NdpProxyRuntime {
+            wan_iface: Some(test_iface_name("missing")),
+            applied: std::collections::BTreeSet::from([addr]),
+        };
+
+        assert!(!runtime.reconcile(&global_ctx, &PublicIpv6ProviderRuntimeState::Disabled));
+        assert!(!runtime.cleanup_pending());
     }
 
     #[cfg(target_os = "linux")]
