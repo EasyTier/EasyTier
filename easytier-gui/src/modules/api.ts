@@ -9,7 +9,7 @@ export class GUIRemoteClient implements Api.RemoteClient {
         await backend.runNetworkInstance(config, save);
     }
     async get_network_info(inst_id: string): Promise<NetworkTypes.NetworkInstanceRunningInfo | undefined> {
-        return backend.collectNetworkInfo(inst_id).then(infos => infos.info.map[inst_id]);
+        return backend.collectNetworkInfo(inst_id).then(infos => infos.info?.map?.[inst_id]);
     }
     async list_network_instance_ids(): Promise<Api.ListNetworkInstanceIdResponse> {
         return backend.listNetworkInstanceIds();

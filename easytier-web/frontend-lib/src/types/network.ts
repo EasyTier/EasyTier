@@ -32,12 +32,32 @@ export type NetworkConfig = Omit<
   networking_method: NetworkingMethod | string
 }
 
+export type NormalizedAclV1 = AclV1 & {
+  group: GroupInfo
+}
+
 const UINT64_MAX = (1n << 64n) - 1n
 
 interface NetworkingConfigFields {
   peer_urls: string[]
   public_server_url?: string
   networking_method?: NetworkingMethod | string
+}
+
+function emptyGroupInfo(): GroupInfo {
+  return {
+    declares: [],
+    members: [],
+  }
+}
+
+function emptyAcl(): Acl {
+  return {
+    acl_v1: {
+      group: emptyGroupInfo(),
+      chains: [],
+    },
+  }
 }
 
 export function DEFAULT_NETWORK_CONFIG(): NetworkConfig {
@@ -110,20 +130,62 @@ export function DEFAULT_NETWORK_CONFIG(): NetworkConfig {
     enable_magic_dns: false,
     enable_private_mode: false,
     port_forwards: [],
-    acl: {
-      acl_v1: {
-        group: {
-          declares: [],
-          members: [],
-        },
-        chains: [],
-      },
-    },
+    acl: emptyAcl(),
   }
 }
 
 function cleanPeerUrls(urls: string[] | undefined): string[] {
   return (urls ?? []).map((url) => url.trim()).filter((url) => url.length > 0)
+}
+
+export function ensureAclRuleLists(rule: AclRule): AclRule {
+  rule.ports ??= []
+  rule.source_ips ??= []
+  rule.destination_ips ??= []
+  rule.source_ports ??= []
+  rule.source_groups ??= []
+  rule.destination_groups ??= []
+  return rule
+}
+
+export function ensureAclChain(chain: AclChain): AclChain {
+  chain.rules ??= []
+  chain.rules.forEach(ensureAclRuleLists)
+  return chain
+}
+
+export function ensureGroupInfo(group: GroupInfo): GroupInfo {
+  group.declares ??= []
+  group.members ??= []
+  return group
+}
+
+export function ensureAclV1(acl: Acl): NormalizedAclV1 {
+  acl.acl_v1 ??= { chains: [], group: emptyGroupInfo() }
+  acl.acl_v1.chains ??= []
+  acl.acl_v1.chains.forEach(ensureAclChain)
+  acl.acl_v1.group = ensureGroupInfo(acl.acl_v1.group ?? emptyGroupInfo())
+  return acl.acl_v1 as NormalizedAclV1
+}
+
+function normalizeAcl(acl: Acl | undefined): Acl {
+  const source = acl ?? emptyAcl()
+  const aclV1 = source.acl_v1 ?? { chains: [], group: emptyGroupInfo() }
+  return {
+    ...source,
+    acl_v1: {
+      ...aclV1,
+      chains: (aclV1.chains ?? []).map((chain) => ({
+        ...chain,
+        rules: (chain.rules ?? []).map((rule) => ({ ...ensureAclRuleLists({ ...rule }) })),
+      })),
+      group: ensureGroupInfo({
+        ...(aclV1.group ?? emptyGroupInfo()),
+        declares: aclV1.group?.declares ?? [],
+        members: aclV1.group?.members ?? [],
+      }),
+    },
+  }
 }
 
 function normalizeUint64ForInput(v: bigint | number | string | null | undefined): number | string | null {
@@ -186,6 +248,14 @@ export function normalizeNetworkConfig(config: NetworkConfig): NetworkConfig {
   normalized.instance_recv_bps_limit = normalizeUint64ForInput(
     normalized.instance_recv_bps_limit as any,
   )
+  normalized.proxy_cidrs ??= []
+  normalized.listener_urls ??= []
+  normalized.relay_network_whitelist ??= []
+  normalized.routes ??= []
+  normalized.exit_nodes ??= []
+  normalized.mapped_listeners ??= []
+  normalized.port_forwards ??= []
+  normalized.acl = normalizeAcl(normalized.acl)
 
   return normalized
 }

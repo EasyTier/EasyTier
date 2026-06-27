@@ -1,6 +1,5 @@
 <script setup lang="ts">
 import { useTimeAgo } from '@vueuse/core'
-import { IPv4 } from 'ip-num/IPNumber'
 import { NetworkInstance, type TunnelInfo, type NodeInfo, type PeerRoutePair } from '../types/network'
 import { useI18n } from 'vue-i18n';
 import { computed, onMounted, onUnmounted, ref } from 'vue';
@@ -173,7 +172,7 @@ function ipFormat(info: PeerRoutePair) {
   const ip = info.route.ipv4_addr
   if (typeof ip === 'string')
     return ip
-  return ip ? `${IPv4.fromNumber(ip.address.addr)}/${ip.network_length}` : ''
+  return ip ? ipv4InetToString(ip) : ''
 }
 
 function oneTunnelProto(tunnel?: TunnelInfo): string {
@@ -294,7 +293,7 @@ const myNodeInfoChips = computed(() => {
   const public_ip = my_node_info.ips?.public_ipv4
   if (public_ip) {
     chips.push({
-      label: `Public IP: ${IPv4.fromNumber(public_ip.addr)}`,
+      label: `Public IP: ${ipv4ToString(public_ip)}`,
       icon: '',
     } as Chip)
   }
@@ -354,6 +353,14 @@ function natType(info: PeerRoutePair): string {
     return udpNatTypeStrMap[udpNatType as NatType]
 
   return ''
+}
+
+function isPublicServerRoute(info: PeerRoutePair): boolean {
+  return info.route?.feature_flag?.is_public_server ?? false
+}
+
+function shouldAvoidRelayData(info: PeerRoutePair): boolean {
+  return info.route?.feature_flag?.avoid_relay_data ?? false
 }
 
 const peerCount = computed(() => {
@@ -502,16 +509,16 @@ function showEventLogs() {
             <Column :field="ipFormat" :header="t('virtual_ipv4')" />
             <Column :header="t('hostname')">
               <template #body="slotProps">
-                <div v-if="!slotProps.data.route.cost || !slotProps.data.route.feature_flag.is_public_server"
+                <div v-if="!slotProps.data.route.cost || !isPublicServerRoute(slotProps.data)"
                   v-tooltip="slotProps.data.route.hostname">
                   {{
                     slotProps.data.route.hostname }}
                 </div>
                 <div v-else v-tooltip="slotProps.data.route.hostname" class="space-x-1">
-                  <Tag v-if="slotProps.data.route.feature_flag.is_public_server" severity="info" value="Info">
+                  <Tag v-if="isPublicServerRoute(slotProps.data)" severity="info" value="Info">
                     {{ t('status.server') }}
                   </Tag>
-                  <Tag v-if="slotProps.data.route.feature_flag.avoid_relay_data" severity="warn" value="Warn">
+                  <Tag v-if="shouldAvoidRelayData(slotProps.data)" severity="warn" value="Warn">
                     {{ t('status.relay') }}
                   </Tag>
                 </div>
