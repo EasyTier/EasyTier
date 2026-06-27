@@ -39,7 +39,7 @@ function routeCost(info: any) {
   return '?'
 }
 
-function resolveObjPath(path: string, obj = globalThis, separator = '.') {
+function resolveObjPath(path: string, obj: any = globalThis, separator = '.') {
   const properties = Array.isArray(path) ? path : path.split(separator)
   return properties.reduce((prev, curr) => prev?.[curr], obj)
 }
@@ -59,10 +59,9 @@ function statsCommon(info: any, field: string): number | undefined {
   if (!info.peer)
     return undefined
 
-  const conns = info.peer.conns
   let sum = 0
   let hasValue = false
-  for (const conn of conns) {
+  for (const conn of peerConns(info)) {
     const value = numericValue(resolveObjPath(field, conn))
     if (value === undefined)
       continue
@@ -275,7 +274,7 @@ const myNodeInfoChips = computed(() => {
 
   // local ipv4s
   const local_ipv4s = my_node_info.ips?.interface_ipv4s
-  for (const [idx, ip] of local_ipv4s?.entries()) {
+  for (const [idx, ip] of local_ipv4s?.entries() ?? []) {
     chips.push({
       label: `Local IPv4 ${idx}: ${ipv4ToString(ip)}`,
       icon: '',
@@ -284,7 +283,7 @@ const myNodeInfoChips = computed(() => {
 
   // local ipv6s
   const local_ipv6s = my_node_info.ips?.interface_ipv6s
-  for (const [idx, ip] of local_ipv6s?.entries()) {
+  for (const [idx, ip] of local_ipv6s?.entries() ?? []) {
     chips.push({
       label: `Local IPv6 ${idx}: ${ipv6ToString(ip)}`,
       icon: '',
@@ -310,7 +309,7 @@ const myNodeInfoChips = computed(() => {
 
   // listeners:
   const listeners = my_node_info.listeners
-  for (const [idx, listener] of listeners?.entries()) {
+  for (const [idx, listener] of listeners?.entries() ?? []) {
     chips.push({
       label: `Listener ${idx}: ${listener.url}`,
       icon: '',
@@ -411,7 +410,7 @@ function showEventLogs() {
   if (!detail)
     return
 
-  dialogContent.value = detail.events.map((event: string) => JSON.parse(event))
+  dialogContent.value = detail.events?.map((event: string) => JSON.parse(event)) ?? []
   dialogHeader.value = 'event_log'
   dialogVisible.value = true
 }
