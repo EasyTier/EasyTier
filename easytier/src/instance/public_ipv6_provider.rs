@@ -61,7 +61,7 @@ fn read_public_ipv6_provider_config_snapshot(
 fn should_run_public_ipv6_provider_reconcile_task(
     config: PublicIpv6ProviderConfigSnapshot,
 ) -> bool {
-    config.provider_enabled && config.configured_prefix.is_none()
+    config.provider_enabled
 }
 
 pub(super) fn should_run_public_ipv6_provider_reconcile(global_ctx: &ArcGlobalCtx) -> bool {
@@ -289,27 +289,41 @@ fn detect_public_ipv6_prefix_from_routes(
 }
 
 #[cfg(target_os = "linux")]
-fn detect_public_ipv6_prefix_from_interfaces(
-    routes: &[DetectedIpv6Route],
-) -> Option<DetectedPublicIpv6Prefix> {
-    use std::collections::BTreeSet;
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct DetectedDefaultRouteIpv6Interface {
+    interface_name: String,
+    address: std::net::Ipv6Addr,
+    prefix: Ipv6Cidr,
+}
 
+#[cfg(target_os = "linux")]
+fn default_route_ifindices(routes: &[DetectedIpv6Route]) -> std::collections::BTreeSet<u32> {
+    routes
+        .iter()
+        .filter(|route| is_ipv6_default_route(route.dst) && route.kind == RouteType::Unicast)
+        .filter_map(|route| route.ifindex)
+        .collect()
+}
+
+#[cfg(target_os = "linux")]
+fn detect_default_route_ipv6_interfaces(
+    routes: &[DetectedIpv6Route],
+    max_prefix_len: u8,
+) -> Vec<DetectedDefaultRouteIpv6Interface> {
     use nix::ifaddrs::getifaddrs;
     use nix::sys::socket::SockaddrLike;
     use pnet::ipnetwork::ip_mask_to_prefix;
 
-    let wan_ifindices = routes
-        .iter()
-        .filter(|route| is_ipv6_default_route(route.dst) && route.kind == RouteType::Unicast)
-        .filter_map(|route| route.ifindex)
-        .collect::<BTreeSet<_>>();
+    let wan_ifindices = default_route_ifindices(routes);
     if wan_ifindices.is_empty() {
-        return None;
+        return Vec::new();
     }
 
-    let interfaces = getifaddrs().ok()?;
+    let Ok(interfaces) = getifaddrs() else {
+        return Vec::new();
+    };
 
-    let candidates: Vec<DetectedPublicIpv6Prefix> = interfaces
+    interfaces
         .filter_map(|iface| {
             let address = iface.address?;
             let netmask = iface.netmask?;
@@ -338,8 +352,7 @@ fn detect_public_ipv6_prefix_from_interfaces(
             let netmask_ip = netmask.as_sockaddr_in6()?.ip();
             let prefix_len = ip_mask_to_prefix(std::net::IpAddr::V6(netmask_ip)).ok()?;
 
-            // ISP-assigned prefixes are /64 or shorter; /128 is a single host address
-            if prefix_len > 64 {
+            if prefix_len > max_prefix_len {
                 return None;
             }
 
@@ -351,29 +364,85 @@ fn detect_public_ipv6_prefix_from_interfaces(
                 .ok()
                 .map(|inet| inet.network())?;
 
-            Some(DetectedPublicIpv6Prefix {
+            Some(DetectedDefaultRouteIpv6Interface {
+                interface_name: iface.interface_name,
+                address: ipv6_addr,
                 prefix: cidr,
-                ndp_proxy: Some(NdpProxyTarget {
-                    wan_iface: iface.interface_name,
-                }),
             })
         })
-        .collect();
+        .collect()
+}
+
+#[cfg(target_os = "linux")]
+fn detect_public_ipv6_prefix_from_interfaces(
+    routes: &[DetectedIpv6Route],
+) -> Option<DetectedPublicIpv6Prefix> {
+    let candidates = detect_default_route_ipv6_interfaces(routes, 64);
 
     // prefer the shortest prefix (widest scope)
     candidates
         .into_iter()
+        .map(|iface| DetectedPublicIpv6Prefix {
+            prefix: iface.prefix,
+            ndp_proxy: Some(NdpProxyTarget {
+                wan_iface: iface.interface_name,
+            }),
+        })
         .min_by_key(|detected| detected.prefix.network_length())
 }
 
 #[cfg(target_os = "linux")]
-async fn detect_public_ipv6_prefix_linux() -> Result<Option<DetectedPublicIpv6Prefix>, Error> {
+fn ipv6_cidr_contains_cidr(outer: Ipv6Cidr, inner: Ipv6Cidr) -> bool {
+    outer.contains(&inner.first_address()) && outer.contains(&inner.last_address())
+}
+
+#[cfg(target_os = "linux")]
+fn detect_configured_prefix_ndp_proxy_target(
+    routes: &[DetectedIpv6Route],
+    prefix: Ipv6Cidr,
+) -> Option<NdpProxyTarget> {
+    let wan_ifindices = default_route_ifindices(routes);
+    if wan_ifindices.is_empty() {
+        return None;
+    }
+
+    let loopback_ifindex = get_interface_index("lo").ok();
+    let routed = routes.iter().any(|route| {
+        route.dst == Some(prefix)
+            && route.kind == RouteType::Unicast
+            && route.ifindex.is_some_and(|ifindex| {
+                !wan_ifindices.contains(&ifindex) && Some(ifindex) != loopback_ifindex
+            })
+    });
+    if routed {
+        return None;
+    }
+
+    detect_default_route_ipv6_interfaces(routes, 128)
+        .into_iter()
+        .filter(|iface| {
+            ipv6_cidr_contains_cidr(iface.prefix, prefix)
+                || (iface.prefix.network_length() == 128 && prefix.contains(&iface.address))
+        })
+        .min_by_key(|iface| iface.prefix.network_length())
+        .map(|iface| NdpProxyTarget {
+            wan_iface: iface.interface_name,
+        })
+}
+
+#[cfg(target_os = "linux")]
+fn list_detected_ipv6_routes() -> Result<Vec<DetectedIpv6Route>, Error> {
     let routes = list_ipv6_route_messages().with_context(|| "failed to query linux ipv6 routes")?;
-    let routes = routes
+    routes
         .iter()
         .cloned()
         .map(DetectedIpv6Route::try_from)
-        .collect::<Result<Vec<_>, _>>()?;
+        .collect::<Result<Vec<_>, _>>()
+}
+
+#[cfg(target_os = "linux")]
+async fn detect_public_ipv6_prefix_linux() -> Result<Option<DetectedPublicIpv6Prefix>, Error> {
+    let routes = list_detected_ipv6_routes()?;
     let loopback_ifindex =
         get_interface_index("lo").with_context(|| "failed to resolve linux loopback ifindex")?;
 
@@ -428,7 +497,18 @@ async fn resolve_public_ipv6_provider_runtime_state_linux(
         if !is_global_routable_public_ipv6_prefix(prefix) {
             return invalid_public_ipv6_prefix_state(prefix, "configured");
         }
-        return active_public_ipv6_provider_state(prefix, None);
+        let ndp_proxy = match list_detected_ipv6_routes() {
+            Ok(routes) => detect_configured_prefix_ndp_proxy_target(&routes, prefix),
+            Err(err) => {
+                tracing::warn!(
+                    prefix = %prefix,
+                    ?err,
+                    "failed to detect NDP proxy target for configured public IPv6 prefix"
+                );
+                None
+            }
+        };
+        return active_public_ipv6_provider_state(prefix, ndp_proxy);
     }
 
     match detect_public_ipv6_prefix_linux().await {
@@ -784,10 +864,14 @@ fn sync_ndp_proxy_entries(
     let wanted = collect_public_ipv6_tun_routes(tun_iface, prefix)?;
     let current = list_ipv6_ndp_proxy(wan_iface)?;
 
+    let mut first_err = None;
     for addr in wanted.difference(&current) {
-        add_ipv6_ndp_proxy(wan_iface, *addr)?;
-        applied.insert(*addr);
-        tracing::debug!(wan_iface = %wan_iface, addr = %addr, "added NDP proxy entry");
+        if let Err(err) = add_ipv6_ndp_proxy(wan_iface, *addr) {
+            first_err.get_or_insert(err);
+        } else {
+            applied.insert(*addr);
+            tracing::debug!(wan_iface = %wan_iface, addr = %addr, "added NDP proxy entry");
+        }
     }
 
     let stale = applied.difference(&wanted).copied().collect::<Vec<_>>();
@@ -801,7 +885,7 @@ fn sync_ndp_proxy_entries(
             "synced stale NDP proxy entries"
         );
     }
-    if let Some(err) = stale_cleanup_err {
+    if let Some(err) = first_err.or(stale_cleanup_err) {
         return Err(err);
     }
 
@@ -1240,14 +1324,14 @@ mod tests {
     }
 
     #[test]
-    fn test_reconcile_task_only_runs_for_auto_detect_provider() {
+    fn test_reconcile_task_runs_when_provider_enabled() {
         assert!(!should_run_public_ipv6_provider_reconcile_task(
             PublicIpv6ProviderConfigSnapshot {
                 provider_enabled: false,
                 configured_prefix: None,
             }
         ));
-        assert!(!should_run_public_ipv6_provider_reconcile_task(
+        assert!(should_run_public_ipv6_provider_reconcile_task(
             PublicIpv6ProviderConfigSnapshot {
                 provider_enabled: true,
                 configured_prefix: Some("2001:db8::/48".parse().unwrap()),
@@ -1429,6 +1513,43 @@ mod tests {
         let detected = detect_public_ipv6_prefix_linux().await.unwrap().unwrap();
         assert_eq!(detected.prefix, "2001:db8:bbbb::/48".parse().unwrap());
         assert_eq!(detected.ndp_proxy.unwrap().wan_iface, wan_if);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[serial_test::serial]
+    #[tokio::test]
+    async fn test_configured_prefix_on_default_iface_gets_ndp_proxy_target() {
+        let wan_if = test_iface_name("cp");
+        let _wan = ScopedDummyLink::new(&wan_if);
+        let configured_prefix = "2001:db8:feed::/64".parse().unwrap();
+
+        run_ip(&["-6", "addr", "add", "2001:db8:feed::1/128", "dev", &wan_if]);
+
+        let ifindex = crate::common::ifcfg::get_interface_index(&wan_if).unwrap();
+        let routes = vec![route(None, None, Some(ifindex), RouteType::Unicast)];
+
+        let target = super::detect_configured_prefix_ndp_proxy_target(&routes, configured_prefix)
+            .expect("configured on-link prefix should require NDP proxy");
+        assert_eq!(target.wan_iface, wan_if);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[serial_test::serial]
+    #[tokio::test]
+    async fn test_configured_prefix_broader_than_default_iface_does_not_get_ndp_proxy_target() {
+        let wan_if = test_iface_name("cb");
+        let _wan = ScopedDummyLink::new(&wan_if);
+        let configured_prefix = "2001:db8:beef::/48".parse().unwrap();
+
+        run_ip(&["-6", "addr", "add", "2001:db8:beef:1::1/64", "dev", &wan_if]);
+
+        let ifindex = crate::common::ifcfg::get_interface_index(&wan_if).unwrap();
+        let routes = vec![route(None, None, Some(ifindex), RouteType::Unicast)];
+
+        assert_eq!(
+            super::detect_configured_prefix_ndp_proxy_target(&routes, configured_prefix),
+            None
+        );
     }
 
     #[cfg(target_os = "linux")]
