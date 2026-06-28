@@ -22,7 +22,6 @@ pub mod machine_id;
 pub mod netns;
 pub mod network;
 pub mod os_info;
-pub mod sharded_counter;
 pub mod stats_manager;
 pub mod stun;
 pub mod stun_codec_ext;

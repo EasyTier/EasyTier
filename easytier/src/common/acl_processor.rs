@@ -3,8 +3,7 @@ use std::{
     net::{IpAddr, SocketAddr},
     str::FromStr as _,
     sync::Arc,
-    sync::atomic::{AtomicU64, Ordering::Relaxed},
-    time::Duration,
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use hotpath::instant::Instant;
@@ -77,41 +76,7 @@ pub struct FastLookupRule {
     pub stateful: bool,
     pub rate_limit: u32,
     pub burst_limit: u32,
-    pub rule_stats: Arc<RuleStatsTracker>,
-}
-
-#[derive(Debug)]
-pub struct RuleStatsTracker {
-    rule: Option<Rule>,
-    packets: AtomicU64,
-    bytes: AtomicU64,
-}
-
-impl RuleStatsTracker {
-    fn new(rule: Option<Rule>) -> Self {
-        Self {
-            rule,
-            packets: AtomicU64::new(0),
-            bytes: AtomicU64::new(0),
-        }
-    }
-
-    #[inline]
-    #[cfg_attr(feature = "hotpath", hotpath::measure(impl_type = "RuleStatsTracker"))]
-    fn increment(&self, packet_size: usize) {
-        self.packets.fetch_add(1, Relaxed);
-        self.bytes.fetch_add(packet_size as u64, Relaxed);
-    }
-
-    fn snapshot(&self) -> RuleStats {
-        RuleStats {
-            rule: self.rule.clone(),
-            stat: Some(StatItem {
-                packet_count: self.packets.load(Relaxed),
-                byte_count: self.bytes.load(Relaxed),
-            }),
-        }
-    }
+    pub rule_stats: Arc<RuleStats>,
 }
 
 // Cache key combining packet info and chain type
@@ -143,17 +108,17 @@ impl AclCacheKey {
 }
 
 // Cache entry with timestamp for LRU cleanup
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(crate) struct AclCacheEntry {
     pub action: Action,
     pub matched_rule: RuleId,
-    pub last_access: AtomicU64,
+    pub last_access: Instant,
     // New fields to track rule characteristics for proper cache behavior
     pub conn_track_key: Option<String>,
     pub rate_limit_keys: Vec<RateLimitKey>,
     pub chain_type: ChainType,
     pub acl_result: Option<AclResult>,
-    pub rule_stats_vec: Vec<Arc<RuleStatsTracker>>,
+    pub rule_stats_vec: Vec<Arc<RuleStats>>,
 }
 
 // Packet info extracted for ACL processing
@@ -246,7 +211,7 @@ pub struct AclProcessor {
     default_outbound_action: Action,
     default_forward_action: Action,
 
-    default_rule_stats: Arc<RuleStatsTracker>,
+    default_rule_stats: Arc<RuleStats>,
 
     // Connection tracking table - shared across different processor instances if needed
     conn_track: Arc<DashMap<String, ConnTrackEntry>>,
@@ -258,13 +223,6 @@ pub struct AclProcessor {
     rule_cache: Arc<DashMap<AclCacheKey, AclCacheEntry>>,
     cache_max_size: usize,
     cache_cleanup_interval: Duration,
-
-    // Coarse monotonic timestamp updated by the cleanup task, used to avoid
-    // calling Instant::now() on every cache hit.
-    coarse_millis: Arc<AtomicU64>,
-
-    // Hot-path counters that bypass the DashMap stats table
-    cache_hits: AtomicU64,
 
     // Statistics
     stats: Arc<DashMap<AclStatKey, u64>>,
@@ -301,14 +259,18 @@ impl AclProcessor {
             default_outbound_action,
             default_forward_action,
 
-            default_rule_stats: Arc::new(RuleStatsTracker::new(None)),
+            default_rule_stats: Arc::new(RuleStats {
+                rule: None,
+                stat: Some(StatItem {
+                    packet_count: 0,
+                    byte_count: 0,
+                }),
+            }),
             conn_track: conn_track.unwrap_or_else(|| Arc::new(DashMap::new())),
             rate_limiters: rate_limiters.unwrap_or_else(|| Arc::new(DashMap::new())),
             rule_cache: Arc::new(DashMap::new()), // Always start with fresh cache
             cache_max_size: 1024,                 // Limit cache to 1k entries
             cache_cleanup_interval: Duration::from_secs(20), // Cleanup every 5 minutes
-            coarse_millis: Arc::new(AtomicU64::new(0)),
-            cache_hits: AtomicU64::new(0),
             stats: stats.unwrap_or_else(|| Arc::new(DashMap::new())),
             tasks,
         };
@@ -412,14 +374,11 @@ impl AclProcessor {
         let rule_cache = self.rule_cache.clone();
         let cache_max_size = self.cache_max_size;
         let cleanup_interval = self.cache_cleanup_interval;
-        let coarse_millis = self.coarse_millis.clone();
 
         self.tasks.spawn(async move {
             let mut interval = tokio::time::interval(cleanup_interval);
             loop {
                 interval.tick().await;
-                let now = crate::common::stats_manager::now_monotonic_millis();
-                coarse_millis.store(now, Relaxed);
                 Self::cleanup_cache(&rule_cache, cache_max_size);
                 rule_cache.shrink_to_fit();
 
@@ -442,9 +401,10 @@ impl AclProcessor {
     /// Clean up cache using LRU strategy
     fn cleanup_cache(cache: &DashMap<AclCacheKey, AclCacheEntry>, max_size: usize) {
         // remove cache not be used in last 15 second
-        let now = crate::common::stats_manager::now_monotonic_millis();
-        let cutoff = now.saturating_sub(15_000);
-        cache.retain(|_, entry| entry.last_access.load(Relaxed) > cutoff);
+        let expired_timepoint = Instant::now()
+            .checked_sub(Duration::from_secs(15))
+            .unwrap_or(Instant::now());
+        cache.retain(|_, entry| entry.last_access > expired_timepoint);
 
         let current_size = cache.len();
         if current_size <= max_size {
@@ -452,9 +412,9 @@ impl AclProcessor {
         }
 
         // Remove oldest entries (LRU cleanup)
-        let mut entries: Vec<(AclCacheKey, u64)> = cache
+        let mut entries: Vec<(AclCacheKey, Instant)> = cache
             .iter()
-            .map(|entry| (entry.key().clone(), entry.value().last_access.load(Relaxed)))
+            .map(|entry| (entry.key().clone(), entry.value().last_access))
             .collect();
 
         // Sort by last_access (oldest first)
@@ -473,7 +433,6 @@ impl AclProcessor {
         );
     }
 
-    #[cfg_attr(feature = "hotpath", hotpath::measure(impl_type = "AclProcessor"))]
     pub(crate) fn process_packet_with_cache_entry(
         &self,
         packet_info: &PacketInfo,
@@ -500,41 +459,42 @@ impl AclProcessor {
         cache_entry.acl_result.clone().unwrap()
     }
 
-    #[cfg_attr(feature = "hotpath", hotpath::measure(impl_type = "AclProcessor"))]
     fn inc_cache_entry_stats(&self, cache_entry: &AclCacheEntry, packet_info: &PacketInfo) {
         for rule_stats in cache_entry.rule_stats_vec.iter() {
-            rule_stats.increment(packet_info.packet_size);
+            // Use unsafe code to mutate the contents behind the Arc
+            let stat_ptr = rule_stats.stat.as_ref().unwrap() as *const StatItem as *mut StatItem;
+            unsafe {
+                (*stat_ptr).packet_count += 1;
+                (*stat_ptr).byte_count += packet_info.packet_size as u64;
+            }
         }
     }
 
     pub fn get_rules_stats(&self) -> Vec<RuleStats> {
         let mut stats: Vec<RuleStats> = Vec::new();
         for rule in self.inbound_rules.iter() {
-            stats.push(rule.rule_stats.snapshot());
+            stats.push((*rule.rule_stats).clone());
         }
         for rule in self.outbound_rules.iter() {
-            stats.push(rule.rule_stats.snapshot());
+            stats.push((*rule.rule_stats).clone());
         }
         for rule in self.forward_rules.iter() {
-            stats.push(rule.rule_stats.snapshot());
+            stats.push((*rule.rule_stats).clone());
         }
         stats
     }
 
     /// Process a packet through ACL rules - Now lock-free!
-    #[cfg_attr(feature = "hotpath", hotpath::measure(impl_type = "AclProcessor"))]
     pub fn process_packet(&self, packet_info: &PacketInfo, chain_type: ChainType) -> AclResult {
         // Check cache first for performance
         let cache_key = AclCacheKey::from_packet_info(packet_info, chain_type);
 
-        // If cache hit and can skip checks, return cached result.
-        // Use get() (read lock) instead of get_mut() (write lock) and update
-        // last_access via AtomicU64, avoiding expensive Instant::now().
-        if let Some(cached) = self.rule_cache.get(&cache_key) {
-            cached
-                .last_access
-                .store(self.coarse_millis.load(Relaxed), Relaxed);
-            self.cache_hits.fetch_add(1, Relaxed);
+        // If cache hit and can skip checks, return cached result
+        if let Some(mut cached) = self.rule_cache.get_mut(&cache_key) {
+            // Update last access time for LRU
+            cached.last_access = Instant::now();
+
+            self.increment_stat(AclStatKey::CacheHits);
             return self.process_packet_with_cache_entry(packet_info, &cached);
         }
 
@@ -556,7 +516,7 @@ impl AclProcessor {
         let mut cache_entry = AclCacheEntry {
             action: Action::Allow,
             matched_rule: RuleId::Default,
-            last_access: AtomicU64::new(self.coarse_millis.load(Relaxed)),
+            last_access: Instant::now(),
             conn_track_key: None,
             rate_limit_keys: vec![],
             chain_type,
@@ -621,9 +581,8 @@ impl AclProcessor {
             // Cache the result with rule info
             self.increment_stat(AclStatKey::RuleMatches);
             self.inc_cache_entry_stats(&cache_entry, packet_info);
-            let result = cache_entry.acl_result.clone().unwrap();
-            self.cache_result(&cache_key, cache_entry);
-            return result;
+            self.cache_result(&cache_key, cache_entry.clone());
+            return cache_entry.acl_result.clone().unwrap();
         }
 
         let default_action = match chain_type {
@@ -659,9 +618,8 @@ impl AclProcessor {
 
         // Cache the default result (no rule info)
         self.inc_cache_entry_stats(&cache_entry, packet_info);
-        let result = cache_entry.acl_result.clone().unwrap();
-        self.cache_result(&cache_key, cache_entry);
-        result
+        self.cache_result(&cache_key, cache_entry.clone());
+        cache_entry.acl_result.clone().unwrap()
     }
 
     /// Get shared state for preserving across hot reloads
@@ -785,11 +743,13 @@ impl AclProcessor {
 
     /// Check connection state for stateful rules
     fn check_connection_state(&self, conn_track_key: &str, packet_info: &PacketInfo) {
-        let now = current_unix_secs();
         self.conn_track
             .entry(conn_track_key.to_string())
             .and_modify(|x| {
-                x.last_seen = now;
+                x.last_seen = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap()
+                    .as_secs();
                 x.packet_count += 1;
                 x.byte_count += packet_info.packet_size as u64;
                 x.state = ConnState::Established as i32;
@@ -803,8 +763,14 @@ impl AclProcessor {
                 ),
                 protocol: packet_info.protocol as i32,
                 state: ConnState::New as i32,
-                created_at: now,
-                last_seen: now,
+                created_at: SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap()
+                    .as_secs(),
+                last_seen: SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap()
+                    .as_secs(),
                 packet_count: 1,
                 byte_count: packet_info.packet_size as u64,
             });
@@ -896,7 +862,13 @@ impl AclProcessor {
             stateful: rule.stateful,
             rate_limit: rule.rate_limit,
             burst_limit: rule.burst_limit,
-            rule_stats: Arc::new(RuleStatsTracker::new(Some(rule.clone()))),
+            rule_stats: Arc::new(RuleStats {
+                rule: Some(rule.clone()),
+                stat: Some(StatItem {
+                    packet_count: 0,
+                    byte_count: 0,
+                }),
+            }),
         }
     }
 
@@ -922,10 +894,6 @@ impl AclProcessor {
             .collect::<HashMap<_, _>>();
 
         // Add cache statistics using enum keys
-        stats.insert(
-            AclStatKey::CacheHits.as_str(),
-            self.cache_hits.load(Relaxed),
-        );
         stats.insert(AclStatKey::CacheSize.as_str(), self.rule_cache.len() as u64);
         stats.insert(
             AclStatKey::CacheMaxSize.as_str(),
@@ -940,11 +908,14 @@ impl AclProcessor {
         conn_track: Arc<DashMap<String, ConnTrackEntry>>,
         timeout_secs: u64,
     ) {
-        let current_time = current_unix_secs();
+        let current_time = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
         let keys_to_remove: Vec<String> = conn_track
             .iter()
             .filter_map(|entry| {
-                if current_time.saturating_sub(entry.last_seen) > timeout_secs {
+                if current_time - entry.last_seen > timeout_secs {
                     Some(entry.key().clone())
                 } else {
                     None
@@ -959,7 +930,11 @@ impl AclProcessor {
 
     /// Get cache hit rate
     pub fn get_cache_hit_rate(&self) -> f64 {
-        let cache_hits = self.cache_hits.load(Relaxed);
+        let cache_hits = self
+            .stats
+            .get(&AclStatKey::CacheHits)
+            .map(|v| *v.value())
+            .unwrap_or(0);
         let total_requests = cache_hits
             + self
                 .stats
@@ -973,13 +948,6 @@ impl AclProcessor {
             cache_hits as f64 / total_requests as f64
         }
     }
-}
-
-fn current_unix_secs() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_secs()
 }
 
 // 新增辅助函数
