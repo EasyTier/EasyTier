@@ -85,12 +85,29 @@ async fn main() {
     let pm = inst_a.get_peer_manager();
     let send_pkt = make_data_packet(src, "10.144.144.2", pkt_size);
 
+    let pipeline_depth: usize = std::env::var("HOTPATH_PIPELINE")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(1);
+
+    println!(
+        "cpu_hotspot_ring: pipeline_depth={}",
+        pipeline_depth
+    );
+
     let sender_task = tokio::spawn(async move {
+        use futures::stream::{FuturesUnordered, StreamExt};
+
         let mut sent: u64 = 0;
         let start = Instant::now();
+        let mut in_flight = FuturesUnordered::new();
+
         loop {
-            let pkt = send_pkt.clone();
-            let _ = pm.send_msg_by_ip(pkt, dst, false).await;
+            while in_flight.len() < pipeline_depth {
+                let pkt = send_pkt.clone();
+                in_flight.push(pm.send_msg_by_ip(pkt, dst, false));
+            }
+            in_flight.next().await;
             sent += 1;
             if sent % 10000 == 0 {
                 let elapsed = start.elapsed().as_secs_f64();
