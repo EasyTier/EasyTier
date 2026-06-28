@@ -6,9 +6,11 @@ use std::{
 };
 
 use anyhow::Context;
+use ariadne::{CharSet, Config as AriadneConfig, IndexType, Label, Report, ReportKind, Source};
 use base64::{Engine as _, prelude::BASE64_STANDARD};
 use clap::ValueEnum;
 use clap::builder::PossibleValue;
+use prost_reflect::{DynamicMessage, ReflectMessage, SerializeOptions};
 use serde::{Deserialize, Serialize};
 use strum::{Display, EnumString, VariantArray};
 use tokio::io::AsyncReadExt as _;
@@ -75,6 +77,54 @@ pub fn gen_default_flags() -> Flags {
         enable_udp_broadcast_relay: false,
         socket_mark: None,
     }
+}
+
+fn flags_to_dynamic_message(flags: &Flags) -> DynamicMessage {
+    let mut message = DynamicMessage::new(flags.descriptor());
+    message
+        .transcode_from(flags)
+        .expect("FlagsInConfig should transcode to DynamicMessage");
+    message
+}
+
+fn flags_to_full_json_map(flags: &DynamicMessage) -> serde_json::Map<String, serde_json::Value> {
+    let options = SerializeOptions::new()
+        .use_proto_field_name(true)
+        .skip_default_fields(false);
+
+    match flags
+        .serialize_with_options(serde_json::value::Serializer, &options)
+        .expect("FlagsInConfig should serialize to JSON")
+    {
+        serde_json::Value::Object(map) => map,
+        _ => unreachable!("FlagsInConfig should serialize to a JSON object"),
+    }
+}
+
+fn flags_diff_from_default(flags: &Flags) -> serde_json::Map<String, serde_json::Value> {
+    let default_flags = gen_default_flags();
+    let default_message = flags_to_dynamic_message(&default_flags);
+    let current_message = flags_to_dynamic_message(flags);
+    let default_map = flags_to_full_json_map(&default_message);
+    let current_map = flags_to_full_json_map(&current_message);
+
+    current_message
+        .descriptor()
+        .fields()
+        .filter_map(|field| {
+            let key = field.name();
+            let value_changed = default_map.get(key) != current_map.get(key);
+            let presence_changed =
+                default_message.has_field(&field) != current_message.has_field(&field);
+            if value_changed || presence_changed {
+                current_map
+                    .get(key)
+                    .map(|value| (key.to_string(), value.clone()))
+            } else {
+                None
+            }
+        })
+        .collect()
 }
 
 fn mapped_listener_allows_implicit_port(url: &url::Url) -> bool {
@@ -569,6 +619,35 @@ struct Config {
     source: Option<ConfigSourceConfig>,
 }
 
+fn format_toml_parse_error(source_name: &str, config_str: &str, error: &toml::de::Error) -> String {
+    let message = format!("failed to parse config TOML from {source_name}");
+
+    let Some(span) = error.span() else {
+        return format!("{message}\ndetail: {error}");
+    };
+
+    let mut output = Vec::new();
+    let report = Report::build(ReportKind::Error, (source_name, span.clone()))
+        .with_config(
+            AriadneConfig::default()
+                .with_color(false)
+                .with_char_set(CharSet::Ascii)
+                .with_index_type(IndexType::Byte),
+        )
+        .with_message(&message)
+        .with_label(Label::new((source_name, span)).with_message(error.message()))
+        .finish();
+
+    if report
+        .write((source_name, Source::from(config_str)), &mut output)
+        .is_ok()
+    {
+        String::from_utf8_lossy(&output).into_owned()
+    } else {
+        format!("{message}\ndetail: {error}")
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct TomlConfigLoader {
     config: Arc<Mutex<Config>>,
@@ -591,11 +670,35 @@ impl TomlConfigLoader {
     }
 
     pub fn new_from_str(config_str: &str) -> Result<Self, anyhow::Error> {
-        let mut config = toml::de::from_str::<Config>(config_str)
-            .with_context(|| format!("failed to parse config file: {}", config_str))?;
+        Self::new_from_str_with_source("inline config", config_str)
+    }
+
+    pub fn new(config_path: &PathBuf) -> Result<Self, anyhow::Error> {
+        let config_str = std::fs::read_to_string(config_path)
+            .with_context(|| format!("failed to read config file: {}", config_path.display()))?;
+
+        let source_name = config_path.display().to_string();
+        Self::new_from_str_with_source(&source_name, &config_str)
+    }
+
+    pub(crate) fn new_from_str_with_source(
+        source_name: &str,
+        config_str: &str,
+    ) -> Result<Self, anyhow::Error> {
+        let mut config = toml::de::from_str::<Config>(config_str).map_err(|err| {
+            let message = format_toml_parse_error(source_name, config_str, &err);
+            anyhow::Error::new(err).context(message)
+        })?;
 
         Self::normalize_config_source(&mut config);
 
+        Self::new_from_config(config).map_err(|err| {
+            let message = format!("failed to load config from {source_name}: {err}");
+            err.context(message)
+        })
+    }
+
+    fn new_from_config(mut config: Config) -> Result<Self, anyhow::Error> {
         config.flags_struct = Some(
             Self::gen_flags(config.flags.clone().unwrap_or_default())
                 .context("failed to parse flags")?,
@@ -629,14 +732,6 @@ impl TomlConfigLoader {
         }
 
         Ok(config)
-    }
-
-    pub fn new(config_path: &PathBuf) -> Result<Self, anyhow::Error> {
-        let config_str = std::fs::read_to_string(config_path)
-            .with_context(|| format!("failed to read config file: {:?}", config_path))?;
-        let ret = Self::new_from_str(&config_str)?;
-
-        Ok(ret)
     }
 
     fn gen_flags(
@@ -1047,28 +1142,9 @@ impl ConfigLoader for TomlConfigLoader {
     }
 
     fn dump(&self) -> String {
-        let default_flags_json = serde_json::to_string(&gen_default_flags()).unwrap();
-        let default_flags_hashmap =
-            serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(&default_flags_json)
-                .unwrap();
-
-        let cur_flags_json = serde_json::to_string(&self.get_flags()).unwrap();
-        let cur_flags_hashmap =
-            serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(&cur_flags_json)
-                .unwrap();
-
-        let mut flag_map: serde_json::Map<String, serde_json::Value> = Default::default();
-        for (key, value) in default_flags_hashmap {
-            if let Some(v) = cur_flags_hashmap.get(&key)
-                && *v != value
-            {
-                flag_map.insert(key, v.clone());
-            }
-        }
-
         let mut config = self.config.lock().unwrap().clone();
         Self::normalize_config_source(&mut config);
-        config.flags = Some(flag_map);
+        config.flags = Some(flags_diff_from_default(&self.get_flags()));
         if config.stun_servers == Some(StunInfoCollector::get_default_servers()) {
             config.stun_servers = None;
         }
@@ -1204,13 +1280,13 @@ pub async fn load_config_from_file(
             .read_to_string(&mut stdin)
             .await
             .context("failed to read config from stdin")?;
-        let config = TomlConfigLoader::new_from_str(&stdin)?;
+        let config = TomlConfigLoader::new_from_str_with_source("stdin", &stdin)?;
         return Ok((config, ConfigFileControl::STATIC_CONFIG));
     }
 
     let config_str = tokio::fs::read_to_string(config_file)
         .await
-        .with_context(|| format!("failed to read config file: {:?}", config_file))?;
+        .with_context(|| format!("failed to read config file: {}", config_file.display()))?;
 
     let (expanded_config_str, uses_env_vars) = if disable_env_parsing {
         (config_str.clone(), false)
@@ -1232,8 +1308,8 @@ pub async fn load_config_from_file(
         );
     }
 
-    let config = TomlConfigLoader::new_from_str(&expanded_config_str)
-        .with_context(|| format!("failed to load config file: {:?}", config_file))?;
+    let source_name = config_file.display().to_string();
+    let config = TomlConfigLoader::new_from_str_with_source(&source_name, &expanded_config_str)?;
 
     let mut control = ConfigFileControl::from_path(config_file.clone()).await;
 
@@ -1272,6 +1348,96 @@ pub mod tests {
     use std::io::Write;
     use std::path::PathBuf;
     use tempfile::NamedTempFile;
+
+    #[test]
+    fn invalid_toml_error_includes_location_and_source_line() {
+        let error = TomlConfigLoader::new_from_str("dhcp = \"yes\"").unwrap_err();
+        let display = error.to_string();
+
+        assert!(display.contains("failed to parse config TOML"));
+        assert!(display.contains("inline config"));
+        assert!(display.contains("dhcp = \"yes\""));
+        assert!(display.contains("^"));
+        assert!(display.contains("invalid type: string"));
+        assert!(!display.contains("<unknown>"));
+        assert!(
+            error
+                .chain()
+                .any(|err| err.downcast_ref::<toml::de::Error>().is_some())
+        );
+    }
+
+    #[test]
+    fn invalid_file_toml_error_includes_config_source() {
+        let mut config_file = NamedTempFile::new().unwrap();
+        writeln!(config_file, "dhcp = \"yes\"").unwrap();
+
+        let error = TomlConfigLoader::new(&config_file.path().to_path_buf()).unwrap_err();
+        let error = error.to_string();
+
+        assert!(error.contains(config_file.path().to_string_lossy().as_ref()));
+        assert!(error.contains("failed to parse config TOML"));
+        assert!(error.contains("dhcp = \"yes\""));
+        assert!(error.contains("^"));
+        assert!(error.contains("invalid type: string"));
+        assert!(!error.contains("<unknown>"));
+    }
+
+    #[test]
+    fn invalid_stdin_toml_error_includes_config_source_in_display() {
+        let error = TomlConfigLoader::new_from_str_with_source("stdin", "dhcp = \"yes\"")
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("stdin"));
+        assert!(error.contains("failed to parse config TOML"));
+        assert!(error.contains("dhcp = \"yes\""));
+        assert!(error.contains("^"));
+        assert!(error.contains("invalid type: string"));
+        assert!(!error.contains("<unknown>"));
+    }
+
+    #[test]
+    fn invalid_toml_error_handles_non_ascii_before_error() {
+        let error = TomlConfigLoader::new_from_str("hostname = \"节点\"\ndhcp = \"yes\"")
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("dhcp = \"yes\""));
+        assert!(error.contains("^"));
+        assert!(error.contains("invalid type: string"));
+    }
+
+    #[test]
+    fn invalid_toml_error_handles_non_ascii_before_error_on_same_line() {
+        let error = TomlConfigLoader::new_from_str("hostname = \"节点\" dhcp = \"yes\"")
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("failed to parse config TOML"));
+        assert!(error.contains("inline config:1:"));
+        assert!(error.contains("hostname = \"节点\" dhcp = \"yes\""));
+        assert!(error.contains("expected newline"));
+        assert!(!error.contains("<unknown>"));
+    }
+
+    #[test]
+    fn invalid_file_flags_error_includes_config_source_in_display() {
+        let mut config_file = NamedTempFile::new().unwrap();
+        writeln!(config_file, "[flags]").unwrap();
+        writeln!(config_file, "socket_mark = \"bad\"").unwrap();
+
+        let error = TomlConfigLoader::new(&config_file.path().to_path_buf()).unwrap_err();
+
+        let display = error.to_string();
+        assert!(display.contains(config_file.path().to_string_lossy().as_ref()));
+        assert!(display.contains("failed to load config"));
+        assert!(display.contains("failed to parse flags"));
+
+        // with_context preserves the cause chain so callers can inspect the root reason.
+        let chain: Vec<String> = error.chain().map(|e| e.to_string()).collect();
+        assert!(chain.iter().any(|m| m.contains("failed to parse flags")));
+    }
 
     #[test]
     fn socket_mark_config_file_roundtrip_none_some_and_zero() {
@@ -1322,6 +1488,49 @@ socket_mark = 66
             ..cfg.get_flags()
         });
         assert_eq!(cfg.get_flags().socket_mark, None);
+    }
+
+    #[test]
+    fn dump_preserves_flags_that_differ_from_easytier_defaults() {
+        let cfg = TomlConfigLoader::default();
+        let mut flags = gen_default_flags();
+        flags.dev_name = "et_test".to_string();
+        flags.enable_quic_proxy = true;
+        flags.disable_tcp_hole_punching = true;
+        flags.disable_sym_hole_punching = true;
+        flags.multi_thread = false;
+        flags.bind_device = false;
+        flags.enable_ipv6 = false;
+        flags.relay_network_whitelist = "".to_string();
+        flags.mtu = 0;
+        flags.socket_mark = Some(0);
+        cfg.set_flags(flags);
+
+        let dumped = cfg.dump();
+
+        assert!(dumped.contains("dev_name = \"et_test\""));
+        assert!(dumped.contains("enable_quic_proxy = true"));
+        assert!(dumped.contains("disable_tcp_hole_punching = true"));
+        assert!(dumped.contains("disable_sym_hole_punching = true"));
+        assert!(dumped.contains("multi_thread = false"));
+        assert!(dumped.contains("bind_device = false"));
+        assert!(dumped.contains("enable_ipv6 = false"));
+        assert!(dumped.contains("relay_network_whitelist = \"\""));
+        assert!(dumped.contains("mtu = 0"));
+        assert!(dumped.contains("socket_mark = 0"));
+
+        let reloaded = TomlConfigLoader::new_from_str(&dumped).unwrap();
+        let reloaded_flags = reloaded.get_flags();
+        assert_eq!(reloaded_flags.dev_name, "et_test");
+        assert!(reloaded_flags.enable_quic_proxy);
+        assert!(reloaded_flags.disable_tcp_hole_punching);
+        assert!(reloaded_flags.disable_sym_hole_punching);
+        assert!(!reloaded_flags.multi_thread);
+        assert!(!reloaded_flags.bind_device);
+        assert!(!reloaded_flags.enable_ipv6);
+        assert_eq!(reloaded_flags.relay_network_whitelist, "");
+        assert_eq!(reloaded_flags.mtu, 0);
+        assert_eq!(reloaded_flags.socket_mark, Some(0));
     }
 
     #[test]

@@ -10,6 +10,15 @@ use std::{
     },
 };
 
+#[cfg(feature = "hotpath")]
+use hotpath::wrap::std::sync::Mutex as StdMutex;
+#[cfg(feature = "hotpath")]
+use hotpath::wrap::tokio::sync::Mutex;
+#[cfg(not(feature = "hotpath"))]
+use std::sync::Mutex as StdMutex;
+#[cfg(not(feature = "hotpath"))]
+use tokio::sync::Mutex;
+
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use guarden::guard;
@@ -17,7 +26,7 @@ use hmac::Mac;
 use prost::Message;
 
 use tokio::{
-    sync::{Mutex, broadcast},
+    sync::broadcast,
     task::JoinSet,
     time::{Duration, timeout},
 };
@@ -98,7 +107,7 @@ struct PeerSessionTunnelFilter {
     enabled: bool,
     my_peer_id: Arc<AtomicCell<PeerId>>,
     peer_id: Arc<AtomicCell<Option<PeerId>>>,
-    session: Arc<std::sync::Mutex<Option<Arc<PeerSession>>>>,
+    session: Arc<StdMutex<Option<Arc<PeerSession>>>>,
 }
 
 impl PeerSessionTunnelFilter {
@@ -107,7 +116,7 @@ impl PeerSessionTunnelFilter {
             enabled,
             my_peer_id: Arc::new(AtomicCell::new(PeerId::default())),
             peer_id: Arc::new(AtomicCell::new(None)),
-            session: Arc::new(std::sync::Mutex::new(None)),
+            session: Arc::new(hotpath::mutex!(std::sync::Mutex::new(None))),
         }
     }
 
@@ -116,7 +125,7 @@ impl PeerSessionTunnelFilter {
             enabled,
             my_peer_id: Arc::new(AtomicCell::new(my_peer_id)),
             peer_id: Arc::new(AtomicCell::new(None)),
-            session: Arc::new(std::sync::Mutex::new(None)),
+            session: Arc::new(hotpath::mutex!(std::sync::Mutex::new(None))),
         }
     }
 
@@ -379,11 +388,12 @@ impl PeerConn {
             session_filter,
             noise_handshake_result: None,
 
-            tunnel: Arc::new(Mutex::new(Box::new(
+            tunnel: Arc::new(hotpath::mutex!(tokio::sync::Mutex::new(Box::new(
                 guard!([mut mpsc_tunnel] mpsc_tunnel.close()),
-            ))),
+            )
+                as Box<dyn Any + Send + 'static>))),
             sink,
-            recv: Mutex::new(Some(recv)),
+            recv: hotpath::mutex!(tokio::sync::Mutex::new(Some(recv))),
             tunnel_info,
 
             tasks: JoinSet::new(),
@@ -1460,6 +1470,7 @@ impl PeerConn {
         });
     }
 
+    #[cfg_attr(feature = "hotpath", hotpath::measure(impl_type = "PeerConn"))]
     pub async fn send_msg(&self, msg: ZCPacket) -> Result<(), Error> {
         Ok(self.sink.send(msg).await?)
     }

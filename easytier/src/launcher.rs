@@ -1211,6 +1211,32 @@ mod tests {
     }
 
     #[test]
+    fn network_config_dump_preserves_web_flags() -> Result<(), anyhow::Error> {
+        let network_config = super::NetworkConfig {
+            instance_id: Some(uuid::Uuid::new_v4().to_string()),
+            dhcp: Some(true),
+            network_name: Some("demo".to_string()),
+            network_secret: Some("secret".to_string()),
+            networking_method: Some(crate::proto::api::manage::NetworkingMethod::Manual as i32),
+            peer_urls: vec!["tcp://1.2.3.4:11010".to_string()],
+            listener_urls: vec!["tcp://0.0.0.0:11010".to_string()],
+            dev_name: Some("et_test".to_string()),
+            enable_quic_proxy: Some(true),
+            disable_tcp_hole_punching: Some(true),
+            disable_sym_hole_punching: Some(true),
+            ..Default::default()
+        };
+
+        let dumped = network_config.gen_config()?.dump();
+
+        assert!(dumped.contains("dev_name = \"et_test\""));
+        assert!(dumped.contains("enable_quic_proxy = true"));
+        assert!(dumped.contains("disable_tcp_hole_punching = true"));
+        assert!(dumped.contains("disable_sym_hole_punching = true"));
+        Ok(())
+    }
+
+    #[test]
     fn test_network_config_conversion_random() -> Result<(), anyhow::Error> {
         let mut rng = rand::thread_rng();
 

@@ -9,7 +9,7 @@ import {
   normalizeNetworkConfig,
   removeRow
 } from '../types/network'
-import { ref, onMounted, onUnmounted, watch } from 'vue'
+import { computed, ref, onMounted, onUnmounted, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import AclManager from './acl/AclManager.vue'
 import UrlListInput from './UrlListInput.vue'
@@ -134,6 +134,7 @@ function savePortForward() {
 const portForwardContainer = ref<HTMLElement | null>(null);
 const isCompact = ref(false);
 
+const UINT64_MAX = (1n << 64n) - 1n
 
 onMounted(() => {
   if (portForwardContainer.value) {
@@ -161,6 +162,39 @@ function syncNormalizedNetwork(network: NetworkConfig | undefined): void {
 }
 
 watch(() => curNetwork.value, syncNormalizedNetwork, { immediate: true, deep: false })
+
+function parseInstanceRecvBpsLimitInput(value: string): number | string | null | undefined {
+  const trimmed = value.trim()
+  if (trimmed.length === 0) {
+    return null
+  }
+  if (!/^\d+$/.test(trimmed)) {
+    return undefined
+  }
+
+  const limit = BigInt(trimmed)
+  if (limit === 0n) {
+    return null
+  }
+  if (limit > UINT64_MAX) {
+    return undefined
+  }
+
+  return limit <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(limit) : limit.toString()
+}
+
+const instanceRecvBpsLimitInput = computed<string>({
+  get: () => {
+    const limit = curNetwork.value.instance_recv_bps_limit
+    return limit == null ? '' : String(limit)
+  },
+  set: (value) => {
+    const limit = parseInstanceRecvBpsLimitInput(value)
+    if (limit !== undefined) {
+      curNetwork.value.instance_recv_bps_limit = limit
+    }
+  },
+})
 </script>
 
 <template>
@@ -317,9 +351,9 @@ watch(() => curNetwork.value, syncNormalizedNetwork, { immediate: true, deep: fa
                     <span class="pi pi-question-circle ml-2 self-center"
                       v-tooltip="t('instance_recv_bps_limit_help')"></span>
                   </div>
-                  <InputNumber id="instance_recv_bps_limit" v-model="curNetwork.instance_recv_bps_limit"
-                    aria-describedby="instance_recv_bps_limit-help" :format="false"
-                    :placeholder="t('instance_recv_bps_limit_placeholder')" :min="1" fluid />
+                  <InputText id="instance_recv_bps_limit" v-model="instanceRecvBpsLimitInput"
+                    aria-describedby="instance_recv_bps_limit-help" inputmode="numeric" pattern="[0-9]*"
+                    :placeholder="t('instance_recv_bps_limit_placeholder')" fluid />
                 </div>
               </div>
 

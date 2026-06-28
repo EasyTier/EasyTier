@@ -52,6 +52,7 @@ toml = "0.8.12"
 chrono = { version = "0.4.37", features = ["serde"] }
 
 guarden = "0.2"
+hotpath = { version = "0.18", default-features = false, optional = true }
 
 delegate = "0.13.5"
 
@@ -91,7 +92,7 @@ rustls = { version = "0.23.0", features = [
 rcgen = { version = "0.12.1", optional = true }
 
 # for websocket
-tokio-websockets = { version = "0.13.2", optional = true, features = [
+tokio-websockets = { version = "0.13.2", git = "https://github.com/EasyTier/tokio-websockets", optional = true, features = [
     "rustls-webpki-roots",
     "client",
     "server",
@@ -129,11 +130,12 @@ once_cell = "1.18.0"
 
 # for rpc
 prost = "0.14.3"
-prost-reflect = { version = "0.16.4", default-features = false, features = ["derive"] }
+prost-reflect = { version = "0.16.4", default-features = false, features = ["derive", "serde"] }
 prost-wkt-types = "0.7.1"
 pbjson = "0.9.0"
 
 anyhow = "1.0"
+ariadne = "0.5"
 
 url = { version = "2.5", features = ["serde"] }
 percent-encoding = "2.3.1"
@@ -400,6 +402,15 @@ jemalloc-prof = [
     "jemalloc-sys/stats",
 ]
 tracing = ["tokio/tracing", "dep:console-subscriber"]
+hotpath = [
+    "dep:hotpath",
+    "hotpath/hotpath",
+    "hotpath/tokio",
+    "hotpath/parking_lot",
+    "hotpath/flume",
+]
+hotpath-cpu = ["hotpath", "hotpath/hotpath-cpu"]
+hotpath-alloc = ["hotpath", "hotpath/hotpath-alloc"]
 magic-dns = ["dep:hickory-client", "dep:hickory-server"]
 faketcp = ["dep:flume"]
 zstd = ["dep:zstd"]
