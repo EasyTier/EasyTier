@@ -50,7 +50,7 @@ function statsCommon(info: any, field: string): number | undefined {
 
   const conns = info.peer.conns
   return conns.reduce((acc: number, conn: any) => {
-    return acc + resolveObjPath(field, conn)
+    return acc + (resolveObjPath(field, conn) ?? 0)
   }, 0)
 }
 
