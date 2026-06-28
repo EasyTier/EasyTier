@@ -14,6 +14,21 @@ extern crate self as hotpath;
 #[cfg(not(feature = "hotpath"))]
 mod hotpath_off;
 
+// When the `hotpath` feature is off, expose a local `instant` module backed by
+// `quanta::Instant` so call sites can uniformly write `use hotpath::instant::Instant;`
+// regardless of whether the feature is enabled. With the feature on, the real
+// `hotpath` crate provides the same path (also `quanta::Instant` on Linux), so
+// the two modes resolve to the identical type.
+#[cfg(not(feature = "hotpath"))]
+pub mod instant {
+    pub type Instant = quanta::Instant;
+}
+
+// Re-export `Instant` at the crate root so public APIs that expose it
+// (e.g. `Route::get_peer_info_last_update_time`) reference a deliberate
+// public type rather than leaking an inaccessible one.
+pub use hotpath::instant::Instant;
+
 mod arch;
 mod gateway;
 pub mod instance;

@@ -6,13 +6,14 @@ use std::{
         Arc, Weak,
         atomic::{AtomicBool, AtomicU32, Ordering},
     },
-    time::{Duration, Instant, SystemTime},
+    time::{Duration, SystemTime},
 };
 
 use arc_swap::ArcSwap;
 use cidr::{IpCidr, Ipv4Cidr, Ipv6Cidr, Ipv6Inet};
 use crossbeam::atomic::AtomicCell;
 use dashmap::DashMap;
+use hotpath::instant::Instant;
 use ordered_hash_map::OrderedHashMap;
 use parking_lot::{RwLock, lock_api::RwLockUpgradableReadGuard};
 use petgraph::{
@@ -2170,9 +2171,9 @@ struct PeerRouteServiceImpl {
     interface_peers_generation: AtomicU64,
     applied_interface_peers_generation: AtomicU64,
 
-    last_update_my_foreign_network: AtomicCell<Option<std::time::Instant>>,
+    last_update_my_foreign_network: AtomicCell<Option<Instant>>,
 
-    peer_info_last_update: AtomicCell<std::time::Instant>,
+    peer_info_last_update: AtomicCell<Instant>,
 }
 
 impl Debug for PeerRouteServiceImpl {
@@ -2239,7 +2240,7 @@ impl PeerRouteServiceImpl {
 
             last_update_my_foreign_network: AtomicCell::new(None),
 
-            peer_info_last_update: AtomicCell::new(std::time::Instant::now()),
+            peer_info_last_update: AtomicCell::new(Instant::now()),
         }
     }
 
@@ -2435,7 +2436,7 @@ impl PeerRouteServiceImpl {
         }
 
         self.last_update_my_foreign_network
-            .store(Some(std::time::Instant::now()));
+            .store(Some(Instant::now()));
 
         let foreign_networks = self
             .interface
@@ -3156,12 +3157,12 @@ impl PeerRouteServiceImpl {
             "update_peer_info_last_update, my_peer_id: {:?}, prev: {:?}, new: {:?}",
             self.my_peer_id,
             self.peer_info_last_update.load(),
-            std::time::Instant::now()
+            Instant::now()
         );
-        self.peer_info_last_update.store(std::time::Instant::now());
+        self.peer_info_last_update.store(Instant::now());
     }
 
-    fn get_peer_info_last_update(&self) -> std::time::Instant {
+    fn get_peer_info_last_update(&self) -> Instant {
         self.peer_info_last_update.load()
     }
 

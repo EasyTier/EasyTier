@@ -8,8 +8,10 @@ use std::{
         Arc,
         atomic::{AtomicBool, Ordering},
     },
-    time::{Duration, Instant},
+    time::Duration,
 };
+
+use hotpath::instant::Instant;
 
 use crate::{
     common::{
