@@ -510,13 +510,20 @@ impl PeerPacketFilter for Socks5Server {
         }
 
         let hdr = packet.peer_manager_header().unwrap();
-        if hdr.packet_type != PacketType::Data as u8 {
+        if !matches!(
+            hdr.packet_type,
+            x if x == PacketType::Data as u8
+                || x == PacketType::DataWithKcpSrcModified as u8
+                || x == PacketType::DataWithQuicSrcModified as u8
+        ) {
             return Some(packet);
         };
 
         let payload_bytes = packet.payload();
 
-        let ipv4 = Ipv4Packet::new(payload_bytes).unwrap();
+        let Some(ipv4) = Ipv4Packet::new(payload_bytes) else {
+            return Some(packet);
+        };
         if ipv4.get_version() != 4 {
             return Some(packet);
         }
@@ -593,6 +600,127 @@ impl PeerPacketFilter for Socks5Server {
         let _ = self.packet_sender.try_send(packet).ok();
 
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+
+    use pnet::packet::{
+        MutablePacket,
+        ip::IpNextHeaderProtocols,
+        ipv4::{self, MutableIpv4Packet},
+        tcp::{self, MutableTcpPacket, TcpFlags},
+    };
+
+    use super::*;
+    use crate::peers::tests::create_mock_peer_manager;
+
+    fn build_tcp_packet(src: SocketAddr, dst: SocketAddr) -> Vec<u8> {
+        let mut buf = vec![0u8; 40];
+        let src_ip = match src.ip() {
+            IpAddr::V4(ip) => ip,
+            IpAddr::V6(_) => panic!("test only supports ipv4"),
+        };
+        let dst_ip = match dst.ip() {
+            IpAddr::V4(ip) => ip,
+            IpAddr::V6(_) => panic!("test only supports ipv4"),
+        };
+
+        {
+            let mut ip_packet = MutableIpv4Packet::new(&mut buf).unwrap();
+            ip_packet.set_version(4);
+            ip_packet.set_header_length(5);
+            ip_packet.set_total_length(40);
+            ip_packet.set_ttl(64);
+            ip_packet.set_next_level_protocol(IpNextHeaderProtocols::Tcp);
+            ip_packet.set_source(src_ip);
+            ip_packet.set_destination(dst_ip);
+
+            let mut tcp_packet = MutableTcpPacket::new(ip_packet.payload_mut()).unwrap();
+            tcp_packet.set_source(src.port());
+            tcp_packet.set_destination(dst.port());
+            tcp_packet.set_data_offset(5);
+            tcp_packet.set_flags(TcpFlags::SYN | TcpFlags::ACK);
+            tcp_packet.set_window(65535);
+            tcp_packet.set_checksum(tcp::ipv4_checksum(
+                &tcp_packet.to_immutable(),
+                &src_ip,
+                &dst_ip,
+            ));
+
+            ip_packet.set_checksum(ipv4::checksum(&ip_packet.to_immutable()));
+        }
+
+        buf
+    }
+
+    #[tokio::test]
+    async fn socks5_consumes_modified_data_when_entry_matches() {
+        let peer_manager = create_mock_peer_manager().await;
+        let server = Socks5Server::new(peer_manager.get_global_ctx(), peer_manager, None);
+
+        let local = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 144, 144, 1)), 40000);
+        let remote = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 144, 144, 3)), 22);
+        let entry = Socks5Entry {
+            src: local,
+            dst: remote,
+            entry_type: TCP_ENTRY,
+        };
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        server.entries.insert(entry, Socks5EntryData::Tcp(listener));
+        server.entry_count.fetch_add(1, Ordering::Relaxed);
+
+        for packet_type in [
+            PacketType::DataWithKcpSrcModified,
+            PacketType::DataWithQuicSrcModified,
+        ] {
+            let mut packet = ZCPacket::new_with_payload(&build_tcp_packet(remote, local));
+            packet.fill_peer_manager_hdr(1, 2, packet_type as u8);
+
+            let result = server.try_process_packet_from_peer(packet).await;
+            assert!(result.is_none());
+
+            let mut receiver = server.packet_recv.lock().await;
+            let received = receiver.try_recv().unwrap();
+            assert_eq!(
+                received.peer_manager_header().unwrap().packet_type,
+                packet_type as u8
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn socks5_passes_through_unmatched_or_malformed_modified_data() {
+        let peer_manager = create_mock_peer_manager().await;
+        let server = Socks5Server::new(peer_manager.get_global_ctx(), peer_manager, None);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        server.entries.insert(
+            Socks5Entry {
+                src: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 144, 144, 1)), 40000),
+                dst: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 144, 144, 3)), 22),
+                entry_type: TCP_ENTRY,
+            },
+            Socks5EntryData::Tcp(listener),
+        );
+        server.entry_count.fetch_add(1, Ordering::Relaxed);
+
+        let unmatched_local = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 144, 144, 1)), 40001);
+        let remote = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 144, 144, 3)), 22);
+        let mut unmatched_packet =
+            ZCPacket::new_with_payload(&build_tcp_packet(remote, unmatched_local));
+        unmatched_packet.fill_peer_manager_hdr(1, 2, PacketType::DataWithKcpSrcModified as u8);
+        let result = server.try_process_packet_from_peer(unmatched_packet).await;
+        assert!(result.is_some());
+
+        let mut malformed_packet = ZCPacket::new_with_payload(&[0u8; 8]);
+        malformed_packet.fill_peer_manager_hdr(1, 2, PacketType::DataWithQuicSrcModified as u8);
+        let result = server.try_process_packet_from_peer(malformed_packet).await;
+        assert!(result.is_some());
+
+        let mut receiver = server.packet_recv.lock().await;
+        assert!(receiver.try_recv().is_err());
     }
 }
 
