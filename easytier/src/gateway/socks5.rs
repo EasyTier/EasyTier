@@ -699,14 +699,23 @@ impl PeerPacketFilter for Socks5Server {
             return Some(packet);
         }
         let hdr = packet.peer_manager_header().unwrap();
-        if !matches!(
+        let is_modified_src_packet = matches!(
             hdr.packet_type,
-            x if x == PacketType::Data as u8
-                || x == PacketType::DataWithKcpSrcModified as u8
+            x if x == PacketType::DataWithKcpSrcModified as u8
                 || x == PacketType::DataWithQuicSrcModified as u8
-        ) {
+        );
+        if hdr.packet_type != PacketType::Data as u8 && !is_modified_src_packet {
             return Some(packet);
-        };
+        }
+        if is_modified_src_packet && hdr.from_peer_id != hdr.to_peer_id {
+            tracing::trace!(
+                packet_type = hdr.packet_type,
+                from_peer_id = hdr.from_peer_id.get(),
+                to_peer_id = hdr.to_peer_id.get(),
+                "socks5 passed non-loopback modified-source packet from peer"
+            );
+            return Some(packet);
+        }
 
         let payload_bytes = packet.payload();
 
@@ -1542,7 +1551,7 @@ mod tests {
             PacketType::DataWithQuicSrcModified,
         ] {
             let mut packet = ZCPacket::new_with_payload(&build_tcp_packet(remote, local));
-            packet.fill_peer_manager_hdr(1, 2, packet_type as u8);
+            packet.fill_peer_manager_hdr(1, 1, packet_type as u8);
 
             let result = server.try_process_packet_from_peer(packet).await;
             assert!(result.is_none());
@@ -1583,6 +1592,36 @@ mod tests {
         let mut malformed_packet = ZCPacket::new_with_payload(&[0u8; 8]);
         malformed_packet.fill_peer_manager_hdr(1, 2, PacketType::DataWithQuicSrcModified as u8);
         let result = server.try_process_packet_from_peer(malformed_packet).await;
+        assert!(result.is_some());
+
+        let mut receiver = server.packet_recv.lock().await;
+        assert!(receiver.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn socks5_passes_through_non_loopback_modified_data_even_when_entry_matches() {
+        let peer_manager = create_mock_peer_manager().await;
+        let server = Socks5Server::new(peer_manager.get_global_ctx(), peer_manager, None);
+
+        let local = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 144, 144, 1)), 40000);
+        let remote = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 144, 144, 3)), 22);
+        let entry = Socks5Entry {
+            src: local,
+            dst: remote,
+            entry_type: TCP_ENTRY,
+        };
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        insert_entry_and_increment_count(
+            &server.entries,
+            &server.entry_count,
+            entry,
+            Socks5EntryData::Tcp(listener),
+        );
+
+        let mut packet = ZCPacket::new_with_payload(&build_tcp_packet(remote, local));
+        packet.fill_peer_manager_hdr(1, 2, PacketType::DataWithKcpSrcModified as u8);
+
+        let result = server.try_process_packet_from_peer(packet).await;
         assert!(result.is_some());
 
         let mut receiver = server.packet_recv.lock().await;
