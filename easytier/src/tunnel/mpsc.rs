@@ -1,8 +1,9 @@
 // this mod wrap tunnel to a mpsc tunnel, based on crossbeam_channel
 
-use std::{pin::Pin, time::Duration};
+use std::{pin::Pin, sync::Arc, time::Duration};
 
 use anyhow::Context;
+use tokio::sync::Mutex;
 use tokio::time::timeout;
 
 use crate::proto::common::TunnelInfo;
@@ -11,20 +12,30 @@ use super::{Tunnel, TunnelError, ZCPacketSink, ZCPacketStream, packet_def::ZCPac
 
 use tokio::sync::mpsc::{Receiver, Sender, channel, error::TrySendError};
 use tokio_util::task::AbortOnDropHandle;
-// use tachyonix::{channel, Receiver, Sender, TrySendError};
 
 use futures::SinkExt;
 
 #[derive(Clone)]
-pub struct MpscTunnelSender(Sender<ZCPacket>);
+pub struct MpscTunnelSender {
+    channel_tx: Option<Sender<ZCPacket>>,
+    direct_sink: Option<Arc<Mutex<Pin<Box<dyn ZCPacketSink>>>>>,
+}
 
 impl MpscTunnelSender {
     #[cfg_attr(feature = "hotpath", hotpath::measure(impl_type = "MpscTunnelSender"))]
     pub async fn send(&self, item: ZCPacket) -> Result<(), TunnelError> {
-        match self.0.try_send(item) {
+        if let Some(sink) = &self.direct_sink {
+            let mut guard = sink.lock().await;
+            guard.feed(item).await?;
+            guard.flush().await?;
+            return Ok(());
+        }
+
+        let tx = self.channel_tx.as_ref().ok_or(TunnelError::Shutdown)?;
+        match tx.try_send(item) {
             Ok(()) => Ok(()),
             Err(TrySendError::Full(item)) => {
-                self.0.send(item).await.with_context(|| "send error")?;
+                tx.send(item).await.with_context(|| "send error")?;
                 Ok(())
             }
             Err(TrySendError::Closed(_)) => Err(TunnelError::Shutdown),
@@ -32,7 +43,8 @@ impl MpscTunnelSender {
     }
 
     pub fn try_send(&self, item: ZCPacket) -> Result<(), TunnelError> {
-        self.0.try_send(item).map_err(|e| match e {
+        let tx = self.channel_tx.as_ref().ok_or(TunnelError::Shutdown)?;
+        tx.try_send(item).map_err(|e| match e {
             TrySendError::Full(_) => TunnelError::BufferFull,
             TrySendError::Closed(_) => TunnelError::Shutdown,
         })
@@ -41,11 +53,12 @@ impl MpscTunnelSender {
 
 pub struct MpscTunnel<T> {
     tx: Option<Sender<ZCPacket>>,
+    direct_sink: Option<Arc<Mutex<Pin<Box<dyn ZCPacketSink>>>>>,
 
     tunnel: T,
     stream: Option<Pin<Box<dyn ZCPacketStream>>>,
 
-    task: AbortOnDropHandle<()>,
+    task: Option<AbortOnDropHandle<()>>,
 }
 
 impl<T: Tunnel> MpscTunnel<T> {
@@ -67,9 +80,21 @@ impl<T: Tunnel> MpscTunnel<T> {
 
         Self {
             tx: Some(tx),
+            direct_sink: None,
             tunnel,
             stream: Some(stream),
-            task: AbortOnDropHandle::new(task),
+            task: Some(AbortOnDropHandle::new(task)),
+        }
+    }
+
+    pub fn new_direct(tunnel: T) -> Self {
+        let (stream, sink) = tunnel.split();
+        Self {
+            tx: None,
+            direct_sink: Some(Arc::new(Mutex::new(sink))),
+            tunnel,
+            stream: Some(stream),
+            task: None,
         }
     }
 
@@ -134,12 +159,18 @@ impl<T: Tunnel> MpscTunnel<T> {
     }
 
     pub fn get_sink(&self) -> MpscTunnelSender {
-        MpscTunnelSender(self.tx.as_ref().unwrap().clone())
+        MpscTunnelSender {
+            channel_tx: self.tx.as_ref().cloned(),
+            direct_sink: self.direct_sink.clone(),
+        }
     }
 
     pub fn close(&mut self) {
         self.tx.take();
-        self.task.abort();
+        self.direct_sink.take();
+        if let Some(task) = self.task.take() {
+            task.abort();
+        }
     }
 
     pub fn tunnel_info(&self) -> Option<TunnelInfo> {
