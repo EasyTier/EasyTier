@@ -680,7 +680,7 @@ impl NdpProxyRuntime {
         state: &PublicIpv6ProviderRuntimeState,
     ) -> bool {
         let Some((prefix, target)) = ndp_proxy_target(state) else {
-            return self.clear_current(global_ctx);
+            return !self.clear_current(global_ctx);
         };
 
         let Some(tun_iface) = global_ctx.get_tun_device_name() else {
@@ -726,7 +726,7 @@ impl NdpProxyRuntime {
 
     fn clear_current_in_netns(&mut self, net_ns: &NetNS) -> bool {
         let _g = net_ns.guard();
-        !self.clear_current_locked()
+        self.clear_current_locked()
     }
 
     fn clear_current_locked(&mut self) -> bool {
@@ -935,7 +935,7 @@ fn reconcile_ndp_proxy_runtime(
 
 #[cfg(target_os = "linux")]
 fn cleanup_ndp_proxy_runtime(runtime: &mut NdpProxyRuntime, net_ns: &NetNS) {
-    if runtime.clear_current_in_netns(net_ns) {
+    if !runtime.clear_current_in_netns(net_ns) {
         tracing::warn!(
             remaining_entries = runtime.applied.len(),
             wan_iface = ?runtime.wan_iface,
