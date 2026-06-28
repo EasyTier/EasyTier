@@ -649,53 +649,53 @@ impl PeerPacketFilter for Socks5Server {
         if entry_count == 0 && !socks5_enabled {
             if tracing::enabled!(tracing::Level::TRACE)
                 && let Some(hdr) = packet.peer_manager_header()
-                    && matches!(
-                        hdr.packet_type,
-                        x if x == PacketType::Data as u8
-                            || x == PacketType::DataWithKcpSrcModified as u8
-                            || x == PacketType::DataWithQuicSrcModified as u8
-                    )
-                {
-                    if let Some(ipv4) = Ipv4Packet::new(packet.payload()) {
-                        let (tcp_src_port, tcp_dst_port, tcp_flags) =
-                            if ipv4.get_next_level_protocol() == IpNextHeaderProtocols::Tcp {
-                                TcpPacket::new(ipv4.payload())
-                                    .map(|tcp| {
-                                        (
-                                            Some(tcp.get_source()),
-                                            Some(tcp.get_destination()),
-                                            Some(tcp.get_flags()),
-                                        )
-                                    })
-                                    .unwrap_or((None, None, None))
-                            } else {
-                                (None, None, None)
-                            };
-                        tracing::trace!(
-                            packet_type = hdr.packet_type,
-                            from_peer_id = hdr.from_peer_id.get(),
-                            to_peer_id = hdr.to_peer_id.get(),
-                            ipv4_src = %ipv4.get_source(),
-                            ipv4_dst = %ipv4.get_destination(),
-                            next_protocol = ?ipv4.get_next_level_protocol(),
-                            ?tcp_src_port,
-                            ?tcp_dst_port,
-                            ?tcp_flags,
-                            entry_count,
-                            socks5_enabled,
-                            "socks5 fast gate passed packet from peer"
-                        );
-                    } else {
-                        tracing::trace!(
-                            packet_type = hdr.packet_type,
-                            from_peer_id = hdr.from_peer_id.get(),
-                            to_peer_id = hdr.to_peer_id.get(),
-                            entry_count,
-                            socks5_enabled,
-                            "socks5 fast gate passed non-ipv4 packet from peer"
-                        );
-                    }
+                && matches!(
+                    hdr.packet_type,
+                    x if x == PacketType::Data as u8
+                        || x == PacketType::DataWithKcpSrcModified as u8
+                        || x == PacketType::DataWithQuicSrcModified as u8
+                )
+            {
+                if let Some(ipv4) = Ipv4Packet::new(packet.payload()) {
+                    let (tcp_src_port, tcp_dst_port, tcp_flags) =
+                        if ipv4.get_next_level_protocol() == IpNextHeaderProtocols::Tcp {
+                            TcpPacket::new(ipv4.payload())
+                                .map(|tcp| {
+                                    (
+                                        Some(tcp.get_source()),
+                                        Some(tcp.get_destination()),
+                                        Some(tcp.get_flags()),
+                                    )
+                                })
+                                .unwrap_or((None, None, None))
+                        } else {
+                            (None, None, None)
+                        };
+                    tracing::trace!(
+                        packet_type = hdr.packet_type,
+                        from_peer_id = hdr.from_peer_id.get(),
+                        to_peer_id = hdr.to_peer_id.get(),
+                        ipv4_src = %ipv4.get_source(),
+                        ipv4_dst = %ipv4.get_destination(),
+                        next_protocol = ?ipv4.get_next_level_protocol(),
+                        ?tcp_src_port,
+                        ?tcp_dst_port,
+                        ?tcp_flags,
+                        entry_count,
+                        socks5_enabled,
+                        "socks5 fast gate passed packet from peer"
+                    );
+                } else {
+                    tracing::trace!(
+                        packet_type = hdr.packet_type,
+                        from_peer_id = hdr.from_peer_id.get(),
+                        to_peer_id = hdr.to_peer_id.get(),
+                        entry_count,
+                        socks5_enabled,
+                        "socks5 fast gate passed non-ipv4 packet from peer"
+                    );
                 }
+            }
             return Some(packet);
         }
         let hdr = packet.peer_manager_header().unwrap();
