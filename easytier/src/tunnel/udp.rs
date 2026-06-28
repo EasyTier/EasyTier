@@ -15,10 +15,7 @@ use zerocopy::{AsBytes, FromBytes};
 
 use tokio::{
     net::UdpSocket,
-    sync::{
-        mpsc::{Receiver, Sender, UnboundedReceiver, UnboundedSender},
-        watch,
-    },
+    sync::mpsc::{Receiver, Sender, UnboundedReceiver, UnboundedSender},
     task::JoinSet,
 };
 use tokio_util::task::AbortOnDropHandle;
@@ -809,12 +806,18 @@ impl UdpTunnelConnector {
         }
     }
 
+    fn should_resend_syn_to_hole_punch_source(
+        recv_addr: SocketAddr,
+        expected_addr: SocketAddr,
+    ) -> bool {
+        recv_addr == expected_addr
+    }
+
     async fn wait_sack(
         socket: &UdpSocket,
         addr: SocketAddr,
         conn_id: u32,
         magic: u64,
-        resend_addr_sender: &watch::Sender<SocketAddr>,
     ) -> Result<SocketAddr, TunnelError> {
         let mut buf = BytesMut::new();
         buf.reserve(UDP_DATA_MTU);
@@ -828,8 +831,7 @@ impl UdpTunnelConnector {
         let header = zc_packet.udp_tunnel_header().unwrap();
         if header.msg_type == UdpPacketType::HolePunch as u8 {
             tracing::debug!(?recv_addr, ?addr, "udp wait sack got hole punch packet");
-            if recv_addr.port() == addr.port() && recv_addr.is_ipv6() == addr.is_ipv6() {
-                let _ = resend_addr_sender.send(recv_addr);
+            if Self::should_resend_syn_to_hole_punch_source(recv_addr, addr) {
                 let udp_packet = new_syn_packet(conn_id, magic).into_bytes();
                 match socket.send_to(&udp_packet, recv_addr).await {
                     Ok(ret) => {
@@ -839,6 +841,12 @@ impl UdpTunnelConnector {
                         tracing::debug!(?recv_addr, ?e, "udp send syn to hole punch source failed")
                     }
                 }
+            } else {
+                tracing::debug!(
+                    ?recv_addr,
+                    ?addr,
+                    "ignore hole punch packet from unexpected source"
+                );
             }
             return Err(TunnelError::InvalidPacket(
                 "got hole punch packet while waiting for sack".to_owned(),
@@ -881,10 +889,9 @@ impl UdpTunnelConnector {
         addr: SocketAddr,
         conn_id: u32,
         magic: u64,
-        resend_addr_sender: watch::Sender<SocketAddr>,
     ) -> Result<SocketAddr, super::TunnelError> {
         loop {
-            let ret = Self::wait_sack(socket, addr, conn_id, magic, &resend_addr_sender).await;
+            let ret = Self::wait_sack(socket, addr, conn_id, magic).await;
             if ret.is_err() {
                 tracing::debug!(?ret, "udp wait sack error");
                 continue;
@@ -991,15 +998,13 @@ impl UdpTunnelConnector {
         let udp_packet = new_syn_packet(conn_id, magic).into_bytes();
         let ret = socket.send_to(&udp_packet, &addr).await?;
         tracing::warn!(?udp_packet, ?ret, "udp send syn");
-        let (resend_addr_sender, resend_addr_receiver) = watch::channel(addr);
         let resend_task = AbortOnDropHandle::new(tokio::spawn({
             let socket = socket.clone();
-            let resend_addr_receiver = resend_addr_receiver;
             let udp_packet = udp_packet.clone();
+            let resend_addr = addr;
             async move {
                 loop {
                     tokio::time::sleep(Duration::from_millis(200)).await;
-                    let resend_addr = *resend_addr_receiver.borrow();
                     match socket.send_to(&udp_packet, &resend_addr).await {
                         Ok(ret) => tracing::trace!(?ret, ?resend_addr, "udp resend syn"),
                         Err(e) => {
@@ -1014,7 +1019,7 @@ impl UdpTunnelConnector {
         // wait sack
         let recv_addr = tokio::time::timeout(
             tokio::time::Duration::from_secs(3),
-            Self::wait_sack_loop(&socket, addr, conn_id, magic, resend_addr_sender),
+            Self::wait_sack_loop(&socket, addr, conn_id, magic),
         )
         .await??;
         drop(resend_task);
@@ -1138,6 +1143,26 @@ mod tests {
     }
 
     fn assert_sync_packet_handler(_: fn(&mut UdpConnection, ZCPacket) -> Result<(), TunnelError>) {}
+
+    #[test]
+    fn hole_punch_source_must_match_connect_addr_before_syn_resend() {
+        let expected_addr: SocketAddr = "198.51.100.10:11010".parse().unwrap();
+        let same_port_different_ip: SocketAddr = "198.51.100.11:11010".parse().unwrap();
+        let same_ip_different_port: SocketAddr = "198.51.100.10:11011".parse().unwrap();
+
+        assert!(UdpTunnelConnector::should_resend_syn_to_hole_punch_source(
+            expected_addr,
+            expected_addr
+        ));
+        assert!(!UdpTunnelConnector::should_resend_syn_to_hole_punch_source(
+            same_port_different_ip,
+            expected_addr
+        ));
+        assert!(!UdpTunnelConnector::should_resend_syn_to_hole_punch_source(
+            same_ip_different_port,
+            expected_addr
+        ));
+    }
 
     #[tokio::test]
     async fn udp_pingpong() {
