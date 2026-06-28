@@ -28,10 +28,11 @@ use std::time::{Duration, Instant};
 
 use bytes::BytesMut;
 
-use easytier::common::config::{ConfigLoader, TomlConfigLoader};
+use easytier::common::config::{ConfigLoader, PeerConfig, TomlConfigLoader};
 use easytier::instance::instance::Instance;
 use easytier::tunnel::packet_def::ZCPacket;
 use easytier::tunnel::ring::RingTunnelConnector;
+use easytier::tunnel::udp::UdpTunnelConnector;
 
 #[tokio::main(flavor = "multi_thread", worker_threads = 4)]
 #[cfg_attr(feature = "hotpath", hotpath::main)]
@@ -46,16 +47,41 @@ async fn main() {
         .and_then(|s| s.parse().ok())
         .unwrap_or(1400);
 
-    let mut inst_a = Instance::new(no_tun_config("hot-a", "10.144.144.1"));
-    let mut inst_b = Instance::new(no_tun_config("hot-b", "10.144.144.2"));
+    let tunnel_type = std::env::var("HOTPATH_TUNNEL")
+        .ok()
+        .unwrap_or_else(|| "ring".to_string());
+
+    let (inst_a_config, inst_b_config) = if tunnel_type == "udp" {
+        let mut a = no_tun_config("hot-a", "10.144.144.1");
+        a.set_listeners(vec!["udp://0.0.0.0:35521".parse().unwrap()]);
+
+        let b = no_tun_config("hot-b", "10.144.144.2");
+        (a, b)
+    } else {
+        (
+            no_tun_config("hot-a", "10.144.144.1"),
+            no_tun_config("hot-b", "10.144.144.2"),
+        )
+    };
+
+    let mut inst_a = Instance::new(inst_a_config);
+    let mut inst_b = Instance::new(inst_b_config);
 
     inst_a.run().await.expect("inst_a run");
     inst_b.run().await.expect("inst_b run");
 
-    let ring_url = format!("ring://{}", inst_a.id());
-    inst_b
-        .get_conn_manager()
-        .add_connector(RingTunnelConnector::new(ring_url.parse().unwrap()));
+    tokio::time::sleep(Duration::from_secs(1)).await;
+
+    if tunnel_type == "ring" {
+        let ring_url = format!("ring://{}", inst_a.id());
+        inst_b
+            .get_conn_manager()
+            .add_connector(RingTunnelConnector::new(ring_url.parse().unwrap()));
+    } else if tunnel_type == "udp" {
+        inst_b.get_conn_manager().add_connector(
+            UdpTunnelConnector::new("udp://127.0.0.1:35521".parse().unwrap()),
+        );
+    }
 
     let dst: IpAddr = "10.144.144.2".parse().unwrap();
     let src = "10.144.144.1";
@@ -78,8 +104,8 @@ async fn main() {
     }
 
     println!(
-        "cpu_hotspot_ring: flooding {}s, pkt_size={} (converged={})",
-        duration, pkt_size, converged
+        "cpu_hotspot_ring: flooding {}s, pkt_size={}, tunnel={} (converged={})",
+        duration, pkt_size, tunnel_type, converged
     );
 
     let pm = inst_a.get_peer_manager();

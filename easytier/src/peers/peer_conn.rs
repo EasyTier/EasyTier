@@ -370,11 +370,11 @@ impl PeerConn {
         let throughput = peer_conn_tunnel_filter.filter_output();
         let filter_chain = TunnelFilterChain::new(session_filter.clone(), peer_conn_tunnel_filter);
         let peer_conn_tunnel = TunnelWithFilter::new(tunnel, filter_chain);
-        let is_ring = peer_conn_tunnel
+        let supports_direct = peer_conn_tunnel
             .info()
-            .map(|i| i.tunnel_type == "ring")
+            .map(|i| matches!(i.tunnel_type.as_str(), "ring" | "udp"))
             .unwrap_or(false);
-        let mut mpsc_tunnel = if is_ring {
+        let mut mpsc_tunnel = if supports_direct {
             MpscTunnel::new_direct(peer_conn_tunnel)
         } else {
             MpscTunnel::new(peer_conn_tunnel, Some(Duration::from_secs(7)))
