@@ -24,7 +24,7 @@ use crate::{
 };
 
 use byteorder::WriteBytesExt as _;
-use bytes::{BufMut, BytesMut};
+use bytes::{Buf, BufMut, BytesMut};
 use cidr::{Ipv4Inet, Ipv6Inet};
 use futures::{SinkExt, Stream, StreamExt, lock::BiLock, ready};
 use pin_project_lite::pin_project;
@@ -180,12 +180,13 @@ impl ZCPacketToBytes for TunZCPacketToBytes {
         assert!(payload_offset >= 4);
 
         let ret = if self.has_packet_info {
-            let mut inner = inner.split_off(payload_offset - 4);
+            inner.advance(payload_offset - 4);
             let proto = infer_proto(&inner[4..]);
             self.fill_packet_info(&mut inner[0..4], proto)?;
             inner
         } else {
-            inner.split_off(payload_offset)
+            inner.advance(payload_offset);
+            inner
         };
 
         tracing::debug!(?ret, ?payload_offset, "convert zc packet to tun packet");

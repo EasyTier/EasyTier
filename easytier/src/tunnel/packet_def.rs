@@ -1,9 +1,10 @@
+use bytes::Buf;
 use bytes::Bytes;
 use bytes::BytesMut;
+use zerocopy::byteorder::*;
 use zerocopy::AsBytes;
 use zerocopy::FromBytes;
 use zerocopy::FromZeroes;
-use zerocopy::byteorder::*;
 
 type DefaultEndian = LittleEndian;
 
@@ -638,7 +639,8 @@ impl ZCPacket {
     }
 
     pub fn payload_bytes(mut self) -> BytesMut {
-        self.inner.split_off(self.payload_offset())
+        self.inner.advance(self.payload_offset());
+        self.inner
     }
 
     pub fn peer_manager_header(&self) -> Option<&PeerManagerHeader> {
@@ -703,11 +705,12 @@ impl ZCPacket {
     }
 
     pub fn tunnel_payload_bytes(mut self) -> BytesMut {
-        self.inner.split_off(
+        self.inner.advance(
             self.packet_type
                 .get_packet_offsets()
                 .peer_manager_header_offset,
-        )
+        );
+        self.inner
     }
 
     pub fn convert_type(mut self, target_packet_type: ZCPacketType) -> Self {
@@ -753,7 +756,8 @@ impl ZCPacket {
             return Self::new_from_buf(buf, target_packet_type);
         }
 
-        Self::new_from_buf(self.inner.split_off(new_offset), target_packet_type)
+        self.inner.advance(new_offset);
+        Self::new_from_buf(self.inner, target_packet_type)
     }
 
     pub fn into_bytes(self) -> Bytes {
