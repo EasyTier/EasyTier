@@ -26,7 +26,6 @@ use std::{
 };
 
 use anyhow::Context as _;
-use dashmap::mapref::entry::Entry;
 use hotpath::instant::Instant;
 use tokio::io::{AsyncRead, AsyncWrite};
 
@@ -35,6 +34,7 @@ use crate::{common::error::Error, gateway::fast_socks5::server::AsyncTcpConnecto
 use super::{
     Socks5AutoConnector, Socks5Entry, Socks5EntryData, Socks5EntrySet, Socks5Server,
     SocksTcpStream, SocksUdpSocket, TCP_ENTRY, TCP_LISTEN_ENTRY, UDP_ENTRY, UdpClientKey,
+    decrement_entry_count, insert_entry_and_increment_count, try_insert_entry_and_increment_count,
 };
 use crate::gateway::tokio_smoltcp::{Net, TcpListener};
 
@@ -59,12 +59,12 @@ impl OwnedRouteEntry {
         entry_count: Arc<AtomicUsize>,
         entry: Socks5Entry,
     ) -> Self {
-        if entries
-            .insert(entry.clone(), Socks5EntryData::DataPlaneRoute)
-            .is_none()
-        {
-            entry_count.fetch_add(1, Ordering::Relaxed);
-        }
+        insert_entry_and_increment_count(
+            &entries,
+            &entry_count,
+            entry.clone(),
+            Socks5EntryData::DataPlaneRoute,
+        );
         Self {
             entries,
             entry_count,
@@ -78,12 +78,13 @@ impl OwnedRouteEntry {
         entry_count: Arc<AtomicUsize>,
         entry: Socks5Entry,
     ) -> Option<Self> {
-        match entries.entry(entry.clone()) {
-            Entry::Occupied(_) => return None,
-            Entry::Vacant(vacant) => {
-                vacant.insert(Socks5EntryData::DataPlaneRoute);
-                entry_count.fetch_add(1, Ordering::Relaxed);
-            }
+        if !try_insert_entry_and_increment_count(
+            &entries,
+            &entry_count,
+            entry.clone(),
+            Socks5EntryData::DataPlaneRoute,
+        ) {
+            return None;
         }
         Some(Self {
             entries,
@@ -96,7 +97,7 @@ impl OwnedRouteEntry {
 impl Drop for OwnedRouteEntry {
     fn drop(&mut self) {
         if self.entries.remove(&self.entry).is_some() {
-            self.entry_count.fetch_sub(1, Ordering::Relaxed);
+            decrement_entry_count(&self.entry_count);
         }
     }
 }
@@ -224,16 +225,18 @@ impl DataPlaneUdpSocket {
             dst: addr,
             entry_type: UDP_ENTRY,
         };
-        if let Entry::Vacant(entry) = self.entries.entry(key) {
-            entry.insert(Socks5EntryData::Udp((
+        try_insert_entry_and_increment_count(
+            &self.entries,
+            &self.entry_count,
+            key,
+            Socks5EntryData::Udp((
                 self.socket.clone(),
                 UdpClientKey {
                     client_addr: self.local_addr,
                     dst_addr: addr,
                 },
-            )));
-            self.entry_count.fetch_add(1, Ordering::Relaxed);
-        }
+            )),
+        );
         self.socket.send_to(buf, addr).await
     }
 
@@ -246,7 +249,7 @@ impl Drop for DataPlaneUdpSocket {
     fn drop(&mut self) {
         self.entries.retain(|_, data| match data {
             Socks5EntryData::Udp((socket, _)) if Arc::ptr_eq(socket, &self.socket) => {
-                self.entry_count.fetch_sub(1, Ordering::Relaxed);
+                decrement_entry_count(&self.entry_count);
                 false
             }
             _ => true,
