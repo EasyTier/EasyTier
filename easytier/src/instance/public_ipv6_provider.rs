@@ -1556,33 +1556,17 @@ mod tests {
     #[serial_test::serial]
     #[tokio::test]
     async fn test_detect_public_ipv6_prefix_linux_dhcpv6_ia_na_single_prefix() {
-        // DHCPv6 IA_NA with a single /64 prefix on the WAN interface.
-        // No delegated route exists — the route-based detection must fall
-        // back to interface addresses.
+        // DHCPv6 IA_NA: the WAN interface has a global prefix with a
+        // default route. Use a /48 dummy prefix so the fallback prefers it
+        // over any real /64 on the test machine.
         let wan_if = test_iface_name("ib");
         let _wan = ScopedDummyLink::new(&wan_if);
 
-        run_ip(&[
-            "-6",
-            "addr",
-            "add",
-            "2001:db8:cccc:ffff::1/64",
-            "dev",
-            &wan_if,
-        ]);
-        run_ip(&[
-            "-6",
-            "route",
-            "add",
-            "default",
-            "from",
-            "2001:db8:cccc::/64",
-            "dev",
-            &wan_if,
-        ]);
+        run_ip(&["-6", "addr", "add", "2001:db8:cccc::1/48", "dev", &wan_if]);
+        run_ip(&["-6", "route", "add", "default", "dev", &wan_if]);
 
         let detected = detect_public_ipv6_prefix_linux().await.unwrap().unwrap();
-        assert_eq!(detected.prefix, "2001:db8:cccc:ffff::/64".parse().unwrap());
+        assert_eq!(detected.prefix, "2001:db8:cccc::/48".parse().unwrap());
         assert_eq!(detected.ndp_proxy.unwrap().wan_iface, wan_if);
     }
 

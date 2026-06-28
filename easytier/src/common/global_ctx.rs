@@ -362,16 +362,6 @@ impl GlobalCtx {
     }
 
     pub fn issue_event(&self, event: GlobalCtxEvent) {
-        match &event {
-            GlobalCtxEvent::TunDeviceReady(name) => {
-                *self.tun_device_name.lock().unwrap() = Some(name.clone());
-            }
-            GlobalCtxEvent::TunDeviceError(_) => {
-                *self.tun_device_name.lock().unwrap() = None;
-            }
-            _ => {}
-        }
-
         if let Err(e) = self.event_bus.send(event.clone()) {
             tracing::warn!(
                 "Failed to send event: {:?}, error: {:?}, receiver count: {}",
@@ -380,6 +370,10 @@ impl GlobalCtx {
                 self.event_bus.receiver_count()
             );
         }
+    }
+
+    pub fn set_tun_device_name(&self, name: Option<String>) {
+        *self.tun_device_name.lock().unwrap() = name;
     }
 
     pub fn get_tun_device_name(&self) -> Option<String> {
@@ -842,18 +836,23 @@ pub mod tests {
     }
 
     #[tokio::test]
-    async fn test_tun_device_name_tracks_tun_events() {
+    async fn test_tun_device_name_tracks_explicit_runtime_state() {
         let config = TomlConfigLoader::default();
         let global_ctx = GlobalCtx::new(config);
 
         assert_eq!(global_ctx.get_tun_device_name(), None);
 
+        global_ctx.issue_event(GlobalCtxEvent::TunDeviceReady("ignored".to_string()));
+        assert_eq!(global_ctx.get_tun_device_name(), None);
+
+        global_ctx.set_tun_device_name(Some("easytier0".to_string()));
         global_ctx.issue_event(GlobalCtxEvent::TunDeviceReady("easytier0".to_string()));
         assert_eq!(
             global_ctx.get_tun_device_name(),
             Some("easytier0".to_string())
         );
 
+        global_ctx.set_tun_device_name(None);
         global_ctx.issue_event(GlobalCtxEvent::TunDeviceError("closed".to_string()));
         assert_eq!(global_ctx.get_tun_device_name(), None);
     }
