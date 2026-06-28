@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { Button, ConfirmPopup, Divider, IftaLabel, Menu, Message, Select, Tag, useConfirm, useToast, type VirtualScrollerLazyEvent } from 'primevue';
+import { Button, Checkbox, ConfirmPopup, Divider, IftaLabel, Menu, Message, Select, Tag, useConfirm, useToast, type VirtualScrollerLazyEvent } from 'primevue';
 import { computed, onMounted, onUnmounted, Ref, ref, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
 import * as Api from '../modules/api';
@@ -13,6 +13,8 @@ const props = defineProps<{
     api: Api.RemoteClient;
     newConfigGenerator?: () => NetworkTypes.NetworkConfig;
     pauseAutoRefresh?: boolean;
+    showAutoRunOnOnline?: boolean;
+    deviceOnline?: boolean;
 }>();
 
 const instanceId = defineModel('instanceId', {
@@ -31,11 +33,35 @@ const curNetworkInfo = ref<NetworkTypes.NetworkInstance | null>(null);
 const showConfigEditDialog = ref(false);
 const isEditingNetwork = ref(false); // Flag to indicate if we're in network editing mode
 const currentNetworkConfig = ref<NetworkTypes.NetworkConfig | undefined>(undefined);
+const autoRunOnOnline = ref(true);
+const autoRunOnOnlineTouched = ref(false);
+const autoRunOnOnlineInstanceId = ref<string | undefined>(undefined);
 
 const listInstanceIdResponse = ref<Api.ListNetworkInstanceIdResponse | undefined>(undefined);
 
 const isRunning = (instanceId: string) => {
     return listInstanceIdResponse.value?.running_inst_ids.map(Utils.UuidToStr).includes(instanceId);
+}
+
+const isAutoRunOnOnlineEnabled = (targetInstanceId: string) => {
+    const autoRunIds = listInstanceIdResponse.value?.auto_run_inst_ids;
+    if (!autoRunIds) {
+        return autoRunOnOnline.value;
+    }
+    return autoRunIds.map(Utils.UuidToStr).includes(targetInstanceId);
+}
+
+const markAutoRunOnOnlineTouched = () => {
+    autoRunOnOnlineTouched.value = true;
+}
+
+const syncAutoRunOnOnline = (targetInstanceId: string, force = false) => {
+    const isDifferentNetwork = autoRunOnOnlineInstanceId.value !== targetInstanceId;
+    if (force || isDifferentNetwork || !autoRunOnOnlineTouched.value) {
+        autoRunOnOnline.value = isAutoRunOnOnlineEnabled(targetInstanceId);
+        autoRunOnOnlineTouched.value = false;
+        autoRunOnOnlineInstanceId.value = targetInstanceId;
+    }
 }
 
 const networkMetaCache = ref<Record<string, Api.NetworkMeta>>({});
@@ -164,8 +190,13 @@ const loadCurrentNetworkConfig = async () => {
         return;
     }
 
+    if (!listInstanceIdResponse.value) {
+        await loadNetworkInstanceIds();
+    }
+
     let ret = await props.api.get_network_config(selectedInstanceId.value!.uuid);
     currentNetworkConfig.value = ret;
+    syncAutoRunOnOnline(selectedInstanceId.value.uuid);
 }
 
 const stopNetwork = async () => {
@@ -218,9 +249,18 @@ const saveAndRunNewNetwork = async (config?: NetworkTypes.NetworkConfig) => {
     }
 
     try {
-        if (networkIsDisabled.value) {
-            await props.api.save_config(cfg);
-            await props.api.update_network_instance_state(cfg.instance_id, false);
+        const shouldAutoRun = !props.showAutoRunOnOnline || autoRunOnOnline.value;
+
+        if (!shouldAutoRun) {
+            await props.api.save_config(cfg, false);
+            if (isRunning(cfg.instance_id)) {
+                await props.api.update_network_instance_state(cfg.instance_id, true);
+            }
+        } else if (networkIsDisabled.value) {
+            await props.api.save_config(cfg, true);
+            if (props.deviceOnline !== false) {
+                await props.api.update_network_instance_state(cfg.instance_id, false);
+            }
         } else {
             await props.api.run_network(cfg, currentNetworkControl.remoteSave.value);
         }
@@ -231,6 +271,8 @@ const saveAndRunNewNetwork = async (config?: NetworkTypes.NetworkConfig) => {
         selectedInstanceId.value = { uuid: cfg.instance_id };
         await loadNetworkInstanceIds();
         await loadCurrentNetworkInfo();
+        autoRunOnOnlineTouched.value = false;
+        autoRunOnOnlineInstanceId.value = cfg.instance_id;
     } catch (e: any) {
         console.error(e);
         toast.add({ severity: 'error', summary: 'Error', detail: 'Failed to run network, error: ' + JSON.stringify(e.response?.data ?? e), life: 2000 });
@@ -245,16 +287,22 @@ const saveNetworkConfig = async () => {
     if (!currentNetworkConfig.value) {
         return;
     }
-    await props.api.save_config(currentNetworkConfig.value);
+    const shouldAutoRun = !props.showAutoRunOnOnline || autoRunOnOnline.value;
+    await props.api.save_config(currentNetworkConfig.value, shouldAutoRun);
 
     delete networkMetaCache.value[currentNetworkConfig.value.instance_id];
     await loadNetworkMetas([currentNetworkConfig.value.instance_id]);
+    autoRunOnOnlineTouched.value = false;
+    autoRunOnOnlineInstanceId.value = currentNetworkConfig.value.instance_id;
 
     toast.add({ severity: 'success', summary: t("web.common.success"), detail: t("web.device_management.config_saved"), life: 2000 });
 }
 const newNetwork = async () => {
     const newNetworkConfig = props.newConfigGenerator?.() ?? NetworkTypes.DEFAULT_NETWORK_CONFIG();
-    await props.api.save_config(newNetworkConfig);
+    autoRunOnOnline.value = true;
+    autoRunOnOnlineTouched.value = false;
+    autoRunOnOnlineInstanceId.value = newNetworkConfig.instance_id;
+    await props.api.save_config(newNetworkConfig, true);
     selectedInstanceId.value = { uuid: newNetworkConfig.instance_id };
     currentNetworkConfig.value = newNetworkConfig;
     await loadNetworkInstanceIds();
@@ -271,9 +319,14 @@ const editNetwork = async () => {
     }
 
     try {
+        if (!listInstanceIdResponse.value) {
+            await loadNetworkInstanceIds();
+        }
+
         let ret = await props.api.get_network_config(instanceId.value!);
         console.debug("editNetwork", ret);
         currentNetworkConfig.value = ret;
+        syncAutoRunOnOnline(instanceId.value!, true);
         isEditingNetwork.value = true; // Switch to editing mode instead
     } catch (e: any) {
         console.error(e);
@@ -556,6 +609,20 @@ onUnmounted(() => {
                         severity="success" />
                 </div>
 
+                <div v-if="props.showAutoRunOnOnline && currentNetworkConfig"
+                    class="auto-run-card flex items-start gap-3 mb-3">
+                    <Checkbox v-model="autoRunOnOnline" input-id="auto-run-on-online" :binary="true"
+                        @update:model-value="markAutoRunOnOnlineTouched" />
+                    <div class="min-w-0">
+                        <label for="auto-run-on-online" class="auto-run-title">
+                            {{ t('web.device_management.auto_run_on_online') }}
+                        </label>
+                        <div class="auto-run-help">
+                            {{ t('web.device_management.auto_run_on_online_help') }}
+                        </div>
+                    </div>
+                </div>
+
                 <Divider />
 
                 <Config :cur-network="currentNetworkConfig" :config-invalid="!currentNetworkConfig"
@@ -613,6 +680,28 @@ onUnmounted(() => {
 .network-content {
     flex: 1;
     overflow-y: auto;
+}
+
+.auto-run-card {
+    border: 1px solid color-mix(in srgb, var(--primary-color, #3b82f6) 28%, var(--surface-border, #dbeafe));
+    border-radius: 0.5rem;
+    background: color-mix(in srgb, var(--primary-color, #3b82f6) 8%, var(--surface-card, #ffffff));
+    padding: 0.75rem 0.9rem;
+}
+
+.auto-run-title {
+    display: block;
+    color: var(--text-color, #1f2937);
+    font-weight: 600;
+    line-height: 1.25rem;
+    cursor: pointer;
+}
+
+.auto-run-help {
+    margin-top: 0.2rem;
+    color: var(--text-color-secondary, #64748b);
+    font-size: 0.88rem;
+    line-height: 1.25rem;
 }
 
 /* 按钮样式 */

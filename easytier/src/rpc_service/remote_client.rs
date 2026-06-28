@@ -122,29 +122,37 @@ where
         &self,
         identify: T,
     ) -> Result<ListNetworkInstanceIdsJsonResp, RemoteClientError<E>> {
-        let client = self
-            .get_rpc_client(identify.clone())
-            .ok_or(RemoteClientError::ClientNotFound)?;
-        let ret = client
-            .list_network_instance(BaseController::default(), ListNetworkInstanceRequest {})
-            .await?;
+        let running_inst_ids = if let Some(client) = self.get_rpc_client(identify.clone()) {
+            client
+                .list_network_instance(BaseController::default(), ListNetworkInstanceRequest {})
+                .await?
+                .inst_ids
+        } else {
+            Vec::new()
+        };
 
-        let running_inst_ids = ret.inst_ids.clone().into_iter().collect();
-
-        // collect networks that are disabled
-        let disabled_inst_ids = self
+        let stored_configs = self
             .get_storage()
             .list_network_configs(identify, ListNetworkProps::All)
             .await
-            .map_err(RemoteClientError::PersistentError)?
+            .map_err(RemoteClientError::PersistentError)?;
+
+        // collect networks that are not running for the existing stopped-list UI
+        let disabled_inst_ids = stored_configs
             .iter()
             .map(|x| Into::<crate::proto::common::Uuid>::into(x.get_network_inst_id().to_string()))
-            .filter(|id| !ret.inst_ids.contains(id))
+            .filter(|id| !running_inst_ids.contains(id))
+            .collect::<Vec<_>>();
+        let auto_run_inst_ids = stored_configs
+            .iter()
+            .filter(|x| !x.is_disabled())
+            .map(|x| Into::<crate::proto::common::Uuid>::into(x.get_network_inst_id().to_string()))
             .collect::<Vec<_>>();
 
         Ok(ListNetworkInstanceIdsJsonResp {
-            running_inst_ids,
+            running_inst_ids: running_inst_ids.into_iter().collect(),
             disabled_inst_ids,
+            auto_run_inst_ids,
         })
     }
 
@@ -296,12 +304,26 @@ where
         config: NetworkConfig,
         source: ConfigSource,
     ) -> Result<(), RemoteClientError<E>> {
+        self.handle_save_network_config_with_source_and_state(
+            identify, inst_id, config, source, true,
+        )
+        .await
+    }
+
+    async fn handle_save_network_config_with_source_and_state(
+        &self,
+        identify: T,
+        inst_id: uuid::Uuid,
+        config: NetworkConfig,
+        source: ConfigSource,
+        disabled: bool,
+    ) -> Result<(), RemoteClientError<E>> {
         self.get_storage()
             .insert_or_update_user_network_config(identify.clone(), inst_id, config, source)
             .await
             .map_err(RemoteClientError::PersistentError)?;
         self.get_storage()
-            .update_network_config_state(identify, inst_id, true)
+            .update_network_config_state(identify, inst_id, disabled)
             .await
             .map_err(RemoteClientError::PersistentError)?;
         Ok(())
@@ -391,6 +413,8 @@ pub enum ListNetworkProps {
 pub struct ListNetworkInstanceIdsJsonResp {
     running_inst_ids: Vec<crate::proto::common::Uuid>,
     disabled_inst_ids: Vec<crate::proto::common::Uuid>,
+    #[serde(default)]
+    auto_run_inst_ids: Vec<crate::proto::common::Uuid>,
 }
 
 #[derive(Debug, serde::Deserialize, serde::Serialize)]
@@ -402,6 +426,7 @@ pub trait PersistentConfig<E> {
     fn get_network_inst_id(&self) -> &str;
     fn get_network_config(&self) -> Result<NetworkConfig, E>;
     fn get_network_config_source(&self) -> ConfigSource;
+    fn is_disabled(&self) -> bool;
     fn get_runtime_network_config_source(&self) -> ConfigSource {
         self.get_network_config_source()
     }

@@ -60,6 +60,8 @@ struct ListSessionJsonResp(Vec<StorageToken>);
 #[derive(Debug, serde::Deserialize, serde::Serialize)]
 struct GetSummaryJsonResp {
     device_count: u32,
+    online_device_count: u32,
+    offline_device_count: u32,
 }
 
 #[derive(Debug, serde::Deserialize, serde::Serialize)]
@@ -149,10 +151,17 @@ impl RestfulServer {
             return Err((StatusCode::UNAUTHORIZED, other_error("No such user").into()));
         };
 
-        let machines = client_mgr.list_machine_by_user_id(user.id()).await;
+        let devices = client_mgr
+            .list_device_by_user_id(user.id())
+            .await
+            .map_err(convert_db_error)?;
+        let online_count = client_mgr.list_machine_by_user_id(user.id()).await.len() as u32;
+        let total_count = devices.len() as u32;
 
         Ok(GetSummaryJsonResp {
-            device_count: machines.len() as u32,
+            device_count: total_count,
+            online_device_count: online_count,
+            offline_device_count: total_count.saturating_sub(online_count),
         }
         .into())
     }

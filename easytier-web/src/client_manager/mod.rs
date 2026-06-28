@@ -26,6 +26,7 @@ use crate::FeatureFlags;
 use crate::webhook::{ManagedNetworkConfig, SharedWebhookConfig};
 use tokio::task::JoinSet;
 
+use crate::db::entity::user_devices;
 use crate::db::{Db, UserIdInDb, entity::user_running_network_configs};
 
 #[derive(rust_embed::Embed)]
@@ -170,9 +171,11 @@ impl ClientManager {
         user_id: UserIdInDb,
         machine_id: &uuid::Uuid,
     ) -> Option<Arc<Session>> {
-        let c_url = self
-            .storage
-            .get_client_url_by_machine_id(user_id, machine_id)?;
+        let c_url = self.storage.get_fresh_client_url_by_machine_id(
+            user_id,
+            machine_id,
+            chrono::Local::now().timestamp(),
+        )?;
         self.client_sessions
             .get(&c_url)
             .map(|item| item.value().clone())
@@ -197,7 +200,34 @@ impl ClientManager {
     }
 
     pub async fn list_machine_by_user_id(&self, user_id: UserIdInDb) -> Vec<url::Url> {
-        self.storage.list_user_clients(user_id)
+        self.storage
+            .list_fresh_clients(user_id, chrono::Local::now().timestamp())
+            .into_iter()
+            .map(|token| token.client_url)
+            .collect()
+    }
+
+    pub fn is_machine_online(&self, user_id: UserIdInDb, machine_id: &uuid::Uuid) -> bool {
+        self.storage
+            .is_machine_online(user_id, machine_id, chrono::Local::now().timestamp())
+    }
+
+    pub async fn list_device_by_user_id(
+        &self,
+        user_id: UserIdInDb,
+    ) -> Result<Vec<user_devices::Model>, sea_orm::DbErr> {
+        self.storage.list_user_devices(user_id).await
+    }
+
+    pub async fn update_device_remark(
+        &self,
+        user_id: UserIdInDb,
+        machine_id: uuid::Uuid,
+        remark: Option<String>,
+    ) -> Result<(), sea_orm::DbErr> {
+        self.storage
+            .update_device_remark(user_id, machine_id, remark)
+            .await
     }
 
     pub async fn reconcile_managed_network_configs(

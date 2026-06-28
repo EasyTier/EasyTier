@@ -34,11 +34,14 @@ export interface RegisterData {
 
 export interface Summary {
     device_count: number;
+    online_device_count: number;
+    offline_device_count: number;
 }
 
 export interface ListNetworkInstanceIdResponse {
     running_inst_ids: Array<Utils.UUID>,
     disabled_inst_ids: Array<Utils.UUID>,
+    auto_run_inst_ids?: Array<Utils.UUID>,
 }
 
 export interface GenerateConfigRequest {
@@ -174,6 +177,10 @@ export class ApiClient {
         return response;
     }
 
+    public async update_device_remark(machineId: string, remark: string | undefined): Promise<void> {
+        await this.client.put(`/machines/${machineId}/remark`, { remark });
+    }
+
     public captcha_url() {
         return this.client.defaults.baseURL + '/auth/captcha';
     }
@@ -232,9 +239,10 @@ class WebRemoteClient implements Api.RemoteClient {
             disabled: disabled,
         });
     }
-    async save_config(config: NetworkTypes.NetworkConfig): Promise<undefined> {
+    async save_config(config: NetworkTypes.NetworkConfig, autoRun?: boolean): Promise<undefined> {
         await this.client.put(`/machines/${this.machine_id}/networks/config/${config.instance_id}`, {
-            config: NetworkTypes.toBackendNetworkConfig(config)
+            config: NetworkTypes.toBackendNetworkConfig(config),
+            auto_run: autoRun,
         });
     }
     async get_network_config(inst_id: string): Promise<NetworkTypes.NetworkConfig> {
