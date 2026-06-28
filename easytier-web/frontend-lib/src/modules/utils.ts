@@ -2,7 +2,10 @@ import { IPv4, IPv6 } from 'ip-num/IPNumber'
 import { Ipv4Addr, Ipv4Inet, Ipv6Addr } from '../types/network'
 
 export function ipv4ToString(ip: Ipv4Addr | null | undefined) {
-    return IPv4.fromNumber(ip?.addr ?? 0).toString()
+    if (!ip) {
+        return ''
+    }
+    return IPv4.fromNumber(ip.addr ?? 0).toString()
 }
 
 export function ipv4InetToString(ip: Ipv4Inet | undefined) {
@@ -13,12 +16,15 @@ export function ipv4InetToString(ip: Ipv4Inet | undefined) {
 }
 
 export function ipv6ToString(ip: Ipv6Addr | null | undefined) {
+    if (!ip) {
+        return ''
+    }
     return IPv6.fromBigInt(
         (BigInt(ip?.part1 ?? 0) << BigInt(96))
         + (BigInt(ip?.part2 ?? 0) << BigInt(64))
         + (BigInt(ip?.part3 ?? 0) << BigInt(32))
         + BigInt(ip?.part4 ?? 0),
-    )
+    ).toString()
 }
 
 function toHexString(uint64: bigint, padding = 9): string {
