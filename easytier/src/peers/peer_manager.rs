@@ -1015,7 +1015,17 @@ impl PeerManager {
 
         self.tasks.lock().await.spawn(async move {
             tracing::trace!("start_peer_recv");
-            while let Ok(ret) = recv_packet_from_chan(&mut recv).await {
+            loop {
+                let ret = match recv.try_recv() {
+                    Ok(pkt) => pkt,
+                    Err(tokio::sync::mpsc::error::TryRecvError::Empty) => {
+                        match recv.recv().await {
+                            Some(pkt) => pkt,
+                            None => break,
+                        }
+                    }
+                    Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => break,
+                };
                 let disable_relay_data = global_ctx.flags_arc().disable_relay_data;
                 let Err(mut ret) = Self::try_handle_foreign_network_packet(
                     ret,

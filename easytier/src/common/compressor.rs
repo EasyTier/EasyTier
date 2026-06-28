@@ -129,6 +129,7 @@ impl Compressor for DefaultCompressor {
         Ok(())
     }
 
+    #[cfg_attr(feature = "hotpath", hotpath::measure(impl_type = "DefaultCompressor"))]
     async fn decompress(&self, zc_packet: &mut ZCPacket) -> Result<(), Error> {
         let pm_header = zc_packet.peer_manager_header().unwrap();
         if !pm_header.is_compressed() {
