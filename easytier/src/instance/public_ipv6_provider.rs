@@ -1518,6 +1518,36 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[serial_test::serial]
     #[tokio::test]
+    async fn test_detect_public_ipv6_prefix_from_interfaces_uses_default_route_iface() {
+        let wan_if = test_iface_name("dw");
+        let other_if = test_iface_name("do");
+        let _wan = ScopedDummyLink::new(&wan_if);
+        let _other = ScopedDummyLink::new(&other_if);
+
+        run_ip(&["-6", "addr", "add", "2001:db8:dddd::1/64", "dev", &wan_if]);
+        run_ip(&["-6", "addr", "add", "2001:db8::1/48", "dev", &other_if]);
+
+        let wan_ifindex = crate::common::ifcfg::get_interface_index(&wan_if).unwrap();
+        let other_ifindex = crate::common::ifcfg::get_interface_index(&other_if).unwrap();
+        let routes = vec![
+            route(None, None, Some(wan_ifindex), RouteType::Unicast),
+            route(
+                Some("2001:db8::/48"),
+                None,
+                Some(other_ifindex),
+                RouteType::Unicast,
+            ),
+        ];
+
+        let detected = detect_public_ipv6_prefix_from_interfaces(&routes)
+            .expect("fallback should select the default-route interface");
+        assert_eq!(detected.prefix, "2001:db8:dddd::/64".parse().unwrap());
+        assert_eq!(detected.ndp_proxy.unwrap().wan_iface, wan_if);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[serial_test::serial]
+    #[tokio::test]
     async fn test_configured_prefix_on_default_iface_gets_ndp_proxy_target() {
         let wan_if = test_iface_name("cp");
         let _wan = ScopedDummyLink::new(&wan_if);
