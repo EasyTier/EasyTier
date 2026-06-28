@@ -1994,6 +1994,18 @@ impl PeerManager {
         self.peers.clone()
     }
 
+    pub fn set_peer_conn_batch_threshold(&self, n: u32) {
+        let peers = self.peers.clone();
+        tokio::spawn(async move {
+            let peer_ids = peers.list_peers();
+            for peer_id in peer_ids {
+                if let Some(peer) = peers.get_peer_by_id(peer_id) {
+                    peer.set_batch_threshold(n);
+                }
+            }
+        });
+    }
+
     pub fn get_relay_peer_map(&self) -> Arc<RelayPeerMap> {
         self.relay_peer_map.clone()
     }

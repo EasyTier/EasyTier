@@ -126,6 +126,17 @@ async fn main() {
     let pm = inst_a.get_peer_manager();
     let send_pkt = make_data_packet(src, "10.144.144.2", pkt_size);
 
+    let batch_threshold: u32 = std::env::var("HOTPATH_BATCH")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(1);
+
+    // After convergence, enable batch flush for writev optimization
+    if converged && batch_threshold > 1 {
+        pm.set_peer_conn_batch_threshold(batch_threshold);
+        println!("cpu_hotspot_ring: batch_threshold={}", batch_threshold);
+    }
+
     let pipeline_depth: usize = std::env::var("HOTPATH_PIPELINE")
         .ok()
         .and_then(|s| s.parse().ok())

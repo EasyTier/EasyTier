@@ -268,6 +268,12 @@ impl Peer {
         self.default_conn_id.load()
     }
 
+    pub fn set_batch_threshold(&self, n: u32) {
+        for conn in self.conns.iter() {
+            conn.value().set_batch_threshold(n);
+        }
+    }
+
     pub fn get_peer_identity_type(&self) -> Option<PeerIdentityType> {
         self.peer_identity_type.load()
     }

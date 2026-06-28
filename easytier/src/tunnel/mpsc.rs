@@ -4,7 +4,7 @@ use std::{
     cell::UnsafeCell,
     pin::Pin,
     sync::Arc,
-    sync::atomic::{AtomicBool, Ordering},
+    sync::atomic::{AtomicBool, AtomicU32, Ordering},
     task::Poll,
     time::Duration,
 };
@@ -26,6 +26,8 @@ use futures::SinkExt;
 struct SpinSink {
     locked: AtomicBool,
     sink: UnsafeCell<Pin<Box<dyn ZCPacketSink>>>,
+    pending_count: AtomicU32,
+    batch_threshold: AtomicU32,
 }
 
 // SAFETY: access is serialized by the spinlock.
@@ -55,7 +57,13 @@ impl SpinSink {
         Self {
             locked: AtomicBool::new(false),
             sink: UnsafeCell::new(sink),
+            pending_count: AtomicU32::new(0),
+            batch_threshold: AtomicU32::new(1),
         }
+    }
+
+    fn set_batch_threshold(&self, n: u32) {
+        self.batch_threshold.store(n, Ordering::Relaxed);
     }
 
     fn try_lock(&self) -> Option<SpinGuard<'_>> {
@@ -89,17 +97,19 @@ impl MpscTunnelSender {
                 match guard.as_mut().poll_ready(&mut cx) {
                     Poll::Ready(Ok(())) => {
                         guard.as_mut().start_send(item)?;
-                        if self.direct_batch_flush {
-                            // RingSink: flush is no-op, data already in ring buffer.
-                            // Skip to allow poll_ready batching at max_buffer_count.
-                            return Ok(());
+                        let count = sink.pending_count.fetch_add(1, Ordering::Relaxed) + 1;
+                        let threshold = sink.batch_threshold.load(Ordering::Relaxed);
+                        if count >= threshold {
+                            sink.pending_count.store(0, Ordering::Relaxed);
+                            // Batch flush: writev all accumulated BufList entries.
+                            // RingSink: no-op. FramedWriter: single writev syscall.
+                            match guard.as_mut().poll_flush(&mut cx) {
+                                Poll::Ready(Err(e)) => return Err(e),
+                                _ => return Ok(()),
+                            }
                         }
-                        // FramedWriter (TCP): must flush per-packet, otherwise
-                        // noop_waker can't wake when socket is full.
-                        match guard.as_mut().poll_flush(&mut cx) {
-                            Poll::Ready(Err(e)) => return Err(e),
-                            _ => return Ok(()),
-                        }
+                        // Accumulate in BufList, no flush yet
+                        return Ok(());
                     }
                     Poll::Ready(Err(e)) => return Err(e),
                     Poll::Pending => return Err(TunnelError::BufferFull),
@@ -118,6 +128,12 @@ impl MpscTunnelSender {
             TrySendError::Full(_) => TunnelError::BufferFull,
             TrySendError::Closed(_) => TunnelError::Shutdown,
         })
+    }
+
+    pub fn set_batch_threshold(&self, n: u32) {
+        if let Some(sink) = &self.direct_sink {
+            sink.set_batch_threshold(n);
+        }
     }
 
     pub async fn send_async(&self, item: ZCPacket) -> Result<(), TunnelError> {

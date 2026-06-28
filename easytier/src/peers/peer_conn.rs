@@ -451,6 +451,10 @@ impl PeerConn {
         self.conn_id
     }
 
+    pub fn set_batch_threshold(&self, n: u32) {
+        self.sink.set_batch_threshold(n);
+    }
+
     pub fn set_is_hole_punched(&mut self, is_hole_punched: bool) {
         self.is_hole_punched = is_hole_punched;
     }
