@@ -87,9 +87,12 @@ impl MpscTunnelSender {
                 match guard.as_mut().poll_ready(&mut cx) {
                     Poll::Ready(Ok(())) => {
                         guard.as_mut().start_send(item)?;
+                        // poll_flush may return Pending when the consumer task hasn't
+                        // drained the ring yet. The data is already in the ring buffer
+                        // and will be consumed — treat Pending as success.
                         match guard.as_mut().poll_flush(&mut cx) {
-                            Poll::Ready(Ok(())) => return Ok(()),
-                            _ => return Err(TunnelError::Shutdown),
+                            Poll::Ready(Err(e)) => return Err(e),
+                            _ => return Ok(()),
                         }
                     }
                     Poll::Ready(Err(e)) => return Err(e),
