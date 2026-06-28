@@ -412,8 +412,9 @@ impl UdpConnection {
             if let Err(e) = self.ring_sender.try_send(zc_packet) {
                 tracing::trace!(?e, "ring sender full, drop lossy packet");
             }
-        } else if let Err(e) = self.ring_sender.force_send(zc_packet) {
-            tracing::trace!(?e, "ring sender full, drop non-lossy packet");
+        } else if self.ring_sender.force_send(zc_packet).is_err() {
+            tracing::trace!("ring sender full, reject non-lossy packet");
+            return Err(TunnelError::BufferFull);
         }
 
         Ok(())
@@ -839,7 +840,9 @@ impl UdpTunnelConnector {
                     }
                 }
             }
-            return Err(TunnelError::InvalidPacket("not sack packet".to_owned()));
+            return Err(TunnelError::InvalidPacket(
+                "got hole punch packet while waiting for sack".to_owned(),
+            ));
         }
         if recv_addr != addr {
             tracing::warn!(?recv_addr, ?addr, ?usize, "udp wait sack addr not match");
@@ -1165,10 +1168,19 @@ mod tests {
             conn.handle_packet_from_remote(new_udp_data_packet(7, PacketType::Data))
                 .unwrap();
         }
+
+        let mut got_buffer_full = false;
         for _ in 0..16 {
-            conn.handle_packet_from_remote(new_udp_data_packet(7, PacketType::Ping))
-                .unwrap();
+            match conn.handle_packet_from_remote(new_udp_data_packet(7, PacketType::Ping)) {
+                Ok(()) => {}
+                Err(TunnelError::BufferFull) => {
+                    got_buffer_full = true;
+                    break;
+                }
+                Err(e) => panic!("unexpected error: {e:?}"),
+            }
         }
+        assert!(got_buffer_full);
     }
 
     #[tokio::test]
