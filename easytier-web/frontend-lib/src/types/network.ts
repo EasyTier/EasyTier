@@ -16,11 +16,16 @@ import {
   type GroupInfo,
   type Rule as AclRule,
 } from '../generated/proto/acl'
-import { CompressionAlgoPb, NatType, type SecureModeConfig } from '../generated/proto/common'
+import {
+  CompressionAlgoPb,
+  NatType,
+  type PeerFeatureFlag,
+  type SecureModeConfig,
+} from '../generated/proto/common'
 import { prepareNetworkConfigForProtoJson } from './networkCompat'
 
 export { AclAction, AclChainType, AclProtocol, CompressionAlgoPb, NatType, NetworkingMethod }
-export type { Acl, AclChain, AclRule, AclV1, GroupIdentity, GroupInfo, PortForwardConfig, SecureModeConfig }
+export type { Acl, AclChain, AclRule, AclV1, GroupIdentity, GroupInfo, PeerFeatureFlag, PortForwardConfig, SecureModeConfig }
 
 export type NetworkConfig = Omit<
   ProtoNetworkConfig,
@@ -368,6 +373,7 @@ export interface Route {
   proxy_cidrs: string[]
   hostname: string
   stun_info?: StunInfo
+  feature_flag?: PeerFeatureFlag
   inst_id: string
   version: string
 }
