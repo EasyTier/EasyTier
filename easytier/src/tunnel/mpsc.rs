@@ -2,7 +2,6 @@
 
 use std::{
     cell::UnsafeCell,
-    future::poll_fn,
     pin::Pin,
     sync::Arc,
     sync::atomic::{AtomicBool, Ordering},
@@ -82,29 +81,38 @@ impl MpscTunnelSender {
     #[cfg_attr(feature = "hotpath", hotpath::measure(impl_type = "MpscTunnelSender"))]
     pub async fn send(&self, item: ZCPacket) -> Result<(), TunnelError> {
         if let Some(sink) = &self.direct_sink {
-            let mut item = Some(item);
-            loop {
-                if let Some(mut guard) = sink.try_lock() {
-                    let result = poll_fn(|cx| {
-                        match guard.as_mut().poll_ready(cx) {
-                            Poll::Ready(Ok(())) => {
-                                let it = item.take().unwrap();
-                                if let Err(e) = guard.as_mut().start_send(it) {
-                                    return Poll::Ready(Err(e));
-                                }
-                                guard.as_mut().poll_flush(cx)
-                            }
-                            Poll::Ready(Err(e)) => Poll::Ready(Err(e)),
-                            Poll::Pending => Poll::Pending,
+            // Sync fast path: no await needed, returns immediately
+            if let Some(mut guard) = sink.try_lock() {
+                let waker = futures::task::noop_waker();
+                let mut cx = std::task::Context::from_waker(&waker);
+                match guard.as_mut().poll_ready(&mut cx) {
+                    Poll::Ready(Ok(())) => {
+                        guard.as_mut().start_send(item)?;
+                        match guard.as_mut().poll_flush(&mut cx) {
+                            Poll::Ready(Ok(())) => return Ok(()),
+                            _ => return Err(TunnelError::Shutdown),
                         }
-                    })
-                    .await;
-                    return result;
+                    }
+                    Poll::Ready(Err(e)) => return Err(e),
+                    Poll::Pending => return Err(TunnelError::BufferFull),
                 }
-                tokio::task::yield_now().await;
             }
+            return Err(TunnelError::BufferFull);
         }
 
+        // Channel mode: async with backpressure
+        self.send_async(item).await
+    }
+
+    pub fn try_send(&self, item: ZCPacket) -> Result<(), TunnelError> {
+        let tx = self.channel_tx.as_ref().ok_or(TunnelError::Shutdown)?;
+        tx.try_send(item).map_err(|e| match e {
+            TrySendError::Full(_) => TunnelError::BufferFull,
+            TrySendError::Closed(_) => TunnelError::Shutdown,
+        })
+    }
+
+    pub async fn send_async(&self, item: ZCPacket) -> Result<(), TunnelError> {
         let tx = self.channel_tx.as_ref().ok_or(TunnelError::Shutdown)?;
         match tx.try_send(item) {
             Ok(()) => Ok(()),
@@ -114,14 +122,6 @@ impl MpscTunnelSender {
             }
             Err(TrySendError::Closed(_)) => Err(TunnelError::Shutdown),
         }
-    }
-
-    pub fn try_send(&self, item: ZCPacket) -> Result<(), TunnelError> {
-        let tx = self.channel_tx.as_ref().ok_or(TunnelError::Shutdown)?;
-        tx.try_send(item).map_err(|e| match e {
-            TrySendError::Full(_) => TunnelError::BufferFull,
-            TrySendError::Closed(_) => TunnelError::Shutdown,
-        })
     }
 }
 
@@ -304,8 +304,7 @@ mod tests {
             for i in 0..1000000 {
                 tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
                 let a = sink1
-                    .send(ZCPacket::new_with_payload("hello".as_bytes()))
-                    .await;
+                    .send_async(ZCPacket::new_with_payload("hello".as_bytes())).await;
                 if a.is_err() {
                     tracing::info!(?a, "t2 exit with err");
                     break;
@@ -324,8 +323,7 @@ mod tests {
             for i in 0..1000000 {
                 tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
                 let a = sink2
-                    .send(ZCPacket::new_with_payload("hello2".as_bytes()))
-                    .await;
+                    .send_async(ZCPacket::new_with_payload("hello2".as_bytes())).await;
                 if a.is_err() {
                     tracing::info!(?a, "t3 exit with err");
                     break;
