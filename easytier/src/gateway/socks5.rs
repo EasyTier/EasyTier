@@ -191,8 +191,15 @@ impl AsyncTcpConnector for SmolTcpConnector {
         };
         *self.current_entry.lock().unwrap() = Some(entry.clone());
         self.entries
-            .insert(entry, Socks5EntryData::Tcp(tmp_listener));
-        self.entry_count.fetch_add(1, Ordering::Relaxed);
+            .insert(entry.clone(), Socks5EntryData::Tcp(tmp_listener));
+        let old_entry_count = self.entry_count.fetch_add(1, Ordering::Relaxed);
+        tracing::trace!(
+            ?entry,
+            old_entry_count,
+            new_entry_count = old_entry_count + 1,
+            entries_len = self.entries.len(),
+            "socks5 inserted smoltcp tcp connector entry"
+        );
 
         if addr.ip() == local_addr {
             let modified_addr =
@@ -220,8 +227,16 @@ impl Drop for SmolTcpConnector {
     fn drop(&mut self) {
         if let Some(entry) = self.current_entry.lock().unwrap().take() {
             tracing::debug!("drop smoltcp connector entry {:?}", entry);
-            self.entries.remove(&entry);
-            self.entry_count.fetch_sub(1, Ordering::Relaxed);
+            let removed = self.entries.remove(&entry).is_some();
+            let old_entry_count = self.entry_count.fetch_sub(1, Ordering::Relaxed);
+            tracing::trace!(
+                ?entry,
+                removed,
+                old_entry_count,
+                new_entry_count = old_entry_count.saturating_sub(1),
+                entries_len = self.entries.len(),
+                "socks5 removed smoltcp tcp connector entry"
+            );
         }
     }
 }
@@ -294,11 +309,26 @@ impl AsyncTcpConnector for Socks5AutoConnector {
             addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), addr.port());
         }
 
-        if self.smoltcp_net.is_none()
-            || peer_mgr_arc.get_msg_dst_peer(&addr.ip()).await.0.is_empty()
+        let has_smoltcp_net = self.smoltcp_net.is_some();
+        let dst_peers = if has_smoltcp_net && !addr.ip().is_loopback() {
+            Some(peer_mgr_arc.get_msg_dst_peer(&addr.ip()).await.0)
+        } else {
+            None
+        };
+
+        if !has_smoltcp_net
+            || dst_peers.as_ref().is_some_and(Vec::is_empty)
             || addr.ip().is_loopback()
         {
             // cannot find dst in virtual network, so try connect to dst directly
+            tracing::trace!(
+                ?addr,
+                src_addr = ?self.src_addr,
+                has_smoltcp_net,
+                dst_peer_count = dst_peers.as_ref().map(Vec::len),
+                is_loopback = addr.ip().is_loopback(),
+                "socks5 auto connector falling back to kernel tcp connect"
+            );
             return Ok(SocksTcpStream::Tcp(
                 tcp_connect_with_timeout(addr, timeout_s).await?,
             ));
@@ -310,25 +340,51 @@ impl AsyncTcpConnector for Socks5AutoConnector {
         #[cfg(feature = "kcp")]
         let connector: Box<dyn AsyncTcpConnector<S = SocksTcpStream> + Send> =
             match (&self.kcp_endpoint, dst_allow_kcp) {
-                (Some(kcp_endpoint), true) => Box::new(Socks5KcpConnector {
-                    kcp_endpoint: kcp_endpoint.clone(),
-                    peer_mgr: self.peer_mgr.clone(),
-                    src_addr: self.src_addr,
-                }),
-                (_, _) => Box::new(SmolTcpConnector {
-                    net: self.smoltcp_net.clone().unwrap(),
-                    entries: self.entries.clone(),
-                    entry_count: self.entry_count.clone(),
-                    current_entry: std::sync::Mutex::new(None),
-                }),
+                (Some(kcp_endpoint), true) => {
+                    tracing::trace!(
+                        ?addr,
+                        src_addr = ?self.src_addr,
+                        dst_peer_count = dst_peers.as_ref().map(Vec::len),
+                        "socks5 auto connector selected kcp"
+                    );
+                    Box::new(Socks5KcpConnector {
+                        kcp_endpoint: kcp_endpoint.clone(),
+                        peer_mgr: self.peer_mgr.clone(),
+                        src_addr: self.src_addr,
+                    })
+                }
+                (_, _) => {
+                    tracing::trace!(
+                        ?addr,
+                        src_addr = ?self.src_addr,
+                        dst_peer_count = dst_peers.as_ref().map(Vec::len),
+                        dst_allow_kcp,
+                        has_kcp_endpoint = self.kcp_endpoint.is_some(),
+                        "socks5 auto connector selected smoltcp"
+                    );
+                    Box::new(SmolTcpConnector {
+                        net: self.smoltcp_net.clone().unwrap(),
+                        entries: self.entries.clone(),
+                        entry_count: self.entry_count.clone(),
+                        current_entry: std::sync::Mutex::new(None),
+                    })
+                }
             };
         #[cfg(not(feature = "kcp"))]
-        let connector = Box::new(SmolTcpConnector {
-            net: self.smoltcp_net.clone().unwrap(),
-            entries: self.entries.clone(),
-            entry_count: self.entry_count.clone(),
-            current_entry: std::sync::Mutex::new(None),
-        });
+        let connector = {
+            tracing::trace!(
+                ?addr,
+                src_addr = ?self.src_addr,
+                dst_peer_count = dst_peers.as_ref().map(Vec::len),
+                "socks5 auto connector selected smoltcp"
+            );
+            Box::new(SmolTcpConnector {
+                net: self.smoltcp_net.clone().unwrap(),
+                entries: self.entries.clone(),
+                entry_count: self.entry_count.clone(),
+                current_entry: std::sync::Mutex::new(None),
+            })
+        };
 
         let ret = connector.tcp_connect(addr, timeout_s).await;
         self.inner_connector.lock().replace(Box::new(connector));
@@ -503,12 +559,63 @@ pub struct Socks5Server {
 #[async_trait::async_trait]
 impl PeerPacketFilter for Socks5Server {
     async fn try_process_packet_from_peer(&self, packet: ZCPacket) -> Option<ZCPacket> {
-        if self.entry_count.load(Ordering::Relaxed) == 0
-            && !self.socks5_enabled.load(Ordering::Relaxed)
-        {
+        let entry_count = self.entry_count.load(Ordering::Relaxed);
+        let socks5_enabled = self.socks5_enabled.load(Ordering::Relaxed);
+        if entry_count == 0 && !socks5_enabled {
+            if tracing::enabled!(tracing::Level::TRACE) {
+                if let Some(hdr) = packet.peer_manager_header()
+                    && matches!(
+                        hdr.packet_type,
+                        x if x == PacketType::Data as u8
+                            || x == PacketType::DataWithKcpSrcModified as u8
+                            || x == PacketType::DataWithQuicSrcModified as u8
+                    )
+                {
+                    if let Some(ipv4) = Ipv4Packet::new(packet.payload()) {
+                        let (tcp_src_port, tcp_dst_port, tcp_flags) =
+                            if ipv4.get_next_level_protocol() == IpNextHeaderProtocols::Tcp {
+                                TcpPacket::new(ipv4.payload())
+                                    .map(|tcp| {
+                                        (
+                                            Some(tcp.get_source()),
+                                            Some(tcp.get_destination()),
+                                            Some(tcp.get_flags()),
+                                        )
+                                    })
+                                    .unwrap_or((None, None, None))
+                            } else {
+                                (None, None, None)
+                            };
+                        tracing::trace!(
+                            packet_type = hdr.packet_type,
+                            from_peer_id = hdr.from_peer_id.get(),
+                            to_peer_id = hdr.to_peer_id.get(),
+                            ipv4_src = %ipv4.get_source(),
+                            ipv4_dst = %ipv4.get_destination(),
+                            next_protocol = ?ipv4.get_next_level_protocol(),
+                            ?tcp_src_port,
+                            ?tcp_dst_port,
+                            ?tcp_flags,
+                            entry_count,
+                            socks5_enabled,
+                            entries_len = self.entries.len(),
+                            "socks5 fast gate passed packet from peer"
+                        );
+                    } else {
+                        tracing::trace!(
+                            packet_type = hdr.packet_type,
+                            from_peer_id = hdr.from_peer_id.get(),
+                            to_peer_id = hdr.to_peer_id.get(),
+                            entry_count,
+                            socks5_enabled,
+                            entries_len = self.entries.len(),
+                            "socks5 fast gate passed non-ipv4 packet from peer"
+                        );
+                    }
+                }
+            }
             return Some(packet);
         }
-
         let hdr = packet.peer_manager_header().unwrap();
         if !matches!(
             hdr.packet_type,
@@ -528,7 +635,7 @@ impl PeerPacketFilter for Socks5Server {
             return Some(packet);
         }
 
-        let entry_key = match ipv4.get_next_level_protocol() {
+        let (entry_key, tcp_flags) = match ipv4.get_next_level_protocol() {
             IpNextHeaderProtocols::Tcp => {
                 let Some(tcp_packet) = TcpPacket::new(ipv4.payload()) else {
                     return Some(packet);
@@ -553,7 +660,7 @@ impl PeerPacketFilter for Socks5Server {
                         entry_type: TCP_LISTEN_ENTRY,
                     }
                 };
-                entry
+                (entry, Some(tcp_packet.get_flags()))
             }
 
             IpNextHeaderProtocols::Udp => {
@@ -569,7 +676,21 @@ impl PeerPacketFilter for Socks5Server {
                     if is_in_entries {
                         // if the packet is fragmented, no matther what the payload is, need send it to both smoltcp and kernel tun. because
                         // we cannot determine the udp port of the packet.
-                        let _ = self.packet_sender.try_send(packet.clone()).ok();
+                        match self.packet_sender.try_send(packet.clone()) {
+                            Ok(()) => tracing::trace!(
+                                ?ipv4_src,
+                                entry_count = self.entry_count.load(Ordering::Relaxed),
+                                entries_len = self.entries.len(),
+                                "socks5 delivered fragmented packet from peer to smoltcp"
+                            ),
+                            Err(err) => tracing::trace!(
+                                ?ipv4_src,
+                                ?err,
+                                entry_count = self.entry_count.load(Ordering::Relaxed),
+                                entries_len = self.entries.len(),
+                                "socks5 failed to deliver fragmented packet from peer to smoltcp"
+                            ),
+                        }
                     }
                     return Some(packet);
                 }
@@ -577,14 +698,17 @@ impl PeerPacketFilter for Socks5Server {
                 let Some(udp_packet) = UdpPacket::new(ipv4.payload()) else {
                     return Some(packet);
                 };
-                Socks5Entry {
-                    dst: SocketAddr::new(ipv4.get_source().into(), udp_packet.get_source()),
-                    src: SocketAddr::new(
-                        ipv4.get_destination().into(),
-                        udp_packet.get_destination(),
-                    ),
-                    entry_type: UDP_ENTRY,
-                }
+                (
+                    Socks5Entry {
+                        dst: SocketAddr::new(ipv4.get_source().into(), udp_packet.get_source()),
+                        src: SocketAddr::new(
+                            ipv4.get_destination().into(),
+                            udp_packet.get_destination(),
+                        ),
+                        entry_type: UDP_ENTRY,
+                    },
+                    None,
+                )
             }
             _ => {
                 return Some(packet);
@@ -592,12 +716,45 @@ impl PeerPacketFilter for Socks5Server {
         };
 
         if !self.entries.contains_key(&entry_key) {
+            tracing::trace!(
+                ?entry_key,
+                ?tcp_flags,
+                ipv4_src = %ipv4.get_source(),
+                ipv4_dst = %ipv4.get_destination(),
+                entry_count = self.entry_count.load(Ordering::Relaxed),
+                entries_len = self.entries.len(),
+                socks5_enabled = self.socks5_enabled.load(Ordering::Relaxed),
+                "socks5 no entry for packet from peer"
+            );
             return Some(packet);
         }
 
-        tracing::trace!(?entry_key, ?ipv4, "socks5 found entry for packet from peer");
+        tracing::trace!(
+            ?entry_key,
+            ?tcp_flags,
+            ?ipv4,
+            entry_count = self.entry_count.load(Ordering::Relaxed),
+            entries_len = self.entries.len(),
+            "socks5 found entry for packet from peer"
+        );
 
-        let _ = self.packet_sender.try_send(packet).ok();
+        match self.packet_sender.try_send(packet) {
+            Ok(()) => tracing::trace!(
+                ?entry_key,
+                ?tcp_flags,
+                entry_count = self.entry_count.load(Ordering::Relaxed),
+                entries_len = self.entries.len(),
+                "socks5 delivered packet from peer to smoltcp"
+            ),
+            Err(err) => tracing::trace!(
+                ?entry_key,
+                ?tcp_flags,
+                ?err,
+                entry_count = self.entry_count.load(Ordering::Relaxed),
+                entries_len = self.entries.len(),
+                "socks5 failed to deliver packet from peer to smoltcp"
+            ),
+        }
 
         None
     }
@@ -783,11 +940,22 @@ impl Socks5Server {
                 #[cfg(not(feature = "ffi-dataplane"))]
                 let data_plane_active = false;
 
-                if cancel_tokens.is_empty()
-                    && !socks5_enabled.load(Ordering::Relaxed)
-                    && !data_plane_active
-                {
-                    let _ = net.lock().await.take();
+                let active_port_forwards = cancel_tokens.len();
+                let is_socks5_enabled = socks5_enabled.load(Ordering::Relaxed);
+                if active_port_forwards == 0 && !is_socks5_enabled && !data_plane_active {
+                    let had_net = {
+                        let mut net_guard = net.lock().await;
+                        net_guard.take().is_some()
+                    };
+                    tracing::trace!(
+                        had_net,
+                        active_port_forwards,
+                        is_socks5_enabled,
+                        data_plane_active,
+                        entry_count = entry_count.load(Ordering::Relaxed),
+                        entries_len = entries.len(),
+                        "socks5 net update waiting for consumers"
+                    );
                     #[cfg(feature = "ffi-dataplane")]
                     let _ = data_plane_net_ready.send_replace(false);
                     port_forward_list_change_notifier.notified().await;
@@ -798,13 +966,30 @@ impl Socks5Server {
 
                 let cur_ipv4 = global_ctx.get_ipv4();
                 if prev_ipv4 != cur_ipv4 {
+                    let old_ipv4 = prev_ipv4;
                     prev_ipv4 = cur_ipv4;
 
+                    tracing::trace!(
+                        ?old_ipv4,
+                        ?cur_ipv4,
+                        old_entry_count = entry_count.load(Ordering::Relaxed),
+                        old_entries_len = entries.len(),
+                        udp_client_count = udp_client_map.len(),
+                        "socks5 net update resetting entries for ipv4 change"
+                    );
                     entries.retain(|_, _| {
                         entry_count.fetch_sub(1, Ordering::Relaxed);
                         false
                     });
                     udp_client_map.clear();
+                    tracing::trace!(
+                        ?old_ipv4,
+                        ?cur_ipv4,
+                        new_entry_count = entry_count.load(Ordering::Relaxed),
+                        new_entries_len = entries.len(),
+                        udp_client_count = udp_client_map.len(),
+                        "socks5 net update reset entries complete"
+                    );
 
                     if let Some(cur_ipv4) = cur_ipv4 {
                         net.lock().await.replace(Socks5ServerNet::new(
@@ -814,12 +999,23 @@ impl Socks5Server {
                             packet_recv.clone(),
                             entries.clone(),
                         ));
+                        tracing::trace!(
+                            ?cur_ipv4,
+                            entry_count = entry_count.load(Ordering::Relaxed),
+                            entries_len = entries.len(),
+                            "socks5 net update installed smoltcp net"
+                        );
                         // Wake any data-plane callers waiting in
                         // `wait_data_plane_net` for the smoltcp net to appear.
                         #[cfg(feature = "ffi-dataplane")]
                         let _ = data_plane_net_ready.send_replace(true);
                     } else {
                         let _ = net.lock().await.take();
+                        tracing::trace!(
+                            entry_count = entry_count.load(Ordering::Relaxed),
+                            entries_len = entries.len(),
+                            "socks5 net update removed smoltcp net"
+                        );
                         #[cfg(feature = "ffi-dataplane")]
                         let _ = data_plane_net_ready.send_replace(false);
                     }
@@ -902,6 +1098,13 @@ impl Socks5Server {
         peer_manager
             .add_packet_process_pipeline(Box::new(self.clone()))
             .await;
+        tracing::trace!(
+            cfg_count = cfgs.len(),
+            cancel_token_count = self.cancel_tokens.len(),
+            entry_count = self.entry_count.load(Ordering::Relaxed),
+            entries_len = self.entries.len(),
+            "socks5 peer packet pipeline registered"
+        );
 
         self.run_net_update_task().await;
 
@@ -934,6 +1137,7 @@ impl Socks5Server {
         connector: Box<dyn AsyncTcpConnector<S = SocksTcpStream> + Send>,
         dst_addr: SocketAddr,
     ) {
+        tracing::trace!(?dst_addr, "port forward: connecting to destination");
         let outgoing_socket = match connector.tcp_connect(dst_addr, 10).await {
             Ok(socket) => socket,
             Err(e) => {
@@ -941,6 +1145,7 @@ impl Socks5Server {
                 return;
             }
         };
+        tracing::trace!(?dst_addr, "port forward: connected to destination");
 
         let mut outgoing_socket = outgoing_socket;
         match tokio::io::copy_bidirectional(&mut incoming_socket, &mut outgoing_socket).await {
@@ -1027,12 +1232,30 @@ impl Socks5Server {
                     dst_addr
                 );
 
+                let (smoltcp_net, net_ipv4) = {
+                    let net_guard = net.lock().await;
+                    (
+                        net_guard.as_ref().map(|net| net.smoltcp_net.clone()),
+                        net_guard.as_ref().map(|net| net.ipv4_addr),
+                    )
+                };
+                tracing::trace!(
+                    ?bind_addr,
+                    ?dst_addr,
+                    client_addr = ?addr,
+                    has_smoltcp_net = smoltcp_net.is_some(),
+                    ?net_ipv4,
+                    entry_count = entry_count.load(Ordering::Relaxed),
+                    entries_len = entries.len(),
+                    "port forward: preparing connector"
+                );
+
                 let connector = Socks5AutoConnector {
                     #[cfg(feature = "kcp")]
                     kcp_endpoint: kcp_endpoint.clone(),
                     peer_mgr: peer_mgr.clone(),
                     entries: entries.clone(),
-                    smoltcp_net: net.lock().await.as_ref().map(|net| net.smoltcp_net.clone()),
+                    smoltcp_net,
                     src_addr: addr,
                     entry_count: entry_count.clone(),
                     inner_connector: parking_lot::Mutex::new(None),
