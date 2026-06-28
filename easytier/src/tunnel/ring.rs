@@ -130,6 +130,7 @@ impl RingSink {
     }
 }
 
+#[cfg_attr(feature = "hotpath", hotpath::measure_all)]
 impl Sink<SinkItem> for RingSink {
     type Error = SinkError;
 
