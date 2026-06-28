@@ -75,6 +75,7 @@ impl SpinSink {
 pub struct MpscTunnelSender {
     channel_tx: Option<Sender<ZCPacket>>,
     direct_sink: Option<Arc<SpinSink>>,
+    direct_batch_flush: bool,
 }
 
 impl MpscTunnelSender {
@@ -88,9 +89,13 @@ impl MpscTunnelSender {
                 match guard.as_mut().poll_ready(&mut cx) {
                     Poll::Ready(Ok(())) => {
                         guard.as_mut().start_send(item)?;
-                        // poll_flush may return Pending when the consumer task hasn't
-                        // drained the ring yet. The data is already in the ring buffer
-                        // and will be consumed — treat Pending as success.
+                        if self.direct_batch_flush {
+                            // RingSink: flush is no-op, data already in ring buffer.
+                            // Skip to allow poll_ready batching at max_buffer_count.
+                            return Ok(());
+                        }
+                        // FramedWriter (TCP): must flush per-packet, otherwise
+                        // noop_waker can't wake when socket is full.
                         match guard.as_mut().poll_flush(&mut cx) {
                             Poll::Ready(Err(e)) => return Err(e),
                             _ => return Ok(()),
@@ -131,6 +136,7 @@ impl MpscTunnelSender {
 pub struct MpscTunnel<T> {
     tx: Option<Sender<ZCPacket>>,
     direct_sink: Option<Arc<SpinSink>>,
+    direct_batch_flush: bool,
 
     tunnel: T,
     stream: Option<Pin<Box<dyn ZCPacketStream>>>,
@@ -158,6 +164,7 @@ impl<T: Tunnel> MpscTunnel<T> {
         Self {
             tx: Some(tx),
             direct_sink: None,
+            direct_batch_flush: false,
             tunnel,
             stream: Some(stream),
             task: Some(AbortOnDropHandle::new(task)),
@@ -166,9 +173,15 @@ impl<T: Tunnel> MpscTunnel<T> {
 
     pub fn new_direct(tunnel: T) -> Self {
         let (stream, sink) = tunnel.split();
+        let info = tunnel.info();
+        let batch_flush = info
+            .as_ref()
+            .map(|i| matches!(i.tunnel_type.as_str(), "ring" | "udp"))
+            .unwrap_or(false);
         Self {
             tx: None,
             direct_sink: Some(Arc::new(SpinSink::new(sink))),
+            direct_batch_flush: batch_flush,
             tunnel,
             stream: Some(stream),
             task: None,
@@ -239,6 +252,7 @@ impl<T: Tunnel> MpscTunnel<T> {
         MpscTunnelSender {
             channel_tx: self.tx.as_ref().cloned(),
             direct_sink: self.direct_sink.clone(),
+            direct_batch_flush: self.direct_batch_flush,
         }
     }
 
