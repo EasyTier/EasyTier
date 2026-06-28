@@ -6,13 +6,37 @@
 
 ## 最终 benchmark 数据
 
+### 带 hotpath profiling（timing 可见，但有 observer effect）
+
 | Tunnel | 原始 pps | 优化后 pps | 提升 | MpscTunnelSender::send |
 |--------|---------|-----------|------|----------------------|
-| Ring   | 234K    | 508K      | +117%| 138ns (原 2.23µs)    |
+| Ring   | 234K    | 478K      | +104%| 138ns (原 2.23µs)    |
 | UDP    | N/A     | 440K      | —    | 294ns               |
-| TCP    | N/A     | 440K      | —    | 376ns               |
+| TCP    | N/A     | 453K      | —    | 378ns               |
 
-测试条件：4 threads, 1400B packets, 10s, Docker 容器内。
+### 不带 hotpath（真实生产性能）
+
+| Tunnel | 优化后 pps | 带宽 | 每包成本 |
+|--------|-----------|------|---------|
+| Ring   | **1,105K** | 12.4 Gbps | 0.91µs |
+| TCP    | **984K**   | 11.0 Gbps | 1.02µs |
+
+### hotpath observer effect
+
+**hotpath 测量基础设施引入了 ~54-57% 的性能开销：**
+
+| Tunnel | 不带 hotpath | 带 hotpath | hotpath 开销 |
+|--------|-------------|-----------|-------------|
+| Ring   | 1,105K pps  | 478K pps  | **-57%**    |
+| TCP    | 984K pps    | 453K pps  | **-54%**    |
+
+**含义：**
+- timing 数据里的 `send_msg_by_ip: 2.15µs` 是膨胀值，真实成本 ~1.0µs
+- 所有 timing 数据需要按 ~2.3x 校准才能反映真实开销
+- hotpath 适用于相对比较（优化前 vs 后），不适用于绝对性能评估
+- 生产环境部署不应用 hotpath feature 编译
+
+测试条件：4 threads, 1400B packets, 10s, 宿主机直跑（TCP/UDP）/ Docker 容器（带 netns）。
 
 ---
 
@@ -55,9 +79,19 @@ debug = "line-tables-only"
 
 samply 需要 debug symbols 且不能 strip。release profile 默认 `strip = true`，必须用单独的 profile。
 
-### Docker 隔离环境
+### Docker 隔离环境（可选，TCP/UDP bench）
 
-TCP/UDP bench 需要独立网络命名空间。Docker 天然提供：
+修复 loopback bind 地址后（见坑 11），TCP/UDP bench 可以直接在宿主机上跑，不需要 Docker：
+
+```bash
+# Ring（进程内，无需隔离）
+HOTPATH_TUNNEL=ring ./target/hotpath/examples/cpu_hotspot_ring
+
+# TCP/UDP（修复后也支持宿主机直跑）
+HOTPATH_TUNNEL=tcp ./target/hotpath/examples/cpu_hotspot_ring
+```
+
+如果仍有 convergence 问题（多网卡环境），用 Docker 提供独立 netns：
 
 ```bash
 docker run --rm \
@@ -68,7 +102,7 @@ docker run --rm \
   /bench
 ```
 
-Docker 镜像需要匹配宿主机的 glibc 版本。Fedora 宿主用 `fedora:latest`，Debian/Ubuntu 宿主用 `debian:bookworm-slim`。
+Docker 镜像需要匹配宿主机的 glibc 版本。Fedora 宿主用 `fedora:latest`。
 
 ---
 
@@ -203,18 +237,39 @@ samply load /tmp/hotpath/<session>/hp.json.gz
 
 **原因**：try_send fast path 让 MpscTunnelSender::send 立即返回（不 await）。多个 send_msg_by_ip 之间没有自然的时间重叠——它们在 CPU 上是串行的。pipeline 需要利用 await 等待时间，但 fast path 消除了 await。
 
+### 坑 15：hotpath 测量引入 54% observer effect
+
+**现象**：同一 binary 带 hotpath feature 和不带 hotpath feature 跑 bench，pps 差距巨大。
+
+**数据**：
+
+| Tunnel | 不带 hotpath | 带 hotpath | hotpath 开销 |
+|--------|-------------|-----------|-------------|
+| Ring   | 1,105K pps  | 478K pps  | **-57%**    |
+| TCP    | 984K pps    | 453K pps  | **-54%**    |
+
+**原因**：hotpath `#[measure]` / `#[measure_all]` 在每个标注的 async fn 上包装 Future struct，每次 poll 记录开始/结束时间（quanta::Instant ~5ns × 2）、更新统计（atomic 操作）。measure_all 覆盖的 impl 块内所有方法都被插桩。当有 ~30 个 measure 点在发包热路径上时，累计开销超过 50%。
+
+**教训**：
+- hotpath timing 数据**适用于相对比较**（优化前 vs 后），**不适用于绝对性能评估**
+- 生产环境**不应**用 hotpath feature 编译
+- 要获取真实 pps，编译不带 `--features hotpath` 的版本
+- timing 数据按 ~2.3x 校准可近似真实开销
+
 ---
 
 ## 优化实施记录
 
-### 有效优化（累计 +117% pps）
+### 有效优化
 
-| 优化 | 每包省 | pps 变化 | 机制 |
-|------|--------|---------|------|
-| try_send fast path | 120ns | +7% | 跳过 tokio mpsc semaphore |
-| metrics batch + sync | 80ns | +1.6% | batch CounterHandle + sync fast path |
-| channel 32→1024 | 220ns | ~0% | 减少 fallback 频率 |
-| **noop_waker sync send** | **1900ns** | **+90%** | **绕过 async machinery** |
+| 优化 | 带 hotpath pps 变化 | 不带 hotpath 效果 | 机制 |
+|------|--------------------|--------------------|------|
+| try_send fast path | +7% | 减少 mpsc semaphore 开销 | 跳过 tokio mpsc semaphore |
+| metrics batch + sync | +1.6% | 减少 CounterHandle touch | batch + sync fast path |
+| channel 32→1024 | ~0% | 减少 fallback 频率 | 更大 buffer |
+| **noop_waker sync send** | **+90%** | **绕过 async machinery** | RingSink 直接 sync poll |
+| #2385 ZCPacket safe init | +5% (TCP) | copy_nonoverlapping | 无 aliasing 检查 |
+| #2381 advance (零拷贝) | ~0% | 消除 split_off Arc churn | Buf::advance 替代 split_off |
 
 ### 验证无效并回退
 
