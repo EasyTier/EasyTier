@@ -1,4 +1,4 @@
-use std::{future::Future, sync::Arc};
+use std::{future::Future, sync::atomic::{AtomicU64, Ordering}, sync::Arc};
 
 use dashmap::DashMap;
 use futures::future::BoxFuture;
@@ -18,16 +18,54 @@ pub(crate) enum InstanceLabelKind {
     From,
 }
 
+#[cfg(not(test))]
+const TRAFFIC_BATCH_SIZE: u64 = 128;
+#[cfg(test)]
+const TRAFFIC_BATCH_SIZE: u64 = 1;
+
 #[derive(Clone)]
 struct TrafficCounters {
     bytes: CounterHandle,
     packets: CounterHandle,
+    batch: Arc<TrafficBatch>,
+}
+
+struct TrafficBatch {
+    bytes: AtomicU64,
+    packets: AtomicU64,
 }
 
 impl TrafficCounters {
+    fn new(bytes: CounterHandle, packets: CounterHandle) -> Self {
+        Self {
+            bytes,
+            packets,
+            batch: Arc::new(TrafficBatch {
+                bytes: AtomicU64::new(0),
+                packets: AtomicU64::new(0),
+            }),
+        }
+    }
+
     fn add_sample(&self, bytes: u64) {
-        self.bytes.add(bytes);
-        self.packets.inc();
+        let prev = self.batch.packets.fetch_add(1, Ordering::Relaxed);
+        self.batch.bytes.fetch_add(bytes, Ordering::Relaxed);
+        if (prev + 1) % TRAFFIC_BATCH_SIZE == 0 {
+            let b = self.batch.bytes.swap(0, Ordering::Relaxed);
+            self.bytes.add(b);
+            self.packets.add(TRAFFIC_BATCH_SIZE);
+        }
+    }
+
+    fn flush(&self) {
+        let b = self.batch.bytes.swap(0, Ordering::Relaxed);
+        let p = self.batch.packets.swap(0, Ordering::Relaxed);
+        if b > 0 {
+            self.bytes.add(b);
+        }
+        if p > 0 {
+            self.packets.add(p);
+        }
     }
 }
 
@@ -60,14 +98,14 @@ impl AggregateTrafficMetrics {
         let label_set =
             LabelSet::new().with_label_type(LabelType::NetworkName(network_name.clone()));
         Self {
-            tx: TrafficCounters {
-                bytes: stats_mgr.get_counter(tx_bytes_metric, label_set.clone()),
-                packets: stats_mgr.get_counter(tx_packets_metric, label_set.clone()),
-            },
-            rx: TrafficCounters {
-                bytes: stats_mgr.get_counter(rx_bytes_metric, label_set.clone()),
-                packets: stats_mgr.get_counter(rx_packets_metric, label_set),
-            },
+            tx: TrafficCounters::new(
+                stats_mgr.get_counter(tx_bytes_metric, label_set.clone()),
+                stats_mgr.get_counter(tx_packets_metric, label_set.clone()),
+            ),
+            rx: TrafficCounters::new(
+                stats_mgr.get_counter(rx_bytes_metric, label_set.clone()),
+                stats_mgr.get_counter(rx_packets_metric, label_set),
+            ),
         }
     }
 
@@ -122,16 +160,32 @@ impl LogicalTrafficMetrics {
         let label_set =
             LabelSet::new().with_label_type(LabelType::NetworkName(network_name.clone()));
         Self {
-            total: TrafficCounters {
-                bytes: stats_mgr.get_counter(total_bytes_metric, label_set.clone()),
-                packets: stats_mgr.get_counter(total_packets_metric, label_set),
-            },
+            total: TrafficCounters::new(
+                stats_mgr.get_counter(total_bytes_metric, label_set.clone()),
+                stats_mgr.get_counter(total_packets_metric, label_set),
+            ),
             stats_mgr,
             network_name,
             instance_bytes_metric,
             instance_packets_metric,
             label_kind,
             per_peer: DashMap::new(),
+        }
+    }
+
+    pub(crate) fn record_fast(&self, peer_id: PeerId, bytes: u64) -> bool {
+        self.total.add_sample(bytes);
+        if let Some(entry) = self.per_peer.get(&peer_id)
+            && entry.value().is_resolved()
+        {
+            let counters = match entry.value() {
+                CachedPeerTrafficCounters::Resolved(c)
+                | CachedPeerTrafficCounters::Unknown(c) => c,
+            };
+            counters.add_sample(bytes);
+            true
+        } else {
+            false
         }
     }
 
@@ -214,14 +268,12 @@ impl LogicalTrafficMetrics {
         let label_set = LabelSet::new()
             .with_label_type(LabelType::NetworkName(self.network_name.clone()))
             .with_label_type(instance_label);
-        TrafficCounters {
-            bytes: self
-                .stats_mgr
+        TrafficCounters::new(
+            self.stats_mgr
                 .get_counter(self.instance_bytes_metric, label_set.clone()),
-            packets: self
-                .stats_mgr
+            self.stats_mgr
                 .get_counter(self.instance_packets_metric, label_set),
-        }
+        )
     }
 }
 
@@ -304,6 +356,15 @@ impl TrafficMetricRecorder {
         }
     }
 
+    pub(crate) fn record_tx_fast(&self, peer_id: PeerId, packet_type: u8, bytes: u64) -> bool {
+        if peer_id == self.my_peer_id {
+            return true;
+        }
+        self.tx_metrics
+            .select(traffic_kind(packet_type))
+            .record_fast(peer_id, bytes)
+    }
+
     pub(crate) async fn record_tx(&self, peer_id: PeerId, packet_type: u8, bytes: u64) {
         if peer_id == self.my_peer_id {
             return;
@@ -312,6 +373,15 @@ impl TrafficMetricRecorder {
             .select(traffic_kind(packet_type))
             .record_with_resolver(peer_id, bytes, || self.resolve_instance_id(peer_id))
             .await;
+    }
+
+    pub(crate) fn record_rx_fast(&self, peer_id: PeerId, packet_type: u8, bytes: u64) -> bool {
+        if peer_id == self.my_peer_id {
+            return true;
+        }
+        self.rx_metrics
+            .select(traffic_kind(packet_type))
+            .record_fast(peer_id, bytes)
     }
 
     pub(crate) async fn record_rx(&self, peer_id: PeerId, packet_type: u8, bytes: u64) {

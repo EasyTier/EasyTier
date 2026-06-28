@@ -1153,9 +1153,11 @@ impl PeerManager {
 
                     self_rx_bytes.add(buf_len as u64);
                     self_rx_packets.inc();
-                    traffic_metrics
-                        .record_rx(from_peer_id, packet_type, buf_len as u64)
-                        .await;
+                    if !traffic_metrics.record_rx_fast(from_peer_id, packet_type, buf_len as u64) {
+                        traffic_metrics
+                            .record_rx(from_peer_id, packet_type, buf_len as u64)
+                            .await;
+                    }
                     compress_rx_bytes_before.add(buf_len as u64);
 
                     let compressor = DefaultCompressor {};
@@ -1582,7 +1584,9 @@ impl PeerManager {
         if send_result.is_ok()
             && let Some(metrics) = direct_tx_metrics
         {
-            metrics.record_tx(dst_peer_id, packet_type, msg_len).await;
+            if !metrics.record_tx_fast(dst_peer_id, packet_type, msg_len) {
+                metrics.record_tx(dst_peer_id, packet_type, msg_len).await;
+            }
         }
 
         send_result
