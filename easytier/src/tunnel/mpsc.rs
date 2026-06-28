@@ -1,9 +1,16 @@
 // this mod wrap tunnel to a mpsc tunnel, based on crossbeam_channel
 
-use std::{future::poll_fn, pin::Pin, sync::Arc, task::Poll, time::Duration};
+use std::{
+    cell::UnsafeCell,
+    future::poll_fn,
+    pin::Pin,
+    sync::Arc,
+    sync::atomic::{AtomicBool, Ordering},
+    task::Poll,
+    time::Duration,
+};
 
 use anyhow::Context;
-use tokio::sync::Mutex;
 use tokio::time::timeout;
 
 use crate::proto::common::TunnelInfo;
@@ -15,10 +22,60 @@ use tokio_util::task::AbortOnDropHandle;
 
 use futures::SinkExt;
 
+/// A simple spinlock protecting a sink. The guard is Send because it only
+/// contains an atomic flag reference (no lifetime-tied borrow like MutexGuard).
+struct SpinSink {
+    locked: AtomicBool,
+    sink: UnsafeCell<Pin<Box<dyn ZCPacketSink>>>,
+}
+
+// SAFETY: access is serialized by the spinlock.
+unsafe impl Send for SpinSink {}
+unsafe impl Sync for SpinSink {}
+
+struct SpinGuard<'a> {
+    spin: &'a SpinSink,
+}
+
+impl<'a> SpinGuard<'a> {
+    fn as_mut(&mut self) -> Pin<&mut dyn ZCPacketSink> {
+        // SAFETY: we hold the spinlock, so we have exclusive access
+        let sink = unsafe { &mut *self.spin.sink.get() };
+        sink.as_mut()
+    }
+}
+
+impl Drop for SpinGuard<'_> {
+    fn drop(&mut self) {
+        self.spin.locked.store(false, Ordering::Release);
+    }
+}
+
+impl SpinSink {
+    fn new(sink: Pin<Box<dyn ZCPacketSink>>) -> Self {
+        Self {
+            locked: AtomicBool::new(false),
+            sink: UnsafeCell::new(sink),
+        }
+    }
+
+    fn try_lock(&self) -> Option<SpinGuard<'_>> {
+        if self
+            .locked
+            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .is_ok()
+        {
+            Some(SpinGuard { spin: self })
+        } else {
+            None
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct MpscTunnelSender {
     channel_tx: Option<Sender<ZCPacket>>,
-    direct_sink: Option<Arc<Mutex<Pin<Box<dyn ZCPacketSink>>>>>,
+    direct_sink: Option<Arc<SpinSink>>,
 }
 
 impl MpscTunnelSender {
@@ -27,7 +84,7 @@ impl MpscTunnelSender {
         if let Some(sink) = &self.direct_sink {
             let mut item = Some(item);
             loop {
-                if let Ok(mut guard) = sink.try_lock() {
+                if let Some(mut guard) = sink.try_lock() {
                     let result = poll_fn(|cx| {
                         match guard.as_mut().poll_ready(cx) {
                             Poll::Ready(Ok(())) => {
@@ -70,7 +127,7 @@ impl MpscTunnelSender {
 
 pub struct MpscTunnel<T> {
     tx: Option<Sender<ZCPacket>>,
-    direct_sink: Option<Arc<Mutex<Pin<Box<dyn ZCPacketSink>>>>>,
+    direct_sink: Option<Arc<SpinSink>>,
 
     tunnel: T,
     stream: Option<Pin<Box<dyn ZCPacketStream>>>,
@@ -108,7 +165,7 @@ impl<T: Tunnel> MpscTunnel<T> {
         let (stream, sink) = tunnel.split();
         Self {
             tx: None,
-            direct_sink: Some(Arc::new(Mutex::new(sink))),
+            direct_sink: Some(Arc::new(SpinSink::new(sink))),
             tunnel,
             stream: Some(stream),
             task: None,
