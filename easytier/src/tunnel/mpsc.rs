@@ -1,6 +1,6 @@
 // this mod wrap tunnel to a mpsc tunnel, based on crossbeam_channel
 
-use std::{pin::Pin, sync::Arc, time::Duration};
+use std::{future::poll_fn, pin::Pin, sync::Arc, task::Poll, time::Duration};
 
 use anyhow::Context;
 use tokio::sync::Mutex;
@@ -25,10 +25,27 @@ impl MpscTunnelSender {
     #[cfg_attr(feature = "hotpath", hotpath::measure(impl_type = "MpscTunnelSender"))]
     pub async fn send(&self, item: ZCPacket) -> Result<(), TunnelError> {
         if let Some(sink) = &self.direct_sink {
-            let mut guard = sink.lock().await;
-            guard.feed(item).await?;
-            guard.flush().await?;
-            return Ok(());
+            let mut item = Some(item);
+            loop {
+                if let Ok(mut guard) = sink.try_lock() {
+                    let result = poll_fn(|cx| {
+                        match guard.as_mut().poll_ready(cx) {
+                            Poll::Ready(Ok(())) => {
+                                let it = item.take().unwrap();
+                                if let Err(e) = guard.as_mut().start_send(it) {
+                                    return Poll::Ready(Err(e));
+                                }
+                                guard.as_mut().poll_flush(cx)
+                            }
+                            Poll::Ready(Err(e)) => Poll::Ready(Err(e)),
+                            Poll::Pending => Poll::Pending,
+                        }
+                    })
+                    .await;
+                    return result;
+                }
+                tokio::task::yield_now().await;
+            }
         }
 
         let tx = self.channel_tx.as_ref().ok_or(TunnelError::Shutdown)?;
