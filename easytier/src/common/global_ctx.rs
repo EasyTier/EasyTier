@@ -372,8 +372,18 @@ impl GlobalCtx {
         }
     }
 
-    pub fn set_tun_device_name(&self, name: Option<String>) {
+    fn set_tun_device_name(&self, name: Option<String>) {
         *self.tun_device_name.lock().unwrap() = name;
+    }
+
+    pub(crate) fn set_tun_device_ready(&self, name: String) {
+        self.set_tun_device_name(Some(name.clone()));
+        self.issue_event(GlobalCtxEvent::TunDeviceReady(name));
+    }
+
+    pub(crate) fn set_tun_device_error(&self, error: String) {
+        self.set_tun_device_name(None);
+        self.issue_event(GlobalCtxEvent::TunDeviceError(error));
     }
 
     pub fn get_tun_device_name(&self) -> Option<String> {
@@ -845,16 +855,24 @@ pub mod tests {
         global_ctx.issue_event(GlobalCtxEvent::TunDeviceReady("ignored".to_string()));
         assert_eq!(global_ctx.get_tun_device_name(), None);
 
-        global_ctx.set_tun_device_name(Some("easytier0".to_string()));
-        global_ctx.issue_event(GlobalCtxEvent::TunDeviceReady("easytier0".to_string()));
+        let mut subscriber = global_ctx.subscribe();
+
+        global_ctx.set_tun_device_ready("easytier0".to_string());
         assert_eq!(
             global_ctx.get_tun_device_name(),
             Some("easytier0".to_string())
         );
+        assert_eq!(
+            subscriber.recv().await.unwrap(),
+            GlobalCtxEvent::TunDeviceReady("easytier0".to_string())
+        );
 
-        global_ctx.set_tun_device_name(None);
-        global_ctx.issue_event(GlobalCtxEvent::TunDeviceError("closed".to_string()));
+        global_ctx.set_tun_device_error("closed".to_string());
         assert_eq!(global_ctx.get_tun_device_name(), None);
+        assert_eq!(
+            subscriber.recv().await.unwrap(),
+            GlobalCtxEvent::TunDeviceError("closed".to_string())
+        );
     }
 
     #[tokio::test]

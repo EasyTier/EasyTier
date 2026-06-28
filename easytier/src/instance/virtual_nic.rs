@@ -1360,17 +1360,12 @@ impl NicCtx {
                             .await;
                     }
 
-                    let tun_device_name = nic.ifname().to_string();
                     self.global_ctx
-                        .set_tun_device_name(Some(tun_device_name.clone()));
-                    self.global_ctx
-                        .issue_event(GlobalCtxEvent::TunDeviceReady(tun_device_name));
+                        .set_tun_device_ready(nic.ifname().to_string());
                     ret
                 }
                 Err(err) => {
-                    self.global_ctx.set_tun_device_name(None);
-                    self.global_ctx
-                        .issue_event(GlobalCtxEvent::TunDeviceError(err.to_string()));
+                    self.global_ctx.set_tun_device_error(err.to_string());
                     return Err(err);
                 }
             }
@@ -1408,17 +1403,12 @@ impl NicCtx {
             let mut nic = self.nic.lock().await;
             match nic.create_dev_for_mobile(tun_fd).await {
                 Ok(ret) => {
-                    let tun_device_name = nic.ifname().to_string();
                     self.global_ctx
-                        .set_tun_device_name(Some(tun_device_name.clone()));
-                    self.global_ctx
-                        .issue_event(GlobalCtxEvent::TunDeviceReady(tun_device_name));
+                        .set_tun_device_ready(nic.ifname().to_string());
                     ret
                 }
                 Err(err) => {
-                    self.global_ctx.set_tun_device_name(None);
-                    self.global_ctx
-                        .issue_event(GlobalCtxEvent::TunDeviceError(err.to_string()));
+                    self.global_ctx.set_tun_device_error(err.to_string());
                     return Err(err);
                 }
             }
