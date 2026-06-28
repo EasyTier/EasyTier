@@ -81,7 +81,8 @@ async fn local_preferred_src_ipv6(
 fn connector_addrs_from_request(
     req: SendUdpHolePunchPacketRequest,
 ) -> rpc_types::error::Result<(u16, Vec<SocketAddr>, Option<crate::proto::common::Ipv6Addr>)> {
-    let listener_port = req.listener_port as u16;
+    let listener_port = u16::try_from(req.listener_port)
+        .map_err(|_| anyhow::anyhow!("listener_port is out of range: {}", req.listener_port))?;
     let mut connector_addrs = req
         .connector_addrs
         .into_iter()
@@ -269,5 +270,19 @@ mod tests {
         .unwrap();
 
         assert_eq!(connector_addrs, vec![old_addr]);
+    }
+
+    #[test]
+    fn hole_punch_request_rejects_out_of_range_listener_port() {
+        let old_addr: SocketAddr = "[2001:db8::1]:10001".parse().unwrap();
+
+        let ret = connector_addrs_from_request(SendUdpHolePunchPacketRequest {
+            connector_addr: Some(old_addr.into()),
+            listener_port: u16::MAX as u32 + 1,
+            preferred_src_ipv6: None,
+            connector_addrs: vec![],
+        });
+
+        assert!(ret.is_err());
     }
 }

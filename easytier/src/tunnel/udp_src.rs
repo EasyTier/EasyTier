@@ -13,29 +13,83 @@ pub(crate) fn send_to_with_src_ipv6(
     dst_addr: SocketAddrV6,
     buf: &[u8],
 ) -> io::Result<usize> {
-    use std::{io::IoSlice, os::fd::AsRawFd};
+    #[cfg(target_env = "ohos")]
+    {
+        let _ = (socket, src_ip, src_ifindex, dst_addr, buf);
+        return Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "sending UDP with a selected IPv6 source is not supported on OHOS",
+        ));
+    }
 
-    use nix::libc;
-    use nix::sys::socket::{ControlMessage, MsgFlags, SockaddrIn6, sendmsg};
+    #[cfg(not(target_env = "ohos"))]
+    {
+        use std::{mem, os::fd::AsRawFd, ptr};
 
-    let pktinfo = libc::in6_pktinfo {
-        ipi6_ifindex: src_ifindex,
-        ipi6_addr: libc::in6_addr {
-            s6_addr: src_ip.octets(),
-        },
-    };
-    let iov = [IoSlice::new(buf)];
-    let cmsgs = [ControlMessage::Ipv6PacketInfo(&pktinfo)];
-    let dst_addr = SockaddrIn6::from(dst_addr);
+        use nix::libc;
 
-    sendmsg(
-        socket.as_raw_fd(),
-        &iov,
-        &cmsgs,
-        MsgFlags::empty(),
-        Some(&dst_addr),
-    )
-    .map_err(|err| io::Error::from_raw_os_error(err as i32))
+        #[repr(align(8))]
+        struct ControlBuffer([u8; 128]);
+
+        let pktinfo = libc::in6_pktinfo {
+            ipi6_addr: libc::in6_addr {
+                s6_addr: src_ip.octets(),
+            },
+            ipi6_ifindex: src_ifindex.try_into().map_err(|_| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "IPv6 source interface index is out of range",
+                )
+            })?,
+        };
+        let mut iov = libc::iovec {
+            iov_base: buf.as_ptr() as *mut libc::c_void,
+            iov_len: buf.len(),
+        };
+        let dst_addr = socket2::SockAddr::from(std::net::SocketAddr::V6(dst_addr));
+        let control_len = unsafe {
+            libc::CMSG_SPACE(mem::size_of::<libc::in6_pktinfo>() as libc::c_uint) as usize
+        };
+        let mut control = ControlBuffer([0u8; 128]);
+        if control_len > control.0.len() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "IPv6 packet info control buffer is too small",
+            ));
+        }
+
+        let msg = libc::msghdr {
+            msg_name: dst_addr.as_ptr() as *mut libc::c_void,
+            msg_namelen: dst_addr.len() as _,
+            msg_iov: &mut iov,
+            msg_iovlen: 1,
+            msg_control: control.0.as_mut_ptr() as *mut libc::c_void,
+            msg_controllen: control_len as _,
+            msg_flags: 0,
+        };
+
+        unsafe {
+            let cmsg = libc::CMSG_FIRSTHDR(&msg);
+            if cmsg.is_null() {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "IPv6 packet info control buffer is invalid",
+                ));
+            }
+            (*cmsg).cmsg_level = libc::IPPROTO_IPV6;
+            (*cmsg).cmsg_type = libc::IPV6_PKTINFO;
+            (*cmsg).cmsg_len =
+                libc::CMSG_LEN(mem::size_of::<libc::in6_pktinfo>() as libc::c_uint) as _;
+            ptr::write(libc::CMSG_DATA(cmsg) as *mut libc::in6_pktinfo, pktinfo);
+
+            let ret = libc::sendmsg(socket.as_raw_fd(), &msg, 0);
+            if ret < 0 {
+                Err(io::Error::last_os_error())
+            } else {
+                Ok(ret as usize)
+            }
+        }
+    }
 }
 
 #[cfg(windows)]
@@ -126,7 +180,7 @@ pub(crate) fn send_to_with_src_ipv6(
             SOCKET(socket.as_raw_socket() as usize),
             &msg,
             0,
-            &mut sent,
+            Some(&mut sent),
             None,
             None,
         );
