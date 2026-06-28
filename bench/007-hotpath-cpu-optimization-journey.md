@@ -11,33 +11,34 @@
 origin/main baseline 使用 `git worktree` 从 origin/main 构建，仅添加 bench example +
 loopback bind fix（TCP/UDP convergence 需要）。无任何优化代码。
 
-| Tunnel | origin/main baseline | 优化后 | **提升** | 带宽（优化后） |
-|--------|---------------------|--------|---------|--------------|
-| **Ring** | 293K pps / 3.3 Gbps | **1,124K pps** | **+284%** | 12.6 Gbps |
-| **TCP**  | 298K pps / 3.3 Gbps | **975K pps**   | **+227%** | 10.9 Gbps |
-| **UDP**  | 630K pps / 7.1 Gbps | **1,066K pps** | **+69%**  | 11.9 Gbps |
+| Tunnel   | origin/main baseline | 优化后         | **提升**  | 带宽（优化后） |
+| -------- | -------------------- | -------------- | --------- | -------------- |
+| **Ring** | 293K pps / 3.3 Gbps  | **1,124K pps** | **+284%** | 12.6 Gbps      |
+| **TCP**  | 298K pps / 3.3 Gbps  | **975K pps**   | **+227%** | 10.9 Gbps      |
+| **UDP**  | 630K pps / 7.1 Gbps  | **1,066K pps** | **+69%**  | 11.9 Gbps      |
 
 UDP baseline 本身较高（630K vs 293K/298K），因为 UDP tunnel 的 forward_from_ring_to_udp
 独立 task 提供了天然的 pipeline overlap，部分隐藏了 channel 开销。
 
 ### 带 hotpath profiling（timing 可见，但有 observer effect）
 
-| Tunnel | 原始 pps | 优化后 pps | 提升 | MpscTunnelSender::send |
-|--------|---------|-----------|------|----------------------|
-| Ring   | 234K    | 478K      | +104%| 138ns (原 2.23µs)    |
-| UDP    | N/A     | 440K      | —    | 294ns               |
-| TCP    | N/A     | 453K      | —    | 378ns               |
+| Tunnel | 原始 pps | 优化后 pps | 提升  | MpscTunnelSender::send |
+| ------ | -------- | ---------- | ----- | ---------------------- |
+| Ring   | 234K     | 478K       | +104% | 138ns (原 2.23µs)      |
+| UDP    | N/A      | 440K       | —     | 294ns                  |
+| TCP    | N/A      | 453K       | —     | 378ns                  |
 
 ### hotpath observer effect
 
 **hotpath 测量基础设施引入了 ~54-57% 的性能开销：**
 
 | Tunnel | 不带 hotpath | 带 hotpath | hotpath 开销 |
-|--------|-------------|-----------|-------------|
-| Ring   | 1,124K pps  | 478K pps  | **-57%**    |
-| TCP    | 975K pps    | 453K pps  | **-54%**    |
+| ------ | ------------ | ---------- | ------------ |
+| Ring   | 1,124K pps   | 478K pps   | **-57%**     |
+| TCP    | 975K pps     | 453K pps   | **-54%**     |
 
 **含义：**
+
 - timing 数据里的 `send_msg_by_ip: 2.15µs` 是膨胀值，真实成本 ~0.9µs
 - 所有 timing 数据需要按 ~2.3x 校准才能反映真实开销
 - hotpath 适用于相对比较（优化前 vs 后），不适用于绝对性能评估
@@ -122,11 +123,13 @@ Docker 镜像需要匹配宿主机的 glibc 版本。Fedora 宿主用 `fedora:la
 **原因**：hotpath-samply 只是 wrapper，它内部 spawn `samply record --pid <pid>` 来采集 CPU 样本。samply 本体没装。
 
 **解决**：
+
 ```bash
 cargo install samply
 ```
 
 如果 autospawn 找不到 hotpath-samply 本身，用环境变量指定完整路径：
+
 ```bash
 export HOTPATH_SAMPLY_WRAPPER_BIN=~/.cargo/bin/hotpath-samply
 ```
@@ -138,6 +141,7 @@ export HOTPATH_SAMPLY_WRAPPER_BIN=~/.cargo/bin/hotpath-samply
 **原因**：`perf_event_mlock_kb` 默认只有 516 KB。32 核机器上 samply 为每个 CPU core 创建 mmap buffer，总 mmap 量超过限制。
 
 **解决**：
+
 ```bash
 echo '65536' | sudo tee /proc/sys/kernel/perf_event_mlock_kb
 ```
@@ -149,6 +153,7 @@ echo '65536' | sudo tee /proc/sys/kernel/perf_event_mlock_kb
 **原因**：同坑 2——`perf_event_paranoid = 2` 时非 root 用户无法使用 perf_event_open。
 
 **解决**：
+
 ```bash
 echo '1' | sudo tee /proc/sys/kernel/perf_event_paranoid
 ```
@@ -160,6 +165,7 @@ echo '1' | sudo tee /proc/sys/kernel/perf_event_paranoid
 **原因**：samply profile 里存储的是地址（不内联符号化）。符号化在查看时通过 symbol server 动态完成。如果直接下载 raw JSON 上传到 profiler.firefox.com，符号 server 无法访问本地二进制文件。
 
 **解决**：必须用 `samply load` 本地打开（它启动 symbol server 自动做符号化）：
+
 ```bash
 samply load /tmp/hotpath/<session>/hp.json.gz
 ```
@@ -251,13 +257,14 @@ samply load /tmp/hotpath/<session>/hp.json.gz
 **数据**：
 
 | Tunnel | 不带 hotpath | 带 hotpath | hotpath 开销 |
-|--------|-------------|-----------|-------------|
-| Ring   | 1,124K pps  | 478K pps  | **-57%**    |
-| TCP    | 975K pps    | 453K pps  | **-54%**    |
+| ------ | ------------ | ---------- | ------------ |
+| Ring   | 1,124K pps   | 478K pps   | **-57%**     |
+| TCP    | 975K pps     | 453K pps   | **-54%**     |
 
 **原因**：hotpath `#[measure]` / `#[measure_all]` 在每个标注的 async fn 上包装 Future struct，每次 poll 记录开始/结束时间（quanta::Instant ~5ns × 2）、更新统计（atomic 操作）。measure_all 覆盖的 impl 块内所有方法都被插桩。当有 ~30 个 measure 点在发包热路径上时，累计开销超过 50%。
 
 **教训**：
+
 - hotpath timing 数据**适用于相对比较**（优化前 vs 后），**不适用于绝对性能评估**
 - 生产环境**不应**用 hotpath feature 编译
 - 要获取真实 pps，编译不带 `--features hotpath` 的版本
@@ -271,34 +278,34 @@ samply load /tmp/hotpath/<session>/hp.json.gz
 
 baseline 构建：`git worktree` 从 origin/main，仅添加 bench example + loopback bind fix。
 
-| Tunnel | baseline | 优化后 | 提升 |
-|--------|---------|--------|------|
+| Tunnel | baseline | 优化后         | 提升      |
+| ------ | -------- | -------------- | --------- |
 | Ring   | 293K pps | **1,124K pps** | **+284%** |
-| TCP    | 298K pps | **975K pps** | **+227%** |
-| UDP    | 630K pps | **1,066K pps** | **+69%** |
+| TCP    | 298K pps | **975K pps**   | **+227%** |
+| UDP    | 630K pps | **1,066K pps** | **+69%**  |
 
 ### 有效优化（按贡献排序）
 
-| 优化 | 带 hotpath pps 变化 | 真实提升来源 | 机制 |
-|------|--------------------|----|------|
-| **noop_waker sync send** | **+90%** | **核心突破** | RingSink/FramedWriter 直接 sync poll，绕过 async machinery |
-| try_send fast path | +7% | 次要 | 跳过 tokio mpsc semaphore |
-| #2385 ZCPacket safe init | +5% (TCP) | TCP 专属 | copy_nonoverlapping 无 aliasing 检查 |
-| metrics batch + sync | +1.6% | 小幅 | batch CounterHandle + sync fast path |
-| #2381 advance (零拷贝) | ~0% | 代码质量 | Buf::advance 消除 split_off Arc churn |
-| channel 32→1024 | ~0% | 减少 fallback | 更大 buffer |
-| 接收侧 try_recv | ~0% (单向) | 双向有价值 | 消除 recv().await async overhead |
-| loopback bind fix | — | TCP/UDP convergence 必需 | 127.0.0.1 加入 bind 地址列表 |
+| 优化                     | 带 hotpath pps 变化 | 真实提升来源             | 机制                                                       |
+| ------------------------ | ------------------- | ------------------------ | ---------------------------------------------------------- |
+| **noop_waker sync send** | **+90%**            | **核心突破**             | RingSink/FramedWriter 直接 sync poll，绕过 async machinery |
+| try_send fast path       | +7%                 | 次要                     | 跳过 tokio mpsc semaphore                                  |
+| #2385 ZCPacket safe init | +5% (TCP)           | TCP 专属                 | copy_nonoverlapping 无 aliasing 检查                       |
+| metrics batch + sync     | +1.6%               | 小幅                     | batch CounterHandle + sync fast path                       |
+| #2381 advance (零拷贝)   | ~0%                 | 代码质量                 | Buf::advance 消除 split_off Arc churn                      |
+| channel 32→1024          | ~0%                 | 减少 fallback            | 更大 buffer                                                |
+| 接收侧 try_recv          | ~0% (单向)          | 双向有价值               | 消除 recv().await async overhead                           |
+| loopback bind fix        | —                   | TCP/UDP convergence 必需 | 127.0.0.1 加入 bind 地址列表                               |
 
 ### 验证无效并回退
 
-| 尝试 | 结果 | 原因 |
-|------|------|------|
-| ShardedCounter (#2385) | -17% pps | TLS 分片高频开销 > UnsafeCell |
-| ZCPacket pool | -15% pps | glibc tcache 比 ArrayQueue CAS 更快 |
-| Allocator 切换 (jemalloc/mimalloc) | ~0% | 小块分配 tcache 都已足够 |
-| Pipeline (FuturesUnordered) | +1.6% | try_send 消除了 await 空隙 |
-| dashmap 合并 | ~0% | contains_key 本身 ~50ns |
+| 尝试                               | 结果     | 原因                                |
+| ---------------------------------- | -------- | ----------------------------------- |
+| ShardedCounter (#2385)             | -17% pps | TLS 分片高频开销 > UnsafeCell       |
+| ZCPacket pool                      | -15% pps | glibc tcache 比 ArrayQueue CAS 更快 |
+| Allocator 切换 (jemalloc/mimalloc) | ~0%      | 小块分配 tcache 都已足够            |
+| Pipeline (FuturesUnordered)        | +1.6%    | try_send 消除了 await 空隙          |
+| dashmap 合并                       | ~0%      | contains_key 本身 ~50ns             |
 
 ### noop_waker 技术详解
 
@@ -331,6 +338,7 @@ pub async fn send(&self, item: ZCPacket) -> Result<(), TunnelError> {
 **为什么 Pending 返回 Ok**：poll_flush Pending 意味着数据已在 buffer（ring buffer 或 BufList）但还没 flush 到网络。forward task 或下一次 send 会消费它。这是安全的——数据不丢、不乱序。
 
 **适用范围**：所有 Sink 的 `start_send` 是同步内存操作的 tunnel：
+
 - Ring tunnel: RingSink → ring buffer（内存）
 - UDP tunnel: RingSink → ring buffer → forward_from_ring_to_udp task → socket
 - TCP tunnel: FramedWriter → BufList（内存）→ poll_flush 时 write socket
@@ -364,15 +372,15 @@ send_msg_by_ip                    ✅ measure
 
 ### 布点排除项（避免与已有 PR 冲突）
 
-| 文件 | 排除原因 |
-|------|---------|
-| stats_manager.rs | PR #2385 重写中 |
-| traffic_metrics.rs | 依赖 stats_manager |
+| 文件                   | 排除原因             |
+| ---------------------- | -------------------- |
+| stats_manager.rs       | PR #2385 重写中      |
+| traffic_metrics.rs     | 依赖 stats_manager   |
 | peer_manager.rs (部分) | advisor/001-002 改动 |
-| peer_conn.rs (部分) | advisor/001-002 改动 |
-| tunnel/mpsc.rs (部分) | perf/001 改动 |
-| packet_def.rs | perf/001-003 改动 |
-| peer_ospf_route.rs | advisor/003-004 改动 |
+| peer_conn.rs (部分)    | advisor/001-002 改动 |
+| tunnel/mpsc.rs (部分)  | perf/001 改动        |
+| packet_def.rs          | perf/001-003 改动    |
+| peer_ospf_route.rs     | advisor/003-004 改动 |
 
 ---
 
@@ -408,11 +416,11 @@ hotpath console
 
 ### 环境变量
 
-| 变量 | 默认 | 说明 |
-|------|------|------|
-| `HOTPATH_BENCH_SECS` | 30 | 打流持续秒数 |
-| `HOTPATH_PKT_SIZE` | 1400 | 包大小 |
-| `HOTPATH_TUNNEL` | ring | ring / udp / tcp |
-| `HOTPATH_PIPELINE` | 1 | pipeline 深度 |
-| `HOTPATH_SAMPLY_WRAPPER_BIN` | — | hotpath-samply 完整路径 |
-| `HOTPATH_SAMPLY_BIN` | — | samply 本体完整路径 |
+| 变量                         | 默认 | 说明                    |
+| ---------------------------- | ---- | ----------------------- |
+| `HOTPATH_BENCH_SECS`         | 30   | 打流持续秒数            |
+| `HOTPATH_PKT_SIZE`           | 1400 | 包大小                  |
+| `HOTPATH_TUNNEL`             | ring | ring / udp / tcp        |
+| `HOTPATH_PIPELINE`           | 1    | pipeline 深度           |
+| `HOTPATH_SAMPLY_WRAPPER_BIN` | —    | hotpath-samply 完整路径 |
+| `HOTPATH_SAMPLY_BIN`         | —    | samply 本体完整路径     |
