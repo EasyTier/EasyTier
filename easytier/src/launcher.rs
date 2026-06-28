@@ -1116,6 +1116,7 @@ impl NetworkConfig {
             .get_credential_file()
             .map(|path| path.to_string_lossy().into_owned());
         let flags = config.get_flags();
+        let default_flags = default_config.get_flags();
         result.latency_first = Some(flags.latency_first);
         result.dev_name = Some(flags.dev_name.clone());
         result.use_smoltcp = Some(flags.use_smoltcp);
@@ -1144,6 +1145,11 @@ impl NetworkConfig {
         result.disable_sym_hole_punching = Some(flags.disable_sym_hole_punching);
         result.enable_magic_dns = Some(flags.accept_dns);
         result.mtu = Some(flags.mtu as i32);
+        result.data_compress_algo = (flags.data_compress_algo != default_flags.data_compress_algo)
+            .then_some(flags.data_compress_algo);
+        result.encryption_algorithm = (flags.encryption_algorithm
+            != default_flags.encryption_algorithm)
+            .then_some(flags.encryption_algorithm.clone());
         result.instance_recv_bps_limit =
             (flags.instance_recv_bps_limit != u64::MAX).then_some(flags.instance_recv_bps_limit);
         result.enable_private_mode = Some(flags.private_mode);
@@ -1173,7 +1179,7 @@ impl NetworkConfig {
 mod tests {
     use crate::{
         common::config::{ConfigLoader, process_secure_mode_cfg},
-        proto::common::SecureModeConfig,
+        proto::common::{CompressionAlgoPb, SecureModeConfig},
     };
     use base64::prelude::{BASE64_STANDARD, Engine as _};
     use rand::Rng;
@@ -1530,6 +1536,39 @@ mod tests {
                 .get_secure_mode()
                 .and_then(|mode| mode.local_private_key),
             Some(credential_secret)
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_network_config_conversion_preserves_runtime_algorithm_flags()
+    -> Result<(), anyhow::Error> {
+        let config = gen_default_config();
+        let mut flags = config.get_flags();
+        flags.data_compress_algo = CompressionAlgoPb::Zstd.into();
+        flags.encryption_algorithm = "managed-test-algo".to_string();
+        config.set_flags(flags.clone());
+
+        let network_config = super::NetworkConfig::new_from_config(&config)?;
+
+        assert_eq!(
+            network_config.data_compress_algo,
+            Some(CompressionAlgoPb::Zstd as i32)
+        );
+        assert_eq!(
+            network_config.encryption_algorithm.as_deref(),
+            Some("managed-test-algo")
+        );
+
+        let generated_config = network_config.gen_config()?;
+        assert_eq!(
+            generated_config.get_flags().data_compress_algo,
+            flags.data_compress_algo
+        );
+        assert_eq!(
+            generated_config.get_flags().encryption_algorithm,
+            flags.encryption_algorithm
         );
 
         Ok(())
