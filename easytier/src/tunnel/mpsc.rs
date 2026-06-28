@@ -50,7 +50,7 @@ pub struct MpscTunnel<T> {
 
 impl<T: Tunnel> MpscTunnel<T> {
     pub fn new(tunnel: T, send_timeout: Option<Duration>) -> Self {
-        let (tx, mut rx) = hotpath::channel!(channel(32));
+        let (tx, mut rx) = hotpath::channel!(channel(1024));
         let (stream, mut sink) = tunnel.split();
 
         let task = tokio::spawn(async move {
