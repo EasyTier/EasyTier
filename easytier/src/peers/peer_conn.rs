@@ -363,7 +363,7 @@ impl PeerConn {
         let throughput = peer_conn_tunnel_filter.filter_output();
         let filter_chain = TunnelFilterChain::new(session_filter.clone(), peer_conn_tunnel_filter);
         let peer_conn_tunnel = TunnelWithFilter::new(tunnel, filter_chain);
-        let mut mpsc_tunnel = MpscTunnel::new(peer_conn_tunnel, Some(Duration::from_secs(7)));
+        let mut mpsc_tunnel = MpscTunnel::new_direct(peer_conn_tunnel);
 
         let (recv, sink) = (mpsc_tunnel.get_stream(), mpsc_tunnel.get_sink());
 
