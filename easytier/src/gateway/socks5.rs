@@ -746,7 +746,7 @@ impl PeerPacketFilter for Socks5Server {
             }
 
             IpNextHeaderProtocols::Udp => {
-                if IpReassembler::is_packet_fragmented(&ipv4) && entry_count != 0 {
+                if IpReassembler::is_packet_fragmented(&ipv4) {
                     let ipv4_src: IpAddr = ipv4.get_source().into();
                     // only send to smoltcp if the ipv4 src is in the entries
                     let is_in_entries = self.entries.iter().any(|x| x.key().dst.ip() == ipv4_src);
@@ -1418,16 +1418,18 @@ impl Socks5Server {
                     now.duration_since(client_info.last_active.load()).as_secs() < 600
                 });
                 udp_forward_task.retain(|k, _| udp_client_map.contains_key(k));
+                let mut removed_entries = 0;
                 entries.retain(|_, data| match data {
                     Socks5EntryData::Udp((_, udp_client_key)) => {
                         let keep = udp_client_map.contains_key(udp_client_key);
                         if !keep {
-                            decrement_entry_count(&entry_count);
+                            removed_entries += 1;
                         }
                         keep
                     }
                     _ => true,
                 });
+                decrement_entry_count_by(&entry_count, removed_entries);
 
                 udp_client_map.shrink_to_fit();
                 udp_forward_task.shrink_to_fit();
@@ -1486,6 +1488,28 @@ mod tests {
                 &src_ip,
                 &dst_ip,
             ));
+
+            ip_packet.set_checksum(ipv4::checksum(&ip_packet.to_immutable()));
+        }
+
+        buf
+    }
+
+    fn build_udp_followup_fragment(src: Ipv4Addr, dst: Ipv4Addr) -> Vec<u8> {
+        let mut buf = vec![0u8; 28];
+        {
+            let mut ip_packet = MutableIpv4Packet::new(&mut buf).unwrap();
+            ip_packet.set_version(4);
+            ip_packet.set_header_length(5);
+            ip_packet.set_total_length(28);
+            ip_packet.set_ttl(64);
+            ip_packet.set_next_level_protocol(IpNextHeaderProtocols::Udp);
+            ip_packet.set_fragment_offset(1);
+            ip_packet.set_source(src);
+            ip_packet.set_destination(dst);
+            ip_packet
+                .payload_mut()
+                .copy_from_slice(&[0xde, 0xad, 0xbe, 0xef, 0xca, 0xfe, 0xba, 0xbe]);
 
             ip_packet.set_checksum(ipv4::checksum(&ip_packet.to_immutable()));
         }
@@ -1563,6 +1587,54 @@ mod tests {
 
         let mut receiver = server.packet_recv.lock().await;
         assert!(receiver.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn socks5_mirrors_fragmented_udp_even_when_entry_count_is_stale_zero() {
+        let peer_manager = create_mock_peer_manager().await;
+        let server = Socks5Server::new(peer_manager.get_global_ctx(), peer_manager, None);
+        server.socks5_enabled.store(true, Ordering::Relaxed);
+
+        let local = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 144, 144, 1)), 40000);
+        let remote = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 144, 144, 3)), 53);
+        let udp_socket = Arc::new(tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        server.entries.insert(
+            Socks5Entry {
+                src: local,
+                dst: remote,
+                entry_type: UDP_ENTRY,
+            },
+            Socks5EntryData::Udp((
+                Arc::new(SocksUdpSocket::UdpSocket(udp_socket)),
+                UdpClientKey {
+                    client_addr: local,
+                    dst_addr: remote,
+                },
+            )),
+        );
+        assert_eq!(server.entry_count.load(Ordering::Relaxed), 0);
+
+        let mut packet = ZCPacket::new_with_payload(&build_udp_followup_fragment(
+            match remote.ip() {
+                IpAddr::V4(ip) => ip,
+                IpAddr::V6(_) => unreachable!(),
+            },
+            match local.ip() {
+                IpAddr::V4(ip) => ip,
+                IpAddr::V6(_) => unreachable!(),
+            },
+        ));
+        packet.fill_peer_manager_hdr(1, 2, PacketType::Data as u8);
+
+        let result = server.try_process_packet_from_peer(packet).await;
+        assert!(result.is_some());
+
+        let mut receiver = server.packet_recv.lock().await;
+        let received = receiver.try_recv().unwrap();
+        assert_eq!(
+            received.peer_manager_header().unwrap().packet_type,
+            PacketType::Data as u8
+        );
     }
 
     #[test]

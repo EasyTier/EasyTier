@@ -247,13 +247,15 @@ impl DataPlaneUdpSocket {
 
 impl Drop for DataPlaneUdpSocket {
     fn drop(&mut self) {
+        let mut removed_entries = 0;
         self.entries.retain(|_, data| match data {
             Socks5EntryData::Udp((socket, _)) if Arc::ptr_eq(socket, &self.socket) => {
-                decrement_entry_count(&self.entry_count);
+                removed_entries += 1;
                 false
             }
             _ => true,
         });
+        super::decrement_entry_count_by(&self.entry_count, removed_entries);
     }
 }
 
