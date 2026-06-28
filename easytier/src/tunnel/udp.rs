@@ -266,14 +266,151 @@ fn get_zcpacket_from_buf(buf: BytesMut, allow_stun: bool) -> Result<ZCPacket, Tu
     Ok(zc_packet)
 }
 
-#[instrument]
+#[cfg(feature = "udp-gso")]
+const UDP_BATCH_SIZE: usize = 8;
+
+#[cfg(feature = "udp-gso")]
 async fn forward_from_ring_to_udp(
     mut ring_recv: RingStream,
     socket: &Arc<UdpSocket>,
     addr: &SocketAddr,
     conn_id: u32,
 ) -> Option<TunnelError> {
-    tracing::debug!("udp forward from ring to udp");
+    use quinn_udp::{Transmit, UdpSockRef, UdpSocketState};
+    use std::io;
+
+    tracing::debug!("udp forward from ring to udp (GSO batch)");
+
+    let udp_state = match UdpSocketState::new(UdpSockRef::from(&**socket)) {
+        Ok(state) => state,
+        Err(e) => {
+            tracing::warn!(?e, "failed to init UdpSocketState, fallback to per-packet send");
+            return forward_from_ring_to_udp_fallback(ring_recv, socket, addr, conn_id).await;
+        }
+    };
+    let max_gso = udp_state.max_gso_segments();
+    tracing::info!(max_gso, "udp GSO segments supported");
+
+    loop {
+        // 1. Get first packet (await)
+        let first = match ring_recv.next().await {
+            Some(Ok(pkt)) => convert_to_udp_bytes(pkt, conn_id),
+            Some(Err(e)) => return Some(e),
+            None => return None,
+        };
+
+        // 2. Try to drain more packets (non-blocking via poll_next with noop waker)
+        use std::pin::Pin;
+        use std::task::{Poll, Context};
+        use futures::task::noop_waker;
+        use futures::Stream;
+        let mut batch: Vec<bytes::Bytes> = vec![first];
+        while batch.len() < UDP_BATCH_SIZE.min(max_gso) {
+            let waker = noop_waker();
+            let mut cx = Context::from_waker(&waker);
+            match Pin::new(&mut ring_recv).poll_next(&mut cx) {
+                Poll::Ready(Some(Ok(pkt))) => {
+                    batch.push(convert_to_udp_bytes(pkt, conn_id));
+                }
+                _ => break,
+            }
+        }
+
+        // 3. Check if all same size (GSO requirement)
+        let seg_size = batch[0].len();
+        let all_same = batch.iter().all(|b| b.len() == seg_size);
+
+        if batch.len() == 1 || !all_same || max_gso == 1 {
+            // Fallback: send individually
+            for buf in &batch {
+                if let Err(e) = send_one(&udp_state, socket, addr, buf).await {
+                    return Some(TunnelError::IOError(e));
+                }
+            }
+        } else {
+            // GSO batch: concatenate + single sendmsg
+            let mut contents = Vec::with_capacity(seg_size * batch.len());
+            for buf in &batch {
+                contents.extend_from_slice(buf);
+            }
+            let transmit = Transmit {
+                destination: *addr,
+                ecn: None,
+                contents: &contents,
+                segment_size: Some(seg_size),
+                src_ip: None,
+            };
+            if let Err(e) = send_one_gso(&udp_state, socket, &transmit).await {
+                return Some(TunnelError::IOError(e));
+            }
+        }
+    }
+}
+
+#[cfg(feature = "udp-gso")]
+fn convert_to_udp_bytes(mut packet: ZCPacket, conn_id: u32) -> bytes::Bytes {
+    let mut packet = packet.convert_type(ZCPacketType::UDP);
+    let udp_payload_len = packet.udp_payload().len();
+    let header = packet.mut_udp_tunnel_header().unwrap();
+    header.conn_id.set(conn_id);
+    header.len.set(udp_payload_len as u16);
+    header.msg_type = UdpPacketType::Data as u8;
+    packet.into_bytes()
+}
+
+#[cfg(feature = "udp-gso")]
+async fn send_one(
+    udp_state: &quinn_udp::UdpSocketState,
+    socket: &Arc<UdpSocket>,
+    addr: &SocketAddr,
+    buf: &[u8],
+) -> Result<(), std::io::Error> {
+    use quinn_udp::{Transmit, UdpSockRef};
+    let transmit = Transmit {
+        destination: *addr,
+        ecn: None,
+        contents: buf,
+        segment_size: None,
+        src_ip: None,
+    };
+    send_one_gso(udp_state, socket, &transmit).await
+}
+
+#[cfg(feature = "udp-gso")]
+async fn send_one_gso(
+    udp_state: &quinn_udp::UdpSocketState,
+    socket: &Arc<UdpSocket>,
+    transmit: &quinn_udp::Transmit<'_>,
+) -> Result<(), std::io::Error> {
+    use quinn_udp::UdpSockRef;
+    loop {
+        match udp_state.send(UdpSockRef::from(&**socket), transmit) {
+            Ok(()) => return Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                tokio::task::yield_now().await;
+            }
+            Err(e) => return Err(e),
+        }
+    }
+}
+
+#[cfg(not(feature = "udp-gso"))]
+async fn forward_from_ring_to_udp(
+    mut ring_recv: RingStream,
+    socket: &Arc<UdpSocket>,
+    addr: &SocketAddr,
+    conn_id: u32,
+) -> Option<TunnelError> {
+    forward_from_ring_to_udp_fallback(ring_recv, socket, addr, conn_id).await
+}
+
+async fn forward_from_ring_to_udp_fallback(
+    mut ring_recv: RingStream,
+    socket: &Arc<UdpSocket>,
+    addr: &SocketAddr,
+    conn_id: u32,
+) -> Option<TunnelError> {
+    tracing::debug!("udp forward from ring to udp (per-packet)");
     loop {
         let buf = ring_recv.next().await?;
         let packet = match buf {
@@ -291,7 +428,6 @@ async fn forward_from_ring_to_udp(
         header.msg_type = UdpPacketType::Data as u8;
 
         let buf = packet.into_bytes();
-        tracing::trace!(?udp_payload_len, ?buf, "udp forward from ring to udp");
         let ret = socket.send_to(&buf, &addr).await;
         if ret.is_err() {
             return Some(TunnelError::IOError(ret.unwrap_err()));

@@ -2365,6 +2365,7 @@ dependencies = [
  "quanta",
  "quinn",
  "quinn-proto",
+ "quinn-udp",
  "quote",
  "rand 0.8.5",
  "rcgen",

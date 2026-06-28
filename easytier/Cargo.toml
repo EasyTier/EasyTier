@@ -85,6 +85,7 @@ atomic_refcell = "0.1.13"
 
 quinn = { version = "0.11.8", optional = true, features = ["ring"] }
 quinn-proto = { version = "0.11.12", optional = true }
+quinn-udp = { version = "0.5", optional = true }
 seahash = { version = "4.1.0", optional = true }
 
 rustls = { version = "0.23.0", features = [
@@ -361,6 +362,7 @@ default = [
     "faketcp",
     "magic-dns",
     "zstd",
+    "udp-gso",
 ]
 full = [
     "websocket",
@@ -378,6 +380,7 @@ full = [
 ]
 wireguard = ["dep:boringtun", "dep:ring"]
 quic = ["dep:quinn", "dep:quinn-proto", "dep:seahash", "dep:rustls", "dep:rcgen"]
+udp-gso = ["dep:quinn-udp"]
 kcp = ["dep:kcp-sys"]
 mimalloc = ["dep:mimalloc"]
 aes-gcm = ["dep:aes-gcm"]
