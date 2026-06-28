@@ -19,6 +19,7 @@ use futures::SinkExt;
 pub struct MpscTunnelSender(Sender<ZCPacket>);
 
 impl MpscTunnelSender {
+    #[cfg_attr(feature = "hotpath", hotpath::measure(impl_type = "MpscTunnelSender"))]
     pub async fn send(&self, item: ZCPacket) -> Result<(), TunnelError> {
         match self.0.try_send(item) {
             Ok(()) => Ok(()),

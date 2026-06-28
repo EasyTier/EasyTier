@@ -1718,6 +1718,7 @@ impl PeerManager {
         Ok(())
     }
 
+    #[cfg_attr(feature = "hotpath", hotpath::measure(impl_type = "PeerManager"))]
     pub async fn send_msg_by_ip(
         &self,
         mut msg: ZCPacket,
