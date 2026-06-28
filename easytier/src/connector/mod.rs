@@ -70,6 +70,8 @@ async fn set_bind_addr_for_peer_connector(
     let ips = global_ctx.get_ip_collector().collect_ip_addrs().await;
     if is_ipv4 {
         let mut bind_addrs = vec![];
+        // Always include loopback so localhost connections work
+        bind_addrs.push(std::net::SocketAddr::from(([127, 0, 0, 1], 0)));
         for ipv4 in ips.interface_ipv4s {
             let socket_addr = SocketAddrV4::new(ipv4.into(), 0).into();
             bind_addrs.push(socket_addr);
