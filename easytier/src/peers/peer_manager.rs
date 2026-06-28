@@ -1633,6 +1633,7 @@ impl PeerManager {
             .collect()
     }
 
+    #[cfg_attr(feature = "hotpath", hotpath::measure(impl_type = "PeerManager"))]
     pub async fn get_msg_dst_peer_ipv4(&self, ipv4_addr: &Ipv4Addr) -> (Vec<PeerId>, bool) {
         let mut is_exit_node = false;
         let mut dst_peers = vec![];
@@ -1701,6 +1702,7 @@ impl PeerManager {
         (dst_peers, is_exit_node)
     }
 
+    #[cfg_attr(feature = "hotpath", hotpath::measure(impl_type = "PeerManager"))]
     pub async fn try_compress_and_encrypt(
         compress_algo: CompressorAlgo,
         encryptor: &Arc<dyn Encryptor + 'static>,
