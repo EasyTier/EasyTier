@@ -372,7 +372,7 @@ impl PeerConn {
         let peer_conn_tunnel = TunnelWithFilter::new(tunnel, filter_chain);
         let supports_direct = peer_conn_tunnel
             .info()
-            .map(|i| matches!(i.tunnel_type.as_str(), "ring" | "udp"))
+            .map(|i| matches!(i.tunnel_type.as_str(), "ring" | "udp" | "tcp"))
             .unwrap_or(false);
         let mut mpsc_tunnel = if supports_direct {
             MpscTunnel::new_direct(peer_conn_tunnel)

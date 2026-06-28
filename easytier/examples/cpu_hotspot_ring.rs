@@ -51,17 +51,21 @@ async fn main() {
         .ok()
         .unwrap_or_else(|| "ring".to_string());
 
-    let (inst_a_config, inst_b_config) = if tunnel_type == "udp" {
-        let mut a = no_tun_config("hot-a", "10.144.144.1");
-        a.set_listeners(vec!["udp://0.0.0.0:35521".parse().unwrap()]);
-
-        let b = no_tun_config("hot-b", "10.144.144.2");
-        (a, b)
-    } else {
-        (
+    let (inst_a_config, inst_b_config) = match tunnel_type.as_str() {
+        "udp" => {
+            let mut a = no_tun_config("hot-a", "10.144.144.1");
+            a.set_listeners(vec!["udp://0.0.0.0:35521".parse().unwrap()]);
+            (a, no_tun_config("hot-b", "10.144.144.2"))
+        }
+        "tcp" => {
+            let mut a = no_tun_config("hot-a", "10.144.144.1");
+            a.set_listeners(vec!["tcp://0.0.0.0:35522".parse().unwrap()]);
+            (a, no_tun_config("hot-b", "10.144.144.2"))
+        }
+        _ => (
             no_tun_config("hot-a", "10.144.144.1"),
             no_tun_config("hot-b", "10.144.144.2"),
-        )
+        ),
     };
 
     let mut inst_a = Instance::new(inst_a_config);
@@ -72,15 +76,26 @@ async fn main() {
 
     tokio::time::sleep(Duration::from_secs(1)).await;
 
-    if tunnel_type == "ring" {
-        let ring_url = format!("ring://{}", inst_a.id());
-        inst_b
-            .get_conn_manager()
-            .add_connector(RingTunnelConnector::new(ring_url.parse().unwrap()));
-    } else if tunnel_type == "udp" {
-        inst_b.get_conn_manager().add_connector(
-            UdpTunnelConnector::new("udp://127.0.0.1:35521".parse().unwrap()),
-        );
+    match tunnel_type.as_str() {
+        "ring" => {
+            let ring_url = format!("ring://{}", inst_a.id());
+            inst_b
+                .get_conn_manager()
+                .add_connector(RingTunnelConnector::new(ring_url.parse().unwrap()));
+        }
+        "udp" => {
+            inst_b.get_conn_manager().add_connector(
+                UdpTunnelConnector::new("udp://127.0.0.1:35521".parse().unwrap()),
+            );
+        }
+        "tcp" => {
+            inst_b.get_conn_manager().add_connector(
+                easytier::tunnel::tcp::TcpTunnelConnector::new(
+                    "tcp://127.0.0.1:35522".parse().unwrap(),
+                ),
+            );
+        }
+        _ => {}
     }
 
     let dst: IpAddr = "10.144.144.2".parse().unwrap();
