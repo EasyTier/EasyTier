@@ -6,6 +6,20 @@
 
 ## 最终 benchmark 数据
 
+### 真实性能对比（不带 hotpath，3 runs average）
+
+origin/main baseline 使用 `git worktree` 从 origin/main 构建，仅添加 bench example +
+loopback bind fix（TCP/UDP convergence 需要）。无任何优化代码。
+
+| Tunnel | origin/main baseline | 优化后 | **提升** | 带宽（优化后） |
+|--------|---------------------|--------|---------|--------------|
+| **Ring** | 293K pps / 3.3 Gbps | **1,124K pps** | **+284%** | 12.6 Gbps |
+| **TCP**  | 298K pps / 3.3 Gbps | **975K pps**   | **+227%** | 10.9 Gbps |
+| **UDP**  | 630K pps / 7.1 Gbps | **1,066K pps** | **+69%**  | 11.9 Gbps |
+
+UDP baseline 本身较高（630K vs 293K/298K），因为 UDP tunnel 的 forward_from_ring_to_udp
+独立 task 提供了天然的 pipeline overlap，部分隐藏了 channel 开销。
+
 ### 带 hotpath profiling（timing 可见，但有 observer effect）
 
 | Tunnel | 原始 pps | 优化后 pps | 提升 | MpscTunnelSender::send |
@@ -14,29 +28,22 @@
 | UDP    | N/A     | 440K      | —    | 294ns               |
 | TCP    | N/A     | 453K      | —    | 378ns               |
 
-### 不带 hotpath（真实生产性能）
-
-| Tunnel | 优化后 pps | 带宽 | 每包成本 |
-|--------|-----------|------|---------|
-| Ring   | **1,105K** | 12.4 Gbps | 0.91µs |
-| TCP    | **984K**   | 11.0 Gbps | 1.02µs |
-
 ### hotpath observer effect
 
 **hotpath 测量基础设施引入了 ~54-57% 的性能开销：**
 
 | Tunnel | 不带 hotpath | 带 hotpath | hotpath 开销 |
 |--------|-------------|-----------|-------------|
-| Ring   | 1,105K pps  | 478K pps  | **-57%**    |
-| TCP    | 984K pps    | 453K pps  | **-54%**    |
+| Ring   | 1,124K pps  | 478K pps  | **-57%**    |
+| TCP    | 975K pps    | 453K pps  | **-54%**    |
 
 **含义：**
-- timing 数据里的 `send_msg_by_ip: 2.15µs` 是膨胀值，真实成本 ~1.0µs
+- timing 数据里的 `send_msg_by_ip: 2.15µs` 是膨胀值，真实成本 ~0.9µs
 - 所有 timing 数据需要按 ~2.3x 校准才能反映真实开销
 - hotpath 适用于相对比较（优化前 vs 后），不适用于绝对性能评估
 - 生产环境部署不应用 hotpath feature 编译
 
-测试条件：4 threads, 1400B packets, 10s, 宿主机直跑（TCP/UDP）/ Docker 容器（带 netns）。
+测试条件：4 threads, 1400B packets, 10s, 宿主机直跑。
 
 ---
 
@@ -245,8 +252,8 @@ samply load /tmp/hotpath/<session>/hp.json.gz
 
 | Tunnel | 不带 hotpath | 带 hotpath | hotpath 开销 |
 |--------|-------------|-----------|-------------|
-| Ring   | 1,105K pps  | 478K pps  | **-57%**    |
-| TCP    | 984K pps    | 453K pps  | **-54%**    |
+| Ring   | 1,124K pps  | 478K pps  | **-57%**    |
+| TCP    | 975K pps    | 453K pps  | **-54%**    |
 
 **原因**：hotpath `#[measure]` / `#[measure_all]` 在每个标注的 async fn 上包装 Future struct，每次 poll 记录开始/结束时间（quanta::Instant ~5ns × 2）、更新统计（atomic 操作）。measure_all 覆盖的 impl 块内所有方法都被插桩。当有 ~30 个 measure 点在发包热路径上时，累计开销超过 50%。
 
@@ -260,16 +267,28 @@ samply load /tmp/hotpath/<session>/hp.json.gz
 
 ## 优化实施记录
 
-### 有效优化
+### 真实提升（不带 hotpath，origin/main baseline 对比）
 
-| 优化 | 带 hotpath pps 变化 | 不带 hotpath 效果 | 机制 |
-|------|--------------------|--------------------|------|
-| try_send fast path | +7% | 减少 mpsc semaphore 开销 | 跳过 tokio mpsc semaphore |
-| metrics batch + sync | +1.6% | 减少 CounterHandle touch | batch + sync fast path |
-| channel 32→1024 | ~0% | 减少 fallback 频率 | 更大 buffer |
-| **noop_waker sync send** | **+90%** | **绕过 async machinery** | RingSink 直接 sync poll |
-| #2385 ZCPacket safe init | +5% (TCP) | copy_nonoverlapping | 无 aliasing 检查 |
-| #2381 advance (零拷贝) | ~0% | 消除 split_off Arc churn | Buf::advance 替代 split_off |
+baseline 构建：`git worktree` 从 origin/main，仅添加 bench example + loopback bind fix。
+
+| Tunnel | baseline | 优化后 | 提升 |
+|--------|---------|--------|------|
+| Ring   | 293K pps | **1,124K pps** | **+284%** |
+| TCP    | 298K pps | **975K pps** | **+227%** |
+| UDP    | 630K pps | **1,066K pps** | **+69%** |
+
+### 有效优化（按贡献排序）
+
+| 优化 | 带 hotpath pps 变化 | 真实提升来源 | 机制 |
+|------|--------------------|----|------|
+| **noop_waker sync send** | **+90%** | **核心突破** | RingSink/FramedWriter 直接 sync poll，绕过 async machinery |
+| try_send fast path | +7% | 次要 | 跳过 tokio mpsc semaphore |
+| #2385 ZCPacket safe init | +5% (TCP) | TCP 专属 | copy_nonoverlapping 无 aliasing 检查 |
+| metrics batch + sync | +1.6% | 小幅 | batch CounterHandle + sync fast path |
+| #2381 advance (零拷贝) | ~0% | 代码质量 | Buf::advance 消除 split_off Arc churn |
+| channel 32→1024 | ~0% | 减少 fallback | 更大 buffer |
+| 接收侧 try_recv | ~0% (单向) | 双向有价值 | 消除 recv().await async overhead |
+| loopback bind fix | — | TCP/UDP convergence 必需 | 127.0.0.1 加入 bind 地址列表 |
 
 ### 验证无效并回退
 
