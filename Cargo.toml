@@ -27,3 +27,9 @@ lto = true
 codegen-units = 1
 opt-level = 3
 strip = true
+
+# For hotpath CPU profiling: samply needs debug symbols and unstripped binaries.
+[profile.hotpath]
+inherits = "release"
+strip = false
+debug = "line-tables-only"

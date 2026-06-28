@@ -32,6 +32,7 @@ pub(crate) struct CidrSet {
     mapped_to_real: Arc<DashMap<cidr::Ipv4Cidr, cidr::Ipv4Cidr>>,
 }
 
+#[cfg_attr(feature = "hotpath", hotpath::measure_all)]
 impl CidrSet {
     pub fn new(global_ctx: ArcGlobalCtx) -> Self {
         let mut ret = Self {
