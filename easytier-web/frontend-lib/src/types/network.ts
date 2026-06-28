@@ -2,6 +2,7 @@ import { v4 as uuidv4 } from 'uuid'
 import {
   NetworkConfig as NetworkConfigPb,
   NetworkingMethod,
+  type NetworkPeerConfig,
   type NetworkConfig as ProtoNetworkConfig,
   type PortForwardConfig,
 } from '../generated/proto/api_manage'
@@ -25,7 +26,7 @@ import {
 import { prepareNetworkConfigForProtoJson } from './networkCompat'
 
 export { AclAction, AclChainType, AclProtocol, CompressionAlgoPb, NatType, NetworkingMethod }
-export type { Acl, AclChain, AclRule, AclV1, GroupIdentity, GroupInfo, PeerFeatureFlag, PortForwardConfig, SecureModeConfig }
+export type { Acl, AclChain, AclRule, AclV1, GroupIdentity, GroupInfo, NetworkPeerConfig, PeerFeatureFlag, PortForwardConfig, SecureModeConfig }
 
 export type NetworkConfig = Omit<
   ProtoNetworkConfig,
@@ -45,8 +46,13 @@ const UINT64_MAX = (1n << 64n) - 1n
 
 interface NetworkingConfigFields {
   peer_urls: string[]
+  peers?: NetworkPeerConfig[]
   public_server_url?: string
   networking_method?: NetworkingMethod | string
+}
+
+interface NetworkingMethodOptions {
+  fillPeerUrlsFromPeers?: boolean
 }
 
 function emptyGroupInfo(): GroupInfo {
@@ -143,6 +149,29 @@ function cleanPeerUrls(urls: string[] | undefined): string[] {
   return (urls ?? []).map((url) => url.trim()).filter((url) => url.length > 0)
 }
 
+function cleanNetworkPeers(peers: NetworkPeerConfig[] | undefined): NetworkPeerConfig[] {
+  return (peers ?? [])
+    .map((peer) => ({
+      ...peer,
+      uri: peer.uri.trim(),
+    }))
+    .filter((peer) => peer.uri.length > 0)
+}
+
+function peersFromUrls(urls: string[], existingPeers: NetworkPeerConfig[]): NetworkPeerConfig[] {
+  const peersByUri = new Map<string, NetworkPeerConfig>()
+  for (const peer of existingPeers) {
+    if (!peersByUri.has(peer.uri)) {
+      peersByUri.set(peer.uri, peer)
+    }
+  }
+
+  return urls.map((uri) => ({
+    ...(peersByUri.get(uri) ?? {}),
+    uri,
+  }))
+}
+
 export function ensureAclRuleLists(rule: AclRule): AclRule {
   rule.ports ??= []
   rule.source_ips ??= []
@@ -230,15 +259,24 @@ function toBackendUint64(v: number | bigint | string | null | undefined): bigint
   }
 }
 
-function applyNetworkingMethod(config: NetworkingConfigFields): void {
+function applyNetworkingMethod(
+  config: NetworkingConfigFields,
+  options: NetworkingMethodOptions = {},
+): void {
+  const existingPeers = cleanNetworkPeers(config.peers)
   config.peer_urls = cleanPeerUrls(config.peer_urls)
+  if (options.fillPeerUrlsFromPeers && config.peer_urls.length === 0 && existingPeers.length > 0) {
+    config.peer_urls = existingPeers.map((peer) => peer.uri)
+  }
 
   const publicServerUrl = config.public_server_url?.trim() ?? ''
   const networkingMethod = config.networking_method ?? NetworkingMethod.Manual
 
   switch (networkingMethod) {
     case NetworkingMethod.PublicServer:
-      config.peer_urls = publicServerUrl ? [publicServerUrl] : []
+      config.peer_urls = publicServerUrl
+        ? [publicServerUrl]
+        : (options.fillPeerUrlsFromPeers ? existingPeers.map((peer) => peer.uri) : [])
       break
     case NetworkingMethod.Manual:
       break
@@ -250,6 +288,7 @@ function applyNetworkingMethod(config: NetworkingConfigFields): void {
 
   config.networking_method = NetworkingMethod.Manual
   config.public_server_url = ''
+  config.peers = peersFromUrls(config.peer_urls, existingPeers)
 }
 
 export function normalizeNetworkConfig(config: NetworkConfig): NetworkConfig {
@@ -257,7 +296,7 @@ export function normalizeNetworkConfig(config: NetworkConfig): NetworkConfig {
     ignoreUnknownFields: true,
   }) as unknown as NetworkConfig
 
-  applyNetworkingMethod(normalized)
+  applyNetworkingMethod(normalized, { fillPeerUrlsFromPeers: true })
   normalized.mtu = normalizeNumberForInput(normalized.mtu)
   normalized.instance_recv_bps_limit = normalizeUint64ForInput(
     normalized.instance_recv_bps_limit as any,
