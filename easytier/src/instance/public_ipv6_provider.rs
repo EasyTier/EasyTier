@@ -292,8 +292,18 @@ fn detect_public_ipv6_prefix_from_routes(
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct DetectedDefaultRouteIpv6Interface {
     interface_name: String,
+    ifindex: u32,
     address: std::net::Ipv6Addr,
     prefix: Ipv6Cidr,
+}
+
+#[cfg(target_os = "linux")]
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct DefaultRouteIpv6InterfaceCandidate {
+    interface_name: String,
+    ifindex: u32,
+    address: std::net::Ipv6Addr,
+    prefix_len: u8,
 }
 
 #[cfg(target_os = "linux")]
@@ -302,6 +312,46 @@ fn default_route_ifindices(routes: &[DetectedIpv6Route]) -> std::collections::BT
         .iter()
         .filter(|route| is_ipv6_default_route(route.dst) && route.kind == RouteType::Unicast)
         .filter_map(|route| route.ifindex)
+        .collect()
+}
+
+#[cfg(target_os = "linux")]
+fn select_default_route_ipv6_interfaces(
+    candidates: impl IntoIterator<Item = DefaultRouteIpv6InterfaceCandidate>,
+    wan_ifindices: &std::collections::BTreeSet<u32>,
+    max_prefix_len: u8,
+) -> Vec<DetectedDefaultRouteIpv6Interface> {
+    candidates
+        .into_iter()
+        .filter_map(|candidate| {
+            if !wan_ifindices.contains(&candidate.ifindex) {
+                return None;
+            }
+
+            if candidate.address.is_loopback()
+                || candidate.address.is_multicast()
+                || candidate.address.is_unicast_link_local()
+                || candidate.address.is_unique_local()
+                || candidate.address.is_unspecified()
+            {
+                return None;
+            }
+
+            if candidate.prefix_len == 0 || candidate.prefix_len > max_prefix_len {
+                return None;
+            }
+
+            let prefix = Ipv6Inet::new(candidate.address, candidate.prefix_len)
+                .ok()
+                .map(|inet| inet.network())?;
+
+            Some(DetectedDefaultRouteIpv6Interface {
+                interface_name: candidate.interface_name,
+                ifindex: candidate.ifindex,
+                address: candidate.address,
+                prefix,
+            })
+        })
         .collect()
 }
 
@@ -323,72 +373,54 @@ fn detect_default_route_ipv6_interfaces(
         return Vec::new();
     };
 
-    interfaces
+    let candidates = interfaces
         .filter_map(|iface| {
             let address = iface.address?;
             let netmask = iface.netmask?;
             let ifindex = get_interface_index(&iface.interface_name).ok()?;
-            if !wan_ifindices.contains(&ifindex) {
-                return None;
-            }
 
             if address.family()? != nix::sys::socket::AddressFamily::Inet6 {
                 return None;
             }
 
             let ipv6_addr = address.as_sockaddr_in6()?.ip();
-
-            // filter out non-global addresses: loopback, multicast, link-local,
-            // unique-local (fc00::/7, fd00::/8), and unspecified
-            if ipv6_addr.is_loopback()
-                || ipv6_addr.is_multicast()
-                || ipv6_addr.is_unicast_link_local()
-                || ipv6_addr.is_unique_local()
-                || ipv6_addr.is_unspecified()
-            {
-                return None;
-            }
-
             let netmask_ip = netmask.as_sockaddr_in6()?.ip();
             let prefix_len = ip_mask_to_prefix(std::net::IpAddr::V6(netmask_ip)).ok()?;
 
-            if prefix_len > max_prefix_len {
-                return None;
-            }
-
-            // Ipv6Cidr::new() rejects addresses with host bits set (which is
-            // always the case for interface addresses). Use Ipv6Inet::new()
-            // instead, which accepts host addresses and can extract the
-            // containing network.
-            let cidr = Ipv6Inet::new(ipv6_addr, prefix_len)
-                .ok()
-                .map(|inet| inet.network())?;
-
-            Some(DetectedDefaultRouteIpv6Interface {
+            Some(DefaultRouteIpv6InterfaceCandidate {
                 interface_name: iface.interface_name,
+                ifindex,
                 address: ipv6_addr,
-                prefix: cidr,
+                prefix_len,
             })
         })
-        .collect()
+        .collect::<Vec<_>>();
+
+    select_default_route_ipv6_interfaces(candidates, &wan_ifindices, max_prefix_len)
+}
+
+#[cfg(target_os = "linux")]
+fn select_public_ipv6_prefix_from_default_route_interfaces(
+    candidates: impl IntoIterator<Item = DetectedDefaultRouteIpv6Interface>,
+) -> Option<DetectedPublicIpv6Prefix> {
+    let iface = candidates
+        .into_iter()
+        .min_by_key(|iface| (iface.prefix.network_length(), iface.ifindex))?;
+    Some(DetectedPublicIpv6Prefix {
+        prefix: iface.prefix,
+        ndp_proxy: Some(NdpProxyTarget {
+            wan_iface: iface.interface_name,
+        }),
+    })
 }
 
 #[cfg(target_os = "linux")]
 fn detect_public_ipv6_prefix_from_interfaces(
     routes: &[DetectedIpv6Route],
 ) -> Option<DetectedPublicIpv6Prefix> {
-    let candidates = detect_default_route_ipv6_interfaces(routes, 64);
-
-    // prefer the shortest prefix (widest scope)
-    candidates
-        .into_iter()
-        .map(|iface| DetectedPublicIpv6Prefix {
-            prefix: iface.prefix,
-            ndp_proxy: Some(NdpProxyTarget {
-                wan_iface: iface.interface_name,
-            }),
-        })
-        .min_by_key(|detected| detected.prefix.network_length())
+    select_public_ipv6_prefix_from_default_route_interfaces(detect_default_route_ipv6_interfaces(
+        routes, 64,
+    ))
 }
 
 #[cfg(target_os = "linux")]
@@ -424,7 +456,7 @@ fn detect_configured_prefix_ndp_proxy_target(
             ipv6_cidr_contains_cidr(iface.prefix, prefix)
                 || (iface.prefix.network_length() == 128 && prefix.contains(&iface.address))
         })
-        .min_by_key(|iface| iface.prefix.network_length())
+        .min_by_key(|iface| (iface.prefix.network_length(), iface.ifindex))
         .map(|iface| NdpProxyTarget {
             wan_iface: iface.interface_name,
         })
@@ -1074,10 +1106,12 @@ mod tests {
 
     #[cfg(target_os = "linux")]
     use super::{
-        DetectedIpv6Route, detect_public_ipv6_prefix_from_interfaces,
-        detect_public_ipv6_prefix_from_routes, detect_public_ipv6_prefix_linux,
-        ensure_linux_ipv6_forwarding_at_paths, ensure_public_ipv6_provider_supported,
-        public_ipv6_provider_auto_detect_error, sync_ndp_proxy_entries,
+        DefaultRouteIpv6InterfaceCandidate, DetectedIpv6Route,
+        detect_public_ipv6_prefix_from_interfaces, detect_public_ipv6_prefix_from_routes,
+        detect_public_ipv6_prefix_linux, ensure_linux_ipv6_forwarding_at_paths,
+        ensure_public_ipv6_provider_supported, public_ipv6_provider_auto_detect_error,
+        select_default_route_ipv6_interfaces,
+        select_public_ipv6_prefix_from_default_route_interfaces, sync_ndp_proxy_entries,
     };
 
     use super::{
@@ -1184,6 +1218,21 @@ mod tests {
         detected: Option<super::DetectedPublicIpv6Prefix>,
     ) -> Option<cidr::Ipv6Cidr> {
         detected.map(|detected| detected.prefix)
+    }
+
+    #[cfg(target_os = "linux")]
+    fn iface_candidate(
+        interface_name: &str,
+        ifindex: u32,
+        address: &str,
+        prefix_len: u8,
+    ) -> DefaultRouteIpv6InterfaceCandidate {
+        DefaultRouteIpv6InterfaceCandidate {
+            interface_name: interface_name.to_string(),
+            ifindex,
+            address: address.parse().unwrap(),
+            prefix_len,
+        }
     }
 
     #[cfg(target_os = "linux")]
@@ -1543,6 +1592,59 @@ mod tests {
             .expect("fallback should select the default-route interface");
         assert_eq!(detected.prefix, "2001:db8:dddd::/64".parse().unwrap());
         assert_eq!(detected.ndp_proxy.unwrap().wan_iface, wan_if);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn test_select_default_route_ipv6_interfaces_filters_candidates() {
+        let wan_ifindices = [2u32].into_iter().collect();
+        let candidates = vec![
+            iface_candidate("wan0", 2, "2001:db8:100::1", 64),
+            iface_candidate("nonwan0", 9, "2001:db8:200::1", 64),
+            iface_candidate("loopback0", 2, "::1", 128),
+            iface_candidate("linklocal0", 2, "fe80::1", 64),
+            iface_candidate("ula0", 2, "fd00::1", 64),
+            iface_candidate("multicast0", 2, "ff02::1", 64),
+            iface_candidate("unspecified0", 2, "::", 64),
+            iface_candidate("empty0", 2, "2001:db8:300::1", 0),
+            iface_candidate("host0", 2, "2001:db8:400::1", 128),
+        ];
+
+        let selected = select_default_route_ipv6_interfaces(candidates, &wan_ifindices, 64);
+
+        assert_eq!(selected.len(), 1);
+        assert_eq!(selected[0].interface_name, "wan0");
+        assert_eq!(selected[0].prefix, "2001:db8:100::/64".parse().unwrap());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn test_select_default_route_ipv6_interfaces_strips_host_bits() {
+        let wan_ifindices = [2u32].into_iter().collect();
+        let candidates = vec![iface_candidate("wan0", 2, "2001:db8:aaaa::abcd", 64)];
+
+        let selected = select_default_route_ipv6_interfaces(candidates, &wan_ifindices, 64);
+
+        assert_eq!(selected.len(), 1);
+        assert_eq!(selected[0].prefix, "2001:db8:aaaa::/64".parse().unwrap());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn test_select_public_ipv6_prefix_tie_breaks_by_lowest_ifindex() {
+        let wan_ifindices = [2u32, 3, 5].into_iter().collect();
+        let candidates = vec![
+            iface_candidate("wan5", 5, "2001:db8:5555::1", 48),
+            iface_candidate("wan64", 3, "2001:db8:3333::1", 64),
+            iface_candidate("wan2", 2, "2001:db9:2222::1", 48),
+        ];
+        let interfaces = select_default_route_ipv6_interfaces(candidates, &wan_ifindices, 64);
+
+        let detected = select_public_ipv6_prefix_from_default_route_interfaces(interfaces)
+            .expect("default-route public IPv6 prefix should be selected");
+
+        assert_eq!(detected.prefix, "2001:db9:2222::/48".parse().unwrap());
+        assert_eq!(detected.ndp_proxy.unwrap().wan_iface, "wan2");
     }
 
     #[cfg(target_os = "linux")]
