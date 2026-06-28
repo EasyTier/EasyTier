@@ -31,16 +31,21 @@ pub(crate) fn send_to_with_src_ipv6(
         #[repr(align(8))]
         struct ControlBuffer([u8; 128]);
 
+        #[cfg(target_os = "android")]
+        let ipi6_ifindex: libc::c_int = i32::try_from(src_ifindex).map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "IPv6 source interface index is out of range",
+            )
+        })?;
+        #[cfg(not(target_os = "android"))]
+        let ipi6_ifindex: libc::c_uint = src_ifindex;
+
         let pktinfo = libc::in6_pktinfo {
             ipi6_addr: libc::in6_addr {
                 s6_addr: src_ip.octets(),
             },
-            ipi6_ifindex: src_ifindex.try_into().map_err(|_| {
-                io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    "IPv6 source interface index is out of range",
-                )
-            })?,
+            ipi6_ifindex,
         };
         let mut iov = libc::iovec {
             iov_base: buf.as_ptr() as *mut libc::c_void,
