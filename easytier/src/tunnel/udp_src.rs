@@ -58,15 +58,14 @@ pub(crate) fn send_to_with_src_ipv6(
             ));
         }
 
-        let msg = libc::msghdr {
-            msg_name: dst_addr.as_ptr() as *mut libc::c_void,
-            msg_namelen: dst_addr.len() as _,
-            msg_iov: &mut iov,
-            msg_iovlen: 1,
-            msg_control: control.0.as_mut_ptr() as *mut libc::c_void,
-            msg_controllen: control_len as _,
-            msg_flags: 0,
-        };
+        let mut msg = unsafe { mem::zeroed::<libc::msghdr>() };
+        msg.msg_name = dst_addr.as_ptr() as *mut libc::c_void;
+        msg.msg_namelen = dst_addr.len() as _;
+        msg.msg_iov = &mut iov;
+        msg.msg_iovlen = 1;
+        msg.msg_control = control.0.as_mut_ptr() as *mut libc::c_void;
+        msg.msg_controllen = control_len as _;
+        msg.msg_flags = 0;
 
         unsafe {
             let cmsg = libc::CMSG_FIRSTHDR(&msg);
