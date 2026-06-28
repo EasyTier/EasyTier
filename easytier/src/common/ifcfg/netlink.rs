@@ -157,6 +157,7 @@ impl From<RouteMessage> for Route {
     }
 }
 
+#[derive(Default)]
 pub struct NetlinkIfConfiger {}
 
 impl NetlinkIfConfiger {

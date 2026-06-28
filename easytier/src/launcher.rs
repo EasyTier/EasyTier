@@ -121,6 +121,7 @@ impl EasyTierLauncher {
         let peer_mgr = instance.get_peer_manager();
         let nic_ctx = instance.get_nic_ctx();
         let peer_packet_receiver = instance.get_peer_packet_receiver();
+        let shared_virtual_nic_registry = instance.get_shared_virtual_nic_registry();
         let mut tun_fd_receiver = data.tun_fd.1.lock().unwrap().take().unwrap();
 
         tasks.spawn(async move {
@@ -128,14 +129,18 @@ impl EasyTierLauncher {
                 let Some(tun_fd) = tun_fd_receiver.recv().await.flatten() else {
                     return;
                 };
-                let res = Instance::setup_nic_ctx_for_mobile(
+                if let Err(err) = Instance::setup_nic_ctx_for_mobile(
                     nic_ctx.clone(),
                     global_ctx.clone(),
                     peer_mgr.clone(),
                     peer_packet_receiver.clone(),
+                    shared_virtual_nic_registry.clone(),
                     tun_fd,
                 )
-                .await;
+                .await
+                {
+                    tracing::error!(?err, tun_fd, "setup mobile nic ctx failed");
+                }
             }
         });
     }

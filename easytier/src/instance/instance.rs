@@ -2,17 +2,20 @@
 use std::any::Any;
 use std::collections::HashSet;
 use std::net::{IpAddr, Ipv4Addr};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Weak};
 #[cfg(feature = "tun")]
+use std::sync::OnceLock;
+use std::sync::{Arc, Weak};
+#[cfg(all(feature = "tun", not(mobile)))]
 use std::time::Duration;
 
 use anyhow::Context;
 use cidr::{IpCidr, Ipv4Inet};
 use futures::FutureExt;
+#[cfg(all(feature = "tun", not(mobile)))]
+use tokio::sync::oneshot;
 use tokio::sync::{Mutex, Notify};
 #[cfg(feature = "tun")]
-use tokio::{sync::oneshot, task::JoinSet};
+use tokio::task::JoinSet;
 #[cfg(feature = "magic-dns")]
 use tokio_util::sync::CancellationToken;
 use tokio_util::task::AbortOnDropHandle;
@@ -69,6 +72,8 @@ use super::public_ipv6_provider::{
     should_run_public_ipv6_provider_reconcile, validate_public_ipv6_config,
     validate_public_ipv6_config_values,
 };
+#[cfg(feature = "tun")]
+use super::shared_virtual_nic::SharedVirtualNicRegistry;
 
 #[cfg(feature = "socks5")]
 use crate::gateway::socks5::Socks5Server;
@@ -79,7 +84,14 @@ struct IpProxy {
     icmp_proxy: Arc<IcmpProxy>,
     udp_proxy: Arc<UdpProxy>,
     global_ctx: ArcGlobalCtx,
-    started: Arc<AtomicBool>,
+    start_state: Arc<Mutex<IpProxyStartState>>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum IpProxyStartState {
+    Idle,
+    Started,
+    Failed,
 }
 
 impl IpProxy {
@@ -94,27 +106,44 @@ impl IpProxy {
             icmp_proxy,
             udp_proxy,
             global_ctx,
-            started: Arc::new(AtomicBool::new(false)),
+            start_state: Arc::new(Mutex::new(IpProxyStartState::Idle)),
         })
     }
 
-    async fn start(&self) -> Result<(), Error> {
-        if (self.global_ctx.config.get_proxy_cidrs().is_empty()
-            || self.started.load(Ordering::Relaxed))
-            && !self.global_ctx.enable_exit_node()
-            && !self.global_ctx.no_tun()
-        {
-            return Ok(());
-        }
-
-        // Actually, if this node is enabled as an exit node,
-        // we still can use the system stack to forward packets.
+    fn should_start(&self) -> bool {
         if self.global_ctx.proxy_forward_by_system() && !self.global_ctx.no_tun() {
+            return false;
+        }
+
+        self.global_ctx.enable_exit_node()
+            || self.global_ctx.no_tun()
+            || !self.global_ctx.config.get_proxy_cidrs().is_empty()
+    }
+
+    async fn start(&self) -> Result<(), Error> {
+        if !self.should_start() {
             return Ok(());
         }
 
-        self.started.store(true, Ordering::Relaxed);
-        self.tcp_proxy.start(true).await?;
+        let mut start_state = self.start_state.lock().await;
+        match *start_state {
+            IpProxyStartState::Idle => {}
+            IpProxyStartState::Started => return Ok(()),
+            IpProxyStartState::Failed => {
+                return Err(anyhow::anyhow!("ip proxy start previously failed").into());
+            }
+        }
+
+        if let Err(err) = self.start_components().await {
+            *start_state = IpProxyStartState::Failed;
+            return Err(err);
+        }
+
+        *start_state = IpProxyStartState::Started;
+        Ok(())
+    }
+
+    async fn start_components(&self) -> Result<(), Error> {
         if let Err(e) = self.icmp_proxy.start().await {
             tracing::error!("start icmp proxy failed: {:?}", e);
             if cfg!(not(any(
@@ -129,8 +158,36 @@ impl IpProxy {
                 return Err(e);
             }
         }
+        self.tcp_proxy.start(true).await?;
         self.udp_proxy.start().await?;
         Ok(())
+    }
+
+    fn watch_config_patches(&self) -> AbortOnDropHandle<()> {
+        let ip_proxy = self.clone();
+        let mut event_receiver = self.global_ctx.subscribe();
+        AbortOnDropHandle::new(tokio::spawn(async move {
+            loop {
+                match event_receiver.recv().await {
+                    Ok(GlobalCtxEvent::ConfigPatched(_)) => {
+                        if let Err(err) = ip_proxy.start().await {
+                            tracing::warn!(?err, "failed to start ip proxy after config patch");
+                        }
+                    }
+                    Ok(_) => {}
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                        event_receiver = event_receiver.resubscribe();
+                        if let Err(err) = ip_proxy.start().await {
+                            tracing::warn!(
+                                ?err,
+                                "failed to start ip proxy after missed config patch"
+                            );
+                        }
+                    }
+                }
+            }
+        }))
     }
 }
 
@@ -194,6 +251,17 @@ impl NicCtxContainer {
 
 #[cfg(feature = "tun")]
 type ArcNicCtx = Arc<Mutex<Option<NicCtxContainer>>>;
+
+#[cfg(feature = "tun")]
+type ArcSharedVirtualNicRegistry = Arc<Mutex<SharedVirtualNicRegistry>>;
+
+#[cfg(feature = "tun")]
+fn default_shared_virtual_nic_registry() -> ArcSharedVirtualNicRegistry {
+    static REGISTRY: OnceLock<ArcSharedVirtualNicRegistry> = OnceLock::new();
+    REGISTRY
+        .get_or_init(|| Arc::new(Mutex::new(SharedVirtualNicRegistry::new())))
+        .clone()
+}
 
 pub struct InstanceRpcServerHook {
     rpc_portal_whitelist: Vec<IpCidr>,
@@ -616,6 +684,8 @@ pub struct Instance {
 
     #[cfg(feature = "tun")]
     nic_ctx: ArcNicCtx,
+    #[cfg(feature = "tun")]
+    shared_virtual_nic_registry: ArcSharedVirtualNicRegistry,
 
     peer_packet_receiver: Arc<Mutex<PacketRecvChanReceiver>>,
     peer_manager: Arc<PeerManager>,
@@ -626,6 +696,7 @@ pub struct Instance {
     tcp_hole_puncher: Arc<Mutex<TcpHolePunchConnector>>,
 
     ip_proxy: Option<IpProxy>,
+    ip_proxy_config_watcher: Option<AbortOnDropHandle<()>>,
 
     #[cfg(feature = "kcp")]
     kcp_proxy_src: Option<KcpProxySrc>,
@@ -705,6 +776,8 @@ impl Instance {
             peer_packet_receiver: Arc::new(Mutex::new(peer_packet_receiver)),
             #[cfg(feature = "tun")]
             nic_ctx: Arc::new(Mutex::new(None)),
+            #[cfg(feature = "tun")]
+            shared_virtual_nic_registry: default_shared_virtual_nic_registry(),
 
             peer_manager,
             listener_manager,
@@ -714,6 +787,7 @@ impl Instance {
             tcp_hole_puncher,
 
             ip_proxy: None,
+            ip_proxy_config_watcher: None,
             #[cfg(feature = "kcp")]
             kcp_proxy_src: None,
             #[cfg(feature = "kcp")]
@@ -790,18 +864,26 @@ impl Instance {
         peer_mgr: Arc<PeerManager>,
         tun_dev: Option<String>,
         tun_ip: Ipv4Inet,
+        #[cfg(feature = "tun")] route_backend: Option<super::virtual_nic::NicBackend>,
     ) -> Option<DnsRunner> {
         let ctx = peer_mgr.get_global_ctx();
         if !ctx.config.get_flags().accept_dns {
             return None;
         }
 
-        let runner = DnsRunner::new(
+        let runner = DnsRunner::new_with_netns(
             peer_mgr,
             tun_dev,
             tun_ip,
             MAGIC_DNS_FAKE_IP.parse().unwrap(),
+            ctx.net_ns.name(),
         );
+        #[cfg(feature = "tun")]
+        let runner = if let Some(route_backend) = route_backend {
+            runner.with_route_backend(route_backend)
+        } else {
+            runner
+        };
         Some(runner)
     }
 
@@ -820,6 +902,34 @@ impl Instance {
         tracing::debug!("nic ctx updated.");
     }
 
+    #[cfg(feature = "tun")]
+    async fn new_nic_ctx(
+        global_ctx: ArcGlobalCtx,
+        peer_manager: &Arc<PeerManager>,
+        peer_packet_receiver: Arc<Mutex<PacketRecvChanReceiver>>,
+        close_notifier: Arc<Notify>,
+        shared_virtual_nic_registry: ArcSharedVirtualNicRegistry,
+    ) -> Result<NicCtx, Error> {
+        if global_ctx.get_flags().dev_name.is_empty() {
+            return Ok(NicCtx::new(
+                global_ctx,
+                peer_manager,
+                peer_packet_receiver,
+                close_notifier,
+            ));
+        }
+
+        NicCtx::new_shared(
+            global_ctx,
+            peer_manager,
+            peer_packet_receiver,
+            close_notifier,
+            shared_virtual_nic_registry,
+            uuid::Uuid::new_v4(),
+        )
+        .await
+    }
+
     // Warning, if there is an IP conflict in the network when using DHCP, the IP will be automatically changed.
     fn check_dhcp_ip_conflict(&self) {
         use rand::Rng;
@@ -827,6 +937,8 @@ impl Instance {
         let global_ctx_c = self.get_global_ctx();
         #[cfg(feature = "tun")]
         let nic_ctx = self.nic_ctx.clone();
+        #[cfg(all(not(mobile), feature = "tun"))]
+        let shared_virtual_nic_registry = self.shared_virtual_nic_registry.clone();
         let _peer_packet_receiver = self.peer_packet_receiver.clone();
         tokio::spawn(async move {
             let default_ipv4_addr = Ipv4Inet::new(Ipv4Addr::new(10, 126, 126, 0), 24).unwrap();
@@ -905,12 +1017,27 @@ impl Instance {
 
                     #[cfg(all(not(mobile), feature = "tun"))]
                     {
-                        let mut new_nic_ctx = NicCtx::new(
+                        let mut new_nic_ctx = match Self::new_nic_ctx(
                             global_ctx_c.clone(),
                             &peer_manager_c,
                             _peer_packet_receiver.clone(),
                             nic_closed_notifier.clone(),
-                        );
+                            shared_virtual_nic_registry.clone(),
+                        )
+                        .await
+                        {
+                            Ok(nic_ctx) => nic_ctx,
+                            Err(e) => {
+                                tracing::error!(
+                                    ?current_dhcp_ip,
+                                    ?candidate_ipv4_addr,
+                                    ?e,
+                                    "create nic ctx failed"
+                                );
+                                global_ctx_c.set_ipv4(None);
+                                continue;
+                            }
+                        };
                         if let Err(e) = new_nic_ctx.run(Some(ip), global_ctx_c.get_ipv6()).await {
                             tracing::error!(
                                 ?current_dhcp_ip,
@@ -922,12 +1049,19 @@ impl Instance {
                             continue;
                         }
                         #[cfg(feature = "magic-dns")]
+                        let route_backend = new_nic_ctx.shared_route_backend_for_dns();
+                        #[cfg(feature = "magic-dns")]
                         let ifname = new_nic_ctx.ifname().await;
                         Self::use_new_nic_ctx(
                             nic_ctx.clone(),
                             new_nic_ctx,
                             #[cfg(feature = "magic-dns")]
-                            Self::create_magic_dns_runner(peer_manager_c.clone(), ifname, ip),
+                            Self::create_magic_dns_runner(
+                                peer_manager_c.clone(),
+                                ifname,
+                                ip,
+                                route_backend,
+                            ),
                         )
                         .await;
                     }
@@ -958,6 +1092,7 @@ impl Instance {
         let nic_ctx = self.nic_ctx.clone();
         let peer_mgr = Arc::downgrade(&self.peer_manager);
         let peer_packet_receiver = self.peer_packet_receiver.clone();
+        let shared_virtual_nic_registry = self.shared_virtual_nic_registry.clone();
 
         tokio::spawn(async move {
             let mut output_tx = Some(first_round_output);
@@ -973,12 +1108,26 @@ impl Instance {
                         return;
                     };
 
-                    let mut new_nic_ctx = NicCtx::new(
+                    let mut new_nic_ctx = match Self::new_nic_ctx(
                         peer_mgr.get_global_ctx(),
                         &peer_mgr,
                         peer_packet_receiver.clone(),
                         close_notifier.clone(),
-                    );
+                        shared_virtual_nic_registry.clone(),
+                    )
+                    .await
+                    {
+                        Ok(nic_ctx) => nic_ctx,
+                        Err(e) => {
+                            if let Some(output_tx) = output_tx.take() {
+                                let _ = output_tx.send(Err(e));
+                                return;
+                            }
+                            tracing::error!("failed to create new nic ctx, err: {:?}", e);
+                            tokio::time::sleep(Duration::from_secs(1)).await;
+                            continue;
+                        }
+                    };
 
                     if let Err(e) = new_nic_ctx.run(ipv4_addr, ipv6_addr).await {
                         if let Some(output_tx) = output_tx.take() {
@@ -993,9 +1142,10 @@ impl Instance {
                     // Create Magic DNS runner only if we have IPv4
                     #[cfg(feature = "magic-dns")]
                     {
+                        let route_backend = new_nic_ctx.shared_route_backend_for_dns();
                         let ifname = new_nic_ctx.ifname().await;
                         let dns_runner = if let Some(ipv4) = ipv4_addr {
-                            Self::create_magic_dns_runner(peer_mgr, ifname, ipv4)
+                            Self::create_magic_dns_runner(peer_mgr, ifname, ipv4, route_backend)
                         } else {
                             None
                         };
@@ -1083,6 +1233,10 @@ impl Instance {
             self.get_peer_manager(),
         )?);
         self.run_ip_proxy().await?;
+        self.ip_proxy_config_watcher = self
+            .ip_proxy
+            .as_ref()
+            .map(|proxy| proxy.watch_config_patches());
 
         self.udp_hole_puncher.lock().await.run().await?;
         self.tcp_hole_puncher.lock().await.run().await?;
@@ -1559,6 +1713,11 @@ impl Instance {
         self.nic_ctx.clone()
     }
 
+    #[cfg(feature = "tun")]
+    pub fn get_shared_virtual_nic_registry(&self) -> ArcSharedVirtualNicRegistry {
+        self.shared_virtual_nic_registry.clone()
+    }
+
     pub fn get_peer_packet_receiver(&self) -> Arc<Mutex<PacketRecvChanReceiver>> {
         self.peer_packet_receiver.clone()
     }
@@ -1569,6 +1728,7 @@ impl Instance {
         global_ctx: ArcGlobalCtx,
         peer_manager: Arc<PeerManager>,
         peer_packet_receiver: Arc<Mutex<PacketRecvChanReceiver>>,
+        shared_virtual_nic_registry: ArcSharedVirtualNicRegistry,
         fd: i32,
     ) -> Result<(), anyhow::Error> {
         tracing::info!("setup_nic_ctx_for_mobile, fd: {}", fd);
@@ -1577,30 +1737,39 @@ impl Instance {
             return Ok(());
         }
         let close_notifier = Arc::new(Notify::new());
-        let mut new_nic_ctx = NicCtx::new(
+        let mut new_nic_ctx = Self::new_nic_ctx(
             global_ctx.clone(),
             &peer_manager,
             peer_packet_receiver.clone(),
             close_notifier.clone(),
-        );
+            shared_virtual_nic_registry,
+        )
+        .await
+        .with_context(|| "create nic ctx failed")?;
         new_nic_ctx
             .run_for_mobile(fd)
             .await
             .with_context(|| "add ip failed")?;
 
-        let magic_dns_runner = if let Some(ipv4) = global_ctx.get_ipv4() {
-            Self::create_magic_dns_runner(peer_manager.clone(), None, ipv4)
-        } else {
-            None
-        };
-        Self::use_new_nic_ctx(nic_ctx.clone(), new_nic_ctx, magic_dns_runner).await;
+        #[cfg(feature = "magic-dns")]
+        {
+            let route_backend = new_nic_ctx.shared_route_backend_for_dns();
+            let magic_dns_runner = if let Some(ipv4) = global_ctx.get_ipv4() {
+                Self::create_magic_dns_runner(peer_manager.clone(), None, ipv4, route_backend)
+            } else {
+                None
+            };
+            Self::use_new_nic_ctx(nic_ctx.clone(), new_nic_ctx, magic_dns_runner).await;
+        }
+        #[cfg(not(feature = "magic-dns"))]
+        Self::use_new_nic_ctx(nic_ctx.clone(), new_nic_ctx).await;
         Ok(())
     }
 
     pub async fn clear_resources(&mut self) {
-        self.peer_manager.clear_resources().await;
         #[cfg(feature = "tun")]
-        let _ = self.nic_ctx.lock().await.take();
+        Self::clear_nic_ctx(self.nic_ctx.clone(), self.peer_packet_receiver.clone()).await;
+        self.peer_manager.clear_resources().await;
     }
 }
 
@@ -1610,9 +1779,11 @@ impl Drop for Instance {
         let pm = Arc::downgrade(&self.peer_manager);
         #[cfg(feature = "tun")]
         let nic_ctx = self.nic_ctx.clone();
+        #[cfg(feature = "tun")]
+        let peer_packet_receiver = self.peer_packet_receiver.clone();
         tokio::spawn(async move {
             #[cfg(feature = "tun")]
-            nic_ctx.lock().await.take();
+            Self::clear_nic_ctx(nic_ctx, peer_packet_receiver).await;
             if let Some(pm) = pm.upgrade() {
                 pm.clear_resources().await;
             };
@@ -1640,11 +1811,94 @@ impl Drop for Instance {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(feature = "tun")]
+    use std::sync::Arc;
+
+    #[cfg(feature = "tun")]
+    use tokio::sync::{Mutex, Notify};
+
     use crate::{
         common::global_ctx::tests::get_mock_global_ctx,
         instance::instance::{InstanceConfigPatcher, InstanceRpcServerHook},
         proto::{api::config::InstanceConfigPatch, rpc_impl::standalone::RpcServerHook},
     };
+    #[cfg(feature = "tun")]
+    use crate::{
+        instance::shared_virtual_nic::SharedVirtualNicRegistry,
+        peers::{
+            create_packet_recv_chan,
+            peer_manager::{PeerManager, RouteAlgoType},
+        },
+    };
+
+    #[cfg(feature = "tun")]
+    async fn new_test_nic_ctx(
+        dev_name: &str,
+        registry: super::ArcSharedVirtualNicRegistry,
+    ) -> super::NicCtx {
+        let global_ctx = get_mock_global_ctx();
+        set_dev_name(&global_ctx, dev_name);
+
+        let (packet_sender, packet_receiver) = create_packet_recv_chan();
+        let peer_manager = Arc::new(PeerManager::new(
+            RouteAlgoType::Ospf,
+            global_ctx.clone(),
+            packet_sender,
+        ));
+
+        super::Instance::new_nic_ctx(
+            global_ctx,
+            &peer_manager,
+            Arc::new(Mutex::new(packet_receiver)),
+            Arc::new(Notify::new()),
+            registry,
+        )
+        .await
+        .unwrap()
+    }
+
+    #[cfg(feature = "tun")]
+    fn set_dev_name(global_ctx: &crate::common::global_ctx::ArcGlobalCtx, dev_name: &str) {
+        let mut flags = global_ctx.get_flags();
+        flags.dev_name = dev_name.to_string();
+        global_ctx.set_flags(flags);
+    }
+
+    #[cfg(feature = "tun")]
+    #[tokio::test]
+    async fn new_nic_ctx_keeps_empty_dev_name_dedicated() {
+        let registry = Arc::new(Mutex::new(SharedVirtualNicRegistry::new()));
+
+        let nic_ctx = new_test_nic_ctx("", registry).await;
+
+        assert!(nic_ctx.is_dedicated_backend_for_test());
+        assert!(nic_ctx.shared_member_id_for_test().is_none());
+        assert!(nic_ctx.shared_nic_for_test().is_none());
+    }
+
+    #[cfg(feature = "tun")]
+    #[tokio::test]
+    async fn new_nic_ctx_shares_dev_name_with_fresh_members() {
+        let registry = Arc::new(Mutex::new(SharedVirtualNicRegistry::new()));
+
+        let first = new_test_nic_ctx("et-shared", registry.clone()).await;
+        let second = new_test_nic_ctx("et-shared", registry.clone()).await;
+
+        let first_member = first.shared_member_id_for_test().unwrap();
+        let second_member = second.shared_member_id_for_test().unwrap();
+        assert_ne!(first_member, second_member);
+
+        let first_shared_nic = first.shared_nic_for_test().unwrap();
+        let second_shared_nic = second.shared_nic_for_test().unwrap();
+        assert!(Arc::ptr_eq(&first_shared_nic, &second_shared_nic));
+
+        let registered_nic = registry
+            .lock()
+            .await
+            .get_by_dev_name_for_test("et-shared")
+            .unwrap();
+        assert!(Arc::ptr_eq(&registered_nic, &first_shared_nic));
+    }
 
     #[tokio::test]
     async fn test_rpc_portal_whitelist() {

@@ -15,10 +15,12 @@ class TauriVpnService : VpnService() {
         @JvmField var triggerCallback: (String, JSObject) -> Unit = { _, _ -> }
         @JvmField var self: TauriVpnService? = null
         @JvmField var ipv4Addr: String? = null
+        @JvmField var ipv4Addrs: Array<String> = emptyArray()
         @JvmField var routes: Array<String> = emptyArray()
         @JvmField var dns: String? = null
 
         const val IPV4_ADDR = "IPV4_ADDR"
+        const val IPV4_ADDRS = "IPV4_ADDRS"
         const val ROUTES = "ROUTES"
         const val DNS = "DNS"
         const val DISALLOWED_APPLICATIONS = "DISALLOWED_APPLICATIONS"
@@ -30,7 +32,8 @@ class TauriVpnService : VpnService() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         println("vpn on start command ${intent?.getExtras()} $intent")
         var args = intent?.getExtras()
-        ipv4Addr = args?.getString(IPV4_ADDR)
+        ipv4Addrs = getIpv4Addrs(args)
+        ipv4Addr = ipv4Addrs.firstOrNull()
         routes = args?.getStringArray(ROUTES) ?: emptyArray()
         dns = args?.getString(DNS)
 
@@ -74,8 +77,22 @@ class TauriVpnService : VpnService() {
 
     private fun clearStatus() {
         ipv4Addr = null
+        ipv4Addrs = emptyArray()
         routes = emptyArray()
         dns = null
+    }
+
+    private fun getIpv4Addrs(args: Bundle?): Array<String> {
+        val ipv4Addrs = args
+            ?.getStringArray(IPV4_ADDRS)
+            ?.filter { it.isNotBlank() }
+            ?.toTypedArray()
+            ?: emptyArray()
+        if (ipv4Addrs.isNotEmpty()) {
+            return ipv4Addrs
+        }
+
+        return arrayOf(args?.getString(IPV4_ADDR) ?: "10.126.126.1/24")
     }
 
     private fun createVpnInterface(args: Bundle?): ParcelFileDescriptor {
@@ -84,18 +101,20 @@ class TauriVpnService : VpnService() {
                 .setBlocking(false)
         
         var mtu = args?.getInt(MTU) ?: 1500
-        var ipv4Addr = args?.getString(IPV4_ADDR) ?: "10.126.126.1/24"
+        var ipv4Addrs = getIpv4Addrs(args)
         var dns: String? = args?.getString(DNS)
         var routes = args?.getStringArray(ROUTES) ?: emptyArray()
         var disallowedApplications = args?.getStringArray(DISALLOWED_APPLICATIONS) ?: emptyArray()
 
-        println("vpn create vpn interface. mtu: $mtu, ipv4Addr: $ipv4Addr, dns:" +
+        println("vpn create vpn interface. mtu: $mtu, ipv4Addrs: ${java.util.Arrays.toString(ipv4Addrs)}, dns:" +
             "$dns, routes: ${java.util.Arrays.toString(routes)}," +
             "disallowedApplications:  ${java.util.Arrays.toString(disallowedApplications)}")
 
-        val ipParts = ipv4Addr.split("/")
-        if (ipParts.size != 2) throw IllegalArgumentException("Invalid IP addr string")
-        builder.addAddress(ipParts[0], ipParts[1].toInt())
+        for (ipv4Addr in ipv4Addrs) {
+            val ipParts = ipv4Addr.split("/")
+            if (ipParts.size != 2) throw IllegalArgumentException("Invalid IP addr string")
+            builder.addAddress(ipParts[0], ipParts[1].toInt())
+        }
         builder.addAddress("fd00::1", 128)
 
         builder.setMtu(mtu)

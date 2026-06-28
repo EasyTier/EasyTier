@@ -9,6 +9,9 @@ mod public_ipv6_provider;
 pub mod proxy_cidrs_monitor;
 
 #[cfg(feature = "tun")]
+pub mod shared_virtual_nic;
+
+#[cfg(feature = "tun")]
 pub mod virtual_nic;
 
 #[cfg(any(windows, test))]

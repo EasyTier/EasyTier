@@ -13,6 +13,9 @@ use x25519_dalek::StaticSecret;
 
 use super::*;
 
+#[cfg(all(feature = "tun", feature = "magic-dns"))]
+use crate::instance::dns_server::{DEFAULT_ET_DNS_ZONE, MAGIC_DNS_FAKE_IP};
+
 // TODO: 需要加一个单测，确保 socks5 + exit node == self || proxy_cidr == 0.0.0.0/0 时，可以实现出口节点的能力。
 
 use crate::{
@@ -258,6 +261,1112 @@ pub async fn drop_insts(insts: Vec<Instance>) {
     while set.join_next().await.is_some() {}
 }
 
+#[cfg(feature = "tun")]
+fn shared_tun_test_dev_name() -> String {
+    format!("st{:08x}", rand::random::<u32>())
+}
+
+#[cfg(feature = "tun")]
+fn shared_tun_test_netns(prefix: &str) -> String {
+    format!("{prefix}{:04x}", rand::random::<u16>())
+}
+
+#[cfg(feature = "tun")]
+fn shared_tun_test_config(
+    inst_name: &str,
+    network_name: &str,
+    network_secret: &str,
+    netns: Option<&str>,
+    dev_name: Option<&str>,
+    ipv4: &str,
+    no_tun: bool,
+) -> TomlConfigLoader {
+    let config = TomlConfigLoader::default();
+    config.set_inst_name(inst_name.to_owned());
+    config.set_network_identity(NetworkIdentity::new(
+        network_name.to_string(),
+        network_secret.to_string(),
+    ));
+    config.set_netns(netns.map(str::to_owned));
+    config.set_ipv4(Some(ipv4.parse().unwrap()));
+    config.set_ipv6(None);
+    config.set_dhcp(false);
+    config.set_listeners(vec![]);
+    config.set_socks5_portal(None);
+
+    let mut flags = config.get_flags();
+    flags.dev_name = dev_name.unwrap_or_default().to_string();
+    flags.enable_ipv6 = false;
+    flags.no_tun = no_tun;
+    config.set_flags(flags);
+
+    config
+}
+
+#[cfg(feature = "tun")]
+async fn wait_tun_ready(
+    receiver: &mut tokio::sync::broadcast::Receiver<crate::common::global_ctx::GlobalCtxEvent>,
+) -> String {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            match receiver.recv().await.unwrap() {
+                crate::common::global_ctx::GlobalCtxEvent::TunDeviceReady(ifname) => return ifname,
+                crate::common::global_ctx::GlobalCtxEvent::TunDeviceError(err) => {
+                    panic!("tun device error: {err}")
+                }
+                _ => {}
+            }
+        }
+    })
+    .await
+    .expect("timed out waiting for tun ready")
+}
+
+#[cfg(feature = "tun")]
+fn proxy_route_exists(
+    routes: &[crate::proto::api::instance::Route],
+    peer_id: PeerId,
+    proxy_cidr: &str,
+) -> bool {
+    let proxy_cidr = proxy_cidr.to_owned();
+    routes
+        .iter()
+        .any(|route| route.peer_id == peer_id && route.proxy_cidrs.contains(&proxy_cidr))
+}
+
+#[cfg(feature = "tun")]
+async fn wait_proxy_route_to_peer(
+    mgr: &std::sync::Arc<PeerManager>,
+    ipv4: &str,
+    dst_peer_id: PeerId,
+    proxy_cidr: &str,
+) {
+    let proxy_cidr = proxy_cidr.to_owned();
+    wait_for_condition(
+        || async {
+            let routes = mgr.list_routes().await;
+            routes.iter().any(|route| {
+                route.peer_id == dst_peer_id
+                    && route.ipv4_addr == Some(ipv4.parse().unwrap())
+                    && route.proxy_cidrs.contains(&proxy_cidr)
+            })
+        },
+        Duration::from_secs(8),
+    )
+    .await;
+}
+
+#[cfg(feature = "tun")]
+async fn wait_proxy_route_absent(
+    mgr: &std::sync::Arc<PeerManager>,
+    dst_peer_id: PeerId,
+    proxy_cidr: &str,
+) {
+    wait_for_condition(
+        || async {
+            let routes = mgr.list_routes().await;
+            !proxy_route_exists(&routes, dst_peer_id, proxy_cidr)
+        },
+        Duration::from_secs(8),
+    )
+    .await;
+}
+
+#[cfg(feature = "tun")]
+async fn patch_proxy_cidr(
+    inst: &Instance,
+    action: crate::proto::api::config::ConfigPatchAction,
+    cidr: &str,
+) {
+    inst.get_config_patcher()
+        .apply_patch(crate::proto::api::config::InstanceConfigPatch {
+            proxy_networks: vec![crate::proto::api::config::ProxyNetworkPatch {
+                action: action as i32,
+                cidr: Some(cidr.parse().unwrap()),
+                mapped_cidr: None,
+            }],
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+}
+
+#[cfg(feature = "tun")]
+struct SharedTunProxyCidrTopology {
+    insts: Vec<Instance>,
+    source_idx: usize,
+    destination_idx: usize,
+}
+
+#[cfg(feature = "tun")]
+async fn init_shared_tun_proxy_cidr_topology(
+    test_name: &str,
+    include_extra_shared_members: bool,
+    enable_kcp_proxy: bool,
+    enable_quic_proxy: bool,
+) -> SharedTunProxyCidrTopology {
+    prepare_linux_namespaces();
+
+    let source_dev = shared_tun_test_dev_name();
+    let mut destination_dev = shared_tun_test_dev_name();
+    while destination_dev == source_dev {
+        destination_dev = shared_tun_test_dev_name();
+    }
+    let network_name = format!("{test_name}_network");
+    let network_secret = format!("{test_name}_secret");
+
+    let source_cfg = shared_tun_test_config(
+        &format!("{test_name}_source"),
+        &network_name,
+        &network_secret,
+        Some("net_a"),
+        Some(&source_dev),
+        "10.144.246.1/24",
+        false,
+    );
+    let mut source_flags = source_cfg.get_flags();
+    source_flags.enable_kcp_proxy = enable_kcp_proxy;
+    source_flags.enable_quic_proxy = enable_quic_proxy;
+    source_cfg.set_flags(source_flags);
+    let mut source = Instance::new(source_cfg);
+
+    let mut source_sibling = include_extra_shared_members.then(|| {
+        Instance::new(shared_tun_test_config(
+            &format!("{test_name}_source_sibling"),
+            &network_name,
+            &network_secret,
+            Some("net_a"),
+            Some(&source_dev),
+            "10.144.246.2/24",
+            false,
+        ))
+    });
+
+    let mut relay = Instance::new(shared_tun_test_config(
+        &format!("{test_name}_relay"),
+        &network_name,
+        &network_secret,
+        Some("net_b"),
+        None,
+        "10.144.246.10/24",
+        false,
+    ));
+
+    let destination_cfg = shared_tun_test_config(
+        &format!("{test_name}_destination"),
+        &network_name,
+        &network_secret,
+        Some("net_c"),
+        Some(&destination_dev),
+        "10.144.246.3/24",
+        false,
+    );
+    destination_cfg
+        .add_proxy_cidr("10.1.2.0/24".parse().unwrap(), None)
+        .unwrap();
+    let mut destination = Instance::new(destination_cfg);
+
+    let mut destination_sibling = include_extra_shared_members.then(|| {
+        Instance::new(shared_tun_test_config(
+            &format!("{test_name}_destination_sibling"),
+            &network_name,
+            &network_secret,
+            Some("net_c"),
+            Some(&destination_dev),
+            "10.144.246.4/24",
+            false,
+        ))
+    });
+
+    let mut source_events = source.get_global_ctx().subscribe();
+    let mut source_sibling_events = source_sibling
+        .as_ref()
+        .map(|inst| inst.get_global_ctx().subscribe());
+    let mut destination_events = destination.get_global_ctx().subscribe();
+    let mut destination_sibling_events = destination_sibling
+        .as_ref()
+        .map(|inst| inst.get_global_ctx().subscribe());
+
+    source.run().await.unwrap();
+    if let Some(inst) = source_sibling.as_mut() {
+        inst.run().await.unwrap();
+    }
+    relay.run().await.unwrap();
+    destination.run().await.unwrap();
+    if let Some(inst) = destination_sibling.as_mut() {
+        inst.run().await.unwrap();
+    }
+
+    assert_eq!(wait_tun_ready(&mut source_events).await, source_dev);
+    if let Some(events) = source_sibling_events.as_mut() {
+        assert_eq!(wait_tun_ready(events).await, source_dev);
+    }
+    assert_eq!(
+        wait_tun_ready(&mut destination_events).await,
+        destination_dev
+    );
+    if let Some(events) = destination_sibling_events.as_mut() {
+        assert_eq!(wait_tun_ready(events).await, destination_dev);
+    }
+
+    let source_id = source.id();
+    if let Some(inst) = source_sibling.as_ref() {
+        inst.get_conn_manager()
+            .add_connector(RingTunnelConnector::new(
+                format!("ring://{source_id}").parse().unwrap(),
+            ));
+    }
+    relay
+        .get_conn_manager()
+        .add_connector(RingTunnelConnector::new(
+            format!("ring://{source_id}").parse().unwrap(),
+        ));
+    destination
+        .get_conn_manager()
+        .add_connector(RingTunnelConnector::new(
+            format!("ring://{source_id}").parse().unwrap(),
+        ));
+    if let Some(inst) = destination_sibling.as_ref() {
+        inst.get_conn_manager()
+            .add_connector(RingTunnelConnector::new(
+                format!("ring://{source_id}").parse().unwrap(),
+            ));
+    }
+
+    let expected_routes = if include_extra_shared_members { 4 } else { 2 };
+    wait_for_condition(
+        || async {
+            let source_sibling_ready = if let Some(inst) = source_sibling.as_ref() {
+                inst.get_peer_manager().list_routes().await.len() == expected_routes
+            } else {
+                true
+            };
+            let destination_sibling_ready = if let Some(inst) = destination_sibling.as_ref() {
+                inst.get_peer_manager().list_routes().await.len() == expected_routes
+            } else {
+                true
+            };
+
+            source.get_peer_manager().list_routes().await.len() == expected_routes
+                && source_sibling_ready
+                && relay.get_peer_manager().list_routes().await.len() == expected_routes
+                && destination.get_peer_manager().list_routes().await.len() == expected_routes
+                && destination_sibling_ready
+        },
+        Duration::from_secs(8),
+    )
+    .await;
+
+    wait_proxy_route_appear(
+        &source.get_peer_manager(),
+        "10.144.246.3/24",
+        destination.peer_id(),
+        "10.1.2.0/24",
+    )
+    .await;
+    wait_for_condition(
+        || async { ping_test("net_a", "10.1.2.4", None).await },
+        Duration::from_secs(8),
+    )
+    .await;
+
+    let mut insts = vec![source, relay, destination];
+    if let Some(inst) = source_sibling {
+        insts.push(inst);
+    }
+    if let Some(inst) = destination_sibling {
+        insts.push(inst);
+    }
+
+    SharedTunProxyCidrTopology {
+        insts,
+        source_idx: 0,
+        destination_idx: 2,
+    }
+}
+
+#[cfg(feature = "tun")]
+fn assert_tcp_proxy_connect_metrics(inst: &Instance, expected_len: usize, protocol: &str) {
+    let metrics = inst
+        .get_global_ctx()
+        .stats_manager()
+        .get_metrics_by_prefix(&MetricName::TcpProxyConnect.to_string());
+    assert_eq!(metrics.len(), expected_len);
+
+    let expected = LabelType::Protocol(protocol.to_string());
+    for metric in metrics {
+        assert_eq!(1, metric.value);
+        assert!(
+            metric
+                .labels
+                .labels()
+                .iter()
+                .any(|label| expected.key() == label.key && expected.value() == label.value)
+        );
+    }
+}
+
+#[cfg(feature = "tun")]
+#[tokio::test]
+#[serial_test::serial]
+pub async fn shared_tun_instances_with_same_dev_name_can_communicate() {
+    let dev_name = shared_tun_test_dev_name();
+    let ns_a = shared_tun_test_netns("stna");
+    let ns_b = shared_tun_test_netns("stnb");
+    let _ns_a_guard = TestNetnsGuard::new(&ns_a, "10.231.1.2/24", "fd31::2/64");
+    let _ns_b_guard = TestNetnsGuard::new(&ns_b, "10.231.2.2/24", "fd32::2/64");
+
+    let mut first = Instance::new(shared_tun_test_config(
+        "shared_tun_first",
+        "shared_tun_network_a",
+        "shared_tun_secret_a",
+        None,
+        Some(&dev_name),
+        "10.144.250.1/24",
+        false,
+    ));
+    let mut second = Instance::new(shared_tun_test_config(
+        "shared_tun_second",
+        "shared_tun_network_b",
+        "shared_tun_secret_b",
+        None,
+        Some(&dev_name),
+        "10.144.251.1/24",
+        false,
+    ));
+    let mut first_peer = Instance::new(shared_tun_test_config(
+        "shared_tun_first_peer",
+        "shared_tun_network_a",
+        "shared_tun_secret_a",
+        Some(&ns_a),
+        None,
+        "10.144.250.2/24",
+        false,
+    ));
+    let mut second_peer = Instance::new(shared_tun_test_config(
+        "shared_tun_second_peer",
+        "shared_tun_network_b",
+        "shared_tun_secret_b",
+        Some(&ns_b),
+        None,
+        "10.144.251.2/24",
+        false,
+    ));
+    let mut first_events = first.get_global_ctx().subscribe();
+    let mut second_events = second.get_global_ctx().subscribe();
+
+    first.run().await.unwrap();
+    let first_ifname = wait_tun_ready(&mut first_events).await;
+    second.run().await.unwrap();
+    let second_ifname = wait_tun_ready(&mut second_events).await;
+    first_peer.run().await.unwrap();
+    second_peer.run().await.unwrap();
+
+    assert_eq!(first_ifname, dev_name);
+    assert_eq!(second_ifname, dev_name);
+
+    first_peer
+        .get_conn_manager()
+        .add_connector(RingTunnelConnector::new(
+            format!("ring://{}", first.id()).parse().unwrap(),
+        ));
+    second_peer
+        .get_conn_manager()
+        .add_connector(RingTunnelConnector::new(
+            format!("ring://{}", second.id()).parse().unwrap(),
+        ));
+
+    wait_for_condition(
+        || async {
+            first.get_peer_manager().list_routes().await.len() == 1
+                && first_peer.get_peer_manager().list_routes().await.len() == 1
+                && second.get_peer_manager().list_routes().await.len() == 1
+                && second_peer.get_peer_manager().list_routes().await.len() == 1
+        },
+        Duration::from_secs(5),
+    )
+    .await;
+
+    wait_for_condition(
+        || async { ping_test(&ns_a, "10.144.250.1", None).await },
+        Duration::from_secs(5),
+    )
+    .await;
+    wait_for_condition(
+        || async { ping_test(&ns_b, "10.144.251.1", None).await },
+        Duration::from_secs(5),
+    )
+    .await;
+
+    drop_insts(vec![first, second, first_peer, second_peer]).await;
+}
+
+#[cfg(feature = "tun")]
+#[tokio::test]
+#[serial_test::serial]
+pub async fn no_tun_instance_does_not_block_shared_tun_communication() {
+    let dev_name = shared_tun_test_dev_name();
+    let ns = shared_tun_test_netns("stnc");
+    let _ns_guard = TestNetnsGuard::new(&ns, "10.231.3.2/24", "fd33::2/64");
+
+    let mut no_tun_inst = Instance::new(shared_tun_test_config(
+        "shared_tun_no_tun",
+        "shared_tun_no_tun_network",
+        "shared_tun_no_tun_secret",
+        None,
+        Some(&dev_name),
+        "10.144.252.1/24",
+        true,
+    ));
+    let mut tun_inst = Instance::new(shared_tun_test_config(
+        "shared_tun_enabled",
+        "shared_tun_enabled_network",
+        "shared_tun_enabled_secret",
+        None,
+        Some(&dev_name),
+        "10.144.253.1/24",
+        false,
+    ));
+    let mut tun_peer = Instance::new(shared_tun_test_config(
+        "shared_tun_enabled_peer",
+        "shared_tun_enabled_network",
+        "shared_tun_enabled_secret",
+        Some(&ns),
+        None,
+        "10.144.253.2/24",
+        false,
+    ));
+    let mut tun_events = tun_inst.get_global_ctx().subscribe();
+
+    no_tun_inst.run().await.unwrap();
+    tun_inst.run().await.unwrap();
+    let ifname = wait_tun_ready(&mut tun_events).await;
+    tun_peer.run().await.unwrap();
+
+    assert_eq!(ifname, dev_name);
+
+    tun_peer
+        .get_conn_manager()
+        .add_connector(RingTunnelConnector::new(
+            format!("ring://{}", tun_inst.id()).parse().unwrap(),
+        ));
+
+    wait_for_condition(
+        || async {
+            tun_inst.get_peer_manager().list_routes().await.len() == 1
+                && tun_peer.get_peer_manager().list_routes().await.len() == 1
+        },
+        Duration::from_secs(5),
+    )
+    .await;
+    wait_for_condition(
+        || async { ping_test(&ns, "10.144.253.1", None).await },
+        Duration::from_secs(5),
+    )
+    .await;
+
+    drop_insts(vec![no_tun_inst, tun_inst, tun_peer]).await;
+}
+
+#[cfg(feature = "tun")]
+#[tokio::test]
+#[serial_test::serial]
+pub async fn shared_tun_proxy_cidr_reaches_member_network() {
+    prepare_linux_namespaces();
+
+    let dev_name = shared_tun_test_dev_name();
+    let center_cfg = get_inst_config(
+        "shared_proxy_center",
+        Some("net_a"),
+        "10.144.254.1",
+        "fd00:254::1/64",
+    );
+    center_cfg.set_ipv6(None);
+    center_cfg.set_listeners(vec![]);
+    center_cfg.set_socks5_portal(None);
+    let mut center = Instance::new(center_cfg);
+
+    let shared_cfg_1 = get_inst_config(
+        "shared_proxy_first",
+        Some("net_c"),
+        "10.144.254.2",
+        "fd00:254::2/64",
+    );
+    shared_cfg_1.set_ipv6(None);
+    shared_cfg_1.set_listeners(vec![]);
+    shared_cfg_1.set_socks5_portal(None);
+    shared_cfg_1
+        .add_proxy_cidr("10.1.2.0/24".parse().unwrap(), None)
+        .unwrap();
+    let mut shared_flags = shared_cfg_1.get_flags();
+    shared_flags.dev_name = dev_name.clone();
+    shared_cfg_1.set_flags(shared_flags.clone());
+    let mut shared_1 = Instance::new(shared_cfg_1);
+
+    let shared_cfg_2 = get_inst_config(
+        "shared_proxy_second",
+        Some("net_c"),
+        "10.144.254.3",
+        "fd00:254::3/64",
+    );
+    shared_cfg_2.set_ipv6(None);
+    shared_cfg_2.set_listeners(vec![]);
+    shared_cfg_2.set_socks5_portal(None);
+    shared_cfg_2.set_flags(shared_flags);
+    let mut shared_2 = Instance::new(shared_cfg_2);
+
+    let remote_cfg = get_inst_config(
+        "shared_proxy_remote",
+        Some("net_b"),
+        "10.144.254.4",
+        "fd00:254::4/64",
+    );
+    remote_cfg.set_ipv6(None);
+    remote_cfg.set_listeners(vec![]);
+    remote_cfg.set_socks5_portal(None);
+    let mut remote = Instance::new(remote_cfg);
+
+    let mut shared_1_events = shared_1.get_global_ctx().subscribe();
+    let mut shared_2_events = shared_2.get_global_ctx().subscribe();
+
+    center.run().await.unwrap();
+    shared_1.run().await.unwrap();
+    shared_2.run().await.unwrap();
+    remote.run().await.unwrap();
+
+    let shared_1_ifname = wait_tun_ready(&mut shared_1_events).await;
+    let shared_2_ifname = wait_tun_ready(&mut shared_2_events).await;
+    assert_eq!(shared_1_ifname, dev_name);
+    assert_eq!(shared_2_ifname, dev_name);
+
+    shared_1
+        .get_conn_manager()
+        .add_connector(RingTunnelConnector::new(
+            format!("ring://{}", center.id()).parse().unwrap(),
+        ));
+    shared_2
+        .get_conn_manager()
+        .add_connector(RingTunnelConnector::new(
+            format!("ring://{}", center.id()).parse().unwrap(),
+        ));
+    remote
+        .get_conn_manager()
+        .add_connector(RingTunnelConnector::new(
+            format!("ring://{}", center.id()).parse().unwrap(),
+        ));
+
+    wait_for_condition(
+        || async {
+            center.get_peer_manager().list_routes().await.len() == 3
+                && shared_1.get_peer_manager().list_routes().await.len() == 3
+                && shared_2.get_peer_manager().list_routes().await.len() == 3
+                && remote.get_peer_manager().list_routes().await.len() == 3
+        },
+        Duration::from_secs(8),
+    )
+    .await;
+
+    wait_proxy_route_appear(
+        &center.get_peer_manager(),
+        "10.144.254.2/24",
+        shared_1.peer_id(),
+        "10.1.2.0/24",
+    )
+    .await;
+    wait_proxy_route_appear(
+        &remote.get_peer_manager(),
+        "10.144.254.2/24",
+        shared_1.peer_id(),
+        "10.1.2.0/24",
+    )
+    .await;
+
+    wait_for_condition(
+        || async { ping_test("net_a", "10.1.2.4", None).await },
+        Duration::from_secs(8),
+    )
+    .await;
+    wait_for_condition(
+        || async { ping_test("net_b", "10.1.2.4", None).await },
+        Duration::from_secs(8),
+    )
+    .await;
+
+    drop_insts(vec![center, shared_1, shared_2, remote]).await;
+}
+
+#[cfg(feature = "tun")]
+#[tokio::test]
+#[serial_test::serial]
+pub async fn shared_tun_duplicate_proxy_cidr_survives_member_departure() {
+    prepare_linux_namespaces();
+
+    let source_dev = shared_tun_test_dev_name();
+    let mut destination_dev = shared_tun_test_dev_name();
+    while destination_dev == source_dev {
+        destination_dev = shared_tun_test_dev_name();
+    }
+    let network_name = "shared_duplicate_proxy_network";
+    let network_secret = "shared_duplicate_proxy_secret";
+    let proxy_cidr = "10.1.2.0/24";
+    let target_ip = "10.1.2.4";
+
+    let mut source = Instance::new(shared_tun_test_config(
+        "shared_duplicate_proxy_source",
+        network_name,
+        network_secret,
+        Some("net_a"),
+        Some(&source_dev),
+        "10.144.245.1/24",
+        false,
+    ));
+
+    let primary_cfg = shared_tun_test_config(
+        "shared_duplicate_proxy_primary",
+        network_name,
+        network_secret,
+        Some("net_c"),
+        Some(&destination_dev),
+        "10.144.245.2/24",
+        false,
+    );
+    primary_cfg
+        .add_proxy_cidr(proxy_cidr.parse().unwrap(), None)
+        .unwrap();
+    let mut primary = Instance::new(primary_cfg);
+
+    let backup_cfg = shared_tun_test_config(
+        "shared_duplicate_proxy_backup",
+        network_name,
+        network_secret,
+        Some("net_c"),
+        Some(&destination_dev),
+        "10.144.245.3/24",
+        false,
+    );
+    backup_cfg
+        .add_proxy_cidr(proxy_cidr.parse().unwrap(), None)
+        .unwrap();
+    let mut backup = Instance::new(backup_cfg);
+
+    let mut source_events = source.get_global_ctx().subscribe();
+    let mut primary_events = primary.get_global_ctx().subscribe();
+    let mut backup_events = backup.get_global_ctx().subscribe();
+
+    source.run().await.unwrap();
+    primary.run().await.unwrap();
+    backup.run().await.unwrap();
+
+    assert_eq!(wait_tun_ready(&mut source_events).await, source_dev);
+    assert_eq!(wait_tun_ready(&mut primary_events).await, destination_dev);
+    assert_eq!(wait_tun_ready(&mut backup_events).await, destination_dev);
+
+    primary
+        .get_conn_manager()
+        .add_connector(RingTunnelConnector::new(
+            format!("ring://{}", source.id()).parse().unwrap(),
+        ));
+    backup
+        .get_conn_manager()
+        .add_connector(RingTunnelConnector::new(
+            format!("ring://{}", source.id()).parse().unwrap(),
+        ));
+
+    wait_for_condition(
+        || async {
+            source.get_peer_manager().list_routes().await.len() == 2
+                && primary.get_peer_manager().list_routes().await.len() == 2
+                && backup.get_peer_manager().list_routes().await.len() == 2
+        },
+        Duration::from_secs(8),
+    )
+    .await;
+
+    wait_proxy_route_to_peer(
+        &source.get_peer_manager(),
+        "10.144.245.2/24",
+        primary.peer_id(),
+        proxy_cidr,
+    )
+    .await;
+    wait_proxy_route_to_peer(
+        &source.get_peer_manager(),
+        "10.144.245.3/24",
+        backup.peer_id(),
+        proxy_cidr,
+    )
+    .await;
+    wait_for_condition(
+        || async { ping_test("net_a", target_ip, None).await },
+        Duration::from_secs(8),
+    )
+    .await;
+
+    let primary_peer_id = primary.peer_id();
+    primary.clear_resources().await;
+    drop(primary);
+
+    wait_proxy_route_absent(&source.get_peer_manager(), primary_peer_id, proxy_cidr).await;
+    wait_proxy_route_to_peer(
+        &source.get_peer_manager(),
+        "10.144.245.3/24",
+        backup.peer_id(),
+        proxy_cidr,
+    )
+    .await;
+    wait_for_condition(
+        || async {
+            ipv4_route_exists_in_ns("net_a", &format!("{proxy_cidr} dev {source_dev}"))
+                && ping_test("net_a", target_ip, None).await
+        },
+        Duration::from_secs(8),
+    )
+    .await;
+
+    drop_insts(vec![source, backup]).await;
+}
+
+#[cfg(feature = "tun")]
+#[tokio::test]
+#[serial_test::serial]
+pub async fn shared_tun_proxy_cidr_runtime_patch_adds_and_removes_route() {
+    prepare_linux_namespaces();
+
+    let source_dev = shared_tun_test_dev_name();
+    let mut destination_dev = shared_tun_test_dev_name();
+    while destination_dev == source_dev {
+        destination_dev = shared_tun_test_dev_name();
+    }
+    let network_name = "shared_dynamic_proxy_network";
+    let network_secret = "shared_dynamic_proxy_secret";
+    let proxy_cidr = "10.1.2.0/24";
+    let target_ip = "10.1.2.4";
+
+    let mut source = Instance::new(shared_tun_test_config(
+        "shared_dynamic_proxy_source",
+        network_name,
+        network_secret,
+        Some("net_a"),
+        Some(&source_dev),
+        "10.144.244.1/24",
+        false,
+    ));
+    let mut destination = Instance::new(shared_tun_test_config(
+        "shared_dynamic_proxy_destination",
+        network_name,
+        network_secret,
+        Some("net_c"),
+        Some(&destination_dev),
+        "10.144.244.2/24",
+        false,
+    ));
+
+    let mut source_events = source.get_global_ctx().subscribe();
+    let mut destination_events = destination.get_global_ctx().subscribe();
+
+    source.run().await.unwrap();
+    destination.run().await.unwrap();
+
+    assert_eq!(wait_tun_ready(&mut source_events).await, source_dev);
+    assert_eq!(
+        wait_tun_ready(&mut destination_events).await,
+        destination_dev
+    );
+
+    destination
+        .get_conn_manager()
+        .add_connector(RingTunnelConnector::new(
+            format!("ring://{}", source.id()).parse().unwrap(),
+        ));
+
+    wait_for_condition(
+        || async {
+            source.get_peer_manager().list_routes().await.len() == 1
+                && destination.get_peer_manager().list_routes().await.len() == 1
+        },
+        Duration::from_secs(8),
+    )
+    .await;
+    assert!(
+        !proxy_route_exists(
+            &source.get_peer_manager().list_routes().await,
+            destination.peer_id(),
+            proxy_cidr,
+        ),
+        "proxy route should not exist before runtime patch"
+    );
+
+    patch_proxy_cidr(
+        &destination,
+        crate::proto::api::config::ConfigPatchAction::Add,
+        proxy_cidr,
+    )
+    .await;
+    wait_proxy_route_to_peer(
+        &source.get_peer_manager(),
+        "10.144.244.2/24",
+        destination.peer_id(),
+        proxy_cidr,
+    )
+    .await;
+    wait_for_condition(
+        || async {
+            source
+                .get_peer_manager()
+                .list_proxy_cidrs()
+                .await
+                .contains(&proxy_cidr.parse().unwrap())
+        },
+        Duration::from_secs(10),
+    )
+    .await;
+    wait_for_condition(
+        || async { ipv4_route_exists_in_ns("net_a", &format!("{proxy_cidr} dev {source_dev}")) },
+        Duration::from_secs(10),
+    )
+    .await;
+    wait_for_condition(
+        || async { ping_test("net_a", target_ip, None).await },
+        Duration::from_secs(10),
+    )
+    .await;
+
+    patch_proxy_cidr(
+        &destination,
+        crate::proto::api::config::ConfigPatchAction::Remove,
+        proxy_cidr,
+    )
+    .await;
+    wait_proxy_route_absent(
+        &source.get_peer_manager(),
+        destination.peer_id(),
+        proxy_cidr,
+    )
+    .await;
+    wait_for_condition(
+        || async { !ipv4_route_exists_in_ns("net_a", &format!("{proxy_cidr} dev {source_dev}")) },
+        Duration::from_secs(10),
+    )
+    .await;
+    wait_for_condition(
+        || async { !ping_test("net_a", target_ip, None).await },
+        Duration::from_secs(8),
+    )
+    .await;
+
+    drop_insts(vec![source, destination]).await;
+}
+
+#[cfg(feature = "tun")]
+#[tokio::test]
+#[serial_test::serial]
+pub async fn shared_tun_proxy_cidr_between_shared_members_covers_icmp_tcp_udp() {
+    let topology =
+        init_shared_tun_proxy_cidr_topology("shared_proxy_paths", true, false, false).await;
+
+    subnet_proxy_test_icmp("10.1.2.4", Duration::from_secs(8)).await;
+    subnet_proxy_test_tcp("10.1.2.4", "10.1.2.4", Duration::from_secs(8)).await;
+    subnet_proxy_test_udp("10.1.2.4", "10.1.2.4", Duration::from_secs(8)).await;
+    assert_tcp_proxy_connect_metrics(
+        &topology.insts[topology.destination_idx],
+        1,
+        TcpProxyEntryTransportType::Tcp.as_str_name(),
+    );
+
+    drop_insts(topology.insts).await;
+}
+
+#[cfg(all(feature = "tun", feature = "kcp"))]
+#[tokio::test]
+#[serial_test::serial]
+pub async fn shared_tun_proxy_cidr_with_kcp_tcp_proxy() {
+    let topology =
+        init_shared_tun_proxy_cidr_topology("shared_proxy_kcp", false, true, false).await;
+
+    subnet_proxy_test_tcp("10.1.2.4", "10.1.2.4", Duration::from_secs(8)).await;
+    assert_tcp_proxy_connect_metrics(
+        &topology.insts[topology.source_idx],
+        1,
+        TcpProxyEntryTransportType::Kcp.as_str_name(),
+    );
+
+    drop_insts(topology.insts).await;
+}
+
+#[cfg(all(feature = "tun", feature = "quic"))]
+#[tokio::test]
+#[serial_test::serial]
+pub async fn shared_tun_proxy_cidr_with_quic_tcp_proxy() {
+    let topology =
+        init_shared_tun_proxy_cidr_topology("shared_proxy_quic", false, false, true).await;
+
+    subnet_proxy_test_tcp("10.1.2.4", "10.1.2.4", Duration::from_secs(8)).await;
+    assert_tcp_proxy_connect_metrics(
+        &topology.insts[topology.source_idx],
+        1,
+        TcpProxyEntryTransportType::Quic.as_str_name(),
+    );
+
+    drop_insts(topology.insts).await;
+}
+
+#[cfg(all(feature = "tun", feature = "magic-dns"))]
+#[tokio::test]
+#[serial_test::serial]
+pub async fn shared_tun_magic_dns_same_namespace_real_tun() {
+    prepare_linux_namespaces();
+
+    let dev_name = shared_tun_test_dev_name();
+    let network_name = "shared_tun_magic_dns_network";
+    let network_secret = "shared_tun_magic_dns_secret";
+
+    let center_cfg = shared_tun_test_config(
+        "shared_dns_center",
+        network_name,
+        network_secret,
+        Some("net_a"),
+        None,
+        "10.144.255.1/24",
+        false,
+    );
+    let mut center = Instance::new(center_cfg);
+
+    let shared_cfg_1 = shared_tun_test_config(
+        "shared_dns_first",
+        network_name,
+        network_secret,
+        Some("net_b"),
+        Some(&dev_name),
+        "10.144.255.2/24",
+        false,
+    );
+    shared_cfg_1.set_hostname(Some("shared-dns-1".to_string()));
+    let mut shared_flags = shared_cfg_1.get_flags();
+    shared_flags.accept_dns = true;
+    shared_cfg_1.set_flags(shared_flags.clone());
+    let mut shared_1 = Instance::new(shared_cfg_1);
+
+    let shared_cfg_2 = shared_tun_test_config(
+        "shared_dns_second",
+        network_name,
+        network_secret,
+        Some("net_b"),
+        Some(&dev_name),
+        "10.144.255.3/24",
+        false,
+    );
+    shared_cfg_2.set_hostname(Some("shared-dns-2".to_string()));
+    shared_cfg_2.set_flags(shared_flags);
+    let mut shared_2 = Instance::new(shared_cfg_2);
+
+    let remote_cfg = shared_tun_test_config(
+        "shared_dns_remote",
+        network_name,
+        network_secret,
+        Some("net_c"),
+        None,
+        "10.144.255.4/24",
+        false,
+    );
+    remote_cfg.set_hostname(Some("shared-dns-remote".to_string()));
+    let mut remote = Instance::new(remote_cfg);
+
+    let mut shared_1_events = shared_1.get_global_ctx().subscribe();
+    let mut shared_2_events = shared_2.get_global_ctx().subscribe();
+
+    center.run().await.unwrap();
+    shared_1.run().await.unwrap();
+    shared_2.run().await.unwrap();
+    remote.run().await.unwrap();
+
+    let shared_1_ifname = wait_tun_ready(&mut shared_1_events).await;
+    let shared_2_ifname = wait_tun_ready(&mut shared_2_events).await;
+    assert_eq!(shared_1_ifname, dev_name);
+    assert_eq!(shared_2_ifname, dev_name);
+
+    shared_1
+        .get_conn_manager()
+        .add_connector(RingTunnelConnector::new(
+            format!("ring://{}", center.id()).parse().unwrap(),
+        ));
+    shared_2
+        .get_conn_manager()
+        .add_connector(RingTunnelConnector::new(
+            format!("ring://{}", center.id()).parse().unwrap(),
+        ));
+    remote
+        .get_conn_manager()
+        .add_connector(RingTunnelConnector::new(
+            format!("ring://{}", center.id()).parse().unwrap(),
+        ));
+
+    wait_for_condition(
+        || async {
+            center.get_peer_manager().list_routes().await.len() == 3
+                && shared_1.get_peer_manager().list_routes().await.len() == 3
+                && shared_2.get_peer_manager().list_routes().await.len() == 3
+                && remote.get_peer_manager().list_routes().await.len() == 3
+        },
+        Duration::from_secs(8),
+    )
+    .await;
+
+    wait_for_condition(
+        || async { ping_test("net_c", "10.144.255.2", None).await },
+        Duration::from_secs(8),
+    )
+    .await;
+    wait_for_condition(
+        || async { ping_test("net_c", "10.144.255.3", None).await },
+        Duration::from_secs(8),
+    )
+    .await;
+    wait_for_condition(
+        || async { ping_test("net_b", "10.144.255.4", None).await },
+        Duration::from_secs(8),
+    )
+    .await;
+
+    wait_for_condition(
+        || async { magic_dns_record_matches("net_b", "shared-dns-1", "10.144.255.2").await },
+        Duration::from_secs(8),
+    )
+    .await;
+    wait_for_condition(
+        || async { magic_dns_record_matches("net_b", "shared-dns-2", "10.144.255.3").await },
+        Duration::from_secs(8),
+    )
+    .await;
+    wait_for_condition(
+        || async { magic_dns_record_matches("net_b", "shared-dns-remote", "10.144.255.4").await },
+        Duration::from_secs(8),
+    )
+    .await;
+
+    drop_insts(vec![shared_1]).await;
+    let routes_after_first_drop = run_ip_in_ns_output("net_b", &["route", "show"]);
+    assert!(
+        ipv4_route_exists_in_ns("net_b", &format!("{MAGIC_DNS_FAKE_IP} dev {dev_name}")),
+        "magic dns fake-ip route should remain while another shared tun member owns it: {routes_after_first_drop}"
+    );
+    wait_for_condition(
+        || async { magic_dns_record_matches("net_b", "shared-dns-2", "10.144.255.3").await },
+        Duration::from_secs(8),
+    )
+    .await;
+    wait_for_condition(
+        || async { magic_dns_record_matches("net_b", "shared-dns-remote", "10.144.255.4").await },
+        Duration::from_secs(8),
+    )
+    .await;
+
+    drop_insts(vec![center, shared_2, remote]).await;
+    assert!(
+        !ipv4_route_exists_in_ns("net_b", &format!("{MAGIC_DNS_FAKE_IP} dev {dev_name}")),
+        "magic dns fake-ip route should be removed with the last shared tun member"
+    );
+}
+
 mod direct_connector_mapped_listener_tests {
     use std::sync::Arc;
 
@@ -400,6 +1509,35 @@ async fn ping6_test(from_netns: &str, target_ip: &str, payload_size: Option<usiz
         .await
         .unwrap();
     code.code().unwrap() == 0
+}
+
+#[cfg(all(feature = "tun", feature = "magic-dns"))]
+async fn magic_dns_record_matches(from_netns: &str, hostname: &str, expected_ip: &str) -> bool {
+    let _g = NetNS::new(Some(ROOT_NETNS_NAME.to_owned())).guard();
+    let server = format!("@{}", MAGIC_DNS_FAKE_IP);
+    let domain = format!("{}.{DEFAULT_ET_DNS_ZONE}", hostname);
+    let output = tokio::process::Command::new("ip")
+        .arg("netns")
+        .arg("exec")
+        .arg(from_netns)
+        .arg("dig")
+        .arg(server)
+        .arg(domain)
+        .arg("A")
+        .arg("+short")
+        .arg("+tries=1")
+        .arg("+time=1")
+        .output()
+        .await
+        .unwrap();
+
+    if !output.status.success() {
+        return false;
+    }
+
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .any(|line| line.trim() == expected_ip)
 }
 
 fn run_cmd(program: &str, args: &[&str]) {
@@ -752,6 +1890,12 @@ fn route_exists_in_ns(ns: &str, needle: &str) -> bool {
         .any(|line| line.contains(needle))
 }
 
+fn ipv4_route_exists_in_ns(ns: &str, needle: &str) -> bool {
+    run_ip_in_ns_output(ns, &["route", "show"])
+        .lines()
+        .any(|line| line.contains(needle))
+}
+
 fn addr_exists_in_ns(ns: &str, dev: &str, needle: &str) -> bool {
     run_ip_in_ns_output(ns, &["-6", "addr", "show", "dev", dev]).contains(needle)
 }
@@ -922,6 +2066,123 @@ pub async fn public_ipv6_auto_addr_reconnect_reuses_same_address() {
     .await;
 
     drop_insts(vec![provider, client]).await;
+}
+
+#[cfg(feature = "tun")]
+#[tokio::test]
+#[serial_test::serial]
+pub async fn shared_tun_public_ipv6_auto_addr_end_to_end() {
+    let lab = PublicIpv6Lab::setup();
+    let provider_dev = shared_tun_test_dev_name();
+    let client_dev = shared_tun_test_dev_name();
+
+    let provider_cfg = get_public_ipv6_config(
+        "provider_shared_public_ipv6",
+        PublicIpv6Lab::PROVIDER_NS,
+        "10.144.144.1",
+        &provider_dev,
+        uuid::Uuid::parse_str("44444444-4444-4444-4444-444444444444").unwrap(),
+    );
+    provider_cfg.set_ipv6_public_addr_provider(true);
+
+    let client_cfg = get_public_ipv6_config(
+        "client_shared_public_ipv6",
+        PublicIpv6Lab::CLIENT_NS,
+        "10.144.144.2",
+        &client_dev,
+        uuid::Uuid::parse_str("55555555-5555-5555-5555-555555555555").unwrap(),
+    );
+    client_cfg.set_ipv6_public_addr_auto(true);
+
+    let client_peer_cfg = get_public_ipv6_config(
+        "client_shared_public_ipv6_peer",
+        PublicIpv6Lab::CLIENT_NS,
+        "10.144.144.3",
+        &client_dev,
+        uuid::Uuid::parse_str("66666666-6666-6666-6666-666666666666").unwrap(),
+    );
+    client_peer_cfg.set_listeners(vec![]);
+
+    let mut provider = Instance::new(provider_cfg);
+    let mut client = Instance::new(client_cfg);
+    let mut client_peer = Instance::new(client_peer_cfg);
+    let mut client_events = client.get_global_ctx().subscribe();
+    let mut client_peer_events = client_peer.get_global_ctx().subscribe();
+
+    provider.run().await.unwrap();
+    client.run().await.unwrap();
+    client_peer.run().await.unwrap();
+
+    let shared_ifname = wait_tun_ready(&mut client_events).await;
+    assert_eq!(shared_ifname, wait_tun_ready(&mut client_peer_events).await);
+    assert_eq!(shared_ifname, client_dev);
+
+    provider
+        .get_conn_manager()
+        .add_connector(TcpTunnelConnector::new(
+            "tcp://10.1.1.2:11010".parse().unwrap(),
+        ));
+
+    wait_for_condition(
+        || async {
+            provider.get_peer_manager().list_routes().await.len() == 1
+                && client.get_peer_manager().list_routes().await.len() == 1
+        },
+        Duration::from_secs(8),
+    )
+    .await;
+
+    wait_for_condition(
+        || async {
+            provider
+                .get_global_ctx()
+                .get_advertised_ipv6_public_addr_prefix()
+                == Some(PublicIpv6Lab::PROVIDER_PREFIX.parse().unwrap())
+        },
+        Duration::from_secs(10),
+    )
+    .await;
+
+    let leased = wait_for_public_ipv6_addr(&client).await;
+    wait_for_public_ipv6_route(&provider, leased).await;
+
+    wait_for_condition(
+        || async {
+            addr_exists_in_ns(PublicIpv6Lab::CLIENT_NS, &client_dev, &leased.to_string())
+                && route_exists_in_ns(
+                    PublicIpv6Lab::CLIENT_NS,
+                    &format!("default dev {client_dev}"),
+                )
+                && route_exists_in_ns(
+                    PublicIpv6Lab::PROVIDER_NS,
+                    &format!("{} dev {provider_dev}", leased.address()),
+                )
+        },
+        Duration::from_secs(10),
+    )
+    .await;
+
+    wait_for_condition(
+        || async { ping6_test(PublicIpv6Lab::CLIENT_NS, PublicIpv6Lab::SERVER_IP, None).await },
+        Duration::from_secs(10),
+    )
+    .await;
+
+    wait_for_condition(
+        || async {
+            ping6_test(
+                PublicIpv6Lab::SERVER_NS,
+                leased.address().to_string().as_str(),
+                None,
+            )
+            .await
+        },
+        Duration::from_secs(10),
+    )
+    .await;
+
+    drop_insts(vec![provider, client, client_peer]).await;
+    drop(lab);
 }
 
 #[rstest::rstest]
