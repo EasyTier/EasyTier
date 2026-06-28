@@ -646,7 +646,7 @@ impl PeerPacketFilter for Socks5Server {
     async fn try_process_packet_from_peer(&self, packet: ZCPacket) -> Option<ZCPacket> {
         let entry_count = self.entry_count.load(Ordering::Relaxed);
         let socks5_enabled = self.socks5_enabled.load(Ordering::Relaxed);
-        if entry_count == 0 && !socks5_enabled {
+        if entry_count == 0 && !socks5_enabled && self.entries.is_empty() {
             if tracing::enabled!(tracing::Level::TRACE)
                 && let Some(hdr) = packet.peer_manager_header()
                 && matches!(
@@ -1593,7 +1593,6 @@ mod tests {
     async fn socks5_mirrors_fragmented_udp_even_when_entry_count_is_stale_zero() {
         let peer_manager = create_mock_peer_manager().await;
         let server = Socks5Server::new(peer_manager.get_global_ctx(), peer_manager, None);
-        server.socks5_enabled.store(true, Ordering::Relaxed);
 
         let local = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 144, 144, 1)), 40000);
         let remote = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 144, 144, 3)), 53);
