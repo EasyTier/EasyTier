@@ -3653,6 +3653,25 @@ pub async fn config_patch_test() {
             true
         },
     );
+    let patch = InstanceConfigPatch {
+        proxy_networks: vec![ProxyNetworkPatch {
+            action: ConfigPatchAction::Clear as i32,
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    insts[1]
+        .get_config_patcher()
+        .apply_patch(patch)
+        .await
+        .unwrap();
+    assert!(
+        insts[1]
+            .get_global_ctx()
+            .config
+            .get_proxy_cidrs()
+            .is_empty()
+    );
 
     // 测试1.1：修改公网 IPv6 provider 相关配置
     let public_prefix = "2001:db8:100::/64";

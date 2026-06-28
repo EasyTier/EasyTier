@@ -6,6 +6,8 @@ use std::{
     time::Duration,
 };
 
+use hotpath::instant::Instant;
+
 use super::{
     FromUrl, IpVersion, Tunnel, TunnelError, TunnelInfo, TunnelListener, TunnelUrl, ZCPacketSink,
     ZCPacketStream,
@@ -346,7 +348,7 @@ struct WgPeer {
     data: Option<WgPeerData>,
     tasks: JoinSet<()>,
 
-    access_time: AtomicCell<std::time::Instant>,
+    access_time: AtomicCell<Instant>,
 }
 
 impl WgPeer {
@@ -369,7 +371,7 @@ impl WgPeer {
             data: None,
             tasks: JoinSet::new(),
 
-            access_time: AtomicCell::new(std::time::Instant::now()),
+            access_time: AtomicCell::new(Instant::now()),
         }
     }
 
@@ -385,7 +387,7 @@ impl WgPeer {
     }
 
     async fn handle_packet_from_peer(&self, packet: &[u8]) {
-        self.access_time.store(std::time::Instant::now());
+        self.access_time.store(Instant::now());
         tracing::trace!("Received {} bytes from peer", packet.len());
         let data = self.data.as_ref().unwrap();
         // TODO: improve this
@@ -468,7 +470,7 @@ pub struct WgTunnelListener {
 
 impl WgTunnelListener {
     pub fn new(addr: url::Url, config: WgConfig) -> Self {
-        let (conn_send, conn_recv) = tokio::sync::mpsc::unbounded_channel();
+        let (conn_send, conn_recv) = hotpath::channel!(tokio::sync::mpsc::unbounded_channel());
         WgTunnelListener {
             addr,
             config,

@@ -1,6 +1,7 @@
-use std::{sync::Arc, time::Instant};
+use std::sync::Arc;
 
 use dashmap::DashMap;
+use hotpath::instant::Instant;
 use prost::Message;
 use snow::params::NoiseParams;
 use tokio::sync::{Mutex, OwnedMutexGuard, oneshot};
