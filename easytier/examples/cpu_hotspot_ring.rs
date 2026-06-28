@@ -15,6 +15,14 @@
 //! Then in another terminal:
 //!   hotpath console
 
+#[cfg(feature = "mimalloc")]
+#[global_allocator]
+static ALLOC: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
+#[cfg(feature = "jemalloc")]
+#[global_allocator]
+static ALLOC: jemallocator::Jemalloc = jemallocator::Jemalloc;
+
 use std::net::IpAddr;
 use std::time::{Duration, Instant};
 
