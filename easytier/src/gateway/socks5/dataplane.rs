@@ -22,11 +22,12 @@ use std::{
         atomic::{AtomicUsize, Ordering},
     },
     task::{Context, Poll},
-    time::{Duration, Instant},
+    time::Duration,
 };
 
 use anyhow::Context as _;
 use dashmap::mapref::entry::Entry;
+use hotpath::instant::Instant;
 use tokio::io::{AsyncRead, AsyncWrite};
 
 use crate::{common::error::Error, gateway::fast_socks5::server::AsyncTcpConnector};

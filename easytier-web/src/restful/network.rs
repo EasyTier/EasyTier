@@ -93,6 +93,8 @@ struct ManagedNetworkConfigJson {
 #[derive(Debug, serde::Deserialize, serde::Serialize)]
 struct ReconcileManagedNetworkConfigsJsonReq {
     managed_network_configs: Vec<ManagedNetworkConfigJson>,
+    config_revision: Option<String>,
+    expected_config_revision: Option<String>,
 }
 
 #[derive(Debug, serde::Deserialize, serde::Serialize)]
@@ -357,13 +359,21 @@ impl NetworkApi {
             })
             .collect();
         client_mgr
-            .reconcile_managed_network_configs(user_id, machine_id, desired)
+            .reconcile_managed_network_configs(
+                user_id,
+                machine_id,
+                desired,
+                payload.config_revision,
+                payload.expected_config_revision,
+            )
             .await
             .map_err(|err| {
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    other_error(err.to_string()).into(),
-                )
+                let status = if crate::client_manager::is_managed_config_revision_conflict(&err) {
+                    StatusCode::CONFLICT
+                } else {
+                    StatusCode::INTERNAL_SERVER_ERROR
+                };
+                (status, other_error(err.to_string()).into())
             })?;
         Ok(Void::default().into())
     }

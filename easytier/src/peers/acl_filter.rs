@@ -1,6 +1,5 @@
 use std::net::{Ipv4Addr, Ipv6Addr};
 use std::sync::atomic::Ordering;
-use std::time::Instant;
 use std::{
     net::IpAddr,
     sync::{Arc, atomic::AtomicBool},
@@ -8,6 +7,7 @@ use std::{
 
 use arc_swap::ArcSwap;
 use dashmap::DashMap;
+use hotpath::instant::Instant;
 use pnet::packet::ipv6::Ipv6Packet;
 use pnet::packet::{
     Packet as _, ip::IpNextHeaderProtocols, ipv4::Ipv4Packet, tcp::TcpPacket, udp::UdpPacket,
@@ -402,8 +402,9 @@ mod tests {
     use std::{
         net::{IpAddr, Ipv4Addr, Ipv6Addr},
         sync::Arc,
-        time::Instant,
     };
+
+    use hotpath::instant::Instant;
 
     use crate::{
         common::acl_processor::PacketInfo,
