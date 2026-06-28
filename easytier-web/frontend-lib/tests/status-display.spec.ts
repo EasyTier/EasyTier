@@ -39,11 +39,14 @@ describe('status display helpers', () => {
   it('does not render missing IP values as zero addresses', () => {
     expect(ipv4ToString(undefined)).toBe('')
     expect(ipv4ToString(null)).toBe('')
+    expect(ipv4ToString({} as any)).toBe('0.0.0.0')
     expect(ipv4ToString({ addr: 0 })).toBe('0.0.0.0')
 
     expect(ipv6ToString(undefined)).toBe('')
     expect(ipv6ToString(null)).toBe('')
+    expect(ipv6ToString({} as any)).toBe('::0')
     expect(ipv6ToString({ part1: 0, part2: 0, part3: 0, part4: 0 })).toBe('::0')
+    expect(ipv6ToString({ part4: 1 } as any)).toBe('::1')
   })
 
   it('skips missing latency and loss values', () => {

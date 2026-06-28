@@ -40,7 +40,7 @@ function routeCost(info: any) {
 }
 
 function resolveObjPath(path: string, obj: any = globalThis, separator = '.') {
-  const properties = Array.isArray(path) ? path : path.split(separator)
+  const properties = path.split(separator)
   return properties.reduce((prev, curr) => prev?.[curr], obj)
 }
 

@@ -20,10 +20,10 @@ export function ipv6ToString(ip: Ipv6Addr | null | undefined) {
         return ''
     }
     return IPv6.fromBigInt(
-        (BigInt(ip?.part1 ?? 0) << BigInt(96))
-        + (BigInt(ip?.part2 ?? 0) << BigInt(64))
-        + (BigInt(ip?.part3 ?? 0) << BigInt(32))
-        + BigInt(ip?.part4 ?? 0),
+        (BigInt(ip.part1 ?? 0) << BigInt(96))
+        + (BigInt(ip.part2 ?? 0) << BigInt(64))
+        + (BigInt(ip.part3 ?? 0) << BigInt(32))
+        + BigInt(ip.part4 ?? 0),
     ).toString()
 }
 

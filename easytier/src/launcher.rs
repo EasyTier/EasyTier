@@ -653,6 +653,7 @@ impl NetworkConfig {
     fn parse_peer_urls(peer_urls: &[String]) -> Result<Vec<PeerConfig>, anyhow::Error> {
         let mut peers = vec![];
         for peer_url in peer_urls.iter() {
+            let peer_url = peer_url.trim();
             if peer_url.is_empty() {
                 continue;
             }
@@ -1308,6 +1309,29 @@ mod tests {
 
         let generated_config = network_config.gen_config()?;
         assert_eq!(generated_config.get_peers(), config.get_peers());
+        Ok(())
+    }
+
+    #[test]
+    fn network_config_gen_config_trims_legacy_peer_urls() -> Result<(), anyhow::Error> {
+        let network_config = super::NetworkConfig {
+            instance_id: Some(uuid::Uuid::new_v4().to_string()),
+            dhcp: Some(true),
+            networking_method: Some(crate::proto::api::manage::NetworkingMethod::Manual as i32),
+            peer_urls: vec![
+                " tcp://1.2.3.4:11010 ".to_string(),
+                "  ".to_string(),
+                "\tudp://5.6.7.8:11010\n".to_string(),
+            ],
+            ..Default::default()
+        };
+
+        let generated_config = network_config.gen_config()?;
+        let peers = generated_config.get_peers();
+
+        assert_eq!(peers.len(), 2);
+        assert_eq!(peers[0].uri.as_str(), "tcp://1.2.3.4:11010");
+        assert_eq!(peers[1].uri.as_str(), "udp://5.6.7.8:11010");
         Ok(())
     }
 
