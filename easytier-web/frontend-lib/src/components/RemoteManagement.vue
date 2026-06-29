@@ -35,7 +35,7 @@ const currentNetworkConfig = ref<NetworkTypes.NetworkConfig | undefined>(undefin
 const listInstanceIdResponse = ref<Api.ListNetworkInstanceIdResponse | undefined>(undefined);
 
 const isRunning = (instanceId: string) => {
-    return listInstanceIdResponse.value?.running_inst_ids.map(Utils.UuidToStr).includes(instanceId);
+    return (listInstanceIdResponse.value?.running_inst_ids ?? []).map(Utils.UuidToStr).includes(instanceId);
 }
 
 const networkMetaCache = ref<Record<string, Api.NetworkMeta>>({});
@@ -46,7 +46,7 @@ const loadNetworkMetas = async (instanceIds: string[]) => {
 
     try {
         const response = await props.api.get_network_metas(missingIds);
-        Object.assign(networkMetaCache.value, response.metas);
+        Object.assign(networkMetaCache.value, response.metas ?? {});
     } catch (e) {
         console.error("Failed to load network metas", e);
     }
@@ -80,8 +80,8 @@ const updateInstanceList = () => {
     let insts = new Set<string>();
     let t = listInstanceIdResponse.value;
     if (t) {
-        t.running_inst_ids.forEach((u) => insts.add(Utils.UuidToStr(u)));
-        t.disabled_inst_ids.forEach((u) => insts.add(Utils.UuidToStr(u)));
+        (t.running_inst_ids ?? []).forEach((u) => insts.add(Utils.UuidToStr(u)));
+        (t.disabled_inst_ids ?? []).forEach((u) => insts.add(Utils.UuidToStr(u)));
     }
 
     const newList = Array.from(insts).map((instance: string) => {
@@ -149,7 +149,7 @@ const networkIsDisabled = computed(() => {
     if (!selectedInstanceId.value) {
         return false;
     }
-    return listInstanceIdResponse.value?.disabled_inst_ids.map(Utils.UuidToStr).includes(selectedInstanceId.value?.uuid);
+    return (listInstanceIdResponse.value?.disabled_inst_ids ?? []).map(Utils.UuidToStr).includes(selectedInstanceId.value?.uuid);
 });
 watch(networkIsDisabled, async (newVal, oldVal) => {
     if (newVal !== oldVal && newVal === true) {
@@ -287,17 +287,35 @@ const loadNetworkInstanceIds = async () => {
 }
 
 const loadCurrentNetworkInfo = async () => {
-    if (!selectedInstanceId.value) {
+    const selected = selectedInstanceId.value?.uuid;
+    if (!selected) {
+        curNetworkInfo.value = null;
         return;
     }
     if (!needShowNetworkStatus.value) {
+        curNetworkInfo.value = null;
+        return;
+    }
+    if (curNetworkInfo.value?.instance_id !== selected) {
+        curNetworkInfo.value = null;
+    }
+
+    let network_info = await props.api.get_network_info(selected);
+    if (selectedInstanceId.value?.uuid !== selected) {
         return;
     }
 
-    let network_info = await props.api.get_network_info(selectedInstanceId.value.uuid);
+    if (!network_info) {
+        curNetworkInfo.value = {
+            instance_id: selected,
+            running: false,
+            error_msg: t('web.device_management.network_info_unavailable'),
+        } as NetworkTypes.NetworkInstance;
+        return;
+    }
 
     curNetworkInfo.value = {
-        instance_id: selectedInstanceId.value.uuid,
+        instance_id: selected,
         running: network_info?.running ?? false,
         error_msg: network_info?.error_msg ?? '',
         detail: network_info,
@@ -492,7 +510,7 @@ onUnmounted(() => {
                                     <div class="flex items-center min-w-0">
                                         <div class="mr-4 min-w-0 flex-1">
                                             <span class="truncate block">{{ t('network_name') }}: {{
-                                                slotProps.option.meta.network_name }}</span>
+                                                slotProps.option.meta?.network_name ?? slotProps.option.uuid }}</span>
                                         </div>
                                         <Tag class="my-auto leading-3 shrink-0"
                                             :severity="isRunning(slotProps.option.uuid) ? 'success' : 'info'"
@@ -569,10 +587,13 @@ onUnmounted(() => {
                     <h2 class="text-xl font-medium">{{ t('web.device_management.network_status') }}</h2>
                 </div>
 
-                <Status v-if="(curNetworkInfo?.error_msg ?? '') === ''" v-bind:cur-network-inst="curNetworkInfo"
+                <Status v-if="curNetworkInfo && curNetworkInfo.error_msg === ''" v-bind:cur-network-inst="curNetworkInfo"
                     class="mb-4">
                 </Status>
-                <Message v-else severity="error" class="mb-4">{{ curNetworkInfo?.error_msg }}</Message>
+                <Message v-else-if="curNetworkInfo?.error_msg" severity="error" class="mb-4">{{
+                    curNetworkInfo.error_msg }}</Message>
+                <Message v-else severity="info" class="mb-4">{{ t('web.device_management.loading_network_status') }}
+                </Message>
 
                 <div class="text-center mt-4">
                     <Button @click="stopNetwork" :disabled="!currentNetworkControl.deletable.value"

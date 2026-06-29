@@ -114,6 +114,12 @@ function allFieldFixture() {
     networking_method: NetworkingMethod.Manual,
     public_server_url: 'tcp://public.example:11010',
     peer_urls: [' tcp://peer-a:11010 ', '', 'udp://peer-b:11010'],
+    peers: [
+      {
+        uri: 'tcp://peer-a:11010',
+        peer_public_key: 'peer-a-public-key',
+      },
+    ],
     proxy_cidrs: ['10.10.0.0/16', '192.168.2.0/24->10.99.0.0/24'],
     enable_vpn_portal: true,
     vpn_portal_listen_port: 23000,
@@ -259,6 +265,8 @@ function assertFullFieldRoundTrip() {
   assert.equal(backend.networking_method, 'Manual')
   assert.equal(backend.public_server_url, '')
   assert.deepEqual(backend.peer_urls, ['tcp://peer-a:11010', 'udp://peer-b:11010'])
+  assert.equal(backend.peers[0].peer_public_key, 'peer-a-public-key')
+  assert.deepEqual(backend.peers[1], { uri: 'udp://peer-b:11010' })
   assert.equal(backend.data_compress_algo, 'Zstd')
   assert.equal(backend.instance_recv_bps_limit, '9007199254740993')
   assert.equal(backend.secure_mode.enabled, true)
@@ -415,6 +423,59 @@ function assertNetworkingMethodNormalization() {
   })
 
   assert.deepEqual(missing.peer_urls, ['tcp://one', 'udp://two'])
+
+  const publicServerMissingUrl = normalizeNetworkConfig({
+    ...DEFAULT_NETWORK_CONFIG(),
+    networking_method: 'PublicServer',
+    public_server_url: '',
+    peer_urls: ['tcp://manual.example:11010'],
+  })
+
+  assert.deepEqual(publicServerMissingUrl.peer_urls, [])
+}
+
+function assertPeerPublicKeysPreserved() {
+  const normalized = normalizeNetworkConfig({
+    ...DEFAULT_NETWORK_CONFIG(),
+    peer_urls: [],
+    peers: [
+      {
+        uri: ' tcp://peer-a:11010 ',
+        peer_public_key: 'peer-a-public-key',
+      },
+    ],
+  })
+
+  assert.deepEqual(normalized.peer_urls, ['tcp://peer-a:11010'])
+  assert.deepEqual(normalized.peers, [
+    {
+      uri: 'tcp://peer-a:11010',
+      peer_public_key: 'peer-a-public-key',
+    },
+  ])
+
+  const unchangedUrl = toBackendNetworkConfig({
+    ...normalized,
+    peer_urls: ['tcp://peer-a:11010', 'tcp://peer-b:11010'],
+  })
+
+  assert.equal(unchangedUrl.peers[0].peer_public_key, 'peer-a-public-key')
+  assert.deepEqual(unchangedUrl.peers[1], { uri: 'tcp://peer-b:11010' })
+
+  const changedUrl = toBackendNetworkConfig({
+    ...normalized,
+    peer_urls: ['tcp://peer-c:11010'],
+  })
+
+  assert.deepEqual(changedUrl.peers, [{ uri: 'tcp://peer-c:11010' }])
+
+  const clearedUrls = toBackendNetworkConfig({
+    ...normalized,
+    peer_urls: [],
+  })
+
+  assert.deepEqual(clearedUrls.peer_urls ?? [], [])
+  assert.deepEqual(clearedUrls.peers ?? [], [])
 }
 
 function assertNumberBoundaries() {
@@ -469,6 +530,7 @@ const tests = [
   assertEnumCompatibility,
   assertAclDefaultsAndExplicitZero,
   assertNetworkingMethodNormalization,
+  assertPeerPublicKeysPreserved,
   assertNumberBoundaries,
 ]
 

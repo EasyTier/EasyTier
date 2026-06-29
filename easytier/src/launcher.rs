@@ -626,6 +626,47 @@ pub type NetworkingMethod = crate::proto::api::manage::NetworkingMethod;
 pub type NetworkConfig = crate::proto::api::manage::NetworkConfig;
 
 impl NetworkConfig {
+    fn parse_peer(peer: &manage::NetworkPeerConfig) -> Result<Option<PeerConfig>, anyhow::Error> {
+        let uri = peer.uri.trim();
+        if uri.is_empty() {
+            return Ok(None);
+        }
+
+        Ok(Some(PeerConfig {
+            uri: uri
+                .parse()
+                .with_context(|| format!("failed to parse peer uri: {}", uri))?,
+            peer_public_key: peer.peer_public_key.clone(),
+        }))
+    }
+
+    fn parse_peers(peers: &[manage::NetworkPeerConfig]) -> Result<Vec<PeerConfig>, anyhow::Error> {
+        let mut ret = Vec::new();
+        for peer in peers {
+            if let Some(peer) = Self::parse_peer(peer)? {
+                ret.push(peer);
+            }
+        }
+        Ok(ret)
+    }
+
+    fn parse_peer_urls(peer_urls: &[String]) -> Result<Vec<PeerConfig>, anyhow::Error> {
+        let mut peers = vec![];
+        for peer_url in peer_urls.iter() {
+            let peer_url = peer_url.trim();
+            if peer_url.is_empty() {
+                continue;
+            }
+            peers.push(PeerConfig {
+                uri: peer_url
+                    .parse()
+                    .with_context(|| format!("failed to parse peer uri: {}", peer_url))?,
+                peer_public_key: None,
+            });
+        }
+        Ok(peers)
+    }
+
     pub fn gen_config(&self) -> Result<TomlConfigLoader, anyhow::Error> {
         let cfg = TomlConfigLoader::default();
         cfg.set_id(
@@ -681,26 +722,23 @@ impl NetworkConfig {
             .unwrap_or_default()
         {
             NetworkingMethod::PublicServer => {
-                let public_server_url = self.public_server_url.clone().unwrap_or_default();
-                cfg.set_peers(vec![PeerConfig {
-                    uri: public_server_url.parse().with_context(|| {
-                        format!("failed to parse public server uri: {}", public_server_url)
-                    })?,
-                    peer_public_key: None,
-                }]);
+                let peers = Self::parse_peers(&self.peers)?;
+                if peers.is_empty() {
+                    let public_server_url = self.public_server_url.clone().unwrap_or_default();
+                    cfg.set_peers(vec![PeerConfig {
+                        uri: public_server_url.parse().with_context(|| {
+                            format!("failed to parse public server uri: {}", public_server_url)
+                        })?,
+                        peer_public_key: None,
+                    }]);
+                } else {
+                    cfg.set_peers(peers);
+                }
             }
             NetworkingMethod::Manual => {
-                let mut peers = vec![];
-                for peer_url in self.peer_urls.iter() {
-                    if peer_url.is_empty() {
-                        continue;
-                    }
-                    peers.push(PeerConfig {
-                        uri: peer_url
-                            .parse()
-                            .with_context(|| format!("failed to parse peer uri: {}", peer_url))?,
-                        peer_public_key: None,
-                    });
+                let mut peers = Self::parse_peers(&self.peers)?;
+                if peers.is_empty() {
+                    peers = Self::parse_peer_urls(&self.peer_urls)?;
                 }
                 if !peers.is_empty() {
                     cfg.set_peers(peers);
@@ -1048,6 +1086,13 @@ impl NetworkConfig {
         result.networking_method = Some(NetworkingMethod::Manual as i32);
         if !peers.is_empty() {
             result.peer_urls = peers.iter().map(|p| p.uri.to_string()).collect();
+            result.peers = peers
+                .iter()
+                .map(|p| manage::NetworkPeerConfig {
+                    uri: p.uri.to_string(),
+                    peer_public_key: p.peer_public_key.clone(),
+                })
+                .collect();
         }
 
         result.listener_urls = config
@@ -1244,6 +1289,54 @@ mod tests {
         assert!(dumped.contains("enable_quic_proxy = true"));
         assert!(dumped.contains("disable_tcp_hole_punching = true"));
         assert!(dumped.contains("disable_sym_hole_punching = true"));
+        Ok(())
+    }
+
+    #[test]
+    fn test_network_config_conversion_preserves_peer_public_key() -> Result<(), anyhow::Error> {
+        let peer_url = "tcp://1.2.3.4:11010";
+        let peer_public_key = BASE64_STANDARD.encode([9u8; 32]);
+        let config = gen_default_config();
+        config.set_peers(vec![crate::common::config::PeerConfig {
+            uri: peer_url.parse()?,
+            peer_public_key: Some(peer_public_key.clone()),
+        }]);
+
+        let network_config = super::NetworkConfig::new_from_config(&config)?;
+
+        assert_eq!(network_config.peer_urls, vec![peer_url.to_string()]);
+        assert_eq!(network_config.peers.len(), 1);
+        assert_eq!(network_config.peers[0].uri, peer_url);
+        assert_eq!(
+            network_config.peers[0].peer_public_key.as_deref(),
+            Some(peer_public_key.as_str())
+        );
+
+        let generated_config = network_config.gen_config()?;
+        assert_eq!(generated_config.get_peers(), config.get_peers());
+        Ok(())
+    }
+
+    #[test]
+    fn network_config_gen_config_trims_legacy_peer_urls() -> Result<(), anyhow::Error> {
+        let network_config = super::NetworkConfig {
+            instance_id: Some(uuid::Uuid::new_v4().to_string()),
+            dhcp: Some(true),
+            networking_method: Some(crate::proto::api::manage::NetworkingMethod::Manual as i32),
+            peer_urls: vec![
+                " tcp://1.2.3.4:11010 ".to_string(),
+                "  ".to_string(),
+                "\tudp://5.6.7.8:11010\n".to_string(),
+            ],
+            ..Default::default()
+        };
+
+        let generated_config = network_config.gen_config()?;
+        let peers = generated_config.get_peers();
+
+        assert_eq!(peers.len(), 2);
+        assert_eq!(peers[0].uri.as_str(), "tcp://1.2.3.4:11010");
+        assert_eq!(peers[1].uri.as_str(), "udp://5.6.7.8:11010");
         Ok(())
     }
 
