@@ -1355,7 +1355,8 @@ async fn query_udp_mapping(
     client_ip: Ipv4Addr,
     local_port: u16,
 ) -> Result<SocketAddr, Error> {
-    let entries = query_mappings(query_netns, expected_external_ip, PortMappingProtocol::UDP).await?;
+    let entries =
+        query_mappings(query_netns, expected_external_ip, PortMappingProtocol::UDP).await?;
     let client_ip = client_ip.to_string();
     let entry = entries
         .into_iter()
@@ -1373,7 +1374,8 @@ async fn query_tcp_mapping(
     client_ip: Ipv4Addr,
     local_port: u16,
 ) -> Result<SocketAddr, Error> {
-    let entries = query_mappings(query_netns, expected_external_ip, PortMappingProtocol::TCP).await?;
+    let entries =
+        query_mappings(query_netns, expected_external_ip, PortMappingProtocol::TCP).await?;
     let client_ip = client_ip.to_string();
     let entry = entries
         .into_iter()
@@ -1619,12 +1621,10 @@ async fn tcp_port_mapping_establishes_and_cleans_up() {
     let local_port = tcp_listener.local_addr().unwrap().port();
 
     let local_listener: url::Url = format!("tcp://0.0.0.0:{}", local_port).parse().unwrap();
-    let (mapped_addr, lease) = crate::common::upnp::resolve_tcp_public_addr(
-        peer_mgr.get_global_ctx(),
-        &local_listener,
-    )
-    .await
-    .unwrap();
+    let (mapped_addr, lease) =
+        crate::common::upnp::resolve_tcp_public_addr(peer_mgr.get_global_ctx(), &local_listener)
+            .await
+            .unwrap();
 
     let event = wait_for_port_mapping_event(&mut event_rx).await;
     match event {
@@ -1638,10 +1638,7 @@ async fn tcp_port_mapping_establishes_and_cleans_up() {
             assert_eq!(ev_local.scheme(), "tcp");
             assert_eq!(ev_local.port(), Some(local_port));
             assert_eq!(ev_mapped.scheme(), "tcp");
-            assert_eq!(
-                ev_mapped.host_str(),
-                Some(expected_external_ip.as_str())
-            );
+            assert_eq!(ev_mapped.host_str(), Some(expected_external_ip.as_str()));
             assert_eq!(ev_mapped.port(), Some(mapped_addr.port()));
         }
         other => panic!("unexpected event: {other:?}"),

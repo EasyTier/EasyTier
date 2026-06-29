@@ -293,10 +293,10 @@ impl TcpHolePunchConnectorData {
 
         {
             let mut lease_guard = self.upnp_lease.lock().await;
-            if lease_guard.is_none() {
-                if let Ok(Some(lease)) = upnp::try_open_tcp_port(&global_ctx, local_port).await {
-                    *lease_guard = Some(lease);
-                }
+            if lease_guard.is_none()
+                && let Ok(Some(lease)) = upnp::try_open_tcp_port(&global_ctx, local_port).await
+            {
+                *lease_guard = Some(lease);
             }
         }
 
@@ -347,7 +347,10 @@ impl TcpHolePunchConnectorData {
 
         let flags = global_ctx.get_flags();
         if !flags.disable_tcp_simultaneous_open {
-            tracing::info!(local_port, "tcp hole punch initiator mode: simultaneous open");
+            tracing::info!(
+                local_port,
+                "tcp hole punch initiator mode: simultaneous open"
+            );
 
             if let Ok(()) = try_connect_to_remote(
                 self.peer_mgr.clone(),
@@ -367,7 +370,10 @@ impl TcpHolePunchConnectorData {
                 return Ok(());
             }
         } else {
-            tracing::info!(local_port, "tcp hole punch initiator skipped simultaneous open by flag");
+            tracing::info!(
+                local_port,
+                "tcp hole punch initiator skipped simultaneous open by flag"
+            );
         }
 
         tracing::debug!(
