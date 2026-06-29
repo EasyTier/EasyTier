@@ -155,7 +155,9 @@ fn generate_lttng_tracepoints(out: &PathBuf) -> Result<(), Box<dyn std::error::E
         .register_provider(provider)
         .output_file_name(out.join("lttng_tracepoints.rs"))
         .generate()
-        .map_err(|_| std::io::Error::other("failed to generate LTTng tracepoints"))?;
+        .map_err(|error| {
+            std::io::Error::other(format!("failed to generate LTTng tracepoints: {error:?}"))
+        })?;
 
     Ok(())
 }
