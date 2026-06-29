@@ -10,6 +10,7 @@ use std::{
     net::{IpAddr, Ipv4Addr, Ipv6Addr},
     sync::{Arc, Weak},
 };
+use bytes::Buf;
 use tokio::{
     sync::{Mutex, Notify},
     task::JoinSet,
@@ -225,7 +226,9 @@ impl TunTx {
 
         let mut frame = {
             let offset = item.payload_offset();
-            item.inner().split_off(offset - hdr_len)
+            let mut inner = item.inner();
+            inner.advance(offset - hdr_len);
+            inner
         };
         let (hdr, packet) = frame.split_at_mut(hdr_len);
 
