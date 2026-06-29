@@ -7,6 +7,7 @@ use anyhow::Context;
 use cidr::{Ipv6Cidr, Ipv6Inet};
 #[cfg(target_os = "linux")]
 use netlink_packet_route::route::{RouteAddress, RouteAttribute, RouteMessage, RouteType};
+use tokio_util::sync::CancellationToken;
 
 #[cfg(target_os = "linux")]
 use crate::common::ifcfg::{
@@ -976,11 +977,16 @@ fn should_reconcile_immediately(event: &GlobalCtxEvent) -> bool {
 
 async fn wait_for_public_ipv6_provider_reconcile_event(
     event_receiver: &mut tokio::sync::broadcast::Receiver<GlobalCtxEvent>,
-    immediate_only: bool,
+    cancel_token: &CancellationToken,
+    reconcile_interval: std::time::Duration,
 ) -> bool {
+    let timer = tokio::time::sleep(reconcile_interval);
+    tokio::pin!(timer);
     loop {
-        if immediate_only {
-            match event_receiver.recv().await {
+        tokio::select! {
+            _ = cancel_token.cancelled() => return false,
+            _ = &mut timer => return true,
+            recv = event_receiver.recv() => match recv {
                 Ok(event) if should_reconcile_immediately(&event) => return true,
                 Ok(_) => {}
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => return false,
@@ -988,19 +994,6 @@ async fn wait_for_public_ipv6_provider_reconcile_event(
                     *event_receiver = event_receiver.resubscribe();
                     return true;
                 }
-            }
-        } else {
-            tokio::select! {
-                recv = event_receiver.recv() => match recv {
-                    Ok(event) if should_reconcile_immediately(&event) => return true,
-                    Ok(_) => {}
-                    Err(tokio::sync::broadcast::error::RecvError::Closed) => return false,
-                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
-                        *event_receiver = event_receiver.resubscribe();
-                        return true;
-                    }
-                },
-                _ = tokio::time::sleep(PUBLIC_IPV6_PROVIDER_RECONCILE_INTERVAL) => return true,
             }
         }
     }
@@ -1045,15 +1038,36 @@ fn log_public_ipv6_provider_state_change(
     }
 }
 
-pub(super) fn run_public_ipv6_provider_reconcile_task(global_ctx: &ArcGlobalCtx) {
+pub(super) struct PublicIpv6ProviderReconcileTask {
+    cancel_token: CancellationToken,
+    handle: tokio::task::JoinHandle<()>,
+}
+
+impl PublicIpv6ProviderReconcileTask {
+    pub(super) async fn shutdown(self) {
+        self.cancel_token.cancel();
+        if let Err(err) = self.handle.await {
+            tracing::warn!(
+                ?err,
+                "public IPv6 provider reconcile task failed during shutdown"
+            );
+        }
+    }
+}
+
+pub(super) fn run_public_ipv6_provider_reconcile_task(
+    global_ctx: &ArcGlobalCtx,
+) -> Option<PublicIpv6ProviderReconcileTask> {
     if !should_run_public_ipv6_provider_reconcile_task(read_public_ipv6_provider_config_snapshot(
         global_ctx,
     )) {
-        return;
+        return None;
     }
 
     let global_ctx = Arc::downgrade(global_ctx);
-    tokio::spawn(async move {
+    let cancel_token = CancellationToken::new();
+    let task_cancel_token = cancel_token.clone();
+    let handle = tokio::spawn(async move {
         let Some(initial_ctx) = global_ctx.upgrade() else {
             return;
         };
@@ -1072,16 +1086,15 @@ pub(super) fn run_public_ipv6_provider_reconcile_task(global_ctx: &ArcGlobalCtx)
             let (next_state, changed) =
                 reconcile_public_ipv6_provider_runtime_with_state(&global_ctx).await;
             log_public_ipv6_provider_state_change(last_state.as_ref(), &next_state, changed);
-            let ndp_cleanup_pending =
-                reconcile_ndp_proxy_runtime(&mut ndp_proxy_runtime, &global_ctx, &next_state);
+            let _ = reconcile_ndp_proxy_runtime(&mut ndp_proxy_runtime, &global_ctx, &next_state);
             last_state = Some(next_state);
 
-            let immediate_only = matches!(
-                last_state.as_ref(),
-                Some(PublicIpv6ProviderRuntimeState::Disabled)
-            ) && !ndp_cleanup_pending;
-            if !wait_for_public_ipv6_provider_reconcile_event(&mut event_receiver, immediate_only)
-                .await
+            if !wait_for_public_ipv6_provider_reconcile_event(
+                &mut event_receiver,
+                &task_cancel_token,
+                PUBLIC_IPV6_PROVIDER_RECONCILE_INTERVAL,
+            )
+            .await
             {
                 break;
             }
@@ -1089,6 +1102,10 @@ pub(super) fn run_public_ipv6_provider_reconcile_task(global_ctx: &ArcGlobalCtx)
 
         cleanup_ndp_proxy_runtime(&mut ndp_proxy_runtime, &net_ns);
     });
+    Some(PublicIpv6ProviderReconcileTask {
+        cancel_token,
+        handle,
+    })
 }
 
 #[cfg(test)]
@@ -1125,7 +1142,7 @@ mod tests {
     use crate::common::{
         config::{ConfigLoader, TomlConfigLoader},
         error::Error,
-        global_ctx::GlobalCtx,
+        global_ctx::{GlobalCtx, GlobalCtxEvent},
     };
 
     #[cfg(target_os = "linux")]
@@ -1834,6 +1851,91 @@ mod tests {
                 .contains(&addr)
         );
         assert!(!runtime.cleanup_pending());
+    }
+
+    #[tokio::test]
+    async fn test_wait_for_reconcile_ignores_unrelated_events_without_resetting_timer() {
+        let (tx, mut rx) = tokio::sync::broadcast::channel(16);
+        let cancel_token = tokio_util::sync::CancellationToken::new();
+        let spam_task = tokio::spawn(async move {
+            loop {
+                if tx.send(GlobalCtxEvent::PeerAdded(1)).is_err() {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+        });
+
+        let reconciled = tokio::time::timeout(
+            std::time::Duration::from_millis(250),
+            super::wait_for_public_ipv6_provider_reconcile_event(
+                &mut rx,
+                &cancel_token,
+                std::time::Duration::from_millis(50),
+            ),
+        )
+        .await
+        .expect("unrelated events should not keep resetting the reconcile timer");
+
+        spam_task.abort();
+        assert!(reconciled);
+    }
+
+    #[cfg(target_os = "linux")]
+    async fn wait_for_ndp_proxy_entry(wan_if: &str, addr: std::net::Ipv6Addr, present: bool) {
+        for _ in 0..50 {
+            let current = crate::common::ifcfg::list_ipv6_ndp_proxy(wan_if).unwrap();
+            if current.contains(&addr) == present {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+
+        let current = crate::common::ifcfg::list_ipv6_ndp_proxy(wan_if).unwrap();
+        assert_eq!(current.contains(&addr), present);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[serial_test::serial]
+    #[tokio::test]
+    async fn test_reconcile_task_shutdown_removes_owned_ndp_proxy_entry() {
+        let wan_if = test_iface_name("tw");
+        let tun_if = test_iface_name("tt");
+        let _wan = ScopedDummyLink::new(&wan_if);
+        let _tun = ScopedDummyLink::new(&tun_if);
+        let prefix = "2001:db8:fade::/64".parse().unwrap();
+        let wan_addr = "2001:db8:fade::1";
+        let leased_addr = "2001:db8:fade::123".parse::<std::net::Ipv6Addr>().unwrap();
+        let global_ctx = test_global_ctx();
+
+        run_ip(&[
+            "-6",
+            "addr",
+            "add",
+            &format!("{wan_addr}/128"),
+            "dev",
+            &wan_if,
+        ]);
+        run_ip(&["-6", "route", "add", "default", "dev", &wan_if]);
+        run_ip(&[
+            "-6",
+            "route",
+            "add",
+            &format!("{leased_addr}/128"),
+            "dev",
+            &tun_if,
+        ]);
+
+        global_ctx.config.set_ipv6_public_addr_provider(true);
+        global_ctx.config.set_ipv6_public_addr_prefix(Some(prefix));
+        global_ctx.set_tun_device_ready(tun_if);
+
+        let task = super::run_public_ipv6_provider_reconcile_task(&global_ctx)
+            .expect("provider task should start when provider is enabled");
+        wait_for_ndp_proxy_entry(&wan_if, leased_addr, true).await;
+
+        task.shutdown().await;
+        wait_for_ndp_proxy_entry(&wan_if, leased_addr, false).await;
     }
 
     #[cfg(target_os = "linux")]
