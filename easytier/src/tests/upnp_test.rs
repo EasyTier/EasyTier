@@ -1617,7 +1617,6 @@ async fn tcp_port_mapping_establishes_and_cleans_up() {
         tokio::net::TcpListener::bind("0.0.0.0:0").await.unwrap()
     };
     let local_port = tcp_listener.local_addr().unwrap().port();
-    drop(tcp_listener);
 
     let local_listener: url::Url = format!("tcp://0.0.0.0:{}", local_port).parse().unwrap();
     let (mapped_addr, lease) = crate::common::upnp::resolve_tcp_public_addr(
@@ -1651,6 +1650,7 @@ async fn tcp_port_mapping_establishes_and_cleans_up() {
     assert!(tcp_mapping_exists(local_port).await);
 
     drop(lease);
+    drop(tcp_listener);
 
     wait_for_condition(
         || async { !tcp_mapping_exists(local_port).await },
