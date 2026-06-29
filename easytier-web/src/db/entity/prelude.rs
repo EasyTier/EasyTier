@@ -5,6 +5,7 @@ pub use super::groups_permissions::Entity as GroupsPermissions;
 pub use super::managed_config_revisions::Entity as ManagedConfigRevisions;
 pub use super::permissions::Entity as Permissions;
 pub use super::tower_sessions::Entity as TowerSessions;
+pub use super::user_devices::Entity as UserDevices;
 pub use super::user_running_network_configs::Entity as UserRunningNetworkConfigs;
 pub use super::users::Entity as Users;
 pub use super::users_groups::Entity as UsersGroups;

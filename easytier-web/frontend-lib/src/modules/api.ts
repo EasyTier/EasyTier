@@ -8,6 +8,7 @@ export interface ValidateConfigResponse {
 export interface ListNetworkInstanceIdResponse {
     running_inst_ids: Array<UUID>,
     disabled_inst_ids: Array<UUID>,
+    auto_run_inst_ids?: Array<UUID>,
 }
 
 export interface GenerateConfigResponse {
@@ -60,7 +61,7 @@ export interface RemoteClient {
     list_network_instance_ids(): Promise<ListNetworkInstanceIdResponse>;
     delete_network(inst_id: string): Promise<undefined>;
     update_network_instance_state(inst_id: string, disabled: boolean): Promise<undefined>;
-    save_config(config: NetworkConfig): Promise<undefined>;
+    save_config(config: NetworkConfig, autoRun?: boolean): Promise<undefined>;
     get_network_config(inst_id: string): Promise<NetworkConfig>;
     generate_config(config: NetworkConfig): Promise<GenerateConfigResponse>;
     parse_config(toml_config: string): Promise<ParseConfigResponse>;

@@ -21,6 +21,16 @@ use async_trait::async_trait;
 
 pub type UserIdInDb = i32;
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UpsertDeviceInfo {
+    pub user_id: UserIdInDb,
+    pub machine_id: Uuid,
+    pub client_url: String,
+    pub hostname: String,
+    pub easytier_version: String,
+    pub report_time: String,
+}
+
 #[derive(Debug, Clone)]
 pub struct Db {
     db_path: String,
@@ -244,6 +254,73 @@ impl Db {
             .await?;
 
         Ok(())
+    }
+
+    pub async fn upsert_device(&self, device: UpsertDeviceInfo) -> Result<(), DbErr> {
+        use entity::user_devices as ud;
+
+        let now = chrono::Local::now().fixed_offset();
+        let on_conflict = OnConflict::columns([ud::Column::UserId, ud::Column::MachineId])
+            .update_columns([
+                ud::Column::ClientUrl,
+                ud::Column::Hostname,
+                ud::Column::EasytierVersion,
+                ud::Column::ReportTime,
+                ud::Column::UpdateTime,
+            ])
+            .to_owned();
+
+        let insert_m = ud::ActiveModel {
+            user_id: Set(device.user_id),
+            machine_id: Set(device.machine_id.to_string()),
+            client_url: Set(device.client_url),
+            hostname: Set(device.hostname),
+            remark: Set(None),
+            easytier_version: Set(device.easytier_version),
+            report_time: Set(device.report_time),
+            create_time: Set(now),
+            update_time: Set(now),
+            ..Default::default()
+        };
+
+        ud::Entity::insert(insert_m)
+            .on_conflict(on_conflict)
+            .exec(self.orm_db())
+            .await?;
+        Ok(())
+    }
+
+    pub async fn update_device_remark(
+        &self,
+        user_id: UserIdInDb,
+        machine_id: Uuid,
+        remark: Option<String>,
+    ) -> Result<(), DbErr> {
+        use entity::user_devices as ud;
+
+        ud::Entity::update_many()
+            .filter(ud::Column::UserId.eq(user_id))
+            .filter(ud::Column::MachineId.eq(machine_id.to_string()))
+            .col_expr(ud::Column::Remark, Expr::value(remark))
+            .col_expr(
+                ud::Column::UpdateTime,
+                Expr::value(chrono::Local::now().fixed_offset()),
+            )
+            .exec(self.orm_db())
+            .await?;
+        Ok(())
+    }
+
+    pub async fn list_user_devices(
+        &self,
+        user_id: UserIdInDb,
+    ) -> Result<Vec<entity::user_devices::Model>, DbErr> {
+        use entity::user_devices as ud;
+
+        ud::Entity::find()
+            .filter(ud::Column::UserId.eq(user_id))
+            .all(self.orm_db())
+            .await
     }
 }
 
@@ -613,5 +690,46 @@ mod tests {
         assert_eq!(saved.get_network_config_source(), ConfigSource::User);
         let saved_config = saved.get_network_config().unwrap();
         assert_eq!(saved_config.network_name.as_deref(), Some("user-owned"));
+    }
+
+    #[tokio::test]
+    async fn device_metadata_is_persisted_and_remark_survives_heartbeat_updates() {
+        let db = Db::memory_db().await;
+        let user_id = db.auto_create_user("device-owner").await.unwrap().id;
+        let machine_id = uuid::Uuid::new_v4();
+
+        db.upsert_device(crate::db::UpsertDeviceInfo {
+            user_id,
+            machine_id,
+            client_url: "tcp://127.0.0.1:1001".to_string(),
+            hostname: "first-host".to_string(),
+            easytier_version: "1.0.0".to_string(),
+            report_time: "2026-06-26T01:00:00+08:00".to_string(),
+        })
+        .await
+        .unwrap();
+
+        db.update_device_remark(user_id, machine_id, Some("edge node".to_string()))
+            .await
+            .unwrap();
+
+        db.upsert_device(crate::db::UpsertDeviceInfo {
+            user_id,
+            machine_id,
+            client_url: "tcp://127.0.0.1:1002".to_string(),
+            hostname: "second-host".to_string(),
+            easytier_version: "1.1.0".to_string(),
+            report_time: "2026-06-26T01:05:00+08:00".to_string(),
+        })
+        .await
+        .unwrap();
+
+        let devices = db.list_user_devices(user_id).await.unwrap();
+        assert_eq!(devices.len(), 1);
+        assert_eq!(devices[0].machine_id, machine_id.to_string());
+        assert_eq!(devices[0].client_url, "tcp://127.0.0.1:1002");
+        assert_eq!(devices[0].hostname, "second-host");
+        assert_eq!(devices[0].easytier_version, "1.1.0");
+        assert_eq!(devices[0].remark.as_deref(), Some("edge node"));
     }
 }

@@ -264,7 +264,15 @@ pub(super) async fn apply_rejected(
         let report_time = SessionRpcService::heartbeat_report_timestamp(&input.req);
         input
             .storage
-            .update_client(storage_token, report_time, false);
+            .update_client(
+                storage_token,
+                report_time,
+                false,
+                input.req.hostname.clone(),
+                input.req.easytier_version.clone(),
+                input.req.report_time.clone(),
+            )
+            .await;
     }
     if disconnect_notification.is_some() {
         wait_webhook_connection_transition(
@@ -382,7 +390,15 @@ pub(super) async fn apply_success(
     let report_time = SessionRpcService::heartbeat_report_timestamp(&runtime_req);
     input
         .storage
-        .update_client(storage_token, report_time, true);
+        .update_client(
+            storage_token,
+            report_time,
+            true,
+            runtime_req.hostname.clone(),
+            runtime_req.easytier_version.clone(),
+            runtime_req.report_time.clone(),
+        )
+        .await;
     let _ = notifier.send(runtime_req);
 }
 

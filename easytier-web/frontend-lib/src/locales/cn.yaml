@@ -325,6 +325,11 @@ web:
     version: 版本
     machine_id: 机器ID
     unknown_location: 未知位置
+    all_statuses: 全部
+    search_placeholder: 搜索主机名或备注
+    remark: 备注
+    remark_placeholder: 添加备注
+    remark_saved: 备注已保存
 
   device_management:
     edit_network: 编辑网络
@@ -339,6 +344,8 @@ web:
     save_config: 保存配置
     config_saved: 配置已保存
     import_config: 导入配置
+    auto_run_on_online: 设备在线后自动运行网络
+    auto_run_on_online_help: 开启后，设备重新上线时会自动运行该网络。关闭后仅保留配置。
     create_new: 创建新网络
     network_status: 网络状态
     network_configuration: 网络配置

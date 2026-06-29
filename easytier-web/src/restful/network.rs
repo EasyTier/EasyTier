@@ -1,6 +1,6 @@
 use axum::extract::Path;
 use axum::http::StatusCode;
-use axum::routing::{delete, post};
+use axum::routing::{delete, post, put};
 use axum::{Json, Router, extract::State, routing::get};
 use axum_login::AuthUser;
 use easytier::common::config::ConfigSource as RuntimeConfigSource;
@@ -55,6 +55,7 @@ struct ValidateConfigJsonReq {
 #[derive(Debug, serde::Deserialize, serde::Serialize)]
 struct SaveNetworkJsonReq {
     config: NetworkConfig,
+    auto_run: Option<bool>,
 }
 
 #[derive(Debug, serde::Deserialize, serde::Serialize)]
@@ -102,11 +103,22 @@ struct ListMachineItem {
     client_url: Option<url::Url>,
     info: Option<HeartbeatRequest>,
     location: Option<Location>,
+    machine_id: uuid::Uuid,
+    hostname: String,
+    remark: Option<String>,
+    easytier_version: String,
+    report_time: String,
+    online: bool,
 }
 
 #[derive(Debug, serde::Deserialize, serde::Serialize)]
 struct ListMachineJsonResp {
     machines: Vec<ListMachineItem>,
+}
+
+#[derive(Debug, serde::Deserialize, serde::Serialize)]
+struct UpdateDeviceRemarkJsonReq {
+    remark: Option<String>,
 }
 
 pub struct NetworkApi;
@@ -219,21 +231,61 @@ impl NetworkApi {
     ) -> Result<Json<ListMachineJsonResp>, HttpHandleError> {
         let user_id = Self::get_user_id(&auth_session)?;
 
-        let client_urls = client_mgr.list_machine_by_user_id(user_id).await;
+        let devices = client_mgr
+            .list_device_by_user_id(user_id)
+            .await
+            .map_err(convert_db_error)?;
 
         let mut machines = vec![];
-        for item in client_urls.iter() {
-            let client_url = item.clone();
-            let session = client_mgr.get_heartbeat_requests(&client_url).await;
-            let location = client_mgr.get_machine_location(&client_url).await;
+        for device in devices {
+            let machine_id = uuid::Uuid::parse_str(&device.machine_id).map_err(|e| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    other_error(format!("Invalid stored machine id: {e}")).into(),
+                )
+            })?;
+            let client_url = device.client_url.parse::<url::Url>().ok();
+            let session = if let Some(client_url) = client_url.as_ref() {
+                client_mgr.get_heartbeat_requests(client_url).await
+            } else {
+                None
+            };
+            let location = if let Some(client_url) = client_url.as_ref() {
+                client_mgr.get_machine_location(client_url).await
+            } else {
+                None
+            };
             machines.push(ListMachineItem {
-                client_url: Some(client_url),
+                client_url,
+                online: client_mgr.is_machine_online(user_id, &machine_id),
                 info: session,
                 location,
+                machine_id,
+                hostname: device.hostname,
+                remark: device.remark,
+                easytier_version: device.easytier_version,
+                report_time: device.report_time,
             });
         }
 
         Ok(Json(ListMachineJsonResp { machines }))
+    }
+
+    async fn handle_update_device_remark(
+        auth_session: AuthSession,
+        State(client_mgr): AppState,
+        Path(machine_id): Path<uuid::Uuid>,
+        Json(payload): Json<UpdateDeviceRemarkJsonReq>,
+    ) -> Result<(), HttpHandleError> {
+        let remark = payload.remark.and_then(|value| {
+            let trimmed = value.trim().to_string();
+            (!trimmed.is_empty()).then_some(trimmed)
+        });
+
+        client_mgr
+            .update_device_remark(Self::get_user_id(&auth_session)?, machine_id, remark)
+            .await
+            .map_err(convert_db_error)
     }
 
     async fn handle_update_network_state(
@@ -290,11 +342,12 @@ impl NetworkApi {
             ));
         }
         client_mgr
-            .handle_save_network_config_with_source(
+            .handle_save_network_config_with_source_and_state(
                 (Self::get_user_id(&auth_session)?, machine_id),
                 inst_id,
                 payload.config,
                 RuntimeConfigSource::Web,
+                !payload.auto_run.unwrap_or(false),
             )
             .await
             .map_err(convert_error)
@@ -422,6 +475,10 @@ impl NetworkApi {
     pub fn build_route() -> Router<AppStateInner> {
         Router::new()
             .route("/api/v1/machines", get(Self::handle_list_machines))
+            .route(
+                "/api/v1/machines/:machine-id/remark",
+                put(Self::handle_update_device_remark),
+            )
             .route(
                 "/api/v1/machines/:machine-id/validate-config",
                 post(Self::handle_validate_config),

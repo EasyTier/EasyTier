@@ -61,6 +61,7 @@ export interface Location {
 
 export interface DeviceInfo {
     hostname: string;
+    remark?: string;
     public_ip: string;
     running_network_count: number;
     report_time: string;
@@ -68,18 +69,24 @@ export interface DeviceInfo {
     running_network_instances?: Array<string>;
     machine_id: string;
     location: Location | undefined;
+    online: boolean;
 }
 
 export function buildDeviceInfo(device: any): DeviceInfo {
+    const info = device.info;
+    const machineId = info?.machine_id ? UuidToStr(info.machine_id) : String(device.machine_id ?? '');
+    const runningNetworkInstances = (info?.running_network_instances ?? []).map((instance: any) => UuidToStr(instance));
     let dev_info: DeviceInfo = {
-        hostname: device.info?.hostname,
-        public_ip: device.client_url,
-        running_network_instances: device.info?.running_network_instances.map((instance: any) => UuidToStr(instance)),
-        running_network_count: device.info?.running_network_instances.length,
-        report_time: device.info?.report_time,
-        easytier_version: device.info?.easytier_version,
-        machine_id: UuidToStr(device.info?.machine_id),
+        hostname: info?.hostname ?? device.hostname ?? machineId,
+        remark: device.remark ?? undefined,
+        public_ip: device.client_url ?? '',
+        running_network_instances: runningNetworkInstances,
+        running_network_count: runningNetworkInstances.length,
+        report_time: info?.report_time ?? device.report_time ?? '',
+        easytier_version: info?.easytier_version ?? device.easytier_version ?? '',
+        machine_id: machineId,
         location: device.location,
+        online: device.online ?? !!info,
     };
 
     return dev_info;

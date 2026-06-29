@@ -428,7 +428,16 @@ impl SessionRpcService {
             let authorized = data.auth_state.is_authorized();
             if let Some(storage_token) = data.storage_token.clone() {
                 let report_time = Self::heartbeat_report_timestamp(&runtime_req);
-                storage.update_client(storage_token, report_time, authorized);
+                storage
+                    .update_client(
+                        storage_token,
+                        report_time,
+                        authorized,
+                        runtime_req.hostname.clone(),
+                        runtime_req.easytier_version.clone(),
+                        runtime_req.report_time.clone(),
+                    )
+                    .await;
             }
             let runtime_notify = (authorized && data.storage_token.is_some())
                 .then(|| (data.notifier.clone(), runtime_req));
@@ -525,7 +534,16 @@ impl SessionRpcService {
         };
 
         let report_time = Self::heartbeat_report_timestamp(&runtime_req);
-        storage.update_client(storage_token, report_time, true);
+        storage
+            .update_client(
+                storage_token,
+                report_time,
+                true,
+                req.hostname.clone(),
+                req.easytier_version.clone(),
+                req.report_time.clone(),
+            )
+            .await;
         let _ = notifier.send(runtime_req);
         Ok(HeartbeatResponse {})
     }
@@ -1098,7 +1116,16 @@ mod tests {
             machine_id,
             user_id,
         };
-        storage.update_client(storage_token.clone(), 1, true);
+        storage
+            .update_client(
+                storage_token.clone(),
+                1,
+                true,
+                req.hostname.clone(),
+                req.easytier_version.clone(),
+                req.report_time.clone(),
+            )
+            .await;
         let mut data = SessionData::new(
             storage.weak_ref(),
             url::Url::parse("http://127.0.0.1").unwrap(),
@@ -1164,7 +1191,16 @@ mod tests {
             machine_id,
             user_id,
         };
-        storage.update_client(storage_token.clone(), 1, true);
+        storage
+            .update_client(
+                storage_token.clone(),
+                1,
+                true,
+                req.hostname.clone(),
+                req.easytier_version.clone(),
+                req.report_time.clone(),
+            )
+            .await;
         let mut data = SessionData::new(
             storage.weak_ref(),
             client_url.clone(),
@@ -1299,7 +1335,16 @@ mod tests {
             machine_id,
             user_id,
         };
-        storage.update_client(storage_token.clone(), 1, false);
+        storage
+            .update_client(
+                storage_token.clone(),
+                1,
+                false,
+                req.hostname.clone(),
+                req.easytier_version.clone(),
+                req.report_time.clone(),
+            )
+            .await;
         let mut data = SessionData::new(
             storage.weak_ref(),
             client_url.clone(),

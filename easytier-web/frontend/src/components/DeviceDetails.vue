@@ -22,6 +22,14 @@ defineProps<{
       <div class="detail-label">{{ t('web.device.hostname') }}</div>
       <div class="detail-value">{{ device.hostname }}</div>
     </div>
+    <div class="detail-item status">
+      <div class="detail-label">{{ t('web.device.status') }}</div>
+      <div class="detail-value">{{ t(device.online ? 'web.device.online' : 'web.device.offline') }}</div>
+    </div>
+    <div class="detail-item remark">
+      <div class="detail-label">{{ t('web.device.remark') }}</div>
+      <div class="detail-value">{{ device.remark || '-' }}</div>
+    </div>
     <div class="detail-item public-ip">
       <div class="detail-label">{{ t('web.device.public_ip') }}</div>
       <div class="detail-value">{{ device.public_ip }}</div>

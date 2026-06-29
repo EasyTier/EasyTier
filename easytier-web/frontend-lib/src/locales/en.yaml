@@ -325,6 +325,11 @@ web:
     version: Version
     machine_id: Machine ID
     unknown_location: Unknown Location
+    all_statuses: All
+    search_placeholder: Search hostname or remark
+    remark: Remark
+    remark_placeholder: Add remark
+    remark_saved: Remark saved
     
   device_management:
     edit_network: Edit Network
@@ -339,6 +344,8 @@ web:
     save_config: Save Config
     config_saved: Config Saved
     import_config: Import Config
+    auto_run_on_online: Auto-run when device is online
+    auto_run_on_online_help: When enabled, this saved network starts automatically after the device reconnects. Turn it off to keep only the configuration.
     create_new: Create New Network
     network_status: Network Status
     network_configuration: Network Configuration

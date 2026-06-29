@@ -2,7 +2,9 @@ use std::sync::{Arc, Weak};
 
 use dashmap::DashMap;
 
-use crate::db::{Db, UserIdInDb};
+use crate::db::{Db, UpsertDeviceInfo, UserIdInDb, entity::user_devices};
+
+pub const CLIENT_ONLINE_TTL_SECS: i64 = 120;
 
 // use this to maintain Storage
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -79,7 +81,15 @@ impl Storage {
             .or_insert(client_info.clone());
     }
 
-    pub fn update_client(&self, stoken: StorageToken, report_time: i64, authorized: bool) {
+    pub async fn update_client(
+        &self,
+        stoken: StorageToken,
+        report_time: i64,
+        authorized: bool,
+        hostname: String,
+        easytier_version: String,
+        report_time_text: String,
+    ) {
         let inner = self.0.user_clients_map.entry(stoken.user_id).or_default();
 
         let client_info = ClientInfo {
@@ -88,6 +98,21 @@ impl Storage {
             authorized,
         };
         Self::update_client_info_map(&inner, &client_info);
+
+        if let Err(err) = self
+            .db()
+            .upsert_device(UpsertDeviceInfo {
+                user_id: stoken.user_id,
+                machine_id: stoken.machine_id,
+                client_url: stoken.client_url.to_string(),
+                hostname,
+                easytier_version,
+                report_time: report_time_text,
+            })
+            .await
+        {
+            tracing::warn!(?err, "failed to persist device metadata");
+        }
     }
 
     pub fn remove_client(&self, stoken: &StorageToken) {
@@ -125,6 +150,20 @@ impl Storage {
         })
     }
 
+    pub fn get_fresh_client_url_by_machine_id(
+        &self,
+        user_id: UserIdInDb,
+        machine_id: &uuid::Uuid,
+        now: i64,
+    ) -> Option<url::Url> {
+        self.0.user_clients_map.get(&user_id).and_then(|info_map| {
+            info_map.get(machine_id).and_then(|info| {
+                Self::is_client_fresh(info.report_time, now)
+                    .then(|| info.storage_token.client_url.clone())
+            })
+        })
+    }
+
     pub fn list_user_clients(&self, user_id: UserIdInDb) -> Vec<url::Url> {
         self.0
             .user_clients_map
@@ -137,6 +176,59 @@ impl Storage {
                     .collect()
             })
             .unwrap_or_default()
+    }
+
+    pub fn is_client_fresh(report_time: i64, now: i64) -> bool {
+        report_time <= now && now.saturating_sub(report_time) <= CLIENT_ONLINE_TTL_SECS
+    }
+
+    pub fn list_fresh_clients(&self, user_id: UserIdInDb, now: i64) -> Vec<StorageToken> {
+        self.0
+            .user_clients_map
+            .get(&user_id)
+            .map(|info_map| {
+                info_map
+                    .iter()
+                    .filter(|info| Self::is_client_fresh(info.value().report_time, now))
+                    .map(|info| info.value().storage_token.clone())
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    pub fn is_machine_online(
+        &self,
+        user_id: UserIdInDb,
+        machine_id: &uuid::Uuid,
+        now: i64,
+    ) -> bool {
+        self.0
+            .user_clients_map
+            .get(&user_id)
+            .and_then(|info_map| {
+                info_map
+                    .get(machine_id)
+                    .map(|info| Self::is_client_fresh(info.report_time, now))
+            })
+            .unwrap_or(false)
+    }
+
+    pub async fn list_user_devices(
+        &self,
+        user_id: UserIdInDb,
+    ) -> Result<Vec<user_devices::Model>, sea_orm::DbErr> {
+        self.db().list_user_devices(user_id).await
+    }
+
+    pub async fn update_device_remark(
+        &self,
+        user_id: UserIdInDb,
+        machine_id: uuid::Uuid,
+        remark: Option<String>,
+    ) -> Result<(), sea_orm::DbErr> {
+        self.db()
+            .update_device_remark(user_id, machine_id, remark)
+            .await
     }
 
     pub fn list_clients(&self) -> Vec<StorageToken> {
@@ -198,8 +290,26 @@ mod tests {
         let user1_token = make_storage_token(1, machine_id, "tcp://127.0.0.1:1001");
         let user2_token = make_storage_token(2, machine_id, "tcp://127.0.0.1:1002");
 
-        storage.update_client(user1_token.clone(), 10, true);
-        storage.update_client(user2_token.clone(), 20, true);
+        storage
+            .update_client(
+                user1_token.clone(),
+                10,
+                true,
+                "host-1".to_string(),
+                "1.0.0".to_string(),
+                "2026-06-26T01:00:00+08:00".to_string(),
+            )
+            .await;
+        storage
+            .update_client(
+                user2_token.clone(),
+                20,
+                true,
+                "host-2".to_string(),
+                "1.0.0".to_string(),
+                "2026-06-26T01:00:01+08:00".to_string(),
+            )
+            .await;
 
         assert_eq!(
             storage.get_client_url_by_machine_id(1, &machine_id),
@@ -229,8 +339,26 @@ mod tests {
         let user1_token = make_storage_token(1, uuid::Uuid::new_v4(), "tcp://127.0.0.1:1001");
         let user2_token = make_storage_token(2, uuid::Uuid::new_v4(), "tcp://127.0.0.1:1002");
 
-        storage.update_client(user1_token.clone(), 10, true);
-        storage.update_client(user2_token.clone(), 20, true);
+        storage
+            .update_client(
+                user1_token.clone(),
+                10,
+                true,
+                "host-1".to_string(),
+                "1.0.0".to_string(),
+                "2026-06-26T01:00:00+08:00".to_string(),
+            )
+            .await;
+        storage
+            .update_client(
+                user2_token.clone(),
+                20,
+                true,
+                "host-2".to_string(),
+                "1.0.0".to_string(),
+                "2026-06-26T01:00:01+08:00".to_string(),
+            )
+            .await;
 
         let tokens = storage.list_clients();
         assert_eq!(tokens.len(), 2);
@@ -250,7 +378,14 @@ mod tests {
         let machine_id = uuid::Uuid::new_v4();
         let token = make_storage_token(1, machine_id, "tcp://127.0.0.1:1001");
 
-        storage.update_client(token.clone(), 10, false);
+        storage.update_client(
+            token.clone(),
+            10,
+            false,
+            "fresh-host".to_string(),
+            "1.0.0".to_string(),
+            "2026-06-26T01:00:00+08:00".to_string(),
+        );
 
         assert_eq!(storage.list_clients().len(), 0);
         assert_eq!(storage.list_all_clients().len(), 1);
@@ -261,14 +396,28 @@ mod tests {
             Some(token.client_url.clone())
         );
 
-        storage.update_client(token.clone(), 11, true);
+        storage.update_client(
+            token.clone(),
+            11,
+            true,
+            "fresh-host".to_string(),
+            "1.0.0".to_string(),
+            "2026-06-26T01:00:00+08:00".to_string(),
+        );
 
         assert_eq!(
             storage.get_client_url_by_machine_id(1, &machine_id),
             Some(token.client_url.clone())
         );
 
-        storage.update_client(token.clone(), 11, false);
+        storage.update_client(
+            token.clone(),
+            11,
+            false,
+            "fresh-host".to_string(),
+            "1.0.0".to_string(),
+            "2026-06-26T01:00:00+08:00".to_string(),
+        );
 
         assert_eq!(storage.get_client_url_by_machine_id(1, &machine_id), None);
         assert_eq!(storage.list_clients().len(), 0);
@@ -282,9 +431,30 @@ mod tests {
         let old_token = make_storage_token(1, machine_id, "tcp://127.0.0.1:1001");
         let new_token = make_storage_token(1, machine_id, "tcp://127.0.0.1:1002");
 
-        storage.update_client(old_token.clone(), 10, true);
-        storage.update_client(new_token.clone(), 20, true);
-        storage.update_client(old_token, 10, false);
+        storage.update_client(
+            old_token.clone(),
+            10,
+            true,
+            "fresh-host".to_string(),
+            "1.0.0".to_string(),
+            "2026-06-26T01:00:00+08:00".to_string(),
+        );
+        storage.update_client(
+            new_token.clone(),
+            20,
+            true,
+            "fresh-host".to_string(),
+            "1.0.0".to_string(),
+            "2026-06-26T01:00:00+08:00".to_string(),
+        );
+        storage.update_client(
+            old_token,
+            10,
+            false,
+            "fresh-host".to_string(),
+            "1.0.0".to_string(),
+            "2026-06-26T01:00:00+08:00".to_string(),
+        );
 
         assert_eq!(
             storage.get_client_url_by_machine_id(1, &machine_id),
@@ -299,8 +469,22 @@ mod tests {
         let authorized_token = make_storage_token(1, machine_id, "tcp://127.0.0.1:1001");
         let pending_token = make_storage_token(1, machine_id, "tcp://127.0.0.1:1002");
 
-        storage.update_client(authorized_token.clone(), 10, true);
-        storage.update_client(pending_token, i64::MAX, false);
+        storage.update_client(
+            authorized_token.clone(),
+            10,
+            true,
+            "fresh-host".to_string(),
+            "1.0.0".to_string(),
+            "2026-06-26T01:00:00+08:00".to_string(),
+        );
+        storage.update_client(
+            pending_token,
+            i64::MAX,
+            false,
+            "fresh-host".to_string(),
+            "1.0.0".to_string(),
+            "2026-06-26T01:00:00+08:00".to_string(),
+        );
 
         assert_eq!(
             storage.get_client_url_by_machine_id(1, &machine_id),
@@ -315,12 +499,82 @@ mod tests {
         let pending_token = make_storage_token(1, machine_id, "tcp://127.0.0.1:1001");
         let authorized_token = make_storage_token(1, machine_id, "tcp://127.0.0.1:1002");
 
-        storage.update_client(pending_token, i64::MAX, false);
-        storage.update_client(authorized_token.clone(), 10, true);
+        storage.update_client(
+            pending_token,
+            i64::MAX,
+            false,
+            "fresh-host".to_string(),
+            "1.0.0".to_string(),
+            "2026-06-26T01:00:00+08:00".to_string(),
+        );
+        storage.update_client(
+            authorized_token.clone(),
+            10,
+            true,
+            "fresh-host".to_string(),
+            "1.0.0".to_string(),
+            "2026-06-26T01:00:00+08:00".to_string(),
+        );
 
         assert_eq!(
             storage.get_client_url_by_machine_id(1, &machine_id),
             Some(authorized_token.client_url)
+        );
+    }
+
+    #[tokio::test]
+    async fn list_fresh_clients_excludes_stale_heartbeats() {
+        let storage = Storage::new(Db::memory_db().await);
+        let fresh_token = make_storage_token(1, uuid::Uuid::new_v4(), "tcp://127.0.0.1:1001");
+        let stale_token = make_storage_token(1, uuid::Uuid::new_v4(), "tcp://127.0.0.1:1002");
+
+        storage
+            .update_client(
+                fresh_token.clone(),
+                1_000,
+                true,
+                "fresh-host".to_string(),
+                "1.0.0".to_string(),
+                "2026-06-26T01:00:00+08:00".to_string(),
+            )
+            .await;
+        storage
+            .update_client(
+                stale_token,
+                800,
+                true,
+                "stale-host".to_string(),
+                "1.0.0".to_string(),
+                "2026-06-26T00:56:40+08:00".to_string(),
+            )
+            .await;
+
+        let tokens = storage.list_fresh_clients(1, 1_100);
+
+        assert_eq!(tokens.len(), 1);
+        assert_eq!(tokens[0].machine_id, fresh_token.machine_id);
+    }
+
+    #[tokio::test]
+    async fn fresh_client_url_is_not_returned_for_stale_machine() {
+        let storage = Storage::new(Db::memory_db().await);
+        let machine_id = uuid::Uuid::new_v4();
+        let token = make_storage_token(1, machine_id, "tcp://127.0.0.1:1001");
+
+        storage
+            .update_client(
+                token,
+                800,
+                true,
+                "stale-host".to_string(),
+                "1.0.0".to_string(),
+                "2026-06-26T00:56:40+08:00".to_string(),
+            )
+            .await;
+
+        assert_eq!(
+            storage.get_fresh_client_url_by_machine_id(1, &machine_id, 1_100),
+            None
         );
     }
 }

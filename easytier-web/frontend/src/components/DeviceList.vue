@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
-import { Button, Drawer, ProgressSpinner, useToast, InputSwitch, Popover, Dropdown, Toolbar } from 'primevue';
+import { Button, Drawer, ProgressSpinner, useToast, InputSwitch, Popover, Dropdown, Toolbar, InputText, Tag } from 'primevue';
 import Tooltip from 'primevue/tooltip';
 import { useRoute, useRouter } from 'vue-router';
 import { Utils } from 'easytier-frontend-lib';
@@ -32,6 +32,15 @@ watch(showDetailedView, (newValue) => {
 const api = props.api;
 
 const deviceList = ref<Array<Utils.DeviceInfo> | undefined>(undefined);
+const deviceKeyword = ref('');
+const selectedStatusFilter = ref({ name: () => t('web.device.all_statuses'), value: 'all', icon: 'pi pi-list' });
+const statusFilterOptions = ref([
+    { name: () => t('web.device.all_statuses'), value: 'all', icon: 'pi pi-list' },
+    { name: () => t('web.device.online'), value: 'online', icon: 'pi pi-wifi' },
+    { name: () => t('web.device.offline'), value: 'offline', icon: 'pi pi-power-off' },
+]);
+const deviceRemarkDrafts = ref<Record<string, string>>({});
+const editingRemarkIds = ref<Record<string, boolean>>({});
 
 const selectedDeviceId = computed<string | undefined>(() => route.params.deviceId as string);
 
@@ -43,7 +52,11 @@ const loadDevices = async () => {
     const resp = await api?.list_machines();
     let devices: Array<Utils.DeviceInfo> = [];
     for (const device of (resp || [])) {
-        devices.push(Utils.buildDeviceInfo(device));
+        const deviceInfo = Utils.buildDeviceInfo(device);
+        devices.push(deviceInfo);
+        if (deviceRemarkDrafts.value[deviceInfo.machine_id] === undefined) {
+            deviceRemarkDrafts.value[deviceInfo.machine_id] = deviceInfo.remark ?? '';
+        }
     }
     console.debug("device list", deviceList.value);
     deviceList.value = devices;
@@ -93,6 +106,35 @@ const handleDeviceManagement = (device: Utils.DeviceInfo) => {
             instanceId: instanceId
         }
     });
+};
+
+const saveDeviceRemark = async (device: Utils.DeviceInfo) => {
+    const remark = deviceRemarkDrafts.value[device.machine_id]?.trim() || undefined;
+    if ((device.remark ?? '') === (remark ?? '')) {
+        editingRemarkIds.value[device.machine_id] = false;
+        return;
+    }
+
+    try {
+        await api?.update_device_remark(device.machine_id, remark);
+        device.remark = remark;
+        deviceRemarkDrafts.value[device.machine_id] = remark ?? '';
+        editingRemarkIds.value[device.machine_id] = false;
+        toast.add({ severity: 'success', summary: t('web.common.success'), detail: t('web.device.remark_saved'), life: 1500 });
+    } catch (e) {
+        toast.add({ severity: 'error', summary: 'Save Remark Failed', detail: e, life: 2000 });
+        console.error(e);
+    }
+};
+
+const editDeviceRemark = (device: Utils.DeviceInfo) => {
+    deviceRemarkDrafts.value[device.machine_id] = device.remark ?? '';
+    editingRemarkIds.value[device.machine_id] = true;
+};
+
+const cancelDeviceRemarkEdit = (device: Utils.DeviceInfo) => {
+    deviceRemarkDrafts.value[device.machine_id] = device.remark ?? '';
+    editingRemarkIds.value[device.machine_id] = false;
 };
 
 // 显示设备详情
@@ -146,7 +188,7 @@ const sortDevices = (devices: Array<Utils.DeviceInfo> | undefined) => {
 
         switch (sortField) {
             case 'hostname':
-                result = a.hostname.localeCompare(b.hostname);
+                result = (a.remark || a.hostname).localeCompare(b.remark || b.hostname);
                 break;
             case 'version':
                 result = a.easytier_version.localeCompare(b.easytier_version);
@@ -161,8 +203,23 @@ const sortDevices = (devices: Array<Utils.DeviceInfo> | undefined) => {
 };
 
 // 排序后的设备列表
+const filteredDeviceList = computed(() => {
+    const keyword = deviceKeyword.value.trim().toLowerCase();
+    const status = selectedStatusFilter.value.value;
+
+    return (deviceList.value ?? []).filter((device) => {
+        const matchesStatus = status === 'all'
+            || (status === 'online' && device.online)
+            || (status === 'offline' && !device.online);
+        const matchesKeyword = !keyword
+            || device.hostname.toLowerCase().includes(keyword)
+            || (device.remark ?? '').toLowerCase().includes(keyword);
+        return matchesStatus && matchesKeyword;
+    });
+});
+
 const sortedDeviceList = computed(() => {
-    return sortDevices(deviceList.value);
+    return sortDevices(filteredDeviceList.value);
 });
 
 // 保存resize事件处理函数的引用，以便正确移除
@@ -201,6 +258,10 @@ const handleResize = () => {
 .device-card:hover {
     transform: translateY(-2px);
     box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+}
+
+.device-card-offline {
+    background: color-mix(in srgb, var(--surface-card, white) 92%, var(--surface-ground, #f8fafc));
 }
 
 .card-header {
@@ -389,8 +450,87 @@ const handleResize = () => {
     padding: 0.1rem 0.4rem;
     border-radius: 0.75rem;
     font-weight: 500;
-    letter-spacing: 0.02em;
+    letter-spacing: 0;
     font-size: 0.65rem;
+}
+
+.status-tag {
+    font-size: 0.72rem;
+}
+
+.status-tag-offline {
+    opacity: 0.78;
+}
+
+.remark-row {
+    min-height: 2rem;
+}
+
+.remark-display {
+    width: 100%;
+    min-height: 2rem;
+    display: grid;
+    grid-template-columns: 1rem minmax(0, 1fr) 1rem;
+    align-items: center;
+    gap: 0.45rem;
+    border: 1px solid transparent;
+    border-radius: 0.4rem;
+    background: color-mix(in srgb, var(--surface-ground, #f8fafc) 72%, transparent);
+    color: var(--text-color-secondary, #64748b);
+    padding: 0.35rem 0.5rem;
+    text-align: left;
+    cursor: pointer;
+    transition: border-color 0.15s ease, background-color 0.15s ease, color 0.15s ease;
+}
+
+.remark-display:hover {
+    border-color: var(--surface-border, #e5e7eb);
+    background: var(--surface-hover, #f1f5f9);
+    color: var(--text-color, #1f2937);
+}
+
+.remark-icon {
+    color: var(--primary-color, #3b82f6);
+    font-size: 0.78rem;
+}
+
+.remark-text {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 0.82rem;
+    line-height: 1.15rem;
+}
+
+.remark-empty {
+    color: var(--text-color-secondary, #94a3b8);
+}
+
+.remark-edit-icon {
+    opacity: 0;
+    color: var(--text-color-secondary, #64748b);
+    font-size: 0.72rem;
+    transition: opacity 0.15s ease;
+}
+
+.remark-display:hover .remark-edit-icon {
+    opacity: 1;
+}
+
+.remark-editor {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 2rem 2rem;
+    align-items: center;
+    gap: 0.25rem;
+}
+
+.remark-action-btn {
+    width: 2rem !important;
+    height: 2rem !important;
+}
+
+.remark-input {
+    height: 2rem;
 }
 
 .sort-controls {
@@ -722,6 +862,23 @@ const handleResize = () => {
                         text rounded class="sort-direction-btn min-w-[2.5rem] h-[2.5rem]"
                         v-tooltip.top="ascending ? t('web.device.sort_direction_asc') : t('web.device.sort_direction_desc')"
                         @click="toggleSortDirection" />
+                    <InputText v-model="deviceKeyword" class="text-sm !w-40 sm:!w-56"
+                        :placeholder="t('web.device.search_placeholder')" />
+                    <Dropdown v-model="selectedStatusFilter" :options="statusFilterOptions" optionLabel="name"
+                        class="sort-dropdown text-sm !min-w-[120px]" panelClass="text-sm">
+                        <template #value="slotProps">
+                            <div class="flex items-center gap-2">
+                                <i :class="[slotProps.value.icon, 'text-600']"></i>
+                                <span class="text-600">{{ slotProps.value.name() }}</span>
+                            </div>
+                        </template>
+                        <template #option="slotProps">
+                            <div class="flex items-center gap-2">
+                                <i :class="[slotProps.option.icon, 'text-600']"></i>
+                                <span>{{ slotProps.option.name() }}</span>
+                            </div>
+                        </template>
+                    </Dropdown>
                 </div>
             </template>
             <template #end>
@@ -743,7 +900,8 @@ const handleResize = () => {
         <div v-if="deviceList !== undefined">
             <!-- 卡片视图 (适用于所有屏幕尺寸) -->
             <div class="card-container">
-                <div v-for="device in sortedDeviceList" :key="device.machine_id" class="device-card">
+                <div v-for="device in sortedDeviceList" :key="device.machine_id" class="device-card"
+                    :class="{ 'device-card-offline': !device.online }">
                     <!-- 卡片头部 -->
                     <div class="card-header">
                         <!-- 上部区域：设备名称和版本徽章 -->
@@ -754,12 +912,39 @@ const handleResize = () => {
                             </div>
 
                             <!-- 版本徽章 -->
-                            <div class="text-xs version-badge" v-tooltip="`EasyTier ${device.easytier_version}`">
-                                v{{ device.easytier_version.split('-')[0] }}
+                            <div class="flex items-center gap-2 shrink-0">
+                                <Tag :severity="device.online ? 'success' : 'secondary'"
+                                    :class="['status-tag', device.online ? 'status-tag-online' : 'status-tag-offline']"
+                                    :value="t(device.online ? 'web.device.online' : 'web.device.offline')" />
+                                <div class="text-xs version-badge" v-tooltip="`EasyTier ${device.easytier_version}`">
+                                    v{{ (device.easytier_version || '-').split('-')[0] }}
+                                </div>
                             </div>
                         </div>
 
                         <!-- 下部区域：IP地址和操作按钮 -->
+                        <div class="remark-row mb-3">
+                            <div v-if="editingRemarkIds[device.machine_id]" class="remark-editor">
+                                <InputText v-model="deviceRemarkDrafts[device.machine_id]"
+                                    class="w-full text-sm remark-input"
+                                    :placeholder="t('web.device.remark_placeholder')"
+                                    @keyup.enter="saveDeviceRemark(device)"
+                                    @keyup.esc="cancelDeviceRemarkEdit(device)" />
+                                <Button icon="pi pi-check" severity="success" text rounded class="remark-action-btn"
+                                    @click="saveDeviceRemark(device)" />
+                                <Button icon="pi pi-times" severity="secondary" text rounded class="remark-action-btn"
+                                    @click="cancelDeviceRemarkEdit(device)" />
+                            </div>
+                            <button v-else type="button" class="remark-display" @click="editDeviceRemark(device)"
+                                :title="device.remark || t('web.device.remark_placeholder')">
+                                <i :class="[device.remark ? 'pi pi-bookmark-fill' : 'pi pi-bookmark', 'remark-icon']"></i>
+                                <span :class="['remark-text', { 'remark-empty': !device.remark }]">
+                                    {{ device.remark || t('web.device.remark_placeholder') }}
+                                </span>
+                                <i class="pi pi-pencil remark-edit-icon"></i>
+                            </button>
+                        </div>
+
                         <div class="flex justify-between items-center">
                             <!-- IP地址和位置信息 -->
                             <div class="text-sm truncate card-subtitle max-w-[60%] flex items-center gap-2"
