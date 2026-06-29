@@ -11,7 +11,7 @@ use std::{
     time::Duration,
 };
 
-use hotpath::instant::Instant;
+use quanta::Instant;
 
 use crate::{
     common::{

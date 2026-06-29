@@ -6,7 +6,7 @@ use std::{
     time::Duration,
 };
 
-use hotpath::instant::Instant;
+use quanta::Instant;
 use rand::{Rng, thread_rng};
 use tokio::{
     sync::broadcast,

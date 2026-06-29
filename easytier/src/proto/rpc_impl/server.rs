@@ -5,8 +5,8 @@ use std::{
 
 use bytes::Bytes;
 use dashmap::DashMap;
-use hotpath::instant::Instant;
 use prost::Message;
+use quanta::Instant;
 use tokio::{task::JoinSet, time::timeout};
 use tokio_stream::StreamExt;
 

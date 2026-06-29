@@ -1,5 +1,5 @@
 use dashmap::DashMap;
-use hotpath::instant::Instant;
+use quanta::Instant;
 use serde::{Deserialize, Serialize};
 use std::cell::UnsafeCell;
 use std::fmt;
