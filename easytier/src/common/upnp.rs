@@ -98,6 +98,13 @@ impl ActiveUdpPortMapping {
                     format!("map {:?} socket for {local_listener} via nat-pmp gateway {gateway}", protocol)
                 })?;
 
+        tracing::debug!(
+            ?protocol,
+            %local_addr,
+            gateway_external_port,
+            "nat-pmp port mapping created"
+        );
+
         Ok(Self {
             backend: PortMappingBackend::NatPmp { gateway },
             local_listener: local_listener.clone(),
@@ -154,6 +161,13 @@ impl ActiveUdpPortMapping {
                     gateway.addr
                 )
             })?;
+
+        tracing::debug!(
+            ?protocol,
+            %local_addr,
+            gateway_external_port,
+            "igd port mapping created"
+        );
 
         Ok(Self {
             backend: PortMappingBackend::Igd { gateway },
@@ -677,6 +691,14 @@ async fn run_port_mapping_task(
                         backend = mapping.backend_name(),
                         gateway_external_port = mapping.gateway_external_port,
                         "failed to renew {:?} port mapping",
+                        mapping.protocol
+                    );
+                } else {
+                    tracing::debug!(
+                        %local_listener,
+                        backend = mapping.backend_name(),
+                        gateway_external_port = mapping.gateway_external_port,
+                        "renewed {:?} port mapping",
                         mapping.protocol
                     );
                 }

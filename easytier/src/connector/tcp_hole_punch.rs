@@ -345,6 +345,8 @@ impl TcpHolePunchConnectorData {
             "tcp hole punch initiator rpc returned"
         );
 
+        tracing::info!(local_port, "tcp hole punch initiator mode: simultaneous open");
+
         if let Ok(()) = try_connect_to_remote(
             self.peer_mgr.clone(),
             remote_mapped_addr,
@@ -369,6 +371,8 @@ impl TcpHolePunchConnectorData {
             ?remote_mapped_addr,
             "tcp hole punch initiator sent syn to remote mapped addr"
         );
+
+        tracing::info!(local_port, "tcp hole punch initiator mode: sc (listen)");
 
         let mut listener =
             TcpTunnelListener::new(format!("tcp://0.0.0.0:{}", local_port).parse().unwrap());
