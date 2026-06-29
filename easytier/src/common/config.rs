@@ -76,6 +76,7 @@ pub fn gen_default_flags() -> Flags {
         disable_relay_data: false,
         enable_udp_broadcast_relay: false,
         socket_mark: None,
+        disable_tcp_simultaneous_open: false,
     }
 }
 

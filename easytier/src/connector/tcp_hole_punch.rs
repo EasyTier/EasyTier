@@ -345,24 +345,29 @@ impl TcpHolePunchConnectorData {
             "tcp hole punch initiator rpc returned"
         );
 
-        tracing::info!(local_port, "tcp hole punch initiator mode: simultaneous open");
+        let flags = global_ctx.get_flags();
+        if !flags.disable_tcp_simultaneous_open {
+            tracing::info!(local_port, "tcp hole punch initiator mode: simultaneous open");
 
-        if let Ok(()) = try_connect_to_remote(
-            self.peer_mgr.clone(),
-            remote_mapped_addr,
-            local_port,
-            false,
-            1,
-        )
-        .await
-        {
-            tracing::info!(
-                dst_peer_id,
+            if let Ok(()) = try_connect_to_remote(
+                self.peer_mgr.clone(),
+                remote_mapped_addr,
                 local_port,
-                ?remote_mapped_addr,
-                "tcp hole punch initiator connected to remote mapped addr with simultaneous connection"
-            );
-            return Ok(());
+                false,
+                1,
+            )
+            .await
+            {
+                tracing::info!(
+                    dst_peer_id,
+                    local_port,
+                    ?remote_mapped_addr,
+                    "tcp hole punch initiator connected to remote mapped addr with simultaneous connection"
+                );
+                return Ok(());
+            }
+        } else {
+            tracing::info!(local_port, "tcp hole punch initiator skipped simultaneous open by flag");
         }
 
         tracing::debug!(

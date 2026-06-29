@@ -102,6 +102,7 @@ message NetworkConfig {
   optional bool disable_relay_data = 65;
   optional bool enable_udp_broadcast_relay = 66;
   optional uint32 socket_mark = 67;
+  optional bool disable_tcp_simultaneous_open = 68;
 }
 
 message PortForwardConfig {
