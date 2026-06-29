@@ -347,10 +347,7 @@ impl TcpHolePunchConnectorData {
 
         let flags = global_ctx.get_flags();
         if !flags.disable_tcp_simultaneous_open {
-            tracing::info!(
-                local_port,
-                "tcp hole punch initiator mode: simultaneous open"
-            );
+            tracing::info!(local_port, "tcp hole punch initiator mode: simultaneous open");
 
             if let Ok(()) = try_connect_to_remote(
                 self.peer_mgr.clone(),
@@ -370,10 +367,7 @@ impl TcpHolePunchConnectorData {
                 return Ok(());
             }
         } else {
-            tracing::info!(
-                local_port,
-                "tcp hole punch initiator skipped simultaneous open by flag"
-            );
+            tracing::info!(local_port, "tcp hole punch initiator skipped simultaneous open by flag");
         }
 
         tracing::debug!(
