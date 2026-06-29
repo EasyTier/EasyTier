@@ -1296,6 +1296,7 @@ fn find_iptables_legacy_bin() -> anyhow::Result<PathBuf> {
 async fn query_mappings(
     query_netns: &'static str,
     expected_external_ip: Ipv4Addr,
+    protocol: PortMappingProtocol,
 ) -> Result<Vec<PortMappingEntry>, Error> {
     tokio::task::spawn_blocking(move || {
         let _g = NetNS::new(Some(query_netns.to_owned())).guard();
@@ -1322,7 +1323,7 @@ async fn query_mappings(
                 for index in 0..64 {
                     match gateway.get_generic_port_mapping_entry(index).await {
                         Ok(entry) => {
-                            if entry.protocol == PortMappingProtocol::UDP
+                            if entry.protocol == protocol
                                 && entry.port_mapping_description == TEST_IGD_DESCRIPTION
                             {
                                 entries.push(entry);
@@ -1354,7 +1355,7 @@ async fn query_udp_mapping(
     client_ip: Ipv4Addr,
     local_port: u16,
 ) -> Result<SocketAddr, Error> {
-    let entries = query_mappings(query_netns, expected_external_ip).await?;
+    let entries = query_mappings(query_netns, expected_external_ip, PortMappingProtocol::UDP).await?;
     let client_ip = client_ip.to_string();
     let entry = entries
         .into_iter()
@@ -1366,8 +1367,32 @@ async fn query_udp_mapping(
     ))
 }
 
+async fn query_tcp_mapping(
+    query_netns: &'static str,
+    expected_external_ip: Ipv4Addr,
+    client_ip: Ipv4Addr,
+    local_port: u16,
+) -> Result<SocketAddr, Error> {
+    let entries = query_mappings(query_netns, expected_external_ip, PortMappingProtocol::TCP).await?;
+    let client_ip = client_ip.to_string();
+    let entry = entries
+        .into_iter()
+        .find(|entry| entry.internal_client == client_ip && entry.internal_port == local_port)
+        .ok_or_else(|| Error::from(anyhow!("tcp mapping not found for local port {local_port}")))?;
+    Ok(SocketAddr::new(
+        IpAddr::V4(expected_external_ip),
+        entry.external_port,
+    ))
+}
+
 async fn mapping_exists(local_port: u16) -> bool {
     query_udp_mapping(TEST_NS_A, TEST_EXTERNAL_IP, TEST_CLIENT_A_IP, local_port)
+        .await
+        .is_ok()
+}
+
+async fn tcp_mapping_exists(local_port: u16) -> bool {
+    query_tcp_mapping(TEST_NS_A, TEST_EXTERNAL_IP, TEST_CLIENT_A_IP, local_port)
         .await
         .is_ok()
 }
@@ -1572,7 +1597,70 @@ async fn udp_hole_punch_listener_skips_upnp_when_disabled() {
 
 #[tokio::test]
 #[serial_test::serial(upnp)]
-async fn udp_hole_punch_succeeds_via_upnp_mappings_with_different_external_ports() {
+async fn tcp_port_mapping_establishes_and_cleans_up() {
+    let _env = UpnpIntegrationEnv::new().await.unwrap();
+    let peer_mgr = create_test_peer_manager(
+        "upnp-test-tcp-mapping",
+        Some(TEST_NS_A),
+        false,
+        Box::new(GatewayBackedStunCollector {
+            netns: TEST_NS_A,
+            client_ip: TEST_CLIENT_A_IP,
+            external_ip: TEST_EXTERNAL_IP,
+        }),
+    )
+    .await;
+    let mut event_rx = peer_mgr.get_global_ctx().subscribe();
+
+    let tcp_listener = {
+        let _g = peer_mgr.get_global_ctx().net_ns.guard();
+        tokio::net::TcpListener::bind("0.0.0.0:0").await.unwrap()
+    };
+    let local_port = tcp_listener.local_addr().unwrap().port();
+    drop(tcp_listener);
+
+    let local_listener: url::Url = format!("tcp://0.0.0.0:{}", local_port).parse().unwrap();
+    let (mapped_addr, lease) = crate::common::upnp::resolve_tcp_public_addr(
+        peer_mgr.get_global_ctx(),
+        &local_listener,
+    )
+    .await
+    .unwrap();
+
+    let event = wait_for_port_mapping_event(&mut event_rx).await;
+    match event {
+        GlobalCtxEvent::ListenerPortMappingEstablished {
+            local_listener: ev_local,
+            mapped_listener: ev_mapped,
+            backend,
+        } => {
+            let expected_external_ip = TEST_EXTERNAL_IP.to_string();
+            assert_eq!(backend, "igd");
+            assert_eq!(ev_local.scheme(), "tcp");
+            assert_eq!(ev_local.port(), Some(local_port));
+            assert_eq!(ev_mapped.scheme(), "tcp");
+            assert_eq!(
+                ev_mapped.host_str(),
+                Some(expected_external_ip.as_str())
+            );
+            assert_eq!(ev_mapped.port(), Some(mapped_addr.port()));
+        }
+        other => panic!("unexpected event: {other:?}"),
+    }
+
+    assert!(tcp_mapping_exists(local_port).await);
+
+    drop(lease);
+
+    wait_for_condition(
+        || async { !tcp_mapping_exists(local_port).await },
+        Duration::from_secs(10),
+    )
+    .await;
+}
+
+#[tokio::test]
+#[serial_test::serial(upnp)]
     let _env = DualGatewayUpnpIntegrationEnv::new().await.unwrap();
 
     let p_a = create_test_peer_manager(
