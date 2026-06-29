@@ -2,6 +2,7 @@ use crate::common::config::{
     ConfigFileControl, ConfigSource, PortForwardConfig, parse_mapped_listener_urls,
     process_secure_mode_cfg,
 };
+use crate::common::log;
 #[cfg(feature = "ffi-dataplane")]
 use crate::gateway::socks5::Socks5Server;
 #[cfg(feature = "ffi-dataplane")]
@@ -44,6 +45,8 @@ pub struct Event {
     event: GlobalCtxEvent,
 }
 
+const EVENT_HISTORY_LEN: usize = 20;
+
 struct EasyTierData {
     events: RwLock<VecDeque<Event>>,
     tun_fd: (mpsc::Sender<TunFd>, Mutex<Option<mpsc::Receiver<TunFd>>>),
@@ -64,7 +67,7 @@ impl Default for EasyTierData {
         let (sender, receiver) = mpsc::channel(16);
         Self {
             event_subscriber: RwLock::new(tx),
-            events: RwLock::new(VecDeque::new()),
+            events: RwLock::new(VecDeque::with_capacity(EVENT_HISTORY_LEN + 1)),
             tun_fd: (sender, Mutex::new(Some(receiver))),
             instance_stop_notifier: Arc::new(tokio::sync::Notify::new()),
             #[cfg(feature = "ffi-dataplane")]
@@ -96,18 +99,6 @@ impl EasyTierLauncher {
             running_cfg: String::new(),
             stop_flag: Arc::new(AtomicBool::new(false)),
             data: Arc::new(EasyTierData::default()),
-        }
-    }
-
-    async fn handle_easytier_event(event: GlobalCtxEvent, data: &EasyTierData) {
-        let mut events = data.events.write().unwrap();
-        let _ = data.event_subscriber.read().unwrap().send(event.clone());
-        events.push_front(Event {
-            time: chrono::Local::now(),
-            event,
-        });
-        if events.len() > 20 {
-            events.pop_back();
         }
     }
 
@@ -153,18 +144,94 @@ impl EasyTierLauncher {
         let global_ctx = instance.get_global_ctx();
         let data_c = data.clone();
         tasks.spawn(async move {
+            let mut tasks = JoinSet::new();
+            let mut handles = VecDeque::with_capacity(EVENT_HISTORY_LEN + 1);
             let mut receiver = global_ctx.subscribe();
+
+            let handler = |event: GlobalCtxEvent, tasks: &mut JoinSet<_>, handles: &mut VecDeque<_>| {
+                let _ = data_c.event_subscriber.read().unwrap().send(event.clone());
+
+                let event = Event {
+                    time: Local::now(),
+                    event,
+                };
+
+                if let Some(hook) = global_ctx.config.get_hook()
+                    && let Ok(event) = serde_json::to_string(&event).inspect_err(|error| log::error!(category: "INSTANCE::HOOK", ?error, "failed to serialize event"))
+                {
+                    let config = global_ctx.config.dump();
+                    handles.push_front(tasks.spawn(async move {
+                        crate::utils::execute(hook, [
+                            ("EASYTIER_EVENT", event),
+                            ("EASYTIER_CONFIG", config),
+                        ]).await
+                    }));
+                    if handles.len() > EVENT_HISTORY_LEN
+                        && let Some(handle) = handles.pop_back()
+                    {
+                        handle.abort();
+                        log::warn!(category: "INSTANCE::HOOK", "too many events, aborting the oldest hook task");
+                    }
+                }
+
+                let mut events = data_c.events.write().unwrap();
+                events.push_front(event);
+                if events.len() > EVENT_HISTORY_LEN {
+                    events.pop_back();
+                }
+            };
+
             loop {
-                match receiver.recv().await {
-                    Ok(event) => {
-                        Self::handle_easytier_event(event.clone(), &data_c).await;
+                tokio::select! {
+                    event = receiver.recv() => {
+                        match event {
+                            Ok(event) => handler(event, &mut tasks, &mut handles),
+                            Err(broadcast::error::RecvError::Closed) => break,
+                            Err(broadcast::error::RecvError::Lagged(_)) => {
+                                // do nothing currently
+                                receiver = receiver.resubscribe();
+                            }
+                        }
                     }
-                    Err(broadcast::error::RecvError::Closed) => {
-                        break;
-                    }
-                    Err(broadcast::error::RecvError::Lagged(_)) => {
-                        // do nothing currently
-                        receiver = receiver.resubscribe();
+                    Some(result) = tasks.join_next_with_id(), if !tasks.is_empty() => {
+                        let output = || -> anyhow::Result<_> {
+                            let id = match &result {
+                                Ok((id, _)) => *id,
+                                Err(e) => e.id(),
+                            };
+                            if let Some(idx) = handles.iter().rposition(|h| h.id() == id) {
+                                handles.remove(idx);
+                            }
+                            Ok(result.map(|(_, r)| r)??)
+                        }();
+                        match output {
+                            Ok(output) => {
+                                let stdout = String::from_utf8_lossy(&output.stdout);
+                                let stdout = stdout.trim();
+                                let stderr = String::from_utf8_lossy(&output.stderr);
+                                let stderr = stderr.trim();
+                                let status = output.status;
+                                if output.status.success() {
+                                    log::debug!(
+                                        category: "INSTANCE::HOOK",
+                                        ?stdout,
+                                        ?stderr,
+                                        "event hook executed successfully"
+                                    );
+                                } else {
+                                    log::error!(
+                                        category: "INSTANCE::HOOK",
+                                        status = status.code(),
+                                        ?stdout,
+                                        ?stderr,
+                                        "event hook exited with non-zero status"
+                                    );
+                                }
+                            }
+                            Err(error) => {
+                                log::error!(category: "INSTANCE::HOOK", ?error, "failed to run event hook");
+                            }
+                        }
                     }
                 }
             }
