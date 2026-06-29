@@ -6,7 +6,7 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-use hotpath::instant::Instant;
+use quanta::Instant;
 
 use crate::common::{config::ConfigLoader, global_ctx::ArcGlobalCtx, token_bucket::TokenBucket};
 use crate::proto::acl::*;

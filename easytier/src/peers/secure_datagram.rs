@@ -701,10 +701,6 @@ impl SecureDatagramSession {
         false
     }
 
-    #[cfg_attr(
-        feature = "hotpath",
-        hotpath::measure(impl_type = "SecureDatagramSession")
-    )]
     pub fn encrypt_payload(
         &self,
         dir: SecureDatagramDirection,
@@ -723,10 +719,6 @@ impl SecureDatagramSession {
         Ok(())
     }
 
-    #[cfg_attr(
-        feature = "hotpath",
-        hotpath::measure(impl_type = "SecureDatagramSession")
-    )]
     pub fn decrypt_payload(
         &self,
         dir: SecureDatagramDirection,

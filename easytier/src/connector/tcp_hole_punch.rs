@@ -5,7 +5,7 @@ use std::{
 };
 
 use anyhow::{Context, Error};
-use hotpath::instant::Instant;
+use quanta::Instant;
 use rand::Rng as _;
 use tokio::task::JoinSet;
 

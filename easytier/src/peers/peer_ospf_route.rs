@@ -13,7 +13,6 @@ use arc_swap::ArcSwap;
 use cidr::{IpCidr, Ipv4Cidr, Ipv6Cidr, Ipv6Inet};
 use crossbeam::atomic::AtomicCell;
 use dashmap::DashMap;
-use hotpath::instant::Instant;
 use ordered_hash_map::OrderedHashMap;
 use parking_lot::{RwLock, lock_api::RwLockUpgradableReadGuard};
 use petgraph::{
@@ -25,6 +24,7 @@ use petgraph::{
 use prefix_trie::PrefixMap;
 use prost::Message;
 use prost_reflect::{DynamicMessage, ReflectMessage};
+use quanta::Instant;
 use tokio::{
     select,
     sync::Mutex,
@@ -1394,7 +1394,6 @@ impl RouteTable {
         }
     }
 
-    #[cfg_attr(feature = "hotpath", hotpath::measure(impl_type = "RouteTable"))]
     fn get_next_hop(&self, dst_peer_id: PeerId) -> Option<NextHopInfo> {
         if self.suppressed_peer_ids.contains_key(&dst_peer_id) {
             return None;
@@ -1402,7 +1401,6 @@ impl RouteTable {
         self.get_topology_next_hop(dst_peer_id)
     }
 
-    #[cfg_attr(feature = "hotpath", hotpath::measure(impl_type = "RouteTable"))]
     fn get_topology_next_hop(&self, dst_peer_id: PeerId) -> Option<NextHopInfo> {
         let cur_version = self.next_hop_map_version.get();
         self.next_hop_map.get(&dst_peer_id).and_then(|x| {

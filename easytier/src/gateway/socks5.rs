@@ -9,9 +9,9 @@ use std::{
 };
 
 use crossbeam::atomic::AtomicCell;
-use hotpath::instant::Instant;
 #[cfg(feature = "kcp")]
 use kcp_sys::{endpoint::KcpEndpoint, stream::KcpStream};
+use quanta::Instant;
 use tokio_util::sync::{CancellationToken, DropGuard};
 use tokio_util::task::AbortOnDropHandle;
 

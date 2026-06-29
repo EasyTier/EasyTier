@@ -1018,7 +1018,7 @@ impl TcpProxyRpc for QuicProxyDstRpcService {
 mod tests {
     use super::*;
     use bytes::Buf;
-    use hotpath::instant::Instant;
+    use quanta::Instant;
 
     /// Helper function: Create a pair of interconnected QuicSockets.
     /// Data sent by socket_a will enter socket_b's rx, and vice versa.
