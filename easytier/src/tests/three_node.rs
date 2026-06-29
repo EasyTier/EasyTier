@@ -4340,7 +4340,7 @@ pub async fn relay_peer_session_cleanup() {
     insts[0]
         .get_peer_manager()
         .get_peer_session_store()
-        .evict_unused_sessions();
+        .evict_unused_sessions_idle(Duration::from_millis(0));
 
     wait_for_condition(
         || async { !relay_map_1.has_session(inst3_peer_id) },
