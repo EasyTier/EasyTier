@@ -1661,6 +1661,7 @@ async fn tcp_port_mapping_establishes_and_cleans_up() {
 
 #[tokio::test]
 #[serial_test::serial(upnp)]
+async fn udp_hole_punch_succeeds_via_upnp_mappings_with_different_external_ports() {
     let _env = DualGatewayUpnpIntegrationEnv::new().await.unwrap();
 
     let p_a = create_test_peer_manager(
