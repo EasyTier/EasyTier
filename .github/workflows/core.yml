@@ -6,7 +6,6 @@ on:
   pull_request:
     branches: [ "develop", "main" ]
     types: [ opened, synchronize, reopened, ready_for_review ]
-  workflow_dispatch:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
@@ -122,6 +121,7 @@ jobs:
       NAME: easytier
       TARGET: ${{ matrix.TARGET }}
       OS: ${{ matrix.OS }}
+      OSS_BUCKET: ${{ secrets.ALIYUN_OSS_BUCKET }}
     needs:
       - pre_job
       - build_web
