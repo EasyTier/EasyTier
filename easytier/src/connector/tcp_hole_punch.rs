@@ -88,7 +88,11 @@ async fn try_connect_to_remote(
     is_client: bool,
     max_attempts: u32,
 ) -> Result<(), Error> {
-    tracing::info!(?a_mapped_addr, local_port, "tcp hole punch start connect loop");
+    tracing::info!(
+        ?a_mapped_addr,
+        local_port,
+        "tcp hole punch start connect loop"
+    );
 
     let use_ws = peer_mgr.get_global_ctx().get_flags().use_ws_hole_punch;
     let is_ws_server = !is_client; // 发起方=WS server，响应方=WS client
@@ -121,15 +125,18 @@ async fn try_connect_to_remote(
                 }
             };
 
-            if let Ok(Ok(stream)) = tokio::time::timeout(Duration::from_secs(3), socket.connect(a_mapped_addr)).await {
+            if let Ok(Ok(stream)) =
+                tokio::time::timeout(Duration::from_secs(3), socket.connect(a_mapped_addr)).await
+            {
                 #[cfg(feature = "websocket")]
-                let tunnel = match upgrade_tcp_to_ws_tunnel(stream, is_ws_server, a_mapped_addr).await {
-                    Ok(t) => t,
-                    Err(e) => {
-                        tracing::error!(?e, "ws upgrade failed after hole punch");
-                        continue;
-                    }
-                };
+                let tunnel =
+                    match upgrade_tcp_to_ws_tunnel(stream, is_ws_server, a_mapped_addr).await {
+                        Ok(t) => t,
+                        Err(e) => {
+                            tracing::error!(?e, "ws upgrade failed after hole punch");
+                            continue;
+                        }
+                    };
 
                 #[cfg(not(feature = "websocket"))]
                 let tunnel = return Err(anyhow::anyhow!("websocket feature required"));
@@ -143,7 +150,13 @@ async fn try_connect_to_remote(
                     tracing::error!(?e, "add tunnel failed");
                     continue;
                 }
-                tracing::info!(?a_mapped_addr, local_port, attempts, is_client, "ws tunnel added after hole punch");
+                tracing::info!(
+                    ?a_mapped_addr,
+                    local_port,
+                    attempts,
+                    is_client,
+                    "ws tunnel added after hole punch"
+                );
                 return Ok(());
             } else {
                 tracing::trace!(?a_mapped_addr, attempts, "connect attempt failed");
