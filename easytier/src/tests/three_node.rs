@@ -2122,6 +2122,124 @@ pub async fn port_forward_test(
 }
 
 #[rstest::rstest]
+#[case(false, false)]
+#[case(true, false)]
+#[case(true, true)]
+#[serial_test::serial]
+#[tokio::test]
+pub async fn port_forward_with_inbound_default_drop_acl_test(
+    #[case] dhcp: bool,
+    #[case] enable_quic_proxy: bool,
+) {
+    use crate::proto::acl::*;
+
+    let acl = Acl {
+        acl_v1: Some(AclV1 {
+            chains: vec![Chain {
+                name: "drop_unsolicited_inbound".to_string(),
+                chain_type: ChainType::Inbound as i32,
+                enabled: true,
+                default_action: Action::Drop as i32,
+                ..Default::default()
+            }],
+            ..Default::default()
+        }),
+    };
+
+    let insts = init_three_node_ex(
+        "udp",
+        |cfg| {
+            if cfg.get_inst_name() == "inst1" {
+                if dhcp {
+                    cfg.set_ipv4(None);
+                    cfg.set_dhcp(true);
+                }
+                cfg.set_acl(Some(acl.clone()));
+                cfg.set_port_forwards(vec![
+                    PortForwardConfig {
+                        bind_addr: "0.0.0.0:23456".parse().unwrap(),
+                        dst_addr: "10.144.144.3:23456".parse().unwrap(),
+                        proto: "tcp".to_string(),
+                    },
+                    PortForwardConfig {
+                        bind_addr: "0.0.0.0:23457".parse().unwrap(),
+                        dst_addr: "10.1.2.4:23457".parse().unwrap(),
+                        proto: "tcp".to_string(),
+                    },
+                ]);
+
+                let mut flags = cfg.get_flags();
+                flags.no_tun = true;
+                flags.enable_kcp_proxy = false;
+                flags.enable_quic_proxy = enable_quic_proxy;
+                cfg.set_flags(flags);
+            } else if cfg.get_inst_name() == "inst3" {
+                cfg.add_proxy_cidr("10.1.2.0/24".parse().unwrap(), None)
+                    .unwrap();
+
+                let mut flags = cfg.get_flags();
+                flags.disable_kcp_input = true;
+                flags.disable_quic_input = !enable_quic_proxy;
+                cfg.set_flags(flags);
+            } else if cfg.get_inst_name() == "inst2" {
+                let mut flags = cfg.get_flags();
+                flags.disable_relay_kcp = true;
+                cfg.set_flags(flags);
+            }
+
+            cfg
+        },
+        false,
+    )
+    .await;
+
+    if dhcp {
+        wait_for_condition(
+            || async { insts[0].get_global_ctx().get_ipv4().is_some() },
+            Duration::from_secs(5),
+        )
+        .await;
+    }
+
+    for (bind_port, server_ns) in [(23456, "net_c"), (23457, "net_d")] {
+        let tcp_listener =
+            TcpTunnelListener::new(format!("tcp://0.0.0.0:{bind_port}").parse().unwrap());
+        let tcp_connector =
+            TcpTunnelConnector::new(format!("tcp://127.0.0.1:{bind_port}").parse().unwrap());
+
+        let mut buf = vec![0; 64];
+        rand::thread_rng().fill(&mut buf[..]);
+
+        let result = _tunnel_pingpong_netns_with_timeout(
+            tcp_listener,
+            tcp_connector,
+            NetNS::new(Some(server_ns.into())),
+            NetNS::new(Some("net_a".into())),
+            buf,
+            Duration::from_secs(1),
+        )
+        .await;
+
+        let stats = insts[0].get_global_ctx().get_acl_filter().get_stats();
+        println!(
+            "port forward source bind_port={} dhcp={} enable_quic_proxy={} ACL stats: {}",
+            bind_port, dhcp, enable_quic_proxy, stats
+        );
+
+        assert!(
+            result.is_ok(),
+            "port-forward TCP should complete through outbound ACL state, bind_port={}, dhcp={}, enable_quic_proxy={}; stats: {}",
+            bind_port,
+            dhcp,
+            enable_quic_proxy,
+            stats,
+        );
+    }
+
+    drop_insts(insts).await;
+}
+
+#[rstest::rstest]
 #[serial_test::serial]
 #[tokio::test]
 pub async fn relay_bps_limit_test(#[values(100, 200, 400, 800)] bps_limit: u64) {
