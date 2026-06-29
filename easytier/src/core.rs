@@ -1131,9 +1131,7 @@ impl NetworkOptions {
         f.disable_tcp_hole_punching = self
             .disable_tcp_hole_punching
             .unwrap_or(f.disable_tcp_hole_punching);
-        f.use_ws_hole_punch = self
-            .use_ws_hole_punch
-            .unwrap_or(f.use_ws_hole_punch);
+        f.use_ws_hole_punch = self.use_ws_hole_punch.unwrap_or(f.use_ws_hole_punch);
         f.disable_udp_hole_punching = self
             .disable_udp_hole_punching
             .unwrap_or(f.disable_udp_hole_punching);
