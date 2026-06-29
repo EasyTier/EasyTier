@@ -280,7 +280,6 @@ impl TcpHolePunchConnectorData {
             return Ok(());
         }
 
-        // Reuse the same port across hole punch attempts to avoid creating new UPnP mappings.
         let local_port = {
             let mut port_guard = self.fixed_local_port.lock().await;
             if let Some(port) = *port_guard {
@@ -292,9 +291,6 @@ impl TcpHolePunchConnectorData {
             }
         };
 
-        // Open router firewall via UPnP so inbound connections can reach this port.
-        // Failure is non-blocking: we fall back to STUN-only.
-        // Only create mapping once; the lease is stored to keep it alive for the node lifetime.
         {
             let mut lease_guard = self.upnp_lease.lock().await;
             if lease_guard.is_none() {

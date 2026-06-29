@@ -121,9 +121,6 @@ impl ActiveUdpPortMapping {
     ) -> anyhow::Result<(TokioGateway, SocketAddr)> {
         let _g = global_ctx.net_ns.guard();
 
-        // Bind SSDP socket to LAN IP so multicast goes through the correct interface.
-        // Without this, Windows may send multicast via the wrong NIC (similar to
-        // miniupnpc's GetBestInterface + IP_MULTICAST_IF behavior).
         let bind_addr = match local_ipv4().await {
             Ok(ip) => SocketAddr::new(ip.into(), 0),
             Err(_) => SocketAddr::new([0, 0, 0, 0].into(), 0),
