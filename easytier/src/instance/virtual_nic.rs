@@ -1,4 +1,5 @@
 use byteorder::WriteBytesExt as _;
+use bytes::Buf;
 use cidr::{Ipv4Inet, Ipv6Inet};
 use pnet::packet::ethernet::{EtherType, EtherTypes};
 use pnet::packet::{ipv4::Ipv4Packet, ipv6::Ipv6Packet};
@@ -225,7 +226,9 @@ impl TunTx {
 
         let mut frame = {
             let offset = item.payload_offset();
-            item.inner().split_off(offset - hdr_len)
+            let mut inner = item.inner();
+            inner.advance(offset - hdr_len);
+            inner
         };
         let (hdr, packet) = frame.split_at_mut(hdr_len);
 
