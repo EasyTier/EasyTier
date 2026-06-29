@@ -2,11 +2,12 @@ use std::sync::{
     Arc, RwLock,
     atomic::{AtomicBool, Ordering},
 };
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use anyhow::anyhow;
 use crossbeam::atomic::AtomicCell;
 use dashmap::DashMap;
+use hotpath::instant::Instant;
 
 use super::secure_datagram::{SecureDatagramDirection, SecureDatagramSession};
 use crate::{
@@ -499,7 +500,6 @@ mod tests {
         ));
         store.insert_session(key.clone(), session);
 
-        std::thread::sleep(Duration::from_millis(1));
         store.evict_unused_sessions_idle(Duration::from_millis(0));
 
         assert!(

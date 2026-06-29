@@ -174,7 +174,8 @@ impl TunnelFilter for PeerSessionTunnelFilter {
             return Some(data);
         }
 
-        let Some(session) = self.session.load_full() else {
+        let session_guard = self.session.load();
+        let Some(session) = session_guard.as_deref() else {
             return Some(data);
         };
         if let Err(e) = session.encrypt_payload(my_peer_id, peer_id, &mut data) {
@@ -221,7 +222,8 @@ impl TunnelFilter for PeerSessionTunnelFilter {
             return Some(Ok(data));
         }
 
-        let Some(session) = self.session.load_full() else {
+        let session_guard = self.session.load();
+        let Some(session) = session_guard.as_deref() else {
             return Some(Ok(data));
         };
 
