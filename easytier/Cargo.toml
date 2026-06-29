@@ -37,6 +37,7 @@ tracing-subscriber = { version = "0.3", features = [
     "local-time",
     "time",
 ] }
+lttng-ust = { git = "https://github.com/EasyTier/lttng-ust-rs.git", optional = true }
 derivative = "2.2.0"
 derive_more = { version = "2.1.1", features = ["full"] }
 console-subscriber = { version = "0.4.1", optional = true }
@@ -329,6 +330,7 @@ quote = "1"
 thunk-rs = { git = "https://github.com/easytier/thunk.git", default-features = false, features = [
     "win7",
 ] }
+lttng-ust-generate = { git = "https://github.com/EasyTier/lttng-ust-rs.git", optional = true }
 
 [target.'cfg(windows)'.build-dependencies]
 reqwest = { version = "0.12.12", features = ["blocking"] }
@@ -402,6 +404,7 @@ jemalloc-prof = [
     "jemalloc-sys/stats",
 ]
 tracing = ["tokio/tracing", "dep:console-subscriber"]
+lttng = ["dep:lttng-ust", "dep:lttng-ust-generate"]
 magic-dns = ["dep:hickory-client", "dep:hickory-server"]
 faketcp = ["dep:flume"]
 zstd = ["dep:zstd"]
