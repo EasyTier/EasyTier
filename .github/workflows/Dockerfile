@@ -1,4 +1,4 @@
-FROM alpine:latest AS base
+FROM alpine:latest AS base 
 FROM base AS builder
 
 ARG TARGETPLATFORM
