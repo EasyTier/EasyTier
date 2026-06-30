@@ -132,7 +132,6 @@ impl PeerMap {
         peer_id == self.my_peer_id || self.peer_map.contains_key(&peer_id)
     }
 
-    #[cfg_attr(feature = "hotpath", hotpath::measure(impl_type = "PeerMap"))]
     pub async fn send_msg_directly(&self, msg: ZCPacket, dst_peer_id: PeerId) -> Result<(), Error> {
         if dst_peer_id == self.my_peer_id {
             let packet_send = self.packet_send.clone();
@@ -164,7 +163,6 @@ impl PeerMap {
         Ok(())
     }
 
-    #[cfg_attr(feature = "hotpath", hotpath::measure(impl_type = "PeerMap"))]
     pub async fn get_gateway_peer_id(
         &self,
         dst_peer_id: PeerId,

@@ -18,6 +18,7 @@ pub mod global_ctx;
 pub mod idn;
 pub mod ifcfg;
 pub mod log;
+pub mod lttng;
 pub mod machine_id;
 pub mod netns;
 pub mod network;

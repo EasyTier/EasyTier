@@ -159,7 +159,7 @@ impl Socket {
         ack: Option<u32>,
         state: State,
     ) -> (Socket, flume::Sender<Bytes>) {
-        let (incoming_tx, incoming_rx) = hotpath::channel!(flume::bounded(MPMC_BUFFER_LEN));
+        let (incoming_tx, incoming_rx) = flume::bounded(MPMC_BUFFER_LEN);
 
         (
             Socket {

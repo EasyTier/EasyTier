@@ -37,6 +37,7 @@ tracing-subscriber = { version = "0.3", features = [
     "local-time",
     "time",
 ] }
+lttng-ust = { git = "https://github.com/EasyTier/lttng-ust-rs.git", optional = true }
 derivative = "2.2.0"
 derive_more = { version = "2.1.1", features = ["full"] }
 console-subscriber = { version = "0.4.1", optional = true }
@@ -52,7 +53,6 @@ toml = "0.8.12"
 chrono = { version = "0.4.37", features = ["serde"] }
 
 guarden = "0.2"
-hotpath = { version = "0.18", default-features = false, optional = true }
 quanta = "0.12"
 
 delegate = "0.13.5"
@@ -330,6 +330,7 @@ quote = "1"
 thunk-rs = { git = "https://github.com/easytier/thunk.git", default-features = false, features = [
     "win7",
 ] }
+lttng-ust-generate = { git = "https://github.com/EasyTier/lttng-ust-rs.git", optional = true }
 
 [target.'cfg(windows)'.build-dependencies]
 reqwest = { version = "0.12.12", features = ["blocking"] }
@@ -403,15 +404,7 @@ jemalloc-prof = [
     "jemalloc-sys/stats",
 ]
 tracing = ["tokio/tracing", "dep:console-subscriber"]
-hotpath = [
-    "dep:hotpath",
-    "hotpath/hotpath",
-    "hotpath/tokio",
-    "hotpath/parking_lot",
-    "hotpath/flume",
-]
-hotpath-cpu = ["hotpath", "hotpath/hotpath-cpu"]
-hotpath-alloc = ["hotpath", "hotpath/hotpath-alloc"]
+lttng = ["dep:lttng-ust", "dep:lttng-ust-generate"]
 magic-dns = ["dep:hickory-client", "dep:hickory-server"]
 faketcp = ["dep:flume"]
 zstd = ["dep:zstd"]

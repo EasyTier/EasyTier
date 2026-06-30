@@ -133,6 +133,35 @@ fn check_locale() {
     }
 }
 
+#[cfg(feature = "lttng")]
+fn generate_lttng_tracepoints(out: &PathBuf) -> Result<(), Box<dyn std::error::Error>> {
+    use lttng_ust_generate::{CIntegerType, CTFType, Generator, LogLevel, Provider};
+
+    let mut provider = Provider::new("easytier");
+    provider
+        .create_class("marker")
+        .add_field("name", CTFType::SequenceText)
+        .add_field("value", CTFType::Integer(CIntegerType::U64))
+        .instantiate_with_level("mark", LogLevel::Info);
+
+    provider
+        .create_class("duration")
+        .add_field("name", CTFType::SequenceText)
+        .add_field("duration_micros", CTFType::Integer(CIntegerType::U64))
+        .instantiate_with_level("duration_micros", LogLevel::Info);
+
+    Generator::default()
+        .generated_lib_name("easytier_lttng_tracepoints")
+        .register_provider(provider)
+        .output_file_name(out.join("lttng_tracepoints.rs"))
+        .generate()
+        .map_err(|error| {
+            std::io::Error::other(format!("failed to generate LTTng tracepoints: {error:?}"))
+        })?;
+
+    Ok(())
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     cfg_aliases! {
         mobile: {
@@ -174,6 +203,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let out = PathBuf::from(env::var("OUT_DIR")?);
+    #[cfg(feature = "lttng")]
+    generate_lttng_tracepoints(&out)?;
+
     let descriptor = out.join("descriptors.bin");
 
     let mut config = prost_build::Config::new();

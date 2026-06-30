@@ -207,7 +207,6 @@ impl Peer {
             .map(|conn| conn.clone())
     }
 
-    #[cfg_attr(feature = "hotpath", hotpath::measure(impl_type = "Peer"))]
     pub async fn send_msg(&self, msg: ZCPacket) -> Result<(), Error> {
         let Some(conn) = self.select_conn().await else {
             return Err(Error::PeerNoConnectionError(self.peer_node_id));
