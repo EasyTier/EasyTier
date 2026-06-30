@@ -220,6 +220,7 @@ smoltcp = { git = "https://github.com/smoltcp-rs/smoltcp.git", rev = "0a926767a6
     "async",
 ] }
 parking_lot = { version = "0.12.0" }
+thread_local = "1.1"
 
 wildmatch = "2.3.4"
 
@@ -347,6 +348,15 @@ futures-util = "0.3.31"
 maplit = "1.0.2"
 tempfile = "3.22.0"
 ctor = "0.8.0"
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[[bench]]
+name = "acl_hotpath"
+harness = false
+
+[[bench]]
+name = "zc_packet"
+harness = false
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
 defguard_wireguard_rs = "0.4.2"

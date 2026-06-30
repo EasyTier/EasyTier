@@ -1,12 +1,15 @@
+use crate::common::sharded_counter::ShardedCounter;
 use dashmap::DashMap;
 use quanta::Instant;
 use serde::{Deserialize, Serialize};
-use std::cell::UnsafeCell;
 use std::fmt;
-use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, LazyLock};
 use std::time::Duration;
 use tokio::time::interval;
 use tokio_util::task::AbortOnDropHandle;
+
+static START_INSTANT: LazyLock<Instant> = LazyLock::new(Instant::now);
 
 /// Predefined metric names for type safety
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -375,10 +378,10 @@ impl Default for LabelSet {
     }
 }
 
-/// UnsafeCounter provides a high-performance counter using UnsafeCell
+/// High-performance counter backed by sharded thread-local accumulation.
 #[derive(Debug)]
 pub struct UnsafeCounter {
-    value: UnsafeCell<u64>,
+    inner: ShardedCounter,
 }
 
 impl Default for UnsafeCounter {
@@ -390,120 +393,55 @@ impl Default for UnsafeCounter {
 impl UnsafeCounter {
     pub fn new() -> Self {
         Self {
-            value: UnsafeCell::new(0),
+            inner: ShardedCounter::new(),
         }
     }
 
-    pub fn new_with_value(initial: u64) -> Self {
-        Self {
-            value: UnsafeCell::new(initial),
-        }
+    pub fn add(&self, delta: u64) {
+        self.inner.add(delta);
     }
 
-    /// Increment the counter by the given amount
-    /// # Safety
-    /// This method is unsafe because it uses UnsafeCell. The caller must ensure
-    /// that no other thread is accessing this counter simultaneously.
-    pub unsafe fn add(&self, delta: u64) {
-        let ptr = self.value.get();
-        unsafe {
-            *ptr = (*ptr).saturating_add(delta);
-        }
+    pub fn inc(&self) {
+        self.inner.inc();
     }
 
-    /// Increment the counter by 1
-    /// # Safety
-    /// This method is unsafe because it uses UnsafeCell. The caller must ensure
-    /// that no other thread is accessing this counter simultaneously.
-    pub unsafe fn inc(&self) {
-        unsafe {
-            self.add(1);
-        }
+    pub fn get(&self) -> u64 {
+        self.inner.get()
     }
 
-    /// Get the current value of the counter
-    /// # Safety
-    /// This method is unsafe because it uses UnsafeCell. The caller must ensure
-    /// that no other thread is modifying this counter simultaneously.
-    pub unsafe fn get(&self) -> u64 {
-        let ptr = self.value.get();
-        unsafe { *ptr }
-    }
-
-    /// Reset the counter to zero
-    /// # Safety
-    /// This method is unsafe because it uses UnsafeCell. The caller must ensure
-    /// that no other thread is accessing this counter simultaneously.
-    pub unsafe fn reset(&self) {
-        let ptr = self.value.get();
-        unsafe {
-            *ptr = 0;
-        }
-    }
-
-    /// Set the counter to a specific value
-    /// # Safety
-    /// This method is unsafe because it uses UnsafeCell. The caller must ensure
-    /// that no other thread is accessing this counter simultaneously.
-    pub unsafe fn set(&self, value: u64) {
-        let ptr = self.value.get();
-        unsafe {
-            *ptr = value;
-        }
+    pub fn reset(&self) {
+        self.inner.reset();
     }
 }
 
-// UnsafeCounter is Send + Sync because the safety is guaranteed by the caller
-unsafe impl Send for UnsafeCounter {}
-unsafe impl Sync for UnsafeCounter {}
-
 /// MetricData contains both the counter and last update timestamp
-/// Uses UnsafeCell for lock-free access
 #[derive(Debug)]
 struct MetricData {
     counter: UnsafeCounter,
-    last_updated: UnsafeCell<Instant>,
+    last_updated: AtomicU64,
+}
+
+pub(crate) fn now_monotonic_millis() -> u64 {
+    Instant::now().duration_since(*START_INSTANT).as_millis() as u64
 }
 
 impl MetricData {
     fn new() -> Self {
         Self {
             counter: UnsafeCounter::new(),
-            last_updated: UnsafeCell::new(Instant::now()),
+            last_updated: AtomicU64::new(now_monotonic_millis()),
         }
     }
 
-    fn new_with_value(initial: u64) -> Self {
-        Self {
-            counter: UnsafeCounter::new_with_value(initial),
-            last_updated: UnsafeCell::new(Instant::now()),
-        }
+    fn touch(&self) {
+        self.last_updated
+            .store(now_monotonic_millis(), Ordering::Relaxed);
     }
 
-    /// Update the last_updated timestamp
-    /// # Safety
-    /// This method is unsafe because it uses UnsafeCell. The caller must ensure
-    /// that no other thread is accessing this timestamp simultaneously.
-    unsafe fn touch(&self) {
-        let ptr = self.last_updated.get();
-        unsafe {
-            *ptr = Instant::now();
-        }
-    }
-
-    /// Get the last updated timestamp
-    /// # Safety
-    /// This method is unsafe because it uses UnsafeCell. The caller must ensure
-    /// that no other thread is modifying this timestamp simultaneously.
-    unsafe fn get_last_updated(&self) -> Instant {
-        let ptr = self.last_updated.get();
-        unsafe { *ptr }
+    fn get_last_updated(&self) -> u64 {
+        self.last_updated.load(Ordering::Relaxed)
     }
 }
-
-// MetricData is Send + Sync because the safety is guaranteed by the caller
-unsafe impl Send for MetricData {}
-unsafe impl Sync for MetricData {}
 
 /// MetricKey uniquely identifies a metric with its name and labels
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -545,41 +483,23 @@ impl CounterHandle {
         }
     }
 
-    /// Increment the counter by the given amount
     pub fn add(&self, delta: u64) {
-        unsafe {
-            self.metric_data.counter.add(delta);
-            self.metric_data.touch();
-        }
+        self.metric_data.counter.add(delta);
+        self.metric_data.touch();
     }
 
-    /// Increment the counter by 1
     pub fn inc(&self) {
-        unsafe {
-            self.metric_data.counter.inc();
-            self.metric_data.touch();
-        }
+        self.metric_data.counter.inc();
+        self.metric_data.touch();
     }
 
-    /// Get the current value of the counter
     pub fn get(&self) -> u64 {
-        unsafe { self.metric_data.counter.get() }
+        self.metric_data.counter.get()
     }
 
-    /// Reset the counter to zero
     pub fn reset(&self) {
-        unsafe {
-            self.metric_data.counter.reset();
-            self.metric_data.touch();
-        }
-    }
-
-    /// Set the counter to a specific value
-    pub fn set(&self, value: u64) {
-        unsafe {
-            self.metric_data.counter.set(value);
-            self.metric_data.touch();
-        }
+        self.metric_data.counter.reset();
+        self.metric_data.touch();
     }
 }
 
@@ -615,9 +535,7 @@ impl StatsManager {
             loop {
                 interval.tick().await;
 
-                let Some(cutoff_time) = Instant::now().checked_sub(Duration::from_secs(180)) else {
-                    continue;
-                };
+                let cutoff_millis = now_monotonic_millis().saturating_sub(180_000);
 
                 let Some(counters) = counters_clone.upgrade() else {
                     break;
@@ -625,7 +543,7 @@ impl StatsManager {
 
                 counters.retain(|_, metric_data: &mut Arc<MetricData>| {
                     Arc::strong_count(metric_data) > 1
-                        || unsafe { metric_data.get_last_updated() > cutoff_time }
+                        || metric_data.get_last_updated() >= cutoff_millis
                 });
                 counters.shrink_to_fit();
             }
@@ -663,7 +581,7 @@ impl StatsManager {
             let key = entry.key();
             let metric_data = entry.value();
 
-            let value = unsafe { metric_data.counter.get() };
+            let value = metric_data.counter.get();
 
             metrics.push(MetricSnapshot {
                 name: key.name,
@@ -696,7 +614,7 @@ impl StatsManager {
         let key = MetricKey::new(name, labels.clone());
 
         if let Some(metric_data) = self.counters.get(&key) {
-            let value = unsafe { metric_data.counter.get() };
+            let value = metric_data.counter.get();
             Some(MetricSnapshot {
                 name,
                 labels: labels.clone(),
@@ -797,17 +715,9 @@ mod tests {
     async fn test_unsafe_counter() {
         let counter = UnsafeCounter::new();
 
-        unsafe {
-            assert_eq!(counter.get(), 0);
-            counter.inc();
-            assert_eq!(counter.get(), 1);
-            counter.add(5);
-            assert_eq!(counter.get(), 6);
-            counter.set(10);
-            assert_eq!(counter.get(), 10);
-            counter.reset();
-            assert_eq!(counter.get(), 0);
-        }
+        assert_eq!(counter.get(), 0);
+        counter.add(256);
+        assert_eq!(counter.get(), 256);
     }
 
     #[tokio::test]
@@ -853,11 +763,11 @@ mod tests {
         let stats = StatsManager::new();
 
         let counter1 = stats.get_simple_counter(MetricName::TrafficBytesTx);
-        counter1.set(100);
+        counter1.add(100);
 
         let labels = LabelSet::new().with_label("status", "success");
         let counter2 = stats.get_counter(MetricName::PeerRpcClientTx, labels);
-        counter2.set(50);
+        counter2.add(50);
 
         let traffic_labels = LabelSet::new()
             .with_label_type(LabelType::NetworkName("default".to_string()))
@@ -865,7 +775,7 @@ mod tests {
                 "87ede5a2-9c3d-492d-9bbe-989b9d07e742".to_string(),
             ));
         let counter3 = stats.get_counter(MetricName::TrafficBytesTxByInstance, traffic_labels);
-        counter3.set(25);
+        counter3.add(25);
 
         let prometheus_output = stats.export_prometheus();
 
@@ -885,7 +795,7 @@ mod tests {
 
         let labels = LabelSet::new().with_label("peer", "test");
         let counter = stats.get_counter(MetricName::PeerRpcClientTx, labels.clone());
-        counter.set(42);
+        counter.add(42);
 
         let metric = stats
             .get_metric(MetricName::PeerRpcClientTx, &labels)
@@ -902,11 +812,11 @@ mod tests {
 
         stats
             .get_simple_counter(MetricName::PeerRpcClientTx)
-            .set(10);
-        stats.get_simple_counter(MetricName::PeerRpcErrors).set(2);
+            .add(10);
+        stats.get_simple_counter(MetricName::PeerRpcErrors).add(2);
         stats
             .get_simple_counter(MetricName::TrafficBytesTx)
-            .set(100);
+            .add(100);
 
         let rpc_metrics = stats.get_metrics_by_prefix("peer_rpc");
         assert_eq!(rpc_metrics.len(), 2);
@@ -921,18 +831,14 @@ mod tests {
 
         // 创建一些计数器
         let counter1 = stats.get_simple_counter(MetricName::PeerRpcClientTx);
-        counter1.set(10);
+        counter1.add(10);
 
         let labels = LabelSet::new().with_label("test", "value");
         let counter2 = stats.get_counter(MetricName::TrafficBytesTx, labels);
-        counter2.set(20);
+        counter2.add(20);
 
         // 验证计数器存在
         assert_eq!(stats.metric_count(), 2);
-
-        // 注意：实际的清理测试需要等待3分钟，这在单元测试中不现实
-        // 这里我们只验证清理机制的基本结构是否正确
-        // 清理逻辑在后台线程中运行，会自动删除超过3分钟未更新的条目
 
         // 验证计数器仍然可以正常工作
         counter1.inc();
@@ -946,14 +852,14 @@ mod tests {
     async fn test_cleanup_keeps_metrics_with_live_handles() {
         let stats = StatsManager::new();
         let counter = stats.get_simple_counter(MetricName::TrafficBytesForwarded);
-        counter.set(1);
+        counter.add(1);
 
-        let cutoff_time = Instant::now().checked_add(Duration::from_secs(1)).unwrap();
+        // Use a future cutoff so last_updated check always fails
+        let future_cutoff = now_monotonic_millis() + 1000;
         stats
             .counters
             .retain(|_, metric_data: &mut Arc<MetricData>| {
-                Arc::strong_count(metric_data) > 1
-                    || unsafe { metric_data.get_last_updated() > cutoff_time }
+                Arc::strong_count(metric_data) > 1 || metric_data.get_last_updated() > future_cutoff
             });
 
         assert_eq!(stats.metric_count(), 1);
@@ -963,8 +869,7 @@ mod tests {
         stats
             .counters
             .retain(|_, metric_data: &mut Arc<MetricData>| {
-                Arc::strong_count(metric_data) > 1
-                    || unsafe { metric_data.get_last_updated() > cutoff_time }
+                Arc::strong_count(metric_data) > 1 || metric_data.get_last_updated() > future_cutoff
             });
         assert_eq!(stats.metric_count(), 0);
     }
