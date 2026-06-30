@@ -214,7 +214,7 @@ impl AuthzBackend for Backend {
 
     async fn get_group_permissions(
         &self,
-        _user: &Self::User,
+        user: &Self::User,
     ) -> Result<HashSet<Self::Permission>, Self::Error> {
         let permissions = entity::users::Entity::find()
             .column_as(entity::permissions::Column::Name, "name")
@@ -234,6 +234,7 @@ impl AuthzBackend for Backend {
                 JoinType::LeftJoin,
                 entity::groups_permissions::Relation::Permissions.def(),
             )
+            .filter(entity::users::Column::Id.eq(user.db_user.id))
             .into_model::<Self::Permission>()
             .all(self.db.orm_db())
             .await?;

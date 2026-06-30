@@ -1,3 +1,4 @@
+mod admin;
 mod auth;
 pub(crate) mod captcha;
 mod network;
@@ -34,6 +35,7 @@ use crate::client_manager::ClientManager;
 use crate::client_manager::storage::StorageToken;
 use crate::db::{Db, UserIdInDb};
 use crate::webhook::SharedWebhookConfig;
+use admin::RegistrationToggle;
 
 /// Embed assets for web dashboard, build frontend first
 #[cfg(feature = "embed")]
@@ -49,6 +51,7 @@ pub struct RestfulServer {
     db: Db,
     oidc_config: oidc::OidcConfig,
     web_router: Option<Router>,
+    registration_toggle: RegistrationToggle,
 }
 
 type AppStateInner = Arc<ClientManager>;
@@ -119,11 +122,12 @@ impl RestfulServer {
         Ok(RestfulServer {
             bind_addr,
             client_mgr,
-            feature_flags,
+            feature_flags: feature_flags.clone(),
             webhook_config,
             db,
             oidc_config,
             web_router,
+            registration_toggle: RegistrationToggle::new(feature_flags.disable_registration),
         })
     }
 
@@ -265,13 +269,25 @@ impl RestfulServer {
             None
         };
 
+        // Admin routes: need Db and RegistrationToggle as extractable state.
+        let admin_router = admin::router()
+            .with_state(self.client_mgr.clone())
+            .layer(Extension(self.db.clone()))
+            .layer(Extension(self.registration_toggle.clone()));
+
+        // Auth routes: need RegistrationToggle for runtime registration check.
+        let auth_router = auth::router()
+            .layer(Extension(self.feature_flags.clone()))
+            .layer(Extension(self.registration_toggle.clone()));
+
         let mut app = Router::new()
             .route("/api/v1/summary", get(Self::handle_get_summary))
             .route("/api/v1/sessions", get(Self::handle_list_all_sessions))
             .merge(NetworkApi::build_route())
             .merge(rpc::router())
+            .merge(admin_router)
             .route_layer(login_required!(Backend))
-            .merge(auth::router().layer(Extension(self.feature_flags.clone())))
+            .merge(auth_router)
             .merge(oidc::router())
             .with_state(self.client_mgr.clone())
             .route(

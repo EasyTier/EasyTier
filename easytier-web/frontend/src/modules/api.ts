@@ -36,6 +36,11 @@ export interface Summary {
     device_count: number;
 }
 
+export interface AdminUserInfo {
+    id: number;
+    username: string;
+}
+
 export interface ListNetworkInstanceIdResponse {
     running_inst_ids: Array<Utils.UUID>,
     disabled_inst_ids: Array<Utils.UUID>,
@@ -159,6 +164,11 @@ export class ApiClient {
         }
     }
 
+    public async whoami(): Promise<{ username: string; is_admin: boolean }> {
+        const response = await this.client.get<any, { username: string; is_admin: boolean }>('/auth/whoami');
+        return response;
+    }
+
     public async list_session() {
         const response = await this.client.get('/sessions');
         return response;
@@ -171,6 +181,27 @@ export class ApiClient {
 
     public async get_summary(): Promise<Summary> {
         const response = await this.client.get<any, Summary>('/summary');
+        return response;
+    }
+
+    // === Admin APIs ===
+
+    public async admin_list_users(): Promise<AdminUserInfo[]> {
+        const response = await this.client.get<any, AdminUserInfo[]>('/admin/users');
+        return response;
+    }
+
+    public async admin_delete_user(user_id: number): Promise<void> {
+        await this.client.delete(`/admin/users/${user_id}`);
+    }
+
+    public async admin_get_registration_status(): Promise<boolean> {
+        const response = await this.client.get<any, boolean>('/admin/registration');
+        return response;
+    }
+
+    public async admin_toggle_registration(enabled: boolean): Promise<boolean> {
+        const response = await this.client.put<any, boolean>('/admin/registration', enabled);
         return response;
     }
 

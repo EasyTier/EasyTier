@@ -292,10 +292,17 @@ web:
     device_list: Device List
     device_management: Device Management
     login_page: Login Page
+    user_management: User Management
     settings: Settings
     logout: Logout
     language: Language
     change_password: Change Password
+
+  admin:
+    user_list: User List
+    registration_toggle: Allow Registration
+    registration_enabled: Registration is currently enabled. New users can sign up.
+    registration_disabled: Registration is currently disabled. New users cannot sign up.
 
   device:
     list: Device List

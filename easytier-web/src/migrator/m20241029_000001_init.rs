@@ -225,16 +225,7 @@ impl MigrationTrait for Migration {
             .await?;
 
         // prepare data
-        let user = Query::insert()
-            .into_table(Users::Table)
-            .columns(vec![Users::Username, Users::Password])
-            .values_panic(vec![
-                "user".into(),
-                "$argon2i$v=19$m=16,t=2,p=1$aGVyRDBrcnRycnlaMDhkbw$449SEcv/qXf+0fnI9+fYVQ".into(), // user (md5summed)
-            ])
-            .to_owned();
-        manager.exec_stmt(user).await?;
-
+        // Only create admin user by default; `users` group is kept for future use but no default user belongs to it
         let admin = Query::insert()
             .into_table(Users::Table)
             .columns(vec![Users::Username, Users::Password])
@@ -298,26 +289,6 @@ impl MigrationTrait for Migration {
             .unwrap()
             .to_owned();
         manager.exec_stmt(users_devices).await?;
-
-        let add_user_to_users = Query::insert()
-            .into_table(UsersGroups::Table)
-            .columns(vec![UsersGroups::UserId, UsersGroups::GroupId])
-            .select_from(
-                Query::select()
-                    .column((Users::Table, Users::Id))
-                    .column((Groups::Table, Groups::Id))
-                    .from(Users::Table)
-                    .full_outer_join(Groups::Table, all![])
-                    .cond_where(
-                        Expr::col(Users::Username)
-                            .eq("user")
-                            .and(Expr::col(Groups::Name).eq("users")),
-                    )
-                    .to_owned(),
-            )
-            .unwrap()
-            .to_owned();
-        manager.exec_stmt(add_user_to_users).await?;
 
         let add_admin_to_admins = Query::insert()
             .into_table(UsersGroups::Table)

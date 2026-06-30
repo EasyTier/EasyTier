@@ -3,7 +3,7 @@ use axum::{
     http::StatusCode,
     routing::{get, post, put},
 };
-use axum_login::login_required;
+use axum_login::{login_required, AuthzBackend};
 use axum_messages::Message;
 use serde::{Deserialize, Serialize};
 
@@ -12,6 +12,7 @@ use crate::restful::users::Backend;
 use std::sync::Arc;
 
 use crate::FeatureFlags;
+use super::admin::RegistrationToggle;
 
 use super::{
     AppStateInner,
@@ -30,6 +31,7 @@ pub fn router() -> Router<AppStateInner> {
             "/api/v1/auth/check_login_status",
             get(self::get::check_login_status),
         )
+        .route("/api/v1/auth/whoami", get(self::get::whoami))
         .route_layer(login_required!(Backend));
     Router::new()
         .merge(r)
@@ -115,12 +117,13 @@ mod post {
 
     pub async fn register(
         Extension(feature_flags): Extension<Arc<FeatureFlags>>,
+        Extension(registration_toggle): Extension<RegistrationToggle>,
         auth_session: AuthSession,
         captcha_session: tower_sessions::Session,
         Json(req): Json<RegisterNewUser>,
     ) -> Result<Json<Void>, HttpHandleError> {
-        // Check if registration is disabled
-        if feature_flags.disable_registration {
+        // Check if registration is disabled (either by startup flag or runtime toggle)
+        if feature_flags.disable_registration || registration_toggle.is_disabled() {
             tracing::warn!("Registration attempt blocked: registration is disabled");
             return Err((
                 StatusCode::FORBIDDEN,
@@ -199,5 +202,39 @@ mod get {
                 Json::from(other_error("Not logged in")),
             ))
         }
+    }
+
+    /// Returns current user info, including whether they have admin privileges.
+    #[derive(Debug, Serialize)]
+    pub struct WhoAmIResponse {
+        pub username: String,
+        pub is_admin: bool,
+    }
+
+    pub async fn whoami(
+        auth_session: AuthSession,
+    ) -> Result<Json<WhoAmIResponse>, HttpHandleError> {
+        let user = auth_session.user.as_ref().ok_or((
+            StatusCode::UNAUTHORIZED,
+            other_error("Not logged in").into(),
+        ))?;
+
+        let permissions = auth_session
+            .backend
+            .get_all_permissions(user)
+            .await
+            .map_err(|e| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    other_error(format!("Failed to get permissions: {:?}", e)).into(),
+                )
+            })?;
+
+        let is_admin = permissions.iter().any(|p| p.name == "manage_user");
+
+        Ok(Json(WhoAmIResponse {
+            username: user.db_user.username.clone(),
+            is_admin,
+        }))
     }
 }
