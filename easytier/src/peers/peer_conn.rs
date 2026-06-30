@@ -11,9 +11,6 @@ use std::{
     },
 };
 
-#[cfg(feature = "hotpath")]
-use hotpath::wrap::tokio::sync::Mutex;
-#[cfg(not(feature = "hotpath"))]
 use tokio::sync::Mutex;
 
 use base64::Engine as _;
@@ -384,12 +381,12 @@ impl PeerConn {
             session_filter,
             noise_handshake_result: None,
 
-            tunnel: Arc::new(hotpath::mutex!(tokio::sync::Mutex::new(Box::new(
-                guard!([mut mpsc_tunnel] mpsc_tunnel.close()),
-            )
-                as Box<dyn Any + Send + 'static>))),
+            tunnel: Arc::new(Mutex::new(
+                Box::new(guard!([mut mpsc_tunnel] mpsc_tunnel.close()))
+                    as Box<dyn Any + Send + 'static>,
+            )),
             sink,
-            recv: hotpath::mutex!(tokio::sync::Mutex::new(Some(recv))),
+            recv: Mutex::new(Some(recv)),
             tunnel_info,
 
             tasks: JoinSet::new(),
@@ -1466,7 +1463,6 @@ impl PeerConn {
         });
     }
 
-    #[cfg_attr(feature = "hotpath", hotpath::measure(impl_type = "PeerConn"))]
     pub async fn send_msg(&self, msg: ZCPacket) -> Result<(), Error> {
         Ok(self.sink.send(msg).await?)
     }

@@ -10,7 +10,7 @@ use std::{
 
 use anyhow::Context;
 use guarden::defer;
-use hotpath::instant::Instant;
+use quanta::Instant;
 use rand::{Rng, seq::SliceRandom};
 use tokio::{net::UdpSocket, sync::RwLock};
 use tokio_util::task::AbortOnDropHandle;

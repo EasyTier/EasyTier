@@ -26,7 +26,7 @@ use std::{
 };
 
 use anyhow::Context as _;
-use hotpath::instant::Instant;
+use quanta::Instant;
 use tokio::io::{AsyncRead, AsyncWrite};
 
 use crate::{common::error::Error, gateway::fast_socks5::server::AsyncTcpConnector};

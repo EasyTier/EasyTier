@@ -2,7 +2,7 @@ use anyhow::Context;
 use async_trait::async_trait;
 use cidr::{Ipv4Cidr, Ipv6Cidr};
 use dashmap::DashMap;
-use hotpath::instant::Instant;
+use quanta::Instant;
 use std::collections::BTreeSet;
 use std::{
     fmt::Debug,
@@ -11,9 +11,6 @@ use std::{
     time::{Duration, SystemTime},
 };
 
-#[cfg(feature = "hotpath")]
-use hotpath::wrap::tokio::sync::{Mutex, RwLock};
-#[cfg(not(feature = "hotpath"))]
 use tokio::sync::{Mutex, RwLock};
 use tokio::{
     sync::mpsc::{self, UnboundedReceiver, UnboundedSender},
@@ -279,8 +276,8 @@ impl PeerManager {
         let rpc_tspt = Arc::new(RpcTransport {
             my_peer_id,
             peers: Arc::downgrade(&peers),
-            foreign_peers: hotpath::mutex!(tokio::sync::Mutex::new(None)),
-            packet_recv: hotpath::mutex!(tokio::sync::Mutex::new(peer_rpc_tspt_recv)),
+            foreign_peers: Mutex::new(None),
+            packet_recv: Mutex::new(peer_rpc_tspt_recv),
             peer_rpc_tspt_sender,
             encryptor: encryptor.clone(),
             is_secure_mode_enabled,
@@ -412,21 +409,17 @@ impl PeerManager {
             global_ctx,
             nic_channel,
 
-            tasks: hotpath::mutex!(tokio::sync::Mutex::new(JoinSet::new())),
+            tasks: Mutex::new(JoinSet::new()),
 
-            packet_recv: Arc::new(hotpath::mutex!(tokio::sync::Mutex::new(Some(packet_recv)))),
+            packet_recv: Arc::new(Mutex::new(Some(packet_recv))),
 
             peers,
 
             peer_rpc_mgr,
             peer_rpc_tspt: rpc_tspt,
 
-            peer_packet_process_pipeline: Arc::new(hotpath::rw_lock!(tokio::sync::RwLock::new(
-                Vec::new()
-            ))),
-            nic_packet_process_pipeline: Arc::new(hotpath::rw_lock!(tokio::sync::RwLock::new(
-                Vec::new()
-            ))),
+            peer_packet_process_pipeline: Arc::new(RwLock::new(Vec::new())),
+            nic_packet_process_pipeline: Arc::new(RwLock::new(Vec::new())),
 
             route_algo_inst,
 
@@ -437,7 +430,7 @@ impl PeerManager {
             encryptor,
             data_compress_algo,
 
-            exit_nodes: hotpath::rw_lock!(tokio::sync::RwLock::new(exit_nodes)),
+            exit_nodes: RwLock::new(exit_nodes),
 
             reserved_my_peer_id_map: DashMap::new(),
             recent_have_traffic: Arc::new(DashMap::new()),
@@ -1444,7 +1437,6 @@ impl PeerManager {
         self.get_route().get_foreign_network_summary().await
     }
 
-    #[cfg_attr(feature = "hotpath", hotpath::measure(impl_type = "PeerManager"))]
     async fn run_nic_packet_process_pipeline(&self, data: &mut ZCPacket) -> bool {
         // Enforce ACL for outbound (NIC-originated) packets. If ACL denies, stop processing.
         if !self.global_ctx.get_acl_filter().process_packet_with_acl(
@@ -1530,7 +1522,6 @@ impl PeerManager {
         result
     }
 
-    #[cfg_attr(feature = "hotpath", hotpath::measure(impl_type = "PeerManager"))]
     async fn send_msg_internal(
         peers: &Arc<PeerMap>,
         foreign_network_client: &Arc<ForeignNetworkClient>,
@@ -2207,7 +2198,7 @@ mod tests {
     use base64::Engine;
     use std::{collections::HashMap, fmt::Debug, sync::Arc, time::Duration};
 
-    use hotpath::instant::Instant;
+    use quanta::Instant;
 
     use crate::{
         common::{
