@@ -3,7 +3,7 @@ use std::sync::{Arc, Weak};
 
 use crate::common::global_ctx::{ArcGlobalCtx, GlobalCtxEvent};
 use crate::peers::peer_manager::PeerManager;
-use hotpath::instant::Instant;
+use quanta::Instant;
 use tokio_util::task::AbortOnDropHandle;
 
 /// ProxyCidrsMonitor monitors changes in proxy CIDRs from peer routes

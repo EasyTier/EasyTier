@@ -7,13 +7,13 @@ use std::{
 };
 
 use anyhow::Context;
-use hotpath::instant::Instant;
 use pnet::packet::{
     Packet,
     icmp::{self, IcmpCode, IcmpTypes, MutableIcmpPacket, echo_reply::MutableEchoReplyPacket},
     ip::IpNextHeaderProtocols,
     ipv4::Ipv4Packet,
 };
+use quanta::Instant;
 use socket2::Socket;
 use tokio::{
     sync::{Mutex, mpsc::UnboundedSender},

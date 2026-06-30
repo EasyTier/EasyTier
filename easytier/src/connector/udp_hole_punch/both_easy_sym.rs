@@ -5,7 +5,7 @@ use std::{
 };
 
 use anyhow::Context;
-use hotpath::instant::Instant;
+use quanta::Instant;
 use tokio::sync::Mutex;
 use tokio_util::task::AbortOnDropHandle;
 

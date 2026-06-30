@@ -8,7 +8,7 @@ use crate::proto::common::{NatType, StunInfo};
 use anyhow::Context;
 use chrono::Local;
 use crossbeam::atomic::AtomicCell;
-use hotpath::instant::Instant;
+use quanta::Instant;
 use rand::seq::IteratorRandom;
 use socket2::{SockAddr, SockRef};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};

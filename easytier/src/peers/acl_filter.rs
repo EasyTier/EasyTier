@@ -7,11 +7,11 @@ use std::{
 
 use arc_swap::ArcSwap;
 use dashmap::DashMap;
-use hotpath::instant::Instant;
 use pnet::packet::ipv6::Ipv6Packet;
 use pnet::packet::{
     Packet as _, ip::IpNextHeaderProtocols, ipv4::Ipv4Packet, tcp::TcpPacket, udp::UdpPacket,
 };
+use quanta::Instant;
 
 use crate::proto::acl::{AclStats, Protocol};
 use crate::tunnel::packet_def::PacketType;
@@ -404,7 +404,7 @@ mod tests {
         sync::Arc,
     };
 
-    use hotpath::instant::Instant;
+    use quanta::Instant;
 
     use crate::{
         common::acl_processor::PacketInfo,

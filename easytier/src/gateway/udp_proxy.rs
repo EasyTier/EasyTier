@@ -8,13 +8,13 @@ use bytes::{BufMut, BytesMut};
 use cidr::Ipv4Inet;
 use crossbeam::atomic::AtomicCell;
 use dashmap::DashMap;
-use hotpath::instant::Instant;
 use pnet::packet::{
     Packet,
     ip::IpNextHeaderProtocols,
     ipv4::Ipv4Packet,
     udp::{self, MutableUdpPacket},
 };
+use quanta::Instant;
 use tokio::sync::mpsc::{Receiver, Sender, channel, error::TrySendError};
 use tokio::{
     net::UdpSocket,
