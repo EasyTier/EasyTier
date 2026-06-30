@@ -340,7 +340,10 @@ impl TcpHolePunchConnectorData {
 
         let flags = global_ctx.get_flags();
         if !flags.disable_tcp_simultaneous_open {
-            tracing::info!(local_port, "tcp hole punch initiator mode: simultaneous open");
+            tracing::info!(
+                local_port,
+                "tcp hole punch initiator mode: simultaneous open"
+            );
 
             if let Ok(()) = try_connect_to_remote(
                 self.peer_mgr.clone(),
@@ -360,7 +363,10 @@ impl TcpHolePunchConnectorData {
                 return Ok(());
             }
         } else {
-            tracing::info!(local_port, "tcp hole punch initiator skipped simultaneous open by flag");
+            tracing::info!(
+                local_port,
+                "tcp hole punch initiator skipped simultaneous open by flag"
+            );
         }
 
         tracing::debug!(
@@ -397,7 +403,10 @@ impl TcpHolePunchConnectorData {
                         match listener.accept().await {
                             Ok(tunnel) => {
                                 if let Err(e) = peer_mgr.add_tunnel_as_server(tunnel, false).await {
-                                    tracing::error!("tcp hole punch global add tunnel error: {}", e);
+                                    tracing::error!(
+                                        "tcp hole punch global add tunnel error: {}",
+                                        e
+                                    );
                                 }
                             }
                             Err(e) => {
@@ -410,17 +419,14 @@ impl TcpHolePunchConnectorData {
             }
         }
 
-        let timeout_result = tokio::time::timeout(
-            Duration::from_secs(10),
-            async {
-                loop {
-                    if self.peer_mgr.get_peer_map().has_peer(dst_peer_id) {
-                        return;
-                    }
-                    tokio::time::sleep(Duration::from_millis(100)).await;
+        let timeout_result = tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                if self.peer_mgr.get_peer_map().has_peer(dst_peer_id) {
+                    return;
                 }
-            },
-        )
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+        })
         .await;
 
         match timeout_result {
@@ -442,7 +448,6 @@ impl TcpHolePunchConnectorData {
             }
         }
     }
-
 }
 
 #[derive(Clone, Debug, Hash, Eq, PartialEq)]
