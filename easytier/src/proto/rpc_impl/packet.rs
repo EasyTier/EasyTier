@@ -1,6 +1,6 @@
 use prost::{Message as _, length_delimiter_len};
 
-use hotpath::instant::Instant;
+use quanta::Instant;
 
 use crate::{
     common::{PeerId, compressor::DefaultCompressor},

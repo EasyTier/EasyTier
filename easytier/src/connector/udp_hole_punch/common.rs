@@ -7,7 +7,7 @@ use std::{
 use crossbeam::atomic::AtomicCell;
 use dashmap::{DashMap, DashSet};
 use guarden::defer;
-use hotpath::instant::Instant;
+use quanta::Instant;
 use rand::seq::SliceRandom as _;
 use tokio::{net::UdpSocket, sync::Mutex, task::JoinSet};
 use tracing::{Instrument, Level, instrument};

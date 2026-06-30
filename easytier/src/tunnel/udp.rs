@@ -15,7 +15,9 @@ use zerocopy::{AsBytes, FromBytes};
 
 use tokio::{
     net::UdpSocket,
-    sync::mpsc::{Receiver, Sender, UnboundedReceiver, UnboundedSender},
+    sync::mpsc::{
+        Receiver, Sender, UnboundedReceiver, UnboundedSender, channel, unbounded_channel,
+    },
     task::JoinSet,
 };
 use tokio_util::task::AbortOnDropHandle;
@@ -673,9 +675,8 @@ pub struct UdpTunnelListener {
 
 impl UdpTunnelListener {
     pub fn new(addr: url::Url) -> Self {
-        let (close_event_send, close_event_recv) =
-            hotpath::channel!(tokio::sync::mpsc::unbounded_channel());
-        let (conn_send, conn_recv) = hotpath::channel!(tokio::sync::mpsc::channel(100));
+        let (close_event_send, close_event_recv) = unbounded_channel();
+        let (conn_send, conn_recv) = channel(100);
         Self {
             addr: addr.clone(),
             socket: None,
@@ -915,8 +916,7 @@ impl UdpTunnelConnector {
             "udp build tunnel for connector"
         );
 
-        let (close_event_sender, mut close_event_recv) =
-            hotpath::channel!(tokio::sync::mpsc::unbounded_channel());
+        let (close_event_sender, mut close_event_recv) = unbounded_channel();
 
         let ring_recv = RingStream::new(ring_for_send_udp.clone());
         let ring_sender = RingSink::new(ring_for_recv_udp.clone());

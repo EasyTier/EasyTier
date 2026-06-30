@@ -7,7 +7,7 @@ use std::time::Duration;
 use anyhow::anyhow;
 use crossbeam::atomic::AtomicCell;
 use dashmap::DashMap;
-use hotpath::instant::Instant;
+use quanta::Instant;
 
 use super::secure_datagram::{SecureDatagramDirection, SecureDatagramSession};
 use crate::{
@@ -376,7 +376,6 @@ impl PeerSession {
         }
     }
 
-    #[cfg_attr(feature = "hotpath", hotpath::measure(impl_type = "PeerSession"))]
     pub fn encrypt_payload(
         &self,
         sender_peer_id: PeerId,
@@ -390,7 +389,6 @@ impl PeerSession {
             .encrypt_payload(Self::dir_for_sender(sender_peer_id, receiver_peer_id), pkt)
     }
 
-    #[cfg_attr(feature = "hotpath", hotpath::measure(impl_type = "PeerSession"))]
     pub fn decrypt_payload(
         &self,
         sender_peer_id: PeerId,

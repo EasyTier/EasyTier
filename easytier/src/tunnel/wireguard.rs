@@ -6,7 +6,7 @@ use std::{
     time::Duration,
 };
 
-use hotpath::instant::Instant;
+use quanta::Instant;
 
 use super::{
     FromUrl, IpVersion, Tunnel, TunnelError, TunnelInfo, TunnelListener, TunnelUrl, ZCPacketSink,
@@ -37,7 +37,11 @@ use crossbeam::atomic::AtomicCell;
 use dashmap::DashMap;
 use futures::{SinkExt, StreamExt, stream::FuturesUnordered};
 use rand::RngCore;
-use tokio::{net::UdpSocket, sync::Mutex, task::JoinSet};
+use tokio::{
+    net::UdpSocket,
+    sync::{Mutex, mpsc::unbounded_channel},
+    task::JoinSet,
+};
 
 const MAX_PACKET: usize = 2048;
 
@@ -470,7 +474,7 @@ pub struct WgTunnelListener {
 
 impl WgTunnelListener {
     pub fn new(addr: url::Url, config: WgConfig) -> Self {
-        let (conn_send, conn_recv) = hotpath::channel!(tokio::sync::mpsc::unbounded_channel());
+        let (conn_send, conn_recv) = unbounded_channel();
         WgTunnelListener {
             addr,
             config,

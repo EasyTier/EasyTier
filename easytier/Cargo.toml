@@ -52,7 +52,6 @@ toml = "0.8.12"
 chrono = { version = "0.4.37", features = ["serde"] }
 
 guarden = "0.2"
-hotpath = { version = "0.18", default-features = false, optional = true }
 quanta = "0.12"
 
 delegate = "0.13.5"
@@ -403,17 +402,14 @@ jemalloc-prof = [
     "jemalloc-sys/stats",
 ]
 tracing = ["tokio/tracing", "dep:console-subscriber"]
-hotpath = [
-    "dep:hotpath",
-    "hotpath/hotpath",
-    "hotpath/tokio",
-    "hotpath/parking_lot",
-    "hotpath/flume",
-]
-hotpath-cpu = ["hotpath", "hotpath/hotpath-cpu"]
-hotpath-alloc = ["hotpath", "hotpath/hotpath-alloc"]
 magic-dns = ["dep:hickory-client", "dep:hickory-server"]
 faketcp = ["dep:flume"]
 zstd = ["dep:zstd"]
+# Deprecated: hotpath profiling has been removed. These feature aliases are
+# retained as no-ops so existing build scripts using `--features hotpath*`
+# continue to work without pulling in any dependencies.
+hotpath = []
+hotpath-cpu = ["hotpath"]
+hotpath-alloc = ["hotpath"]
 # For Network Extension on macOS
 macos-ne = []

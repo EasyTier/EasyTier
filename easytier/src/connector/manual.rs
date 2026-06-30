@@ -6,7 +6,7 @@ use std::{
 };
 
 use dashmap::DashSet;
-use hotpath::instant::Instant;
+use quanta::Instant;
 use tokio::{sync::mpsc, task::JoinSet, time::timeout};
 
 use crate::{
