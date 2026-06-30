@@ -22,6 +22,8 @@ const api = computed<ApiClient | undefined>(() => {
     }
 });
 
+const isAdmin = ref(false);
+
 const dialog = useDialog();
 
 const userMenu = ref();
@@ -89,6 +91,17 @@ const closeSidebar = () => {
 };
 
 onMounted(async () => {
+    // Check if current user is admin
+    if (api.value) {
+        try {
+            const info = await api.value.whoami();
+            isAdmin.value = info.is_admin;
+        } catch (e) {
+            // Not admin or error - keep isAdmin as false
+            console.log('Not admin or whoami failed:', e);
+        }
+    }
+
     // 等待 DOM 渲染完成后添加事件监听器
     await nextTick();
     document.addEventListener('click', handleClickOutside);
@@ -155,6 +168,13 @@ onUnmounted(() => {
                         severity="contrast" @click="router.push({ name: 'deviceList' })">
                         <i class="pi pi-server text-xl"></i>
                         <span class="mb-0.5">{{ t('web.main.device_list') }}</span>
+                    </Button>
+                </li>
+                <li v-if="isAdmin">
+                    <Button variant="text" class="w-full justify-start gap-x-3 pl-1.5 sidebar-button"
+                        severity="contrast" @click="router.push({ name: 'userManagement' })">
+                        <i class="pi pi-users text-xl"></i>
+                        <span class="mb-0.5">{{ t('web.main.user_management') }}</span>
                     </Button>
                 </li>
                 <li>

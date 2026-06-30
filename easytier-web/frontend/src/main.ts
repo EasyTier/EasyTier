@@ -14,6 +14,7 @@ import Login from './components/Login.vue'
 import DeviceList from './components/DeviceList.vue'
 import DeviceManagement from './components/DeviceManagement.vue'
 import Dashboard from './components/Dashboard.vue'
+import UserManagement from './components/UserManagement.vue'
 import DialogService from 'primevue/dialogservice';
 import ToastService from 'primevue/toastservice';
 import ConfigGenerator from './components/ConfigGenerator.vue'
@@ -55,6 +56,11 @@ const routes = [
                         component: DeviceManagement,
                     }
                 ]
+            },
+            {
+                path: 'userManagement',
+                name: 'userManagement',
+                component: UserManagement,
             },
         ]
     },

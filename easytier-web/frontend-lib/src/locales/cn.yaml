@@ -292,10 +292,17 @@ web:
     device_list: 设备列表
     device_management: 设备管理
     login_page: 登录页面
+    user_management: 用户管理
     settings: 设置
     logout: 退出登录
     language: 语言
     change_password: 修改密码
+
+  admin:
+    user_list: 用户列表
+    registration_toggle: 允许注册
+    registration_enabled: 注册已开启，新用户可以注册。
+    registration_disabled: 注册已关闭，新用户无法注册。
 
   device:
     list: 设备列表
