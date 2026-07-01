@@ -2352,6 +2352,7 @@ dependencies = [
  "derive_builder",
  "derive_more 2.1.1",
  "encoding",
+ "etherparse 0.20.2",
  "flume 0.12.0",
  "forwarded-header-value",
  "futures",
@@ -2372,6 +2373,7 @@ dependencies = [
  "idna 1.0.3",
  "igd-next",
  "indoc",
+ "internet-checksum",
  "itertools 0.14.0",
  "kcp-sys",
  "machine-uid",
@@ -2455,6 +2457,7 @@ dependencies = [
  "url",
  "uuid",
  "version-compare",
+ "virtio-bindings",
  "which 7.0.3",
  "wildmatch",
  "winapi",
@@ -2900,6 +2903,15 @@ name = "etherparse"
 version = "0.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "827292ea592108849932ad8e30218f8b1f21c0dfd0696698a18b5d0aed62d990"
+dependencies = [
+ "arrayvec",
+]
+
+[[package]]
+name = "etherparse"
+version = "0.20.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e8b5355e41024c070dd6c1a9b3340e5026a71a4222fb6c64606f21c9f6b502c1"
 dependencies = [
  "arrayvec",
 ]
@@ -4491,6 +4503,12 @@ checksum = "a0c10553d664a4d0bcff9f4215d0aac67a639cc68ef660840afe309b807bc9f5"
 dependencies = [
  "generic-array",
 ]
+
+[[package]]
+name = "internet-checksum"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fc6d6206008e25125b1f97fbe5d309eb7b85141cf9199d52dbd3729a1584dd16"
 
 [[package]]
 name = "inventory"
@@ -8829,9 +8847,9 @@ dependencies = [
 
 [[package]]
 name = "smallvec"
-version = "1.13.2"
+version = "1.15.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3c5e1a9a646d36c3599cd173a41282daf47c44583ad367b8e6837255952e5c67"
+checksum = "8ed6a63f02c8539c91a8685a86f4099661ba3da017932f6ebbea6de3f0fa7c90"
 dependencies = [
  "serde",
 ]
@@ -10595,16 +10613,19 @@ checksum = "7b3e06c9b9d80ed6b745c7159c40b311ad2916abb34a49e9be2653b90db0d8dd"
 [[package]]
 name = "tun-easytier"
 version = "1.1.1"
-source = "git+https://github.com/EasyTier/rust-tun#12378839e7985283df0e4fb536b7137230356db5"
+source = "git+https://github.com/ZnqbuZ/rust-tun#b2c3fbaa532eed390997ac0dfadb111a7d86f1a7"
 dependencies = [
  "bytes",
  "cfg-if",
+ "delegate",
+ "derive_more 2.1.1",
  "futures-core",
  "ipnet",
  "libc",
  "libloading 0.8.5",
  "log",
  "nix 0.29.0",
+ "smallvec",
  "thiserror 1.0.63",
  "tokio",
  "tokio-util",
@@ -10911,6 +10932,12 @@ name = "version_check"
 version = "0.9.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
+
+[[package]]
+name = "virtio-bindings"
+version = "0.2.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "091f1f09cfbf2a78563b562e7a949465cce1aef63b6065645188d995162f8868"
 
 [[package]]
 name = "vswhom"
@@ -11413,7 +11440,7 @@ name = "windivert"
 version = "0.6.0"
 source = "git+https://github.com/EasyTier/windivert-rust.git?rev=adcc56d1550f7b5377ec2b3429f413ee24a77375#adcc56d1550f7b5377ec2b3429f413ee24a77375"
 dependencies = [
- "etherparse",
+ "etherparse 0.13.0",
  "thiserror 1.0.63",
  "windivert-sys",
  "windows 0.48.0",

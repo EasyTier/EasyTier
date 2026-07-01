@@ -18,6 +18,7 @@ use crate::tunnel::packet_def::{
     PacketType, PeerManagerHeader, TAIL_RESERVED_SIZE, ZCPacket, ZCPacketType,
 };
 use crate::tunnel::quic::{client_config, endpoint_config, server_config};
+use crate::utils::buf::{BufMargins, BufPool};
 use crate::utils::task::HedgeExt;
 use anyhow::{Context, Error, anyhow, bail, ensure};
 use atomic_refcell::AtomicRefCell;
@@ -38,7 +39,6 @@ use std::future::Future;
 use std::io::IoSliceMut;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::pin::Pin;
-use std::ptr::copy_nonoverlapping;
 use std::sync::{Arc, Weak};
 use std::task::Poll;
 use std::time::Duration;
@@ -60,17 +60,7 @@ struct QuicPacket {
     ecn: Option<EcnCodepoint>,
 }
 
-#[derive(Debug, Clone, Copy, From, Into)]
-pub struct PacketMargins {
-    pub header: usize,
-    pub trailer: usize,
-}
-
-impl PacketMargins {
-    pub fn len(&self) -> usize {
-        self.header + self.trailer
-    }
-}
+type PacketMargins = BufMargins;
 //endregion
 
 //region socket
@@ -123,26 +113,17 @@ impl AsyncUdpSocket for QuicSocket {
 
                 let segment_size = transmit.segment_size.unwrap_or(len);
                 let chunks = transmit.contents.chunks(segment_size);
-                let segment = segment_size + self.margins.len();
-
-                let mut payload = BytesMut::with_capacity(chunks.len() * segment);
+                let segment = segment_size + self.margins.size();
 
                 // The length of the last chunk could be smaller than segment_size
+                let mut payload = BufPool::new(chunks.len() * segment);
                 for chunk in chunks {
-                    let len = chunk.len();
-                    unsafe {
-                        copy_nonoverlapping(
-                            chunk.as_ptr(),
-                            payload.chunk_mut().as_mut_ptr().add(self.margins.header),
-                            len,
-                        );
-                        payload.advance_mut(len + self.margins.len());
-                    }
+                    payload.write(chunk, self.margins);
                 }
 
                 permit.send(QuicPacket {
                     addr: transmit.destination,
-                    payload,
+                    payload: payload.split(),
                     segment: Some(segment),
                     ecn: transmit.ecn,
                 });
@@ -1421,7 +1402,7 @@ mod tests {
         let mut rx = socket.rx.into_inner();
         let packet = rx.recv().await.unwrap();
 
-        let actual_segment_size = segment_size + margins.len();
+        let actual_segment_size = segment_size + margins.size();
         let payload = packet.payload;
 
         let chunk1_start = margins.header;

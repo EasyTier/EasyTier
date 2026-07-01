@@ -16,7 +16,6 @@ use tokio::time::error::Elapsed;
 
 use self::packet_def::ZCPacket;
 
-pub mod buf;
 pub mod common;
 pub mod filter;
 pub mod mpsc;
@@ -87,9 +86,8 @@ pub enum TunnelError {
     TunError(String),
 }
 
-pub type StreamT = packet_def::ZCPacket;
-pub type StreamItem = Result<StreamT, TunnelError>;
-pub type SinkItem = packet_def::ZCPacket;
+pub type StreamItem = Result<ZCPacket, TunnelError>;
+pub type SinkItem = ZCPacket;
 pub type SinkError = TunnelError;
 
 pub trait ZCPacketStream: Stream<Item = StreamItem> + Send {}

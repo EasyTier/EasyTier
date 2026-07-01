@@ -8,7 +8,7 @@ use std::net::{IpAddr, SocketAddr};
 const IPV4_HEADER_LEN: usize = 20;
 const IPV6_HEADER_LEN: usize = 40;
 const TCP_HEADER_LEN: usize = 20;
-pub const MAX_PACKET_LEN: usize = 1500;
+pub const FAKETCP_MAX_PACKET_SIZE: usize = 1 << 16;
 
 #[derive(Debug)]
 pub enum IPPacket<'p> {
