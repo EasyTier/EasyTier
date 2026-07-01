@@ -12,6 +12,9 @@ use crate::tunnel::{
 use anyhow::Context;
 use derivative::Derivative;
 use derive_more::{Deref, DerefMut};
+#[cfg(feature = "hotpath")]
+use hotpath::wrap::parking_lot::RwLock;
+#[cfg(not(feature = "hotpath"))]
 use parking_lot::RwLock;
 use quinn::{
     ClientConfig, ConnectError, Connection, Endpoint, EndpointConfig, ServerConfig,
@@ -312,18 +315,25 @@ struct RwPoolInner<Item> {
     enabled: bool,
 }
 
-#[derive(Debug)]
 struct RwPool<Item> {
     ephemeral: RwLock<RwPoolInner<Item>>,
     persistent: RwLock<RwPoolInner<Item>>,
     capacity: usize,
 }
 
+impl<Item> std::fmt::Debug for RwPool<Item> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RwPool")
+            .field("capacity", &self.capacity)
+            .finish()
+    }
+}
+
 impl<Item> RwPool<Item> {
     fn new(capacity: usize) -> Self {
         Self {
-            ephemeral: RwLock::new(RwPoolInner::default()),
-            persistent: RwLock::new(RwPoolInner::default()),
+            ephemeral: hotpath::rw_lock!(parking_lot::RwLock::new(RwPoolInner::default())),
+            persistent: hotpath::rw_lock!(parking_lot::RwLock::new(RwPoolInner::default())),
             capacity,
         }
     }

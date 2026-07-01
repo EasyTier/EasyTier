@@ -48,9 +48,13 @@ use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::sync::{
-    Arc, RwLock,
+    Arc,
     atomic::{AtomicU32, Ordering},
 };
+#[cfg(feature = "hotpath")]
+use hotpath::wrap::std::sync::RwLock;
+#[cfg(not(feature = "hotpath"))]
+use std::sync::RwLock;
 use tokio::sync::broadcast;
 use tokio::time;
 use tokio_util::task::AbortOnDropHandle;
@@ -159,7 +163,7 @@ impl Socket {
         ack: Option<u32>,
         state: State,
     ) -> (Socket, flume::Sender<Bytes>) {
-        let (incoming_tx, incoming_rx) = flume::bounded(MPMC_BUFFER_LEN);
+        let (incoming_tx, incoming_rx) = hotpath::channel!(flume::bounded(MPMC_BUFFER_LEN));
 
         (
             Socket {
@@ -430,9 +434,9 @@ impl Stack {
     ) -> Stack {
         let (tuples_purge_tx, _tuples_purge_rx) = broadcast::channel(16);
         let shared = Arc::new(Shared {
-            state: RwLock::new(StackState::default()),
+            state: hotpath::rw_lock!(std::sync::RwLock::new(StackState::default())),
             tun: tun.clone(),
-            listening: RwLock::new(HashSet::new()),
+            listening: hotpath::rw_lock!(std::sync::RwLock::new(HashSet::new())),
             tuples_purge: tuples_purge_tx.clone(),
         });
 

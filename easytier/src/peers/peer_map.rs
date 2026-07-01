@@ -6,6 +6,9 @@ use std::{
 use anyhow::Context;
 use dashmap::{DashMap, DashSet};
 use parking_lot::Mutex;
+#[cfg(feature = "hotpath")]
+use hotpath::wrap::tokio::sync::RwLock;
+#[cfg(not(feature = "hotpath"))]
 use tokio::sync::RwLock;
 
 use crate::{
@@ -45,7 +48,7 @@ impl PeerMap {
             my_peer_id,
             peer_map: DashMap::new(),
             packet_send,
-            routes: RwLock::new(Vec::new()),
+            routes: hotpath::rw_lock!(tokio::sync::RwLock::new(Vec::new())),
             alive_client_urls: Arc::new(Mutex::new(multimap::MultiMap::new())),
         }
     }
@@ -132,6 +135,7 @@ impl PeerMap {
         peer_id == self.my_peer_id || self.peer_map.contains_key(&peer_id)
     }
 
+    #[cfg_attr(feature = "hotpath", hotpath::measure(impl_type = "PeerMap"))]
     pub async fn send_msg_directly(&self, msg: ZCPacket, dst_peer_id: PeerId) -> Result<(), Error> {
         if dst_peer_id == self.my_peer_id {
             let packet_send = self.packet_send.clone();
@@ -163,6 +167,7 @@ impl PeerMap {
         Ok(())
     }
 
+    #[cfg_attr(feature = "hotpath", hotpath::measure(impl_type = "PeerMap"))]
     pub async fn get_gateway_peer_id(
         &self,
         dst_peer_id: PeerId,

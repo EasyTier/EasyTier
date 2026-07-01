@@ -293,6 +293,7 @@ fn get_zcpacket_from_buf(buf: BytesMut, allow_stun: bool) -> Result<ZCPacket, Tu
 }
 
 #[instrument]
+#[cfg_attr(feature = "hotpath", hotpath::measure())]
 async fn forward_from_ring_to_udp(
     mut ring_recv: RingStream,
     socket: &Arc<UdpSocket>,
@@ -327,6 +328,7 @@ async fn forward_from_ring_to_udp(
     }
 }
 
+#[cfg_attr(feature = "hotpath", hotpath::measure())]
 async fn udp_recv_from_socket_forward_task(
     socket: &UdpSocket,
     buf: &mut BytesMut,
@@ -395,6 +397,7 @@ impl UdpConnection {
         }
     }
 
+    #[cfg_attr(feature = "hotpath", hotpath::measure(impl_type = "UdpTunnel"))]
     pub fn handle_packet_from_remote(&mut self, zc_packet: ZCPacket) -> Result<(), TunnelError> {
         let header = zc_packet.udp_tunnel_header().unwrap();
         let conn_id = header.conn_id.get();
@@ -541,6 +544,7 @@ impl UdpTunnelListenerData {
         }
     }
 
+    #[cfg_attr(feature = "hotpath", hotpath::measure(impl_type = "UdpTunnelListener"))]
     fn do_forward_one_packet_to_conn(&self, zc_packet: ZCPacket, addr: SocketAddr) {
         let header = zc_packet.udp_tunnel_header().unwrap();
         if header.msg_type == UdpPacketType::Syn as u8 {
@@ -647,6 +651,7 @@ impl UdpTunnelListenerData {
         }
     }
 
+    #[cfg_attr(feature = "hotpath", hotpath::measure(impl_type = "UdpTunnelListener"))]
     async fn do_forward_task(self) {
         let socket = self.socket.as_ref().unwrap().clone();
         let mut buf = BytesMut::new();
@@ -675,8 +680,8 @@ pub struct UdpTunnelListener {
 
 impl UdpTunnelListener {
     pub fn new(addr: url::Url) -> Self {
-        let (close_event_send, close_event_recv) = unbounded_channel();
-        let (conn_send, conn_recv) = channel(100);
+        let (close_event_send, close_event_recv) = hotpath::channel!(unbounded_channel());
+        let (conn_send, conn_recv) = hotpath::channel!(channel(100));
         Self {
             addr: addr.clone(),
             socket: None,
@@ -916,7 +921,8 @@ impl UdpTunnelConnector {
             "udp build tunnel for connector"
         );
 
-        let (close_event_sender, mut close_event_recv) = unbounded_channel();
+        let (close_event_sender, mut close_event_recv) =
+            hotpath::channel!(unbounded_channel());
 
         let ring_recv = RingStream::new(ring_for_send_udp.clone());
         let ring_sender = RingSink::new(ring_for_recv_udp.clone());

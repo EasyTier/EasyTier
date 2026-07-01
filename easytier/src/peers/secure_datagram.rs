@@ -1,10 +1,15 @@
 use std::{
     sync::{
-        Arc, Mutex, RwLock,
         atomic::{AtomicBool, AtomicU32, Ordering},
+        Arc,
     },
     time::{SystemTime, UNIX_EPOCH},
 };
+
+#[cfg(feature = "hotpath")]
+use hotpath::wrap::std::sync::{Mutex, RwLock};
+#[cfg(not(feature = "hotpath"))]
+use std::sync::{Mutex, RwLock};
 
 use anyhow::anyhow;
 use atomic_shim::AtomicU64;
@@ -14,7 +19,7 @@ use sha2::Sha256;
 use zerocopy::FromBytes;
 
 use crate::{
-    peers::encrypt::{Encryptor, create_encryptor},
+    peers::encrypt::{create_encryptor, Encryptor},
     tunnel::packet_def::{StandardAeadTail, ZCPacket},
 };
 
@@ -228,15 +233,15 @@ pub struct SecureDatagramSession {
 impl std::fmt::Debug for SecureDatagramSession {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("SecureDatagramSession")
-            .field("root_key", &self.root_key)
+            .field("root_key", &*self.root_key.read().unwrap())
             .field("session_generation", &self.session_generation)
             .field("send_epoch", &self.send_epoch)
             .field("send_seq", &self.send_seq)
             .field("send_epoch_started_ms", &self.send_epoch_started_ms)
             .field("send_packets_since_epoch", &self.send_packets_since_epoch)
-            .field("rx_slots", &self.rx_slots)
-            .field("key_cache", &self.key_cache)
-            .field("sync_rx_grace", &self.sync_rx_grace)
+            .field("rx_slots", &*self.rx_slots.lock().unwrap())
+            .field("key_cache", &*self.key_cache.lock().unwrap())
+            .field("sync_rx_grace", &*self.sync_rx_grace.lock().unwrap())
             .field(
                 "sync_rx_grace_expires_at_ms",
                 &self.sync_rx_grace_expires_at_ms,
@@ -272,15 +277,15 @@ impl SecureDatagramSession {
         ];
         let now_ms = now_ms();
         Self {
-            root_key: RwLock::new(root_key),
+            root_key: hotpath::rw_lock!(std::sync::RwLock::new(root_key)),
             session_generation: AtomicU32::new(session_generation),
             send_epoch: AtomicU32::new(initial_epoch),
             send_seq: [AtomicU64::new(0), AtomicU64::new(0)],
             send_epoch_started_ms: AtomicU64::new(now_ms),
             send_packets_since_epoch: AtomicU64::new(0),
-            rx_slots: Mutex::new(rx_slots),
-            key_cache: Mutex::new(key_cache),
-            sync_rx_grace: Mutex::new(SyncRxGrace::default()),
+            rx_slots: hotpath::mutex!(std::sync::Mutex::new(rx_slots)),
+            key_cache: hotpath::mutex!(std::sync::Mutex::new(key_cache)),
+            sync_rx_grace: hotpath::mutex!(std::sync::Mutex::new(SyncRxGrace::default())),
             sync_rx_grace_expires_at_ms: AtomicU64::new(0),
             send_cipher_algorithm,
             recv_cipher_algorithm,
@@ -701,6 +706,10 @@ impl SecureDatagramSession {
         false
     }
 
+    #[cfg_attr(
+        feature = "hotpath",
+        hotpath::measure(impl_type = "SecureDatagramSession")
+    )]
     pub fn encrypt_payload(
         &self,
         dir: SecureDatagramDirection,
@@ -719,6 +728,10 @@ impl SecureDatagramSession {
         Ok(())
     }
 
+    #[cfg_attr(
+        feature = "hotpath",
+        hotpath::measure(impl_type = "SecureDatagramSession")
+    )]
     pub fn decrypt_payload(
         &self,
         dir: SecureDatagramDirection,
@@ -884,11 +897,9 @@ mod tests {
         let nonce_offset = payload.len() - StandardAeadTail::NONCE_SIZE;
         payload[nonce_offset..].copy_from_slice(&poisoned_nonce);
 
-        assert!(
-            receiver
-                .decrypt_payload(SecureDatagramDirection::AToB, &mut forged)
-                .is_err()
-        );
+        assert!(receiver
+            .decrypt_payload(SecureDatagramDirection::AToB, &mut forged)
+            .is_err());
 
         let plaintext = b"pkt2";
         let mut pkt2 = ZCPacket::new_with_payload(plaintext);
