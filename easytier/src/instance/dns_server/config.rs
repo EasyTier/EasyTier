@@ -16,6 +16,13 @@ pub struct RunConfig {
     #[builder(default = Vec::new())]
     #[serde(default)]
     excluded_forward_nameservers: Vec<IpAddr>,
+
+    /// When true, no ForwardAuthority is created. Queries for zones not handled
+    /// by this server return REFUSED immediately, which is correct for the
+    /// Magic DNS server that only handles VPN-internal zones.
+    #[builder(default = false)]
+    #[serde(default)]
+    disable_forwarding: bool,
 }
 
 impl RunConfig {
@@ -29,6 +36,10 @@ impl RunConfig {
 
     pub fn excluded_forward_nameservers(&self) -> &Vec<IpAddr> {
         &self.excluded_forward_nameservers
+    }
+
+    pub fn disable_forwarding(&self) -> bool {
+        self.disable_forwarding
     }
 }
 

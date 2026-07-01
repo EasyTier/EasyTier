@@ -88,32 +88,37 @@ impl Server {
             catalog.upsert(zone.clone().into(), vec![Arc::new(authroty)]);
         }
 
-        // use forwarder authority for the root zone
-        let system_conf =
-            read_system_conf().unwrap_or((get_default_resolver_config(), ResolverOpts::default()));
-        let forward_config = ForwardConfig {
-            name_servers: system_conf
-                .0
-                .name_servers()
-                .iter()
-                .filter(|&x| {
-                    !config
-                        .excluded_forward_nameservers()
-                        .contains(&x.socket_addr.ip())
-                })
-                .cloned()
-                .collect::<Vec<_>>()
-                .into(),
-            options: Some(system_conf.1),
-        };
-        let auth = ForwardAuthority::builder_with_config(
-            forward_config,
-            TokioConnectionProvider::default(),
-        )
-        .build()
-        .unwrap();
-
-        catalog.upsert(rr::Name::from_str(".")?.into(), vec![Arc::new(auth)]);
+        // Only add a ForwardAuthority when forwarding is explicitly enabled.
+        // The Magic DNS server only handles VPN-internal zones; forwarding non-VPN
+        // queries to an upstream DNS server can block for seconds on timeout and
+        // stalls the entire NIC packet pipeline. When disable_forwarding is set
+        // (the default for Magic DNS), unknown zones return REFUSED immediately.
+        if !config.disable_forwarding() {
+            let system_conf = read_system_conf()
+                .unwrap_or((get_default_resolver_config(), ResolverOpts::default()));
+            let forward_config = ForwardConfig {
+                name_servers: system_conf
+                    .0
+                    .name_servers()
+                    .iter()
+                    .filter(|&x| {
+                        !config
+                            .excluded_forward_nameservers()
+                            .contains(&x.socket_addr.ip())
+                    })
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .into(),
+                options: Some(system_conf.1),
+            };
+            let auth = ForwardAuthority::builder_with_config(
+                forward_config,
+                TokioConnectionProvider::default(),
+            )
+            .build()
+            .map_err(|e| anyhow::anyhow!("failed to build ForwardAuthority: {}", e))?;
+            catalog.upsert(rr::Name::from_str(".")?.into(), vec![Arc::new(auth)]);
+        }
 
         let catalog = Arc::new(RwLock::new(catalog));
         let handler = CatalogRequestHandler::new(catalog.clone());

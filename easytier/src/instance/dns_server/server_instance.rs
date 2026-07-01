@@ -38,9 +38,10 @@ use crate::{
 use anyhow::Context;
 use cidr::Ipv4Inet;
 use dashmap::DashMap;
+use hickory_proto::op::{Header, ResponseCode};
 use hickory_proto::rr::LowerName;
 use hickory_proto::serialize::binary::{BinDecodable, BinEncoder};
-use hickory_server::authority::{MessageRequest, MessageResponse};
+use hickory_server::authority::{MessageRequest, MessageResponse, MessageResponseBuilder};
 use hickory_server::server::{Request, RequestHandler, ResponseHandler, ResponseInfo};
 use multimap::MultiMap;
 use pnet::packet::icmp::{IcmpTypes, MutableIcmpPacket};
@@ -57,6 +58,10 @@ use std::sync::Mutex;
 use std::{collections::BTreeMap, io, net::Ipv4Addr, str::FromStr, sync::Arc, time::Duration};
 
 static NIC_PIPELINE_NAME: &str = "magic_dns_server";
+
+/// Timeout for a single DNS query handled by the Magic DNS server.
+/// Prevents the NIC pipeline from being stalled by a slow or looping ForwardAuthority.
+const DNS_QUERY_TIMEOUT_SECS: u64 = 3;
 
 pub(super) struct MagicDnsServerInstanceData {
     dns_server: Server,
@@ -91,7 +96,7 @@ impl MagicDnsServerInstanceData {
                 .rr_type(RecordType::A)
                 .name(format!("{}.{}", route.hostname, zone))
                 .value(ipv4_addr.to_string())
-                .ttl(Duration::from_secs(1))
+                .ttl(Duration::from_secs(30))
                 .build()?;
 
             // check record name valid for dns
@@ -372,16 +377,42 @@ impl MagicDnsServerInstanceData {
         let response_payload = {
             let response_payload_arc = Arc::new(Mutex::new(Vec::with_capacity(512)));
 
-            self.dns_server
-                .read_catalog()
-                .await
-                .handle_request(
-                    &request,
-                    ResponseWrapper {
-                        response: response_payload_arc.clone(),
-                    },
-                )
-                .await;
+            // Wrap handle_request with a timeout to prevent the NIC processing pipeline
+            // from being stalled if the ForwardAuthority DNS forward hangs.
+            // 15-second stalls were observed when forwarding looped back through the stub resolver.
+            let timeout_result = tokio::time::timeout(
+                Duration::from_secs(DNS_QUERY_TIMEOUT_SECS),
+                async {
+                    self.dns_server
+                        .read_catalog()
+                        .await
+                        .handle_request(
+                            &request,
+                            ResponseWrapper {
+                                response: response_payload_arc.clone(),
+                            },
+                        )
+                        .await;
+                },
+            )
+            .await;
+
+            if timeout_result.is_err() {
+                tracing::warn!(
+                    "DNS query handling timed out after {}s; returning SERVFAIL to unblock NIC pipeline",
+                    DNS_QUERY_TIMEOUT_SECS
+                );
+                // Return SERVFAIL so the client fails fast instead of waiting its own retry timeout.
+                if let Ok(mut buf) = response_payload_arc.lock() {
+                    buf.clear();
+                    let builder = MessageResponseBuilder::from_message_request(&request);
+                    let mut header = Header::response_from_request(request.header());
+                    header.set_response_code(ResponseCode::ServFail);
+                    let servfail = builder.build_no_records(header);
+                    let mut encoder = BinEncoder::new(&mut *buf);
+                    let _ = servfail.destructive_emit(&mut encoder);
+                }
+            }
 
             Arc::into_inner(response_payload_arc)?.into_inner().ok()?
         };
@@ -522,7 +553,7 @@ impl MagicDnsServerInstance {
 
         let dns_config = RunConfigBuilder::default()
             .general(GeneralConfigBuilder::default().build()?)
-            .excluded_forward_nameservers(vec![fake_ip.into()])
+            .disable_forwarding(true)
             .build()?;
         let mut dns_server = Server::new(dns_config);
         dns_server.run().await?;
