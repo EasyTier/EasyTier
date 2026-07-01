@@ -27,6 +27,7 @@ basic_settings: Basic Settings
 listener_urls: Listener URLs
 rpc_port: RPC Port
 port: Port
+path: Path
 rpc_portal_whitelists: RPC Whitelist
 config_network: Config Network
 running: Running
