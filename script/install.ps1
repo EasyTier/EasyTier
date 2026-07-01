@@ -4,7 +4,9 @@
 
 .DESCRIPTION
     Download EasyTier from GitHub Release and install it.
-    Copies binaries to the install directory and updates the system PATH.
+    Copies binaries to the install directory, writes an example config under
+    <InstallDir>\config (matching the Linux installer's layout), and updates
+    the system PATH. It does NOT start anything automatically.
 
 .PARAMETER Version
     Target version: "latest", "stable", or a specific tag like "v2.6.2".
@@ -21,8 +23,9 @@
 
 .NOTES
     Administrator privileges are required.
-    After installation, run: easytier-cli service install
-    to register EasyTier as a system service.
+    EasyTier is installed but NOT started. Edit <InstallDir>\config\default.conf
+    (set your own network_name / network_secret), then register the service:
+        easytier-cli service install -- --config-dir "<InstallDir>\config"
 #>
 param(
     [Parameter(Position = 0)]
@@ -85,7 +88,7 @@ Write-Host ''
 # ---------------------------------------------------------------------------
 # Step 1 - Resolve release version
 # ---------------------------------------------------------------------------
-Write-Host '[1/5] Querying GitHub Release info...' -ForegroundColor Yellow
+Write-Host '[1/6] Querying GitHub Release info...' -ForegroundColor Yellow
 
 try {
     if ($Version -eq 'latest' -or $Version -eq 'stable') {
@@ -116,7 +119,7 @@ Write-Host "  Version : $releaseVersion" -ForegroundColor Green
 # Step 2 - Find download URL
 # ---------------------------------------------------------------------------
 Write-Host ''
-Write-Host '[2/5] Resolving download URL...' -ForegroundColor Yellow
+Write-Host '[2/6] Resolving download URL...' -ForegroundColor Yellow
 $asset = $releaseInfo.assets |
     Where-Object { $_.name -eq $assetZipName } |
     Select-Object -First 1
@@ -134,7 +137,7 @@ Write-Host "  URL     : $downloadUrl" -ForegroundColor DarkGray
 # Step 3 - Download ZIP
 # ---------------------------------------------------------------------------
 Write-Host ''
-Write-Host "[3/5] Downloading $assetZipName ..." -ForegroundColor Yellow
+Write-Host "[3/6] Downloading $assetZipName ..." -ForegroundColor Yellow
 
 $tempDir = Join-Path $env:TEMP "easytier-install-$(Get-Random)"
 $zipPath = Join-Path $tempDir $assetZipName
@@ -156,7 +159,7 @@ catch {
 # Step 4 - Extract & copy to install directory
 # ---------------------------------------------------------------------------
 Write-Host ''
-Write-Host '[4/5] Extracting and copying files...' -ForegroundColor Yellow
+Write-Host '[4/6] Extracting and copying files...' -ForegroundColor Yellow
 
 $extractDir = Join-Path $tempDir 'extracted'
 New-Item -ItemType Directory -Force -Path $extractDir | Out-Null
@@ -193,10 +196,73 @@ catch {
 Write-Host "  Installed to: $InstallDir" -ForegroundColor Green
 
 # ---------------------------------------------------------------------------
-# Step 5 - Update system PATH
+# Step 5 - Write example config
 # ---------------------------------------------------------------------------
 Write-Host ''
-Write-Host '[5/5] Updating system PATH...' -ForegroundColor Yellow
+Write-Host '[5/6] Writing example config...' -ForegroundColor Yellow
+
+# Mirror the Linux installer's layout: <InstallDir>\config\default.conf.
+$configDir  = Join-Path $InstallDir 'config'
+$configFile = Join-Path $configDir 'default.conf'
+New-Item -ItemType Directory -Force -Path $configDir | Out-Null
+
+if (Test-Path $configFile) {
+    # Never overwrite an existing config so a re-run keeps the user's edits
+    # (and their network_secret).
+    Write-Host "  Keeping existing config: $configFile" -ForegroundColor DarkGray
+}
+else {
+    # Generate a unique random network secret so this node forms its own
+    # private network by default instead of silently joining the shared public
+    # "default" network. Edit network_name / network_secret before starting.
+    $networkSecret = [guid]::NewGuid().ToString()
+    $configContent = @"
+instance_name = "default"
+dhcp = true
+listeners = [
+    "tcp://0.0.0.0:11010",
+    "udp://0.0.0.0:11010",
+    "wg://0.0.0.0:11011",
+    "ws://0.0.0.0:11011/",
+    "wss://0.0.0.0:11012/",
+]
+exit_nodes = []
+rpc_portal = "0.0.0.0:0"
+
+[[peer]]
+uri = "tcp://public.easytier.top:11010"
+
+[network_identity]
+network_name = "default"
+network_secret = "$networkSecret"
+
+[flags]
+default_protocol = "udp"
+dev_name = ""
+enable_encryption = true
+enable_ipv6 = true
+mtu = 1380
+latency_first = false
+enable_exit_node = false
+no_tun = false
+use_smoltcp = false
+relay_network_whitelist = "*"
+disable_p2p = false
+p2p_only = false
+relay_all_peer_rpc = false
+disable_tcp_hole_punching = false
+disable_udp_hole_punching = false
+"@
+    # WriteAllText writes UTF-8 without a BOM, which the TOML parser expects.
+    [System.IO.File]::WriteAllText($configFile, $configContent)
+    Write-Host "  Wrote example config: $configFile" -ForegroundColor Green
+}
+
+# ---------------------------------------------------------------------------
+# Step 6 - Update system PATH
+# ---------------------------------------------------------------------------
+Write-Host ''
+Write-Host '[6/6] Updating system PATH...' -ForegroundColor Yellow
 
 $systemPath = [Environment]::GetEnvironmentVariable('PATH', 'Machine')
 # Split on ';' and normalize (trim trailing backslash, case-insensitive) for an exact match
@@ -228,7 +294,12 @@ Write-Host ''
 Write-Host "  [OK] EasyTier $releaseVersion installation complete!" -ForegroundColor Green
 Write-Host ''
 Write-Host "  Install dir : $InstallDir" -ForegroundColor White
+Write-Host "  Config file : $configFile" -ForegroundColor White
 Write-Host '  User guide  : https://easytier.cn/en/guide/network/decentralized-networking.html' -ForegroundColor DarkGray
+Write-Host ''
+Write-Host '  NOTE: EasyTier is installed but NOT started. Edit the config above and set' -ForegroundColor DarkYellow
+Write-Host '        your own network_name / network_secret, then register the service:' -ForegroundColor DarkYellow
+Write-Host "          easytier-cli service install -- --config-dir `"$configDir`"" -ForegroundColor Cyan
 Write-Host ''
 Write-Host '  NOTE: If PATH was just updated, please restart your terminal.' -ForegroundColor DarkYellow
 Write-Host ''
