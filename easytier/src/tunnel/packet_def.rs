@@ -1,3 +1,4 @@
+use bytes::Buf;
 use bytes::Bytes;
 use bytes::BytesMut;
 use zerocopy::AsBytes;
@@ -486,7 +487,7 @@ impl ZCPacket {
         let total_len = payload_off + payload.len();
         ret.inner.reserve(total_len);
         unsafe { ret.inner.set_len(total_len) };
-        ret.mut_payload()[..payload.len()].copy_from_slice(payload);
+        ret.mut_payload().copy_from_slice(payload);
         ret
     }
 
@@ -587,7 +588,8 @@ impl ZCPacket {
     }
 
     pub fn payload_bytes(mut self) -> BytesMut {
-        self.inner.split_off(self.payload_offset())
+        self.inner.advance(self.payload_offset());
+        self.inner
     }
 
     pub fn peer_manager_header(&self) -> Option<&PeerManagerHeader> {
@@ -652,11 +654,12 @@ impl ZCPacket {
     }
 
     pub fn tunnel_payload_bytes(mut self) -> BytesMut {
-        self.inner.split_off(
+        self.inner.advance(
             self.packet_type
                 .get_packet_offsets()
                 .peer_manager_header_offset,
-        )
+        );
+        self.inner
     }
 
     pub fn convert_type(mut self, target_packet_type: ZCPacketType) -> Self {
@@ -702,7 +705,8 @@ impl ZCPacket {
             return Self::new_from_buf(buf, target_packet_type);
         }
 
-        Self::new_from_buf(self.inner.split_off(new_offset), target_packet_type)
+        self.inner.advance(new_offset);
+        Self::new_from_buf(self.inner, target_packet_type)
     }
 
     pub fn into_bytes(self) -> Bytes {
@@ -748,8 +752,10 @@ impl ZCPacket {
         let foreign_hdr_len = hdr.get_header_len();
 
         Self::new_from_buf(
-            self.inner
-                .split_off(foreign_hdr_len + self.payload_offset()),
+            {
+                self.inner.advance(foreign_hdr_len + self.payload_offset());
+                self.inner
+            },
             ZCPacketType::DummyTunnel,
         )
     }
