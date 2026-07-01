@@ -221,6 +221,26 @@ impl Drop for UdpPortMappingLease {
     }
 }
 
+async fn try_get_public_addr_via_upnp(
+    global_ctx: &ArcGlobalCtx,
+    local_listener: &url::Url,
+    mapping: &Option<UdpPortMappingLease>,
+) -> anyhow::Result<SocketAddr> {
+    let (gateway, _local_addr) = ActiveUdpPortMapping::discover_igd_gateway(global_ctx, local_listener).await?;
+
+    let public_ip = gateway.get_external_ip().await
+        .context("failed to get external ip from gateway")?;
+
+    let lease_ref = mapping.as_ref();
+
+    let public_addr = if let Some(lease) = lease_ref {
+        SocketAddr::new(public_ip, lease.gateway_external_port())
+    } else {
+        bail!("port mapping lease is required to get external port")
+    };
+    Ok(public_addr)
+}
+
 pub async fn resolve_udp_public_addr(
     global_ctx: ArcGlobalCtx,
     local_listener: &url::Url,
@@ -238,12 +258,22 @@ pub async fn resolve_udp_public_addr(
         }
     };
 
-    let mapped_addr = global_ctx
+    let mut mapped_addr = global_ctx
         .get_stun_info_collector()
         .get_udp_port_mapping_with_socket(socket)
         .await
         .map_err(anyhow::Error::from)
         .with_context(|| format!("resolve udp public addr for {local_listener}"))?;
+
+    match try_get_public_addr_via_upnp(&global_ctx, local_listener, &port_mapping).await {
+        Ok(public_addr) => {
+            tracing::info!(%local_listener, %public_addr, "got public addr via upnp/igd");
+            mapped_addr = public_addr;
+        }
+        Err(err) => {
+            tracing::debug!(?err, "upnp/igd failed, fallback to stun");
+        }
+    }
 
     if let Some(port_mapping) = port_mapping.as_ref() {
         let mapped_listener = build_url_from_socket_addr(&mapped_addr.to_string(), "udp");
