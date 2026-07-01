@@ -219,6 +219,7 @@ pub struct GlobalCtx {
 
     running_listeners: Mutex<Vec<url::Url>>,
     advertised_ipv6_public_addr_prefix: Mutex<Option<cidr::Ipv6Cidr>>,
+    tun_device_name: Mutex<Option<String>>,
 
     flags: ArcSwap<Flags>,
 
@@ -336,6 +337,7 @@ impl GlobalCtx {
 
             running_listeners: Mutex::new(Vec::new()),
             advertised_ipv6_public_addr_prefix: Mutex::new(None),
+            tun_device_name: Mutex::new(None),
 
             flags: ArcSwap::new(Arc::new(flags)),
 
@@ -368,6 +370,24 @@ impl GlobalCtx {
                 self.event_bus.receiver_count()
             );
         }
+    }
+
+    fn set_tun_device_name(&self, name: Option<String>) {
+        *self.tun_device_name.lock().unwrap() = name;
+    }
+
+    pub(crate) fn set_tun_device_ready(&self, name: String) {
+        self.set_tun_device_name(Some(name.clone()));
+        self.issue_event(GlobalCtxEvent::TunDeviceReady(name));
+    }
+
+    pub(crate) fn set_tun_device_error(&self, error: String) {
+        self.set_tun_device_name(None);
+        self.issue_event(GlobalCtxEvent::TunDeviceError(error));
+    }
+
+    pub fn get_tun_device_name(&self) -> Option<String> {
+        self.tun_device_name.lock().unwrap().clone()
     }
 
     pub fn check_network_in_whitelist(&self, network_name: &str) -> Result<(), anyhow::Error> {
@@ -822,6 +842,36 @@ pub mod tests {
         assert_eq!(
             subscriber.recv().await.unwrap(),
             GlobalCtxEvent::PeerConnRemoved(PeerConnInfo::default())
+        );
+    }
+
+    #[tokio::test]
+    async fn test_tun_device_name_tracks_explicit_runtime_state() {
+        let config = TomlConfigLoader::default();
+        let global_ctx = GlobalCtx::new(config);
+
+        assert_eq!(global_ctx.get_tun_device_name(), None);
+
+        global_ctx.issue_event(GlobalCtxEvent::TunDeviceReady("ignored".to_string()));
+        assert_eq!(global_ctx.get_tun_device_name(), None);
+
+        let mut subscriber = global_ctx.subscribe();
+
+        global_ctx.set_tun_device_ready("easytier0".to_string());
+        assert_eq!(
+            global_ctx.get_tun_device_name(),
+            Some("easytier0".to_string())
+        );
+        assert_eq!(
+            subscriber.recv().await.unwrap(),
+            GlobalCtxEvent::TunDeviceReady("easytier0".to_string())
+        );
+
+        global_ctx.set_tun_device_error("closed".to_string());
+        assert_eq!(global_ctx.get_tun_device_name(), None);
+        assert_eq!(
+            subscriber.recv().await.unwrap(),
+            GlobalCtxEvent::TunDeviceError("closed".to_string())
         );
     }
 

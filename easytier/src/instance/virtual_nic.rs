@@ -1361,12 +1361,11 @@ impl NicCtx {
                     }
 
                     self.global_ctx
-                        .issue_event(GlobalCtxEvent::TunDeviceReady(nic.ifname().to_string()));
+                        .set_tun_device_ready(nic.ifname().to_string());
                     ret
                 }
                 Err(err) => {
-                    self.global_ctx
-                        .issue_event(GlobalCtxEvent::TunDeviceError(err.to_string()));
+                    self.global_ctx.set_tun_device_error(err.to_string());
                     return Err(err);
                 }
             }
@@ -1405,12 +1404,11 @@ impl NicCtx {
             match nic.create_dev_for_mobile(tun_fd).await {
                 Ok(ret) => {
                     self.global_ctx
-                        .issue_event(GlobalCtxEvent::TunDeviceReady(nic.ifname().to_string()));
+                        .set_tun_device_ready(nic.ifname().to_string());
                     ret
                 }
                 Err(err) => {
-                    self.global_ctx
-                        .issue_event(GlobalCtxEvent::TunDeviceError(err.to_string()));
+                    self.global_ctx.set_tun_device_error(err.to_string());
                     return Err(err);
                 }
             }
