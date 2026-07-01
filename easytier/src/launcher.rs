@@ -173,7 +173,12 @@ impl EasyTierLauncher {
         #[cfg(mobile)]
         Self::run_routine_for_mobile(&instance, &data, &mut tasks).await;
 
-        instance.run().await?;
+        if let Err(err) = instance.run().await {
+            tasks.abort_all();
+            drop(tasks);
+            instance.clear_resources().await;
+            return Err(err.into());
+        }
 
         #[cfg(feature = "ffi-dataplane")]
         data.data_plane
