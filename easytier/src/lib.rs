@@ -5,6 +5,20 @@ use std::io;
 use clap::Command;
 use clap_complete::{Generator, Shell};
 
+// When the `hotpath` feature is off, alias the current crate as `hotpath` so
+// call sites keep using `hotpath::...` paths, and provide a local no-op shim
+// for the profiling macros. This keeps `hotpath` an optional dependency: the
+// profiler is absent from the dependency graph entirely in default builds.
+#[cfg(not(feature = "hotpath"))]
+extern crate self as hotpath;
+#[cfg(not(feature = "hotpath"))]
+mod hotpath_off;
+
+// `hotpath-alloc` registers a global profiling allocator, which is mutually
+// exclusive with the `jemalloc`/`mimalloc` global allocators.
+#[cfg(all(feature = "hotpath-alloc", any(feature = "jemalloc", feature = "mimalloc")))]
+compile_error!("feature `hotpath-alloc` cannot be enabled together with `jemalloc` or `mimalloc`");
+
 // Re-export `Instant` at the crate root so public APIs that expose it
 // (e.g. `Route::get_peer_info_last_update_time`) reference a deliberate
 // public type rather than leaking an inaccessible one.
