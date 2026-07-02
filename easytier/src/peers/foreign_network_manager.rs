@@ -14,9 +14,8 @@ use std::{
 };
 
 use dashmap::{DashMap, DashSet};
-use easytier_core::peers::foreign_network_manager::{
-    self as core_foreign_network_manager, GlobalForeignNetworkAccessor,
-};
+use easytier_core::peers::foreign_network_manager as core_foreign_network_manager;
+pub use easytier_core::peers::foreign_network_manager::GlobalForeignNetworkAccessor;
 use guarden::{Guard, defer};
 use tokio::{
     sync::{Mutex, mpsc::UnboundedSender},
