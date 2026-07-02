@@ -186,6 +186,46 @@ impl PeerContext for GlobalCtx {
         self.get_stun_info_collector().get_stun_info()
     }
 
+    fn instance_id(&self) -> uuid::Uuid {
+        self.get_id()
+    }
+
+    fn ipv4(&self) -> Option<cidr::Ipv4Inet> {
+        self.get_ipv4()
+    }
+
+    fn ipv6(&self) -> Option<cidr::Ipv6Inet> {
+        self.get_ipv6()
+    }
+
+    fn proxy_cidrs(&self) -> Vec<cidr::Ipv4Cidr> {
+        self.config
+            .get_proxy_cidrs()
+            .iter()
+            .map(|x| x.mapped_cidr.unwrap_or(x.cidr))
+            .collect()
+    }
+
+    fn vpn_portal_cidr(&self) -> Option<cidr::Ipv4Cidr> {
+        self.get_vpn_portal_cidr()
+    }
+
+    fn hostname(&self) -> String {
+        self.get_hostname()
+    }
+
+    fn feature_flags(&self) -> crate::proto::common::PeerFeatureFlag {
+        self.get_feature_flags()
+    }
+
+    fn advertised_ipv6_public_addr_prefix(&self) -> Option<cidr::Ipv6Cidr> {
+        self.get_advertised_ipv6_public_addr_prefix()
+    }
+
+    fn is_ip_in_same_network(&self, ip: &IpAddr) -> bool {
+        GlobalCtx::is_ip_in_same_network(self, ip)
+    }
+
     fn peer_groups(&self, peer_id: PeerId) -> Vec<PeerGroupInfo> {
         self.get_acl_groups(peer_id)
     }
@@ -236,6 +276,18 @@ impl PeerContext for GlobalCtx {
 
     fn is_pubkey_trusted(&self, pubkey: &[u8], network_name: &str) -> bool {
         self.is_pubkey_trusted(pubkey, network_name)
+    }
+
+    fn trusted_credential_pubkeys(
+        &self,
+        network_secret: &str,
+    ) -> Vec<crate::proto::peer_rpc::TrustedCredentialPubkeyProof> {
+        self.get_credential_manager()
+            .get_trusted_pubkeys(network_secret)
+    }
+
+    fn update_trusted_keys(&self, keys: TrustedKeyMap, network_name: &str) {
+        GlobalCtx::update_trusted_keys(self, keys, network_name);
     }
 
     fn record_control_tx(&self, network_name: &str, bytes: u64) {

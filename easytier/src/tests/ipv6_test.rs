@@ -37,7 +37,7 @@ async fn test_route_peer_info_ipv6() {
     global_ctx.set_ipv6(Some(ipv6_cidr));
 
     // Create RoutePeerInfo with IPv6 support
-    let updated_info = new_updated_self_route_peer_info(123, 456, &global_ctx, None);
+    let updated_info = new_updated_self_route_peer_info(123, 456, global_ctx.as_ref(), None);
 
     // Verify IPv6 address is included
     assert!(updated_info.ipv6_addr.is_some());

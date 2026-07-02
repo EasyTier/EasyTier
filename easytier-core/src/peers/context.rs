@@ -2,16 +2,18 @@ use std::{
     collections::HashMap,
     collections::hash_map::DefaultHasher,
     hash::{Hash, Hasher},
+    net::IpAddr,
     sync::Arc,
     time::{SystemTime, UNIX_EPOCH},
 };
 
 use arc_swap::ArcSwap;
 use async_trait::async_trait;
+use cidr::{Ipv4Cidr, Ipv4Inet, Ipv6Cidr, Ipv6Inet};
 use dashmap::DashMap;
 use easytier_proto::{
-    common::{FlagsInConfig, SecureModeConfig, StunInfo, TunnelInfo},
-    peer_rpc::PeerGroupInfo,
+    common::{FlagsInConfig, PeerFeatureFlag, SecureModeConfig, StunInfo, TunnelInfo},
+    peer_rpc::{PeerGroupInfo, TrustedCredentialPubkeyProof},
 };
 use hmac::{Hmac, Mac};
 use sha2::Sha256;
@@ -261,6 +263,42 @@ pub trait PeerContext: Send + Sync {
         StunInfo::default()
     }
 
+    fn instance_id(&self) -> uuid::Uuid {
+        uuid::Uuid::nil()
+    }
+
+    fn ipv4(&self) -> Option<Ipv4Inet> {
+        None
+    }
+
+    fn ipv6(&self) -> Option<Ipv6Inet> {
+        None
+    }
+
+    fn proxy_cidrs(&self) -> Vec<Ipv4Cidr> {
+        Vec::new()
+    }
+
+    fn vpn_portal_cidr(&self) -> Option<Ipv4Cidr> {
+        None
+    }
+
+    fn hostname(&self) -> String {
+        String::new()
+    }
+
+    fn feature_flags(&self) -> PeerFeatureFlag {
+        PeerFeatureFlag::default()
+    }
+
+    fn advertised_ipv6_public_addr_prefix(&self) -> Option<Ipv6Cidr> {
+        None
+    }
+
+    fn is_ip_in_same_network(&self, _ip: &IpAddr) -> bool {
+        false
+    }
+
     fn peer_groups(&self, _peer_id: PeerId) -> Vec<PeerGroupInfo> {
         Vec::new()
     }
@@ -287,6 +325,15 @@ pub trait PeerContext: Send + Sync {
     fn is_pubkey_trusted(&self, _pubkey: &[u8], _network_name: &str) -> bool {
         false
     }
+
+    fn trusted_credential_pubkeys(
+        &self,
+        _network_secret: &str,
+    ) -> Vec<TrustedCredentialPubkeyProof> {
+        Vec::new()
+    }
+
+    fn update_trusted_keys(&self, _keys: TrustedKeyMap, _network_name: &str) {}
 
     fn record_control_tx(&self, _network_name: &str, _bytes: u64) {}
 
