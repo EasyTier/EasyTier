@@ -45,6 +45,10 @@ impl ForeignNetworkClient {
         self.peer_map.add_new_peer_conn(peer_conn).await
     }
 
+    pub fn is_client_url_alive(&self, url: &url::Url) -> bool {
+        self.peer_map.is_client_url_alive(url)
+    }
+
     pub fn has_next_hop(&self, peer_id: PeerId) -> bool {
         self.get_next_hop(peer_id).is_some()
     }

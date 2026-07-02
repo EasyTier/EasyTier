@@ -2514,6 +2514,7 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tracing",
+ "url",
  "uuid",
  "x25519-dalek",
  "zerocopy 0.7.35",
