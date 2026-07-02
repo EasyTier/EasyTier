@@ -1,7 +1,7 @@
 use std::{
-    collections::{BTreeSet, HashMap, hash_map::DefaultHasher},
+    collections::{BTreeSet, HashMap, HashSet, hash_map::DefaultHasher},
     hash::Hasher,
-    net::{IpAddr, SocketAddr},
+    net::{IpAddr, Ipv6Addr, SocketAddr},
     sync::{Arc, Mutex},
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -13,6 +13,7 @@ use easytier_core::peers::context::{
     ArcByteLimiter, ByteLimiter, NetworkIdentity as CoreNetworkIdentity, PeerContext, PeerEvent,
     secret_proof_from_secret,
 };
+use easytier_core::peers::public_ipv6::PublicIpv6Runtime;
 
 use super::{
     PeerId,
@@ -389,6 +390,63 @@ impl PeerContext for GlobalCtx {
                 self.issue_event(GlobalCtxEvent::PeerConnRemoved(info.into()))
             }
         }
+    }
+}
+
+#[async_trait]
+impl PublicIpv6Runtime for GlobalCtx {
+    fn ipv6_public_addr_auto(&self) -> bool {
+        self.config.get_ipv6_public_addr_auto()
+    }
+
+    fn ipv6_public_addr_provider(&self) -> bool {
+        self.config.get_ipv6_public_addr_provider()
+    }
+
+    fn instance_id(&self) -> uuid::Uuid {
+        self.get_id()
+    }
+
+    fn network_name(&self) -> String {
+        self.get_network_name()
+    }
+
+    async fn collect_reserved_public_ipv6_addrs(
+        &self,
+        prefix: cidr::Ipv6Cidr,
+    ) -> HashSet<Ipv6Addr> {
+        let ip_list = self.get_ip_collector().collect_ip_addrs().await;
+        let mut reserved = HashSet::new();
+        reserved.extend(
+            ip_list
+                .interface_ipv6s
+                .into_iter()
+                .map(Ipv6Addr::from)
+                .filter(|addr| prefix.contains(addr)),
+        );
+        reserved.extend(
+            ip_list
+                .public_ipv6
+                .into_iter()
+                .map(Ipv6Addr::from)
+                .filter(|addr| prefix.contains(addr)),
+        );
+        reserved
+    }
+
+    fn public_ipv6_lease_changed(&self, old: Option<cidr::Ipv6Inet>, new: Option<cidr::Ipv6Inet>) {
+        self.set_public_ipv6_lease(new);
+        self.issue_event(GlobalCtxEvent::PublicIpv6Changed(old, new));
+    }
+
+    fn public_ipv6_routes_changed(
+        &self,
+        routes: BTreeSet<cidr::Ipv6Inet>,
+        added: Vec<cidr::Ipv6Inet>,
+        removed: Vec<cidr::Ipv6Inet>,
+    ) {
+        self.set_public_ipv6_routes(routes);
+        self.issue_event(GlobalCtxEvent::PublicIpv6RoutesUpdated(added, removed));
     }
 }
 

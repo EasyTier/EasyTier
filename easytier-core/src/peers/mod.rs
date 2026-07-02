@@ -10,6 +10,7 @@ pub mod peer_map;
 pub mod peer_ospf_route;
 pub mod peer_rpc;
 pub mod peer_session;
+pub mod public_ipv6;
 pub mod route_trait;
 pub mod secure_datagram;
 mod util;

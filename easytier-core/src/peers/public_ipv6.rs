@@ -8,11 +8,10 @@ use std::{
 use cidr::{Ipv6Cidr, Ipv6Inet};
 
 use crate::{
-    common::{
-        PeerId,
-        global_ctx::{ArcGlobalCtx, GlobalCtxEvent},
-    },
+    config::PeerId,
+    peers::peer_rpc::PeerRpcManager,
     proto::{
+        common::Void,
         peer_rpc::{
             AcquireIpv6PublicAddrLeaseRequest, GetIpv6PublicAddrLeaseRequest,
             Ipv6PublicAddrLeaseReply, PublicIpv6AddrRpc, PublicIpv6AddrRpcClientFactory,
@@ -25,22 +24,20 @@ use crate::{
     },
 };
 
-use super::peer_rpc::PeerRpcManager;
-
 // Use a longer lease with an early renew window to reduce steady-state RPC
 // churn while preserving enough margin for transient provider failures.
 static PUBLIC_IPV6_LEASE_TTL: Duration = Duration::from_secs(120);
 static PUBLIC_IPV6_RENEW_INTERVAL: Duration = Duration::from_secs(40);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct PublicIpv6Provider {
+pub struct PublicIpv6Provider {
     pub peer_id: PeerId,
     pub inst_id: uuid::Uuid,
     pub prefix: Ipv6Cidr,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct PublicIpv6ProviderLease {
+pub struct PublicIpv6ProviderLease {
     pub peer_id: PeerId,
     pub inst_id: uuid::Uuid,
     pub addr: Ipv6Inet,
@@ -62,7 +59,7 @@ struct PublicIpv6ClientState {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct PublicIpv6PeerRouteInfo {
+pub struct PublicIpv6PeerRouteInfo {
     pub peer_id: PeerId,
     pub inst_id: Option<uuid::Uuid>,
     pub is_provider: bool,
@@ -71,18 +68,35 @@ pub(crate) struct PublicIpv6PeerRouteInfo {
     pub reachable: bool,
 }
 
-pub(crate) trait PublicIpv6RouteControl: Send + Sync {
+pub trait PublicIpv6RouteControl: Send + Sync {
     fn my_peer_id(&self) -> PeerId;
     fn peer_route_snapshot(&self) -> Vec<PublicIpv6PeerRouteInfo>;
     fn publish_self_public_ipv6_lease(&self, lease: Option<Ipv6Inet>) -> bool;
 }
 
-pub(crate) trait PublicIpv6SyncTrigger: Send + Sync {
+pub trait PublicIpv6SyncTrigger: Send + Sync {
     fn sync_now(&self, reason: &str);
 }
 
-pub(crate) struct PublicIpv6Service {
-    global_ctx: ArcGlobalCtx,
+#[async_trait::async_trait]
+#[auto_impl::auto_impl(Arc)]
+pub trait PublicIpv6Runtime: Send + Sync {
+    fn ipv6_public_addr_auto(&self) -> bool;
+    fn ipv6_public_addr_provider(&self) -> bool;
+    fn instance_id(&self) -> uuid::Uuid;
+    fn network_name(&self) -> String;
+    async fn collect_reserved_public_ipv6_addrs(&self, prefix: Ipv6Cidr) -> HashSet<Ipv6Addr>;
+    fn public_ipv6_lease_changed(&self, old: Option<Ipv6Inet>, new: Option<Ipv6Inet>);
+    fn public_ipv6_routes_changed(
+        &self,
+        routes: BTreeSet<Ipv6Inet>,
+        added: Vec<Ipv6Inet>,
+        removed: Vec<Ipv6Inet>,
+    );
+}
+
+pub struct PublicIpv6Service {
+    runtime: Arc<dyn PublicIpv6Runtime>,
     peer_rpc: Weak<PeerRpcManager>,
     route_control: Arc<dyn PublicIpv6RouteControl>,
     sync_trigger: Arc<dyn PublicIpv6SyncTrigger>,
@@ -94,14 +108,14 @@ pub(crate) struct PublicIpv6Service {
 }
 
 impl PublicIpv6Service {
-    pub(crate) fn new(
-        global_ctx: ArcGlobalCtx,
+    pub fn new(
+        runtime: Arc<dyn PublicIpv6Runtime>,
         peer_rpc: Weak<PeerRpcManager>,
         route_control: Arc<dyn PublicIpv6RouteControl>,
         sync_trigger: Arc<dyn PublicIpv6SyncTrigger>,
     ) -> Self {
         Self {
-            global_ctx,
+            runtime,
             peer_rpc,
             route_control,
             sync_trigger,
@@ -112,7 +126,7 @@ impl PublicIpv6Service {
         }
     }
 
-    pub(crate) fn rpc_server(self: &Arc<Self>) -> PublicIpv6AddrRpcServerImpl {
+    pub fn rpc_server(self: &Arc<Self>) -> PublicIpv6AddrRpcServerImpl {
         PublicIpv6AddrRpcServerImpl {
             service: Arc::downgrade(self),
         }
@@ -218,7 +232,7 @@ impl PublicIpv6Service {
 
     fn reconcile_runtime_from_snapshot(&self, peers: &[PublicIpv6PeerRouteInfo]) {
         let (mut my_addr, routes) = self.collect_runtime_from_snapshot(peers);
-        if !self.global_ctx.config.get_ipv6_public_addr_auto() {
+        if !self.runtime.ipv6_public_addr_auto() {
             my_addr = None;
         }
 
@@ -226,9 +240,7 @@ impl PublicIpv6Service {
         if *cached_my_addr != my_addr {
             let old = *cached_my_addr;
             *cached_my_addr = my_addr;
-            self.global_ctx.set_public_ipv6_lease(my_addr);
-            self.global_ctx
-                .issue_event(GlobalCtxEvent::PublicIpv6Changed(old, my_addr));
+            self.runtime.public_ipv6_lease_changed(old, my_addr);
         }
         drop(cached_my_addr);
 
@@ -243,10 +255,8 @@ impl PublicIpv6Service {
                 .copied()
                 .collect::<Vec<_>>();
             *cached_routes = routes;
-            self.global_ctx
-                .set_public_ipv6_routes(cached_routes.clone());
-            self.global_ctx
-                .issue_event(GlobalCtxEvent::PublicIpv6RoutesUpdated(added, removed));
+            self.runtime
+                .public_ipv6_routes_changed(cached_routes.clone(), added, removed);
         }
     }
 
@@ -255,7 +265,7 @@ impl PublicIpv6Service {
         self.reconcile_runtime_from_snapshot(&peers);
     }
 
-    pub(crate) fn handle_route_change(&self) -> bool {
+    pub fn handle_route_change(&self) -> bool {
         let peers = self.route_control.peer_route_snapshot();
         let provider = Self::selected_provider_from_snapshot(&peers);
         let _provider_changed = self.clear_provider_state_if_provider_changed(provider.as_ref());
@@ -325,23 +335,9 @@ impl PublicIpv6Service {
     }
 
     async fn collect_reserved_addrs(&self, prefix: Ipv6Cidr) -> HashSet<Ipv6Addr> {
-        let mut reserved = HashSet::new();
-        let ip_list = self.global_ctx.get_ip_collector().collect_ip_addrs().await;
-        reserved.extend(
-            ip_list
-                .interface_ipv6s
-                .into_iter()
-                .map(Ipv6Addr::from)
-                .filter(|addr| prefix.contains(addr)),
-        );
-        reserved.extend(
-            ip_list
-                .public_ipv6
-                .into_iter()
-                .map(Ipv6Addr::from)
-                .filter(|addr| prefix.contains(addr)),
-        );
-        reserved
+        self.runtime
+            .collect_reserved_public_ipv6_addrs(prefix)
+            .await
     }
 
     fn prune_expired_leases(
@@ -463,7 +459,7 @@ impl PublicIpv6Service {
         Ok((provider, lease.clone()))
     }
 
-    pub(crate) async fn gc_provider_leases(&self) {
+    pub async fn gc_provider_leases(&self) {
         let peers = self.route_control.peer_route_snapshot();
         let provider = Self::selected_provider_from_snapshot(&peers);
         self.clear_provider_state_if_provider_changed(provider.as_ref());
@@ -479,8 +475,8 @@ impl PublicIpv6Service {
         self.set_provider_state(Some(state));
     }
 
-    pub(crate) async fn sync_client_state(&self) -> bool {
-        if !self.global_ctx.config.get_ipv6_public_addr_auto() {
+    pub async fn sync_client_state(&self) -> bool {
+        if !self.runtime.ipv6_public_addr_auto() {
             return self
                 .clear_client_lease_state(self.clear_client_state_if_provider_changed(None));
         }
@@ -525,10 +521,10 @@ impl PublicIpv6Service {
             .scoped_client::<PublicIpv6AddrRpcClientFactory<BaseController>>(
                 self.my_peer_id(),
                 provider.peer_id,
-                self.global_ctx.get_network_name(),
+                self.runtime.network_name(),
             );
 
-        let inst_id = self.global_ctx.get_id();
+        let inst_id = self.runtime.instance_id();
         let reply = if let Some(state) = current.as_ref().filter(|state| state.provider == provider)
         {
             match rpc_stub
@@ -615,8 +611,8 @@ impl PublicIpv6Service {
         peer_info_changed
     }
 
-    pub(crate) async fn provider_gc_routine(self: Arc<Self>) {
-        if !self.global_ctx.config.get_ipv6_public_addr_provider() {
+    pub async fn provider_gc_routine(self: Arc<Self>) {
+        if !self.runtime.ipv6_public_addr_provider() {
             return;
         }
         loop {
@@ -625,7 +621,7 @@ impl PublicIpv6Service {
         }
     }
 
-    pub(crate) async fn client_routine(self: Arc<Self>) {
+    pub async fn client_routine(self: Arc<Self>) {
         loop {
             if self.sync_client_state().await {
                 self.sync_trigger.sync_now("sync_public_ipv6_client_state");
@@ -634,20 +630,20 @@ impl PublicIpv6Service {
         }
     }
 
-    pub(crate) fn list_routes(&self) -> BTreeSet<Ipv6Inet> {
+    pub fn list_routes(&self) -> BTreeSet<Ipv6Inet> {
         self.route_cache.lock().unwrap().clone()
     }
 
-    pub(crate) fn my_addr(&self) -> Option<Ipv6Inet> {
+    pub fn my_addr(&self) -> Option<Ipv6Inet> {
         *self.my_addr_cache.lock().unwrap()
     }
 
-    pub(crate) fn provider_peer_id_for_client(&self) -> Option<PeerId> {
+    pub fn provider_peer_id_for_client(&self) -> Option<PeerId> {
         self.current_client_state()
             .map(|state| state.provider.peer_id)
     }
 
-    pub(crate) fn local_provider_state(
+    pub fn local_provider_state(
         &self,
     ) -> Option<(PublicIpv6Provider, Vec<PublicIpv6ProviderLease>)> {
         let provider = self.selected_provider()?;
@@ -663,7 +659,7 @@ impl PublicIpv6Service {
 }
 
 #[derive(Clone)]
-pub(crate) struct PublicIpv6AddrRpcServerImpl {
+pub struct PublicIpv6AddrRpcServerImpl {
     service: Weak<PublicIpv6Service>,
 }
 
@@ -749,7 +745,7 @@ impl PublicIpv6AddrRpc for PublicIpv6AddrRpcServerImpl {
         &self,
         _: BaseController,
         request: ReleaseIpv6PublicAddrLeaseRequest,
-    ) -> rpc_types::error::Result<crate::proto::common::Void> {
+    ) -> rpc_types::error::Result<Void> {
         let Some(service) = self.service.upgrade() else {
             return Err(anyhow::anyhow!("public ipv6 service stopped").into());
         };
@@ -851,20 +847,17 @@ fn allocate_public_ipv6_leases(
 mod tests {
     use std::net::Ipv6Addr;
     use std::{
-        collections::{HashMap, HashSet},
+        collections::{BTreeSet, HashMap, HashSet},
         sync::{Arc, Mutex},
     };
 
     use cidr::{Ipv6Cidr, Ipv6Inet};
 
-    use crate::{
-        common::{PeerId, global_ctx::tests::get_mock_global_ctx},
-        peers::peer_rpc::PeerRpcManager,
-    };
+    use crate::{config::PeerId, peers::peer_rpc::PeerRpcManager};
 
     use super::{
-        PublicIpv6PeerRouteInfo, PublicIpv6RouteControl, PublicIpv6Service, PublicIpv6SyncTrigger,
-        allocate_public_ipv6_leases,
+        PublicIpv6PeerRouteInfo, PublicIpv6RouteControl, PublicIpv6Runtime, PublicIpv6Service,
+        PublicIpv6SyncTrigger, allocate_public_ipv6_leases,
     };
 
     struct TestRouteControl {
@@ -890,6 +883,72 @@ mod tests {
 
     impl PublicIpv6SyncTrigger for TestSyncTrigger {
         fn sync_now(&self, _reason: &str) {}
+    }
+
+    struct TestRuntime {
+        auto: bool,
+        provider: bool,
+        inst_id: uuid::Uuid,
+        network_name: String,
+        reserved: Mutex<HashSet<Ipv6Addr>>,
+        lease: Mutex<Option<Ipv6Inet>>,
+        routes: Mutex<BTreeSet<Ipv6Inet>>,
+    }
+
+    impl TestRuntime {
+        fn new(auto: bool) -> Self {
+            Self {
+                auto,
+                provider: false,
+                inst_id: uuid::Uuid::from_u128(1),
+                network_name: "default".to_string(),
+                reserved: Mutex::new(HashSet::new()),
+                lease: Mutex::new(None),
+                routes: Mutex::new(BTreeSet::new()),
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl PublicIpv6Runtime for TestRuntime {
+        fn ipv6_public_addr_auto(&self) -> bool {
+            self.auto
+        }
+
+        fn ipv6_public_addr_provider(&self) -> bool {
+            self.provider
+        }
+
+        fn instance_id(&self) -> uuid::Uuid {
+            self.inst_id
+        }
+
+        fn network_name(&self) -> String {
+            self.network_name.clone()
+        }
+
+        async fn collect_reserved_public_ipv6_addrs(&self, prefix: Ipv6Cidr) -> HashSet<Ipv6Addr> {
+            self.reserved
+                .lock()
+                .unwrap()
+                .iter()
+                .copied()
+                .filter(|addr| prefix.contains(addr))
+                .collect()
+        }
+
+        fn public_ipv6_lease_changed(&self, _old: Option<Ipv6Inet>, new: Option<Ipv6Inet>) {
+            *self.lease.lock().unwrap() = new;
+        }
+
+        fn public_ipv6_routes_changed(
+            &self,
+            routes: BTreeSet<Ipv6Inet>,
+            _added: Vec<Ipv6Inet>,
+            _removed: Vec<Ipv6Inet>,
+        ) {
+            *self.routes.lock().unwrap() = routes;
+        }
     }
 
     #[test]
@@ -983,16 +1042,12 @@ mod tests {
 
     #[tokio::test]
     async fn reconcile_runtime_clears_public_ipv6_lease_when_auto_is_disabled() {
-        let global_ctx = get_mock_global_ctx();
-        global_ctx.config.set_ipv6_public_addr_auto(false);
-
-        let virtual_addr = "fd00::1/64".parse().unwrap();
         let stale_addr = "2001:db8::123/64".parse().unwrap();
-        global_ctx.set_ipv6(Some(virtual_addr));
-        global_ctx.set_public_ipv6_lease(Some(stale_addr));
+        let runtime = Arc::new(TestRuntime::new(false));
+        *runtime.lease.lock().unwrap() = Some(stale_addr);
 
         let service = Arc::new(PublicIpv6Service::new(
-            global_ctx.clone(),
+            runtime.clone(),
             std::sync::Weak::<PeerRpcManager>::new(),
             Arc::new(TestRouteControl {
                 my_peer_id: 1,
@@ -1005,21 +1060,16 @@ mod tests {
         service.reconcile_runtime_from_snapshot(&[]);
 
         assert_eq!(*service.my_addr_cache.lock().unwrap(), None);
-        assert_eq!(global_ctx.get_ipv6(), Some(virtual_addr));
-        assert_eq!(global_ctx.get_public_ipv6_lease(), None);
+        assert_eq!(*runtime.lease.lock().unwrap(), None);
     }
 
     #[tokio::test]
-    async fn reconcile_runtime_keeps_virtual_ipv6_when_public_lease_changes() {
-        let global_ctx = get_mock_global_ctx();
-        global_ctx.config.set_ipv6_public_addr_auto(true);
-
-        let virtual_addr = "fd00::1/64".parse().unwrap();
+    async fn reconcile_runtime_updates_public_lease_when_auto_enabled() {
         let public_addr = "2001:db8::123/64".parse().unwrap();
-        global_ctx.set_ipv6(Some(virtual_addr));
+        let runtime = Arc::new(TestRuntime::new(true));
 
         let service = Arc::new(PublicIpv6Service::new(
-            global_ctx.clone(),
+            runtime.clone(),
             std::sync::Weak::<PeerRpcManager>::new(),
             Arc::new(TestRouteControl {
                 my_peer_id: 1,
@@ -1037,7 +1087,6 @@ mod tests {
 
         service.reconcile_runtime();
 
-        assert_eq!(global_ctx.get_ipv6(), Some(virtual_addr));
-        assert_eq!(global_ctx.get_public_ipv6_lease(), Some(public_addr));
+        assert_eq!(*runtime.lease.lock().unwrap(), Some(public_addr));
     }
 }
