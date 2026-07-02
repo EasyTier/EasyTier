@@ -26,10 +26,11 @@ use super::{
 use crate::{
     common::{
         config::ProxyNetworkConfig,
+        credential_manager::CredentialManager,
         stats_manager::{self, StatsManager},
         token_bucket::TokenBucketManager,
     },
-    peers::{acl_filter::AclFilter, credential_manager::CredentialManager},
+    peers::acl_filter::AclFilter,
     proto::{
         acl::GroupIdentity,
         api::{config::InstanceConfigPatch, instance::PeerConnInfo},
