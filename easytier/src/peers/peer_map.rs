@@ -142,14 +142,10 @@ impl PeerMap {
         dst_peer_id: PeerId,
         policy: NextHopPolicy,
     ) -> Result<(), Error> {
-        let Some(gateway_peer_id) = self.get_gateway_peer_id(dst_peer_id, policy).await else {
-            return Err(Error::RouteError(Some(format!(
-                "peer map sengmsg no gateway for dst_peer_id: {}",
-                dst_peer_id
-            ))));
-        };
-
-        self.send_msg_directly(msg, gateway_peer_id).await
+        self.core
+            .send_msg(msg, dst_peer_id, policy)
+            .await
+            .map_err(Into::into)
     }
 
     pub async fn get_peer_id_by_ipv4(&self, ipv4: &Ipv4Addr) -> Option<PeerId> {
@@ -225,18 +221,7 @@ impl PeerMap {
     }
 
     pub async fn clean_peer_without_conn(&self) {
-        let mut to_remove = vec![];
-
-        for peer_id in self.list_peers() {
-            let conns = self.list_peer_conns(peer_id).await;
-            if conns.is_none() || conns.as_ref().unwrap().is_empty() {
-                to_remove.push(peer_id);
-            }
-        }
-
-        for peer_id in to_remove {
-            self.close_peer(peer_id).await.unwrap();
-        }
+        self.core.clean_peer_without_conn().await;
     }
 
     pub async fn list_routes(&self) -> DashMap<PeerId, PeerId> {
@@ -253,15 +238,10 @@ impl PeerMap {
     }
 
     pub async fn need_relay_by_foreign_network(&self, dst_peer_id: PeerId) -> Result<bool, Error> {
-        let gateway_id = self
-            .get_gateway_peer_id(dst_peer_id, NextHopPolicy::LeastHop)
+        self.core
+            .need_relay_by_foreign_network(dst_peer_id)
             .await
-            .ok_or(Error::RouteError(Some(format!(
-                "peer map need_relay_by_foreign_network no gateway for dst_peer_id: {}",
-                dst_peer_id
-            ))))?;
-
-        Ok(!self.has_peer(gateway_id))
+            .map_err(Into::into)
     }
 
     pub fn my_peer_id(&self) -> PeerId {
