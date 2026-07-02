@@ -2,7 +2,10 @@ use anyhow::Context;
 use async_trait::async_trait;
 use cidr::{Ipv4Cidr, Ipv6Cidr};
 use dashmap::DashMap;
-use easytier_core::peers::peer_manager as core_peer_manager;
+use easytier_core::peers::{
+    foreign_network_manager::{self as core_foreign_network_manager, GlobalForeignNetworkAccessor},
+    peer_manager as core_peer_manager,
+};
 use quanta::Instant;
 use std::collections::BTreeSet;
 use std::{
@@ -58,7 +61,7 @@ use super::{
     create_packet_recv_chan,
     encrypt::{Encryptor, NullCipher},
     foreign_network_client::ForeignNetworkClient,
-    foreign_network_manager::{ForeignNetworkManager, GlobalForeignNetworkAccessor},
+    foreign_network_manager::ForeignNetworkManager,
     peer_conn::PeerConnId,
     peer_map::PeerMap,
     peer_ospf_route::PeerRoute,
@@ -450,29 +453,7 @@ impl PeerManager {
     fn build_foreign_network_manager_accessor(
         peer_map: &Arc<PeerMap>,
     ) -> Box<dyn GlobalForeignNetworkAccessor> {
-        struct T {
-            peer_map: Weak<PeerMap>,
-        }
-
-        #[async_trait::async_trait]
-        impl GlobalForeignNetworkAccessor for T {
-            async fn list_global_foreign_peer(
-                &self,
-                network_identity: &NetworkIdentity,
-            ) -> Vec<PeerId> {
-                let Some(peer_map) = self.peer_map.upgrade() else {
-                    return vec![];
-                };
-
-                peer_map
-                    .list_peers_own_foreign_network(network_identity)
-                    .await
-            }
-        }
-
-        Box::new(T {
-            peer_map: Arc::downgrade(peer_map),
-        })
+        core_foreign_network_manager::peer_map_foreign_network_accessor(peer_map.downgrade_core())
     }
 
     async fn add_new_peer_conn(&self, peer_conn: PeerConn) -> Result<(), Error> {

@@ -14,7 +14,9 @@ use std::{
 };
 
 use dashmap::{DashMap, DashSet};
-use easytier_core::peers::foreign_network_manager as core_foreign_network_manager;
+use easytier_core::peers::foreign_network_manager::{
+    self as core_foreign_network_manager, GlobalForeignNetworkAccessor,
+};
 use guarden::{Guard, defer};
 use tokio::{
     sync::{Mutex, mpsc::UnboundedSender},
@@ -61,12 +63,6 @@ use super::{
         is_relay_data_packet_type, route_peer_info_instance_id, traffic_kind,
     },
 };
-
-#[async_trait::async_trait]
-#[auto_impl::auto_impl(&, Box, Arc)]
-pub trait GlobalForeignNetworkAccessor: Send + Sync + 'static {
-    async fn list_global_foreign_peer(&self, network_identity: &NetworkIdentity) -> Vec<PeerId>;
-}
 
 struct ForeignNetworkEntry {
     my_peer_id: PeerId,
@@ -325,9 +321,14 @@ impl ForeignNetworkEntry {
                     return vec![];
                 };
 
+                let network_identity = easytier_core::peers::context::NetworkIdentity {
+                    network_name: self.network_identity.network_name.clone(),
+                    network_secret: self.network_identity.network_secret.clone(),
+                    network_secret_digest: self.network_identity.network_secret_digest,
+                };
                 let mut global = self
                     .accessor
-                    .list_global_foreign_peer(&self.network_identity)
+                    .list_global_foreign_peer(&network_identity)
                     .await;
                 let local = peer_map.list_peers_with_conn().await;
                 global.extend(local.iter().cloned());

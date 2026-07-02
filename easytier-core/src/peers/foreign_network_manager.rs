@@ -8,9 +8,42 @@ use tokio::sync::{
 use crate::{config::PeerId, packet::ZCPacket};
 
 use super::{
+    context::NetworkIdentity,
     peer_map::PeerMap,
     peer_rpc::{PeerRpcManager, PeerRpcManagerTransport},
 };
+
+#[async_trait::async_trait]
+#[auto_impl::auto_impl(&, Box, Arc)]
+pub trait GlobalForeignNetworkAccessor: Send + Sync + 'static {
+    async fn list_global_foreign_peer(&self, network_identity: &NetworkIdentity) -> Vec<PeerId>;
+}
+
+pub fn peer_map_foreign_network_accessor(
+    peer_map: Weak<PeerMap>,
+) -> Box<dyn GlobalForeignNetworkAccessor> {
+    struct PeerMapForeignNetworkAccessor {
+        peer_map: Weak<PeerMap>,
+    }
+
+    #[async_trait::async_trait]
+    impl GlobalForeignNetworkAccessor for PeerMapForeignNetworkAccessor {
+        async fn list_global_foreign_peer(
+            &self,
+            network_identity: &NetworkIdentity,
+        ) -> Vec<PeerId> {
+            let Some(peer_map) = self.peer_map.upgrade() else {
+                return vec![];
+            };
+
+            peer_map
+                .list_peers_own_foreign_network(network_identity)
+                .await
+        }
+    }
+
+    Box::new(PeerMapForeignNetworkAccessor { peer_map })
+}
 
 pub struct RpcTransport {
     my_peer_id: PeerId,
