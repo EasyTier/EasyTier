@@ -216,6 +216,10 @@ impl PeerMap {
         self.core.as_ref()
     }
 
+    pub fn core(&self) -> Arc<CorePeerMap> {
+        self.core.clone()
+    }
+
     pub fn downgrade_core(&self) -> Weak<CorePeerMap> {
         Arc::downgrade(&self.core)
     }

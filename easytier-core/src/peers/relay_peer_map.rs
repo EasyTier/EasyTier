@@ -13,6 +13,8 @@ use crate::{
     peers::{
         context::ArcPeerContext,
         error::Error,
+        foreign_network_client::ForeignNetworkClient,
+        peer_map::PeerMap,
         peer_session::{PeerSession, PeerSessionAction, PeerSessionStore, SessionKey},
         route_trait::NextHopPolicy,
         util::shrink_dashmap,
@@ -70,6 +72,58 @@ pub trait RelayRouteTransport: Send + Sync {
         dst_peer_id: PeerId,
         policy: NextHopPolicy,
     ) -> Result<(), Error>;
+}
+
+pub struct PeerMapRelayRouteTransport {
+    peer_map: Arc<PeerMap>,
+    foreign_network_client: Option<Arc<ForeignNetworkClient>>,
+}
+
+#[async_trait::async_trait]
+impl RelayRouteTransport for PeerMapRelayRouteTransport {
+    async fn get_route_peer_info(&self, peer_id: PeerId) -> Option<RoutePeerInfo> {
+        self.peer_map.get_route_peer_info(peer_id).await
+    }
+
+    async fn send_msg_to_next_hop(
+        &self,
+        msg: ZCPacket,
+        dst_peer_id: PeerId,
+        policy: NextHopPolicy,
+    ) -> Result<(), Error> {
+        let Some(next_hop) = self.peer_map.get_gateway_peer_id(dst_peer_id, policy).await else {
+            return Err(Error::RouteError(Some(format!(
+                "next hop not found in route for peer {dst_peer_id:?}"
+            ))));
+        };
+        if self.peer_map.has_peer(next_hop) {
+            self.peer_map.send_msg_directly(msg, next_hop).await
+        } else if let Some(foreign_network_client) = &self.foreign_network_client {
+            foreign_network_client.send_msg(msg, next_hop).await
+        } else {
+            Err(Error::RouteError(Some(format!(
+                "next hop not found in direct peer map: {next_hop:?}"
+            ))))
+        }
+    }
+}
+
+pub fn new_relay_peer_map(
+    peer_map: Arc<PeerMap>,
+    foreign_network_client: Option<Arc<ForeignNetworkClient>>,
+    context: ArcPeerContext,
+    my_peer_id: PeerId,
+    peer_session_store: Arc<PeerSessionStore>,
+) -> Arc<RelayPeerMap> {
+    RelayPeerMap::new(
+        Arc::new(PeerMapRelayRouteTransport {
+            peer_map,
+            foreign_network_client,
+        }),
+        context,
+        my_peer_id,
+        peer_session_store,
+    )
 }
 
 impl RelayPeerMap {
