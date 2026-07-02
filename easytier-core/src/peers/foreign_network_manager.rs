@@ -11,7 +11,9 @@ use super::{
     context::NetworkIdentity,
     peer_map::PeerMap,
     peer_rpc::{PeerRpcManager, PeerRpcManagerTransport},
+    route_trait::{RouteInterface, RouteInterfaceBox},
 };
+use crate::proto::peer_rpc::PeerIdentityType;
 
 #[async_trait::async_trait]
 #[auto_impl::auto_impl(&, Box, Arc)]
@@ -43,6 +45,87 @@ pub fn peer_map_foreign_network_accessor(
     }
 
     Box::new(PeerMapForeignNetworkAccessor { peer_map })
+}
+
+pub struct ForeignNetworkRouteInterface {
+    my_peer_id: PeerId,
+    peer_map: Weak<PeerMap>,
+    network_identity: NetworkIdentity,
+    accessor: Box<dyn GlobalForeignNetworkAccessor>,
+}
+
+impl ForeignNetworkRouteInterface {
+    pub fn new(
+        my_peer_id: PeerId,
+        peer_map: Weak<PeerMap>,
+        network_identity: NetworkIdentity,
+        accessor: Box<dyn GlobalForeignNetworkAccessor>,
+    ) -> Self {
+        Self {
+            my_peer_id,
+            peer_map,
+            network_identity,
+            accessor,
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl RouteInterface for ForeignNetworkRouteInterface {
+    async fn list_peers(&self) -> Vec<PeerId> {
+        let Some(peer_map) = self.peer_map.upgrade() else {
+            return vec![];
+        };
+
+        let mut global = self
+            .accessor
+            .list_global_foreign_peer(&self.network_identity)
+            .await;
+        let local = peer_map.list_peers_with_conn().await;
+        global.extend(local.iter().cloned());
+        global
+            .into_iter()
+            .filter(|peer_id| *peer_id != self.my_peer_id)
+            .collect()
+    }
+
+    fn my_peer_id(&self) -> PeerId {
+        self.my_peer_id
+    }
+
+    fn need_periodic_requery_peers(&self) -> bool {
+        true
+    }
+
+    async fn get_peer_identity_type(&self, peer_id: PeerId) -> Option<PeerIdentityType> {
+        let peer_map = self.peer_map.upgrade()?;
+        peer_map.get_peer_identity_type(peer_id)
+    }
+
+    async fn get_peer_public_key(&self, peer_id: PeerId) -> Option<Vec<u8>> {
+        let peer_map = self.peer_map.upgrade()?;
+        peer_map.get_peer_public_key(peer_id)
+    }
+
+    async fn close_peer(&self, peer_id: PeerId) {
+        if let Some(peer_map) = self.peer_map.upgrade() {
+            let _ = peer_map.close_peer(peer_id).await;
+        }
+    }
+}
+
+pub fn foreign_network_route_interface(
+    my_peer_id: PeerId,
+    peer_map: Weak<PeerMap>,
+    network_identity: NetworkIdentity,
+    accessor: Box<dyn GlobalForeignNetworkAccessor>,
+) -> RouteInterfaceBox {
+    Box::new(ForeignNetworkRouteInterface::new(
+        my_peer_id,
+        peer_map,
+        network_identity,
+        accessor,
+    ))
 }
 
 pub struct RpcTransport {

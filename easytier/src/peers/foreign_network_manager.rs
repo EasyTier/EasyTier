@@ -33,7 +33,7 @@ use crate::{
         token_bucket::TokenBucket,
     },
     peer_center::instance::{PeerCenterInstance, PeerMapWithPeerRpcManager},
-    peers::route_trait::{Route, RouteInterface},
+    peers::route_trait::Route,
     proto::{
         api::instance::{
             ForeignNetworkEntryPb, ListForeignNetworkResponse, PeerInfo, TrustedKeyInfoPb,
@@ -306,62 +306,6 @@ impl ForeignNetworkEntry {
     }
 
     async fn prepare_route(&self, accessor: Box<dyn GlobalForeignNetworkAccessor>) {
-        struct Interface {
-            my_peer_id: PeerId,
-            peer_map: Weak<PeerMap>,
-            network_identity: NetworkIdentity,
-            accessor: Box<dyn GlobalForeignNetworkAccessor>,
-        }
-
-        #[async_trait::async_trait]
-        impl RouteInterface for Interface {
-            async fn list_peers(&self) -> Vec<PeerId> {
-                let Some(peer_map) = self.peer_map.upgrade() else {
-                    return vec![];
-                };
-
-                let network_identity = easytier_core::peers::context::NetworkIdentity {
-                    network_name: self.network_identity.network_name.clone(),
-                    network_secret: self.network_identity.network_secret.clone(),
-                    network_secret_digest: self.network_identity.network_secret_digest,
-                };
-                let mut global = self
-                    .accessor
-                    .list_global_foreign_peer(&network_identity)
-                    .await;
-                let local = peer_map.list_peers_with_conn().await;
-                global.extend(local.iter().cloned());
-                global
-                    .into_iter()
-                    .filter(|x| *x != self.my_peer_id)
-                    .collect()
-            }
-
-            fn my_peer_id(&self) -> PeerId {
-                self.my_peer_id
-            }
-
-            fn need_periodic_requery_peers(&self) -> bool {
-                true
-            }
-
-            async fn get_peer_identity_type(&self, peer_id: PeerId) -> Option<PeerIdentityType> {
-                let peer_map = self.peer_map.upgrade()?;
-                peer_map.get_peer_identity_type(peer_id)
-            }
-
-            async fn get_peer_public_key(&self, peer_id: PeerId) -> Option<Vec<u8>> {
-                let peer_map = self.peer_map.upgrade()?;
-                peer_map.get_peer_public_key(peer_id)
-            }
-
-            async fn close_peer(&self, peer_id: PeerId) {
-                if let Some(peer_map) = self.peer_map.upgrade() {
-                    let _ = peer_map.close_peer(peer_id).await;
-                }
-            }
-        }
-
         let route = PeerRoute::new(
             self.my_peer_id,
             self.global_ctx.clone(),
@@ -369,12 +313,18 @@ impl ForeignNetworkEntry {
             self.peer_rpc.clone(),
         );
         route
-            .open(Box::new(Interface {
-                my_peer_id: self.my_peer_id,
-                network_identity: self.network.clone(),
-                peer_map: Arc::downgrade(&self.peer_map),
-                accessor,
-            }))
+            .open(
+                core_foreign_network_manager::foreign_network_route_interface(
+                    self.my_peer_id,
+                    self.peer_map.downgrade_core(),
+                    easytier_core::peers::context::NetworkIdentity {
+                        network_name: self.network.network_name.clone(),
+                        network_secret: self.network.network_secret.clone(),
+                        network_secret_digest: self.network.network_secret_digest,
+                    },
+                    accessor,
+                ),
+            )
             .await
             .unwrap();
 
