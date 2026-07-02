@@ -2,6 +2,7 @@ pub mod context;
 pub mod credential_manager;
 pub mod encrypt;
 pub mod error;
+pub mod foreign_network_client;
 pub mod graph_algo;
 pub mod peer;
 pub mod peer_conn;

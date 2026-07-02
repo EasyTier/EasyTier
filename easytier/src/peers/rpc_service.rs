@@ -70,7 +70,7 @@ impl PeerManagerRpcService {
                 .list_peer_conns(peer)
                 .await
             {
-                peer_info.conns = conns;
+                peer_info.conns = conns.into_iter().map(Into::into).collect();
             }
 
             peer_infos.push(peer_info);

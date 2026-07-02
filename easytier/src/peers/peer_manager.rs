@@ -2092,7 +2092,8 @@ impl PeerManager {
             .foreign_network_client
             .get_peer_map()
             .close_peer_conn(peer_id, conn_id)
-            .await;
+            .await
+            .map_err(Error::from);
         tracing::info!("close_peer_conn in foreign network client: {:?}", ret);
         if ret.is_ok() || !matches!(ret.as_ref().unwrap_err(), Error::NotFound) {
             return ret;

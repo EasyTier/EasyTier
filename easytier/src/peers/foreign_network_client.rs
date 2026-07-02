@@ -1,20 +1,22 @@
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+
+use easytier_core::peers::peer_map::PeerMap;
+use parking_lot::Mutex;
 
 use crate::{
     common::{PeerId, error::Error, global_ctx::ArcGlobalCtx},
     tunnel::packet_def::ZCPacket,
 };
-use tokio_util::task::AbortOnDropHandle;
 
-use super::{PacketRecvChan, peer_conn::PeerConn, peer_map::PeerMap, peer_rpc::PeerRpcManager};
+use super::{
+    PacketRecvChan,
+    peer_conn::{PeerConn, PeerConnId},
+    peer_rpc::PeerRpcManager,
+};
 
 pub struct ForeignNetworkClient {
-    global_ctx: ArcGlobalCtx,
-    peer_rpc: Arc<PeerRpcManager>,
-    my_peer_id: PeerId,
-
-    peer_map: Arc<PeerMap>,
-    task: Mutex<Option<AbortOnDropHandle<()>>>,
+    core: easytier_core::peers::foreign_network_client::ForeignNetworkClient,
+    alive_client_urls: Arc<Mutex<multimap::MultiMap<url::Url, PeerConnId>>>,
 }
 
 impl ForeignNetworkClient {
@@ -24,77 +26,90 @@ impl ForeignNetworkClient {
         peer_rpc: Arc<PeerRpcManager>,
         my_peer_id: PeerId,
     ) -> Self {
-        let peer_map = Arc::new(PeerMap::new(
-            packet_sender_to_mgr,
-            global_ctx.clone(),
-            my_peer_id,
-        ));
         Self {
-            global_ctx,
-            peer_rpc,
-            my_peer_id,
-
-            peer_map,
-            task: Mutex::new(None),
+            core: easytier_core::peers::foreign_network_client::ForeignNetworkClient::new(
+                global_ctx,
+                packet_sender_to_mgr,
+                peer_rpc,
+                my_peer_id,
+            ),
+            alive_client_urls: Arc::new(Mutex::new(multimap::MultiMap::new())),
         }
     }
 
     pub async fn add_new_peer_conn(&self, peer_conn: PeerConn) -> Result<(), Error> {
-        tracing::warn!(peer_conn = ?peer_conn.get_conn_info(), network = ?peer_conn.get_network_identity(), "add new peer conn in foreign network client");
-        self.peer_map.add_new_peer_conn(peer_conn).await
+        let _ = self.maintain_alive_client_urls(&peer_conn);
+        self.core
+            .add_new_peer_conn(peer_conn)
+            .await
+            .map_err(Into::into)
+    }
+
+    fn maintain_alive_client_urls(&self, peer_conn: &PeerConn) -> Option<()> {
+        let conn_info = peer_conn.get_conn_info();
+        if !conn_info.is_client {
+            return None;
+        }
+
+        let close_notifier = peer_conn.get_close_notifier();
+        let alive_conns_weak = Arc::downgrade(&self.alive_client_urls);
+        let conn_id = close_notifier.get_conn_id();
+        let alive_client_url: url::Url = conn_info.tunnel?.remote_addr?.into();
+        self.alive_client_urls
+            .lock()
+            .insert(alive_client_url.clone(), conn_id);
+
+        tokio::spawn(async move {
+            if let Some(mut waiter) = close_notifier.get_waiter().await {
+                let _ = waiter.recv().await;
+            }
+            let Some(alive_conns) = alive_conns_weak.upgrade() else {
+                return;
+            };
+            let mut guard = alive_conns.lock();
+            if let Some(mut conn_ids) = guard.remove(&alive_client_url) {
+                conn_ids.retain(|id| id != &conn_id);
+                if !conn_ids.is_empty() {
+                    guard.insert_many(alive_client_url, conn_ids);
+                }
+            };
+            let alive_conn_count = guard.len();
+            drop(guard);
+            tracing::debug!(
+                ?conn_id,
+                "peer conn is closed, current alive conns: {}",
+                alive_conn_count
+            );
+        });
+
+        Some(())
+    }
+
+    pub fn is_client_url_alive(&self, url: &url::Url) -> bool {
+        self.alive_client_urls.lock().contains_key(url)
     }
 
     pub fn has_next_hop(&self, peer_id: PeerId) -> bool {
-        self.get_next_hop(peer_id).is_some()
+        self.core.has_next_hop(peer_id)
     }
 
     pub async fn list_public_peers(&self) -> Vec<PeerId> {
-        self.peer_map.list_peers()
+        self.core.list_public_peers().await
     }
 
     pub fn get_next_hop(&self, peer_id: PeerId) -> Option<PeerId> {
-        if self.peer_map.has_peer(peer_id) {
-            return Some(peer_id);
-        }
-        None
+        self.core.get_next_hop(peer_id)
     }
 
     pub async fn send_msg(&self, msg: ZCPacket, peer_id: PeerId) -> Result<(), Error> {
-        if let Some(next_hop) = self.get_next_hop(peer_id) {
-            let ret = self.peer_map.send_msg_directly(msg, next_hop).await;
-            if ret.is_err() {
-                tracing::error!(
-                    ?ret,
-                    ?peer_id,
-                    ?next_hop,
-                    "foreign network client send msg failed"
-                );
-            } else {
-                tracing::info!(
-                    ?peer_id,
-                    ?next_hop,
-                    "foreign network client send msg success"
-                );
-            }
-            return ret;
-        }
-        Err(Error::RouteError(Some("no next hop".to_string())))
+        self.core.send_msg(msg, peer_id).await.map_err(Into::into)
     }
 
     pub async fn run(&self) {
-        let peer_map = Arc::downgrade(&self.peer_map);
-        *self.task.lock().unwrap() = Some(AbortOnDropHandle::new(tokio::spawn(async move {
-            loop {
-                tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
-                let Some(peer_map) = peer_map.upgrade() else {
-                    break;
-                };
-                peer_map.clean_peer_without_conn().await;
-            }
-        })));
+        self.core.run().await;
     }
 
     pub fn get_peer_map(&self) -> Arc<PeerMap> {
-        self.peer_map.clone()
+        self.core.get_peer_map()
     }
 }

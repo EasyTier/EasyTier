@@ -2066,14 +2066,6 @@ pub async fn manual_reconnector(#[values(true, false)] is_foreign: bool) {
 
     tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
 
-    let peer_map = if !is_foreign {
-        inst1.get_peer_manager().get_peer_map()
-    } else {
-        inst1
-            .get_peer_manager()
-            .get_foreign_network_client()
-            .get_peer_map()
-    };
     let center_inst_peer_id = if !is_foreign {
         center_inst.peer_id()
     } else {
@@ -2084,9 +2076,26 @@ pub async fn manual_reconnector(#[values(true, false)] is_foreign: bool) {
             .unwrap()
     };
 
-    let conns = peer_map.list_peer_conns(center_inst_peer_id).await.unwrap();
+    let conns_len = if !is_foreign {
+        inst1
+            .get_peer_manager()
+            .get_peer_map()
+            .list_peer_conns(center_inst_peer_id)
+            .await
+            .unwrap()
+            .len()
+    } else {
+        inst1
+            .get_peer_manager()
+            .get_foreign_network_client()
+            .get_peer_map()
+            .list_peer_conns(center_inst_peer_id)
+            .await
+            .unwrap()
+            .len()
+    };
 
-    assert!(!conns.is_empty());
+    assert!(conns_len > 0);
 
     wait_for_condition(
         || async { ping_test("net_b", "10.144.145.2", None).await },
@@ -2094,7 +2103,6 @@ pub async fn manual_reconnector(#[values(true, false)] is_foreign: bool) {
     )
     .await;
 
-    drop(peer_map);
     drop_insts(vec![center_inst, inst1, inst2]).await;
 }
 

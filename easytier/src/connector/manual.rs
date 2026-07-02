@@ -281,10 +281,7 @@ impl ManualConnectorManager {
         };
         for url in data.connectors.iter().map(|x| x.key().clone()) {
             if !pm.get_peer_map().is_client_url_alive(&url)
-                && !pm
-                    .get_foreign_network_client()
-                    .get_peer_map()
-                    .is_client_url_alive(&url)
+                && !pm.get_foreign_network_client().is_client_url_alive(&url)
             {
                 ret.insert(url.clone());
             }
