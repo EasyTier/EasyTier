@@ -13,6 +13,13 @@ use arc_swap::ArcSwap;
 use cidr::{IpCidr, Ipv4Cidr, Ipv6Cidr, Ipv6Inet};
 use crossbeam::atomic::AtomicCell;
 use dashmap::DashMap;
+use easytier_core::{
+    peers::context::NetworkIdentity as CoreNetworkIdentity,
+    proto::core_peer::peer::{
+        ListPublicIpv6InfoResponse as CoreListPublicIpv6InfoResponse,
+        PublicIpv6LeaseInfo as CorePublicIpv6LeaseInfo, Route as CoreRouteInfo,
+    },
+};
 use ordered_hash_map::OrderedHashMap;
 use parking_lot::{RwLock, lock_api::RwLockUpgradableReadGuard};
 use petgraph::{
@@ -3918,7 +3925,7 @@ impl Route for PeerRoute {
             .map(|x| x.next_hop_peer_id)
     }
 
-    async fn list_routes(&self) -> Vec<crate::proto::api::instance::Route> {
+    async fn list_routes(&self) -> Vec<CoreRouteInfo> {
         let route_table = &self.service_impl.route_table;
         let route_table_with_cost = &self.service_impl.route_table_with_cost;
         let mut routes = Vec::new();
@@ -3930,7 +3937,7 @@ impl Route for PeerRoute {
                 continue;
             };
             let next_hop_peer_latency_first = route_table_with_cost.get_next_hop(*item.key());
-            let mut route: crate::proto::api::instance::Route = item.value().clone().into();
+            let mut route: CoreRouteInfo = item.value().clone().into();
             route.next_hop_peer_id = next_hop_peer.next_hop_peer_id;
             route.cost = next_hop_peer.path_len as i32;
             route.path_latency = next_hop_peer.path_latency;
@@ -3983,14 +3990,12 @@ impl Route for PeerRoute {
         self.public_ipv6_service.provider_peer_id_for_client()
     }
 
-    async fn get_local_public_ipv6_info(
-        &self,
-    ) -> crate::proto::api::instance::ListPublicIpv6InfoResponse {
+    async fn get_local_public_ipv6_info(&self) -> CoreListPublicIpv6InfoResponse {
         let Some((provider, leases)) = self.public_ipv6_service.local_provider_state() else {
-            return crate::proto::api::instance::ListPublicIpv6InfoResponse::default();
+            return CoreListPublicIpv6InfoResponse::default();
         };
 
-        crate::proto::api::instance::ListPublicIpv6InfoResponse {
+        CoreListPublicIpv6InfoResponse {
             provider_prefix: Some(
                 Ipv6Inet::new(
                     provider.prefix.first_address(),
@@ -4001,7 +4006,7 @@ impl Route for PeerRoute {
             ),
             provider_leases: leases
                 .into_iter()
-                .map(|lease| crate::proto::api::instance::PublicIpv6LeaseInfo {
+                .map(|lease| CorePublicIpv6LeaseInfo {
                     peer_id: lease.peer_id,
                     inst_id: lease.inst_id.to_string(),
                     leased_addr: Some(lease.addr.into()),
@@ -4105,11 +4110,12 @@ impl Route for PeerRoute {
 
     async fn list_peers_own_foreign_network(
         &self,
-        network_identity: &NetworkIdentity,
+        network_identity: &CoreNetworkIdentity,
     ) -> Vec<PeerId> {
+        let network_identity: NetworkIdentity = network_identity.clone().into();
         self.service_impl
             .foreign_network_owner_map
-            .get(network_identity)
+            .get(&network_identity)
             .map(|x| x.clone())
             .unwrap_or_default()
     }

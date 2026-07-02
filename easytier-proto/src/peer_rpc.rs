@@ -132,6 +132,50 @@ impl From<Vec<crate::api::instance::PeerInfo>> for PeerInfoForGlobalMap {
     }
 }
 
+impl From<RoutePeerInfo> for crate::core_peer::peer::Route {
+    fn from(val: RoutePeerInfo) -> Self {
+        let network_length = if val.network_length == 0 {
+            24
+        } else {
+            val.network_length
+        };
+
+        crate::core_peer::peer::Route {
+            peer_id: val.peer_id,
+            ipv4_addr: val.ipv4_addr.map(|ipv4_addr| crate::common::Ipv4Inet {
+                address: Some(ipv4_addr),
+                network_length,
+            }),
+            next_hop_peer_id: 0,
+            cost: 0,
+            path_latency: 0,
+            proxy_cidrs: val.proxy_cidrs.clone(),
+            hostname: val.hostname.unwrap_or_default(),
+            stun_info: {
+                let mut stun_info = crate::common::StunInfo::default();
+                if let Ok(udp_nat_type) = crate::common::NatType::try_from(val.udp_nat_type) {
+                    stun_info.set_udp_nat_type(udp_nat_type);
+                }
+                if let Ok(tcp_nat_type) = crate::common::NatType::try_from(val.tcp_nat_type) {
+                    stun_info.set_tcp_nat_type(tcp_nat_type);
+                }
+                Some(stun_info)
+            },
+            inst_id: val.inst_id.map(|x| x.to_string()).unwrap_or_default(),
+            version: val.easytier_version,
+            feature_flag: val.feature_flag,
+
+            next_hop_peer_id_latency_first: None,
+            cost_latency_first: None,
+            path_latency_latency_first: None,
+
+            ipv6_addr: val.ipv6_addr,
+            public_ipv6_addr: val.ipv6_public_addr_lease,
+            ipv6_public_addr_prefix: val.ipv6_public_addr_prefix,
+        }
+    }
+}
+
 #[cfg(feature = "api")]
 impl From<RoutePeerInfo> for crate::api::instance::Route {
     fn from(val: RoutePeerInfo) -> Self {
