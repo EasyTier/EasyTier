@@ -2503,6 +2503,7 @@ dependencies = [
  "prost 0.14.3",
  "quanta",
  "rand 0.8.5",
+ "serde",
  "sha2",
  "snow",
  "thiserror 1.0.63",
@@ -2510,6 +2511,7 @@ dependencies = [
  "tokio-util",
  "tracing",
  "uuid",
+ "x25519-dalek",
  "zerocopy 0.7.35",
  "zstd",
 ]

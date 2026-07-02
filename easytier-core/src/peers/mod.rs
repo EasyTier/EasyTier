@@ -1,4 +1,5 @@
 pub mod context;
+pub mod credential_manager;
 pub mod encrypt;
 pub mod error;
 pub mod graph_algo;

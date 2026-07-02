@@ -32,6 +32,7 @@ prefix-trie = { version = "0.7.0", features = ["cidr"] }
 prost = "0.14.3"
 rand = "0.8.5"
 quanta = "0.12"
+serde = { version = "1.0", features = ["derive"] }
 sha2 = "0.10.8"
 snow = "0.10.0"
 thiserror = "1.0"
@@ -45,6 +46,7 @@ tokio = { version = "1", default-features = false, features = [
 ] }
 tokio-util = { version = "0.7", features = ["rt"] }
 uuid = { version = "1.5.0", features = ["v4", "fast-rng"] }
+x25519-dalek = { version = "2.0", features = ["static_secrets"] }
 zerocopy = { version = "0.7.32", features = ["derive", "simd"] }
 zstd = { version = "0.13", optional = true }
 aes-gcm = { version = "0.10.3", optional = true }
