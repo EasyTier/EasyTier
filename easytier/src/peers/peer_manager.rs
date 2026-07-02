@@ -1558,7 +1558,10 @@ impl PeerManager {
         } else if peers.has_peer(dst_peer_id) {
             peers.send_msg_directly(msg, dst_peer_id).await
         } else if foreign_network_client.has_next_hop(dst_peer_id) {
-            foreign_network_client.send_msg(msg, dst_peer_id).await
+            foreign_network_client
+                .send_msg(msg, dst_peer_id)
+                .await
+                .map_err(Into::into)
         } else if let Some(gateway) = peers.get_gateway_peer_id(dst_peer_id, policy.clone()).await {
             if peers.has_peer(gateway) || foreign_network_client.has_next_hop(gateway) {
                 relay_peer_map
@@ -1575,7 +1578,10 @@ impl PeerManager {
             }
         } else if foreign_network_client.has_next_hop(dst_peer_id) {
             // check foreign network again. so in happy path we can avoid extra check
-            foreign_network_client.send_msg(msg, dst_peer_id).await
+            foreign_network_client
+                .send_msg(msg, dst_peer_id)
+                .await
+                .map_err(Into::into)
         } else {
             tracing::debug!(?dst_peer_id, "no gateway for peer");
             Err(Error::RouteError(None))

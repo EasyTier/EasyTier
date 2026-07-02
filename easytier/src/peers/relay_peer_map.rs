@@ -54,10 +54,7 @@ impl RelayRouteTransport for RuntimeRelayRouteTransport {
                 .await
                 .map_err(core_error_from_runtime)
         } else if let Some(foreign_network_client) = &self.foreign_network_client {
-            foreign_network_client
-                .send_msg(msg, next_hop)
-                .await
-                .map_err(core_error_from_runtime)
+            foreign_network_client.send_msg(msg, next_hop).await
         } else {
             Err(easytier_core::peers::error::Error::RouteError(Some(
                 format!("next hop not found in direct peer map: {next_hop:?}"),
