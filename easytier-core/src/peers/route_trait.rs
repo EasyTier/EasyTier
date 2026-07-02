@@ -1,11 +1,11 @@
 use cidr::Ipv6Inet;
 use cidr::{Ipv4Cidr, Ipv6Cidr};
 use dashmap::DashMap;
+use quanta::Instant;
 use std::{
     collections::BTreeSet,
     net::{Ipv4Addr, Ipv6Addr},
     sync::Arc,
-    time::Instant,
 };
 
 use crate::{

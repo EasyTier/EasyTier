@@ -19,12 +19,9 @@ use crate::{
     },
 };
 
-#[derive(Clone, Debug, Default)]
-pub enum NextHopPolicy {
-    #[default]
-    LeastHop,
-    LeastCost,
-}
+pub use easytier_core::peers::route_trait::{
+    DefaultRouteCostCalculator, NextHopPolicy, RouteCostCalculator, RouteCostCalculatorInterface,
+};
 
 pub type ForeignNetworkRouteInfoMap =
     DashMap<ForeignNetworkRouteInfoKey, ForeignNetworkRouteInfoEntry>;
@@ -49,31 +46,6 @@ pub trait RouteInterface {
 }
 
 pub type RouteInterfaceBox = Box<dyn RouteInterface + Send + Sync>;
-
-#[auto_impl::auto_impl(Box , &mut)]
-pub trait RouteCostCalculatorInterface: Send + Sync {
-    fn begin_update(&mut self) {}
-    fn end_update(&mut self) {}
-
-    fn calculate_cost(&self, _src: PeerId, _dst: PeerId) -> i32 {
-        1
-    }
-
-    fn need_update(&self) -> bool {
-        false
-    }
-
-    fn dump(&self) -> String {
-        "All routes have cost 1".to_string()
-    }
-}
-
-#[derive(Clone, Debug, Default)]
-pub struct DefaultRouteCostCalculator;
-
-impl RouteCostCalculatorInterface for DefaultRouteCostCalculator {}
-
-pub type RouteCostCalculator = Box<dyn RouteCostCalculatorInterface>;
 
 #[async_trait::async_trait]
 #[auto_impl::auto_impl(Box, Arc)]
