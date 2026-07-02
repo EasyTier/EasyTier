@@ -4273,7 +4273,43 @@ impl PeerPacketFilter for PeerRoute {}
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::peers::route_trait::DefaultRouteCostCalculator;
+    use crate::peers::context::NoopPeerContext;
+    use crate::peers::route_trait::{DefaultRouteCostCalculator, RouteInterface};
+    use parking_lot::Mutex;
+
+    struct CountingInterface {
+        my_peer_id: PeerId,
+        peers: Arc<Mutex<Vec<PeerId>>>,
+        peer_identity_types: Arc<Mutex<HashMap<PeerId, Option<PeerIdentityType>>>>,
+        list_peers_calls: Arc<AtomicU32>,
+        get_peer_identity_type_calls: Arc<AtomicU32>,
+    }
+
+    #[async_trait::async_trait]
+    impl RouteInterface for CountingInterface {
+        async fn list_peers(&self) -> Vec<PeerId> {
+            self.list_peers_calls.fetch_add(1, Ordering::Relaxed);
+            self.peers.lock().clone()
+        }
+
+        async fn get_peer_identity_type(&self, peer_id: PeerId) -> Option<PeerIdentityType> {
+            self.get_peer_identity_type_calls
+                .fetch_add(1, Ordering::Relaxed);
+            self.peer_identity_types
+                .lock()
+                .get(&peer_id)
+                .copied()
+                .flatten()
+        }
+
+        fn my_peer_id(&self) -> PeerId {
+            self.my_peer_id
+        }
+    }
+
+    fn test_service_impl(my_peer_id: PeerId) -> PeerRouteServiceImpl {
+        PeerRouteServiceImpl::new(my_peer_id, Arc::new(NoopPeerContext::default()))
+    }
 
     fn peer(peer_id: PeerId) -> OspfPeerInfo {
         OspfPeerInfo {
@@ -4295,6 +4331,122 @@ mod tests {
             connected_peers: connected_peers.into_iter().collect(),
             version: 1,
         }
+    }
+
+    #[tokio::test]
+    async fn interface_peer_cache_refreshes_only_when_marked_dirty() {
+        let service_impl = test_service_impl(1);
+        let peers = Arc::new(Mutex::new(vec![2, 3]));
+        let peer_identity_types = Arc::new(Mutex::new(HashMap::new()));
+        let list_peers_calls = Arc::new(AtomicU32::new(0));
+        let get_peer_identity_type_calls = Arc::new(AtomicU32::new(0));
+        *service_impl.interface.lock().await = Some(Box::new(CountingInterface {
+            my_peer_id: 1,
+            peers: peers.clone(),
+            peer_identity_types,
+            list_peers_calls: list_peers_calls.clone(),
+            get_peer_identity_type_calls,
+        }));
+
+        let first: BTreeSet<_> = service_impl.list_peers_from_interface().await;
+        let second: BTreeSet<_> = service_impl.list_peers_from_interface().await;
+
+        assert_eq!(first, BTreeSet::from([2, 3]));
+        assert_eq!(second, BTreeSet::from([2, 3]));
+        assert_eq!(list_peers_calls.load(Ordering::Relaxed), 1);
+
+        *peers.lock() = vec![2, 4];
+        service_impl.handle_peer_context_event(&PeerContextEvent::PeerConnAdded);
+
+        let third: BTreeSet<_> = service_impl.list_peers_from_interface().await;
+        assert_eq!(third, BTreeSet::from([2, 4]));
+        assert_eq!(list_peers_calls.load(Ordering::Relaxed), 2);
+    }
+
+    #[tokio::test]
+    async fn update_my_conn_info_skips_interface_scan_when_topology_is_unchanged() {
+        let service_impl = test_service_impl(1);
+        let peers = Arc::new(Mutex::new(vec![2, 3]));
+        let peer_identity_types = Arc::new(Mutex::new(HashMap::new()));
+        let list_peers_calls = Arc::new(AtomicU32::new(0));
+        let get_peer_identity_type_calls = Arc::new(AtomicU32::new(0));
+        *service_impl.interface.lock().await = Some(Box::new(CountingInterface {
+            my_peer_id: 1,
+            peers: peers.clone(),
+            peer_identity_types,
+            list_peers_calls: list_peers_calls.clone(),
+            get_peer_identity_type_calls: get_peer_identity_type_calls.clone(),
+        }));
+
+        assert!(service_impl.update_my_conn_info().await);
+        assert_eq!(list_peers_calls.load(Ordering::Relaxed), 1);
+        assert_eq!(get_peer_identity_type_calls.load(Ordering::Relaxed), 2);
+
+        assert!(!service_impl.update_my_conn_info().await);
+        assert_eq!(list_peers_calls.load(Ordering::Relaxed), 1);
+        assert_eq!(get_peer_identity_type_calls.load(Ordering::Relaxed), 2);
+
+        *peers.lock() = vec![2, 4];
+        service_impl.handle_peer_context_event(&PeerContextEvent::PeerConnRemoved);
+
+        assert!(service_impl.update_my_conn_info().await);
+        assert_eq!(list_peers_calls.load(Ordering::Relaxed), 2);
+        assert_eq!(get_peer_identity_type_calls.load(Ordering::Relaxed), 4);
+
+        assert!(!service_impl.update_my_conn_info().await);
+        assert_eq!(list_peers_calls.load(Ordering::Relaxed), 2);
+        assert_eq!(get_peer_identity_type_calls.load(Ordering::Relaxed), 4);
+    }
+
+    #[tokio::test]
+    async fn get_peer_identity_type_reuses_snapshot_until_topology_changes() {
+        let service_impl = test_service_impl(1);
+        let peers = Arc::new(Mutex::new(vec![2, 3]));
+        let peer_identity_types = Arc::new(Mutex::new(HashMap::from([
+            (2, Some(PeerIdentityType::Credential)),
+            (3, Some(PeerIdentityType::Admin)),
+            (4, Some(PeerIdentityType::Admin)),
+        ])));
+        let list_peers_calls = Arc::new(AtomicU32::new(0));
+        let get_peer_identity_type_calls = Arc::new(AtomicU32::new(0));
+        *service_impl.interface.lock().await = Some(Box::new(CountingInterface {
+            my_peer_id: 1,
+            peers: peers.clone(),
+            peer_identity_types: peer_identity_types.clone(),
+            list_peers_calls: list_peers_calls.clone(),
+            get_peer_identity_type_calls: get_peer_identity_type_calls.clone(),
+        }));
+
+        assert_eq!(
+            service_impl.get_peer_identity_type_from_interface(2).await,
+            Some(PeerIdentityType::Credential)
+        );
+        assert_eq!(list_peers_calls.load(Ordering::Relaxed), 1);
+        assert_eq!(get_peer_identity_type_calls.load(Ordering::Relaxed), 2);
+
+        assert_eq!(
+            service_impl.get_peer_identity_type_from_interface(2).await,
+            Some(PeerIdentityType::Credential)
+        );
+        assert_eq!(list_peers_calls.load(Ordering::Relaxed), 1);
+        assert_eq!(get_peer_identity_type_calls.load(Ordering::Relaxed), 2);
+
+        *peers.lock() = vec![2, 4];
+        service_impl.handle_peer_context_event(&PeerContextEvent::PeerConnRemoved);
+
+        assert_eq!(
+            service_impl.get_peer_identity_type_from_interface(4).await,
+            Some(PeerIdentityType::Admin)
+        );
+        assert_eq!(list_peers_calls.load(Ordering::Relaxed), 2);
+        assert_eq!(get_peer_identity_type_calls.load(Ordering::Relaxed), 4);
+
+        assert_eq!(
+            service_impl.get_peer_identity_type_from_interface(4).await,
+            Some(PeerIdentityType::Admin)
+        );
+        assert_eq!(list_peers_calls.load(Ordering::Relaxed), 2);
+        assert_eq!(get_peer_identity_type_calls.load(Ordering::Relaxed), 4);
     }
 
     #[test]
