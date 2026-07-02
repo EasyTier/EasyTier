@@ -685,32 +685,6 @@ impl PeerManager {
             .map_err(Error::from)
     }
 
-    async fn run_credential_gc_routine(&self) {
-        let global_ctx = self.global_ctx.clone();
-        let peer_map = self.peers.clone();
-        self.tasks.lock().await.spawn(async move {
-            loop {
-                if global_ctx.get_network_identity().network_secret.is_some() {
-                    if global_ctx
-                        .get_credential_manager()
-                        .remove_expired_credentials()
-                    {
-                        global_ctx.issue_event(GlobalCtxEvent::CredentialChanged);
-                    }
-
-                    let network_name = global_ctx.get_network_name();
-                    core_peer_manager::close_untrusted_credential_peers(
-                        peer_map.as_ref(),
-                        &network_name,
-                        |pubkey, network_name| global_ctx.is_pubkey_trusted(pubkey, network_name),
-                    )
-                    .await;
-                }
-                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-            }
-        });
-    }
-
     async fn run_traffic_metrics_gc_routine(&self) {
         let mut event_receiver = self.global_ctx.subscribe();
         let traffic_metrics = self.traffic_metrics.clone();
@@ -758,10 +732,10 @@ impl PeerManager {
             self.recent_traffic.clone(),
             self.foreign_network_client.clone(),
             self.peer_session_store.clone(),
+            self.global_ctx.clone(),
         )
         .spawn_into(&self.tasks)
         .await;
-        self.run_credential_gc_routine().await;
         self.run_traffic_metrics_gc_routine().await;
 
         self.run_foriegn_network().await;

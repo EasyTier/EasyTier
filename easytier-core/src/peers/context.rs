@@ -389,6 +389,12 @@ pub trait PeerContext: Send + Sync {
         Vec::new()
     }
 
+    fn remove_expired_credentials(&self) -> bool {
+        false
+    }
+
+    fn issue_credential_changed(&self) {}
+
     fn update_trusted_keys(&self, _keys: TrustedKeyMap, _network_name: &str) {}
 
     fn record_control_tx(&self, _network_name: &str, _bytes: u64) {}

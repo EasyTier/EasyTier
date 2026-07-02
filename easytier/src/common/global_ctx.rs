@@ -321,6 +321,14 @@ impl PeerContext for GlobalCtx {
             .get_trusted_pubkeys(network_secret)
     }
 
+    fn remove_expired_credentials(&self) -> bool {
+        self.get_credential_manager().remove_expired_credentials()
+    }
+
+    fn issue_credential_changed(&self) {
+        GlobalCtx::issue_event(self, GlobalCtxEvent::CredentialChanged);
+    }
+
     fn update_trusted_keys(&self, keys: TrustedKeyMap, network_name: &str) {
         GlobalCtx::update_trusted_keys(self, keys, network_name);
     }

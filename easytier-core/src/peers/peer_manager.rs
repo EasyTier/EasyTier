@@ -744,6 +744,7 @@ pub struct PeerMaintenanceTasks {
     recent_traffic: RecentTrafficTracker,
     foreign_network_client: Arc<ForeignNetworkClient>,
     peer_session_store: Arc<PeerSessionStore>,
+    context: ArcPeerContext,
 }
 
 impl PeerMaintenanceTasks {
@@ -753,6 +754,7 @@ impl PeerMaintenanceTasks {
         recent_traffic: RecentTrafficTracker,
         foreign_network_client: Arc<ForeignNetworkClient>,
         peer_session_store: Arc<PeerSessionStore>,
+        context: ArcPeerContext,
     ) -> Self {
         Self {
             peer_map,
@@ -760,6 +762,7 @@ impl PeerMaintenanceTasks {
             recent_traffic,
             foreign_network_client,
             peer_session_store,
+            context,
         }
     }
 
@@ -768,6 +771,7 @@ impl PeerMaintenanceTasks {
         self.spawn_relay_session_gc_routine(tasks).await;
         self.spawn_recent_traffic_gc_routine(tasks).await;
         self.spawn_peer_session_gc_routine(tasks).await;
+        self.spawn_credential_gc_routine(tasks).await;
     }
 
     async fn spawn_clean_peer_without_conn_routine(&self, tasks: &Mutex<JoinSet<()>>) {
@@ -814,6 +818,29 @@ impl PeerMaintenanceTasks {
             loop {
                 tokio::time::sleep(std::time::Duration::from_secs(60)).await;
                 peer_session_store.evict_unused_sessions();
+            }
+        });
+    }
+
+    async fn spawn_credential_gc_routine(&self, tasks: &Mutex<JoinSet<()>>) {
+        let context = self.context.clone();
+        let peer_map = self.peer_map.clone();
+        tasks.lock().await.spawn(async move {
+            loop {
+                if context.network_identity().network_secret.is_some() {
+                    if context.remove_expired_credentials() {
+                        context.issue_credential_changed();
+                    }
+
+                    let network_name = context.network_name();
+                    close_untrusted_credential_peers(
+                        peer_map.as_ref(),
+                        &network_name,
+                        |pubkey, network_name| context.is_pubkey_trusted(pubkey, network_name),
+                    )
+                    .await;
+                }
+                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
             }
         });
     }
