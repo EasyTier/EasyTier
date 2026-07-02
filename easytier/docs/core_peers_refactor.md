@@ -94,6 +94,17 @@ tokio = { version = "1", default-features = false, features = [
 
 这些问题说明 `peers` 应整体成为 core 的深 Module，但必须先明确 Adapter seam。
 
+## Scope 修正：保留 peers 现有模块分割
+
+`easytier/src/peers/` 现在的目录和文件分割已经基本对应了 peer control-plane 的自然领域边界：peer RPC、PeerSession、PeerConn、PeerMap、PeerManager、OSPF route、credential、relay/foreign network 等都已经是有状态、有生命周期的 Module。后续迁移应尽量按这些现有 Module 边界整体迁入 `easytier-core::peers`，而不是继续把 OSPF 或 peers 拆成一批更小的纯逻辑 helper。
+
+这意味着：
+
+- `peers` 目录的现有模块边界默认是目标结构，只有遇到明确的 runtime-only 依赖或循环依赖时才调整。
+- 已经临时迁出的 route table / route graph 逻辑只是过渡状态，不是继续按算法、cleanup、foreign-network、next-hop 等细粒度 helper 拆分 OSPF 的方向。
+- OSPF 的最终目标是让 `PeerRouteServiceImpl`、`RouteSessionManager`、`SyncedRouteInfo`、route table、stale cleanup、foreign network route info 和 next-hop policy 回到同一个 core OSPF Module 内，保持状态和生命周期的 locality。
+- 如果某个依赖阻止整体迁移，应优先判断该依赖是否本身属于 core；属于 core 的依赖应一起迁移或先迁移，而不是为了绕开依赖继续拆浅 helper。
+
 ## Core 信息类型归属
 
 迁移 `peers` 前需要先处理 proto/model 的 feature 分层问题。当前部分核心状态信息类型放在 `proto::api::instance` 下，例如 route list、peer conn info 等。这些类型现在只在 `easytier-proto` 的 `api` feature 下导出，而 `easytier-core` 只能依赖 `core` feature。
@@ -160,13 +171,30 @@ core 后续可以拥有 listen/dial 编排，但不拥有真实 bind/connect 实
 
 ### Core Context Seam
 
-`GlobalCtx` 不能进入 core。需要拆成更小的 Interface：
+`GlobalCtx` 不能整体进入 core，但不能因此让 core 缺少 peers 本来需要的核心上下文。正确做法是把 `GlobalCtx` 拆出一个 core-needed subset，由 runtime Adapter 持有完整 `GlobalCtx` 并向 core 提供这个子集。
+
+这个 core context subset 包括：
 
 - config snapshot：network name、network secret digest、secure mode、encryption algorithm、feature flags。
 - key store：本地 keypair、secret proof、trusted pubkey 查询。
 - event sink：peer added/removed、conn added/removed、route changed、credential changed。
 - metrics sink：可选，core 不应要求 native stats manager。
 - disconnect action：core 决定断开，runtime 执行真实关闭。
+
+其中 disconnect peer 不应成为 runtime 反向驱动 core 状态的理由。core 可以输出 disconnect action 或调用 callback；runtime 只负责执行真实 tunnel/peer 关闭。
+
+### Core 依赖归属
+
+迁移 OSPF 和 peers 时，不应把所有当前来自 `easytier` crate 的依赖都视为 runtime-only。以下依赖更接近 core capability，应纳入 core 或以 core seam 表达：
+
+- `PeerRpcManager`：属于 core。request/response matching、RPC dispatch、peer RPC client/server 管理应进入 `easytier-core`；runtime 只提供 transport、metrics、event Adapter。
+- `credential_manager`：credential 信任状态、校验、轮转/撤销等内存状态属于 core；文件持久化、管理 API 展示和外部配置加载留在 runtime Adapter。
+- public IPv6 provider/control-plane：当前看起来主要是 OS-independent state/provider，默认按 core Module 处理；如果后续发现真实 OS 探测或路由安装逻辑，再把那部分抽成 runtime Adapter。
+- STUN：探测 I/O 和平台网络行为留在 runtime；core 只依赖 NAT/public endpoint snapshot trait 或 provider trait。
+- `GlobalCtx`：按上一节拆 core context subset，不把完整 runtime context 传进 core。
+- disconnect peer：作为 core action/callback，不作为保留 OSPF 或 PeerMap 在 runtime 的理由。
+
+这些依赖的处理原则是：能成为 core Module 的就迁入 core；确实触碰 OS、socket、文件、service、API 的部分才留作 Adapter。
 
 ### Packet/NIC Seam
 
@@ -264,9 +292,10 @@ cargo check -p easytier-core --target wasm32-wasip1 --no-default-features
 
 ### 5. 迁移 OSPF route
 
-- 在 core `PeerMap` / `PeerRpcManager` 稳定后，迁移 OSPF route graph、sync session、stale cleanup、foreign network route info。
-- `GlobalCtxEvent` 替换成 core event 或 event sink。
-- STUN/public IPv6 信息通过 snapshot Adapter 注入。
+- 在 core `PeerMap` / `PeerRpcManager`、core context subset、credential manager、public IPv6 provider、STUN snapshot trait 稳定后，整体迁移 OSPF。
+- 不继续把 OSPF 拆成 route graph、sync session、stale cleanup、foreign network route info 等零散 helper。迁移目标是一个有状态的 core OSPF Module，保留现有 `peer_ospf_route.rs` 的领域边界和生命周期关系。
+- `GlobalCtxEvent` 替换成 core event 或 event sink；disconnect peer 替换成 core action/callback。
+- STUN/public IPv6 信息通过 core provider/snapshot trait 注入；OS 探测或平台 I/O 由 runtime Adapter 提供。
 
 验收：core 单测覆盖 route convergence、stale cleanup、foreign network merge、next-hop policy。
 
@@ -304,6 +333,7 @@ cargo check -p easytier
 ## 迁移原则
 
 - core 是 stateful control-plane，不是纯函数 helper 集合。
+- `peers` 的现有模块分割默认保留；不要为了短期绕依赖把它继续拆成小 helper。
 - 状态和生命周期逻辑必须留在同一个 core Module 内，尤其是 `Peer` 的 conn set、credential、add/remove 并发状态。
 - runtime Adapter 只提供变化点，不承载核心 peer registry。
 - 迁移期可以用 re-export 保持兼容，但不允许长期维护两套 `PeerMap`。
