@@ -103,8 +103,9 @@ impl CredentialManager {
         }
     }
 
-    pub fn entries_snapshot(&self) -> HashMap<String, CredentialEntry> {
-        self.credentials.lock().unwrap().clone()
+    pub fn with_entries<R>(&self, f: impl FnOnce(&HashMap<String, CredentialEntry>) -> R) -> R {
+        let credentials = self.credentials.lock().unwrap();
+        f(&credentials)
     }
 
     pub fn generate_credential(

@@ -119,12 +119,13 @@ impl CredentialManager {
         let Some(path) = &self.storage_path else {
             return;
         };
-        let creds = self.core.entries_snapshot();
-        if let Ok(json) = serde_json::to_string_pretty(&creds)
-            && let Err(e) = std::fs::write(path, json)
-        {
-            tracing::warn!(?e, "failed to save credentials to disk");
-        }
+        self.core.with_entries(|creds| {
+            if let Ok(json) = serde_json::to_string_pretty(creds)
+                && let Err(e) = std::fs::write(path, json)
+            {
+                tracing::warn!(?e, "failed to save credentials to disk");
+            }
+        });
     }
 
     fn load_entries_from_disk(path: Option<&PathBuf>) -> HashMap<String, CredentialEntry> {
