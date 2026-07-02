@@ -240,6 +240,18 @@ impl PeerContext for GlobalCtx {
         GlobalCtx::is_ip_in_same_network(self, ip)
     }
 
+    fn is_ip_local_virtual_ip(&self, ip: &IpAddr) -> bool {
+        GlobalCtx::is_ip_local_virtual_ip(self, ip)
+    }
+
+    fn p2p_only(&self) -> bool {
+        GlobalCtx::p2p_only(self)
+    }
+
+    fn latency_first(&self) -> bool {
+        GlobalCtx::latency_first(self)
+    }
+
     fn peer_groups(&self, peer_id: PeerId) -> Vec<PeerGroupInfo> {
         self.get_acl_groups(peer_id)
     }

@@ -1,5 +1,8 @@
-use std::sync::{Arc, Weak};
 use std::time::{Duration, SystemTime};
+use std::{
+    net::{IpAddr, Ipv4Addr, Ipv6Addr},
+    sync::{Arc, Weak},
+};
 
 use anyhow::Context;
 use dashmap::DashMap;
@@ -13,10 +16,11 @@ use crate::{
     compressor::{Compressor as _, DefaultCompressor},
     config::PeerId,
     packet::{CompressorAlgo, PacketType, ZCPacket},
+    proto::core_peer::peer::Route as CoreRoute,
 };
 
 use super::{
-    BoxPeerPacketFilter, PacketRecvChanReceiver,
+    BoxNicPacketFilter, BoxPeerPacketFilter, PacketRecvChanReceiver,
     acl_filter::AclFilter,
     context::{ArcPeerContext, NetworkIdentity},
     encrypt::Encryptor,
@@ -331,6 +335,394 @@ pub async fn try_compress_and_encrypt(
         encryptor.encrypt(msg).with_context(|| "encrypt failed")?;
     }
     Ok(())
+}
+
+struct PeerOutboundPacketRouterCounters {
+    self_tx_packets: CounterHandle,
+    self_tx_bytes: CounterHandle,
+    compress_tx_bytes_before: CounterHandle,
+    compress_tx_bytes_after: CounterHandle,
+}
+
+pub struct PeerOutboundPacketRouter {
+    my_peer_id: PeerId,
+    context: ArcPeerContext,
+    peers: Arc<PeerMap>,
+    route: ArcRoute,
+    foreign_network_client: Arc<ForeignNetworkClient>,
+    relay_peer_map: Arc<RelayPeerMap>,
+    nic_packet_process_pipeline: Arc<RwLock<Vec<BoxNicPacketFilter>>>,
+    encryptor: Arc<dyn Encryptor>,
+    data_compress_algo: CompressorAlgo,
+    exit_nodes: Arc<RwLock<Vec<IpAddr>>>,
+    recent_traffic: RecentTrafficTracker,
+    traffic_metrics: Arc<TrafficMetricRecorder>,
+    acl_filter: Arc<AclFilter>,
+    is_secure_mode_enabled: bool,
+    counters: PeerOutboundPacketRouterCounters,
+}
+
+impl PeerOutboundPacketRouter {
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        my_peer_id: PeerId,
+        context: ArcPeerContext,
+        peers: Arc<PeerMap>,
+        route: ArcRoute,
+        foreign_network_client: Arc<ForeignNetworkClient>,
+        relay_peer_map: Arc<RelayPeerMap>,
+        nic_packet_process_pipeline: Arc<RwLock<Vec<BoxNicPacketFilter>>>,
+        encryptor: Arc<dyn Encryptor>,
+        data_compress_algo: CompressorAlgo,
+        exit_nodes: Arc<RwLock<Vec<IpAddr>>>,
+        recent_traffic: RecentTrafficTracker,
+        traffic_metrics: Arc<TrafficMetricRecorder>,
+        acl_filter: Arc<AclFilter>,
+        is_secure_mode_enabled: bool,
+        self_tx_packets: CounterHandle,
+        self_tx_bytes: CounterHandle,
+        compress_tx_bytes_before: CounterHandle,
+        compress_tx_bytes_after: CounterHandle,
+    ) -> Self {
+        Self {
+            my_peer_id,
+            context,
+            peers,
+            route,
+            foreign_network_client,
+            relay_peer_map,
+            nic_packet_process_pipeline,
+            encryptor,
+            data_compress_algo,
+            exit_nodes,
+            recent_traffic,
+            traffic_metrics,
+            acl_filter,
+            is_secure_mode_enabled,
+            counters: PeerOutboundPacketRouterCounters {
+                self_tx_packets,
+                self_tx_bytes,
+                compress_tx_bytes_before,
+                compress_tx_bytes_after,
+            },
+        }
+    }
+
+    fn has_directly_connected_conn(&self, peer_id: PeerId) -> bool {
+        if let Some(peer) = self.peers.get_peer_by_id(peer_id) {
+            peer.has_directly_connected_conn()
+        } else {
+            self.foreign_network_client.get_peer_map().has_peer(peer_id)
+        }
+    }
+
+    fn mark_recent_traffic(&self, dst_peer_id: PeerId) {
+        let flags = self.context.flags();
+        self.recent_traffic
+            .mark(dst_peer_id, flags.disable_p2p, flags.lazy_p2p, |peer_id| {
+                self.has_directly_connected_conn(peer_id)
+            });
+    }
+
+    async fn run_nic_packet_process_pipeline(&self, data: &mut ZCPacket) -> bool {
+        // Enforce ACL for outbound (NIC-originated) packets. If ACL denies, stop processing.
+        if !self.acl_filter.process_packet_with_acl(
+            data,
+            false,
+            None,
+            |_| false,
+            self.route.as_ref().as_ref(),
+        ) {
+            return false;
+        }
+
+        for pipeline in self.nic_packet_process_pipeline.read().await.iter().rev() {
+            let _ = pipeline.try_process_packet_from_nic(data).await;
+        }
+
+        true
+    }
+
+    fn check_p2p_only_before_send(&self, dst_peer_id: PeerId) -> Result<(), Error> {
+        if self.context.p2p_only() && !self.peers.has_peer(dst_peer_id) {
+            return Err(Error::RouteError(None));
+        }
+        Ok(())
+    }
+
+    pub async fn send_msg_for_proxy(
+        &self,
+        mut msg: ZCPacket,
+        dst_peer_id: PeerId,
+    ) -> Result<(), Error> {
+        self.mark_recent_traffic(dst_peer_id);
+        self.check_p2p_only_before_send(dst_peer_id)?;
+
+        self.counters
+            .compress_tx_bytes_before
+            .add(msg.buf_len() as u64);
+
+        try_compress_and_encrypt(
+            self.data_compress_algo,
+            &self.encryptor,
+            &mut msg,
+            self.is_secure_mode_enabled,
+        )
+        .await?;
+
+        self.counters
+            .compress_tx_bytes_after
+            .add(msg.buf_len() as u64);
+
+        let msg_len = msg.buf_len() as u64;
+        let result = send_msg_internal(
+            self.peers.as_ref(),
+            &self.foreign_network_client,
+            &self.relay_peer_map,
+            Some(&self.traffic_metrics),
+            msg,
+            dst_peer_id,
+        )
+        .await;
+        if result.is_ok() {
+            self.counters.self_tx_bytes.add(msg_len);
+            self.counters.self_tx_packets.inc();
+        }
+        result
+    }
+
+    pub async fn get_msg_dst_peer(&self, addr: &IpAddr) -> (Vec<PeerId>, bool) {
+        match addr {
+            IpAddr::V4(ipv4_addr) => self.get_msg_dst_peer_ipv4(ipv4_addr).await,
+            IpAddr::V6(ipv6_addr) => self.get_msg_dst_peer_ipv6(ipv6_addr).await,
+        }
+    }
+
+    fn is_all_peers_broadcast_ipv4(&self, ipv4_addr: &Ipv4Addr) -> bool {
+        let network_length = self
+            .context
+            .ipv4()
+            .map(|x| x.network_length())
+            .unwrap_or(24);
+        let ipv4_inet = cidr::Ipv4Inet::new(*ipv4_addr, network_length).unwrap();
+        ipv4_addr.is_broadcast()
+            || ipv4_addr.is_multicast()
+            || *ipv4_addr == ipv4_inet.last_address()
+    }
+
+    fn is_all_peers_broadcast_ipv6(&self, ipv6_addr: &Ipv6Addr) -> bool {
+        let network_length = self
+            .context
+            .ipv6()
+            .map(|x| x.network_length())
+            .unwrap_or(64);
+        let ipv6_inet = cidr::Ipv6Inet::new(*ipv6_addr, network_length).unwrap();
+        ipv6_addr.is_multicast() || *ipv6_addr == ipv6_inet.last_address()
+    }
+
+    fn select_ipv4_broadcast_peers<'a>(
+        routes: impl IntoIterator<Item = &'a CoreRoute>,
+        my_peer_id: PeerId,
+    ) -> Vec<PeerId> {
+        routes
+            .into_iter()
+            .filter_map(|route| {
+                (route.peer_id != my_peer_id && route.ipv4_addr.is_some()).then_some(route.peer_id)
+            })
+            .collect()
+    }
+
+    pub async fn get_msg_dst_peer_ipv4(&self, ipv4_addr: &Ipv4Addr) -> (Vec<PeerId>, bool) {
+        let mut is_exit_node = false;
+        let mut dst_peers = vec![];
+        if self.is_all_peers_broadcast_ipv4(ipv4_addr) {
+            dst_peers.extend(Self::select_ipv4_broadcast_peers(
+                &self.peers.list_route_infos().await,
+                self.my_peer_id,
+            ));
+        } else if let Some(peer_id) = self.peers.get_peer_id_by_ipv4(ipv4_addr).await {
+            dst_peers.push(peer_id);
+        } else if !self
+            .context
+            .is_ip_in_same_network(&std::net::IpAddr::V4(*ipv4_addr))
+        {
+            for exit_node in self.exit_nodes.read().await.iter() {
+                let IpAddr::V4(exit_node) = exit_node else {
+                    continue;
+                };
+                if let Some(peer_id) = self.peers.get_peer_id_by_ipv4(exit_node).await {
+                    dst_peers.push(peer_id);
+                    is_exit_node = true;
+                    break;
+                }
+            }
+        }
+        #[cfg(target_env = "ohos")]
+        {
+            if dst_peers.is_empty()
+                && !self
+                    .context
+                    .is_ip_in_same_network(&std::net::IpAddr::V4(*ipv4_addr))
+            {
+                tracing::trace!("no peer id for ipv4: {}, set exit_node for ohos", ipv4_addr);
+                dst_peers.push(self.my_peer_id.clone());
+                is_exit_node = true;
+            }
+        }
+        (dst_peers, is_exit_node)
+    }
+
+    pub async fn get_msg_dst_peer_ipv6(&self, ipv6_addr: &Ipv6Addr) -> (Vec<PeerId>, bool) {
+        let mut is_exit_node = false;
+        let mut dst_peers = vec![];
+        if self.is_all_peers_broadcast_ipv6(ipv6_addr) {
+            dst_peers.extend(self.peers.list_routes().await.iter().map(|x| *x.key()));
+        } else if let Some(peer_id) = self.peers.get_peer_id_by_ipv6(ipv6_addr).await {
+            dst_peers.push(peer_id);
+        } else if !ipv6_addr.is_unicast_link_local()
+            && let Some(peer_id) = self.route.get_public_ipv6_gateway_peer_id().await
+        {
+            dst_peers.push(peer_id);
+        } else if !ipv6_addr.is_unicast_link_local() {
+            // NOTE: never route link local address to exit node.
+            for exit_node in self.exit_nodes.read().await.iter() {
+                let IpAddr::V6(exit_node) = exit_node else {
+                    continue;
+                };
+                if let Some(peer_id) = self.peers.get_peer_id_by_ipv6(exit_node).await {
+                    dst_peers.push(peer_id);
+                    is_exit_node = true;
+                    break;
+                }
+            }
+        }
+
+        (dst_peers, is_exit_node)
+    }
+
+    pub async fn send_msg_by_ip(
+        &self,
+        mut msg: ZCPacket,
+        ip_addr: IpAddr,
+        not_send_to_self: bool,
+    ) -> Result<(), Error> {
+        tracing::trace!(
+            "do send_msg in peer manager, msg: {:?}, ip_addr: {}",
+            msg,
+            ip_addr
+        );
+
+        msg.fill_peer_manager_hdr(self.my_peer_id, 0, PacketType::Data as u8);
+        if !self.run_nic_packet_process_pipeline(&mut msg).await {
+            return Ok(());
+        }
+        let cur_to_peer_id = msg.peer_manager_header().unwrap().to_peer_id.into();
+        if cur_to_peer_id != 0 {
+            self.mark_recent_traffic(cur_to_peer_id);
+            return send_msg_internal(
+                self.peers.as_ref(),
+                &self.foreign_network_client,
+                &self.relay_peer_map,
+                Some(&self.traffic_metrics),
+                msg,
+                cur_to_peer_id,
+            )
+            .await;
+        }
+
+        let (dst_peers, is_exit_node) = match ip_addr {
+            IpAddr::V4(ipv4_addr) => self.get_msg_dst_peer_ipv4(&ipv4_addr).await,
+            IpAddr::V6(ipv6_addr) => self.get_msg_dst_peer_ipv6(&ipv6_addr).await,
+        };
+
+        if dst_peers.is_empty() {
+            tracing::info!("no peer id for ip: {}", ip_addr);
+            return Ok(());
+        }
+
+        self.counters
+            .compress_tx_bytes_before
+            .add(msg.buf_len() as u64);
+
+        try_compress_and_encrypt(
+            self.data_compress_algo,
+            &self.encryptor,
+            &mut msg,
+            self.is_secure_mode_enabled,
+        )
+        .await?;
+
+        self.counters
+            .compress_tx_bytes_after
+            .add(msg.buf_len() as u64);
+
+        let is_latency_first = self.context.latency_first();
+        msg.mut_peer_manager_header()
+            .unwrap()
+            .set_latency_first(is_latency_first)
+            .set_exit_node(is_exit_node);
+
+        let mut errs: Vec<Error> = vec![];
+        let mut msg = Some(msg);
+        let total_dst_peers = dst_peers.len();
+        let should_mark_recent_traffic = should_mark_recent_traffic_for_fanout(total_dst_peers);
+        for (i, peer_id) in dst_peers.iter().enumerate() {
+            if should_mark_recent_traffic {
+                self.mark_recent_traffic(*peer_id);
+            }
+            if let Err(e) = self.check_p2p_only_before_send(*peer_id) {
+                errs.push(e);
+                continue;
+            }
+
+            let mut msg = if i == total_dst_peers - 1 {
+                msg.take().unwrap()
+            } else {
+                msg.clone().unwrap()
+            };
+
+            let hdr = msg.mut_peer_manager_header().unwrap();
+            hdr.to_peer_id.set(*peer_id);
+
+            #[cfg(not(target_env = "ohos"))]
+            {
+                if not_send_to_self
+                    && *peer_id == self.my_peer_id
+                    && !self.context.is_ip_local_virtual_ip(&ip_addr)
+                {
+                    // Keep the loop-prevention flags for proxy-induced self-delivery where
+                    // the destination is not this node's own EasyTier-managed IP.
+                    hdr.set_not_send_to_tun(true);
+                    hdr.set_no_proxy(true);
+                }
+            }
+
+            self.counters.self_tx_bytes.add(msg.buf_len() as u64);
+            self.counters.self_tx_packets.inc();
+
+            if let Err(e) = send_msg_internal(
+                self.peers.as_ref(),
+                &self.foreign_network_client,
+                &self.relay_peer_map,
+                Some(&self.traffic_metrics),
+                msg,
+                *peer_id,
+            )
+            .await
+            {
+                errs.push(e);
+            }
+        }
+
+        tracing::trace!(?dst_peers, "do send_msg in peer manager done");
+
+        if errs.is_empty() {
+            Ok(())
+        } else {
+            tracing::error!(?errs, "send_msg has error");
+            Err(anyhow::anyhow!("send_msg has error: {:?}", errs).into())
+        }
+    }
 }
 
 struct PeerPacketRouterCounters {
@@ -971,6 +1363,32 @@ mod tests {
         assert!(should_mark_recent_traffic_for_fanout(0));
         assert!(should_mark_recent_traffic_for_fanout(1));
         assert!(!should_mark_recent_traffic_for_fanout(2));
+    }
+
+    fn route_with_ipv4(
+        peer_id: u32,
+        ipv4_addr: Option<std::net::Ipv4Addr>,
+    ) -> crate::proto::core_peer::peer::Route {
+        crate::proto::core_peer::peer::Route {
+            peer_id,
+            ipv4_addr: ipv4_addr.map(|addr| cidr::Ipv4Inet::new(addr, 24).unwrap().into()),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn ipv4_broadcast_peer_selection_skips_peers_without_ipv4() {
+        let routes = vec![
+            route_with_ipv4(1, Some(std::net::Ipv4Addr::new(10, 126, 126, 1))),
+            route_with_ipv4(2, None),
+            route_with_ipv4(3, Some(std::net::Ipv4Addr::new(10, 126, 126, 3))),
+            route_with_ipv4(4, None),
+        ];
+
+        assert_eq!(
+            PeerOutboundPacketRouter::select_ipv4_broadcast_peers(&routes, 3),
+            vec![1]
+        );
     }
 
     #[test]

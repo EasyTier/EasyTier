@@ -295,6 +295,25 @@ pub trait PeerContext: Send + Sync {
             .unwrap_or(false)
     }
 
+    fn is_ip_local_virtual_ip(&self, ip: &IpAddr) -> bool {
+        match ip {
+            IpAddr::V4(v4) => self
+                .ipv4()
+                .map(|addr| addr.address() == *v4)
+                .unwrap_or(false),
+            IpAddr::V6(v6) => self.is_ip_local_ipv6(v6),
+        }
+    }
+
+    fn p2p_only(&self) -> bool {
+        self.flags().p2p_only
+    }
+
+    fn latency_first(&self) -> bool {
+        let flags = self.flags();
+        flags.latency_first && !flags.p2p_only
+    }
+
     fn proxy_cidrs(&self) -> Vec<Ipv4Cidr> {
         Vec::new()
     }
