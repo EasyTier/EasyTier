@@ -23,6 +23,7 @@ impl GroupInfo {
     }
 }
 
+#[cfg(feature = "api")]
 impl Display for ConnTrackEntry {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let src = self
@@ -87,6 +88,7 @@ impl Display for StatItem {
     }
 }
 
+#[cfg(feature = "api")]
 impl Display for AclStats {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         writeln!(f, "AclStats:")?;

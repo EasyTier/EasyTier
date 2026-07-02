@@ -1,7 +1,7 @@
 #[cfg(feature = "core")]
 pub mod rpc_types;
 
-#[cfg(feature = "api")]
+#[cfg(feature = "core")]
 pub mod acl;
 #[cfg(feature = "api")]
 pub mod api;

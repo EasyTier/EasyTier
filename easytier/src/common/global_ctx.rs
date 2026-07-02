@@ -8,9 +8,9 @@ use std::{
 use arc_swap::ArcSwap;
 use async_trait::async_trait;
 use easytier_core::peers::context::{
-    ArcByteLimiter, ByteLimiter, NetworkIdentity as CoreNetworkIdentity, PeerContext,
-    PeerContextEvent, PeerContextEventSubscriber, PeerEvent, PeerGroupIdentity,
-    TrustedKeyMapManager, secret_proof_from_secret,
+    ArcByteLimiter, NetworkIdentity as CoreNetworkIdentity, PeerContext, PeerContextEvent,
+    PeerContextEventSubscriber, PeerEvent, PeerGroupIdentity, TrustedKeyMapManager,
+    secret_proof_from_secret,
 };
 pub use easytier_core::peers::context::{TrustedKeyMap, TrustedKeyMetadata, TrustedKeySource};
 use easytier_core::peers::public_ipv6::PublicIpv6Runtime;
@@ -27,7 +27,7 @@ use crate::{
     common::{
         config::ProxyNetworkConfig,
         stats_manager::{self, StatsManager},
-        token_bucket::{TokenBucket, TokenBucketManager},
+        token_bucket::TokenBucketManager,
     },
     peers::{acl_filter::AclFilter, credential_manager::CredentialManager},
     proto::{
@@ -160,13 +160,6 @@ impl std::fmt::Debug for GlobalCtx {
 }
 
 pub type ArcGlobalCtx = std::sync::Arc<GlobalCtx>;
-
-#[async_trait]
-impl ByteLimiter for TokenBucket {
-    async fn consume(&self, bytes: u64) {
-        TokenBucket::consume(self, bytes).await;
-    }
-}
 
 impl PeerContext for GlobalCtx {
     fn network_identity(&self) -> CoreNetworkIdentity {
