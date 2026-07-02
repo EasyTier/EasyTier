@@ -45,14 +45,10 @@ fn parse_ipv4_packet(payload: &[u8]) -> Option<ParsedIpPacket<'_>> {
     let header_len = usize::from(payload[0] & 0x0f) * 4;
     let options_len = header_len.saturating_sub(20);
     let payload_offset = 20 + options_len;
-    if payload.len() < payload_offset {
-        return None;
-    }
+    let payload_start = payload_offset.min(payload.len());
     let total_length = usize::from(u16::from_be_bytes([payload[2], payload[3]]));
     let payload_len = total_length.saturating_sub(header_len);
-    let payload_end = payload_offset
-        .saturating_add(payload_len)
-        .min(payload.len());
+    let payload_end = payload_start.saturating_add(payload_len).min(payload.len());
 
     Some(ParsedIpPacket {
         src_ip: IpAddr::V4(Ipv4Addr::new(
@@ -68,7 +64,7 @@ fn parse_ipv4_packet(payload: &[u8]) -> Option<ParsedIpPacket<'_>> {
             payload[19],
         )),
         protocol: payload[9],
-        transport_payload: &payload[payload_offset..payload_end],
+        transport_payload: &payload[payload_start..payload_end],
     })
 }
 
@@ -444,8 +440,8 @@ mod tests {
     use crate::peers::acl_processor::PacketInfo;
 
     use super::{
-        AclFilter, IP_PROTO_TCP, IP_PROTO_UDP, OutboundAllowRecord, acl_protocol, parse_ip_packet,
-        parse_transport_ports,
+        AclFilter, IP_PROTO_ICMP, IP_PROTO_TCP, IP_PROTO_UDP, OutboundAllowRecord, acl_protocol,
+        parse_ip_packet, parse_transport_ports,
     };
 
     fn packet_info(dst_ip: IpAddr) -> PacketInfo {
@@ -555,6 +551,27 @@ mod tests {
         assert_eq!(parsed.transport_payload.len(), 20);
         assert_eq!(src_port, Some(1234));
         assert_eq!(dst_port, Some(80));
+    }
+
+    #[test]
+    fn parse_ipv4_keeps_pnet_truncated_options_behavior() {
+        let mut packet = vec![0u8; 20];
+        packet[0] = 0x4f;
+        packet[2..4].copy_from_slice(&60u16.to_be_bytes());
+        packet[9] = IP_PROTO_ICMP;
+        packet[12..16].copy_from_slice(&[10, 0, 0, 1]);
+        packet[16..20].copy_from_slice(&[10, 0, 0, 2]);
+
+        let parsed = parse_ip_packet(&packet).unwrap();
+        let (src_port, dst_port) =
+            parse_transport_ports(parsed.protocol, parsed.transport_payload).unwrap();
+
+        assert_eq!(parsed.src_ip, IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)));
+        assert_eq!(parsed.dst_ip, IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)));
+        assert_eq!(acl_protocol(parsed.protocol), Protocol::Icmp);
+        assert!(parsed.transport_payload.is_empty());
+        assert_eq!(src_port, None);
+        assert_eq!(dst_port, None);
     }
 
     #[test]
