@@ -56,7 +56,7 @@ use super::{
     peer_rpc::PeerRpcManager,
     peer_task::ExternalTaskSignal,
     relay_peer_map::{RelayPeerMap, new_relay_peer_map},
-    route_trait::{ArcRoute, Route},
+    route_trait::Route,
 };
 
 struct SelfTxCounters {
@@ -545,25 +545,17 @@ impl PeerManager {
     where
         T: Route + PeerPacketFilter + Send + Sync + Clone + 'static,
     {
-        // for route
-        self.add_packet_process_pipeline(Box::new(route.clone()))
-            .await;
-
         let foreign_network_provider: Arc<dyn ForeignNetworkRouteInfoProvider> =
             self.foreign_network_manager.clone();
-        let my_peer_id = self.my_peer_id;
-        let _route_id = route
-            .open(core_peer_manager::peer_manager_route_interface(
-                my_peer_id,
-                Arc::downgrade(&self.peers),
-                Arc::downgrade(&self.foreign_network_client),
-                Arc::downgrade(&foreign_network_provider),
-            ))
-            .await
-            .unwrap();
-
-        let arc_route: ArcRoute = Arc::new(Box::new(route));
-        self.peers.add_route(arc_route).await;
+        core_peer_manager::add_route(
+            self.peer_packet_process_pipeline.as_ref(),
+            self.peers.clone(),
+            self.foreign_network_client.clone(),
+            foreign_network_provider,
+            self.my_peer_id,
+            route,
+        )
+        .await;
     }
 
     pub fn get_route(&self) -> Box<dyn Route + Send + Sync + 'static> {

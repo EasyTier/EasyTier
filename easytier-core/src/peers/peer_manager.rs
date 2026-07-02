@@ -341,6 +341,36 @@ pub async fn init_packet_process_pipeline(
         }));
 }
 
+pub async fn add_route<T>(
+    peer_packet_process_pipeline: &RwLock<Vec<BoxPeerPacketFilter>>,
+    peers: Arc<PeerMap>,
+    foreign_network_client: Arc<ForeignNetworkClient>,
+    foreign_network_provider: Arc<dyn ForeignNetworkRouteInfoProvider>,
+    my_peer_id: PeerId,
+    route: T,
+) where
+    T: Route + PeerPacketFilter + Send + Sync + Clone + 'static,
+{
+    // for route
+    peer_packet_process_pipeline
+        .write()
+        .await
+        .push(Box::new(route.clone()));
+
+    let _route_id = route
+        .open(peer_manager_route_interface(
+            my_peer_id,
+            Arc::downgrade(&peers),
+            Arc::downgrade(&foreign_network_client),
+            Arc::downgrade(&foreign_network_provider),
+        ))
+        .await
+        .unwrap();
+
+    let arc_route: ArcRoute = Arc::new(Box::new(route));
+    peers.add_route(arc_route).await;
+}
+
 #[async_trait::async_trait]
 #[auto_impl::auto_impl(&, Arc)]
 pub trait ForeignPeerConnectionCloser: Send + Sync {
