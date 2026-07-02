@@ -2,6 +2,7 @@ use anyhow::Context;
 use async_trait::async_trait;
 use cidr::{Ipv4Cidr, Ipv6Cidr};
 use dashmap::DashMap;
+use easytier_core::peers::peer_manager as core_peer_manager;
 use quanta::Instant;
 use std::collections::BTreeSet;
 use std::{
@@ -1106,15 +1107,16 @@ impl PeerManager {
                     } else {
                         None
                     };
-                    let ret = Self::send_msg_internal(
-                        &peers,
+                    let ret = core_peer_manager::send_msg_internal(
+                        peers.as_core(),
                         &foreign_client,
                         &relay_peer_map,
                         tx_metrics,
                         ret,
                         to_peer_id,
                     )
-                    .await;
+                    .await
+                    .map_err(Error::from);
                     if ret.is_err() {
                         tracing::error!(?ret, ?to_peer_id, ?from_peer_id, "forward packet error");
                     }
@@ -1471,14 +1473,6 @@ impl PeerManager {
         }
     }
 
-    fn get_next_hop_policy(is_first_latency: bool) -> NextHopPolicy {
-        if is_first_latency {
-            NextHopPolicy::LeastCost
-        } else {
-            NextHopPolicy::LeastHop
-        }
-    }
-
     fn check_p2p_only_before_send(&self, dst_peer_id: PeerId) -> Result<(), Error> {
         if self.global_ctx.p2p_only() && !self.peers.has_peer(dst_peer_id) {
             return Err(Error::RouteError(None));
@@ -1511,89 +1505,21 @@ impl PeerManager {
             .add(msg.buf_len() as u64);
 
         let msg_len = msg.buf_len() as u64;
-        let result = Self::send_msg_internal(
-            &self.peers,
+        let result = core_peer_manager::send_msg_internal(
+            self.peers.as_core(),
             &self.foreign_network_client,
             &self.relay_peer_map,
             Some(&self.traffic_metrics),
             msg,
             dst_peer_id,
         )
-        .await;
+        .await
+        .map_err(Error::from);
         if result.is_ok() {
             self.self_tx_counters.self_tx_bytes.add(msg_len);
             self.self_tx_counters.self_tx_packets.inc();
         }
         result
-    }
-
-    async fn send_msg_internal(
-        peers: &Arc<PeerMap>,
-        foreign_network_client: &Arc<ForeignNetworkClient>,
-        relay_peer_map: &Arc<RelayPeerMap>,
-        direct_tx_metrics: Option<&Arc<TrafficMetricRecorder>>,
-        msg: ZCPacket,
-        dst_peer_id: PeerId,
-    ) -> Result<(), Error> {
-        let policy =
-            Self::get_next_hop_policy(msg.peer_manager_header().unwrap().is_latency_first());
-        let is_latency_first = msg.peer_manager_header().unwrap().is_latency_first();
-        let packet_type = msg.peer_manager_header().unwrap().packet_type;
-        let msg_len = msg.buf_len() as u64;
-        let latency_first_gateway = if is_latency_first {
-            peers
-                .get_gateway_peer_id(dst_peer_id, policy.clone())
-                .await
-                .filter(|gateway| *gateway != dst_peer_id)
-        } else {
-            None
-        };
-        let send_result = if let Some(gateway) = latency_first_gateway
-            && (peers.has_peer(gateway) || foreign_network_client.has_next_hop(gateway))
-        {
-            relay_peer_map
-                .send_msg(msg, dst_peer_id, policy)
-                .await
-                .map_err(Error::from)
-        } else if peers.has_peer(dst_peer_id) {
-            peers.send_msg_directly(msg, dst_peer_id).await
-        } else if foreign_network_client.has_next_hop(dst_peer_id) {
-            foreign_network_client
-                .send_msg(msg, dst_peer_id)
-                .await
-                .map_err(Into::into)
-        } else if let Some(gateway) = peers.get_gateway_peer_id(dst_peer_id, policy.clone()).await {
-            if peers.has_peer(gateway) || foreign_network_client.has_next_hop(gateway) {
-                relay_peer_map
-                    .send_msg(msg, dst_peer_id, policy)
-                    .await
-                    .map_err(Error::from)
-            } else {
-                tracing::warn!(
-                    ?gateway,
-                    ?dst_peer_id,
-                    "cannot send msg to peer through gateway"
-                );
-                Err(Error::RouteError(None))
-            }
-        } else if foreign_network_client.has_next_hop(dst_peer_id) {
-            // check foreign network again. so in happy path we can avoid extra check
-            foreign_network_client
-                .send_msg(msg, dst_peer_id)
-                .await
-                .map_err(Into::into)
-        } else {
-            tracing::debug!(?dst_peer_id, "no gateway for peer");
-            Err(Error::RouteError(None))
-        };
-
-        if send_result.is_ok()
-            && let Some(metrics) = direct_tx_metrics
-        {
-            metrics.record_tx(dst_peer_id, packet_type, msg_len).await;
-        }
-
-        send_result
     }
 
     pub async fn get_msg_dst_peer(&self, addr: &IpAddr) -> (Vec<PeerId>, bool) {
@@ -1745,15 +1671,16 @@ impl PeerManager {
         let cur_to_peer_id = msg.peer_manager_header().unwrap().to_peer_id.into();
         if cur_to_peer_id != 0 {
             self.mark_recent_traffic(cur_to_peer_id);
-            return Self::send_msg_internal(
-                &self.peers,
+            return core_peer_manager::send_msg_internal(
+                self.peers.as_core(),
                 &self.foreign_network_client,
                 &self.relay_peer_map,
                 Some(&self.traffic_metrics),
                 msg,
                 cur_to_peer_id,
             )
-            .await;
+            .await
+            .map_err(Error::from);
         }
 
         let (dst_peers, is_exit_node) = match ip_addr {
@@ -1829,8 +1756,8 @@ impl PeerManager {
                 .add(msg.buf_len() as u64);
             self.self_tx_counters.self_tx_packets.inc();
 
-            if let Err(e) = Self::send_msg_internal(
-                &self.peers,
+            if let Err(e) = core_peer_manager::send_msg_internal(
+                self.peers.as_core(),
                 &self.foreign_network_client,
                 &self.relay_peer_map,
                 Some(&self.traffic_metrics),
@@ -1838,6 +1765,7 @@ impl PeerManager {
                 *peer_id,
             )
             .await
+            .map_err(Error::from)
             {
                 errs.push(e);
             }
@@ -2127,7 +2055,8 @@ impl PeerManager {
             return false;
         }
 
-        let next_hop_policy = Self::get_next_hop_policy(self.global_ctx.get_flags().latency_first);
+        let next_hop_policy =
+            core_peer_manager::get_next_hop_policy(self.global_ctx.get_flags().latency_first);
         // check relay node allow relay kcp.
         let Some(next_hop_id) = route
             .get_next_hop_with_policy(dst_peer_id, next_hop_policy)
@@ -2175,7 +2104,8 @@ impl PeerManager {
             return false;
         }
 
-        let next_hop_policy = Self::get_next_hop_policy(self.global_ctx.get_flags().latency_first);
+        let next_hop_policy =
+            core_peer_manager::get_next_hop_policy(self.global_ctx.get_flags().latency_first);
         // check relay node allow relay quic.
         let Some(next_hop_id) = route
             .get_next_hop_with_policy(dst_peer_id, next_hop_policy)
@@ -2214,6 +2144,7 @@ impl PeerManager {
 #[cfg(test)]
 mod tests {
     use base64::Engine;
+    use easytier_core::peers::peer_manager as core_peer_manager;
     use std::{collections::HashMap, fmt::Debug, sync::Arc, time::Duration};
 
     use quanta::Instant;
@@ -2527,8 +2458,8 @@ mod tests {
         let mut pkt = ZCPacket::new_with_payload(b"tx");
         pkt.fill_peer_manager_hdr(peer_mgr.my_peer_id(), dst_peer_id, PacketType::Data as u8);
 
-        let result = PeerManager::send_msg_internal(
-            &peer_mgr.peers,
+        let result = core_peer_manager::send_msg_internal(
+            peer_mgr.peers.as_core(),
             &peer_mgr.foreign_network_client,
             &peer_mgr.relay_peer_map,
             Some(&peer_mgr.traffic_metrics),
@@ -2596,8 +2527,8 @@ mod tests {
         let mut pkt = ZCPacket::new_with_payload(b"tx");
         pkt.fill_peer_manager_hdr(peer_mgr.my_peer_id(), dst_peer_id, PacketType::Data as u8);
 
-        PeerManager::send_msg_internal(
-            &peer_mgr.peers,
+        core_peer_manager::send_msg_internal(
+            peer_mgr.peers.as_core(),
             &peer_mgr.foreign_network_client,
             &peer_mgr.relay_peer_map,
             Some(&peer_mgr.traffic_metrics),
@@ -2683,8 +2614,8 @@ mod tests {
         );
         let pkt_len = pkt.buf_len() as u64;
 
-        PeerManager::send_msg_internal(
-            &peer_mgr_a.peers,
+        core_peer_manager::send_msg_internal(
+            peer_mgr_a.peers.as_core(),
             &peer_mgr_a.foreign_network_client,
             &peer_mgr_a.relay_peer_map,
             Some(&peer_mgr_a.traffic_metrics),
@@ -2782,8 +2713,8 @@ mod tests {
             .set_latency_first(true);
         let pkt_len = pkt.buf_len() as u64;
 
-        PeerManager::send_msg_internal(
-            &peer_mgr_a.peers,
+        core_peer_manager::send_msg_internal(
+            peer_mgr_a.peers.as_core(),
             &peer_mgr_a.foreign_network_client,
             &peer_mgr_a.relay_peer_map,
             Some(&peer_mgr_a.traffic_metrics),
@@ -2854,8 +2785,8 @@ mod tests {
         );
         let pkt_len = pkt.buf_len() as u64;
 
-        PeerManager::send_msg_internal(
-            &peer_mgr_a.peers,
+        core_peer_manager::send_msg_internal(
+            peer_mgr_a.peers.as_core(),
             &peer_mgr_a.foreign_network_client,
             &peer_mgr_a.relay_peer_map,
             Some(&peer_mgr_a.traffic_metrics),
@@ -2930,8 +2861,8 @@ mod tests {
         );
         let pkt_len = pkt.buf_len() as u64;
 
-        PeerManager::send_msg_internal(
-            &peer_mgr_a.peers,
+        core_peer_manager::send_msg_internal(
+            peer_mgr_a.peers.as_core(),
             &peer_mgr_a.foreign_network_client,
             &peer_mgr_a.relay_peer_map,
             Some(&peer_mgr_a.traffic_metrics),
@@ -2995,8 +2926,8 @@ mod tests {
         );
         let pkt_len = pkt.buf_len() as u64;
 
-        PeerManager::send_msg_internal(
-            &peer_mgr_a.peers,
+        core_peer_manager::send_msg_internal(
+            peer_mgr_a.peers.as_core(),
             &peer_mgr_a.foreign_network_client,
             &peer_mgr_a.relay_peer_map,
             Some(&peer_mgr_a.traffic_metrics),

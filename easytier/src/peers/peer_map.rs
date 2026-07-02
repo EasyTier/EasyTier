@@ -207,6 +207,10 @@ impl PeerMap {
     pub fn get_global_ctx(&self) -> ArcGlobalCtx {
         self.global_ctx.clone()
     }
+
+    pub fn as_core(&self) -> &CorePeerMap {
+        &self.core
+    }
 }
 
 impl Drop for PeerMap {
