@@ -7,7 +7,10 @@ use tokio::sync::{
     mpsc::{self, UnboundedReceiver, UnboundedSender},
 };
 
-use crate::{config::PeerId, packet::ZCPacket};
+use crate::{
+    config::PeerId,
+    packet::{PacketType, ZCPacket},
+};
 
 use super::{
     context::NetworkIdentity,
@@ -25,6 +28,7 @@ use super::{
 use crate::proto::peer_rpc::{
     ForeignNetworkRouteInfoEntry, ForeignNetworkRouteInfoKey, PeerIdentityType,
 };
+use crate::stats_manager::{LabelSet, LabelType, MetricName, StatsManager};
 
 pub struct RpcTransport {
     my_peer_id: PeerId,
@@ -187,6 +191,159 @@ pub async fn close_untrusted_credential_peers<F>(
         if let Err(e) = peer_map.close_peer(peer_id).await {
             tracing::warn!(?e, ?peer_id, "failed to close untrusted credential peer");
         }
+    }
+}
+
+#[async_trait::async_trait]
+#[auto_impl::auto_impl(&, Arc)]
+pub trait ForeignNetworkPacketHandler: Send + Sync + 'static {
+    fn get_network_peer_id(&self, network_name: &str) -> Option<PeerId>;
+
+    async fn forward_foreign_network_packet(
+        &self,
+        network_name: &str,
+        dst_peer_id: PeerId,
+        msg: ZCPacket,
+    ) -> anyhow::Result<()>;
+}
+
+pub fn is_relay_data_packet(packet_type: u8) -> bool {
+    super::traffic_metrics::is_relay_data_packet_type(packet_type)
+}
+
+pub fn is_relay_data_zc_packet(packet: &ZCPacket) -> bool {
+    let Some(hdr) = packet.peer_manager_header() else {
+        return false;
+    };
+
+    if hdr.packet_type == PacketType::ForeignNetworkPacket as u8 {
+        let inner_packet_type = packet.foreign_network_inner_packet_type();
+        if inner_packet_type.is_none() {
+            tracing::warn!(
+                ?hdr,
+                "foreign network packet has unparseable inner peer manager header"
+            );
+        }
+        return inner_packet_type.is_none_or(is_relay_data_packet);
+    }
+
+    is_relay_data_packet(hdr.packet_type)
+}
+
+pub async fn try_handle_foreign_network_packet<H>(
+    mut packet: ZCPacket,
+    my_peer_id: PeerId,
+    peer_map: &PeerMap,
+    foreign_network_handler: &H,
+    stats_manager: &StatsManager,
+    disable_relay_data: bool,
+) -> Result<(), ZCPacket>
+where
+    H: ForeignNetworkPacketHandler + ?Sized,
+{
+    let pm_header = packet.peer_manager_header().unwrap();
+    if pm_header.packet_type != PacketType::ForeignNetworkPacket as u8 {
+        return Err(packet);
+    }
+
+    let from_peer_id = pm_header.from_peer_id.get();
+    let to_peer_id = pm_header.to_peer_id.get();
+
+    if disable_relay_data && is_relay_data_zc_packet(&packet) {
+        tracing::debug!(
+            ?from_peer_id,
+            ?to_peer_id,
+            inner_packet_type = ?packet.foreign_network_inner_packet_type(),
+            "drop foreign network relay data while relay data is disabled"
+        );
+        return Ok(());
+    }
+
+    let foreign_hdr = packet.foreign_network_hdr().unwrap();
+    let foreign_network_name = foreign_hdr.get_network_name(packet.payload());
+    let foreign_peer_id = foreign_hdr.get_dst_peer_id();
+
+    let foreign_network_my_peer_id =
+        foreign_network_handler.get_network_peer_id(&foreign_network_name);
+
+    let buf_len = packet.buf_len();
+    let label_set =
+        LabelSet::new().with_label_type(LabelType::NetworkName(foreign_network_name.clone()));
+    let add_counter = move |bytes_metric, packets_metric| {
+        stats_manager
+            .get_counter(bytes_metric, label_set.clone())
+            .add(buf_len as u64);
+        stats_manager.get_counter(packets_metric, label_set).inc();
+    };
+
+    // NOTICE: the to peer id is modified by the src from foreign network my peer id to the origin my peer id
+    if to_peer_id == my_peer_id {
+        // packet sent from other peer to me, extract the inner packet and forward it
+        add_counter(
+            MetricName::TrafficBytesForeignForwardRx,
+            MetricName::TrafficPacketsForeignForwardRx,
+        );
+        if let Err(e) = foreign_network_handler
+            .forward_foreign_network_packet(
+                &foreign_network_name,
+                foreign_peer_id,
+                packet.foreign_network_packet(),
+            )
+            .await
+        {
+            tracing::debug!(
+                ?e,
+                ?foreign_network_name,
+                ?foreign_peer_id,
+                "foreign network mgr send_msg_to_peer failed"
+            );
+        }
+        Ok(())
+    } else if Some(from_peer_id) == foreign_network_my_peer_id {
+        // to_peer_id is my peer id for the foreign network, need to convert to the origin my_peer_id of dst
+        let Some(to_peer_id) = peer_map
+            .get_origin_my_peer_id(&foreign_network_name, to_peer_id)
+            .await
+        else {
+            tracing::debug!(
+                ?foreign_network_name,
+                ?to_peer_id,
+                "cannot find origin my peer id for foreign network."
+            );
+            return Err(packet);
+        };
+
+        add_counter(
+            MetricName::TrafficBytesForeignForwardTx,
+            MetricName::TrafficPacketsForeignForwardTx,
+        );
+
+        // modify the to_peer id from foreign network my peer id to the origin my peer id
+        packet
+            .mut_peer_manager_header()
+            .unwrap()
+            .to_peer_id
+            .set(to_peer_id);
+
+        // packet is generated from foreign network mgr and should be forward to other peer
+        if let Err(e) = peer_map
+            .send_msg(packet, to_peer_id, NextHopPolicy::LeastHop)
+            .await
+        {
+            tracing::debug!(
+                ?e,
+                ?to_peer_id,
+                "send_msg_directly failed when forward local generated foreign network packet"
+            );
+        }
+        Ok(())
+    } else {
+        // target is not me, forward it. try get origin peer id
+        add_counter(
+            MetricName::TrafficBytesForeignForwardForwarded,
+            MetricName::TrafficPacketsForeignForwardForwarded,
+        );
+        Err(packet)
     }
 }
 

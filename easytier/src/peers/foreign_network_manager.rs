@@ -18,6 +18,7 @@ use easytier_core::peers::foreign_network_manager as core_foreign_network_manage
 pub use easytier_core::peers::foreign_network_manager::{
     ForeignNetworkRouteInfo, ForeignNetworkRouteInfoProvider, GlobalForeignNetworkAccessor,
 };
+use easytier_core::peers::peer_manager::ForeignNetworkPacketHandler;
 use guarden::{Guard, defer};
 use tokio::{
     sync::{Mutex, mpsc::UnboundedSender},
@@ -1149,6 +1150,24 @@ impl ForeignNetworkRouteInfoProvider for ForeignNetworkManager {
 
     fn get_foreign_network_last_update(&self, network_name: &str) -> Option<SystemTime> {
         ForeignNetworkManager::get_foreign_network_last_update(self, network_name)
+    }
+}
+
+#[async_trait::async_trait]
+impl ForeignNetworkPacketHandler for ForeignNetworkManager {
+    fn get_network_peer_id(&self, network_name: &str) -> Option<PeerId> {
+        ForeignNetworkManager::get_network_peer_id(self, network_name)
+    }
+
+    async fn forward_foreign_network_packet(
+        &self,
+        network_name: &str,
+        dst_peer_id: PeerId,
+        msg: ZCPacket,
+    ) -> anyhow::Result<()> {
+        ForeignNetworkManager::forward_foreign_network_packet(self, network_name, dst_peer_id, msg)
+            .await
+            .map_err(Into::into)
     }
 }
 

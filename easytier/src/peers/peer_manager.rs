@@ -33,10 +33,10 @@ use crate::{
         peer_conn::PeerConn,
         peer_session::PeerSessionStore,
         recv_packet_from_chan,
-        route_trait::{MockRoute, NextHopPolicy},
+        route_trait::MockRoute,
         traffic_metrics::{
             InstanceLabelKind, LogicalTrafficMetrics, TrafficKind, TrafficMetricRecorder,
-            is_relay_data_packet_type, route_peer_info_instance_id, traffic_kind,
+            route_peer_info_instance_id, traffic_kind,
         },
     },
     proto::{
@@ -691,143 +691,6 @@ impl PeerManager {
         Ok(())
     }
 
-    async fn try_handle_foreign_network_packet(
-        mut packet: ZCPacket,
-        my_peer_id: PeerId,
-        peer_map: &PeerMap,
-        foreign_network_mgr: &ForeignNetworkManager,
-        stats_manager: &crate::common::stats_manager::StatsManager,
-        disable_relay_data: bool,
-    ) -> Result<(), ZCPacket> {
-        let pm_header = packet.peer_manager_header().unwrap();
-        if pm_header.packet_type != PacketType::ForeignNetworkPacket as u8 {
-            return Err(packet);
-        }
-
-        let from_peer_id = pm_header.from_peer_id.get();
-        let to_peer_id = pm_header.to_peer_id.get();
-
-        if disable_relay_data && Self::is_relay_data_zc_packet(&packet) {
-            tracing::debug!(
-                ?from_peer_id,
-                ?to_peer_id,
-                inner_packet_type = ?packet.foreign_network_inner_packet_type(),
-                "drop foreign network relay data while relay data is disabled"
-            );
-            return Ok(());
-        }
-
-        let foreign_hdr = packet.foreign_network_hdr().unwrap();
-        let foreign_network_name = foreign_hdr.get_network_name(packet.payload());
-        let foreign_peer_id = foreign_hdr.get_dst_peer_id();
-
-        let foreign_network_my_peer_id =
-            foreign_network_mgr.get_network_peer_id(&foreign_network_name);
-
-        let buf_len = packet.buf_len();
-        let label_set =
-            LabelSet::new().with_label_type(LabelType::NetworkName(foreign_network_name.clone()));
-        let add_counter = move |bytes_metric, packets_metric| {
-            stats_manager
-                .get_counter(bytes_metric, label_set.clone())
-                .add(buf_len as u64);
-            stats_manager.get_counter(packets_metric, label_set).inc();
-        };
-
-        // NOTICE: the to peer id is modified by the src from foreign network my peer id to the origin my peer id
-        if to_peer_id == my_peer_id {
-            // packet sent from other peer to me, extract the inner packet and forward it
-            add_counter(
-                MetricName::TrafficBytesForeignForwardRx,
-                MetricName::TrafficPacketsForeignForwardRx,
-            );
-            if let Err(e) = foreign_network_mgr
-                .forward_foreign_network_packet(
-                    &foreign_network_name,
-                    foreign_peer_id,
-                    packet.foreign_network_packet(),
-                )
-                .await
-            {
-                tracing::debug!(
-                    ?e,
-                    ?foreign_network_name,
-                    ?foreign_peer_id,
-                    "foreign network mgr send_msg_to_peer failed"
-                );
-            }
-            Ok(())
-        } else if Some(from_peer_id) == foreign_network_my_peer_id {
-            // to_peer_id is my peer id for the foreign network, need to convert to the origin my_peer_id of dst
-            let Some(to_peer_id) = peer_map
-                .get_origin_my_peer_id(&foreign_network_name, to_peer_id)
-                .await
-            else {
-                tracing::debug!(
-                    ?foreign_network_name,
-                    ?to_peer_id,
-                    "cannot find origin my peer id for foreign network."
-                );
-                return Err(packet);
-            };
-
-            add_counter(
-                MetricName::TrafficBytesForeignForwardTx,
-                MetricName::TrafficPacketsForeignForwardTx,
-            );
-
-            // modify the to_peer id from foreign network my peer id to the origin my peer id
-            packet
-                .mut_peer_manager_header()
-                .unwrap()
-                .to_peer_id
-                .set(to_peer_id);
-
-            // packet is generated from foreign network mgr and should be forward to other peer
-            if let Err(e) = peer_map
-                .send_msg(packet, to_peer_id, NextHopPolicy::LeastHop)
-                .await
-            {
-                tracing::debug!(
-                    ?e,
-                    ?to_peer_id,
-                    "send_msg_directly failed when forward local generated foreign network packet"
-                );
-            }
-            Ok(())
-        } else {
-            // target is not me, forward it. try get origin peer id
-            add_counter(
-                MetricName::TrafficBytesForeignForwardForwarded,
-                MetricName::TrafficPacketsForeignForwardForwarded,
-            );
-            Err(packet)
-        }
-    }
-
-    fn is_relay_data_packet(packet_type: u8) -> bool {
-        is_relay_data_packet_type(packet_type)
-    }
-
-    fn is_relay_data_zc_packet(packet: &ZCPacket) -> bool {
-        let Some(hdr) = packet.peer_manager_header() else {
-            return false;
-        };
-
-        if hdr.packet_type == PacketType::ForeignNetworkPacket as u8 {
-            let inner_packet_type = packet.foreign_network_inner_packet_type();
-            if inner_packet_type.is_none() {
-                tracing::warn!(
-                    ?hdr,
-                    "foreign network packet has unparseable inner peer manager header"
-                );
-            }
-            return inner_packet_type.is_none_or(Self::is_relay_data_packet);
-        }
-
-        Self::is_relay_data_packet(hdr.packet_type)
-    }
-
     async fn start_peer_recv(&self) {
         let mut recv = self.packet_recv.lock().await.take().unwrap();
         let my_peer_id = self.my_peer_id;
@@ -882,7 +745,7 @@ impl PeerManager {
             tracing::trace!("start_peer_recv");
             while let Ok(ret) = recv_packet_from_chan(&mut recv).await {
                 let disable_relay_data = global_ctx.flags_arc().disable_relay_data;
-                let Err(mut ret) = Self::try_handle_foreign_network_packet(
+                let Err(mut ret) = core_peer_manager::try_handle_foreign_network_packet(
                     ret,
                     my_peer_id,
                     &peers,
@@ -896,7 +759,7 @@ impl PeerManager {
                 };
 
                 let buf_len = ret.buf_len();
-                let is_relay_data_packet = Self::is_relay_data_zc_packet(&ret);
+                let is_relay_data_packet = core_peer_manager::is_relay_data_zc_packet(&ret);
                 let Some(hdr) = ret.mut_peer_manager_header() else {
                     tracing::warn!(?ret, "invalid packet, skip");
                     continue;
@@ -2189,7 +2052,7 @@ mod tests {
             PacketType::DataWithQuicSrcModified,
             PacketType::ForeignNetworkPacket,
         ] {
-            assert!(PeerManager::is_relay_data_packet(packet_type as u8));
+            assert!(core_peer_manager::is_relay_data_packet(packet_type as u8));
         }
 
         for packet_type in [
@@ -2204,7 +2067,7 @@ mod tests {
             PacketType::RelayHandshake,
             PacketType::RelayHandshakeAck,
         ] {
-            assert!(!PeerManager::is_relay_data_packet(packet_type as u8));
+            assert!(!core_peer_manager::is_relay_data_packet(packet_type as u8));
         }
     }
 
@@ -2222,7 +2085,9 @@ mod tests {
             foreign_rpc_packet.foreign_network_inner_packet_type(),
             Some(PacketType::RpcReq as u8)
         );
-        assert!(!PeerManager::is_relay_data_zc_packet(&foreign_rpc_packet));
+        assert!(!core_peer_manager::is_relay_data_zc_packet(
+            &foreign_rpc_packet
+        ));
 
         let mut data_packet = ZCPacket::new_with_payload(b"data");
         data_packet.fill_peer_manager_hdr(1, 2, PacketType::Data as u8);
@@ -2234,7 +2099,9 @@ mod tests {
             foreign_data_packet.foreign_network_inner_packet_type(),
             Some(PacketType::Data as u8)
         );
-        assert!(PeerManager::is_relay_data_zc_packet(&foreign_data_packet));
+        assert!(core_peer_manager::is_relay_data_zc_packet(
+            &foreign_data_packet
+        ));
     }
 
     #[tokio::test]
