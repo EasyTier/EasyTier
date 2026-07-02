@@ -14,7 +14,10 @@ use easytier_core::{
             RouteInterfaceBox as CoreRouteInterfaceBox,
         },
     },
-    proto::core_peer::peer::Route as CoreRouteInfo,
+    proto::core_peer::peer::{
+        ListPublicIpv6InfoResponse as CoreListPublicIpv6InfoResponse,
+        PublicIpv6LeaseInfo as CorePublicIpv6LeaseInfo, Route as CoreRouteInfo,
+    },
 };
 use parking_lot::Mutex;
 
@@ -79,6 +82,25 @@ fn api_route_to_core(route: instance::Route) -> CoreRouteInfo {
         ipv6_addr: route.ipv6_addr,
         public_ipv6_addr: route.public_ipv6_addr,
         ipv6_public_addr_prefix: route.ipv6_public_addr_prefix,
+    }
+}
+
+fn api_public_ipv6_info_to_core(
+    info: instance::ListPublicIpv6InfoResponse,
+) -> CoreListPublicIpv6InfoResponse {
+    CoreListPublicIpv6InfoResponse {
+        provider_prefix: info.provider_prefix,
+        provider_leases: info
+            .provider_leases
+            .into_iter()
+            .map(|lease| CorePublicIpv6LeaseInfo {
+                peer_id: lease.peer_id,
+                inst_id: lease.inst_id,
+                leased_addr: lease.leased_addr,
+                valid_until_unix_seconds: lease.valid_until_unix_seconds,
+                reused: lease.reused,
+            })
+            .collect(),
     }
 }
 
@@ -164,6 +186,10 @@ impl CoreRoute for CoreRouteAdapter {
 
     async fn get_public_ipv6_gateway_peer_id(&self) -> Option<PeerId> {
         self.route.get_public_ipv6_gateway_peer_id().await
+    }
+
+    async fn get_local_public_ipv6_info(&self) -> CoreListPublicIpv6InfoResponse {
+        api_public_ipv6_info_to_core(self.route.get_local_public_ipv6_info().await)
     }
 
     async fn get_peer_id_by_ipv4(&self, ipv4: &Ipv4Addr) -> Option<PeerId> {

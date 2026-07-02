@@ -12,7 +12,7 @@ use crate::{
     config::PeerId,
     peers::context::NetworkIdentity,
     proto::{
-        core_peer::peer::Route as CoreRoute,
+        core_peer::peer::{ListPublicIpv6InfoResponse, Route as CoreRoute},
         peer_rpc::{
             ForeignNetworkRouteInfoEntry, ForeignNetworkRouteInfoKey, PeerIdentityType,
             RouteForeignNetworkInfos, RouteForeignNetworkSummary, RoutePeerInfo,
@@ -111,7 +111,9 @@ pub trait Route {
         None
     }
 
-    async fn get_local_public_ipv6_info(&self) {}
+    async fn get_local_public_ipv6_info(&self) -> ListPublicIpv6InfoResponse {
+        ListPublicIpv6InfoResponse::default()
+    }
 
     async fn get_peer_id_by_ipv4(&self, _ipv4: &Ipv4Addr) -> Option<PeerId> {
         None

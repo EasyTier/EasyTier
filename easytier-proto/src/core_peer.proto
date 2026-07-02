@@ -62,3 +62,16 @@ message Route {
   common.Ipv6Inet public_ipv6_addr = 16;
   common.Ipv6Inet ipv6_public_addr_prefix = 17;
 }
+
+message PublicIpv6LeaseInfo {
+  uint32 peer_id = 1;
+  string inst_id = 2;
+  common.Ipv6Inet leased_addr = 3;
+  int64 valid_until_unix_seconds = 4;
+  bool reused = 5;
+}
+
+message ListPublicIpv6InfoResponse {
+  common.Ipv6Inet provider_prefix = 1;
+  repeated PublicIpv6LeaseInfo provider_leases = 2;
+}
