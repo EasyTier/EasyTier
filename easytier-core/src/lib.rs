@@ -1,3 +1,4 @@
+pub mod compressor;
 pub mod config;
 pub mod packet;
 pub mod peers;
