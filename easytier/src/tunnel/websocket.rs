@@ -356,6 +356,49 @@ impl TunnelConnector for WsTunnelConnector {
     }
 }
 
+pub async fn upgrade_tcp_to_ws_tunnel(
+    stream: TcpStream,
+    is_ws_server: bool,
+    remote_addr: SocketAddr,
+) -> Result<Box<dyn Tunnel>, TunnelError> {
+    let local_addr = stream.local_addr()?;
+    let info = TunnelInfo {
+        tunnel_type: "ws".to_owned(),
+        local_addr: Some(super::build_url_from_socket_addr(&local_addr.to_string(), "ws").into()),
+        remote_addr: Some(super::build_url_from_socket_addr(&remote_addr.to_string(), "ws").into()),
+        resolved_remote_addr: Some(
+            super::build_url_from_socket_addr(&remote_addr.to_string(), "ws").into(),
+        ),
+    };
+
+    if is_ws_server {
+        let (_, ws_stream) = ServerBuilder::new()
+            .limits(Limits::unlimited())
+            .max_headers(128)
+            .accept(stream)
+            .await?;
+        let (write, read) = ws_stream.split();
+        Ok(Box::new(TunnelWrapper::new(
+            read.filter_map(map_from_ws_message),
+            write.with(sink_from_zc_packet),
+            Some(info),
+        )))
+    } else {
+        let ws_uri = format!("ws://{}", remote_addr);
+        let c = ClientBuilder::from_uri(
+            http::Uri::try_from(ws_uri).map_err(|e| TunnelError::InvalidProtocol(e.to_string()))?,
+        )
+        .max_headers(128);
+        let (client, _) = c.connect_on(MaybeTlsStream::Plain(stream)).await?;
+        let (write, read) = client.split();
+        Ok(Box::new(TunnelWrapper::new(
+            read.filter_map(map_from_ws_message),
+            write.with(sink_from_zc_packet),
+            Some(info),
+        )))
+    }
+}
+
 #[cfg(test)]
 pub mod tests {
     use super::*;
