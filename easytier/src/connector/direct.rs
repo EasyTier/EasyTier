@@ -779,6 +779,7 @@ struct DirectConnectorLauncher(Arc<DirectConnectorManagerData>);
 
 #[async_trait::async_trait]
 impl PeerTaskLauncher for DirectConnectorLauncher {
+    type PeerManager = PeerManager;
     type Data = Arc<DirectConnectorManagerData>;
     type CollectPeerItem = PeerId;
     type TaskRet = ();

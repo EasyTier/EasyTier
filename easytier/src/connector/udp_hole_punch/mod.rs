@@ -398,6 +398,7 @@ struct PunchTaskInfo {
 
 #[async_trait::async_trait]
 impl PeerTaskLauncher for UdpHolePunchPeerTaskLauncher {
+    type PeerManager = PeerManager;
     type Data = Arc<UdpHoePunchConnectorData>;
     type CollectPeerItem = PunchTaskInfo;
     type TaskRet = ();

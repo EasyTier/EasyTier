@@ -410,6 +410,7 @@ struct TcpHolePunchPeerTaskLauncher {}
 
 #[async_trait::async_trait]
 impl PeerTaskLauncher for TcpHolePunchPeerTaskLauncher {
+    type PeerManager = PeerManager;
     type Data = Arc<TcpHolePunchConnectorData>;
     type CollectPeerItem = TcpPunchTaskInfo;
     type TaskRet = ();
