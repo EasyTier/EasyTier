@@ -56,4 +56,20 @@ pub type Result<T> = result::Result<T, Error>;
 
 pub type ErrorCollection = crate::utils::error::ErrorCollection<Error>;
 
+impl From<easytier_core::peers::error::Error> for Error {
+    fn from(value: easytier_core::peers::error::Error) -> Self {
+        match value {
+            easytier_core::peers::error::Error::WaitRespError(msg) => Self::WaitRespError(msg),
+            easytier_core::peers::error::Error::SecretKeyError(msg) => Self::SecretKeyError(msg),
+            easytier_core::peers::error::Error::PeerNoConnectionError(peer_id) => {
+                Self::PeerNoConnectionError(peer_id)
+            }
+            easytier_core::peers::error::Error::RouteError(msg) => Self::RouteError(msg),
+            easytier_core::peers::error::Error::NotFound => Self::NotFound,
+            easytier_core::peers::error::Error::Tunnel(err) => Self::TunnelError(err),
+            easytier_core::peers::error::Error::Other(err) => Self::AnyhowError(err),
+        }
+    }
+}
+
 // impl From for std::

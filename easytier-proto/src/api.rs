@@ -74,6 +74,74 @@ pub mod instance {
     include!(concat!(env!("OUT_DIR"), "/api.instance.rs"));
     include!(concat!(env!("OUT_DIR"), "/api.instance.serde.rs"));
 
+    impl From<crate::core_peer::peer::PeerConnStats> for PeerConnStats {
+        fn from(value: crate::core_peer::peer::PeerConnStats) -> Self {
+            Self {
+                rx_bytes: value.rx_bytes,
+                tx_bytes: value.tx_bytes,
+                rx_packets: value.rx_packets,
+                tx_packets: value.tx_packets,
+                latency_us: value.latency_us,
+            }
+        }
+    }
+
+    impl From<crate::core_peer::peer::PeerConnInfo> for PeerConnInfo {
+        fn from(value: crate::core_peer::peer::PeerConnInfo) -> Self {
+            Self {
+                conn_id: value.conn_id,
+                my_peer_id: value.my_peer_id,
+                peer_id: value.peer_id,
+                features: value.features,
+                tunnel: value.tunnel,
+                stats: value.stats.map(Into::into),
+                loss_rate: value.loss_rate,
+                is_client: value.is_client,
+                network_name: value.network_name,
+                is_closed: value.is_closed,
+                noise_local_static_pubkey: value.noise_local_static_pubkey,
+                noise_remote_static_pubkey: value.noise_remote_static_pubkey,
+                secure_auth_level: value.secure_auth_level,
+                peer_identity_type: value.peer_identity_type,
+            }
+        }
+    }
+
+    impl From<crate::core_peer::peer::PeerInfo> for PeerInfo {
+        fn from(value: crate::core_peer::peer::PeerInfo) -> Self {
+            Self {
+                peer_id: value.peer_id,
+                conns: value.conns.into_iter().map(Into::into).collect(),
+                default_conn_id: value.default_conn_id,
+                directly_connected_conns: value.directly_connected_conns,
+            }
+        }
+    }
+
+    impl From<crate::core_peer::peer::Route> for Route {
+        fn from(value: crate::core_peer::peer::Route) -> Self {
+            Self {
+                peer_id: value.peer_id,
+                ipv4_addr: value.ipv4_addr,
+                next_hop_peer_id: value.next_hop_peer_id,
+                cost: value.cost,
+                path_latency: value.path_latency,
+                proxy_cidrs: value.proxy_cidrs,
+                hostname: value.hostname,
+                stun_info: value.stun_info,
+                inst_id: value.inst_id,
+                version: value.version,
+                feature_flag: value.feature_flag,
+                next_hop_peer_id_latency_first: value.next_hop_peer_id_latency_first,
+                cost_latency_first: value.cost_latency_first,
+                path_latency_latency_first: value.path_latency_latency_first,
+                ipv6_addr: value.ipv6_addr,
+                public_ipv6_addr: value.public_ipv6_addr,
+                ipv6_public_addr_prefix: value.ipv6_public_addr_prefix,
+            }
+        }
+    }
+
     impl Display for PeerConnInfo {
         fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
             f.debug_struct("PeerConnInfo")

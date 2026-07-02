@@ -42,7 +42,7 @@ async fn map_from_ws_message(
 ) -> Option<Result<ZCPacket, TunnelError>> {
     if let Err(e) = msg {
         tracing::error!(?e, "recv from websocket error");
-        return Some(Err(TunnelError::WebSocketError(e)));
+        return Some(Err(TunnelError::websocket_error(e)));
     }
 
     let msg = msg.unwrap();
@@ -120,7 +120,8 @@ impl WsTunnelListener {
             .limits(Limits::unlimited())
             .max_headers(128)
             .accept(stream)
-            .await?;
+            .await
+            .map_err(TunnelError::websocket_error)?;
 
         if TRUSTED_PROXIES
             .iter()
@@ -159,7 +160,9 @@ impl WsTunnelListener {
 
         Ok(Box::new(TunnelWrapper::new(
             read.filter_map(map_from_ws_message),
-            write.with(sink_from_zc_packet),
+            write
+                .sink_map_err(TunnelError::websocket_error)
+                .with(sink_from_zc_packet::<TunnelError>),
             Some(info),
         )))
     }
@@ -272,10 +275,15 @@ impl WsTunnelConnector {
             MaybeTlsStream::Plain(stream)
         };
 
-        let (client, _) = c.connect_on(stream).await?;
+        let (client, _) = c
+            .connect_on(stream)
+            .await
+            .map_err(TunnelError::websocket_error)?;
         let (write, read) = client.split();
         let read = read.filter_map(map_from_ws_message);
-        let write = write.with(sink_from_zc_packet);
+        let write = write
+            .sink_map_err(TunnelError::websocket_error)
+            .with(sink_from_zc_packet::<TunnelError>);
         Ok(Box::new(TunnelWrapper::new(read, write, Some(info))))
     }
 

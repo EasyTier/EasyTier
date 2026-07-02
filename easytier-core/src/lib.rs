@@ -1,5 +1,7 @@
 pub mod config;
 pub mod packet;
-pub mod transport;
+pub mod peers;
+pub mod rpc_impl;
+pub mod tunnel;
 
 pub use easytier_proto as proto;

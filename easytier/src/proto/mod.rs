@@ -8,9 +8,3 @@ pub use easytier_proto::magic_dns;
 pub mod tests;
 
 pub mod rpc_impl;
-
-impl From<crate::tunnel::TunnelError> for rpc_types::error::Error {
-    fn from(value: crate::tunnel::TunnelError) -> Self {
-        Self::TunnelError(value.to_string())
-    }
-}

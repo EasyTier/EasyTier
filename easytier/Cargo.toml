@@ -380,12 +380,12 @@ full = [
     "magic-dns",
     "zstd",
 ]
-wireguard = ["dep:boringtun", "dep:ring", "easytier-proto/wireguard"]
+wireguard = ["dep:boringtun", "dep:ring", "easytier-core/aes-gcm", "easytier-core/chacha20", "easytier-proto/wireguard"]
 quic = ["dep:quinn", "dep:quinn-proto", "dep:seahash", "dep:rustls", "dep:rcgen", "easytier-proto/quic"]
 kcp = ["dep:kcp-sys"]
 mimalloc = ["dep:mimalloc"]
-aes-gcm = ["dep:aes-gcm"]
-openssl-crypto = ["dep:openssl"]
+aes-gcm = ["dep:aes-gcm", "easytier-core/aes-gcm"]
+openssl-crypto = ["dep:openssl", "easytier-core/aes-gcm", "easytier-core/chacha20"]
 tun = ["dep:tun"]
 websocket = [
     "dep:tokio-websockets",

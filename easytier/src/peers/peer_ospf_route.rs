@@ -221,7 +221,7 @@ fn new_route_peer_info() -> RoutePeerInfo {
 }
 
 /// Creates a new `RoutePeerInfo` instance with updated information from the given context.
-fn new_updated_self_route_peer_info(
+pub(crate) fn new_updated_self_route_peer_info(
     my_peer_id: PeerId,
     peer_route_id: u64,
     global_ctx: &ArcGlobalCtx,
@@ -4171,6 +4171,7 @@ mod tests {
 
     use super::{
         NextHopInfo, PeerRoute, REMOVE_DEAD_PEER_INFO_AFTER, RouteConnInfo, SyncRouteSession,
+        new_route_peer_info, new_updated_self_route_peer_info,
     };
     use crate::proto::common::TimestampExt;
     use crate::{

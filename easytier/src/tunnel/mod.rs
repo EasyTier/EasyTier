@@ -1,20 +1,17 @@
-use std::{
-    collections::hash_map::DefaultHasher, hash::Hasher, net::SocketAddr, pin::Pin, sync::Arc,
-};
+use std::{collections::hash_map::DefaultHasher, hash::Hasher, net::SocketAddr, sync::Arc};
 
-use crate::{
-    common::{dns::socket_addrs, error::Error},
-    proto::common::TunnelInfo,
-};
+use crate::common::{dns::socket_addrs, error::Error};
 use async_trait::async_trait;
 use derive_more::{From, TryInto};
-use futures::{Sink, Stream};
 use socket2::Protocol;
 use std::fmt::Debug;
 use strum::{Display, EnumString, IntoStaticStr, VariantArray};
-use tokio::time::error::Elapsed;
 
-use self::packet_def::ZCPacket;
+pub use crate::proto::common::TunnelInfo;
+pub use easytier_core::tunnel::{
+    IpVersion, SinkError, SinkItem, SplitTunnel, StreamItem, StreamT, Tunnel, TunnelError,
+    ZCPacketSink, ZCPacketStream,
+};
 
 pub mod buf;
 pub mod common;
@@ -45,76 +42,9 @@ pub mod insecure_tls;
 #[cfg(unix)]
 pub mod unix;
 
-#[derive(thiserror::Error, Debug)]
-pub enum TunnelError {
-    #[error("io error: {0}")]
-    IOError(#[from] std::io::Error),
-    #[error("invalid packet. msg: {0}")]
-    InvalidPacket(String),
-    #[error("exceed max packet size. max: {0}, input: {1}")]
-    ExceedMaxPacketSize(usize, usize),
-
-    #[error("invalid protocol: {0}")]
-    InvalidProtocol(String),
-    #[error("invalid addr: {0}")]
-    InvalidAddr(String),
-
-    #[error("internal error {0}")]
-    InternalError(String),
-
-    #[error("conn id not match, expect: {0}, actual: {1}")]
-    ConnIdNotMatch(u32, u32),
-    #[error("buffer full")]
-    BufferFull,
-
-    #[error("timeout")]
-    Timeout(#[from] Elapsed),
-
-    #[error("anyhow error: {0}")]
-    Anyhow(#[from] anyhow::Error),
-
-    #[error("shutdown")]
-    Shutdown,
-
-    #[error("no dns record found")]
-    NoDnsRecordFound(IpVersion),
-
-    #[cfg(feature = "websocket")]
-    #[error("websocket error: {0}")]
-    WebSocketError(#[from] tokio_websockets::Error),
-
-    #[error("tunnel error: {0}")]
-    TunError(String),
-}
-
-pub type StreamT = packet_def::ZCPacket;
-pub type StreamItem = Result<StreamT, TunnelError>;
-pub type SinkItem = packet_def::ZCPacket;
-pub type SinkError = TunnelError;
-
-pub trait ZCPacketStream: Stream<Item = StreamItem> + Send {}
-impl<T> ZCPacketStream for T where T: Stream<Item = StreamItem> + Send {}
-pub trait ZCPacketSink: Sink<SinkItem, Error = SinkError> + Send {}
-impl<T> ZCPacketSink for T where T: Sink<SinkItem, Error = SinkError> + Send {}
-
-pub type SplitTunnel = (Pin<Box<dyn ZCPacketStream>>, Pin<Box<dyn ZCPacketSink>>);
-
-#[auto_impl::auto_impl(Box, Arc)]
-pub trait Tunnel: Send {
-    fn split(&self) -> SplitTunnel;
-    fn info(&self) -> Option<TunnelInfo>;
-}
-
 #[auto_impl::auto_impl(Arc)]
 pub trait TunnelConnCounter: 'static + Send + Sync + Debug {
     fn get(&self) -> Option<u32>;
-}
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum IpVersion {
-    V4,
-    V6,
-    Both,
 }
 
 #[async_trait]
@@ -159,14 +89,6 @@ pub fn build_url_from_socket_addr(addr: &String, scheme: &str) -> url::Url {
         ret_url
     } else {
         url::Url::parse(format!("{}://{}", scheme, addr).as_str()).unwrap()
-    }
-}
-
-impl std::fmt::Debug for dyn Tunnel {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Tunnel")
-            .field("info", &self.info())
-            .finish()
     }
 }
 

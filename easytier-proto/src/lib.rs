@@ -10,6 +10,8 @@ pub mod common;
 #[cfg(feature = "core")]
 pub mod core_config;
 #[cfg(feature = "core")]
+pub mod core_peer;
+#[cfg(feature = "core")]
 pub mod error;
 #[cfg(all(feature = "api", feature = "magic-dns"))]
 pub mod magic_dns;

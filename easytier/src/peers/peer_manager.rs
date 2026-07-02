@@ -90,7 +90,7 @@ impl PeerRpcManagerTransport for RpcTransport {
         self.my_peer_id
     }
 
-    async fn send(&self, mut msg: ZCPacket, dst_peer_id: PeerId) -> Result<(), Error> {
+    async fn send(&self, mut msg: ZCPacket, dst_peer_id: PeerId) -> anyhow::Result<()> {
         let peers = self.peers.upgrade().ok_or(Error::Unknown)?;
         // NOTE: if route info is not exchanged, this will return None. treat it as public server.
         let is_dst_peer_public_server = peers
@@ -105,14 +105,15 @@ impl PeerRpcManagerTransport for RpcTransport {
                 .with_context(|| "encrypt failed")?;
         }
         // send to self and this packet will be forwarded in peer_recv loop
-        peers.send_msg_directly(msg, self.my_peer_id).await
+        peers.send_msg_directly(msg, self.my_peer_id).await?;
+        Ok(())
     }
 
-    async fn recv(&self) -> Result<ZCPacket, Error> {
+    async fn recv(&self) -> anyhow::Result<ZCPacket> {
         if let Some(o) = self.packet_recv.lock().await.recv().await {
             Ok(o)
         } else {
-            Err(Error::Unknown)
+            Err(Error::Unknown.into())
         }
     }
 }
@@ -557,7 +558,7 @@ impl PeerManager {
 
     async fn add_new_peer_conn(&self, peer_conn: PeerConn) -> Result<(), Error> {
         let my_identity = self.global_ctx.get_network_identity();
-        let peer_identity = peer_conn.get_network_identity();
+        let peer_identity: NetworkIdentity = peer_conn.get_network_identity().into();
         let conn_info = peer_conn.get_conn_info();
         let local_secure_mode = self
             .global_ctx
@@ -772,10 +773,10 @@ impl PeerManager {
             if let Some(network_name) = reserved_peer_id_network_name {
                 self.release_reserved_peer_id(&network_name);
             }
-            return Err(err);
+            return Err(err.into());
         }
 
-        let peer_identity = conn.get_network_identity();
+        let peer_identity: NetworkIdentity = conn.get_network_identity().into();
         let peer_network_name = peer_identity.network_name.clone();
         let my_identity = self.global_ctx.get_network_identity();
         let is_local_network = peer_network_name == my_identity.network_name;

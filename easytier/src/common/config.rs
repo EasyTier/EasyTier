@@ -323,6 +323,16 @@ pub struct NetworkIdentity {
     pub network_secret_digest: Option<NetworkSecretDigest>,
 }
 
+impl From<easytier_core::peers::context::NetworkIdentity> for NetworkIdentity {
+    fn from(value: easytier_core::peers::context::NetworkIdentity) -> Self {
+        Self {
+            network_name: value.network_name,
+            network_secret: value.network_secret,
+            network_secret_digest: value.network_secret_digest,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum ConfigSource {

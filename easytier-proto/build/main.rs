@@ -88,6 +88,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let proto_files_reflect = ["src/peer_rpc.proto", "src/common.proto"];
 
     let proto_files = [
+        "src/core_peer.proto",
         "src/core_config.proto",
         "src/error.proto",
         "src/tests.proto",

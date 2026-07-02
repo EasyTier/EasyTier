@@ -2481,14 +2481,34 @@ dependencies = [
 name = "easytier-core"
 version = "2.6.4"
 dependencies = [
+ "aes-gcm",
+ "anyhow",
+ "arc-swap",
  "async-trait",
+ "auto_impl",
+ "base64 0.22.1",
  "bitflags 2.8.0",
  "bytes",
+ "chacha20poly1305",
+ "cidr",
+ "crossbeam",
+ "dashmap",
  "easytier-proto",
+ "futures",
+ "guarden 0.2.0",
+ "hmac",
+ "parking_lot",
+ "prost 0.14.3",
+ "rand 0.8.5",
+ "sha2",
+ "snow",
  "thiserror 1.0.63",
  "tokio",
+ "tokio-util",
  "tracing",
+ "uuid",
  "zerocopy 0.7.35",
+ "zstd",
 ]
 
 [[package]]

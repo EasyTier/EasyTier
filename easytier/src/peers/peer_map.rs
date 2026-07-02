@@ -3,8 +3,8 @@ use std::{
     sync::Arc,
 };
 
-use anyhow::Context;
 use dashmap::{DashMap, DashSet};
+use easytier_core::peers::peer_map::PeerMap as CorePeerMap;
 use parking_lot::Mutex;
 use tokio::sync::RwLock;
 
@@ -12,8 +12,7 @@ use crate::{
     common::{
         PeerId,
         error::Error,
-        global_ctx::{ArcGlobalCtx, GlobalCtxEvent, NetworkIdentity},
-        shrink_dashmap,
+        global_ctx::{ArcGlobalCtx, NetworkIdentity},
     },
     proto::{
         api::instance::{self, PeerConnInfo},
@@ -30,46 +29,28 @@ use super::{
 };
 
 pub struct PeerMap {
+    core: CorePeerMap,
     global_ctx: ArcGlobalCtx,
-    my_peer_id: PeerId,
-    peer_map: DashMap<PeerId, Arc<Peer>>,
-    packet_send: PacketRecvChan,
     routes: RwLock<Vec<ArcRoute>>,
     alive_client_urls: Arc<Mutex<multimap::MultiMap<url::Url, PeerConnId>>>,
 }
 
 impl PeerMap {
     pub fn new(packet_send: PacketRecvChan, global_ctx: ArcGlobalCtx, my_peer_id: PeerId) -> Self {
-        PeerMap {
+        Self {
+            core: CorePeerMap::new(packet_send, global_ctx.clone(), my_peer_id),
             global_ctx,
-            my_peer_id,
-            peer_map: DashMap::new(),
-            packet_send,
             routes: RwLock::new(Vec::new()),
             alive_client_urls: Arc::new(Mutex::new(multimap::MultiMap::new())),
         }
     }
 
-    async fn add_new_peer(&self, peer: Peer) {
-        let peer_id = peer.peer_node_id;
-        self.peer_map.insert(peer_id, Arc::new(peer));
-        self.global_ctx
-            .issue_event(GlobalCtxEvent::PeerAdded(peer_id));
-    }
-
     pub async fn add_new_peer_conn(&self, peer_conn: PeerConn) -> Result<(), Error> {
         let _ = self.maintain_alive_client_urls(&peer_conn);
-        let peer_id = peer_conn.get_peer_id();
-        let no_entry = self.peer_map.get(&peer_id).is_none();
-        if no_entry {
-            let new_peer = Peer::new(peer_id, self.packet_send.clone(), self.global_ctx.clone());
-            new_peer.add_peer_conn(peer_conn).await?;
-            self.add_new_peer(new_peer).await;
-        } else {
-            let peer = self.peer_map.get(&peer_id).unwrap().clone();
-            peer.add_peer_conn(peer_conn).await?;
-        }
-        Ok(())
+        self.core
+            .add_new_peer_conn(peer_conn)
+            .await
+            .map_err(Into::into)
     }
 
     fn maintain_alive_client_urls(&self, peer_conn: &PeerConn) -> Option<()> {
@@ -117,50 +98,22 @@ impl PeerMap {
     }
 
     pub fn get_peer_by_id(&self, peer_id: PeerId) -> Option<Arc<Peer>> {
-        self.peer_map.get(&peer_id).map(|v| v.clone())
+        self.core.get_peer_by_id(peer_id)
     }
 
     pub fn get_directly_connections_by_peer_id(&self, peer_id: PeerId) -> DashSet<uuid::Uuid> {
-        if let Some(peer) = self.get_peer_by_id(peer_id) {
-            return peer.get_directly_connections();
-        }
-
-        DashSet::new()
+        self.core.get_directly_connections_by_peer_id(peer_id)
     }
 
     pub fn has_peer(&self, peer_id: PeerId) -> bool {
-        peer_id == self.my_peer_id || self.peer_map.contains_key(&peer_id)
+        self.core.has_peer(peer_id)
     }
 
     pub async fn send_msg_directly(&self, msg: ZCPacket, dst_peer_id: PeerId) -> Result<(), Error> {
-        if dst_peer_id == self.my_peer_id {
-            let packet_send = self.packet_send.clone();
-            tokio::spawn(async move {
-                let ret = packet_send
-                    .send(msg)
-                    .await
-                    .with_context(|| "send msg to self failed");
-                if ret.is_err() {
-                    tracing::error!("send msg to self failed: {:?}", ret);
-                }
-            });
-            return Ok(());
-        }
-
-        match self.get_peer_by_id(dst_peer_id) {
-            Some(peer) => {
-                peer.send_msg(msg).await?;
-            }
-            None => {
-                tracing::error!("no peer for dst_peer_id: {}", dst_peer_id);
-                return Err(Error::RouteError(Some(format!(
-                    "peer map sengmsg directly no connected dst_peer_id: {}",
-                    dst_peer_id
-                ))));
-            }
-        }
-
-        Ok(())
+        self.core
+            .send_msg_directly(msg, dst_peer_id)
+            .await
+            .map_err(Into::into)
     }
 
     pub async fn get_gateway_peer_id(
@@ -168,7 +121,7 @@ impl PeerMap {
         dst_peer_id: PeerId,
         policy: NextHopPolicy,
     ) -> Option<PeerId> {
-        if dst_peer_id == self.my_peer_id {
+        if dst_peer_id == self.my_peer_id() {
             return Some(dst_peer_id);
         }
 
@@ -176,13 +129,11 @@ impl PeerMap {
             return Some(dst_peer_id);
         }
 
-        // get route info
         for route in self.routes.read().await.iter() {
             if let Some(gateway_peer_id) = route
                 .get_next_hop_with_policy(dst_peer_id, policy.clone())
                 .await
             {
-                // NOTIC: for foreign network, gateway_peer_id may not connect to me
                 return Some(gateway_peer_id);
             }
         }
@@ -215,8 +166,7 @@ impl PeerMap {
             ))));
         };
 
-        self.send_msg_directly(msg, gateway_peer_id).await?;
-        Ok(())
+        self.send_msg_directly(msg, gateway_peer_id).await
     }
 
     pub async fn get_peer_id_by_ipv4(&self, ipv4: &Ipv4Addr) -> Option<PeerId> {
@@ -265,49 +215,34 @@ impl PeerMap {
     }
 
     pub fn is_empty(&self) -> bool {
-        self.peer_map.is_empty()
+        self.core.is_empty()
     }
 
     pub fn list_peers(&self) -> Vec<PeerId> {
-        let mut ret = Vec::new();
-        for item in self.peer_map.iter() {
-            let peer_id = item.key();
-            ret.push(*peer_id);
-        }
-        ret
+        self.core.list_peers()
     }
 
     pub async fn list_peers_with_conn(&self) -> Vec<PeerId> {
-        let mut ret = Vec::new();
-        for item in self.peer_map.iter() {
-            if item.value().has_live_conns() {
-                ret.push(*item.key());
-            }
-        }
-        ret
+        self.core.list_peers_with_conn().await
     }
 
     pub async fn list_peer_conns(&self, peer_id: PeerId) -> Option<Vec<PeerConnInfo>> {
-        if let Some(p) = self.get_peer_by_id(peer_id) {
-            Some(p.list_peer_conns().await)
-        } else {
-            None
-        }
+        self.core
+            .list_peer_conns(peer_id)
+            .await
+            .map(|conns| conns.into_iter().map(Into::into).collect())
     }
 
     pub async fn get_peer_default_conn_id(&self, peer_id: PeerId) -> Option<PeerConnId> {
-        self.get_peer_by_id(peer_id)
-            .map(|p| p.get_default_conn_id())
+        self.core.get_peer_default_conn_id(peer_id).await
     }
 
     pub fn get_peer_identity_type(&self, peer_id: PeerId) -> Option<PeerIdentityType> {
-        self.get_peer_by_id(peer_id)
-            .and_then(|p| p.get_peer_identity_type())
+        self.core.get_peer_identity_type(peer_id)
     }
 
     pub fn get_peer_public_key(&self, peer_id: PeerId) -> Option<Vec<u8>> {
-        self.get_peer_by_id(peer_id)
-            .and_then(|p| p.get_peer_public_key())
+        self.core.get_peer_public_key(peer_id)
     }
 
     pub async fn close_peer_conn(
@@ -315,26 +250,14 @@ impl PeerMap {
         peer_id: PeerId,
         conn_id: &PeerConnId,
     ) -> Result<(), Error> {
-        if let Some(p) = self.get_peer_by_id(peer_id) {
-            p.close_peer_conn(conn_id).await
-        } else {
-            Err(Error::NotFound)
-        }
+        self.core
+            .close_peer_conn(peer_id, conn_id)
+            .await
+            .map_err(Into::into)
     }
 
     pub async fn close_peer(&self, peer_id: PeerId) -> Result<(), TunnelError> {
-        let remove_ret = self.peer_map.remove(&peer_id);
-        shrink_dashmap(&self.peer_map, None);
-
-        self.global_ctx
-            .issue_event(GlobalCtxEvent::PeerRemoved(peer_id));
-        tracing::info!(
-            ?peer_id,
-            has_old_value = ?remove_ret.is_some(),
-            peer_ref_counter = ?remove_ret.map(|v| Arc::strong_count(&v.1)),
-            "peer is closed"
-        );
-        Ok(())
+        self.core.close_peer(peer_id).await
     }
 
     pub async fn add_route(&self, route: ArcRoute) {
@@ -375,7 +298,6 @@ impl PeerMap {
     }
 
     pub async fn need_relay_by_foreign_network(&self, dst_peer_id: PeerId) -> Result<bool, Error> {
-        // if gateway_peer_id is not connected to me, means need relay by foreign network
         let gateway_id = self
             .get_gateway_peer_id(dst_peer_id, NextHopPolicy::LeastHop)
             .await
@@ -388,7 +310,7 @@ impl PeerMap {
     }
 
     pub fn my_peer_id(&self) -> PeerId {
-        self.my_peer_id
+        self.core.my_peer_id()
     }
 
     pub fn get_global_ctx(&self) -> ArcGlobalCtx {
@@ -399,7 +321,7 @@ impl PeerMap {
 impl Drop for PeerMap {
     fn drop(&mut self) {
         tracing::debug!(
-            self.my_peer_id,
+            my_peer_id = self.my_peer_id(),
             network = ?self.global_ctx.get_network_identity(),
             "PeerMap is dropped"
         );

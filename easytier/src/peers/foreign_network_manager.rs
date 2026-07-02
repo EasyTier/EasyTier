@@ -326,7 +326,7 @@ impl ForeignNetworkEntry {
                 self.my_peer_id
             }
 
-            async fn send(&self, msg: ZCPacket, dst_peer_id: PeerId) -> Result<(), Error> {
+            async fn send(&self, msg: ZCPacket, dst_peer_id: PeerId) -> anyhow::Result<()> {
                 tracing::debug!(
                     "foreign network manager send rpc to peer: {:?}",
                     dst_peer_id
@@ -337,15 +337,16 @@ impl ForeignNetworkEntry {
                     .ok_or(anyhow::anyhow!("peer map is gone"))?;
 
                 // send to ourselves so we can handle it in forward logic.
-                peer_map.send_msg_directly(msg, self.my_peer_id).await
+                peer_map.send_msg_directly(msg, self.my_peer_id).await?;
+                Ok(())
             }
 
-            async fn recv(&self) -> Result<ZCPacket, Error> {
+            async fn recv(&self) -> anyhow::Result<ZCPacket> {
                 if let Some(o) = self.packet_recv.lock().await.recv().await {
                     tracing::trace!("recv rpc packet in foreign network manager rpc transport");
                     Ok(o)
                 } else {
-                    Err(Error::Unknown)
+                    Err(Error::Unknown.into())
                 }
             }
         }
@@ -952,7 +953,7 @@ impl ForeignNetworkManager {
 
     pub async fn add_peer_conn(&self, peer_conn: PeerConn) -> Result<(), Error> {
         let conn_info = peer_conn.get_conn_info();
-        let peer_network = peer_conn.get_network_identity();
+        let peer_network: NetworkIdentity = peer_conn.get_network_identity().into();
         tracing::info!(peer_conn = ?conn_info, network = ?peer_network, "add new peer conn in foreign network manager");
 
         let relay_peer_rpc = self.global_ctx.get_flags().relay_all_peer_rpc;

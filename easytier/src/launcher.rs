@@ -1234,6 +1234,7 @@ impl NetworkConfigExt for NetworkConfig {
 mod tests {
     use crate::{
         common::config::{ConfigLoader, process_secure_mode_cfg},
+        launcher::NetworkConfigExt,
         proto::common::{CompressionAlgoPb, SecureModeConfig},
     };
     use base64::prelude::{BASE64_STANDARD, Engine as _};
