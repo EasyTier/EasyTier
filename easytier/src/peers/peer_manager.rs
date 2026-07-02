@@ -227,7 +227,7 @@ impl PeerManager {
 
         let rpc_tspt = core_peer_manager::RpcTransport::new(
             my_peer_id,
-            peers.downgrade_core(),
+            Arc::downgrade(&peers),
             encryptor.clone(),
             is_secure_mode_enabled,
         );
@@ -453,7 +453,7 @@ impl PeerManager {
     fn build_foreign_network_manager_accessor(
         peer_map: &Arc<PeerMap>,
     ) -> Box<dyn GlobalForeignNetworkAccessor> {
-        core_foreign_network_manager::peer_map_foreign_network_accessor(peer_map.downgrade_core())
+        core_foreign_network_manager::peer_map_foreign_network_accessor(Arc::downgrade(peer_map))
     }
 
     async fn add_new_peer_conn(&self, peer_conn: PeerConn) -> Result<(), Error> {
@@ -471,7 +471,7 @@ impl PeerManager {
             network_secret_digest: my_identity.network_secret_digest,
         };
         let peer_id = core_peer_manager::add_new_peer_conn(
-            self.peers.as_core(),
+            self.peers.as_ref(),
             &my_identity,
             local_secure_mode,
             peer_conn,
@@ -700,6 +700,7 @@ impl PeerManager {
         my_peer_id: PeerId,
         peer_map: &PeerMap,
         foreign_network_mgr: &ForeignNetworkManager,
+        stats_manager: &crate::common::stats_manager::StatsManager,
         disable_relay_data: bool,
     ) -> Result<(), ZCPacket> {
         let pm_header = packet.peer_manager_header().unwrap();
@@ -728,7 +729,6 @@ impl PeerManager {
             foreign_network_mgr.get_network_peer_id(&foreign_network_name);
 
         let buf_len = packet.buf_len();
-        let stats_manager = peer_map.get_global_ctx().stats_manager().clone();
         let label_set =
             LabelSet::new().with_label_type(LabelType::NetworkName(foreign_network_name.clone()));
         let add_counter = move |bytes_metric, packets_metric| {
@@ -891,6 +891,7 @@ impl PeerManager {
                     my_peer_id,
                     &peers,
                     &foreign_mgr,
+                    &stats_mgr,
                     disable_relay_data,
                 )
                 .await
@@ -983,7 +984,7 @@ impl PeerManager {
                         None
                     };
                     let ret = core_peer_manager::send_msg_internal(
-                        peers.as_core(),
+                        peers.as_ref(),
                         &foreign_client,
                         &relay_peer_map,
                         tx_metrics,
@@ -1381,7 +1382,7 @@ impl PeerManager {
 
         let msg_len = msg.buf_len() as u64;
         let result = core_peer_manager::send_msg_internal(
-            self.peers.as_core(),
+            self.peers.as_ref(),
             &self.foreign_network_client,
             &self.relay_peer_map,
             Some(&self.traffic_metrics),
@@ -1443,7 +1444,13 @@ impl PeerManager {
         let mut dst_peers = vec![];
         if self.is_all_peers_broadcast_ipv4(ipv4_addr) {
             dst_peers.extend(Self::select_ipv4_broadcast_peers(
-                &self.peers.list_route_infos().await,
+                &self
+                    .peers
+                    .list_route_infos()
+                    .await
+                    .into_iter()
+                    .map(Into::into)
+                    .collect::<Vec<instance::Route>>(),
                 self.my_peer_id,
             ));
         } else if let Some(peer_id) = self.peers.get_peer_id_by_ipv4(ipv4_addr).await {
@@ -1547,7 +1554,7 @@ impl PeerManager {
         if cur_to_peer_id != 0 {
             self.mark_recent_traffic(cur_to_peer_id);
             return core_peer_manager::send_msg_internal(
-                self.peers.as_core(),
+                self.peers.as_ref(),
                 &self.foreign_network_client,
                 &self.relay_peer_map,
                 Some(&self.traffic_metrics),
@@ -1632,7 +1639,7 @@ impl PeerManager {
             self.self_tx_counters.self_tx_packets.inc();
 
             if let Err(e) = core_peer_manager::send_msg_internal(
-                self.peers.as_core(),
+                self.peers.as_ref(),
                 &self.foreign_network_client,
                 &self.relay_peer_map,
                 Some(&self.traffic_metrics),
@@ -1723,7 +1730,7 @@ impl PeerManager {
 
                     let network_name = global_ctx.get_network_name();
                     core_peer_manager::close_untrusted_credential_peers(
-                        peer_map.as_core(),
+                        peer_map.as_ref(),
                         &network_name,
                         |pubkey, network_name| global_ctx.is_pubkey_trusted(pubkey, network_name),
                     )
@@ -1895,7 +1902,11 @@ impl PeerManager {
         peer_id: PeerId,
         conn_id: &PeerConnId,
     ) -> Result<(), Error> {
-        let ret = self.peers.close_peer_conn(peer_id, conn_id).await;
+        let ret = self
+            .peers
+            .close_peer_conn(peer_id, conn_id)
+            .await
+            .map_err(Error::from);
         tracing::info!("close_peer_conn in peer map: {:?}", ret);
         if ret.is_ok() || !matches!(ret.as_ref().unwrap_err(), Error::NotFound) {
             return ret;
@@ -2338,7 +2349,7 @@ mod tests {
         pkt.fill_peer_manager_hdr(peer_mgr.my_peer_id(), dst_peer_id, PacketType::Data as u8);
 
         let result = core_peer_manager::send_msg_internal(
-            peer_mgr.peers.as_core(),
+            peer_mgr.peers.as_ref(),
             &peer_mgr.foreign_network_client,
             &peer_mgr.relay_peer_map,
             Some(&peer_mgr.traffic_metrics),
@@ -2407,7 +2418,7 @@ mod tests {
         pkt.fill_peer_manager_hdr(peer_mgr.my_peer_id(), dst_peer_id, PacketType::Data as u8);
 
         core_peer_manager::send_msg_internal(
-            peer_mgr.peers.as_core(),
+            peer_mgr.peers.as_ref(),
             &peer_mgr.foreign_network_client,
             &peer_mgr.relay_peer_map,
             Some(&peer_mgr.traffic_metrics),
@@ -2494,7 +2505,7 @@ mod tests {
         let pkt_len = pkt.buf_len() as u64;
 
         core_peer_manager::send_msg_internal(
-            peer_mgr_a.peers.as_core(),
+            peer_mgr_a.peers.as_ref(),
             &peer_mgr_a.foreign_network_client,
             &peer_mgr_a.relay_peer_map,
             Some(&peer_mgr_a.traffic_metrics),
@@ -2593,7 +2604,7 @@ mod tests {
         let pkt_len = pkt.buf_len() as u64;
 
         core_peer_manager::send_msg_internal(
-            peer_mgr_a.peers.as_core(),
+            peer_mgr_a.peers.as_ref(),
             &peer_mgr_a.foreign_network_client,
             &peer_mgr_a.relay_peer_map,
             Some(&peer_mgr_a.traffic_metrics),
@@ -2665,7 +2676,7 @@ mod tests {
         let pkt_len = pkt.buf_len() as u64;
 
         core_peer_manager::send_msg_internal(
-            peer_mgr_a.peers.as_core(),
+            peer_mgr_a.peers.as_ref(),
             &peer_mgr_a.foreign_network_client,
             &peer_mgr_a.relay_peer_map,
             Some(&peer_mgr_a.traffic_metrics),
@@ -2741,7 +2752,7 @@ mod tests {
         let pkt_len = pkt.buf_len() as u64;
 
         core_peer_manager::send_msg_internal(
-            peer_mgr_a.peers.as_core(),
+            peer_mgr_a.peers.as_ref(),
             &peer_mgr_a.foreign_network_client,
             &peer_mgr_a.relay_peer_map,
             Some(&peer_mgr_a.traffic_metrics),
@@ -2806,7 +2817,7 @@ mod tests {
         let pkt_len = pkt.buf_len() as u64;
 
         core_peer_manager::send_msg_internal(
-            peer_mgr_a.peers.as_core(),
+            peer_mgr_a.peers.as_ref(),
             &peer_mgr_a.foreign_network_client,
             &peer_mgr_a.relay_peer_map,
             Some(&peer_mgr_a.traffic_metrics),

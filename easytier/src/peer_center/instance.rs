@@ -419,7 +419,7 @@ impl PeerCenterPeerManagerTrait for PeerManager {
     }
 
     fn get_global_ctx(&self) -> Arc<GlobalCtx> {
-        self.get_peer_map().get_global_ctx()
+        self.get_global_ctx()
     }
 
     fn get_rpc_mgr(&self) -> Weak<PeerRpcManager> {
@@ -434,6 +434,7 @@ impl PeerCenterPeerManagerTrait for PeerManager {
 pub struct PeerMapWithPeerRpcManager {
     pub peer_map: Arc<PeerMap>,
     pub rpc_mgr: Arc<PeerRpcManager>,
+    pub global_ctx: Arc<GlobalCtx>,
 }
 
 #[async_trait::async_trait]
@@ -471,7 +472,7 @@ impl PeerCenterPeerManagerTrait for PeerMapWithPeerRpcManager {
     }
 
     fn get_global_ctx(&self) -> Arc<GlobalCtx> {
-        self.peer_map.get_global_ctx()
+        self.global_ctx.clone()
     }
 
     fn get_rpc_mgr(&self) -> Weak<PeerRpcManager> {
@@ -479,7 +480,12 @@ impl PeerCenterPeerManagerTrait for PeerMapWithPeerRpcManager {
     }
 
     async fn list_routes(&self) -> Vec<crate::proto::api::instance::Route> {
-        self.peer_map.list_route_infos().await
+        self.peer_map
+            .list_route_infos()
+            .await
+            .into_iter()
+            .map(Into::into)
+            .collect()
     }
 }
 

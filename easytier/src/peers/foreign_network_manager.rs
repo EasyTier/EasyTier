@@ -182,7 +182,7 @@ impl ForeignNetworkEntry {
 
         let (peer_rpc, rpc_transport_sender) = core_foreign_network_manager::build_rpc_transport(
             my_peer_id,
-            peer_map.downgrade_core(),
+            Arc::downgrade(&peer_map),
         );
 
         peer_rpc.rpc_server().registry().register(
@@ -208,6 +208,7 @@ impl ForeignNetworkEntry {
             PeerMapWithPeerRpcManager {
                 peer_map: peer_map.clone(),
                 rpc_mgr: peer_rpc.clone(),
+                global_ctx: foreign_global_ctx.clone(),
             },
         )));
 
@@ -316,7 +317,7 @@ impl ForeignNetworkEntry {
             .open(
                 core_foreign_network_manager::foreign_network_route_interface(
                     self.my_peer_id,
-                    self.peer_map.downgrade_core(),
+                    Arc::downgrade(&self.peer_map),
                     easytier_core::peers::context::NetworkIdentity {
                         network_name: self.network.network_name.clone(),
                         network_secret: self.network.network_secret.clone(),
@@ -1052,7 +1053,14 @@ impl ForeignNetworkManager {
             for peer in item.peer_map.list_peers() {
                 let peer_info = PeerInfo {
                     peer_id: peer,
-                    conns: item.peer_map.list_peer_conns(peer).await.unwrap_or(vec![]),
+                    conns: item
+                        .peer_map
+                        .list_peer_conns(peer)
+                        .await
+                        .unwrap_or(vec![])
+                        .into_iter()
+                        .map(Into::into)
+                        .collect(),
                     ..Default::default()
                 };
                 entry.peers.push(peer_info);
@@ -1085,7 +1093,8 @@ impl ForeignNetworkManager {
             let send_result = entry
                 .peer_map
                 .send_msg(msg, dst_peer_id, NextHopPolicy::LeastHop)
-                .await;
+                .await
+                .map_err(Error::from);
             if send_result.is_ok() {
                 entry
                     .traffic_metrics
@@ -1106,7 +1115,11 @@ impl ForeignNetworkManager {
         let network_names = self.data.get_peer_network(peer_id).unwrap_or_default();
         for network_name in network_names {
             if let Some(entry) = self.data.get_network_entry(&network_name) {
-                let ret = entry.peer_map.close_peer_conn(peer_id, conn_id).await;
+                let ret = entry
+                    .peer_map
+                    .close_peer_conn(peer_id, conn_id)
+                    .await
+                    .map_err(Error::from);
                 if ret.is_ok() || !matches!(ret.as_ref().unwrap_err(), Error::NotFound) {
                     return ret;
                 }

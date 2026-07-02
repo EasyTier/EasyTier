@@ -16,7 +16,7 @@ pub(crate) fn new_relay_peer_map(
     peer_session_store: Arc<PeerSessionStore>,
 ) -> Arc<RelayPeerMap> {
     easytier_core::peers::relay_peer_map::new_relay_peer_map(
-        peer_map.core(),
+        peer_map,
         foreign_network_client,
         global_ctx,
         my_peer_id,

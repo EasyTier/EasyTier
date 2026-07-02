@@ -63,7 +63,7 @@ impl PeerManagerRpcService {
             };
 
             if let Some(conns) = peer_map.list_peer_conns(peer).await {
-                peer_info.conns = conns;
+                peer_info.conns = conns.into_iter().map(Into::into).collect();
             } else if let Some(conns) = peer_manager
                 .get_foreign_network_client()
                 .get_peer_map()
