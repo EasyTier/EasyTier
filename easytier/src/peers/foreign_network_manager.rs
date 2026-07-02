@@ -14,12 +14,10 @@ use std::{
 };
 
 use dashmap::{DashMap, DashSet};
+use easytier_core::peers::foreign_network_manager as core_foreign_network_manager;
 use guarden::{Guard, defer};
 use tokio::{
-    sync::{
-        Mutex,
-        mpsc::{self, UnboundedReceiver, UnboundedSender},
-    },
+    sync::{Mutex, mpsc::UnboundedSender},
     task::JoinSet,
 };
 
@@ -52,7 +50,7 @@ use super::{
     peer_conn::PeerConn,
     peer_map::PeerMap,
     peer_ospf_route::PeerRoute,
-    peer_rpc::{PeerRpcManager, PeerRpcManagerTransport},
+    peer_rpc::PeerRpcManager,
     peer_rpc_service::DirectConnectorManagerRpcServer,
     peer_session::PeerSessionStore,
     recv_packet_from_chan,
@@ -187,7 +185,10 @@ impl ForeignNetworkEntry {
             peer_session_store.clone(),
         );
 
-        let (peer_rpc, rpc_transport_sender) = Self::build_rpc_tspt(my_peer_id, peer_map.clone());
+        let (peer_rpc, rpc_transport_sender) = core_foreign_network_manager::build_rpc_transport(
+            my_peer_id,
+            peer_map.downgrade_core(),
+        );
 
         peer_rpc.rpc_server().registry().register(
             DirectConnectorRpcServer::new(DirectConnectorManagerRpcServer::new(
@@ -307,68 +308,6 @@ impl ForeignNetworkEntry {
         }
 
         foreign_global_ctx
-    }
-
-    fn build_rpc_tspt(
-        my_peer_id: PeerId,
-        peer_map: Arc<PeerMap>,
-    ) -> (Arc<PeerRpcManager>, UnboundedSender<ZCPacket>) {
-        struct RpcTransport {
-            my_peer_id: PeerId,
-            peer_map: Weak<PeerMap>,
-
-            packet_recv: Mutex<UnboundedReceiver<ZCPacket>>,
-        }
-
-        #[async_trait::async_trait]
-        impl PeerRpcManagerTransport for RpcTransport {
-            fn my_peer_id(&self) -> PeerId {
-                self.my_peer_id
-            }
-
-            async fn send(&self, msg: ZCPacket, dst_peer_id: PeerId) -> anyhow::Result<()> {
-                tracing::debug!(
-                    "foreign network manager send rpc to peer: {:?}",
-                    dst_peer_id
-                );
-                let peer_map = self
-                    .peer_map
-                    .upgrade()
-                    .ok_or(anyhow::anyhow!("peer map is gone"))?;
-
-                // send to ourselves so we can handle it in forward logic.
-                peer_map.send_msg_directly(msg, self.my_peer_id).await?;
-                Ok(())
-            }
-
-            async fn recv(&self) -> anyhow::Result<ZCPacket> {
-                if let Some(o) = self.packet_recv.lock().await.recv().await {
-                    tracing::trace!("recv rpc packet in foreign network manager rpc transport");
-                    Ok(o)
-                } else {
-                    Err(Error::Unknown.into())
-                }
-            }
-        }
-
-        impl Drop for RpcTransport {
-            fn drop(&mut self) {
-                tracing::debug!(
-                    "drop rpc transport for foreign network manager, my_peer_id: {:?}",
-                    self.my_peer_id
-                );
-            }
-        }
-
-        let (rpc_transport_sender, peer_rpc_tspt_recv) = mpsc::unbounded_channel();
-        let tspt = RpcTransport {
-            my_peer_id,
-            peer_map: Arc::downgrade(&peer_map),
-            packet_recv: Mutex::new(peer_rpc_tspt_recv),
-        };
-
-        let peer_rpc = Arc::new(PeerRpcManager::new(tspt));
-        (peer_rpc, rpc_transport_sender)
     }
 
     async fn prepare_route(&self, accessor: Box<dyn GlobalForeignNetworkAccessor>) {
