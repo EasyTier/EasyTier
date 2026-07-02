@@ -1427,6 +1427,66 @@ mod tests {
         assert!(!should_mark_recent_traffic_for_fanout(2));
     }
 
+    #[test]
+    fn disable_relay_data_classifies_data_plane_packets_only() {
+        for packet_type in [
+            PacketType::Data,
+            PacketType::KcpSrc,
+            PacketType::KcpDst,
+            PacketType::QuicSrc,
+            PacketType::QuicDst,
+            PacketType::DataWithKcpSrcModified,
+            PacketType::DataWithQuicSrcModified,
+            PacketType::ForeignNetworkPacket,
+        ] {
+            assert!(is_relay_data_packet(packet_type as u8));
+        }
+
+        for packet_type in [
+            PacketType::RpcReq,
+            PacketType::RpcResp,
+            PacketType::Ping,
+            PacketType::Pong,
+            PacketType::HandShake,
+            PacketType::NoiseHandshakeMsg1,
+            PacketType::NoiseHandshakeMsg2,
+            PacketType::NoiseHandshakeMsg3,
+            PacketType::RelayHandshake,
+            PacketType::RelayHandshakeAck,
+        ] {
+            assert!(!is_relay_data_packet(packet_type as u8));
+        }
+    }
+
+    #[test]
+    fn disable_relay_data_inspects_foreign_network_inner_packet_type() {
+        let network_name = "net1".to_string();
+
+        let mut rpc_packet = ZCPacket::new_with_payload(b"rpc");
+        rpc_packet.fill_peer_manager_hdr(1, 2, PacketType::RpcReq as u8);
+        let mut foreign_rpc_packet =
+            ZCPacket::new_for_foreign_network(&network_name, 2, &rpc_packet);
+        foreign_rpc_packet.fill_peer_manager_hdr(10, 20, PacketType::ForeignNetworkPacket as u8);
+
+        assert_eq!(
+            foreign_rpc_packet.foreign_network_inner_packet_type(),
+            Some(PacketType::RpcReq as u8)
+        );
+        assert!(!is_relay_data_zc_packet(&foreign_rpc_packet));
+
+        let mut data_packet = ZCPacket::new_with_payload(b"data");
+        data_packet.fill_peer_manager_hdr(1, 2, PacketType::Data as u8);
+        let mut foreign_data_packet =
+            ZCPacket::new_for_foreign_network(&network_name, 2, &data_packet);
+        foreign_data_packet.fill_peer_manager_hdr(10, 20, PacketType::ForeignNetworkPacket as u8);
+
+        assert_eq!(
+            foreign_data_packet.foreign_network_inner_packet_type(),
+            Some(PacketType::Data as u8)
+        );
+        assert!(is_relay_data_zc_packet(&foreign_data_packet));
+    }
+
     fn route_with_ipv4(
         peer_id: u32,
         ipv4_addr: Option<std::net::Ipv4Addr>,
