@@ -1,5 +1,4 @@
 use anyhow::Context;
-use async_trait::async_trait;
 use cidr::{Ipv4Cidr, Ipv6Cidr};
 use dashmap::DashMap;
 use easytier_core::peers::{
@@ -11,8 +10,8 @@ use std::collections::BTreeSet;
 use std::{
     fmt::Debug,
     net::{IpAddr, Ipv4Addr, Ipv6Addr},
-    sync::{Arc, Weak, atomic::AtomicBool},
-    time::{Duration, SystemTime},
+    sync::{Arc, atomic::AtomicBool},
+    time::Duration,
 };
 
 use tokio::sync::{Mutex, RwLock};
@@ -34,7 +33,7 @@ use crate::{
         peer_conn::PeerConn,
         peer_session::PeerSessionStore,
         recv_packet_from_chan,
-        route_trait::{ForeignNetworkRouteInfoMap, MockRoute, NextHopPolicy, RouteInterface},
+        route_trait::{MockRoute, NextHopPolicy},
         traffic_metrics::{
             InstanceLabelKind, LogicalTrafficMetrics, TrafficKind, TrafficMetricRecorder,
             is_relay_data_packet_type, route_peer_info_instance_id, traffic_kind,
@@ -45,10 +44,7 @@ use crate::{
             self, ListGlobalForeignNetworkResponse,
             list_global_foreign_network_response::OneForeignNetwork,
         },
-        peer_rpc::{
-            ForeignNetworkRouteInfoEntry, ForeignNetworkRouteInfoKey, PeerIdentityType,
-            RouteForeignNetworkSummary,
-        },
+        peer_rpc::{PeerIdentityType, RouteForeignNetworkSummary},
     },
     tunnel::{
         self, Tunnel, TunnelConnector,
@@ -61,7 +57,7 @@ use super::{
     create_packet_recv_chan,
     encrypt::{Encryptor, NullCipher},
     foreign_network_client::ForeignNetworkClient,
-    foreign_network_manager::ForeignNetworkManager,
+    foreign_network_manager::{ForeignNetworkManager, ForeignNetworkRouteInfoProvider},
     peer_conn::PeerConnId,
     peer_map::PeerMap,
     peer_ospf_route::PeerRoute,
@@ -1152,94 +1148,16 @@ impl PeerManager {
         self.add_packet_process_pipeline(Box::new(route.clone()))
             .await;
 
-        struct Interface {
-            my_peer_id: PeerId,
-            peers: Weak<PeerMap>,
-            foreign_network_client: Weak<ForeignNetworkClient>,
-            foreign_network_manager: Weak<ForeignNetworkManager>,
-        }
-
-        #[async_trait]
-        impl RouteInterface for Interface {
-            async fn list_peers(&self) -> Vec<PeerId> {
-                let Some(foreign_client) = self.foreign_network_client.upgrade() else {
-                    return vec![];
-                };
-
-                let Some(peer_map) = self.peers.upgrade() else {
-                    return vec![];
-                };
-
-                let mut peers = foreign_client.list_public_peers().await;
-                peers.extend(peer_map.list_peers_with_conn().await);
-                peers
-            }
-
-            fn my_peer_id(&self) -> PeerId {
-                self.my_peer_id
-            }
-
-            async fn close_peer(&self, peer_id: PeerId) {
-                if let Some(peer_map) = self.peers.upgrade() {
-                    let _ = peer_map.close_peer(peer_id).await;
-                }
-
-                if let Some(foreign_client) = self.foreign_network_client.upgrade() {
-                    let _ = foreign_client.get_peer_map().close_peer(peer_id).await;
-                }
-            }
-
-            async fn get_peer_public_key(&self, peer_id: PeerId) -> Option<Vec<u8>> {
-                let peer_map = self.peers.upgrade()?;
-                peer_map.get_peer_public_key(peer_id)
-            }
-
-            async fn get_peer_identity_type(&self, peer_id: PeerId) -> Option<PeerIdentityType> {
-                let peer_map = self.peers.upgrade()?;
-                peer_map.get_peer_identity_type(peer_id)
-            }
-
-            async fn list_foreign_networks(&self) -> ForeignNetworkRouteInfoMap {
-                let ret = DashMap::new();
-                let Some(foreign_mgr) = self.foreign_network_manager.upgrade() else {
-                    return ret;
-                };
-
-                let networks = foreign_mgr.list_foreign_networks().await;
-                for (network_name, info) in networks.foreign_networks.iter() {
-                    if info.peers.is_empty() {
-                        continue;
-                    }
-
-                    let last_update = foreign_mgr
-                        .get_foreign_network_last_update(network_name)
-                        .unwrap_or(SystemTime::now());
-                    ret.insert(
-                        ForeignNetworkRouteInfoKey {
-                            peer_id: self.my_peer_id,
-                            network_name: network_name.clone(),
-                        },
-                        ForeignNetworkRouteInfoEntry {
-                            foreign_peer_ids: info.peers.iter().map(|x| x.peer_id).collect(),
-                            last_update: Some(last_update.into()),
-                            version: 0,
-                            network_secret_digest: info.network_secret_digest.clone(),
-                            my_peer_id_for_this_network: info.my_peer_id_for_this_network,
-                        },
-                    );
-                }
-                ret
-            }
-        }
-
+        let foreign_network_provider: Arc<dyn ForeignNetworkRouteInfoProvider> =
+            self.foreign_network_manager.clone();
         let my_peer_id = self.my_peer_id;
         let _route_id = route
-            .open(Box::new(Interface {
+            .open(core_peer_manager::peer_manager_route_interface(
                 my_peer_id,
-                peers: Arc::downgrade(&self.peers),
-                foreign_network_client: Arc::downgrade(&self.foreign_network_client),
-                foreign_network_manager: Arc::downgrade(&self.foreign_network_manager),
-            }))
+                Arc::downgrade(&self.peers),
+                Arc::downgrade(&self.foreign_network_client),
+                Arc::downgrade(&foreign_network_provider),
+            ))
             .await
             .unwrap();
 

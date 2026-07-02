@@ -1,4 +1,5 @@
 use std::sync::{Arc, Weak};
+use std::time::SystemTime;
 
 use tokio::sync::{
     Mutex,
@@ -19,6 +20,24 @@ use crate::proto::peer_rpc::PeerIdentityType;
 #[auto_impl::auto_impl(&, Box, Arc)]
 pub trait GlobalForeignNetworkAccessor: Send + Sync + 'static {
     async fn list_global_foreign_peer(&self, network_identity: &NetworkIdentity) -> Vec<PeerId>;
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct ForeignNetworkRouteInfo {
+    pub network_name: String,
+    pub peer_ids: Vec<PeerId>,
+    pub network_secret_digest: Vec<u8>,
+    pub my_peer_id_for_this_network: PeerId,
+}
+
+#[async_trait::async_trait]
+#[auto_impl::auto_impl(&, Arc)]
+pub trait ForeignNetworkRouteInfoProvider: Send + Sync + 'static {
+    async fn list_foreign_network_route_infos(&self) -> Vec<ForeignNetworkRouteInfo>;
+
+    fn get_foreign_network_last_update(&self, _network_name: &str) -> Option<SystemTime> {
+        None
+    }
 }
 
 pub fn peer_map_foreign_network_accessor(

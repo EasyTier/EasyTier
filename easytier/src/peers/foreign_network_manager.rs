@@ -15,7 +15,9 @@ use std::{
 
 use dashmap::{DashMap, DashSet};
 use easytier_core::peers::foreign_network_manager as core_foreign_network_manager;
-pub use easytier_core::peers::foreign_network_manager::GlobalForeignNetworkAccessor;
+pub use easytier_core::peers::foreign_network_manager::{
+    ForeignNetworkRouteInfo, ForeignNetworkRouteInfoProvider, GlobalForeignNetworkAccessor,
+};
 use guarden::{Guard, defer};
 use tokio::{
     sync::{Mutex, mpsc::UnboundedSender},
@@ -1126,6 +1128,27 @@ impl ForeignNetworkManager {
             }
         }
         Err(Error::NotFound)
+    }
+}
+
+#[async_trait::async_trait]
+impl ForeignNetworkRouteInfoProvider for ForeignNetworkManager {
+    async fn list_foreign_network_route_infos(&self) -> Vec<ForeignNetworkRouteInfo> {
+        self.list_foreign_networks()
+            .await
+            .foreign_networks
+            .into_iter()
+            .map(|(network_name, info)| ForeignNetworkRouteInfo {
+                network_name,
+                peer_ids: info.peers.into_iter().map(|peer| peer.peer_id).collect(),
+                network_secret_digest: info.network_secret_digest,
+                my_peer_id_for_this_network: info.my_peer_id_for_this_network,
+            })
+            .collect()
+    }
+
+    fn get_foreign_network_last_update(&self, network_name: &str) -> Option<SystemTime> {
+        ForeignNetworkManager::get_foreign_network_last_update(self, network_name)
     }
 }
 

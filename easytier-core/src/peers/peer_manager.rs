@@ -1,4 +1,5 @@
 use std::sync::{Arc, Weak};
+use std::time::SystemTime;
 
 use anyhow::Context;
 use tokio::sync::{
@@ -9,12 +10,21 @@ use tokio::sync::{
 use crate::{config::PeerId, packet::ZCPacket};
 
 use super::{
-    context::NetworkIdentity, encrypt::Encryptor, error::Error,
-    foreign_network_client::ForeignNetworkClient, peer_conn::PeerConn, peer_map::PeerMap,
-    peer_rpc::PeerRpcManagerTransport, relay_peer_map::RelayPeerMap, route_trait::NextHopPolicy,
+    context::NetworkIdentity,
+    encrypt::Encryptor,
+    error::Error,
+    foreign_network_client::ForeignNetworkClient,
+    foreign_network_manager::ForeignNetworkRouteInfoProvider,
+    peer_conn::PeerConn,
+    peer_map::PeerMap,
+    peer_rpc::PeerRpcManagerTransport,
+    relay_peer_map::RelayPeerMap,
+    route_trait::{ForeignNetworkRouteInfoMap, NextHopPolicy, RouteInterface, RouteInterfaceBox},
     traffic_metrics::TrafficMetricRecorder,
 };
-use crate::proto::peer_rpc::PeerIdentityType;
+use crate::proto::peer_rpc::{
+    ForeignNetworkRouteInfoEntry, ForeignNetworkRouteInfoKey, PeerIdentityType,
+};
 
 pub struct RpcTransport {
     my_peer_id: PeerId,
@@ -178,6 +188,116 @@ pub async fn close_untrusted_credential_peers<F>(
             tracing::warn!(?e, ?peer_id, "failed to close untrusted credential peer");
         }
     }
+}
+
+pub struct PeerManagerRouteInterface {
+    my_peer_id: PeerId,
+    peers: Weak<PeerMap>,
+    foreign_network_client: Weak<ForeignNetworkClient>,
+    foreign_network_provider: Weak<dyn ForeignNetworkRouteInfoProvider>,
+}
+
+impl PeerManagerRouteInterface {
+    pub fn new(
+        my_peer_id: PeerId,
+        peers: Weak<PeerMap>,
+        foreign_network_client: Weak<ForeignNetworkClient>,
+        foreign_network_provider: Weak<dyn ForeignNetworkRouteInfoProvider>,
+    ) -> Self {
+        Self {
+            my_peer_id,
+            peers,
+            foreign_network_client,
+            foreign_network_provider,
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl RouteInterface for PeerManagerRouteInterface {
+    async fn list_peers(&self) -> Vec<PeerId> {
+        let Some(foreign_client) = self.foreign_network_client.upgrade() else {
+            return vec![];
+        };
+
+        let Some(peer_map) = self.peers.upgrade() else {
+            return vec![];
+        };
+
+        let mut peers = foreign_client.list_public_peers().await;
+        peers.extend(peer_map.list_peers_with_conn().await);
+        peers
+    }
+
+    fn my_peer_id(&self) -> PeerId {
+        self.my_peer_id
+    }
+
+    async fn close_peer(&self, peer_id: PeerId) {
+        if let Some(peer_map) = self.peers.upgrade() {
+            let _ = peer_map.close_peer(peer_id).await;
+        }
+
+        if let Some(foreign_client) = self.foreign_network_client.upgrade() {
+            let _ = foreign_client.get_peer_map().close_peer(peer_id).await;
+        }
+    }
+
+    async fn get_peer_public_key(&self, peer_id: PeerId) -> Option<Vec<u8>> {
+        let peer_map = self.peers.upgrade()?;
+        peer_map.get_peer_public_key(peer_id)
+    }
+
+    async fn get_peer_identity_type(&self, peer_id: PeerId) -> Option<PeerIdentityType> {
+        let peer_map = self.peers.upgrade()?;
+        peer_map.get_peer_identity_type(peer_id)
+    }
+
+    async fn list_foreign_networks(&self) -> ForeignNetworkRouteInfoMap {
+        let ret = ForeignNetworkRouteInfoMap::new();
+        let Some(provider) = self.foreign_network_provider.upgrade() else {
+            return ret;
+        };
+
+        let networks = provider.list_foreign_network_route_infos().await;
+        for info in networks {
+            if info.peer_ids.is_empty() {
+                continue;
+            }
+
+            let last_update = provider
+                .get_foreign_network_last_update(&info.network_name)
+                .unwrap_or(SystemTime::now());
+            ret.insert(
+                ForeignNetworkRouteInfoKey {
+                    peer_id: self.my_peer_id,
+                    network_name: info.network_name,
+                },
+                ForeignNetworkRouteInfoEntry {
+                    foreign_peer_ids: info.peer_ids,
+                    last_update: Some(last_update.into()),
+                    version: 0,
+                    network_secret_digest: info.network_secret_digest,
+                    my_peer_id_for_this_network: info.my_peer_id_for_this_network,
+                },
+            );
+        }
+        ret
+    }
+}
+
+pub fn peer_manager_route_interface(
+    my_peer_id: PeerId,
+    peers: Weak<PeerMap>,
+    foreign_network_client: Weak<ForeignNetworkClient>,
+    foreign_network_provider: Weak<dyn ForeignNetworkRouteInfoProvider>,
+) -> RouteInterfaceBox {
+    Box::new(PeerManagerRouteInterface::new(
+        my_peer_id,
+        peers,
+        foreign_network_client,
+        foreign_network_provider,
+    ))
 }
 
 pub async fn send_msg_internal(
