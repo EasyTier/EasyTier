@@ -265,6 +265,10 @@ pub trait PeerContext: Send + Sync {
         FlagsInConfig::default()
     }
 
+    fn disable_relay_data(&self) -> bool {
+        self.flags().disable_relay_data
+    }
+
     fn secure_mode(&self) -> Option<SecureModeConfig> {
         None
     }

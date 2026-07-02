@@ -32,7 +32,7 @@ use crate::{
         error::Error,
         global_ctx::{ArcGlobalCtx, GlobalCtx, GlobalCtxEvent, NetworkIdentity, TrustedKeySource},
         join_joinset_background, shrink_dashmap,
-        stats_manager::{LabelSet, LabelType, MetricName, StatsManager},
+        stats_manager::{MetricName, StatsManager},
         token_bucket::TokenBucket,
     },
     peer_center::instance::{PeerCenterInstance, PeerMapWithPeerRpcManager},
@@ -45,7 +45,7 @@ use crate::{
         common::LimiterConfig,
         peer_rpc::{DirectConnectorRpcServer, PeerIdentityType},
     },
-    tunnel::packet_def::{PacketType, ZCPacket},
+    tunnel::packet_def::ZCPacket,
     use_global_var,
 };
 
@@ -57,12 +57,11 @@ use super::{
     peer_rpc::PeerRpcManager,
     peer_rpc_service::DirectConnectorManagerRpcServer,
     peer_session::PeerSessionStore,
-    recv_packet_from_chan,
     relay_peer_map::{RelayPeerMap, new_relay_peer_map},
     route_trait::NextHopPolicy,
     traffic_metrics::{
-        InstanceLabelKind, LogicalTrafficMetrics, TrafficKind, TrafficMetricRecorder,
-        is_relay_data_packet_type, route_peer_info_instance_id, traffic_kind,
+        InstanceLabelKind, LogicalTrafficMetrics, TrafficMetricRecorder,
+        route_peer_info_instance_id,
     },
 };
 
@@ -340,185 +339,26 @@ impl ForeignNetworkEntry {
     }
 
     async fn start_packet_recv(&self) {
-        let mut recv = self.packet_recv.lock().await.take().unwrap();
-        let my_node_id = self.my_peer_id;
-        let rpc_sender = self.rpc_sender.clone();
-        let peer_map = self.peer_map.clone();
-        let relay_peer_map = self.relay_peer_map.clone();
-        let traffic_metrics = self.traffic_metrics.clone();
-        let parent_global_ctx = self.parent_global_ctx.clone();
-        let relay_data = self.relay_data;
+        let packet_recv = self.packet_recv.lock().await.take().unwrap();
         let pm_sender = self.pm_packet_sender.lock().await.take().unwrap();
-        let network_name = self.network.network_name.clone();
-        let bps_limiter = self.bps_limiter.clone();
-
-        let label_set =
-            LabelSet::new().with_label_type(LabelType::NetworkName(network_name.clone()));
-        let forward_data_bytes = self
-            .stats_mgr
-            .get_counter(MetricName::TrafficBytesForwarded, label_set.clone());
-        let forward_data_packets = self
-            .stats_mgr
-            .get_counter(MetricName::TrafficPacketsForwarded, label_set.clone());
-        let forward_control_bytes = self
-            .stats_mgr
-            .get_counter(MetricName::TrafficControlBytesForwarded, label_set.clone());
-        let forward_control_packets = self.stats_mgr.get_counter(
-            MetricName::TrafficControlPacketsForwarded,
-            label_set.clone(),
+        let parent_context: easytier_core::peers::context::ArcPeerContext =
+            self.parent_global_ctx.clone();
+        let router = core_foreign_network_manager::ForeignNetworkPacketRouter::new(
+            self.my_peer_id,
+            packet_recv,
+            self.rpc_sender.clone(),
+            self.peer_map.clone(),
+            self.relay_peer_map.clone(),
+            self.traffic_metrics.clone(),
+            parent_context,
+            self.relay_data,
+            pm_sender,
+            self.network.network_name.clone(),
+            self.bps_limiter.clone(),
+            self.stats_mgr.clone(),
         );
-        let rx_bytes = self
-            .stats_mgr
-            .get_counter(MetricName::TrafficBytesSelfRx, label_set.clone());
-        let rx_packets = self
-            .stats_mgr
-            .get_counter(MetricName::TrafficPacketsRx, label_set.clone());
 
-        self.tasks.lock().await.spawn(async move {
-            while let Ok(mut zc_packet) = recv_packet_from_chan(&mut recv).await {
-                let buf_len = zc_packet.buf_len();
-                let Some(hdr) = zc_packet.peer_manager_header() else {
-                    tracing::warn!("invalid packet, skip");
-                    continue;
-                };
-                tracing::trace!(?hdr, "recv packet in foreign network manager");
-                let from_peer_id = hdr.from_peer_id.get();
-                let packet_type = hdr.packet_type;
-                let len = hdr.len.get();
-                let to_peer_id = hdr.to_peer_id.get();
-                let is_local_delivery = to_peer_id == my_node_id;
-                let is_locally_originated = from_peer_id == my_node_id;
-                if is_local_delivery && !is_locally_originated {
-                    traffic_metrics
-                        .record_rx(from_peer_id, packet_type, buf_len as u64)
-                        .await;
-                }
-                if is_local_delivery {
-                    if packet_type == PacketType::RelayHandshake as u8
-                        || packet_type == PacketType::RelayHandshakeAck as u8
-                    {
-                        let _ = relay_peer_map.handle_handshake_packet(zc_packet).await;
-                        continue;
-                    }
-
-                    if relay_peer_map.is_secure_mode_enabled() && hdr.is_encrypted() {
-                        match relay_peer_map.decrypt_if_needed(&mut zc_packet).await {
-                            Ok(true) => {}
-                            Ok(false) => {
-                                tracing::error!("secure session not found");
-                                continue;
-                            }
-                            Err(e) => {
-                                tracing::error!(?e, "secure decrypt failed");
-                                continue;
-                            }
-                        }
-                    }
-
-                    if packet_type == PacketType::TaRpc as u8
-                        || packet_type == PacketType::RpcReq as u8
-                        || packet_type == PacketType::RpcResp as u8
-                    {
-                        rx_bytes.add(buf_len as u64);
-                        rx_packets.inc();
-                        rpc_sender.send(zc_packet).unwrap();
-                        continue;
-                    }
-                    tracing::trace!(
-                        ?packet_type,
-                        ?len,
-                        ?from_peer_id,
-                        ?to_peer_id,
-                        "ignore packet in foreign network"
-                    );
-                } else {
-                    if is_relay_data_packet_type(packet_type) {
-                        let disable_relay_data = parent_global_ctx.flags_arc().disable_relay_data;
-                        if !relay_data || disable_relay_data {
-                            tracing::debug!(
-                                ?from_peer_id,
-                                ?to_peer_id,
-                                packet_type,
-                                disable_relay_data,
-                                "drop foreign network relay data"
-                            );
-                            continue;
-                        }
-                        if let Some(bps_limiter) = bps_limiter.as_ref()
-                            && !bps_limiter.try_consume(len.into())
-                        {
-                            continue;
-                        }
-                    }
-
-                    match traffic_kind(packet_type) {
-                        TrafficKind::Data => {
-                            forward_data_bytes.add(buf_len as u64);
-                            forward_data_packets.inc();
-                        }
-                        TrafficKind::Control => {
-                            forward_control_bytes.add(buf_len as u64);
-                            forward_control_packets.inc();
-                        }
-                    }
-
-                    let gateway_peer_id = peer_map
-                        .get_gateway_peer_id(to_peer_id, NextHopPolicy::LeastHop)
-                        .await;
-
-                    match gateway_peer_id {
-                        Some(peer_id) if peer_map.has_peer(peer_id) => {
-                            if peer_id != to_peer_id && hdr.from_peer_id.get() == my_node_id {
-                                if let Err(e) = relay_peer_map
-                                    .send_msg(zc_packet, to_peer_id, NextHopPolicy::LeastHop)
-                                    .await
-                                {
-                                    tracing::error!(
-                                        ?e,
-                                        "send packet to foreign peer inside relay peer map failed"
-                                    );
-                                } else if is_locally_originated {
-                                    traffic_metrics
-                                        .record_tx(to_peer_id, packet_type, buf_len as u64)
-                                        .await;
-                                }
-                            } else if let Err(e) =
-                                peer_map.send_msg_directly(zc_packet, peer_id).await
-                            {
-                                tracing::error!(
-                                    ?e,
-                                    "send packet to foreign peer inside peer map failed"
-                                );
-                            } else if is_locally_originated {
-                                traffic_metrics
-                                    .record_tx(to_peer_id, packet_type, buf_len as u64)
-                                    .await;
-                            }
-                        }
-                        _ => {
-                            let mut foreign_packet = ZCPacket::new_for_foreign_network(
-                                &network_name,
-                                to_peer_id,
-                                &zc_packet,
-                            );
-                            let via_peer = gateway_peer_id.unwrap_or(to_peer_id);
-                            foreign_packet.fill_peer_manager_hdr(
-                                my_node_id,
-                                via_peer,
-                                PacketType::ForeignNetworkPacket as u8,
-                            );
-                            if let Err(e) = pm_sender.send(foreign_packet).await {
-                                tracing::error!("send packet to peer with pm failed: {:?}", e);
-                            } else if is_locally_originated {
-                                traffic_metrics
-                                    .record_tx(to_peer_id, packet_type, buf_len as u64)
-                                    .await;
-                            }
-                        }
-                    };
-                }
-            }
-        });
+        self.tasks.lock().await.spawn(router.run());
     }
 
     async fn run_relay_session_gc_routine(&self) {

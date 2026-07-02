@@ -176,6 +176,10 @@ impl PeerContext for GlobalCtx {
         self.get_flags()
     }
 
+    fn disable_relay_data(&self) -> bool {
+        self.flags_arc().disable_relay_data
+    }
+
     fn secure_mode(&self) -> Option<crate::proto::common::SecureModeConfig> {
         self.config.get_secure_mode()
     }
