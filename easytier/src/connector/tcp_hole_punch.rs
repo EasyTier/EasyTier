@@ -10,7 +10,7 @@ use rand::Rng as _;
 use tokio::task::JoinSet;
 
 use crate::{
-    common::{PeerId, join_joinset_background, stun::StunInfoCollectorTrait},
+    common::{PeerId, join_joinset_background, stun::StunInfoCollectorTrait, upnp},
     connector::udp_hole_punch::BackOff,
     peers::{
         peer_manager::PeerManager,
@@ -229,6 +229,9 @@ impl TcpHolePunchRpc for TcpHolePunchServer {
 struct TcpHolePunchConnectorData {
     peer_mgr: Arc<PeerManager>,
     blacklist: Arc<timedmap::TimedMap<PeerId, ()>>,
+    upnp_lease: tokio::sync::OnceCell<Option<upnp::UdpPortMappingLease>>,
+    fixed_local_port: tokio::sync::OnceCell<u16>,
+    sc_listen_handle: tokio::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
 }
 
 impl TcpHolePunchConnectorData {
@@ -236,6 +239,9 @@ impl TcpHolePunchConnectorData {
         Arc::new(Self {
             peer_mgr,
             blacklist: Arc::new(timedmap::TimedMap::new()),
+            upnp_lease: tokio::sync::OnceCell::new(),
+            fixed_local_port: tokio::sync::OnceCell::new(),
+            sc_listen_handle: tokio::sync::Mutex::new(None),
         })
     }
 
@@ -276,7 +282,17 @@ impl TcpHolePunchConnectorData {
             return Ok(());
         }
 
-        let local_port = select_local_port(&self.peer_mgr, false).await?;
+        let local_port = *self
+            .fixed_local_port
+            .get_or_try_init(|| select_local_port(&self.peer_mgr, false))
+            .await?;
+
+        let _ = self
+            .upnp_lease
+            .get_or_try_init(|| upnp::try_open_tcp_port(&global_ctx, local_port))
+            .await
+            .ok();
+
         let mapped_addr = global_ctx
             .get_stun_info_collector()
             .get_tcp_port_mapping(local_port)
@@ -322,22 +338,35 @@ impl TcpHolePunchConnectorData {
             "tcp hole punch initiator rpc returned"
         );
 
-        if let Ok(()) = try_connect_to_remote(
-            self.peer_mgr.clone(),
-            remote_mapped_addr,
-            local_port,
-            false,
-            1,
-        )
-        .await
-        {
+        let flags = global_ctx.get_flags();
+        if !flags.disable_tcp_simultaneous_open {
             tracing::info!(
-                dst_peer_id,
                 local_port,
-                ?remote_mapped_addr,
-                "tcp hole punch initiator connected to remote mapped addr with simultaneous connection"
+                "tcp hole punch initiator mode: simultaneous open"
             );
-            return Ok(());
+
+            if let Ok(()) = try_connect_to_remote(
+                self.peer_mgr.clone(),
+                remote_mapped_addr,
+                local_port,
+                false,
+                1,
+            )
+            .await
+            {
+                tracing::info!(
+                    dst_peer_id,
+                    local_port,
+                    ?remote_mapped_addr,
+                    "tcp hole punch initiator connected to remote mapped addr with simultaneous connection"
+                );
+                return Ok(());
+            }
+        } else {
+            tracing::info!(
+                local_port,
+                "tcp hole punch initiator skipped simultaneous open by flag"
+            );
         }
 
         tracing::debug!(
@@ -347,54 +376,75 @@ impl TcpHolePunchConnectorData {
             "tcp hole punch initiator sent syn to remote mapped addr"
         );
 
-        let mut listener =
-            TcpTunnelListener::new(format!("tcp://0.0.0.0:{}", local_port).parse().unwrap());
+        tracing::info!(local_port, "tcp hole punch initiator mode: sc (listen)");
+
         {
-            let _g = self.peer_mgr.get_global_ctx().net_ns.guard();
-            listener.listen().await?;
-        }
-        tracing::info!(
-            dst_peer_id,
-            local_port,
-            url = %listener.local_url(),
-            "tcp hole punch initiator listening"
-        );
+            let mut guard = self.sc_listen_handle.lock().await;
 
-        tokio::time::timeout(
-            Duration::from_secs(10),
-            self.accept_loop(&mut listener, dst_peer_id),
-        )
-        .await??;
+            if guard.as_ref().is_some_and(|h| h.is_finished()) {
+                *guard = None;
+            }
 
-        tracing::info!(
-            dst_peer_id,
-            "tcp hole punch initiator accepted and added server tunnel"
-        );
+            if guard.is_none() {
+                let peer_mgr = self.peer_mgr.clone();
+                let listen_addr = format!("tcp://0.0.0.0:{}", local_port);
 
-        Ok(())
-    }
-
-    async fn accept_loop(
-        &self,
-        listener: &mut TcpTunnelListener,
-        dst_peer_id: PeerId,
-    ) -> Result<(), Error> {
-        loop {
-            match listener.accept().await {
-                Ok(tunnel) => {
-                    if let Err(e) = self.peer_mgr.add_tunnel_as_server(tunnel, false).await {
-                        tracing::error!("tcp hole punch add tunnel error: {}", e);
-                        continue;
+                *guard = Some(tokio::spawn(async move {
+                    let mut listener = TcpTunnelListener::new(listen_addr.parse().unwrap());
+                    {
+                        let _g = peer_mgr.get_global_ctx().net_ns.guard();
+                        if let Err(e) = listener.listen().await {
+                            tracing::error!(?e, "tcp hole punch global sc listener failed to bind");
+                            return;
+                        }
                     }
+                    tracing::info!(url = %listener.local_url(), "tcp hole punch global sc listener started");
+                    loop {
+                        match listener.accept().await {
+                            Ok(tunnel) => {
+                                if let Err(e) = peer_mgr.add_tunnel_as_server(tunnel, false).await {
+                                    tracing::error!(
+                                        "tcp hole punch global add tunnel error: {}",
+                                        e
+                                    );
+                                }
+                            }
+                            Err(e) => {
+                                tracing::error!("tcp hole punch global accept error: {}", e);
+                                break;
+                            }
+                        }
+                    }
+                }));
+            }
+        }
 
-                    tracing::info!(
-                        dst_peer_id,
-                        "tcp hole punch initiator accepted and added server tunnel"
-                    );
+        let timeout_result = tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                if self.peer_mgr.get_peer_map().has_peer(dst_peer_id) {
+                    return;
                 }
-                Err(e) => {
-                    tracing::error!("tcp hole punch accept error: {}", e);
-                }
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+        })
+        .await;
+
+        match timeout_result {
+            Ok(()) => {
+                tracing::info!(
+                    dst_peer_id,
+                    local_port,
+                    "tcp hole punch initiator connected via global sc listener"
+                );
+                Ok(())
+            }
+            Err(_) => {
+                tracing::warn!(
+                    dst_peer_id,
+                    local_port,
+                    "tcp hole punch initiator sc listen timeout"
+                );
+                Err(anyhow::anyhow!("sc listen timeout"))
             }
         }
     }
