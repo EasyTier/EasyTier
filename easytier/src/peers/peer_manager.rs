@@ -447,33 +447,6 @@ impl PeerManager {
         });
     }
 
-    async fn close_untrusted_credential_peers(peer_map: &Arc<PeerMap>, global_ctx: &ArcGlobalCtx) {
-        let network_name = global_ctx.get_network_name();
-        for peer_id in peer_map.list_peers() {
-            if !matches!(
-                peer_map.get_peer_identity_type(peer_id),
-                Some(PeerIdentityType::Credential)
-            ) {
-                continue;
-            }
-            let Some(peer) = peer_map.get_peer_by_id(peer_id) else {
-                continue;
-            };
-            let Some(pubkey) = peer.get_peer_public_key() else {
-                continue;
-            };
-
-            if global_ctx.is_pubkey_trusted(&pubkey, &network_name) {
-                continue;
-            }
-
-            tracing::warn!(?peer_id, "closing untrusted credential peer");
-            if let Err(e) = peer_map.close_peer(peer_id).await {
-                tracing::warn!(?e, ?peer_id, "failed to close untrusted credential peer");
-            }
-        }
-    }
-
     fn build_foreign_network_manager_accessor(
         peer_map: &Arc<PeerMap>,
     ) -> Box<dyn GlobalForeignNetworkAccessor> {
@@ -504,8 +477,6 @@ impl PeerManager {
 
     async fn add_new_peer_conn(&self, peer_conn: PeerConn) -> Result<(), Error> {
         let my_identity = self.global_ctx.get_network_identity();
-        let peer_identity: NetworkIdentity = peer_conn.get_network_identity().into();
-        let conn_info = peer_conn.get_conn_info();
         let local_secure_mode = self
             .global_ctx
             .config
@@ -513,40 +484,19 @@ impl PeerManager {
             .as_ref()
             .map(|cfg| cfg.enabled)
             .unwrap_or(false);
-        let peer_secure_mode = !conn_info.noise_remote_static_pubkey.is_empty();
-
-        if local_secure_mode != peer_secure_mode {
-            return Err(Error::SecretKeyError(
-                "same-network peers must use the same secure mode".to_string(),
-            ));
-        }
-
-        // For credential nodes, network_secret_digest is either None or all-zeros
-        // (all-zeros when received over the wire via handshake).
-        // In this case, only compare network_name.
-        let my_digest_empty = my_identity
-            .network_secret_digest
-            .as_ref()
-            .is_none_or(|d| d.iter().all(|b| *b == 0));
-        let peer_digest_empty = peer_identity
-            .network_secret_digest
-            .as_ref()
-            .is_none_or(|d| d.iter().all(|b| *b == 0));
-
-        let identity_ok = if my_digest_empty || peer_digest_empty {
-            // Credential node: only check network_name
-            my_identity.network_name == peer_identity.network_name
-        } else {
-            my_identity == peer_identity
+        let my_identity = easytier_core::peers::context::NetworkIdentity {
+            network_name: my_identity.network_name,
+            network_secret: my_identity.network_secret,
+            network_secret_digest: my_identity.network_secret_digest,
         };
-
-        if !identity_ok {
-            return Err(Error::SecretKeyError(
-                "network identity not match".to_string(),
-            ));
-        }
-        let peer_id = peer_conn.get_peer_id();
-        self.peers.add_new_peer_conn(peer_conn).await?;
+        let peer_id = core_peer_manager::add_new_peer_conn(
+            self.peers.as_core(),
+            &my_identity,
+            local_secure_mode,
+            peer_conn,
+        )
+        .await
+        .map_err(Error::from)?;
         self.clear_recent_traffic(peer_id);
         Ok(())
     }
@@ -1790,7 +1740,13 @@ impl PeerManager {
                         global_ctx.issue_event(GlobalCtxEvent::CredentialChanged);
                     }
 
-                    Self::close_untrusted_credential_peers(&peer_map, &global_ctx).await;
+                    let network_name = global_ctx.get_network_name();
+                    core_peer_manager::close_untrusted_credential_peers(
+                        peer_map.as_core(),
+                        &network_name,
+                        |pubkey, network_name| global_ctx.is_pubkey_trusted(pubkey, network_name),
+                    )
+                    .await;
                 }
                 tokio::time::sleep(std::time::Duration::from_secs(1)).await;
             }

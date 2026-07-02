@@ -9,10 +9,12 @@ use tokio::sync::{
 use crate::{config::PeerId, packet::ZCPacket};
 
 use super::{
-    encrypt::Encryptor, error::Error, foreign_network_client::ForeignNetworkClient,
-    peer_map::PeerMap, peer_rpc::PeerRpcManagerTransport, relay_peer_map::RelayPeerMap,
-    route_trait::NextHopPolicy, traffic_metrics::TrafficMetricRecorder,
+    context::NetworkIdentity, encrypt::Encryptor, error::Error,
+    foreign_network_client::ForeignNetworkClient, peer_conn::PeerConn, peer_map::PeerMap,
+    peer_rpc::PeerRpcManagerTransport, relay_peer_map::RelayPeerMap, route_trait::NextHopPolicy,
+    traffic_metrics::TrafficMetricRecorder,
 };
+use crate::proto::peer_rpc::PeerIdentityType;
 
 pub struct RpcTransport {
     my_peer_id: PeerId,
@@ -97,6 +99,84 @@ pub fn get_next_hop_policy(is_latency_first: bool) -> NextHopPolicy {
         NextHopPolicy::LeastCost
     } else {
         NextHopPolicy::LeastHop
+    }
+}
+
+fn network_secret_digest_is_empty(network: &NetworkIdentity) -> bool {
+    network
+        .network_secret_digest
+        .as_ref()
+        .is_none_or(|d| d.iter().all(|b| *b == 0))
+}
+
+pub async fn add_new_peer_conn(
+    peer_map: &PeerMap,
+    local_identity: &NetworkIdentity,
+    local_secure_mode: bool,
+    peer_conn: PeerConn,
+) -> Result<PeerId, Error> {
+    let peer_identity = peer_conn.get_network_identity();
+    let conn_info = peer_conn.get_conn_info();
+    let peer_secure_mode = !conn_info.noise_remote_static_pubkey.is_empty();
+
+    if local_secure_mode != peer_secure_mode {
+        return Err(Error::SecretKeyError(
+            "same-network peers must use the same secure mode".to_string(),
+        ));
+    }
+
+    // For credential nodes, network_secret_digest is either None or all-zeros
+    // (all-zeros when received over the wire via handshake).
+    // In this case, only compare network_name.
+    let my_digest_empty = network_secret_digest_is_empty(local_identity);
+    let peer_digest_empty = network_secret_digest_is_empty(&peer_identity);
+
+    let identity_ok = if my_digest_empty || peer_digest_empty {
+        // Credential node: only check network_name
+        local_identity.network_name == peer_identity.network_name
+    } else {
+        local_identity == &peer_identity
+    };
+
+    if !identity_ok {
+        return Err(Error::SecretKeyError(
+            "network identity not match".to_string(),
+        ));
+    }
+    let peer_id = peer_conn.get_peer_id();
+    peer_map.add_new_peer_conn(peer_conn).await?;
+    Ok(peer_id)
+}
+
+pub async fn close_untrusted_credential_peers<F>(
+    peer_map: &PeerMap,
+    network_name: &str,
+    mut is_pubkey_trusted: F,
+) where
+    F: FnMut(&[u8], &str) -> bool + Send,
+{
+    for peer_id in peer_map.list_peers() {
+        if !matches!(
+            peer_map.get_peer_identity_type(peer_id),
+            Some(PeerIdentityType::Credential)
+        ) {
+            continue;
+        }
+        let Some(peer) = peer_map.get_peer_by_id(peer_id) else {
+            continue;
+        };
+        let Some(pubkey) = peer.get_peer_public_key() else {
+            continue;
+        };
+
+        if is_pubkey_trusted(&pubkey, network_name) {
+            continue;
+        }
+
+        tracing::warn!(?peer_id, "closing untrusted credential peer");
+        if let Err(e) = peer_map.close_peer(peer_id).await {
+            tracing::warn!(?e, ?peer_id, "failed to close untrusted credential peer");
+        }
     }
 }
 
