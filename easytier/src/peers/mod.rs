@@ -1,6 +1,5 @@
 pub mod acl_filter;
 pub mod credential_manager;
-pub mod peer;
 pub mod peer_conn;
 pub mod peer_manager;
 pub mod peer_map;
@@ -25,7 +24,7 @@ pub mod tests;
 pub(crate) use easytier_core::peers::secure_datagram;
 pub use easytier_core::peers::{
     BoxNicPacketFilter, BoxPeerPacketFilter, NicPacketFilter, PacketRecvChan,
-    PacketRecvChanReceiver, PeerPacketFilter, create_packet_recv_chan, peer_conn_ping,
+    PacketRecvChanReceiver, PeerPacketFilter, create_packet_recv_chan, peer, peer_conn_ping,
     peer_session, recv_packet_from_chan, route_trait,
 };
 
