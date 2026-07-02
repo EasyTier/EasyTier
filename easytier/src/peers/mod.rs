@@ -19,8 +19,6 @@ pub mod peer_task;
 #[cfg(test)]
 pub mod tests;
 
-pub(crate) use easytier_core::peers::public_ipv6;
-
 pub mod peer_rpc {
     pub use easytier_core::peers::peer_rpc::*;
 

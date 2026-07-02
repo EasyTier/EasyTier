@@ -26,10 +26,14 @@ easytier-proto = { path = "../easytier-proto", default-features = false, feature
 futures = "0.3"
 guarden = "0.2"
 hmac = "0.12.1"
+atomic-shim = "0.2.0"
+ordered_hash_map = "0.5.0"
 parking_lot = "0.12.1"
 petgraph = "0.8.1"
 prefix-trie = { version = "0.7.0", features = ["cidr"] }
 prost = "0.14.3"
+prost-reflect = { version = "0.16.4", default-features = false, features = ["derive", "serde"] }
+prost-wkt-types = "0.7.1"
 rand = "0.8.5"
 quanta = "0.12"
 serde = { version = "1.0", features = ["derive"] }
