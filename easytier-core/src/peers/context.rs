@@ -301,6 +301,14 @@ pub trait PeerContext: Send + Sync {
         PeerFeatureFlag::default()
     }
 
+    fn easytier_version(&self) -> String {
+        env!("CARGO_PKG_VERSION").to_string()
+    }
+
+    fn ospf_update_my_foreign_network_interval_sec(&self) -> u64 {
+        10
+    }
+
     fn advertised_ipv6_public_addr_prefix(&self) -> Option<Ipv6Cidr> {
         None
     }
@@ -333,6 +341,15 @@ pub trait PeerContext: Send + Sync {
     }
 
     fn is_pubkey_trusted(&self, _pubkey: &[u8], _network_name: &str) -> bool {
+        false
+    }
+
+    fn is_pubkey_trusted_with_source(
+        &self,
+        _pubkey: &[u8],
+        _network_name: &str,
+        _source: TrustedKeySource,
+    ) -> bool {
         false
     }
 

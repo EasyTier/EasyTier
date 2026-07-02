@@ -15,7 +15,7 @@ use dashmap::DashMap;
 use easytier_core::{
     peers::{
         context::{
-            NetworkIdentity as CoreNetworkIdentity, PeerContext, PeerContextEvent,
+            ArcPeerContext, NetworkIdentity as CoreNetworkIdentity, PeerContext, PeerContextEvent,
             PeerGroupIdentity, TrustedKeyMetadata, TrustedKeySource,
         },
         peer_ospf_route::{
@@ -40,10 +40,7 @@ use tokio::{
 };
 
 use crate::{
-    common::{
-        PeerId, config::NetworkIdentity, constants::EASYTIER_VERSION, global_ctx::ArcGlobalCtx,
-        shrink_dashmap,
-    },
+    common::{PeerId, constants::EASYTIER_VERSION, global_ctx::ArcGlobalCtx, shrink_dashmap},
     peers::route_trait::{Route, RouteInterfaceBox},
     proto::{
         common::NatType,
@@ -61,7 +58,6 @@ use crate::{
             controller::{BaseController, Controller},
         },
     },
-    use_global_var,
 };
 
 use super::{
@@ -227,7 +223,7 @@ pub(crate) fn new_updated_self_route_peer_info(
         last_update: None,
         version: 0,
 
-        easytier_version: EASYTIER_VERSION.to_string(),
+        easytier_version: context.easytier_version(),
         feature_flag: Some(context.feature_flags()),
         peer_route_id,
         network_length: ipv4
@@ -1599,7 +1595,7 @@ impl Drop for SyncRouteSession {
 struct PeerRouteServiceImpl {
     my_peer_id: PeerId,
     my_peer_route_id: u64,
-    global_ctx: ArcGlobalCtx,
+    context: ArcPeerContext,
     sessions: DashMap<PeerId, Arc<SyncRouteSession>>,
 
     interface: Mutex<Option<RouteInterfaceBox>>,
@@ -1607,7 +1603,7 @@ struct PeerRouteServiceImpl {
     cost_calculator: std::sync::RwLock<Option<RouteCostCalculator>>,
     route_table: OspfRouteTable,
     route_table_with_cost: OspfRouteTable,
-    foreign_network_owner_map: DashMap<NetworkIdentity, Vec<PeerId>>,
+    foreign_network_owner_map: DashMap<CoreNetworkIdentity, Vec<PeerId>>,
     foreign_network_my_peer_id_map: DashMap<(String, PeerId), PeerId>,
     synced_route_info: SyncedRouteInfo,
     public_ipv6_service: std::sync::Mutex<Weak<PublicIpv6Service>>,
@@ -1628,7 +1624,7 @@ impl Debug for PeerRouteServiceImpl {
         f.debug_struct("PeerRouteServiceImpl")
             .field("my_peer_id", &self.my_peer_id)
             .field("my_peer_route_id", &self.my_peer_route_id)
-            .field("network", &self.global_ctx.network_identity())
+            .field("network", &self.context.network_identity())
             .field("sessions", &self.sessions)
             .field("route_table", &self.route_table)
             .field("route_table_with_cost", &self.route_table_with_cost)
@@ -1647,11 +1643,11 @@ impl Debug for PeerRouteServiceImpl {
 }
 
 impl PeerRouteServiceImpl {
-    fn new(my_peer_id: PeerId, global_ctx: ArcGlobalCtx) -> Self {
+    fn new(my_peer_id: PeerId, context: ArcPeerContext) -> Self {
         PeerRouteServiceImpl {
             my_peer_id,
             my_peer_route_id: rand::random(),
-            global_ctx,
+            context,
             sessions: DashMap::new(),
 
             interface: Mutex::new(None),
@@ -1692,7 +1688,7 @@ impl PeerRouteServiceImpl {
     }
 
     fn get_my_secret_digest(&self) -> Option<Vec<u8>> {
-        let ni = self.global_ctx.network_identity();
+        let ni = self.context.network_identity();
         ni.network_secret_digest.map(|d| d.to_vec())
     }
 
@@ -1702,9 +1698,9 @@ impl PeerRouteServiceImpl {
     }
 
     fn is_credential_node(&self) -> bool {
-        self.global_ctx.network_identity().network_secret.is_none()
+        self.context.network_identity().network_secret.is_none()
             && self
-                .global_ctx
+                .context
                 .secure_mode()
                 .map(|c| c.enabled)
                 .unwrap_or(false)
@@ -1834,7 +1830,7 @@ impl PeerRouteServiceImpl {
         self.synced_route_info.update_my_peer_info(
             self.my_peer_id,
             self.my_peer_route_id,
-            self.global_ctx.as_ref(),
+            self.context.as_ref(),
             *self.self_public_ipv6_addr_lease.lock().unwrap(),
         )
     }
@@ -1873,7 +1869,7 @@ impl PeerRouteServiceImpl {
         let last_time = self.last_update_my_foreign_network.load();
         if last_time.is_some()
             && last_time.unwrap().elapsed().as_secs()
-                < use_global_var!(OSPF_UPDATE_MY_GLOBAL_FOREIGN_NETWORK_INTERVAL_SEC)
+                < self.context.ospf_update_my_foreign_network_interval_sec()
         {
             return false;
         }
@@ -1943,7 +1939,7 @@ impl PeerRouteServiceImpl {
             {
                 continue;
             }
-            let network_identity = NetworkIdentity {
+            let network_identity = CoreNetworkIdentity {
                 network_name: key.network_name.clone(),
                 network_secret: None,
                 network_secret_digest: Some(
@@ -2235,7 +2231,7 @@ impl PeerRouteServiceImpl {
     async fn refresh_acl_groups(&self) -> bool {
         let my_peer_info_updated = self.update_my_peer_info();
         let trust_admin_groups_without_proof =
-            self.global_ctx.network_identity().network_secret.is_none();
+            self.context.network_identity().network_secret.is_none();
 
         let peer_infos: Vec<_> = self
             .synced_route_info
@@ -2246,7 +2242,7 @@ impl PeerRouteServiceImpl {
             .collect();
         self.synced_route_info.verify_and_update_group_trusts(
             &peer_infos,
-            &self.global_ctx.acl_group_declarations(),
+            &self.context.acl_group_declarations(),
             trust_admin_groups_without_proof,
         );
 
@@ -2267,7 +2263,7 @@ impl PeerRouteServiceImpl {
     }
 
     fn refresh_credential_trusts(&self) -> Vec<PeerId> {
-        let network_identity = self.global_ctx.network_identity();
+        let network_identity = self.context.network_identity();
         let (untrusted, global_trusted_keys, _) = self
             .synced_route_info
             .verify_and_update_credential_trusts_with_active_peers_protecting(
@@ -2276,7 +2272,7 @@ impl PeerRouteServiceImpl {
                 Some(self.my_peer_id),
             );
         PeerContext::update_trusted_keys(
-            self.global_ctx.as_ref(),
+            self.context.as_ref(),
             global_trusted_keys,
             &network_identity.network_name,
         );
@@ -2285,7 +2281,7 @@ impl PeerRouteServiceImpl {
     }
 
     fn refresh_credential_trusts_with_current_topology(&self) -> Vec<PeerId> {
-        let network_identity = self.global_ctx.network_identity();
+        let network_identity = self.context.network_identity();
 
         // Non-reusable credential owner election depends on reachability, so rebuild the
         // route table from the latest synced peer/conn state before checking active peers.
@@ -2301,7 +2297,7 @@ impl PeerRouteServiceImpl {
                 Some(self.my_peer_id),
             );
         PeerContext::update_trusted_keys(
-            self.global_ctx.as_ref(),
+            self.context.as_ref(),
             global_trusted_keys,
             &network_identity.network_name,
         );
@@ -2500,7 +2496,7 @@ impl PeerRouteServiceImpl {
             .scoped_client::<OspfRouteRpcClientFactory<BaseController>>(
                 self.my_peer_id,
                 dst_peer_id,
-                self.global_ctx.network_name(),
+                self.context.network_name(),
             );
 
         let sync_route_info_req = SyncRouteInfoRequest {
@@ -2534,7 +2530,7 @@ impl PeerRouteServiceImpl {
             ret,
             sync_route_info_req,
             session,
-            self.global_ctx.network_identity(),
+            self.context.network_identity(),
             next_last_sync_succ_timestamp
         );
 
@@ -2554,7 +2550,7 @@ impl PeerRouteServiceImpl {
             Ok(resp) => {
                 if let Some(err) = resp.error {
                     if err == Error::DuplicatePeerId as i32 {
-                        if !self.global_ctx.feature_flags().is_public_server {
+                        if !self.context.feature_flags().is_public_server {
                             panic!("duplicate peer id");
                         }
                     } else {
@@ -3058,7 +3054,7 @@ impl RouteSessionManager {
             };
             if !pi.is_empty() {
                 let trust_admin_groups_without_proof = service_impl
-                    .global_ctx
+                    .context
                     .network_identity()
                     .network_secret
                     .is_none();
@@ -3073,7 +3069,7 @@ impl RouteSessionManager {
                     .synced_route_info
                     .verify_and_update_group_trusts(
                         pi,
-                        &service_impl.global_ctx.acl_group_declarations(),
+                        &service_impl.context.acl_group_declarations(),
                         trust_admin_groups_without_proof,
                     );
                 session.update_dst_saved_peer_info_version(pi, from_peer_id);
@@ -3230,7 +3226,7 @@ impl PublicIpv6SyncTrigger for OspfPublicIpv6SyncTrigger {
 
 pub struct PeerRoute {
     my_peer_id: PeerId,
-    global_ctx: ArcGlobalCtx,
+    context: ArcPeerContext,
     peer_rpc: Weak<PeerRpcManager>,
 
     service_impl: Arc<PeerRouteServiceImpl>,
@@ -3256,7 +3252,8 @@ impl PeerRoute {
         global_ctx: ArcGlobalCtx,
         peer_rpc: Arc<PeerRpcManager>,
     ) -> Arc<Self> {
-        let service_impl = Arc::new(PeerRouteServiceImpl::new(my_peer_id, global_ctx.clone()));
+        let context: ArcPeerContext = global_ctx.clone();
+        let service_impl = Arc::new(PeerRouteServiceImpl::new(my_peer_id, context.clone()));
         let session_mgr = RouteSessionManager::new(service_impl.clone(), peer_rpc.clone());
         let public_ipv6_service = Arc::new(PublicIpv6Service::new(
             global_ctx.clone(),
@@ -3272,7 +3269,7 @@ impl PeerRoute {
 
         Arc::new(PeerRoute {
             my_peer_id,
-            global_ctx,
+            context,
             peer_rpc: Arc::downgrade(&peer_rpc),
 
             service_impl,
@@ -3303,7 +3300,7 @@ impl PeerRoute {
         service_impl: Arc<PeerRouteServiceImpl>,
         session_mgr: RouteSessionManager,
     ) {
-        let mut peer_event_receiver = service_impl.global_ctx.subscribe_peer_events();
+        let mut peer_event_receiver = service_impl.context.subscribe_peer_events();
         service_impl.mark_interface_peers_dirty();
         loop {
             if service_impl.update_my_infos().await {
@@ -3330,7 +3327,7 @@ impl PeerRoute {
                         service_impl.handle_peer_context_event(ev_ref);
                     } else {
                         service_impl.mark_interface_peers_dirty();
-                        peer_event_receiver = service_impl.global_ctx.subscribe_peer_events();
+                        peer_event_receiver = service_impl.context.subscribe_peer_events();
                     }
                     tracing::info!(
                         ?ev,
@@ -3354,11 +3351,11 @@ impl PeerRoute {
 
         peer_rpc.rpc_server().registry().register(
             OspfRouteRpcServer::new(self.session_mgr.clone()),
-            &self.global_ctx.network_name(),
+            &self.context.network_name(),
         );
         peer_rpc.rpc_server().registry().register(
             PublicIpv6AddrRpcServer::new(self.public_ipv6_service.rpc_server()),
-            &self.global_ctx.network_name(),
+            &self.context.network_name(),
         );
 
         self.tasks
@@ -3398,7 +3395,7 @@ impl Drop for PeerRoute {
     fn drop(&mut self) {
         tracing::debug!(
             self.my_peer_id,
-            network = ?self.global_ctx.network_identity(),
+            network = ?self.context.network_identity(),
             service = ?self.service_impl,
             "PeerRoute drop"
         );
@@ -3409,11 +3406,11 @@ impl Drop for PeerRoute {
 
         peer_rpc.rpc_server().registry().unregister(
             OspfRouteRpcServer::new(self.session_mgr.clone()),
-            &self.global_ctx.network_name(),
+            &self.context.network_name(),
         );
         peer_rpc.rpc_server().registry().unregister(
             PublicIpv6AddrRpcServer::new(self.public_ipv6_service.rpc_server()),
-            &self.global_ctx.network_name(),
+            &self.context.network_name(),
         );
     }
 }
@@ -3518,7 +3515,7 @@ impl Route for PeerRoute {
         }
 
         // only get peer id for proxy when the dst ipv4 is not in same network with us
-        if PeerContext::is_ip_in_same_network(self.global_ctx.as_ref(), &IpAddr::V4(*ipv4_addr)) {
+        if PeerContext::is_ip_in_same_network(self.context.as_ref(), &IpAddr::V4(*ipv4_addr)) {
             tracing::trace!(?ipv4_addr, "ipv4 addr is in same network with us");
             return None;
         }
@@ -3538,7 +3535,7 @@ impl Route for PeerRoute {
         }
 
         // only get peer id for proxy when the dst ipv4 is not in same network with us
-        if PeerContext::is_ip_in_same_network(self.global_ctx.as_ref(), &IpAddr::V6(*ipv6_addr)) {
+        if PeerContext::is_ip_in_same_network(self.context.as_ref(), &IpAddr::V6(*ipv6_addr)) {
             tracing::trace!(?ipv6_addr, "ipv6 addr is in same network with us");
             return None;
         }
@@ -3596,10 +3593,9 @@ impl Route for PeerRoute {
         &self,
         network_identity: &CoreNetworkIdentity,
     ) -> Vec<PeerId> {
-        let network_identity: NetworkIdentity = network_identity.clone().into();
         self.service_impl
             .foreign_network_owner_map
-            .get(&network_identity)
+            .get(network_identity)
             .map(|x| x.clone())
             .unwrap_or_default()
     }
@@ -5202,7 +5198,7 @@ mod tests {
         let credential_peer_id: PeerId = 10052;
         let admin_pubkey = vec![5u8; 32];
         let credential_pubkey = vec![6u8; 32];
-        let network_name = service_impl.global_ctx.network_name();
+        let network_name = service_impl.context.network_name();
         let now = SystemTime::now();
         let closed_peers = Arc::new(Mutex::new(Vec::new()));
 
@@ -5244,7 +5240,7 @@ mod tests {
             .synced_route_info
             .verify_and_update_credential_trusts(None);
         PeerContext::update_trusted_keys(
-            service_impl.global_ctx.as_ref(),
+            service_impl.context.as_ref(),
             global_trusted_keys,
             &network_name,
         );
@@ -5263,7 +5259,7 @@ mod tests {
 
         service_impl.clear_expired_peer().await;
 
-        assert!(!service_impl.global_ctx.is_pubkey_trusted_with_source(
+        assert!(!service_impl.context.is_pubkey_trusted_with_source(
             &credential_pubkey,
             &network_name,
             TrustedKeySource::OspfCredential,
@@ -5314,7 +5310,7 @@ mod tests {
         let self_info = new_updated_self_route_peer_info(
             service_impl.my_peer_id,
             service_impl.my_peer_route_id,
-            service_impl.global_ctx.as_ref(),
+            service_impl.context.as_ref(),
             None,
         );
         let mut self_info = self_info;
@@ -6438,9 +6434,8 @@ mod tests {
         route.service_impl.mark_interface_peers_dirty();
         assert!(route.service_impl.update_my_conn_info().await);
 
-        route
-            .service_impl
-            .global_ctx
+        peer_mgr
+            .get_global_ctx()
             .config
             .add_proxy_cidr("10.10.0.0/16".parse().unwrap(), None)
             .unwrap();

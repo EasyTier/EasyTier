@@ -18,6 +18,7 @@ use easytier_core::peers::public_ipv6::PublicIpv6Runtime;
 use super::{
     PeerId,
     config::{ConfigLoader, Flags},
+    constants::EASYTIER_VERSION,
     netns::NetNS,
     network::IPCollector,
     stun::{StunInfoCollector, StunInfoCollectorTrait},
@@ -221,6 +222,14 @@ impl PeerContext for GlobalCtx {
         self.get_feature_flags()
     }
 
+    fn easytier_version(&self) -> String {
+        EASYTIER_VERSION.to_string()
+    }
+
+    fn ospf_update_my_foreign_network_interval_sec(&self) -> u64 {
+        use_global_var!(OSPF_UPDATE_MY_GLOBAL_FOREIGN_NETWORK_INTERVAL_SEC)
+    }
+
     fn advertised_ipv6_public_addr_prefix(&self) -> Option<cidr::Ipv6Cidr> {
         self.get_advertised_ipv6_public_addr_prefix()
     }
@@ -279,6 +288,15 @@ impl PeerContext for GlobalCtx {
 
     fn is_pubkey_trusted(&self, pubkey: &[u8], network_name: &str) -> bool {
         self.is_pubkey_trusted(pubkey, network_name)
+    }
+
+    fn is_pubkey_trusted_with_source(
+        &self,
+        pubkey: &[u8],
+        network_name: &str,
+        source: TrustedKeySource,
+    ) -> bool {
+        GlobalCtx::is_pubkey_trusted_with_source(self, pubkey, network_name, source)
     }
 
     fn trusted_credential_pubkeys(
