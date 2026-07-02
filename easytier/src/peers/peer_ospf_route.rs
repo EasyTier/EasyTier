@@ -14,7 +14,7 @@ use crossbeam::atomic::AtomicCell;
 use dashmap::DashMap;
 use easytier_core::{
     peers::{
-        context::{NetworkIdentity as CoreNetworkIdentity, PeerContext},
+        context::{NetworkIdentity as CoreNetworkIdentity, PeerContext, PeerGroupIdentity},
         peer_ospf_route::{
             OspfPeerConnInfo, OspfPeerInfo, OspfRouteSnapshot, OspfRouteTable, Version,
             cidr_is_subset_str,
@@ -46,7 +46,6 @@ use crate::{
     },
     peers::route_trait::{Route, RouteInterfaceBox},
     proto::{
-        acl::GroupIdentity,
         common::NatType,
         peer_rpc::{
             ForeignNetworkRouteInfoEntry, ForeignNetworkRouteInfoKey, OspfRouteRpc,
@@ -247,7 +246,7 @@ pub(crate) fn new_updated_self_route_peer_info(
         ),
         ipv6_public_addr_lease: public_ipv6_addr_lease.map(Into::into),
 
-        groups: global_ctx.get_acl_groups(my_peer_id),
+        groups: global_ctx.peer_groups(my_peer_id),
 
         noise_static_pubkey,
 
@@ -1086,7 +1085,7 @@ impl SyncedRouteInfo {
     fn verify_and_update_group_trusts(
         &self,
         peer_infos: &[RoutePeerInfo],
-        local_group_declarations: &[GroupIdentity],
+        local_group_declarations: &[PeerGroupIdentity],
         trust_admin_groups_without_proof: bool,
     ) {
         let local_group_declarations = local_group_declarations
@@ -2279,7 +2278,7 @@ impl PeerRouteServiceImpl {
             .collect();
         self.synced_route_info.verify_and_update_group_trusts(
             &peer_infos,
-            &self.global_ctx.get_acl_group_declarations(),
+            &self.global_ctx.acl_group_declarations(),
             trust_admin_groups_without_proof,
         );
 
@@ -3100,7 +3099,7 @@ impl RouteSessionManager {
                     .synced_route_info
                     .verify_and_update_group_trusts(
                         pi,
-                        &service_impl.global_ctx.get_acl_group_declarations(),
+                        &service_impl.global_ctx.acl_group_declarations(),
                         trust_admin_groups_without_proof,
                     );
                 session.update_dst_saved_peer_info_version(pi, from_peer_id);
@@ -3679,7 +3678,10 @@ mod tests {
         time::{Duration, SystemTime},
     };
 
-    use easytier_core::peers::peer_ospf_route::OspfNextHopInfo as NextHopInfo;
+    use easytier_core::peers::{
+        context::{PeerContext, PeerGroupIdentity},
+        peer_ospf_route::OspfNextHopInfo as NextHopInfo,
+    };
 
     use super::{
         PeerRoute, REMOVE_DEAD_PEER_INFO_AFTER, RouteConnInfo, SyncRouteSession,
@@ -4166,7 +4168,7 @@ mod tests {
             .synced_route_info
             .verify_and_update_group_trusts(
                 &[credential_info],
-                &[GroupIdentity {
+                &[PeerGroupIdentity {
                     group_name: "proof-group".to_string(),
                     group_secret: "proof-secret".to_string(),
                 }],
@@ -5447,7 +5449,7 @@ mod tests {
             .synced_route_info
             .verify_and_update_group_trusts(
                 &[remote_info],
-                &peer_mgr.get_global_ctx().get_acl_group_declarations(),
+                &peer_mgr.get_global_ctx().acl_group_declarations(),
                 false,
             );
 
@@ -5584,11 +5586,11 @@ mod tests {
             .verify_and_update_group_trusts(
                 &[admin_info, credential_info],
                 &[
-                    GroupIdentity {
+                    PeerGroupIdentity {
                         group_name: "proof-group".to_string(),
                         group_secret: "proof-secret".to_string(),
                     },
-                    GroupIdentity {
+                    PeerGroupIdentity {
                         group_name: "invalid-group".to_string(),
                         group_secret: "actual-secret".to_string(),
                     },

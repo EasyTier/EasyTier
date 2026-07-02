@@ -9,7 +9,10 @@ use std::{
 use arc_swap::ArcSwap;
 use async_trait::async_trait;
 use dashmap::DashMap;
-use easytier_proto::common::{FlagsInConfig, SecureModeConfig, StunInfo, TunnelInfo};
+use easytier_proto::{
+    common::{FlagsInConfig, SecureModeConfig, StunInfo, TunnelInfo},
+    peer_rpc::PeerGroupInfo,
+};
 use hmac::{Hmac, Mac};
 use sha2::Sha256;
 
@@ -122,6 +125,12 @@ pub enum PeerEvent {
     PeerRemoved(PeerId),
     PeerConnAdded(easytier_proto::core_peer::peer::PeerConnInfo),
     PeerConnRemoved(easytier_proto::core_peer::peer::PeerConnInfo),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PeerGroupIdentity {
+    pub group_name: String,
+    pub group_secret: String,
 }
 
 /// Source of a trusted public key propagated by the OSPF route layer.
@@ -250,6 +259,14 @@ pub trait PeerContext: Send + Sync {
 
     fn stun_info(&self) -> StunInfo {
         StunInfo::default()
+    }
+
+    fn peer_groups(&self, _peer_id: PeerId) -> Vec<PeerGroupInfo> {
+        Vec::new()
+    }
+
+    fn acl_group_declarations(&self) -> Vec<PeerGroupIdentity> {
+        Vec::new()
     }
 
     fn pinned_remote_static_pubkey(&self, _tunnel_info: Option<&TunnelInfo>) -> Option<String> {

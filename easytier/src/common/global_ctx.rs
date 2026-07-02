@@ -9,7 +9,7 @@ use arc_swap::ArcSwap;
 use async_trait::async_trait;
 use easytier_core::peers::context::{
     ArcByteLimiter, ByteLimiter, NetworkIdentity as CoreNetworkIdentity, PeerContext, PeerEvent,
-    TrustedKeyMapManager, secret_proof_from_secret,
+    PeerGroupIdentity, TrustedKeyMapManager, secret_proof_from_secret,
 };
 pub use easytier_core::peers::context::{TrustedKeyMap, TrustedKeyMetadata, TrustedKeySource};
 use easytier_core::peers::public_ipv6::PublicIpv6Runtime;
@@ -184,6 +184,20 @@ impl PeerContext for GlobalCtx {
 
     fn stun_info(&self) -> crate::proto::common::StunInfo {
         self.get_stun_info_collector().get_stun_info()
+    }
+
+    fn peer_groups(&self, peer_id: PeerId) -> Vec<PeerGroupInfo> {
+        self.get_acl_groups(peer_id)
+    }
+
+    fn acl_group_declarations(&self) -> Vec<PeerGroupIdentity> {
+        self.get_acl_group_declarations()
+            .into_iter()
+            .map(|group| PeerGroupIdentity {
+                group_name: group.group_name,
+                group_secret: group.group_secret,
+            })
+            .collect()
     }
 
     fn pinned_remote_static_pubkey(
