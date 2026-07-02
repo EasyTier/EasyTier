@@ -450,6 +450,68 @@ impl PeerOutboundPacketRouter {
         Ok(())
     }
 
+    async fn check_allow_wrapped_proxy_to_dst(
+        &self,
+        dst_ip: &IpAddr,
+        dst_allows_input: impl Fn(crate::proto::common::PeerFeatureFlag) -> bool,
+        next_hop_disables_relay: impl Fn(crate::proto::common::PeerFeatureFlag) -> bool,
+    ) -> bool {
+        let Some(dst_peer_id) = self.route.get_peer_id_by_ip(dst_ip).await else {
+            return false;
+        };
+        let Some(peer_info) = self.route.get_peer_info(dst_peer_id).await else {
+            return false;
+        };
+
+        if !peer_info
+            .feature_flag
+            .map(dst_allows_input)
+            .unwrap_or(false)
+        {
+            return false;
+        }
+
+        let next_hop_policy = get_next_hop_policy(self.context.flags().latency_first);
+        let Some(next_hop_id) = self
+            .route
+            .get_next_hop_with_policy(dst_peer_id, next_hop_policy)
+            .await
+        else {
+            return false;
+        };
+
+        if next_hop_id == dst_peer_id {
+            return true;
+        }
+
+        let Some(next_hop_info) = self.route.get_peer_info(next_hop_id).await else {
+            return false;
+        };
+
+        !next_hop_info
+            .feature_flag
+            .map(next_hop_disables_relay)
+            .unwrap_or(false)
+    }
+
+    pub async fn check_allow_kcp_to_dst(&self, dst_ip: &IpAddr) -> bool {
+        self.check_allow_wrapped_proxy_to_dst(
+            dst_ip,
+            |feature_flag| feature_flag.kcp_input,
+            |feature_flag| feature_flag.no_relay_kcp,
+        )
+        .await
+    }
+
+    pub async fn check_allow_quic_to_dst(&self, dst_ip: &IpAddr) -> bool {
+        self.check_allow_wrapped_proxy_to_dst(
+            dst_ip,
+            |feature_flag| feature_flag.quic_input,
+            |feature_flag| feature_flag.no_relay_quic,
+        )
+        .await
+    }
+
     pub async fn send_msg_for_proxy(
         &self,
         mut msg: ZCPacket,

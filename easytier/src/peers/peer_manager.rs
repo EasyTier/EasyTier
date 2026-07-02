@@ -1193,97 +1193,15 @@ impl PeerManager {
     }
 
     pub async fn check_allow_kcp_to_dst(&self, dst_ip: &IpAddr) -> bool {
-        let route = self.get_route();
-        let Some(dst_peer_id) = route.get_peer_id_by_ip(dst_ip).await else {
-            return false;
-        };
-        let Some(peer_info) = route.get_peer_info(dst_peer_id).await else {
-            return false;
-        };
-
-        // check dst allow kcp input
-        if !peer_info.feature_flag.map(|x| x.kcp_input).unwrap_or(false) {
-            return false;
-        }
-
-        let next_hop_policy =
-            core_peer_manager::get_next_hop_policy(self.global_ctx.get_flags().latency_first);
-        // check relay node allow relay kcp.
-        let Some(next_hop_id) = route
-            .get_next_hop_with_policy(dst_peer_id, next_hop_policy)
+        self.outbound_packet_router
+            .check_allow_kcp_to_dst(dst_ip)
             .await
-        else {
-            return false;
-        };
-
-        if next_hop_id == dst_peer_id {
-            // dst p2p, no need to relay
-            return true;
-        }
-
-        let Some(next_hop_info) = route.get_peer_info(next_hop_id).await else {
-            return false;
-        };
-
-        // check next hop allow kcp relay
-        if next_hop_info
-            .feature_flag
-            .map(|x| x.no_relay_kcp)
-            .unwrap_or(false)
-        {
-            return false;
-        }
-
-        true
     }
 
     pub async fn check_allow_quic_to_dst(&self, dst_ip: &IpAddr) -> bool {
-        let route = self.get_route();
-        let Some(dst_peer_id) = route.get_peer_id_by_ip(dst_ip).await else {
-            return false;
-        };
-        let Some(peer_info) = route.get_peer_info(dst_peer_id).await else {
-            return false;
-        };
-
-        // check dst allow quic input
-        if !peer_info
-            .feature_flag
-            .map(|x| x.quic_input)
-            .unwrap_or(false)
-        {
-            return false;
-        }
-
-        let next_hop_policy =
-            core_peer_manager::get_next_hop_policy(self.global_ctx.get_flags().latency_first);
-        // check relay node allow relay quic.
-        let Some(next_hop_id) = route
-            .get_next_hop_with_policy(dst_peer_id, next_hop_policy)
+        self.outbound_packet_router
+            .check_allow_quic_to_dst(dst_ip)
             .await
-        else {
-            return false;
-        };
-
-        if next_hop_id == dst_peer_id {
-            // dst p2p, no need to relay
-            return true;
-        }
-
-        let Some(next_hop_info) = route.get_peer_info(next_hop_id).await else {
-            return false;
-        };
-
-        // check next hop allow quic relay
-        if next_hop_info
-            .feature_flag
-            .map(|x| x.no_relay_quic)
-            .unwrap_or(false)
-        {
-            return false;
-        }
-
-        true
     }
 
     pub async fn update_exit_nodes(&self) {
