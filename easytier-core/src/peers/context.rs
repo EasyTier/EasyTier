@@ -1,15 +1,19 @@
 use std::{
+    collections::HashMap,
     collections::hash_map::DefaultHasher,
     hash::{Hash, Hasher},
     sync::Arc,
+    time::{SystemTime, UNIX_EPOCH},
 };
 
+use arc_swap::ArcSwap;
 use async_trait::async_trait;
+use dashmap::DashMap;
 use easytier_proto::common::{FlagsInConfig, SecureModeConfig, TunnelInfo};
 use hmac::{Hmac, Mac};
 use sha2::Sha256;
 
-use crate::config::PeerId;
+use crate::{config::PeerId, peers::util::shrink_dashmap};
 
 pub type NetworkSecretDigest = [u8; 32];
 pub const SECRET_PROOF_PREFIX: &[u8] = b"easytier secret proof";
@@ -118,6 +122,115 @@ pub enum PeerEvent {
     PeerRemoved(PeerId),
     PeerConnAdded(easytier_proto::core_peer::peer::PeerConnInfo),
     PeerConnRemoved(easytier_proto::core_peer::peer::PeerConnInfo),
+}
+
+/// Source of a trusted public key propagated by the OSPF route layer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TrustedKeySource {
+    OspfNode,
+    OspfCredential,
+}
+
+#[derive(Debug, Clone)]
+pub struct TrustedKeyMetadata {
+    pub source: TrustedKeySource,
+    pub expiry_unix: Option<i64>,
+}
+
+impl TrustedKeyMetadata {
+    pub fn is_expired(&self) -> bool {
+        if let Some(expiry) = self.expiry_unix {
+            let now = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_secs() as i64;
+            return now >= expiry;
+        }
+        false
+    }
+}
+
+pub type TrustedKeyMap = HashMap<Vec<u8>, TrustedKeyMetadata>;
+
+pub struct TrustedKeyMapManager {
+    network_trusted_keys: DashMap<String, ArcSwap<TrustedKeyMap>>,
+}
+
+impl TrustedKeyMapManager {
+    pub fn new() -> Self {
+        Self {
+            network_trusted_keys: DashMap::new(),
+        }
+    }
+
+    pub fn update_trusted_keys(&self, network_name: &str, trusted_keys: TrustedKeyMap) {
+        match self.network_trusted_keys.entry(network_name.to_string()) {
+            dashmap::Entry::Vacant(entry) => {
+                entry.insert(ArcSwap::new(Arc::new(trusted_keys)));
+            }
+            dashmap::Entry::Occupied(entry) => {
+                entry.get().store(Arc::new(trusted_keys));
+            }
+        }
+    }
+
+    pub fn remove_trusted_keys(&self, network_name: &str) {
+        self.network_trusted_keys.remove(network_name);
+        shrink_dashmap(&self.network_trusted_keys, None);
+    }
+
+    pub fn verify_trusted_key(&self, pubkey: &[u8], network_name: &str) -> bool {
+        self.verify_trusted_key_with_source(pubkey, network_name, None)
+    }
+
+    pub fn verify_trusted_key_with_source(
+        &self,
+        pubkey: &[u8],
+        network_name: &str,
+        source: Option<TrustedKeySource>,
+    ) -> bool {
+        let Some(trusted_keys) = self
+            .network_trusted_keys
+            .get(network_name)
+            .map(|v| v.load_full())
+        else {
+            return false;
+        };
+
+        let Some(metadata) = trusted_keys.get(&pubkey.to_vec()) else {
+            return false;
+        };
+
+        if let Some(source) = source {
+            metadata.source == source && !metadata.is_expired()
+        } else {
+            !metadata.is_expired()
+        }
+    }
+
+    pub fn list_trusted_keys(&self, network_name: &str) -> Vec<(Vec<u8>, TrustedKeyMetadata)> {
+        let Some(trusted_keys) = self
+            .network_trusted_keys
+            .get(network_name)
+            .map(|v| v.load_full())
+        else {
+            return Vec::new();
+        };
+
+        let mut items = trusted_keys
+            .iter()
+            .filter(|(_, metadata)| !metadata.is_expired())
+            .map(|(pubkey, metadata)| (pubkey.clone(), metadata.clone()))
+            .collect::<Vec<_>>();
+        items.sort_by(|left, right| left.0.cmp(&right.0));
+        items
+    }
+}
+
+impl Default for TrustedKeyMapManager {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 pub trait PeerContext: Send + Sync {
@@ -293,6 +406,35 @@ mod tests {
             .to_vec();
 
         assert_eq!(proof, expected);
+    }
+
+    #[test]
+    fn trusted_key_manager_respects_source_filter() {
+        let manager = TrustedKeyMapManager::new();
+        let network_name = "net";
+        let pubkey = vec![1; 32];
+        manager.update_trusted_keys(
+            network_name,
+            HashMap::from([(
+                pubkey.clone(),
+                TrustedKeyMetadata {
+                    source: TrustedKeySource::OspfCredential,
+                    expiry_unix: None,
+                },
+            )]),
+        );
+
+        assert!(manager.verify_trusted_key(&pubkey, network_name));
+        assert!(manager.verify_trusted_key_with_source(
+            &pubkey,
+            network_name,
+            Some(TrustedKeySource::OspfCredential),
+        ));
+        assert!(!manager.verify_trusted_key_with_source(
+            &pubkey,
+            network_name,
+            Some(TrustedKeySource::OspfNode),
+        ));
     }
 
     #[test]

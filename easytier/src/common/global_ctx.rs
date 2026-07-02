@@ -1,18 +1,17 @@
 use std::{
-    collections::{BTreeSet, HashMap, HashSet, hash_map::DefaultHasher},
+    collections::{BTreeSet, HashSet, hash_map::DefaultHasher},
     hash::Hasher,
     net::{IpAddr, Ipv6Addr, SocketAddr},
     sync::{Arc, Mutex},
-    time::{SystemTime, UNIX_EPOCH},
 };
 
 use arc_swap::ArcSwap;
 use async_trait::async_trait;
-use dashmap::DashMap;
 use easytier_core::peers::context::{
     ArcByteLimiter, ByteLimiter, NetworkIdentity as CoreNetworkIdentity, PeerContext, PeerEvent,
-    secret_proof_from_secret,
+    TrustedKeyMapManager, secret_proof_from_secret,
 };
+pub use easytier_core::peers::context::{TrustedKeyMap, TrustedKeyMetadata, TrustedKeySource};
 use easytier_core::peers::public_ipv6::PublicIpv6Runtime;
 
 use super::{
@@ -25,7 +24,6 @@ use super::{
 use crate::{
     common::{
         config::ProxyNetworkConfig,
-        shrink_dashmap,
         stats_manager::{self, StatsManager},
         token_bucket::{TokenBucket, TokenBucketManager},
     },
@@ -96,114 +94,6 @@ pub enum GlobalCtxEvent {
 
 pub type EventBus = tokio::sync::broadcast::Sender<GlobalCtxEvent>;
 pub type EventBusSubscriber = tokio::sync::broadcast::Receiver<GlobalCtxEvent>;
-
-/// Source of a trusted public key from OSPF route propagation
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TrustedKeySource {
-    /// Peer node's noise static pubkey
-    OspfNode,
-    /// Admin-declared trusted credential pubkey
-    OspfCredential,
-}
-
-/// Metadata for a trusted public key
-#[derive(Debug, Clone)]
-pub struct TrustedKeyMetadata {
-    pub source: TrustedKeySource,
-    /// Expiry time in Unix seconds. None means never expires.
-    pub expiry_unix: Option<i64>,
-}
-
-impl TrustedKeyMetadata {
-    pub fn is_expired(&self) -> bool {
-        if let Some(expiry) = self.expiry_unix {
-            let now = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_secs() as i64;
-            return now >= expiry;
-        }
-        false
-    }
-}
-
-// key is (pubkey, network-name)
-pub type TrustedKeyMap = HashMap<Vec<u8>, TrustedKeyMetadata>;
-
-struct TrustedKeyMapManager {
-    network_trusted_keys: DashMap<String, ArcSwap<TrustedKeyMap>>,
-}
-
-impl TrustedKeyMapManager {
-    pub fn new() -> Self {
-        Self {
-            network_trusted_keys: DashMap::new(),
-        }
-    }
-
-    pub fn update_trusted_keys(&self, network_name: &str, trusted_keys: TrustedKeyMap) {
-        match self.network_trusted_keys.entry(network_name.to_string()) {
-            dashmap::Entry::Vacant(entry) => {
-                entry.insert(ArcSwap::new(Arc::new(trusted_keys)));
-            }
-            dashmap::Entry::Occupied(entry) => {
-                entry.get().store(Arc::new(trusted_keys));
-            }
-        }
-    }
-
-    pub fn remove_trusted_keys(&self, network_name: &str) {
-        self.network_trusted_keys.remove(network_name);
-        shrink_dashmap(&self.network_trusted_keys, None);
-    }
-
-    pub fn verify_trusted_key(&self, pubkey: &[u8], network_name: &str) -> bool {
-        self.verify_trusted_key_with_source(pubkey, network_name, None)
-    }
-
-    pub fn verify_trusted_key_with_source(
-        &self,
-        pubkey: &[u8],
-        network_name: &str,
-        source: Option<TrustedKeySource>,
-    ) -> bool {
-        let Some(trusted_keys) = self
-            .network_trusted_keys
-            .get(network_name)
-            .map(|v| v.load_full())
-        else {
-            return false;
-        };
-
-        let Some(metadata) = trusted_keys.get(&pubkey.to_vec()) else {
-            return false;
-        };
-
-        if let Some(source) = source {
-            metadata.source == source && !metadata.is_expired()
-        } else {
-            !metadata.is_expired()
-        }
-    }
-
-    pub fn list_trusted_keys(&self, network_name: &str) -> Vec<(Vec<u8>, TrustedKeyMetadata)> {
-        let Some(trusted_keys) = self
-            .network_trusted_keys
-            .get(network_name)
-            .map(|v| v.load_full())
-        else {
-            return Vec::new();
-        };
-
-        let mut items = trusted_keys
-            .iter()
-            .filter(|(_, metadata)| !metadata.is_expired())
-            .map(|(pubkey, metadata)| (pubkey.clone(), metadata.clone()))
-            .collect::<Vec<_>>();
-        items.sort_by(|left, right| left.0.cmp(&right.0));
-        items
-    }
-}
 
 pub struct GlobalCtx {
     pub inst_name: String,
@@ -1093,7 +983,7 @@ pub mod tests {
         let pubkey = vec![1; 32];
 
         global_ctx.update_trusted_keys(
-            HashMap::from([(
+            std::collections::HashMap::from([(
                 pubkey.clone(),
                 TrustedKeyMetadata {
                     source: TrustedKeySource::OspfCredential,
