@@ -37,9 +37,17 @@ use crossbeam::atomic::AtomicCell;
 use dashmap::DashMap;
 use futures::{SinkExt, StreamExt, stream::FuturesUnordered};
 use rand::RngCore;
+#[cfg(feature = "hotpath")]
+use hotpath::wrap::std::sync::Mutex as StdMutex;
+#[cfg(feature = "hotpath")]
+use hotpath::wrap::tokio::sync::Mutex;
+#[cfg(not(feature = "hotpath"))]
+use std::sync::Mutex as StdMutex;
+#[cfg(not(feature = "hotpath"))]
+use tokio::sync::Mutex;
 use tokio::{
     net::UdpSocket,
-    sync::{Mutex, mpsc::unbounded_channel},
+    sync::mpsc::unbounded_channel,
     task::JoinSet,
 };
 
@@ -347,7 +355,7 @@ struct WgPeer {
     config: WgConfig,
     endpoint: SocketAddr,
 
-    sink: std::sync::Mutex<Option<Pin<Box<dyn ZCPacketSink>>>>,
+    sink: StdMutex<Option<Pin<Box<dyn ZCPacketSink>>>>,
 
     data: Option<WgPeerData>,
     tasks: JoinSet<()>,
@@ -358,19 +366,19 @@ struct WgPeer {
 impl WgPeer {
     fn new(udp: Arc<UdpSocket>, config: WgConfig, endpoint: SocketAddr) -> Self {
         WgPeer {
-            tunn: Some(Mutex::new(Tunn::new(
+            tunn: Some(hotpath::mutex!(tokio::sync::Mutex::new(Tunn::new(
                 config.my_secret_key.clone(),
                 config.peer_public_key,
                 None,
                 None,
                 rand::thread_rng().next_u32(),
                 None,
-            ))),
+            )))),
 
             udp,
             config,
             endpoint,
-            sink: std::sync::Mutex::new(None),
+            sink: hotpath::mutex!(std::sync::Mutex::new(None)),
 
             data: None,
             tasks: JoinSet::new(),
@@ -379,6 +387,7 @@ impl WgPeer {
         }
     }
 
+    #[cfg_attr(feature = "hotpath", hotpath::measure(impl_type = "WgTunnel"))]
     async fn handle_packet_from_me<S: ZCPacketStream + Unpin>(mut stream: S, data: WgPeerData) {
         while let Some(Ok(packet)) = stream.next().await {
             let ret = data.handle_one_packet_from_me(packet).await;
@@ -390,6 +399,7 @@ impl WgPeer {
             .store(true, std::sync::atomic::Ordering::Relaxed);
     }
 
+    #[cfg_attr(feature = "hotpath", hotpath::measure(impl_type = "WgTunnel"))]
     async fn handle_packet_from_peer(&self, packet: &[u8]) {
         self.access_time.store(Instant::now());
         tracing::trace!("Received {} bytes from peer", packet.len());
@@ -474,7 +484,7 @@ pub struct WgTunnelListener {
 
 impl WgTunnelListener {
     pub fn new(addr: url::Url, config: WgConfig) -> Self {
-        let (conn_send, conn_recv) = unbounded_channel();
+        let (conn_send, conn_recv) = hotpath::channel!(unbounded_channel());
         WgTunnelListener {
             addr,
             config,

@@ -24,6 +24,16 @@ pub static malloc_conf: &[u8] = b"retain:false\0";
 rust_i18n::i18n!("locales", fallback = "en");
 
 #[tokio::main(flavor = "current_thread")]
+#[cfg_attr(
+    all(
+        feature = "hotpath",
+        not(all(
+            feature = "hotpath-alloc",
+            any(feature = "jemalloc", feature = "mimalloc")
+        ))
+    ),
+    hotpath::main
+)]
 async fn main() -> std::process::ExitCode {
     core::main().await
 }

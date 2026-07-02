@@ -2,6 +2,9 @@ use std::sync::Arc;
 
 use crossbeam::atomic::AtomicCell;
 use dashmap::{DashMap, DashSet};
+#[cfg(feature = "hotpath")]
+use hotpath::wrap::parking_lot::RwLock;
+#[cfg(not(feature = "hotpath"))]
 use parking_lot::RwLock;
 
 use tokio::{select, sync::mpsc};
@@ -56,7 +59,7 @@ impl Peer {
         let shutdown_notifier = Arc::new(tokio::sync::Notify::new());
         let peer_identity_type = Arc::new(AtomicCell::new(None));
         let peer_identity_type_copy = peer_identity_type.clone();
-        let peer_public_key = Arc::new(RwLock::new(None));
+        let peer_public_key = Arc::new(hotpath::rw_lock!(parking_lot::RwLock::new(None)));
         let peer_public_key_copy = peer_public_key.clone();
 
         let conns_copy = conns.clone();
@@ -207,6 +210,7 @@ impl Peer {
             .map(|conn| conn.clone())
     }
 
+    #[cfg_attr(feature = "hotpath", hotpath::measure(impl_type = "Peer"))]
     pub async fn send_msg(&self, msg: ZCPacket) -> Result<(), Error> {
         let Some(conn) = self.select_conn().await else {
             return Err(Error::PeerNoConnectionError(self.peer_node_id));

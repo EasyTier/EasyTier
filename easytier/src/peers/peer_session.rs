@@ -1,7 +1,11 @@
 use std::sync::{
-    Arc, RwLock,
+    Arc,
     atomic::{AtomicBool, Ordering},
 };
+#[cfg(feature = "hotpath")]
+use hotpath::wrap::std::sync::RwLock;
+#[cfg(not(feature = "hotpath"))]
+use std::sync::RwLock;
 use std::time::Duration;
 
 use anyhow::anyhow;
@@ -262,7 +266,7 @@ impl std::fmt::Debug for PeerSession {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("PeerSession")
             .field("peer_id", &self.peer_id)
-            .field("peer_static_pubkey", &self.peer_static_pubkey)
+            .field("peer_static_pubkey", &*self.peer_static_pubkey.read().unwrap())
             .field("datagram", &self.datagram)
             .finish()
     }
@@ -282,7 +286,7 @@ impl PeerSession {
     ) -> Self {
         Self {
             peer_id,
-            peer_static_pubkey: RwLock::new(peer_static_pubkey),
+            peer_static_pubkey: hotpath::rw_lock!(std::sync::RwLock::new(peer_static_pubkey)),
             datagram: SecureDatagramSession::new(
                 root_key,
                 session_generation,
@@ -376,6 +380,7 @@ impl PeerSession {
         }
     }
 
+    #[cfg_attr(feature = "hotpath", hotpath::measure(impl_type = "PeerSession"))]
     pub fn encrypt_payload(
         &self,
         sender_peer_id: PeerId,
@@ -389,6 +394,7 @@ impl PeerSession {
             .encrypt_payload(Self::dir_for_sender(sender_peer_id, receiver_peer_id), pkt)
     }
 
+    #[cfg_attr(feature = "hotpath", hotpath::measure(impl_type = "PeerSession"))]
     pub fn decrypt_payload(
         &self,
         sender_peer_id: PeerId,

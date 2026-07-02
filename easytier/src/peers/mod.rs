@@ -59,8 +59,9 @@ type BoxNicPacketFilter = Box<dyn NicPacketFilter + Send + Sync>;
 pub type PacketRecvChan = tokio::sync::mpsc::Sender<ZCPacket>;
 pub type PacketRecvChanReceiver = tokio::sync::mpsc::Receiver<ZCPacket>;
 pub fn create_packet_recv_chan() -> (PacketRecvChan, PacketRecvChanReceiver) {
-    tokio::sync::mpsc::channel(128)
+    hotpath::channel!(tokio::sync::mpsc::channel(128))
 }
+#[cfg_attr(feature = "hotpath", hotpath::measure())]
 pub async fn recv_packet_from_chan(
     packet_recv_chan_receiver: &mut PacketRecvChanReceiver,
 ) -> Result<ZCPacket, anyhow::Error> {

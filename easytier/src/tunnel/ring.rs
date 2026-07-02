@@ -196,7 +196,7 @@ pub struct RingTunnelListener {
 
 impl RingTunnelListener {
     pub fn new(key: url::Url) -> Self {
-        let (conn_sender, conn_receiver) = unbounded_channel();
+        let (conn_sender, conn_receiver) = hotpath::channel!(unbounded_channel());
         RingTunnelListener {
             listener_addr: key,
             conn_sender,

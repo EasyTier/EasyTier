@@ -19,6 +19,7 @@ use futures::SinkExt;
 pub struct MpscTunnelSender(Sender<ZCPacket>);
 
 impl MpscTunnelSender {
+    #[cfg_attr(feature = "hotpath", hotpath::measure(impl_type = "MpscTunnelSender"))]
     pub async fn send(&self, item: ZCPacket) -> Result<(), TunnelError> {
         self.0.send(item).await.with_context(|| "send error")?;
         Ok(())
@@ -43,7 +44,7 @@ pub struct MpscTunnel<T> {
 
 impl<T: Tunnel> MpscTunnel<T> {
     pub fn new(tunnel: T, send_timeout: Option<Duration>) -> Self {
-        let (tx, mut rx) = channel(32);
+        let (tx, mut rx) = hotpath::channel!(channel(32));
         let (stream, mut sink) = tunnel.split();
 
         let task = tokio::spawn(async move {
@@ -66,6 +67,7 @@ impl<T: Tunnel> MpscTunnel<T> {
         }
     }
 
+    #[cfg_attr(feature = "hotpath", hotpath::measure(impl_type = "MpscTunnel"))]
     async fn forward_one_round(
         rx: &mut Receiver<ZCPacket>,
         sink: &mut Pin<Box<dyn ZCPacketSink>>,
@@ -79,6 +81,7 @@ impl<T: Tunnel> MpscTunnel<T> {
         }
     }
 
+    #[cfg_attr(feature = "hotpath", hotpath::measure(impl_type = "MpscTunnel"))]
     async fn forward_one_round_no_timeout(
         rx: &mut Receiver<ZCPacket>,
         sink: &mut Pin<Box<dyn ZCPacketSink>>,
@@ -96,6 +99,7 @@ impl<T: Tunnel> MpscTunnel<T> {
         sink.flush().await
     }
 
+    #[cfg_attr(feature = "hotpath", hotpath::measure(impl_type = "MpscTunnel"))]
     async fn forward_one_round_with_timeout(
         rx: &mut Receiver<ZCPacket>,
         sink: &mut Pin<Box<dyn ZCPacketSink>>,
