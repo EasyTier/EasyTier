@@ -13,10 +13,7 @@ use std::{
 };
 
 use tokio::sync::{Mutex, RwLock};
-use tokio::{
-    sync::mpsc::{self, UnboundedReceiver, UnboundedSender},
-    task::JoinSet,
-};
+use tokio::{sync::mpsc::UnboundedSender, task::JoinSet};
 
 use crate::{
     common::{
@@ -32,7 +29,6 @@ use crate::{
     peers::{
         PeerPacketFilter,
         peer_conn::PeerConn,
-        peer_rpc::PeerRpcManagerTransport,
         peer_session::PeerSessionStore,
         recv_packet_from_chan,
         route_trait::{ForeignNetworkRouteInfoMap, MockRoute, NextHopPolicy, RouteInterface},
@@ -71,53 +67,6 @@ use super::{
     relay_peer_map::{RelayPeerMap, new_relay_peer_map},
     route_trait::{ArcRoute, Route},
 };
-
-struct RpcTransport {
-    my_peer_id: PeerId,
-    peers: Weak<PeerMap>,
-    // TODO: this seems can be removed
-    foreign_peers: Mutex<Option<Weak<ForeignNetworkClient>>>,
-
-    packet_recv: Mutex<UnboundedReceiver<ZCPacket>>,
-    peer_rpc_tspt_sender: UnboundedSender<ZCPacket>,
-
-    encryptor: Arc<dyn Encryptor>,
-    is_secure_mode_enabled: bool,
-}
-
-#[async_trait::async_trait]
-impl PeerRpcManagerTransport for RpcTransport {
-    fn my_peer_id(&self) -> PeerId {
-        self.my_peer_id
-    }
-
-    async fn send(&self, mut msg: ZCPacket, dst_peer_id: PeerId) -> anyhow::Result<()> {
-        let peers = self.peers.upgrade().ok_or(Error::Unknown)?;
-        // NOTE: if route info is not exchanged, this will return None. treat it as public server.
-        let is_dst_peer_public_server = peers
-            .get_route_peer_info(dst_peer_id)
-            .await
-            .and_then(|x| x.feature_flag.map(|x| x.is_public_server))
-            // if dst is directly connected, it's must not public server
-            .unwrap_or(!peers.has_peer(dst_peer_id));
-        if !is_dst_peer_public_server && !self.is_secure_mode_enabled {
-            self.encryptor
-                .encrypt(&mut msg)
-                .with_context(|| "encrypt failed")?;
-        }
-        // send to self and this packet will be forwarded in peer_recv loop
-        peers.send_msg_directly(msg, self.my_peer_id).await?;
-        Ok(())
-    }
-
-    async fn recv(&self) -> anyhow::Result<ZCPacket> {
-        if let Some(o) = self.packet_recv.lock().await.recv().await {
-            Ok(o)
-        } else {
-            Err(Error::Unknown.into())
-        }
-    }
-}
 
 pub enum RouteAlgoType {
     Ospf,
@@ -158,7 +107,7 @@ pub struct PeerManager {
     peers: Arc<PeerMap>,
 
     peer_rpc_mgr: Arc<PeerRpcManager>,
-    peer_rpc_tspt: Arc<RpcTransport>,
+    peer_rpc_tspt: Arc<core_peer_manager::RpcTransport>,
 
     peer_packet_process_pipeline: Arc<RwLock<Vec<BoxPeerPacketFilter>>>,
     nic_packet_process_pipeline: Arc<RwLock<Vec<BoxNicPacketFilter>>>,
@@ -273,17 +222,12 @@ impl PeerManager {
             .map(|cfg| cfg.enabled)
             .unwrap_or(false);
 
-        // TODO: remove these because we have impl pipeline processor.
-        let (peer_rpc_tspt_sender, peer_rpc_tspt_recv) = mpsc::unbounded_channel();
-        let rpc_tspt = Arc::new(RpcTransport {
+        let rpc_tspt = core_peer_manager::RpcTransport::new(
             my_peer_id,
-            peers: Arc::downgrade(&peers),
-            foreign_peers: Mutex::new(None),
-            packet_recv: Mutex::new(peer_rpc_tspt_recv),
-            peer_rpc_tspt_sender,
-            encryptor: encryptor.clone(),
+            peers.downgrade_core(),
+            encryptor.clone(),
             is_secure_mode_enabled,
-        });
+        );
         let peer_rpc_mgr = Arc::new(PeerRpcManager::new_with_stats_manager(
             rpc_tspt.clone(),
             global_ctx.stats_manager().clone(),
@@ -1263,7 +1207,7 @@ impl PeerManager {
             }
         }
         self.add_packet_process_pipeline(Box::new(PeerRpcPacketProcessor {
-            peer_rpc_tspt_sender: self.peer_rpc_tspt.peer_rpc_tspt_sender.clone(),
+            peer_rpc_tspt_sender: self.peer_rpc_tspt.packet_sender(),
         }))
         .await;
     }
@@ -1879,10 +1823,8 @@ impl PeerManager {
 
     async fn run_foriegn_network(&self) {
         self.peer_rpc_tspt
-            .foreign_peers
-            .lock()
-            .await
-            .replace(Arc::downgrade(&self.foreign_network_client));
+            .set_foreign_peers(Some(Arc::downgrade(&self.foreign_network_client)))
+            .await;
 
         self.foreign_network_client.run().await;
     }

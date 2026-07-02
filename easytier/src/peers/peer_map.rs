@@ -1,6 +1,6 @@
 use std::{
     net::{Ipv4Addr, Ipv6Addr},
-    sync::Arc,
+    sync::{Arc, Weak},
 };
 
 use dashmap::{DashMap, DashSet};
@@ -29,14 +29,18 @@ use super::{
 };
 
 pub struct PeerMap {
-    core: CorePeerMap,
+    core: Arc<CorePeerMap>,
     global_ctx: ArcGlobalCtx,
 }
 
 impl PeerMap {
     pub fn new(packet_send: PacketRecvChan, global_ctx: ArcGlobalCtx, my_peer_id: PeerId) -> Self {
         Self {
-            core: CorePeerMap::new(packet_send, global_ctx.clone(), my_peer_id),
+            core: Arc::new(CorePeerMap::new(
+                packet_send,
+                global_ctx.clone(),
+                my_peer_id,
+            )),
             global_ctx,
         }
     }
@@ -209,7 +213,11 @@ impl PeerMap {
     }
 
     pub fn as_core(&self) -> &CorePeerMap {
-        &self.core
+        self.core.as_ref()
+    }
+
+    pub fn downgrade_core(&self) -> Weak<CorePeerMap> {
+        Arc::downgrade(&self.core)
     }
 }
 

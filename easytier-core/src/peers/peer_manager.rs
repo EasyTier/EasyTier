@@ -1,12 +1,96 @@
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
+
+use anyhow::Context;
+use tokio::sync::{
+    Mutex,
+    mpsc::{self, UnboundedReceiver, UnboundedSender},
+};
 
 use crate::{config::PeerId, packet::ZCPacket};
 
 use super::{
-    error::Error, foreign_network_client::ForeignNetworkClient, peer_map::PeerMap,
-    relay_peer_map::RelayPeerMap, route_trait::NextHopPolicy,
-    traffic_metrics::TrafficMetricRecorder,
+    encrypt::Encryptor, error::Error, foreign_network_client::ForeignNetworkClient,
+    peer_map::PeerMap, peer_rpc::PeerRpcManagerTransport, relay_peer_map::RelayPeerMap,
+    route_trait::NextHopPolicy, traffic_metrics::TrafficMetricRecorder,
 };
+
+pub struct RpcTransport {
+    my_peer_id: PeerId,
+    peers: Weak<PeerMap>,
+    // TODO: this seems can be removed
+    foreign_peers: Mutex<Option<Weak<ForeignNetworkClient>>>,
+
+    packet_recv: Mutex<UnboundedReceiver<ZCPacket>>,
+    peer_rpc_tspt_sender: UnboundedSender<ZCPacket>,
+
+    encryptor: Arc<dyn Encryptor>,
+    is_secure_mode_enabled: bool,
+}
+
+impl RpcTransport {
+    pub fn new(
+        my_peer_id: PeerId,
+        peers: Weak<PeerMap>,
+        encryptor: Arc<dyn Encryptor>,
+        is_secure_mode_enabled: bool,
+    ) -> Arc<Self> {
+        let (peer_rpc_tspt_sender, peer_rpc_tspt_recv) = mpsc::unbounded_channel();
+        Arc::new(Self {
+            my_peer_id,
+            peers,
+            foreign_peers: Mutex::new(None),
+            packet_recv: Mutex::new(peer_rpc_tspt_recv),
+            peer_rpc_tspt_sender,
+            encryptor,
+            is_secure_mode_enabled,
+        })
+    }
+
+    pub fn packet_sender(&self) -> UnboundedSender<ZCPacket> {
+        self.peer_rpc_tspt_sender.clone()
+    }
+
+    pub async fn set_foreign_peers(&self, foreign_peers: Option<Weak<ForeignNetworkClient>>) {
+        *self.foreign_peers.lock().await = foreign_peers;
+    }
+}
+
+#[async_trait::async_trait]
+impl PeerRpcManagerTransport for RpcTransport {
+    fn my_peer_id(&self) -> PeerId {
+        self.my_peer_id
+    }
+
+    async fn send(&self, mut msg: ZCPacket, dst_peer_id: PeerId) -> anyhow::Result<()> {
+        let peers = self
+            .peers
+            .upgrade()
+            .ok_or_else(|| anyhow::anyhow!("peer map is gone"))?;
+        // NOTE: if route info is not exchanged, this will return None. treat it as public server.
+        let is_dst_peer_public_server = peers
+            .get_route_peer_info(dst_peer_id)
+            .await
+            .and_then(|x| x.feature_flag.map(|x| x.is_public_server))
+            // if dst is directly connected, it's must not public server
+            .unwrap_or(!peers.has_peer(dst_peer_id));
+        if !is_dst_peer_public_server && !self.is_secure_mode_enabled {
+            self.encryptor
+                .encrypt(&mut msg)
+                .with_context(|| "encrypt failed")?;
+        }
+        // send to self and this packet will be forwarded in peer_recv loop
+        peers.send_msg_directly(msg, self.my_peer_id).await?;
+        Ok(())
+    }
+
+    async fn recv(&self) -> anyhow::Result<ZCPacket> {
+        if let Some(o) = self.packet_recv.lock().await.recv().await {
+            Ok(o)
+        } else {
+            Err(anyhow::anyhow!("rpc transport is closed"))
+        }
+    }
+}
 
 pub fn get_next_hop_policy(is_latency_first: bool) -> NextHopPolicy {
     if is_latency_first {
