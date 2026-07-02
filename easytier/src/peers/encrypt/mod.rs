@@ -1,60 +1,16 @@
-use crate::{
-    common::{config::EncryptionAlgorithm, log},
-    tunnel::packet_def::ZCPacket,
-};
+use crate::common::{config::EncryptionAlgorithm, log};
 use std::sync::Arc;
 
 #[cfg(feature = "wireguard")]
 pub mod ring;
 
 #[cfg(feature = "aes-gcm")]
-pub mod aes_gcm;
+pub use easytier_core::peers::encrypt::aes_gcm;
 
 #[cfg(feature = "openssl-crypto")]
 pub mod openssl;
 
-pub mod xor;
-
-#[derive(thiserror::Error, Debug)]
-pub enum Error {
-    #[error("packet is too short. len: {0}")]
-    PacketTooShort(usize),
-    #[error("decryption failed")]
-    DecryptionFailed,
-    #[error("encryption failed")]
-    EncryptionFailed,
-    #[error("invalid tag. tag: {0:?}")]
-    InvalidTag(Vec<u8>),
-}
-
-pub trait Encryptor: Send + Sync + 'static {
-    fn decrypt(&self, zc_packet: &mut ZCPacket) -> Result<(), Error>;
-    fn encrypt(&self, zc_packet: &mut ZCPacket) -> Result<(), Error>;
-    fn encrypt_with_nonce(
-        &self,
-        zc_packet: &mut ZCPacket,
-        _nonce: Option<&[u8]>,
-    ) -> Result<(), Error> {
-        self.encrypt(zc_packet)
-    }
-}
-
-pub struct NullCipher;
-
-impl Encryptor for NullCipher {
-    fn decrypt(&self, zc_packet: &mut ZCPacket) -> Result<(), Error> {
-        let pm_header = zc_packet.peer_manager_header().unwrap();
-        if pm_header.is_encrypted() {
-            Err(Error::DecryptionFailed)
-        } else {
-            Ok(())
-        }
-    }
-
-    fn encrypt(&self, _zc_packet: &mut ZCPacket) -> Result<(), Error> {
-        Ok(())
-    }
-}
+pub use easytier_core::peers::encrypt::{Encryptor, Error, NullCipher, xor};
 
 /// Create an encryptor based on the algorithm name
 pub fn create_encryptor(
