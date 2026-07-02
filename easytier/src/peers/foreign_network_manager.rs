@@ -18,7 +18,7 @@ use easytier_core::peers::foreign_network_manager as core_foreign_network_manage
 pub use easytier_core::peers::foreign_network_manager::{
     ForeignNetworkRouteInfo, ForeignNetworkRouteInfoProvider, GlobalForeignNetworkAccessor,
 };
-use easytier_core::peers::peer_manager::ForeignNetworkPacketHandler;
+use easytier_core::peers::peer_manager::{self as core_peer_manager, ForeignNetworkPacketHandler};
 use guarden::{Guard, defer};
 use tokio::{
     sync::{Mutex, mpsc::UnboundedSender},
@@ -1008,6 +1008,23 @@ impl ForeignNetworkPacketHandler for ForeignNetworkManager {
         ForeignNetworkManager::forward_foreign_network_packet(self, network_name, dst_peer_id, msg)
             .await
             .map_err(Into::into)
+    }
+}
+
+#[async_trait::async_trait]
+impl core_peer_manager::ForeignPeerConnectionCloser for ForeignNetworkManager {
+    async fn close_peer_conn(
+        &self,
+        peer_id: PeerId,
+        conn_id: &super::peer_conn::PeerConnId,
+    ) -> Result<(), easytier_core::peers::error::Error> {
+        ForeignNetworkManager::close_peer_conn(self, peer_id, conn_id)
+            .await
+            .map_err(|err| match err {
+                Error::NotFound => easytier_core::peers::error::Error::NotFound,
+                Error::RouteError(msg) => easytier_core::peers::error::Error::RouteError(msg),
+                err => easytier_core::peers::error::Error::Other(anyhow::anyhow!(err)),
+            })
     }
 }
 

@@ -28,7 +28,7 @@ use super::{
     error::Error,
     foreign_network_client::ForeignNetworkClient,
     foreign_network_manager::ForeignNetworkRouteInfoProvider,
-    peer_conn::PeerConn,
+    peer_conn::{PeerConn, PeerConnId},
     peer_map::PeerMap,
     peer_rpc::PeerRpcManagerTransport,
     peer_session::PeerSessionStore,
@@ -208,6 +208,41 @@ pub async fn close_untrusted_credential_peers<F>(
             tracing::warn!(?e, ?peer_id, "failed to close untrusted credential peer");
         }
     }
+}
+
+#[async_trait::async_trait]
+#[auto_impl::auto_impl(&, Arc)]
+pub trait ForeignPeerConnectionCloser: Send + Sync {
+    async fn close_peer_conn(&self, peer_id: PeerId, conn_id: &PeerConnId) -> Result<(), Error>;
+}
+
+pub async fn close_peer_conn(
+    peers: &PeerMap,
+    foreign_network_client: &ForeignNetworkClient,
+    foreign_network_manager: &(dyn ForeignPeerConnectionCloser + Send + Sync),
+    peer_id: PeerId,
+    conn_id: &PeerConnId,
+) -> Result<(), Error> {
+    let ret = peers.close_peer_conn(peer_id, conn_id).await;
+    tracing::info!("close_peer_conn in peer map: {:?}", ret);
+    if ret.is_ok() || !matches!(ret.as_ref().unwrap_err(), Error::NotFound) {
+        return ret;
+    }
+
+    let ret = foreign_network_client
+        .get_peer_map()
+        .close_peer_conn(peer_id, conn_id)
+        .await;
+    tracing::info!("close_peer_conn in foreign network client: {:?}", ret);
+    if ret.is_ok() || !matches!(ret.as_ref().unwrap_err(), Error::NotFound) {
+        return ret;
+    }
+
+    let ret = foreign_network_manager
+        .close_peer_conn(peer_id, conn_id)
+        .await;
+    tracing::info!("close_peer_conn in foreign network manager done: {:?}", ret);
+    ret
 }
 
 // Keep lazy-p2p demand alive across the 5s task rescan interval and a full on-demand

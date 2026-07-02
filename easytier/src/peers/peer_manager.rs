@@ -1120,33 +1120,15 @@ impl PeerManager {
         peer_id: PeerId,
         conn_id: &PeerConnId,
     ) -> Result<(), Error> {
-        let ret = self
-            .peers
-            .close_peer_conn(peer_id, conn_id)
-            .await
-            .map_err(Error::from);
-        tracing::info!("close_peer_conn in peer map: {:?}", ret);
-        if ret.is_ok() || !matches!(ret.as_ref().unwrap_err(), Error::NotFound) {
-            return ret;
-        }
-
-        let ret = self
-            .foreign_network_client
-            .get_peer_map()
-            .close_peer_conn(peer_id, conn_id)
-            .await
-            .map_err(Error::from);
-        tracing::info!("close_peer_conn in foreign network client: {:?}", ret);
-        if ret.is_ok() || !matches!(ret.as_ref().unwrap_err(), Error::NotFound) {
-            return ret;
-        }
-
-        let ret = self
-            .foreign_network_manager
-            .close_peer_conn(peer_id, conn_id)
-            .await;
-        tracing::info!("close_peer_conn in foreign network manager done: {:?}", ret);
-        ret
+        core_peer_manager::close_peer_conn(
+            self.peers.as_ref(),
+            &self.foreign_network_client,
+            self.foreign_network_manager.as_ref(),
+            peer_id,
+            conn_id,
+        )
+        .await
+        .map_err(Error::from)
     }
 
     pub async fn check_allow_kcp_to_dst(&self, dst_ip: &IpAddr) -> bool {
