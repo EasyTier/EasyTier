@@ -9,6 +9,12 @@ pub mod credential_manager {
 pub mod peer_conn {
     pub use easytier_core::peers::peer_conn::*;
 
+    pub(crate) fn core_conn_info_to_api(
+        info: easytier_core::proto::core_peer::peer::PeerConnInfo,
+    ) -> crate::proto::api::instance::PeerConnInfo {
+        info.into()
+    }
+
     #[cfg(test)]
     pub mod tests {
         use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
