@@ -18,6 +18,7 @@ use crate::{
     config::PeerId,
     packet::{CompressorAlgo, PacketType, ZCPacket},
     proto::core_peer::peer::Route as CoreRoute,
+    tunnel::Tunnel,
 };
 
 use super::{
@@ -243,6 +244,83 @@ pub async fn close_peer_conn(
         .await;
     tracing::info!("close_peer_conn in foreign network manager done: {:?}", ret);
     ret
+}
+
+pub struct PeerConnectionAdmission {
+    my_peer_id: PeerId,
+    context: ArcPeerContext,
+    peers: Arc<PeerMap>,
+    foreign_network_client: Arc<ForeignNetworkClient>,
+    peer_session_store: Arc<PeerSessionStore>,
+    recent_traffic: RecentTrafficTracker,
+}
+
+impl PeerConnectionAdmission {
+    pub fn new(
+        my_peer_id: PeerId,
+        context: ArcPeerContext,
+        peers: Arc<PeerMap>,
+        foreign_network_client: Arc<ForeignNetworkClient>,
+        peer_session_store: Arc<PeerSessionStore>,
+        recent_traffic: RecentTrafficTracker,
+    ) -> Self {
+        Self {
+            my_peer_id,
+            context,
+            peers,
+            foreign_network_client,
+            peer_session_store,
+            recent_traffic,
+        }
+    }
+
+    pub async fn add_client_tunnel(
+        &self,
+        tunnel: Box<dyn Tunnel>,
+        is_directly_connected: bool,
+    ) -> Result<(PeerId, PeerConnId), Error> {
+        self.add_client_tunnel_with_peer_id_hint(tunnel, is_directly_connected, None)
+            .await
+    }
+
+    pub async fn add_client_tunnel_with_peer_id_hint(
+        &self,
+        tunnel: Box<dyn Tunnel>,
+        is_directly_connected: bool,
+        peer_id_hint: Option<PeerId>,
+    ) -> Result<(PeerId, PeerConnId), Error> {
+        let mut peer = PeerConn::new_with_peer_id_hint(
+            self.my_peer_id,
+            self.context.clone(),
+            tunnel,
+            peer_id_hint,
+            self.peer_session_store.clone(),
+        );
+        peer.set_is_hole_punched(!is_directly_connected);
+        peer.do_handshake_as_client().await?;
+        let conn_id = peer.get_conn_id();
+        let peer_id = peer.get_peer_id();
+        let local_identity = self.context.network_identity();
+        if peer.get_network_identity().network_name == local_identity.network_name {
+            let local_secure_mode = self
+                .context
+                .secure_mode()
+                .as_ref()
+                .map(|cfg| cfg.enabled)
+                .unwrap_or(false);
+            let peer_id = add_new_peer_conn(
+                self.peers.as_ref(),
+                &local_identity,
+                local_secure_mode,
+                peer,
+            )
+            .await?;
+            self.recent_traffic.clear(peer_id);
+        } else {
+            self.foreign_network_client.add_new_peer_conn(peer).await?;
+        }
+        Ok((peer_id, conn_id))
+    }
 }
 
 // Keep lazy-p2p demand alive across the 5s task rescan interval and a full on-demand

@@ -113,6 +113,7 @@ pub struct PeerManager {
     foreign_network_client: Arc<ForeignNetworkClient>,
     relay_peer_map: Arc<RelayPeerMap>,
 
+    peer_connection_admission: core_peer_manager::PeerConnectionAdmission,
     outbound_packet_router: core_peer_manager::PeerOutboundPacketRouter,
 
     encryptor: Arc<dyn Encryptor + 'static>,
@@ -314,6 +315,14 @@ impl PeerManager {
         let nic_packet_process_pipeline = Arc::new(RwLock::new(Vec::new()));
         let exit_nodes = Arc::new(RwLock::new(exit_nodes));
         let recent_traffic = core_peer_manager::RecentTrafficTracker::new(my_peer_id);
+        let peer_connection_admission = core_peer_manager::PeerConnectionAdmission::new(
+            my_peer_id,
+            global_ctx.clone(),
+            peers.clone(),
+            foreign_network_client.clone(),
+            peer_session_store.clone(),
+            recent_traffic.clone(),
+        );
         let outbound_packet_router = core_peer_manager::PeerOutboundPacketRouter::new(
             my_peer_id,
             global_ctx.clone(),
@@ -359,6 +368,7 @@ impl PeerManager {
             foreign_network_client,
             relay_peer_map,
 
+            peer_connection_admission,
             outbound_packet_router,
 
             encryptor,
@@ -449,8 +459,10 @@ impl PeerManager {
         tunnel: Box<dyn Tunnel>,
         is_directly_connected: bool,
     ) -> Result<(PeerId, PeerConnId), Error> {
-        self.add_client_tunnel_with_peer_id_hint(tunnel, is_directly_connected, None)
+        self.peer_connection_admission
+            .add_client_tunnel(tunnel, is_directly_connected)
             .await
+            .map_err(Error::from)
     }
 
     pub async fn add_client_tunnel_with_peer_id_hint(
@@ -459,25 +471,10 @@ impl PeerManager {
         is_directly_connected: bool,
         peer_id_hint: Option<PeerId>,
     ) -> Result<(PeerId, PeerConnId), Error> {
-        let mut peer = PeerConn::new_with_peer_id_hint(
-            self.my_peer_id,
-            self.global_ctx.clone(),
-            tunnel,
-            peer_id_hint,
-            self.peer_session_store.clone(),
-        );
-        peer.set_is_hole_punched(!is_directly_connected);
-        peer.do_handshake_as_client().await?;
-        let conn_id = peer.get_conn_id();
-        let peer_id = peer.get_peer_id();
-        if peer.get_network_identity().network_name
-            == self.global_ctx.get_network_identity().network_name
-        {
-            self.add_new_peer_conn(peer).await?;
-        } else {
-            self.foreign_network_client.add_new_peer_conn(peer).await?;
-        }
-        Ok((peer_id, conn_id))
+        self.peer_connection_admission
+            .add_client_tunnel_with_peer_id_hint(tunnel, is_directly_connected, peer_id_hint)
+            .await
+            .map_err(Error::from)
     }
 
     pub fn has_directly_connected_conn(&self, peer_id: PeerId) -> bool {
