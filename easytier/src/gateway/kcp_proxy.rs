@@ -29,7 +29,7 @@ use crate::{
         global_ctx::{ArcGlobalCtx, GlobalCtx},
     },
     gateway::wrapped_proxy::{ProxyAclHandler, TcpProxyForWrappedSrcTrait},
-    peers::{PeerPacketFilter, peer_manager::PeerManager},
+    peers::{NicPacketFilter, PeerPacketFilter, peer_manager::PeerManager},
     proto::{
         acl::{ChainType, Protocol},
         api::instance::{
@@ -210,6 +210,13 @@ impl TcpProxyForWrappedSrcTrait for TcpProxyForKcpSrc {
         peer_manager
             .check_allow_kcp_to_dst(&IpAddr::V4(*dst_ip))
             .await
+    }
+}
+
+#[async_trait::async_trait]
+impl NicPacketFilter for TcpProxyForKcpSrc {
+    async fn try_process_packet_from_nic(&self, zc_packet: &mut ZCPacket) -> bool {
+        self.try_process_wrapped_packet_from_nic(zc_packet).await
     }
 }
 

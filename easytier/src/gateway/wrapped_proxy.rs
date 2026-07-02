@@ -71,11 +71,8 @@ pub(crate) trait TcpProxyForWrappedSrcTrait: Send + Sync + 'static {
     fn get_tcp_proxy(&self) -> &Arc<TcpProxy<Self::Connector>>;
     fn mark_src_modified(hdr: &mut PeerManagerHeader) -> &mut PeerManagerHeader;
     async fn check_dst_allow_wrapped_input(&self, dst_ip: &Ipv4Addr) -> bool;
-}
 
-#[async_trait::async_trait]
-impl<C: NatDstConnector, T: TcpProxyForWrappedSrcTrait<Connector = C>> NicPacketFilter for T {
-    async fn try_process_packet_from_nic(&self, zc_packet: &mut ZCPacket) -> bool {
+    async fn try_process_wrapped_packet_from_nic(&self, zc_packet: &mut ZCPacket) -> bool {
         let ret = self
             .get_tcp_proxy()
             .try_process_packet_from_nic(zc_packet)

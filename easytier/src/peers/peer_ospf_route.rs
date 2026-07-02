@@ -4154,7 +4154,7 @@ impl Route for PeerRoute {
     }
 }
 
-impl PeerPacketFilter for Arc<PeerRoute> {}
+impl PeerPacketFilter for PeerRoute {}
 
 #[cfg(test)]
 mod tests {

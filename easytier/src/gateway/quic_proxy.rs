@@ -4,8 +4,8 @@ use crate::common::global_ctx::{ArcGlobalCtx, GlobalCtx};
 use crate::gateway::CidrSet;
 use crate::gateway::tcp_proxy::{NatDstConnector, TcpProxy};
 use crate::gateway::wrapped_proxy::{ProxyAclHandler, TcpProxyForWrappedSrcTrait};
-use crate::peers::PeerPacketFilter;
 use crate::peers::peer_manager::PeerManager;
+use crate::peers::{NicPacketFilter, PeerPacketFilter};
 use crate::proto::acl::{ChainType, Protocol};
 use crate::proto::api::instance::{
     ListTcpProxyEntryRequest, ListTcpProxyEntryResponse, TcpProxyEntry, TcpProxyEntryState,
@@ -454,6 +454,13 @@ impl TcpProxyForWrappedSrcTrait for TcpProxyForQuicSrc {
         peer_manager
             .check_allow_quic_to_dst(&IpAddr::V4(*dst_ip))
             .await
+    }
+}
+
+#[async_trait::async_trait]
+impl NicPacketFilter for TcpProxyForQuicSrc {
+    async fn try_process_packet_from_nic(&self, zc_packet: &mut ZCPacket) -> bool {
+        self.try_process_wrapped_packet_from_nic(zc_packet).await
     }
 }
 

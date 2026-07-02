@@ -28,31 +28,9 @@ pub mod peer_task;
 #[cfg(test)]
 pub mod tests;
 
-use crate::tunnel::packet_def::ZCPacket;
-
-#[async_trait::async_trait]
-#[auto_impl::auto_impl(Arc)]
-pub trait PeerPacketFilter {
-    async fn try_process_packet_from_peer(&self, zc_packet: ZCPacket) -> Option<ZCPacket> {
-        Some(zc_packet)
-    }
-}
-
-#[async_trait::async_trait]
-#[auto_impl::auto_impl(Arc)]
-pub trait NicPacketFilter {
-    async fn try_process_packet_from_nic(&self, data: &mut ZCPacket) -> bool;
-
-    fn id(&self) -> String {
-        format!("{:p}", self)
-    }
-}
-
-type BoxPeerPacketFilter = Box<dyn PeerPacketFilter + Send + Sync>;
-type BoxNicPacketFilter = Box<dyn NicPacketFilter + Send + Sync>;
-
 pub use easytier_core::peers::{
-    PacketRecvChan, PacketRecvChanReceiver, create_packet_recv_chan, recv_packet_from_chan,
+    BoxNicPacketFilter, BoxPeerPacketFilter, NicPacketFilter, PacketRecvChan,
+    PacketRecvChanReceiver, PeerPacketFilter, create_packet_recv_chan, recv_packet_from_chan,
 };
 
 pub const PUBLIC_SERVER_HOSTNAME_PREFIX: &str = "PublicServer_";
