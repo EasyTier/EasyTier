@@ -40,7 +40,7 @@ use tokio::{
 };
 
 use crate::{
-    common::{PeerId, constants::EASYTIER_VERSION, shrink_dashmap},
+    common::{PeerId, shrink_dashmap},
     peers::route_trait::{Route, RouteInterfaceBox},
     proto::{
         common::NatType,
@@ -73,6 +73,8 @@ use super::{
     },
 };
 
+#[cfg(test)]
+use crate::common::constants::EASYTIER_VERSION;
 use crate::proto::common::TimestampExt;
 use atomic_shim::AtomicU64;
 use prost_wkt_types::Timestamp;
@@ -161,7 +163,7 @@ fn is_foreign_network_info_newer(
 }
 
 #[allow(deprecated)]
-fn new_route_peer_info() -> RoutePeerInfo {
+fn new_route_peer_info_with_version(easytier_version: String) -> RoutePeerInfo {
     RoutePeerInfo {
         peer_id: 0,
         inst_id: Some(uuid::Uuid::nil().into()),
@@ -175,7 +177,7 @@ fn new_route_peer_info() -> RoutePeerInfo {
         // else we may assign a older timestamp than iterate time.
         last_update: None,
         version: 0,
-        easytier_version: EASYTIER_VERSION.to_string(),
+        easytier_version,
         feature_flag: None,
         peer_route_id: 0,
         network_length: 24,
@@ -188,6 +190,11 @@ fn new_route_peer_info() -> RoutePeerInfo {
         ipv6_public_addr_prefix: None,
         ipv6_public_addr_lease: None,
     }
+}
+
+#[cfg(test)]
+fn new_route_peer_info() -> RoutePeerInfo {
+    new_route_peer_info_with_version(EASYTIER_VERSION.to_string())
 }
 
 /// Creates a new `RoutePeerInfo` instance with updated information from the given context.
@@ -311,6 +318,7 @@ struct InterfacePeerSnapshot {
 
 // constructed with all infos synced from all peers.
 struct SyncedRouteInfo {
+    default_easytier_version: String,
     peer_infos: RwLock<OrderedHashMap<PeerId, RoutePeerInfo>>,
     // prost doesn't support unknown fields, so we use DynamicMessage to store raw infos and propagate them to other peers.
     raw_peer_infos: DashMap<PeerId, DynamicMessage>,
@@ -335,6 +343,7 @@ struct SyncedRouteInfo {
 impl Debug for SyncedRouteInfo {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("SyncedRouteInfo")
+            .field("default_easytier_version", &self.default_easytier_version)
             .field("peer_infos", &self.peer_infos)
             .field("conn_map", &self.conn_map)
             .field("foreign_network", &self.foreign_network)
@@ -703,7 +712,8 @@ impl SyncedRouteInfo {
         for peer_id in peer_ids {
             let guard = self.peer_infos.upgradable_read();
             if !guard.contains_key(peer_id) {
-                let mut peer_info = new_route_peer_info();
+                let mut peer_info =
+                    new_route_peer_info_with_version(self.default_easytier_version.clone());
                 let mut guard = RwLockUpgradableReadGuard::upgrade(guard);
                 peer_info.last_update = Some(Timestamp::now());
                 guard.insert(*peer_id, peer_info);
@@ -1648,7 +1658,7 @@ impl PeerRouteServiceImpl {
         PeerRouteServiceImpl {
             my_peer_id,
             my_peer_route_id: rand::random(),
-            context,
+            context: context.clone(),
             sessions: DashMap::new(),
 
             interface: Mutex::new(None),
@@ -1661,6 +1671,7 @@ impl PeerRouteServiceImpl {
             foreign_network_my_peer_id_map: DashMap::new(),
 
             synced_route_info: SyncedRouteInfo {
+                default_easytier_version: context.easytier_version(),
                 peer_infos: RwLock::new(OrderedHashMap::new()),
                 raw_peer_infos: DashMap::new(),
                 conn_map: RwLock::new(OrderedHashMap::new()),
