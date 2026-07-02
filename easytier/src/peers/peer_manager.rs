@@ -13,7 +13,7 @@ use std::{
 };
 
 use tokio::sync::{Mutex, RwLock};
-use tokio::{sync::mpsc::UnboundedSender, task::JoinSet};
+use tokio::task::JoinSet;
 
 use crate::{
     common::{
@@ -41,7 +41,7 @@ use crate::{
     },
     tunnel::{
         Tunnel, TunnelConnector,
-        packet_def::{CompressorAlgo, PacketType, ZCPacket, compressor_algo_from_pb},
+        packet_def::{CompressorAlgo, ZCPacket, compressor_algo_from_pb},
     },
 };
 
@@ -533,62 +533,11 @@ impl PeerManager {
     }
 
     async fn init_packet_process_pipeline(&self) {
-        // for tun/tap ip/eth packet.
-        struct NicPacketProcessor {
-            nic_channel: PacketRecvChan,
-        }
-        #[async_trait::async_trait]
-        impl PeerPacketFilter for NicPacketProcessor {
-            async fn try_process_packet_from_peer(&self, packet: ZCPacket) -> Option<ZCPacket> {
-                let hdr = packet.peer_manager_header().unwrap();
-                if hdr.packet_type == PacketType::Data as u8 && !hdr.is_not_send_to_tun() {
-                    if hdr.is_encrypted() || hdr.is_compressed() {
-                        tracing::warn!(
-                            from_peer_id = hdr.from_peer_id.get(),
-                            to_peer_id = hdr.to_peer_id.get(),
-                            encrypted = hdr.is_encrypted(),
-                            compressed = hdr.is_compressed(),
-                            "dropping packet before nic because it is not fully decoded"
-                        );
-                        return None;
-                    }
-                    tracing::trace!(?packet, "send packet to nic channel");
-                    // TODO: use a function to get the body ref directly for zero copy
-                    let _ = self.nic_channel.send(packet).await;
-                    None
-                } else {
-                    Some(packet)
-                }
-            }
-        }
-        self.add_packet_process_pipeline(Box::new(NicPacketProcessor {
-            nic_channel: self.nic_channel.clone(),
-        }))
-        .await;
-
-        // for peer rpc packet
-        struct PeerRpcPacketProcessor {
-            peer_rpc_tspt_sender: UnboundedSender<ZCPacket>,
-        }
-
-        #[async_trait::async_trait]
-        impl PeerPacketFilter for PeerRpcPacketProcessor {
-            async fn try_process_packet_from_peer(&self, packet: ZCPacket) -> Option<ZCPacket> {
-                let hdr = packet.peer_manager_header().unwrap();
-                if hdr.packet_type == PacketType::TaRpc as u8
-                    || hdr.packet_type == PacketType::RpcReq as u8
-                    || hdr.packet_type == PacketType::RpcResp as u8
-                {
-                    self.peer_rpc_tspt_sender.send(packet).unwrap();
-                    None
-                } else {
-                    Some(packet)
-                }
-            }
-        }
-        self.add_packet_process_pipeline(Box::new(PeerRpcPacketProcessor {
-            peer_rpc_tspt_sender: self.peer_rpc_tspt.packet_sender(),
-        }))
+        core_peer_manager::init_packet_process_pipeline(
+            self.peer_packet_process_pipeline.as_ref(),
+            self.nic_channel.clone(),
+            self.peer_rpc_tspt.packet_sender(),
+        )
         .await;
     }
 

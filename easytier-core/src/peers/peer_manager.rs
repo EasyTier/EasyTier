@@ -23,7 +23,8 @@ use crate::{
 };
 
 use super::{
-    BoxNicPacketFilter, BoxPeerPacketFilter, PacketRecvChanReceiver,
+    BoxNicPacketFilter, BoxPeerPacketFilter, PacketRecvChan, PacketRecvChanReceiver,
+    PeerPacketFilter,
     acl_filter::AclFilter,
     context::{ArcPeerContext, NetworkIdentity},
     encrypt::Encryptor,
@@ -270,6 +271,74 @@ pub async fn close_untrusted_credential_peers<F>(
             tracing::warn!(?e, ?peer_id, "failed to close untrusted credential peer");
         }
     }
+}
+
+struct NicPacketProcessor {
+    nic_channel: PacketRecvChan,
+}
+
+#[async_trait::async_trait]
+impl PeerPacketFilter for NicPacketProcessor {
+    async fn try_process_packet_from_peer(&self, packet: ZCPacket) -> Option<ZCPacket> {
+        let hdr = packet.peer_manager_header().unwrap();
+        if hdr.packet_type == PacketType::Data as u8 && !hdr.is_not_send_to_tun() {
+            if hdr.is_encrypted() || hdr.is_compressed() {
+                tracing::warn!(
+                    from_peer_id = hdr.from_peer_id.get(),
+                    to_peer_id = hdr.to_peer_id.get(),
+                    encrypted = hdr.is_encrypted(),
+                    compressed = hdr.is_compressed(),
+                    "dropping packet before nic because it is not fully decoded"
+                );
+                return None;
+            }
+            tracing::trace!(?packet, "send packet to nic channel");
+            let _ = self.nic_channel.send(packet).await;
+            None
+        } else {
+            Some(packet)
+        }
+    }
+}
+
+struct PeerRpcPacketProcessor {
+    peer_rpc_tspt_sender: UnboundedSender<ZCPacket>,
+}
+
+#[async_trait::async_trait]
+impl PeerPacketFilter for PeerRpcPacketProcessor {
+    async fn try_process_packet_from_peer(&self, packet: ZCPacket) -> Option<ZCPacket> {
+        let hdr = packet.peer_manager_header().unwrap();
+        if hdr.packet_type == PacketType::TaRpc as u8
+            || hdr.packet_type == PacketType::RpcReq as u8
+            || hdr.packet_type == PacketType::RpcResp as u8
+        {
+            self.peer_rpc_tspt_sender.send(packet).unwrap();
+            None
+        } else {
+            Some(packet)
+        }
+    }
+}
+
+pub async fn init_packet_process_pipeline(
+    peer_packet_process_pipeline: &RwLock<Vec<BoxPeerPacketFilter>>,
+    nic_channel: PacketRecvChan,
+    peer_rpc_tspt_sender: UnboundedSender<ZCPacket>,
+) {
+    // for tun/tap ip/eth packet.
+    peer_packet_process_pipeline
+        .write()
+        .await
+        .push(Box::new(NicPacketProcessor { nic_channel }));
+
+    // for peer rpc packet
+    peer_packet_process_pipeline
+        .write()
+        .await
+        .push(Box::new(PeerRpcPacketProcessor {
+            peer_rpc_tspt_sender,
+        }));
 }
 
 #[async_trait::async_trait]
