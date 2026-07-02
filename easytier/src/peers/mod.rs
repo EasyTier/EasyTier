@@ -1,20 +1,21 @@
-pub mod acl_filter;
-pub mod credential_manager;
+pub use easytier_core::peers::{
+    acl_filter, foreign_network_client, peer_map, peer_ospf_route, peer_task,
+};
+
+pub mod credential_manager {
+    pub use crate::common::credential_manager::*;
+}
+
 pub mod peer_conn;
 pub mod peer_manager;
-pub mod peer_map;
-pub mod peer_ospf_route;
 pub mod peer_rpc_service;
 pub mod relay_peer_map;
 pub mod rpc_service;
-mod traffic_metrics;
+pub(crate) use easytier_core::peers::traffic_metrics;
 
-pub mod foreign_network_client;
 pub mod foreign_network_manager;
 
 pub mod encrypt;
-
-pub mod peer_task;
 
 #[cfg(test)]
 pub mod tests;
