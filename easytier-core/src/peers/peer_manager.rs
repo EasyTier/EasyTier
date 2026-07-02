@@ -32,13 +32,16 @@ use super::{
     foreign_network_manager::ForeignNetworkRouteInfoProvider,
     peer_conn::{PeerConn, PeerConnId},
     peer_map::PeerMap,
+    peer_ospf_route::PeerRoute,
     peer_rpc::PeerRpcManagerTransport,
     peer_session::PeerSessionStore,
     peer_task::ExternalTaskSignal,
+    public_ipv6::PublicIpv6Runtime,
     recv_packet_from_chan,
     relay_peer_map::RelayPeerMap,
     route_trait::{
-        ArcRoute, ForeignNetworkRouteInfoMap, NextHopPolicy, RouteInterface, RouteInterfaceBox,
+        ArcRoute, ForeignNetworkRouteInfoMap, MockRoute, NextHopPolicy, Route, RouteInterface,
+        RouteInterfaceBox,
     },
     traffic_metrics::{TrafficKind, TrafficMetricRecorder, traffic_kind},
     util::shrink_dashmap,
@@ -131,6 +134,63 @@ pub fn get_next_hop_policy(is_latency_first: bool) -> NextHopPolicy {
         NextHopPolicy::LeastCost
     } else {
         NextHopPolicy::LeastHop
+    }
+}
+
+pub enum RouteAlgoType {
+    Ospf,
+    None,
+}
+
+pub enum RouteAlgoInst {
+    Ospf(Arc<PeerRoute>),
+    None,
+}
+
+impl Clone for RouteAlgoInst {
+    fn clone(&self) -> Self {
+        match self {
+            RouteAlgoInst::Ospf(route) => RouteAlgoInst::Ospf(route.clone()),
+            RouteAlgoInst::None => RouteAlgoInst::None,
+        }
+    }
+}
+
+impl RouteAlgoInst {
+    pub fn new(
+        route_algo: RouteAlgoType,
+        my_peer_id: PeerId,
+        context: ArcPeerContext,
+        public_ipv6_runtime: Arc<dyn PublicIpv6Runtime>,
+        peer_rpc_mgr: Arc<super::peer_rpc::PeerRpcManager>,
+    ) -> Self {
+        match route_algo {
+            RouteAlgoType::Ospf => RouteAlgoInst::Ospf(PeerRoute::new(
+                my_peer_id,
+                context,
+                public_ipv6_runtime,
+                peer_rpc_mgr,
+            )),
+            RouteAlgoType::None => RouteAlgoInst::None,
+        }
+    }
+
+    pub fn ospf_route(&self) -> Option<Arc<PeerRoute>> {
+        match self {
+            RouteAlgoInst::Ospf(route) => Some(route.clone()),
+            RouteAlgoInst::None => None,
+        }
+    }
+
+    pub fn route_box(&self) -> Box<dyn Route + Send + Sync + 'static> {
+        match self {
+            RouteAlgoInst::Ospf(route) => Box::new(route.clone()),
+            RouteAlgoInst::None => Box::new(MockRoute {}),
+        }
+    }
+
+    pub fn route_arc(&self) -> ArcRoute {
+        Arc::new(self.route_box())
     }
 }
 

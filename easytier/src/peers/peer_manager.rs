@@ -1,4 +1,5 @@
 use cidr::{Ipv4Cidr, Ipv6Cidr};
+pub use easytier_core::peers::peer_manager::RouteAlgoType;
 use easytier_core::peers::{
     foreign_network_manager::{self as core_foreign_network_manager, GlobalForeignNetworkAccessor},
     peer_manager as core_peer_manager,
@@ -26,7 +27,6 @@ use crate::{
     peers::{
         PeerPacketFilter,
         peer_session::PeerSessionStore,
-        route_trait::MockRoute,
         traffic_metrics::{
             InstanceLabelKind, LogicalTrafficMetrics, TrafficMetricRecorder,
             route_peer_info_instance_id,
@@ -53,31 +53,11 @@ use super::{
     foreign_network_manager::{ForeignNetworkManager, ForeignNetworkRouteInfoProvider},
     peer_conn::PeerConnId,
     peer_map::PeerMap,
-    peer_ospf_route::PeerRoute,
     peer_rpc::PeerRpcManager,
     peer_task::ExternalTaskSignal,
     relay_peer_map::{RelayPeerMap, new_relay_peer_map},
     route_trait::{ArcRoute, Route},
 };
-
-pub enum RouteAlgoType {
-    Ospf,
-    None,
-}
-
-enum RouteAlgoInst {
-    Ospf(Arc<PeerRoute>),
-    None,
-}
-
-impl Clone for RouteAlgoInst {
-    fn clone(&self) -> Self {
-        match self {
-            RouteAlgoInst::Ospf(route) => RouteAlgoInst::Ospf(route.clone()),
-            RouteAlgoInst::None => RouteAlgoInst::None,
-        }
-    }
-}
 
 struct SelfTxCounters {
     self_tx_packets: CounterHandle,
@@ -104,7 +84,7 @@ pub struct PeerManager {
     peer_packet_process_pipeline: Arc<RwLock<Vec<BoxPeerPacketFilter>>>,
     nic_packet_process_pipeline: Arc<RwLock<Vec<BoxNicPacketFilter>>>,
 
-    route_algo_inst: RouteAlgoInst,
+    route_algo_inst: core_peer_manager::RouteAlgoInst,
 
     foreign_network_manager: Arc<ForeignNetworkManager>,
     foreign_network_client: Arc<ForeignNetworkClient>,
@@ -193,15 +173,13 @@ impl PeerManager {
             global_ctx.stats_manager().clone(),
         ));
 
-        let route_algo_inst = match route_algo {
-            RouteAlgoType::Ospf => RouteAlgoInst::Ospf(PeerRoute::new(
-                my_peer_id,
-                global_ctx.clone(),
-                global_ctx.clone(),
-                peer_rpc_mgr.clone(),
-            )),
-            RouteAlgoType::None => RouteAlgoInst::None,
-        };
+        let route_algo_inst = core_peer_manager::RouteAlgoInst::new(
+            route_algo,
+            my_peer_id,
+            global_ctx.clone(),
+            global_ctx.clone(),
+            peer_rpc_mgr.clone(),
+        );
 
         let foreign_network_manager = Arc::new(ForeignNetworkManager::new(
             my_peer_id,
@@ -296,13 +274,13 @@ impl PeerManager {
             move |peer_id| {
                 let route_algo_inst = route_algo_inst_for_metrics.clone();
                 async move {
-                    match &route_algo_inst {
-                        RouteAlgoInst::Ospf(route) => route
+                    match route_algo_inst.ospf_route() {
+                        Some(route) => route
                             .get_peer_info(peer_id)
                             .await
                             .as_ref()
                             .and_then(route_peer_info_instance_id),
-                        RouteAlgoInst::None => None,
+                        None => None,
                     }
                 }
             },
@@ -324,7 +302,7 @@ impl PeerManager {
             my_peer_id,
             global_ctx.clone(),
             peers.clone(),
-            Self::route_arc_from_algo(&route_algo_inst),
+            route_algo_inst.route_arc(),
             foreign_network_client.clone(),
             relay_peer_map.clone(),
             nic_packet_process_pipeline.clone(),
@@ -639,21 +617,8 @@ impl PeerManager {
         self.peers.add_route(arc_route).await;
     }
 
-    fn route_box_from_algo(
-        route_algo_inst: &RouteAlgoInst,
-    ) -> Box<dyn Route + Send + Sync + 'static> {
-        match route_algo_inst {
-            RouteAlgoInst::Ospf(route) => Box::new(route.clone()),
-            RouteAlgoInst::None => Box::new(MockRoute {}),
-        }
-    }
-
-    fn route_arc_from_algo(route_algo_inst: &RouteAlgoInst) -> ArcRoute {
-        Arc::new(Self::route_box_from_algo(route_algo_inst))
-    }
-
     pub fn get_route(&self) -> Box<dyn Route + Send + Sync + 'static> {
-        Self::route_box_from_algo(&self.route_algo_inst)
+        self.route_algo_inst.route_box()
     }
 
     pub async fn list_routes(&self) -> Vec<instance::Route> {
@@ -830,10 +795,9 @@ impl PeerManager {
     }
 
     pub async fn run(&self) -> Result<(), Error> {
-        match &self.route_algo_inst {
-            RouteAlgoInst::Ospf(route) => self.add_route(route.clone()).await,
-            RouteAlgoInst::None => {}
-        };
+        if let Some(route) = self.route_algo_inst.ospf_route() {
+            self.add_route(route).await;
+        }
 
         self.init_packet_process_pipeline().await;
         self.peer_rpc_mgr.run();
