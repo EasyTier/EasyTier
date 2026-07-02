@@ -182,6 +182,10 @@ impl PeerContext for GlobalCtx {
         self.config.get_secure_mode()
     }
 
+    fn stun_info(&self) -> crate::proto::common::StunInfo {
+        self.get_stun_info_collector().get_stun_info()
+    }
+
     fn pinned_remote_static_pubkey(
         &self,
         tunnel_info: Option<&crate::proto::common::TunnelInfo>,

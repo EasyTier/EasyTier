@@ -14,7 +14,7 @@ use crossbeam::atomic::AtomicCell;
 use dashmap::DashMap;
 use easytier_core::{
     peers::{
-        context::NetworkIdentity as CoreNetworkIdentity,
+        context::{NetworkIdentity as CoreNetworkIdentity, PeerContext},
         peer_ospf_route::{
             OspfPeerConnInfo, OspfPeerInfo, OspfRouteSnapshot, OspfRouteTable, Version,
             cidr_is_subset_str,
@@ -43,7 +43,6 @@ use crate::{
         constants::EASYTIER_VERSION,
         global_ctx::{ArcGlobalCtx, GlobalCtxEvent},
         shrink_dashmap,
-        stun::StunInfoCollectorTrait,
     },
     peers::route_trait::{Route, RouteInterfaceBox},
     proto::{
@@ -202,7 +201,7 @@ pub(crate) fn new_updated_self_route_peer_info(
     global_ctx: &ArcGlobalCtx,
     public_ipv6_addr_lease: Option<Ipv6Inet>,
 ) -> RoutePeerInfo {
-    let stun_info = global_ctx.get_stun_info_collector().get_stun_info();
+    let stun_info = global_ctx.stun_info();
     let noise_static_pubkey = global_ctx
         .config
         .get_secure_mode()

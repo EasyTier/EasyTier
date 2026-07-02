@@ -9,7 +9,7 @@ use std::{
 use arc_swap::ArcSwap;
 use async_trait::async_trait;
 use dashmap::DashMap;
-use easytier_proto::common::{FlagsInConfig, SecureModeConfig, TunnelInfo};
+use easytier_proto::common::{FlagsInConfig, SecureModeConfig, StunInfo, TunnelInfo};
 use hmac::{Hmac, Mac};
 use sha2::Sha256;
 
@@ -246,6 +246,10 @@ pub trait PeerContext: Send + Sync {
 
     fn secure_mode(&self) -> Option<SecureModeConfig> {
         None
+    }
+
+    fn stun_info(&self) -> StunInfo {
+        StunInfo::default()
     }
 
     fn pinned_remote_static_pubkey(&self, _tunnel_info: Option<&TunnelInfo>) -> Option<String> {
