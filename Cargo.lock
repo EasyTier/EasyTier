@@ -2499,6 +2499,7 @@ dependencies = [
  "hmac",
  "parking_lot",
  "petgraph",
+ "prefix-trie",
  "prost 0.14.3",
  "quanta",
  "rand 0.8.5",

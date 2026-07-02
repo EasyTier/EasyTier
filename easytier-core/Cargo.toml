@@ -28,6 +28,7 @@ guarden = "0.2"
 hmac = "0.12.1"
 parking_lot = "0.12.1"
 petgraph = "0.8.1"
+prefix-trie = { version = "0.7.0", features = ["cidr"] }
 prost = "0.14.3"
 rand = "0.8.5"
 quanta = "0.12"
