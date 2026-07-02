@@ -12,6 +12,7 @@ use tokio::sync::{
     mpsc::{self, UnboundedReceiver, UnboundedSender},
 };
 use tokio::task::JoinSet;
+use url::Url;
 
 use crate::{
     compressor::{Compressor as _, DefaultCompressor},
@@ -246,13 +247,29 @@ pub async fn close_peer_conn(
     ret
 }
 
+#[async_trait::async_trait]
+#[auto_impl::auto_impl(&, Arc)]
+pub trait ForeignNetworkConnectionAdmission: Send + Sync {
+    fn get_network_peer_id(&self, network_name: &str) -> Option<PeerId>;
+
+    fn is_existing_credential_pubkey_trusted(
+        &self,
+        network_name: &str,
+        remote_static_pubkey: &[u8],
+    ) -> bool;
+
+    async fn add_peer_conn(&self, peer_conn: PeerConn) -> Result<(), Error>;
+}
+
 pub struct PeerConnectionAdmission {
     my_peer_id: PeerId,
     context: ArcPeerContext,
     peers: Arc<PeerMap>,
     foreign_network_client: Arc<ForeignNetworkClient>,
+    foreign_network_admission: Arc<dyn ForeignNetworkConnectionAdmission>,
     peer_session_store: Arc<PeerSessionStore>,
     recent_traffic: RecentTrafficTracker,
+    reserved_my_peer_id_map: DashMap<String, PeerId>,
 }
 
 impl PeerConnectionAdmission {
@@ -261,6 +278,7 @@ impl PeerConnectionAdmission {
         context: ArcPeerContext,
         peers: Arc<PeerMap>,
         foreign_network_client: Arc<ForeignNetworkClient>,
+        foreign_network_admission: Arc<dyn ForeignNetworkConnectionAdmission>,
         peer_session_store: Arc<PeerSessionStore>,
         recent_traffic: RecentTrafficTracker,
     ) -> Self {
@@ -269,8 +287,10 @@ impl PeerConnectionAdmission {
             context,
             peers,
             foreign_network_client,
+            foreign_network_admission,
             peer_session_store,
             recent_traffic,
+            reserved_my_peer_id_map: DashMap::new(),
         }
     }
 
@@ -320,6 +340,160 @@ impl PeerConnectionAdmission {
             self.foreign_network_client.add_new_peer_conn(peer).await?;
         }
         Ok((peer_id, conn_id))
+    }
+
+    fn check_remote_addr_not_from_virtual_network(&self, tunnel: &dyn Tunnel) -> Result<(), Error> {
+        tracing::info!("check remote addr not from virtual network");
+        let Some(tunnel_info) = tunnel.info() else {
+            return Err(anyhow::anyhow!("tunnel info is not set").into());
+        };
+        let Some(src) = tunnel_info.remote_addr.map(Url::from) else {
+            return Err(anyhow::anyhow!("tunnel info remote addr is not set").into());
+        };
+        if src.scheme() == "ring" {
+            return Ok(());
+        }
+        let Ok(Some(addr)) = src.socket_addrs(|| Some(1)).map(|x| x.first().cloned()) else {
+            // if the tunnel is not rely on ip address, skip check
+            return Ok(());
+        };
+
+        // if no-tun is enabled, the src ip of packet in virtual network is converted to loopback address
+        // we already filter out the connection in tcp/quic/kcp proxy so no need check here.
+        if addr.ip().is_loopback() {
+            // allow other loopback address, good for conn from cdn/l4 connection
+            return Ok(());
+        }
+
+        if self.context.is_ip_in_same_network(&addr.ip()) {
+            return Err(anyhow::anyhow!(
+                "tunnel src {} is from the same network (ignore this error please)",
+                addr
+            )
+            .into());
+        }
+
+        Ok(())
+    }
+
+    fn release_reserved_peer_id(&self, network_name: &str) {
+        self.reserved_my_peer_id_map.remove(network_name);
+        shrink_dashmap(&self.reserved_my_peer_id_map, None);
+    }
+
+    #[tracing::instrument(ret, skip(self, tunnel))]
+    pub async fn add_tunnel_as_server(
+        &self,
+        tunnel: Box<dyn Tunnel>,
+        is_directly_connected: bool,
+    ) -> Result<(), Error> {
+        tracing::info!("add tunnel as server start");
+        self.check_remote_addr_not_from_virtual_network(&*tunnel)?;
+
+        let mut conn = PeerConn::new(
+            self.my_peer_id,
+            self.context.clone(),
+            tunnel,
+            self.peer_session_store.clone(),
+        );
+        let mut reserved_peer_id_network_name = None;
+        let handshake_ret = conn
+            .do_handshake_as_server_ext(|peer, network_name: &str| {
+                if network_name == self.context.network_identity().network_name {
+                    return Ok(());
+                }
+
+                let mut peer_id = self
+                    .foreign_network_admission
+                    .get_network_peer_id(network_name);
+                if peer_id.is_none() {
+                    reserved_peer_id_network_name = Some(network_name.to_string());
+                    peer_id = Some(
+                        *self
+                            .reserved_my_peer_id_map
+                            .entry(network_name.to_string())
+                            .or_insert_with(rand::random::<PeerId>)
+                            .value(),
+                    );
+                }
+                peer.set_peer_id(peer_id.unwrap());
+
+                tracing::info!(
+                    ?peer_id,
+                    ?network_name,
+                    "handshake as server with foreign network, new peer id: {}, peer id in foreign manager: {:?}",
+                    peer.get_my_peer_id(), peer_id
+                );
+
+                Ok(())
+            })
+            .await;
+
+        if let Err(err) = handshake_ret {
+            if let Some(network_name) = reserved_peer_id_network_name {
+                self.release_reserved_peer_id(&network_name);
+            }
+            return Err(err);
+        }
+
+        let peer_identity = conn.get_network_identity();
+        let peer_network_name = peer_identity.network_name.clone();
+        let local_identity = self.context.network_identity();
+        let is_local_network = peer_network_name == local_identity.network_name;
+        let trusted_foreign_credential =
+            matches!(conn.get_peer_identity_type(), PeerIdentityType::Credential)
+                && self
+                    .foreign_network_admission
+                    .is_existing_credential_pubkey_trusted(
+                        &peer_network_name,
+                        &conn.get_conn_info().noise_remote_static_pubkey,
+                    );
+        let foreign_network_allowed =
+            conn.matches_local_network_secret() || trusted_foreign_credential;
+
+        if !is_local_network && self.context.flags().private_mode && !foreign_network_allowed {
+            self.release_reserved_peer_id(&peer_network_name);
+            return Err(Error::SecretKeyError(
+                "private mode is turned on, foreign network secret mismatch".to_string(),
+            ));
+        }
+
+        conn.set_is_hole_punched(!is_directly_connected);
+
+        let add_peer_ret = if is_local_network {
+            let local_secure_mode = self
+                .context
+                .secure_mode()
+                .as_ref()
+                .map(|cfg| cfg.enabled)
+                .unwrap_or(false);
+            match add_new_peer_conn(
+                self.peers.as_ref(),
+                &local_identity,
+                local_secure_mode,
+                conn,
+            )
+            .await
+            {
+                Ok(peer_id) => {
+                    self.recent_traffic.clear(peer_id);
+                    Ok(())
+                }
+                Err(err) => Err(err),
+            }
+        } else {
+            self.foreign_network_admission.add_peer_conn(conn).await
+        };
+
+        if let Err(err) = add_peer_ret {
+            self.release_reserved_peer_id(&peer_network_name);
+            return Err(err);
+        }
+
+        self.release_reserved_peer_id(&peer_network_name);
+
+        tracing::info!("add tunnel as server done");
+        Ok(())
     }
 }
 

@@ -1012,6 +1012,47 @@ impl ForeignNetworkPacketHandler for ForeignNetworkManager {
 }
 
 #[async_trait::async_trait]
+impl core_peer_manager::ForeignNetworkConnectionAdmission for ForeignNetworkManager {
+    fn get_network_peer_id(&self, network_name: &str) -> Option<PeerId> {
+        ForeignNetworkManager::get_network_peer_id(self, network_name)
+    }
+
+    fn is_existing_credential_pubkey_trusted(
+        &self,
+        network_name: &str,
+        remote_static_pubkey: &[u8],
+    ) -> bool {
+        ForeignNetworkManager::is_existing_credential_pubkey_trusted(
+            self,
+            network_name,
+            remote_static_pubkey,
+        )
+    }
+
+    async fn add_peer_conn(
+        &self,
+        peer_conn: super::peer_conn::PeerConn,
+    ) -> Result<(), easytier_core::peers::error::Error> {
+        ForeignNetworkManager::add_peer_conn(self, peer_conn)
+            .await
+            .map_err(|err| match err {
+                Error::TunnelError(err) => easytier_core::peers::error::Error::Tunnel(err),
+                Error::PeerNoConnectionError(peer_id) => {
+                    easytier_core::peers::error::Error::PeerNoConnectionError(peer_id)
+                }
+                Error::RouteError(msg) => easytier_core::peers::error::Error::RouteError(msg),
+                Error::NotFound => easytier_core::peers::error::Error::NotFound,
+                Error::AnyhowError(err) => easytier_core::peers::error::Error::Other(err),
+                Error::WaitRespError(msg) => easytier_core::peers::error::Error::WaitRespError(msg),
+                Error::SecretKeyError(msg) => {
+                    easytier_core::peers::error::Error::SecretKeyError(msg)
+                }
+                err => easytier_core::peers::error::Error::Other(anyhow::anyhow!(err)),
+            })
+    }
+}
+
+#[async_trait::async_trait]
 impl core_peer_manager::ForeignPeerConnectionCloser for ForeignNetworkManager {
     async fn close_peer_conn(
         &self,

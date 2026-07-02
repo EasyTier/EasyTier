@@ -1,5 +1,4 @@
 use cidr::{Ipv4Cidr, Ipv6Cidr};
-use dashmap::DashMap;
 use easytier_core::peers::{
     foreign_network_manager::{self as core_foreign_network_manager, GlobalForeignNetworkAccessor},
     peer_manager as core_peer_manager,
@@ -20,14 +19,12 @@ use crate::{
         PeerId,
         constants::EASYTIER_VERSION,
         error::Error,
-        global_ctx::{ArcGlobalCtx, GlobalCtxEvent, NetworkIdentity},
-        shrink_dashmap,
+        global_ctx::{ArcGlobalCtx, GlobalCtxEvent},
         stats_manager::{CounterHandle, LabelSet, LabelType, MetricName},
         stun::StunInfoCollectorTrait,
     },
     peers::{
         PeerPacketFilter,
-        peer_conn::PeerConn,
         peer_session::PeerSessionStore,
         route_trait::MockRoute,
         traffic_metrics::{
@@ -40,7 +37,7 @@ use crate::{
             self, ListGlobalForeignNetworkResponse,
             list_global_foreign_network_response::OneForeignNetwork,
         },
-        peer_rpc::{PeerIdentityType, RouteForeignNetworkSummary},
+        peer_rpc::RouteForeignNetworkSummary,
     },
     tunnel::{
         Tunnel, TunnelConnector,
@@ -121,7 +118,6 @@ pub struct PeerManager {
 
     exit_nodes: Arc<RwLock<Vec<IpAddr>>>,
 
-    reserved_my_peer_id_map: DashMap<String, PeerId>,
     recent_traffic: core_peer_manager::RecentTrafficTracker,
 
     allow_loopback_tunnel: AtomicBool,
@@ -320,6 +316,7 @@ impl PeerManager {
             global_ctx.clone(),
             peers.clone(),
             foreign_network_client.clone(),
+            foreign_network_manager.clone(),
             peer_session_store.clone(),
             recent_traffic.clone(),
         );
@@ -376,7 +373,6 @@ impl PeerManager {
 
             exit_nodes,
 
-            reserved_my_peer_id_map: DashMap::new(),
             recent_traffic,
 
             allow_loopback_tunnel: AtomicBool::new(true),
@@ -426,32 +422,6 @@ impl PeerManager {
         peer_map: &Arc<PeerMap>,
     ) -> Box<dyn GlobalForeignNetworkAccessor> {
         core_foreign_network_manager::peer_map_foreign_network_accessor(Arc::downgrade(peer_map))
-    }
-
-    async fn add_new_peer_conn(&self, peer_conn: PeerConn) -> Result<(), Error> {
-        let my_identity = self.global_ctx.get_network_identity();
-        let local_secure_mode = self
-            .global_ctx
-            .config
-            .get_secure_mode()
-            .as_ref()
-            .map(|cfg| cfg.enabled)
-            .unwrap_or(false);
-        let my_identity = easytier_core::peers::context::NetworkIdentity {
-            network_name: my_identity.network_name,
-            network_secret: my_identity.network_secret,
-            network_secret_digest: my_identity.network_secret_digest,
-        };
-        let peer_id = core_peer_manager::add_new_peer_conn(
-            self.peers.as_ref(),
-            &my_identity,
-            local_secure_mode,
-            peer_conn,
-        )
-        .await
-        .map_err(Error::from)?;
-        self.clear_recent_traffic(peer_id);
-        Ok(())
     }
 
     pub async fn add_client_tunnel(
@@ -518,140 +488,16 @@ impl PeerManager {
             .await?)
     }
 
-    // avoid loop back to virtual network
-    fn check_remote_addr_not_from_virtual_network(
-        &self,
-        tunnel: &dyn Tunnel,
-    ) -> Result<(), anyhow::Error> {
-        tracing::info!("check remote addr not from virtual network");
-        let Some(tunnel_info) = tunnel.info() else {
-            anyhow::bail!("tunnel info is not set");
-        };
-        let Some(src) = tunnel_info.remote_addr.map(url::Url::from) else {
-            anyhow::bail!("tunnel info remote addr is not set");
-        };
-        if src.scheme() == "ring" {
-            return Ok(());
-        }
-        let Ok(Some(addr)) = src.socket_addrs(|| Some(1)).map(|x| x.first().cloned()) else {
-            // if the tunnel is not rely on ip address, skip check
-            return Ok(());
-        };
-
-        // if no-tun is enabled, the src ip of packet in virtual network is converted to loopback address
-        // we already filter out the connection in tcp/quic/kcp proxy so no need check here.
-        if addr.ip().is_loopback() {
-            // allow other loopback address, good for conn from cdn/l4 connection
-            return Ok(());
-        }
-
-        if self.global_ctx.is_ip_in_same_network(&addr.ip()) {
-            anyhow::bail!(
-                "tunnel src {} is from the same network (ignore this error please)",
-                addr
-            );
-        }
-
-        Ok(())
-    }
-
-    fn release_reserved_peer_id(&self, network_name: &str) {
-        self.reserved_my_peer_id_map.remove(network_name);
-        shrink_dashmap(&self.reserved_my_peer_id_map, None);
-    }
-
     #[tracing::instrument(ret)]
     pub async fn add_tunnel_as_server(
         &self,
         tunnel: Box<dyn Tunnel>,
         is_directly_connected: bool,
     ) -> Result<(), Error> {
-        tracing::info!("add tunnel as server start");
-        self.check_remote_addr_not_from_virtual_network(&tunnel)?;
-
-        let mut conn = PeerConn::new(
-            self.my_peer_id,
-            self.global_ctx.clone(),
-            tunnel,
-            self.peer_session_store.clone(),
-        );
-        let mut reserved_peer_id_network_name = None;
-        let handshake_ret = conn.do_handshake_as_server_ext(|peer, network_name:&str| {
-            if network_name
-                == self.global_ctx.get_network_identity().network_name
-            {
-                return Ok(());
-            }
-
-            let mut peer_id = self
-                .foreign_network_manager
-                .get_network_peer_id(network_name);
-            if peer_id.is_none() {
-                reserved_peer_id_network_name = Some(network_name.to_string());
-                peer_id = Some(*self.reserved_my_peer_id_map.entry(network_name.to_string()).or_insert_with(|| {
-                    rand::random::<PeerId>()
-                }).value());
-            }
-            peer.set_peer_id(peer_id.unwrap());
-
-            tracing::info!(
-                ?peer_id,
-                ?network_name,
-                "handshake as server with foreign network, new peer id: {}, peer id in foreign manager: {:?}",
-                peer.get_my_peer_id(), peer_id
-            );
-
-            Ok(())
-        })
-        .await;
-
-        if let Err(err) = handshake_ret {
-            if let Some(network_name) = reserved_peer_id_network_name {
-                self.release_reserved_peer_id(&network_name);
-            }
-            return Err(err.into());
-        }
-
-        let peer_identity: NetworkIdentity = conn.get_network_identity().into();
-        let peer_network_name = peer_identity.network_name.clone();
-        let my_identity = self.global_ctx.get_network_identity();
-        let is_local_network = peer_network_name == my_identity.network_name;
-        let trusted_foreign_credential =
-            matches!(conn.get_peer_identity_type(), PeerIdentityType::Credential)
-                && self
-                    .foreign_network_manager
-                    .is_existing_credential_pubkey_trusted(
-                        &peer_network_name,
-                        &conn.get_conn_info().noise_remote_static_pubkey,
-                    );
-        let foreign_network_allowed =
-            conn.matches_local_network_secret() || trusted_foreign_credential;
-
-        if !is_local_network && self.global_ctx.get_flags().private_mode && !foreign_network_allowed
-        {
-            self.release_reserved_peer_id(&peer_network_name);
-            return Err(Error::SecretKeyError(
-                "private mode is turned on, foreign network secret mismatch".to_string(),
-            ));
-        }
-
-        conn.set_is_hole_punched(!is_directly_connected);
-
-        let add_peer_ret = if is_local_network {
-            self.add_new_peer_conn(conn).await
-        } else {
-            self.foreign_network_manager.add_peer_conn(conn).await
-        };
-
-        if let Err(err) = add_peer_ret {
-            self.release_reserved_peer_id(&peer_network_name);
-            return Err(err);
-        }
-
-        self.release_reserved_peer_id(&peer_network_name);
-
-        tracing::info!("add tunnel as server done");
-        Ok(())
+        self.peer_connection_admission
+            .add_tunnel_as_server(tunnel, is_directly_connected)
+            .await
+            .map_err(Error::from)
     }
 
     async fn start_peer_recv(&self) {
