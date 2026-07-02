@@ -43,9 +43,16 @@ fn parse_ipv4_packet(payload: &[u8]) -> Option<ParsedIpPacket<'_>> {
         return None;
     }
     let header_len = usize::from(payload[0] & 0x0f) * 4;
-    if header_len < 20 || payload.len() < header_len {
+    let options_len = header_len.saturating_sub(20);
+    let payload_offset = 20 + options_len;
+    if payload.len() < payload_offset {
         return None;
     }
+    let total_length = usize::from(u16::from_be_bytes([payload[2], payload[3]]));
+    let payload_len = total_length.saturating_sub(header_len);
+    let payload_end = payload_offset
+        .saturating_add(payload_len)
+        .min(payload.len());
 
     Some(ParsedIpPacket {
         src_ip: IpAddr::V4(Ipv4Addr::new(
@@ -61,7 +68,7 @@ fn parse_ipv4_packet(payload: &[u8]) -> Option<ParsedIpPacket<'_>> {
             payload[19],
         )),
         protocol: payload[9],
-        transport_payload: &payload[header_len..],
+        transport_payload: &payload[payload_offset..payload_end],
     })
 }
 
@@ -69,12 +76,14 @@ fn parse_ipv6_packet(payload: &[u8]) -> Option<ParsedIpPacket<'_>> {
     if payload.len() < 40 {
         return None;
     }
+    let payload_len = usize::from(u16::from_be_bytes([payload[4], payload[5]]));
+    let payload_end = 40usize.saturating_add(payload_len).min(payload.len());
 
     Some(ParsedIpPacket {
         src_ip: IpAddr::V6(Ipv6Addr::from(<[u8; 16]>::try_from(&payload[8..24]).ok()?)),
         dst_ip: IpAddr::V6(Ipv6Addr::from(<[u8; 16]>::try_from(&payload[24..40]).ok()?)),
         protocol: payload[6],
-        transport_payload: &payload[40..],
+        transport_payload: &payload[40..payload_end],
     })
 }
 
@@ -456,6 +465,7 @@ mod tests {
     fn parse_ipv4_tcp_packet_extracts_addrs_and_ports() {
         let mut packet = vec![0u8; 40];
         packet[0] = 0x45;
+        packet[2..4].copy_from_slice(&40u16.to_be_bytes());
         packet[9] = IP_PROTO_TCP;
         packet[12..16].copy_from_slice(&[10, 0, 0, 1]);
         packet[16..20].copy_from_slice(&[10, 0, 0, 2]);
@@ -479,6 +489,7 @@ mod tests {
         let dst: Ipv6Addr = "2001:db8::2".parse().unwrap();
         let mut packet = vec![0u8; 48];
         packet[0] = 0x60;
+        packet[4..6].copy_from_slice(&8u16.to_be_bytes());
         packet[6] = IP_PROTO_UDP;
         packet[8..24].copy_from_slice(&src.octets());
         packet[24..40].copy_from_slice(&dst.octets());
@@ -494,6 +505,56 @@ mod tests {
         assert_eq!(acl_protocol(parsed.protocol), Protocol::Udp);
         assert_eq!(src_port, Some(5353));
         assert_eq!(dst_port, Some(53));
+    }
+
+    #[test]
+    fn parse_ipv4_uses_declared_total_length() {
+        let mut packet = vec![0u8; 40];
+        packet[0] = 0x45;
+        packet[2..4].copy_from_slice(&24u16.to_be_bytes());
+        packet[9] = IP_PROTO_TCP;
+        packet[12..16].copy_from_slice(&[10, 0, 0, 1]);
+        packet[16..20].copy_from_slice(&[10, 0, 0, 2]);
+        packet[20..22].copy_from_slice(&1234u16.to_be_bytes());
+        packet[22..24].copy_from_slice(&80u16.to_be_bytes());
+
+        let parsed = parse_ip_packet(&packet).unwrap();
+
+        assert_eq!(parsed.transport_payload.len(), 4);
+        assert!(parse_transport_ports(parsed.protocol, parsed.transport_payload).is_none());
+    }
+
+    #[test]
+    fn parse_ipv6_uses_declared_payload_length() {
+        let mut packet = vec![0u8; 48];
+        packet[0] = 0x60;
+        packet[4..6].copy_from_slice(&4u16.to_be_bytes());
+        packet[6] = IP_PROTO_UDP;
+        packet[40..42].copy_from_slice(&5353u16.to_be_bytes());
+        packet[42..44].copy_from_slice(&53u16.to_be_bytes());
+
+        let parsed = parse_ip_packet(&packet).unwrap();
+
+        assert_eq!(parsed.transport_payload.len(), 4);
+        assert!(parse_transport_ports(parsed.protocol, parsed.transport_payload).is_none());
+    }
+
+    #[test]
+    fn parse_ipv4_keeps_pnet_ihl_less_than_five_behavior() {
+        let mut packet = vec![0u8; 40];
+        packet[0] = 0x44;
+        packet[2..4].copy_from_slice(&40u16.to_be_bytes());
+        packet[9] = IP_PROTO_TCP;
+        packet[20..22].copy_from_slice(&1234u16.to_be_bytes());
+        packet[22..24].copy_from_slice(&80u16.to_be_bytes());
+
+        let parsed = parse_ip_packet(&packet).unwrap();
+        let (src_port, dst_port) =
+            parse_transport_ports(parsed.protocol, parsed.transport_payload).unwrap();
+
+        assert_eq!(parsed.transport_payload.len(), 20);
+        assert_eq!(src_port, Some(1234));
+        assert_eq!(dst_port, Some(80));
     }
 
     #[test]
