@@ -131,8 +131,8 @@ pub enum PeerEvent {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PeerContextEvent {
-    PeerAdded,
-    PeerRemoved,
+    PeerAdded(PeerId),
+    PeerRemoved(PeerId),
     PeerConnAdded,
     PeerConnRemoved,
 }

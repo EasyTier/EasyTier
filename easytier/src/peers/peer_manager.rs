@@ -20,7 +20,7 @@ use crate::{
         PeerId,
         constants::EASYTIER_VERSION,
         error::Error,
-        global_ctx::{ArcGlobalCtx, GlobalCtxEvent},
+        global_ctx::ArcGlobalCtx,
         stats_manager::{CounterHandle, LabelSet, LabelType, MetricName},
         stun::StunInfoCollectorTrait,
     },
@@ -685,30 +685,6 @@ impl PeerManager {
             .map_err(Error::from)
     }
 
-    async fn run_traffic_metrics_gc_routine(&self) {
-        let mut event_receiver = self.global_ctx.subscribe();
-        let traffic_metrics = self.traffic_metrics.clone();
-        self.tasks.lock().await.spawn(async move {
-            loop {
-                match event_receiver.recv().await {
-                    Ok(GlobalCtxEvent::PeerRemoved(peer_id)) => {
-                        traffic_metrics.remove_peer(peer_id);
-                    }
-                    Ok(_) => {}
-                    Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
-                        tracing::warn!(
-                            skipped,
-                            "traffic metrics GC receiver lagged; clearing peer cache to avoid stale metric attribution"
-                        );
-                        traffic_metrics.clear_peer_cache();
-                        event_receiver = event_receiver.resubscribe();
-                    }
-                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
-                }
-            }
-        });
-    }
-
     async fn run_foriegn_network(&self) {
         self.peer_rpc_tspt
             .set_foreign_peers(Some(Arc::downgrade(&self.foreign_network_client)))
@@ -733,10 +709,10 @@ impl PeerManager {
             self.foreign_network_client.clone(),
             self.peer_session_store.clone(),
             self.global_ctx.clone(),
+            self.traffic_metrics.clone(),
         )
         .spawn_into(&self.tasks)
         .await;
-        self.run_traffic_metrics_gc_routine().await;
 
         self.run_foriegn_network().await;
 

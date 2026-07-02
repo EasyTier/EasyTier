@@ -594,8 +594,8 @@ impl GlobalCtx {
 
     fn issue_peer_context_event(&self, event: &GlobalCtxEvent) {
         let event = match event {
-            GlobalCtxEvent::PeerAdded(_) => PeerContextEvent::PeerAdded,
-            GlobalCtxEvent::PeerRemoved(_) => PeerContextEvent::PeerRemoved,
+            GlobalCtxEvent::PeerAdded(peer_id) => PeerContextEvent::PeerAdded(*peer_id),
+            GlobalCtxEvent::PeerRemoved(peer_id) => PeerContextEvent::PeerRemoved(*peer_id),
             GlobalCtxEvent::PeerConnAdded(_) => PeerContextEvent::PeerConnAdded,
             GlobalCtxEvent::PeerConnRemoved(_) => PeerContextEvent::PeerConnRemoved,
             _ => return,
@@ -1052,6 +1052,7 @@ pub mod tests {
         let global_ctx = GlobalCtx::new(config);
 
         let mut subscriber = global_ctx.subscribe();
+        let mut peer_subscriber = global_ctx.subscribe_peer_events().unwrap();
         let peer_id = new_peer_id();
         global_ctx.issue_event(GlobalCtxEvent::PeerAdded(peer_id));
         global_ctx.issue_event(GlobalCtxEvent::PeerRemoved(peer_id));
@@ -1073,6 +1074,22 @@ pub mod tests {
         assert_eq!(
             subscriber.recv().await.unwrap(),
             GlobalCtxEvent::PeerConnRemoved(PeerConnInfo::default())
+        );
+        assert_eq!(
+            peer_subscriber.recv().await.unwrap(),
+            PeerContextEvent::PeerAdded(peer_id)
+        );
+        assert_eq!(
+            peer_subscriber.recv().await.unwrap(),
+            PeerContextEvent::PeerRemoved(peer_id)
+        );
+        assert_eq!(
+            peer_subscriber.recv().await.unwrap(),
+            PeerContextEvent::PeerConnAdded
+        );
+        assert_eq!(
+            peer_subscriber.recv().await.unwrap(),
+            PeerContextEvent::PeerConnRemoved
         );
     }
 

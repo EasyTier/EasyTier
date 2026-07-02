@@ -745,6 +745,7 @@ pub struct PeerMaintenanceTasks {
     foreign_network_client: Arc<ForeignNetworkClient>,
     peer_session_store: Arc<PeerSessionStore>,
     context: ArcPeerContext,
+    traffic_metrics: Arc<TrafficMetricRecorder>,
 }
 
 impl PeerMaintenanceTasks {
@@ -755,6 +756,7 @@ impl PeerMaintenanceTasks {
         foreign_network_client: Arc<ForeignNetworkClient>,
         peer_session_store: Arc<PeerSessionStore>,
         context: ArcPeerContext,
+        traffic_metrics: Arc<TrafficMetricRecorder>,
     ) -> Self {
         Self {
             peer_map,
@@ -763,6 +765,7 @@ impl PeerMaintenanceTasks {
             foreign_network_client,
             peer_session_store,
             context,
+            traffic_metrics,
         }
     }
 
@@ -772,6 +775,7 @@ impl PeerMaintenanceTasks {
         self.spawn_recent_traffic_gc_routine(tasks).await;
         self.spawn_peer_session_gc_routine(tasks).await;
         self.spawn_credential_gc_routine(tasks).await;
+        self.spawn_traffic_metrics_gc_routine(tasks).await;
     }
 
     async fn spawn_clean_peer_without_conn_routine(&self, tasks: &Mutex<JoinSet<()>>) {
@@ -841,6 +845,36 @@ impl PeerMaintenanceTasks {
                     .await;
                 }
                 tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+            }
+        });
+    }
+
+    async fn spawn_traffic_metrics_gc_routine(&self, tasks: &Mutex<JoinSet<()>>) {
+        let Some(mut event_receiver) = self.context.subscribe_peer_events() else {
+            return;
+        };
+        let context = self.context.clone();
+        let traffic_metrics = self.traffic_metrics.clone();
+        tasks.lock().await.spawn(async move {
+            loop {
+                match event_receiver.recv().await {
+                    Ok(super::context::PeerContextEvent::PeerRemoved(peer_id)) => {
+                        traffic_metrics.remove_peer(peer_id);
+                    }
+                    Ok(_) => {}
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
+                        tracing::warn!(
+                            skipped,
+                            "traffic metrics GC receiver lagged; clearing peer cache to avoid stale metric attribution"
+                        );
+                        traffic_metrics.clear_peer_cache();
+                        let Some(new_receiver) = context.subscribe_peer_events() else {
+                            break;
+                        };
+                        event_receiver = new_receiver;
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                }
             }
         });
     }
