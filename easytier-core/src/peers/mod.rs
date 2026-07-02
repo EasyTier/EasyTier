@@ -18,6 +18,7 @@ pub mod public_ipv6;
 pub mod relay_peer_map;
 pub mod route_trait;
 pub mod secure_datagram;
+pub mod traffic_metrics;
 mod util;
 
 #[cfg(test)]
