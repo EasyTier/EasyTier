@@ -7,7 +7,12 @@ use std::{
 };
 
 use arc_swap::ArcSwap;
+use async_trait::async_trait;
 use dashmap::DashMap;
+use easytier_core::peers::context::{
+    ArcByteLimiter, ByteLimiter, NetworkIdentity as CoreNetworkIdentity, PeerContext, PeerEvent,
+    secret_proof_from_secret,
+};
 
 use super::{
     PeerId,
@@ -18,8 +23,10 @@ use super::{
 };
 use crate::{
     common::{
-        config::ProxyNetworkConfig, shrink_dashmap, stats_manager::StatsManager,
-        token_bucket::TokenBucketManager,
+        config::ProxyNetworkConfig,
+        shrink_dashmap,
+        stats_manager::{self, StatsManager},
+        token_bucket::{TokenBucket, TokenBucketManager},
     },
     peers::{acl_filter::AclFilter, credential_manager::CredentialManager},
     proto::{
@@ -30,6 +37,7 @@ use crate::{
     },
     rpc_service::protected_port,
     tunnel::matches_protocol,
+    use_global_var,
 };
 use crossbeam::atomic::AtomicCell;
 use hmac::{Hmac, Mac};
@@ -258,7 +266,151 @@ impl std::fmt::Debug for GlobalCtx {
 
 pub type ArcGlobalCtx = std::sync::Arc<GlobalCtx>;
 
+#[async_trait]
+impl ByteLimiter for TokenBucket {
+    async fn consume(&self, bytes: u64) {
+        TokenBucket::consume(self, bytes).await;
+    }
+}
+
+impl PeerContext for GlobalCtx {
+    fn network_identity(&self) -> CoreNetworkIdentity {
+        let identity = self.get_network_identity();
+        CoreNetworkIdentity {
+            network_name: identity.network_name,
+            network_secret: identity.network_secret,
+            network_secret_digest: identity.network_secret_digest,
+        }
+    }
+
+    fn flags(&self) -> crate::proto::common::FlagsInConfig {
+        self.get_flags()
+    }
+
+    fn secure_mode(&self) -> Option<crate::proto::common::SecureModeConfig> {
+        self.config.get_secure_mode()
+    }
+
+    fn pinned_remote_static_pubkey(
+        &self,
+        tunnel_info: Option<&crate::proto::common::TunnelInfo>,
+    ) -> Option<String> {
+        let remote_url_str = tunnel_info
+            .and_then(|t| t.remote_addr.as_ref())
+            .map(|u| u.url.as_str())?;
+        let remote_url: url::Url = remote_url_str.parse().ok()?;
+
+        self.config
+            .get_peers()
+            .into_iter()
+            .find(|p| p.uri == remote_url)
+            .and_then(|p| p.peer_public_key)
+    }
+
+    fn secret_proof(&self, challenge: &[u8]) -> Option<hmac::Hmac<sha2::Sha256>> {
+        let secret = self.get_network_identity().network_secret?;
+        secret_proof_from_secret(&secret, challenge)
+    }
+
+    fn secret_digest(&self, network_identity: &CoreNetworkIdentity) -> Vec<u8> {
+        if use_global_var!(HMAC_SECRET_DIGEST) {
+            self.get_secret_proof(b"digest")
+                .map(|mac| mac.finalize().into_bytes().to_vec())
+                .unwrap_or_default()
+        } else {
+            network_identity
+                .secret_digest()
+                .unwrap_or_default()
+                .to_vec()
+        }
+    }
+
+    fn is_pubkey_trusted(&self, pubkey: &[u8], network_name: &str) -> bool {
+        self.is_pubkey_trusted(pubkey, network_name)
+    }
+
+    fn record_control_tx(&self, network_name: &str, bytes: u64) {
+        self.record_control_metric(
+            network_name,
+            bytes,
+            stats_manager::MetricName::TrafficControlBytesTx,
+            stats_manager::MetricName::TrafficControlPacketsTx,
+        );
+    }
+
+    fn record_control_rx(&self, network_name: &str, bytes: u64) {
+        self.record_control_metric(
+            network_name,
+            bytes,
+            stats_manager::MetricName::TrafficControlBytesRx,
+            stats_manager::MetricName::TrafficControlPacketsRx,
+        );
+    }
+
+    fn recv_limiter(&self, network_name: &str, is_foreign_network: bool) -> Option<ArcByteLimiter> {
+        let flags = self.get_flags();
+        if is_foreign_network && flags.foreign_relay_bps_limit != u64::MAX {
+            let limiter_config = crate::proto::common::LimiterConfig {
+                burst_rate: None,
+                bps: Some(flags.foreign_relay_bps_limit),
+                fill_duration_ms: None,
+            };
+            return Some(
+                self.token_bucket_manager()
+                    .get_or_create(&format!("{network_name}:recv"), limiter_config.into()),
+            );
+        }
+
+        if flags.instance_recv_bps_limit != u64::MAX {
+            let limiter_config = crate::proto::common::LimiterConfig {
+                burst_rate: None,
+                bps: Some(flags.instance_recv_bps_limit),
+                fill_duration_ms: None,
+            };
+            return Some(
+                self.token_bucket_manager()
+                    .get_or_create("instance:recv", limiter_config.into()),
+            );
+        }
+
+        None
+    }
+
+    fn issue_event(&self, event: PeerEvent) {
+        match event {
+            PeerEvent::PeerAdded(peer_id) => self.issue_event(GlobalCtxEvent::PeerAdded(peer_id)),
+            PeerEvent::PeerRemoved(peer_id) => {
+                self.issue_event(GlobalCtxEvent::PeerRemoved(peer_id))
+            }
+            PeerEvent::PeerConnAdded(info) => {
+                self.issue_event(GlobalCtxEvent::PeerConnAdded(info.into()))
+            }
+            PeerEvent::PeerConnRemoved(info) => {
+                self.issue_event(GlobalCtxEvent::PeerConnRemoved(info.into()))
+            }
+        }
+    }
+}
+
 impl GlobalCtx {
+    fn record_control_metric(
+        &self,
+        network_name: &str,
+        bytes: u64,
+        bytes_metric: stats_manager::MetricName,
+        packets_metric: stats_manager::MetricName,
+    ) {
+        let label_set = stats_manager::LabelSet::new().with_label_type(
+            stats_manager::LabelType::NetworkName(network_name.to_string()),
+        );
+        self.stats_manager()
+            .get_counter(bytes_metric, label_set.clone())
+            .add(bytes);
+        self.stats_manager()
+            .get_counter(packets_metric, label_set)
+            .inc();
+    }
+
     fn apply_disable_relay_data_flag(
         flags: &Flags,
         mut feature_flags: PeerFeatureFlag,
