@@ -2,7 +2,10 @@ use cidr::{Ipv4Cidr, Ipv6Cidr};
 pub use easytier_core::peers::peer_manager::RouteAlgoType;
 use easytier_core::peers::{
     foreign_network_manager::{self as core_foreign_network_manager, GlobalForeignNetworkAccessor},
-    peer_manager as core_peer_manager,
+    peer_manager::{
+        self as core_peer_manager, ForeignNetworkPacketHandler, PeerManagerRunState,
+        PeerManagerTrafficCounters,
+    },
 };
 use quanta::Instant;
 use std::collections::BTreeSet;
@@ -478,44 +481,6 @@ impl PeerManager {
             .map_err(Error::from)
     }
 
-    async fn start_peer_recv(&self) {
-        let packet_recv = self.packet_recv.lock().await.take().unwrap();
-        let is_credential_node = self
-            .global_ctx
-            .get_network_identity()
-            .network_secret
-            .is_none()
-            && self.is_secure_mode_enabled;
-        let context: easytier_core::peers::context::ArcPeerContext = self.global_ctx.clone();
-        let foreign_network_handler: Arc<dyn core_peer_manager::ForeignNetworkPacketHandler> =
-            self.foreign_network_manager.clone();
-        let router = core_peer_manager::PeerPacketRouter::new(
-            packet_recv,
-            self.my_peer_id,
-            self.peers.clone(),
-            self.peer_packet_process_pipeline.clone(),
-            self.foreign_network_client.clone(),
-            self.relay_peer_map.clone(),
-            foreign_network_handler,
-            self.encryptor.clone(),
-            self.data_compress_algo,
-            self.global_ctx.get_acl_filter().clone(),
-            context,
-            self.is_secure_mode_enabled,
-            self.get_route().into(),
-            is_credential_node,
-            self.traffic_metrics.clone(),
-            self.global_ctx.stats_manager().clone(),
-            self.global_ctx.get_network_name(),
-            self.self_tx_counters.self_tx_packets.clone(),
-            self.self_tx_counters.self_tx_bytes.clone(),
-            self.self_tx_counters.compress_tx_bytes_before.clone(),
-            self.self_tx_counters.compress_tx_bytes_after.clone(),
-        );
-
-        self.tasks.lock().await.spawn(router.run());
-    }
-
     pub async fn add_packet_process_pipeline(&self, pipeline: BoxPeerPacketFilter) {
         // newest pipeline will be executed first
         self.peer_packet_process_pipeline
@@ -530,15 +495,6 @@ impl PeerManager {
             .write()
             .await
             .push(pipeline);
-    }
-
-    async fn init_packet_process_pipeline(&self) {
-        core_peer_manager::init_packet_process_pipeline(
-            self.peer_packet_process_pipeline.as_ref(),
-            self.nic_channel.clone(),
-            self.peer_rpc_tspt.packet_sender(),
-        )
-        .await;
     }
 
     pub async fn add_route<T>(&self, route: T)
@@ -677,38 +633,45 @@ impl PeerManager {
             .map_err(Error::from)
     }
 
-    async fn run_foriegn_network(&self) {
-        self.peer_rpc_tspt
-            .set_foreign_peers(Some(Arc::downgrade(&self.foreign_network_client)))
-            .await;
-
-        self.foreign_network_client.run().await;
-    }
-
     pub async fn run(&self) -> Result<(), Error> {
-        if let Some(route) = self.route_algo_inst.ospf_route() {
-            self.add_route(route).await;
-        }
-
-        self.init_packet_process_pipeline().await;
-        self.peer_rpc_mgr.run();
-
-        self.start_peer_recv().await;
-        core_peer_manager::PeerMaintenanceTasks::new(
+        let foreign_network_handler: Arc<dyn ForeignNetworkPacketHandler> =
+            self.foreign_network_manager.clone();
+        let foreign_network_provider: Arc<dyn ForeignNetworkRouteInfoProvider> =
+            self.foreign_network_manager.clone();
+        PeerManagerRunState::new(
+            self.my_peer_id,
+            self.packet_recv.clone(),
             self.peers.clone(),
+            self.peer_rpc_mgr.clone(),
+            self.peer_rpc_tspt.clone(),
+            self.peer_packet_process_pipeline.clone(),
+            self.nic_channel.clone(),
+            self.route_algo_inst.clone(),
+            self.foreign_network_client.clone(),
+            foreign_network_handler,
+            foreign_network_provider,
             self.relay_peer_map.clone(),
             self.recent_traffic.clone(),
-            self.foreign_network_client.clone(),
             self.peer_session_store.clone(),
+            self.encryptor.clone(),
+            self.data_compress_algo,
+            self.global_ctx.get_acl_filter().clone(),
             self.global_ctx.clone(),
+            self.is_secure_mode_enabled,
+            self.get_route().into(),
             self.traffic_metrics.clone(),
+            self.global_ctx.stats_manager().clone(),
+            self.global_ctx.get_network_name(),
+            PeerManagerTrafficCounters {
+                self_tx_packets: self.self_tx_counters.self_tx_packets.clone(),
+                self_tx_bytes: self.self_tx_counters.self_tx_bytes.clone(),
+                compress_tx_bytes_before: self.self_tx_counters.compress_tx_bytes_before.clone(),
+                compress_tx_bytes_after: self.self_tx_counters.compress_tx_bytes_after.clone(),
+            },
         )
-        .spawn_into(&self.tasks)
-        .await;
-
-        self.run_foriegn_network().await;
-
-        Ok(())
+        .run(&self.tasks)
+        .await
+        .map_err(Error::from)
     }
 
     pub fn get_peer_map(&self) -> Arc<PeerMap> {

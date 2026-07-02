@@ -371,6 +371,175 @@ pub async fn add_route<T>(
     peers.add_route(arc_route).await;
 }
 
+pub struct PeerManagerTrafficCounters {
+    pub self_tx_packets: CounterHandle,
+    pub self_tx_bytes: CounterHandle,
+    pub compress_tx_bytes_before: CounterHandle,
+    pub compress_tx_bytes_after: CounterHandle,
+}
+
+pub struct PeerManagerRunState {
+    my_peer_id: PeerId,
+    packet_recv: Arc<Mutex<Option<PacketRecvChanReceiver>>>,
+    peers: Arc<PeerMap>,
+    peer_rpc_mgr: Arc<super::peer_rpc::PeerRpcManager>,
+    peer_rpc_tspt: Arc<RpcTransport>,
+    peer_packet_process_pipeline: Arc<RwLock<Vec<BoxPeerPacketFilter>>>,
+    nic_channel: PacketRecvChan,
+    route_algo_inst: RouteAlgoInst,
+    foreign_network_client: Arc<ForeignNetworkClient>,
+    foreign_network_handler: Arc<dyn ForeignNetworkPacketHandler>,
+    foreign_network_provider: Arc<dyn ForeignNetworkRouteInfoProvider>,
+    relay_peer_map: Arc<RelayPeerMap>,
+    recent_traffic: RecentTrafficTracker,
+    peer_session_store: Arc<PeerSessionStore>,
+    encryptor: Arc<dyn Encryptor + 'static>,
+    data_compress_algo: CompressorAlgo,
+    acl_filter: Arc<AclFilter>,
+    context: ArcPeerContext,
+    is_secure_mode_enabled: bool,
+    route: ArcRoute,
+    traffic_metrics: Arc<TrafficMetricRecorder>,
+    stats_manager: Arc<StatsManager>,
+    network_name: String,
+    counters: PeerManagerTrafficCounters,
+}
+
+impl PeerManagerRunState {
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        my_peer_id: PeerId,
+        packet_recv: Arc<Mutex<Option<PacketRecvChanReceiver>>>,
+        peers: Arc<PeerMap>,
+        peer_rpc_mgr: Arc<super::peer_rpc::PeerRpcManager>,
+        peer_rpc_tspt: Arc<RpcTransport>,
+        peer_packet_process_pipeline: Arc<RwLock<Vec<BoxPeerPacketFilter>>>,
+        nic_channel: PacketRecvChan,
+        route_algo_inst: RouteAlgoInst,
+        foreign_network_client: Arc<ForeignNetworkClient>,
+        foreign_network_handler: Arc<dyn ForeignNetworkPacketHandler>,
+        foreign_network_provider: Arc<dyn ForeignNetworkRouteInfoProvider>,
+        relay_peer_map: Arc<RelayPeerMap>,
+        recent_traffic: RecentTrafficTracker,
+        peer_session_store: Arc<PeerSessionStore>,
+        encryptor: Arc<dyn Encryptor + 'static>,
+        data_compress_algo: CompressorAlgo,
+        acl_filter: Arc<AclFilter>,
+        context: ArcPeerContext,
+        is_secure_mode_enabled: bool,
+        route: ArcRoute,
+        traffic_metrics: Arc<TrafficMetricRecorder>,
+        stats_manager: Arc<StatsManager>,
+        network_name: String,
+        counters: PeerManagerTrafficCounters,
+    ) -> Self {
+        Self {
+            my_peer_id,
+            packet_recv,
+            peers,
+            peer_rpc_mgr,
+            peer_rpc_tspt,
+            peer_packet_process_pipeline,
+            nic_channel,
+            route_algo_inst,
+            foreign_network_client,
+            foreign_network_handler,
+            foreign_network_provider,
+            relay_peer_map,
+            recent_traffic,
+            peer_session_store,
+            encryptor,
+            data_compress_algo,
+            acl_filter,
+            context,
+            is_secure_mode_enabled,
+            route,
+            traffic_metrics,
+            stats_manager,
+            network_name,
+            counters,
+        }
+    }
+
+    async fn start_peer_recv(&self, tasks: &Mutex<JoinSet<()>>) {
+        let packet_recv = self.packet_recv.lock().await.take().unwrap();
+        let is_credential_node =
+            self.context.network_identity().network_secret.is_none() && self.is_secure_mode_enabled;
+        let router = PeerPacketRouter::new(
+            packet_recv,
+            self.my_peer_id,
+            self.peers.clone(),
+            self.peer_packet_process_pipeline.clone(),
+            self.foreign_network_client.clone(),
+            self.relay_peer_map.clone(),
+            self.foreign_network_handler.clone(),
+            self.encryptor.clone(),
+            self.data_compress_algo,
+            self.acl_filter.clone(),
+            self.context.clone(),
+            self.is_secure_mode_enabled,
+            self.route.clone(),
+            is_credential_node,
+            self.traffic_metrics.clone(),
+            self.stats_manager.clone(),
+            self.network_name.clone(),
+            self.counters.self_tx_packets.clone(),
+            self.counters.self_tx_bytes.clone(),
+            self.counters.compress_tx_bytes_before.clone(),
+            self.counters.compress_tx_bytes_after.clone(),
+        );
+
+        tasks.lock().await.spawn(router.run());
+    }
+
+    async fn run_foreign_network(&self) {
+        self.peer_rpc_tspt
+            .set_foreign_peers(Some(Arc::downgrade(&self.foreign_network_client)))
+            .await;
+
+        self.foreign_network_client.run().await;
+    }
+
+    pub async fn run(&self, tasks: &Mutex<JoinSet<()>>) -> Result<(), Error> {
+        if let Some(route) = self.route_algo_inst.ospf_route() {
+            add_route(
+                self.peer_packet_process_pipeline.as_ref(),
+                self.peers.clone(),
+                self.foreign_network_client.clone(),
+                self.foreign_network_provider.clone(),
+                self.my_peer_id,
+                route,
+            )
+            .await;
+        }
+
+        init_packet_process_pipeline(
+            self.peer_packet_process_pipeline.as_ref(),
+            self.nic_channel.clone(),
+            self.peer_rpc_tspt.packet_sender(),
+        )
+        .await;
+        self.peer_rpc_mgr.run();
+
+        self.start_peer_recv(tasks).await;
+        PeerMaintenanceTasks::new(
+            self.peers.clone(),
+            self.relay_peer_map.clone(),
+            self.recent_traffic.clone(),
+            self.foreign_network_client.clone(),
+            self.peer_session_store.clone(),
+            self.context.clone(),
+            self.traffic_metrics.clone(),
+        )
+        .spawn_into(tasks)
+        .await;
+
+        self.run_foreign_network().await;
+
+        Ok(())
+    }
+}
+
 #[async_trait::async_trait]
 #[auto_impl::auto_impl(&, Arc)]
 pub trait ForeignPeerConnectionCloser: Send + Sync {
