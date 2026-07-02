@@ -292,6 +292,7 @@ impl PeerManager {
             RouteAlgoType::Ospf => RouteAlgoInst::Ospf(PeerRoute::new(
                 my_peer_id,
                 global_ctx.clone(),
+                global_ctx.clone(),
                 peer_rpc_mgr.clone(),
             )),
             RouteAlgoType::None => RouteAlgoInst::None,

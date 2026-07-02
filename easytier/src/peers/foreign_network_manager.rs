@@ -426,6 +426,7 @@ impl ForeignNetworkEntry {
         let route = PeerRoute::new(
             self.my_peer_id,
             self.global_ctx.clone(),
+            self.global_ctx.clone(),
             self.peer_rpc.clone(),
         );
         route

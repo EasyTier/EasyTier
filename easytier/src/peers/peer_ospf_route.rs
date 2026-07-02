@@ -40,7 +40,7 @@ use tokio::{
 };
 
 use crate::{
-    common::{PeerId, constants::EASYTIER_VERSION, global_ctx::ArcGlobalCtx, shrink_dashmap},
+    common::{PeerId, constants::EASYTIER_VERSION, shrink_dashmap},
     peers::route_trait::{Route, RouteInterfaceBox},
     proto::{
         common::NatType,
@@ -64,7 +64,8 @@ use super::{
     PeerPacketFilter,
     peer_rpc::PeerRpcManager,
     public_ipv6::{
-        PublicIpv6PeerRouteInfo, PublicIpv6RouteControl, PublicIpv6Service, PublicIpv6SyncTrigger,
+        PublicIpv6PeerRouteInfo, PublicIpv6RouteControl, PublicIpv6Runtime, PublicIpv6Service,
+        PublicIpv6SyncTrigger,
     },
     route_trait::{
         DefaultRouteCostCalculator, ForeignNetworkRouteInfoMap, NextHopPolicy, RouteCostCalculator,
@@ -3249,14 +3250,14 @@ impl Debug for PeerRoute {
 impl PeerRoute {
     pub fn new(
         my_peer_id: PeerId,
-        global_ctx: ArcGlobalCtx,
+        context: ArcPeerContext,
+        public_ipv6_runtime: Arc<dyn PublicIpv6Runtime>,
         peer_rpc: Arc<PeerRpcManager>,
     ) -> Arc<Self> {
-        let context: ArcPeerContext = global_ctx.clone();
         let service_impl = Arc::new(PeerRouteServiceImpl::new(my_peer_id, context.clone()));
         let session_mgr = RouteSessionManager::new(service_impl.clone(), peer_rpc.clone());
         let public_ipv6_service = Arc::new(PublicIpv6Service::new(
-            global_ctx.clone(),
+            public_ipv6_runtime,
             Arc::downgrade(&peer_rpc),
             Arc::new(OspfPublicIpv6RouteHandle {
                 service_impl: Arc::downgrade(&service_impl),
@@ -3883,9 +3884,11 @@ mod tests {
     }
 
     async fn create_mock_route(peer_mgr: Arc<PeerManager>) -> Arc<PeerRoute> {
+        let global_ctx = peer_mgr.get_global_ctx();
         let peer_route = PeerRoute::new(
             peer_mgr.my_peer_id(),
-            peer_mgr.get_global_ctx(),
+            global_ctx.clone(),
+            global_ctx,
             peer_mgr.get_peer_rpc_mgr(),
         );
         peer_mgr.add_route(peer_route.clone()).await;
