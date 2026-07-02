@@ -67,7 +67,7 @@ impl PingIntervalController {
             last_send_logic_time: 0,
 
             backoff_idx: 0,
-            max_backoff_idx: 4,
+            max_backoff_idx: 3,
 
             last_throughput,
         }
