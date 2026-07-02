@@ -1,0 +1,32 @@
+[package]
+name = "easytier-core"
+description = "EasyTier OS-free control-plane core primitives."
+homepage = "https://github.com/EasyTier/EasyTier"
+repository = "https://github.com/EasyTier/EasyTier"
+version = "2.6.4"
+edition.workspace = true
+rust-version.workspace = true
+authors = ["kkrainbow"]
+keywords = ["vpn", "p2p", "network", "easytier"]
+categories = ["network-programming"]
+license-file = "../LICENSE"
+
+[dependencies]
+async-trait = "0.1.74"
+bitflags = "2.5"
+bytes = "1.5.0"
+easytier-proto = { path = "../easytier-proto", default-features = false, features = ["core"] }
+thiserror = "1.0"
+tracing = { version = "0.1", features = ["log"] }
+tokio = { version = "1", default-features = false, features = [
+    "rt",
+    "time",
+    "sync",
+    "macros",
+    "io-util",
+] }
+zerocopy = { version = "0.7.32", features = ["derive", "simd"] }
+
+[features]
+default = []
+zstd = []

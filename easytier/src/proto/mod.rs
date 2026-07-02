@@ -1,21 +1,16 @@
-pub mod rpc_impl;
-pub mod rpc_types;
+pub use easytier_proto::{ALL_DESCRIPTOR_BYTES, DESCRIPTOR_POOL_BYTES};
+pub use easytier_proto::{acl, api, common, core_config, error, peer_rpc, rpc_types, utils, web};
 
-pub mod acl;
-pub mod api;
-pub mod common;
-pub mod error;
 #[cfg(feature = "magic-dns")]
-pub mod magic_dns;
-pub mod peer_rpc;
-pub mod web;
+pub use easytier_proto::magic_dns;
 
 #[cfg(test)]
 pub mod tests;
-pub mod utils;
 
-pub const DESCRIPTOR_POOL_BYTES: &[u8] =
-    include_bytes!(concat!(env!("OUT_DIR"), "/file_descriptor_set.bin"));
+pub mod rpc_impl;
 
-pub const ALL_DESCRIPTOR_BYTES: &[u8] =
-    include_bytes!(concat!(env!("OUT_DIR"), "/descriptors.bin"));
+impl From<crate::tunnel::TunnelError> for rpc_types::error::Error {
+    fn from(value: crate::tunnel::TunnelError) -> Self {
+        Self::TunnelError(value.to_string())
+    }
+}

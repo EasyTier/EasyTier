@@ -1,4 +1,5 @@
 use easytier::proto::api::manage::NetworkConfig;
+use easytier::launcher::NetworkConfigExt;
 use serde_json::{Map, Value};
 use uuid::Uuid;
 

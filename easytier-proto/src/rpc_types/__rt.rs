@@ -40,7 +40,6 @@ where
     I: prost::Message,
     O: prost::Message + Default,
 {
-    type Error = super::error::Error;
     let input_bytes = encode(input)?;
     let ret_msg = handler.call(ctrl, method, input_bytes).await?;
     decode(ret_msg)

@@ -630,49 +630,54 @@ pub fn add_proxy_network_to_config(
 pub type NetworkingMethod = crate::proto::api::manage::NetworkingMethod;
 pub type NetworkConfig = crate::proto::api::manage::NetworkConfig;
 
-impl NetworkConfig {
-    fn parse_peer(peer: &manage::NetworkPeerConfig) -> Result<Option<PeerConfig>, anyhow::Error> {
-        let uri = peer.uri.trim();
-        if uri.is_empty() {
-            return Ok(None);
-        }
+pub trait NetworkConfigExt {
+    fn gen_config(&self) -> Result<TomlConfigLoader, anyhow::Error>;
+    fn new_from_config(config: impl ConfigLoader) -> Result<NetworkConfig, anyhow::Error>;
+}
 
-        Ok(Some(PeerConfig {
-            uri: uri
+fn parse_peer(peer: &manage::NetworkPeerConfig) -> Result<Option<PeerConfig>, anyhow::Error> {
+    let uri = peer.uri.trim();
+    if uri.is_empty() {
+        return Ok(None);
+    }
+
+    Ok(Some(PeerConfig {
+        uri: uri
+            .parse()
+            .with_context(|| format!("failed to parse peer uri: {}", uri))?,
+        peer_public_key: peer.peer_public_key.clone(),
+    }))
+}
+
+fn parse_peers(peers: &[manage::NetworkPeerConfig]) -> Result<Vec<PeerConfig>, anyhow::Error> {
+    let mut ret = Vec::new();
+    for peer in peers {
+        if let Some(peer) = parse_peer(peer)? {
+            ret.push(peer);
+        }
+    }
+    Ok(ret)
+}
+
+fn parse_peer_urls(peer_urls: &[String]) -> Result<Vec<PeerConfig>, anyhow::Error> {
+    let mut peers = vec![];
+    for peer_url in peer_urls.iter() {
+        let peer_url = peer_url.trim();
+        if peer_url.is_empty() {
+            continue;
+        }
+        peers.push(PeerConfig {
+            uri: peer_url
                 .parse()
-                .with_context(|| format!("failed to parse peer uri: {}", uri))?,
-            peer_public_key: peer.peer_public_key.clone(),
-        }))
+                .with_context(|| format!("failed to parse peer uri: {}", peer_url))?,
+            peer_public_key: None,
+        });
     }
+    Ok(peers)
+}
 
-    fn parse_peers(peers: &[manage::NetworkPeerConfig]) -> Result<Vec<PeerConfig>, anyhow::Error> {
-        let mut ret = Vec::new();
-        for peer in peers {
-            if let Some(peer) = Self::parse_peer(peer)? {
-                ret.push(peer);
-            }
-        }
-        Ok(ret)
-    }
-
-    fn parse_peer_urls(peer_urls: &[String]) -> Result<Vec<PeerConfig>, anyhow::Error> {
-        let mut peers = vec![];
-        for peer_url in peer_urls.iter() {
-            let peer_url = peer_url.trim();
-            if peer_url.is_empty() {
-                continue;
-            }
-            peers.push(PeerConfig {
-                uri: peer_url
-                    .parse()
-                    .with_context(|| format!("failed to parse peer uri: {}", peer_url))?,
-                peer_public_key: None,
-            });
-        }
-        Ok(peers)
-    }
-
-    pub fn gen_config(&self) -> Result<TomlConfigLoader, anyhow::Error> {
+impl NetworkConfigExt for NetworkConfig {
+    fn gen_config(&self) -> Result<TomlConfigLoader, anyhow::Error> {
         let cfg = TomlConfigLoader::default();
         cfg.set_id(
             self.instance_id
@@ -727,7 +732,7 @@ impl NetworkConfig {
             .unwrap_or_default()
         {
             NetworkingMethod::PublicServer => {
-                let peers = Self::parse_peers(&self.peers)?;
+                let peers = parse_peers(&self.peers)?;
                 if peers.is_empty() {
                     let public_server_url = self.public_server_url.clone().unwrap_or_default();
                     cfg.set_peers(vec![PeerConfig {
@@ -741,9 +746,9 @@ impl NetworkConfig {
                 }
             }
             NetworkingMethod::Manual => {
-                let mut peers = Self::parse_peers(&self.peers)?;
+                let mut peers = parse_peers(&self.peers)?;
                 if peers.is_empty() {
-                    peers = Self::parse_peer_urls(&self.peer_urls)?;
+                    peers = parse_peer_urls(&self.peer_urls)?;
                 }
                 if !peers.is_empty() {
                     cfg.set_peers(peers);
@@ -1049,7 +1054,7 @@ impl NetworkConfig {
         Ok(cfg)
     }
 
-    pub fn new_from_config(config: impl ConfigLoader) -> Result<Self, anyhow::Error> {
+    fn new_from_config(config: impl ConfigLoader) -> Result<Self, anyhow::Error> {
         let default_config = TomlConfigLoader::default();
 
         let mut result = Self {

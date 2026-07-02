@@ -2351,6 +2351,8 @@ dependencies = [
  "derivative",
  "derive_builder",
  "derive_more 2.1.1",
+ "easytier-core",
+ "easytier-proto",
  "encoding",
  "flume 0.12.0",
  "forwarded-header-value",
@@ -2392,26 +2394,20 @@ dependencies = [
  "parking_lot",
  "paste",
  "pbjson",
- "pbjson-build",
  "percent-encoding",
  "petgraph",
  "pin-project-lite",
  "pnet",
  "prefix-trie",
- "proc-macro2",
  "prost 0.14.3",
- "prost-build",
  "prost-reflect",
- "prost-reflect-build",
  "prost-wkt-types",
  "quanta",
  "quinn",
  "quinn-proto",
- "quote",
  "rand 0.8.5",
  "rcgen",
  "regex",
- "reqwest 0.12.12",
  "resolv-conf",
  "ring",
  "ringbuf",
@@ -2464,7 +2460,6 @@ dependencies = [
  "winreg 0.52.0",
  "x25519-dalek",
  "zerocopy 0.7.35",
- "zip",
  "zstd",
 ]
 
@@ -2480,6 +2475,20 @@ dependencies = [
  "once_cell",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "easytier-core"
+version = "2.6.4"
+dependencies = [
+ "async-trait",
+ "bitflags 2.8.0",
+ "bytes",
+ "easytier-proto",
+ "thiserror 1.0.63",
+ "tokio",
+ "tracing",
+ "zerocopy 0.7.35",
 ]
 
 [[package]]
@@ -2531,6 +2540,43 @@ dependencies = [
  "uuid",
  "winapi",
  "windows 0.52.0",
+]
+
+[[package]]
+name = "easytier-proto"
+version = "2.6.4"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "auto_impl",
+ "base64 0.22.1",
+ "bytes",
+ "chrono",
+ "cidr",
+ "delegate",
+ "derivative",
+ "derive_more 2.1.1",
+ "hmac",
+ "indoc",
+ "pbjson",
+ "pbjson-build",
+ "proc-macro2",
+ "prost 0.14.3",
+ "prost-build",
+ "prost-reflect",
+ "prost-reflect-build",
+ "prost-wkt-types",
+ "quote",
+ "reqwest 0.12.12",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror 1.0.63",
+ "tokio",
+ "url",
+ "uuid",
+ "x25519-dalek",
+ "zip",
 ]
 
 [[package]]

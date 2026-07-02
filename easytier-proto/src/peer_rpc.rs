@@ -1,8 +1,11 @@
 use hmac::{Hmac, Mac};
 use prost::Message;
 use sha2::Sha256;
+#[cfg(feature = "api")]
+use std::collections::BTreeMap;
+use std::collections::BTreeSet;
 
-use crate::common::PeerId;
+type PeerId = u32;
 
 include!(concat!(env!("OUT_DIR"), "/peer_rpc.rs"));
 include!(concat!(env!("OUT_DIR"), "/peer_rpc.serde.rs"));
@@ -100,6 +103,96 @@ impl From<RouteConnBitmap> for sync_route_info_request::ConnInfo {
 impl From<RouteConnPeerList> for sync_route_info_request::ConnInfo {
     fn from(val: RouteConnPeerList) -> Self {
         Self::ConnPeerList(val)
+    }
+}
+
+#[cfg(feature = "api")]
+impl From<Vec<crate::api::instance::PeerInfo>> for PeerInfoForGlobalMap {
+    fn from(peers: Vec<crate::api::instance::PeerInfo>) -> Self {
+        let mut peer_map = BTreeMap::new();
+        for peer in peers {
+            let Some(min_lat) = peer
+                .conns
+                .iter()
+                .map(|conn| conn.stats.as_ref().unwrap().latency_us)
+                .min()
+            else {
+                continue;
+            };
+
+            let dp_info = DirectConnectedPeerInfo {
+                latency_ms: std::cmp::max(1, (min_lat as u32 / 1000) as i32),
+            };
+
+            peer_map.insert(peer.peer_id, dp_info);
+        }
+        PeerInfoForGlobalMap {
+            direct_peers: peer_map,
+        }
+    }
+}
+
+#[cfg(feature = "api")]
+impl From<RoutePeerInfo> for crate::api::instance::Route {
+    fn from(val: RoutePeerInfo) -> Self {
+        let network_length = if val.network_length == 0 {
+            24
+        } else {
+            val.network_length
+        };
+
+        crate::api::instance::Route {
+            peer_id: val.peer_id,
+            ipv4_addr: val.ipv4_addr.map(|ipv4_addr| crate::common::Ipv4Inet {
+                address: Some(ipv4_addr),
+                network_length,
+            }),
+            next_hop_peer_id: 0,
+            cost: 0,
+            path_latency: 0,
+            proxy_cidrs: val.proxy_cidrs.clone(),
+            hostname: val.hostname.unwrap_or_default(),
+            stun_info: {
+                let mut stun_info = crate::common::StunInfo::default();
+                if let Ok(udp_nat_type) = crate::common::NatType::try_from(val.udp_nat_type) {
+                    stun_info.set_udp_nat_type(udp_nat_type);
+                }
+                if let Ok(tcp_nat_type) = crate::common::NatType::try_from(val.tcp_nat_type) {
+                    stun_info.set_tcp_nat_type(tcp_nat_type);
+                }
+                Some(stun_info)
+            },
+            inst_id: val.inst_id.map(|x| x.to_string()).unwrap_or_default(),
+            version: val.easytier_version,
+            feature_flag: val.feature_flag,
+
+            next_hop_peer_id_latency_first: None,
+            cost_latency_first: None,
+            path_latency_latency_first: None,
+
+            ipv6_addr: val.ipv6_addr,
+            public_ipv6_addr: val.ipv6_public_addr_lease,
+            ipv6_public_addr_prefix: val.ipv6_public_addr_prefix,
+        }
+    }
+}
+
+impl RouteConnBitmap {
+    pub fn get_bit(&self, idx: usize) -> bool {
+        let byte_idx = idx / 8;
+        let bit_idx = idx % 8;
+        let byte = self.bitmap[byte_idx];
+        (byte >> bit_idx) & 1 == 1
+    }
+
+    pub fn get_connected_peers(&self, peer_idx: usize) -> BTreeSet<PeerId> {
+        let mut connected_peers = BTreeSet::new();
+        for (idx, peer_id_version) in self.peer_ids.iter().enumerate() {
+            if self.get_bit(peer_idx * self.peer_ids.len() + idx) {
+                connected_peers.insert(peer_id_version.peer_id);
+            }
+        }
+        connected_peers
     }
 }
 

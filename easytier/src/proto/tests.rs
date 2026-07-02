@@ -1,5 +1,4 @@
-include!(concat!(env!("OUT_DIR"), "/tests.rs"));
-include!(concat!(env!("OUT_DIR"), "/tests.serde.rs"));
+pub use easytier_proto::tests::*;
 
 use std::sync::{Arc, Mutex};
 

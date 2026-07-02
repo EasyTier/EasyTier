@@ -5,6 +5,7 @@ use crate::{
         ConfigFileControl, ConfigFilePermission, ConfigLoader, ConfigSource, TomlConfigLoader,
     },
     instance_manager::NetworkInstanceManager,
+    launcher::NetworkConfigExt,
     proto::{
         api::{
             config::GetConfigRequest,

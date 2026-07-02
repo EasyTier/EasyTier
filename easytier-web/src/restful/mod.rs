@@ -17,7 +17,7 @@ use axum_login::tower_sessions::{ExpiredDeletion, SessionManagerLayer};
 use axum_login::{AuthManagerLayerBuilder, AuthUser, AuthzBackend, login_required};
 use axum_messages::MessagesManagerLayer;
 use easytier::common::config::{ConfigLoader, TomlConfigLoader};
-use easytier::launcher::NetworkConfig;
+use easytier::launcher::{NetworkConfig, NetworkConfigExt};
 use easytier::proto::rpc_types;
 use network::NetworkApi;
 use sea_orm::DbErr;

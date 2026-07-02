@@ -8,7 +8,10 @@ use crate::{
         common::{CompressionAlgoPb, RpcCompressionInfo, RpcDescriptor, RpcPacket},
         rpc_types::error::Error,
     },
-    tunnel::packet_def::{CompressorAlgo, PacketType, TAIL_RESERVED_SIZE, ZCPacket, ZCPacketType},
+    tunnel::packet_def::{
+        CompressorAlgo, PacketType, TAIL_RESERVED_SIZE, ZCPacket, ZCPacketType,
+        compressor_algo_from_pb, compressor_algo_to_pb,
+    },
 };
 
 use super::RpcTransactId;
@@ -23,14 +26,12 @@ pub async fn compress_packet(
     content: &[u8],
 ) -> Result<(Vec<u8>, CompressionAlgoPb), Error> {
     let compressor = DefaultCompressor::new();
-    let algo = accepted_compression_algo
-        .try_into()
-        .unwrap_or(CompressorAlgo::None);
+    let algo = compressor_algo_from_pb(accepted_compression_algo).unwrap_or(CompressorAlgo::None);
     let compressed = compressor.compress_raw(content, algo).await?;
     if compressed.len() >= content.len() {
         Ok((content.to_vec(), CompressionAlgoPb::None))
     } else {
-        Ok((compressed, algo.try_into().unwrap()))
+        Ok((compressed, compressor_algo_to_pb(algo)))
     }
 }
 
@@ -39,7 +40,7 @@ pub async fn decompress_packet(
     content: &[u8],
 ) -> Result<Vec<u8>, Error> {
     let compressor = DefaultCompressor::new();
-    let algo = compression_algo.try_into()?;
+    let algo = compressor_algo_from_pb(compression_algo)?;
     let decompressed = compressor.decompress_raw(content, algo).await?;
     Ok(decompressed)
 }

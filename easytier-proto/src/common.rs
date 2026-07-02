@@ -5,9 +5,21 @@ use std::{
     fmt::{self, Display},
     str::FromStr,
 };
-use strum::VariantArray;
 
-use crate::tunnel::{IpScheme, packet_def::CompressorAlgo};
+const IP_SCHEMES: &[&str] = &[
+    "tcp",
+    "udp",
+    #[cfg(feature = "wireguard")]
+    "wg",
+    #[cfg(feature = "quic")]
+    "quic",
+    #[cfg(feature = "websocket")]
+    "ws",
+    #[cfg(feature = "websocket")]
+    "wss",
+    #[cfg(feature = "faketcp")]
+    "faketcp",
+];
 
 include!(concat!(env!("OUT_DIR"), "/common.rs"));
 include!(concat!(env!("OUT_DIR"), "/common.serde.rs"));
@@ -301,8 +313,7 @@ impl fmt::Display for Url {
 }
 
 fn split_tunnel_scheme(raw_scheme: &str) -> Option<(&str, &'static str, bool)> {
-    for scheme in IpScheme::VARIANTS {
-        let scheme: &'static str = scheme.into();
+    for &scheme in IP_SCHEMES {
         if let Some(base) = raw_scheme.strip_suffix('6')
             && let Some(prefix) = base.strip_suffix(scheme)
             && (prefix.is_empty() || prefix.ends_with('-'))
@@ -468,31 +479,6 @@ impl TunnelInfo {
     pub fn display_remote_addr(&self) -> Option<String> {
         self.effective_remote_addr()
             .map(Url::normalized_tunnel_display)
-    }
-}
-
-impl TryFrom<CompressionAlgoPb> for CompressorAlgo {
-    type Error = anyhow::Error;
-
-    fn try_from(value: CompressionAlgoPb) -> Result<Self, Self::Error> {
-        match value {
-            #[cfg(feature = "zstd")]
-            CompressionAlgoPb::Zstd => Ok(CompressorAlgo::ZstdDefault),
-            CompressionAlgoPb::None => Ok(CompressorAlgo::None),
-            _ => Err(anyhow::anyhow!("Invalid CompressionAlgoPb")),
-        }
-    }
-}
-
-impl TryFrom<CompressorAlgo> for CompressionAlgoPb {
-    type Error = anyhow::Error;
-
-    fn try_from(value: CompressorAlgo) -> Result<Self, Self::Error> {
-        match value {
-            #[cfg(feature = "zstd")]
-            CompressorAlgo::ZstdDefault => Ok(CompressionAlgoPb::Zstd),
-            CompressorAlgo::None => Ok(CompressionAlgoPb::None),
-        }
     }
 }
 

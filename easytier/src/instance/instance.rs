@@ -33,6 +33,7 @@ use crate::gateway::kcp_proxy::{KcpProxyDst, KcpProxyDstRpcService, KcpProxySrc}
 use crate::gateway::quic_proxy::{QuicProxy, QuicProxyDstRpcService};
 use crate::gateway::tcp_proxy::{NatDstTcpConnector, TcpProxy, TcpProxyRpcService};
 use crate::gateway::udp_proxy::UdpProxy;
+use crate::launcher::NetworkConfigExt;
 use crate::peer_center::instance::{PeerCenterInstance, PeerCenterInstanceService};
 use crate::peers::peer_conn::PeerConnId;
 use crate::peers::peer_manager::{PeerManager, RouteAlgoType};
@@ -455,7 +456,13 @@ impl InstanceConfigPatcher {
         let global_ctx = weak_upgrade(&self.global_ctx)?;
 
         let mut current_forwards = global_ctx.config.get_port_forwards();
-        let patches = port_forwards.into_iter().map(Into::into).collect();
+        let patches = port_forwards
+            .into_iter()
+            .map(|patch| crate::proto::api::config::Patchable {
+                action: ConfigPatchAction::try_from(patch.action).ok(),
+                value: patch.cfg.map(Into::into),
+            })
+            .collect();
         InstanceConfigPatcher::trace_patchables(&patches);
         crate::proto::api::config::patch_vec(&mut current_forwards, patches);
 

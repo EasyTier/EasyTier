@@ -43,7 +43,7 @@ use crate::{
     peers::route_trait::{Route, RouteInterfaceBox},
     proto::{
         acl::GroupIdentity,
-        common::{Ipv4Inet, NatType, StunInfo},
+        common::NatType,
         peer_rpc::{
             ForeignNetworkRouteInfoEntry, ForeignNetworkRouteInfoKey, OspfRouteRpc,
             OspfRouteRpcClientFactory, OspfRouteRpcServer, PeerGroupInfo, PeerIdVersion,
@@ -190,190 +190,105 @@ fn is_foreign_network_info_newer(
     )
 }
 
-impl RoutePeerInfo {
-    #[allow(deprecated)]
-    pub fn new() -> Self {
-        Self {
-            peer_id: 0,
-            inst_id: Some(uuid::Uuid::nil().into()),
-            cost: 0,
-            ipv4_addr: None,
-            proxy_cidrs: Vec::new(),
-            hostname: None,
-            udp_nat_type: 0,
-            tcp_nat_type: 0,
-            // ensure this is updated when the peer_infos/conn_info/foreign_network lock is acquired.
-            // else we may assign a older timestamp than iterate time.
-            last_update: None,
-            version: 0,
-            easytier_version: EASYTIER_VERSION.to_string(),
-            feature_flag: None,
-            peer_route_id: 0,
-            network_length: 24,
-            ipv6_addr: None,
-            groups: Vec::new(),
+#[allow(deprecated)]
+fn new_route_peer_info() -> RoutePeerInfo {
+    RoutePeerInfo {
+        peer_id: 0,
+        inst_id: Some(uuid::Uuid::nil().into()),
+        cost: 0,
+        ipv4_addr: None,
+        proxy_cidrs: Vec::new(),
+        hostname: None,
+        udp_nat_type: 0,
+        tcp_nat_type: 0,
+        // ensure this is updated when the peer_infos/conn_info/foreign_network lock is acquired.
+        // else we may assign a older timestamp than iterate time.
+        last_update: None,
+        version: 0,
+        easytier_version: EASYTIER_VERSION.to_string(),
+        feature_flag: None,
+        peer_route_id: 0,
+        network_length: 24,
+        ipv6_addr: None,
+        groups: Vec::new(),
 
-            quic_port: None,
-            noise_static_pubkey: Vec::new(),
-            trusted_credential_pubkeys: Vec::new(),
-            ipv6_public_addr_prefix: None,
-            ipv6_public_addr_lease: None,
-        }
-    }
-
-    /// Creates a new `RoutePeerInfo` instance with updated information from the given context.
-    ///
-    /// # Parameters
-    /// - `my_peer_id`: The unique identifier for the peer.
-    /// - `peer_route_id`: The route identifier associated with the peer.
-    /// - `global_ctx`: Reference to the global context containing configuration and state.
-    ///
-    /// # Returns
-    /// A new `RoutePeerInfo` instance initialized with values from the provided context and parameters.
-    pub fn new_updated_self(
-        my_peer_id: PeerId,
-        peer_route_id: u64,
-        global_ctx: &ArcGlobalCtx,
-        public_ipv6_addr_lease: Option<Ipv6Inet>,
-    ) -> Self {
-        let stun_info = global_ctx.get_stun_info_collector().get_stun_info();
-        let noise_static_pubkey = global_ctx
-            .config
-            .get_secure_mode()
-            .and_then(|cfg| cfg.public_key().ok())
-            .map(|pk| pk.as_bytes().to_vec())
-            .unwrap_or_default();
-        Self {
-            peer_id: my_peer_id,
-            inst_id: Some(global_ctx.get_id().into()),
-            cost: 0,
-            ipv4_addr: global_ctx.get_ipv4().map(|x| x.address().into()),
-            proxy_cidrs: global_ctx
-                .config
-                .get_proxy_cidrs()
-                .iter()
-                .map(|x| x.mapped_cidr.unwrap_or(x.cidr))
-                .chain(global_ctx.get_vpn_portal_cidr())
-                .map(|x| x.to_string())
-                .collect(),
-            hostname: Some(global_ctx.get_hostname()),
-            udp_nat_type: stun_info.udp_nat_type,
-            tcp_nat_type: stun_info.tcp_nat_type,
-
-            // these two fields should not participate in comparison.
-            last_update: None,
-            version: 0,
-
-            easytier_version: EASYTIER_VERSION.to_string(),
-            feature_flag: Some(global_ctx.get_feature_flags()),
-            peer_route_id,
-            network_length: global_ctx
-                .get_ipv4()
-                .map(|x| x.network_length() as u32)
-                .unwrap_or(24),
-
-            ipv6_addr: global_ctx.get_ipv6().map(|x| x.into()),
-            ipv6_public_addr_prefix: global_ctx.get_advertised_ipv6_public_addr_prefix().map(
-                |prefix| {
-                    Ipv6Inet::new(prefix.first_address(), prefix.network_length())
-                        .unwrap()
-                        .into()
-                },
-            ),
-            ipv6_public_addr_lease: public_ipv6_addr_lease.map(Into::into),
-
-            groups: global_ctx.get_acl_groups(my_peer_id),
-
-            noise_static_pubkey,
-
-            // Only admin nodes (holding network_secret) publish trusted credential pubkeys
-            trusted_credential_pubkeys: if let Some(network_secret) =
-                global_ctx.get_network_identity().network_secret
-            {
-                global_ctx
-                    .get_credential_manager()
-                    .get_trusted_pubkeys(&network_secret)
-            } else {
-                Vec::new()
-            },
-
-            ..Default::default()
-        }
-    }
-
-    /// Attempts to update the `new` RoutePeerInfo based on the `old` RoutePeerInfo.
-    ///
-    /// An update is triggered if any fields in `new` differ from `old`, or if the time since
-    /// `old.last_update` exceeds the `UPDATE_PEER_INFO_PERIOD`.
-    ///
-    /// If an update occurs, `new.last_update` is set to the current time and `new.version` is incremented.
-    /// Otherwise, `new.last_update` and `new.version` are copied from `old` without modification.
-    ///
-    /// Returns `true` if an update was performed (fields changed or periodic update required),
-    /// or `false` if no update was necessary.
-    pub fn try_update_new_peer_info(old: &RoutePeerInfo, new: &mut RoutePeerInfo) -> bool {
-        let need_update_periodically = if let Ok(Ok(d)) =
-            SystemTime::try_from(old.last_update.unwrap_or_default()).map(|x| x.elapsed())
-        {
-            d > UPDATE_PEER_INFO_PERIOD
-        } else {
-            true
-        };
-
-        // these two fields should not participate in comparison.
-        new.version = old.version;
-        new.last_update = old.last_update;
-
-        if *new != *old || need_update_periodically {
-            new.version += 1;
-            true
-        } else {
-            false
-        }
+        quic_port: None,
+        noise_static_pubkey: Vec::new(),
+        trusted_credential_pubkeys: Vec::new(),
+        ipv6_public_addr_prefix: None,
+        ipv6_public_addr_lease: None,
     }
 }
 
-impl From<RoutePeerInfo> for crate::proto::api::instance::Route {
-    fn from(val: RoutePeerInfo) -> Self {
-        let network_length = if val.network_length == 0 {
-            24
-        } else {
-            val.network_length
-        };
+/// Creates a new `RoutePeerInfo` instance with updated information from the given context.
+fn new_updated_self_route_peer_info(
+    my_peer_id: PeerId,
+    peer_route_id: u64,
+    global_ctx: &ArcGlobalCtx,
+    public_ipv6_addr_lease: Option<Ipv6Inet>,
+) -> RoutePeerInfo {
+    let stun_info = global_ctx.get_stun_info_collector().get_stun_info();
+    let noise_static_pubkey = global_ctx
+        .config
+        .get_secure_mode()
+        .and_then(|cfg| cfg.public_key().ok())
+        .map(|pk| pk.as_bytes().to_vec())
+        .unwrap_or_default();
+    RoutePeerInfo {
+        peer_id: my_peer_id,
+        inst_id: Some(global_ctx.get_id().into()),
+        cost: 0,
+        ipv4_addr: global_ctx.get_ipv4().map(|x| x.address().into()),
+        proxy_cidrs: global_ctx
+            .config
+            .get_proxy_cidrs()
+            .iter()
+            .map(|x| x.mapped_cidr.unwrap_or(x.cidr))
+            .chain(global_ctx.get_vpn_portal_cidr())
+            .map(|x| x.to_string())
+            .collect(),
+        hostname: Some(global_ctx.get_hostname()),
+        udp_nat_type: stun_info.udp_nat_type,
+        tcp_nat_type: stun_info.tcp_nat_type,
 
-        crate::proto::api::instance::Route {
-            peer_id: val.peer_id,
-            ipv4_addr: val.ipv4_addr.map(|ipv4_addr| Ipv4Inet {
-                address: Some(ipv4_addr),
-                network_length,
-            }),
-            next_hop_peer_id: 0, // next_hop_peer_id is calculated in RouteTable.
-            cost: 0,             // cost is calculated in RouteTable.
-            path_latency: 0,     // path_latency is calculated in RouteTable.
-            proxy_cidrs: val.proxy_cidrs.clone(),
-            hostname: val.hostname.unwrap_or_default(),
-            stun_info: {
-                let mut stun_info = StunInfo::default();
-                if let Ok(udp_nat_type) = NatType::try_from(val.udp_nat_type) {
-                    stun_info.set_udp_nat_type(udp_nat_type);
-                }
-                if let Ok(tcp_nat_type) = NatType::try_from(val.tcp_nat_type) {
-                    stun_info.set_tcp_nat_type(tcp_nat_type);
-                }
-                Some(stun_info)
+        // these two fields should not participate in comparison.
+        last_update: None,
+        version: 0,
+
+        easytier_version: EASYTIER_VERSION.to_string(),
+        feature_flag: Some(global_ctx.get_feature_flags()),
+        peer_route_id,
+        network_length: global_ctx
+            .get_ipv4()
+            .map(|x| x.network_length() as u32)
+            .unwrap_or(24),
+
+        ipv6_addr: global_ctx.get_ipv6().map(|x| x.into()),
+        ipv6_public_addr_prefix: global_ctx.get_advertised_ipv6_public_addr_prefix().map(
+            |prefix| {
+                Ipv6Inet::new(prefix.first_address(), prefix.network_length())
+                    .unwrap()
+                    .into()
             },
-            inst_id: val.inst_id.map(|x| x.to_string()).unwrap_or_default(),
-            version: val.easytier_version,
-            feature_flag: val.feature_flag,
+        ),
+        ipv6_public_addr_lease: public_ipv6_addr_lease.map(Into::into),
 
-            next_hop_peer_id_latency_first: None,
-            cost_latency_first: None,
-            path_latency_latency_first: None,
+        groups: global_ctx.get_acl_groups(my_peer_id),
 
-            ipv6_addr: val.ipv6_addr,
-            public_ipv6_addr: val.ipv6_public_addr_lease,
-            ipv6_public_addr_prefix: val.ipv6_public_addr_prefix,
-        }
+        noise_static_pubkey,
+
+        // Only admin nodes (holding network_secret) publish trusted credential pubkeys
+        trusted_credential_pubkeys: if let Some(network_secret) =
+            global_ctx.get_network_identity().network_secret
+        {
+            global_ctx
+                .get_credential_manager()
+                .get_trusted_pubkeys(&network_secret)
+        } else {
+            Vec::new()
+        },
+
+        ..Default::default()
     }
 }
 
@@ -381,22 +296,25 @@ type RouteConnBitmap = crate::proto::peer_rpc::RouteConnBitmap;
 type RouteConnPeerList = crate::proto::peer_rpc::RouteConnPeerList;
 type PeerConnInfo = crate::proto::peer_rpc::route_conn_peer_list::PeerConnInfo;
 
-impl RouteConnBitmap {
-    fn get_bit(&self, idx: usize) -> bool {
-        let byte_idx = idx / 8;
-        let bit_idx = idx % 8;
-        let byte = self.bitmap[byte_idx];
-        (byte >> bit_idx) & 1 == 1
-    }
+/// Attempts to update the `new` RoutePeerInfo based on the `old` RoutePeerInfo.
+fn try_update_new_peer_info(old: &RoutePeerInfo, new: &mut RoutePeerInfo) -> bool {
+    let need_update_periodically = if let Ok(Ok(d)) =
+        SystemTime::try_from(old.last_update.unwrap_or_default()).map(|x| x.elapsed())
+    {
+        d > UPDATE_PEER_INFO_PERIOD
+    } else {
+        true
+    };
 
-    fn get_connected_peers(&self, peer_idx: usize) -> BTreeSet<PeerId> {
-        let mut connected_peers = BTreeSet::new();
-        for (idx, peer_id_version) in self.peer_ids.iter().enumerate() {
-            if self.get_bit(peer_idx * self.peer_ids.len() + idx) {
-                connected_peers.insert(peer_id_version.peer_id);
-            }
-        }
-        connected_peers
+    // these two fields should not participate in comparison.
+    new.version = old.version;
+    new.last_update = old.last_update;
+
+    if *new != *old || need_update_periodically {
+        new.version += 1;
+        true
+    } else {
+        false
     }
 }
 
@@ -791,7 +709,7 @@ impl SyncedRouteInfo {
         for peer_id in peer_ids {
             let guard = self.peer_infos.upgradable_read();
             if !guard.contains_key(peer_id) {
-                let mut peer_info = RoutePeerInfo::new();
+                let mut peer_info = new_route_peer_info();
                 let mut guard = RwLockUpgradableReadGuard::upgrade(guard);
                 peer_info.last_update = Some(Timestamp::now());
                 guard.insert(*peer_id, peer_info);
@@ -1023,7 +941,7 @@ impl SyncedRouteInfo {
         global_ctx: &ArcGlobalCtx,
         public_ipv6_addr_lease: Option<Ipv6Inet>,
     ) -> bool {
-        let mut new = RoutePeerInfo::new_updated_self(
+        let mut new = new_updated_self_route_peer_info(
             my_peer_id,
             my_peer_route_id,
             global_ctx,
@@ -1033,7 +951,7 @@ impl SyncedRouteInfo {
         let old = guard.get(&my_peer_id);
         let new_version = old.map(|x| x.version).unwrap_or(0) + 1;
         let need_insert_new = if let Some(old) = old {
-            RoutePeerInfo::try_update_new_peer_info(old, &mut new)
+            try_update_new_peer_info(old, &mut new)
         } else {
             true
         };
@@ -4509,7 +4427,7 @@ mod tests {
         peer_id: PeerId,
         noise_static_pubkey: &[u8],
     ) -> RoutePeerInfo {
-        let mut peer_info = RoutePeerInfo::new();
+        let mut peer_info = new_route_peer_info();
         peer_info.peer_id = peer_id;
         peer_info.version = 1;
         peer_info.noise_static_pubkey = noise_static_pubkey.to_vec();
@@ -4526,7 +4444,7 @@ mod tests {
         network_secret: &str,
         now: i64,
     ) -> RoutePeerInfo {
-        let mut admin_info = RoutePeerInfo::new();
+        let mut admin_info = new_route_peer_info();
         admin_info.peer_id = peer_id;
         admin_info.version = 1;
         admin_info.feature_flag = Some(PeerFeatureFlag {
@@ -4578,7 +4496,7 @@ mod tests {
     async fn credential_flag_controls_role_classification() {
         let service_impl = PeerRouteServiceImpl::new(1, get_mock_global_ctx());
 
-        let mut admin_info = RoutePeerInfo::new();
+        let mut admin_info = new_route_peer_info();
         admin_info.peer_id = 10;
         admin_info.version = 1;
         admin_info.feature_flag = Some(PeerFeatureFlag {
@@ -4586,7 +4504,7 @@ mod tests {
             ..Default::default()
         });
 
-        let mut credential_info = RoutePeerInfo::new();
+        let mut credential_info = new_route_peer_info();
         credential_info.peer_id = 11;
         credential_info.version = 1;
         credential_info.feature_flag = Some(PeerFeatureFlag {
@@ -4630,7 +4548,7 @@ mod tests {
         let admin_key = vec![1; 32];
         let credential_key = vec![2; 32];
 
-        let mut admin_info = RoutePeerInfo::new();
+        let mut admin_info = new_route_peer_info();
         admin_info.peer_id = 20;
         admin_info.version = 1;
         admin_info.feature_flag = Some(PeerFeatureFlag {
@@ -4646,7 +4564,7 @@ mod tests {
             network_secret,
         )];
 
-        let mut credential_info = RoutePeerInfo::new();
+        let mut credential_info = new_route_peer_info();
         credential_info.peer_id = 21;
         credential_info.version = 1;
         credential_info.feature_flag = Some(PeerFeatureFlag {
@@ -4698,7 +4616,7 @@ mod tests {
         let credential_peer_id = 31;
         let credential_pubkey = vec![7; 32];
 
-        let mut credential_info = RoutePeerInfo::new();
+        let mut credential_info = new_route_peer_info();
         credential_info.peer_id = credential_peer_id;
         credential_info.version = 1;
         credential_info.noise_static_pubkey = credential_pubkey.clone();
@@ -4708,7 +4626,7 @@ mod tests {
             credential_peer_id,
         )];
 
-        let mut admin_info = RoutePeerInfo::new();
+        let mut admin_info = new_route_peer_info();
         admin_info.peer_id = 32;
         admin_info.version = 1;
         admin_info.feature_flag = Some(PeerFeatureFlag {
@@ -4789,14 +4707,14 @@ mod tests {
             let mut peer_infos = service_impl.synced_route_info.peer_infos.write();
             let mut conn_map = service_impl.synced_route_info.conn_map.write();
             for peer_id in removed_peer_ids {
-                let mut info = RoutePeerInfo::new();
+                let mut info = new_route_peer_info();
                 info.peer_id = peer_id;
                 info.version = 1;
                 peer_infos.insert(peer_id, info);
                 conn_map.insert(peer_id, RouteConnInfo::default());
             }
 
-            let mut retained_info = RoutePeerInfo::new();
+            let mut retained_info = new_route_peer_info();
             retained_info.peer_id = retained_peer_id;
             retained_info.version = 1;
             peer_infos.insert(retained_peer_id, retained_info);
@@ -4911,7 +4829,7 @@ mod tests {
 
         let credential_key = vec![7; 32];
 
-        let mut admin_info = RoutePeerInfo::new();
+        let mut admin_info = new_route_peer_info();
         admin_info.peer_id = 30;
         admin_info.version = 1;
 
@@ -4943,7 +4861,7 @@ mod tests {
             "typed verification should fail after nested unknown fields are dropped"
         );
 
-        let mut credential_info = RoutePeerInfo::new();
+        let mut credential_info = new_route_peer_info();
         credential_info.peer_id = 41;
         credential_info.version = 1;
         credential_info.noise_static_pubkey = credential_key.clone();
@@ -4996,7 +4914,7 @@ mod tests {
 
         let admin_info = make_admin_route_peer_info(30, &credential_key, network_secret, now);
 
-        let mut original_peer = RoutePeerInfo::new();
+        let mut original_peer = new_route_peer_info();
         original_peer.peer_id = 41;
         original_peer.version = 1;
         original_peer.noise_static_pubkey = credential_key.clone();
@@ -5024,7 +4942,7 @@ mod tests {
             Some(41)
         );
 
-        let mut new_peer = RoutePeerInfo::new();
+        let mut new_peer = new_route_peer_info();
         new_peer.peer_id = 39;
         new_peer.version = 1;
         new_peer.noise_static_pubkey = credential_key.clone();
@@ -5087,7 +5005,7 @@ mod tests {
 
         let admin_info = make_admin_route_peer_info(30, &credential_key, network_secret, now);
 
-        let mut stale_peer = RoutePeerInfo::new();
+        let mut stale_peer = new_route_peer_info();
         stale_peer.peer_id = stale_peer_id;
         stale_peer.version = 1;
         stale_peer.noise_static_pubkey = credential_key.clone();
@@ -5096,7 +5014,7 @@ mod tests {
             ..Default::default()
         });
 
-        let mut replacement_peer = RoutePeerInfo::new();
+        let mut replacement_peer = new_route_peer_info();
         replacement_peer.peer_id = replacement_peer_id;
         replacement_peer.version = 1;
         replacement_peer.noise_static_pubkey = credential_key.clone();
@@ -5190,7 +5108,7 @@ mod tests {
         let now = SystemTime::now();
         let credential_key = vec![10; 32];
 
-        let mut self_info = RoutePeerInfo::new();
+        let mut self_info = new_route_peer_info();
         self_info.peer_id = SELF_PEER_ID;
         self_info.version = 1;
 
@@ -5369,7 +5287,7 @@ mod tests {
         let now = SystemTime::now();
         let credential_key = vec![10; 32];
 
-        let mut self_info = RoutePeerInfo::new();
+        let mut self_info = new_route_peer_info();
         self_info.peer_id = SELF_PEER_ID;
         self_info.version = 1;
 
@@ -5377,7 +5295,7 @@ mod tests {
             make_admin_route_peer_info(ADMIN_PEER_ID, &credential_key, NETWORK_SECRET, now_unix);
         let first_peer = make_credential_route_peer_info(FIRST_PEER_ID, &credential_key);
         let second_peer = make_credential_route_peer_info(SECOND_PEER_ID, &credential_key);
-        let mut downstream_peer = RoutePeerInfo::new();
+        let mut downstream_peer = new_route_peer_info();
         downstream_peer.peer_id = DOWNSTREAM_PEER_ID;
         downstream_peer.version = 1;
 
@@ -5518,7 +5436,7 @@ mod tests {
         let stale_peer_id = 41;
         let replacement_peer_id = 39;
 
-        let mut self_info = RoutePeerInfo::new();
+        let mut self_info = new_route_peer_info();
         self_info.peer_id = SELF_PEER_ID;
         self_info.version = 1;
 
@@ -5704,12 +5622,12 @@ mod tests {
                 },
             );
 
-        let mut sender_info = RoutePeerInfo::new();
+        let mut sender_info = new_route_peer_info();
         sender_info.peer_id = from_peer_id;
         sender_info.version = 1;
         sender_info.proxy_cidrs = vec!["10.10.0.0/24".to_string()];
 
-        let mut forwarded_info = RoutePeerInfo::new();
+        let mut forwarded_info = new_route_peer_info();
         forwarded_info.peer_id = forwarded_peer_id;
         forwarded_info.version = 1;
 
@@ -5764,11 +5682,11 @@ mod tests {
             peer_public_key: DashMap::new(),
         }));
 
-        let mut sender_info = RoutePeerInfo::new();
+        let mut sender_info = new_route_peer_info();
         sender_info.peer_id = from_peer_id;
         sender_info.version = 1;
 
-        let mut forwarded_info = RoutePeerInfo::new();
+        let mut forwarded_info = new_route_peer_info();
         forwarded_info.peer_id = forwarded_peer_id;
         forwarded_info.version = 1;
         forwarded_info.trusted_credential_pubkeys = vec![TrustedCredentialPubkeyProof {
@@ -5833,7 +5751,7 @@ mod tests {
         {
             let mut guard = service_impl.synced_route_info.peer_infos.write();
 
-            let mut admin_info = RoutePeerInfo::new();
+            let mut admin_info = new_route_peer_info();
             admin_info.peer_id = admin_peer_id;
             admin_info.version = 1;
             admin_info.last_update =
@@ -5849,7 +5767,7 @@ mod tests {
                 credential_hmac: vec![1; 32],
             }];
 
-            let mut credential_info = RoutePeerInfo::new();
+            let mut credential_info = new_route_peer_info();
             credential_info.peer_id = credential_peer_id;
             credential_info.version = 1;
             credential_info.last_update = Some(now.into());
@@ -5920,7 +5838,7 @@ mod tests {
             closed_peers: closed_peers.clone(),
         }));
 
-        let mut credential_info = RoutePeerInfo::new();
+        let mut credential_info = new_route_peer_info();
         credential_info.peer_id = credential_peer_id;
         credential_info.version = 1;
         credential_info.noise_static_pubkey = credential_pubkey.clone();
@@ -5928,7 +5846,7 @@ mod tests {
             is_credential_peer: true,
             ..Default::default()
         });
-        let self_info = RoutePeerInfo::new_updated_self(
+        let self_info = new_updated_self_route_peer_info(
             service_impl.my_peer_id,
             service_impl.my_peer_route_id,
             &service_impl.global_ctx,
@@ -6023,7 +5941,7 @@ mod tests {
             }),
         }));
 
-        let mut remote_info = RoutePeerInfo::new();
+        let mut remote_info = new_route_peer_info();
         remote_info.peer_id = remote_peer_id;
         remote_info.version = 1;
         remote_info.groups = vec![remote_group];
@@ -6081,7 +5999,7 @@ mod tests {
             )),
         );
 
-        let mut admin_a = RoutePeerInfo::new();
+        let mut admin_a = new_route_peer_info();
         admin_a.peer_id = 501;
         admin_a.version = 1;
         admin_a.groups = vec![
@@ -6095,7 +6013,7 @@ mod tests {
             },
         ];
 
-        let mut admin_b = RoutePeerInfo::new();
+        let mut admin_b = new_route_peer_info();
         admin_b.peer_id = 502;
         admin_b.version = 1;
         admin_b.groups = vec![PeerGroupInfo {
@@ -6130,7 +6048,7 @@ mod tests {
         let credential_peer_id = 601;
         let credential_pubkey = vec![9; 32];
 
-        let mut admin_info = RoutePeerInfo::new();
+        let mut admin_info = new_route_peer_info();
         admin_info.peer_id = 600;
         admin_info.version = 1;
         admin_info.trusted_credential_pubkeys = vec![TrustedCredentialPubkeyProof {
@@ -6143,7 +6061,7 @@ mod tests {
             credential_hmac: vec![7; 32],
         }];
 
-        let mut credential_info = RoutePeerInfo::new();
+        let mut credential_info = new_route_peer_info();
         credential_info.peer_id = credential_peer_id;
         credential_info.version = 1;
         credential_info.noise_static_pubkey = credential_pubkey.clone();
@@ -6879,7 +6797,7 @@ mod tests {
                 },
             );
 
-        let mut sender_info = RoutePeerInfo::new();
+        let mut sender_info = new_route_peer_info();
         sender_info.peer_id = from_peer_id;
         sender_info.version = 1;
 
@@ -6926,11 +6844,11 @@ mod tests {
             peer_public_key: DashMap::new(),
         }));
 
-        let mut sender_info = RoutePeerInfo::new();
+        let mut sender_info = new_route_peer_info();
         sender_info.peer_id = from_peer_id;
         sender_info.version = 1;
 
-        let mut forwarded_info = RoutePeerInfo::new();
+        let mut forwarded_info = new_route_peer_info();
         forwarded_info.peer_id = forwarded_peer_id;
         forwarded_info.version = 1;
         forwarded_info.trusted_credential_pubkeys = vec![TrustedCredentialPubkeyProof {
@@ -6997,7 +6915,7 @@ mod tests {
             peer_public_key: DashMap::new(),
         }));
 
-        let mut sender_info = RoutePeerInfo::new();
+        let mut sender_info = new_route_peer_info();
         sender_info.peer_id = from_peer_id;
         sender_info.version = 1;
         // Set is_credential_peer=true so the mark_credential_peer(false) path triggers
@@ -7063,7 +6981,7 @@ mod tests {
             .unwrap();
         assert!(route.service_impl.update_my_peer_info());
 
-        let mut sender_info = RoutePeerInfo::new();
+        let mut sender_info = new_route_peer_info();
         sender_info.peer_id = from_peer_id;
         sender_info.version = 1;
         sender_info.proxy_cidrs = vec![

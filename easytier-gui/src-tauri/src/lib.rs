@@ -21,7 +21,7 @@ use easytier::{
         log,
     },
     instance_manager::NetworkInstanceManager,
-    launcher::NetworkConfig,
+    launcher::{NetworkConfig, NetworkConfigExt},
     rpc_service::ApiRpcServer,
     tunnel::TunnelListener,
     tunnel::ring::RingTunnelListener,
@@ -602,7 +602,7 @@ mod manager {
     use dashmap::{DashMap, DashSet};
     use easytier::common::global_ctx::GlobalCtx;
     use easytier::common::stun::MockStunInfoCollector;
-    use easytier::launcher::NetworkConfig;
+    use easytier::launcher::{NetworkConfig, NetworkConfigExt};
     use easytier::proto::api::logger::{LoggerRpc, LoggerRpcClientFactory, SetLoggerConfigRequest};
     use easytier::proto::api::manage::RunNetworkInstanceRequest;
     use easytier::proto::common::NatType;

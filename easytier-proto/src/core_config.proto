@@ -1,0 +1,56 @@
+syntax = "proto3";
+
+import "common.proto";
+
+package core_config;
+
+message CoreConfig {
+  NodeConfig node = 1;
+  RouteConfig routes = 2;
+  PeerPolicyConfig peer_policy = 3;
+  TrafficConfig traffic = 4;
+}
+
+message NodeConfig {
+  optional uint32 peer_id = 1;
+  optional common.UUID instance_id = 2;
+  optional string hostname = 3;
+  string network_name = 4;
+}
+
+message RouteConfig {
+  optional IpPrefix ipv4 = 1;
+  optional IpPrefix ipv6 = 2;
+  repeated IpPrefix advertised_routes = 3;
+  repeated ProxyNetworkConfig proxy_networks = 4;
+  repeated ForeignNetworkConfig foreign_networks = 5;
+}
+
+message IpPrefix {
+  common.IpAddr address = 1;
+  uint32 prefix_len = 2;
+}
+
+message ProxyNetworkConfig {
+  IpPrefix real = 1;
+  optional IpPrefix mapped = 2;
+}
+
+message ForeignNetworkConfig {
+  string name = 1;
+  repeated IpPrefix cidrs = 2;
+}
+
+message PeerPolicyConfig {
+  optional bool p2p_enabled = 1;
+  optional bool relay_peer_rpc = 2;
+  optional bool relay_data = 3;
+  optional bool latency_first = 4;
+  optional bool encryption_required = 5;
+}
+
+message TrafficConfig {
+  optional uint32 mtu = 1;
+  optional uint64 instance_recv_bps_limit = 2;
+  optional uint64 foreign_relay_bps_limit = 3;
+}

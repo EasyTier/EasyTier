@@ -376,6 +376,7 @@ mod tests {
     use easytier::{
         common::MachineIdOptions,
         instance_manager::NetworkInstanceManager,
+        launcher::NetworkConfigExt,
         proto::{
             api::manage::{NetworkConfig, NetworkingMethod, PortForwardConfig},
             common::CompressionAlgoPb,

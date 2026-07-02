@@ -504,6 +504,7 @@ mod tests {
 
     use easytier::{
         common::config::{ConfigLoader as _, ConfigSource},
+        launcher::NetworkConfigExt,
         proto::api::manage::{ConfigSource as RpcConfigSource, NetworkConfig, NetworkMeta},
         rpc_service::remote_client::{ListNetworkProps, PersistentConfig as _, Storage as _},
     };

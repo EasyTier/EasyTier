@@ -28,7 +28,7 @@ pub enum Error {
     Timeout(#[from] tokio::time::error::Elapsed),
 
     #[error("Tunnel error: {0}")]
-    TunnelError(#[from] crate::tunnel::TunnelError),
+    TunnelError(String),
 
     #[error("Shutdown")]
     Shutdown,

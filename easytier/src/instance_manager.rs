@@ -1,7 +1,6 @@
 #[cfg(feature = "ffi-dataplane")]
 use crate::launcher::{DataPlaneTcpListener, DataPlaneTcpStream, DataPlaneUdpSocket};
 use dashmap::DashMap;
-use std::fmt::{Display, Formatter};
 use std::{collections::BTreeMap, path::PathBuf, sync::Arc};
 use tokio_util::task::AbortOnDropHandle;
 
@@ -12,7 +11,6 @@ use crate::{
         log,
     },
     launcher::{NetworkInstance, NetworkInstanceRunningInfo},
-    proto::{self},
     rpc_service::InstanceRpcService,
 };
 
@@ -572,16 +570,6 @@ fn handle_event(
             }
         }
     })
-}
-
-impl Display for proto::api::instance::PeerConnInfo {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("PeerConnInfo")
-            .field("my_peer_id", &self.my_peer_id)
-            .field("dst_peer_id", &self.peer_id)
-            .field("tunnel_info", &self.tunnel)
-            .finish()
-    }
 }
 
 #[cfg(test)]

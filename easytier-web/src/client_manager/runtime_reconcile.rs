@@ -3,6 +3,7 @@ use easytier::{
     common::config::{
         ConfigLoader, EncryptionAlgorithm, PortForwardConfig as RuntimePortForwardConfig,
     },
+    launcher::NetworkConfigExt,
     proto::{
         acl::Acl,
         api::{

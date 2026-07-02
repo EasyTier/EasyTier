@@ -7,15 +7,6 @@ pub mod config {
         pub value: Option<T>,
     }
 
-    impl From<PortForwardPatch> for Patchable<crate::common::config::PortForwardConfig> {
-        fn from(patch: PortForwardPatch) -> Self {
-            Patchable {
-                action: ConfigPatchAction::try_from(patch.action).ok(),
-                value: patch.cfg.map(Into::into),
-            }
-        }
-    }
-
     impl From<RoutePatch> for Patchable<cidr::Ipv4Cidr> {
         fn from(value: RoutePatch) -> Self {
             Patchable {
@@ -78,8 +69,20 @@ pub mod config {
 }
 
 pub mod instance {
+    use std::fmt::{Display, Formatter};
+
     include!(concat!(env!("OUT_DIR"), "/api.instance.rs"));
     include!(concat!(env!("OUT_DIR"), "/api.instance.serde.rs"));
+
+    impl Display for PeerConnInfo {
+        fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+            f.debug_struct("PeerConnInfo")
+                .field("my_peer_id", &self.my_peer_id)
+                .field("dst_peer_id", &self.peer_id)
+                .field("tunnel_info", &self.tunnel)
+                .finish()
+        }
+    }
 
     impl PeerRoutePair {
         pub fn get_latency_ms(&self) -> Option<f64> {

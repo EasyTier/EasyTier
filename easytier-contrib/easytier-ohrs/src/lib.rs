@@ -59,6 +59,7 @@ use easytier::common::{
     config::{ConfigFileControl, ConfigLoader, TomlConfigLoader},
 };
 use easytier::instance_manager::NetworkInstanceManager;
+use easytier::launcher::NetworkConfigExt;
 use easytier::proto::api::manage::NetworkConfig;
 use easytier::proto::api::manage::NetworkingMethod;
 use easytier::web_client::{WebClient, WebClientHooks, run_web_client};

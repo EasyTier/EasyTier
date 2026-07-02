@@ -52,7 +52,7 @@ use crate::{
     },
     tunnel::{
         self, Tunnel, TunnelConnector,
-        packet_def::{CompressorAlgo, PacketType, ZCPacket},
+        packet_def::{CompressorAlgo, PacketType, ZCPacket, compressor_algo_from_pb},
     },
 };
 
@@ -310,11 +310,9 @@ impl PeerManager {
             my_peer_id,
         ));
 
-        let data_compress_algo = global_ctx
-            .get_flags()
-            .data_compress_algo()
-            .try_into()
-            .expect("invalid data compress algo, maybe some features not enabled");
+        let data_compress_algo =
+            compressor_algo_from_pb(global_ctx.get_flags().data_compress_algo())
+                .expect("invalid data compress algo, maybe some features not enabled");
 
         let exit_nodes = global_ctx.config.get_exit_nodes();
 
