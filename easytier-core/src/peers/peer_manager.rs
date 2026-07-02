@@ -11,6 +11,7 @@ use tokio::sync::{
     Mutex, RwLock,
     mpsc::{self, UnboundedReceiver, UnboundedSender},
 };
+use tokio::task::JoinSet;
 
 use crate::{
     compressor::{Compressor as _, DefaultCompressor},
@@ -30,6 +31,7 @@ use super::{
     peer_conn::PeerConn,
     peer_map::PeerMap,
     peer_rpc::PeerRpcManagerTransport,
+    peer_session::PeerSessionStore,
     peer_task::ExternalTaskSignal,
     recv_packet_from_chan,
     relay_peer_map::RelayPeerMap,
@@ -317,6 +319,87 @@ impl RecentTrafficTracker {
 
     pub fn p2p_demand_notify(&self) -> Arc<ExternalTaskSignal> {
         self.p2p_demand_notify.clone()
+    }
+}
+
+pub struct PeerMaintenanceTasks {
+    peer_map: Arc<PeerMap>,
+    relay_peer_map: Arc<RelayPeerMap>,
+    recent_traffic: RecentTrafficTracker,
+    foreign_network_client: Arc<ForeignNetworkClient>,
+    peer_session_store: Arc<PeerSessionStore>,
+}
+
+impl PeerMaintenanceTasks {
+    pub fn new(
+        peer_map: Arc<PeerMap>,
+        relay_peer_map: Arc<RelayPeerMap>,
+        recent_traffic: RecentTrafficTracker,
+        foreign_network_client: Arc<ForeignNetworkClient>,
+        peer_session_store: Arc<PeerSessionStore>,
+    ) -> Self {
+        Self {
+            peer_map,
+            relay_peer_map,
+            recent_traffic,
+            foreign_network_client,
+            peer_session_store,
+        }
+    }
+
+    pub async fn spawn_into(self, tasks: &Mutex<JoinSet<()>>) {
+        self.spawn_clean_peer_without_conn_routine(tasks).await;
+        self.spawn_relay_session_gc_routine(tasks).await;
+        self.spawn_recent_traffic_gc_routine(tasks).await;
+        self.spawn_peer_session_gc_routine(tasks).await;
+    }
+
+    async fn spawn_clean_peer_without_conn_routine(&self, tasks: &Mutex<JoinSet<()>>) {
+        let peer_map = self.peer_map.clone();
+        tasks.lock().await.spawn(async move {
+            loop {
+                peer_map.clean_peer_without_conn().await;
+                tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+            }
+        });
+    }
+
+    async fn spawn_relay_session_gc_routine(&self, tasks: &Mutex<JoinSet<()>>) {
+        let relay_peer_map = self.relay_peer_map.clone();
+        tasks.lock().await.spawn(async move {
+            loop {
+                relay_peer_map.evict_idle_sessions(std::time::Duration::from_secs(60));
+                tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+            }
+        });
+    }
+
+    async fn spawn_recent_traffic_gc_routine(&self, tasks: &Mutex<JoinSet<()>>) {
+        let recent_traffic = self.recent_traffic.clone();
+        let peers = self.peer_map.clone();
+        let foreign_network_client = self.foreign_network_client.clone();
+        tasks.lock().await.spawn(async move {
+            loop {
+                recent_traffic.gc(Instant::now(), |peer_id| {
+                    if let Some(peer) = peers.get_peer_by_id(peer_id) {
+                        peer.has_directly_connected_conn()
+                    } else {
+                        foreign_network_client.get_peer_map().has_peer(peer_id)
+                    }
+                });
+                tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+            }
+        });
+    }
+
+    async fn spawn_peer_session_gc_routine(&self, tasks: &Mutex<JoinSet<()>>) {
+        let peer_session_store = self.peer_session_store.clone();
+        tasks.lock().await.spawn(async move {
+            loop {
+                tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+                peer_session_store.evict_unused_sessions();
+            }
+        });
     }
 }
 

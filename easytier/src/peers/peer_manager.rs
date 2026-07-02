@@ -928,54 +928,6 @@ impl PeerManager {
             .map_err(Error::from)
     }
 
-    async fn run_clean_peer_without_conn_routine(&self) {
-        let peer_map = self.peers.clone();
-        self.tasks.lock().await.spawn(async move {
-            loop {
-                peer_map.clean_peer_without_conn().await;
-                tokio::time::sleep(std::time::Duration::from_secs(3)).await;
-            }
-        });
-    }
-
-    async fn run_relay_session_gc_routine(&self) {
-        let relay_peer_map = self.relay_peer_map.clone();
-        self.tasks.lock().await.spawn(async move {
-            loop {
-                relay_peer_map.evict_idle_sessions(std::time::Duration::from_secs(60));
-                tokio::time::sleep(std::time::Duration::from_secs(30)).await;
-            }
-        });
-    }
-
-    async fn run_recent_traffic_gc_routine(&self) {
-        let recent_traffic = self.recent_traffic.clone();
-        let peers = self.peers.clone();
-        let foreign_network_client = self.foreign_network_client.clone();
-        self.tasks.lock().await.spawn(async move {
-            loop {
-                recent_traffic.gc(Instant::now(), |peer_id| {
-                    if let Some(peer) = peers.get_peer_by_id(peer_id) {
-                        peer.has_directly_connected_conn()
-                    } else {
-                        foreign_network_client.get_peer_map().has_peer(peer_id)
-                    }
-                });
-                tokio::time::sleep(std::time::Duration::from_secs(30)).await;
-            }
-        });
-    }
-
-    async fn run_peer_session_gc_routine(&self) {
-        let peer_session_store = self.peer_session_store.clone();
-        self.tasks.lock().await.spawn(async move {
-            loop {
-                tokio::time::sleep(std::time::Duration::from_secs(60)).await;
-                peer_session_store.evict_unused_sessions();
-            }
-        });
-    }
-
     async fn run_credential_gc_routine(&self) {
         let global_ctx = self.global_ctx.clone();
         let peer_map = self.peers.clone();
@@ -1044,10 +996,15 @@ impl PeerManager {
         self.peer_rpc_mgr.run();
 
         self.start_peer_recv().await;
-        self.run_clean_peer_without_conn_routine().await;
-        self.run_relay_session_gc_routine().await;
-        self.run_recent_traffic_gc_routine().await;
-        self.run_peer_session_gc_routine().await;
+        core_peer_manager::PeerMaintenanceTasks::new(
+            self.peers.clone(),
+            self.relay_peer_map.clone(),
+            self.recent_traffic.clone(),
+            self.foreign_network_client.clone(),
+            self.peer_session_store.clone(),
+        )
+        .spawn_into(&self.tasks)
+        .await;
         self.run_credential_gc_routine().await;
         self.run_traffic_metrics_gc_routine().await;
 
