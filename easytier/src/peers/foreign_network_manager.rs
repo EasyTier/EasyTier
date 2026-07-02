@@ -56,7 +56,7 @@ use super::{
     peer_rpc_service::DirectConnectorManagerRpcServer,
     peer_session::PeerSessionStore,
     recv_packet_from_chan,
-    relay_peer_map::RelayPeerMap,
+    relay_peer_map::{RelayPeerMap, new_relay_peer_map},
     route_trait::NextHopPolicy,
     traffic_metrics::{
         InstanceLabelKind, LogicalTrafficMetrics, TrafficKind, TrafficMetricRecorder,
@@ -179,7 +179,7 @@ impl ForeignNetworkEntry {
                 }
             },
         ));
-        let relay_peer_map = RelayPeerMap::new(
+        let relay_peer_map = new_relay_peer_map(
             peer_map.clone(),
             None,
             foreign_global_ctx.clone(),

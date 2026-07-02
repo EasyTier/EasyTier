@@ -27,7 +27,7 @@ use super::{
     peer_manager::{PeerManager, RouteAlgoType},
     peer_map::PeerMap,
     peer_session::{PeerSession, PeerSessionStore, SessionKey},
-    relay_peer_map::RelayPeerMap,
+    relay_peer_map::new_relay_peer_map,
     route_trait::NextHopPolicy,
 };
 
@@ -263,7 +263,7 @@ async fn relay_peer_map_secure_session_decrypt() {
     set_secure_mode_cfg(&ctx, true);
     let peer_map = Arc::new(PeerMap::new(s, ctx.clone(), 10));
     let store = Arc::new(PeerSessionStore::new());
-    let relay_map = RelayPeerMap::new(peer_map, None, ctx.clone(), 10, store.clone());
+    let relay_map = new_relay_peer_map(peer_map, None, ctx.clone(), 10, store.clone());
 
     let algo = ctx.get_flags().encryption_algorithm.clone();
     let root_key = [7u8; 32];
@@ -439,7 +439,7 @@ async fn relay_peer_map_retry_backoff_and_evict() {
     let ctx_secure = get_mock_global_ctx();
     set_secure_mode_cfg(&ctx_secure, true);
     let peer_map = Arc::new(PeerMap::new(s, ctx_secure.clone(), 10));
-    let relay_map = RelayPeerMap::new(
+    let relay_map = new_relay_peer_map(
         peer_map,
         None,
         ctx_secure.clone(),
@@ -457,7 +457,7 @@ async fn relay_peer_map_retry_backoff_and_evict() {
     let (s2, _r2) = create_packet_recv_chan();
     let ctx_plain = get_mock_global_ctx();
     let peer_map_plain = Arc::new(PeerMap::new(s2, ctx_plain.clone(), 30));
-    let relay_map_plain = RelayPeerMap::new(
+    let relay_map_plain = new_relay_peer_map(
         peer_map_plain,
         None,
         ctx_plain.clone(),
@@ -487,7 +487,7 @@ async fn relay_peer_map_pending_packet_buffer() {
     set_secure_mode_cfg(&ctx, true);
     let peer_map = Arc::new(PeerMap::new(s, ctx.clone(), 10));
     let store = Arc::new(PeerSessionStore::new());
-    let relay_map = RelayPeerMap::new(peer_map, None, ctx.clone(), 10, store.clone());
+    let relay_map = new_relay_peer_map(peer_map, None, ctx.clone(), 10, store.clone());
 
     // Send multiple packets while no session exists (handshake will fail, but packets should be buffered)
     for i in 0..5u8 {
@@ -498,11 +498,7 @@ async fn relay_peer_map_pending_packet_buffer() {
 
     // Verify packets were buffered
     assert_eq!(
-        relay_map
-            .pending_packets
-            .get(&20)
-            .map(|v| v.len())
-            .unwrap_or(0),
+        relay_map.pending_packet_count(20),
         5,
         "5 packets should be buffered during handshake"
     );
@@ -514,11 +510,7 @@ async fn relay_peer_map_pending_packet_buffer() {
         let _ = relay_map.send_msg(pkt, 20, NextHopPolicy::LeastHop).await;
     }
 
-    let buffered = relay_map
-        .pending_packets
-        .get(&20)
-        .map(|v| v.len())
-        .unwrap_or(0);
+    let buffered = relay_map.pending_packet_count(20);
     assert!(
         buffered <= 32,
         "buffer should not exceed MAX_PENDING_PACKETS_PER_PEER, got {buffered}"
@@ -527,11 +519,7 @@ async fn relay_peer_map_pending_packet_buffer() {
     // Verify remove_peer clears pending packets
     relay_map.remove_peer(20);
     assert_eq!(
-        relay_map
-            .pending_packets
-            .get(&20)
-            .map(|v| v.len())
-            .unwrap_or(0),
+        relay_map.pending_packet_count(20),
         0,
         "pending packets should be cleared on peer removal"
     );
@@ -585,19 +573,11 @@ async fn relay_peer_map_pending_packets_flushed_on_handshake_success() {
     for i in 0..3u8 {
         let mut pkt = ZCPacket::new_with_payload(&[i]);
         pkt.fill_peer_manager_hdr(peer_a_id, peer_c_id, PacketType::Data as u8);
-        relay_a
-            .pending_packets
-            .entry(peer_c_id)
-            .or_default()
-            .push((pkt, NextHopPolicy::LeastHop));
+        relay_a.buffer_pending_packet_for_testing(peer_c_id, pkt, NextHopPolicy::LeastHop);
     }
 
     assert_eq!(
-        relay_a
-            .pending_packets
-            .get(&peer_c_id)
-            .map(|v| v.len())
-            .unwrap_or(0),
+        relay_a.pending_packet_count(peer_c_id),
         3,
         "3 packets should be in the buffer"
     );
@@ -611,11 +591,7 @@ async fn relay_peer_map_pending_packets_flushed_on_handshake_success() {
     // Verify session established and buffer cleared
     assert!(relay_a.has_session(peer_c_id));
     assert_eq!(
-        relay_a
-            .pending_packets
-            .get(&peer_c_id)
-            .map(|v| v.len())
-            .unwrap_or(0),
+        relay_a.pending_packet_count(peer_c_id),
         0,
         "pending packets should be flushed after successful handshake"
     );
@@ -806,7 +782,7 @@ async fn relay_peer_map_remove_peer() {
     set_secure_mode_cfg(&ctx, true);
     let peer_map = Arc::new(PeerMap::new(s, ctx.clone(), 10));
     let store = Arc::new(PeerSessionStore::new());
-    let relay_map = RelayPeerMap::new(peer_map, None, ctx.clone(), 10, store.clone());
+    let relay_map = new_relay_peer_map(peer_map, None, ctx.clone(), 10, store.clone());
 
     let peer_1: PeerId = 100;
 
