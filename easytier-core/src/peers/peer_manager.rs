@@ -5,17 +5,20 @@ use anyhow::Context;
 use dashmap::DashMap;
 use quanta::Instant;
 use tokio::sync::{
-    Mutex,
+    Mutex, RwLock,
     mpsc::{self, UnboundedReceiver, UnboundedSender},
 };
 
 use crate::{
+    compressor::{Compressor as _, DefaultCompressor},
     config::PeerId,
-    packet::{PacketType, ZCPacket},
+    packet::{CompressorAlgo, PacketType, ZCPacket},
 };
 
 use super::{
-    context::NetworkIdentity,
+    BoxPeerPacketFilter, PacketRecvChanReceiver,
+    acl_filter::AclFilter,
+    context::{ArcPeerContext, NetworkIdentity},
     encrypt::Encryptor,
     error::Error,
     foreign_network_client::ForeignNetworkClient,
@@ -24,15 +27,18 @@ use super::{
     peer_map::PeerMap,
     peer_rpc::PeerRpcManagerTransport,
     peer_task::ExternalTaskSignal,
+    recv_packet_from_chan,
     relay_peer_map::RelayPeerMap,
-    route_trait::{ForeignNetworkRouteInfoMap, NextHopPolicy, RouteInterface, RouteInterfaceBox},
-    traffic_metrics::TrafficMetricRecorder,
+    route_trait::{
+        ArcRoute, ForeignNetworkRouteInfoMap, NextHopPolicy, RouteInterface, RouteInterfaceBox,
+    },
+    traffic_metrics::{TrafficKind, TrafficMetricRecorder, traffic_kind},
     util::shrink_dashmap,
 };
 use crate::proto::peer_rpc::{
     ForeignNetworkRouteInfoEntry, ForeignNetworkRouteInfoKey, PeerIdentityType,
 };
-use crate::stats_manager::{LabelSet, LabelType, MetricName, StatsManager};
+use crate::stats_manager::{CounterHandle, LabelSet, LabelType, MetricName, StatsManager};
 
 pub struct RpcTransport {
     my_peer_id: PeerId,
@@ -307,6 +313,322 @@ impl RecentTrafficTracker {
 
     pub fn p2p_demand_notify(&self) -> Arc<ExternalTaskSignal> {
         self.p2p_demand_notify.clone()
+    }
+}
+
+pub async fn try_compress_and_encrypt(
+    compress_algo: CompressorAlgo,
+    encryptor: &Arc<dyn Encryptor + 'static>,
+    msg: &mut ZCPacket,
+    secure_mode_enabled: bool,
+) -> Result<(), Error> {
+    let compressor = DefaultCompressor {};
+    compressor
+        .compress(msg, compress_algo)
+        .await
+        .with_context(|| "compress failed")?;
+    if !secure_mode_enabled {
+        encryptor.encrypt(msg).with_context(|| "encrypt failed")?;
+    }
+    Ok(())
+}
+
+struct PeerPacketRouterCounters {
+    self_tx_packets: CounterHandle,
+    self_tx_bytes: CounterHandle,
+    self_rx_packets: CounterHandle,
+    self_rx_bytes: CounterHandle,
+    forward_data_tx_packets: CounterHandle,
+    forward_data_tx_bytes: CounterHandle,
+    forward_control_tx_packets: CounterHandle,
+    forward_control_tx_bytes: CounterHandle,
+    compress_tx_bytes_before: CounterHandle,
+    compress_tx_bytes_after: CounterHandle,
+    compress_rx_bytes_before: CounterHandle,
+    compress_rx_bytes_after: CounterHandle,
+}
+
+pub struct PeerPacketRouter {
+    packet_recv: PacketRecvChanReceiver,
+    my_peer_id: PeerId,
+    peers: Arc<PeerMap>,
+    peer_packet_process_pipeline: Arc<RwLock<Vec<BoxPeerPacketFilter>>>,
+    foreign_client: Arc<ForeignNetworkClient>,
+    relay_peer_map: Arc<RelayPeerMap>,
+    foreign_network_handler: Arc<dyn ForeignNetworkPacketHandler>,
+    encryptor: Arc<dyn Encryptor>,
+    compress_algo: CompressorAlgo,
+    acl_filter: Arc<AclFilter>,
+    context: ArcPeerContext,
+    secure_mode_enabled: bool,
+    route: ArcRoute,
+    is_credential_node: bool,
+    traffic_metrics: Arc<TrafficMetricRecorder>,
+    stats_mgr: Arc<StatsManager>,
+    counters: PeerPacketRouterCounters,
+}
+
+impl PeerPacketRouter {
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        packet_recv: PacketRecvChanReceiver,
+        my_peer_id: PeerId,
+        peers: Arc<PeerMap>,
+        peer_packet_process_pipeline: Arc<RwLock<Vec<BoxPeerPacketFilter>>>,
+        foreign_client: Arc<ForeignNetworkClient>,
+        relay_peer_map: Arc<RelayPeerMap>,
+        foreign_network_handler: Arc<dyn ForeignNetworkPacketHandler>,
+        encryptor: Arc<dyn Encryptor>,
+        compress_algo: CompressorAlgo,
+        acl_filter: Arc<AclFilter>,
+        context: ArcPeerContext,
+        secure_mode_enabled: bool,
+        route: ArcRoute,
+        is_credential_node: bool,
+        traffic_metrics: Arc<TrafficMetricRecorder>,
+        stats_mgr: Arc<StatsManager>,
+        network_name: String,
+        self_tx_packets: CounterHandle,
+        self_tx_bytes: CounterHandle,
+        compress_tx_bytes_before: CounterHandle,
+        compress_tx_bytes_after: CounterHandle,
+    ) -> Self {
+        let label_set = LabelSet::new().with_label_type(LabelType::NetworkName(network_name));
+        Self {
+            packet_recv,
+            my_peer_id,
+            peers,
+            peer_packet_process_pipeline,
+            foreign_client,
+            relay_peer_map,
+            foreign_network_handler,
+            encryptor,
+            compress_algo,
+            acl_filter,
+            context,
+            secure_mode_enabled,
+            route,
+            is_credential_node,
+            traffic_metrics,
+            stats_mgr: stats_mgr.clone(),
+            counters: PeerPacketRouterCounters {
+                self_tx_packets,
+                self_tx_bytes,
+                self_rx_bytes: stats_mgr
+                    .get_counter(MetricName::TrafficBytesSelfRx, label_set.clone()),
+                self_rx_packets: stats_mgr
+                    .get_counter(MetricName::TrafficPacketsSelfRx, label_set.clone()),
+                forward_data_tx_bytes: stats_mgr
+                    .get_counter(MetricName::TrafficBytesForwarded, label_set.clone()),
+                forward_data_tx_packets: stats_mgr
+                    .get_counter(MetricName::TrafficPacketsForwarded, label_set.clone()),
+                forward_control_tx_bytes: stats_mgr
+                    .get_counter(MetricName::TrafficControlBytesForwarded, label_set.clone()),
+                forward_control_tx_packets: stats_mgr.get_counter(
+                    MetricName::TrafficControlPacketsForwarded,
+                    label_set.clone(),
+                ),
+                compress_tx_bytes_before,
+                compress_tx_bytes_after,
+                compress_rx_bytes_before: stats_mgr
+                    .get_counter(MetricName::CompressionBytesRxBefore, label_set.clone()),
+                compress_rx_bytes_after: stats_mgr
+                    .get_counter(MetricName::CompressionBytesRxAfter, label_set),
+            },
+        }
+    }
+
+    pub async fn run(mut self) {
+        tracing::trace!("start_peer_recv");
+        while let Ok(ret) = recv_packet_from_chan(&mut self.packet_recv).await {
+            let disable_relay_data = self.context.disable_relay_data();
+            let Err(ret) = try_handle_foreign_network_packet(
+                ret,
+                self.my_peer_id,
+                &self.peers,
+                self.foreign_network_handler.as_ref(),
+                self.stats_mgr.as_ref(),
+                disable_relay_data,
+            )
+            .await
+            else {
+                continue;
+            };
+
+            self.handle_packet(ret, disable_relay_data).await;
+        }
+        panic!("done_peer_recv");
+    }
+
+    async fn handle_packet(&self, mut ret: ZCPacket, disable_relay_data: bool) {
+        let buf_len = ret.buf_len();
+        let is_relay_data_packet = is_relay_data_zc_packet(&ret);
+        let Some(hdr) = ret.mut_peer_manager_header() else {
+            tracing::warn!(?ret, "invalid packet, skip");
+            return;
+        };
+
+        tracing::trace!(?hdr, "peer recv a packet...");
+        let from_peer_id = hdr.from_peer_id.get();
+        let to_peer_id = hdr.to_peer_id.get();
+        let packet_type = hdr.packet_type;
+        let is_encrypted = hdr.is_encrypted();
+        if to_peer_id != self.my_peer_id {
+            if disable_relay_data && is_relay_data_packet {
+                tracing::debug!(
+                    ?from_peer_id,
+                    ?to_peer_id,
+                    packet_type,
+                    "drop forwarded relay data while relay data is disabled"
+                );
+                return;
+            }
+
+            if hdr.forward_counter > 7 {
+                tracing::warn!(?hdr, "forward counter exceed, drop packet");
+                return;
+            }
+
+            // Step 10b: credential nodes don't forward handshake packets
+            if self.is_credential_node
+                && (packet_type == PacketType::HandShake as u8
+                    || packet_type == PacketType::NoiseHandshakeMsg1 as u8
+                    || packet_type == PacketType::NoiseHandshakeMsg2 as u8
+                    || packet_type == PacketType::NoiseHandshakeMsg3 as u8)
+            {
+                tracing::debug!("credential node dropping forwarded handshake packet");
+                return;
+            }
+
+            if hdr.forward_counter > 2 && hdr.is_latency_first() {
+                tracing::trace!(?hdr, "set_latency_first false because too many hop");
+                hdr.set_latency_first(false);
+            }
+
+            hdr.forward_counter += 1;
+
+            if from_peer_id == self.my_peer_id {
+                self.counters.compress_tx_bytes_before.add(buf_len as u64);
+
+                if packet_type == PacketType::Data as u8
+                    || packet_type == PacketType::KcpSrc as u8
+                    || packet_type == PacketType::KcpDst as u8
+                {
+                    let _ = try_compress_and_encrypt(
+                        self.compress_algo,
+                        &self.encryptor,
+                        &mut ret,
+                        self.secure_mode_enabled,
+                    )
+                    .await;
+                }
+
+                self.counters
+                    .compress_tx_bytes_after
+                    .add(ret.buf_len() as u64);
+                self.counters.self_tx_bytes.add(ret.buf_len() as u64);
+                self.counters.self_tx_packets.inc();
+            } else {
+                match traffic_kind(packet_type) {
+                    TrafficKind::Data => {
+                        self.counters.forward_data_tx_bytes.add(buf_len as u64);
+                        self.counters.forward_data_tx_packets.inc();
+                    }
+                    TrafficKind::Control => {
+                        self.counters.forward_control_tx_bytes.add(buf_len as u64);
+                        self.counters.forward_control_tx_packets.inc();
+                    }
+                }
+            }
+
+            tracing::trace!(?to_peer_id, my_peer_id = ?self.my_peer_id, "need forward");
+            let tx_metrics = if from_peer_id == self.my_peer_id {
+                Some(&self.traffic_metrics)
+            } else {
+                None
+            };
+            let ret = send_msg_internal(
+                self.peers.as_ref(),
+                &self.foreign_client,
+                &self.relay_peer_map,
+                tx_metrics,
+                ret,
+                to_peer_id,
+            )
+            .await
+            .map_err(Error::from);
+            if ret.is_err() {
+                tracing::error!(?ret, ?to_peer_id, ?from_peer_id, "forward packet error");
+            }
+        } else {
+            if packet_type == PacketType::RelayHandshake as u8
+                || packet_type == PacketType::RelayHandshakeAck as u8
+            {
+                let _ = self.relay_peer_map.handle_handshake_packet(ret).await;
+                return;
+            }
+            if !self.secure_mode_enabled {
+                if let Err(e) = self.encryptor.decrypt(&mut ret) {
+                    tracing::error!(?e, "decrypt failed");
+                    return;
+                }
+            } else if is_encrypted {
+                match self.relay_peer_map.decrypt_if_needed(&mut ret).await {
+                    Ok(true) => {}
+                    Ok(false) => {
+                        tracing::error!("secure session not found");
+                        return;
+                    }
+                    Err(e) => {
+                        tracing::error!(?e, "secure decrypt failed");
+                        return;
+                    }
+                }
+            }
+
+            self.counters.self_rx_bytes.add(buf_len as u64);
+            self.counters.self_rx_packets.inc();
+            self.traffic_metrics
+                .record_rx(from_peer_id, packet_type, buf_len as u64)
+                .await;
+            self.counters.compress_rx_bytes_before.add(buf_len as u64);
+
+            let compressor = DefaultCompressor {};
+            if let Err(e) = compressor.decompress(&mut ret).await {
+                tracing::error!(?e, "decompress failed");
+                return;
+            }
+
+            self.counters
+                .compress_rx_bytes_after
+                .add(ret.buf_len() as u64);
+
+            if !self.acl_filter.process_packet_with_acl(
+                &ret,
+                true,
+                self.context.ipv4().map(|x| x.address()),
+                |dst| self.context.is_ip_local_ipv6(&dst),
+                self.route.as_ref(),
+            ) {
+                return;
+            }
+
+            let mut processed = false;
+            let mut zc_packet = Some(ret);
+            tracing::trace!(?zc_packet, "try_process_packet_from_peer");
+            for pipeline in self.peer_packet_process_pipeline.read().await.iter().rev() {
+                zc_packet = pipeline
+                    .try_process_packet_from_peer(zc_packet.unwrap())
+                    .await;
+                if zc_packet.is_none() {
+                    processed = true;
+                    break;
+                }
+            }
+            if !processed {
+                tracing::error!(?zc_packet, "unhandled packet");
+            }
+        }
     }
 }
 

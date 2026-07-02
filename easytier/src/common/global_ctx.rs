@@ -200,6 +200,10 @@ impl PeerContext for GlobalCtx {
         self.get_ipv6()
     }
 
+    fn is_ip_local_ipv6(&self, ip: &std::net::Ipv6Addr) -> bool {
+        GlobalCtx::is_ip_local_ipv6(self, ip)
+    }
+
     fn proxy_cidrs(&self) -> Vec<cidr::Ipv4Cidr> {
         self.config
             .get_proxy_cidrs()

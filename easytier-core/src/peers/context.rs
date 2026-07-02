@@ -289,6 +289,12 @@ pub trait PeerContext: Send + Sync {
         None
     }
 
+    fn is_ip_local_ipv6(&self, ip: &std::net::Ipv6Addr) -> bool {
+        self.ipv6()
+            .map(|addr| addr.address() == *ip)
+            .unwrap_or(false)
+    }
+
     fn proxy_cidrs(&self) -> Vec<Ipv4Cidr> {
         Vec::new()
     }

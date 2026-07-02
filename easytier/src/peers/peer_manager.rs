@@ -1,4 +1,3 @@
-use anyhow::Context;
 use cidr::{Ipv4Cidr, Ipv6Cidr};
 use dashmap::DashMap;
 use easytier_core::peers::{
@@ -19,7 +18,6 @@ use tokio::{sync::mpsc::UnboundedSender, task::JoinSet};
 use crate::{
     common::{
         PeerId,
-        compressor::{Compressor as _, DefaultCompressor},
         constants::EASYTIER_VERSION,
         error::Error,
         global_ctx::{ArcGlobalCtx, GlobalCtxEvent, NetworkIdentity},
@@ -31,11 +29,10 @@ use crate::{
         PeerPacketFilter,
         peer_conn::PeerConn,
         peer_session::PeerSessionStore,
-        recv_packet_from_chan,
         route_trait::MockRoute,
         traffic_metrics::{
-            InstanceLabelKind, LogicalTrafficMetrics, TrafficKind, TrafficMetricRecorder,
-            route_peer_info_instance_id, traffic_kind,
+            InstanceLabelKind, LogicalTrafficMetrics, TrafficMetricRecorder,
+            route_peer_info_instance_id,
         },
     },
     proto::{
@@ -633,239 +630,41 @@ impl PeerManager {
     }
 
     async fn start_peer_recv(&self) {
-        let mut recv = self.packet_recv.lock().await.take().unwrap();
-        let my_peer_id = self.my_peer_id;
-        let peers = self.peers.clone();
-        let pipe_line = self.peer_packet_process_pipeline.clone();
-        let foreign_client = self.foreign_network_client.clone();
-        let relay_peer_map = self.relay_peer_map.clone();
-        let foreign_mgr = self.foreign_network_manager.clone();
-        let encryptor = self.encryptor.clone();
-        let compress_algo = self.data_compress_algo;
-        let acl_filter = self.global_ctx.get_acl_filter().clone();
-        let global_ctx = self.global_ctx.clone();
-        let secure_mode_enabled = self.is_secure_mode_enabled;
-        let stats_mgr = self.global_ctx.stats_manager().clone();
-        let route = self.get_route();
+        let packet_recv = self.packet_recv.lock().await.take().unwrap();
         let is_credential_node = self
             .global_ctx
             .get_network_identity()
             .network_secret
             .is_none()
-            && secure_mode_enabled;
-
-        let label_set =
-            LabelSet::new().with_label_type(LabelType::NetworkName(global_ctx.get_network_name()));
-
-        let self_tx_bytes = self.self_tx_counters.self_tx_bytes.clone();
-        let self_tx_packets = self.self_tx_counters.self_tx_packets.clone();
-        let self_rx_bytes =
-            stats_mgr.get_counter(MetricName::TrafficBytesSelfRx, label_set.clone());
-        let self_rx_packets =
-            stats_mgr.get_counter(MetricName::TrafficPacketsSelfRx, label_set.clone());
-        let forward_data_tx_bytes =
-            stats_mgr.get_counter(MetricName::TrafficBytesForwarded, label_set.clone());
-        let forward_data_tx_packets =
-            stats_mgr.get_counter(MetricName::TrafficPacketsForwarded, label_set.clone());
-        let forward_control_tx_bytes =
-            stats_mgr.get_counter(MetricName::TrafficControlBytesForwarded, label_set.clone());
-        let forward_control_tx_packets = stats_mgr.get_counter(
-            MetricName::TrafficControlPacketsForwarded,
-            label_set.clone(),
+            && self.is_secure_mode_enabled;
+        let context: easytier_core::peers::context::ArcPeerContext = self.global_ctx.clone();
+        let foreign_network_handler: Arc<dyn core_peer_manager::ForeignNetworkPacketHandler> =
+            self.foreign_network_manager.clone();
+        let router = core_peer_manager::PeerPacketRouter::new(
+            packet_recv,
+            self.my_peer_id,
+            self.peers.clone(),
+            self.peer_packet_process_pipeline.clone(),
+            self.foreign_network_client.clone(),
+            self.relay_peer_map.clone(),
+            foreign_network_handler,
+            self.encryptor.clone(),
+            self.data_compress_algo,
+            self.global_ctx.get_acl_filter().clone(),
+            context,
+            self.is_secure_mode_enabled,
+            self.get_route().into(),
+            is_credential_node,
+            self.traffic_metrics.clone(),
+            self.global_ctx.stats_manager().clone(),
+            self.global_ctx.get_network_name(),
+            self.self_tx_counters.self_tx_packets.clone(),
+            self.self_tx_counters.self_tx_bytes.clone(),
+            self.self_tx_counters.compress_tx_bytes_before.clone(),
+            self.self_tx_counters.compress_tx_bytes_after.clone(),
         );
 
-        let compress_tx_bytes_before = self.self_tx_counters.compress_tx_bytes_before.clone();
-        let compress_tx_bytes_after = self.self_tx_counters.compress_tx_bytes_after.clone();
-        let compress_rx_bytes_before =
-            stats_mgr.get_counter(MetricName::CompressionBytesRxBefore, label_set.clone());
-        let compress_rx_bytes_after =
-            stats_mgr.get_counter(MetricName::CompressionBytesRxAfter, label_set.clone());
-        let traffic_metrics = self.traffic_metrics.clone();
-
-        self.tasks.lock().await.spawn(async move {
-            tracing::trace!("start_peer_recv");
-            while let Ok(ret) = recv_packet_from_chan(&mut recv).await {
-                let disable_relay_data = global_ctx.flags_arc().disable_relay_data;
-                let Err(mut ret) = core_peer_manager::try_handle_foreign_network_packet(
-                    ret,
-                    my_peer_id,
-                    &peers,
-                    &foreign_mgr,
-                    &stats_mgr,
-                    disable_relay_data,
-                )
-                .await
-                else {
-                    continue;
-                };
-
-                let buf_len = ret.buf_len();
-                let is_relay_data_packet = core_peer_manager::is_relay_data_zc_packet(&ret);
-                let Some(hdr) = ret.mut_peer_manager_header() else {
-                    tracing::warn!(?ret, "invalid packet, skip");
-                    continue;
-                };
-
-                tracing::trace!(?hdr, "peer recv a packet...");
-                let from_peer_id = hdr.from_peer_id.get();
-                let to_peer_id = hdr.to_peer_id.get();
-                let packet_type = hdr.packet_type;
-                let is_encrypted = hdr.is_encrypted();
-                if to_peer_id != my_peer_id {
-                    if disable_relay_data && is_relay_data_packet {
-                        tracing::debug!(
-                            ?from_peer_id,
-                            ?to_peer_id,
-                            packet_type,
-                            "drop forwarded relay data while relay data is disabled"
-                        );
-                        continue;
-                    }
-
-                    if hdr.forward_counter > 7 {
-                        tracing::warn!(?hdr, "forward counter exceed, drop packet");
-                        continue;
-                    }
-
-                    // Step 10b: credential nodes don't forward handshake packets
-                    if is_credential_node
-                        && (packet_type == PacketType::HandShake as u8
-                            || packet_type == PacketType::NoiseHandshakeMsg1 as u8
-                            || packet_type == PacketType::NoiseHandshakeMsg2 as u8
-                            || packet_type == PacketType::NoiseHandshakeMsg3 as u8)
-                    {
-                        tracing::debug!("credential node dropping forwarded handshake packet");
-                        continue;
-                    }
-
-                    if hdr.forward_counter > 2 && hdr.is_latency_first() {
-                        tracing::trace!(?hdr, "set_latency_first false because too many hop");
-                        hdr.set_latency_first(false);
-                    }
-
-                    hdr.forward_counter += 1;
-
-                    if from_peer_id == my_peer_id {
-                        compress_tx_bytes_before.add(buf_len as u64);
-
-                        if packet_type == PacketType::Data as u8
-                            || packet_type == PacketType::KcpSrc as u8
-                            || packet_type == PacketType::KcpDst as u8
-                        {
-                            let _ = Self::try_compress_and_encrypt(
-                                compress_algo,
-                                &encryptor,
-                                &mut ret,
-                                secure_mode_enabled,
-                            )
-                            .await;
-                        }
-
-                        compress_tx_bytes_after.add(ret.buf_len() as u64);
-                        self_tx_bytes.add(ret.buf_len() as u64);
-                        self_tx_packets.inc();
-                    } else {
-                        match traffic_kind(packet_type) {
-                            TrafficKind::Data => {
-                                forward_data_tx_bytes.add(buf_len as u64);
-                                forward_data_tx_packets.inc();
-                            }
-                            TrafficKind::Control => {
-                                forward_control_tx_bytes.add(buf_len as u64);
-                                forward_control_tx_packets.inc();
-                            }
-                        }
-                    }
-
-                    tracing::trace!(?to_peer_id, ?my_peer_id, "need forward");
-                    let tx_metrics = if from_peer_id == my_peer_id {
-                        Some(&traffic_metrics)
-                    } else {
-                        None
-                    };
-                    let ret = core_peer_manager::send_msg_internal(
-                        peers.as_ref(),
-                        &foreign_client,
-                        &relay_peer_map,
-                        tx_metrics,
-                        ret,
-                        to_peer_id,
-                    )
-                    .await
-                    .map_err(Error::from);
-                    if ret.is_err() {
-                        tracing::error!(?ret, ?to_peer_id, ?from_peer_id, "forward packet error");
-                    }
-                } else {
-                    if packet_type == PacketType::RelayHandshake as u8
-                        || packet_type == PacketType::RelayHandshakeAck as u8
-                    {
-                        let _ = relay_peer_map.handle_handshake_packet(ret).await;
-                        continue;
-                    }
-                    if !secure_mode_enabled {
-                        if let Err(e) = encryptor.decrypt(&mut ret) {
-                            tracing::error!(?e, "decrypt failed");
-                            continue;
-                        }
-                    } else if is_encrypted {
-                        match relay_peer_map.decrypt_if_needed(&mut ret).await {
-                            Ok(true) => {}
-                            Ok(false) => {
-                                tracing::error!("secure session not found");
-                                continue;
-                            }
-                            Err(e) => {
-                                tracing::error!(?e, "secure decrypt failed");
-                                continue;
-                            }
-                        }
-                    }
-
-                    self_rx_bytes.add(buf_len as u64);
-                    self_rx_packets.inc();
-                    traffic_metrics
-                        .record_rx(from_peer_id, packet_type, buf_len as u64)
-                        .await;
-                    compress_rx_bytes_before.add(buf_len as u64);
-
-                    let compressor = DefaultCompressor {};
-                    if let Err(e) = compressor.decompress(&mut ret).await {
-                        tracing::error!(?e, "decompress failed");
-                        continue;
-                    }
-
-                    compress_rx_bytes_after.add(ret.buf_len() as u64);
-
-                    if !acl_filter.process_packet_with_acl(
-                        &ret,
-                        true,
-                        global_ctx.get_ipv4().map(|x| x.address()),
-                        |dst| global_ctx.is_ip_local_ipv6(&dst),
-                        &route,
-                    ) {
-                        continue;
-                    }
-
-                    let mut processed = false;
-                    let mut zc_packet = Some(ret);
-                    tracing::trace!(?zc_packet, "try_process_packet_from_peer");
-                    for pipeline in pipe_line.read().await.iter().rev() {
-                        zc_packet = pipeline
-                            .try_process_packet_from_peer(zc_packet.unwrap())
-                            .await;
-                        if zc_packet.is_none() {
-                            processed = true;
-                            break;
-                        }
-                    }
-                    if !processed {
-                        tracing::error!(?zc_packet, "unhandled packet");
-                    }
-                }
-            }
-            panic!("done_peer_recv");
-        });
+        self.tasks.lock().await.spawn(router.run());
     }
 
     pub async fn add_packet_process_pipeline(&self, pipeline: BoxPeerPacketFilter) {
@@ -1090,7 +889,7 @@ impl PeerManager {
             .compress_tx_bytes_before
             .add(msg.buf_len() as u64);
 
-        Self::try_compress_and_encrypt(
+        core_peer_manager::try_compress_and_encrypt(
             self.data_compress_algo,
             &self.encryptor,
             &mut msg,
@@ -1235,23 +1034,6 @@ impl PeerManager {
         (dst_peers, is_exit_node)
     }
 
-    pub async fn try_compress_and_encrypt(
-        compress_algo: CompressorAlgo,
-        encryptor: &Arc<dyn Encryptor + 'static>,
-        msg: &mut ZCPacket,
-        secure_mode_enabled: bool,
-    ) -> Result<(), Error> {
-        let compressor = DefaultCompressor {};
-        compressor
-            .compress(msg, compress_algo)
-            .await
-            .with_context(|| "compress failed")?;
-        if !secure_mode_enabled {
-            encryptor.encrypt(msg).with_context(|| "encrypt failed")?;
-        }
-        Ok(())
-    }
-
     pub async fn send_msg_by_ip(
         &self,
         mut msg: ZCPacket,
@@ -1301,7 +1083,7 @@ impl PeerManager {
             .compress_tx_bytes_before
             .add(msg.buf_len() as u64);
 
-        Self::try_compress_and_encrypt(
+        core_peer_manager::try_compress_and_encrypt(
             self.data_compress_algo,
             &self.encryptor,
             &mut msg,
