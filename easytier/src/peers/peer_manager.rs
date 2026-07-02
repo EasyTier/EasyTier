@@ -2220,7 +2220,6 @@ mod tests {
             create_packet_recv_chan,
             peer_conn::tests::set_secure_mode_cfg,
             peer_manager::RouteAlgoType,
-            peer_rpc::tests::register_service,
             route_trait::{NextHopPolicy, RouteCostCalculatorInterface},
             tests::{
                 connect_peer_manager, create_mock_peer_manager_with_name, wait_route_appear,
@@ -2241,6 +2240,23 @@ mod tests {
     };
 
     use super::PeerManager;
+
+    fn register_service(
+        rpc_mgr: &crate::peers::peer_rpc::PeerRpcManager,
+        domain: &str,
+        delay_ms: u64,
+        prefix: &str,
+    ) {
+        use crate::proto::tests::{GreetingServer, GreetingService};
+
+        rpc_mgr.rpc_server().registry().register(
+            GreetingServer::new(GreetingService {
+                delay_ms,
+                prefix: prefix.to_string(),
+            }),
+            domain,
+        );
+    }
 
     async fn create_lazy_peer_manager() -> Arc<PeerManager> {
         let peer_mgr = create_mock_peer_manager_with_mock_stun(NatType::Unknown).await;

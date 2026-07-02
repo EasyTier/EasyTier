@@ -4,7 +4,6 @@ pub mod peer_conn;
 pub mod peer_manager;
 pub mod peer_map;
 pub mod peer_ospf_route;
-pub mod peer_rpc;
 pub mod peer_rpc_service;
 pub(crate) mod public_ipv6;
 pub mod relay_peer_map;
@@ -20,6 +19,12 @@ pub mod peer_task;
 
 #[cfg(test)]
 pub mod tests;
+
+pub mod peer_rpc {
+    pub use easytier_core::peers::peer_rpc::*;
+
+    pub use crate::common::stats_manager::StatsRpcMetrics;
+}
 
 pub(crate) use easytier_core::peers::secure_datagram;
 pub use easytier_core::peers::{
