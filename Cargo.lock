@@ -2498,6 +2498,7 @@ dependencies = [
  "guarden 0.2.0",
  "hmac",
  "parking_lot",
+ "petgraph",
  "prost 0.14.3",
  "quanta",
  "rand 0.8.5",

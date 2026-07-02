@@ -1,6 +1,7 @@
 pub mod context;
 pub mod encrypt;
 pub mod error;
+pub mod graph_algo;
 pub mod peer;
 pub mod peer_conn;
 pub mod peer_conn_ping;
