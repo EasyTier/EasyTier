@@ -28,6 +28,14 @@ path = "src/easytier-cli.rs"
 name = "easytier"
 path = "src/lib.rs"
 
+[[bench]]
+name = "tx_throughput"
+harness = false
+
+[[bench]]
+name = "packet_bytes_extraction"
+harness = false
+
 [dependencies]
 git-version = "0.3.9"
 
@@ -336,6 +344,7 @@ zip = "4.0.0"
 
 
 [dev-dependencies]
+criterion = "0.5.1"
 serial_test = "3.0.0"
 rstest = "0.25.0"
 futures-util = "0.3.31"
