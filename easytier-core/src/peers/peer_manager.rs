@@ -1,7 +1,9 @@
 use std::sync::{Arc, Weak};
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 
 use anyhow::Context;
+use dashmap::DashMap;
+use quanta::Instant;
 use tokio::sync::{
     Mutex,
     mpsc::{self, UnboundedReceiver, UnboundedSender},
@@ -21,9 +23,11 @@ use super::{
     peer_conn::PeerConn,
     peer_map::PeerMap,
     peer_rpc::PeerRpcManagerTransport,
+    peer_task::ExternalTaskSignal,
     relay_peer_map::RelayPeerMap,
     route_trait::{ForeignNetworkRouteInfoMap, NextHopPolicy, RouteInterface, RouteInterfaceBox},
     traffic_metrics::TrafficMetricRecorder,
+    util::shrink_dashmap,
 };
 use crate::proto::peer_rpc::{
     ForeignNetworkRouteInfoEntry, ForeignNetworkRouteInfoKey, PeerIdentityType,
@@ -191,6 +195,118 @@ pub async fn close_untrusted_credential_peers<F>(
         if let Err(e) = peer_map.close_peer(peer_id).await {
             tracing::warn!(?e, ?peer_id, "failed to close untrusted credential peer");
         }
+    }
+}
+
+// Keep lazy-p2p demand alive across the 5s task rescan interval and a full on-demand
+// connect attempt, without retaining extra per-task state in the hot path.
+pub const RECENT_HAVE_TRAFFIC_TTL: Duration = Duration::from_secs(30);
+
+pub fn should_mark_recent_traffic_for_fanout(total_dst_peers: usize) -> bool {
+    total_dst_peers <= 1
+}
+
+fn gc_recent_traffic_entries<F>(
+    recent_have_traffic: &DashMap<PeerId, Instant>,
+    now: Instant,
+    mut has_directly_connected_conn: F,
+) where
+    F: FnMut(PeerId) -> bool,
+{
+    let mut to_remove = Vec::new();
+    for entry in recent_have_traffic.iter() {
+        let peer_id = *entry.key();
+        let expired = now.saturating_duration_since(*entry.value()) > RECENT_HAVE_TRAFFIC_TTL;
+        if expired || has_directly_connected_conn(peer_id) {
+            to_remove.push(peer_id);
+        }
+    }
+
+    if !to_remove.is_empty() {
+        for peer_id in to_remove {
+            recent_have_traffic.remove(&peer_id);
+        }
+        shrink_dashmap(recent_have_traffic, None);
+    }
+}
+
+#[derive(Clone)]
+pub struct RecentTrafficTracker {
+    my_peer_id: PeerId,
+    recent_have_traffic: Arc<DashMap<PeerId, Instant>>,
+    p2p_demand_notify: Arc<ExternalTaskSignal>,
+}
+
+impl RecentTrafficTracker {
+    pub fn new(my_peer_id: PeerId) -> Self {
+        Self {
+            my_peer_id,
+            recent_have_traffic: Arc::new(DashMap::new()),
+            p2p_demand_notify: Arc::new(ExternalTaskSignal::new()),
+        }
+    }
+
+    pub fn mark<F>(
+        &self,
+        dst_peer_id: PeerId,
+        disable_p2p: bool,
+        lazy_p2p: bool,
+        mut has_directly_connected_conn: F,
+    ) where
+        F: FnMut(PeerId) -> bool,
+    {
+        if dst_peer_id == self.my_peer_id {
+            return;
+        }
+
+        if disable_p2p || !lazy_p2p || has_directly_connected_conn(dst_peer_id) {
+            return;
+        }
+
+        let now = Instant::now();
+        if let Some(mut last_seen) = self.recent_have_traffic.get_mut(&dst_peer_id) {
+            let should_notify = now.saturating_duration_since(*last_seen) > RECENT_HAVE_TRAFFIC_TTL;
+            *last_seen = now;
+            if !should_notify {
+                return;
+            }
+        } else {
+            self.recent_have_traffic.insert(dst_peer_id, now);
+        }
+        self.p2p_demand_notify.notify();
+    }
+
+    pub fn has<F>(&self, peer_id: PeerId, now: Instant, mut has_directly_connected_conn: F) -> bool
+    where
+        F: FnMut(PeerId) -> bool,
+    {
+        if has_directly_connected_conn(peer_id) {
+            return false;
+        }
+
+        self.recent_have_traffic
+            .get(&peer_id)
+            .map(|last_seen| now.saturating_duration_since(*last_seen) <= RECENT_HAVE_TRAFFIC_TTL)
+            .unwrap_or(false)
+    }
+
+    pub fn clear(&self, peer_id: PeerId) {
+        self.recent_have_traffic.remove(&peer_id);
+    }
+
+    pub fn gc<F>(&self, now: Instant, has_directly_connected_conn: F)
+    where
+        F: FnMut(PeerId) -> bool,
+    {
+        gc_recent_traffic_entries(
+            self.recent_have_traffic.as_ref(),
+            now,
+            has_directly_connected_conn,
+        );
+    }
+
+    pub fn p2p_demand_notify(&self) -> Arc<ExternalTaskSignal> {
+        self.p2p_demand_notify.clone()
     }
 }
 
@@ -517,4 +633,88 @@ pub async fn send_msg_internal(
     }
 
     send_result
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use dashmap::DashMap;
+    use quanta::Instant;
+
+    use super::*;
+
+    #[test]
+    fn recent_traffic_fanout_policy_only_marks_single_peer() {
+        assert!(should_mark_recent_traffic_for_fanout(0));
+        assert!(should_mark_recent_traffic_for_fanout(1));
+        assert!(!should_mark_recent_traffic_for_fanout(2));
+    }
+
+    #[test]
+    fn gc_recent_traffic_removes_expired_and_connected_entries() {
+        let stale_peer = 1;
+        let direct_peer = 2;
+        let active_peer = 3;
+        let recent_have_traffic = DashMap::new();
+
+        recent_have_traffic.insert(
+            stale_peer,
+            Instant::now() - RECENT_HAVE_TRAFFIC_TTL - Duration::from_millis(1),
+        );
+        recent_have_traffic.insert(direct_peer, Instant::now());
+        recent_have_traffic.insert(active_peer, Instant::now());
+
+        let future_peer = 4;
+        recent_have_traffic.insert(future_peer, Instant::now() + Duration::from_secs(1));
+
+        gc_recent_traffic_entries(&recent_have_traffic, Instant::now(), |peer_id| {
+            peer_id == direct_peer
+        });
+
+        assert!(!recent_have_traffic.contains_key(&stale_peer));
+        assert!(!recent_have_traffic.contains_key(&direct_peer));
+        assert!(recent_have_traffic.contains_key(&active_peer));
+        assert!(recent_have_traffic.contains_key(&future_peer));
+    }
+
+    #[test]
+    fn recent_traffic_notifies_only_when_demand_becomes_active() {
+        let tracker = RecentTrafficTracker::new(1);
+        let peer_id = 2;
+        let signal = tracker.p2p_demand_notify();
+
+        let initial_version = signal.version();
+        tracker.mark(peer_id, false, true, |_| false);
+        assert_eq!(signal.version(), initial_version + 1);
+
+        let first_seen = *tracker.recent_have_traffic.get(&peer_id).unwrap();
+        std::thread::sleep(Duration::from_millis(5));
+        tracker.mark(peer_id, false, true, |_| false);
+        assert_eq!(
+            signal.version(),
+            initial_version + 1,
+            "fresh demand should not wake all p2p workers again"
+        );
+        let refreshed_seen = *tracker.recent_have_traffic.get(&peer_id).unwrap();
+        assert!(refreshed_seen > first_seen);
+
+        if let Some(mut last_seen) = tracker.recent_have_traffic.get_mut(&peer_id) {
+            *last_seen = Instant::now() - RECENT_HAVE_TRAFFIC_TTL - Duration::from_millis(1);
+        }
+        tracker.mark(peer_id, false, true, |_| false);
+        assert_eq!(signal.version(), initial_version + 2);
+    }
+
+    #[test]
+    fn recent_traffic_tolerates_future_timestamps() {
+        let tracker = RecentTrafficTracker::new(1);
+        let peer_id = 2;
+        tracker
+            .recent_have_traffic
+            .insert(peer_id, Instant::now() + Duration::from_secs(1));
+
+        assert!(tracker.has(peer_id, Instant::now(), |_| false));
+        tracker.mark(peer_id, false, true, |_| false);
+    }
 }
