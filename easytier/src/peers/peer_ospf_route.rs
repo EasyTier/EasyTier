@@ -15,8 +15,8 @@ use dashmap::DashMap;
 use easytier_core::{
     peers::{
         context::{
-            NetworkIdentity as CoreNetworkIdentity, PeerContext, PeerGroupIdentity,
-            TrustedKeyMetadata, TrustedKeySource,
+            NetworkIdentity as CoreNetworkIdentity, PeerContext, PeerContextEvent,
+            PeerGroupIdentity, TrustedKeyMetadata, TrustedKeySource,
         },
         peer_ospf_route::{
             OspfPeerConnInfo, OspfPeerInfo, OspfRouteSnapshot, OspfRouteTable, Version,
@@ -41,10 +41,7 @@ use tokio::{
 
 use crate::{
     common::{
-        PeerId,
-        config::NetworkIdentity,
-        constants::EASYTIER_VERSION,
-        global_ctx::{ArcGlobalCtx, GlobalCtxEvent},
+        PeerId, config::NetworkIdentity, constants::EASYTIER_VERSION, global_ctx::ArcGlobalCtx,
         shrink_dashmap,
     },
     peers::route_trait::{Route, RouteInterfaceBox},
@@ -1978,16 +1975,8 @@ impl PeerRouteServiceImpl {
             .unwrap_or(false)
     }
 
-    fn handle_global_ctx_event(&self, event: &GlobalCtxEvent) {
-        if matches!(
-            event,
-            GlobalCtxEvent::PeerAdded(_)
-                | GlobalCtxEvent::PeerRemoved(_)
-                | GlobalCtxEvent::PeerConnAdded(_)
-                | GlobalCtxEvent::PeerConnRemoved(_)
-        ) {
-            self.mark_interface_peers_dirty();
-        }
+    fn handle_peer_context_event(&self, _event: &PeerContextEvent) {
+        self.mark_interface_peers_dirty();
     }
 
     fn update_route_table_and_cached_local_conn_bitmap(&self) {
@@ -3314,7 +3303,7 @@ impl PeerRoute {
         service_impl: Arc<PeerRouteServiceImpl>,
         session_mgr: RouteSessionManager,
     ) {
-        let mut global_event_receiver = service_impl.global_ctx.subscribe();
+        let mut peer_event_receiver = service_impl.global_ctx.subscribe_peer_events();
         service_impl.mark_interface_peers_dirty();
         loop {
             if service_impl.update_my_infos().await {
@@ -3330,17 +3319,26 @@ impl PeerRoute {
                 }
             }
 
-            select! {
-                ev = global_event_receiver.recv() => {
+            if let Some(receiver) = peer_event_receiver.as_mut() {
+                let event = select! {
+                    ev = receiver.recv() => Some(ev),
+                    _ = tokio::time::sleep(Duration::from_secs(1)) => None,
+                };
+
+                if let Some(ev) = event {
                     if let Ok(ev_ref) = &ev {
-                        service_impl.handle_global_ctx_event(ev_ref);
+                        service_impl.handle_peer_context_event(ev_ref);
                     } else {
                         service_impl.mark_interface_peers_dirty();
-                        global_event_receiver = global_event_receiver.resubscribe();
+                        peer_event_receiver = service_impl.global_ctx.subscribe_peer_events();
                     }
-                    tracing::info!(?ev, "global event received in update_my_peer_info_routine");
+                    tracing::info!(
+                        ?ev,
+                        "peer context event received in update_my_peer_info_routine"
+                    );
                 }
-                _ = tokio::time::sleep(Duration::from_secs(1)) => {}
+            } else {
+                tokio::time::sleep(Duration::from_secs(1)).await;
             }
         }
     }
@@ -3658,7 +3656,7 @@ mod tests {
     };
 
     use easytier_core::peers::{
-        context::{PeerContext, PeerGroupIdentity, TrustedKeySource},
+        context::{PeerContext, PeerContextEvent, PeerGroupIdentity, TrustedKeySource},
         peer_ospf_route::OspfNextHopInfo as NextHopInfo,
     };
 
@@ -3671,10 +3669,7 @@ mod tests {
         common::{
             PeerId,
             config::NetworkIdentity,
-            global_ctx::{
-                GlobalCtxEvent,
-                tests::{get_mock_global_ctx, get_mock_global_ctx_with_network},
-            },
+            global_ctx::tests::{get_mock_global_ctx, get_mock_global_ctx_with_network},
         },
         connector::udp_hole_punch::tests::replace_stun_info_collector,
         peers::{
@@ -3798,7 +3793,7 @@ mod tests {
         assert_eq!(list_peers_calls.load(Ordering::Relaxed), 1);
 
         *peers.lock() = vec![2, 4];
-        service_impl.handle_global_ctx_event(&GlobalCtxEvent::PeerConnAdded(Default::default()));
+        service_impl.handle_peer_context_event(&PeerContextEvent::PeerConnAdded);
 
         let third: BTreeSet<_> = service_impl.list_peers_from_interface().await;
         assert_eq!(third, BTreeSet::from([2, 4]));
@@ -3829,7 +3824,7 @@ mod tests {
         assert_eq!(get_peer_identity_type_calls.load(Ordering::Relaxed), 2);
 
         *peers.lock() = vec![2, 4];
-        service_impl.handle_global_ctx_event(&GlobalCtxEvent::PeerConnRemoved(Default::default()));
+        service_impl.handle_peer_context_event(&PeerContextEvent::PeerConnRemoved);
 
         assert!(service_impl.update_my_conn_info().await);
         assert_eq!(list_peers_calls.load(Ordering::Relaxed), 2);
@@ -3874,7 +3869,7 @@ mod tests {
         assert_eq!(get_peer_identity_type_calls.load(Ordering::Relaxed), 2);
 
         *peers.lock() = vec![2, 4];
-        service_impl.handle_global_ctx_event(&GlobalCtxEvent::PeerConnRemoved(Default::default()));
+        service_impl.handle_peer_context_event(&PeerContextEvent::PeerConnRemoved);
 
         assert_eq!(
             service_impl.get_peer_identity_type_from_interface(4).await,
@@ -5049,7 +5044,7 @@ mod tests {
         assert!(!service_impl.route_table.peer_reachable(SECOND_PEER_ID));
 
         *peers.lock() = vec![SECOND_PEER_ID];
-        service_impl.handle_global_ctx_event(&GlobalCtxEvent::PeerConnRemoved(Default::default()));
+        service_impl.handle_peer_context_event(&PeerContextEvent::PeerConnRemoved);
 
         assert!(service_impl.update_my_infos().await);
         assert_eq!(

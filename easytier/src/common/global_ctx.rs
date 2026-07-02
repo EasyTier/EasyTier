@@ -8,8 +8,9 @@ use std::{
 use arc_swap::ArcSwap;
 use async_trait::async_trait;
 use easytier_core::peers::context::{
-    ArcByteLimiter, ByteLimiter, NetworkIdentity as CoreNetworkIdentity, PeerContext, PeerEvent,
-    PeerGroupIdentity, TrustedKeyMapManager, secret_proof_from_secret,
+    ArcByteLimiter, ByteLimiter, NetworkIdentity as CoreNetworkIdentity, PeerContext,
+    PeerContextEvent, PeerContextEventSubscriber, PeerEvent, PeerGroupIdentity,
+    TrustedKeyMapManager, secret_proof_from_secret,
 };
 pub use easytier_core::peers::context::{TrustedKeyMap, TrustedKeyMetadata, TrustedKeySource};
 use easytier_core::peers::public_ipv6::PublicIpv6Runtime;
@@ -94,6 +95,7 @@ pub enum GlobalCtxEvent {
 
 pub type EventBus = tokio::sync::broadcast::Sender<GlobalCtxEvent>;
 pub type EventBusSubscriber = tokio::sync::broadcast::Receiver<GlobalCtxEvent>;
+type PeerEventBus = tokio::sync::broadcast::Sender<PeerContextEvent>;
 
 pub struct GlobalCtx {
     pub inst_name: String,
@@ -103,6 +105,7 @@ pub struct GlobalCtx {
     pub network: NetworkIdentity,
 
     event_bus: EventBus,
+    peer_event_bus: PeerEventBus,
 
     cached_ipv4: AtomicCell<Option<cidr::Ipv4Inet>>,
     cached_ipv6: AtomicCell<Option<cidr::Ipv6Inet>>,
@@ -351,6 +354,10 @@ impl PeerContext for GlobalCtx {
             }
         }
     }
+
+    fn subscribe_peer_events(&self) -> Option<PeerContextEventSubscriber> {
+        Some(self.peer_event_bus.subscribe())
+    }
 }
 
 #[async_trait]
@@ -457,6 +464,7 @@ impl GlobalCtx {
         let hostname = config_fs.get_hostname();
 
         let (event_bus, _) = tokio::sync::broadcast::channel(16);
+        let (peer_event_bus, _) = tokio::sync::broadcast::channel(16);
 
         let stun_info_collector = StunInfoCollector::new_with_default_servers();
 
@@ -490,6 +498,7 @@ impl GlobalCtx {
             network,
 
             event_bus,
+            peer_event_bus,
             cached_ipv4: AtomicCell::new(None),
             cached_ipv6: AtomicCell::new(None),
             public_ipv6_lease: AtomicCell::new(None),
@@ -532,6 +541,7 @@ impl GlobalCtx {
     }
 
     pub fn issue_event(&self, event: GlobalCtxEvent) {
+        self.issue_peer_context_event(&event);
         if let Err(e) = self.event_bus.send(event.clone()) {
             tracing::warn!(
                 "Failed to send event: {:?}, error: {:?}, receiver count: {}",
@@ -540,6 +550,17 @@ impl GlobalCtx {
                 self.event_bus.receiver_count()
             );
         }
+    }
+
+    fn issue_peer_context_event(&self, event: &GlobalCtxEvent) {
+        let event = match event {
+            GlobalCtxEvent::PeerAdded(_) => PeerContextEvent::PeerAdded,
+            GlobalCtxEvent::PeerRemoved(_) => PeerContextEvent::PeerRemoved,
+            GlobalCtxEvent::PeerConnAdded(_) => PeerContextEvent::PeerConnAdded,
+            GlobalCtxEvent::PeerConnRemoved(_) => PeerContextEvent::PeerConnRemoved,
+            _ => return,
+        };
+        let _ = self.peer_event_bus.send(event);
     }
 
     fn set_tun_device_name(&self, name: Option<String>) {

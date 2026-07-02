@@ -130,6 +130,16 @@ pub enum PeerEvent {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PeerContextEvent {
+    PeerAdded,
+    PeerRemoved,
+    PeerConnAdded,
+    PeerConnRemoved,
+}
+
+pub type PeerContextEventSubscriber = tokio::sync::broadcast::Receiver<PeerContextEvent>;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PeerGroupIdentity {
     pub group_name: String,
     pub group_secret: String,
@@ -348,6 +358,10 @@ pub trait PeerContext: Send + Sync {
     }
 
     fn issue_event(&self, _event: PeerEvent) {}
+
+    fn subscribe_peer_events(&self) -> Option<PeerContextEventSubscriber> {
+        None
+    }
 }
 
 pub type ArcPeerContext = Arc<dyn PeerContext>;
