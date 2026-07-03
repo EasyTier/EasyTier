@@ -134,10 +134,18 @@ where
                     match task.await {
                         Ok(Ok(_)) => {}
                         Ok(Err(task_ret)) => {
-                            tracing::error!(?task_ret, "hole punching task failed");
+                            tracing::error!(
+                                target: "easytier_core::peers::peer_task",
+                                ?task_ret,
+                                "hole punching task failed"
+                            );
                         }
                         Err(e) => {
-                            tracing::error!(?e, "hole punching task aborted");
+                            tracing::error!(
+                                target: "easytier_core::peers::peer_task",
+                                ?e,
+                                "hole punching task aborted"
+                            );
                         }
                     }
                 }
@@ -150,7 +158,11 @@ where
                         continue;
                     }
 
-                    tracing::debug!(?item, "launch hole punching task");
+                    tracing::debug!(
+                        target: "easytier_core::peers::peer_task",
+                        ?item,
+                        "launch hole punching task"
+                    );
                     peer_task_map.insert(
                         item.clone(),
                         AbortOnDropHandle::new(launcher.launch_task(&data, item).await),
