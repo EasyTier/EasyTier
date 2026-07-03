@@ -4,28 +4,27 @@ use std::{
     time::Duration,
 };
 
+use async_trait::async_trait;
 use crossbeam::atomic::AtomicCell;
-use dashmap::{DashMap, DashSet};
-use guarden::defer;
+use easytier_core::hole_punch::udp as core_udp_hole_punch;
 use quanta::Instant;
 use rand::seq::SliceRandom as _;
 use tokio::{net::UdpSocket, sync::Mutex, task::JoinSet};
-use tracing::{Instrument, Level, instrument};
-use zerocopy::FromBytes as _;
+use tracing::{Level, instrument};
 
 use crate::{
     common::{error::Error, global_ctx::ArcGlobalCtx, join_joinset_background, netns::NetNS, upnp},
     peers::peer_manager::PeerManager,
     tunnel::{
         Tunnel, TunnelConnCounter, TunnelListener as _,
-        packet_def::{UDP_TUNNEL_HEADER_SIZE, UDPTunnelHeader, UdpPacketType},
         udp::{UdpTunnelConnector, UdpTunnelListener, new_hole_punch_packet},
     },
 };
 
-pub(crate) const HOLE_PUNCH_PACKET_BODY_LEN: u16 = 16;
 const MAX_PUBLIC_UDP_HOLE_PUNCH_LISTENERS: usize = 4;
-pub(crate) use easytier_core::hole_punch::udp::{UdpNatType, UdpPunchClientMethod};
+pub(crate) use easytier_core::hole_punch::udp::{
+    HOLE_PUNCH_PACKET_BODY_LEN, UdpNatType, UdpPunchClientMethod,
+};
 
 fn generate_shuffled_port_vec() -> Vec<u16> {
     let mut rng = rand::thread_rng();
@@ -41,152 +40,104 @@ pub(crate) struct PunchedUdpSocket {
     pub(crate) remote_addr: SocketAddr,
 }
 
+struct RuntimeUdpPunchSocket {
+    socket: Arc<UdpSocket>,
+}
+
+impl RuntimeUdpPunchSocket {
+    fn new(socket: Arc<UdpSocket>) -> Self {
+        Self { socket }
+    }
+}
+
+#[async_trait]
+impl core_udp_hole_punch::UdpPunchSocket for RuntimeUdpPunchSocket {
+    fn local_addr(&self) -> std::io::Result<SocketAddr> {
+        self.socket.local_addr()
+    }
+
+    async fn send_to(&self, data: &[u8], addr: SocketAddr) -> std::io::Result<usize> {
+        self.socket.send_to(data, addr).await
+    }
+
+    async fn recv_from(&self, buf: &mut [u8]) -> std::io::Result<(usize, SocketAddr)> {
+        self.socket.recv_from(buf).await
+    }
+}
+
+struct RuntimeUdpPunchSocketFactory {
+    net_ns: NetNS,
+}
+
+#[async_trait]
+impl core_udp_hole_punch::UdpPunchSocketFactory for RuntimeUdpPunchSocketFactory {
+    type Socket = RuntimeUdpPunchSocket;
+
+    async fn bind_udp(&self, port: Option<u16>) -> anyhow::Result<Arc<Self::Socket>> {
+        let socket = {
+            let _g = self.net_ns.guard();
+            Arc::new(UdpSocket::bind((Ipv4Addr::UNSPECIFIED, port.unwrap_or(0))).await?)
+        };
+
+        Ok(Arc::new(RuntimeUdpPunchSocket::new(socket)))
+    }
+}
+
 // used for symmetric hole punching, binding to multiple ports to increase the chance of success
 pub(crate) struct UdpSocketArray {
-    sockets: Arc<DashMap<SocketAddr, Arc<UdpSocket>>>,
-    max_socket_count: usize,
-    net_ns: NetNS,
-    tasks: Arc<std::sync::Mutex<JoinSet<()>>>,
-
-    intreast_tids: Arc<DashSet<u32>>,
-    tid_to_socket: Arc<DashMap<u32, Vec<PunchedUdpSocket>>>,
+    inner: core_udp_hole_punch::UdpSocketArray<RuntimeUdpPunchSocketFactory>,
 }
 
 impl UdpSocketArray {
     pub fn new(max_socket_count: usize, net_ns: NetNS) -> Self {
-        let tasks = Arc::new(std::sync::Mutex::new(JoinSet::new()));
-        join_joinset_background(tasks.clone(), "UdpSocketArray".to_owned());
-
+        let runtime = Arc::new(RuntimeUdpPunchSocketFactory { net_ns });
         Self {
-            sockets: Arc::new(DashMap::new()),
-            max_socket_count,
-            net_ns,
-            tasks,
-
-            intreast_tids: Arc::new(DashSet::new()),
-            tid_to_socket: Arc::new(DashMap::new()),
+            inner: core_udp_hole_punch::UdpSocketArray::new(max_socket_count, runtime),
         }
     }
 
     pub fn started(&self) -> bool {
-        !self.sockets.is_empty()
+        self.inner.started()
     }
 
     pub async fn add_new_socket(&self, socket: Arc<UdpSocket>) -> Result<(), anyhow::Error> {
-        let socket_map = self.sockets.clone();
-        let local_addr = socket.local_addr()?;
-        let intreast_tids = self.intreast_tids.clone();
-        let tid_to_socket = self.tid_to_socket.clone();
-        socket_map.insert(local_addr, socket.clone());
-        self.tasks.lock().unwrap().spawn(
-            async move {
-                defer!(socket_map.remove(&local_addr););
-                let mut buf = [0u8; UDP_TUNNEL_HEADER_SIZE + HOLE_PUNCH_PACKET_BODY_LEN as usize];
-                tracing::trace!(?local_addr, "udp socket added");
-                loop {
-                    let Ok((len, addr)) = socket.recv_from(&mut buf).await else {
-                        break;
-                    };
-
-                    tracing::debug!(?len, ?addr, "got raw packet");
-
-                    if len != UDP_TUNNEL_HEADER_SIZE + HOLE_PUNCH_PACKET_BODY_LEN as usize {
-                        continue;
-                    }
-
-                    let Some(p) = UDPTunnelHeader::ref_from_prefix(&buf) else {
-                        continue;
-                    };
-
-                    let tid = p.conn_id.get();
-                    let valid = p.msg_type == UdpPacketType::HolePunch as u8
-                        && p.len.get() == HOLE_PUNCH_PACKET_BODY_LEN;
-                    tracing::debug!(?p, ?addr, ?tid, ?valid, ?p, "got udp hole punch packet");
-
-                    if !valid {
-                        continue;
-                    }
-
-                    if intreast_tids.contains(&tid) {
-                        tracing::info!(?addr, ?tid, "got hole punching packet with intreast tid");
-                        tid_to_socket
-                            .entry(tid)
-                            .or_default()
-                            .push(PunchedUdpSocket {
-                                socket: socket.clone(),
-                                tid,
-                                remote_addr: addr,
-                            });
-                        break;
-                    }
-                }
-                tracing::debug!(?local_addr, "udp socket recv loop end");
-            }
-            .instrument(tracing::info_span!("udp array socket recv loop")),
-        );
-        Ok(())
+        self.inner
+            .add_new_socket(Arc::new(RuntimeUdpPunchSocket::new(socket)))
+            .await
     }
 
     #[instrument(err)]
     pub async fn start(&self) -> Result<(), anyhow::Error> {
-        tracing::info!("starting udp socket array");
-
-        while self.sockets.len() < self.max_socket_count {
-            let socket = {
-                let _g = self.net_ns.guard();
-                Arc::new(UdpSocket::bind("0.0.0.0:0").await?)
-            };
-
-            self.add_new_socket(socket).await?;
-        }
-
-        Ok(())
+        self.inner.start().await
     }
 
     #[instrument(err)]
     pub async fn send_with_all(&self, data: &[u8], addr: SocketAddr) -> Result<(), anyhow::Error> {
-        tracing::info!(?addr, "sending hole punching packet");
-
-        let sockets = self
-            .sockets
-            .iter()
-            .map(|s| s.value().clone())
-            .collect::<Vec<_>>();
-
-        for socket in sockets.iter() {
-            for _ in 0..3 {
-                socket.send_to(data, addr).await?;
-            }
-        }
-
-        Ok(())
+        self.inner.send_with_all(data, addr).await
     }
 
-    #[instrument(ret(level = Level::DEBUG))]
     pub fn try_fetch_punched_socket(&self, tid: u32) -> Option<PunchedUdpSocket> {
-        tracing::debug!(?tid, "try fetch punched socket");
-        self.tid_to_socket.get_mut(&tid)?.value_mut().pop()
+        self.inner
+            .try_fetch_punched_socket(tid)
+            .map(|socket| PunchedUdpSocket {
+                socket: socket.socket.socket.clone(),
+                tid: socket.tid,
+                remote_addr: socket.remote_addr,
+            })
     }
 
     pub fn add_intreast_tid(&self, tid: u32) {
-        self.intreast_tids.insert(tid);
+        self.inner.add_intreast_tid(tid);
     }
 
     pub fn remove_intreast_tid(&self, tid: u32) {
-        self.intreast_tids.remove(&tid);
-        self.tid_to_socket.remove(&tid);
+        self.inner.remove_intreast_tid(tid);
     }
 }
 
 impl std::fmt::Debug for UdpSocketArray {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("UdpSocketArray")
-            .field("sockets", &self.sockets.len())
-            .field("max_socket_count", &self.max_socket_count)
-            .field("started", &self.started())
-            .field("intreast_tids", &self.intreast_tids.len())
-            .field("tid_to_socket", &self.tid_to_socket.len())
-            .finish()
+        self.inner.fmt(f)
     }
 }
 

@@ -185,6 +185,25 @@ pub trait UdpHolePunchPeerSource: Send + Sync {
 }
 
 #[async_trait]
+pub trait UdpPunchSocketFactory: Send + Sync + 'static {
+    type Socket: UdpPunchSocket + 'static;
+
+    async fn bind_udp(&self, port: Option<u16>) -> anyhow::Result<Arc<Self::Socket>>;
+}
+
+#[async_trait]
+impl<T> UdpPunchSocketFactory for T
+where
+    T: UdpHolePunchRuntime + Send + Sync + 'static,
+{
+    type Socket = T::Socket;
+
+    async fn bind_udp(&self, port: Option<u16>) -> anyhow::Result<Arc<Self::Socket>> {
+        UdpHolePunchRuntime::bind_udp(self, port).await
+    }
+}
+
+#[async_trait]
 pub trait UdpHolePunchRuntime: Send + Sync + 'static {
     type Socket: UdpPunchSocket + 'static;
 

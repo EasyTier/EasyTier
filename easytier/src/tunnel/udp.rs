@@ -9,8 +9,8 @@ use anyhow::Context;
 use async_trait::async_trait;
 use bytes::BytesMut;
 use dashmap::DashMap;
+pub use easytier_core::hole_punch::udp::new_hole_punch_packet;
 use futures::{StreamExt, stream::FuturesUnordered};
-use rand::{Rng, SeedableRng};
 use zerocopy::{AsBytes, FromBytes};
 
 use tokio::{
@@ -89,21 +89,6 @@ fn new_sack_packet(conn_id: u32, magic: u64) -> ZCPacket {
             header.len.set(8);
         },
         Some(&magic.to_le_bytes()),
-    )
-}
-
-pub fn new_hole_punch_packet(tid: u32, buf_len: u16) -> ZCPacket {
-    // generate a 128 bytes vec with random data
-    let mut rng = rand::rngs::StdRng::from_entropy();
-    let mut buf = vec![0u8; buf_len as usize];
-    rng.fill(&mut buf[..]);
-    new_udp_packet(
-        |header| {
-            header.msg_type = UdpPacketType::HolePunch as u8;
-            header.conn_id.set(tid);
-            header.len.set(buf_len);
-        },
-        Some(&buf),
     )
 }
 
@@ -1116,6 +1101,7 @@ mod tests {
     use std::{net::IpAddr, time::Duration};
 
     use futures::SinkExt;
+    use rand::Rng;
     use tokio::time::timeout;
 
     use super::*;
