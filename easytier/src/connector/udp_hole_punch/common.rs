@@ -6,7 +6,7 @@ use std::{
 
 use async_trait::async_trait;
 use crossbeam::atomic::AtomicCell;
-use easytier_core::hole_punch::udp as core_udp_hole_punch;
+use easytier_core::hole_punch::udp::{self as core_udp_hole_punch, ReusableUdpPunchListener};
 use quanta::Instant;
 use rand::seq::SliceRandom as _;
 use tokio::{net::UdpSocket, sync::Mutex, task::JoinSet};
@@ -21,9 +21,9 @@ use crate::{
     },
 };
 
-const MAX_PUBLIC_UDP_HOLE_PUNCH_LISTENERS: usize = 4;
 pub(crate) use easytier_core::hole_punch::udp::{
-    HOLE_PUNCH_PACKET_BODY_LEN, UdpNatType, UdpPunchClientMethod,
+    HOLE_PUNCH_PACKET_BODY_LEN, MAX_PUBLIC_UDP_HOLE_PUNCH_LISTENERS, UdpNatType,
+    UdpPunchClientMethod,
 };
 
 fn generate_shuffled_port_vec() -> Vec<u16> {
@@ -415,30 +415,21 @@ impl PunchHoleServerCommon {
 }
 
 fn can_reuse_public_listener(listener: &UdpHolePunchListener) -> bool {
-    listener.running.load() && !listener.mapped_addr.ip().is_unspecified()
+    core_udp_hole_punch::can_reuse_public_listener(&listener_reuse_state(listener))
 }
 
 fn can_reuse_port_mapping_listener(listener: &UdpHolePunchListener) -> bool {
-    can_reuse_public_listener(listener) && listener.has_port_mapping_lease
+    core_udp_hole_punch::can_reuse_port_mapping_listener(&listener_reuse_state(listener))
 }
 
 fn select_reusable_public_listener_idx(listeners: &[UdpHolePunchListener]) -> Option<usize> {
-    // Reuse the listener that was active most recently.
-    listeners
-        .iter()
-        .enumerate()
-        .filter(|(_, listener)| can_reuse_public_listener(listener))
-        .max_by_key(|(_, listener)| listener.last_active_time.load())
-        .map(|(idx, _)| idx)
+    let states = listener_reuse_states(listeners);
+    core_udp_hole_punch::select_reusable_public_listener_idx(&states)
 }
 
 fn select_reusable_port_mapping_listener_idx(listeners: &[UdpHolePunchListener]) -> Option<usize> {
-    listeners
-        .iter()
-        .enumerate()
-        .filter(|(_, listener)| can_reuse_port_mapping_listener(listener))
-        .max_by_key(|(_, listener)| listener.last_active_time.load())
-        .map(|(idx, _)| idx)
+    let states = listener_reuse_states(listeners);
+    core_udp_hole_punch::select_reusable_port_mapping_listener_idx(&states)
 }
 
 fn should_create_public_listener(
@@ -448,23 +439,13 @@ fn should_create_public_listener(
     force_new_listener: bool,
     prefer_port_mapping: bool,
 ) -> bool {
-    if current_listener_count >= MAX_PUBLIC_UDP_HOLE_PUNCH_LISTENERS {
-        return false;
-    }
-
-    if current_listener_count == 0 {
-        return true;
-    }
-
-    if force_new_listener {
-        return true;
-    }
-
-    if prefer_port_mapping && !has_port_mapping_listener {
-        return true;
-    }
-
-    !has_reusable_listener
+    core_udp_hole_punch::should_create_public_listener(
+        current_listener_count,
+        has_reusable_listener,
+        has_port_mapping_listener,
+        force_new_listener,
+        prefer_port_mapping,
+    )
 }
 
 fn should_retry_public_listener_selection(
@@ -473,11 +454,25 @@ fn should_retry_public_listener_selection(
     prefer_port_mapping: bool,
     has_port_mapping_listener: bool,
 ) -> bool {
-    if prefer_port_mapping && has_port_mapping_listener {
-        return false;
-    }
+    core_udp_hole_punch::should_retry_public_listener_selection(
+        force_new_listener,
+        current_listener_count,
+        prefer_port_mapping,
+        has_port_mapping_listener,
+    )
+}
 
-    !force_new_listener && current_listener_count < MAX_PUBLIC_UDP_HOLE_PUNCH_LISTENERS
+fn listener_reuse_state(listener: &UdpHolePunchListener) -> ReusableUdpPunchListener {
+    ReusableUdpPunchListener {
+        running: listener.running.load(),
+        mapped_addr: listener.mapped_addr,
+        has_port_mapping_lease: listener.has_port_mapping_lease,
+        last_active_time: listener.last_active_time.load(),
+    }
+}
+
+fn listener_reuse_states(listeners: &[UdpHolePunchListener]) -> Vec<ReusableUdpPunchListener> {
+    listeners.iter().map(listener_reuse_state).collect()
 }
 
 #[tracing::instrument(err, ret(level=Level::DEBUG))]

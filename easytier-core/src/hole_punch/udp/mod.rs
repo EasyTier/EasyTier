@@ -1,4 +1,5 @@
 mod common;
+mod listener;
 mod model;
 mod packet;
 mod policy;
@@ -6,6 +7,12 @@ mod runtime;
 mod socket_array;
 
 pub use common::{BLACKLIST_TIMEOUT_SEC, BackOff, UdpNatType, UdpPunchClientMethod};
+pub use listener::{
+    MAX_PUBLIC_UDP_HOLE_PUNCH_LISTENERS, ReusableUdpPunchListener, can_reuse_port_mapping_listener,
+    can_reuse_public_listener, select_reusable_port_mapping_listener_idx,
+    select_reusable_public_listener_idx, should_create_public_listener,
+    should_retry_public_listener_selection,
+};
 pub use model::{P2pPolicyFlags, UdpPunchCandidate};
 pub use packet::{HOLE_PUNCH_PACKET_BODY_LEN, hole_punch_packet_tid, new_hole_punch_packet};
 pub use policy::{should_background_p2p_with_peer, should_try_p2p_with_peer};
