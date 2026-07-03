@@ -1,41 +1,40 @@
 use std::{
-    sync::{Arc, atomic::AtomicBool},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
     time::Duration,
 };
 
 use anyhow::Error;
-use both_easy_sym::{PunchBothEasySymHoleClient, PunchBothEasySymHoleServer};
+use both_easy_sym::PunchBothEasySymHoleServer;
 use common::{
-    PunchHoleServerCommon, RuntimeUdpHolePunchRuntime, RuntimeUdpHolePunchTunnelSink, UdpNatType,
-    UdpPunchClientMethod,
+    PunchHoleServerCommon, RuntimeUdpHolePunchPeerSource, RuntimeUdpHolePunchRuntime,
+    RuntimeUdpHolePunchTunnelSink,
 };
-use cone::{PunchConeHoleClient, PunchConeHoleServer};
-use dashmap::DashMap;
+use cone::PunchConeHoleServer;
 use easytier_core::hole_punch::udp::{
-    BLACKLIST_TIMEOUT_SEC, P2pPolicyFlags, SelectPunchListener as CoreSelectPunchListener,
+    BLACKLIST_TIMEOUT_SEC, SelectPunchListener as CoreSelectPunchListener,
     SelectPunchListenerResponse as CoreSelectPunchListenerResponse,
     SendPunchPacketBothEasySym as CoreSendPunchPacketBothEasySym,
     SendPunchPacketBothEasySymResponse as CoreSendPunchPacketBothEasySymResponse,
     SendPunchPacketCone as CoreSendPunchPacketCone,
     SendPunchPacketEasySym as CoreSendPunchPacketEasySym,
     SendPunchPacketHardSym as CoreSendPunchPacketHardSym,
-    SendPunchPacketHardSymResponse as CoreSendPunchPacketHardSymResponse, UdpHolePunchInbound,
+    SendPunchPacketHardSymResponse as CoreSendPunchPacketHardSymResponse,
+    UdpHolePunchConnector as CoreUdpHolePunchConnector, UdpHolePunchInbound,
     UdpHolePunchServerCommon as CoreUdpHolePunchServerCommon, UdpHolePunchSignalError,
-    UdpPunchCandidate, UdpPunchTaskInfo, collect_udp_punch_tasks, should_blacklist_signal_error,
+    get_udp_sym_punch_lock, should_blacklist_signal_error,
 };
 use once_cell::sync::Lazy;
-use quanta::Instant;
-use sym_to_cone::{PunchSymToConeHoleClient, PunchSymToConeHoleServer};
-use tokio::{sync::Mutex, task::JoinHandle};
+use signaling::PeerRpcUdpHolePunchSignaling;
+use sym_to_cone::PunchSymToConeHoleServer;
 
 use crate::{
-    common::{PeerId, stun::StunInfoCollectorTrait},
-    peers::{
-        peer_manager::PeerManager,
-        peer_task::{PeerTaskLauncher, PeerTaskManager},
-    },
+    common::PeerId,
+    peers::peer_manager::PeerManager,
     proto::{
-        common::{NatType, Void},
+        common::Void,
         peer_rpc::{
             SelectPunchListenerRequest, SelectPunchListenerResponse,
             SendPunchPacketBothEasySymRequest, SendPunchPacketBothEasySymResponse,
@@ -45,7 +44,6 @@ use crate::{
         },
         rpc_types::{self, controller::BaseController},
     },
-    tunnel::Tunnel,
 };
 
 pub(crate) mod both_easy_sym;
@@ -56,17 +54,7 @@ pub(crate) mod sym_to_cone;
 
 pub use easytier_core::hole_punch::udp::BackOff;
 
-// sym punch should be serialized
-static SYM_PUNCH_LOCK: Lazy<DashMap<PeerId, Arc<Mutex<()>>>> = Lazy::new(DashMap::new);
 pub static RUN_TESTING: Lazy<AtomicBool> = Lazy::new(|| AtomicBool::new(false));
-
-fn get_sym_punch_lock(peer_id: PeerId) -> Arc<Mutex<()>> {
-    SYM_PUNCH_LOCK
-        .entry(peer_id)
-        .or_insert_with(|| Arc::new(Mutex::new(())))
-        .value()
-        .clone()
-}
 
 struct UdpHolePunchServer {
     common: Arc<PunchHoleServerCommon>,
@@ -164,7 +152,7 @@ impl UdpHolePunchInbound for UdpHolePunchServer {
         &self,
         request: CoreSendPunchPacketHardSym,
     ) -> Result<CoreSendPunchPacketHardSymResponse, UdpHolePunchSignalError> {
-        let _locked = get_sym_punch_lock(self.common.get_peer_mgr().my_peer_id())
+        let _locked = get_udp_sym_punch_lock(self.common.get_peer_mgr().my_peer_id())
             .try_lock_owned()
             .map_err(|_| {
                 UdpHolePunchSignalError::RemoteRejected("sym punch lock is busy".into())
@@ -190,7 +178,7 @@ impl UdpHolePunchInbound for UdpHolePunchServer {
         &self,
         request: CoreSendPunchPacketEasySym,
     ) -> Result<(), UdpHolePunchSignalError> {
-        let _locked = get_sym_punch_lock(self.common.get_peer_mgr().my_peer_id())
+        let _locked = get_udp_sym_punch_lock(self.common.get_peer_mgr().my_peer_id())
             .try_lock_owned()
             .map_err(|_| {
                 UdpHolePunchSignalError::RemoteRejected("sym punch lock is busy".into())
@@ -212,7 +200,7 @@ impl UdpHolePunchInbound for UdpHolePunchServer {
         &self,
         request: CoreSendPunchPacketBothEasySym,
     ) -> Result<CoreSendPunchPacketBothEasySymResponse, UdpHolePunchSignalError> {
-        let _locked = get_sym_punch_lock(self.common.get_peer_mgr().my_peer_id())
+        let _locked = get_udp_sym_punch_lock(self.common.get_peer_mgr().my_peer_id())
             .try_lock_owned()
             .map_err(|_| {
                 UdpHolePunchSignalError::RemoteRejected("sym punch lock is busy".into())
@@ -403,314 +391,16 @@ pub fn handle_signal_result<T>(
     }
 }
 
-struct UdpHoePunchConnectorData {
-    cone_client: PunchConeHoleClient,
-    sym_to_cone_client: PunchSymToConeHoleClient,
-    both_easy_sym_client: PunchBothEasySymHoleClient,
-    peer_mgr: Arc<PeerManager>,
-    blacklist: Arc<timedmap::TimedMap<PeerId, ()>>,
-}
-
-impl UdpHoePunchConnectorData {
-    pub fn new(peer_mgr: Arc<PeerManager>) -> Arc<Self> {
-        let blacklist = Arc::new(timedmap::TimedMap::new());
-        let cone_client = PunchConeHoleClient::new(peer_mgr.clone(), blacklist.clone());
-        let sym_to_cone_client = PunchSymToConeHoleClient::new(peer_mgr.clone(), blacklist.clone());
-        let both_easy_sym_client =
-            PunchBothEasySymHoleClient::new(peer_mgr.clone(), blacklist.clone());
-
-        Arc::new(Self {
-            cone_client,
-            sym_to_cone_client,
-            both_easy_sym_client,
-            peer_mgr,
-            blacklist,
-        })
-    }
-
-    #[tracing::instrument(skip(self))]
-    async fn handle_punch_result(
-        &self,
-        ret: Result<Option<Box<dyn Tunnel>>, Error>,
-        backoff: Option<&mut BackOff>,
-        round: Option<&mut u32>,
-    ) -> bool {
-        let op = |rollback: bool| {
-            if rollback {
-                if let Some(backoff) = backoff {
-                    backoff.rollback();
-                }
-                if let Some(round) = round {
-                    *round = round.saturating_sub(1);
-                }
-            } else if let Some(round) = round {
-                *round += 1;
-            }
-        };
-
-        match ret {
-            Ok(Some(tunnel)) => {
-                tracing::info!(?tunnel, "hole punching get tunnel success");
-
-                if let Err(e) = self.peer_mgr.add_client_tunnel(tunnel, false).await {
-                    tracing::warn!("add client tunnel failed, err: {}", e);
-                    op(true);
-                    false
-                } else {
-                    true
-                }
-            }
-            Ok(None) => {
-                tracing::info!("hole punching failed, no punch tunnel");
-                op(false);
-                false
-            }
-            Err(e) => {
-                tracing::info!("hole punching failed, err: {}", e);
-                op(true);
-                false
-            }
-        }
-    }
-
-    #[tracing::instrument(skip(self))]
-    async fn cone_to_cone(self: Arc<Self>, task_info: PunchTaskInfo) -> Result<(), Error> {
-        let mut backoff = BackOff::new(vec![1000, 1000, 2000, 4000, 4000, 8000, 8000, 16000]);
-
-        loop {
-            backoff.sleep_for_next_backoff().await;
-
-            let ret = self
-                .cone_client
-                .do_hole_punching(task_info.dst_peer_id)
-                .await;
-
-            if self
-                .handle_punch_result(ret, Some(&mut backoff), None)
-                .await
-            {
-                break;
-            }
-        }
-
-        Ok(())
-    }
-
-    #[tracing::instrument(skip(self))]
-    async fn sym_to_cone(self: Arc<Self>, task_info: PunchTaskInfo) -> Result<(), Error> {
-        let mut backoff =
-            BackOff::new(vec![1000, 1000, 2000, 4000, 4000, 8000, 8000, 16000, 64000]);
-        let mut round = 0;
-        let mut port_idx = rand::random();
-
-        loop {
-            backoff.sleep_for_next_backoff().await;
-
-            // always try cone first
-            if !RUN_TESTING.load(std::sync::atomic::Ordering::Relaxed) {
-                let ret = self
-                    .cone_client
-                    .do_hole_punching(task_info.dst_peer_id)
-                    .await;
-                if self.handle_punch_result(ret, None, None).await {
-                    break;
-                }
-            }
-
-            let ret = {
-                let _lock = get_sym_punch_lock(self.peer_mgr.my_peer_id())
-                    .lock_owned()
-                    .await;
-                self.sym_to_cone_client
-                    .do_hole_punching(
-                        task_info.dst_peer_id,
-                        round,
-                        &mut port_idx,
-                        task_info.my_nat_type,
-                    )
-                    .await
-            };
-
-            if self
-                .handle_punch_result(ret, Some(&mut backoff), Some(&mut round))
-                .await
-            {
-                break;
-            }
-        }
-
-        Ok(())
-    }
-
-    #[tracing::instrument(skip(self))]
-    async fn both_easy_sym(self: Arc<Self>, task_info: PunchTaskInfo) -> Result<(), Error> {
-        let mut backoff =
-            BackOff::new(vec![1000, 1000, 2000, 4000, 4000, 8000, 8000, 16000, 64000]);
-
-        loop {
-            backoff.sleep_for_next_backoff().await;
-
-            // always try cone first
-            if !RUN_TESTING.load(std::sync::atomic::Ordering::Relaxed) {
-                let ret = self
-                    .cone_client
-                    .do_hole_punching(task_info.dst_peer_id)
-                    .await;
-                if self.handle_punch_result(ret, None, None).await {
-                    break;
-                }
-            }
-
-            let mut is_busy = false;
-
-            let ret = {
-                let _lock = get_sym_punch_lock(self.peer_mgr.my_peer_id())
-                    .lock_owned()
-                    .await;
-                self.both_easy_sym_client
-                    .do_hole_punching(
-                        task_info.dst_peer_id,
-                        task_info.my_nat_type,
-                        task_info.dst_nat_type,
-                        &mut is_busy,
-                    )
-                    .await
-            };
-
-            if is_busy {
-                backoff.rollback();
-            } else if self
-                .handle_punch_result(ret, Some(&mut backoff), None)
-                .await
-            {
-                break;
-            }
-        }
-
-        Ok(())
-    }
-}
-
-#[derive(Clone)]
-struct UdpHolePunchPeerTaskLauncher {}
-
-type PunchTaskInfo = UdpPunchTaskInfo;
-
-#[async_trait::async_trait]
-impl PeerTaskLauncher for UdpHolePunchPeerTaskLauncher {
-    type PeerManager = PeerManager;
-    type Data = Arc<UdpHoePunchConnectorData>;
-    type CollectPeerItem = PunchTaskInfo;
-    type TaskRet = ();
-
-    fn new_data(&self, peer_mgr: Arc<PeerManager>) -> Self::Data {
-        UdpHoePunchConnectorData::new(peer_mgr)
-    }
-
-    async fn collect_peers_need_task(&self, data: &Self::Data) -> Vec<Self::CollectPeerItem> {
-        let my_nat_type = data
-            .peer_mgr
-            .get_global_ctx()
-            .get_stun_info_collector()
-            .get_stun_info()
-            .udp_nat_type;
-        let my_nat_type: UdpNatType = NatType::try_from(my_nat_type)
-            .unwrap_or(NatType::Unknown)
-            .into();
-        if !my_nat_type.is_sym() {
-            data.sym_to_cone_client.clear_udp_array().await;
-        }
-
-        // do not do anything if:
-        // 1. our nat type is OpenInternet or NoPat, which means we can wait other peers to connect us
-        // notice that if we are unknown, we treat ourselves as cone
-        if my_nat_type.is_open() {
-            return Vec::new();
-        }
-
-        let my_peer_id = data.peer_mgr.my_peer_id();
-        let flags = data.peer_mgr.get_global_ctx().get_flags();
-        let policy = P2pPolicyFlags {
-            disable_udp_hole_punching: flags.disable_udp_hole_punching,
-            disable_sym_hole_punching: flags.disable_sym_hole_punching,
-            lazy_p2p: flags.lazy_p2p,
-            disable_p2p: flags.disable_p2p,
-            need_p2p: flags.need_p2p,
-        };
-        let now = Instant::now();
-
-        data.blacklist.cleanup();
-
-        let routes = data.peer_mgr.list_routes().await;
-        let candidates = routes.iter().filter_map(|route| {
-            let peer_nat_type = route
-                .stun_info
-                .as_ref()
-                .map(|x| x.udp_nat_type)
-                .unwrap_or(0);
-            let Ok(peer_nat_type) = NatType::try_from(peer_nat_type) else {
-                return None;
-            };
-
-            Some(UdpPunchCandidate {
-                peer_id: route.peer_id,
-                udp_nat_type: peer_nat_type,
-                feature_flag: route.feature_flag.clone(),
-                has_direct_connection: data.peer_mgr.get_peer_map().has_peer(route.peer_id),
-                has_recent_traffic: data.peer_mgr.has_recent_traffic(route.peer_id, now),
-            })
-        });
-
-        let peers_to_connect =
-            collect_udp_punch_tasks(my_peer_id, my_nat_type, policy, candidates, |peer_id| {
-                data.blacklist.contains(&peer_id)
-            });
-        for task in &peers_to_connect {
-            tracing::info!(
-                peer_id = task.dst_peer_id,
-                peer_nat_type = ?task.dst_nat_type,
-                ?my_nat_type,
-                "found peer to do hole punching"
-            );
-        }
-
-        peers_to_connect
-    }
-
-    async fn launch_task(
-        &self,
-        data: &Self::Data,
-        item: Self::CollectPeerItem,
-    ) -> JoinHandle<Result<Self::TaskRet, Error>> {
-        let data = data.clone();
-        let disable_sym_hole_punching = data
-            .peer_mgr
-            .get_global_ctx()
-            .get_flags()
-            .disable_sym_hole_punching;
-        let punch_method = item
-            .my_nat_type
-            .get_punch_hole_method(item.dst_nat_type, disable_sym_hole_punching);
-        match punch_method {
-            UdpPunchClientMethod::ConeToCone => tokio::spawn(data.cone_to_cone(item)),
-            UdpPunchClientMethod::SymToCone => tokio::spawn(data.sym_to_cone(item)),
-            UdpPunchClientMethod::EasySymToEasySym => tokio::spawn(data.both_easy_sym(item)),
-            _ => unreachable!(),
-        }
-    }
-
-    async fn all_task_done(&self, data: &Self::Data) {
-        data.sym_to_cone_client.clear_udp_array().await;
-    }
-
-    fn loop_interval_ms(&self) -> u64 {
-        5000
-    }
-}
+type RuntimeUdpHolePunchConnector = CoreUdpHolePunchConnector<
+    RuntimeUdpHolePunchPeerSource,
+    PeerRpcUdpHolePunchSignaling,
+    RuntimeUdpHolePunchTunnelSink,
+    RuntimeUdpHolePunchRuntime,
+>;
 
 pub struct UdpHolePunchConnector {
     server: Arc<UdpHolePunchServer>,
-    client: PeerTaskManager<UdpHolePunchPeerTaskLauncher>,
+    client: RuntimeUdpHolePunchConnector,
     peer_mgr: Arc<PeerManager>,
 }
 
@@ -723,19 +413,24 @@ pub struct UdpHolePunchConnector {
 
 impl UdpHolePunchConnector {
     pub fn new(peer_mgr: Arc<PeerManager>) -> Self {
+        let client = RuntimeUdpHolePunchConnector::new(
+            Arc::new(RuntimeUdpHolePunchPeerSource::new(peer_mgr.clone())),
+            Arc::new(PeerRpcUdpHolePunchSignaling::new(peer_mgr.clone())),
+            Arc::new(RuntimeUdpHolePunchTunnelSink::new(peer_mgr.clone())),
+            Arc::new(RuntimeUdpHolePunchRuntime::new(peer_mgr.get_global_ctx())),
+            Some(peer_mgr.p2p_demand_notify()),
+        );
+        client.set_try_cone_before_sym(!RUN_TESTING.load(Ordering::Relaxed));
+
         Self {
             server: UdpHolePunchServer::new(peer_mgr.clone()),
-            client: PeerTaskManager::new_with_external_signal(
-                UdpHolePunchPeerTaskLauncher {},
-                peer_mgr.clone(),
-                Some(peer_mgr.p2p_demand_notify()),
-            ),
+            client,
             peer_mgr,
         }
     }
 
     pub async fn run_as_client(&mut self) -> Result<(), Error> {
-        self.client.start();
+        self.client.run_as_client();
         Ok(())
     }
 
@@ -777,16 +472,17 @@ pub mod tests {
     use std::sync::Arc;
     use std::time::Duration;
 
+    use easytier_core::hole_punch::udp::{UdpHolePunchPeerSource, collect_udp_punch_tasks};
+
     use crate::common::stun::MockStunInfoCollector;
     use crate::peers::{
         peer_manager::PeerManager,
-        peer_task::PeerTaskLauncher,
         tests::{connect_peer_manager, create_mock_peer_manager, wait_route_appear},
     };
     use crate::proto::common::NatType;
     use crate::tunnel::common::tests::wait_for_condition;
 
-    use super::{RUN_TESTING, UdpHolePunchConnector, UdpHolePunchPeerTaskLauncher};
+    use super::{RUN_TESTING, UdpHolePunchConnector, common::RuntimeUdpHolePunchPeerSource};
 
     pub fn replace_stun_info_collector(peer_mgr: Arc<PeerManager>, udp_nat_type: NatType) {
         let collector = Box::new(MockStunInfoCollector { udp_nat_type });
@@ -807,14 +503,25 @@ pub mod tests {
     }
 
     async fn collect_lazy_punch_peers(peer_mgr: Arc<PeerManager>) -> Vec<u32> {
-        let launcher = UdpHolePunchPeerTaskLauncher {};
-        let data = launcher.new_data(peer_mgr);
-        launcher
-            .collect_peers_need_task(&data)
-            .await
-            .into_iter()
-            .map(|task| task.dst_peer_id)
-            .collect()
+        let source = RuntimeUdpHolePunchPeerSource::new(peer_mgr.clone());
+        let my_nat_type = peer_mgr
+            .get_global_ctx()
+            .get_stun_info_collector()
+            .get_stun_info()
+            .udp_nat_type;
+        let my_nat_type = NatType::try_from(my_nat_type)
+            .unwrap_or(NatType::Unknown)
+            .into();
+        collect_udp_punch_tasks(
+            source.local_peer_id(),
+            my_nat_type,
+            source.p2p_policy_flags(),
+            source.candidates().await,
+            |_| false,
+        )
+        .into_iter()
+        .map(|task| task.dst_peer_id)
+        .collect()
     }
 
     #[rstest::rstest]
@@ -842,8 +549,7 @@ pub mod tests {
                 hole_punching_a
                     .client
                     .data()
-                    .blacklist
-                    .contains(&p_c.my_peer_id())
+                    .is_blacklisted(p_c.my_peer_id())
             },
             Duration::from_secs(10),
         )

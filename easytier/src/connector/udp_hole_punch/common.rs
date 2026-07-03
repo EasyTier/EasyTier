@@ -14,17 +14,18 @@ use tokio::{net::UdpSocket, sync::Mutex, task::JoinSet};
 use tracing::{Level, instrument};
 
 use crate::{
-    common::{error::Error, global_ctx::ArcGlobalCtx, join_joinset_background, netns::NetNS, upnp},
+    common::{
+        PeerId, error::Error, global_ctx::ArcGlobalCtx, join_joinset_background, netns::NetNS, upnp,
+    },
     peers::peer_manager::PeerManager,
+    proto::common::NatType,
     tunnel::{
         Tunnel, TunnelConnCounter, TunnelListener as _,
         udp::{UdpTunnelConnector, UdpTunnelListener},
     },
 };
 
-pub(crate) use easytier_core::hole_punch::udp::{
-    MAX_PUBLIC_UDP_HOLE_PUNCH_LISTENERS, UdpNatType, UdpPunchClientMethod,
-};
+pub(crate) use easytier_core::hole_punch::udp::{MAX_PUBLIC_UDP_HOLE_PUNCH_LISTENERS, UdpNatType};
 
 fn generate_shuffled_port_vec() -> Vec<u16> {
     let mut rng = rand::thread_rng();
@@ -272,6 +273,69 @@ impl core_udp_hole_punch::UdpHolePunchTunnelSink for RuntimeUdpHolePunchTunnelSi
             .add_tunnel_as_server(tunnel, false)
             .await
             .map_err(anyhow::Error::from)
+    }
+}
+
+pub(crate) struct RuntimeUdpHolePunchPeerSource {
+    peer_mgr: Arc<PeerManager>,
+    network_name: String,
+}
+
+impl RuntimeUdpHolePunchPeerSource {
+    pub(crate) fn new(peer_mgr: Arc<PeerManager>) -> Self {
+        let network_name = peer_mgr.get_global_ctx().get_network_name();
+        Self {
+            peer_mgr,
+            network_name,
+        }
+    }
+}
+
+#[async_trait]
+impl core_udp_hole_punch::UdpHolePunchPeerSource for RuntimeUdpHolePunchPeerSource {
+    fn local_peer_id(&self) -> PeerId {
+        self.peer_mgr.my_peer_id()
+    }
+
+    fn network_name(&self) -> &str {
+        &self.network_name
+    }
+
+    fn p2p_policy_flags(&self) -> core_udp_hole_punch::P2pPolicyFlags {
+        let flags = self.peer_mgr.get_global_ctx().get_flags();
+        core_udp_hole_punch::P2pPolicyFlags {
+            disable_udp_hole_punching: flags.disable_udp_hole_punching,
+            disable_sym_hole_punching: flags.disable_sym_hole_punching,
+            lazy_p2p: flags.lazy_p2p,
+            disable_p2p: flags.disable_p2p,
+            need_p2p: flags.need_p2p,
+        }
+    }
+
+    async fn candidates(&self) -> Vec<core_udp_hole_punch::UdpPunchCandidate> {
+        let now = Instant::now();
+        let routes = self.peer_mgr.list_routes().await;
+        routes
+            .iter()
+            .filter_map(|route| {
+                let udp_nat_type = route
+                    .stun_info
+                    .as_ref()
+                    .map(|info| info.udp_nat_type)
+                    .unwrap_or(0);
+                let Ok(udp_nat_type) = NatType::try_from(udp_nat_type) else {
+                    return None;
+                };
+
+                Some(core_udp_hole_punch::UdpPunchCandidate {
+                    peer_id: route.peer_id,
+                    udp_nat_type,
+                    feature_flag: route.feature_flag.clone(),
+                    has_direct_connection: self.peer_mgr.get_peer_map().has_peer(route.peer_id),
+                    has_recent_traffic: self.peer_mgr.has_recent_traffic(route.peer_id, now),
+                })
+            })
+            .collect()
     }
 }
 
