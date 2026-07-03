@@ -103,7 +103,6 @@ message NetworkConfig {
   optional bool enable_udp_broadcast_relay = 66;
   optional uint32 socket_mark = 67;
   repeated NetworkPeerConfig peers = 68;
-  optional bool use_ws_hole_punch = 69;
 }
 
 message NetworkPeerConfig {

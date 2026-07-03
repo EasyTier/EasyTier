@@ -273,9 +273,15 @@ service UdpHolePunchRpc {
       returns (SendPunchPacketBothEasySymResponse);
 }
 
-message TcpHolePunchRequest { common.SocketAddr connector_mapped_addr = 1; }
+message TcpHolePunchRequest {
+  common.SocketAddr connector_mapped_addr = 1;
+  string tunnel_scheme = 2;
+}
 
-message TcpHolePunchResponse { common.SocketAddr listener_mapped_addr = 1; }
+message TcpHolePunchResponse {
+  common.SocketAddr listener_mapped_addr = 1;
+  string tunnel_scheme = 2;
+}
 
 service TcpHolePunchRpc {
   rpc ExchangeMappedAddr(TcpHolePunchRequest) returns (TcpHolePunchResponse);

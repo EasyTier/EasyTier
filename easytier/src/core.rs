@@ -468,15 +468,6 @@ struct NetworkOptions {
 
     #[arg(
         long,
-        env = "ET_USE_WS_HOLE_PUNCH",
-        help = "Upgrade TCP hole punch connection to WebSocket tunnel",
-        num_args = 0..=1,
-        default_missing_value = "true"
-    )]
-    use_ws_hole_punch: Option<bool>,
-
-    #[arg(
-        long,
         env = "ET_DISABLE_SYM_HOLE_PUNCHING",
         help = t!("core_clap.disable_sym_hole_punching").to_string(),
         num_args = 0..=1,
@@ -1131,7 +1122,6 @@ impl NetworkOptions {
         f.disable_tcp_hole_punching = self
             .disable_tcp_hole_punching
             .unwrap_or(f.disable_tcp_hole_punching);
-        f.use_ws_hole_punch = self.use_ws_hole_punch.unwrap_or(f.use_ws_hole_punch);
         f.disable_udp_hole_punching = self
             .disable_udp_hole_punching
             .unwrap_or(f.disable_udp_hole_punching);

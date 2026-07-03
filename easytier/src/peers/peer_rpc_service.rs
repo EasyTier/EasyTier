@@ -131,6 +131,7 @@ impl DirectConnectorRpc for DirectConnectorManagerRpcServer {
             .config
             .get_mapped_listeners()
             .into_iter()
+            .chain(self.global_ctx.get_dynamic_mapped_listeners())
             .chain(self.global_ctx.get_running_listeners())
             .map(Into::into)
             .collect();

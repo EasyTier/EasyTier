@@ -991,10 +991,6 @@ impl NetworkConfig {
             flags.disable_tcp_hole_punching = disable_tcp_hole_punching;
         }
 
-        if let Some(use_ws_hole_punch) = self.use_ws_hole_punch {
-            flags.use_ws_hole_punch = use_ws_hole_punch;
-        }
-
         if let Some(disable_udp_hole_punching) = self.disable_udp_hole_punching {
             flags.disable_udp_hole_punching = disable_udp_hole_punching;
         }
@@ -1192,7 +1188,6 @@ impl NetworkConfig {
         result.proxy_forward_by_system = Some(flags.proxy_forward_by_system);
         result.disable_encryption = Some(!flags.enable_encryption);
         result.disable_tcp_hole_punching = Some(flags.disable_tcp_hole_punching);
-        result.use_ws_hole_punch = Some(flags.use_ws_hole_punch);
         result.disable_udp_hole_punching = Some(flags.disable_udp_hole_punching);
         result.disable_upnp = Some(flags.disable_upnp);
         result.disable_relay_data = Some(flags.disable_relay_data);

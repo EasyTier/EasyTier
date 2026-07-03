@@ -85,8 +85,6 @@ message FlagsInConfig {
   // non-Linux platforms.
   optional uint32 socket_mark = 43;
 
-  // upgrade tcp hole punch connection to websocket tunnel
-  bool use_ws_hole_punch = 44;
 }
 
 message RpcDescriptor {

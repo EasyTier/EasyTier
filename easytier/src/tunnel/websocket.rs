@@ -163,6 +163,59 @@ impl WsTunnelListener {
             Some(info),
         )))
     }
+
+    async fn accept_ws_or_pre_punch(
+        &self,
+        stream: TcpStream,
+    ) -> Result<Option<Box<dyn Tunnel>>, TunnelError> {
+        let mut peek = [0u8; 4];
+        let n = match timeout(Duration::from_secs(1), stream.peek(&mut peek)).await {
+            Ok(Ok(0)) => return Ok(None),
+            Ok(Ok(n)) => n,
+            Ok(Err(error)) => return Err(error.into()),
+            Err(_) => return Ok(None),
+        };
+
+        let peek = &peek[..n];
+        if is_wss(&self.addr)? {
+            if is_tls_client_hello(peek) {
+                return self.try_accept(stream).await.map(Some);
+            }
+
+            return Ok(None);
+        }
+
+        if b"GET ".starts_with(peek) {
+            return self.try_accept(stream).await.map(Some);
+        }
+
+        Ok(None)
+    }
+}
+
+fn is_tls_client_hello(peek: &[u8]) -> bool {
+    peek.first()
+        .is_some_and(|content_type| *content_type == 0x16)
+        && peek
+            .get(1)
+            .is_none_or(|version_major| *version_major == 0x03)
+}
+
+fn is_tcp_pre_punch_error(error: &TunnelError) -> bool {
+    match error {
+        TunnelError::IOError(error) => matches!(
+            error.kind(),
+            std::io::ErrorKind::ConnectionAborted
+                | std::io::ErrorKind::ConnectionReset
+                | std::io::ErrorKind::UnexpectedEof
+                | std::io::ErrorKind::TimedOut
+                | std::io::ErrorKind::NotConnected
+        ),
+        TunnelError::Timeout(_) => true,
+        #[cfg(feature = "websocket")]
+        TunnelError::WebSocketError(_) => true,
+        _ => false,
+    }
 }
 
 #[async_trait::async_trait]
@@ -175,6 +228,8 @@ impl TunnelListener for WsTunnelListener {
             .addr(addr)
             .only_v6(true)
             .maybe_socket_mark(self.socket_mark)
+            .reuse_address(true)
+            .reuse_port(true)
             .call()?;
 
         self.addr
@@ -191,11 +246,27 @@ impl TunnelListener for WsTunnelListener {
             // only fail on tcp accept error
             let (stream, _) = listener.accept().await?;
             stream.set_nodelay(true).unwrap();
-            match timeout(Duration::from_secs(3), self.try_accept(stream)).await {
-                Ok(Ok(tunnel)) => return Ok(tunnel),
-                e => {
-                    tracing::error!(?e, ?self, "Failed to accept ws/wss tunnel");
-                    continue;
+            match timeout(Duration::from_secs(3), self.accept_ws_or_pre_punch(stream)).await {
+                Ok(Ok(Some(tunnel))) => return Ok(tunnel),
+                Ok(Ok(None)) => {
+                    tracing::trace!(?self, "ignored tcp pre-punch connection on ws/wss listener");
+                }
+                Ok(Err(error)) if is_tcp_pre_punch_error(&error) => {
+                    tracing::trace!(
+                        ?error,
+                        ?self,
+                        "ignored tcp pre-punch connection on ws/wss listener"
+                    );
+                }
+                Ok(Err(error)) => {
+                    tracing::warn!(?error, ?self, "Failed to accept ws/wss tunnel");
+                }
+                Err(error) => {
+                    tracing::trace!(
+                        ?error,
+                        ?self,
+                        "ignored timed out tcp pre-punch connection on ws/wss listener"
+                    );
                 }
             }
         }
@@ -212,6 +283,7 @@ pub struct WsTunnelConnector {
     resolved_addr: Option<SocketAddr>,
 
     bind_addrs: Vec<SocketAddr>,
+    reuse_bind_port: bool,
     socket_mark: Option<u32>,
 }
 
@@ -223,8 +295,13 @@ impl WsTunnelConnector {
             resolved_addr: None,
 
             bind_addrs: vec![],
+            reuse_bind_port: false,
             socket_mark: None,
         }
+    }
+
+    pub fn set_reuse_bind_port(&mut self, reuse: bool) {
+        self.reuse_bind_port = reuse;
     }
 
     async fn connect_with(
@@ -303,12 +380,22 @@ impl WsTunnelConnector {
 
         for bind_addr in self.bind_addrs.iter() {
             tracing::info!(?bind_addr, ?addr, "bind addr");
-            match bind()
-                .addr(*bind_addr)
-                .only_v6(true)
-                .maybe_socket_mark(self.socket_mark)
-                .call()
-            {
+            let socket = if self.reuse_bind_port {
+                bind()
+                    .addr(*bind_addr)
+                    .only_v6(true)
+                    .maybe_socket_mark(self.socket_mark)
+                    .reuse_address(true)
+                    .reuse_port(true)
+                    .call()
+            } else {
+                bind()
+                    .addr(*bind_addr)
+                    .only_v6(true)
+                    .maybe_socket_mark(self.socket_mark)
+                    .call()
+            };
+            match socket {
                 Ok(socket) => futures.push(Self::connect_with(self.addr.clone(), addr, socket)),
                 Err(error) => {
                     tracing::error!(?bind_addr, ?addr, ?error, "bind addr fail");
@@ -356,49 +443,6 @@ impl TunnelConnector for WsTunnelConnector {
     }
 }
 
-pub async fn upgrade_tcp_to_ws_tunnel(
-    stream: TcpStream,
-    is_ws_server: bool,
-    remote_addr: SocketAddr,
-) -> Result<Box<dyn Tunnel>, TunnelError> {
-    let local_addr = stream.local_addr()?;
-    let info = TunnelInfo {
-        tunnel_type: "ws".to_owned(),
-        local_addr: Some(super::build_url_from_socket_addr(&local_addr.to_string(), "ws").into()),
-        remote_addr: Some(super::build_url_from_socket_addr(&remote_addr.to_string(), "ws").into()),
-        resolved_remote_addr: Some(
-            super::build_url_from_socket_addr(&remote_addr.to_string(), "ws").into(),
-        ),
-    };
-
-    if is_ws_server {
-        let (_, ws_stream) = ServerBuilder::new()
-            .limits(Limits::unlimited())
-            .max_headers(128)
-            .accept(stream)
-            .await?;
-        let (write, read) = ws_stream.split();
-        Ok(Box::new(TunnelWrapper::new(
-            read.filter_map(map_from_ws_message),
-            write.with(sink_from_zc_packet),
-            Some(info),
-        )))
-    } else {
-        let ws_uri = format!("ws://{}", remote_addr);
-        let c = ClientBuilder::from_uri(
-            http::Uri::try_from(ws_uri).map_err(|e| TunnelError::InvalidProtocol(e.to_string()))?,
-        )
-        .max_headers(128);
-        let (client, _) = c.connect_on(MaybeTlsStream::Plain(stream)).await?;
-        let (write, read) = client.split();
-        Ok(Box::new(TunnelWrapper::new(
-            read.filter_map(map_from_ws_message),
-            write.with(sink_from_zc_packet),
-            Some(info),
-        )))
-    }
-}
-
 #[cfg(test)]
 pub mod tests {
     use super::*;
@@ -424,6 +468,37 @@ pub mod tests {
             WsTunnelConnector::new(format!("{}://127.0.0.1:25557", proto).parse().unwrap());
         connector.set_bind_addrs(vec!["127.0.0.1:0".parse().unwrap()]);
         _tunnel_pingpong(listener, connector).await
+    }
+
+    #[tokio::test]
+    async fn ws_connector_reuses_listener_port_for_bound_connect() {
+        let mut port_holder = WsTunnelListener::new("ws://127.0.0.1:0".parse().unwrap());
+        port_holder.listen().await.unwrap();
+        let local_port = port_holder.local_url().port().unwrap();
+
+        let mut remote_listener = WsTunnelListener::new("ws://127.0.0.1:0".parse().unwrap());
+        remote_listener.listen().await.unwrap();
+        let remote_url = remote_listener.local_url();
+        let server_task = tokio::spawn(async move {
+            let tunnel = remote_listener.accept().await.unwrap();
+            tunnel
+                .info()
+                .unwrap()
+                .remote_addr
+                .unwrap()
+                .url
+                .parse::<url::Url>()
+                .unwrap()
+                .port()
+                .unwrap()
+        });
+
+        let mut connector = WsTunnelConnector::new(remote_url);
+        connector.set_bind_addrs(vec![format!("127.0.0.1:{local_port}").parse().unwrap()]);
+        connector.set_reuse_bind_port(true);
+        let _client_tunnel = connector.connect().await.unwrap();
+
+        assert_eq!(server_task.await.unwrap(), local_port);
     }
 
     // TODO: tokio-websockets cannot correctly handle close, benchmark case is disabled

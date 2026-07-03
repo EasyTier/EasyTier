@@ -218,6 +218,7 @@ pub struct GlobalCtx {
     stun_info_collection: Mutex<Arc<dyn StunInfoCollectorTrait>>,
 
     running_listeners: Mutex<Vec<url::Url>>,
+    dynamic_mapped_listeners: Mutex<Vec<url::Url>>,
     advertised_ipv6_public_addr_prefix: Mutex<Option<cidr::Ipv6Cidr>>,
     tun_device_name: Mutex<Option<String>>,
 
@@ -336,6 +337,7 @@ impl GlobalCtx {
             stun_info_collection: Mutex::new(stun_info_collector),
 
             running_listeners: Mutex::new(Vec::new()),
+            dynamic_mapped_listeners: Mutex::new(Vec::new()),
             advertised_ipv6_public_addr_prefix: Mutex::new(None),
             tun_device_name: Mutex::new(None),
 
@@ -542,6 +544,24 @@ impl GlobalCtx {
         if !l.contains(&url) {
             l.push(url);
         }
+    }
+
+    pub fn get_dynamic_mapped_listeners(&self) -> Vec<url::Url> {
+        self.dynamic_mapped_listeners.lock().unwrap().clone()
+    }
+
+    pub fn add_dynamic_mapped_listener(&self, url: url::Url) {
+        let mut l = self.dynamic_mapped_listeners.lock().unwrap();
+        if !l.contains(&url) {
+            l.push(url);
+        }
+    }
+
+    pub fn remove_dynamic_mapped_listener(&self, url: &url::Url) {
+        self.dynamic_mapped_listeners
+            .lock()
+            .unwrap()
+            .retain(|x| x != url);
     }
 
     pub fn get_vpn_portal_cidr(&self) -> Option<cidr::Ipv4Cidr> {

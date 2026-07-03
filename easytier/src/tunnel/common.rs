@@ -418,6 +418,8 @@ fn setup_socket2_ext(
     #[allow(unused_variables)] bind_dev: Option<String>,
     only_v6: bool,
     socket_mark: Option<u32>,
+    reuse_address: bool,
+    #[allow(unused_variables)] reuse_port: bool,
 ) -> Result<(), TunnelError> {
     #[cfg(target_os = "windows")]
     {
@@ -430,7 +432,12 @@ fn setup_socket2_ext(
     }
 
     socket2_socket.set_nonblocking(true)?;
-    socket2_socket.set_reuse_address(!cfg!(target_os = "windows"))?;
+    socket2_socket.set_reuse_address(reuse_address)?;
+
+    #[cfg(all(unix, not(target_os = "solaris"), not(target_os = "illumos")))]
+    if reuse_port {
+        socket2_socket.set_reuse_port(true)?;
+    }
 
     // SO_MARK must be set before bind() so the kernel applies the mark to
     // any source-address selection bind() triggers on unspecified binds.
@@ -444,9 +451,6 @@ fn setup_socket2_ext(
             tracing::warn!(?e, "bind failed, do not return error for ipv6");
         }
     }
-
-    // #[cfg(all(unix, not(target_os = "solaris"), not(target_os = "illumos")))]
-    // socket2_socket.set_reuse_port(true)?;
 
     if bind_addr.ip().is_unspecified() {
         return Ok(());
@@ -562,6 +566,12 @@ pub fn bind<B: Bindable>(
     /// Linux SO_MARK (fwmark) to apply to the socket. `None` leaves SO_MARK
     /// untouched; `Some(mark)` applies that exact value, including `Some(0)`.
     socket_mark: Option<u32>,
+    /// Override SO_REUSEADDR. By default this keeps the historical behavior:
+    /// enabled on non-Windows and disabled on Windows.
+    reuse_address: Option<bool>,
+    /// Enable SO_REUSEPORT where the platform supports it.
+    #[builder(default)]
+    reuse_port: bool,
 ) -> Result<B, TunnelError> {
     let _g = net_ns.map(|n| n.guard());
     let dev = match dev {
@@ -570,7 +580,15 @@ pub fn bind<B: Bindable>(
         BindDev::Custom(s) => Some(s),
     };
     let socket = socket2::Socket::new(socket2::Domain::for_address(addr), B::TYPE, B::PROTOCOL)?;
-    setup_socket2_ext(&socket, &addr, dev, only_v6, socket_mark)?;
+    setup_socket2_ext(
+        &socket,
+        &addr,
+        dev,
+        only_v6,
+        socket_mark,
+        reuse_address.unwrap_or(!cfg!(target_os = "windows")),
+        reuse_port,
+    )?;
     B::finalize(socket)
 }
 

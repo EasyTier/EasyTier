@@ -124,7 +124,6 @@ export function DEFAULT_NETWORK_CONFIG(): NetworkConfig {
     proxy_forward_by_system: false,
     disable_encryption: false,
     disable_tcp_hole_punching: false,
-    use_ws_hole_punch: false,
     disable_udp_hole_punching: false,
     disable_upnp: false,
     enable_udp_broadcast_relay: false,

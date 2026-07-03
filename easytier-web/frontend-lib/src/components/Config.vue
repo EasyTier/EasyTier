@@ -98,7 +98,6 @@ const bool_flags: BoolFlag[] = [
   { field: 'proxy_forward_by_system', help: 'proxy_forward_by_system_help' },
   { field: 'disable_encryption', help: 'disable_encryption_help' },
   { field: 'disable_tcp_hole_punching', help: 'disable_tcp_hole_punching_help' },
-  { field: 'use_ws_hole_punch', help: 'use_ws_hole_punch_help' },
   { field: 'disable_udp_hole_punching', help: 'disable_udp_hole_punching_help' },
   { field: 'enable_udp_broadcast_relay', help: 'enable_udp_broadcast_relay_help' },
   { field: 'disable_upnp', help: 'disable_upnp_help' },

@@ -106,7 +106,7 @@ impl TunnelListener for TcpTunnelListener {
     }
 }
 
-fn get_tunnel_with_tcp_stream(
+pub(crate) fn get_tunnel_with_tcp_stream(
     stream: TcpStream,
     remote_url: url::Url,
 ) -> Result<Box<dyn Tunnel>, super::TunnelError> {
