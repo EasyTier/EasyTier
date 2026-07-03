@@ -19,20 +19,20 @@ use tokio_util::task::AbortOnDropHandle;
 use crate::gateway::kcp_proxy::NatDstKcpConnector;
 use crate::{
     common::{config::PortForwardConfig, global_ctx::GlobalCtxEvent, join_joinset_background},
-    gateway::{
-        fast_socks5::{
-            server::{
-                AcceptAuthentication, AsyncTcpConnector, Config, SimpleUserPassword, Socks5Socket,
-            },
-            util::stream::tcp_connect_with_timeout,
+    gateway::fast_socks5::{
+        server::{
+            AcceptAuthentication, AsyncTcpConnector, Config, SimpleUserPassword, Socks5Socket,
         },
-        ip_reassembler::IpReassembler,
+        util::stream::tcp_connect_with_timeout,
     },
     tunnel::packet_def::{PacketType, ZCPacket},
 };
 use anyhow::Context;
 use dashmap::{DashMap, mapref::entry::Entry};
-use easytier_core::proxy::tokio_smoltcp::{self, BufferSize, Net, NetConfig, channel_device};
+use easytier_core::proxy::{
+    ip_reassembler::{IpReassembler, SmolIpv4Packet},
+    tokio_smoltcp::{self, BufferSize, Net, NetConfig, channel_device},
+};
 use pnet::packet::{
     Packet, ip::IpNextHeaderProtocols, ipv4::Ipv4Packet, tcp::TcpPacket, udp::UdpPacket,
 };
@@ -755,7 +755,9 @@ impl PeerPacketFilter for Socks5Server {
             }
 
             IpNextHeaderProtocols::Udp => {
-                if IpReassembler::is_packet_fragmented(&ipv4) {
+                let smol_ipv4 = SmolIpv4Packet::new_unchecked(ipv4.packet());
+                let is_fragmented = IpReassembler::is_packet_fragmented(&smol_ipv4);
+                if is_fragmented {
                     let ipv4_src: IpAddr = ipv4.get_source().into();
                     // only send to smoltcp if the ipv4 src is in the entries
                     let is_in_entries = self.entries.iter().any(|x| x.key().dst.ip() == ipv4_src);

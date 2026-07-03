@@ -8,7 +8,6 @@ use easytier_core::proxy::cidr_table::{
 use crate::common::global_ctx::ArcGlobalCtx;
 
 pub mod icmp_proxy;
-pub mod ip_reassembler;
 pub mod tcp_proxy;
 pub mod udp_proxy;
 

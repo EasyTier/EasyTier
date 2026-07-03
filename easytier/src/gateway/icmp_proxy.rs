@@ -22,17 +22,17 @@ use tokio::{
 
 use tracing::Instrument;
 
+use easytier_core::proxy::ip_reassembler::{
+    ComposeIpv4PacketArgs, IpProtocol, IpReassembler, SmolIpv4Packet, compose_ipv4_packet,
+};
+
 use crate::{
     common::{PeerId, error::Error, global_ctx::ArcGlobalCtx},
-    gateway::ip_reassembler::ComposeIpv4PacketArgs,
     peers::{PeerPacketFilter, peer_manager::PeerManager},
     tunnel::packet_def::{PacketType, ZCPacket},
 };
 
-use super::{
-    CidrSet,
-    ip_reassembler::{IpReassembler, compose_ipv4_packet},
-};
+use super::CidrSet;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 struct IcmpNatKey {
@@ -164,7 +164,7 @@ fn socket_recv_loop(
                 buf: &mut buf[..],
                 src_v4: &v.mapped_dst_ip,
                 dst_v4: &dest_ip,
-                next_protocol: IpNextHeaderProtocols::Icmp,
+                next_protocol: IpProtocol::Icmp,
                 payload_len,
                 payload_mtu: 1200,
                 ip_id: id,
@@ -353,7 +353,7 @@ impl IcmpProxy {
                 buf: &mut buf[..],
                 src_v4: src_ip,
                 dst_v4: dst_ip,
-                next_protocol: IpNextHeaderProtocols::Icmp,
+                next_protocol: IpProtocol::Icmp,
                 payload_len: len,
                 payload_mtu: 1200,
                 ip_id: rand::random(),
@@ -414,10 +414,10 @@ impl IcmpProxy {
         }
 
         let resembled_buf: Option<Vec<u8>>;
-        let icmp_packet = if IpReassembler::is_packet_fragmented(&ipv4) {
-            resembled_buf =
-                self.ip_resemmbler
-                    .add_fragment(ipv4.get_source(), ipv4.get_destination(), &ipv4);
+        let smol_ipv4 = SmolIpv4Packet::new_unchecked(ipv4.packet());
+        let icmp_packet = if IpReassembler::is_packet_fragmented(&smol_ipv4) {
+            let smol_ipv4 = SmolIpv4Packet::new_checked(ipv4.packet()).ok()?;
+            resembled_buf = self.ip_resemmbler.add_fragment(&smol_ipv4);
             resembled_buf.as_ref()?;
             icmp::echo_request::EchoRequestPacket::new(resembled_buf.as_ref().unwrap())?
         } else {
