@@ -23,8 +23,7 @@ use crate::{
 };
 
 pub(crate) use easytier_core::hole_punch::udp::{
-    HOLE_PUNCH_PACKET_BODY_LEN, MAX_PUBLIC_UDP_HOLE_PUNCH_LISTENERS, UdpNatType,
-    UdpPunchClientMethod,
+    MAX_PUBLIC_UDP_HOLE_PUNCH_LISTENERS, UdpNatType, UdpPunchClientMethod,
 };
 
 fn generate_shuffled_port_vec() -> Vec<u16> {

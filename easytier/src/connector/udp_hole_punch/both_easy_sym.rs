@@ -1,19 +1,14 @@
-use std::{
-    net::{SocketAddr, SocketAddrV4},
-    sync::Arc,
-    time::Duration,
+use std::sync::Arc;
+
+use easytier_core::hole_punch::udp::{
+    SendPunchPacketBothEasySym, UdpBothEasySymPunchClient, UdpBothEasySymPunchServer,
+    UdpHolePunchClientError, UdpHolePunchServerCommon,
 };
 
-use anyhow::Context;
-use easytier_core::hole_punch::udp::{UdpBothEasySymPunchClient, UdpHolePunchClientError};
-use quanta::Instant;
-use tokio::sync::Mutex;
-use tokio_util::task::AbortOnDropHandle;
-
 use crate::{
-    common::{PeerId, stun::StunInfoCollectorTrait},
+    common::PeerId,
     connector::udp_hole_punch::common::{
-        HOLE_PUNCH_PACKET_BODY_LEN, RuntimeUdpHolePunchRuntime, UdpHolePunchListener,
+        RuntimeUdpHolePunchRuntime, RuntimeUdpHolePunchTunnelSink,
     },
     connector::udp_hole_punch::{handle_signal_result, signaling::PeerRpcUdpHolePunchSignaling},
     peers::peer_manager::PeerManager,
@@ -21,24 +16,24 @@ use crate::{
         peer_rpc::{SendPunchPacketBothEasySymRequest, SendPunchPacketBothEasySymResponse},
         rpc_types,
     },
-    tunnel::{Tunnel, udp::new_hole_punch_packet},
+    tunnel::Tunnel,
 };
 
-use super::common::{PunchHoleServerCommon, UdpNatType, UdpSocketArray};
+use super::common::UdpNatType;
 
-const UDP_ARRAY_SIZE_FOR_BOTH_EASY_SYM: usize = 25;
-const REMOTE_WAIT_TIME_MS: u64 = 5000;
+type CoreBothEasySymServer =
+    UdpBothEasySymPunchServer<RuntimeUdpHolePunchRuntime, RuntimeUdpHolePunchTunnelSink>;
+type CoreServerCommon =
+    UdpHolePunchServerCommon<RuntimeUdpHolePunchRuntime, RuntimeUdpHolePunchTunnelSink>;
 
 pub(crate) struct PunchBothEasySymHoleServer {
-    common: Arc<PunchHoleServerCommon>,
-    task: Mutex<Option<AbortOnDropHandle<()>>>,
+    core_server: CoreBothEasySymServer,
 }
 
 impl PunchBothEasySymHoleServer {
-    pub(crate) fn new(common: Arc<PunchHoleServerCommon>) -> Self {
+    pub(crate) fn new(common: Arc<CoreServerCommon>) -> Self {
         Self {
-            common,
-            task: Mutex::new(None),
+            core_server: UdpBothEasySymPunchServer::new(common),
         }
     }
 
@@ -48,123 +43,25 @@ impl PunchBothEasySymHoleServer {
         &self,
         request: SendPunchPacketBothEasySymRequest,
     ) -> Result<SendPunchPacketBothEasySymResponse, rpc_types::error::Error> {
-        tracing::info!("send_punch_packet_both_easy_sym start");
-        let busy_resp = Ok(SendPunchPacketBothEasySymResponse {
-            is_busy: true,
-            ..Default::default()
-        });
-        let Ok(mut locked_task) = self.task.try_lock() else {
-            return busy_resp;
-        };
-        if locked_task.is_some() && !locked_task.as_ref().unwrap().is_finished() {
-            return busy_resp;
-        }
-
-        let global_ctx = self.common.get_global_ctx();
-        let cur_mapped_addr = global_ctx
-            .get_stun_info_collector()
-            .get_udp_port_mapping(0)
-            .await
-            .with_context(|| "failed to get udp port mapping")?;
-
-        tracing::info!("send_punch_packet_hard_sym start");
-        let socket_count = request.udp_socket_count as usize;
         let public_ips = request
             .public_ip
             .ok_or(anyhow::anyhow!("public_ip is required"))?;
-        let transaction_id = request.transaction_id;
 
-        let udp_array =
-            UdpSocketArray::new(socket_count, self.common.get_global_ctx().net_ns.clone());
-        udp_array.start().await?;
-        udp_array.add_intreast_tid(transaction_id);
-        let peer_mgr = self.common.get_peer_mgr();
+        let response = self
+            .core_server
+            .send_punch_packet_both_easy_sym(SendPunchPacketBothEasySym {
+                transaction_id: request.transaction_id,
+                public_ip: public_ips.into(),
+                dst_port_num: request.dst_port_num,
+                udp_socket_count: request.udp_socket_count,
+                wait_time_ms: request.wait_time_ms,
+            })
+            .await?;
 
-        let punch_packet =
-            new_hole_punch_packet(transaction_id, HOLE_PUNCH_PACKET_BODY_LEN).into_bytes();
-        let mut punched = vec![];
-        let common = self.common.clone();
-
-        let task = tokio::spawn(async move {
-            let mut listeners = Vec::new();
-            let start_time = Instant::now();
-            let wait_time_ms = request.wait_time_ms.min(8000);
-            while start_time.elapsed() < Duration::from_millis(wait_time_ms as u64) {
-                if let Err(e) = udp_array
-                    .send_with_all(
-                        &punch_packet,
-                        SocketAddr::V4(SocketAddrV4::new(
-                            public_ips.into(),
-                            request.dst_port_num as u16,
-                        )),
-                    )
-                    .await
-                {
-                    tracing::error!(?e, "failed to send hole punch packet");
-                    break;
-                }
-
-                tokio::time::sleep(Duration::from_millis(100)).await;
-
-                if let Some(s) = udp_array.try_fetch_punched_socket(transaction_id) {
-                    tracing::info!(?s, ?transaction_id, "got punched socket in both easy sym");
-                    assert!(Arc::strong_count(&s.socket) == 1);
-                    let Some(port) = s.socket.local_addr().ok().map(|addr| addr.port()) else {
-                        tracing::warn!("failed to get local addr from punched socket");
-                        continue;
-                    };
-                    let remote_addr = s.remote_addr;
-                    drop(s);
-
-                    let listener =
-                        match UdpHolePunchListener::new_ext(peer_mgr.clone(), false, Some(port))
-                            .await
-                        {
-                            Ok(l) => l,
-                            Err(e) => {
-                                tracing::warn!(?e, "failed to create listener");
-                                continue;
-                            }
-                        };
-                    punched.push((listener.get_socket().await, remote_addr));
-                    listeners.push(listener);
-                }
-
-                // if any listener is punched, we can break the loop
-                for l in &listeners {
-                    if l.get_conn_count().await > 0 {
-                        tracing::info!(?l, "got punched listener");
-                        break;
-                    }
-                }
-
-                if !punched.is_empty() {
-                    tracing::debug!(?punched, "got punched socket and keep sending punch packet");
-                }
-
-                for p in &punched {
-                    let (socket, remote_addr) = p;
-                    let send_remote_ret = socket.send_to(&punch_packet, remote_addr).await;
-                    tracing::debug!(
-                        ?send_remote_ret,
-                        ?socket,
-                        "send hole punch packet to punched remote"
-                    );
-                }
-            }
-
-            for l in listeners {
-                if l.get_conn_count().await > 0 {
-                    common.add_listener(l).await;
-                }
-            }
-        });
-
-        *locked_task = Some(AbortOnDropHandle::new(task));
-        return Ok(SendPunchPacketBothEasySymResponse {
-            is_busy: false,
-            base_mapped_addr: Some(cur_mapped_addr.into()),
-        });
+        Ok(SendPunchPacketBothEasySymResponse {
+            is_busy: response.is_busy,
+            base_mapped_addr: response.base_mapped_addr.map(Into::into),
+        })
     }
 }
 

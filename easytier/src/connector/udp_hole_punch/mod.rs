@@ -5,7 +5,10 @@ use std::{
 
 use anyhow::Error;
 use both_easy_sym::{PunchBothEasySymHoleClient, PunchBothEasySymHoleServer};
-use common::{PunchHoleServerCommon, UdpNatType, UdpPunchClientMethod};
+use common::{
+    PunchHoleServerCommon, RuntimeUdpHolePunchRuntime, RuntimeUdpHolePunchTunnelSink, UdpNatType,
+    UdpPunchClientMethod,
+};
 use cone::{PunchConeHoleClient, PunchConeHoleServer};
 use dashmap::DashMap;
 use easytier_core::hole_punch::udp::{
@@ -17,8 +20,8 @@ use easytier_core::hole_punch::udp::{
     SendPunchPacketEasySym as CoreSendPunchPacketEasySym,
     SendPunchPacketHardSym as CoreSendPunchPacketHardSym,
     SendPunchPacketHardSymResponse as CoreSendPunchPacketHardSymResponse, UdpHolePunchInbound,
-    UdpHolePunchSignalError, UdpPunchCandidate, UdpPunchTaskInfo, collect_udp_punch_tasks,
-    should_blacklist_signal_error,
+    UdpHolePunchServerCommon as CoreUdpHolePunchServerCommon, UdpHolePunchSignalError,
+    UdpPunchCandidate, UdpPunchTaskInfo, collect_udp_punch_tasks, should_blacklist_signal_error,
 };
 use once_cell::sync::Lazy;
 use quanta::Instant;
@@ -74,10 +77,14 @@ struct UdpHolePunchServer {
 
 impl UdpHolePunchServer {
     pub fn new(peer_mgr: Arc<PeerManager>) -> Arc<Self> {
-        let common = Arc::new(PunchHoleServerCommon::new(peer_mgr));
+        let common = Arc::new(PunchHoleServerCommon::new(peer_mgr.clone()));
         let cone_server = PunchConeHoleServer::new(common.clone());
         let sym_to_cone_server = PunchSymToConeHoleServer::new(common.clone());
-        let both_easy_sym_server = PunchBothEasySymHoleServer::new(common.clone());
+        let core_common = Arc::new(CoreUdpHolePunchServerCommon::new(
+            Arc::new(RuntimeUdpHolePunchRuntime::new(peer_mgr.get_global_ctx())),
+            Arc::new(RuntimeUdpHolePunchTunnelSink::new(peer_mgr)),
+        ));
+        let both_easy_sym_server = PunchBothEasySymHoleServer::new(core_common);
 
         Arc::new(Self {
             common,
