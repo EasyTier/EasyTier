@@ -30,7 +30,10 @@ use super::{
     encrypt::Encryptor,
     error::Error,
     foreign_network_client::ForeignNetworkClient,
-    foreign_network_manager::ForeignNetworkRouteInfoProvider,
+    foreign_network_manager::{
+        ForeignNetworkRouteInfoProvider, GlobalForeignNetworkAccessor,
+        peer_map_foreign_network_accessor,
+    },
     peer_conn::{PeerConn, PeerConnId},
     peer_map::PeerMap,
     peer_ospf_route::PeerRoute,
@@ -44,7 +47,10 @@ use super::{
         ArcRoute, ForeignNetworkRouteInfoMap, MockRoute, NextHopPolicy, Route, RouteInterface,
         RouteInterfaceBox,
     },
-    traffic_metrics::{TrafficKind, TrafficMetricRecorder, traffic_kind},
+    traffic_metrics::{
+        InstanceLabelKind, LogicalTrafficMetrics, TrafficKind, TrafficMetricRecorder,
+        route_peer_info_instance_id, traffic_kind,
+    },
     util::shrink_dashmap,
 };
 use crate::proto::peer_rpc::{
@@ -378,6 +384,11 @@ pub struct PeerManagerTrafficCounters {
     pub compress_tx_bytes_after: CounterHandle,
 }
 
+pub struct PeerManagerCoreBuildResult<F> {
+    pub core: PeerManagerCore,
+    pub foreign_network_manager: Arc<F>,
+}
+
 pub struct PeerManagerCore {
     my_peer_id: PeerId,
     tasks: Mutex<JoinSet<()>>,
@@ -412,6 +423,239 @@ pub struct PeerManagerCore {
 }
 
 impl PeerManagerCore {
+    /// Builds the default peer control-plane graph while letting runtime provide
+    /// the foreign-network adapter that owns platform-specific context.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_with_default_components<F, BuildForeignNetworkManager>(
+        route_algo: RouteAlgoType,
+        my_peer_id: PeerId,
+        context: ArcPeerContext,
+        public_ipv6_runtime: Arc<dyn PublicIpv6Runtime>,
+        stats_manager: Arc<StatsManager>,
+        acl_filter: Arc<AclFilter>,
+        nic_channel: PacketRecvChan,
+        encryptor: Arc<dyn Encryptor + 'static>,
+        is_secure_mode_enabled: bool,
+        data_compress_algo: CompressorAlgo,
+        exit_nodes: Vec<IpAddr>,
+        build_foreign_network_manager: BuildForeignNetworkManager,
+    ) -> PeerManagerCoreBuildResult<F>
+    where
+        F: ForeignNetworkConnectionAdmission
+            + ForeignNetworkPacketHandler
+            + ForeignNetworkRouteInfoProvider
+            + ForeignPeerConnectionCloser
+            + Send
+            + Sync
+            + 'static,
+        BuildForeignNetworkManager: FnOnce(
+            PeerId,
+            Arc<PeerSessionStore>,
+            PacketRecvChan,
+            Box<dyn GlobalForeignNetworkAccessor>,
+        ) -> Arc<F>,
+    {
+        let (packet_send, packet_recv) = super::create_packet_recv_chan();
+        let peers = Arc::new(PeerMap::new(
+            packet_send.clone(),
+            context.clone(),
+            my_peer_id,
+        ));
+        let peer_session_store = Arc::new(PeerSessionStore::new());
+
+        let rpc_tspt = RpcTransport::new(
+            my_peer_id,
+            Arc::downgrade(&peers),
+            encryptor.clone(),
+            is_secure_mode_enabled,
+        );
+        let peer_rpc_mgr = Arc::new(super::peer_rpc::PeerRpcManager::new_with_stats_manager(
+            rpc_tspt.clone(),
+            stats_manager.clone(),
+        ));
+
+        let route_algo_inst = RouteAlgoInst::new(
+            route_algo,
+            my_peer_id,
+            context.clone(),
+            public_ipv6_runtime,
+            peer_rpc_mgr.clone(),
+        );
+
+        let foreign_network_manager = build_foreign_network_manager(
+            my_peer_id,
+            peer_session_store.clone(),
+            packet_send.clone(),
+            peer_map_foreign_network_accessor(Arc::downgrade(&peers)),
+        );
+        let foreign_network_client = Arc::new(ForeignNetworkClient::new(
+            context.clone(),
+            packet_send,
+            peer_rpc_mgr.clone(),
+            my_peer_id,
+        ));
+
+        let network_name = context.network_name();
+        let traffic_tx_metrics = Arc::new(LogicalTrafficMetrics::new(
+            stats_manager.clone(),
+            network_name.clone(),
+            MetricName::TrafficBytesTx,
+            MetricName::TrafficPacketsTx,
+            MetricName::TrafficBytesTxByInstance,
+            MetricName::TrafficPacketsTxByInstance,
+            InstanceLabelKind::To,
+        ));
+        let traffic_control_tx_metrics = Arc::new(LogicalTrafficMetrics::new(
+            stats_manager.clone(),
+            network_name.clone(),
+            MetricName::TrafficControlBytesTx,
+            MetricName::TrafficControlPacketsTx,
+            MetricName::TrafficControlBytesTxByInstance,
+            MetricName::TrafficControlPacketsTxByInstance,
+            InstanceLabelKind::To,
+        ));
+        let self_tx_counters = PeerManagerTrafficCounters {
+            self_tx_packets: stats_manager.get_counter(
+                MetricName::TrafficPacketsSelfTx,
+                LabelSet::new().with_label_type(LabelType::NetworkName(network_name.clone())),
+            ),
+            self_tx_bytes: stats_manager.get_counter(
+                MetricName::TrafficBytesSelfTx,
+                LabelSet::new().with_label_type(LabelType::NetworkName(network_name.clone())),
+            ),
+            compress_tx_bytes_before: stats_manager.get_counter(
+                MetricName::CompressionBytesTxBefore,
+                LabelSet::new().with_label_type(LabelType::NetworkName(network_name.clone())),
+            ),
+            compress_tx_bytes_after: stats_manager.get_counter(
+                MetricName::CompressionBytesTxAfter,
+                LabelSet::new().with_label_type(LabelType::NetworkName(network_name.clone())),
+            ),
+        };
+        let traffic_rx_metrics = Arc::new(LogicalTrafficMetrics::new(
+            stats_manager.clone(),
+            network_name.clone(),
+            MetricName::TrafficBytesRx,
+            MetricName::TrafficPacketsRx,
+            MetricName::TrafficBytesRxByInstance,
+            MetricName::TrafficPacketsRxByInstance,
+            InstanceLabelKind::From,
+        ));
+        let traffic_control_rx_metrics = Arc::new(LogicalTrafficMetrics::new(
+            stats_manager.clone(),
+            network_name.clone(),
+            MetricName::TrafficControlBytesRx,
+            MetricName::TrafficControlPacketsRx,
+            MetricName::TrafficControlBytesRxByInstance,
+            MetricName::TrafficControlPacketsRxByInstance,
+            InstanceLabelKind::From,
+        ));
+        let route_algo_inst_for_metrics = route_algo_inst.clone();
+        let traffic_metrics = Arc::new(TrafficMetricRecorder::new(
+            my_peer_id,
+            traffic_tx_metrics,
+            traffic_control_tx_metrics,
+            traffic_rx_metrics,
+            traffic_control_rx_metrics,
+            move |peer_id| {
+                let route_algo_inst = route_algo_inst_for_metrics.clone();
+                async move {
+                    match route_algo_inst.ospf_route() {
+                        Some(route) => route
+                            .get_peer_info(peer_id)
+                            .await
+                            .as_ref()
+                            .and_then(route_peer_info_instance_id),
+                        None => None,
+                    }
+                }
+            },
+        ));
+        let peer_packet_process_pipeline = Arc::new(RwLock::new(Vec::new()));
+        let nic_packet_process_pipeline = Arc::new(RwLock::new(Vec::new()));
+        let exit_nodes = Arc::new(RwLock::new(exit_nodes));
+        let relay_peer_map = super::relay_peer_map::new_relay_peer_map(
+            peers.clone(),
+            Some(foreign_network_client.clone()),
+            context.clone(),
+            my_peer_id,
+            peer_session_store.clone(),
+        );
+        let recent_traffic = RecentTrafficTracker::new(my_peer_id);
+        let peer_connection_admission = PeerConnectionAdmission::new(
+            my_peer_id,
+            context.clone(),
+            peers.clone(),
+            foreign_network_client.clone(),
+            foreign_network_manager.clone(),
+            peer_session_store.clone(),
+            recent_traffic.clone(),
+        );
+        let route = route_algo_inst.route_arc();
+        let outbound_packet_router = PeerOutboundPacketRouter::new(
+            my_peer_id,
+            context.clone(),
+            peers.clone(),
+            route.clone(),
+            foreign_network_client.clone(),
+            relay_peer_map.clone(),
+            nic_packet_process_pipeline.clone(),
+            encryptor.clone(),
+            data_compress_algo,
+            exit_nodes.clone(),
+            recent_traffic.clone(),
+            traffic_metrics.clone(),
+            acl_filter.clone(),
+            is_secure_mode_enabled,
+            self_tx_counters.self_tx_packets.clone(),
+            self_tx_counters.self_tx_bytes.clone(),
+            self_tx_counters.compress_tx_bytes_before.clone(),
+            self_tx_counters.compress_tx_bytes_after.clone(),
+        );
+
+        let foreign_network_handler: Arc<dyn ForeignNetworkPacketHandler> =
+            foreign_network_manager.clone();
+        let foreign_network_provider: Arc<dyn ForeignNetworkRouteInfoProvider> =
+            foreign_network_manager.clone();
+        let foreign_network_closer: Arc<dyn ForeignPeerConnectionCloser> =
+            foreign_network_manager.clone();
+
+        PeerManagerCoreBuildResult {
+            core: PeerManagerCore::new(
+                my_peer_id,
+                Arc::new(Mutex::new(Some(packet_recv))),
+                peers,
+                peer_rpc_mgr,
+                rpc_tspt,
+                peer_packet_process_pipeline,
+                nic_packet_process_pipeline,
+                nic_channel,
+                route_algo_inst,
+                foreign_network_client,
+                foreign_network_handler,
+                foreign_network_provider,
+                foreign_network_closer,
+                relay_peer_map,
+                peer_connection_admission,
+                outbound_packet_router,
+                recent_traffic,
+                peer_session_store,
+                encryptor,
+                data_compress_algo,
+                exit_nodes,
+                acl_filter,
+                context,
+                is_secure_mode_enabled,
+                route,
+                traffic_metrics,
+                stats_manager,
+                network_name,
+                self_tx_counters,
+            ),
+            foreign_network_manager,
+        }
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         my_peer_id: PeerId,
