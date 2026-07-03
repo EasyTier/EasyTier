@@ -2,6 +2,7 @@ import { mount, type VueWrapper } from '@vue/test-utils'
 import { describe, expect, it, vi } from 'vitest'
 import { defineComponent, h, nextTick, reactive } from 'vue'
 import Config from '../src/components/Config.vue'
+import UrlListInput from '../src/components/UrlListInput.vue'
 import {
   DEFAULT_NETWORK_CONFIG,
   toBackendNetworkConfig,
@@ -218,6 +219,9 @@ const UrlListInputStub = defineComponent({
     modelValue: Array,
     id: String,
     addLabel: String,
+    defaultUrl: String,
+    portlessProtos: Array,
+    protos: Object,
   },
   emits: ['update:modelValue'],
   setup(props, { attrs, emit }) {
@@ -227,6 +231,9 @@ const UrlListInputStub = defineComponent({
       value: (props.modelValue ?? []).join(','),
       'data-stub': 'url-list-input',
       'data-add-label': props.addLabel,
+      'data-default-url': props.defaultUrl,
+      'data-portless-protos': JSON.stringify(props.portlessProtos ?? []),
+      'data-protos': JSON.stringify(props.protos ?? {}),
       onInput: (event: Event) => emit('update:modelValue', splitList((event.target as HTMLInputElement).value)),
     })
   },
@@ -403,6 +410,14 @@ describe('Config.vue network config projection', () => {
     expect(input(wrapper, 'input[data-add-label="add_listener_url"]').value).toBe('tcp://0.0.0.0:12010')
     expect(input(wrapper, 'input[data-add-label="add_mapped_listener"]').value).toBe('tcp://127.0.0.1:22000')
 
+    const listenerInput = input(wrapper, 'input[data-add-label="add_listener_url"]')
+    expect(JSON.parse(listenerInput.dataset.protos ?? '{}')).toMatchObject({
+      tcp: 0,
+      udp: 0,
+      wg: 0,
+    })
+    expect(JSON.parse(listenerInput.dataset.portlessProtos ?? '[]')).toStrictEqual(['txt', 'srv'])
+
     expect(wrapper.find<HTMLSelectElement>('select[data-stub="select-button"]').element.value).toBe('udp')
     expect(input(wrapper, 'input[placeholder="port_forwards_bind_addr"]').value).toBe('0.0.0.0')
     expect(input(wrapper, 'input[placeholder="port_forwards_dst_addr"]').value).toBe('10.0.0.2')
@@ -559,5 +574,28 @@ describe('Config.vue network config projection', () => {
 
     expect(wrapper.emitted('runNetwork')?.[0]).toEqual([curNetwork])
     expect((wrapper.emitted('runNetwork')?.[0][0] as NetworkConfig).network_name).toBe('mesh-running')
+  })
+})
+
+describe('UrlListInput.vue defaults', () => {
+  it('adds a dynamic listener URL when no explicit default URL is provided', async () => {
+    const urls: string[] = []
+    const wrapper = mount(UrlListInput, {
+      props: {
+        addLabel: 'add_listener_url',
+        modelValue: urls,
+        protos: { tcp: 0 },
+      },
+      global: {
+        stubs: {
+          Button: ButtonStub,
+          UrlInput: true,
+        },
+      },
+    })
+
+    await wrapper.find('.border-dashed').trigger('click')
+
+    expect(urls).toStrictEqual(['tcp://0.0.0.0:0'])
   })
 })
