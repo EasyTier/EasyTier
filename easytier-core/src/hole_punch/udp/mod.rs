@@ -4,6 +4,7 @@ mod model;
 mod packet;
 mod policy;
 mod runtime;
+mod server;
 mod socket_array;
 
 pub use common::{BLACKLIST_TIMEOUT_SEC, BackOff, UdpNatType, UdpPunchClientMethod};
@@ -24,6 +25,7 @@ pub use runtime::{
     UdpHolePunchTunnelSink, UdpPortMappingLease, UdpPunchAcceptor, UdpPunchConnCounter,
     UdpPunchListener, UdpPunchSocket, UdpPunchSocketFactory,
 };
+pub use server::{SelectedUdpPunchListener, UdpHolePunchServerCommon};
 pub use socket_array::{PunchedUdpSocket, UdpSocketArray};
 
 const fn udp_packet_len(body_len: u16) -> usize {

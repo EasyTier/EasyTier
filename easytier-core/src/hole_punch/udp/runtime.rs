@@ -221,10 +221,10 @@ pub trait UdpHolePunchRuntime: Send + Sync + 'static {
         prefer_port_mapping: bool,
     ) -> anyhow::Result<UdpPunchListener<Self::Socket>>;
 
-    async fn create_port_bound_acceptor(
+    async fn create_port_bound_listener(
         &self,
         port: u16,
-    ) -> anyhow::Result<Box<dyn UdpPunchAcceptor>>;
+    ) -> anyhow::Result<UdpPunchListener<Self::Socket>>;
 
     async fn connect_with_socket(
         &self,
