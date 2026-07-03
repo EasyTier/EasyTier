@@ -16,7 +16,7 @@ use crate::tunnel::packet_def::{PacketType, PeerManagerHeader};
 use crate::{
     common::{acl_processor::PacketInfo, error::Result},
     gateway::tcp_proxy::{NatDstConnector, TcpProxy},
-    peers::{NicPacketFilter, acl_filter::AclFilter},
+    peers::acl_filter::AclFilter,
     proto::acl::{Action, ChainType},
     tunnel::packet_def::ZCPacket,
 };

@@ -2,7 +2,7 @@ use std::{
     net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4},
     sync::{
         Arc,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU16, Ordering},
     },
     time::{Duration, Instant},
 };
@@ -19,6 +19,7 @@ use crate::{
 use super::{
     cidr_table::ProxyCidrTable,
     ip_reassembler::{ComposeIpv4PacketArgs, IpReassembler, compose_ipv4_packet},
+    runtime::UdpProxyRuntime,
 };
 
 #[derive(Debug, Hash, Eq, PartialEq, Clone, Copy)]
@@ -121,11 +122,6 @@ pub struct UdpProxyPeerContext {
     pub no_tun: bool,
 }
 
-pub trait UdpProxyRuntime: Send + Sync {
-    fn is_ip_local_virtual_ip(&self, ip: &IpAddr) -> bool;
-    fn should_deny_proxy(&self, dst_socket: &SocketAddr, is_udp: bool) -> bool;
-}
-
 #[derive(Debug)]
 pub enum UdpProxyAction {
     ForwardToSocket {
@@ -144,6 +140,7 @@ pub struct UdpProxyCore {
     nat_ids: DashMap<UdpNatEntryId, UdpNatKey>,
     ip_reassembler: IpReassembler,
     entry_ttl: Duration,
+    next_ip_id: AtomicU16,
 }
 
 impl UdpProxyCore {
@@ -154,11 +151,16 @@ impl UdpProxyCore {
             nat_ids: DashMap::new(),
             ip_reassembler: IpReassembler::new(fragment_timeout),
             entry_ttl: Duration::from_secs(180),
+            next_ip_id: AtomicU16::new(1),
         }
     }
 
     pub fn nat_entry_count(&self) -> usize {
         self.nat_table.len()
+    }
+
+    pub fn entry_ids(&self) -> Vec<UdpNatEntryId> {
+        self.nat_ids.iter().map(|entry| *entry.key()).collect()
     }
 
     pub fn remove_expired_entries(&self) -> Vec<UdpNatEntryId> {
@@ -267,7 +269,7 @@ impl UdpProxyCore {
         let nat_entry = match self.nat_table.entry(nat_key) {
             Entry::Occupied(entry) => entry.get().clone(),
             Entry::Vacant(entry) => {
-                let denied = runtime.should_deny_proxy(&deny_dst, true);
+                let denied = runtime.should_deny_udp_proxy(deny_dst);
                 let nat_entry = Arc::new(UdpNatEntry::new(
                     hdr.from_peer_id.get(),
                     hdr.to_peer_id.get(),
@@ -304,8 +306,7 @@ impl UdpProxyCore {
         entry_id: UdpNatEntryId,
         src_socket: SocketAddr,
         payload: &[u8],
-        payload_mtu: usize,
-        ip_id: u16,
+        ipv4_mtu: usize,
     ) -> anyhow::Result<Vec<ZCPacket>> {
         let Some(key) = self.nat_ids.get(&entry_id).map(|entry| *entry.value()) else {
             return Ok(Vec::new());
@@ -334,6 +335,11 @@ impl UdpProxyCore {
         }
         src_v4.set_ip(reply_src_ip);
 
+        let payload_mtu = ipv4_mtu
+            .saturating_sub(smoltcp::wire::IPV4_HEADER_LEN)
+            .max(8);
+        let payload_mtu = payload_mtu - (payload_mtu % 8);
+        let ip_id = self.next_ip_id.fetch_add(1, Ordering::Relaxed);
         compose_udp_ipv4_response(&entry, &src_v4, &nat_src_v4, payload, payload_mtu, ip_id)
     }
 }
@@ -401,14 +407,36 @@ mod tests {
 
     struct TestRuntime;
 
-    impl UdpProxyRuntime for TestRuntime {
+    impl super::runtime::ProxyRuntimeInfo for TestRuntime {
+        fn proxy_runtime_snapshot(&self) -> super::runtime::ProxyRuntimeSnapshot {
+            super::runtime::ProxyRuntimeSnapshot::default()
+        }
+
         fn is_ip_local_virtual_ip(&self, ip: &IpAddr) -> bool {
             matches!(ip, IpAddr::V4(ip) if *ip == Ipv4Addr::new(10, 144, 144, 204))
         }
+    }
 
-        fn should_deny_proxy(&self, _dst_socket: &SocketAddr, _is_udp: bool) -> bool {
+    impl UdpProxyRuntime for TestRuntime {
+        fn should_deny_udp_proxy(&self, _dst_socket: SocketAddr) -> bool {
             false
         }
+
+        fn udp_response_ipv4_mtu(&self) -> usize {
+            1280
+        }
+
+        async fn send_udp_to_socket(
+            &self,
+            _entry_id: UdpNatEntryId,
+            _dst: SocketAddr,
+            _payload: bytes::Bytes,
+            _response_sink: std::sync::Weak<dyn super::runtime::UdpProxyResponseSink>,
+        ) -> Result<(), super::runtime::ProxyRuntimeError> {
+            Ok(())
+        }
+
+        fn close_udp_socket(&self, _entry_id: UdpNatEntryId) {}
     }
 
     #[test]
@@ -465,13 +493,7 @@ mod tests {
         };
 
         let packets = core
-            .handle_socket_response(
-                entry_id,
-                "127.0.0.1:12345".parse().unwrap(),
-                b"reply",
-                1280,
-                1,
-            )
+            .handle_socket_response(entry_id, "127.0.0.1:12345".parse().unwrap(), b"reply", 1280)
             .unwrap();
         assert_eq!(packets.len(), 1);
         let ipv4 = Ipv4Packet::new_checked(packets[0].payload()).unwrap();

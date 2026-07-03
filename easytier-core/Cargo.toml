@@ -73,6 +73,7 @@ proxy-smoltcp-stack = [
     "smoltcp/medium-ip",
     "smoltcp/socket-tcp",
     "smoltcp/socket-udp",
+    "smoltcp/proto-ipv6",
     "smoltcp/async",
 ]
 test-utils = []

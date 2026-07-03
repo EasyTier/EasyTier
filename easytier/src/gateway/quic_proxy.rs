@@ -949,12 +949,11 @@ impl QuicProxySrc {
 impl QuicProxySrc {
     async fn run(&self) {
         trace!("quic proxy src starting");
+        let wrapped_filter = self.tcp_proxy.clone();
         self.peer_mgr
-            .add_nic_packet_process_pipeline(Box::new(self.tcp_proxy.clone()))
+            .add_nic_packet_process_pipeline(Box::new(wrapped_filter))
             .await;
-        self.peer_mgr
-            .add_packet_process_pipeline(Box::new(self.tcp_proxy.0.clone()))
-            .await;
+        self.tcp_proxy.0.register_peer_pipeline().await;
         self.peer_mgr
             .add_packet_process_pipeline(Box::new(QuicPacketReceiver {
                 tx: self.tx.clone(),

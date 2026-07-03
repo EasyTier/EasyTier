@@ -1,6 +1,8 @@
 use cidr::{Ipv4Cidr, Ipv6Cidr};
 pub use easytier_core::peers::peer_manager::RouteAlgoType;
-use easytier_core::peers::peer_manager::{AddressResolution, AddressResolver, PeerManagerCore};
+use easytier_core::peers::peer_manager::{
+    AddressResolution, AddressResolver, PeerManagerCore, PipelineRegistrationGuard,
+};
 use quanta::Instant;
 use std::collections::BTreeSet;
 use std::{
@@ -39,7 +41,7 @@ use super::{
 
 pub struct PeerManager {
     global_ctx: ArcGlobalCtx,
-    core: PeerManagerCore,
+    core: Arc<PeerManagerCore>,
 
     foreign_network_manager: Arc<ForeignNetworkManager>,
 }
@@ -148,9 +150,13 @@ impl PeerManager {
 
         PeerManager {
             global_ctx,
-            core: build_result.core,
+            core: Arc::new(build_result.core),
             foreign_network_manager: build_result.foreign_network_manager,
         }
+    }
+
+    pub fn core(&self) -> Arc<PeerManagerCore> {
+        self.core.clone()
     }
 
     pub fn mark_recent_traffic(&self, dst_peer_id: PeerId) {
@@ -251,6 +257,24 @@ impl PeerManager {
 
     pub async fn add_nic_packet_process_pipeline(&self, pipeline: BoxNicPacketFilter) {
         self.core.add_nic_packet_process_pipeline(pipeline).await;
+    }
+
+    pub async fn add_managed_packet_process_pipeline(
+        &self,
+        pipeline: BoxPeerPacketFilter,
+    ) -> PipelineRegistrationGuard {
+        self.core
+            .add_managed_packet_process_pipeline(pipeline)
+            .await
+    }
+
+    pub async fn add_managed_nic_packet_process_pipeline(
+        &self,
+        pipeline: BoxNicPacketFilter,
+    ) -> PipelineRegistrationGuard {
+        self.core
+            .add_managed_nic_packet_process_pipeline(pipeline)
+            .await
     }
 
     pub async fn add_route<T>(&self, route: T)

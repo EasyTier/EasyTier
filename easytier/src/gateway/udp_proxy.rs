@@ -1,28 +1,31 @@
 use std::{
-    net::{IpAddr, SocketAddr},
-    sync::{Arc, Weak, atomic::AtomicBool},
+    net::{IpAddr, Ipv4Addr, SocketAddr},
+    sync::{Arc, atomic::AtomicBool},
     time::Duration,
 };
 
+use bytes::Bytes;
 use dashmap::{DashMap, mapref::entry::Entry};
-use easytier_core::proxy::udp_proxy::{
-    UdpNatEntryId, UdpProxyAction, UdpProxyCore, UdpProxyPeerContext, UdpProxyRuntime,
+use easytier_core::proxy::{
+    runtime::{
+        ProxyRuntimeError, ProxyRuntimeInfo, ProxyRuntimeSnapshot, UdpProxyResponseSink,
+        UdpProxyRuntime,
+    },
+    udp_proxy::{UdpNatEntryId, UdpProxyCore},
+    udp_proxy_service::UdpProxyService,
 };
+#[cfg(test)]
 use tokio::sync::mpsc::{Receiver, Sender, channel};
-use tokio::{
-    net::UdpSocket,
-    sync::Mutex,
-    task::{JoinHandle, JoinSet},
-    time::timeout,
-};
+use tokio::{net::UdpSocket, sync::Mutex, task::JoinHandle, time::timeout};
 use tokio_util::task::AbortOnDropHandle;
 
 use super::CidrSet;
 use crate::tunnel::common::bind;
+#[cfg(test)]
+use crate::tunnel::packet_def::ZCPacket;
 use crate::{
     common::{error::Error, global_ctx::ArcGlobalCtx},
-    peers::{PeerPacketFilter, peer_manager::PeerManager},
-    tunnel::packet_def::ZCPacket,
+    peers::peer_manager::PeerManager,
 };
 
 #[derive(Debug)]
@@ -47,17 +50,20 @@ impl RuntimeUdpNatEntry {
     pub fn stop(&self) {
         self.stopped
             .store(true, std::sync::atomic::Ordering::Relaxed);
+        if let Ok(local_addr) = self.socket.local_addr()
+            && let Ok(wake_socket) = std::net::UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0))
+        {
+            let _ = wake_socket.send_to(&[], local_addr);
+        }
     }
 
     async fn forward_task(
         self: Arc<Self>,
-        core: Arc<UdpProxyCore>,
         entry_id: UdpNatEntryId,
-        packet_sender: Sender<ZCPacket>,
+        response_sink: std::sync::Weak<dyn UdpProxyResponseSink>,
     ) {
         let self_clone = self.clone();
         let recv_task = AbortOnDropHandle::new(tokio::spawn(async move {
-            let mut ip_id = 1;
             loop {
                 if self_clone
                     .stopped
@@ -85,27 +91,23 @@ impl RuntimeUdpNatEntry {
                 };
 
                 tracing::trace!(?len, ?src_socket, "udp nat packet response received");
-
-                let packets = match core.handle_socket_response(
-                    entry_id,
-                    src_socket,
-                    &buf[..len],
-                    1280,
-                    ip_id,
-                ) {
-                    Ok(packets) => packets,
-                    Err(err) => {
-                        tracing::error!(?err, "compose udp response packet failed");
-                        break;
-                    }
-                };
-                ip_id = ip_id.wrapping_add(1);
-                for packet in packets {
-                    if let Err(err) = packet_sender.try_send(packet) {
-                        tracing::error!(?err, "send udp packet to peer failed, may exiting");
-                        break;
-                    }
+                if self_clone
+                    .stopped
+                    .load(std::sync::atomic::Ordering::Relaxed)
+                {
+                    break;
                 }
+
+                let Some(response_sink) = response_sink.upgrade() else {
+                    break;
+                };
+                response_sink
+                    .handle_socket_response(
+                        entry_id,
+                        src_socket,
+                        Bytes::copy_from_slice(&buf[..len]),
+                    )
+                    .await;
             }
         }));
 
@@ -116,67 +118,23 @@ impl RuntimeUdpNatEntry {
 }
 
 #[derive(Debug)]
-pub struct UdpProxy {
+struct RuntimeUdpProxyAdapter {
     global_ctx: ArcGlobalCtx,
-    peer_manager: Weak<PeerManager>,
-
-    cidr_set: CidrSet,
-    core: Arc<UdpProxyCore>,
     socket_entries: Arc<DashMap<UdpNatEntryId, Arc<RuntimeUdpNatEntry>>>,
-
-    sender: Sender<ZCPacket>,
-    receiver: Mutex<Option<Receiver<ZCPacket>>>,
-
-    tasks: Mutex<JoinSet<()>>,
 }
 
-impl UdpProxy {
-    async fn try_handle_packet(&self, packet: &ZCPacket) -> Option<()> {
-        let runtime = UdpProxyRuntimeView {
-            global_ctx: &self.global_ctx,
-        };
-        let action = self.core.handle_peer_packet(
-            packet,
-            UdpProxyPeerContext {
-                virtual_ipv4: self.global_ctx.get_ipv4().map(|inet| inet.address()),
-                enable_exit_node: self.global_ctx.enable_exit_node(),
-                no_tun: self.global_ctx.no_tun(),
-            },
-            &runtime,
-        );
-
-        let UdpProxyAction::ForwardToSocket {
-            entry_id,
-            dst,
-            payload,
-        } = action
-        else {
-            return matches!(action, UdpProxyAction::Drop).then_some(());
-        };
-
-        let nat_entry = match self.ensure_socket_entry(entry_id).await {
-            Ok(entry) => entry,
-            Err(err) => {
-                tracing::error!(?err, ?entry_id, "create udp nat socket failed");
-                self.core.remove_entry(entry_id);
-                return None;
-            }
-        };
-        let send_ret = {
-            let _g = self.global_ctx.net_ns.guard();
-            nat_entry.socket.send_to(&payload, dst).await
-        };
-
-        if let Err(send_err) = send_ret {
-            tracing::error!(?send_err, "udp nat send failed");
+impl RuntimeUdpProxyAdapter {
+    fn new(global_ctx: ArcGlobalCtx) -> Self {
+        Self {
+            global_ctx,
+            socket_entries: Arc::new(DashMap::new()),
         }
-
-        Some(())
     }
 
     async fn ensure_socket_entry(
         &self,
         entry_id: UdpNatEntryId,
+        response_sink: std::sync::Weak<dyn UdpProxyResponseSink>,
     ) -> Result<Arc<RuntimeUdpNatEntry>, Error> {
         let entry = match self.socket_entries.entry(entry_id) {
             Entry::Occupied(entry) => entry.get().clone(),
@@ -192,39 +150,90 @@ impl UdpProxy {
         if task.is_none() {
             task.replace(tokio::spawn(RuntimeUdpNatEntry::forward_task(
                 entry.clone(),
-                self.core.clone(),
                 entry_id,
-                self.sender.clone(),
+                response_sink,
             )));
         }
         drop(task);
 
         Ok(entry)
     }
+
+    fn close_all(&self) {
+        let _g = self.global_ctx.net_ns.guard();
+        for entry in self.socket_entries.iter() {
+            entry.stop();
+        }
+        self.socket_entries.clear();
+    }
 }
 
-struct UdpProxyRuntimeView<'a> {
-    global_ctx: &'a ArcGlobalCtx,
-}
-
-impl UdpProxyRuntime for UdpProxyRuntimeView<'_> {
-    fn is_ip_local_virtual_ip(&self, ip: &IpAddr) -> bool {
-        self.global_ctx.is_ip_local_virtual_ip(ip)
+impl ProxyRuntimeInfo for RuntimeUdpProxyAdapter {
+    fn proxy_runtime_snapshot(&self) -> ProxyRuntimeSnapshot {
+        let local_inet = self.global_ctx.get_ipv4().as_ref().cloned();
+        ProxyRuntimeSnapshot {
+            local_inet,
+            virtual_ipv4: local_inet.map(|inet| inet.address()),
+            no_tun: self.global_ctx.no_tun(),
+            enable_exit_node: self.global_ctx.enable_exit_node(),
+            smoltcp_enabled: false,
+            latency_first: self.global_ctx.latency_first(),
+        }
     }
 
-    fn should_deny_proxy(&self, dst_socket: &SocketAddr, is_udp: bool) -> bool {
-        self.global_ctx.should_deny_proxy(dst_socket, is_udp)
+    fn is_ip_local_virtual_ip(&self, ip: &IpAddr) -> bool {
+        self.global_ctx.is_ip_local_virtual_ip(ip)
     }
 }
 
 #[async_trait::async_trait]
-impl PeerPacketFilter for UdpProxy {
-    async fn try_process_packet_from_peer(&self, packet: ZCPacket) -> Option<ZCPacket> {
-        self.try_handle_packet(&packet)
-            .await
-            .is_none()
-            .then_some(packet)
+impl UdpProxyRuntime for RuntimeUdpProxyAdapter {
+    fn should_deny_udp_proxy(&self, dst: SocketAddr) -> bool {
+        self.global_ctx.should_deny_proxy(&dst, true)
     }
+
+    fn udp_response_ipv4_mtu(&self) -> usize {
+        1280
+    }
+
+    async fn send_udp_to_socket(
+        &self,
+        entry_id: UdpNatEntryId,
+        dst: SocketAddr,
+        payload: Bytes,
+        response_sink: std::sync::Weak<dyn UdpProxyResponseSink>,
+    ) -> Result<(), ProxyRuntimeError> {
+        let nat_entry = self
+            .ensure_socket_entry(entry_id, response_sink)
+            .await
+            .map_err(|err| ProxyRuntimeError::Other(err.into()))?;
+        let send_ret = {
+            let _g = self.global_ctx.net_ns.guard();
+            nat_entry.socket.send_to(&payload, dst).await
+        };
+
+        send_ret
+            .map(|_| ())
+            .map_err(|err| ProxyRuntimeError::Other(err.into()))
+    }
+
+    fn close_udp_socket(&self, entry_id: UdpNatEntryId) {
+        if let Some((_, entry)) = self.socket_entries.remove(&entry_id) {
+            let _g = self.global_ctx.net_ns.guard();
+            entry.stop();
+        }
+        self.socket_entries.shrink_to_fit();
+    }
+}
+
+pub struct UdpProxy {
+    cidr_set: CidrSet,
+    runtime: Arc<RuntimeUdpProxyAdapter>,
+    service: Arc<UdpProxyService<RuntimeUdpProxyAdapter>>,
+    #[cfg(test)]
+    receiver: Mutex<Option<Receiver<ZCPacket>>>,
+    #[cfg(test)]
+    test_response_sink: Arc<TestUdpResponseSink>,
 }
 
 impl UdpProxy {
@@ -233,81 +242,120 @@ impl UdpProxy {
         peer_manager: Arc<PeerManager>,
     ) -> Result<Arc<Self>, Error> {
         let cidr_set = CidrSet::new(global_ctx.clone());
-        let core = Arc::new(UdpProxyCore::new(cidr_set.table(), Duration::from_secs(10)));
+        let runtime = Arc::new(RuntimeUdpProxyAdapter::new(global_ctx));
+        let service = UdpProxyService::new(
+            peer_manager.core(),
+            runtime.clone(),
+            cidr_set.table(),
+            Duration::from_secs(10),
+        );
+        #[cfg(test)]
         let (sender, receiver) = channel(1024);
-        let ret = Self {
-            global_ctx,
-            peer_manager: Arc::downgrade(&peer_manager),
+        #[cfg(test)]
+        let test_response_sink = Arc::new(TestUdpResponseSink {
+            core: service.core(),
+            runtime: runtime.clone(),
+            sender: sender.clone(),
+        });
+        Ok(Arc::new(Self {
             cidr_set,
-            core,
-            socket_entries: Arc::new(DashMap::new()),
-            sender,
+            runtime,
+            service,
+            #[cfg(test)]
             receiver: Mutex::new(Some(receiver)),
-            tasks: Mutex::new(JoinSet::new()),
-        };
-        Ok(Arc::new(ret))
+            #[cfg(test)]
+            test_response_sink,
+        }))
     }
 
     pub async fn start(self: &Arc<Self>) -> Result<(), Error> {
-        let Some(peer_manager) = self.peer_manager.upgrade() else {
-            return Err(anyhow::anyhow!("peer manager is gone").into());
-        };
-        peer_manager
-            .add_packet_process_pipeline(Box::new(self.clone()))
-            .await;
-
-        // clean up nat table
-        let core = self.core.clone();
-        let socket_entries = self.socket_entries.clone();
-        self.tasks.lock().await.spawn(async move {
-            loop {
-                tokio::time::sleep(Duration::from_secs(15)).await;
-                for entry_id in core.remove_expired_entries() {
-                    if let Some((_, entry)) = socket_entries.remove(&entry_id) {
-                        entry.stop();
-                    }
-                }
-                socket_entries.shrink_to_fit();
-            }
-        });
-
-        let core = self.core.clone();
-        self.tasks.lock().await.spawn(async move {
-            loop {
-                tokio::time::sleep(Duration::from_secs(1)).await;
-                core.remove_expired_fragments();
-            }
-        });
-
-        // forward packets to peer manager
-        let mut receiver = self.receiver.lock().await.take().unwrap();
-        let peer_manager = self.peer_manager.clone();
-        let is_latency_first = self.global_ctx.latency_first();
-        self.tasks.lock().await.spawn(async move {
-            while let Some(mut msg) = receiver.recv().await {
-                let hdr = msg.mut_peer_manager_header().unwrap();
-                hdr.set_latency_first(is_latency_first);
-                let to_peer_id = hdr.to_peer_id.into();
-                tracing::trace!(?msg, ?to_peer_id, "udp nat packet response send");
-                let Some(pm) = peer_manager.upgrade() else {
-                    tracing::warn!("peer manager is gone, udp proxy send loop exit");
-                    return;
-                };
-                let ret = pm.send_msg_for_proxy(msg, to_peer_id).await;
-                if ret.is_err() {
-                    tracing::error!("send icmp packet to peer failed: {:?}", ret);
-                }
-            }
-        });
+        self.service.start().await;
         Ok(())
+    }
+
+    pub fn core(&self) -> Arc<UdpProxyCore> {
+        self.service.core()
+    }
+
+    #[cfg(test)]
+    async fn try_handle_packet(&self, packet: &ZCPacket) -> Option<()> {
+        use easytier_core::proxy::udp_proxy::{UdpProxyAction, UdpProxyPeerContext};
+
+        let snapshot = self.runtime.proxy_runtime_snapshot();
+        let action = self.core().handle_peer_packet(
+            packet,
+            UdpProxyPeerContext {
+                virtual_ipv4: snapshot.virtual_ipv4,
+                enable_exit_node: snapshot.enable_exit_node,
+                no_tun: snapshot.no_tun,
+            },
+            self.runtime.as_ref(),
+        );
+
+        let UdpProxyAction::ForwardToSocket {
+            entry_id,
+            dst,
+            payload,
+        } = action
+        else {
+            return matches!(action, UdpProxyAction::Drop).then_some(());
+        };
+
+        let sink: Arc<dyn UdpProxyResponseSink> = self.test_response_sink.clone();
+        if let Err(err) = self
+            .runtime
+            .send_udp_to_socket(entry_id, dst, payload, Arc::downgrade(&sink))
+            .await
+        {
+            tracing::error!(?err, ?entry_id, "udp proxy runtime send failed");
+            self.core().remove_entry(entry_id);
+            self.runtime.close_udp_socket(entry_id);
+            return None;
+        }
+        Some(())
+    }
+}
+
+#[cfg(test)]
+struct TestUdpResponseSink {
+    core: Arc<UdpProxyCore>,
+    runtime: Arc<RuntimeUdpProxyAdapter>,
+    sender: Sender<ZCPacket>,
+}
+
+#[cfg(test)]
+#[async_trait::async_trait]
+impl UdpProxyResponseSink for TestUdpResponseSink {
+    async fn handle_socket_response(
+        &self,
+        entry_id: UdpNatEntryId,
+        src: SocketAddr,
+        payload: Bytes,
+    ) {
+        let packets = self
+            .core
+            .handle_socket_response(
+                entry_id,
+                src,
+                payload.as_ref(),
+                self.runtime.udp_response_ipv4_mtu(),
+            )
+            .unwrap();
+        let latency_first = self.runtime.proxy_runtime_snapshot().latency_first;
+        for mut packet in packets {
+            packet
+                .mut_peer_manager_header()
+                .expect("peer manager header")
+                .set_latency_first(latency_first);
+            self.sender.try_send(packet).unwrap();
+        }
     }
 }
 
 impl Drop for UdpProxy {
     fn drop(&mut self) {
-        for v in self.socket_entries.iter() {
-            v.stop();
-        }
+        self.service.stop();
+        self.runtime.close_all();
     }
 }
 
@@ -433,6 +481,7 @@ mod tests {
 
     async fn stop_nat_entries(proxy: &UdpProxy) {
         let nat_socket_addrs = proxy
+            .runtime
             .socket_entries
             .iter()
             .filter_map(|entry| {
@@ -444,7 +493,7 @@ mod tests {
             })
             .collect::<Vec<_>>();
 
-        for entry in proxy.socket_entries.iter() {
+        for entry in proxy.runtime.socket_entries.iter() {
             entry.stop();
         }
 
@@ -587,7 +636,7 @@ mod tests {
         let (payload, second_nat_socket) = recv_payload(&real_dst).await;
         assert_eq!(payload, b"second");
 
-        assert_eq!(proxy.core.nat_entry_count(), 2);
+        assert_eq!(proxy.core().nat_entry_count(), 2);
 
         real_dst
             .send_to(b"first-reply", first_nat_socket)

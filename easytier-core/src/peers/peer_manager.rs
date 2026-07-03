@@ -1,7 +1,10 @@
 use std::time::{Duration, SystemTime};
 use std::{
     net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
-    sync::{Arc, Weak},
+    sync::{
+        Arc, Weak,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 
 use anyhow::Context;
@@ -327,8 +330,75 @@ impl PeerPacketFilter for PeerRpcPacketProcessor {
     }
 }
 
-pub async fn init_packet_process_pipeline(
-    peer_packet_process_pipeline: &RwLock<Vec<BoxPeerPacketFilter>>,
+pub(crate) struct PeerPipelineEntry {
+    active: Arc<AtomicBool>,
+    filter: BoxPeerPacketFilter,
+}
+
+pub(crate) struct NicPipelineEntry {
+    active: Arc<AtomicBool>,
+    filter: BoxNicPacketFilter,
+}
+
+#[derive(Clone)]
+pub struct PipelineRegistrationGuard {
+    active: Arc<AtomicBool>,
+}
+
+impl PipelineRegistrationGuard {
+    pub fn close(&self) {
+        self.active.store(false, Ordering::Relaxed);
+    }
+}
+
+impl Drop for PipelineRegistrationGuard {
+    fn drop(&mut self) {
+        self.close();
+    }
+}
+
+fn permanent_peer_pipeline_entry(filter: BoxPeerPacketFilter) -> Arc<PeerPipelineEntry> {
+    Arc::new(PeerPipelineEntry {
+        active: Arc::new(AtomicBool::new(true)),
+        filter,
+    })
+}
+
+fn permanent_nic_pipeline_entry(filter: BoxNicPacketFilter) -> Arc<NicPipelineEntry> {
+    Arc::new(NicPipelineEntry {
+        active: Arc::new(AtomicBool::new(true)),
+        filter,
+    })
+}
+
+fn managed_peer_pipeline_entry(
+    filter: BoxPeerPacketFilter,
+) -> (Arc<PeerPipelineEntry>, PipelineRegistrationGuard) {
+    let active = Arc::new(AtomicBool::new(true));
+    (
+        Arc::new(PeerPipelineEntry {
+            active: active.clone(),
+            filter,
+        }),
+        PipelineRegistrationGuard { active },
+    )
+}
+
+fn managed_nic_pipeline_entry(
+    filter: BoxNicPacketFilter,
+) -> (Arc<NicPipelineEntry>, PipelineRegistrationGuard) {
+    let active = Arc::new(AtomicBool::new(true));
+    (
+        Arc::new(NicPipelineEntry {
+            active: active.clone(),
+            filter,
+        }),
+        PipelineRegistrationGuard { active },
+    )
+}
+
+async fn init_packet_process_pipeline(
+    peer_packet_process_pipeline: &RwLock<Vec<Arc<PeerPipelineEntry>>>,
     nic_channel: PacketRecvChan,
     peer_rpc_tspt_sender: UnboundedSender<ZCPacket>,
 ) {
@@ -336,19 +406,23 @@ pub async fn init_packet_process_pipeline(
     peer_packet_process_pipeline
         .write()
         .await
-        .push(Box::new(NicPacketProcessor { nic_channel }));
+        .push(permanent_peer_pipeline_entry(Box::new(
+            NicPacketProcessor { nic_channel },
+        )));
 
     // for peer rpc packet
     peer_packet_process_pipeline
         .write()
         .await
-        .push(Box::new(PeerRpcPacketProcessor {
-            peer_rpc_tspt_sender,
-        }));
+        .push(permanent_peer_pipeline_entry(Box::new(
+            PeerRpcPacketProcessor {
+                peer_rpc_tspt_sender,
+            },
+        )));
 }
 
-pub async fn add_route<T>(
-    peer_packet_process_pipeline: &RwLock<Vec<BoxPeerPacketFilter>>,
+async fn add_route<T>(
+    peer_packet_process_pipeline: &RwLock<Vec<Arc<PeerPipelineEntry>>>,
     peers: Arc<PeerMap>,
     foreign_network_client: Arc<ForeignNetworkClient>,
     foreign_network_provider: Arc<dyn ForeignNetworkRouteInfoProvider>,
@@ -361,7 +435,7 @@ pub async fn add_route<T>(
     peer_packet_process_pipeline
         .write()
         .await
-        .push(Box::new(route.clone()));
+        .push(permanent_peer_pipeline_entry(Box::new(route.clone())));
 
     let _route_id = route
         .open(peer_manager_route_interface(
@@ -396,8 +470,8 @@ pub struct PeerManagerCore {
     peers: Arc<PeerMap>,
     peer_rpc_mgr: Arc<super::peer_rpc::PeerRpcManager>,
     peer_rpc_tspt: Arc<RpcTransport>,
-    peer_packet_process_pipeline: Arc<RwLock<Vec<BoxPeerPacketFilter>>>,
-    nic_packet_process_pipeline: Arc<RwLock<Vec<BoxNicPacketFilter>>>,
+    peer_packet_process_pipeline: Arc<RwLock<Vec<Arc<PeerPipelineEntry>>>>,
+    nic_packet_process_pipeline: Arc<RwLock<Vec<Arc<NicPipelineEntry>>>>,
     nic_channel: PacketRecvChan,
     route_algo_inst: RouteAlgoInst,
     foreign_network_client: Arc<ForeignNetworkClient>,
@@ -714,14 +788,14 @@ impl PeerManagerCore {
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub fn new(
+    fn new(
         my_peer_id: PeerId,
         packet_recv: Arc<Mutex<Option<PacketRecvChanReceiver>>>,
         peers: Arc<PeerMap>,
         peer_rpc_mgr: Arc<super::peer_rpc::PeerRpcManager>,
         peer_rpc_tspt: Arc<RpcTransport>,
-        peer_packet_process_pipeline: Arc<RwLock<Vec<BoxPeerPacketFilter>>>,
-        nic_packet_process_pipeline: Arc<RwLock<Vec<BoxNicPacketFilter>>>,
+        peer_packet_process_pipeline: Arc<RwLock<Vec<Arc<PeerPipelineEntry>>>>,
+        nic_packet_process_pipeline: Arc<RwLock<Vec<Arc<NicPipelineEntry>>>>,
         nic_channel: PacketRecvChan,
         route_algo_inst: RouteAlgoInst,
         foreign_network_client: Arc<ForeignNetworkClient>,
@@ -887,7 +961,7 @@ impl PeerManagerCore {
         self.peer_packet_process_pipeline
             .write()
             .await
-            .push(pipeline);
+            .push(permanent_peer_pipeline_entry(pipeline));
     }
 
     pub async fn add_nic_packet_process_pipeline(&self, pipeline: BoxNicPacketFilter) {
@@ -895,7 +969,25 @@ impl PeerManagerCore {
         self.nic_packet_process_pipeline
             .write()
             .await
-            .push(pipeline);
+            .push(permanent_nic_pipeline_entry(pipeline));
+    }
+
+    pub async fn add_managed_packet_process_pipeline(
+        &self,
+        pipeline: BoxPeerPacketFilter,
+    ) -> PipelineRegistrationGuard {
+        let (entry, guard) = managed_peer_pipeline_entry(pipeline);
+        self.peer_packet_process_pipeline.write().await.push(entry);
+        guard
+    }
+
+    pub async fn add_managed_nic_packet_process_pipeline(
+        &self,
+        pipeline: BoxNicPacketFilter,
+    ) -> PipelineRegistrationGuard {
+        let (entry, guard) = managed_nic_pipeline_entry(pipeline);
+        self.nic_packet_process_pipeline.write().await.push(entry);
+        guard
     }
 
     pub async fn add_route<T>(&self, route: T)
@@ -915,7 +1007,7 @@ impl PeerManagerCore {
 
     pub async fn remove_nic_packet_process_pipeline(&self, id: String) -> Result<(), Error> {
         let mut pipelines = self.nic_packet_process_pipeline.write().await;
-        if let Some(pos) = pipelines.iter().position(|x| x.id() == id) {
+        if let Some(pos) = pipelines.iter().position(|x| x.filter.id() == id) {
             pipelines.remove(pos);
             Ok(())
         } else {
@@ -1638,7 +1730,7 @@ pub struct PeerOutboundPacketRouter {
     route: ArcRoute,
     foreign_network_client: Arc<ForeignNetworkClient>,
     relay_peer_map: Arc<RelayPeerMap>,
-    nic_packet_process_pipeline: Arc<RwLock<Vec<BoxNicPacketFilter>>>,
+    nic_packet_process_pipeline: Arc<RwLock<Vec<Arc<NicPipelineEntry>>>>,
     encryptor: Arc<dyn Encryptor>,
     data_compress_algo: CompressorAlgo,
     exit_nodes: Arc<RwLock<Vec<IpAddr>>>,
@@ -1651,14 +1743,14 @@ pub struct PeerOutboundPacketRouter {
 
 impl PeerOutboundPacketRouter {
     #[allow(clippy::too_many_arguments)]
-    pub fn new(
+    fn new(
         my_peer_id: PeerId,
         context: ArcPeerContext,
         peers: Arc<PeerMap>,
         route: ArcRoute,
         foreign_network_client: Arc<ForeignNetworkClient>,
         relay_peer_map: Arc<RelayPeerMap>,
-        nic_packet_process_pipeline: Arc<RwLock<Vec<BoxNicPacketFilter>>>,
+        nic_packet_process_pipeline: Arc<RwLock<Vec<Arc<NicPipelineEntry>>>>,
         encryptor: Arc<dyn Encryptor>,
         data_compress_algo: CompressorAlgo,
         exit_nodes: Arc<RwLock<Vec<IpAddr>>>,
@@ -1724,7 +1816,10 @@ impl PeerOutboundPacketRouter {
         }
 
         for pipeline in self.nic_packet_process_pipeline.read().await.iter().rev() {
-            let _ = pipeline.try_process_packet_from_nic(data).await;
+            if !pipeline.active.load(Ordering::Relaxed) {
+                continue;
+            }
+            let _ = pipeline.filter.try_process_packet_from_nic(data).await;
         }
 
         true
@@ -2093,7 +2188,7 @@ pub struct PeerPacketRouter {
     packet_recv: PacketRecvChanReceiver,
     my_peer_id: PeerId,
     peers: Arc<PeerMap>,
-    peer_packet_process_pipeline: Arc<RwLock<Vec<BoxPeerPacketFilter>>>,
+    peer_packet_process_pipeline: Arc<RwLock<Vec<Arc<PeerPipelineEntry>>>>,
     foreign_client: Arc<ForeignNetworkClient>,
     relay_peer_map: Arc<RelayPeerMap>,
     foreign_network_handler: Arc<dyn ForeignNetworkPacketHandler>,
@@ -2111,11 +2206,11 @@ pub struct PeerPacketRouter {
 
 impl PeerPacketRouter {
     #[allow(clippy::too_many_arguments)]
-    pub fn new(
+    fn new(
         packet_recv: PacketRecvChanReceiver,
         my_peer_id: PeerId,
         peers: Arc<PeerMap>,
-        peer_packet_process_pipeline: Arc<RwLock<Vec<BoxPeerPacketFilter>>>,
+        peer_packet_process_pipeline: Arc<RwLock<Vec<Arc<PeerPipelineEntry>>>>,
         foreign_client: Arc<ForeignNetworkClient>,
         relay_peer_map: Arc<RelayPeerMap>,
         foreign_network_handler: Arc<dyn ForeignNetworkPacketHandler>,
@@ -2358,7 +2453,11 @@ impl PeerPacketRouter {
             let mut zc_packet = Some(ret);
             tracing::trace!(?zc_packet, "try_process_packet_from_peer");
             for pipeline in self.peer_packet_process_pipeline.read().await.iter().rev() {
+                if !pipeline.active.load(Ordering::Relaxed) {
+                    continue;
+                }
                 zc_packet = pipeline
+                    .filter
                     .try_process_packet_from_peer(zc_packet.unwrap())
                     .await;
                 if zc_packet.is_none() {

@@ -16,6 +16,8 @@ use crate::packet::{PacketType, ZCPacket};
 
 use super::cidr_table::ProxyCidrTable;
 
+pub type TcpNatEntryId = uuid::Uuid;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TcpProxyMode {
     Tcp,
@@ -44,7 +46,7 @@ pub struct TcpNatEntrySnapshot {
 
 #[derive(Debug)]
 pub struct TcpNatEntry {
-    id: uuid::Uuid,
+    id: TcpNatEntryId,
     src: SocketAddr,
     real_dst: SocketAddr,
     mapped_dst: SocketAddr,
@@ -69,7 +71,7 @@ impl TcpNatEntry {
         }
     }
 
-    pub fn id(&self) -> uuid::Uuid {
+    pub fn id(&self) -> TcpNatEntryId {
         self.id
     }
 
@@ -376,7 +378,7 @@ impl TcpProxyCore {
         Some(entry)
     }
 
-    pub fn remove_entry(&self, entry_id: uuid::Uuid) {
+    pub fn remove_entry(&self, entry_id: TcpNatEntryId) {
         let Some((_, entry)) = self.conn_map.remove(&entry_id) else {
             return;
         };
