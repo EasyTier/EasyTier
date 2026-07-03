@@ -6,7 +6,7 @@ use std::collections::BTreeSet;
 use std::{
     fmt::Debug,
     net::{IpAddr, Ipv4Addr, Ipv6Addr},
-    sync::{Arc, atomic::AtomicBool},
+    sync::Arc,
 };
 
 use crate::{
@@ -42,8 +42,6 @@ pub struct PeerManager {
     core: PeerManagerCore,
 
     foreign_network_manager: Arc<ForeignNetworkManager>,
-
-    allow_loopback_tunnel: AtomicBool,
 }
 
 struct RuntimeAddressResolver;
@@ -152,14 +150,7 @@ impl PeerManager {
             global_ctx,
             core: build_result.core,
             foreign_network_manager: build_result.foreign_network_manager,
-
-            allow_loopback_tunnel: AtomicBool::new(true),
         }
-    }
-
-    pub fn set_allow_loopback_tunnel(&self, allow_loopback_tunnel: bool) {
-        self.allow_loopback_tunnel
-            .store(allow_loopback_tunnel, std::sync::atomic::Ordering::Relaxed);
     }
 
     pub fn mark_recent_traffic(&self, dst_peer_id: PeerId) {

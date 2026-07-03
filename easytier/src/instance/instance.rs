@@ -718,8 +718,6 @@ impl Instance {
             peer_packet_sender,
         ));
 
-        peer_manager.set_allow_loopback_tunnel(false);
-
         let listener_manager = Arc::new(Mutex::new(ListenerManager::new(
             global_ctx.clone(),
             peer_manager.clone(),
