@@ -1,4 +1,4 @@
-use std::{net::SocketAddr, sync::Arc};
+use std::{fmt, net::SocketAddr, sync::Arc};
 
 use async_trait::async_trait;
 use easytier_core::hole_punch::udp::{
@@ -25,6 +25,14 @@ use crate::{
 #[derive(Clone)]
 pub(crate) struct PeerRpcUdpHolePunchSignaling {
     peer_mgr: Arc<PeerManager>,
+}
+
+impl fmt::Debug for PeerRpcUdpHolePunchSignaling {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("PeerRpcUdpHolePunchSignaling")
+            .field("my_peer_id", &self.peer_mgr.my_peer_id())
+            .finish_non_exhaustive()
+    }
 }
 
 impl PeerRpcUdpHolePunchSignaling {

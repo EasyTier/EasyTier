@@ -5,6 +5,7 @@ use std::{
 };
 
 use anyhow::Context;
+use easytier_core::hole_punch::udp::{SendPunchPacketBothEasySym, UdpHolePunchSignaling};
 use quanta::Instant;
 use tokio::sync::Mutex;
 use tokio_util::task::AbortOnDropHandle;
@@ -14,14 +15,11 @@ use crate::{
     connector::udp_hole_punch::common::{
         HOLE_PUNCH_PACKET_BODY_LEN, UdpHolePunchListener, try_connect_with_socket,
     },
-    connector::udp_hole_punch::handle_rpc_result,
+    connector::udp_hole_punch::{handle_signal_result, signaling::PeerRpcUdpHolePunchSignaling},
     peers::peer_manager::PeerManager,
     proto::{
-        peer_rpc::{
-            SendPunchPacketBothEasySymRequest, SendPunchPacketBothEasySymResponse,
-            UdpHolePunchRpcClientFactory,
-        },
-        rpc_types::{self, controller::BaseController},
+        peer_rpc::{SendPunchPacketBothEasySymRequest, SendPunchPacketBothEasySymResponse},
+        rpc_types,
     },
     tunnel::{Tunnel, udp::new_hole_punch_packet},
 };
@@ -174,6 +172,7 @@ impl PunchBothEasySymHoleServer {
 #[derive(Debug)]
 pub(crate) struct PunchBothEasySymHoleClient {
     peer_mgr: Arc<PeerManager>,
+    signaling: PeerRpcUdpHolePunchSignaling,
     blacklist: Arc<timedmap::TimedMap<PeerId, ()>>,
 }
 
@@ -183,7 +182,8 @@ impl PunchBothEasySymHoleClient {
         blacklist: Arc<timedmap::TimedMap<PeerId, ()>>,
     ) -> Self {
         Self {
-            peer_mgr,
+            peer_mgr: peer_mgr.clone(),
+            signaling: PeerRpcUdpHolePunchSignaling::new(peer_mgr),
             blacklist,
         }
     }
@@ -229,28 +229,16 @@ impl PunchBothEasySymHoleClient {
             .get_inc_of_easy_sym()
             .ok_or(anyhow::anyhow!("peer_is_incremental is required"))?;
 
-        let rpc_stub = self
-            .peer_mgr
-            .get_peer_rpc_mgr()
-            .rpc_client()
-            .scoped_client::<UdpHolePunchRpcClientFactory<BaseController>>(
-                self.peer_mgr.my_peer_id(),
-                dst_peer_id,
-                global_ctx.get_network_name(),
-            );
-
         let tid = rand::random();
         udp_array.add_intreast_tid(tid);
 
-        let remote_ret = rpc_stub
+        let remote_ret = self
+            .signaling
             .send_punch_packet_both_easy_sym(
-                BaseController {
-                    timeout_ms: 2000,
-                    ..Default::default()
-                },
-                SendPunchPacketBothEasySymRequest {
+                dst_peer_id,
+                SendPunchPacketBothEasySym {
                     transaction_id: tid,
-                    public_ip: Some(my_public_ip.into()),
+                    public_ip: my_public_ip,
                     dst_port_num: if me_is_incremental {
                         cur_mapped_addr.port().saturating_add(DST_PORT_OFFSET)
                     } else {
@@ -262,7 +250,7 @@ impl PunchBothEasySymHoleClient {
             )
             .await;
 
-        let remote_ret = handle_rpc_result(remote_ret, dst_peer_id, &self.blacklist)?;
+        let remote_ret = handle_signal_result(remote_ret, dst_peer_id, &self.blacklist)?;
 
         if remote_ret.is_busy {
             *is_busy = true;
@@ -274,15 +262,12 @@ impl PunchBothEasySymHoleClient {
             .ok_or(anyhow::anyhow!("remote_mapped_addr is required"))?;
 
         let now = Instant::now();
-        remote_mapped_addr.port = if peer_is_incremental {
-            remote_mapped_addr
-                .port
-                .saturating_add(DST_PORT_OFFSET as u32)
+        let remote_port = if peer_is_incremental {
+            remote_mapped_addr.port().saturating_add(DST_PORT_OFFSET)
         } else {
-            remote_mapped_addr
-                .port
-                .saturating_sub(DST_PORT_OFFSET as u32)
+            remote_mapped_addr.port().saturating_sub(DST_PORT_OFFSET)
         };
+        remote_mapped_addr.set_port(remote_port);
         tracing::debug!(
             ?remote_mapped_addr,
             ?remote_ret,
@@ -293,7 +278,7 @@ impl PunchBothEasySymHoleClient {
             udp_array
                 .send_with_all(
                     &new_hole_punch_packet(tid, HOLE_PUNCH_PACKET_BODY_LEN).into_bytes(),
-                    remote_mapped_addr.into(),
+                    remote_mapped_addr,
                 )
                 .await?;
 
@@ -319,7 +304,7 @@ impl PunchBothEasySymHoleClient {
                 match try_connect_with_socket(
                     global_ctx.clone(),
                     socket.socket.clone(),
-                    remote_mapped_addr.into(),
+                    remote_mapped_addr,
                 )
                 .await
                 {
