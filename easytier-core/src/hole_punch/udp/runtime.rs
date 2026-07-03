@@ -100,7 +100,7 @@ pub struct SendPunchPacketBothEasySymResponse {
     pub base_mapped_addr: Option<SocketAddr>,
 }
 
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum UdpHolePunchSignalError {
     #[error("invalid service key")]
     InvalidServiceKey,
@@ -110,6 +110,10 @@ pub enum UdpHolePunchSignalError {
     RemoteRejected(String),
     #[error("transport: {0}")]
     Transport(String),
+}
+
+pub fn should_blacklist_signal_error(error: &UdpHolePunchSignalError) -> bool {
+    matches!(error, UdpHolePunchSignalError::InvalidServiceKey)
 }
 
 #[async_trait]

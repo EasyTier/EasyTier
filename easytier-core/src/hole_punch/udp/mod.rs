@@ -25,6 +25,7 @@ pub use runtime::{
     UdpHolePunchPeerSource, UdpHolePunchRuntime, UdpHolePunchSignalError, UdpHolePunchSignaling,
     UdpHolePunchTunnelSink, UdpPortMappingLease, UdpPunchAcceptor, UdpPunchConnCounter,
     UdpPunchListener, UdpPunchSocket, UdpPunchSocketFactory, UdpResolvedPublicAddr,
+    should_blacklist_signal_error,
 };
 pub use server::{SelectedUdpPunchListener, UdpHolePunchServerCommon};
 pub use server::{send_cone_hole_punch_packets, send_symmetric_hole_punch_packet};

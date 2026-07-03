@@ -5,18 +5,20 @@ use quanta::Instant;
 use tokio::net::UdpSocket;
 use tokio_util::task::AbortOnDropHandle;
 
+use easytier_core::hole_punch::udp::{
+    SelectPunchListener, SendPunchPacketCone, UdpHolePunchSignaling,
+};
+
 use crate::{
     common::{PeerId, upnp},
     connector::udp_hole_punch::common::{
         HOLE_PUNCH_PACKET_BODY_LEN, RuntimeUdpPunchSocket, UdpSocketArray, try_connect_with_socket,
     },
-    connector::udp_hole_punch::handle_rpc_result,
+    connector::udp_hole_punch::{handle_signal_result, signaling::PeerRpcUdpHolePunchSignaling},
     peers::peer_manager::PeerManager,
     proto::{
         common::Void,
-        peer_rpc::{
-            SelectPunchListenerRequest, SendPunchPacketConeRequest, UdpHolePunchRpcClientFactory,
-        },
+        peer_rpc::SendPunchPacketConeRequest,
         rpc_types::{self, controller::BaseController},
     },
     tunnel::{Tunnel, udp::new_hole_punch_packet},
@@ -75,6 +77,7 @@ impl PunchConeHoleServer {
 
 pub(crate) struct PunchConeHoleClient {
     peer_mgr: Arc<PeerManager>,
+    signaling: PeerRpcUdpHolePunchSignaling,
     blacklist: Arc<timedmap::TimedMap<PeerId, ()>>,
 }
 
@@ -84,7 +87,8 @@ impl PunchConeHoleClient {
         blacklist: Arc<timedmap::TimedMap<PeerId, ()>>,
     ) -> Self {
         Self {
-            peer_mgr,
+            peer_mgr: peer_mgr.clone(),
+            signaling: PeerRpcUdpHolePunchSignaling::new(peer_mgr),
             blacklist,
         }
     }
@@ -105,31 +109,19 @@ impl PunchConeHoleClient {
         let global_ctx = self.peer_mgr.get_global_ctx();
         let udp_array = UdpSocketArray::new(1, global_ctx.net_ns.clone());
 
-        let rpc_stub = self
-            .peer_mgr
-            .get_peer_rpc_mgr()
-            .rpc_client()
-            .scoped_client::<UdpHolePunchRpcClientFactory<BaseController>>(
-                self.peer_mgr.my_peer_id(),
-                dst_peer_id,
-                global_ctx.get_network_name(),
-            );
-
-        let resp = rpc_stub
+        let resp = self
+            .signaling
             .select_punch_listener(
-                BaseController::default(),
-                SelectPunchListenerRequest {
+                dst_peer_id,
+                SelectPunchListener {
                     force_new: false,
                     prefer_port_mapping: true,
                 },
             )
             .await;
 
-        let resp = handle_rpc_result(resp, dst_peer_id, &self.blacklist)?;
-
-        let remote_mapped_addr = resp.listener_mapped_addr.ok_or(anyhow::anyhow!(
-            "select_punch_listener response missing listener_mapped_addr"
-        ))?;
+        let resp = handle_signal_result(resp, dst_peer_id, &self.blacklist)?;
+        let remote_mapped_addr = resp.listener_mapped_addr;
 
         let local_socket = {
             let _g = self.peer_mgr.get_global_ctx().net_ns.guard();
@@ -161,7 +153,7 @@ impl PunchConeHoleClient {
             udp_array
                 .send_with_all(
                     &new_hole_punch_packet(tid, HOLE_PUNCH_PACKET_BODY_LEN).into_bytes(),
-                    remote_mapped_addr.into(),
+                    remote_mapped_addr,
                 )
                 .await
                 .with_context(|| "failed to send hole punch packet from local")
@@ -169,16 +161,14 @@ impl PunchConeHoleClient {
 
         send_from_local().await?;
 
+        let signaling = self.signaling.clone();
         let punch_task = AbortOnDropHandle::new(tokio::spawn(async move {
-            if let Err(e) = rpc_stub
+            if let Err(e) = signaling
                 .send_punch_packet_cone(
-                    BaseController {
-                        timeout_ms: 4000,
-                        ..Default::default()
-                    },
-                    SendPunchPacketConeRequest {
-                        listener_mapped_addr: Some(remote_mapped_addr),
-                        dest_addr: Some(local_mapped_addr.into()),
+                    dst_peer_id,
+                    SendPunchPacketCone {
+                        listener_mapped_addr: remote_mapped_addr,
+                        dest_addr: local_mapped_addr,
                         transaction_id: tid,
                         packet_count_per_batch: 2,
                         packet_batch_count: 5,
@@ -214,7 +204,7 @@ impl PunchConeHoleClient {
                 match try_connect_with_socket(
                     global_ctx.clone(),
                     socket.socket.clone(),
-                    remote_mapped_addr.into(),
+                    remote_mapped_addr,
                 )
                 .await
                 {
