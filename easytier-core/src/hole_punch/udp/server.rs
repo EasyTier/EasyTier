@@ -7,22 +7,255 @@ use std::{
 use anyhow::Context;
 use crossbeam::atomic::AtomicCell;
 use quanta::Instant;
+use rand::{Rng, seq::SliceRandom as _};
 use tokio::{sync::Mutex, task::JoinSet};
 use tokio_util::task::AbortOnDropHandle;
 
+use crate::config::PeerId;
+
 use super::{
     HOLE_PUNCH_PACKET_BODY_LEN, MAX_PUBLIC_UDP_HOLE_PUNCH_LISTENERS, ReusableUdpPunchListener,
-    SendPunchPacketBothEasySym, SendPunchPacketBothEasySymResponse, SendPunchPacketCone,
-    UdpHolePunchRuntime, UdpHolePunchTunnelSink, UdpPortMappingLease, UdpPunchConnCounter,
-    UdpPunchListener, UdpPunchSocket, UdpSocketArray, can_reuse_port_mapping_listener,
-    can_reuse_public_listener, new_hole_punch_packet, select_reusable_port_mapping_listener_idx,
+    SelectPunchListener, SelectPunchListenerResponse, SendPunchPacketBothEasySym,
+    SendPunchPacketBothEasySymResponse, SendPunchPacketCone, SendPunchPacketEasySym,
+    SendPunchPacketHardSym, SendPunchPacketHardSymResponse, UdpHolePunchInbound,
+    UdpHolePunchRuntime, UdpHolePunchSignalError, UdpHolePunchTunnelSink, UdpPortMappingLease,
+    UdpPunchConnCounter, UdpPunchListener, UdpPunchSocket, UdpSocketArray,
+    can_reuse_port_mapping_listener, can_reuse_public_listener, get_udp_sym_punch_lock,
+    new_hole_punch_packet, select_reusable_port_mapping_listener_idx,
     select_reusable_public_listener_idx, should_create_public_listener,
     should_retry_public_listener_selection,
 };
 
+const MAX_K1_FOR_RANDOM_HARD_SYM: u32 = 180;
+
 pub struct SelectedUdpPunchListener<S> {
     pub socket: Arc<S>,
     pub mapped_addr: SocketAddr,
+}
+
+pub struct UdpHolePunchServer<R, T>
+where
+    R: UdpHolePunchRuntime,
+    T: UdpHolePunchTunnelSink + 'static,
+{
+    local_peer_id: PeerId,
+    common: Arc<UdpHolePunchServerCommon<R, T>>,
+    both_easy_sym_server: UdpBothEasySymPunchServer<R, T>,
+    shuffled_port_vec: Arc<Vec<u16>>,
+}
+
+impl<R, T> UdpHolePunchServer<R, T>
+where
+    R: UdpHolePunchRuntime,
+    T: UdpHolePunchTunnelSink + 'static,
+{
+    pub fn new(local_peer_id: PeerId, runtime: Arc<R>, tunnel_sink: Arc<T>) -> Self {
+        let common = Arc::new(UdpHolePunchServerCommon::new(runtime, tunnel_sink));
+        let both_easy_sym_server = UdpBothEasySymPunchServer::new(common.clone());
+        let mut shuffled_port_vec: Vec<u16> = (1..=65535).collect();
+        shuffled_port_vec.shuffle(&mut rand::thread_rng());
+
+        Self {
+            local_peer_id,
+            common,
+            both_easy_sym_server,
+            shuffled_port_vec: Arc::new(shuffled_port_vec),
+        }
+    }
+
+    fn busy_signal_error() -> UdpHolePunchSignalError {
+        UdpHolePunchSignalError::RemoteRejected("sym punch lock is busy".into())
+    }
+
+    fn anyhow_to_signal_error(error: anyhow::Error) -> UdpHolePunchSignalError {
+        UdpHolePunchSignalError::RemoteRejected(error.to_string())
+    }
+
+    async fn send_punch_packet_easy_sym_inner(
+        &self,
+        request: SendPunchPacketEasySym,
+    ) -> anyhow::Result<()> {
+        tracing::info!("send_punch_packet_easy_sym start");
+
+        let listener = self
+            .common
+            .find_listener(&request.listener_mapped_addr)
+            .await
+            .ok_or(anyhow::anyhow!(
+                "send_punch_packet_easy_sym failed to find listener"
+            ))?;
+
+        if request.public_ips.is_empty() {
+            tracing::warn!("send_punch_packet_easy_sym got zero len public ip");
+            anyhow::bail!("send_punch_packet_easy_sym got zero len public ip");
+        }
+
+        let base_port_num = request.base_port_num;
+        let max_port_num = request.max_port_num.max(1);
+        let port_start = if request.is_incremental {
+            base_port_num.saturating_add(1)
+        } else {
+            base_port_num.saturating_sub(max_port_num)
+        };
+        let port_end = if request.is_incremental {
+            base_port_num.saturating_add(max_port_num)
+        } else {
+            base_port_num.saturating_sub(1)
+        };
+
+        if port_end <= port_start {
+            anyhow::bail!("send_punch_packet_easy_sym invalid port range");
+        }
+
+        let ports = (port_start..=port_end)
+            .map(|port| port as u16)
+            .collect::<Vec<_>>();
+        tracing::debug!(
+            ?ports,
+            public_ips = ?request.public_ips,
+            "send_punch_packet_easy_sym send to ports"
+        );
+
+        for _ in 0..2 {
+            send_symmetric_hole_punch_packet(
+                &ports,
+                listener.clone(),
+                request.transaction_id,
+                &request.public_ips,
+                0,
+                ports.len(),
+            )
+            .await
+            .with_context(|| "failed to send symmetric hole punch packet")?;
+        }
+
+        Ok(())
+    }
+
+    async fn send_punch_packet_hard_sym_inner(
+        &self,
+        request: SendPunchPacketHardSym,
+    ) -> anyhow::Result<SendPunchPacketHardSymResponse> {
+        tracing::info!("try_punch_symmetric start");
+
+        let listener = self
+            .common
+            .find_listener(&request.listener_mapped_addr)
+            .await
+            .ok_or(anyhow::anyhow!(
+                "send_punch_packet_for_cone failed to find listener"
+            ))?;
+
+        if request.public_ips.is_empty() {
+            tracing::warn!("try_punch_symmetric got zero len public ip");
+            anyhow::bail!("try_punch_symmetric got zero len public ip");
+        }
+
+        let last_port_index = request.port_index as usize;
+        let round = request.round.max(1);
+        let mut max_k2: u32 = rand::thread_rng().gen_range(600..800);
+        if round > 2 {
+            max_k2 = (max_k2 * 2 / round).max(MAX_K1_FOR_RANDOM_HARD_SYM);
+        }
+
+        let mut next_port_index = 0;
+        for _ in 0..2 {
+            next_port_index = send_symmetric_hole_punch_packet(
+                &self.shuffled_port_vec,
+                listener.clone(),
+                request.transaction_id,
+                &request.public_ips,
+                last_port_index,
+                max_k2 as usize,
+            )
+            .await
+            .with_context(|| "failed to send symmetric hole punch packet randomly")?;
+        }
+
+        Ok(SendPunchPacketHardSymResponse {
+            next_port_index: next_port_index as u32,
+        })
+    }
+}
+
+#[async_trait::async_trait]
+impl<R, T> UdpHolePunchInbound for UdpHolePunchServer<R, T>
+where
+    R: UdpHolePunchRuntime,
+    T: UdpHolePunchTunnelSink + 'static,
+{
+    async fn select_punch_listener(
+        &self,
+        request: SelectPunchListener,
+    ) -> Result<SelectPunchListenerResponse, UdpHolePunchSignalError> {
+        let selected = self
+            .common
+            .select_listener(request.force_new, request.prefer_port_mapping)
+            .await
+            .ok_or_else(|| {
+                UdpHolePunchSignalError::RemoteRejected("no listener available".into())
+            })?;
+
+        Ok(SelectPunchListenerResponse {
+            listener_mapped_addr: selected.mapped_addr,
+        })
+    }
+
+    async fn send_punch_packet_cone(
+        &self,
+        request: SendPunchPacketCone,
+    ) -> Result<(), UdpHolePunchSignalError> {
+        let listener = self
+            .common
+            .find_listener(&request.listener_mapped_addr)
+            .await
+            .ok_or_else(|| {
+                UdpHolePunchSignalError::RemoteRejected(
+                    "send_punch_packet_for_cone failed to find listener".into(),
+                )
+            })?;
+
+        send_cone_hole_punch_packets(listener, &request)
+            .await
+            .map_err(Self::anyhow_to_signal_error)
+    }
+
+    async fn send_punch_packet_hard_sym(
+        &self,
+        request: SendPunchPacketHardSym,
+    ) -> Result<SendPunchPacketHardSymResponse, UdpHolePunchSignalError> {
+        let _locked = get_udp_sym_punch_lock(self.local_peer_id)
+            .try_lock_owned()
+            .map_err(|_| Self::busy_signal_error())?;
+        self.send_punch_packet_hard_sym_inner(request)
+            .await
+            .map_err(Self::anyhow_to_signal_error)
+    }
+
+    async fn send_punch_packet_easy_sym(
+        &self,
+        request: SendPunchPacketEasySym,
+    ) -> Result<(), UdpHolePunchSignalError> {
+        let _locked = get_udp_sym_punch_lock(self.local_peer_id)
+            .try_lock_owned()
+            .map_err(|_| Self::busy_signal_error())?;
+        self.send_punch_packet_easy_sym_inner(request)
+            .await
+            .map_err(Self::anyhow_to_signal_error)
+    }
+
+    async fn send_punch_packet_both_easy_sym(
+        &self,
+        request: SendPunchPacketBothEasySym,
+    ) -> Result<SendPunchPacketBothEasySymResponse, UdpHolePunchSignalError> {
+        let _locked = get_udp_sym_punch_lock(self.local_peer_id)
+            .try_lock_owned()
+            .map_err(|_| Self::busy_signal_error())?;
+        self.both_easy_sym_server
+            .send_punch_packet_both_easy_sym(request)
+            .await
+            .map_err(Self::anyhow_to_signal_error)
+    }
 }
 
 pub struct UdpHolePunchServerCommon<R, T>

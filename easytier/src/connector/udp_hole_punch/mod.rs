@@ -7,12 +7,9 @@ use std::{
 };
 
 use anyhow::Error;
-use both_easy_sym::PunchBothEasySymHoleServer;
 use common::{
-    PunchHoleServerCommon, RuntimeUdpHolePunchPeerSource, RuntimeUdpHolePunchRuntime,
-    RuntimeUdpHolePunchTunnelSink,
+    RuntimeUdpHolePunchPeerSource, RuntimeUdpHolePunchRuntime, RuntimeUdpHolePunchTunnelSink,
 };
-use cone::PunchConeHoleServer;
 use easytier_core::hole_punch::udp::{
     BLACKLIST_TIMEOUT_SEC, SelectPunchListener as CoreSelectPunchListener,
     SelectPunchListenerResponse as CoreSelectPunchListenerResponse,
@@ -23,12 +20,11 @@ use easytier_core::hole_punch::udp::{
     SendPunchPacketHardSym as CoreSendPunchPacketHardSym,
     SendPunchPacketHardSymResponse as CoreSendPunchPacketHardSymResponse,
     UdpHolePunchConnector as CoreUdpHolePunchConnector, UdpHolePunchInbound,
-    UdpHolePunchServerCommon as CoreUdpHolePunchServerCommon, UdpHolePunchSignalError,
-    get_udp_sym_punch_lock, should_blacklist_signal_error,
+    UdpHolePunchServer as CoreUdpHolePunchServer, UdpHolePunchSignalError,
+    should_blacklist_signal_error,
 };
 use once_cell::sync::Lazy;
 use signaling::PeerRpcUdpHolePunchSignaling;
-use sym_to_cone::PunchSymToConeHoleServer;
 
 use crate::{
     common::PeerId,
@@ -57,42 +53,18 @@ pub use easytier_core::hole_punch::udp::BackOff;
 pub static RUN_TESTING: Lazy<AtomicBool> = Lazy::new(|| AtomicBool::new(false));
 
 struct UdpHolePunchServer {
-    common: Arc<PunchHoleServerCommon>,
-    cone_server: PunchConeHoleServer,
-    sym_to_cone_server: PunchSymToConeHoleServer,
-    both_easy_sym_server: PunchBothEasySymHoleServer,
+    inner: CoreUdpHolePunchServer<RuntimeUdpHolePunchRuntime, RuntimeUdpHolePunchTunnelSink>,
 }
 
 impl UdpHolePunchServer {
     pub fn new(peer_mgr: Arc<PeerManager>) -> Arc<Self> {
-        let common = Arc::new(PunchHoleServerCommon::new(peer_mgr.clone()));
-        let cone_server = PunchConeHoleServer::new(common.clone());
-        let sym_to_cone_server = PunchSymToConeHoleServer::new(common.clone());
-        let core_common = Arc::new(CoreUdpHolePunchServerCommon::new(
+        let inner = CoreUdpHolePunchServer::new(
+            peer_mgr.my_peer_id(),
             Arc::new(RuntimeUdpHolePunchRuntime::new(peer_mgr.get_global_ctx())),
             Arc::new(RuntimeUdpHolePunchTunnelSink::new(peer_mgr)),
-        ));
-        let both_easy_sym_server = PunchBothEasySymHoleServer::new(core_common);
+        );
 
-        Arc::new(Self {
-            common,
-            cone_server,
-            sym_to_cone_server,
-            both_easy_sym_server,
-        })
-    }
-}
-
-fn rpc_error_to_signal_error(error: rpc_types::error::Error) -> UdpHolePunchSignalError {
-    match error {
-        rpc_types::error::Error::InvalidServiceKey(_, _) => {
-            UdpHolePunchSignalError::InvalidServiceKey
-        }
-        rpc_types::error::Error::Timeout(_) => UdpHolePunchSignalError::Timeout,
-        rpc_types::error::Error::ExecutionError(error) => {
-            UdpHolePunchSignalError::RemoteRejected(error.to_string())
-        }
-        other => UdpHolePunchSignalError::Transport(other.to_string()),
+        Arc::new(Self { inner })
     }
 }
 
@@ -114,113 +86,35 @@ impl UdpHolePunchInbound for UdpHolePunchServer {
         &self,
         request: CoreSelectPunchListener,
     ) -> Result<CoreSelectPunchListenerResponse, UdpHolePunchSignalError> {
-        let (_, addr) = self
-            .common
-            .select_listener(request.force_new, request.prefer_port_mapping)
-            .await
-            .ok_or_else(|| {
-                UdpHolePunchSignalError::RemoteRejected("no listener available".into())
-            })?;
-
-        Ok(CoreSelectPunchListenerResponse {
-            listener_mapped_addr: addr,
-        })
+        self.inner.select_punch_listener(request).await
     }
 
     async fn send_punch_packet_cone(
         &self,
         request: CoreSendPunchPacketCone,
     ) -> Result<(), UdpHolePunchSignalError> {
-        self.cone_server
-            .send_punch_packet_cone(
-                BaseController::default(),
-                SendPunchPacketConeRequest {
-                    listener_mapped_addr: Some(request.listener_mapped_addr.into()),
-                    dest_addr: Some(request.dest_addr.into()),
-                    transaction_id: request.transaction_id,
-                    packet_count_per_batch: request.packet_count_per_batch,
-                    packet_batch_count: request.packet_batch_count,
-                    packet_interval_ms: request.packet_interval_ms,
-                },
-            )
-            .await
-            .map(|_| ())
-            .map_err(rpc_error_to_signal_error)
+        self.inner.send_punch_packet_cone(request).await
     }
 
     async fn send_punch_packet_hard_sym(
         &self,
         request: CoreSendPunchPacketHardSym,
     ) -> Result<CoreSendPunchPacketHardSymResponse, UdpHolePunchSignalError> {
-        let _locked = get_udp_sym_punch_lock(self.common.get_peer_mgr().my_peer_id())
-            .try_lock_owned()
-            .map_err(|_| {
-                UdpHolePunchSignalError::RemoteRejected("sym punch lock is busy".into())
-            })?;
-        let response = self
-            .sym_to_cone_server
-            .send_punch_packet_hard_sym(SendPunchPacketHardSymRequest {
-                listener_mapped_addr: Some(request.listener_mapped_addr.into()),
-                public_ips: request.public_ips.into_iter().map(Into::into).collect(),
-                transaction_id: request.transaction_id,
-                port_index: request.port_index,
-                round: request.round,
-            })
-            .await
-            .map_err(rpc_error_to_signal_error)?;
-
-        Ok(CoreSendPunchPacketHardSymResponse {
-            next_port_index: response.next_port_index,
-        })
+        self.inner.send_punch_packet_hard_sym(request).await
     }
 
     async fn send_punch_packet_easy_sym(
         &self,
         request: CoreSendPunchPacketEasySym,
     ) -> Result<(), UdpHolePunchSignalError> {
-        let _locked = get_udp_sym_punch_lock(self.common.get_peer_mgr().my_peer_id())
-            .try_lock_owned()
-            .map_err(|_| {
-                UdpHolePunchSignalError::RemoteRejected("sym punch lock is busy".into())
-            })?;
-        self.sym_to_cone_server
-            .send_punch_packet_easy_sym(SendPunchPacketEasySymRequest {
-                listener_mapped_addr: Some(request.listener_mapped_addr.into()),
-                public_ips: request.public_ips.into_iter().map(Into::into).collect(),
-                transaction_id: request.transaction_id,
-                base_port_num: request.base_port_num,
-                max_port_num: request.max_port_num,
-                is_incremental: request.is_incremental,
-            })
-            .await
-            .map_err(rpc_error_to_signal_error)
+        self.inner.send_punch_packet_easy_sym(request).await
     }
 
     async fn send_punch_packet_both_easy_sym(
         &self,
         request: CoreSendPunchPacketBothEasySym,
     ) -> Result<CoreSendPunchPacketBothEasySymResponse, UdpHolePunchSignalError> {
-        let _locked = get_udp_sym_punch_lock(self.common.get_peer_mgr().my_peer_id())
-            .try_lock_owned()
-            .map_err(|_| {
-                UdpHolePunchSignalError::RemoteRejected("sym punch lock is busy".into())
-            })?;
-        let response = self
-            .both_easy_sym_server
-            .send_punch_packet_both_easy_sym(SendPunchPacketBothEasySymRequest {
-                transaction_id: request.transaction_id,
-                public_ip: Some(request.public_ip.into()),
-                dst_port_num: request.dst_port_num,
-                udp_socket_count: request.udp_socket_count,
-                wait_time_ms: request.wait_time_ms,
-            })
-            .await
-            .map_err(rpc_error_to_signal_error)?;
-
-        Ok(CoreSendPunchPacketBothEasySymResponse {
-            is_busy: response.is_busy,
-            base_mapped_addr: response.base_mapped_addr.map(Into::into),
-        })
+        self.inner.send_punch_packet_both_easy_sym(request).await
     }
 }
 
