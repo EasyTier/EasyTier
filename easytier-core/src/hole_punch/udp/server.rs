@@ -50,8 +50,12 @@ where
     T: UdpHolePunchTunnelSink + 'static,
 {
     pub fn new(local_peer_id: PeerId, runtime: Arc<R>, tunnel_sink: Arc<T>) -> Self {
-        let common = Arc::new(UdpHolePunchServerCommon::new(runtime, tunnel_sink));
-        let both_easy_sym_server = UdpBothEasySymPunchServer::new(common.clone());
+        let common = Arc::new(UdpHolePunchServerCommon::new(
+            runtime.clone(),
+            tunnel_sink.clone(),
+        ));
+        let both_easy_sym_common = Arc::new(UdpHolePunchServerCommon::new(runtime, tunnel_sink));
+        let both_easy_sym_server = UdpBothEasySymPunchServer::new(both_easy_sym_common);
         let mut shuffled_port_vec: Vec<u16> = (1..=65535).collect();
         shuffled_port_vec.shuffle(&mut rand::thread_rng());
 
@@ -909,6 +913,18 @@ mod tests {
             }),
             port_mapping_lease: None,
         }
+    }
+
+    #[tokio::test]
+    async fn server_keeps_both_easy_sym_listener_pool_separate() {
+        let runtime = Arc::new(MockRuntime::new(Vec::new()));
+        let sink = Arc::new(MockSink::default());
+        let server = UdpHolePunchServer::new(1, runtime, sink);
+
+        assert!(!Arc::ptr_eq(
+            &server.common,
+            &server.both_easy_sym_server.common
+        ));
     }
 
     #[tokio::test]
