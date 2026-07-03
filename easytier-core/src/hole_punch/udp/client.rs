@@ -1,5 +1,5 @@
 use std::{
-    net::{Ipv4Addr, SocketAddr},
+    net::{IpAddr, Ipv4Addr, SocketAddr},
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -15,9 +15,10 @@ use tokio_util::task::AbortOnDropHandle;
 use crate::{config::PeerId, tunnel::Tunnel};
 
 use super::{
-    HOLE_PUNCH_PACKET_BODY_LEN, SelectPunchListener, SendPunchPacketCone, SendPunchPacketEasySym,
-    SendPunchPacketHardSym, UdpHolePunchRuntime, UdpHolePunchSignalError, UdpHolePunchSignaling,
-    UdpNatType, UdpSocketArray, new_hole_punch_packet,
+    HOLE_PUNCH_PACKET_BODY_LEN, SelectPunchListener, SendPunchPacketBothEasySym,
+    SendPunchPacketCone, SendPunchPacketEasySym, SendPunchPacketHardSym, UdpHolePunchRuntime,
+    UdpHolePunchSignalError, UdpHolePunchSignaling, UdpNatType, UdpSocketArray,
+    new_hole_punch_packet,
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -31,6 +32,18 @@ pub enum UdpHolePunchClientError {
 pub type UdpHolePunchClientResult<T> = Result<T, UdpHolePunchClientError>;
 
 const UDP_ARRAY_SIZE_FOR_HARD_SYM: usize = 84;
+const UDP_ARRAY_SIZE_FOR_BOTH_EASY_SYM: usize = 25;
+const DST_PORT_OFFSET: u16 = 20;
+const REMOTE_WAIT_TIME_MS: u64 = 5000;
+
+pub fn apply_peer_easy_sym_port_offset(base_port: u16, peer_is_incremental: bool) -> u16 {
+    let port = if peer_is_incremental {
+        (base_port as u32).saturating_add(DST_PORT_OFFSET as u32)
+    } else {
+        (base_port as u32).saturating_sub(DST_PORT_OFFSET as u32)
+    };
+    port as u16
+}
 
 #[tracing::instrument(skip(runtime, signaling), fields(dst_peer_id), err)]
 pub async fn punch_cone_to_cone<R, S>(
@@ -426,6 +439,140 @@ where
     }
 }
 
+pub struct UdpBothEasySymPunchClient<R, S>
+where
+    R: UdpHolePunchRuntime,
+    S: UdpHolePunchSignaling + 'static,
+{
+    runtime: Arc<R>,
+    signaling: Arc<S>,
+}
+
+impl<R, S> UdpBothEasySymPunchClient<R, S>
+where
+    R: UdpHolePunchRuntime,
+    S: UdpHolePunchSignaling + 'static,
+{
+    pub fn new(runtime: Arc<R>, signaling: Arc<S>) -> Self {
+        Self { runtime, signaling }
+    }
+
+    #[tracing::instrument(ret, skip(self))]
+    pub async fn do_hole_punching(
+        &self,
+        dst_peer_id: PeerId,
+        my_nat_info: UdpNatType,
+        peer_nat_info: UdpNatType,
+        is_busy: &mut bool,
+    ) -> UdpHolePunchClientResult<Option<Box<dyn Tunnel>>> {
+        *is_busy = false;
+
+        let udp_array = UdpSocketArray::new(UDP_ARRAY_SIZE_FOR_BOTH_EASY_SYM, self.runtime.clone());
+        udp_array.start().await?;
+
+        let cur_mapped_addr = self.runtime.get_udp_port_mapping(0).await?;
+        let my_public_ip = match cur_mapped_addr.ip() {
+            IpAddr::V4(v4) => v4,
+            _ => {
+                return Err(anyhow::anyhow!("ipv6 is not supported").into());
+            }
+        };
+        let me_is_incremental = my_nat_info
+            .get_inc_of_easy_sym()
+            .ok_or(anyhow::anyhow!("me_is_incremental is required"))?;
+        let peer_is_incremental = peer_nat_info
+            .get_inc_of_easy_sym()
+            .ok_or(anyhow::anyhow!("peer_is_incremental is required"))?;
+
+        let tid = rand::random();
+        udp_array.add_intreast_tid(tid);
+
+        let remote_ret = self
+            .signaling
+            .send_punch_packet_both_easy_sym(
+                dst_peer_id,
+                SendPunchPacketBothEasySym {
+                    transaction_id: tid,
+                    public_ip: my_public_ip,
+                    dst_port_num: if me_is_incremental {
+                        cur_mapped_addr.port().saturating_add(DST_PORT_OFFSET)
+                    } else {
+                        cur_mapped_addr.port().saturating_sub(DST_PORT_OFFSET)
+                    } as u32,
+                    udp_socket_count: UDP_ARRAY_SIZE_FOR_BOTH_EASY_SYM as u32,
+                    wait_time_ms: REMOTE_WAIT_TIME_MS as u32,
+                },
+            )
+            .await?;
+
+        if remote_ret.is_busy {
+            *is_busy = true;
+            return Err(anyhow::anyhow!("remote is busy").into());
+        }
+
+        let mut remote_mapped_addr = remote_ret
+            .base_mapped_addr
+            .ok_or(anyhow::anyhow!("remote_mapped_addr is required"))?;
+
+        let now = Instant::now();
+        remote_mapped_addr.set_port(apply_peer_easy_sym_port_offset(
+            remote_mapped_addr.port(),
+            peer_is_incremental,
+        ));
+        tracing::debug!(
+            ?remote_mapped_addr,
+            ?remote_ret,
+            "start send hole punch packet for both easy sym"
+        );
+
+        while now.elapsed().as_millis() < (REMOTE_WAIT_TIME_MS + 1000).into() {
+            udp_array
+                .send_with_all(
+                    &new_hole_punch_packet(tid, HOLE_PUNCH_PACKET_BODY_LEN).into_bytes(),
+                    remote_mapped_addr,
+                )
+                .await?;
+
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+            let Some(socket) = udp_array.try_fetch_punched_socket(tid) else {
+                tracing::trace!(
+                    ?remote_mapped_addr,
+                    ?tid,
+                    "no punched socket found, send some more hole punch packets"
+                );
+                continue;
+            };
+
+            tracing::info!(
+                ?socket,
+                ?remote_mapped_addr,
+                ?tid,
+                "got punched socket in both easy sym"
+            );
+
+            for _ in 0..2 {
+                match self
+                    .runtime
+                    .connect_with_socket(socket.socket.clone(), remote_mapped_addr)
+                    .await
+                {
+                    Ok(tunnel) => {
+                        return Ok(Some(tunnel));
+                    }
+                    Err(e) => {
+                        tracing::error!(?e, "failed to connect with socket");
+                        continue;
+                    }
+                }
+            }
+            udp_array.add_new_socket(socket.socket).await?;
+        }
+
+        Ok(None)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::{
@@ -602,6 +749,8 @@ mod tests {
     struct RecordingSignaling {
         easy_requests: tokio::sync::Mutex<Vec<SendPunchPacketEasySym>>,
         hard_requests: tokio::sync::Mutex<Vec<SendPunchPacketHardSym>>,
+        both_requests: tokio::sync::Mutex<Vec<SendPunchPacketBothEasySym>>,
+        both_response: super::super::SendPunchPacketBothEasySymResponse,
         next_port_index: u32,
     }
 
@@ -610,8 +759,21 @@ mod tests {
             Self {
                 easy_requests: tokio::sync::Mutex::new(Vec::new()),
                 hard_requests: tokio::sync::Mutex::new(Vec::new()),
+                both_requests: tokio::sync::Mutex::new(Vec::new()),
+                both_response: super::super::SendPunchPacketBothEasySymResponse {
+                    is_busy: false,
+                    base_mapped_addr: Some(SocketAddr::from(([127, 0, 0, 1], 40144))),
+                },
                 next_port_index,
             }
+        }
+
+        fn with_both_response(
+            mut self,
+            both_response: super::super::SendPunchPacketBothEasySymResponse,
+        ) -> Self {
+            self.both_response = both_response;
+            self
         }
     }
 
@@ -658,10 +820,11 @@ mod tests {
         async fn send_punch_packet_both_easy_sym(
             &self,
             _dst_peer_id: PeerId,
-            _request: super::super::SendPunchPacketBothEasySym,
+            request: SendPunchPacketBothEasySym,
         ) -> Result<super::super::SendPunchPacketBothEasySymResponse, UdpHolePunchSignalError>
         {
-            unimplemented!("not used by sym-to-cone client tests")
+            self.both_requests.lock().await.push(request);
+            Ok(self.both_response.clone())
         }
     }
 
@@ -726,5 +889,53 @@ mod tests {
         assert_eq!(req.round, 4);
         assert_eq!(req.port_index, 123);
         assert_eq!(last_port_idx, 321);
+    }
+
+    #[test]
+    fn both_easy_sym_port_offset_preserves_old_proto_cast_semantics() {
+        assert_eq!(apply_peer_easy_sym_port_offset(65530, true), 14);
+        assert_eq!(apply_peer_easy_sym_port_offset(10, false), 0);
+    }
+
+    #[tokio::test]
+    async fn both_easy_sym_sends_remote_request_and_reports_busy() {
+        let runtime = Arc::new(MockRuntime::new());
+        let signaling = Arc::new(RecordingSignaling::new(0).with_both_response(
+            super::super::SendPunchPacketBothEasySymResponse {
+                is_busy: true,
+                base_mapped_addr: None,
+            },
+        ));
+        let client = UdpBothEasySymPunchClient::new(runtime.clone(), signaling.clone());
+
+        let mut is_busy = false;
+        let err = client
+            .do_hole_punching(
+                2,
+                NatType::SymmetricEasyInc.into(),
+                NatType::SymmetricEasyDec.into(),
+                &mut is_busy,
+            )
+            .await
+            .unwrap_err();
+
+        assert!(is_busy);
+        assert!(err.to_string().contains("remote is busy"));
+        assert_eq!(runtime.port_mapping_count.load(Ordering::Relaxed), 1);
+        assert_eq!(
+            runtime.bind_count.load(Ordering::Relaxed),
+            UDP_ARRAY_SIZE_FOR_BOTH_EASY_SYM
+        );
+
+        let both_requests = signaling.both_requests.lock().await;
+        assert_eq!(both_requests.len(), 1);
+        let req = &both_requests[0];
+        assert_eq!(req.public_ip, Ipv4Addr::new(203, 0, 113, 1));
+        assert_eq!(req.dst_port_num, 10020);
+        assert_eq!(
+            req.udp_socket_count,
+            UDP_ARRAY_SIZE_FOR_BOTH_EASY_SYM as u32
+        );
+        assert_eq!(req.wait_time_ms, REMOTE_WAIT_TIME_MS as u32);
     }
 }

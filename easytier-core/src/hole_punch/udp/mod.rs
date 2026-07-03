@@ -10,7 +10,8 @@ mod socket_array;
 mod task;
 
 pub use client::{
-    UdpHolePunchClientError, UdpHolePunchClientResult, UdpSymToConePunchClient, punch_cone_to_cone,
+    UdpBothEasySymPunchClient, UdpHolePunchClientError, UdpHolePunchClientResult,
+    UdpSymToConePunchClient, apply_peer_easy_sym_port_offset, punch_cone_to_cone,
 };
 pub use common::{BLACKLIST_TIMEOUT_SEC, BackOff, UdpNatType, UdpPunchClientMethod};
 pub use listener::{
