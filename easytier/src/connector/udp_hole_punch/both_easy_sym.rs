@@ -30,6 +30,15 @@ const UDP_ARRAY_SIZE_FOR_BOTH_EASY_SYM: usize = 25;
 const DST_PORT_OFFSET: u16 = 20;
 const REMOTE_WAIT_TIME_MS: u64 = 5000;
 
+fn apply_peer_easy_sym_port_offset(base_port: u16, peer_is_incremental: bool) -> u16 {
+    let port = if peer_is_incremental {
+        (base_port as u32).saturating_add(DST_PORT_OFFSET as u32)
+    } else {
+        (base_port as u32).saturating_sub(DST_PORT_OFFSET as u32)
+    };
+    port as u16
+}
+
 pub(crate) struct PunchBothEasySymHoleServer {
     common: Arc<PunchHoleServerCommon>,
     task: Mutex<Option<AbortOnDropHandle<()>>>,
@@ -262,12 +271,10 @@ impl PunchBothEasySymHoleClient {
             .ok_or(anyhow::anyhow!("remote_mapped_addr is required"))?;
 
         let now = Instant::now();
-        let remote_port = if peer_is_incremental {
-            remote_mapped_addr.port().saturating_add(DST_PORT_OFFSET)
-        } else {
-            remote_mapped_addr.port().saturating_sub(DST_PORT_OFFSET)
-        };
-        remote_mapped_addr.set_port(remote_port);
+        remote_mapped_addr.set_port(apply_peer_easy_sym_port_offset(
+            remote_mapped_addr.port(),
+            peer_is_incremental,
+        ));
         tracing::debug!(
             ?remote_mapped_addr,
             ?remote_ret,
@@ -333,6 +340,7 @@ pub mod tests {
 
     use tokio::net::UdpSocket;
 
+    use super::apply_peer_easy_sym_port_offset;
     use crate::connector::udp_hole_punch::RUN_TESTING;
     use crate::{
         connector::udp_hole_punch::{
@@ -342,6 +350,12 @@ pub mod tests {
         proto::common::NatType,
         tunnel::common::tests::wait_for_condition,
     };
+
+    #[test]
+    fn easy_sym_remote_port_offset_preserves_old_proto_cast_semantics() {
+        assert_eq!(apply_peer_easy_sym_port_offset(65530, true), 14);
+        assert_eq!(apply_peer_easy_sym_port_offset(10, false), 0);
+    }
 
     #[rstest::rstest]
     #[tokio::test]
