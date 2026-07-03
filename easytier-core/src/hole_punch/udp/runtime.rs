@@ -225,6 +225,8 @@ pub trait UdpHolePunchRuntime: Send + Sync + 'static {
         socket: Arc<Self::Socket>,
     ) -> anyhow::Result<UdpResolvedPublicAddr>;
 
+    async fn get_udp_port_mapping(&self, port: u16) -> anyhow::Result<SocketAddr>;
+
     async fn create_listener(
         &self,
         prefer_port_mapping: bool,

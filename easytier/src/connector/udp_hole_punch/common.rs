@@ -209,6 +209,14 @@ impl core_udp_hole_punch::UdpHolePunchRuntime for RuntimeUdpHolePunchRuntime {
         })
     }
 
+    async fn get_udp_port_mapping(&self, port: u16) -> anyhow::Result<SocketAddr> {
+        self.global_ctx
+            .get_stun_info_collector()
+            .get_udp_port_mapping(port)
+            .await
+            .map_err(anyhow::Error::from)
+    }
+
     async fn create_listener(
         &self,
         _prefer_port_mapping: bool,

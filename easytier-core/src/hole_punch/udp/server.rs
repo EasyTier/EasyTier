@@ -456,6 +456,10 @@ mod tests {
             })
         }
 
+        async fn get_udp_port_mapping(&self, _port: u16) -> anyhow::Result<SocketAddr> {
+            Ok(SocketAddr::from(([203, 0, 113, 1], 10000)))
+        }
+
         async fn create_listener(
             &self,
             _prefer_port_mapping: bool,
