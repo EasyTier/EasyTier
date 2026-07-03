@@ -21,7 +21,6 @@ pub mod socks5;
 
 #[cfg(feature = "kcp")]
 pub mod kcp_proxy;
-mod wrapped_proxy;
 
 #[cfg(feature = "quic")]
 pub mod quic_proxy;

@@ -1,4 +1,5 @@
 pub mod cidr_table;
+pub mod proxy_acl;
 #[cfg(feature = "proxy-packet")]
 pub mod runtime;
 
@@ -16,3 +17,5 @@ pub mod tokio_smoltcp;
 pub mod udp_proxy_engine;
 #[cfg(feature = "proxy-packet")]
 pub mod udp_proxy_service;
+#[cfg(feature = "proxy-packet")]
+pub mod wrapped_tcp_proxy;

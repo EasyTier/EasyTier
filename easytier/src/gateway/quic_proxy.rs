@@ -3,7 +3,6 @@ use crate::common::acl_processor::PacketInfo;
 use crate::common::global_ctx::ArcGlobalCtx;
 use crate::gateway::CidrSet;
 use crate::gateway::tcp_proxy::{NatDstConnector, TcpProxy};
-use crate::gateway::wrapped_proxy::{ProxyAclHandler, TcpProxyForWrappedSrcTrait};
 use crate::peers::peer_manager::PeerManager;
 use crate::peers::{NicPacketFilter, PeerPacketFilter};
 use crate::proto::acl::{ChainType, Protocol};
@@ -14,9 +13,7 @@ use crate::proto::api::instance::{
 use crate::proto::peer_rpc::KcpConnData as QuicConnData;
 use crate::proto::rpc_types;
 use crate::proto::rpc_types::controller::BaseController;
-use crate::tunnel::packet_def::{
-    PacketType, PeerManagerHeader, TAIL_RESERVED_SIZE, ZCPacket, ZCPacketType,
-};
+use crate::tunnel::packet_def::{PacketType, TAIL_RESERVED_SIZE, ZCPacket, ZCPacketType};
 use crate::tunnel::quic::{client_config, endpoint_config, server_config};
 use crate::utils::task::HedgeExt;
 use anyhow::{Context, Error, anyhow, bail, ensure};
@@ -51,7 +48,14 @@ use tokio::{join, select};
 use tokio_util::sync::PollSender;
 use tracing::{debug, error, info, instrument, trace, warn};
 
-use easytier_core::proxy::tcp_proxy_engine::TcpProxyMode;
+use easytier_core::proxy::{
+    proxy_acl::ProxyAclHandler,
+    tcp_proxy_engine::TcpProxyMode,
+    wrapped_tcp_proxy::{
+        WrappedTcpProxyNicContext, WrappedTcpProxyTransport,
+        try_process_wrapped_tcp_packet_from_nic,
+    },
+};
 
 //region packet
 #[derive(Debug, Constructor)]
@@ -422,35 +426,40 @@ impl NatDstConnector for NatDstQuicConnector {
 #[derive(Clone)]
 struct TcpProxyForQuicSrc(Arc<TcpProxy<NatDstQuicConnector>>);
 
-#[async_trait::async_trait]
-impl TcpProxyForWrappedSrcTrait for TcpProxyForQuicSrc {
-    type Connector = NatDstQuicConnector;
+impl TcpProxyForQuicSrc {
+    async fn try_process_nic_packet(&self, zc_packet: &mut ZCPacket) -> bool {
+        if self.0.try_process_packet_from_nic(zc_packet).await {
+            return true;
+        }
 
-    #[inline]
-    fn get_tcp_proxy(&self) -> &Arc<TcpProxy<Self::Connector>> {
-        &self.0
-    }
-
-    #[inline]
-    fn mark_src_modified(hdr: &mut PeerManagerHeader) -> &mut PeerManagerHeader {
-        hdr.mark_quic_src_modified()
-    }
-
-    #[inline]
-    async fn check_dst_allow_wrapped_input(&self, dst_ip: &Ipv4Addr) -> bool {
-        let Some(peer_manager) = self.0.get_peer_manager() else {
-            return false;
-        };
-        peer_manager
-            .check_allow_quic_to_dst(&IpAddr::V4(*dst_ip))
-            .await
+        let tcp_proxy = self.0.clone();
+        let peer_manager = self.0.get_peer_manager();
+        try_process_wrapped_tcp_packet_from_nic(
+            zc_packet,
+            WrappedTcpProxyNicContext {
+                transport: WrappedTcpProxyTransport::Quic,
+                my_peer_id: self.0.get_my_peer_id(),
+                local_ipv4: self.0.get_local_ip(),
+                smoltcp_enabled: self.0.is_smoltcp_enabled(),
+            },
+            move |src| tcp_proxy.is_tcp_proxy_connection(src),
+            move |dst_ip| async move {
+                let Some(peer_manager) = peer_manager else {
+                    return false;
+                };
+                peer_manager
+                    .check_allow_quic_to_dst(&IpAddr::V4(dst_ip))
+                    .await
+            },
+        )
+        .await
     }
 }
 
 #[async_trait::async_trait]
 impl NicPacketFilter for TcpProxyForQuicSrc {
     async fn try_process_packet_from_nic(&self, zc_packet: &mut ZCPacket) -> bool {
-        self.try_process_wrapped_packet_from_nic(zc_packet).await
+        self.try_process_nic_packet(zc_packet).await
     }
 }
 
@@ -783,6 +792,7 @@ impl QuicStreamReceiver {
             acl_handler
                 .copy_bidirection_with_acl(stream.inner, ret)
                 .await
+                .map_err(crate::common::error::Error::from)
         })
     }
 }
@@ -942,7 +952,7 @@ pub struct QuicProxySrc {
 impl QuicProxySrc {
     #[inline]
     pub fn get_tcp_proxy(&self) -> Arc<TcpProxy<NatDstQuicConnector>> {
-        self.tcp_proxy.get_tcp_proxy().clone()
+        self.tcp_proxy.0.clone()
     }
 }
 

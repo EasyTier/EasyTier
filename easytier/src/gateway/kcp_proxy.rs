@@ -1,5 +1,5 @@
 use std::{
-    net::{IpAddr, Ipv4Addr, SocketAddr},
+    net::{IpAddr, SocketAddr},
     sync::{Arc, Weak},
     time::Duration,
 };
@@ -17,7 +17,14 @@ use kcp_sys::{
 use prost::Message;
 use tokio::task::JoinSet;
 
-use easytier_core::proxy::tcp_proxy_engine::TcpProxyMode;
+use easytier_core::proxy::{
+    proxy_acl::ProxyAclHandler,
+    tcp_proxy_engine::TcpProxyMode,
+    wrapped_tcp_proxy::{
+        WrappedTcpProxyNicContext, WrappedTcpProxyTransport,
+        try_process_wrapped_tcp_packet_from_nic,
+    },
+};
 
 use super::{
     CidrSet,
@@ -26,7 +33,6 @@ use super::{
 use crate::utils::task::HedgeExt;
 use crate::{
     common::{acl_processor::PacketInfo, error::Result, global_ctx::ArcGlobalCtx},
-    gateway::wrapped_proxy::{ProxyAclHandler, TcpProxyForWrappedSrcTrait},
     peers::{NicPacketFilter, PeerPacketFilter, peer_manager::PeerManager},
     proto::{
         acl::{ChainType, Protocol},
@@ -37,7 +43,7 @@ use crate::{
         peer_rpc::KcpConnData,
         rpc_types::{self, controller::BaseController},
     },
-    tunnel::packet_def::{PacketType, PeerManagerHeader, ZCPacket},
+    tunnel::packet_def::{PacketType, ZCPacket},
 };
 
 fn create_kcp_endpoint() -> KcpEndpoint {
@@ -178,32 +184,40 @@ impl NatDstConnector for NatDstKcpConnector {
 #[derive(Clone)]
 struct TcpProxyForKcpSrc(Arc<TcpProxy<NatDstKcpConnector>>);
 
-#[async_trait::async_trait]
-impl TcpProxyForWrappedSrcTrait for TcpProxyForKcpSrc {
-    type Connector = NatDstKcpConnector;
+impl TcpProxyForKcpSrc {
+    async fn try_process_nic_packet(&self, zc_packet: &mut ZCPacket) -> bool {
+        if self.0.try_process_packet_from_nic(zc_packet).await {
+            return true;
+        }
 
-    fn get_tcp_proxy(&self) -> &Arc<TcpProxy<Self::Connector>> {
-        &self.0
-    }
-
-    fn mark_src_modified(hdr: &mut PeerManagerHeader) -> &mut PeerManagerHeader {
-        hdr.mark_kcp_src_modified()
-    }
-
-    async fn check_dst_allow_wrapped_input(&self, dst_ip: &Ipv4Addr) -> bool {
-        let Some(peer_manager) = self.0.get_peer_manager() else {
-            return false;
-        };
-        peer_manager
-            .check_allow_kcp_to_dst(&IpAddr::V4(*dst_ip))
-            .await
+        let tcp_proxy = self.0.clone();
+        let peer_manager = self.0.get_peer_manager();
+        try_process_wrapped_tcp_packet_from_nic(
+            zc_packet,
+            WrappedTcpProxyNicContext {
+                transport: WrappedTcpProxyTransport::Kcp,
+                my_peer_id: self.0.get_my_peer_id(),
+                local_ipv4: self.0.get_local_ip(),
+                smoltcp_enabled: self.0.is_smoltcp_enabled(),
+            },
+            move |src| tcp_proxy.is_tcp_proxy_connection(src),
+            move |dst_ip| async move {
+                let Some(peer_manager) = peer_manager else {
+                    return false;
+                };
+                peer_manager
+                    .check_allow_kcp_to_dst(&IpAddr::V4(dst_ip))
+                    .await
+            },
+        )
+        .await
     }
 }
 
 #[async_trait::async_trait]
 impl NicPacketFilter for TcpProxyForKcpSrc {
     async fn try_process_packet_from_nic(&self, zc_packet: &mut ZCPacket) -> bool {
-        self.try_process_wrapped_packet_from_nic(zc_packet).await
+        self.try_process_nic_packet(zc_packet).await
     }
 }
 

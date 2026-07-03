@@ -1099,7 +1099,7 @@ cargo check -p easytier-core --target wasm32-wasip1 --no-default-features --feat
 
 ## 第三阶段：Wrapped TCP Proxy 与 Proxy ACL Core 化
 
-UDP/TCP proxy core 化完成后，下一步迁移 `wrapped_proxy.rs`。这一阶段只处理
+UDP/TCP proxy core 化完成后，本阶段迁移 `wrapped_proxy.rs`。这一阶段只处理
 KCP/QUIC wrapped TCP source 的 NIC packet 规则，以及 stream proxy ACL helper。
 KCP/QUIC endpoint、QUIC/KCP transport、connection map、stats label 和 runtime
 启动路径不纳入本阶段。
@@ -1167,7 +1167,7 @@ core 不允许依赖：
 
 ### Proxy ACL 边界
 
-`ProxyAclHandler` 应迁入 `easytier-core/src/proxy/proxy_acl.rs`。它可以继续持有
+`ProxyAclHandler` 迁入 `easytier-core/src/proxy/proxy_acl.rs`。它可以继续持有
 `Arc<AclFilter>`、`PacketInfo` 和 `ChainType`，并提供 stream copy helper：
 
 ```text
