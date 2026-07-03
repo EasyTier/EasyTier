@@ -21,7 +21,6 @@ use easytier_core::hole_punch::udp::{
     SendPunchPacketHardSymResponse as CoreSendPunchPacketHardSymResponse,
     UdpHolePunchConnector as CoreUdpHolePunchConnector, UdpHolePunchInbound,
     UdpHolePunchServer as CoreUdpHolePunchServer, UdpHolePunchSignalError,
-    should_blacklist_signal_error,
 };
 use once_cell::sync::Lazy;
 use signaling::PeerRpcUdpHolePunchSignaling;
@@ -42,10 +41,13 @@ use crate::{
     },
 };
 
+#[cfg(test)]
 pub(crate) mod both_easy_sym;
 pub(crate) mod common;
+#[cfg(test)]
 pub(crate) mod cone;
 pub(crate) mod signaling;
+#[cfg(test)]
 pub(crate) mod sym_to_cone;
 
 pub use easytier_core::hole_punch::udp::BackOff;
@@ -262,22 +264,6 @@ pub fn handle_rpc_result<T>(
         Ok(ret) => Ok(ret),
         Err(e) => {
             if matches!(e, rpc_types::error::Error::InvalidServiceKey(_, _)) {
-                blacklist.insert(dst_peer_id, (), Duration::from_secs(BLACKLIST_TIMEOUT_SEC));
-            }
-            Err(e)
-        }
-    }
-}
-
-pub fn handle_signal_result<T>(
-    ret: Result<T, UdpHolePunchSignalError>,
-    dst_peer_id: PeerId,
-    blacklist: &timedmap::TimedMap<PeerId, ()>,
-) -> Result<T, UdpHolePunchSignalError> {
-    match ret {
-        Ok(ret) => Ok(ret),
-        Err(e) => {
-            if should_blacklist_signal_error(&e) {
                 blacklist.insert(dst_peer_id, (), Duration::from_secs(BLACKLIST_TIMEOUT_SEC));
             }
             Err(e)

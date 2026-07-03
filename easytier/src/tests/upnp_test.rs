@@ -8,6 +8,7 @@ use std::{
 };
 
 use anyhow::{Context, anyhow, bail};
+use easytier_core::hole_punch::udp::{UdpHolePunchRuntime, UdpPunchSocket};
 use igd_next::{
     GetGenericPortMappingEntryError, PortMappingEntry, PortMappingProtocol, SearchOptions,
     aio::tokio::search_gateway,
@@ -24,7 +25,7 @@ use crate::{
         netns::NetNS,
         stun::{MockStunInfoCollector, StunInfoCollectorTrait},
     },
-    connector::udp_hole_punch::{UdpHolePunchConnector, common::UdpHolePunchListener},
+    connector::udp_hole_punch::{UdpHolePunchConnector, common::RuntimeUdpHolePunchRuntime},
     instance::instance::Instance,
     peers::{
         create_packet_recv_chan,
@@ -1506,8 +1507,9 @@ async fn udp_hole_punch_listener_establishes_upnp_mapping() {
     .await;
     let mut event_rx = peer_mgr.get_global_ctx().subscribe();
 
-    let listener = UdpHolePunchListener::new(peer_mgr.clone()).await.unwrap();
-    let local_port = listener.get_socket().await.local_addr().unwrap().port();
+    let runtime = RuntimeUdpHolePunchRuntime::new(peer_mgr.get_global_ctx());
+    let listener = runtime.create_listener(true).await.unwrap();
+    let local_port = listener.socket.local_addr().unwrap().port();
 
     let event = wait_for_port_mapping_event(&mut event_rx).await;
     let mapped_addr = query_udp_mapping(TEST_NS_A, TEST_EXTERNAL_IP, TEST_CLIENT_A_IP, local_port)
@@ -1560,8 +1562,9 @@ async fn udp_hole_punch_listener_skips_upnp_when_disabled() {
     .await;
     let mut event_rx = peer_mgr.get_global_ctx().subscribe();
 
-    let listener = UdpHolePunchListener::new(peer_mgr.clone()).await.unwrap();
-    let local_port = listener.get_socket().await.local_addr().unwrap().port();
+    let runtime = RuntimeUdpHolePunchRuntime::new(peer_mgr.get_global_ctx());
+    let listener = runtime.create_listener(true).await.unwrap();
+    let local_port = listener.socket.local_addr().unwrap().port();
 
     let event = tokio::time::timeout(Duration::from_secs(2), event_rx.recv()).await;
     assert!(event.is_err(), "unexpected port mapping event: {event:?}");
