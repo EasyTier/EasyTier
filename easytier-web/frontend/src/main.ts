@@ -17,6 +17,7 @@ import Dashboard from './components/Dashboard.vue'
 import DialogService from 'primevue/dialogservice';
 import ToastService from 'primevue/toastservice';
 import ConfigGenerator from './components/ConfigGenerator.vue'
+import DecryptTool from './components/DecryptTool.vue'
 
 const routes = [
     {
@@ -71,7 +72,11 @@ const routes = [
     {
         path: '/config_generator',
         component: ConfigGenerator,
-    }
+    },
+    {
+        path: '/decrypt_tool',
+        component: DecryptTool,
+    },
 ]
 
 const router = createRouter({
