@@ -1,5 +1,7 @@
 use std::net::{IpAddr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
 
+use easytier_core::hole_punch::udp as core_udp_hole_punch;
+
 use crate::{
     common::{dns::socket_addrs, error::Error, global_ctx::ArcGlobalCtx, idn},
     connector::dns_connector::DnsTunnelConnector,
@@ -27,13 +29,12 @@ pub(crate) fn should_try_p2p_with_peer(
     local_disable_p2p: bool,
     local_need_p2p: bool,
 ) -> bool {
-    feature_flag
-        .map(|flag| {
-            (allow_public_server || !flag.is_public_server)
-                && (!local_disable_p2p || flag.need_p2p)
-                && (!flag.disable_p2p || local_need_p2p)
-        })
-        .unwrap_or(!local_disable_p2p)
+    core_udp_hole_punch::should_try_p2p_with_peer(
+        feature_flag,
+        allow_public_server,
+        local_disable_p2p,
+        local_need_p2p,
+    )
 }
 
 pub(crate) fn should_background_p2p_with_peer(
@@ -43,12 +44,13 @@ pub(crate) fn should_background_p2p_with_peer(
     local_disable_p2p: bool,
     local_need_p2p: bool,
 ) -> bool {
-    should_try_p2p_with_peer(
+    core_udp_hole_punch::should_background_p2p_with_peer(
         feature_flag,
         allow_public_server,
+        lazy_p2p,
         local_disable_p2p,
         local_need_p2p,
-    ) && (!lazy_p2p || feature_flag.map(|flag| flag.need_p2p).unwrap_or(false))
+    )
 }
 
 async fn set_bind_addr_for_peer_connector(

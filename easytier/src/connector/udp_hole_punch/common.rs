@@ -14,11 +14,8 @@ use tracing::{Instrument, Level, instrument};
 use zerocopy::FromBytes as _;
 
 use crate::{
-    common::{
-        PeerId, error::Error, global_ctx::ArcGlobalCtx, join_joinset_background, netns::NetNS, upnp,
-    },
+    common::{error::Error, global_ctx::ArcGlobalCtx, join_joinset_background, netns::NetNS, upnp},
     peers::peer_manager::PeerManager,
-    proto::common::NatType,
     tunnel::{
         Tunnel, TunnelConnCounter, TunnelListener as _,
         packet_def::{UDP_TUNNEL_HEADER_SIZE, UDPTunnelHeader, UdpPacketType},
@@ -28,167 +25,13 @@ use crate::{
 
 pub(crate) const HOLE_PUNCH_PACKET_BODY_LEN: u16 = 16;
 const MAX_PUBLIC_UDP_HOLE_PUNCH_LISTENERS: usize = 4;
+pub(crate) use easytier_core::hole_punch::udp::{UdpNatType, UdpPunchClientMethod};
 
 fn generate_shuffled_port_vec() -> Vec<u16> {
     let mut rng = rand::thread_rng();
     let mut port_vec: Vec<u16> = (1..=65535).collect();
     port_vec.shuffle(&mut rng);
     port_vec
-}
-
-pub(crate) enum UdpPunchClientMethod {
-    None,
-    ConeToCone,
-    SymToCone,
-    EasySymToEasySym,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub(crate) enum UdpNatType {
-    Unknown,
-    Open(NatType),
-    Cone(NatType),
-    // bool means if it is incremental
-    EasySymmetric(NatType, bool),
-    HardSymmetric(NatType),
-}
-
-impl From<NatType> for UdpNatType {
-    fn from(nat_type: NatType) -> Self {
-        match nat_type {
-            NatType::Unknown => UdpNatType::Unknown,
-            NatType::OpenInternet => UdpNatType::Open(nat_type),
-            NatType::NoPat | NatType::FullCone | NatType::Restricted | NatType::PortRestricted => {
-                UdpNatType::Cone(nat_type)
-            }
-            NatType::Symmetric | NatType::SymUdpFirewall => UdpNatType::HardSymmetric(nat_type),
-            NatType::SymmetricEasyInc => UdpNatType::EasySymmetric(nat_type, true),
-            NatType::SymmetricEasyDec => UdpNatType::EasySymmetric(nat_type, false),
-        }
-    }
-}
-
-impl From<UdpNatType> for NatType {
-    fn from(val: UdpNatType) -> Self {
-        match val {
-            UdpNatType::Unknown => NatType::Unknown,
-            UdpNatType::Open(nat_type) => nat_type,
-            UdpNatType::Cone(nat_type) => nat_type,
-            UdpNatType::EasySymmetric(nat_type, _) => nat_type,
-            UdpNatType::HardSymmetric(nat_type) => nat_type,
-        }
-    }
-}
-
-impl UdpNatType {
-    pub(crate) fn is_open(&self) -> bool {
-        matches!(self, UdpNatType::Open(_))
-    }
-
-    pub(crate) fn is_unknown(&self) -> bool {
-        matches!(self, UdpNatType::Unknown)
-    }
-
-    pub(crate) fn is_sym(&self) -> bool {
-        self.is_hard_sym() || self.is_easy_sym()
-    }
-
-    pub(crate) fn is_hard_sym(&self) -> bool {
-        matches!(self, UdpNatType::HardSymmetric(_))
-    }
-
-    pub(crate) fn is_easy_sym(&self) -> bool {
-        matches!(self, UdpNatType::EasySymmetric(_, _))
-    }
-
-    pub(crate) fn is_cone(&self) -> bool {
-        matches!(self, UdpNatType::Cone(_))
-    }
-
-    pub(crate) fn get_inc_of_easy_sym(&self) -> Option<bool> {
-        match self {
-            UdpNatType::EasySymmetric(_, inc) => Some(*inc),
-            _ => None,
-        }
-    }
-
-    pub(crate) fn get_punch_hole_method(
-        &self,
-        other: Self,
-        global_ctx: ArcGlobalCtx,
-    ) -> UdpPunchClientMethod {
-        // Check if symmetric NAT hole punching is disabled
-        let disable_sym_hole_punching = global_ctx.get_flags().disable_sym_hole_punching;
-
-        // If symmetric NAT hole punching is disabled, treat symmetric as cone
-        if disable_sym_hole_punching && self.is_sym() {
-            // Convert symmetric to cone type for hole punching logic
-            if other.is_sym() {
-                return UdpPunchClientMethod::None;
-            } else {
-                return UdpPunchClientMethod::ConeToCone;
-            }
-        }
-
-        if other.is_unknown() {
-            if self.is_sym() {
-                return UdpPunchClientMethod::SymToCone;
-            } else {
-                return UdpPunchClientMethod::ConeToCone;
-            }
-        }
-
-        if self.is_unknown() {
-            if other.is_sym() {
-                return UdpPunchClientMethod::None;
-            } else {
-                return UdpPunchClientMethod::ConeToCone;
-            }
-        }
-
-        if self.is_open() || other.is_open() {
-            // open nat does not need to punch hole
-            return UdpPunchClientMethod::None;
-        }
-
-        if self.is_cone() {
-            if other.is_sym() {
-                return UdpPunchClientMethod::None;
-            } else {
-                return UdpPunchClientMethod::ConeToCone;
-            }
-        } else if self.is_easy_sym() {
-            if other.is_hard_sym() {
-                return UdpPunchClientMethod::None;
-            } else if other.is_easy_sym() {
-                return UdpPunchClientMethod::EasySymToEasySym;
-            } else {
-                return UdpPunchClientMethod::SymToCone;
-            }
-        } else if self.is_hard_sym() {
-            if other.is_sym() {
-                return UdpPunchClientMethod::None;
-            } else {
-                return UdpPunchClientMethod::SymToCone;
-            }
-        }
-
-        unreachable!("invalid nat type");
-    }
-
-    pub(crate) fn can_punch_hole_as_client(
-        &self,
-        other: Self,
-        my_peer_id: PeerId,
-        dst_peer_id: PeerId,
-        global_ctx: ArcGlobalCtx,
-    ) -> bool {
-        match self.get_punch_hole_method(other, global_ctx) {
-            UdpPunchClientMethod::None => false,
-            UdpPunchClientMethod::ConeToCone | UdpPunchClientMethod::SymToCone => true,
-            UdpPunchClientMethod::EasySymToEasySym => my_peer_id < dst_peer_id,
-        }
-    }
 }
 
 #[derive(Debug)]

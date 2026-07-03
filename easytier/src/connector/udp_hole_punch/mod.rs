@@ -8,6 +8,7 @@ use both_easy_sym::{PunchBothEasySymHoleClient, PunchBothEasySymHoleServer};
 use common::{PunchHoleServerCommon, UdpNatType, UdpPunchClientMethod};
 use cone::{PunchConeHoleClient, PunchConeHoleServer};
 use dashmap::DashMap;
+use easytier_core::hole_punch::udp::BLACKLIST_TIMEOUT_SEC;
 use once_cell::sync::Lazy;
 use quanta::Instant;
 use sym_to_cone::{PunchSymToConeHoleClient, PunchSymToConeHoleServer};
@@ -40,12 +41,11 @@ pub(crate) mod common;
 pub(crate) mod cone;
 pub(crate) mod sym_to_cone;
 
+pub use easytier_core::hole_punch::udp::BackOff;
+
 // sym punch should be serialized
 static SYM_PUNCH_LOCK: Lazy<DashMap<PeerId, Arc<Mutex<()>>>> = Lazy::new(DashMap::new);
 pub static RUN_TESTING: Lazy<AtomicBool> = Lazy::new(|| AtomicBool::new(false));
-
-// Blacklist timeout in seconds
-pub const BLACKLIST_TIMEOUT_SEC: u64 = 3600;
 
 fn get_sym_punch_lock(peer_id: PeerId) -> Arc<Mutex<()>> {
     SYM_PUNCH_LOCK
@@ -147,38 +147,6 @@ impl UdpHolePunchRpc for UdpHolePunchServer {
         self.both_easy_sym_server
             .send_punch_packet_both_easy_sym(input)
             .await
-    }
-}
-
-#[derive(Debug)]
-pub struct BackOff {
-    backoffs_ms: Vec<u64>,
-    current_idx: usize,
-}
-
-impl BackOff {
-    pub fn new(backoffs_ms: Vec<u64>) -> Self {
-        Self {
-            backoffs_ms,
-            current_idx: 0,
-        }
-    }
-
-    pub fn next_backoff(&mut self) -> u64 {
-        let backoff = self.backoffs_ms[self.current_idx];
-        self.current_idx = (self.current_idx + 1).min(self.backoffs_ms.len() - 1);
-        backoff
-    }
-
-    pub fn rollback(&mut self) {
-        self.current_idx = self.current_idx.saturating_sub(1);
-    }
-
-    pub async fn sleep_for_next_backoff(&mut self) {
-        let backoff = self.next_backoff();
-        if backoff > 0 {
-            tokio::time::sleep(tokio::time::Duration::from_millis(backoff)).await;
-        }
     }
 }
 
@@ -480,9 +448,12 @@ impl PeerTaskLauncher for UdpHolePunchPeerTaskLauncher {
                 continue;
             }
 
-            let global_ctx = data.peer_mgr.get_global_ctx();
-            if !my_nat_type.can_punch_hole_as_client(peer_nat_type, my_peer_id, peer_id, global_ctx)
-            {
+            if !my_nat_type.can_punch_hole_as_client(
+                peer_nat_type,
+                my_peer_id,
+                peer_id,
+                flags.disable_sym_hole_punching,
+            ) {
                 continue;
             }
 
@@ -509,10 +480,14 @@ impl PeerTaskLauncher for UdpHolePunchPeerTaskLauncher {
         item: Self::CollectPeerItem,
     ) -> JoinHandle<Result<Self::TaskRet, Error>> {
         let data = data.clone();
-        let global_ctx = data.peer_mgr.get_global_ctx();
+        let disable_sym_hole_punching = data
+            .peer_mgr
+            .get_global_ctx()
+            .get_flags()
+            .disable_sym_hole_punching;
         let punch_method = item
             .my_nat_type
-            .get_punch_hole_method(item.dst_nat_type, global_ctx);
+            .get_punch_hole_method(item.dst_nat_type, disable_sym_hole_punching);
         match punch_method {
             UdpPunchClientMethod::ConeToCone => tokio::spawn(data.cone_to_cone(item)),
             UdpPunchClientMethod::SymToCone => tokio::spawn(data.sym_to_cone(item)),
