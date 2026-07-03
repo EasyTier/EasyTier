@@ -140,6 +140,18 @@ where
         self.blacklist.contains(peer_id)
     }
 
+    fn should_skip_blacklisted(&self, peer_id: PeerId) -> bool {
+        if self.blacklist.contains(peer_id) {
+            tracing::debug!(
+                dst_peer_id = peer_id,
+                "peer is blacklisted, skipping hole punching"
+            );
+            true
+        } else {
+            false
+        }
+    }
+
     fn map_client_result(
         &self,
         dst_peer_id: PeerId,
@@ -209,11 +221,7 @@ where
         loop {
             backoff.sleep_for_next_backoff().await;
 
-            if self.blacklist.contains(task_info.dst_peer_id) {
-                tracing::debug!(
-                    dst_peer_id = task_info.dst_peer_id,
-                    "peer is blacklisted, skipping hole punching"
-                );
+            if self.should_skip_blacklisted(task_info.dst_peer_id) {
                 break;
             }
 
@@ -246,11 +254,7 @@ where
         loop {
             backoff.sleep_for_next_backoff().await;
 
-            if self.blacklist.contains(task_info.dst_peer_id) {
-                tracing::debug!(
-                    dst_peer_id = task_info.dst_peer_id,
-                    "peer is blacklisted, skipping hole punching"
-                );
+            if self.should_skip_blacklisted(task_info.dst_peer_id) {
                 break;
             }
 
@@ -263,6 +267,9 @@ where
                 .await;
                 let ret = self.map_client_result(task_info.dst_peer_id, ret);
                 if self.handle_punch_result(ret, None, None).await {
+                    break;
+                }
+                if self.should_skip_blacklisted(task_info.dst_peer_id) {
                     break;
                 }
             }
@@ -301,11 +308,7 @@ where
         loop {
             backoff.sleep_for_next_backoff().await;
 
-            if self.blacklist.contains(task_info.dst_peer_id) {
-                tracing::debug!(
-                    dst_peer_id = task_info.dst_peer_id,
-                    "peer is blacklisted, skipping hole punching"
-                );
+            if self.should_skip_blacklisted(task_info.dst_peer_id) {
                 break;
             }
 
@@ -318,6 +321,9 @@ where
                 .await;
                 let ret = self.map_client_result(task_info.dst_peer_id, ret);
                 if self.handle_punch_result(ret, None, None).await {
+                    break;
+                }
+                if self.should_skip_blacklisted(task_info.dst_peer_id) {
                     break;
                 }
             }
