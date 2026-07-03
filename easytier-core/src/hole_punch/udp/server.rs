@@ -4,6 +4,7 @@ use std::{
     time::Duration,
 };
 
+use anyhow::Context;
 use crossbeam::atomic::AtomicCell;
 use quanta::Instant;
 use tokio::{sync::Mutex, task::JoinSet};
@@ -375,6 +376,13 @@ where
         }
     }
 
+    pub async fn is_busy(&self) -> bool {
+        match self.task.try_lock() {
+            Ok(locked_task) => locked_task.as_ref().is_some_and(|task| !task.is_finished()),
+            Err(_) => true,
+        }
+    }
+
     #[tracing::instrument(skip(self), ret, err)]
     pub async fn send_punch_packet_both_easy_sym(
         &self,
@@ -397,7 +405,7 @@ where
             .runtime
             .get_udp_port_mapping(0)
             .await
-            .map_err(anyhow::Error::from)?;
+            .with_context(|| "failed to get udp port mapping")?;
 
         tracing::info!("send_punch_packet_hard_sym start");
         let socket_count = request.udp_socket_count as usize;

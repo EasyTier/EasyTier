@@ -43,6 +43,13 @@ impl PunchBothEasySymHoleServer {
         &self,
         request: SendPunchPacketBothEasySymRequest,
     ) -> Result<SendPunchPacketBothEasySymResponse, rpc_types::error::Error> {
+        if self.core_server.is_busy().await {
+            return Ok(SendPunchPacketBothEasySymResponse {
+                is_busy: true,
+                ..Default::default()
+            });
+        }
+
         let public_ips = request
             .public_ip
             .ok_or(anyhow::anyhow!("public_ip is required"))?;
