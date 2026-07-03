@@ -1,6 +1,6 @@
 use std::time::{Duration, SystemTime};
 use std::{
-    net::{IpAddr, Ipv4Addr, Ipv6Addr},
+    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
     sync::{Arc, Weak},
 };
 
@@ -422,6 +422,61 @@ pub struct PeerManagerCore {
     counters: PeerManagerTrafficCounters,
 }
 
+pub enum AddressResolution {
+    IpAddrs(Vec<SocketAddr>),
+    NotIpBased,
+    Unavailable,
+}
+
+#[async_trait::async_trait]
+#[auto_impl::auto_impl(&, Arc)]
+pub trait AddressResolver: Send + Sync {
+    async fn resolve_remote(
+        &self,
+        remote_addr: &Url,
+        default_port: Option<u16>,
+    ) -> AddressResolution;
+}
+
+pub struct NoopAddressResolver;
+
+#[async_trait::async_trait]
+impl AddressResolver for NoopAddressResolver {
+    async fn resolve_remote(
+        &self,
+        _remote_addr: &Url,
+        _default_port: Option<u16>,
+    ) -> AddressResolution {
+        AddressResolution::Unavailable
+    }
+}
+
+async fn check_resolved_remote_addr_not_from_virtual_network(
+    context: &ArcPeerContext,
+    address_resolver: &dyn AddressResolver,
+    src: Url,
+) -> Result<(), Error> {
+    let addrs = match address_resolver.resolve_remote(&src, Some(1)).await {
+        AddressResolution::IpAddrs(addrs) => addrs,
+        AddressResolution::NotIpBased | AddressResolution::Unavailable => return Ok(()),
+    };
+
+    // if no-tun is enabled, the src ip of packet in virtual network is converted to loopback address
+    // we already filter out the connection in tcp/quic/kcp proxy so no need check here.
+    let Some(addr) = addrs
+        .into_iter()
+        .find(|addr| !addr.ip().is_loopback() && context.is_ip_in_same_network(&addr.ip()))
+    else {
+        return Ok(());
+    };
+
+    Err(anyhow::anyhow!(
+        "tunnel src {} is from the same network (ignore this error please)",
+        addr
+    )
+    .into())
+}
+
 impl PeerManagerCore {
     /// Builds the default peer control-plane graph while letting runtime provide
     /// the foreign-network adapter that owns platform-specific context.
@@ -438,6 +493,7 @@ impl PeerManagerCore {
         is_secure_mode_enabled: bool,
         data_compress_algo: CompressorAlgo,
         exit_nodes: Vec<IpAddr>,
+        address_resolver: Arc<dyn AddressResolver>,
         build_foreign_network_manager: BuildForeignNetworkManager,
     ) -> PeerManagerCoreBuildResult<F>
     where
@@ -590,6 +646,7 @@ impl PeerManagerCore {
             foreign_network_manager.clone(),
             peer_session_store.clone(),
             recent_traffic.clone(),
+            address_resolver,
         );
         let route = route_algo_inst.route_arc();
         let outbound_packet_router = PeerOutboundPacketRouter::new(
@@ -1078,6 +1135,7 @@ pub struct PeerConnectionAdmission {
     peer_session_store: Arc<PeerSessionStore>,
     recent_traffic: RecentTrafficTracker,
     reserved_my_peer_id_map: DashMap<String, PeerId>,
+    address_resolver: Arc<dyn AddressResolver>,
 }
 
 impl PeerConnectionAdmission {
@@ -1089,6 +1147,7 @@ impl PeerConnectionAdmission {
         foreign_network_admission: Arc<dyn ForeignNetworkConnectionAdmission>,
         peer_session_store: Arc<PeerSessionStore>,
         recent_traffic: RecentTrafficTracker,
+        address_resolver: Arc<dyn AddressResolver>,
     ) -> Self {
         Self {
             my_peer_id,
@@ -1099,6 +1158,7 @@ impl PeerConnectionAdmission {
             peer_session_store,
             recent_traffic,
             reserved_my_peer_id_map: DashMap::new(),
+            address_resolver,
         }
     }
 
@@ -1150,38 +1210,24 @@ impl PeerConnectionAdmission {
         Ok((peer_id, conn_id))
     }
 
-    fn check_remote_addr_not_from_virtual_network(&self, tunnel: &dyn Tunnel) -> Result<(), Error> {
-        tracing::info!("check remote addr not from virtual network");
+    fn remote_addr_from_tunnel(tunnel: &dyn Tunnel) -> Result<Url, Error> {
         let Some(tunnel_info) = tunnel.info() else {
             return Err(anyhow::anyhow!("tunnel info is not set").into());
         };
         let Some(src) = tunnel_info.remote_addr.map(Url::from) else {
             return Err(anyhow::anyhow!("tunnel info remote addr is not set").into());
         };
-        if src.scheme() == "ring" {
-            return Ok(());
-        }
-        let Ok(Some(addr)) = src.socket_addrs(|| Some(1)).map(|x| x.first().cloned()) else {
-            // if the tunnel is not rely on ip address, skip check
-            return Ok(());
-        };
+        Ok(src)
+    }
 
-        // if no-tun is enabled, the src ip of packet in virtual network is converted to loopback address
-        // we already filter out the connection in tcp/quic/kcp proxy so no need check here.
-        if addr.ip().is_loopback() {
-            // allow other loopback address, good for conn from cdn/l4 connection
-            return Ok(());
-        }
-
-        if self.context.is_ip_in_same_network(&addr.ip()) {
-            return Err(anyhow::anyhow!(
-                "tunnel src {} is from the same network (ignore this error please)",
-                addr
-            )
-            .into());
-        }
-
-        Ok(())
+    async fn check_remote_addr_not_from_virtual_network(&self, src: Url) -> Result<(), Error> {
+        tracing::info!("check remote addr not from virtual network");
+        check_resolved_remote_addr_not_from_virtual_network(
+            &self.context,
+            self.address_resolver.as_ref(),
+            src,
+        )
+        .await
     }
 
     fn release_reserved_peer_id(&self, network_name: &str) {
@@ -1196,7 +1242,9 @@ impl PeerConnectionAdmission {
         is_directly_connected: bool,
     ) -> Result<(), Error> {
         tracing::info!("add tunnel as server start");
-        self.check_remote_addr_not_from_virtual_network(&*tunnel)?;
+        let remote_addr = Self::remote_addr_from_tunnel(&*tunnel)?;
+        self.check_remote_addr_not_from_virtual_network(remote_addr)
+            .await?;
 
         let mut conn = PeerConn::new(
             self.my_peer_id,
@@ -2652,18 +2700,79 @@ pub async fn send_msg_internal(
 
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
+    use std::{net::SocketAddr, time::Duration};
 
     use dashmap::DashMap;
     use quanta::Instant;
 
     use super::*;
+    use crate::peers::context::PeerContext;
+
+    struct SameNetworkContext;
+
+    impl PeerContext for SameNetworkContext {
+        fn network_identity(&self) -> NetworkIdentity {
+            NetworkIdentity {
+                network_name: "test".to_string(),
+                network_secret: None,
+                network_secret_digest: None,
+            }
+        }
+
+        fn is_ip_in_same_network(&self, ip: &IpAddr) -> bool {
+            matches!(ip, IpAddr::V4(ip) if ip.octets()[0..2] == [10, 144])
+        }
+    }
+
+    struct StaticAddressResolver(AddressResolution);
+
+    #[async_trait::async_trait]
+    impl AddressResolver for StaticAddressResolver {
+        async fn resolve_remote(
+            &self,
+            _remote_addr: &Url,
+            _default_port: Option<u16>,
+        ) -> AddressResolution {
+            match &self.0 {
+                AddressResolution::IpAddrs(addrs) => AddressResolution::IpAddrs(addrs.clone()),
+                AddressResolution::NotIpBased => AddressResolution::NotIpBased,
+                AddressResolution::Unavailable => AddressResolution::Unavailable,
+            }
+        }
+    }
 
     #[test]
     fn recent_traffic_fanout_policy_only_marks_single_peer() {
         assert!(should_mark_recent_traffic_for_fanout(0));
         assert!(should_mark_recent_traffic_for_fanout(1));
         assert!(!should_mark_recent_traffic_for_fanout(2));
+    }
+
+    #[tokio::test]
+    async fn remote_addr_check_rejects_resolved_virtual_network_ip() {
+        let context: ArcPeerContext = Arc::new(SameNetworkContext);
+        let resolver = StaticAddressResolver(AddressResolution::IpAddrs(vec![
+            SocketAddr::from(([127, 0, 0, 1], 1234)),
+            SocketAddr::from(([10, 144, 0, 2], 1234)),
+        ]));
+        let url = Url::parse("tcp://example.test:1234").unwrap();
+
+        let err =
+            check_resolved_remote_addr_not_from_virtual_network(&context, &resolver, url).await;
+
+        assert!(matches!(err, Err(Error::Other(_))));
+    }
+
+    #[tokio::test]
+    async fn remote_addr_check_skips_unavailable_resolution() {
+        let context: ArcPeerContext = Arc::new(SameNetworkContext);
+        let resolver = StaticAddressResolver(AddressResolution::Unavailable);
+        let url = Url::parse("tcp://example.test:1234").unwrap();
+
+        let ret =
+            check_resolved_remote_addr_not_from_virtual_network(&context, &resolver, url).await;
+
+        assert!(ret.is_ok());
     }
 
     #[test]

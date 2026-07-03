@@ -1,6 +1,6 @@
 use cidr::{Ipv4Cidr, Ipv6Cidr};
-use easytier_core::peers::peer_manager::PeerManagerCore;
 pub use easytier_core::peers::peer_manager::RouteAlgoType;
+use easytier_core::peers::peer_manager::{AddressResolution, AddressResolver, PeerManagerCore};
 use quanta::Instant;
 use std::collections::BTreeSet;
 use std::{
@@ -11,7 +11,7 @@ use std::{
 
 use crate::{
     common::{
-        PeerId, constants::EASYTIER_VERSION, error::Error, global_ctx::ArcGlobalCtx,
+        PeerId, constants::EASYTIER_VERSION, dns, error::Error, global_ctx::ArcGlobalCtx,
         stun::StunInfoCollectorTrait,
     },
     peers::{
@@ -44,6 +44,33 @@ pub struct PeerManager {
     foreign_network_manager: Arc<ForeignNetworkManager>,
 
     allow_loopback_tunnel: AtomicBool,
+}
+
+struct RuntimeAddressResolver;
+
+#[async_trait::async_trait]
+impl AddressResolver for RuntimeAddressResolver {
+    async fn resolve_remote(
+        &self,
+        remote_addr: &url::Url,
+        default_port: Option<u16>,
+    ) -> AddressResolution {
+        if matches!(remote_addr.scheme(), "ring" | "unix") {
+            return AddressResolution::NotIpBased;
+        }
+
+        match dns::socket_addrs(remote_addr, || default_port).await {
+            Ok(addrs) => AddressResolution::IpAddrs(addrs),
+            Err(err) => {
+                tracing::debug!(
+                    ?err,
+                    ?remote_addr,
+                    "skip remote address virtual network check because address resolution failed"
+                );
+                AddressResolution::Unavailable
+            }
+        }
+    }
 }
 
 impl Debug for PeerManager {
@@ -109,6 +136,7 @@ impl PeerManager {
             is_secure_mode_enabled,
             data_compress_algo,
             exit_nodes,
+            Arc::new(RuntimeAddressResolver),
             move |my_peer_id, peer_session_store, packet_sender_to_mgr, accessor| {
                 Arc::new(ForeignNetworkManager::new(
                     my_peer_id,
