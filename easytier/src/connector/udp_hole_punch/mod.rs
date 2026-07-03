@@ -8,7 +8,10 @@ use both_easy_sym::{PunchBothEasySymHoleClient, PunchBothEasySymHoleServer};
 use common::{PunchHoleServerCommon, UdpNatType, UdpPunchClientMethod};
 use cone::{PunchConeHoleClient, PunchConeHoleServer};
 use dashmap::DashMap;
-use easytier_core::hole_punch::udp::BLACKLIST_TIMEOUT_SEC;
+use easytier_core::hole_punch::udp::{
+    BLACKLIST_TIMEOUT_SEC, P2pPolicyFlags, UdpPunchCandidate, UdpPunchTaskInfo,
+    collect_udp_punch_tasks,
+};
 use once_cell::sync::Lazy;
 use quanta::Instant;
 use sym_to_cone::{PunchSymToConeHoleClient, PunchSymToConeHoleServer};
@@ -33,8 +36,6 @@ use crate::{
     },
     tunnel::Tunnel,
 };
-
-use crate::connector::{should_background_p2p_with_peer, should_try_p2p_with_peer};
 
 pub(crate) mod both_easy_sym;
 pub(crate) mod common;
@@ -357,12 +358,7 @@ impl UdpHoePunchConnectorData {
 #[derive(Clone)]
 struct UdpHolePunchPeerTaskLauncher {}
 
-#[derive(Clone, Debug, Hash, Eq, PartialEq)]
-struct PunchTaskInfo {
-    dst_peer_id: PeerId,
-    dst_nat_type: UdpNatType,
-    my_nat_type: UdpNatType,
-}
+type PunchTaskInfo = UdpPunchTaskInfo;
 
 #[async_trait::async_trait]
 impl PeerTaskLauncher for UdpHolePunchPeerTaskLauncher {
@@ -389,86 +385,57 @@ impl PeerTaskLauncher for UdpHolePunchPeerTaskLauncher {
             data.sym_to_cone_client.clear_udp_array().await;
         }
 
-        let mut peers_to_connect: Vec<Self::CollectPeerItem> = Vec::new();
         // do not do anything if:
         // 1. our nat type is OpenInternet or NoPat, which means we can wait other peers to connect us
         // notice that if we are unknown, we treat ourselves as cone
         if my_nat_type.is_open() {
-            return peers_to_connect;
+            return Vec::new();
         }
 
         let my_peer_id = data.peer_mgr.my_peer_id();
         let flags = data.peer_mgr.get_global_ctx().get_flags();
-        let lazy_p2p = flags.lazy_p2p;
+        let policy = P2pPolicyFlags {
+            disable_udp_hole_punching: flags.disable_udp_hole_punching,
+            disable_sym_hole_punching: flags.disable_sym_hole_punching,
+            lazy_p2p: flags.lazy_p2p,
+            disable_p2p: flags.disable_p2p,
+            need_p2p: flags.need_p2p,
+        };
         let now = Instant::now();
 
         data.blacklist.cleanup();
 
-        // collect peer list from peer manager and do some filter:
-        // 1. peers without direct conns;
-        // 2. peers is full cone (any restricted type);
-        // 3. peers not in blacklist;
-        for route in data.peer_mgr.list_routes().await.iter() {
-            let static_allowed = should_background_p2p_with_peer(
-                route.feature_flag.as_ref(),
-                false,
-                lazy_p2p,
-                flags.disable_p2p,
-                flags.need_p2p,
-            );
-            let dynamic_allowed = should_try_p2p_with_peer(
-                route.feature_flag.as_ref(),
-                false,
-                flags.disable_p2p,
-                flags.need_p2p,
-            ) && data.peer_mgr.has_recent_traffic(route.peer_id, now);
-            if !static_allowed && !dynamic_allowed {
-                continue;
-            }
-
+        let routes = data.peer_mgr.list_routes().await;
+        let candidates = routes.iter().filter_map(|route| {
             let peer_nat_type = route
                 .stun_info
                 .as_ref()
                 .map(|x| x.udp_nat_type)
                 .unwrap_or(0);
             let Ok(peer_nat_type) = NatType::try_from(peer_nat_type) else {
-                continue;
+                return None;
             };
-            let peer_nat_type = peer_nat_type.into();
 
-            let peer_id: PeerId = route.peer_id;
+            Some(UdpPunchCandidate {
+                peer_id: route.peer_id,
+                udp_nat_type: peer_nat_type,
+                feature_flag: route.feature_flag.clone(),
+                has_direct_connection: data.peer_mgr.get_peer_map().has_peer(route.peer_id),
+                has_recent_traffic: data.peer_mgr.has_recent_traffic(route.peer_id, now),
+            })
+        });
 
-            // Check if peer is blacklisted
-            if data.blacklist.contains(&peer_id) {
-                tracing::debug!(?peer_id, "peer is blacklisted, skipping");
-                continue;
-            }
-
-            if data.peer_mgr.get_peer_map().has_peer(peer_id) {
-                continue;
-            }
-
-            if !my_nat_type.can_punch_hole_as_client(
-                peer_nat_type,
-                my_peer_id,
-                peer_id,
-                flags.disable_sym_hole_punching,
-            ) {
-                continue;
-            }
-
+        let peers_to_connect =
+            collect_udp_punch_tasks(my_peer_id, my_nat_type, policy, candidates, |peer_id| {
+                data.blacklist.contains(&peer_id)
+            });
+        for task in &peers_to_connect {
             tracing::info!(
-                ?peer_id,
-                ?peer_nat_type,
+                peer_id = task.dst_peer_id,
+                peer_nat_type = ?task.dst_nat_type,
                 ?my_nat_type,
                 "found peer to do hole punching"
             );
-
-            peers_to_connect.push(PunchTaskInfo {
-                dst_peer_id: peer_id,
-                dst_nat_type: peer_nat_type,
-                my_nat_type,
-            });
         }
 
         peers_to_connect
