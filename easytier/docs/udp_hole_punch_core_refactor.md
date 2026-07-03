@@ -352,6 +352,11 @@ pub struct UdpPunchListener<S> {
     pub port_mapping_lease: Option<Box<dyn UdpPortMappingLease>>,
 }
 
+pub struct UdpResolvedPublicAddr {
+    pub mapped_addr: std::net::SocketAddr,
+    pub port_mapping_lease: Option<Box<dyn UdpPortMappingLease>>,
+}
+
 #[async_trait::async_trait]
 pub trait UdpHolePunchRuntime: Send + Sync + 'static {
     type Socket: UdpPunchSocket + 'static;
@@ -366,7 +371,7 @@ pub trait UdpHolePunchRuntime: Send + Sync + 'static {
     async fn resolve_udp_public_addr(
         &self,
         socket: std::sync::Arc<Self::Socket>,
-    ) -> anyhow::Result<std::net::SocketAddr>;
+    ) -> anyhow::Result<UdpResolvedPublicAddr>;
 
     async fn create_listener(
         &self,
@@ -440,7 +445,8 @@ pub trait UdpHolePunchRuntime: Send + Sync + 'static {
 2. core 按 NAT 类型、P2P flags、recent traffic、direct connection 状态选择目标。
 3. core 通过 `UdpHolePunchSignaling` 调用远端 `select_punch_listener`。
 4. core 调用 `runtime.bind_udp(None)` 创建本地 socket。
-5. core 调用 `runtime.resolve_udp_public_addr(socket)` 获取本地 mapped address。
+5. core 调用 `runtime.resolve_udp_public_addr(socket)` 获取本地 mapped address，并在
+   打洞结束前持有可能返回的 port-mapping lease。
 6. core 把 socket 加入 `UdpSocketArray`，注册 transaction id。
 7. core 通过 `UdpHolePunchSignaling` 调用远端 `send_punch_packet_cone`，
    同时本地周期性向远端 listener mapped address 发送 hole-punch packet。

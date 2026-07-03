@@ -292,7 +292,7 @@ mod tests {
 
     use super::*;
     use crate::{
-        hole_punch::udp::{UdpPunchAcceptor, UdpPunchConnCounter},
+        hole_punch::udp::{UdpPunchAcceptor, UdpPunchConnCounter, UdpResolvedPublicAddr},
         proto::common::StunInfo,
         tunnel::{Tunnel, memory::create_memory_tunnel_pair},
     };
@@ -370,8 +370,11 @@ mod tests {
         async fn resolve_udp_public_addr(
             &self,
             socket: Arc<Self::Socket>,
-        ) -> anyhow::Result<SocketAddr> {
-            Ok(socket.local_addr()?)
+        ) -> anyhow::Result<UdpResolvedPublicAddr> {
+            Ok(UdpResolvedPublicAddr {
+                mapped_addr: socket.local_addr()?,
+                port_mapping_lease: None,
+            })
         }
 
         async fn create_listener(

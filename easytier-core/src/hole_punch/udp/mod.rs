@@ -23,7 +23,7 @@ pub use runtime::{
     SendPunchPacketHardSym, SendPunchPacketHardSymResponse, UdpHolePunchInbound,
     UdpHolePunchPeerSource, UdpHolePunchRuntime, UdpHolePunchSignalError, UdpHolePunchSignaling,
     UdpHolePunchTunnelSink, UdpPortMappingLease, UdpPunchAcceptor, UdpPunchConnCounter,
-    UdpPunchListener, UdpPunchSocket, UdpPunchSocketFactory,
+    UdpPunchListener, UdpPunchSocket, UdpPunchSocketFactory, UdpResolvedPublicAddr,
 };
 pub use server::{SelectedUdpPunchListener, UdpHolePunchServerCommon};
 pub use socket_array::{PunchedUdpSocket, UdpSocketArray};

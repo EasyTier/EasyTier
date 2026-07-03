@@ -1,6 +1,7 @@
 use std::{
+    fmt::Debug,
     net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4},
-    sync::Arc,
+    sync::{Arc, Mutex as StdMutex},
     time::Duration,
 };
 
@@ -40,7 +41,7 @@ pub(crate) struct PunchedUdpSocket {
     pub(crate) remote_addr: SocketAddr,
 }
 
-struct RuntimeUdpPunchSocket {
+pub(crate) struct RuntimeUdpPunchSocket {
     socket: Arc<UdpSocket>,
 }
 
@@ -62,6 +63,203 @@ impl core_udp_hole_punch::UdpPunchSocket for RuntimeUdpPunchSocket {
 
     async fn recv_from(&self, buf: &mut [u8]) -> std::io::Result<(usize, SocketAddr)> {
         self.socket.recv_from(buf).await
+    }
+}
+
+#[allow(dead_code)]
+struct RuntimeUdpPunchAcceptor {
+    listener: UdpTunnelListener,
+}
+
+#[async_trait]
+impl core_udp_hole_punch::UdpPunchAcceptor for RuntimeUdpPunchAcceptor {
+    async fn accept(&mut self) -> anyhow::Result<Box<dyn Tunnel>> {
+        self.listener.accept().await.map_err(anyhow::Error::from)
+    }
+}
+
+#[allow(dead_code)]
+struct RuntimeUdpPunchConnCounter {
+    inner: Arc<Box<dyn TunnelConnCounter>>,
+}
+
+impl core_udp_hole_punch::UdpPunchConnCounter for RuntimeUdpPunchConnCounter {
+    fn get(&self) -> Option<u32> {
+        self.inner.get()
+    }
+}
+
+#[allow(dead_code)]
+struct RuntimeUdpPortMappingLease {
+    _inner: StdMutex<Option<upnp::UdpPortMappingLease>>,
+}
+
+impl Debug for RuntimeUdpPortMappingLease {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RuntimeUdpPortMappingLease")
+            .finish_non_exhaustive()
+    }
+}
+
+impl core_udp_hole_punch::UdpPortMappingLease for RuntimeUdpPortMappingLease {}
+
+#[allow(dead_code)]
+pub(crate) struct RuntimeUdpHolePunchRuntime {
+    global_ctx: ArcGlobalCtx,
+}
+
+impl RuntimeUdpHolePunchRuntime {
+    pub(crate) fn new(global_ctx: ArcGlobalCtx) -> Self {
+        Self { global_ctx }
+    }
+
+    async fn create_listener_ext(
+        &self,
+        with_mapped_addr: bool,
+        port: Option<u16>,
+    ) -> anyhow::Result<core_udp_hole_punch::UdpPunchListener<RuntimeUdpPunchSocket>> {
+        let socket = core_udp_hole_punch::UdpHolePunchRuntime::bind_udp(self, port).await?;
+        let local_port = socket.socket.local_addr()?.port();
+        let listen_url: url::Url = format!("udp://0.0.0.0:{local_port}").parse().unwrap();
+
+        let (mapped_addr, port_mapping_lease) = if with_mapped_addr {
+            upnp::resolve_udp_public_addr(
+                self.global_ctx.clone(),
+                &listen_url,
+                socket.socket.clone(),
+            )
+            .await?
+        } else {
+            (
+                SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, local_port)),
+                None,
+            )
+        };
+
+        let mut listener = UdpTunnelListener::new_with_socket(listen_url, socket.socket.clone());
+
+        {
+            let _g = self.global_ctx.net_ns.guard();
+            listener.listen().await?;
+        }
+
+        let socket = listener
+            .get_socket()
+            .map(RuntimeUdpPunchSocket::new)
+            .map(Arc::new)
+            .ok_or_else(|| anyhow::anyhow!("udp tunnel listener did not expose socket"))?;
+        let conn_counter = Arc::new(RuntimeUdpPunchConnCounter {
+            inner: listener.get_conn_counter(),
+        });
+        let acceptor = Box::new(RuntimeUdpPunchAcceptor { listener });
+        let port_mapping_lease = port_mapping_lease.map(|lease| {
+            Box::new(RuntimeUdpPortMappingLease {
+                _inner: StdMutex::new(Some(lease)),
+            }) as Box<dyn core_udp_hole_punch::UdpPortMappingLease>
+        });
+
+        Ok(core_udp_hole_punch::UdpPunchListener {
+            socket,
+            mapped_addr,
+            conn_counter,
+            acceptor,
+            port_mapping_lease,
+        })
+    }
+}
+
+#[async_trait]
+impl core_udp_hole_punch::UdpHolePunchRuntime for RuntimeUdpHolePunchRuntime {
+    type Socket = RuntimeUdpPunchSocket;
+
+    fn stun_info(&self) -> crate::proto::common::StunInfo {
+        self.global_ctx.get_stun_info_collector().get_stun_info()
+    }
+
+    async fn bind_udp(&self, port: Option<u16>) -> anyhow::Result<Arc<Self::Socket>> {
+        let socket = {
+            let _g = self.global_ctx.net_ns.guard();
+            Arc::new(UdpSocket::bind((Ipv4Addr::UNSPECIFIED, port.unwrap_or(0))).await?)
+        };
+
+        Ok(Arc::new(RuntimeUdpPunchSocket::new(socket)))
+    }
+
+    async fn resolve_udp_public_addr(
+        &self,
+        socket: Arc<Self::Socket>,
+    ) -> anyhow::Result<core_udp_hole_punch::UdpResolvedPublicAddr> {
+        let local_port = socket.socket.local_addr()?.port();
+        let listen_url: url::Url = format!("udp://0.0.0.0:{local_port}").parse().unwrap();
+        let (mapped_addr, port_mapping_lease) = upnp::resolve_udp_public_addr(
+            self.global_ctx.clone(),
+            &listen_url,
+            socket.socket.clone(),
+        )
+        .await?;
+        let port_mapping_lease = port_mapping_lease.map(|lease| {
+            Box::new(RuntimeUdpPortMappingLease {
+                _inner: StdMutex::new(Some(lease)),
+            }) as Box<dyn core_udp_hole_punch::UdpPortMappingLease>
+        });
+
+        Ok(core_udp_hole_punch::UdpResolvedPublicAddr {
+            mapped_addr,
+            port_mapping_lease,
+        })
+    }
+
+    async fn create_listener(
+        &self,
+        _prefer_port_mapping: bool,
+    ) -> anyhow::Result<core_udp_hole_punch::UdpPunchListener<Self::Socket>> {
+        self.create_listener_ext(true, None).await
+    }
+
+    async fn create_port_bound_listener(
+        &self,
+        port: u16,
+    ) -> anyhow::Result<core_udp_hole_punch::UdpPunchListener<Self::Socket>> {
+        self.create_listener_ext(false, Some(port)).await
+    }
+
+    async fn connect_with_socket(
+        &self,
+        socket: Arc<Self::Socket>,
+        remote: SocketAddr,
+    ) -> anyhow::Result<Box<dyn Tunnel>> {
+        try_connect_with_socket(self.global_ctx.clone(), socket.socket.clone(), remote)
+            .await
+            .map_err(anyhow::Error::from)
+    }
+}
+
+#[allow(dead_code)]
+pub(crate) struct RuntimeUdpHolePunchTunnelSink {
+    peer_mgr: Arc<PeerManager>,
+}
+
+impl RuntimeUdpHolePunchTunnelSink {
+    pub(crate) fn new(peer_mgr: Arc<PeerManager>) -> Self {
+        Self { peer_mgr }
+    }
+}
+
+#[async_trait]
+impl core_udp_hole_punch::UdpHolePunchTunnelSink for RuntimeUdpHolePunchTunnelSink {
+    async fn add_client_tunnel(&self, tunnel: Box<dyn Tunnel>) -> anyhow::Result<()> {
+        self.peer_mgr
+            .add_client_tunnel(tunnel, false)
+            .await
+            .map(|_| ())
+            .map_err(anyhow::Error::from)
+    }
+
+    async fn add_server_tunnel(&self, tunnel: Box<dyn Tunnel>) -> anyhow::Result<()> {
+        self.peer_mgr
+            .add_tunnel_as_server(tunnel, false)
+            .await
+            .map_err(anyhow::Error::from)
     }
 }
 
@@ -564,8 +762,9 @@ mod tests {
     use crate::common::global_ctx::tests::get_mock_global_ctx;
 
     use super::{
-        MAX_PUBLIC_UDP_HOLE_PUNCH_LISTENERS, easytier_managed_local_addr_error,
-        should_create_public_listener, should_retry_public_listener_selection,
+        MAX_PUBLIC_UDP_HOLE_PUNCH_LISTENERS, core_udp_hole_punch,
+        easytier_managed_local_addr_error, should_create_public_listener,
+        should_retry_public_listener_selection,
     };
 
     #[tokio::test]
@@ -580,6 +779,33 @@ mod tests {
             easytier_managed_local_addr_error(&global_ctx, local_addr),
             Some("local address is easytier-managed ipv6")
         );
+    }
+
+    #[tokio::test]
+    async fn runtime_adapter_can_bind_udp_socket() {
+        let runtime = super::RuntimeUdpHolePunchRuntime::new(get_mock_global_ctx());
+
+        let socket = core_udp_hole_punch::UdpHolePunchRuntime::bind_udp(&runtime, None)
+            .await
+            .unwrap();
+
+        assert_ne!(socket.socket.local_addr().unwrap().port(), 0);
+    }
+
+    #[tokio::test]
+    async fn runtime_adapter_port_bound_listener_skips_mapped_addr() {
+        let runtime = super::RuntimeUdpHolePunchRuntime::new(get_mock_global_ctx());
+
+        let listener =
+            core_udp_hole_punch::UdpHolePunchRuntime::create_port_bound_listener(&runtime, 0)
+                .await
+                .unwrap();
+
+        let local_port = listener.socket.socket.local_addr().unwrap().port();
+        assert_ne!(local_port, 0);
+        assert!(listener.mapped_addr.ip().is_unspecified());
+        assert_eq!(listener.mapped_addr.port(), local_port);
+        assert!(listener.port_mapping_lease.is_none());
     }
 
     #[test]

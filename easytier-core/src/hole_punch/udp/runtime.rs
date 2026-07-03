@@ -35,6 +35,11 @@ pub struct UdpPunchListener<S> {
     pub port_mapping_lease: Option<Box<dyn UdpPortMappingLease>>,
 }
 
+pub struct UdpResolvedPublicAddr {
+    pub mapped_addr: SocketAddr,
+    pub port_mapping_lease: Option<Box<dyn UdpPortMappingLease>>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SelectPunchListener {
     pub force_new: bool,
@@ -214,7 +219,7 @@ pub trait UdpHolePunchRuntime: Send + Sync + 'static {
     async fn resolve_udp_public_addr(
         &self,
         socket: Arc<Self::Socket>,
-    ) -> anyhow::Result<SocketAddr>;
+    ) -> anyhow::Result<UdpResolvedPublicAddr>;
 
     async fn create_listener(
         &self,
