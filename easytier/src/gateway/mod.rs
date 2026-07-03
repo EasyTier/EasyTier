@@ -1,6 +1,9 @@
-use dashmap::DashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use tokio::task::JoinSet;
+
+use easytier_core::proxy::cidr_table::{
+    ProxyCidrRule, ProxyCidrSnapshot, ProxyCidrSnapshotProvider, ProxyCidrTable,
+};
 
 use crate::common::global_ctx::ArcGlobalCtx;
 
@@ -26,20 +29,16 @@ pub mod quic_proxy;
 #[derive(Debug)]
 pub(crate) struct CidrSet {
     global_ctx: ArcGlobalCtx,
-    cidr_set: Arc<Mutex<Vec<cidr::Ipv4Cidr>>>,
+    table: Arc<ProxyCidrTable>,
     tasks: JoinSet<()>,
-
-    mapped_to_real: Arc<DashMap<cidr::Ipv4Cidr, cidr::Ipv4Cidr>>,
 }
 
 impl CidrSet {
     pub fn new(global_ctx: ArcGlobalCtx) -> Self {
         let mut ret = Self {
             global_ctx,
-            cidr_set: Arc::new(Mutex::new(vec![])),
+            table: Arc::new(ProxyCidrTable::new()),
             tasks: JoinSet::new(),
-
-            mapped_to_real: Arc::new(DashMap::new()),
         };
         ret.run_cidr_updater();
         ret
@@ -47,25 +46,22 @@ impl CidrSet {
 
     fn run_cidr_updater(&mut self) {
         let global_ctx = self.global_ctx.clone();
-        let cidr_set = self.cidr_set.clone();
-        let mapped_to_real = self.mapped_to_real.clone();
+        let table = self.table.clone();
         self.tasks.spawn(async move {
             let mut last_cidrs = vec![];
             loop {
                 let cidrs = global_ctx.config.get_proxy_cidrs();
                 if cidrs != last_cidrs {
                     last_cidrs = cidrs.clone();
-                    mapped_to_real.clear();
-                    cidr_set.lock().unwrap().clear();
-                    for cidr in cidrs.iter() {
-                        let real_cidr = cidr.cidr;
-                        let mapped = cidr.mapped_cidr.unwrap_or(real_cidr);
-                        cidr_set.lock().unwrap().push(mapped);
-
-                        if mapped != real_cidr {
-                            mapped_to_real.insert(mapped, real_cidr);
-                        }
-                    }
+                    table.update_snapshot(ProxyCidrSnapshot {
+                        rules: cidrs
+                            .into_iter()
+                            .map(|cidr| ProxyCidrRule {
+                                cidr: cidr.cidr,
+                                mapped_cidr: cidr.mapped_cidr,
+                            })
+                            .collect(),
+                    });
                 }
                 tokio::time::sleep(std::time::Duration::from_secs(1)).await;
             }
@@ -73,29 +69,35 @@ impl CidrSet {
     }
 
     pub fn contains_v4(&self, ipv4: std::net::Ipv4Addr, real_ip: &mut std::net::Ipv4Addr) -> bool {
-        let ip = ipv4;
-        let s = self.cidr_set.lock().unwrap();
-        for cidr in s.iter() {
-            if cidr.contains(&ip) {
-                if let Some(real_cidr) = self.mapped_to_real.get(cidr).map(|v| *v.value()) {
-                    let origin_network_bits = real_cidr.first().address().to_bits();
-                    let network_mask = cidr.mask().to_bits();
-
-                    let mut converted_ip = ipv4.to_bits();
-                    converted_ip &= !network_mask;
-                    converted_ip |= origin_network_bits;
-
-                    *real_ip = std::net::Ipv4Addr::from(converted_ip);
-                } else {
-                    *real_ip = ipv4;
-                }
-                return true;
-            }
+        if let Some(mapped_ip) = self.table.lookup_v4(ipv4) {
+            *real_ip = mapped_ip;
+            return true;
         }
         false
     }
 
     pub fn is_empty(&self) -> bool {
-        self.cidr_set.lock().unwrap().is_empty()
+        self.table.is_empty()
+    }
+
+    pub fn table(&self) -> Arc<ProxyCidrTable> {
+        self.table.clone()
+    }
+}
+
+impl ProxyCidrSnapshotProvider for CidrSet {
+    fn proxy_cidr_snapshot(&self) -> ProxyCidrSnapshot {
+        ProxyCidrSnapshot {
+            rules: self
+                .global_ctx
+                .config
+                .get_proxy_cidrs()
+                .into_iter()
+                .map(|cidr| ProxyCidrRule {
+                    cidr: cidr.cidr,
+                    mapped_cidr: cidr.mapped_cidr,
+                })
+                .collect(),
+        }
     }
 }

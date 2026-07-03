@@ -1,17 +1,12 @@
 use anyhow::Context;
 use cidr::Ipv4Inet;
-use core::panic;
-use crossbeam::atomic::AtomicCell;
-use dashmap::DashMap;
-use pnet::packet::MutablePacket;
-use pnet::packet::Packet;
-use pnet::packet::ip::IpNextHeaderProtocols;
-use pnet::packet::ipv4::{Ipv4Packet, MutableIpv4Packet};
-use pnet::packet::tcp::{MutableTcpPacket, TcpPacket, ipv4_checksum};
-use quanta::Instant;
+use easytier_core::proxy::tcp_proxy::{
+    TcpNatEntry, TcpNatEntrySnapshot, TcpNatEntryState as CoreTcpNatEntryState, TcpProxyCore,
+    TcpProxyMode, TcpProxyNicContext, TcpProxyPacketAction, TcpProxyPeerContext,
+};
 use socket2::{SockRef, TcpKeepalive};
-use std::net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4};
-use std::sync::atomic::{AtomicBool, AtomicU16};
+use std::net::{Ipv4Addr, SocketAddr};
+use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Weak};
 use std::time::Duration;
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt, copy_bidirectional};
@@ -34,27 +29,21 @@ use crate::proto::api::instance::{
 };
 use crate::proto::rpc_types;
 use crate::proto::rpc_types::controller::BaseController;
-use crate::tunnel::packet_def::{PacketType, PeerManagerHeader, ZCPacket};
+use crate::tunnel::packet_def::ZCPacket;
 
 use super::CidrSet;
 
 #[cfg(feature = "smoltcp")]
 use super::tokio_smoltcp::{self, Net, NetConfig, channel_device};
+#[cfg(feature = "smoltcp")]
+use smoltcp::wire::Ipv4Packet;
 
 #[async_trait::async_trait]
 pub(crate) trait NatDstConnector: Send + Sync + Clone + 'static {
     type DstStream: AsyncRead + AsyncWrite + Unpin + Send;
 
     async fn connect(&self, src: SocketAddr, dst: SocketAddr) -> anyhow::Result<Self::DstStream>;
-    fn check_packet_from_peer_fast(&self, cidr_set: &CidrSet, global_ctx: &GlobalCtx) -> bool;
-    fn check_packet_from_peer(
-        &self,
-        cidr_set: &CidrSet,
-        global_ctx: &GlobalCtx,
-        hdr: &PeerManagerHeader,
-        ipv4: &Ipv4Addr,
-        real_dst_ip: &mut Ipv4Addr,
-    ) -> bool;
+    fn proxy_mode(&self) -> TcpProxyMode;
     fn transport_type(&self) -> TcpProxyEntryTransportType;
 }
 
@@ -81,72 +70,12 @@ impl NatDstConnector for NatDstTcpConnector {
         Ok(stream)
     }
 
-    fn check_packet_from_peer_fast(&self, cidr_set: &CidrSet, global_ctx: &GlobalCtx) -> bool {
-        !cidr_set.is_empty() || global_ctx.enable_exit_node() || global_ctx.no_tun()
-    }
-
-    fn check_packet_from_peer(
-        &self,
-        cidr_set: &CidrSet,
-        global_ctx: &GlobalCtx,
-        hdr: &PeerManagerHeader,
-        ipv4: &Ipv4Addr,
-        real_dst_ip: &mut Ipv4Addr,
-    ) -> bool {
-        let is_exit_node = hdr.is_exit_node();
-
-        if !(cidr_set.contains_v4(*ipv4, real_dst_ip)
-            || is_exit_node
-            || global_ctx.no_tun()
-                && Some(*ipv4) == global_ctx.get_ipv4().as_ref().map(Ipv4Inet::address))
-        {
-            return false;
-        }
-
-        true
+    fn proxy_mode(&self) -> TcpProxyMode {
+        TcpProxyMode::Tcp
     }
 
     fn transport_type(&self) -> TcpProxyEntryTransportType {
         TcpProxyEntryTransportType::Tcp
-    }
-}
-
-type NatDstEntryState = TcpProxyEntryState;
-
-#[derive(Debug)]
-pub struct NatDstEntry {
-    id: uuid::Uuid,
-    src: SocketAddr,
-    real_dst: SocketAddr,
-    mapped_dst: SocketAddr,
-    start_time: Instant,
-    start_time_local: chrono::DateTime<chrono::Local>,
-    tasks: Mutex<JoinSet<()>>,
-    state: AtomicCell<NatDstEntryState>,
-}
-
-impl NatDstEntry {
-    pub fn new(src: SocketAddr, real_dst: SocketAddr, mapped_dst: SocketAddr) -> Self {
-        Self {
-            id: uuid::Uuid::new_v4(),
-            src,
-            real_dst,
-            mapped_dst,
-            start_time: Instant::now(),
-            start_time_local: chrono::Local::now(),
-            tasks: Mutex::new(JoinSet::new()),
-            state: AtomicCell::new(NatDstEntryState::SynReceived),
-        }
-    }
-
-    fn parse_as_pb(&self, transport_type: TcpProxyEntryTransportType) -> TcpProxyEntry {
-        TcpProxyEntry {
-            src: Some(self.src.into()),
-            dst: Some(self.real_dst.into()),
-            start_time: self.start_time_local.timestamp() as u64,
-            state: self.state.load().into(),
-            transport_type: transport_type.into(),
-        }
     }
 }
 
@@ -306,26 +235,16 @@ impl ProxyTcpListener {
     }
 }
 
-type ArcNatDstEntry = Arc<NatDstEntry>;
-
-type SynSockMap = Arc<DashMap<SocketAddr, ArcNatDstEntry>>;
-type ConnSockMap = Arc<DashMap<uuid::Uuid, ArcNatDstEntry>>;
-// peer src addr to nat entry, when respond tcp packet, should modify the tcp src addr to the nat entry's dst addr
-type AddrConnSockMap = Arc<DashMap<SocketAddr, ArcNatDstEntry>>;
+type ArcNatDstEntry = Arc<TcpNatEntry>;
 
 #[derive(Debug)]
 pub struct TcpProxy<C: NatDstConnector> {
     global_ctx: Arc<GlobalCtx>,
     peer_manager: Weak<PeerManager>,
-    local_port: AtomicU16,
-
     tasks: Arc<std::sync::Mutex<JoinSet<()>>>,
 
-    syn_map: SynSockMap,
-    conn_map: ConnSockMap,
-    addr_conn_map: AddrConnSockMap,
-
     cidr_set: CidrSet,
+    core: Arc<TcpProxyCore>,
 
     smoltcp_stack_sender: Option<mpsc::Sender<ZCPacket>>,
     smoltcp_stack_receiver: Arc<Mutex<Option<mpsc::Receiver<ZCPacket>>>>,
@@ -341,101 +260,60 @@ pub struct TcpProxy<C: NatDstConnector> {
 #[async_trait::async_trait]
 impl<C: NatDstConnector> PeerPacketFilter for TcpProxy<C> {
     async fn try_process_packet_from_peer(&self, mut packet: ZCPacket) -> Option<ZCPacket> {
-        if self.try_handle_peer_packet(&mut packet).await.is_some() {
-            if self.is_smoltcp_enabled() {
-                let smoltcp_stack_sender = self.smoltcp_stack_sender.as_ref().unwrap();
-                if let Err(e) = smoltcp_stack_sender.try_send(packet) {
-                    tracing::error!("send to smoltcp stack failed: {:?}", e);
-                }
-            } else if let Some(peer_manager) = self.get_peer_manager()
-                && let Err(e) = peer_manager.get_nic_channel().send(packet).await
-            {
-                tracing::error!("send to nic failed: {:?}", e);
-            }
-            return None;
-        } else {
-            Some(packet)
+        let action = self.core.try_handle_peer_packet(
+            self.connector.proxy_mode(),
+            &mut packet,
+            TcpProxyPeerContext {
+                local_inet: self.get_local_inet(),
+                virtual_ipv4: self.global_ctx.get_ipv4().map(|inet| inet.address()),
+                local_port: self.get_local_port(),
+                enable_exit_node: self.global_ctx.enable_exit_node(),
+                no_tun: self.global_ctx.no_tun(),
+                smoltcp_enabled: self.is_smoltcp_enabled(),
+            },
+        );
+        let TcpProxyPacketAction::Handled { new_syn: _new_syn } = action else {
+            return Some(packet);
+        };
+
+        #[cfg(feature = "smoltcp")]
+        if _new_syn && self.is_smoltcp_enabled() {
+            let smoltcp_listener_tx = self.smoltcp_listener_tx.lock().unwrap().clone().unwrap();
+            SmolTcpListener::add_listener(
+                smoltcp_listener_tx,
+                self.smoltcp_net.clone(),
+                self.tasks.clone(),
+            )
+            .await;
+            tracing::info!("smol tcp listener added");
         }
+
+        if self.is_smoltcp_enabled() {
+            let smoltcp_stack_sender = self.smoltcp_stack_sender.as_ref().unwrap();
+            if let Err(e) = smoltcp_stack_sender.try_send(packet) {
+                tracing::error!("send to smoltcp stack failed: {:?}", e);
+            }
+        } else if let Some(peer_manager) = self.get_peer_manager()
+            && let Err(e) = peer_manager.get_nic_channel().send(packet).await
+        {
+            tracing::error!("send to nic failed: {:?}", e);
+        }
+        None
     }
 }
 
 #[async_trait::async_trait]
 impl<C: NatDstConnector> NicPacketFilter for TcpProxy<C> {
     async fn try_process_packet_from_nic(&self, zc_packet: &mut ZCPacket) -> bool {
-        let Some(my_ipv4_inet) = self.get_local_inet() else {
-            return false;
-        };
-        let my_ipv4 = my_ipv4_inet.address();
-
-        let data = zc_packet.payload();
-        let ip_packet = Ipv4Packet::new(data).unwrap();
-        if ip_packet.get_version() != 4
-            || ip_packet.get_source() != my_ipv4
-            || ip_packet.get_next_level_protocol() != IpNextHeaderProtocols::Tcp
-        {
-            return false;
-        }
-
-        let tcp_packet = TcpPacket::new(ip_packet.payload()).unwrap();
-        if tcp_packet.get_source() != self.get_local_port() {
-            return false;
-        }
-
-        let mut dst_addr = SocketAddr::V4(SocketAddrV4::new(
-            ip_packet.get_destination(),
-            tcp_packet.get_destination(),
-        ));
-        let mut need_transform_dst = false;
-
-        // for kcp proxy, the src ip of nat entry will be converted from my ip to fake ip
-        // here we need to convert it back
-        if !self.is_smoltcp_enabled() && dst_addr.ip() == Self::get_fake_local_ipv4(&my_ipv4_inet) {
-            dst_addr.set_ip(IpAddr::V4(my_ipv4));
-            need_transform_dst = true;
-        }
-
-        tracing::trace!(dst_addr = ?dst_addr, "tcp packet try find entry");
-        let entry = if let Some(entry) = self.addr_conn_map.get(&dst_addr) {
-            entry
-        } else {
-            let Some(syn_entry) = self.syn_map.get(&dst_addr) else {
-                return false;
-            };
-            syn_entry
-        };
-        let nat_entry = entry.clone();
-        drop(entry);
-        assert_eq!(nat_entry.src, dst_addr);
-
-        let IpAddr::V4(ip) = nat_entry.mapped_dst.ip() else {
-            panic!("v4 nat entry src ip is not v4");
-        };
-
-        zc_packet
-            .mut_peer_manager_header()
-            .unwrap()
-            .set_no_proxy(true);
-        if need_transform_dst {
-            zc_packet.mut_peer_manager_header().unwrap().to_peer_id = self.get_my_peer_id().into();
-        }
-
-        let mut ip_packet = MutableIpv4Packet::new(zc_packet.mut_payload()).unwrap();
-        ip_packet.set_source(ip);
-        if need_transform_dst {
-            ip_packet.set_destination(my_ipv4);
-        }
-        let dst = ip_packet.get_destination();
-
-        let mut tcp_packet = MutableTcpPacket::new(ip_packet.payload_mut()).unwrap();
-        tcp_packet.set_source(nat_entry.real_dst.port());
-
-        Self::update_tcp_packet_checksum(&mut tcp_packet, &ip, &dst);
-        drop(tcp_packet);
-        Self::update_ip_packet_checksum(&mut ip_packet);
-
-        tracing::trace!(dst_addr = ?dst_addr, nat_entry = ?nat_entry, packet = ?ip_packet, "tcp packet after modified");
-
-        true
+        self.core.try_process_packet_from_nic(
+            zc_packet,
+            TcpProxyNicContext {
+                local_inet: self.get_local_inet(),
+                local_port: self.get_local_port(),
+                my_peer_id: self.get_my_peer_id(),
+                smoltcp_enabled: self.is_smoltcp_enabled(),
+            },
+        )
     }
 }
 
@@ -443,19 +321,17 @@ impl<C: NatDstConnector> TcpProxy<C> {
     pub fn new(peer_manager: Arc<PeerManager>, connector: C) -> Arc<Self> {
         let (smoltcp_stack_sender, smoltcp_stack_receiver) = mpsc::channel::<ZCPacket>(1000);
         let global_ctx = peer_manager.get_global_ctx();
+        let cidr_set = CidrSet::new(global_ctx.clone());
+        let core = Arc::new(TcpProxyCore::new(cidr_set.table()));
 
         Arc::new(Self {
             global_ctx: global_ctx.clone(),
             peer_manager: Arc::downgrade(&peer_manager),
 
-            local_port: AtomicU16::new(0),
             tasks: Arc::new(std::sync::Mutex::new(JoinSet::new())),
 
-            syn_map: Arc::new(DashMap::new()),
-            conn_map: Arc::new(DashMap::new()),
-            addr_conn_map: Arc::new(DashMap::new()),
-
-            cidr_set: CidrSet::new(global_ctx),
+            cidr_set,
+            core,
 
             smoltcp_stack_sender: Some(smoltcp_stack_sender),
             smoltcp_stack_receiver: Arc::new(Mutex::new(Some(smoltcp_stack_receiver))),
@@ -473,22 +349,6 @@ impl<C: NatDstConnector> TcpProxy<C> {
 
     pub fn get_peer_manager(&self) -> Option<Arc<PeerManager>> {
         self.peer_manager.upgrade()
-    }
-
-    fn update_tcp_packet_checksum(
-        tcp_packet: &mut MutableTcpPacket,
-        ipv4_src: &Ipv4Addr,
-        ipv4_dst: &Ipv4Addr,
-    ) {
-        tcp_packet.set_checksum(ipv4_checksum(
-            &tcp_packet.to_immutable(),
-            ipv4_src,
-            ipv4_dst,
-        ));
-    }
-
-    fn update_ip_packet_checksum(ip_packet: &mut MutableIpv4Packet) {
-        ip_packet.set_checksum(pnet::packet::ipv4::checksum(&ip_packet.to_immutable()));
     }
 
     pub async fn start(self: &Arc<Self>, add_pipeline: bool) -> Result<()> {
@@ -511,20 +371,11 @@ impl<C: NatDstConnector> TcpProxy<C> {
     }
 
     async fn run_syn_map_cleaner(&self) -> Result<()> {
-        let syn_map = self.syn_map.clone();
+        let core = self.core.clone();
         let tasks = self.tasks.clone();
         let syn_map_cleaner_task = async move {
             loop {
-                syn_map.retain(|_, entry| {
-                    if entry.start_time.elapsed() > Duration::from_secs(30) {
-                        tracing::warn!(entry = ?entry, "syn nat entry expired");
-                        entry.state.store(NatDstEntryState::Closed);
-                        false
-                    } else {
-                        true
-                    }
-                });
-                syn_map.shrink_to_fit();
+                core.cleanup_expired_syn(Duration::from_secs(30));
                 tokio::time::sleep(Duration::from_secs(10)).await;
             }
         };
@@ -549,8 +400,7 @@ impl<C: NatDstConnector> TcpProxy<C> {
             // use smoltcp network stack
 
             use crate::gateway::tokio_smoltcp::BufferSize;
-            self.local_port
-                .store(8899, std::sync::atomic::Ordering::Relaxed);
+            self.core.set_local_port(8899);
 
             let mut cap = smoltcp::phy::DeviceCapabilities::default();
             cap.max_transmission_unit = 1280;
@@ -576,19 +426,19 @@ impl<C: NatDstConnector> TcpProxy<C> {
                         ?data,
                         "receive from smoltcp stack and send to peer mgr packet"
                     );
-                    let Some(ipv4) = Ipv4Packet::new(&data) else {
+                    let Ok(ipv4) = Ipv4Packet::new_checked(data.as_slice()) else {
                         tracing::error!(?data, "smoltcp stack stream get non ipv4 packet");
                         continue;
                     };
 
-                    let dst = ipv4.get_destination();
+                    let dst = ipv4.dst_addr();
                     let packet = ZCPacket::new_with_payload(&data);
                     let Some(peer_mgr) = peer_mgr.upgrade() else {
                         tracing::warn!("peer manager is gone, smoltcp sender exited");
                         return;
                     };
                     if let Err(e) = peer_mgr
-                        .send_msg_by_ip(packet, IpAddr::V4(dst), false)
+                        .send_msg_by_ip(packet, std::net::IpAddr::V4(dst), false)
                         .await
                     {
                         tracing::error!("send to peer failed in smoltcp sender: {:?}", e);
@@ -634,10 +484,7 @@ impl<C: NatDstConnector> TcpProxy<C> {
             let tcp_listener = net_ns
                 .run_async(|| async { TcpListener::bind(&listen_addr).await })
                 .await?;
-            self.local_port.store(
-                tcp_listener.local_addr()?.port(),
-                std::sync::atomic::Ordering::Relaxed,
-            );
+            self.core.set_local_port(tcp_listener.local_addr()?.port());
 
             self.enable_smoltcp
                 .store(false, std::sync::atomic::Ordering::Relaxed);
@@ -652,34 +499,18 @@ impl<C: NatDstConnector> TcpProxy<C> {
 
         let global_ctx = self.global_ctx.clone();
         let tasks = Arc::downgrade(&self.tasks);
-        let syn_map = self.syn_map.clone();
-        let conn_map = self.conn_map.clone();
-        let addr_conn_map = self.addr_conn_map.clone();
+        let core = self.core.clone();
         let connector = self.connector.clone();
         let accept_task = async move {
-            let conn_map = conn_map.clone();
             loop {
                 let accept_ret = tcp_listener.accept().await;
-                let Ok((tcp_stream, mut socket_addr)) = accept_ret else {
+                let Ok((tcp_stream, socket_addr)) = accept_ret else {
                     tracing::error!("nat tcp listener accept failed: {:?}", accept_ret.err());
                     continue;
                 };
 
-                let my_ip_inet = global_ctx.get_ipv4();
-                let my_ip = my_ip_inet
-                    .as_ref()
-                    .map(Ipv4Inet::address)
-                    .unwrap_or(Ipv4Addr::UNSPECIFIED);
-
-                if my_ip_inet.is_some()
-                    && socket_addr.ip() == Self::get_fake_local_ipv4(&my_ip_inet.unwrap())
-                {
-                    socket_addr.set_ip(IpAddr::V4(my_ip));
-                }
-
-                let Some(entry) = syn_map.get(&socket_addr) else {
+                let Some(entry) = core.accept_connection(socket_addr, global_ctx.get_ipv4()) else {
                     tracing::error!(
-                        ?my_ip,
                         ?socket_addr,
                         "tcp connection from unknown source, ignore it"
                     );
@@ -688,19 +519,8 @@ impl<C: NatDstConnector> TcpProxy<C> {
                 tracing::info!(
                     ?socket_addr,
                     "tcp connection accepted for proxy, nat dst: {:?}",
-                    entry.real_dst
+                    entry.real_dst()
                 );
-                assert_eq!(entry.state.load(), NatDstEntryState::SynReceived);
-
-                let entry_clone = entry.clone();
-                drop(entry);
-                syn_map.remove_if(&socket_addr, |_, entry| entry.id == entry_clone.id);
-
-                entry_clone.state.store(NatDstEntryState::ConnectingDst);
-
-                let _ = addr_conn_map.insert(entry_clone.src, entry_clone.clone());
-                let old_nat_val = conn_map.insert(entry_clone.id, entry_clone.clone());
-                assert!(old_nat_val.is_none());
 
                 let Some(tasks) = tasks.upgrade() else {
                     tracing::error!("tcp proxy tasks is dropped, exit accept loop");
@@ -711,9 +531,8 @@ impl<C: NatDstConnector> TcpProxy<C> {
                     connector.clone(),
                     global_ctx.clone(),
                     tcp_stream,
-                    conn_map.clone(),
-                    addr_conn_map.clone(),
-                    entry_clone,
+                    core.clone(),
+                    entry,
                 ));
             }
         };
@@ -725,50 +544,34 @@ impl<C: NatDstConnector> TcpProxy<C> {
         Ok(())
     }
 
-    fn remove_entry_from_all_conn_map(
-        conn_map: ConnSockMap,
-        addr_conn_map: AddrConnSockMap,
-        nat_entry: ArcNatDstEntry,
-    ) {
-        conn_map.remove(&nat_entry.id);
-        addr_conn_map.remove_if(&nat_entry.src, |_, entry| entry.id == nat_entry.id);
-        if conn_map.capacity() - conn_map.len() > 16 {
-            conn_map.shrink_to_fit();
-        }
-        if addr_conn_map.capacity() - addr_conn_map.len() > 16 {
-            addr_conn_map.shrink_to_fit();
-        }
-    }
-
     async fn connect_to_nat_dst(
         connector: C,
         global_ctx: ArcGlobalCtx,
         src_tcp_stream: ProxyTcpStream,
-        conn_map: ConnSockMap,
-        addr_conn_map: AddrConnSockMap,
+        core: Arc<TcpProxyCore>,
         nat_entry: ArcNatDstEntry,
     ) {
         if let Err(e) = src_tcp_stream.set_nodelay(true) {
             tracing::warn!("set_nodelay failed, ignore it: {:?}", e);
         }
 
-        if global_ctx.should_deny_proxy(&nat_entry.real_dst, false) {
+        if global_ctx.should_deny_proxy(&nat_entry.real_dst(), false) {
             tracing::error!(
                 ?nat_entry,
                 "nat dst port {} is in running listeners, ignore it",
-                nat_entry.real_dst.port()
+                nat_entry.real_dst().port()
             );
-            nat_entry.state.store(NatDstEntryState::Closed);
-            Self::remove_entry_from_all_conn_map(conn_map, addr_conn_map, nat_entry);
+            nat_entry.set_state(CoreTcpNatEntryState::Closed);
+            core.remove_entry(nat_entry.id());
             return;
         }
 
-        let nat_dst = if global_ctx.is_ip_local_virtual_ip(&nat_entry.real_dst.ip()) {
-            format!("127.0.0.1:{}", nat_entry.real_dst.port())
+        let nat_dst = if global_ctx.is_ip_local_virtual_ip(&nat_entry.real_dst().ip()) {
+            format!("127.0.0.1:{}", nat_entry.real_dst().port())
                 .parse()
                 .unwrap()
         } else {
-            nat_entry.real_dst
+            nat_entry.real_dst()
         };
 
         global_ctx
@@ -781,68 +584,58 @@ impl<C: NatDstConnector> TcpProxy<C> {
                     ))
                     .with_label_type(LabelType::DstIp(nat_dst.ip().to_string()))
                     .with_label_type(LabelType::MappedDstIp(
-                        nat_entry.mapped_dst.ip().to_string(),
+                        nat_entry.mapped_dst().ip().to_string(),
                     )),
             )
             .inc();
 
         let _guard = global_ctx.net_ns.guard();
-        let Ok(dst_tcp_stream) = connector.connect(nat_entry.src, nat_dst).await else {
+        let Ok(dst_tcp_stream) = connector.connect(nat_entry.src(), nat_dst).await else {
             tracing::error!("connect to dst failed: {:?}", nat_entry);
-            nat_entry.state.store(NatDstEntryState::Closed);
-            Self::remove_entry_from_all_conn_map(conn_map, addr_conn_map, nat_entry);
+            nat_entry.set_state(CoreTcpNatEntryState::Closed);
+            core.remove_entry(nat_entry.id());
             return;
         };
         drop(_guard);
 
         tracing::info!(?nat_entry, ?nat_dst, "tcp connection to dst established");
 
-        assert_eq!(nat_entry.state.load(), NatDstEntryState::ConnectingDst);
-        nat_entry.state.store(NatDstEntryState::Connected);
+        assert_eq!(nat_entry.state(), CoreTcpNatEntryState::ConnectingDst);
+        nat_entry.set_state(CoreTcpNatEntryState::Connected);
 
-        Self::handle_nat_connection(
-            src_tcp_stream,
-            dst_tcp_stream,
-            conn_map,
-            addr_conn_map,
-            nat_entry,
-        )
-        .await;
+        Self::handle_nat_connection(src_tcp_stream, dst_tcp_stream, core, nat_entry).await;
     }
 
     async fn handle_nat_connection(
         mut src_tcp_stream: ProxyTcpStream,
         mut dst_tcp_stream: C::DstStream,
-        conn_map: ConnSockMap,
-        addr_conn_map: AddrConnSockMap,
+        core: Arc<TcpProxyCore>,
         nat_entry: ArcNatDstEntry,
     ) {
         let nat_entry_clone = nat_entry.clone();
-        nat_entry.tasks.lock().await.spawn(async move {
-            let ret = src_tcp_stream.copy_bidirectional(&mut dst_tcp_stream).await;
-            tracing::info!(nat_entry = ?nat_entry_clone, ret = ?ret, "nat tcp connection closed");
+        let ret = src_tcp_stream.copy_bidirectional(&mut dst_tcp_stream).await;
+        tracing::info!(nat_entry = ?nat_entry_clone, ret = ?ret, "nat tcp connection closed");
 
-            nat_entry_clone.state.store(NatDstEntryState::ClosingSrc);
-            let ret = timeout(Duration::from_secs(10), src_tcp_stream.shutdown()).await;
-            tracing::info!(nat_entry = ?nat_entry_clone, ret = ?ret, "src tcp stream shutdown");
+        nat_entry_clone.set_state(CoreTcpNatEntryState::ClosingSrc);
+        let ret = timeout(Duration::from_secs(10), src_tcp_stream.shutdown()).await;
+        tracing::info!(nat_entry = ?nat_entry_clone, ret = ?ret, "src tcp stream shutdown");
 
-            nat_entry_clone.state.store(NatDstEntryState::ClosingDst);
-            let ret = timeout(Duration::from_secs(10), dst_tcp_stream.shutdown()).await;
-            tracing::info!(nat_entry = ?nat_entry_clone, ret = ?ret, "dst tcp stream shutdown");
+        nat_entry_clone.set_state(CoreTcpNatEntryState::ClosingDst);
+        let ret = timeout(Duration::from_secs(10), dst_tcp_stream.shutdown()).await;
+        tracing::info!(nat_entry = ?nat_entry_clone, ret = ?ret, "dst tcp stream shutdown");
 
-            drop(src_tcp_stream);
-            drop(dst_tcp_stream);
+        drop(src_tcp_stream);
+        drop(dst_tcp_stream);
 
-            nat_entry_clone.state.store(NatDstEntryState::Closed);
-            // sleep later so the fin packet can be processed
-            tokio::time::sleep(Duration::from_secs(10)).await;
+        nat_entry_clone.set_state(CoreTcpNatEntryState::Closed);
+        // sleep later so the fin packet can be processed
+        tokio::time::sleep(Duration::from_secs(10)).await;
 
-            Self::remove_entry_from_all_conn_map(conn_map, addr_conn_map, nat_entry_clone);
-        });
+        core.remove_entry(nat_entry_clone.id());
     }
 
     pub fn get_local_port(&self) -> u16 {
-        self.local_port.load(std::sync::atomic::Ordering::Relaxed)
+        self.core.local_port()
     }
 
     pub fn get_my_peer_id(&self) -> u32 {
@@ -873,136 +666,45 @@ impl<C: NatDstConnector> TcpProxy<C> {
             .load(std::sync::atomic::Ordering::Relaxed)
     }
 
-    pub fn get_fake_local_ipv4(local_ip: &Ipv4Inet) -> Ipv4Addr {
-        local_ip.first_address()
-    }
-
-    async fn try_handle_peer_packet(&self, packet: &mut ZCPacket) -> Option<()> {
-        if !self
-            .connector
-            .check_packet_from_peer_fast(&self.cidr_set, &self.global_ctx)
-        {
-            return None;
-        }
-
-        let ipv4_inet = self.get_local_inet()?;
-        let ipv4_addr = ipv4_inet.address();
-        {
-            let hdr = packet.peer_manager_header().unwrap();
-            if (hdr.packet_type != PacketType::Data as u8
-                && hdr.packet_type != PacketType::DataWithKcpSrcModified as u8
-                && hdr.packet_type != PacketType::DataWithQuicSrcModified as u8)
-                || hdr.is_no_proxy()
-            {
-                return None;
-            };
-        }
-
-        let origin_ip = {
-            let payload_bytes = packet.mut_payload();
-            let ipv4 = Ipv4Packet::new(payload_bytes)?;
-            if ipv4.get_version() != 4
-                || ipv4.get_next_level_protocol() != IpNextHeaderProtocols::Tcp
-            {
-                return None;
-            }
-
-            ipv4.get_destination()
-        };
-        let mut real_dst_ip = origin_ip;
-        let hdr = packet.mut_peer_manager_header().unwrap();
-
-        if !self.connector.check_packet_from_peer(
-            &self.cidr_set,
-            &self.global_ctx,
-            hdr,
-            &origin_ip,
-            &mut real_dst_ip,
-        ) {
-            return None;
-        }
-
-        // restore to data packet
-        hdr.packet_type = PacketType::Data as u8;
-
-        tracing::trace!(ipv4 = ?origin_ip, cidr_set = ?self.cidr_set, "proxy tcp packet received");
-
-        let payload_bytes = packet.mut_payload();
-        let ip_packet = Ipv4Packet::new(payload_bytes).unwrap();
-        let tcp_packet = TcpPacket::new(ip_packet.payload()).unwrap();
-
-        let source_ip = ip_packet.get_source();
-        let source_port = tcp_packet.get_source();
-        let src = SocketAddr::V4(SocketAddrV4::new(source_ip, source_port));
-
-        let is_tcp_syn = tcp_packet.get_flags() & pnet::packet::tcp::TcpFlags::SYN != 0;
-        let is_tcp_ack = tcp_packet.get_flags() & pnet::packet::tcp::TcpFlags::ACK != 0;
-        if is_tcp_syn && !is_tcp_ack {
-            let dest_ip = ip_packet.get_destination();
-            let dest_port = tcp_packet.get_destination();
-            let mapped_dst = SocketAddr::V4(SocketAddrV4::new(dest_ip, dest_port));
-            let real_dst = SocketAddr::V4(SocketAddrV4::new(real_dst_ip, dest_port));
-
-            let old_val = self
-                .syn_map
-                .insert(src, Arc::new(NatDstEntry::new(src, real_dst, mapped_dst)));
-            tracing::info!(src = ?src, ?real_dst, ?mapped_dst, old_entry = ?old_val, "tcp syn received");
-
-            // if smoltcp is enabled, add the listener to the net
-            #[cfg(feature = "smoltcp")]
-            if self.is_smoltcp_enabled() {
-                let smoltcp_listener_tx = self.smoltcp_listener_tx.lock().unwrap().clone().unwrap();
-                SmolTcpListener::add_listener(
-                    smoltcp_listener_tx,
-                    self.smoltcp_net.clone(),
-                    self.tasks.clone(),
-                )
-                .await;
-                tracing::info!("smol tcp listener added for src: {:?}", src);
-            }
-        } else if !self.addr_conn_map.contains_key(&src) && !self.syn_map.contains_key(&src) {
-            // if not in syn map and addr conn map, may forwarding n2n packet
-            return None;
-        }
-
-        let mut ip_packet = MutableIpv4Packet::new(payload_bytes).unwrap();
-        if !self.is_smoltcp_enabled() && source_ip == ipv4_addr {
-            // modify the source so the response packet can be handled by tun device
-            ip_packet.set_source(Self::get_fake_local_ipv4(&ipv4_inet));
-        }
-        ip_packet.set_destination(ipv4_addr);
-        let source = ip_packet.get_source();
-
-        let mut tcp_packet = MutableTcpPacket::new(ip_packet.payload_mut()).unwrap();
-        tcp_packet.set_destination(self.get_local_port());
-
-        Self::update_tcp_packet_checksum(&mut tcp_packet, &source, &ipv4_addr);
-        drop(tcp_packet);
-        Self::update_ip_packet_checksum(&mut ip_packet);
-
-        tracing::trace!(?source, ?ipv4_addr, ?packet, "tcp packet after modified");
-
-        Some(())
-    }
-
     pub fn is_tcp_proxy_connection(&self, src: SocketAddr) -> bool {
-        self.syn_map.contains_key(&src) || self.addr_conn_map.contains_key(&src)
+        self.core.is_tcp_proxy_connection(src)
     }
 
     pub fn list_proxy_entries(&self) -> Vec<TcpProxyEntry> {
-        let mut entries: Vec<TcpProxyEntry> = Vec::new();
         let transport_type = self.connector.transport_type();
-        for entry in self.syn_map.iter() {
-            entries.push(entry.value().as_ref().parse_as_pb(transport_type));
-        }
-        for entry in self.conn_map.iter() {
-            entries.push(entry.value().as_ref().parse_as_pb(transport_type));
-        }
-        entries
+        self.core
+            .list_entries()
+            .into_iter()
+            .map(|entry| tcp_entry_snapshot_to_pb(entry, transport_type))
+            .collect()
     }
 
     pub fn get_transport_type(&self) -> TcpProxyEntryTransportType {
         self.connector.transport_type()
+    }
+}
+
+fn tcp_entry_snapshot_to_pb(
+    entry: TcpNatEntrySnapshot,
+    transport_type: TcpProxyEntryTransportType,
+) -> TcpProxyEntry {
+    TcpProxyEntry {
+        src: Some(entry.src.into()),
+        dst: Some(entry.dst.into()),
+        start_time: entry.start_time,
+        state: tcp_entry_state_to_pb(entry.state).into(),
+        transport_type: transport_type.into(),
+    }
+}
+
+fn tcp_entry_state_to_pb(state: CoreTcpNatEntryState) -> TcpProxyEntryState {
+    match state {
+        CoreTcpNatEntryState::SynReceived => TcpProxyEntryState::SynReceived,
+        CoreTcpNatEntryState::ConnectingDst => TcpProxyEntryState::ConnectingDst,
+        CoreTcpNatEntryState::Connected => TcpProxyEntryState::Connected,
+        CoreTcpNatEntryState::ClosingSrc => TcpProxyEntryState::ClosingSrc,
+        CoreTcpNatEntryState::ClosingDst => TcpProxyEntryState::ClosingDst,
+        CoreTcpNatEntryState::Closed => TcpProxyEntryState::Closed,
     }
 }
 

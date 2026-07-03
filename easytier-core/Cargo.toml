@@ -38,6 +38,7 @@ rand = "0.8.5"
 quanta = "0.12"
 serde = { version = "1.0", features = ["derive"] }
 sha2 = "0.10.8"
+smoltcp = { git = "https://github.com/smoltcp-rs/smoltcp.git", rev = "0a926767a68bc88d5512afefa7529c5ecdade4ea", optional = true, default-features = false }
 snow = "0.10.0"
 thiserror = "1.0"
 tracing = { version = "0.1", features = ["log"] }
@@ -61,5 +62,18 @@ chacha20poly1305 = { version = "0.10.1", optional = true }
 default = []
 aes-gcm = ["dep:aes-gcm"]
 chacha20 = ["dep:chacha20poly1305"]
+proxy-packet = [
+    "dep:smoltcp",
+    "smoltcp/std",
+    "smoltcp/proto-ipv4",
+    "smoltcp/proto-ipv4-fragmentation",
+]
+proxy-smoltcp-stack = [
+    "proxy-packet",
+    "smoltcp/medium-ip",
+    "smoltcp/socket-tcp",
+    "smoltcp/socket-udp",
+    "smoltcp/async",
+]
 test-utils = []
 zstd = ["dep:zstd"]

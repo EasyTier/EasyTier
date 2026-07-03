@@ -37,7 +37,9 @@ name = "packet_bytes_extraction"
 harness = false
 
 [dependencies]
-easytier-core = { path = "../easytier-core", version = "2.6.4", default-features = false }
+easytier-core = { path = "../easytier-core", version = "2.6.4", default-features = false, features = [
+    "proxy-packet",
+] }
 easytier-proto = { path = "../easytier-proto", version = "2.6.4", default-features = false, features = [
     "api",
     "core",
@@ -399,7 +401,7 @@ websocket = [
     "dep:rcgen",
     "easytier-proto/websocket",
 ]
-smoltcp = ["dep:smoltcp"]
+smoltcp = ["dep:smoltcp", "easytier-core/proxy-smoltcp-stack"]
 socks5 = ["smoltcp"]
 ffi-dataplane = ["socks5"]
 jemalloc = ["dep:jemallocator", "dep:jemalloc-sys"]

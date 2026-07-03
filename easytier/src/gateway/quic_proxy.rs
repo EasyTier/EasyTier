@@ -1,6 +1,6 @@
 use crate::common::PeerId;
 use crate::common::acl_processor::PacketInfo;
-use crate::common::global_ctx::{ArcGlobalCtx, GlobalCtx};
+use crate::common::global_ctx::ArcGlobalCtx;
 use crate::gateway::CidrSet;
 use crate::gateway::tcp_proxy::{NatDstConnector, TcpProxy};
 use crate::gateway::wrapped_proxy::{ProxyAclHandler, TcpProxyForWrappedSrcTrait};
@@ -50,6 +50,8 @@ use tokio::time::timeout;
 use tokio::{join, select};
 use tokio_util::sync::PollSender;
 use tracing::{debug, error, info, instrument, trace, warn};
+
+use easytier_core::proxy::tcp_proxy::TcpProxyMode;
 
 //region packet
 #[derive(Debug, Constructor)]
@@ -407,20 +409,8 @@ impl NatDstConnector for NatDstQuicConnector {
     }
 
     #[inline]
-    fn check_packet_from_peer_fast(&self, _cidr_set: &CidrSet, _global_ctx: &GlobalCtx) -> bool {
-        true
-    }
-
-    #[inline]
-    fn check_packet_from_peer(
-        &self,
-        _cidr_set: &CidrSet,
-        _global_ctx: &GlobalCtx,
-        hdr: &PeerManagerHeader,
-        _ipv4: &Ipv4Addr,
-        _real_dst_ip: &mut Ipv4Addr,
-    ) -> bool {
-        hdr.from_peer_id == hdr.to_peer_id && hdr.is_quic_src_modified()
+    fn proxy_mode(&self) -> TcpProxyMode {
+        TcpProxyMode::QuicSrc
     }
 
     #[inline]

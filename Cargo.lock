@@ -2509,6 +2509,7 @@ dependencies = [
  "rand 0.8.5",
  "serde",
  "sha2",
+ "smoltcp",
  "snow",
  "thiserror 1.0.63",
  "tokio",
