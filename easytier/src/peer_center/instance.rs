@@ -5,19 +5,12 @@ pub use easytier_core::peer_center::instance::{
 };
 
 use crate::{
-    common::{PeerId, global_ctx::GlobalCtx},
+    common::PeerId,
     peers::{
-        peer_manager::PeerManager, peer_map::PeerMap, peer_rpc::PeerRpcManager,
-        rpc_service::PeerManagerRpcService,
+        peer_manager::PeerManager, peer_rpc::PeerRpcManager, rpc_service::PeerManagerRpcService,
     },
-    proto::peer_rpc::{DirectConnectedPeerInfo, PeerInfoForGlobalMap},
+    proto::peer_rpc::PeerInfoForGlobalMap,
 };
-
-pub struct PeerMapWithPeerRpcManager {
-    pub peer_map: Arc<PeerMap>,
-    pub rpc_mgr: Arc<PeerRpcManager>,
-    pub global_ctx: Arc<GlobalCtx>,
-}
 
 #[async_trait::async_trait]
 impl PeerCenterPeerManagerTrait for PeerManager {
@@ -39,53 +32,6 @@ impl PeerCenterPeerManagerTrait for PeerManager {
 
     async fn list_routes(&self) -> Vec<easytier_core::proto::core_peer::peer::Route> {
         self.get_route().list_routes().await
-    }
-}
-
-#[async_trait::async_trait]
-impl PeerCenterPeerManagerTrait for PeerMapWithPeerRpcManager {
-    async fn list_peers(&self) -> PeerInfoForGlobalMap {
-        // TODO: currently latency between public server cannot be calculated because one public-server pair
-        // has no connection between them. (hard to get latency from peer manager because it's hard to transform the peer id)
-        // but it's fine because we don't want too much traffic between public servers.
-        let peers = self.peer_map.list_peers();
-        let mut ret = PeerInfoForGlobalMap::default();
-        for peer in peers {
-            if let Some(conns) = self.peer_map.list_peer_conns(peer).await {
-                let Some(min_lat) = conns
-                    .iter()
-                    .map(|conn| conn.stats.as_ref().unwrap().latency_us)
-                    .min()
-                else {
-                    continue;
-                };
-
-                ret.direct_peers.insert(
-                    peer,
-                    DirectConnectedPeerInfo {
-                        latency_ms: std::cmp::max(1, (min_lat as u32 / 1000) as i32),
-                    },
-                );
-            }
-        }
-
-        ret
-    }
-
-    fn my_peer_id(&self) -> PeerId {
-        self.peer_map.my_peer_id()
-    }
-
-    fn network_name(&self) -> String {
-        self.global_ctx.get_network_name()
-    }
-
-    fn get_rpc_mgr(&self) -> Weak<PeerRpcManager> {
-        Arc::downgrade(&self.rpc_mgr)
-    }
-
-    async fn list_routes(&self) -> Vec<easytier_core::proto::core_peer::peer::Route> {
-        self.peer_map.list_route_infos().await
     }
 }
 

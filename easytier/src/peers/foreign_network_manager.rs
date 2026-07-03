@@ -14,6 +14,7 @@ use std::{
 };
 
 use dashmap::{DashMap, DashSet};
+use easytier_core::peer_center::instance::PeerMapWithPeerRpcManager;
 use easytier_core::peers::foreign_network_manager as core_foreign_network_manager;
 pub use easytier_core::peers::foreign_network_manager::{
     ForeignNetworkRouteInfo, ForeignNetworkRouteInfoProvider, GlobalForeignNetworkAccessor,
@@ -35,7 +36,7 @@ use crate::{
         stats_manager::{MetricName, StatsManager},
         token_bucket::TokenBucket,
     },
-    peer_center::instance::{PeerCenterInstance, PeerMapWithPeerRpcManager},
+    peer_center::instance::PeerCenterInstance,
     peers::route_trait::Route,
     proto::{
         api::instance::{
@@ -210,7 +211,7 @@ impl ForeignNetworkEntry {
             PeerMapWithPeerRpcManager {
                 peer_map: peer_map.clone(),
                 rpc_mgr: peer_rpc.clone(),
-                global_ctx: foreign_global_ctx.clone(),
+                network_name: foreign_global_ctx.get_network_name(),
             },
         )));
 
