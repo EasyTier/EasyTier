@@ -378,23 +378,29 @@ pub struct PeerManagerTrafficCounters {
     pub compress_tx_bytes_after: CounterHandle,
 }
 
-pub struct PeerManagerRunState {
+pub struct PeerManagerCore {
     my_peer_id: PeerId,
+    tasks: Mutex<JoinSet<()>>,
     packet_recv: Arc<Mutex<Option<PacketRecvChanReceiver>>>,
     peers: Arc<PeerMap>,
     peer_rpc_mgr: Arc<super::peer_rpc::PeerRpcManager>,
     peer_rpc_tspt: Arc<RpcTransport>,
     peer_packet_process_pipeline: Arc<RwLock<Vec<BoxPeerPacketFilter>>>,
+    nic_packet_process_pipeline: Arc<RwLock<Vec<BoxNicPacketFilter>>>,
     nic_channel: PacketRecvChan,
     route_algo_inst: RouteAlgoInst,
     foreign_network_client: Arc<ForeignNetworkClient>,
     foreign_network_handler: Arc<dyn ForeignNetworkPacketHandler>,
     foreign_network_provider: Arc<dyn ForeignNetworkRouteInfoProvider>,
+    foreign_network_closer: Arc<dyn ForeignPeerConnectionCloser>,
     relay_peer_map: Arc<RelayPeerMap>,
+    peer_connection_admission: PeerConnectionAdmission,
+    outbound_packet_router: PeerOutboundPacketRouter,
     recent_traffic: RecentTrafficTracker,
     peer_session_store: Arc<PeerSessionStore>,
     encryptor: Arc<dyn Encryptor + 'static>,
     data_compress_algo: CompressorAlgo,
+    exit_nodes: Arc<RwLock<Vec<IpAddr>>>,
     acl_filter: Arc<AclFilter>,
     context: ArcPeerContext,
     is_secure_mode_enabled: bool,
@@ -405,7 +411,7 @@ pub struct PeerManagerRunState {
     counters: PeerManagerTrafficCounters,
 }
 
-impl PeerManagerRunState {
+impl PeerManagerCore {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         my_peer_id: PeerId,
@@ -414,16 +420,21 @@ impl PeerManagerRunState {
         peer_rpc_mgr: Arc<super::peer_rpc::PeerRpcManager>,
         peer_rpc_tspt: Arc<RpcTransport>,
         peer_packet_process_pipeline: Arc<RwLock<Vec<BoxPeerPacketFilter>>>,
+        nic_packet_process_pipeline: Arc<RwLock<Vec<BoxNicPacketFilter>>>,
         nic_channel: PacketRecvChan,
         route_algo_inst: RouteAlgoInst,
         foreign_network_client: Arc<ForeignNetworkClient>,
         foreign_network_handler: Arc<dyn ForeignNetworkPacketHandler>,
         foreign_network_provider: Arc<dyn ForeignNetworkRouteInfoProvider>,
+        foreign_network_closer: Arc<dyn ForeignPeerConnectionCloser>,
         relay_peer_map: Arc<RelayPeerMap>,
+        peer_connection_admission: PeerConnectionAdmission,
+        outbound_packet_router: PeerOutboundPacketRouter,
         recent_traffic: RecentTrafficTracker,
         peer_session_store: Arc<PeerSessionStore>,
         encryptor: Arc<dyn Encryptor + 'static>,
         data_compress_algo: CompressorAlgo,
+        exit_nodes: Arc<RwLock<Vec<IpAddr>>>,
         acl_filter: Arc<AclFilter>,
         context: ArcPeerContext,
         is_secure_mode_enabled: bool,
@@ -435,21 +446,27 @@ impl PeerManagerRunState {
     ) -> Self {
         Self {
             my_peer_id,
+            tasks: Mutex::new(JoinSet::new()),
             packet_recv,
             peers,
             peer_rpc_mgr,
             peer_rpc_tspt,
             peer_packet_process_pipeline,
+            nic_packet_process_pipeline,
             nic_channel,
             route_algo_inst,
             foreign_network_client,
             foreign_network_handler,
             foreign_network_provider,
+            foreign_network_closer,
             relay_peer_map,
+            peer_connection_admission,
+            outbound_packet_router,
             recent_traffic,
             peer_session_store,
             encryptor,
             data_compress_algo,
+            exit_nodes,
             acl_filter,
             context,
             is_secure_mode_enabled,
@@ -461,7 +478,234 @@ impl PeerManagerRunState {
         }
     }
 
-    async fn start_peer_recv(&self, tasks: &Mutex<JoinSet<()>>) {
+    pub fn my_peer_id(&self) -> PeerId {
+        self.my_peer_id
+    }
+
+    pub fn get_peer_map(&self) -> Arc<PeerMap> {
+        self.peers.clone()
+    }
+
+    pub fn get_relay_peer_map(&self) -> Arc<RelayPeerMap> {
+        self.relay_peer_map.clone()
+    }
+
+    pub fn get_peer_rpc_mgr(&self) -> Arc<super::peer_rpc::PeerRpcManager> {
+        self.peer_rpc_mgr.clone()
+    }
+
+    pub fn get_peer_session_store(&self) -> Arc<PeerSessionStore> {
+        self.peer_session_store.clone()
+    }
+
+    pub fn get_nic_channel(&self) -> PacketRecvChan {
+        self.nic_channel.clone()
+    }
+
+    pub fn get_foreign_network_client(&self) -> Arc<ForeignNetworkClient> {
+        self.foreign_network_client.clone()
+    }
+
+    pub fn traffic_metrics(&self) -> Arc<TrafficMetricRecorder> {
+        self.traffic_metrics.clone()
+    }
+
+    pub fn get_route(&self) -> Box<dyn Route + Send + Sync + 'static> {
+        self.route_algo_inst.route_box()
+    }
+
+    pub fn mark_recent_traffic(&self, dst_peer_id: PeerId) {
+        let flags = self.context.flags();
+        self.recent_traffic
+            .mark(dst_peer_id, flags.disable_p2p, flags.lazy_p2p, |peer_id| {
+                self.has_directly_connected_conn(peer_id)
+            });
+    }
+
+    pub fn has_recent_traffic(&self, peer_id: PeerId, now: Instant) -> bool {
+        self.recent_traffic.has(peer_id, now, |peer_id| {
+            self.has_directly_connected_conn(peer_id)
+        })
+    }
+
+    pub fn clear_recent_traffic(&self, peer_id: PeerId) {
+        self.recent_traffic.clear(peer_id);
+    }
+
+    pub fn p2p_demand_notify(&self) -> Arc<ExternalTaskSignal> {
+        self.recent_traffic.p2p_demand_notify()
+    }
+
+    pub fn gc_recent_traffic(&self) {
+        self.recent_traffic.gc(Instant::now(), |peer_id| {
+            self.has_directly_connected_conn(peer_id)
+        });
+    }
+
+    pub fn has_directly_connected_conn(&self, peer_id: PeerId) -> bool {
+        if let Some(peer) = self.peers.get_peer_by_id(peer_id) {
+            peer.has_directly_connected_conn()
+        } else {
+            self.foreign_network_client.get_peer_map().has_peer(peer_id)
+        }
+    }
+
+    pub async fn add_client_tunnel(
+        &self,
+        tunnel: Box<dyn Tunnel>,
+        is_directly_connected: bool,
+    ) -> Result<(PeerId, PeerConnId), Error> {
+        self.peer_connection_admission
+            .add_client_tunnel(tunnel, is_directly_connected)
+            .await
+    }
+
+    pub async fn add_client_tunnel_with_peer_id_hint(
+        &self,
+        tunnel: Box<dyn Tunnel>,
+        is_directly_connected: bool,
+        peer_id_hint: Option<PeerId>,
+    ) -> Result<(PeerId, PeerConnId), Error> {
+        self.peer_connection_admission
+            .add_client_tunnel_with_peer_id_hint(tunnel, is_directly_connected, peer_id_hint)
+            .await
+    }
+
+    pub async fn add_tunnel_as_server(
+        &self,
+        tunnel: Box<dyn Tunnel>,
+        is_directly_connected: bool,
+    ) -> Result<(), Error> {
+        self.peer_connection_admission
+            .add_tunnel_as_server(tunnel, is_directly_connected)
+            .await
+    }
+
+    pub async fn add_packet_process_pipeline(&self, pipeline: BoxPeerPacketFilter) {
+        // newest pipeline will be executed first
+        self.peer_packet_process_pipeline
+            .write()
+            .await
+            .push(pipeline);
+    }
+
+    pub async fn add_nic_packet_process_pipeline(&self, pipeline: BoxNicPacketFilter) {
+        // newest pipeline will be executed first
+        self.nic_packet_process_pipeline
+            .write()
+            .await
+            .push(pipeline);
+    }
+
+    pub async fn add_route<T>(&self, route: T)
+    where
+        T: Route + PeerPacketFilter + Send + Sync + Clone + 'static,
+    {
+        add_route(
+            self.peer_packet_process_pipeline.as_ref(),
+            self.peers.clone(),
+            self.foreign_network_client.clone(),
+            self.foreign_network_provider.clone(),
+            self.my_peer_id,
+            route,
+        )
+        .await;
+    }
+
+    pub async fn remove_nic_packet_process_pipeline(&self, id: String) -> Result<(), Error> {
+        let mut pipelines = self.nic_packet_process_pipeline.write().await;
+        if let Some(pos) = pipelines.iter().position(|x| x.id() == id) {
+            pipelines.remove(pos);
+            Ok(())
+        } else {
+            Err(Error::NotFound)
+        }
+    }
+
+    pub async fn send_msg_for_proxy(
+        &self,
+        msg: ZCPacket,
+        dst_peer_id: PeerId,
+    ) -> Result<(), Error> {
+        self.outbound_packet_router
+            .send_msg_for_proxy(msg, dst_peer_id)
+            .await
+    }
+
+    pub async fn get_msg_dst_peer(&self, addr: &IpAddr) -> (Vec<PeerId>, bool) {
+        self.outbound_packet_router.get_msg_dst_peer(addr).await
+    }
+
+    pub async fn get_msg_dst_peer_ipv4(&self, ipv4_addr: &Ipv4Addr) -> (Vec<PeerId>, bool) {
+        self.outbound_packet_router
+            .get_msg_dst_peer_ipv4(ipv4_addr)
+            .await
+    }
+
+    pub async fn get_msg_dst_peer_ipv6(&self, ipv6_addr: &Ipv6Addr) -> (Vec<PeerId>, bool) {
+        self.outbound_packet_router
+            .get_msg_dst_peer_ipv6(ipv6_addr)
+            .await
+    }
+
+    pub async fn send_msg_by_ip(
+        &self,
+        msg: ZCPacket,
+        ip_addr: IpAddr,
+        not_send_to_self: bool,
+    ) -> Result<(), Error> {
+        self.outbound_packet_router
+            .send_msg_by_ip(msg, ip_addr, not_send_to_self)
+            .await
+    }
+
+    pub async fn check_allow_kcp_to_dst(&self, dst_ip: &IpAddr) -> bool {
+        self.outbound_packet_router
+            .check_allow_kcp_to_dst(dst_ip)
+            .await
+    }
+
+    pub async fn check_allow_quic_to_dst(&self, dst_ip: &IpAddr) -> bool {
+        self.outbound_packet_router
+            .check_allow_quic_to_dst(dst_ip)
+            .await
+    }
+
+    pub async fn update_exit_nodes(&self, exit_nodes: Vec<IpAddr>) {
+        *self.exit_nodes.write().await = exit_nodes;
+    }
+
+    pub async fn wait(&self) {
+        while !self.tasks.lock().await.is_empty() {
+            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+        }
+    }
+
+    pub async fn clear_resources(&self) {
+        let mut peer_pipeline = self.peer_packet_process_pipeline.write().await;
+        peer_pipeline.clear();
+        let mut nic_pipeline = self.nic_packet_process_pipeline.write().await;
+        nic_pipeline.clear();
+
+        self.peer_rpc_mgr.rpc_server().registry().unregister_all();
+    }
+
+    pub async fn close_peer_conn(
+        &self,
+        peer_id: PeerId,
+        conn_id: &PeerConnId,
+    ) -> Result<(), Error> {
+        close_peer_conn(
+            self.peers.as_ref(),
+            &self.foreign_network_client,
+            self.foreign_network_closer.as_ref(),
+            peer_id,
+            conn_id,
+        )
+        .await
+    }
+
+    async fn start_peer_recv(&self) {
         let packet_recv = self.packet_recv.lock().await.take().unwrap();
         let is_credential_node =
             self.context.network_identity().network_secret.is_none() && self.is_secure_mode_enabled;
@@ -489,7 +733,7 @@ impl PeerManagerRunState {
             self.counters.compress_tx_bytes_after.clone(),
         );
 
-        tasks.lock().await.spawn(router.run());
+        self.tasks.lock().await.spawn(router.run());
     }
 
     async fn run_foreign_network(&self) {
@@ -500,17 +744,9 @@ impl PeerManagerRunState {
         self.foreign_network_client.run().await;
     }
 
-    pub async fn run(&self, tasks: &Mutex<JoinSet<()>>) -> Result<(), Error> {
+    pub async fn run(&self) -> Result<(), Error> {
         if let Some(route) = self.route_algo_inst.ospf_route() {
-            add_route(
-                self.peer_packet_process_pipeline.as_ref(),
-                self.peers.clone(),
-                self.foreign_network_client.clone(),
-                self.foreign_network_provider.clone(),
-                self.my_peer_id,
-                route,
-            )
-            .await;
+            self.add_route(route).await;
         }
 
         init_packet_process_pipeline(
@@ -521,7 +757,7 @@ impl PeerManagerRunState {
         .await;
         self.peer_rpc_mgr.run();
 
-        self.start_peer_recv(tasks).await;
+        self.start_peer_recv().await;
         PeerMaintenanceTasks::new(
             self.peers.clone(),
             self.relay_peer_map.clone(),
@@ -531,7 +767,7 @@ impl PeerManagerRunState {
             self.context.clone(),
             self.traffic_metrics.clone(),
         )
-        .spawn_into(tasks)
+        .spawn_into(&self.tasks)
         .await;
 
         self.run_foreign_network().await;
