@@ -27,12 +27,12 @@ use crate::{
             util::stream::tcp_connect_with_timeout,
         },
         ip_reassembler::IpReassembler,
-        tokio_smoltcp::{BufferSize, Net, NetConfig, channel_device},
     },
     tunnel::packet_def::{PacketType, ZCPacket},
 };
 use anyhow::Context;
 use dashmap::{DashMap, mapref::entry::Entry};
+use easytier_core::proxy::tokio_smoltcp::{self, BufferSize, Net, NetConfig, channel_device};
 use pnet::packet::{
     Packet, ip::IpNextHeaderProtocols, ipv4::Ipv4Packet, tcp::TcpPacket, udp::UdpPacket,
 };
@@ -61,7 +61,7 @@ pub use dataplane::{DataPlaneTcpListener, DataPlaneTcpStream, DataPlaneUdpSocket
 
 enum SocksUdpSocket {
     UdpSocket(Arc<tokio::net::UdpSocket>),
-    SmolUdpSocket(super::tokio_smoltcp::UdpSocket),
+    SmolUdpSocket(tokio_smoltcp::UdpSocket),
 }
 
 impl SocksUdpSocket {
@@ -82,7 +82,7 @@ impl SocksUdpSocket {
 
 enum SocksTcpStream {
     Tcp(tokio::net::TcpStream),
-    SmolTcp(super::tokio_smoltcp::TcpStream),
+    SmolTcp(tokio_smoltcp::TcpStream),
     #[cfg(feature = "kcp")]
     Kcp(KcpStream),
 }

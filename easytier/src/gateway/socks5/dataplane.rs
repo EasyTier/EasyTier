@@ -30,13 +30,13 @@ use quanta::Instant;
 use tokio::io::{AsyncRead, AsyncWrite};
 
 use crate::{common::error::Error, gateway::fast_socks5::server::AsyncTcpConnector};
+use easytier_core::proxy::tokio_smoltcp::{Net, TcpListener};
 
 use super::{
     Socks5AutoConnector, Socks5Entry, Socks5EntryData, Socks5EntrySet, Socks5Server,
     SocksTcpStream, SocksUdpSocket, TCP_ENTRY, TCP_LISTEN_ENTRY, UDP_ENTRY, UdpClientKey,
     decrement_entry_count, insert_entry_and_increment_count, try_insert_entry_and_increment_count,
 };
-use crate::gateway::tokio_smoltcp::{Net, TcpListener};
 
 struct DataPlaneRef {
     refs: Arc<AtomicUsize>,

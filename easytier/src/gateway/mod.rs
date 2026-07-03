@@ -10,8 +10,6 @@ use crate::common::global_ctx::ArcGlobalCtx;
 pub mod icmp_proxy;
 pub mod ip_reassembler;
 pub mod tcp_proxy;
-#[cfg(feature = "smoltcp")]
-pub mod tokio_smoltcp;
 pub mod udp_proxy;
 
 #[cfg(feature = "socks5")]
