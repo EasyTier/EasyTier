@@ -26,6 +26,7 @@ pub use runtime::{
     UdpPunchListener, UdpPunchSocket, UdpPunchSocketFactory, UdpResolvedPublicAddr,
 };
 pub use server::{SelectedUdpPunchListener, UdpHolePunchServerCommon};
+pub use server::{send_cone_hole_punch_packets, send_symmetric_hole_punch_packet};
 pub use socket_array::{PunchedUdpSocket, UdpSocketArray};
 
 const fn udp_packet_len(body_len: u16) -> usize {

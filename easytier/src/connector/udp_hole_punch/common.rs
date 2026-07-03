@@ -18,7 +18,7 @@ use crate::{
     peers::peer_manager::PeerManager,
     tunnel::{
         Tunnel, TunnelConnCounter, TunnelListener as _,
-        udp::{UdpTunnelConnector, UdpTunnelListener, new_hole_punch_packet},
+        udp::{UdpTunnelConnector, UdpTunnelListener},
     },
 };
 
@@ -46,7 +46,7 @@ pub(crate) struct RuntimeUdpPunchSocket {
 }
 
 impl RuntimeUdpPunchSocket {
-    fn new(socket: Arc<UdpSocket>) -> Self {
+    pub(crate) fn new(socket: Arc<UdpSocket>) -> Self {
         Self { socket }
     }
 }
@@ -682,23 +682,16 @@ pub(crate) async fn send_symmetric_hole_punch_packet(
     port_start_idx: usize,
     max_packets: usize,
 ) -> Result<usize, Error> {
-    tracing::debug!("sending hard symmetric hole punching packet");
-    let mut sent_packets = 0;
-    let mut cur_port_idx = port_start_idx;
-    while sent_packets < max_packets {
-        let port = ports[cur_port_idx % ports.len()];
-        for pub_ip in public_ips {
-            let addr = SocketAddr::V4(SocketAddrV4::new(*pub_ip, port));
-            for _ in 0..3 {
-                let packet = new_hole_punch_packet(transaction_id, HOLE_PUNCH_PACKET_BODY_LEN);
-                udp.send_to(&packet.into_bytes(), addr).await?;
-            }
-            sent_packets += 1;
-        }
-        cur_port_idx = cur_port_idx.wrapping_add(1);
-        tokio::time::sleep(Duration::from_millis(1)).await;
-    }
-    Ok(cur_port_idx % ports.len())
+    core_udp_hole_punch::send_symmetric_hole_punch_packet(
+        ports,
+        Arc::new(RuntimeUdpPunchSocket::new(udp)),
+        transaction_id,
+        public_ips,
+        port_start_idx,
+        max_packets,
+    )
+    .await
+    .map_err(Error::from)
 }
 
 async fn check_udp_socket_local_addr(

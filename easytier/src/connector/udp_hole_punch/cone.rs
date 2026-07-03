@@ -8,7 +8,7 @@ use tokio_util::task::AbortOnDropHandle;
 use crate::{
     common::{PeerId, upnp},
     connector::udp_hole_punch::common::{
-        HOLE_PUNCH_PACKET_BODY_LEN, UdpSocketArray, try_connect_with_socket,
+        HOLE_PUNCH_PACKET_BODY_LEN, RuntimeUdpPunchSocket, UdpSocketArray, try_connect_with_socket,
     },
     connector::udp_hole_punch::handle_rpc_result,
     peers::peer_manager::PeerManager,
@@ -55,27 +55,19 @@ impl PunchConeHoleServer {
             "send_punch_packet_for_cone request missing dest_addr"
         ))?;
         let dest_addr = std::net::SocketAddr::from(dest_addr);
-        let dest_ip = dest_addr.ip();
-        if dest_ip.is_unspecified() || dest_ip.is_multicast() {
-            return Err(anyhow::anyhow!(
-                "send_punch_packet_for_cone dest_ip is malformed, {:?}",
-                request
-            )
-            .into());
-        }
-
-        for _ in 0..request.packet_batch_count {
-            tracing::info!(?request, "sending hole punching packet");
-
-            for _ in 0..request.packet_count_per_batch {
-                let udp_packet =
-                    new_hole_punch_packet(request.transaction_id, HOLE_PUNCH_PACKET_BODY_LEN);
-                if let Err(e) = listener.send_to(&udp_packet.into_bytes(), &dest_addr).await {
-                    tracing::error!(?e, "failed to send hole punch packet to dest addr");
-                }
-            }
-            tokio::time::sleep(Duration::from_millis(request.packet_interval_ms as u64)).await;
-        }
+        easytier_core::hole_punch::udp::send_cone_hole_punch_packets(
+            Arc::new(RuntimeUdpPunchSocket::new(listener)),
+            &easytier_core::hole_punch::udp::SendPunchPacketCone {
+                listener_mapped_addr: listener_addr,
+                dest_addr,
+                transaction_id: request.transaction_id,
+                packet_count_per_batch: request.packet_count_per_batch,
+                packet_batch_count: request.packet_batch_count,
+                packet_interval_ms: request.packet_interval_ms,
+            },
+        )
+        .await
+        .map_err(anyhow::Error::from)?;
 
         Ok(Void::default())
     }

@@ -1,4 +1,8 @@
-use std::{net::SocketAddr, sync::Arc, time::Duration};
+use std::{
+    net::{Ipv4Addr, SocketAddr, SocketAddrV4},
+    sync::Arc,
+    time::Duration,
+};
 
 use crossbeam::atomic::AtomicCell;
 use quanta::Instant;
@@ -6,11 +10,12 @@ use tokio::{sync::Mutex, task::JoinSet};
 use tokio_util::task::AbortOnDropHandle;
 
 use super::{
-    MAX_PUBLIC_UDP_HOLE_PUNCH_LISTENERS, ReusableUdpPunchListener, UdpHolePunchRuntime,
-    UdpHolePunchTunnelSink, UdpPortMappingLease, UdpPunchListener, UdpPunchSocket,
-    can_reuse_port_mapping_listener, can_reuse_public_listener,
-    select_reusable_port_mapping_listener_idx, select_reusable_public_listener_idx,
-    should_create_public_listener, should_retry_public_listener_selection,
+    HOLE_PUNCH_PACKET_BODY_LEN, MAX_PUBLIC_UDP_HOLE_PUNCH_LISTENERS, ReusableUdpPunchListener,
+    SendPunchPacketCone, UdpHolePunchRuntime, UdpHolePunchTunnelSink, UdpPortMappingLease,
+    UdpPunchListener, UdpPunchSocket, can_reuse_port_mapping_listener, can_reuse_public_listener,
+    new_hole_punch_packet, select_reusable_port_mapping_listener_idx,
+    select_reusable_public_listener_idx, should_create_public_listener,
+    should_retry_public_listener_selection,
 };
 
 pub struct SelectedUdpPunchListener<S> {
@@ -277,6 +282,71 @@ where
         .collect()
 }
 
+pub async fn send_cone_hole_punch_packets<S>(
+    udp: Arc<S>,
+    request: &SendPunchPacketCone,
+) -> anyhow::Result<()>
+where
+    S: UdpPunchSocket + 'static,
+{
+    let dest_ip = request.dest_addr.ip();
+    if dest_ip.is_unspecified() || dest_ip.is_multicast() {
+        anyhow::bail!(
+            "send_punch_packet_for_cone dest_ip is malformed: {:?}",
+            request
+        );
+    }
+
+    for _ in 0..request.packet_batch_count {
+        tracing::info!(?request, "sending hole punching packet");
+
+        for _ in 0..request.packet_count_per_batch {
+            let udp_packet =
+                new_hole_punch_packet(request.transaction_id, HOLE_PUNCH_PACKET_BODY_LEN);
+            if let Err(err) = udp
+                .send_to(&udp_packet.into_bytes(), request.dest_addr)
+                .await
+            {
+                tracing::error!(?err, "failed to send hole punch packet to dest addr");
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(request.packet_interval_ms as u64)).await;
+    }
+
+    Ok(())
+}
+
+#[tracing::instrument(err, ret(level = tracing::Level::DEBUG), skip(ports, udp))]
+pub async fn send_symmetric_hole_punch_packet<S>(
+    ports: &[u16],
+    udp: Arc<S>,
+    transaction_id: u32,
+    public_ips: &[Ipv4Addr],
+    port_start_idx: usize,
+    max_packets: usize,
+) -> anyhow::Result<usize>
+where
+    S: UdpPunchSocket + 'static,
+{
+    tracing::debug!("sending hard symmetric hole punching packet");
+    let mut sent_packets = 0;
+    let mut cur_port_idx = port_start_idx;
+    while sent_packets < max_packets {
+        let port = ports[cur_port_idx % ports.len()];
+        for pub_ip in public_ips {
+            let addr = SocketAddr::V4(SocketAddrV4::new(*pub_ip, port));
+            for _ in 0..3 {
+                let packet = new_hole_punch_packet(transaction_id, HOLE_PUNCH_PACKET_BODY_LEN);
+                udp.send_to(&packet.into_bytes(), addr).await?;
+            }
+            sent_packets += 1;
+        }
+        cur_port_idx = cur_port_idx.wrapping_add(1);
+        tokio::time::sleep(Duration::from_millis(1)).await;
+    }
+    Ok(cur_port_idx % ports.len())
+}
+
 #[cfg(test)]
 mod tests {
     use std::{
@@ -299,6 +369,7 @@ mod tests {
 
     struct MockSocket {
         local_addr: SocketAddr,
+        sent: tokio::sync::Mutex<Vec<(Vec<u8>, SocketAddr)>>,
     }
 
     #[async_trait]
@@ -308,6 +379,7 @@ mod tests {
         }
 
         async fn send_to(&self, data: &[u8], _addr: SocketAddr) -> io::Result<usize> {
+            self.sent.lock().await.push((data.to_vec(), _addr));
             Ok(data.len())
         }
 
@@ -364,6 +436,7 @@ mod tests {
         async fn bind_udp(&self, _port: Option<u16>) -> anyhow::Result<Arc<Self::Socket>> {
             Ok(Arc::new(MockSocket {
                 local_addr: SocketAddr::from(([127, 0, 0, 1], 0)),
+                sent: tokio::sync::Mutex::new(Vec::new()),
             }))
         }
 
@@ -426,6 +499,7 @@ mod tests {
         UdpPunchListener {
             socket: Arc::new(MockSocket {
                 local_addr: SocketAddr::from(([127, 0, 0, 1], port)),
+                sent: tokio::sync::Mutex::new(Vec::new()),
             }),
             mapped_addr: SocketAddr::from(([203, 0, 113, 1], port)),
             conn_counter: Arc::new(MockCounter::default()),
@@ -472,5 +546,53 @@ mod tests {
         }
 
         assert_eq!(sink.server_tunnels.load(Ordering::Relaxed), 1);
+    }
+
+    #[tokio::test]
+    async fn cone_packet_sender_keeps_old_batch_shape() {
+        let socket = Arc::new(MockSocket {
+            local_addr: SocketAddr::from(([127, 0, 0, 1], 10002)),
+            sent: tokio::sync::Mutex::new(Vec::new()),
+        });
+        let request = SendPunchPacketCone {
+            listener_mapped_addr: SocketAddr::from(([203, 0, 113, 1], 10002)),
+            dest_addr: SocketAddr::from(([198, 51, 100, 1], 20000)),
+            transaction_id: 9,
+            packet_count_per_batch: 2,
+            packet_batch_count: 3,
+            packet_interval_ms: 0,
+        };
+
+        send_cone_hole_punch_packets(socket.clone(), &request)
+            .await
+            .unwrap();
+
+        let sent = socket.sent.lock().await;
+        assert_eq!(sent.len(), 6);
+        assert!(sent.iter().all(|(_, addr)| *addr == request.dest_addr));
+    }
+
+    #[tokio::test]
+    async fn symmetric_packet_sender_returns_next_port_index() {
+        let socket = Arc::new(MockSocket {
+            local_addr: SocketAddr::from(([127, 0, 0, 1], 10003)),
+            sent: tokio::sync::Mutex::new(Vec::new()),
+        });
+        let next_idx = send_symmetric_hole_punch_packet(
+            &[10, 11, 12],
+            socket.clone(),
+            9,
+            &[Ipv4Addr::new(198, 51, 100, 1)],
+            1,
+            2,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(next_idx, 0);
+        let sent = socket.sent.lock().await;
+        assert_eq!(sent.len(), 6);
+        assert_eq!(sent[0].1, SocketAddr::from(([198, 51, 100, 1], 11)));
+        assert_eq!(sent[3].1, SocketAddr::from(([198, 51, 100, 1], 12)));
     }
 }
