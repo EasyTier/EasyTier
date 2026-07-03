@@ -370,6 +370,7 @@ mod tests {
     struct MockSocket {
         local_addr: SocketAddr,
         sent: tokio::sync::Mutex<Vec<(Vec<u8>, SocketAddr)>>,
+        fail_next_send: AtomicUsize,
     }
 
     #[async_trait]
@@ -379,6 +380,10 @@ mod tests {
         }
 
         async fn send_to(&self, data: &[u8], _addr: SocketAddr) -> io::Result<usize> {
+            if self.fail_next_send.load(Ordering::Relaxed) != 0 {
+                self.fail_next_send.fetch_sub(1, Ordering::Relaxed);
+                return Err(io::Error::new(io::ErrorKind::Other, "mock send failure"));
+            }
             self.sent.lock().await.push((data.to_vec(), _addr));
             Ok(data.len())
         }
@@ -437,6 +442,7 @@ mod tests {
             Ok(Arc::new(MockSocket {
                 local_addr: SocketAddr::from(([127, 0, 0, 1], 0)),
                 sent: tokio::sync::Mutex::new(Vec::new()),
+                fail_next_send: AtomicUsize::new(0),
             }))
         }
 
@@ -500,6 +506,7 @@ mod tests {
             socket: Arc::new(MockSocket {
                 local_addr: SocketAddr::from(([127, 0, 0, 1], port)),
                 sent: tokio::sync::Mutex::new(Vec::new()),
+                fail_next_send: AtomicUsize::new(0),
             }),
             mapped_addr: SocketAddr::from(([203, 0, 113, 1], port)),
             conn_counter: Arc::new(MockCounter::default()),
@@ -553,6 +560,7 @@ mod tests {
         let socket = Arc::new(MockSocket {
             local_addr: SocketAddr::from(([127, 0, 0, 1], 10002)),
             sent: tokio::sync::Mutex::new(Vec::new()),
+            fail_next_send: AtomicUsize::new(0),
         });
         let request = SendPunchPacketCone {
             listener_mapped_addr: SocketAddr::from(([203, 0, 113, 1], 10002)),
@@ -573,10 +581,59 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn cone_packet_sender_rejects_malformed_dest_ip() {
+        let socket = Arc::new(MockSocket {
+            local_addr: SocketAddr::from(([127, 0, 0, 1], 10004)),
+            sent: tokio::sync::Mutex::new(Vec::new()),
+            fail_next_send: AtomicUsize::new(0),
+        });
+        let request = SendPunchPacketCone {
+            listener_mapped_addr: SocketAddr::from(([203, 0, 113, 1], 10004)),
+            dest_addr: SocketAddr::from(([0, 0, 0, 0], 20000)),
+            transaction_id: 9,
+            packet_count_per_batch: 2,
+            packet_batch_count: 3,
+            packet_interval_ms: 0,
+        };
+
+        let err = send_cone_hole_punch_packets(socket.clone(), &request)
+            .await
+            .unwrap_err();
+
+        assert!(err.to_string().contains("dest_ip is malformed"));
+        assert!(socket.sent.lock().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn cone_packet_sender_continues_after_send_error() {
+        let socket = Arc::new(MockSocket {
+            local_addr: SocketAddr::from(([127, 0, 0, 1], 10005)),
+            sent: tokio::sync::Mutex::new(Vec::new()),
+            fail_next_send: AtomicUsize::new(1),
+        });
+        let request = SendPunchPacketCone {
+            listener_mapped_addr: SocketAddr::from(([203, 0, 113, 1], 10005)),
+            dest_addr: SocketAddr::from(([198, 51, 100, 1], 20000)),
+            transaction_id: 9,
+            packet_count_per_batch: 2,
+            packet_batch_count: 1,
+            packet_interval_ms: 0,
+        };
+
+        send_cone_hole_punch_packets(socket.clone(), &request)
+            .await
+            .unwrap();
+
+        let sent = socket.sent.lock().await;
+        assert_eq!(sent.len(), 1);
+    }
+
+    #[tokio::test]
     async fn symmetric_packet_sender_returns_next_port_index() {
         let socket = Arc::new(MockSocket {
             local_addr: SocketAddr::from(([127, 0, 0, 1], 10003)),
             sent: tokio::sync::Mutex::new(Vec::new()),
+            fail_next_send: AtomicUsize::new(0),
         });
         let next_idx = send_symmetric_hole_punch_packet(
             &[10, 11, 12],
@@ -594,5 +651,28 @@ mod tests {
         assert_eq!(sent.len(), 6);
         assert_eq!(sent[0].1, SocketAddr::from(([198, 51, 100, 1], 11)));
         assert_eq!(sent[3].1, SocketAddr::from(([198, 51, 100, 1], 12)));
+    }
+
+    #[tokio::test]
+    async fn symmetric_packet_sender_returns_send_error() {
+        let socket = Arc::new(MockSocket {
+            local_addr: SocketAddr::from(([127, 0, 0, 1], 10006)),
+            sent: tokio::sync::Mutex::new(Vec::new()),
+            fail_next_send: AtomicUsize::new(1),
+        });
+
+        let err = send_symmetric_hole_punch_packet(
+            &[10],
+            socket.clone(),
+            9,
+            &[Ipv4Addr::new(198, 51, 100, 1)],
+            0,
+            1,
+        )
+        .await
+        .unwrap_err();
+
+        assert!(err.to_string().contains("mock send failure"));
+        assert!(socket.sent.lock().await.is_empty());
     }
 }
