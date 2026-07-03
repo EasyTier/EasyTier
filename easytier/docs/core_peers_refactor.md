@@ -427,7 +427,7 @@ packet 被代理、如何建立 NAT entry、如何改写 IP/TCP/UDP header、如
 
 - KCP proxy 本体。
 - QUIC proxy 本体。
-- `wrapped_proxy.rs` 中 KCP/QUIC wrapped source 逻辑。
+- `wrapped_proxy.rs` 中 KCP/QUIC wrapped source 逻辑；该逻辑在下一阶段单独迁移。
 - socks5 / fast_socks5。
 - smoltcp 在 socks5 或其他 runtime 场景中的使用。
 - 真实 `UdpSocket`、`TcpListener`、`TcpStream`、raw socket、TUN、netns。
@@ -472,7 +472,7 @@ easytier
     mod.rs             # runtime re-export / adapter glue
     udp_proxy.rs       # runtime socket adapter
     tcp_proxy.rs       # runtime facade + kernel socket adapter, no smoltcp import
-    wrapped_proxy.rs   # unchanged in this phase
+    wrapped_proxy.rs   # unchanged in this phase; removed in wrapped proxy phase
     kcp_proxy.rs       # unchanged in this phase
     quic_proxy.rs      # unchanged in this phase
     socks5*.rs         # unchanged in this phase
@@ -895,7 +895,7 @@ TCP proxy 不能简单按“core packet rewrite + runtime smoltcp”拆分。当
 - smoltcp 模式下 peer packet 进入 stack，而不是写回 NIC。
 - smoltcp stack 输出的 IP packet 再通过 peer send Adapter 发回 peer。
 - `wrapped_proxy.rs` 会根据 `is_smoltcp_enabled()` 决定 net-to-net wrapped TCP
-  是否允许。
+  是否允许；该判断应在下一阶段迁入 wrapped TCP proxy core 规则中。
 
 因此 TCP proxy 迁移时应把 TCP proxy 使用的 smoltcp dataplane 一起纳入
 `easytier-core`，但必须作为 optional feature。
@@ -1096,6 +1096,126 @@ cargo check -p easytier-core --target wasm32-wasip1 --no-default-features --feat
   runtime `TcpProxy` facade 注册进 pipeline。
 - `rg 'send_msg_by_ip|get_nic_channel|send_msg_for_proxy'
   easytier/src/gateway/{udp_proxy.rs,tcp_proxy.rs}` 无结果。
+
+## 第三阶段：Wrapped TCP Proxy 与 Proxy ACL Core 化
+
+UDP/TCP proxy core 化完成后，下一步迁移 `wrapped_proxy.rs`。这一阶段只处理
+KCP/QUIC wrapped TCP source 的 NIC packet 规则，以及 stream proxy ACL helper。
+KCP/QUIC endpoint、QUIC/KCP transport、connection map、stats label 和 runtime
+启动路径不纳入本阶段。
+
+### 第三阶段 Scope
+
+迁移以下内容：
+
+- `TcpProxyForWrappedSrcTrait::try_process_wrapped_packet_from_nic` 中的 wrapped TCP
+  NIC packet 判断和 header 改写规则。
+- `ProxyAclHandler`，因为 `AclFilter`、`AclProcessor` 和 `PacketInfo` 已经在
+  `easytier-core`，该 helper 不应继续留在 runtime gateway。
+- KCP/QUIC runtime wrapper 中与 wrapped TCP NIC filter 相关的最小 adapter。
+
+不迁移以下内容：
+
+- KCP proxy 本体和 KCP endpoint。
+- QUIC proxy 本体、QUIC endpoint、quinn socket/stream。
+- runtime `NatDstConnector`、stream connect、connection cache 和 transport stats。
+- socks5 / fast_socks5。
+
+### 目标结构
+
+```text
+easytier-core
+  proxy/
+    proxy_acl.rs          # stream ACL copy helper
+    wrapped_tcp_proxy.rs  # KCP/QUIC wrapped TCP NIC packet rules
+
+easytier
+  gateway/
+    kcp_proxy.rs          # runtime KCP endpoint + adapter
+    quic_proxy.rs         # runtime QUIC endpoint + adapter
+```
+
+本阶段不要把 wrapped TCP proxy 机械拆成 `engine`/`service` 两个文件。当前
+wrapped source 逻辑没有独立 NAT table，也没有复杂 lifecycle；一个
+`wrapped_tcp_proxy.rs` 更符合实际复杂度。只有当后续引入独立状态表、pipeline
+guard 或多 backend lifecycle 时，才考虑再拆 service 文件。
+
+### Wrapped TCP Proxy 边界
+
+core `wrapped_tcp_proxy.rs` 负责：
+
+- 解析 `ZCPacket` payload 中的 IPv4/TCP header。
+- 只允许 SYN 创建 wrapped 输入；非 SYN 必须命中已存在的 TCP proxy connection。
+- 在非 smoltcp 模式下拒绝 net-to-net wrapped TCP 输入。
+- 将 packet header 标记为 KCP src modified 或 QUIC src modified。
+- 将 `to_peer_id` 改写成本机 peer id。
+
+runtime KCP/QUIC adapter 只负责：
+
+- 提供 transport kind：KCP 或 QUIC。
+- 提供目标 IP 是否允许 wrapped input 的 async policy。
+- 提供本机 peer id、本地 IPv4、smoltcp enabled snapshot，以及
+  `TcpProxyEngine` connection lookup。
+- 注册 core wrapped TCP NIC filter 到 runtime 当前既有 pipeline 位置。
+
+core 不允许依赖：
+
+- runtime `TcpProxy` facade。
+- `GlobalCtx`。
+- `NatDstConnector`。
+- QUIC/KCP endpoint 或具体 stream 类型。
+
+### Proxy ACL 边界
+
+`ProxyAclHandler` 应迁入 `easytier-core/src/proxy/proxy_acl.rs`。它可以继续持有
+`Arc<AclFilter>`、`PacketInfo` 和 `ChainType`，并提供 stream copy helper：
+
+```text
+AsyncRead/AsyncWrite stream
+  -> InspectReader
+  -> AclFilter::get_processor().process_packet(...)
+  -> AclFilter::handle_acl_result(...)
+  -> copy_bidirectional(...)
+```
+
+`ProxyAclHandler` 不属于 wrapped TCP packet engine，不能和
+`wrapped_tcp_proxy.rs` 混在一起。它处理 stream payload ACL；wrapped TCP proxy
+处理 NIC packet rewrite。
+
+### 第三阶段迁移步骤
+
+1. 新增 core `proxy_acl.rs`
+   - 移入 `ProxyAclHandler`。
+   - runtime KCP/QUIC 引用 core `ProxyAclHandler`。
+   - 不改变 ACL 处理语义和 stream copy 行为。
+
+2. 新增 core `wrapped_tcp_proxy.rs`
+   - 定义 wrapped transport kind、runtime snapshot/context、packet action。
+   - 迁移 IPv4/TCP parse、SYN 判断、established connection 判断、net-to-net
+     smoltcp gating 和 header mark 规则。
+   - 用 `smoltcp::wire` 或已有 core packet parser，避免在 core 新增 runtime-only
+     parsing 依赖。
+
+3. 改造 KCP/QUIC wrapper
+   - 删除 runtime `TcpProxyForWrappedSrcTrait`。
+   - KCP/QUIC wrapper 缩成 runtime adapter，只实现 allow-check 和 transport kind。
+   - NIC pipeline 注册 core wrapped TCP filter，不注册 runtime `TcpProxy` facade。
+
+4. 删除 `gateway/wrapped_proxy.rs`
+   - `ProxyAclHandler` 调用点改到 `easytier_core::proxy::proxy_acl`。
+   - wrapped TCP packet 处理调用点改到 `easytier_core::proxy::wrapped_tcp_proxy`。
+
+### 第三阶段验收
+
+- `rg 'TcpProxyForWrappedSrcTrait|try_process_wrapped_packet_from_nic'
+  easytier/src/gateway` 无结果。
+- `rg 'ProxyAclHandler' easytier/src/gateway/wrapped_proxy.rs` 无结果，且该文件被删除。
+- `rg 'gateway::tcp_proxy::TcpProxy|GlobalCtx|NatDstConnector'
+  easytier-core/src/proxy/wrapped_tcp_proxy.rs` 无结果。
+- `rg 'pnet::packet' easytier-core/src/proxy/wrapped_tcp_proxy.rs` 无结果。
+- KCP/QUIC wrapped TCP src modified 语义保持不变。
+- net-to-net wrapped TCP 在非 smoltcp 模式下仍被拒绝。
+- non-SYN packet 只有命中已存在 TCP proxy connection 时才允许 wrapped input。
 
 ## 每个代码 Commit 的硬验收
 
