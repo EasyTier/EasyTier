@@ -397,6 +397,297 @@ cargo check -p easytier-core --target wasm32-wasip1 --no-default-features
 
 验收：core 单测覆盖 route convergence、stale cleanup、foreign network merge、next-hop policy。
 
+## 第二阶段：UDP/TCP Proxy Core 化
+
+peers 第一阶段完成后，下一阶段只迁移 UDP proxy 和 TCP proxy。目标是把
+proxy 的 packet classification、NAT 状态、CIDR 映射、fragment/rewrite/checksum
+等核心 packet dataplane 放进 `easytier-core`，让 `easytier` 继续作为 runtime
+Adapter 提供真实 socket、TUN/netns、配置、stats 和管理 DTO。
+
+这一阶段的核心判断是：UDP/TCP proxy 不是纯 runtime 能力。它们决定哪些 peer
+packet 被代理、如何建立 NAT entry、如何改写 IP/TCP/UDP header、如何标记
+`no_proxy`、如何把 response packet 送回 peer。这些规则与 peer packet routing
+紧密相关，应成为 core 的深 Module，换取 locality 和更好的 core 单测。
+
+### 第二阶段 Scope
+
+只迁移以下 Module 或其核心 Implementation：
+
+- `easytier/src/gateway/mod.rs::CidrSet`
+- `easytier/src/gateway/ip_reassembler.rs`
+- `easytier/src/gateway/udp_proxy.rs`
+- `easytier/src/gateway/tcp_proxy.rs`
+- TCP proxy 内部直接使用的 smoltcp dataplane
+
+不迁移以下内容：
+
+- KCP proxy 本体。
+- QUIC proxy 本体。
+- `wrapped_proxy.rs` 中 KCP/QUIC wrapped source 逻辑。
+- socks5 / fast_socks5。
+- smoltcp 在 socks5 或其他 runtime 场景中的使用。
+- 真实 `UdpSocket`、`TcpListener`、`TcpStream`、raw socket、TUN、netns。
+- proxy RPC、管理 DTO、CLI 展示。
+
+如果迁移 `TcpProxy` 的内部 Interface 需要让 KCP/QUIC 继续编译，本阶段只能通过
+runtime 兼容 wrapper 或 re-export 维持现状，不修改 KCP/QUIC proxy 的行为和
+领域结构。
+
+### 目标结构
+
+```text
+easytier-core
+  proxy/
+    mod.rs
+    cidr_table.rs
+    ip_reassembler.rs
+    udp_proxy.rs
+    tcp_proxy.rs
+    tcp_stack.rs
+    smoltcp_stack.rs   # only with feature = "smoltcp"
+
+easytier
+  gateway/
+    mod.rs             # runtime re-export / adapter glue
+    udp_proxy.rs       # runtime socket adapter + PeerManager send adapter
+    tcp_proxy.rs       # runtime facade + kernel socket adapter
+    wrapped_proxy.rs   # unchanged in this phase
+    kcp_proxy.rs       # unchanged in this phase
+    quic_proxy.rs      # unchanged in this phase
+    socks5*.rs         # unchanged in this phase
+```
+
+`easytier-core::proxy` 应是 stateful dataplane Module，而不是一组浅 helper。
+runtime `gateway` 保留现有启动路径和产品入口，内部委托给 core Module。
+
+### Proxy CIDR Seam
+
+当前 `CidrSet` 同时持有 `GlobalCtx`、轮询 config、维护 mapped CIDR，并提供
+lookup。这是一个浅 seam：核心 lookup 逻辑和 runtime config polling 混在一起。
+
+第二阶段先把它拆成：
+
+- core `ProxyCidrTable`：只持有 proxy CIDR snapshot，提供 mapped-to-real lookup。
+- runtime `ProxyCidrTableUpdater`：从 `GlobalCtx.config.get_proxy_cidrs()` 读取配置，
+  在配置变化时更新 core table。
+
+core Interface 应表达 lookup 结果，而不是通过 mutable out-param 修改调用方变量：
+
+```rust
+pub struct ProxyCidrMatch {
+    pub mapped_dst: std::net::Ipv4Addr,
+    pub real_dst: std::net::Ipv4Addr,
+}
+
+pub struct ProxyCidrTable { ... }
+
+impl ProxyCidrTable {
+    pub fn update(&self, cidrs: impl IntoIterator<Item = ProxyCidrRule>);
+    pub fn lookup_v4(&self, dst: std::net::Ipv4Addr) -> Option<ProxyCidrMatch>;
+    pub fn is_empty(&self) -> bool;
+}
+```
+
+`ProxyCidrRule` 可以从现有 config 类型转换而来，但 core 不应依赖 `GlobalCtx`
+或 TOML/config loader。这样 UDP/TCP/ICMP 以后都能复用同一个深 Module。
+
+### IP Packet Seam
+
+`ip_reassembler.rs` 和 IPv4 compose/rewrite 属于 core packet dataplane。迁移时应
+保持以下原则：
+
+- `IpReassembler`、fragment expiration、IPv4 compose 进入 core。
+- UDP/TCP checksum 和 IPv4 checksum rewrite 进入 core。
+- core 不引入 `pnet` 作为长期依赖。当前 runtime 使用 `pnet` 的解析和 rewrite
+  逻辑需要迁成 core 自有的最小 packet view/mutable view，或复用已有
+  `easytier-core::packet` 能力。
+- 真实 TUN/NIC 读写仍留在 runtime Adapter。
+
+如果迁移中发现一次性替换 `pnet` 风险过高，可以先在 runtime 保留 `pnet` wrapper，
+但 core 的最终形态不能依赖 `pnet`，否则会违反 core 依赖约束。
+
+### UDP Proxy Module
+
+UDP proxy 应优先迁移，因为它比 TCP proxy 更少依赖 stream stack。目标是把
+`UdpNatKey`、`UdpNatEntry`、NAT table、packet classification、fragment
+reassembly、UDP response compose 和 entry cleanup 收敛到 core。
+
+core `UdpProxyCore` 的 Interface 应围绕 packet 和 runtime action，而不是直接
+操作 socket：
+
+```rust
+pub enum UdpProxyAction {
+    ForwardToSocket {
+        entry_id: UdpNatEntryId,
+        dst: std::net::SocketAddr,
+        payload: bytes::Bytes,
+    },
+    SendToPeer {
+        dst_peer: PeerId,
+        packet: ZCPacket,
+    },
+    Drop,
+    Pass(ZCPacket),
+}
+```
+
+runtime Adapter 负责：
+
+- 创建和持有真实 `UdpSocket`。
+- 在正确 netns 下 `send_to` / `recv_from`。
+- 调用 runtime `should_deny_proxy`。
+- 把 core 产生的 `SendToPeer` 交给 `PeerManager::send_msg_for_proxy`。
+- 启动/停止 task，处理 socket I/O 错误。
+
+core 负责：
+
+- 判断 packet 是否是可代理 UDP IPv4 packet。
+- 处理 proxy CIDR、exit node、no-tun local virtual IP 规则。
+- 创建/维护 NAT entry 状态。
+- 处理 denied entry 的 drop/pass 行为。
+- 处理 UDP fragment reassembly。
+- 把 socket response 组装为 `ZCPacket`，设置 `PacketType::Data` 和 `no_proxy`。
+- entry active/expired 状态。
+
+`UdpProxyCore` 单测应直接喂 `ZCPacket` 和 fake socket response，不需要真实 UDP
+socket。
+
+### TCP Proxy Module
+
+TCP proxy 不能简单按“core packet rewrite + runtime smoltcp”拆分。当前
+`TcpProxy` 与 smoltcp 耦合很深：
+
+- `TcpProxy` 持有 smoltcp stack channel、`Net`、listener tx 和 enabled state。
+- smoltcp 模式下 peer packet 进入 stack，而不是写回 NIC。
+- smoltcp stack 输出的 IP packet 再通过 peer send Adapter 发回 peer。
+- `wrapped_proxy.rs` 会根据 `is_smoltcp_enabled()` 决定 net-to-net wrapped TCP
+  是否允许。
+
+因此 TCP proxy 迁移时应把 TCP proxy 使用的 smoltcp dataplane 一起纳入
+`easytier-core`，但必须作为 optional feature。
+
+目标拆分：
+
+- core `TcpProxyCore`：维护 SYN map、conn map、addr conn map、NAT entry state、
+  peer packet classification、NIC response rewrite、checksum、mapped dst、local
+  fake IP 规则、entry listing 的 core model。
+- core `TcpStack` Interface：抽象“把 rewritten packet 交给 TCP stack”和“从
+  TCP stack 输出 IP packet”。
+- core `SmolTcpStack` Adapter：在 `#[cfg(feature = "smoltcp")]` 下实现
+  `TcpStack`，承载当前 `ChannelDevice`、`Net`、smoltcp listener 相关逻辑。
+- runtime `KernelTcpStack` Adapter：保留真实 `TcpListener/TcpStream`、socket
+  keepalive、netns bind/connect/copy。
+- runtime `TcpProxy` facade：保留当前外部调用路径，内部委托 `TcpProxyCore` 和
+  runtime stack Adapter。
+
+`TcpProxyCore` 不应直接依赖 `PeerManager`。它通过 Adapter 输出 action：
+
+```rust
+pub enum TcpProxyAction {
+    SendToNic(ZCPacket),
+    SendToPeerByIp {
+        dst: std::net::IpAddr,
+        packet: ZCPacket,
+        not_send_to_self: bool,
+    },
+    ConnectDst {
+        entry_id: TcpNatEntryId,
+        src: std::net::SocketAddr,
+        dst: std::net::SocketAddr,
+    },
+    Drop,
+    Pass(ZCPacket),
+}
+```
+
+runtime Adapter 负责：
+
+- 根据 config 选择 kernel stack 或 smoltcp stack。
+- 在 netns 中 bind/listen/connect。
+- 执行 stream copy 和 shutdown。
+- 调用 `PeerManager::send_msg_by_ip` / NIC channel。
+- 查询 `should_deny_proxy`。
+- 记录 stats 和组装管理 DTO。
+
+core 负责：
+
+- SYN packet 建立 NAT entry。
+- 非 SYN packet 只允许已存在 entry。
+- peer packet rewrite 到 local TCP stack。
+- NIC/stack response rewrite 回 mapped dst。
+- `no_proxy` 标记和 packet type restore。
+- fake local IPv4 规则。
+- entry state 和 cleanup。
+
+### smoltcp Feature 约束
+
+`easytier-core` 的 `smoltcp` 必须是 optional feature，不进入 default feature。
+引入该 feature 后需要满足：
+
+- `TcpProxyCore` 的普通 NAT/packet rewrite 不依赖 smoltcp。
+- `SmolTcpStack` 只在 `#[cfg(feature = "smoltcp")]` 下编译。
+- smoltcp 只能通过 core `TcpStack` Interface 与 `TcpProxyCore` 交互。
+- smoltcp 迁入 core 后，`wasm32-wasip1` 必须在开启该 feature 时仍能编译。
+
+涉及 TCP proxy 或 smoltcp 的 commit 必须额外跑：
+
+```bash
+cargo check -p easytier-core --target wasm32-wasip1 --no-default-features --features smoltcp
+```
+
+如果该命令不能通过，说明 smoltcp 不能按当前形态进入 core。此时必须回退为
+runtime `SmolTcpStack` Adapter，不能为了迁移让 core 失去 wasm 编译目标。
+
+### 第二阶段迁移顺序
+
+1. 迁移 `ProxyCidrTable`
+   - core 新增 table 和 mapped CIDR 单测。
+   - runtime `CidrSet` 退化为配置更新 Adapter 或 re-export wrapper。
+
+2. 迁移 IP packet reassembly/compose
+   - core 新增 fragment reassembly 和 IPv4 compose 单测。
+   - 移除 core 迁移路径中的 `pnet` 依赖。
+
+3. 迁移 UDP proxy core
+   - core 新增 `UdpProxyCore`、NAT table、fake runtime action。
+   - runtime `UdpProxy` 保留 socket task 和 PeerManager send Adapter。
+   - 单测覆盖 proxy CIDR、mapped CIDR、fragment、denied entry、response compose。
+
+4. 迁移 TCP proxy core 和 stack seam
+   - core 新增 `TcpProxyCore` 和 `TcpStack` Interface。
+   - runtime 保留 kernel socket Adapter。
+   - smoltcp dataplane 作为 core optional `smoltcp` feature 迁入。
+   - runtime `TcpProxy` facade 尽量保持现有外部 Interface，避免触碰 KCP/QUIC/socks5。
+
+5. 清理 runtime gateway 兼容层
+   - 删除已迁移的重复 NAT/packet rewrite 状态。
+   - 保留管理 DTO、runtime task、socket/netns Adapter。
+   - `wrapped_proxy.rs`、`kcp_proxy.rs`、`quic_proxy.rs`、`socks5*.rs` 不纳入本阶段重构。
+
+### 第二阶段验收
+
+每一步至少需要：
+
+```bash
+cargo check -p easytier-core --target wasm32-wasip1 --no-default-features
+cargo test -p easytier-core
+cargo check -p easytier --no-default-features
+```
+
+涉及 smoltcp 时额外需要：
+
+```bash
+cargo check -p easytier-core --target wasm32-wasip1 --no-default-features --features smoltcp
+```
+
+涉及 runtime gateway 行为时，需要补充 runtime 测试或最小集成验证，至少覆盖：
+
+- UDP proxy request/response。
+- TCP proxy SYN/response rewrite。
+- mapped CIDR。
+- no-tun local virtual IP。
+- smoltcp enabled 和 disabled 两条路径。
+
 ## 每个代码 Commit 的硬验收
 
 ```bash
