@@ -220,6 +220,10 @@ pub trait UdpHolePunchRuntime: Send + Sync + 'static {
 
     async fn bind_udp(&self, port: Option<u16>) -> anyhow::Result<Arc<Self::Socket>>;
 
+    async fn bind_direct_connect_udp(&self) -> anyhow::Result<Arc<Self::Socket>> {
+        self.bind_udp(None).await
+    }
+
     async fn resolve_udp_public_addr(
         &self,
         socket: Arc<Self::Socket>,

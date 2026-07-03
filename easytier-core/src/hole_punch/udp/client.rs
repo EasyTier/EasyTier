@@ -345,7 +345,7 @@ where
         let remote_mapped_addr = resp.listener_mapped_addr;
 
         if self.try_direct_connect.load(Ordering::Relaxed) {
-            let socket = self.runtime.bind_udp(None).await?;
+            let socket = self.runtime.bind_direct_connect_udp().await?;
             if let Ok(tunnel) = self
                 .runtime
                 .connect_with_socket(socket, remote_mapped_addr)

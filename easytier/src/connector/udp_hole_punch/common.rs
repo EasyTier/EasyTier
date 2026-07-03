@@ -185,6 +185,11 @@ impl core_udp_hole_punch::UdpHolePunchRuntime for RuntimeUdpHolePunchRuntime {
         Ok(Arc::new(RuntimeUdpPunchSocket::new(socket)))
     }
 
+    async fn bind_direct_connect_udp(&self) -> anyhow::Result<Arc<Self::Socket>> {
+        let socket = Arc::new(UdpSocket::bind("0.0.0.0:0").await?);
+        Ok(Arc::new(RuntimeUdpPunchSocket::new(socket)))
+    }
+
     async fn resolve_udp_public_addr(
         &self,
         socket: Arc<Self::Socket>,
