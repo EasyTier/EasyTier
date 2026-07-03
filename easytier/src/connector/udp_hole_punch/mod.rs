@@ -3,14 +3,22 @@ use std::{
     time::Duration,
 };
 
-use anyhow::{Context, Error};
+use anyhow::Error;
 use both_easy_sym::{PunchBothEasySymHoleClient, PunchBothEasySymHoleServer};
 use common::{PunchHoleServerCommon, UdpNatType, UdpPunchClientMethod};
 use cone::{PunchConeHoleClient, PunchConeHoleServer};
 use dashmap::DashMap;
 use easytier_core::hole_punch::udp::{
-    BLACKLIST_TIMEOUT_SEC, P2pPolicyFlags, UdpHolePunchSignalError, UdpPunchCandidate,
-    UdpPunchTaskInfo, collect_udp_punch_tasks, should_blacklist_signal_error,
+    BLACKLIST_TIMEOUT_SEC, P2pPolicyFlags, SelectPunchListener as CoreSelectPunchListener,
+    SelectPunchListenerResponse as CoreSelectPunchListenerResponse,
+    SendPunchPacketBothEasySym as CoreSendPunchPacketBothEasySym,
+    SendPunchPacketBothEasySymResponse as CoreSendPunchPacketBothEasySymResponse,
+    SendPunchPacketCone as CoreSendPunchPacketCone,
+    SendPunchPacketEasySym as CoreSendPunchPacketEasySym,
+    SendPunchPacketHardSym as CoreSendPunchPacketHardSym,
+    SendPunchPacketHardSymResponse as CoreSendPunchPacketHardSymResponse, UdpHolePunchInbound,
+    UdpHolePunchSignalError, UdpPunchCandidate, UdpPunchTaskInfo, collect_udp_punch_tasks,
+    should_blacklist_signal_error,
 };
 use once_cell::sync::Lazy;
 use quanta::Instant;
@@ -80,6 +88,147 @@ impl UdpHolePunchServer {
     }
 }
 
+fn rpc_error_to_signal_error(error: rpc_types::error::Error) -> UdpHolePunchSignalError {
+    match error {
+        rpc_types::error::Error::InvalidServiceKey(_, _) => {
+            UdpHolePunchSignalError::InvalidServiceKey
+        }
+        rpc_types::error::Error::Timeout(_) => UdpHolePunchSignalError::Timeout,
+        rpc_types::error::Error::ExecutionError(error) => {
+            UdpHolePunchSignalError::RemoteRejected(error.to_string())
+        }
+        other => UdpHolePunchSignalError::Transport(other.to_string()),
+    }
+}
+
+fn signal_error_to_rpc_error(error: UdpHolePunchSignalError) -> rpc_types::error::Error {
+    match error {
+        UdpHolePunchSignalError::InvalidServiceKey => rpc_types::error::Error::InvalidServiceKey(
+            "UdpHolePunchRpc".to_owned(),
+            "UdpHolePunchRpc".to_owned(),
+        ),
+        UdpHolePunchSignalError::Timeout => anyhow::anyhow!("timeout").into(),
+        UdpHolePunchSignalError::RemoteRejected(message)
+        | UdpHolePunchSignalError::Transport(message) => anyhow::anyhow!(message).into(),
+    }
+}
+
+#[async_trait::async_trait]
+impl UdpHolePunchInbound for UdpHolePunchServer {
+    async fn select_punch_listener(
+        &self,
+        request: CoreSelectPunchListener,
+    ) -> Result<CoreSelectPunchListenerResponse, UdpHolePunchSignalError> {
+        let (_, addr) = self
+            .common
+            .select_listener(request.force_new, request.prefer_port_mapping)
+            .await
+            .ok_or_else(|| {
+                UdpHolePunchSignalError::RemoteRejected("no listener available".into())
+            })?;
+
+        Ok(CoreSelectPunchListenerResponse {
+            listener_mapped_addr: addr,
+        })
+    }
+
+    async fn send_punch_packet_cone(
+        &self,
+        request: CoreSendPunchPacketCone,
+    ) -> Result<(), UdpHolePunchSignalError> {
+        self.cone_server
+            .send_punch_packet_cone(
+                BaseController::default(),
+                SendPunchPacketConeRequest {
+                    listener_mapped_addr: Some(request.listener_mapped_addr.into()),
+                    dest_addr: Some(request.dest_addr.into()),
+                    transaction_id: request.transaction_id,
+                    packet_count_per_batch: request.packet_count_per_batch,
+                    packet_batch_count: request.packet_batch_count,
+                    packet_interval_ms: request.packet_interval_ms,
+                },
+            )
+            .await
+            .map(|_| ())
+            .map_err(rpc_error_to_signal_error)
+    }
+
+    async fn send_punch_packet_hard_sym(
+        &self,
+        request: CoreSendPunchPacketHardSym,
+    ) -> Result<CoreSendPunchPacketHardSymResponse, UdpHolePunchSignalError> {
+        let _locked = get_sym_punch_lock(self.common.get_peer_mgr().my_peer_id())
+            .try_lock_owned()
+            .map_err(|_| {
+                UdpHolePunchSignalError::RemoteRejected("sym punch lock is busy".into())
+            })?;
+        let response = self
+            .sym_to_cone_server
+            .send_punch_packet_hard_sym(SendPunchPacketHardSymRequest {
+                listener_mapped_addr: Some(request.listener_mapped_addr.into()),
+                public_ips: request.public_ips.into_iter().map(Into::into).collect(),
+                transaction_id: request.transaction_id,
+                port_index: request.port_index,
+                round: request.round,
+            })
+            .await
+            .map_err(rpc_error_to_signal_error)?;
+
+        Ok(CoreSendPunchPacketHardSymResponse {
+            next_port_index: response.next_port_index,
+        })
+    }
+
+    async fn send_punch_packet_easy_sym(
+        &self,
+        request: CoreSendPunchPacketEasySym,
+    ) -> Result<(), UdpHolePunchSignalError> {
+        let _locked = get_sym_punch_lock(self.common.get_peer_mgr().my_peer_id())
+            .try_lock_owned()
+            .map_err(|_| {
+                UdpHolePunchSignalError::RemoteRejected("sym punch lock is busy".into())
+            })?;
+        self.sym_to_cone_server
+            .send_punch_packet_easy_sym(SendPunchPacketEasySymRequest {
+                listener_mapped_addr: Some(request.listener_mapped_addr.into()),
+                public_ips: request.public_ips.into_iter().map(Into::into).collect(),
+                transaction_id: request.transaction_id,
+                base_port_num: request.base_port_num,
+                max_port_num: request.max_port_num,
+                is_incremental: request.is_incremental,
+            })
+            .await
+            .map_err(rpc_error_to_signal_error)
+    }
+
+    async fn send_punch_packet_both_easy_sym(
+        &self,
+        request: CoreSendPunchPacketBothEasySym,
+    ) -> Result<CoreSendPunchPacketBothEasySymResponse, UdpHolePunchSignalError> {
+        let _locked = get_sym_punch_lock(self.common.get_peer_mgr().my_peer_id())
+            .try_lock_owned()
+            .map_err(|_| {
+                UdpHolePunchSignalError::RemoteRejected("sym punch lock is busy".into())
+            })?;
+        let response = self
+            .both_easy_sym_server
+            .send_punch_packet_both_easy_sym(SendPunchPacketBothEasySymRequest {
+                transaction_id: request.transaction_id,
+                public_ip: Some(request.public_ip.into()),
+                dst_port_num: request.dst_port_num,
+                udp_socket_count: request.udp_socket_count,
+                wait_time_ms: request.wait_time_ms,
+            })
+            .await
+            .map_err(rpc_error_to_signal_error)?;
+
+        Ok(CoreSendPunchPacketBothEasySymResponse {
+            is_busy: response.is_busy,
+            base_mapped_addr: response.base_mapped_addr.map(Into::into),
+        })
+    }
+}
+
 #[async_trait::async_trait]
 impl UdpHolePunchRpc for UdpHolePunchServer {
     type Controller = BaseController;
@@ -89,24 +238,49 @@ impl UdpHolePunchRpc for UdpHolePunchServer {
         _ctrl: Self::Controller,
         input: SelectPunchListenerRequest,
     ) -> rpc_types::error::Result<SelectPunchListenerResponse> {
-        let (_, addr) = self
-            .common
-            .select_listener(input.force_new, input.prefer_port_mapping)
-            .await
-            .ok_or(anyhow::anyhow!("no listener available"))?;
+        let response = UdpHolePunchInbound::select_punch_listener(
+            self,
+            CoreSelectPunchListener {
+                force_new: input.force_new,
+                prefer_port_mapping: input.prefer_port_mapping,
+            },
+        )
+        .await
+        .map_err(signal_error_to_rpc_error)?;
 
         Ok(SelectPunchListenerResponse {
-            listener_mapped_addr: Some(addr.into()),
+            listener_mapped_addr: Some(response.listener_mapped_addr.into()),
         })
     }
 
     /// send packet to one remote_addr, used by nat1-3 to nat1-3
     async fn send_punch_packet_cone(
         &self,
-        ctrl: Self::Controller,
+        _ctrl: Self::Controller,
         input: SendPunchPacketConeRequest,
     ) -> rpc_types::error::Result<Void> {
-        self.cone_server.send_punch_packet_cone(ctrl, input).await
+        let listener_addr = input.listener_mapped_addr.ok_or(anyhow::anyhow!(
+            "send_punch_packet_for_cone request missing listener_mapped_addr"
+        ))?;
+        let dest_addr = input.dest_addr.ok_or(anyhow::anyhow!(
+            "send_punch_packet_for_cone request missing dest_addr"
+        ))?;
+
+        UdpHolePunchInbound::send_punch_packet_cone(
+            self,
+            CoreSendPunchPacketCone {
+                listener_mapped_addr: listener_addr.into(),
+                dest_addr: dest_addr.into(),
+                transaction_id: input.transaction_id,
+                packet_count_per_batch: input.packet_count_per_batch,
+                packet_batch_count: input.packet_batch_count,
+                packet_interval_ms: input.packet_interval_ms,
+            },
+        )
+        .await
+        .map_err(signal_error_to_rpc_error)?;
+
+        Ok(Void::default())
     }
 
     /// send packet to multiple remote_addr (birthday attack), used by nat4 to nat1-3
@@ -115,12 +289,25 @@ impl UdpHolePunchRpc for UdpHolePunchServer {
         _ctrl: Self::Controller,
         input: SendPunchPacketHardSymRequest,
     ) -> rpc_types::error::Result<SendPunchPacketHardSymResponse> {
-        let _locked = get_sym_punch_lock(self.common.get_peer_mgr().my_peer_id())
-            .try_lock_owned()
-            .with_context(|| "sym punch lock is busy")?;
-        self.sym_to_cone_server
-            .send_punch_packet_hard_sym(input)
-            .await
+        let listener_addr = input.listener_mapped_addr.ok_or(anyhow::anyhow!(
+            "try_punch_symmetric request missing listener_addr"
+        ))?;
+        let response = UdpHolePunchInbound::send_punch_packet_hard_sym(
+            self,
+            CoreSendPunchPacketHardSym {
+                listener_mapped_addr: listener_addr.into(),
+                public_ips: input.public_ips.into_iter().map(Into::into).collect(),
+                transaction_id: input.transaction_id,
+                port_index: input.port_index,
+                round: input.round,
+            },
+        )
+        .await
+        .map_err(signal_error_to_rpc_error)?;
+
+        Ok(SendPunchPacketHardSymResponse {
+            next_port_index: response.next_port_index,
+        })
     }
 
     async fn send_punch_packet_easy_sym(
@@ -128,13 +315,24 @@ impl UdpHolePunchRpc for UdpHolePunchServer {
         _ctrl: Self::Controller,
         input: SendPunchPacketEasySymRequest,
     ) -> rpc_types::error::Result<Void> {
-        let _locked = get_sym_punch_lock(self.common.get_peer_mgr().my_peer_id())
-            .try_lock_owned()
-            .with_context(|| "sym punch lock is busy")?;
-        self.sym_to_cone_server
-            .send_punch_packet_easy_sym(input)
-            .await
-            .map(|_| Void {})
+        let listener_addr = input.listener_mapped_addr.ok_or(anyhow::anyhow!(
+            "send_punch_packet_easy_sym request missing listener_addr"
+        ))?;
+        UdpHolePunchInbound::send_punch_packet_easy_sym(
+            self,
+            CoreSendPunchPacketEasySym {
+                listener_mapped_addr: listener_addr.into(),
+                public_ips: input.public_ips.into_iter().map(Into::into).collect(),
+                transaction_id: input.transaction_id,
+                base_port_num: input.base_port_num,
+                max_port_num: input.max_port_num,
+                is_incremental: input.is_incremental,
+            },
+        )
+        .await
+        .map_err(signal_error_to_rpc_error)?;
+
+        Ok(Void::default())
     }
 
     /// nat4 to nat4 (both predictably)
@@ -143,12 +341,26 @@ impl UdpHolePunchRpc for UdpHolePunchServer {
         _ctrl: Self::Controller,
         input: SendPunchPacketBothEasySymRequest,
     ) -> rpc_types::error::Result<SendPunchPacketBothEasySymResponse> {
-        let _locked = get_sym_punch_lock(self.common.get_peer_mgr().my_peer_id())
-            .try_lock_owned()
-            .with_context(|| "sym punch lock is busy")?;
-        self.both_easy_sym_server
-            .send_punch_packet_both_easy_sym(input)
-            .await
+        let public_ip = input
+            .public_ip
+            .ok_or(anyhow::anyhow!("public_ip is required"))?;
+        let response = UdpHolePunchInbound::send_punch_packet_both_easy_sym(
+            self,
+            CoreSendPunchPacketBothEasySym {
+                transaction_id: input.transaction_id,
+                public_ip: public_ip.into(),
+                dst_port_num: input.dst_port_num,
+                udp_socket_count: input.udp_socket_count,
+                wait_time_ms: input.wait_time_ms,
+            },
+        )
+        .await
+        .map_err(signal_error_to_rpc_error)?;
+
+        Ok(SendPunchPacketBothEasySymResponse {
+            is_busy: response.is_busy,
+            base_mapped_addr: response.base_mapped_addr.map(Into::into),
+        })
     }
 }
 
