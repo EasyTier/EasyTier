@@ -32,6 +32,10 @@ path = "src/lib.rs"
 name = "tx_throughput"
 harness = false
 
+[[bench]]
+name = "packet_bytes_extraction"
+harness = false
+
 [dependencies]
 git-version = "0.3.9"
 
