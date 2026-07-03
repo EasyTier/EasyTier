@@ -9,7 +9,7 @@ use dashmap::DashMap;
 use tokio::task::JoinSet;
 
 use crate::{
-    common::PeerId,
+    config::PeerId,
     proto::{
         peer_rpc::{
             DirectConnectedPeerInfo, GetGlobalPeerMapRequest, GetGlobalPeerMapResponse,
@@ -44,7 +44,7 @@ struct PeerCenterServerData {
 #[derive(Clone, Debug)]
 pub struct PeerCenterServer {
     data: Arc<PeerCenterServerData>,
-    tasks: Arc<JoinSet<()>>,
+    _tasks: Arc<JoinSet<()>>,
 }
 
 impl PeerCenterServer {
@@ -64,7 +64,7 @@ impl PeerCenterServer {
 
         PeerCenterServer {
             data,
-            tasks: Arc::new(tasks),
+            _tasks: Arc::new(tasks),
         }
     }
 
