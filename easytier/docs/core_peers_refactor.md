@@ -72,6 +72,8 @@ tokio = { version = "1", default-features = false, features = [
 
 第一阶段的 peers 迁移已经完成。`easytier-core::peers` 现在承载 peer 通信栈的核心状态和生命周期，包括 `PeerManagerCore`、`PeerMap`、`Peer`、`PeerConn`、PeerSession、安全 datagram、peer RPC、relay peer map、foreign network manager/client、traffic metrics、credential manager、public IPv6 control-plane、OSPF route 和 ACL 处理。
 
+但当前完成状态仍有一个未关闭的架构缺口：`PeerManagerCore` 中的 remote address 虚拟网段检查仍可能通过 `Url::socket_addrs` 触发 DNS 解析。该路径需要按下文的 DNS / Address Resolution Seam 修正后，才能认为 peers 第一阶段满足“core 不依赖 DNS resolver”的目标。
+
 `easytier` 中剩余的 `peers` 文件是 runtime Adapter 或测试：
 
 - `peer_manager.rs`：保留产品侧 `PeerManager` 包装，负责选择 runtime 配置、真实 tunnel connect/netns、管理 API DTO 转换和 node info 拼装；核心 peer graph 由 `easytier-core::peers::peer_manager::PeerManagerCore` 构造和运行。
@@ -194,6 +196,52 @@ core 后续可以拥有 listen/dial 编排，但不拥有真实 bind/connect 实
 
 这里提到的 listener/dialer Adapter 需要在删除遗留 `transport.rs` 后重新设计，不能复用现有 `SocketFactory` 作为 core peer connection Interface。`SocketFactory` 只能作为更底层的真实 I/O Adapter 候选，不能替代 `Tunnel`。
 
+### DNS / Address Resolution Seam
+
+DNS 和地址解析属于 runtime Adapter，不属于 `easytier-core`。原因不是
+`socket_addrs` 是否能在某个 target 下编译，而是它会把系统 resolver、DNS
+配置、netns、socket mark、magic DNS 和 SRV lookup 等平台语义带进 core。
+这些语义依赖运行环境，不能成为 wasm-safe core Module 的隐式行为。
+
+因此 `easytier-core` 不应调用以下 DNS-capable Interface：
+
+- `Url::socket_addrs`。
+- `std::net::ToSocketAddrs`。
+- 系统 resolver 或 Hickory resolver。
+- magic DNS、SRV lookup、或任何会从 hostname 推导 `SocketAddr` 的 helper。
+
+runtime Adapter 负责完成所有会触发解析的工作，包括：
+
+- 从 listener URL、connector URL、peer URL 或 DNS connector 结果中解析地址。
+- 在 netns/socket mark/系统 DNS 开关影响下选择 resolver。
+- 把解析后的 `SocketAddr`、解析失败、或“不可解析/不应解析”的状态传给
+  core。
+- 如果某个检查需要使用 runtime 解析策略，runtime Adapter 应直接把检查结果
+  或已解析地址注入 core，而不是让 core 重新解析 hostname。
+
+`TunnelInfo` 的使用也要遵守这个 seam：
+
+- `TunnelInfo.remote_addr` 只能作为原始地址和诊断/展示字段。它可能是 domain
+  URL，不能作为 core 决策时的解析入口。
+- `TunnelInfo.resolved_remote_addr` 或等价的 `ResolvedRemoteEndpoint` 才能被
+  core 用于虚拟网段检查、peer 连接判定等需要 IP 地址的逻辑。
+- 如果 core 只能看到 domain URL，core 不得调用 DNS resolver。该逻辑应跳过
+  需要 IP 的检查，或者返回一个需要 runtime Adapter 补充解析结果的状态。
+
+当前具体修复方向是：`PeerManagerCore::check_remote_addr_not_from_virtual_network`
+不能再调用 `Url::socket_addrs`。它应只消费 runtime 已解析好的 remote
+`SocketAddr`，或只检查 `TunnelInfo.resolved_remote_addr` / core-safe endpoint
+metadata。遇到只有 domain 的 `remote_addr` 时，由 runtime Adapter 负责解析后
+再调用 core，或显式选择跳过该虚拟网段检查。
+
+验收时需要同时检查代码形态和编译结果。`cargo check -p easytier-core
+--target wasm32-wasip1 --no-default-features` 只能证明 core 可编译，不能证明没有
+运行期 DNS 解析。应额外确认 `easytier-core` 中没有 DNS-capable 路径，例如：
+
+```bash
+rg 'socket_addrs|ToSocketAddrs|Resolver|lookup_ip' easytier-core/src
+```
+
 ### Core Context Seam
 
 `GlobalCtx` 不能整体进入 core，但不能因此让 core 缺少 peers 本来需要的核心上下文。正确做法是把 `GlobalCtx` 拆出一个 core-needed subset，由 runtime Adapter 持有完整 `GlobalCtx` 并向 core 提供这个子集。
@@ -251,6 +299,7 @@ easytier
   runtime adapters:
     tunnel adapters
     socket/listener/dialer adapters
+    DNS/address-resolution adapter
     tun/nic adapter
     global ctx adapter
     credential persistence adapter
@@ -266,6 +315,7 @@ easytier
 - 删除前一轮错误重构遗留的 `easytier-core/src/transport.rs`，移除 `PacketTransport` / `TunnelIo` / `SocketFactory` 这套与 `Tunnel` 平行的传输抽象。
 - 确认 `easytier-core::packet` 覆盖 peers 需要的 packet 类型。
 - 定义最小 core tunnel surface：上移 `Tunnel` trait、`ZCPacket` stream/sink 类型和最小 core tunnel error；`TunnelConnector`、`TunnelListener`、URL 解析、socket mark、DNS/WebSocket 等 runtime-specific 能力留在 `easytier`。
+- 定义 DNS / Address Resolution Seam：runtime Adapter 负责 DNS、SRV、系统 resolver、netns/socket mark 影响下的地址解析；core 只消费已解析的 `SocketAddr` 或 core-safe endpoint metadata。
 - 将 peer/conn/route 的核心信息类型从 `proto::api::instance` 下沉到 `easytier-proto` 的 `core` feature 可见位置，避免 `easytier-core` 依赖管理 API DTO。
 - 确认 `easytier-proto` 的 `core` feature 覆盖 peer RPC 和 route 所需 proto。
 - 将 `easytier/src/proto/rpc_impl` 中通用 bidirect RPC runtime 迁到 `easytier-core`。generated RPC traits/types 留在 `easytier-proto`。
@@ -330,6 +380,7 @@ cargo check -p easytier-core --target wasm32-wasip1 --no-default-features
 cargo check -p easytier-proto --target wasm32-wasip1
 cargo check -p easytier-core --target wasm32-wasip1 --no-default-features
 cargo test -p easytier-core
+rg 'socket_addrs|ToSocketAddrs|Resolver|lookup_ip' easytier-core/src
 ```
 
 影响 `easytier` runtime 时还要跑：
