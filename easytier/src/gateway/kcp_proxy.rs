@@ -17,7 +17,7 @@ use kcp_sys::{
 use prost::Message;
 use tokio::task::JoinSet;
 
-use easytier_core::proxy::tcp_proxy::TcpProxyMode;
+use easytier_core::proxy::tcp_proxy_engine::TcpProxyMode;
 
 use super::{
     CidrSet,

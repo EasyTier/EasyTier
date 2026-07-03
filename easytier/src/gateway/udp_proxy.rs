@@ -11,7 +11,7 @@ use easytier_core::proxy::{
         ProxyRuntimeError, ProxyRuntimeInfo, ProxyRuntimeSnapshot, UdpProxyResponseSink,
         UdpProxyRuntime,
     },
-    udp_proxy::{UdpNatEntryId, UdpProxyCore},
+    udp_proxy_engine::{UdpNatEntryId, UdpProxyEngine},
     udp_proxy_service::UdpProxyService,
 };
 #[cfg(test)]
@@ -253,7 +253,7 @@ impl UdpProxy {
         let (sender, receiver) = channel(1024);
         #[cfg(test)]
         let test_response_sink = Arc::new(TestUdpResponseSink {
-            core: service.core(),
+            engine: service.engine(),
             runtime: runtime.clone(),
             sender: sender.clone(),
         });
@@ -273,16 +273,16 @@ impl UdpProxy {
         Ok(())
     }
 
-    pub fn core(&self) -> Arc<UdpProxyCore> {
-        self.service.core()
+    pub fn engine(&self) -> Arc<UdpProxyEngine> {
+        self.service.engine()
     }
 
     #[cfg(test)]
     async fn try_handle_packet(&self, packet: &ZCPacket) -> Option<()> {
-        use easytier_core::proxy::udp_proxy::{UdpProxyAction, UdpProxyPeerContext};
+        use easytier_core::proxy::udp_proxy_engine::{UdpProxyAction, UdpProxyPeerContext};
 
         let snapshot = self.runtime.proxy_runtime_snapshot();
-        let action = self.core().handle_peer_packet(
+        let action = self.engine().handle_peer_packet(
             packet,
             UdpProxyPeerContext {
                 virtual_ipv4: snapshot.virtual_ipv4,
@@ -308,7 +308,7 @@ impl UdpProxy {
             .await
         {
             tracing::error!(?err, ?entry_id, "udp proxy runtime send failed");
-            self.core().remove_entry(entry_id);
+            self.engine().remove_entry(entry_id);
             self.runtime.close_udp_socket(entry_id);
             return None;
         }
@@ -318,7 +318,7 @@ impl UdpProxy {
 
 #[cfg(test)]
 struct TestUdpResponseSink {
-    core: Arc<UdpProxyCore>,
+    engine: Arc<UdpProxyEngine>,
     runtime: Arc<RuntimeUdpProxyAdapter>,
     sender: Sender<ZCPacket>,
 }
@@ -333,7 +333,7 @@ impl UdpProxyResponseSink for TestUdpResponseSink {
         payload: Bytes,
     ) {
         let packets = self
-            .core
+            .engine
             .handle_socket_response(
                 entry_id,
                 src,
@@ -636,7 +636,7 @@ mod tests {
         let (payload, second_nat_socket) = recv_payload(&real_dst).await;
         assert_eq!(payload, b"second");
 
-        assert_eq!(proxy.core().nat_entry_count(), 2);
+        assert_eq!(proxy.engine().nat_entry_count(), 2);
 
         real_dst
             .send_to(b"first-reply", first_nat_socket)

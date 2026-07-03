@@ -51,7 +51,7 @@ use tokio::{join, select};
 use tokio_util::sync::PollSender;
 use tracing::{debug, error, info, instrument, trace, warn};
 
-use easytier_core::proxy::tcp_proxy::TcpProxyMode;
+use easytier_core::proxy::tcp_proxy_engine::TcpProxyMode;
 
 //region packet
 #[derive(Debug, Constructor)]

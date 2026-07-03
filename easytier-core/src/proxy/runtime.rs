@@ -5,8 +5,8 @@ use bytes::Bytes;
 use cidr::Ipv4Inet;
 use tokio::io::{AsyncRead, AsyncWrite};
 
-use super::tcp_proxy::TcpNatEntryId;
-use super::udp_proxy::UdpNatEntryId;
+use super::tcp_proxy_engine::TcpNatEntryId;
+use super::udp_proxy_engine::UdpNatEntryId;
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct ProxyRuntimeSnapshot {

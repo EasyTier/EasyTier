@@ -11,7 +11,7 @@ use easytier_core::proxy::runtime::{
     ProxyRuntimeError, ProxyRuntimeInfo, ProxyRuntimeSnapshot, TcpProxyConnectContext,
     TcpProxyDstStream, TcpProxyKernelListener, TcpProxyRuntime, TcpProxySrcStream,
 };
-use easytier_core::proxy::tcp_proxy::{
+use easytier_core::proxy::tcp_proxy_engine::{
     TcpNatEntrySnapshot, TcpNatEntryState as CoreTcpNatEntryState, TcpProxyMode, TcpProxyNicContext,
 };
 use easytier_core::proxy::tcp_proxy_service::TcpProxyService;
@@ -247,7 +247,7 @@ impl<C: NatDstConnector> TcpProxyRuntime for RuntimeTcpProxyAdapter<C> {
 
     async fn copy_bidirectional_no_shutdown(
         &self,
-        _entry_id: easytier_core::proxy::tcp_proxy::TcpNatEntryId,
+        _entry_id: easytier_core::proxy::tcp_proxy_engine::TcpNatEntryId,
         src: &mut dyn TcpProxySrcStream,
         dst: &mut dyn TcpProxyDstStream,
     ) -> std::result::Result<(), ProxyRuntimeError> {
@@ -321,7 +321,7 @@ impl<C: NatDstConnector> TcpProxy<C> {
     }
 
     pub fn get_local_port(&self) -> u16 {
-        self.service.core().local_port()
+        self.service.engine().local_port()
     }
 
     pub fn get_my_peer_id(&self) -> u32 {
@@ -348,12 +348,12 @@ impl<C: NatDstConnector> TcpProxy<C> {
     }
 
     pub fn is_tcp_proxy_connection(&self, src: SocketAddr) -> bool {
-        self.service.core().is_tcp_proxy_connection(src)
+        self.service.engine().is_tcp_proxy_connection(src)
     }
 
     pub async fn try_process_packet_from_nic(&self, zc_packet: &mut ZCPacket) -> bool {
         let snapshot = self.runtime.proxy_runtime_snapshot();
-        self.service.core().try_process_packet_from_nic(
+        self.service.engine().try_process_packet_from_nic(
             zc_packet,
             TcpProxyNicContext {
                 local_inet: snapshot.local_inet,
@@ -367,7 +367,7 @@ impl<C: NatDstConnector> TcpProxy<C> {
     pub fn list_proxy_entries(&self) -> Vec<TcpProxyEntry> {
         let transport_type = self.connector.transport_type();
         self.service
-            .core()
+            .engine()
             .list_entries()
             .into_iter()
             .map(|entry| tcp_entry_snapshot_to_pb(entry, transport_type))

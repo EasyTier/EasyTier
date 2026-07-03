@@ -19,15 +19,15 @@ use super::runtime::{
 };
 #[cfg(feature = "proxy-smoltcp-stack")]
 use super::smoltcp_stack::{SmolTcpStack, output_dst_ip};
-use super::tcp_proxy::{
-    TcpNatEntry, TcpNatEntryState, TcpProxyCore, TcpProxyMode, TcpProxyNicContext,
+use super::tcp_proxy_engine::{
+    TcpNatEntry, TcpNatEntryState, TcpProxyEngine, TcpProxyMode, TcpProxyNicContext,
     TcpProxyPacketAction, TcpProxyPeerContext,
 };
 
 pub struct TcpProxyService<R: TcpProxyRuntime + 'static> {
     peer_manager: Arc<PeerManagerCore>,
     runtime: Arc<R>,
-    core: Arc<TcpProxyCore>,
+    engine: Arc<TcpProxyEngine>,
     mode: TcpProxyMode,
     peer_pipeline_guard: std::sync::Mutex<Option<PipelineRegistrationGuard>>,
     nic_pipeline_guard: std::sync::Mutex<Option<PipelineRegistrationGuard>>,
@@ -48,7 +48,7 @@ impl<R: TcpProxyRuntime + 'static> TcpProxyService<R> {
         Arc::new(Self {
             peer_manager,
             runtime,
-            core: Arc::new(TcpProxyCore::new(cidr_table)),
+            engine: Arc::new(TcpProxyEngine::new(cidr_table)),
             mode,
             peer_pipeline_guard: std::sync::Mutex::new(None),
             nic_pipeline_guard: std::sync::Mutex::new(None),
@@ -60,8 +60,8 @@ impl<R: TcpProxyRuntime + 'static> TcpProxyService<R> {
         })
     }
 
-    pub fn core(&self) -> Arc<TcpProxyCore> {
-        self.core.clone()
+    pub fn engine(&self) -> Arc<TcpProxyEngine> {
+        self.engine.clone()
     }
 
     pub async fn start(self: &Arc<Self>, register_pipeline: bool) -> Result<(), ProxyRuntimeError> {
@@ -154,7 +154,7 @@ impl<R: TcpProxyRuntime + 'static> TcpProxyService<R> {
                 let Some(service) = service.upgrade() else {
                     break;
                 };
-                service.core.cleanup_expired_syn(Duration::from_secs(30));
+                service.engine.cleanup_expired_syn(Duration::from_secs(30));
                 service.drain_completed_tasks();
             }
         });
@@ -172,7 +172,7 @@ impl<R: TcpProxyRuntime + 'static> TcpProxyService<R> {
     async fn start_kernel_listener(self: &Arc<Self>) -> Result<(), ProxyRuntimeError> {
         let listener: Arc<dyn TcpProxyKernelListener> =
             Arc::from(self.runtime.bind_kernel_listener().await?);
-        self.core.set_local_port(listener.local_port());
+        self.engine.set_local_port(listener.local_port());
         self.kernel_listener
             .lock()
             .unwrap()
@@ -208,7 +208,7 @@ impl<R: TcpProxyRuntime + 'static> TcpProxyService<R> {
             .map(|inet| inet.address())
             .unwrap_or(std::net::Ipv4Addr::new(192, 88, 99, 254));
         let stack = SmolTcpStack::new(local_ip).await?;
-        self.core.set_local_port(stack.local_port());
+        self.engine.set_local_port(stack.local_port());
 
         let mut output_rx = stack.take_output_rx().await?;
         let peer_manager = self.peer_manager.clone();
@@ -257,7 +257,7 @@ impl<R: TcpProxyRuntime + 'static> TcpProxyService<R> {
     ) {
         let snapshot = self.runtime.proxy_runtime_snapshot();
         let Some(entry) = self
-            .core
+            .engine
             .accept_connection(socket_addr, snapshot.local_inet)
         else {
             tracing::error!(
@@ -290,7 +290,7 @@ impl<R: TcpProxyRuntime + 'static> TcpProxyService<R> {
                 entry.real_dst().port()
             );
             entry.set_state(TcpNatEntryState::Closed);
-            service.core.remove_entry(entry.id());
+            service.engine.remove_entry(entry.id());
             return;
         }
 
@@ -303,7 +303,7 @@ impl<R: TcpProxyRuntime + 'static> TcpProxyService<R> {
         let Ok(mut dst_stream) = service.runtime.connect_dst(ctx).await else {
             tracing::error!("connect to dst failed: {:?}", entry);
             entry.set_state(TcpNatEntryState::Closed);
-            service.core.remove_entry(entry.id());
+            service.engine.remove_entry(entry.id());
             return;
         };
 
@@ -331,18 +331,18 @@ impl<R: TcpProxyRuntime + 'static> TcpProxyService<R> {
 
         entry.set_state(TcpNatEntryState::Closed);
         tokio::time::sleep(Duration::from_secs(10)).await;
-        service.core.remove_entry(entry.id());
+        service.engine.remove_entry(entry.id());
     }
 
     async fn handle_peer_packet(self: Arc<Self>, mut packet: ZCPacket) -> Option<ZCPacket> {
         let snapshot = self.runtime.proxy_runtime_snapshot();
-        let action = self.core.try_handle_peer_packet(
+        let action = self.engine.try_handle_peer_packet(
             self.mode,
             &mut packet,
             TcpProxyPeerContext {
                 local_inet: snapshot.local_inet,
                 virtual_ipv4: snapshot.virtual_ipv4,
-                local_port: self.core.local_port(),
+                local_port: self.engine.local_port(),
                 enable_exit_node: snapshot.enable_exit_node,
                 no_tun: snapshot.no_tun,
                 smoltcp_enabled: snapshot.smoltcp_enabled,
@@ -382,11 +382,11 @@ impl<R: TcpProxyRuntime + 'static> TcpProxyService<R> {
 
     async fn handle_nic_packet(&self, packet: &mut ZCPacket) -> bool {
         let snapshot = self.runtime.proxy_runtime_snapshot();
-        self.core.try_process_packet_from_nic(
+        self.engine.try_process_packet_from_nic(
             packet,
             TcpProxyNicContext {
                 local_inet: snapshot.local_inet,
-                local_port: self.core.local_port(),
+                local_port: self.engine.local_port(),
                 my_peer_id: self.peer_manager.my_peer_id(),
                 smoltcp_enabled: snapshot.smoltcp_enabled,
             },

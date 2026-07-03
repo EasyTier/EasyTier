@@ -131,7 +131,7 @@ pub enum TcpProxyPacketAction {
 }
 
 #[derive(Debug)]
-pub struct TcpProxyCore {
+pub struct TcpProxyEngine {
     cidr_table: Arc<ProxyCidrTable>,
     local_port: AtomicU16,
     syn_map: DashMap<SocketAddr, Arc<TcpNatEntry>>,
@@ -139,7 +139,7 @@ pub struct TcpProxyCore {
     addr_conn_map: DashMap<SocketAddr, Arc<TcpNatEntry>>,
 }
 
-impl TcpProxyCore {
+impl TcpProxyEngine {
     pub fn new(cidr_table: Arc<ProxyCidrTable>) -> Self {
         Self {
             cidr_table,
@@ -483,8 +483,8 @@ mod tests {
         packet
     }
 
-    fn tcp_core() -> TcpProxyCore {
-        TcpProxyCore::new(Arc::new(ProxyCidrTable::from_snapshot(ProxyCidrSnapshot {
+    fn tcp_engine() -> TcpProxyEngine {
+        TcpProxyEngine::new(Arc::new(ProxyCidrTable::from_snapshot(ProxyCidrSnapshot {
             rules: vec![ProxyCidrRule {
                 cidr: "127.0.0.0/24".parse().unwrap(),
                 mapped_cidr: Some("10.10.10.0/24".parse().unwrap()),
@@ -505,13 +505,13 @@ mod tests {
 
     #[test]
     fn peer_syn_creates_entry_and_rewrites_to_local_stack() {
-        let core = tcp_core();
+        let engine = tcp_engine();
         let src = SocketAddrV4::new("10.144.144.206".parse().unwrap(), 50000);
         let mapped_dst = SocketAddrV4::new("10.10.10.42".parse().unwrap(), 80);
         let mut packet = build_tcp_packet(src, mapped_dst, true, false);
 
         assert_eq!(
-            core.try_handle_peer_packet(TcpProxyMode::Tcp, &mut packet, peer_ctx()),
+            engine.try_handle_peer_packet(TcpProxyMode::Tcp, &mut packet, peer_ctx()),
             TcpProxyPacketAction::Handled { new_syn: true }
         );
 
@@ -525,7 +525,7 @@ mod tests {
         assert_eq!(tcp.src_port(), src.port());
         assert_eq!(tcp.dst_port(), 8899);
 
-        let entries = core.list_entries();
+        let entries = engine.list_entries();
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].src, SocketAddr::V4(src));
         assert_eq!(
@@ -537,15 +537,15 @@ mod tests {
 
     #[test]
     fn nic_response_rewrites_back_to_mapped_destination() {
-        let core = tcp_core();
+        let engine = tcp_engine();
         let src = SocketAddrV4::new("10.144.144.206".parse().unwrap(), 50000);
         let mapped_dst = SocketAddrV4::new("10.10.10.42".parse().unwrap(), 80);
         let mut request = build_tcp_packet(src, mapped_dst, true, false);
         assert!(matches!(
-            core.try_handle_peer_packet(TcpProxyMode::Tcp, &mut request, peer_ctx()),
+            engine.try_handle_peer_packet(TcpProxyMode::Tcp, &mut request, peer_ctx()),
             TcpProxyPacketAction::Handled { new_syn: true }
         ));
-        let entry = core
+        let entry = engine
             .accept_connection(
                 SocketAddr::V4(src),
                 Some("10.144.144.204/24".parse().unwrap()),
@@ -555,7 +555,7 @@ mod tests {
 
         let local = SocketAddrV4::new("10.144.144.204".parse().unwrap(), 8899);
         let mut response = build_tcp_packet(local, src, false, true);
-        assert!(core.try_process_packet_from_nic(
+        assert!(engine.try_process_packet_from_nic(
             &mut response,
             TcpProxyNicContext {
                 local_inet: Some("10.144.144.204/24".parse().unwrap()),
@@ -577,26 +577,27 @@ mod tests {
 
     #[test]
     fn accept_connection_does_not_resurrect_closed_syn_entry() {
-        let core = tcp_core();
+        let engine = tcp_engine();
         let src = SocketAddrV4::new("10.144.144.206".parse().unwrap(), 50000);
         let mapped_dst = SocketAddrV4::new("10.10.10.42".parse().unwrap(), 80);
         let mut request = build_tcp_packet(src, mapped_dst, true, false);
         assert!(matches!(
-            core.try_handle_peer_packet(TcpProxyMode::Tcp, &mut request, peer_ctx()),
+            engine.try_handle_peer_packet(TcpProxyMode::Tcp, &mut request, peer_ctx()),
             TcpProxyPacketAction::Handled { new_syn: true }
         ));
-        let entry = core.syn_map.get(&SocketAddr::V4(src)).unwrap().clone();
+        let entry = engine.syn_map.get(&SocketAddr::V4(src)).unwrap().clone();
         entry.set_state(TcpNatEntryState::Closed);
 
         assert!(
-            core.accept_connection(
-                SocketAddr::V4(src),
-                Some("10.144.144.204/24".parse().unwrap()),
-            )
-            .is_none()
+            engine
+                .accept_connection(
+                    SocketAddr::V4(src),
+                    Some("10.144.144.204/24".parse().unwrap()),
+                )
+                .is_none()
         );
-        assert!(core.syn_map.get(&SocketAddr::V4(src)).is_none());
-        assert!(core.addr_conn_map.get(&SocketAddr::V4(src)).is_none());
-        assert!(core.conn_map.is_empty());
+        assert!(engine.syn_map.get(&SocketAddr::V4(src)).is_none());
+        assert!(engine.addr_conn_map.get(&SocketAddr::V4(src)).is_none());
+        assert!(engine.conn_map.is_empty());
     }
 }

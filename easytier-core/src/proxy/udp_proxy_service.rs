@@ -14,12 +14,12 @@ use crate::peers::peer_manager::{PeerManagerCore, PipelineRegistrationGuard};
 
 use super::cidr_table::ProxyCidrTable;
 use super::runtime::{UdpProxyResponseSink, UdpProxyRuntime};
-use super::udp_proxy::{UdpNatEntryId, UdpProxyAction, UdpProxyCore, UdpProxyPeerContext};
+use super::udp_proxy_engine::{UdpNatEntryId, UdpProxyAction, UdpProxyEngine, UdpProxyPeerContext};
 
 pub struct UdpProxyService<R: UdpProxyRuntime + 'static> {
     peer_manager: Arc<PeerManagerCore>,
     runtime: Arc<R>,
-    core: Arc<UdpProxyCore>,
+    engine: Arc<UdpProxyEngine>,
     response_tx: Sender<ZCPacket>,
     response_rx: std::sync::Mutex<Option<Receiver<ZCPacket>>>,
     pipeline_guard: std::sync::Mutex<Option<PipelineRegistrationGuard>>,
@@ -38,7 +38,7 @@ impl<R: UdpProxyRuntime + 'static> UdpProxyService<R> {
         Arc::new(Self {
             peer_manager,
             runtime,
-            core: Arc::new(UdpProxyCore::new(cidr_table, fragment_timeout)),
+            engine: Arc::new(UdpProxyEngine::new(cidr_table, fragment_timeout)),
             response_tx,
             response_rx: std::sync::Mutex::new(Some(response_rx)),
             pipeline_guard: std::sync::Mutex::new(None),
@@ -47,8 +47,8 @@ impl<R: UdpProxyRuntime + 'static> UdpProxyService<R> {
         })
     }
 
-    pub fn core(&self) -> Arc<UdpProxyCore> {
-        self.core.clone()
+    pub fn engine(&self) -> Arc<UdpProxyEngine> {
+        self.engine.clone()
     }
 
     pub async fn start(self: &Arc<Self>) {
@@ -96,7 +96,7 @@ impl<R: UdpProxyRuntime + 'static> UdpProxyService<R> {
                 let Some(service) = service.upgrade() else {
                     break;
                 };
-                for entry_id in service.core.remove_expired_entries() {
+                for entry_id in service.engine.remove_expired_entries() {
                     service.runtime.close_udp_socket(entry_id);
                 }
             }
@@ -109,7 +109,7 @@ impl<R: UdpProxyRuntime + 'static> UdpProxyService<R> {
                 let Some(service) = service.upgrade() else {
                     break;
                 };
-                service.core.remove_expired_fragments();
+                service.engine.remove_expired_fragments();
             }
         });
     }
@@ -122,15 +122,15 @@ impl<R: UdpProxyRuntime + 'static> UdpProxyService<R> {
             guard.close();
         }
         self.tasks.lock().unwrap().abort_all();
-        for entry_id in self.core.entry_ids() {
-            self.core.remove_entry(entry_id);
+        for entry_id in self.engine.entry_ids() {
+            self.engine.remove_entry(entry_id);
             self.runtime.close_udp_socket(entry_id);
         }
     }
 
     async fn handle_peer_packet(self: Arc<Self>, packet: ZCPacket) -> Option<ZCPacket> {
         let snapshot = self.runtime.proxy_runtime_snapshot();
-        let action = self.core.handle_peer_packet(
+        let action = self.engine.handle_peer_packet(
             &packet,
             UdpProxyPeerContext {
                 virtual_ipv4: snapshot.virtual_ipv4,
@@ -156,7 +156,7 @@ impl<R: UdpProxyRuntime + 'static> UdpProxyService<R> {
             .await
         {
             tracing::error!(?err, ?entry_id, "udp proxy runtime send failed");
-            self.core.remove_entry(entry_id);
+            self.engine.remove_entry(entry_id);
             self.runtime.close_udp_socket(entry_id);
         }
 
@@ -178,7 +178,7 @@ impl<R: UdpProxyRuntime + 'static> UdpProxyResponseSink for UdpProxyService<R> {
         src: std::net::SocketAddr,
         payload: Bytes,
     ) {
-        let packets = match self.core.handle_socket_response(
+        let packets = match self.engine.handle_socket_response(
             entry_id,
             src,
             payload.as_ref(),
@@ -187,7 +187,7 @@ impl<R: UdpProxyRuntime + 'static> UdpProxyResponseSink for UdpProxyService<R> {
             Ok(packets) => packets,
             Err(err) => {
                 tracing::error!(?err, ?entry_id, "compose udp response packet failed");
-                self.core.remove_entry(entry_id);
+                self.engine.remove_entry(entry_id);
                 self.runtime.close_udp_socket(entry_id);
                 return;
             }

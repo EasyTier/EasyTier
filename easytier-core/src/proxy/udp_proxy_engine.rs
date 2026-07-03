@@ -134,7 +134,7 @@ pub enum UdpProxyAction {
 }
 
 #[derive(Debug)]
-pub struct UdpProxyCore {
+pub struct UdpProxyEngine {
     cidr_table: Arc<ProxyCidrTable>,
     nat_table: DashMap<UdpNatKey, Arc<UdpNatEntry>>,
     nat_ids: DashMap<UdpNatEntryId, UdpNatKey>,
@@ -143,7 +143,7 @@ pub struct UdpProxyCore {
     next_ip_id: AtomicU16,
 }
 
-impl UdpProxyCore {
+impl UdpProxyEngine {
     pub fn new(cidr_table: Arc<ProxyCidrTable>, fragment_timeout: Duration) -> Self {
         Self {
             cidr_table,
@@ -403,13 +403,18 @@ fn compose_udp_ipv4_response(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::proxy::cidr_table::{ProxyCidrRule, ProxyCidrSnapshot};
+    use crate::proxy::{
+        cidr_table::{ProxyCidrRule, ProxyCidrSnapshot},
+        runtime::{
+            ProxyRuntimeError, ProxyRuntimeInfo, ProxyRuntimeSnapshot, UdpProxyResponseSink,
+        },
+    };
 
     struct TestRuntime;
 
-    impl super::runtime::ProxyRuntimeInfo for TestRuntime {
-        fn proxy_runtime_snapshot(&self) -> super::runtime::ProxyRuntimeSnapshot {
-            super::runtime::ProxyRuntimeSnapshot::default()
+    impl ProxyRuntimeInfo for TestRuntime {
+        fn proxy_runtime_snapshot(&self) -> ProxyRuntimeSnapshot {
+            ProxyRuntimeSnapshot::default()
         }
 
         fn is_ip_local_virtual_ip(&self, ip: &IpAddr) -> bool {
@@ -417,6 +422,7 @@ mod tests {
         }
     }
 
+    #[async_trait::async_trait]
     impl UdpProxyRuntime for TestRuntime {
         fn should_deny_udp_proxy(&self, _dst_socket: SocketAddr) -> bool {
             false
@@ -431,8 +437,8 @@ mod tests {
             _entry_id: UdpNatEntryId,
             _dst: SocketAddr,
             _payload: bytes::Bytes,
-            _response_sink: std::sync::Weak<dyn super::runtime::UdpProxyResponseSink>,
-        ) -> Result<(), super::runtime::ProxyRuntimeError> {
+            _response_sink: std::sync::Weak<dyn UdpProxyResponseSink>,
+        ) -> Result<(), ProxyRuntimeError> {
             Ok(())
         }
 
@@ -447,7 +453,7 @@ mod tests {
                 mapped_cidr: Some("10.10.10.3/32".parse().unwrap()),
             }],
         }));
-        let core = UdpProxyCore::new(table, Duration::from_secs(10));
+        let engine = UdpProxyEngine::new(table, Duration::from_secs(10));
 
         let mut request =
             vec![0; smoltcp::wire::IPV4_HEADER_LEN + smoltcp::wire::UDP_HEADER_LEN + 7];
@@ -479,7 +485,7 @@ mod tests {
         let mut zc = ZCPacket::new_with_payload(&request);
         zc.fill_peer_manager_hdr(1, 2, PacketType::Data as u8);
 
-        let action = core.handle_peer_packet(
+        let action = engine.handle_peer_packet(
             &zc,
             UdpProxyPeerContext {
                 virtual_ipv4: Some("10.144.144.204".parse().unwrap()),
@@ -492,7 +498,7 @@ mod tests {
             panic!("expected forward action");
         };
 
-        let packets = core
+        let packets = engine
             .handle_socket_response(entry_id, "127.0.0.1:12345".parse().unwrap(), b"reply", 1280)
             .unwrap();
         assert_eq!(packets.len(), 1);
