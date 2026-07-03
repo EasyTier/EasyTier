@@ -333,6 +333,10 @@ impl PeerContext for GlobalCtx {
         GlobalCtx::update_trusted_keys(self, keys, network_name);
     }
 
+    fn remove_trusted_keys(&self, network_name: &str) {
+        GlobalCtx::remove_trusted_keys(self, network_name);
+    }
+
     fn record_control_tx(&self, network_name: &str, bytes: u64) {
         self.record_control_metric(
             network_name,

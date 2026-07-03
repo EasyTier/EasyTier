@@ -61,4 +61,5 @@ chacha20poly1305 = { version = "0.10.1", optional = true }
 default = []
 aes-gcm = ["dep:aes-gcm"]
 chacha20 = ["dep:chacha20poly1305"]
+test-utils = []
 zstd = ["dep:zstd"]

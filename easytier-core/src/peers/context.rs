@@ -397,6 +397,8 @@ pub trait PeerContext: Send + Sync {
 
     fn update_trusted_keys(&self, _keys: TrustedKeyMap, _network_name: &str) {}
 
+    fn remove_trusted_keys(&self, _network_name: &str) {}
+
     fn record_control_tx(&self, _network_name: &str, _bytes: u64) {}
 
     fn record_control_rx(&self, _network_name: &str, _bytes: u64) {}
