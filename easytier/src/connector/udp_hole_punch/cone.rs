@@ -1,19 +1,10 @@
-use std::{sync::Arc, time::Duration};
+use std::sync::Arc;
 
-use anyhow::Context;
-use quanta::Instant;
-use tokio::net::UdpSocket;
-use tokio_util::task::AbortOnDropHandle;
-
-use easytier_core::hole_punch::udp::{
-    SelectPunchListener, SendPunchPacketCone, UdpHolePunchSignaling,
-};
+use easytier_core::hole_punch::udp::{UdpHolePunchClientError, punch_cone_to_cone};
 
 use crate::{
-    common::{PeerId, upnp},
-    connector::udp_hole_punch::common::{
-        HOLE_PUNCH_PACKET_BODY_LEN, RuntimeUdpPunchSocket, UdpSocketArray, try_connect_with_socket,
-    },
+    common::PeerId,
+    connector::udp_hole_punch::common::{RuntimeUdpHolePunchRuntime, RuntimeUdpPunchSocket},
     connector::udp_hole_punch::{handle_signal_result, signaling::PeerRpcUdpHolePunchSignaling},
     peers::peer_manager::PeerManager,
     proto::{
@@ -21,7 +12,7 @@ use crate::{
         peer_rpc::SendPunchPacketConeRequest,
         rpc_types::{self, controller::BaseController},
     },
-    tunnel::{Tunnel, udp::new_hole_punch_packet},
+    tunnel::Tunnel,
 };
 
 use super::common::PunchHoleServerCommon;
@@ -103,123 +94,21 @@ impl PunchConeHoleClient {
             return Ok(None);
         }
 
-        tracing::info!(?dst_peer_id, "start hole punching");
-        let tid = rand::random();
-
-        let global_ctx = self.peer_mgr.get_global_ctx();
-        let udp_array = UdpSocketArray::new(1, global_ctx.net_ns.clone());
-
-        let resp = self
-            .signaling
-            .select_punch_listener(
-                dst_peer_id,
-                SelectPunchListener {
-                    force_new: false,
-                    prefer_port_mapping: true,
-                },
-            )
-            .await;
-
-        let resp = handle_signal_result(resp, dst_peer_id, &self.blacklist)?;
-        let remote_mapped_addr = resp.listener_mapped_addr;
-
-        let local_socket = {
-            let _g = self.peer_mgr.get_global_ctx().net_ns.guard();
-            Arc::new(UdpSocket::bind("0.0.0.0:0").await?)
-        };
-        let local_addr = local_socket
-            .local_addr()
-            .with_context(|| "failed to get local addr from udp punch socket")?;
-        let local_listener: url::Url = format!("udp://0.0.0.0:{}", local_addr.port())
-            .parse()
-            .unwrap();
-        let (local_mapped_addr, _local_port_mapping_lease) = upnp::resolve_udp_public_addr(
-            global_ctx.clone(),
-            &local_listener,
-            local_socket.clone(),
-        )
-        .await
-        .with_context(|| "failed to resolve udp public addr for cone hole punch")?;
-
-        tracing::debug!(
-            ?local_mapped_addr,
-            ?remote_mapped_addr,
-            "hole punch got remote listener"
-        );
-
-        udp_array.add_new_socket(local_socket).await?;
-        udp_array.add_intreast_tid(tid);
-        let send_from_local = || async {
-            udp_array
-                .send_with_all(
-                    &new_hole_punch_packet(tid, HOLE_PUNCH_PACKET_BODY_LEN).into_bytes(),
-                    remote_mapped_addr,
+        let runtime = Arc::new(RuntimeUdpHolePunchRuntime::new(
+            self.peer_mgr.get_global_ctx(),
+        ));
+        let signaling = Arc::new(self.signaling.clone());
+        match punch_cone_to_cone(runtime, signaling, dst_peer_id).await {
+            Ok(ret) => Ok(ret),
+            Err(UdpHolePunchClientError::Signaling(err)) => {
+                Err(
+                    handle_signal_result::<()>(Err(err), dst_peer_id, &self.blacklist)
+                        .unwrap_err()
+                        .into(),
                 )
-                .await
-                .with_context(|| "failed to send hole punch packet from local")
-        };
-
-        send_from_local().await?;
-
-        let signaling = self.signaling.clone();
-        let punch_task = AbortOnDropHandle::new(tokio::spawn(async move {
-            if let Err(e) = signaling
-                .send_punch_packet_cone(
-                    dst_peer_id,
-                    SendPunchPacketCone {
-                        listener_mapped_addr: remote_mapped_addr,
-                        dest_addr: local_mapped_addr,
-                        transaction_id: tid,
-                        packet_count_per_batch: 2,
-                        packet_batch_count: 5,
-                        packet_interval_ms: 400,
-                    },
-                )
-                .await
-            {
-                tracing::error!(?e, "failed to call remote send punch packet");
             }
-        }));
-
-        // server: will send some punching resps, total 10 packets.
-        // client: use the socket to create UdpTunnel with UdpTunnelConnector
-        // NOTICE: UdpTunnelConnector will ignore the punching resp packet sent by remote.
-        let mut finish_time: Option<Instant> = None;
-        while finish_time.is_none() || finish_time.as_ref().unwrap().elapsed().as_millis() < 1000 {
-            tokio::time::sleep(Duration::from_millis(200)).await;
-
-            if finish_time.is_none() && punch_task.is_finished() {
-                finish_time = Some(Instant::now());
-            }
-
-            let Some(socket) = udp_array.try_fetch_punched_socket(tid) else {
-                tracing::debug!("no punched socket found, send some more hole punch packets");
-                send_from_local().await?;
-                continue;
-            };
-
-            tracing::debug!(?socket, ?tid, "punched socket found, try connect with it");
-
-            for _ in 0..2 {
-                match try_connect_with_socket(
-                    global_ctx.clone(),
-                    socket.socket.clone(),
-                    remote_mapped_addr,
-                )
-                .await
-                {
-                    Ok(tunnel) => {
-                        tracing::info!(?tunnel, "hole punched");
-                        return Ok(Some(tunnel));
-                    }
-                    Err(e) => {
-                        tracing::error!(?e, "failed to connect with socket");
-                    }
-                }
-            }
+            Err(err) => Err(err.into()),
         }
-
-        Ok(None)
     }
 }
 

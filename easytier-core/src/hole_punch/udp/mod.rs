@@ -1,3 +1,4 @@
+mod client;
 mod common;
 mod listener;
 mod model;
@@ -8,6 +9,7 @@ mod server;
 mod socket_array;
 mod task;
 
+pub use client::{UdpHolePunchClientError, UdpHolePunchClientResult, punch_cone_to_cone};
 pub use common::{BLACKLIST_TIMEOUT_SEC, BackOff, UdpNatType, UdpPunchClientMethod};
 pub use listener::{
     MAX_PUBLIC_UDP_HOLE_PUNCH_LISTENERS, ReusableUdpPunchListener, can_reuse_port_mapping_listener,
