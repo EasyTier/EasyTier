@@ -304,6 +304,104 @@ udp://
 7. 完成 connector socket 化后，再单独评估 UDP protocol v2 的 magic/version
    升级，不混入本阶段重构。
 
+## 当前实现状态
+
+已经完成的部分：
+
+- UDP packet helper 已移动到 `easytier-core::socket::udp`，wire shape 未改变。
+- core 已有 `VirtualUdpSocket`、`UdpSessionSocket`、`UdpSessionKind`、direct
+  session wrapper 和 EasyTier mux session layer。
+- `EasyTierUdpSessionLayer` 已接管 connector 侧的 `conn_id` 生成、`Syn`
+  发送/重发、`Sack` 校验、`HolePunch` 唤醒和 Data demux。
+- `UdpTunnelConnector` 已改为通过 `EasyTierUdpSessionLayer::connect` 获取
+  `UdpSessionSocket`，再由临时 compatibility bridge 升级成现有 ring-backed
+  UDP tunnel。
+- `RuntimeUdpSocket` 已成为 easytier runtime 侧共享的
+  `tokio::net::UdpSocket` adapter，hole-punch runtime 不再保留重复
+  `VirtualUdpSocket` implementation。
+
+仍待完成的部分：
+
+- `UdpTunnelListener` 仍在 `easytier/src/tunnel/udp.rs` 中维护自己的
+  `UdpConnection`、`sock_map`、raw recv loop、`Syn` / `Sack` accept path、
+  STUN response 和 hole-punch dispatch。
+- listener 侧必须迁移到 `EasyTierUdpSessionLayer::accept`，让 core 成为真实
+  UDP socket 唯一 recv owner。
+- `wg` / `quic` / `udp` upgrader 仍需要改为消费 `UdpSessionSocket`，当前
+  `udp://` 仍通过 compatibility bridge 产出旧 `Tunnel`。
+
+## Listener 迁移方案
+
+下一阶段迁移 `UdpTunnelListener`，目标是删除 easytier crate 中 listener 侧的
+重复 EasyTier UDP session logic。
+
+### Core 层补齐 listener 所需能力
+
+`EasyTierUdpSessionLayer` 已经能够识别 `Syn`、发送 `Sack`、维护 session map、
+投递 Data，并把 STUN / V4 hole-punch / V6 hole-punch 分类为
+`UdpSessionLayerControl`。listener 迁移前需要补齐两个只读/控制能力：
+
+- 暴露 active mux session count，供旧 `TunnelConnCounter` compatibility wrapper
+  使用。
+- 明确 control packet 的处理边界。STUN 和 hole-punch classification 属于 core
+  UDP session layer；涉及 runtime 平台能力的实际发包可以通过
+  `VirtualUdpSocket` hook 或 core control handler 调用 runtime adapter 完成。
+  v6 hole-punch 的 preferred source/ifindex 不能泄漏回 connector。
+
+### easytier crate listener compatibility bridge
+
+迁移后的 `UdpTunnelListener::listen()`：
+
+```text
+UdpTunnelListener::listen()
+  -> bind or reuse tokio UdpSocket
+  -> RuntimeUdpSocket
+  -> EasyTierUdpSessionLayer
+  -> spawn accept loop
+  -> spawn control loop if runtime-specific control handling is still external
+```
+
+accept loop：
+
+```text
+EasyTierUdpSessionLayer::accept()
+  -> UdpSessionSocket
+  -> bridge UdpSessionSocket <-> RingSocket
+  -> TunnelWrapper
+  -> legacy TunnelListener::accept()
+```
+
+这个 bridge 是 compatibility code，只为了让当前 `TunnelListener` interface 继续
+工作。它不能重新实现 `conn_id`、`Syn` / `Sack` 或 socket recv demux。
+
+control loop：
+
+```text
+EasyTierUdpSessionLayer::recv_control()
+  -> STUN response / V4 hole punch / V6 hole punch handling
+```
+
+如果 control handling 暂时还在 easytier crate，必须只消费 core 已分类的
+`UdpSessionLayerControl`，不能读取 raw datagram 或解析 EasyTier UDP header。
+最终目标仍是把 STUN 和 hole-punch 发包策略下沉到 core/runtime adapter seam。
+
+### 删除的 easytier crate 代码
+
+listener 迁移完成后，`easytier/src/tunnel/udp.rs` 中这些结构应删除：
+
+- `UdpConnection`
+- `forward_from_ring_to_udp`
+- `udp_recv_from_socket_forward_task`
+- `UdpTunnelListenerData::handle_new_connect`
+- `UdpTunnelListenerData::do_forward_one_packet_to_conn`
+- listener-local `sock_map` 和 close-event cleanup path
+
+保留的代码应只包括：
+
+- runtime adapter `RuntimeUdpSocket`
+- `UdpSessionSocket` 与 legacy ring tunnel 的临时 bridge
+- `TunnelListener` compatibility wrapper
+
 ## 当前阶段非目标
 
 - 不修改 EasyTier UDP wire protocol。
