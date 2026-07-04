@@ -163,6 +163,17 @@ EasyTier mux UDP session
 `DirectUdpSessionSocket` / `MuxUdpSessionSocket` 这种不同类型，只返回同一个
 `UdpSessionSocket` Interface。`UdpSessionKind` 只反映来源，不能改变调用语义。
 
+direct session 的最小 implementation 是一个 `UdpSession` wrapper：
+
+```text
+Arc<dyn VirtualUdpSocket> + peer_addr
+  -> UdpSessionSocket(kind = Direct)
+```
+
+它把 `send(payload)` 映射为底层 `send_to(payload, peer_addr)`，并且 `recv()` 只
+返回来自 `peer_addr` 的 payload。底层 `send_to` / `recv_from` 不穿透到
+connector 或 upgrader。
+
 ### UDP session layer 接管底层 socket
 
 core UDP session layer 消费 `VirtualUdpSocket`：

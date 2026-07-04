@@ -137,9 +137,97 @@ pub trait UdpSessionListener: Send {
     async fn accept(&mut self) -> anyhow::Result<Self::Session>;
 }
 
+#[derive(Debug)]
+pub struct UdpSession<S> {
+    socket: Arc<S>,
+    peer_addr: SocketAddr,
+    kind: UdpSessionKind,
+}
+
+impl<S> UdpSession<S>
+where
+    S: VirtualUdpSocket,
+{
+    pub fn direct(socket: Arc<S>, peer_addr: SocketAddr) -> Self {
+        Self {
+            socket,
+            peer_addr,
+            kind: UdpSessionKind::Direct,
+        }
+    }
+}
+
+#[async_trait]
+impl<S> UdpSessionSocket for UdpSession<S>
+where
+    S: VirtualUdpSocket,
+{
+    fn kind(&self) -> UdpSessionKind {
+        self.kind
+    }
+
+    fn local_addr(&self) -> std::io::Result<SocketAddr> {
+        self.socket.local_addr()
+    }
+
+    fn peer_addr(&self) -> std::io::Result<SocketAddr> {
+        Ok(self.peer_addr)
+    }
+
+    async fn send(&self, data: &[u8]) -> std::io::Result<usize> {
+        self.socket.send_to(data, self.peer_addr).await
+    }
+
+    async fn recv(&self, buf: &mut [u8]) -> std::io::Result<usize> {
+        loop {
+            let (len, remote_addr) = self.socket.recv_from(buf).await?;
+            if remote_addr == self.peer_addr {
+                return Ok(len);
+            }
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct UdpSessionDialer<F> {
+    factory: Arc<F>,
+}
+
+impl<F> UdpSessionDialer<F>
+where
+    F: VirtualUdpSocketFactory,
+{
+    pub fn new(factory: Arc<F>) -> Self {
+        Self { factory }
+    }
+}
+
+#[async_trait]
+impl<F> UdpSessionConnector for UdpSessionDialer<F>
+where
+    F: VirtualUdpSocketFactory,
+{
+    type Session = UdpSession<F::Socket>;
+
+    async fn connect(
+        &mut self,
+        request: UdpSessionConnectRequest,
+    ) -> anyhow::Result<Self::Session> {
+        let socket = self.factory.bind_udp(request.bind).await?;
+        Ok(UdpSession::direct(socket, request.remote_addr))
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use std::sync::Mutex;
+    use std::{
+        collections::VecDeque,
+        io,
+        sync::{
+            Mutex,
+            atomic::{AtomicU16, Ordering},
+        },
+    };
 
     use super::*;
 
@@ -320,5 +408,133 @@ mod tests {
             listener.accept().await.unwrap().peer_addr().unwrap(),
             peer_addr
         );
+    }
+
+    struct MockVirtualUdpSocket {
+        local_addr: SocketAddr,
+        incoming: Mutex<VecDeque<(Vec<u8>, SocketAddr)>>,
+        sent: Mutex<Vec<(Vec<u8>, SocketAddr)>>,
+    }
+
+    impl MockVirtualUdpSocket {
+        fn new(local_addr: SocketAddr, incoming: Vec<(Vec<u8>, SocketAddr)>) -> Self {
+            Self {
+                local_addr,
+                incoming: Mutex::new(incoming.into()),
+                sent: Mutex::new(Vec::new()),
+            }
+        }
+
+        fn sent(&self) -> Vec<(Vec<u8>, SocketAddr)> {
+            self.sent.lock().unwrap().clone()
+        }
+    }
+
+    #[async_trait]
+    impl VirtualUdpSocket for MockVirtualUdpSocket {
+        fn local_addr(&self) -> io::Result<SocketAddr> {
+            Ok(self.local_addr)
+        }
+
+        async fn send_to(&self, data: &[u8], addr: SocketAddr) -> io::Result<usize> {
+            self.sent.lock().unwrap().push((data.to_vec(), addr));
+            Ok(data.len())
+        }
+
+        async fn recv_from(&self, buf: &mut [u8]) -> io::Result<(usize, SocketAddr)> {
+            let (data, remote_addr) =
+                self.incoming.lock().unwrap().pop_front().ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::UnexpectedEof, "no incoming datagram")
+                })?;
+            let len = data.len().min(buf.len());
+            buf[..len].copy_from_slice(&data[..len]);
+            Ok((len, remote_addr))
+        }
+    }
+
+    #[tokio::test]
+    async fn direct_udp_session_sends_to_peer_addr() {
+        let local_addr = SocketAddr::from(([127, 0, 0, 1], 12000));
+        let peer_addr = SocketAddr::from(([127, 0, 0, 1], 12001));
+        let socket = Arc::new(MockVirtualUdpSocket::new(local_addr, Vec::new()));
+        let session = UdpSession::direct(socket.clone(), peer_addr);
+
+        assert_eq!(session.kind(), UdpSessionKind::Direct);
+        assert_eq!(session.local_addr().unwrap(), local_addr);
+        assert_eq!(session.peer_addr().unwrap(), peer_addr);
+        assert_eq!(session.send(b"hello").await.unwrap(), 5);
+
+        assert_eq!(socket.sent(), vec![(b"hello".to_vec(), peer_addr)]);
+    }
+
+    #[tokio::test]
+    async fn direct_udp_session_receives_only_from_peer_addr() {
+        let local_addr = SocketAddr::from(([127, 0, 0, 1], 12000));
+        let peer_addr = SocketAddr::from(([127, 0, 0, 1], 12001));
+        let unexpected_addr = SocketAddr::from(([127, 0, 0, 1], 12002));
+        let socket = Arc::new(MockVirtualUdpSocket::new(
+            local_addr,
+            vec![
+                (b"noise".to_vec(), unexpected_addr),
+                (b"payload".to_vec(), peer_addr),
+            ],
+        ));
+        let session = UdpSession::direct(socket, peer_addr);
+
+        let mut buf = [0; 16];
+        let len = session.recv(&mut buf).await.unwrap();
+
+        assert_eq!(&buf[..len], b"payload");
+    }
+
+    struct MockVirtualUdpSocketFactory {
+        next_port: AtomicU16,
+        bind_options: Mutex<Vec<UdpBindOptions>>,
+    }
+
+    impl MockVirtualUdpSocketFactory {
+        fn new(next_port: u16) -> Self {
+            Self {
+                next_port: AtomicU16::new(next_port),
+                bind_options: Mutex::new(Vec::new()),
+            }
+        }
+
+        fn bind_options(&self) -> Vec<UdpBindOptions> {
+            self.bind_options.lock().unwrap().clone()
+        }
+    }
+
+    #[async_trait]
+    impl VirtualUdpSocketFactory for MockVirtualUdpSocketFactory {
+        type Socket = MockVirtualUdpSocket;
+
+        async fn bind_udp(&self, options: UdpBindOptions) -> anyhow::Result<Arc<Self::Socket>> {
+            self.bind_options.lock().unwrap().push(options);
+            let local_addr = options.local_addr.unwrap_or_else(|| {
+                SocketAddr::from((
+                    [127, 0, 0, 1],
+                    self.next_port.fetch_add(1, Ordering::Relaxed),
+                ))
+            });
+            Ok(Arc::new(MockVirtualUdpSocket::new(local_addr, Vec::new())))
+        }
+    }
+
+    #[tokio::test]
+    async fn udp_session_dialer_binds_socket_and_returns_direct_session() {
+        let factory = Arc::new(MockVirtualUdpSocketFactory::new(13000));
+        let mut dialer = UdpSessionDialer::new(factory.clone());
+        let remote_addr = SocketAddr::from(([192, 0, 2, 10], 11010));
+        let bind_addr = SocketAddr::from(([127, 0, 0, 1], 14000));
+        let request = UdpSessionConnectRequest::direct(remote_addr)
+            .with_bind(UdpBindOptions::port_bound_listener(bind_addr));
+
+        let session = dialer.connect(request).await.unwrap();
+
+        assert_eq!(factory.bind_options(), vec![request.bind]);
+        assert_eq!(session.kind(), UdpSessionKind::Direct);
+        assert_eq!(session.local_addr().unwrap(), bind_addr);
+        assert_eq!(session.peer_addr().unwrap(), remote_addr);
     }
 }
