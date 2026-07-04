@@ -10,6 +10,9 @@ mod socket_array;
 mod task;
 
 pub use crate::config::P2pPolicyFlags;
+pub use crate::socket::udp::{
+    UdpBindOptions, UdpSocketPurpose, VirtualUdpSocket, VirtualUdpSocketFactory,
+};
 pub use client::{
     UdpBothEasySymPunchClient, UdpHolePunchClientError, UdpHolePunchClientResult,
     UdpSymToConePunchClient, apply_peer_easy_sym_port_offset, punch_cone_to_cone,
@@ -30,8 +33,7 @@ pub use runtime::{
     SendPunchPacketHardSym, SendPunchPacketHardSymResponse, UdpHolePunchInbound,
     UdpHolePunchPeerSource, UdpHolePunchRuntime, UdpHolePunchSignalError, UdpHolePunchSignaling,
     UdpHolePunchTunnelSink, UdpPortMappingLease, UdpPunchAcceptor, UdpPunchConnCounter,
-    UdpPunchListener, UdpPunchSocket, UdpPunchSocketFactory, UdpResolvedPublicAddr,
-    should_blacklist_signal_error,
+    UdpPunchListener, UdpResolvedPublicAddr, should_blacklist_signal_error,
 };
 pub use server::{
     SelectedUdpPunchListener, UdpBothEasySymPunchServer, UdpHolePunchServer,

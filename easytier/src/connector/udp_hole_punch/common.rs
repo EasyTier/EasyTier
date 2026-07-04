@@ -19,18 +19,18 @@ use crate::{
     },
 };
 
-pub(crate) struct RuntimeUdpPunchSocket {
+pub(crate) struct RuntimeUdpSocket {
     socket: Arc<UdpSocket>,
 }
 
-impl RuntimeUdpPunchSocket {
+impl RuntimeUdpSocket {
     pub(crate) fn new(socket: Arc<UdpSocket>) -> Self {
         Self { socket }
     }
 }
 
 #[async_trait]
-impl core_udp_hole_punch::UdpPunchSocket for RuntimeUdpPunchSocket {
+impl core_udp_hole_punch::VirtualUdpSocket for RuntimeUdpSocket {
     fn local_addr(&self) -> std::io::Result<SocketAddr> {
         self.socket.local_addr()
     }
@@ -95,8 +95,14 @@ impl RuntimeUdpHolePunchRuntime {
         &self,
         with_mapped_addr: bool,
         port: Option<u16>,
-    ) -> anyhow::Result<core_udp_hole_punch::UdpPunchListener<RuntimeUdpPunchSocket>> {
-        let socket = core_udp_hole_punch::UdpHolePunchRuntime::bind_udp(self, port).await?;
+    ) -> anyhow::Result<core_udp_hole_punch::UdpPunchListener<RuntimeUdpSocket>> {
+        let bind_options = match port {
+            Some(port) => core_udp_hole_punch::UdpBindOptions::port_bound_listener(SocketAddr::V4(
+                SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, port),
+            )),
+            None => core_udp_hole_punch::UdpBindOptions::hole_punch_control(),
+        };
+        let socket = core_udp_hole_punch::UdpHolePunchRuntime::bind_udp(self, bind_options).await?;
         let local_port = socket.socket.local_addr()?.port();
         let listen_url: url::Url = format!("udp://0.0.0.0:{local_port}").parse().unwrap();
 
@@ -123,7 +129,7 @@ impl RuntimeUdpHolePunchRuntime {
 
         let socket = listener
             .get_socket()
-            .map(RuntimeUdpPunchSocket::new)
+            .map(RuntimeUdpSocket::new)
             .map(Arc::new)
             .ok_or_else(|| anyhow::anyhow!("udp tunnel listener did not expose socket"))?;
         let conn_counter = Arc::new(RuntimeUdpPunchConnCounter {
@@ -148,24 +154,30 @@ impl RuntimeUdpHolePunchRuntime {
 
 #[async_trait]
 impl core_udp_hole_punch::UdpHolePunchRuntime for RuntimeUdpHolePunchRuntime {
-    type Socket = RuntimeUdpPunchSocket;
+    type Socket = RuntimeUdpSocket;
 
     fn stun_info(&self) -> crate::proto::common::StunInfo {
         self.global_ctx.get_stun_info_collector().get_stun_info()
     }
 
-    async fn bind_udp(&self, port: Option<u16>) -> anyhow::Result<Arc<Self::Socket>> {
+    async fn bind_udp(
+        &self,
+        options: core_udp_hole_punch::UdpBindOptions,
+    ) -> anyhow::Result<Arc<Self::Socket>> {
+        let bind_addr = options
+            .local_addr
+            .unwrap_or_else(|| SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 0)));
         let socket = {
             let _g = self.global_ctx.net_ns.guard();
-            Arc::new(UdpSocket::bind((Ipv4Addr::UNSPECIFIED, port.unwrap_or(0))).await?)
+            Arc::new(UdpSocket::bind(bind_addr).await?)
         };
 
-        Ok(Arc::new(RuntimeUdpPunchSocket::new(socket)))
+        Ok(Arc::new(RuntimeUdpSocket::new(socket)))
     }
 
     async fn bind_direct_connect_udp(&self) -> anyhow::Result<Arc<Self::Socket>> {
         let socket = Arc::new(UdpSocket::bind("0.0.0.0:0").await?);
-        Ok(Arc::new(RuntimeUdpPunchSocket::new(socket)))
+        Ok(Arc::new(RuntimeUdpSocket::new(socket)))
     }
 
     async fn resolve_udp_public_addr(
@@ -397,9 +409,12 @@ mod tests {
     async fn runtime_adapter_can_bind_udp_socket() {
         let runtime = super::RuntimeUdpHolePunchRuntime::new(get_mock_global_ctx());
 
-        let socket = core_udp_hole_punch::UdpHolePunchRuntime::bind_udp(&runtime, None)
-            .await
-            .unwrap();
+        let socket = core_udp_hole_punch::UdpHolePunchRuntime::bind_udp(
+            &runtime,
+            core_udp_hole_punch::UdpBindOptions::hole_punch_control(),
+        )
+        .await
+        .unwrap();
 
         assert_ne!(socket.socket.local_addr().unwrap().port(), 0);
     }

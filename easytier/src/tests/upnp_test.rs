@@ -8,7 +8,7 @@ use std::{
 };
 
 use anyhow::{Context, anyhow, bail};
-use easytier_core::hole_punch::udp::{UdpHolePunchRuntime, UdpPunchSocket};
+use easytier_core::hole_punch::udp::{UdpHolePunchRuntime, VirtualUdpSocket};
 use igd_next::{
     GetGenericPortMappingEntryError, PortMappingEntry, PortMappingProtocol, SearchOptions,
     aio::tokio::search_gateway,

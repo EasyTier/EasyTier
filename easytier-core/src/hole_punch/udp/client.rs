@@ -16,9 +16,9 @@ use crate::{config::PeerId, tunnel::Tunnel};
 
 use super::{
     HOLE_PUNCH_PACKET_BODY_LEN, SelectPunchListener, SendPunchPacketBothEasySym,
-    SendPunchPacketCone, SendPunchPacketEasySym, SendPunchPacketHardSym, UdpHolePunchRuntime,
-    UdpHolePunchSignalError, UdpHolePunchSignaling, UdpNatType, UdpSocketArray,
-    new_hole_punch_packet,
+    SendPunchPacketCone, SendPunchPacketEasySym, SendPunchPacketHardSym, UdpBindOptions,
+    UdpHolePunchRuntime, UdpHolePunchSignalError, UdpHolePunchSignaling, UdpNatType,
+    UdpSocketArray, VirtualUdpSocketFactory, new_hole_punch_packet,
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -71,7 +71,9 @@ where
         .await?;
     let remote_mapped_addr = resp.listener_mapped_addr;
 
-    let local_socket = runtime.bind_udp(None).await?;
+    let local_socket =
+        UdpHolePunchRuntime::bind_udp(runtime.as_ref(), UdpBindOptions::hole_punch_control())
+            .await?;
     let resolved = runtime
         .resolve_udp_public_addr(local_socket.clone())
         .await?;
@@ -151,7 +153,7 @@ async fn send_from_local<R>(
     remote_mapped_addr: SocketAddr,
 ) -> UdpHolePunchClientResult<()>
 where
-    R: super::UdpPunchSocketFactory,
+    R: VirtualUdpSocketFactory,
 {
     udp_array
         .send_with_all(punch_packet, remote_mapped_addr)
@@ -588,6 +590,7 @@ mod tests {
     use super::*;
     use crate::{
         proto::common::{NatType, StunInfo},
+        socket::udp::VirtualUdpSocket,
         tunnel::Tunnel,
     };
 
@@ -596,7 +599,7 @@ mod tests {
     }
 
     #[async_trait]
-    impl super::super::UdpPunchSocket for MockSocket {
+    impl VirtualUdpSocket for MockSocket {
         fn local_addr(&self) -> io::Result<SocketAddr> {
             Ok(self.local_addr)
         }
@@ -614,6 +617,7 @@ mod tests {
         bind_count: AtomicUsize,
         resolve_count: AtomicUsize,
         port_mapping_count: AtomicUsize,
+        bind_options: tokio::sync::Mutex<Vec<UdpBindOptions>>,
     }
 
     impl MockRuntime {
@@ -622,6 +626,7 @@ mod tests {
                 bind_count: AtomicUsize::new(0),
                 resolve_count: AtomicUsize::new(0),
                 port_mapping_count: AtomicUsize::new(0),
+                bind_options: tokio::sync::Mutex::new(Vec::new()),
             }
         }
     }
@@ -637,7 +642,8 @@ mod tests {
             }
         }
 
-        async fn bind_udp(&self, _port: Option<u16>) -> anyhow::Result<Arc<Self::Socket>> {
+        async fn bind_udp(&self, options: UdpBindOptions) -> anyhow::Result<Arc<Self::Socket>> {
+            self.bind_options.lock().await.push(options);
             let bind_idx = self.bind_count.fetch_add(1, Ordering::Relaxed);
             Ok(Arc::new(MockSocket {
                 local_addr: SocketAddr::from(([127, 0, 0, 1], 10000 + bind_idx as u16)),
@@ -744,6 +750,17 @@ mod tests {
         ));
         assert_eq!(runtime.bind_count.load(Ordering::Relaxed), 0);
         assert_eq!(runtime.resolve_count.load(Ordering::Relaxed), 0);
+    }
+
+    #[tokio::test]
+    async fn default_direct_connect_bind_uses_direct_connect_purpose() {
+        let runtime = MockRuntime::new();
+
+        let socket = runtime.bind_direct_connect_udp().await.unwrap();
+
+        assert_eq!(socket.local_addr().unwrap().port(), 10000);
+        let bind_options = runtime.bind_options.lock().await;
+        assert_eq!(bind_options.as_slice(), &[UdpBindOptions::direct_connect()]);
     }
 
     struct RecordingSignaling {

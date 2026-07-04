@@ -9,7 +9,8 @@ use tokio::task::JoinSet;
 use tracing::{Instrument, Level, instrument};
 
 use super::{
-    HOLE_PUNCH_PACKET_BODY_LEN, UdpPunchSocket, UdpPunchSocketFactory, hole_punch_packet_tid,
+    HOLE_PUNCH_PACKET_BODY_LEN, UdpBindOptions, VirtualUdpSocket, VirtualUdpSocketFactory,
+    hole_punch_packet_tid,
 };
 
 pub struct PunchedUdpSocket<S> {
@@ -29,11 +30,11 @@ impl<S> Debug for PunchedUdpSocket<S> {
 
 pub struct UdpSocketArray<R>
 where
-    R: UdpPunchSocketFactory,
+    R: VirtualUdpSocketFactory,
 {
     sockets: Arc<DashMap<SocketAddr, Arc<R::Socket>>>,
     max_socket_count: usize,
-    runtime: Arc<R>,
+    socket_factory: Arc<R>,
     tasks: Arc<Mutex<JoinSet<()>>>,
 
     interest_tids: Arc<DashSet<u32>>,
@@ -42,16 +43,16 @@ where
 
 impl<R> UdpSocketArray<R>
 where
-    R: UdpPunchSocketFactory,
+    R: VirtualUdpSocketFactory,
 {
-    pub fn new(max_socket_count: usize, runtime: Arc<R>) -> Self {
+    pub fn new(max_socket_count: usize, socket_factory: Arc<R>) -> Self {
         let tasks = Arc::new(Mutex::new(JoinSet::new()));
         join_joinset_background(tasks.clone(), "UdpSocketArray");
 
         Self {
             sockets: Arc::new(DashMap::new()),
             max_socket_count,
-            runtime,
+            socket_factory,
             tasks,
 
             interest_tids: Arc::new(DashSet::new()),
@@ -117,7 +118,10 @@ where
         tracing::info!("starting udp socket array");
 
         while self.sockets.len() < self.max_socket_count {
-            let socket = self.runtime.bind_udp(None).await?;
+            let socket = self
+                .socket_factory
+                .bind_udp(UdpBindOptions::hole_punch_candidate())
+                .await?;
             self.add_new_socket(socket).await?;
         }
 
@@ -169,7 +173,7 @@ where
 
 impl<R> Debug for UdpSocketArray<R>
 where
-    R: UdpPunchSocketFactory,
+    R: VirtualUdpSocketFactory,
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("UdpSocketArray")
@@ -268,7 +272,7 @@ mod tests {
     }
 
     #[async_trait]
-    impl UdpPunchSocket for MockSocket {
+    impl VirtualUdpSocket for MockSocket {
         fn local_addr(&self) -> io::Result<SocketAddr> {
             Ok(self.local_addr)
         }
@@ -290,21 +294,24 @@ mod tests {
 
     struct MockFactory {
         next_port: AtomicU16,
+        bind_options: TokioMutex<Vec<UdpBindOptions>>,
     }
 
     impl MockFactory {
         fn new() -> Self {
             Self {
                 next_port: AtomicU16::new(10000),
+                bind_options: TokioMutex::new(Vec::new()),
             }
         }
     }
 
     #[async_trait]
-    impl UdpPunchSocketFactory for MockFactory {
+    impl VirtualUdpSocketFactory for MockFactory {
         type Socket = MockSocket;
 
-        async fn bind_udp(&self, _port: Option<u16>) -> anyhow::Result<Arc<Self::Socket>> {
+        async fn bind_udp(&self, options: UdpBindOptions) -> anyhow::Result<Arc<Self::Socket>> {
+            self.bind_options.lock().await.push(options);
             let port = self.next_port.fetch_add(1, Ordering::Relaxed);
             Ok(Arc::new(MockSocket::new(
                 SocketAddr::from(([127, 0, 0, 1], port)),
@@ -367,11 +374,20 @@ mod tests {
     #[tokio::test]
     async fn start_binds_up_to_max_socket_count() {
         let runtime = Arc::new(MockFactory::new());
-        let array = UdpSocketArray::new(2, runtime);
+        let array = UdpSocketArray::new(2, runtime.clone());
 
         array.start().await.unwrap();
 
         assert!(array.started());
         assert_eq!(array.sockets.len(), 2);
+
+        let bind_options = runtime.bind_options.lock().await;
+        assert_eq!(
+            bind_options.as_slice(),
+            &[
+                UdpBindOptions::hole_punch_candidate(),
+                UdpBindOptions::hole_punch_candidate(),
+            ]
+        );
     }
 }

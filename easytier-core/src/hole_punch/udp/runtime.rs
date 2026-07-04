@@ -5,16 +5,11 @@ use std::{
 
 use async_trait::async_trait;
 
-use crate::{proto::common::StunInfo, tunnel::Tunnel};
-
-#[async_trait]
-pub trait UdpPunchSocket: Send + Sync {
-    fn local_addr(&self) -> std::io::Result<SocketAddr>;
-
-    async fn send_to(&self, data: &[u8], addr: SocketAddr) -> std::io::Result<usize>;
-
-    async fn recv_from(&self, buf: &mut [u8]) -> std::io::Result<(usize, SocketAddr)>;
-}
+use crate::{
+    proto::common::StunInfo,
+    socket::udp::{UdpBindOptions, VirtualUdpSocket, VirtualUdpSocketFactory},
+    tunnel::Tunnel,
+};
 
 #[async_trait]
 pub trait UdpPunchAcceptor: Send {
@@ -194,34 +189,15 @@ pub trait UdpHolePunchPeerSource: Send + Sync {
 }
 
 #[async_trait]
-pub trait UdpPunchSocketFactory: Send + Sync + 'static {
-    type Socket: UdpPunchSocket + 'static;
-
-    async fn bind_udp(&self, port: Option<u16>) -> anyhow::Result<Arc<Self::Socket>>;
-}
-
-#[async_trait]
-impl<T> UdpPunchSocketFactory for T
-where
-    T: UdpHolePunchRuntime + Send + Sync + 'static,
-{
-    type Socket = T::Socket;
-
-    async fn bind_udp(&self, port: Option<u16>) -> anyhow::Result<Arc<Self::Socket>> {
-        UdpHolePunchRuntime::bind_udp(self, port).await
-    }
-}
-
-#[async_trait]
 pub trait UdpHolePunchRuntime: Send + Sync + 'static {
-    type Socket: UdpPunchSocket + 'static;
+    type Socket: VirtualUdpSocket + 'static;
 
     fn stun_info(&self) -> StunInfo;
 
-    async fn bind_udp(&self, port: Option<u16>) -> anyhow::Result<Arc<Self::Socket>>;
+    async fn bind_udp(&self, options: UdpBindOptions) -> anyhow::Result<Arc<Self::Socket>>;
 
     async fn bind_direct_connect_udp(&self) -> anyhow::Result<Arc<Self::Socket>> {
-        self.bind_udp(None).await
+        UdpHolePunchRuntime::bind_udp(self, UdpBindOptions::direct_connect()).await
     }
 
     async fn resolve_udp_public_addr(
@@ -246,4 +222,16 @@ pub trait UdpHolePunchRuntime: Send + Sync + 'static {
         socket: Arc<Self::Socket>,
         remote: SocketAddr,
     ) -> anyhow::Result<Box<dyn Tunnel>>;
+}
+
+#[async_trait]
+impl<T> VirtualUdpSocketFactory for T
+where
+    T: UdpHolePunchRuntime + Send + Sync + 'static,
+{
+    type Socket = T::Socket;
+
+    async fn bind_udp(&self, options: UdpBindOptions) -> anyhow::Result<Arc<Self::Socket>> {
+        UdpHolePunchRuntime::bind_udp(self, options).await
+    }
 }

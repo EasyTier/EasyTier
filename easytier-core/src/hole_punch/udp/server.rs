@@ -19,7 +19,7 @@ use super::{
     SendPunchPacketBothEasySymResponse, SendPunchPacketCone, SendPunchPacketEasySym,
     SendPunchPacketHardSym, SendPunchPacketHardSymResponse, UdpHolePunchInbound,
     UdpHolePunchRuntime, UdpHolePunchSignalError, UdpHolePunchTunnelSink, UdpPortMappingLease,
-    UdpPunchConnCounter, UdpPunchListener, UdpPunchSocket, UdpSocketArray,
+    UdpPunchConnCounter, UdpPunchListener, UdpSocketArray, VirtualUdpSocket,
     can_reuse_port_mapping_listener, can_reuse_public_listener, get_udp_sym_punch_lock,
     new_hole_punch_packet, select_reusable_port_mapping_listener_idx,
     select_reusable_public_listener_idx, should_create_public_listener,
@@ -432,7 +432,7 @@ struct UdpPunchListenerRecord<S> {
 
 impl<S> UdpPunchListenerRecord<S>
 where
-    S: UdpPunchSocket + 'static,
+    S: VirtualUdpSocket + 'static,
 {
     fn new<T>(listener: UdpPunchListener<S>, tunnel_sink: Arc<T>) -> Self
     where
@@ -519,7 +519,7 @@ fn listener_reuse_states<S>(
     listeners: &[UdpPunchListenerRecord<S>],
 ) -> Vec<ReusableUdpPunchListener>
 where
-    S: UdpPunchSocket + 'static,
+    S: VirtualUdpSocket + 'static,
 {
     listeners
         .iter()
@@ -532,7 +532,7 @@ pub async fn send_cone_hole_punch_packets<S>(
     request: &SendPunchPacketCone,
 ) -> anyhow::Result<()>
 where
-    S: UdpPunchSocket + 'static,
+    S: VirtualUdpSocket + 'static,
 {
     let dest_ip = request.dest_addr.ip();
     if dest_ip.is_unspecified() || dest_ip.is_multicast() {
@@ -571,7 +571,7 @@ pub async fn send_symmetric_hole_punch_packet<S>(
     max_packets: usize,
 ) -> anyhow::Result<usize>
 where
-    S: UdpPunchSocket + 'static,
+    S: VirtualUdpSocket + 'static,
 {
     tracing::debug!("sending hard symmetric hole punching packet");
     let mut sent_packets = 0;
@@ -758,6 +758,7 @@ mod tests {
     use crate::{
         hole_punch::udp::{UdpPunchAcceptor, UdpPunchConnCounter, UdpResolvedPublicAddr},
         proto::common::StunInfo,
+        socket::udp::UdpBindOptions,
         tunnel::{Tunnel, memory::create_memory_tunnel_pair},
     };
 
@@ -768,7 +769,7 @@ mod tests {
     }
 
     #[async_trait]
-    impl UdpPunchSocket for MockSocket {
+    impl VirtualUdpSocket for MockSocket {
         fn local_addr(&self) -> io::Result<SocketAddr> {
             Ok(self.local_addr)
         }
@@ -832,7 +833,7 @@ mod tests {
             StunInfo::default()
         }
 
-        async fn bind_udp(&self, _port: Option<u16>) -> anyhow::Result<Arc<Self::Socket>> {
+        async fn bind_udp(&self, _options: UdpBindOptions) -> anyhow::Result<Arc<Self::Socket>> {
             Ok(Arc::new(MockSocket {
                 local_addr: SocketAddr::from(([127, 0, 0, 1], 0)),
                 sent: tokio::sync::Mutex::new(Vec::new()),
