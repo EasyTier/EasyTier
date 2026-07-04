@@ -15,34 +15,9 @@ use crate::{
     proto::common::NatType,
     tunnel::{
         Tunnel, TunnelConnCounter, TunnelListener as _,
-        udp::{UdpTunnelConnector, UdpTunnelListener},
+        udp::{RuntimeUdpSocket, UdpTunnelConnector, UdpTunnelListener},
     },
 };
-
-pub(crate) struct RuntimeUdpSocket {
-    socket: Arc<UdpSocket>,
-}
-
-impl RuntimeUdpSocket {
-    pub(crate) fn new(socket: Arc<UdpSocket>) -> Self {
-        Self { socket }
-    }
-}
-
-#[async_trait]
-impl core_udp_hole_punch::VirtualUdpSocket for RuntimeUdpSocket {
-    fn local_addr(&self) -> std::io::Result<SocketAddr> {
-        self.socket.local_addr()
-    }
-
-    async fn send_to(&self, data: &[u8], addr: SocketAddr) -> std::io::Result<usize> {
-        self.socket.send_to(data, addr).await
-    }
-
-    async fn recv_from(&self, buf: &mut [u8]) -> std::io::Result<(usize, SocketAddr)> {
-        self.socket.recv_from(buf).await
-    }
-}
 
 #[allow(dead_code)]
 struct RuntimeUdpPunchAcceptor {
@@ -103,16 +78,12 @@ impl RuntimeUdpHolePunchRuntime {
             None => core_udp_hole_punch::UdpBindOptions::hole_punch_control(),
         };
         let socket = core_udp_hole_punch::UdpHolePunchRuntime::bind_udp(self, bind_options).await?;
-        let local_port = socket.socket.local_addr()?.port();
+        let local_port = socket.socket().local_addr()?.port();
         let listen_url: url::Url = format!("udp://0.0.0.0:{local_port}").parse().unwrap();
 
         let (mapped_addr, port_mapping_lease) = if with_mapped_addr {
-            upnp::resolve_udp_public_addr(
-                self.global_ctx.clone(),
-                &listen_url,
-                socket.socket.clone(),
-            )
-            .await?
+            upnp::resolve_udp_public_addr(self.global_ctx.clone(), &listen_url, socket.socket())
+                .await?
         } else {
             (
                 SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, local_port)),
@@ -120,7 +91,7 @@ impl RuntimeUdpHolePunchRuntime {
             )
         };
 
-        let mut listener = UdpTunnelListener::new_with_socket(listen_url, socket.socket.clone());
+        let mut listener = UdpTunnelListener::new_with_socket(listen_url, socket.socket());
 
         {
             let _g = self.global_ctx.net_ns.guard();
@@ -184,14 +155,11 @@ impl core_udp_hole_punch::UdpHolePunchRuntime for RuntimeUdpHolePunchRuntime {
         &self,
         socket: Arc<Self::Socket>,
     ) -> anyhow::Result<core_udp_hole_punch::UdpResolvedPublicAddr> {
-        let local_port = socket.socket.local_addr()?.port();
+        let local_port = socket.socket().local_addr()?.port();
         let listen_url: url::Url = format!("udp://0.0.0.0:{local_port}").parse().unwrap();
-        let (mapped_addr, port_mapping_lease) = upnp::resolve_udp_public_addr(
-            self.global_ctx.clone(),
-            &listen_url,
-            socket.socket.clone(),
-        )
-        .await?;
+        let (mapped_addr, port_mapping_lease) =
+            upnp::resolve_udp_public_addr(self.global_ctx.clone(), &listen_url, socket.socket())
+                .await?;
         let port_mapping_lease = port_mapping_lease.map(|lease| {
             Box::new(RuntimeUdpPortMappingLease {
                 _inner: StdMutex::new(Some(lease)),
@@ -231,7 +199,7 @@ impl core_udp_hole_punch::UdpHolePunchRuntime for RuntimeUdpHolePunchRuntime {
         socket: Arc<Self::Socket>,
         remote: SocketAddr,
     ) -> anyhow::Result<Box<dyn Tunnel>> {
-        try_connect_with_socket(self.global_ctx.clone(), socket.socket.clone(), remote)
+        try_connect_with_socket(self.global_ctx.clone(), socket.socket(), remote)
             .await
             .map_err(anyhow::Error::from)
     }
@@ -416,7 +384,7 @@ mod tests {
         .await
         .unwrap();
 
-        assert_ne!(socket.socket.local_addr().unwrap().port(), 0);
+        assert_ne!(socket.socket().local_addr().unwrap().port(), 0);
     }
 
     #[tokio::test]
@@ -428,7 +396,7 @@ mod tests {
                 .await
                 .unwrap();
 
-        let local_port = listener.socket.socket.local_addr().unwrap().port();
+        let local_port = listener.socket.socket().local_addr().unwrap().port();
         assert_ne!(local_port, 0);
         assert!(listener.mapped_addr.ip().is_unspecified());
         assert_eq!(listener.mapped_addr.port(), local_port);
