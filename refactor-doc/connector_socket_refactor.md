@@ -38,6 +38,8 @@ manual/direct/hole-punch connector
 pub enum ConnectedSocket {
     Tcp(TcpSocket),
     Udp(ConnectedUdpSocket),
+    FakeTcp(FakeTcpSocket),
+    Unix(UnixSocket),
     Ring(RingSocket),
 }
 
@@ -52,47 +54,86 @@ pub struct ConnectedUdpSocket {
 引用，则只能通过保持裸 socket 语义的 thin Interface 或 endpoint 类型表达，
 不能重新包装成 tunnel-like transport。
 
-### SocketConnectPlan 属于 orchestrator
+### SocketDialRequest 属于 core socket 层
 
-`SocketConnectPlan` 是 orchestrator 解析用户 URL、route candidate 或
-hole-punch 结果后得到的连接计划。它不是 connector，也不是 tunnel。它只说明
-如何拿到 socket：
+`SocketDialRequest` 是一次 socket dial 请求。它不是用户 URL，也不是 tunnel
+schema；它说明要 dial 哪一类 socket、目标 endpoint 是域名还是地址、有哪些
+bind candidates，以及创建 socket 时需要应用哪些 socket options。
+
+DNS 解析不在 orchestrator 里提前做完。core 会提供单独的 DNS hook Module，
+runtime 在启动时把 DNS resolver Adapter 注册到 core；connector/dialer 可以接收
+domain，并在执行 `SocketDialRequest` 时通过 core DNS hook 解析。
+
+bind addr 也不是 `Option<SocketAddr>`。每一个 bind addr 都对应一个独立 socket
+attempt，因此 bind candidate 应该提升为 core socket 层的一等概念：
 
 ```rust
-pub enum SocketConnectPlan {
-    Tcp {
-        remote_addr: SocketAddr,
-        bind_addr: Option<SocketAddr>,
-        ip_version: IpVersion,
-    },
-    Udp {
-        remote_addr: SocketAddr,
-        bind_addr: Option<SocketAddr>,
-        ip_version: IpVersion,
-    },
-    Ring {
-        remote_id: RingId,
-    },
+pub struct SocketDialRequest {
+    pub socket_kind: SocketKind,
+    pub remote: RemoteEndpoint,
+    pub binds: Vec<BindEndpoint>,
+    pub options: SocketOptions,
+}
+
+pub enum SocketKind {
+    Tcp,
+    Udp,
+    FakeTcp,
+    Unix,
+    Ring,
+}
+
+pub enum RemoteEndpoint {
+    Domain { host: String, port: u16 },
+    Addr(SocketAddr),
+    Ring(RingId),
+    UnixPath(PathBuf),
+}
+
+pub enum BindEndpoint {
+    Default,
+    Addr(SocketAddr),
+    Device(String),
+    AddrOnDevice { addr: SocketAddr, device: String },
+}
+
+pub struct SocketOptions {
+    pub ip_version: IpVersion,
+    pub socket_mark: Option<u32>,
+    pub netns: Option<NetNamespace>,
 }
 ```
 
-schema 不进入 connector。示例：
+core socket dialer 执行 request 时负责展开 attempts：
 
 ```text
-ws://1.2.3.4:11010
-  -> SocketConnectPlan::Tcp(...)
+RemoteEndpoint::Domain
+  -> core DNS hook
+  -> Vec<SocketAddr>
+
+bind candidates x resolved remote addrs
+  -> independent socket attempts
+  -> first successful ConnectedSocket
+```
+
+orchestrator 只负责从 schema 得出 socket kind 和 upgrader，不把域名提前压成单个
+`SocketAddr`，也不把多个 bind candidates 压成一个 `bind_addr`。示例：
+
+```text
+ws://example.com:11010
+  -> SocketDialRequest { socket_kind: Tcp, remote: Domain(...), binds: ... }
   -> WebSocket upgrader
 
-quic://1.2.3.4:11010
-  -> SocketConnectPlan::Udp(...)
+quic://example.com:11010
+  -> SocketDialRequest { socket_kind: Udp, remote: Domain(...), binds: ... }
   -> Quic upgrader
 
-wg://1.2.3.4:11010
-  -> SocketConnectPlan::Udp(...)
+wg://example.com:11010
+  -> SocketDialRequest { socket_kind: Udp, remote: Domain(...), binds: ... }
   -> WireGuard upgrader
 
 ring://uuid
-  -> SocketConnectPlan::Ring(...)
+  -> SocketDialRequest { socket_kind: Ring, remote: Ring(...) }
   -> Ring upgrader
 ```
 
@@ -138,7 +179,7 @@ connector Module 只负责交付 `ConnectedSocket`：
 ```rust
 #[async_trait::async_trait]
 pub trait SocketConnector {
-    async fn connect(&mut self) -> Result<ConnectedSocket, Error>;
+    async fn connect(&mut self, request: SocketDialRequest) -> Result<ConnectedSocket, Error>;
 }
 ```
 
@@ -153,14 +194,53 @@ manual、direct、TCP hole punch、UDP hole punch 都应落到这个 seam：
 connector 不接收 `TunnelScheme`，不调用 `TunnelConnector`，不构造
 `Box<dyn Tunnel>`。
 
+### Socket listener seam
+
+listener 的 connector seam 也必须停在 socket 层。旧 `TunnelListener::accept()`
+直接返回 `Box<dyn Tunnel>`，严格方案下需要替换为 socket listener：
+
+```rust
+#[async_trait::async_trait]
+pub trait SocketListener {
+    async fn listen(&mut self, request: SocketListenRequest) -> Result<(), Error>;
+    async fn accept(&mut self) -> Result<ConnectedSocket, Error>;
+}
+```
+
+inbound 路径和 outbound 路径共享同一个 upgrader seam：
+
+```text
+listener config
+  -> SocketListenRequest
+  -> SocketListener
+  -> ConnectedSocket
+  -> TunnelUpgrader selected by schema and server role
+  -> Box<dyn Tunnel>
+  -> peer admission
+```
+
+因此删除旧 `TunnelListener` production 路径时，不是让 listener 逻辑消失，而是
+把 listener accept 的产物从 tunnel 改成 socket。TCP/UDP/Ring/FakeTCP/Unix
+listener 都应落到这个 seam；WebSocket/QUIC/WireGuard 的 server-side handshake
+属于 upgrader，不属于 listener。
+
 ### Tunnel upgrader seam
 
 upgrader Module 负责从 socket 到 tunnel：
 
 ```rust
+pub enum TunnelUpgradeRole {
+    Client,
+    Server,
+}
+
 #[async_trait::async_trait]
 pub trait TunnelUpgrader {
-    async fn upgrade(&self, socket: ConnectedSocket) -> Result<Box<dyn Tunnel>, Error>;
+    async fn upgrade(
+        &self,
+        socket: ConnectedSocket,
+        role: TunnelUpgradeRole,
+    ) -> Result<Box<dyn Tunnel>, Error>;
 }
 ```
 
@@ -171,10 +251,30 @@ pub trait TunnelUpgrader {
 - `WebSocketTunnelUpgrader`
 - `QuicTunnelUpgrader`
 - `WireGuardTunnelUpgrader`
+- `FakeTcpTunnelUpgrader`
+- `UnixTunnelUpgrader`
 - `RingTunnelUpgrader`
 
 upgrader 可以知道 schema、framing、crypto handshake、协议 metadata；connector
 不能知道这些。
+
+### 不引入 LegacyTunnelConnectorUpgrader
+
+严格方案下不引入 `LegacyTunnelConnectorUpgrader`，也不在新 orchestrator 中保留
+`TunnelBuildPlan::Legacy` 这类 fallback。原因是 legacy `TunnelConnector`
+自己 dial socket 并直接产出 `Tunnel`，它不是 socket-to-tunnel upgrader；把它
+包装成 upgrader 会让 connector seam 继续携带 `Tunnel` 语义。
+
+迁移期可以暂时保留旧代码供未迁移调用点编译，但它不能成为新路径的一部分：
+
+- 新 `connector` Interface 中不能出现 `Tunnel` / `TunnelInfo` /
+  `TunnelConnector`。
+- 新 `orchestrator` 只执行 socket dial/listen request -> `ConnectedSocket` ->
+  `TunnelUpgrader` -> `Box<dyn Tunnel>`。
+- `ws` / `quic` / `wg` 必须在本轮补齐真正的 socket-to-tunnel upgrader，而不是
+  通过 legacy tunnel connector fallback。
+- 旧 `TunnelConnector` 只作为待删除的 compatibility surface 存在；迁移完成
+  后从 production connector 路径移除。
 
 ### Peer admission seam
 
@@ -205,17 +305,21 @@ hole punch 还是 ring 来的。它只关心已经升级好的 `Tunnel`。
 1. 新增 `easytier-core::socket::ring`，把当前 ring queue 能力沉淀为
    `RingSocket` / `RingListener` / `RingDialer`，但暂不删除旧
    `RingTunnelConnector`。
-2. 新增 `ConnectedSocket` 和 `SocketConnectPlan`，先放在 orchestrator/runtime
-   侧，避免过早污染 core peers Interface。
-3. 为现有 tcp/udp/ws/quic/wg/ring tunnel 实现补齐 socket-to-tunnel upgrader
-   Adapter。
+2. 新增 `ConnectedSocket`、`SocketDialRequest`、`SocketListenRequest`、
+   `RemoteEndpoint`、`BindEndpoint` 和 core DNS hook，放在 core socket 层，
+   避免污染 core peers Interface。
+3. 新增严格的 `TunnelUpgrader` seam，为 tcp/udp/ws/quic/wg/faketcp/unix/ring
+   全部补齐 socket-to-tunnel upgrader Adapter；不引入 legacy tunnel connector
+   fallback。
 4. 改 manual/direct 路径：URL schema 解析由 orchestrator 完成，connector 只
-   根据 `SocketConnectPlan` 拿 socket。
+   根据 `SocketDialRequest` 拿 socket。
 5. 改 TCP/UDP hole punch：成功结果从 `Tunnel` 改成 socket endpoint，sink 从
    `TunnelSink` 改成 endpoint sink。
 6. 收敛 `PeerManager::connect_tunnel()`：改为 orchestrator 完成
    `socket -> tunnel`，PeerManager 只接收 tunnel admission。
-7. 删除或降级旧的 `TunnelConnector` / `TunnelListener` compatibility wrapper。
+7. 删除旧的 production `TunnelConnector` / `TunnelListener` connector 路径；
+   tunnel Module 可以保留 listener/upgrader 所需的 tunnel implementation，但
+   connector Module 不再暴露 tunnel-producing Interface。
 
 ## 第一阶段执行计划
 
@@ -251,15 +355,231 @@ easytier-core/src/tunnel.rs
 - 本阶段不迁移 manual/direct/hole-punch 调用路径，不删除旧
   `TunnelConnector`。
 
+## 第二阶段执行计划：严格 socket connector
+
+第二阶段的目标是建立完整的新路径，不用 legacy tunnel connector fallback：
+
+```text
+outbound:
+URL / route candidate / hole-punch result
+  -> orchestrator parses schema and selects socket kind + upgrader
+  -> SocketDialRequest with domain/address and bind candidates
+  -> SocketConnector
+  -> core DNS hook + bind candidate expansion
+  -> ConnectedSocket
+  -> TunnelUpgrader selected by schema and client role
+  -> Box<dyn Tunnel>
+  -> peer admission
+
+inbound:
+listener config
+  -> orchestrator parses schema and selects socket kind + upgrader
+  -> SocketListenRequest with bind candidates
+  -> SocketListener
+  -> ConnectedSocket
+  -> TunnelUpgrader selected by schema and server role
+  -> Box<dyn Tunnel>
+  -> peer admission
+```
+
+第二阶段需要同时补 core socket Module 和 runtime orchestrator Module：
+
+```text
+easytier-core/src/socket/
+  dns.rs        # DNS resolver hook Interface，runtime 启动时注册 Adapter
+  dial.rs       # SocketDialRequest、RemoteEndpoint、BindEndpoint
+  listen.rs     # SocketListenRequest、SocketConnector、SocketListener
+
+easytier/src/orchestrator/
+  mod.rs
+  socket.rs      # schema -> socket kind / request builder
+  upgrade.rs     # TunnelUpgrader、TunnelUpgradePlan
+  schema.rs      # URL/TunnelScheme -> socket request + upgrade plan
+```
+
+`SocketDialRequest` 只描述如何得到裸 socket，不携带 tunnel schema：
+
+```rust
+pub struct SocketDialRequest {
+    pub socket_kind: SocketKind,
+    pub remote: RemoteEndpoint,
+    pub binds: Vec<BindEndpoint>,
+    pub options: SocketOptions,
+}
+```
+
+`SocketListenRequest` 同样只描述如何 listen/accept 裸 socket：
+
+```rust
+pub struct SocketListenRequest {
+    pub socket_kind: SocketKind,
+    pub binds: Vec<BindEndpoint>,
+    pub options: SocketOptions,
+}
+```
+
+DNS hook 和 bind expansion 是 core socket dialer 的 implementation：
+
+```text
+SocketDialRequest {
+  remote: Domain(host, port),
+  binds: [BindEndpoint::Addr(a), BindEndpoint::Addr(b)],
+}
+
+core dns hook resolves host -> [r1, r2]
+
+attempts:
+  bind a -> connect r1
+  bind a -> connect r2
+  bind b -> connect r1
+  bind b -> connect r2
+```
+
+这样每个 bind candidate 都会创建自己的 socket；失败重试、并发 race、地址族筛选
+和成功 socket 的选择都集中在 core socket dialer，调用方不需要自己复制这套逻辑。
+
+`TunnelUpgradePlan` 只描述如何把已连接 socket 升级为 tunnel：
+
+```rust
+pub enum TunnelUpgradePlan {
+    Tcp(TcpUpgradePlan),
+    Udp(UdpUpgradePlan),
+    WebSocket(WebSocketUpgradePlan),
+    Quic(QuicUpgradePlan),
+    WireGuard(WireGuardUpgradePlan),
+    FakeTcp(FakeTcpUpgradePlan),
+    Unix(UnixUpgradePlan),
+    Ring(RingUpgradePlan),
+}
+```
+
+同一个 URL schema 会拆成两部分：
+
+```text
+tcp://host:port
+  -> SocketDialRequest { socket_kind: Tcp, remote: Domain(host, port), ... }
+  -> TunnelUpgradePlan::Tcp
+
+udp://host:port
+  -> SocketDialRequest { socket_kind: Udp, remote: Domain(host, port), ... }
+  -> TunnelUpgradePlan::Udp
+
+ws://host:port / wss://host:port
+  -> SocketDialRequest { socket_kind: Tcp, remote: Domain(host, port), ... }
+  -> TunnelUpgradePlan::WebSocket
+
+quic://host:port
+  -> SocketDialRequest { socket_kind: Udp, remote: Domain(host, port), ... }
+  -> TunnelUpgradePlan::Quic
+
+wg://host:port
+  -> SocketDialRequest { socket_kind: Udp, remote: Domain(host, port), ... }
+  -> TunnelUpgradePlan::WireGuard
+
+ring://uuid
+  -> SocketDialRequest { socket_kind: Ring, remote: Ring(uuid), ... }
+  -> TunnelUpgradePlan::Ring
+
+faketcp://host:port
+  -> SocketDialRequest { socket_kind: FakeTcp, remote: Domain(host, port), ... }
+  -> TunnelUpgradePlan::FakeTcp
+
+unix://path
+  -> SocketDialRequest { socket_kind: Unix, remote: UnixPath(path), ... }
+  -> TunnelUpgradePlan::Unix
+```
+
+其他现有 schema 也要从 tunnel-producing connector 中拆出来：
+
+- `http://` / `https://`：不是 socket connector，而是 discovery resolver；
+  它解析出最终 tunnel URL 后重新生成 `SocketDialRequest + TunnelUpgradePlan`。
+- `txt://` / `srv://`：不是 socket connector，而是 DNS discovery resolver；
+  它解析出最终 tunnel URL 后重新进入 orchestrator plan 生成流程。
+
+### 第二阶段 Adapter 切分
+
+- `TcpSocketConnector`：执行 `SocketDialRequest` 的 TCP dial。它可以接收
+  `RemoteEndpoint::Domain`，通过 core DNS hook 解析，并按 `BindEndpoint`
+  展开独立 socket attempts；不构造 `TunnelInfo`。
+- `UdpSocketConnector`：执行 `SocketDialRequest` 的 UDP dial/connect 或
+  bind + remote endpoint。它同样通过 core DNS hook 和 bind expansion 创建
+  `ConnectedUdpSocket`；不构造 UDP tunnel。
+- `TcpSocketListener`：只负责 TCP listen/accept，返回 TCP socket；不构造
+  `TcpTunnel`。
+- `UdpSocketListener`：只负责 UDP listen/accept 语义所需的 socket endpoint；
+  不构造 UDP tunnel。
+- `RingSocketConnector`：只负责从 core ring registry dial `RingSocket`；不构造
+  `RingTunnel`。
+- `RingSocketListener`：只负责从 core ring registry accept `RingSocket`；不构造
+  `RingTunnel`。
+- `FakeTcpSocketConnector` / `FakeTcpSocketListener`：只负责建立 FakeTCP
+  virtual socket；不构造 tunnel framing。
+- `UnixSocketConnector` / `UnixSocketListener`：只负责建立 local stream socket；
+  不构造 tunnel framing。
+- `TcpTunnelUpgrader`：消费 TCP socket，构造 EasyTier TCP packet tunnel 和
+  `TunnelInfo`。
+- `UdpTunnelUpgrader`：消费 `ConnectedUdpSocket`，构造 EasyTier UDP packet
+  tunnel 和 `TunnelInfo`。
+- `WebSocketTunnelUpgrader`：消费 TCP socket，执行 websocket client/server
+  handshake，再构造 websocket tunnel。
+- `QuicTunnelUpgrader`：消费 UDP socket endpoint，创建/注册 QUIC endpoint，
+  执行 QUIC connect/open stream，再构造 QUIC tunnel。
+- `WireGuardTunnelUpgrader`：消费 UDP socket endpoint，执行 WireGuard tunnel
+  初始化；现有 `connect_with_socket` 形态应下沉为 upgrader implementation。
+- `RingTunnelUpgrader`：消费 `RingSocket`，包装成 core `RingTunnel`。
+- `FakeTcpTunnelUpgrader`：消费 FakeTCP virtual socket，构造 FakeTCP packet
+  tunnel 和 `TunnelInfo`。
+- `UnixTunnelUpgrader`：消费 local stream socket，构造 Unix packet tunnel 和
+  `TunnelInfo`。
+
+### 第二阶段执行边界
+
+- 不实现 `LegacyTunnelConnectorUpgrader`。
+- 不新增任何返回 `Box<dyn Tunnel>` 的 connector Interface。
+- 不新增任何返回 `Box<dyn Tunnel>` 的 listener Interface。
+- 不让 `SocketConnector` 接收 `TunnelScheme`、URL schema 或 tunnel-specific
+  config。
+- 不让 `SocketListener` 接收 tunnel-specific config；它只能接收
+  `SocketListenRequest` 中的 socket kind、bind candidates 和 socket options。
+- `TunnelInfo` 只在 upgrader 中构造，因为它描述的是 tunnel 产物，不是 socket。
+- `PeerManager` 不调用 connector；它只接收 orchestrator 已经升级好的
+  `Box<dyn Tunnel>`。
+- 如果某个旧 connector 的 implementation 暂时还存在，必须标记为待删除，不得
+  被新 orchestrator 路径调用。
+
+### ws/quic/wg 的迁移要求
+
+`ws` / `quic` / `wg` 不走 legacy fallback，而是在第二阶段完成最小可用
+upgrader：
+
+- `ws`：先抽出 websocket handshake helper，使它可以从已连接 TCP socket 构造
+  tunnel；旧 `WsTunnelConnector::connect()` 的 dial 逻辑移入
+  `TcpSocketConnector`。
+- `wg`：复用现有 socket-based 初始化路径，把 UDP socket 获取逻辑移入
+  `UdpSocketConnector`，WireGuard config 和握手逻辑留在
+  `WireGuardTunnelUpgrader`。
+- `quic`：拆分 `QuicEndpointManager::connect(global_ctx, addr)`，让 endpoint
+  creation 可以消费 orchestrator 提供的 UDP socket endpoint；QUIC connect 和
+  stream open 留在 `QuicTunnelUpgrader`。
+
+如果 `quic` endpoint 复用需要绑定地址级缓存，缓存属于 `QuicTunnelUpgrader`
+implementation 或其内部 helper，不属于 connector Interface。connector 仍只
+交付 UDP socket endpoint。
+
 ## 非目标
 
 - 不让 connector 解析或持有 tunnel schema。
 - 不让 connector 直接构造 `TunnelInfo`。
 - 不把 `PeerManager` 作为 connector 的依赖。
-- 不把 URL 解析、DNS、netns、SO_MARK 等 runtime policy 混入 core socket
-  primitive。
+- 不把 URL schema 解析混入 core socket primitive；schema 属于 orchestrator。
+- 不把 runtime DNS implementation 混入 core；core 只定义 DNS hook Interface，
+  runtime 负责注册 Adapter。
+- 不把 OS-specific netns、SO_MARK、bind-device implementation 混入 core；
+  core 只定义 socket options 和 bind endpoint，runtime socket Adapter 负责应用。
 - 不把 `RingSocket` 设计成 `Tunnel` 的别名；`RingTunnel` 必须是 upgrader
   的产物。
+- 不引入 `LegacyTunnelConnectorUpgrader` 或任何新 legacy tunnel connector
+  fallback。
 
 ## 验收标准
 
@@ -269,5 +589,7 @@ easytier-core/src/tunnel.rs
 - `easytier-core::peers` 仍只消费 `Box<dyn Tunnel>`，不反向依赖 connector。
 - `easytier-core::hole_punch::udp` 不再出现 `Box<dyn Tunnel>` 或
   `TunnelSink`。
-- `TunnelConnector::connect()` 不再是 connector 主 Interface；旧接口只作为
-  迁移期 Adapter 存在。
+- `ws` / `quic` / `wg` 都有真实的 socket-to-tunnel upgrader，不能通过
+  `TunnelConnector` fallback 进入新路径。
+- `TunnelConnector::connect()` 不再是 connector Interface；production
+  connector 路径中不再出现 tunnel-producing connector。
