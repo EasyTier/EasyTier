@@ -1,8 +1,100 @@
-use std::net::IpAddr;
+use std::{
+    collections::hash_map::DefaultHasher,
+    hash::{Hash, Hasher},
+    net::IpAddr,
+};
 
 use easytier_proto::{common as common_pb, core_config as pb};
 
 pub type PeerId = u32;
+
+pub type NetworkSecretDigest = [u8; 32];
+
+#[derive(Debug, Clone)]
+pub struct NetworkIdentity {
+    pub network_name: String,
+    pub network_secret: Option<String>,
+    pub network_secret_digest: Option<NetworkSecretDigest>,
+}
+
+impl NetworkIdentity {
+    pub fn secret_digest(&self) -> Option<NetworkSecretDigest> {
+        if self.network_secret_digest.is_some() {
+            self.network_secret_digest
+        } else if let Some(network_secret) = &self.network_secret {
+            let mut network_secret_digest = [0u8; 32];
+            generate_digest_from_str(
+                &self.network_name,
+                network_secret,
+                &mut network_secret_digest,
+            );
+            Some(network_secret_digest)
+        } else {
+            None
+        }
+    }
+
+    pub fn with_secret_digest(mut self) -> Self {
+        self.network_secret_digest = self.secret_digest();
+        self
+    }
+}
+
+#[derive(Eq, PartialEq, Hash)]
+struct NetworkIdentityWithOnlyDigest {
+    network_name: String,
+    network_secret_digest: Option<NetworkSecretDigest>,
+}
+
+fn generate_digest_from_str(str1: &str, str2: &str, digest: &mut [u8]) {
+    let mut hasher = DefaultHasher::new();
+    hasher.write(str1.as_bytes());
+    hasher.write(str2.as_bytes());
+
+    assert_eq!(digest.len() % 8, 0, "digest length must be multiple of 8");
+
+    let shard_count = digest.len() / 8;
+    for i in 0..shard_count {
+        digest[i * 8..(i + 1) * 8].copy_from_slice(&hasher.finish().to_be_bytes());
+        hasher.write(&digest[..(i + 1) * 8]);
+    }
+}
+
+impl From<NetworkIdentity> for NetworkIdentityWithOnlyDigest {
+    fn from(identity: NetworkIdentity) -> Self {
+        Self {
+            network_secret_digest: identity.secret_digest(),
+            network_name: identity.network_name,
+        }
+    }
+}
+
+impl PartialEq for NetworkIdentity {
+    fn eq(&self, other: &Self) -> bool {
+        let self_with_digest = NetworkIdentityWithOnlyDigest::from(self.clone());
+        let other_with_digest = NetworkIdentityWithOnlyDigest::from(other.clone());
+        self_with_digest == other_with_digest
+    }
+}
+
+impl Eq for NetworkIdentity {}
+
+impl Hash for NetworkIdentity {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        let self_with_digest = NetworkIdentityWithOnlyDigest::from(self.clone());
+        self_with_digest.hash(state);
+    }
+}
+
+impl Default for NetworkIdentity {
+    fn default() -> Self {
+        Self {
+            network_name: "default".to_string(),
+            network_secret: None,
+            network_secret_digest: Some([0u8; 32]),
+        }
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct CoreConfig {
@@ -66,6 +158,15 @@ impl Default for PeerPolicyConfig {
             encryption_required: true,
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct P2pPolicyFlags {
+    pub disable_udp_hole_punching: bool,
+    pub disable_sym_hole_punching: bool,
+    pub lazy_p2p: bool,
+    pub disable_p2p: bool,
+    pub need_p2p: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -365,6 +466,60 @@ fn uuid_from_bytes(bytes: [u8; 16]) -> common_pb::Uuid {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn digest(network_name: &str, network_secret: &str) -> NetworkSecretDigest {
+        let mut digest = [0u8; 32];
+        generate_digest_from_str(network_name, network_secret, &mut digest);
+        digest
+    }
+
+    #[test]
+    fn network_identity_matches_secret_to_digest_identity() {
+        let local = NetworkIdentity {
+            network_name: "net".to_string(),
+            network_secret: Some("secret".to_string()),
+            network_secret_digest: None,
+        };
+        let remote = NetworkIdentity {
+            network_name: "net".to_string(),
+            network_secret: None,
+            network_secret_digest: Some(digest("net", "secret")),
+        };
+
+        assert_eq!(local, remote);
+    }
+
+    #[test]
+    fn network_identity_rejects_different_digest() {
+        let local = NetworkIdentity {
+            network_name: "net".to_string(),
+            network_secret: Some("secret".to_string()),
+            network_secret_digest: None,
+        };
+        let remote = NetworkIdentity {
+            network_name: "net".to_string(),
+            network_secret: None,
+            network_secret_digest: Some(digest("net", "other")),
+        };
+
+        assert_ne!(local, remote);
+    }
+
+    #[test]
+    fn network_identity_derives_digest_from_plaintext_secret() {
+        let identity = NetworkIdentity {
+            network_name: "net".to_string(),
+            network_secret: Some("secret".to_string()),
+            network_secret_digest: None,
+        };
+
+        assert_eq!(identity.secret_digest(), Some(digest("net", "secret")));
+    }
+
+    #[test]
+    fn network_identity_default_keeps_existing_digest_semantics() {
+        assert_eq!(NetworkIdentity::default().secret_digest(), Some([0u8; 32]));
+    }
 
     #[test]
     fn validates_ip_prefix_lengths() {

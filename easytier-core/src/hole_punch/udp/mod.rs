@@ -2,7 +2,6 @@ mod client;
 mod common;
 mod connector;
 mod listener;
-mod model;
 mod packet;
 mod policy;
 mod runtime;
@@ -10,6 +9,7 @@ mod server;
 mod socket_array;
 mod task;
 
+pub use crate::config::P2pPolicyFlags;
 pub use client::{
     UdpBothEasySymPunchClient, UdpHolePunchClientError, UdpHolePunchClientResult,
     UdpSymToConePunchClient, apply_peer_easy_sym_port_offset, punch_cone_to_cone,
@@ -22,7 +22,6 @@ pub use listener::{
     select_reusable_public_listener_idx, should_create_public_listener,
     should_retry_public_listener_selection,
 };
-pub use model::P2pPolicyFlags;
 pub use packet::{HOLE_PUNCH_PACKET_BODY_LEN, hole_punch_packet_tid, new_hole_punch_packet};
 pub use policy::{should_background_p2p_with_peer, should_try_p2p_with_peer};
 pub use runtime::{

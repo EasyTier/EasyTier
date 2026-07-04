@@ -46,7 +46,7 @@ pub fn get_logger_timer_rfc3339()
     get_logger_timer(time::format_description::well_known::Rfc3339)
 }
 
-pub type PeerId = u32;
+pub use easytier_core::config::PeerId;
 
 pub fn new_peer_id() -> PeerId {
     rand::random()

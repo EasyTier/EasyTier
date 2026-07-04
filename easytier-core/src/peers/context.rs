@@ -1,7 +1,5 @@
 use std::{
     collections::HashMap,
-    collections::hash_map::DefaultHasher,
-    hash::{Hash, Hasher},
     net::IpAddr,
     sync::Arc,
     time::{SystemTime, UNIX_EPOCH},
@@ -18,96 +16,15 @@ use easytier_proto::{
 use hmac::{Hmac, Mac};
 use sha2::Sha256;
 
-use crate::{config::PeerId, peers::util::shrink_dashmap};
+pub use crate::config::{NetworkIdentity, NetworkSecretDigest};
+use crate::{
+    config::{
+        CoreConfig, IpPrefix, NodeConfig, PeerId, PeerPolicyConfig, RouteConfig, TrafficConfig,
+    },
+    peers::util::shrink_dashmap,
+};
 
-pub type NetworkSecretDigest = [u8; 32];
 pub const SECRET_PROOF_PREFIX: &[u8] = b"easytier secret proof";
-
-#[derive(Debug, Clone)]
-pub struct NetworkIdentity {
-    pub network_name: String,
-    pub network_secret: Option<String>,
-    pub network_secret_digest: Option<NetworkSecretDigest>,
-}
-
-impl NetworkIdentity {
-    pub fn secret_digest(&self) -> Option<NetworkSecretDigest> {
-        if self.network_secret_digest.is_some() {
-            self.network_secret_digest
-        } else if let Some(network_secret) = &self.network_secret {
-            let mut network_secret_digest = [0u8; 32];
-            generate_digest_from_str(
-                &self.network_name,
-                network_secret,
-                &mut network_secret_digest,
-            );
-            Some(network_secret_digest)
-        } else {
-            None
-        }
-    }
-
-    pub fn with_secret_digest(mut self) -> Self {
-        self.network_secret_digest = self.secret_digest();
-        self
-    }
-}
-
-#[derive(Eq, PartialEq, Hash)]
-struct NetworkIdentityWithOnlyDigest {
-    network_name: String,
-    network_secret_digest: Option<NetworkSecretDigest>,
-}
-
-fn generate_digest_from_str(str1: &str, str2: &str, digest: &mut [u8]) {
-    let mut hasher = DefaultHasher::new();
-    hasher.write(str1.as_bytes());
-    hasher.write(str2.as_bytes());
-
-    assert_eq!(digest.len() % 8, 0, "digest length must be multiple of 8");
-
-    let shard_count = digest.len() / 8;
-    for i in 0..shard_count {
-        digest[i * 8..(i + 1) * 8].copy_from_slice(&hasher.finish().to_be_bytes());
-        hasher.write(&digest[..(i + 1) * 8]);
-    }
-}
-
-impl From<NetworkIdentity> for NetworkIdentityWithOnlyDigest {
-    fn from(identity: NetworkIdentity) -> Self {
-        Self {
-            network_secret_digest: identity.secret_digest(),
-            network_name: identity.network_name,
-        }
-    }
-}
-
-impl PartialEq for NetworkIdentity {
-    fn eq(&self, other: &Self) -> bool {
-        let self_with_digest = NetworkIdentityWithOnlyDigest::from(self.clone());
-        let other_with_digest = NetworkIdentityWithOnlyDigest::from(other.clone());
-        self_with_digest == other_with_digest
-    }
-}
-
-impl Eq for NetworkIdentity {}
-
-impl Hash for NetworkIdentity {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        let self_with_digest = NetworkIdentityWithOnlyDigest::from(self.clone());
-        self_with_digest.hash(state);
-    }
-}
-
-impl Default for NetworkIdentity {
-    fn default() -> Self {
-        Self {
-            network_name: "default".to_string(),
-            network_secret: None,
-            network_secret_digest: Some([0u8; 32]),
-        }
-    }
-}
 
 #[async_trait]
 pub trait ByteLimiter: Send + Sync {
@@ -138,6 +55,25 @@ pub enum PeerContextEvent {
 }
 
 pub type PeerContextEventSubscriber = tokio::sync::broadcast::Receiver<PeerContextEvent>;
+
+#[derive(Debug, Clone)]
+pub struct PeerRuntimeConfig {
+    pub core: CoreConfig,
+    pub network_identity: NetworkIdentity,
+    pub stun_info: StunInfo,
+    pub feature_flags: PeerFeatureFlag,
+    pub secure_mode: Option<SecureModeConfig>,
+}
+
+fn ipv4_inet_to_config(value: Ipv4Inet) -> IpPrefix {
+    IpPrefix::new(IpAddr::V4(value.address()), value.network_length())
+        .expect("Ipv4Inet should always have a valid IPv4 prefix length")
+}
+
+fn ipv6_inet_to_config(value: Ipv6Inet) -> IpPrefix {
+    IpPrefix::new(IpAddr::V6(value.address()), value.network_length())
+        .expect("Ipv6Inet should always have a valid IPv6 prefix length")
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PeerGroupIdentity {
@@ -254,7 +190,38 @@ impl Default for TrustedKeyMapManager {
     }
 }
 
+/// Runtime dependency interface for the peers module.
+///
+/// `PeerContext` is intentionally scoped to `easytier-core::peers`; other core
+/// modules should depend on their own narrow DTOs or traits instead of treating
+/// this as a core-wide global context.
 pub trait PeerContext: Send + Sync {
+    fn runtime_config(&self) -> PeerRuntimeConfig {
+        let network_identity = self.network_identity();
+        let hostname = self.hostname();
+        PeerRuntimeConfig {
+            core: CoreConfig {
+                node: NodeConfig {
+                    peer_id: None,
+                    instance_id: Some(*self.instance_id().as_bytes()),
+                    hostname: (!hostname.is_empty()).then_some(hostname),
+                    network_name: network_identity.network_name.clone(),
+                },
+                routes: RouteConfig {
+                    ipv4: self.ipv4().map(ipv4_inet_to_config),
+                    ipv6: self.ipv6().map(ipv6_inet_to_config),
+                    ..Default::default()
+                },
+                peer_policy: PeerPolicyConfig::default(),
+                traffic: TrafficConfig::default(),
+            },
+            network_identity,
+            stun_info: self.stun_info(),
+            feature_flags: self.feature_flags(),
+            secure_mode: self.secure_mode(),
+        }
+    }
+
     fn network_identity(&self) -> NetworkIdentity;
 
     fn network_name(&self) -> String {
@@ -483,44 +450,6 @@ impl PeerContext for NoopPeerContext {
 mod tests {
     use super::*;
 
-    fn digest(network_name: &str, network_secret: &str) -> NetworkSecretDigest {
-        let mut digest = [0u8; 32];
-        generate_digest_from_str(network_name, network_secret, &mut digest);
-        digest
-    }
-
-    #[test]
-    fn network_identity_matches_secret_to_digest_identity() {
-        let local = NetworkIdentity {
-            network_name: "net".to_string(),
-            network_secret: Some("secret".to_string()),
-            network_secret_digest: None,
-        };
-        let remote = NetworkIdentity {
-            network_name: "net".to_string(),
-            network_secret: None,
-            network_secret_digest: Some(digest("net", "secret")),
-        };
-
-        assert_eq!(local, remote);
-    }
-
-    #[test]
-    fn network_identity_rejects_different_digest() {
-        let local = NetworkIdentity {
-            network_name: "net".to_string(),
-            network_secret: Some("secret".to_string()),
-            network_secret_digest: None,
-        };
-        let remote = NetworkIdentity {
-            network_name: "net".to_string(),
-            network_secret: None,
-            network_secret_digest: Some(digest("net", "other")),
-        };
-
-        assert_ne!(local, remote);
-    }
-
     #[test]
     fn noop_peer_context_uses_runtime_secret_proof_prefix() {
         let context = NoopPeerContext::new(NetworkIdentity {
@@ -542,6 +471,57 @@ mod tests {
             .to_vec();
 
         assert_eq!(proof, expected);
+    }
+
+    struct RuntimeConfigContext {
+        instance_id: uuid::Uuid,
+    }
+
+    impl PeerContext for RuntimeConfigContext {
+        fn network_identity(&self) -> NetworkIdentity {
+            NetworkIdentity {
+                network_name: "net".to_string(),
+                network_secret: Some("secret".to_string()),
+                network_secret_digest: None,
+            }
+        }
+
+        fn instance_id(&self) -> uuid::Uuid {
+            self.instance_id
+        }
+
+        fn ipv4(&self) -> Option<Ipv4Inet> {
+            Some("10.1.0.1/24".parse().unwrap())
+        }
+
+        fn ipv6(&self) -> Option<Ipv6Inet> {
+            Some("2001:db8::1/64".parse().unwrap())
+        }
+
+        fn hostname(&self) -> String {
+            "node-a".to_string()
+        }
+    }
+
+    #[test]
+    fn runtime_config_preserves_peer_context_snapshot() {
+        let instance_id = uuid::Uuid::from_u128(0x11223344556677889900aabbccddeeff);
+        let context = RuntimeConfigContext { instance_id };
+
+        let config = context.runtime_config();
+
+        assert_eq!(config.network_identity.network_name, "net");
+        assert_eq!(config.core.node.instance_id, Some(*instance_id.as_bytes()));
+        assert_eq!(config.core.node.hostname.as_deref(), Some("node-a"));
+        assert_eq!(config.core.node.network_name, "net");
+        assert_eq!(
+            config.core.routes.ipv4,
+            Some(IpPrefix::new("10.1.0.1".parse().unwrap(), 24).unwrap())
+        );
+        assert_eq!(
+            config.core.routes.ipv6,
+            Some(IpPrefix::new("2001:db8::1".parse().unwrap(), 64).unwrap())
+        );
     }
 
     #[test]
@@ -571,16 +551,5 @@ mod tests {
             network_name,
             Some(TrustedKeySource::OspfNode),
         ));
-    }
-
-    #[test]
-    fn network_identity_derives_digest_from_plaintext_secret() {
-        let identity = NetworkIdentity {
-            network_name: "net".to_string(),
-            network_secret: Some("secret".to_string()),
-            network_secret_digest: None,
-        };
-
-        assert_eq!(identity.secret_digest(), Some(digest("net", "secret")));
     }
 }

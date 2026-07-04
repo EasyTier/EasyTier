@@ -236,7 +236,7 @@ runtime adapter：
 如果后续需要自动约束，可以增加轻量脚本或 CI 检查：
 
 ```text
-rg "ArcPeerContext|PeerContext" easytier-core/src \
+rg "\bArcPeerContext\b|\bPeerContext\b" easytier-core/src \
   --glob '!easytier-core/src/peers/**' \
   --glob '!config.rs'
 ```
