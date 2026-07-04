@@ -55,6 +55,24 @@ describe('UrlListInput.vue add fallback', () => {
     expect(urls.value).toEqual(['tcp://0.0.0.0:11010'])
   })
 
+  it('falls back to the first available protocol when tcp is not present', async () => {
+    const { wrapper, urls } = mountUrlListInput({ udp: 22000 })
+
+    await wrapper.find('.cursor-pointer').trigger('click')
+    await nextTick()
+
+    expect(urls.value).toEqual(['udp://0.0.0.0:22000'])
+  })
+
+  it('falls back to tcp default port when protos is empty', async () => {
+    const { wrapper, urls } = mountUrlListInput({})
+
+    await wrapper.find('.cursor-pointer').trigger('click')
+    await nextTick()
+
+    expect(urls.value).toEqual(['tcp://0.0.0.0:11010'])
+  })
+
   it('supports port-zero fallback from protos', async () => {
     const { wrapper, urls } = mountUrlListInput({ tcp: 0, udp: 0 })
 
