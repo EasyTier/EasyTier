@@ -2,7 +2,10 @@ use std::{
     collections::{BTreeSet, HashMap, hash_map::DefaultHasher},
     hash::Hasher,
     net::{IpAddr, SocketAddr},
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicU64, Ordering},
+    },
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -219,6 +222,8 @@ pub struct GlobalCtx {
 
     running_listeners: Mutex<Vec<url::Url>>,
     dynamic_mapped_listeners: Mutex<Vec<url::Url>>,
+    dynamic_mapped_listener_ports: Mutex<HashMap<(String, u16), (url::Url, u64)>>,
+    dynamic_mapped_listener_generation: AtomicU64,
     advertised_ipv6_public_addr_prefix: Mutex<Option<cidr::Ipv6Cidr>>,
     tun_device_name: Mutex<Option<String>>,
 
@@ -338,6 +343,8 @@ impl GlobalCtx {
 
             running_listeners: Mutex::new(Vec::new()),
             dynamic_mapped_listeners: Mutex::new(Vec::new()),
+            dynamic_mapped_listener_ports: Mutex::new(HashMap::new()),
+            dynamic_mapped_listener_generation: AtomicU64::new(0),
             advertised_ipv6_public_addr_prefix: Mutex::new(None),
             tun_device_name: Mutex::new(None),
 
@@ -562,6 +569,108 @@ impl GlobalCtx {
             .lock()
             .unwrap()
             .retain(|x| x != url);
+    }
+
+    pub fn get_dynamic_mapped_listener_for_port(
+        &self,
+        scheme: &str,
+        local_port: u16,
+    ) -> Option<url::Url> {
+        self.dynamic_mapped_listener_ports
+            .lock()
+            .unwrap()
+            .get(&(scheme.to_owned(), local_port))
+            .map(|(url, _)| url.clone())
+    }
+
+    pub fn add_dynamic_mapped_listener_for_port(
+        &self,
+        scheme: &str,
+        local_port: u16,
+        url: url::Url,
+    ) -> u64 {
+        let key = (scheme.to_owned(), local_port);
+        let generation = self
+            .dynamic_mapped_listener_generation
+            .fetch_add(1, Ordering::Relaxed)
+            + 1;
+        let old_url = self
+            .dynamic_mapped_listener_ports
+            .lock()
+            .unwrap()
+            .insert(key, (url.clone(), generation))
+            .map(|(old_url, _)| old_url);
+
+        self.add_dynamic_mapped_listener(url.clone());
+
+        if let Some(old_url) = old_url
+            && old_url != url
+        {
+            self.remove_dynamic_mapped_listener_if_unreferenced(&old_url);
+        }
+
+        generation
+    }
+
+    fn remove_dynamic_mapped_listener_if_unreferenced(&self, url: &url::Url) {
+        let still_referenced = self
+            .dynamic_mapped_listener_ports
+            .lock()
+            .unwrap()
+            .values()
+            .any(|(mapped_url, _)| mapped_url == url);
+        if !still_referenced {
+            self.remove_dynamic_mapped_listener(url);
+        }
+    }
+
+    pub fn remove_dynamic_mapped_listener_for_port_if_generation(
+        &self,
+        scheme: &str,
+        local_port: u16,
+        url: &url::Url,
+        generation: u64,
+    ) {
+        let key = (scheme.to_owned(), local_port);
+        let removed_url = {
+            let mut mapped_listener_ports = self.dynamic_mapped_listener_ports.lock().unwrap();
+            if mapped_listener_ports
+                .get(&key)
+                .is_some_and(|(current_url, current_generation)| {
+                    current_url == url && *current_generation == generation
+                })
+            {
+                mapped_listener_ports
+                    .remove(&key)
+                    .map(|(removed_url, _)| removed_url)
+            } else {
+                None
+            }
+        };
+
+        if let Some(removed_url) = removed_url {
+            self.remove_dynamic_mapped_listener_if_unreferenced(&removed_url);
+        }
+    }
+
+    pub fn remove_dynamic_mapped_listener_for_port(
+        &self,
+        scheme: &str,
+        local_port: u16,
+        url: &url::Url,
+    ) {
+        let key = (scheme.to_owned(), local_port);
+        let removed_url = self
+            .dynamic_mapped_listener_ports
+            .lock()
+            .unwrap()
+            .remove(&key)
+            .map(|(removed_url, _)| removed_url);
+        if let Some(removed_url) = removed_url.as_ref() {
+            self.remove_dynamic_mapped_listener_if_unreferenced(removed_url);
+        } else {
+            self.remove_dynamic_mapped_listener_if_unreferenced(url);
+        }
     }
 
     pub fn get_vpn_portal_cidr(&self) -> Option<cidr::Ipv4Cidr> {
@@ -863,6 +972,47 @@ pub mod tests {
             subscriber.recv().await.unwrap(),
             GlobalCtxEvent::PeerConnRemoved(PeerConnInfo::default())
         );
+    }
+
+    #[tokio::test]
+    async fn dynamic_mapped_listener_generation_prevents_stale_expiry() {
+        let config = TomlConfigLoader::default();
+        let global_ctx = GlobalCtx::new(config);
+        let mapped_url: url::Url = "ws://203.0.113.1:11011/".parse().unwrap();
+
+        let first_generation =
+            global_ctx.add_dynamic_mapped_listener_for_port("ws", 11011, mapped_url.clone());
+        let second_generation =
+            global_ctx.add_dynamic_mapped_listener_for_port("ws", 11011, mapped_url.clone());
+
+        global_ctx.remove_dynamic_mapped_listener_for_port_if_generation(
+            "ws",
+            11011,
+            &mapped_url,
+            first_generation,
+        );
+
+        assert_eq!(
+            global_ctx.get_dynamic_mapped_listener_for_port("ws", 11011),
+            Some(mapped_url.clone())
+        );
+        assert_eq!(
+            global_ctx.get_dynamic_mapped_listeners(),
+            vec![mapped_url.clone()]
+        );
+
+        global_ctx.remove_dynamic_mapped_listener_for_port_if_generation(
+            "ws",
+            11011,
+            &mapped_url,
+            second_generation,
+        );
+
+        assert_eq!(
+            global_ctx.get_dynamic_mapped_listener_for_port("ws", 11011),
+            None
+        );
+        assert!(global_ctx.get_dynamic_mapped_listeners().is_empty());
     }
 
     #[tokio::test]

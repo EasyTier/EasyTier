@@ -10,9 +10,9 @@ use chrono::Local;
 use crossbeam::atomic::AtomicCell;
 use quanta::Instant;
 use rand::seq::IteratorRandom;
-use socket2::{SockAddr, SockRef};
+use socket2::SockRef;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::{UdpSocket, lookup_host};
+use tokio::net::{TcpSocket, UdpSocket, lookup_host};
 use tokio::sync::{Mutex, broadcast};
 use tokio::task::JoinSet;
 use tracing::{Instrument, Level};
@@ -22,6 +22,7 @@ use stun_codec::rfc5389::methods::BINDING;
 use stun_codec::{Message, MessageClass, MessageDecoder, MessageEncoder};
 
 use crate::common::error::Error;
+use crate::tunnel::common::bind;
 
 use super::dns::resolve_txt_record;
 use super::stun_codec_ext::*;
@@ -766,7 +767,7 @@ impl TcpStunClient {
         Ok(msg)
     }
 
-    async fn connect(&self) -> Result<tokio::net::TcpStream, Error> {
+    async fn connect(&self, reset_on_drop: bool) -> Result<tokio::net::TcpStream, Error> {
         let bind_addr = match self.stun_server {
             SocketAddr::V4(_) => {
                 SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), self.source_port)
@@ -776,38 +777,27 @@ impl TcpStunClient {
             }
         };
 
-        let socket2_socket = socket2::Socket::new(
-            socket2::Domain::for_address(self.stun_server),
-            socket2::Type::STREAM,
-            Some(socket2::Protocol::TCP),
-        )?;
-
-        if bind_addr.is_ipv6() {
-            socket2_socket.set_only_v6(true)?;
-        }
-
-        socket2_socket.set_nonblocking(true)?;
-        socket2_socket.set_reuse_address(true)?;
-
-        #[cfg(all(unix, not(target_os = "solaris"), not(target_os = "illumos")))]
-        {
-            let _ = socket2_socket.set_reuse_port(true);
-        }
-
-        socket2_socket.bind(&SockAddr::from(bind_addr))?;
-
-        let socket = tokio::net::TcpSocket::from_std_stream(socket2_socket.into());
+        let socket = bind::<TcpSocket>()
+            .addr(bind_addr)
+            .only_v6(self.stun_server.is_ipv6())
+            .reuse_address(true)
+            .reuse_port(true)
+            .call()?;
         let stream =
             tokio::time::timeout(self.conn_timeout, socket.connect(self.stun_server)).await??;
 
-        let _ = SockRef::from(&stream).set_linger(Some(Duration::ZERO));
+        if reset_on_drop {
+            let _ = SockRef::from(&stream).set_linger(Some(Duration::ZERO));
+        }
 
         Ok(stream)
     }
 
-    #[tracing::instrument(ret, level = Level::TRACE)]
-    pub async fn bind_request(self) -> Result<BindRequestResponse, Error> {
-        let mut stream = self.connect().await?;
+    async fn bind_request_inner(
+        self,
+        reset_on_drop: bool,
+    ) -> Result<(BindRequestResponse, tokio::net::TcpStream), Error> {
+        let mut stream = self.connect(reset_on_drop).await?;
         let local_addr = stream.local_addr()?;
         let stun_host = self.stun_server;
 
@@ -830,7 +820,7 @@ impl TcpStunClient {
             ));
         }
 
-        Ok(BindRequestResponse {
+        let resp = BindRequestResponse {
             local_addr,
             stun_server_addr: stun_host,
             recv_from_addr: stun_host,
@@ -841,7 +831,51 @@ impl TcpStunClient {
             real_ip_changed: false,
             real_port_changed: false,
             latency_us: now.elapsed().as_micros() as u32,
-        })
+        };
+
+        Ok((resp, stream))
+    }
+
+    #[tracing::instrument(ret, level = Level::TRACE)]
+    pub async fn bind_request(self) -> Result<BindRequestResponse, Error> {
+        self.bind_request_inner(true).await.map(|(resp, _)| resp)
+    }
+
+    #[tracing::instrument(ret, level = Level::TRACE)]
+    pub async fn bind_request_and_hold(
+        self,
+        hold_duration: Duration,
+    ) -> Result<BindRequestResponse, Error> {
+        let (resp, mut stream) = self.bind_request_inner(false).await?;
+        let local_addr = resp.local_addr;
+        let mapped_addr = resp.mapped_socket_addr;
+        let stun_server = resp.stun_server_addr;
+        tokio::spawn(async move {
+            tracing::info!(
+                ?local_addr,
+                ?mapped_addr,
+                ?stun_server,
+                hold_secs = hold_duration.as_secs(),
+                "tcp stun mapping hold start"
+            );
+            tokio::time::sleep(hold_duration).await;
+            if let Err(error) = stream.shutdown().await {
+                tracing::debug!(
+                    ?error,
+                    ?local_addr,
+                    ?mapped_addr,
+                    ?stun_server,
+                    "tcp stun mapping hold shutdown failed"
+                );
+            }
+            tracing::info!(
+                ?local_addr,
+                ?mapped_addr,
+                ?stun_server,
+                "tcp stun mapping hold end"
+            );
+        });
+        Ok(resp)
     }
 }
 
@@ -917,6 +951,14 @@ pub trait StunInfoCollectorTrait: Send + Sync {
         udp: Arc<UdpSocket>,
     ) -> Result<SocketAddr, Error>;
     async fn get_tcp_port_mapping(&self, local_port: u16) -> Result<SocketAddr, Error>;
+    async fn get_tcp_port_mapping_and_hold(
+        &self,
+        local_port: u16,
+        hold_duration: Duration,
+    ) -> Result<SocketAddr, Error> {
+        let _ = hold_duration;
+        self.get_tcp_port_mapping(local_port).await
+    }
 }
 
 pub struct StunInfoCollector {
@@ -1061,6 +1103,53 @@ impl StunInfoCollectorTrait for StunInfoCollector {
 
         for server in stun_servers.iter() {
             let Ok(ret) = TcpStunClient::new(*server, local_port).bind_request().await else {
+                tracing::warn!(?server, "tcp stun bind request failed");
+                continue;
+            };
+
+            if let Some(mapped_addr) = ret.mapped_socket_addr {
+                return Ok(mapped_addr);
+            }
+        }
+
+        Err(Error::NotFound)
+    }
+
+    async fn get_tcp_port_mapping_and_hold(
+        &self,
+        local_port: u16,
+        hold_duration: Duration,
+    ) -> Result<SocketAddr, Error> {
+        self.start_stun_routine();
+
+        let mut stun_servers = self
+            .tcp_nat_test_result
+            .read()
+            .unwrap()
+            .clone()
+            .map(|x| x.collect_available_stun_server())
+            .unwrap_or_default();
+
+        if stun_servers.is_empty() {
+            let mut host_resolver =
+                HostResolverIter::new(self.tcp_stun_servers.read().unwrap().clone(), 2, false);
+            while let Some(addr) = host_resolver.next().await {
+                stun_servers.push(addr);
+                if stun_servers.len() >= 2 {
+                    break;
+                }
+            }
+        }
+
+        if stun_servers.is_empty() {
+            return Err(Error::NotFound);
+        }
+
+        for server in stun_servers.iter() {
+            let Ok(ret) = TcpStunClient::new(*server, local_port)
+                .bind_request_and_hold(hold_duration)
+                .await
+            else {
                 tracing::warn!(?server, "tcp stun bind request failed");
                 continue;
             };

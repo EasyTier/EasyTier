@@ -126,13 +126,25 @@ impl DirectConnectorRpc for DirectConnectorManagerRpcServer {
         _: GetIpListRequest,
     ) -> rpc_types::error::Result<GetIpListResponse> {
         let mut ret = self.global_ctx.get_ip_collector().collect_ip_addrs().await;
-        ret.listeners = self
-            .global_ctx
-            .config
-            .get_mapped_listeners()
+        let mapped_listeners = self.global_ctx.config.get_mapped_listeners();
+        let dynamic_mapped_listeners = self.global_ctx.get_dynamic_mapped_listeners();
+        let running_listeners = self.global_ctx.get_running_listeners();
+        if !dynamic_mapped_listeners.is_empty() {
+            tracing::info!(
+                ?dynamic_mapped_listeners,
+                "ws_hole_punch: get_ip_list exposes dynamic mapped listeners"
+            );
+        }
+        tracing::debug!(
+            ?mapped_listeners,
+            ?dynamic_mapped_listeners,
+            ?running_listeners,
+            "ws_hole_punch: get_ip_list listener sources"
+        );
+        ret.listeners = mapped_listeners
             .into_iter()
-            .chain(self.global_ctx.get_dynamic_mapped_listeners())
-            .chain(self.global_ctx.get_running_listeners())
+            .chain(dynamic_mapped_listeners)
+            .chain(running_listeners)
             .map(Into::into)
             .collect();
         remove_easytier_managed_ipv6s(&mut ret, &self.global_ctx);

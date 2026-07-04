@@ -156,7 +156,11 @@ where
                         continue;
                     }
 
-                    tracing::debug!(?item, "launch hole punching task");
+                    tracing::debug!(
+                        ?item,
+                        task_launcher = std::any::type_name::<L>(),
+                        "launch peer task"
+                    );
                     peer_task_map.insert(
                         item.clone(),
                         AbortOnDropHandle::new(launcher.launch_task(&data, item).await),
