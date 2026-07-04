@@ -12,9 +12,10 @@ const props = defineProps<{
 const list = defineModel<string[]>({ required: true })
 
 const fallbackUrl = () => {
-    const defaultProto = Object.keys(props.protos).includes('tcp')
+    const protoKeys = Object.keys(props.protos)
+    const defaultProto = protoKeys.includes('tcp')
         ? 'tcp'
-        : (Object.keys(props.protos)[0] ?? 'tcp')
+        : (protoKeys[0] ?? 'tcp')
     const defaultPort = props.protos[defaultProto] ?? 11010
     return `${defaultProto}://0.0.0.0:${defaultPort}`
 }
