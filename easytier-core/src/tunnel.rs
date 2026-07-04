@@ -5,17 +5,12 @@ use tokio::time::error::Elapsed;
 
 use crate::{packet::ZCPacket, proto::common::TunnelInfo};
 
+pub use crate::socket::IpVersion;
+
 pub mod filter;
 pub mod mpsc;
 pub mod ring;
 pub mod stats;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum IpVersion {
-    V4,
-    V6,
-    Both,
-}
 
 #[derive(Debug, thiserror::Error)]
 pub enum TunnelError {
