@@ -30,8 +30,8 @@ use crate::{
     },
     tunnel::{
         Tunnel, TunnelError, ZCPacketStream,
-        memory::create_memory_tunnel_pair,
         mpsc::{MpscTunnel, MpscTunnelSender},
+        ring::create_ring_tunnel_pair,
     },
 };
 
@@ -108,7 +108,7 @@ impl Default for Client {
 
 impl Client {
     pub fn new() -> Self {
-        let (ring_a, ring_b) = create_memory_tunnel_pair();
+        let (ring_a, ring_b) = create_ring_tunnel_pair();
         Self {
             mpsc: Mutex::new(MpscTunnel::new(ring_a, None)),
             transport: Mutex::new(MpscTunnel::new(ring_b, None)),

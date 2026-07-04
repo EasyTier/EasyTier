@@ -238,8 +238,6 @@ wildmatch = "2.3.4"
 rust-i18n = "3"
 sys-locale = "0.3"
 
-ringbuf = "0.4.5"
-async-ringbuf = "0.3.1"
 
 service-manager = { git = "https://github.com/EasyTier/service-manager-rs.git", branch = "main" }
 

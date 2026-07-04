@@ -28,7 +28,7 @@ use super::{
     TunnelUrl,
     common::wait_for_connect_futures,
     packet_def::{UDP_TUNNEL_HEADER_SIZE, UDPTunnelHeader, V4HolePunchPacket, V6HolePunchPacket},
-    ring::{RingSink, RingStream},
+    ring::{RingSink, RingSinkSendError, RingStream, create_ring_socket_pair, split_ring_socket},
 };
 use crate::tunnel::common::bind;
 use crate::{
@@ -37,7 +37,6 @@ use crate::{
         build_url_from_socket_addr,
         common::{TunnelWrapper, reserve_buf},
         packet_def::{UdpPacketType, ZCPacket, ZCPacketType},
-        ring::RingTunnel,
         udp_src,
     },
 };
@@ -393,12 +392,22 @@ impl UdpConnection {
         }
 
         if zc_packet.is_lossy() {
-            if let Err(e) = self.ring_sender.try_send(zc_packet) {
-                tracing::trace!(?e, "ring sender full, drop lossy packet");
+            if let Err(err) = self.ring_sender.try_send(zc_packet) {
+                match err {
+                    RingSinkSendError::Full(packet) => {
+                        tracing::trace!(?packet, "ring sender full, drop lossy packet");
+                    }
+                    RingSinkSendError::Closed(_) => return Err(TunnelError::Shutdown),
+                }
             }
-        } else if self.ring_sender.force_send(zc_packet).is_err() {
-            tracing::trace!("ring sender full, reject non-lossy packet");
-            return Err(TunnelError::BufferFull);
+        } else if let Err(err) = self.ring_sender.force_send(zc_packet) {
+            return match err {
+                RingSinkSendError::Full(_) => {
+                    tracing::trace!("ring sender full, reject non-lossy packet");
+                    Err(TunnelError::BufferFull)
+                }
+                RingSinkSendError::Closed(_) => Err(TunnelError::Shutdown),
+            };
         }
 
         Ok(())
@@ -458,34 +467,28 @@ impl UdpTunnelListenerData {
             return;
         }
 
-        let ring_for_send_udp = Arc::new(RingTunnel::new(128));
-        let ring_for_recv_udp = Arc::new(RingTunnel::new(128));
-        tracing::debug!(
-            ?ring_for_send_udp,
-            ?ring_for_recv_udp,
-            "udp build tunnel for listener"
-        );
+        let (tunnel_ring, udp_ring) = create_ring_socket_pair(128);
+        tracing::debug!(?tunnel_ring, ?udp_ring, "udp build tunnel for listener");
 
-        let new_internal_conn = || {
-            UdpConnection::new(
-                socket.clone(),
-                conn_id,
-                remote_addr,
-                RingSink::new(ring_for_recv_udp.clone()),
-                RingStream::new(ring_for_send_udp.clone()),
-                self.close_event_sender.clone(),
-            )
-        };
+        let (udp_recv, udp_sender) = split_ring_socket(udp_ring);
+        let mut new_internal_conn = Some(UdpConnection::new(
+            socket.clone(),
+            conn_id,
+            remote_addr,
+            udp_sender,
+            udp_recv,
+            self.close_event_sender.clone(),
+        ));
         let duplicate_syn = match self.sock_map.entry(remote_addr) {
             dashmap::mapref::entry::Entry::Occupied(entry) if entry.get().conn_id == conn_id => {
                 true
             }
             dashmap::mapref::entry::Entry::Occupied(mut entry) => {
-                entry.insert(new_internal_conn());
+                entry.insert(new_internal_conn.take().unwrap());
                 false
             }
             dashmap::mapref::entry::Entry::Vacant(entry) => {
-                entry.insert(new_internal_conn());
+                entry.insert(new_internal_conn.take().unwrap());
                 false
             }
         };
@@ -504,9 +507,10 @@ impl UdpTunnelListenerData {
             return;
         }
 
+        let (tunnel_recv, tunnel_sender) = split_ring_socket(tunnel_ring);
         let conn = Box::new(TunnelWrapper::new(
-            Box::new(RingStream::new(ring_for_recv_udp)),
-            Box::new(RingSink::new(ring_for_send_udp)),
+            Box::new(tunnel_recv),
+            Box::new(tunnel_sender),
             Some(TunnelInfo {
                 tunnel_type: "udp".to_owned(),
                 local_addr: Some(self.local_url.clone().into()),
@@ -893,18 +897,12 @@ impl UdpTunnelConnector {
         dst_addr: SocketAddr,
         conn_id: u32,
     ) -> Result<Box<dyn super::Tunnel>, super::TunnelError> {
-        let ring_for_send_udp = Arc::new(RingTunnel::new(128));
-        let ring_for_recv_udp = Arc::new(RingTunnel::new(128));
-        tracing::debug!(
-            ?ring_for_send_udp,
-            ?ring_for_recv_udp,
-            "udp build tunnel for connector"
-        );
+        let (tunnel_ring, udp_ring) = create_ring_socket_pair(128);
+        tracing::debug!(?tunnel_ring, ?udp_ring, "udp build tunnel for connector");
 
         let (close_event_sender, mut close_event_recv) = unbounded_channel();
 
-        let ring_recv = RingStream::new(ring_for_send_udp.clone());
-        let ring_sender = RingSink::new(ring_for_recv_udp.clone());
+        let (ring_recv, ring_sender) = split_ring_socket(udp_ring);
         let mut udp_conn = UdpConnection::new(
             socket.clone(),
             conn_id,
@@ -951,9 +949,10 @@ impl UdpTunnelConnector {
             )),
         );
 
+        let (tunnel_recv, tunnel_sender) = split_ring_socket(tunnel_ring);
         Ok(Box::new(TunnelWrapper::new(
-            Box::new(RingStream::new(ring_for_recv_udp)),
-            Box::new(RingSink::new(ring_for_send_udp)),
+            Box::new(tunnel_recv),
+            Box::new(tunnel_sender),
             Some(TunnelInfo {
                 tunnel_type: "udp".to_owned(),
                 local_addr: Some(
@@ -1163,15 +1162,15 @@ mod tests {
 
         let socket = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
         let dst_addr = "127.0.0.1:1".parse().unwrap();
-        let ring_for_send_udp = Arc::new(RingTunnel::new(8));
-        let ring_for_recv_udp = Arc::new(RingTunnel::new(8));
+        let (_tunnel_ring, udp_ring) = create_ring_socket_pair(8);
+        let (udp_recv, udp_sender) = split_ring_socket(udp_ring);
         let (close_event_sender, _close_event_recv) = tokio::sync::mpsc::unbounded_channel();
         let mut conn = UdpConnection::new(
             socket,
             7,
             dst_addr,
-            RingSink::new(ring_for_recv_udp),
-            RingStream::new(ring_for_send_udp),
+            udp_sender,
+            udp_recv,
             close_event_sender,
         );
 

@@ -217,6 +217,40 @@ hole punch 还是 ring 来的。它只关心已经升级好的 `Tunnel`。
    `socket -> tunnel`，PeerManager 只接收 tunnel admission。
 7. 删除或降级旧的 `TunnelConnector` / `TunnelListener` compatibility wrapper。
 
+## 第一阶段执行计划
+
+第一阶段使用 `socket` 作为 Module 名，不使用 `transport`。`transport` 容易把
+裸 socket 和升级后的 tunnel 混在一起；`socket` 能直接表达这个 Module 的
+Interface 层级。
+
+目标布局：
+
+```text
+easytier-core/src/socket/
+  mod.rs
+  udp.rs      # 已存在：VirtualUdpSocket、UdpBindOptions、VirtualUdpSocketFactory
+  tcp.rs      # 新增：VirtualTcpSocket、TCP connect/listen factory Interface
+  ring.rs     # 新增：RingSocket in-process primitive
+
+easytier-core/src/tunnel.rs
+  Tunnel       # 保持现有位置，不移动到 socket Module
+  ring.rs      # RingSocket<ZCPacket> -> RingTunnel
+```
+
+执行边界：
+
+- `VirtualUdpSocket` 继续留在 `socket::udp`，不在 hole-punch Module 内重新定义。
+- `VirtualTcpSocket` 新增到 `socket::tcp`，只表达裸 TCP stream I/O 和地址。
+- `RingSocket<T>` 新增到 `socket::ring`，只表达 in-process socket primitive；
+  `tunnel::ring` 选择 `T = ZCPacket` 并提供 core 内唯一的 in-memory
+  `RingTunnel`。
+- `Tunnel` 继续留在 `easytier-core::tunnel`，明确它是 orchestrator upgrade
+  后的产物。
+- 删除 `tunnel::memory`，避免 core 中同时存在两套 in-memory tunnel
+  implementation。
+- 本阶段不迁移 manual/direct/hole-punch 调用路径，不删除旧
+  `TunnelConnector`。
+
 ## 非目标
 
 - 不让 connector 解析或持有 tunnel schema。

@@ -9,7 +9,7 @@ use tokio::{task::JoinSet, time::timeout};
 use crate::{
     packet::PacketType,
     proto::rpc_types::error::Error,
-    tunnel::{Tunnel, memory::create_memory_tunnel_pair},
+    tunnel::{Tunnel, ring::create_ring_tunnel_pair},
 };
 
 use super::{
@@ -95,7 +95,7 @@ impl BidirectRpcManager {
     }
 
     pub fn run_and_create_tunnel(&self) -> Box<dyn Tunnel> {
-        let (ret, inner) = create_memory_tunnel_pair();
+        let (ret, inner) = create_ring_tunnel_pair();
         self.run_with_tunnel(inner);
         ret
     }

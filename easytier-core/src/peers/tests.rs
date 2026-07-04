@@ -11,13 +11,13 @@ use crate::{
         peer_map::PeerMap,
         peer_session::PeerSessionStore,
     },
-    tunnel::memory::create_memory_tunnel_pair,
+    tunnel::ring::create_ring_tunnel_pair,
 };
 
 #[tokio::test]
 async fn peer_conn_handshake_over_memory_tunnel() {
     let peer_session_store = Arc::new(PeerSessionStore::new());
-    let (client_tunnel, server_tunnel) = create_memory_tunnel_pair();
+    let (client_tunnel, server_tunnel) = create_ring_tunnel_pair();
     let client_ctx = Arc::new(NoopPeerContext::default());
     let server_ctx = Arc::new(NoopPeerContext::default());
 
@@ -38,7 +38,7 @@ async fn peer_conn_handshake_over_memory_tunnel() {
 #[tokio::test]
 async fn peer_conn_handshake_matches_plaintext_secret_identity() {
     let peer_session_store = Arc::new(PeerSessionStore::new());
-    let (client_tunnel, server_tunnel) = create_memory_tunnel_pair();
+    let (client_tunnel, server_tunnel) = create_ring_tunnel_pair();
     let client_ctx = Arc::new(NoopPeerContext::new(NetworkIdentity {
         network_name: "net".to_string(),
         network_secret: Some("secret".to_string()),
@@ -67,7 +67,7 @@ async fn peer_conn_handshake_matches_plaintext_secret_identity() {
 #[tokio::test]
 async fn peer_map_forwards_packet_over_memory_tunnel() {
     let peer_session_store = Arc::new(PeerSessionStore::new());
-    let (client_tunnel, server_tunnel) = create_memory_tunnel_pair();
+    let (client_tunnel, server_tunnel) = create_ring_tunnel_pair();
     let client_ctx = Arc::new(NoopPeerContext::default());
     let server_ctx = Arc::new(NoopPeerContext::default());
 

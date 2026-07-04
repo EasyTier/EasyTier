@@ -24,8 +24,8 @@ use crate::{
     rpc_impl::packet::BuildRpcPacketArgs,
     tunnel::{
         Tunnel, ZCPacketStream,
-        memory::create_memory_tunnel_pair,
         mpsc::{MpscTunnel, MpscTunnelSender},
+        ring::create_ring_tunnel_pair,
     },
 };
 
@@ -99,7 +99,7 @@ impl Server {
     }
 
     pub fn new_with_registry(registry: Arc<ServiceRegistry>) -> Self {
-        let (ring_a, ring_b) = create_memory_tunnel_pair();
+        let (ring_a, ring_b) = create_ring_tunnel_pair();
 
         Self {
             registry,

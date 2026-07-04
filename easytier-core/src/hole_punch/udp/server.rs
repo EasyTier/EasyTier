@@ -759,7 +759,7 @@ mod tests {
         hole_punch::udp::{UdpPunchAcceptor, UdpPunchConnCounter, UdpResolvedPublicAddr},
         proto::common::StunInfo,
         socket::udp::UdpBindOptions,
-        tunnel::{Tunnel, memory::create_memory_tunnel_pair},
+        tunnel::{Tunnel, ring::create_ring_tunnel_pair},
     };
 
     struct MockSocket {
@@ -878,7 +878,7 @@ mod tests {
             _socket: Arc<Self::Socket>,
             _remote: SocketAddr,
         ) -> anyhow::Result<Box<dyn Tunnel>> {
-            let (tunnel, _) = create_memory_tunnel_pair();
+            let (tunnel, _) = create_ring_tunnel_pair();
             Ok(tunnel)
         }
     }
@@ -949,7 +949,7 @@ mod tests {
 
     #[tokio::test]
     async fn accepted_tunnel_is_forwarded_to_sink() {
-        let (server_tunnel, _) = create_memory_tunnel_pair();
+        let (server_tunnel, _) = create_ring_tunnel_pair();
         let runtime = Arc::new(MockRuntime::new(vec![listener(10001, vec![server_tunnel])]));
         let sink = Arc::new(MockSink::default());
         let common = UdpHolePunchServerCommon::new(runtime, sink.clone());

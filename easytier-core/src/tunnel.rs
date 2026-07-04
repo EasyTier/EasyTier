@@ -6,8 +6,8 @@ use tokio::time::error::Elapsed;
 use crate::{packet::ZCPacket, proto::common::TunnelInfo};
 
 pub mod filter;
-pub mod memory;
 pub mod mpsc;
+pub mod ring;
 pub mod stats;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
