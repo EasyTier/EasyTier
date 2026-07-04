@@ -1,6 +1,16 @@
-use std::{net::SocketAddr, sync::Arc};
+use std::{
+    net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6},
+    sync::Arc,
+};
 
 use async_trait::async_trait;
+use bytes::BytesMut;
+use zerocopy::{AsBytes, FromBytes};
+
+use crate::packet::{
+    UDP_TUNNEL_HEADER_SIZE, UDPTunnelHeader, UdpPacketType, V4HolePunchPacket, V6HolePunchPacket,
+    ZCPacket, ZCPacketType,
+};
 
 #[async_trait]
 pub trait VirtualUdpSocket: Send + Sync + 'static {
@@ -66,6 +76,161 @@ pub trait VirtualUdpSocketFactory: Send + Sync + 'static {
     type Socket: VirtualUdpSocket;
 
     async fn bind_udp(&self, options: UdpBindOptions) -> anyhow::Result<Arc<Self::Socket>>;
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PreferredIpv6Source {
+    pub ip: Ipv6Addr,
+    pub ifindex: u32,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum UdpSessionPacketError {
+    #[error("udp packet size too small: {datagram_size:?}, packet: {packet:?}")]
+    TooSmall {
+        datagram_size: usize,
+        packet: BytesMut,
+    },
+    #[error(
+        "udp packet payload len not match: header len: {header_len:?}, real len: {datagram_size:?}"
+    )]
+    PayloadLenMismatch {
+        header_len: usize,
+        datagram_size: usize,
+    },
+}
+
+fn new_udp_packet<F>(f: F, udp_body: &[u8]) -> ZCPacket
+where
+    F: FnOnce(&mut UDPTunnelHeader),
+{
+    let mut buf = BytesMut::new();
+    buf.resize(UDP_TUNNEL_HEADER_SIZE + udp_body.len(), 0);
+    buf[UDP_TUNNEL_HEADER_SIZE..].copy_from_slice(udp_body);
+
+    let mut ret = ZCPacket::new_from_buf(buf, ZCPacketType::UDP);
+    let header = ret.mut_udp_tunnel_header().unwrap();
+    f(header);
+    ret
+}
+
+pub fn new_syn_packet(conn_id: u32, magic: u64) -> ZCPacket {
+    new_udp_packet(
+        |header| {
+            header.msg_type = UdpPacketType::Syn as u8;
+            header.conn_id.set(conn_id);
+            header.len.set(8);
+        },
+        &magic.to_le_bytes(),
+    )
+}
+
+pub fn new_sack_packet(conn_id: u32, magic: u64) -> ZCPacket {
+    new_udp_packet(
+        |header| {
+            header.msg_type = UdpPacketType::Sack as u8;
+            header.conn_id.set(conn_id);
+            header.len.set(8);
+        },
+        &magic.to_le_bytes(),
+    )
+}
+
+pub fn new_v6_hole_punch_packet(
+    dst: &SocketAddrV6,
+    preferred_src: Option<PreferredIpv6Source>,
+) -> ZCPacket {
+    let mut body = V6HolePunchPacket::default();
+    body.dst_ipv6.copy_from_slice(&dst.ip().octets());
+    body.dst_port.set(dst.port());
+    if let Some(src) = preferred_src {
+        body.preferred_src_ipv6.copy_from_slice(&src.ip.octets());
+        body.preferred_src_ifindex.set(src.ifindex);
+    }
+    new_udp_packet(
+        |header| {
+            header.msg_type = UdpPacketType::V6HolePunch as u8;
+            header.conn_id.set(dst.port() as u32);
+            header
+                .len
+                .set(std::mem::size_of::<V6HolePunchPacket>() as u16);
+        },
+        body.as_bytes(),
+    )
+}
+
+pub fn new_v4_hole_punch_packet(dst: &SocketAddrV4) -> ZCPacket {
+    let mut body = V4HolePunchPacket::default();
+    body.dst_ipv4.copy_from_slice(&dst.ip().octets());
+    body.dst_port.set(dst.port());
+    new_udp_packet(
+        |header| {
+            header.msg_type = UdpPacketType::V4HolePunch as u8;
+            header.conn_id.set(dst.port() as u32);
+            header
+                .len
+                .set(std::mem::size_of::<V4HolePunchPacket>() as u16);
+        },
+        body.as_bytes(),
+    )
+}
+
+pub fn extract_dst_addr_from_v4_hole_punch_packet(buf: &[u8]) -> Option<SocketAddrV4> {
+    let body = V4HolePunchPacket::ref_from_prefix(buf)?;
+    let ip = Ipv4Addr::from(body.dst_ipv4);
+    Some(SocketAddrV4::new(ip, body.dst_port.get()))
+}
+
+pub fn extract_v6_hole_punch_packet(
+    buf: &[u8],
+) -> Option<(SocketAddrV6, Option<PreferredIpv6Source>)> {
+    let body = V6HolePunchPacket::ref_from_prefix(buf)?;
+    let ip = Ipv6Addr::from(body.dst_ipv6);
+    let preferred_src_ipv6 = Ipv6Addr::from(body.preferred_src_ipv6);
+    let preferred_src = (!preferred_src_ipv6.is_unspecified()).then_some(PreferredIpv6Source {
+        ip: preferred_src_ipv6,
+        ifindex: body.preferred_src_ifindex.get(),
+    });
+    Some((
+        SocketAddrV6::new(ip, body.dst_port.get(), 0, 0),
+        preferred_src,
+    ))
+}
+
+pub fn is_stun_packet(data: &[u8]) -> bool {
+    data.len() >= UDP_TUNNEL_HEADER_SIZE
+        && data[4..8] == [0x21, 0x12, 0xA4, 0x42]
+        && data[0] & 0xC0 == 0
+}
+
+pub fn parse_udp_session_datagram(
+    buf: BytesMut,
+    allow_stun: bool,
+) -> Result<ZCPacket, UdpSessionPacketError> {
+    let datagram_size = buf.len();
+    if datagram_size < UDP_TUNNEL_HEADER_SIZE {
+        return Err(UdpSessionPacketError::TooSmall {
+            datagram_size,
+            packet: buf,
+        });
+    }
+
+    if allow_stun && is_stun_packet(&buf[..UDP_TUNNEL_HEADER_SIZE]) {
+        return Ok(ZCPacket::new_from_buf(buf, ZCPacketType::UDP));
+    }
+
+    let zc_packet = ZCPacket::new_from_buf(buf, ZCPacketType::UDP);
+    let header = zc_packet.udp_tunnel_header().unwrap();
+    let header_len = header.len.get() as usize;
+    let real_len = datagram_size - UDP_TUNNEL_HEADER_SIZE;
+    if header_len != real_len {
+        return Err(UdpSessionPacketError::PayloadLenMismatch {
+            header_len,
+            datagram_size,
+        });
+    }
+
+    Ok(zc_packet)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -536,5 +701,65 @@ mod tests {
         assert_eq!(session.kind(), UdpSessionKind::Direct);
         assert_eq!(session.local_addr().unwrap(), bind_addr);
         assert_eq!(session.peer_addr().unwrap(), remote_addr);
+    }
+
+    #[test]
+    fn builds_syn_and_sack_packets_without_changing_wire_shape() {
+        let conn_id = 0x1234_5678;
+        let magic = 0x0102_0304_0506_0708;
+
+        for (packet, msg_type) in [
+            (new_syn_packet(conn_id, magic), UdpPacketType::Syn as u8),
+            (new_sack_packet(conn_id, magic), UdpPacketType::Sack as u8),
+        ] {
+            let header = packet.udp_tunnel_header().unwrap();
+            assert_eq!(header.conn_id.get(), conn_id);
+            assert_eq!(header.msg_type, msg_type);
+            assert_eq!(header.len.get(), 8);
+            assert_eq!(packet.udp_payload(), magic.to_le_bytes());
+        }
+    }
+
+    #[test]
+    fn v6_hole_punch_packet_preserves_preferred_source() {
+        let dst_addr = "[2001:db8::1]:10001".parse::<SocketAddrV6>().unwrap();
+        let preferred_src = PreferredIpv6Source {
+            ip: "2001:db8::2".parse().unwrap(),
+            ifindex: 42,
+        };
+
+        let packet = new_v6_hole_punch_packet(&dst_addr, Some(preferred_src));
+        let (parsed_dst_addr, parsed_preferred_src) =
+            extract_v6_hole_punch_packet(packet.udp_payload()).unwrap();
+
+        assert_eq!(parsed_dst_addr, dst_addr);
+        assert_eq!(parsed_preferred_src, Some(preferred_src));
+    }
+
+    #[test]
+    fn parses_udp_session_datagram_and_rejects_bad_payload_len() {
+        let packet = new_syn_packet(7, 42).into_bytes();
+        let parsed = parse_udp_session_datagram(packet.clone().into(), false).unwrap();
+        assert_eq!(parsed.udp_tunnel_header().unwrap().conn_id.get(), 7);
+
+        let mut bad_packet = packet.to_vec();
+        bad_packet.pop();
+
+        assert!(matches!(
+            parse_udp_session_datagram(BytesMut::from(bad_packet.as_slice()), false),
+            Err(UdpSessionPacketError::PayloadLenMismatch { .. })
+        ));
+    }
+
+    #[test]
+    fn stun_classifier_requires_cookie_and_stun_bits() {
+        let mut stun = [0; UDP_TUNNEL_HEADER_SIZE];
+        stun[4..8].copy_from_slice(&[0x21, 0x12, 0xA4, 0x42]);
+
+        assert!(is_stun_packet(&stun));
+
+        stun[0] = 0xC0;
+        assert!(!is_stun_packet(&stun));
+        assert!(!is_stun_packet(&stun[..UDP_TUNNEL_HEADER_SIZE - 1]));
     }
 }

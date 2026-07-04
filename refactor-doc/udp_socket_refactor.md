@@ -199,6 +199,9 @@ core UDP session layer 的 demux，再投递到对应的 `UdpSessionSocket`。
 ## Demux 规则
 
 本阶段不修改 EasyTier UDP wire protocol。demux 必须基于现有包格式实现。
+`Syn` / `Sack`、V4/V6 hole-punch packet builder、STUN classifier 和 UDP
+session datagram parser 属于 core socket 层 helper；`easytier` crate 不再保留
+这些 packet helper 的重复实现。
 
 ### 已建立 EasyTier UDP session
 

@@ -1,6 +1,6 @@
 use std::{
     fmt::Debug,
-    net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6},
+    net::{SocketAddr, SocketAddrV4, SocketAddrV6},
     sync::{Arc, Weak},
     time::Duration,
 };
@@ -9,9 +9,16 @@ use anyhow::Context;
 use async_trait::async_trait;
 use bytes::BytesMut;
 use dashmap::DashMap;
-pub use easytier_core::hole_punch::udp::new_hole_punch_packet;
+use easytier_core::socket::udp::{
+    extract_dst_addr_from_v4_hole_punch_packet, extract_v6_hole_punch_packet, is_stun_packet,
+    new_sack_packet, new_syn_packet, parse_udp_session_datagram,
+};
+pub use easytier_core::{
+    hole_punch::udp::new_hole_punch_packet,
+    socket::udp::{PreferredIpv6Source, new_v4_hole_punch_packet, new_v6_hole_punch_packet},
+};
 use futures::{StreamExt, stream::FuturesUnordered};
-use zerocopy::{AsBytes, FromBytes};
+use zerocopy::AsBytes;
 
 use tokio::{
     net::UdpSocket,
@@ -27,7 +34,6 @@ use super::{
     FromUrl, IpVersion, Tunnel, TunnelConnCounter, TunnelError, TunnelInfo, TunnelListener,
     TunnelUrl,
     common::wait_for_connect_futures,
-    packet_def::{UDP_TUNNEL_HEADER_SIZE, UDPTunnelHeader, V4HolePunchPacket, V6HolePunchPacket},
     ring::{RingSink, RingSinkSendError, RingStream, create_ring_socket_pair, split_ring_socket},
 };
 use crate::tunnel::common::bind;
@@ -45,118 +51,6 @@ pub const UDP_DATA_MTU: usize = 2000;
 
 type UdpCloseEventSender = UnboundedSender<(SocketAddr, Option<TunnelError>)>;
 type UdpCloseEventReceiver = UnboundedReceiver<(SocketAddr, Option<TunnelError>)>;
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct PreferredIpv6Source {
-    pub ip: Ipv6Addr,
-    pub ifindex: u32,
-}
-
-fn new_udp_packet<F>(f: F, udp_body: Option<&[u8]>) -> ZCPacket
-where
-    F: FnOnce(&mut UDPTunnelHeader),
-{
-    let mut buf = BytesMut::new();
-    buf.resize(
-        UDP_TUNNEL_HEADER_SIZE + udp_body.as_ref().map(|v| v.len()).unwrap_or(0),
-        0,
-    );
-    buf[UDP_TUNNEL_HEADER_SIZE..].copy_from_slice(udp_body.unwrap());
-
-    let mut ret = ZCPacket::new_from_buf(buf, ZCPacketType::UDP);
-    let header = ret.mut_udp_tunnel_header().unwrap();
-    f(header);
-    ret
-}
-
-fn new_syn_packet(conn_id: u32, magic: u64) -> ZCPacket {
-    new_udp_packet(
-        |header| {
-            header.msg_type = UdpPacketType::Syn as u8;
-            header.conn_id.set(conn_id);
-            header.len.set(8);
-        },
-        Some(&magic.to_le_bytes()),
-    )
-}
-
-fn new_sack_packet(conn_id: u32, magic: u64) -> ZCPacket {
-    new_udp_packet(
-        |header| {
-            header.msg_type = UdpPacketType::Sack as u8;
-            header.conn_id.set(conn_id);
-            header.len.set(8);
-        },
-        Some(&magic.to_le_bytes()),
-    )
-}
-
-pub fn new_v6_hole_punch_packet(
-    dst: &SocketAddrV6,
-    preferred_src: Option<PreferredIpv6Source>,
-) -> ZCPacket {
-    // generate a 128 bytes vec with random data
-    let mut body = V6HolePunchPacket::default();
-    body.dst_ipv6.copy_from_slice(&dst.ip().octets());
-    body.dst_port.set(dst.port());
-    if let Some(src) = preferred_src {
-        body.preferred_src_ipv6.copy_from_slice(&src.ip.octets());
-        body.preferred_src_ifindex.set(src.ifindex);
-    }
-    new_udp_packet(
-        |header| {
-            header.msg_type = UdpPacketType::V6HolePunch as u8;
-            header.conn_id.set(dst.port() as u32);
-            header
-                .len
-                .set(std::mem::size_of::<V6HolePunchPacket>() as u16);
-        },
-        Some(body.as_bytes()),
-    )
-}
-
-pub fn new_v4_hole_punch_packet(dst: &SocketAddrV4) -> ZCPacket {
-    let mut body = V4HolePunchPacket::default();
-    body.dst_ipv4.copy_from_slice(&dst.ip().octets());
-    body.dst_port.set(dst.port());
-    new_udp_packet(
-        |header| {
-            header.msg_type = UdpPacketType::V4HolePunch as u8;
-            header.conn_id.set(dst.port() as u32);
-            header
-                .len
-                .set(std::mem::size_of::<V4HolePunchPacket>() as u16);
-        },
-        Some(body.as_bytes()),
-    )
-}
-
-fn extract_dst_addr_from_v4_hole_punch_packet(buf: &[u8]) -> Option<SocketAddrV4> {
-    let body = V4HolePunchPacket::ref_from_prefix(buf)?;
-    let ip = Ipv4Addr::from(body.dst_ipv4);
-    Some(SocketAddrV4::new(ip, body.dst_port.get()))
-}
-
-fn extract_v6_hole_punch_packet(buf: &[u8]) -> Option<(SocketAddrV6, Option<PreferredIpv6Source>)> {
-    let body = V6HolePunchPacket::ref_from_prefix(buf)?;
-    let ip = Ipv6Addr::from(body.dst_ipv6);
-    let preferred_src_ipv6 = Ipv6Addr::from(body.preferred_src_ipv6);
-    let preferred_src = (!preferred_src_ipv6.is_unspecified()).then_some(PreferredIpv6Source {
-        ip: preferred_src_ipv6,
-        ifindex: body.preferred_src_ifindex.get(),
-    });
-    Some((
-        SocketAddrV6::new(ip, body.dst_port.get(), 0, 0),
-        preferred_src,
-    ))
-}
-
-fn is_stun_packet(b: &[u8]) -> bool {
-    // stun has following pattern:
-    // 1. first two bits are 0b00
-    // 2. magic cookie between 32-64 bits: 0x2112A442
-    b[4..8] == [0x21, 0x12, 0xA4, 0x42] && b[0] & 0xC0 == 0
-}
 
 pub async fn send_v6_hole_punch_packet(
     listener_port: u16,
@@ -251,29 +145,8 @@ async fn respond_stun_packet(
 }
 
 fn get_zcpacket_from_buf(buf: BytesMut, allow_stun: bool) -> Result<ZCPacket, TunnelError> {
-    let dg_size = buf.len();
-    if dg_size < UDP_TUNNEL_HEADER_SIZE {
-        return Err(TunnelError::InvalidPacket(format!(
-            "udp packet size too small: {:?}, packet: {:?}",
-            dg_size, buf
-        )));
-    }
-
-    if allow_stun && is_stun_packet(&buf[..UDP_TUNNEL_HEADER_SIZE]) {
-        return Ok(ZCPacket::new_from_buf(buf, ZCPacketType::UDP));
-    }
-
-    let zc_packet = ZCPacket::new_from_buf(buf, ZCPacketType::UDP);
-    let header = zc_packet.udp_tunnel_header().unwrap();
-    let payload_len = header.len.get() as usize;
-    if payload_len != dg_size - UDP_TUNNEL_HEADER_SIZE {
-        return Err(TunnelError::InvalidPacket(format!(
-            "udp packet payload len not match: header len: {:?}, real len: {:?}",
-            payload_len, dg_size
-        )));
-    }
-
-    Ok(zc_packet)
+    parse_udp_session_datagram(buf, allow_stun)
+        .map_err(|err| TunnelError::InvalidPacket(err.to_string()))
 }
 
 #[instrument]
