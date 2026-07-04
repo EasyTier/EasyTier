@@ -1,34 +1,28 @@
 use std::{
     fmt::Debug,
     net::{SocketAddr, SocketAddrV4, SocketAddrV6},
-    sync::{Arc, Weak},
+    sync::{Arc, Mutex as StdMutex, Weak},
 };
 
 use anyhow::Context;
 use async_trait::async_trait;
 use bytes::BytesMut;
-use dashmap::DashMap;
 use easytier_core::socket::udp::{
-    EasyTierUdpSessionLayer, UdpSessionConnectError, UdpSessionSocket, VirtualUdpSocket,
-    extract_dst_addr_from_v4_hole_punch_packet, extract_v6_hole_punch_packet, is_stun_packet,
-    new_sack_packet, parse_udp_session_datagram,
+    EasyTierUdpSessionLayer, UdpSessionConnectError, UdpSessionLayerControl, UdpSessionSocket,
+    VirtualUdpSocket,
 };
 pub use easytier_core::{
     hole_punch::udp::new_hole_punch_packet,
     socket::udp::{PreferredIpv6Source, new_v4_hole_punch_packet, new_v6_hole_punch_packet},
 };
 use futures::{StreamExt, stream::FuturesUnordered};
-use zerocopy::AsBytes;
 
 use tokio::{
     net::UdpSocket,
-    sync::mpsc::{
-        Receiver, Sender, UnboundedReceiver, UnboundedSender, channel, unbounded_channel,
-    },
+    sync::mpsc::{Receiver, Sender, channel},
     task::JoinSet,
 };
-use tokio_util::task::AbortOnDropHandle;
-use tracing::{Instrument, instrument};
+use tracing::Instrument;
 
 use super::{
     FromUrl, IpVersion, Tunnel, TunnelConnCounter, TunnelError, TunnelInfo, TunnelListener,
@@ -38,10 +32,10 @@ use super::{
 };
 use crate::tunnel::common::bind;
 use crate::{
-    common::{join_joinset_background, shrink_dashmap},
+    common::join_joinset_background,
     tunnel::{
         build_url_from_socket_addr,
-        common::{TunnelWrapper, reserve_buf},
+        common::TunnelWrapper,
         packet_def::{UDP_TUNNEL_HEADER_SIZE, UdpPacketType, ZCPacket, ZCPacketType},
         udp_src,
     },
@@ -49,20 +43,32 @@ use crate::{
 
 pub const UDP_DATA_MTU: usize = 2000;
 
-type UdpCloseEventSender = UnboundedSender<(SocketAddr, Option<TunnelError>)>;
-type UdpCloseEventReceiver = UnboundedReceiver<(SocketAddr, Option<TunnelError>)>;
-
 pub(crate) struct RuntimeUdpSocket {
     socket: Arc<UdpSocket>,
+    easy_tier_layer: StdMutex<Option<Weak<EasyTierUdpSessionLayer<RuntimeUdpSocket>>>>,
 }
 
 impl RuntimeUdpSocket {
     pub(crate) fn new(socket: Arc<UdpSocket>) -> Self {
-        Self { socket }
+        Self {
+            socket,
+            easy_tier_layer: StdMutex::new(None),
+        }
     }
 
     pub(crate) fn socket(&self) -> Arc<UdpSocket> {
         self.socket.clone()
+    }
+
+    pub(crate) fn easy_tier_layer(self: &Arc<Self>) -> Arc<EasyTierUdpSessionLayer<Self>> {
+        let mut weak_layer = self.easy_tier_layer.lock().unwrap();
+        if let Some(layer) = weak_layer.as_ref().and_then(Weak::upgrade) {
+            return layer;
+        }
+
+        let layer = Arc::new(EasyTierUdpSessionLayer::new(self.clone()));
+        *weak_layer = Some(Arc::downgrade(&layer));
+        layer
     }
 }
 
@@ -173,46 +179,6 @@ async fn respond_stun_packet(
     Ok(())
 }
 
-fn get_zcpacket_from_buf(buf: BytesMut, allow_stun: bool) -> Result<ZCPacket, TunnelError> {
-    parse_udp_session_datagram(buf, allow_stun)
-        .map_err(|err| TunnelError::InvalidPacket(err.to_string()))
-}
-
-#[instrument]
-async fn forward_from_ring_to_udp(
-    mut ring_recv: RingStream,
-    socket: &Arc<UdpSocket>,
-    addr: &SocketAddr,
-    conn_id: u32,
-) -> Option<TunnelError> {
-    tracing::debug!("udp forward from ring to udp");
-    loop {
-        let buf = ring_recv.next().await?;
-        let packet = match buf {
-            Ok(v) => v,
-            Err(e) => {
-                return Some(e);
-            }
-        };
-
-        let mut packet = packet.convert_type(ZCPacketType::UDP);
-        let udp_payload_len = packet.udp_payload().len();
-        let header = packet.mut_udp_tunnel_header().unwrap();
-        header.conn_id.set(conn_id);
-        header.len.set(udp_payload_len as u16);
-        header.msg_type = UdpPacketType::Data as u8;
-
-        let buf = packet.into_bytes();
-        tracing::trace!(?udp_payload_len, ?buf, "udp forward from ring to udp");
-        let ret = socket.send_to(&buf, &addr).await;
-        if ret.is_err() {
-            return Some(TunnelError::IOError(ret.unwrap_err()));
-        } else if ret.unwrap() == 0 {
-            return None;
-        }
-    }
-}
-
 async fn forward_from_ring_to_udp_session(
     mut ring_recv: RingStream,
     session: Arc<dyn UdpSessionSocket>,
@@ -307,263 +273,45 @@ fn map_udp_session_connect_error(error: UdpSessionConnectError) -> TunnelError {
     }
 }
 
-async fn udp_recv_from_socket_forward_task(
-    socket: &UdpSocket,
-    buf: &mut BytesMut,
-    allow_stun: bool,
-) -> Result<(ZCPacket, SocketAddr), TunnelError> {
-    loop {
-        reserve_buf(buf, UDP_DATA_MTU, UDP_DATA_MTU * 4);
-        let (dg_size, addr) = match socket.recv_buf_from(buf).await {
-            Ok(v) => v,
-            Err(e) => {
-                tracing::error!(?e, "udp recv from socket error");
-                return Err(e.into());
-            }
-        };
-        tracing::trace!(
-            "udp recv packet: {:?}, buf: {:?}, size: {}",
-            addr,
-            buf,
-            dg_size
-        );
-
-        let zc_packet = match get_zcpacket_from_buf(buf.split(), allow_stun) {
-            Ok(v) => v,
-            Err(e) => {
-                tracing::warn!(?e, "udp get zc packet from buf error");
-                continue;
-            }
-        };
-
-        return Ok((zc_packet, addr));
-    }
-}
-
-struct UdpConnection {
-    socket: Arc<UdpSocket>,
-    conn_id: u32,
-    dst_addr: SocketAddr,
-
-    ring_sender: RingSink,
-    forward_task: AbortOnDropHandle<()>,
-}
-
-impl UdpConnection {
-    pub fn new(
-        socket: Arc<UdpSocket>,
-        conn_id: u32,
-        dst_addr: SocketAddr,
-        ring_sender: RingSink,
-        ring_recv: RingStream,
-        close_event_sender: UdpCloseEventSender,
-    ) -> Self {
-        let s = socket.clone();
-        let forward_task = AbortOnDropHandle::new(tokio::spawn(async move {
-            let close_event_sender = close_event_sender;
-            let err = forward_from_ring_to_udp(ring_recv, &s, &dst_addr, conn_id).await;
-            if let Err(e) = close_event_sender.send((dst_addr, err)) {
-                tracing::error!(?e, "udp send close event error");
-            }
-        }));
-        Self {
-            socket,
-            conn_id,
-            dst_addr,
-            ring_sender,
-            forward_task,
-        }
-    }
-
-    pub fn handle_packet_from_remote(&mut self, zc_packet: ZCPacket) -> Result<(), TunnelError> {
-        let header = zc_packet.udp_tunnel_header().unwrap();
-        let conn_id = header.conn_id.get();
-
-        if header.msg_type != UdpPacketType::Data as u8 {
-            return Err(TunnelError::InvalidPacket("not data packet".to_owned()));
-        }
-
-        if self.conn_id != conn_id {
-            return Err(TunnelError::ConnIdNotMatch(self.conn_id, conn_id));
-        }
-
-        if let Some(err) = send_zcpacket_to_ring(&mut self.ring_sender, zc_packet) {
-            return Err(err);
-        }
-
-        Ok(())
-    }
-}
-
-#[derive(Clone)]
-struct UdpTunnelListenerData {
-    local_url: url::Url,
-    socket: Option<Arc<UdpSocket>>,
-    sock_map: Arc<DashMap<SocketAddr, UdpConnection>>,
-    conn_send: Sender<Box<dyn Tunnel>>,
-    close_event_sender: UdpCloseEventSender,
-}
-
-impl UdpTunnelListenerData {
-    pub fn new(
-        local_url: url::Url,
-        conn_send: Sender<Box<dyn Tunnel>>,
-        close_event_sender: UdpCloseEventSender,
-    ) -> Self {
-        Self {
-            local_url,
-            socket: None,
-            sock_map: Arc::new(DashMap::new()),
-            conn_send,
-            close_event_sender,
-        }
-    }
-
-    async fn handle_new_connect(self, remote_addr: SocketAddr, zc_packet: ZCPacket) {
-        let udp_payload = zc_packet.udp_payload();
-        if udp_payload.len() != 8 {
-            tracing::warn!(
-                "udp syn packet payload len not match: {:?}, packet: {:?}",
-                udp_payload.len(),
-                zc_packet,
-            );
-            return;
-        }
-        let magic = u64::from_le_bytes(udp_payload[..8].try_into().unwrap());
-        let conn_id = zc_packet.udp_tunnel_header().unwrap().conn_id.get();
-
-        tracing::info!(?conn_id, ?remote_addr, "udp connection accept handling",);
-        let socket = self.socket.as_ref().unwrap().clone();
-
-        let sack_buf = new_sack_packet(conn_id, magic).into_bytes();
-        if self
-            .sock_map
-            .get(&remote_addr)
-            .is_some_and(|conn| conn.conn_id == conn_id)
-        {
-            if let Err(e) = socket.send_to(&sack_buf, remote_addr).await {
-                tracing::error!(?e, "udp resend sack packet error");
-            }
-            tracing::debug!(?conn_id, ?remote_addr, "udp duplicate syn, resent sack");
-            return;
-        }
-
-        let (tunnel_ring, udp_ring) = create_ring_socket_pair(128);
-        tracing::debug!(?tunnel_ring, ?udp_ring, "udp build tunnel for listener");
-
-        let (udp_recv, udp_sender) = split_ring_socket(udp_ring);
-        let mut new_internal_conn = Some(UdpConnection::new(
-            socket.clone(),
-            conn_id,
+async fn handle_udp_session_control(
+    runtime_socket: Arc<RuntimeUdpSocket>,
+    control: UdpSessionLayerControl,
+) {
+    match control {
+        UdpSessionLayerControl::Stun {
             remote_addr,
-            udp_sender,
-            udp_recv,
-            self.close_event_sender.clone(),
-        ));
-        let duplicate_syn = match self.sock_map.entry(remote_addr) {
-            dashmap::mapref::entry::Entry::Occupied(entry) if entry.get().conn_id == conn_id => {
-                true
+            datagram,
+        } => {
+            let ret =
+                respond_stun_packet(runtime_socket.socket(), remote_addr, datagram.to_vec()).await;
+            if let Err(err) = ret {
+                tracing::error!(?err, "udp respond stun packet error");
             }
-            dashmap::mapref::entry::Entry::Occupied(mut entry) => {
-                entry.insert(new_internal_conn.take().unwrap());
-                false
-            }
-            dashmap::mapref::entry::Entry::Vacant(entry) => {
-                entry.insert(new_internal_conn.take().unwrap());
-                false
-            }
-        };
-        if duplicate_syn {
-            if let Err(e) = socket.send_to(&sack_buf, remote_addr).await {
-                tracing::error!(?e, "udp resend sack packet error");
-            }
-            tracing::debug!(?conn_id, ?remote_addr, "udp duplicate syn, resent sack");
-            return;
         }
-
-        if let Err(e) = socket.send_to(&sack_buf, remote_addr).await {
-            self.sock_map
-                .remove_if(&remote_addr, |_, conn| conn.conn_id == conn_id);
-            tracing::error!(?e, "udp send sack packet error");
-            return;
+        UdpSessionLayerControl::V4HolePunch {
+            remote_addr,
+            dst_addr,
+        } => {
+            let udp_packet = new_hole_punch_packet(1, 32).into_bytes();
+            if let Err(err) = runtime_socket
+                .socket()
+                .try_send_to(&udp_packet, SocketAddr::V4(dst_addr))
+            {
+                tracing::error!(?err, ?remote_addr, "udp send hole punch packet error");
+            }
+            tracing::debug!(
+                ?remote_addr,
+                ?dst_addr,
+                "udp control send v4 hole punch packet"
+            );
         }
-
-        let (tunnel_recv, tunnel_sender) = split_ring_socket(tunnel_ring);
-        let conn = Box::new(TunnelWrapper::new(
-            Box::new(tunnel_recv),
-            Box::new(tunnel_sender),
-            Some(TunnelInfo {
-                tunnel_type: "udp".to_owned(),
-                local_addr: Some(self.local_url.clone().into()),
-                remote_addr: Some(
-                    build_url_from_socket_addr(&remote_addr.to_string(), "udp").into(),
-                ),
-                resolved_remote_addr: Some(
-                    build_url_from_socket_addr(&remote_addr.to_string(), "udp").into(),
-                ),
-            }),
-        ));
-
-        tracing::info!(info = ?conn.info().unwrap().remote_addr, "udp connection accept done");
-
-        if let Err(e) = self.conn_send.send(conn).await {
-            tracing::warn!(?e, "udp send conn to accept channel error");
-        }
-    }
-
-    fn do_forward_one_packet_to_conn(&self, zc_packet: ZCPacket, addr: SocketAddr) {
-        let header = zc_packet.udp_tunnel_header().unwrap();
-        if header.msg_type == UdpPacketType::Syn as u8 {
-            tokio::spawn(Self::handle_new_connect(self.clone(), addr, zc_packet));
-        } else if is_stun_packet(header.as_bytes()) {
-            // ignore stun packet
-            tracing::debug!("udp forward packet ignore stun packet");
-            let socket = self.socket.as_ref().unwrap().clone();
-            tokio::spawn(async move {
-                let ret = respond_stun_packet(socket, addr, zc_packet.inner().to_vec()).await;
-                if let Err(e) = ret {
-                    tracing::error!(?e, "udp respond stun packet error");
-                }
-            });
-        } else if header.msg_type == UdpPacketType::V4HolePunch as u8 {
-            if !addr.ip().is_loopback() {
-                tracing::warn!(?addr, "v4 hole punch packet should be from loopback");
-                return;
-            }
-            if !addr.ip().is_ipv4() {
-                tracing::warn!(?addr, "v4 hole punch packet should be sent from ipv4");
-                return;
-            }
-            let Some(dst_addr) =
-                extract_dst_addr_from_v4_hole_punch_packet(zc_packet.udp_payload())
-            else {
-                tracing::warn!("invalid v4 hole punch packet");
-                return;
-            };
-            let socket = self.socket.as_ref().unwrap().clone();
-            let udp_packet = new_hole_punch_packet(1, 32);
-            if let Err(e) = socket.try_send_to(&udp_packet.into_bytes(), SocketAddr::V4(dst_addr)) {
-                tracing::error!(?e, "udp send hole punch packet error");
-            }
-            tracing::debug!(?dst_addr, "udp forward packet send hole punch packet");
-        } else if header.msg_type == UdpPacketType::V6HolePunch as u8 {
-            if !addr.ip().is_loopback() {
-                tracing::warn!(?addr, "v6 hole punch packet should be from loopback");
-                return;
-            }
-            if !addr.ip().is_ipv6() {
-                tracing::warn!(?addr, "v6 hole punch packet should be sent from ipv6");
-                return;
-            }
-            let Some((dst_addr, preferred_src)) =
-                extract_v6_hole_punch_packet(zc_packet.udp_payload())
-            else {
-                tracing::warn!("invalid v6 hole punch packet");
-                return;
-            };
-            let socket = self.socket.as_ref().unwrap().clone();
-            let udp_packet = new_hole_punch_packet(1, 32);
-            let udp_packet = udp_packet.into_bytes();
+        UdpSessionLayerControl::V6HolePunch {
+            remote_addr,
+            dst_addr,
+            preferred_src,
+        } => {
+            let socket = runtime_socket.socket();
+            let udp_packet = new_hole_punch_packet(1, 32).into_bytes();
             let sent_with_src = if let Some(src) = preferred_src {
                 match udp_src::send_to_with_src_ipv6(
                     &socket,
@@ -577,16 +325,16 @@ impl UdpTunnelListenerData {
                             ?src,
                             ?dst_addr,
                             ?ret,
-                            "udp forward packet send hole punch packet with preferred ipv6 source"
+                            "udp control send v6 hole punch packet with preferred source"
                         );
                         true
                     }
-                    Err(e) => {
+                    Err(err) => {
                         tracing::debug!(
                             ?src,
                             ?dst_addr,
-                            ?e,
-                            "udp forward packet preferred ipv6 source failed, falling back"
+                            ?err,
+                            "udp control preferred v6 source failed, falling back"
                         );
                         false
                     }
@@ -594,40 +342,112 @@ impl UdpTunnelListenerData {
             } else {
                 false
             };
-            if !sent_with_src
-                && let Err(e) = socket.try_send_to(&udp_packet, SocketAddr::V6(dst_addr))
-            {
-                tracing::error!(?e, "udp send hole punch packet error");
+            if !sent_with_src && let Err(err) = socket.try_send_to(&udp_packet, dst_addr.into()) {
+                tracing::error!(?err, ?remote_addr, "udp send hole punch packet error");
             }
             tracing::debug!(
+                ?remote_addr,
                 ?dst_addr,
                 ?preferred_src,
-                "udp forward packet send hole punch packet"
+                "udp control send v6 hole punch packet"
             );
-        } else if header.msg_type != UdpPacketType::HolePunch as u8 {
-            let Some(mut conn) = self.sock_map.get_mut(&addr) else {
-                tracing::trace!(?header, "udp forward packet error, connection not found");
-                return;
-            };
-            if let Err(e) = conn.handle_packet_from_remote(zc_packet) {
-                tracing::trace!(?e, "udp forward packet error");
-            }
-        } else {
-            tracing::trace!(?header, "udp forward packet ignore hole punch packet");
         }
     }
+}
 
-    async fn do_forward_task(self) {
-        let socket = self.socket.as_ref().unwrap().clone();
-        let mut buf = BytesMut::new();
-        loop {
-            match udp_recv_from_socket_forward_task(&socket, &mut buf, true).await {
-                Ok((zc_packet, addr)) => self.do_forward_one_packet_to_conn(zc_packet, addr),
-                Err(e) => {
-                    tracing::error!(?e, "udp recv packet error");
-                    break;
+async fn run_udp_session_control_loop(
+    layer: Arc<EasyTierUdpSessionLayer<RuntimeUdpSocket>>,
+    runtime_socket: Arc<RuntimeUdpSocket>,
+) {
+    loop {
+        match layer.recv_control().await {
+            Ok(control) => handle_udp_session_control(runtime_socket.clone(), control).await,
+            Err(err) => {
+                tracing::debug!(?err, "udp session control loop stopped");
+                break;
+            }
+        }
+    }
+}
+
+fn build_udp_tunnel_from_session(
+    session: Arc<dyn UdpSessionSocket>,
+    tunnel_info: TunnelInfo,
+    keep_layer_alive: Option<Arc<EasyTierUdpSessionLayer<RuntimeUdpSocket>>>,
+) -> Result<Box<dyn Tunnel>, TunnelError> {
+    let (tunnel_ring, udp_ring) = create_ring_socket_pair(128);
+    tracing::debug!(?tunnel_ring, ?udp_ring, "udp build tunnel from session");
+
+    let (ring_recv, ring_sender) = split_ring_socket(udp_ring);
+    let send_session = session.clone();
+    let recv_session = session.clone();
+    let dst_addr = session.peer_addr()?;
+    tokio::spawn(
+        async move {
+            let _keep_layer_alive = keep_layer_alive;
+            tokio::select! {
+                err = forward_from_ring_to_udp_session(ring_recv, send_session) => {
+                    tracing::debug!(?err, "udp ring-to-session task done");
+                }
+                err = forward_from_udp_session_to_ring(recv_session, ring_sender) => {
+                    tracing::debug!(?err, "udp session-to-ring task done");
                 }
             }
+        }
+        .instrument(tracing::info_span!(
+            "udp forward between session and ring",
+            ?dst_addr,
+        )),
+    );
+
+    let (tunnel_recv, tunnel_sender) = split_ring_socket(tunnel_ring);
+    Ok(Box::new(TunnelWrapper::new(
+        Box::new(tunnel_recv),
+        Box::new(tunnel_sender),
+        Some(tunnel_info),
+    )))
+}
+
+async fn accept_udp_session_tunnels(
+    layer: Arc<EasyTierUdpSessionLayer<RuntimeUdpSocket>>,
+    conn_send: Sender<Box<dyn Tunnel>>,
+    local_url: url::Url,
+) {
+    loop {
+        let session = match layer.accept().await {
+            Ok(session) => Arc::new(session) as Arc<dyn UdpSessionSocket>,
+            Err(err) => {
+                tracing::debug!(?err, "udp session accept loop stopped");
+                break;
+            }
+        };
+        let remote_addr = match session.peer_addr() {
+            Ok(addr) => addr,
+            Err(err) => {
+                tracing::debug!(?err, "udp accepted session has invalid peer addr");
+                continue;
+            }
+        };
+        let tunnel_info = TunnelInfo {
+            tunnel_type: "udp".to_owned(),
+            local_addr: Some(local_url.clone().into()),
+            remote_addr: Some(build_url_from_socket_addr(&remote_addr.to_string(), "udp").into()),
+            resolved_remote_addr: Some(
+                build_url_from_socket_addr(&remote_addr.to_string(), "udp").into(),
+            ),
+        };
+        let conn = match build_udp_tunnel_from_session(session, tunnel_info, Some(layer.clone())) {
+            Ok(conn) => conn,
+            Err(err) => {
+                tracing::debug!(?err, "udp accepted session build tunnel failed");
+                continue;
+            }
+        };
+        tracing::info!(info = ?conn.info().unwrap().remote_addr, "udp connection accept done");
+
+        if let Err(err) = conn_send.send(conn).await {
+            tracing::warn!(?err, "udp send conn to accept channel error");
+            break;
         }
     }
 }
@@ -635,25 +455,28 @@ impl UdpTunnelListenerData {
 pub struct UdpTunnelListener {
     addr: url::Url,
     socket: Option<Arc<UdpSocket>>,
+    runtime_socket: Option<Arc<RuntimeUdpSocket>>,
+    session_layer: Option<Arc<EasyTierUdpSessionLayer<RuntimeUdpSocket>>>,
+    session_layer_ref: Arc<StdMutex<Option<Weak<EasyTierUdpSessionLayer<RuntimeUdpSocket>>>>>,
 
+    conn_send: Sender<Box<dyn Tunnel>>,
     conn_recv: Receiver<Box<dyn Tunnel>>,
-    data: UdpTunnelListenerData,
     forward_tasks: Arc<std::sync::Mutex<JoinSet<()>>>,
-    close_event_recv: Option<UdpCloseEventReceiver>,
     socket_mark: Option<u32>,
 }
 
 impl UdpTunnelListener {
     pub fn new(addr: url::Url) -> Self {
-        let (close_event_send, close_event_recv) = unbounded_channel();
         let (conn_send, conn_recv) = channel(100);
         Self {
-            addr: addr.clone(),
+            addr,
             socket: None,
+            runtime_socket: None,
+            session_layer: None,
+            session_layer_ref: Arc::new(StdMutex::new(None)),
+            conn_send,
             conn_recv,
-            data: UdpTunnelListenerData::new(addr, conn_send, close_event_send),
             forward_tasks: Arc::new(std::sync::Mutex::new(JoinSet::new())),
-            close_event_recv: Some(close_event_recv),
             socket_mark: None,
         }
     }
@@ -664,6 +487,7 @@ impl UdpTunnelListener {
 
     pub fn new_with_socket(addr: url::Url, socket: Arc<UdpSocket>) -> Self {
         let mut listener = Self::new(addr);
+        listener.runtime_socket = Some(Arc::new(RuntimeUdpSocket::new(socket.clone())));
         listener.socket = Some(socket);
         listener
     }
@@ -671,11 +495,19 @@ impl UdpTunnelListener {
     pub fn get_socket(&self) -> Option<Arc<UdpSocket>> {
         self.socket.clone()
     }
+
+    pub(crate) fn get_runtime_socket(&self) -> Option<Arc<RuntimeUdpSocket>> {
+        self.runtime_socket.clone()
+    }
 }
 
 #[async_trait]
 impl TunnelListener for UdpTunnelListener {
     async fn listen(&mut self) -> Result<(), TunnelError> {
+        if self.session_layer.is_some() {
+            return Ok(());
+        }
+
         if self.socket.is_none() {
             let addr = SocketAddr::from_url(self.addr.clone(), IpVersion::Both).await?;
             let tunnel_url: TunnelUrl = self.addr.clone().into();
@@ -688,30 +520,31 @@ impl TunnelListener for UdpTunnelListener {
                     .call()?,
             ));
         }
-        self.data.socket = self.socket.clone();
 
         self.addr
             .set_port(Some(self.socket.as_ref().unwrap().local_addr()?.port()))
             .unwrap();
 
-        self.forward_tasks
-            .lock()
-            .unwrap()
-            .spawn(self.data.clone().do_forward_task());
-
-        let sock_map = Arc::downgrade(&self.data.sock_map.clone());
-        let mut close_recv = self.close_event_recv.take().unwrap();
-        self.forward_tasks.lock().unwrap().spawn(async move {
-            while let Some((dst_addr, err)) = close_recv.recv().await {
-                if let Some(err) = err {
-                    tracing::error!(?err, "udp close event error");
-                }
-                if let Some(sock_map) = sock_map.upgrade() {
-                    sock_map.remove(&dst_addr);
-                    shrink_dashmap(&sock_map, None);
-                }
+        let runtime_socket = match self.runtime_socket.clone() {
+            Some(socket) => socket,
+            None => {
+                let socket = Arc::new(RuntimeUdpSocket::new(self.socket.as_ref().unwrap().clone()));
+                self.runtime_socket = Some(socket.clone());
+                socket
             }
-        });
+        };
+        let layer = runtime_socket.easy_tier_layer();
+        *self.session_layer_ref.lock().unwrap() = Some(Arc::downgrade(&layer));
+        self.session_layer = Some(layer.clone());
+
+        self.forward_tasks.lock().unwrap().spawn(
+            accept_udp_session_tunnels(layer.clone(), self.conn_send.clone(), self.addr.clone())
+                .instrument(tracing::info_span!("udp session accept loop")),
+        );
+        self.forward_tasks.lock().unwrap().spawn(
+            run_udp_session_control_loop(layer, runtime_socket)
+                .instrument(tracing::info_span!("udp session control loop")),
+        );
 
         join_joinset_background(self.forward_tasks.clone(), "UdpTunnelListener".to_owned());
 
@@ -734,25 +567,31 @@ impl TunnelListener for UdpTunnelListener {
 
     fn get_conn_counter(&self) -> Arc<Box<dyn TunnelConnCounter>> {
         struct UdpTunnelConnCounter {
-            sock_map: Weak<DashMap<SocketAddr, UdpConnection>>,
+            session_layer: Arc<StdMutex<Option<Weak<EasyTierUdpSessionLayer<RuntimeUdpSocket>>>>>,
         }
 
         impl TunnelConnCounter for UdpTunnelConnCounter {
             fn get(&self) -> Option<u32> {
-                self.sock_map.upgrade().map(|x| x.len() as u32)
+                let session_layer = self.session_layer.lock().unwrap();
+                let Some(session_layer) = session_layer.as_ref() else {
+                    return Some(0);
+                };
+                session_layer
+                    .upgrade()
+                    .map(|layer| layer.active_session_count() as u32)
             }
         }
 
         impl Debug for UdpTunnelConnCounter {
             fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
                 f.debug_struct("UdpTunnelConnCounter")
-                    .field("sock_map_len", &self.get())
+                    .field("session_count", &self.get())
                     .finish()
             }
         }
 
         Arc::new(Box::new(UdpTunnelConnCounter {
-            sock_map: Arc::downgrade(&self.data.sock_map.clone()),
+            session_layer: self.session_layer_ref.clone(),
         }))
     }
 }
@@ -783,36 +622,10 @@ impl UdpTunnelConnector {
         layer: Arc<EasyTierUdpSessionLayer<RuntimeUdpSocket>>,
         session: Arc<dyn UdpSessionSocket>,
     ) -> Result<Box<dyn super::Tunnel>, super::TunnelError> {
-        let (tunnel_ring, udp_ring) = create_ring_socket_pair(128);
-        tracing::debug!(?tunnel_ring, ?udp_ring, "udp build tunnel for connector");
-
-        let (ring_recv, ring_sender) = split_ring_socket(udp_ring);
-        let send_session = session.clone();
-        let recv_session = session.clone();
         let dst_addr = session.peer_addr()?;
-        tokio::spawn(
-            async move {
-                let _layer = layer;
-                tokio::select! {
-                    err = forward_from_ring_to_udp_session(ring_recv, send_session) => {
-                        tracing::debug!(?err, "connector udp ring-to-session task done");
-                    }
-                    err = forward_from_udp_session_to_ring(recv_session, ring_sender) => {
-                        tracing::debug!(?err, "connector udp session-to-ring task done");
-                    }
-                }
-            }
-            .instrument(tracing::info_span!(
-                "udp forward between session and ring",
-                ?dst_addr,
-            )),
-        );
-
-        let (tunnel_recv, tunnel_sender) = split_ring_socket(tunnel_ring);
-        Ok(Box::new(TunnelWrapper::new(
-            Box::new(tunnel_recv),
-            Box::new(tunnel_sender),
-            Some(TunnelInfo {
+        build_udp_tunnel_from_session(
+            session,
+            TunnelInfo {
                 tunnel_type: "udp".to_owned(),
                 local_addr: Some(
                     build_url_from_socket_addr(&socket.local_addr()?.to_string(), "udp").into(),
@@ -821,8 +634,9 @@ impl UdpTunnelConnector {
                 resolved_remote_addr: Some(
                     build_url_from_socket_addr(&dst_addr.to_string(), "udp").into(),
                 ),
-            }),
-        )))
+            },
+            Some(layer),
+        )
     }
 
     pub async fn try_connect_with_socket(
@@ -830,14 +644,21 @@ impl UdpTunnelConnector {
         socket: Arc<UdpSocket>,
         addr: SocketAddr,
     ) -> Result<Box<dyn super::Tunnel>, super::TunnelError> {
+        self.try_connect_with_runtime_socket(Arc::new(RuntimeUdpSocket::new(socket)), addr)
+            .await
+    }
+
+    pub(crate) async fn try_connect_with_runtime_socket(
+        &self,
+        runtime_socket: Arc<RuntimeUdpSocket>,
+        addr: SocketAddr,
+    ) -> Result<Box<dyn super::Tunnel>, super::TunnelError> {
         tracing::warn!("udp connect: {:?}", self.addr);
 
         #[cfg(target_os = "windows")]
-        crate::arch::windows::disable_connection_reset(socket.as_ref())?;
+        crate::arch::windows::disable_connection_reset(runtime_socket.socket().as_ref())?;
 
-        let layer = Arc::new(EasyTierUdpSessionLayer::new(Arc::new(
-            RuntimeUdpSocket::new(socket.clone()),
-        )));
+        let layer = runtime_socket.easy_tier_layer();
         let session = layer
             .connect(addr)
             .await
@@ -850,7 +671,8 @@ impl UdpTunnelConnector {
             );
         }
 
-        self.build_tunnel(socket, layer, Arc::new(session)).await
+        self.build_tunnel(runtime_socket.socket(), layer, Arc::new(session))
+            .await
     }
 
     async fn connect_with_default_bind(
@@ -938,7 +760,7 @@ mod tests {
     use std::{io, net::IpAddr, time::Duration};
 
     use async_trait::async_trait;
-    use easytier_core::socket::udp::UdpSessionKind;
+    use easytier_core::socket::udp::{UdpSessionKind, extract_v6_hole_punch_packet};
     use futures::SinkExt;
     use rand::Rng;
     use tokio::time::timeout;
@@ -1008,8 +830,6 @@ mod tests {
         }
     }
 
-    fn assert_sync_packet_handler(_: fn(&mut UdpConnection, ZCPacket) -> Result<(), TunnelError>) {}
-
     #[tokio::test]
     async fn udp_pingpong() {
         let listener = UdpTunnelListener::new("udp://0.0.0.0:5556".parse().unwrap());
@@ -1018,40 +838,20 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn udp_connection_handler_uses_sync_nonblocking_ring_delivery() {
-        assert_sync_packet_handler(UdpConnection::handle_packet_from_remote);
-
+    async fn udp_listener_reuses_runtime_socket_session_layer() {
         let socket = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
-        let dst_addr = "127.0.0.1:1".parse().unwrap();
-        let (_tunnel_ring, udp_ring) = create_ring_socket_pair(8);
-        let (udp_recv, udp_sender) = split_ring_socket(udp_ring);
-        let (close_event_sender, _close_event_recv) = tokio::sync::mpsc::unbounded_channel();
-        let mut conn = UdpConnection::new(
+        let port = socket.local_addr().unwrap().port();
+        let mut listener = UdpTunnelListener::new_with_socket(
+            format!("udp://127.0.0.1:{port}").parse().unwrap(),
             socket,
-            7,
-            dst_addr,
-            udp_sender,
-            udp_recv,
-            close_event_sender,
         );
 
-        for _ in 0..16 {
-            conn.handle_packet_from_remote(new_udp_data_packet(7, PacketType::Data))
-                .unwrap();
-        }
+        listener.listen().await.unwrap();
+        let runtime_socket = listener.get_runtime_socket().unwrap();
+        let listener_layer = listener.session_layer.as_ref().unwrap();
+        let socket_layer = runtime_socket.easy_tier_layer();
 
-        let mut got_buffer_full = false;
-        for _ in 0..16 {
-            match conn.handle_packet_from_remote(new_udp_data_packet(7, PacketType::Ping)) {
-                Ok(()) => {}
-                Err(TunnelError::BufferFull) => {
-                    got_buffer_full = true;
-                    break;
-                }
-                Err(e) => panic!("unexpected error: {e:?}"),
-            }
-        }
-        assert!(got_buffer_full);
+        assert!(Arc::ptr_eq(listener_layer, &socket_layer));
     }
 
     #[test]

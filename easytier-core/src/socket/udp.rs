@@ -493,6 +493,10 @@ where
         self.socket.local_addr()
     }
 
+    pub fn active_session_count(&self) -> usize {
+        self.sessions.len()
+    }
+
     pub async fn connect(
         &self,
         remote_addr: SocketAddr,

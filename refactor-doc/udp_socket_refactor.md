@@ -320,19 +320,28 @@ udp://
   `tokio::net::UdpSocket` adapter，hole-punch runtime 不再保留重复
   `VirtualUdpSocket` implementation。
 
+本阶段继续完成的部分：
+
+- `UdpTunnelListener` 已迁移到 `EasyTierUdpSessionLayer::accept`。
+- listener 侧不再维护 `UdpConnection`、`sock_map`、raw recv loop、`Syn` /
+  `Sack` accept path 或 Data demux。
+- hole-punch listener 和 outbound connect 复用同一个 `RuntimeUdpSocket` 上缓存的
+  `EasyTierUdpSessionLayer`，避免同一个真实 UDP socket 出现多个 recv owner。
+- listener compatibility wrapper 仍把 accepted `UdpSessionSocket` 临时升级成
+  ring-backed legacy `Tunnel`。
+
 仍待完成的部分：
 
-- `UdpTunnelListener` 仍在 `easytier/src/tunnel/udp.rs` 中维护自己的
-  `UdpConnection`、`sock_map`、raw recv loop、`Syn` / `Sack` accept path、
-  STUN response 和 hole-punch dispatch。
-- listener 侧必须迁移到 `EasyTierUdpSessionLayer::accept`，让 core 成为真实
-  UDP socket 唯一 recv owner。
+- STUN response 和 V4/V6 hole-punch 发包现在通过
+  `EasyTierUdpSessionLayer::recv_control` 消费 core 已分类的 control event，但实际
+  发包 helper 仍在 easytier crate。后续应继续把这部分收敛到 core/runtime
+  adapter seam。
 - `wg` / `quic` / `udp` upgrader 仍需要改为消费 `UdpSessionSocket`，当前
   `udp://` 仍通过 compatibility bridge 产出旧 `Tunnel`。
 
 ## Listener 迁移方案
 
-下一阶段迁移 `UdpTunnelListener`，目标是删除 easytier crate 中 listener 侧的
+本阶段迁移 `UdpTunnelListener`，目标是删除 easytier crate 中 listener 侧的
 重复 EasyTier UDP session logic。
 
 ### Core 层补齐 listener 所需能力
@@ -387,7 +396,7 @@ EasyTierUdpSessionLayer::recv_control()
 
 ### 删除的 easytier crate 代码
 
-listener 迁移完成后，`easytier/src/tunnel/udp.rs` 中这些结构应删除：
+listener 迁移完成后，`easytier/src/tunnel/udp.rs` 中这些结构已删除：
 
 - `UdpConnection`
 - `forward_from_ring_to_udp`

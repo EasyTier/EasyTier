@@ -99,9 +99,7 @@ impl RuntimeUdpHolePunchRuntime {
         }
 
         let socket = listener
-            .get_socket()
-            .map(RuntimeUdpSocket::new)
-            .map(Arc::new)
+            .get_runtime_socket()
             .ok_or_else(|| anyhow::anyhow!("udp tunnel listener did not expose socket"))?;
         let conn_counter = Arc::new(RuntimeUdpPunchConnCounter {
             inner: listener.get_conn_counter(),
@@ -199,7 +197,7 @@ impl core_udp_hole_punch::UdpHolePunchRuntime for RuntimeUdpHolePunchRuntime {
         socket: Arc<Self::Socket>,
         remote: SocketAddr,
     ) -> anyhow::Result<Box<dyn Tunnel>> {
-        try_connect_with_socket(self.global_ctx.clone(), socket.socket(), remote)
+        try_connect_with_runtime_socket(self.global_ctx.clone(), socket, remote)
             .await
             .map_err(anyhow::Error::from)
     }
@@ -333,6 +331,19 @@ pub(crate) async fn try_connect_with_socket(
     socket: Arc<UdpSocket>,
     remote_mapped_addr: SocketAddr,
 ) -> Result<Box<dyn Tunnel>, Error> {
+    try_connect_with_runtime_socket(
+        global_ctx,
+        Arc::new(RuntimeUdpSocket::new(socket)),
+        remote_mapped_addr,
+    )
+    .await
+}
+
+pub(crate) async fn try_connect_with_runtime_socket(
+    global_ctx: ArcGlobalCtx,
+    socket: Arc<RuntimeUdpSocket>,
+    remote_mapped_addr: SocketAddr,
+) -> Result<Box<dyn Tunnel>, Error> {
     let connector = UdpTunnelConnector::new(
         format!(
             "udp://{}:{}",
@@ -346,7 +357,7 @@ pub(crate) async fn try_connect_with_socket(
     check_udp_socket_local_addr(global_ctx, remote_mapped_addr).await?;
 
     connector
-        .try_connect_with_socket(socket, remote_mapped_addr)
+        .try_connect_with_runtime_socket(socket, remote_mapped_addr)
         .await
         .map_err(Error::from)
 }
