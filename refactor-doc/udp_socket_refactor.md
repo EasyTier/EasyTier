@@ -32,8 +32,8 @@ header 包裹。
 pub trait VirtualUdpSocketFactory: Send + Sync {
     type Socket: VirtualUdpSocket;
 
-    async fn bind_udp(&self, request: UdpBindRequest)
-        -> std::io::Result<Self::Socket>;
+    async fn bind_udp(&self, options: UdpBindOptions)
+        -> anyhow::Result<std::sync::Arc<Self::Socket>>;
 }
 
 #[async_trait::async_trait]
@@ -78,6 +78,41 @@ pub trait UdpSessionSocket: Send {
 
     async fn send(&self, payload: &[u8]) -> std::io::Result<usize>;
     async fn recv(&self, buf: &mut [u8]) -> std::io::Result<usize>;
+}
+```
+
+core UDP session dial/listen seam 使用 peer-scoped request：
+
+```rust
+pub struct UdpSessionConnectRequest {
+    pub remote_addr: SocketAddr,
+    pub bind: UdpBindOptions,
+}
+
+pub struct UdpSessionListenRequest {
+    pub bind: UdpBindOptions,
+}
+
+#[async_trait::async_trait]
+pub trait UdpSessionConnector {
+    type Session: UdpSessionSocket;
+
+    async fn connect(
+        &mut self,
+        request: UdpSessionConnectRequest,
+    ) -> anyhow::Result<Self::Session>;
+}
+
+#[async_trait::async_trait]
+pub trait UdpSessionListener {
+    type Session: UdpSessionSocket;
+
+    async fn listen(&mut self, request: UdpSessionListenRequest)
+        -> anyhow::Result<()>;
+
+    fn local_addr(&self) -> std::io::Result<SocketAddr>;
+
+    async fn accept(&mut self) -> anyhow::Result<Self::Session>;
 }
 ```
 
