@@ -506,6 +506,27 @@ mod tests {
     }
 
     #[test]
+    fn network_identity_equal_values_have_equal_hash() {
+        let local = NetworkIdentity {
+            network_name: "net".to_string(),
+            network_secret: Some("secret".to_string()),
+            network_secret_digest: None,
+        };
+        let remote = NetworkIdentity {
+            network_name: "net".to_string(),
+            network_secret: None,
+            network_secret_digest: Some(digest("net", "secret")),
+        };
+        let mut local_hasher = DefaultHasher::new();
+        let mut remote_hasher = DefaultHasher::new();
+
+        local.hash(&mut local_hasher);
+        remote.hash(&mut remote_hasher);
+
+        assert_eq!(local_hasher.finish(), remote_hasher.finish());
+    }
+
+    #[test]
     fn network_identity_derives_digest_from_plaintext_secret() {
         let identity = NetworkIdentity {
             network_name: "net".to_string(),
