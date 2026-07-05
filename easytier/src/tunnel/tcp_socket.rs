@@ -140,6 +140,7 @@ fn must_bind_before_connect(bind_options: &TcpBindOptions) -> bool {
     bind_options.local_addr.is_some()
         || bind_options.bind_device.is_some()
         || bind_options.reuse_port
+        || bind_options.only_v6
         || bind_options.reuse_addr != !cfg!(target_os = "windows")
 }
 
@@ -186,4 +187,20 @@ pub(crate) async fn connect_tcp(
     let socket = bind_tcp_socket(remote_addr, bind_options)?;
     let stream = socket.connect(remote_addr).await?;
     Ok(RuntimeTcpSocket::new(stream))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tcp_connect_binds_when_socket_option_requires_pre_connect_setup() {
+        assert!(must_bind_before_connect(
+            &TcpBindOptions::default().with_only_v6(true)
+        ));
+        assert!(must_bind_before_connect(
+            &TcpBindOptions::default().with_bind_device(Some("eth0".to_owned()))
+        ));
+        assert!(!must_bind_before_connect(&TcpBindOptions::default()));
+    }
 }

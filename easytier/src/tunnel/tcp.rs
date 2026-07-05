@@ -280,6 +280,10 @@ fn select_one_remote_addr(
         .ok_or(TunnelError::NoDnsRecordFound(ip_version))
 }
 
+fn bind_addr_matches_remote(bind_addr: SocketAddr, remote_addr: SocketAddr) -> bool {
+    bind_addr.is_ipv4() == remote_addr.is_ipv4()
+}
+
 async fn resolve_tcp_bind_url_addr(
     url: &url::Url,
     ip_version: IpVersion,
@@ -332,6 +336,22 @@ impl TcpTunnelConnector {
         resolve_tcp_remote_addrs(endpoint, self.ip_version, self.socket_mark).await
     }
 
+    fn selectable_remote_addrs(&self, remote_addrs: Vec<SocketAddr>) -> Vec<SocketAddr> {
+        if self.bind_addrs.is_empty() {
+            return remote_addrs;
+        }
+
+        remote_addrs
+            .into_iter()
+            .filter(|remote_addr| {
+                self.bind_addrs
+                    .iter()
+                    .copied()
+                    .any(|bind_addr| bind_addr_matches_remote(bind_addr, *remote_addr))
+            })
+            .collect()
+    }
+
     fn build_candidates(&self, remote_addr: SocketAddr) -> Vec<TcpConnectCandidate> {
         if self.bind_addrs.is_empty() {
             return vec![TcpConnectCandidate::new(
@@ -343,6 +363,7 @@ impl TcpTunnelConnector {
         self.bind_addrs
             .iter()
             .copied()
+            .filter(|bind_addr| bind_addr_matches_remote(*bind_addr, remote_addr))
             .map(|bind_addr| {
                 TcpConnectCandidate::new(
                     remote_addr,
@@ -357,6 +378,7 @@ impl TcpTunnelConnector {
 
     async fn build_dialer(&self) -> Result<TcpCandidateDialer, TunnelError> {
         let remote_addrs = self.resolve_remote_addrs().await?;
+        let remote_addrs = self.selectable_remote_addrs(remote_addrs);
         let remote_addr = select_one_remote_addr(remote_addrs, self.ip_version)?;
         Ok(TcpCandidateDialer::new(
             self.addr.clone(),
@@ -438,6 +460,26 @@ mod tests {
         async fn resolve(&self, _query: DnsQuery) -> anyhow::Result<Vec<IpAddr>> {
             Ok(self.ips.clone())
         }
+    }
+
+    #[test]
+    fn connector_filters_bind_candidates_by_remote_family() {
+        let remote_v4: SocketAddr = "127.0.0.1:11013".parse().unwrap();
+        let remote_v6: SocketAddr = "[::1]:11013".parse().unwrap();
+        let bind_v4: SocketAddr = "127.0.0.1:0".parse().unwrap();
+        let mut connector = TcpTunnelConnector::new("tcp://example.com:11013".parse().unwrap());
+        connector.set_bind_addrs(vec![bind_v4]);
+
+        assert_eq!(
+            connector.selectable_remote_addrs(vec![remote_v6, remote_v4]),
+            vec![remote_v4]
+        );
+        assert!(connector.build_candidates(remote_v6).is_empty());
+
+        let candidates = connector.build_candidates(remote_v4);
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].options.remote_addr, remote_v4);
+        assert_eq!(candidates[0].options.bind.local_addr, Some(bind_v4));
     }
 
     #[tokio::test]
