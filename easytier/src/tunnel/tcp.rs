@@ -4,12 +4,11 @@ use async_trait::async_trait;
 use easytier_core::{
     socket::{
         SocketContext,
-        dial::{
-            BindEndpoint, RemoteEndpoint, SocketAttemptBuilder, SocketDialError, SocketDialRequest,
-            SocketKind,
-        },
         dns::{DnsQuery, DnsResolveError, global_dns_resolver},
-        tcp::{VirtualTcpListener, VirtualTcpSocket},
+        tcp::{
+            TcpBindOptions, TcpConnectOptions, TcpListenOptions, VirtualTcpListener,
+            VirtualTcpSocket,
+        },
     },
     tunnel::tcp::TcpTunnelUpgrader,
 };
@@ -21,6 +20,73 @@ use super::{
     common::wait_for_connect_futures,
 };
 use crate::{common::dns::register_core_dns_resolver, tunnel::tcp_socket};
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum TcpUrlEndpoint {
+    Addr(SocketAddr),
+    Domain { host: String, port: u16 },
+}
+
+#[derive(Debug, Clone)]
+struct TcpConnectCandidate {
+    options: TcpConnectOptions,
+}
+
+impl TcpConnectCandidate {
+    fn new(remote_addr: SocketAddr, bind: TcpBindOptions) -> Self {
+        Self {
+            options: TcpConnectOptions::direct_connect(remote_addr).with_bind(bind),
+        }
+    }
+}
+
+#[derive(Debug)]
+struct TcpSingleSocketConnector {
+    options: TcpConnectOptions,
+}
+
+impl TcpSingleSocketConnector {
+    fn new(options: TcpConnectOptions) -> Self {
+        Self { options }
+    }
+
+    async fn connect(self) -> Result<tcp_socket::RuntimeTcpSocket, TunnelError> {
+        tcp_socket::connect_tcp(self.options).await
+    }
+}
+
+#[derive(Debug)]
+struct TcpCandidateDialer {
+    original_url: url::Url,
+    candidates: Vec<TcpConnectCandidate>,
+}
+
+impl TcpCandidateDialer {
+    fn new(original_url: url::Url, candidates: Vec<TcpConnectCandidate>) -> Self {
+        Self {
+            original_url,
+            candidates,
+        }
+    }
+
+    async fn connect(self) -> Result<tcp_socket::RuntimeTcpSocket, TunnelError> {
+        let futures = FuturesUnordered::new();
+
+        for candidate in self.candidates {
+            let remote_addr = candidate.options.remote_addr;
+            let bind = candidate.options.bind.clone();
+            tracing::info!(
+                url = ?self.original_url,
+                ?remote_addr,
+                ?bind,
+                "connect tcp start"
+            );
+            futures.push(TcpSingleSocketConnector::new(candidate.options).connect());
+        }
+
+        wait_for_connect_futures(futures).await
+    }
+}
 
 #[derive(Debug)]
 pub struct TcpTunnelListener {
@@ -67,8 +133,12 @@ impl TunnelListener for TcpTunnelListener {
         self.listener = None;
 
         let addr = resolve_tcp_bind_url_addr(&self.addr, IpVersion::Both, self.socket_mark).await?;
-        let context = tcp_socket_context(IpVersion::Both, self.socket_mark);
-        let listener = tcp_socket::bind_tcp_listener(addr, &context)?;
+        let bind = TcpBindOptions::default()
+            .with_local_addr(Some(addr))
+            .with_socket_mark(self.socket_mark)
+            .with_only_v6(true);
+        let listener =
+            tcp_socket::bind_tcp_listener(TcpListenOptions::direct_connect(addr).with_bind(bind))?;
 
         self.addr
             .set_port(Some(listener.local_addr()?.port()))
@@ -111,14 +181,14 @@ fn tcp_socket_context(ip_version: IpVersion, socket_mark: Option<u32>) -> Socket
     }
 }
 
-fn remote_endpoint_from_tcp_url(url: &url::Url) -> Result<RemoteEndpoint, TunnelError> {
+fn remote_endpoint_from_tcp_url(url: &url::Url) -> Result<TcpUrlEndpoint, TunnelError> {
     let host = url
         .host_str()
         .ok_or_else(|| TunnelError::InvalidAddr(url.to_string()))?;
     let port = url.port().unwrap_or(IpScheme::Tcp.default_port());
     Ok(match parse_url_host_ip_literal(host) {
-        Ok(ip) => RemoteEndpoint::Addr(SocketAddr::new(ip, port)),
-        Err(_) => RemoteEndpoint::Domain {
+        Ok(ip) => TcpUrlEndpoint::Addr(SocketAddr::new(ip, port)),
+        Err(_) => TcpUrlEndpoint::Domain {
             host: host.to_owned(),
             port,
         },
@@ -133,45 +203,6 @@ fn parse_url_host_ip_literal(host: &str) -> Result<IpAddr, std::net::AddrParseEr
         host.parse()
     } else {
         host.parse()
-    }
-}
-
-async fn resolve_tcp_attempts(
-    request: &SocketDialRequest,
-) -> Result<Vec<easytier_core::socket::dial::SocketAttempt>, TunnelError> {
-    let builder = SocketAttemptBuilder::new();
-    match builder
-        .resolve_ip_attempts(request, global_dns_resolver())
-        .await
-    {
-        Ok(attempts) => Ok(attempts),
-        Err(SocketDialError::Dns(DnsResolveError::NotRegistered)) => {
-            register_core_dns_resolver();
-            Ok(builder
-                .resolve_ip_attempts(request, global_dns_resolver())
-                .await
-                .map_err(|error| TunnelError::Anyhow(error.into()))?)
-        }
-        Err(error) => Err(TunnelError::Anyhow(error.into())),
-    }
-}
-
-fn select_one_remote_attempts(
-    attempts: Vec<easytier_core::socket::dial::SocketAttempt>,
-) -> Vec<easytier_core::socket::dial::SocketAttempt> {
-    let mut remote_addrs = Vec::new();
-    for attempt in &attempts {
-        if !remote_addrs.contains(&attempt.remote_addr) {
-            remote_addrs.push(attempt.remote_addr);
-        }
-    }
-    let remote_addr = remote_addrs.choose(&mut rand::thread_rng()).copied();
-    match remote_addr {
-        Some(remote_addr) => attempts
-            .into_iter()
-            .filter(|attempt| attempt.remote_addr == remote_addr)
-            .collect(),
-        None => attempts,
     }
 }
 
@@ -198,26 +229,72 @@ async fn resolve_tcp_domain_addrs(
         .collect())
 }
 
+fn addr_matches_ip_version(addr: SocketAddr, ip_version: IpVersion) -> bool {
+    match ip_version {
+        IpVersion::V4 => addr.is_ipv4(),
+        IpVersion::V6 => addr.is_ipv6(),
+        IpVersion::Both => true,
+    }
+}
+
+fn dedup_addrs(addrs: impl IntoIterator<Item = SocketAddr>) -> Vec<SocketAddr> {
+    let mut deduped = Vec::new();
+    for addr in addrs {
+        if !deduped.contains(&addr) {
+            deduped.push(addr);
+        }
+    }
+    deduped
+}
+
+async fn resolve_tcp_remote_addrs(
+    endpoint: TcpUrlEndpoint,
+    ip_version: IpVersion,
+    socket_mark: Option<u32>,
+) -> Result<Vec<SocketAddr>, TunnelError> {
+    let addrs = match endpoint {
+        TcpUrlEndpoint::Addr(addr) => vec![addr],
+        TcpUrlEndpoint::Domain { host, port } => {
+            resolve_tcp_domain_addrs(host, port, tcp_socket_context(ip_version, socket_mark))
+                .await?
+        }
+    };
+    let addrs = dedup_addrs(
+        addrs
+            .into_iter()
+            .filter(|addr| addr_matches_ip_version(*addr, ip_version)),
+    );
+    if addrs.is_empty() {
+        return Err(TunnelError::NoDnsRecordFound(ip_version));
+    }
+    Ok(addrs)
+}
+
+fn select_one_remote_addr(
+    remote_addrs: Vec<SocketAddr>,
+    ip_version: IpVersion,
+) -> Result<SocketAddr, TunnelError> {
+    remote_addrs
+        .choose(&mut rand::thread_rng())
+        .copied()
+        .ok_or(TunnelError::NoDnsRecordFound(ip_version))
+}
+
 async fn resolve_tcp_bind_url_addr(
     url: &url::Url,
     ip_version: IpVersion,
     socket_mark: Option<u32>,
 ) -> Result<SocketAddr, TunnelError> {
     let addrs = match remote_endpoint_from_tcp_url(url)? {
-        RemoteEndpoint::Addr(addr) => vec![addr],
-        RemoteEndpoint::Domain { host, port } => {
+        TcpUrlEndpoint::Addr(addr) => vec![addr],
+        TcpUrlEndpoint::Domain { host, port } => {
             resolve_tcp_domain_addrs(host, port, tcp_socket_context(ip_version, socket_mark))
                 .await?
         }
-        _ => unreachable!("tcp URL resolves only to IP endpoints"),
     };
     let addrs = addrs
         .into_iter()
-        .filter(|addr| match ip_version {
-            IpVersion::V4 => addr.is_ipv4(),
-            IpVersion::V6 => addr.is_ipv6(),
-            IpVersion::Both => true,
-        })
+        .filter(|addr| addr_matches_ip_version(*addr, ip_version))
         .collect::<Vec<_>>();
     addrs
         .choose(&mut rand::thread_rng())
@@ -246,35 +323,51 @@ impl TcpTunnelConnector {
         }
     }
 
-    fn build_dial_request(&self) -> Result<SocketDialRequest, TunnelError> {
-        let remote = self
+    async fn resolve_remote_addrs(&self) -> Result<Vec<SocketAddr>, TunnelError> {
+        let endpoint = self
             .resolved_addr
-            .map(RemoteEndpoint::Addr)
+            .map(TcpUrlEndpoint::Addr)
             .map(Ok)
             .unwrap_or_else(|| remote_endpoint_from_tcp_url(&self.addr))?;
-        let binds = self
-            .bind_addrs
-            .iter()
-            .copied()
-            .map(BindEndpoint::Addr)
-            .collect::<Vec<_>>();
-        Ok(SocketDialRequest::new(SocketKind::Tcp, remote)
-            .with_context(tcp_socket_context(self.ip_version, self.socket_mark))
-            .with_binds(binds))
+        resolve_tcp_remote_addrs(endpoint, self.ip_version, self.socket_mark).await
     }
 
-    async fn connect_attempts(
-        &self,
-        attempts: Vec<easytier_core::socket::dial::SocketAttempt>,
-    ) -> Result<Box<dyn Tunnel>, super::TunnelError> {
-        let futures = FuturesUnordered::new();
-
-        for attempt in attempts {
-            tracing::info!(url = ?self.addr, ?attempt.remote_addr, ?attempt.bind, "connect tcp start");
-            futures.push(tcp_socket::connect_tcp_attempt(attempt));
+    fn build_candidates(&self, remote_addr: SocketAddr) -> Vec<TcpConnectCandidate> {
+        if self.bind_addrs.is_empty() {
+            return vec![TcpConnectCandidate::new(
+                remote_addr,
+                TcpBindOptions::default().with_socket_mark(self.socket_mark),
+            )];
         }
 
-        let socket = wait_for_connect_futures(futures).await?;
+        self.bind_addrs
+            .iter()
+            .copied()
+            .map(|bind_addr| {
+                TcpConnectCandidate::new(
+                    remote_addr,
+                    TcpBindOptions::default()
+                        .with_local_addr(Some(bind_addr))
+                        .with_socket_mark(self.socket_mark)
+                        .with_only_v6(true),
+                )
+            })
+            .collect()
+    }
+
+    async fn build_dialer(&self) -> Result<TcpCandidateDialer, TunnelError> {
+        let remote_addrs = self.resolve_remote_addrs().await?;
+        let remote_addr = select_one_remote_addr(remote_addrs, self.ip_version)?;
+        Ok(TcpCandidateDialer::new(
+            self.addr.clone(),
+            self.build_candidates(remote_addr),
+        ))
+    }
+
+    fn upgrade_socket(
+        &self,
+        socket: tcp_socket::RuntimeTcpSocket,
+    ) -> Result<Box<dyn Tunnel>, super::TunnelError> {
         let local_addr = socket.local_addr()?;
         let peer_addr = socket.peer_addr()?;
         tracing::info!(url = ?self.addr, ?peer_addr, "connect tcp succ");
@@ -295,10 +388,9 @@ impl TcpTunnelConnector {
 #[async_trait]
 impl super::TunnelConnector for TcpTunnelConnector {
     async fn connect(&mut self) -> Result<Box<dyn Tunnel>, TunnelError> {
-        let request = self.build_dial_request()?;
-        let attempts = resolve_tcp_attempts(&request).await?;
-        let attempts = select_one_remote_attempts(attempts);
-        self.connect_attempts(attempts).await
+        let dialer = self.build_dialer().await?;
+        let socket = dialer.connect().await?;
+        self.upgrade_socket(socket)
     }
 
     fn remote_url(&self) -> url::Url {

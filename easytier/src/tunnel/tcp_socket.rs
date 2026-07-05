@@ -5,22 +5,17 @@ use std::{
     task::{Context, Poll},
 };
 
-use easytier_core::socket::{
-    SocketContext,
-    dial::{BindEndpoint, SocketAttempt},
-    tcp::{VirtualTcpListener, VirtualTcpSocket},
+use easytier_core::socket::tcp::{
+    TcpBindOptions, TcpConnectOptions, TcpListenOptions, VirtualTcpListener, VirtualTcpSocket,
 };
 use tokio::{
     io::{AsyncRead, AsyncWrite, ReadBuf},
     net::{TcpListener, TcpSocket, TcpStream},
 };
 
-use crate::{
-    common::netns::NetNS,
-    tunnel::{
-        TunnelError,
-        common::{BindDev, bind},
-    },
+use crate::tunnel::{
+    TunnelError,
+    common::{BindDev, apply_socket_mark, bind},
 };
 
 #[derive(Debug)]
@@ -107,64 +102,88 @@ fn unspecified_bind_addr(remote_addr: SocketAddr) -> SocketAddr {
     }
 }
 
-fn netns_from_context(context: &SocketContext) -> Option<NetNS> {
-    context
-        .netns
-        .as_ref()
-        .map(|netns| NetNS::new(Some(netns.token().to_owned())))
+fn bind_dev_from_options(options: &TcpBindOptions, local_addr_was_defaulted: bool) -> BindDev {
+    options
+        .bind_device
+        .clone()
+        .map(BindDev::from)
+        .unwrap_or_else(|| {
+            if local_addr_was_defaulted {
+                BindDev::Disabled
+            } else {
+                BindDev::Auto
+            }
+        })
+}
+
+fn bind_tcp_socket(
+    remote_addr: SocketAddr,
+    bind_options: TcpBindOptions,
+) -> Result<TcpSocket, TunnelError> {
+    let (bind_addr, local_addr_was_defaulted) = match bind_options.local_addr {
+        Some(addr) => (addr, false),
+        None => (unspecified_bind_addr(remote_addr), true),
+    };
+    let bind_dev = bind_dev_from_options(&bind_options, local_addr_was_defaulted);
+
+    bind::<TcpSocket>()
+        .addr(bind_addr)
+        .dev(bind_dev)
+        .only_v6(bind_options.only_v6)
+        .reuse_addr(bind_options.reuse_addr)
+        .reuse_port(bind_options.reuse_port)
+        .maybe_socket_mark(bind_options.socket_mark)
+        .call()
+}
+
+fn must_bind_before_connect(bind_options: &TcpBindOptions) -> bool {
+    bind_options.local_addr.is_some()
+        || bind_options.bind_device.is_some()
+        || bind_options.reuse_port
+        || bind_options.reuse_addr != !cfg!(target_os = "windows")
 }
 
 pub(crate) fn bind_tcp_listener(
-    addr: SocketAddr,
-    context: &SocketContext,
+    options: TcpListenOptions,
 ) -> Result<RuntimeTcpListener, TunnelError> {
+    let bind_options = options.bind;
+    let addr = bind_options.local_addr.ok_or_else(|| {
+        TunnelError::InvalidAddr("tcp listener requires a local bind address".to_owned())
+    })?;
+    let bind_dev = bind_dev_from_options(&bind_options, false);
     let listener = bind::<TcpListener>()
         .addr(addr)
-        .only_v6(true)
-        .maybe_socket_mark(context.socket_mark)
-        .maybe_net_ns(netns_from_context(context))
+        .dev(bind_dev)
+        .only_v6(bind_options.only_v6)
+        .reuse_addr(bind_options.reuse_addr)
+        .reuse_port(bind_options.reuse_port)
+        .maybe_socket_mark(bind_options.socket_mark)
         .call()?;
     Ok(RuntimeTcpListener::new(listener))
 }
 
-pub(crate) async fn connect_tcp_attempt(
-    attempt: SocketAttempt,
+pub(crate) async fn connect_tcp(
+    options: TcpConnectOptions,
 ) -> Result<RuntimeTcpSocket, TunnelError> {
-    let remote_addr = attempt.remote_addr;
-    let socket = match attempt.bind {
-        BindEndpoint::Default => {
+    let remote_addr = options.remote_addr;
+    let bind_options = options.bind;
+
+    if !must_bind_before_connect(&bind_options) {
+        let stream = if bind_options.socket_mark.is_some() {
             let socket = if remote_addr.is_ipv4() {
                 TcpSocket::new_v4()?
             } else {
                 TcpSocket::new_v6()?
             };
-            crate::tunnel::common::apply_socket_mark(
-                &socket2::SockRef::from(&socket),
-                attempt.context.socket_mark,
-            )?;
-            socket
-        }
-        BindEndpoint::Addr(addr) => bind::<TcpSocket>()
-            .addr(addr)
-            .only_v6(true)
-            .maybe_socket_mark(attempt.context.socket_mark)
-            .maybe_net_ns(netns_from_context(&attempt.context))
-            .call()?,
-        BindEndpoint::Device(device) => bind::<TcpSocket>()
-            .addr(unspecified_bind_addr(remote_addr))
-            .dev(device)
-            .only_v6(true)
-            .maybe_socket_mark(attempt.context.socket_mark)
-            .maybe_net_ns(netns_from_context(&attempt.context))
-            .call()?,
-        BindEndpoint::AddrOnDevice { addr, device } => bind::<TcpSocket>()
-            .addr(addr)
-            .dev(BindDev::Custom(device))
-            .only_v6(true)
-            .maybe_socket_mark(attempt.context.socket_mark)
-            .maybe_net_ns(netns_from_context(&attempt.context))
-            .call()?,
-    };
+            apply_socket_mark(&socket2::SockRef::from(&socket), bind_options.socket_mark)?;
+            socket.connect(remote_addr).await?
+        } else {
+            TcpStream::connect(remote_addr).await?
+        };
+        return Ok(RuntimeTcpSocket::new(stream));
+    }
+
+    let socket = bind_tcp_socket(remote_addr, bind_options)?;
     let stream = socket.connect(remote_addr).await?;
     Ok(RuntimeTcpSocket::new(stream))
 }
