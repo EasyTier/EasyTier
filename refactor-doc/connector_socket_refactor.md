@@ -577,7 +577,10 @@ upgrader：
   `TcpSocketConnector`。
 - `wg`：复用现有 socket-based 初始化路径，把 UDP socket 获取逻辑移入
   `UdpSocketConnector`，WireGuard config 和握手逻辑留在
-  `WireGuardTunnelUpgrader`。
+  `WireGuardTunnelUpgrader`。当前代码已先把 legacy `WgTunnelConnector` /
+  `WgTunnelListener` 内部迁移到 `UdpSessionSocket`，后续只需要把外层
+  `TunnelConnector` compatibility wrapper 拆成正式的 socket connector +
+  upgrader。
 - `quic`：拆分 `QuicEndpointManager::connect(global_ctx, addr)`，让 endpoint
   creation 可以消费 orchestrator 提供的 UDP socket endpoint；QUIC connect 和
   stream open 留在 `QuicTunnelUpgrader`。

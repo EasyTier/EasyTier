@@ -15,6 +15,7 @@ use super::{
     generate_digest_from_str,
     packet_def::{PEER_MANAGER_HEADER_SIZE, ZCPacketType},
     ring::create_ring_tunnel_pair,
+    udp::{RuntimeUdpSessionLayer, RuntimeUdpSocket},
 };
 use crate::tunnel::common::{BindDev, bind};
 use crate::{
@@ -35,6 +36,7 @@ use boringtun::{
 use bytes::BytesMut;
 use crossbeam::atomic::AtomicCell;
 use dashmap::DashMap;
+use easytier_core::socket::udp::UdpSessionSocket;
 use futures::{SinkExt, StreamExt, stream::FuturesUnordered};
 use rand::RngCore;
 use tokio::{
@@ -116,10 +118,11 @@ impl WgConfig {
 
 #[derive(Clone)]
 struct WgPeerData {
-    udp: Arc<UdpSocket>, // only for send
+    session: Arc<dyn UdpSessionSocket>,
     endpoint: SocketAddr,
     tunn: Arc<Mutex<Tunn>>,
     wg_type: WgType,
+    access_time: Arc<AtomicCell<Instant>>,
     stopped: Arc<AtomicBool>,
 }
 
@@ -127,7 +130,7 @@ impl Debug for WgPeerData {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("WgPeerData")
             .field("endpoint", &self.endpoint)
-            .field("local", &self.udp.local_addr())
+            .field("local", &self.session.local_addr())
             .finish()
     }
 }
@@ -159,8 +162,8 @@ impl WgPeerData {
 
         match encapsulate_result {
             TunnResult::WriteToNetwork(packet) => {
-                self.udp
-                    .send_to(packet, self.endpoint)
+                self.session
+                    .send(packet)
                     .await
                     .context("Failed to send encrypted IP packet to WireGuard endpoint.")?;
                 tracing::debug!(
@@ -192,6 +195,7 @@ impl WgPeerData {
         mut sink: S,
         recv_buf: &[u8],
     ) {
+        self.access_time.store(Instant::now());
         let mut send_buf = vec![0u8; MAX_PACKET];
         let data = recv_buf;
         let decapsulate_result = {
@@ -203,7 +207,7 @@ impl WgPeerData {
 
         match decapsulate_result {
             TunnResult::WriteToNetwork(packet) => {
-                match self.udp.send_to(packet, self.endpoint).await {
+                match self.session.send(packet).await {
                     Ok(_) => {}
                     Err(e) => {
                         tracing::error!(
@@ -218,7 +222,7 @@ impl WgPeerData {
                     let mut send_buf = vec![0u8; MAX_PACKET];
                     match peer.decapsulate(None, &[], &mut send_buf) {
                         TunnResult::WriteToNetwork(packet) => {
-                            match self.udp.send_to(packet, self.endpoint).await {
+                            match self.session.send(packet).await {
                                 Ok(_) => {}
                                 Err(e) => {
                                     tracing::error!(
@@ -273,7 +277,7 @@ impl WgPeerData {
                     "Sending routine packet of {} bytes to WireGuard endpoint",
                     packet.len()
                 );
-                match self.udp.send_to(packet, self.endpoint).await {
+                match self.session.send(packet).await {
                     Ok(_) => {}
                     Err(e) => {
                         tracing::error!(
@@ -343,7 +347,8 @@ impl WgPeerData {
 
 struct WgPeer {
     tunn: Option<Mutex<Tunn>>,
-    udp: Arc<UdpSocket>, // only for send
+    _session_layer: Arc<RuntimeUdpSessionLayer>,
+    session: Arc<dyn UdpSessionSocket>,
     config: WgConfig,
     endpoint: SocketAddr,
 
@@ -352,11 +357,16 @@ struct WgPeer {
     data: Option<WgPeerData>,
     tasks: JoinSet<()>,
 
-    access_time: AtomicCell<Instant>,
+    access_time: Arc<AtomicCell<Instant>>,
 }
 
 impl WgPeer {
-    fn new(udp: Arc<UdpSocket>, config: WgConfig, endpoint: SocketAddr) -> Self {
+    fn new(
+        session_layer: Arc<RuntimeUdpSessionLayer>,
+        session: Arc<dyn UdpSessionSocket>,
+        config: WgConfig,
+        endpoint: SocketAddr,
+    ) -> Self {
         WgPeer {
             tunn: Some(Mutex::new(Tunn::new(
                 config.my_secret_key.clone(),
@@ -367,7 +377,8 @@ impl WgPeer {
                 None,
             ))),
 
-            udp,
+            _session_layer: session_layer,
+            session,
             config,
             endpoint,
             sink: std::sync::Mutex::new(None),
@@ -375,7 +386,7 @@ impl WgPeer {
             data: None,
             tasks: JoinSet::new(),
 
-            access_time: AtomicCell::new(Instant::now()),
+            access_time: Arc::new(AtomicCell::new(Instant::now())),
         }
     }
 
@@ -390,26 +401,17 @@ impl WgPeer {
             .store(true, std::sync::atomic::Ordering::Relaxed);
     }
 
-    async fn handle_packet_from_peer(&self, packet: &[u8]) {
-        self.access_time.store(Instant::now());
-        tracing::trace!("Received {} bytes from peer", packet.len());
-        let data = self.data.as_ref().unwrap();
-        // TODO: improve this
-        let mut sink = self.sink.lock().unwrap().take().unwrap();
-        data.handle_one_packet_from_peer(&mut sink, packet).await;
-        self.sink.lock().unwrap().replace(sink);
-    }
-
     fn start_and_get_tunnel(&mut self) -> Box<dyn Tunnel> {
         let (stunnel, ctunnel) = create_ring_tunnel_pair();
 
         let (stream, sink) = stunnel.split();
 
         let data = WgPeerData {
-            udp: self.udp.clone(),
+            session: self.session.clone(),
             endpoint: self.endpoint,
             tunn: Arc::new(self.tunn.take().unwrap()),
             wg_type: self.config.wg_type.clone(),
+            access_time: self.access_time.clone(),
             stopped: Arc::new(AtomicBool::new(false)),
         };
 
@@ -450,8 +452,29 @@ impl WgPeer {
         handshake_init.into()
     }
 
-    fn udp_socket(&self) -> Arc<UdpSocket> {
-        self.udp.clone()
+    fn spawn_session_recv_task(&mut self, first_packet: Option<Vec<u8>>) {
+        let session = self.session.clone();
+        let data = self.data.as_ref().unwrap().clone();
+        let mut sink = self.sink.lock().unwrap().take().unwrap();
+        self.tasks.spawn(async move {
+            if let Some(packet) = first_packet {
+                data.handle_one_packet_from_peer(&mut sink, &packet).await;
+            }
+
+            let mut buf = vec![0u8; MAX_PACKET];
+            loop {
+                let n = match session.recv(&mut buf).await {
+                    Ok(n) => n,
+                    Err(e) => {
+                        tracing::error!("Failed to receive wg packet: {}", e);
+                        data.stopped
+                            .store(true, std::sync::atomic::Ordering::Relaxed);
+                        break;
+                    }
+                };
+                data.handle_one_packet_from_peer(&mut sink, &buf[..n]).await;
+            }
+        });
     }
 }
 
@@ -462,7 +485,6 @@ pub struct WgTunnelListener {
     addr: url::Url,
     config: WgConfig,
 
-    udp: Option<Arc<UdpSocket>>,
     conn_recv: ConnReceiver,
     conn_send: Option<ConnSender>,
 
@@ -479,7 +501,6 @@ impl WgTunnelListener {
             addr,
             config,
 
-            udp: None,
             conn_recv,
             conn_send: Some(conn_send),
 
@@ -494,12 +515,8 @@ impl WgTunnelListener {
         self.socket_mark = socket_mark;
     }
 
-    fn get_udp_socket(&self) -> Arc<UdpSocket> {
-        self.udp.as_ref().unwrap().clone()
-    }
-
-    async fn handle_udp_incoming(
-        socket: Arc<UdpSocket>,
+    async fn accept_udp_sessions(
+        layer: Arc<RuntimeUdpSessionLayer>,
         config: WgConfig,
         conn_sender: ConnSender,
         peer_map: Arc<DashMap<SocketAddr, Arc<WgPeer>>>,
@@ -517,48 +534,55 @@ impl WgTunnelListener {
             }
         });
 
-        let mut buf = vec![0u8; MAX_PACKET];
         loop {
-            let Ok((n, addr)) = socket.recv_from(&mut buf).await else {
-                tracing::error!("Failed to receive from UDP socket");
-                break;
+            let session = match layer.accept_direct().await {
+                Ok(session) => Arc::new(session) as Arc<dyn UdpSessionSocket>,
+                Err(e) => {
+                    tracing::error!("Failed to accept wg udp session: {}", e);
+                    break;
+                }
+            };
+            let addr = match session.peer_addr() {
+                Ok(addr) => addr,
+                Err(e) => {
+                    tracing::error!("Failed to get wg session peer addr: {}", e);
+                    continue;
+                }
+            };
+            if peer_map.contains_key(&addr) {
+                continue;
+            }
+            let local_addr = match session.local_addr() {
+                Ok(addr) => addr,
+                Err(e) => {
+                    tracing::error!("Failed to get wg session local addr: {}", e);
+                    continue;
+                }
             };
 
-            let data = &buf[..n];
-            tracing::trace!(?n, ?addr, "Received bytes from peer");
-
-            if !peer_map.contains_key(&addr) {
-                tracing::info!("New peer: {}", addr);
-                let mut wg = WgPeer::new(socket.clone(), config.clone(), addr);
-                let (stream, sink) = wg.start_and_get_tunnel().split();
-                let tunnel = Box::new(TunnelWrapper::new(
-                    stream,
-                    sink,
-                    Some(TunnelInfo {
-                        tunnel_type: "wg".to_owned(),
-                        local_addr: Some(
-                            build_url_from_socket_addr(
-                                &socket.local_addr().unwrap().to_string(),
-                                "wg",
-                            )
-                            .into(),
-                        ),
-                        remote_addr: Some(
-                            build_url_from_socket_addr(&addr.to_string(), "wg").into(),
-                        ),
-                        resolved_remote_addr: Some(
-                            build_url_from_socket_addr(&addr.to_string(), "wg").into(),
-                        ),
-                    }),
-                ));
-                if let Err(e) = conn_sender.send(tunnel) {
-                    tracing::error!("Failed to send tunnel to conn_sender: {}", e);
-                }
-                peer_map.insert(addr, Arc::new(wg));
+            tracing::info!("New peer: {}", addr);
+            let mut wg = WgPeer::new(layer.clone(), session, config.clone(), addr);
+            let (stream, sink) = wg.start_and_get_tunnel().split();
+            wg.spawn_session_recv_task(None);
+            let tunnel = Box::new(TunnelWrapper::new(
+                stream,
+                sink,
+                Some(TunnelInfo {
+                    tunnel_type: "wg".to_owned(),
+                    local_addr: Some(
+                        build_url_from_socket_addr(&local_addr.to_string(), "wg").into(),
+                    ),
+                    remote_addr: Some(build_url_from_socket_addr(&addr.to_string(), "wg").into()),
+                    resolved_remote_addr: Some(
+                        build_url_from_socket_addr(&addr.to_string(), "wg").into(),
+                    ),
+                }),
+            ));
+            if let Err(e) = conn_sender.send(tunnel) {
+                tracing::error!("Failed to send tunnel to conn_sender: {}", e);
+                break;
             }
-
-            let peer = peer_map.get(&addr).unwrap().clone();
-            peer.handle_packet_from_peer(data).await;
+            peer_map.insert(addr, Arc::new(wg));
         }
     }
 }
@@ -568,20 +592,22 @@ impl TunnelListener for WgTunnelListener {
     async fn listen(&mut self) -> Result<(), TunnelError> {
         let addr = SocketAddr::from_url(self.addr.clone(), IpVersion::Both).await?;
         let tunnel_url: TunnelUrl = self.addr.clone().into();
-        self.udp = Some(Arc::new(
+        let socket = Arc::new(
             bind()
                 .addr(addr)
                 .only_v6(true)
                 .maybe_dev(tunnel_url.bind_dev())
                 .maybe_socket_mark(self.socket_mark)
                 .call()?,
-        ));
+        );
+        let runtime_socket = Arc::new(RuntimeUdpSocket::new(socket));
+        let layer = runtime_socket.udp_session_layer();
         self.addr
-            .set_port(Some(self.udp.as_ref().unwrap().local_addr()?.port()))
+            .set_port(Some(layer.local_addr()?.port()))
             .unwrap();
 
-        self.tasks.spawn(Self::handle_udp_incoming(
-            self.get_udp_socket(),
+        self.tasks.spawn(Self::accept_udp_sessions(
+            layer,
             self.config.clone(),
             self.conn_send.take().unwrap(),
             self.wg_peer_map.clone(),
@@ -607,7 +633,6 @@ impl TunnelListener for WgTunnelListener {
 pub struct WgTunnelConnector {
     addr: url::Url,
     config: WgConfig,
-    udp: Option<Arc<UdpSocket>>,
 
     bind_addrs: Vec<SocketAddr>,
     ip_version: IpVersion,
@@ -619,7 +644,6 @@ impl Debug for WgTunnelConnector {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("WgTunnelConnector")
             .field("addr", &self.addr)
-            .field("udp", &self.udp)
             .finish()
     }
 }
@@ -629,7 +653,6 @@ impl WgTunnelConnector {
         WgTunnelConnector {
             addr,
             config,
-            udp: None,
             bind_addrs: vec![],
             ip_version: IpVersion::Both,
             resolved_addr: None,
@@ -645,19 +668,21 @@ impl WgTunnelConnector {
         addr: SocketAddr,
     ) -> Result<Box<dyn super::Tunnel>, super::TunnelError> {
         tracing::warn!("wg connect: {:?}", addr);
-        let local_addr = udp
+        let runtime_socket = Arc::new(RuntimeUdpSocket::new(Arc::new(udp)));
+        let layer = runtime_socket.udp_session_layer();
+        let session = Arc::new(layer.open_direct_session(addr)?) as Arc<dyn UdpSessionSocket>;
+        let local_addr = session
             .local_addr()
             .with_context(|| "Failed to get local addr")?
             .to_string();
 
-        let mut wg_peer = WgPeer::new(Arc::new(udp), config.clone(), addr);
-        let udp = wg_peer.udp_socket();
+        let mut wg_peer = WgPeer::new(layer, session.clone(), config.clone(), addr);
 
         // do handshake here so we will return after receive first packet
         let handshake = wg_peer.create_handshake_init().await;
-        udp.send_to(&handshake, addr).await?;
+        session.send(&handshake).await?;
         let mut buf = [0u8; MAX_PACKET];
-        let (n, recv_addr) = match udp.recv_from(&mut buf).await {
+        let n = match session.recv(&mut buf).await {
             Ok(ret) => ret,
             Err(e) => {
                 tracing::error!("Failed to receive handshake response: {}", e);
@@ -665,27 +690,8 @@ impl WgTunnelConnector {
             }
         };
 
-        if recv_addr != addr {
-            tracing::warn!(?recv_addr, "Received packet from changed address");
-        }
-
         let tunnel = wg_peer.start_and_get_tunnel();
-        let data = wg_peer.data.as_ref().unwrap().clone();
-        let mut sink = wg_peer.sink.lock().unwrap().take().unwrap();
-        wg_peer.tasks.spawn(async move {
-            data.handle_one_packet_from_peer(&mut sink, &buf[..n]).await;
-            loop {
-                let mut buf = vec![0u8; MAX_PACKET];
-                let (n, _) = match udp.recv_from(&mut buf).await {
-                    Ok(ret) => ret,
-                    Err(e) => {
-                        tracing::error!("Failed to receive wg packet: {}", e);
-                        break;
-                    }
-                };
-                data.handle_one_packet_from_peer(&mut sink, &buf[..n]).await;
-            }
-        });
+        wg_peer.spawn_session_recv_task(Some(buf[..n].to_vec()));
 
         let (stream, sink) = tunnel.split();
         let ret = Box::new(TunnelWrapper::new_with_associate_data(

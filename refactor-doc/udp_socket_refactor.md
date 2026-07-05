@@ -381,20 +381,25 @@ udp://
 - core UDP hub 已增加 direct UDP session registry。direct session 不再需要自己
   持有同一底层 UDP socket 的独立 recv loop；非 EasyTier UDP datagram 由 hub
   按 `remote_addr` 投递到对应 ring-backed `UdpSessionSocket`。
-- direct accept path 已提供给后续 WG/QUIC listener 使用：开启 direct accept 后，
-  未命中 EasyTier branch 的首个 raw datagram 会创建 peer-scoped
+- direct accept path 已接入 WG listener，并保留给后续 QUIC listener 使用：
+  开启 direct accept 后，未命中 EasyTier branch 的首个 raw datagram 会创建 peer-scoped
   `UdpSessionSocket`，并把首包投递到该 session ring。
+- `WgTunnelConnector` / `WgTunnelListener` 已改为消费 direct
+  `UdpSessionSocket`。WireGuard 的握手、routine packet 和后续 encrypted packet
+  都通过 peer-scoped `send` / `recv` 运行，不再直接 `send_to` / `recv_from`
+  底层 UDP socket。
 
 仍待完成的部分：
 
-- UDP hub 的 WG/QUIC branch 仍待接入；core 已具备 direct/raw datagram session
-  branch，但 WG/QUIC upgrader 还没有改成消费 `UdpSessionSocket`。
+- UDP hub 的 QUIC branch 仍待接入；core 已具备 direct/raw datagram session
+  branch，WG 已消费 `UdpSessionSocket`，QUIC upgrader 还没有改成消费
+  `UdpSessionSocket`。
 - STUN response 的 EasyTier runtime codec 仍由 easytier crate 中的
   `RuntimeUdpSessionControlHandler` 调用本地 helper。core 已拥有 classifier 和
   control path；后续如果要进一步收敛，需要把 codec helper 也提升到 core 可依赖
   的位置。
-- `wg` / `quic` / `udp` upgrader 仍需要改为消费 `UdpSessionSocket`，当前
-  `udp://` 仍通过 compatibility bridge 产出旧 `Tunnel`。
+- `quic` / `udp` upgrader 仍需要改为消费 `UdpSessionSocket`，当前 `udp://`
+  仍通过 compatibility bridge 产出旧 `Tunnel`。
 
 ## Listener 迁移方案
 

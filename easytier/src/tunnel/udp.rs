@@ -44,7 +44,8 @@ use crate::{
 
 pub const UDP_DATA_MTU: usize = 2000;
 
-type RuntimeUdpSessionLayer = UdpSessionLayer<RuntimeUdpSocket, RuntimeUdpSessionControlHandler>;
+pub(crate) type RuntimeUdpSessionLayer =
+    UdpSessionLayer<RuntimeUdpSocket, RuntimeUdpSessionControlHandler>;
 
 pub(crate) struct RuntimeUdpSocket {
     socket: Arc<UdpSocket>,
