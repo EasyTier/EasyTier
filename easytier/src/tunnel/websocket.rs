@@ -314,6 +314,12 @@ impl WsTunnelListener {
                 return self.try_accept(stream).await.map(Some);
             }
 
+            if b"GET ".starts_with(peek) {
+                return Err(TunnelError::InvalidProtocol(
+                    "HTTP upgrade on WSS port".to_string(),
+                ));
+            }
+
             tracing::info!(
                 listener = %self.addr,
                 ?local_addr,
@@ -335,6 +341,12 @@ impl WsTunnelListener {
         );
         if http_upgrade {
             return self.try_accept(stream).await.map(Some);
+        }
+
+        if is_tls_client_hello(peek) {
+            return Err(TunnelError::InvalidProtocol(
+                "TLS ClientHello on WS port".to_string(),
+            ));
         }
 
         tracing::info!(
