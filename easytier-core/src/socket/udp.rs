@@ -82,39 +82,72 @@ pub enum UdpSocketPurpose {
     PortBoundListener,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UdpBindOptions {
     pub local_addr: Option<SocketAddr>,
+    pub socket_mark: Option<u32>,
+    pub bind_device: Option<String>,
+    pub reuse_addr: bool,
+    pub reuse_port: bool,
+    pub only_v6: bool,
     pub purpose: UdpSocketPurpose,
 }
 
 impl UdpBindOptions {
-    pub fn hole_punch_control() -> Self {
+    fn for_purpose(purpose: UdpSocketPurpose) -> Self {
         Self {
             local_addr: None,
-            purpose: UdpSocketPurpose::HolePunchControl,
+            socket_mark: None,
+            bind_device: None,
+            reuse_addr: false,
+            reuse_port: false,
+            only_v6: false,
+            purpose,
         }
+    }
+
+    pub fn hole_punch_control() -> Self {
+        Self::for_purpose(UdpSocketPurpose::HolePunchControl)
     }
 
     pub fn hole_punch_candidate() -> Self {
-        Self {
-            local_addr: None,
-            purpose: UdpSocketPurpose::HolePunchCandidate,
-        }
+        Self::for_purpose(UdpSocketPurpose::HolePunchCandidate)
     }
 
     pub fn direct_connect() -> Self {
-        Self {
-            local_addr: None,
-            purpose: UdpSocketPurpose::DirectConnect,
-        }
+        Self::for_purpose(UdpSocketPurpose::DirectConnect)
     }
 
     pub fn port_bound_listener(local_addr: SocketAddr) -> Self {
         Self {
             local_addr: Some(local_addr),
-            purpose: UdpSocketPurpose::PortBoundListener,
+            ..Self::for_purpose(UdpSocketPurpose::PortBoundListener)
         }
+    }
+
+    pub fn with_socket_mark(mut self, socket_mark: Option<u32>) -> Self {
+        self.socket_mark = socket_mark;
+        self
+    }
+
+    pub fn with_bind_device(mut self, bind_device: Option<String>) -> Self {
+        self.bind_device = bind_device;
+        self
+    }
+
+    pub fn with_reuse_addr(mut self, reuse_addr: bool) -> Self {
+        self.reuse_addr = reuse_addr;
+        self
+    }
+
+    pub fn with_reuse_port(mut self, reuse_port: bool) -> Self {
+        self.reuse_port = reuse_port;
+        self
+    }
+
+    pub fn with_only_v6(mut self, only_v6: bool) -> Self {
+        self.only_v6 = only_v6;
+        self
     }
 }
 
@@ -460,7 +493,7 @@ impl UdpSessionProtocol {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UdpSessionConnectRequest {
     pub remote_addr: SocketAddr,
     pub bind: UdpBindOptions,
@@ -482,7 +515,7 @@ impl UdpSessionConnectRequest {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UdpSessionListenRequest {
     pub bind: UdpBindOptions,
 }
@@ -2109,6 +2142,11 @@ mod tests {
             UdpBindOptions::hole_punch_control(),
             UdpBindOptions {
                 local_addr: None,
+                socket_mark: None,
+                bind_device: None,
+                reuse_addr: false,
+                reuse_port: false,
+                only_v6: false,
                 purpose: UdpSocketPurpose::HolePunchControl,
             }
         );
@@ -2116,6 +2154,11 @@ mod tests {
             UdpBindOptions::hole_punch_candidate(),
             UdpBindOptions {
                 local_addr: None,
+                socket_mark: None,
+                bind_device: None,
+                reuse_addr: false,
+                reuse_port: false,
+                only_v6: false,
                 purpose: UdpSocketPurpose::HolePunchCandidate,
             }
         );
@@ -2123,6 +2166,11 @@ mod tests {
             UdpBindOptions::direct_connect(),
             UdpBindOptions {
                 local_addr: None,
+                socket_mark: None,
+                bind_device: None,
+                reuse_addr: false,
+                reuse_port: false,
+                only_v6: false,
                 purpose: UdpSocketPurpose::DirectConnect,
             }
         );
@@ -2130,6 +2178,11 @@ mod tests {
             UdpBindOptions::port_bound_listener(listener_addr),
             UdpBindOptions {
                 local_addr: Some(listener_addr),
+                socket_mark: None,
+                bind_device: None,
+                reuse_addr: false,
+                reuse_port: false,
+                only_v6: false,
                 purpose: UdpSocketPurpose::PortBoundListener,
             }
         );
@@ -2153,6 +2206,11 @@ mod tests {
             request.bind,
             UdpBindOptions {
                 local_addr: Some(bind_addr),
+                socket_mark: None,
+                bind_device: None,
+                reuse_addr: false,
+                reuse_port: false,
+                only_v6: false,
                 purpose: UdpSocketPurpose::PortBoundListener,
             }
         );
@@ -2163,7 +2221,7 @@ mod tests {
         let bind_addr = SocketAddr::from(([0, 0, 0, 0], 11010));
         let bind = UdpBindOptions::port_bound_listener(bind_addr);
 
-        assert_eq!(UdpSessionListenRequest::new(bind).bind, bind);
+        assert_eq!(UdpSessionListenRequest::new(bind.clone()).bind, bind);
     }
 
     struct MockUdpSessionSocket {
@@ -3600,7 +3658,7 @@ mod tests {
         type Socket = MockVirtualUdpSocket;
 
         async fn bind_udp(&self, options: UdpBindOptions) -> anyhow::Result<Arc<Self::Socket>> {
-            self.bind_options.lock().unwrap().push(options);
+            self.bind_options.lock().unwrap().push(options.clone());
             let local_addr = options.local_addr.unwrap_or_else(|| {
                 SocketAddr::from((
                     [127, 0, 0, 1],
@@ -3619,10 +3677,11 @@ mod tests {
         let bind_addr = SocketAddr::from(([127, 0, 0, 1], 14000));
         let request = UdpSessionConnectRequest::wireguard(remote_addr)
             .with_bind(UdpBindOptions::port_bound_listener(bind_addr));
+        let expected_bind = request.bind.clone();
 
         let session = dialer.connect(request).await.unwrap();
 
-        assert_eq!(factory.bind_options(), vec![request.bind]);
+        assert_eq!(factory.bind_options(), vec![expected_bind]);
         assert_eq!(session.kind(), UdpSessionKind::WireGuard);
         assert_eq!(session.local_addr().unwrap(), bind_addr);
         assert_eq!(session.peer_addr().unwrap(), remote_addr);

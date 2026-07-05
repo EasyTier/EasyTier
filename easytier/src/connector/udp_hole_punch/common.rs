@@ -15,6 +15,7 @@ use crate::{
     proto::common::NatType,
     tunnel::{
         Tunnel, TunnelConnCounter, TunnelListener as _,
+        common::{BindDev, bind},
         udp::{RuntimeUdpSocket, UdpTunnelConnector, UdpTunnelListener},
     },
 };
@@ -136,16 +137,24 @@ impl core_udp_hole_punch::UdpHolePunchRuntime for RuntimeUdpHolePunchRuntime {
         let bind_addr = options
             .local_addr
             .unwrap_or_else(|| SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 0)));
+        let bind_device = options
+            .bind_device
+            .map(BindDev::from)
+            .unwrap_or(BindDev::Disabled);
         let socket = {
-            let _g = self.global_ctx.net_ns.guard();
-            Arc::new(UdpSocket::bind(bind_addr).await?)
+            Arc::new(
+                bind::<UdpSocket>()
+                    .addr(bind_addr)
+                    .dev(bind_device)
+                    .maybe_net_ns(Some(self.global_ctx.net_ns.clone()))
+                    .only_v6(options.only_v6)
+                    .reuse_addr(options.reuse_addr)
+                    .reuse_port(options.reuse_port)
+                    .maybe_socket_mark(options.socket_mark)
+                    .call()?,
+            )
         };
 
-        Ok(Arc::new(RuntimeUdpSocket::new(socket)))
-    }
-
-    async fn bind_direct_connect_udp(&self) -> anyhow::Result<Arc<Self::Socket>> {
-        let socket = Arc::new(UdpSocket::bind("0.0.0.0:0").await?);
         Ok(Arc::new(RuntimeUdpSocket::new(socket)))
     }
 
