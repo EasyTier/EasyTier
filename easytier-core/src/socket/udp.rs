@@ -1,10 +1,7 @@
 use std::{
     io,
     net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6},
-    sync::{
-        Arc, Mutex as StdMutex,
-        atomic::{AtomicBool, Ordering},
-    },
+    sync::{Arc, Mutex as StdMutex, atomic::Ordering},
     time::Duration,
 };
 
@@ -298,8 +295,7 @@ enum UdpDatagramClassification {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum UdpSessionPacketKind {
-    WireGuard,
-    Quic,
+    Classified(UdpSessionProtocol),
     Unknown,
 }
 
@@ -329,9 +325,9 @@ impl EasyTierUdpPacketKind {
 
 fn classify_session_udp_datagram(data: &[u8]) -> UdpSessionPacketKind {
     if is_wireguard_packet(data) {
-        UdpSessionPacketKind::WireGuard
+        UdpSessionPacketKind::Classified(UdpSessionProtocol::WireGuard)
     } else if is_quic_packet(data) {
-        UdpSessionPacketKind::Quic
+        UdpSessionPacketKind::Classified(UdpSessionProtocol::Quic)
     } else {
         UdpSessionPacketKind::Unknown
     }
@@ -449,10 +445,19 @@ pub trait UdpSessionSocket: Send + Sync + 'static {
     async fn recv(&self, buf: &mut [u8]) -> std::io::Result<usize>;
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum UdpSessionProtocol {
     WireGuard,
     Quic,
+}
+
+impl UdpSessionProtocol {
+    fn session_kind(self) -> UdpSessionKind {
+        match self {
+            Self::WireGuard => UdpSessionKind::WireGuard,
+            Self::Quic => UdpSessionKind::Quic,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -520,8 +525,31 @@ impl UdpSessionKey {
 }
 
 type UdpSessionRegistry = DashMap<UdpSessionKey, UdpSessionRegistryEntry>;
-type WireGuardUdpSessionRegistry = DashMap<SocketAddr, UdpSessionRegistryEntry>;
+type ClassifiedUdpSessionRegistry = DashMap<ClassifiedUdpSessionKey, UdpSessionRegistryEntry>;
+type ClassifiedUdpSessionAccepts = DashMap<UdpSessionProtocol, Arc<ClassifiedUdpSessionAccept>>;
 type PendingUdpSessionConnects = DashMap<u32, PendingUdpSessionConnect>;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct ClassifiedUdpSessionKey {
+    protocol: UdpSessionProtocol,
+    peer_addr: SocketAddr,
+}
+
+impl ClassifiedUdpSessionKey {
+    fn new(protocol: UdpSessionProtocol, peer_addr: SocketAddr) -> Self {
+        Self {
+            protocol,
+            peer_addr,
+        }
+    }
+}
+
+#[derive(Debug)]
+struct ClassifiedUdpSessionAccept {
+    accepted: mpsc::Sender<UdpSession>,
+    accepted_rx: TokioMutex<mpsc::Receiver<UdpSession>>,
+    accept_enabled: std::sync::atomic::AtomicBool,
+}
 
 #[derive(Debug, Clone)]
 struct UdpSessionRegistryEntry {
@@ -611,9 +639,9 @@ enum UdpSessionCloseTarget {
         key: UdpSessionKey,
         sessions: Arc<UdpSessionRegistry>,
     },
-    WireGuard {
-        peer_addr: SocketAddr,
-        sessions: Arc<WireGuardUdpSessionRegistry>,
+    Classified {
+        key: ClassifiedUdpSessionKey,
+        sessions: Arc<ClassifiedUdpSessionRegistry>,
     },
 }
 
@@ -643,17 +671,14 @@ impl UdpSessionClose {
         }
     }
 
-    fn wireguard(
-        peer_addr: SocketAddr,
+    fn classified(
+        key: ClassifiedUdpSessionKey,
         close: watch::Sender<bool>,
-        sessions: Arc<WireGuardUdpSessionRegistry>,
+        sessions: Arc<ClassifiedUdpSessionRegistry>,
     ) -> Self {
         Self {
             close,
-            target: UdpSessionCloseTarget::WireGuard {
-                peer_addr,
-                sessions,
-            },
+            target: UdpSessionCloseTarget::Classified { key, sessions },
         }
     }
 
@@ -664,11 +689,8 @@ impl UdpSessionClose {
             UdpSessionCloseTarget::EasyTier { key, sessions } => {
                 close_udp_session(sessions, *key);
             }
-            UdpSessionCloseTarget::WireGuard {
-                peer_addr,
-                sessions,
-            } => {
-                close_wireguard_udp_session(sessions, *peer_addr);
+            UdpSessionCloseTarget::Classified { key, sessions } => {
+                close_classified_udp_session(sessions, *key);
             }
         }
         let _ = self.close.send(true);
@@ -792,15 +814,29 @@ pub struct UdpSessionLayer<S, H = NoopUdpSessionControlHandler> {
     socket: Arc<S>,
     _control_handler: Arc<H>,
     sessions: Arc<UdpSessionRegistry>,
-    wireguard_sessions: Arc<WireGuardUdpSessionRegistry>,
+    classified_sessions: Arc<ClassifiedUdpSessionRegistry>,
+    classified_accepts: Arc<ClassifiedUdpSessionAccepts>,
     pending_connects: Arc<PendingUdpSessionConnects>,
-    accepted_rx: TokioMutex<mpsc::Receiver<UdpSession>>,
-    wireguard_accepted_rx: TokioMutex<mpsc::Receiver<UdpSession>>,
-    wireguard_accept_enabled: Arc<AtomicBool>,
-    priority_control_rx: TokioMutex<mpsc::Receiver<UdpSessionLayerControl>>,
+    mux_accepted_rx: TokioMutex<mpsc::Receiver<UdpSession>>,
     control_rx: TokioMutex<mpsc::Receiver<UdpSessionLayerControl>>,
     session_shutdown_tx: watch::Sender<bool>,
     recv_task: JoinHandle<()>,
+}
+
+fn create_classified_udp_session_accepts() -> Arc<ClassifiedUdpSessionAccepts> {
+    let accepts = Arc::new(DashMap::new());
+    for protocol in [UdpSessionProtocol::WireGuard, UdpSessionProtocol::Quic] {
+        let (accepted, accepted_rx) = mpsc::channel(UDP_SESSION_QUEUE_CAPACITY);
+        accepts.insert(
+            protocol,
+            Arc::new(ClassifiedUdpSessionAccept {
+                accepted,
+                accepted_rx: TokioMutex::new(accepted_rx),
+                accept_enabled: std::sync::atomic::AtomicBool::new(false),
+            }),
+        );
+    }
+    accepts
 }
 
 impl<S> UdpSessionLayer<S>
@@ -819,24 +855,19 @@ where
 {
     pub fn new_with_control_handler(socket: Arc<S>, control_handler: Arc<H>) -> Self {
         let sessions = Arc::new(DashMap::new());
-        let wireguard_sessions = Arc::new(DashMap::new());
+        let classified_sessions = Arc::new(DashMap::new());
+        let classified_accepts = create_classified_udp_session_accepts();
         let pending_connects = Arc::new(DashMap::new());
-        let (accepted_tx, accepted_rx) = mpsc::channel(UDP_SESSION_QUEUE_CAPACITY);
-        let (wireguard_accepted_tx, wireguard_accepted_rx) =
-            mpsc::channel(UDP_SESSION_QUEUE_CAPACITY);
-        let wireguard_accept_enabled = Arc::new(AtomicBool::new(false));
-        let (priority_control_tx, priority_control_rx) = mpsc::channel(UDP_SESSION_QUEUE_CAPACITY);
+        let (mux_accepted_tx, mux_accepted_rx) = mpsc::channel(UDP_SESSION_QUEUE_CAPACITY);
         let (control_tx, control_rx) = mpsc::channel(UDP_SESSION_QUEUE_CAPACITY);
         let (session_shutdown_tx, _) = watch::channel(false);
         let recv_task = tokio::spawn(udp_session_layer_recv_task(
             socket.clone(),
             sessions.clone(),
-            wireguard_sessions.clone(),
+            classified_sessions.clone(),
+            classified_accepts.clone(),
             pending_connects.clone(),
-            accepted_tx,
-            wireguard_accepted_tx,
-            wireguard_accept_enabled.clone(),
-            priority_control_tx,
+            mux_accepted_tx,
             control_tx,
             control_handler.clone(),
             session_shutdown_tx.clone(),
@@ -846,12 +877,10 @@ where
             socket,
             _control_handler: control_handler,
             sessions,
-            wireguard_sessions,
+            classified_sessions,
+            classified_accepts,
             pending_connects,
-            accepted_rx: TokioMutex::new(accepted_rx),
-            wireguard_accepted_rx: TokioMutex::new(wireguard_accepted_rx),
-            wireguard_accept_enabled,
-            priority_control_rx: TokioMutex::new(priority_control_rx),
+            mux_accepted_rx: TokioMutex::new(mux_accepted_rx),
             control_rx: TokioMutex::new(control_rx),
             session_shutdown_tx,
             recv_task,
@@ -866,35 +895,40 @@ where
         self.sessions.len()
     }
 
-    pub fn active_wireguard_session_count(&self) -> usize {
-        self.wireguard_sessions.len()
+    pub fn active_classified_session_count(&self) -> usize {
+        self.classified_sessions.len()
     }
 
-    pub fn open_wireguard_session(&self, remote_addr: SocketAddr) -> io::Result<UdpSession> {
+    pub fn open_classified_session(
+        &self,
+        protocol: UdpSessionProtocol,
+        remote_addr: SocketAddr,
+    ) -> io::Result<UdpSession> {
         let local_addr = self.socket.local_addr()?;
+        let key = ClassifiedUdpSessionKey::new(protocol, remote_addr);
         let rings = create_udp_session_rings();
-        match self.wireguard_sessions.entry(remote_addr) {
+        match self.classified_sessions.entry(key) {
             dashmap::mapref::entry::Entry::Vacant(entry) => {
                 entry.insert(udp_session_registry_entry(&rings));
             }
             dashmap::mapref::entry::Entry::Occupied(_) => {
                 return Err(io::Error::new(
                     io::ErrorKind::AddrInUse,
-                    format!("wireguard udp session already exists for {remote_addr}"),
+                    format!("{protocol:?} udp session already exists for {remote_addr}"),
                 ));
             }
         }
 
-        let close = UdpSessionClose::wireguard(
-            remote_addr,
+        let close = UdpSessionClose::classified(
+            key,
             rings.close_tx.clone(),
-            self.wireguard_sessions.clone(),
+            self.classified_sessions.clone(),
         );
         Ok(UdpSession::new(
             self.socket.clone(),
             local_addr,
             remote_addr,
-            UdpSessionKind::WireGuard,
+            protocol.session_kind(),
             UdpSessionCodec::Identity,
             rings,
             close,
@@ -982,43 +1016,39 @@ where
     }
 
     pub async fn accept(&self) -> io::Result<UdpSession> {
-        let mut accepted_rx = self.accepted_rx.lock().await;
-        accepted_rx
+        let mut mux_accepted_rx = self.mux_accepted_rx.lock().await;
+        mux_accepted_rx
             .recv()
             .await
             .ok_or_else(|| io::Error::new(io::ErrorKind::UnexpectedEof, "udp listener closed"))
     }
 
-    pub async fn accept_wireguard_session(&self) -> io::Result<UdpSession> {
-        self.wireguard_accept_enabled.store(true, Ordering::Relaxed);
-        let mut wireguard_accepted_rx = self.wireguard_accepted_rx.lock().await;
-        wireguard_accepted_rx.recv().await.ok_or_else(|| {
+    pub async fn accept_classified_session(
+        &self,
+        protocol: UdpSessionProtocol,
+    ) -> io::Result<UdpSession> {
+        let accept = self
+            .classified_accepts
+            .get(&protocol)
+            .map(|entry| entry.value().clone())
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("{protocol:?} udp listener is not registered"),
+                )
+            })?;
+        accept.accept_enabled.store(true, Ordering::Relaxed);
+        let mut accepted_rx = accept.accepted_rx.lock().await;
+        accepted_rx.recv().await.ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::UnexpectedEof,
-                "wireguard udp listener closed",
+                format!("{protocol:?} udp listener closed"),
             )
         })
     }
 
     pub async fn recv_control(&self) -> io::Result<UdpSessionLayerControl> {
-        let mut priority_control_rx = self.priority_control_rx.lock().await;
         let mut control_rx = self.control_rx.lock().await;
-        if let Ok(packet) = priority_control_rx.try_recv() {
-            return Ok(packet);
-        }
-        if let Ok(packet) = control_rx.try_recv() {
-            return Ok(packet);
-        }
-
-        let packet = tokio::select! {
-            biased;
-            packet = priority_control_rx.recv() => packet,
-            packet = control_rx.recv() => packet,
-        };
-        if let Some(packet) = packet {
-            return Ok(packet);
-        }
-
         control_rx
             .recv()
             .await
@@ -1090,7 +1120,7 @@ impl<S, H> Drop for UdpSessionLayer<S, H> {
         let _ = self.session_shutdown_tx.send(true);
         self.pending_connects.clear();
         close_all_udp_sessions(&self.sessions);
-        close_all_wireguard_udp_sessions(&self.wireguard_sessions);
+        close_all_classified_udp_sessions(&self.classified_sessions);
         self.recv_task.abort();
     }
 }
@@ -1197,11 +1227,11 @@ fn close_udp_session(sessions: &UdpSessionRegistry, key: UdpSessionKey) {
     }
 }
 
-fn close_wireguard_udp_session(
-    wireguard_sessions: &WireGuardUdpSessionRegistry,
-    peer_addr: SocketAddr,
+fn close_classified_udp_session(
+    classified_sessions: &ClassifiedUdpSessionRegistry,
+    key: ClassifiedUdpSessionKey,
 ) {
-    if let Some((_, entry)) = wireguard_sessions.remove(&peer_addr) {
+    if let Some((_, entry)) = classified_sessions.remove(&key) {
         let _ = entry.close.send(true);
     }
 }
@@ -1217,15 +1247,15 @@ fn close_all_udp_sessions(sessions: &UdpSessionRegistry) {
     sessions.clear();
 }
 
-fn close_all_wireguard_udp_sessions(wireguard_sessions: &WireGuardUdpSessionRegistry) {
-    let close_senders = wireguard_sessions
+fn close_all_classified_udp_sessions(classified_sessions: &ClassifiedUdpSessionRegistry) {
+    let close_senders = classified_sessions
         .iter()
         .map(|entry| entry.value().close.clone())
         .collect::<Vec<_>>();
     for close in close_senders {
         let _ = close.send(true);
     }
-    wireguard_sessions.clear();
+    classified_sessions.clear();
 }
 
 fn ring_socket_error_to_io(error: crate::socket::ring::RingSocketError) -> io::Error {
@@ -1425,12 +1455,10 @@ fn move_pending_udp_session_sender(
 async fn udp_session_layer_recv_task<S, H>(
     socket: Arc<S>,
     sessions: Arc<UdpSessionRegistry>,
-    wireguard_sessions: Arc<WireGuardUdpSessionRegistry>,
+    classified_sessions: Arc<ClassifiedUdpSessionRegistry>,
+    classified_accepts: Arc<ClassifiedUdpSessionAccepts>,
     pending_connects: Arc<PendingUdpSessionConnects>,
-    accepted: mpsc::Sender<UdpSession>,
-    wireguard_accepted: mpsc::Sender<UdpSession>,
-    wireguard_accept_enabled: Arc<AtomicBool>,
-    priority_control: mpsc::Sender<UdpSessionLayerControl>,
+    mux_accepted: mpsc::Sender<UdpSession>,
     control: mpsc::Sender<UdpSessionLayerControl>,
     control_handler: Arc<H>,
     session_shutdown_tx: watch::Sender<bool>,
@@ -1448,7 +1476,7 @@ async fn udp_session_layer_recv_task<S, H>(
                 let _ = session_shutdown_tx.send(true);
                 pending_connects.clear();
                 close_all_udp_sessions(&sessions);
-                close_all_wireguard_udp_sessions(&wireguard_sessions);
+                close_all_classified_udp_sessions(&classified_sessions);
                 break;
             }
         };
@@ -1474,9 +1502,8 @@ async fn udp_session_layer_recv_task<S, H>(
             UdpDatagramClassification::SessionPacket { kind, datagram } => {
                 dispatch_session_udp_datagram(
                     socket.clone(),
-                    &wireguard_sessions,
-                    &wireguard_accepted,
-                    wireguard_accept_enabled.load(Ordering::Relaxed),
+                    &classified_sessions,
+                    &classified_accepts,
                     session_shutdown_tx.subscribe(),
                     remote_addr,
                     kind,
@@ -1493,8 +1520,8 @@ async fn udp_session_layer_recv_task<S, H>(
                     socket.clone(),
                     &sessions,
                     &pending_connects,
-                    &accepted,
-                    &priority_control,
+                    &mux_accepted,
+                    &control,
                     control_handler.clone(),
                     control_handler_permits.clone(),
                     remote_addr,
@@ -1506,9 +1533,8 @@ async fn udp_session_layer_recv_task<S, H>(
                 if !consumed {
                     dispatch_session_udp_datagram(
                         socket.clone(),
-                        &wireguard_sessions,
-                        &wireguard_accepted,
-                        wireguard_accept_enabled.load(Ordering::Relaxed),
+                        &classified_sessions,
+                        &classified_accepts,
                         session_shutdown_tx.subscribe(),
                         remote_addr,
                         fallback,
@@ -1524,8 +1550,8 @@ fn dispatch_easy_tier_udp_datagram<S, H>(
     socket: Arc<S>,
     sessions: &Arc<UdpSessionRegistry>,
     pending_connects: &Arc<PendingUdpSessionConnects>,
-    accepted: &mpsc::Sender<UdpSession>,
-    priority_control: &mpsc::Sender<UdpSessionLayerControl>,
+    mux_accepted: &mpsc::Sender<UdpSession>,
+    control: &mpsc::Sender<UdpSessionLayerControl>,
     control_handler: Arc<H>,
     control_handler_permits: Arc<Semaphore>,
     remote_addr: SocketAddr,
@@ -1543,7 +1569,7 @@ where
         EasyTierUdpPacketKind::Syn => handle_new_easy_tier_mux_connect(
             socket,
             sessions.clone(),
-            accepted.clone(),
+            mux_accepted.clone(),
             remote_addr,
             conn_id,
             packet,
@@ -1559,7 +1585,7 @@ where
             socket,
             control_handler,
             control_handler_permits,
-            priority_control,
+            control,
             remote_addr,
             packet,
         ),
@@ -1567,7 +1593,7 @@ where
             socket,
             control_handler,
             control_handler_permits,
-            priority_control,
+            control,
             remote_addr,
             packet,
         ),
@@ -1595,9 +1621,8 @@ fn dispatch_data_packet(
 
 fn dispatch_session_udp_datagram<S>(
     socket: Arc<S>,
-    wireguard_sessions: &Arc<WireGuardUdpSessionRegistry>,
-    wireguard_accepted: &mpsc::Sender<UdpSession>,
-    wireguard_accept_enabled: bool,
+    classified_sessions: &Arc<ClassifiedUdpSessionRegistry>,
+    classified_accepts: &Arc<ClassifiedUdpSessionAccepts>,
     session_shutdown: watch::Receiver<bool>,
     remote_addr: SocketAddr,
     kind: UdpSessionPacketKind,
@@ -1606,93 +1631,100 @@ fn dispatch_session_udp_datagram<S>(
     S: VirtualUdpSocket,
 {
     match kind {
-        UdpSessionPacketKind::WireGuard => dispatch_wireguard_udp_datagram(
+        UdpSessionPacketKind::Classified(protocol) => dispatch_classified_udp_datagram(
             socket,
-            wireguard_sessions,
-            wireguard_accepted,
-            wireguard_accept_enabled,
+            classified_sessions,
+            classified_accepts,
+            protocol,
             session_shutdown,
             remote_addr,
             datagram,
         ),
-        UdpSessionPacketKind::Quic => {
-            tracing::trace!(?remote_addr, "quic udp packet has no session route yet");
-        }
         UdpSessionPacketKind::Unknown => {
             tracing::trace!(?remote_addr, "unknown udp packet has no session route");
         }
     }
 }
 
-fn dispatch_wireguard_udp_datagram<S>(
+fn dispatch_classified_udp_datagram<S>(
     socket: Arc<S>,
-    wireguard_sessions: &Arc<WireGuardUdpSessionRegistry>,
-    wireguard_accepted: &mpsc::Sender<UdpSession>,
-    wireguard_accept_enabled: bool,
+    classified_sessions: &Arc<ClassifiedUdpSessionRegistry>,
+    classified_accepts: &Arc<ClassifiedUdpSessionAccepts>,
+    protocol: UdpSessionProtocol,
     session_shutdown: watch::Receiver<bool>,
     remote_addr: SocketAddr,
     datagram: BytesMut,
 ) where
     S: VirtualUdpSocket,
 {
-    if let Some(entry) = wireguard_sessions
-        .get(&remote_addr)
+    let key = ClassifiedUdpSessionKey::new(protocol, remote_addr);
+    if let Some(entry) = classified_sessions
+        .get(&key)
         .map(|entry| entry.value().clone())
     {
         if !dispatch_payload_to_session(&entry.incoming, datagram) {
-            close_wireguard_udp_session(wireguard_sessions, remote_addr);
-            tracing::debug!(?remote_addr, "wireguard udp session data queue closed");
+            close_classified_udp_session(classified_sessions, key);
+            tracing::debug!(?key, "classified udp session data queue closed");
         }
         return;
     }
 
-    if !wireguard_accept_enabled {
+    let Some(accept) = classified_accepts
+        .get(&protocol)
+        .map(|entry| entry.value().clone())
+    else {
+        tracing::trace!(
+            ?protocol,
+            ?remote_addr,
+            "classified udp accept is not registered"
+        );
+        return;
+    };
+
+    if !accept.accept_enabled.load(Ordering::Relaxed) {
         return;
     }
 
-    let accept_permit = match wireguard_accepted.clone().try_reserve_owned() {
+    let accept_permit = match accept.accepted.clone().try_reserve_owned() {
         Ok(permit) => permit,
         Err(err) => {
-            tracing::debug!(?err, ?remote_addr, "wireguard udp accept queue unavailable");
+            tracing::debug!(?err, ?key, "classified udp accept queue unavailable");
             return;
         }
     };
     let local_addr = match socket.local_addr() {
         Ok(addr) => addr,
         Err(err) => {
-            tracing::debug!(?err, ?remote_addr, "wireguard udp get local addr error");
+            tracing::debug!(?err, ?key, "classified udp get local addr error");
             return;
         }
     };
     let rings = create_udp_session_rings();
-    match wireguard_sessions.entry(remote_addr) {
+    match classified_sessions.entry(key) {
         dashmap::mapref::entry::Entry::Vacant(entry) => {
             entry.insert(udp_session_registry_entry(&rings));
         }
         dashmap::mapref::entry::Entry::Occupied(entry) => {
             let entry = entry.get().clone();
             if !dispatch_payload_to_session(&entry.incoming, datagram) {
-                close_wireguard_udp_session(wireguard_sessions, remote_addr);
-                tracing::debug!(?remote_addr, "wireguard udp session data queue closed");
+                close_classified_udp_session(classified_sessions, key);
+                tracing::debug!(?key, "classified udp session data queue closed");
             }
             return;
         }
     }
     if !dispatch_payload_to_session(&rings.core_incoming, datagram) {
-        close_wireguard_udp_session(wireguard_sessions, remote_addr);
-        tracing::debug!(?remote_addr, "wireguard udp session data queue closed");
+        close_classified_udp_session(classified_sessions, key);
+        tracing::debug!(?key, "classified udp session data queue closed");
         return;
     }
-    let close = UdpSessionClose::wireguard(
-        remote_addr,
-        rings.close_tx.clone(),
-        wireguard_sessions.clone(),
-    );
+    let close =
+        UdpSessionClose::classified(key, rings.close_tx.clone(), classified_sessions.clone());
     let session = UdpSession::new(
         socket,
         local_addr,
         remote_addr,
-        UdpSessionKind::WireGuard,
+        protocol.session_kind(),
         UdpSessionCodec::Identity,
         rings,
         close,
@@ -1704,7 +1736,7 @@ fn dispatch_wireguard_udp_datagram<S>(
 fn handle_new_easy_tier_mux_connect<S>(
     socket: Arc<S>,
     sessions: Arc<UdpSessionRegistry>,
-    accepted: mpsc::Sender<UdpSession>,
+    mux_accepted: mpsc::Sender<UdpSession>,
     remote_addr: SocketAddr,
     conn_id: u32,
     packet: &ZCPacket,
@@ -1738,7 +1770,7 @@ where
         return true;
     }
 
-    let accept_permit = match accepted.clone().try_reserve_owned() {
+    let accept_permit = match mux_accepted.clone().try_reserve_owned() {
         Ok(permit) => permit,
         Err(err) => {
             tracing::debug!(?err, ?key, "udp accept queue unavailable");
@@ -2050,10 +2082,7 @@ where
     ) -> anyhow::Result<Self::Session> {
         let socket = self.factory.bind_udp(request.bind).await?;
         let layer = Arc::new(UdpSessionLayer::new(socket));
-        let mut session = match request.protocol {
-            UdpSessionProtocol::WireGuard => layer.open_wireguard_session(request.remote_addr)?,
-            UdpSessionProtocol::Quic => anyhow::bail!("quic udp session dialer is not wired yet"),
-        };
+        let mut session = layer.open_classified_session(request.protocol, request.remote_addr)?;
         session._cleanup.layer_guard = Some(Box::new(layer));
         Ok(session)
     }
@@ -2609,7 +2638,9 @@ mod tests {
         let peer_addr = SocketAddr::from(([127, 0, 0, 1], 12001));
         let socket = Arc::new(AutoSackVirtualUdpSocket::new(local_addr));
         let layer = UdpSessionLayer::new(socket.clone());
-        let session = layer.open_wireguard_session(peer_addr).unwrap();
+        let session = layer
+            .open_classified_session(UdpSessionProtocol::WireGuard, peer_addr)
+            .unwrap();
 
         assert_eq!(session.kind(), UdpSessionKind::WireGuard);
         assert_eq!(session.send(b"outbound").await.unwrap(), 8);
@@ -2639,7 +2670,9 @@ mod tests {
         let peer_addr = SocketAddr::from(([127, 0, 0, 1], 12001));
         let socket = Arc::new(AutoSackVirtualUdpSocket::new(local_addr));
         let layer = UdpSessionLayer::new(socket.clone());
-        let session = layer.open_wireguard_session(peer_addr).unwrap();
+        let session = layer
+            .open_classified_session(UdpSessionProtocol::WireGuard, peer_addr)
+            .unwrap();
         let packet = wireguard_packet_with_easy_tier_data_header(b"wireguard-collision");
 
         socket
@@ -2665,7 +2698,9 @@ mod tests {
         let peer_addr = SocketAddr::from(([127, 0, 0, 1], 12001));
         let socket = Arc::new(AutoSackVirtualUdpSocket::new(local_addr));
         let layer = UdpSessionLayer::new(socket.clone());
-        let wireguard_session = layer.open_wireguard_session(peer_addr).unwrap();
+        let wireguard_session = layer
+            .open_classified_session(UdpSessionProtocol::WireGuard, peer_addr)
+            .unwrap();
         let key = UdpSessionKey::new(peer_addr, 4);
         let (mux_session, _shutdown_tx) =
             create_test_easy_tier_mux_session(socket.clone(), key, layer.sessions.clone());
@@ -2705,11 +2740,21 @@ mod tests {
         let layer = Arc::new(UdpSessionLayer::new(socket.clone()));
         let mut accept_task = tokio::spawn({
             let layer = layer.clone();
-            async move { layer.accept_wireguard_session().await }
+            async move {
+                layer
+                    .accept_classified_session(UdpSessionProtocol::WireGuard)
+                    .await
+            }
         });
 
         tokio::time::timeout(Duration::from_secs(1), async {
-            while !layer.wireguard_accept_enabled.load(Ordering::Relaxed) {
+            while !layer
+                .classified_accepts
+                .get(&UdpSessionProtocol::WireGuard)
+                .unwrap()
+                .accept_enabled
+                .load(Ordering::Relaxed)
+            {
                 tokio::task::yield_now().await;
             }
         })
@@ -2729,7 +2774,7 @@ mod tests {
                 .is_err()
         );
         accept_task.abort();
-        assert_eq!(layer.active_wireguard_session_count(), 0);
+        assert_eq!(layer.active_classified_session_count(), 0);
     }
 
     #[tokio::test]
@@ -2740,12 +2785,22 @@ mod tests {
         let layer = Arc::new(UdpSessionLayer::new(socket.clone()));
         let accept_task = tokio::spawn({
             let layer = layer.clone();
-            async move { layer.accept_wireguard_session().await }
+            async move {
+                layer
+                    .accept_classified_session(UdpSessionProtocol::WireGuard)
+                    .await
+            }
         });
         let packet = wireguard_packet_with_easy_tier_data_header(b"accepted-wireguard");
 
         tokio::time::timeout(Duration::from_secs(1), async {
-            while !layer.wireguard_accept_enabled.load(Ordering::Relaxed) {
+            while !layer
+                .classified_accepts
+                .get(&UdpSessionProtocol::WireGuard)
+                .unwrap()
+                .accept_enabled
+                .load(Ordering::Relaxed)
+            {
                 tokio::task::yield_now().await;
             }
         })
@@ -2770,7 +2825,7 @@ mod tests {
         assert_eq!(accepted.peer_addr().unwrap(), peer_addr);
         assert_eq!(&buf[..len], packet.as_slice());
         assert_eq!(layer.active_session_count(), 0);
-        assert_eq!(layer.active_wireguard_session_count(), 1);
+        assert_eq!(layer.active_classified_session_count(), 1);
     }
 
     #[tokio::test]
@@ -2779,7 +2834,9 @@ mod tests {
         let peer_addr = SocketAddr::from(([127, 0, 0, 1], 12001));
         let socket = Arc::new(AutoSackVirtualUdpSocket::new(local_addr));
         let layer = UdpSessionLayer::new(socket.clone());
-        let session = layer.open_wireguard_session(peer_addr).unwrap();
+        let session = layer
+            .open_classified_session(UdpSessionProtocol::WireGuard, peer_addr)
+            .unwrap();
         let syn = new_syn_packet(0x1122_3344, 0x5566_7788).into_bytes();
 
         socket
@@ -3003,23 +3060,18 @@ mod tests {
             session_shutdown_rx,
         );
         let pending_connects = Arc::new(DashMap::new());
-        let wireguard_sessions = Arc::new(DashMap::new());
-        let (accepted_tx, _accepted_rx) = mpsc::channel(UDP_SESSION_QUEUE_CAPACITY);
-        let (wireguard_accepted_tx, _wireguard_accepted_rx) =
-            mpsc::channel(UDP_SESSION_QUEUE_CAPACITY);
-        let wireguard_accept_enabled = Arc::new(AtomicBool::new(false));
-        let (priority_control_tx, _priority_control_rx) = mpsc::channel(UDP_SESSION_QUEUE_CAPACITY);
+        let classified_sessions = Arc::new(DashMap::new());
+        let classified_accepts = create_classified_udp_session_accepts();
+        let (mux_accepted_tx, _mux_accepted_rx) = mpsc::channel(UDP_SESSION_QUEUE_CAPACITY);
         let (control_tx, _control_rx) = mpsc::channel(UDP_SESSION_QUEUE_CAPACITY);
 
         udp_session_layer_recv_task(
             socket,
             sessions.clone(),
-            wireguard_sessions.clone(),
+            classified_sessions.clone(),
+            classified_accepts,
             pending_connects.clone(),
-            accepted_tx,
-            wireguard_accepted_tx,
-            wireguard_accept_enabled,
-            priority_control_tx,
+            mux_accepted_tx,
             control_tx,
             Arc::new(NoopUdpSessionControlHandler),
             session_shutdown_tx,
@@ -3027,7 +3079,7 @@ mod tests {
         .await;
 
         assert!(sessions.is_empty());
-        assert!(wireguard_sessions.is_empty());
+        assert!(classified_sessions.is_empty());
         assert!(pending_connects.is_empty());
 
         let mut buf = [0; 16];
@@ -3058,20 +3110,20 @@ mod tests {
         let magic = 0x0102_0304_0506_0708;
         let socket = Arc::new(MockVirtualUdpSocket::new(local_addr, Vec::new()));
         let sessions = Arc::new(DashMap::new());
-        let (accepted_tx, mut accepted_rx) = mpsc::channel(UDP_SESSION_QUEUE_CAPACITY);
+        let (mux_accepted_tx, mut mux_accepted_rx) = mpsc::channel(UDP_SESSION_QUEUE_CAPACITY);
         let (_shutdown_tx, shutdown_rx) = watch::channel(false);
 
         handle_new_easy_tier_mux_connect(
             socket.clone(),
             sessions.clone(),
-            accepted_tx,
+            mux_accepted_tx,
             peer_addr,
             conn_id,
             &new_syn_packet(conn_id, magic),
             shutdown_rx,
         );
 
-        let accepted = tokio::time::timeout(Duration::from_secs(1), accepted_rx.recv())
+        let accepted = tokio::time::timeout(Duration::from_secs(1), mux_accepted_rx.recv())
             .await
             .unwrap()
             .unwrap();
@@ -3101,13 +3153,13 @@ mod tests {
         let sessions = Arc::new(DashMap::new());
         let (session, _shutdown_tx) =
             create_test_easy_tier_mux_session(socket.clone(), key, sessions.clone());
-        let (accepted_tx, _accepted_rx) = mpsc::channel(UDP_SESSION_QUEUE_CAPACITY);
+        let (mux_accepted_tx, _mux_accepted_rx) = mpsc::channel(UDP_SESSION_QUEUE_CAPACITY);
         let (_session_shutdown_tx, session_shutdown_rx) = watch::channel(false);
 
         handle_new_easy_tier_mux_connect(
             socket,
             sessions.clone(),
-            accepted_tx,
+            mux_accepted_tx,
             peer_addr,
             conn_id,
             &new_syn_packet(conn_id, magic),
@@ -3132,26 +3184,26 @@ mod tests {
         let socket = Arc::new(MockVirtualUdpSocket::new(local_addr, Vec::new()));
         let sessions = Arc::new(DashMap::new());
         let full_sessions = Arc::new(DashMap::new());
-        let (accepted_tx, mut accepted_rx) = mpsc::channel(1);
+        let (mux_accepted_tx, mut mux_accepted_rx) = mpsc::channel(1);
         let (queued_session, _queued_shutdown_tx) = create_test_easy_tier_mux_session(
             socket.clone(),
             UdpSessionKey::new(SocketAddr::from(([127, 0, 0, 1], 12002)), 7),
             full_sessions,
         );
-        accepted_tx.try_send(queued_session).unwrap();
+        mux_accepted_tx.try_send(queued_session).unwrap();
         let (_shutdown_tx, shutdown_rx) = watch::channel(false);
 
         handle_new_easy_tier_mux_connect(
             socket.clone(),
             sessions.clone(),
-            accepted_tx,
+            mux_accepted_tx,
             peer_addr,
             conn_id,
             &new_syn_packet(conn_id, magic),
             shutdown_rx,
         );
 
-        assert!(accepted_rx.try_recv().is_ok());
+        assert!(mux_accepted_rx.try_recv().is_ok());
         assert!(!sessions.contains_key(&UdpSessionKey::new(peer_addr, conn_id)));
         assert!(socket.sent().is_empty());
     }
@@ -3273,24 +3325,19 @@ mod tests {
             sessions.clone(),
         );
         let pending_connects = Arc::new(DashMap::new());
-        let wireguard_sessions = Arc::new(DashMap::new());
-        let (accepted_tx, _accepted_rx) = mpsc::channel(UDP_SESSION_QUEUE_CAPACITY);
-        let (wireguard_accepted_tx, _wireguard_accepted_rx) =
-            mpsc::channel(UDP_SESSION_QUEUE_CAPACITY);
-        let wireguard_accept_enabled = Arc::new(AtomicBool::new(false));
-        let (priority_control_tx, _priority_control_rx) = mpsc::channel(UDP_SESSION_QUEUE_CAPACITY);
+        let classified_sessions = Arc::new(DashMap::new());
+        let classified_accepts = create_classified_udp_session_accepts();
+        let (mux_accepted_tx, _mux_accepted_rx) = mpsc::channel(UDP_SESSION_QUEUE_CAPACITY);
         let (control_tx, _control_rx) = mpsc::channel(UDP_SESSION_QUEUE_CAPACITY);
         let control_handler = Arc::new(BlockingUdpSessionControlHandler::default());
         let (session_shutdown_tx, _) = watch::channel(false);
         let recv_task = tokio::spawn(udp_session_layer_recv_task(
             socket,
             sessions,
-            wireguard_sessions,
+            classified_sessions,
+            classified_accepts,
             pending_connects,
-            accepted_tx,
-            wireguard_accepted_tx,
-            wireguard_accept_enabled,
-            priority_control_tx,
+            mux_accepted_tx,
             control_tx,
             control_handler.clone(),
             session_shutdown_tx,
@@ -3313,17 +3360,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn local_hole_punch_control_uses_priority_queue_over_stun_backlog() {
+    async fn local_hole_punch_control_is_dispatched_to_control_queue() {
         let remote_addr = SocketAddr::from(([127, 0, 0, 1], 12001));
         let dst_addr = SocketAddrV4::new(Ipv4Addr::new(192, 0, 2, 10), 1234);
-        let (normal_tx, _normal_rx) = mpsc::channel(1);
-        let (priority_tx, mut priority_rx) = mpsc::channel(1);
-        normal_tx
-            .try_send(UdpSessionLayerControl::Stun {
-                remote_addr,
-                datagram: BytesMut::from(&b"stun"[..]),
-            })
-            .unwrap();
+        let (control_tx, mut control_rx) = mpsc::channel(1);
         let socket = Arc::new(MockVirtualUdpSocket::new(remote_addr, vec![]));
         let control_handler = Arc::new(RecordingUdpSessionControlHandler::default());
 
@@ -3331,13 +3371,13 @@ mod tests {
             socket,
             control_handler,
             Arc::new(Semaphore::new(UDP_SESSION_QUEUE_CAPACITY)),
-            &priority_tx,
+            &control_tx,
             remote_addr,
             &new_v4_hole_punch_packet(&dst_addr),
         );
 
         assert_eq!(
-            priority_rx.recv().await.unwrap(),
+            control_rx.recv().await.unwrap(),
             UdpSessionLayerControl::V4HolePunch {
                 remote_addr,
                 dst_addr,

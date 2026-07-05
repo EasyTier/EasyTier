@@ -36,7 +36,7 @@ use boringtun::{
 use bytes::BytesMut;
 use crossbeam::atomic::AtomicCell;
 use dashmap::DashMap;
-use easytier_core::socket::udp::UdpSessionSocket;
+use easytier_core::socket::udp::{UdpSessionProtocol, UdpSessionSocket};
 use futures::{SinkExt, StreamExt, stream::FuturesUnordered};
 use rand::RngCore;
 use tokio::{
@@ -535,7 +535,10 @@ impl WgTunnelListener {
         });
 
         loop {
-            let session = match layer.accept_wireguard_session().await {
+            let session = match layer
+                .accept_classified_session(UdpSessionProtocol::WireGuard)
+                .await
+            {
                 Ok(session) => Arc::new(session) as Arc<dyn UdpSessionSocket>,
                 Err(e) => {
                     tracing::error!("Failed to accept wg udp session: {}", e);
@@ -670,7 +673,8 @@ impl WgTunnelConnector {
         tracing::warn!("wg connect: {:?}", addr);
         let runtime_socket = Arc::new(RuntimeUdpSocket::new(Arc::new(udp)));
         let layer = runtime_socket.udp_session_layer();
-        let session = Arc::new(layer.open_wireguard_session(addr)?) as Arc<dyn UdpSessionSocket>;
+        let session = Arc::new(layer.open_classified_session(UdpSessionProtocol::WireGuard, addr)?)
+            as Arc<dyn UdpSessionSocket>;
         let local_addr = session
             .local_addr()
             .with_context(|| "Failed to get local addr")?
