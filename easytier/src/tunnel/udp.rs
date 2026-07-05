@@ -338,47 +338,56 @@ fn map_udp_session_connect_error(error: UdpSessionConnectError) -> TunnelError {
     }
 }
 
-fn upgrade_udp_session_to_legacy_tunnel(
-    session: Arc<dyn UdpSessionSocket>,
+struct UdpTunnelUpgrader {
     tunnel_info: TunnelInfo,
     keep_layer_alive: Option<Arc<RuntimeUdpSessionLayer>>,
-) -> Result<Box<dyn Tunnel>, TunnelError> {
-    let (tunnel_ring, udp_ring) = create_ring_socket_pair(128);
-    tracing::debug!(?tunnel_ring, ?udp_ring, "udp build tunnel from session");
-
-    let (ring_recv, ring_sender) = split_ring_socket(udp_ring);
-    let send_session = session.clone();
-    let recv_session = session.clone();
-    let dst_addr = session.peer_addr()?;
-    tokio::spawn(
-        async move {
-            let _keep_layer_alive = keep_layer_alive;
-            tokio::select! {
-                err = forward_from_ring_to_udp_session(ring_recv, send_session) => {
-                    tracing::debug!(?err, "udp ring-to-session task done");
-                }
-                err = forward_from_udp_session_to_ring(recv_session, ring_sender) => {
-                    tracing::debug!(?err, "udp session-to-ring task done");
-                }
-            }
-        }
-        .instrument(tracing::info_span!(
-            "udp forward between session and ring",
-            ?dst_addr,
-        )),
-    );
-
-    let (tunnel_recv, tunnel_sender) = split_ring_socket(tunnel_ring);
-    Ok(Box::new(TunnelWrapper::new(
-        Box::new(tunnel_recv),
-        Box::new(tunnel_sender),
-        Some(tunnel_info),
-    )))
 }
 
-struct ConnectedUdpSession {
-    layer: Arc<RuntimeUdpSessionLayer>,
-    session: Arc<dyn UdpSessionSocket>,
+impl UdpTunnelUpgrader {
+    fn new(tunnel_info: TunnelInfo, keep_layer_alive: Option<Arc<RuntimeUdpSessionLayer>>) -> Self {
+        Self {
+            tunnel_info,
+            keep_layer_alive,
+        }
+    }
+
+    fn upgrade(self, session: Arc<dyn UdpSessionSocket>) -> Result<Box<dyn Tunnel>, TunnelError> {
+        let Self {
+            tunnel_info,
+            keep_layer_alive,
+        } = self;
+        let (tunnel_ring, udp_ring) = create_ring_socket_pair(128);
+        tracing::debug!(?tunnel_ring, ?udp_ring, "udp build tunnel from session");
+
+        let (ring_recv, ring_sender) = split_ring_socket(udp_ring);
+        let send_session = session.clone();
+        let recv_session = session.clone();
+        let dst_addr = session.peer_addr()?;
+        tokio::spawn(
+            async move {
+                let _keep_layer_alive = keep_layer_alive;
+                tokio::select! {
+                    err = forward_from_ring_to_udp_session(ring_recv, send_session) => {
+                        tracing::debug!(?err, "udp ring-to-session task done");
+                    }
+                    err = forward_from_udp_session_to_ring(recv_session, ring_sender) => {
+                        tracing::debug!(?err, "udp session-to-ring task done");
+                    }
+                }
+            }
+            .instrument(tracing::info_span!(
+                "udp forward between session and ring",
+                ?dst_addr,
+            )),
+        );
+
+        let (tunnel_recv, tunnel_sender) = split_ring_socket(tunnel_ring);
+        Ok(Box::new(TunnelWrapper::new(
+            Box::new(tunnel_recv),
+            Box::new(tunnel_sender),
+            Some(tunnel_info),
+        )))
+    }
 }
 
 async fn accept_udp_session_tunnels(
@@ -409,14 +418,13 @@ async fn accept_udp_session_tunnels(
                 build_url_from_socket_addr(&remote_addr.to_string(), "udp").into(),
             ),
         };
-        let conn =
-            match upgrade_udp_session_to_legacy_tunnel(session, tunnel_info, Some(layer.clone())) {
-                Ok(conn) => conn,
-                Err(err) => {
-                    tracing::debug!(?err, "udp accepted session build tunnel failed");
-                    continue;
-                }
-            };
+        let conn = match UdpTunnelUpgrader::new(tunnel_info, Some(layer.clone())).upgrade(session) {
+            Ok(conn) => conn,
+            Err(err) => {
+                tracing::debug!(?err, "udp accepted session build tunnel failed");
+                continue;
+            }
+        };
         tracing::info!(info = ?conn.info().unwrap().remote_addr, "udp connection accept done");
 
         if let Err(err) = conn_send.send(conn).await {
@@ -590,7 +598,7 @@ impl UdpTunnelConnector {
         &self,
         runtime_socket: Arc<RuntimeUdpSocket>,
         addr: SocketAddr,
-    ) -> Result<ConnectedUdpSession, super::TunnelError> {
+    ) -> Result<(Arc<RuntimeUdpSessionLayer>, Arc<dyn UdpSessionSocket>), super::TunnelError> {
         tracing::warn!("udp connect: {:?}", self.addr);
 
         #[cfg(target_os = "windows")]
@@ -609,20 +617,17 @@ impl UdpTunnelConnector {
             );
         }
 
-        Ok(ConnectedUdpSession {
-            layer,
-            session: Arc::new(session),
-        })
+        Ok((layer, Arc::new(session)))
     }
 
-    fn upgrade_connected_session_to_legacy_tunnel(
+    fn udp_tunnel_upgrader_for_session(
         &self,
-        connected: ConnectedUdpSession,
-    ) -> Result<Box<dyn super::Tunnel>, super::TunnelError> {
-        let local_addr = connected.session.local_addr()?;
-        let dst_addr = connected.session.peer_addr()?;
-        upgrade_udp_session_to_legacy_tunnel(
-            connected.session,
+        layer: Arc<RuntimeUdpSessionLayer>,
+        session: &dyn UdpSessionSocket,
+    ) -> Result<UdpTunnelUpgrader, super::TunnelError> {
+        let local_addr = session.local_addr()?;
+        let dst_addr = session.peer_addr()?;
+        Ok(UdpTunnelUpgrader::new(
             TunnelInfo {
                 tunnel_type: "udp".to_owned(),
                 local_addr: Some(build_url_from_socket_addr(&local_addr.to_string(), "udp").into()),
@@ -631,8 +636,8 @@ impl UdpTunnelConnector {
                     build_url_from_socket_addr(&dst_addr.to_string(), "udp").into(),
                 ),
             },
-            Some(connected.layer),
-        )
+            Some(layer),
+        ))
     }
 
     pub async fn try_connect_with_socket(
@@ -649,10 +654,11 @@ impl UdpTunnelConnector {
         runtime_socket: Arc<RuntimeUdpSocket>,
         addr: SocketAddr,
     ) -> Result<Box<dyn super::Tunnel>, super::TunnelError> {
-        let connected = self
+        let (layer, session) = self
             .connect_udp_session_with_runtime_socket(runtime_socket, addr)
             .await?;
-        self.upgrade_connected_session_to_legacy_tunnel(connected)
+        let upgrader = self.udp_tunnel_upgrader_for_session(layer, session.as_ref())?;
+        upgrader.upgrade(session)
     }
 
     async fn connect_with_default_bind(
@@ -771,13 +777,19 @@ mod tests {
 
     struct MockUdpSessionSocket {
         recv: tokio::sync::Mutex<Receiver<Vec<u8>>>,
+        sent: StdMutex<Vec<Vec<u8>>>,
     }
 
     impl MockUdpSessionSocket {
         fn new(recv: Receiver<Vec<u8>>) -> Self {
             Self {
                 recv: tokio::sync::Mutex::new(recv),
+                sent: StdMutex::new(Vec::new()),
             }
+        }
+
+        fn sent(&self) -> Vec<Vec<u8>> {
+            self.sent.lock().unwrap().clone()
         }
     }
 
@@ -796,6 +808,7 @@ mod tests {
         }
 
         async fn send(&self, data: &[u8]) -> io::Result<usize> {
+            self.sent.lock().unwrap().push(data.to_vec());
             Ok(data.len())
         }
 
@@ -858,6 +871,47 @@ mod tests {
             }
         }
         assert!(got_buffer_full);
+    }
+
+    #[tokio::test]
+    async fn udp_tunnel_upgrader_consumes_udp_session_socket() {
+        let (payload_sender, payload_recv) = channel(8);
+        let session = Arc::new(MockUdpSessionSocket::new(payload_recv));
+        let tunnel = UdpTunnelUpgrader::new(
+            TunnelInfo {
+                tunnel_type: "udp".to_owned(),
+                local_addr: None,
+                remote_addr: None,
+                resolved_remote_addr: None,
+            },
+            None,
+        )
+        .upgrade(session.clone())
+        .unwrap();
+        let (mut stream, mut sink) = tunnel.split();
+
+        let outbound_packet = ZCPacket::new_with_payload(b"outbound");
+        let expected_session_payload = outbound_packet
+            .clone()
+            .convert_type(ZCPacketType::UDP)
+            .udp_payload()
+            .to_vec();
+        sink.send(outbound_packet).await.unwrap();
+        wait_for_condition(
+            || async { !session.sent().is_empty() },
+            Duration::from_secs(1),
+        )
+        .await;
+        assert_eq!(session.sent(), vec![expected_session_payload]);
+
+        payload_sender.send(b"inbound".to_vec()).await.unwrap();
+        let packet = timeout(Duration::from_secs(1), stream.next())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(packet.udp_payload(), b"inbound");
     }
 
     #[tokio::test]

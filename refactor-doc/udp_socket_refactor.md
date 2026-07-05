@@ -234,6 +234,10 @@ core UDP session layer 的 demux，再投递到对应的 `UdpSessionSocket`。
 session datagram parser 属于 core socket 层 helper；`easytier` crate 不再保留
 这些 packet helper 的重复实现。
 
+当前重构的硬约束是保持现有协议兼容：不引入 magic/version，不修改 header、
+payload、`Syn`、`Sack`、`Data` 或 hole-punch 格式。任何 UDP protocol v2 只能
+作为单独设计和单独 patch，不混入本阶段 socket/session 重构。
+
 core UDP hub 是两级 demux：
 
 ```text
@@ -374,12 +378,11 @@ udp://
 - `UdpSessionLayer` 已接管 connector 侧的 `conn_id` 生成、`Syn`
   发送/重发、`Sack` 校验、`HolePunch` 唤醒和 Data demux。
 - `UdpTunnelConnector` 已改为通过 `UdpSessionLayer::connect` 获取
-  `UdpSessionSocket`，再由临时 compatibility bridge 升级成现有 ring-backed
-  UDP tunnel。
+  `UdpSessionSocket`，再交给 `UdpTunnelUpgrader` 升级成现有 ring-backed
+  UDP tunnel。connector 不再直接表达 session-to-tunnel bridge 细节。
 - `UdpTunnelConnector` 内部已拆分为 `connect_udp_session_with_runtime_socket`
-  和 `upgrade_connected_session_to_legacy_tunnel` 两步：前者产出
-  `UdpSessionSocket`，后者只是当前 `TunnelConnector` trait 的 legacy
-  compatibility wrapper。
+  和 `UdpTunnelUpgrader::upgrade` 两步：前者产出 `UdpSessionSocket`，后者是
+  当前 `TunnelConnector` trait 仍要求返回 `Tunnel` 时的 `udp://` upgrader。
 - `RuntimeUdpSocket` 已成为 easytier runtime 侧共享的
   `tokio::net::UdpSocket` adapter，hole-punch runtime 不再保留重复
   `VirtualUdpSocket` implementation。
@@ -391,10 +394,9 @@ udp://
   `Sack` accept path 或 Data demux。
 - hole-punch listener 和 outbound connect 复用同一个 `RuntimeUdpSocket` 上缓存的
   `UdpSessionLayer`，避免同一个真实 UDP socket 出现多个 recv owner。
-- listener compatibility wrapper 仍把 accepted `UdpSessionSocket` 临时升级成
-  ring-backed legacy `Tunnel`。
-- connector 和 listener 共享 `upgrade_udp_session_to_legacy_tunnel` 兼容层，避免
-  在两侧重复表达 session-to-tunnel upgrade 逻辑。
+- listener accept path 仍为了当前 `TunnelListener` trait 返回 `Tunnel`，但升级逻辑
+  已收敛到同一个 `UdpTunnelUpgrader`。listener 只负责从 `UdpSessionLayer`
+  accept socket，并把 socket 交给 `udp://` upgrader。
 - `UdpSessionLayer` 已在 core 内部识别 STUN 和 V4/V6 hole-punch
   control packet，并通过独立的 `UdpSessionControlHandler` 触发 response /
   punch 发包。`VirtualUdpSocket` 保持裸 UDP socket 语义。
@@ -425,8 +427,9 @@ udp://
   `RuntimeUdpSessionControlHandler` 调用本地 helper。core 已拥有 classifier 和
   control path；后续如果要进一步收敛，需要把 codec helper 也提升到 core 可依赖
   的位置。
-- `quic` / `udp` upgrader 仍需要改为消费 `UdpSessionSocket`，当前 `udp://`
-  仍通过 compatibility bridge 产出旧 `Tunnel`。
+- QUIC upgrader 仍需要改为消费 `UdpSessionSocket`。`udp://` upgrader 已消费
+  `UdpSessionSocket`，当前保留的 ring-backed `Tunnel` 输出只是为了适配尚未
+  socket 化的 `TunnelConnector` / `TunnelListener` trait。
 
 ## Listener 迁移方案
 
@@ -447,7 +450,7 @@ udp://
   preferred source/ifindex 不能泄漏回 connector，也不能下沉到裸
   `VirtualUdpSocket` trait。
 
-### easytier crate listener compatibility bridge
+### easytier crate listener trait adapter
 
 迁移后的 `UdpTunnelListener::listen()`：
 
