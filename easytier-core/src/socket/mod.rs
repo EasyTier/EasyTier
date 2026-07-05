@@ -4,9 +4,7 @@
 //! bindable communication endpoints; tunnels are produced later by runtime
 //! upgraders and can be handed to peers.
 
-pub mod dial;
 pub mod dns;
-pub mod listen;
 pub mod ring;
 pub mod tcp;
 pub mod udp;
