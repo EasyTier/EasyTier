@@ -1,7 +1,12 @@
 use std::net::{IpAddr, Ipv6Addr, SocketAddr};
 
+use easytier_core::socket::udp::{
+    PreferredIpv6Source, send_v4_hole_punch_control_packet, send_v6_hole_punch_control_packet,
+};
+
 use crate::{
     common::{global_ctx::ArcGlobalCtx, network::IPCollector},
+    connector::udp_hole_punch::common::RuntimeUdpHolePunchRuntime,
     proto::{
         common::Void,
         peer_rpc::{
@@ -9,7 +14,6 @@ use crate::{
         },
         rpc_types::{self, controller::BaseController},
     },
-    tunnel::udp,
 };
 
 const MAX_UDP_HOLE_PUNCH_CONNECTOR_ADDRS: usize = 16;
@@ -42,7 +46,7 @@ fn is_usable_preferred_src_ipv6(ip: &Ipv6Addr, global_ctx: &ArcGlobalCtx) -> boo
 async fn local_preferred_src_ipv6(
     global_ctx: &ArcGlobalCtx,
     preferred_src_ipv6: Option<crate::proto::common::Ipv6Addr>,
-) -> Option<udp::PreferredIpv6Source> {
+) -> Option<PreferredIpv6Source> {
     let preferred_src_ipv6 = preferred_src_ipv6.map(Ipv6Addr::from)?;
     if !is_usable_preferred_src_ipv6(&preferred_src_ipv6, global_ctx) {
         tracing::debug!(
@@ -64,7 +68,7 @@ async fn local_preferred_src_ipv6(
                 ifindex = iface.index,
                 "use preferred IPv6 source for udp hole punch"
             );
-            return Some(udp::PreferredIpv6Source {
+            return Some(PreferredIpv6Source {
                 ip: preferred_src_ipv6,
                 ifindex: iface.index,
             });
@@ -162,15 +166,21 @@ impl DirectConnectorRpc for DirectConnectorManagerRpcServer {
         );
 
         // send 3 packets to the connector
+        let runtime = RuntimeUdpHolePunchRuntime::new(self.global_ctx.clone());
         for _ in 0..3 {
             for connector_addr in &connector_addrs {
                 let ret = match connector_addr {
                     SocketAddr::V4(addr) => {
-                        udp::send_v4_hole_punch_packet(listener_port, *addr).await
+                        send_v4_hole_punch_control_packet(&runtime, listener_port, *addr).await
                     }
                     SocketAddr::V6(addr) => {
-                        udp::send_v6_hole_punch_packet(listener_port, *addr, preferred_src_ipv6)
-                            .await
+                        send_v6_hole_punch_control_packet(
+                            &runtime,
+                            listener_port,
+                            *addr,
+                            preferred_src_ipv6,
+                        )
+                        .await
                     }
                 };
                 if let Err(e) = ret {

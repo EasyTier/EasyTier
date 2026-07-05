@@ -74,6 +74,49 @@ pub struct NoopUdpSessionControlHandler;
 #[async_trait]
 impl<S> UdpSessionControlHandler<S> for NoopUdpSessionControlHandler where S: VirtualUdpSocket {}
 
+pub async fn send_v4_hole_punch_control_packet<F>(
+    factory: &F,
+    listener_port: u16,
+    dst_addr: SocketAddrV4,
+) -> anyhow::Result<()>
+where
+    F: VirtualUdpSocketFactory,
+{
+    let socket = factory
+        .bind_udp(
+            UdpBindOptions::hole_punch_control().with_local_addr(Some(SocketAddr::V4(
+                SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0),
+            ))),
+        )
+        .await?;
+    let packet = new_v4_hole_punch_packet(&dst_addr).into_bytes();
+    let listener_addr = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, listener_port));
+    socket.send_to(&packet, listener_addr).await?;
+    Ok(())
+}
+
+pub async fn send_v6_hole_punch_control_packet<F>(
+    factory: &F,
+    listener_port: u16,
+    dst_addr: SocketAddrV6,
+    preferred_src: Option<PreferredIpv6Source>,
+) -> anyhow::Result<()>
+where
+    F: VirtualUdpSocketFactory,
+{
+    let socket = factory
+        .bind_udp(
+            UdpBindOptions::hole_punch_control().with_local_addr(Some(SocketAddr::V6(
+                SocketAddrV6::new(Ipv6Addr::LOCALHOST, 0, 0, 0),
+            ))),
+        )
+        .await?;
+    let packet = new_v6_hole_punch_packet(&dst_addr, preferred_src).into_bytes();
+    let listener_addr = SocketAddr::V6(SocketAddrV6::new(Ipv6Addr::LOCALHOST, listener_port, 0, 0));
+    socket.send_to(&packet, listener_addr).await?;
+    Ok(())
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UdpSocketPurpose {
     HolePunchControl,
@@ -123,6 +166,11 @@ impl UdpBindOptions {
             local_addr: Some(local_addr),
             ..Self::for_purpose(UdpSocketPurpose::PortBoundListener)
         }
+    }
+
+    pub fn with_local_addr(mut self, local_addr: Option<SocketAddr>) -> Self {
+        self.local_addr = local_addr;
+        self
     }
 
     pub fn with_socket_mark(mut self, socket_mark: Option<u32>) -> Self {
@@ -3694,6 +3742,7 @@ mod tests {
     struct MockVirtualUdpSocketFactory {
         next_port: AtomicU16,
         bind_options: Mutex<Vec<UdpBindOptions>>,
+        sockets: Mutex<Vec<Arc<MockVirtualUdpSocket>>>,
     }
 
     impl MockVirtualUdpSocketFactory {
@@ -3701,11 +3750,16 @@ mod tests {
             Self {
                 next_port: AtomicU16::new(next_port),
                 bind_options: Mutex::new(Vec::new()),
+                sockets: Mutex::new(Vec::new()),
             }
         }
 
         fn bind_options(&self) -> Vec<UdpBindOptions> {
             self.bind_options.lock().unwrap().clone()
+        }
+
+        fn sockets(&self) -> Vec<Arc<MockVirtualUdpSocket>> {
+            self.sockets.lock().unwrap().clone()
         }
     }
 
@@ -3721,7 +3775,9 @@ mod tests {
                     self.next_port.fetch_add(1, Ordering::Relaxed),
                 ))
             });
-            Ok(Arc::new(MockVirtualUdpSocket::new(local_addr, Vec::new())))
+            let socket = Arc::new(MockVirtualUdpSocket::new(local_addr, Vec::new()));
+            self.sockets.lock().unwrap().push(socket.clone());
+            Ok(socket)
         }
     }
 
@@ -3741,6 +3797,68 @@ mod tests {
         assert_eq!(session.kind(), UdpSessionKind::WireGuard);
         assert_eq!(session.local_addr().unwrap(), bind_addr);
         assert_eq!(session.peer_addr().unwrap(), remote_addr);
+    }
+
+    #[tokio::test]
+    async fn v4_hole_punch_control_sender_uses_factory_socket() {
+        let factory = MockVirtualUdpSocketFactory::new(13000);
+        let dst_addr = SocketAddrV4::new(Ipv4Addr::new(192, 0, 2, 1), 11010);
+
+        send_v4_hole_punch_control_packet(&factory, 22020, dst_addr)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            factory.bind_options(),
+            vec![
+                UdpBindOptions::hole_punch_control().with_local_addr(Some(SocketAddr::V4(
+                    SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0)
+                )))
+            ]
+        );
+        let sockets = factory.sockets();
+        assert_eq!(sockets.len(), 1);
+        assert_eq!(
+            sockets[0].sent(),
+            vec![(
+                new_v4_hole_punch_packet(&dst_addr).into_bytes().to_vec(),
+                SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 22020))
+            )]
+        );
+    }
+
+    #[tokio::test]
+    async fn v6_hole_punch_control_sender_uses_factory_socket() {
+        let factory = MockVirtualUdpSocketFactory::new(13000);
+        let dst_addr = "[2001:db8::1]:11010".parse::<SocketAddrV6>().unwrap();
+        let preferred_src = PreferredIpv6Source {
+            ip: "2001:db8::2".parse().unwrap(),
+            ifindex: 42,
+        };
+
+        send_v6_hole_punch_control_packet(&factory, 22020, dst_addr, Some(preferred_src))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            factory.bind_options(),
+            vec![
+                UdpBindOptions::hole_punch_control().with_local_addr(Some(SocketAddr::V6(
+                    SocketAddrV6::new(Ipv6Addr::LOCALHOST, 0, 0, 0)
+                )))
+            ]
+        );
+        let sockets = factory.sockets();
+        assert_eq!(sockets.len(), 1);
+        assert_eq!(
+            sockets[0].sent(),
+            vec![(
+                new_v6_hole_punch_packet(&dst_addr, Some(preferred_src))
+                    .into_bytes()
+                    .to_vec(),
+                SocketAddr::V6(SocketAddrV6::new(Ipv6Addr::LOCALHOST, 22020, 0, 0))
+            )]
+        );
     }
 
     #[test]

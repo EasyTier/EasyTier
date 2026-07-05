@@ -8,13 +8,10 @@ use std::{
 use anyhow::Context;
 use async_trait::async_trait;
 use bytes::BytesMut;
+pub use easytier_core::hole_punch::udp::new_hole_punch_packet;
 use easytier_core::socket::udp::{
-    UdpSessionConnectError, UdpSessionControlHandler, UdpSessionLayer, UdpSessionSocket,
-    VirtualUdpSocket,
-};
-pub use easytier_core::{
-    hole_punch::udp::new_hole_punch_packet,
-    socket::udp::{PreferredIpv6Source, new_v4_hole_punch_packet, new_v6_hole_punch_packet},
+    PreferredIpv6Source, UdpSessionConnectError, UdpSessionControlHandler, UdpSessionLayer,
+    UdpSessionSocket, VirtualUdpSocket,
 };
 use futures::{StreamExt, stream::FuturesUnordered};
 
@@ -150,37 +147,6 @@ impl UdpSessionControlHandler<RuntimeUdpSocket> for RuntimeUdpSessionControlHand
         }
         udp_socket.try_send_to(&udp_packet, SocketAddr::V6(dst_addr))
     }
-}
-
-pub async fn send_v6_hole_punch_packet(
-    listener_port: u16,
-    dst_addr: SocketAddrV6,
-    preferred_src: Option<PreferredIpv6Source>,
-) -> Result<(), TunnelError> {
-    let local_socket = UdpSocket::bind("[::1]:0").await?;
-    let udp_packet = new_v6_hole_punch_packet(&dst_addr, preferred_src);
-    let remote_addr = format!("[::1]:{}", listener_port)
-        .parse::<SocketAddr>()
-        .unwrap();
-    local_socket
-        .send_to(&udp_packet.into_bytes(), remote_addr)
-        .await?;
-    Ok(())
-}
-
-pub async fn send_v4_hole_punch_packet(
-    listener_port: u16,
-    dst_addr: SocketAddrV4,
-) -> Result<(), TunnelError> {
-    let local_socket = UdpSocket::bind("127.0.0.1:0").await?;
-    let udp_packet = new_v4_hole_punch_packet(&dst_addr);
-    let remote_addr = format!("127.0.0.1:{}", listener_port)
-        .parse::<SocketAddr>()
-        .unwrap();
-    local_socket
-        .send_to(&udp_packet.into_bytes(), remote_addr)
-        .await?;
-    Ok(())
 }
 
 async fn respond_stun_packet(
@@ -746,7 +712,10 @@ mod tests {
     use std::{io, net::IpAddr, time::Duration};
 
     use async_trait::async_trait;
-    use easytier_core::socket::udp::{UdpSessionKind, extract_v6_hole_punch_packet};
+    use easytier_core::socket::udp::{
+        UdpSessionKind, extract_v6_hole_punch_packet, new_v6_hole_punch_packet,
+        send_v4_hole_punch_control_packet, send_v6_hole_punch_control_packet,
+    };
     use futures::SinkExt;
     use rand::Rng;
     use tokio::time::timeout;
@@ -754,6 +723,7 @@ mod tests {
     use super::*;
     use crate::{
         common::global_ctx::tests::get_mock_global_ctx,
+        connector::udp_hole_punch::common::RuntimeUdpHolePunchRuntime,
         tunnel::{
             TunnelConnector,
             common::{
@@ -1198,7 +1168,9 @@ mod tests {
         tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
         // a socket to send v6 hole punch packets
-        send_v6_hole_punch_packet(
+        let runtime = RuntimeUdpHolePunchRuntime::new(get_mock_global_ctx());
+        send_v6_hole_punch_control_packet(
+            &runtime,
             lis.local_url().port().unwrap(),
             match socket.local_addr().unwrap() {
                 std::net::SocketAddr::V6(addr_v6) => addr_v6,
@@ -1230,7 +1202,9 @@ mod tests {
 
         tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
-        send_v4_hole_punch_packet(
+        let runtime = RuntimeUdpHolePunchRuntime::new(get_mock_global_ctx());
+        send_v4_hole_punch_control_packet(
+            &runtime,
             lis.local_url().port().unwrap(),
             match socket.local_addr().unwrap() {
                 std::net::SocketAddr::V4(addr_v4) => addr_v4,
