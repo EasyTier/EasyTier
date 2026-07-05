@@ -37,6 +37,7 @@ use super::{
     },
 };
 
+#[derive(Debug)]
 pub struct UdpSessionLayer<S, H = NoopUdpSessionControlHandler> {
     socket: Arc<S>,
     _control_handler: Arc<H>,
