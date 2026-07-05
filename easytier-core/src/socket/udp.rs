@@ -780,7 +780,7 @@ impl UdpSession {
         let recv_task = tokio::spawn(forward_identity_socket_to_udp_session(
             recv_socket,
             peer_addr,
-            rings.core_incoming.clone(),
+            rings.session_recv_tx.clone(),
             shutdown_tx.subscribe(),
             close.clone(),
         ));
@@ -819,7 +819,7 @@ impl UdpSession {
             socket,
             peer_addr,
             codec,
-            rings.core_outgoing,
+            rings.session_send_rx,
             shutdown,
             close.clone(),
         ));
@@ -829,8 +829,8 @@ impl UdpSession {
             peer_addr,
             kind,
             codec,
-            incoming: TokioMutex::new(rings.session_incoming),
-            outgoing: TokioMutex::new(rings.session_outgoing),
+            incoming: TokioMutex::new(rings.session_recv_rx),
+            outgoing: TokioMutex::new(rings.session_send_tx),
             closed: rings.close_rx,
             _cleanup: UdpSessionCleanup {
                 session_close: Some(close),
@@ -1219,29 +1219,29 @@ impl UdpSessionSocket for UdpSession {
 }
 
 struct UdpSessionRingParts {
-    session_incoming: RingSocketReceiver<BytesMut>,
-    session_outgoing: RingSocketSender<UdpSessionOutbound>,
-    core_incoming: Arc<StdMutex<RingSocketSender<BytesMut>>>,
-    core_outgoing: RingSocketReceiver<UdpSessionOutbound>,
+    session_recv_rx: RingSocketReceiver<BytesMut>,
+    session_recv_tx: Arc<StdMutex<RingSocketSender<BytesMut>>>,
+    session_send_tx: RingSocketSender<UdpSessionOutbound>,
+    session_send_rx: RingSocketReceiver<UdpSessionOutbound>,
     close_tx: watch::Sender<bool>,
     close_rx: watch::Receiver<bool>,
 }
 
 fn create_udp_session_rings() -> UdpSessionRingParts {
-    let (session_incoming_socket, core_incoming_socket) =
+    let (session_recv_rx_socket, session_recv_tx_socket) =
         RingSocket::pair(UDP_SESSION_QUEUE_CAPACITY);
-    let (core_outgoing_socket, session_outgoing_socket) =
+    let (session_send_rx_socket, session_send_tx_socket) =
         RingSocket::pair(UDP_SESSION_QUEUE_CAPACITY);
-    let (session_incoming, _unused_session_incoming_tx) = session_incoming_socket.split();
-    let (_unused_core_incoming_rx, core_incoming) = core_incoming_socket.split();
-    let (core_outgoing, _unused_core_outgoing_tx) = core_outgoing_socket.split();
-    let (_unused_session_outgoing_rx, session_outgoing) = session_outgoing_socket.split();
+    let (session_recv_rx, _unused_session_recv_tx) = session_recv_rx_socket.split();
+    let (_unused_session_recv_peer_rx, session_recv_tx) = session_recv_tx_socket.split();
+    let (session_send_rx, _unused_session_send_peer_tx) = session_send_rx_socket.split();
+    let (_unused_session_send_rx, session_send_tx) = session_send_tx_socket.split();
     let (close_tx, close_rx) = watch::channel(false);
     UdpSessionRingParts {
-        session_incoming,
-        session_outgoing,
-        core_incoming: Arc::new(StdMutex::new(core_incoming)),
-        core_outgoing,
+        session_recv_rx,
+        session_recv_tx: Arc::new(StdMutex::new(session_recv_tx)),
+        session_send_tx,
+        session_send_rx,
         close_tx,
         close_rx,
     }
@@ -1249,7 +1249,7 @@ fn create_udp_session_rings() -> UdpSessionRingParts {
 
 fn udp_session_registry_entry(rings: &UdpSessionRingParts) -> UdpSessionRegistryEntry {
     UdpSessionRegistryEntry {
-        incoming: rings.core_incoming.clone(),
+        incoming: rings.session_recv_tx.clone(),
         close: rings.close_tx.clone(),
     }
 }
@@ -1746,7 +1746,7 @@ fn dispatch_classified_udp_datagram<S>(
             return;
         }
     }
-    if !dispatch_payload_to_session(&rings.core_incoming, datagram) {
+    if !dispatch_payload_to_session(&rings.session_recv_tx, datagram) {
         close_classified_udp_session(classified_sessions, key);
         tracing::debug!(?key, "classified udp session data queue closed");
         return;
@@ -3456,7 +3456,7 @@ mod tests {
         let session_key = Arc::new(StdMutex::new(None));
         let rings = create_udp_session_rings();
         let entry = udp_session_registry_entry(&rings);
-        let mut incoming_rx = rings.session_incoming;
+        let mut incoming_rx = rings.session_recv_rx;
         let (control_tx, _control_rx) = mpsc::channel(1);
         let (sack_tx, mut sack_rx) = watch::channel(None);
         control_tx
