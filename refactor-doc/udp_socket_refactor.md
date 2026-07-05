@@ -346,14 +346,14 @@ udp://
 已经完成的部分：
 
 - UDP packet helper 已移动到 `easytier-core::socket::udp`，wire shape 未改变。
-- core 已有 `VirtualUdpSocket`、`UdpSessionSocket`、`UdpSessionKind` 和
-  EasyTier mux session layer。
+- core 已有 `VirtualUdpSocket`、`UdpSessionSocket`、`UdpSessionKind` 和统一的
+  `UdpSessionLayer`，EasyTier mux 只是其中一个协议分支。
 - `UdpSession` 已调整为 ring-backed endpoint：外部 `send`/`recv` 只操作
   per-session ring；`send` 等待内部发送 completion，EasyTier Data packet
   编解码和真实 `send_to` 由 core 内部 task 负责。
-- `EasyTierUdpSessionLayer` 已接管 connector 侧的 `conn_id` 生成、`Syn`
+- `UdpSessionLayer` 已接管 connector 侧的 `conn_id` 生成、`Syn`
   发送/重发、`Sack` 校验、`HolePunch` 唤醒和 Data demux。
-- `UdpTunnelConnector` 已改为通过 `EasyTierUdpSessionLayer::connect` 获取
+- `UdpTunnelConnector` 已改为通过 `UdpSessionLayer::connect` 获取
   `UdpSessionSocket`，再由临时 compatibility bridge 升级成现有 ring-backed
   UDP tunnel。
 - `UdpTunnelConnector` 内部已拆分为 `connect_udp_session_with_runtime_socket`
@@ -366,16 +366,16 @@ udp://
 
 本阶段继续完成的部分：
 
-- `UdpTunnelListener` 已迁移到 `EasyTierUdpSessionLayer::accept`。
+- `UdpTunnelListener` 已迁移到 `UdpSessionLayer::accept`。
 - listener 侧不再维护 `UdpConnection`、`sock_map`、raw recv loop、`Syn` /
   `Sack` accept path 或 Data demux。
 - hole-punch listener 和 outbound connect 复用同一个 `RuntimeUdpSocket` 上缓存的
-  `EasyTierUdpSessionLayer`，避免同一个真实 UDP socket 出现多个 recv owner。
+  `UdpSessionLayer`，避免同一个真实 UDP socket 出现多个 recv owner。
 - listener compatibility wrapper 仍把 accepted `UdpSessionSocket` 临时升级成
   ring-backed legacy `Tunnel`。
 - connector 和 listener 共享 `upgrade_udp_session_to_legacy_tunnel` 兼容层，避免
   在两侧重复表达 session-to-tunnel upgrade 逻辑。
-- `EasyTierUdpSessionLayer` 已在 core 内部识别 STUN 和 V4/V6 hole-punch
+- `UdpSessionLayer` 已在 core 内部识别 STUN 和 V4/V6 hole-punch
   control packet，并通过独立的 `UdpSessionControlHandler` 触发 response /
   punch 发包。`VirtualUdpSocket` 保持裸 UDP socket 语义。
 - core UDP hub 已增加 direct UDP session registry。direct session 不再需要自己
@@ -403,7 +403,7 @@ udp://
 
 ### Core 层补齐 listener 所需能力
 
-`EasyTierUdpSessionLayer` 已经能够识别 `Syn`、发送 `Sack`、维护 session map、
+`UdpSessionLayer` 已经能够识别 `Syn`、发送 `Sack`、维护 session map、
 投递 Data，并把 STUN / V4 hole-punch / V6 hole-punch 分类为
 `UdpSessionLayerControl`。listener 迁移需要补齐两个只读/控制能力：
 
@@ -423,14 +423,14 @@ udp://
 UdpTunnelListener::listen()
   -> bind or reuse tokio UdpSocket
   -> RuntimeUdpSocket
-  -> EasyTierUdpSessionLayer
+  -> UdpSessionLayer
   -> spawn accept loop
 ```
 
 accept loop：
 
 ```text
-EasyTierUdpSessionLayer::accept()
+UdpSessionLayer::accept()
   -> UdpSessionSocket
   -> bridge UdpSessionSocket <-> RingSocket
   -> TunnelWrapper
@@ -443,7 +443,7 @@ EasyTierUdpSessionLayer::accept()
 control handling：
 
 ```text
-EasyTierUdpSessionLayer recv loop
+UdpSessionLayer recv loop
   -> classify STUN / V4 hole punch / V6 hole punch
   -> enqueue bounded UdpSessionControlHandler task
   -> runtime control adapter performs platform-specific send behavior

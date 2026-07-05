@@ -9,7 +9,7 @@ use anyhow::Context;
 use async_trait::async_trait;
 use bytes::BytesMut;
 use easytier_core::socket::udp::{
-    EasyTierUdpSessionLayer, UdpSessionConnectError, UdpSessionControlHandler, UdpSessionSocket,
+    UdpSessionConnectError, UdpSessionControlHandler, UdpSessionLayer, UdpSessionSocket,
     VirtualUdpSocket,
 };
 pub use easytier_core::{
@@ -44,19 +44,18 @@ use crate::{
 
 pub const UDP_DATA_MTU: usize = 2000;
 
-type RuntimeEasyTierUdpSessionLayer =
-    EasyTierUdpSessionLayer<RuntimeUdpSocket, RuntimeUdpSessionControlHandler>;
+type RuntimeUdpSessionLayer = UdpSessionLayer<RuntimeUdpSocket, RuntimeUdpSessionControlHandler>;
 
 pub(crate) struct RuntimeUdpSocket {
     socket: Arc<UdpSocket>,
-    easy_tier_layer: StdMutex<Option<Weak<RuntimeEasyTierUdpSessionLayer>>>,
+    udp_session_layer: StdMutex<Option<Weak<RuntimeUdpSessionLayer>>>,
 }
 
 impl RuntimeUdpSocket {
     pub(crate) fn new(socket: Arc<UdpSocket>) -> Self {
         Self {
             socket,
-            easy_tier_layer: StdMutex::new(None),
+            udp_session_layer: StdMutex::new(None),
         }
     }
 
@@ -64,13 +63,13 @@ impl RuntimeUdpSocket {
         self.socket.clone()
     }
 
-    pub(crate) fn easy_tier_layer(self: &Arc<Self>) -> Arc<RuntimeEasyTierUdpSessionLayer> {
-        let mut weak_layer = self.easy_tier_layer.lock().unwrap();
+    pub(crate) fn udp_session_layer(self: &Arc<Self>) -> Arc<RuntimeUdpSessionLayer> {
+        let mut weak_layer = self.udp_session_layer.lock().unwrap();
         if let Some(layer) = weak_layer.as_ref().and_then(Weak::upgrade) {
             return layer;
         }
 
-        let layer = Arc::new(EasyTierUdpSessionLayer::new_with_control_handler(
+        let layer = Arc::new(UdpSessionLayer::new_with_control_handler(
             self.clone(),
             Arc::new(RuntimeUdpSessionControlHandler),
         ));
@@ -341,7 +340,7 @@ fn map_udp_session_connect_error(error: UdpSessionConnectError) -> TunnelError {
 fn upgrade_udp_session_to_legacy_tunnel(
     session: Arc<dyn UdpSessionSocket>,
     tunnel_info: TunnelInfo,
-    keep_layer_alive: Option<Arc<RuntimeEasyTierUdpSessionLayer>>,
+    keep_layer_alive: Option<Arc<RuntimeUdpSessionLayer>>,
 ) -> Result<Box<dyn Tunnel>, TunnelError> {
     let (tunnel_ring, udp_ring) = create_ring_socket_pair(128);
     tracing::debug!(?tunnel_ring, ?udp_ring, "udp build tunnel from session");
@@ -377,12 +376,12 @@ fn upgrade_udp_session_to_legacy_tunnel(
 }
 
 struct ConnectedUdpSession {
-    layer: Arc<RuntimeEasyTierUdpSessionLayer>,
+    layer: Arc<RuntimeUdpSessionLayer>,
     session: Arc<dyn UdpSessionSocket>,
 }
 
 async fn accept_udp_session_tunnels(
-    layer: Arc<RuntimeEasyTierUdpSessionLayer>,
+    layer: Arc<RuntimeUdpSessionLayer>,
     conn_send: Sender<Box<dyn Tunnel>>,
     local_url: url::Url,
 ) {
@@ -430,8 +429,8 @@ pub struct UdpTunnelListener {
     addr: url::Url,
     socket: Option<Arc<UdpSocket>>,
     runtime_socket: Option<Arc<RuntimeUdpSocket>>,
-    session_layer: Option<Arc<RuntimeEasyTierUdpSessionLayer>>,
-    session_layer_ref: Arc<StdMutex<Option<Weak<RuntimeEasyTierUdpSessionLayer>>>>,
+    session_layer: Option<Arc<RuntimeUdpSessionLayer>>,
+    session_layer_ref: Arc<StdMutex<Option<Weak<RuntimeUdpSessionLayer>>>>,
 
     conn_send: Sender<Box<dyn Tunnel>>,
     conn_recv: Receiver<Box<dyn Tunnel>>,
@@ -507,7 +506,7 @@ impl TunnelListener for UdpTunnelListener {
                 socket
             }
         };
-        let layer = runtime_socket.easy_tier_layer();
+        let layer = runtime_socket.udp_session_layer();
         *self.session_layer_ref.lock().unwrap() = Some(Arc::downgrade(&layer));
         self.session_layer = Some(layer.clone());
 
@@ -537,7 +536,7 @@ impl TunnelListener for UdpTunnelListener {
 
     fn get_conn_counter(&self) -> Arc<Box<dyn TunnelConnCounter>> {
         struct UdpTunnelConnCounter {
-            session_layer: Arc<StdMutex<Option<Weak<RuntimeEasyTierUdpSessionLayer>>>>,
+            session_layer: Arc<StdMutex<Option<Weak<RuntimeUdpSessionLayer>>>>,
         }
 
         impl TunnelConnCounter for UdpTunnelConnCounter {
@@ -596,7 +595,7 @@ impl UdpTunnelConnector {
         #[cfg(target_os = "windows")]
         crate::arch::windows::disable_connection_reset(runtime_socket.socket().as_ref())?;
 
-        let layer = runtime_socket.easy_tier_layer();
+        let layer = runtime_socket.udp_session_layer();
         let session = layer
             .connect(addr)
             .await
@@ -829,7 +828,7 @@ mod tests {
         listener.listen().await.unwrap();
         let runtime_socket = listener.get_runtime_socket().unwrap();
         let listener_layer = listener.session_layer.as_ref().unwrap();
-        let socket_layer = runtime_socket.easy_tier_layer();
+        let socket_layer = runtime_socket.udp_session_layer();
 
         assert!(Arc::ptr_eq(listener_layer, &socket_layer));
     }

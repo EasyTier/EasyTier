@@ -674,7 +674,7 @@ impl UdpSession {
 }
 
 #[derive(Debug)]
-pub struct EasyTierUdpSessionLayer<S, H = NoopUdpSessionControlHandler> {
+pub struct UdpSessionLayer<S, H = NoopUdpSessionControlHandler> {
     socket: Arc<S>,
     _control_handler: Arc<H>,
     sessions: Arc<UdpSessionRegistry>,
@@ -689,7 +689,7 @@ pub struct EasyTierUdpSessionLayer<S, H = NoopUdpSessionControlHandler> {
     recv_task: JoinHandle<()>,
 }
 
-impl<S> EasyTierUdpSessionLayer<S>
+impl<S> UdpSessionLayer<S>
 where
     S: VirtualUdpSocket,
 {
@@ -698,7 +698,7 @@ where
     }
 }
 
-impl<S, H> EasyTierUdpSessionLayer<S, H>
+impl<S, H> UdpSessionLayer<S, H>
 where
     S: VirtualUdpSocket,
     H: UdpSessionControlHandler<S>,
@@ -713,7 +713,7 @@ where
         let (priority_control_tx, priority_control_rx) = mpsc::channel(UDP_SESSION_QUEUE_CAPACITY);
         let (control_tx, control_rx) = mpsc::channel(UDP_SESSION_QUEUE_CAPACITY);
         let (session_shutdown_tx, _) = watch::channel(false);
-        let recv_task = tokio::spawn(easy_tier_mux_layer_recv_task(
+        let recv_task = tokio::spawn(udp_session_layer_recv_task(
             socket.clone(),
             sessions.clone(),
             direct_sessions.clone(),
@@ -956,7 +956,7 @@ where
     }
 }
 
-impl<S, H> Drop for EasyTierUdpSessionLayer<S, H> {
+impl<S, H> Drop for UdpSessionLayer<S, H> {
     fn drop(&mut self) {
         let _ = self.session_shutdown_tx.send(true);
         self.pending_connects.clear();
@@ -1332,7 +1332,7 @@ fn move_pending_udp_session_sender(
     }
 }
 
-async fn easy_tier_mux_layer_recv_task<S, H>(
+async fn udp_session_layer_recv_task<S, H>(
     socket: Arc<S>,
     sessions: Arc<UdpSessionRegistry>,
     direct_sessions: Arc<DirectUdpSessionRegistry>,
@@ -1873,7 +1873,7 @@ where
         request: UdpSessionConnectRequest,
     ) -> anyhow::Result<Self::Session> {
         let socket = self.factory.bind_udp(request.bind).await?;
-        let layer = Arc::new(EasyTierUdpSessionLayer::new(socket));
+        let layer = Arc::new(UdpSessionLayer::new(socket));
         let mut session = layer.open_direct_session(request.remote_addr)?;
         session._cleanup.layer_guard = Some(Box::new(layer));
         Ok(session)
@@ -2394,7 +2394,7 @@ mod tests {
         let local_addr = SocketAddr::from(([127, 0, 0, 1], 12000));
         let peer_addr = SocketAddr::from(([127, 0, 0, 1], 12001));
         let socket = Arc::new(AutoSackVirtualUdpSocket::new(local_addr));
-        let layer = EasyTierUdpSessionLayer::new(socket.clone());
+        let layer = UdpSessionLayer::new(socket.clone());
         let session = layer.open_direct_session(peer_addr).unwrap();
 
         assert_eq!(session.kind(), UdpSessionKind::Direct);
@@ -2423,7 +2423,7 @@ mod tests {
         let local_addr = SocketAddr::from(([127, 0, 0, 1], 12000));
         let peer_addr = SocketAddr::from(([127, 0, 0, 1], 12001));
         let socket = Arc::new(AutoSackVirtualUdpSocket::new(local_addr));
-        let layer = Arc::new(EasyTierUdpSessionLayer::new(socket.clone()));
+        let layer = Arc::new(UdpSessionLayer::new(socket.clone()));
         let accept_task = tokio::spawn({
             let layer = layer.clone();
             async move { layer.accept_direct().await }
@@ -2463,7 +2463,7 @@ mod tests {
         let local_addr = SocketAddr::from(([127, 0, 0, 1], 12000));
         let peer_addr = SocketAddr::from(([127, 0, 0, 1], 12001));
         let socket = Arc::new(AutoSackVirtualUdpSocket::new(local_addr));
-        let layer = EasyTierUdpSessionLayer::new(socket.clone());
+        let layer = UdpSessionLayer::new(socket.clone());
         let session = layer.open_direct_session(peer_addr).unwrap();
         let syn = new_syn_packet(0x1122_3344, 0x5566_7788).into_bytes();
 
@@ -2615,11 +2615,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn easy_tier_udp_session_layer_connects_with_shared_recv_loop() {
+    async fn udp_session_layer_connects_with_shared_recv_loop() {
         let local_addr = SocketAddr::from(([127, 0, 0, 1], 12000));
         let peer_addr = SocketAddr::from(([127, 0, 0, 1], 12001));
         let socket = Arc::new(AutoSackVirtualUdpSocket::new(local_addr));
-        let layer = EasyTierUdpSessionLayer::new(socket.clone());
+        let layer = UdpSessionLayer::new(socket.clone());
 
         let session = tokio::time::timeout(Duration::from_secs(1), layer.connect(peer_addr))
             .await
@@ -2641,11 +2641,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn cancelled_easy_tier_udp_session_connect_cleans_registered_state() {
+    async fn cancelled_udp_session_connect_cleans_registered_state() {
         let local_addr = SocketAddr::from(([127, 0, 0, 1], 12000));
         let peer_addr = SocketAddr::from(([127, 0, 0, 1], 12001));
         let socket = Arc::new(MockVirtualUdpSocket::new(local_addr, Vec::new()));
-        let layer = EasyTierUdpSessionLayer::new(socket);
+        let layer = UdpSessionLayer::new(socket);
 
         let result =
             tokio::time::timeout(Duration::from_millis(50), layer.connect(peer_addr)).await;
@@ -2656,11 +2656,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn dropping_easy_tier_udp_session_layer_closes_session_recv() {
+    async fn dropping_udp_session_layer_closes_session_recv() {
         let local_addr = SocketAddr::from(([127, 0, 0, 1], 12000));
         let peer_addr = SocketAddr::from(([127, 0, 0, 1], 12001));
         let socket = Arc::new(AutoSackVirtualUdpSocket::new(local_addr));
-        let layer = EasyTierUdpSessionLayer::new(socket.clone());
+        let layer = UdpSessionLayer::new(socket.clone());
         let session = layer.connect(peer_addr).await.unwrap();
         drop(layer);
 
@@ -2695,7 +2695,7 @@ mod tests {
         let (priority_control_tx, _priority_control_rx) = mpsc::channel(UDP_SESSION_QUEUE_CAPACITY);
         let (control_tx, _control_rx) = mpsc::channel(UDP_SESSION_QUEUE_CAPACITY);
 
-        easy_tier_mux_layer_recv_task(
+        udp_session_layer_recv_task(
             socket,
             sessions.clone(),
             direct_sessions.clone(),
@@ -2735,7 +2735,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn easy_tier_udp_session_layer_accepts_syn_and_sends_sack() {
+    async fn udp_session_layer_accepts_syn_and_sends_sack() {
         let local_addr = SocketAddr::from(([127, 0, 0, 1], 12000));
         let peer_addr = SocketAddr::from(([127, 0, 0, 1], 12001));
         let conn_id = 0x1122_3344;
@@ -2841,7 +2841,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn easy_tier_udp_session_layer_routes_stun_and_hole_punch_control_packets() {
+    async fn udp_session_layer_routes_stun_and_hole_punch_control_packets() {
         let local_addr = SocketAddr::from(([127, 0, 0, 1], 12000));
         let stun_remote_addr = SocketAddr::from(([127, 0, 0, 1], 12001));
         let rejected_remote_addr = SocketAddr::from(([192, 0, 2, 1], 12001));
@@ -2876,8 +2876,7 @@ mod tests {
             ],
         ));
         let control_handler = Arc::new(RecordingUdpSessionControlHandler::default());
-        let layer =
-            EasyTierUdpSessionLayer::new_with_control_handler(socket, control_handler.clone());
+        let layer = UdpSessionLayer::new_with_control_handler(socket, control_handler.clone());
 
         let mut events = Vec::new();
         for _ in 0..3 {
@@ -2966,7 +2965,7 @@ mod tests {
         let (control_tx, _control_rx) = mpsc::channel(UDP_SESSION_QUEUE_CAPACITY);
         let control_handler = Arc::new(BlockingUdpSessionControlHandler::default());
         let (session_shutdown_tx, _) = watch::channel(false);
-        let recv_task = tokio::spawn(easy_tier_mux_layer_recv_task(
+        let recv_task = tokio::spawn(udp_session_layer_recv_task(
             socket,
             sessions,
             direct_sessions,
