@@ -455,10 +455,6 @@ fn setup_socket2_ext(
         }
     }
 
-    if bind_addr.ip().is_unspecified() {
-        return Ok(());
-    }
-
     // linux/mac does not use interface of bind_addr to send packet, so we need to bind device
     // win can handle this with bind correctly
     #[cfg(any(target_os = "ios", target_os = "macos"))]
@@ -668,6 +664,25 @@ pub mod tests {
         // the mark, distinct from None which makes no syscall.
         super::apply_socket_mark(&socket, Some(0)).expect("set_mark(0) failed");
         assert_eq!(read_so_mark(&socket), 0);
+    }
+
+    #[cfg(any(
+        target_os = "android",
+        target_os = "fuchsia",
+        target_os = "linux",
+        target_env = "ohos"
+    ))]
+    #[test]
+    fn bind_custom_device_is_applied_for_unspecified_addr() {
+        use std::net::SocketAddr;
+        use tokio::net::UdpSocket;
+
+        let addr: SocketAddr = "0.0.0.0:0".parse().unwrap();
+        let _err = super::bind::<UdpSocket>()
+            .addr(addr)
+            .dev("et-missing0")
+            .call()
+            .expect_err("custom device must not be skipped for unspecified bind addr");
     }
 
     #[test]
