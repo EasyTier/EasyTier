@@ -1442,6 +1442,12 @@ fn udp_session_closed_error() -> io::Error {
     io::Error::new(io::ErrorKind::UnexpectedEof, "udp session closed")
 }
 
+#[derive(Debug, Clone, Copy)]
+enum UdpSessionEnqueuePolicy {
+    Lossy,
+    Reliable,
+}
+
 async fn forward_udp_session_to_socket<S>(
     socket: Arc<S>,
     peer_addr: SocketAddr,
@@ -1527,7 +1533,11 @@ async fn forward_identity_socket_to_udp_session<S>(
                 if remote_addr != peer_addr {
                     continue;
                 }
-                if !dispatch_payload_to_session(&incoming, BytesMut::from(&buf[..len])) {
+                if !dispatch_payload_to_session(
+                    &incoming,
+                    BytesMut::from(&buf[..len]),
+                    UdpSessionEnqueuePolicy::Reliable,
+                ) {
                     close.close();
                     break;
                 }
@@ -1539,15 +1549,19 @@ async fn forward_identity_socket_to_udp_session<S>(
 fn dispatch_payload_to_session(
     incoming: &Arc<StdMutex<RingSocketSender<BytesMut>>>,
     payload: BytesMut,
+    policy: UdpSessionEnqueuePolicy,
 ) -> bool {
     let result = {
         let mut incoming = incoming.lock().unwrap();
-        incoming.force_send(payload)
+        match policy {
+            UdpSessionEnqueuePolicy::Lossy => incoming.try_send(payload),
+            UdpSessionEnqueuePolicy::Reliable => incoming.force_send(payload),
+        }
     };
     match result {
         Ok(()) => true,
         Err(RingSocketSendError::Full(_)) => {
-            tracing::trace!("udp session data queue full");
+            tracing::trace!(?policy, "udp session data queue full");
             true
         }
         Err(RingSocketSendError::Closed(_)) => false,
@@ -1783,7 +1797,12 @@ fn dispatch_data_packet(
     };
 
     let payload = BytesMut::from(packet.udp_payload());
-    if !dispatch_payload_to_session(&entry.incoming, payload) {
+    let policy = if packet.is_lossy() {
+        UdpSessionEnqueuePolicy::Lossy
+    } else {
+        UdpSessionEnqueuePolicy::Reliable
+    };
+    if !dispatch_payload_to_session(&entry.incoming, payload, policy) {
         close_udp_session(sessions, key);
         tracing::debug!(?key, "udp session data queue closed");
     }
@@ -1833,7 +1852,11 @@ fn dispatch_classified_udp_datagram<S>(
         .get(&key)
         .map(|entry| entry.value().clone())
     {
-        if !dispatch_payload_to_session(&entry.incoming, datagram) {
+        if !dispatch_payload_to_session(
+            &entry.incoming,
+            datagram,
+            UdpSessionEnqueuePolicy::Reliable,
+        ) {
             close_classified_udp_session(classified_sessions, key);
             tracing::debug!(?key, "classified udp session data queue closed");
         }
@@ -1877,14 +1900,22 @@ fn dispatch_classified_udp_datagram<S>(
         }
         dashmap::mapref::entry::Entry::Occupied(entry) => {
             let entry = entry.get().clone();
-            if !dispatch_payload_to_session(&entry.incoming, datagram) {
+            if !dispatch_payload_to_session(
+                &entry.incoming,
+                datagram,
+                UdpSessionEnqueuePolicy::Reliable,
+            ) {
                 close_classified_udp_session(classified_sessions, key);
                 tracing::debug!(?key, "classified udp session data queue closed");
             }
             return;
         }
     }
-    if !dispatch_payload_to_session(&rings.session_recv_tx, datagram) {
+    if !dispatch_payload_to_session(
+        &rings.session_recv_tx,
+        datagram,
+        UdpSessionEnqueuePolicy::Reliable,
+    ) {
         close_classified_udp_session(classified_sessions, key);
         tracing::debug!(?key, "classified udp session data queue closed");
         return;
@@ -2360,6 +2391,54 @@ mod tests {
         let bind = UdpBindOptions::port_bound_listener(bind_addr);
 
         assert_eq!(UdpSessionListenRequest::new(bind.clone()).bind, bind);
+    }
+
+    async fn drain_session_payloads(mut rings: UdpSessionRingParts) -> usize {
+        let mut count = 0;
+        while let Ok(Some(Ok(_))) =
+            tokio::time::timeout(Duration::from_millis(10), rings.session_recv_rx.next()).await
+        {
+            count += 1;
+        }
+        count
+    }
+
+    #[tokio::test]
+    async fn lossy_udp_session_enqueue_preserves_reserved_capacity() {
+        const RING_RESERVED_CAPACITY: usize = 4;
+
+        let rings = create_udp_session_rings();
+        for _ in 0..UDP_SESSION_QUEUE_CAPACITY {
+            assert!(dispatch_payload_to_session(
+                &rings.session_recv_tx,
+                BytesMut::from("lossy"),
+                UdpSessionEnqueuePolicy::Lossy,
+            ));
+        }
+        assert_eq!(
+            drain_session_payloads(rings).await,
+            UDP_SESSION_QUEUE_CAPACITY - RING_RESERVED_CAPACITY
+        );
+
+        let rings = create_udp_session_rings();
+        for _ in 0..UDP_SESSION_QUEUE_CAPACITY {
+            assert!(dispatch_payload_to_session(
+                &rings.session_recv_tx,
+                BytesMut::from("lossy"),
+                UdpSessionEnqueuePolicy::Lossy,
+            ));
+        }
+        for _ in 0..RING_RESERVED_CAPACITY {
+            assert!(dispatch_payload_to_session(
+                &rings.session_recv_tx,
+                BytesMut::from("reliable"),
+                UdpSessionEnqueuePolicy::Reliable,
+            ));
+        }
+        assert_eq!(
+            drain_session_payloads(rings).await,
+            UDP_SESSION_QUEUE_CAPACITY
+        );
     }
 
     struct MockUdpSessionSocket {

@@ -52,14 +52,20 @@ fn ring_send_error_to_tunnel<T>(error: RingSocketSendError<T>) -> TunnelError {
     }
 }
 
-struct UdpTunnelKeepAlive {
-    _cleanup: StdMutex<Option<UdpSessionCleanup>>,
-    _keep_alive: Option<Box<dyn Send + Sync>>,
+struct UdpTunnelSessionGuard {
+    cleanup: StdMutex<Option<UdpSessionCleanup>>,
+    _layer_guard: Option<Box<dyn Send + Sync>>,
+}
+
+impl UdpTunnelSessionGuard {
+    fn close_session(&self) {
+        drop(self.cleanup.lock().unwrap().take());
+    }
 }
 
 struct UdpTunnelStream {
     session_recv_rx: RingSocketReceiver<BytesMut>,
-    _keep_alive: Arc<UdpTunnelKeepAlive>,
+    session_guard: Arc<UdpTunnelSessionGuard>,
 }
 
 impl Stream for UdpTunnelStream {
@@ -75,11 +81,17 @@ impl Stream for UdpTunnelStream {
     }
 }
 
+impl Drop for UdpTunnelStream {
+    fn drop(&mut self) {
+        self.session_guard.close_session();
+    }
+}
+
 struct UdpTunnelSink {
     codec: UdpSessionCodec,
     session_send_tx: RingSocketSender<UdpSessionOutbound>,
     closed: watch::Receiver<bool>,
-    _keep_alive: Arc<UdpTunnelKeepAlive>,
+    session_guard: Arc<UdpTunnelSessionGuard>,
 }
 
 impl Sink<SinkItem> for UdpTunnelSink {
@@ -123,9 +135,20 @@ impl Sink<SinkItem> for UdpTunnelSink {
     }
 
     fn poll_close(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        Pin::new(&mut self.get_mut().session_send_tx)
+        let this = self.get_mut();
+        let result = Pin::new(&mut this.session_send_tx)
             .poll_close(cx)
-            .map_err(ring_socket_error_to_tunnel)
+            .map_err(ring_socket_error_to_tunnel);
+        if let Poll::Ready(_) = &result {
+            this.session_guard.close_session();
+        }
+        result
+    }
+}
+
+impl Drop for UdpTunnelSink {
+    fn drop(&mut self) {
+        self.session_guard.close_session();
     }
 }
 
@@ -187,20 +210,20 @@ impl Tunnel for UdpTunnel {
             .unwrap()
             .take()
             .expect("UdpTunnel can only be split once");
-        let keep_alive = Arc::new(UdpTunnelKeepAlive {
-            _cleanup: StdMutex::new(Some(parts.cleanup)),
-            _keep_alive: parts.keep_alive,
+        let session_guard = Arc::new(UdpTunnelSessionGuard {
+            cleanup: StdMutex::new(Some(parts.cleanup)),
+            _layer_guard: parts.keep_alive,
         });
         (
             Box::pin(UdpTunnelStream {
                 session_recv_rx: parts.session_recv_rx,
-                _keep_alive: keep_alive.clone(),
+                session_guard: session_guard.clone(),
             }),
             Box::pin(UdpTunnelSink {
                 codec: parts.codec,
                 session_send_tx: parts.session_send_tx,
                 closed: parts.closed,
-                _keep_alive: keep_alive,
+                session_guard,
             }),
         )
     }
@@ -367,5 +390,33 @@ mod tests {
             .unwrap();
 
         assert_eq!(packet.udp_payload(), b"inbound");
+    }
+
+    #[tokio::test]
+    async fn udp_tunnel_sink_close_closes_session() {
+        let local_addr = "127.0.0.1:1".parse().unwrap();
+        let peer_addr = "127.0.0.1:2".parse().unwrap();
+        let (_network_sender, network_recv) = channel(8);
+        let socket = Arc::new(MockVirtualUdpSocket::new(local_addr, network_recv));
+        let session =
+            UdpSession::identity_standalone(socket, peer_addr, UdpSessionKind::Quic).unwrap();
+        let tunnel = UdpTunnelUpgrader::new(TunnelInfo {
+            tunnel_type: "udp".to_owned(),
+            local_addr: None,
+            remote_addr: None,
+            resolved_remote_addr: None,
+        })
+        .upgrade(session)
+        .unwrap();
+        let (mut stream, mut sink) = tunnel.split();
+
+        sink.close().await.unwrap();
+        let item = timeout(Duration::from_secs(1), stream.next())
+            .await
+            .unwrap();
+        assert!(
+            item.is_none() || matches!(item, Some(Err(TunnelError::Shutdown))),
+            "session stream must close after sink close"
+        );
     }
 }
