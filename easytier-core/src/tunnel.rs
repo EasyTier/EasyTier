@@ -11,6 +11,7 @@ pub mod filter;
 pub mod mpsc;
 pub mod ring;
 pub mod stats;
+pub mod tcp;
 pub mod udp;
 
 #[derive(Debug, thiserror::Error)]

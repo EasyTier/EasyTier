@@ -1,8 +1,10 @@
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
 use anyhow::Context;
+use async_trait::async_trait;
+use easytier_core::socket::dns::{DnsQuery, DnsResolver, global_dns_resolver};
 use hickory_proto::runtime::TokioRuntimeProvider;
 use hickory_proto::xfer::Protocol;
 use hickory_resolver::config::{LookupIpStrategy, NameServerConfig, ResolverConfig, ResolverOpts};
@@ -10,6 +12,7 @@ use hickory_resolver::name_server::{GenericConnector, TokioConnectionProvider};
 use hickory_resolver::system_conf::read_system_conf;
 use hickory_resolver::{Resolver, TokioResolver};
 use once_cell::sync::Lazy;
+use std::sync::Once;
 use tokio::net::lookup_host;
 
 use super::error::Error;
@@ -45,6 +48,23 @@ pub static RESOLVER: Lazy<Arc<Resolver<GenericConnector<TokioRuntimeProvider>>>>
             .with_options(opt);
         Arc::new(builder.build())
     });
+
+static CORE_DNS_RESOLVER_REGISTER: Once = Once::new();
+
+struct RuntimeDnsResolver;
+
+#[async_trait]
+impl DnsResolver for RuntimeDnsResolver {
+    async fn resolve(&self, query: DnsQuery) -> anyhow::Result<Vec<IpAddr>> {
+        Ok(resolve_ips(&query.host).await?)
+    }
+}
+
+pub fn register_core_dns_resolver() {
+    CORE_DNS_RESOLVER_REGISTER.call_once(|| {
+        global_dns_resolver().register(Arc::new(RuntimeDnsResolver));
+    });
+}
 
 pub async fn resolve_txt_record(domain_name: &str) -> Result<String, Error> {
     let r = RESOLVER.clone();
@@ -107,6 +127,27 @@ pub async fn socket_addrs(
         .iter()
         .map(|ip| SocketAddr::new(ip, port))
         .collect::<Vec<_>>())
+}
+
+pub async fn resolve_ips(host: &str) -> Result<Vec<IpAddr>, Error> {
+    if ALLOW_USE_SYSTEM_DNS_RESOLVER.load(std::sync::atomic::Ordering::Relaxed) {
+        match lookup_host((host, 0)).await {
+            Ok(a) => {
+                let a = a.map(|addr| addr.ip()).collect();
+                tracing::debug!(?a, "system dns lookup done");
+                return Ok(a);
+            }
+            Err(e) => {
+                tracing::error!(?e, "system dns lookup failed");
+            }
+        }
+    }
+
+    let ret = RESOLVER
+        .lookup_ip(host)
+        .await
+        .with_context(|| format!("hickory dns lookup_ip failed, host: {}", host))?;
+    Ok(ret.iter().collect::<Vec<_>>())
 }
 
 #[cfg(test)]

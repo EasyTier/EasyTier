@@ -21,6 +21,7 @@ pub mod packet_def;
 pub mod ring;
 pub mod stats;
 pub mod tcp;
+pub(crate) mod tcp_socket;
 pub mod udp;
 pub(crate) mod udp_src;
 
