@@ -350,6 +350,10 @@ udp://
 - `UdpTunnelConnector` 已改为通过 `EasyTierUdpSessionLayer::connect` 获取
   `UdpSessionSocket`，再由临时 compatibility bridge 升级成现有 ring-backed
   UDP tunnel。
+- `UdpTunnelConnector` 内部已拆分为 `connect_udp_session_with_runtime_socket`
+  和 `upgrade_connected_session_to_legacy_tunnel` 两步：前者产出
+  `UdpSessionSocket`，后者只是当前 `TunnelConnector` trait 的 legacy
+  compatibility wrapper。
 - `RuntimeUdpSocket` 已成为 easytier runtime 侧共享的
   `tokio::net::UdpSocket` adapter，hole-punch runtime 不再保留重复
   `VirtualUdpSocket` implementation。
@@ -363,6 +367,8 @@ udp://
   `EasyTierUdpSessionLayer`，避免同一个真实 UDP socket 出现多个 recv owner。
 - listener compatibility wrapper 仍把 accepted `UdpSessionSocket` 临时升级成
   ring-backed legacy `Tunnel`。
+- connector 和 listener 共享 `upgrade_udp_session_to_legacy_tunnel` 兼容层，避免
+  在两侧重复表达 session-to-tunnel upgrade 逻辑。
 - `EasyTierUdpSessionLayer` 已在 core 内部识别 STUN 和 V4/V6 hole-punch
   control packet，并通过独立的 `UdpSessionControlHandler` 触发 response /
   punch 发包。`VirtualUdpSocket` 保持裸 UDP socket 语义。

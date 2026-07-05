@@ -338,7 +338,7 @@ fn map_udp_session_connect_error(error: UdpSessionConnectError) -> TunnelError {
     }
 }
 
-fn build_udp_tunnel_from_session(
+fn upgrade_udp_session_to_legacy_tunnel(
     session: Arc<dyn UdpSessionSocket>,
     tunnel_info: TunnelInfo,
     keep_layer_alive: Option<Arc<RuntimeEasyTierUdpSessionLayer>>,
@@ -376,6 +376,11 @@ fn build_udp_tunnel_from_session(
     )))
 }
 
+struct ConnectedUdpSession {
+    layer: Arc<RuntimeEasyTierUdpSessionLayer>,
+    session: Arc<dyn UdpSessionSocket>,
+}
+
 async fn accept_udp_session_tunnels(
     layer: Arc<RuntimeEasyTierUdpSessionLayer>,
     conn_send: Sender<Box<dyn Tunnel>>,
@@ -404,13 +409,14 @@ async fn accept_udp_session_tunnels(
                 build_url_from_socket_addr(&remote_addr.to_string(), "udp").into(),
             ),
         };
-        let conn = match build_udp_tunnel_from_session(session, tunnel_info, Some(layer.clone())) {
-            Ok(conn) => conn,
-            Err(err) => {
-                tracing::debug!(?err, "udp accepted session build tunnel failed");
-                continue;
-            }
-        };
+        let conn =
+            match upgrade_udp_session_to_legacy_tunnel(session, tunnel_info, Some(layer.clone())) {
+                Ok(conn) => conn,
+                Err(err) => {
+                    tracing::debug!(?err, "udp accepted session build tunnel failed");
+                    continue;
+                }
+            };
         tracing::info!(info = ?conn.info().unwrap().remote_addr, "udp connection accept done");
 
         if let Err(err) = conn_send.send(conn).await {
@@ -580,43 +586,11 @@ impl UdpTunnelConnector {
         }
     }
 
-    async fn build_tunnel(
-        &self,
-        socket: Arc<UdpSocket>,
-        layer: Arc<RuntimeEasyTierUdpSessionLayer>,
-        session: Arc<dyn UdpSessionSocket>,
-    ) -> Result<Box<dyn super::Tunnel>, super::TunnelError> {
-        let dst_addr = session.peer_addr()?;
-        build_udp_tunnel_from_session(
-            session,
-            TunnelInfo {
-                tunnel_type: "udp".to_owned(),
-                local_addr: Some(
-                    build_url_from_socket_addr(&socket.local_addr()?.to_string(), "udp").into(),
-                ),
-                remote_addr: Some(self.addr.clone().into()),
-                resolved_remote_addr: Some(
-                    build_url_from_socket_addr(&dst_addr.to_string(), "udp").into(),
-                ),
-            },
-            Some(layer),
-        )
-    }
-
-    pub async fn try_connect_with_socket(
-        &self,
-        socket: Arc<UdpSocket>,
-        addr: SocketAddr,
-    ) -> Result<Box<dyn super::Tunnel>, super::TunnelError> {
-        self.try_connect_with_runtime_socket(Arc::new(RuntimeUdpSocket::new(socket)), addr)
-            .await
-    }
-
-    pub(crate) async fn try_connect_with_runtime_socket(
+    async fn connect_udp_session_with_runtime_socket(
         &self,
         runtime_socket: Arc<RuntimeUdpSocket>,
         addr: SocketAddr,
-    ) -> Result<Box<dyn super::Tunnel>, super::TunnelError> {
+    ) -> Result<ConnectedUdpSession, super::TunnelError> {
         tracing::warn!("udp connect: {:?}", self.addr);
 
         #[cfg(target_os = "windows")]
@@ -635,8 +609,50 @@ impl UdpTunnelConnector {
             );
         }
 
-        self.build_tunnel(runtime_socket.socket(), layer, Arc::new(session))
+        Ok(ConnectedUdpSession {
+            layer,
+            session: Arc::new(session),
+        })
+    }
+
+    fn upgrade_connected_session_to_legacy_tunnel(
+        &self,
+        connected: ConnectedUdpSession,
+    ) -> Result<Box<dyn super::Tunnel>, super::TunnelError> {
+        let local_addr = connected.session.local_addr()?;
+        let dst_addr = connected.session.peer_addr()?;
+        upgrade_udp_session_to_legacy_tunnel(
+            connected.session,
+            TunnelInfo {
+                tunnel_type: "udp".to_owned(),
+                local_addr: Some(build_url_from_socket_addr(&local_addr.to_string(), "udp").into()),
+                remote_addr: Some(self.addr.clone().into()),
+                resolved_remote_addr: Some(
+                    build_url_from_socket_addr(&dst_addr.to_string(), "udp").into(),
+                ),
+            },
+            Some(connected.layer),
+        )
+    }
+
+    pub async fn try_connect_with_socket(
+        &self,
+        socket: Arc<UdpSocket>,
+        addr: SocketAddr,
+    ) -> Result<Box<dyn super::Tunnel>, super::TunnelError> {
+        self.try_connect_with_runtime_socket(Arc::new(RuntimeUdpSocket::new(socket)), addr)
             .await
+    }
+
+    pub(crate) async fn try_connect_with_runtime_socket(
+        &self,
+        runtime_socket: Arc<RuntimeUdpSocket>,
+        addr: SocketAddr,
+    ) -> Result<Box<dyn super::Tunnel>, super::TunnelError> {
+        let connected = self
+            .connect_udp_session_with_runtime_socket(runtime_socket, addr)
+            .await?;
+        self.upgrade_connected_session_to_legacy_tunnel(connected)
     }
 
     async fn connect_with_default_bind(
