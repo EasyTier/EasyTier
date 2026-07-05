@@ -25,20 +25,13 @@ use tokio_util::either::Either;
 use tokio_websockets::{ClientBuilder, Limits, MaybeTlsStream, Message, ServerBuilder};
 use zerocopy::AsBytes;
 
+pub(crate) const WS_TCP_HOLE_PUNCH_LOCAL_QUERY: &str = "easytier_ws_tcp_hole_punch";
+
 fn is_wss(addr: &url::Url) -> Result<bool, TunnelError> {
     match addr.scheme() {
         "ws" => Ok(false),
         "wss" => Ok(true),
         _ => Err(TunnelError::InvalidProtocol(addr.scheme().to_string())),
-    }
-}
-
-fn reset_tcp_stream_on_drop(stream: &TcpStream) {
-    if let Err(error) = socket2::SockRef::from(stream).set_linger(Some(Duration::ZERO)) {
-        tracing::trace!(
-            ?error,
-            "ws_hole_punch: failed to set reset linger on ignored tcp stream"
-        );
     }
 }
 
@@ -247,10 +240,9 @@ impl WsTunnelListener {
                 ?local_addr,
                 ?peer_addr,
                 ?peek,
-                "ws_hole_punch: websocket listener reset ignored non-tls tcp stream on wss port"
+                "ws_hole_punch: websocket listener accepts original tcp hole-punch stream on wss port"
             );
-            reset_tcp_stream_on_drop(&stream);
-            return Ok(None);
+            return self.try_accept_tcp_hole_punch(stream).map(Some);
         }
 
         let http_upgrade = b"GET ".starts_with(peek);
@@ -271,10 +263,27 @@ impl WsTunnelListener {
             ?local_addr,
             ?peer_addr,
             ?peek,
-            "ws_hole_punch: websocket listener reset ignored non-upgrade tcp stream on ws port"
+            "ws_hole_punch: websocket listener accepts original tcp hole-punch stream on ws port"
         );
-        reset_tcp_stream_on_drop(&stream);
-        Ok(None)
+        self.try_accept_tcp_hole_punch(stream).map(Some)
+    }
+
+    fn try_accept_tcp_hole_punch(&self, stream: TcpStream) -> Result<Box<dyn Tunnel>, TunnelError> {
+        let peer_addr = stream.peer_addr()?;
+        let local_addr = stream.local_addr()?;
+        let remote_url = super::build_url_from_socket_addr(&peer_addr.to_string(), "tcp");
+        let mut local_url = super::build_url_from_socket_addr(&local_addr.to_string(), "tcp");
+        local_url
+            .query_pairs_mut()
+            .append_pair(WS_TCP_HOLE_PUNCH_LOCAL_QUERY, self.addr.scheme());
+        tracing::info!(
+            listener = %self.addr,
+            ?local_addr,
+            ?peer_addr,
+            local_url = %local_url,
+            "ws_hole_punch: websocket listener passes original tcp hole-punch stream to tcp tunnel"
+        );
+        super::tcp::get_tunnel_with_tcp_stream_and_local_url(stream, remote_url, local_url)
     }
 }
 
@@ -515,7 +524,11 @@ impl WsTunnelConnector {
         let futures = FuturesUnordered::new();
 
         // reuse_bind_port keeps the source port fixed; each retry still needs a fresh TCP socket.
-        for bind_addr in self.bind_addrs.iter() {
+        for bind_addr in self
+            .bind_addrs
+            .iter()
+            .filter(|bind_addr| bind_addr.is_ipv4() == addr.is_ipv4())
+        {
             tracing::info!(
                 ?bind_addr,
                 ?addr,
@@ -562,7 +575,11 @@ impl TunnelConnector for WsTunnelConnector {
             Some(addr) => addr,
             None => SocketAddr::from_url(self.addr.clone(), self.ip_version).await?,
         };
-        if self.bind_addrs.is_empty() || addr.is_ipv6() {
+        let has_matching_bind_addr = self
+            .bind_addrs
+            .iter()
+            .any(|bind_addr| bind_addr.is_ipv4() == addr.is_ipv4());
+        if !has_matching_bind_addr {
             self.connect_with_default_bind(addr).await
         } else {
             self.connect_with_custom_bind(addr).await

@@ -110,15 +110,22 @@ pub(crate) fn get_tunnel_with_tcp_stream(
     stream: TcpStream,
     remote_url: url::Url,
 ) -> Result<Box<dyn Tunnel>, super::TunnelError> {
+    let local_url = super::build_url_from_socket_addr(&stream.local_addr()?.to_string(), "tcp");
+    get_tunnel_with_tcp_stream_and_local_url(stream, remote_url, local_url)
+}
+
+pub(crate) fn get_tunnel_with_tcp_stream_and_local_url(
+    stream: TcpStream,
+    remote_url: url::Url,
+    local_url: url::Url,
+) -> Result<Box<dyn Tunnel>, super::TunnelError> {
     if let Err(e) = stream.set_nodelay(true) {
         tracing::warn!(?e, "set_nodelay fail in get_tunnel_with_tcp_stream");
     }
 
     let info = TunnelInfo {
         tunnel_type: "tcp".to_owned(),
-        local_addr: Some(
-            super::build_url_from_socket_addr(&stream.local_addr()?.to_string(), "tcp").into(),
-        ),
+        local_addr: Some(local_url.into()),
         remote_addr: Some(remote_url.into()),
         resolved_remote_addr: Some(
             super::build_url_from_socket_addr(&stream.peer_addr()?.to_string(), "tcp").into(),

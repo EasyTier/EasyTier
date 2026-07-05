@@ -3,6 +3,7 @@ use std::{
     net::IpAddr,
     str::FromStr,
     sync::{Arc, Weak},
+    time::Duration,
 };
 
 use anyhow::Context;
@@ -14,8 +15,10 @@ use crate::{
         error::Error,
         global_ctx::{ArcGlobalCtx, GlobalCtxEvent},
         netns::NetNS,
+        stun::StunInfoCollectorTrait,
     },
     peers::peer_manager::PeerManager,
+    proto::common::TunnelInfo,
     tunnel::{
         self, IpScheme, Tunnel, TunnelListener, TunnelScheme, ring::RingTunnelListener,
         tcp::TcpTunnelListener, udp::UdpTunnelListener,
@@ -90,11 +93,98 @@ pub trait TunnelHandlerForListener {
     async fn handle_tunnel(&self, tunnel: Box<dyn Tunnel>) -> Result<(), Error>;
 }
 
+fn ws_tcp_hole_punch_listener_info(tunnel_info: &TunnelInfo) -> Option<(String, u16)> {
+    #[cfg(feature = "websocket")]
+    {
+        if tunnel_info.tunnel_type != "tcp" {
+            return None;
+        }
+
+        let local_addr = tunnel_info.local_addr.as_ref()?;
+        let local_url = url::Url::try_from(local_addr).ok()?;
+        let scheme = local_url.query_pairs().find_map(|(key, value)| {
+            (key == crate::tunnel::websocket::WS_TCP_HOLE_PUNCH_LOCAL_QUERY)
+                .then(|| value.into_owned())
+        })?;
+        if scheme != "ws" && scheme != "wss" {
+            return None;
+        }
+
+        Some((scheme, local_url.port()?))
+    }
+
+    #[cfg(not(feature = "websocket"))]
+    {
+        let _ = tunnel_info;
+        None
+    }
+}
+
+fn is_ws_tcp_hole_punch_tunnel(tunnel: &dyn Tunnel) -> bool {
+    tunnel
+        .info()
+        .as_ref()
+        .and_then(ws_tcp_hole_punch_listener_info)
+        .is_some()
+}
+
+async fn advertise_ws_tcp_hole_punch_listener(global_ctx: ArcGlobalCtx, tunnel_info: &TunnelInfo) {
+    let Some((scheme, local_port)) = ws_tcp_hole_punch_listener_info(tunnel_info) else {
+        return;
+    };
+
+    let mapped_addr = match global_ctx
+        .get_stun_info_collector()
+        .get_tcp_port_mapping_and_hold(local_port, Duration::from_secs(90))
+        .await
+    {
+        Ok(mapped_addr) => mapped_addr,
+        Err(error) => {
+            tracing::warn!(
+                ?error,
+                local_port,
+                scheme = %scheme,
+                "ws_hole_punch: tcp hole-punch tunnel established but mapped listener update failed"
+            );
+            return;
+        }
+    };
+
+    let mapped_url = tunnel::build_url_from_socket_addr(&mapped_addr.to_string(), &scheme);
+    tracing::info!(
+        local_port,
+        ?mapped_addr,
+        mapped_url = %mapped_url,
+        scheme = %scheme,
+        "ws_hole_punch: tcp hole-punch tunnel established, advertise websocket mapped listener"
+    );
+    let generation =
+        global_ctx.add_dynamic_mapped_listener_for_port(&scheme, local_port, mapped_url.clone());
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_secs(60)).await;
+        tracing::info!(
+            local_port,
+            mapped_url = %mapped_url,
+            scheme = %scheme,
+            "ws_hole_punch: expire websocket mapped listener from tcp hole-punch tunnel"
+        );
+        global_ctx.remove_dynamic_mapped_listener_for_port_if_generation(
+            &scheme,
+            local_port,
+            &mapped_url,
+            generation,
+        );
+    });
+}
+
 #[async_trait]
 impl TunnelHandlerForListener for PeerManager {
     #[tracing::instrument]
     async fn handle_tunnel(&self, tunnel: Box<dyn Tunnel>) -> Result<(), Error> {
-        self.add_tunnel_as_server(tunnel, true).await
+        let is_directly_connected = !is_ws_tcp_hole_punch_tunnel(tunnel.as_ref());
+        self.add_tunnel_as_server(tunnel, is_directly_connected)
+            .await
+            .map(|_| ())
     }
 }
 
@@ -257,6 +347,10 @@ impl<H: TunnelHandlerForListener + Send + Sync + 'static + Debug> ListenerManage
                         return;
                     };
                     let server_ret = peer_manager.handle_tunnel(ret).await;
+                    if server_ret.is_ok() {
+                        advertise_ws_tcp_hole_punch_listener(global_ctx.clone(), &tunnel_info)
+                            .await;
+                    }
                     if let Err(e) = &server_ret {
                         global_ctx.issue_event(GlobalCtxEvent::ConnectionError(
                             tunnel_info.local_addr.unwrap_or_default().to_string(),

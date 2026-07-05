@@ -86,7 +86,10 @@ async fn connect_client_and_server(
         },
         {
             let server = server.clone();
-            async move { server.add_tunnel_as_server(server_ring, true).await }
+            async move {
+                server.add_tunnel_as_server(server_ring, true).await?;
+                Ok(())
+            }
         }
     )
 }

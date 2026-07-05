@@ -730,7 +730,7 @@ impl PeerManager {
         &self,
         tunnel: Box<dyn Tunnel>,
         is_directly_connected: bool,
-    ) -> Result<(), Error> {
+    ) -> Result<(PeerId, PeerConnId), Error> {
         tracing::info!("add tunnel as server start");
         self.check_remote_addr_not_from_virtual_network(&tunnel)?;
 
@@ -801,6 +801,8 @@ impl PeerManager {
         }
 
         conn.set_is_hole_punched(!is_directly_connected);
+        let peer_id = conn.get_peer_id();
+        let conn_id = conn.get_conn_id();
 
         let add_peer_ret = if is_local_network {
             self.add_new_peer_conn(conn).await
@@ -816,7 +818,7 @@ impl PeerManager {
         self.release_reserved_peer_id(&peer_network_name);
 
         tracing::info!("add tunnel as server done");
-        Ok(())
+        Ok((peer_id, conn_id))
     }
 
     async fn try_handle_foreign_network_packet(

@@ -122,20 +122,23 @@ impl DirectConnectorRpc for DirectConnectorManagerRpcServer {
 
     async fn get_ip_list(
         &self,
-        _: BaseController,
+        ctrl: BaseController,
         _: GetIpListRequest,
     ) -> rpc_types::error::Result<GetIpListResponse> {
         let mut ret = self.global_ctx.get_ip_collector().collect_ip_addrs().await;
+        let caller_tunnel = ctrl.tunnel_info.clone();
         let mapped_listeners = self.global_ctx.config.get_mapped_listeners();
         let dynamic_mapped_listeners = self.global_ctx.get_dynamic_mapped_listeners();
         let running_listeners = self.global_ctx.get_running_listeners();
         if !dynamic_mapped_listeners.is_empty() {
             tracing::info!(
+                ?caller_tunnel,
                 ?dynamic_mapped_listeners,
                 "ws_hole_punch: get_ip_list exposes dynamic mapped listeners"
             );
         }
         tracing::debug!(
+            ?caller_tunnel,
             ?mapped_listeners,
             ?dynamic_mapped_listeners,
             ?running_listeners,
