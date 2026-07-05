@@ -356,6 +356,23 @@ impl EasyTierUdpPacketKind {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct EasyTierUdpDatagramInfo {
+    kind: EasyTierUdpPacketKind,
+    conn_id: u32,
+}
+
+#[derive(Debug)]
+enum EasyTierUdpDatagramInspectError {
+    TooSmall {
+        datagram_size: usize,
+    },
+    PayloadLenMismatch {
+        header_len: usize,
+        datagram_size: usize,
+    },
+}
+
 fn classify_session_udp_datagram(data: &[u8]) -> UdpSessionPacketKind {
     if is_wireguard_packet(data) {
         UdpSessionPacketKind::Classified(UdpSessionProtocol::WireGuard)
@@ -385,34 +402,73 @@ fn is_quic_packet(data: &[u8]) -> bool {
     data.first().is_some_and(|first| first & 0x40 != 0)
 }
 
+fn inspect_easytier_udp_datagram(
+    data: &[u8],
+) -> Result<Option<EasyTierUdpDatagramInfo>, EasyTierUdpDatagramInspectError> {
+    let datagram_size = data.len();
+    if datagram_size < UDP_TUNNEL_HEADER_SIZE {
+        return Err(EasyTierUdpDatagramInspectError::TooSmall { datagram_size });
+    }
+
+    let header = UDPTunnelHeader::ref_from_prefix(data).unwrap();
+    let header_len = header.len.get() as usize;
+    let real_len = datagram_size - UDP_TUNNEL_HEADER_SIZE;
+    if header_len != real_len {
+        return Err(EasyTierUdpDatagramInspectError::PayloadLenMismatch {
+            header_len,
+            datagram_size,
+        });
+    }
+
+    Ok(
+        EasyTierUdpPacketKind::from_msg_type(header.msg_type).map(|kind| EasyTierUdpDatagramInfo {
+            kind,
+            conn_id: header.conn_id.get(),
+        }),
+    )
+}
+
 fn classify_udp_datagram(datagram: BytesMut) -> UdpDatagramClassification {
     if is_stun_packet(&datagram) {
         return UdpDatagramClassification::Stun(datagram);
     }
 
     let fallback = classify_session_udp_datagram(&datagram);
-    let packet = match parse_udp_session_datagram(datagram.clone(), false) {
-        Ok(packet) => packet,
+    let easytier = match inspect_easytier_udp_datagram(&datagram) {
+        Ok(Some(easytier)) => easytier,
+        Ok(None) => {
+            return UdpDatagramClassification::SessionPacket {
+                kind: fallback,
+                datagram,
+            };
+        }
         Err(err) => {
-            tracing::debug!(?err, "udp session packet parse error");
+            match err {
+                EasyTierUdpDatagramInspectError::TooSmall { datagram_size } => {
+                    tracing::debug!(datagram_size, "udp session packet too small");
+                }
+                EasyTierUdpDatagramInspectError::PayloadLenMismatch {
+                    header_len,
+                    datagram_size,
+                } => {
+                    tracing::debug!(
+                        header_len,
+                        datagram_size,
+                        "udp session packet payload len mismatch"
+                    );
+                }
+            }
             return UdpDatagramClassification::SessionPacket {
                 kind: fallback,
                 datagram,
             };
         }
     };
-    let header = packet.udp_tunnel_header().unwrap();
-    let conn_id = header.conn_id.get();
-    let Some(kind) = EasyTierUdpPacketKind::from_msg_type(header.msg_type) else {
-        return UdpDatagramClassification::SessionPacket {
-            kind: fallback,
-            datagram: packet.into_bytes().into(),
-        };
-    };
+    let packet = ZCPacket::new_from_buf(datagram, ZCPacketType::UDP);
 
     UdpDatagramClassification::EasyTier {
-        kind,
-        conn_id,
+        kind: easytier.kind,
+        conn_id: easytier.conn_id,
         packet,
         fallback,
     }
@@ -3732,6 +3788,37 @@ mod tests {
         assert!(matches!(
             parse_udp_session_datagram(BytesMut::from(bad_packet.as_slice()), false),
             Err(UdpSessionPacketError::PayloadLenMismatch { .. })
+        ));
+    }
+
+    #[test]
+    fn inspects_easytier_udp_datagram_without_owning_buffer() {
+        let packet = new_syn_packet(7, 42).into_bytes();
+        let info = inspect_easytier_udp_datagram(&packet).unwrap().unwrap();
+
+        assert_eq!(info.kind, EasyTierUdpPacketKind::Syn);
+        assert_eq!(info.conn_id, 7);
+
+        let unknown_packet = new_udp_packet(
+            |header| {
+                header.conn_id.set(9);
+                header.msg_type = 0xff;
+                header.len.set(0);
+            },
+            &[],
+        )
+        .into_bytes();
+        assert_eq!(
+            inspect_easytier_udp_datagram(&unknown_packet).unwrap(),
+            None
+        );
+
+        let mut bad_packet = packet.to_vec();
+        bad_packet.pop();
+
+        assert!(matches!(
+            inspect_easytier_udp_datagram(&bad_packet),
+            Err(EasyTierUdpDatagramInspectError::PayloadLenMismatch { .. })
         ));
     }
 
