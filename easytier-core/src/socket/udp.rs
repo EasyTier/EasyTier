@@ -1,7 +1,10 @@
 use std::{
     io,
     net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6},
-    sync::{Arc, Mutex as StdMutex},
+    sync::{
+        Arc, Mutex as StdMutex,
+        atomic::{AtomicBool, Ordering},
+    },
     time::Duration,
 };
 
@@ -400,6 +403,7 @@ impl UdpSessionKey {
 }
 
 type UdpSessionRegistry = DashMap<UdpSessionKey, UdpSessionRegistryEntry>;
+type DirectUdpSessionRegistry = DashMap<SocketAddr, UdpSessionRegistryEntry>;
 type PendingUdpSessionConnects = DashMap<u32, PendingUdpSessionConnect>;
 
 #[derive(Debug, Clone)]
@@ -460,8 +464,49 @@ struct UdpSessionOutbound {
 struct UdpSessionCleanup {
     session_key: Option<UdpSessionKey>,
     sessions: Option<Arc<UdpSessionRegistry>>,
+    direct_peer_addr: Option<SocketAddr>,
+    direct_sessions: Option<Arc<DirectUdpSessionRegistry>>,
     shutdown: Option<watch::Sender<bool>>,
     tasks: Vec<JoinHandle<()>>,
+    layer_guard: Option<Box<dyn Send + Sync>>,
+}
+
+#[derive(Clone)]
+struct DirectUdpSessionClose {
+    peer_addr: SocketAddr,
+    close: watch::Sender<bool>,
+    direct_sessions: Option<Arc<DirectUdpSessionRegistry>>,
+}
+
+impl DirectUdpSessionClose {
+    #[cfg(test)]
+    fn standalone(peer_addr: SocketAddr, close: watch::Sender<bool>) -> Self {
+        Self {
+            peer_addr,
+            close,
+            direct_sessions: None,
+        }
+    }
+
+    fn registered(
+        peer_addr: SocketAddr,
+        close: watch::Sender<bool>,
+        direct_sessions: Arc<DirectUdpSessionRegistry>,
+    ) -> Self {
+        Self {
+            peer_addr,
+            close,
+            direct_sessions: Some(direct_sessions),
+        }
+    }
+
+    fn close(&self) {
+        if let Some(direct_sessions) = &self.direct_sessions {
+            close_direct_udp_session(direct_sessions, self.peer_addr);
+        } else {
+            let _ = self.close.send(true);
+        }
+    }
 }
 
 impl std::fmt::Debug for UdpSessionCleanup {
@@ -469,8 +514,11 @@ impl std::fmt::Debug for UdpSessionCleanup {
         f.debug_struct("UdpSessionCleanup")
             .field("session_key", &self.session_key)
             .field("has_sessions", &self.sessions.is_some())
+            .field("direct_peer_addr", &self.direct_peer_addr)
+            .field("has_direct_sessions", &self.direct_sessions.is_some())
             .field("has_shutdown", &self.shutdown.is_some())
             .field("tasks", &self.tasks.len())
+            .field("has_layer_guard", &self.layer_guard.is_some())
             .finish()
     }
 }
@@ -483,6 +531,11 @@ impl Drop for UdpSessionCleanup {
         if let (Some(sessions), Some(session_key)) = (&self.sessions, self.session_key) {
             close_udp_session(sessions, session_key);
         }
+        if let (Some(direct_sessions), Some(peer_addr)) =
+            (&self.direct_sessions, self.direct_peer_addr)
+        {
+            close_direct_udp_session(direct_sessions, peer_addr);
+        }
         for task in &self.tasks {
             task.abort();
         }
@@ -490,7 +543,8 @@ impl Drop for UdpSessionCleanup {
 }
 
 impl UdpSession {
-    pub fn direct<S>(socket: Arc<S>, peer_addr: SocketAddr) -> io::Result<Self>
+    #[cfg(test)]
+    fn direct_standalone<S>(socket: Arc<S>, peer_addr: SocketAddr) -> io::Result<Self>
     where
         S: VirtualUdpSocket,
     {
@@ -502,14 +556,14 @@ impl UdpSession {
             peer_addr,
             rings.core_outgoing,
             shutdown_tx.subscribe(),
-            rings.close_tx.clone(),
+            DirectUdpSessionClose::standalone(peer_addr, rings.close_tx.clone()),
         ));
         let recv_task = tokio::spawn(forward_direct_socket_to_udp_session(
             socket,
             peer_addr,
             rings.core_incoming.clone(),
             shutdown_tx.subscribe(),
-            rings.close_tx.clone(),
+            DirectUdpSessionClose::standalone(peer_addr, rings.close_tx.clone()),
         ));
 
         Ok(Self {
@@ -522,10 +576,58 @@ impl UdpSession {
             _cleanup: UdpSessionCleanup {
                 session_key: None,
                 sessions: None,
+                direct_peer_addr: None,
+                direct_sessions: None,
                 shutdown: Some(shutdown_tx),
                 tasks: vec![send_task, recv_task],
+                layer_guard: None,
             },
         })
+    }
+
+    fn direct_registered<S>(
+        socket: Arc<S>,
+        local_addr: SocketAddr,
+        peer_addr: SocketAddr,
+        rings: UdpSessionRingParts,
+        direct_sessions: Arc<DirectUdpSessionRegistry>,
+        shutdown: watch::Receiver<bool>,
+    ) -> Self
+    where
+        S: VirtualUdpSocket,
+    {
+        if *shutdown.borrow() {
+            let _ = rings.close_tx.send(true);
+        }
+        let send_task = tokio::spawn(forward_direct_udp_session_to_socket(
+            socket,
+            peer_addr,
+            rings.core_outgoing,
+            shutdown,
+            DirectUdpSessionClose::registered(
+                peer_addr,
+                rings.close_tx.clone(),
+                direct_sessions.clone(),
+            ),
+        ));
+
+        Self {
+            local_addr,
+            peer_addr,
+            kind: UdpSessionKind::Direct,
+            incoming: TokioMutex::new(rings.session_incoming),
+            outgoing: TokioMutex::new(rings.session_outgoing),
+            closed: rings.close_rx,
+            _cleanup: UdpSessionCleanup {
+                session_key: None,
+                sessions: None,
+                direct_peer_addr: Some(peer_addr),
+                direct_sessions: Some(direct_sessions),
+                shutdown: None,
+                tasks: vec![send_task],
+                layer_guard: None,
+            },
+        }
     }
 
     fn easy_tier_mux<S>(
@@ -561,8 +663,11 @@ impl UdpSession {
             _cleanup: UdpSessionCleanup {
                 session_key: Some(key),
                 sessions: Some(sessions),
+                direct_peer_addr: None,
+                direct_sessions: None,
                 shutdown: None,
                 tasks: vec![send_task],
+                layer_guard: None,
             },
         }
     }
@@ -573,8 +678,11 @@ pub struct EasyTierUdpSessionLayer<S, H = NoopUdpSessionControlHandler> {
     socket: Arc<S>,
     _control_handler: Arc<H>,
     sessions: Arc<UdpSessionRegistry>,
+    direct_sessions: Arc<DirectUdpSessionRegistry>,
     pending_connects: Arc<PendingUdpSessionConnects>,
     accepted_rx: TokioMutex<mpsc::Receiver<UdpSession>>,
+    direct_accepted_rx: TokioMutex<mpsc::Receiver<UdpSession>>,
+    direct_accept_enabled: Arc<AtomicBool>,
     priority_control_rx: TokioMutex<mpsc::Receiver<UdpSessionLayerControl>>,
     control_rx: TokioMutex<mpsc::Receiver<UdpSessionLayerControl>>,
     session_shutdown_tx: watch::Sender<bool>,
@@ -597,16 +705,22 @@ where
 {
     pub fn new_with_control_handler(socket: Arc<S>, control_handler: Arc<H>) -> Self {
         let sessions = Arc::new(DashMap::new());
+        let direct_sessions = Arc::new(DashMap::new());
         let pending_connects = Arc::new(DashMap::new());
         let (accepted_tx, accepted_rx) = mpsc::channel(UDP_SESSION_QUEUE_CAPACITY);
+        let (direct_accepted_tx, direct_accepted_rx) = mpsc::channel(UDP_SESSION_QUEUE_CAPACITY);
+        let direct_accept_enabled = Arc::new(AtomicBool::new(false));
         let (priority_control_tx, priority_control_rx) = mpsc::channel(UDP_SESSION_QUEUE_CAPACITY);
         let (control_tx, control_rx) = mpsc::channel(UDP_SESSION_QUEUE_CAPACITY);
         let (session_shutdown_tx, _) = watch::channel(false);
         let recv_task = tokio::spawn(easy_tier_mux_layer_recv_task(
             socket.clone(),
             sessions.clone(),
+            direct_sessions.clone(),
             pending_connects.clone(),
             accepted_tx,
+            direct_accepted_tx,
+            direct_accept_enabled.clone(),
             priority_control_tx,
             control_tx,
             control_handler.clone(),
@@ -617,8 +731,11 @@ where
             socket,
             _control_handler: control_handler,
             sessions,
+            direct_sessions,
             pending_connects,
             accepted_rx: TokioMutex::new(accepted_rx),
+            direct_accepted_rx: TokioMutex::new(direct_accepted_rx),
+            direct_accept_enabled,
             priority_control_rx: TokioMutex::new(priority_control_rx),
             control_rx: TokioMutex::new(control_rx),
             session_shutdown_tx,
@@ -632,6 +749,35 @@ where
 
     pub fn active_session_count(&self) -> usize {
         self.sessions.len()
+    }
+
+    pub fn active_direct_session_count(&self) -> usize {
+        self.direct_sessions.len()
+    }
+
+    pub fn open_direct_session(&self, remote_addr: SocketAddr) -> io::Result<UdpSession> {
+        let local_addr = self.socket.local_addr()?;
+        let rings = create_udp_session_rings();
+        match self.direct_sessions.entry(remote_addr) {
+            dashmap::mapref::entry::Entry::Vacant(entry) => {
+                entry.insert(udp_session_registry_entry(&rings));
+            }
+            dashmap::mapref::entry::Entry::Occupied(_) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::AddrInUse,
+                    format!("direct udp session already exists for {remote_addr}"),
+                ));
+            }
+        }
+
+        Ok(UdpSession::direct_registered(
+            self.socket.clone(),
+            local_addr,
+            remote_addr,
+            rings,
+            self.direct_sessions.clone(),
+            self.session_shutdown_tx.subscribe(),
+        ))
     }
 
     pub async fn connect(
@@ -715,6 +861,14 @@ where
             .recv()
             .await
             .ok_or_else(|| io::Error::new(io::ErrorKind::UnexpectedEof, "udp listener closed"))
+    }
+
+    pub async fn accept_direct(&self) -> io::Result<UdpSession> {
+        self.direct_accept_enabled.store(true, Ordering::Relaxed);
+        let mut direct_accepted_rx = self.direct_accepted_rx.lock().await;
+        direct_accepted_rx.recv().await.ok_or_else(|| {
+            io::Error::new(io::ErrorKind::UnexpectedEof, "direct udp listener closed")
+        })
     }
 
     pub async fn recv_control(&self) -> io::Result<UdpSessionLayerControl> {
@@ -807,6 +961,7 @@ impl<S, H> Drop for EasyTierUdpSessionLayer<S, H> {
         let _ = self.session_shutdown_tx.send(true);
         self.pending_connects.clear();
         close_all_udp_sessions(&self.sessions);
+        close_all_direct_udp_sessions(&self.direct_sessions);
         self.recv_task.abort();
     }
 }
@@ -915,6 +1070,12 @@ fn close_udp_session(sessions: &UdpSessionRegistry, key: UdpSessionKey) {
     }
 }
 
+fn close_direct_udp_session(direct_sessions: &DirectUdpSessionRegistry, peer_addr: SocketAddr) {
+    if let Some((_, entry)) = direct_sessions.remove(&peer_addr) {
+        let _ = entry.close.send(true);
+    }
+}
+
 fn close_all_udp_sessions(sessions: &UdpSessionRegistry) {
     let close_senders = sessions
         .iter()
@@ -924,6 +1085,17 @@ fn close_all_udp_sessions(sessions: &UdpSessionRegistry) {
         let _ = close.send(true);
     }
     sessions.clear();
+}
+
+fn close_all_direct_udp_sessions(direct_sessions: &DirectUdpSessionRegistry) {
+    let close_senders = direct_sessions
+        .iter()
+        .map(|entry| entry.value().close.clone())
+        .collect::<Vec<_>>();
+    for close in close_senders {
+        let _ = close.send(true);
+    }
+    direct_sessions.clear();
 }
 
 fn ring_socket_error_to_io(error: crate::socket::ring::RingSocketError) -> io::Error {
@@ -944,7 +1116,7 @@ async fn forward_direct_udp_session_to_socket<S>(
     peer_addr: SocketAddr,
     mut outgoing: RingSocketReceiver<UdpSessionOutbound>,
     mut shutdown: watch::Receiver<bool>,
-    close: watch::Sender<bool>,
+    close: DirectUdpSessionClose,
 ) where
     S: VirtualUdpSocket,
 {
@@ -952,7 +1124,7 @@ async fn forward_direct_udp_session_to_socket<S>(
         tokio::select! {
             biased;
             _ = shutdown.changed() => {
-                let _ = close.send(true);
+                close.close();
                 break;
             }
             outbound = outgoing.next() => {
@@ -963,7 +1135,7 @@ async fn forward_direct_udp_session_to_socket<S>(
                     Ok(outbound) => outbound,
                     Err(err) => {
                         tracing::debug!(?err, ?peer_addr, "udp direct session outgoing ring closed");
-                        let _ = close.send(true);
+                        close.close();
                         break;
                     }
                 };
@@ -974,7 +1146,7 @@ async fn forward_direct_udp_session_to_socket<S>(
                     Err(err) => {
                         tracing::debug!(?err, ?peer_addr, "udp direct session send error");
                         let _ = outbound.completion.send(Err(err));
-                        let _ = close.send(true);
+                        close.close();
                         break;
                     }
                 }
@@ -983,12 +1155,13 @@ async fn forward_direct_udp_session_to_socket<S>(
     }
 }
 
+#[cfg(test)]
 async fn forward_direct_socket_to_udp_session<S>(
     socket: Arc<S>,
     peer_addr: SocketAddr,
     incoming: Arc<StdMutex<RingSocketSender<BytesMut>>>,
     mut shutdown: watch::Receiver<bool>,
-    close: watch::Sender<bool>,
+    close: DirectUdpSessionClose,
 ) where
     S: VirtualUdpSocket,
 {
@@ -997,7 +1170,7 @@ async fn forward_direct_socket_to_udp_session<S>(
         tokio::select! {
             biased;
             _ = shutdown.changed() => {
-                let _ = close.send(true);
+                close.close();
                 break;
             }
             ret = socket.recv_from(&mut buf) => {
@@ -1005,7 +1178,7 @@ async fn forward_direct_socket_to_udp_session<S>(
                     Ok(ret) => ret,
                     Err(err) => {
                         tracing::debug!(?err, ?peer_addr, "udp direct session recv error");
-                        let _ = close.send(true);
+                        close.close();
                         break;
                     }
                 };
@@ -1013,7 +1186,7 @@ async fn forward_direct_socket_to_udp_session<S>(
                     continue;
                 }
                 if !dispatch_payload_to_session(&incoming, BytesMut::from(&buf[..len])) {
-                    let _ = close.send(true);
+                    close.close();
                     break;
                 }
             }
@@ -1162,8 +1335,11 @@ fn move_pending_udp_session_sender(
 async fn easy_tier_mux_layer_recv_task<S, H>(
     socket: Arc<S>,
     sessions: Arc<UdpSessionRegistry>,
+    direct_sessions: Arc<DirectUdpSessionRegistry>,
     pending_connects: Arc<PendingUdpSessionConnects>,
     accepted: mpsc::Sender<UdpSession>,
+    direct_accepted: mpsc::Sender<UdpSession>,
+    direct_accept_enabled: Arc<AtomicBool>,
     priority_control: mpsc::Sender<UdpSessionLayerControl>,
     control: mpsc::Sender<UdpSessionLayerControl>,
     control_handler: Arc<H>,
@@ -1182,6 +1358,7 @@ async fn easy_tier_mux_layer_recv_task<S, H>(
                 let _ = session_shutdown_tx.send(true);
                 pending_connects.clear();
                 close_all_udp_sessions(&sessions);
+                close_all_direct_udp_sessions(&direct_sessions);
                 break;
             }
         };
@@ -1205,10 +1382,19 @@ async fn easy_tier_mux_layer_recv_task<S, H>(
             continue;
         }
 
-        let packet = match parse_udp_session_datagram(datagram, false) {
+        let packet = match parse_udp_session_datagram(datagram.clone(), false) {
             Ok(packet) => packet,
             Err(err) => {
                 tracing::debug!(?err, "udp session packet parse error");
+                dispatch_direct_udp_datagram(
+                    socket.clone(),
+                    &direct_sessions,
+                    &direct_accepted,
+                    direct_accept_enabled.load(Ordering::Relaxed),
+                    session_shutdown_tx.subscribe(),
+                    remote_addr,
+                    datagram,
+                );
                 continue;
             }
         };
@@ -1255,7 +1441,17 @@ async fn easy_tier_mux_layer_recv_task<S, H>(
                     packet,
                 );
             }
-            _ => {}
+            _ => {
+                dispatch_direct_udp_datagram(
+                    socket.clone(),
+                    &direct_sessions,
+                    &direct_accepted,
+                    direct_accept_enabled.load(Ordering::Relaxed),
+                    session_shutdown_tx.subscribe(),
+                    remote_addr,
+                    packet.into_bytes().into(),
+                );
+            }
         }
     }
 }
@@ -1276,6 +1472,76 @@ fn dispatch_data_packet(
         close_udp_session(sessions, key);
         tracing::debug!(?key, "udp session data queue closed");
     }
+}
+
+fn dispatch_direct_udp_datagram<S>(
+    socket: Arc<S>,
+    direct_sessions: &Arc<DirectUdpSessionRegistry>,
+    direct_accepted: &mpsc::Sender<UdpSession>,
+    direct_accept_enabled: bool,
+    session_shutdown: watch::Receiver<bool>,
+    remote_addr: SocketAddr,
+    datagram: BytesMut,
+) where
+    S: VirtualUdpSocket,
+{
+    if let Some(entry) = direct_sessions
+        .get(&remote_addr)
+        .map(|entry| entry.value().clone())
+    {
+        if !dispatch_payload_to_session(&entry.incoming, datagram) {
+            close_direct_udp_session(direct_sessions, remote_addr);
+            tracing::debug!(?remote_addr, "direct udp session data queue closed");
+        }
+        return;
+    }
+
+    if !direct_accept_enabled {
+        return;
+    }
+
+    let accept_permit = match direct_accepted.clone().try_reserve_owned() {
+        Ok(permit) => permit,
+        Err(err) => {
+            tracing::debug!(?err, ?remote_addr, "direct udp accept queue unavailable");
+            return;
+        }
+    };
+    let local_addr = match socket.local_addr() {
+        Ok(addr) => addr,
+        Err(err) => {
+            tracing::debug!(?err, ?remote_addr, "direct udp get local addr error");
+            return;
+        }
+    };
+    let rings = create_udp_session_rings();
+    match direct_sessions.entry(remote_addr) {
+        dashmap::mapref::entry::Entry::Vacant(entry) => {
+            entry.insert(udp_session_registry_entry(&rings));
+        }
+        dashmap::mapref::entry::Entry::Occupied(entry) => {
+            let entry = entry.get().clone();
+            if !dispatch_payload_to_session(&entry.incoming, datagram) {
+                close_direct_udp_session(direct_sessions, remote_addr);
+                tracing::debug!(?remote_addr, "direct udp session data queue closed");
+            }
+            return;
+        }
+    }
+    if !dispatch_payload_to_session(&rings.core_incoming, datagram) {
+        close_direct_udp_session(direct_sessions, remote_addr);
+        tracing::debug!(?remote_addr, "direct udp session data queue closed");
+        return;
+    }
+    let session = UdpSession::direct_registered(
+        socket,
+        local_addr,
+        remote_addr,
+        rings,
+        direct_sessions.clone(),
+        session_shutdown,
+    );
+    accept_permit.send(session);
 }
 
 fn handle_new_easy_tier_mux_connect<S>(
@@ -1607,7 +1873,10 @@ where
         request: UdpSessionConnectRequest,
     ) -> anyhow::Result<Self::Session> {
         let socket = self.factory.bind_udp(request.bind).await?;
-        Ok(UdpSession::direct(socket, request.remote_addr)?)
+        let layer = Arc::new(EasyTierUdpSessionLayer::new(socket));
+        let mut session = layer.open_direct_session(request.remote_addr)?;
+        session._cleanup.layer_guard = Some(Box::new(layer));
+        Ok(session)
     }
 }
 
@@ -2069,7 +2338,7 @@ mod tests {
         let local_addr = SocketAddr::from(([127, 0, 0, 1], 12000));
         let peer_addr = SocketAddr::from(([127, 0, 0, 1], 12001));
         let socket = Arc::new(AutoSackVirtualUdpSocket::new(local_addr));
-        let session = UdpSession::direct(socket.clone(), peer_addr).unwrap();
+        let session = UdpSession::direct_standalone(socket.clone(), peer_addr).unwrap();
 
         assert_eq!(session.kind(), UdpSessionKind::Direct);
         assert_eq!(session.local_addr().unwrap(), local_addr);
@@ -2091,7 +2360,7 @@ mod tests {
             (b"payload".to_vec(), peer_addr),
         ]);
         socket.incoming_notify.notify_one();
-        let session = UdpSession::direct(socket, peer_addr).unwrap();
+        let session = UdpSession::direct_standalone(socket, peer_addr).unwrap();
 
         let mut buf = [0; 16];
         let len = session.recv(&mut buf).await.unwrap();
@@ -2104,7 +2373,7 @@ mod tests {
         let local_addr = SocketAddr::from(([127, 0, 0, 1], 12000));
         let peer_addr = SocketAddr::from(([127, 0, 0, 1], 12001));
         let socket = Arc::new(FailingSendVirtualUdpSocket { local_addr });
-        let session = UdpSession::direct(socket, peer_addr).unwrap();
+        let session = UdpSession::direct_standalone(socket, peer_addr).unwrap();
 
         let err = tokio::time::timeout(Duration::from_secs(1), session.send(b"payload"))
             .await
@@ -2118,6 +2387,107 @@ mod tests {
             .unwrap()
             .unwrap_err();
         assert_eq!(err.kind(), io::ErrorKind::UnexpectedEof);
+    }
+
+    #[tokio::test]
+    async fn udp_layer_routes_raw_datagrams_to_registered_direct_session() {
+        let local_addr = SocketAddr::from(([127, 0, 0, 1], 12000));
+        let peer_addr = SocketAddr::from(([127, 0, 0, 1], 12001));
+        let socket = Arc::new(AutoSackVirtualUdpSocket::new(local_addr));
+        let layer = EasyTierUdpSessionLayer::new(socket.clone());
+        let session = layer.open_direct_session(peer_addr).unwrap();
+
+        assert_eq!(session.kind(), UdpSessionKind::Direct);
+        assert_eq!(session.send(b"outbound").await.unwrap(), 8);
+        let sent = wait_for_sent(|| socket.sent(), 1).await;
+        assert_eq!(sent, vec![(b"outbound".to_vec(), peer_addr)]);
+
+        socket
+            .incoming
+            .lock()
+            .unwrap()
+            .push_back((b"inbound".to_vec(), peer_addr));
+        socket.incoming_notify.notify_one();
+
+        let mut buf = [0; 16];
+        let len = tokio::time::timeout(Duration::from_secs(1), session.recv(&mut buf))
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(&buf[..len], b"inbound");
+    }
+
+    #[tokio::test]
+    async fn udp_layer_accepts_direct_session_from_unknown_raw_datagram_when_enabled() {
+        let local_addr = SocketAddr::from(([127, 0, 0, 1], 12000));
+        let peer_addr = SocketAddr::from(([127, 0, 0, 1], 12001));
+        let socket = Arc::new(AutoSackVirtualUdpSocket::new(local_addr));
+        let layer = Arc::new(EasyTierUdpSessionLayer::new(socket.clone()));
+        let accept_task = tokio::spawn({
+            let layer = layer.clone();
+            async move { layer.accept_direct().await }
+        });
+
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while !layer.direct_accept_enabled.load(Ordering::Relaxed) {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+
+        socket
+            .incoming
+            .lock()
+            .unwrap()
+            .push_back((b"first".to_vec(), peer_addr));
+        socket.incoming_notify.notify_one();
+
+        let accepted = tokio::time::timeout(Duration::from_secs(1), accept_task)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert_eq!(accepted.kind(), UdpSessionKind::Direct);
+        assert_eq!(accepted.peer_addr().unwrap(), peer_addr);
+        assert_eq!(layer.active_direct_session_count(), 1);
+
+        let mut buf = [0; 16];
+        let len = accepted.recv(&mut buf).await.unwrap();
+        assert_eq!(&buf[..len], b"first");
+    }
+
+    #[tokio::test]
+    async fn udp_layer_keeps_easy_tier_syn_out_of_direct_session() {
+        let local_addr = SocketAddr::from(([127, 0, 0, 1], 12000));
+        let peer_addr = SocketAddr::from(([127, 0, 0, 1], 12001));
+        let socket = Arc::new(AutoSackVirtualUdpSocket::new(local_addr));
+        let layer = EasyTierUdpSessionLayer::new(socket.clone());
+        let session = layer.open_direct_session(peer_addr).unwrap();
+        let syn = new_syn_packet(0x1122_3344, 0x5566_7788).into_bytes();
+
+        socket
+            .incoming
+            .lock()
+            .unwrap()
+            .push_back((syn.to_vec(), peer_addr));
+        socket.incoming_notify.notify_one();
+
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while layer.active_session_count() == 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+
+        let mut buf = [0; 16];
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), session.recv(&mut buf))
+                .await
+                .is_err()
+        );
     }
 
     #[tokio::test]
@@ -2318,15 +2688,21 @@ mod tests {
             session_shutdown_rx,
         );
         let pending_connects = Arc::new(DashMap::new());
+        let direct_sessions = Arc::new(DashMap::new());
         let (accepted_tx, _accepted_rx) = mpsc::channel(UDP_SESSION_QUEUE_CAPACITY);
+        let (direct_accepted_tx, _direct_accepted_rx) = mpsc::channel(UDP_SESSION_QUEUE_CAPACITY);
+        let direct_accept_enabled = Arc::new(AtomicBool::new(false));
         let (priority_control_tx, _priority_control_rx) = mpsc::channel(UDP_SESSION_QUEUE_CAPACITY);
         let (control_tx, _control_rx) = mpsc::channel(UDP_SESSION_QUEUE_CAPACITY);
 
         easy_tier_mux_layer_recv_task(
             socket,
             sessions.clone(),
+            direct_sessions.clone(),
             pending_connects.clone(),
             accepted_tx,
+            direct_accepted_tx,
+            direct_accept_enabled,
             priority_control_tx,
             control_tx,
             Arc::new(NoopUdpSessionControlHandler),
@@ -2335,6 +2711,7 @@ mod tests {
         .await;
 
         assert!(sessions.is_empty());
+        assert!(direct_sessions.is_empty());
         assert!(pending_connects.is_empty());
 
         let mut buf = [0; 16];
@@ -2581,7 +2958,10 @@ mod tests {
             sessions.clone(),
         );
         let pending_connects = Arc::new(DashMap::new());
+        let direct_sessions = Arc::new(DashMap::new());
         let (accepted_tx, _accepted_rx) = mpsc::channel(UDP_SESSION_QUEUE_CAPACITY);
+        let (direct_accepted_tx, _direct_accepted_rx) = mpsc::channel(UDP_SESSION_QUEUE_CAPACITY);
+        let direct_accept_enabled = Arc::new(AtomicBool::new(false));
         let (priority_control_tx, _priority_control_rx) = mpsc::channel(UDP_SESSION_QUEUE_CAPACITY);
         let (control_tx, _control_rx) = mpsc::channel(UDP_SESSION_QUEUE_CAPACITY);
         let control_handler = Arc::new(BlockingUdpSessionControlHandler::default());
@@ -2589,8 +2969,11 @@ mod tests {
         let recv_task = tokio::spawn(easy_tier_mux_layer_recv_task(
             socket,
             sessions,
+            direct_sessions,
             pending_connects,
             accepted_tx,
+            direct_accepted_tx,
+            direct_accept_enabled,
             priority_control_tx,
             control_tx,
             control_handler.clone(),

@@ -278,6 +278,12 @@ remote_addr -> UdpSessionSocket
 它用于 `wg` / `quic` 这类需要裸 UDP payload 的 upgrader。payload 不加
 EasyTier UDP header。
 
+当前兼容阶段的 fallback 规则是：STUN、hole-punch control、合法 EasyTier
+`Data` / `Syn` / `Sack` 仍优先留在 EasyTier branch；解析失败或未知
+`msg_type` 的 datagram 才按 `remote_addr` 投递到 direct session。旧协议没有
+magic，因此如果某个 WG/QUIC 包刚好伪装成合法 EasyTier 包，仍存在误分类风险；
+这个问题留到 UDP protocol v2 增加 magic/version 时解决。
+
 在旧 EasyTier UDP 协议下，如果同一个 `remote_addr` 同时存在 direct UDP
 session 和 EasyTier mux session，新建 mux session 的首包只能通过现有
 `Syn + len == 8` 规则识别，不能做到 100% 无歧义。这个限制应记录为当前阶段
@@ -372,11 +378,17 @@ udp://
 - `EasyTierUdpSessionLayer` 已在 core 内部识别 STUN 和 V4/V6 hole-punch
   control packet，并通过独立的 `UdpSessionControlHandler` 触发 response /
   punch 发包。`VirtualUdpSocket` 保持裸 UDP socket 语义。
+- core UDP hub 已增加 direct UDP session registry。direct session 不再需要自己
+  持有同一底层 UDP socket 的独立 recv loop；非 EasyTier UDP datagram 由 hub
+  按 `remote_addr` 投递到对应 ring-backed `UdpSessionSocket`。
+- direct accept path 已提供给后续 WG/QUIC listener 使用：开启 direct accept 后，
+  未命中 EasyTier branch 的首个 raw datagram 会创建 peer-scoped
+  `UdpSessionSocket`，并把首包投递到该 session ring。
 
 仍待完成的部分：
 
-- UDP hub 的 WG/QUIC branch 仍待接入；当前实现先把 EasyTier branch 和 direct
-  session 拉回 ring-backed 语义，避免继续暴露 raw socket 行为。
+- UDP hub 的 WG/QUIC branch 仍待接入；core 已具备 direct/raw datagram session
+  branch，但 WG/QUIC upgrader 还没有改成消费 `UdpSessionSocket`。
 - STUN response 的 EasyTier runtime codec 仍由 easytier crate 中的
   `RuntimeUdpSessionControlHandler` 调用本地 helper。core 已拥有 classifier 和
   control path；后续如果要进一步收敛，需要把 codec helper 也提升到 core 可依赖
