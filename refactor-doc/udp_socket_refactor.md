@@ -66,8 +66,9 @@ UDP socket seam 只保留一个对外 Interface：
 ```rust
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UdpSessionKind {
-    Direct,
     EasyTierMux,
+    WireGuard,
+    Quic,
 }
 
 #[async_trait::async_trait]
@@ -94,6 +95,7 @@ core UDP session dial/listen seam 使用 peer-scoped request：
 pub struct UdpSessionConnectRequest {
     pub remote_addr: SocketAddr,
     pub bind: UdpBindOptions,
+    pub protocol: UdpSessionProtocol,
 }
 
 pub struct UdpSessionListenRequest {
@@ -155,20 +157,25 @@ send_to(buf, addr) -> assert addr == session.peer_addr(); session.send(buf)
 `UdpSessionSocket` 可以来自不同协议分支：
 
 ```text
-direct/WG/QUIC UDP session
-  core UDP hub + protocol classifier + fixed peer/session key
-  payload 原样收发
-  适合 wg/quic upgrade
+WireGuard UDP session
+  core UDP hub + protocol classifier + WireGuard packet shape + remote_addr
+  branch codec = identity
+  适合 wg upgrade
+
+QUIC UDP session
+  core UDP hub + protocol classifier + QUIC packet shape / connection identity
+  branch codec = identity
+  适合 quic upgrade
 
 EasyTier mux UDP session
   core UDP hub + EasyTier branch + conn_id + Syn/Sack
-  payload 进入/离开 socket 时由 core 包装/拆掉 UDPTunnelHeader
+  branch codec = EasyTier UDP Data header wrap/strip
   适合 EasyTier udp transport upgrade
 ```
 
 这些差异属于 implementation detail。core 对外不暴露
-`DirectUdpSessionSocket` / `MuxUdpSessionSocket` 这种不同类型，只返回同一个
-`UdpSessionSocket` Interface。`UdpSessionKind` 只反映来源，不能改变调用语义。
+`WireGuardUdpSessionSocket` / `MuxUdpSessionSocket` 这种不同具体 socket 类型，只返回
+同一个 `UdpSessionSocket` Interface。`UdpSessionKind` 只反映来源，不能改变调用语义。
 
 `UdpSession` 的实现必须是 ring-backed：
 
@@ -183,6 +190,18 @@ UdpSessionSocket.send()
   -> protocol branch encoder
   -> VirtualUdpSocket.send_to()
 ```
+
+`UdpSession` 内部持有 branch codec。codec 只负责 session payload 和真实 UDP
+datagram 的互转，不参与 tunnel schema 决策：
+
+```text
+EasyTier codec: payload <-> UDPTunnelHeader(Data, conn_id) + payload
+WireGuard codec: payload <-> payload
+QUIC codec: payload <-> payload
+```
+
+classifier 负责判断 datagram 属于哪个 branch；branch route 负责选择哪个
+session；codec 只负责该 session 的 datagram framing。
 
 底层 `send_to` / `recv_from` 不穿透到 connector 或 upgrader。
 
@@ -266,26 +285,27 @@ accept path。
 session layer 内部处理。它们不是 `UdpSessionSocket` payload，不应该暴露给
 upgrader。
 
-### Direct UDP session
+### WireGuard 和 QUIC UDP session
 
-direct/WG/QUIC 这类裸 UDP payload session 以协议分支自己的 session key
-作为接收路由 key。最小 direct branch 可以只用 peer addr：
+WG/QUIC branch 以协议分支自己的 session key 作为接收路由 key。当前
+WireGuard branch 使用 peer addr：
 
 ```text
 remote_addr -> UdpSessionSocket
 ```
 
-它用于 `wg` / `quic` 这类需要裸 UDP payload 的 upgrader。payload 不加
-EasyTier UDP header。
+它用于 `wg` / `quic` 这类需要原始协议 datagram 的 upgrader。payload 是否加
+header 由 branch codec 决定，不由 connector/upgrader 决定。
 
-当前兼容阶段的 fallback 规则是：STUN、hole-punch control、合法 EasyTier
-`Data` / `Syn` / `Sack` 仍优先留在 EasyTier branch；解析失败或未知
-`msg_type` 的 datagram 才按 `remote_addr` 投递到 direct session。旧协议没有
-magic，因此如果某个 WG/QUIC 包刚好伪装成合法 EasyTier 包，仍存在误分类风险；
-这个问题留到 UDP protocol v2 增加 magic/version 时解决。
+当前兼容阶段的 fallback 规则是：core UDP hub 先集中判定 datagram 类型；
+STUN 有明确 magic，直接留在 control branch；可解析的 EasyTier datagram 先进入
+EasyTier branch，但只有命中现有 mux session、合法 `Syn`、匹配 pending connect
+的 `Sack`、或可执行的 hole-punch control 才会 claim 这个包。未被 EasyTier
+状态 claim 的 datagram，再继续按 centralized classifier 的 WG/QUIC packet
+shape 投递到对应协议 session。Unknown datagram 不创建 session，只记录并丢弃。
 
-在旧 EasyTier UDP 协议下，如果同一个 `remote_addr` 同时存在 direct UDP
-session 和 EasyTier mux session，新建 mux session 的首包只能通过现有
+在旧 EasyTier UDP 协议下，如果同一个 `remote_addr` 同时存在 WireGuard/QUIC
+UDP session 和 EasyTier mux session，新建 mux session 的首包只能通过现有
 `Syn + len == 8` 规则识别，不能做到 100% 无歧义。这个限制应记录为当前阶段
 约束，后续协议升级时再通过 magic/version 解决。
 
@@ -378,21 +398,28 @@ udp://
 - `UdpSessionLayer` 已在 core 内部识别 STUN 和 V4/V6 hole-punch
   control packet，并通过独立的 `UdpSessionControlHandler` 触发 response /
   punch 发包。`VirtualUdpSocket` 保持裸 UDP socket 语义。
-- core UDP hub 已增加 direct UDP session registry。direct session 不再需要自己
-  持有同一底层 UDP socket 的独立 recv loop；非 EasyTier UDP datagram 由 hub
-  按 `remote_addr` 投递到对应 ring-backed `UdpSessionSocket`。
-- direct accept path 已接入 WG listener，并保留给后续 QUIC listener 使用：
-  开启 direct accept 后，未命中 EasyTier branch 的首个 raw datagram 会创建 peer-scoped
-  `UdpSessionSocket`，并把首包投递到该 session ring。
-- `WgTunnelConnector` / `WgTunnelListener` 已改为消费 direct
+- core UDP hub 已增加 WireGuard UDP session registry。WireGuard session 不再需要
+  自己持有同一底层 UDP socket 的独立 recv loop；WG datagram 由 hub 按
+  `remote_addr` 投递到对应 ring-backed `UdpSessionSocket`。
+- WireGuard accept path 已接入 WG listener，并保留给后续 QUIC listener 对照：
+  开启 WireGuard accept 后，未被 EasyTier branch claim 且满足 WireGuard packet
+  shape 的首个 datagram 会创建 peer-scoped `UdpSessionSocket`，并把首包投递到
+  该 session ring。
+- `WgTunnelConnector` / `WgTunnelListener` 已改为消费 WireGuard
   `UdpSessionSocket`。WireGuard 的握手、routine packet 和后续 encrypted packet
   都通过 peer-scoped `send` / `recv` 运行，不再直接 `send_to` / `recv_from`
   底层 UDP socket。
+- `UdpSession` send path 已收敛成统一实现：session payload 先经过 branch codec
+  转换为 UDP datagram，再由 core 内部调用 `VirtualUdpSocket::send_to`。EasyTier
+  使用 Data header codec，WireGuard 使用 identity codec。
+- core UDP hub 已集中完成 datagram 分类，并用“EasyTier branch 先判定、只有
+  可 claim 的 EasyTier 包才消费、其余继续按 WG/QUIC packet shape 分流”的规则避免
+  WG/QUIC 包因为碰巧满足 EasyTier 旧 header 形态而被 mux branch 吞掉。
 
 仍待完成的部分：
 
-- UDP hub 的 QUIC branch 仍待接入；core 已具备 direct/raw datagram session
-  branch，WG 已消费 `UdpSessionSocket`，QUIC upgrader 还没有改成消费
+- UDP hub 的 QUIC branch 仍待接入；core classifier 已能识别 QUIC-like datagram，
+  WG branch 已消费 `UdpSessionSocket`，QUIC upgrader 还没有改成消费
   `UdpSessionSocket`。
 - STUN response 的 EasyTier runtime codec 仍由 easytier crate 中的
   `RuntimeUdpSessionControlHandler` 调用本地 helper。core 已拥有 classifier 和

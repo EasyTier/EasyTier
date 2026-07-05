@@ -281,6 +281,114 @@ pub fn is_stun_packet(data: &[u8]) -> bool {
         && data[0] & 0xC0 == 0
 }
 
+#[derive(Debug)]
+enum UdpDatagramClassification {
+    Stun(BytesMut),
+    EasyTier {
+        kind: EasyTierUdpPacketKind,
+        conn_id: u32,
+        packet: ZCPacket,
+        fallback: UdpSessionPacketKind,
+    },
+    SessionPacket {
+        kind: UdpSessionPacketKind,
+        datagram: BytesMut,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum UdpSessionPacketKind {
+    WireGuard,
+    Quic,
+    Unknown,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EasyTierUdpPacketKind {
+    Data,
+    Syn,
+    Sack,
+    HolePunch,
+    V4HolePunch,
+    V6HolePunch,
+}
+
+impl EasyTierUdpPacketKind {
+    fn from_msg_type(msg_type: u8) -> Option<Self> {
+        match msg_type {
+            msg_type if msg_type == UdpPacketType::Data as u8 => Some(Self::Data),
+            msg_type if msg_type == UdpPacketType::Syn as u8 => Some(Self::Syn),
+            msg_type if msg_type == UdpPacketType::Sack as u8 => Some(Self::Sack),
+            msg_type if msg_type == UdpPacketType::HolePunch as u8 => Some(Self::HolePunch),
+            msg_type if msg_type == UdpPacketType::V4HolePunch as u8 => Some(Self::V4HolePunch),
+            msg_type if msg_type == UdpPacketType::V6HolePunch as u8 => Some(Self::V6HolePunch),
+            _ => None,
+        }
+    }
+}
+
+fn classify_session_udp_datagram(data: &[u8]) -> UdpSessionPacketKind {
+    if is_wireguard_packet(data) {
+        UdpSessionPacketKind::WireGuard
+    } else if is_quic_packet(data) {
+        UdpSessionPacketKind::Quic
+    } else {
+        UdpSessionPacketKind::Unknown
+    }
+}
+
+fn is_wireguard_packet(data: &[u8]) -> bool {
+    if data.len() < 4 {
+        return false;
+    }
+
+    let msg_type = u32::from_le_bytes(data[..4].try_into().unwrap());
+    match msg_type {
+        1 => data.len() == 148,
+        2 => data.len() == 92,
+        3 => data.len() == 64,
+        4 => data.len() >= 32,
+        _ => false,
+    }
+}
+
+fn is_quic_packet(data: &[u8]) -> bool {
+    data.first().is_some_and(|first| first & 0x40 != 0)
+}
+
+fn classify_udp_datagram(datagram: BytesMut) -> UdpDatagramClassification {
+    if is_stun_packet(&datagram) {
+        return UdpDatagramClassification::Stun(datagram);
+    }
+
+    let fallback = classify_session_udp_datagram(&datagram);
+    let packet = match parse_udp_session_datagram(datagram.clone(), false) {
+        Ok(packet) => packet,
+        Err(err) => {
+            tracing::debug!(?err, "udp session packet parse error");
+            return UdpDatagramClassification::SessionPacket {
+                kind: fallback,
+                datagram,
+            };
+        }
+    };
+    let header = packet.udp_tunnel_header().unwrap();
+    let conn_id = header.conn_id.get();
+    let Some(kind) = EasyTierUdpPacketKind::from_msg_type(header.msg_type) else {
+        return UdpDatagramClassification::SessionPacket {
+            kind: fallback,
+            datagram: packet.into_bytes().into(),
+        };
+    };
+
+    UdpDatagramClassification::EasyTier {
+        kind,
+        conn_id,
+        packet,
+        fallback,
+    }
+}
+
 pub fn parse_udp_session_datagram(
     buf: BytesMut,
     allow_stun: bool,
@@ -313,8 +421,9 @@ pub fn parse_udp_session_datagram(
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UdpSessionKind {
-    Direct,
     EasyTierMux,
+    WireGuard,
+    Quic,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -341,16 +450,24 @@ pub trait UdpSessionSocket: Send + Sync + 'static {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UdpSessionProtocol {
+    WireGuard,
+    Quic,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct UdpSessionConnectRequest {
     pub remote_addr: SocketAddr,
     pub bind: UdpBindOptions,
+    pub protocol: UdpSessionProtocol,
 }
 
 impl UdpSessionConnectRequest {
-    pub fn direct(remote_addr: SocketAddr) -> Self {
+    pub fn wireguard(remote_addr: SocketAddr) -> Self {
         Self {
             remote_addr,
             bind: UdpBindOptions::direct_connect(),
+            protocol: UdpSessionProtocol::WireGuard,
         }
     }
 
@@ -403,7 +520,7 @@ impl UdpSessionKey {
 }
 
 type UdpSessionRegistry = DashMap<UdpSessionKey, UdpSessionRegistryEntry>;
-type DirectUdpSessionRegistry = DashMap<SocketAddr, UdpSessionRegistryEntry>;
+type WireGuardUdpSessionRegistry = DashMap<SocketAddr, UdpSessionRegistryEntry>;
 type PendingUdpSessionConnects = DashMap<u32, PendingUdpSessionConnect>;
 
 #[derive(Debug, Clone)]
@@ -450,6 +567,7 @@ pub struct UdpSession {
     local_addr: SocketAddr,
     peer_addr: SocketAddr,
     kind: UdpSessionKind,
+    codec: UdpSessionCodec,
     incoming: TokioMutex<RingSocketReceiver<BytesMut>>,
     outgoing: TokioMutex<RingSocketSender<UdpSessionOutbound>>,
     closed: watch::Receiver<bool>,
@@ -461,61 +579,113 @@ struct UdpSessionOutbound {
     completion: oneshot::Sender<io::Result<usize>>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum UdpSessionCodec {
+    EasyTierData { conn_id: u32 },
+    Identity,
+}
+
+impl UdpSessionCodec {
+    fn validate_payload(&self, payload: &[u8]) -> io::Result<()> {
+        if matches!(self, Self::EasyTierData { .. }) {
+            udp_session_payload_len(payload)?;
+        }
+        Ok(())
+    }
+
+    fn encode(&self, payload: &[u8]) -> io::Result<BytesMut> {
+        match self {
+            Self::EasyTierData { conn_id } => {
+                Ok(new_data_packet(*conn_id, payload)?.into_bytes().into())
+            }
+            Self::Identity => Ok(BytesMut::from(payload)),
+        }
+    }
+}
+
+#[derive(Clone)]
+enum UdpSessionCloseTarget {
+    #[cfg(test)]
+    SignalOnly,
+    EasyTier {
+        key: UdpSessionKey,
+        sessions: Arc<UdpSessionRegistry>,
+    },
+    WireGuard {
+        peer_addr: SocketAddr,
+        sessions: Arc<WireGuardUdpSessionRegistry>,
+    },
+}
+
+#[derive(Clone)]
+struct UdpSessionClose {
+    close: watch::Sender<bool>,
+    target: UdpSessionCloseTarget,
+}
+
+impl UdpSessionClose {
+    #[cfg(test)]
+    fn signal_only(close: watch::Sender<bool>) -> Self {
+        Self {
+            close,
+            target: UdpSessionCloseTarget::SignalOnly,
+        }
+    }
+
+    fn easy_tier(
+        key: UdpSessionKey,
+        close: watch::Sender<bool>,
+        sessions: Arc<UdpSessionRegistry>,
+    ) -> Self {
+        Self {
+            close,
+            target: UdpSessionCloseTarget::EasyTier { key, sessions },
+        }
+    }
+
+    fn wireguard(
+        peer_addr: SocketAddr,
+        close: watch::Sender<bool>,
+        sessions: Arc<WireGuardUdpSessionRegistry>,
+    ) -> Self {
+        Self {
+            close,
+            target: UdpSessionCloseTarget::WireGuard {
+                peer_addr,
+                sessions,
+            },
+        }
+    }
+
+    fn close(&self) {
+        match &self.target {
+            #[cfg(test)]
+            UdpSessionCloseTarget::SignalOnly => {}
+            UdpSessionCloseTarget::EasyTier { key, sessions } => {
+                close_udp_session(sessions, *key);
+            }
+            UdpSessionCloseTarget::WireGuard {
+                peer_addr,
+                sessions,
+            } => {
+                close_wireguard_udp_session(sessions, *peer_addr);
+            }
+        }
+        let _ = self.close.send(true);
+    }
+}
+
 struct UdpSessionCleanup {
-    session_key: Option<UdpSessionKey>,
-    sessions: Option<Arc<UdpSessionRegistry>>,
-    direct_peer_addr: Option<SocketAddr>,
-    direct_sessions: Option<Arc<DirectUdpSessionRegistry>>,
+    session_close: Option<UdpSessionClose>,
     shutdown: Option<watch::Sender<bool>>,
     tasks: Vec<JoinHandle<()>>,
     layer_guard: Option<Box<dyn Send + Sync>>,
 }
 
-#[derive(Clone)]
-struct DirectUdpSessionClose {
-    peer_addr: SocketAddr,
-    close: watch::Sender<bool>,
-    direct_sessions: Option<Arc<DirectUdpSessionRegistry>>,
-}
-
-impl DirectUdpSessionClose {
-    #[cfg(test)]
-    fn standalone(peer_addr: SocketAddr, close: watch::Sender<bool>) -> Self {
-        Self {
-            peer_addr,
-            close,
-            direct_sessions: None,
-        }
-    }
-
-    fn registered(
-        peer_addr: SocketAddr,
-        close: watch::Sender<bool>,
-        direct_sessions: Arc<DirectUdpSessionRegistry>,
-    ) -> Self {
-        Self {
-            peer_addr,
-            close,
-            direct_sessions: Some(direct_sessions),
-        }
-    }
-
-    fn close(&self) {
-        if let Some(direct_sessions) = &self.direct_sessions {
-            close_direct_udp_session(direct_sessions, self.peer_addr);
-        } else {
-            let _ = self.close.send(true);
-        }
-    }
-}
-
 impl std::fmt::Debug for UdpSessionCleanup {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("UdpSessionCleanup")
-            .field("session_key", &self.session_key)
-            .field("has_sessions", &self.sessions.is_some())
-            .field("direct_peer_addr", &self.direct_peer_addr)
-            .field("has_direct_sessions", &self.direct_sessions.is_some())
+            .field("has_session_close", &self.session_close.is_some())
             .field("has_shutdown", &self.shutdown.is_some())
             .field("tasks", &self.tasks.len())
             .field("has_layer_guard", &self.layer_guard.is_some())
@@ -528,13 +698,8 @@ impl Drop for UdpSessionCleanup {
         if let Some(shutdown) = &self.shutdown {
             let _ = shutdown.send(true);
         }
-        if let (Some(sessions), Some(session_key)) = (&self.sessions, self.session_key) {
-            close_udp_session(sessions, session_key);
-        }
-        if let (Some(direct_sessions), Some(peer_addr)) =
-            (&self.direct_sessions, self.direct_peer_addr)
-        {
-            close_direct_udp_session(direct_sessions, peer_addr);
+        if let Some(close) = &self.session_close {
+            close.close();
         }
         for task in &self.tasks {
             task.abort();
@@ -544,53 +709,49 @@ impl Drop for UdpSessionCleanup {
 
 impl UdpSession {
     #[cfg(test)]
-    fn direct_standalone<S>(socket: Arc<S>, peer_addr: SocketAddr) -> io::Result<Self>
+    fn identity_standalone<S>(
+        socket: Arc<S>,
+        peer_addr: SocketAddr,
+        kind: UdpSessionKind,
+    ) -> io::Result<Self>
     where
         S: VirtualUdpSocket,
     {
         let local_addr = socket.local_addr()?;
         let rings = create_udp_session_rings();
         let (shutdown_tx, _) = watch::channel(false);
-        let send_task = tokio::spawn(forward_direct_udp_session_to_socket(
-            socket.clone(),
-            peer_addr,
-            rings.core_outgoing,
-            shutdown_tx.subscribe(),
-            DirectUdpSessionClose::standalone(peer_addr, rings.close_tx.clone()),
-        ));
-        let recv_task = tokio::spawn(forward_direct_socket_to_udp_session(
-            socket,
+        let close = UdpSessionClose::signal_only(rings.close_tx.clone());
+        let recv_socket = socket.clone();
+        let recv_task = tokio::spawn(forward_identity_socket_to_udp_session(
+            recv_socket,
             peer_addr,
             rings.core_incoming.clone(),
             shutdown_tx.subscribe(),
-            DirectUdpSessionClose::standalone(peer_addr, rings.close_tx.clone()),
+            close.clone(),
         ));
-
-        Ok(Self {
+        let mut session = Self::new(
+            socket.clone(),
             local_addr,
             peer_addr,
-            kind: UdpSessionKind::Direct,
-            incoming: TokioMutex::new(rings.session_incoming),
-            outgoing: TokioMutex::new(rings.session_outgoing),
-            closed: rings.close_rx,
-            _cleanup: UdpSessionCleanup {
-                session_key: None,
-                sessions: None,
-                direct_peer_addr: None,
-                direct_sessions: None,
-                shutdown: Some(shutdown_tx),
-                tasks: vec![send_task, recv_task],
-                layer_guard: None,
-            },
-        })
+            kind,
+            UdpSessionCodec::Identity,
+            rings,
+            close,
+            shutdown_tx.subscribe(),
+        );
+        session._cleanup.shutdown = Some(shutdown_tx);
+        session._cleanup.tasks.push(recv_task);
+        Ok(session)
     }
 
-    fn direct_registered<S>(
+    fn new<S>(
         socket: Arc<S>,
         local_addr: SocketAddr,
         peer_addr: SocketAddr,
+        kind: UdpSessionKind,
+        codec: UdpSessionCodec,
         rings: UdpSessionRingParts,
-        direct_sessions: Arc<DirectUdpSessionRegistry>,
+        close: UdpSessionClose,
         shutdown: watch::Receiver<bool>,
     ) -> Self
     where
@@ -599,72 +760,25 @@ impl UdpSession {
         if *shutdown.borrow() {
             let _ = rings.close_tx.send(true);
         }
-        let send_task = tokio::spawn(forward_direct_udp_session_to_socket(
+        let send_task = tokio::spawn(forward_udp_session_to_socket(
             socket,
             peer_addr,
+            codec,
             rings.core_outgoing,
             shutdown,
-            DirectUdpSessionClose::registered(
-                peer_addr,
-                rings.close_tx.clone(),
-                direct_sessions.clone(),
-            ),
+            close.clone(),
         ));
 
         Self {
             local_addr,
             peer_addr,
-            kind: UdpSessionKind::Direct,
+            kind,
+            codec,
             incoming: TokioMutex::new(rings.session_incoming),
             outgoing: TokioMutex::new(rings.session_outgoing),
             closed: rings.close_rx,
             _cleanup: UdpSessionCleanup {
-                session_key: None,
-                sessions: None,
-                direct_peer_addr: Some(peer_addr),
-                direct_sessions: Some(direct_sessions),
-                shutdown: None,
-                tasks: vec![send_task],
-                layer_guard: None,
-            },
-        }
-    }
-
-    fn easy_tier_mux<S>(
-        socket: Arc<S>,
-        local_addr: SocketAddr,
-        key: UdpSessionKey,
-        rings: UdpSessionRingParts,
-        sessions: Arc<UdpSessionRegistry>,
-        shutdown: watch::Receiver<bool>,
-    ) -> Self
-    where
-        S: VirtualUdpSocket,
-    {
-        if *shutdown.borrow() {
-            let _ = rings.close_tx.send(true);
-        }
-        let send_task = tokio::spawn(forward_easy_tier_mux_session_to_udp_socket(
-            socket,
-            key,
-            sessions.clone(),
-            rings.core_outgoing,
-            shutdown,
-            rings.close_tx.clone(),
-        ));
-
-        Self {
-            local_addr,
-            peer_addr: key.peer_addr,
-            kind: UdpSessionKind::EasyTierMux,
-            incoming: TokioMutex::new(rings.session_incoming),
-            outgoing: TokioMutex::new(rings.session_outgoing),
-            closed: rings.close_rx,
-            _cleanup: UdpSessionCleanup {
-                session_key: Some(key),
-                sessions: Some(sessions),
-                direct_peer_addr: None,
-                direct_sessions: None,
+                session_close: Some(close),
                 shutdown: None,
                 tasks: vec![send_task],
                 layer_guard: None,
@@ -678,11 +792,11 @@ pub struct UdpSessionLayer<S, H = NoopUdpSessionControlHandler> {
     socket: Arc<S>,
     _control_handler: Arc<H>,
     sessions: Arc<UdpSessionRegistry>,
-    direct_sessions: Arc<DirectUdpSessionRegistry>,
+    wireguard_sessions: Arc<WireGuardUdpSessionRegistry>,
     pending_connects: Arc<PendingUdpSessionConnects>,
     accepted_rx: TokioMutex<mpsc::Receiver<UdpSession>>,
-    direct_accepted_rx: TokioMutex<mpsc::Receiver<UdpSession>>,
-    direct_accept_enabled: Arc<AtomicBool>,
+    wireguard_accepted_rx: TokioMutex<mpsc::Receiver<UdpSession>>,
+    wireguard_accept_enabled: Arc<AtomicBool>,
     priority_control_rx: TokioMutex<mpsc::Receiver<UdpSessionLayerControl>>,
     control_rx: TokioMutex<mpsc::Receiver<UdpSessionLayerControl>>,
     session_shutdown_tx: watch::Sender<bool>,
@@ -705,22 +819,23 @@ where
 {
     pub fn new_with_control_handler(socket: Arc<S>, control_handler: Arc<H>) -> Self {
         let sessions = Arc::new(DashMap::new());
-        let direct_sessions = Arc::new(DashMap::new());
+        let wireguard_sessions = Arc::new(DashMap::new());
         let pending_connects = Arc::new(DashMap::new());
         let (accepted_tx, accepted_rx) = mpsc::channel(UDP_SESSION_QUEUE_CAPACITY);
-        let (direct_accepted_tx, direct_accepted_rx) = mpsc::channel(UDP_SESSION_QUEUE_CAPACITY);
-        let direct_accept_enabled = Arc::new(AtomicBool::new(false));
+        let (wireguard_accepted_tx, wireguard_accepted_rx) =
+            mpsc::channel(UDP_SESSION_QUEUE_CAPACITY);
+        let wireguard_accept_enabled = Arc::new(AtomicBool::new(false));
         let (priority_control_tx, priority_control_rx) = mpsc::channel(UDP_SESSION_QUEUE_CAPACITY);
         let (control_tx, control_rx) = mpsc::channel(UDP_SESSION_QUEUE_CAPACITY);
         let (session_shutdown_tx, _) = watch::channel(false);
         let recv_task = tokio::spawn(udp_session_layer_recv_task(
             socket.clone(),
             sessions.clone(),
-            direct_sessions.clone(),
+            wireguard_sessions.clone(),
             pending_connects.clone(),
             accepted_tx,
-            direct_accepted_tx,
-            direct_accept_enabled.clone(),
+            wireguard_accepted_tx,
+            wireguard_accept_enabled.clone(),
             priority_control_tx,
             control_tx,
             control_handler.clone(),
@@ -731,11 +846,11 @@ where
             socket,
             _control_handler: control_handler,
             sessions,
-            direct_sessions,
+            wireguard_sessions,
             pending_connects,
             accepted_rx: TokioMutex::new(accepted_rx),
-            direct_accepted_rx: TokioMutex::new(direct_accepted_rx),
-            direct_accept_enabled,
+            wireguard_accepted_rx: TokioMutex::new(wireguard_accepted_rx),
+            wireguard_accept_enabled,
             priority_control_rx: TokioMutex::new(priority_control_rx),
             control_rx: TokioMutex::new(control_rx),
             session_shutdown_tx,
@@ -751,31 +866,38 @@ where
         self.sessions.len()
     }
 
-    pub fn active_direct_session_count(&self) -> usize {
-        self.direct_sessions.len()
+    pub fn active_wireguard_session_count(&self) -> usize {
+        self.wireguard_sessions.len()
     }
 
-    pub fn open_direct_session(&self, remote_addr: SocketAddr) -> io::Result<UdpSession> {
+    pub fn open_wireguard_session(&self, remote_addr: SocketAddr) -> io::Result<UdpSession> {
         let local_addr = self.socket.local_addr()?;
         let rings = create_udp_session_rings();
-        match self.direct_sessions.entry(remote_addr) {
+        match self.wireguard_sessions.entry(remote_addr) {
             dashmap::mapref::entry::Entry::Vacant(entry) => {
                 entry.insert(udp_session_registry_entry(&rings));
             }
             dashmap::mapref::entry::Entry::Occupied(_) => {
                 return Err(io::Error::new(
                     io::ErrorKind::AddrInUse,
-                    format!("direct udp session already exists for {remote_addr}"),
+                    format!("wireguard udp session already exists for {remote_addr}"),
                 ));
             }
         }
 
-        Ok(UdpSession::direct_registered(
+        let close = UdpSessionClose::wireguard(
+            remote_addr,
+            rings.close_tx.clone(),
+            self.wireguard_sessions.clone(),
+        );
+        Ok(UdpSession::new(
             self.socket.clone(),
             local_addr,
             remote_addr,
+            UdpSessionKind::WireGuard,
+            UdpSessionCodec::Identity,
             rings,
-            self.direct_sessions.clone(),
+            close,
             self.session_shutdown_tx.subscribe(),
         ))
     }
@@ -842,12 +964,16 @@ where
                 cleanup_guard.set_session_key(key);
                 cleanup_guard.disarm_keep_session();
 
-                Ok(UdpSession::easy_tier_mux(
+                let close =
+                    UdpSessionClose::easy_tier(key, rings.close_tx.clone(), self.sessions.clone());
+                Ok(UdpSession::new(
                     self.socket.clone(),
                     local_addr,
-                    key,
+                    key.peer_addr,
+                    UdpSessionKind::EasyTierMux,
+                    UdpSessionCodec::EasyTierData { conn_id },
                     rings,
-                    self.sessions.clone(),
+                    close,
                     self.session_shutdown_tx.subscribe(),
                 ))
             }
@@ -863,11 +989,14 @@ where
             .ok_or_else(|| io::Error::new(io::ErrorKind::UnexpectedEof, "udp listener closed"))
     }
 
-    pub async fn accept_direct(&self) -> io::Result<UdpSession> {
-        self.direct_accept_enabled.store(true, Ordering::Relaxed);
-        let mut direct_accepted_rx = self.direct_accepted_rx.lock().await;
-        direct_accepted_rx.recv().await.ok_or_else(|| {
-            io::Error::new(io::ErrorKind::UnexpectedEof, "direct udp listener closed")
+    pub async fn accept_wireguard_session(&self) -> io::Result<UdpSession> {
+        self.wireguard_accept_enabled.store(true, Ordering::Relaxed);
+        let mut wireguard_accepted_rx = self.wireguard_accepted_rx.lock().await;
+        wireguard_accepted_rx.recv().await.ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "wireguard udp listener closed",
+            )
         })
     }
 
@@ -961,7 +1090,7 @@ impl<S, H> Drop for UdpSessionLayer<S, H> {
         let _ = self.session_shutdown_tx.send(true);
         self.pending_connects.clear();
         close_all_udp_sessions(&self.sessions);
-        close_all_direct_udp_sessions(&self.direct_sessions);
+        close_all_wireguard_udp_sessions(&self.wireguard_sessions);
         self.recv_task.abort();
     }
 }
@@ -981,9 +1110,7 @@ impl UdpSessionSocket for UdpSession {
     }
 
     async fn send(&self, data: &[u8]) -> std::io::Result<usize> {
-        if self.kind == UdpSessionKind::EasyTierMux {
-            udp_session_payload_len(data)?;
-        }
+        self.codec.validate_payload(data)?;
         let mut closed = self.closed.clone();
         if *closed.borrow() {
             return Err(udp_session_closed_error());
@@ -1070,8 +1197,11 @@ fn close_udp_session(sessions: &UdpSessionRegistry, key: UdpSessionKey) {
     }
 }
 
-fn close_direct_udp_session(direct_sessions: &DirectUdpSessionRegistry, peer_addr: SocketAddr) {
-    if let Some((_, entry)) = direct_sessions.remove(&peer_addr) {
+fn close_wireguard_udp_session(
+    wireguard_sessions: &WireGuardUdpSessionRegistry,
+    peer_addr: SocketAddr,
+) {
+    if let Some((_, entry)) = wireguard_sessions.remove(&peer_addr) {
         let _ = entry.close.send(true);
     }
 }
@@ -1087,15 +1217,15 @@ fn close_all_udp_sessions(sessions: &UdpSessionRegistry) {
     sessions.clear();
 }
 
-fn close_all_direct_udp_sessions(direct_sessions: &DirectUdpSessionRegistry) {
-    let close_senders = direct_sessions
+fn close_all_wireguard_udp_sessions(wireguard_sessions: &WireGuardUdpSessionRegistry) {
+    let close_senders = wireguard_sessions
         .iter()
         .map(|entry| entry.value().close.clone())
         .collect::<Vec<_>>();
     for close in close_senders {
         let _ = close.send(true);
     }
-    direct_sessions.clear();
+    wireguard_sessions.clear();
 }
 
 fn ring_socket_error_to_io(error: crate::socket::ring::RingSocketError) -> io::Error {
@@ -1111,12 +1241,13 @@ fn udp_session_closed_error() -> io::Error {
     io::Error::new(io::ErrorKind::UnexpectedEof, "udp session closed")
 }
 
-async fn forward_direct_udp_session_to_socket<S>(
+async fn forward_udp_session_to_socket<S>(
     socket: Arc<S>,
     peer_addr: SocketAddr,
+    codec: UdpSessionCodec,
     mut outgoing: RingSocketReceiver<UdpSessionOutbound>,
     mut shutdown: watch::Receiver<bool>,
-    close: DirectUdpSessionClose,
+    close: UdpSessionClose,
 ) where
     S: VirtualUdpSocket,
 {
@@ -1134,17 +1265,27 @@ async fn forward_direct_udp_session_to_socket<S>(
                 let outbound = match outbound {
                     Ok(outbound) => outbound,
                     Err(err) => {
-                        tracing::debug!(?err, ?peer_addr, "udp direct session outgoing ring closed");
+                        tracing::debug!(?err, ?peer_addr, "udp session outgoing ring closed");
                         close.close();
                         break;
                     }
                 };
-                match socket.send_to(&outbound.payload, peer_addr).await {
-                    Ok(len) => {
-                        let _ = outbound.completion.send(Ok(len));
+                let payload_len = outbound.payload.len();
+                let datagram = match codec.encode(&outbound.payload) {
+                    Ok(datagram) => datagram,
+                    Err(err) => {
+                        tracing::debug!(?err, ?peer_addr, ?codec, "udp session datagram encode error");
+                        let _ = outbound.completion.send(Err(err));
+                        close.close();
+                        break;
+                    }
+                };
+                match socket.send_to(&datagram, peer_addr).await {
+                    Ok(_) => {
+                        let _ = outbound.completion.send(Ok(payload_len));
                     }
                     Err(err) => {
-                        tracing::debug!(?err, ?peer_addr, "udp direct session send error");
+                        tracing::debug!(?err, ?peer_addr, "udp session send error");
                         let _ = outbound.completion.send(Err(err));
                         close.close();
                         break;
@@ -1156,12 +1297,12 @@ async fn forward_direct_udp_session_to_socket<S>(
 }
 
 #[cfg(test)]
-async fn forward_direct_socket_to_udp_session<S>(
+async fn forward_identity_socket_to_udp_session<S>(
     socket: Arc<S>,
     peer_addr: SocketAddr,
     incoming: Arc<StdMutex<RingSocketSender<BytesMut>>>,
     mut shutdown: watch::Receiver<bool>,
-    close: DirectUdpSessionClose,
+    close: UdpSessionClose,
 ) where
     S: VirtualUdpSocket,
 {
@@ -1177,7 +1318,7 @@ async fn forward_direct_socket_to_udp_session<S>(
                 let (len, remote_addr) = match ret {
                     Ok(ret) => ret,
                     Err(err) => {
-                        tracing::debug!(?err, ?peer_addr, "udp direct session recv error");
+                        tracing::debug!(?err, ?peer_addr, "identity udp session recv error");
                         close.close();
                         break;
                     }
@@ -1189,57 +1330,6 @@ async fn forward_direct_socket_to_udp_session<S>(
                     close.close();
                     break;
                 }
-            }
-        }
-    }
-}
-
-async fn forward_easy_tier_mux_session_to_udp_socket<S>(
-    socket: Arc<S>,
-    key: UdpSessionKey,
-    sessions: Arc<UdpSessionRegistry>,
-    mut outgoing: RingSocketReceiver<UdpSessionOutbound>,
-    mut shutdown: watch::Receiver<bool>,
-    close: watch::Sender<bool>,
-) where
-    S: VirtualUdpSocket,
-{
-    loop {
-        tokio::select! {
-            biased;
-            _ = shutdown.changed() => {
-                let _ = close.send(true);
-                break;
-            }
-            outbound = outgoing.next() => {
-                let Some(outbound) = outbound else {
-                    break;
-                };
-                let outbound = match outbound {
-                    Ok(outbound) => outbound,
-                    Err(err) => {
-                        tracing::debug!(?err, ?key, "udp mux session outgoing ring closed");
-                        close_udp_session(&sessions, key);
-                        break;
-                    }
-                };
-                let payload_len = outbound.payload.len();
-                let packet = match new_data_packet(key.conn_id, &outbound.payload) {
-                    Ok(packet) => packet,
-                    Err(err) => {
-                        tracing::debug!(?err, ?key, "udp mux session data packet build error");
-                        let _ = outbound.completion.send(Err(err));
-                        close_udp_session(&sessions, key);
-                        break;
-                    }
-                };
-                if let Err(err) = socket.send_to(&packet.into_bytes(), key.peer_addr).await {
-                    tracing::debug!(?err, ?key, "udp mux session send error");
-                    let _ = outbound.completion.send(Err(err));
-                    close_udp_session(&sessions, key);
-                    break;
-                }
-                let _ = outbound.completion.send(Ok(payload_len));
             }
         }
     }
@@ -1335,11 +1425,11 @@ fn move_pending_udp_session_sender(
 async fn udp_session_layer_recv_task<S, H>(
     socket: Arc<S>,
     sessions: Arc<UdpSessionRegistry>,
-    direct_sessions: Arc<DirectUdpSessionRegistry>,
+    wireguard_sessions: Arc<WireGuardUdpSessionRegistry>,
     pending_connects: Arc<PendingUdpSessionConnects>,
     accepted: mpsc::Sender<UdpSession>,
-    direct_accepted: mpsc::Sender<UdpSession>,
-    direct_accept_enabled: Arc<AtomicBool>,
+    wireguard_accepted: mpsc::Sender<UdpSession>,
+    wireguard_accept_enabled: Arc<AtomicBool>,
     priority_control: mpsc::Sender<UdpSessionLayerControl>,
     control: mpsc::Sender<UdpSessionLayerControl>,
     control_handler: Arc<H>,
@@ -1358,101 +1448,129 @@ async fn udp_session_layer_recv_task<S, H>(
                 let _ = session_shutdown_tx.send(true);
                 pending_connects.clear();
                 close_all_udp_sessions(&sessions);
-                close_all_direct_udp_sessions(&direct_sessions);
+                close_all_wireguard_udp_sessions(&wireguard_sessions);
                 break;
             }
         };
 
         let datagram = BytesMut::from(&buf[..len]);
-        if is_stun_packet(&datagram) {
-            spawn_stun_control_handler(
-                socket.clone(),
-                control_handler.clone(),
-                control_handler_permits.clone(),
-                datagram.clone(),
-                remote_addr,
-            );
-            dispatch_control_packet(
-                &control,
-                UdpSessionLayerControl::Stun {
-                    remote_addr,
-                    datagram,
-                },
-            );
-            continue;
-        }
-
-        let packet = match parse_udp_session_datagram(datagram.clone(), false) {
-            Ok(packet) => packet,
-            Err(err) => {
-                tracing::debug!(?err, "udp session packet parse error");
-                dispatch_direct_udp_datagram(
+        match classify_udp_datagram(datagram) {
+            UdpDatagramClassification::Stun(datagram) => {
+                spawn_stun_control_handler(
                     socket.clone(),
-                    &direct_sessions,
-                    &direct_accepted,
-                    direct_accept_enabled.load(Ordering::Relaxed),
+                    control_handler.clone(),
+                    control_handler_permits.clone(),
+                    datagram.clone(),
+                    remote_addr,
+                );
+                dispatch_control_packet(
+                    &control,
+                    UdpSessionLayerControl::Stun {
+                        remote_addr,
+                        datagram,
+                    },
+                );
+            }
+            UdpDatagramClassification::SessionPacket { kind, datagram } => {
+                dispatch_session_udp_datagram(
+                    socket.clone(),
+                    &wireguard_sessions,
+                    &wireguard_accepted,
+                    wireguard_accept_enabled.load(Ordering::Relaxed),
                     session_shutdown_tx.subscribe(),
                     remote_addr,
+                    kind,
                     datagram,
                 );
-                continue;
             }
-        };
-        let header = packet.udp_tunnel_header().unwrap();
-        let conn_id = header.conn_id.get();
-        match header.msg_type {
-            msg_type if msg_type == UdpPacketType::Data as u8 => {
-                dispatch_data_packet(&sessions, remote_addr, conn_id, packet);
-            }
-            msg_type if msg_type == UdpPacketType::Syn as u8 => {
-                handle_new_easy_tier_mux_connect(
+            UdpDatagramClassification::EasyTier {
+                kind,
+                conn_id,
+                packet,
+                fallback,
+            } => {
+                let consumed = dispatch_easy_tier_udp_datagram(
                     socket.clone(),
-                    sessions.clone(),
-                    accepted.clone(),
+                    &sessions,
+                    &pending_connects,
+                    &accepted,
+                    &priority_control,
+                    control_handler.clone(),
+                    control_handler_permits.clone(),
                     remote_addr,
+                    kind,
                     conn_id,
-                    packet,
+                    &packet,
                     session_shutdown_tx.subscribe(),
                 );
-            }
-            msg_type if msg_type == UdpPacketType::Sack as u8 => {
-                dispatch_sack_packet(&sessions, &pending_connects, remote_addr, conn_id, packet);
-            }
-            msg_type if msg_type == UdpPacketType::HolePunch as u8 => {
-                dispatch_hole_punch_packet(&pending_connects, remote_addr);
-            }
-            msg_type if msg_type == UdpPacketType::V4HolePunch as u8 => {
-                dispatch_v4_hole_punch_control(
-                    socket.clone(),
-                    control_handler.clone(),
-                    control_handler_permits.clone(),
-                    &priority_control,
-                    remote_addr,
-                    packet,
-                );
-            }
-            msg_type if msg_type == UdpPacketType::V6HolePunch as u8 => {
-                dispatch_v6_hole_punch_control(
-                    socket.clone(),
-                    control_handler.clone(),
-                    control_handler_permits.clone(),
-                    &priority_control,
-                    remote_addr,
-                    packet,
-                );
-            }
-            _ => {
-                dispatch_direct_udp_datagram(
-                    socket.clone(),
-                    &direct_sessions,
-                    &direct_accepted,
-                    direct_accept_enabled.load(Ordering::Relaxed),
-                    session_shutdown_tx.subscribe(),
-                    remote_addr,
-                    packet.into_bytes().into(),
-                );
+                if !consumed {
+                    dispatch_session_udp_datagram(
+                        socket.clone(),
+                        &wireguard_sessions,
+                        &wireguard_accepted,
+                        wireguard_accept_enabled.load(Ordering::Relaxed),
+                        session_shutdown_tx.subscribe(),
+                        remote_addr,
+                        fallback,
+                        packet.into_bytes().into(),
+                    );
+                }
             }
         }
+    }
+}
+
+fn dispatch_easy_tier_udp_datagram<S, H>(
+    socket: Arc<S>,
+    sessions: &Arc<UdpSessionRegistry>,
+    pending_connects: &Arc<PendingUdpSessionConnects>,
+    accepted: &mpsc::Sender<UdpSession>,
+    priority_control: &mpsc::Sender<UdpSessionLayerControl>,
+    control_handler: Arc<H>,
+    control_handler_permits: Arc<Semaphore>,
+    remote_addr: SocketAddr,
+    kind: EasyTierUdpPacketKind,
+    conn_id: u32,
+    packet: &ZCPacket,
+    session_shutdown: watch::Receiver<bool>,
+) -> bool
+where
+    S: VirtualUdpSocket,
+    H: UdpSessionControlHandler<S>,
+{
+    match kind {
+        EasyTierUdpPacketKind::Data => dispatch_data_packet(sessions, remote_addr, conn_id, packet),
+        EasyTierUdpPacketKind::Syn => handle_new_easy_tier_mux_connect(
+            socket,
+            sessions.clone(),
+            accepted.clone(),
+            remote_addr,
+            conn_id,
+            packet,
+            session_shutdown,
+        ),
+        EasyTierUdpPacketKind::Sack => {
+            dispatch_sack_packet(sessions, pending_connects, remote_addr, conn_id, packet)
+        }
+        EasyTierUdpPacketKind::HolePunch => {
+            dispatch_hole_punch_packet(pending_connects, remote_addr)
+        }
+        EasyTierUdpPacketKind::V4HolePunch => dispatch_v4_hole_punch_control(
+            socket,
+            control_handler,
+            control_handler_permits,
+            priority_control,
+            remote_addr,
+            packet,
+        ),
+        EasyTierUdpPacketKind::V6HolePunch => dispatch_v6_hole_punch_control(
+            socket,
+            control_handler,
+            control_handler_permits,
+            priority_control,
+            remote_addr,
+            packet,
+        ),
     }
 }
 
@@ -1460,11 +1578,11 @@ fn dispatch_data_packet(
     sessions: &UdpSessionRegistry,
     peer_addr: SocketAddr,
     conn_id: u32,
-    packet: ZCPacket,
-) {
+    packet: &ZCPacket,
+) -> bool {
     let key = UdpSessionKey::new(peer_addr, conn_id);
     let Some(entry) = sessions.get(&key).map(|entry| entry.value().clone()) else {
-        return;
+        return false;
     };
 
     let payload = BytesMut::from(packet.udp_payload());
@@ -1472,73 +1590,112 @@ fn dispatch_data_packet(
         close_udp_session(sessions, key);
         tracing::debug!(?key, "udp session data queue closed");
     }
+    true
 }
 
-fn dispatch_direct_udp_datagram<S>(
+fn dispatch_session_udp_datagram<S>(
     socket: Arc<S>,
-    direct_sessions: &Arc<DirectUdpSessionRegistry>,
-    direct_accepted: &mpsc::Sender<UdpSession>,
-    direct_accept_enabled: bool,
+    wireguard_sessions: &Arc<WireGuardUdpSessionRegistry>,
+    wireguard_accepted: &mpsc::Sender<UdpSession>,
+    wireguard_accept_enabled: bool,
+    session_shutdown: watch::Receiver<bool>,
+    remote_addr: SocketAddr,
+    kind: UdpSessionPacketKind,
+    datagram: BytesMut,
+) where
+    S: VirtualUdpSocket,
+{
+    match kind {
+        UdpSessionPacketKind::WireGuard => dispatch_wireguard_udp_datagram(
+            socket,
+            wireguard_sessions,
+            wireguard_accepted,
+            wireguard_accept_enabled,
+            session_shutdown,
+            remote_addr,
+            datagram,
+        ),
+        UdpSessionPacketKind::Quic => {
+            tracing::trace!(?remote_addr, "quic udp packet has no session route yet");
+        }
+        UdpSessionPacketKind::Unknown => {
+            tracing::trace!(?remote_addr, "unknown udp packet has no session route");
+        }
+    }
+}
+
+fn dispatch_wireguard_udp_datagram<S>(
+    socket: Arc<S>,
+    wireguard_sessions: &Arc<WireGuardUdpSessionRegistry>,
+    wireguard_accepted: &mpsc::Sender<UdpSession>,
+    wireguard_accept_enabled: bool,
     session_shutdown: watch::Receiver<bool>,
     remote_addr: SocketAddr,
     datagram: BytesMut,
 ) where
     S: VirtualUdpSocket,
 {
-    if let Some(entry) = direct_sessions
+    if let Some(entry) = wireguard_sessions
         .get(&remote_addr)
         .map(|entry| entry.value().clone())
     {
         if !dispatch_payload_to_session(&entry.incoming, datagram) {
-            close_direct_udp_session(direct_sessions, remote_addr);
-            tracing::debug!(?remote_addr, "direct udp session data queue closed");
+            close_wireguard_udp_session(wireguard_sessions, remote_addr);
+            tracing::debug!(?remote_addr, "wireguard udp session data queue closed");
         }
         return;
     }
 
-    if !direct_accept_enabled {
+    if !wireguard_accept_enabled {
         return;
     }
 
-    let accept_permit = match direct_accepted.clone().try_reserve_owned() {
+    let accept_permit = match wireguard_accepted.clone().try_reserve_owned() {
         Ok(permit) => permit,
         Err(err) => {
-            tracing::debug!(?err, ?remote_addr, "direct udp accept queue unavailable");
+            tracing::debug!(?err, ?remote_addr, "wireguard udp accept queue unavailable");
             return;
         }
     };
     let local_addr = match socket.local_addr() {
         Ok(addr) => addr,
         Err(err) => {
-            tracing::debug!(?err, ?remote_addr, "direct udp get local addr error");
+            tracing::debug!(?err, ?remote_addr, "wireguard udp get local addr error");
             return;
         }
     };
     let rings = create_udp_session_rings();
-    match direct_sessions.entry(remote_addr) {
+    match wireguard_sessions.entry(remote_addr) {
         dashmap::mapref::entry::Entry::Vacant(entry) => {
             entry.insert(udp_session_registry_entry(&rings));
         }
         dashmap::mapref::entry::Entry::Occupied(entry) => {
             let entry = entry.get().clone();
             if !dispatch_payload_to_session(&entry.incoming, datagram) {
-                close_direct_udp_session(direct_sessions, remote_addr);
-                tracing::debug!(?remote_addr, "direct udp session data queue closed");
+                close_wireguard_udp_session(wireguard_sessions, remote_addr);
+                tracing::debug!(?remote_addr, "wireguard udp session data queue closed");
             }
             return;
         }
     }
     if !dispatch_payload_to_session(&rings.core_incoming, datagram) {
-        close_direct_udp_session(direct_sessions, remote_addr);
-        tracing::debug!(?remote_addr, "direct udp session data queue closed");
+        close_wireguard_udp_session(wireguard_sessions, remote_addr);
+        tracing::debug!(?remote_addr, "wireguard udp session data queue closed");
         return;
     }
-    let session = UdpSession::direct_registered(
+    let close = UdpSessionClose::wireguard(
+        remote_addr,
+        rings.close_tx.clone(),
+        wireguard_sessions.clone(),
+    );
+    let session = UdpSession::new(
         socket,
         local_addr,
         remote_addr,
+        UdpSessionKind::WireGuard,
+        UdpSessionCodec::Identity,
         rings,
-        direct_sessions.clone(),
+        close,
         session_shutdown,
     );
     accept_permit.send(session);
@@ -1550,9 +1707,10 @@ fn handle_new_easy_tier_mux_connect<S>(
     accepted: mpsc::Sender<UdpSession>,
     remote_addr: SocketAddr,
     conn_id: u32,
-    packet: ZCPacket,
+    packet: &ZCPacket,
     session_shutdown: watch::Receiver<bool>,
-) where
+) -> bool
+where
     S: VirtualUdpSocket,
 {
     let payload = packet.udp_payload();
@@ -1563,7 +1721,7 @@ fn handle_new_easy_tier_mux_connect<S>(
             ?conn_id,
             "udp syn packet payload len not match",
         );
-        return;
+        return false;
     }
 
     let magic = u64::from_le_bytes(payload[..8].try_into().unwrap());
@@ -1577,31 +1735,34 @@ fn handle_new_easy_tier_mux_connect<S>(
                 close_udp_session(&sessions, key);
             }
         });
-        return;
+        return true;
     }
 
     let accept_permit = match accepted.clone().try_reserve_owned() {
         Ok(permit) => permit,
         Err(err) => {
             tracing::debug!(?err, ?key, "udp accept queue unavailable");
-            return;
+            return true;
         }
     };
     let local_addr = match socket.local_addr() {
         Ok(addr) => addr,
         Err(err) => {
             tracing::debug!(?err, ?key, "udp get local addr for accepted session error");
-            return;
+            return true;
         }
     };
     let rings = create_udp_session_rings();
     sessions.insert(key, udp_session_registry_entry(&rings));
-    let session = UdpSession::easy_tier_mux(
+    let close = UdpSessionClose::easy_tier(key, rings.close_tx.clone(), sessions.clone());
+    let session = UdpSession::new(
         socket.clone(),
         local_addr,
-        key,
+        key.peer_addr,
+        UdpSessionKind::EasyTierMux,
+        UdpSessionCodec::EasyTierData { conn_id },
         rings,
-        sessions.clone(),
+        close,
         session_shutdown,
     );
     tokio::spawn(async move {
@@ -1613,6 +1774,7 @@ fn handle_new_easy_tier_mux_connect<S>(
 
         accept_permit.send(session);
     });
+    true
 }
 
 fn dispatch_sack_packet(
@@ -1620,8 +1782,8 @@ fn dispatch_sack_packet(
     pending_connects: &PendingUdpSessionConnects,
     recv_addr: SocketAddr,
     conn_id: u32,
-    packet: ZCPacket,
-) {
+    packet: &ZCPacket,
+) -> bool {
     let payload = packet.udp_payload();
     if payload.len() != 8 {
         if let Some(pending) = pending_connects
@@ -1631,8 +1793,9 @@ fn dispatch_sack_packet(
             let _ = pending.try_send(UdpConnectControl::InvalidPacket(
                 "udp sack packet payload len not match".to_owned(),
             ));
+            return true;
         }
-        return;
+        return false;
     }
 
     let magic = u64::from_le_bytes(payload[..8].try_into().unwrap());
@@ -1646,8 +1809,9 @@ fn dispatch_sack_packet(
             let _ = pending.try_send(UdpConnectControl::InvalidPacket(
                 "udp sack magic not match".to_owned(),
             ));
+            return true;
         }
-        return;
+        return false;
     };
 
     let new_key = UdpSessionKey::new(recv_addr, conn_id);
@@ -1655,23 +1819,31 @@ fn dispatch_sack_packet(
         let _ = pending.control.try_send(UdpConnectControl::InvalidPacket(
             "udp session already exists".to_owned(),
         ));
-        return;
+        return true;
     }
     if pending.sack.send(Some(recv_addr)).is_err() {
         close_udp_session(sessions, new_key);
     }
+    true
 }
 
-fn dispatch_hole_punch_packet(pending_connects: &PendingUdpSessionConnects, recv_addr: SocketAddr) {
+fn dispatch_hole_punch_packet(
+    pending_connects: &PendingUdpSessionConnects,
+    recv_addr: SocketAddr,
+) -> bool {
     let controls = pending_connects
         .iter()
         .filter(|entry| entry.value().expected_addr == recv_addr)
         .map(|entry| entry.value().control.clone())
         .collect::<Vec<_>>();
+    if controls.is_empty() {
+        return false;
+    }
 
     for control in controls {
         let _ = control.try_send(UdpConnectControl::HolePunch { recv_addr });
     }
+    true
 }
 
 fn spawn_stun_control_handler<S, H>(
@@ -1764,25 +1936,26 @@ fn dispatch_v4_hole_punch_control<S, H>(
     permits: Arc<Semaphore>,
     control: &mpsc::Sender<UdpSessionLayerControl>,
     remote_addr: SocketAddr,
-    packet: ZCPacket,
-) where
+    packet: &ZCPacket,
+) -> bool
+where
     S: VirtualUdpSocket,
     H: UdpSessionControlHandler<S>,
 {
     if !remote_addr.ip().is_loopback() {
         tracing::warn!(?remote_addr, "v4 hole punch packet should be from loopback");
-        return;
+        return false;
     }
     if !remote_addr.ip().is_ipv4() {
         tracing::warn!(
             ?remote_addr,
             "v4 hole punch packet should be sent from ipv4"
         );
-        return;
+        return false;
     }
     let Some(dst_addr) = extract_dst_addr_from_v4_hole_punch_packet(packet.udp_payload()) else {
         tracing::debug!(?remote_addr, "invalid v4 hole punch packet");
-        return;
+        return false;
     };
     spawn_v4_hole_punch_control_handler(socket, control_handler, permits, remote_addr, dst_addr);
     dispatch_control_packet(
@@ -1792,6 +1965,7 @@ fn dispatch_v4_hole_punch_control<S, H>(
             dst_addr,
         },
     );
+    true
 }
 
 fn dispatch_v6_hole_punch_control<S, H>(
@@ -1800,25 +1974,26 @@ fn dispatch_v6_hole_punch_control<S, H>(
     permits: Arc<Semaphore>,
     control: &mpsc::Sender<UdpSessionLayerControl>,
     remote_addr: SocketAddr,
-    packet: ZCPacket,
-) where
+    packet: &ZCPacket,
+) -> bool
+where
     S: VirtualUdpSocket,
     H: UdpSessionControlHandler<S>,
 {
     if !remote_addr.ip().is_loopback() {
         tracing::warn!(?remote_addr, "v6 hole punch packet should be from loopback");
-        return;
+        return false;
     }
     if !remote_addr.ip().is_ipv6() {
         tracing::warn!(
             ?remote_addr,
             "v6 hole punch packet should be sent from ipv6"
         );
-        return;
+        return false;
     }
     let Some((dst_addr, preferred_src)) = extract_v6_hole_punch_packet(packet.udp_payload()) else {
         tracing::debug!(?remote_addr, "invalid v6 hole punch packet");
-        return;
+        return false;
     };
     spawn_v6_hole_punch_control_handler(
         socket,
@@ -1836,6 +2011,7 @@ fn dispatch_v6_hole_punch_control<S, H>(
             preferred_src,
         },
     );
+    true
 }
 
 fn dispatch_control_packet(
@@ -1874,7 +2050,10 @@ where
     ) -> anyhow::Result<Self::Session> {
         let socket = self.factory.bind_udp(request.bind).await?;
         let layer = Arc::new(UdpSessionLayer::new(socket));
-        let mut session = layer.open_direct_session(request.remote_addr)?;
+        let mut session = match request.protocol {
+            UdpSessionProtocol::WireGuard => layer.open_wireguard_session(request.remote_addr)?,
+            UdpSessionProtocol::Quic => anyhow::bail!("quic udp session dialer is not wired yet"),
+        };
         session._cleanup.layer_guard = Some(Box::new(layer));
         Ok(session)
     }
@@ -1936,10 +2115,11 @@ mod tests {
         let remote_addr = SocketAddr::from(([192, 0, 2, 1], 11010));
         let bind_addr = SocketAddr::from(([0, 0, 0, 0], 22020));
 
-        let request = UdpSessionConnectRequest::direct(remote_addr)
+        let request = UdpSessionConnectRequest::wireguard(remote_addr)
             .with_bind(UdpBindOptions::port_bound_listener(bind_addr));
 
         assert_eq!(request.remote_addr, remote_addr);
+        assert_eq!(request.protocol, UdpSessionProtocol::WireGuard);
         assert_eq!(
             request.bind,
             UdpBindOptions {
@@ -1997,14 +2177,14 @@ mod tests {
         let local_addr = SocketAddr::from(([127, 0, 0, 1], 10000));
         let peer_addr = SocketAddr::from(([127, 0, 0, 1], 10001));
         let socket = MockUdpSessionSocket {
-            kind: UdpSessionKind::Direct,
+            kind: UdpSessionKind::WireGuard,
             local_addr,
             peer_addr,
             incoming: Mutex::new(b"pong".to_vec()),
             sent: Mutex::new(Vec::new()),
         };
 
-        assert_eq!(socket.kind(), UdpSessionKind::Direct);
+        assert_eq!(socket.kind(), UdpSessionKind::WireGuard);
         assert_eq!(socket.local_addr().unwrap(), local_addr);
         assert_eq!(socket.peer_addr().unwrap(), peer_addr);
         assert_eq!(socket.send(b"ping").await.unwrap(), 4);
@@ -2313,7 +2493,19 @@ mod tests {
         let local_addr = socket.local_addr().unwrap();
         let rings = create_udp_session_rings();
         sessions.insert(key, udp_session_registry_entry(&rings));
-        UdpSession::easy_tier_mux(socket, local_addr, key, rings, sessions, shutdown)
+        let close = UdpSessionClose::easy_tier(key, rings.close_tx.clone(), sessions);
+        UdpSession::new(
+            socket,
+            local_addr,
+            key.peer_addr,
+            UdpSessionKind::EasyTierMux,
+            UdpSessionCodec::EasyTierData {
+                conn_id: key.conn_id,
+            },
+            rings,
+            close,
+            shutdown,
+        )
     }
 
     async fn wait_for_sent<F>(mut sent: F, min_len: usize) -> Vec<(Vec<u8>, SocketAddr)>
@@ -2333,14 +2525,34 @@ mod tests {
         .unwrap()
     }
 
+    fn wireguard_transport_packet(payload: &[u8]) -> Vec<u8> {
+        let mut packet = vec![0; 32.max(4 + payload.len())];
+        packet[..4].copy_from_slice(&4u32.to_le_bytes());
+        packet[4..4 + payload.len()].copy_from_slice(payload);
+        packet
+    }
+
+    fn wireguard_packet_with_easy_tier_data_header(payload: &[u8]) -> Vec<u8> {
+        let payload_len = 24.max(payload.len());
+        let mut packet = vec![0; UDP_TUNNEL_HEADER_SIZE + payload_len];
+        packet[..4].copy_from_slice(&4u32.to_le_bytes());
+        packet[4] = UdpPacketType::Data as u8;
+        packet[6..8].copy_from_slice(&(payload_len as u16).to_le_bytes());
+        packet[UDP_TUNNEL_HEADER_SIZE..UDP_TUNNEL_HEADER_SIZE + payload.len()]
+            .copy_from_slice(payload);
+        packet
+    }
+
     #[tokio::test]
-    async fn direct_udp_session_sends_to_peer_addr() {
+    async fn wireguard_udp_session_sends_to_peer_addr() {
         let local_addr = SocketAddr::from(([127, 0, 0, 1], 12000));
         let peer_addr = SocketAddr::from(([127, 0, 0, 1], 12001));
         let socket = Arc::new(AutoSackVirtualUdpSocket::new(local_addr));
-        let session = UdpSession::direct_standalone(socket.clone(), peer_addr).unwrap();
+        let session =
+            UdpSession::identity_standalone(socket.clone(), peer_addr, UdpSessionKind::WireGuard)
+                .unwrap();
 
-        assert_eq!(session.kind(), UdpSessionKind::Direct);
+        assert_eq!(session.kind(), UdpSessionKind::WireGuard);
         assert_eq!(session.local_addr().unwrap(), local_addr);
         assert_eq!(session.peer_addr().unwrap(), peer_addr);
         assert_eq!(session.send(b"hello").await.unwrap(), 5);
@@ -2350,7 +2562,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn direct_udp_session_receives_only_from_peer_addr() {
+    async fn wireguard_udp_session_receives_only_from_peer_addr() {
         let local_addr = SocketAddr::from(([127, 0, 0, 1], 12000));
         let peer_addr = SocketAddr::from(([127, 0, 0, 1], 12001));
         let unexpected_addr = SocketAddr::from(([127, 0, 0, 1], 12002));
@@ -2360,7 +2572,8 @@ mod tests {
             (b"payload".to_vec(), peer_addr),
         ]);
         socket.incoming_notify.notify_one();
-        let session = UdpSession::direct_standalone(socket, peer_addr).unwrap();
+        let session =
+            UdpSession::identity_standalone(socket, peer_addr, UdpSessionKind::WireGuard).unwrap();
 
         let mut buf = [0; 16];
         let len = session.recv(&mut buf).await.unwrap();
@@ -2369,11 +2582,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn direct_udp_session_send_failure_closes_recv() {
+    async fn wireguard_udp_session_send_failure_closes_recv() {
         let local_addr = SocketAddr::from(([127, 0, 0, 1], 12000));
         let peer_addr = SocketAddr::from(([127, 0, 0, 1], 12001));
         let socket = Arc::new(FailingSendVirtualUdpSocket { local_addr });
-        let session = UdpSession::direct_standalone(socket, peer_addr).unwrap();
+        let session =
+            UdpSession::identity_standalone(socket, peer_addr, UdpSessionKind::WireGuard).unwrap();
 
         let err = tokio::time::timeout(Duration::from_secs(1), session.send(b"payload"))
             .await
@@ -2390,47 +2604,112 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn udp_layer_routes_raw_datagrams_to_registered_direct_session() {
+    async fn udp_layer_routes_wireguard_packets_to_registered_wireguard_session() {
         let local_addr = SocketAddr::from(([127, 0, 0, 1], 12000));
         let peer_addr = SocketAddr::from(([127, 0, 0, 1], 12001));
         let socket = Arc::new(AutoSackVirtualUdpSocket::new(local_addr));
         let layer = UdpSessionLayer::new(socket.clone());
-        let session = layer.open_direct_session(peer_addr).unwrap();
+        let session = layer.open_wireguard_session(peer_addr).unwrap();
 
-        assert_eq!(session.kind(), UdpSessionKind::Direct);
+        assert_eq!(session.kind(), UdpSessionKind::WireGuard);
         assert_eq!(session.send(b"outbound").await.unwrap(), 8);
         let sent = wait_for_sent(|| socket.sent(), 1).await;
         assert_eq!(sent, vec![(b"outbound".to_vec(), peer_addr)]);
 
+        let inbound = wireguard_transport_packet(b"inbound");
         socket
             .incoming
             .lock()
             .unwrap()
-            .push_back((b"inbound".to_vec(), peer_addr));
+            .push_back((inbound.clone(), peer_addr));
         socket.incoming_notify.notify_one();
 
-        let mut buf = [0; 16];
+        let mut buf = [0; 64];
         let len = tokio::time::timeout(Duration::from_secs(1), session.recv(&mut buf))
             .await
             .unwrap()
             .unwrap();
 
-        assert_eq!(&buf[..len], b"inbound");
+        assert_eq!(&buf[..len], inbound.as_slice());
     }
 
     #[tokio::test]
-    async fn udp_layer_accepts_direct_session_from_unknown_raw_datagram_when_enabled() {
+    async fn udp_layer_routes_unclaimed_easy_tier_shaped_wireguard_packet_to_wireguard_session() {
+        let local_addr = SocketAddr::from(([127, 0, 0, 1], 12000));
+        let peer_addr = SocketAddr::from(([127, 0, 0, 1], 12001));
+        let socket = Arc::new(AutoSackVirtualUdpSocket::new(local_addr));
+        let layer = UdpSessionLayer::new(socket.clone());
+        let session = layer.open_wireguard_session(peer_addr).unwrap();
+        let packet = wireguard_packet_with_easy_tier_data_header(b"wireguard-collision");
+
+        socket
+            .incoming
+            .lock()
+            .unwrap()
+            .push_back((packet.clone(), peer_addr));
+        socket.incoming_notify.notify_one();
+
+        let mut buf = [0; 64];
+        let len = tokio::time::timeout(Duration::from_secs(1), session.recv(&mut buf))
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(&buf[..len], packet.as_slice());
+        assert_eq!(layer.active_session_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn udp_layer_routes_claimed_easy_tier_data_to_mux_before_wireguard_session() {
+        let local_addr = SocketAddr::from(([127, 0, 0, 1], 12000));
+        let peer_addr = SocketAddr::from(([127, 0, 0, 1], 12001));
+        let socket = Arc::new(AutoSackVirtualUdpSocket::new(local_addr));
+        let layer = UdpSessionLayer::new(socket.clone());
+        let wireguard_session = layer.open_wireguard_session(peer_addr).unwrap();
+        let key = UdpSessionKey::new(peer_addr, 4);
+        let (mux_session, _shutdown_tx) =
+            create_test_easy_tier_mux_session(socket.clone(), key, layer.sessions.clone());
+        let packet = wireguard_packet_with_easy_tier_data_header(b"mux-payload");
+        let mux_payload = packet[UDP_TUNNEL_HEADER_SIZE..].to_vec();
+
+        socket
+            .incoming
+            .lock()
+            .unwrap()
+            .push_back((packet, peer_addr));
+        socket.incoming_notify.notify_one();
+
+        let mut mux_buf = [0; 32];
+        let len = tokio::time::timeout(Duration::from_secs(1), mux_session.recv(&mut mux_buf))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(&mux_buf[..len], mux_payload.as_slice());
+
+        let mut wireguard_buf = [0; 64];
+        assert!(
+            tokio::time::timeout(
+                Duration::from_millis(100),
+                wireguard_session.recv(&mut wireguard_buf)
+            )
+            .await
+            .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn udp_layer_drops_unknown_datagram_instead_of_creating_session() {
         let local_addr = SocketAddr::from(([127, 0, 0, 1], 12000));
         let peer_addr = SocketAddr::from(([127, 0, 0, 1], 12001));
         let socket = Arc::new(AutoSackVirtualUdpSocket::new(local_addr));
         let layer = Arc::new(UdpSessionLayer::new(socket.clone()));
-        let accept_task = tokio::spawn({
+        let mut accept_task = tokio::spawn({
             let layer = layer.clone();
-            async move { layer.accept_direct().await }
+            async move { layer.accept_wireguard_session().await }
         });
 
         tokio::time::timeout(Duration::from_secs(1), async {
-            while !layer.direct_accept_enabled.load(Ordering::Relaxed) {
+            while !layer.wireguard_accept_enabled.load(Ordering::Relaxed) {
                 tokio::task::yield_now().await;
             }
         })
@@ -2444,27 +2723,63 @@ mod tests {
             .push_back((b"first".to_vec(), peer_addr));
         socket.incoming_notify.notify_one();
 
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), &mut accept_task)
+                .await
+                .is_err()
+        );
+        accept_task.abort();
+        assert_eq!(layer.active_wireguard_session_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn udp_layer_accepts_unclaimed_easy_tier_shaped_wireguard_packet_when_enabled() {
+        let local_addr = SocketAddr::from(([127, 0, 0, 1], 12000));
+        let peer_addr = SocketAddr::from(([127, 0, 0, 1], 12001));
+        let socket = Arc::new(AutoSackVirtualUdpSocket::new(local_addr));
+        let layer = Arc::new(UdpSessionLayer::new(socket.clone()));
+        let accept_task = tokio::spawn({
+            let layer = layer.clone();
+            async move { layer.accept_wireguard_session().await }
+        });
+        let packet = wireguard_packet_with_easy_tier_data_header(b"accepted-wireguard");
+
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while !layer.wireguard_accept_enabled.load(Ordering::Relaxed) {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+
+        socket
+            .incoming
+            .lock()
+            .unwrap()
+            .push_back((packet.clone(), peer_addr));
+        socket.incoming_notify.notify_one();
+
         let accepted = tokio::time::timeout(Duration::from_secs(1), accept_task)
             .await
             .unwrap()
             .unwrap()
             .unwrap();
-        assert_eq!(accepted.kind(), UdpSessionKind::Direct);
-        assert_eq!(accepted.peer_addr().unwrap(), peer_addr);
-        assert_eq!(layer.active_direct_session_count(), 1);
-
-        let mut buf = [0; 16];
+        let mut buf = [0; 192];
         let len = accepted.recv(&mut buf).await.unwrap();
-        assert_eq!(&buf[..len], b"first");
+
+        assert_eq!(accepted.peer_addr().unwrap(), peer_addr);
+        assert_eq!(&buf[..len], packet.as_slice());
+        assert_eq!(layer.active_session_count(), 0);
+        assert_eq!(layer.active_wireguard_session_count(), 1);
     }
 
     #[tokio::test]
-    async fn udp_layer_keeps_easy_tier_syn_out_of_direct_session() {
+    async fn udp_layer_keeps_easy_tier_syn_out_of_wireguard_session() {
         let local_addr = SocketAddr::from(([127, 0, 0, 1], 12000));
         let peer_addr = SocketAddr::from(([127, 0, 0, 1], 12001));
         let socket = Arc::new(AutoSackVirtualUdpSocket::new(local_addr));
         let layer = UdpSessionLayer::new(socket.clone());
-        let session = layer.open_direct_session(peer_addr).unwrap();
+        let session = layer.open_wireguard_session(peer_addr).unwrap();
         let syn = new_syn_packet(0x1122_3344, 0x5566_7788).into_bytes();
 
         socket
@@ -2590,19 +2905,19 @@ mod tests {
             &sessions,
             unexpected_addr,
             conn_id,
-            new_data_packet(conn_id, b"wrong-peer").unwrap(),
+            &new_data_packet(conn_id, b"wrong-peer").unwrap(),
         );
         dispatch_data_packet(
             &sessions,
             peer_addr,
             conn_id + 1,
-            new_data_packet(conn_id + 1, b"wrong-conn").unwrap(),
+            &new_data_packet(conn_id + 1, b"wrong-conn").unwrap(),
         );
         dispatch_data_packet(
             &sessions,
             peer_addr,
             conn_id,
-            new_data_packet(conn_id, b"payload").unwrap(),
+            &new_data_packet(conn_id, b"payload").unwrap(),
         );
 
         let mut buf = [0; 16];
@@ -2688,21 +3003,22 @@ mod tests {
             session_shutdown_rx,
         );
         let pending_connects = Arc::new(DashMap::new());
-        let direct_sessions = Arc::new(DashMap::new());
+        let wireguard_sessions = Arc::new(DashMap::new());
         let (accepted_tx, _accepted_rx) = mpsc::channel(UDP_SESSION_QUEUE_CAPACITY);
-        let (direct_accepted_tx, _direct_accepted_rx) = mpsc::channel(UDP_SESSION_QUEUE_CAPACITY);
-        let direct_accept_enabled = Arc::new(AtomicBool::new(false));
+        let (wireguard_accepted_tx, _wireguard_accepted_rx) =
+            mpsc::channel(UDP_SESSION_QUEUE_CAPACITY);
+        let wireguard_accept_enabled = Arc::new(AtomicBool::new(false));
         let (priority_control_tx, _priority_control_rx) = mpsc::channel(UDP_SESSION_QUEUE_CAPACITY);
         let (control_tx, _control_rx) = mpsc::channel(UDP_SESSION_QUEUE_CAPACITY);
 
         udp_session_layer_recv_task(
             socket,
             sessions.clone(),
-            direct_sessions.clone(),
+            wireguard_sessions.clone(),
             pending_connects.clone(),
             accepted_tx,
-            direct_accepted_tx,
-            direct_accept_enabled,
+            wireguard_accepted_tx,
+            wireguard_accept_enabled,
             priority_control_tx,
             control_tx,
             Arc::new(NoopUdpSessionControlHandler),
@@ -2711,7 +3027,7 @@ mod tests {
         .await;
 
         assert!(sessions.is_empty());
-        assert!(direct_sessions.is_empty());
+        assert!(wireguard_sessions.is_empty());
         assert!(pending_connects.is_empty());
 
         let mut buf = [0; 16];
@@ -2751,7 +3067,7 @@ mod tests {
             accepted_tx,
             peer_addr,
             conn_id,
-            new_syn_packet(conn_id, magic),
+            &new_syn_packet(conn_id, magic),
             shutdown_rx,
         );
 
@@ -2794,7 +3110,7 @@ mod tests {
             accepted_tx,
             peer_addr,
             conn_id,
-            new_syn_packet(conn_id, magic),
+            &new_syn_packet(conn_id, magic),
             session_shutdown_rx,
         );
 
@@ -2831,7 +3147,7 @@ mod tests {
             accepted_tx,
             peer_addr,
             conn_id,
-            new_syn_packet(conn_id, magic),
+            &new_syn_packet(conn_id, magic),
             shutdown_rx,
         );
 
@@ -2957,10 +3273,11 @@ mod tests {
             sessions.clone(),
         );
         let pending_connects = Arc::new(DashMap::new());
-        let direct_sessions = Arc::new(DashMap::new());
+        let wireguard_sessions = Arc::new(DashMap::new());
         let (accepted_tx, _accepted_rx) = mpsc::channel(UDP_SESSION_QUEUE_CAPACITY);
-        let (direct_accepted_tx, _direct_accepted_rx) = mpsc::channel(UDP_SESSION_QUEUE_CAPACITY);
-        let direct_accept_enabled = Arc::new(AtomicBool::new(false));
+        let (wireguard_accepted_tx, _wireguard_accepted_rx) =
+            mpsc::channel(UDP_SESSION_QUEUE_CAPACITY);
+        let wireguard_accept_enabled = Arc::new(AtomicBool::new(false));
         let (priority_control_tx, _priority_control_rx) = mpsc::channel(UDP_SESSION_QUEUE_CAPACITY);
         let (control_tx, _control_rx) = mpsc::channel(UDP_SESSION_QUEUE_CAPACITY);
         let control_handler = Arc::new(BlockingUdpSessionControlHandler::default());
@@ -2968,11 +3285,11 @@ mod tests {
         let recv_task = tokio::spawn(udp_session_layer_recv_task(
             socket,
             sessions,
-            direct_sessions,
+            wireguard_sessions,
             pending_connects,
             accepted_tx,
-            direct_accepted_tx,
-            direct_accept_enabled,
+            wireguard_accepted_tx,
+            wireguard_accept_enabled,
             priority_control_tx,
             control_tx,
             control_handler.clone(),
@@ -3016,7 +3333,7 @@ mod tests {
             Arc::new(Semaphore::new(UDP_SESSION_QUEUE_CAPACITY)),
             &priority_tx,
             remote_addr,
-            new_v4_hole_punch_packet(&dst_addr),
+            &new_v4_hole_punch_packet(&dst_addr),
         );
 
         assert_eq!(
@@ -3065,20 +3382,20 @@ mod tests {
             &sessions,
             expected_addr,
             conn_id,
-            new_data_packet(conn_id, b"pre-sack").unwrap(),
+            &new_data_packet(conn_id, b"pre-sack").unwrap(),
         );
         dispatch_sack_packet(
             &sessions,
             &pending_connects,
             actual_addr,
             conn_id,
-            new_sack_packet(conn_id, magic),
+            &new_sack_packet(conn_id, magic),
         );
         dispatch_data_packet(
             &sessions,
             actual_addr,
             conn_id,
-            new_data_packet(conn_id, b"payload").unwrap(),
+            &new_data_packet(conn_id, b"payload").unwrap(),
         );
 
         assert!(sessions.contains_key(&actual_key));
@@ -3129,14 +3446,14 @@ mod tests {
             &pending_connects,
             first_addr,
             conn_id,
-            new_sack_packet(conn_id, magic),
+            &new_sack_packet(conn_id, magic),
         );
         dispatch_sack_packet(
             &sessions,
             &pending_connects,
             replay_addr,
             conn_id,
-            new_sack_packet(conn_id, magic),
+            &new_sack_packet(conn_id, magic),
         );
 
         assert!(sessions.contains_key(&first_key));
@@ -3177,7 +3494,7 @@ mod tests {
             &pending_connects,
             actual_addr,
             conn_id,
-            new_sack_packet(conn_id, magic),
+            &new_sack_packet(conn_id, magic),
         );
 
         assert!(sessions.is_empty());
@@ -3214,7 +3531,7 @@ mod tests {
             &pending_connects,
             actual_addr,
             conn_id,
-            new_sack_packet(conn_id, magic),
+            &new_sack_packet(conn_id, magic),
         );
 
         assert!(sessions.is_empty());
@@ -3255,18 +3572,18 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn udp_session_dialer_binds_socket_and_returns_direct_session() {
+    async fn udp_session_dialer_binds_socket_and_returns_wireguard_session() {
         let factory = Arc::new(MockVirtualUdpSocketFactory::new(13000));
         let mut dialer = UdpSessionDialer::new(factory.clone());
         let remote_addr = SocketAddr::from(([192, 0, 2, 10], 11010));
         let bind_addr = SocketAddr::from(([127, 0, 0, 1], 14000));
-        let request = UdpSessionConnectRequest::direct(remote_addr)
+        let request = UdpSessionConnectRequest::wireguard(remote_addr)
             .with_bind(UdpBindOptions::port_bound_listener(bind_addr));
 
         let session = dialer.connect(request).await.unwrap();
 
         assert_eq!(factory.bind_options(), vec![request.bind]);
-        assert_eq!(session.kind(), UdpSessionKind::Direct);
+        assert_eq!(session.kind(), UdpSessionKind::WireGuard);
         assert_eq!(session.local_addr().unwrap(), bind_addr);
         assert_eq!(session.peer_addr().unwrap(), remote_addr);
     }
