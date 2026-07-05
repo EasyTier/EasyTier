@@ -739,19 +739,19 @@ pub struct UdpSession {
     _cleanup: UdpSessionCleanup,
 }
 
-struct UdpSessionOutbound {
-    payload: BytesMut,
-    completion: oneshot::Sender<io::Result<usize>>,
+pub(crate) struct UdpSessionOutbound {
+    pub(crate) payload: BytesMut,
+    pub(crate) completion: oneshot::Sender<io::Result<usize>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum UdpSessionCodec {
+pub(crate) enum UdpSessionCodec {
     EasyTierData { conn_id: u32 },
     Identity,
 }
 
 impl UdpSessionCodec {
-    fn validate_payload(&self, payload: &[u8]) -> io::Result<()> {
+    pub(crate) fn validate_payload(&self, payload: &[u8]) -> io::Result<()> {
         if matches!(self, Self::EasyTierData { .. }) {
             udp_session_payload_len(payload)?;
         }
@@ -834,7 +834,7 @@ impl UdpSessionClose {
     }
 }
 
-struct UdpSessionCleanup {
+pub(crate) struct UdpSessionCleanup {
     session_close: Option<UdpSessionClose>,
     shutdown: Option<watch::Sender<bool>>,
     tasks: Vec<JoinHandle<()>>,
@@ -868,7 +868,7 @@ impl Drop for UdpSessionCleanup {
 
 impl UdpSession {
     #[cfg(test)]
-    fn identity_standalone<S>(
+    pub(crate) fn identity_standalone<S>(
         socket: Arc<S>,
         peer_addr: SocketAddr,
         kind: UdpSessionKind,
@@ -944,6 +944,40 @@ impl UdpSession {
             },
         }
     }
+
+    pub(crate) fn into_tunnel_parts(self) -> UdpSessionTunnelParts {
+        let Self {
+            local_addr,
+            peer_addr,
+            kind,
+            codec,
+            incoming,
+            outgoing,
+            closed,
+            _cleanup,
+        } = self;
+        UdpSessionTunnelParts {
+            local_addr,
+            peer_addr,
+            kind,
+            codec,
+            session_recv_rx: incoming.into_inner(),
+            session_send_tx: outgoing.into_inner(),
+            closed,
+            cleanup: _cleanup,
+        }
+    }
+}
+
+pub(crate) struct UdpSessionTunnelParts {
+    pub(crate) local_addr: SocketAddr,
+    pub(crate) peer_addr: SocketAddr,
+    pub(crate) kind: UdpSessionKind,
+    pub(crate) codec: UdpSessionCodec,
+    pub(crate) session_recv_rx: RingSocketReceiver<BytesMut>,
+    pub(crate) session_send_tx: RingSocketSender<UdpSessionOutbound>,
+    pub(crate) closed: watch::Receiver<bool>,
+    pub(crate) cleanup: UdpSessionCleanup,
 }
 
 #[derive(Debug)]

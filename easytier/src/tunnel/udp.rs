@@ -9,8 +9,8 @@ use anyhow::Context;
 use async_trait::async_trait;
 pub use easytier_core::hole_punch::udp::new_hole_punch_packet;
 use easytier_core::socket::udp::{
-    PreferredIpv6Source, UdpSessionConnectError, UdpSessionControlHandler, UdpSessionLayer,
-    UdpSessionSocket, VirtualUdpSocket,
+    PreferredIpv6Source, UdpSession, UdpSessionConnectError, UdpSessionControlHandler,
+    UdpSessionLayer, UdpSessionSocket, VirtualUdpSocket,
 };
 use easytier_core::tunnel::udp::UdpTunnelUpgrader;
 use futures::stream::FuturesUnordered;
@@ -218,7 +218,7 @@ async fn accept_udp_session_tunnels(
 ) {
     loop {
         let session = match layer.accept().await {
-            Ok(session) => Arc::new(session) as Arc<dyn UdpSessionSocket>,
+            Ok(session) => session,
             Err(err) => {
                 tracing::debug!(?err, "udp session accept loop stopped");
                 break;
@@ -420,7 +420,7 @@ impl UdpTunnelConnector {
         &self,
         runtime_socket: Arc<RuntimeUdpSocket>,
         addr: SocketAddr,
-    ) -> Result<(Arc<RuntimeUdpSessionLayer>, Arc<dyn UdpSessionSocket>), super::TunnelError> {
+    ) -> Result<(Arc<RuntimeUdpSessionLayer>, UdpSession), super::TunnelError> {
         tracing::warn!("udp connect: {:?}", self.addr);
 
         #[cfg(target_os = "windows")]
@@ -439,13 +439,13 @@ impl UdpTunnelConnector {
             );
         }
 
-        Ok((layer, Arc::new(session)))
+        Ok((layer, session))
     }
 
     fn udp_tunnel_upgrader_for_session(
         &self,
         layer: Arc<RuntimeUdpSessionLayer>,
-        session: &dyn UdpSessionSocket,
+        session: &UdpSession,
     ) -> Result<UdpTunnelUpgrader, super::TunnelError> {
         let local_addr = session.local_addr()?;
         let dst_addr = session.peer_addr()?;
@@ -479,7 +479,7 @@ impl UdpTunnelConnector {
         let (layer, session) = self
             .connect_udp_session_with_runtime_socket(runtime_socket, addr)
             .await?;
-        let upgrader = self.udp_tunnel_upgrader_for_session(layer, session.as_ref())?;
+        let upgrader = self.udp_tunnel_upgrader_for_session(layer, &session)?;
         upgrader.upgrade(session)
     }
 

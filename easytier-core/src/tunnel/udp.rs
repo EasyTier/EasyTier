@@ -1,72 +1,25 @@
-use std::sync::Arc;
+use std::{
+    pin::Pin,
+    sync::{Arc, Mutex as StdMutex},
+    task::{Context, Poll},
+};
 
 use bytes::BytesMut;
-use futures::StreamExt;
-use tracing::Instrument;
+use futures::{Sink, Stream};
+use tokio::sync::{oneshot, watch};
 
 use crate::{
     packet::{UDP_TUNNEL_HEADER_SIZE, UdpPacketType, ZCPacket, ZCPacketType},
     proto::common::TunnelInfo,
-    socket::udp::UdpSessionSocket,
-    tunnel::{
-        Tunnel, TunnelError,
-        ring::{
-            RingSink, RingSinkSendError, RingStream, RingTunnel, create_ring_socket_pair,
-            split_ring_socket,
+    socket::{
+        ring::{RingSocketError, RingSocketReceiver, RingSocketSendError, RingSocketSender},
+        udp::{
+            UdpSession, UdpSessionCleanup, UdpSessionCodec, UdpSessionOutbound,
+            UdpSessionTunnelParts,
         },
     },
+    tunnel::{SinkError, SinkItem, SplitTunnel, StreamItem, Tunnel, TunnelError},
 };
-
-const UDP_TUNNEL_BRIDGE_RING_CAPACITY: usize = 128;
-
-async fn forward_from_ring_to_udp_session(
-    mut ring_recv: RingStream,
-    session: Arc<dyn UdpSessionSocket>,
-) -> Option<TunnelError> {
-    tracing::debug!("udp forward from ring to udp session");
-    loop {
-        let buf = ring_recv.next().await?;
-        let packet = match buf {
-            Ok(v) => v,
-            Err(e) => return Some(e),
-        };
-
-        let packet = packet.convert_type(ZCPacketType::UDP);
-        let payload = BytesMut::from(packet.udp_payload());
-        match session.send(&payload).await {
-            Ok(0) => return None,
-            Ok(_) => {}
-            Err(err) => return Some(TunnelError::IOError(err)),
-        }
-    }
-}
-
-async fn forward_from_udp_session_to_ring(
-    session: Arc<dyn UdpSessionSocket>,
-    mut ring_sender: RingSink,
-) -> Option<TunnelError> {
-    tracing::debug!("udp forward from udp session to ring");
-    let mut buf = vec![0u8; u16::MAX as usize];
-    loop {
-        let len = match session.recv(&mut buf).await {
-            Ok(0) => return None,
-            Ok(len) => len,
-            Err(err) => return Some(TunnelError::IOError(err)),
-        };
-
-        let zc_packet = match zcpacket_from_udp_session_payload(&buf[..len]) {
-            Ok(packet) => packet,
-            Err(err) => return Some(err),
-        };
-        if let Some(err) = send_zcpacket_to_ring(&mut ring_sender, zc_packet) {
-            if matches!(err, TunnelError::BufferFull) {
-                tracing::trace!(?err, "udp session bridge ring send failed");
-                continue;
-            }
-            return Some(err);
-        }
-    }
-}
 
 fn zcpacket_from_udp_session_payload(payload: &[u8]) -> Result<ZCPacket, TunnelError> {
     let payload_len = u16::try_from(payload.len())
@@ -82,27 +35,179 @@ fn zcpacket_from_udp_session_payload(payload: &[u8]) -> Result<ZCPacket, TunnelE
     Ok(packet)
 }
 
-fn send_zcpacket_to_ring(ring_sender: &mut RingSink, zc_packet: ZCPacket) -> Option<TunnelError> {
-    if zc_packet.is_lossy() {
-        if let Err(err) = ring_sender.try_send(zc_packet) {
-            match err {
-                RingSinkSendError::Full(packet) => {
-                    tracing::trace!(?packet, "ring sender full, drop lossy packet");
-                }
-                RingSinkSendError::Closed(_) => return Some(TunnelError::Shutdown),
-            }
+fn ring_socket_error_to_tunnel(error: RingSocketError) -> TunnelError {
+    match error {
+        RingSocketError::Closed => TunnelError::Shutdown,
+        RingSocketError::Full => TunnelError::BufferFull,
+        RingSocketError::AlreadySplit => {
+            TunnelError::InternalError("udp session ring already split".to_owned())
         }
-    } else if let Err(err) = ring_sender.force_send(zc_packet) {
-        return match err {
-            RingSinkSendError::Full(_) => {
-                tracing::trace!("ring sender full, reject non-lossy packet");
-                Some(TunnelError::BufferFull)
-            }
-            RingSinkSendError::Closed(_) => Some(TunnelError::Shutdown),
-        };
+    }
+}
+
+fn ring_send_error_to_tunnel<T>(error: RingSocketSendError<T>) -> TunnelError {
+    match error {
+        RingSocketSendError::Closed(_) => TunnelError::Shutdown,
+        RingSocketSendError::Full(_) => TunnelError::BufferFull,
+    }
+}
+
+struct UdpTunnelKeepAlive {
+    _cleanup: StdMutex<Option<UdpSessionCleanup>>,
+    _keep_alive: Option<Box<dyn Send + Sync>>,
+}
+
+struct UdpTunnelStream {
+    session_recv_rx: RingSocketReceiver<BytesMut>,
+    _keep_alive: Arc<UdpTunnelKeepAlive>,
+}
+
+impl Stream for UdpTunnelStream {
+    type Item = StreamItem;
+
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let ret = std::task::ready!(Pin::new(&mut self.get_mut().session_recv_rx).poll_next(cx));
+        Poll::Ready(ret.map(|payload| {
+            payload
+                .map_err(ring_socket_error_to_tunnel)
+                .and_then(|payload| zcpacket_from_udp_session_payload(&payload))
+        }))
+    }
+}
+
+struct UdpTunnelSink {
+    codec: UdpSessionCodec,
+    session_send_tx: RingSocketSender<UdpSessionOutbound>,
+    closed: watch::Receiver<bool>,
+    _keep_alive: Arc<UdpTunnelKeepAlive>,
+}
+
+impl Sink<SinkItem> for UdpTunnelSink {
+    type Error = SinkError;
+
+    fn poll_ready(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        let this = self.get_mut();
+        if *this.closed.borrow() {
+            return Poll::Ready(Err(TunnelError::Shutdown));
+        }
+        Pin::new(&mut this.session_send_tx)
+            .poll_ready(cx)
+            .map_err(ring_socket_error_to_tunnel)
     }
 
-    None
+    fn start_send(self: Pin<&mut Self>, item: SinkItem) -> Result<(), Self::Error> {
+        let this = self.get_mut();
+        if *this.closed.borrow() {
+            return Err(TunnelError::Shutdown);
+        }
+
+        let packet = item.convert_type(ZCPacketType::UDP);
+        let payload = BytesMut::from(packet.udp_payload());
+        this.codec
+            .validate_payload(&payload)
+            .map_err(TunnelError::IOError)?;
+        let (completion, _sent) = oneshot::channel();
+        let outbound = UdpSessionOutbound {
+            payload,
+            completion,
+        };
+        this.session_send_tx
+            .force_send(outbound)
+            .map_err(ring_send_error_to_tunnel)
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        Pin::new(&mut self.get_mut().session_send_tx)
+            .poll_flush(cx)
+            .map_err(ring_socket_error_to_tunnel)
+    }
+
+    fn poll_close(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        Pin::new(&mut self.get_mut().session_send_tx)
+            .poll_close(cx)
+            .map_err(ring_socket_error_to_tunnel)
+    }
+}
+
+struct UdpTunnelParts {
+    codec: UdpSessionCodec,
+    session_recv_rx: RingSocketReceiver<BytesMut>,
+    session_send_tx: RingSocketSender<UdpSessionOutbound>,
+    closed: watch::Receiver<bool>,
+    cleanup: UdpSessionCleanup,
+    keep_alive: Option<Box<dyn Send + Sync>>,
+}
+
+pub struct UdpTunnel {
+    info: Option<TunnelInfo>,
+    parts: StdMutex<Option<UdpTunnelParts>>,
+}
+
+impl UdpTunnel {
+    fn new(
+        tunnel_info: TunnelInfo,
+        session_parts: UdpSessionTunnelParts,
+        keep_alive: Option<Box<dyn Send + Sync>>,
+    ) -> Self {
+        let UdpSessionTunnelParts {
+            local_addr,
+            peer_addr,
+            kind,
+            codec,
+            session_recv_rx,
+            session_send_tx,
+            closed,
+            cleanup,
+        } = session_parts;
+        tracing::debug!(
+            ?local_addr,
+            ?peer_addr,
+            ?kind,
+            "udp build tunnel from session"
+        );
+        Self {
+            info: Some(tunnel_info),
+            parts: StdMutex::new(Some(UdpTunnelParts {
+                codec,
+                session_recv_rx,
+                session_send_tx,
+                closed,
+                cleanup,
+                keep_alive,
+            })),
+        }
+    }
+}
+
+impl Tunnel for UdpTunnel {
+    fn split(&self) -> SplitTunnel {
+        let parts = self
+            .parts
+            .lock()
+            .unwrap()
+            .take()
+            .expect("UdpTunnel can only be split once");
+        let keep_alive = Arc::new(UdpTunnelKeepAlive {
+            _cleanup: StdMutex::new(Some(parts.cleanup)),
+            _keep_alive: parts.keep_alive,
+        });
+        (
+            Box::pin(UdpTunnelStream {
+                session_recv_rx: parts.session_recv_rx,
+                _keep_alive: keep_alive.clone(),
+            }),
+            Box::pin(UdpTunnelSink {
+                codec: parts.codec,
+                session_send_tx: parts.session_send_tx,
+                closed: parts.closed,
+                _keep_alive: keep_alive,
+            }),
+        )
+    }
+
+    fn info(&self) -> Option<TunnelInfo> {
+        self.info.clone()
+    }
 }
 
 pub struct UdpTunnelUpgrader {
@@ -128,40 +233,16 @@ impl UdpTunnelUpgrader {
         }
     }
 
-    pub fn upgrade(
-        self,
-        session: Arc<dyn UdpSessionSocket>,
-    ) -> Result<Box<dyn Tunnel>, TunnelError> {
+    pub fn upgrade(self, session: UdpSession) -> Result<Box<dyn Tunnel>, TunnelError> {
         let Self {
             tunnel_info,
             keep_alive,
         } = self;
-        let (tunnel_ring, udp_ring) = create_ring_socket_pair(UDP_TUNNEL_BRIDGE_RING_CAPACITY);
-        tracing::debug!(?tunnel_ring, ?udp_ring, "udp build tunnel from session");
-
-        let (ring_recv, ring_sender) = split_ring_socket(udp_ring);
-        let send_session = session.clone();
-        let recv_session = session.clone();
-        let dst_addr = session.peer_addr()?;
-        tokio::spawn(
-            async move {
-                let _keep_alive = keep_alive;
-                tokio::select! {
-                    err = forward_from_ring_to_udp_session(ring_recv, send_session) => {
-                        tracing::debug!(?err, "udp ring-to-session task done");
-                    }
-                    err = forward_from_udp_session_to_ring(recv_session, ring_sender) => {
-                        tracing::debug!(?err, "udp session-to-ring task done");
-                    }
-                }
-            }
-            .instrument(tracing::info_span!(
-                "udp forward between session and ring",
-                ?dst_addr,
-            )),
-        );
-
-        Ok(Box::new(RingTunnel::new(tunnel_ring, Some(tunnel_info))))
+        Ok(Box::new(UdpTunnel::new(
+            tunnel_info,
+            session.into_tunnel_parts(),
+            keep_alive,
+        )))
     }
 }
 
@@ -181,69 +262,52 @@ mod tests {
         time::{sleep, timeout},
     };
 
-    use crate::{
-        packet::{PacketType, UdpPacketType, ZCPacket, ZCPacketType},
-        socket::udp::{UdpSessionKind, UdpSessionSocket},
-    };
+    use crate::socket::udp::{UdpSessionKind, VirtualUdpSocket};
 
     use super::*;
 
-    fn new_udp_data_packet(conn_id: u32, packet_type: PacketType) -> ZCPacket {
-        let mut packet = ZCPacket::new_with_payload(b"udp-data").convert_type(ZCPacketType::UDP);
-        packet.fill_peer_manager_hdr(1, 2, packet_type as u8);
-        let udp_payload_len = packet.udp_payload().len();
-        let header = packet.mut_udp_tunnel_header().unwrap();
-        header.conn_id.set(conn_id);
-        header.msg_type = UdpPacketType::Data as u8;
-        header.len.set(udp_payload_len as u16);
-        packet
+    struct MockVirtualUdpSocket {
+        local_addr: SocketAddr,
+        inbound: tokio::sync::Mutex<Receiver<(Vec<u8>, SocketAddr)>>,
+        sent: StdMutex<Vec<(Vec<u8>, SocketAddr)>>,
     }
 
-    struct MockUdpSessionSocket {
-        recv: tokio::sync::Mutex<Receiver<Vec<u8>>>,
-        sent: StdMutex<Vec<Vec<u8>>>,
-    }
-
-    impl MockUdpSessionSocket {
-        fn new(recv: Receiver<Vec<u8>>) -> Self {
+    impl MockVirtualUdpSocket {
+        fn new(local_addr: SocketAddr, inbound: Receiver<(Vec<u8>, SocketAddr)>) -> Self {
             Self {
-                recv: tokio::sync::Mutex::new(recv),
+                local_addr,
+                inbound: tokio::sync::Mutex::new(inbound),
                 sent: StdMutex::new(Vec::new()),
             }
         }
 
-        fn sent(&self) -> Vec<Vec<u8>> {
+        fn sent(&self) -> Vec<(Vec<u8>, SocketAddr)> {
             self.sent.lock().unwrap().clone()
         }
     }
 
     #[async_trait]
-    impl UdpSessionSocket for MockUdpSessionSocket {
-        fn kind(&self) -> UdpSessionKind {
-            UdpSessionKind::EasyTierMux
-        }
-
+    impl VirtualUdpSocket for MockVirtualUdpSocket {
         fn local_addr(&self) -> io::Result<SocketAddr> {
-            Ok("127.0.0.1:1".parse().unwrap())
+            Ok(self.local_addr)
         }
 
-        fn peer_addr(&self) -> io::Result<SocketAddr> {
-            Ok("127.0.0.1:2".parse().unwrap())
-        }
-
-        async fn send(&self, data: &[u8]) -> io::Result<usize> {
-            self.sent.lock().unwrap().push(data.to_vec());
+        async fn send_to(&self, data: &[u8], addr: SocketAddr) -> io::Result<usize> {
+            self.sent.lock().unwrap().push((data.to_vec(), addr));
             Ok(data.len())
         }
 
-        async fn recv(&self, buf: &mut [u8]) -> io::Result<usize> {
-            let mut recv = self.recv.lock().await;
-            let Some(data) = recv.recv().await else {
-                return Ok(0);
+        async fn recv_from(&self, buf: &mut [u8]) -> io::Result<(usize, SocketAddr)> {
+            let mut inbound = self.inbound.lock().await;
+            let Some((data, addr)) = inbound.recv().await else {
+                return Err(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    "mock socket closed",
+                ));
             };
             let len = data.len().min(buf.len());
             buf[..len].copy_from_slice(&data[..len]);
-            Ok(len)
+            Ok((len, addr))
         }
     }
 
@@ -263,43 +327,22 @@ mod tests {
         .unwrap();
     }
 
-    #[test]
-    fn udp_session_bridge_keeps_lossy_ring_delivery_policy() {
-        let (_tunnel_ring, udp_ring) = create_ring_socket_pair(8);
-        let (_udp_recv, mut udp_sender) = split_ring_socket(udp_ring);
-
-        for _ in 0..16 {
-            assert!(
-                send_zcpacket_to_ring(&mut udp_sender, new_udp_data_packet(0, PacketType::Data))
-                    .is_none()
-            );
-        }
-
-        let mut got_buffer_full = false;
-        for _ in 0..16 {
-            match send_zcpacket_to_ring(&mut udp_sender, new_udp_data_packet(0, PacketType::Ping)) {
-                None => {}
-                Some(TunnelError::BufferFull) => {
-                    got_buffer_full = true;
-                    break;
-                }
-                Some(err) => panic!("unexpected error: {err:?}"),
-            }
-        }
-        assert!(got_buffer_full);
-    }
-
     #[tokio::test]
-    async fn udp_tunnel_upgrader_consumes_udp_session_socket() {
-        let (payload_sender, payload_recv) = channel(8);
-        let session = Arc::new(MockUdpSessionSocket::new(payload_recv));
+    async fn udp_tunnel_upgrader_consumes_udp_session_rings() {
+        let local_addr = "127.0.0.1:1".parse().unwrap();
+        let peer_addr = "127.0.0.1:2".parse().unwrap();
+        let (network_sender, network_recv) = channel(8);
+        let socket = Arc::new(MockVirtualUdpSocket::new(local_addr, network_recv));
+        let session =
+            UdpSession::identity_standalone(socket.clone(), peer_addr, UdpSessionKind::Quic)
+                .unwrap();
         let tunnel = UdpTunnelUpgrader::new(TunnelInfo {
             tunnel_type: "udp".to_owned(),
             local_addr: None,
             remote_addr: None,
             resolved_remote_addr: None,
         })
-        .upgrade(session.clone())
+        .upgrade(session)
         .unwrap();
         let (mut stream, mut sink) = tunnel.split();
 
@@ -310,10 +353,13 @@ mod tests {
             .udp_payload()
             .to_vec();
         sink.send(outbound_packet).await.unwrap();
-        wait_until(|| !session.sent().is_empty()).await;
-        assert_eq!(session.sent(), vec![expected_session_payload]);
+        wait_until(|| !socket.sent().is_empty()).await;
+        assert_eq!(socket.sent(), vec![(expected_session_payload, peer_addr)]);
 
-        payload_sender.send(b"inbound".to_vec()).await.unwrap();
+        network_sender
+            .send((b"inbound".to_vec(), peer_addr))
+            .await
+            .unwrap();
         let packet = timeout(Duration::from_secs(1), stream.next())
             .await
             .unwrap()
@@ -321,30 +367,5 @@ mod tests {
             .unwrap();
 
         assert_eq!(packet.udp_payload(), b"inbound");
-    }
-
-    #[tokio::test]
-    async fn udp_session_bridge_keeps_running_after_non_lossy_ring_full() {
-        let (payload_sender, payload_recv) = channel(32);
-        let session = Arc::new(MockUdpSessionSocket::new(payload_recv));
-        let (tunnel_ring, udp_ring) = create_ring_socket_pair(8);
-        let (_tunnel_recv, _tunnel_sender) = split_ring_socket(tunnel_ring);
-        let (_udp_recv, udp_sender) = split_ring_socket(udp_ring);
-        let payload = new_udp_data_packet(0, PacketType::Ping)
-            .udp_payload()
-            .to_vec();
-
-        let mut bridge_task = tokio::spawn(forward_from_udp_session_to_ring(session, udp_sender));
-        for _ in 0..16 {
-            payload_sender.send(payload.clone()).await.unwrap();
-        }
-
-        assert!(
-            timeout(Duration::from_millis(100), &mut bridge_task)
-                .await
-                .is_err(),
-            "bridge task must keep running after transient non-lossy BufferFull"
-        );
-        bridge_task.abort();
     }
 }
