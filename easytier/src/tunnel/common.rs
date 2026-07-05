@@ -460,16 +460,22 @@ fn setup_socket2_ext(
     #[cfg(any(target_os = "ios", target_os = "macos"))]
     if let Some(dev_name) = bind_dev {
         // use IP_BOUND_IF to bind device
-        unsafe {
-            let dev_idx = nix::libc::if_nametoindex(dev_name.as_str().as_ptr() as *const i8);
-            tracing::warn!(?dev_idx, ?dev_name, "bind device");
-            if bind_addr.is_ipv4() {
-                socket2_socket.bind_device_by_index_v4(std::num::NonZeroU32::new(dev_idx))?;
-            } else {
-                socket2_socket.bind_device_by_index_v6(std::num::NonZeroU32::new(dev_idx))?;
-            }
-            tracing::warn!(?dev_idx, ?dev_name, "bind device doen");
+        let c_dev_name = std::ffi::CString::new(dev_name.clone()).map_err(|err| {
+            TunnelError::InvalidAddr(format!("invalid interface name {dev_name}: {err}"))
+        })?;
+        let dev_idx = unsafe { nix::libc::if_nametoindex(c_dev_name.as_ptr()) };
+        let Some(dev_idx) = std::num::NonZeroU32::new(dev_idx) else {
+            return Err(TunnelError::InvalidAddr(format!(
+                "network interface not found: {dev_name}"
+            )));
+        };
+        tracing::warn!(?dev_idx, ?dev_name, "bind device");
+        if bind_addr.is_ipv4() {
+            socket2_socket.bind_device_by_index_v4(Some(dev_idx))?;
+        } else {
+            socket2_socket.bind_device_by_index_v6(Some(dev_idx))?;
         }
+        tracing::warn!(?dev_idx, ?dev_name, "bind device done");
     }
 
     #[cfg(any(
@@ -680,7 +686,7 @@ pub mod tests {
         let addr: SocketAddr = "0.0.0.0:0".parse().unwrap();
         let _err = super::bind::<UdpSocket>()
             .addr(addr)
-            .dev("et-missing0")
+            .dev("et/invalid-device-name")
             .call()
             .expect_err("custom device must not be skipped for unspecified bind addr");
     }
