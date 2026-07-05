@@ -35,6 +35,85 @@ fn is_wss(addr: &url::Url) -> Result<bool, TunnelError> {
     }
 }
 
+pub(crate) async fn upgrade_tcp_to_websocket_tunnel(
+    stream: TcpStream,
+    scheme: &str,
+    is_ws_server: bool,
+    remote_addr: SocketAddr,
+) -> Result<Box<dyn Tunnel>, TunnelError> {
+    let local_addr = stream.local_addr()?;
+    let remote_url = super::build_url_from_socket_addr(&remote_addr.to_string(), scheme);
+    let is_wss = is_wss(&remote_url)?;
+    let info = TunnelInfo {
+        tunnel_type: scheme.to_owned(),
+        local_addr: Some(super::build_url_from_socket_addr(&local_addr.to_string(), scheme).into()),
+        remote_addr: Some(remote_url.clone().into()),
+        resolved_remote_addr: Some(remote_url.clone().into()),
+    };
+
+    tracing::info!(
+        ?local_addr,
+        ?remote_addr,
+        scheme,
+        is_ws_server,
+        "ws_hole_punch: upgrade punched tcp stream to websocket tunnel"
+    );
+
+    if is_ws_server {
+        let stream = if is_wss {
+            init_crypto_provider();
+            let (certs, key) = get_insecure_tls_cert();
+            let config = rustls::ServerConfig::builder()
+                .with_no_client_auth()
+                .with_single_cert(certs, key)
+                .with_context(|| "Failed to create server config")?;
+            let stream = TlsAcceptor::from(Arc::new(config)).accept(stream).await?;
+            Either::Left(stream)
+        } else {
+            Either::Right(stream)
+        };
+
+        let (_, ws_stream) = ServerBuilder::new()
+            .limits(Limits::unlimited())
+            .max_headers(128)
+            .accept(stream)
+            .await?;
+        let (write, read) = ws_stream.split();
+        return Ok(Box::new(TunnelWrapper::new(
+            read.filter_map(map_from_ws_message),
+            write.with(sink_from_zc_packet),
+            Some(info),
+        )));
+    }
+
+    let c = ClientBuilder::from_uri(
+        http::Uri::try_from(remote_url.to_string())
+            .map_err(|error| TunnelError::InvalidProtocol(error.to_string()))?,
+    )
+    .max_headers(128);
+    let stream: MaybeTlsStream<TcpStream> = if is_wss {
+        init_crypto_provider();
+        let tls_conn = tokio_rustls::TlsConnector::from(Arc::new(get_insecure_tls_client_config()));
+        let sni = match remote_url.domain() {
+            None => "localhost".to_string(),
+            Some(domain) => domain.to_string(),
+        };
+        let server_name = rustls::pki_types::ServerName::try_from(sni)
+            .map_err(|_| TunnelError::InvalidProtocol("Invalid SNI".to_string()))?;
+        let stream = tls_conn.connect(server_name, stream).await?;
+        MaybeTlsStream::Rustls(stream)
+    } else {
+        MaybeTlsStream::Plain(stream)
+    };
+    let (client, _) = c.connect_on(stream).await?;
+    let (write, read) = client.split();
+    Ok(Box::new(TunnelWrapper::new(
+        read.filter_map(map_from_ws_message),
+        write.with(sink_from_zc_packet),
+        Some(info),
+    )))
+}
+
 async fn sink_from_zc_packet<E>(msg: ZCPacket) -> Result<Message, E> {
     Ok(Message::binary(msg.tunnel_payload_bytes().freeze()))
 }

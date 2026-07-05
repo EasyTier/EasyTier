@@ -27,6 +27,28 @@ use tokio_util::task::AbortOnDropHandle;
 type ArcPeerConn = Arc<PeerConn>;
 type ConnMap = Arc<DashMap<PeerConnId, ArcPeerConn>>;
 
+#[cfg(feature = "websocket")]
+fn websocket_tunnel_scheme(conn_info: &PeerConnInfo) -> Option<&str> {
+    let tunnel_info = conn_info.tunnel.as_ref()?;
+    let scheme = tunnel_info.tunnel_type.as_str();
+    (scheme == "ws" || scheme == "wss").then_some(scheme)
+}
+
+#[cfg(feature = "websocket")]
+fn ws_tcp_hole_punch_marker_scheme(conn_info: &PeerConnInfo) -> Option<String> {
+    let tunnel_info = conn_info.tunnel.as_ref()?;
+    if tunnel_info.tunnel_type != "tcp" {
+        return None;
+    }
+
+    let local_addr = tunnel_info.local_addr.as_ref()?;
+    let local_url = url::Url::try_from(local_addr).ok()?;
+    let scheme = local_url.query_pairs().find_map(|(key, value)| {
+        (key == crate::tunnel::websocket::WS_TCP_HOLE_PUNCH_LOCAL_QUERY).then(|| value.into_owned())
+    })?;
+    (scheme == "ws" || scheme == "wss").then_some(scheme)
+}
+
 pub struct Peer {
     pub peer_node_id: PeerId,
     conns: ConnMap,
@@ -166,9 +188,32 @@ impl Peer {
             }
         }
 
+        #[cfg(feature = "websocket")]
+        let ws_tcp_hole_punch_conns_to_close = websocket_tunnel_scheme(&conn_info)
+            .map(|new_scheme| {
+                self.conns
+                    .iter()
+                    .filter_map(|entry| {
+                        let old_conn = entry.value();
+                        if old_conn.is_closed() {
+                            return None;
+                        }
+
+                        let old_conn_info = old_conn.get_conn_info();
+                        let old_scheme = ws_tcp_hole_punch_marker_scheme(&old_conn_info)?;
+                        (old_scheme == new_scheme).then_some(old_conn.get_conn_id())
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+
+        #[cfg(not(feature = "websocket"))]
+        let ws_tcp_hole_punch_conns_to_close: Vec<PeerConnId> = Vec::new();
+
+        let new_conn_id = conn.get_conn_id();
         conn.start_recv_loop(self.packet_recv_chan.clone()).await;
         conn.start_pingpong();
-        self.conns.insert(conn.get_conn_id(), Arc::new(conn));
+        self.conns.insert(new_conn_id, Arc::new(conn));
 
         let close_event_sender = self.close_event_sender.clone();
         tokio::spawn(async move {
@@ -183,6 +228,24 @@ impl Peer {
 
         self.global_ctx
             .issue_event(GlobalCtxEvent::PeerConnAdded(conn_info));
+
+        for old_conn_id in ws_tcp_hole_punch_conns_to_close {
+            tracing::info!(
+                ?old_conn_id,
+                ?new_conn_id,
+                peer_id = self.peer_node_id,
+                "ws_hole_punch: close temporary tcp pre-punch conn after websocket conn established"
+            );
+            if let Err(error) = self.close_peer_conn(&old_conn_id).await {
+                tracing::warn!(
+                    ?error,
+                    ?old_conn_id,
+                    ?new_conn_id,
+                    peer_id = self.peer_node_id,
+                    "ws_hole_punch: failed to close temporary tcp pre-punch conn"
+                );
+            }
+        }
         Ok(())
     }
 
