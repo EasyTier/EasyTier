@@ -1,5 +1,6 @@
 use std::{
     fmt::Debug,
+    io,
     net::{SocketAddr, SocketAddrV4, SocketAddrV6},
     sync::{Arc, Mutex as StdMutex, Weak},
 };
@@ -8,7 +9,7 @@ use anyhow::Context;
 use async_trait::async_trait;
 use bytes::BytesMut;
 use easytier_core::socket::udp::{
-    EasyTierUdpSessionLayer, UdpSessionConnectError, UdpSessionLayerControl, UdpSessionSocket,
+    EasyTierUdpSessionLayer, UdpSessionConnectError, UdpSessionControlHandler, UdpSessionSocket,
     VirtualUdpSocket,
 };
 pub use easytier_core::{
@@ -43,9 +44,12 @@ use crate::{
 
 pub const UDP_DATA_MTU: usize = 2000;
 
+type RuntimeEasyTierUdpSessionLayer =
+    EasyTierUdpSessionLayer<RuntimeUdpSocket, RuntimeUdpSessionControlHandler>;
+
 pub(crate) struct RuntimeUdpSocket {
     socket: Arc<UdpSocket>,
-    easy_tier_layer: StdMutex<Option<Weak<EasyTierUdpSessionLayer<RuntimeUdpSocket>>>>,
+    easy_tier_layer: StdMutex<Option<Weak<RuntimeEasyTierUdpSessionLayer>>>,
 }
 
 impl RuntimeUdpSocket {
@@ -60,13 +64,16 @@ impl RuntimeUdpSocket {
         self.socket.clone()
     }
 
-    pub(crate) fn easy_tier_layer(self: &Arc<Self>) -> Arc<EasyTierUdpSessionLayer<Self>> {
+    pub(crate) fn easy_tier_layer(self: &Arc<Self>) -> Arc<RuntimeEasyTierUdpSessionLayer> {
         let mut weak_layer = self.easy_tier_layer.lock().unwrap();
         if let Some(layer) = weak_layer.as_ref().and_then(Weak::upgrade) {
             return layer;
         }
 
-        let layer = Arc::new(EasyTierUdpSessionLayer::new(self.clone()));
+        let layer = Arc::new(EasyTierUdpSessionLayer::new_with_control_handler(
+            self.clone(),
+            Arc::new(RuntimeUdpSessionControlHandler),
+        ));
         *weak_layer = Some(Arc::downgrade(&layer));
         layer
     }
@@ -84,6 +91,64 @@ impl VirtualUdpSocket for RuntimeUdpSocket {
 
     async fn recv_from(&self, buf: &mut [u8]) -> std::io::Result<(usize, SocketAddr)> {
         self.socket.recv_from(buf).await
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct RuntimeUdpSessionControlHandler;
+
+#[async_trait]
+impl UdpSessionControlHandler<RuntimeUdpSocket> for RuntimeUdpSessionControlHandler {
+    async fn respond_stun(
+        &self,
+        socket: Arc<RuntimeUdpSocket>,
+        datagram: &[u8],
+        addr: SocketAddr,
+    ) -> std::io::Result<()> {
+        respond_stun_packet(socket.socket(), addr, datagram.to_vec())
+            .await
+            .map_err(|err| io::Error::new(io::ErrorKind::Other, err.to_string()))
+    }
+
+    async fn send_v4_hole_punch(
+        &self,
+        socket: Arc<RuntimeUdpSocket>,
+        dst_addr: SocketAddrV4,
+    ) -> std::io::Result<usize> {
+        let udp_packet = new_hole_punch_packet(1, 32).into_bytes();
+        socket
+            .socket()
+            .try_send_to(&udp_packet, SocketAddr::V4(dst_addr))
+    }
+
+    async fn send_v6_hole_punch(
+        &self,
+        socket: Arc<RuntimeUdpSocket>,
+        dst_addr: SocketAddrV6,
+        preferred_src: Option<PreferredIpv6Source>,
+    ) -> std::io::Result<usize> {
+        let udp_packet = new_hole_punch_packet(1, 32).into_bytes();
+        let udp_socket = socket.socket();
+        if let Some(src) = preferred_src {
+            match udp_src::send_to_with_src_ipv6(
+                &udp_socket,
+                src.ip,
+                src.ifindex,
+                dst_addr,
+                &udp_packet,
+            ) {
+                Ok(ret) => return Ok(ret),
+                Err(err) => {
+                    tracing::debug!(
+                        ?src,
+                        ?dst_addr,
+                        ?err,
+                        "udp preferred v6 source failed, falling back"
+                    );
+                }
+            }
+        }
+        udp_socket.try_send_to(&udp_packet, SocketAddr::V6(dst_addr))
     }
 }
 
@@ -273,107 +338,10 @@ fn map_udp_session_connect_error(error: UdpSessionConnectError) -> TunnelError {
     }
 }
 
-async fn handle_udp_session_control(
-    runtime_socket: Arc<RuntimeUdpSocket>,
-    control: UdpSessionLayerControl,
-) {
-    match control {
-        UdpSessionLayerControl::Stun {
-            remote_addr,
-            datagram,
-        } => {
-            let ret =
-                respond_stun_packet(runtime_socket.socket(), remote_addr, datagram.to_vec()).await;
-            if let Err(err) = ret {
-                tracing::error!(?err, "udp respond stun packet error");
-            }
-        }
-        UdpSessionLayerControl::V4HolePunch {
-            remote_addr,
-            dst_addr,
-        } => {
-            let udp_packet = new_hole_punch_packet(1, 32).into_bytes();
-            if let Err(err) = runtime_socket
-                .socket()
-                .try_send_to(&udp_packet, SocketAddr::V4(dst_addr))
-            {
-                tracing::error!(?err, ?remote_addr, "udp send hole punch packet error");
-            }
-            tracing::debug!(
-                ?remote_addr,
-                ?dst_addr,
-                "udp control send v4 hole punch packet"
-            );
-        }
-        UdpSessionLayerControl::V6HolePunch {
-            remote_addr,
-            dst_addr,
-            preferred_src,
-        } => {
-            let socket = runtime_socket.socket();
-            let udp_packet = new_hole_punch_packet(1, 32).into_bytes();
-            let sent_with_src = if let Some(src) = preferred_src {
-                match udp_src::send_to_with_src_ipv6(
-                    &socket,
-                    src.ip,
-                    src.ifindex,
-                    dst_addr,
-                    &udp_packet,
-                ) {
-                    Ok(ret) => {
-                        tracing::debug!(
-                            ?src,
-                            ?dst_addr,
-                            ?ret,
-                            "udp control send v6 hole punch packet with preferred source"
-                        );
-                        true
-                    }
-                    Err(err) => {
-                        tracing::debug!(
-                            ?src,
-                            ?dst_addr,
-                            ?err,
-                            "udp control preferred v6 source failed, falling back"
-                        );
-                        false
-                    }
-                }
-            } else {
-                false
-            };
-            if !sent_with_src && let Err(err) = socket.try_send_to(&udp_packet, dst_addr.into()) {
-                tracing::error!(?err, ?remote_addr, "udp send hole punch packet error");
-            }
-            tracing::debug!(
-                ?remote_addr,
-                ?dst_addr,
-                ?preferred_src,
-                "udp control send v6 hole punch packet"
-            );
-        }
-    }
-}
-
-async fn run_udp_session_control_loop(
-    layer: Arc<EasyTierUdpSessionLayer<RuntimeUdpSocket>>,
-    runtime_socket: Arc<RuntimeUdpSocket>,
-) {
-    loop {
-        match layer.recv_control().await {
-            Ok(control) => handle_udp_session_control(runtime_socket.clone(), control).await,
-            Err(err) => {
-                tracing::debug!(?err, "udp session control loop stopped");
-                break;
-            }
-        }
-    }
-}
-
 fn build_udp_tunnel_from_session(
     session: Arc<dyn UdpSessionSocket>,
     tunnel_info: TunnelInfo,
-    keep_layer_alive: Option<Arc<EasyTierUdpSessionLayer<RuntimeUdpSocket>>>,
+    keep_layer_alive: Option<Arc<RuntimeEasyTierUdpSessionLayer>>,
 ) -> Result<Box<dyn Tunnel>, TunnelError> {
     let (tunnel_ring, udp_ring) = create_ring_socket_pair(128);
     tracing::debug!(?tunnel_ring, ?udp_ring, "udp build tunnel from session");
@@ -409,7 +377,7 @@ fn build_udp_tunnel_from_session(
 }
 
 async fn accept_udp_session_tunnels(
-    layer: Arc<EasyTierUdpSessionLayer<RuntimeUdpSocket>>,
+    layer: Arc<RuntimeEasyTierUdpSessionLayer>,
     conn_send: Sender<Box<dyn Tunnel>>,
     local_url: url::Url,
 ) {
@@ -456,8 +424,8 @@ pub struct UdpTunnelListener {
     addr: url::Url,
     socket: Option<Arc<UdpSocket>>,
     runtime_socket: Option<Arc<RuntimeUdpSocket>>,
-    session_layer: Option<Arc<EasyTierUdpSessionLayer<RuntimeUdpSocket>>>,
-    session_layer_ref: Arc<StdMutex<Option<Weak<EasyTierUdpSessionLayer<RuntimeUdpSocket>>>>>,
+    session_layer: Option<Arc<RuntimeEasyTierUdpSessionLayer>>,
+    session_layer_ref: Arc<StdMutex<Option<Weak<RuntimeEasyTierUdpSessionLayer>>>>,
 
     conn_send: Sender<Box<dyn Tunnel>>,
     conn_recv: Receiver<Box<dyn Tunnel>>,
@@ -541,10 +509,6 @@ impl TunnelListener for UdpTunnelListener {
             accept_udp_session_tunnels(layer.clone(), self.conn_send.clone(), self.addr.clone())
                 .instrument(tracing::info_span!("udp session accept loop")),
         );
-        self.forward_tasks.lock().unwrap().spawn(
-            run_udp_session_control_loop(layer, runtime_socket)
-                .instrument(tracing::info_span!("udp session control loop")),
-        );
 
         join_joinset_background(self.forward_tasks.clone(), "UdpTunnelListener".to_owned());
 
@@ -567,7 +531,7 @@ impl TunnelListener for UdpTunnelListener {
 
     fn get_conn_counter(&self) -> Arc<Box<dyn TunnelConnCounter>> {
         struct UdpTunnelConnCounter {
-            session_layer: Arc<StdMutex<Option<Weak<EasyTierUdpSessionLayer<RuntimeUdpSocket>>>>>,
+            session_layer: Arc<StdMutex<Option<Weak<RuntimeEasyTierUdpSessionLayer>>>>,
         }
 
         impl TunnelConnCounter for UdpTunnelConnCounter {
@@ -619,7 +583,7 @@ impl UdpTunnelConnector {
     async fn build_tunnel(
         &self,
         socket: Arc<UdpSocket>,
-        layer: Arc<EasyTierUdpSessionLayer<RuntimeUdpSocket>>,
+        layer: Arc<RuntimeEasyTierUdpSessionLayer>,
         session: Arc<dyn UdpSessionSocket>,
     ) -> Result<Box<dyn super::Tunnel>, super::TunnelError> {
         let dst_addr = session.peer_addr()?;
