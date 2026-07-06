@@ -844,17 +844,26 @@ fn retain_unclaimed_pending_initial_for_stale_incoming(
     });
 }
 
+enum PendingInitialRegister {
+    Registered,
+    AlreadyRegisteredSameGeneration,
+    OccupiedByOtherGeneration,
+}
+
 fn register_pending_initial(
     pending_initials: &QuicUdpPendingInitials,
     initial_key: QuicUdpInitialKey,
     closer: Arc<QuicUdpSessionCloser>,
-) -> bool {
+) -> PendingInitialRegister {
     match pending_initials.lock().unwrap().entry(initial_key) {
         Entry::Vacant(entry) => {
             entry.insert(closer);
-            true
+            PendingInitialRegister::Registered
         }
-        Entry::Occupied(_) => false,
+        Entry::Occupied(entry) if Arc::ptr_eq(entry.get(), &closer) => {
+            PendingInitialRegister::AlreadyRegisteredSameGeneration
+        }
+        Entry::Occupied(_) => PendingInitialRegister::OccupiedByOtherGeneration,
     }
 }
 
@@ -1133,7 +1142,7 @@ impl QuicUdpListenerSocket {
                 let session_pending_initials = pending_initials.clone();
                 tokio::spawn(async move {
                     let mut buf = vec![0u8; 64 * 1024];
-                    let mut initial_key = None;
+                    let mut initial_keys = Vec::new();
                     let unclaimed_timeout = tokio::time::sleep(QUIC_UDP_UNCLAIMED_SESSION_TIMEOUT);
                     tokio::pin!(unclaimed_timeout);
                     loop {
@@ -1150,16 +1159,18 @@ impl QuicUdpListenerSocket {
                             recv = session.recv(&mut buf) => {
                                 match recv {
                                     Ok(len) => {
-                                        if initial_key.is_none() {
-                                            if let Some(dcid) = parse_quic_initial_dcid(&buf[..len]) {
-                                                let key = (peer_addr, dcid);
-                                                if register_pending_initial(
-                                                    &session_pending_initials,
-                                                    key.clone(),
-                                                    closer.clone(),
-                                                ) {
-                                                    initial_key = Some(key);
-                                                } else {
+                                        if let Some(dcid) = parse_quic_initial_dcid(&buf[..len]) {
+                                            let key = (peer_addr, dcid);
+                                            match register_pending_initial(
+                                                &session_pending_initials,
+                                                key.clone(),
+                                                closer.clone(),
+                                            ) {
+                                                PendingInitialRegister::Registered => {
+                                                    initial_keys.push(key);
+                                                }
+                                                PendingInitialRegister::AlreadyRegisteredSameGeneration => {}
+                                                PendingInitialRegister::OccupiedByOtherGeneration => {
                                                     tracing::debug!(
                                                         ?peer_addr,
                                                         "drop duplicate quic initial generation"
@@ -1198,7 +1209,7 @@ impl QuicUdpListenerSocket {
                     {
                         session_closers.remove(&peer_addr);
                     }
-                    if let Some(initial_key) = initial_key {
+                    for initial_key in initial_keys {
                         if closer.is_claimed() {
                             remove_pending_initial_if_matches(
                                 &session_pending_initials,
@@ -1207,9 +1218,9 @@ impl QuicUdpListenerSocket {
                             );
                         } else {
                             retain_unclaimed_pending_initial_for_stale_incoming(
-                                session_pending_initials,
+                                session_pending_initials.clone(),
                                 initial_key,
-                                closer,
+                                closer.clone(),
                             );
                         }
                     }
@@ -1783,15 +1794,17 @@ mod tests {
         let new_closer = Arc::new(QuicUdpSessionCloser::new(new_close_tx));
         let initial_key = (peer_addr, vec![1, 2, 3, 4]);
 
-        assert!(register_pending_initial(
-            &pending_initials,
-            initial_key.clone(),
-            old_closer.clone()
+        assert!(matches!(
+            register_pending_initial(&pending_initials, initial_key.clone(), old_closer.clone()),
+            PendingInitialRegister::Registered
         ));
-        assert!(!register_pending_initial(
-            &pending_initials,
-            initial_key.clone(),
-            new_closer
+        assert!(matches!(
+            register_pending_initial(&pending_initials, initial_key.clone(), old_closer.clone()),
+            PendingInitialRegister::AlreadyRegisteredSameGeneration
+        ));
+        assert!(matches!(
+            register_pending_initial(&pending_initials, initial_key.clone(), new_closer),
+            PendingInitialRegister::OccupiedByOtherGeneration
         ));
         assert!(
             pending_initials
@@ -1799,6 +1812,36 @@ mod tests {
                 .unwrap()
                 .get(&initial_key)
                 .is_some_and(|current| Arc::ptr_eq(current, &old_closer))
+        );
+    }
+
+    #[test]
+    fn pending_quic_initial_accepts_multiple_dcids_for_same_generation() {
+        let peer_addr: SocketAddr = "127.0.0.1:31004".parse().unwrap();
+        let pending_initials = Arc::new(StdMutex::new(HashMap::new()));
+        let (close_tx, _) = watch::channel(false);
+        let closer = Arc::new(QuicUdpSessionCloser::new(close_tx));
+        let first_key = (peer_addr, vec![1]);
+        let second_key = (peer_addr, vec![2]);
+
+        assert!(matches!(
+            register_pending_initial(&pending_initials, first_key.clone(), closer.clone()),
+            PendingInitialRegister::Registered
+        ));
+        assert!(matches!(
+            register_pending_initial(&pending_initials, second_key.clone(), closer.clone()),
+            PendingInitialRegister::Registered
+        ));
+        let pending_initials = pending_initials.lock().unwrap();
+        assert!(
+            pending_initials
+                .get(&first_key)
+                .is_some_and(|current| Arc::ptr_eq(current, &closer))
+        );
+        assert!(
+            pending_initials
+                .get(&second_key)
+                .is_some_and(|current| Arc::ptr_eq(current, &closer))
         );
     }
 
