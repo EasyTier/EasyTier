@@ -1305,7 +1305,7 @@ impl QuicUdpListenerSocket {
         src_ip: Option<IpAddr>,
     ) -> io::Result<()> {
         let len = if let Some(src_ip) = src_ip {
-            udp_src::send_to_with_src_ip(&self.send_socket, src_ip, destination, payload)?
+            udp_src::try_send_to_with_src_ip(&self.send_socket, src_ip, destination, payload)?
         } else {
             self.send_socket.try_send_to(payload, destination)?
         };

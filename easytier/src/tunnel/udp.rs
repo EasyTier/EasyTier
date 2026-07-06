@@ -94,7 +94,7 @@ impl VirtualUdpSocket for RuntimeUdpSocket {
         meta: UdpSocketSendMeta,
     ) -> std::io::Result<usize> {
         if let Some(src_ip) = meta.src_ip {
-            return udp_src::send_to_with_src_ip(&self.socket, src_ip, addr, data);
+            return udp_src::send_to_with_src_ip(&self.socket, src_ip, addr, data).await;
         }
         self.send_to(data, addr).await
     }

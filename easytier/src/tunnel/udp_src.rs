@@ -158,7 +158,32 @@ fn recv_from_with_dst_ip_once(
     Ok((len as usize, remote_addr, dst_ip))
 }
 
-pub(crate) fn send_to_with_src_ip(
+#[cfg(any(target_os = "linux", target_os = "android"))]
+pub(crate) async fn send_to_with_src_ip(
+    socket: &UdpSocket,
+    src_ip: IpAddr,
+    dst_addr: SocketAddr,
+    buf: &[u8],
+) -> io::Result<usize> {
+    socket
+        .async_io(tokio::io::Interest::WRITABLE, || {
+            send_to_with_src_ip_raw(socket, src_ip, dst_addr, buf)
+        })
+        .await
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "android")))]
+pub(crate) async fn send_to_with_src_ip(
+    socket: &UdpSocket,
+    _src_ip: IpAddr,
+    dst_addr: SocketAddr,
+    buf: &[u8],
+) -> io::Result<usize> {
+    socket.send_to(buf, dst_addr).await
+}
+
+#[cfg(any(target_os = "linux", target_os = "android"))]
+pub(crate) fn try_send_to_with_src_ip(
     socket: &UdpSocket,
     src_ip: IpAddr,
     dst_addr: SocketAddr,
@@ -167,6 +192,16 @@ pub(crate) fn send_to_with_src_ip(
     socket.try_io(tokio::io::Interest::WRITABLE, || {
         send_to_with_src_ip_raw(socket, src_ip, dst_addr, buf)
     })
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "android")))]
+pub(crate) fn try_send_to_with_src_ip(
+    socket: &UdpSocket,
+    src_ip: IpAddr,
+    dst_addr: SocketAddr,
+    buf: &[u8],
+) -> io::Result<usize> {
+    send_to_with_src_ip_raw(socket, src_ip, dst_addr, buf)
 }
 
 fn send_to_with_src_ip_raw(
