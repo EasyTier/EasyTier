@@ -831,16 +831,14 @@ fn remove_pending_initial_if_matches(
     }
 }
 
-fn retain_unclaimed_pending_initial_for_stale_incoming(
+fn retain_pending_initial_tombstone_for_stale_incoming(
     pending_initials: QuicUdpPendingInitials,
     initial_key: QuicUdpInitialKey,
     closer: Arc<QuicUdpSessionCloser>,
 ) {
     tokio::spawn(async move {
         tokio::time::sleep(QUIC_UDP_UNCLAIMED_SESSION_TIMEOUT).await;
-        if !closer.is_claimed() {
-            remove_pending_initial_if_matches(&pending_initials, &initial_key, &closer);
-        }
+        remove_pending_initial_if_matches(&pending_initials, &initial_key, &closer);
     });
 }
 
@@ -1210,19 +1208,11 @@ impl QuicUdpListenerSocket {
                         session_closers.remove(&peer_addr);
                     }
                     for initial_key in initial_keys {
-                        if closer.is_claimed() {
-                            remove_pending_initial_if_matches(
-                                &session_pending_initials,
-                                &initial_key,
-                                &closer,
-                            );
-                        } else {
-                            retain_unclaimed_pending_initial_for_stale_incoming(
-                                session_pending_initials.clone(),
-                                initial_key,
-                                closer.clone(),
-                            );
-                        }
+                        retain_pending_initial_tombstone_for_stale_incoming(
+                            session_pending_initials.clone(),
+                            initial_key,
+                            closer.clone(),
+                        );
                     }
                 });
             }
@@ -1842,6 +1832,40 @@ mod tests {
             pending_initials
                 .get(&second_key)
                 .is_some_and(|current| Arc::ptr_eq(current, &closer))
+        );
+    }
+
+    #[test]
+    fn pending_quic_initial_keeps_unconsumed_sibling_after_one_dcid_is_claimed() {
+        let peer_addr: SocketAddr = "127.0.0.1:31005".parse().unwrap();
+        let pending_initials = Arc::new(StdMutex::new(HashMap::new()));
+        let (old_close_tx, _) = watch::channel(false);
+        let (new_close_tx, _) = watch::channel(false);
+        let old_closer = Arc::new(QuicUdpSessionCloser::new(old_close_tx));
+        let new_closer = Arc::new(QuicUdpSessionCloser::new(new_close_tx));
+        let claimed_key = (peer_addr, vec![1]);
+        let pending_key = (peer_addr, vec![2]);
+
+        assert!(matches!(
+            register_pending_initial(&pending_initials, claimed_key.clone(), old_closer.clone()),
+            PendingInitialRegister::Registered
+        ));
+        assert!(matches!(
+            register_pending_initial(&pending_initials, pending_key.clone(), old_closer.clone()),
+            PendingInitialRegister::Registered
+        ));
+        pending_initials.lock().unwrap().remove(&claimed_key);
+
+        assert!(matches!(
+            register_pending_initial(&pending_initials, pending_key.clone(), new_closer),
+            PendingInitialRegister::OccupiedByOtherGeneration
+        ));
+        assert!(
+            pending_initials
+                .lock()
+                .unwrap()
+                .get(&pending_key)
+                .is_some_and(|current| Arc::ptr_eq(current, &old_closer))
         );
     }
 
