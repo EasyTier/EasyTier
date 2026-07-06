@@ -822,6 +822,78 @@ async fn udp_layer_accepts_unclaimed_easy_tier_shaped_wireguard_packet_when_enab
 }
 
 #[tokio::test]
+async fn udp_layer_pre_enabled_classified_accept_queues_first_packet() {
+    let local_addr = SocketAddr::from(([127, 0, 0, 1], 12000));
+    let peer_addr = SocketAddr::from(([127, 0, 0, 1], 12001));
+    let socket = Arc::new(AutoSackVirtualUdpSocket::new(local_addr));
+    let layer = UdpSessionLayer::new(socket.clone());
+    let packet = wireguard_packet_with_easy_tier_data_header(b"pre-enabled-wireguard");
+
+    layer
+        .enable_classified_accept(UdpSessionProtocol::WireGuard)
+        .unwrap();
+    socket
+        .incoming
+        .lock()
+        .unwrap()
+        .push_back((packet.clone(), peer_addr));
+    socket.incoming_notify.notify_one();
+
+    let accepted = tokio::time::timeout(
+        Duration::from_secs(1),
+        layer.accept_classified_session(UdpSessionProtocol::WireGuard),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    let mut buf = [0; 192];
+    let len = accepted.recv(&mut buf).await.unwrap();
+
+    assert_eq!(accepted.peer_addr().unwrap(), peer_addr);
+    assert_eq!(&buf[..len], packet.as_slice());
+    assert_eq!(layer.active_session_count(), 0);
+    assert_eq!(layer.active_classified_session_count(), 1);
+}
+
+#[tokio::test]
+async fn udp_layer_routes_quic_like_easytier_packet_to_existing_quic_session() {
+    let local_addr = SocketAddr::from(([127, 0, 0, 1], 12000));
+    let peer_addr = SocketAddr::from(([127, 0, 0, 1], 12001));
+    let socket = Arc::new(AutoSackVirtualUdpSocket::new(local_addr));
+    let layer = UdpSessionLayer::new(socket.clone());
+    let session = layer
+        .open_classified_session(UdpSessionProtocol::Quic, peer_addr)
+        .unwrap();
+    let packet = new_udp_packet(
+        |header| {
+            header.conn_id.set(0x40);
+            header.msg_type = UdpPacketType::Syn as u8;
+            header.len.set(8);
+        },
+        b"12345678",
+    )
+    .into_bytes()
+    .to_vec();
+
+    socket
+        .incoming
+        .lock()
+        .unwrap()
+        .push_back((packet.clone(), peer_addr));
+    socket.incoming_notify.notify_one();
+
+    let mut buf = [0; 64];
+    let len = tokio::time::timeout(Duration::from_secs(1), session.recv(&mut buf))
+        .await
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(&buf[..len], packet.as_slice());
+    assert_eq!(layer.active_session_count(), 0);
+    assert_eq!(layer.active_classified_session_count(), 1);
+}
+
+#[tokio::test]
 async fn udp_layer_keeps_easy_tier_syn_out_of_wireguard_session() {
     let local_addr = SocketAddr::from(([127, 0, 0, 1], 12000));
     let peer_addr = SocketAddr::from(([127, 0, 0, 1], 12001));

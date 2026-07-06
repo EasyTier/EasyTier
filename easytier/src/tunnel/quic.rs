@@ -2,25 +2,51 @@
 //!
 //! Checkout the `README.md` for guidance.
 
-use super::{FromUrl, IpVersion, Tunnel, TunnelConnector, TunnelError, TunnelListener};
+use super::{
+    FromUrl, IpVersion, SinkError, SinkItem, StreamItem, Tunnel, TunnelConnector, TunnelError,
+    TunnelListener, ZCPacketSink, ZCPacketStream,
+};
 use crate::common::global_ctx::ArcGlobalCtx;
 use crate::tunnel::common::bind;
 use crate::tunnel::{
     TunnelInfo,
     common::{FramedReader, FramedWriter, TunnelWrapper},
+    udp::{RuntimeUdpSessionLayer, RuntimeUdpSessionListener},
 };
 use anyhow::Context;
 use derivative::Derivative;
 use derive_more::{Deref, DerefMut};
+use easytier_core::socket::udp::{UdpSessionProtocol, UdpSessionSocket};
+use futures::{Sink, Stream};
 use parking_lot::RwLock;
 use quinn::{
-    ClientConfig, ConnectError, Connection, Endpoint, EndpointConfig, ServerConfig,
-    TransportConfig, congestion::BbrConfig, default_runtime,
+    AsyncUdpSocket, ClientConfig, ConnectError, Connecting, Connection, Endpoint, EndpointConfig,
+    ServerConfig, TransportConfig, UdpPoller,
+    congestion::BbrConfig,
+    default_runtime,
+    udp::{RecvMeta, Transmit},
 };
-use std::net::{Ipv4Addr, Ipv6Addr};
-use std::sync::OnceLock;
-use std::{net::SocketAddr, sync::Arc, time::Duration};
-use tokio::net::UdpSocket;
+use std::{
+    fmt::Formatter,
+    future::Future,
+    io::{self, IoSliceMut},
+    net::SocketAddr,
+    net::{IpAddr, Ipv4Addr, Ipv6Addr},
+    pin::Pin,
+    sync::OnceLock,
+    sync::{Arc, Mutex as StdMutex},
+    task::{Context as TaskContext, Poll},
+    time::Duration,
+};
+use tokio::{
+    net::UdpSocket,
+    sync::{
+        mpsc::{Receiver, Sender, UnboundedReceiver, channel},
+        oneshot,
+    },
+    task::{AbortHandle, JoinSet},
+};
+use tokio_util::task::AbortOnDropHandle;
 
 // region config
 mod crypto {
@@ -713,6 +739,7 @@ impl QuicEndpointManager {
 
 struct ConnWrapper {
     conn: Connection,
+    _endpoint: Option<Endpoint>,
 }
 
 impl Drop for ConnWrapper {
@@ -721,94 +748,500 @@ impl Drop for ConnWrapper {
     }
 }
 
+struct QuicBiAcceptTask {
+    abort_handle: AbortHandle,
+}
+
+impl Drop for QuicBiAcceptTask {
+    fn drop(&mut self) {
+        self.abort_handle.abort();
+    }
+}
+
+enum LazyQuicReaderState {
+    Pending(oneshot::Receiver<Result<(quinn::RecvStream, Arc<ConnWrapper>), String>>),
+    Ready(Pin<Box<dyn ZCPacketStream>>),
+    Closed,
+}
+
+struct LazyQuicReader {
+    state: LazyQuicReaderState,
+    _accept_task: Arc<QuicBiAcceptTask>,
+}
+
+impl Stream for LazyQuicReader {
+    type Item = StreamItem;
+
+    fn poll_next(self: Pin<&mut Self>, cx: &mut TaskContext<'_>) -> Poll<Option<Self::Item>> {
+        let this = self.get_mut();
+        loop {
+            match &mut this.state {
+                LazyQuicReaderState::Pending(rx) => match Pin::new(rx).poll(cx) {
+                    Poll::Ready(Ok(Ok((recv, conn)))) => {
+                        this.state = LazyQuicReaderState::Ready(Box::pin(
+                            FramedReader::new_with_associate_data(recv, 2000, Some(Box::new(conn))),
+                        ));
+                    }
+                    Poll::Ready(Ok(Err(error))) => {
+                        this.state = LazyQuicReaderState::Closed;
+                        return Poll::Ready(Some(Err(TunnelError::Anyhow(anyhow::anyhow!(error)))));
+                    }
+                    Poll::Ready(Err(_)) => {
+                        this.state = LazyQuicReaderState::Closed;
+                        return Poll::Ready(Some(Err(TunnelError::Shutdown)));
+                    }
+                    Poll::Pending => return Poll::Pending,
+                },
+                LazyQuicReaderState::Ready(reader) => return reader.as_mut().poll_next(cx),
+                LazyQuicReaderState::Closed => return Poll::Ready(None),
+            }
+        }
+    }
+}
+
+enum LazyQuicWriterState {
+    Pending(oneshot::Receiver<Result<(quinn::SendStream, Arc<ConnWrapper>), String>>),
+    Ready(Pin<Box<dyn ZCPacketSink>>),
+    Closed,
+}
+
+struct LazyQuicWriter {
+    state: LazyQuicWriterState,
+    _accept_task: Arc<QuicBiAcceptTask>,
+}
+
+impl LazyQuicWriter {
+    fn poll_ready_inner(&mut self, cx: &mut TaskContext<'_>) -> Poll<Result<(), SinkError>> {
+        loop {
+            match &mut self.state {
+                LazyQuicWriterState::Pending(rx) => match Pin::new(rx).poll(cx) {
+                    Poll::Ready(Ok(Ok((send, conn)))) => {
+                        self.state = LazyQuicWriterState::Ready(Box::pin(
+                            FramedWriter::new_with_associate_data(send, Some(Box::new(conn))),
+                        ));
+                    }
+                    Poll::Ready(Ok(Err(error))) => {
+                        self.state = LazyQuicWriterState::Closed;
+                        return Poll::Ready(Err(TunnelError::Anyhow(anyhow::anyhow!(error))));
+                    }
+                    Poll::Ready(Err(_)) => {
+                        self.state = LazyQuicWriterState::Closed;
+                        return Poll::Ready(Err(TunnelError::Shutdown));
+                    }
+                    Poll::Pending => return Poll::Pending,
+                },
+                LazyQuicWriterState::Ready(writer) => return writer.as_mut().poll_ready(cx),
+                LazyQuicWriterState::Closed => return Poll::Ready(Err(TunnelError::Shutdown)),
+            }
+        }
+    }
+}
+
+impl Sink<SinkItem> for LazyQuicWriter {
+    type Error = SinkError;
+
+    fn poll_ready(self: Pin<&mut Self>, cx: &mut TaskContext<'_>) -> Poll<Result<(), Self::Error>> {
+        self.get_mut().poll_ready_inner(cx)
+    }
+
+    fn start_send(self: Pin<&mut Self>, item: SinkItem) -> Result<(), Self::Error> {
+        match &mut self.get_mut().state {
+            LazyQuicWriterState::Ready(writer) => writer.as_mut().start_send(item),
+            LazyQuicWriterState::Pending(_) => Err(TunnelError::BufferFull),
+            LazyQuicWriterState::Closed => Err(TunnelError::Shutdown),
+        }
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, cx: &mut TaskContext<'_>) -> Poll<Result<(), Self::Error>> {
+        let this = self.get_mut();
+        match this.poll_ready_inner(cx) {
+            Poll::Ready(Ok(())) => match &mut this.state {
+                LazyQuicWriterState::Ready(writer) => writer.as_mut().poll_flush(cx),
+                LazyQuicWriterState::Pending(_) => Poll::Pending,
+                LazyQuicWriterState::Closed => Poll::Ready(Err(TunnelError::Shutdown)),
+            },
+            other => other,
+        }
+    }
+
+    fn poll_close(self: Pin<&mut Self>, cx: &mut TaskContext<'_>) -> Poll<Result<(), Self::Error>> {
+        let this = self.get_mut();
+        match this.poll_ready_inner(cx) {
+            Poll::Ready(Ok(())) => match &mut this.state {
+                LazyQuicWriterState::Ready(writer) => writer.as_mut().poll_close(cx),
+                LazyQuicWriterState::Pending(_) => Poll::Pending,
+                LazyQuicWriterState::Closed => Poll::Ready(Err(TunnelError::Shutdown)),
+            },
+            other => other,
+        }
+    }
+}
+
+fn lazy_quic_tunnel_streams(
+    connecting: Connecting,
+    endpoint: Endpoint,
+) -> (LazyQuicReader, LazyQuicWriter) {
+    let (send_tx, send_rx) = oneshot::channel();
+    let (recv_tx, recv_rx) = oneshot::channel();
+    let accept_task = tokio::spawn(async move {
+        let result = async {
+            let conn = connecting
+                .await
+                .map_err(|error| format!("accept connection failed: {error}"))?;
+            let (send, recv) = conn
+                .accept_bi()
+                .await
+                .map_err(|error| format!("accept_bi failed: {error}"))?;
+            let conn = Arc::new(ConnWrapper {
+                conn,
+                _endpoint: Some(endpoint),
+            });
+            Ok::<_, String>((send, recv, conn))
+        }
+        .await;
+
+        match result {
+            Ok((send, recv, conn)) => {
+                let _ = send_tx.send(Ok((send, conn.clone())));
+                let _ = recv_tx.send(Ok((recv, conn)));
+            }
+            Err(error) => {
+                let _ = send_tx.send(Err(error.clone()));
+                let _ = recv_tx.send(Err(error));
+            }
+        }
+    });
+    let accept_task = Arc::new(QuicBiAcceptTask {
+        abort_handle: accept_task.abort_handle(),
+    });
+    (
+        LazyQuicReader {
+            state: LazyQuicReaderState::Pending(recv_rx),
+            _accept_task: accept_task.clone(),
+        },
+        LazyQuicWriter {
+            state: LazyQuicWriterState::Pending(send_rx),
+            _accept_task: accept_task,
+        },
+    )
+}
+
+struct QuicUdpPoller {
+    socket: Arc<UdpSocket>,
+    writable: StdMutex<Option<Pin<Box<dyn Future<Output = io::Result<()>> + Send>>>>,
+}
+
+impl std::fmt::Debug for QuicUdpPoller {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("QuicUdpPoller").finish()
+    }
+}
+
+impl UdpPoller for QuicUdpPoller {
+    fn poll_writable(self: Pin<&mut Self>, cx: &mut TaskContext<'_>) -> Poll<io::Result<()>> {
+        let this = self.get_mut();
+        let mut writable = this.writable.lock().unwrap();
+        loop {
+            if writable.is_none() {
+                let socket = this.socket.clone();
+                *writable = Some(Box::pin(async move { socket.writable().await }));
+            }
+
+            let wait = writable.as_mut().unwrap();
+            match wait.as_mut().poll(cx) {
+                Poll::Ready(ret) => {
+                    *writable = None;
+                    return Poll::Ready(ret);
+                }
+                Poll::Pending => return Poll::Pending,
+            }
+        }
+    }
+}
+
+struct QuicUdpDatagram {
+    payload: Vec<u8>,
+    peer_addr: SocketAddr,
+}
+
+struct QuicUdpListenerSocket {
+    send_socket: Arc<UdpSocket>,
+    local_addr: SocketAddr,
+    incoming: StdMutex<UnboundedReceiver<io::Result<QuicUdpDatagram>>>,
+    _accept_task: AbortOnDropHandle<()>,
+}
+
+impl std::fmt::Debug for QuicUdpListenerSocket {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("QuicUdpListenerSocket")
+            .field("local_addr", &self.local_addr)
+            .finish()
+    }
+}
+
+impl QuicUdpListenerSocket {
+    fn new(layer: Arc<RuntimeUdpSessionLayer>, send_socket: Arc<UdpSocket>) -> io::Result<Self> {
+        let local_addr = send_socket.local_addr()?;
+        let (incoming_tx, incoming_rx) = tokio::sync::mpsc::unbounded_channel();
+        let accept_task = AbortOnDropHandle::new(tokio::spawn(async move {
+            loop {
+                let session = match layer
+                    .accept_classified_session(UdpSessionProtocol::Quic)
+                    .await
+                {
+                    Ok(session) => session,
+                    Err(err) => {
+                        let _ = incoming_tx.send(Err(err));
+                        break;
+                    }
+                };
+                let peer_addr = match session.peer_addr() {
+                    Ok(addr) => addr,
+                    Err(err) => {
+                        let _ = incoming_tx.send(Err(err));
+                        continue;
+                    }
+                };
+                let session_incoming_tx = incoming_tx.clone();
+                tokio::spawn(async move {
+                    let mut buf = vec![0u8; 64 * 1024];
+                    loop {
+                        match session.recv(&mut buf).await {
+                            Ok(len) => {
+                                if session_incoming_tx
+                                    .send(Ok(QuicUdpDatagram {
+                                        payload: buf[..len].to_vec(),
+                                        peer_addr,
+                                    }))
+                                    .is_err()
+                                {
+                                    break;
+                                }
+                            }
+                            Err(err) => {
+                                let _ = session_incoming_tx.send(Err(err));
+                                break;
+                            }
+                        }
+                    }
+                });
+            }
+        }));
+
+        Ok(Self {
+            send_socket,
+            local_addr,
+            incoming: StdMutex::new(incoming_rx),
+            _accept_task: accept_task,
+        })
+    }
+
+    fn try_send_payload(&self, payload: &[u8], destination: SocketAddr) -> io::Result<()> {
+        let len = self.send_socket.try_send_to(payload, destination)?;
+        if len != payload.len() {
+            return Err(io::Error::new(
+                io::ErrorKind::WriteZero,
+                "quic udp datagram was partially sent",
+            ));
+        }
+        Ok(())
+    }
+
+    fn send_transmit(&self, transmit: &Transmit<'_>) -> io::Result<()> {
+        if let Some(segment_size) = transmit.segment_size {
+            for segment in transmit.contents.chunks(segment_size) {
+                self.try_send_payload(segment, transmit.destination)?;
+            }
+        } else {
+            self.try_send_payload(transmit.contents, transmit.destination)?;
+        }
+        Ok(())
+    }
+}
+
+impl AsyncUdpSocket for QuicUdpListenerSocket {
+    fn create_io_poller(self: Arc<Self>) -> Pin<Box<dyn UdpPoller>> {
+        Box::pin(QuicUdpPoller {
+            socket: self.send_socket.clone(),
+            writable: StdMutex::new(None),
+        })
+    }
+
+    fn try_send(&self, transmit: &Transmit<'_>) -> io::Result<()> {
+        self.send_transmit(transmit)
+    }
+
+    fn poll_recv(
+        &self,
+        cx: &mut TaskContext<'_>,
+        bufs: &mut [IoSliceMut<'_>],
+        meta: &mut [RecvMeta],
+    ) -> Poll<io::Result<usize>> {
+        if bufs.is_empty() || meta.is_empty() {
+            return Poll::Ready(Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "quic udp recv buffers are empty",
+            )));
+        }
+
+        let mut incoming = self.incoming.lock().unwrap();
+        match Pin::new(&mut *incoming).poll_recv(cx) {
+            Poll::Ready(Some(Ok(datagram))) => {
+                if bufs[0].len() < datagram.payload.len() {
+                    return Poll::Ready(Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "quic udp recv buffer too small",
+                    )));
+                }
+                bufs[0][..datagram.payload.len()].copy_from_slice(&datagram.payload);
+                meta[0] = RecvMeta {
+                    addr: datagram.peer_addr,
+                    len: datagram.payload.len(),
+                    stride: datagram.payload.len(),
+                    ecn: None,
+                    dst_ip: None,
+                };
+                Poll::Ready(Ok(1))
+            }
+            Poll::Ready(Some(Err(error))) => Poll::Ready(Err(error)),
+            Poll::Ready(None) => Poll::Ready(Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "quic udp session closed",
+            ))),
+            Poll::Pending => Poll::Pending,
+        }
+    }
+
+    fn local_addr(&self) -> io::Result<SocketAddr> {
+        Ok(self.local_addr)
+    }
+
+    fn may_fragment(&self) -> bool {
+        false
+    }
+}
+
+async fn accept_quic_tunnel(
+    endpoint: Endpoint,
+    local_url: url::Url,
+) -> Result<Box<dyn Tunnel>, TunnelError> {
+    let incoming = endpoint
+        .accept()
+        .await
+        .ok_or_else(|| TunnelError::InvalidPacket("quic accept failed".to_owned()))?;
+    let remote_addr = incoming.remote_address();
+    let connecting = incoming
+        .accept()
+        .with_context(|| "quic accept connection failed")?;
+    let (reader, writer) = lazy_quic_tunnel_streams(connecting, endpoint);
+    tokio::task::yield_now().await;
+
+    let info = TunnelInfo {
+        tunnel_type: "quic".to_owned(),
+        local_addr: Some(local_url.into()),
+        remote_addr: Some(
+            super::build_url_from_socket_addr(&remote_addr.to_string(), "quic").into(),
+        ),
+        resolved_remote_addr: Some(
+            super::build_url_from_socket_addr(&remote_addr.to_string(), "quic").into(),
+        ),
+    };
+
+    Ok(Box::new(TunnelWrapper::new(reader, writer, Some(info))))
+}
+
+async fn accept_quic_tunnels(
+    endpoint: Endpoint,
+    local_url: url::Url,
+    conn_send: Sender<Box<dyn Tunnel>>,
+) {
+    loop {
+        match accept_quic_tunnel(endpoint.clone(), local_url.clone()).await {
+            Ok(conn) => {
+                if let Err(err) = conn_send.send(conn).await {
+                    tracing::warn!(?err, "quic send conn to accept channel error");
+                    break;
+                }
+            }
+            Err(err) => {
+                tracing::warn!(?err, "quic accept fail");
+                tokio::time::sleep(Duration::from_millis(1)).await;
+            }
+        }
+    }
+}
+
 pub struct QuicTunnelListener {
-    addr: url::Url,
-    global_ctx: ArcGlobalCtx,
+    session_listener: RuntimeUdpSessionListener,
     endpoint: Option<Endpoint>,
+    conn_send: Sender<Box<dyn Tunnel>>,
+    conn_recv: Receiver<Box<dyn Tunnel>>,
+    forward_tasks: Arc<StdMutex<JoinSet<()>>>,
+    global_ctx: ArcGlobalCtx,
 }
 
 impl QuicTunnelListener {
     pub fn new(addr: url::Url, global_ctx: ArcGlobalCtx) -> Self {
+        let (conn_send, conn_recv) = channel(100);
         QuicTunnelListener {
-            addr,
-            global_ctx,
+            session_listener: RuntimeUdpSessionListener::new(addr),
             endpoint: None,
+            conn_send,
+            conn_recv,
+            forward_tasks: Arc::new(StdMutex::new(JoinSet::new())),
+            global_ctx,
         }
-    }
-
-    async fn do_accept(&self) -> Result<Box<dyn Tunnel>, super::TunnelError> {
-        // accept a single connection
-        let conn = self
-            .endpoint
-            .as_ref()
-            .unwrap()
-            .accept()
-            .await
-            .ok_or_else(|| anyhow::anyhow!("accept failed, no incoming"))?;
-        let conn = conn.await.with_context(|| "accept connection failed")?;
-        let remote_addr = conn.remote_address();
-        let (w, r) = conn.accept_bi().await.with_context(|| "accept_bi failed")?;
-
-        let arc_conn = Arc::new(ConnWrapper { conn });
-
-        let info = TunnelInfo {
-            tunnel_type: "quic".to_owned(),
-            local_addr: Some(self.local_url().into()),
-            remote_addr: Some(
-                super::build_url_from_socket_addr(&remote_addr.to_string(), "quic").into(),
-            ),
-            resolved_remote_addr: Some(
-                super::build_url_from_socket_addr(&remote_addr.to_string(), "quic").into(),
-            ),
-        };
-
-        Ok(Box::new(TunnelWrapper::new(
-            FramedReader::new_with_associate_data(r, 2000, Some(Box::new(arc_conn.clone()))),
-            FramedWriter::new_with_associate_data(w, Some(Box::new(arc_conn))),
-            Some(info),
-        )))
-    }
-}
-
-impl Drop for QuicTunnelListener {
-    fn drop(&mut self) {
-        let Some(endpoint) = &self.endpoint else {
-            return;
-        };
-        let Ok(local_addr) = endpoint.local_addr() else {
-            return;
-        };
-        QuicEndpointManager::load(&self.global_ctx).remove_endpoint_by_local_addr(local_addr);
     }
 }
 
 #[async_trait::async_trait]
 impl TunnelListener for QuicTunnelListener {
     async fn listen(&mut self) -> Result<(), TunnelError> {
-        let addr = SocketAddr::from_url(self.addr.clone(), IpVersion::Both).await?;
-        let endpoint = QuicEndpointManager::server(&self.global_ctx, addr)?;
-        self.addr
-            .set_port(Some(endpoint.local_addr()?.port()))
-            .unwrap();
-        self.endpoint = Some(endpoint);
-
+        if self.endpoint.is_some() {
+            return Ok(());
+        }
+        use crate::common::config::ConfigLoader as _;
+        self.session_listener
+            .set_socket_mark(self.global_ctx.config.get_flags().socket_mark);
+        let addr = SocketAddr::from_url(self.session_listener.local_url(), IpVersion::Both).await?;
+        self.session_listener
+            .set_only_v6(addr.ip() != IpAddr::V6(Ipv6Addr::UNSPECIFIED));
+        self.session_listener.listen().await?;
+        self.session_listener
+            .enable_classified_accept(UdpSessionProtocol::Quic)?;
+        let layer = self.session_listener.session_layer().ok_or_else(|| {
+            TunnelError::InternalError("udp listener session layer not started".to_owned())
+        })?;
+        let send_socket = self
+            .session_listener
+            .get_socket()
+            .ok_or_else(|| TunnelError::InternalError("udp listener not started".to_owned()))?;
+        let udp_socket = Arc::new(QuicUdpListenerSocket::new(layer, send_socket)?);
+        let runtime = default_runtime().ok_or(TunnelError::InternalError(
+            "no async runtime found".to_owned(),
+        ))?;
+        self.endpoint = Some(Endpoint::new_with_abstract_socket(
+            endpoint_config(),
+            Some(server_config()),
+            udp_socket,
+            runtime,
+        )?);
+        let endpoint = self.endpoint.as_ref().unwrap().clone();
+        let local_url = self.local_url();
+        let conn_send = self.conn_send.clone();
+        self.forward_tasks
+            .lock()
+            .unwrap()
+            .spawn(accept_quic_tunnels(endpoint, local_url, conn_send));
         Ok(())
     }
 
     async fn accept(&mut self) -> Result<Box<dyn Tunnel>, super::TunnelError> {
-        loop {
-            match self.do_accept().await {
-                Ok(ret) => return Ok(ret),
-                Err(e) => {
-                    tracing::warn!(?e, "accept fail");
-                    tokio::time::sleep(Duration::from_millis(1)).await;
-                }
-            }
-        }
+        self.conn_recv.recv().await.ok_or(TunnelError::Shutdown)
     }
 
     fn local_url(&self) -> url::Url {
-        self.addr.clone()
+        self.session_listener.local_url()
     }
 }
 
@@ -858,7 +1291,10 @@ impl TunnelConnector for QuicTunnelConnector {
             ),
         };
 
-        let arc_conn = Arc::new(ConnWrapper { conn: connection });
+        let arc_conn = Arc::new(ConnWrapper {
+            conn: connection,
+            _endpoint: None,
+        });
         Ok(Box::new(TunnelWrapper::new(
             FramedReader::new_with_associate_data(r, 4500, Some(Box::new(arc_conn.clone()))),
             FramedWriter::new_with_associate_data(w, Some(Box::new(arc_conn))),
@@ -990,21 +1426,19 @@ mod tests {
     }
 
     #[test]
-    fn listener_drop_removes_persistent_endpoint() {
-        RUNTIME.block_on(listener_drop_removes_persistent_endpoint_impl())
+    fn listener_uses_udp_session_listener_outside_endpoint_manager() {
+        RUNTIME.block_on(listener_uses_udp_session_listener_outside_endpoint_manager_impl())
     }
-    async fn listener_drop_removes_persistent_endpoint_impl() {
+    async fn listener_uses_udp_session_listener_outside_endpoint_manager_impl() {
         let global_ctx = global_ctx();
-        let endpoint_addr = {
-            let mut listener =
-                QuicTunnelListener::new("quic://127.0.0.1:0".parse().unwrap(), global_ctx.clone());
-            listener.listen().await.unwrap();
-            let endpoint_addr = listener.endpoint.as_ref().unwrap().local_addr().unwrap();
-            assert!(QuicEndpointManager::load(&global_ctx).contains_local_addr(endpoint_addr));
-            endpoint_addr
-        };
+        let mut listener =
+            QuicTunnelListener::new("quic://127.0.0.1:0".parse().unwrap(), global_ctx.clone());
+        listener.listen().await.unwrap();
+        let listener_addr = SocketAddr::from_url(listener.local_url(), IpVersion::Both)
+            .await
+            .unwrap();
 
-        assert!(!QuicEndpointManager::load(&global_ctx).contains_local_addr(endpoint_addr));
+        assert!(!QuicEndpointManager::load(&global_ctx).contains_local_addr(listener_addr));
     }
 
     #[test]

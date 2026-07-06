@@ -251,12 +251,11 @@ where
             .ok_or_else(|| io::Error::new(io::ErrorKind::UnexpectedEof, "udp listener closed"))
     }
 
-    pub async fn accept_classified_session(
+    fn classified_accept(
         &self,
         protocol: UdpSessionProtocol,
-    ) -> io::Result<UdpSession> {
-        let accept = self
-            .classified_accepts
+    ) -> io::Result<Arc<ClassifiedUdpSessionAccept>> {
+        self.classified_accepts
             .get(&protocol)
             .map(|entry| entry.value().clone())
             .ok_or_else(|| {
@@ -264,7 +263,20 @@ where
                     io::ErrorKind::InvalidInput,
                     format!("{protocol:?} udp listener is not registered"),
                 )
-            })?;
+            })
+    }
+
+    pub fn enable_classified_accept(&self, protocol: UdpSessionProtocol) -> io::Result<()> {
+        let accept = self.classified_accept(protocol)?;
+        accept.accept_enabled.store(true, Ordering::Relaxed);
+        Ok(())
+    }
+
+    pub async fn accept_classified_session(
+        &self,
+        protocol: UdpSessionProtocol,
+    ) -> io::Result<UdpSession> {
+        let accept = self.classified_accept(protocol)?;
         accept.accept_enabled.store(true, Ordering::Relaxed);
         let mut accepted_rx = accept.accepted_rx.lock().await;
         accepted_rx.recv().await.ok_or_else(|| {
@@ -452,6 +464,11 @@ pub(super) async fn udp_session_layer_recv_task<S, H>(
         };
 
         let datagram = BytesMut::from(&buf[..len]);
+        let quic_key = ClassifiedUdpSessionKey::new(UdpSessionProtocol::Quic, remote_addr);
+        if classified_sessions.contains_key(&quic_key) {
+            dispatch_existing_classified_udp_datagram(&classified_sessions, quic_key, datagram);
+            continue;
+        }
         match classify_udp_datagram(datagram) {
             UdpDatagramClassification::Stun(datagram) => {
                 spawn_stun_control_handler(
@@ -513,6 +530,24 @@ pub(super) async fn udp_session_layer_recv_task<S, H>(
                 }
             }
         }
+    }
+}
+
+fn dispatch_existing_classified_udp_datagram(
+    classified_sessions: &Arc<ClassifiedUdpSessionRegistry>,
+    key: ClassifiedUdpSessionKey,
+    datagram: BytesMut,
+) {
+    let Some(entry) = classified_sessions
+        .get(&key)
+        .map(|entry| entry.value().clone())
+    else {
+        return;
+    };
+
+    if !dispatch_payload_to_session(&entry.incoming, datagram, UdpSessionEnqueuePolicy::Reliable) {
+        close_classified_udp_session(classified_sessions, key);
+        tracing::debug!(?key, "classified udp session data queue closed");
     }
 }
 

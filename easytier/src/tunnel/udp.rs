@@ -282,6 +282,7 @@ pub(crate) struct RuntimeUdpSessionListener {
     session_layer: Option<Arc<RuntimeUdpSessionLayer>>,
     session_layer_ref: Arc<StdMutex<Option<Weak<RuntimeUdpSessionLayer>>>>,
     socket_mark: Option<u32>,
+    only_v6: bool,
 }
 
 impl RuntimeUdpSessionListener {
@@ -293,6 +294,7 @@ impl RuntimeUdpSessionListener {
             session_layer: None,
             session_layer_ref: Arc::new(StdMutex::new(None)),
             socket_mark: None,
+            only_v6: true,
         }
     }
 
@@ -305,6 +307,10 @@ impl RuntimeUdpSessionListener {
 
     pub(crate) fn set_socket_mark(&mut self, socket_mark: Option<u32>) {
         self.socket_mark = socket_mark;
+    }
+
+    pub(crate) fn set_only_v6(&mut self, only_v6: bool) {
+        self.only_v6 = only_v6;
     }
 
     pub(crate) fn get_socket(&self) -> Option<Arc<UdpSocket>> {
@@ -330,7 +336,7 @@ impl RuntimeUdpSessionListener {
             self.socket = Some(Arc::new(
                 bind()
                     .addr(addr)
-                    .only_v6(true)
+                    .only_v6(self.only_v6)
                     .maybe_dev(tunnel_url.bind_dev())
                     .maybe_socket_mark(self.socket_mark)
                     .call()?,
@@ -366,6 +372,19 @@ impl RuntimeUdpSessionListener {
             .ok_or_else(|| TunnelError::InternalError("udp listener not started".to_owned()))?;
         accept_udp_session(layer, accept_kind)
             .await
+            .map_err(TunnelError::IOError)
+    }
+
+    pub(crate) fn enable_classified_accept(
+        &self,
+        protocol: UdpSessionProtocol,
+    ) -> Result<(), TunnelError> {
+        let layer = self
+            .session_layer
+            .as_ref()
+            .ok_or_else(|| TunnelError::InternalError("udp listener not started".to_owned()))?;
+        layer
+            .enable_classified_accept(protocol)
             .map_err(TunnelError::IOError)
     }
 
