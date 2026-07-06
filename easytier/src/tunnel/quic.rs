@@ -16,8 +16,8 @@ use derive_more::{Deref, DerefMut};
 use easytier_core::socket::udp::{UdpSessionProtocol, UdpSessionSocket, parse_quic_initial_dcid};
 use parking_lot::RwLock;
 use quinn::{
-    AsyncUdpSocket, ClientConfig, ConnectError, Connection, Endpoint, EndpointConfig, ServerConfig,
-    TransportConfig, UdpPoller,
+    AsyncUdpSocket, ClientConfig, ConnectError, Connecting, Connection, Endpoint, EndpointConfig,
+    ServerConfig, TransportConfig, UdpPoller,
     congestion::BbrConfig,
     default_runtime,
     udp::{RecvMeta, Transmit},
@@ -1290,12 +1290,20 @@ impl AsyncUdpSocket for QuicUdpListenerSocket {
     }
 }
 
-async fn accept_quic_tunnel(
+struct PendingQuicTunnel {
+    connecting: Connecting,
+    endpoint: Endpoint,
+    local_url: url::Url,
+    remote_addr: SocketAddr,
+    cleanup: QuicUdpSessionCleanup,
+}
+
+async fn accept_quic_incoming(
     endpoint: Endpoint,
     local_url: url::Url,
     udp_session_closers: QuicUdpSessionClosers,
     pending_initials: QuicUdpPendingInitials,
-) -> Result<Box<dyn Tunnel>, TunnelError> {
+) -> Result<PendingQuicTunnel, TunnelError> {
     let incoming = endpoint
         .accept()
         .await
@@ -1308,6 +1316,24 @@ async fn accept_quic_tunnel(
     let connecting = incoming
         .accept()
         .with_context(|| "quic accept connection failed")?;
+
+    Ok(PendingQuicTunnel {
+        connecting,
+        endpoint,
+        local_url,
+        remote_addr,
+        cleanup,
+    })
+}
+
+async fn finish_quic_tunnel(pending: PendingQuicTunnel) -> Result<Box<dyn Tunnel>, TunnelError> {
+    let PendingQuicTunnel {
+        connecting,
+        endpoint,
+        local_url,
+        remote_addr,
+        cleanup,
+    } = pending;
     let conn = connecting
         .await
         .with_context(|| "accept connection failed")?;
@@ -1343,24 +1369,40 @@ async fn accept_quic_tunnels(
     pending_initials: QuicUdpPendingInitials,
     conn_send: Sender<Box<dyn Tunnel>>,
 ) {
+    let mut complete_tasks = JoinSet::new();
     loop {
-        match accept_quic_tunnel(
-            endpoint.clone(),
-            local_url.clone(),
-            udp_session_closers.clone(),
-            pending_initials.clone(),
-        )
-        .await
-        {
-            Ok(conn) => {
-                if let Err(err) = conn_send.send(conn).await {
-                    tracing::warn!(?err, "quic send conn to accept channel error");
-                    break;
+        tokio::select! {
+            Some(ret) = complete_tasks.join_next(), if !complete_tasks.is_empty() => {
+                match ret {
+                    Ok(Ok(conn)) => {
+                        if let Err(err) = conn_send.send(conn).await {
+                            tracing::warn!(?err, "quic send conn to accept channel error");
+                            break;
+                        }
+                    }
+                    Ok(Err(err)) => {
+                        tracing::warn!(?err, "quic accept fail");
+                    }
+                    Err(err) => {
+                        tracing::warn!(?err, "quic accept task panic");
+                    }
                 }
             }
-            Err(err) => {
-                tracing::warn!(?err, "quic accept fail");
-                tokio::time::sleep(Duration::from_millis(1)).await;
+            accepted = accept_quic_incoming(
+                endpoint.clone(),
+                local_url.clone(),
+                udp_session_closers.clone(),
+                pending_initials.clone(),
+            ) => {
+                match accepted {
+                    Ok(pending) => {
+                        complete_tasks.spawn(finish_quic_tunnel(pending));
+                    }
+                    Err(err) => {
+                        tracing::warn!(?err, "quic accept fail");
+                        tokio::time::sleep(Duration::from_millis(1)).await;
+                    }
+                }
             }
         }
     }
