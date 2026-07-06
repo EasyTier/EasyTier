@@ -459,25 +459,20 @@ pub(crate) async fn send_to_with_src_ip(
         (IpAddr::V4(src), SocketAddr::V4(dst)) => {
             socket
                 .async_io(tokio::io::Interest::WRITABLE, || {
-                    send_to_with_src_ipv4(socket, src, dst, buf)
+                    send_to_with_src_ipv4_to_addr(socket, src, SocketAddr::V4(dst), buf)
                 })
                 .await
         }
         (IpAddr::V4(src), SocketAddr::V6(dst)) => {
-            let Some(mapped_dst) = dst.ip().to_ipv4_mapped() else {
+            if dst.ip().to_ipv4_mapped().is_none() {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidInput,
                     format!("source address {src} does not match destination {dst} family"),
                 ));
-            };
+            }
             socket
                 .async_io(tokio::io::Interest::WRITABLE, || {
-                    send_to_with_src_ipv4(
-                        socket,
-                        src,
-                        SocketAddrV4::new(mapped_dst, dst.port()),
-                        buf,
-                    )
+                    send_to_with_src_ipv4_to_addr(socket, src, SocketAddr::V6(dst), buf)
                 })
                 .await
         }
@@ -517,17 +512,17 @@ pub(crate) fn try_send_to_with_src_ip(
     match (src_ip, dst_addr) {
         (IpAddr::V4(src), SocketAddr::V4(dst)) => socket
             .try_io(tokio::io::Interest::WRITABLE, || {
-                send_to_with_src_ipv4(socket, src, dst, buf)
+                send_to_with_src_ipv4_to_addr(socket, src, SocketAddr::V4(dst), buf)
             }),
         (IpAddr::V4(src), SocketAddr::V6(dst)) => {
-            let Some(mapped_dst) = dst.ip().to_ipv4_mapped() else {
+            if dst.ip().to_ipv4_mapped().is_none() {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidInput,
                     format!("source address {src} does not match destination {dst} family"),
                 ));
-            };
+            }
             socket.try_io(tokio::io::Interest::WRITABLE, || {
-                send_to_with_src_ipv4(socket, src, SocketAddrV4::new(mapped_dst, dst.port()), buf)
+                send_to_with_src_ipv4_to_addr(socket, src, SocketAddr::V6(dst), buf)
             })
         }
         (IpAddr::V6(src), SocketAddr::V6(dst)) => socket
@@ -539,6 +534,54 @@ pub(crate) fn try_send_to_with_src_ip(
             format!("source address {src} does not match destination {dst} family"),
         )),
     }
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "android")))]
+fn send_to_with_src_ipv4_to_addr(
+    socket: &UdpSocket,
+    src_ip: Ipv4Addr,
+    dst_addr: SocketAddr,
+    buf: &[u8],
+) -> io::Result<usize> {
+    match dst_addr {
+        SocketAddr::V4(dst) => send_to_with_src_ipv4(socket, src_ip, dst, buf),
+        SocketAddr::V6(dst) => {
+            let Some(mapped_dst) = dst.ip().to_ipv4_mapped() else {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("source address {src_ip} does not match destination {dst} family"),
+                ));
+            };
+            send_to_with_src_ipv4_mapped_v6(socket, src_ip, dst, mapped_dst, buf)
+        }
+    }
+}
+
+#[cfg(windows)]
+fn send_to_with_src_ipv4_mapped_v6(
+    socket: &UdpSocket,
+    src_ip: Ipv4Addr,
+    dst_addr: SocketAddrV6,
+    _mapped_dst: Ipv4Addr,
+    buf: &[u8],
+) -> io::Result<usize> {
+    send_to_with_src_ipv4_windows(socket, src_ip, SocketAddr::V6(dst_addr), buf)
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "android", windows)))]
+fn send_to_with_src_ipv4_mapped_v6(
+    socket: &UdpSocket,
+    src_ip: Ipv4Addr,
+    dst_addr: SocketAddrV6,
+    mapped_dst: Ipv4Addr,
+    buf: &[u8],
+) -> io::Result<usize> {
+    send_to_with_src_ipv4(
+        socket,
+        src_ip,
+        SocketAddrV4::new(mapped_dst, dst_addr.port()),
+        buf,
+    )
 }
 
 fn send_to_with_src_ip_raw(
@@ -652,6 +695,12 @@ fn send_to_with_src_ipv4(
     #[repr(align(8))]
     struct ControlBuffer([u8; 128]);
 
+    if let Ok(SocketAddr::V4(local_addr)) = socket.local_addr() {
+        if !local_addr.ip().is_unspecified() {
+            return socket.try_send_to(buf, SocketAddr::V4(dst_addr));
+        }
+    }
+
     let src_addr = libc::in_addr {
         s_addr: u32::from(src_ip).to_be(),
     };
@@ -707,6 +756,16 @@ fn send_to_with_src_ipv4(
     dst_addr: SocketAddrV4,
     buf: &[u8],
 ) -> io::Result<usize> {
+    send_to_with_src_ipv4_windows(socket, src_ip, SocketAddr::V4(dst_addr), buf)
+}
+
+#[cfg(windows)]
+fn send_to_with_src_ipv4_windows(
+    socket: &UdpSocket,
+    src_ip: Ipv4Addr,
+    dst_addr: SocketAddr,
+    buf: &[u8],
+) -> io::Result<usize> {
     use std::{mem, os::windows::io::AsRawSocket, ptr};
 
     use windows::{
@@ -720,7 +779,7 @@ fn send_to_with_src_ipv4(
     #[repr(align(8))]
     struct ControlBuffer([u8; 128]);
 
-    let dst = socket2::SockAddr::from(std::net::SocketAddr::V4(dst_addr));
+    let dst = socket2::SockAddr::from(dst_addr);
     let mut data = WSABUF {
         len: buf.len() as u32,
         buf: PSTR(buf.as_ptr() as *mut u8),
