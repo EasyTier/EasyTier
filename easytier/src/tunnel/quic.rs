@@ -27,6 +27,7 @@ use quinn::{
     udp::{RecvMeta, Transmit},
 };
 use std::{
+    collections::HashMap,
     fmt::Formatter,
     future::Future,
     io::{self, IoSliceMut},
@@ -41,8 +42,8 @@ use std::{
 use tokio::{
     net::UdpSocket,
     sync::{
-        mpsc::{Receiver, Sender, UnboundedReceiver, channel},
-        oneshot,
+        mpsc::{Receiver, Sender, channel},
+        oneshot, watch,
     },
     task::{AbortHandle, JoinSet},
 };
@@ -740,11 +741,34 @@ impl QuicEndpointManager {
 struct ConnWrapper {
     conn: Connection,
     _endpoint: Option<Endpoint>,
+    _udp_session_cleanup: Option<QuicUdpSessionCleanup>,
 }
 
 impl Drop for ConnWrapper {
     fn drop(&mut self) {
         self.conn.close(0u32.into(), b"done");
+    }
+}
+
+type QuicUdpSessionClosers = Arc<StdMutex<HashMap<SocketAddr, Arc<watch::Sender<bool>>>>>;
+
+#[derive(Clone)]
+struct QuicUdpSessionCleanup {
+    peer_addr: SocketAddr,
+    closers: QuicUdpSessionClosers,
+}
+
+impl QuicUdpSessionCleanup {
+    fn new(peer_addr: SocketAddr, closers: QuicUdpSessionClosers) -> Self {
+        Self { peer_addr, closers }
+    }
+}
+
+impl Drop for QuicUdpSessionCleanup {
+    fn drop(&mut self) {
+        if let Some(close) = self.closers.lock().unwrap().remove(&self.peer_addr) {
+            let _ = close.send(true);
+        }
     }
 }
 
@@ -880,6 +904,7 @@ impl Sink<SinkItem> for LazyQuicWriter {
 fn lazy_quic_tunnel_streams(
     connecting: Connecting,
     endpoint: Endpoint,
+    udp_session_cleanup: QuicUdpSessionCleanup,
 ) -> (LazyQuicReader, LazyQuicWriter) {
     let (send_tx, send_rx) = oneshot::channel();
     let (recv_tx, recv_rx) = oneshot::channel();
@@ -895,6 +920,7 @@ fn lazy_quic_tunnel_streams(
             let conn = Arc::new(ConnWrapper {
                 conn,
                 _endpoint: Some(endpoint),
+                _udp_session_cleanup: Some(udp_session_cleanup),
             });
             Ok::<_, String>((send, recv, conn))
         }
@@ -964,10 +990,12 @@ struct QuicUdpDatagram {
     peer_addr: SocketAddr,
 }
 
+const QUIC_UDP_DATAGRAM_QUEUE_CAPACITY: usize = 1024;
+
 struct QuicUdpListenerSocket {
     send_socket: Arc<UdpSocket>,
     local_addr: SocketAddr,
-    incoming: StdMutex<UnboundedReceiver<io::Result<QuicUdpDatagram>>>,
+    incoming: StdMutex<Receiver<io::Result<QuicUdpDatagram>>>,
     _accept_task: AbortOnDropHandle<()>,
 }
 
@@ -980,9 +1008,13 @@ impl std::fmt::Debug for QuicUdpListenerSocket {
 }
 
 impl QuicUdpListenerSocket {
-    fn new(layer: Arc<RuntimeUdpSessionLayer>, send_socket: Arc<UdpSocket>) -> io::Result<Self> {
+    fn new(
+        layer: Arc<RuntimeUdpSessionLayer>,
+        send_socket: Arc<UdpSocket>,
+        udp_session_closers: QuicUdpSessionClosers,
+    ) -> io::Result<Self> {
         let local_addr = send_socket.local_addr()?;
-        let (incoming_tx, incoming_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (incoming_tx, incoming_rx) = channel(QUIC_UDP_DATAGRAM_QUEUE_CAPACITY);
         let accept_task = AbortOnDropHandle::new(tokio::spawn(async move {
             loop {
                 let session = match layer
@@ -991,38 +1023,63 @@ impl QuicUdpListenerSocket {
                 {
                     Ok(session) => session,
                     Err(err) => {
-                        let _ = incoming_tx.send(Err(err));
+                        let _ = incoming_tx.send(Err(err)).await;
                         break;
                     }
                 };
                 let peer_addr = match session.peer_addr() {
                     Ok(addr) => addr,
                     Err(err) => {
-                        let _ = incoming_tx.send(Err(err));
+                        tracing::debug!(?err, "quic udp session peer addr error");
                         continue;
                     }
                 };
+                let (close_tx, mut close_rx) = watch::channel(false);
+                let close_tx = Arc::new(close_tx);
+                udp_session_closers
+                    .lock()
+                    .unwrap()
+                    .insert(peer_addr, close_tx.clone());
                 let session_incoming_tx = incoming_tx.clone();
+                let session_closers = udp_session_closers.clone();
                 tokio::spawn(async move {
                     let mut buf = vec![0u8; 64 * 1024];
                     loop {
-                        match session.recv(&mut buf).await {
-                            Ok(len) => {
-                                if session_incoming_tx
-                                    .send(Ok(QuicUdpDatagram {
-                                        payload: buf[..len].to_vec(),
-                                        peer_addr,
-                                    }))
-                                    .is_err()
-                                {
-                                    break;
+                        tokio::select! {
+                            biased;
+                            _ = close_rx.changed() => break,
+                            recv = session.recv(&mut buf) => {
+                                match recv {
+                                    Ok(len) => {
+                                        if session_incoming_tx
+                                            .send(Ok(QuicUdpDatagram {
+                                                payload: buf[..len].to_vec(),
+                                                peer_addr,
+                                            }))
+                                            .await
+                                            .is_err()
+                                        {
+                                            break;
+                                        }
+                                    }
+                                    Err(err) => {
+                                        tracing::debug!(
+                                            ?err,
+                                            ?peer_addr,
+                                            "quic udp session recv stopped"
+                                        );
+                                        break;
+                                    }
                                 }
                             }
-                            Err(err) => {
-                                let _ = session_incoming_tx.send(Err(err));
-                                break;
-                            }
                         }
+                    }
+                    let mut session_closers = session_closers.lock().unwrap();
+                    if session_closers
+                        .get(&peer_addr)
+                        .is_some_and(|current| Arc::ptr_eq(current, &close_tx))
+                    {
+                        session_closers.remove(&peer_addr);
                     }
                 });
             }
@@ -1085,30 +1142,37 @@ impl AsyncUdpSocket for QuicUdpListenerSocket {
         }
 
         let mut incoming = self.incoming.lock().unwrap();
-        match Pin::new(&mut *incoming).poll_recv(cx) {
-            Poll::Ready(Some(Ok(datagram))) => {
-                if bufs[0].len() < datagram.payload.len() {
+        loop {
+            match Pin::new(&mut *incoming).poll_recv(cx) {
+                Poll::Ready(Some(Ok(datagram))) => {
+                    if bufs[0].len() < datagram.payload.len() {
+                        tracing::debug!(
+                            payload_len = datagram.payload.len(),
+                            recv_buf_len = bufs[0].len(),
+                            peer_addr = ?datagram.peer_addr,
+                            "drop oversized quic udp datagram"
+                        );
+                        continue;
+                    }
+                    bufs[0][..datagram.payload.len()].copy_from_slice(&datagram.payload);
+                    meta[0] = RecvMeta {
+                        addr: datagram.peer_addr,
+                        len: datagram.payload.len(),
+                        stride: datagram.payload.len(),
+                        ecn: None,
+                        dst_ip: None,
+                    };
+                    return Poll::Ready(Ok(1));
+                }
+                Poll::Ready(Some(Err(error))) => return Poll::Ready(Err(error)),
+                Poll::Ready(None) => {
                     return Poll::Ready(Err(io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        "quic udp recv buffer too small",
+                        io::ErrorKind::UnexpectedEof,
+                        "quic udp session closed",
                     )));
                 }
-                bufs[0][..datagram.payload.len()].copy_from_slice(&datagram.payload);
-                meta[0] = RecvMeta {
-                    addr: datagram.peer_addr,
-                    len: datagram.payload.len(),
-                    stride: datagram.payload.len(),
-                    ecn: None,
-                    dst_ip: None,
-                };
-                Poll::Ready(Ok(1))
+                Poll::Pending => return Poll::Pending,
             }
-            Poll::Ready(Some(Err(error))) => Poll::Ready(Err(error)),
-            Poll::Ready(None) => Poll::Ready(Err(io::Error::new(
-                io::ErrorKind::UnexpectedEof,
-                "quic udp session closed",
-            ))),
-            Poll::Pending => Poll::Pending,
         }
     }
 
@@ -1124,6 +1188,7 @@ impl AsyncUdpSocket for QuicUdpListenerSocket {
 async fn accept_quic_tunnel(
     endpoint: Endpoint,
     local_url: url::Url,
+    udp_session_closers: QuicUdpSessionClosers,
 ) -> Result<Box<dyn Tunnel>, TunnelError> {
     let incoming = endpoint
         .accept()
@@ -1133,7 +1198,8 @@ async fn accept_quic_tunnel(
     let connecting = incoming
         .accept()
         .with_context(|| "quic accept connection failed")?;
-    let (reader, writer) = lazy_quic_tunnel_streams(connecting, endpoint);
+    let cleanup = QuicUdpSessionCleanup::new(remote_addr, udp_session_closers);
+    let (reader, writer) = lazy_quic_tunnel_streams(connecting, endpoint, cleanup);
     tokio::task::yield_now().await;
 
     let info = TunnelInfo {
@@ -1153,10 +1219,17 @@ async fn accept_quic_tunnel(
 async fn accept_quic_tunnels(
     endpoint: Endpoint,
     local_url: url::Url,
+    udp_session_closers: QuicUdpSessionClosers,
     conn_send: Sender<Box<dyn Tunnel>>,
 ) {
     loop {
-        match accept_quic_tunnel(endpoint.clone(), local_url.clone()).await {
+        match accept_quic_tunnel(
+            endpoint.clone(),
+            local_url.clone(),
+            udp_session_closers.clone(),
+        )
+        .await
+        {
             Ok(conn) => {
                 if let Err(err) = conn_send.send(conn).await {
                     tracing::warn!(?err, "quic send conn to accept channel error");
@@ -1176,6 +1249,7 @@ pub struct QuicTunnelListener {
     endpoint: Option<Endpoint>,
     conn_send: Sender<Box<dyn Tunnel>>,
     conn_recv: Receiver<Box<dyn Tunnel>>,
+    udp_session_closers: QuicUdpSessionClosers,
     forward_tasks: Arc<StdMutex<JoinSet<()>>>,
     global_ctx: ArcGlobalCtx,
 }
@@ -1188,6 +1262,7 @@ impl QuicTunnelListener {
             endpoint: None,
             conn_send,
             conn_recv,
+            udp_session_closers: Arc::new(StdMutex::new(HashMap::new())),
             forward_tasks: Arc::new(StdMutex::new(JoinSet::new())),
             global_ctx,
         }
@@ -1216,7 +1291,11 @@ impl TunnelListener for QuicTunnelListener {
             .session_listener
             .get_socket()
             .ok_or_else(|| TunnelError::InternalError("udp listener not started".to_owned()))?;
-        let udp_socket = Arc::new(QuicUdpListenerSocket::new(layer, send_socket)?);
+        let udp_socket = Arc::new(QuicUdpListenerSocket::new(
+            layer,
+            send_socket,
+            self.udp_session_closers.clone(),
+        )?);
         let runtime = default_runtime().ok_or(TunnelError::InternalError(
             "no async runtime found".to_owned(),
         ))?;
@@ -1228,11 +1307,17 @@ impl TunnelListener for QuicTunnelListener {
         )?);
         let endpoint = self.endpoint.as_ref().unwrap().clone();
         let local_url = self.local_url();
+        let udp_session_closers = self.udp_session_closers.clone();
         let conn_send = self.conn_send.clone();
         self.forward_tasks
             .lock()
             .unwrap()
-            .spawn(accept_quic_tunnels(endpoint, local_url, conn_send));
+            .spawn(accept_quic_tunnels(
+                endpoint,
+                local_url,
+                udp_session_closers,
+                conn_send,
+            ));
         Ok(())
     }
 
@@ -1294,6 +1379,7 @@ impl TunnelConnector for QuicTunnelConnector {
         let arc_conn = Arc::new(ConnWrapper {
             conn: connection,
             _endpoint: None,
+            _udp_session_cleanup: None,
         });
         Ok(Box::new(TunnelWrapper::new(
             FramedReader::new_with_associate_data(r, 4500, Some(Box::new(arc_conn.clone()))),
@@ -1322,6 +1408,8 @@ mod tests {
         TunnelConnector,
         common::tests::{_tunnel_bench, _tunnel_pingpong},
     };
+    use futures::future::poll_fn;
+    use std::io::IoSliceMut;
     use std::sync::LazyLock;
     use tokio::runtime::{Builder, Runtime};
 
@@ -1439,6 +1527,71 @@ mod tests {
             .unwrap();
 
         assert!(!QuicEndpointManager::load(&global_ctx).contains_local_addr(listener_addr));
+    }
+
+    #[test]
+    fn listener_socket_drops_oversized_datagrams() {
+        RUNTIME.block_on(listener_socket_drops_oversized_datagrams_impl())
+    }
+    async fn listener_socket_drops_oversized_datagrams_impl() {
+        let send_socket = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let local_addr = send_socket.local_addr().unwrap();
+        let peer_addr: SocketAddr = "127.0.0.1:31000".parse().unwrap();
+        let (incoming_tx, incoming_rx) = channel(2);
+        incoming_tx
+            .send(Ok(QuicUdpDatagram {
+                payload: vec![0; 1500],
+                peer_addr,
+            }))
+            .await
+            .unwrap();
+        incoming_tx
+            .send(Ok(QuicUdpDatagram {
+                payload: b"ok".to_vec(),
+                peer_addr,
+            }))
+            .await
+            .unwrap();
+
+        let socket = QuicUdpListenerSocket {
+            send_socket,
+            local_addr,
+            incoming: StdMutex::new(incoming_rx),
+            _accept_task: AbortOnDropHandle::new(tokio::spawn(async {
+                std::future::pending::<()>().await
+            })),
+        };
+        let mut storage = [0; 8];
+        let mut bufs = [IoSliceMut::new(&mut storage)];
+        let mut meta = [RecvMeta::default()];
+        let msgs = poll_fn(|cx| socket.poll_recv(cx, &mut bufs, &mut meta))
+            .await
+            .unwrap();
+
+        assert_eq!(msgs, 1);
+        assert_eq!(meta[0].addr, peer_addr);
+        assert_eq!(meta[0].len, 2);
+        assert_eq!(&bufs[0][..2], b"ok");
+    }
+
+    #[test]
+    fn quic_udp_session_cleanup_notifies_and_removes_peer() {
+        RUNTIME.block_on(quic_udp_session_cleanup_notifies_and_removes_peer_impl())
+    }
+    async fn quic_udp_session_cleanup_notifies_and_removes_peer_impl() {
+        let peer_addr: SocketAddr = "127.0.0.1:31001".parse().unwrap();
+        let closers = Arc::new(StdMutex::new(HashMap::new()));
+        let (close_tx, mut close_rx) = watch::channel(false);
+        closers
+            .lock()
+            .unwrap()
+            .insert(peer_addr, Arc::new(close_tx));
+
+        drop(QuicUdpSessionCleanup::new(peer_addr, closers.clone()));
+
+        close_rx.changed().await.unwrap();
+        assert!(*close_rx.borrow());
+        assert!(!closers.lock().unwrap().contains_key(&peer_addr));
     }
 
     #[test]
