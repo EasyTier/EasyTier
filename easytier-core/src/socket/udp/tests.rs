@@ -771,6 +771,51 @@ async fn udp_layer_drops_unknown_datagram_instead_of_creating_session() {
 }
 
 #[tokio::test]
+async fn udp_layer_drops_short_quic_like_datagram_instead_of_creating_session() {
+    let local_addr = SocketAddr::from(([127, 0, 0, 1], 12000));
+    let peer_addr = SocketAddr::from(([127, 0, 0, 1], 12001));
+    let socket = Arc::new(AutoSackVirtualUdpSocket::new(local_addr));
+    let layer = Arc::new(UdpSessionLayer::new(socket.clone()));
+    let mut accept_task = tokio::spawn({
+        let layer = layer.clone();
+        async move {
+            layer
+                .accept_classified_session(UdpSessionProtocol::Quic)
+                .await
+        }
+    });
+
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while !layer
+            .classified_accepts
+            .get(&UdpSessionProtocol::Quic)
+            .unwrap()
+            .accept_enabled
+            .load(Ordering::Relaxed)
+        {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+
+    socket
+        .incoming
+        .lock()
+        .unwrap()
+        .push_back((vec![0xc0; 32], peer_addr));
+    socket.incoming_notify.notify_one();
+
+    assert!(
+        tokio::time::timeout(Duration::from_millis(100), &mut accept_task)
+            .await
+            .is_err()
+    );
+    accept_task.abort();
+    assert_eq!(layer.active_classified_session_count(), 0);
+}
+
+#[tokio::test]
 async fn udp_layer_accepts_unclaimed_easy_tier_shaped_wireguard_packet_when_enabled() {
     let local_addr = SocketAddr::from(([127, 0, 0, 1], 12000));
     let peer_addr = SocketAddr::from(([127, 0, 0, 1], 12001));

@@ -242,7 +242,15 @@ fn is_wireguard_packet(data: &[u8]) -> bool {
 }
 
 fn is_quic_packet(data: &[u8]) -> bool {
-    data.first().is_some_and(|first| first & 0x40 != 0)
+    const QUIC_INITIAL_HEADER_FORM_AND_FIXED_BIT: u8 = 0xC0;
+    const QUIC_LONG_PACKET_TYPE_MASK: u8 = 0x30;
+    const QUIC_MIN_INITIAL_DATAGRAM_LEN: usize = 1200;
+
+    data.first().is_some_and(|first| {
+        (first & QUIC_INITIAL_HEADER_FORM_AND_FIXED_BIT) == QUIC_INITIAL_HEADER_FORM_AND_FIXED_BIT
+            && (first & QUIC_LONG_PACKET_TYPE_MASK) == 0
+            && data.len() >= QUIC_MIN_INITIAL_DATAGRAM_LEN
+    })
 }
 
 pub(super) fn inspect_easytier_udp_datagram(

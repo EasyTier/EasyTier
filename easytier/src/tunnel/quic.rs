@@ -35,6 +35,7 @@ use std::{
     net::{IpAddr, Ipv4Addr, Ipv6Addr},
     pin::Pin,
     sync::OnceLock,
+    sync::atomic::{AtomicBool, Ordering},
     sync::{Arc, Mutex as StdMutex},
     task::{Context as TaskContext, Poll},
     time::Duration,
@@ -750,24 +751,65 @@ impl Drop for ConnWrapper {
     }
 }
 
-type QuicUdpSessionClosers = Arc<StdMutex<HashMap<SocketAddr, Arc<watch::Sender<bool>>>>>;
+type QuicUdpSessionClosers = Arc<StdMutex<HashMap<SocketAddr, Arc<QuicUdpSessionCloser>>>>;
+
+struct QuicUdpSessionCloser {
+    close: watch::Sender<bool>,
+    claimed: AtomicBool,
+}
+
+impl QuicUdpSessionCloser {
+    fn new(close: watch::Sender<bool>) -> Self {
+        Self {
+            close,
+            claimed: AtomicBool::new(false),
+        }
+    }
+
+    fn claim(&self) {
+        self.claimed.store(true, Ordering::Relaxed);
+    }
+
+    fn is_claimed(&self) -> bool {
+        self.claimed.load(Ordering::Relaxed)
+    }
+
+    fn close(&self) {
+        let _ = self.close.send(true);
+    }
+}
 
 #[derive(Clone)]
 struct QuicUdpSessionCleanup {
     peer_addr: SocketAddr,
+    closer: Arc<QuicUdpSessionCloser>,
     closers: QuicUdpSessionClosers,
 }
 
 impl QuicUdpSessionCleanup {
-    fn new(peer_addr: SocketAddr, closers: QuicUdpSessionClosers) -> Self {
-        Self { peer_addr, closers }
+    fn new(
+        peer_addr: SocketAddr,
+        closer: Arc<QuicUdpSessionCloser>,
+        closers: QuicUdpSessionClosers,
+    ) -> Self {
+        closer.claim();
+        Self {
+            peer_addr,
+            closer,
+            closers,
+        }
     }
 }
 
 impl Drop for QuicUdpSessionCleanup {
     fn drop(&mut self) {
-        if let Some(close) = self.closers.lock().unwrap().remove(&self.peer_addr) {
-            let _ = close.send(true);
+        self.closer.close();
+        let mut closers = self.closers.lock().unwrap();
+        if closers
+            .get(&self.peer_addr)
+            .is_some_and(|current| Arc::ptr_eq(current, &self.closer))
+        {
+            closers.remove(&self.peer_addr);
         }
     }
 }
@@ -991,6 +1033,7 @@ struct QuicUdpDatagram {
 }
 
 const QUIC_UDP_DATAGRAM_QUEUE_CAPACITY: usize = 1024;
+const QUIC_UDP_UNCLAIMED_SESSION_TIMEOUT: Duration = Duration::from_secs(10);
 
 struct QuicUdpListenerSocket {
     send_socket: Arc<UdpSocket>,
@@ -1035,19 +1078,28 @@ impl QuicUdpListenerSocket {
                     }
                 };
                 let (close_tx, mut close_rx) = watch::channel(false);
-                let close_tx = Arc::new(close_tx);
+                let closer = Arc::new(QuicUdpSessionCloser::new(close_tx));
                 udp_session_closers
                     .lock()
                     .unwrap()
-                    .insert(peer_addr, close_tx.clone());
+                    .insert(peer_addr, closer.clone());
                 let session_incoming_tx = incoming_tx.clone();
                 let session_closers = udp_session_closers.clone();
                 tokio::spawn(async move {
                     let mut buf = vec![0u8; 64 * 1024];
+                    let unclaimed_timeout = tokio::time::sleep(QUIC_UDP_UNCLAIMED_SESSION_TIMEOUT);
+                    tokio::pin!(unclaimed_timeout);
                     loop {
                         tokio::select! {
                             biased;
                             _ = close_rx.changed() => break,
+                            _ = &mut unclaimed_timeout, if !closer.is_claimed() => {
+                                tracing::debug!(
+                                    ?peer_addr,
+                                    "quic udp session was not claimed before timeout"
+                                );
+                                break;
+                            }
                             recv = session.recv(&mut buf) => {
                                 match recv {
                                     Ok(len) => {
@@ -1077,7 +1129,7 @@ impl QuicUdpListenerSocket {
                     let mut session_closers = session_closers.lock().unwrap();
                     if session_closers
                         .get(&peer_addr)
-                        .is_some_and(|current| Arc::ptr_eq(current, &close_tx))
+                        .is_some_and(|current| Arc::ptr_eq(current, &closer))
                     {
                         session_closers.remove(&peer_addr);
                     }
@@ -1195,10 +1247,16 @@ async fn accept_quic_tunnel(
         .await
         .ok_or_else(|| TunnelError::InvalidPacket("quic accept failed".to_owned()))?;
     let remote_addr = incoming.remote_address();
+    let closer = udp_session_closers
+        .lock()
+        .unwrap()
+        .get(&remote_addr)
+        .cloned()
+        .ok_or_else(|| TunnelError::InvalidPacket("quic udp session was closed".to_owned()))?;
+    let cleanup = QuicUdpSessionCleanup::new(remote_addr, closer, udp_session_closers);
     let connecting = incoming
         .accept()
         .with_context(|| "quic accept connection failed")?;
-    let cleanup = QuicUdpSessionCleanup::new(remote_addr, udp_session_closers);
     let (reader, writer) = lazy_quic_tunnel_streams(connecting, endpoint, cleanup);
     tokio::task::yield_now().await;
 
@@ -1582,16 +1640,49 @@ mod tests {
         let peer_addr: SocketAddr = "127.0.0.1:31001".parse().unwrap();
         let closers = Arc::new(StdMutex::new(HashMap::new()));
         let (close_tx, mut close_rx) = watch::channel(false);
-        closers
-            .lock()
-            .unwrap()
-            .insert(peer_addr, Arc::new(close_tx));
+        let closer = Arc::new(QuicUdpSessionCloser::new(close_tx));
+        closers.lock().unwrap().insert(peer_addr, closer.clone());
 
-        drop(QuicUdpSessionCleanup::new(peer_addr, closers.clone()));
+        drop(QuicUdpSessionCleanup::new(
+            peer_addr,
+            closer,
+            closers.clone(),
+        ));
 
         close_rx.changed().await.unwrap();
         assert!(*close_rx.borrow());
         assert!(!closers.lock().unwrap().contains_key(&peer_addr));
+    }
+
+    #[test]
+    fn stale_quic_udp_session_cleanup_does_not_close_newer_peer_session() {
+        RUNTIME.block_on(stale_quic_udp_session_cleanup_does_not_close_newer_peer_session_impl())
+    }
+    async fn stale_quic_udp_session_cleanup_does_not_close_newer_peer_session_impl() {
+        let peer_addr: SocketAddr = "127.0.0.1:31002".parse().unwrap();
+        let closers = Arc::new(StdMutex::new(HashMap::new()));
+        let (old_close_tx, mut old_close_rx) = watch::channel(false);
+        let (new_close_tx, new_close_rx) = watch::channel(false);
+        let old_closer = Arc::new(QuicUdpSessionCloser::new(old_close_tx));
+        let new_closer = Arc::new(QuicUdpSessionCloser::new(new_close_tx));
+        let cleanup = QuicUdpSessionCleanup::new(peer_addr, old_closer, closers.clone());
+        closers
+            .lock()
+            .unwrap()
+            .insert(peer_addr, new_closer.clone());
+
+        drop(cleanup);
+
+        old_close_rx.changed().await.unwrap();
+        assert!(*old_close_rx.borrow());
+        assert!(!*new_close_rx.borrow());
+        assert!(
+            closers
+                .lock()
+                .unwrap()
+                .get(&peer_addr)
+                .is_some_and(|current| Arc::ptr_eq(current, &new_closer))
+        );
     }
 
     #[test]
