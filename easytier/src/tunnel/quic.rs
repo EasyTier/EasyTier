@@ -38,6 +38,7 @@ use std::{
 };
 use tokio::{
     net::UdpSocket,
+    runtime::Handle,
     sync::{
         mpsc::{Receiver, Sender, channel},
         watch,
@@ -824,6 +825,7 @@ struct QuicUdpSessionCleanup {
     closer: Arc<QuicUdpSessionCloser>,
     closers: QuicUdpSessionClosers,
     pending_initials: QuicUdpPendingInitials,
+    runtime: Option<Handle>,
 }
 
 impl QuicUdpSessionCleanup {
@@ -841,18 +843,20 @@ impl QuicUdpSessionCleanup {
             closer,
             closers,
             pending_initials,
+            runtime: Handle::try_current().ok(),
         }
     }
 }
 
 impl Drop for QuicUdpSessionCleanup {
     fn drop(&mut self) {
-        retain_claimed_initial_tombstone_for_stale_incoming(
-            self.pending_initials.clone(),
-            self.initial_key.clone(),
-            self.closer.clone(),
-        );
         if !self.closer.release_connection() {
+            retain_claimed_initial_tombstone_for_stale_incoming(
+                self.pending_initials.clone(),
+                self.initial_key.clone(),
+                self.closer.clone(),
+                self.runtime.clone(),
+            );
             return;
         }
         self.closer.close();
@@ -863,6 +867,13 @@ impl Drop for QuicUdpSessionCleanup {
         {
             closers.remove(&self.peer_addr);
         }
+        drop(closers);
+        retain_claimed_initial_tombstone_for_stale_incoming(
+            self.pending_initials.clone(),
+            self.initial_key.clone(),
+            self.closer.clone(),
+            self.runtime.clone(),
+        );
     }
 }
 
@@ -964,12 +975,14 @@ fn retain_claimed_initial_tombstone_for_stale_incoming(
     pending_initials: QuicUdpPendingInitials,
     initial_key: QuicUdpInitialKey,
     closer: Arc<QuicUdpSessionCloser>,
+    runtime: Option<Handle>,
 ) {
     retain_claimed_initial_tombstone_for_stale_incoming_after(
         pending_initials,
         initial_key,
         closer,
         QUIC_UDP_UNCLAIMED_SESSION_TIMEOUT,
+        runtime,
     );
 }
 
@@ -978,6 +991,7 @@ fn retain_claimed_initial_tombstone_for_stale_incoming_after(
     initial_key: QuicUdpInitialKey,
     closer: Arc<QuicUdpSessionCloser>,
     timeout: Duration,
+    runtime: Option<Handle>,
 ) {
     {
         let mut pending_initials = pending_initials.lock().unwrap();
@@ -989,7 +1003,11 @@ fn retain_claimed_initial_tombstone_for_stale_incoming_after(
             });
     }
 
-    tokio::spawn(async move {
+    let Some(runtime) = runtime.or_else(|| Handle::try_current().ok()) else {
+        remove_tombstone_and_claim_if_matches(&pending_initials, &initial_key, &closer);
+        return;
+    };
+    runtime.spawn(async move {
         tokio::time::sleep(timeout).await;
         remove_tombstone_and_claim_if_matches(&pending_initials, &initial_key, &closer);
     });
@@ -1841,6 +1859,30 @@ mod tests {
     }
 
     #[test]
+    fn quic_udp_session_cleanup_drop_outside_runtime_does_not_panic() {
+        let peer_addr: SocketAddr = "127.0.0.1:31011".parse().unwrap();
+        let initial_key = (peer_addr, vec![1]);
+        let closers = Arc::new(StdMutex::new(HashMap::new()));
+        let pending_initials = Arc::new(StdMutex::new(HashMap::new()));
+        let (close_tx, close_rx) = watch::channel(false);
+        let closer = Arc::new(QuicUdpSessionCloser::new(close_tx));
+        assert!(closer.try_claim(&initial_key));
+        closers.lock().unwrap().insert(peer_addr, closer.clone());
+
+        drop(QuicUdpSessionCleanup::new(
+            initial_key.clone(),
+            closer.clone(),
+            closers.clone(),
+            pending_initials.clone(),
+        ));
+
+        assert!(*close_rx.borrow());
+        assert!(!closers.lock().unwrap().contains_key(&peer_addr));
+        assert!(!pending_initials.lock().unwrap().contains_key(&initial_key));
+        assert_eq!(closer.claimed_initial_count(), 0);
+    }
+
+    #[test]
     fn quic_udp_session_cleanup_closes_after_last_connection() {
         RUNTIME.block_on(quic_udp_session_cleanup_closes_after_last_connection_impl())
     }
@@ -2168,6 +2210,7 @@ mod tests {
             initial_key.clone(),
             old_closer.clone(),
             Duration::from_millis(1),
+            Some(Handle::current()),
         );
         assert!(matches!(
             register_pending_initial(&pending_initials, initial_key.clone(), new_closer.clone()),
