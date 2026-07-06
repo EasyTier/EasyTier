@@ -263,7 +263,7 @@ pub(crate) enum UdpSessionAcceptKind {
     Classified(UdpSessionProtocol),
 }
 
-async fn accept_udp_session(
+pub(crate) async fn accept_udp_session(
     layer: &Arc<RuntimeUdpSessionLayer>,
     accept_kind: UdpSessionAcceptKind,
 ) -> io::Result<UdpSession> {

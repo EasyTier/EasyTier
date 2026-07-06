@@ -9,13 +9,16 @@ use std::{
 use quanta::Instant;
 
 use super::{
-    FromUrl, IpVersion, Tunnel, TunnelError, TunnelInfo, TunnelListener, TunnelUrl, ZCPacketSink,
+    FromUrl, IpVersion, Tunnel, TunnelError, TunnelInfo, TunnelListener, ZCPacketSink,
     ZCPacketStream,
     common::wait_for_connect_futures,
     generate_digest_from_str,
     packet_def::{PEER_MANAGER_HEADER_SIZE, ZCPacketType},
     ring::create_ring_tunnel_pair,
-    udp::{RuntimeUdpSessionLayer, RuntimeUdpSocket},
+    udp::{
+        RuntimeUdpSessionLayer, RuntimeUdpSessionListener, RuntimeUdpSocket, UdpSessionAcceptKind,
+        accept_udp_session,
+    },
 };
 use crate::tunnel::common::{BindDev, bind};
 use crate::{
@@ -482,7 +485,7 @@ type ConnSender = tokio::sync::mpsc::UnboundedSender<Box<dyn Tunnel>>;
 type ConnReceiver = tokio::sync::mpsc::UnboundedReceiver<Box<dyn Tunnel>>;
 
 pub struct WgTunnelListener {
-    addr: url::Url,
+    session_listener: RuntimeUdpSessionListener,
     config: WgConfig,
 
     conn_recv: ConnReceiver,
@@ -491,14 +494,13 @@ pub struct WgTunnelListener {
     wg_peer_map: Arc<DashMap<SocketAddr, Arc<WgPeer>>>,
 
     tasks: JoinSet<()>,
-    socket_mark: Option<u32>,
 }
 
 impl WgTunnelListener {
     pub fn new(addr: url::Url, config: WgConfig) -> Self {
         let (conn_send, conn_recv) = unbounded_channel();
         WgTunnelListener {
-            addr,
+            session_listener: RuntimeUdpSessionListener::new(addr),
             config,
 
             conn_recv,
@@ -507,12 +509,11 @@ impl WgTunnelListener {
             wg_peer_map: Arc::new(DashMap::new()),
 
             tasks: JoinSet::new(),
-            socket_mark: None,
         }
     }
 
     pub fn set_socket_mark(&mut self, socket_mark: Option<u32>) {
-        self.socket_mark = socket_mark;
+        self.session_listener.set_socket_mark(socket_mark);
     }
 
     async fn accept_udp_sessions(
@@ -535,9 +536,11 @@ impl WgTunnelListener {
         });
 
         loop {
-            let session = match layer
-                .accept_classified_session(UdpSessionProtocol::WireGuard)
-                .await
+            let session = match accept_udp_session(
+                &layer,
+                UdpSessionAcceptKind::Classified(UdpSessionProtocol::WireGuard),
+            )
+            .await
             {
                 Ok(session) => Arc::new(session) as Arc<dyn UdpSessionSocket>,
                 Err(e) => {
@@ -593,21 +596,14 @@ impl WgTunnelListener {
 #[async_trait]
 impl TunnelListener for WgTunnelListener {
     async fn listen(&mut self) -> Result<(), TunnelError> {
-        let addr = SocketAddr::from_url(self.addr.clone(), IpVersion::Both).await?;
-        let tunnel_url: TunnelUrl = self.addr.clone().into();
-        let socket = Arc::new(
-            bind()
-                .addr(addr)
-                .only_v6(true)
-                .maybe_dev(tunnel_url.bind_dev())
-                .maybe_socket_mark(self.socket_mark)
-                .call()?,
-        );
-        let runtime_socket = Arc::new(RuntimeUdpSocket::new(socket));
-        let layer = runtime_socket.udp_session_layer();
-        self.addr
-            .set_port(Some(layer.local_addr()?.port()))
-            .unwrap();
+        let already_listening = self.session_listener.session_layer().is_some();
+        self.session_listener.listen().await?;
+        if already_listening {
+            return Ok(());
+        }
+        let layer = self.session_listener.session_layer().ok_or_else(|| {
+            TunnelError::InternalError("wg listener did not create udp session layer".to_owned())
+        })?;
 
         self.tasks.spawn(Self::accept_udp_sessions(
             layer,
@@ -628,7 +624,7 @@ impl TunnelListener for WgTunnelListener {
     }
 
     fn local_url(&self) -> url::Url {
-        self.addr.clone()
+        self.session_listener.local_url()
     }
 }
 
