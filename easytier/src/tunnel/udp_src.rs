@@ -44,7 +44,12 @@ pub(crate) async fn recv_from_with_dst_ip(
 ) -> io::Result<(usize, SocketAddr, Option<IpAddr>)> {
     socket
         .async_io(tokio::io::Interest::READABLE, || {
-            recv_from_with_dst_ip_once(socket, buf)
+            loop {
+                match recv_from_with_dst_ip_once(socket, buf) {
+                    Err(err) if err.kind() == io::ErrorKind::Interrupted => continue,
+                    ret => break ret,
+                }
+            }
         })
         .await
 }
@@ -154,6 +159,17 @@ fn recv_from_with_dst_ip_once(
 }
 
 pub(crate) fn send_to_with_src_ip(
+    socket: &UdpSocket,
+    src_ip: IpAddr,
+    dst_addr: SocketAddr,
+    buf: &[u8],
+) -> io::Result<usize> {
+    socket.try_io(tokio::io::Interest::WRITABLE, || {
+        send_to_with_src_ip_raw(socket, src_ip, dst_addr, buf)
+    })
+}
+
+fn send_to_with_src_ip_raw(
     socket: &UdpSocket,
     src_ip: IpAddr,
     dst_addr: SocketAddr,
