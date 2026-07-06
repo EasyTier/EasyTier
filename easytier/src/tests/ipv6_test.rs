@@ -49,7 +49,7 @@ async fn test_route_peer_info_ipv6() {
 #[tokio::test]
 async fn test_peer_manager_ipv6() {
     let global_ctx = get_mock_global_ctx();
-    let (packet_sender, _packet_receiver) = tokio::sync::mpsc::channel(100);
+    let (packet_sender, _packet_receiver) = crate::peers::create_packet_recv_chan();
     let peer_mgr = crate::peers::peer_manager::PeerManager::new(
         RouteAlgoType::Ospf,
         global_ctx.clone(),

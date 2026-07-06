@@ -13,11 +13,10 @@ use futures::{StreamExt, stream::FuturesUnordered};
 use rand::{Rng, SeedableRng};
 use zerocopy::{AsBytes, FromBytes};
 
+use hotpath::wrap::tokio::sync::mpsc::{Receiver, Sender, UnboundedReceiver, UnboundedSender};
 use tokio::{
     net::UdpSocket,
-    sync::mpsc::{
-        Receiver, Sender, UnboundedReceiver, UnboundedSender, channel, unbounded_channel,
-    },
+    sync::mpsc::{channel, unbounded_channel},
     task::JoinSet,
 };
 use tokio_util::task::AbortOnDropHandle;
@@ -1185,7 +1184,7 @@ mod tests {
         let dst_addr = "127.0.0.1:1".parse().unwrap();
         let ring_for_send_udp = Arc::new(RingTunnel::new(8));
         let ring_for_recv_udp = Arc::new(RingTunnel::new(8));
-        let (close_event_sender, _close_event_recv) = tokio::sync::mpsc::unbounded_channel();
+        let (close_event_sender, _close_event_recv) = hotpath::channel!(tokio::sync::mpsc::unbounded_channel());
         let mut conn = UdpConnection::new(
             socket,
             7,

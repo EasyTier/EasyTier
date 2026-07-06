@@ -89,7 +89,7 @@ impl AddrTuple {
 
 #[derive(Default)]
 struct StackState {
-    tuples: HashMap<AddrTuple, flume::Sender<Bytes>>,
+    tuples: HashMap<AddrTuple, hotpath::wrap::flume::Sender<Bytes>>,
     closed: bool,
 }
 
@@ -133,7 +133,7 @@ pub enum State {
 pub struct Socket {
     shared: Arc<Shared>,
     tun: Arc<dyn Tun>,
-    incoming: flume::Receiver<Bytes>,
+    incoming: hotpath::wrap::flume::Receiver<Bytes>,
     local_addr: SocketAddr,
     remote_addr: SocketAddr,
     local_mac: MacAddr,
@@ -162,7 +162,7 @@ impl Socket {
         remote_mac: Option<MacAddr>,
         ack: Option<u32>,
         state: State,
-    ) -> (Socket, flume::Sender<Bytes>) {
+    ) -> (Socket, hotpath::wrap::flume::Sender<Bytes>) {
         let (incoming_tx, incoming_rx) = hotpath::channel!(flume::bounded(MPMC_BUFFER_LEN));
 
         (
@@ -505,7 +505,7 @@ impl Stack {
         shared: Arc<Shared>,
         mut tuples_purge: broadcast::Receiver<AddrTuple>,
     ) {
-        let mut tuples: HashMap<AddrTuple, flume::Sender<Bytes>> = HashMap::new();
+        let mut tuples: HashMap<AddrTuple, hotpath::wrap::flume::Sender<Bytes>> = HashMap::new();
 
         loop {
             let mut buf = BytesMut::new();

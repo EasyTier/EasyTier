@@ -56,8 +56,8 @@ type BoxNicPacketFilter = Box<dyn NicPacketFilter + Send + Sync>;
 // pub fn create_packet_recv_chan() -> (PacketRecvChan, PacketRecvChanReceiver) {
 //     tachyonix::channel(128)
 // }
-pub type PacketRecvChan = tokio::sync::mpsc::Sender<ZCPacket>;
-pub type PacketRecvChanReceiver = tokio::sync::mpsc::Receiver<ZCPacket>;
+pub type PacketRecvChan = hotpath::wrap::tokio::sync::mpsc::Sender<ZCPacket>;
+pub type PacketRecvChanReceiver = hotpath::wrap::tokio::sync::mpsc::Receiver<ZCPacket>;
 pub fn create_packet_recv_chan() -> (PacketRecvChan, PacketRecvChanReceiver) {
     hotpath::channel!(tokio::sync::mpsc::channel(128))
 }

@@ -11,7 +11,8 @@ use async_trait::async_trait;
 use futures::{Sink, SinkExt, Stream, StreamExt};
 use once_cell::sync::Lazy;
 
-use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
+use hotpath::wrap::tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
+use tokio::sync::mpsc::unbounded_channel;
 
 use uuid::Uuid;
 

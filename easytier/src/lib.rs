@@ -13,6 +13,8 @@ use clap_complete::{Generator, Shell};
 extern crate self as hotpath;
 #[cfg(not(feature = "hotpath"))]
 mod hotpath_off;
+#[cfg(not(feature = "hotpath"))]
+pub(crate) use hotpath_off::wrap;
 
 // `hotpath-alloc` registers a global profiling allocator, which is mutually
 // exclusive with the `jemalloc`/`mimalloc` global allocators.
