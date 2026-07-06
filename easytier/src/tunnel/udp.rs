@@ -10,7 +10,7 @@ use async_trait::async_trait;
 pub use easytier_core::hole_punch::udp::new_hole_punch_packet;
 use easytier_core::socket::udp::{
     PreferredIpv6Source, UdpSession, UdpSessionConnectError, UdpSessionControlHandler,
-    UdpSessionLayer, UdpSessionSocket, VirtualUdpSocket,
+    UdpSessionLayer, UdpSessionProtocol, UdpSessionSocket, VirtualUdpSocket,
 };
 use easytier_core::tunnel::udp::UdpTunnelUpgrader;
 use futures::stream::FuturesUnordered;
@@ -213,11 +213,12 @@ fn map_udp_session_connect_error(error: UdpSessionConnectError) -> TunnelError {
 
 async fn accept_udp_session_tunnels(
     layer: Arc<RuntimeUdpSessionLayer>,
+    accept_kind: UdpSessionAcceptKind,
     conn_send: Sender<Box<dyn Tunnel>>,
     local_url: url::Url,
 ) {
     loop {
-        let session = match layer.accept().await {
+        let session = match accept_udp_session(&layer, accept_kind).await {
             Ok(session) => session,
             Err(err) => {
                 tracing::debug!(?err, "udp session accept loop stopped");
@@ -256,58 +257,69 @@ async fn accept_udp_session_tunnels(
     }
 }
 
-pub struct UdpTunnelListener {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum UdpSessionAcceptKind {
+    EasyTierMux,
+    Classified(UdpSessionProtocol),
+}
+
+async fn accept_udp_session(
+    layer: &Arc<RuntimeUdpSessionLayer>,
+    accept_kind: UdpSessionAcceptKind,
+) -> io::Result<UdpSession> {
+    match accept_kind {
+        UdpSessionAcceptKind::EasyTierMux => layer.accept().await,
+        UdpSessionAcceptKind::Classified(protocol) => {
+            layer.accept_classified_session(protocol).await
+        }
+    }
+}
+
+pub(crate) struct RuntimeUdpSessionListener {
     addr: url::Url,
     socket: Option<Arc<UdpSocket>>,
     runtime_socket: Option<Arc<RuntimeUdpSocket>>,
     session_layer: Option<Arc<RuntimeUdpSessionLayer>>,
     session_layer_ref: Arc<StdMutex<Option<Weak<RuntimeUdpSessionLayer>>>>,
-
-    conn_send: Sender<Box<dyn Tunnel>>,
-    conn_recv: Receiver<Box<dyn Tunnel>>,
-    forward_tasks: Arc<std::sync::Mutex<JoinSet<()>>>,
     socket_mark: Option<u32>,
 }
 
-impl UdpTunnelListener {
-    pub fn new(addr: url::Url) -> Self {
-        let (conn_send, conn_recv) = channel(100);
+impl RuntimeUdpSessionListener {
+    pub(crate) fn new(addr: url::Url) -> Self {
         Self {
             addr,
             socket: None,
             runtime_socket: None,
             session_layer: None,
             session_layer_ref: Arc::new(StdMutex::new(None)),
-            conn_send,
-            conn_recv,
-            forward_tasks: Arc::new(std::sync::Mutex::new(JoinSet::new())),
             socket_mark: None,
         }
     }
 
-    pub fn set_socket_mark(&mut self, socket_mark: Option<u32>) {
-        self.socket_mark = socket_mark;
-    }
-
-    pub fn new_with_socket(addr: url::Url, socket: Arc<UdpSocket>) -> Self {
+    pub(crate) fn new_with_socket(addr: url::Url, socket: Arc<UdpSocket>) -> Self {
         let mut listener = Self::new(addr);
         listener.runtime_socket = Some(Arc::new(RuntimeUdpSocket::new(socket.clone())));
         listener.socket = Some(socket);
         listener
     }
 
-    pub fn get_socket(&self) -> Option<Arc<UdpSocket>> {
+    pub(crate) fn set_socket_mark(&mut self, socket_mark: Option<u32>) {
+        self.socket_mark = socket_mark;
+    }
+
+    pub(crate) fn get_socket(&self) -> Option<Arc<UdpSocket>> {
         self.socket.clone()
     }
 
     pub(crate) fn get_runtime_socket(&self) -> Option<Arc<RuntimeUdpSocket>> {
         self.runtime_socket.clone()
     }
-}
 
-#[async_trait]
-impl TunnelListener for UdpTunnelListener {
-    async fn listen(&mut self) -> Result<(), TunnelError> {
+    pub(crate) fn session_layer(&self) -> Option<Arc<RuntimeUdpSessionLayer>> {
+        self.session_layer.clone()
+    }
+
+    pub(crate) async fn listen(&mut self) -> Result<(), TunnelError> {
         if self.session_layer.is_some() {
             return Ok(());
         }
@@ -339,33 +351,29 @@ impl TunnelListener for UdpTunnelListener {
         };
         let layer = runtime_socket.udp_session_layer();
         *self.session_layer_ref.lock().unwrap() = Some(Arc::downgrade(&layer));
-        self.session_layer = Some(layer.clone());
-
-        self.forward_tasks.lock().unwrap().spawn(
-            accept_udp_session_tunnels(layer.clone(), self.conn_send.clone(), self.addr.clone())
-                .instrument(tracing::info_span!("udp session accept loop")),
-        );
-
-        join_joinset_background(self.forward_tasks.clone(), "UdpTunnelListener".to_owned());
+        self.session_layer = Some(layer);
 
         Ok(())
     }
 
-    async fn accept(&mut self) -> Result<Box<dyn super::Tunnel>, super::TunnelError> {
-        tracing::info!("start udp accept: {:?}", self.addr);
-        if let Some(conn) = self.conn_recv.recv().await {
-            return Ok(conn);
-        }
-        return Err(super::TunnelError::InternalError(
-            "udp accept error".to_owned(),
-        ));
+    pub(crate) async fn accept(
+        &self,
+        accept_kind: UdpSessionAcceptKind,
+    ) -> Result<UdpSession, TunnelError> {
+        let layer = self
+            .session_layer
+            .as_ref()
+            .ok_or_else(|| TunnelError::InternalError("udp listener not started".to_owned()))?;
+        accept_udp_session(layer, accept_kind)
+            .await
+            .map_err(TunnelError::IOError)
     }
 
-    fn local_url(&self) -> url::Url {
+    pub(crate) fn local_url(&self) -> url::Url {
         self.addr.clone()
     }
 
-    fn get_conn_counter(&self) -> Arc<Box<dyn TunnelConnCounter>> {
+    pub(crate) fn get_conn_counter(&self) -> Arc<Box<dyn TunnelConnCounter>> {
         struct UdpTunnelConnCounter {
             session_layer: Arc<StdMutex<Option<Weak<RuntimeUdpSessionLayer>>>>,
         }
@@ -393,6 +401,93 @@ impl TunnelListener for UdpTunnelListener {
         Arc::new(Box::new(UdpTunnelConnCounter {
             session_layer: self.session_layer_ref.clone(),
         }))
+    }
+}
+
+pub struct UdpTunnelListener {
+    session_listener: RuntimeUdpSessionListener,
+    conn_send: Sender<Box<dyn Tunnel>>,
+    conn_recv: Receiver<Box<dyn Tunnel>>,
+    forward_tasks: Arc<std::sync::Mutex<JoinSet<()>>>,
+}
+
+impl UdpTunnelListener {
+    pub fn new(addr: url::Url) -> Self {
+        let (conn_send, conn_recv) = channel(100);
+        Self {
+            session_listener: RuntimeUdpSessionListener::new(addr),
+            conn_send,
+            conn_recv,
+            forward_tasks: Arc::new(std::sync::Mutex::new(JoinSet::new())),
+        }
+    }
+
+    pub fn set_socket_mark(&mut self, socket_mark: Option<u32>) {
+        self.session_listener.set_socket_mark(socket_mark);
+    }
+
+    pub fn new_with_socket(addr: url::Url, socket: Arc<UdpSocket>) -> Self {
+        let (conn_send, conn_recv) = channel(100);
+        Self {
+            session_listener: RuntimeUdpSessionListener::new_with_socket(addr, socket),
+            conn_send,
+            conn_recv,
+            forward_tasks: Arc::new(std::sync::Mutex::new(JoinSet::new())),
+        }
+    }
+
+    pub fn get_socket(&self) -> Option<Arc<UdpSocket>> {
+        self.session_listener.get_socket()
+    }
+
+    pub(crate) fn get_runtime_socket(&self) -> Option<Arc<RuntimeUdpSocket>> {
+        self.session_listener.get_runtime_socket()
+    }
+}
+
+#[async_trait]
+impl TunnelListener for UdpTunnelListener {
+    async fn listen(&mut self) -> Result<(), TunnelError> {
+        let already_listening = self.session_listener.session_layer().is_some();
+        self.session_listener.listen().await?;
+        if already_listening {
+            return Ok(());
+        }
+        let layer = self.session_listener.session_layer().ok_or_else(|| {
+            TunnelError::InternalError("udp listener did not create session layer".to_owned())
+        })?;
+
+        self.forward_tasks.lock().unwrap().spawn(
+            accept_udp_session_tunnels(
+                layer,
+                UdpSessionAcceptKind::EasyTierMux,
+                self.conn_send.clone(),
+                self.session_listener.local_url(),
+            )
+            .instrument(tracing::info_span!("udp session accept loop")),
+        );
+
+        join_joinset_background(self.forward_tasks.clone(), "UdpTunnelListener".to_owned());
+
+        Ok(())
+    }
+
+    async fn accept(&mut self) -> Result<Box<dyn super::Tunnel>, super::TunnelError> {
+        tracing::info!("start udp accept: {:?}", self.session_listener.local_url());
+        if let Some(conn) = self.conn_recv.recv().await {
+            return Ok(conn);
+        }
+        return Err(super::TunnelError::InternalError(
+            "udp accept error".to_owned(),
+        ));
+    }
+
+    fn local_url(&self) -> url::Url {
+        self.session_listener.local_url()
+    }
+
+    fn get_conn_counter(&self) -> Arc<Box<dyn TunnelConnCounter>> {
+        self.session_listener.get_conn_counter()
     }
 }
 
@@ -608,7 +703,7 @@ mod tests {
 
         listener.listen().await.unwrap();
         let runtime_socket = listener.get_runtime_socket().unwrap();
-        let listener_layer = listener.session_layer.as_ref().unwrap();
+        let listener_layer = listener.session_listener.session_layer.as_ref().unwrap();
         let socket_layer = runtime_socket.udp_session_layer();
 
         assert!(Arc::ptr_eq(listener_layer, &socket_layer));
