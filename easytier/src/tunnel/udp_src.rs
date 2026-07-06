@@ -175,11 +175,38 @@ pub(crate) async fn send_to_with_src_ip(
 #[cfg(not(any(target_os = "linux", target_os = "android")))]
 pub(crate) async fn send_to_with_src_ip(
     socket: &UdpSocket,
-    _src_ip: IpAddr,
+    src_ip: IpAddr,
     dst_addr: SocketAddr,
     buf: &[u8],
 ) -> io::Result<usize> {
-    socket.send_to(buf, dst_addr).await
+    match (src_ip, dst_addr) {
+        (IpAddr::V4(_), SocketAddr::V4(dst)) => socket.send_to(buf, SocketAddr::V4(dst)).await,
+        (IpAddr::V4(src), SocketAddr::V6(dst)) => {
+            let Some(mapped_dst) = dst.ip().to_ipv4_mapped() else {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("source address {src} does not match destination {dst} family"),
+                ));
+            };
+            socket
+                .send_to(
+                    buf,
+                    SocketAddr::V4(SocketAddrV4::new(mapped_dst, dst.port())),
+                )
+                .await
+        }
+        (IpAddr::V6(src), SocketAddr::V6(dst)) => {
+            socket
+                .async_io(tokio::io::Interest::WRITABLE, || {
+                    send_to_with_src_ipv6(socket, src, 0, dst, buf)
+                })
+                .await
+        }
+        (src, dst) => Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("source address {src} does not match destination {dst} family"),
+        )),
+    }
 }
 
 #[cfg(any(target_os = "linux", target_os = "android"))]
@@ -201,7 +228,29 @@ pub(crate) fn try_send_to_with_src_ip(
     dst_addr: SocketAddr,
     buf: &[u8],
 ) -> io::Result<usize> {
-    send_to_with_src_ip_raw(socket, src_ip, dst_addr, buf)
+    match (src_ip, dst_addr) {
+        (IpAddr::V4(_), SocketAddr::V4(dst)) => socket.try_send_to(buf, SocketAddr::V4(dst)),
+        (IpAddr::V4(src), SocketAddr::V6(dst)) => {
+            let Some(mapped_dst) = dst.ip().to_ipv4_mapped() else {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("source address {src} does not match destination {dst} family"),
+                ));
+            };
+            socket.try_send_to(
+                buf,
+                SocketAddr::V4(SocketAddrV4::new(mapped_dst, dst.port())),
+            )
+        }
+        (IpAddr::V6(src), SocketAddr::V6(dst)) => socket
+            .try_io(tokio::io::Interest::WRITABLE, || {
+                send_to_with_src_ipv6(socket, src, 0, dst, buf)
+            }),
+        (src, dst) => Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("source address {src} does not match destination {dst} family"),
+        )),
+    }
 }
 
 fn send_to_with_src_ip_raw(
