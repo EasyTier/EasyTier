@@ -931,7 +931,7 @@ fn expire_unclaimed_pending_initial_after_timeout(
         pending_initials,
         initial_key,
         closer,
-        QUIC_UDP_UNCLAIMED_SESSION_TIMEOUT,
+        QUIC_UDP_UNCLAIMED_INITIAL_TIMEOUT,
     );
 }
 
@@ -1126,6 +1126,7 @@ struct QuicUdpDatagram {
 const QUIC_UDP_DATAGRAM_QUEUE_CAPACITY: usize = 1024;
 const QUIC_UDP_UNCLAIMED_SESSION_TIMEOUT: Duration = Duration::from_secs(10);
 const QUIC_UDP_STALE_INCOMING_TOMBSTONE_TIMEOUT: Duration = Duration::from_secs(30);
+const QUIC_UDP_UNCLAIMED_INITIAL_TIMEOUT: Duration = QUIC_UDP_STALE_INCOMING_TOMBSTONE_TIMEOUT;
 const QUIC_UDP_MAX_PENDING_INITIALS_PER_SESSION: usize = 64;
 const QUIC_UDP_MAX_CLAIMED_INITIALS_PER_SESSION: usize = 64;
 const QUIC_MAX_ACTIVE_UDP_SESSIONS: usize = 1024;
@@ -2230,6 +2231,12 @@ mod tests {
         assert!(claim_pending_initial(&pending_initials, &initial_key).is_none());
         tokio::time::sleep(Duration::from_millis(20)).await;
         assert!(!pending_initials.lock().unwrap().contains_key(&initial_key));
+    }
+
+    #[test]
+    fn quic_initial_tombstones_outlive_unclaimed_sessions_and_accepts() {
+        assert!(QUIC_UDP_UNCLAIMED_INITIAL_TIMEOUT > QUIC_UDP_UNCLAIMED_SESSION_TIMEOUT);
+        assert!(QUIC_UDP_STALE_INCOMING_TOMBSTONE_TIMEOUT > QUIC_ACCEPT_COMPLETION_TIMEOUT);
     }
 
     #[test]
