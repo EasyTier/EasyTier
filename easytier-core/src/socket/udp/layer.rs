@@ -25,15 +25,15 @@ use super::{
         ClassifiedUdpSessionAccept, ClassifiedUdpSessionAccepts, ClassifiedUdpSessionKey,
         ClassifiedUdpSessionRegistry, PendingUdpSessionConnect, PendingUdpSessionConnects,
         UdpConnectControl, UdpSession, UdpSessionClose, UdpSessionCodec, UdpSessionConnectError,
-        UdpSessionConnectRequest, UdpSessionConnector, UdpSessionEnqueuePolicy, UdpSessionKey,
-        UdpSessionKind, UdpSessionLayerControl, UdpSessionProtocol, UdpSessionRegistry,
-        close_all_classified_udp_sessions, close_all_udp_sessions, close_classified_udp_session,
-        close_udp_session, create_udp_session_rings, dispatch_payload_to_session,
-        udp_session_registry_entry,
+        UdpSessionConnectRequest, UdpSessionConnector, UdpSessionDatagram, UdpSessionEnqueuePolicy,
+        UdpSessionKey, UdpSessionKind, UdpSessionLayerControl, UdpSessionProtocol,
+        UdpSessionRegistry, close_all_classified_udp_sessions, close_all_udp_sessions,
+        close_classified_udp_session, close_udp_session, create_udp_session_rings,
+        dispatch_payload_to_session, udp_session_registry_entry,
     },
     virtual_socket::{
         NoopUdpSessionControlHandler, PreferredIpv6Source, UdpSessionControlHandler,
-        VirtualUdpSocket, VirtualUdpSocketFactory,
+        UdpSocketRecvMeta, VirtualUdpSocket, VirtualUdpSocketFactory,
     },
 };
 
@@ -451,7 +451,7 @@ pub(super) async fn udp_session_layer_recv_task<S, H>(
     let mut buf = [0u8; 65535];
     let control_handler_permits = Arc::new(Semaphore::new(UDP_SESSION_QUEUE_CAPACITY));
     loop {
-        let (len, remote_addr) = match socket.recv_from(&mut buf).await {
+        let (len, remote_addr, recv_meta) = match socket.recv_from_with_meta(&mut buf).await {
             Ok(ret) => ret,
             Err(err) => {
                 tracing::debug!(?err, "udp session recv loop stopped");
@@ -463,30 +463,34 @@ pub(super) async fn udp_session_layer_recv_task<S, H>(
             }
         };
 
-        let datagram = BytesMut::from(&buf[..len]);
+        let payload = BytesMut::from(&buf[..len]);
+        let datagram = UdpSessionDatagram::new(payload.clone(), recv_meta);
         let quic_key = ClassifiedUdpSessionKey::new(UdpSessionProtocol::Quic, remote_addr);
         if classified_sessions.contains_key(&quic_key) {
             dispatch_existing_classified_udp_datagram(&classified_sessions, quic_key, datagram);
             continue;
         }
-        match classify_udp_datagram(datagram) {
-            UdpDatagramClassification::Stun(datagram) => {
+        match classify_udp_datagram(payload) {
+            UdpDatagramClassification::Stun(datagram_payload) => {
                 spawn_stun_control_handler(
                     socket.clone(),
                     control_handler.clone(),
                     control_handler_permits.clone(),
-                    datagram.clone(),
+                    datagram_payload.clone(),
                     remote_addr,
                 );
                 dispatch_control_packet(
                     &control,
                     UdpSessionLayerControl::Stun {
                         remote_addr,
-                        datagram,
+                        datagram: datagram_payload,
                     },
                 );
             }
-            UdpDatagramClassification::SessionPacket { kind, datagram } => {
+            UdpDatagramClassification::SessionPacket {
+                kind,
+                datagram: datagram_payload,
+            } => {
                 dispatch_session_udp_datagram(
                     socket.clone(),
                     &classified_sessions,
@@ -494,7 +498,7 @@ pub(super) async fn udp_session_layer_recv_task<S, H>(
                     session_shutdown_tx.subscribe(),
                     remote_addr,
                     kind,
-                    datagram,
+                    UdpSessionDatagram::new(datagram_payload, recv_meta),
                 );
             }
             UdpDatagramClassification::EasyTier {
@@ -515,6 +519,7 @@ pub(super) async fn udp_session_layer_recv_task<S, H>(
                     kind,
                     conn_id,
                     &packet,
+                    recv_meta,
                     session_shutdown_tx.subscribe(),
                 );
                 if !consumed {
@@ -525,7 +530,7 @@ pub(super) async fn udp_session_layer_recv_task<S, H>(
                         session_shutdown_tx.subscribe(),
                         remote_addr,
                         fallback,
-                        packet.into_bytes().into(),
+                        UdpSessionDatagram::new(packet.into_bytes().into(), recv_meta),
                     );
                 }
             }
@@ -536,7 +541,7 @@ pub(super) async fn udp_session_layer_recv_task<S, H>(
 fn dispatch_existing_classified_udp_datagram(
     classified_sessions: &Arc<ClassifiedUdpSessionRegistry>,
     key: ClassifiedUdpSessionKey,
-    datagram: BytesMut,
+    datagram: UdpSessionDatagram,
 ) {
     let Some(entry) = classified_sessions
         .get(&key)
@@ -563,6 +568,7 @@ fn dispatch_easy_tier_udp_datagram<S, H>(
     kind: EasyTierUdpPacketKind,
     conn_id: u32,
     packet: &ZCPacket,
+    recv_meta: UdpSocketRecvMeta,
     session_shutdown: watch::Receiver<bool>,
 ) -> bool
 where
@@ -570,7 +576,9 @@ where
     H: UdpSessionControlHandler<S>,
 {
     match kind {
-        EasyTierUdpPacketKind::Data => dispatch_data_packet(sessions, remote_addr, conn_id, packet),
+        EasyTierUdpPacketKind::Data => {
+            dispatch_data_packet(sessions, remote_addr, conn_id, packet, recv_meta)
+        }
         EasyTierUdpPacketKind::Syn => handle_new_easy_tier_mux_connect(
             socket,
             sessions.clone(),
@@ -610,13 +618,14 @@ pub(super) fn dispatch_data_packet(
     peer_addr: SocketAddr,
     conn_id: u32,
     packet: &ZCPacket,
+    recv_meta: UdpSocketRecvMeta,
 ) -> bool {
     let key = UdpSessionKey::new(peer_addr, conn_id);
     let Some(entry) = sessions.get(&key).map(|entry| entry.value().clone()) else {
         return false;
     };
 
-    let payload = BytesMut::from(packet.udp_payload());
+    let payload = UdpSessionDatagram::new(BytesMut::from(packet.udp_payload()), recv_meta);
     let policy = if packet.is_lossy() {
         UdpSessionEnqueuePolicy::Lossy
     } else {
@@ -636,7 +645,7 @@ fn dispatch_session_udp_datagram<S>(
     session_shutdown: watch::Receiver<bool>,
     remote_addr: SocketAddr,
     kind: UdpSessionPacketKind,
-    datagram: BytesMut,
+    datagram: UdpSessionDatagram,
 ) where
     S: VirtualUdpSocket,
 {
@@ -663,7 +672,7 @@ fn dispatch_classified_udp_datagram<S>(
     protocol: UdpSessionProtocol,
     session_shutdown: watch::Receiver<bool>,
     remote_addr: SocketAddr,
-    datagram: BytesMut,
+    datagram: UdpSessionDatagram,
 ) where
     S: VirtualUdpSocket,
 {

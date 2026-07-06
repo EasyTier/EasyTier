@@ -1,12 +1,22 @@
 use std::{
     io,
-    net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6},
+    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6},
     sync::Arc,
 };
 
 use async_trait::async_trait;
 
 use super::packet::{new_v4_hole_punch_packet, new_v6_hole_punch_packet};
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct UdpSocketRecvMeta {
+    pub dst_ip: Option<IpAddr>,
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct UdpSocketSendMeta {
+    pub src_ip: Option<IpAddr>,
+}
 
 #[async_trait]
 pub trait VirtualUdpSocket: Send + Sync + 'static {
@@ -15,6 +25,24 @@ pub trait VirtualUdpSocket: Send + Sync + 'static {
     async fn send_to(&self, data: &[u8], addr: SocketAddr) -> std::io::Result<usize>;
 
     async fn recv_from(&self, buf: &mut [u8]) -> std::io::Result<(usize, SocketAddr)>;
+
+    async fn send_to_with_meta(
+        &self,
+        data: &[u8],
+        addr: SocketAddr,
+        meta: UdpSocketSendMeta,
+    ) -> std::io::Result<usize> {
+        let _ = meta;
+        self.send_to(data, addr).await
+    }
+
+    async fn recv_from_with_meta(
+        &self,
+        buf: &mut [u8],
+    ) -> std::io::Result<(usize, SocketAddr, UdpSocketRecvMeta)> {
+        let (len, addr) = self.recv_from(buf).await?;
+        Ok((len, addr, UdpSocketRecvMeta::default()))
+    }
 }
 
 #[async_trait]

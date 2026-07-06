@@ -9,6 +9,7 @@ use crate::tunnel::{
     TunnelInfo,
     common::{FramedReader, FramedWriter, TunnelWrapper},
     udp::{RuntimeUdpSessionLayer, RuntimeUdpSessionListener},
+    udp_src,
 };
 use anyhow::Context;
 use derivative::Derivative;
@@ -40,7 +41,7 @@ use tokio::{
     net::UdpSocket,
     runtime::Handle,
     sync::{
-        mpsc::{Receiver, Sender, channel},
+        mpsc::{Receiver, Sender, channel, error::TrySendError},
         watch,
     },
     task::JoinSet,
@@ -964,6 +965,14 @@ fn retain_pending_initial_tombstone_for_stale_incoming_after(
     closer: Arc<QuicUdpSessionCloser>,
     timeout: Duration,
 ) {
+    {
+        let mut pending_initials = pending_initials.lock().unwrap();
+        if let Some(pending) = pending_initials.get_mut(&initial_key) {
+            if pending_initial_matches(pending, &closer) {
+                pending.claimed = true;
+            }
+        }
+    }
     tokio::spawn(async move {
         tokio::time::sleep(timeout).await;
         remove_pending_initial_if_matches(&pending_initials, &initial_key, &closer);
@@ -1110,6 +1119,7 @@ impl UdpPoller for QuicUdpPoller {
 struct QuicUdpDatagram {
     payload: Vec<u8>,
     peer_addr: SocketAddr,
+    dst_ip: Option<IpAddr>,
 }
 
 const QUIC_UDP_DATAGRAM_QUEUE_CAPACITY: usize = 1024;
@@ -1117,6 +1127,7 @@ const QUIC_UDP_UNCLAIMED_SESSION_TIMEOUT: Duration = Duration::from_secs(10);
 const QUIC_UDP_MAX_PENDING_INITIALS_PER_SESSION: usize = 64;
 const QUIC_UDP_MAX_CLAIMED_INITIALS_PER_SESSION: usize = 64;
 const QUIC_MAX_IN_FLIGHT_HANDSHAKES: usize = 128;
+const QUIC_ACCEPT_COMPLETION_TIMEOUT: Duration = Duration::from_secs(10);
 
 struct QuicUdpListenerSocket {
     send_socket: Arc<UdpSocket>,
@@ -1185,9 +1196,9 @@ impl QuicUdpListenerSocket {
                                 );
                                 break;
                             }
-                            recv = session.recv(&mut buf) => {
+                            recv = session.recv_with_meta(&mut buf) => {
                                 match recv {
-                                    Ok(len) => {
+                                    Ok((len, meta)) => {
                                         let mut should_forward = true;
                                         if let Some(dcid) = parse_quic_initial_dcid(&buf[..len]) {
                                             let key = (peer_addr, dcid);
@@ -1224,15 +1235,19 @@ impl QuicUdpListenerSocket {
                                         if !should_forward {
                                             continue;
                                         }
-                                        if session_incoming_tx
-                                            .send(Ok(QuicUdpDatagram {
+                                        match session_incoming_tx.try_send(Ok(QuicUdpDatagram {
                                                 payload: buf[..len].to_vec(),
                                                 peer_addr,
-                                            }))
-                                            .await
-                                            .is_err()
-                                        {
-                                            break;
+                                                dst_ip: meta.dst_ip,
+                                            })) {
+                                            Ok(()) => {}
+                                            Err(TrySendError::Full(_)) => {
+                                                tracing::debug!(
+                                                    ?peer_addr,
+                                                    "drop quic udp datagram after incoming queue full"
+                                                );
+                                            }
+                                            Err(TrySendError::Closed(_)) => break,
                                         }
                                     }
                                     Err(err) => {
@@ -1283,8 +1298,17 @@ impl QuicUdpListenerSocket {
         })
     }
 
-    fn try_send_payload(&self, payload: &[u8], destination: SocketAddr) -> io::Result<()> {
-        let len = self.send_socket.try_send_to(payload, destination)?;
+    fn try_send_payload(
+        &self,
+        payload: &[u8],
+        destination: SocketAddr,
+        src_ip: Option<IpAddr>,
+    ) -> io::Result<()> {
+        let len = if let Some(src_ip) = src_ip {
+            udp_src::send_to_with_src_ip(&self.send_socket, src_ip, destination, payload)?
+        } else {
+            self.send_socket.try_send_to(payload, destination)?
+        };
         if len != payload.len() {
             return Err(io::Error::new(
                 io::ErrorKind::WriteZero,
@@ -1297,10 +1321,10 @@ impl QuicUdpListenerSocket {
     fn send_transmit(&self, transmit: &Transmit<'_>) -> io::Result<()> {
         if let Some(segment_size) = transmit.segment_size {
             for segment in transmit.contents.chunks(segment_size) {
-                self.try_send_payload(segment, transmit.destination)?;
+                self.try_send_payload(segment, transmit.destination, transmit.src_ip)?;
             }
         } else {
-            self.try_send_payload(transmit.contents, transmit.destination)?;
+            self.try_send_payload(transmit.contents, transmit.destination, transmit.src_ip)?;
         }
         Ok(())
     }
@@ -1350,7 +1374,7 @@ impl AsyncUdpSocket for QuicUdpListenerSocket {
                         len: datagram.payload.len(),
                         stride: datagram.payload.len(),
                         ecn: None,
-                        dst_ip: None,
+                        dst_ip: datagram.dst_ip,
                     };
                     return Poll::Ready(Ok(1));
                 }
@@ -1424,10 +1448,14 @@ async fn finish_quic_tunnel(pending: PendingQuicTunnel) -> Result<Box<dyn Tunnel
         remote_addr,
         cleanup,
     } = pending;
-    let conn = connecting
+    let conn = tokio::time::timeout(QUIC_ACCEPT_COMPLETION_TIMEOUT, connecting)
         .await
+        .map_err(TunnelError::Timeout)?
         .with_context(|| "accept connection failed")?;
-    let (w, r) = conn.accept_bi().await.with_context(|| "accept_bi failed")?;
+    let (w, r) = tokio::time::timeout(QUIC_ACCEPT_COMPLETION_TIMEOUT, conn.accept_bi())
+        .await
+        .map_err(TunnelError::Timeout)?
+        .with_context(|| "accept_bi failed")?;
     let arc_conn = Arc::new(ConnWrapper {
         conn,
         _endpoint: Some(endpoint),
@@ -1801,6 +1829,7 @@ mod tests {
             .send(Ok(QuicUdpDatagram {
                 payload: vec![0; 1500],
                 peer_addr,
+                dst_ip: None,
             }))
             .await
             .unwrap();
@@ -1808,6 +1837,7 @@ mod tests {
             .send(Ok(QuicUdpDatagram {
                 payload: b"ok".to_vec(),
                 peer_addr,
+                dst_ip: None,
             }))
             .await
             .unwrap();
@@ -2153,6 +2183,33 @@ mod tests {
                 .is_some_and(|current| Arc::ptr_eq(&current.closer, &old_closer))
         );
         assert!(!pending_initials.lock().unwrap().contains_key(&claimed_key));
+    }
+
+    #[test]
+    fn pending_quic_initial_tombstone_is_not_claimable() {
+        RUNTIME.block_on(pending_quic_initial_tombstone_is_not_claimable_impl())
+    }
+    async fn pending_quic_initial_tombstone_is_not_claimable_impl() {
+        let peer_addr: SocketAddr = "127.0.0.1:31012".parse().unwrap();
+        let pending_initials = Arc::new(StdMutex::new(HashMap::new()));
+        let (close_tx, _) = watch::channel(false);
+        let closer = Arc::new(QuicUdpSessionCloser::new(close_tx));
+        let initial_key = (peer_addr, vec![1]);
+
+        assert!(matches!(
+            register_pending_initial(&pending_initials, initial_key.clone(), closer.clone()),
+            PendingInitialRegister::Registered
+        ));
+        retain_pending_initial_tombstone_for_stale_incoming_after(
+            pending_initials.clone(),
+            initial_key.clone(),
+            closer,
+            Duration::from_millis(1),
+        );
+
+        assert!(claim_pending_initial(&pending_initials, &initial_key).is_none());
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert!(!pending_initials.lock().unwrap().contains_key(&initial_key));
     }
 
     #[test]

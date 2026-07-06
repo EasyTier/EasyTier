@@ -1,6 +1,6 @@
 use std::{
     io,
-    net::{SocketAddr, SocketAddrV4, SocketAddrV6},
+    net::{IpAddr, SocketAddr, SocketAddrV4, SocketAddrV6},
     sync::{Arc, Mutex as StdMutex},
 };
 
@@ -18,8 +18,37 @@ use crate::socket::ring::{RingSocket, RingSocketReceiver, RingSocketSendError, R
 use super::{
     UDP_SESSION_QUEUE_CAPACITY,
     packet::{new_data_packet, udp_session_payload_len},
-    virtual_socket::{PreferredIpv6Source, UdpBindOptions, VirtualUdpSocket},
+    virtual_socket::{PreferredIpv6Source, UdpBindOptions, UdpSocketRecvMeta, VirtualUdpSocket},
 };
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct UdpSessionDatagram {
+    pub(crate) payload: BytesMut,
+    pub(crate) dst_ip: Option<IpAddr>,
+}
+
+impl UdpSessionDatagram {
+    pub(crate) fn new(payload: BytesMut, meta: UdpSocketRecvMeta) -> Self {
+        Self {
+            payload,
+            dst_ip: meta.dst_ip,
+        }
+    }
+}
+
+impl From<BytesMut> for UdpSessionDatagram {
+    fn from(payload: BytesMut) -> Self {
+        Self {
+            payload,
+            dst_ip: None,
+        }
+    }
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct UdpSessionRecvMeta {
+    pub dst_ip: Option<IpAddr>,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UdpSessionKind {
@@ -49,6 +78,11 @@ pub trait UdpSessionSocket: Send + Sync + 'static {
     async fn send(&self, data: &[u8]) -> std::io::Result<usize>;
 
     async fn recv(&self, buf: &mut [u8]) -> std::io::Result<usize>;
+
+    async fn recv_with_meta(&self, buf: &mut [u8]) -> std::io::Result<(usize, UdpSessionRecvMeta)> {
+        let len = self.recv(buf).await?;
+        Ok((len, UdpSessionRecvMeta::default()))
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -161,7 +195,7 @@ pub(super) struct ClassifiedUdpSessionAccept {
 
 #[derive(Debug, Clone)]
 pub(super) struct UdpSessionRegistryEntry {
-    pub(super) incoming: Arc<StdMutex<RingSocketSender<BytesMut>>>,
+    pub(super) incoming: Arc<StdMutex<RingSocketSender<UdpSessionDatagram>>>,
     pub(super) close: watch::Sender<bool>,
 }
 
@@ -204,7 +238,7 @@ pub struct UdpSession {
     peer_addr: SocketAddr,
     kind: UdpSessionKind,
     codec: UdpSessionCodec,
-    incoming: TokioMutex<RingSocketReceiver<BytesMut>>,
+    incoming: TokioMutex<RingSocketReceiver<UdpSessionDatagram>>,
     outgoing: TokioMutex<RingSocketSender<UdpSessionOutbound>>,
     closed: watch::Receiver<bool>,
     pub(super) _cleanup: UdpSessionCleanup,
@@ -445,7 +479,7 @@ pub(crate) struct UdpSessionTunnelParts {
     pub(crate) peer_addr: SocketAddr,
     pub(crate) kind: UdpSessionKind,
     pub(crate) codec: UdpSessionCodec,
-    pub(crate) session_recv_rx: RingSocketReceiver<BytesMut>,
+    pub(crate) session_recv_rx: RingSocketReceiver<UdpSessionDatagram>,
     pub(crate) session_send_tx: RingSocketSender<UdpSessionOutbound>,
     pub(crate) closed: watch::Receiver<bool>,
     pub(crate) cleanup: UdpSessionCleanup,
@@ -493,6 +527,10 @@ impl UdpSessionSocket for UdpSession {
     }
 
     async fn recv(&self, buf: &mut [u8]) -> std::io::Result<usize> {
+        self.recv_with_meta(buf).await.map(|(len, _meta)| len)
+    }
+
+    async fn recv_with_meta(&self, buf: &mut [u8]) -> std::io::Result<(usize, UdpSessionRecvMeta)> {
         let mut closed = self.closed.clone();
         if *closed.borrow() {
             return Err(udp_session_closed_error());
@@ -505,15 +543,20 @@ impl UdpSessionSocket for UdpSession {
                 .ok_or_else(udp_session_closed_error)?
                 .map_err(ring_socket_error_to_io)?,
         };
-        let len = payload.len().min(buf.len());
-        buf[..len].copy_from_slice(&payload[..len]);
-        Ok(len)
+        let len = payload.payload.len().min(buf.len());
+        buf[..len].copy_from_slice(&payload.payload[..len]);
+        Ok((
+            len,
+            UdpSessionRecvMeta {
+                dst_ip: payload.dst_ip,
+            },
+        ))
     }
 }
 
 pub(super) struct UdpSessionRingParts {
-    pub(super) session_recv_rx: RingSocketReceiver<BytesMut>,
-    pub(super) session_recv_tx: Arc<StdMutex<RingSocketSender<BytesMut>>>,
+    pub(super) session_recv_rx: RingSocketReceiver<UdpSessionDatagram>,
+    pub(super) session_recv_tx: Arc<StdMutex<RingSocketSender<UdpSessionDatagram>>>,
     pub(super) session_send_tx: RingSocketSender<UdpSessionOutbound>,
     pub(super) session_send_rx: RingSocketReceiver<UdpSessionOutbound>,
     pub(super) close_tx: watch::Sender<bool>,
@@ -664,7 +707,7 @@ async fn forward_udp_session_to_socket<S>(
 async fn forward_identity_socket_to_udp_session<S>(
     socket: Arc<S>,
     peer_addr: SocketAddr,
-    incoming: Arc<StdMutex<RingSocketSender<BytesMut>>>,
+    incoming: Arc<StdMutex<RingSocketSender<UdpSessionDatagram>>>,
     mut shutdown: watch::Receiver<bool>,
     close: UdpSessionClose,
 ) where
@@ -704,10 +747,11 @@ async fn forward_identity_socket_to_udp_session<S>(
 }
 
 pub(super) fn dispatch_payload_to_session(
-    incoming: &Arc<StdMutex<RingSocketSender<BytesMut>>>,
-    payload: BytesMut,
+    incoming: &Arc<StdMutex<RingSocketSender<UdpSessionDatagram>>>,
+    payload: impl Into<UdpSessionDatagram>,
     policy: UdpSessionEnqueuePolicy,
 ) -> bool {
+    let payload = payload.into();
     let result = {
         let mut incoming = incoming.lock().unwrap();
         match policy {

@@ -10,7 +10,8 @@ use async_trait::async_trait;
 pub use easytier_core::hole_punch::udp::new_hole_punch_packet;
 use easytier_core::socket::udp::{
     PreferredIpv6Source, UdpSession, UdpSessionConnectError, UdpSessionControlHandler,
-    UdpSessionLayer, UdpSessionProtocol, UdpSessionSocket, VirtualUdpSocket,
+    UdpSessionLayer, UdpSessionProtocol, UdpSessionSocket, UdpSocketRecvMeta, UdpSocketSendMeta,
+    VirtualUdpSocket,
 };
 use easytier_core::tunnel::udp::UdpTunnelUpgrader;
 use futures::stream::FuturesUnordered;
@@ -44,6 +45,9 @@ pub(crate) struct RuntimeUdpSocket {
 
 impl RuntimeUdpSocket {
     pub(crate) fn new(socket: Arc<UdpSocket>) -> Self {
+        if let Err(err) = udp_src::enable_recv_pktinfo(&socket) {
+            tracing::debug!(?err, "enable udp pktinfo failed");
+        }
         Self {
             socket,
             udp_session_layer: StdMutex::new(None),
@@ -81,6 +85,26 @@ impl VirtualUdpSocket for RuntimeUdpSocket {
 
     async fn recv_from(&self, buf: &mut [u8]) -> std::io::Result<(usize, SocketAddr)> {
         self.socket.recv_from(buf).await
+    }
+
+    async fn send_to_with_meta(
+        &self,
+        data: &[u8],
+        addr: SocketAddr,
+        meta: UdpSocketSendMeta,
+    ) -> std::io::Result<usize> {
+        if let Some(src_ip) = meta.src_ip {
+            return udp_src::send_to_with_src_ip(&self.socket, src_ip, addr, data);
+        }
+        self.send_to(data, addr).await
+    }
+
+    async fn recv_from_with_meta(
+        &self,
+        buf: &mut [u8],
+    ) -> std::io::Result<(usize, SocketAddr, UdpSocketRecvMeta)> {
+        let (len, addr, dst_ip) = udp_src::recv_from_with_dst_ip(&self.socket, buf).await?;
+        Ok((len, addr, UdpSocketRecvMeta { dst_ip }))
     }
 }
 
@@ -679,7 +703,10 @@ impl super::TunnelConnector for UdpTunnelConnector {
 
 #[cfg(test)]
 mod tests {
-    use std::{net::IpAddr, time::Duration};
+    use std::{
+        net::{IpAddr, Ipv4Addr},
+        time::Duration,
+    };
 
     use bytes::BytesMut;
     use easytier_core::packet::ZCPacket;
@@ -726,6 +753,27 @@ mod tests {
         let socket_layer = runtime_socket.udp_session_layer();
 
         assert!(Arc::ptr_eq(listener_layer, &socket_layer));
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    #[tokio::test]
+    async fn runtime_udp_socket_reports_ipv4_destination_ip() {
+        let socket = Arc::new(UdpSocket::bind("0.0.0.0:0").await.unwrap());
+        let runtime_socket = RuntimeUdpSocket::new(socket.clone());
+        let client = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        client
+            .send_to(
+                b"pktinfo",
+                SocketAddr::from(([127, 0, 0, 1], socket.local_addr().unwrap().port())),
+            )
+            .await
+            .unwrap();
+
+        let mut buf = [0; 32];
+        let (len, _peer, meta) = runtime_socket.recv_from_with_meta(&mut buf).await.unwrap();
+
+        assert_eq!(&buf[..len], b"pktinfo");
+        assert_eq!(meta.dst_ip, Some(IpAddr::V4(Ipv4Addr::LOCALHOST)));
     }
 
     #[tokio::test]

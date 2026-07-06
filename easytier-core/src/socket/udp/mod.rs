@@ -20,13 +20,14 @@ pub use packet::{
 pub use session::{
     UdpSession, UdpSessionConnectError, UdpSessionConnectRequest, UdpSessionConnector,
     UdpSessionKind, UdpSessionLayerControl, UdpSessionListenRequest, UdpSessionListener,
-    UdpSessionProtocol, UdpSessionSocket,
+    UdpSessionProtocol, UdpSessionRecvMeta, UdpSessionSocket,
 };
 pub(crate) use session::{
-    UdpSessionCleanup, UdpSessionCodec, UdpSessionOutbound, UdpSessionTunnelParts,
+    UdpSessionCleanup, UdpSessionCodec, UdpSessionDatagram, UdpSessionOutbound,
+    UdpSessionTunnelParts,
 };
 pub use virtual_socket::{
     NoopUdpSessionControlHandler, PreferredIpv6Source, UdpBindOptions, UdpSessionControlHandler,
-    UdpSocketPurpose, VirtualUdpSocket, VirtualUdpSocketFactory, send_v4_hole_punch_control_packet,
-    send_v6_hole_punch_control_packet,
+    UdpSocketPurpose, UdpSocketRecvMeta, UdpSocketSendMeta, VirtualUdpSocket,
+    VirtualUdpSocketFactory, send_v4_hole_punch_control_packet, send_v6_hole_punch_control_packet,
 };

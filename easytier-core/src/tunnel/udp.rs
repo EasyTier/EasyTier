@@ -14,7 +14,7 @@ use crate::{
     socket::{
         ring::{RingSocketError, RingSocketReceiver, RingSocketSendError, RingSocketSender},
         udp::{
-            UdpSession, UdpSessionCleanup, UdpSessionCodec, UdpSessionOutbound,
+            UdpSession, UdpSessionCleanup, UdpSessionCodec, UdpSessionDatagram, UdpSessionOutbound,
             UdpSessionTunnelParts,
         },
     },
@@ -64,7 +64,7 @@ impl UdpTunnelSessionGuard {
 }
 
 struct UdpTunnelStream {
-    session_recv_rx: RingSocketReceiver<BytesMut>,
+    session_recv_rx: RingSocketReceiver<UdpSessionDatagram>,
     session_guard: Arc<UdpTunnelSessionGuard>,
 }
 
@@ -76,7 +76,7 @@ impl Stream for UdpTunnelStream {
         Poll::Ready(ret.map(|payload| {
             payload
                 .map_err(ring_socket_error_to_tunnel)
-                .and_then(|payload| zcpacket_from_udp_session_payload(&payload))
+                .and_then(|datagram| zcpacket_from_udp_session_payload(&datagram.payload))
         }))
     }
 }
@@ -154,7 +154,7 @@ impl Drop for UdpTunnelSink {
 
 struct UdpTunnelParts {
     codec: UdpSessionCodec,
-    session_recv_rx: RingSocketReceiver<BytesMut>,
+    session_recv_rx: RingSocketReceiver<UdpSessionDatagram>,
     session_send_tx: RingSocketSender<UdpSessionOutbound>,
     closed: watch::Receiver<bool>,
     cleanup: UdpSessionCleanup,

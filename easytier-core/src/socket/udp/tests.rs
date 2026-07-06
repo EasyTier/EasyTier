@@ -1077,18 +1077,21 @@ async fn easy_tier_mux_udp_session_receives_only_peer_data_payloads() {
         unexpected_addr,
         conn_id,
         &new_data_packet(conn_id, b"wrong-peer").unwrap(),
+        Default::default(),
     );
     dispatch_data_packet(
         &sessions,
         peer_addr,
         conn_id + 1,
         &new_data_packet(conn_id + 1, b"wrong-conn").unwrap(),
+        Default::default(),
     );
     dispatch_data_packet(
         &sessions,
         peer_addr,
         conn_id,
         &new_data_packet(conn_id, b"payload").unwrap(),
+        Default::default(),
     );
 
     let mut buf = [0; 16];
@@ -1536,6 +1539,7 @@ async fn sack_from_actual_remote_rekeys_pending_session_before_data_dispatch() {
         expected_addr,
         conn_id,
         &new_data_packet(conn_id, b"pre-sack").unwrap(),
+        Default::default(),
     );
     dispatch_sack_packet(
         &sessions,
@@ -1549,6 +1553,7 @@ async fn sack_from_actual_remote_rekeys_pending_session_before_data_dispatch() {
         actual_addr,
         conn_id,
         &new_data_packet(conn_id, b"payload").unwrap(),
+        Default::default(),
     );
 
     assert!(sessions.contains_key(&actual_key));
@@ -1562,7 +1567,7 @@ async fn sack_from_actual_remote_rekeys_pending_session_before_data_dispatch() {
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(payload, BytesMut::from(&b"payload"[..]));
+    assert_eq!(payload.payload, BytesMut::from(&b"payload"[..]));
 }
 
 #[tokio::test]
