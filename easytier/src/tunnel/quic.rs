@@ -41,6 +41,7 @@ use tokio::{
     net::UdpSocket,
     runtime::Handle,
     sync::{
+        Semaphore,
         mpsc::{Receiver, Sender, channel, error::TrySendError},
         watch,
     },
@@ -955,7 +956,7 @@ fn retain_pending_initial_tombstone_for_stale_incoming(
         pending_initials,
         initial_key,
         closer,
-        QUIC_UDP_UNCLAIMED_SESSION_TIMEOUT,
+        QUIC_UDP_STALE_INCOMING_TOMBSTONE_TIMEOUT,
     );
 }
 
@@ -989,7 +990,7 @@ fn retain_claimed_initial_tombstone_for_stale_incoming(
         pending_initials,
         initial_key,
         closer,
-        QUIC_UDP_UNCLAIMED_SESSION_TIMEOUT,
+        QUIC_UDP_STALE_INCOMING_TOMBSTONE_TIMEOUT,
         runtime,
     );
 }
@@ -1124,8 +1125,10 @@ struct QuicUdpDatagram {
 
 const QUIC_UDP_DATAGRAM_QUEUE_CAPACITY: usize = 1024;
 const QUIC_UDP_UNCLAIMED_SESSION_TIMEOUT: Duration = Duration::from_secs(10);
+const QUIC_UDP_STALE_INCOMING_TOMBSTONE_TIMEOUT: Duration = Duration::from_secs(30);
 const QUIC_UDP_MAX_PENDING_INITIALS_PER_SESSION: usize = 64;
 const QUIC_UDP_MAX_CLAIMED_INITIALS_PER_SESSION: usize = 64;
+const QUIC_MAX_ACTIVE_UDP_SESSIONS: usize = 1024;
 const QUIC_MAX_IN_FLIGHT_HANDSHAKES: usize = 128;
 const QUIC_ACCEPT_COMPLETION_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -1153,6 +1156,7 @@ impl QuicUdpListenerSocket {
     ) -> io::Result<Self> {
         let local_addr = send_socket.local_addr()?;
         let (incoming_tx, incoming_rx) = channel(QUIC_UDP_DATAGRAM_QUEUE_CAPACITY);
+        let active_session_permits = Arc::new(Semaphore::new(QUIC_MAX_ACTIVE_UDP_SESSIONS));
         let accept_task = AbortOnDropHandle::new(tokio::spawn(async move {
             loop {
                 let session = match layer
@@ -1172,6 +1176,13 @@ impl QuicUdpListenerSocket {
                         continue;
                     }
                 };
+                let Ok(session_permit) = active_session_permits.clone().try_acquire_owned() else {
+                    tracing::debug!(
+                        ?peer_addr,
+                        "drop quic udp session after active session limit"
+                    );
+                    continue;
+                };
                 let (close_tx, mut close_rx) = watch::channel(false);
                 let closer = Arc::new(QuicUdpSessionCloser::new(close_tx));
                 udp_session_closers
@@ -1182,6 +1193,7 @@ impl QuicUdpListenerSocket {
                 let session_closers = udp_session_closers.clone();
                 let session_pending_initials = pending_initials.clone();
                 tokio::spawn(async move {
+                    let _session_permit = session_permit;
                     let mut buf = vec![0u8; 64 * 1024];
                     let unclaimed_timeout = tokio::time::sleep(QUIC_UDP_UNCLAIMED_SESSION_TIMEOUT);
                     tokio::pin!(unclaimed_timeout);
@@ -1493,9 +1505,17 @@ async fn accept_quic_tunnels(
             Some(ret) = complete_tasks.join_next(), if !complete_tasks.is_empty() => {
                 match ret {
                     Ok(Ok(conn)) => {
-                        if let Err(err) = conn_send.send(conn).await {
-                            tracing::warn!(?err, "quic send conn to accept channel error");
-                            break;
+                        match conn_send.try_send(conn) {
+                            Ok(()) => {}
+                            Err(TrySendError::Full(_)) => {
+                                tracing::warn!(
+                                    "quic accept channel full; drop completed connection"
+                                );
+                            }
+                            Err(TrySendError::Closed(_)) => {
+                                tracing::warn!("quic accept channel closed");
+                                break;
+                            }
                         }
                     }
                     Ok(Err(err)) => {

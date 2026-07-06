@@ -601,6 +601,8 @@ impl TunnelListener for WgTunnelListener {
         if already_listening {
             return Ok(());
         }
+        self.session_listener
+            .enable_classified_accept(UdpSessionProtocol::WireGuard)?;
         let layer = self.session_listener.session_layer().ok_or_else(|| {
             TunnelError::InternalError("wg listener did not create udp session layer".to_owned())
         })?;
