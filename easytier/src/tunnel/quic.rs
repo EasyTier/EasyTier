@@ -773,12 +773,17 @@ impl QuicUdpSessionCloser {
         }
     }
 
-    fn claim(&self, initial_key: &QuicUdpInitialKey) {
+    fn try_claim(&self, initial_key: &QuicUdpInitialKey) -> bool {
         self.claimed.store(true, Ordering::Relaxed);
-        self.claimed_initials
-            .lock()
-            .unwrap()
-            .insert(initial_key.clone());
+        let mut claimed_initials = self.claimed_initials.lock().unwrap();
+        if claimed_initials.contains(initial_key) {
+            return true;
+        }
+        if claimed_initials.len() >= QUIC_UDP_MAX_CLAIMED_INITIALS_PER_SESSION {
+            return false;
+        }
+        claimed_initials.insert(initial_key.clone());
+        true
     }
 
     fn is_claimed(&self) -> bool {
@@ -787,6 +792,15 @@ impl QuicUdpSessionCloser {
 
     fn is_initial_claimed(&self, initial_key: &QuicUdpInitialKey) -> bool {
         self.claimed_initials.lock().unwrap().contains(initial_key)
+    }
+
+    fn remove_claimed_initial(&self, initial_key: &QuicUdpInitialKey) {
+        self.claimed_initials.lock().unwrap().remove(initial_key);
+    }
+
+    #[cfg(test)]
+    fn claimed_initial_count(&self) -> usize {
+        self.claimed_initials.lock().unwrap().len()
     }
 
     fn retain_connection(&self) {
@@ -806,27 +820,38 @@ impl QuicUdpSessionCloser {
 
 struct QuicUdpSessionCleanup {
     peer_addr: SocketAddr,
+    initial_key: QuicUdpInitialKey,
     closer: Arc<QuicUdpSessionCloser>,
     closers: QuicUdpSessionClosers,
+    pending_initials: QuicUdpPendingInitials,
 }
 
 impl QuicUdpSessionCleanup {
     fn new(
-        peer_addr: SocketAddr,
+        initial_key: QuicUdpInitialKey,
         closer: Arc<QuicUdpSessionCloser>,
         closers: QuicUdpSessionClosers,
+        pending_initials: QuicUdpPendingInitials,
     ) -> Self {
+        let peer_addr = initial_key.0;
         closer.retain_connection();
         Self {
             peer_addr,
+            initial_key,
             closer,
             closers,
+            pending_initials,
         }
     }
 }
 
 impl Drop for QuicUdpSessionCleanup {
     fn drop(&mut self) {
+        retain_claimed_initial_tombstone_for_stale_incoming(
+            self.pending_initials.clone(),
+            self.initial_key.clone(),
+            self.closer.clone(),
+        );
         if !self.closer.release_connection() {
             return;
         }
@@ -862,6 +887,15 @@ fn remove_pending_initial_if_matches(
     }
 }
 
+fn remove_tombstone_and_claim_if_matches(
+    pending_initials: &QuicUdpPendingInitials,
+    initial_key: &QuicUdpInitialKey,
+    closer: &Arc<QuicUdpSessionCloser>,
+) {
+    remove_pending_initial_if_matches(pending_initials, initial_key, closer);
+    closer.remove_claimed_initial(initial_key);
+}
+
 fn remove_unclaimed_pending_initial_if_matches(
     pending_initials: &QuicUdpPendingInitials,
     initial_key: &QuicUdpInitialKey,
@@ -874,21 +908,6 @@ fn remove_unclaimed_pending_initial_if_matches(
     {
         pending_initials.remove(initial_key);
     }
-}
-
-fn remove_claimed_pending_initial_if_matches(
-    pending_initials: &QuicUdpPendingInitials,
-    initial_key: &QuicUdpInitialKey,
-    closer: &Arc<QuicUdpSessionCloser>,
-) -> bool {
-    let mut pending_initials = pending_initials.lock().unwrap();
-    if pending_initials.get(initial_key).is_some_and(|current| {
-        pending_initial_matches(current, closer) && closer.is_initial_claimed(initial_key)
-    }) {
-        pending_initials.remove(initial_key);
-        return true;
-    }
-    false
 }
 
 fn expire_unclaimed_pending_initial_after_timeout(
@@ -921,13 +940,58 @@ fn retain_pending_initial_tombstone_for_stale_incoming(
     initial_key: QuicUdpInitialKey,
     closer: Arc<QuicUdpSessionCloser>,
 ) {
-    if remove_claimed_pending_initial_if_matches(&pending_initials, &initial_key, &closer) {
-        return;
+    retain_pending_initial_tombstone_for_stale_incoming_after(
+        pending_initials,
+        initial_key,
+        closer,
+        QUIC_UDP_UNCLAIMED_SESSION_TIMEOUT,
+    );
+}
+
+fn retain_pending_initial_tombstone_for_stale_incoming_after(
+    pending_initials: QuicUdpPendingInitials,
+    initial_key: QuicUdpInitialKey,
+    closer: Arc<QuicUdpSessionCloser>,
+    timeout: Duration,
+) {
+    tokio::spawn(async move {
+        tokio::time::sleep(timeout).await;
+        remove_pending_initial_if_matches(&pending_initials, &initial_key, &closer);
+    });
+}
+
+fn retain_claimed_initial_tombstone_for_stale_incoming(
+    pending_initials: QuicUdpPendingInitials,
+    initial_key: QuicUdpInitialKey,
+    closer: Arc<QuicUdpSessionCloser>,
+) {
+    retain_claimed_initial_tombstone_for_stale_incoming_after(
+        pending_initials,
+        initial_key,
+        closer,
+        QUIC_UDP_UNCLAIMED_SESSION_TIMEOUT,
+    );
+}
+
+fn retain_claimed_initial_tombstone_for_stale_incoming_after(
+    pending_initials: QuicUdpPendingInitials,
+    initial_key: QuicUdpInitialKey,
+    closer: Arc<QuicUdpSessionCloser>,
+    timeout: Duration,
+) {
+    {
+        let mut pending_initials = pending_initials.lock().unwrap();
+        pending_initials
+            .entry(initial_key.clone())
+            .or_insert_with(|| QuicUdpPendingInitial {
+                closer: closer.clone(),
+                claimed: true,
+            });
     }
 
     tokio::spawn(async move {
-        tokio::time::sleep(QUIC_UDP_UNCLAIMED_SESSION_TIMEOUT).await;
-        remove_pending_initial_if_matches(&pending_initials, &initial_key, &closer);
+        tokio::time::sleep(timeout).await;
+        remove_tombstone_and_claim_if_matches(&pending_initials, &initial_key, &closer);
     });
 }
 
@@ -965,7 +1029,6 @@ fn register_pending_initial(
         }
         Entry::Occupied(entry) if pending_initial_matches(entry.get(), &closer) => {
             if entry.get().claimed || closer.is_initial_claimed(entry.key()) {
-                entry.remove();
                 PendingInitialRegister::AlreadyClaimedSameGeneration
             } else {
                 PendingInitialRegister::AlreadyRegisteredSameGeneration
@@ -986,7 +1049,10 @@ fn claim_pending_initial(
     }
     pending.claimed = true;
     let closer = pending.closer.clone();
-    closer.claim(initial_key);
+    if !closer.try_claim(initial_key) {
+        pending_initials.remove(initial_key);
+        return None;
+    }
     pending_initials.remove(initial_key);
     Some(closer)
 }
@@ -1032,6 +1098,8 @@ struct QuicUdpDatagram {
 const QUIC_UDP_DATAGRAM_QUEUE_CAPACITY: usize = 1024;
 const QUIC_UDP_UNCLAIMED_SESSION_TIMEOUT: Duration = Duration::from_secs(10);
 const QUIC_UDP_MAX_PENDING_INITIALS_PER_SESSION: usize = 64;
+const QUIC_UDP_MAX_CLAIMED_INITIALS_PER_SESSION: usize = 64;
+const QUIC_MAX_IN_FLIGHT_HANDSHAKES: usize = 128;
 
 struct QuicUdpListenerSocket {
     send_socket: Arc<UdpSocket>,
@@ -1312,7 +1380,12 @@ async fn accept_quic_incoming(
     let initial_key = (remote_addr, incoming.orig_dst_cid().to_vec());
     let closer = claim_pending_initial(&pending_initials, &initial_key)
         .ok_or_else(|| TunnelError::InvalidPacket("quic udp session was closed".to_owned()))?;
-    let cleanup = QuicUdpSessionCleanup::new(remote_addr, closer, udp_session_closers);
+    let cleanup = QuicUdpSessionCleanup::new(
+        initial_key,
+        closer,
+        udp_session_closers,
+        pending_initials.clone(),
+    );
     let connecting = incoming
         .accept()
         .with_context(|| "quic accept connection failed")?;
@@ -1393,7 +1466,7 @@ async fn accept_quic_tunnels(
                 local_url.clone(),
                 udp_session_closers.clone(),
                 pending_initials.clone(),
-            ) => {
+            ), if complete_tasks.len() < QUIC_MAX_IN_FLIGHT_HANDSHAKES => {
                 match accepted {
                     Ok(pending) => {
                         complete_tasks.spawn(finish_quic_tunnel(pending));
@@ -1750,14 +1823,16 @@ mod tests {
     async fn quic_udp_session_cleanup_notifies_and_removes_peer_impl() {
         let peer_addr: SocketAddr = "127.0.0.1:31001".parse().unwrap();
         let closers = Arc::new(StdMutex::new(HashMap::new()));
+        let pending_initials = Arc::new(StdMutex::new(HashMap::new()));
         let (close_tx, mut close_rx) = watch::channel(false);
         let closer = Arc::new(QuicUdpSessionCloser::new(close_tx));
         closers.lock().unwrap().insert(peer_addr, closer.clone());
 
         drop(QuicUdpSessionCleanup::new(
-            peer_addr,
+            (peer_addr, vec![1]),
             closer,
             closers.clone(),
+            pending_initials,
         ));
 
         close_rx.changed().await.unwrap();
@@ -1772,12 +1847,23 @@ mod tests {
     async fn quic_udp_session_cleanup_closes_after_last_connection_impl() {
         let peer_addr: SocketAddr = "127.0.0.1:31006".parse().unwrap();
         let closers = Arc::new(StdMutex::new(HashMap::new()));
+        let pending_initials = Arc::new(StdMutex::new(HashMap::new()));
         let (close_tx, mut close_rx) = watch::channel(false);
         let closer = Arc::new(QuicUdpSessionCloser::new(close_tx));
         closers.lock().unwrap().insert(peer_addr, closer.clone());
 
-        let first_cleanup = QuicUdpSessionCleanup::new(peer_addr, closer.clone(), closers.clone());
-        let second_cleanup = QuicUdpSessionCleanup::new(peer_addr, closer.clone(), closers.clone());
+        let first_cleanup = QuicUdpSessionCleanup::new(
+            (peer_addr, vec![1]),
+            closer.clone(),
+            closers.clone(),
+            pending_initials.clone(),
+        );
+        let second_cleanup = QuicUdpSessionCleanup::new(
+            (peer_addr, vec![2]),
+            closer.clone(),
+            closers.clone(),
+            pending_initials,
+        );
 
         drop(first_cleanup);
         assert!(
@@ -1806,11 +1892,17 @@ mod tests {
     async fn stale_quic_udp_session_cleanup_does_not_close_newer_peer_session_impl() {
         let peer_addr: SocketAddr = "127.0.0.1:31002".parse().unwrap();
         let closers = Arc::new(StdMutex::new(HashMap::new()));
+        let pending_initials = Arc::new(StdMutex::new(HashMap::new()));
         let (old_close_tx, mut old_close_rx) = watch::channel(false);
         let (new_close_tx, new_close_rx) = watch::channel(false);
         let old_closer = Arc::new(QuicUdpSessionCloser::new(old_close_tx));
         let new_closer = Arc::new(QuicUdpSessionCloser::new(new_close_tx));
-        let cleanup = QuicUdpSessionCleanup::new(peer_addr, old_closer, closers.clone());
+        let cleanup = QuicUdpSessionCleanup::new(
+            (peer_addr, vec![1]),
+            old_closer,
+            closers.clone(),
+            pending_initials,
+        );
         closers
             .lock()
             .unwrap()
@@ -1922,6 +2014,38 @@ mod tests {
     }
 
     #[test]
+    fn pending_quic_initial_limits_claimed_dcids_per_session() {
+        let peer_addr: SocketAddr = "127.0.0.1:31009".parse().unwrap();
+        let pending_initials = Arc::new(StdMutex::new(HashMap::new()));
+        let (close_tx, _) = watch::channel(false);
+        let closer = Arc::new(QuicUdpSessionCloser::new(close_tx));
+
+        for dcid in 0..QUIC_UDP_MAX_CLAIMED_INITIALS_PER_SESSION {
+            let key = (peer_addr, vec![dcid as u8]);
+            assert!(matches!(
+                register_pending_initial(&pending_initials, key.clone(), closer.clone()),
+                PendingInitialRegister::Registered
+            ));
+            assert!(claim_pending_initial(&pending_initials, &key).is_some());
+        }
+        assert_eq!(
+            closer.claimed_initial_count(),
+            QUIC_UDP_MAX_CLAIMED_INITIALS_PER_SESSION
+        );
+
+        let overflow_key = (
+            peer_addr,
+            vec![QUIC_UDP_MAX_CLAIMED_INITIALS_PER_SESSION as u8],
+        );
+        assert!(matches!(
+            register_pending_initial(&pending_initials, overflow_key.clone(), closer),
+            PendingInitialRegister::Registered
+        ));
+        assert!(claim_pending_initial(&pending_initials, &overflow_key).is_none());
+        assert!(!pending_initials.lock().unwrap().contains_key(&overflow_key));
+    }
+
+    #[test]
     fn pending_quic_initial_keeps_unconsumed_sibling_after_one_dcid_is_claimed() {
         RUNTIME.block_on(
             pending_quic_initial_keeps_unconsumed_sibling_after_one_dcid_is_claimed_impl(),
@@ -1947,7 +2071,12 @@ mod tests {
             PendingInitialRegister::Registered
         ));
         let closer = claim_pending_initial(&pending_initials, &claimed_key).unwrap();
-        let _cleanup = QuicUdpSessionCleanup::new(peer_addr, closer, closers);
+        let _cleanup = QuicUdpSessionCleanup::new(
+            claimed_key.clone(),
+            closer,
+            closers,
+            pending_initials.clone(),
+        );
 
         assert!(matches!(
             register_pending_initial(&pending_initials, claimed_key.clone(), old_closer.clone()),
@@ -2002,7 +2131,12 @@ mod tests {
             PendingInitialRegister::Registered
         ));
         let claimed = claim_pending_initial(&pending_initials, &claimed_key).unwrap();
-        let _cleanup = QuicUdpSessionCleanup::new(peer_addr, claimed, closers);
+        let _cleanup = QuicUdpSessionCleanup::new(
+            claimed_key.clone(),
+            claimed,
+            closers,
+            pending_initials.clone(),
+        );
 
         expire_unclaimed_pending_initial_after(
             pending_initials.clone(),
@@ -2013,6 +2147,40 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(20)).await;
 
         assert!(!pending_initials.lock().unwrap().contains_key(&pending_key));
+    }
+
+    #[test]
+    fn claimed_quic_initial_tombstone_expires() {
+        RUNTIME.block_on(claimed_quic_initial_tombstone_expires_impl())
+    }
+    async fn claimed_quic_initial_tombstone_expires_impl() {
+        let peer_addr: SocketAddr = "127.0.0.1:31010".parse().unwrap();
+        let pending_initials = Arc::new(StdMutex::new(HashMap::new()));
+        let (old_close_tx, _) = watch::channel(false);
+        let (new_close_tx, _) = watch::channel(false);
+        let old_closer = Arc::new(QuicUdpSessionCloser::new(old_close_tx));
+        let new_closer = Arc::new(QuicUdpSessionCloser::new(new_close_tx));
+        let initial_key = (peer_addr, vec![1]);
+
+        assert!(old_closer.try_claim(&initial_key));
+        retain_claimed_initial_tombstone_for_stale_incoming_after(
+            pending_initials.clone(),
+            initial_key.clone(),
+            old_closer.clone(),
+            Duration::from_millis(1),
+        );
+        assert!(matches!(
+            register_pending_initial(&pending_initials, initial_key.clone(), new_closer.clone()),
+            PendingInitialRegister::OccupiedByOtherGeneration
+        ));
+
+        tokio::time::sleep(Duration::from_millis(20)).await;
+
+        assert_eq!(old_closer.claimed_initial_count(), 0);
+        assert!(matches!(
+            register_pending_initial(&pending_initials, initial_key, new_closer),
+            PendingInitialRegister::Registered
+        ));
     }
 
     #[test]
