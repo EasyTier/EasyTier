@@ -859,6 +859,12 @@ impl Drop for QuicUdpSessionCleanup {
             );
             return;
         }
+        retain_claimed_initial_tombstone_for_stale_incoming(
+            self.pending_initials.clone(),
+            self.initial_key.clone(),
+            self.closer.clone(),
+            self.runtime.clone(),
+        );
         self.closer.close();
         let mut closers = self.closers.lock().unwrap();
         if closers
@@ -867,13 +873,6 @@ impl Drop for QuicUdpSessionCleanup {
         {
             closers.remove(&self.peer_addr);
         }
-        drop(closers);
-        retain_claimed_initial_tombstone_for_stale_incoming(
-            self.pending_initials.clone(),
-            self.initial_key.clone(),
-            self.closer.clone(),
-            self.runtime.clone(),
-        );
     }
 }
 
@@ -1869,12 +1868,19 @@ mod tests {
         assert!(closer.try_claim(&initial_key));
         closers.lock().unwrap().insert(peer_addr, closer.clone());
 
-        drop(QuicUdpSessionCleanup::new(
+        let cleanup = QuicUdpSessionCleanup::new(
             initial_key.clone(),
             closer.clone(),
             closers.clone(),
             pending_initials.clone(),
-        ));
+        );
+        let pending_initials_guard = pending_initials.lock().unwrap();
+        let dropper = std::thread::spawn(move || drop(cleanup));
+
+        std::thread::sleep(Duration::from_millis(20));
+        assert!(!*close_rx.borrow());
+        drop(pending_initials_guard);
+        dropper.join().unwrap();
 
         assert!(*close_rx.borrow());
         assert!(!closers.lock().unwrap().contains_key(&peer_addr));
