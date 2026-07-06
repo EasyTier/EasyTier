@@ -241,16 +241,67 @@ fn is_wireguard_packet(data: &[u8]) -> bool {
     }
 }
 
-fn is_quic_packet(data: &[u8]) -> bool {
+fn parse_quic_varint(data: &[u8]) -> Option<(u64, usize)> {
+    let first = *data.first()?;
+    let len = 1usize << (first >> 6);
+    if data.len() < len {
+        return None;
+    }
+
+    let mut value = u64::from(first & 0x3f);
+    for byte in &data[1..len] {
+        value = (value << 8) | u64::from(*byte);
+    }
+    Some((value, len))
+}
+
+pub fn parse_quic_initial_dcid(data: &[u8]) -> Option<Vec<u8>> {
     const QUIC_INITIAL_HEADER_FORM_AND_FIXED_BIT: u8 = 0xC0;
     const QUIC_LONG_PACKET_TYPE_MASK: u8 = 0x30;
     const QUIC_MIN_INITIAL_DATAGRAM_LEN: usize = 1200;
+    const QUIC_MAX_CID_LEN: usize = 20;
 
-    data.first().is_some_and(|first| {
-        (first & QUIC_INITIAL_HEADER_FORM_AND_FIXED_BIT) == QUIC_INITIAL_HEADER_FORM_AND_FIXED_BIT
-            && (first & QUIC_LONG_PACKET_TYPE_MASK) == 0
-            && data.len() >= QUIC_MIN_INITIAL_DATAGRAM_LEN
-    })
+    let first = *data.first()?;
+    if (first & QUIC_INITIAL_HEADER_FORM_AND_FIXED_BIT) != QUIC_INITIAL_HEADER_FORM_AND_FIXED_BIT
+        || (first & QUIC_LONG_PACKET_TYPE_MASK) != 0
+        || data.len() < QUIC_MIN_INITIAL_DATAGRAM_LEN
+    {
+        return None;
+    }
+
+    let version = data.get(1..5)?;
+    if version == [0, 0, 0, 0] {
+        return None;
+    }
+
+    let dcid_len = usize::from(*data.get(5)?);
+    if dcid_len == 0 || dcid_len > QUIC_MAX_CID_LEN {
+        return None;
+    }
+    let dcid_start = 6;
+    let dcid_end = dcid_start + dcid_len;
+    let dcid = data.get(dcid_start..dcid_end)?;
+
+    let scid_len = usize::from(*data.get(dcid_end)?);
+    if scid_len > QUIC_MAX_CID_LEN {
+        return None;
+    }
+    let token_len_offset = dcid_end + 1 + scid_len;
+    let (token_len, token_len_size) = parse_quic_varint(data.get(token_len_offset..)?)?;
+    let packet_len_offset = token_len_offset + token_len_size + usize::try_from(token_len).ok()?;
+    let (packet_len, packet_len_size) = parse_quic_varint(data.get(packet_len_offset..)?)?;
+    let packet_offset = packet_len_offset + packet_len_size;
+    if packet_len == 0
+        || data.len().saturating_sub(packet_offset) < usize::try_from(packet_len).ok()?
+    {
+        return None;
+    }
+
+    Some(dcid.to_vec())
+}
+
+fn is_quic_packet(data: &[u8]) -> bool {
+    parse_quic_initial_dcid(data).is_some()
 }
 
 pub(super) fn inspect_easytier_udp_datagram(

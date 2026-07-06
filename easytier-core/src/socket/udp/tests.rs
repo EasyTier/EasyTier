@@ -771,7 +771,7 @@ async fn udp_layer_drops_unknown_datagram_instead_of_creating_session() {
 }
 
 #[tokio::test]
-async fn udp_layer_drops_short_quic_like_datagram_instead_of_creating_session() {
+async fn udp_layer_drops_malformed_quic_like_datagrams_instead_of_creating_session() {
     let local_addr = SocketAddr::from(([127, 0, 0, 1], 12000));
     let peer_addr = SocketAddr::from(([127, 0, 0, 1], 12001));
     let socket = Arc::new(AutoSackVirtualUdpSocket::new(local_addr));
@@ -804,6 +804,11 @@ async fn udp_layer_drops_short_quic_like_datagram_instead_of_creating_session() 
         .lock()
         .unwrap()
         .push_back((vec![0xc0; 32], peer_addr));
+    socket
+        .incoming
+        .lock()
+        .unwrap()
+        .push_back((vec![0xc0; 1200], peer_addr));
     socket.incoming_notify.notify_one();
 
     assert!(

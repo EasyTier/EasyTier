@@ -16,7 +16,7 @@ use crate::tunnel::{
 use anyhow::Context;
 use derivative::Derivative;
 use derive_more::{Deref, DerefMut};
-use easytier_core::socket::udp::{UdpSessionProtocol, UdpSessionSocket};
+use easytier_core::socket::udp::{UdpSessionProtocol, UdpSessionSocket, parse_quic_initial_dcid};
 use futures::{Sink, Stream};
 use parking_lot::RwLock;
 use quinn::{
@@ -752,6 +752,8 @@ impl Drop for ConnWrapper {
 }
 
 type QuicUdpSessionClosers = Arc<StdMutex<HashMap<SocketAddr, Arc<QuicUdpSessionCloser>>>>;
+type QuicUdpInitialKey = (SocketAddr, Vec<u8>);
+type QuicUdpPendingInitials = Arc<StdMutex<HashMap<QuicUdpInitialKey, Arc<QuicUdpSessionCloser>>>>;
 
 struct QuicUdpSessionCloser {
     close: watch::Sender<bool>,
@@ -1055,6 +1057,7 @@ impl QuicUdpListenerSocket {
         layer: Arc<RuntimeUdpSessionLayer>,
         send_socket: Arc<UdpSocket>,
         udp_session_closers: QuicUdpSessionClosers,
+        pending_initials: QuicUdpPendingInitials,
     ) -> io::Result<Self> {
         let local_addr = send_socket.local_addr()?;
         let (incoming_tx, incoming_rx) = channel(QUIC_UDP_DATAGRAM_QUEUE_CAPACITY);
@@ -1085,8 +1088,10 @@ impl QuicUdpListenerSocket {
                     .insert(peer_addr, closer.clone());
                 let session_incoming_tx = incoming_tx.clone();
                 let session_closers = udp_session_closers.clone();
+                let session_pending_initials = pending_initials.clone();
                 tokio::spawn(async move {
                     let mut buf = vec![0u8; 64 * 1024];
+                    let mut initial_key = None;
                     let unclaimed_timeout = tokio::time::sleep(QUIC_UDP_UNCLAIMED_SESSION_TIMEOUT);
                     tokio::pin!(unclaimed_timeout);
                     loop {
@@ -1103,6 +1108,16 @@ impl QuicUdpListenerSocket {
                             recv = session.recv(&mut buf) => {
                                 match recv {
                                     Ok(len) => {
+                                        if initial_key.is_none() {
+                                            if let Some(dcid) = parse_quic_initial_dcid(&buf[..len]) {
+                                                let key = (peer_addr, dcid);
+                                                session_pending_initials
+                                                    .lock()
+                                                    .unwrap()
+                                                    .insert(key.clone(), closer.clone());
+                                                initial_key = Some(key);
+                                            }
+                                        }
                                         if session_incoming_tx
                                             .send(Ok(QuicUdpDatagram {
                                                 payload: buf[..len].to_vec(),
@@ -1132,6 +1147,15 @@ impl QuicUdpListenerSocket {
                         .is_some_and(|current| Arc::ptr_eq(current, &closer))
                     {
                         session_closers.remove(&peer_addr);
+                    }
+                    if let Some(initial_key) = initial_key {
+                        let mut pending_initials = session_pending_initials.lock().unwrap();
+                        if pending_initials
+                            .get(&initial_key)
+                            .is_some_and(|current| Arc::ptr_eq(current, &closer))
+                        {
+                            pending_initials.remove(&initial_key);
+                        }
                     }
                 });
             }
@@ -1241,17 +1265,18 @@ async fn accept_quic_tunnel(
     endpoint: Endpoint,
     local_url: url::Url,
     udp_session_closers: QuicUdpSessionClosers,
+    pending_initials: QuicUdpPendingInitials,
 ) -> Result<Box<dyn Tunnel>, TunnelError> {
     let incoming = endpoint
         .accept()
         .await
         .ok_or_else(|| TunnelError::InvalidPacket("quic accept failed".to_owned()))?;
     let remote_addr = incoming.remote_address();
-    let closer = udp_session_closers
+    let initial_key = (remote_addr, incoming.orig_dst_cid().to_vec());
+    let closer = pending_initials
         .lock()
         .unwrap()
-        .get(&remote_addr)
-        .cloned()
+        .remove(&initial_key)
         .ok_or_else(|| TunnelError::InvalidPacket("quic udp session was closed".to_owned()))?;
     let cleanup = QuicUdpSessionCleanup::new(remote_addr, closer, udp_session_closers);
     let connecting = incoming
@@ -1278,6 +1303,7 @@ async fn accept_quic_tunnels(
     endpoint: Endpoint,
     local_url: url::Url,
     udp_session_closers: QuicUdpSessionClosers,
+    pending_initials: QuicUdpPendingInitials,
     conn_send: Sender<Box<dyn Tunnel>>,
 ) {
     loop {
@@ -1285,6 +1311,7 @@ async fn accept_quic_tunnels(
             endpoint.clone(),
             local_url.clone(),
             udp_session_closers.clone(),
+            pending_initials.clone(),
         )
         .await
         {
@@ -1308,6 +1335,7 @@ pub struct QuicTunnelListener {
     conn_send: Sender<Box<dyn Tunnel>>,
     conn_recv: Receiver<Box<dyn Tunnel>>,
     udp_session_closers: QuicUdpSessionClosers,
+    pending_initials: QuicUdpPendingInitials,
     forward_tasks: Arc<StdMutex<JoinSet<()>>>,
     global_ctx: ArcGlobalCtx,
 }
@@ -1321,6 +1349,7 @@ impl QuicTunnelListener {
             conn_send,
             conn_recv,
             udp_session_closers: Arc::new(StdMutex::new(HashMap::new())),
+            pending_initials: Arc::new(StdMutex::new(HashMap::new())),
             forward_tasks: Arc::new(StdMutex::new(JoinSet::new())),
             global_ctx,
         }
@@ -1353,6 +1382,7 @@ impl TunnelListener for QuicTunnelListener {
             layer,
             send_socket,
             self.udp_session_closers.clone(),
+            self.pending_initials.clone(),
         )?);
         let runtime = default_runtime().ok_or(TunnelError::InternalError(
             "no async runtime found".to_owned(),
@@ -1366,6 +1396,7 @@ impl TunnelListener for QuicTunnelListener {
         let endpoint = self.endpoint.as_ref().unwrap().clone();
         let local_url = self.local_url();
         let udp_session_closers = self.udp_session_closers.clone();
+        let pending_initials = self.pending_initials.clone();
         let conn_send = self.conn_send.clone();
         self.forward_tasks
             .lock()
@@ -1374,6 +1405,7 @@ impl TunnelListener for QuicTunnelListener {
                 endpoint,
                 local_url,
                 udp_session_closers,
+                pending_initials,
                 conn_send,
             ));
         Ok(())
