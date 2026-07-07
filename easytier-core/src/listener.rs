@@ -197,7 +197,7 @@ where
         for factory in &self.factories {
             initial_listeners.push(if factory.must_succeed {
                 Some(
-                    listen_once(factory.creator.clone(), self.events.clone())
+                    listen_once(factory.creator.clone())
                         .await
                         .with_context(|| "required listener failed to start")?,
                 )
@@ -222,26 +222,14 @@ where
 
 async fn listen_once<Accepted>(
     creator: ListenerCreatorArc<Accepted>,
-    events: Arc<dyn ListenerEventSink>,
 ) -> anyhow::Result<Box<dyn SocketListener<Accepted = Accepted>>>
 where
     Accepted: Send + 'static,
 {
     let mut listener = creator();
     match listener.listen().await {
-        Ok(()) => {
-            emit_listener_added(&events, &*listener);
-            Ok(listener)
-        }
-        Err(error) => {
-            events.emit(ListenerEvent::ListenerAddFailed {
-                url: listener.local_url(),
-                error: format!("{error:?}"),
-                retry_count: 1,
-                will_retry: false,
-            });
-            Err(error)
-        }
+        Ok(()) => Ok(listener),
+        Err(error) => Err(error),
     }
 }
 
@@ -259,7 +247,10 @@ async fn run_listener<Accepted, H>(
     let mut handler_tasks = JoinSet::new();
     loop {
         let mut listener = match initial_listener.take() {
-            Some(listener) => listener,
+            Some(listener) => {
+                emit_listener_added(&events, &*listener);
+                listener
+            }
             None => {
                 let mut listener = creator();
                 match listener.listen().await {
@@ -289,42 +280,42 @@ async fn run_listener<Accepted, H>(
         };
 
         loop {
+            drain_finished_handler_tasks(&mut handler_tasks);
             let listener_url = listener.local_url();
-            tokio::select! {
-                Some(ret) = handler_tasks.join_next(), if !handler_tasks.is_empty() => {
-                    if let Err(error) = ret {
-                        tracing::error!(?error, "accepted socket handler task failed");
-                    }
-                }
-                accepted = listener.accept() => {
-                    let accepted = match accepted {
-                        Ok(accepted) => accepted,
-                        Err(error) => {
-                            events.emit(ListenerEvent::ListenerAcceptFailed {
-                                url: listener_url.clone(),
-                                error: format!("{error:?}"),
-                            });
-                            tracing::error!(?error, ?listener, "listener accept error");
-                            tokio::time::sleep(options.accept_retry_delay).await;
-                            break;
-                        }
-                    };
-
-                    events.emit(ListenerEvent::SocketAccepted {
+            let accepted = match listener.accept().await {
+                Ok(accepted) => accepted,
+                Err(error) => {
+                    events.emit(ListenerEvent::ListenerAcceptFailed {
                         url: listener_url.clone(),
+                        error: format!("{error:?}"),
                     });
-                    let handler = handler.clone();
-                    let events = events.clone();
-                    handler_tasks.spawn(async move {
-                        if let Err(error) = handler.handle_accepted_socket(accepted).await {
-                            events.emit(ListenerEvent::AcceptedSocketHandleFailed {
-                                url: listener_url,
-                                error: format!("{error:?}"),
-                            });
-                        }
+                    tracing::error!(?error, ?listener, "listener accept error");
+                    tokio::time::sleep(options.accept_retry_delay).await;
+                    break;
+                }
+            };
+
+            events.emit(ListenerEvent::SocketAccepted {
+                url: listener_url.clone(),
+            });
+            let handler = handler.clone();
+            let events = events.clone();
+            handler_tasks.spawn(async move {
+                if let Err(error) = handler.handle_accepted_socket(accepted).await {
+                    events.emit(ListenerEvent::AcceptedSocketHandleFailed {
+                        url: listener_url,
+                        error: format!("{error:?}"),
                     });
                 }
-            }
+            });
+        }
+    }
+}
+
+fn drain_finished_handler_tasks(handler_tasks: &mut JoinSet<()>) {
+    while let Some(ret) = handler_tasks.try_join_next() {
+        if let Err(error) = ret {
+            tracing::error!(?error, "accepted socket handler task failed");
         }
     }
 }
@@ -532,10 +523,11 @@ mod tests {
         let handler = Arc::new(MockHandler {
             accepted: Mutex::new(Vec::new()),
         });
+        let events = Arc::new(Events::default());
         let first_accepts = Arc::new(Mutex::new(VecDeque::from([Ok::<_, anyhow::Error>(9)])));
         let mut manager = ListenerManager::new_with_options(
             handler.clone(),
-            Arc::new(Events::default()),
+            events.clone(),
             ListenerManagerOptions {
                 accept_retry_delay: Duration::from_millis(1),
                 listen_retry_delay: Duration::from_millis(1),
@@ -574,6 +566,14 @@ mod tests {
         assert!(manager.run().await.is_err());
         tokio::time::sleep(Duration::from_millis(20)).await;
         assert!(handler.accepted.lock().unwrap().is_empty());
+        assert!(
+            events
+                .events
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|event| !matches!(event, ListenerEvent::ListenerAdded { .. }))
+        );
     }
 
     #[tokio::test]
