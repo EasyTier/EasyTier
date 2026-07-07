@@ -1,12 +1,17 @@
 use std::{
     fmt::Debug,
-    net::IpAddr,
+    net::{IpAddr, SocketAddr},
     str::FromStr,
     sync::{Arc, Weak},
 };
 
 use anyhow::Context;
 use async_trait::async_trait;
+use easytier_core::{
+    listener as core_listener,
+    socket::udp::{UdpSession, UdpSessionAcceptKind, UdpSessionSocket, UdpSessionSocketListener},
+    tunnel::udp::UdpTunnelUpgrader,
+};
 use tokio::task::JoinSet;
 
 use crate::{
@@ -17,8 +22,11 @@ use crate::{
     },
     peers::peer_manager::PeerManager,
     tunnel::{
-        self, IpScheme, Tunnel, TunnelListener, TunnelScheme, ring::RingTunnelListener,
-        tcp::TcpTunnelListener, udp::UdpTunnelListener,
+        self, FromUrl, IpScheme, IpVersion, Tunnel, TunnelInfo, TunnelListener, TunnelScheme,
+        TunnelUrl, build_url_from_socket_addr,
+        ring::RingTunnelListener,
+        tcp::TcpTunnelListener,
+        udp::{RuntimeUdpSessionControlHandler, RuntimeUdpSocketFactory, UdpTunnelListener},
     },
     utils::BoxExt,
 };
@@ -113,17 +121,30 @@ pub struct ListenerManager<H> {
     net_ns: NetNS,
     listeners: Vec<ListenerFactory>,
     peer_manager: Weak<H>,
+    udp_listener_manager: core_listener::ListenerManager<UdpSession, UdpAcceptedSocketHandler<H>>,
 
     tasks: JoinSet<()>,
 }
 
 impl<H: TunnelHandlerForListener + Send + Sync + 'static + Debug> ListenerManager<H> {
     pub fn new(global_ctx: ArcGlobalCtx, peer_manager: Arc<H>) -> Self {
+        let peer_manager = Arc::downgrade(&peer_manager);
+        let udp_handler = Arc::new(UdpAcceptedSocketHandler {
+            global_ctx: global_ctx.clone(),
+            peer_manager: peer_manager.clone(),
+        });
+        let udp_events = Arc::new(GlobalCtxListenerEventSink {
+            global_ctx: global_ctx.clone(),
+        });
         Self {
             global_ctx: global_ctx.clone(),
             net_ns: global_ctx.net_ns.clone(),
             listeners: Vec::new(),
-            peer_manager: Arc::downgrade(&peer_manager),
+            peer_manager,
+            udp_listener_manager: core_listener::ListenerManager::new_with_events(
+                udp_handler,
+                udp_events,
+            ),
             tasks: JoinSet::new(),
         }
     }
@@ -142,20 +163,31 @@ impl<H: TunnelHandlerForListener + Send + Sync + 'static + Debug> ListenerManage
 
         for l in self.global_ctx.config.get_listener_uris().iter() {
             let l = l.clone();
-            let Ok(_) = create_listener_by_url(&l, self.global_ctx.clone()) else {
+            let Ok(scheme) = TunnelScheme::try_from(&l) else {
                 let msg = format!("failed to get listener by url: {}, maybe not supported", l);
                 self.global_ctx
                     .issue_event(GlobalCtxEvent::ListenerAddFailed(l.clone(), msg));
                 continue;
             };
-            let ctx = self.global_ctx.clone();
 
-            let listener = l.clone();
-            self.add_listener(
-                move || create_listener_by_url(&listener, ctx.clone()).unwrap(),
-                true,
-            )
-            .await?;
+            if scheme == TunnelScheme::Ip(IpScheme::Udp) {
+                self.add_udp_listener(l.clone(), true).await?;
+            } else {
+                let Ok(_) = create_listener_by_url(&l, self.global_ctx.clone()) else {
+                    let msg = format!("failed to get listener by url: {}, maybe not supported", l);
+                    self.global_ctx
+                        .issue_event(GlobalCtxEvent::ListenerAddFailed(l.clone(), msg));
+                    continue;
+                };
+                let ctx = self.global_ctx.clone();
+
+                let listener = l.clone();
+                self.add_listener(
+                    move || create_listener_by_url(&listener, ctx.clone()).unwrap(),
+                    true,
+                )
+                .await?;
+            }
 
             if self.global_ctx.config.get_flags().enable_ipv6
                 && !is_url_host_ipv6(&l)
@@ -167,15 +199,50 @@ impl<H: TunnelHandlerForListener + Send + Sync + 'static + Debug> ListenerManage
                 ipv6_listener
                     .set_host(Some("[::]".to_string().as_str()))
                     .with_context(|| format!("failed to set ipv6 host for listener: {}", l))?;
-                let ctx = self.global_ctx.clone();
-                self.add_listener(
-                    move || create_listener_by_url(&ipv6_listener, ctx.clone()).unwrap(),
-                    false,
-                )
-                .await?;
+                if scheme == TunnelScheme::Ip(IpScheme::Udp) {
+                    self.add_udp_listener(ipv6_listener, false).await?;
+                } else {
+                    let ctx = self.global_ctx.clone();
+                    self.add_listener(
+                        move || create_listener_by_url(&ipv6_listener, ctx.clone()).unwrap(),
+                        false,
+                    )
+                    .await?;
+                }
             }
         }
 
+        Ok(())
+    }
+
+    pub async fn add_udp_listener(
+        &mut self,
+        listener: url::Url,
+        must_succeed: bool,
+    ) -> Result<(), Error> {
+        use crate::common::config::ConfigLoader;
+
+        let socket_mark = self.global_ctx.config.get_flags().socket_mark;
+        let bind_device = TunnelUrl::from(listener.clone()).bind_dev();
+        let factory = Arc::new(
+            RuntimeUdpSocketFactory::new(self.net_ns.clone())
+                .with_socket_mark(socket_mark)
+                .with_port_bound_bind_device(bind_device),
+        );
+        let control_handler = Arc::new(RuntimeUdpSessionControlHandler);
+        let net_ns = self.net_ns.clone();
+        self.udp_listener_manager.add_listener(
+            move || {
+                Box::new(RuntimeUdpSessionSocketListener::new(
+                    listener.clone(),
+                    net_ns.clone(),
+                    UdpSessionAcceptKind::EasyTierMux,
+                    factory.clone(),
+                    control_handler.clone(),
+                ))
+            },
+            must_succeed,
+        );
         Ok(())
     }
 
@@ -271,6 +338,9 @@ impl<H: TunnelHandlerForListener + Send + Sync + 'static + Debug> ListenerManage
     }
 
     pub async fn run(&mut self) -> Result<(), Error> {
+        if self.udp_listener_manager.listener_count() > 0 {
+            self.udp_listener_manager.run().await?;
+        }
         for listener in &self.listeners {
             if listener.must_succ {
                 // try listen once
@@ -292,6 +362,205 @@ impl<H: TunnelHandlerForListener + Send + Sync + 'static + Debug> ListenerManage
     }
 }
 
+type EasyTierUdpSessionSocketListener =
+    UdpSessionSocketListener<RuntimeUdpSocketFactory, RuntimeUdpSessionControlHandler>;
+
+struct RuntimeUdpSessionSocketListener {
+    url: url::Url,
+    net_ns: NetNS,
+    accept_kind: UdpSessionAcceptKind,
+    factory: Arc<RuntimeUdpSocketFactory>,
+    control_handler: Arc<RuntimeUdpSessionControlHandler>,
+    inner: Option<EasyTierUdpSessionSocketListener>,
+}
+
+impl RuntimeUdpSessionSocketListener {
+    fn new(
+        url: url::Url,
+        net_ns: NetNS,
+        accept_kind: UdpSessionAcceptKind,
+        factory: Arc<RuntimeUdpSocketFactory>,
+        control_handler: Arc<RuntimeUdpSessionControlHandler>,
+    ) -> Self {
+        Self {
+            url,
+            net_ns,
+            accept_kind,
+            factory,
+            control_handler,
+            inner: None,
+        }
+    }
+
+    fn inner(&mut self) -> anyhow::Result<&mut EasyTierUdpSessionSocketListener> {
+        self.inner
+            .as_mut()
+            .ok_or_else(|| anyhow::anyhow!("runtime udp session listener is not started"))
+    }
+}
+
+impl Debug for RuntimeUdpSessionSocketListener {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let url = self
+            .inner
+            .as_ref()
+            .map(core_listener::SocketListener::local_url)
+            .unwrap_or_else(|| self.url.clone());
+        f.debug_struct("RuntimeUdpSessionSocketListener")
+            .field("url", &url)
+            .field("accept_kind", &self.accept_kind)
+            .field("listening", &self.inner.is_some())
+            .finish()
+    }
+}
+
+#[async_trait]
+impl core_listener::SocketListener for RuntimeUdpSessionSocketListener {
+    type Accepted = UdpSession;
+
+    async fn listen(&mut self) -> anyhow::Result<()> {
+        if self.inner.is_some() {
+            return Ok(());
+        }
+
+        let socket_addr = {
+            let _guard = self.net_ns.guard();
+            SocketAddr::from_url(self.url.clone(), IpVersion::Both).await?
+        };
+        let mut inner = UdpSessionSocketListener::new_with_control_handler(
+            self.url.clone(),
+            socket_addr,
+            self.accept_kind,
+            self.factory.clone(),
+            self.control_handler.clone(),
+        );
+        inner.listen().await?;
+        self.inner = Some(inner);
+        Ok(())
+    }
+
+    async fn accept(&mut self) -> anyhow::Result<Self::Accepted> {
+        self.inner()?.accept().await
+    }
+
+    fn local_url(&self) -> url::Url {
+        self.inner
+            .as_ref()
+            .map(core_listener::SocketListener::local_url)
+            .unwrap_or_else(|| self.url.clone())
+    }
+
+    fn connection_counter(&self) -> Arc<dyn core_listener::ListenerConnectionCounter> {
+        self.inner
+            .as_ref()
+            .map(core_listener::SocketListener::connection_counter)
+            .unwrap_or_else(|| Arc::new(ZeroConnectionCounter))
+    }
+}
+
+#[derive(Debug)]
+struct ZeroConnectionCounter;
+
+impl core_listener::ListenerConnectionCounter for ZeroConnectionCounter {
+    fn get(&self) -> Option<u32> {
+        Some(0)
+    }
+}
+
+#[derive(Debug)]
+struct GlobalCtxListenerEventSink {
+    global_ctx: ArcGlobalCtx,
+}
+
+impl core_listener::ListenerEventSink for GlobalCtxListenerEventSink {
+    fn emit(&self, event: core_listener::ListenerEvent) {
+        match event {
+            core_listener::ListenerEvent::ListenerAdded { url, .. } => {
+                self.global_ctx.add_running_listener(url.clone());
+                self.global_ctx
+                    .issue_event(GlobalCtxEvent::ListenerAdded(url));
+            }
+            core_listener::ListenerEvent::ListenerAddFailed {
+                url,
+                error,
+                will_retry,
+                ..
+            } => {
+                let message = if will_retry {
+                    format!("error: {error}, retry listen later...")
+                } else {
+                    format!("error: {error}")
+                };
+                self.global_ctx
+                    .issue_event(GlobalCtxEvent::ListenerAddFailed(url, message));
+            }
+            core_listener::ListenerEvent::ListenerAcceptFailed { url, error } => {
+                self.global_ctx
+                    .issue_event(GlobalCtxEvent::ListenerAcceptFailed(
+                        url,
+                        format!("error: {error}, retry listen later..."),
+                    ));
+            }
+            core_listener::ListenerEvent::SocketAccepted { .. } => {}
+            core_listener::ListenerEvent::AcceptedSocketHandleFailed { .. } => {}
+        }
+    }
+}
+
+#[derive(Debug)]
+struct UdpAcceptedSocketHandler<H> {
+    global_ctx: ArcGlobalCtx,
+    peer_manager: Weak<H>,
+}
+
+#[async_trait]
+impl<H> core_listener::AcceptedSocketHandler<UdpSession> for UdpAcceptedSocketHandler<H>
+where
+    H: TunnelHandlerForListener + Send + Sync + 'static + Debug,
+{
+    async fn handle_accepted_socket(&self, session: UdpSession) -> anyhow::Result<()> {
+        let local_addr = session.local_addr()?;
+        let remote_addr = session.peer_addr()?;
+        let local_url = build_url_from_socket_addr(&local_addr.to_string(), "udp");
+        let remote_url = build_url_from_socket_addr(&remote_addr.to_string(), "udp");
+        let tunnel_info = TunnelInfo {
+            tunnel_type: "udp".to_owned(),
+            local_addr: Some(local_url.clone().into()),
+            remote_addr: Some(remote_url.clone().into()),
+            resolved_remote_addr: Some(remote_url.clone().into()),
+        };
+
+        let tunnel = UdpTunnelUpgrader::new(tunnel_info).upgrade(session)?;
+        self.global_ctx
+            .issue_event(GlobalCtxEvent::ConnectionAccepted(
+                local_url.to_string(),
+                remote_url.to_string(),
+            ));
+        tracing::info!(ret = ?tunnel, "conn accepted");
+
+        let Some(peer_manager) = self.peer_manager.upgrade() else {
+            let error = "peer manager is gone, cannot handle tunnel".to_owned();
+            self.global_ctx.issue_event(GlobalCtxEvent::ConnectionError(
+                local_url.to_string(),
+                remote_url.to_string(),
+                error.clone(),
+            ));
+            tracing::error!(error = %error, "handle conn error");
+            return Err(anyhow::anyhow!(error));
+        };
+        if let Err(error) = peer_manager.handle_tunnel(tunnel).await {
+            self.global_ctx.issue_event(GlobalCtxEvent::ConnectionError(
+                local_url.to_string(),
+                remote_url.to_string(),
+                error.to_string(),
+            ));
+            tracing::error!(?error, "handle conn error");
+            return Err(error.into());
+        }
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::atomic::{AtomicI32, Ordering};
@@ -300,6 +569,7 @@ mod tests {
     use tokio::time::timeout;
 
     use crate::{
+        common::config::ConfigLoader,
         common::global_ctx::tests::get_mock_global_ctx,
         tunnel::{TunnelConnector, TunnelError, packet_def::ZCPacket, ring::RingTunnelConnector},
     };
@@ -319,6 +589,21 @@ mod tests {
             send.send(zc_packet).await.unwrap();
             Err(Error::Unknown)
         }
+    }
+
+    #[tokio::test]
+    async fn prepare_udp_listeners_registers_core_udp_manager() {
+        let global_ctx = get_mock_global_ctx();
+        global_ctx
+            .config
+            .set_listeners(vec!["udp://127.0.0.1:0".parse().unwrap()]);
+        let handler = Arc::new(MockListenerHandler {});
+        let mut listener_mgr = ListenerManager::new(global_ctx, handler);
+
+        listener_mgr.prepare_listeners().await.unwrap();
+
+        assert_eq!(listener_mgr.listeners.len(), 1);
+        assert_eq!(listener_mgr.udp_listener_manager.listener_count(), 1);
     }
 
     #[tokio::test]

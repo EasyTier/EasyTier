@@ -1,6 +1,5 @@
 use std::{
     fmt::Debug,
-    io,
     net::{Ipv4Addr, SocketAddr, SocketAddrV4, SocketAddrV6},
     sync::{Arc, Mutex as StdMutex, Weak},
 };
@@ -10,8 +9,10 @@ pub use easytier_core::hole_punch::udp::new_hole_punch_packet;
 use easytier_core::socket::udp::{
     PreferredIpv6Source, UdpBindOptions, UdpSession, UdpSessionConnectError,
     UdpSessionControlHandler, UdpSessionLayer, UdpSessionProtocol, UdpSessionSocket,
-    UdpSocketRecvMeta, UdpSocketSendMeta, VirtualUdpSocket, VirtualUdpSocketFactory,
+    UdpSocketPurpose, UdpSocketRecvMeta, UdpSocketSendMeta, VirtualUdpSocket,
+    VirtualUdpSocketFactory,
 };
+pub(crate) use easytier_core::socket::udp::{UdpSessionAcceptKind, accept_udp_session};
 use easytier_core::tunnel::udp::UdpTunnelUpgrader;
 use futures::stream::FuturesUnordered;
 
@@ -28,7 +29,7 @@ use super::{
 };
 use crate::tunnel::common::{BindDev, bind};
 use crate::{
-    common::join_joinset_background,
+    common::{join_joinset_background, netns::NetNS},
     tunnel::{build_url_from_socket_addr, udp_src},
 };
 
@@ -161,6 +162,76 @@ impl UdpSessionControlHandler<RuntimeUdpSocket> for RuntimeUdpSessionControlHand
     }
 }
 
+#[derive(Debug, Clone)]
+pub(crate) struct RuntimeUdpSocketFactory {
+    net_ns: NetNS,
+    socket_mark: Option<u32>,
+    port_bound_bind_device: Option<String>,
+}
+
+impl RuntimeUdpSocketFactory {
+    pub(crate) fn new(net_ns: NetNS) -> Self {
+        Self {
+            net_ns,
+            socket_mark: None,
+            port_bound_bind_device: None,
+        }
+    }
+
+    pub(crate) fn with_socket_mark(mut self, socket_mark: Option<u32>) -> Self {
+        self.socket_mark = socket_mark;
+        self
+    }
+
+    pub(crate) fn with_port_bound_bind_device(mut self, bind_device: Option<String>) -> Self {
+        self.port_bound_bind_device = bind_device;
+        self
+    }
+
+    fn bind_device_for(&self, options: &UdpBindOptions) -> BindDev {
+        if let Some(bind_device) = &options.bind_device {
+            return BindDev::from(bind_device.as_str());
+        }
+
+        if options.purpose == UdpSocketPurpose::PortBoundListener {
+            return self
+                .port_bound_bind_device
+                .as_deref()
+                .map(BindDev::from)
+                .unwrap_or(BindDev::Auto);
+        }
+
+        BindDev::Disabled
+    }
+
+    fn reuse_addr_for(&self, options: &UdpBindOptions) -> bool {
+        options.reuse_addr
+            || (options.purpose == UdpSocketPurpose::PortBoundListener
+                && !cfg!(target_os = "windows"))
+    }
+}
+
+#[async_trait]
+impl VirtualUdpSocketFactory for RuntimeUdpSocketFactory {
+    type Socket = RuntimeUdpSocket;
+
+    async fn bind_udp(&self, options: UdpBindOptions) -> anyhow::Result<Arc<Self::Socket>> {
+        let bind_addr = options
+            .local_addr
+            .unwrap_or_else(|| SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 0)));
+        let socket = bind::<UdpSocket>()
+            .addr(bind_addr)
+            .dev(self.bind_device_for(&options))
+            .maybe_net_ns(Some(self.net_ns.clone()))
+            .only_v6(options.only_v6)
+            .reuse_addr(self.reuse_addr_for(&options))
+            .reuse_port(options.reuse_port)
+            .maybe_socket_mark(options.socket_mark.or(self.socket_mark))
+            .call()?;
+        Ok(Arc::new(RuntimeUdpSocket::new(Arc::new(socket))))
+    }
+}
+
 #[async_trait]
 impl VirtualUdpSocketFactory for RuntimeUdpSessionControlHandler {
     type Socket = RuntimeUdpSocket;
@@ -235,24 +306,6 @@ async fn accept_udp_session_tunnels(
         if let Err(err) = conn_send.send(conn).await {
             tracing::warn!(?err, "udp send conn to accept channel error");
             break;
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum UdpSessionAcceptKind {
-    EasyTierMux,
-    Classified(UdpSessionProtocol),
-}
-
-pub(crate) async fn accept_udp_session(
-    layer: &Arc<RuntimeUdpSessionLayer>,
-    accept_kind: UdpSessionAcceptKind,
-) -> io::Result<UdpSession> {
-    match accept_kind {
-        UdpSessionAcceptKind::EasyTierMux => layer.accept().await,
-        UdpSessionAcceptKind::Classified(protocol) => {
-            layer.accept_classified_session(protocol).await
         }
     }
 }
@@ -679,6 +732,7 @@ mod tests {
     use super::*;
     use crate::{
         common::global_ctx::tests::get_mock_global_ctx,
+        common::netns::NetNS,
         connector::udp_hole_punch::common::RuntimeUdpHolePunchRuntime,
         tunnel::{
             TunnelConnector,
@@ -688,6 +742,42 @@ mod tests {
             },
         },
     };
+
+    #[test]
+    fn runtime_udp_socket_factory_interprets_bind_defaults_by_purpose() {
+        let listener_addr = SocketAddr::from(([0, 0, 0, 0], 11010));
+        let factory = RuntimeUdpSocketFactory::new(NetNS::new(None));
+
+        assert!(matches!(
+            factory.bind_device_for(&UdpBindOptions::port_bound_listener(listener_addr)),
+            BindDev::Auto
+        ));
+        assert!(matches!(
+            factory.bind_device_for(&UdpBindOptions::hole_punch_control()),
+            BindDev::Disabled
+        ));
+        assert_eq!(
+            factory.reuse_addr_for(&UdpBindOptions::port_bound_listener(listener_addr)),
+            !cfg!(target_os = "windows")
+        );
+        assert!(!factory.reuse_addr_for(&UdpBindOptions::hole_punch_control()));
+    }
+
+    #[test]
+    fn runtime_udp_socket_factory_applies_listener_bind_device_default() {
+        let listener_addr = SocketAddr::from(([0, 0, 0, 0], 11010));
+        let factory = RuntimeUdpSocketFactory::new(NetNS::new(None))
+            .with_port_bound_bind_device(Some("eth0".to_owned()));
+
+        match factory.bind_device_for(&UdpBindOptions::port_bound_listener(listener_addr)) {
+            BindDev::Custom(dev) => assert_eq!(dev, "eth0"),
+            bind_device => panic!("unexpected bind device: {bind_device:?}"),
+        }
+        assert!(matches!(
+            factory.bind_device_for(&UdpBindOptions::hole_punch_control()),
+            BindDev::Disabled
+        ));
+    }
 
     #[tokio::test]
     async fn udp_pingpong() {

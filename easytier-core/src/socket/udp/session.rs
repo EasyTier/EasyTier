@@ -450,6 +450,13 @@ impl UdpSession {
         }
     }
 
+    pub(super) fn keep_layer_alive<T>(&mut self, layer_guard: T)
+    where
+        T: Send + Sync + 'static,
+    {
+        self._cleanup.layer_guard = Some(Box::new(layer_guard));
+    }
+
     pub(crate) fn into_tunnel_parts(self) -> UdpSessionTunnelParts {
         let Self {
             local_addr,

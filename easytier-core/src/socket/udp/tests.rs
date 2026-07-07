@@ -18,6 +18,7 @@ use stun_codec::{Message, MessageClass, MessageEncoder, rfc5389::methods::BINDIN
 use tokio::sync::{Semaphore, mpsc, watch};
 
 use crate::{
+    listener::SocketListener,
     packet::{PacketType, UDP_TUNNEL_HEADER_SIZE, UdpPacketType, ZCPacket, ZCPacketType},
     socket::ring::RingSocketSendError,
     stun::{Attribute, ChangeRequest, u32_to_tid},
@@ -1799,6 +1800,53 @@ async fn udp_session_dialer_binds_socket_and_returns_wireguard_session() {
     assert_eq!(session.kind(), UdpSessionKind::WireGuard);
     assert_eq!(session.local_addr().unwrap(), bind_addr);
     assert_eq!(session.peer_addr().unwrap(), remote_addr);
+}
+
+#[tokio::test]
+async fn udp_session_socket_listener_builds_port_bound_bind_options() {
+    let factory = Arc::new(MockVirtualUdpSocketFactory::new(13000));
+    let local_addr = SocketAddr::from(([0, 0, 0, 0], 11010));
+    let mut listener = UdpSessionSocketListener::new(
+        "udp://0.0.0.0:0".parse().unwrap(),
+        local_addr,
+        factory.clone(),
+    );
+
+    listener.listen().await.unwrap();
+
+    assert_eq!(
+        factory.bind_options(),
+        vec![UdpBindOptions::port_bound_listener(local_addr).with_only_v6(true)]
+    );
+    assert_eq!(listener.local_url().port(), Some(11010));
+    assert_eq!(listener.connection_counter().get(), Some(0));
+}
+
+#[tokio::test]
+async fn udp_session_socket_listener_accepts_easy_tier_mux_session() {
+    let local_addr = SocketAddr::from(([127, 0, 0, 1], 11010));
+    let peer_addr = SocketAddr::from(([127, 0, 0, 1], 12010));
+    let factory = Arc::new(MockVirtualUdpSocketFactory::with_socket_incoming(
+        13000,
+        vec![(
+            new_syn_packet(0x1122_3344, 0x5566_7788)
+                .into_bytes()
+                .to_vec(),
+            peer_addr,
+        )],
+    ));
+    let mut listener =
+        UdpSessionSocketListener::new("udp://127.0.0.1:0".parse().unwrap(), local_addr, factory);
+
+    listener.listen().await.unwrap();
+    let session = tokio::time::timeout(Duration::from_secs(1), listener.accept())
+        .await
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(session.kind(), UdpSessionKind::EasyTierMux);
+    assert_eq!(session.local_addr().unwrap(), local_addr);
+    assert_eq!(session.peer_addr().unwrap(), peer_addr);
 }
 
 #[tokio::test]
