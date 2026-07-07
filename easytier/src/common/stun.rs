@@ -18,13 +18,13 @@ use tokio::task::JoinSet;
 use tracing::{Instrument, Level};
 
 use bytecodec::{DecodeExt, EncodeExt};
+use easytier_core::stun::*;
 use stun_codec::rfc5389::methods::BINDING;
 use stun_codec::{Message, MessageClass, MessageDecoder, MessageEncoder};
 
 use crate::common::error::Error;
 
 use super::dns::resolve_txt_record;
-use super::stun_codec_ext::*;
 
 const DEFAULT_UDP_STUN_SERVERS: &[&str] = &[
     "txt:stun.easytier.cn",

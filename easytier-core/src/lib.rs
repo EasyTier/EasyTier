@@ -9,6 +9,7 @@ pub mod proxy;
 pub mod rpc_impl;
 pub mod socket;
 pub mod stats_manager;
+pub mod stun;
 pub mod task;
 pub mod token_bucket;
 pub mod tunnel;

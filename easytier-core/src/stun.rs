@@ -1,17 +1,23 @@
 use std::net::SocketAddr;
+use std::sync::Arc;
 
+use anyhow::Context as _;
 use bytecodec::fixnum::{U32beDecoder, U32beEncoder};
+use bytecodec::{ByteCount, Decode, DecodeExt as _, Encode, EncodeExt as _, Eos, Result};
+use bytecodec::{SizedEncode, TryTaggedDecode};
+use stun_codec::macros::track;
 use stun_codec::net::{SocketAddrDecoder, SocketAddrEncoder, socket_addr_xor};
-
 use stun_codec::rfc5389::attributes::{
     MappedAddress, Software, XorMappedAddress, XorMappedAddress2,
 };
+use stun_codec::rfc5389::methods::BINDING;
 use stun_codec::rfc5780::attributes::{OtherAddress, ResponseOrigin};
-use stun_codec::{AttributeType, Message, TransactionId, define_attribute_enums};
+use stun_codec::{
+    AttributeType, Message, MessageClass, MessageDecoder, MessageEncoder, TransactionId,
+    define_attribute_enums,
+};
 
-use bytecodec::{ByteCount, Decode, Encode, Eos, Result, SizedEncode, TryTaggedDecode};
-
-use stun_codec::macros::track;
+use crate::socket::udp::{UdpBindOptions, VirtualUdpSocket, VirtualUdpSocketFactory};
 
 macro_rules! impl_decode {
     ($decoder:ty, $item:ident, $and_then:expr) => {
@@ -298,3 +304,127 @@ define_attribute_enums!(
         ResponseOrigin
     ]
 );
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StunResponseSendSource {
+    SameSocket,
+    NewSocket,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StunResponse {
+    pub bytes: Vec<u8>,
+    pub send_source: StunResponseSendSource,
+}
+
+pub fn build_stun_response(addr: SocketAddr, req_buf: &[u8]) -> anyhow::Result<StunResponse> {
+    let mut decoder = MessageDecoder::<Attribute>::new();
+    let req_msg = decoder
+        .decode_from_bytes(req_buf)
+        .map_err(|e| anyhow::anyhow!("stun decode error: {:?}", e))?
+        .map_err(|e| anyhow::anyhow!("stun decode broken message error: {:?}", e))?;
+
+    let tid = req_msg.transaction_id();
+    // we only respond easytier stun req, whose tid has 0xdeadbeef prefix
+    if tid.as_bytes()[0..4] != [0xde, 0xad, 0xbe, 0xef] {
+        anyhow::bail!("stun req tid not from easytier");
+    }
+
+    let mut resp_msg = Message::<Attribute>::new(
+        MessageClass::SuccessResponse,
+        BINDING,
+        // we discard the prefix, make sure our implementation is not compatible with other stun client
+        u32_to_tid(tid_to_u32(&tid)),
+    );
+    resp_msg.add_attribute(Attribute::XorMappedAddress(XorMappedAddress::new(addr)));
+
+    let mut encoder = MessageEncoder::new();
+    let bytes = encoder
+        .encode_into_bytes(resp_msg.clone())
+        .map_err(|e| anyhow::anyhow!("stun encode error: {:?}", e))?;
+
+    let change_req = req_msg
+        .get_attribute::<ChangeRequest>()
+        .map(|r| r.ip() || r.port())
+        .unwrap_or(false);
+
+    Ok(StunResponse {
+        bytes,
+        send_source: if change_req {
+            StunResponseSendSource::NewSocket
+        } else {
+            StunResponseSendSource::SameSocket
+        },
+    })
+}
+
+pub async fn respond_stun_packet<S, F>(
+    socket: Arc<S>,
+    factory: &F,
+    addr: SocketAddr,
+    req_buf: &[u8],
+) -> anyhow::Result<()>
+where
+    S: VirtualUdpSocket,
+    F: VirtualUdpSocketFactory<Socket = S> + ?Sized,
+{
+    let response = build_stun_response(addr, req_buf)?;
+    match response.send_source {
+        StunResponseSendSource::SameSocket => {
+            socket
+                .send_to(&response.bytes, addr)
+                .await
+                .with_context(|| "send stun response error")?;
+        }
+        StunResponseSendSource::NewSocket => {
+            let bind_addr = if addr.is_ipv4() {
+                "0.0.0.0:0".parse().unwrap()
+            } else {
+                "[::]:0".parse().unwrap()
+            };
+            let socket = factory
+                .bind_udp(UdpBindOptions::hole_punch_control().with_local_addr(Some(bind_addr)))
+                .await?;
+            socket.send_to(&response.bytes, addr).await?;
+        }
+    }
+
+    tracing::debug!(?addr, "udp respond stun packet done");
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn easytier_transaction_id_roundtrips_u32() {
+        let tid = u32_to_tid(0x1122_3344);
+
+        assert_eq!(&tid.as_bytes()[..4], &[0xde, 0xad, 0xbe, 0xef]);
+        assert_eq!(tid_to_u32(&tid), 0x1122_3344);
+    }
+
+    #[test]
+    fn build_stun_response_rejects_non_easytier_tid() {
+        let request =
+            Message::<Attribute>::new(MessageClass::Request, BINDING, TransactionId::new([0; 12]));
+        let mut encoder = MessageEncoder::new();
+        let request = encoder.encode_into_bytes(request).unwrap();
+
+        assert!(build_stun_response("127.0.0.1:1234".parse().unwrap(), &request).is_err());
+    }
+
+    #[test]
+    fn build_stun_response_detects_change_request() {
+        let mut request = Message::<Attribute>::new(MessageClass::Request, BINDING, u32_to_tid(7));
+        request.add_attribute(Attribute::ChangeRequest(ChangeRequest::new(true, false)));
+        let mut encoder = MessageEncoder::new();
+        let request = encoder.encode_into_bytes(request).unwrap();
+
+        let response = build_stun_response("127.0.0.1:1234".parse().unwrap(), &request).unwrap();
+
+        assert_eq!(response.send_source, StunResponseSendSource::NewSocket);
+        assert!(!response.bytes.is_empty());
+    }
+}

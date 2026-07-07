@@ -1,17 +1,16 @@
 use std::{
     fmt::Debug,
     io,
-    net::{SocketAddr, SocketAddrV4, SocketAddrV6},
+    net::{Ipv4Addr, SocketAddr, SocketAddrV4, SocketAddrV6},
     sync::{Arc, Mutex as StdMutex, Weak},
 };
 
-use anyhow::Context;
 use async_trait::async_trait;
 pub use easytier_core::hole_punch::udp::new_hole_punch_packet;
 use easytier_core::socket::udp::{
-    PreferredIpv6Source, UdpSession, UdpSessionConnectError, UdpSessionControlHandler,
-    UdpSessionLayer, UdpSessionProtocol, UdpSessionSocket, UdpSocketRecvMeta, UdpSocketSendMeta,
-    VirtualUdpSocket,
+    PreferredIpv6Source, UdpBindOptions, UdpSession, UdpSessionConnectError,
+    UdpSessionControlHandler, UdpSessionLayer, UdpSessionProtocol, UdpSessionSocket,
+    UdpSocketRecvMeta, UdpSocketSendMeta, VirtualUdpSocket, VirtualUdpSocketFactory,
 };
 use easytier_core::tunnel::udp::UdpTunnelUpgrader;
 use futures::stream::FuturesUnordered;
@@ -27,7 +26,7 @@ use super::{
     FromUrl, IpVersion, Tunnel, TunnelConnCounter, TunnelError, TunnelInfo, TunnelListener,
     TunnelUrl, common::wait_for_connect_futures,
 };
-use crate::tunnel::common::bind;
+use crate::tunnel::common::{BindDev, bind};
 use crate::{
     common::join_joinset_background,
     tunnel::{build_url_from_socket_addr, udp_src},
@@ -119,7 +118,7 @@ impl UdpSessionControlHandler<RuntimeUdpSocket> for RuntimeUdpSessionControlHand
         datagram: &[u8],
         addr: SocketAddr,
     ) -> std::io::Result<()> {
-        respond_stun_packet(socket.socket(), addr, datagram.to_vec())
+        easytier_core::stun::respond_stun_packet(socket, self, addr, datagram)
             .await
             .map_err(|err| io::Error::new(io::ErrorKind::Other, err.to_string()))
     }
@@ -166,65 +165,28 @@ impl UdpSessionControlHandler<RuntimeUdpSocket> for RuntimeUdpSessionControlHand
     }
 }
 
-async fn respond_stun_packet(
-    socket: Arc<UdpSocket>,
-    addr: SocketAddr,
-    req_buf: Vec<u8>,
-) -> Result<(), anyhow::Error> {
-    use crate::common::stun_codec_ext::*;
-    use bytecodec::{DecodeExt as _, EncodeExt as _};
-    use stun_codec::{
-        Message, MessageClass, MessageDecoder, MessageEncoder,
-        rfc5389::{attributes::XorMappedAddress, methods::BINDING},
-    };
+#[async_trait]
+impl VirtualUdpSocketFactory for RuntimeUdpSessionControlHandler {
+    type Socket = RuntimeUdpSocket;
 
-    let mut decoder = MessageDecoder::<Attribute>::new();
-    let req_msg = decoder
-        .decode_from_bytes(&req_buf)
-        .map_err(|e| anyhow::anyhow!("stun decode error: {:?}", e))?
-        .map_err(|e| anyhow::anyhow!("stun decode broken message error: {:?}", e))?;
-
-    let tid = req_msg.transaction_id();
-    // we only respond easytier stun req, whose tid has 0xdeadbeef prefix
-    if tid.as_bytes()[0..4] != [0xde, 0xad, 0xbe, 0xef] {
-        anyhow::bail!("stun req tid not from easytier");
+    async fn bind_udp(&self, options: UdpBindOptions) -> anyhow::Result<Arc<Self::Socket>> {
+        let bind_addr = options
+            .local_addr
+            .unwrap_or_else(|| SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 0)));
+        let bind_device = options
+            .bind_device
+            .map(BindDev::from)
+            .unwrap_or(BindDev::Disabled);
+        let socket = bind::<UdpSocket>()
+            .addr(bind_addr)
+            .dev(bind_device)
+            .only_v6(options.only_v6)
+            .reuse_addr(options.reuse_addr)
+            .reuse_port(options.reuse_port)
+            .maybe_socket_mark(options.socket_mark)
+            .call()?;
+        Ok(Arc::new(RuntimeUdpSocket::new(Arc::new(socket))))
     }
-
-    let mut resp_msg = Message::<Attribute>::new(
-        MessageClass::SuccessResponse,
-        BINDING,
-        // we discard the prefix, make sure our implementation is not compatible with other stun client
-        u32_to_tid(tid_to_u32(&tid)),
-    );
-    resp_msg.add_attribute(Attribute::XorMappedAddress(XorMappedAddress::new(addr)));
-
-    let mut encoder = MessageEncoder::new();
-    let rsp_buf = encoder
-        .encode_into_bytes(resp_msg.clone())
-        .map_err(|e| anyhow::anyhow!("stun encode error: {:?}", e))?;
-
-    let change_req = req_msg
-        .get_attribute::<ChangeRequest>()
-        .map(|r| r.ip() || r.port())
-        .unwrap_or(false);
-
-    if !change_req {
-        socket
-            .send_to(&rsp_buf, addr)
-            .await
-            .with_context(|| "send stun response error")?;
-    } else {
-        // send from a new udp socket
-        let socket = if addr.is_ipv4() {
-            UdpSocket::bind("0.0.0.0:0").await?
-        } else {
-            UdpSocket::bind("[::]:0").await?
-        };
-        socket.send_to(&rsp_buf, addr).await?;
-    }
-
-    tracing::debug!(?addr, ?req_msg, ?change_req, "udp respond stun packet done");
-    Ok(())
 }
 
 fn map_udp_session_connect_error(error: UdpSessionConnectError) -> TunnelError {

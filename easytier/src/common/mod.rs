@@ -25,7 +25,6 @@ pub mod network;
 pub mod os_info;
 pub mod stats_manager;
 pub mod stun;
-pub mod stun_codec_ext;
 pub mod token_bucket;
 pub mod tracing_rolling_appender;
 pub mod upnp;
