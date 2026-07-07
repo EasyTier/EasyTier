@@ -48,9 +48,13 @@ use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::sync::{
-    Arc, RwLock,
+    Arc,
     atomic::{AtomicU32, Ordering},
 };
+#[cfg(feature = "hotpath")]
+use hotpath::wrap::std::sync::RwLock;
+#[cfg(not(feature = "hotpath"))]
+use std::sync::RwLock;
 use tokio::sync::broadcast;
 use tokio::time;
 use tokio_util::task::AbortOnDropHandle;
@@ -85,7 +89,7 @@ impl AddrTuple {
 
 #[derive(Default)]
 struct StackState {
-    tuples: HashMap<AddrTuple, flume::Sender<Bytes>>,
+    tuples: HashMap<AddrTuple, hotpath::wrap::flume::Sender<Bytes>>,
     closed: bool,
 }
 
@@ -129,7 +133,7 @@ pub enum State {
 pub struct Socket {
     shared: Arc<Shared>,
     tun: Arc<dyn Tun>,
-    incoming: flume::Receiver<Bytes>,
+    incoming: hotpath::wrap::flume::Receiver<Bytes>,
     local_addr: SocketAddr,
     remote_addr: SocketAddr,
     local_mac: MacAddr,
@@ -158,8 +162,8 @@ impl Socket {
         remote_mac: Option<MacAddr>,
         ack: Option<u32>,
         state: State,
-    ) -> (Socket, flume::Sender<Bytes>) {
-        let (incoming_tx, incoming_rx) = flume::bounded(MPMC_BUFFER_LEN);
+    ) -> (Socket, hotpath::wrap::flume::Sender<Bytes>) {
+        let (incoming_tx, incoming_rx) = hotpath::channel!(flume::bounded(MPMC_BUFFER_LEN));
 
         (
             Socket {
@@ -430,9 +434,9 @@ impl Stack {
     ) -> Stack {
         let (tuples_purge_tx, _tuples_purge_rx) = broadcast::channel(16);
         let shared = Arc::new(Shared {
-            state: RwLock::new(StackState::default()),
+            state: hotpath::rw_lock!(std::sync::RwLock::new(StackState::default())),
             tun: tun.clone(),
-            listening: RwLock::new(HashSet::new()),
+            listening: hotpath::rw_lock!(std::sync::RwLock::new(HashSet::new())),
             tuples_purge: tuples_purge_tx.clone(),
         });
 
@@ -501,7 +505,7 @@ impl Stack {
         shared: Arc<Shared>,
         mut tuples_purge: broadcast::Receiver<AddrTuple>,
     ) {
-        let mut tuples: HashMap<AddrTuple, flume::Sender<Bytes>> = HashMap::new();
+        let mut tuples: HashMap<AddrTuple, hotpath::wrap::flume::Sender<Bytes>> = HashMap::new();
 
         loop {
             let mut buf = BytesMut::new();

@@ -11,7 +11,8 @@ use async_trait::async_trait;
 use futures::{Sink, SinkExt, Stream, StreamExt};
 use once_cell::sync::Lazy;
 
-use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
+use hotpath::wrap::tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
+use tokio::sync::mpsc::unbounded_channel;
 
 use uuid::Uuid;
 
@@ -196,7 +197,7 @@ pub struct RingTunnelListener {
 
 impl RingTunnelListener {
     pub fn new(key: url::Url) -> Self {
-        let (conn_sender, conn_receiver) = unbounded_channel();
+        let (conn_sender, conn_receiver) = hotpath::channel!(unbounded_channel());
         RingTunnelListener {
             listener_addr: key,
             conn_sender,
