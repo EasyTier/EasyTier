@@ -465,8 +465,8 @@ impl WgPeer {
     }
 }
 
-type ConnSender = tokio::sync::mpsc::UnboundedSender<Box<dyn Tunnel>>;
-type ConnReceiver = tokio::sync::mpsc::UnboundedReceiver<Box<dyn Tunnel>>;
+type ConnSender = hotpath::wrap::tokio::sync::mpsc::UnboundedSender<Box<dyn Tunnel>>;
+type ConnReceiver = hotpath::wrap::tokio::sync::mpsc::UnboundedReceiver<Box<dyn Tunnel>>;
 
 pub struct WgTunnelListener {
     addr: url::Url,

@@ -38,3 +38,15 @@ macro_rules! rw_lock {
         $expr
     };
 }
+
+/// Type-level mirror of `hotpath::wrap` for type positions: with the feature
+/// off, `channel!` returns the original endpoints, so the wrapped endpoint
+/// types are the plain channel types.
+pub(crate) mod wrap {
+    pub(crate) mod tokio {
+        pub(crate) mod sync {
+            pub(crate) use ::tokio::sync::mpsc;
+        }
+    }
+    pub(crate) use ::flume;
+}
