@@ -166,7 +166,6 @@ impl UdpSessionControlHandler<RuntimeUdpSocket> for RuntimeUdpSessionControlHand
 pub(crate) struct RuntimeUdpSocketFactory {
     net_ns: NetNS,
     socket_mark: Option<u32>,
-    port_bound_bind_device: Option<String>,
 }
 
 impl RuntimeUdpSocketFactory {
@@ -174,17 +173,11 @@ impl RuntimeUdpSocketFactory {
         Self {
             net_ns,
             socket_mark: None,
-            port_bound_bind_device: None,
         }
     }
 
     pub(crate) fn with_socket_mark(mut self, socket_mark: Option<u32>) -> Self {
         self.socket_mark = socket_mark;
-        self
-    }
-
-    pub(crate) fn with_port_bound_bind_device(mut self, bind_device: Option<String>) -> Self {
-        self.port_bound_bind_device = bind_device;
         self
     }
 
@@ -194,11 +187,7 @@ impl RuntimeUdpSocketFactory {
         }
 
         if options.purpose == UdpSocketPurpose::PortBoundListener {
-            return self
-                .port_bound_bind_device
-                .as_deref()
-                .map(BindDev::from)
-                .unwrap_or(BindDev::Auto);
+            return BindDev::Auto;
         }
 
         BindDev::Disabled
@@ -764,12 +753,13 @@ mod tests {
     }
 
     #[test]
-    fn runtime_udp_socket_factory_applies_listener_bind_device_default() {
+    fn runtime_udp_socket_factory_applies_listener_bind_device_option() {
         let listener_addr = SocketAddr::from(([0, 0, 0, 0], 11010));
-        let factory = RuntimeUdpSocketFactory::new(NetNS::new(None))
-            .with_port_bound_bind_device(Some("eth0".to_owned()));
+        let factory = RuntimeUdpSocketFactory::new(NetNS::new(None));
+        let options = UdpBindOptions::port_bound_listener(listener_addr)
+            .with_bind_device(Some("eth0".to_owned()));
 
-        match factory.bind_device_for(&UdpBindOptions::port_bound_listener(listener_addr)) {
+        match factory.bind_device_for(&options) {
             BindDev::Custom(dev) => assert_eq!(dev, "eth0"),
             bind_device => panic!("unexpected bind device: {bind_device:?}"),
         }

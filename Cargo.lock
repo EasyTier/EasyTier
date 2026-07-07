@@ -2500,6 +2500,7 @@ dependencies = [
  "hmac",
  "ordered_hash_map",
  "parking_lot",
+ "percent-encoding",
  "petgraph",
  "prefix-trie",
  "prost 0.14.3",
