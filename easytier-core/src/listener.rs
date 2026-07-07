@@ -1,8 +1,8 @@
-use std::{fmt::Debug, future::Future, sync::Arc, time::Duration};
+use std::{fmt::Debug, future::Future, pin::Pin, sync::Arc, time::Duration};
 
 use anyhow::Context as _;
 use async_trait::async_trait;
-use tokio::task::JoinSet;
+use tokio::{sync::mpsc, task::JoinSet};
 use url::Url;
 
 pub trait ListenerConnectionCounter: Debug + Send + Sync {
@@ -143,6 +143,31 @@ pub struct ListenerManager<Accepted, H> {
     events: Arc<dyn ListenerEventSink>,
     options: ListenerManagerOptions,
     tasks: JoinSet<()>,
+    accepted_tasks: AcceptedTaskSpawner,
+    accepted_task_rx: Option<mpsc::UnboundedReceiver<AcceptedTask>>,
+}
+
+type AcceptedTask = Pin<Box<dyn Future<Output = ()> + Send + 'static>>;
+
+#[derive(Clone)]
+struct AcceptedTaskSpawner {
+    tx: mpsc::UnboundedSender<AcceptedTask>,
+}
+
+impl AcceptedTaskSpawner {
+    fn new() -> (Self, mpsc::UnboundedReceiver<AcceptedTask>) {
+        let (tx, rx) = mpsc::unbounded_channel();
+        (Self { tx }, rx)
+    }
+
+    fn spawn<F>(&self, future: F)
+    where
+        F: Future<Output = ()> + Send + 'static,
+    {
+        if self.tx.send(Box::pin(future)).is_err() {
+            tracing::warn!("accepted socket handler task runner stopped");
+        }
+    }
 }
 
 impl<Accepted, H> ListenerManager<Accepted, H>
@@ -167,12 +192,15 @@ where
         events: Arc<dyn ListenerEventSink>,
         options: ListenerManagerOptions,
     ) -> Self {
+        let (accepted_tasks, accepted_task_rx) = AcceptedTaskSpawner::new();
         Self {
             factories: Vec::new(),
             handler,
             events,
             options,
             tasks: JoinSet::new(),
+            accepted_tasks,
+            accepted_task_rx: Some(accepted_task_rx),
         }
     }
 
@@ -206,12 +234,17 @@ where
             });
         }
 
+        if let Some(accepted_task_rx) = self.accepted_task_rx.take() {
+            self.tasks.spawn(run_accepted_task_runner(accepted_task_rx));
+        }
+
         for (factory, initial_listener) in self.factories.iter().zip(initial_listeners) {
             self.tasks.spawn(run_listener(
                 factory.creator.clone(),
                 self.handler.clone(),
                 self.events.clone(),
                 self.options.clone(),
+                self.accepted_tasks.clone(),
                 initial_listener,
             ));
         }
@@ -238,13 +271,13 @@ async fn run_listener<Accepted, H>(
     handler: Arc<H>,
     events: Arc<dyn ListenerEventSink>,
     options: ListenerManagerOptions,
+    accepted_tasks: AcceptedTaskSpawner,
     mut initial_listener: Option<Box<dyn SocketListener<Accepted = Accepted>>>,
 ) where
     Accepted: Send + 'static,
     H: AcceptedSocketHandler<Accepted> + 'static,
 {
     let mut listen_error_count = 0;
-    let mut handler_tasks = JoinSet::new();
     loop {
         let mut listener = match initial_listener.take() {
             Some(listener) => {
@@ -280,7 +313,6 @@ async fn run_listener<Accepted, H>(
         };
 
         loop {
-            drain_finished_handler_tasks(&mut handler_tasks);
             let listener_url = listener.local_url();
             let accepted = match listener.accept().await {
                 Ok(accepted) => accepted,
@@ -300,7 +332,7 @@ async fn run_listener<Accepted, H>(
             });
             let handler = handler.clone();
             let events = events.clone();
-            handler_tasks.spawn(async move {
+            accepted_tasks.spawn(async move {
                 if let Err(error) = handler.handle_accepted_socket(accepted).await {
                     events.emit(ListenerEvent::AcceptedSocketHandleFailed {
                         url: listener_url,
@@ -312,9 +344,28 @@ async fn run_listener<Accepted, H>(
     }
 }
 
-fn drain_finished_handler_tasks(handler_tasks: &mut JoinSet<()>) {
-    while let Some(ret) = handler_tasks.try_join_next() {
-        if let Err(error) = ret {
+async fn run_accepted_task_runner(mut accepted_task_rx: mpsc::UnboundedReceiver<AcceptedTask>) {
+    let mut handler_tasks = JoinSet::new();
+    loop {
+        tokio::select! {
+            Some(task) = handler_tasks.join_next(), if !handler_tasks.is_empty() => {
+                if let Err(error) = task {
+                    tracing::error!(?error, "accepted socket handler task failed");
+                }
+            }
+            maybe_task = accepted_task_rx.recv() => {
+                match maybe_task {
+                    Some(task) => {
+                        handler_tasks.spawn(task);
+                    }
+                    None => break,
+                }
+            }
+        }
+    }
+
+    while let Some(task) = handler_tasks.join_next().await {
+        if let Err(error) = task {
             tracing::error!(?error, "accepted socket handler task failed");
         }
     }
@@ -631,7 +682,8 @@ mod tests {
     #[derive(Debug)]
     struct DropSignalListener {
         url: Url,
-        accepted: Option<DropSignal>,
+        listen_results: Arc<Mutex<VecDeque<anyhow::Result<()>>>>,
+        accepts: Arc<Mutex<VecDeque<anyhow::Result<DropSignal>>>>,
     }
 
     #[async_trait]
@@ -639,12 +691,17 @@ mod tests {
         type Accepted = DropSignal;
 
         async fn listen(&mut self) -> anyhow::Result<()> {
-            Ok(())
+            self.listen_results
+                .lock()
+                .unwrap()
+                .pop_front()
+                .unwrap_or(Ok(()))
         }
 
         async fn accept(&mut self) -> anyhow::Result<Self::Accepted> {
-            match self.accepted.take() {
-                Some(accepted) => Ok(accepted),
+            let next_accept = self.accepts.lock().unwrap().pop_front();
+            match next_accept {
+                Some(ret) => ret,
                 None => std::future::pending().await,
             }
         }
@@ -678,13 +735,16 @@ mod tests {
                 max_listen_retries: 0,
             },
         );
-        let accepted = Arc::new(Mutex::new(Some(DropSignal(Some(drop_tx)))));
-        let listener_accepted = accepted.clone();
+        let accepts = Arc::new(Mutex::new(VecDeque::from([Ok::<_, anyhow::Error>(
+            DropSignal(Some(drop_tx)),
+        )])));
+        let listener_accepts = accepts.clone();
         manager.add_listener(
             move || {
                 Box::new(DropSignalListener {
                     url: "mock://drop".parse().unwrap(),
-                    accepted: listener_accepted.lock().unwrap().take(),
+                    listen_results: Arc::new(Mutex::new(VecDeque::from([Ok(())]))),
+                    accepts: listener_accepts.clone(),
                 })
             },
             true,
@@ -694,6 +754,72 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(20)).await;
         drop(manager);
 
+        tokio::time::timeout(Duration::from_secs(1), drop_rx)
+            .await
+            .unwrap()
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn listen_retry_exhaustion_keeps_in_flight_handler_tasks_until_manager_drop() {
+        let (drop_tx, mut drop_rx) = tokio::sync::oneshot::channel();
+        let listen_results = Arc::new(Mutex::new(VecDeque::from([
+            Ok(()),
+            Err(anyhow::anyhow!("bind failed")),
+        ])));
+        let accepts = Arc::new(Mutex::new(VecDeque::from([
+            Ok::<_, anyhow::Error>(DropSignal(Some(drop_tx))),
+            Err(anyhow::anyhow!("accept failed")),
+        ])));
+        let events = Arc::new(Events::default());
+        let mut manager = ListenerManager::new_with_options(
+            Arc::new(PendingHandler),
+            events.clone(),
+            ListenerManagerOptions {
+                accept_retry_delay: Duration::from_millis(1),
+                listen_retry_delay: Duration::from_millis(1),
+                max_listen_retries: 0,
+            },
+        );
+        let listener_results = listen_results.clone();
+        let listener_accepts = accepts.clone();
+        manager.add_listener(
+            move || {
+                Box::new(DropSignalListener {
+                    url: "mock://retry-exhausted".parse().unwrap(),
+                    listen_results: listener_results.clone(),
+                    accepts: listener_accepts.clone(),
+                })
+            },
+            true,
+        );
+
+        manager.run().await.unwrap();
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                if events.events.lock().unwrap().iter().any(|event| {
+                    matches!(
+                        event,
+                        ListenerEvent::ListenerAddFailed {
+                            will_retry: false,
+                            ..
+                        }
+                    )
+                }) {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(1)).await;
+            }
+        })
+        .await
+        .unwrap();
+
+        assert!(matches!(
+            drop_rx.try_recv(),
+            Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+        ));
+
+        drop(manager);
         tokio::time::timeout(Duration::from_secs(1), drop_rx)
             .await
             .unwrap()
