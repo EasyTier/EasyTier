@@ -10,14 +10,17 @@ use std::{
 };
 
 use async_trait::async_trait;
+use bytecodec::EncodeExt as _;
 use bytes::BytesMut;
 use dashmap::DashMap;
 use futures::StreamExt;
+use stun_codec::{Message, MessageClass, MessageEncoder, rfc5389::methods::BINDING};
 use tokio::sync::{Semaphore, mpsc, watch};
 
 use crate::{
     packet::{PacketType, UDP_TUNNEL_HEADER_SIZE, UdpPacketType, ZCPacket, ZCPacketType},
     socket::ring::RingSocketSendError,
+    stun::{Attribute, ChangeRequest, u32_to_tid},
 };
 
 use super::{layer::*, packet::*, session::*, virtual_socket::*, *};
@@ -317,6 +320,17 @@ impl VirtualUdpSocket for MockVirtualUdpSocket {
     }
 }
 
+fn easytier_stun_request(change_ip: bool, change_port: bool) -> Vec<u8> {
+    let mut request = Message::<Attribute>::new(MessageClass::Request, BINDING, u32_to_tid(7));
+    if change_ip || change_port {
+        request.add_attribute(Attribute::ChangeRequest(ChangeRequest::new(
+            change_ip,
+            change_port,
+        )));
+    }
+    MessageEncoder::new().encode_into_bytes(request).unwrap()
+}
+
 struct FailingSendVirtualUdpSocket {
     local_addr: SocketAddr,
 }
@@ -341,16 +355,11 @@ impl VirtualUdpSocket for FailingSendVirtualUdpSocket {
 
 #[derive(Debug, Default)]
 struct RecordingUdpSessionControlHandler {
-    stun_responses: Mutex<Vec<(Vec<u8>, SocketAddr)>>,
     v4_hole_punches: Mutex<Vec<SocketAddrV4>>,
     v6_hole_punches: Mutex<Vec<(SocketAddrV6, Option<PreferredIpv6Source>)>>,
 }
 
 impl RecordingUdpSessionControlHandler {
-    fn stun_responses(&self) -> Vec<(Vec<u8>, SocketAddr)> {
-        self.stun_responses.lock().unwrap().clone()
-    }
-
     fn v4_hole_punches(&self) -> Vec<SocketAddrV4> {
         self.v4_hole_punches.lock().unwrap().clone()
     }
@@ -362,19 +371,6 @@ impl RecordingUdpSessionControlHandler {
 
 #[async_trait]
 impl UdpSessionControlHandler<MockVirtualUdpSocket> for RecordingUdpSessionControlHandler {
-    async fn respond_stun(
-        &self,
-        _socket: Arc<MockVirtualUdpSocket>,
-        datagram: &[u8],
-        remote_addr: SocketAddr,
-    ) -> io::Result<()> {
-        self.stun_responses
-            .lock()
-            .unwrap()
-            .push((datagram.to_vec(), remote_addr));
-        Ok(())
-    }
-
     async fn send_v4_hole_punch(
         &self,
         _socket: Arc<MockVirtualUdpSocket>,
@@ -405,7 +401,10 @@ struct BlockingUdpSessionControlHandler {
 }
 
 #[async_trait]
-impl UdpSessionControlHandler<MockVirtualUdpSocket> for BlockingUdpSessionControlHandler {
+impl UdpSessionControlHandler<MockVirtualUdpSocket> for BlockingUdpSessionControlHandler {}
+
+#[async_trait]
+impl UdpSessionStunResponder<MockVirtualUdpSocket> for BlockingUdpSessionControlHandler {
     async fn respond_stun(
         &self,
         _socket: Arc<MockVirtualUdpSocket>,
@@ -476,7 +475,10 @@ impl VirtualUdpSocket for AutoSackVirtualUdpSocket {
 }
 
 #[async_trait]
-impl UdpSessionControlHandler<AutoSackVirtualUdpSocket> for BlockingUdpSessionControlHandler {
+impl UdpSessionControlHandler<AutoSackVirtualUdpSocket> for BlockingUdpSessionControlHandler {}
+
+#[async_trait]
+impl UdpSessionStunResponder<AutoSackVirtualUdpSocket> for BlockingUdpSessionControlHandler {
     async fn respond_stun(
         &self,
         _socket: Arc<AutoSackVirtualUdpSocket>,
@@ -1190,6 +1192,7 @@ async fn udp_session_recv_loop_error_closes_registered_sessions() {
         mux_accepted_tx,
         control_tx,
         Arc::new(NoopUdpSessionControlHandler),
+        Arc::new(NoopUdpSessionStunResponder),
         session_shutdown_tx,
     )
     .await;
@@ -1328,6 +1331,7 @@ async fn full_accept_queue_does_not_block_udp_session_recv_loop() {
 async fn udp_session_layer_routes_stun_and_hole_punch_control_packets() {
     let local_addr = SocketAddr::from(([127, 0, 0, 1], 12000));
     let stun_remote_addr = SocketAddr::from(([127, 0, 0, 1], 12001));
+    let change_stun_remote_addr = SocketAddr::from(([127, 0, 0, 1], 12004));
     let rejected_remote_addr = SocketAddr::from(([192, 0, 2, 1], 12001));
     let v4_remote_addr = SocketAddr::from(([127, 0, 0, 1], 12002));
     let v6_remote_addr = "[::1]:12003".parse::<SocketAddr>().unwrap();
@@ -1337,12 +1341,13 @@ async fn udp_session_layer_routes_stun_and_hole_punch_control_packets() {
         ip: "2001:db8::2".parse().unwrap(),
         ifindex: 42,
     };
-    let mut stun = vec![0; UDP_TUNNEL_HEADER_SIZE];
-    stun[4..8].copy_from_slice(&[0x21, 0x12, 0xA4, 0x42]);
+    let stun = easytier_stun_request(false, false);
+    let change_stun = easytier_stun_request(true, false);
     let socket = Arc::new(MockVirtualUdpSocket::new(
         local_addr,
         vec![
             (stun.clone(), stun_remote_addr),
+            (change_stun.clone(), change_stun_remote_addr),
             (
                 new_v4_hole_punch_packet(&dst_v4).into_bytes().to_vec(),
                 rejected_remote_addr,
@@ -1360,10 +1365,15 @@ async fn udp_session_layer_routes_stun_and_hole_punch_control_packets() {
         ],
     ));
     let control_handler = Arc::new(RecordingUdpSessionControlHandler::default());
-    let layer = UdpSessionLayer::new_with_control_handler(socket, control_handler.clone());
+    let stun_responder = Arc::new(MockVirtualUdpSocketFactory::new(13000));
+    let layer = UdpSessionLayer::new_with_control_handler_and_stun_responder(
+        socket.clone(),
+        control_handler.clone(),
+        stun_responder.clone(),
+    );
 
     let mut events = Vec::new();
-    for _ in 0..3 {
+    for _ in 0..4 {
         events.push(
             tokio::time::timeout(Duration::from_secs(1), layer.recv_control())
                 .await
@@ -1374,6 +1384,10 @@ async fn udp_session_layer_routes_stun_and_hole_punch_control_packets() {
     assert!(events.contains(&UdpSessionLayerControl::Stun {
         remote_addr: stun_remote_addr,
         datagram: BytesMut::from(stun.as_slice()),
+    }));
+    assert!(events.contains(&UdpSessionLayerControl::Stun {
+        remote_addr: change_stun_remote_addr,
+        datagram: BytesMut::from(change_stun.as_slice()),
     }));
     assert!(events.contains(&UdpSessionLayerControl::V4HolePunch {
         remote_addr: v4_remote_addr,
@@ -1386,9 +1400,11 @@ async fn udp_session_layer_routes_stun_and_hole_punch_control_packets() {
     }));
     tokio::time::timeout(Duration::from_secs(1), async {
         loop {
-            if control_handler
-                .stun_responses()
-                .contains(&(stun.clone(), stun_remote_addr))
+            let responder_sockets = stun_responder.sockets();
+            if responder_sockets
+                .first()
+                .is_some_and(|socket| !socket.sent().is_empty())
+                && !socket.sent().is_empty()
                 && control_handler.v4_hole_punches().contains(&dst_v4)
                 && control_handler
                     .v6_hole_punches()
@@ -1401,10 +1417,25 @@ async fn udp_session_layer_routes_stun_and_hole_punch_control_packets() {
     })
     .await
     .unwrap();
-    assert!(
-        control_handler
-            .stun_responses()
-            .contains(&(stun, stun_remote_addr))
+    assert_eq!(
+        stun_responder.bind_options(),
+        vec![
+            UdpBindOptions::hole_punch_control().with_local_addr(Some(SocketAddr::V4(
+                SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 0)
+            )))
+        ]
+    );
+    let responder_sockets = stun_responder.sockets();
+    assert_eq!(responder_sockets.len(), 1);
+    assert_eq!(
+        responder_sockets[0].sent()[0].1,
+        change_stun_remote_addr,
+        "ChangeRequest STUN responses should be sent through a fresh socket"
+    );
+    assert_eq!(
+        socket.sent()[0].1,
+        stun_remote_addr,
+        "normal STUN responses should use the listener socket"
     );
     assert!(control_handler.v4_hole_punches().contains(&dst_v4));
     assert!(
@@ -1455,6 +1486,7 @@ async fn udp_session_recv_loop_does_not_wait_for_control_handler() {
         pending_connects,
         mux_accepted_tx,
         control_tx,
+        control_handler.clone(),
         control_handler.clone(),
         session_shutdown_tx,
     ));
@@ -1699,6 +1731,7 @@ struct MockVirtualUdpSocketFactory {
     next_port: AtomicU16,
     bind_options: Mutex<Vec<UdpBindOptions>>,
     sockets: Mutex<Vec<Arc<MockVirtualUdpSocket>>>,
+    incoming: Mutex<VecDeque<Vec<(Vec<u8>, SocketAddr)>>>,
 }
 
 impl MockVirtualUdpSocketFactory {
@@ -1707,7 +1740,14 @@ impl MockVirtualUdpSocketFactory {
             next_port: AtomicU16::new(next_port),
             bind_options: Mutex::new(Vec::new()),
             sockets: Mutex::new(Vec::new()),
+            incoming: Mutex::new(VecDeque::new()),
         }
+    }
+
+    fn with_socket_incoming(next_port: u16, incoming: Vec<(Vec<u8>, SocketAddr)>) -> Self {
+        let factory = Self::new(next_port);
+        factory.incoming.lock().unwrap().push_back(incoming);
+        factory
     }
 
     fn bind_options(&self) -> Vec<UdpBindOptions> {
@@ -1731,7 +1771,13 @@ impl VirtualUdpSocketFactory for MockVirtualUdpSocketFactory {
                 self.next_port.fetch_add(1, Ordering::Relaxed),
             ))
         });
-        let socket = Arc::new(MockVirtualUdpSocket::new(local_addr, Vec::new()));
+        let incoming = self
+            .incoming
+            .lock()
+            .unwrap()
+            .pop_front()
+            .unwrap_or_default();
+        let socket = Arc::new(MockVirtualUdpSocket::new(local_addr, incoming));
         self.sockets.lock().unwrap().push(socket.clone());
         Ok(socket)
     }
@@ -1753,6 +1799,44 @@ async fn udp_session_dialer_binds_socket_and_returns_wireguard_session() {
     assert_eq!(session.kind(), UdpSessionKind::WireGuard);
     assert_eq!(session.local_addr().unwrap(), bind_addr);
     assert_eq!(session.peer_addr().unwrap(), remote_addr);
+}
+
+#[tokio::test]
+async fn udp_session_dialer_uses_factory_as_stun_responder() {
+    let remote_addr = SocketAddr::from(([192, 0, 2, 10], 11010));
+    let stun_remote_addr = SocketAddr::from(([127, 0, 0, 1], 12001));
+    let request = UdpSessionConnectRequest::wireguard(remote_addr);
+    let expected_session_bind = request.bind.clone();
+    let factory = Arc::new(MockVirtualUdpSocketFactory::with_socket_incoming(
+        13000,
+        vec![(easytier_stun_request(true, false), stun_remote_addr)],
+    ));
+    let mut dialer = UdpSessionDialer::new(factory.clone());
+
+    let _session = dialer.connect(request).await.unwrap();
+
+    tokio::time::timeout(Duration::from_secs(1), async {
+        loop {
+            let sockets = factory.sockets();
+            if sockets.len() == 2 && !sockets[1].sent().is_empty() {
+                return;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(
+        factory.bind_options(),
+        vec![
+            expected_session_bind,
+            UdpBindOptions::hole_punch_control().with_local_addr(Some(SocketAddr::V4(
+                SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 0)
+            )))
+        ]
+    );
+    let sockets = factory.sockets();
+    assert_eq!(sockets[1].sent()[0].1, stun_remote_addr);
 }
 
 #[tokio::test]

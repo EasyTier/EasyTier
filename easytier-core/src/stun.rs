@@ -395,7 +395,77 @@ where
 
 #[cfg(test)]
 mod tests {
+    use std::{io, sync::Mutex};
+
+    use async_trait::async_trait;
+
     use super::*;
+
+    #[derive(Debug, Default)]
+    struct MockSocket {
+        sent: Mutex<Vec<(Vec<u8>, SocketAddr)>>,
+    }
+
+    impl MockSocket {
+        fn sent(&self) -> Vec<(Vec<u8>, SocketAddr)> {
+            self.sent.lock().unwrap().clone()
+        }
+    }
+
+    #[async_trait]
+    impl VirtualUdpSocket for MockSocket {
+        fn local_addr(&self) -> io::Result<SocketAddr> {
+            Ok("127.0.0.1:0".parse().unwrap())
+        }
+
+        async fn send_to(&self, data: &[u8], addr: SocketAddr) -> io::Result<usize> {
+            self.sent.lock().unwrap().push((data.to_vec(), addr));
+            Ok(data.len())
+        }
+
+        async fn recv_from(&self, _buf: &mut [u8]) -> io::Result<(usize, SocketAddr)> {
+            std::future::pending().await
+        }
+    }
+
+    #[derive(Debug, Default)]
+    struct MockFactory {
+        bind_options: Mutex<Vec<UdpBindOptions>>,
+        sockets: Mutex<Vec<Arc<MockSocket>>>,
+    }
+
+    impl MockFactory {
+        fn bind_options(&self) -> Vec<UdpBindOptions> {
+            self.bind_options.lock().unwrap().clone()
+        }
+
+        fn sockets(&self) -> Vec<Arc<MockSocket>> {
+            self.sockets.lock().unwrap().clone()
+        }
+    }
+
+    #[async_trait]
+    impl VirtualUdpSocketFactory for MockFactory {
+        type Socket = MockSocket;
+
+        async fn bind_udp(&self, options: UdpBindOptions) -> anyhow::Result<Arc<Self::Socket>> {
+            self.bind_options.lock().unwrap().push(options);
+            let socket = Arc::new(MockSocket::default());
+            self.sockets.lock().unwrap().push(socket.clone());
+            Ok(socket)
+        }
+    }
+
+    fn stun_request(change_ip: bool, change_port: bool) -> Vec<u8> {
+        let mut request = Message::<Attribute>::new(MessageClass::Request, BINDING, u32_to_tid(7));
+        if change_ip || change_port {
+            request.add_attribute(Attribute::ChangeRequest(ChangeRequest::new(
+                change_ip,
+                change_port,
+            )));
+        }
+        MessageEncoder::new().encode_into_bytes(request).unwrap()
+    }
 
     #[test]
     fn easytier_transaction_id_roundtrips_u32() {
@@ -417,14 +487,39 @@ mod tests {
 
     #[test]
     fn build_stun_response_detects_change_request() {
-        let mut request = Message::<Attribute>::new(MessageClass::Request, BINDING, u32_to_tid(7));
-        request.add_attribute(Attribute::ChangeRequest(ChangeRequest::new(true, false)));
-        let mut encoder = MessageEncoder::new();
-        let request = encoder.encode_into_bytes(request).unwrap();
+        let request = stun_request(true, false);
 
         let response = build_stun_response("127.0.0.1:1234".parse().unwrap(), &request).unwrap();
 
         assert_eq!(response.send_source, StunResponseSendSource::NewSocket);
         assert!(!response.bytes.is_empty());
+    }
+
+    #[tokio::test]
+    async fn respond_stun_packet_uses_ipv6_unspecified_socket_for_ipv6_change_request() {
+        let listener_socket = Arc::new(MockSocket::default());
+        let factory = MockFactory::default();
+        let remote_addr = "[::1]:1234".parse().unwrap();
+
+        respond_stun_packet(
+            listener_socket.clone(),
+            &factory,
+            remote_addr,
+            &stun_request(true, false),
+        )
+        .await
+        .unwrap();
+
+        assert!(listener_socket.sent().is_empty());
+        assert_eq!(
+            factory.bind_options(),
+            vec![
+                UdpBindOptions::hole_punch_control()
+                    .with_local_addr(Some("[::]:0".parse().unwrap()))
+            ]
+        );
+        let sockets = factory.sockets();
+        assert_eq!(sockets.len(), 1);
+        assert_eq!(sockets[0].sent()[0].1, remote_addr);
     }
 }

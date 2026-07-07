@@ -50,15 +50,6 @@ pub trait UdpSessionControlHandler<S>: Send + Sync + 'static
 where
     S: VirtualUdpSocket,
 {
-    async fn respond_stun(
-        &self,
-        _socket: Arc<S>,
-        _datagram: &[u8],
-        _remote_addr: SocketAddr,
-    ) -> io::Result<()> {
-        Ok(())
-    }
-
     async fn send_v4_hole_punch(
         &self,
         _socket: Arc<S>,
@@ -82,6 +73,45 @@ pub struct NoopUdpSessionControlHandler;
 
 #[async_trait]
 impl<S> UdpSessionControlHandler<S> for NoopUdpSessionControlHandler where S: VirtualUdpSocket {}
+
+#[async_trait]
+pub trait UdpSessionStunResponder<S>: Send + Sync + 'static
+where
+    S: VirtualUdpSocket,
+{
+    async fn respond_stun(
+        &self,
+        _socket: Arc<S>,
+        _datagram: &[u8],
+        _remote_addr: SocketAddr,
+    ) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+#[derive(Debug, Default)]
+pub struct NoopUdpSessionStunResponder;
+
+#[async_trait]
+impl<S> UdpSessionStunResponder<S> for NoopUdpSessionStunResponder where S: VirtualUdpSocket {}
+
+#[async_trait]
+impl<S, F> UdpSessionStunResponder<S> for F
+where
+    S: VirtualUdpSocket,
+    F: VirtualUdpSocketFactory<Socket = S>,
+{
+    async fn respond_stun(
+        &self,
+        socket: Arc<S>,
+        datagram: &[u8],
+        remote_addr: SocketAddr,
+    ) -> io::Result<()> {
+        crate::stun::respond_stun_packet(socket, self, remote_addr, datagram)
+            .await
+            .map_err(|err| io::Error::new(io::ErrorKind::Other, err.to_string()))
+    }
+}
 
 pub async fn send_v4_hole_punch_control_packet<F>(
     factory: &F,

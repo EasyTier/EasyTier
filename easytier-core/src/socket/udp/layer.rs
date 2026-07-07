@@ -32,15 +32,17 @@ use super::{
         dispatch_payload_to_session, udp_session_registry_entry,
     },
     virtual_socket::{
-        NoopUdpSessionControlHandler, PreferredIpv6Source, UdpSessionControlHandler,
-        UdpSocketRecvMeta, VirtualUdpSocket, VirtualUdpSocketFactory,
+        NoopUdpSessionControlHandler, NoopUdpSessionStunResponder, PreferredIpv6Source,
+        UdpSessionControlHandler, UdpSessionStunResponder, UdpSocketRecvMeta, VirtualUdpSocket,
+        VirtualUdpSocketFactory,
     },
 };
 
 #[derive(Debug)]
-pub struct UdpSessionLayer<S, H = NoopUdpSessionControlHandler> {
+pub struct UdpSessionLayer<S, H = NoopUdpSessionControlHandler, R = NoopUdpSessionStunResponder> {
     socket: Arc<S>,
     _control_handler: Arc<H>,
+    _stun_responder: Arc<R>,
     pub(super) sessions: Arc<UdpSessionRegistry>,
     classified_sessions: Arc<ClassifiedUdpSessionRegistry>,
     pub(super) classified_accepts: Arc<ClassifiedUdpSessionAccepts>,
@@ -72,16 +74,39 @@ where
     S: VirtualUdpSocket,
 {
     pub fn new(socket: Arc<S>) -> Self {
-        Self::new_with_control_handler(socket, Arc::new(NoopUdpSessionControlHandler))
+        Self::new_with_control_handler_and_stun_responder(
+            socket,
+            Arc::new(NoopUdpSessionControlHandler),
+            Arc::new(NoopUdpSessionStunResponder),
+        )
     }
 }
 
-impl<S, H> UdpSessionLayer<S, H>
+impl<S, H> UdpSessionLayer<S, H, H>
+where
+    S: VirtualUdpSocket,
+    H: UdpSessionControlHandler<S> + UdpSessionStunResponder<S>,
+{
+    pub fn new_with_control_handler(socket: Arc<S>, control_handler: Arc<H>) -> Self {
+        Self::new_with_control_handler_and_stun_responder(
+            socket,
+            control_handler.clone(),
+            control_handler,
+        )
+    }
+}
+
+impl<S, H, R> UdpSessionLayer<S, H, R>
 where
     S: VirtualUdpSocket,
     H: UdpSessionControlHandler<S>,
+    R: UdpSessionStunResponder<S>,
 {
-    pub fn new_with_control_handler(socket: Arc<S>, control_handler: Arc<H>) -> Self {
+    pub fn new_with_control_handler_and_stun_responder(
+        socket: Arc<S>,
+        control_handler: Arc<H>,
+        stun_responder: Arc<R>,
+    ) -> Self {
         let sessions = Arc::new(DashMap::new());
         let classified_sessions = Arc::new(DashMap::new());
         let classified_accepts = create_classified_udp_session_accepts();
@@ -98,12 +123,14 @@ where
             mux_accepted_tx,
             control_tx,
             control_handler.clone(),
+            stun_responder.clone(),
             session_shutdown_tx.clone(),
         ));
 
         Self {
             socket,
             _control_handler: control_handler,
+            _stun_responder: stun_responder,
             sessions,
             classified_sessions,
             classified_accepts,
@@ -355,7 +382,7 @@ where
     }
 }
 
-impl<S, H> Drop for UdpSessionLayer<S, H> {
+impl<S, H, R> Drop for UdpSessionLayer<S, H, R> {
     fn drop(&mut self) {
         let _ = self.session_shutdown_tx.send(true);
         self.pending_connects.clear();
@@ -434,7 +461,7 @@ fn move_pending_udp_session_sender(
     }
 }
 
-pub(super) async fn udp_session_layer_recv_task<S, H>(
+pub(super) async fn udp_session_layer_recv_task<S, H, R>(
     socket: Arc<S>,
     sessions: Arc<UdpSessionRegistry>,
     classified_sessions: Arc<ClassifiedUdpSessionRegistry>,
@@ -443,10 +470,12 @@ pub(super) async fn udp_session_layer_recv_task<S, H>(
     mux_accepted: mpsc::Sender<UdpSession>,
     control: mpsc::Sender<UdpSessionLayerControl>,
     control_handler: Arc<H>,
+    stun_responder: Arc<R>,
     session_shutdown_tx: watch::Sender<bool>,
 ) where
     S: VirtualUdpSocket,
     H: UdpSessionControlHandler<S>,
+    R: UdpSessionStunResponder<S>,
 {
     let mut buf = [0u8; 65535];
     let control_handler_permits = Arc::new(Semaphore::new(UDP_SESSION_QUEUE_CAPACITY));
@@ -474,7 +503,7 @@ pub(super) async fn udp_session_layer_recv_task<S, H>(
             UdpDatagramClassification::Stun(datagram_payload) => {
                 spawn_stun_control_handler(
                     socket.clone(),
-                    control_handler.clone(),
+                    stun_responder.clone(),
                     control_handler_permits.clone(),
                     datagram_payload.clone(),
                     remote_addr,
@@ -911,21 +940,21 @@ fn dispatch_hole_punch_packet(
 
 fn spawn_stun_control_handler<S, H>(
     socket: Arc<S>,
-    control_handler: Arc<H>,
+    stun_responder: Arc<H>,
     permits: Arc<Semaphore>,
     datagram: BytesMut,
     remote_addr: SocketAddr,
 ) where
     S: VirtualUdpSocket,
-    H: UdpSessionControlHandler<S>,
+    H: UdpSessionStunResponder<S>,
 {
     let Ok(permit) = permits.try_acquire_owned() else {
-        tracing::debug!(?remote_addr, "udp control handler queue full");
+        tracing::debug!(?remote_addr, "udp stun responder queue full");
         return;
     };
     tokio::spawn(async move {
         let _permit = permit;
-        if let Err(err) = control_handler
+        if let Err(err) = stun_responder
             .respond_stun(socket, &datagram, remote_addr)
             .await
         {
@@ -1112,7 +1141,13 @@ where
         request: UdpSessionConnectRequest,
     ) -> anyhow::Result<Self::Session> {
         let socket = self.factory.bind_udp(request.bind).await?;
-        let layer = Arc::new(UdpSessionLayer::new(socket));
+        let layer = Arc::new(
+            UdpSessionLayer::new_with_control_handler_and_stun_responder(
+                socket,
+                Arc::new(NoopUdpSessionControlHandler),
+                self.factory.clone(),
+            ),
+        );
         let mut session = layer.open_classified_session(request.protocol, request.remote_addr)?;
         session._cleanup.layer_guard = Some(Box::new(layer));
         Ok(session)

@@ -27,7 +27,8 @@ pub(crate) use session::{
     UdpSessionTunnelParts,
 };
 pub use virtual_socket::{
-    NoopUdpSessionControlHandler, PreferredIpv6Source, UdpBindOptions, UdpSessionControlHandler,
-    UdpSocketPurpose, UdpSocketRecvMeta, UdpSocketSendMeta, VirtualUdpSocket,
-    VirtualUdpSocketFactory, send_v4_hole_punch_control_packet, send_v6_hole_punch_control_packet,
+    NoopUdpSessionControlHandler, NoopUdpSessionStunResponder, PreferredIpv6Source, UdpBindOptions,
+    UdpSessionControlHandler, UdpSessionStunResponder, UdpSocketPurpose, UdpSocketRecvMeta,
+    UdpSocketSendMeta, VirtualUdpSocket, VirtualUdpSocketFactory,
+    send_v4_hole_punch_control_packet, send_v6_hole_punch_control_packet,
 };

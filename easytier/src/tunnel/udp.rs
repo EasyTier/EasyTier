@@ -34,8 +34,11 @@ use crate::{
 
 pub const UDP_DATA_MTU: usize = 2000;
 
-pub(crate) type RuntimeUdpSessionLayer =
-    UdpSessionLayer<RuntimeUdpSocket, RuntimeUdpSessionControlHandler>;
+pub(crate) type RuntimeUdpSessionLayer = UdpSessionLayer<
+    RuntimeUdpSocket,
+    RuntimeUdpSessionControlHandler,
+    RuntimeUdpSessionControlHandler,
+>;
 
 pub(crate) struct RuntimeUdpSocket {
     socket: Arc<UdpSocket>,
@@ -63,10 +66,14 @@ impl RuntimeUdpSocket {
             return layer;
         }
 
-        let layer = Arc::new(UdpSessionLayer::new_with_control_handler(
-            self.clone(),
-            Arc::new(RuntimeUdpSessionControlHandler),
-        ));
+        let control_handler = Arc::new(RuntimeUdpSessionControlHandler);
+        let layer = Arc::new(
+            UdpSessionLayer::new_with_control_handler_and_stun_responder(
+                self.clone(),
+                control_handler.clone(),
+                control_handler,
+            ),
+        );
         *weak_layer = Some(Arc::downgrade(&layer));
         layer
     }
@@ -112,17 +119,6 @@ pub(crate) struct RuntimeUdpSessionControlHandler;
 
 #[async_trait]
 impl UdpSessionControlHandler<RuntimeUdpSocket> for RuntimeUdpSessionControlHandler {
-    async fn respond_stun(
-        &self,
-        socket: Arc<RuntimeUdpSocket>,
-        datagram: &[u8],
-        addr: SocketAddr,
-    ) -> std::io::Result<()> {
-        easytier_core::stun::respond_stun_packet(socket, self, addr, datagram)
-            .await
-            .map_err(|err| io::Error::new(io::ErrorKind::Other, err.to_string()))
-    }
-
     async fn send_v4_hole_punch(
         &self,
         socket: Arc<RuntimeUdpSocket>,
