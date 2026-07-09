@@ -2,20 +2,25 @@ use std::{
     io,
     net::{IpAddr, SocketAddr},
     pin::Pin,
+    sync::Arc,
     task::{Context, Poll},
 };
 
 use easytier_core::socket::tcp::{
-    TcpBindOptions, TcpConnectOptions, TcpListenOptions, VirtualTcpListener, VirtualTcpSocket,
+    TcpBindOptions, TcpConnectOptions, TcpListenOptions, VirtualTcpListener,
+    VirtualTcpListenerFactory, VirtualTcpSocket,
 };
 use tokio::{
     io::{AsyncRead, AsyncWrite, ReadBuf},
     net::{TcpListener, TcpSocket, TcpStream},
 };
 
-use crate::tunnel::{
-    TunnelError,
-    common::{BindDev, apply_socket_mark, bind},
+use crate::{
+    common::netns::NetNS,
+    tunnel::{
+        TunnelError,
+        common::{BindDev, apply_socket_mark, bind},
+    },
 };
 
 #[derive(Debug)]
@@ -95,6 +100,29 @@ impl VirtualTcpListener for RuntimeTcpListener {
     }
 }
 
+#[derive(Debug, Clone)]
+pub(crate) struct RuntimeTcpListenerFactory {
+    net_ns: NetNS,
+}
+
+impl RuntimeTcpListenerFactory {
+    pub(crate) fn new(net_ns: NetNS) -> Self {
+        Self { net_ns }
+    }
+}
+
+#[async_trait::async_trait]
+impl VirtualTcpListenerFactory for RuntimeTcpListenerFactory {
+    type Listener = RuntimeTcpListener;
+
+    async fn bind_tcp(&self, options: TcpListenOptions) -> anyhow::Result<Arc<Self::Listener>> {
+        Ok(Arc::new(bind_tcp_listener_with_netns(
+            options,
+            Some(self.net_ns.clone()),
+        )?))
+    }
+}
+
 fn unspecified_bind_addr(remote_addr: SocketAddr) -> SocketAddr {
     match remote_addr {
         SocketAddr::V4(_) => SocketAddr::new(IpAddr::from([0, 0, 0, 0]), 0),
@@ -147,6 +175,13 @@ fn must_bind_before_connect(bind_options: &TcpBindOptions) -> bool {
 pub(crate) fn bind_tcp_listener(
     options: TcpListenOptions,
 ) -> Result<RuntimeTcpListener, TunnelError> {
+    bind_tcp_listener_with_netns(options, None)
+}
+
+fn bind_tcp_listener_with_netns(
+    options: TcpListenOptions,
+    net_ns: Option<NetNS>,
+) -> Result<RuntimeTcpListener, TunnelError> {
     let bind_options = options.bind;
     let addr = bind_options.local_addr.ok_or_else(|| {
         TunnelError::InvalidAddr("tcp listener requires a local bind address".to_owned())
@@ -155,6 +190,7 @@ pub(crate) fn bind_tcp_listener(
     let listener = bind::<TcpListener>()
         .addr(addr)
         .dev(bind_dev)
+        .maybe_net_ns(net_ns)
         .only_v6(bind_options.only_v6)
         .reuse_addr(bind_options.reuse_addr)
         .reuse_port(bind_options.reuse_port)

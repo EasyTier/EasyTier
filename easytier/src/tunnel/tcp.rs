@@ -284,7 +284,7 @@ fn bind_addr_matches_remote(bind_addr: SocketAddr, remote_addr: SocketAddr) -> b
     bind_addr.is_ipv4() == remote_addr.is_ipv4()
 }
 
-async fn resolve_tcp_bind_url_addr(
+pub(crate) async fn resolve_tcp_bind_url_addr(
     url: &url::Url,
     ip_version: IpVersion,
     socket_mark: Option<u32>,

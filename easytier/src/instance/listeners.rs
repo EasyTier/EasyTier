@@ -7,8 +7,11 @@ use std::{
 use async_trait::async_trait;
 use easytier_core::{
     listener::{self as core_listener, plan as core_listener_plan},
-    socket::udp::{UdpSession, UdpSessionAcceptKind, UdpSessionSocket, UdpSessionSocketListener},
-    tunnel::udp::UdpTunnelUpgrader,
+    socket::{
+        tcp::{TcpSocketListener, VirtualTcpSocket},
+        udp::{UdpSession, UdpSessionAcceptKind, UdpSessionSocket, UdpSessionSocketListener},
+    },
+    tunnel::{tcp::TcpTunnelUpgrader, udp::UdpTunnelUpgrader},
 };
 
 use crate::{
@@ -22,7 +25,8 @@ use crate::{
         self, FromUrl, IpScheme, IpVersion, Tunnel, TunnelConnCounter, TunnelInfo, TunnelListener,
         TunnelScheme, build_url_from_socket_addr,
         ring::RingTunnelListener,
-        tcp::TcpTunnelListener,
+        tcp::{TcpTunnelListener, resolve_tcp_bind_url_addr},
+        tcp_socket::{RuntimeTcpListenerFactory, RuntimeTcpSocket},
         udp::{RuntimeUdpSessionControlHandler, RuntimeUdpSocketFactory, UdpTunnelListener},
     },
     utils::BoxExt,
@@ -98,7 +102,7 @@ impl<T: Send + Sync> ListenerCreatorTrait for T where T: Fn() -> Box<dyn TunnelL
 
 fn listener_scheme_registry() -> core_listener_plan::ListenerSchemeRegistry {
     let mut registry = core_listener_plan::ListenerSchemeRegistry::new()
-        .support("tcp", core_listener_plan::ListenerKind::External)
+        .support("tcp", core_listener_plan::ListenerKind::TcpStream)
         .support("udp", core_listener_plan::ListenerKind::UdpSession);
 
     #[cfg(feature = "wireguard")]
@@ -133,6 +137,7 @@ fn listener_scheme_registry() -> core_listener_plan::ListenerSchemeRegistry {
 
 enum AcceptedConnection {
     Tunnel(Box<dyn Tunnel>),
+    TcpStream(RuntimeTcpSocket),
     UdpSession(UdpSession),
 }
 
@@ -202,6 +207,10 @@ impl<H: TunnelHandlerForListener + Send + Sync + 'static + Debug> ListenerManage
                 self.add_udp_listener(listener.url, listener.must_succeed)
                     .await
             }
+            core_listener_plan::ListenerKind::TcpStream => {
+                self.add_tcp_listener(listener.url, listener.must_succeed)
+                    .await
+            }
             core_listener_plan::ListenerKind::External => {
                 self.add_external_listener(listener.url, listener.must_succeed)
                     .await
@@ -230,6 +239,30 @@ impl<H: TunnelHandlerForListener + Send + Sync + 'static + Debug> ListenerManage
             must_succeed,
         )
         .await
+    }
+
+    pub async fn add_tcp_listener(
+        &mut self,
+        listener: url::Url,
+        must_succeed: bool,
+    ) -> Result<(), Error> {
+        use crate::common::config::ConfigLoader;
+
+        let socket_mark = self.global_ctx.config.get_flags().socket_mark;
+        let factory = Arc::new(RuntimeTcpListenerFactory::new(self.net_ns.clone()));
+        let net_ns = self.net_ns.clone();
+        self.listener_manager.add_listener(
+            move || {
+                Box::new(RuntimeTcpSocketListener::new(
+                    listener.clone(),
+                    net_ns.clone(),
+                    factory.clone(),
+                    socket_mark,
+                ))
+            },
+            must_succeed,
+        );
+        Ok(())
     }
 
     pub async fn add_udp_listener(
@@ -276,6 +309,93 @@ impl<H: TunnelHandlerForListener + Send + Sync + 'static + Debug> ListenerManage
 
     pub async fn run(&mut self) -> Result<(), Error> {
         self.listener_manager.run().await.map_err(Into::into)
+    }
+}
+
+type EasyTierTcpSocketListener = TcpSocketListener<RuntimeTcpListenerFactory>;
+
+struct RuntimeTcpSocketListener {
+    url: url::Url,
+    net_ns: NetNS,
+    factory: Arc<RuntimeTcpListenerFactory>,
+    socket_mark: Option<u32>,
+    inner: Option<EasyTierTcpSocketListener>,
+}
+
+impl RuntimeTcpSocketListener {
+    fn new(
+        url: url::Url,
+        net_ns: NetNS,
+        factory: Arc<RuntimeTcpListenerFactory>,
+        socket_mark: Option<u32>,
+    ) -> Self {
+        Self {
+            url,
+            net_ns,
+            factory,
+            socket_mark,
+            inner: None,
+        }
+    }
+
+    fn inner(&mut self) -> anyhow::Result<&mut EasyTierTcpSocketListener> {
+        self.inner
+            .as_mut()
+            .ok_or_else(|| anyhow::anyhow!("runtime tcp socket listener is not started"))
+    }
+}
+
+impl Debug for RuntimeTcpSocketListener {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let url = self
+            .inner
+            .as_ref()
+            .map(core_listener::SocketListener::local_url)
+            .unwrap_or_else(|| self.url.clone());
+        f.debug_struct("RuntimeTcpSocketListener")
+            .field("url", &url)
+            .field("listening", &self.inner.is_some())
+            .finish()
+    }
+}
+
+#[async_trait]
+impl core_listener::SocketListener for RuntimeTcpSocketListener {
+    type Accepted = AcceptedConnection;
+
+    async fn listen(&mut self) -> anyhow::Result<()> {
+        if self.inner.is_some() {
+            return Ok(());
+        }
+
+        let local_addr = {
+            let _guard = self.net_ns.guard();
+            resolve_tcp_bind_url_addr(&self.url, IpVersion::Both, self.socket_mark).await?
+        };
+        let options = core_listener_plan::tcp_listener_options(local_addr, self.socket_mark);
+        let mut inner =
+            TcpSocketListener::new_with_options(self.url.clone(), options, self.factory.clone());
+        inner.listen().await?;
+        self.inner = Some(inner);
+        Ok(())
+    }
+
+    async fn accept(&mut self) -> anyhow::Result<Self::Accepted> {
+        Ok(AcceptedConnection::TcpStream(self.inner()?.accept().await?))
+    }
+
+    fn local_url(&self) -> url::Url {
+        self.inner
+            .as_ref()
+            .map(core_listener::SocketListener::local_url)
+            .unwrap_or_else(|| self.url.clone())
+    }
+
+    fn connection_counter(&self) -> Arc<dyn core_listener::ListenerConnectionCounter> {
+        self.inner
+            .as_ref()
+            .map(core_listener::SocketListener::connection_counter)
+            .unwrap_or_else(|| Arc::new(ZeroConnectionCounter))
     }
 }
 
@@ -510,6 +630,7 @@ where
     async fn handle_accepted_socket(&self, accepted: AcceptedConnection) -> anyhow::Result<()> {
         match accepted {
             AcceptedConnection::Tunnel(tunnel) => self.handle_tunnel(tunnel).await,
+            AcceptedConnection::TcpStream(stream) => self.handle_tcp_stream(stream).await,
             AcceptedConnection::UdpSession(session) => self.handle_udp_session(session).await,
         }
     }
@@ -519,6 +640,22 @@ impl<H> EasyTierAcceptedHandler<H>
 where
     H: TunnelHandlerForListener + Send + Sync + 'static + Debug,
 {
+    async fn handle_tcp_stream(&self, stream: RuntimeTcpSocket) -> anyhow::Result<()> {
+        let local_addr = stream.local_addr()?;
+        let remote_addr = stream.peer_addr()?;
+        let local_url = build_url_from_socket_addr(&local_addr.to_string(), "tcp");
+        let remote_url = build_url_from_socket_addr(&remote_addr.to_string(), "tcp");
+        let tunnel_info = TunnelInfo {
+            tunnel_type: "tcp".to_owned(),
+            local_addr: Some(local_url.clone().into()),
+            remote_addr: Some(remote_url.clone().into()),
+            resolved_remote_addr: Some(remote_url.clone().into()),
+        };
+
+        let tunnel = TcpTunnelUpgrader::new(tunnel_info).upgrade(stream)?;
+        self.handle_tunnel(tunnel).await
+    }
+
     async fn handle_udp_session(&self, session: UdpSession) -> anyhow::Result<()> {
         let local_addr = session.local_addr()?;
         let remote_addr = session.peer_addr()?;
@@ -589,7 +726,10 @@ mod tests {
     use crate::{
         common::config::ConfigLoader,
         common::global_ctx::tests::get_mock_global_ctx,
-        tunnel::{TunnelConnector, TunnelError, packet_def::ZCPacket, ring::RingTunnelConnector},
+        tunnel::{
+            TunnelConnector, TunnelError, packet_def::ZCPacket, ring::RingTunnelConnector,
+            tcp::TcpTunnelConnector,
+        },
     };
 
     use super::*;
@@ -621,6 +761,68 @@ mod tests {
         listener_mgr.prepare_listeners().await.unwrap();
 
         assert_eq!(listener_mgr.listener_manager.listener_count(), 2);
+    }
+
+    #[test]
+    fn listener_scheme_registry_classifies_tcp_as_tcp_stream() {
+        let url = "tcp://127.0.0.1:0".parse().unwrap();
+
+        assert_eq!(
+            listener_scheme_registry().classify(&url),
+            Some(core_listener_plan::ListenerKind::TcpStream)
+        );
+    }
+
+    #[tokio::test]
+    async fn prepare_tcp_listeners_registers_core_listener_manager() {
+        let global_ctx = get_mock_global_ctx();
+        global_ctx
+            .config
+            .set_listeners(vec!["tcp://127.0.0.1:0".parse().unwrap()]);
+        let handler = Arc::new(MockListenerHandler {});
+        let mut listener_mgr = ListenerManager::new(global_ctx, handler);
+
+        listener_mgr.prepare_listeners().await.unwrap();
+
+        assert_eq!(listener_mgr.listener_manager.listener_count(), 2);
+    }
+
+    #[tokio::test]
+    async fn tcp_listener_accepts_through_core_socket_listener() {
+        let global_ctx = get_mock_global_ctx();
+        global_ctx
+            .config
+            .set_listeners(vec!["tcp://127.0.0.1:0".parse().unwrap()]);
+        let handler = Arc::new(MockListenerHandler {});
+        let mut listener_mgr = ListenerManager::new(global_ctx.clone(), handler.clone());
+
+        listener_mgr.prepare_listeners().await.unwrap();
+        listener_mgr.run().await.unwrap();
+
+        let listener_url = timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                if let Some(url) = global_ctx
+                    .get_running_listeners()
+                    .into_iter()
+                    .find(|url| url.scheme() == "tcp")
+                {
+                    break url;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+
+        let tunnel = TcpTunnelConnector::new(listener_url)
+            .connect()
+            .await
+            .unwrap();
+        let (mut recv, _send) = tunnel.split();
+        assert_eq!(
+            recv.next().await.unwrap().unwrap().payload(),
+            "abc".as_bytes()
+        );
     }
 
     #[tokio::test]

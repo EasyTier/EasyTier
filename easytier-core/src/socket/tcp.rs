@@ -1,7 +1,9 @@
-use std::{io, net::SocketAddr, sync::Arc};
+use std::{fmt, io, net::SocketAddr, sync::Arc};
 
 use async_trait::async_trait;
 use tokio::io::{AsyncRead, AsyncWrite};
+
+use crate::listener::SocketListener;
 
 /// A core-visible TCP stream endpoint.
 ///
@@ -182,9 +184,228 @@ pub trait VirtualTcpListenerFactory: Send + Sync + 'static {
     async fn bind_tcp(&self, options: TcpListenOptions) -> anyhow::Result<Arc<Self::Listener>>;
 }
 
+type AcceptedTcpSocket<F> =
+    <<F as VirtualTcpListenerFactory>::Listener as VirtualTcpListener>::Socket;
+
+pub struct TcpSocketListener<F>
+where
+    F: VirtualTcpListenerFactory,
+{
+    url: url::Url,
+    options: TcpListenOptions,
+    factory: Arc<F>,
+    listener: Option<Arc<F::Listener>>,
+}
+
+impl<F> TcpSocketListener<F>
+where
+    F: VirtualTcpListenerFactory,
+{
+    pub fn new_with_options(url: url::Url, options: TcpListenOptions, factory: Arc<F>) -> Self {
+        Self {
+            url,
+            options,
+            factory,
+            listener: None,
+        }
+    }
+
+    fn listener(&self) -> anyhow::Result<Arc<F::Listener>> {
+        self.listener
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("tcp socket listener is not started"))
+    }
+}
+
+impl<F> fmt::Debug for TcpSocketListener<F>
+where
+    F: VirtualTcpListenerFactory,
+{
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("TcpSocketListener")
+            .field("url", &self.url)
+            .field("options", &self.options)
+            .field("listening", &self.listener.is_some())
+            .finish()
+    }
+}
+
+#[async_trait]
+impl<F> SocketListener for TcpSocketListener<F>
+where
+    F: VirtualTcpListenerFactory,
+{
+    type Accepted = AcceptedTcpSocket<F>;
+
+    async fn listen(&mut self) -> anyhow::Result<()> {
+        if self.listener.is_some() {
+            return Ok(());
+        }
+
+        let listener = self.factory.bind_tcp(self.options.clone()).await?;
+        let local_addr = listener.local_addr()?;
+        self.url
+            .set_port(Some(local_addr.port()))
+            .map_err(|_| anyhow::anyhow!("failed to update tcp listener port for {}", self.url))?;
+        self.listener = Some(listener);
+        Ok(())
+    }
+
+    async fn accept(&mut self) -> anyhow::Result<Self::Accepted> {
+        loop {
+            let listener = self.listener()?;
+            match listener.accept().await {
+                Ok((socket, _)) => return Ok(socket),
+                Err(error) if is_retryable_tcp_accept_error(&error) => {
+                    tracing::warn!(?error, "tcp accept failed with retryable error");
+                }
+                Err(error) => {
+                    tracing::warn!(?error, "tcp accept failed");
+                    return Err(error.into());
+                }
+            }
+        }
+    }
+
+    fn local_url(&self) -> url::Url {
+        self.url.clone()
+    }
+}
+
+fn is_retryable_tcp_accept_error(error: &io::Error) -> bool {
+    use io::ErrorKind::*;
+    matches!(
+        error.kind(),
+        NotConnected | ConnectionAborted | ConnectionRefused | ConnectionReset
+    )
+}
+
 #[cfg(test)]
 mod tests {
+    use std::{
+        collections::VecDeque,
+        pin::Pin,
+        sync::Mutex,
+        task::{Context, Poll},
+    };
+
+    use tokio::io::{DuplexStream, ReadBuf};
+
     use super::*;
+
+    struct MockTcpSocket {
+        stream: DuplexStream,
+        local_addr: SocketAddr,
+        peer_addr: SocketAddr,
+    }
+
+    impl MockTcpSocket {
+        fn new(local_addr: SocketAddr, peer_addr: SocketAddr) -> Self {
+            let (stream, _) = tokio::io::duplex(64);
+            Self {
+                stream,
+                local_addr,
+                peer_addr,
+            }
+        }
+    }
+
+    impl AsyncRead for MockTcpSocket {
+        fn poll_read(
+            mut self: Pin<&mut Self>,
+            cx: &mut Context<'_>,
+            buf: &mut ReadBuf<'_>,
+        ) -> Poll<io::Result<()>> {
+            Pin::new(&mut self.stream).poll_read(cx, buf)
+        }
+    }
+
+    impl AsyncWrite for MockTcpSocket {
+        fn poll_write(
+            mut self: Pin<&mut Self>,
+            cx: &mut Context<'_>,
+            buf: &[u8],
+        ) -> Poll<io::Result<usize>> {
+            Pin::new(&mut self.stream).poll_write(cx, buf)
+        }
+
+        fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Pin::new(&mut self.stream).poll_flush(cx)
+        }
+
+        fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Pin::new(&mut self.stream).poll_shutdown(cx)
+        }
+    }
+
+    impl VirtualTcpSocket for MockTcpSocket {
+        fn local_addr(&self) -> io::Result<SocketAddr> {
+            Ok(self.local_addr)
+        }
+
+        fn peer_addr(&self) -> io::Result<SocketAddr> {
+            Ok(self.peer_addr)
+        }
+    }
+
+    struct MockTcpListener {
+        local_addr: SocketAddr,
+        accepts: Mutex<VecDeque<io::Result<MockTcpSocket>>>,
+    }
+
+    impl MockTcpListener {
+        fn new(local_addr: SocketAddr, accepts: Vec<io::Result<MockTcpSocket>>) -> Self {
+            Self {
+                local_addr,
+                accepts: Mutex::new(accepts.into()),
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl VirtualTcpListener for MockTcpListener {
+        type Socket = MockTcpSocket;
+
+        fn local_addr(&self) -> io::Result<SocketAddr> {
+            Ok(self.local_addr)
+        }
+
+        async fn accept(&self) -> io::Result<(Self::Socket, SocketAddr)> {
+            let result = self.accepts.lock().unwrap().pop_front();
+            match result {
+                Some(Ok(socket)) => {
+                    let peer_addr = socket.peer_addr()?;
+                    Ok((socket, peer_addr))
+                }
+                Some(Err(error)) => Err(error),
+                None => std::future::pending().await,
+            }
+        }
+    }
+
+    struct MockTcpListenerFactory {
+        listener: Arc<MockTcpListener>,
+        binds: Mutex<Vec<TcpListenOptions>>,
+    }
+
+    impl MockTcpListenerFactory {
+        fn new(listener: Arc<MockTcpListener>) -> Self {
+            Self {
+                listener,
+                binds: Mutex::new(Vec::new()),
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl VirtualTcpListenerFactory for MockTcpListenerFactory {
+        type Listener = MockTcpListener;
+
+        async fn bind_tcp(&self, options: TcpListenOptions) -> anyhow::Result<Arc<Self::Listener>> {
+            self.binds.lock().unwrap().push(options);
+            Ok(self.listener.clone())
+        }
+    }
 
     #[test]
     fn tcp_connect_options_preserve_socket_purpose() {
@@ -266,5 +487,55 @@ mod tests {
                 only_v6: true,
             }
         );
+    }
+
+    #[tokio::test]
+    async fn tcp_socket_listener_binds_and_accepts_socket() {
+        let requested_addr = SocketAddr::from(([127, 0, 0, 1], 0));
+        let bound_addr = SocketAddr::from(([127, 0, 0, 1], 12000));
+        let peer_addr = SocketAddr::from(([127, 0, 0, 1], 12001));
+        let options = TcpListenOptions::direct_connect(requested_addr);
+        let listener = Arc::new(MockTcpListener::new(
+            bound_addr,
+            vec![Ok(MockTcpSocket::new(bound_addr, peer_addr))],
+        ));
+        let factory = Arc::new(MockTcpListenerFactory::new(listener));
+        let mut socket_listener = TcpSocketListener::new_with_options(
+            "tcp://127.0.0.1:0".parse().unwrap(),
+            options.clone(),
+            factory.clone(),
+        );
+
+        socket_listener.listen().await.unwrap();
+        let accepted = socket_listener.accept().await.unwrap();
+
+        assert_eq!(socket_listener.local_url().port(), Some(bound_addr.port()));
+        assert_eq!(accepted.peer_addr().unwrap(), peer_addr);
+        assert_eq!(factory.binds.lock().unwrap().as_slice(), &[options]);
+    }
+
+    #[tokio::test]
+    async fn tcp_socket_listener_retries_retryable_accept_error() {
+        let requested_addr = SocketAddr::from(([127, 0, 0, 1], 0));
+        let bound_addr = SocketAddr::from(([127, 0, 0, 1], 12010));
+        let peer_addr = SocketAddr::from(([127, 0, 0, 1], 12011));
+        let listener = Arc::new(MockTcpListener::new(
+            bound_addr,
+            vec![
+                Err(io::Error::new(io::ErrorKind::ConnectionReset, "reset")),
+                Ok(MockTcpSocket::new(bound_addr, peer_addr)),
+            ],
+        ));
+        let factory = Arc::new(MockTcpListenerFactory::new(listener));
+        let mut socket_listener = TcpSocketListener::new_with_options(
+            "tcp://127.0.0.1:0".parse().unwrap(),
+            TcpListenOptions::direct_connect(requested_addr),
+            factory,
+        );
+
+        socket_listener.listen().await.unwrap();
+        let accepted = socket_listener.accept().await.unwrap();
+
+        assert_eq!(accepted.peer_addr().unwrap(), peer_addr);
     }
 }

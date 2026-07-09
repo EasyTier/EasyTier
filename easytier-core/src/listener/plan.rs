@@ -7,11 +7,15 @@ use std::{
 use percent_encoding::percent_decode_str;
 use url::Url;
 
-use crate::socket::udp::{UdpBindOptions, UdpSessionListenRequest};
+use crate::socket::{
+    tcp::{TcpBindOptions, TcpListenOptions},
+    udp::{UdpBindOptions, UdpSessionListenRequest},
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ListenerKind {
     Ring,
+    TcpStream,
     UdpSession,
     External,
 }
@@ -160,6 +164,17 @@ pub fn udp_session_listen_request(
     )
 }
 
+pub fn tcp_listener_options(
+    local_addr: std::net::SocketAddr,
+    socket_mark: Option<u32>,
+) -> TcpListenOptions {
+    let bind = TcpBindOptions::default()
+        .with_local_addr(Some(local_addr))
+        .with_socket_mark(socket_mark)
+        .with_only_v6(true);
+    TcpListenOptions::direct_connect(local_addr).with_bind(bind)
+}
+
 pub fn is_url_host_ipv6(url: &Url) -> bool {
     url.host_str().is_some_and(|h| h.contains(':'))
 }
@@ -210,7 +225,7 @@ mod tests {
 
     fn registry() -> ListenerSchemeRegistry {
         ListenerSchemeRegistry::new()
-            .support("tcp", ListenerKind::External)
+            .support("tcp", ListenerKind::TcpStream)
             .support("udp", ListenerKind::UdpSession)
             .support("quic", ListenerKind::External)
             .support("faketcp", ListenerKind::External)
@@ -324,6 +339,23 @@ mod tests {
                     .with_only_v6(true)
                     .with_socket_mark(Some(7))
                     .with_bind_device(Some("eth0".to_owned()))
+            )
+        );
+    }
+
+    #[test]
+    fn tcp_listener_options_preserve_existing_listener_bind_options() {
+        let local_addr: std::net::SocketAddr = "0.0.0.0:11010".parse().unwrap();
+
+        let options = tcp_listener_options(local_addr, Some(7));
+
+        assert_eq!(
+            options,
+            TcpListenOptions::direct_connect(local_addr).with_bind(
+                TcpBindOptions::default()
+                    .with_local_addr(Some(local_addr))
+                    .with_socket_mark(Some(7))
+                    .with_only_v6(true)
             )
         );
     }
