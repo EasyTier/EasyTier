@@ -796,11 +796,7 @@ impl AclProcessor {
                     panic!("Rate limit bucket not found");
                 }
                 RateLimitValue {
-                    token_bucket: TokenBucket::new(
-                        burst as u64,
-                        rate as u64,
-                        Duration::from_millis(10),
-                    ),
+                    token_bucket: TokenBucket::new(burst as u64, rate as u64),
                     last_update: Instant::now(),
                 }
             });
