@@ -2502,6 +2502,7 @@ dependencies = [
  "parking_lot",
  "percent-encoding",
  "petgraph",
+ "pin-project-lite",
  "prefix-trie",
  "prost 0.14.3",
  "prost-reflect",

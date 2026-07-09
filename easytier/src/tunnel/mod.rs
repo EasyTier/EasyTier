@@ -13,7 +13,6 @@ pub use easytier_core::tunnel::{
     ZCPacketSink, ZCPacketStream,
 };
 
-pub mod buf;
 pub mod common;
 pub mod filter;
 pub mod mpsc;

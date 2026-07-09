@@ -33,6 +33,7 @@ ordered_hash_map = "0.5.0"
 parking_lot = "0.12.1"
 percent-encoding = "2.3.1"
 petgraph = "0.8.1"
+pin-project-lite = "0.2.13"
 prefix-trie = { version = "0.7.0", features = ["cidr"] }
 prost = "0.14.3"
 prost-reflect = { version = "0.16.4", default-features = false, features = ["derive", "serde"] }

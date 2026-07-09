@@ -1,242 +1,11 @@
-use std::{
-    collections::VecDeque,
-    pin::Pin,
-    sync::Mutex as StdMutex,
-    task::{Context, Poll, ready},
-};
-
-use bytes::{Buf, BufMut, Bytes, BytesMut};
-use futures::{Sink, Stream};
-use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
-use tokio_util::io::poll_write_buf;
-use zerocopy::FromBytes as _;
+use std::sync::Mutex as StdMutex;
 
 use crate::{
-    packet::{
-        PEER_MANAGER_HEADER_SIZE, TCP_TUNNEL_HEADER_SIZE, TCPTunnelHeader, ZCPacket, ZCPacketType,
-    },
     proto::common::TunnelInfo,
     socket::tcp::VirtualTcpSocket,
-    tunnel::{SinkError, SinkItem, SplitTunnel, StreamItem, Tunnel, TunnelError},
+    tunnel::framed::{FramedReader, FramedWriter, TCP_MTU_BYTES},
+    tunnel::{SplitTunnel, Tunnel, TunnelError},
 };
-
-const TCP_MTU_BYTES: usize = 2000;
-
-fn reserve_buf(buf: &mut BytesMut, min_size: usize, max_size: usize) {
-    if buf.capacity() < min_size {
-        buf.reserve(max_size);
-    }
-}
-
-struct TcpTunnelStream<R> {
-    reader: R,
-    buf: BytesMut,
-    max_packet_size: usize,
-    error: Option<TunnelError>,
-}
-
-impl<R> TcpTunnelStream<R> {
-    fn new(reader: R, max_packet_size: usize) -> Self {
-        Self {
-            reader,
-            buf: BytesMut::with_capacity(max_packet_size),
-            max_packet_size,
-            error: None,
-        }
-    }
-
-    fn extract_one_packet(
-        buf: &mut BytesMut,
-        max_packet_size: usize,
-    ) -> Option<Result<ZCPacket, TunnelError>> {
-        if buf.len() < TCP_TUNNEL_HEADER_SIZE {
-            return None;
-        }
-
-        let header = TCPTunnelHeader::ref_from_prefix(&buf[..]).unwrap();
-        let body_len = header.len.get() as usize;
-        if body_len > max_packet_size {
-            return Some(Err(TunnelError::InvalidPacket("body too long".to_owned())));
-        }
-
-        if body_len < PEER_MANAGER_HEADER_SIZE {
-            return Some(Err(TunnelError::InvalidPacket("body too short".to_owned())));
-        }
-
-        if buf.len() < TCP_TUNNEL_HEADER_SIZE + body_len {
-            return None;
-        }
-
-        let packet_buf = buf.split_to(TCP_TUNNEL_HEADER_SIZE + body_len);
-        Some(Ok(ZCPacket::new_from_buf(packet_buf, ZCPacketType::TCP)))
-    }
-}
-
-impl<R> Stream for TcpTunnelStream<R>
-where
-    R: AsyncRead + Send + 'static + Unpin,
-{
-    type Item = StreamItem;
-
-    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        let this = &mut *self;
-
-        loop {
-            if let Some(error) = this.error.as_ref() {
-                tracing::warn!("poll_next on a failed TcpTunnelStream, {:?}", error);
-                return Poll::Ready(None);
-            }
-
-            if let Some(packet) = Self::extract_one_packet(&mut this.buf, this.max_packet_size) {
-                if let Err(TunnelError::InvalidPacket(msg)) = packet.as_ref() {
-                    this.error.replace(TunnelError::InvalidPacket(msg.clone()));
-                }
-                return Poll::Ready(Some(packet));
-            }
-
-            reserve_buf(
-                &mut this.buf,
-                this.max_packet_size,
-                this.max_packet_size * 2,
-            );
-
-            let cap = this.buf.capacity() - this.buf.len();
-            let buf = this.buf.chunk_mut().as_mut_ptr();
-            let buf = unsafe { std::slice::from_raw_parts_mut(buf, cap) };
-            let mut buf = ReadBuf::new(buf);
-
-            let ret = ready!(Pin::new(&mut this.reader).poll_read(cx, &mut buf));
-            let len = buf.filled().len();
-            unsafe { this.buf.advance_mut(len) };
-
-            match ret {
-                Ok(_) if len == 0 => return Poll::Ready(None),
-                Ok(_) => {}
-                Err(error) => return Poll::Ready(Some(Err(TunnelError::IOError(error)))),
-            }
-        }
-    }
-}
-
-struct SendBufs {
-    bufs: VecDeque<Bytes>,
-}
-
-impl SendBufs {
-    fn new() -> Self {
-        Self {
-            bufs: VecDeque::new(),
-        }
-    }
-
-    fn len(&self) -> usize {
-        self.bufs.len()
-    }
-
-    fn push_back(&mut self, buf: Bytes) {
-        self.bufs.push_back(buf);
-    }
-}
-
-impl Buf for SendBufs {
-    fn remaining(&self) -> usize {
-        self.bufs.iter().map(Buf::remaining).sum()
-    }
-
-    fn chunk(&self) -> &[u8] {
-        self.bufs.front().map(Buf::chunk).unwrap_or_default()
-    }
-
-    fn advance(&mut self, mut cnt: usize) {
-        while cnt > 0 {
-            let Some(front) = self.bufs.front_mut() else {
-                return;
-            };
-            let rem = front.remaining();
-            if rem > cnt {
-                front.advance(cnt);
-                return;
-            }
-            front.advance(rem);
-            cnt -= rem;
-            self.bufs.pop_front();
-        }
-    }
-}
-
-struct TcpTunnelSink<W> {
-    writer: W,
-    sending_bufs: SendBufs,
-}
-
-impl<W> TcpTunnelSink<W> {
-    fn new(writer: W) -> Self {
-        Self {
-            writer,
-            sending_bufs: SendBufs::new(),
-        }
-    }
-
-    fn max_buffer_count(&self) -> usize {
-        64
-    }
-}
-
-impl<W> Sink<SinkItem> for TcpTunnelSink<W>
-where
-    W: AsyncWrite + Send + 'static + Unpin,
-{
-    type Error = SinkError;
-
-    fn poll_ready(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        let max_buffer_count = self.max_buffer_count();
-        if self.sending_bufs.len() >= max_buffer_count {
-            self.as_mut().poll_flush(cx)
-        } else {
-            Poll::Ready(Ok(()))
-        }
-    }
-
-    fn start_send(self: Pin<&mut Self>, item: SinkItem) -> Result<(), Self::Error> {
-        let this = self.get_mut();
-        let mut item = item.convert_type(ZCPacketType::TCP);
-        let tcp_len = PEER_MANAGER_HEADER_SIZE + item.payload_len();
-        let Some(header) = item.mut_tcp_tunnel_header() else {
-            return Err(TunnelError::InvalidPacket("packet too short".to_owned()));
-        };
-        header.len.set(tcp_len.try_into().unwrap());
-        this.sending_bufs.push_back(item.into_bytes());
-        Ok(())
-    }
-
-    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        let this = self.get_mut();
-        let mut remaining = this.sending_bufs.remaining();
-        while remaining != 0 {
-            let n = ready!(poll_write_buf(
-                Pin::new(&mut this.writer),
-                cx,
-                &mut this.sending_bufs
-            ))?;
-            if n == 0 {
-                return Poll::Ready(Err(TunnelError::IOError(std::io::Error::new(
-                    std::io::ErrorKind::WriteZero,
-                    "failed to write frame to transport",
-                ))));
-            }
-            remaining -= n;
-        }
-
-        ready!(Pin::new(&mut this.writer).poll_flush(cx))?;
-        Poll::Ready(Ok(()))
-    }
-
-    fn poll_close(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        ready!(self.as_mut().poll_flush(cx))?;
-        ready!(Pin::new(&mut self.get_mut().writer).poll_shutdown(cx))?;
-        Poll::Ready(Ok(()))
-    }
-}
 
 pub struct TcpTunnel<S> {
     info: Option<TunnelInfo>,
@@ -265,8 +34,8 @@ where
             .expect("TcpTunnel can only be split once");
         let (reader, writer) = tokio::io::split(socket);
         (
-            Box::pin(TcpTunnelStream::new(reader, TCP_MTU_BYTES)),
-            Box::pin(TcpTunnelSink::new(writer)),
+            Box::pin(FramedReader::new(reader, TCP_MTU_BYTES)),
+            Box::pin(FramedWriter::new(writer)),
         )
     }
 
@@ -297,11 +66,13 @@ mod tests {
     use std::{
         io,
         net::SocketAddr,
+        pin::Pin,
         task::{Context, Poll},
     };
 
+    use crate::packet::{PEER_MANAGER_HEADER_SIZE, ZCPacket, ZCPacketType};
     use futures::{SinkExt, StreamExt};
-    use tokio::io::{AsyncReadExt, AsyncWriteExt, DuplexStream};
+    use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, DuplexStream, ReadBuf};
 
     use super::*;
 

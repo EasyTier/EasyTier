@@ -8,6 +8,7 @@ use crate::{packet::ZCPacket, proto::common::TunnelInfo};
 pub use crate::socket::IpVersion;
 
 pub mod filter;
+pub mod framed;
 pub mod mpsc;
 pub mod ring;
 pub mod stats;
