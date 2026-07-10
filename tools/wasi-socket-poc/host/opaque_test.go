@@ -30,9 +30,10 @@ const (
 )
 
 type opaqueReadOperation struct {
-	done bool
-	data []byte
-	err  error
+	handle uint32
+	done   bool
+	data   []byte
+	err    error
 }
 
 type opaqueWriteOperation struct {
@@ -76,7 +77,7 @@ func (b *opaqueBridge) startRead(
 		b.mu.Unlock()
 		return opaqueHostInvalid
 	}
-	result := &opaqueReadOperation{}
+	result := &opaqueReadOperation{handle: handle}
 	b.reads[operation] = result
 	b.workers.Add(1)
 	b.mu.Unlock()
@@ -214,6 +215,18 @@ func (b *opaqueBridge) signalCompletion() {
 	}
 }
 
+func (b *opaqueBridge) readInFlight(handle uint32) bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	for _, operation := range b.reads {
+		if operation.handle == handle && !operation.done {
+			return true
+		}
+	}
+	return false
+}
+
 func (b *opaqueBridge) close() {
 	b.mu.Lock()
 	connections := make([]net.Conn, 0, len(b.handles))
@@ -262,7 +275,42 @@ func TestOpaqueSocketBridgeDrivesTokio(t *testing.T) {
 		t.Fatalf("instantiate guest: %v", err)
 	}
 
+	initResult, err := module.ExportedFunction("init_opaque_probe").Call(ctx, 1, 2)
+	if err != nil {
+		t.Fatalf("initialize opaque probe: %v", err)
+	}
+	if len(initResult) != 1 || int32(initResult[0]) != 0 {
+		t.Fatalf("unexpected opaque probe initialization result: %v", initResult)
+	}
+
+	driveCalls := 0
+	drive := func() uint32 {
+		results, err := module.ExportedFunction("drive_opaque_probe").Call(ctx)
+		if err != nil {
+			t.Fatalf("drive opaque probe: %v", err)
+		}
+		if len(results) != 1 {
+			t.Fatalf("unexpected opaque probe result count: %d", len(results))
+		}
+		status := uint32(results[0])
+		driveCalls++
+		if status&opaqueError != 0 {
+			t.Fatalf("opaque probe failed at stage %d", status&^opaqueError)
+		}
+		return status
+	}
+
+	status := drive()
+	if !bridge.readInFlight(1) {
+		t.Fatal("pending connection read was not in flight after initial drive")
+	}
+	if !bridge.readInFlight(2) {
+		t.Fatal("active connection read was not in flight after initial drive")
+	}
+
 	echo := make(chan error, 1)
+	readyToReadEcho := make(chan struct{})
+	allowEchoRead := make(chan struct{})
 	go func() {
 		if err := activePeer.SetDeadline(time.Now().Add(3 * time.Second)); err != nil {
 			echo <- err
@@ -271,6 +319,13 @@ func TestOpaqueSocketBridgeDrivesTokio(t *testing.T) {
 		want := []byte{0x5a}
 		if _, err := activePeer.Write(want); err != nil {
 			echo <- fmt.Errorf("write active connection: %w", err)
+			return
+		}
+		close(readyToReadEcho)
+		select {
+		case <-allowEchoRead:
+		case <-ctx.Done():
+			echo <- ctx.Err()
 			return
 		}
 		got := make([]byte, len(want))
@@ -285,40 +340,41 @@ func TestOpaqueSocketBridgeDrivesTokio(t *testing.T) {
 		echo <- nil
 	}()
 
-	initResult, err := module.ExportedFunction("init_opaque_probe").Call(ctx, 1, 2)
-	if err != nil {
-		t.Fatalf("initialize opaque probe: %v", err)
+	waitForCompletion := func(stage string) {
+		select {
+		case <-bridge.completion:
+		case <-ctx.Done():
+			t.Fatalf("waiting for %s completion: %v", stage, ctx.Err())
+		}
 	}
-	if len(initResult) != 1 || int32(initResult[0]) != 0 {
-		t.Fatalf("unexpected opaque probe initialization result: %v", initResult)
+
+	waitForCompletion("active read")
+	status = drive()
+	if status&opaqueSecondSocketProgress != 0 {
+		t.Fatal("active socket completed before its write was released")
 	}
+	select {
+	case <-readyToReadEcho:
+	case <-ctx.Done():
+		t.Fatalf("waiting for peer to finish its write: %v", ctx.Err())
+	}
+	close(allowEchoRead)
+
+	waitForCompletion("active write")
+	status = drive()
+	if status&opaqueSecondSocketProgress == 0 {
+		t.Fatal("active socket did not progress after read and write completions")
+	}
+	completionDriveCalls := 2
 
 	ticker := time.NewTicker(5 * time.Millisecond)
 	defer ticker.Stop()
-	driveCalls := 0
-	var status uint32
 	for status&opaqueDone == 0 {
-		results, err := module.ExportedFunction("drive_opaque_probe").Call(ctx)
-		if err != nil {
-			t.Fatalf("drive opaque probe: %v", err)
-		}
-		if len(results) != 1 {
-			t.Fatalf("unexpected opaque probe result count: %d", len(results))
-		}
-		status = uint32(results[0])
-		driveCalls++
-		if status&opaqueError != 0 {
-			t.Fatalf("opaque probe failed at stage %d", status&^opaqueError)
-		}
-		if status&opaqueDone != 0 {
-			break
-		}
-
 		select {
-		case <-bridge.completion:
 		case <-ticker.C:
+			status = drive()
 		case <-ctx.Done():
-			t.Fatalf("waiting to drive opaque probe: %v", ctx.Err())
+			t.Fatalf("waiting for Tokio timer progress: %v", ctx.Err())
 		}
 	}
 
@@ -344,9 +400,10 @@ func TestOpaqueSocketBridgeDrivesTokio(t *testing.T) {
 	}
 
 	t.Logf(
-		"opaque net.Conn bridge passed: status=0x%x, serialized drive calls=%d",
+		"opaque net.Conn bridge passed: status=0x%x, drives=%d, completion drives=%d",
 		status,
 		driveCalls,
+		completionDriveCalls,
 	)
 }
 
