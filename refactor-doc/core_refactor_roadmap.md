@@ -38,14 +38,16 @@ Already established:
 - peer routing, peer RPC, route state, stream framing, core-side TCP and UDP
   socket Interfaces, DNS Interface, and substantial hole-punch logic have moved
   into core;
+- UDP hole-punch completion and ordinary TCP manual reconnect/listener paths now
+  produce host-created sockets before core-owned tunnel upgrade and peer
+  admission;
 - the native crate already contains Adapter implementations for several core
   Interfaces.
 
 The current architecture is still intermediate:
 
-- manual reconnect, direct-connect, and TCP hole-punch paths can still create
-  legacy tunnels outside the final socket seam;
-- UDP hole punching still exposes a tunnel-producing path;
+- non-TCP manual reconnect, direct-connect, and TCP hole-punch paths can still
+  create legacy tunnels outside the final socket seam;
 - not every inbound protocol listener is expressed as a core-owned socket
   listener plus portable tunnel upgrade;
 - native `Instance`, `PeerManager`, `PeerContext`, and process-global state
@@ -75,8 +77,10 @@ The whole refactor is done only when all of these hold:
 
 ## Phase 0: prove the Go/WASI socket and executor model
 
-This phase is blocking. Do not migrate more runtime ownership across a wasm
-seam whose socket handoff, readiness, and executor model are still hypothetical.
+This validation remains required before the Go/WASM socket ABI is finalized,
+but it does not block Phase 1 ownership migrations that can be verified through
+the existing native and in-memory Adapters. Do not claim the Go host path is
+production-ready until this phase exits.
 
 Implement the bounded experiment in
 [`go_wasi_host_poc.md`](go_wasi_host_poc.md). It must first test whether Go can

@@ -51,7 +51,13 @@ pub static RESOLVER: Lazy<Arc<Resolver<GenericConnector<TokioRuntimeProvider>>>>
 
 static CORE_DNS_RESOLVER_REGISTER: Once = Once::new();
 
-struct RuntimeDnsResolver;
+pub(crate) struct RuntimeDnsResolver;
+
+impl RuntimeDnsResolver {
+    pub(crate) fn new() -> Self {
+        Self
+    }
+}
 
 #[async_trait]
 impl DnsResolver for RuntimeDnsResolver {
@@ -62,7 +68,7 @@ impl DnsResolver for RuntimeDnsResolver {
 
 pub fn register_core_dns_resolver() {
     CORE_DNS_RESOLVER_REGISTER.call_once(|| {
-        global_dns_resolver().register(Arc::new(RuntimeDnsResolver));
+        global_dns_resolver().register(Arc::new(RuntimeDnsResolver::new()));
     });
 }
 

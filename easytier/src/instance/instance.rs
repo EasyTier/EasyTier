@@ -17,6 +17,8 @@ use tokio::{sync::oneshot, task::JoinSet};
 use tokio_util::sync::CancellationToken;
 use tokio_util::task::AbortOnDropHandle;
 
+use easytier_core::peers::peer_manager::PeerManagerCore;
+
 use crate::common::PeerId;
 use crate::common::acl_processor::AclRuleBuilder;
 use crate::common::config::ConfigLoader;
@@ -670,7 +672,7 @@ pub struct Instance {
 
     peer_packet_receiver: Arc<Mutex<PacketRecvChanReceiver>>,
     peer_manager: Arc<PeerManager>,
-    listener_manager: Arc<Mutex<ListenerManager<PeerManager>>>,
+    listener_manager: Arc<Mutex<ListenerManager<PeerManagerCore>>>,
     conn_manager: Arc<ManualConnectorManager>,
     direct_conn_manager: Arc<DirectConnectorManager>,
     udp_hole_puncher: Arc<Mutex<UdpHolePunchConnector>>,
@@ -720,7 +722,7 @@ impl Instance {
 
         let listener_manager = Arc::new(Mutex::new(ListenerManager::new(
             global_ctx.clone(),
-            peer_manager.clone(),
+            peer_manager.core(),
         )));
 
         let conn_manager = Arc::new(ManualConnectorManager::new(

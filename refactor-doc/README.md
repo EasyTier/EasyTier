@@ -19,7 +19,7 @@ single `easytier-core` crate. When documents disagree, use the following order:
 | Document | Status | Role |
 | --- | --- | --- |
 | [`core_refactor_roadmap.md`](core_refactor_roadmap.md) | Active | Overall migration order and gates |
-| [`go_wasi_host_poc.md`](go_wasi_host_poc.md) | Active | Blocking Phase 0 experiment |
+| [`go_wasi_host_poc.md`](go_wasi_host_poc.md) | Deferred validation | Required before finalizing the Go/WASM socket ABI |
 | [`core_config_peer_context_refactor.md`](core_config_peer_context_refactor.md) | Partially current | Input to the Core instance phase |
 | [`connector_socket_refactor.md`](connector_socket_refactor.md) | Historical | Earlier socket-seam reasoning; its target direction remains useful |
 | [`core_peers_refactor.md`](core_peers_refactor.md) | Historical | Peer migration plan, mostly implemented |
@@ -35,4 +35,3 @@ the current source and fold any still-valid work into the active roadmap.
 - [`0001-portable-logic-belongs-in-one-core-crate.md`](../docs/adr/0001-portable-logic-belongs-in-one-core-crate.md)
 - [`0002-go-host-drives-wasi-core-with-tokio.md`](../docs/adr/0002-go-host-drives-wasi-core-with-tokio.md)
 - [`0003-host-os-policy-is-runtime-configuration.md`](../docs/adr/0003-host-os-policy-is-runtime-configuration.md)
-

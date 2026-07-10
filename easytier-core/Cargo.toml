@@ -28,6 +28,7 @@ easytier-proto = { path = "../easytier-proto", default-features = false, feature
 futures = "0.3"
 guarden = "0.2"
 hmac = "0.12.1"
+idna = "1.0"
 atomic-shim = "0.2.0"
 ordered_hash_map = "0.5.0"
 parking_lot = "0.12.1"

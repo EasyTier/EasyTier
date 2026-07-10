@@ -6,12 +6,14 @@ use std::{
 
 use async_trait::async_trait;
 use easytier_core::{
+    connectivity::tcp::upgrade_accepted_socket,
     listener::{self as core_listener, plan as core_listener_plan},
+    peers::peer_manager::PeerManagerCore,
     socket::{
-        tcp::{TcpSocketListener, VirtualTcpSocket},
+        tcp::TcpSocketListener,
         udp::{UdpSession, UdpSessionAcceptKind, UdpSessionSocket, UdpSessionSocketListener},
     },
-    tunnel::{tcp::TcpTunnelUpgrader, udp::UdpTunnelUpgrader},
+    tunnel::udp::UdpTunnelUpgrader,
 };
 
 use crate::{
@@ -91,9 +93,19 @@ pub trait TunnelHandlerForListener {
 
 #[async_trait]
 impl TunnelHandlerForListener for PeerManager {
-    #[tracing::instrument]
+    #[tracing::instrument(skip(self))]
     async fn handle_tunnel(&self, tunnel: Box<dyn Tunnel>) -> Result<(), Error> {
         self.add_tunnel_as_server(tunnel, true).await
+    }
+}
+
+#[async_trait]
+impl TunnelHandlerForListener for PeerManagerCore {
+    #[tracing::instrument(skip(self))]
+    async fn handle_tunnel(&self, tunnel: Box<dyn Tunnel>) -> Result<(), Error> {
+        self.add_tunnel_as_server(tunnel, true)
+            .await
+            .map_err(Error::from)
     }
 }
 
@@ -148,7 +160,7 @@ pub struct ListenerManager<H> {
         core_listener::ListenerManager<AcceptedConnection, EasyTierAcceptedHandler<H>>,
 }
 
-impl<H: TunnelHandlerForListener + Send + Sync + 'static + Debug> ListenerManager<H> {
+impl<H: TunnelHandlerForListener + Send + Sync + 'static> ListenerManager<H> {
     pub fn new(global_ctx: ArcGlobalCtx, peer_manager: Arc<H>) -> Self {
         let peer_manager = Arc::downgrade(&peer_manager);
         let handler = Arc::new(EasyTierAcceptedHandler {
@@ -616,16 +628,23 @@ impl core_listener::ListenerEventSink for GlobalCtxListenerEventSink {
     }
 }
 
-#[derive(Debug)]
 struct EasyTierAcceptedHandler<H> {
     global_ctx: ArcGlobalCtx,
     peer_manager: Weak<H>,
 }
 
+impl<H> Debug for EasyTierAcceptedHandler<H> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("EasyTierAcceptedHandler")
+            .field("peer_manager_available", &self.peer_manager.strong_count())
+            .finish()
+    }
+}
+
 #[async_trait]
 impl<H> core_listener::AcceptedSocketHandler<AcceptedConnection> for EasyTierAcceptedHandler<H>
 where
-    H: TunnelHandlerForListener + Send + Sync + 'static + Debug,
+    H: TunnelHandlerForListener + Send + Sync + 'static,
 {
     async fn handle_accepted_socket(&self, accepted: AcceptedConnection) -> anyhow::Result<()> {
         match accepted {
@@ -638,21 +657,10 @@ where
 
 impl<H> EasyTierAcceptedHandler<H>
 where
-    H: TunnelHandlerForListener + Send + Sync + 'static + Debug,
+    H: TunnelHandlerForListener + Send + Sync + 'static,
 {
     async fn handle_tcp_stream(&self, stream: RuntimeTcpSocket) -> anyhow::Result<()> {
-        let local_addr = stream.local_addr()?;
-        let remote_addr = stream.peer_addr()?;
-        let local_url = build_url_from_socket_addr(&local_addr.to_string(), "tcp");
-        let remote_url = build_url_from_socket_addr(&remote_addr.to_string(), "tcp");
-        let tunnel_info = TunnelInfo {
-            tunnel_type: "tcp".to_owned(),
-            local_addr: Some(local_url.clone().into()),
-            remote_addr: Some(remote_url.clone().into()),
-            resolved_remote_addr: Some(remote_url.clone().into()),
-        };
-
-        let tunnel = TcpTunnelUpgrader::new(tunnel_info).upgrade(stream)?;
+        let tunnel = upgrade_accepted_socket(stream)?;
         self.handle_tunnel(tunnel).await
     }
 

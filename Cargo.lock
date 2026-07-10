@@ -2498,6 +2498,7 @@ dependencies = [
  "futures",
  "guarden 0.2.0",
  "hmac",
+ "idna 1.0.3",
  "ordered_hash_map",
  "parking_lot",
  "percent-encoding",

@@ -881,6 +881,17 @@ impl PeerManagerCore {
         self.foreign_network_client.clone()
     }
 
+    pub async fn is_easytier_managed_ipv6(&self, ip: &std::net::Ipv6Addr) -> bool {
+        if self.context.is_ip_local_ipv6(ip) {
+            return true;
+        }
+        self.route
+            .list_public_ipv6_routes()
+            .await
+            .iter()
+            .any(|route| route.address() == *ip)
+    }
+
     pub fn traffic_metrics(&self) -> Arc<TrafficMetricRecorder> {
         self.traffic_metrics.clone()
     }
