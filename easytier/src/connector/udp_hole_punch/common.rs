@@ -1,11 +1,11 @@
 use std::{
     fmt::Debug,
     net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4},
-    sync::{Arc, Mutex as StdMutex},
+    sync::{Arc, Mutex as StdMutex, Weak},
 };
 
 use async_trait::async_trait;
-use easytier_core::hole_punch::udp as core_udp_hole_punch;
+use easytier_core::{hole_punch::udp as core_udp_hole_punch, socket::udp::UdpSessionSocket};
 use quanta::Instant;
 use tokio::net::UdpSocket;
 
@@ -14,32 +14,42 @@ use crate::{
     peers::peer_manager::PeerManager,
     proto::common::NatType,
     tunnel::{
-        Tunnel, TunnelConnCounter, TunnelListener as _,
         common::{BindDev, bind},
-        udp::{RuntimeUdpSocket, UdpTunnelConnector, UdpTunnelListener},
+        udp::{RuntimeUdpSessionLayer, RuntimeUdpSocket},
     },
 };
 
 #[allow(dead_code)]
 struct RuntimeUdpPunchAcceptor {
-    listener: UdpTunnelListener,
+    layer: Arc<RuntimeUdpSessionLayer>,
 }
 
 #[async_trait]
 impl core_udp_hole_punch::UdpPunchAcceptor for RuntimeUdpPunchAcceptor {
-    async fn accept(&mut self) -> anyhow::Result<Box<dyn Tunnel>> {
-        self.listener.accept().await.map_err(anyhow::Error::from)
+    async fn accept(&mut self) -> anyhow::Result<core_udp_hole_punch::UdpPunchSocket> {
+        let session = self.layer.accept().await?;
+        let remote_addr = session.peer_addr()?;
+        Ok(core_udp_hole_punch::UdpPunchSocket::new(
+            session,
+            remote_addr,
+            self.layer.clone(),
+        ))
     }
 }
 
 #[allow(dead_code)]
 struct RuntimeUdpPunchConnCounter {
-    inner: Arc<Box<dyn TunnelConnCounter>>,
+    layer: Weak<RuntimeUdpSessionLayer>,
 }
 
 impl core_udp_hole_punch::UdpPunchConnCounter for RuntimeUdpPunchConnCounter {
     fn get(&self) -> Option<u32> {
-        self.inner.get()
+        Some(
+            self.layer
+                .upgrade()
+                .map(|layer| layer.active_session_count() as u32)
+                .unwrap_or(0),
+        )
     }
 }
 
@@ -92,20 +102,11 @@ impl RuntimeUdpHolePunchRuntime {
             )
         };
 
-        let mut listener = UdpTunnelListener::new_with_socket(listen_url, socket.socket());
-
-        {
-            let _g = self.global_ctx.net_ns.guard();
-            listener.listen().await?;
-        }
-
-        let socket = listener
-            .get_runtime_socket()
-            .ok_or_else(|| anyhow::anyhow!("udp tunnel listener did not expose socket"))?;
+        let layer = socket.udp_session_layer();
         let conn_counter = Arc::new(RuntimeUdpPunchConnCounter {
-            inner: listener.get_conn_counter(),
+            layer: Arc::downgrade(&layer),
         });
-        let acceptor = Box::new(RuntimeUdpPunchAcceptor { listener });
+        let acceptor = Box::new(RuntimeUdpPunchAcceptor { layer });
         let port_mapping_lease = port_mapping_lease.map(|lease| {
             Box::new(RuntimeUdpPortMappingLease {
                 _inner: StdMutex::new(Some(lease)),
@@ -205,39 +206,25 @@ impl core_udp_hole_punch::UdpHolePunchRuntime for RuntimeUdpHolePunchRuntime {
         &self,
         socket: Arc<Self::Socket>,
         remote: SocketAddr,
-    ) -> anyhow::Result<Box<dyn Tunnel>> {
-        try_connect_with_runtime_socket(self.global_ctx.clone(), socket, remote)
-            .await
-            .map_err(anyhow::Error::from)
-    }
-}
+    ) -> anyhow::Result<core_udp_hole_punch::UdpPunchSocket> {
+        check_udp_socket_local_addr(self.global_ctx.clone(), remote).await?;
 
-#[allow(dead_code)]
-pub(crate) struct RuntimeUdpHolePunchTunnelSink {
-    peer_mgr: Arc<PeerManager>,
-}
+        #[cfg(target_os = "windows")]
+        crate::arch::windows::disable_connection_reset(socket.socket().as_ref())?;
 
-impl RuntimeUdpHolePunchTunnelSink {
-    pub(crate) fn new(peer_mgr: Arc<PeerManager>) -> Self {
-        Self { peer_mgr }
-    }
-}
+        let layer = socket.udp_session_layer();
+        let session = layer.connect(remote).await?;
+        if session.peer_addr()? != remote {
+            tracing::debug!(
+                recv_addr = ?session.peer_addr()?,
+                ?remote,
+                "udp connect addr not match"
+            );
+        }
 
-#[async_trait]
-impl core_udp_hole_punch::UdpHolePunchTunnelSink for RuntimeUdpHolePunchTunnelSink {
-    async fn add_client_tunnel(&self, tunnel: Box<dyn Tunnel>) -> anyhow::Result<()> {
-        self.peer_mgr
-            .add_client_tunnel(tunnel, false)
-            .await
-            .map(|_| ())
-            .map_err(anyhow::Error::from)
-    }
-
-    async fn add_server_tunnel(&self, tunnel: Box<dyn Tunnel>) -> anyhow::Result<()> {
-        self.peer_mgr
-            .add_tunnel_as_server(tunnel, false)
-            .await
-            .map_err(anyhow::Error::from)
+        Ok(core_udp_hole_punch::UdpPunchSocket::new(
+            session, remote, layer,
+        ))
     }
 }
 
@@ -333,42 +320,6 @@ fn easytier_managed_local_addr_error(
         }
         _ => None,
     }
-}
-
-pub(crate) async fn try_connect_with_socket(
-    global_ctx: ArcGlobalCtx,
-    socket: Arc<UdpSocket>,
-    remote_mapped_addr: SocketAddr,
-) -> Result<Box<dyn Tunnel>, Error> {
-    try_connect_with_runtime_socket(
-        global_ctx,
-        Arc::new(RuntimeUdpSocket::new(socket)),
-        remote_mapped_addr,
-    )
-    .await
-}
-
-pub(crate) async fn try_connect_with_runtime_socket(
-    global_ctx: ArcGlobalCtx,
-    socket: Arc<RuntimeUdpSocket>,
-    remote_mapped_addr: SocketAddr,
-) -> Result<Box<dyn Tunnel>, Error> {
-    let connector = UdpTunnelConnector::new(
-        format!(
-            "udp://{}:{}",
-            remote_mapped_addr.ip(),
-            remote_mapped_addr.port()
-        )
-        .parse()
-        .unwrap(),
-    );
-
-    check_udp_socket_local_addr(global_ctx, remote_mapped_addr).await?;
-
-    connector
-        .try_connect_with_runtime_socket(socket, remote_mapped_addr)
-        .await
-        .map_err(Error::from)
 }
 
 #[cfg(test)]

@@ -451,11 +451,18 @@ where
         let mut tasks = JoinSet::new();
 
         tasks.spawn(async move {
-            while let Ok(conn) = acceptor.accept().await {
-                tracing::warn!(?conn, "udp hole punching listener got peer connection");
+            while let Ok(socket) = acceptor.accept().await {
+                tracing::warn!(?socket, "udp hole punching listener got peer connection");
+                let tunnel = match socket.into_tunnel() {
+                    Ok(tunnel) => tunnel,
+                    Err(err) => {
+                        tracing::error!(?err, "failed to build UDP hole-punch tunnel");
+                        continue;
+                    }
+                };
                 let tunnel_sink = tunnel_sink.clone();
                 tokio::spawn(async move {
-                    if let Err(err) = tunnel_sink.add_server_tunnel(conn).await {
+                    if let Err(err) = tunnel_sink.add_server_tunnel(tunnel).await {
                         tracing::error!(
                             ?err,
                             "failed to add tunnel as server in hole punch listener"
@@ -756,10 +763,12 @@ mod tests {
 
     use super::*;
     use crate::{
-        hole_punch::udp::{UdpPunchAcceptor, UdpPunchConnCounter, UdpResolvedPublicAddr},
+        hole_punch::udp::{
+            UdpPunchAcceptor, UdpPunchConnCounter, UdpPunchSocket, UdpResolvedPublicAddr,
+        },
         proto::common::StunInfo,
-        socket::udp::UdpBindOptions,
-        tunnel::{Tunnel, ring::create_ring_tunnel_pair},
+        socket::udp::{UdpBindOptions, UdpSession, UdpSessionKind},
+        tunnel::Tunnel,
     };
 
     struct MockSocket {
@@ -800,16 +809,16 @@ mod tests {
     }
 
     struct MockAcceptor {
-        tunnels: VecDeque<Box<dyn Tunnel>>,
+        sockets: VecDeque<UdpPunchSocket>,
     }
 
     #[async_trait]
     impl UdpPunchAcceptor for MockAcceptor {
-        async fn accept(&mut self) -> anyhow::Result<Box<dyn Tunnel>> {
-            let Some(tunnel) = self.tunnels.pop_front() else {
+        async fn accept(&mut self) -> anyhow::Result<UdpPunchSocket> {
+            let Some(socket) = self.sockets.pop_front() else {
                 return std::future::pending().await;
             };
-            Ok(tunnel)
+            Ok(socket)
         }
     }
 
@@ -875,11 +884,12 @@ mod tests {
 
         async fn connect_with_socket(
             &self,
-            _socket: Arc<Self::Socket>,
-            _remote: SocketAddr,
-        ) -> anyhow::Result<Box<dyn Tunnel>> {
-            let (tunnel, _) = create_ring_tunnel_pair();
-            Ok(tunnel)
+            socket: Arc<Self::Socket>,
+            remote: SocketAddr,
+        ) -> anyhow::Result<UdpPunchSocket> {
+            let session =
+                UdpSession::identity_standalone(socket, remote, UdpSessionKind::EasyTierMux)?;
+            Ok(UdpPunchSocket::new(session, remote, ()))
         }
     }
 
@@ -900,7 +910,7 @@ mod tests {
         }
     }
 
-    fn listener(port: u16, tunnels: Vec<Box<dyn Tunnel>>) -> UdpPunchListener<MockSocket> {
+    fn listener(port: u16, sockets: Vec<UdpPunchSocket>) -> UdpPunchListener<MockSocket> {
         UdpPunchListener {
             socket: Arc::new(MockSocket {
                 local_addr: SocketAddr::from(([127, 0, 0, 1], port)),
@@ -910,7 +920,7 @@ mod tests {
             mapped_addr: SocketAddr::from(([203, 0, 113, 1], port)),
             conn_counter: Arc::new(MockCounter::default()),
             acceptor: Box::new(MockAcceptor {
-                tunnels: tunnels.into(),
+                sockets: sockets.into(),
             }),
             port_mapping_lease: None,
         }
@@ -949,8 +959,20 @@ mod tests {
 
     #[tokio::test]
     async fn accepted_tunnel_is_forwarded_to_sink() {
-        let (server_tunnel, _) = create_ring_tunnel_pair();
-        let runtime = Arc::new(MockRuntime::new(vec![listener(10001, vec![server_tunnel])]));
+        let socket = Arc::new(MockSocket {
+            local_addr: SocketAddr::from(([127, 0, 0, 1], 10001)),
+            sent: tokio::sync::Mutex::new(Vec::new()),
+            fail_next_send: AtomicUsize::new(0),
+        });
+        let remote_addr = SocketAddr::from(([127, 0, 0, 1], 20001));
+        let session =
+            UdpSession::identity_standalone(socket, remote_addr, UdpSessionKind::EasyTierMux)
+                .unwrap();
+        let punched_socket = UdpPunchSocket::new(session, remote_addr, ());
+        let runtime = Arc::new(MockRuntime::new(vec![listener(
+            10001,
+            vec![punched_socket],
+        )]));
         let sink = Arc::new(MockSink::default());
         let common = UdpHolePunchServerCommon::new(runtime, sink.clone());
 

@@ -12,13 +12,13 @@ use rand::Rng;
 use tokio::sync::RwLock;
 use tokio_util::task::AbortOnDropHandle;
 
-use crate::{config::PeerId, tunnel::Tunnel};
+use crate::config::PeerId;
 
 use super::{
     HOLE_PUNCH_PACKET_BODY_LEN, SelectPunchListener, SendPunchPacketBothEasySym,
     SendPunchPacketCone, SendPunchPacketEasySym, SendPunchPacketHardSym, UdpBindOptions,
     UdpHolePunchRuntime, UdpHolePunchSignalError, UdpHolePunchSignaling, UdpNatType,
-    UdpSocketArray, VirtualUdpSocketFactory, new_hole_punch_packet,
+    UdpPunchSocket, UdpSocketArray, VirtualUdpSocketFactory, new_hole_punch_packet,
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -50,7 +50,7 @@ pub async fn punch_cone_to_cone<R, S>(
     runtime: Arc<R>,
     signaling: Arc<S>,
     dst_peer_id: PeerId,
-) -> UdpHolePunchClientResult<Option<Box<dyn Tunnel>>>
+) -> UdpHolePunchClientResult<Option<UdpPunchSocket>>
 where
     R: UdpHolePunchRuntime,
     S: UdpHolePunchSignaling + 'static,
@@ -133,9 +133,9 @@ where
                 .connect_with_socket(socket.socket.clone(), remote_mapped_addr)
                 .await
             {
-                Ok(tunnel) => {
-                    tracing::info!(?tunnel, "hole punched");
-                    return Ok(Some(tunnel));
+                Ok(socket) => {
+                    tracing::info!(?socket, "hole punched");
+                    return Ok(Some(socket));
                 }
                 Err(e) => {
                     tracing::error!(?e, "failed to connect with socket");
@@ -299,8 +299,8 @@ where
         tid: u32,
         remote_mapped_addr: SocketAddr,
         punch_task: &AbortOnDropHandle<T>,
-    ) -> anyhow::Result<Option<Box<dyn Tunnel>>> {
-        let mut ret_tunnel: Option<Box<dyn Tunnel>> = None;
+    ) -> anyhow::Result<Option<UdpPunchSocket>> {
+        let mut ret_socket = None;
         let mut finish_time: Option<Instant> = None;
         while finish_time.is_none() || finish_time.as_ref().unwrap().elapsed().as_millis() < 1000 {
             udp_array.send_with_all(packet, remote_mapped_addr).await?;
@@ -321,8 +321,8 @@ where
                 .connect_with_socket(socket.socket.clone(), remote_mapped_addr)
                 .await
             {
-                Ok(tunnel) => {
-                    ret_tunnel.replace(tunnel);
+                Ok(socket) => {
+                    ret_socket.replace(socket);
                     break;
                 }
                 Err(e) => {
@@ -333,7 +333,7 @@ where
             }
         }
 
-        Ok(ret_tunnel)
+        Ok(ret_socket)
     }
 
     #[tracing::instrument(err(level = tracing::Level::ERROR), skip(self))]
@@ -343,7 +343,7 @@ where
         round: u32,
         last_port_idx: &mut usize,
         my_nat_info: UdpNatType,
-    ) -> UdpHolePunchClientResult<Option<Box<dyn Tunnel>>> {
+    ) -> UdpHolePunchClientResult<Option<UdpPunchSocket>> {
         let udp_array = self.prepare_udp_array().await?;
 
         let resp = self
@@ -361,12 +361,12 @@ where
 
         if self.try_direct_connect.load(Ordering::Relaxed) {
             let socket = self.runtime.bind_direct_connect_udp().await?;
-            if let Ok(tunnel) = self
+            if let Ok(socket) = self
                 .runtime
                 .connect_with_socket(socket, remote_mapped_addr)
                 .await
             {
-                return Ok(Some(tunnel));
+                return Ok(Some(socket));
             }
         }
 
@@ -402,14 +402,14 @@ where
                     tid,
                 ),
             ));
-            let ret_tunnel = self
+            let ret_socket = self
                 .check_hole_punch_result(&udp_array, &packet, tid, remote_mapped_addr, &punch_task)
                 .await?;
 
             let task_ret = punch_task.await;
-            tracing::debug!(?ret_tunnel, ?task_ret, "predictable punch task got result");
-            if let Some(tunnel) = ret_tunnel {
-                return Ok(Some(tunnel));
+            tracing::debug!(?ret_socket, ?task_ret, "predictable punch task got result");
+            if let Some(socket) = ret_socket {
+                return Ok(Some(socket));
             }
         }
 
@@ -424,12 +424,12 @@ where
                 round,
                 port_index,
             )));
-        let ret_tunnel = self
+        let ret_socket = self
             .check_hole_punch_result(&udp_array, &packet, tid, remote_mapped_addr, &punch_task)
             .await?;
 
         let punch_task_result = punch_task.await;
-        tracing::debug!(?punch_task_result, ?ret_tunnel, "punch task got result");
+        tracing::debug!(?punch_task_result, ?ret_socket, "punch task got result");
 
         if let Ok(Some(next_port_idx)) = punch_task_result {
             *last_port_idx = next_port_idx as usize;
@@ -437,7 +437,7 @@ where
             *last_port_idx = rand::random();
         }
 
-        Ok(ret_tunnel)
+        Ok(ret_socket)
     }
 }
 
@@ -466,7 +466,7 @@ where
         my_nat_info: UdpNatType,
         peer_nat_info: UdpNatType,
         is_busy: &mut bool,
-    ) -> UdpHolePunchClientResult<Option<Box<dyn Tunnel>>> {
+    ) -> UdpHolePunchClientResult<Option<UdpPunchSocket>> {
         *is_busy = false;
 
         let udp_array = UdpSocketArray::new(UDP_ARRAY_SIZE_FOR_BOTH_EASY_SYM, self.runtime.clone());
@@ -559,8 +559,8 @@ where
                     .connect_with_socket(socket.socket.clone(), remote_mapped_addr)
                     .await
                 {
-                    Ok(tunnel) => {
-                        return Ok(Some(tunnel));
+                    Ok(socket) => {
+                        return Ok(Some(socket));
                     }
                     Err(e) => {
                         tracing::error!(?e, "failed to connect with socket");
@@ -591,7 +591,6 @@ mod tests {
     use crate::{
         proto::common::{NatType, StunInfo},
         socket::udp::VirtualUdpSocket,
-        tunnel::Tunnel,
     };
 
     struct MockSocket {
@@ -684,7 +683,7 @@ mod tests {
             &self,
             _socket: Arc<Self::Socket>,
             _remote: SocketAddr,
-        ) -> anyhow::Result<Box<dyn Tunnel>> {
+        ) -> anyhow::Result<UdpPunchSocket> {
             unimplemented!("not used by cone client tests")
         }
     }

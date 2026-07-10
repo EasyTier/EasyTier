@@ -15,13 +15,12 @@ use crate::{
     config::PeerId,
     proto::common::NatType,
     task::{ExternalTaskSignal, PeerTaskLauncher, PeerTaskManager},
-    tunnel::Tunnel,
 };
 
 use super::{
     BLACKLIST_TIMEOUT_SEC, BackOff, P2pPolicyFlags, UdpBothEasySymPunchClient,
     UdpHolePunchClientError, UdpHolePunchPeerSource, UdpHolePunchRuntime, UdpHolePunchSignaling,
-    UdpHolePunchTunnelSink, UdpNatType, UdpPunchClientMethod, UdpPunchTaskInfo,
+    UdpHolePunchTunnelSink, UdpNatType, UdpPunchClientMethod, UdpPunchSocket, UdpPunchTaskInfo,
     UdpSymToConePunchClient, collect_udp_punch_tasks, punch_cone_to_cone,
     should_blacklist_signal_error,
 };
@@ -155,8 +154,8 @@ where
     fn map_client_result(
         &self,
         dst_peer_id: PeerId,
-        ret: Result<Option<Box<dyn Tunnel>>, UdpHolePunchClientError>,
-    ) -> Result<Option<Box<dyn Tunnel>>, Error> {
+        ret: Result<Option<UdpPunchSocket>, UdpHolePunchClientError>,
+    ) -> Result<Option<UdpPunchSocket>, Error> {
         match ret {
             Ok(ret) => Ok(ret),
             Err(UdpHolePunchClientError::Signaling(err)) => {
@@ -172,7 +171,7 @@ where
     #[tracing::instrument(skip(self))]
     async fn handle_punch_result(
         &self,
-        ret: Result<Option<Box<dyn Tunnel>>, Error>,
+        ret: Result<Option<UdpPunchSocket>, Error>,
         backoff: Option<&mut BackOff>,
         round: Option<&mut u32>,
     ) -> bool {
@@ -190,7 +189,15 @@ where
         };
 
         match ret {
-            Ok(Some(tunnel)) => {
+            Ok(Some(socket)) => {
+                let tunnel = match socket.into_tunnel() {
+                    Ok(tunnel) => tunnel,
+                    Err(err) => {
+                        tracing::warn!(?err, "build UDP hole-punch tunnel failed");
+                        op(true);
+                        return false;
+                    }
+                };
                 tracing::info!(?tunnel, "hole punching get tunnel success");
 
                 if let Err(err) = self.tunnel_sink.add_client_tunnel(tunnel).await {
@@ -202,7 +209,7 @@ where
                 }
             }
             Ok(None) => {
-                tracing::info!("hole punching failed, no punch tunnel");
+                tracing::info!("hole punching failed, no punched socket");
                 op(false);
                 false
             }

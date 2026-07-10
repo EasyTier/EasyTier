@@ -7,20 +7,21 @@ use std::{
 };
 
 use anyhow::Error;
-use common::{
-    RuntimeUdpHolePunchPeerSource, RuntimeUdpHolePunchRuntime, RuntimeUdpHolePunchTunnelSink,
-};
-use easytier_core::hole_punch::udp::{
-    BLACKLIST_TIMEOUT_SEC, SelectPunchListener as CoreSelectPunchListener,
-    SelectPunchListenerResponse as CoreSelectPunchListenerResponse,
-    SendPunchPacketBothEasySym as CoreSendPunchPacketBothEasySym,
-    SendPunchPacketBothEasySymResponse as CoreSendPunchPacketBothEasySymResponse,
-    SendPunchPacketCone as CoreSendPunchPacketCone,
-    SendPunchPacketEasySym as CoreSendPunchPacketEasySym,
-    SendPunchPacketHardSym as CoreSendPunchPacketHardSym,
-    SendPunchPacketHardSymResponse as CoreSendPunchPacketHardSymResponse,
-    UdpHolePunchConnector as CoreUdpHolePunchConnector, UdpHolePunchInbound,
-    UdpHolePunchServer as CoreUdpHolePunchServer, UdpHolePunchSignalError,
+use common::{RuntimeUdpHolePunchPeerSource, RuntimeUdpHolePunchRuntime};
+use easytier_core::{
+    hole_punch::udp::{
+        BLACKLIST_TIMEOUT_SEC, SelectPunchListener as CoreSelectPunchListener,
+        SelectPunchListenerResponse as CoreSelectPunchListenerResponse,
+        SendPunchPacketBothEasySym as CoreSendPunchPacketBothEasySym,
+        SendPunchPacketBothEasySymResponse as CoreSendPunchPacketBothEasySymResponse,
+        SendPunchPacketCone as CoreSendPunchPacketCone,
+        SendPunchPacketEasySym as CoreSendPunchPacketEasySym,
+        SendPunchPacketHardSym as CoreSendPunchPacketHardSym,
+        SendPunchPacketHardSymResponse as CoreSendPunchPacketHardSymResponse,
+        UdpHolePunchConnector as CoreUdpHolePunchConnector, UdpHolePunchInbound,
+        UdpHolePunchServer as CoreUdpHolePunchServer, UdpHolePunchSignalError,
+    },
+    peers::peer_manager::PeerManagerCore,
 };
 use once_cell::sync::Lazy;
 use signaling::PeerRpcUdpHolePunchSignaling;
@@ -55,7 +56,7 @@ pub use easytier_core::hole_punch::udp::BackOff;
 pub static RUN_TESTING: Lazy<AtomicBool> = Lazy::new(|| AtomicBool::new(false));
 
 struct UdpHolePunchServer {
-    inner: CoreUdpHolePunchServer<RuntimeUdpHolePunchRuntime, RuntimeUdpHolePunchTunnelSink>,
+    inner: CoreUdpHolePunchServer<RuntimeUdpHolePunchRuntime, PeerManagerCore>,
 }
 
 impl UdpHolePunchServer {
@@ -63,7 +64,7 @@ impl UdpHolePunchServer {
         let inner = CoreUdpHolePunchServer::new(
             peer_mgr.my_peer_id(),
             Arc::new(RuntimeUdpHolePunchRuntime::new(peer_mgr.get_global_ctx())),
-            Arc::new(RuntimeUdpHolePunchTunnelSink::new(peer_mgr)),
+            peer_mgr.core(),
         );
 
         Arc::new(Self { inner })
@@ -274,7 +275,7 @@ pub fn handle_rpc_result<T>(
 type RuntimeUdpHolePunchConnector = CoreUdpHolePunchConnector<
     RuntimeUdpHolePunchPeerSource,
     PeerRpcUdpHolePunchSignaling,
-    RuntimeUdpHolePunchTunnelSink,
+    PeerManagerCore,
     RuntimeUdpHolePunchRuntime,
 >;
 
@@ -296,7 +297,7 @@ impl UdpHolePunchConnector {
         let client = RuntimeUdpHolePunchConnector::new(
             Arc::new(RuntimeUdpHolePunchPeerSource::new(peer_mgr.clone())),
             Arc::new(PeerRpcUdpHolePunchSignaling::new(peer_mgr.clone())),
-            Arc::new(RuntimeUdpHolePunchTunnelSink::new(peer_mgr.clone())),
+            peer_mgr.core(),
             Arc::new(RuntimeUdpHolePunchRuntime::new(peer_mgr.get_global_ctx())),
             Some(peer_mgr.p2p_demand_notify()),
         );

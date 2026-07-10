@@ -33,7 +33,7 @@ pub use runtime::{
     SendPunchPacketHardSym, SendPunchPacketHardSymResponse, UdpHolePunchInbound,
     UdpHolePunchPeerSource, UdpHolePunchRuntime, UdpHolePunchSignalError, UdpHolePunchSignaling,
     UdpHolePunchTunnelSink, UdpPortMappingLease, UdpPunchAcceptor, UdpPunchConnCounter,
-    UdpPunchListener, UdpResolvedPublicAddr, should_blacklist_signal_error,
+    UdpPunchListener, UdpPunchSocket, UdpResolvedPublicAddr, should_blacklist_signal_error,
 };
 pub use server::{
     SelectedUdpPunchListener, UdpBothEasySymPunchServer, UdpHolePunchServer,

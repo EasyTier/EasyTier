@@ -1170,6 +1170,22 @@ impl PeerManagerCore {
 }
 
 #[async_trait::async_trait]
+impl crate::hole_punch::udp::UdpHolePunchTunnelSink for PeerManagerCore {
+    async fn add_client_tunnel(&self, tunnel: Box<dyn Tunnel>) -> anyhow::Result<()> {
+        PeerManagerCore::add_client_tunnel(self, tunnel, false)
+            .await
+            .map(|_| ())
+            .map_err(anyhow::Error::from)
+    }
+
+    async fn add_server_tunnel(&self, tunnel: Box<dyn Tunnel>) -> anyhow::Result<()> {
+        PeerManagerCore::add_tunnel_as_server(self, tunnel, false)
+            .await
+            .map_err(anyhow::Error::from)
+    }
+}
+
+#[async_trait::async_trait]
 #[auto_impl::auto_impl(&, Arc)]
 pub trait ForeignPeerConnectionCloser: Send + Sync {
     async fn close_peer_conn(&self, peer_id: PeerId, conn_id: &PeerConnId) -> Result<(), Error>;
