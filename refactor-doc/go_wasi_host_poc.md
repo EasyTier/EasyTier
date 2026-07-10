@@ -58,6 +58,24 @@ This proves compilation and finite test execution. It does not prove that:
 - a logical Go connection wrapper can be represented by a virtual fd;
 - a long-lived Tokio networking instance can idle, wake, and stop correctly.
 
+### Public wazero socket probe result
+
+The reproducible harness in
+[`tools/wasi-socket-poc`](../tools/wasi-socket-poc/README.md) tested the public
+wazero 1.12.0 path:
+
+- the `tokio_unstable` WASI guest compiles and takes ownership of a pre-opened
+  TCP listener virtual fd;
+- wazero's public socket configuration exposes only `WithTCPListener`, with no
+  arbitrary Go `net.Conn` or UDP resource injection;
+- Tokio aborts in its I/O driver when the first WASIp1 `poll_oneoff` returns
+  `ENOTSUP` (58).
+
+Consequently Model A is not viable with unmodified public wazero 1.12.0. The
+pending-read, second-socket, timer, and idle-polling scenarios cannot be measured
+until either wazero socket readiness is extended or Model B is implemented. The
+choice between those next steps remains open.
+
 ## Constraints
 
 1. Tokio stays internal to core. Tokio runtime handles, tasks, futures, and
