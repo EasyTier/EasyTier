@@ -17,7 +17,7 @@ This roadmap follows the ownership rules in [`CONTEXT.md`](../CONTEXT.md) and
 these accepted decisions:
 
 - one portable core crate: [ADR 0001](../docs/adr/0001-portable-logic-belongs-in-one-core-crate.md);
-- Go drives a current-thread Tokio WASI core through a serialized seam:
+- Go supplies host-created sockets to a current-thread Tokio WASI core:
   [ADR 0002](../docs/adr/0002-go-host-drives-wasi-core-with-tokio.md);
 - host-OS policy is runtime configuration:
   [ADR 0003](../docs/adr/0003-host-os-policy-is-runtime-configuration.md).
@@ -73,21 +73,25 @@ The whole refactor is done only when all of these hold:
    key behaviours.
 8. Deprecated native ownership and compatibility forwarding paths are deleted.
 
-## Phase 0: prove the Go/WASI drive model
+## Phase 0: prove the Go/WASI socket and executor model
 
 This phase is blocking. Do not migrate more runtime ownership across a wasm
-seam whose scheduling model is still hypothetical.
+seam whose socket handoff, readiness, and executor model are still hypothetical.
 
 Implement the bounded experiment in
-[`go_wasi_host_poc.md`](go_wasi_host_poc.md). It must compare drive strategies,
-prove non-blocking DNS/TCP/UDP operation delivery, and show that Tokio timers and
-unrelated connections continue while one host operation remains pending.
+[`go_wasi_host_poc.md`](go_wasi_host_poc.md). It must first test whether Go can
+create a socket, register it as a guest virtual fd, and let Tokio drive its I/O.
+It must compare that preferred model with an opaque-handle Socket Adapter and,
+only when necessary, a host operation/completion fallback. Every model must show
+that Tokio timers and unrelated connections continue while one socket remains
+pending.
 
 Exit gate:
 
-- a selected drive strategy meets every functional, scheduling, lifecycle, and
-  isolation gate in the PoC;
-- the selected ABI categories and ownership rules are recorded in a follow-up
+- a selected socket reference, readiness mechanism, and executor-drive
+  Implementation meets every functional, scheduling, lifecycle, and isolation
+  gate in the PoC;
+- the selected wasm Interface and ownership rules are recorded in a follow-up
   ADR;
 - failure produces a written architectural decision before more migration. A
   failed PoC is not patched with per-operation blocking imports.
@@ -230,4 +234,3 @@ Every phase selects the relevant rows, and the final phase runs all rows:
 | State | no cross-instance leakage, restart and partial-start cleanup |
 | Dependency | no new direct OS calls in core; wasm import allowlist |
 | Configuration | host-OS policy explicit and consistent across hosts |
-

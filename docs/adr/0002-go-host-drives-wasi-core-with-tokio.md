@@ -1,86 +1,126 @@
-# ADR-0002: Go Host Drives WASI Core with Tokio Retained Internally
+# ADR-0002: Go Host Provides Sockets to a Tokio-Driven WASI Core
 
 - Status: Accepted for Phase 0 validation
 - Date: 2026-07-10
 
 ## Context
 
-The target integration loads EasyTier into a Go process without cgo. The host
-passes configuration and supplies DNS, TCP, UDP, and packet-plane capabilities.
-Core owns the peer graph, protocols, routing, and connection orchestration.
+The target integration loads EasyTier into a Go process without cgo. Mihomo
+must control DNS and the creation of every real socket so that it can enforce
+routing, loop prevention, platform policy, and security. That requirement does
+not imply that Go must own EasyTier's socket I/O scheduling or protocol state.
 
-Tokio 1.52 supports the `rt`, `time`, `sync`, `macros`, and `io-util` features on
-WASM. The current `easytier-core` uses exactly this subset. Local verification
-ran the existing wasm test artifacts with Go and wazero v1.12.0:
+Core already models this ownership split: a Host Adapter creates a socket, and
+the resulting core Socket Interface supports asynchronous I/O below portable
+tunnel framing. The desired wasm model preserves the same Interface and keeps
+read/write scheduling, backpressure, framing, and protocol decisions in core.
+
+Tokio 1.52 supports `rt`, `time`, `sync`, `macros`, and `io-util` on WASM without
+unstable configuration. It also has unstable `tokio::net` support on
+`wasm32-wasi`; because WASIp1 cannot create sockets, those sockets must be
+provided through `FromRawFd`.
+
+Local verification ran the existing wasm test artifacts with Go and wazero
+v1.12.0:
 
 - 220 default/no-default tests passed;
 - 239 all-feature tests passed;
 - timer tests exercised WASI `clock_time_get` and `poll_oneoff`.
 
-This proves that Tokio's current-thread scheduler, synchronization, and timers
-run under a Go host. It does not prove that arbitrary Go socket and DNS
-implementations can wake and drive a long-lived EasyTier instance efficiently.
+This proves finite execution of the stable Tokio subset. It does not prove
+long-lived socket I/O. wazero v1.12.0 exposes experimental pre-opened TCP
+listeners, but its public socket configuration does not dynamically register an
+arbitrary Go `net.Conn` or `net.PacketConn`, and its current WASIp1 polling does
+not provide complete socket readiness. A virtual-fd handoff therefore requires
+validation and may require a wazero extension.
 
-wazero calls into a guest synchronously. Calls to the same exported function
-must not overlap. A blocking host import pauses the only guest executor. Tokio's
-current-thread runtime also stops making progress after the active drive
-returns.
+wazero guest calls are synchronous on the calling Go goroutine. Calls into one
+module instance must not overlap or re-enter it. An individual blocking socket
+import would pause the only current-thread guest executor.
 
 ## Decision
 
-1. Retain Tokio as an internal core Implementation.
-2. Limit wasm builds to Tokio's supported current-thread feature subset.
-3. Do not expose Tokio runtime handles or Rust futures across the Go/wasm seam.
-4. Give each wasm core instance one serialized Go drive owner.
-5. Express DNS and socket work as non-blocking operations completed during a
-   later drive; do not call blocking Go network methods inside host imports.
-6. Forbid host-to-guest re-entry from inside an import.
-7. Use cooperative stop and operation cancellation. Context-triggered Module
-   closure is only a hard watchdog.
-8. Validate the exact drive/timer strategy in Phase 0 before more connectivity
-   migration depends on it.
+1. Retain Tokio as core's internal executor and I/O scheduler.
+2. Keep wasm execution current-thread; do not require multi-thread Tokio.
+3. Give the Go Host Adapter authority over DNS and every real socket creation,
+   including dial, listen, bind, and accepted platform resources.
+4. Keep read/write scheduling, backpressure, portable framing, and protocol
+   state in core. Host-backed I/O is not host-scheduled I/O.
+5. Require every actual socket OS operation to cross WASI or a Host Adapter;
+   core never accesses a host OS resource directly.
+6. Prefer a host-created virtual-fd socket that core can drive through Tokio if
+   Phase 0 proves dynamic resource registration and readiness are viable.
+7. Treat an opaque-handle Socket Adapter and a host-owned operation/completion
+   queue as fallback Implementations to compare, not predetermined ownership.
+8. Forbid an individual DNS or socket import from blocking the guest executor.
+9. Do not expose Tokio runtime handles, tasks, futures, or wakers across the
+   Go/wasm seam, and forbid host-to-guest re-entry from an import.
+10. Use cooperative stop. Closing the wasm Module is a hard watchdog, not the
+    ordinary shutdown path.
+11. Select the socket handoff, readiness, and executor-drive Implementation only
+    after the Phase 0 measurements.
 
 ## Consequences
 
-- Tokio-based core code does not need a wholesale executor rewrite before the
-  PoC.
-- Go owns real asynchronous I/O and completion queues.
-- The wasm Adapter copies request data out of guest memory before an operation
-  outlives a call and reacquires memory before copying a completion in.
-- A fixed periodic drive may be used only as a measured PoC mechanism. It is not
-  accepted as the final design without idle-CPU and latency evidence.
-- `rt-multi-thread`, `spawn_blocking`, `block_in_place`, `tokio::net`, and
-  blocking individual host imports are outside the supported wasm model.
+- The native and Go hosts share the same deep Socket Interface: the host creates
+  platform resources, while core receives asynchronous sockets.
+- Go does not have to own EasyTier's socket read/write state, protocol
+  lifecycle, or one worker queue per operation.
+- A virtual-fd Implementation may use unstable `tokio::net` support and may need
+  a maintained wazero extension. Neither dependency is accepted for production
+  until the PoC measures it.
+- A logical Go `net.Conn` or `net.PacketConn` cannot always be reduced to an OS
+  descriptor. A viable Interface must preserve wrapper behaviour when the Host
+  Adapter supplies a logical connection.
+- If opaque handles are used, borrowed wasm-memory views cannot outlive a host
+  call. Data ownership and readiness notification must be explicit.
+- A fixed periodic drive is not accepted without idle-CPU and latency evidence.
 
-## Phase 0 unresolved decision
+## Phase 0 unresolved decisions
 
-Phase 0 must compare bounded cooperative drive with a centralized multiplexed
-wait. The accepted design will be the one that preserves timer progress,
-avoids head-of-line blocking, provides clean cancellation, and meets measured
-idle-CPU and latency budgets without busy polling.
+Phase 0 must resolve four independent choices:
+
+1. socket reference: injected WASI virtual fd, opaque host handle, or
+   operation/completion fallback;
+2. readiness: WASI `poll_oneoff`, a host readiness Interface, or completion
+   delivery;
+3. executor progress: a long-lived serialized guest call or bounded cooperative
+   drives;
+4. data transfer: direct WASI buffers or copied host-seam buffers.
+
+The accepted combination must preserve Tokio timer and socket progress, avoid
+head-of-line blocking and busy polling, support clean cancellation, preserve
+logical Go connection behaviour, and meet measured idle-CPU and latency gates.
 
 ## Rejected alternatives
 
-### Remove Tokio before validating the host seam
+### Remove Tokio before validating the socket seam
 
-Rejected because current tests prove the supported Tokio subset works, and a
-rewrite would touch widespread task and timer code without first proving it is
-necessary.
+Rejected because the supported Tokio subset already runs under wazero, and the
+host-created socket model may allow Tokio to retain I/O scheduling.
+
+### Require Go workers for all socket I/O
+
+Rejected as an architectural requirement. It is a valid fallback
+Implementation, but Mihomo needs creation and DNS authority rather than
+EasyTier protocol ownership.
 
 ### Block in each socket or DNS import
 
-Rejected because one pending read or accept would freeze all peer, timer,
-reconnect, and shutdown tasks in that wasm instance.
+Rejected because one pending read, write, accept, or resolution would freeze
+all peer, timer, reconnect, and shutdown tasks in that wasm instance.
 
 ### Concurrent or re-entrant calls into one wasm instance
 
-Rejected because wazero function calls are not safe to overlap and core state is
-designed for one serialized owner.
+Rejected because wazero function calls are not safe to overlap and core state
+has one serialized owner.
 
 ## References
 
 - <https://docs.rs/tokio/1.52.1/src/tokio/lib.rs.html#424-455>
 - <https://tokio.rs/tokio/topics/bridging>
+- <https://pkg.go.dev/github.com/tetratelabs/wazero/experimental/sock>
+- <https://github.com/tetratelabs/wazero/blob/v1.12.0/imports/wasi_snapshot_preview1/poll.go>
 - <https://wazero.io/languages/>
 - <https://pkg.go.dev/github.com/tetratelabs/wazero/api#Function>
 - <https://doc.rust-lang.org/nightly/rustc/platform-support/wasm32-wasip1.html>

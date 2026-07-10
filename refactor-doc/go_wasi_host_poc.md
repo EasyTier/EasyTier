@@ -4,12 +4,34 @@
 
 ## Question to answer
 
-Can a pure-Go host, initially wazero, drive a `wasm32-wasip1` build of the
-single `easytier-core` crate while core retains current-thread Tokio and while
-DNS, TCP, and UDP are asynchronous host capabilities?
+Can a pure-Go host, initially wazero, create and authorize every DNS and socket
+resource while a `wasm32-wasip1` build of the single `easytier-core` crate keeps
+current-thread Tokio in control of asynchronous read/write scheduling,
+backpressure, timers, and EasyTier protocol state?
 
 The PoC must answer this before the rest of the refactor depends on a particular
-wasm ABI or scheduling strategy.
+socket reference, readiness mechanism, or executor-drive Implementation.
+
+## Ownership under test
+
+The PoC preserves this split:
+
+```text
+Go / Mihomo Host Adapter
+    DNS, dial, listen, bind, accept, platform policy, real resources
+                         |
+                         v
+              host-backed Socket Interface
+                         |
+                         v
+easytier-core / Tokio
+    read/write scheduling, backpressure, framing, protocol lifecycle
+```
+
+Every actual OS read, write, poll, and close still executes through WASI or a
+Host Adapter. "Tokio-driven I/O" means that core decides when work is polled and
+how it participates in EasyTier tasks; it does not mean wasm directly performs
+host syscalls.
 
 ## What is already proven
 
@@ -23,167 +45,234 @@ At baseline commit `40fb39b5`:
 - the core Tokio feature set is `sync`, `macros`, `io-util`, `rt`, and `time`,
   which is within Tokio's documented stable wasm support.
 
-This proves compilation and finite test execution. It does not prove that a Go
-host can sustain an indefinitely running networking instance.
+Tokio 1.52 also documents unstable `tokio::net` support for `wasm32-wasi`.
+Because WASIp1 cannot create a new socket inside the guest, such a socket must
+be supplied through `FromRawFd`.
+
+This proves compilation and finite test execution. It does not prove that:
+
+- wazero can dynamically register a Mihomo-created `net.Conn` or
+  `net.PacketConn` as a guest virtual fd;
+- wazero's WASIp1 polling can provide correct and efficient TCP and UDP
+  readiness to Tokio;
+- a logical Go connection wrapper can be represented by a virtual fd;
+- a long-lived Tokio networking instance can idle, wake, and stop correctly.
 
 ## Constraints
 
-1. Tokio stays internal to core. Tokio runtime handles, tasks, and futures do
-   not cross the host seam.
+1. Tokio stays internal to core. Tokio runtime handles, tasks, futures, and
+   wakers do not cross the host seam.
 2. One wasm module instance uses current-thread Tokio. Multi-thread Tokio is not
    part of this design.
-3. A wazero exported function call runs synchronously on the calling Go
-   goroutine. Calls into the same module instance are serialized and are never
-   re-entrant.
-4. A host import must not wait for an individual socket, DNS result, or timer in
-   a way that blocks the only guest executor.
-5. Potentially blocking Go work runs in Go goroutines. The host later delivers
-   a Completion during a drive.
-6. Go does not retain a borrowed slice into wasm memory after a call returns.
-   Data is copied or represented by opaque handles. Memory growth must not
-   invalidate host state.
-7. Normal cancellation is cooperative. Closing the whole module is reserved for
+3. Go and Mihomo control DNS and every real socket creation. Core cannot bypass
+   their routing, loop-prevention, or platform policy.
+4. Core owns socket I/O scheduling, backpressure, portable framing, and protocol
+   state after the Host Adapter supplies a socket.
+5. A wazero guest call runs synchronously on its calling Go goroutine. Calls
+   into the same module instance are serialized and never re-entrant.
+6. An individual socket or DNS import must not block the only guest executor.
+7. Go does not retain a borrowed slice into wasm memory after a call returns.
+   Data is copied or represented by an owned resource reference.
+8. A logical `net.Conn` or `net.PacketConn` may contain Mihomo behaviour beyond
+   an OS descriptor. The selected model must not require unsafe descriptor
+   extraction that bypasses that behaviour.
+9. Normal cancellation is cooperative. Closing the whole module is reserved for
    a stuck-instance hard kill.
-8. The first PoC uses pure Go and no cgo so the embedding and deployment model
-   remains representative.
+10. The first PoC uses pure Go and no cgo so the embedding and deployment model
+    remains representative.
 
-## Candidate runtime models
+## Candidate socket models
 
-### Model A: long-running guest with blocking per-operation imports
+### Model A: injected virtual fd with Tokio-driven I/O
 
-Core calls `tcp_read`, `udp_recv`, or `dns_resolve`; the import blocks until the
-specific result is ready.
+The Go Host Adapter creates a socket with the Mihomo dialer or packet-listener
+path and registers it in the module's WASI resource table. Core receives a guest
+virtual fd and constructs a Tokio socket through `FromRawFd`. Tokio drives
+read/write and readiness through WASI.
+
+This is the preferred model because it most closely matches the native Socket
+Interface and keeps the wasm-specific Interface small. It passes the deletion
+test: removing the virtual-fd Adapter would force fd ownership, readiness,
+error, and cancellation rules into every socket caller.
+
+The PoC must not assume this works. wazero v1.12.0 publicly supports pre-opened
+TCP listeners, but does not expose a complete dynamic registration Interface
+for arbitrary outbound TCP connections or UDP packet connections. Its WASIp1
+polling implementation also needs explicit readiness validation. Record whether
+a small maintainable wazero extension can close those gaps.
+
+### Model B: opaque handle with core-driven asynchronous I/O
+
+The Go Host Adapter creates a logical socket and returns an opaque host handle.
+A wasm Socket Adapter implements the existing core asynchronous Socket Interface
+over non-blocking host operations and a centralized readiness mechanism. Tokio
+still decides when each socket is polled and owns task wakeups, backpressure, and
+protocol state.
+
+This model can preserve arbitrary Go `net.Conn` and `net.PacketConn` wrappers
+without modifying wazero's internal fd table. Its cost is a custom readiness and
+data-transfer Interface. The Interface must stay deep: individual callers must
+not learn host queue, memory, or wakeup details.
+
+### Model C: host operation/completion fallback
+
+Go workers perform potentially blocking DNS and socket operations. A serialized
+guest invocation later delivers owned completions to core, which wakes the
+corresponding Tokio tasks.
+
+This is a valid portability fallback, not the default ownership model. It gives
+Go more responsibility for I/O queues and data movement and therefore needs
+evidence that Models A and B are not viable or are materially worse.
+
+### Model D: blocking per-socket imports
+
+Core calls a host `read`, `write`, `accept`, or resolver operation and that
+individual import waits for its result.
 
 Reject this model. One pending operation can freeze unrelated connections,
-Tokio timers, cancellation, and peer maintenance on the current-thread runtime.
+Tokio timers, cancellation, peer maintenance, and shutdown.
 
-### Model B: bounded cooperative drives
+## Candidate executor-drive models
 
-Go is the drive owner. Each serialized drive supplies commands and available
-Completions, lets core make bounded progress, and receives new Operations plus
-the next wake requirement before returning. Go waits for operation completion,
-external commands, or the next timer deadline and invokes the next drive.
+Socket representation and executor progress are separate choices. Test both
+where the socket model permits them:
 
-This is the primary model to prototype because it keeps Go in control and
-makes the no-overlap rule explicit. The experiment must determine how Tokio's
-current-thread scheduler is advanced without busy polling and how timer
-deadlines are surfaced accurately.
+### Long-lived serialized guest call
 
-### Model C: centralized multiplex wait
+One Go goroutine enters the guest runtime and remains its sole owner. Tokio idles
+inside one centralized host or WASI readiness wait that can wake for any socket,
+timer, cancellation request, or external command.
 
-Core enters one host import that waits for any completion or the next deadline,
-not for an individual socket. This can avoid idle polling while preserving one
-executor wake point.
+This avoids periodic re-entry but requires a correct multiplexed wait and a
+cooperative way to deliver host commands without a concurrent guest call.
 
-Prototype this only if Model B cannot provide efficient idle waiting. The wait
-must be centralized, cancellable, and able to wake for any connection; it must
-not turn into blocking imports spread across socket Implementations.
+### Bounded cooperative drives
 
-The Phase 0 result selects Model B, Model C, or a documented combination. It
-must not leave both as accidental production modes.
+Go invokes serialized bounded drives. Each drive lets Tokio make progress and
+returns a wake requirement. Go waits for readiness, a timer deadline, or an
+external command before starting the next drive.
 
-## PoC shape
+This keeps lifecycle control explicit but must prove that it can advance Tokio
+without unconditional polling or leaking executor details across the seam.
 
-Use a disposable Go harness and the real `easytier-core` wasm artifact. Keep the
-cross-wasm surface narrow and group it into three Interface categories:
+Phase 0 selects one socket model and one executor-drive model. It must not leave
+multiple accidental production modes.
 
-- lifecycle: create, configure, start, request stop, inspect terminal state,
-  and destroy a Core instance;
-- drive exchange: submit commands and Completions, make bounded progress, and
-  return Operations, events, and a wake requirement;
-- owned data transfer: allocate/write/read/release serialized batches without
-  retaining borrowed guest memory.
+## Experiment shape
 
-Exact function names, binary encoding, and memory ownership details are outputs
-of the PoC, not assumptions in this document. The production Interface should
-be recorded in a follow-up ADR after measurement.
+Use two layers so wazero limitations are not confused with unfinished EasyTier
+ownership migration.
 
-Inside Go:
+### Socket substrate harness
 
-```text
-serialized drive owner
-        |
-        +-- command/completion queue
-        +-- timer wake
-        +-- DNS workers
-        +-- TCP workers
-        +-- UDP workers
-        +-- packet I/O workers
-```
+A minimal Rust wasm guest exercises Tokio timers and a host-created socket but
+contains no EasyTier protocol logic. It establishes whether virtual fd or opaque
+handle readiness works at all.
 
-Workers may complete concurrently, but only the drive owner calls the wasm
-instance. Host Implementations translate opaque operation handles to Go
-resources and never call back into wasm from an import.
+### EasyTier integration harness
+
+The real `easytier-core` wasm artifact uses the selected experimental Socket and
+DNS Adapters. It establishes whether the model composes with the existing core
+Socket Interface and protocol tasks.
+
+The Go harness owns resources and policy but does not implement EasyTier
+framing, routing, retries, peer state, or protocol lifecycle.
 
 ## Milestones
 
-### P0.1: artifact and lifecycle seam
+### P0.1: wazero socket capability probe
 
-- build one reproducible `easytier-core` `wasm32-wasip1` artifact;
-- instantiate two modules in one Go process;
-- apply distinct minimal configurations;
-- start, drive, cooperatively stop, and destroy both instances repeatedly;
-- record the import allowlist and prove no unintended networking imports.
+- build a minimal current-thread Tokio `wasm32-wasip1` guest;
+- have Go create a TCP connection and attempt to register it as a guest virtual
+  fd without letting the guest dial;
+- verify read, partial write, EOF, close, and real readiness through Tokio;
+- keep one read pending while a timer and another socket continue;
+- test accepted TCP resources and UDP packet resources, not only a pre-opened
+  listener;
+- repeat with a logical Go connection wrapper whose semantics cannot be reduced
+  to a raw OS descriptor;
+- document every required unstable Tokio setting, wazero extension, and
+  unsupported operation.
 
-This milestone may initially use an in-memory clocked operation to prove the
-drive mechanics before adding sockets.
+Exit P0.1 with one of three results:
 
-### P0.2: DNS and TCP
+1. Model A is viable with public wazero;
+2. Model A is viable with a small maintainable extension whose ownership and
+   portability are acceptable;
+3. Model A is rejected with a reproducible reason, and Model B becomes primary.
 
-- implement Go DNS and TCP Host Adapters using operation handles;
-- keep one TCP read pending indefinitely while another connection exchanges
-  data and Tokio timers continue;
-- exercise connect success, refusal, timeout, EOF, partial read/write,
-  cancellation, and backpressure;
-- verify address and error normalization at the seam.
+### P0.2: opaque-handle comparison
 
-Use Go loopback sockets first, then use two wasm core instances to complete the
-smallest meaningful EasyTier handshake over the Adapter path.
+Run this milestone if Model A is rejected or needs comparison before accepting
+a wazero extension.
 
-### P0.3: UDP and minimal network formation
+- implement one deep experimental Socket Adapter over opaque Go handles;
+- preserve Tokio-owned read/write polling, backpressure, and task wakeups;
+- exercise TCP connect, accept, refusal, timeout, EOF, partial I/O,
+  cancellation, and sustained backpressure;
+- exercise UDP bind, send, receive, source address, zero-length datagrams,
+  truncation policy, multiple peers, cancellation, and receive backpressure;
+- measure data copies, wakeups, queue depth, idle CPU, and timer delay against
+  Model A where available;
+- prototype Model C only if Model B cannot provide correct, efficient readiness.
 
-- implement bind, send, receive, close, and peer-scoped UDP session behaviour;
-- exercise datagram truncation policy, zero-length datagrams, multiple peers,
-  cancellation, and receive backpressure;
-- connect two core instances with a minimal configuration that needs no native
-  TUN and show peer admission, route convergence, and packet exchange through a
-  host-provided packet Interface.
+### P0.3: DNS and minimal EasyTier network
 
-If current core ownership prevents this scenario, add only the smallest
-experiment seam required to expose the scheduling question. Record the missing
-ownership as Phase 1 or Phase 2 work instead of pulling the whole refactor into
-the PoC.
+- route every hostname lookup through the Go Host Adapter;
+- ensure IP literals and non-IP transports do not accidentally invoke DNS;
+- instantiate two real core wasm modules with different minimal configurations;
+- create every TCP or UDP resource through the Go Host Adapter;
+- complete the smallest meaningful EasyTier handshake;
+- show peer admission, route convergence, and packet exchange through a
+  host-provided packet Interface without a native TUN;
+- keep an unrelated socket pending throughout the scenario.
+
+If current core ownership prevents the scenario, add only the smallest
+experiment seam required to expose the socket and scheduling question. Record
+the missing ownership as Phase 1 or Phase 2 work rather than pulling the whole
+refactor into the PoC.
 
 ### P0.4: lifecycle and measurement
 
-- repeat start/stop and forced host-operation failure;
-- leave operations pending during graceful stop and verify cleanup ordering;
+- start and cooperatively stop two module instances repeatedly;
+- leave DNS and socket resources pending during graceful stop and verify cleanup
+  ordering;
+- force Host Adapter failures and malformed results;
 - hard-kill a deliberately stuck instance without corrupting the other module;
-- measure timer delay, idle CPU, throughput, allocations, queue depth, and
-  shutdown latency for each viable runtime model.
+- measure timer delay, idle CPU, throughput, allocations, copies, wakeups,
+  resource count, and shutdown latency for every viable model.
 
 ## Acceptance gates
 
 The PoC passes only if all gates pass.
 
-### Correctness
+### Ownership and correctness
 
+- the Go Host Adapter observes and controls every DNS request and real socket
+  creation;
+- core cannot create an untracked real socket;
+- after socket creation, core and Tokio own read/write scheduling, backpressure,
+  framing, and protocol lifecycle;
+- the Go harness contains no EasyTier peer, routing, retry, or framing logic;
 - two Go-hosted core instances form a peer connection and exchange packets;
-- DNS, TCP, UDP, timers, and cancellation all traverse the intended seams;
-- one pending operation cannot prevent unrelated work;
-- errors and EOF are distinguishable and do not leak Go handles.
+- TCP, UDP, DNS, timers, cancellation, EOF, and errors cross their intended
+  seams without leaking host resources;
+- a logical Go connection wrapper retains its behaviour.
 
 ### Scheduling and performance
 
-- the drive loop has no unconditional busy polling;
+- no individual DNS, read, write, accept, or receive host call blocks unrelated
+  guest work;
+- the selected executor-drive model has no unconditional busy polling;
 - under the pending-read scenario, timer p99 delay is no worse than twice the
   native current-thread baseline plus 5 ms in the same controlled test;
 - idle CPU for one quiescent instance is below 1% of one core after warm-up, or
   the result is rejected with evidence that the measurement floor is higher;
 - packet throughput reaches at least 50% of the equivalent native Adapter path
-  before optimization, with profiling showing no architectural serialization
-  beyond the required single drive owner;
-- queue depth remains bounded under sustained producer pressure.
+  before optimization, with profiling identifying every unavoidable
+  serialization and copy;
+- readiness events, buffers, and queues remain bounded under sustained producer
+  pressure.
 
 These are PoC gates, not production performance promises. Record the native
 baseline and environment before comparing models; do not weaken a gate after a
@@ -191,37 +280,40 @@ failed result without documenting why the measurement was invalid.
 
 ### Lifecycle and isolation
 
-- cooperative stop completes within two seconds after Go cancels all pending
-  host operations;
-- 100 create/start/stop cycles leave no growing goroutine, operation-handle, or
-  wasm-memory count;
+- cooperative stop completes within two seconds after the host cancels or wakes
+  all pending resources;
+- 100 create/start/stop cycles leave no growing goroutine, virtual-fd, opaque
+  handle, queue, or wasm-memory count;
 - separate module instances do not share configuration, DNS results, handles,
   peer state, or cancellation;
 - module close can terminate a stuck instance as a hard-kill fallback.
 
-### Memory and ABI
+### Memory and resource ownership
 
 - memory growth does not invalidate data retained by Go;
-- malformed lengths, handles, encodings, and duplicate Completions fail safely;
-- every allocated cross-boundary buffer has one documented owner and release
-  point;
+- malformed lengths, resource references, encodings, and duplicate readiness or
+  completion events fail safely;
+- every virtual fd, opaque handle, buffer, and logical Go connection has one
+  documented owner and close point;
 - the wasm import list contains only the intended WASI and host capabilities.
 
 ## Deliverables and decision
 
 Phase 0 produces:
 
-1. a small reproducible Go harness and wasm build command;
-2. conformance tests for the selected scheduling and operation model;
-3. measurements for Models B and, only if necessary, C;
-4. an ADR fixing drive ownership, wake behaviour, batch encoding, memory
-   ownership, cancellation, and error semantics;
-5. an explicit go/no-go decision for using Tokio plus wazero as the production
-   Go-host model.
+1. a minimal socket substrate harness and a real-core Go integration harness;
+2. a reproducible capability report for Tokio WASI networking and wazero socket
+   injection/readiness;
+3. conformance tests and measurements for Model A and, when required, Model B;
+4. evidence before selecting Model C as a fallback;
+5. an ADR fixing socket reference, readiness, executor progress, data ownership,
+   cancellation, and error semantics;
+6. an explicit go/no-go decision for Tokio-driven socket I/O under the selected
+   wazero embedding.
 
-If the PoC fails, decide among changing the drive model, changing the wasm
-runtime, or introducing a core executor seam. Do not respond by moving portable
-network logic back into the host.
+If the PoC fails, decide among maintaining a small wazero extension, using the
+opaque-handle Adapter, changing the wasm runtime, or introducing a core executor
+seam. Do not respond by moving portable network or protocol logic into Go.
 
 ## Reproduction baseline
 
@@ -234,15 +326,15 @@ cargo test -p easytier-core --target wasm32-wasip1 --all-features --no-run
 go run github.com/tetratelabs/wazero/cmd/wazero@v1.12.0 run <test-artifact>.wasm
 ```
 
-The PoC must pin the Rust toolchain, Cargo feature set, wazero version, Go
-version, and artifact hash in its result.
+The PoC must pin the Rust toolchain, Cargo feature set, Tokio unstable settings,
+wazero version or patch, Go version, and artifact hash in its result.
 
 ## Primary references
 
 - [Tokio wasm support](https://docs.rs/tokio/1.52.1/src/tokio/lib.rs.html#424-455)
 - [Tokio current-thread runtime behaviour](https://tokio.rs/tokio/topics/bridging)
+- [wazero experimental sockets](https://pkg.go.dev/github.com/tetratelabs/wazero/experimental/sock)
+- [wazero WASIp1 polling](https://github.com/tetratelabs/wazero/blob/v1.12.0/imports/wasi_snapshot_preview1/poll.go)
 - [wazero concurrency guidance](https://wazero.io/languages/)
 - [wazero Function.Call contract](https://pkg.go.dev/github.com/tetratelabs/wazero/api#Function)
 - [Rust `wasm32-wasip1` target](https://doc.rust-lang.org/nightly/rustc/platform-support/wasm32-wasip1.html)
-- [wazero host functions](https://pkg.go.dev/github.com/tetratelabs/wazero#HostFunctionBuilder)
-

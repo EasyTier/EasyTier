@@ -43,10 +43,11 @@ primary hosts:
 
 ### Host capability
 
-A platform operation core is allowed to request but not implement. Host
-capabilities include DNS, TCP and UDP socket operations, TUN or packet ingress
-and egress, platform route changes, persistent storage, clock/random facilities
-when not supplied by WASI, and platform-policy discovery.
+A platform operation core is allowed to request but not implement directly.
+Host capabilities include DNS, real TCP and UDP socket creation and system
+calls, TUN or packet ingress and egress, platform route changes, persistent
+storage, clock/random facilities when not supplied by WASI, and platform-policy
+discovery.
 
 ### Host Adapter
 
@@ -60,8 +61,10 @@ A host-authorized communication endpoint below EasyTier protocol framing. A
 socket may represent TCP stream I/O, peer-scoped UDP datagrams, an in-process
 ring, or another raw transport shape.
 
-Core may own the socket Interface and socket orchestration. The host owns the
-real handle and every OS operation.
+Core owns the socket Interface, I/O scheduling, backpressure, and socket
+orchestration. The host authorizes and creates the real endpoint, owns its
+platform resource, and executes OS operations through a Host Adapter or WASI.
+Host-backed I/O does not imply host-owned I/O scheduling or protocol state.
 
 ### Tunnel
 
@@ -94,24 +97,6 @@ authoritative runtime state after a core instance starts.
 Platform defaults are resolved by the host before or while producing runtime
 configuration.
 
-### Operation
-
-A host-capability request whose completion may occur later, such as DNS resolve,
-TCP dial, TCP accept, UDP receive, or packet write. An operation is identified
-by an opaque numeric handle across the wasm seam.
-
-### Completion
-
-The result of an operation, delivered to core during a later serialized drive.
-Completions carry copied data or handles; they never retain borrowed wasm-memory
-views across calls.
-
-### Drive
-
-One serialized invocation that lets a wasm core instance consume commands and
-completions and make bounded progress. A drive must return to Go; calls into the
-same wasm instance must not overlap or re-enter it.
-
 ### Native composition root
 
 The thin `easytier` layer that loads native configuration, constructs Host
@@ -125,7 +110,7 @@ It must not reconstruct core routing or connectivity decisions.
 | Configuration | normalized state, validation, defaults independent of host OS | input parsing, persistence, host-OS default selection |
 | Peers | peer graph, admission, sessions, RPC dispatch, routing | presentation and external persistence |
 | Connectivity | candidates, retries, backoff, blacklists, hole-punch state | DNS, real sockets, UPnP/NAT-PMP, platform policy |
-| Socket | Interface, requests, peer-scoped UDP session logic | OS handles and syscalls |
+| Socket | Interface, I/O scheduling, backpressure, requests, peer-scoped UDP session logic | creation policy, OS handles, syscalls, readiness mechanism |
 | Tunnel | portable framing and protocol logic | non-portable protocol engines only when unavoidable |
 | Packet plane | classification, transformation, proxy/NAT state | TUN/raw socket ingress and egress |
 | Lifecycle | core task ownership and orderly shutdown rules | process lifecycle and hard-kill watchdog |
@@ -143,14 +128,18 @@ It must not reconstruct core routing or connectivity decisions.
 5. Dial, accept, and hole-punch paths stop at the socket seam before tunnel
    upgrade.
 6. Peer admission consumes tunnels and does not call connectivity modules.
-7. A Go host never blocks the only guest executor inside an individual socket or
+7. The host controls every real socket creation and DNS request. Core does not
+   bypass those Host Adapters.
+8. Core and Tokio own socket I/O scheduling, backpressure, and protocol state,
+   even when each actual OS operation crosses a Host Adapter or WASI.
+9. A Go host never blocks the only guest executor inside an individual socket or
    DNS import.
-8. Calls into one wasm instance are serialized and non-reentrant.
-9. Graceful cancellation is cooperative. Closing the wasm Module is a hard-kill
-   fallback, not ordinary shutdown.
-10. Compatibility with existing `easytier::*` public paths is not a refactor
+10. Calls into one wasm instance are serialized and non-reentrant.
+11. Graceful cancellation is cooperative. Closing the wasm Module is a hard-kill
+    fallback, not ordinary shutdown.
+12. Compatibility with existing `easytier::*` public paths is not a refactor
     requirement.
-11. Feature slicing follows stable deep Modules after ownership is settled; it
+13. Feature slicing follows stable deep Modules after ownership is settled; it
     is not an early migration goal.
 
 ## Architecture vocabulary
