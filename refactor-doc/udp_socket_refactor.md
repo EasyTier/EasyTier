@@ -1,5 +1,8 @@
 # UDP Socket 重构方向
 
+> 状态：历史设计输入，部分阶段已经完成。当前实施顺序和完成条件以
+> [`core_refactor_roadmap.md`](core_refactor_roadmap.md) 为准。
+
 ## 背景
 
 EasyTier 现有 UDP transport 不是裸 UDP tunnel。它复用一个 UDP port，在 UDP

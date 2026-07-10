@@ -1,5 +1,9 @@
 # core::config 与 PeerContext 职责收敛方案
 
+> 状态：部分仍有效。后续工作已收敛到
+> [`core_refactor_roadmap.md`](core_refactor_roadmap.md) 的 Core instance
+> 阶段，实施前需按当前源码重新盘点已完成项。
+
 ## 背景
 
 `easytier-core` 已经开始承担可复用的 core 模块职责。`PeerId` 已经位于

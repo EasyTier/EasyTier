@@ -1,5 +1,9 @@
 # Connector Socket 重构方向
 
+> 状态：历史设计输入。当前实施顺序以
+> [`core_refactor_roadmap.md`](core_refactor_roadmap.md) 为准；本文关于
+> “先产出 Socket、再升级 Tunnel”的目标仍然有效，代码现状需重新核对。
+
 ## 背景
 
 当前 connector 相关代码的最大架构问题是：connector 的最终产物是

@@ -1,5 +1,9 @@
 # Mihomo WASI Core Constraints
 
+> Status: accepted constraint input. See the
+> [authoritative refactor index](../../../refactor-doc/README.md) for current
+> decisions, migration order, and implementation status.
+
 ## Source And Boundary
 
 This document records the constraints implied by the mihomo EasyTier outbound

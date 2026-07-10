@@ -1,5 +1,9 @@
 # UDP 打洞迁移到 easytier-core 重构计划
 
+> 状态：历史迁移计划。打洞逻辑已经大量进入 core，但最终
+> Socket-to-Tunnel seam 尚未闭合；当前范围见
+> [`core_refactor_roadmap.md`](core_refactor_roadmap.md)。
+
 ## 背景
 
 本轮 core crates 重构的长期目标是：`easytier-core` 承载可复用的

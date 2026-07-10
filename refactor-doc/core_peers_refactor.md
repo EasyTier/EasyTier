@@ -1,5 +1,9 @@
 # easytier-core Peers 重构第一阶段方案
 
+> 状态：历史迁移计划，主体已经实施。请使用
+> [`core_refactor_roadmap.md`](core_refactor_roadmap.md) 判断剩余工作，
+> 不要把本文的旧路径或阶段清单当作当前事实。
+
 ## 背景
 
 本轮 core crates 重构的出发点是：把 EasyTier 的跨平台核心能力收敛到 `easytier-core` / `easytier-proto`，并保证 `easytier-core` 可以在 `wasm32-wasip1` 下编译。

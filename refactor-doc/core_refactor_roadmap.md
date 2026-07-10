@@ -1,0 +1,233 @@
+# EasyTier Core Refactor Roadmap
+
+> Status: active and authoritative. Updated 2026-07-10.
+
+## Outcome
+
+The refactor is complete when a Go host can create a `wasm32-wasip1` build of
+the single `easytier-core` crate, supply normalized configuration and Host
+Adapters for sockets, DNS, and packet I/O, and form an EasyTier network without
+reimplementing peer, route, connectivity, or protocol decisions.
+
+The native `easytier` crate remains a composition root and native host. It may
+parse platform configuration and implement Host Adapters, but it must not be a
+second owner of portable runtime logic.
+
+This roadmap follows the ownership rules in [`CONTEXT.md`](../CONTEXT.md) and
+these accepted decisions:
+
+- one portable core crate: [ADR 0001](../docs/adr/0001-portable-logic-belongs-in-one-core-crate.md);
+- Go drives a current-thread Tokio WASI core through a serialized seam:
+  [ADR 0002](../docs/adr/0002-go-host-drives-wasi-core-with-tokio.md);
+- host-OS policy is runtime configuration:
+  [ADR 0003](../docs/adr/0003-host-os-policy-is-runtime-configuration.md).
+
+## Current baseline
+
+The `refactor_core` line contains 200 commits after `f24735a8`; at `40fb39b5`
+the accumulated diff changes 221 files with 46,055 insertions and 24,396
+deletions. This is useful migration history, not evidence that the ownership
+move is finished.
+
+Already established:
+
+- `easytier-core` builds for `wasm32-wasip1` with default, no-default, and all
+  feature configurations;
+- the default and no-default wasm test artifacts pass 220 tests, and the
+  all-features artifact passes 239 tests under pure-Go wazero 1.12.0;
+- peer routing, peer RPC, route state, stream framing, core-side TCP and UDP
+  socket Interfaces, DNS Interface, and substantial hole-punch logic have moved
+  into core;
+- the native crate already contains Adapter implementations for several core
+  Interfaces.
+
+The current architecture is still intermediate:
+
+- manual reconnect, direct-connect, and TCP hole-punch paths can still create
+  legacy tunnels outside the final socket seam;
+- UDP hole punching still exposes a tunnel-producing path;
+- not every inbound protocol listener is expressed as a core-owned socket
+  listener plus portable tunnel upgrade;
+- native `Instance`, `PeerManager`, `PeerContext`, and process-global state
+  still overlap in lifecycle and state ownership;
+- core has no stable wasm artifact contract or Go socket/DNS bridge;
+- build features exist, but ownership has not yet settled into deep Modules
+  suitable for deliberate feature slicing.
+
+## Definition of done
+
+The whole refactor is done only when all of these hold:
+
+1. The same core behaviour is used by the native host and Go host.
+2. Go can form and maintain a multi-peer network by supplying configuration,
+   DNS, socket, and packet-plane Implementations.
+3. Core contains no direct real-OS networking, DNS, TUN, route, process, or
+   service-manager calls.
+4. A core instance is the sole owner of its peer graph, connectivity state,
+   listeners, routes, proxy state, tasks, and shutdown.
+5. Every dial, accept, and hole-punch path produces a socket before portable
+   tunnel upgrade and peer admission.
+6. Host-OS choices are explicit runtime configuration rather than accidental
+   consequences of `target_os = "wasi"`.
+7. Native integration tests and wasm/Go-host conformance tests cover the same
+   key behaviours.
+8. Deprecated native ownership and compatibility forwarding paths are deleted.
+
+## Phase 0: prove the Go/WASI drive model
+
+This phase is blocking. Do not migrate more runtime ownership across a wasm
+seam whose scheduling model is still hypothetical.
+
+Implement the bounded experiment in
+[`go_wasi_host_poc.md`](go_wasi_host_poc.md). It must compare drive strategies,
+prove non-blocking DNS/TCP/UDP operation delivery, and show that Tokio timers and
+unrelated connections continue while one host operation remains pending.
+
+Exit gate:
+
+- a selected drive strategy meets every functional, scheduling, lifecycle, and
+  isolation gate in the PoC;
+- the selected ABI categories and ownership rules are recorded in a follow-up
+  ADR;
+- failure produces a written architectural decision before more migration. A
+  failed PoC is not patched with per-operation blocking imports.
+
+## Phase 1: close the socket-to-tunnel seam
+
+Make the transport pipeline uniform:
+
+```text
+Connectivity decision -> Socket -> portable tunnel upgrade -> peer admission
+```
+
+Work:
+
+1. Inventory every outbound and inbound path and classify the first point that
+   touches a real OS resource.
+2. Convert manual reconnect and direct-connect to request sockets through the
+   core Interface.
+3. Convert TCP and UDP hole-punch completion to return sockets rather than
+   upgraded tunnels.
+4. Express every supported inbound listener as a Host Adapter producing core
+   socket events, with portable handshakes and framing in core.
+5. Keep platform knobs such as netns, bind-device, socket marks, UPnP, and
+   NAT-PMP in Adapter Implementations; requests carry policy, not syscalls.
+6. Delete each legacy tunnel-producing path as soon as its replacement passes
+   native and wasm conformance tests.
+
+Exit gate:
+
+- a repository search finds no native connectivity path that directly creates
+  a tunnel for peer admission;
+- all supported connection methods enter peer admission through the same
+  tunnel Interface;
+- socket cancellation, backpressure, listener shutdown, and address/error
+  normalization behave consistently across native and Go test Adapters;
+- native multi-node and hole-punch integration tests pass in the Docker test
+  environment.
+
+## Phase 2: establish the authoritative Core instance
+
+Create one deep lifecycle Module inside `easytier-core`. Avoid a pass-through
+wrapper: the Core instance must actually own state and enforce ordering.
+
+Work:
+
+1. Define a normalized `CoreConfig` independent of CLI, TOML, web, and Go input
+   shapes.
+2. Move start, reconfiguration, task ownership, stop, and join ordering behind
+   the Core instance Interface.
+3. Move instance-specific DNS overrides, ring registries, peer maps, route
+   state, proxy state, and cancellation state out of process globals.
+4. Reduce `PeerContext` to peer-domain state. It must not remain a container for
+   every cross-cutting runtime dependency.
+5. Make native `Instance` construct Adapters, translate management input and
+   output, and delegate lifecycle; remove duplicate state and decisions.
+6. Provide snapshots/events for management views instead of sharing mutable
+   internals with hosts.
+
+Exit gate:
+
+- two core instances in one process can use different configuration, DNS,
+  sockets, and shutdown without state leakage;
+- there is one owner for every mutable runtime state identified in the
+  ownership inventory;
+- repeated start/stop and partial-start failure leave no tasks or handles;
+- native and Go hosts exercise the same Core instance lifecycle Interface.
+
+## Phase 3: migrate the remaining portable logic
+
+With the two major seams stable, move the remaining logic by vertical slice.
+For each slice, move state, decisions, lifecycle, tests, and management
+projection together so Locality improves rather than merely moving files.
+
+Candidate slices, ordered by dependency and leverage:
+
+1. packet ingress/egress orchestration and TUN-independent packet processing;
+2. DHCP, ICMP proxy, SOCKS/proxy-NAT, magic DNS, and public-IPv6 routing logic;
+3. listener and protocol selection policy not completed in Phase 1;
+4. remaining lifecycle and configuration reconciliation;
+5. portable management commands and state snapshots.
+
+OS-dependent Implementations stay in the native or Go host. If a third-party
+protocol engine cannot build for WASI, keep a narrow Adapter seam rather than
+moving the surrounding policy out of core.
+
+Each slice exits only after:
+
+- core owns the state and decisions;
+- native and Go or in-memory Adapters pass the same conformance suite;
+- the old native ownership is deleted;
+- direct OS dependencies remain outside `easytier-core`.
+
+## Phase 4: simplify and slice features
+
+Feature work starts after Modules and ownership are stable.
+
+1. Delete obsolete forwarding types, compatibility exports, unused bridges,
+   duplicate configuration, and stale migration tests.
+2. Measure dependency and binary-size cost by Module.
+3. Place feature seams at deep optional Modules such as optional protocols,
+   management surfaces, or packet-plane functions.
+4. Keep the default build coherent; avoid features that expose half of an
+   Interface or create a combinatorial test matrix without meaningful savings.
+5. Test default, no-default, selected feature profiles, all-features, native,
+   and `wasm32-wasip1` builds.
+
+Exit gate:
+
+- every public feature corresponds to a documented capability and measurable
+  dependency or size saving;
+- supported feature combinations have explicit CI coverage;
+- removing an optional Module does not leak conditional logic through unrelated
+  callers.
+
+## Implementation discipline
+
+Use vertical, deletable commits:
+
+1. state the ownership change and exit criterion;
+2. add or adapt a conformance test at the target Interface;
+3. add the core behaviour and both real Adapter paths where applicable;
+4. switch every caller in that slice;
+5. delete the previous owner in the same series;
+6. run the validation matrix before starting another slice.
+
+Do not preserve old public Rust paths merely to make a migration appear less
+disruptive. Do preserve wire compatibility when it is an explicit protocol
+requirement; that is separate from Rust source compatibility.
+
+## Validation matrix
+
+Every phase selects the relevant rows, and the final phase runs all rows:
+
+| Dimension | Required checks |
+| --- | --- |
+| Rust host | unit tests, native integration tests, multi-node Docker tests |
+| WASI core | default, no-default, and all-features compile and tests |
+| Go host | Adapter conformance, multi-instance, multi-peer, shutdown tests |
+| Scheduling | pending I/O, timers, backpressure, cancellation, idle CPU |
+| State | no cross-instance leakage, restart and partial-start cleanup |
+| Dependency | no new direct OS calls in core; wasm import allowlist |
+| Configuration | host-OS policy explicit and consistent across hosts |
+

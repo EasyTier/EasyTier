@@ -1,0 +1,171 @@
+# EasyTier Architecture Context
+
+## Purpose
+
+This document defines the domain language and ownership rules for the ongoing
+EasyTier core refactor. New plans, code, tests, and reviews should use these
+terms consistently.
+
+The north star is a single `easytier-core` crate that owns almost all portable
+EasyTier logic. Native EasyTier and a Go wasm host provide platform capabilities
+through Adapter seams. `easytier-core` must compile for `wasm32-wasip1` and must
+not perform real OS networking, DNS, TUN, file-system configuration, process, or
+service-manager operations.
+
+## Domain language
+
+### Core
+
+The portable EasyTier implementation in the single `easytier-core` crate. Core
+owns protocol state, peer state, routing decisions, connection orchestration,
+packet processing, and lifecycle rules that do not require direct OS calls.
+
+Core may use `cfg` for guest-target capabilities. Host-OS policy must arrive as
+configuration because a wasm guest sees `target_os = "wasi"`, not the OS that
+runs the Go host.
+
+### Core instance
+
+One independently configured and independently stopped EasyTier network
+instance. A core instance is the authoritative owner of its peer graph,
+connectivity state, listener state, route state, proxy state, task lifecycle,
+and runtime configuration.
+
+Process-global registries must not contain instance-specific state.
+
+### Host
+
+The program that embeds or runs core and owns platform resources. There are two
+primary hosts:
+
+- the native `easytier` crate;
+- a Go program embedding a `wasm32-wasip1` artifact, initially through wazero.
+
+### Host capability
+
+A platform operation core is allowed to request but not implement. Host
+capabilities include DNS, TCP and UDP socket operations, TUN or packet ingress
+and egress, platform route changes, persistent storage, clock/random facilities
+when not supplied by WASI, and platform-policy discovery.
+
+### Host Adapter
+
+A concrete native or Go implementation of host capabilities at a seam owned by
+core. The native and Go implementations are the two real Adapters that validate
+the seam.
+
+### Socket
+
+A host-authorized communication endpoint below EasyTier protocol framing. A
+socket may represent TCP stream I/O, peer-scoped UDP datagrams, an in-process
+ring, or another raw transport shape.
+
+Core may own the socket Interface and socket orchestration. The host owns the
+real handle and every OS operation.
+
+### Tunnel
+
+An EasyTier packet connection produced by applying framing, metadata, and any
+protocol handshake to a socket. Peer admission consumes a tunnel; dial,
+listener accept, and hole punching produce sockets.
+
+### Connectivity
+
+The logic that decides how and when to obtain a socket for a peer. It includes
+manual reconnect, direct candidate selection, TCP and UDP hole punching,
+blacklists, retry/backoff, listener reuse, and task lifecycle.
+
+Connectivity belongs in core. DNS resolution, real socket creation, UPnP,
+NAT-PMP, netns, socket marks, and bind-device operations belong to Host
+Adapters.
+
+### Peer graph
+
+The authoritative set of peers, peer connections, next hops, routes, sessions,
+relay state, and foreign-network state for a core instance. The host may present
+or cache snapshots but must not maintain a second source of truth.
+
+### Runtime configuration
+
+The normalized configuration consumed by core. Native TOML, CLI flags, web
+configuration, and Go configuration are input formats; they are not
+authoritative runtime state after a core instance starts.
+
+Platform defaults are resolved by the host before or while producing runtime
+configuration.
+
+### Operation
+
+A host-capability request whose completion may occur later, such as DNS resolve,
+TCP dial, TCP accept, UDP receive, or packet write. An operation is identified
+by an opaque numeric handle across the wasm seam.
+
+### Completion
+
+The result of an operation, delivered to core during a later serialized drive.
+Completions carry copied data or handles; they never retain borrowed wasm-memory
+views across calls.
+
+### Drive
+
+One serialized invocation that lets a wasm core instance consume commands and
+completions and make bounded progress. A drive must return to Go; calls into the
+same wasm instance must not overlap or re-enter it.
+
+### Native composition root
+
+The thin `easytier` layer that loads native configuration, constructs Host
+Adapters, creates a core instance, and presents native management interfaces.
+It must not reconstruct core routing or connectivity decisions.
+
+## Ownership map
+
+| Area | Core owns | Host owns |
+| --- | --- | --- |
+| Configuration | normalized state, validation, defaults independent of host OS | input parsing, persistence, host-OS default selection |
+| Peers | peer graph, admission, sessions, RPC dispatch, routing | presentation and external persistence |
+| Connectivity | candidates, retries, backoff, blacklists, hole-punch state | DNS, real sockets, UPnP/NAT-PMP, platform policy |
+| Socket | Interface, requests, peer-scoped UDP session logic | OS handles and syscalls |
+| Tunnel | portable framing and protocol logic | non-portable protocol engines only when unavoidable |
+| Packet plane | classification, transformation, proxy/NAT state | TUN/raw socket ingress and egress |
+| Lifecycle | core task ownership and orderly shutdown rules | process lifecycle and hard-kill watchdog |
+| Time/random | portable Tokio/WASI use by default | replacement only when a host contract requires it |
+
+## Architectural invariants
+
+1. `easytier-core` is a single crate.
+2. `easytier-core` may not perform real OS socket, DNS, TUN, file-system
+   configuration, process, or service-manager operations.
+3. A host-OS decision cannot depend only on core's compile-time target when core
+   is built as wasm; it must be represented in runtime configuration.
+4. Each core instance owns its mutable state. Instance-specific global
+   registries are forbidden.
+5. Dial, accept, and hole-punch paths stop at the socket seam before tunnel
+   upgrade.
+6. Peer admission consumes tunnels and does not call connectivity modules.
+7. A Go host never blocks the only guest executor inside an individual socket or
+   DNS import.
+8. Calls into one wasm instance are serialized and non-reentrant.
+9. Graceful cancellation is cooperative. Closing the wasm Module is a hard-kill
+   fallback, not ordinary shutdown.
+10. Compatibility with existing `easytier::*` public paths is not a refactor
+    requirement.
+11. Feature slicing follows stable deep Modules after ownership is settled; it
+    is not an early migration goal.
+
+## Architecture vocabulary
+
+Architecture discussions use these terms:
+
+- **Module**: an Interface plus an Implementation.
+- **Interface**: everything callers must know, including types, invariants,
+  ordering, errors, configuration, and performance.
+- **Seam**: where an Interface lives and behaviour can be replaced.
+- **Adapter**: a concrete implementation at a seam.
+- **Depth**: behaviour and leverage hidden behind a small Interface.
+- **Leverage**: capability callers receive per unit of Interface.
+- **Locality**: related state, decisions, bugs, and tests concentrated together.
+
+New abstractions should pass the deletion test: deleting a deep Module should
+force its complexity to reappear in multiple callers. Deleting a pass-through
+Module should not merely make the system easier to understand.
