@@ -7,6 +7,8 @@ use tokio::{
     time::{sleep, timeout},
 };
 
+mod opaque;
+
 const TIMER_PROGRESS: u32 = 1 << 0;
 const SECOND_SOCKET_PROGRESS: u32 = 1 << 1;
 const PENDING_READ_ISOLATED: u32 = 1 << 2;

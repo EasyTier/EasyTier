@@ -73,8 +73,37 @@ wazero 1.12.0 path:
 
 Consequently Model A is not viable with unmodified public wazero 1.12.0. The
 pending-read, second-socket, timer, and idle-polling scenarios cannot be measured
-until either wazero socket readiness is extended or Model B is implemented. The
-choice between those next steps remains open.
+through that path. Phase 0 therefore continues with Model B rather than a wazero
+extension.
+
+### Opaque-handle probe result
+
+The same harness now contains a minimal Model B implementation:
+
+- Go stores arbitrary `net.Conn` values behind opaque integer handles;
+- a guest `HostTcpStream` implements Tokio `AsyncRead` and `AsyncWrite`;
+- the Adapter submits at most one operation per direction when Tokio polls it;
+- Go workers mechanically call the requested `net.Conn.Read` or
+  `net.Conn.Write`, own any buffer while the guest is not running, and signal a
+  completion without re-entering wasm;
+- the host serially invokes a bounded guest `drive`, which wakes the registered
+  tasks and lets current-thread Tokio poll them again.
+
+The probe uses two `net.Pipe` connections, so success does not depend on an OS
+descriptor. One read remains permanently pending while the second connection
+echoes a byte and a 50 ms Tokio timer completes. The observed status `0x1b`
+proves timer progress, second-connection progress, pending-read isolation, and
+successful completion. All wasm calls remain serialized.
+
+This answers the ownership question precisely: Tokio can keep control of when
+EasyTier tasks request and observe I/O, while Go performs the unavoidable
+mechanical call on the logical `net.Conn`. Go does not need to own framing,
+protocol state, retries, or routing.
+
+The bounded drive currently uses a 5 ms tick in addition to completion wakes.
+That is a test mechanism, not an accepted idle strategy. The PoC has not yet
+proven deadline-aware sleeping, idle CPU, UDP semantics, partial I/O,
+cancellation, EOF, sustained backpressure, or lifecycle cleanup.
 
 ## Constraints
 
@@ -123,24 +152,26 @@ a small maintainable wazero extension can close those gaps.
 
 The Go Host Adapter creates a logical socket and returns an opaque host handle.
 A wasm Socket Adapter implements the existing core asynchronous Socket Interface
-over non-blocking host operations and a centralized readiness mechanism. Tokio
+over submitted host operations and a centralized completion mechanism. Tokio
 still decides when each socket is polled and owns task wakeups, backpressure, and
-protocol state.
+protocol state. For a generic Go `net.Conn`, the submitted operation may execute
+on a Go worker because the Interface itself exposes blocking `Read` and `Write`.
 
 This model can preserve arbitrary Go `net.Conn` and `net.PacketConn` wrappers
 without modifying wazero's internal fd table. Its cost is a custom readiness and
 data-transfer Interface. The Interface must stay deep: individual callers must
 not learn host queue, memory, or wakeup details.
 
-### Model C: host operation/completion fallback
+### Model C: host-owned queue fallback
 
-Go workers perform potentially blocking DNS and socket operations. A serialized
-guest invocation later delivers owned completions to core, which wakes the
-corresponding Tokio tasks.
+Go continuously drives socket I/O into host-owned send and receive queues,
+independently of whether Tokio has polled a corresponding operation. A
+serialized guest invocation later pushes owned completions to core.
 
-This is a valid portability fallback, not the default ownership model. It gives
-Go more responsibility for I/O queues and data movement and therefore needs
-evidence that Models A and B are not viable or are materially worse.
+This is a valid portability fallback, not the default ownership model. Unlike
+Model B's demand-driven single operations, it gives Go responsibility for queue
+policy and backpressure. It therefore needs evidence that Model B is not viable
+or is materially worse.
 
 ### Model D: blocking per-socket imports
 
