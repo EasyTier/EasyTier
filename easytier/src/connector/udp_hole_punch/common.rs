@@ -21,6 +21,7 @@ use crate::{
     proto::common::NatType,
     tunnel::{
         Tunnel, TunnelConnCounter, TunnelListener as _,
+        common::bind_underlay_udp_socket,
         packet_def::{UDP_TUNNEL_HEADER_SIZE, UDPTunnelHeader, UdpPacketType},
         udp::{UdpTunnelConnector, UdpTunnelListener, new_hole_punch_packet},
     },
@@ -203,6 +204,7 @@ pub(crate) struct UdpSocketArray {
     sockets: Arc<DashMap<SocketAddr, Arc<UdpSocket>>>,
     max_socket_count: usize,
     net_ns: NetNS,
+    bind_device: bool,
     tasks: Arc<std::sync::Mutex<JoinSet<()>>>,
 
     intreast_tids: Arc<DashSet<u32>>,
@@ -210,7 +212,7 @@ pub(crate) struct UdpSocketArray {
 }
 
 impl UdpSocketArray {
-    pub fn new(max_socket_count: usize, net_ns: NetNS) -> Self {
+    pub fn new(max_socket_count: usize, net_ns: NetNS, bind_device: bool) -> Self {
         let tasks = Arc::new(std::sync::Mutex::new(JoinSet::new()));
         join_joinset_background(tasks.clone(), "UdpSocketArray".to_owned());
 
@@ -218,6 +220,7 @@ impl UdpSocketArray {
             sockets: Arc::new(DashMap::new()),
             max_socket_count,
             net_ns,
+            bind_device,
             tasks,
 
             intreast_tids: Arc::new(DashSet::new()),
@@ -291,7 +294,10 @@ impl UdpSocketArray {
         while self.sockets.len() < self.max_socket_count {
             let socket = {
                 let _g = self.net_ns.guard();
-                Arc::new(UdpSocket::bind("0.0.0.0:0").await?)
+                Arc::new(
+                    bind_underlay_udp_socket("0.0.0.0:0".parse().unwrap(), self.bind_device)
+                        .await?,
+                )
             };
 
             self.add_new_socket(socket).await?;
@@ -375,8 +381,15 @@ impl UdpHolePunchListener {
         port: Option<u16>,
     ) -> Result<Self, Error> {
         let socket = {
-            let _g = peer_mgr.get_global_ctx().net_ns.guard();
-            Arc::new(UdpSocket::bind((Ipv4Addr::UNSPECIFIED, port.unwrap_or(0))).await?)
+            let global_ctx = peer_mgr.get_global_ctx();
+            let _g = global_ctx.net_ns.guard();
+            Arc::new(
+                bind_underlay_udp_socket(
+                    (Ipv4Addr::UNSPECIFIED, port.unwrap_or(0)).into(),
+                    global_ctx.config.get_flags().bind_device,
+                )
+                .await?,
+            )
         };
         let local_port = socket.local_addr()?.port();
         let listen_url: url::Url = format!("udp://0.0.0.0:{local_port}").parse().unwrap();
@@ -718,7 +731,13 @@ async fn check_udp_socket_local_addr(
     global_ctx: ArcGlobalCtx,
     remote_mapped_addr: SocketAddr,
 ) -> Result<(), Error> {
-    let socket = UdpSocket::bind("0.0.0.0:0").await?;
+    // bind the probe the same way real punch sockets are bound, so the local
+    // addr it reports reflects the route those sockets will actually take
+    let socket = bind_underlay_udp_socket(
+        "0.0.0.0:0".parse().unwrap(),
+        global_ctx.config.get_flags().bind_device,
+    )
+    .await?;
     socket.connect(remote_mapped_addr).await?;
     if let Ok(local_addr) = socket.local_addr()
         && let Some(err) = easytier_managed_local_addr_error(&global_ctx, local_addr)

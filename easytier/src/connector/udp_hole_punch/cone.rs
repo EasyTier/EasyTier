@@ -2,7 +2,6 @@ use std::{sync::Arc, time::Duration};
 
 use anyhow::Context;
 use quanta::Instant;
-use tokio::net::UdpSocket;
 use tokio_util::task::AbortOnDropHandle;
 
 use crate::{
@@ -10,6 +9,7 @@ use crate::{
     connector::udp_hole_punch::common::{
         HOLE_PUNCH_PACKET_BODY_LEN, UdpSocketArray, try_connect_with_socket,
     },
+    tunnel::common::bind_underlay_udp_socket,
     connector::udp_hole_punch::handle_rpc_result,
     peers::peer_manager::PeerManager,
     proto::{
@@ -111,7 +111,11 @@ impl PunchConeHoleClient {
         let tid = rand::random();
 
         let global_ctx = self.peer_mgr.get_global_ctx();
-        let udp_array = UdpSocketArray::new(1, global_ctx.net_ns.clone());
+        let udp_array = UdpSocketArray::new(
+            1,
+            global_ctx.net_ns.clone(),
+            global_ctx.config.get_flags().bind_device,
+        );
 
         let rpc_stub = self
             .peer_mgr
@@ -141,7 +145,13 @@ impl PunchConeHoleClient {
 
         let local_socket = {
             let _g = self.peer_mgr.get_global_ctx().net_ns.guard();
-            Arc::new(UdpSocket::bind("0.0.0.0:0").await?)
+            Arc::new(
+                bind_underlay_udp_socket(
+                    "0.0.0.0:0".parse().unwrap(),
+                    global_ctx.config.get_flags().bind_device,
+                )
+                .await?,
+            )
         };
         let local_addr = local_socket
             .local_addr()
