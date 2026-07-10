@@ -53,8 +53,10 @@ use pnet::packet::{
     udp::{self, MutableUdpPacket},
 };
 use std::net::{SocketAddr, SocketAddrV4};
+use std::process::Command;
 use std::sync::Mutex;
 use std::{collections::BTreeMap, io, net::Ipv4Addr, str::FromStr, sync::Arc, time::Duration};
+use tokio::net::UdpSocket;
 
 static NIC_PIPELINE_NAME: &str = "magic_dns_server";
 
@@ -487,6 +489,7 @@ pub struct MagicDnsServerInstance {
     pub(super) data: Arc<MagicDnsServerInstanceData>,
     peer_mgr: Arc<PeerManager>,
     tun_inet: Ipv4Inet,
+    _udp_task: tokio::task::JoinHandle<()>,
 }
 
 fn get_system_config(
@@ -568,15 +571,128 @@ impl MagicDnsServerInstance {
             .context("Failed to initialize DNS zone")?;
 
         let data_clone = data.clone();
-        tokio::task::spawn_blocking(move || data_clone.do_system_config(&tld_dns_zone_clone))
+        let zone_for_config = tld_dns_zone_clone.clone();
+        tokio::task::spawn_blocking(move || data_clone.do_system_config(&zone_for_config))
             .await
             .context("Failed to configure system")??;
+
+        // Linux 的 get_system_config 返回 None（stub/未实现），
+        // systemd-resolved 的 DNS 配置从未生效。
+        // 直接用 resolvectl 配置 DNS server 和 domain。
+        if let Some(ref tun_name) = tun_dev {
+            let dns_ok = Command::new("/usr/bin/resolvectl")
+                .args(["dns", tun_name, &fake_ip.to_string()])
+                .status();
+            if let Ok(status) = dns_ok {
+                if status.success() {
+                    tracing::info!("resolvectl dns {} set to {}", tun_name, fake_ip);
+                }
+            }
+            let domain_str = tld_dns_zone_clone.trim_end_matches('.');
+            let domain_ok = Command::new("/usr/bin/resolvectl")
+                .args(["domain", tun_name, &format!("~{}", domain_str)])
+                .status();
+            if let Ok(status) = domain_ok {
+                if status.success() {
+                    tracing::info!(
+                        "resolvectl domain {} set to ~{}",
+                        tun_name, domain_str
+                    );
+                }
+            }
+        }
+
+        // Add fake_ip to lo so the kernel routes packets to us, and set up a UDP listener
+        // for DNS queries. This avoids relying on the NIC packet pipeline's self-send path,
+        // which cannot deliver responses back to the local TUN device.
+        let lo_add = Command::new("/usr/sbin/ip")
+            .args(["addr", "add", &format!("{}/32", fake_ip), "dev", "lo"])
+            .status()
+            .context("Failed to add fake_ip to lo")?;
+        if !lo_add.success() {
+            tracing::warn!("ip addr add {}/32 dev lo failed (exit: {:?}), continuing", fake_ip, lo_add.code());
+        } else {
+            tracing::info!("Added {}/32 to lo for MagicDNS", fake_ip);
+        }
+
+        let socket = {
+            let addr: SocketAddr =
+                SocketAddrV4::new(fake_ip, 53).into();
+            let domain = socket2::Domain::IPV4;
+            let socket_type = socket2::Type::DGRAM;
+            let socket = socket2::Socket::new(domain, socket_type, Some(socket2::Protocol::UDP))
+                .context("Failed to create MagicDNS UDP socket")?;
+            socket.set_reuse_address(true)?;
+            socket.set_nonblocking(true)?;
+            socket.bind(&addr.into()).with_context(|| {
+                format!("Failed to bind MagicDNS UDP socket to {}", addr)
+            })?;
+            UdpSocket::from_std(socket.into())
+                .context("Failed to convert MagicDNS UDP socket")?
+        };
+        tracing::info!("MagicDNS UDP listener bound on {}/53", fake_ip);
+
+        let listen_data = data.clone();
+        let udp_task = tokio::task::spawn(async move {
+            let mut buf = vec![0u8; 1500];
+            loop {
+                let (len, src) = match socket.recv_from(&mut buf).await {
+                    Ok(v) => v,
+                    Err(e) => {
+                        tracing::error!("MagicDNS UDP recv error: {:?}", e);
+                        tokio::time::sleep(Duration::from_secs(1)).await;
+                        continue;
+                    }
+                };
+
+                let request_payload = &buf[..len];
+                let msg = match MessageRequest::from_bytes(request_payload) {
+                    Ok(m) => m,
+                    Err(e) => {
+                        tracing::debug!("MagicDNS: invalid DNS query: {:?}", e);
+                        continue;
+                    }
+                };
+                let request = Request::new(
+                    msg,
+                    src,
+                    hickory_proto::xfer::Protocol::Udp,
+                );
+
+                let response_buf = Arc::new(Mutex::new(Vec::with_capacity(512)));
+                listen_data
+                    .dns_server
+                    .read_catalog()
+                    .await
+                    .handle_request(
+                        &request,
+                        ResponseWrapper {
+                            response: response_buf.clone(),
+                        },
+                    )
+                    .await;
+
+                let response_bytes = match Arc::into_inner(response_buf) {
+                    Some(mutex) => mutex.into_inner().unwrap_or_default(),
+                    None => continue,
+                };
+
+                if response_bytes.is_empty() {
+                    continue;
+                }
+
+                if let Err(e) = socket.send_to(&response_bytes, src).await {
+                    tracing::error!("MagicDNS UDP send error: {:?}", e);
+                }
+            }
+        });
 
         Ok(Self {
             rpc_server,
             data,
             peer_mgr,
             tun_inet,
+            _udp_task: udp_task,
         })
     }
 
@@ -595,6 +711,11 @@ impl MagicDnsServerInstance {
                     .await;
             }
         }
+
+        // Remove fake_ip from lo
+        let _ = Command::new("/usr/sbin/ip")
+            .args(["addr", "del", &format!("{}/32", self.data.fake_ip), "dev", "lo"])
+            .status();
 
         let _ = self
             .peer_mgr
