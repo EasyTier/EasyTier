@@ -103,6 +103,8 @@ message NetworkConfig {
   optional bool enable_udp_broadcast_relay = 66;
   optional uint32 socket_mark = 67;
   repeated NetworkPeerConfig peers = 68;
+  // MagicDNS zone TLD — pushed from Web Console, overrides --tld-dns-zone CLI flag
+  optional string tld_dns_zone = 69;
 }
 
 message NetworkPeerConfig {
