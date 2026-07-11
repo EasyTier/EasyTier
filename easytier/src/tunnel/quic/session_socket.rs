@@ -7,7 +7,10 @@ use std::{
     task::{Context, Poll},
 };
 
-use easytier_core::{connectivity::transport::ConnectedUdpSession, socket::udp::UdpSessionSocket};
+use easytier_core::{
+    connectivity::transport::ConnectedUdpSession,
+    socket::udp::{UdpSession, UdpSessionSocket},
+};
 use quinn::{
     AsyncUdpSocket, UdpPoller,
     udp::{RecvMeta, Transmit},
@@ -50,6 +53,10 @@ impl QuicUdpSessionSocket {
     pub(crate) fn new(connected: ConnectedUdpSession) -> io::Result<Self> {
         let (session, session_guard) = connected.into_parts();
         Self::from_session(Arc::new(session), session_guard)
+    }
+
+    pub(crate) fn from_accepted(session: UdpSession) -> io::Result<Self> {
+        Self::from_session(Arc::new(session), Box::new(()))
     }
 
     fn from_session(

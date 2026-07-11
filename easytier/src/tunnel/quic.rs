@@ -16,7 +16,7 @@ use derivative::Derivative;
 use derive_more::{Deref, DerefMut};
 use easytier_core::{
     connectivity::transport::ConnectedUdpSession,
-    socket::udp::{UdpSessionProtocol, UdpSessionSocket, parse_quic_initial_dcid},
+    socket::udp::{UdpSession, UdpSessionProtocol, UdpSessionSocket, parse_quic_initial_dcid},
 };
 use parking_lot::RwLock;
 use quinn::{
@@ -1702,6 +1702,56 @@ pub(crate) async fn upgrade_connected(
     };
     Ok(Box::new(TunnelWrapper::new(
         FramedReader::new_with_associate_data(read, 4500, Some(Box::new(connection.clone()))),
+        FramedWriter::new_with_associate_data(write, Some(Box::new(connection))),
+        Some(info),
+    )))
+}
+
+pub(crate) async fn upgrade_accepted(
+    session: UdpSession,
+    local_url: url::Url,
+) -> Result<Box<dyn Tunnel>, TunnelError> {
+    let socket = Arc::new(QuicUdpSessionSocket::from_accepted(session)?);
+    let runtime = default_runtime().ok_or(TunnelError::InternalError(
+        "no async runtime found".to_owned(),
+    ))?;
+    let endpoint = Endpoint::new_with_abstract_socket(
+        endpoint_config(),
+        Some(server_config()),
+        socket,
+        runtime,
+    )?;
+    let incoming = tokio::time::timeout(QUIC_ACCEPT_COMPLETION_TIMEOUT, endpoint.accept())
+        .await
+        .map_err(TunnelError::Timeout)?
+        .ok_or_else(|| TunnelError::InvalidPacket("quic accept failed".to_owned()))?;
+    let connecting = incoming
+        .accept()
+        .with_context(|| "quic accept connection failed")?;
+    let connection = tokio::time::timeout(QUIC_ACCEPT_COMPLETION_TIMEOUT, connecting)
+        .await
+        .map_err(TunnelError::Timeout)?
+        .with_context(|| "accept connection failed")?;
+    let (write, read) =
+        tokio::time::timeout(QUIC_ACCEPT_COMPLETION_TIMEOUT, connection.accept_bi())
+            .await
+            .map_err(TunnelError::Timeout)?
+            .with_context(|| "accept_bi failed")?;
+    let remote_addr = connection.remote_address();
+    let connection = Arc::new(ConnWrapper {
+        conn: connection,
+        _endpoint: Some(endpoint),
+        _udp_session_cleanup: None,
+    });
+    let remote_url = super::build_url_from_socket_addr(&remote_addr.to_string(), "quic");
+    let info = TunnelInfo {
+        tunnel_type: "quic".to_owned(),
+        local_addr: Some(local_url.into()),
+        remote_addr: Some(remote_url.clone().into()),
+        resolved_remote_addr: Some(remote_url.into()),
+    };
+    Ok(Box::new(TunnelWrapper::new(
+        FramedReader::new_with_associate_data(read, 2000, Some(Box::new(connection.clone()))),
         FramedWriter::new_with_associate_data(write, Some(Box::new(connection))),
         Some(info),
     )))

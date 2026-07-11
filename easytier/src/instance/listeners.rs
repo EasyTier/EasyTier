@@ -124,7 +124,7 @@ fn listener_scheme_registry() -> core_listener_plan::ListenerSchemeRegistry {
     #[cfg(feature = "quic")]
     {
         registry = registry
-            .support("quic", core_listener_plan::ListenerKind::External)
+            .support("quic", core_listener_plan::ListenerKind::UdpSession)
             .disable_ipv6_shadow("quic");
     }
     #[cfg(feature = "websocket")]
@@ -302,6 +302,10 @@ impl<H: TunnelHandlerForListener + Send + Sync + 'static> ListenerManager<H> {
             #[cfg(feature = "wireguard")]
             "wg" => UdpSessionAcceptKind::Classified(
                 easytier_core::socket::udp::UdpSessionProtocol::WireGuard,
+            ),
+            #[cfg(feature = "quic")]
+            "quic" => UdpSessionAcceptKind::Classified(
+                easytier_core::socket::udp::UdpSessionProtocol::Quic,
             ),
             scheme => {
                 return Err(Error::InvalidUrl(format!(
@@ -745,6 +749,8 @@ where
                 );
                 tunnel::wireguard::upgrade_accepted(session, config)?
             }
+            #[cfg(feature = "quic")]
+            "quic" => tunnel::quic::upgrade_accepted(session, local_url).await?,
             scheme => anyhow::bail!("unsupported UDP listener protocol: {scheme}"),
         };
         self.handle_tunnel(tunnel).await
@@ -931,6 +937,16 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "quic")]
+    #[test]
+    fn listener_scheme_registry_classifies_quic_as_udp_session() {
+        let url = "quic://127.0.0.1:0".parse().unwrap();
+        assert_eq!(
+            listener_scheme_registry().classify(&url),
+            Some(core_listener_plan::ListenerKind::UdpSession)
+        );
+    }
+
     #[tokio::test]
     async fn prepare_tcp_listeners_registers_core_listener_manager() {
         let global_ctx = get_mock_global_ctx();
@@ -1061,6 +1077,51 @@ mod tests {
         let tunnel = timeout(
             std::time::Duration::from_secs(5),
             tunnel::wireguard::WgTunnelConnector::new(listener_url, config).connect(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        let (mut recv, mut send) = tunnel.split();
+        send.send(ZCPacket::new_with_payload("abc".as_bytes()))
+            .await
+            .unwrap();
+        assert_eq!(
+            recv.next().await.unwrap().unwrap().payload(),
+            "abc".as_bytes()
+        );
+    }
+
+    #[cfg(feature = "quic")]
+    #[tokio::test]
+    async fn quic_listener_accepts_through_core_session_listener() {
+        let global_ctx = get_mock_global_ctx();
+        global_ctx
+            .config
+            .set_listeners(vec!["quic://127.0.0.1:0".parse().unwrap()]);
+        let handler = Arc::new(EchoListenerHandler);
+        let mut listener_mgr = ListenerManager::new(global_ctx.clone(), handler.clone());
+
+        listener_mgr.prepare_listeners().await.unwrap();
+        listener_mgr.run().await.unwrap();
+
+        let listener_url = timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                if let Some(url) = global_ctx
+                    .get_running_listeners()
+                    .into_iter()
+                    .find(|url| url.scheme() == "quic")
+                {
+                    break url;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+
+        let tunnel = timeout(
+            std::time::Duration::from_secs(5),
+            tunnel::quic::QuicTunnelConnector::new(listener_url, global_ctx).connect(),
         )
         .await
         .unwrap()
