@@ -63,6 +63,14 @@ pub struct PeerRuntimeConfig {
     pub stun_info: StunInfo,
     pub feature_flags: PeerFeatureFlag,
     pub secure_mode: Option<SecureModeConfig>,
+    pub host_routing: HostRoutingPolicy,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct HostRoutingPolicy {
+    /// Route otherwise-unreachable external IPv4 traffic through this node and
+    /// keep self-delivered packets eligible for the host TUN/proxy path.
+    pub local_exit_node_fallback: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -262,7 +270,12 @@ pub trait PeerContext: Send + Sync {
             stun_info: self.stun_info(),
             feature_flags: self.feature_flags(),
             secure_mode: self.secure_mode(),
+            host_routing: self.host_routing_policy(),
         }
+    }
+
+    fn host_routing_policy(&self) -> HostRoutingPolicy {
+        HostRoutingPolicy::default()
     }
 
     fn network_identity(&self) -> NetworkIdentity;
@@ -502,6 +515,10 @@ impl PeerContext for ConfigPeerContext {
         self.flags.clone()
     }
 
+    fn host_routing_policy(&self) -> HostRoutingPolicy {
+        self.runtime.host_routing
+    }
+
     fn issue_event(&self, event: PeerEvent) {
         let event = match event {
             PeerEvent::PeerAdded(peer_id) => PeerContextEvent::PeerAdded(peer_id),
@@ -689,6 +706,9 @@ mod tests {
                 enabled: true,
                 ..Default::default()
             }),
+            host_routing: HostRoutingPolicy {
+                local_exit_node_fallback: true,
+            },
         };
         let mut flags = FlagsInConfig::default();
         flags.p2p_only = true;
@@ -712,6 +732,7 @@ mod tests {
             ]
         );
         assert!(context.secure_mode().unwrap().enabled);
+        assert!(context.host_routing_policy().local_exit_node_fallback);
 
         let proof = context
             .secret_proof(b"challenge")
@@ -742,6 +763,7 @@ mod tests {
             stun_info: StunInfo::default(),
             feature_flags: PeerFeatureFlag::default(),
             secure_mode: None,
+            host_routing: HostRoutingPolicy::default(),
         })
     }
 

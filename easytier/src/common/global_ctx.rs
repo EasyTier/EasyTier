@@ -7,9 +7,9 @@ use std::{
 use arc_swap::ArcSwap;
 use async_trait::async_trait;
 use easytier_core::peers::context::{
-    ArcByteLimiter, NetworkIdentity as CoreNetworkIdentity, PeerContext, PeerContextEvent,
-    PeerContextEventSubscriber, PeerEvent, PeerGroupIdentity, TrustedKeyMapManager,
-    secret_proof_from_secret,
+    ArcByteLimiter, HostRoutingPolicy, NetworkIdentity as CoreNetworkIdentity, PeerContext,
+    PeerContextEvent, PeerContextEventSubscriber, PeerEvent, PeerGroupIdentity,
+    TrustedKeyMapManager, secret_proof_from_secret,
 };
 pub use easytier_core::peers::context::{TrustedKeyMap, TrustedKeyMetadata, TrustedKeySource};
 use easytier_core::peers::encrypt::{derive_key_128, derive_key_256};
@@ -174,6 +174,12 @@ impl PeerContext for GlobalCtx {
 
     fn flags(&self) -> crate::proto::common::FlagsInConfig {
         self.get_flags()
+    }
+
+    fn host_routing_policy(&self) -> HostRoutingPolicy {
+        HostRoutingPolicy {
+            local_exit_node_fallback: cfg!(target_env = "ohos"),
+        }
     }
 
     fn disable_relay_data(&self) -> bool {

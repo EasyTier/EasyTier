@@ -35,7 +35,9 @@ use super::{
     BoxNicPacketFilter, BoxPeerPacketFilter, PacketRecvChan, PacketRecvChanReceiver,
     PeerPacketFilter,
     acl_filter::AclFilter,
-    context::{ArcPeerContext, ConfigPeerContext, NetworkIdentity, PeerRuntimeConfig},
+    context::{
+        ArcPeerContext, ConfigPeerContext, HostRoutingPolicy, NetworkIdentity, PeerRuntimeConfig,
+    },
     encrypt::{Encryptor, NullCipher, create_encryptor, derive_key_128, derive_key_256},
     error::Error,
     foreign_network_client::ForeignNetworkClient,
@@ -2230,6 +2232,7 @@ struct PeerOutboundPacketRouterCounters {
 pub struct PeerOutboundPacketRouter {
     my_peer_id: PeerId,
     context: ArcPeerContext,
+    host_routing: HostRoutingPolicy,
     peers: Arc<PeerMap>,
     route: ArcRoute,
     foreign_network_client: Arc<ForeignNetworkClient>,
@@ -2267,9 +2270,11 @@ impl PeerOutboundPacketRouter {
         compress_tx_bytes_before: CounterHandle,
         compress_tx_bytes_after: CounterHandle,
     ) -> Self {
+        let host_routing = context.host_routing_policy();
         Self {
             my_peer_id,
             context,
+            host_routing,
             peers,
             route,
             foreign_network_client,
@@ -2505,17 +2510,18 @@ impl PeerOutboundPacketRouter {
                 }
             }
         }
-        #[cfg(target_env = "ohos")]
+        if self.host_routing.local_exit_node_fallback
+            && dst_peers.is_empty()
+            && !self
+                .context
+                .is_ip_in_same_network(&std::net::IpAddr::V4(*ipv4_addr))
         {
-            if dst_peers.is_empty()
-                && !self
-                    .context
-                    .is_ip_in_same_network(&std::net::IpAddr::V4(*ipv4_addr))
-            {
-                tracing::trace!("no peer id for ipv4: {}, set exit_node for ohos", ipv4_addr);
-                dst_peers.push(self.my_peer_id.clone());
-                is_exit_node = true;
-            }
+            tracing::trace!(
+                %ipv4_addr,
+                "no peer route for external IPv4; use local exit-node fallback"
+            );
+            dst_peers.push(self.my_peer_id);
+            is_exit_node = true;
         }
         (dst_peers, is_exit_node)
     }
@@ -2632,17 +2638,15 @@ impl PeerOutboundPacketRouter {
             let hdr = msg.mut_peer_manager_header().unwrap();
             hdr.to_peer_id.set(*peer_id);
 
-            #[cfg(not(target_env = "ohos"))]
+            if !self.host_routing.local_exit_node_fallback
+                && not_send_to_self
+                && *peer_id == self.my_peer_id
+                && !self.context.is_ip_local_virtual_ip(&ip_addr)
             {
-                if not_send_to_self
-                    && *peer_id == self.my_peer_id
-                    && !self.context.is_ip_local_virtual_ip(&ip_addr)
-                {
-                    // Keep the loop-prevention flags for proxy-induced self-delivery where
-                    // the destination is not this node's own EasyTier-managed IP.
-                    hdr.set_not_send_to_tun(true);
-                    hdr.set_no_proxy(true);
-                }
+                // Keep the loop-prevention flags for proxy-induced self-delivery where
+                // the destination is not this node's own EasyTier-managed IP.
+                hdr.set_not_send_to_tun(true);
+                hdr.set_no_proxy(true);
             }
 
             self.counters.self_tx_bytes.add(msg.buf_len() as u64);
@@ -3425,6 +3429,7 @@ mod tests {
             stun_info: StunInfo::default(),
             feature_flags: PeerFeatureFlag::default(),
             secure_mode: None,
+            host_routing: HostRoutingPolicy::default(),
         }
     }
 
@@ -3459,6 +3464,25 @@ mod tests {
         assert_eq!(route.task_count(), 0);
         assert!(core.stats_manager.cleanup_task_is_stopped());
         assert!(core.acl_filter.cleanup_task_is_stopped());
+    }
+
+    #[tokio::test]
+    async fn portable_host_policy_controls_local_exit_node_fallback() {
+        let external_ipv4 = Ipv4Addr::new(203, 0, 113, 10);
+        let default_core =
+            build_portable_for_test(portable_runtime_config("portable-net", 78)).unwrap();
+        assert_eq!(
+            default_core.get_msg_dst_peer_ipv4(&external_ipv4).await,
+            (Vec::new(), false)
+        );
+
+        let mut runtime = portable_runtime_config("portable-net", 79);
+        runtime.host_routing.local_exit_node_fallback = true;
+        let fallback_core = build_portable_for_test(runtime).unwrap();
+        assert_eq!(
+            fallback_core.get_msg_dst_peer_ipv4(&external_ipv4).await,
+            (vec![79], true)
+        );
     }
 
     #[tokio::test]
