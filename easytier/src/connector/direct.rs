@@ -4,16 +4,13 @@ use std::sync::{
 };
 
 use easytier_core::{
-    connectivity::direct::{
-        DirectConnectorManager as CoreDirectConnectorManager, DirectConnectorOptions,
-    },
-    socket::{dns::DnsResolver, tcp::TcpBindOptions, udp::UdpBindOptions},
+    connectivity::direct::DirectConnectorManager as CoreDirectConnectorManager,
+    socket::dns::DnsResolver,
 };
 
 use crate::{
-    common::{config::ConfigLoader, dns::RuntimeDnsResolver, global_ctx::ArcGlobalCtx},
+    common::{dns::RuntimeDnsResolver, global_ctx::ArcGlobalCtx},
     peers::peer_manager::PeerManager,
-    use_global_var,
 };
 
 #[cfg(test)]
@@ -22,7 +19,10 @@ use crate::{
     proto::peer_rpc::GetIpListResponse,
 };
 
-use super::{protocol::RuntimeClientProtocolUpgrader, runtime::RuntimeConnectorHost};
+use super::{
+    core_instance::runtime_direct_options, protocol::RuntimeClientProtocolUpgrader,
+    runtime::RuntimeConnectorHost,
+};
 
 static TESTING: AtomicBool = AtomicBool::new(false);
 
@@ -34,7 +34,7 @@ pub struct DirectConnectorManager {
 
 impl DirectConnectorManager {
     pub fn new(global_ctx: ArcGlobalCtx, peer_manager: Arc<PeerManager>) -> Self {
-        let options = runtime_direct_options(&global_ctx);
+        let options = runtime_direct_options(&global_ctx, TESTING.load(Ordering::Relaxed));
         let inner = CoreDirectConnectorManager::new(
             peer_manager.core(),
             Arc::new(RuntimeConnectorHost::new(global_ctx.clone())),
@@ -67,29 +67,6 @@ impl DirectConnectorManager {
             .try_direct_connect_with_ip_list(dst_peer_id, ip_list)
             .await
             .map_err(Error::from)
-    }
-}
-
-pub(crate) fn runtime_direct_options(global_ctx: &ArcGlobalCtx) -> DirectConnectorOptions {
-    let flags = global_ctx.config.get_flags();
-    DirectConnectorOptions {
-        network_name: global_ctx.get_network_name(),
-        default_protocol: flags.default_protocol,
-        enable_ipv6: flags.enable_ipv6,
-        allow_public_server: use_global_var!(DIRECT_CONNECT_TO_PUBLIC_SERVER),
-        lazy_p2p: flags.lazy_p2p,
-        disable_p2p: flags.disable_p2p,
-        need_p2p: flags.need_p2p,
-        bind_device: flags.bind_device,
-        allow_interface_bind: !cfg!(any(
-            target_os = "android",
-            target_os = "ios",
-            all(target_os = "macos", feature = "macos-ne"),
-            target_env = "ohos"
-        )),
-        tcp_bind: TcpBindOptions::default().with_socket_mark(flags.socket_mark),
-        udp_bind: UdpBindOptions::direct_connect().with_socket_mark(flags.socket_mark),
-        testing: TESTING.load(Ordering::Relaxed),
     }
 }
 

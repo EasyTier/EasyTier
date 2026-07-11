@@ -2,6 +2,7 @@ use std::{sync::Arc, time::Duration};
 
 use easytier_core::{
     connectivity::{
+        direct::DirectConnectorOptions,
         manual::{
             ManualConnectivityEvent, ManualConnectivityEventSink, ManualConnectorOptions,
             ManualEndpointResolver,
@@ -23,9 +24,8 @@ use crate::{
 };
 
 use super::{
-    direct::runtime_direct_options, dns_connector::DnsTunnelConnector,
-    http_connector::HttpTunnelConnector, protocol::RuntimeClientProtocolUpgrader,
-    runtime::RuntimeConnectorHost,
+    dns_connector::DnsTunnelConnector, http_connector::HttpTunnelConnector,
+    protocol::RuntimeClientProtocolUpgrader, runtime::RuntimeConnectorHost,
 };
 
 pub(crate) type RuntimeCoreInstance = CoreInstance<RuntimeConnectorHost>;
@@ -103,6 +103,32 @@ pub(crate) fn runtime_manual_options(global_ctx: &ArcGlobalCtx) -> ManualConnect
     }
 }
 
+pub(crate) fn runtime_direct_options(
+    global_ctx: &ArcGlobalCtx,
+    testing: bool,
+) -> DirectConnectorOptions {
+    let flags = global_ctx.config.get_flags();
+    DirectConnectorOptions {
+        network_name: global_ctx.get_network_name(),
+        default_protocol: flags.default_protocol,
+        enable_ipv6: flags.enable_ipv6,
+        allow_public_server: use_global_var!(DIRECT_CONNECT_TO_PUBLIC_SERVER),
+        lazy_p2p: flags.lazy_p2p,
+        disable_p2p: flags.disable_p2p,
+        need_p2p: flags.need_p2p,
+        bind_device: flags.bind_device,
+        allow_interface_bind: !cfg!(any(
+            target_os = "android",
+            target_os = "ios",
+            all(target_os = "macos", feature = "macos-ne"),
+            target_env = "ohos"
+        )),
+        tcp_bind: TcpBindOptions::default().with_socket_mark(flags.socket_mark),
+        udp_bind: UdpBindOptions::direct_connect().with_socket_mark(flags.socket_mark),
+        testing,
+    }
+}
+
 pub(crate) fn runtime_core_instance_adapters(
     global_ctx: ArcGlobalCtx,
 ) -> CoreInstanceAdapters<RuntimeConnectorHost> {
@@ -127,7 +153,7 @@ pub(crate) fn build_runtime_core_instance(
     let config = CoreInstanceConfig {
         initial_peers: Vec::new(),
         manual: runtime_manual_options(&global_ctx),
-        direct: runtime_direct_options(&global_ctx),
+        direct: runtime_direct_options(&global_ctx, false),
     };
     CoreInstance::new(
         peer_manager.core(),
