@@ -369,8 +369,8 @@ mod tests {
         )
         .unwrap();
 
-        let (_, mut client_sink) = client.split();
-        let (mut server_stream, _) = server.split();
+        let (mut client_stream, mut client_sink) = client.split();
+        let (mut server_stream, mut server_sink) = server.split();
         let payload = vec![0x5a; 3000];
         client_sink
             .send(ZCPacket::new_with_payload(&payload))
@@ -379,5 +379,14 @@ mod tests {
 
         let packet = server_stream.next().await.unwrap().unwrap();
         assert_eq!(packet.payload(), payload);
+
+        let response_payload = vec![0xa5; 3000];
+        server_sink
+            .send(ZCPacket::new_with_payload(&response_payload))
+            .await
+            .unwrap();
+
+        let packet = client_stream.next().await.unwrap().unwrap();
+        assert_eq!(packet.payload(), response_payload);
     }
 }
