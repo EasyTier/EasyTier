@@ -189,11 +189,14 @@ mod tests {
     #[rstest::rstest]
     #[tokio::test]
     async fn direct_connector_basic_test(
-        #[cfg_attr(feature = "faketcp", values("tcp", "udp", "wg", "faketcp"))]
-        #[cfg_attr(not(feature = "faketcp"), values("tcp", "udp", "wg"))]
-        protocol: &str,
+        #[values("tcp", "udp", "wg", "faketcp")] protocol: &str,
         #[values(true, false)] ipv6: bool,
     ) {
+        #[cfg(not(feature = "faketcp"))]
+        if protocol == "faketcp" {
+            return;
+        }
+
         if protocol == "faketcp" {
             if ipv6 {
                 return;
