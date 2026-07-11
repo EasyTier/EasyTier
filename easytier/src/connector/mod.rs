@@ -21,7 +21,8 @@ pub(crate) mod direct;
 pub mod manual;
 pub(crate) mod protocol;
 pub(crate) mod runtime;
-pub mod tcp_hole_punch;
+#[cfg(test)]
+pub(crate) mod tcp_hole_punch;
 pub mod udp_hole_punch;
 
 pub mod dns_connector;

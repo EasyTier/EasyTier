@@ -2,42 +2,18 @@ use std::sync::Arc;
 
 use easytier_core::hole_punch::tcp::TcpHolePunchConnector as CoreTcpHolePunchConnector;
 
-use crate::{
-    common::error::Error, connector::runtime::RuntimeConnectorHost,
-    peers::peer_manager::PeerManager,
-};
+use crate::{connector::runtime::RuntimeConnectorHost, peers::peer_manager::PeerManager};
 
-type RuntimeTcpHolePunchConnector = CoreTcpHolePunchConnector<RuntimeConnectorHost>;
+pub(crate) type RuntimeTcpHolePunchConnector = CoreTcpHolePunchConnector<RuntimeConnectorHost>;
 
-pub struct TcpHolePunchConnector {
-    inner: RuntimeTcpHolePunchConnector,
-}
-
-impl TcpHolePunchConnector {
-    pub fn new(peer_manager: Arc<PeerManager>) -> Self {
-        let global_ctx = peer_manager.get_global_ctx();
-        Self {
-            inner: RuntimeTcpHolePunchConnector::new(
-                peer_manager.core(),
-                Arc::new(RuntimeConnectorHost::new(global_ctx)),
-            ),
-        }
-    }
-
-    pub async fn run(&mut self) -> Result<(), Error> {
-        self.inner.run();
-        Ok(())
-    }
-
-    #[cfg(test)]
-    async fn run_immediately(&self) {
-        self.inner.run_immediately().await;
-    }
-
-    #[cfg(test)]
-    async fn collect_peers_need_task(&self) -> Vec<u32> {
-        self.inner.collect_peers_need_task().await
-    }
+pub(crate) fn runtime_tcp_hole_punch_connector(
+    peer_manager: Arc<PeerManager>,
+) -> RuntimeTcpHolePunchConnector {
+    let global_ctx = peer_manager.get_global_ctx();
+    RuntimeTcpHolePunchConnector::new(
+        peer_manager.core(),
+        Arc::new(RuntimeConnectorHost::new(global_ctx)),
+    )
 }
 
 #[cfg(test)]
@@ -46,7 +22,9 @@ mod tests {
 
     use crate::{
         common::{error::Error, stun::StunInfoCollectorTrait},
-        connector::tcp_hole_punch::TcpHolePunchConnector,
+        connector::tcp_hole_punch::{
+            RuntimeTcpHolePunchConnector, runtime_tcp_hole_punch_connector,
+        },
         peers::{
             peer_manager::PeerManager,
             tests::{connect_peer_manager, create_mock_peer_manager, wait_route_appear},
@@ -105,7 +83,7 @@ mod tests {
             .replace_stun_info_collector(collector);
     }
 
-    async fn collect_lazy_punch_peers(connector: &TcpHolePunchConnector) -> Vec<u32> {
+    async fn collect_lazy_punch_peers(connector: &RuntimeTcpHolePunchConnector) -> Vec<u32> {
         connector.collect_peers_need_task().await
     }
 
@@ -123,10 +101,10 @@ mod tests {
         connect_peer_manager(p_b.clone(), p_c.clone()).await;
         wait_route_appear(p_a.clone(), p_c.clone()).await.unwrap();
 
-        let mut hole_punching_a = TcpHolePunchConnector::new(p_a.clone());
-        let mut hole_punching_c = TcpHolePunchConnector::new(p_c.clone());
-        hole_punching_a.run().await.unwrap();
-        hole_punching_c.run().await.unwrap();
+        let hole_punching_a = runtime_tcp_hole_punch_connector(p_a.clone());
+        let hole_punching_c = runtime_tcp_hole_punch_connector(p_c.clone());
+        hole_punching_a.run();
+        hole_punching_c.run();
 
         hole_punching_a.run_immediately().await;
         hole_punching_c.run_immediately().await;
@@ -168,10 +146,10 @@ mod tests {
         connect_peer_manager(p_b.clone(), p_c.clone()).await;
         wait_route_appear(p_a.clone(), p_c.clone()).await.unwrap();
 
-        let mut hole_punching_a = TcpHolePunchConnector::new(p_a.clone());
-        let mut hole_punching_c = TcpHolePunchConnector::new(p_c.clone());
-        hole_punching_a.run().await.unwrap();
-        hole_punching_c.run().await.unwrap();
+        let hole_punching_a = runtime_tcp_hole_punch_connector(p_a.clone());
+        let hole_punching_c = runtime_tcp_hole_punch_connector(p_c.clone());
+        hole_punching_a.run();
+        hole_punching_c.run();
 
         hole_punching_a.run_immediately().await;
         hole_punching_c.run_immediately().await;
@@ -211,7 +189,7 @@ mod tests {
         connect_peer_manager(p_a.clone(), p_b.clone()).await;
         connect_peer_manager(p_b.clone(), p_c.clone()).await;
         wait_route_appear(p_a.clone(), p_c.clone()).await.unwrap();
-        let connector = TcpHolePunchConnector::new(p_a.clone());
+        let connector = runtime_tcp_hole_punch_connector(p_a.clone());
 
         assert!(
             !collect_lazy_punch_peers(&connector)
