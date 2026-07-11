@@ -15,6 +15,7 @@ use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use super::tcp::VirtualTcpSocket;
 
 pub mod factory;
+pub mod listener;
 pub mod udp;
 #[cfg(target_os = "wasi")]
 pub mod wasi;
