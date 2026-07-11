@@ -8,8 +8,6 @@ use super::{HostOperationId, HostSocketHandle, HostSocketIo, HostSocketRuntime};
 
 #[cfg(target_os = "wasi")]
 pub mod wasi;
-#[cfg(any(test, target_os = "wasi"))]
-mod wire;
 
 /// One host-owned UDP receive completion.
 #[derive(Debug)]

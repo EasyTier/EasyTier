@@ -22,12 +22,18 @@ pub struct WasiHostTcpIo {
     read_buffers: Mutex<HashMap<HostOperationId, Vec<u8>>>,
 }
 
-impl HostSocketIo for WasiHostTcpIo {
-    fn cancel_operation(&self, operation: HostOperationId) -> io::Result<()> {
+impl WasiHostTcpIo {
+    pub(super) fn forget_operation(&self, operation: HostOperationId) {
         self.read_buffers
             .lock()
             .expect("WASI read buffer registry poisoned")
             .remove(&operation);
+    }
+}
+
+impl HostSocketIo for WasiHostTcpIo {
+    fn cancel_operation(&self, operation: HostOperationId) -> io::Result<()> {
+        self.forget_operation(operation);
         status("cancel_operation", unsafe { cancel_operation(operation.0) })
     }
 

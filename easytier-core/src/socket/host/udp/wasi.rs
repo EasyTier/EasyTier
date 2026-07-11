@@ -2,13 +2,11 @@ use std::{collections::HashMap, io, sync::Mutex, task::Poll};
 
 use crate::socket::udp::{UdpSocketRecvMeta, UdpSocketSendMeta};
 
-use super::{
-    HostUdpDatagram, HostUdpIo,
-    wire::{UDP_METADATA_LEN, decode_udp_metadata, encode_udp_metadata},
-};
+use super::{HostUdpDatagram, HostUdpIo};
 use crate::socket::host::{
     HostOperationId, HostSocketHandle, HostSocketIo,
     wasi_common::{host_error, status},
+    wasi_wire::{UDP_METADATA_LEN, decode_udp_metadata, encode_udp_metadata},
 };
 
 const HOST_PENDING: i32 = -1;
@@ -42,12 +40,18 @@ pub struct WasiHostUdpIo {
     recv_buffers: Mutex<HashMap<HostOperationId, WasiUdpRecvBuffer>>,
 }
 
-impl HostSocketIo for WasiHostUdpIo {
-    fn cancel_operation(&self, operation: HostOperationId) -> io::Result<()> {
+impl WasiHostUdpIo {
+    pub(in crate::socket::host) fn forget_operation(&self, operation: HostOperationId) {
         self.recv_buffers
             .lock()
             .expect("WASI UDP receive buffer registry poisoned")
             .remove(&operation);
+    }
+}
+
+impl HostSocketIo for WasiHostUdpIo {
+    fn cancel_operation(&self, operation: HostOperationId) -> io::Result<()> {
+        self.forget_operation(operation);
         status("cancel_operation", unsafe { cancel_operation(operation.0) })
     }
 

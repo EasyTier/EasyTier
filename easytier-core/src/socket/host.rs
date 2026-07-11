@@ -20,7 +20,13 @@ pub mod udp;
 #[cfg(target_os = "wasi")]
 pub mod wasi;
 #[cfg(target_os = "wasi")]
+pub mod wasi_backend;
+#[cfg(target_os = "wasi")]
 mod wasi_common;
+#[cfg(any(test, target_os = "wasi"))]
+mod wasi_options;
+#[cfg(any(test, target_os = "wasi"))]
+mod wasi_wire;
 
 static NEXT_HOST_OPERATION: AtomicU64 = AtomicU64::new(1);
 

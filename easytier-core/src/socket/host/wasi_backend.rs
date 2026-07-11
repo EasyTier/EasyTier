@@ -1,0 +1,253 @@
+use std::{io, task::Poll};
+
+use crate::socket::{
+    tcp::{TcpConnectOptions, TcpListenOptions},
+    udp::{UdpBindOptions, UdpSocketSendMeta},
+};
+
+use super::{
+    HostOperationId, HostSocketHandle, HostSocketIo, HostTcpIo,
+    factory::{HostSocketFactoryIo, HostTcpConnectResult, HostUdpBindResult},
+    listener::{HostTcpBindResult, HostTcpListenerIo},
+    udp::{HostUdpDatagram, HostUdpIo, wasi::WasiHostUdpIo},
+    wasi::WasiHostTcpIo,
+    wasi_common::{host_error, status},
+    wasi_options::{
+        BOUND_SOCKET_RESULT_LEN, TCP_SOCKET_RESULT_LEN, decode_tcp_bind_result,
+        decode_tcp_socket_result, decode_udp_bind_result, encode_tcp_connect_options,
+        encode_tcp_listen_options, encode_udp_bind_options,
+    },
+};
+
+const HOST_PENDING: i32 = -1;
+
+#[link(wasm_import_module = "easytier_host")]
+unsafe extern "C" {
+    fn start_tcp_connect(operation: u64, options: u32, options_len: u32) -> i32;
+    fn take_tcp_connect(operation: u64, result: u32, result_len: u32) -> i32;
+    fn start_udp_bind(operation: u64, options: u32, options_len: u32) -> i32;
+    fn take_udp_bind(operation: u64, result: u32, result_len: u32) -> i32;
+    fn start_tcp_bind(operation: u64, options: u32, options_len: u32) -> i32;
+    fn take_tcp_bind(operation: u64, result: u32, result_len: u32) -> i32;
+    fn start_tcp_accept(handle: u64, operation: u64) -> i32;
+    fn take_tcp_accept(operation: u64, result: u32, result_len: u32) -> i32;
+    fn cancel_operation(operation: u64) -> i32;
+    fn close(handle: u64) -> i32;
+}
+
+#[derive(Default)]
+pub struct WasiHostSocketBackend {
+    tcp: WasiHostTcpIo,
+    udp: WasiHostUdpIo,
+}
+
+impl HostSocketIo for WasiHostSocketBackend {
+    fn cancel_operation(&self, operation: HostOperationId) -> io::Result<()> {
+        self.tcp.forget_operation(operation);
+        self.udp.forget_operation(operation);
+        status("cancel_operation", unsafe { cancel_operation(operation.0) })
+    }
+
+    fn close(&self, handle: HostSocketHandle) -> io::Result<()> {
+        status("close", unsafe { close(handle.0) })
+    }
+}
+
+impl HostTcpIo for WasiHostSocketBackend {
+    fn submit_read(
+        &self,
+        handle: HostSocketHandle,
+        operation: HostOperationId,
+        capacity: usize,
+    ) -> io::Result<()> {
+        self.tcp.submit_read(handle, operation, capacity)
+    }
+
+    fn take_read(&self, operation: HostOperationId) -> Poll<io::Result<Vec<u8>>> {
+        self.tcp.take_read(operation)
+    }
+
+    fn submit_write(
+        &self,
+        handle: HostSocketHandle,
+        operation: HostOperationId,
+        source: &[u8],
+    ) -> io::Result<()> {
+        self.tcp.submit_write(handle, operation, source)
+    }
+
+    fn take_write(&self, operation: HostOperationId) -> Poll<io::Result<()>> {
+        self.tcp.take_write(operation)
+    }
+}
+
+impl HostUdpIo for WasiHostSocketBackend {
+    fn submit_recv(
+        &self,
+        handle: HostSocketHandle,
+        operation: HostOperationId,
+        capacity: usize,
+    ) -> io::Result<()> {
+        self.udp.submit_recv(handle, operation, capacity)
+    }
+
+    fn take_recv(&self, operation: HostOperationId) -> Poll<io::Result<HostUdpDatagram>> {
+        self.udp.take_recv(operation)
+    }
+
+    fn try_send(
+        &self,
+        handle: HostSocketHandle,
+        source: &[u8],
+        peer_addr: std::net::SocketAddr,
+        meta: UdpSocketSendMeta,
+    ) -> io::Result<()> {
+        self.udp.try_send(handle, source, peer_addr, meta)
+    }
+
+    fn submit_send_ready(
+        &self,
+        handle: HostSocketHandle,
+        operation: HostOperationId,
+    ) -> io::Result<()> {
+        self.udp.submit_send_ready(handle, operation)
+    }
+
+    fn take_send_ready(&self, operation: HostOperationId) -> Poll<io::Result<()>> {
+        self.udp.take_send_ready(operation)
+    }
+}
+
+impl HostSocketFactoryIo for WasiHostSocketBackend {
+    fn submit_tcp_connect(
+        &self,
+        operation: HostOperationId,
+        options: &TcpConnectOptions,
+    ) -> io::Result<()> {
+        let encoded = encode_tcp_connect_options(options)?;
+        status("start_tcp_connect", unsafe {
+            start_tcp_connect(
+                operation.0,
+                encoded.as_ptr() as u32,
+                encoded_len("TCP connect options", &encoded)?,
+            )
+        })
+    }
+
+    fn take_tcp_connect(
+        &self,
+        operation: HostOperationId,
+    ) -> Poll<io::Result<HostTcpConnectResult>> {
+        let mut encoded = [0_u8; TCP_SOCKET_RESULT_LEN];
+        match unsafe {
+            take_tcp_connect(
+                operation.0,
+                encoded.as_mut_ptr() as u32,
+                TCP_SOCKET_RESULT_LEN as u32,
+            )
+        } {
+            HOST_PENDING => Poll::Pending,
+            0 => Poll::Ready(decode_tcp_socket_result(&encoded)),
+            value => Poll::Ready(Err(host_error("take_tcp_connect", value))),
+        }
+    }
+
+    fn submit_udp_bind(
+        &self,
+        operation: HostOperationId,
+        options: &UdpBindOptions,
+    ) -> io::Result<()> {
+        let encoded = encode_udp_bind_options(options)?;
+        status("start_udp_bind", unsafe {
+            start_udp_bind(
+                operation.0,
+                encoded.as_ptr() as u32,
+                encoded_len("UDP bind options", &encoded)?,
+            )
+        })
+    }
+
+    fn take_udp_bind(&self, operation: HostOperationId) -> Poll<io::Result<HostUdpBindResult>> {
+        let mut encoded = [0_u8; BOUND_SOCKET_RESULT_LEN];
+        match unsafe {
+            take_udp_bind(
+                operation.0,
+                encoded.as_mut_ptr() as u32,
+                BOUND_SOCKET_RESULT_LEN as u32,
+            )
+        } {
+            HOST_PENDING => Poll::Pending,
+            0 => Poll::Ready(decode_udp_bind_result(&encoded)),
+            value => Poll::Ready(Err(host_error("take_udp_bind", value))),
+        }
+    }
+}
+
+impl HostTcpListenerIo for WasiHostSocketBackend {
+    fn submit_tcp_bind(
+        &self,
+        operation: HostOperationId,
+        options: &TcpListenOptions,
+    ) -> io::Result<()> {
+        let encoded = encode_tcp_listen_options(options)?;
+        status("start_tcp_bind", unsafe {
+            start_tcp_bind(
+                operation.0,
+                encoded.as_ptr() as u32,
+                encoded_len("TCP listen options", &encoded)?,
+            )
+        })
+    }
+
+    fn take_tcp_bind(&self, operation: HostOperationId) -> Poll<io::Result<HostTcpBindResult>> {
+        let mut encoded = [0_u8; BOUND_SOCKET_RESULT_LEN];
+        match unsafe {
+            take_tcp_bind(
+                operation.0,
+                encoded.as_mut_ptr() as u32,
+                BOUND_SOCKET_RESULT_LEN as u32,
+            )
+        } {
+            HOST_PENDING => Poll::Pending,
+            0 => Poll::Ready(decode_tcp_bind_result(&encoded)),
+            value => Poll::Ready(Err(host_error("take_tcp_bind", value))),
+        }
+    }
+
+    fn submit_tcp_accept(
+        &self,
+        handle: HostSocketHandle,
+        operation: HostOperationId,
+    ) -> io::Result<()> {
+        status("start_tcp_accept", unsafe {
+            start_tcp_accept(handle.0, operation.0)
+        })
+    }
+
+    fn take_tcp_accept(
+        &self,
+        operation: HostOperationId,
+    ) -> Poll<io::Result<HostTcpConnectResult>> {
+        let mut encoded = [0_u8; TCP_SOCKET_RESULT_LEN];
+        match unsafe {
+            take_tcp_accept(
+                operation.0,
+                encoded.as_mut_ptr() as u32,
+                TCP_SOCKET_RESULT_LEN as u32,
+            )
+        } {
+            HOST_PENDING => Poll::Pending,
+            0 => Poll::Ready(decode_tcp_socket_result(&encoded)),
+            value => Poll::Ready(Err(host_error("take_tcp_accept", value))),
+        }
+    }
+}
+
+fn encoded_len(description: &str, encoded: &[u8]) -> io::Result<u32> {
+    u32::try_from(encoded.len()).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("{description} exceed WASI guest memory"),
+        )
+    })
+}

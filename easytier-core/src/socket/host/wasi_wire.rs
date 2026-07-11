@@ -3,6 +3,7 @@ use std::{
     net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6},
 };
 
+pub(super) const SOCKET_ADDRESS_LEN: usize = 27;
 pub(super) const UDP_METADATA_LEN: usize = 44;
 
 const V4_FAMILY: u8 = 4;
@@ -20,20 +21,7 @@ pub(super) fn encode_udp_metadata(
     optional_ip: Option<IpAddr>,
 ) -> [u8; UDP_METADATA_LEN] {
     let mut wire = [0_u8; UDP_METADATA_LEN];
-    match peer_addr {
-        SocketAddr::V4(addr) => {
-            wire[ADDRESS_FAMILY] = V4_FAMILY;
-            wire[ADDRESS_BYTES.start..ADDRESS_BYTES.start + 4].copy_from_slice(&addr.ip().octets());
-            wire[PORT_BYTES].copy_from_slice(&addr.port().to_be_bytes());
-        }
-        SocketAddr::V6(addr) => {
-            wire[ADDRESS_FAMILY] = V6_FAMILY;
-            wire[ADDRESS_BYTES].copy_from_slice(&addr.ip().octets());
-            wire[PORT_BYTES].copy_from_slice(&addr.port().to_be_bytes());
-            wire[FLOWINFO_BYTES].copy_from_slice(&addr.flowinfo().to_be_bytes());
-            wire[SCOPE_ID_BYTES].copy_from_slice(&addr.scope_id().to_be_bytes());
-        }
-    }
+    wire[..SOCKET_ADDRESS_LEN].copy_from_slice(&encode_socket_address(peer_addr));
 
     match optional_ip {
         None => {}
@@ -50,34 +38,30 @@ pub(super) fn encode_udp_metadata(
     wire
 }
 
+pub(super) fn encode_socket_address(addr: SocketAddr) -> [u8; SOCKET_ADDRESS_LEN] {
+    let mut wire = [0_u8; SOCKET_ADDRESS_LEN];
+    match addr {
+        SocketAddr::V4(addr) => {
+            wire[ADDRESS_FAMILY] = V4_FAMILY;
+            wire[ADDRESS_BYTES.start..ADDRESS_BYTES.start + 4].copy_from_slice(&addr.ip().octets());
+            wire[PORT_BYTES].copy_from_slice(&addr.port().to_be_bytes());
+        }
+        SocketAddr::V6(addr) => {
+            wire[ADDRESS_FAMILY] = V6_FAMILY;
+            wire[ADDRESS_BYTES].copy_from_slice(&addr.ip().octets());
+            wire[PORT_BYTES].copy_from_slice(&addr.port().to_be_bytes());
+            wire[FLOWINFO_BYTES].copy_from_slice(&addr.flowinfo().to_be_bytes());
+            wire[SCOPE_ID_BYTES].copy_from_slice(&addr.scope_id().to_be_bytes());
+        }
+    }
+    wire
+}
+
 pub(super) fn decode_udp_metadata(
     wire: &[u8; UDP_METADATA_LEN],
 ) -> io::Result<(SocketAddr, Option<IpAddr>)> {
-    let port = u16::from_be_bytes(wire[PORT_BYTES].try_into().unwrap());
-    let peer_addr = match wire[ADDRESS_FAMILY] {
-        V4_FAMILY => {
-            require_zero(
-                &wire[ADDRESS_BYTES.start + 4..ADDRESS_BYTES.end],
-                "IPv4 padding",
-            )?;
-            require_zero(&wire[FLOWINFO_BYTES], "IPv4 flowinfo")?;
-            require_zero(&wire[SCOPE_ID_BYTES], "IPv4 scope ID")?;
-            SocketAddr::V4(SocketAddrV4::new(
-                Ipv4Addr::from(
-                    <[u8; 4]>::try_from(&wire[ADDRESS_BYTES.start..ADDRESS_BYTES.start + 4])
-                        .unwrap(),
-                ),
-                port,
-            ))
-        }
-        V6_FAMILY => SocketAddr::V6(SocketAddrV6::new(
-            Ipv6Addr::from(<[u8; 16]>::try_from(&wire[ADDRESS_BYTES]).unwrap()),
-            port,
-            u32::from_be_bytes(wire[FLOWINFO_BYTES].try_into().unwrap()),
-            u32::from_be_bytes(wire[SCOPE_ID_BYTES].try_into().unwrap()),
-        )),
-        family => return Err(invalid_family("peer address", family)),
-    };
+    let address = <[u8; SOCKET_ADDRESS_LEN]>::try_from(&wire[..SOCKET_ADDRESS_LEN]).unwrap();
+    let peer_addr = decode_socket_address(&address)?;
 
     let optional_ip = match wire[OPTIONAL_IP_FAMILY] {
         0 => {
@@ -100,6 +84,34 @@ pub(super) fn decode_udp_metadata(
         family => return Err(invalid_family("optional IP", family)),
     };
     Ok((peer_addr, optional_ip))
+}
+
+pub(super) fn decode_socket_address(wire: &[u8; SOCKET_ADDRESS_LEN]) -> io::Result<SocketAddr> {
+    let port = u16::from_be_bytes(wire[PORT_BYTES].try_into().unwrap());
+    match wire[ADDRESS_FAMILY] {
+        V4_FAMILY => {
+            require_zero(
+                &wire[ADDRESS_BYTES.start + 4..ADDRESS_BYTES.end],
+                "IPv4 padding",
+            )?;
+            require_zero(&wire[FLOWINFO_BYTES], "IPv4 flowinfo")?;
+            require_zero(&wire[SCOPE_ID_BYTES], "IPv4 scope ID")?;
+            Ok(SocketAddr::V4(SocketAddrV4::new(
+                Ipv4Addr::from(
+                    <[u8; 4]>::try_from(&wire[ADDRESS_BYTES.start..ADDRESS_BYTES.start + 4])
+                        .unwrap(),
+                ),
+                port,
+            )))
+        }
+        V6_FAMILY => Ok(SocketAddr::V6(SocketAddrV6::new(
+            Ipv6Addr::from(<[u8; 16]>::try_from(&wire[ADDRESS_BYTES]).unwrap()),
+            port,
+            u32::from_be_bytes(wire[FLOWINFO_BYTES].try_into().unwrap()),
+            u32::from_be_bytes(wire[SCOPE_ID_BYTES].try_into().unwrap()),
+        ))),
+        family => Err(invalid_family("peer address", family)),
+    }
 }
 
 fn require_zero(bytes: &[u8], field: &str) -> io::Result<()> {
