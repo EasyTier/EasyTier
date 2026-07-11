@@ -39,7 +39,10 @@ use boringtun::{
 use bytes::BytesMut;
 use crossbeam::atomic::AtomicCell;
 use dashmap::DashMap;
-use easytier_core::socket::udp::{UdpSessionProtocol, UdpSessionSocket};
+use easytier_core::{
+    connectivity::transport::ConnectedUdpSession,
+    socket::udp::{UdpSessionProtocol, UdpSessionSocket},
+};
 use futures::{SinkExt, StreamExt, stream::FuturesUnordered};
 use rand::RngCore;
 use tokio::{
@@ -350,7 +353,7 @@ impl WgPeerData {
 
 struct WgPeer {
     tunn: Option<Mutex<Tunn>>,
-    _session_layer: Arc<RuntimeUdpSessionLayer>,
+    _session_guard: Box<dyn Send + Sync>,
     session: Arc<dyn UdpSessionSocket>,
     config: WgConfig,
     endpoint: SocketAddr,
@@ -365,7 +368,7 @@ struct WgPeer {
 
 impl WgPeer {
     fn new(
-        session_layer: Arc<RuntimeUdpSessionLayer>,
+        session_guard: Box<dyn Send + Sync>,
         session: Arc<dyn UdpSessionSocket>,
         config: WgConfig,
         endpoint: SocketAddr,
@@ -380,7 +383,7 @@ impl WgPeer {
                 None,
             ))),
 
-            _session_layer: session_layer,
+            _session_guard: session_guard,
             session,
             config,
             endpoint,
@@ -567,7 +570,7 @@ impl WgTunnelListener {
             };
 
             tracing::info!("New peer: {}", addr);
-            let mut wg = WgPeer::new(layer.clone(), session, config.clone(), addr);
+            let mut wg = WgPeer::new(Box::new(layer.clone()), session, config.clone(), addr);
             let (stream, sink) = wg.start_and_get_tunnel().split();
             wg.spawn_session_recv_task(None);
             let tunnel = Box::new(TunnelWrapper::new(
@@ -671,48 +674,60 @@ impl WgTunnelConnector {
         tracing::warn!("wg connect: {:?}", addr);
         let runtime_socket = Arc::new(RuntimeUdpSocket::new(Arc::new(udp)));
         let layer = runtime_socket.udp_session_layer();
-        let session = Arc::new(layer.open_classified_session(UdpSessionProtocol::WireGuard, addr)?)
-            as Arc<dyn UdpSessionSocket>;
-        let local_addr = session
-            .local_addr()
-            .with_context(|| "Failed to get local addr")?
-            .to_string();
-
-        let mut wg_peer = WgPeer::new(layer, session.clone(), config.clone(), addr);
-
-        // do handshake here so we will return after receive first packet
-        let handshake = wg_peer.create_handshake_init().await;
-        session.send(&handshake).await?;
-        let mut buf = [0u8; MAX_PACKET];
-        let n = match session.recv(&mut buf).await {
-            Ok(ret) => ret,
-            Err(e) => {
-                tracing::error!("Failed to receive handshake response: {}", e);
-                return Err(TunnelError::IOError(e));
-            }
-        };
-
-        let tunnel = wg_peer.start_and_get_tunnel();
-        wg_peer.spawn_session_recv_task(Some(buf[..n].to_vec()));
-
-        let (stream, sink) = tunnel.split();
-        let ret = Box::new(TunnelWrapper::new_with_associate_data(
-            stream,
-            sink,
-            Some(TunnelInfo {
-                tunnel_type: "wg".to_owned(),
-                local_addr: Some(super::build_url_from_socket_addr(&local_addr, "wg").into()),
-                remote_addr: Some(addr_url.into()),
-                resolved_remote_addr: Some(
-                    super::build_url_from_socket_addr(&addr.to_string(), "wg").into(),
-                ),
-            }),
-            Some(Box::new(wg_peer)),
-        ));
-
-        Ok(ret)
+        let session = layer.open_classified_session(UdpSessionProtocol::WireGuard, addr)?;
+        upgrade_connected(ConnectedUdpSession::new(session, layer), addr_url, config).await
     }
+}
 
+pub(crate) async fn upgrade_connected(
+    connected: ConnectedUdpSession,
+    addr_url: url::Url,
+    config: WgConfig,
+) -> Result<Box<dyn Tunnel>, TunnelError> {
+    let (session, session_guard) = connected.into_parts();
+    let session = Arc::new(session) as Arc<dyn UdpSessionSocket>;
+    let addr = session.peer_addr()?;
+    let local_addr = session
+        .local_addr()
+        .with_context(|| "Failed to get local addr")?
+        .to_string();
+
+    let mut wg_peer = WgPeer::new(session_guard, session.clone(), config.clone(), addr);
+
+    // do handshake here so we will return after receive first packet
+    let handshake = wg_peer.create_handshake_init().await;
+    session.send(&handshake).await?;
+    let mut buf = [0u8; MAX_PACKET];
+    let n = match session.recv(&mut buf).await {
+        Ok(ret) => ret,
+        Err(e) => {
+            tracing::error!("Failed to receive handshake response: {}", e);
+            return Err(TunnelError::IOError(e));
+        }
+    };
+
+    let tunnel = wg_peer.start_and_get_tunnel();
+    wg_peer.spawn_session_recv_task(Some(buf[..n].to_vec()));
+
+    let (stream, sink) = tunnel.split();
+    let ret = Box::new(TunnelWrapper::new_with_associate_data(
+        stream,
+        sink,
+        Some(TunnelInfo {
+            tunnel_type: "wg".to_owned(),
+            local_addr: Some(super::build_url_from_socket_addr(&local_addr, "wg").into()),
+            remote_addr: Some(addr_url.into()),
+            resolved_remote_addr: Some(
+                super::build_url_from_socket_addr(&addr.to_string(), "wg").into(),
+            ),
+        }),
+        Some(Box::new(wg_peer)),
+    ));
+
+    Ok(ret)
+}
+
+impl WgTunnelConnector {
     async fn connect_with_ipv6(&self, addr: SocketAddr) -> Result<Box<dyn Tunnel>, TunnelError> {
         let socket = bind()
             .addr("[::]:0".parse().unwrap())
