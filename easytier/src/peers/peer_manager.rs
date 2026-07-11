@@ -497,8 +497,8 @@ impl PeerManager {
 #[cfg(test)]
 mod tests {
     use base64::Engine;
-    use easytier_core::peers::peer_manager as core_peer_manager;
-    use std::{collections::HashMap, fmt::Debug, sync::Arc, time::Duration};
+    use easytier_core::peers::peer_manager::{self as core_peer_manager, PeerManagerCore};
+    use std::{collections::HashMap, sync::Arc, time::Duration};
 
     use quanta::Instant;
 
@@ -510,9 +510,10 @@ mod tests {
             stats_manager::{LabelSet, LabelType, MetricName},
         },
         connector::{
-            create_connector_by_url, udp_hole_punch::tests::create_mock_peer_manager_with_mock_stun,
+            manual::ManualConnectorManager,
+            udp_hole_punch::tests::create_mock_peer_manager_with_mock_stun,
         },
-        instance::listeners::create_listener_by_url,
+        instance::listeners::ListenerManager,
         peers::{
             create_packet_recv_chan,
             peer_conn::tests::set_secure_mode_cfg,
@@ -528,7 +529,6 @@ mod tests {
             peer_rpc::SecureAuthLevel,
         },
         tunnel::{
-            TunnelConnector, TunnelListener,
             common::tests::wait_for_condition,
             filter::{TunnelWithFilter, tests::DropSendTunnelFilter},
             packet_def::{PacketType, ZCPacket},
@@ -1463,23 +1463,28 @@ mod tests {
         .await;
     }
 
-    async fn connect_peer_manager_with<C: TunnelConnector + Debug + 'static, L: TunnelListener>(
-        client_mgr: Arc<PeerManager>,
-        server_mgr: &Arc<PeerManager>,
-        mut client: C,
-        server: &mut L,
-    ) {
-        server.listen().await.unwrap();
+    async fn connect_peer_managers_through_core(
+        client: Arc<PeerManager>,
+        server: Arc<PeerManager>,
+        protocol: &str,
+        port: u16,
+    ) -> (ManualConnectorManager, ListenerManager<PeerManagerCore>) {
+        server.get_global_ctx().config.set_listeners(vec![
+            format!("{protocol}://0.0.0.0:{port}").parse().unwrap(),
+        ]);
+        let mut listener = ListenerManager::new(server.get_global_ctx(), server.core());
+        listener.prepare_listeners().await.unwrap();
+        listener.run().await.unwrap();
 
-        tokio::spawn(async move {
-            client.set_bind_addrs(vec![]);
-            client_mgr.try_direct_connect(client).await.unwrap();
-        });
-
-        server_mgr
-            .add_client_tunnel(server.accept().await.unwrap(), false)
+        let mut flags = client.get_global_ctx().get_flags();
+        flags.bind_device = false;
+        client.get_global_ctx().set_flags(flags);
+        let connector = ManualConnectorManager::new(client.get_global_ctx(), client);
+        connector
+            .add_connector_by_url(format!("{protocol}://127.0.0.1:{port}").parse().unwrap())
             .await
             .unwrap();
+        (connector, listener)
     }
 
     #[rstest::rstest]
@@ -1502,39 +1507,25 @@ mod tests {
         let peer_mgr_c = create_mock_peer_manager_with_mock_stun(NatType::Unknown).await;
         register_service(&peer_mgr_c.get_peer_rpc_mgr(), "", 0, "hello c");
 
-        let mut listener1 = create_listener_by_url(
-            &format!("{}://0.0.0.0:31013", proto1).parse().unwrap(),
-            peer_mgr_b.get_global_ctx(),
+        let (_connector1, _listener1) = connect_peer_managers_through_core(
+            peer_mgr_a.clone(),
+            peer_mgr_b.clone(),
+            proto1,
+            31013,
         )
-        .unwrap();
-        let connector1 = create_connector_by_url(
-            format!("{}://127.0.0.1:31013", proto1).as_str(),
-            &peer_mgr_a.get_global_ctx(),
-            crate::tunnel::IpVersion::Both,
-        )
-        .await
-        .unwrap();
-        connect_peer_manager_with(peer_mgr_a.clone(), &peer_mgr_b, connector1, &mut listener1)
-            .await;
+        .await;
 
         wait_route_appear(peer_mgr_a.clone(), peer_mgr_b.clone())
             .await
             .unwrap();
 
-        let mut listener2 = create_listener_by_url(
-            &format!("{}://0.0.0.0:31014", proto2).parse().unwrap(),
-            peer_mgr_c.get_global_ctx(),
+        let (_connector2, _listener2) = connect_peer_managers_through_core(
+            peer_mgr_b.clone(),
+            peer_mgr_c.clone(),
+            proto2,
+            31014,
         )
-        .unwrap();
-        let connector2 = create_connector_by_url(
-            format!("{}://127.0.0.1:31014", proto2).as_str(),
-            &peer_mgr_b.get_global_ctx(),
-            crate::tunnel::IpVersion::Both,
-        )
-        .await
-        .unwrap();
-        connect_peer_manager_with(peer_mgr_b.clone(), &peer_mgr_c, connector2, &mut listener2)
-            .await;
+        .await;
 
         wait_route_appear(peer_mgr_a.clone(), peer_mgr_c.clone())
             .await
