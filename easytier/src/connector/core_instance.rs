@@ -161,3 +161,44 @@ pub(crate) fn build_runtime_core_instance(
         config,
     )
 }
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use easytier_core::instance::CoreInstanceState;
+
+    use crate::{
+        common::global_ctx::tests::get_mock_global_ctx,
+        peers::{
+            create_packet_recv_chan,
+            peer_manager::{PeerManager, RouteAlgoType},
+        },
+    };
+
+    use super::*;
+
+    #[tokio::test]
+    async fn runtime_core_instance_owns_connectivity_lifecycle() {
+        let global_ctx = get_mock_global_ctx();
+        let (nic_channel, _nic_receiver) = create_packet_recv_chan();
+        let peer_manager = Arc::new(PeerManager::new(
+            RouteAlgoType::Ospf,
+            global_ctx.clone(),
+            nic_channel,
+        ));
+        let instance = Arc::new(
+            build_runtime_core_instance(global_ctx, peer_manager)
+                .expect("runtime core composition should succeed"),
+        );
+
+        assert_eq!(instance.state(), CoreInstanceState::Created);
+        instance.start().await.unwrap();
+        assert_eq!(instance.state(), CoreInstanceState::Running);
+        assert!(instance.start().await.is_err());
+
+        instance.stop().await;
+        instance.stop().await;
+        assert_eq!(instance.state(), CoreInstanceState::Stopped);
+    }
+}
