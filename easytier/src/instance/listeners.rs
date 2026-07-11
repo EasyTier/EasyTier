@@ -129,8 +129,8 @@ fn listener_scheme_registry() -> core_listener_plan::ListenerSchemeRegistry {
     #[cfg(feature = "websocket")]
     {
         registry = registry
-            .support("ws", core_listener_plan::ListenerKind::External)
-            .support("wss", core_listener_plan::ListenerKind::External);
+            .support("ws", core_listener_plan::ListenerKind::TcpStream)
+            .support("wss", core_listener_plan::ListenerKind::TcpStream);
     }
     #[cfg(feature = "faketcp")]
     {
@@ -148,7 +148,10 @@ fn listener_scheme_registry() -> core_listener_plan::ListenerSchemeRegistry {
 
 enum AcceptedConnection {
     Tunnel(Box<dyn Tunnel>),
-    TcpStream(RuntimeTcpSocket),
+    TcpStream {
+        stream: RuntimeTcpSocket,
+        local_url: url::Url,
+    },
     UdpSession(UdpSession),
 }
 
@@ -392,7 +395,11 @@ impl core_listener::SocketListener for RuntimeTcpSocketListener {
     }
 
     async fn accept(&mut self) -> anyhow::Result<Self::Accepted> {
-        Ok(AcceptedConnection::TcpStream(self.inner()?.accept().await?))
+        let local_url = self.local_url();
+        Ok(AcceptedConnection::TcpStream {
+            stream: self.inner()?.accept().await?,
+            local_url,
+        })
     }
 
     fn local_url(&self) -> url::Url {
@@ -648,7 +655,9 @@ where
     async fn handle_accepted_socket(&self, accepted: AcceptedConnection) -> anyhow::Result<()> {
         match accepted {
             AcceptedConnection::Tunnel(tunnel) => self.handle_tunnel(tunnel).await,
-            AcceptedConnection::TcpStream(stream) => self.handle_tcp_stream(stream).await,
+            AcceptedConnection::TcpStream { stream, local_url } => {
+                self.handle_tcp_stream(stream, local_url).await
+            }
             AcceptedConnection::UdpSession(session) => self.handle_udp_session(session).await,
         }
     }
@@ -658,8 +667,23 @@ impl<H> EasyTierAcceptedHandler<H>
 where
     H: TunnelHandlerForListener + Send + Sync + 'static,
 {
-    async fn handle_tcp_stream(&self, stream: RuntimeTcpSocket) -> anyhow::Result<()> {
-        let tunnel = upgrade_accepted_socket(stream)?;
+    async fn handle_tcp_stream(
+        &self,
+        stream: RuntimeTcpSocket,
+        local_url: url::Url,
+    ) -> anyhow::Result<()> {
+        let tunnel = match local_url.scheme() {
+            "tcp" => upgrade_accepted_socket(stream)?,
+            #[cfg(feature = "websocket")]
+            "ws" | "wss" => {
+                tokio::time::timeout(
+                    std::time::Duration::from_secs(3),
+                    tunnel::websocket::upgrade_accepted(stream, local_url),
+                )
+                .await??
+            }
+            scheme => anyhow::bail!("unsupported TCP listener protocol: {scheme}"),
+        };
         self.handle_tunnel(tunnel).await
     }
 
@@ -769,6 +793,17 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "websocket")]
+    #[test]
+    fn listener_scheme_registry_classifies_websocket_as_tcp_stream() {
+        for url in ["ws://127.0.0.1:0", "wss://127.0.0.1:0"] {
+            assert_eq!(
+                listener_scheme_registry().classify(&url.parse().unwrap()),
+                Some(core_listener_plan::ListenerKind::TcpStream)
+            );
+        }
+    }
+
     #[tokio::test]
     async fn prepare_tcp_listeners_registers_core_listener_manager() {
         let global_ctx = get_mock_global_ctx();
@@ -811,6 +846,48 @@ mod tests {
         .unwrap();
 
         let tunnel = TcpTunnelConnector::new(listener_url)
+            .connect()
+            .await
+            .unwrap();
+        let (mut recv, _send) = tunnel.split();
+        assert_eq!(
+            recv.next().await.unwrap().unwrap().payload(),
+            "abc".as_bytes()
+        );
+    }
+
+    #[cfg(feature = "websocket")]
+    #[rstest::rstest]
+    #[tokio::test]
+    async fn websocket_listener_accepts_through_core_socket_listener(
+        #[values("ws", "wss")] protocol: &str,
+    ) {
+        let global_ctx = get_mock_global_ctx();
+        global_ctx
+            .config
+            .set_listeners(vec![format!("{protocol}://127.0.0.1:0").parse().unwrap()]);
+        let handler = Arc::new(MockListenerHandler {});
+        let mut listener_mgr = ListenerManager::new(global_ctx.clone(), handler.clone());
+
+        listener_mgr.prepare_listeners().await.unwrap();
+        listener_mgr.run().await.unwrap();
+
+        let listener_url = timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                if let Some(url) = global_ctx
+                    .get_running_listeners()
+                    .into_iter()
+                    .find(|url| url.scheme() == protocol)
+                {
+                    break url;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+
+        let tunnel = tunnel::websocket::WsTunnelConnector::new(listener_url)
             .connect()
             .await
             .unwrap();
