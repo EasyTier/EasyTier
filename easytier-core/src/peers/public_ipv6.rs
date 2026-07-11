@@ -69,6 +69,50 @@ pub enum PublicIpv6ProviderConfigError {
     InvalidPrefix(Ipv6Cidr),
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PublicIpv6ProviderResolution {
+    Disabled,
+    Pending(String),
+    Active(Ipv6Cidr),
+}
+
+pub fn resolve_public_ipv6_provider(
+    config: PublicIpv6ProviderConfig,
+    detected_prefix: Result<Option<Ipv6Cidr>, String>,
+) -> PublicIpv6ProviderResolution {
+    if !config.provider_enabled {
+        return PublicIpv6ProviderResolution::Disabled;
+    }
+    if !config.provider_supported {
+        return PublicIpv6ProviderResolution::Pending(
+            PublicIpv6ProviderConfigError::UnsupportedProvider.to_string(),
+        );
+    }
+
+    if let Some(prefix) = config.configured_prefix {
+        return if is_global_routable_public_ipv6_prefix(prefix) {
+            PublicIpv6ProviderResolution::Active(prefix)
+        } else {
+            PublicIpv6ProviderResolution::Pending(format!(
+                "the configured prefix {prefix} is not a valid global unicast IPv6 prefix"
+            ))
+        };
+    }
+
+    match detected_prefix {
+        Ok(Some(prefix)) if is_global_routable_public_ipv6_prefix(prefix) => {
+            PublicIpv6ProviderResolution::Active(prefix)
+        }
+        Ok(Some(prefix)) => PublicIpv6ProviderResolution::Pending(format!(
+            "the detected prefix {prefix} is not a valid global unicast IPv6 prefix"
+        )),
+        Ok(None) => PublicIpv6ProviderResolution::Pending(
+            "no public IPv6 prefix found on this system; set --ipv6-public-addr-prefix manually, or check that your ISP has delegated an IPv6 prefix and a default-from route exists in the kernel routing table".to_owned(),
+        ),
+        Err(error) => PublicIpv6ProviderResolution::Pending(error),
+    }
+}
+
 pub fn is_global_routable_public_ipv6_prefix(prefix: Ipv6Cidr) -> bool {
     let addr = prefix.first_address();
     !addr.is_loopback()
@@ -906,8 +950,8 @@ mod tests {
 
     use super::{
         PublicIpv6PeerRouteInfo, PublicIpv6ProviderConfig, PublicIpv6ProviderConfigError,
-        PublicIpv6RouteControl, PublicIpv6Runtime, PublicIpv6Service, PublicIpv6SyncTrigger,
-        allocate_public_ipv6_leases,
+        PublicIpv6ProviderResolution, PublicIpv6RouteControl, PublicIpv6Runtime, PublicIpv6Service,
+        PublicIpv6SyncTrigger, allocate_public_ipv6_leases, resolve_public_ipv6_provider,
     };
 
     struct TestRouteControl {
@@ -1184,5 +1228,69 @@ mod tests {
         };
         assert!(config.validate().is_ok());
         assert!(config.should_run_reconcile());
+    }
+
+    #[test]
+    fn provider_resolution_prefers_configured_prefix_without_detection() {
+        let prefix = "2001:db8::/48".parse().unwrap();
+        let config = PublicIpv6ProviderConfig {
+            provider_enabled: true,
+            configured_prefix: Some(prefix),
+            provider_supported: true,
+        };
+        assert_eq!(
+            resolve_public_ipv6_provider(config, Err("detection must be ignored".to_owned())),
+            PublicIpv6ProviderResolution::Active(prefix)
+        );
+    }
+
+    #[test]
+    fn provider_resolution_normalizes_auto_detection_results() {
+        let config = PublicIpv6ProviderConfig {
+            provider_enabled: true,
+            configured_prefix: None,
+            provider_supported: true,
+        };
+        let prefix = "2001:db8:1::/56".parse().unwrap();
+        assert_eq!(
+            resolve_public_ipv6_provider(config, Ok(Some(prefix))),
+            PublicIpv6ProviderResolution::Active(prefix)
+        );
+        assert!(matches!(
+            resolve_public_ipv6_provider(config, Ok(None)),
+            PublicIpv6ProviderResolution::Pending(message)
+                if message.contains("ipv6-public-addr-prefix")
+        ));
+        assert_eq!(
+            resolve_public_ipv6_provider(config, Err("host detection failed".to_owned())),
+            PublicIpv6ProviderResolution::Pending("host detection failed".to_owned())
+        );
+    }
+
+    #[test]
+    fn provider_resolution_rejects_invalid_configured_and_detected_prefixes() {
+        let configured = PublicIpv6ProviderConfig {
+            provider_enabled: true,
+            configured_prefix: Some("fd00::/48".parse().unwrap()),
+            provider_supported: true,
+        };
+        assert!(matches!(
+            resolve_public_ipv6_provider(configured, Ok(None)),
+            PublicIpv6ProviderResolution::Pending(message)
+                if message.contains("configured prefix")
+        ));
+
+        let detected = PublicIpv6ProviderConfig {
+            configured_prefix: None,
+            ..configured
+        };
+        assert!(matches!(
+            resolve_public_ipv6_provider(
+                detected,
+                Ok(Some("fe80::/64".parse().unwrap()))
+            ),
+            PublicIpv6ProviderResolution::Pending(message)
+                if message.contains("detected prefix")
+        ));
     }
 }

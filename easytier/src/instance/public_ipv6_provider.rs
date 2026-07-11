@@ -6,7 +6,8 @@ use std::sync::Arc;
 use anyhow::Context;
 use cidr::{Ipv6Cidr, Ipv6Inet};
 use easytier_core::peers::public_ipv6::{
-    PublicIpv6ProviderConfig, is_global_routable_public_ipv6_prefix,
+    PublicIpv6ProviderConfig, PublicIpv6ProviderResolution, is_global_routable_public_ipv6_prefix,
+    resolve_public_ipv6_provider,
 };
 #[cfg(target_os = "linux")]
 use netlink_packet_route::route::{RouteAddress, RouteAttribute, RouteMessage, RouteType};
@@ -99,13 +100,6 @@ fn ensure_public_ipv6_provider_supported() -> Result<(), Error> {
     }
     .validate()
     .map_err(|error| anyhow::Error::new(error).into())
-}
-
-fn public_ipv6_provider_auto_detect_error() -> Error {
-    anyhow::anyhow!(
-        "no public IPv6 prefix found on this system; set --ipv6-public-addr-prefix manually, or check that your ISP has delegated an IPv6 prefix and a default-from route exists in the kernel routing table"
-    )
-    .into()
 }
 
 #[cfg(target_os = "linux")]
@@ -468,16 +462,6 @@ async fn detect_public_ipv6_prefix_linux() -> Result<Option<Ipv6Cidr>, Error> {
     Ok(None)
 }
 
-fn invalid_public_ipv6_prefix_state(
-    prefix: Ipv6Cidr,
-    source: &str,
-) -> PublicIpv6ProviderRuntimeState {
-    PublicIpv6ProviderRuntimeState::Pending(format!(
-        "the {} prefix {} is not a valid global unicast IPv6 prefix",
-        source, prefix
-    ))
-}
-
 #[cfg(target_os = "linux")]
 fn active_public_ipv6_provider_state(
     prefix: Ipv6Cidr,
@@ -492,9 +476,38 @@ fn active_public_ipv6_provider_state(prefix: Ipv6Cidr) -> PublicIpv6ProviderRunt
 }
 
 #[cfg(target_os = "linux")]
+fn runtime_state_from_resolution(
+    resolution: PublicIpv6ProviderResolution,
+    ndp_proxy: Option<NdpProxyTarget>,
+) -> PublicIpv6ProviderRuntimeState {
+    match resolution {
+        PublicIpv6ProviderResolution::Disabled => PublicIpv6ProviderRuntimeState::Disabled,
+        PublicIpv6ProviderResolution::Pending(error) => {
+            PublicIpv6ProviderRuntimeState::Pending(error)
+        }
+        PublicIpv6ProviderResolution::Active(prefix) => {
+            active_public_ipv6_provider_state(prefix, ndp_proxy)
+        }
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn runtime_state_from_resolution(
+    resolution: PublicIpv6ProviderResolution,
+) -> PublicIpv6ProviderRuntimeState {
+    match resolution {
+        PublicIpv6ProviderResolution::Disabled => PublicIpv6ProviderRuntimeState::Disabled,
+        PublicIpv6ProviderResolution::Pending(error) => {
+            PublicIpv6ProviderRuntimeState::Pending(error)
+        }
+        PublicIpv6ProviderResolution::Active(prefix) => active_public_ipv6_provider_state(prefix),
+    }
+}
+
+#[cfg(target_os = "linux")]
 async fn resolve_public_ipv6_provider_runtime_state_linux(
     global_ctx: &ArcGlobalCtx,
-    configured_prefix: Option<Ipv6Cidr>,
+    config: PublicIpv6ProviderConfig,
 ) -> PublicIpv6ProviderRuntimeState {
     let _g = global_ctx.net_ns.guard();
 
@@ -502,9 +515,10 @@ async fn resolve_public_ipv6_provider_runtime_state_linux(
         return PublicIpv6ProviderRuntimeState::Pending(err.to_string());
     }
 
-    if let Some(prefix) = configured_prefix {
-        if !is_global_routable_public_ipv6_prefix(prefix) {
-            return invalid_public_ipv6_prefix_state(prefix, "configured");
+    if let Some(prefix) = config.configured_prefix {
+        let resolution = resolve_public_ipv6_provider(config, Ok(None));
+        if !matches!(resolution, PublicIpv6ProviderResolution::Active(_)) {
+            return runtime_state_from_resolution(resolution, None);
         }
         let ndp_proxy = match list_detected_ipv6_routes() {
             Ok(routes) => detect_configured_prefix_ndp_proxy_target(&routes, prefix),
@@ -517,46 +531,43 @@ async fn resolve_public_ipv6_provider_runtime_state_linux(
                 None
             }
         };
-        return active_public_ipv6_provider_state(prefix, ndp_proxy);
+        return runtime_state_from_resolution(resolution, ndp_proxy);
     }
 
-    match detect_public_ipv6_prefix_linux().await {
-        Ok(Some(detected)) if is_global_routable_public_ipv6_prefix(detected.prefix) => {
-            active_public_ipv6_provider_state(detected.prefix, detected.ndp_proxy)
-        }
-        Ok(Some(detected)) => invalid_public_ipv6_prefix_state(detected.prefix, "detected"),
-        Ok(None) => PublicIpv6ProviderRuntimeState::Pending(
-            public_ipv6_provider_auto_detect_error().to_string(),
-        ),
-        Err(err) => PublicIpv6ProviderRuntimeState::Pending(err.to_string()),
-    }
+    let detected = detect_public_ipv6_prefix_linux().await;
+    let ndp_proxy = detected
+        .as_ref()
+        .ok()
+        .and_then(|detected| detected.as_ref())
+        .and_then(|detected| detected.ndp_proxy.clone());
+    let detected_prefix = detected
+        .map(|detected| detected.map(|detected| detected.prefix))
+        .map_err(|error| error.to_string());
+    runtime_state_from_resolution(
+        resolve_public_ipv6_provider(config, detected_prefix),
+        ndp_proxy,
+    )
 }
 
 async fn resolve_public_ipv6_provider_runtime_state(
     _global_ctx: &ArcGlobalCtx,
     config: PublicIpv6ProviderConfig,
 ) -> PublicIpv6ProviderRuntimeState {
-    if !config.provider_enabled {
-        return PublicIpv6ProviderRuntimeState::Disabled;
+    if !config.provider_enabled || !config.provider_supported {
+        #[cfg(target_os = "linux")]
+        return runtime_state_from_resolution(resolve_public_ipv6_provider(config, Ok(None)), None);
+        #[cfg(not(target_os = "linux"))]
+        return runtime_state_from_resolution(resolve_public_ipv6_provider(config, Ok(None)));
     }
 
     #[cfg(target_os = "linux")]
     {
-        return resolve_public_ipv6_provider_runtime_state_linux(
-            _global_ctx,
-            config.configured_prefix,
-        )
-        .await;
+        return resolve_public_ipv6_provider_runtime_state_linux(_global_ctx, config).await;
     }
 
     #[cfg(not(target_os = "linux"))]
     {
-        let _ = config.configured_prefix;
-        PublicIpv6ProviderRuntimeState::Pending(
-            ensure_public_ipv6_provider_supported()
-                .unwrap_err()
-                .to_string(),
-        )
+        runtime_state_from_resolution(resolve_public_ipv6_provider(config, Ok(None)))
     }
 }
 
@@ -1102,19 +1113,18 @@ mod tests {
         DefaultRouteIpv6InterfaceCandidate, DetectedIpv6Route,
         detect_public_ipv6_prefix_from_interfaces, detect_public_ipv6_prefix_from_routes,
         detect_public_ipv6_prefix_linux, ensure_linux_ipv6_forwarding_at_paths,
-        ensure_public_ipv6_provider_supported, public_ipv6_provider_auto_detect_error,
-        select_default_route_ipv6_interfaces,
+        ensure_public_ipv6_provider_supported, select_default_route_ipv6_interfaces,
         select_public_ipv6_prefix_from_default_route_interfaces, sync_ndp_proxy_entries,
     };
 
+    #[cfg(not(target_os = "linux"))]
+    use super::ensure_public_ipv6_provider_supported;
     use super::{
         PublicIpv6ProviderConfig, PublicIpv6ProviderRuntimeState,
         active_public_ipv6_provider_state, read_public_ipv6_provider_config_snapshot,
         should_run_public_ipv6_provider_reconcile_task,
         try_apply_public_ipv6_provider_runtime_state,
     };
-    #[cfg(not(target_os = "linux"))]
-    use super::{ensure_public_ipv6_provider_supported, public_ipv6_provider_auto_detect_error};
     use crate::common::{
         config::{ConfigLoader, TomlConfigLoader},
         error::Error,
@@ -1334,15 +1344,6 @@ mod tests {
             detected_prefix(detect_public_ipv6_prefix_from_routes(&routes, 1)),
             None
         );
-    }
-
-    #[test]
-    fn test_public_ipv6_provider_auto_detect_error_mentions_manual_prefix() {
-        let err = public_ipv6_provider_auto_detect_error();
-        let msg = err.to_string();
-
-        assert!(msg.contains("IPv6 prefix"), "{}", msg);
-        assert!(msg.contains("ipv6-public-addr-prefix"), "{}", msg);
     }
 
     fn test_global_ctx() -> Arc<GlobalCtx> {
