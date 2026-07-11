@@ -56,13 +56,14 @@ impl AsyncRead for RingByteStream {
         }
         loop {
             if let Some((packet, offset)) = &mut self.buffered {
+                if *offset == packet.payload().len() {
+                    self.buffered = None;
+                    continue;
+                }
                 let remaining = &packet.payload()[*offset..];
                 let copy_len = remaining.len().min(buffer.remaining());
                 buffer.put_slice(&remaining[..copy_len]);
                 *offset += copy_len;
-                if *offset == packet.payload().len() {
-                    self.buffered = None;
-                }
                 return Poll::Ready(Ok(()));
             }
 
@@ -425,5 +426,25 @@ mod tests {
         right.read_exact(&mut suffix).await.unwrap();
         assert_eq!(&prefix, b"ab");
         assert_eq!(&suffix, b"cdef");
+    }
+
+    #[tokio::test]
+    async fn byte_stream_skips_empty_packets_without_reporting_eof() {
+        let (left, right) = RingTunnelSocket::pair(8);
+        let (_left_receiver, mut left_sender) = left.split();
+        let mut right = RingByteStream::new(right).unwrap();
+
+        left_sender
+            .send(crate::packet::ZCPacket::new_with_payload(b""))
+            .await
+            .unwrap();
+        left_sender
+            .send(crate::packet::ZCPacket::new_with_payload(b"data"))
+            .await
+            .unwrap();
+
+        let mut received = [0; 4];
+        right.read_exact(&mut received).await.unwrap();
+        assert_eq!(&received, b"data");
     }
 }
