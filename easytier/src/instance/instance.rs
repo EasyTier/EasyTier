@@ -35,7 +35,7 @@ use crate::gateway::icmp_proxy::IcmpProxy;
 #[cfg(feature = "kcp")]
 use crate::gateway::kcp_proxy::KcpProxyService;
 #[cfg(feature = "quic")]
-use crate::gateway::quic_proxy::{QuicProxy, QuicProxyDstRpcService};
+use crate::gateway::quic_proxy::QuicProxyService;
 use crate::gateway::tcp_proxy::{NatDstTcpConnector, TcpProxy, TcpProxyRpcService};
 use crate::gateway::udp_proxy::UdpProxy;
 use crate::launcher::NetworkConfigExt;
@@ -112,6 +112,16 @@ impl ProxyStartupPolicy for RuntimeProxyStartupPolicy {
             forward_by_system: self.global_ctx.proxy_forward_by_system(),
         }
         .should_start()
+    }
+}
+
+#[cfg(any(feature = "kcp", feature = "quic"))]
+struct RuntimeTransportProxyStartupPolicy;
+
+#[cfg(any(feature = "kcp", feature = "quic"))]
+impl ProxyStartupPolicy for RuntimeTransportProxyStartupPolicy {
+    fn should_start(&self) -> bool {
+        true
     }
 }
 
@@ -612,7 +622,7 @@ pub struct Instance {
     kcp_proxy: Arc<KcpProxyService>,
 
     #[cfg(feature = "quic")]
-    quic_proxy: Option<QuicProxy>,
+    quic_proxy: Arc<QuicProxyService>,
 
     vpn_portal: Arc<Mutex<Box<dyn VpnPortal>>>,
 
@@ -758,9 +768,20 @@ impl Instance {
         );
         #[cfg(feature = "kcp")]
         let kcp_proxy = Arc::new(KcpProxyService::new(peer_manager.clone()));
-        #[cfg(feature = "kcp")]
-        let transport_proxy: Option<Arc<dyn ProxyService>> = Some(kcp_proxy.clone());
-        #[cfg(not(feature = "kcp"))]
+        #[cfg(feature = "quic")]
+        let quic_proxy = Arc::new(QuicProxyService::new(peer_manager.clone()));
+        #[cfg(any(feature = "kcp", feature = "quic"))]
+        let transport_proxy: Option<Arc<dyn ProxyService>> = {
+            let mut services: Vec<Arc<dyn ProxyService>> = Vec::new();
+            #[cfg(feature = "kcp")]
+            services.push(kcp_proxy.clone());
+            #[cfg(feature = "quic")]
+            services.push(quic_proxy.clone());
+            let group: Arc<dyn ProxyService> =
+                ProxyServiceGroup::new(Arc::new(RuntimeTransportProxyStartupPolicy), services);
+            Some(group)
+        };
+        #[cfg(not(any(feature = "kcp", feature = "quic")))]
         let transport_proxy: Option<Arc<dyn ProxyService>> = None;
         let core_instance = Arc::new(
             build_runtime_core_instance_with_transport(
@@ -796,7 +817,7 @@ impl Instance {
             kcp_proxy,
 
             #[cfg(feature = "quic")]
-            quic_proxy: None,
+            quic_proxy,
 
             vpn_portal: Arc::new(Mutex::new(Box::new(vpn_portal_inst))),
 
@@ -994,19 +1015,8 @@ impl Instance {
                 .await?;
         }
 
-        #[cfg(feature = "kcp")]
+        #[cfg(any(feature = "kcp", feature = "quic"))]
         self.core_instance.start_transport_proxy().await?;
-
-        #[cfg(feature = "quic")]
-        {
-            let quic_src = self.global_ctx.get_flags().enable_quic_proxy;
-            let quic_dst = !self.global_ctx.get_flags().disable_quic_input;
-            if quic_src || quic_dst {
-                let mut quic_proxy = QuicProxy::new(self.get_peer_manager());
-                quic_proxy.run(quic_src, quic_dst).await;
-                self.quic_proxy = Some(quic_proxy);
-            }
-        }
 
         self.global_ctx
             .get_acl_filter()
@@ -1426,20 +1436,16 @@ impl Instance {
                 }
 
                 #[cfg(feature = "quic")]
-                if let Some(quic_proxy) = self.quic_proxy.as_ref() {
-                    if let Some(quic_src) = quic_proxy.src() {
-                        tcp_proxy_rpc_services.insert(
-                            "quic_src".to_string(),
-                            Arc::new(TcpProxyRpcService::new(quic_src.get_tcp_proxy())),
-                        );
-                    }
+                if let Some(quic_proxy) = self.quic_proxy.src_tcp_proxy() {
+                    tcp_proxy_rpc_services.insert(
+                        "quic_src".to_string(),
+                        Arc::new(TcpProxyRpcService::new(quic_proxy)),
+                    );
+                }
 
-                    if let Some(quic_dst) = quic_proxy.dst() {
-                        tcp_proxy_rpc_services.insert(
-                            "quic_dst".to_string(),
-                            Arc::new(QuicProxyDstRpcService::new(quic_dst)),
-                        );
-                    }
+                #[cfg(feature = "quic")]
+                if let Some(quic_proxy) = self.quic_proxy.dst_rpc_service() {
+                    tcp_proxy_rpc_services.insert("quic_dst".to_string(), Arc::new(quic_proxy));
                 }
 
                 tcp_proxy_rpc_services
@@ -1533,7 +1539,7 @@ impl Drop for Instance {
 
 #[cfg(test)]
 mod tests {
-    #[cfg(feature = "kcp")]
+    #[cfg(any(feature = "kcp", feature = "quic"))]
     use crate::{common::config::TomlConfigLoader, instance::instance::Instance};
     use crate::{
         common::global_ctx::tests::get_mock_global_ctx,
@@ -1551,6 +1557,18 @@ mod tests {
         instance.global_ctx.set_flags(flags);
 
         assert_eq!(instance.kcp_proxy.enabled_directions(), (true, false));
+    }
+
+    #[cfg(feature = "quic")]
+    #[tokio::test]
+    async fn quic_proxy_reads_direction_flags_at_activation() {
+        let instance = Instance::new(TomlConfigLoader::default());
+        let mut flags = instance.global_ctx.get_flags();
+        flags.enable_quic_proxy = true;
+        flags.disable_quic_input = true;
+        instance.global_ctx.set_flags(flags);
+
+        assert_eq!(instance.quic_proxy.enabled_directions(), (true, false));
     }
 
     #[tokio::test]

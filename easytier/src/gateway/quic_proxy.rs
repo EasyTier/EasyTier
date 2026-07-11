@@ -36,10 +36,11 @@ use std::io::IoSliceMut;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::pin::Pin;
 use std::ptr::copy_nonoverlapping;
-use std::sync::{Arc, Weak};
+use std::sync::{Arc, Mutex as StdMutex, Weak};
 use std::task::Poll;
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, Join, join};
+use tokio::sync::Mutex;
 use tokio::sync::mpsc::error::TrySendError;
 use tokio::sync::mpsc::{Receiver, Sender, channel};
 use tokio::task::JoinSet;
@@ -48,12 +49,15 @@ use tokio::{join, select};
 use tokio_util::sync::PollSender;
 use tracing::{debug, error, info, instrument, trace, warn};
 
-use easytier_core::proxy::{
-    proxy_acl::ProxyAclHandler,
-    tcp_proxy_engine::TcpProxyMode,
-    wrapped_tcp_proxy::{
-        WrappedTcpProxyNicContext, WrappedTcpProxyTransport,
-        try_process_wrapped_tcp_packet_from_nic,
+use easytier_core::{
+    instance::ProxyService,
+    proxy::{
+        proxy_acl::ProxyAclHandler,
+        tcp_proxy_engine::TcpProxyMode,
+        wrapped_tcp_proxy::{
+            WrappedTcpProxyNicContext, WrappedTcpProxyTransport,
+            try_process_wrapped_tcp_packet_from_nic,
+        },
     },
 };
 
@@ -942,6 +946,86 @@ impl QuicProxy {
     }
 }
 
+pub struct QuicProxyService {
+    peer_manager: Arc<PeerManager>,
+    state: Mutex<Option<QuicProxy>>,
+    src_tcp_proxy: StdMutex<Option<Arc<TcpProxy<NatDstQuicConnector>>>>,
+    dst_proxy_entries: StdMutex<Option<Arc<DashMap<(StreamId, StreamId), TcpProxyEntry>>>>,
+}
+
+impl QuicProxyService {
+    pub fn new(peer_manager: Arc<PeerManager>) -> Self {
+        Self {
+            peer_manager,
+            state: Mutex::new(None),
+            src_tcp_proxy: StdMutex::new(None),
+            dst_proxy_entries: StdMutex::new(None),
+        }
+    }
+
+    pub(crate) fn enabled_directions(&self) -> (bool, bool) {
+        let flags = self.peer_manager.get_global_ctx().get_flags();
+        (flags.enable_quic_proxy, !flags.disable_quic_input)
+    }
+
+    pub fn src_tcp_proxy(&self) -> Option<Arc<TcpProxy<NatDstQuicConnector>>> {
+        self.src_tcp_proxy
+            .lock()
+            .expect("QUIC source TCP proxy mutex poisoned")
+            .clone()
+    }
+
+    pub fn dst_rpc_service(&self) -> Option<QuicProxyDstRpcService> {
+        self.dst_proxy_entries
+            .lock()
+            .expect("QUIC destination proxy entries mutex poisoned")
+            .as_ref()
+            .map(QuicProxyDstRpcService::new)
+    }
+}
+
+#[async_trait::async_trait]
+impl ProxyService for QuicProxyService {
+    async fn start(&self) -> anyhow::Result<()> {
+        let mut state = self.state.lock().await;
+        if state.is_some() {
+            return Ok(());
+        }
+
+        let (src_enabled, dst_enabled) = self.enabled_directions();
+        let mut proxy = QuicProxy::new(self.peer_manager.clone());
+        if src_enabled || dst_enabled {
+            proxy.run(src_enabled, dst_enabled).await;
+        }
+
+        *self
+            .src_tcp_proxy
+            .lock()
+            .expect("QUIC source TCP proxy mutex poisoned") =
+            proxy.src().map(QuicProxySrc::get_tcp_proxy);
+        *self
+            .dst_proxy_entries
+            .lock()
+            .expect("QUIC destination proxy entries mutex poisoned") =
+            proxy.dst().map(|dst| dst.stream_ctx.proxy_entries.clone());
+        *state = Some(proxy);
+        Ok(())
+    }
+
+    async fn stop(&self) {
+        let state = self.state.lock().await.take();
+        self.src_tcp_proxy
+            .lock()
+            .expect("QUIC source TCP proxy mutex poisoned")
+            .take();
+        self.dst_proxy_entries
+            .lock()
+            .expect("QUIC destination proxy entries mutex poisoned")
+            .take();
+        drop(state);
+    }
+}
+
 pub struct QuicProxySrc {
     peer_mgr: Arc<PeerManager>,
     tcp_proxy: TcpProxyForQuicSrc,
@@ -997,8 +1081,8 @@ impl QuicProxyDst {
 pub struct QuicProxyDstRpcService(Weak<DashMap<(StreamId, StreamId), TcpProxyEntry>>);
 
 impl QuicProxyDstRpcService {
-    pub fn new(quic_proxy_dst: &QuicProxyDst) -> Self {
-        Self(Arc::downgrade(&quic_proxy_dst.stream_ctx.proxy_entries))
+    pub fn new(proxy_entries: &Arc<DashMap<(StreamId, StreamId), TcpProxyEntry>>) -> Self {
+        Self(Arc::downgrade(proxy_entries))
     }
 }
 
