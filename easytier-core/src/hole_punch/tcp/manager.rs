@@ -1,5 +1,5 @@
 use std::{
-    sync::{Arc, Mutex, Weak},
+    sync::{Arc, Mutex},
     time::Duration,
 };
 
@@ -106,7 +106,7 @@ where
     H: TcpHolePunchHost,
 {
     host: Arc<H>,
-    peer_manager: Weak<PeerManagerCore>,
+    peer_manager: Arc<PeerManagerCore>,
     tasks: Arc<Mutex<JoinSet<()>>>,
 }
 
@@ -119,7 +119,7 @@ where
         join_joinset_background(tasks.clone());
         Arc::new(Self {
             host,
-            peer_manager: Arc::downgrade(&peer_manager),
+            peer_manager,
             tasks,
         })
     }
@@ -138,10 +138,6 @@ where
         _controller: Self::Controller,
         input: TcpHolePunchRequest,
     ) -> rpc_types::error::Result<TcpHolePunchResponse> {
-        let peer_manager = self
-            .peer_manager
-            .upgrade()
-            .ok_or_else(|| anyhow::anyhow!("peer manager is gone"))?;
         let local_nat_type = self.host.tcp_nat_type();
         tracing::debug!(?local_nat_type, "tcp hole punch rpc received");
         if local_nat_type == NatType::Unknown {
@@ -178,6 +174,7 @@ where
         );
 
         let host = self.host.clone();
+        let peer_manager = self.peer_manager.clone();
         self.tasks.lock().unwrap().spawn(async move {
             let _ = try_connect_to_remote(
                 host,
