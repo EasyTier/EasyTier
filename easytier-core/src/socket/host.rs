@@ -17,6 +17,7 @@ use super::tcp::VirtualTcpSocket;
 pub mod dns;
 pub mod factory;
 pub mod listener;
+pub mod packet;
 pub mod udp;
 #[cfg(target_os = "wasi")]
 pub mod wasi;
