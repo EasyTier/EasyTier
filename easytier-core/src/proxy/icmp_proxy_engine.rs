@@ -32,7 +32,7 @@ pub enum IcmpProxyAction {
         destination: Ipv4Addr,
         packet: Vec<u8>,
     },
-    SendToPeer(ZCPacket),
+    SendToPeer(Vec<ZCPacket>),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -156,23 +156,32 @@ impl IcmpProxyEngine {
         }
     }
 
-    pub fn handle_socket_response(&self, peer_ip: Ipv4Addr, packet: &mut [u8]) -> Option<ZCPacket> {
-        let ipv4 = Ipv4Packet::new(packet)?;
-        let reply = icmp::echo_reply::EchoReplyPacket::new(ipv4.payload())?;
+    pub fn handle_socket_response(&self, peer_ip: Ipv4Addr, packet: &mut [u8]) -> Vec<ZCPacket> {
+        let Some(ipv4) = Ipv4Packet::new(packet) else {
+            return Vec::new();
+        };
+        let Some(reply) = icmp::echo_reply::EchoReplyPacket::new(ipv4.payload()) else {
+            return Vec::new();
+        };
         if reply.get_icmp_type() != IcmpTypes::EchoReply {
-            return None;
+            return Vec::new();
         }
         let key = IcmpNatKey {
             real_destination: peer_ip,
             identifier: reply.get_identifier(),
             sequence: reply.get_sequence_number(),
         };
-        let (_, entry) = self.nat_table.remove(&key)?;
-        let payload_len = packet
+        let Some((_, entry)) = self.nat_table.remove(&key) else {
+            return Vec::new();
+        };
+        let Some(payload_len) = packet
             .len()
-            .checked_sub(ipv4.get_header_length() as usize * 4)?;
+            .checked_sub(ipv4.get_header_length() as usize * 4)
+        else {
+            return Vec::new();
+        };
         let ip_id = ipv4.get_identification();
-        let mut response = None;
+        let mut responses = Vec::new();
         let _ = compose_ipv4_packet(
             ComposeIpv4PacketArgs {
                 buf: packet,
@@ -194,11 +203,11 @@ impl IcmpProxyEngine {
                     .mut_peer_manager_header()
                     .expect("peer manager header")
                     .set_no_proxy(true);
-                response = Some(packet);
+                responses.push(packet);
                 Ok(())
             },
         );
-        response
+        responses
     }
 
     pub fn remove_expired_entries(&self, max_age: Duration) {
@@ -230,7 +239,7 @@ impl IcmpProxyEngine {
         reply.set_checksum(icmp::checksum(&reply.to_immutable()));
 
         let payload_len = buffer.len() - 20;
-        let mut response = None;
+        let mut responses = Vec::new();
         let _ = compose_ipv4_packet(
             ComposeIpv4PacketArgs {
                 buf: &mut buffer,
@@ -248,11 +257,11 @@ impl IcmpProxyEngine {
                     destination_peer_id,
                     PacketType::Data as u8,
                 );
-                response = Some(packet);
+                responses.push(packet);
                 Ok(())
             },
         );
-        IcmpProxyAction::SendToPeer(response.expect("ICMP reply composition should succeed"))
+        IcmpProxyAction::SendToPeer(responses)
     }
 }
 
@@ -267,14 +276,18 @@ mod tests {
     use super::*;
     use crate::proxy::cidr_table::{ProxyCidrRule, ProxyCidrSnapshot};
 
-    fn echo_request(source: Ipv4Addr, destination: Ipv4Addr) -> ZCPacket {
-        let mut bytes = vec![0_u8; 20 + 8 + 4];
+    fn echo_request_with_payload(
+        source: Ipv4Addr,
+        destination: Ipv4Addr,
+        payload: &[u8],
+    ) -> ZCPacket {
+        let mut bytes = vec![0_u8; 20 + 8 + payload.len()];
         {
             let mut request = MutableEchoRequestPacket::new(&mut bytes[20..]).unwrap();
             request.set_icmp_type(IcmpTypes::EchoRequest);
             request.set_identifier(7);
             request.set_sequence_number(11);
-            request.set_payload(b"ping");
+            request.set_payload(payload);
             let mut icmp = MutableIcmpPacket::new(&mut bytes[20..]).unwrap();
             icmp.set_checksum(icmp::checksum(&icmp.to_immutable()));
         }
@@ -293,6 +306,10 @@ mod tests {
         let mut packet = ZCPacket::new_with_payload(&bytes);
         packet.fill_peer_manager_hdr(101, 202, PacketType::Data as u8);
         packet
+    }
+
+    fn echo_request(source: Ipv4Addr, destination: Ipv4Addr) -> ZCPacket {
+        echo_request_with_payload(source, destination, b"ping")
     }
 
     fn engine(rule: Option<ProxyCidrRule>) -> IcmpProxyEngine {
@@ -324,7 +341,7 @@ mod tests {
         let engine = engine(None);
         let packet = echo_request("10.0.0.2".parse().unwrap(), "10.0.0.1".parse().unwrap());
 
-        let IcmpProxyAction::SendToPeer(reply) = engine.handle_peer_packet(
+        let IcmpProxyAction::SendToPeer(replies) = engine.handle_peer_packet(
             &packet,
             IcmpProxyContext {
                 virtual_ipv4: Some("10.0.0.1".parse().unwrap()),
@@ -333,6 +350,9 @@ mod tests {
             },
         ) else {
             panic!("expected local reply");
+        };
+        let [reply] = replies.as_slice() else {
+            panic!("expected one local reply");
         };
         let header = reply.peer_manager_header().unwrap();
         assert_eq!(header.from_peer_id.get(), 202);
@@ -386,9 +406,10 @@ mod tests {
             ipv4.set_source(destination);
             ipv4.set_checksum(ipv4::checksum(&ipv4.to_immutable()));
         }
-        let reply = engine
-            .handle_socket_response(destination, &mut response)
-            .expect("socket reply should match NAT entry");
+        let replies = engine.handle_socket_response(destination, &mut response);
+        let [reply] = replies.as_slice() else {
+            panic!("expected one socket reply");
+        };
         let header = reply.peer_manager_header().unwrap();
         assert_eq!(header.from_peer_id.get(), 202);
         assert_eq!(header.to_peer_id.get(), 101);
@@ -402,5 +423,94 @@ mod tests {
             ipv4.get_destination(),
             "10.0.0.2".parse::<Ipv4Addr>().unwrap()
         );
+    }
+
+    #[test]
+    fn large_local_reply_preserves_all_ipv4_fragments() {
+        let engine = engine(None);
+        let packet = echo_request_with_payload(
+            "10.0.0.2".parse().unwrap(),
+            "10.0.0.1".parse().unwrap(),
+            &[0; 2400],
+        );
+
+        let IcmpProxyAction::SendToPeer(replies) = engine.handle_peer_packet(
+            &packet,
+            IcmpProxyContext {
+                virtual_ipv4: Some("10.0.0.1".parse().unwrap()),
+                no_tun: true,
+                ..Default::default()
+            },
+        ) else {
+            panic!("expected local replies");
+        };
+
+        assert_eq!(replies.len(), 3);
+        assert!(replies.iter().all(|packet| {
+            let header = packet.peer_manager_header().unwrap();
+            header.from_peer_id.get() == 202 && header.to_peer_id.get() == 101
+        }));
+    }
+
+    #[test]
+    fn large_socket_reply_preserves_all_ipv4_fragments() {
+        let engine = engine(Some(ProxyCidrRule {
+            cidr: "127.0.0.0/24".parse().unwrap(),
+            mapped_cidr: Some("10.10.10.0/24".parse().unwrap()),
+        }));
+        let destination = "127.0.0.42".parse().unwrap();
+        let packet = echo_request_with_payload(
+            "10.0.0.2".parse().unwrap(),
+            "10.10.10.42".parse().unwrap(),
+            &[0; 2400],
+        );
+        assert!(matches!(
+            engine.handle_peer_packet(
+                &packet,
+                IcmpProxyContext {
+                    virtual_ipv4: Some("10.0.0.1".parse().unwrap()),
+                    ..Default::default()
+                },
+            ),
+            IcmpProxyAction::SendToSocket { .. }
+        ));
+        assert!(engine.nat_table.contains_key(&IcmpNatKey {
+            real_destination: destination,
+            identifier: 7,
+            sequence: 11,
+        }));
+
+        let mut response =
+            echo_request_with_payload(destination, "10.0.0.1".parse().unwrap(), &[0; 2400])
+                .payload()
+                .to_vec();
+        {
+            let mut ipv4 = MutableIpv4Packet::new(&mut response).unwrap();
+            let mut reply = MutableEchoReplyPacket::new(ipv4.payload_mut()).unwrap();
+            reply.set_icmp_type(IcmpTypes::EchoReply);
+            let mut icmp = MutableIcmpPacket::new(ipv4.payload_mut()).unwrap();
+            icmp.set_checksum(icmp::checksum(&icmp.to_immutable()));
+            ipv4.set_source(destination);
+            // Raw sockets may return a buffer with bytes beyond the IPv4 total
+            // length. The native implementation composes from the received
+            // buffer length, so keep that case covered without changing the
+            // existing in-place composer in this refactor.
+            ipv4.set_total_length(1220);
+            ipv4.set_checksum(ipv4::checksum(&ipv4.to_immutable()));
+        }
+        let ipv4 = Ipv4Packet::new(&response).unwrap();
+        let echo_reply = icmp::echo_reply::EchoReplyPacket::new(ipv4.payload()).unwrap();
+        assert_eq!(echo_reply.get_icmp_type(), IcmpTypes::EchoReply);
+        assert_eq!(echo_reply.get_identifier(), 7);
+        assert_eq!(echo_reply.get_sequence_number(), 11);
+
+        let replies = engine.handle_socket_response(destination, &mut response);
+        assert_eq!(replies.len(), 3);
+        assert!(replies.iter().all(|packet| {
+            let header = packet.peer_manager_header().unwrap();
+            header.from_peer_id.get() == 202
+                && header.to_peer_id.get() == 101
+                && header.is_no_proxy()
+        }));
     }
 }
