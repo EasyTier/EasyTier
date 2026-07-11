@@ -7,6 +7,9 @@ use crate::instance::PacketSink;
 
 use super::{HostOperationId, HostSocketRuntime};
 
+#[cfg(target_os = "wasi")]
+pub mod wasi;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct HostPacketSinkHandle(pub u64);
 
