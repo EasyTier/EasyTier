@@ -44,19 +44,35 @@ type opaqueWriteOperation struct {
 type opaqueBridge struct {
 	mu         sync.Mutex
 	handles    map[uint64]net.Conn
+	packets    map[uint64]*opaquePacketState
 	reads      map[uint64]*opaqueReadOperation
 	writes     map[uint64]*opaqueWriteOperation
+	udpReads   map[uint64]*opaqueUDPReadWaiter
+	udpWrites  map[uint64]*opaqueUDPWriteWaiter
 	completion chan struct{}
 	workers    sync.WaitGroup
 }
 
-func newOpaqueBridge(handles map[uint64]net.Conn) *opaqueBridge {
-	return &opaqueBridge{
+func newOpaqueBridge(
+	handles map[uint64]net.Conn,
+	packets map[uint64]net.PacketConn,
+) *opaqueBridge {
+	bridge := &opaqueBridge{
 		handles:    handles,
+		packets:    make(map[uint64]*opaquePacketState, len(packets)),
 		reads:      make(map[uint64]*opaqueReadOperation),
 		writes:     make(map[uint64]*opaqueWriteOperation),
+		udpReads:   make(map[uint64]*opaqueUDPReadWaiter),
+		udpWrites:  make(map[uint64]*opaqueUDPWriteWaiter),
 		completion: make(chan struct{}, 1),
 	}
+	for handle, connection := range packets {
+		state := newOpaquePacketState(connection)
+		bridge.packets[handle] = state
+		bridge.workers.Add(1)
+		go bridge.runUDPSends(handle, state)
+	}
+	return bridge
 }
 
 func (b *opaqueBridge) startRead(
@@ -239,6 +255,14 @@ func (b *opaqueBridge) cancelOperation(
 		delete(b.writes, operation)
 		return 0
 	}
+	if _, exists := b.udpReads[operation]; exists {
+		delete(b.udpReads, operation)
+		return 0
+	}
+	if _, exists := b.udpWrites[operation]; exists {
+		delete(b.udpWrites, operation)
+		return 0
+	}
 	return opaqueHostInvalid
 }
 
@@ -252,13 +276,22 @@ func (b *opaqueBridge) closeHandle(
 	if exists {
 		delete(b.handles, handle)
 	}
+	packet, packetExists := b.packets[handle]
+	if packetExists {
+		delete(b.packets, handle)
+	}
 	b.mu.Unlock()
 
-	if !exists {
+	if !exists && !packetExists {
 		return 0
 	}
-	if err := connection.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
-		return opaqueHostIOError
+	if exists {
+		if err := connection.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
+			return opaqueHostIOError
+		}
+	}
+	if packetExists {
+		packet.closeAfterQueuedSends()
 	}
 	return 0
 }
@@ -281,10 +314,17 @@ func (b *opaqueBridge) close() {
 	for _, connection := range b.handles {
 		connections = append(connections, connection)
 	}
+	packets := make([]*opaquePacketState, 0, len(b.packets))
+	for _, packet := range b.packets {
+		packets = append(packets, packet)
+	}
 	b.mu.Unlock()
 
 	for _, connection := range connections {
 		_ = connection.Close()
+	}
+	for _, packet := range packets {
+		packet.closeAfterQueuedSends()
 	}
 	b.workers.Wait()
 }
@@ -292,10 +332,13 @@ func (b *opaqueBridge) close() {
 func TestOpaqueSocketBridgeDrivesTokio(t *testing.T) {
 	pendingHost, pendingPeer := net.Pipe()
 	activeHost, activePeer := net.Pipe()
-	bridge := newOpaqueBridge(map[uint64]net.Conn{
-		1: pendingHost,
-		2: activeHost,
-	})
+	bridge := newOpaqueBridge(
+		map[uint64]net.Conn{
+			1: pendingHost,
+			2: activeHost,
+		},
+		nil,
+	)
 	defer bridge.close()
 	defer pendingPeer.Close()
 	defer activePeer.Close()
@@ -469,6 +512,11 @@ func instantiateOpaqueHost(
 		NewFunctionBuilder().WithFunc(bridge.takeRead).Export("take_read").
 		NewFunctionBuilder().WithFunc(bridge.startWrite).Export("start_write").
 		NewFunctionBuilder().WithFunc(bridge.takeWrite).Export("take_write").
+		NewFunctionBuilder().WithFunc(bridge.startUDPRecv).Export("start_udp_recv").
+		NewFunctionBuilder().WithFunc(bridge.takeUDPRecv).Export("take_udp_recv").
+		NewFunctionBuilder().WithFunc(bridge.tryUDPSend).Export("try_udp_send").
+		NewFunctionBuilder().WithFunc(bridge.startUDPSendReady).Export("start_udp_send_ready").
+		NewFunctionBuilder().WithFunc(bridge.takeUDPSendReady).Export("take_udp_send_ready").
 		NewFunctionBuilder().WithFunc(bridge.cancelOperation).Export("cancel_operation").
 		NewFunctionBuilder().WithFunc(bridge.closeHandle).Export("close").
 		Instantiate(ctx)

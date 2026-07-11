@@ -7,7 +7,10 @@ use std::{
     time::Duration,
 };
 
-use easytier_core::socket::host::{HostSocketHandle, HostSocketRuntime, wasi::WasiHostTcpIo};
+use easytier_core::socket::{
+    host::{HostSocketHandle, HostSocketRuntime, udp::wasi::WasiHostUdpIo, wasi::WasiHostTcpIo},
+    udp::VirtualUdpSocket,
+};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     runtime::{Builder, Runtime},
@@ -23,9 +26,16 @@ const ERROR: u32 = 1 << 31;
 
 thread_local! {
     static PROBE: RefCell<Option<Probe>> = const { RefCell::new(None) };
+    static UDP_PROBE: RefCell<Option<UdpProbe>> = const { RefCell::new(None) };
 }
 
 struct Probe {
+    runtime: Runtime,
+    status: Arc<AtomicU32>,
+    sockets: HostSocketRuntime,
+}
+
+struct UdpProbe {
     runtime: Runtime,
     status: Arc<AtomicU32>,
     sockets: HostSocketRuntime,
@@ -131,6 +141,73 @@ pub extern "C" fn drive_opaque_probe() -> u32 {
             }
         }
 
+        probe.status.load(Ordering::SeqCst)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn init_udp_probe(handle: u32) -> i32 {
+    UDP_PROBE.with_borrow_mut(|slot| {
+        if slot.is_some() {
+            return -1;
+        }
+
+        let runtime = match Builder::new_current_thread().enable_time().build() {
+            Ok(runtime) => runtime,
+            Err(_) => return -2,
+        };
+        let status = Arc::new(AtomicU32::new(0));
+        let sockets = HostSocketRuntime::new();
+        let socket = Arc::new(sockets.udp_socket(
+            Arc::new(WasiHostUdpIo::default()),
+            HostSocketHandle(u64::from(handle)),
+            "127.0.0.1:11013".parse().unwrap(),
+        ));
+
+        let task_status = status.clone();
+        runtime.spawn(async move {
+            let mut buffer = [0_u8; 64];
+            let result = async {
+                let (length, peer_addr) = socket.recv_from(&mut buffer).await?;
+                if &buffer[..length] != b"udp" {
+                    return Err(std::io::Error::other("unexpected UDP payload"));
+                }
+                let sent = socket.send_to(&buffer[..length], peer_addr).await?;
+                if sent != length {
+                    return Err(std::io::Error::other("short UDP send"));
+                }
+                Ok(())
+            }
+            .await;
+            match result {
+                Ok(()) => {
+                    task_status.fetch_or(DONE, Ordering::SeqCst);
+                }
+                Err(_) => {
+                    task_status.fetch_or(ERROR | 4, Ordering::SeqCst);
+                }
+            }
+        });
+
+        *slot = Some(UdpProbe {
+            runtime,
+            status,
+            sockets,
+        });
+        0
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn drive_udp_probe() -> u32 {
+    UDP_PROBE.with_borrow_mut(|slot| {
+        let Some(probe) = slot.as_mut() else {
+            return ERROR | 5;
+        };
+        probe.sockets.notify_completions();
+        probe
+            .runtime
+            .block_on(async { tokio::task::yield_now().await });
         probe.status.load(Ordering::SeqCst)
     })
 }

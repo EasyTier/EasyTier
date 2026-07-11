@@ -81,7 +81,7 @@ func TestTokioPreopenedTCPSocketCapability(t *testing.T) {
 		}
 	})
 
-	instantiateOpaqueHost(t, ctx, runtime, newOpaqueBridge(nil))
+	instantiateOpaqueHost(t, ctx, runtime, newOpaqueBridge(nil, nil))
 	wasi_snapshot_preview1.MustInstantiate(ctx, runtime)
 	compiled, err := runtime.CompileModule(ctx, wasm)
 	if err != nil {
