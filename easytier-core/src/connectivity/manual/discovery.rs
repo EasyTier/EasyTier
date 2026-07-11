@@ -612,7 +612,10 @@ mod tests {
         )
         .await
         .unwrap();
-        server_task.await.unwrap();
+        tokio::time::timeout(Duration::from_secs(1), server_task)
+            .await
+            .expect("HTTP facade test server did not finish")
+            .unwrap();
 
         assert_eq!(response.status_code, 302);
         assert_eq!(response.location.as_deref(), Some("tcp://192.0.2.10:11010"));
