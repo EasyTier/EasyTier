@@ -38,6 +38,7 @@ pub enum AcceptedTransport<TcpSocket> {
     Udp {
         session: UdpSession,
         local_url: Url,
+        admission: Option<crate::connectivity::protocol::ServerProtocolAdmission>,
     },
     ByteStream {
         socket: TcpSocket,
@@ -129,8 +130,14 @@ where
             AcceptedTransport::Tcp { socket, local_url } => {
                 self.protocol.upgrade_tcp(socket, local_url).await?
             }
-            AcceptedTransport::Udp { session, local_url } => {
-                self.protocol.upgrade_udp(session, local_url).await?
+            AcceptedTransport::Udp {
+                session,
+                local_url,
+                admission,
+            } => {
+                self.protocol
+                    .upgrade_udp(session, local_url, admission)
+                    .await?
             }
             AcceptedTransport::ByteStream {
                 socket,
@@ -174,7 +181,9 @@ where
                 }
                 raw::upgrade_accepted_tcp_with_local_url(socket, local_url)?
             }
-            AcceptedTransport::Udp { session, local_url } => {
+            AcceptedTransport::Udp {
+                session, local_url, ..
+            } => {
                 if local_url.scheme() != "udp" {
                     anyhow::bail!("unsupported raw UDP listener protocol: {local_url}");
                 }
@@ -350,6 +359,7 @@ where
         Ok(AcceptedTransport::Udp {
             session,
             local_url: self.inner.local_url(),
+            admission: None,
         })
     }
 
@@ -794,6 +804,7 @@ mod tests {
             &self,
             session: UdpSession,
             _local_url: Url,
+            _admission: Option<crate::connectivity::protocol::ServerProtocolAdmission>,
         ) -> anyhow::Result<ServerProtocolUpgrade> {
             self.udp_calls.fetch_add(1, Ordering::Relaxed);
             Ok(ServerProtocolUpgrade::Tunnel(raw::upgrade_accepted_udp(
@@ -846,7 +857,9 @@ mod tests {
                     self.blocked.notified().await;
                     drop(socket);
                 }
-                AcceptedTransport::Udp { session, local_url } => {
+                AcceptedTransport::Udp {
+                    session, local_url, ..
+                } => {
                     self.events.send(AcceptedEvent::Udp {
                         port: local_url.port().unwrap(),
                         kind: session.kind(),
@@ -909,6 +922,7 @@ mod tests {
             .handle_accepted_socket(AcceptedTransport::Udp {
                 session: udp_session,
                 local_url: "udp://127.0.0.1:22000".parse().unwrap(),
+                admission: None,
             })
             .await?;
         assert_eq!(protocol.udp_calls.load(Ordering::Relaxed), 1);
@@ -935,6 +949,7 @@ mod tests {
             .handle_accepted_socket(AcceptedTransport::Udp {
                 session: udp_session,
                 local_url: "udp://127.0.0.1:22000".parse()?,
+                admission: None,
             })
             .await
             .unwrap_err();

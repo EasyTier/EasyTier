@@ -1,6 +1,7 @@
 use std::{marker::PhantomData, sync::Arc, time::Duration};
 
 use async_trait::async_trait;
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use url::Url;
 
 use crate::{
@@ -37,6 +38,38 @@ pub enum ServerProtocolUpgrade {
     Acceptor(Box<dyn ServerTunnelAcceptor>),
 }
 
+pub struct ServerProtocolAdmission {
+    active_session: OwnedSemaphorePermit,
+    handshake_slots: Arc<Semaphore>,
+}
+
+impl ServerProtocolAdmission {
+    pub fn into_parts(self) -> (OwnedSemaphorePermit, Arc<Semaphore>) {
+        (self.active_session, self.handshake_slots)
+    }
+}
+
+pub struct ServerProtocolAdmissionController {
+    active_sessions: Arc<Semaphore>,
+    handshake_slots: Arc<Semaphore>,
+}
+
+impl ServerProtocolAdmissionController {
+    pub fn new(max_active_sessions: usize, max_in_flight_handshakes: usize) -> Self {
+        Self {
+            active_sessions: Arc::new(Semaphore::new(max_active_sessions)),
+            handshake_slots: Arc::new(Semaphore::new(max_in_flight_handshakes)),
+        }
+    }
+
+    pub fn try_admit(&self) -> Option<ServerProtocolAdmission> {
+        Some(ServerProtocolAdmission {
+            active_session: self.active_sessions.clone().try_acquire_owned().ok()?,
+            handshake_slots: self.handshake_slots.clone(),
+        })
+    }
+}
+
 #[async_trait]
 pub trait ServerProtocolUpgrader<TcpSocket>: Send + Sync + 'static {
     fn supports_scheme(&self, scheme: &str) -> bool;
@@ -51,6 +84,7 @@ pub trait ServerProtocolUpgrader<TcpSocket>: Send + Sync + 'static {
         &self,
         session: UdpSession,
         local_url: Url,
+        admission: Option<ServerProtocolAdmission>,
     ) -> anyhow::Result<ServerProtocolUpgrade>;
 
     async fn upgrade_byte_stream(
@@ -278,6 +312,7 @@ where
         &self,
         session: UdpSession,
         local_url: Url,
+        admission: Option<ServerProtocolAdmission>,
     ) -> anyhow::Result<ServerProtocolUpgrade> {
         match local_url.scheme() {
             "udp" => Ok(ServerProtocolUpgrade::Tunnel(upgrade_accepted_udp(
@@ -289,7 +324,11 @@ where
             "ring" | "unix" => {
                 anyhow::bail!("{} protocol requires a byte stream", local_url.scheme())
             }
-            scheme => self.external(scheme)?.upgrade_udp(session, local_url).await,
+            scheme => {
+                self.external(scheme)?
+                    .upgrade_udp(session, local_url, admission)
+                    .await
+            }
         }
     }
 
@@ -443,6 +482,7 @@ mod tests {
             &self,
             _session: UdpSession,
             _local_url: Url,
+            _admission: Option<ServerProtocolAdmission>,
         ) -> anyhow::Result<ServerProtocolUpgrade> {
             anyhow::bail!("external server UDP protocol invoked")
         }
@@ -632,5 +672,20 @@ mod tests {
             disabled_unix.to_string(),
             "unsupported server protocol upgrader: unix"
         );
+    }
+
+    #[test]
+    fn server_protocol_admission_is_scoped_to_its_controller() {
+        let controller = ServerProtocolAdmissionController::new(1, 2);
+        let admission = controller.try_admit().unwrap();
+        assert!(controller.try_admit().is_none());
+
+        let (active_session, handshake_slots) = admission.into_parts();
+        assert_eq!(handshake_slots.available_permits(), 2);
+        drop(active_session);
+        assert!(controller.try_admit().is_some());
+
+        let other = ServerProtocolAdmissionController::new(1, 1);
+        assert!(other.try_admit().is_some());
     }
 }

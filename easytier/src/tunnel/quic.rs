@@ -15,7 +15,10 @@ use anyhow::Context;
 use derivative::Derivative;
 use derive_more::{Deref, DerefMut};
 use easytier_core::{
-    connectivity::{protocol::ServerTunnelAcceptor, transport::ConnectedUdpSession},
+    connectivity::{
+        protocol::{ServerProtocolAdmission, ServerTunnelAcceptor},
+        transport::ConnectedUdpSession,
+    },
     socket::udp::{UdpSession, UdpSessionProtocol, UdpSessionSocket, parse_quic_initial_dcid},
     tunnel::wrapper::TunnelWrapper,
 };
@@ -1858,9 +1861,27 @@ impl QuicAcceptedSession {
             _active_session,
             handshakes,
         } = admission;
+        Self::new_with_admission_parts(session, local_url, _active_session, handshakes)
+    }
+
+    pub(crate) fn new_with_core_admission(
+        session: UdpSession,
+        local_url: url::Url,
+        admission: ServerProtocolAdmission,
+    ) -> Result<Self, TunnelError> {
+        let (active_session, handshake_slots) = admission.into_parts();
+        Self::new_with_admission_parts(session, local_url, active_session, handshake_slots)
+    }
+
+    fn new_with_admission_parts(
+        session: UdpSession,
+        local_url: url::Url,
+        active_session: OwnedSemaphorePermit,
+        handshakes: Arc<Semaphore>,
+    ) -> Result<Self, TunnelError> {
         let socket = Arc::new(QuicUdpSessionSocket::from_accepted(
             session,
-            _active_session,
+            active_session,
         )?);
         let runtime = default_runtime().ok_or(TunnelError::InternalError(
             "no async runtime found".to_owned(),

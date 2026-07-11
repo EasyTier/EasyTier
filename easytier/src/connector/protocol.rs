@@ -1,14 +1,12 @@
 use std::sync::Arc;
-#[cfg(feature = "quic")]
-use std::{collections::HashMap, sync::Mutex};
 
 use async_trait::async_trait;
 use easytier_core::{
     connectivity::{
         protocol::{
             ClientProtocolUpgrader, CoreClientProtocolConfig, CoreClientProtocolUpgrader,
-            CoreServerProtocolConfig, CoreServerProtocolUpgrader, ServerProtocolUpgrade,
-            ServerProtocolUpgrader,
+            CoreServerProtocolConfig, CoreServerProtocolUpgrader, ServerProtocolAdmission,
+            ServerProtocolUpgrade, ServerProtocolUpgrader,
         },
         transport::ConnectedTransport,
     },
@@ -24,17 +22,11 @@ pub(crate) struct RuntimeClientProtocolUpgrader {
 
 pub(crate) struct RuntimeServerProtocolUpgrader {
     global_ctx: ArcGlobalCtx,
-    #[cfg(feature = "quic")]
-    quic_admissions: Mutex<HashMap<url::Url, Arc<crate::tunnel::quic::QuicSessionAdmission>>>,
 }
 
 impl RuntimeServerProtocolUpgrader {
     pub(crate) fn new(global_ctx: ArcGlobalCtx) -> Self {
-        Self {
-            global_ctx,
-            #[cfg(feature = "quic")]
-            quic_admissions: Mutex::new(HashMap::new()),
-        }
+        Self { global_ctx }
     }
 }
 
@@ -159,6 +151,7 @@ impl ServerProtocolUpgrader<RuntimeTcpSocket> for RuntimeServerProtocolUpgrader 
         &self,
         _session: UdpSession,
         local_url: url::Url,
+        _admission: Option<ServerProtocolAdmission>,
     ) -> anyhow::Result<ServerProtocolUpgrade> {
         match local_url.scheme() {
             #[cfg(feature = "wireguard")]
@@ -175,18 +168,12 @@ impl ServerProtocolUpgrader<RuntimeTcpSocket> for RuntimeServerProtocolUpgrader 
             }
             #[cfg(feature = "quic")]
             "quic" => {
-                let admission = self
-                    .quic_admissions
-                    .lock()
-                    .map_err(|_| anyhow::anyhow!("QUIC admission registry is poisoned"))?
-                    .entry(local_url.clone())
-                    .or_insert_with(crate::tunnel::quic::QuicSessionAdmission::new)
-                    .clone();
-                let permit = admission
-                    .try_acquire_session()
-                    .ok_or_else(|| anyhow::anyhow!("QUIC active session limit reached"))?;
+                let admission = _admission
+                    .ok_or_else(|| anyhow::anyhow!("QUIC server admission permit is missing"))?;
                 Ok(ServerProtocolUpgrade::Acceptor(Box::new(
-                    crate::tunnel::quic::QuicAcceptedSession::new(_session, local_url, permit)?,
+                    crate::tunnel::quic::QuicAcceptedSession::new_with_core_admission(
+                        _session, local_url, admission,
+                    )?,
                 )))
             }
             scheme => anyhow::bail!("unsupported native UDP server protocol upgrader: {scheme}"),
