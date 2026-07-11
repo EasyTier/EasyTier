@@ -267,6 +267,9 @@ where
             "udp" | "wg" | "quic" => {
                 anyhow::bail!("{} protocol requires a UDP session", local_url.scheme())
             }
+            "ring" | "unix" => {
+                anyhow::bail!("{} protocol requires a byte stream", local_url.scheme())
+            }
             scheme => self.external(scheme)?.upgrade_tcp(socket, local_url).await,
         }
     }
@@ -282,6 +285,9 @@ where
             )?)),
             "tcp" | "ws" | "wss" | "faketcp" => {
                 anyhow::bail!("{} protocol requires a TCP transport", local_url.scheme())
+            }
+            "ring" | "unix" => {
+                anyhow::bail!("{} protocol requires a byte stream", local_url.scheme())
             }
             scheme => self.external(scheme)?.upgrade_udp(session, local_url).await,
         }
@@ -422,7 +428,7 @@ mod tests {
     #[async_trait]
     impl ServerProtocolUpgrader<MockTcpSocket> for MockExternalUpgrader {
         fn supports_scheme(&self, scheme: &str) -> bool {
-            scheme == "external"
+            matches!(scheme, "external" | "ring" | "unix")
         }
 
         async fn upgrade_tcp(
@@ -582,6 +588,8 @@ mod tests {
         assert!(upgrader.supports_scheme("udp"));
         assert!(!upgrader.supports_scheme("ws"));
         assert!(!upgrader.supports_scheme("quic"));
+        assert!(upgrader.supports_scheme("ring"));
+        assert!(!upgrader.supports_scheme("unix"));
         assert!(upgrader.supports_scheme("external"));
 
         let external = upgrader
@@ -599,6 +607,30 @@ mod tests {
         assert_eq!(
             mismatched.to_string(),
             "quic protocol requires a UDP session"
+        );
+
+        let wrong_ring_transport = upgrader
+            .upgrade_tcp(MockTcpSocket, "ring://local".parse().unwrap())
+            .await
+            .err()
+            .unwrap();
+        assert_eq!(
+            wrong_ring_transport.to_string(),
+            "ring protocol requires a byte stream"
+        );
+
+        let disabled_unix = upgrader
+            .upgrade_byte_stream(
+                MockTcpSocket,
+                "unix:///tmp/easytier.sock".parse().unwrap(),
+                None,
+            )
+            .await
+            .err()
+            .unwrap();
+        assert_eq!(
+            disabled_unix.to_string(),
+            "unsupported server protocol upgrader: unix"
         );
     }
 }
