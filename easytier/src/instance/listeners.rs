@@ -1035,6 +1035,7 @@ where
             stream,
             local_url,
             CoreServerProtocolConfig {
+                unix: cfg!(unix),
                 websocket: cfg!(feature = "websocket"),
                 faketcp: cfg!(feature = "faketcp"),
                 websocket_timeout: std::time::Duration::from_secs(3),

@@ -52,6 +52,13 @@ pub trait ServerProtocolUpgrader<TcpSocket>: Send + Sync + 'static {
         session: UdpSession,
         local_url: Url,
     ) -> anyhow::Result<ServerProtocolUpgrade>;
+
+    async fn upgrade_byte_stream(
+        &self,
+        socket: TcpSocket,
+        local_url: Url,
+        remote_url: Option<Url>,
+    ) -> anyhow::Result<ServerProtocolUpgrade>;
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -168,6 +175,7 @@ where
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CoreServerProtocolConfig {
+    pub unix: bool,
     pub websocket: bool,
     pub faketcp: bool,
     pub websocket_timeout: Duration,
@@ -176,6 +184,7 @@ pub struct CoreServerProtocolConfig {
 impl Default for CoreServerProtocolConfig {
     fn default() -> Self {
         Self {
+            unix: false,
             websocket: false,
             faketcp: false,
             websocket_timeout: Duration::from_secs(3),
@@ -213,7 +222,8 @@ impl<TcpSocket: 'static> CoreServerProtocolUpgrader<TcpSocket> {
 
     fn supports_core_scheme(&self, scheme: &str) -> Option<bool> {
         match scheme {
-            "tcp" | "udp" => Some(true),
+            "tcp" | "udp" | "ring" => Some(true),
+            "unix" => Some(self.config.unix),
             "ws" | "wss" => Some(self.config.websocket),
             "faketcp" => Some(self.config.faketcp),
             _ => None,
@@ -274,6 +284,34 @@ where
                 anyhow::bail!("{} protocol requires a TCP transport", local_url.scheme())
             }
             scheme => self.external(scheme)?.upgrade_udp(session, local_url).await,
+        }
+    }
+
+    async fn upgrade_byte_stream(
+        &self,
+        socket: TcpSocket,
+        local_url: Url,
+        remote_url: Option<Url>,
+    ) -> anyhow::Result<ServerProtocolUpgrade> {
+        match local_url.scheme() {
+            "ring" => Ok(ServerProtocolUpgrade::Tunnel(
+                raw::upgrade_accepted_byte_stream(socket, local_url, remote_url)?,
+            )),
+            "unix" if self.config.unix => Ok(ServerProtocolUpgrade::Tunnel(
+                raw::upgrade_accepted_byte_stream(socket, local_url, remote_url)?,
+            )),
+            "tcp" | "ws" | "wss" | "faketcp" => {
+                anyhow::bail!("{} protocol requires a TCP transport", local_url.scheme())
+            }
+            "udp" | "wg" | "quic" => {
+                anyhow::bail!("{} protocol requires a UDP session", local_url.scheme())
+            }
+            "unix" => anyhow::bail!("unsupported server protocol upgrader: unix"),
+            scheme => {
+                self.external(scheme)?
+                    .upgrade_byte_stream(socket, local_url, remote_url)
+                    .await
+            }
         }
     }
 }
@@ -401,6 +439,15 @@ mod tests {
             _local_url: Url,
         ) -> anyhow::Result<ServerProtocolUpgrade> {
             anyhow::bail!("external server UDP protocol invoked")
+        }
+
+        async fn upgrade_byte_stream(
+            &self,
+            _socket: MockTcpSocket,
+            _local_url: Url,
+            _remote_url: Option<Url>,
+        ) -> anyhow::Result<ServerProtocolUpgrade> {
+            anyhow::bail!("external server byte-stream protocol invoked")
         }
     }
 

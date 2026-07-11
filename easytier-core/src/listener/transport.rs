@@ -31,14 +31,27 @@ pub type HostAcceptedTcpSocket<H> =
 /// Socket creation and binding belong to the host factory. Protocol handling
 /// consumes this value and may turn it into one or more EasyTier tunnels.
 pub enum AcceptedTransport<TcpSocket> {
-    Tcp { socket: TcpSocket, local_url: Url },
-    Udp { session: UdpSession, local_url: Url },
+    Tcp {
+        socket: TcpSocket,
+        local_url: Url,
+    },
+    Udp {
+        session: UdpSession,
+        local_url: Url,
+    },
+    ByteStream {
+        socket: TcpSocket,
+        local_url: Url,
+        remote_url: Option<Url>,
+    },
 }
 
 impl<TcpSocket> AcceptedTransport<TcpSocket> {
     pub fn local_url(&self) -> &Url {
         match self {
-            Self::Tcp { local_url, .. } | Self::Udp { local_url, .. } => local_url,
+            Self::Tcp { local_url, .. }
+            | Self::Udp { local_url, .. }
+            | Self::ByteStream { local_url, .. } => local_url,
         }
     }
 }
@@ -119,6 +132,15 @@ where
             AcceptedTransport::Udp { session, local_url } => {
                 self.protocol.upgrade_udp(session, local_url).await?
             }
+            AcceptedTransport::ByteStream {
+                socket,
+                local_url,
+                remote_url,
+            } => {
+                self.protocol
+                    .upgrade_byte_stream(socket, local_url, remote_url)
+                    .await?
+            }
         };
         self.handle_upgrade(upgrade).await
     }
@@ -158,6 +180,11 @@ where
                 }
                 raw::upgrade_accepted_udp(session)?
             }
+            AcceptedTransport::ByteStream {
+                socket,
+                local_url,
+                remote_url,
+            } => raw::upgrade_accepted_byte_stream(socket, local_url, remote_url)?,
         };
         peer_manager.add_tunnel_as_server(tunnel, true).await?;
         Ok(())
@@ -479,7 +506,7 @@ mod tests {
 
     use super::*;
     use crate::{
-        connectivity::protocol::ServerTunnelAcceptor,
+        connectivity::protocol::{CoreServerProtocolUpgrader, ServerTunnelAcceptor},
         socket::{
             tcp::{VirtualTcpListener, VirtualTcpSocket},
             udp::{
@@ -773,6 +800,17 @@ mod tests {
                 session,
             )?))
         }
+
+        async fn upgrade_byte_stream(
+            &self,
+            socket: MockTcpSocket,
+            local_url: Url,
+            remote_url: Option<Url>,
+        ) -> anyhow::Result<ServerProtocolUpgrade> {
+            Ok(ServerProtocolUpgrade::Tunnel(
+                raw::upgrade_accepted_byte_stream(socket, local_url, remote_url)?,
+            ))
+        }
     }
 
     struct RecordingTunnelHandler {
@@ -815,6 +853,15 @@ mod tests {
                     })?;
                     self.blocked.notified().await;
                     drop(session);
+                }
+                AcceptedTransport::ByteStream {
+                    socket, local_url, ..
+                } => {
+                    self.events.send(AcceptedEvent::Tcp {
+                        port: local_url.port().unwrap_or_default(),
+                    })?;
+                    self.blocked.notified().await;
+                    drop(socket);
                 }
             }
             Ok(())
@@ -868,6 +915,45 @@ mod tests {
         assert_eq!(tunnel_handler.calls.load(Ordering::Relaxed), 3);
 
         Ok::<(), anyhow::Error>(())
+    }
+
+    #[tokio::test]
+    async fn core_builtin_server_upgrades_raw_udp_and_byte_streams() -> anyhow::Result<()> {
+        let tunnel_handler = Arc::new(RecordingTunnelHandler {
+            calls: AtomicUsize::new(0),
+        });
+        let protocol = Arc::new(CoreServerProtocolUpgrader::new(Default::default()));
+        let handler = ProtocolAcceptedTransportHandler::new(&tunnel_handler, protocol);
+
+        let udp_socket = Arc::new(MockUdpSocket::new("127.0.0.1:22000".parse()?));
+        let udp_session = UdpSession::identity_standalone(
+            udp_socket,
+            "127.0.0.1:32000".parse()?,
+            UdpSessionKind::EasyTierMux,
+        )?;
+        let admission_error = handler
+            .handle_accepted_socket(AcceptedTransport::Udp {
+                session: udp_session,
+                local_url: "udp://127.0.0.1:22000".parse()?,
+            })
+            .await
+            .unwrap_err();
+        assert_eq!(admission_error.to_string(), "first admission rejected");
+
+        let (stream, _remote) = tokio::io::duplex(64);
+        handler
+            .handle_accepted_socket(AcceptedTransport::ByteStream {
+                socket: MockTcpSocket {
+                    stream,
+                    local_addr: "127.0.0.1:21000".parse()?,
+                    peer_addr: "127.0.0.1:31000".parse()?,
+                },
+                local_url: "ring://local".parse()?,
+                remote_url: Some("ring://remote".parse()?),
+            })
+            .await?;
+        assert_eq!(tunnel_handler.calls.load(Ordering::Relaxed), 2);
+        Ok(())
     }
 
     #[tokio::test]
