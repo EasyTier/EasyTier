@@ -989,30 +989,25 @@ impl GlobalCtx {
             .any(|x| x.port() == Some(port) && matches_protocol!(x, Protocol::UDP) == is_udp)
     }
 
+    pub fn is_local_ip(&self, ip: &IpAddr) -> bool {
+        let _guard = self.net_ns.guard();
+        self.is_ip_local_virtual_ip(ip) || std::net::UdpSocket::bind(format!("{ip}:0")).is_ok()
+    }
+
+    pub fn is_protected_tcp_port(&self, port: u16) -> bool {
+        protected_port::is_protected_tcp_port(port)
+    }
+
     #[tracing::instrument(ret, skip(self))]
     pub fn should_deny_proxy(&self, dst_addr: &SocketAddr, is_udp: bool) -> bool {
-        let _g = self.net_ns.guard();
         let ip = dst_addr.ip();
-        // first check if ip is an EasyTier-managed local address
-        // then try bind this ip, if succ means it is local ip
-        let dst_is_local_et_ip = self.is_ip_local_virtual_ip(&ip);
         // this is an expensive operation, should be called sparingly
         // 1. tcp/kcp/quic call this only after proxy conn is established
         // 2. udp cache the result in nat entry
-        let dst_is_local_phy_ip = std::net::UdpSocket::bind(format!("{}:0", ip)).is_ok();
-
-        tracing::trace!(
-            "check should_deny_proxy: dst_addr={}, dst_is_local_et_ip={}, dst_is_local_phy_ip={}, is_udp={}",
-            dst_addr,
-            dst_is_local_et_ip,
-            dst_is_local_phy_ip,
-            is_udp
-        );
-
-        if dst_is_local_et_ip || dst_is_local_phy_ip {
+        if self.is_local_ip(&ip) {
             // if is local ip, make sure the port is not one of the listening ports
             self.is_port_in_running_listeners(dst_addr.port(), is_udp)
-                || (!is_udp && protected_port::is_protected_tcp_port(dst_addr.port()))
+                || (!is_udp && self.is_protected_tcp_port(dst_addr.port()))
         } else {
             false
         }

@@ -68,7 +68,9 @@ pub trait DirectConnectorHost: ManualConnectorHost {
 
     fn running_listeners(&self) -> Vec<Url>;
 
-    fn should_deny_proxy(&self, dst_addr: &SocketAddr, is_udp: bool) -> bool;
+    fn is_local_ip(&self, ip: &IpAddr) -> bool;
+
+    fn is_protected_tcp_port(&self, port: u16) -> bool;
 
     fn stun_public_ips(&self) -> Vec<IpAddr>;
 
@@ -583,17 +585,21 @@ where
                 local.port() == Some(port) && is_udp_protocol(local.scheme()) == is_udp
             })
         };
+        let should_deny_target = |target: &SocketAddr| {
+            let port_is_protected = port_has_local_listener(target.port())
+                || (!is_udp && self.host.is_protected_tcp_port(target.port()));
+            port_is_protected && self.host.is_local_ip(&target.ip())
+        };
 
         match listener_host {
             Some(SocketAddr::V4(socket_addr)) if socket_addr.ip().is_unspecified() => {
-                let check_self = port_has_local_listener(socket_addr.port());
                 for ip in ip_list
                     .interface_ipv4s
                     .iter()
                     .chain(ip_list.public_ipv4.iter())
                 {
                     let target = SocketAddr::new(IpAddr::V4(ip.addr.into()), socket_addr.port());
-                    if check_self && self.host.should_deny_proxy(&target, is_udp) {
+                    if should_deny_target(&target) {
                         continue;
                     }
                     let mut url = listener.clone();
@@ -609,10 +615,7 @@ where
             Some(SocketAddr::V4(socket_addr))
                 if !socket_addr.ip().is_loopback() || self.options.testing =>
             {
-                if !self
-                    .host
-                    .should_deny_proxy(&SocketAddr::V4(socket_addr), is_udp)
-                {
+                if !should_deny_target(&SocketAddr::V4(socket_addr)) {
                     tasks.spawn(Self::try_connect_to_url(
                         self.clone(),
                         dst_peer_id,
@@ -621,7 +624,6 @@ where
                 }
             }
             Some(SocketAddr::V6(socket_addr)) if socket_addr.ip().is_unspecified() => {
-                let check_self = port_has_local_listener(socket_addr.port());
                 let candidates = ip_list
                     .interface_ipv6s
                     .iter()
@@ -631,7 +633,7 @@ where
                     .collect::<HashSet<_>>();
                 for ip in candidates {
                     let target = SocketAddr::new(IpAddr::V6(ip), socket_addr.port());
-                    if check_self && self.host.should_deny_proxy(&target, is_udp) {
+                    if should_deny_target(&target) {
                         continue;
                     }
                     let mut url = listener.clone();
@@ -655,10 +657,7 @@ where
             Some(SocketAddr::V6(socket_addr))
                 if !socket_addr.ip().is_loopback() || self.options.testing =>
             {
-                if !self
-                    .host
-                    .should_deny_proxy(&SocketAddr::V6(socket_addr), is_udp)
-                {
+                if !should_deny_target(&SocketAddr::V6(socket_addr)) {
                     tasks.spawn(Self::try_connect_to_url(
                         self.clone(),
                         dst_peer_id,

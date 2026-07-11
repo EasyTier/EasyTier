@@ -192,8 +192,12 @@ impl DirectConnectorHost for RuntimeConnectorHost {
         self.global_ctx.get_running_listeners()
     }
 
-    fn should_deny_proxy(&self, dst_addr: &SocketAddr, is_udp: bool) -> bool {
-        self.global_ctx.should_deny_proxy(dst_addr, is_udp)
+    fn is_local_ip(&self, ip: &IpAddr) -> bool {
+        self.global_ctx.is_local_ip(ip)
+    }
+
+    fn is_protected_tcp_port(&self, port: u16) -> bool {
+        self.global_ctx.is_protected_tcp_port(port)
     }
 
     fn stun_public_ips(&self) -> Vec<IpAddr> {
