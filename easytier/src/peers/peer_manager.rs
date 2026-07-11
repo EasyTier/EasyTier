@@ -540,8 +540,7 @@ mod tests {
             stats_manager::{LabelSet, LabelType, MetricName},
         },
         connector::{
-            create_connector_by_url, direct::PeerManagerForDirectConnector,
-            udp_hole_punch::tests::create_mock_peer_manager_with_mock_stun,
+            create_connector_by_url, udp_hole_punch::tests::create_mock_peer_manager_with_mock_stun,
         },
         instance::listeners::create_listener_by_url,
         peers::{
@@ -1718,10 +1717,7 @@ mod tests {
         });
 
         wait_for_condition(
-            || async {
-                let peers = peer_mgr_a.list_peers().await;
-                peers.is_empty()
-            },
+            || async { peer_mgr_a.list_routes().await.is_empty() },
             Duration::from_secs(10),
         )
         .await;
@@ -1749,10 +1745,7 @@ mod tests {
             .unwrap();
 
         wait_for_condition(
-            || async {
-                let peers = peer_mgr_a.list_peers().await;
-                peers.is_empty()
-            },
+            || async { peer_mgr_a.list_routes().await.is_empty() },
             Duration::from_secs(10),
         )
         .await;

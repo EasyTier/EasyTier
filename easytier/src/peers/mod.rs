@@ -62,7 +62,6 @@ pub mod peer_conn {
     }
 }
 pub mod peer_manager;
-pub mod peer_rpc_service;
 pub mod relay_peer_map {
     use std::sync::Arc;
 

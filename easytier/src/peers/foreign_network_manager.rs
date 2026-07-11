@@ -8,6 +8,7 @@ connected to any node in the local network.
 use std::{sync::Arc, time::SystemTime};
 
 use dashmap::DashMap;
+use easytier_core::connectivity::direct::DirectConnectorRpcHandler;
 use easytier_core::peers::foreign_network_manager as core_foreign_network_manager;
 pub use easytier_core::peers::foreign_network_manager::{
     ForeignNetworkRouteInfo, ForeignNetworkRouteInfoProvider, GlobalForeignNetworkAccessor,
@@ -29,6 +30,7 @@ use crate::{
         stats_manager::StatsManager,
         token_bucket::TokenBucket,
     },
+    connector::runtime::RuntimeConnectorHost,
     proto::{
         api::instance::{
             ForeignNetworkEntryPb, ListForeignNetworkResponse, PeerInfo, TrustedKeyInfoPb,
@@ -45,7 +47,7 @@ use crate::{
 use super::create_packet_recv_chan;
 use super::{
     PUBLIC_SERVER_HOSTNAME_PREFIX, PacketRecvChan, peer_conn::PeerConn, peer_rpc::PeerRpcManager,
-    peer_rpc_service::DirectConnectorManagerRpcServer, peer_session::PeerSessionStore,
+    peer_session::PeerSessionStore,
 };
 
 #[cfg(test)]
@@ -295,7 +297,9 @@ impl core_foreign_network_manager::ForeignNetworkRuntime for ForeignNetworkRunti
             .global_ctx
             .clone();
         peer_rpc.rpc_server().registry().register(
-            DirectConnectorRpcServer::new(DirectConnectorManagerRpcServer::new(foreign_global_ctx)),
+            DirectConnectorRpcServer::new(DirectConnectorRpcHandler::new(Arc::new(
+                RuntimeConnectorHost::new(foreign_global_ctx),
+            ))),
             network_name,
         );
     }
