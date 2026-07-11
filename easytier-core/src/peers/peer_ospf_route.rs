@@ -29,7 +29,7 @@ use prost_wkt_types::Timestamp;
 use quanta::Instant;
 use tokio::{
     select,
-    sync::Mutex,
+    sync::{Mutex, RwLock as AsyncRwLock},
     task::{JoinHandle, JoinSet},
 };
 
@@ -2240,6 +2240,8 @@ struct PeerRouteServiceImpl {
     my_peer_route_id: u64,
     context: ArcPeerContext,
     sessions: DashMap<PeerId, Arc<SyncRouteSession>>,
+    stopped: AtomicBool,
+    session_operation: AsyncRwLock<()>,
 
     interface: Mutex<Option<RouteInterfaceBox>>,
 
@@ -2293,6 +2295,8 @@ impl PeerRouteServiceImpl {
             my_peer_route_id: rand::random(),
             context: context.clone(),
             sessions: DashMap::new(),
+            stopped: AtomicBool::new(false),
+            session_operation: AsyncRwLock::new(()),
 
             interface: Mutex::new(None),
 
@@ -3448,6 +3452,9 @@ impl RouteSessionManager {
         let Some(service_impl) = self.service_impl.upgrade() else {
             return Err(Error::Stopped);
         };
+        if service_impl.stopped.load(Ordering::Acquire) {
+            return Err(Error::Stopped);
+        }
 
         tracing::info!(?service_impl.my_peer_id, ?peer_id, "start ospf sync session");
 
@@ -3646,6 +3653,10 @@ impl RouteSessionManager {
         let Some(service_impl) = self.service_impl.upgrade() else {
             return Err(Error::Stopped);
         };
+        let _session_operation = service_impl.session_operation.read().await;
+        if service_impl.stopped.load(Ordering::Acquire) {
+            return Err(Error::Stopped);
+        }
 
         let my_peer_id = service_impl.my_peer_id;
         let session = self.get_or_start_session(from_peer_id)?;
@@ -4052,6 +4063,9 @@ impl PeerRoute {
     }
 
     async fn stop(&self) {
+        self.service_impl.stopped.store(true, Ordering::Release);
+        self.unregister_rpc_services();
+
         let mut tasks = {
             let mut tasks = self.tasks.lock().unwrap();
             std::mem::replace(&mut *tasks, JoinSet::new())
@@ -4059,6 +4073,7 @@ impl PeerRoute {
         tasks.abort_all();
         while tasks.join_next().await.is_some() {}
 
+        let _session_operation = self.service_impl.session_operation.write().await;
         let sessions = self
             .service_impl
             .sessions
@@ -4072,7 +4087,6 @@ impl PeerRoute {
         }
 
         *self.service_impl.interface.lock().await = None;
-        self.unregister_rpc_services();
     }
 
     #[cfg(test)]
@@ -4323,9 +4337,12 @@ impl PeerPacketFilter for PeerRoute {}
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::packet::ZCPacket;
     use crate::peers::context::NoopPeerContext;
+    use crate::peers::peer_rpc::PeerRpcManagerTransport;
     use crate::peers::route_trait::{DefaultRouteCostCalculator, RouteInterface};
     use parking_lot::Mutex;
+    use tokio::sync::Notify;
 
     struct CountingInterface {
         my_peer_id: PeerId,
@@ -4333,6 +4350,80 @@ mod tests {
         peer_identity_types: Arc<Mutex<HashMap<PeerId, Option<PeerIdentityType>>>>,
         list_peers_calls: Arc<AtomicU32>,
         get_peer_identity_type_calls: Arc<AtomicU32>,
+    }
+
+    struct BlockingInterface {
+        entered: Arc<Notify>,
+        release: Arc<Notify>,
+    }
+
+    #[async_trait::async_trait]
+    impl RouteInterface for BlockingInterface {
+        async fn list_peers(&self) -> Vec<PeerId> {
+            self.entered.notify_one();
+            self.release.notified().await;
+            vec![2]
+        }
+
+        async fn get_peer_identity_type(&self, _peer_id: PeerId) -> Option<PeerIdentityType> {
+            Some(PeerIdentityType::Admin)
+        }
+
+        fn my_peer_id(&self) -> PeerId {
+            1
+        }
+    }
+
+    struct TestPeerRpcTransport;
+
+    #[async_trait::async_trait]
+    impl PeerRpcManagerTransport for TestPeerRpcTransport {
+        fn my_peer_id(&self) -> PeerId {
+            1
+        }
+
+        async fn send(&self, _msg: ZCPacket, _dst_peer_id: PeerId) -> anyhow::Result<()> {
+            Ok(())
+        }
+
+        async fn recv(&self) -> anyhow::Result<ZCPacket> {
+            std::future::pending().await
+        }
+    }
+
+    struct TestPublicIpv6Runtime;
+
+    #[async_trait::async_trait]
+    impl PublicIpv6Runtime for TestPublicIpv6Runtime {
+        fn ipv6_public_addr_auto(&self) -> bool {
+            false
+        }
+
+        fn ipv6_public_addr_provider(&self) -> bool {
+            false
+        }
+
+        fn instance_id(&self) -> uuid::Uuid {
+            uuid::Uuid::nil()
+        }
+
+        fn network_name(&self) -> String {
+            "default".to_owned()
+        }
+
+        async fn collect_reserved_public_ipv6_addrs(&self, _prefix: Ipv6Cidr) -> HashSet<Ipv6Addr> {
+            HashSet::new()
+        }
+
+        fn public_ipv6_lease_changed(&self, _old: Option<Ipv6Inet>, _new: Option<Ipv6Inet>) {}
+
+        fn public_ipv6_routes_changed(
+            &self,
+            _routes: BTreeSet<Ipv6Inet>,
+            _added: Vec<Ipv6Inet>,
+            _removed: Vec<Ipv6Inet>,
+        ) {
+        }
     }
 
     #[async_trait::async_trait]
@@ -4497,6 +4588,66 @@ mod tests {
         );
         assert_eq!(list_peers_calls.load(Ordering::Relaxed), 2);
         assert_eq!(get_peer_identity_type_calls.load(Ordering::Relaxed), 4);
+    }
+
+    #[tokio::test]
+    async fn stop_waits_for_in_flight_route_sync_before_draining_sessions() {
+        let peer_rpc = Arc::new(PeerRpcManager::new(TestPeerRpcTransport));
+        let route = PeerRoute::new(
+            1,
+            Arc::new(NoopPeerContext::default()),
+            Arc::new(TestPublicIpv6Runtime),
+            peer_rpc,
+        );
+        let entered = Arc::new(Notify::new());
+        let release = Arc::new(Notify::new());
+        *route.service_impl.interface.lock().await = Some(Box::new(BlockingInterface {
+            entered: entered.clone(),
+            release: release.clone(),
+        }));
+
+        let sync_task = tokio::spawn({
+            let session_mgr = route.session_mgr.clone();
+            async move {
+                session_mgr
+                    .do_sync_route_info(2, 1, false, None, None, None, None)
+                    .await
+            }
+        });
+        tokio::time::timeout(Duration::from_secs(1), entered.notified())
+            .await
+            .expect("route sync did not enter the interface call");
+
+        let stop_task = tokio::spawn({
+            let route = route.clone();
+            async move { route.stop().await }
+        });
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while !route.service_impl.stopped.load(Ordering::Acquire) {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("route did not enter the stopped state");
+
+        assert!(!stop_task.is_finished());
+        assert!(matches!(
+            route.session_mgr.get_or_start_session(3),
+            Err(Error::Stopped)
+        ));
+
+        release.notify_one();
+        sync_task
+            .await
+            .expect("route sync task panicked")
+            .expect("in-flight route sync failed");
+        tokio::time::timeout(Duration::from_secs(1), stop_task)
+            .await
+            .expect("route stop did not finish")
+            .expect("route stop task panicked");
+
+        assert!(route.service_impl.sessions.is_empty());
+        assert_eq!(route.task_count(), 0);
     }
 
     #[test]
