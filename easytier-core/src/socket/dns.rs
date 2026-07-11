@@ -24,6 +24,22 @@ pub trait DnsResolver: Send + Sync + 'static {
     async fn resolve(&self, query: DnsQuery) -> anyhow::Result<Vec<IpAddr>>;
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DnsSrvRecord {
+    pub priority: u16,
+    pub weight: u16,
+    pub port: u16,
+    pub target: String,
+}
+
+/// Resolves non-address DNS records used by EasyTier endpoint discovery.
+#[async_trait]
+pub trait DnsRecordResolver: Send + Sync + 'static {
+    async fn resolve_txt(&self, query: DnsQuery) -> anyhow::Result<String>;
+
+    async fn resolve_srv(&self, query: DnsQuery) -> anyhow::Result<Vec<DnsSrvRecord>>;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -38,5 +54,20 @@ mod tests {
                 context,
             }
         );
+    }
+
+    #[test]
+    fn srv_record_keeps_dns_selection_fields() {
+        let record = DnsSrvRecord {
+            priority: 10,
+            weight: 20,
+            port: 11010,
+            target: "peer.example.com.".to_owned(),
+        };
+
+        assert_eq!(record.priority, 10);
+        assert_eq!(record.weight, 20);
+        assert_eq!(record.port, 11010);
+        assert_eq!(record.target, "peer.example.com.");
     }
 }

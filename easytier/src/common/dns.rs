@@ -4,7 +4,7 @@ use std::sync::atomic::AtomicBool;
 
 use anyhow::Context;
 use async_trait::async_trait;
-use easytier_core::socket::dns::{DnsQuery, DnsResolver};
+use easytier_core::socket::dns::{DnsQuery, DnsRecordResolver, DnsResolver, DnsSrvRecord};
 use hickory_proto::runtime::TokioRuntimeProvider;
 use hickory_proto::xfer::Protocol;
 use hickory_resolver::config::{LookupIpStrategy, NameServerConfig, ResolverConfig, ResolverOpts};
@@ -60,6 +60,29 @@ impl RuntimeDnsResolver {
 impl DnsResolver for RuntimeDnsResolver {
     async fn resolve(&self, query: DnsQuery) -> anyhow::Result<Vec<IpAddr>> {
         Ok(resolve_ips(&query.host).await?)
+    }
+}
+
+#[async_trait]
+impl DnsRecordResolver for RuntimeDnsResolver {
+    async fn resolve_txt(&self, query: DnsQuery) -> anyhow::Result<String> {
+        Ok(resolve_txt_record(&query.host).await?)
+    }
+
+    async fn resolve_srv(&self, query: DnsQuery) -> anyhow::Result<Vec<DnsSrvRecord>> {
+        let response = RESOLVER
+            .srv_lookup(&query.host)
+            .await
+            .with_context(|| format!("srv_lookup failed, srv_domain: {}", query.host))?;
+        Ok(response
+            .iter()
+            .map(|record| DnsSrvRecord {
+                priority: record.priority(),
+                weight: record.weight(),
+                port: record.port(),
+                target: record.target().to_utf8(),
+            })
+            .collect())
     }
 }
 
