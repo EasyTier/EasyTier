@@ -40,6 +40,7 @@ pub use crate::connectivity::protocol::raw::{
 
 const MANUAL_DEFAULT_PORT: u16 = 11010;
 const MANUAL_PREFLIGHT_DEFAULT_PORT: u16 = 1000;
+const MAX_MANUAL_ENDPOINT_HOPS: usize = 16;
 
 fn manual_default_port(url: &Url) -> u16 {
     match url.scheme() {
@@ -133,6 +134,7 @@ impl Tunnel for ResolvedManualTunnel {
     }
 }
 
+#[derive(Debug)]
 struct ResolvedManualEndpoint {
     url: Url,
     tunnel_prefixes: Vec<String>,
@@ -437,7 +439,11 @@ async fn resolve_manual_endpoint(
 ) -> anyhow::Result<ResolvedManualEndpoint> {
     let mut url = requested_url;
     let mut tunnel_prefixes = Vec::new();
+    let mut visited = BTreeSet::new();
     loop {
+        if !visited.insert(url.clone()) {
+            anyhow::bail!("manual endpoint resolution cycle detected at {url}");
+        }
         if ManualTransport::from_url(&url).is_ok() {
             return Ok(ResolvedManualEndpoint {
                 url,
@@ -446,6 +452,9 @@ async fn resolve_manual_endpoint(
         }
         if !is_manual_endpoint_scheme(url.scheme()) {
             anyhow::bail!("unsupported resolved manual connector URL: {url}");
+        }
+        if tunnel_prefixes.len() >= MAX_MANUAL_ENDPOINT_HOPS {
+            anyhow::bail!("manual endpoint resolution exceeded {MAX_MANUAL_ENDPOINT_HOPS} hops");
         }
         tunnel_prefixes.push(url.scheme().to_owned());
         url = convert_idn_to_ascii(resolver.resolve_endpoint(&url).await?)?;
@@ -473,6 +482,41 @@ fn apply_resolved_endpoint_info(
     })
 }
 
+async fn resolve_reconnect_ip_versions(
+    url: &Url,
+    connect_timeout: Duration,
+    socket_mark: Option<u32>,
+    dns: &dyn DnsResolver,
+) -> anyhow::Result<Vec<IpVersion>> {
+    if matches!(url.scheme(), "txt" | "srv") {
+        return Ok(vec![IpVersion::Both]);
+    }
+
+    let addrs = with_timeout_budget(
+        "resolve",
+        Instant::now(),
+        connect_timeout,
+        resolve_url_addrs(
+            url,
+            MANUAL_PREFLIGHT_DEFAULT_PORT,
+            IpVersion::Both,
+            socket_mark,
+            dns,
+        ),
+    )
+    .await?;
+    tracing::info!(?addrs, %url, "manual preflight resolve done");
+
+    let mut ip_versions = Vec::new();
+    if addrs.iter().any(SocketAddr::is_ipv4) {
+        ip_versions.push(IpVersion::V4);
+    }
+    if addrs.iter().any(SocketAddr::is_ipv6) {
+        ip_versions.push(IpVersion::V6);
+    }
+    Ok(ip_versions)
+}
+
 async fn reconnect<H>(data: Arc<ManualConnectorData<H>>, url: Url) -> anyhow::Result<()>
 where
     H: ManualConnectorHost,
@@ -487,37 +531,22 @@ where
             return Err(error);
         }
     };
-    let preflight = with_timeout_budget(
-        "resolve",
-        Instant::now(),
+    let ip_versions = match resolve_reconnect_ip_versions(
+        &normalized_url,
         connect_timeout,
-        resolve_url_addrs(
-            &normalized_url,
-            MANUAL_PREFLIGHT_DEFAULT_PORT,
-            IpVersion::Both,
-            ManualTransport::from_url(&normalized_url)
-                .ok()
-                .and_then(|transport| data.options.socket_mark(transport)),
-            data.dns.as_ref(),
-        ),
+        ManualTransport::from_url(&normalized_url)
+            .ok()
+            .and_then(|transport| data.options.socket_mark(transport)),
+        data.dns.as_ref(),
     )
-    .await;
-    let addrs = match preflight {
-        Ok(addrs) => addrs,
+    .await
+    {
+        Ok(ip_versions) => ip_versions,
         Err(error) => {
             emit_connect_error(&data, &url, IpVersion::Both, &error);
             return Err(error);
         }
     };
-    tracing::info!(?addrs, %url, "manual preflight resolve done");
-
-    let mut ip_versions = Vec::new();
-    if addrs.iter().any(SocketAddr::is_ipv4) {
-        ip_versions.push(IpVersion::V4);
-    }
-    if addrs.iter().any(SocketAddr::is_ipv6) {
-        ip_versions.push(IpVersion::V6);
-    }
 
     let mut last_error = anyhow::anyhow!("cannot get IP from URL");
     for ip_version in ip_versions {
@@ -841,6 +870,8 @@ mod tests {
 
     struct ChainedEndpointResolver;
 
+    struct CyclingEndpointResolver;
+
     #[async_trait]
     impl ManualEndpointResolver for ChainedEndpointResolver {
         async fn resolve_endpoint(&self, url: &Url) -> anyhow::Result<Url> {
@@ -849,6 +880,13 @@ mod tests {
                 "txt" => Ok("tcp://peer.example:12000".parse().unwrap()),
                 scheme => anyhow::bail!("unexpected endpoint scheme: {scheme}"),
             }
+        }
+    }
+
+    #[async_trait]
+    impl ManualEndpointResolver for CyclingEndpointResolver {
+        async fn resolve_endpoint(&self, url: &Url) -> anyhow::Result<Url> {
+            Ok(url.clone())
         }
     }
 
@@ -914,6 +952,37 @@ mod tests {
 
         assert_eq!(endpoint.url.as_str(), "tcp://peer.example:12000");
         assert_eq!(endpoint.tunnel_prefixes, ["http", "txt"]);
+    }
+
+    #[tokio::test]
+    async fn manual_endpoint_resolution_rejects_cycles() {
+        let error = resolve_manual_endpoint(
+            &CyclingEndpointResolver,
+            "http://discovery.example".parse().unwrap(),
+        )
+        .await
+        .unwrap_err();
+
+        assert!(error.to_string().contains("cycle detected"));
+    }
+
+    #[tokio::test]
+    async fn txt_discovery_does_not_require_address_records() {
+        let resolver = StaticDnsResolver {
+            ips: Vec::new(),
+            queries: Mutex::new(Vec::new()),
+        };
+        let versions = resolve_reconnect_ip_versions(
+            &"txt://discovery.example".parse().unwrap(),
+            Duration::from_secs(1),
+            None,
+            &resolver,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(versions, [IpVersion::Both]);
+        assert!(resolver.queries.lock().unwrap().is_empty());
     }
 
     #[test]

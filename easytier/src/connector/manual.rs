@@ -599,7 +599,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn core_owns_enabled_ip_protocols_only() {
+    fn core_owns_enabled_ip_and_discovery_protocols() {
         assert!(ManualConnectorManager::core_owns_scheme(
             &"tcp://127.0.0.1".parse().unwrap()
         ));
@@ -619,8 +619,19 @@ mod tests {
                 "unexpected core ownership for {url}"
             );
         }
+        for url in [
+            "http://127.0.0.1",
+            "https://127.0.0.1",
+            "txt://discovery.example",
+            "srv://discovery.example",
+        ] {
+            assert!(
+                ManualConnectorManager::core_owns_scheme(&url.parse().unwrap()),
+                "core should own discovery URL {url}"
+            );
+        }
         assert!(!ManualConnectorManager::core_owns_scheme(
-            &"http://127.0.0.1".parse().unwrap()
+            &"ring://local".parse().unwrap()
         ));
     }
 
