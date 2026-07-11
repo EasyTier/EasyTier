@@ -5,8 +5,10 @@ use std::{
 };
 
 use anyhow::Context;
+use easytier_core::connectivity::manual::discovery::{
+    self, HttpDiscoveryResponse, HttpEndpointSource,
+};
 use http_req::request::{RedirectPolicy, Request};
-use rand::seq::SliceRandom as _;
 use url::Url;
 
 use crate::{
@@ -72,79 +74,6 @@ impl HttpTunnelConnector {
     }
 
     #[tracing::instrument(ret)]
-    async fn handle_302_redirect(
-        &mut self,
-        new_url: url::Url,
-        url_str: &str,
-    ) -> Result<Url, Error> {
-        // the url should be in following format:
-        // 1: http(s)://easytier.cn/?url=tcp://10.147.22.22:11010 (scheme is http, domain is ignored, path is splitted into proto type and addr)
-        // 2: http(s)://tcp://10.137.22.22:11010 (connector url is appended to the scheme)
-        // 3: tcp://10.137.22.22:11010 (scheme is protocol type, the url is used to construct a connector directly)
-        tracing::info!("redirect to {}", new_url);
-        let url = url::Url::parse(new_url.as_str())
-            .with_context(|| format!("parsing redirect url failed. url: {}", new_url))?;
-        if url.scheme() == "http" || url.scheme() == "https" {
-            let mut query = new_url
-                .query_pairs()
-                .filter_map(|x| url::Url::parse(&x.1).ok())
-                .collect::<Vec<_>>();
-            query.shuffle(&mut rand::thread_rng());
-            if !query.is_empty() {
-                tracing::info!("try to create connector by url: {}", query[0]);
-                self.redirect_type = HttpRedirectType::RedirectToQuery;
-                return Ok(query[0].clone());
-            } else if let Some(new_url) = url_str
-                .strip_prefix(format!("{}://", url.scheme()).as_str())
-                .and_then(|x| Url::parse(x).ok())
-            {
-                // stripe the scheme and create connector by url
-                self.redirect_type = HttpRedirectType::RedirectToUrl;
-                return Ok(new_url);
-            }
-            return Err(Error::InvalidUrl(format!(
-                "no valid connector url found in url: {}",
-                url
-            )));
-        } else {
-            self.redirect_type = HttpRedirectType::RedirectToUrl;
-            return Ok(new_url);
-        }
-    }
-
-    #[tracing::instrument]
-    async fn handle_200_success(&mut self, body: &String) -> Result<Url, Error> {
-        // resp body should be line of connector urls, like:
-        // tcp://10.1.1.1:11010
-        // udp://10.1.1.1:11010
-        let mut lines = body
-            .lines()
-            .map(|line| line.trim())
-            .filter(|line| !line.is_empty())
-            .collect::<Vec<&str>>();
-
-        tracing::info!("get {} lines of connector urls", lines.len());
-
-        // shuffle the lines and pick the usable one
-        lines.shuffle(&mut rand::thread_rng());
-
-        for line in lines {
-            let url = url::Url::parse(line);
-            if url.is_err() {
-                tracing::warn!("invalid url: {}, skip it", line);
-                continue;
-            }
-            self.redirect_type = HttpRedirectType::BodyUrls;
-            return Ok(url.unwrap());
-        }
-
-        Err(Error::InvalidUrl(format!(
-            "no valid connector url found, response body: {}",
-            body
-        )))
-    }
-
-    #[tracing::instrument(ret)]
     pub async fn get_redirected_url(&mut self, original_url: &str) -> Result<Url, Error> {
         self.redirect_type = HttpRedirectType::Unknown;
         tracing::info!("get_redirected_url: {}", original_url);
@@ -178,22 +107,17 @@ impl HttpTunnelConnector {
 
         let body = String::from_utf8_lossy(&body.read().unwrap()).to_string();
 
-        if res.status_code().is_redirect() {
-            let redirect_url = res
-                .headers()
-                .get("Location")
-                .ok_or_else(|| Error::InvalidUrl("no redirect address found".to_string()))?;
-            let new_url = url::Url::parse(redirect_url.as_str())
-                .with_context(|| format!("parsing redirect url failed. url: {}", redirect_url))?;
-            return self.handle_302_redirect(new_url, redirect_url).await;
-        } else if res.status_code().is_success() {
-            return self.handle_200_success(&body).await;
-        } else {
-            return Err(Error::InvalidUrl(format!(
-                "unexpected response, resp: {:?}, body: {}",
-                res, body,
-            )));
-        }
+        let endpoint = discovery::resolve_http_endpoint(HttpDiscoveryResponse {
+            status_code: u16::from(res.status_code()),
+            location: res.headers().get("Location").map(ToString::to_string),
+            body,
+        })?;
+        self.redirect_type = match endpoint.source {
+            HttpEndpointSource::RedirectQuery => HttpRedirectType::RedirectToQuery,
+            HttpEndpointSource::RedirectUrl => HttpRedirectType::RedirectToUrl,
+            HttpEndpointSource::ResponseBody => HttpRedirectType::BodyUrls,
+        };
+        Ok(endpoint.url)
     }
 
     pub async fn get_redirected_connector(
