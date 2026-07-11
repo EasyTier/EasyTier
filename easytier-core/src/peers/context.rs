@@ -651,9 +651,9 @@ impl PeerContext for ConfigPeerContext {
             .or(Some(self.flags.instance_recv_bps_limit))
             .filter(|limit| !matches!(*limit, 0 | u64::MAX));
         let (key, bps) = if is_foreign_network && let Some(limit) = foreign_limit {
-            (format!("{network_name}:recv"), limit)
+            (format!("portable:foreign:{network_name}:recv"), limit)
         } else {
-            ("instance:recv".to_owned(), instance_limit?)
+            ("portable:instance:recv".to_owned(), instance_limit?)
         };
         self.support.get_or_create_limiter(&key, bps)
     }

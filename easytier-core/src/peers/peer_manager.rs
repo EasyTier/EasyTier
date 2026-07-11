@@ -3539,9 +3539,11 @@ mod tests {
         let foreign_a = core.context.recv_limiter("foreign-a", true).unwrap();
         let foreign_a_again = core.context.recv_limiter("foreign-a", true).unwrap();
         let foreign_b = core.context.recv_limiter("foreign-b", true).unwrap();
+        let foreign_named_instance = core.context.recv_limiter("instance", true).unwrap();
         assert!(Arc::ptr_eq(&foreign_a, &foreign_a_again));
         assert!(!Arc::ptr_eq(&foreign_a, &foreign_b));
         assert!(!Arc::ptr_eq(&instance_a, &foreign_a));
+        assert!(!Arc::ptr_eq(&instance_a, &foreign_named_instance));
 
         core.clear_resources().await;
         assert!(core.context.recv_limiter("portable-net", false).is_none());
