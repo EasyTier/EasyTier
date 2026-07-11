@@ -1,3 +1,5 @@
+pub mod discovery;
+
 use std::{
     collections::BTreeSet,
     future::Future,
