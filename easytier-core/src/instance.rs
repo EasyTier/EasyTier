@@ -2,9 +2,10 @@
 
 use std::sync::{
     Arc, Weak,
-    atomic::{AtomicU8, Ordering},
+    atomic::{AtomicBool, AtomicU8, Ordering},
 };
 
+use async_trait::async_trait;
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 use url::Url;
@@ -105,6 +106,13 @@ where
     pub endpoint_resolver: Arc<dyn ManualEndpointResolver>,
     pub protocol: Arc<dyn ClientProtocolUpgrader<<H as VirtualTcpSocketFactory>::Socket>>,
     pub manual_events: Option<Arc<dyn ManualConnectivityEventSink>>,
+    pub udp_hole_punch: Option<Arc<dyn UdpHolePunchService>>,
+}
+
+#[async_trait]
+pub trait UdpHolePunchService: Send + Sync + 'static {
+    async fn start(&self) -> anyhow::Result<()>;
+    async fn stop(&self);
 }
 
 /// Owns the portable peer and connectivity runtime for one EasyTier instance.
@@ -122,6 +130,8 @@ where
     manual: ManualConnectorManager<H>,
     direct: DirectConnectorManager<H>,
     tcp_hole_punch: TcpHolePunchConnector<H>,
+    udp_hole_punch: Option<Arc<dyn UdpHolePunchService>>,
+    udp_hole_punch_started: AtomicBool,
 }
 
 impl<H> CoreInstance<H>
@@ -133,6 +143,7 @@ where
         adapters: CoreInstanceAdapters<H>,
         config: CoreInstanceConfig,
     ) -> anyhow::Result<Self> {
+        let udp_hole_punch = adapters.udp_hole_punch;
         let manual = match adapters.manual_events {
             Some(events) => ManualConnectorManager::new_with_events(
                 peer_manager.clone(),
@@ -174,6 +185,8 @@ where
             manual,
             direct,
             tcp_hole_punch,
+            udp_hole_punch,
+            udp_hole_punch_started: AtomicBool::new(false),
         })
     }
 
@@ -197,6 +210,10 @@ where
     }
 
     async fn stop_components(&self) {
+        if let Some(udp_hole_punch) = &self.udp_hole_punch {
+            udp_hole_punch.stop().await;
+            self.udp_hole_punch_started.store(false, Ordering::Release);
+        }
         self.manual.stop().await;
         self.tcp_hole_punch.stop().await;
         self.direct.stop().await;
@@ -234,6 +251,31 @@ where
         self.manual.start();
 
         self.set_state(CoreInstanceState::Running);
+        recovery.disarm();
+        Ok(())
+    }
+
+    pub async fn start_udp_hole_punch(self: &Arc<Self>) -> anyhow::Result<()> {
+        let _operation = self.operation.lock().await;
+        let state = self.state();
+        if state != CoreInstanceState::Running {
+            anyhow::bail!("UDP hole punching cannot start from core instance state {state:?}");
+        }
+        let Some(udp_hole_punch) = &self.udp_hole_punch else {
+            return Ok(());
+        };
+        if self.udp_hole_punch_started.load(Ordering::Acquire) {
+            return Ok(());
+        }
+
+        let mut recovery = self.recovery_guard();
+        self.udp_hole_punch_started.store(true, Ordering::Release);
+        if let Err(error) = udp_hole_punch.start().await {
+            udp_hole_punch.stop().await;
+            self.udp_hole_punch_started.store(false, Ordering::Release);
+            recovery.disarm();
+            return Err(error);
+        }
         recovery.disarm();
         Ok(())
     }

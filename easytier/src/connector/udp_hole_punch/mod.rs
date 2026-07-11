@@ -21,6 +21,7 @@ use easytier_core::{
         UdpHolePunchConnector as CoreUdpHolePunchConnector, UdpHolePunchInbound,
         UdpHolePunchServer as CoreUdpHolePunchServer, UdpHolePunchSignalError, UdpSymPunchLock,
     },
+    instance::UdpHolePunchService,
     peers::peer_manager::PeerManagerCore,
 };
 use once_cell::sync::Lazy;
@@ -324,12 +325,12 @@ impl UdpHolePunchConnector {
         }
     }
 
-    pub async fn run_as_client(&mut self) -> Result<(), Error> {
+    pub async fn run_as_client(&self) -> Result<(), Error> {
         self.client.run_as_client();
         Ok(())
     }
 
-    pub async fn run_as_server(&mut self) -> Result<(), Error> {
+    pub async fn run_as_server(&self) -> Result<(), Error> {
         self.server.start().await;
         self.peer_mgr
             .get_peer_rpc_mgr()
@@ -343,7 +344,7 @@ impl UdpHolePunchConnector {
         Ok(())
     }
 
-    pub async fn run(&mut self) -> Result<(), Error> {
+    pub async fn run(&self) -> Result<(), Error> {
         let global_ctx = self.peer_mgr.get_global_ctx();
 
         if global_ctx.get_flags().disable_udp_hole_punching {
@@ -373,6 +374,17 @@ impl UdpHolePunchConnector {
     #[cfg(test)]
     pub async fn run_immediately_for_test(&self) {
         self.client.run_immediately().await;
+    }
+}
+
+#[async_trait::async_trait]
+impl UdpHolePunchService for UdpHolePunchConnector {
+    async fn start(&self) -> anyhow::Result<()> {
+        self.run().await.map_err(anyhow::Error::from)
+    }
+
+    async fn stop(&self) {
+        UdpHolePunchConnector::stop(self).await;
     }
 }
 

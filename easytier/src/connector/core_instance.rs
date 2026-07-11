@@ -143,6 +143,7 @@ pub(crate) fn runtime_core_instance_adapters(
         manual_events: Some(Arc::new(GlobalCtxManualConnectivityEventSink {
             global_ctx,
         })),
+        udp_hole_punch: None,
     }
 }
 
@@ -155,11 +156,11 @@ pub(crate) fn build_runtime_core_instance(
         manual: runtime_manual_options(&global_ctx),
         direct: runtime_direct_options(&global_ctx, false),
     };
-    CoreInstance::new(
-        peer_manager.core(),
-        runtime_core_instance_adapters(global_ctx),
-        config,
-    )
+    let mut adapters = runtime_core_instance_adapters(global_ctx);
+    adapters.udp_hole_punch = Some(Arc::new(super::udp_hole_punch::UdpHolePunchConnector::new(
+        peer_manager.clone(),
+    )));
+    CoreInstance::new(peer_manager.core(), adapters, config)
 }
 
 #[cfg(test)]
@@ -199,6 +200,8 @@ mod tests {
         instance.start().await.unwrap();
         assert_eq!(instance.state(), CoreInstanceState::Running);
         assert!(instance.start().await.is_err());
+        instance.start_udp_hole_punch().await.unwrap();
+        instance.start_udp_hole_punch().await.unwrap();
 
         instance.stop().await;
         instance.stop().await;
@@ -236,6 +239,12 @@ mod tests {
         let (start_a, start_b) = tokio::join!(instance_a.start(), instance_b.start());
         start_a.unwrap();
         start_b.unwrap();
+        let (udp_a, udp_b) = tokio::join!(
+            instance_a.start_udp_hole_punch(),
+            instance_b.start_udp_hole_punch()
+        );
+        udp_a.unwrap();
+        udp_b.unwrap();
         assert_eq!(instance_a.state(), CoreInstanceState::Running);
         assert_eq!(instance_b.state(), CoreInstanceState::Running);
 

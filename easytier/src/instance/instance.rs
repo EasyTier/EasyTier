@@ -26,7 +26,6 @@ use crate::common::error::Error;
 use crate::common::global_ctx::{ArcGlobalCtx, GlobalCtx, GlobalCtxEvent};
 use crate::connector::core_instance::{RuntimeCoreInstance, build_runtime_core_instance};
 use crate::connector::manual::{ConnectorManagerRpcService, ManualConnectorManager};
-use crate::connector::udp_hole_punch::UdpHolePunchConnector;
 use crate::gateway::icmp_proxy::IcmpProxy;
 #[cfg(feature = "kcp")]
 use crate::gateway::kcp_proxy::{KcpProxyDst, KcpProxyDstRpcService, KcpProxySrc};
@@ -674,7 +673,6 @@ pub struct Instance {
     core_instance: Arc<RuntimeCoreInstance>,
     listener_manager: Arc<Mutex<ListenerManager<PeerManagerCore>>>,
     conn_manager: Arc<ManualConnectorManager>,
-    udp_hole_puncher: Arc<Mutex<UdpHolePunchConnector>>,
 
     ip_proxy: Option<IpProxy>,
 
@@ -733,9 +731,6 @@ impl Instance {
             core_instance.clone(),
         ));
 
-        let udp_hole_puncher =
-            Arc::new(Mutex::new(UdpHolePunchConnector::new(peer_manager.clone())));
-
         let peer_center = Arc::new(PeerCenterInstance::new(peer_manager.clone()));
 
         #[cfg(feature = "wireguard")]
@@ -758,7 +753,6 @@ impl Instance {
             core_instance,
             listener_manager,
             conn_manager,
-            udp_hole_puncher,
 
             ip_proxy: None,
             #[cfg(feature = "kcp")]
@@ -1136,7 +1130,7 @@ impl Instance {
         )?);
         self.run_ip_proxy().await?;
 
-        self.udp_hole_puncher.lock().await.run().await?;
+        self.core_instance.start_udp_hole_punch().await?;
 
         self.peer_center.init().await;
         let route_calc = self.peer_center.get_cost_calculator();
@@ -1651,7 +1645,6 @@ impl Instance {
 
     pub async fn clear_resources(&mut self) {
         self.public_ipv6_provider_task.shutdown().await;
-        self.udp_hole_puncher.lock().await.stop().await;
         self.core_instance.stop().await;
         #[cfg(feature = "tun")]
         let _ = self.nic_ctx.lock().await.take();
@@ -1663,14 +1656,11 @@ impl Drop for Instance {
         let my_peer_id = self.peer_manager.my_peer_id();
         let pm = Arc::downgrade(&self.peer_manager);
         let core_instance = self.core_instance.clone();
-        let udp_hole_puncher = self.udp_hole_puncher.clone();
         #[cfg(feature = "tun")]
         let nic_ctx = self.nic_ctx.clone();
         tokio::spawn(async move {
             #[cfg(feature = "tun")]
             nic_ctx.lock().await.take();
-            udp_hole_puncher.lock().await.stop().await;
-            drop(udp_hole_puncher);
             core_instance.stop().await;
 
             let now = std::time::Instant::now();
