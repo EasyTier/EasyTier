@@ -66,20 +66,20 @@ pub struct PeerRuntimeConfig {
 }
 
 #[derive(Debug, Clone)]
-pub struct ConfigPeerContext {
+pub(crate) struct ConfigPeerContext {
     runtime: PeerRuntimeConfig,
     flags: FlagsInConfig,
 }
 
 impl ConfigPeerContext {
-    pub fn new(runtime: PeerRuntimeConfig) -> Self {
+    pub(crate) fn new(runtime: PeerRuntimeConfig) -> Self {
         Self {
             runtime,
             flags: FlagsInConfig::default(),
         }
     }
 
-    pub fn with_flags(mut self, flags: FlagsInConfig) -> Self {
+    pub(crate) fn with_flags(mut self, flags: FlagsInConfig) -> Self {
         self.flags = flags;
         self
     }
@@ -92,31 +92,18 @@ fn config_ipv4(value: &IpPrefix) -> Option<Ipv4Inet> {
     Ipv4Inet::new(address, value.prefix_len).ok()
 }
 
+fn config_ipv4_cidr(value: &IpPrefix) -> Option<Ipv4Cidr> {
+    let IpAddr::V4(address) = value.address else {
+        return None;
+    };
+    Ipv4Cidr::new(address, value.prefix_len).ok()
+}
+
 fn config_ipv6(value: &IpPrefix) -> Option<Ipv6Inet> {
     let IpAddr::V6(address) = value.address else {
         return None;
     };
     Ipv6Inet::new(address, value.prefix_len).ok()
-}
-
-fn same_ip_prefix(left: IpAddr, right: IpAddr, prefix_len: u8) -> bool {
-    match (left, right) {
-        (IpAddr::V4(left), IpAddr::V4(right)) => {
-            let Some(shift) = 32u32.checked_sub(u32::from(prefix_len)) else {
-                return false;
-            };
-            let mask = u32::MAX.checked_shl(shift).unwrap_or(0);
-            u32::from(left) & mask == u32::from(right) & mask
-        }
-        (IpAddr::V6(left), IpAddr::V6(right)) => {
-            let Some(shift) = 128u32.checked_sub(u32::from(prefix_len)) else {
-                return false;
-            };
-            let mask = u128::MAX.checked_shl(shift).unwrap_or(0);
-            u128::from(left) & mask == u128::from(right) & mask
-        }
-        _ => false,
-    }
 }
 
 fn ipv4_inet_to_config(value: Ipv4Inet) -> IpPrefix {
@@ -539,13 +526,20 @@ impl PeerContext for ConfigPeerContext {
     }
 
     fn is_ip_in_same_network(&self, ip: &IpAddr) -> bool {
-        [
-            self.runtime.core.routes.ipv4.as_ref(),
-            self.runtime.core.routes.ipv6.as_ref(),
-        ]
-        .into_iter()
-        .flatten()
-        .any(|prefix| same_ip_prefix(prefix.address, *ip, prefix.prefix_len))
+        match ip {
+            IpAddr::V4(ip) => self.ipv4().is_some_and(|network| network.contains(ip)),
+            IpAddr::V6(ip) => self.ipv6().is_some_and(|network| network.contains(ip)),
+        }
+    }
+
+    fn proxy_cidrs(&self) -> Vec<Ipv4Cidr> {
+        self.runtime
+            .core
+            .routes
+            .proxy_networks
+            .iter()
+            .filter_map(|proxy| config_ipv4_cidr(proxy.mapped.as_ref().unwrap_or(&proxy.real)))
+            .collect()
     }
 
     fn hostname(&self) -> String {
@@ -654,6 +648,16 @@ mod tests {
                 routes: RouteConfig {
                     ipv4: Some(IpPrefix::new("10.20.0.7".parse().unwrap(), 16).unwrap()),
                     ipv6: Some(IpPrefix::new("2001:db8::7".parse().unwrap(), 64).unwrap()),
+                    proxy_networks: vec![
+                        crate::config::ProxyNetworkConfig {
+                            real: IpPrefix::new("10.40.0.0".parse().unwrap(), 16).unwrap(),
+                            mapped: Some(IpPrefix::new("10.50.0.0".parse().unwrap(), 16).unwrap()),
+                        },
+                        crate::config::ProxyNetworkConfig {
+                            real: IpPrefix::new("10.60.0.0".parse().unwrap(), 16).unwrap(),
+                            mapped: None,
+                        },
+                    ],
                     ..Default::default()
                 },
                 ..Default::default()
@@ -684,6 +688,13 @@ mod tests {
         assert!(context.is_ip_in_same_network(&"10.20.99.1".parse().unwrap()));
         assert!(context.is_ip_in_same_network(&"2001:db8::99".parse().unwrap()));
         assert!(!context.is_ip_in_same_network(&"10.21.0.1".parse().unwrap()));
+        assert_eq!(
+            context.proxy_cidrs(),
+            vec![
+                "10.50.0.0/16".parse().unwrap(),
+                "10.60.0.0/16".parse().unwrap()
+            ]
+        );
         assert!(context.secure_mode().unwrap().enabled);
 
         let proof = context
@@ -696,6 +707,62 @@ mod tests {
             .finalize()
             .into_bytes();
         assert_eq!(proof, expected);
+    }
+
+    fn config_context_with_routes(
+        ipv4: Option<IpPrefix>,
+        ipv6: Option<IpPrefix>,
+    ) -> ConfigPeerContext {
+        ConfigPeerContext::new(PeerRuntimeConfig {
+            core: CoreConfig {
+                routes: RouteConfig {
+                    ipv4,
+                    ipv6,
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            network_identity: NetworkIdentity::default(),
+            stun_info: StunInfo::default(),
+            feature_flags: PeerFeatureFlag::default(),
+            secure_mode: None,
+        })
+    }
+
+    #[test]
+    fn config_peer_context_validates_route_family_and_prefix_edges() {
+        let mismatched = config_context_with_routes(
+            Some(IpPrefix {
+                address: "2001:db8::1".parse().unwrap(),
+                prefix_len: 64,
+            }),
+            Some(IpPrefix {
+                address: "10.20.0.1".parse().unwrap(),
+                prefix_len: 24,
+            }),
+        );
+        assert_eq!(mismatched.ipv4(), None);
+        assert_eq!(mismatched.ipv6(), None);
+        assert!(!mismatched.is_ip_in_same_network(&"2001:db8::2".parse().unwrap()));
+        assert!(!mismatched.is_ip_in_same_network(&"10.20.0.2".parse().unwrap()));
+
+        let edges = config_context_with_routes(
+            Some(IpPrefix::new("10.20.0.7".parse().unwrap(), 0).unwrap()),
+            Some(IpPrefix::new("2001:db8::7".parse().unwrap(), 128).unwrap()),
+        );
+        assert!(edges.is_ip_in_same_network(&"203.0.113.1".parse().unwrap()));
+        assert!(edges.is_ip_in_same_network(&"2001:db8::7".parse().unwrap()));
+        assert!(!edges.is_ip_in_same_network(&"2001:db8::8".parse().unwrap()));
+
+        let invalid = config_context_with_routes(
+            Some(IpPrefix {
+                address: "10.20.0.7".parse().unwrap(),
+                prefix_len: 33,
+            }),
+            None,
+        );
+        assert_eq!(invalid.ipv4(), None);
+        assert!(!invalid.is_ip_in_same_network(&"10.20.0.7".parse().unwrap()));
     }
 
     #[test]

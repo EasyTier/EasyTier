@@ -164,12 +164,11 @@ pub struct PortablePeerManagerConfig {
     pub runtime: PeerRuntimeConfig,
     pub flags: FlagsInConfig,
     pub route_algo: RouteAlgoType,
-    pub data_compress_algo: CompressorAlgo,
     pub exit_nodes: Vec<IpAddr>,
 }
 
 impl PortablePeerManagerConfig {
-    pub fn new(runtime: PeerRuntimeConfig) -> Self {
+    pub fn new(mut runtime: PeerRuntimeConfig) -> Self {
         let policy = &runtime.core.peer_policy;
         let traffic = &runtime.core.traffic;
         let mut flags = FlagsInConfig::default();
@@ -178,14 +177,16 @@ impl PortablePeerManagerConfig {
         flags.relay_all_peer_rpc = policy.relay_peer_rpc;
         flags.disable_relay_data = !policy.relay_data;
         flags.latency_first = policy.latency_first;
+        flags.data_compress_algo = crate::proto::common::CompressionAlgoPb::None.into();
         flags.mtu = traffic.mtu.map(u32::from).unwrap_or_default();
         flags.instance_recv_bps_limit = traffic.instance_recv_bps_limit.unwrap_or_default();
         flags.foreign_relay_bps_limit = traffic.foreign_relay_bps_limit.unwrap_or_default();
+        runtime.feature_flags.disable_p2p = flags.disable_p2p;
+        runtime.feature_flags.avoid_relay_data |= flags.disable_relay_data;
         Self {
             runtime,
             flags,
             route_algo: RouteAlgoType::Ospf,
-            data_compress_algo: CompressorAlgo::None,
             exit_nodes: Vec::new(),
         }
     }
@@ -685,6 +686,10 @@ struct DisabledForeignNetworkManager;
 
 #[async_trait::async_trait]
 impl ForeignNetworkConnectionAdmission for DisabledForeignNetworkManager {
+    fn allow_client_foreign_network(&self) -> bool {
+        false
+    }
+
     fn get_network_peer_id(&self, _network_name: &str) -> Option<PeerId> {
         None
     }
@@ -780,6 +785,70 @@ impl PeerManagerCore {
             _ => {}
         }
 
+        if let (Some(_), Some(expected_digest)) = (
+            config.runtime.network_identity.network_secret.as_ref(),
+            config
+                .runtime
+                .network_identity
+                .network_secret_digest
+                .as_ref(),
+        ) {
+            let mut identity = config.runtime.network_identity.clone();
+            identity.network_secret_digest = None;
+            let derived_digest = identity
+                .secret_digest()
+                .expect("identity with a secret should derive a digest");
+            if &derived_digest != expected_digest {
+                anyhow::bail!("network secret does not match the configured digest");
+            }
+        }
+        if config.runtime.feature_flags.is_credential_peer {
+            anyhow::bail!(
+                "credential peer mode requires a trust adapter and is not available in portable composition"
+            );
+        }
+        if config.flags.instance_recv_bps_limit != 0
+            || config.flags.foreign_relay_bps_limit != 0
+            || config
+                .runtime
+                .core
+                .traffic
+                .instance_recv_bps_limit
+                .is_some_and(|limit| limit != 0)
+            || config
+                .runtime
+                .core
+                .traffic
+                .foreign_relay_bps_limit
+                .is_some_and(|limit| limit != 0)
+        {
+            anyhow::bail!(
+                "traffic limits require a limiter adapter and are not available in portable composition"
+            );
+        }
+        if let Some(secure) = config
+            .runtime
+            .secure_mode
+            .as_ref()
+            .filter(|secure| secure.enabled)
+        {
+            if config.runtime.network_identity.network_secret.is_none() {
+                anyhow::bail!(
+                    "secure mode without a network secret requires trust and pin adapters"
+                );
+            }
+            let private_key = secure.private_key()?;
+            let public_key = secure.public_key()?;
+            let derived_public = x25519_dalek::PublicKey::from(&private_key);
+            if derived_public.as_bytes() != public_key.as_bytes() {
+                anyhow::bail!("secure mode public key does not match its private key");
+            }
+        }
+        let data_compress_algo = CompressorAlgo::try_from(config.flags.data_compress_algo())?;
+        if tokio::runtime::Handle::try_current().is_err() {
+            anyhow::bail!("portable peer manager construction requires an entered Tokio runtime");
+        }
+
         let my_peer_id = config
             .runtime
             .core
@@ -816,6 +885,9 @@ impl PeerManagerCore {
             .secure_mode
             .as_ref()
             .is_some_and(|secure| secure.enabled);
+        config.runtime.feature_flags.disable_p2p = config.flags.disable_p2p;
+        config.runtime.feature_flags.need_p2p = config.flags.need_p2p;
+        config.runtime.feature_flags.avoid_relay_data |= config.flags.disable_relay_data;
         let context: ArcPeerContext =
             Arc::new(ConfigPeerContext::new(config.runtime).with_flags(config.flags));
         let public_ipv6_runtime = Arc::new(DisabledPublicIpv6Runtime {
@@ -836,7 +908,7 @@ impl PeerManagerCore {
             nic_channel,
             encryptor,
             is_secure_mode_enabled,
-            config.data_compress_algo,
+            data_compress_algo,
             config.exit_nodes,
             address_resolver,
             |_, _, _, _| Arc::new(DisabledForeignNetworkManager),
@@ -1562,6 +1634,10 @@ pub async fn close_peer_conn(
 #[async_trait::async_trait]
 #[auto_impl::auto_impl(&, Arc)]
 pub trait ForeignNetworkConnectionAdmission: Send + Sync {
+    fn allow_client_foreign_network(&self) -> bool {
+        true
+    }
+
     fn get_network_peer_id(&self, network_name: &str) -> Option<PeerId>;
 
     fn is_existing_credential_pubkey_trusted(
@@ -1652,6 +1728,15 @@ impl PeerConnectionAdmission {
             .await?;
             self.recent_traffic.clear(peer_id);
         } else {
+            if !self
+                .foreign_network_admission
+                .allow_client_foreign_network()
+            {
+                return Err(anyhow::anyhow!(
+                    "foreign network client connections are disabled for this core instance"
+                )
+                .into());
+            }
             self.foreign_network_client.add_new_peer_conn(peer).await?;
         }
         Ok((peer_id, conn_id))
@@ -3279,17 +3364,25 @@ mod tests {
         }
     }
 
+    fn build_portable_for_test(runtime: PeerRuntimeConfig) -> anyhow::Result<PeerManagerCore> {
+        let (packet_tx, _packet_rx) = create_packet_recv_chan();
+        PeerManagerCore::new_portable(
+            PortablePeerManagerConfig::new(runtime),
+            Arc::new(PanicDnsResolver),
+            packet_tx,
+        )
+    }
+
     #[tokio::test]
     async fn portable_peer_manager_builds_and_stops_from_normalized_config() {
         let runtime = portable_runtime_config("portable-net", 77);
-        let config = PortablePeerManagerConfig::new(runtime);
-        let (packet_tx, _packet_rx) = create_packet_recv_chan();
-        let core =
-            PeerManagerCore::new_portable(config, Arc::new(PanicDnsResolver), packet_tx).unwrap();
+        let core = build_portable_for_test(runtime).unwrap();
 
         assert_eq!(core.my_peer_id(), 77);
         assert_eq!(core.context.network_name(), "portable-net");
         assert_ne!(core.context.instance_id(), uuid::Uuid::nil());
+        assert_eq!(core.data_compress_algo, CompressorAlgo::None);
+        assert!(!DisabledForeignNetworkManager.allow_client_foreign_network());
 
         core.run().await.unwrap();
         core.clear_resources().await;
@@ -3308,6 +3401,46 @@ mod tests {
         );
 
         assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn portable_peer_manager_rejects_unavailable_config_capabilities() {
+        let mut digest_mismatch = portable_runtime_config("portable-net", 79);
+        digest_mismatch.network_identity.network_secret_digest = Some([1; 32]);
+        assert!(build_portable_for_test(digest_mismatch).is_err());
+
+        let mut limited = portable_runtime_config("portable-net", 80);
+        limited.core.traffic.instance_recv_bps_limit = Some(1024);
+        assert!(build_portable_for_test(limited).is_err());
+
+        let mut credential = portable_runtime_config("portable-net", 81);
+        credential.feature_flags.is_credential_peer = true;
+        assert!(build_portable_for_test(credential).is_err());
+
+        let mut secure_without_trust = portable_runtime_config("portable-net", 82);
+        secure_without_trust.network_identity.network_secret = None;
+        secure_without_trust.secure_mode = Some(crate::proto::common::SecureModeConfig {
+            enabled: true,
+            ..Default::default()
+        });
+        assert!(build_portable_for_test(secure_without_trust).is_err());
+
+        let mut secure_without_keys = portable_runtime_config("portable-net", 83);
+        secure_without_keys.secure_mode = Some(crate::proto::common::SecureModeConfig {
+            enabled: true,
+            ..Default::default()
+        });
+        assert!(build_portable_for_test(secure_without_keys).is_err());
+    }
+
+    #[test]
+    fn portable_peer_manager_reports_missing_tokio_runtime() {
+        let result = build_portable_for_test(portable_runtime_config("portable-net", 84));
+
+        let Err(error) = result else {
+            panic!("construction outside Tokio must fail");
+        };
+        assert!(error.to_string().contains("entered Tokio runtime"));
     }
 
     #[test]
