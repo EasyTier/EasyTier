@@ -173,9 +173,13 @@ pub(crate) fn build_runtime_core_instance(
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
 
-    use easytier_core::instance::CoreInstanceState;
+    use easytier_core::instance::{CoreInstanceState, ListenerService};
+    use tokio::sync::Notify;
 
     use crate::{
         common::global_ctx::{
@@ -189,6 +193,48 @@ mod tests {
     };
 
     use super::*;
+
+    #[derive(Default)]
+    struct BlockingListenerService {
+        start_entered: Notify,
+        stop_calls: AtomicUsize,
+    }
+
+    #[async_trait::async_trait]
+    impl ListenerService for BlockingListenerService {
+        async fn start(&self) -> anyhow::Result<()> {
+            self.start_entered.notify_one();
+            std::future::pending().await
+        }
+
+        async fn stop(&self) {
+            self.stop_calls.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    fn build_test_instance_with_listener(
+        network_name: &str,
+        listener: Arc<dyn ListenerService>,
+    ) -> Arc<RuntimeCoreInstance> {
+        let global_ctx = get_mock_global_ctx_with_network(Some(NetworkIdentity::new(
+            network_name.to_owned(),
+            String::new(),
+        )));
+        let (nic_channel, _nic_receiver) = create_packet_recv_chan();
+        let peer_manager = Arc::new(PeerManager::new(
+            RouteAlgoType::Ospf,
+            global_ctx.clone(),
+            nic_channel,
+        ));
+        let config = CoreInstanceConfig {
+            initial_peers: Vec::new(),
+            manual: runtime_manual_options(&global_ctx),
+            direct: runtime_direct_options(&global_ctx, false),
+        };
+        let mut adapters = runtime_core_instance_adapters(global_ctx);
+        adapters.listener = Some(listener);
+        Arc::new(CoreInstance::new(peer_manager.core(), adapters, config).unwrap())
+    }
 
     #[tokio::test]
     async fn runtime_core_instance_owns_connectivity_lifecycle() {
@@ -265,5 +311,31 @@ mod tests {
 
         instance_b.stop().await;
         assert_eq!(instance_b.state(), CoreInstanceState::Stopped);
+    }
+
+    #[tokio::test]
+    async fn stop_cancels_pending_listener_start() {
+        let listener = Arc::new(BlockingListenerService::default());
+        let instance = build_test_instance_with_listener("pending-listener", listener.clone());
+        let start_instance = instance.clone();
+        let start_task = tokio::spawn(async move { start_instance.start_listeners().await });
+        listener.start_entered.notified().await;
+
+        instance.stop().await;
+
+        assert!(start_task.await.unwrap().is_err());
+        assert_eq!(instance.state(), CoreInstanceState::Stopped);
+        assert_eq!(listener.stop_calls.load(Ordering::Relaxed), 1);
+    }
+
+    #[tokio::test]
+    async fn stop_from_created_cleans_listener_service() {
+        let listener = Arc::new(BlockingListenerService::default());
+        let instance = build_test_instance_with_listener("created-listener", listener.clone());
+
+        instance.stop().await;
+
+        assert_eq!(instance.state(), CoreInstanceState::Stopped);
+        assert_eq!(listener.stop_calls.load(Ordering::Relaxed), 1);
     }
 }
