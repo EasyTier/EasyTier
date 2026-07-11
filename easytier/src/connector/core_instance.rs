@@ -298,6 +298,33 @@ mod tests {
         assert_eq!(instance.state(), CoreInstanceState::Stopped);
     }
 
+    #[tokio::test]
+    async fn portable_core_instance_rejects_conflicting_p2p_policy() {
+        let global_ctx = get_mock_global_ctx_with_network(Some(NetworkIdentity::new(
+            "portable-policy-validation".to_owned(),
+            String::new(),
+        )));
+        let (packet_sink, _packet_receiver) = create_packet_recv_chan();
+        let peer = PortablePeerManagerConfig::new(global_ctx.runtime_config())
+            .with_flags(global_ctx.get_flags());
+        let mut connectivity = CoreInstanceConfig {
+            initial_peers: Vec::new(),
+            manual: runtime_manual_options(&global_ctx),
+            direct: runtime_direct_options(&global_ctx, false),
+        };
+        connectivity.direct.disable_p2p = !peer.flags.disable_p2p;
+
+        let error = RuntimeCoreInstance::new_portable(
+            runtime_core_instance_adapters(global_ctx),
+            PortableCoreInstanceConfig { peer, connectivity },
+            packet_sink,
+        )
+        .err()
+        .expect("conflicting P2P policy should be rejected");
+
+        assert!(error.to_string().contains("P2P policy"));
+    }
+
     fn build_test_instance(network_name: &str) -> Arc<RuntimeCoreInstance> {
         let global_ctx = get_mock_global_ctx_with_network(Some(NetworkIdentity::new(
             network_name.to_owned(),

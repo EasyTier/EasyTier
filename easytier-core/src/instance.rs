@@ -106,6 +106,23 @@ pub struct PortableCoreInstanceConfig {
     pub connectivity: CoreInstanceConfig,
 }
 
+fn validate_portable_connectivity_config(
+    config: &PortableCoreInstanceConfig,
+) -> anyhow::Result<()> {
+    let peer_flags = &config.peer.flags;
+    let direct = &config.connectivity.direct;
+    if (direct.lazy_p2p, direct.disable_p2p, direct.need_p2p)
+        != (
+            peer_flags.lazy_p2p,
+            peer_flags.disable_p2p,
+            peer_flags.need_p2p,
+        )
+    {
+        anyhow::bail!("direct connectivity P2P policy does not match peer policy");
+    }
+    Ok(())
+}
+
 pub struct CoreInstanceAdapters<H>
 where
     H: DirectConnectorHost + TcpHolePunchHost,
@@ -161,6 +178,7 @@ where
         config: PortableCoreInstanceConfig,
         packet_sink: PacketRecvChan,
     ) -> anyhow::Result<Self> {
+        validate_portable_connectivity_config(&config)?;
         let network_name = &config.peer.runtime.network_identity.network_name;
         if config.connectivity.direct.network_name != *network_name {
             anyhow::bail!(
