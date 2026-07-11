@@ -23,7 +23,6 @@ use crate::{
     },
     peers::{NicPacketFilter, peer_manager::PeerManager},
     proto::{
-        api::instance::Route,
         common::{TunnelInfo, Void},
         magic_dns::{
             DnsRecord, DnsRecordA, DnsRecordList, GetDnsRecordResponse, HandshakeRequest,
@@ -37,12 +36,11 @@ use crate::{
 };
 use anyhow::Context;
 use cidr::Ipv4Inet;
-use dashmap::DashMap;
+use easytier_core::magic_dns::{MagicDnsRecordStore, MagicDnsRoute};
 use hickory_proto::rr::LowerName;
 use hickory_proto::serialize::binary::{BinDecodable, BinEncoder};
 use hickory_server::authority::{MessageRequest, MessageResponse};
 use hickory_server::server::{Request, RequestHandler, ResponseHandler, ResponseInfo};
-use multimap::MultiMap;
 use pnet::packet::icmp::{IcmpTypes, MutableIcmpPacket};
 use pnet::packet::ipv4::Ipv4Packet;
 use pnet::packet::udp::UdpPacket;
@@ -65,14 +63,14 @@ pub(super) struct MagicDnsServerInstanceData {
     fake_ip: Ipv4Addr,
     my_peer_id: PeerId,
 
-    // zone -> (tunnel remote addr -> route)
-    route_infos: DashMap<String, MultiMap<url::Url, Route>>,
+    route_store: MagicDnsRecordStore,
+    record_apply: tokio::sync::Mutex<()>,
 
     system_config: Option<Box<dyn SystemConfig>>,
 }
 
 impl MagicDnsServerInstanceData {
-    pub async fn update_dns_records<'a, T: Iterator<Item = &'a Route>>(
+    pub async fn update_dns_records<'a, T: Iterator<Item = &'a MagicDnsRoute>>(
         &self,
         routes: T,
         zone: &str,
@@ -83,7 +81,7 @@ impl MagicDnsServerInstanceData {
                 continue;
             }
 
-            let Some(ipv4_addr) = route.ipv4_addr.unwrap_or_default().address else {
+            let Some(ipv4_addr) = route.ipv4_addr else {
                 continue;
             };
 
@@ -130,10 +128,9 @@ impl MagicDnsServerInstanceData {
     }
 
     pub async fn update(&self) {
-        for item in self.route_infos.iter() {
-            let zone = item.key();
-            let route_iter = item.value().flat_iter().map(|x| x.1);
-            if let Err(e) = self.update_dns_records(route_iter, zone).await {
+        let snapshot = self.route_store.snapshot();
+        for (zone, routes) in &snapshot.zones {
+            if let Err(e) = self.update_dns_records(routes.iter(), zone).await {
                 tracing::error!("Failed to update DNS records for zone {}: {:?}", zone, e);
             }
         }
@@ -141,7 +138,7 @@ impl MagicDnsServerInstanceData {
 
     async fn keep_zone_authoritative(&self, zone: &str) {
         if let Err(e) = self
-            .update_dns_records(std::iter::empty::<&Route>(), zone)
+            .update_dns_records(std::iter::empty::<&MagicDnsRoute>(), zone)
             .await
         {
             tracing::error!(
@@ -194,24 +191,22 @@ impl MagicDnsServerRpc for MagicDnsServerInstanceData {
         let Some(remote_addr) = &tunnel_info.remote_addr else {
             return Err(anyhow::anyhow!("No remote addr").into());
         };
+        let _apply = self.record_apply.lock().await;
         let zone = input.zone.clone();
         let remote_addr: url::Url = remote_addr.clone().into();
-        let mut zone_removed = false;
-
-        if let Some(mut routes_by_addr) = self.route_infos.get_mut(&zone) {
-            routes_by_addr.remove(&remote_addr);
-            if !input.routes.is_empty() {
-                routes_by_addr.insert_many(remote_addr, input.routes);
-            }
-            zone_removed = routes_by_addr.is_empty();
-        } else if !input.routes.is_empty() {
-            let mut routes_by_addr = MultiMap::new();
-            routes_by_addr.insert_many(remote_addr, input.routes);
-            self.route_infos.insert(zone.clone(), routes_by_addr);
-        }
+        let routes = input
+            .routes
+            .into_iter()
+            .map(|route| MagicDnsRoute {
+                hostname: route.hostname,
+                ipv4_addr: route.ipv4_addr.unwrap_or_default().address.map(Into::into),
+            })
+            .collect();
+        let zone_removed =
+            self.route_store
+                .replace_client_routes(zone.clone(), remote_addr.to_string(), routes);
 
         if zone_removed {
-            self.route_infos.remove(&zone);
             self.keep_zone_authoritative(&zone).await;
         }
 
@@ -225,20 +220,18 @@ impl MagicDnsServerRpc for MagicDnsServerInstanceData {
         _input: Void,
     ) -> crate::proto::rpc_types::error::Result<GetDnsRecordResponse> {
         let mut ret = BTreeMap::new();
-        for item in self.route_infos.iter() {
-            let zone = item.key();
-            let routes = item.value();
+        for (zone, routes) in self.route_store.snapshot().zones {
             let mut dns_records = DnsRecordList::default();
-            for route in routes.iter().map(|x| x.1) {
+            for route in routes {
                 dns_records.records.push(DnsRecord {
                     record: Some(dns_record::Record::A(DnsRecordA {
                         name: format!("{}.{}", route.hostname, zone),
-                        value: route.ipv4_addr.unwrap_or_default().address,
+                        value: route.ipv4_addr.map(Into::into),
                         ttl: 1,
                     })),
                 });
             }
-            ret.insert(zone.clone(), dns_records);
+            ret.insert(zone, dns_records);
         }
         Ok(GetDnsRecordResponse { records: ret })
     }
@@ -464,18 +457,9 @@ impl RpcServerHook for MagicDnsServerInstanceData {
         let Some(remote_addr) = tunnel_info.remote_addr else {
             return;
         };
-        let remote_addr = remote_addr.into();
-        let mut removed_zones = vec![];
-        for mut item in self.route_infos.iter_mut() {
-            item.value_mut().remove(&remote_addr);
-            if item.value().is_empty() {
-                removed_zones.push(item.key().clone());
-            }
-        }
-        for zone in &removed_zones {
-            self.route_infos.remove(zone);
-        }
-        for zone in removed_zones {
+        let _apply = self.record_apply.lock().await;
+        let remote_addr: url::Url = remote_addr.into();
+        for zone in self.route_store.remove_client(&remote_addr.to_string()) {
             self.keep_zone_authoritative(&zone).await;
         }
         self.update().await;
@@ -547,7 +531,8 @@ impl MagicDnsServerInstance {
             tun_ip: tun_inet.address(),
             fake_ip,
             my_peer_id: peer_mgr.my_peer_id(),
-            route_infos: DashMap::new(),
+            route_store: MagicDnsRecordStore::default(),
+            record_apply: tokio::sync::Mutex::new(()),
             system_config: get_system_config(tun_dev.as_deref())?,
         });
 

@@ -4,6 +4,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use cidr::Ipv4Inet;
+use easytier_core::magic_dns::MagicDnsRoute;
 use hickory_client::client::{Client, ClientHandle as _};
 use hickory_proto::rr;
 use hickory_proto::runtime::TokioRuntimeProvider;
@@ -134,20 +135,17 @@ async fn test_magic_dns_server_instance() {
             .unwrap();
 
     let routes = [
-        Route {
+        MagicDnsRoute {
             hostname: "test1".to_string(),
-            ipv4_addr: Some(Ipv4Inet::from_str("8.8.8.8/24").unwrap().into()),
-            ..Default::default()
+            ipv4_addr: Some("8.8.8.8".parse().unwrap()),
         },
-        Route {
+        MagicDnsRoute {
             hostname: "中文".to_string(),
-            ipv4_addr: Some(Ipv4Inet::from_str("8.8.8.8/24").unwrap().into()),
-            ..Default::default()
+            ipv4_addr: Some("8.8.8.8".parse().unwrap()),
         },
-        Route {
+        MagicDnsRoute {
             hostname: ".invalid".to_string(),
-            ipv4_addr: Some(Ipv4Inet::from_str("8.8.8.8/24").unwrap().into()),
-            ..Default::default()
+            ipv4_addr: Some("8.8.8.8".parse().unwrap()),
         },
     ];
     dns_server_inst
