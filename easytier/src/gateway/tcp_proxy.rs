@@ -10,20 +10,21 @@ use cidr::Ipv4Inet;
 use easytier_core::instance::ProxyService;
 use easytier_core::proxy::runtime::{
     ProxyRuntimeError, ProxyRuntimeInfo, ProxyRuntimeSnapshot, TcpProxyConnectContext,
-    TcpProxyDstStream, TcpProxyKernelListener, TcpProxyRuntime, TcpProxySrcStream,
+    TcpProxyDstStream, TcpProxyRuntime,
 };
 use easytier_core::proxy::tcp_proxy_engine::{
     TcpNatEntrySnapshot, TcpNatEntryState as CoreTcpNatEntryState, TcpProxyMode, TcpProxyNicContext,
 };
 use easytier_core::proxy::tcp_proxy_service::TcpProxyService;
 use tokio::io::{AsyncRead, AsyncWrite};
-use tokio::net::{TcpListener, TcpSocket, TcpStream};
+use tokio::net::{TcpSocket, TcpStream};
 use tokio::time::timeout;
 
 use crate::common::error::Result;
 use crate::common::global_ctx::{ArcGlobalCtx, GlobalCtx};
 use crate::common::log;
 use crate::common::stats_manager::{LabelSet, LabelType, MetricName};
+use crate::connector::runtime::RuntimeConnectorHost;
 use crate::peers::peer_manager::PeerManager;
 use crate::proto::api::instance::{
     ListTcpProxyEntryRequest, ListTcpProxyEntryResponse, TcpProxyEntry, TcpProxyEntryState,
@@ -75,30 +76,6 @@ impl NatDstConnector for NatDstTcpConnector {
 
     fn transport_type(&self) -> TcpProxyEntryTransportType {
         TcpProxyEntryTransportType::Tcp
-    }
-}
-
-struct RuntimeKernelTcpListener {
-    listener: TcpListener,
-}
-
-#[async_trait::async_trait]
-impl TcpProxyKernelListener for RuntimeKernelTcpListener {
-    fn local_port(&self) -> u16 {
-        self.listener
-            .local_addr()
-            .map(|addr| addr.port())
-            .unwrap_or_default()
-    }
-
-    fn close(&self) {}
-
-    async fn accept(
-        &self,
-    ) -> std::result::Result<(SocketAddr, Box<dyn TcpProxySrcStream>), ProxyRuntimeError> {
-        let (stream, addr) = self.listener.accept().await?;
-        prepare_proxy_tcp_socket(&stream).map_err(|err| ProxyRuntimeError::Other(err.into()))?;
-        Ok((addr, Box::new(stream)))
     }
 }
 
@@ -182,17 +159,6 @@ impl<C: NatDstConnector> TcpProxyRuntime for RuntimeTcpProxyAdapter<C> {
         self.global_ctx.should_deny_proxy(&dst, false)
     }
 
-    async fn bind_kernel_listener(
-        &self,
-    ) -> std::result::Result<Box<dyn TcpProxyKernelListener>, ProxyRuntimeError> {
-        let listen_addr = SocketAddr::new(Ipv4Addr::UNSPECIFIED.into(), 0);
-        let net_ns = self.global_ctx.net_ns.clone();
-        let listener = net_ns
-            .run_async(|| async { TcpListener::bind(&listen_addr).await })
-            .await?;
-        Ok(Box::new(RuntimeKernelTcpListener { listener }))
-    }
-
     async fn connect_dst(
         &self,
         ctx: TcpProxyConnectContext,
@@ -231,7 +197,7 @@ pub struct TcpProxy<C: NatDstConnector> {
     peer_manager: Weak<PeerManager>,
     cidr_set: CidrSet,
     runtime: Arc<RuntimeTcpProxyAdapter<C>>,
-    service: Arc<TcpProxyService<RuntimeTcpProxyAdapter<C>>>,
+    service: Arc<TcpProxyService<RuntimeTcpProxyAdapter<C>, RuntimeConnectorHost>>,
     connector: C,
 }
 
@@ -246,6 +212,7 @@ impl<C: NatDstConnector> TcpProxy<C> {
         let service = TcpProxyService::new(
             peer_manager.core(),
             runtime.clone(),
+            Arc::new(RuntimeConnectorHost::new(global_ctx.clone())),
             cidr_set.table(),
             connector.proxy_mode(),
         );

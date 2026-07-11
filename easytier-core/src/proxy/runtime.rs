@@ -106,20 +106,8 @@ pub struct TcpProxyConnectContext {
 }
 
 #[async_trait::async_trait]
-pub trait TcpProxyKernelListener: Send + Sync {
-    fn local_port(&self) -> u16;
-    fn close(&self);
-
-    async fn accept(&self) -> Result<(SocketAddr, Box<dyn TcpProxySrcStream>), ProxyRuntimeError>;
-}
-
-#[async_trait::async_trait]
 pub trait TcpProxyRuntime: ProxyRuntimeInfo {
     fn should_deny_tcp_proxy(&self, dst: SocketAddr) -> bool;
-
-    async fn bind_kernel_listener(
-        &self,
-    ) -> Result<Box<dyn TcpProxyKernelListener>, ProxyRuntimeError>;
 
     async fn connect_dst(
         &self,
