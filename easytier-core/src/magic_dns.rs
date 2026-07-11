@@ -1,5 +1,146 @@
 use std::{collections::BTreeMap, net::Ipv4Addr, sync::Mutex};
 
+#[cfg(feature = "proxy-packet")]
+use std::future::Future;
+
+#[cfg(feature = "proxy-packet")]
+use pnet_packet::{
+    MutablePacket, Packet,
+    icmp::{self, IcmpTypes, MutableIcmpPacket},
+    ip::IpNextHeaderProtocols,
+    ipv4::{self, Ipv4Packet, MutableIpv4Packet},
+    udp::{self, MutableUdpPacket, UdpPacket},
+};
+
+#[cfg(feature = "proxy-packet")]
+use crate::{config::PeerId, packet::ZCPacket};
+
+#[cfg(feature = "proxy-packet")]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MagicDnsQuery {
+    pub source: std::net::SocketAddr,
+    pub payload: Vec<u8>,
+}
+
+#[cfg(feature = "proxy-packet")]
+pub async fn process_magic_dns_packet<F, Fut>(
+    packet: &mut ZCPacket,
+    fake_ip: Ipv4Addr,
+    my_peer_id: PeerId,
+    resolve: F,
+) -> bool
+where
+    F: FnOnce(MagicDnsQuery) -> Fut,
+    Fut: Future<Output = Option<Vec<u8>>>,
+{
+    let Some(ip_packet) = Ipv4Packet::new(packet.payload()) else {
+        return false;
+    };
+    if ip_packet.get_version() != 4 || ip_packet.get_destination() != fake_ip {
+        return false;
+    }
+
+    let ip_header_length = ip_packet.get_header_length() as usize * 4;
+    let protocol = ip_packet.get_next_level_protocol();
+    let source_ip = ip_packet.get_source();
+    let destination_ip = ip_packet.get_destination();
+
+    match protocol {
+        IpNextHeaderProtocols::Udp => {
+            let Some(udp_packet) = UdpPacket::new(&packet.payload()[ip_header_length..]) else {
+                return false;
+            };
+            if udp_packet.get_destination() != 53 {
+                return false;
+            }
+            let source_port = udp_packet.get_source();
+            let destination_port = udp_packet.get_destination();
+            let request_length = udp_packet.payload().len();
+            let query = MagicDnsQuery {
+                source: std::net::SocketAddr::from((source_ip, source_port)),
+                payload: udp_packet.payload().to_vec(),
+            };
+            let Some(response) = resolve(query).await else {
+                return false;
+            };
+            if !apply_udp_response(
+                packet,
+                source_ip,
+                destination_ip,
+                source_port,
+                destination_port,
+                request_length,
+                &response,
+            ) {
+                return false;
+            }
+        }
+        IpNextHeaderProtocols::Icmp => {
+            let Some(mut icmp_packet) =
+                MutableIcmpPacket::new(&mut packet.mut_payload()[ip_header_length..])
+            else {
+                return false;
+            };
+            if icmp_packet.get_icmp_type() != IcmpTypes::EchoRequest {
+                return false;
+            }
+            icmp_packet.set_icmp_type(IcmpTypes::EchoReply);
+            icmp_packet.set_checksum(icmp::checksum(&icmp_packet.to_immutable()));
+        }
+        _ => return false,
+    }
+
+    let Some(mut ip_packet) = MutableIpv4Packet::new(packet.mut_payload()) else {
+        return false;
+    };
+    ip_packet.set_source(destination_ip);
+    ip_packet.set_destination(source_ip);
+    ip_packet.set_checksum(ipv4::checksum(&ip_packet.to_immutable()));
+    let Some(header) = packet.mut_peer_manager_header() else {
+        return false;
+    };
+    header.to_peer_id = my_peer_id.into();
+    true
+}
+
+#[cfg(feature = "proxy-packet")]
+#[allow(clippy::too_many_arguments)]
+fn apply_udp_response(
+    packet: &mut ZCPacket,
+    source_ip: Ipv4Addr,
+    destination_ip: Ipv4Addr,
+    source_port: u16,
+    destination_port: u16,
+    request_length: usize,
+    response: &[u8],
+) -> bool {
+    let delta_length = response.len() as isize - request_length as isize;
+    let inner_length = (packet.buf_len() as isize + delta_length) as usize;
+    if packet.mut_inner().capacity() < inner_length {
+        let header_length = inner_length - response.len();
+        packet.mut_inner().truncate(header_length);
+    }
+    packet.mut_inner().resize(inner_length, 0);
+
+    let Some(mut ip_packet) = MutableIpv4Packet::new(packet.mut_payload()) else {
+        return false;
+    };
+    ip_packet.set_total_length((ip_packet.get_total_length() as isize + delta_length) as u16);
+    let Some(mut udp_packet) = MutableUdpPacket::new(ip_packet.payload_mut()) else {
+        return false;
+    };
+    udp_packet.set_length((udp_packet.get_length() as isize + delta_length) as u16);
+    udp_packet.set_source(destination_port);
+    udp_packet.set_destination(source_port);
+    udp_packet.payload_mut().copy_from_slice(response);
+    udp_packet.set_checksum(udp::ipv4_checksum(
+        &udp_packet.to_immutable(),
+        &destination_ip,
+        &source_ip,
+    ));
+    true
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MagicDnsRoute {
     pub hostname: String,
@@ -86,6 +227,43 @@ impl MagicDnsRecordStore {
 mod tests {
     use super::*;
 
+    #[cfg(feature = "proxy-packet")]
+    fn udp_query(payload: &[u8], destination_port: u16) -> ZCPacket {
+        let mut bytes = vec![0; 20 + 8 + payload.len()];
+        {
+            let mut ip = MutableIpv4Packet::new(&mut bytes).unwrap();
+            ip.set_version(4);
+            ip.set_header_length(5);
+            ip.set_total_length((20 + 8 + payload.len()) as u16);
+            ip.set_next_level_protocol(IpNextHeaderProtocols::Udp);
+            ip.set_source("10.0.0.2".parse().unwrap());
+            ip.set_destination("100.100.100.101".parse().unwrap());
+            let mut udp = MutableUdpPacket::new(ip.payload_mut()).unwrap();
+            udp.set_source(53000);
+            udp.set_destination(destination_port);
+            udp.set_length((8 + payload.len()) as u16);
+            udp.payload_mut().copy_from_slice(payload);
+        }
+        ZCPacket::new_with_payload(&bytes)
+    }
+
+    #[cfg(feature = "proxy-packet")]
+    fn icmp_echo_request() -> ZCPacket {
+        let mut bytes = vec![0; 20 + 8];
+        {
+            let mut ip = MutableIpv4Packet::new(&mut bytes).unwrap();
+            ip.set_version(4);
+            ip.set_header_length(5);
+            ip.set_total_length(28);
+            ip.set_next_level_protocol(IpNextHeaderProtocols::Icmp);
+            ip.set_source("10.0.0.2".parse().unwrap());
+            ip.set_destination("100.100.100.101".parse().unwrap());
+            let mut icmp = MutableIcmpPacket::new(ip.payload_mut()).unwrap();
+            icmp.set_icmp_type(IcmpTypes::EchoRequest);
+        }
+        ZCPacket::new_with_payload(&bytes)
+    }
+
     fn route(hostname: &str, addr: [u8; 4]) -> MagicDnsRoute {
         MagicDnsRoute {
             hostname: hostname.to_owned(),
@@ -169,5 +347,76 @@ mod tests {
         let snapshot = store.snapshot();
         assert_eq!(snapshot.zones.len(), 1);
         assert_eq!(snapshot.zones["b.et.net."][0].hostname, "peer-b");
+    }
+
+    #[cfg(feature = "proxy-packet")]
+    #[tokio::test]
+    async fn packet_engine_rewrites_dns_query_response() {
+        let mut packet = udp_query(b"query", 53);
+        let handled = process_magic_dns_packet(
+            &mut packet,
+            "100.100.100.101".parse().unwrap(),
+            42,
+            |query| async move {
+                assert_eq!(query.source, "10.0.0.2:53000".parse().unwrap());
+                assert_eq!(query.payload, b"query");
+                Some(b"response".to_vec())
+            },
+        )
+        .await;
+
+        assert!(handled);
+        let ip = Ipv4Packet::new(packet.payload()).unwrap();
+        assert_eq!(
+            ip.get_source(),
+            "100.100.100.101".parse::<Ipv4Addr>().unwrap()
+        );
+        assert_eq!(
+            ip.get_destination(),
+            "10.0.0.2".parse::<Ipv4Addr>().unwrap()
+        );
+        let udp = UdpPacket::new(ip.payload()).unwrap();
+        assert_eq!(udp.get_source(), 53);
+        assert_eq!(udp.get_destination(), 53000);
+        assert_eq!(udp.payload(), b"response");
+        assert_eq!(packet.get_dst_peer_id(), Some(42));
+    }
+
+    #[cfg(feature = "proxy-packet")]
+    #[tokio::test]
+    async fn packet_engine_replies_to_icmp_without_calling_dns() {
+        let mut packet = icmp_echo_request();
+        let handled = process_magic_dns_packet(
+            &mut packet,
+            "100.100.100.101".parse().unwrap(),
+            7,
+            |_| async { panic!("ICMP must not invoke DNS") },
+        )
+        .await;
+
+        assert!(handled);
+        let ip = Ipv4Packet::new(packet.payload()).unwrap();
+        assert_eq!(
+            ip.get_source(),
+            "100.100.100.101".parse::<Ipv4Addr>().unwrap()
+        );
+        let icmp = pnet_packet::icmp::IcmpPacket::new(ip.payload()).unwrap();
+        assert_eq!(icmp.get_icmp_type(), IcmpTypes::EchoReply);
+        assert_eq!(packet.get_dst_peer_id(), Some(7));
+    }
+
+    #[cfg(feature = "proxy-packet")]
+    #[tokio::test]
+    async fn packet_engine_ignores_non_dns_udp() {
+        let mut packet = udp_query(b"query", 5353);
+        assert!(
+            !process_magic_dns_packet(
+                &mut packet,
+                "100.100.100.101".parse().unwrap(),
+                42,
+                |_| async { Some(Vec::new()) },
+            )
+            .await
+        );
     }
 }
