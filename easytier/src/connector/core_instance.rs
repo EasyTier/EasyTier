@@ -5,13 +5,14 @@ use easytier_core::{
         direct::DirectConnectorOptions,
         manual::{
             ManualConnectivityEvent, ManualConnectivityEventSink, ManualConnectorOptions,
-            ManualEndpointResolver,
+            ManualEndpointResolver, discovery,
         },
         protocol::ClientProtocolUpgrader,
     },
     instance::{CoreInstance, CoreInstanceAdapters, CoreInstanceConfig},
-    socket::{dns::DnsResolver, tcp::TcpBindOptions, udp::UdpBindOptions},
+    socket::{SocketContext, dns::DnsResolver, tcp::TcpBindOptions, udp::UdpBindOptions},
 };
+use strum::VariantArray as _;
 
 use crate::{
     common::{
@@ -21,12 +22,13 @@ use crate::{
     },
     instance::listeners::RuntimeListenerService,
     peers::peer_manager::PeerManager,
+    tunnel::IpScheme,
     use_global_var,
 };
 
 use super::{
-    dns_connector::DnsTunnelConnector, http_connector::HttpTunnelConnector,
-    protocol::RuntimeClientProtocolUpgrader, runtime::RuntimeConnectorHost,
+    http_connector::HttpTunnelConnector, protocol::RuntimeClientProtocolUpgrader,
+    runtime::RuntimeConnectorHost,
 };
 
 pub(crate) type RuntimeCoreInstance = CoreInstance<RuntimeConnectorHost>;
@@ -48,14 +50,24 @@ impl ManualEndpointResolver for RuntimeManualEndpointResolver {
                 Ok(resolver.get_redirected_url(url.as_str()).await?)
             }
             "txt" | "srv" => {
-                let resolver = DnsTunnelConnector::new(url.clone(), self.global_ctx.clone());
                 let host = url
                     .host_str()
                     .ok_or_else(|| anyhow::anyhow!("host should not be empty in {url}"))?;
+                let resolver = RuntimeDnsResolver::new();
                 if url.scheme() == "txt" {
-                    Ok(resolver.resolve_txt_endpoint(host).await?)
+                    discovery::resolve_txt_endpoint(&resolver, host, SocketContext::default()).await
                 } else {
-                    Ok(resolver.resolve_srv_endpoint(host).await?)
+                    let protocols = IpScheme::VARIANTS
+                        .iter()
+                        .map(ToString::to_string)
+                        .collect::<Vec<_>>();
+                    discovery::resolve_srv_endpoint(
+                        &resolver,
+                        host,
+                        &protocols,
+                        SocketContext::default(),
+                    )
+                    .await
                 }
             }
             scheme => anyhow::bail!("unsupported manual endpoint resolver scheme: {scheme}"),
