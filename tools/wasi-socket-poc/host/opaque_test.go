@@ -42,19 +42,21 @@ type opaqueWriteOperation struct {
 }
 
 type opaqueBridge struct {
-	mu         sync.Mutex
-	handles    map[uint64]net.Conn
-	packets    map[uint64]*opaquePacketState
-	listeners  map[uint64]*opaqueTCPListenerState
-	reads      map[uint64]*opaqueReadOperation
-	writes     map[uint64]*opaqueWriteOperation
-	udpReads   map[uint64]*opaqueUDPReadWaiter
-	udpWrites  map[uint64]*opaqueUDPWriteWaiter
-	tcpAccepts map[uint64]*opaqueTCPAcceptWaiter
-	creates    map[uint64]*opaqueCreateOperation
-	nextHandle uint64
-	completion chan struct{}
-	workers    sync.WaitGroup
+	mu          sync.Mutex
+	handles     map[uint64]net.Conn
+	packets     map[uint64]*opaquePacketState
+	listeners   map[uint64]*opaqueTCPListenerState
+	reads       map[uint64]*opaqueReadOperation
+	writes      map[uint64]*opaqueWriteOperation
+	udpReads    map[uint64]*opaqueUDPReadWaiter
+	udpWrites   map[uint64]*opaqueUDPWriteWaiter
+	tcpAccepts  map[uint64]*opaqueTCPAcceptWaiter
+	creates     map[uint64]*opaqueCreateOperation
+	dns         map[uint64]*opaqueDNSOperation
+	dnsResolver opaqueDNSResolver
+	nextHandle  uint64
+	completion  chan struct{}
+	workers     sync.WaitGroup
 }
 
 func newOpaqueBridge(
@@ -65,17 +67,19 @@ func newOpaqueBridge(
 		handles = make(map[uint64]net.Conn)
 	}
 	bridge := &opaqueBridge{
-		handles:    handles,
-		packets:    make(map[uint64]*opaquePacketState, len(packets)),
-		listeners:  make(map[uint64]*opaqueTCPListenerState),
-		reads:      make(map[uint64]*opaqueReadOperation),
-		writes:     make(map[uint64]*opaqueWriteOperation),
-		udpReads:   make(map[uint64]*opaqueUDPReadWaiter),
-		udpWrites:  make(map[uint64]*opaqueUDPWriteWaiter),
-		tcpAccepts: make(map[uint64]*opaqueTCPAcceptWaiter),
-		creates:    make(map[uint64]*opaqueCreateOperation),
-		nextHandle: 1 << 48,
-		completion: make(chan struct{}, 1),
+		handles:     handles,
+		packets:     make(map[uint64]*opaquePacketState, len(packets)),
+		listeners:   make(map[uint64]*opaqueTCPListenerState),
+		reads:       make(map[uint64]*opaqueReadOperation),
+		writes:      make(map[uint64]*opaqueWriteOperation),
+		udpReads:    make(map[uint64]*opaqueUDPReadWaiter),
+		udpWrites:   make(map[uint64]*opaqueUDPWriteWaiter),
+		tcpAccepts:  make(map[uint64]*opaqueTCPAcceptWaiter),
+		creates:     make(map[uint64]*opaqueCreateOperation),
+		dns:         make(map[uint64]*opaqueDNSOperation),
+		dnsResolver: systemOpaqueDNSResolver{},
+		nextHandle:  1 << 48,
+		completion:  make(chan struct{}, 1),
 	}
 	for handle, connection := range packets {
 		state := newOpaquePacketState(connection)
@@ -294,6 +298,11 @@ func (b *opaqueBridge) cancelOperation(
 		delete(b.tcpAccepts, operation)
 		return 0
 	}
+	if dns, exists := b.dns[operation]; exists {
+		delete(b.dns, operation)
+		dns.cancel()
+		return 0
+	}
 	return opaqueHostInvalid
 }
 
@@ -372,6 +381,11 @@ func (b *opaqueBridge) close() {
 		creates = append(creates, create)
 	}
 	b.creates = make(map[uint64]*opaqueCreateOperation)
+	dns := make([]*opaqueDNSOperation, 0, len(b.dns))
+	for _, operation := range b.dns {
+		dns = append(dns, operation)
+	}
+	b.dns = make(map[uint64]*opaqueDNSOperation)
 	b.mu.Unlock()
 
 	for _, connection := range connections {
@@ -399,6 +413,9 @@ func (b *opaqueBridge) close() {
 		if create.listener != nil {
 			_ = create.listener.Close()
 		}
+	}
+	for _, operation := range dns {
+		operation.cancel()
 	}
 	b.workers.Wait()
 }
@@ -607,6 +624,12 @@ func instantiateOpaqueHost(
 		NewFunctionBuilder().WithFunc(bridge.takeTCPBind).Export("take_tcp_bind").
 		NewFunctionBuilder().WithFunc(bridge.startTCPAccept).Export("start_tcp_accept").
 		NewFunctionBuilder().WithFunc(bridge.takeTCPAccept).Export("take_tcp_accept").
+		NewFunctionBuilder().WithFunc(bridge.startDNSResolve).Export("start_dns_resolve").
+		NewFunctionBuilder().WithFunc(bridge.takeDNSResolve).Export("take_dns_resolve").
+		NewFunctionBuilder().WithFunc(bridge.startDNSTXT).Export("start_dns_txt").
+		NewFunctionBuilder().WithFunc(bridge.takeDNSTXT).Export("take_dns_txt").
+		NewFunctionBuilder().WithFunc(bridge.startDNSSRV).Export("start_dns_srv").
+		NewFunctionBuilder().WithFunc(bridge.takeDNSSRV).Export("take_dns_srv").
 		NewFunctionBuilder().WithFunc(bridge.cancelOperation).Export("cancel_operation").
 		NewFunctionBuilder().WithFunc(bridge.closeHandle).Export("close").
 		Instantiate(ctx)
