@@ -49,6 +49,8 @@ type opaqueBridge struct {
 	writes     map[uint64]*opaqueWriteOperation
 	udpReads   map[uint64]*opaqueUDPReadWaiter
 	udpWrites  map[uint64]*opaqueUDPWriteWaiter
+	creates    map[uint64]*opaqueCreateOperation
+	nextHandle uint64
 	completion chan struct{}
 	workers    sync.WaitGroup
 }
@@ -57,6 +59,9 @@ func newOpaqueBridge(
 	handles map[uint64]net.Conn,
 	packets map[uint64]net.PacketConn,
 ) *opaqueBridge {
+	if handles == nil {
+		handles = make(map[uint64]net.Conn)
+	}
 	bridge := &opaqueBridge{
 		handles:    handles,
 		packets:    make(map[uint64]*opaquePacketState, len(packets)),
@@ -64,6 +69,8 @@ func newOpaqueBridge(
 		writes:     make(map[uint64]*opaqueWriteOperation),
 		udpReads:   make(map[uint64]*opaqueUDPReadWaiter),
 		udpWrites:  make(map[uint64]*opaqueUDPWriteWaiter),
+		creates:    make(map[uint64]*opaqueCreateOperation),
+		nextHandle: 1 << 48,
 		completion: make(chan struct{}, 1),
 	}
 	for handle, connection := range packets {
@@ -263,6 +270,19 @@ func (b *opaqueBridge) cancelOperation(
 		delete(b.udpWrites, operation)
 		return 0
 	}
+	if create, exists := b.creates[operation]; exists {
+		delete(b.creates, operation)
+		if create.cancel != nil {
+			create.cancel()
+		}
+		if create.connection != nil {
+			_ = create.connection.Close()
+		}
+		if create.packet != nil {
+			_ = create.packet.Close()
+		}
+		return 0
+	}
 	return opaqueHostInvalid
 }
 
@@ -318,6 +338,11 @@ func (b *opaqueBridge) close() {
 	for _, packet := range b.packets {
 		packets = append(packets, packet)
 	}
+	creates := make([]*opaqueCreateOperation, 0, len(b.creates))
+	for _, create := range b.creates {
+		creates = append(creates, create)
+	}
+	b.creates = make(map[uint64]*opaqueCreateOperation)
 	b.mu.Unlock()
 
 	for _, connection := range connections {
@@ -325,6 +350,17 @@ func (b *opaqueBridge) close() {
 	}
 	for _, packet := range packets {
 		packet.closeAfterQueuedSends()
+	}
+	for _, create := range creates {
+		if create.cancel != nil {
+			create.cancel()
+		}
+		if create.connection != nil {
+			_ = create.connection.Close()
+		}
+		if create.packet != nil {
+			_ = create.packet.Close()
+		}
 	}
 	b.workers.Wait()
 }
@@ -525,6 +561,14 @@ func instantiateOpaqueHost(
 		NewFunctionBuilder().WithFunc(bridge.tryUDPSend).Export("try_udp_send").
 		NewFunctionBuilder().WithFunc(bridge.startUDPSendReady).Export("start_udp_send_ready").
 		NewFunctionBuilder().WithFunc(bridge.takeUDPSendReady).Export("take_udp_send_ready").
+		NewFunctionBuilder().WithFunc(bridge.startTCPConnect).Export("start_tcp_connect").
+		NewFunctionBuilder().WithFunc(bridge.takeTCPConnect).Export("take_tcp_connect").
+		NewFunctionBuilder().WithFunc(bridge.startUDPBind).Export("start_udp_bind").
+		NewFunctionBuilder().WithFunc(bridge.takeUDPBind).Export("take_udp_bind").
+		NewFunctionBuilder().WithFunc(bridge.unsupportedTCPBind).Export("start_tcp_bind").
+		NewFunctionBuilder().WithFunc(bridge.unsupportedTakeBound).Export("take_tcp_bind").
+		NewFunctionBuilder().WithFunc(bridge.unsupportedTCPAccept).Export("start_tcp_accept").
+		NewFunctionBuilder().WithFunc(bridge.unsupportedTakeSocket).Export("take_tcp_accept").
 		NewFunctionBuilder().WithFunc(bridge.cancelOperation).Export("cancel_operation").
 		NewFunctionBuilder().WithFunc(bridge.closeHandle).Export("close").
 		Instantiate(ctx)

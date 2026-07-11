@@ -8,8 +8,12 @@ use std::{
 };
 
 use easytier_core::socket::{
-    host::{HostSocketHandle, HostSocketRuntime, udp::wasi::WasiHostUdpIo, wasi::WasiHostTcpIo},
-    udp::VirtualUdpSocket,
+    host::{
+        HostSocketHandle, HostSocketRuntime, factory::HostSocketFactory, udp::wasi::WasiHostUdpIo,
+        wasi::WasiHostTcpIo, wasi_backend::WasiHostSocketBackend,
+    },
+    tcp::{TcpConnectOptions, VirtualTcpSocketFactory},
+    udp::{UdpBindOptions, VirtualUdpSocket, VirtualUdpSocketFactory},
 };
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
@@ -22,11 +26,14 @@ const SECOND_SOCKET_PROGRESS: u32 = 1 << 1;
 const PENDING_READ_COMPLETED: u32 = 1 << 2;
 const PENDING_READ_ISOLATED: u32 = 1 << 3;
 const DONE: u32 = 1 << 4;
+const FACTORY_TCP_PROGRESS: u32 = 1 << 5;
+const FACTORY_UDP_PROGRESS: u32 = 1 << 6;
 const ERROR: u32 = 1 << 31;
 
 thread_local! {
     static PROBE: RefCell<Option<Probe>> = const { RefCell::new(None) };
     static UDP_PROBE: RefCell<Option<UdpProbe>> = const { RefCell::new(None) };
+    static FACTORY_PROBE: RefCell<Option<FactoryProbe>> = const { RefCell::new(None) };
 }
 
 struct Probe {
@@ -36,6 +43,12 @@ struct Probe {
 }
 
 struct UdpProbe {
+    runtime: Runtime,
+    status: Arc<AtomicU32>,
+    sockets: HostSocketRuntime,
+}
+
+struct FactoryProbe {
     runtime: Runtime,
     status: Arc<AtomicU32>,
     sockets: HostSocketRuntime,
@@ -208,6 +221,127 @@ pub extern "C" fn drive_udp_probe() -> u32 {
         probe
             .runtime
             .block_on(async { tokio::task::yield_now().await });
+        probe.status.load(Ordering::SeqCst)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn init_factory_probe(tcp_port: u32, udp_port: u32) -> i32 {
+    FACTORY_PROBE.with_borrow_mut(|slot| {
+        if slot.is_some() {
+            return -1;
+        }
+        let Ok(tcp_port) = u16::try_from(tcp_port) else {
+            return -2;
+        };
+        let Ok(udp_port) = u16::try_from(udp_port) else {
+            return -3;
+        };
+        let runtime = match Builder::new_current_thread().enable_time().build() {
+            Ok(runtime) => runtime,
+            Err(_) => return -4,
+        };
+        let status = Arc::new(AtomicU32::new(0));
+        let sockets = HostSocketRuntime::new();
+        let factory = Arc::new(HostSocketFactory::new(
+            sockets.clone(),
+            Arc::new(WasiHostSocketBackend::default()),
+        ));
+
+        let tcp_status = status.clone();
+        let tcp_factory = factory.clone();
+        runtime.spawn(async move {
+            let result: Result<(), String> = async {
+                let remote_addr = std::net::SocketAddr::from(([127, 0, 0, 1], tcp_port));
+                let mut stream = tcp_factory
+                    .connect_tcp(TcpConnectOptions::direct_connect(remote_addr))
+                    .await
+                    .map_err(|error| error.to_string())?;
+                stream
+                    .write_all(b"factory-tcp")
+                    .await
+                    .map_err(|error| error.to_string())?;
+                stream.flush().await.map_err(|error| error.to_string())?;
+                let mut echo = [0_u8; 11];
+                stream
+                    .read_exact(&mut echo)
+                    .await
+                    .map_err(|error| error.to_string())?;
+                if &echo != b"factory-tcp" {
+                    return Err("factory TCP echo mismatch".to_owned());
+                }
+                Ok(())
+            }
+            .await;
+            match result {
+                Ok(()) => {
+                    tcp_status.fetch_or(FACTORY_TCP_PROGRESS, Ordering::SeqCst);
+                }
+                Err(_) => {
+                    tcp_status.fetch_or(ERROR | 6, Ordering::SeqCst);
+                }
+            }
+        });
+
+        let udp_status = status.clone();
+        runtime.spawn(async move {
+            let result: Result<(), String> = async {
+                let socket = factory
+                    .bind_udp(UdpBindOptions::direct_connect())
+                    .await
+                    .map_err(|error| error.to_string())?;
+                let remote_addr = std::net::SocketAddr::from(([127, 0, 0, 1], udp_port));
+                socket
+                    .send_to(b"factory-udp", remote_addr)
+                    .await
+                    .map_err(|error| error.to_string())?;
+                let mut echo = [0_u8; 11];
+                let (length, peer_addr) = socket
+                    .recv_from(&mut echo)
+                    .await
+                    .map_err(|error| error.to_string())?;
+                if length != echo.len() || &echo != b"factory-udp" || peer_addr != remote_addr {
+                    return Err("factory UDP echo mismatch".to_owned());
+                }
+                Ok(())
+            }
+            .await;
+            match result {
+                Ok(()) => {
+                    udp_status.fetch_or(FACTORY_UDP_PROGRESS, Ordering::SeqCst);
+                }
+                Err(_) => {
+                    udp_status.fetch_or(ERROR | 7, Ordering::SeqCst);
+                }
+            }
+        });
+
+        *slot = Some(FactoryProbe {
+            runtime,
+            status,
+            sockets,
+        });
+        0
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn drive_factory_probe() -> u32 {
+    FACTORY_PROBE.with_borrow_mut(|slot| {
+        let Some(probe) = slot.as_mut() else {
+            return ERROR | 8;
+        };
+        probe.sockets.notify_completions();
+        probe
+            .runtime
+            .block_on(async { tokio::task::yield_now().await });
+        let status = probe.status.load(Ordering::SeqCst);
+        if status & ERROR == 0
+            && status & (FACTORY_TCP_PROGRESS | FACTORY_UDP_PROGRESS)
+                == FACTORY_TCP_PROGRESS | FACTORY_UDP_PROGRESS
+        {
+            probe.status.fetch_or(DONE, Ordering::SeqCst);
+        }
         probe.status.load(Ordering::SeqCst)
     })
 }
