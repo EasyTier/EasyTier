@@ -603,7 +603,6 @@ pub struct Instance {
     peer_packet_receiver: Arc<Mutex<PacketRecvChanReceiver>>,
     peer_manager: Arc<PeerManager>,
     core_instance: Arc<RuntimeCoreInstance>,
-    conn_manager: Arc<ManualConnectorManager>,
 
     ip_proxy: Option<IpProxy>,
 
@@ -762,10 +761,6 @@ impl Instance {
                 .expect("runtime core instance composition should be valid"),
         );
 
-        let conn_manager = Arc::new(ManualConnectorManager::new_with_core_instance(
-            core_instance.clone(),
-        ));
-
         #[cfg(feature = "wireguard")]
         let vpn_portal_inst = vpn_portal::wireguard::WireGuard::default();
         #[cfg(not(feature = "wireguard"))]
@@ -784,7 +779,6 @@ impl Instance {
 
             peer_manager,
             core_instance,
-            conn_manager,
 
             ip_proxy: Some(ip_proxy),
             #[cfg(feature = "kcp")]
@@ -805,7 +799,9 @@ impl Instance {
     }
 
     pub fn get_conn_manager(&self) -> Arc<ManualConnectorManager> {
-        self.conn_manager.clone()
+        Arc::new(ManualConnectorManager::new_with_core_instance(
+            self.core_instance.clone(),
+        ))
     }
 
     async fn prepare_public_ipv6_config(&self) -> Result<(), Error> {
@@ -1403,9 +1399,7 @@ impl Instance {
 
         ApiRpcServiceImpl {
             peer_mgr_rpc_service: PeerManagerRpcService::new(self.peer_manager.clone()),
-            connector_mgr_rpc_service: ConnectorManagerRpcService(Arc::downgrade(
-                &self.conn_manager,
-            )),
+            connector_mgr_rpc_service: ConnectorManagerRpcService::new(&self.core_instance),
             mapped_listener_mgr_rpc_service: self.get_mapped_listener_manager_rpc_service(),
             vpn_portal_rpc_service: self.get_vpn_portal_rpc_service(),
             tcp_proxy_rpc_services: {

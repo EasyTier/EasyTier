@@ -133,28 +133,39 @@ impl ManualConnectorManager {
     }
 
     pub async fn list_connectors(&self) -> Vec<Connector> {
-        let mut ret = Vec::new();
-        for connector in self.portable.list_connectors() {
-            let status = match connector.status {
-                ManualConnectorStatus::Connected => ConnectorStatus::Connected,
-                ManualConnectorStatus::Disconnected => ConnectorStatus::Disconnected,
-                ManualConnectorStatus::Connecting => ConnectorStatus::Connecting,
-            };
-            ret.insert(
-                0,
-                Connector {
-                    url: Some(connector.url.into()),
-                    status: status.into(),
-                },
-            );
-        }
-
-        ret
+        connector_snapshots_to_api(self.portable.list_connectors())
     }
 }
 
+fn connector_snapshots_to_api(
+    snapshots: Vec<easytier_core::connectivity::manual::ManualConnectorSnapshot>,
+) -> Vec<Connector> {
+    let mut connectors = Vec::with_capacity(snapshots.len());
+    for connector in snapshots {
+        let status = match connector.status {
+            ManualConnectorStatus::Connected => ConnectorStatus::Connected,
+            ManualConnectorStatus::Disconnected => ConnectorStatus::Disconnected,
+            ManualConnectorStatus::Connecting => ConnectorStatus::Connecting,
+        };
+        connectors.insert(
+            0,
+            Connector {
+                url: Some(connector.url.into()),
+                status: status.into(),
+            },
+        );
+    }
+    connectors
+}
+
 #[derive(Clone)]
-pub struct ConnectorManagerRpcService(pub Weak<ManualConnectorManager>);
+pub struct ConnectorManagerRpcService(Weak<RuntimeCoreInstance>);
+
+impl ConnectorManagerRpcService {
+    pub(crate) fn new(core_instance: &Arc<RuntimeCoreInstance>) -> Self {
+        Self(Arc::downgrade(core_instance))
+    }
+}
 
 #[async_trait::async_trait]
 impl ConnectorManageRpc for ConnectorManagerRpcService {
@@ -165,10 +176,10 @@ impl ConnectorManageRpc for ConnectorManagerRpcService {
         _: BaseController,
         _request: ListConnectorRequest,
     ) -> Result<ListConnectorResponse, rpc_types::error::Error> {
-        let mut ret = ListConnectorResponse::default();
-        let connectors = weak_upgrade(&self.0)?.list_connectors().await;
-        ret.connectors = connectors;
-        Ok(ret)
+        let core_instance = weak_upgrade(&self.0)?;
+        Ok(ListConnectorResponse {
+            connectors: connector_snapshots_to_api(core_instance.list_connectors()),
+        })
     }
 }
 
