@@ -54,9 +54,23 @@ func TestOpaquePacketSinkBackpressure(t *testing.T) {
 	bridge.mu.Lock()
 	queued := len(bridge.packetSinks[handle].packets)
 	waiters := len(bridge.packetWrites)
+	waiterReady := false
+	for _, waiter := range bridge.packetWrites {
+		waiterReady = waiter.ready
+	}
 	bridge.mu.Unlock()
-	if queued != 1 || waiters != 1 {
-		t.Fatalf("packet backpressure state: queued=%d waiters=%d", queued, waiters)
+	if queued != 1 || waiters != 1 || waiterReady {
+		t.Fatalf(
+			"packet backpressure state: queued=%d waiters=%d ready=%t",
+			queued,
+			waiters,
+			waiterReady,
+		)
+	}
+	select {
+	case <-bridge.completion:
+		t.Fatal("packet readiness completed while sink was still full")
+	default:
 	}
 
 	first, err := bridge.consumePacket(handle)
