@@ -1,13 +1,19 @@
-use std::{fmt, marker::PhantomData, sync::Arc};
+use std::{
+    fmt,
+    marker::PhantomData,
+    sync::{Arc, Weak},
+};
 
 use async_trait::async_trait;
 use url::Url;
 
 use crate::{
+    connectivity::protocol::raw,
     listener::{
         AcceptedSocketHandler, ListenerConnectionCounter, ListenerEventSink, ListenerManager,
         SocketListener,
     },
+    peers::peer_manager::PeerManagerCore,
     socket::{
         tcp::{TcpListenOptions, TcpSocketListener, VirtualTcpListener, VirtualTcpListenerFactory},
         udp::{
@@ -34,6 +40,50 @@ impl<TcpSocket> AcceptedTransport<TcpSocket> {
         match self {
             Self::Tcp { local_url, .. } | Self::Udp { local_url, .. } => local_url,
         }
+    }
+}
+
+pub struct RawAcceptedTransportHandler {
+    peer_manager: Weak<PeerManagerCore>,
+}
+
+impl RawAcceptedTransportHandler {
+    pub fn new(peer_manager: &Arc<PeerManagerCore>) -> Self {
+        Self {
+            peer_manager: Arc::downgrade(peer_manager),
+        }
+    }
+}
+
+#[async_trait]
+impl<TcpSocket> AcceptedSocketHandler<AcceptedTransport<TcpSocket>> for RawAcceptedTransportHandler
+where
+    TcpSocket: crate::socket::tcp::VirtualTcpSocket,
+{
+    async fn handle_accepted_socket(
+        &self,
+        accepted: AcceptedTransport<TcpSocket>,
+    ) -> anyhow::Result<()> {
+        let peer_manager = self
+            .peer_manager
+            .upgrade()
+            .ok_or_else(|| anyhow::anyhow!("peer manager is gone"))?;
+        let tunnel = match accepted {
+            AcceptedTransport::Tcp { socket, local_url } => {
+                if local_url.scheme() != "tcp" {
+                    anyhow::bail!("unsupported raw TCP listener protocol: {local_url}");
+                }
+                raw::upgrade_accepted_tcp_with_local_url(socket, local_url)?
+            }
+            AcceptedTransport::Udp { session, local_url } => {
+                if local_url.scheme() != "udp" {
+                    anyhow::bail!("unsupported raw UDP listener protocol: {local_url}");
+                }
+                raw::upgrade_accepted_udp(session)?
+            }
+        };
+        peer_manager.add_tunnel_as_server(tunnel, true).await?;
+        Ok(())
     }
 }
 

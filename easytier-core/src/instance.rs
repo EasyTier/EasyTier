@@ -20,6 +20,13 @@ use crate::{
         protocol::{ClientProtocolUpgrader, RawClientProtocolUpgrader},
     },
     hole_punch::tcp::{TcpHolePunchConnector, TcpHolePunchHost},
+    listener::{
+        AcceptedSocketHandler,
+        transport::{
+            AcceptedTransport, HostAcceptedTcpSocket, RawAcceptedTransportHandler,
+            TransportListenerConfig, TransportListenerService,
+        },
+    },
     peers::{
         PacketRecvChan,
         peer_manager::{PeerManagerCore, PortablePeerManagerConfig},
@@ -86,6 +93,7 @@ where
 #[derive(Debug, Clone)]
 pub struct CoreInstanceConfig {
     pub initial_peers: Vec<Url>,
+    pub listeners: Vec<TransportListenerConfig>,
     pub manual: ManualConnectorOptions,
     pub direct: DirectConnectorOptions,
 }
@@ -94,6 +102,7 @@ impl Default for CoreInstanceConfig {
     fn default() -> Self {
         Self {
             initial_peers: Vec::new(),
+            listeners: Vec::new(),
             manual: ManualConnectorOptions::default(),
             direct: DirectConnectorOptions::default(),
         }
@@ -133,6 +142,8 @@ where
     pub protocol: Option<Arc<dyn ClientProtocolUpgrader<<H as VirtualTcpSocketFactory>::Socket>>>,
     pub manual_events: Option<Arc<dyn ManualConnectivityEventSink>>,
     pub listener: Option<Arc<dyn ListenerService>>,
+    pub accepted_transport_handler:
+        Option<Arc<dyn AcceptedSocketHandler<AcceptedTransport<HostAcceptedTcpSocket<H>>>>>,
     pub udp_hole_punch: Option<Arc<dyn UdpHolePunchService>>,
 }
 
@@ -140,6 +151,20 @@ where
 pub trait ListenerService: Send + Sync + 'static {
     async fn start(&self) -> anyhow::Result<()>;
     async fn stop(&self);
+}
+
+#[async_trait]
+impl<H> ListenerService for TransportListenerService<H>
+where
+    H: DirectConnectorHost + TcpHolePunchHost,
+{
+    async fn start(&self) -> anyhow::Result<()> {
+        TransportListenerService::start(self).await
+    }
+
+    async fn stop(&self) {
+        TransportListenerService::stop(self).await;
+    }
 }
 
 #[async_trait]
@@ -200,43 +225,71 @@ where
         adapters: CoreInstanceAdapters<H>,
         config: CoreInstanceConfig,
     ) -> anyhow::Result<Self> {
-        let listener = adapters.listener;
-        let udp_hole_punch = adapters.udp_hole_punch;
-        let protocol = adapters
-            .protocol
-            .unwrap_or_else(|| Arc::new(RawClientProtocolUpgrader));
-        let manual = match adapters.manual_events {
+        let CoreInstanceAdapters {
+            host,
+            dns,
+            endpoint_resolver,
+            protocol,
+            manual_events,
+            listener,
+            accepted_transport_handler,
+            udp_hole_punch,
+        } = adapters;
+        let CoreInstanceConfig {
+            initial_peers,
+            listeners,
+            manual: manual_options,
+            direct: direct_options,
+        } = config;
+
+        let listener: Option<Arc<dyn ListenerService>> = match (listener, listeners.is_empty()) {
+            (Some(_), false) => {
+                anyhow::bail!("external and core transport listeners cannot both be configured")
+            }
+            (Some(listener), true) => Some(listener),
+            (None, true) => None,
+            (None, false) => {
+                let handler = accepted_transport_handler
+                    .unwrap_or_else(|| Arc::new(RawAcceptedTransportHandler::new(&peer_manager)));
+                Some(Arc::new(TransportListenerService::new(
+                    host.clone(),
+                    listeners,
+                    handler,
+                )))
+            }
+        };
+        let protocol = protocol.unwrap_or_else(|| Arc::new(RawClientProtocolUpgrader));
+        let manual = match manual_events {
             Some(events) => ManualConnectorManager::new_with_events(
                 peer_manager.clone(),
-                adapters.host.clone(),
-                adapters.dns.clone(),
-                adapters.endpoint_resolver,
+                host.clone(),
+                dns.clone(),
+                endpoint_resolver,
                 protocol.clone(),
-                config.manual,
+                manual_options,
                 events,
             ),
             None => ManualConnectorManager::new(
                 peer_manager.clone(),
-                adapters.host.clone(),
-                adapters.dns.clone(),
-                adapters.endpoint_resolver,
+                host.clone(),
+                dns.clone(),
+                endpoint_resolver,
                 protocol.clone(),
-                config.manual,
+                manual_options,
             ),
         };
-        for url in config.initial_peers {
+        for url in initial_peers {
             manual.add_connector(url)?;
         }
 
         let direct = DirectConnectorManager::new(
             peer_manager.clone(),
-            adapters.host.clone(),
-            adapters.dns,
+            host.clone(),
+            dns,
             protocol,
-            config.direct,
+            direct_options,
         );
-        let tcp_hole_punch =
-            TcpHolePunchConnector::new(peer_manager.clone(), adapters.host.clone());
+        let tcp_hole_punch = TcpHolePunchConnector::new(peer_manager.clone(), host);
 
         Ok(Self {
             state: AtomicU8::new(CoreInstanceState::Created as u8),

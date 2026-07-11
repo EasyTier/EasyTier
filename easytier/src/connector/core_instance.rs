@@ -147,6 +147,7 @@ pub(crate) fn runtime_core_instance_adapters(
             global_ctx,
         })),
         listener: None,
+        accepted_transport_handler: None,
         udp_hole_punch: None,
     }
 }
@@ -157,6 +158,7 @@ pub(crate) fn build_runtime_core_instance(
 ) -> anyhow::Result<RuntimeCoreInstance> {
     let config = CoreInstanceConfig {
         initial_peers: Vec::new(),
+        listeners: Vec::new(),
         manual: runtime_manual_options(&global_ctx),
         direct: runtime_direct_options(&global_ctx, false),
     };
@@ -180,7 +182,12 @@ mod tests {
 
     use easytier_core::{
         instance::{CoreInstanceState, ListenerService, PortableCoreInstanceConfig},
+        listener::transport::TransportListenerConfig,
         peers::{context::PeerContext, peer_manager::PortablePeerManagerConfig},
+        socket::{
+            tcp::TcpListenOptions,
+            udp::{UdpBindOptions, UdpSessionAcceptKind, UdpSessionListenRequest},
+        },
     };
     use tokio::sync::Notify;
     use tokio_util::task::AbortOnDropHandle;
@@ -232,6 +239,7 @@ mod tests {
         ));
         let config = CoreInstanceConfig {
             initial_peers: Vec::new(),
+            listeners: Vec::new(),
             manual: runtime_manual_options(&global_ctx),
             direct: runtime_direct_options(&global_ctx, false),
         };
@@ -280,6 +288,21 @@ mod tests {
             .with_flags(global_ctx.get_flags());
         let connectivity = CoreInstanceConfig {
             initial_peers: Vec::new(),
+            listeners: vec![
+                TransportListenerConfig::Tcp {
+                    url: "tcp://127.0.0.1:0".parse().unwrap(),
+                    options: TcpListenOptions::manual_connect("127.0.0.1:0".parse().unwrap()),
+                    must_succeed: true,
+                },
+                TransportListenerConfig::Udp {
+                    url: "udp://127.0.0.1:0".parse().unwrap(),
+                    request: UdpSessionListenRequest::new(UdpBindOptions::port_bound_listener(
+                        "127.0.0.1:0".parse().unwrap(),
+                    )),
+                    accept_kind: UdpSessionAcceptKind::EasyTierMux,
+                    must_succeed: true,
+                },
+            ],
             manual: runtime_manual_options(&global_ctx),
             direct: runtime_direct_options(&global_ctx, false),
         };
@@ -292,6 +315,7 @@ mod tests {
             .unwrap(),
         );
 
+        instance.start_listeners().await.unwrap();
         instance.start().await.unwrap();
         assert_eq!(instance.state(), CoreInstanceState::Running);
         instance.stop().await;
@@ -309,6 +333,7 @@ mod tests {
             .with_flags(global_ctx.get_flags());
         let mut connectivity = CoreInstanceConfig {
             initial_peers: Vec::new(),
+            listeners: Vec::new(),
             manual: runtime_manual_options(&global_ctx),
             direct: runtime_direct_options(&global_ctx, false),
         };
