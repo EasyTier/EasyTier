@@ -2,11 +2,11 @@
 
 pub mod packet_io;
 
-use std::net::IpAddr;
 use std::sync::{
     Arc, Weak,
     atomic::{AtomicBool, AtomicU8, Ordering},
 };
+use std::{collections::BTreeSet, net::IpAddr};
 
 use async_trait::async_trait;
 use tokio::sync::Mutex;
@@ -36,7 +36,9 @@ use crate::{
         create_packet_recv_chan,
         peer_manager::{PeerManagerCore, PortablePeerManagerConfig},
     },
-    proxy::cidr_monitor::{ProxyCidrMonitor, ProxyCidrMonitorHost},
+    proxy::cidr_monitor::{
+        ProxyCidrDiff, ProxyCidrMonitor, ProxyCidrMonitorHost, collect_proxy_cidr_diff,
+    },
     socket::{
         dns::{DnsRecordResolver, DnsResolver},
         tcp::VirtualTcpSocketFactory,
@@ -653,6 +655,14 @@ where
 
     pub async fn refresh_acl_groups(&self) {
         self.peer_manager.get_route().refresh_acl_groups().await;
+    }
+
+    pub async fn proxy_cidr_diff(
+        &self,
+        previous: &BTreeSet<cidr::Ipv4Cidr>,
+    ) -> Option<ProxyCidrDiff> {
+        let host = self.proxy_cidr_monitor.as_ref()?;
+        Some(collect_proxy_cidr_diff(self.peer_manager.as_ref(), host.as_ref(), previous).await)
     }
 
     pub async fn send_ip_packet(&self, packet: Vec<u8>) -> anyhow::Result<()> {

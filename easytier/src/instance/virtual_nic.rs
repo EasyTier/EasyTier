@@ -15,7 +15,6 @@ use crate::{
         log,
     },
     connector::core_instance::RuntimeCoreInstance,
-    instance::proxy_cidrs_monitor::ProxyCidrsMonitor,
     peers::{PacketRecvChanReceiver, peer_manager::PeerManager, recv_packet_from_chan},
     tunnel::{
         StreamItem, Tunnel, TunnelError, ZCPacketSink, ZCPacketStream,
@@ -1049,8 +1048,8 @@ impl NicCtx {
     }
 
     async fn run_proxy_cidrs_route_updater(&mut self) -> Result<(), Error> {
-        let Some(peer_mgr) = self.peer_mgr.upgrade() else {
-            return Err(anyhow::anyhow!("peer manager not available").into());
+        let Some(core_instance) = self.core_instance.upgrade() else {
+            return Err(anyhow::anyhow!("core instance not available").into());
         };
         let global_ctx = self.global_ctx.clone();
         let net_ns = self.global_ctx.net_ns.clone();
@@ -1063,19 +1062,17 @@ impl NicCtx {
             let mut cur_proxy_cidrs = BTreeSet::<cidr::Ipv4Cidr>::new();
 
             // Initial sync: get current proxy_cidrs state and apply routes
-            let (_, added, removed) = ProxyCidrsMonitor::diff_proxy_cidrs(
-                peer_mgr.as_ref(),
-                &global_ctx,
-                &cur_proxy_cidrs,
-            )
-            .await;
+            let Some(diff) = core_instance.proxy_cidr_diff(&cur_proxy_cidrs).await else {
+                tracing::error!("proxy CIDR monitor host is unavailable");
+                return;
+            };
             Self::apply_route_changes(
                 &ifcfg,
                 &ifname,
                 &net_ns,
                 &mut cur_proxy_cidrs,
-                added,
-                removed,
+                diff.added,
+                diff.removed,
             )
             .await;
 
@@ -1092,13 +1089,12 @@ impl NicCtx {
                         );
                         event_receiver = event_receiver.resubscribe();
                         // Full sync after lagged to recover consistent state
-                        let (_, added, removed) = ProxyCidrsMonitor::diff_proxy_cidrs(
-                            peer_mgr.as_ref(),
-                            &global_ctx,
-                            &cur_proxy_cidrs,
-                        )
-                        .await;
-                        GlobalCtxEvent::ProxyCidrsUpdated(added, removed)
+                        let Some(diff) = core_instance.proxy_cidr_diff(&cur_proxy_cidrs).await
+                        else {
+                            tracing::error!("proxy CIDR monitor host is unavailable");
+                            return;
+                        };
+                        GlobalCtxEvent::ProxyCidrsUpdated(diff.added, diff.removed)
                     }
                 };
 
