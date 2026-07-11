@@ -88,6 +88,7 @@ fn take_result<T>(
     }
     let required = usize::try_from(required).expect("positive i32 fits usize");
     if required > MAX_DNS_RESULT_LEN {
+        cancel_probed_result(operation);
         return Poll::Ready(Err(io::Error::new(
             io::ErrorKind::InvalidData,
             format!("host {name} result exceeds {MAX_DNS_RESULT_LEN} bytes"),
@@ -97,12 +98,20 @@ fn take_result<T>(
     let capacity = u32::try_from(required).expect("DNS result limit fits u32");
     let copied = unsafe { take(operation.0, encoded.as_mut_ptr() as u32, capacity) };
     if copied != i32::try_from(required).expect("positive DNS result length fits i32") {
+        cancel_probed_result(operation);
         return Poll::Ready(Err(io::Error::new(
             io::ErrorKind::InvalidData,
             format!("host {name} changed result length from {required} to {copied}"),
         )));
     }
     Poll::Ready(decode(&encoded))
+}
+
+fn cancel_probed_result(operation: HostOperationId) {
+    // The size probe does not consume host state. A second take may have
+    // consumed it before returning a malformed status, so this best-effort
+    // ownership cleanup must not hide the original protocol error.
+    let _ = unsafe { cancel_operation(operation.0) };
 }
 
 fn host_status(name: &'static str, result: i32) -> io::Result<()> {
