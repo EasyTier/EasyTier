@@ -6,7 +6,7 @@ use std::{
 
 use anyhow::Context;
 use easytier_core::connectivity::manual::discovery::{
-    self, HttpDiscoveryResponse, HttpEndpointSource,
+    self, HttpDiscoveryResponse, HttpEndpointSource, ResolvedHttpEndpoint,
 };
 use http_req::request::{RedirectPolicy, Request};
 use url::Url;
@@ -51,6 +51,12 @@ enum HttpRedirectType {
     RedirectToUrl,
     // redirected url is in the body of response
     BodyUrls,
+}
+
+fn interpret_http_discovery_response(
+    response: HttpDiscoveryResponse,
+) -> Result<ResolvedHttpEndpoint, Error> {
+    discovery::resolve_http_endpoint(response).map_err(|error| Error::InvalidUrl(error.to_string()))
 }
 
 #[derive(Debug)]
@@ -107,7 +113,7 @@ impl HttpTunnelConnector {
 
         let body = String::from_utf8_lossy(&body.read().unwrap()).to_string();
 
-        let endpoint = discovery::resolve_http_endpoint(HttpDiscoveryResponse {
+        let endpoint = interpret_http_discovery_response(HttpDiscoveryResponse {
             status_code: u16::from(res.status_code()),
             location: res.headers().get("Location").map(ToString::to_string),
             body,
@@ -176,6 +182,32 @@ mod tests {
     };
 
     use super::*;
+
+    #[test]
+    fn http_discovery_failures_remain_invalid_url_errors() {
+        for response in [
+            HttpDiscoveryResponse {
+                status_code: 302,
+                location: None,
+                body: String::new(),
+            },
+            HttpDiscoveryResponse {
+                status_code: 200,
+                location: None,
+                body: "not a URL".to_owned(),
+            },
+            HttpDiscoveryResponse {
+                status_code: 500,
+                location: None,
+                body: "failure".to_owned(),
+            },
+        ] {
+            assert!(matches!(
+                interpret_http_discovery_response(response),
+                Err(Error::InvalidUrl(_))
+            ));
+        }
+    }
 
     async fn run_http_redirect_server(
         port: u16,

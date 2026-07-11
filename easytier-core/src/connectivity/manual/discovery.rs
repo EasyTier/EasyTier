@@ -30,7 +30,8 @@ pub struct ResolvedHttpEndpoint {
 }
 
 fn resolve_http_redirect(location: &str) -> anyhow::Result<ResolvedHttpEndpoint> {
-    let url = Url::parse(location)?;
+    let url = Url::parse(location)
+        .with_context(|| format!("parsing redirect URL failed. url: {location}"))?;
     if !matches!(url.scheme(), "http" | "https") {
         return Ok(ResolvedHttpEndpoint {
             url,
@@ -243,6 +244,20 @@ mod tests {
         .unwrap();
         assert_eq!(body.url.as_str(), "wg://127.0.0.1:11011");
         assert_eq!(body.source, HttpEndpointSource::ResponseBody);
+    }
+
+    #[test]
+    fn http_discovery_reports_malformed_redirect_location() {
+        let error = resolve_http_endpoint(HttpDiscoveryResponse {
+            status_code: 302,
+            location: Some("not a URL".to_owned()),
+            body: String::new(),
+        })
+        .unwrap_err();
+
+        let message = error.to_string();
+        assert!(message.contains("parsing redirect URL failed"));
+        assert!(message.contains("not a URL"));
     }
 
     struct TestResolver {
