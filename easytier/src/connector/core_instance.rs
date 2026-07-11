@@ -137,6 +137,7 @@ pub(crate) fn runtime_core_instance_adapters(
         listener: None,
         accepted_transport_handler: None,
         udp_hole_punch: None,
+        proxy: None,
     }
 }
 

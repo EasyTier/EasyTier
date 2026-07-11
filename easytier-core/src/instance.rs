@@ -176,6 +176,7 @@ where
     pub accepted_transport_handler:
         Option<Arc<dyn AcceptedSocketHandler<AcceptedTransport<HostAcceptedTcpSocket<H>>>>>,
     pub udp_hole_punch: Option<Arc<dyn UdpHolePunchService>>,
+    pub proxy: Option<Arc<dyn ProxyService>>,
 }
 
 #[async_trait]
@@ -204,6 +205,12 @@ pub trait UdpHolePunchService: Send + Sync + 'static {
     async fn stop(&self);
 }
 
+#[async_trait]
+pub trait ProxyService: Send + Sync + 'static {
+    async fn start(&self) -> anyhow::Result<()>;
+    async fn stop(&self);
+}
+
 /// Owns the portable peer and connectivity runtime for one EasyTier instance.
 ///
 /// An instance is intentionally one-shot: after it is stopped, construct a new
@@ -222,6 +229,8 @@ where
     listener: Option<Arc<dyn ListenerService>>,
     udp_hole_punch: Option<Arc<dyn UdpHolePunchService>>,
     udp_hole_punch_started: AtomicBool,
+    proxy: Option<Arc<dyn ProxyService>>,
+    proxy_started: AtomicBool,
     packet_egress: Option<PacketEgress>,
 }
 
@@ -276,6 +285,7 @@ where
             listener,
             accepted_transport_handler,
             udp_hole_punch,
+            proxy,
         } = adapters;
         let CoreInstanceConfig {
             initial_peers,
@@ -371,6 +381,8 @@ where
             listener,
             udp_hole_punch,
             udp_hole_punch_started: AtomicBool::new(false),
+            proxy,
+            proxy_started: AtomicBool::new(false),
             packet_egress: None,
         })
     }
@@ -401,6 +413,10 @@ where
         if let Some(udp_hole_punch) = &self.udp_hole_punch {
             udp_hole_punch.stop().await;
             self.udp_hole_punch_started.store(false, Ordering::Release);
+        }
+        if let Some(proxy) = &self.proxy {
+            proxy.stop().await;
+            self.proxy_started.store(false, Ordering::Release);
         }
         self.manual.stop().await;
         self.tcp_hole_punch.stop().await;
@@ -496,6 +512,38 @@ where
         if let Err(error) = start_result {
             udp_hole_punch.stop().await;
             self.udp_hole_punch_started.store(false, Ordering::Release);
+            recovery.disarm();
+            return Err(error);
+        }
+        recovery.disarm();
+        Ok(())
+    }
+
+    /// Starts proxy services after the host has prepared its packet interface.
+    pub async fn start_proxy(self: &Arc<Self>) -> anyhow::Result<()> {
+        let _operation = self.operation.lock().await;
+        let state = self.state();
+        if state != CoreInstanceState::Running {
+            anyhow::bail!("proxy services cannot start from core instance state {state:?}");
+        }
+        let Some(proxy) = &self.proxy else {
+            return Ok(());
+        };
+        if self.proxy_started.load(Ordering::Acquire) {
+            return Ok(());
+        }
+
+        let mut recovery = self.recovery_guard();
+        self.proxy_started.store(true, Ordering::Release);
+        let start_result = tokio::select! {
+            _ = self.cancel.cancelled() => {
+                Err(anyhow::anyhow!("proxy service start cancelled"))
+            }
+            result = proxy.start() => result,
+        };
+        if let Err(error) = start_result {
+            proxy.stop().await;
+            self.proxy_started.store(false, Ordering::Release);
             recovery.disarm();
             return Err(error);
         }
