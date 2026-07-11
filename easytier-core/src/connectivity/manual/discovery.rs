@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use rand::{Rng as _, seq::SliceRandom};
 use url::Url;
 
@@ -53,6 +55,14 @@ fn srv_record_url(protocol: &str, record: DnsSrvRecord) -> anyhow::Result<(Url, 
     Ok((Url::parse(&url)?, u64::from(record.priority)))
 }
 
+fn deduplicate_srv_candidates(candidates: Vec<(Url, u64)>) -> Vec<(Url, u64)> {
+    candidates
+        .into_iter()
+        .collect::<HashSet<_>>()
+        .into_iter()
+        .collect()
+}
+
 pub async fn resolve_srv_endpoint(
     resolver: &dyn DnsRecordResolver,
     domain_name: &str,
@@ -82,6 +92,7 @@ pub async fn resolve_srv_endpoint(
     if candidates.is_empty() {
         anyhow::bail!("no SRV endpoint found for {domain_name}");
     }
+    let candidates = deduplicate_srv_candidates(candidates);
 
     choose_weighted(&candidates)
         .cloned()
@@ -159,5 +170,19 @@ mod tests {
             *resolver.queries.lock().unwrap(),
             ["_easytier._quic.discovery.example"]
         );
+    }
+
+    #[test]
+    fn srv_discovery_deduplicates_url_and_priority() {
+        let endpoint: Url = "tcp://peer.example.com:11010".parse().unwrap();
+        let candidates = deduplicate_srv_candidates(vec![
+            (endpoint.clone(), 10),
+            (endpoint.clone(), 10),
+            (endpoint.clone(), 20),
+        ]);
+
+        assert_eq!(candidates.len(), 2);
+        assert!(candidates.contains(&(endpoint.clone(), 10)));
+        assert!(candidates.contains(&(endpoint, 20)));
     }
 }
