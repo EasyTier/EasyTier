@@ -5,6 +5,7 @@
 //! upgraders and can be handed to peers.
 
 pub mod dns;
+pub mod host;
 pub mod ring;
 pub mod tcp;
 pub mod udp;
