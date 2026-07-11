@@ -340,7 +340,7 @@ pub(crate) fn upgrade_connected_socket(
     TcpTunnelUpgrader::new(info).upgrade(socket)
 }
 
-fn upgrade_accepted_socket(
+pub(crate) fn upgrade_accepted_socket(
     socket: FakeTcpSocket,
     local_url: url::Url,
 ) -> Result<Box<dyn Tunnel>, TunnelError> {
@@ -364,18 +364,8 @@ struct AcceptResult {
     mac: Option<MacAddr>,
 }
 
-#[async_trait::async_trait]
-impl TunnelListener for FakeTcpTunnelListener {
-    async fn listen(&mut self) -> Result<(), TunnelError> {
-        let port = self.addr.port().unwrap_or(0);
-        let bind_addr = SocketAddr::from_url(self.addr.clone(), IpVersion::Both).await?;
-        let os_listener = tokio::net::TcpListener::bind(bind_addr).await?;
-        tracing::info!(port, "FakeTcpTunnelListener listening");
-        self.os_listener = Some(os_listener);
-        Ok(())
-    }
-
-    async fn accept(&mut self) -> Result<Box<dyn Tunnel>, TunnelError> {
+impl FakeTcpTunnelListener {
+    pub(crate) async fn accept_socket(&mut self) -> Result<FakeTcpSocket, TunnelError> {
         tracing::debug!("FakeTcpTunnelListener waiting for accept");
         let (res, stack, socket) = loop {
             let res = self.do_accept().await?;
@@ -403,11 +393,27 @@ impl TunnelListener for FakeTcpTunnelListener {
         );
 
         let tunnel_type = get_faketcp_tunnel_type_str(stack.driver_type());
-        let socket = FakeTcpSocket::new(
+        Ok(FakeTcpSocket::new(
             socket,
             tunnel_type,
             (build_os_socket_reader_task(res.socket), stack),
-        );
+        ))
+    }
+}
+
+#[async_trait::async_trait]
+impl TunnelListener for FakeTcpTunnelListener {
+    async fn listen(&mut self) -> Result<(), TunnelError> {
+        let port = self.addr.port().unwrap_or(0);
+        let bind_addr = SocketAddr::from_url(self.addr.clone(), IpVersion::Both).await?;
+        let os_listener = tokio::net::TcpListener::bind(bind_addr).await?;
+        tracing::info!(port, "FakeTcpTunnelListener listening");
+        self.os_listener = Some(os_listener);
+        Ok(())
+    }
+
+    async fn accept(&mut self) -> Result<Box<dyn Tunnel>, TunnelError> {
+        let socket = self.accept_socket().await?;
         upgrade_accepted_socket(socket, self.local_url())
     }
 

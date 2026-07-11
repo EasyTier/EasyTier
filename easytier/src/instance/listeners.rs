@@ -136,7 +136,7 @@ fn listener_scheme_registry() -> core_listener_plan::ListenerSchemeRegistry {
     #[cfg(feature = "faketcp")]
     {
         registry = registry
-            .support("faketcp", core_listener_plan::ListenerKind::External)
+            .support("faketcp", core_listener_plan::ListenerKind::TcpStream)
             .disable_ipv6_shadow("faketcp");
     }
     #[cfg(unix)]
@@ -266,6 +266,21 @@ impl<H: TunnelHandlerForListener + Send + Sync + 'static> ListenerManager<H> {
         must_succeed: bool,
     ) -> Result<(), Error> {
         use crate::common::config::ConfigLoader;
+
+        #[cfg(feature = "faketcp")]
+        if listener.scheme() == "faketcp" {
+            let net_ns = self.net_ns.clone();
+            self.listener_manager.add_listener(
+                move || {
+                    Box::new(RuntimeFakeTcpSocketListener::new(
+                        listener.clone(),
+                        net_ns.clone(),
+                    ))
+                },
+                must_succeed,
+            );
+            return Ok(());
+        }
 
         let socket_mark = self.global_ctx.config.get_flags().socket_mark;
         let factory = Arc::new(RuntimeTcpListenerFactory::new(self.net_ns.clone()));
@@ -452,6 +467,62 @@ impl core_listener::SocketListener for RuntimeTcpSocketListener {
 
 type EasyTierUdpSessionSocketListener =
     UdpSessionSocketListener<RuntimeUdpSocketFactory, RuntimeUdpSessionControlHandler>;
+
+#[cfg(feature = "faketcp")]
+struct RuntimeFakeTcpSocketListener {
+    net_ns: NetNS,
+    inner: tunnel::fake_tcp::FakeTcpTunnelListener,
+}
+
+#[cfg(feature = "faketcp")]
+impl RuntimeFakeTcpSocketListener {
+    fn new(url: url::Url, net_ns: NetNS) -> Self {
+        Self {
+            net_ns,
+            inner: tunnel::fake_tcp::FakeTcpTunnelListener::new(url),
+        }
+    }
+}
+
+#[cfg(feature = "faketcp")]
+impl Debug for RuntimeFakeTcpSocketListener {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("RuntimeFakeTcpSocketListener")
+            .field("url", &self.inner.local_url())
+            .finish()
+    }
+}
+
+#[cfg(feature = "faketcp")]
+#[async_trait]
+impl core_listener::SocketListener for RuntimeFakeTcpSocketListener {
+    type Accepted = AcceptedConnection;
+
+    async fn listen(&mut self) -> anyhow::Result<()> {
+        let _guard = self.net_ns.guard();
+        self.inner.listen().await?;
+        Ok(())
+    }
+
+    async fn accept(&mut self) -> anyhow::Result<Self::Accepted> {
+        let local_url = self.inner.local_url();
+        let socket = self.inner.accept_socket().await?;
+        Ok(AcceptedConnection::TcpStream {
+            stream: RuntimeTcpSocket::from_fake_tcp(socket),
+            local_url,
+            upgrade_permit: None,
+        })
+    }
+
+    fn local_url(&self) -> url::Url {
+        self.inner.local_url()
+    }
+
+    fn connection_counter(&self) -> Arc<dyn core_listener::ListenerConnectionCounter> {
+        Arc::new(ZeroConnectionCounter)
+    }
+}
 
 struct TunnelListenerAdapter {
     net_ns: NetNS,
@@ -728,6 +799,10 @@ where
                 )
                 .await??
             }
+            #[cfg(feature = "faketcp")]
+            "faketcp" => {
+                tunnel::fake_tcp::upgrade_accepted_socket(stream.into_fake_tcp()?, local_url)?
+            }
             scheme => anyhow::bail!("unsupported TCP listener protocol: {scheme}"),
         };
         self.handle_tunnel(tunnel).await
@@ -947,6 +1022,16 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "faketcp")]
+    #[test]
+    fn listener_scheme_registry_classifies_faketcp_as_tcp_stream() {
+        let url = "faketcp://127.0.0.1:11013".parse().unwrap();
+        assert_eq!(
+            listener_scheme_registry().classify(&url),
+            Some(core_listener_plan::ListenerKind::TcpStream)
+        );
+    }
+
     #[tokio::test]
     async fn prepare_tcp_listeners_registers_core_listener_manager() {
         let global_ctx = get_mock_global_ctx();
@@ -1130,6 +1215,55 @@ mod tests {
         send.send(ZCPacket::new_with_payload("abc".as_bytes()))
             .await
             .unwrap();
+        assert_eq!(
+            recv.next().await.unwrap().unwrap().payload(),
+            "abc".as_bytes()
+        );
+    }
+
+    #[cfg(feature = "faketcp")]
+    #[tokio::test]
+    async fn faketcp_listener_accepts_through_core_socket_listener() {
+        #[cfg(target_family = "unix")]
+        if unsafe { nix::libc::geteuid() } != 0 {
+            return;
+        }
+
+        let port = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        let global_ctx = get_mock_global_ctx();
+        global_ctx
+            .config
+            .set_listeners(vec![format!("faketcp://127.0.0.1:{port}").parse().unwrap()]);
+        let handler = Arc::new(MockListenerHandler {});
+        let mut listener_mgr = ListenerManager::new(global_ctx.clone(), handler.clone());
+
+        listener_mgr.prepare_listeners().await.unwrap();
+        listener_mgr.run().await.unwrap();
+
+        let listener_url = timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                if let Some(url) = global_ctx
+                    .get_running_listeners()
+                    .into_iter()
+                    .find(|url| url.scheme() == "faketcp")
+                {
+                    break url;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+
+        let tunnel = tunnel::fake_tcp::FakeTcpTunnelConnector::new(listener_url)
+            .connect()
+            .await
+            .unwrap();
+        let (mut recv, _send) = tunnel.split();
         assert_eq!(
             recv.next().await.unwrap().unwrap().payload(),
             "abc".as_bytes()
