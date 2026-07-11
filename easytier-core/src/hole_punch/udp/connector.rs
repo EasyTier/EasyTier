@@ -514,6 +514,15 @@ where
         self.client.run_immediately().await;
     }
 
+    pub async fn stop(&self) {
+        self.client.stop().await;
+        self.client
+            .data()
+            .sym_to_cone_client
+            .clear_udp_array()
+            .await;
+    }
+
     pub fn data(&self) -> Arc<UdpHolePunchConnectorData<P, S, T, R>> {
         self.client.data()
     }
