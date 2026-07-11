@@ -8,6 +8,7 @@ use easytier_core::{
     connectivity::{
         direct::DirectConnectorHost,
         manual::{ManualConnectorHost, ManualInterfaceAddrs},
+        transport::ConnectedByteStream,
     },
     hole_punch::tcp::TcpHolePunchHost,
     proto::common::NatType,
@@ -26,6 +27,7 @@ use crate::{
     common::{global_ctx::ArcGlobalCtx, network::IPCollector, stun::StunInfoCollectorTrait},
     proto::peer_rpc::GetIpListResponse,
     tunnel::{
+        ring::connect_ring_socket,
         tcp_socket::{self, RuntimeTcpListener, RuntimeTcpListenerFactory, RuntimeTcpSocket},
         udp::{RuntimeUdpSessionControlHandler, RuntimeUdpSocket, RuntimeUdpSocketFactory},
     },
@@ -175,6 +177,28 @@ impl ManualConnectorHost for RuntimeConnectorHost {
                 .collect(),
             public_ipv6: addrs.public_ipv6.map(std::net::Ipv6Addr::from),
         })
+    }
+
+    async fn connect_byte_stream(
+        &self,
+        url: &url::Url,
+    ) -> anyhow::Result<ConnectedByteStream<RuntimeTcpSocket>> {
+        if url.scheme() != "ring" {
+            anyhow::bail!("unsupported runtime byte stream: {url}");
+        }
+        let remote_id = url
+            .host_str()
+            .ok_or_else(|| anyhow::anyhow!("ring URL has no peer id: {url}"))?
+            .parse()?;
+        let dialed = connect_ring_socket(remote_id)?;
+        let local_url = format!("ring://{}", dialed.local_id).parse()?;
+        let socket = RuntimeTcpSocket::from_ring(dialed.socket)?;
+        Ok(ConnectedByteStream::new(
+            socket,
+            Some(local_url),
+            url.clone(),
+            Some(url.clone()),
+        ))
     }
 }
 

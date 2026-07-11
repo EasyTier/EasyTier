@@ -23,7 +23,7 @@ impl RuntimeClientProtocolUpgrader {
 impl ClientProtocolUpgrader<RuntimeTcpSocket> for RuntimeClientProtocolUpgrader {
     fn supports_scheme(&self, scheme: &str) -> bool {
         match scheme {
-            "tcp" | "udp" => true,
+            "tcp" | "udp" | "ring" => true,
             "ws" | "wss" => cfg!(feature = "websocket"),
             "wg" => cfg!(feature = "wireguard"),
             "quic" => cfg!(feature = "quic"),
@@ -39,6 +39,14 @@ impl ClientProtocolUpgrader<RuntimeTcpSocket> for RuntimeClientProtocolUpgrader 
     ) -> anyhow::Result<Box<dyn Tunnel>> {
         match requested_url.scheme() {
             "tcp" | "udp" => Ok(raw::upgrade_connected(connected, requested_url)?),
+            "ring" => match connected {
+                ConnectedTransport::ByteStream(stream) => {
+                    Ok(raw::upgrade_connected_byte_stream(stream)?)
+                }
+                ConnectedTransport::Tcp(_) | ConnectedTransport::Udp(_) => {
+                    anyhow::bail!("Ring protocol requires a host-created byte stream")
+                }
+            },
             #[cfg(feature = "websocket")]
             "ws" | "wss" => match connected {
                 ConnectedTransport::Tcp(socket) => {
@@ -117,6 +125,7 @@ mod tests {
 
         assert!(upgrader.supports_scheme("tcp"));
         assert!(upgrader.supports_scheme("udp"));
+        assert!(upgrader.supports_scheme("ring"));
         assert_eq!(upgrader.supports_scheme("ws"), cfg!(feature = "websocket"));
         assert_eq!(upgrader.supports_scheme("wss"), cfg!(feature = "websocket"));
         assert_eq!(upgrader.supports_scheme("wg"), cfg!(feature = "wireguard"));
@@ -125,7 +134,6 @@ mod tests {
             upgrader.supports_scheme("faketcp"),
             cfg!(feature = "faketcp")
         );
-        assert!(!upgrader.supports_scheme("ring"));
     }
 
     #[test]

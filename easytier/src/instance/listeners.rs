@@ -8,7 +8,10 @@ use async_trait::async_trait;
 #[cfg(feature = "quic")]
 use easytier_core::socket::udp::UdpSessionSocket;
 use easytier_core::{
-    connectivity::manual::{upgrade_accepted_session, upgrade_accepted_socket},
+    connectivity::{
+        manual::{upgrade_accepted_session, upgrade_accepted_socket},
+        protocol::raw,
+    },
     instance::ListenerService,
     listener::{self as core_listener, plan as core_listener_plan},
     peers::peer_manager::PeerManagerCore,
@@ -29,7 +32,6 @@ use crate::{
     tunnel::{
         self, FromUrl, IpScheme, IpVersion, Tunnel, TunnelConnCounter, TunnelListener,
         TunnelScheme,
-        ring::RingTunnelListener,
         tcp::{TcpTunnelListener, resolve_tcp_bind_url_addr},
         tcp_socket::{RuntimeTcpListenerFactory, RuntimeTcpSocket},
         udp::{RuntimeUdpSessionControlHandler, RuntimeUdpSocketFactory, UdpTunnelListener},
@@ -152,6 +154,11 @@ fn listener_scheme_registry() -> core_listener_plan::ListenerSchemeRegistry {
 
 enum AcceptedConnection {
     Tunnel(Box<dyn Tunnel>),
+    ByteStream {
+        stream: RuntimeTcpSocket,
+        local_url: url::Url,
+        remote_url: url::Url,
+    },
     TcpStream {
         stream: RuntimeTcpSocket,
         local_url: url::Url,
@@ -221,11 +228,11 @@ impl<H: TunnelHandlerForListener + Send + Sync + 'static> ListenerManager<H> {
         match listener.kind {
             core_listener_plan::ListenerKind::Ring => {
                 let url = listener.url;
-                self.add_listener(
-                    move || Box::new(RingTunnelListener::new(url.clone())),
+                self.listener_manager.add_listener(
+                    move || Box::new(RuntimeRingStreamListener::new(url.clone())),
                     listener.must_succeed,
-                )
-                .await
+                );
+                Ok(())
             }
             core_listener_plan::ListenerKind::UdpSession => {
                 self.add_udp_listener(listener.url, listener.must_succeed)
@@ -398,6 +405,65 @@ impl ListenerService for RuntimeListenerService {
 }
 
 type EasyTierTcpSocketListener = TcpSocketListener<RuntimeTcpListenerFactory>;
+
+struct RuntimeRingStreamListener {
+    url: url::Url,
+    inner: Option<easytier_core::tunnel::ring::RingTunnelSocketListener>,
+}
+
+impl RuntimeRingStreamListener {
+    fn new(url: url::Url) -> Self {
+        Self { url, inner: None }
+    }
+}
+
+impl Debug for RuntimeRingStreamListener {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("RuntimeRingStreamListener")
+            .field("url", &self.url)
+            .field("listening", &self.inner.is_some())
+            .finish()
+    }
+}
+
+#[async_trait]
+impl core_listener::SocketListener for RuntimeRingStreamListener {
+    type Accepted = AcceptedConnection;
+
+    async fn listen(&mut self) -> anyhow::Result<()> {
+        if self.inner.is_some() {
+            return Ok(());
+        }
+        let local_id = uuid::Uuid::from_url(self.url.clone(), IpVersion::Both).await?;
+        self.inner = Some(easytier_core::tunnel::ring::RingTunnelSocketListener::bind(
+            local_id,
+        )?);
+        Ok(())
+    }
+
+    async fn accept(&mut self) -> anyhow::Result<Self::Accepted> {
+        let accepted = self
+            .inner
+            .as_mut()
+            .ok_or_else(|| anyhow::anyhow!("ring stream listener is not started"))?
+            .accept()
+            .await?;
+        Ok(AcceptedConnection::ByteStream {
+            stream: RuntimeTcpSocket::from_ring(accepted.socket)?,
+            local_url: format!("ring://{}", accepted.local_id).parse()?,
+            remote_url: format!("ring://{}", accepted.remote_id).parse()?,
+        })
+    }
+
+    fn local_url(&self) -> url::Url {
+        self.url.clone()
+    }
+
+    fn connection_counter(&self) -> Arc<dyn core_listener::ListenerConnectionCounter> {
+        Arc::new(ZeroConnectionCounter)
+    }
+}
 
 struct RuntimeTcpSocketListener {
     url: url::Url,
@@ -828,6 +894,11 @@ where
     async fn handle_accepted_socket(&self, accepted: AcceptedConnection) -> anyhow::Result<()> {
         match accepted {
             AcceptedConnection::Tunnel(tunnel) => self.handle_tunnel(tunnel).await,
+            AcceptedConnection::ByteStream {
+                stream,
+                local_url,
+                remote_url,
+            } => self.handle_byte_stream(stream, local_url, remote_url).await,
             AcceptedConnection::TcpStream {
                 stream,
                 local_url,
@@ -864,6 +935,16 @@ impl<H> EasyTierAcceptedHandler<H>
 where
     H: TunnelHandlerForListener + Send + Sync + 'static,
 {
+    async fn handle_byte_stream(
+        &self,
+        stream: RuntimeTcpSocket,
+        local_url: url::Url,
+        remote_url: url::Url,
+    ) -> anyhow::Result<()> {
+        let tunnel = raw::upgrade_accepted_byte_stream(stream, local_url, remote_url)?;
+        self.handle_tunnel(tunnel).await
+    }
+
     async fn handle_tcp_stream(
         &self,
         stream: RuntimeTcpSocket,
@@ -980,7 +1061,9 @@ mod tests {
         common::config::ConfigLoader,
         common::global_ctx::tests::get_mock_global_ctx,
         tunnel::{
-            TunnelConnector, TunnelError, packet_def::ZCPacket, ring::RingTunnelConnector,
+            TunnelConnector, TunnelError,
+            packet_def::ZCPacket,
+            ring::{RingTunnelConnector, RingTunnelListener},
             tcp::TcpTunnelConnector,
         },
     };
