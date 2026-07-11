@@ -100,6 +100,23 @@ where
     TcpTunnelUpgrader::new(info).upgrade(socket)
 }
 
+pub fn upgrade_accepted_byte_stream<S>(
+    socket: S,
+    local_url: Url,
+    remote_url: Url,
+) -> Result<Box<dyn Tunnel>, TunnelError>
+where
+    S: VirtualTcpSocket,
+{
+    let info = TunnelInfo {
+        tunnel_type: local_url.scheme().to_owned(),
+        local_addr: Some(local_url.into()),
+        remote_addr: Some(remote_url.clone().into()),
+        resolved_remote_addr: Some(remote_url.into()),
+    };
+    TcpTunnelUpgrader::new(info).upgrade(socket)
+}
+
 pub fn upgrade_accepted_udp(session: UdpSession) -> Result<Box<dyn Tunnel>, TunnelError> {
     let info = accepted_tunnel_info("udp", session.local_addr()?, session.peer_addr()?);
     UdpTunnelUpgrader::new(info).upgrade(session)
@@ -262,6 +279,27 @@ mod tests {
             remote_url.clone(),
             None,
         ))
+        .unwrap();
+        let info = tunnel.info().unwrap();
+
+        assert_eq!(info.tunnel_type, "ring");
+        assert_eq!(info.local_addr.unwrap().url, local_url.as_str());
+        assert_eq!(info.remote_addr.unwrap().url, remote_url.as_str());
+        assert_eq!(info.resolved_remote_addr.unwrap().url, remote_url.as_str());
+    }
+
+    #[test]
+    fn accepted_byte_stream_uses_explicit_endpoint_metadata() {
+        let local_url: Url = "ring://local".parse().unwrap();
+        let remote_url: Url = "ring://remote".parse().unwrap();
+        let tunnel = upgrade_accepted_byte_stream(
+            MockTcpSocket::new(
+                "127.0.0.1:1000".parse().unwrap(),
+                "127.0.0.1:2000".parse().unwrap(),
+            ),
+            local_url.clone(),
+            remote_url.clone(),
+        )
         .unwrap();
         let info = tunnel.info().unwrap();
 
