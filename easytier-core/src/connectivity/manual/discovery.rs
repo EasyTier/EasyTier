@@ -47,6 +47,20 @@ pub struct ManualEndpointDiscoveryConfig {
     pub srv_protocols: Vec<String>,
 }
 
+impl Default for ManualEndpointDiscoveryConfig {
+    fn default() -> Self {
+        Self {
+            user_agent: "easytier-core".to_owned(),
+            network_name: String::new(),
+            http_timeout: Duration::from_secs(20),
+            http_ip_version: IpVersion::Both,
+            http_tcp_bind: TcpBindOptions::default(),
+            dns_record_context: SocketContext::default(),
+            srv_protocols: vec!["tcp".to_owned(), "udp".to_owned()],
+        }
+    }
+}
+
 pub struct CoreManualEndpointResolver<H>
 where
     H: VirtualTcpSocketFactory,

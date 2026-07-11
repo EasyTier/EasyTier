@@ -2,6 +2,7 @@ use std::sync::{Arc, Weak};
 
 use easytier_core::connectivity::manual::{
     ManualConnectorManager as CoreManualConnectorManager, ManualConnectorStatus,
+    discovery::CoreManualEndpointResolver,
 };
 
 use crate::{
@@ -19,7 +20,10 @@ use crate::{
 };
 
 use super::{
-    core_instance::{RuntimeCoreInstance, runtime_core_instance_adapters, runtime_manual_options},
+    core_instance::{
+        RuntimeCoreInstance, runtime_core_instance_adapters, runtime_endpoint_discovery_config,
+        runtime_manual_options,
+    },
     runtime::RuntimeConnectorHost,
 };
 
@@ -67,11 +71,17 @@ pub struct ManualConnectorManager {
 impl ManualConnectorManager {
     pub fn new(global_ctx: ArcGlobalCtx, peer_manager: Arc<PeerManager>) -> Self {
         let adapters = runtime_core_instance_adapters(global_ctx.clone());
+        let endpoint_resolver = Arc::new(CoreManualEndpointResolver::new(
+            adapters.host.clone(),
+            adapters.dns.clone(),
+            adapters.dns_records.clone(),
+            runtime_endpoint_discovery_config(&global_ctx),
+        ));
         let core_manager = Arc::new(CoreManualConnectorManager::new_with_events(
             peer_manager.core(),
             adapters.host,
             adapters.dns,
-            adapters.endpoint_resolver,
+            endpoint_resolver,
             adapters
                 .protocol
                 .expect("native runtime should provide optional protocol upgrades"),

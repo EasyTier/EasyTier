@@ -18,7 +18,8 @@ use crate::{
         direct::{DirectConnectorHost, DirectConnectorManager, DirectConnectorOptions},
         manual::{
             ManualConnectivityEventSink, ManualConnectorManager, ManualConnectorOptions,
-            ManualConnectorSnapshot, ManualEndpointResolver,
+            ManualConnectorSnapshot,
+            discovery::{CoreManualEndpointResolver, ManualEndpointDiscoveryConfig},
         },
         protocol::{ClientProtocolUpgrader, RawClientProtocolUpgrader},
     },
@@ -34,7 +35,10 @@ use crate::{
         create_packet_recv_chan,
         peer_manager::{PeerManagerCore, PortablePeerManagerConfig},
     },
-    socket::{dns::DnsResolver, tcp::VirtualTcpSocketFactory},
+    socket::{
+        dns::{DnsRecordResolver, DnsResolver},
+        tcp::VirtualTcpSocketFactory,
+    },
 };
 
 pub use packet_io::PacketSink;
@@ -100,6 +104,7 @@ where
 pub struct CoreInstanceConfig {
     pub initial_peers: Vec<Url>,
     pub listeners: Vec<TransportListenerConfig>,
+    pub endpoint_discovery: ManualEndpointDiscoveryConfig,
     pub manual: ManualConnectorOptions,
     pub direct: DirectConnectorOptions,
 }
@@ -109,6 +114,7 @@ impl Default for CoreInstanceConfig {
         Self {
             initial_peers: Vec::new(),
             listeners: Vec::new(),
+            endpoint_discovery: ManualEndpointDiscoveryConfig::default(),
             manual: ManualConnectorOptions::default(),
             direct: DirectConnectorOptions::default(),
         }
@@ -163,7 +169,7 @@ where
 {
     pub host: Arc<H>,
     pub dns: Arc<dyn DnsResolver>,
-    pub endpoint_resolver: Arc<dyn ManualEndpointResolver>,
+    pub dns_records: Arc<dyn DnsRecordResolver>,
     pub protocol: Option<Arc<dyn ClientProtocolUpgrader<<H as VirtualTcpSocketFactory>::Socket>>>,
     pub manual_events: Option<Arc<dyn ManualConnectivityEventSink>>,
     pub listener: Option<Arc<dyn ListenerService>>,
@@ -265,7 +271,7 @@ where
         let CoreInstanceAdapters {
             host,
             dns,
-            endpoint_resolver,
+            dns_records,
             protocol,
             manual_events,
             listener,
@@ -275,6 +281,7 @@ where
         let CoreInstanceConfig {
             initial_peers,
             listeners,
+            endpoint_discovery,
             manual: manual_options,
             direct: direct_options,
         } = config;
@@ -302,6 +309,12 @@ where
             }
         };
         let protocol = protocol.unwrap_or_else(|| Arc::new(RawClientProtocolUpgrader));
+        let endpoint_resolver = Arc::new(CoreManualEndpointResolver::new(
+            host.clone(),
+            dns.clone(),
+            dns_records,
+            endpoint_discovery,
+        ));
         let manual = match manual_events {
             Some(events) => ManualConnectorManager::new_with_events(
                 peer_manager.clone(),

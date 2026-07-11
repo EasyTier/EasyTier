@@ -5,7 +5,7 @@ use easytier_core::{
         direct::DirectConnectorOptions,
         manual::{
             ManualConnectivityEvent, ManualConnectivityEventSink, ManualConnectorOptions,
-            discovery::{CoreManualEndpointResolver, ManualEndpointDiscoveryConfig},
+            discovery::ManualEndpointDiscoveryConfig,
         },
         protocol::ClientProtocolUpgrader,
     },
@@ -81,6 +81,20 @@ pub(crate) fn runtime_manual_options(global_ctx: &ArcGlobalCtx) -> ManualConnect
     }
 }
 
+pub(crate) fn runtime_endpoint_discovery_config(
+    global_ctx: &ArcGlobalCtx,
+) -> ManualEndpointDiscoveryConfig {
+    ManualEndpointDiscoveryConfig {
+        user_agent: format!("easytier/{VERSION}"),
+        network_name: global_ctx.network.network_name.clone(),
+        http_timeout: Duration::from_secs(20),
+        http_ip_version: IpVersion::Both,
+        http_tcp_bind: runtime_manual_options(global_ctx).tcp_bind,
+        dns_record_context: SocketContext::default(),
+        srv_protocols: IpScheme::VARIANTS.iter().map(ToString::to_string).collect(),
+    }
+}
+
 pub(crate) fn runtime_direct_options(
     global_ctx: &ArcGlobalCtx,
     testing: bool,
@@ -113,25 +127,10 @@ pub(crate) fn runtime_core_instance_adapters(
     let host = Arc::new(RuntimeConnectorHost::new(global_ctx.clone()));
     let dns: Arc<dyn DnsResolver> = Arc::new(RuntimeDnsResolver::new());
     let dns_records: Arc<dyn DnsRecordResolver> = Arc::new(RuntimeDnsResolver::new());
-    let manual = runtime_manual_options(&global_ctx);
-    let endpoint_resolver = Arc::new(CoreManualEndpointResolver::new(
-        host.clone(),
-        dns.clone(),
-        dns_records,
-        ManualEndpointDiscoveryConfig {
-            user_agent: format!("easytier/{VERSION}"),
-            network_name: global_ctx.network.network_name.clone(),
-            http_timeout: Duration::from_secs(20),
-            http_ip_version: IpVersion::Both,
-            http_tcp_bind: manual.tcp_bind,
-            dns_record_context: SocketContext::default(),
-            srv_protocols: IpScheme::VARIANTS.iter().map(ToString::to_string).collect(),
-        },
-    ));
     CoreInstanceAdapters {
         host,
         dns,
-        endpoint_resolver,
+        dns_records,
         protocol: Some(
             Arc::new(RuntimeClientProtocolUpgrader::new(global_ctx.clone()))
                 as Arc<dyn ClientProtocolUpgrader<_>>,
@@ -152,6 +151,7 @@ pub(crate) fn build_runtime_core_instance(
     let config = CoreInstanceConfig {
         initial_peers: Vec::new(),
         listeners: Vec::new(),
+        endpoint_discovery: runtime_endpoint_discovery_config(&global_ctx),
         manual: runtime_manual_options(&global_ctx),
         direct: runtime_direct_options(&global_ctx, false),
     };
@@ -246,6 +246,7 @@ mod tests {
         let config = CoreInstanceConfig {
             initial_peers: Vec::new(),
             listeners: Vec::new(),
+            endpoint_discovery: runtime_endpoint_discovery_config(&global_ctx),
             manual: runtime_manual_options(&global_ctx),
             direct: runtime_direct_options(&global_ctx, false),
         };
@@ -309,6 +310,7 @@ mod tests {
                     must_succeed: true,
                 },
             ],
+            endpoint_discovery: runtime_endpoint_discovery_config(&global_ctx),
             manual: runtime_manual_options(&global_ctx),
             direct: runtime_direct_options(&global_ctx, false),
         };
@@ -369,6 +371,7 @@ mod tests {
                             ),
                             must_succeed: true,
                         }],
+                        endpoint_discovery: runtime_endpoint_discovery_config(&global_a),
                         manual: Default::default(),
                         direct: runtime_direct_options(&global_a, true),
                     },
@@ -385,6 +388,7 @@ mod tests {
                     connectivity: CoreInstanceConfig {
                         initial_peers: Vec::new(),
                         listeners: Vec::new(),
+                        endpoint_discovery: runtime_endpoint_discovery_config(&global_b),
                         manual: Default::default(),
                         direct: runtime_direct_options(&global_b, true),
                     },
@@ -479,6 +483,7 @@ mod tests {
         let mut connectivity = CoreInstanceConfig {
             initial_peers: Vec::new(),
             listeners: Vec::new(),
+            endpoint_discovery: runtime_endpoint_discovery_config(&global_ctx),
             manual: runtime_manual_options(&global_ctx),
             direct: runtime_direct_options(&global_ctx, false),
         };
@@ -516,6 +521,7 @@ mod tests {
                 ),
                 must_succeed: true,
             }],
+            endpoint_discovery: runtime_endpoint_discovery_config(&global_ctx),
             manual: runtime_manual_options(&global_ctx),
             direct: runtime_direct_options(&global_ctx, false),
         };
