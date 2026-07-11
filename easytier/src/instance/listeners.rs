@@ -777,6 +777,7 @@ impl core_listener::ListenerEventSink for GlobalCtxListenerEventSink {
                 self.global_ctx
                     .issue_event(GlobalCtxEvent::ListenerAdded(url));
             }
+            core_listener::ListenerEvent::ListenerRemoved { .. } => {}
             core_listener::ListenerEvent::ListenerAddFailed {
                 url,
                 error,

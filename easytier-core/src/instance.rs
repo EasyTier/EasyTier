@@ -21,7 +21,7 @@ use crate::{
     },
     hole_punch::tcp::{TcpHolePunchConnector, TcpHolePunchHost},
     listener::{
-        AcceptedSocketHandler,
+        AcceptedSocketHandler, RunningListenerProvider, RunningListenerRegistry,
         transport::{
             AcceptedTransport, HostAcceptedTcpSocket, RawAcceptedTransportHandler,
             TransportListenerConfig, TransportListenerService,
@@ -269,20 +269,26 @@ where
             direct: direct_options,
         } = config;
 
-        let listener: Option<Arc<dyn ListenerService>> = match (listener, listeners.is_empty()) {
+        let (listener, running_listeners): (
+            Option<Arc<dyn ListenerService>>,
+            Option<Arc<dyn RunningListenerProvider>>,
+        ) = match (listener, listeners.is_empty()) {
             (Some(_), false) => {
                 anyhow::bail!("external and core transport listeners cannot both be configured")
             }
-            (Some(listener), true) => Some(listener),
-            (None, true) => None,
+            (Some(listener), true) => (Some(listener), None),
+            (None, true) => (None, None),
             (None, false) => {
                 let handler = accepted_transport_handler
                     .unwrap_or_else(|| Arc::new(RawAcceptedTransportHandler::new(&peer_manager)));
-                Some(Arc::new(TransportListenerService::new(
+                let registry = Arc::new(RunningListenerRegistry::default());
+                let listener = Arc::new(TransportListenerService::new_with_events(
                     host.clone(),
                     listeners,
                     handler,
-                )))
+                    registry.clone(),
+                ));
+                (Some(listener), Some(registry))
             }
         };
         let protocol = protocol.unwrap_or_else(|| Arc::new(RawClientProtocolUpgrader));
@@ -309,13 +315,23 @@ where
             manual.add_connector(url)?;
         }
 
-        let direct = DirectConnectorManager::new(
-            peer_manager.clone(),
-            host.clone(),
-            dns,
-            protocol,
-            direct_options,
-        );
+        let direct = match running_listeners {
+            Some(running_listeners) => DirectConnectorManager::new_with_running_listeners(
+                peer_manager.clone(),
+                host.clone(),
+                running_listeners,
+                dns,
+                protocol,
+                direct_options,
+            ),
+            None => DirectConnectorManager::new(
+                peer_manager.clone(),
+                host.clone(),
+                dns,
+                protocol,
+                direct_options,
+            ),
+        };
         let tcp_hole_punch = TcpHolePunchConnector::new(peer_manager.clone(), host);
 
         Ok(Self {
@@ -499,5 +515,9 @@ where
 
     pub fn list_connectors(&self) -> Vec<ManualConnectorSnapshot> {
         self.manual.list_connectors()
+    }
+
+    pub fn running_listeners(&self) -> Vec<Url> {
+        self.direct.running_listeners()
     }
 }

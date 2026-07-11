@@ -117,7 +117,14 @@ impl TransportListenerConfig {
 
     pub fn supports_raw_handler(&self) -> bool {
         matches!(self, Self::Tcp { url, .. } if url.scheme() == "tcp")
-            || matches!(self, Self::Udp { url, .. } if url.scheme() == "udp")
+            || matches!(
+                self,
+                Self::Udp {
+                    url,
+                    accept_kind: UdpSessionAcceptKind::EasyTierMux,
+                    ..
+                } if url.scheme() == "udp"
+            )
     }
 }
 

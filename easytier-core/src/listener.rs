@@ -63,6 +63,9 @@ pub enum ListenerEvent {
         url: Url,
         connection_counter: Arc<dyn ListenerConnectionCounter>,
     },
+    ListenerRemoved {
+        url: Url,
+    },
     ListenerAddFailed {
         url: Url,
         error: String,
@@ -84,6 +87,53 @@ pub enum ListenerEvent {
 
 pub trait ListenerEventSink: Debug + Send + Sync {
     fn emit(&self, event: ListenerEvent);
+}
+
+pub trait RunningListenerProvider: Debug + Send + Sync + 'static {
+    fn running_listeners(&self) -> Vec<Url>;
+}
+
+#[derive(Debug, Default)]
+pub struct RunningListenerRegistry {
+    listeners: std::sync::Mutex<Vec<(Url, usize)>>,
+}
+
+impl RunningListenerProvider for RunningListenerRegistry {
+    fn running_listeners(&self) -> Vec<Url> {
+        self.listeners
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(url, _)| url.clone())
+            .collect()
+    }
+}
+
+impl ListenerEventSink for RunningListenerRegistry {
+    fn emit(&self, event: ListenerEvent) {
+        let mut listeners = self.listeners.lock().unwrap();
+        match event {
+            ListenerEvent::ListenerAdded { url, .. } => {
+                if let Some((_, count)) =
+                    listeners.iter_mut().find(|(listener, _)| listener == &url)
+                {
+                    *count += 1;
+                } else {
+                    listeners.push((url, 1));
+                }
+            }
+            ListenerEvent::ListenerRemoved { url } => {
+                if let Some(index) = listeners.iter().position(|(listener, _)| listener == &url) {
+                    if listeners[index].1 == 1 {
+                        listeners.remove(index);
+                    } else {
+                        listeners[index].1 -= 1;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -247,14 +297,15 @@ where
         let mut initial_listeners = Vec::with_capacity(self.factories.len());
         for factory in &self.factories {
             initial_listeners.push(if factory.must_succeed {
-                Some(tokio::select! {
+                let listener = tokio::select! {
                     _ = self.cancel.cancelled() => {
                         anyhow::bail!("listener manager stopped during startup")
                     }
                     result = listen_once(factory.creator.clone()) => {
                         result.with_context(|| "required listener failed to start")?
                     }
-                })
+                };
+                Some(listener)
             } else {
                 None
             });
@@ -262,6 +313,12 @@ where
         if self.cancel.is_cancelled() {
             anyhow::bail!("listener manager stopped during startup");
         }
+        let initial_listeners = initial_listeners
+            .into_iter()
+            .map(|listener| {
+                listener.map(|listener| RegisteredListener::new(listener, self.events.clone()))
+            })
+            .collect::<Vec<_>>();
 
         let mut tasks = self.tasks.lock().await;
         tasks.spawn(run_accepted_task_runner(
@@ -324,25 +381,21 @@ async fn run_listener<Accepted, H>(
     events: Arc<dyn ListenerEventSink>,
     options: ListenerManagerOptions,
     accepted_tasks: AcceptedTaskSpawner,
-    mut initial_listener: Option<Box<dyn SocketListener<Accepted = Accepted>>>,
+    mut initial_listener: Option<RegisteredListener<Accepted>>,
 ) where
     Accepted: Send + 'static,
     H: AcceptedSocketHandler<Accepted> + 'static,
 {
     let mut listen_error_count = 0;
     loop {
-        let mut listener = match initial_listener.take() {
-            Some(listener) => {
-                emit_listener_added(&events, &*listener);
-                listener
-            }
+        let registered_listener = match initial_listener.take() {
+            Some(listener) => listener,
             None => {
                 let mut listener = creator();
                 match listener.listen().await {
                     Ok(()) => {
                         listen_error_count = 0;
-                        emit_listener_added(&events, &*listener);
-                        listener
+                        RegisteredListener::new(listener, events.clone())
                     }
                     Err(error) => {
                         listen_error_count += 1;
@@ -363,6 +416,8 @@ async fn run_listener<Accepted, H>(
                 }
             }
         };
+        let mut listener = registered_listener.listener;
+        let _registration = registered_listener.registration;
 
         loop {
             let listener_url = listener.local_url();
@@ -434,16 +489,45 @@ async fn run_accepted_task_runner(
     }
 }
 
-fn emit_listener_added<Accepted>(
-    events: &Arc<dyn ListenerEventSink>,
-    listener: &dyn SocketListener<Accepted = Accepted>,
-) where
+struct RegisteredListener<Accepted>
+where
     Accepted: Send + 'static,
 {
-    events.emit(ListenerEvent::ListenerAdded {
-        url: listener.local_url(),
-        connection_counter: listener.connection_counter(),
-    });
+    listener: Box<dyn SocketListener<Accepted = Accepted>>,
+    registration: ListenerRegistration,
+}
+
+impl<Accepted> RegisteredListener<Accepted>
+where
+    Accepted: Send + 'static,
+{
+    fn new(
+        listener: Box<dyn SocketListener<Accepted = Accepted>>,
+        events: Arc<dyn ListenerEventSink>,
+    ) -> Self {
+        let url = listener.local_url();
+        events.emit(ListenerEvent::ListenerAdded {
+            url: url.clone(),
+            connection_counter: listener.connection_counter(),
+        });
+        Self {
+            listener,
+            registration: ListenerRegistration { url, events },
+        }
+    }
+}
+
+struct ListenerRegistration {
+    url: Url,
+    events: Arc<dyn ListenerEventSink>,
+}
+
+impl Drop for ListenerRegistration {
+    fn drop(&mut self) {
+        self.events.emit(ListenerEvent::ListenerRemoved {
+            url: self.url.clone(),
+        });
+    }
 }
 
 #[cfg(test)]
@@ -551,6 +635,24 @@ mod tests {
         fn emit(&self, event: ListenerEvent) {
             self.events.lock().unwrap().push(event);
         }
+    }
+
+    #[test]
+    fn running_listener_registry_reference_counts_duplicate_urls() {
+        let registry = RunningListenerRegistry::default();
+        let url: Url = "tcp://127.0.0.1:11010".parse().unwrap();
+        for _ in 0..2 {
+            registry.emit(ListenerEvent::ListenerAdded {
+                url: url.clone(),
+                connection_counter: Arc::new(EmptyConnectionCounter),
+            });
+        }
+        assert_eq!(registry.running_listeners(), vec![url.clone()]);
+
+        registry.emit(ListenerEvent::ListenerRemoved { url: url.clone() });
+        assert_eq!(registry.running_listeners(), vec![url.clone()]);
+        registry.emit(ListenerEvent::ListenerRemoved { url });
+        assert!(registry.running_listeners().is_empty());
     }
 
     #[tokio::test]

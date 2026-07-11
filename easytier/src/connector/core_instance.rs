@@ -315,11 +315,20 @@ mod tests {
             .unwrap(),
         );
 
+        assert!(instance.running_listeners().is_empty());
         instance.start_listeners().await.unwrap();
+        let running_listeners = instance.running_listeners();
+        assert_eq!(running_listeners.len(), 2);
+        assert!(
+            running_listeners
+                .iter()
+                .all(|listener| listener.port().is_some_and(|port| port != 0))
+        );
         instance.start().await.unwrap();
         assert_eq!(instance.state(), CoreInstanceState::Running);
         instance.stop().await;
         assert_eq!(instance.state(), CoreInstanceState::Stopped);
+        assert!(instance.running_listeners().is_empty());
     }
 
     #[tokio::test]
@@ -362,7 +371,7 @@ mod tests {
         let connectivity = CoreInstanceConfig {
             initial_peers: Vec::new(),
             listeners: vec![TransportListenerConfig::Udp {
-                url: "wg://127.0.0.1:0".parse().unwrap(),
+                url: "udp://127.0.0.1:0".parse().unwrap(),
                 request: UdpSessionListenRequest::new(UdpBindOptions::port_bound_listener(
                     "127.0.0.1:0".parse().unwrap(),
                 )),

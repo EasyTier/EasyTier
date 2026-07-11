@@ -21,6 +21,7 @@ use crate::{
         transport::{self, ConnectedTransport, UdpSessionMode},
     },
     hole_punch::udp::{should_background_p2p_with_peer, should_try_p2p_with_peer},
+    listener::RunningListenerProvider,
     peers::{peer_conn::PeerConnId, peer_manager::PeerManagerCore},
     proto::{
         common::Void,
@@ -79,6 +80,33 @@ pub trait DirectConnectorHost: ManualConnectorHost {
     ) -> anyhow::Result<SocketAddr>;
 
     async fn preferred_ipv6_source(&self, ip: Ipv6Addr) -> Option<PreferredIpv6Source>;
+}
+
+struct HostRunningListenerProvider<H>
+where
+    H: DirectConnectorHost,
+{
+    host: Arc<H>,
+}
+
+impl<H> std::fmt::Debug for HostRunningListenerProvider<H>
+where
+    H: DirectConnectorHost,
+{
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("HostRunningListenerProvider")
+            .finish_non_exhaustive()
+    }
+}
+
+impl<H> RunningListenerProvider for HostRunningListenerProvider<H>
+where
+    H: DirectConnectorHost,
+{
+    fn running_listeners(&self) -> Vec<Url> {
+        self.host.running_listeners()
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -209,6 +237,7 @@ where
 {
     peer_manager: Arc<PeerManagerCore>,
     host: Arc<H>,
+    running_listeners: Arc<dyn RunningListenerProvider>,
     dns: Arc<dyn DnsResolver>,
     protocol:
         Arc<dyn ClientProtocolUpgrader<<H as crate::socket::tcp::VirtualTcpSocketFactory>::Socket>>,
@@ -250,9 +279,31 @@ where
         >,
         options: DirectConnectorOptions,
     ) -> Self {
+        let running_listeners = Arc::new(HostRunningListenerProvider { host: host.clone() });
+        Self::new_with_running_listeners(
+            peer_manager,
+            host,
+            running_listeners,
+            dns,
+            protocol,
+            options,
+        )
+    }
+
+    pub fn new_with_running_listeners(
+        peer_manager: Arc<PeerManagerCore>,
+        host: Arc<H>,
+        running_listeners: Arc<dyn RunningListenerProvider>,
+        dns: Arc<dyn DnsResolver>,
+        protocol: Arc<
+            dyn ClientProtocolUpgrader<<H as crate::socket::tcp::VirtualTcpSocketFactory>::Socket>,
+        >,
+        options: DirectConnectorOptions,
+    ) -> Self {
         let data = Arc::new(DirectConnectorData {
             peer_manager: peer_manager.clone(),
             host,
+            running_listeners,
             dns,
             protocol,
             options,
@@ -279,9 +330,12 @@ where
             .rpc_server()
             .registry()
             .register(
-                GeneratedDirectConnectorRpcServer::new(DirectConnectorRpcHandler::new(
-                    self.data.host.clone(),
-                )),
+                GeneratedDirectConnectorRpcServer::new(
+                    DirectConnectorRpcHandler::new_with_running_listeners(
+                        self.data.host.clone(),
+                        self.data.running_listeners.clone(),
+                    ),
+                ),
                 &self.data.options.network_name,
             );
     }
@@ -298,9 +352,12 @@ where
             .rpc_server()
             .registry()
             .unregister(
-                GeneratedDirectConnectorRpcServer::new(DirectConnectorRpcHandler::new(
-                    self.data.host.clone(),
-                )),
+                GeneratedDirectConnectorRpcServer::new(
+                    DirectConnectorRpcHandler::new_with_running_listeners(
+                        self.data.host.clone(),
+                        self.data.running_listeners.clone(),
+                    ),
+                ),
                 &self.data.options.network_name,
             );
     }
@@ -313,6 +370,10 @@ where
         self.data
             .try_direct_connect_with_ip_list(dst_peer_id, ip_list)
             .await
+    }
+
+    pub fn running_listeners(&self) -> Vec<Url> {
+        self.data.running_listeners.running_listeners()
     }
 }
 
@@ -516,7 +577,7 @@ where
         };
         let listener_host = addrs.pop();
         let is_udp = is_udp_protocol(listener.scheme());
-        let local_listeners = self.host.running_listeners();
+        let local_listeners = self.running_listeners.running_listeners();
         let port_has_local_listener = |port: u16| {
             local_listeners.iter().any(|local| {
                 local.port() == Some(port) && is_udp_protocol(local.scheme()) == is_udp
@@ -885,6 +946,7 @@ where
     H: DirectConnectorHost,
 {
     host: Arc<H>,
+    running_listeners: Arc<dyn RunningListenerProvider>,
 }
 
 impl<H> Clone for DirectConnectorRpcHandler<H>
@@ -894,6 +956,7 @@ where
     fn clone(&self) -> Self {
         Self {
             host: self.host.clone(),
+            running_listeners: self.running_listeners.clone(),
         }
     }
 }
@@ -903,7 +966,21 @@ where
     H: DirectConnectorHost,
 {
     pub fn new(host: Arc<H>) -> Self {
-        Self { host }
+        let running_listeners = Arc::new(HostRunningListenerProvider { host: host.clone() });
+        Self {
+            host,
+            running_listeners,
+        }
+    }
+
+    pub fn new_with_running_listeners(
+        host: Arc<H>,
+        running_listeners: Arc<dyn RunningListenerProvider>,
+    ) -> Self {
+        Self {
+            host,
+            running_listeners,
+        }
     }
 }
 
@@ -924,7 +1001,7 @@ where
             .host
             .mapped_listeners()
             .into_iter()
-            .chain(self.host.running_listeners())
+            .chain(self.running_listeners.running_listeners())
             .map(Into::into)
             .collect();
         response
