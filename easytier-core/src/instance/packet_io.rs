@@ -64,18 +64,19 @@ fn parse_ipv6_packet(packet: &[u8]) -> anyhow::Result<IpPacketMeta> {
     })
 }
 
-/// Receives decoded data packets leaving the EasyTier peer graph.
+/// Receives raw IP packet bytes leaving the EasyTier peer graph.
 ///
 /// The host decides whether packets go to a TUN device, a Go callback, or a
-/// different packet backend. Core never performs that platform I/O directly.
+/// different packet backend. Core's internal packet headers never cross this
+/// boundary, and core never performs platform I/O directly.
 #[async_trait]
 pub trait PacketSink: Send + Sync + 'static {
-    async fn write_packet(&self, packet: ZCPacket) -> anyhow::Result<()>;
+    async fn write_packet(&self, packet: Vec<u8>) -> anyhow::Result<()>;
 }
 
 #[async_trait]
-impl PacketSink for mpsc::Sender<ZCPacket> {
-    async fn write_packet(&self, packet: ZCPacket) -> anyhow::Result<()> {
+impl PacketSink for mpsc::Sender<Vec<u8>> {
+    async fn write_packet(&self, packet: Vec<u8>) -> anyhow::Result<()> {
         self.send(packet)
             .await
             .map_err(|_| anyhow::anyhow!("packet sink channel is closed"))
@@ -107,7 +108,7 @@ impl PacketEgress {
         let sink = self.sink.clone();
         let task = tokio::spawn(async move {
             while let Some(packet) = receiver.recv().await {
-                if let Err(error) = sink.write_packet(packet).await {
+                if let Err(error) = sink.write_packet(packet.payload().to_vec()).await {
                     tracing::warn!(?error, "host packet sink rejected an egress packet");
                 }
             }
@@ -200,7 +201,7 @@ mod tests {
             .await
             .expect("packet egress did not forward to the host")
             .expect("host packet channel closed");
-        assert_eq!(packet.payload(), b"packet");
+        assert_eq!(packet, b"packet");
 
         egress.stop().await;
         assert!(egress.start().is_err());
