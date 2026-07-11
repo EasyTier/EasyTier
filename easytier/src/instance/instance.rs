@@ -104,6 +104,43 @@ impl ProxyService for RuntimeProxyService {
     }
 }
 
+struct RuntimePostNetworkService {
+    global_ctx: ArcGlobalCtx,
+    peer_manager: Arc<PeerManager>,
+    vpn_portal: Arc<Mutex<Box<dyn VpnPortal>>>,
+    #[cfg(feature = "socks5")]
+    socks5_server: Arc<Socks5Server>,
+    #[cfg(feature = "kcp")]
+    kcp_proxy: Arc<KcpProxyService>,
+}
+
+#[async_trait::async_trait]
+impl ProxyService for RuntimePostNetworkService {
+    async fn start(&self) -> anyhow::Result<()> {
+        if self.global_ctx.get_vpn_portal_cidr().is_some() {
+            self.vpn_portal
+                .lock()
+                .await
+                .start(self.global_ctx.clone(), self.peer_manager.clone())
+                .await?;
+        }
+
+        #[cfg(feature = "socks5")]
+        self.socks5_server
+            .run(
+                #[cfg(feature = "kcp")]
+                self.kcp_proxy
+                    .src_endpoint()
+                    .map(|endpoint| Arc::downgrade(&endpoint)),
+            )
+            .await?;
+
+        Ok(())
+    }
+
+    async fn stop(&self) {}
+}
+
 struct RuntimeProxyStartupPolicy {
     global_ctx: ArcGlobalCtx,
 }
@@ -776,23 +813,36 @@ impl Instance {
         };
         #[cfg(not(any(feature = "kcp", feature = "quic")))]
         let transport_proxy: Option<Arc<dyn ProxyService>> = None;
+
+        #[cfg(feature = "wireguard")]
+        let vpn_portal_inst = vpn_portal::wireguard::WireGuard::default();
+        #[cfg(not(feature = "wireguard"))]
+        let vpn_portal_inst = vpn_portal::NullVpnPortal;
+        let vpn_portal: Arc<Mutex<Box<dyn VpnPortal>>> =
+            Arc::new(Mutex::new(Box::new(vpn_portal_inst)));
+
+        #[cfg(feature = "socks5")]
+        let socks5_server = Socks5Server::new(global_ctx.clone(), peer_manager.clone(), None);
+
+        let post_network: Arc<dyn ProxyService> = Arc::new(RuntimePostNetworkService {
+            global_ctx: global_ctx.clone(),
+            peer_manager: peer_manager.clone(),
+            vpn_portal: vpn_portal.clone(),
+            #[cfg(feature = "socks5")]
+            socks5_server: socks5_server.clone(),
+            #[cfg(feature = "kcp")]
+            kcp_proxy: kcp_proxy.clone(),
+        });
         let core_instance = Arc::new(
             build_runtime_core_instance_with_transport(
                 global_ctx.clone(),
                 peer_manager.clone(),
                 transport_proxy,
                 Some(proxy.clone()),
+                Some(post_network),
             )
             .expect("runtime core instance composition should be valid"),
         );
-
-        #[cfg(feature = "wireguard")]
-        let vpn_portal_inst = vpn_portal::wireguard::WireGuard::default();
-        #[cfg(not(feature = "wireguard"))]
-        let vpn_portal_inst = vpn_portal::NullVpnPortal;
-
-        #[cfg(feature = "socks5")]
-        let socks5_server = Socks5Server::new(global_ctx.clone(), peer_manager.clone(), None);
 
         Instance {
             inst_name: global_ctx.inst_name.clone(),
@@ -812,7 +862,7 @@ impl Instance {
             #[cfg(feature = "quic")]
             quic_proxy,
 
-            vpn_portal: Arc::new(Mutex::new(Box::new(vpn_portal_inst))),
+            vpn_portal,
 
             #[cfg(feature = "socks5")]
             socks5_server,
@@ -997,20 +1047,6 @@ impl Instance {
         // run after tun device created, so listener can bind to tun device, which may be required by win 10
         self.core_instance
             .start_network_services(Some(RuntimeDhcpIpv4Host::new(self)))
-            .await?;
-
-        if self.global_ctx.get_vpn_portal_cidr().is_some() {
-            self.run_vpn_portal().await?;
-        }
-
-        #[cfg(feature = "socks5")]
-        self.socks5_server
-            .run(
-                #[cfg(feature = "kcp")]
-                self.kcp_proxy
-                    .src_endpoint()
-                    .map(|endpoint| Arc::downgrade(&endpoint)),
-            )
             .await?;
 
         Ok(())
