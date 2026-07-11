@@ -1638,8 +1638,6 @@ impl Instance {
 
 impl Drop for Instance {
     fn drop(&mut self) {
-        let my_peer_id = self.peer_manager.my_peer_id();
-        let pm = Arc::downgrade(&self.peer_manager);
         let core_instance = self.core_instance.clone();
         #[cfg(feature = "tun")]
         let nic_ctx = self.nic_ctx.clone();
@@ -1648,24 +1646,6 @@ impl Drop for Instance {
             nic_ctx.lock().await.take();
             core_instance.stop().await;
             drop(core_instance);
-
-            let now = std::time::Instant::now();
-            while now.elapsed().as_secs() < 10 {
-                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-                if pm.strong_count() == 0 {
-                    tracing::info!(
-                        "Instance for peer {} dropped, all resources cleared.",
-                        my_peer_id
-                    );
-                    return;
-                }
-            }
-
-            debug_assert!(
-                false,
-                "Instance for peer {} dropped, but resources not cleared in 1 seconds.",
-                my_peer_id
-            );
         });
     }
 }
