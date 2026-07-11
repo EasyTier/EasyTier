@@ -5,6 +5,7 @@ use crate::{socket::tcp::VirtualTcpSocket, tunnel::Tunnel};
 
 use super::transport::ConnectedTransport;
 
+pub mod insecure_tls;
 pub mod raw;
 
 #[async_trait]

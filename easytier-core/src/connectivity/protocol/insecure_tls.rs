@@ -2,8 +2,11 @@ use std::sync::Arc;
 
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, ServerName, UnixTime};
 
-/// Dummy certificate verifier that treats any certificate as valid.
-/// NOTE, such verification is vulnerable to MITM attacks, but convenient for testing.
+/// Certificate verifier used by EasyTier's existing WSS transport.
+///
+/// This deliberately preserves the legacy transport semantics: peer identity
+/// is authenticated by EasyTier above TLS rather than by the generated WSS
+/// certificate.
 #[derive(Debug)]
 struct SkipServerVerification(Arc<rustls::crypto::CryptoProvider>);
 

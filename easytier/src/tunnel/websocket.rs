@@ -1,17 +1,19 @@
 use super::{
     FromUrl, IpVersion, Tunnel, TunnelConnector, TunnelError, TunnelListener,
     common::wait_for_connect_futures,
-    insecure_tls::{get_insecure_tls_cert, init_crypto_provider},
     packet_def::{ZCPacket, ZCPacketType},
 };
 use crate::tunnel::common::bind;
-use crate::{
-    proto::common::TunnelInfo,
-    tunnel::{insecure_tls::get_insecure_tls_client_config, tcp_socket::RuntimeTcpSocket},
-};
+use crate::{proto::common::TunnelInfo, tunnel::tcp_socket::RuntimeTcpSocket};
 use anyhow::Context;
 use bytes::BytesMut;
-use easytier_core::{socket::tcp::VirtualTcpSocket, tunnel::wrapper::TunnelWrapper};
+use easytier_core::{
+    connectivity::protocol::insecure_tls::{
+        get_insecure_tls_cert, get_insecure_tls_client_config, init_crypto_provider,
+    },
+    socket::tcp::VirtualTcpSocket,
+    tunnel::wrapper::TunnelWrapper,
+};
 use forwarded_header_value::ForwardedHeaderValue;
 use futures::{SinkExt, StreamExt, stream::FuturesUnordered};
 use pnet::ipnetwork::IpNetwork;

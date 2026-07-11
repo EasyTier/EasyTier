@@ -44,6 +44,7 @@ prost-reflect = { version = "0.16.4", default-features = false, features = ["der
 prost-wkt-types = "0.7.1"
 rand = "0.8.5"
 quanta = "0.12"
+rcgen = "0.12.1"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 serde = { version = "1.0", features = ["derive"] }
 sha2 = "0.10.8"
