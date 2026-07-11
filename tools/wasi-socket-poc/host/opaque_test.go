@@ -330,12 +330,16 @@ func (b *opaqueBridge) close() {
 }
 
 func TestOpaqueSocketBridgeDrivesTokio(t *testing.T) {
+	const (
+		pendingHandle uint64 = 1<<40 | 1
+		activeHandle  uint64 = 1<<40 | 2
+	)
 	pendingHost, pendingPeer := net.Pipe()
 	activeHost, activePeer := net.Pipe()
 	bridge := newOpaqueBridge(
 		map[uint64]net.Conn{
-			1: pendingHost,
-			2: activeHost,
+			pendingHandle: pendingHost,
+			activeHandle:  activeHost,
 		},
 		nil,
 	)
@@ -367,7 +371,11 @@ func TestOpaqueSocketBridgeDrivesTokio(t *testing.T) {
 		t.Fatalf("instantiate guest: %v", err)
 	}
 
-	initResult, err := module.ExportedFunction("init_opaque_probe").Call(ctx, 1, 2)
+	initResult, err := module.ExportedFunction("init_opaque_probe").Call(
+		ctx,
+		pendingHandle,
+		activeHandle,
+	)
 	if err != nil {
 		t.Fatalf("initialize opaque probe: %v", err)
 	}
@@ -393,10 +401,10 @@ func TestOpaqueSocketBridgeDrivesTokio(t *testing.T) {
 	}
 
 	status := drive()
-	if !bridge.readInFlight(1) {
+	if !bridge.readInFlight(pendingHandle) {
 		t.Fatal("pending connection read was not in flight after initial drive")
 	}
-	if !bridge.readInFlight(2) {
+	if !bridge.readInFlight(activeHandle) {
 		t.Fatal("active connection read was not in flight after initial drive")
 	}
 

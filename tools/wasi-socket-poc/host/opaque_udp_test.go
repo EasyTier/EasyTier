@@ -238,11 +238,7 @@ func (b *opaqueBridge) tryUDPSend(
 	metadataSource uint32,
 	metadataLength uint32,
 ) int32 {
-	if metadataLength != udpMetadataLen {
-		return opaqueHostMemory
-	}
-	data, ok := module.Memory().Read(source, length)
-	if !ok {
+	if metadataLength != udpMetadataLen || length > 65535 {
 		return opaqueHostMemory
 	}
 	metadata, ok := module.Memory().Read(metadataSource, metadataLength)
@@ -253,8 +249,6 @@ func (b *opaqueBridge) tryUDPSend(
 	if err != nil || sourceIP != nil || flowinfo != 0 {
 		return opaqueHostInvalid
 	}
-	request := opaqueUDPSend{data: append([]byte(nil), data...), peer: peer}
-
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	state, exists := b.packets[handle]
@@ -264,12 +258,18 @@ func (b *opaqueBridge) tryUDPSend(
 	if state.sendErr != nil {
 		return opaqueHostIOError
 	}
-	select {
-	case state.sendQueue <- request:
-		return 0
-	default:
+	if len(state.sendQueue) >= cap(state.sendQueue) {
 		return opaqueHostWouldBlock
 	}
+	data, ok := module.Memory().Read(source, length)
+	if !ok {
+		return opaqueHostMemory
+	}
+	state.sendQueue <- opaqueUDPSend{
+		data: append([]byte(nil), data...),
+		peer: peer,
+	}
+	return 0
 }
 
 func (b *opaqueBridge) startUDPSendReady(
@@ -462,6 +462,7 @@ func TestUDPMetadataABI(t *testing.T) {
 }
 
 func TestOpaqueUDPBridgeDrivesCoreSocket(t *testing.T) {
+	const udpHandle uint64 = 1<<40 | 3
 	hostPacket, err := net.ListenPacket("udp4", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("listen host UDP: %v", err)
@@ -471,7 +472,7 @@ func TestOpaqueUDPBridgeDrivesCoreSocket(t *testing.T) {
 		hostPacket.Close()
 		t.Fatalf("listen peer UDP: %v", err)
 	}
-	bridge := newOpaqueBridge(nil, map[uint64]net.PacketConn{3: hostPacket})
+	bridge := newOpaqueBridge(nil, map[uint64]net.PacketConn{udpHandle: hostPacket})
 	defer bridge.close()
 	defer peerPacket.Close()
 	wasm := buildGuest(t)
@@ -495,7 +496,7 @@ func TestOpaqueUDPBridgeDrivesCoreSocket(t *testing.T) {
 		t.Fatalf("instantiate guest: %v", err)
 	}
 
-	results, err := module.ExportedFunction("init_udp_probe").Call(ctx, 3)
+	results, err := module.ExportedFunction("init_udp_probe").Call(ctx, udpHandle)
 	if err != nil || len(results) != 1 || int32(results[0]) != 0 {
 		t.Fatalf("initialize UDP probe: results=%v err=%v", results, err)
 	}

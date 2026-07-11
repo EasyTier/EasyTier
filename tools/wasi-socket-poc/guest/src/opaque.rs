@@ -44,11 +44,11 @@ struct UdpProbe {
 fn tcp_stream(
     sockets: &HostSocketRuntime,
     io: Arc<WasiHostTcpIo>,
-    handle: u32,
+    handle: u64,
 ) -> easytier_core::socket::host::HostTcpStream {
     sockets.tcp_stream(
         io,
-        HostSocketHandle(u64::from(handle)),
+        HostSocketHandle(handle),
         "192.0.2.1:10000".parse().unwrap(),
         "192.0.2.2:11013".parse().unwrap(),
         None,
@@ -56,7 +56,7 @@ fn tcp_stream(
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn init_opaque_probe(pending_handle: u32, active_handle: u32) -> i32 {
+pub extern "C" fn init_opaque_probe(pending_handle: u64, active_handle: u64) -> i32 {
     PROBE.with_borrow_mut(|slot| {
         if slot.is_some() {
             return -1;
@@ -146,7 +146,7 @@ pub extern "C" fn drive_opaque_probe() -> u32 {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn init_udp_probe(handle: u32) -> i32 {
+pub extern "C" fn init_udp_probe(handle: u64) -> i32 {
     UDP_PROBE.with_borrow_mut(|slot| {
         if slot.is_some() {
             return -1;
@@ -160,7 +160,7 @@ pub extern "C" fn init_udp_probe(handle: u32) -> i32 {
         let sockets = HostSocketRuntime::new();
         let socket = Arc::new(sockets.udp_socket(
             Arc::new(WasiHostUdpIo::default()),
-            HostSocketHandle(u64::from(handle)),
+            HostSocketHandle(handle),
             "127.0.0.1:11013".parse().unwrap(),
         ));
 
