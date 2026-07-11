@@ -7,6 +7,7 @@ use std::time::Duration;
 
 use anyhow::Context;
 use cidr::Ipv4Inet;
+use easytier_core::instance::ProxyService;
 use easytier_core::proxy::runtime::{
     ProxyRuntimeError, ProxyRuntimeInfo, ProxyRuntimeSnapshot, TcpProxyConnectContext,
     TcpProxyDstStream, TcpProxyKernelListener, TcpProxyRuntime, TcpProxySrcStream,
@@ -316,6 +317,11 @@ impl<C: NatDstConnector> TcpProxy<C> {
         Ok(())
     }
 
+    pub fn stop(&self) {
+        self.service.stop();
+        self.cidr_set.stop_updater();
+    }
+
     pub async fn register_peer_pipeline(self: &Arc<Self>) {
         self.service.register_peer_pipeline().await;
     }
@@ -376,6 +382,24 @@ impl<C: NatDstConnector> TcpProxy<C> {
 
     pub fn get_transport_type(&self) -> TcpProxyEntryTransportType {
         self.connector.transport_type()
+    }
+}
+
+impl<C: NatDstConnector> Drop for TcpProxy<C> {
+    fn drop(&mut self) {
+        self.stop();
+    }
+}
+
+#[async_trait::async_trait]
+impl<C: NatDstConnector> ProxyService for TcpProxy<C> {
+    async fn start(&self) -> anyhow::Result<()> {
+        self.runtime.latch_smoltcp_enabled();
+        self.service.start(true).await.map_err(anyhow::Error::new)
+    }
+
+    async fn stop(&self) {
+        TcpProxy::stop(self);
     }
 }
 

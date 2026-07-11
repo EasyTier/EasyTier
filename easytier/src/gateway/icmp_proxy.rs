@@ -10,6 +10,7 @@ use std::{
 };
 
 use anyhow::Context;
+use easytier_core::instance::ProxyService;
 use easytier_core::proxy::{
     icmp_proxy_service::IcmpProxyService,
     runtime::{
@@ -174,7 +175,7 @@ fn socket_recv_loop(
 }
 
 pub struct IcmpProxy {
-    _cidr_set: CidrSet,
+    cidr_set: CidrSet,
     service: Arc<IcmpProxyService<RuntimeIcmpProxyAdapter>>,
 }
 
@@ -191,10 +192,7 @@ impl IcmpProxy {
             cidr_set.table(),
             Duration::from_secs(10),
         );
-        Ok(Arc::new(Self {
-            _cidr_set: cidr_set,
-            service,
-        }))
+        Ok(Arc::new(Self { cidr_set, service }))
     }
 
     pub async fn start(&self) -> Result<(), Error> {
@@ -206,12 +204,37 @@ impl IcmpProxy {
 
     pub fn stop(&self) {
         self.service.stop();
+        self.cidr_set.stop_updater();
     }
 }
 
 impl Drop for IcmpProxy {
     fn drop(&mut self) {
         self.stop();
+    }
+}
+
+#[async_trait::async_trait]
+impl ProxyService for IcmpProxy {
+    async fn start(&self) -> anyhow::Result<()> {
+        if let Err(err) = IcmpProxy::start(self).await {
+            tracing::error!(?err, "start ICMP proxy failed");
+            if cfg!(not(any(
+                target_os = "android",
+                any(
+                    target_os = "ios",
+                    all(target_os = "macos", feature = "macos-ne")
+                ),
+                target_env = "ohos"
+            ))) {
+                return Err(err.into());
+            }
+        }
+        Ok(())
+    }
+
+    async fn stop(&self) {
+        IcmpProxy::stop(self);
     }
 }
 
