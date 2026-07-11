@@ -10,7 +10,6 @@ use easytier_core::socket::udp::UdpSessionSocket;
 use easytier_core::{
     connectivity::manual::{upgrade_accepted_session, upgrade_accepted_socket},
     instance::ListenerService,
-    listener::transport::{AcceptedTransport, TransportListenerConfig, TransportListenerService},
     listener::{self as core_listener, plan as core_listener_plan},
     peers::peer_manager::PeerManagerCore,
     socket::{
@@ -26,7 +25,6 @@ use crate::{
         global_ctx::{ArcGlobalCtx, GlobalCtxEvent},
         netns::NetNS,
     },
-    connector::runtime::RuntimeConnectorHost,
     peers::peer_manager::PeerManager,
     tunnel::{
         self, FromUrl, IpScheme, IpVersion, Tunnel, TunnelConnCounter, TunnelListener,
@@ -150,15 +148,6 @@ fn listener_scheme_registry() -> core_listener_plan::ListenerSchemeRegistry {
     }
 
     registry
-}
-
-fn core_owns_raw_listener(listener: &core_listener_plan::PlannedListener) -> bool {
-    listener.must_succeed
-        && matches!(
-            (listener.kind, listener.url.scheme()),
-            (core_listener_plan::ListenerKind::TcpStream, "tcp")
-                | (core_listener_plan::ListenerKind::UdpSession, "udp")
-        )
 }
 
 enum AcceptedConnection {
@@ -382,150 +371,29 @@ impl<H: TunnelHandlerForListener + Send + Sync + 'static> ListenerManager<H> {
     }
 }
 
-struct RunningRuntimeListeners {
-    legacy: ListenerManager<PeerManagerCore>,
-    transport: Option<TransportListenerService<RuntimeConnectorHost>>,
-}
-
 pub(crate) struct RuntimeListenerService {
-    global_ctx: ArcGlobalCtx,
-    peer_manager: Weak<PeerManagerCore>,
-    host: Arc<RuntimeConnectorHost>,
-    running: Mutex<Option<RunningRuntimeListeners>>,
+    manager: Mutex<ListenerManager<PeerManagerCore>>,
 }
 
 impl RuntimeListenerService {
-    pub(crate) fn new(
-        global_ctx: ArcGlobalCtx,
-        peer_manager: Arc<PeerManagerCore>,
-        host: Arc<RuntimeConnectorHost>,
-    ) -> Self {
+    pub(crate) fn new(global_ctx: ArcGlobalCtx, peer_manager: Arc<PeerManagerCore>) -> Self {
         Self {
-            global_ctx,
-            peer_manager: Arc::downgrade(&peer_manager),
-            host,
-            running: Mutex::new(None),
+            manager: Mutex::new(ListenerManager::new(global_ctx, peer_manager)),
         }
-    }
-
-    async fn prepare(&self) -> anyhow::Result<RunningRuntimeListeners> {
-        use crate::common::config::ConfigLoader;
-
-        let peer_manager = self
-            .peer_manager
-            .upgrade()
-            .ok_or_else(|| anyhow::anyhow!("peer manager is gone"))?;
-        let mut legacy = ListenerManager::new(self.global_ctx.clone(), peer_manager.clone());
-        let plan = core_listener_plan::plan_listeners(
-            core_listener_plan::ListenerPlanRequest::new(
-                self.global_ctx.get_id(),
-                self.global_ctx.config.get_listener_uris(),
-                self.global_ctx.config.get_flags().enable_ipv6,
-            ),
-            &listener_scheme_registry(),
-        );
-
-        for failure in plan.failures {
-            self.global_ctx
-                .issue_event(GlobalCtxEvent::ListenerAddFailed(
-                    failure.url,
-                    failure.message,
-                ));
-        }
-
-        let socket_mark = self.global_ctx.config.get_flags().socket_mark;
-        let mut transport_configs = Vec::new();
-        for listener in plan.listeners {
-            if !core_owns_raw_listener(&listener) {
-                legacy.add_planned_listener(listener).await?;
-                continue;
-            }
-
-            match listener.kind {
-                core_listener_plan::ListenerKind::TcpStream => {
-                    let local_addr = {
-                        let _guard = self.global_ctx.net_ns.guard();
-                        resolve_tcp_bind_url_addr(&listener.url, IpVersion::Both, socket_mark)
-                            .await?
-                    };
-                    transport_configs.push(TransportListenerConfig::Tcp {
-                        url: listener.url,
-                        options: core_listener_plan::tcp_listener_options(local_addr, socket_mark),
-                        must_succeed: listener.must_succeed,
-                    });
-                }
-                core_listener_plan::ListenerKind::UdpSession => {
-                    let local_addr = {
-                        let _guard = self.global_ctx.net_ns.guard();
-                        SocketAddr::from_url(listener.url.clone(), IpVersion::Both).await?
-                    };
-                    let request = core_listener_plan::udp_session_listen_request(
-                        &listener.url,
-                        local_addr,
-                        socket_mark,
-                    );
-                    transport_configs.push(TransportListenerConfig::Udp {
-                        url: listener.url,
-                        request,
-                        accept_kind: UdpSessionAcceptKind::EasyTierMux,
-                        must_succeed: listener.must_succeed,
-                    });
-                }
-                _ => unreachable!("raw listener ownership validates the listener kind"),
-            }
-        }
-
-        let transport = if transport_configs.is_empty() {
-            None
-        } else {
-            let handler = Arc::new(EasyTierAcceptedHandler {
-                global_ctx: self.global_ctx.clone(),
-                peer_manager: Arc::downgrade(&peer_manager),
-            });
-            let events = Arc::new(GlobalCtxListenerEventSink {
-                global_ctx: self.global_ctx.clone(),
-            });
-            Some(TransportListenerService::new_with_events(
-                self.host.clone(),
-                transport_configs,
-                handler,
-                events,
-            ))
-        };
-
-        Ok(RunningRuntimeListeners { legacy, transport })
     }
 }
 
 #[async_trait]
 impl ListenerService for RuntimeListenerService {
     async fn start(&self) -> anyhow::Result<()> {
-        let mut running = self.running.lock().await;
-        if running.is_some() {
-            anyhow::bail!("runtime listener service is already running");
-        }
-
-        let mut services = self.prepare().await?;
-        services.legacy.run().await?;
-        if let Some(transport) = &services.transport
-            && let Err(error) = transport.start().await
-        {
-            transport.stop().await;
-            services.legacy.stop().await;
-            return Err(error);
-        }
-        *running = Some(services);
+        let mut manager = self.manager.lock().await;
+        manager.prepare_listeners().await?;
+        manager.run().await?;
         Ok(())
     }
 
     async fn stop(&self) {
-        let Some(services) = self.running.lock().await.take() else {
-            return;
-        };
-        if let Some(transport) = services.transport {
-            transport.stop().await;
-        }
-        services.legacy.stop().await;
+        self.manager.lock().await.stop().await;
     }
 }
 
@@ -992,27 +860,6 @@ where
     }
 }
 
-#[async_trait]
-impl<H> core_listener::AcceptedSocketHandler<AcceptedTransport<RuntimeTcpSocket>>
-    for EasyTierAcceptedHandler<H>
-where
-    H: TunnelHandlerForListener + Send + Sync + 'static,
-{
-    async fn handle_accepted_socket(
-        &self,
-        accepted: AcceptedTransport<RuntimeTcpSocket>,
-    ) -> anyhow::Result<()> {
-        match accepted {
-            AcceptedTransport::Tcp { socket, local_url } => {
-                self.handle_tcp_stream(socket, local_url, None).await
-            }
-            AcceptedTransport::Udp { session, local_url } => {
-                self.handle_udp_session(session, local_url).await
-            }
-        }
-    }
-}
-
 impl<H> EasyTierAcceptedHandler<H>
 where
     H: TunnelHandlerForListener + Send + Sync + 'static,
@@ -1191,26 +1038,6 @@ mod tests {
             listener_scheme_registry().classify(&url),
             Some(core_listener_plan::ListenerKind::TcpStream)
         );
-    }
-
-    #[test]
-    fn core_raw_listener_ownership_keeps_optional_shadow_legacy() {
-        let plan = core_listener_plan::plan_listeners(
-            core_listener_plan::ListenerPlanRequest::new(
-                uuid::Uuid::nil(),
-                vec!["tcp://0.0.0.0:0".parse().unwrap()],
-                true,
-            ),
-            &listener_scheme_registry(),
-        );
-        let ownership = plan
-            .listeners
-            .iter()
-            .filter(|listener| listener.url.scheme() == "tcp")
-            .map(core_owns_raw_listener)
-            .collect::<Vec<_>>();
-
-        assert_eq!(ownership, vec![true, false]);
     }
 
     #[cfg(feature = "websocket")]
