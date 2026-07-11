@@ -31,7 +31,7 @@ where
     TcpSocket: VirtualTcpSocket,
 {
     fn supports_scheme(&self, scheme: &str) -> bool {
-        matches!(scheme, "tcp" | "udp")
+        matches!(scheme, "tcp" | "udp" | "ring" | "unix")
     }
 
     async fn upgrade_client(
@@ -46,11 +46,17 @@ where
             ("udp", ConnectedTransport::Udp(session)) => {
                 Ok(raw::upgrade_connected_udp(session, requested_url)?)
             }
-            ("tcp", ConnectedTransport::Udp(_)) => {
+            ("ring" | "unix", ConnectedTransport::ByteStream(stream)) => {
+                Ok(raw::upgrade_connected_byte_stream(stream)?)
+            }
+            ("tcp", ConnectedTransport::Udp(_) | ConnectedTransport::ByteStream(_)) => {
                 anyhow::bail!("TCP protocol requires a TCP transport")
             }
-            ("udp", ConnectedTransport::Tcp(_)) => {
+            ("udp", ConnectedTransport::Tcp(_) | ConnectedTransport::ByteStream(_)) => {
                 anyhow::bail!("UDP protocol requires a UDP session")
+            }
+            ("ring" | "unix", _) => {
+                anyhow::bail!("external byte-stream protocol requires a byte stream")
             }
             (scheme, _) => anyhow::bail!("unsupported client protocol upgrader: {scheme}"),
         }
@@ -116,6 +122,14 @@ mod tests {
     #[tokio::test]
     async fn raw_upgrader_rejects_non_raw_and_mismatched_protocols() {
         let upgrader = RawClientProtocolUpgrader;
+
+        let supports = |scheme| {
+            <RawClientProtocolUpgrader as ClientProtocolUpgrader<MockTcpSocket>>::supports_scheme(
+                &upgrader, scheme,
+            )
+        };
+        assert!(supports("ring"));
+        assert!(supports("unix"));
 
         let unsupported = upgrader
             .upgrade_client(

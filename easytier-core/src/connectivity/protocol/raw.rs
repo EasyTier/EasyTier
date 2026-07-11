@@ -3,7 +3,7 @@ use std::net::SocketAddr;
 use url::Url;
 
 use crate::{
-    connectivity::transport::{ConnectedTransport, ConnectedUdpSession},
+    connectivity::transport::{ConnectedByteStream, ConnectedTransport, ConnectedUdpSession},
     proto::common::TunnelInfo,
     socket::{
         tcp::VirtualTcpSocket,
@@ -22,7 +22,24 @@ where
     match connected {
         ConnectedTransport::Tcp(socket) => upgrade_connected_tcp(socket, requested_remote_addr),
         ConnectedTransport::Udp(session) => upgrade_connected_udp(session, requested_remote_addr),
+        ConnectedTransport::ByteStream(stream) => upgrade_connected_byte_stream(stream),
     }
+}
+
+pub fn upgrade_connected_byte_stream<S>(
+    connected: ConnectedByteStream<S>,
+) -> Result<Box<dyn Tunnel>, TunnelError>
+where
+    S: VirtualTcpSocket,
+{
+    let (socket, local_url, remote_url, resolved_remote_url) = connected.into_parts();
+    let info = TunnelInfo {
+        tunnel_type: remote_url.scheme().to_owned(),
+        local_addr: local_url.map(Into::into),
+        remote_addr: Some(remote_url.clone().into()),
+        resolved_remote_addr: Some(resolved_remote_url.unwrap_or(remote_url).into()),
+    };
+    TcpTunnelUpgrader::new(info).upgrade(socket)
 }
 
 pub fn upgrade_connected_tcp<S>(
@@ -230,5 +247,27 @@ mod tests {
             accepted.info().unwrap().local_addr.unwrap().url,
             requested_local_url.as_str()
         );
+    }
+
+    #[test]
+    fn byte_stream_upgrader_uses_host_endpoint_metadata() {
+        let local_url: Url = "ring://local".parse().unwrap();
+        let remote_url: Url = "ring://remote".parse().unwrap();
+        let tunnel = upgrade_connected_byte_stream(ConnectedByteStream::new(
+            MockTcpSocket::new(
+                "127.0.0.1:1000".parse().unwrap(),
+                "127.0.0.1:2000".parse().unwrap(),
+            ),
+            Some(local_url.clone()),
+            remote_url.clone(),
+            None,
+        ))
+        .unwrap();
+        let info = tunnel.info().unwrap();
+
+        assert_eq!(info.tunnel_type, "ring");
+        assert_eq!(info.local_addr.unwrap().url, local_url.as_str());
+        assert_eq!(info.remote_addr.unwrap().url, remote_url.as_str());
+        assert_eq!(info.resolved_remote_addr.unwrap().url, remote_url.as_str());
     }
 }

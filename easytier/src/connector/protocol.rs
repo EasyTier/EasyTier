@@ -47,6 +47,9 @@ impl ClientProtocolUpgrader<RuntimeTcpSocket> for RuntimeClientProtocolUpgrader 
                 ConnectedTransport::Udp(_) => {
                     anyhow::bail!("WebSocket protocol requires a TCP transport")
                 }
+                ConnectedTransport::ByteStream(_) => {
+                    anyhow::bail!("WebSocket protocol requires a TCP transport")
+                }
             },
             #[cfg(feature = "wireguard")]
             "wg" => match connected {
@@ -62,6 +65,9 @@ impl ClientProtocolUpgrader<RuntimeTcpSocket> for RuntimeClientProtocolUpgrader 
                 ConnectedTransport::Tcp(_) => {
                     anyhow::bail!("WireGuard protocol requires a UDP session")
                 }
+                ConnectedTransport::ByteStream(_) => {
+                    anyhow::bail!("WireGuard protocol requires a UDP session")
+                }
             },
             #[cfg(feature = "quic")]
             "quic" => match connected {
@@ -69,6 +75,9 @@ impl ClientProtocolUpgrader<RuntimeTcpSocket> for RuntimeClientProtocolUpgrader 
                     Ok(crate::tunnel::quic::upgrade_connected(session, requested_url).await?)
                 }
                 ConnectedTransport::Tcp(_) => {
+                    anyhow::bail!("QUIC protocol requires a UDP session")
+                }
+                ConnectedTransport::ByteStream(_) => {
                     anyhow::bail!("QUIC protocol requires a UDP session")
                 }
             },
@@ -81,6 +90,9 @@ impl ClientProtocolUpgrader<RuntimeTcpSocket> for RuntimeClientProtocolUpgrader 
                     )?)
                 }
                 ConnectedTransport::Udp(_) => {
+                    anyhow::bail!("FakeTCP protocol requires a TCP transport")
+                }
+                ConnectedTransport::ByteStream(_) => {
                     anyhow::bail!("FakeTCP protocol requires a TCP transport")
                 }
             },

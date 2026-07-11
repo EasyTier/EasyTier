@@ -18,7 +18,7 @@ use url::Url;
 use crate::{
     connectivity::{
         protocol::ClientProtocolUpgrader,
-        transport::{self, ConnectedTransport, UdpSessionMode},
+        transport::{self, ConnectedByteStream, ConnectedTransport, UdpSessionMode},
     },
     peers::peer_manager::PeerManagerCore,
     proto::common::TunnelInfo,
@@ -69,6 +69,7 @@ fn validate_manual_url(url: &Url) -> anyhow::Result<()> {
 pub(crate) enum ManualTransport {
     Tcp(TcpSocketPurpose),
     Udp(UdpSessionMode),
+    ByteStream,
 }
 
 impl ManualTransport {
@@ -83,6 +84,7 @@ impl ManualTransport {
             "quic" => Ok(Self::Udp(UdpSessionMode::Classified(
                 UdpSessionProtocol::Quic,
             ))),
+            "ring" | "unix" => Ok(Self::ByteStream),
             _ => anyhow::bail!("unsupported core manual connector URL: {url}"),
         }
     }
@@ -92,7 +94,10 @@ impl ManualTransport {
     }
 
     fn supports_interface_bind(self) -> bool {
-        !matches!(self, Self::Tcp(TcpSocketPurpose::FakeTcp))
+        !matches!(
+            self,
+            Self::Tcp(TcpSocketPurpose::FakeTcp) | Self::ByteStream
+        )
     }
 }
 
@@ -112,6 +117,13 @@ pub trait ManualConnectorHost:
     async fn local_addr_for_remote(&self, remote_addr: SocketAddr) -> anyhow::Result<SocketAddr>;
 
     async fn interface_addrs(&self) -> anyhow::Result<ManualInterfaceAddrs>;
+
+    async fn connect_byte_stream(
+        &self,
+        url: &Url,
+    ) -> anyhow::Result<ConnectedByteStream<<Self as VirtualTcpSocketFactory>::Socket>> {
+        anyhow::bail!("host does not support external byte stream: {url}")
+    }
 }
 
 #[async_trait]
@@ -217,6 +229,7 @@ impl ManualConnectorOptions {
         match transport {
             ManualTransport::Tcp(_) => self.tcp_bind.socket_mark,
             ManualTransport::Udp(_) => self.udp_bind.socket_mark,
+            ManualTransport::ByteStream => None,
         }
     }
 }
@@ -551,6 +564,12 @@ async fn resolve_reconnect_ip_versions(
     socket_mark: Option<u32>,
     dns: &dyn DnsResolver,
 ) -> anyhow::Result<Vec<IpVersion>> {
+    if matches!(
+        ManualTransport::from_url(url),
+        Ok(ManualTransport::ByteStream)
+    ) {
+        return Ok(vec![IpVersion::Both]);
+    }
     if matches!(url.scheme(), "txt" | "srv") {
         return Ok(vec![IpVersion::Both]);
     }
@@ -660,53 +679,64 @@ where
         );
     }
     let transport = ManualTransport::from_url(&endpoint.url)?;
-    let (remote_addr, bind_addrs) =
-        with_timeout_budget("resolve", started_at, connect_timeout, async {
-            let peer_manager = data
-                .peer_manager
-                .upgrade()
-                .ok_or_else(|| anyhow::anyhow!("peer manager is gone, cannot resolve connector"))?;
-            let remote_addr = resolve_remote_addr(
-                peer_manager.as_ref(),
-                data.host.as_ref(),
-                data.dns.as_ref(),
-                &endpoint.url,
-                manual_default_port(&endpoint.url),
-                ip_version,
-                data.options.socket_mark(transport),
-            )
-            .await?;
-            let bind_addrs = if data.options.bind_device
-                && data.options.allow_interface_bind
-                && transport.supports_interface_bind()
-            {
-                collect_bind_addrs(
+    let resolved = if transport == ManualTransport::ByteStream {
+        None
+    } else {
+        Some(
+            with_timeout_budget("resolve", started_at, connect_timeout, async {
+                let peer_manager = data.peer_manager.upgrade().ok_or_else(|| {
+                    anyhow::anyhow!("peer manager is gone, cannot resolve connector")
+                })?;
+                let remote_addr = resolve_remote_addr(
                     peer_manager.as_ref(),
                     data.host.as_ref(),
-                    transport.is_udp(),
-                    remote_addr,
+                    data.dns.as_ref(),
+                    &endpoint.url,
+                    manual_default_port(&endpoint.url),
+                    ip_version,
+                    data.options.socket_mark(transport),
                 )
-                .await?
-            } else {
-                Vec::new()
-            };
-            Ok((remote_addr, bind_addrs))
-        })
-        .await?;
+                .await?;
+                let bind_addrs = if data.options.bind_device
+                    && data.options.allow_interface_bind
+                    && transport.supports_interface_bind()
+                {
+                    collect_bind_addrs(
+                        peer_manager.as_ref(),
+                        data.host.as_ref(),
+                        transport.is_udp(),
+                        remote_addr,
+                    )
+                    .await?
+                } else {
+                    Vec::new()
+                };
+                Ok((remote_addr, bind_addrs))
+            })
+            .await?,
+        )
+    };
     data.events.emit(ManualConnectivityEvent::Connecting {
         url: requested_url.clone(),
     });
 
     let tunnel = with_timeout_budget("connect", started_at, connect_timeout, async {
-        let connected = connect_resolved(
-            data.host.clone(),
-            transport,
-            remote_addr,
-            bind_addrs,
-            data.options.tcp_bind.clone(),
-            data.options.udp_bind.clone(),
-        )
-        .await?;
+        let connected = match resolved {
+            Some((remote_addr, bind_addrs)) => {
+                connect_resolved(
+                    data.host.clone(),
+                    transport,
+                    remote_addr,
+                    bind_addrs,
+                    data.options.tcp_bind.clone(),
+                    data.options.udp_bind.clone(),
+                )
+                .await?
+            }
+            None => {
+                ConnectedTransport::ByteStream(data.host.connect_byte_stream(&endpoint.url).await?)
+            }
+        };
         data.protocol.upgrade_client(connected, endpoint.url).await
     })
     .await?;
@@ -749,6 +779,9 @@ where
             transport::connect_udp(host, remote_addr, bind_addrs, udp_bind, mode)
                 .await
                 .map(ConnectedTransport::Udp)
+        }
+        ManualTransport::ByteStream => {
+            anyhow::bail!("external byte streams do not use an IP transport address")
         }
     }
 }
@@ -998,6 +1031,8 @@ mod tests {
                 "quic://127.0.0.1:1",
                 ManualTransport::Udp(UdpSessionMode::Classified(UdpSessionProtocol::Quic)),
             ),
+            ("ring://local", ManualTransport::ByteStream),
+            ("unix:///tmp/easytier.sock", ManualTransport::ByteStream),
         ];
 
         for (url, expected) in cases {
@@ -1043,6 +1078,25 @@ mod tests {
         };
         let versions = resolve_reconnect_ip_versions(
             &"txt://discovery.example".parse().unwrap(),
+            Duration::from_secs(1),
+            None,
+            &resolver,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(versions, [IpVersion::Both]);
+        assert!(resolver.queries.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn external_byte_stream_does_not_require_address_records() {
+        let resolver = StaticDnsResolver {
+            ips: Vec::new(),
+            queries: Mutex::new(Vec::new()),
+        };
+        let versions = resolve_reconnect_ip_versions(
+            &"ring://local".parse().unwrap(),
             Duration::from_secs(1),
             None,
             &resolver,
