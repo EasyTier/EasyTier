@@ -186,51 +186,6 @@ pub fn upgrade_accepted_udp(
     }
 }
 
-/// Core's built-in TCP and UDP tunnel framing.
-///
-/// Hosts only need to provide a different upgrader when they enable an
-/// optional protocol whose implementation has not moved into core yet.
-#[derive(Debug, Default)]
-pub struct RawClientProtocolUpgrader;
-
-#[async_trait]
-impl<TcpSocket> ClientProtocolUpgrader<TcpSocket> for RawClientProtocolUpgrader
-where
-    TcpSocket: VirtualTcpSocket,
-{
-    fn supports_scheme(&self, scheme: &str) -> bool {
-        matches!(scheme, "tcp" | "udp" | "ring" | "unix")
-    }
-
-    async fn upgrade_client(
-        &self,
-        connected: ConnectedTransport<TcpSocket>,
-        requested_url: Url,
-    ) -> anyhow::Result<Box<dyn Tunnel>> {
-        match (requested_url.scheme(), connected) {
-            ("tcp", ConnectedTransport::Tcp(socket)) => {
-                Ok(raw::upgrade_connected_tcp(socket, requested_url)?)
-            }
-            ("udp", ConnectedTransport::Udp(session)) => {
-                Ok(raw::upgrade_connected_udp(session, requested_url)?)
-            }
-            ("ring" | "unix", ConnectedTransport::ByteStream(stream)) => {
-                Ok(raw::upgrade_connected_byte_stream(stream)?)
-            }
-            ("tcp", ConnectedTransport::Udp(_) | ConnectedTransport::ByteStream(_)) => {
-                anyhow::bail!("TCP protocol requires a TCP transport")
-            }
-            ("udp", ConnectedTransport::Tcp(_) | ConnectedTransport::ByteStream(_)) => {
-                anyhow::bail!("UDP protocol requires a UDP session")
-            }
-            ("ring" | "unix", _) => {
-                anyhow::bail!("external byte-stream protocol requires a byte stream")
-            }
-            (scheme, _) => anyhow::bail!("unsupported client protocol upgrader: {scheme}"),
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::{
@@ -305,16 +260,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn raw_upgrader_rejects_non_raw_and_mismatched_protocols() {
-        let upgrader = RawClientProtocolUpgrader;
+    async fn default_core_upgrader_rejects_external_and_mismatched_protocols() {
+        let upgrader =
+            CoreClientProtocolUpgrader::<MockTcpSocket>::new(CoreClientProtocolConfig::default());
 
-        let supports = |scheme| {
-            <RawClientProtocolUpgrader as ClientProtocolUpgrader<MockTcpSocket>>::supports_scheme(
-                &upgrader, scheme,
-            )
-        };
-        assert!(supports("ring"));
-        assert!(supports("unix"));
+        assert!(upgrader.supports_scheme("ring"));
+        assert!(!upgrader.supports_scheme("unix"));
 
         let unsupported = upgrader
             .upgrade_client(

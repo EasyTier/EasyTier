@@ -21,7 +21,7 @@ use crate::{
             ManualConnectorSnapshot,
             discovery::{CoreManualEndpointResolver, ManualEndpointDiscoveryConfig},
         },
-        protocol::{ClientProtocolUpgrader, RawClientProtocolUpgrader},
+        protocol::{ClientProtocolUpgrader, CoreClientProtocolConfig, CoreClientProtocolUpgrader},
     },
     hole_punch::tcp::{TcpHolePunchConnector, TcpHolePunchHost},
     listener::{
@@ -307,7 +307,11 @@ where
                 (Some(listener), Some(registry))
             }
         };
-        let protocol = protocol.unwrap_or_else(|| Arc::new(RawClientProtocolUpgrader));
+        let protocol = protocol.unwrap_or_else(|| {
+            Arc::new(CoreClientProtocolUpgrader::new(
+                CoreClientProtocolConfig::default(),
+            ))
+        });
         let endpoint_resolver = Arc::new(CoreManualEndpointResolver::new(
             host.clone(),
             dns.clone(),

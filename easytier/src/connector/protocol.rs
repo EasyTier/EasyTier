@@ -99,8 +99,6 @@ impl ClientProtocolUpgrader<RuntimeTcpSocket> for RuntimeClientProtocolUpgrader 
 
 #[cfg(test)]
 mod tests {
-    use easytier_core::connectivity::protocol::RawClientProtocolUpgrader;
-
     use crate::common::global_ctx::tests::get_mock_global_ctx;
 
     use super::*;
@@ -131,19 +129,5 @@ mod tests {
             upgrader.supports_scheme("faketcp"),
             cfg!(feature = "faketcp")
         );
-    }
-
-    #[test]
-    fn core_raw_upgrader_needs_no_runtime_protocol_adapter() {
-        let upgrader = RawClientProtocolUpgrader;
-        let supports = |scheme| {
-            <RawClientProtocolUpgrader as ClientProtocolUpgrader<RuntimeTcpSocket>>::supports_scheme(
-                &upgrader, scheme,
-            )
-        };
-
-        assert!(supports("tcp"));
-        assert!(supports("udp"));
-        assert!(!supports("quic"));
     }
 }
