@@ -128,8 +128,63 @@ struct PendingRingConnection {
 
 type ConnectionMap = HashMap<RingSocketId, UnboundedSender<Arc<PendingRingConnection>>>;
 
-static CONNECTION_MAP: LazyLock<Mutex<ConnectionMap>> =
-    LazyLock::new(|| Mutex::new(HashMap::new()));
+#[derive(Default)]
+pub struct RingTunnelRegistry {
+    connections: Mutex<ConnectionMap>,
+}
+
+impl RingTunnelRegistry {
+    pub fn bind(
+        self: &Arc<Self>,
+        local_id: RingSocketId,
+    ) -> Result<RingTunnelSocketListener, RingTunnelRegistryError> {
+        let (conn_sender, conn_receiver) = unbounded_channel();
+        let mut connections = self.connections.lock().unwrap();
+        if connections.contains_key(&local_id) {
+            return Err(RingTunnelRegistryError::AlreadyRegistered(local_id));
+        }
+
+        connections.insert(local_id, conn_sender.clone());
+        Ok(RingTunnelSocketListener {
+            registry: self.clone(),
+            local_id,
+            conn_sender,
+            conn_receiver,
+        })
+    }
+
+    pub fn connect(
+        &self,
+        remote_id: RingSocketId,
+    ) -> Result<DialedRingSocket, RingTunnelRegistryError> {
+        let conn_sender = self
+            .connections
+            .lock()
+            .unwrap()
+            .get(&remote_id)
+            .cloned()
+            .ok_or(RingTunnelRegistryError::NotFound(remote_id))?;
+        let (client, server) =
+            RingSocket::pair_with_ids(uuid::Uuid::new_v4(), remote_id, RING_TUNNEL_CAP);
+        let conn = Arc::new(PendingRingConnection {
+            client: client.clone(),
+            server,
+        });
+
+        conn_sender
+            .send(conn)
+            .map_err(|_| RingTunnelRegistryError::Closed(remote_id))?;
+
+        Ok(DialedRingSocket {
+            local_id: client.id(),
+            socket: client,
+            remote_id,
+        })
+    }
+}
+
+static DEFAULT_RING_REGISTRY: LazyLock<Arc<RingTunnelRegistry>> =
+    LazyLock::new(|| Arc::new(RingTunnelRegistry::default()));
 
 pub struct AcceptedRingSocket {
     pub socket: Arc<RingTunnelSocket>,
@@ -144,6 +199,7 @@ pub struct DialedRingSocket {
 }
 
 pub struct RingTunnelSocketListener {
+    registry: Arc<RingTunnelRegistry>,
     local_id: RingSocketId,
     conn_sender: UnboundedSender<Arc<PendingRingConnection>>,
     conn_receiver: UnboundedReceiver<Arc<PendingRingConnection>>,
@@ -159,18 +215,7 @@ impl Debug for RingTunnelSocketListener {
 
 impl RingTunnelSocketListener {
     pub fn bind(local_id: RingSocketId) -> Result<Self, RingTunnelRegistryError> {
-        let (conn_sender, conn_receiver) = unbounded_channel();
-        let mut map = CONNECTION_MAP.lock().unwrap();
-        if map.contains_key(&local_id) {
-            return Err(RingTunnelRegistryError::AlreadyRegistered(local_id));
-        }
-
-        map.insert(local_id, conn_sender.clone());
-        Ok(Self {
-            local_id,
-            conn_sender,
-            conn_receiver,
-        })
+        DEFAULT_RING_REGISTRY.bind(local_id)
     }
 
     pub fn local_id(&self) -> RingSocketId {
@@ -202,12 +247,12 @@ impl RingTunnelSocketListener {
 
 impl Drop for RingTunnelSocketListener {
     fn drop(&mut self) {
-        let mut map = CONNECTION_MAP.lock().unwrap();
-        if map
+        let mut connections = self.registry.connections.lock().unwrap();
+        if connections
             .get(&self.local_id)
             .is_some_and(|sender| sender.same_channel(&self.conn_sender))
         {
-            map.remove(&self.local_id);
+            connections.remove(&self.local_id);
         }
     }
 }
@@ -215,28 +260,7 @@ impl Drop for RingTunnelSocketListener {
 pub fn connect_ring_socket(
     remote_id: RingSocketId,
 ) -> Result<DialedRingSocket, RingTunnelRegistryError> {
-    let conn_sender = CONNECTION_MAP
-        .lock()
-        .unwrap()
-        .get(&remote_id)
-        .cloned()
-        .ok_or(RingTunnelRegistryError::NotFound(remote_id))?;
-    let (client, server) =
-        RingSocket::pair_with_ids(uuid::Uuid::new_v4(), remote_id, RING_TUNNEL_CAP);
-    let conn = Arc::new(PendingRingConnection {
-        client: client.clone(),
-        server,
-    });
-
-    conn_sender
-        .send(conn)
-        .map_err(|_| RingTunnelRegistryError::Closed(remote_id))?;
-
-    Ok(DialedRingSocket {
-        local_id: client.id(),
-        socket: client,
-        remote_id,
-    })
+    DEFAULT_RING_REGISTRY.connect(remote_id)
 }
 
 pub struct RingStream {
@@ -394,6 +418,31 @@ mod tests {
     use crate::packet::ZCPacket;
 
     use super::*;
+
+    #[tokio::test]
+    async fn explicit_registries_isolate_ring_listener_namespaces() {
+        let listener_id = uuid::Uuid::new_v4();
+        let first = Arc::new(RingTunnelRegistry::default());
+        let second = Arc::new(RingTunnelRegistry::default());
+        let mut listener = first.bind(listener_id).unwrap();
+
+        assert!(matches!(
+            second.connect(listener_id),
+            Err(RingTunnelRegistryError::NotFound(id)) if id == listener_id
+        ));
+
+        let dialed = first.connect(listener_id).unwrap();
+        let accepted = listener.accept().await.unwrap();
+        assert_eq!(dialed.remote_id, listener_id);
+        assert_eq!(accepted.local_id, listener_id);
+        assert_eq!(accepted.remote_id, dialed.local_id);
+
+        drop(listener);
+        assert!(matches!(
+            first.connect(listener_id),
+            Err(RingTunnelRegistryError::NotFound(id)) if id == listener_id
+        ));
+    }
 
     #[tokio::test]
     async fn ring_tunnel_pair_transfers_packets() {
