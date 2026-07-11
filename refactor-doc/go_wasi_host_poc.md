@@ -99,6 +99,13 @@ semantics without blocking the guest or retaining guest-memory borrows. The
 WASI ABI uses an independently golden-tested 44-byte metadata record for peer
 address, port, IPv6 flow/scope, and optional source or destination IP.
 
+The same unified backend now implements the existing core socket factories and
+TCP listener Interface. Core sends versioned connect/bind/listen options; Go
+creates the real resources and returns fixed handle/address records. Accepted
+connections remain queued in Go until a core `accept()` poll takes one. The
+reproducible probes complete TCP connect, UDP bind, TCP listen/accept, and all
+three echo paths without passing pre-created handles into guest initialization.
+
 The probe uses two `net.Pipe` connections, so success does not depend on an OS
 descriptor. One read remains permanently pending while the second connection
 echoes a byte and a 50 ms Tokio timer completes. The observed status `0x1b`
