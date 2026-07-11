@@ -10,6 +10,7 @@ use tokio_util::sync::CancellationToken;
 use url::Url;
 
 pub mod plan;
+pub mod transport;
 
 pub trait ListenerConnectionCounter: Debug + Send + Sync {
     fn get(&self) -> Option<u32>;
