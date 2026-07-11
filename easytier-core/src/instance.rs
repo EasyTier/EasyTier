@@ -613,6 +613,14 @@ where
             .await
     }
 
+    pub async fn update_exit_nodes(&self, exit_nodes: Vec<IpAddr>) {
+        self.peer_manager.update_exit_nodes(exit_nodes).await;
+    }
+
+    pub async fn refresh_acl_groups(&self) {
+        self.peer_manager.get_route().refresh_acl_groups().await;
+    }
+
     pub async fn send_ip_packet(&self, packet: Vec<u8>) -> anyhow::Result<()> {
         let meta = parse_ip_packet(&packet)?;
         let source_is_local = self.peer_manager.is_local_virtual_ip(&meta.source);

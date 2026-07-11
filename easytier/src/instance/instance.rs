@@ -282,7 +282,6 @@ pub struct InstanceConfigPatcher {
     global_ctx: Weak<GlobalCtx>,
     #[cfg(feature = "socks5")]
     socks5_server: Weak<Socks5Server>,
-    peer_manager: Weak<PeerManager>,
     core_instance: Weak<RuntimeCoreInstance>,
     public_ipv6_provider_task: ArcPublicIpv6ProviderTaskSlot,
 }
@@ -505,8 +504,7 @@ impl InstanceConfigPatcher {
         global_ctx
             .get_acl_filter()
             .reload_rules(AclRuleBuilder::build(&global_ctx)?.as_ref());
-        weak_upgrade(&self.peer_manager)?
-            .get_route()
+        weak_upgrade(&self.core_instance)?
             .refresh_acl_groups()
             .await;
         Ok(())
@@ -583,13 +581,13 @@ impl InstanceConfigPatcher {
             return Ok(());
         }
         let global_ctx = weak_upgrade(&self.global_ctx)?;
-        let peer_manager = weak_upgrade(&self.peer_manager)?;
+        let core_instance = weak_upgrade(&self.core_instance)?;
         let mut current_exit_nodes = global_ctx.config.get_exit_nodes();
         let patches = exit_nodes.into_iter().map(Into::into).collect();
         InstanceConfigPatcher::trace_patchables(&patches);
         crate::proto::api::config::patch_vec(&mut current_exit_nodes, patches);
-        global_ctx.config.set_exit_nodes(current_exit_nodes);
-        peer_manager.update_exit_nodes().await;
+        global_ctx.config.set_exit_nodes(current_exit_nodes.clone());
+        core_instance.update_exit_nodes(current_exit_nodes).await;
 
         Ok(())
     }
@@ -1382,7 +1380,6 @@ impl Instance {
             global_ctx: Arc::downgrade(&self.global_ctx),
             #[cfg(feature = "socks5")]
             socks5_server: Arc::downgrade(&self.socks5_server),
-            peer_manager: Arc::downgrade(&self.peer_manager),
             core_instance: Arc::downgrade(&self.core_instance),
             public_ipv6_provider_task: self.public_ipv6_provider_task.clone(),
         }
