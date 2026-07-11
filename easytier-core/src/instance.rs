@@ -288,10 +288,12 @@ where
 
     pub async fn stop(self: &Arc<Self>) {
         self.cancel.cancel();
+        let mut recovery = self.recovery_guard();
         let _operation = self.operation.lock().await;
         match self.state() {
             CoreInstanceState::Created | CoreInstanceState::Stopped => {
                 self.set_state(CoreInstanceState::Stopped);
+                recovery.disarm();
                 return;
             }
             CoreInstanceState::Starting
@@ -300,7 +302,6 @@ where
                 self.set_state(CoreInstanceState::Stopping);
             }
         }
-        let mut recovery = self.recovery_guard();
 
         self.stop_components().await;
         self.set_state(CoreInstanceState::Stopped);
