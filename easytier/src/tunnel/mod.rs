@@ -36,7 +36,6 @@ pub mod quic;
 #[cfg(feature = "websocket")]
 pub mod websocket;
 
-#[cfg(any(feature = "quic", feature = "websocket"))]
 #[cfg(unix)]
 pub mod unix;
 
