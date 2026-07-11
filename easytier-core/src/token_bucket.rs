@@ -168,6 +168,14 @@ impl TokenBucket {
             self.refill_notifier.notified().await;
         }
     }
+
+    async fn stop(&self) {
+        let task = self.refill_task.lock().unwrap().take();
+        if let Some(task) = task {
+            task.abort();
+            let _ = task.await;
+        }
+    }
 }
 
 #[async_trait::async_trait]
@@ -179,9 +187,7 @@ impl ByteLimiter for TokenBucket {
 
 pub struct TokenBucketManager {
     buckets: Arc<DashMap<String, Arc<TokenBucket>>>,
-
-    #[allow(dead_code)]
-    retain_task: AbortOnDropHandle<()>,
+    retain_task: Mutex<Option<AbortOnDropHandle<()>>>,
 }
 
 impl Default for TokenBucketManager {
@@ -214,7 +220,7 @@ impl TokenBucketManager {
 
         Self {
             buckets,
-            retain_task: AbortOnDropHandle::new(retain_task),
+            retain_task: Mutex::new(Some(AbortOnDropHandle::new(retain_task))),
         }
     }
 
@@ -232,6 +238,23 @@ impl TokenBucketManager {
 
     pub fn is_empty(&self) -> bool {
         self.buckets.is_empty()
+    }
+
+    pub async fn stop(&self) {
+        let retain_task = self.retain_task.lock().unwrap().take();
+        if let Some(retain_task) = retain_task {
+            retain_task.abort();
+            let _ = retain_task.await;
+        }
+        let buckets = self
+            .buckets
+            .iter()
+            .map(|entry| entry.value().clone())
+            .collect::<Vec<_>>();
+        for bucket in buckets {
+            bucket.stop().await;
+        }
+        self.buckets.clear();
     }
 }
 

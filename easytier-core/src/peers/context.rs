@@ -1,7 +1,7 @@
 use std::{
     collections::HashMap,
     net::IpAddr,
-    sync::Arc,
+    sync::{Arc, Mutex},
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -10,7 +10,9 @@ use async_trait::async_trait;
 use cidr::{Ipv4Cidr, Ipv4Inet, Ipv6Cidr, Ipv6Inet};
 use dashmap::DashMap;
 use easytier_proto::{
-    common::{FlagsInConfig, PeerFeatureFlag, SecureModeConfig, StunInfo, TunnelInfo},
+    common::{
+        FlagsInConfig, LimiterConfig, PeerFeatureFlag, SecureModeConfig, StunInfo, TunnelInfo,
+    },
     peer_rpc::{PeerGroupInfo, TrustedCredentialPubkeyProof},
 };
 use hmac::{Hmac, Mac};
@@ -22,6 +24,7 @@ use crate::{
         CoreConfig, IpPrefix, NodeConfig, PeerId, PeerPolicyConfig, RouteConfig, TrafficConfig,
     },
     peers::util::shrink_dashmap,
+    token_bucket::TokenBucketManager,
 };
 
 pub const SECRET_PROOF_PREFIX: &[u8] = b"easytier secret proof";
@@ -73,11 +76,55 @@ pub struct HostRoutingPolicy {
     pub local_exit_node_fallback: bool,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub(crate) struct ConfigPeerContext {
     runtime: PeerRuntimeConfig,
     flags: FlagsInConfig,
     peer_events: tokio::sync::broadcast::Sender<PeerContextEvent>,
+    support: Arc<ConfigPeerContextSupport>,
+}
+
+#[derive(Default)]
+struct ConfigLimiterState {
+    manager: Option<TokenBucketManager>,
+    stopped: bool,
+}
+
+#[derive(Default)]
+pub(crate) struct ConfigPeerContextSupport {
+    limiter_state: Mutex<ConfigLimiterState>,
+}
+
+impl ConfigPeerContextSupport {
+    fn get_or_create_limiter(&self, key: &str, bps: u64) -> Option<ArcByteLimiter> {
+        let mut state = self.limiter_state.lock().unwrap();
+        if state.stopped {
+            return None;
+        }
+        let manager = state.manager.get_or_insert_with(TokenBucketManager::new);
+        Some(
+            manager.get_or_create(
+                key,
+                LimiterConfig {
+                    burst_rate: None,
+                    bps: Some(bps),
+                    fill_duration_ms: None,
+                }
+                .into(),
+            ),
+        )
+    }
+
+    pub(crate) async fn stop(&self) {
+        let manager = {
+            let mut state = self.limiter_state.lock().unwrap();
+            state.stopped = true;
+            state.manager.take()
+        };
+        if let Some(manager) = manager {
+            manager.stop().await;
+        }
+    }
 }
 
 impl ConfigPeerContext {
@@ -86,12 +133,17 @@ impl ConfigPeerContext {
             runtime,
             flags: FlagsInConfig::default(),
             peer_events: tokio::sync::broadcast::channel(100).0,
+            support: Arc::new(ConfigPeerContextSupport::default()),
         }
     }
 
     pub(crate) fn with_flags(mut self, flags: FlagsInConfig) -> Self {
         self.flags = flags;
         self
+    }
+
+    pub(crate) fn support(&self) -> Arc<ConfigPeerContextSupport> {
+        self.support.clone()
     }
 }
 
@@ -586,6 +638,24 @@ impl PeerContext for ConfigPeerContext {
     fn secret_proof(&self, challenge: &[u8]) -> Option<Hmac<Sha256>> {
         let secret = self.runtime.network_identity.network_secret.as_ref()?;
         secret_proof_from_secret(secret, challenge)
+    }
+
+    fn recv_limiter(&self, network_name: &str, is_foreign_network: bool) -> Option<ArcByteLimiter> {
+        let traffic = &self.runtime.core.traffic;
+        let foreign_limit = traffic
+            .foreign_relay_bps_limit
+            .or(Some(self.flags.foreign_relay_bps_limit))
+            .filter(|limit| !matches!(*limit, 0 | u64::MAX));
+        let instance_limit = traffic
+            .instance_recv_bps_limit
+            .or(Some(self.flags.instance_recv_bps_limit))
+            .filter(|limit| !matches!(*limit, 0 | u64::MAX));
+        let (key, bps) = if is_foreign_network && let Some(limit) = foreign_limit {
+            (format!("{network_name}:recv"), limit)
+        } else {
+            ("instance:recv".to_owned(), instance_limit?)
+        };
+        self.support.get_or_create_limiter(&key, bps)
     }
 }
 

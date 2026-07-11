@@ -36,7 +36,8 @@ use super::{
     PeerPacketFilter,
     acl_filter::AclFilter,
     context::{
-        ArcPeerContext, ConfigPeerContext, HostRoutingPolicy, NetworkIdentity, PeerRuntimeConfig,
+        ArcPeerContext, ConfigPeerContext, ConfigPeerContextSupport, HostRoutingPolicy,
+        NetworkIdentity, PeerRuntimeConfig,
     },
     encrypt::{Encryptor, NullCipher, create_encryptor, derive_key_128, derive_key_256},
     error::Error,
@@ -197,10 +198,6 @@ impl PortablePeerManagerConfig {
         self.flags = flags;
         self
     }
-}
-
-fn legacy_limit_is_unlimited(limit: u64) -> bool {
-    limit == 0 || limit == u64::MAX
 }
 
 fn validate_portable_routes(routes: &crate::config::RouteConfig) -> anyhow::Result<()> {
@@ -582,6 +579,7 @@ pub struct PeerManagerCore {
     network_name: String,
     counters: PeerManagerTrafficCounters,
     owns_support_tasks: bool,
+    config_context_support: Option<Arc<ConfigPeerContextSupport>>,
 }
 
 pub enum AddressResolution {
@@ -861,25 +859,6 @@ impl PeerManagerCore {
                 "credential peer mode requires a trust adapter and is not available in portable composition"
             );
         }
-        if !legacy_limit_is_unlimited(config.flags.instance_recv_bps_limit)
-            || !legacy_limit_is_unlimited(config.flags.foreign_relay_bps_limit)
-            || config
-                .runtime
-                .core
-                .traffic
-                .instance_recv_bps_limit
-                .is_some_and(|limit| !legacy_limit_is_unlimited(limit))
-            || config
-                .runtime
-                .core
-                .traffic
-                .foreign_relay_bps_limit
-                .is_some_and(|limit| !legacy_limit_is_unlimited(limit))
-        {
-            anyhow::bail!(
-                "traffic limits require a limiter adapter and are not available in portable composition"
-            );
-        }
         if let Some(secure) = config
             .runtime
             .secure_mode
@@ -942,8 +921,10 @@ impl PeerManagerCore {
         config.runtime.feature_flags.disable_p2p = config.flags.disable_p2p;
         config.runtime.feature_flags.need_p2p = config.flags.need_p2p;
         config.runtime.feature_flags.avoid_relay_data |= config.flags.disable_relay_data;
-        let context: ArcPeerContext =
+        let config_context =
             Arc::new(ConfigPeerContext::new(config.runtime).with_flags(config.flags));
+        let config_context_support = config_context.support();
+        let context: ArcPeerContext = config_context;
         let public_ipv6_runtime = Arc::new(DisabledPublicIpv6Runtime {
             instance_id,
             network_name,
@@ -969,6 +950,7 @@ impl PeerManagerCore {
         );
         let mut core = result.core;
         core.owns_support_tasks = true;
+        core.config_context_support = Some(config_context_support);
         Ok(core)
     }
 
@@ -1271,6 +1253,7 @@ impl PeerManagerCore {
             network_name,
             counters,
             owns_support_tasks: false,
+            config_context_support: None,
         }
     }
 
@@ -1538,6 +1521,9 @@ impl PeerManagerCore {
         while tasks.join_next().await.is_some() {}
         self.route.close().await;
         self.peer_rpc_mgr.stop().await;
+        if let Some(support) = &self.config_context_support {
+            support.stop().await;
+        }
         if self.owns_support_tasks {
             self.stats_manager.stop_cleanup_task().await;
             self.acl_filter.stop_cleanup_task().await;
@@ -3506,10 +3492,6 @@ mod tests {
         digest_mismatch.network_identity.network_secret_digest = Some([1; 32]);
         assert!(build_portable_for_test(digest_mismatch).is_err());
 
-        let mut limited = portable_runtime_config("portable-net", 80);
-        limited.core.traffic.instance_recv_bps_limit = Some(1024);
-        assert!(build_portable_for_test(limited).is_err());
-
         let mut credential = portable_runtime_config("portable-net", 81);
         credential.feature_flags.is_credential_peer = true;
         assert!(build_portable_for_test(credential).is_err());
@@ -3538,7 +3520,32 @@ mod tests {
         flags.foreign_relay_bps_limit = u64::MAX;
 
         let core = build_portable_config_for_test(config.with_flags(flags)).unwrap();
+        assert!(core.context.recv_limiter("portable-net", false).is_none());
+        assert!(core.context.recv_limiter("foreign-net", true).is_none());
         core.clear_resources().await;
+    }
+
+    #[tokio::test]
+    async fn portable_peer_manager_builds_configured_recv_limiters() {
+        let mut runtime = portable_runtime_config("portable-net", 80);
+        runtime.core.traffic.instance_recv_bps_limit = Some(1024);
+        runtime.core.traffic.foreign_relay_bps_limit = Some(2048);
+        let core = build_portable_for_test(runtime).unwrap();
+
+        let instance_a = core.context.recv_limiter("portable-net", false).unwrap();
+        let instance_b = core.context.recv_limiter("other-net", false).unwrap();
+        assert!(Arc::ptr_eq(&instance_a, &instance_b));
+
+        let foreign_a = core.context.recv_limiter("foreign-a", true).unwrap();
+        let foreign_a_again = core.context.recv_limiter("foreign-a", true).unwrap();
+        let foreign_b = core.context.recv_limiter("foreign-b", true).unwrap();
+        assert!(Arc::ptr_eq(&foreign_a, &foreign_a_again));
+        assert!(!Arc::ptr_eq(&foreign_a, &foreign_b));
+        assert!(!Arc::ptr_eq(&instance_a, &foreign_a));
+
+        core.clear_resources().await;
+        assert!(core.context.recv_limiter("portable-net", false).is_none());
+        assert!(core.context.recv_limiter("foreign-a", true).is_none());
     }
 
     #[tokio::test]
