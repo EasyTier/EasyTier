@@ -63,20 +63,21 @@ fn resolve_http_redirect(location: &str) -> anyhow::Result<ResolvedHttpEndpoint>
 }
 
 fn resolve_http_body(body: &str) -> anyhow::Result<ResolvedHttpEndpoint> {
-    let candidates = body
+    let mut candidates = body
         .lines()
         .map(str::trim)
         .filter(|line| !line.is_empty())
-        .filter_map(|line| Url::parse(line).ok())
         .collect::<Vec<_>>();
-    let url = candidates
-        .choose(&mut rand::thread_rng())
-        .cloned()
-        .ok_or_else(|| anyhow::anyhow!("no valid connector URL found in response body {body:?}"))?;
-    Ok(ResolvedHttpEndpoint {
-        url,
-        source: HttpEndpointSource::ResponseBody,
-    })
+    candidates.shuffle(&mut rand::thread_rng());
+    for candidate in candidates {
+        if let Ok(url) = Url::parse(candidate) {
+            return Ok(ResolvedHttpEndpoint {
+                url,
+                source: HttpEndpointSource::ResponseBody,
+            });
+        }
+    }
+    anyhow::bail!("no valid connector URL found in response body {body:?}")
 }
 
 pub fn resolve_http_endpoint(
