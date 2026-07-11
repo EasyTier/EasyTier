@@ -16,6 +16,7 @@ use tokio::sync::{Mutex, Notify};
 use tokio::{sync::oneshot, task::JoinSet};
 #[cfg(feature = "magic-dns")]
 use tokio_util::sync::CancellationToken;
+#[cfg(feature = "magic-dns")]
 use tokio_util::task::AbortOnDropHandle;
 
 use crate::common::PeerId;
@@ -681,7 +682,6 @@ pub struct Instance {
     #[cfg(feature = "socks5")]
     socks5_server: Arc<Socks5Server>,
 
-    proxy_cidrs_monitor: Option<AbortOnDropHandle<()>>,
     public_ipv6_provider_task: ArcPublicIpv6ProviderTaskSlot,
 
     global_ctx: ArcGlobalCtx,
@@ -754,7 +754,6 @@ impl Instance {
             #[cfg(feature = "socks5")]
             socks5_server,
 
-            proxy_cidrs_monitor: None,
             public_ipv6_provider_task: Arc::new(PublicIpv6ProviderTaskSlot::new()),
 
             global_ctx,
@@ -1136,11 +1135,7 @@ impl Instance {
 
         self.add_initial_peers().await?;
 
-        let monitor = super::proxy_cidrs_monitor::ProxyCidrsMonitor::new(
-            self.peer_manager.clone(),
-            self.global_ctx.clone(),
-        );
-        self.proxy_cidrs_monitor = Some(monitor.start());
+        self.core_instance.start_proxy_cidr_monitor().await?;
 
         if self.global_ctx.get_vpn_portal_cidr().is_some() {
             self.run_vpn_portal().await?;

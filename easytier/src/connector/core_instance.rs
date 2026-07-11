@@ -26,6 +26,7 @@ use crate::{
         global_ctx::{ArcGlobalCtx, GlobalCtxEvent},
     },
     instance::listeners::RuntimeListenerService,
+    instance::proxy_cidrs_monitor::runtime_proxy_cidr_monitor_host,
     peers::peer_manager::PeerManager,
     tunnel::IpScheme,
     use_global_var,
@@ -132,12 +133,13 @@ pub(crate) fn runtime_core_instance_adapters(
         dns_records,
         protocol: Some(runtime_client_protocol_upgrader(global_ctx.clone())),
         manual_events: Some(Arc::new(GlobalCtxManualConnectivityEventSink {
-            global_ctx,
+            global_ctx: global_ctx.clone(),
         })),
         listener: None,
         accepted_transport_handler: None,
         udp_hole_punch: None,
         proxy: None,
+        proxy_cidr_monitor: Some(runtime_proxy_cidr_monitor_host(global_ctx.clone())),
     }
 }
 
@@ -317,6 +319,8 @@ mod tests {
         instance.start_proxy().await.unwrap();
         instance.start_proxy().await.unwrap();
         assert_eq!(proxy.start_calls.load(Ordering::Relaxed), 1);
+        instance.start_proxy_cidr_monitor().await.unwrap();
+        instance.start_proxy_cidr_monitor().await.unwrap();
         instance.start_udp_hole_punch().await.unwrap();
         instance.start_udp_hole_punch().await.unwrap();
 

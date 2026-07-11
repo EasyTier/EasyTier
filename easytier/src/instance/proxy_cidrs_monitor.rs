@@ -1,14 +1,11 @@
 use std::{collections::BTreeSet, sync::Arc};
 
-use easytier_core::proxy::cidr_monitor::{
-    ProxyCidrConfigSnapshot, ProxyCidrMonitor as CoreProxyCidrMonitor, ProxyCidrMonitorHost,
-    collect_proxy_cidr_diff,
-};
-use tokio_util::task::AbortOnDropHandle;
-
 use crate::{
     common::global_ctx::{ArcGlobalCtx, GlobalCtxEvent},
     peers::peer_manager::PeerManager,
+};
+use easytier_core::proxy::cidr_monitor::{
+    ProxyCidrConfigSnapshot, ProxyCidrMonitorHost, collect_proxy_cidr_diff,
 };
 
 struct RuntimeProxyCidrMonitorHost {
@@ -41,18 +38,15 @@ impl ProxyCidrMonitorHost for RuntimeProxyCidrMonitorHost {
     }
 }
 
-pub struct ProxyCidrsMonitor {
-    inner: CoreProxyCidrMonitor,
+pub(crate) fn runtime_proxy_cidr_monitor_host(
+    global_ctx: ArcGlobalCtx,
+) -> Arc<dyn ProxyCidrMonitorHost> {
+    Arc::new(RuntimeProxyCidrMonitorHost { global_ctx })
 }
 
-impl ProxyCidrsMonitor {
-    pub fn new(peer_manager: Arc<PeerManager>, global_ctx: ArcGlobalCtx) -> Self {
-        let host = Arc::new(RuntimeProxyCidrMonitorHost { global_ctx });
-        Self {
-            inner: CoreProxyCidrMonitor::new(&peer_manager.core(), host),
-        }
-    }
+pub struct ProxyCidrsMonitor;
 
+impl ProxyCidrsMonitor {
     pub async fn diff_proxy_cidrs(
         peer_manager: &PeerManager,
         global_ctx: &ArcGlobalCtx,
@@ -67,9 +61,5 @@ impl ProxyCidrsMonitor {
         };
         let diff = collect_proxy_cidr_diff(peer_manager.core().as_ref(), &host, current).await;
         (diff.current, diff.added, diff.removed)
-    }
-
-    pub fn start(self) -> AbortOnDropHandle<()> {
-        self.inner.start()
     }
 }

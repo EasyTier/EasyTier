@@ -11,6 +11,7 @@ use std::sync::{
 use async_trait::async_trait;
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
+use tokio_util::task::AbortOnDropHandle;
 use url::Url;
 
 use crate::{
@@ -35,6 +36,7 @@ use crate::{
         create_packet_recv_chan,
         peer_manager::{PeerManagerCore, PortablePeerManagerConfig},
     },
+    proxy::cidr_monitor::{ProxyCidrMonitor, ProxyCidrMonitorHost},
     socket::{
         dns::{DnsRecordResolver, DnsResolver},
         tcp::VirtualTcpSocketFactory,
@@ -177,6 +179,7 @@ where
         Option<Arc<dyn AcceptedSocketHandler<AcceptedTransport<HostAcceptedTcpSocket<H>>>>>,
     pub udp_hole_punch: Option<Arc<dyn UdpHolePunchService>>,
     pub proxy: Option<Arc<dyn ProxyService>>,
+    pub proxy_cidr_monitor: Option<Arc<dyn ProxyCidrMonitorHost>>,
 }
 
 #[async_trait]
@@ -231,6 +234,8 @@ where
     udp_hole_punch_started: AtomicBool,
     proxy: Option<Arc<dyn ProxyService>>,
     proxy_started: AtomicBool,
+    proxy_cidr_monitor: Option<Arc<dyn ProxyCidrMonitorHost>>,
+    proxy_cidr_monitor_task: Mutex<Option<AbortOnDropHandle<()>>>,
     packet_egress: Option<PacketEgress>,
 }
 
@@ -286,6 +291,7 @@ where
             accepted_transport_handler,
             udp_hole_punch,
             proxy,
+            proxy_cidr_monitor,
         } = adapters;
         let CoreInstanceConfig {
             initial_peers,
@@ -383,6 +389,8 @@ where
             udp_hole_punch_started: AtomicBool::new(false),
             proxy,
             proxy_started: AtomicBool::new(false),
+            proxy_cidr_monitor,
+            proxy_cidr_monitor_task: Mutex::new(None),
             packet_egress: None,
         })
     }
@@ -407,6 +415,7 @@ where
     }
 
     async fn stop_components(&self) {
+        self.proxy_cidr_monitor_task.lock().await.take();
         if let Some(listener) = &self.listener {
             listener.stop().await;
         }
@@ -556,6 +565,31 @@ where
             anyhow::bail!("proxy service start cancelled");
         }
         recovery.disarm();
+        Ok(())
+    }
+
+    pub async fn start_proxy_cidr_monitor(self: &Arc<Self>) -> anyhow::Result<()> {
+        let _operation = self.operation.lock().await;
+        let state = self.state();
+        if state != CoreInstanceState::Running {
+            anyhow::bail!("proxy CIDR monitor cannot start from core instance state {state:?}");
+        }
+        let Some(host) = &self.proxy_cidr_monitor else {
+            return Ok(());
+        };
+        let mut task = self.proxy_cidr_monitor_task.lock().await;
+        if task.is_some() {
+            return Ok(());
+        }
+        if self.cancel.is_cancelled() {
+            anyhow::bail!("proxy CIDR monitor start cancelled");
+        }
+
+        task.replace(ProxyCidrMonitor::new(&self.peer_manager, host.clone()).start());
+        if self.cancel.is_cancelled() {
+            task.take();
+            anyhow::bail!("proxy CIDR monitor start cancelled");
+        }
         Ok(())
     }
 
