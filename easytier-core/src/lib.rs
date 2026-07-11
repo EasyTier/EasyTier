@@ -2,6 +2,7 @@ pub mod compressor;
 pub mod config;
 pub mod connectivity;
 pub mod hole_punch;
+pub mod instance;
 pub mod listener;
 pub mod packet;
 pub mod peer_center;
