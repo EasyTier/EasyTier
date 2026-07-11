@@ -1,25 +1,22 @@
-use std::{
-    net::SocketAddr,
-    pin::Pin,
-    sync::{Arc, RwLock},
-};
+use std::{net::SocketAddr, pin::Pin, sync::Arc, time::Duration};
 
-use anyhow::Context;
+use anyhow::Context as _;
 use easytier_core::connectivity::manual::discovery::{
-    self, HttpDiscoveryResponse, HttpEndpointSource, ResolvedHttpEndpoint,
+    self, HttpDiscoveryRequest, HttpDiscoveryResponse, HttpEndpointSource, ResolvedHttpEndpoint,
 };
-use http_req::request::{RedirectPolicy, Request};
 use url::Url;
 
 use crate::{
     VERSION,
-    common::{error::Error, global_ctx::ArcGlobalCtx},
+    common::{dns::RuntimeDnsResolver, error::Error, global_ctx::ArcGlobalCtx},
     tunnel::{IpVersion, Tunnel, TunnelConnector, TunnelError, ZCPacketSink, ZCPacketStream},
 };
 
 use crate::proto::common::TunnelInfo;
 
-use super::create_connector_by_url;
+use super::{
+    core_instance::runtime_manual_options, create_connector_by_url, runtime::RuntimeConnectorHost,
+};
 
 pub struct TunnelWithInfo {
     inner: Box<dyn Tunnel>,
@@ -83,41 +80,28 @@ impl HttpTunnelConnector {
     pub async fn get_redirected_url(&mut self, original_url: &str) -> Result<Url, Error> {
         self.redirect_type = HttpRedirectType::Unknown;
         tracing::info!("get_redirected_url: {}", original_url);
-        // Container for body of a response.
-        let body = Arc::new(RwLock::new(Vec::new()));
-
-        let original_url_clone = original_url.to_string();
-        let body_clone = body.clone();
+        let url = Url::parse(original_url)
+            .with_context(|| format!("parsing url failed. url: {original_url}"))?;
         let network_name = self.global_ctx.network.network_name.clone();
         let user_agent = format!("easytier/{}", VERSION);
-        let res = tokio::task::spawn_blocking(move || {
-            let uri = http_req::uri::Uri::try_from(original_url_clone.as_ref())
-                .with_context(|| format!("parsing url failed. url: {}", original_url_clone))?;
-
-            tracing::info!(
-                "sending http request to {}, network_name: {}",
-                uri,
-                network_name
-            );
-
-            Request::new(&uri)
-                .header("User-Agent", &user_agent)
-                .header("X-Network-Name", &network_name)
-                .redirect_policy(RedirectPolicy::Limit(0))
-                .timeout(std::time::Duration::from_secs(20))
-                .send(&mut *body_clone.write().unwrap())
-                .with_context(|| format!("sending http request failed. url: {}", uri))
-        })
+        tracing::info!(%url, %network_name, "sending HTTP discovery request");
+        let options = runtime_manual_options(&self.global_ctx);
+        let response = discovery::fetch_http_discovery(
+            Arc::new(RuntimeConnectorHost::new(self.global_ctx.clone())),
+            &RuntimeDnsResolver::new(),
+            HttpDiscoveryRequest {
+                url,
+                user_agent,
+                network_name,
+                timeout: Duration::from_secs(20),
+                ip_version: self.ip_version.into(),
+                tcp_bind: options.tcp_bind,
+            },
+        )
         .await
-        .map_err(|e| Error::InvalidUrl(format!("task join error: {}", e)))??;
+        .with_context(|| format!("sending HTTP request failed. url: {original_url}"))?;
 
-        let body = String::from_utf8_lossy(&body.read().unwrap()).to_string();
-
-        let endpoint = interpret_http_discovery_response(HttpDiscoveryResponse {
-            status_code: u16::from(res.status_code()),
-            location: res.headers().get("Location").map(ToString::to_string),
-            body,
-        })?;
+        let endpoint = interpret_http_discovery_response(response)?;
         self.redirect_type = match endpoint.source {
             HttpEndpointSource::RedirectQuery => HttpRedirectType::RedirectToQuery,
             HttpEndpointSource::RedirectUrl => HttpRedirectType::RedirectToUrl,
