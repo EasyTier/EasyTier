@@ -5,6 +5,9 @@ use std::sync::Arc;
 #[cfg(target_os = "linux")]
 use anyhow::Context;
 use cidr::{Ipv6Cidr, Ipv6Inet};
+use easytier_core::peers::public_ipv6::{
+    PublicIpv6ProviderConfig, is_global_routable_public_ipv6_prefix,
+};
 #[cfg(target_os = "linux")]
 use netlink_packet_route::route::{RouteAddress, RouteAttribute, RouteMessage, RouteType};
 use tokio_util::sync::CancellationToken;
@@ -44,25 +47,18 @@ enum PublicIpv6ProviderRuntimeState {
     Active(PublicIpv6ProviderActiveState),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct PublicIpv6ProviderConfigSnapshot {
-    provider_enabled: bool,
-    configured_prefix: Option<Ipv6Cidr>,
-}
-
 fn read_public_ipv6_provider_config_snapshot(
     global_ctx: &ArcGlobalCtx,
-) -> PublicIpv6ProviderConfigSnapshot {
-    PublicIpv6ProviderConfigSnapshot {
+) -> PublicIpv6ProviderConfig {
+    PublicIpv6ProviderConfig {
         provider_enabled: global_ctx.config.get_ipv6_public_addr_provider(),
         configured_prefix: global_ctx.config.get_ipv6_public_addr_prefix(),
+        provider_supported: cfg!(target_os = "linux"),
     }
 }
 
-fn should_run_public_ipv6_provider_reconcile_task(
-    config: PublicIpv6ProviderConfigSnapshot,
-) -> bool {
-    config.provider_enabled
+fn should_run_public_ipv6_provider_reconcile_task(config: PublicIpv6ProviderConfig) -> bool {
+    config.should_run_reconcile()
 }
 
 pub(super) fn should_run_public_ipv6_provider_reconcile(global_ctx: &ArcGlobalCtx) -> bool {
@@ -71,38 +67,19 @@ pub(super) fn should_run_public_ipv6_provider_reconcile(global_ctx: &ArcGlobalCt
     ))
 }
 
-fn is_global_routable_public_ipv6_prefix(prefix: Ipv6Cidr) -> bool {
-    let addr = prefix.first_address();
-    !addr.is_loopback()
-        && !addr.is_multicast()
-        && !addr.is_unicast_link_local()
-        && !addr.is_unique_local()
-        && !addr.is_unspecified()
-}
-
 pub(super) fn validate_public_ipv6_config_values(
     _ipv6: Option<Ipv6Inet>,
     provider_enabled: bool,
     _auto_enabled: bool,
     prefix: Option<Ipv6Cidr>,
 ) -> Result<(), Error> {
-    if !provider_enabled {
-        return Ok(());
+    PublicIpv6ProviderConfig {
+        provider_enabled,
+        configured_prefix: prefix,
+        provider_supported: cfg!(target_os = "linux"),
     }
-
-    ensure_public_ipv6_provider_supported()?;
-
-    if let Some(prefix) = prefix
-        && !is_global_routable_public_ipv6_prefix(prefix)
-    {
-        return Err(anyhow::anyhow!(
-            "the prefix {} is not a valid global unicast IPv6 prefix; it must be a routable address range, not a private, link-local, or multicast address",
-            prefix
-        )
-        .into());
-    }
-
-    Ok(())
+    .validate()
+    .map_err(|error| anyhow::Error::new(error).into())
 }
 
 pub(super) fn validate_public_ipv6_config(global_ctx: &ArcGlobalCtx) -> Result<(), Error> {
@@ -115,14 +92,13 @@ pub(super) fn validate_public_ipv6_config(global_ctx: &ArcGlobalCtx) -> Result<(
 }
 
 fn ensure_public_ipv6_provider_supported() -> Result<(), Error> {
-    if cfg!(target_os = "linux") {
-        return Ok(());
+    PublicIpv6ProviderConfig {
+        provider_enabled: true,
+        configured_prefix: None,
+        provider_supported: cfg!(target_os = "linux"),
     }
-
-    Err(anyhow::anyhow!(
-        "the provider feature requires Linux; run without --ipv6-public-addr-provider on this node, or move the provider role to a Linux node. client mode (--ipv6-public-addr-auto) works on all platforms"
-    )
-    .into())
+    .validate()
+    .map_err(|error| anyhow::Error::new(error).into())
 }
 
 fn public_ipv6_provider_auto_detect_error() -> Error {
@@ -558,7 +534,7 @@ async fn resolve_public_ipv6_provider_runtime_state_linux(
 
 async fn resolve_public_ipv6_provider_runtime_state(
     _global_ctx: &ArcGlobalCtx,
-    config: PublicIpv6ProviderConfigSnapshot,
+    config: PublicIpv6ProviderConfig,
 ) -> PublicIpv6ProviderRuntimeState {
     if !config.provider_enabled {
         return PublicIpv6ProviderRuntimeState::Disabled;
@@ -605,7 +581,7 @@ fn apply_public_ipv6_provider_runtime_state(
 
 fn try_apply_public_ipv6_provider_runtime_state(
     global_ctx: &ArcGlobalCtx,
-    config: PublicIpv6ProviderConfigSnapshot,
+    config: PublicIpv6ProviderConfig,
     state: &PublicIpv6ProviderRuntimeState,
 ) -> Option<bool> {
     (read_public_ipv6_provider_config_snapshot(global_ctx) == config)
@@ -1132,7 +1108,7 @@ mod tests {
     };
 
     use super::{
-        PublicIpv6ProviderConfigSnapshot, PublicIpv6ProviderRuntimeState,
+        PublicIpv6ProviderConfig, PublicIpv6ProviderRuntimeState,
         active_public_ipv6_provider_state, read_public_ipv6_provider_config_snapshot,
         should_run_public_ipv6_provider_reconcile_task,
         try_apply_public_ipv6_provider_runtime_state,
@@ -1382,9 +1358,10 @@ mod tests {
 
         assert_eq!(
             read_public_ipv6_provider_config_snapshot(&global_ctx),
-            PublicIpv6ProviderConfigSnapshot {
+            PublicIpv6ProviderConfig {
                 provider_enabled: true,
                 configured_prefix: Some(prefix),
+                provider_supported: cfg!(target_os = "linux"),
             }
         );
     }
@@ -1392,21 +1369,24 @@ mod tests {
     #[test]
     fn test_reconcile_task_runs_when_provider_enabled() {
         assert!(!should_run_public_ipv6_provider_reconcile_task(
-            PublicIpv6ProviderConfigSnapshot {
+            PublicIpv6ProviderConfig {
                 provider_enabled: false,
                 configured_prefix: None,
+                provider_supported: cfg!(target_os = "linux"),
             }
         ));
         assert!(should_run_public_ipv6_provider_reconcile_task(
-            PublicIpv6ProviderConfigSnapshot {
+            PublicIpv6ProviderConfig {
                 provider_enabled: true,
                 configured_prefix: Some("2001:db8::/48".parse().unwrap()),
+                provider_supported: cfg!(target_os = "linux"),
             }
         ));
         assert!(should_run_public_ipv6_provider_reconcile_task(
-            PublicIpv6ProviderConfigSnapshot {
+            PublicIpv6ProviderConfig {
                 provider_enabled: true,
                 configured_prefix: None,
+                provider_supported: cfg!(target_os = "linux"),
             }
         ));
     }
@@ -1415,9 +1395,10 @@ mod tests {
     async fn test_try_apply_public_ipv6_provider_runtime_state_rejects_stale_config() {
         let global_ctx = test_global_ctx();
         let prefix = "2001:db8::/48".parse().unwrap();
-        let config = PublicIpv6ProviderConfigSnapshot {
+        let config = PublicIpv6ProviderConfig {
             provider_enabled: true,
             configured_prefix: Some(prefix),
+            provider_supported: cfg!(target_os = "linux"),
         };
 
         global_ctx.config.set_ipv6_public_addr_provider(false);

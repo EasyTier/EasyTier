@@ -29,6 +29,55 @@ use crate::{
 static PUBLIC_IPV6_LEASE_TTL: Duration = Duration::from_secs(120);
 static PUBLIC_IPV6_RENEW_INTERVAL: Duration = Duration::from_secs(40);
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PublicIpv6ProviderConfig {
+    pub provider_enabled: bool,
+    pub configured_prefix: Option<Ipv6Cidr>,
+    pub provider_supported: bool,
+}
+
+impl PublicIpv6ProviderConfig {
+    pub fn should_run_reconcile(self) -> bool {
+        self.provider_enabled
+    }
+
+    pub fn validate(self) -> Result<(), PublicIpv6ProviderConfigError> {
+        if !self.provider_enabled {
+            return Ok(());
+        }
+        if !self.provider_supported {
+            return Err(PublicIpv6ProviderConfigError::UnsupportedProvider);
+        }
+        if let Some(prefix) = self.configured_prefix
+            && !is_global_routable_public_ipv6_prefix(prefix)
+        {
+            return Err(PublicIpv6ProviderConfigError::InvalidPrefix(prefix));
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, thiserror::Error, PartialEq, Eq)]
+pub enum PublicIpv6ProviderConfigError {
+    #[error(
+        "the provider feature requires Linux; run without --ipv6-public-addr-provider on this node, or move the provider role to a Linux node. client mode (--ipv6-public-addr-auto) works on all platforms"
+    )]
+    UnsupportedProvider,
+    #[error(
+        "the prefix {0} is not a valid global unicast IPv6 prefix; it must be a routable address range, not a private, link-local, or multicast address"
+    )]
+    InvalidPrefix(Ipv6Cidr),
+}
+
+pub fn is_global_routable_public_ipv6_prefix(prefix: Ipv6Cidr) -> bool {
+    let addr = prefix.first_address();
+    !addr.is_loopback()
+        && !addr.is_multicast()
+        && !addr.is_unicast_link_local()
+        && !addr.is_unique_local()
+        && !addr.is_unspecified()
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PublicIpv6Provider {
     pub peer_id: PeerId,
@@ -856,8 +905,9 @@ mod tests {
     use crate::{config::PeerId, peers::peer_rpc::PeerRpcManager};
 
     use super::{
-        PublicIpv6PeerRouteInfo, PublicIpv6RouteControl, PublicIpv6Runtime, PublicIpv6Service,
-        PublicIpv6SyncTrigger, allocate_public_ipv6_leases,
+        PublicIpv6PeerRouteInfo, PublicIpv6ProviderConfig, PublicIpv6ProviderConfigError,
+        PublicIpv6RouteControl, PublicIpv6Runtime, PublicIpv6Service, PublicIpv6SyncTrigger,
+        allocate_public_ipv6_leases,
     };
 
     struct TestRouteControl {
@@ -1088,5 +1138,51 @@ mod tests {
         service.reconcile_runtime();
 
         assert_eq!(*runtime.lease.lock().unwrap(), Some(public_addr));
+    }
+
+    #[test]
+    fn provider_config_uses_explicit_host_capability() {
+        let unsupported = PublicIpv6ProviderConfig {
+            provider_enabled: true,
+            configured_prefix: None,
+            provider_supported: false,
+        };
+        assert_eq!(
+            unsupported.validate(),
+            Err(PublicIpv6ProviderConfigError::UnsupportedProvider)
+        );
+
+        let disabled = PublicIpv6ProviderConfig {
+            provider_enabled: false,
+            ..unsupported
+        };
+        assert!(disabled.validate().is_ok());
+        assert!(!disabled.should_run_reconcile());
+    }
+
+    #[test]
+    fn provider_config_rejects_non_global_prefixes() {
+        for prefix in ["::1/128", "fe80::/64", "fd00::/48", "ff00::/8", "::/0"] {
+            let config = PublicIpv6ProviderConfig {
+                provider_enabled: true,
+                configured_prefix: Some(prefix.parse().unwrap()),
+                provider_supported: true,
+            };
+            assert!(matches!(
+                config.validate(),
+                Err(PublicIpv6ProviderConfigError::InvalidPrefix(_))
+            ));
+        }
+    }
+
+    #[test]
+    fn provider_config_accepts_global_prefix() {
+        let config = PublicIpv6ProviderConfig {
+            provider_enabled: true,
+            configured_prefix: Some("2001:db8::/48".parse().unwrap()),
+            provider_supported: true,
+        };
+        assert!(config.validate().is_ok());
+        assert!(config.should_run_reconcile());
     }
 }
