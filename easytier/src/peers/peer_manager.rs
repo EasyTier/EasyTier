@@ -396,8 +396,9 @@ impl PeerManager {
             .map_err(Error::from)
     }
 
+    #[cfg(test)]
     pub async fn run(&self) -> Result<(), Error> {
-        self.core.run().await.map_err(Error::from)
+        self.core.run_for_test().await.map_err(Error::from)
     }
 
     pub fn get_peer_map(&self) -> Arc<PeerMap> {
@@ -493,10 +494,6 @@ impl PeerManager {
 
     pub async fn wait(&self) {
         self.core.wait().await;
-    }
-
-    pub async fn clear_resources(&self) {
-        self.core.clear_resources().await;
     }
 
     pub async fn close_peer_conn(

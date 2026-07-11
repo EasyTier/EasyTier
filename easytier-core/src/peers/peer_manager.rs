@@ -1104,7 +1104,7 @@ impl PeerManagerCore {
         }
     }
 
-    pub async fn stop(&self) {
+    pub(crate) async fn stop(&self) {
         let mut tasks = {
             let mut task_slot = self.tasks.lock().await;
             std::mem::replace(&mut *task_slot, JoinSet::new())
@@ -1114,7 +1114,7 @@ impl PeerManagerCore {
         self.peer_rpc_mgr.stop().await;
     }
 
-    pub async fn clear_resources(&self) {
+    pub(crate) async fn clear_resources(&self) {
         self.stop().await;
         let mut peer_pipeline = self.peer_packet_process_pipeline.write().await;
         peer_pipeline.clear();
@@ -1178,7 +1178,7 @@ impl PeerManagerCore {
         self.foreign_network_client.run().await;
     }
 
-    pub async fn run(&self) -> Result<(), Error> {
+    pub(crate) async fn run(&self) -> Result<(), Error> {
         if let Some(route) = self.route_algo_inst.ospf_route() {
             self.add_route(route).await;
         }
@@ -1207,6 +1207,12 @@ impl PeerManagerCore {
         self.run_foreign_network().await;
 
         Ok(())
+    }
+
+    #[cfg(feature = "test-utils")]
+    #[doc(hidden)]
+    pub async fn run_for_test(&self) -> Result<(), Error> {
+        self.run().await
     }
 }
 
