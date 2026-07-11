@@ -469,16 +469,6 @@ mod tests {
         packet
     }
 
-    async fn wait_proxy_cidr_loaded(proxy: &UdpProxy) {
-        timeout(Duration::from_secs(1), async {
-            while proxy.cidr_set.is_empty() {
-                tokio::time::sleep(Duration::from_millis(10)).await;
-            }
-        })
-        .await
-        .unwrap();
-    }
-
     async fn recv_payload(socket: &UdpSocket) -> (Vec<u8>, SocketAddr) {
         let mut buf = [0; 64];
         let (len, addr) = timeout(Duration::from_secs(1), socket.recv_from(&mut buf))
@@ -556,7 +546,7 @@ mod tests {
         ));
         let proxy = UdpProxy::new(global_ctx, peer_manager).unwrap();
         proxy.start().await.unwrap();
-        wait_proxy_cidr_loaded(&proxy).await;
+        assert!(!proxy.cidr_set.is_empty());
         let mut response_receiver = proxy.receiver.lock().await.take().unwrap();
 
         let real_dst = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
@@ -602,7 +592,7 @@ mod tests {
         ));
         let proxy = UdpProxy::new(global_ctx, peer_manager).unwrap();
         proxy.start().await.unwrap();
-        wait_proxy_cidr_loaded(&proxy).await;
+        assert!(!proxy.cidr_set.is_empty());
         let mut response_receiver = proxy.receiver.lock().await.take().unwrap();
 
         let real_dst = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
@@ -655,7 +645,7 @@ mod tests {
         ));
         let proxy = UdpProxy::new(global_ctx, peer_manager).unwrap();
         proxy.start().await.unwrap();
-        wait_proxy_cidr_loaded(&proxy).await;
+        assert!(!proxy.cidr_set.is_empty());
         let mut response_receiver = proxy.receiver.lock().await.take().unwrap();
 
         let real_dst = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();

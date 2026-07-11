@@ -52,8 +52,17 @@ impl CidrSet {
         }
         let global_ctx = self.global_ctx.clone();
         let table = self.table.clone();
+        let mut last_cidrs = global_ctx.config.get_proxy_cidrs();
+        table.update_snapshot(ProxyCidrSnapshot {
+            rules: last_cidrs
+                .iter()
+                .map(|cidr| ProxyCidrRule {
+                    cidr: cidr.cidr,
+                    mapped_cidr: cidr.mapped_cidr,
+                })
+                .collect(),
+        });
         updater_task.replace(AbortOnDropHandle::new(tokio::spawn(async move {
-            let mut last_cidrs = vec![];
             loop {
                 let cidrs = global_ctx.config.get_proxy_cidrs();
                 if cidrs != last_cidrs {
