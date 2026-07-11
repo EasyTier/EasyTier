@@ -1,8 +1,12 @@
 //! Lifecycle owner for the portable EasyTier runtime.
 
-use std::sync::Arc;
+use std::sync::{
+    Arc, Weak,
+    atomic::{AtomicU8, Ordering},
+};
 
 use tokio::sync::Mutex;
+use tokio_util::sync::CancellationToken;
 use url::Url;
 
 use crate::{
@@ -20,12 +24,59 @@ use crate::{
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
 pub enum CoreInstanceState {
     Created,
     Starting,
     Running,
     Stopping,
     Stopped,
+}
+
+impl CoreInstanceState {
+    fn from_u8(value: u8) -> Self {
+        match value {
+            value if value == Self::Created as u8 => Self::Created,
+            value if value == Self::Starting as u8 => Self::Starting,
+            value if value == Self::Running as u8 => Self::Running,
+            value if value == Self::Stopping as u8 => Self::Stopping,
+            value if value == Self::Stopped as u8 => Self::Stopped,
+            _ => unreachable!("invalid core instance state"),
+        }
+    }
+}
+
+struct RecoveryGuard<F>
+where
+    F: FnOnce(),
+{
+    recovery: Option<F>,
+}
+
+impl<F> RecoveryGuard<F>
+where
+    F: FnOnce(),
+{
+    fn new(recovery: F) -> Self {
+        Self {
+            recovery: Some(recovery),
+        }
+    }
+
+    fn disarm(&mut self) {
+        self.recovery.take();
+    }
+}
+
+impl<F> Drop for RecoveryGuard<F>
+where
+    F: FnOnce(),
+{
+    fn drop(&mut self) {
+        if let Some(recovery) = self.recovery.take() {
+            recovery();
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -64,7 +115,9 @@ pub struct CoreInstance<H>
 where
     H: DirectConnectorHost + TcpHolePunchHost,
 {
-    state: Mutex<CoreInstanceState>,
+    state: AtomicU8,
+    operation: Mutex<()>,
+    cancel: CancellationToken,
     peer_manager: Arc<PeerManagerCore>,
     manual: ManualConnectorManager<H>,
     direct: DirectConnectorManager<H>,
@@ -114,7 +167,9 @@ where
             TcpHolePunchConnector::new(peer_manager.clone(), adapters.host.clone());
 
         Ok(Self {
-            state: Mutex::new(CoreInstanceState::Created),
+            state: AtomicU8::new(CoreInstanceState::Created as u8),
+            operation: Mutex::new(()),
+            cancel: CancellationToken::new(),
             peer_manager,
             manual,
             direct,
@@ -122,49 +177,86 @@ where
         })
     }
 
-    pub async fn state(&self) -> CoreInstanceState {
-        *self.state.lock().await
+    pub fn state(&self) -> CoreInstanceState {
+        CoreInstanceState::from_u8(self.state.load(Ordering::Acquire))
     }
 
-    pub async fn start(&self) -> anyhow::Result<()> {
-        let mut state = self.state.lock().await;
-        if *state != CoreInstanceState::Created {
+    fn set_state(&self, state: CoreInstanceState) {
+        self.state.store(state as u8, Ordering::Release);
+    }
+
+    fn recovery_guard(self: &Arc<Self>) -> RecoveryGuard<impl FnOnce() + Send + use<H>> {
+        let weak: Weak<Self> = Arc::downgrade(self);
+        RecoveryGuard::new(move || {
+            if let Some(instance) = weak.upgrade() {
+                tokio::spawn(async move {
+                    instance.stop().await;
+                });
+            }
+        })
+    }
+
+    async fn stop_components(&self) {
+        self.manual.stop().await;
+        self.tcp_hole_punch.stop().await;
+        self.direct.stop().await;
+        self.peer_manager.clear_resources().await;
+    }
+
+    pub async fn start(self: &Arc<Self>) -> anyhow::Result<()> {
+        let _operation = self.operation.lock().await;
+        let state = self.state();
+        if state != CoreInstanceState::Created {
             anyhow::bail!("core instance cannot start from state {state:?}");
         }
-        *state = CoreInstanceState::Starting;
+        self.set_state(CoreInstanceState::Starting);
+        let mut recovery = self.recovery_guard();
 
-        if let Err(error) = self.peer_manager.run().await {
-            self.peer_manager.clear_resources().await;
-            *state = CoreInstanceState::Stopped;
-            return Err(error.into());
+        let start_result = tokio::select! {
+            _ = self.cancel.cancelled() => Err(anyhow::anyhow!("core instance start cancelled")),
+            result = self.peer_manager.run() => result.map_err(anyhow::Error::from),
+        };
+        if let Err(error) = start_result {
+            self.stop_components().await;
+            self.set_state(CoreInstanceState::Stopped);
+            recovery.disarm();
+            return Err(error);
         }
+        if self.cancel.is_cancelled() {
+            self.stop_components().await;
+            self.set_state(CoreInstanceState::Stopped);
+            recovery.disarm();
+            anyhow::bail!("core instance start cancelled");
+        }
+
         self.direct.run();
         self.tcp_hole_punch.run();
         self.manual.start();
 
-        *state = CoreInstanceState::Running;
+        self.set_state(CoreInstanceState::Running);
+        recovery.disarm();
         Ok(())
     }
 
-    pub async fn stop(&self) {
-        let mut state = self.state.lock().await;
-        match *state {
+    pub async fn stop(self: &Arc<Self>) {
+        self.cancel.cancel();
+        let _operation = self.operation.lock().await;
+        match self.state() {
             CoreInstanceState::Created | CoreInstanceState::Stopped => {
-                *state = CoreInstanceState::Stopped;
+                self.set_state(CoreInstanceState::Stopped);
                 return;
             }
             CoreInstanceState::Starting
             | CoreInstanceState::Running
             | CoreInstanceState::Stopping => {
-                *state = CoreInstanceState::Stopping;
+                self.set_state(CoreInstanceState::Stopping);
             }
         }
+        let mut recovery = self.recovery_guard();
 
-        self.manual.stop().await;
-        self.tcp_hole_punch.stop().await;
-        self.direct.stop().await;
-        self.peer_manager.clear_resources().await;
-        *state = CoreInstanceState::Stopped;
+        self.stop_components().await;
+        self.set_state(CoreInstanceState::Stopped);
+        recovery.disarm();
     }
 
     pub fn add_connector(&self, url: Url) -> anyhow::Result<()> {
