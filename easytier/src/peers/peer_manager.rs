@@ -33,7 +33,6 @@ use crate::{
         peer_conn::PeerConn,
         peer_rpc::PeerRpcManagerTransport,
         peer_session::PeerSessionStore,
-        recv_packet_from_chan,
         route_trait::{ForeignNetworkRouteInfoMap, MockRoute, NextHopPolicy, RouteInterface},
         traffic_metrics::{
             InstanceLabelKind, LogicalTrafficMetrics, TrafficKind, TrafficMetricRecorder,
@@ -1008,7 +1007,7 @@ impl PeerManager {
 
         self.tasks.lock().await.spawn(async move {
             tracing::trace!("start_peer_recv");
-            while let Ok(ret) = recv_packet_from_chan(&mut recv).await {
+            while let Ok(ret) = crate::peers::recv_packet_from_chan(&mut recv).await {
                 let disable_relay_data = global_ctx.flags_arc().disable_relay_data;
                 let Err(mut ret) = Self::try_handle_foreign_network_packet(
                     ret,
