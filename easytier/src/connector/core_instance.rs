@@ -173,7 +173,7 @@ mod tests {
     };
 
     use easytier_core::{
-        instance::{CoreInstanceState, ListenerService, PortableCoreInstanceConfig},
+        instance::{CoreInstanceState, ListenerService, PortableCoreInstanceConfig, ProxyService},
         listener::transport::TransportListenerConfig,
         peers::{context::PeerContext, peer_manager::PortablePeerManagerConfig},
         socket::{
@@ -228,6 +228,46 @@ mod tests {
         }
     }
 
+    #[derive(Default)]
+    struct RecordingProxyService {
+        start_calls: AtomicUsize,
+        stop_calls: AtomicUsize,
+    }
+
+    #[async_trait::async_trait]
+    impl ProxyService for RecordingProxyService {
+        async fn start(&self) -> anyhow::Result<()> {
+            self.start_calls.fetch_add(1, Ordering::Relaxed);
+            Ok(())
+        }
+
+        async fn stop(&self) {
+            self.stop_calls.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    #[derive(Default)]
+    struct BlockingProxyService {
+        start_entered: Notify,
+        release_start: Notify,
+        start_calls: AtomicUsize,
+        stop_calls: AtomicUsize,
+    }
+
+    #[async_trait::async_trait]
+    impl ProxyService for BlockingProxyService {
+        async fn start(&self) -> anyhow::Result<()> {
+            self.start_calls.fetch_add(1, Ordering::Relaxed);
+            self.start_entered.notify_one();
+            self.release_start.notified().await;
+            Ok(())
+        }
+
+        async fn stop(&self) {
+            self.stop_calls.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
     fn build_test_instance_with_listener(
         network_name: &str,
         listener: Arc<dyn ListenerService>,
@@ -263,21 +303,62 @@ mod tests {
             global_ctx.clone(),
             nic_channel,
         ));
+        let proxy = Arc::new(RecordingProxyService::default());
         let instance = Arc::new(
-            build_runtime_core_instance(global_ctx, peer_manager, None)
+            build_runtime_core_instance(global_ctx, peer_manager, Some(proxy.clone()))
                 .expect("runtime core composition should succeed"),
         );
 
         assert_eq!(instance.state(), CoreInstanceState::Created);
+        assert!(instance.start_proxy().await.is_err());
         instance.start().await.unwrap();
         assert_eq!(instance.state(), CoreInstanceState::Running);
         assert!(instance.start().await.is_err());
+        instance.start_proxy().await.unwrap();
+        instance.start_proxy().await.unwrap();
+        assert_eq!(proxy.start_calls.load(Ordering::Relaxed), 1);
         instance.start_udp_hole_punch().await.unwrap();
         instance.start_udp_hole_punch().await.unwrap();
 
         instance.stop().await;
         instance.stop().await;
         assert_eq!(instance.state(), CoreInstanceState::Stopped);
+        assert_eq!(proxy.stop_calls.load(Ordering::Relaxed), 1);
+    }
+
+    #[tokio::test]
+    async fn stopping_while_proxy_starts_rolls_back_once() {
+        let global_ctx = get_mock_global_ctx();
+        let (nic_channel, _nic_receiver) = create_packet_recv_chan();
+        let peer_manager = Arc::new(PeerManager::new(
+            RouteAlgoType::Ospf,
+            global_ctx.clone(),
+            nic_channel,
+        ));
+        let proxy = Arc::new(BlockingProxyService::default());
+        let instance = Arc::new(
+            build_runtime_core_instance(global_ctx, peer_manager, Some(proxy.clone()))
+                .expect("runtime core composition should succeed"),
+        );
+        instance.start().await.unwrap();
+
+        let start_task = tokio::spawn({
+            let instance = instance.clone();
+            async move { instance.start_proxy().await }
+        });
+        proxy.start_entered.notified().await;
+        let stop_task = tokio::spawn({
+            let instance = instance.clone();
+            async move { instance.stop().await }
+        });
+        tokio::task::yield_now().await;
+        proxy.release_start.notify_one();
+
+        assert!(start_task.await.unwrap().is_err());
+        stop_task.await.unwrap();
+        assert_eq!(instance.state(), CoreInstanceState::Stopped);
+        assert_eq!(proxy.start_calls.load(Ordering::Relaxed), 1);
+        assert_eq!(proxy.stop_calls.load(Ordering::Relaxed), 1);
     }
 
     #[tokio::test]
