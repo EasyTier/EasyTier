@@ -8,9 +8,15 @@ use std::{
 };
 
 use easytier_core::socket::{
+    IpVersion, NetNamespace, SocketContext,
+    dns::{DnsQuery, DnsRecordResolver, DnsResolver, DnsSrvRecord},
     host::{
-        HostSocketHandle, HostSocketRuntime, factory::HostSocketFactory,
-        listener::HostTcpListenerFactory, udp::wasi::WasiHostUdpIo, wasi::WasiHostTcpIo,
+        HostSocketHandle, HostSocketRuntime,
+        dns::{HostDnsResolver, wasi::WasiHostDnsIo},
+        factory::HostSocketFactory,
+        listener::HostTcpListenerFactory,
+        udp::wasi::WasiHostUdpIo,
+        wasi::WasiHostTcpIo,
         wasi_backend::WasiHostSocketBackend,
     },
     tcp::{
@@ -39,6 +45,7 @@ thread_local! {
     static UDP_PROBE: RefCell<Option<UdpProbe>> = const { RefCell::new(None) };
     static FACTORY_PROBE: RefCell<Option<FactoryProbe>> = const { RefCell::new(None) };
     static LISTENER_PROBE: RefCell<Option<FactoryProbe>> = const { RefCell::new(None) };
+    static DNS_PROBE: RefCell<Option<FactoryProbe>> = const { RefCell::new(None) };
 }
 
 struct Probe {
@@ -418,6 +425,113 @@ pub extern "C" fn drive_listener_probe() -> u32 {
     LISTENER_PROBE.with_borrow_mut(|slot| {
         let Some(probe) = slot.as_mut() else {
             return ERROR | 10;
+        };
+        probe.sockets.notify_completions();
+        probe
+            .runtime
+            .block_on(async { tokio::task::yield_now().await });
+        probe.status.load(Ordering::SeqCst)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn init_dns_probe() -> i32 {
+    DNS_PROBE.with_borrow_mut(|slot| {
+        if slot.is_some() {
+            return -1;
+        }
+        let runtime = match Builder::new_current_thread().enable_time().build() {
+            Ok(runtime) => runtime,
+            Err(_) => return -2,
+        };
+        let status = Arc::new(AtomicU32::new(0));
+        let sockets = HostSocketRuntime::new();
+        let resolver = HostDnsResolver::new(sockets.clone(), Arc::new(WasiHostDnsIo));
+        let task_status = status.clone();
+        runtime.spawn(async move {
+            let result: Result<(), String> = async {
+                let addresses = resolver
+                    .resolve(DnsQuery::new(
+                        "peer.example",
+                        SocketContext {
+                            ip_version: IpVersion::Both,
+                            socket_mark: Some(7),
+                            netns: Some(NetNamespace::new("mihomo")),
+                        },
+                    ))
+                    .await
+                    .map_err(|error| error.to_string())?;
+                if addresses
+                    != vec![
+                        "192.0.2.1".parse::<std::net::IpAddr>().unwrap(),
+                        "2001:db8::1".parse::<std::net::IpAddr>().unwrap(),
+                    ]
+                {
+                    return Err("DNS address result mismatch".to_owned());
+                }
+
+                let txt = resolver
+                    .resolve_txt(DnsQuery::new(
+                        "_easytier.example",
+                        SocketContext {
+                            ip_version: IpVersion::V4,
+                            socket_mark: None,
+                            netns: None,
+                        },
+                    ))
+                    .await
+                    .map_err(|error| error.to_string())?;
+                if txt != "tcp://peer.example:11010" {
+                    return Err("DNS TXT result mismatch".to_owned());
+                }
+
+                let srv = resolver
+                    .resolve_srv(DnsQuery::new(
+                        "_easytier._udp.example",
+                        SocketContext {
+                            ip_version: IpVersion::V6,
+                            socket_mark: Some(9),
+                            netns: Some(NetNamespace::new("")),
+                        },
+                    ))
+                    .await
+                    .map_err(|error| error.to_string())?;
+                if srv
+                    != vec![DnsSrvRecord {
+                        priority: 10,
+                        weight: 20,
+                        port: 11010,
+                        target: "peer.example.".to_owned(),
+                    }]
+                {
+                    return Err("DNS SRV result mismatch".to_owned());
+                }
+                Ok(())
+            }
+            .await;
+            match result {
+                Ok(()) => {
+                    task_status.fetch_or(DONE, Ordering::SeqCst);
+                }
+                Err(_) => {
+                    task_status.fetch_or(ERROR | 11, Ordering::SeqCst);
+                }
+            }
+        });
+        *slot = Some(FactoryProbe {
+            runtime,
+            status,
+            sockets,
+        });
+        0
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn drive_dns_probe() -> u32 {
+    DNS_PROBE.with_borrow_mut(|slot| {
+        let Some(probe) = slot.as_mut() else {
+            return ERROR | 12;
         };
         probe.sockets.notify_completions();
         probe
