@@ -13,8 +13,11 @@ import (
 )
 
 type probeDNSResolver struct {
-	mu      sync.Mutex
-	queries []decodedDNSQuery
+	mu             sync.Mutex
+	queries        []decodedDNSQuery
+	addressStarted chan struct{}
+	releaseAddress chan struct{}
+	startOnce      sync.Once
 }
 
 func (r *probeDNSResolver) record(query decodedDNSQuery) {
@@ -23,8 +26,14 @@ func (r *probeDNSResolver) record(query decodedDNSQuery) {
 	r.mu.Unlock()
 }
 
-func (r *probeDNSResolver) lookupIP(_ context.Context, query decodedDNSQuery) ([]netip.Addr, error) {
+func (r *probeDNSResolver) lookupIP(ctx context.Context, query decodedDNSQuery) ([]netip.Addr, error) {
 	r.record(query)
+	r.startOnce.Do(func() { close(r.addressStarted) })
+	select {
+	case <-r.releaseAddress:
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
 	return []netip.Addr{netip.MustParseAddr("192.0.2.1"), netip.MustParseAddr("2001:db8::1")}, nil
 }
 
@@ -50,7 +59,10 @@ func (r *probeDNSResolver) recorded() []decodedDNSQuery {
 }
 
 func TestOpaqueDNSDrivesCoreResolver(t *testing.T) {
-	resolver := &probeDNSResolver{}
+	resolver := &probeDNSResolver{
+		addressStarted: make(chan struct{}),
+		releaseAddress: make(chan struct{}),
+	}
 	bridge := newOpaqueBridge(nil, nil)
 	bridge.dnsResolver = resolver
 	defer bridge.close()
@@ -85,13 +97,26 @@ func TestOpaqueDNSDrivesCoreResolver(t *testing.T) {
 		t.Fatalf("initialize DNS probe: results=%v err=%v", results, err)
 	}
 
+	results, err = module.ExportedFunction("drive_dns_probe").Call(ctx)
+	if err != nil || len(results) != 1 || uint32(results[0]) != 0 {
+		t.Fatalf("bootstrap DNS probe: results=%v err=%v", results, err)
+	}
+	select {
+	case <-resolver.addressStarted:
+	case <-ctx.Done():
+		t.Fatalf("wait for pending address query: %v", ctx.Err())
+	}
+	select {
+	case <-bridge.completion:
+		t.Fatal("DNS completion arrived before resolver release")
+	default:
+	}
+	close(resolver.releaseAddress)
+
 	status := uint32(0)
-	ticker := time.NewTicker(5 * time.Millisecond)
-	defer ticker.Stop()
 	for status&opaqueDone == 0 {
 		select {
 		case <-bridge.completion:
-		case <-ticker.C:
 		case <-ctx.Done():
 			t.Fatalf("wait for DNS probe: %v", ctx.Err())
 		}
