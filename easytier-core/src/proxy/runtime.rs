@@ -125,11 +125,4 @@ pub trait TcpProxyRuntime: ProxyRuntimeInfo {
         &self,
         ctx: TcpProxyConnectContext,
     ) -> Result<Box<dyn TcpProxyDstStream>, ProxyRuntimeError>;
-
-    async fn copy_bidirectional_no_shutdown(
-        &self,
-        entry_id: TcpNatEntryId,
-        src: &mut dyn TcpProxySrcStream,
-        dst: &mut dyn TcpProxyDstStream,
-    ) -> Result<(), ProxyRuntimeError>;
 }

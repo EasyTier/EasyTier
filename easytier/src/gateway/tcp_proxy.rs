@@ -17,7 +17,7 @@ use easytier_core::proxy::tcp_proxy_engine::{
 };
 use easytier_core::proxy::tcp_proxy_service::TcpProxyService;
 use socket2::{SockRef, TcpKeepalive};
-use tokio::io::{AsyncRead, AsyncWrite, copy};
+use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::{TcpListener, TcpSocket, TcpStream};
 use tokio::time::timeout;
 
@@ -244,29 +244,6 @@ impl<C: NatDstConnector> TcpProxyRuntime for RuntimeTcpProxyAdapter<C> {
         drop(_guard);
 
         Ok(Box::new(stream))
-    }
-
-    async fn copy_bidirectional_no_shutdown(
-        &self,
-        _entry_id: easytier_core::proxy::tcp_proxy_engine::TcpNatEntryId,
-        src: &mut dyn TcpProxySrcStream,
-        dst: &mut dyn TcpProxyDstStream,
-    ) -> std::result::Result<(), ProxyRuntimeError> {
-        let (mut src_reader, mut src_writer) = tokio::io::split(src);
-        let (mut dst_reader, mut dst_writer) = tokio::io::split(dst);
-        let src_to_dst = copy(&mut src_reader, &mut dst_writer);
-        let dst_to_src = copy(&mut dst_reader, &mut src_writer);
-        tokio::pin!(src_to_dst);
-        tokio::pin!(dst_to_src);
-        tokio::select! {
-            result = &mut src_to_dst => {
-                result?;
-            }
-            result = &mut dst_to_src => {
-                result?;
-            }
-        }
-        Ok(())
     }
 }
 

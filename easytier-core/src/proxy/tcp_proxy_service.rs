@@ -4,7 +4,7 @@ use std::sync::{
 };
 use std::time::Duration;
 
-use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncWriteExt, copy};
 use tokio::task::JoinSet;
 use tokio::time::timeout;
 
@@ -14,8 +14,8 @@ use crate::peers::{NicPacketFilter, PeerPacketFilter};
 
 use super::cidr_table::ProxyCidrTable;
 use super::runtime::{
-    ProxyRuntimeError, TcpProxyConnectContext, TcpProxyKernelListener, TcpProxyRuntime,
-    TcpProxySrcStream,
+    ProxyRuntimeError, TcpProxyConnectContext, TcpProxyDstStream, TcpProxyKernelListener,
+    TcpProxyRuntime, TcpProxySrcStream,
 };
 #[cfg(feature = "proxy-smoltcp-stack")]
 use super::smoltcp_stack::{SmolTcpStack, output_dst_ip};
@@ -312,10 +312,7 @@ impl<R: TcpProxyRuntime + 'static> TcpProxyService<R> {
             entry.set_state(TcpNatEntryState::Connected);
         }
 
-        let ret = service
-            .runtime
-            .copy_bidirectional_no_shutdown(entry.id(), src_stream.as_mut(), dst_stream.as_mut())
-            .await;
+        let ret = copy_bidirectional_no_shutdown(src_stream.as_mut(), dst_stream.as_mut()).await;
         tracing::info!(nat_entry = ?entry, ret = ?ret, "nat tcp connection closed");
 
         entry.set_state(TcpNatEntryState::ClosingSrc);
@@ -392,6 +389,27 @@ impl<R: TcpProxyRuntime + 'static> TcpProxyService<R> {
             },
         )
     }
+}
+
+async fn copy_bidirectional_no_shutdown(
+    src: &mut dyn TcpProxySrcStream,
+    dst: &mut dyn TcpProxyDstStream,
+) -> Result<(), ProxyRuntimeError> {
+    let (mut src_reader, mut src_writer) = tokio::io::split(src);
+    let (mut dst_reader, mut dst_writer) = tokio::io::split(dst);
+    let src_to_dst = copy(&mut src_reader, &mut dst_writer);
+    let dst_to_src = copy(&mut dst_reader, &mut src_writer);
+    tokio::pin!(src_to_dst);
+    tokio::pin!(dst_to_src);
+    tokio::select! {
+        result = &mut src_to_dst => {
+            result?;
+        }
+        result = &mut dst_to_src => {
+            result?;
+        }
+    }
+    Ok(())
 }
 
 impl<R: TcpProxyRuntime + 'static> Drop for TcpProxyService<R> {
