@@ -9,31 +9,28 @@ use crate::socket::udp::{
 
 use super::first_success;
 
-pub type ConnectedUdpSessionLayer<H> =
-    UdpSessionLayer<<H as VirtualUdpSocketFactory>::Socket, H, H>;
-
-pub struct ConnectedUdpSession<H>
-where
-    H: VirtualUdpSocketFactory + UdpSessionControlHandler<<H as VirtualUdpSocketFactory>::Socket>,
-{
+pub struct ConnectedUdpSession {
     session: UdpSession,
-    layer: Arc<ConnectedUdpSessionLayer<H>>,
+    keep_alive: Box<dyn Send + Sync>,
 }
 
-impl<H> ConnectedUdpSession<H>
-where
-    H: VirtualUdpSocketFactory + UdpSessionControlHandler<<H as VirtualUdpSocketFactory>::Socket>,
-{
-    pub fn new(session: UdpSession, layer: Arc<ConnectedUdpSessionLayer<H>>) -> Self {
-        Self { session, layer }
+impl ConnectedUdpSession {
+    pub fn new<T>(session: UdpSession, keep_alive: T) -> Self
+    where
+        T: Send + Sync + 'static,
+    {
+        Self {
+            session,
+            keep_alive: Box::new(keep_alive),
+        }
     }
 
     pub fn session(&self) -> &UdpSession {
         &self.session
     }
 
-    pub fn into_parts(self) -> (UdpSession, Arc<ConnectedUdpSessionLayer<H>>) {
-        (self.session, self.layer)
+    pub fn into_parts(self) -> (UdpSession, Box<dyn Send + Sync>) {
+        (self.session, self.keep_alive)
     }
 }
 
@@ -49,7 +46,7 @@ pub async fn connect_udp<H>(
     bind_addrs: Vec<SocketAddr>,
     default_bind: UdpBindOptions,
     mode: UdpSessionMode,
-) -> anyhow::Result<ConnectedUdpSession<H>>
+) -> anyhow::Result<ConnectedUdpSession>
 where
     H: VirtualUdpSocketFactory + UdpSessionControlHandler<<H as VirtualUdpSocketFactory>::Socket>,
 {
@@ -81,7 +78,7 @@ async fn bind_and_connect<H>(
     bind: UdpBindOptions,
     remote_addr: SocketAddr,
     mode: UdpSessionMode,
-) -> anyhow::Result<ConnectedUdpSession<H>>
+) -> anyhow::Result<ConnectedUdpSession>
 where
     H: VirtualUdpSocketFactory + UdpSessionControlHandler<<H as VirtualUdpSocketFactory>::Socket>,
 {

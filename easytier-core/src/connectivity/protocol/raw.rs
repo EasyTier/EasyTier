@@ -6,20 +6,18 @@ use crate::{
     connectivity::transport::{ConnectedTransport, ConnectedUdpSession},
     proto::common::TunnelInfo,
     socket::{
-        tcp::{VirtualTcpSocket, VirtualTcpSocketFactory},
-        udp::{UdpSession, UdpSessionControlHandler, UdpSessionSocket, VirtualUdpSocketFactory},
+        tcp::VirtualTcpSocket,
+        udp::{UdpSession, UdpSessionSocket},
     },
     tunnel::{Tunnel, TunnelError, tcp::TcpTunnelUpgrader, udp::UdpTunnelUpgrader},
 };
 
-pub fn upgrade_connected<H>(
-    connected: ConnectedTransport<H>,
+pub fn upgrade_connected<S>(
+    connected: ConnectedTransport<S>,
     requested_remote_addr: Url,
 ) -> Result<Box<dyn Tunnel>, TunnelError>
 where
-    H: VirtualTcpSocketFactory
-        + VirtualUdpSocketFactory
-        + UdpSessionControlHandler<<H as VirtualUdpSocketFactory>::Socket>,
+    S: VirtualTcpSocket,
 {
     match connected {
         ConnectedTransport::Tcp(socket) => upgrade_connected_tcp(socket, requested_remote_addr),
@@ -45,13 +43,10 @@ where
     TcpTunnelUpgrader::new(info).upgrade(socket)
 }
 
-pub fn upgrade_connected_udp<H>(
-    connected: ConnectedUdpSession<H>,
+pub fn upgrade_connected_udp(
+    connected: ConnectedUdpSession,
     requested_remote_addr: Url,
-) -> Result<Box<dyn Tunnel>, TunnelError>
-where
-    H: VirtualUdpSocketFactory + UdpSessionControlHandler<<H as VirtualUdpSocketFactory>::Socket>,
-{
+) -> Result<Box<dyn Tunnel>, TunnelError> {
     let (session, layer) = connected.into_parts();
     let info = connected_tunnel_info(
         "udp",

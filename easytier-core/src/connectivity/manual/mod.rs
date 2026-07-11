@@ -492,7 +492,7 @@ pub(crate) async fn connect_resolved<H>(
     bind_addrs: Vec<SocketAddr>,
     tcp_bind: TcpBindOptions,
     udp_bind: UdpBindOptions,
-) -> anyhow::Result<ConnectedTransport<H>>
+) -> anyhow::Result<ConnectedTransport<<H as VirtualTcpSocketFactory>::Socket>>
 where
     H: ManualConnectorHost,
 {
@@ -548,11 +548,6 @@ where
                 ));
             }
             Ok(_) => usable.push(addr),
-            Err(error) if ip_version == IpVersion::Both => {
-                rejected_reason = Some(format!(
-                    "{url} IPv6 candidate {v6_addr} could not be validated: {error}"
-                ));
-            }
             Err(error) => return Err(error),
         }
     }
