@@ -1,6 +1,9 @@
 use std::{collections::HashMap, io, sync::Mutex, task::Poll};
 
-use super::{HostOperationId, HostSocketHandle, HostSocketIo, HostTcpIo};
+use super::{
+    HostOperationId, HostSocketHandle, HostSocketIo, HostTcpIo,
+    wasi_common::{host_error, status},
+};
 
 const HOST_PENDING: i32 = -1;
 
@@ -108,16 +111,4 @@ impl HostTcpIo for WasiHostTcpIo {
             value => Poll::Ready(Err(host_error("take_write", value))),
         }
     }
-}
-
-fn status(operation: &str, result: i32) -> io::Result<()> {
-    if result == 0 {
-        Ok(())
-    } else {
-        Err(host_error(operation, result))
-    }
-}
-
-fn host_error(operation: &str, code: i32) -> io::Error {
-    io::Error::other(format!("host {operation} failed with code {code}"))
 }

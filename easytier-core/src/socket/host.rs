@@ -17,6 +17,8 @@ use super::tcp::VirtualTcpSocket;
 pub mod udp;
 #[cfg(target_os = "wasi")]
 pub mod wasi;
+#[cfg(target_os = "wasi")]
+mod wasi_common;
 
 static NEXT_HOST_OPERATION: AtomicU64 = AtomicU64::new(1);
 
