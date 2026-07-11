@@ -434,6 +434,7 @@ where
             dns_records,
             endpoint_discovery,
         ));
+        peer_manager.initialize_portable_acl(&initial_acl)?;
         let acl_config: Arc<dyn AclConfigProvider> =
             acl_config.unwrap_or_else(|| Arc::new(StaticAclConfigProvider(initial_acl)));
         let manual = match manual_events {
@@ -840,7 +841,9 @@ where
         }
 
         let acl = self.acl_config.current_acl_config().build()?;
-        self.peer_manager.reload_acl(acl.as_ref());
+        if self.peer_manager.reload_acl(acl.as_ref()) {
+            self.refresh_acl_groups().await;
+        }
         self.initial_acl_loaded.store(true, Ordering::Release);
         Ok(())
     }

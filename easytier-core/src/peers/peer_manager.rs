@@ -1501,8 +1501,26 @@ impl PeerManagerCore {
         *self.exit_nodes.write().await = exit_nodes;
     }
 
-    pub(crate) fn reload_acl(&self, acl: Option<&crate::proto::acl::Acl>) {
+    pub(crate) fn initialize_portable_acl(
+        &self,
+        config: &super::acl_config::AclRuleConfig,
+    ) -> anyhow::Result<()> {
+        let Some(support) = &self.config_context_support else {
+            return Ok(());
+        };
+        support.set_acl(config.build()?);
+        Ok(())
+    }
+
+    pub(crate) fn reload_acl(&self, acl: Option<&crate::proto::acl::Acl>) -> bool {
+        let portable_context_updated = if let Some(support) = &self.config_context_support {
+            support.set_acl(acl.cloned());
+            true
+        } else {
+            false
+        };
         self.acl_filter.reload_rules(acl);
+        portable_context_updated
     }
 
     pub async fn wait(&self) {
