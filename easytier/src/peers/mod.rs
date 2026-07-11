@@ -64,10 +64,15 @@ pub fn create_packet_recv_chan() -> (PacketRecvChan, PacketRecvChanReceiver) {
 pub async fn recv_packet_from_chan(
     packet_recv_chan_receiver: &mut PacketRecvChanReceiver,
 ) -> Result<ZCPacket, anyhow::Error> {
-    packet_recv_chan_receiver
-        .recv()
-        .await
-        .ok_or(anyhow::anyhow!("recv_packet_from_chan failed"))
+    use tokio::sync::mpsc::error::TryRecvError;
+    match packet_recv_chan_receiver.try_recv() {
+        Ok(pkt) => Ok(pkt),
+        Err(TryRecvError::Empty) => packet_recv_chan_receiver
+            .recv()
+            .await
+            .ok_or(anyhow::anyhow!("recv_packet_from_chan failed")),
+        Err(TryRecvError::Disconnected) => Err(anyhow::anyhow!("recv_packet_from_chan failed")),
+    }
 }
 
 pub const PUBLIC_SERVER_HOSTNAME_PREFIX: &str = "PublicServer_";
