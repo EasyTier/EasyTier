@@ -1,5 +1,5 @@
 use crate::packet::ZCPacket;
-use std::sync::Arc;
+use std::{collections::hash_map::DefaultHasher, hash::Hasher, sync::Arc};
 
 #[cfg(feature = "aes-gcm")]
 pub mod aes_gcm;
@@ -33,6 +33,32 @@ pub trait Encryptor: Send + Sync + 'static {
 }
 
 pub struct NullCipher;
+
+pub fn derive_key_128(secret: &str) -> [u8; 16] {
+    let mut key = [0u8; 16];
+    let mut hasher = DefaultHasher::new();
+    hasher.write(secret.as_bytes());
+    key[0..8].copy_from_slice(&hasher.finish().to_be_bytes());
+    hasher.write(&key[0..8]);
+    key[8..16].copy_from_slice(&hasher.finish().to_be_bytes());
+    hasher.write(&key);
+    key
+}
+
+pub fn derive_key_256(secret: &str) -> [u8; 32] {
+    let mut key = [0u8; 32];
+    let mut hasher = DefaultHasher::new();
+    hasher.write(secret.as_bytes());
+    hasher.write(b"easytier-256bit-key");
+    for i in 0..4 {
+        let chunk_start = i * 8;
+        let chunk_end = chunk_start + 8;
+        hasher.write(&key[0..chunk_start]);
+        hasher.write(&[i as u8]);
+        key[chunk_start..chunk_end].copy_from_slice(&hasher.finish().to_be_bytes());
+    }
+    key
+}
 
 impl Encryptor for NullCipher {
     fn decrypt(&self, zc_packet: &mut ZCPacket) -> Result<(), Error> {
@@ -109,5 +135,27 @@ pub fn create_encryptor(
 
         #[cfg(feature = "chacha20")]
         EncryptionAlgorithm::ChaCha20 => Arc::new(chacha20::ChaCha20Cipher::new(key_256)),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn network_secret_key_derivation_is_stable() {
+        assert_eq!(
+            derive_key_128("secret"),
+            [
+                86, 90, 25, 219, 78, 240, 193, 33, 168, 172, 88, 14, 218, 248, 78, 166,
+            ]
+        );
+        assert_eq!(
+            derive_key_256("secret"),
+            [
+                199, 205, 248, 94, 194, 101, 97, 138, 79, 69, 167, 248, 140, 5, 165, 163,
+                192, 139, 166, 217, 166, 152, 28, 230, 146, 109, 150, 196, 66, 242, 231, 140,
+            ]
+        );
     }
 }

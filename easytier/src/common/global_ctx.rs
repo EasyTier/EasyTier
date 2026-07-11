@@ -1,6 +1,5 @@
 use std::{
-    collections::{BTreeSet, HashSet, hash_map::DefaultHasher},
-    hash::Hasher,
+    collections::{BTreeSet, HashSet},
     net::{IpAddr, Ipv6Addr, SocketAddr},
     sync::{Arc, Mutex},
 };
@@ -13,6 +12,7 @@ use easytier_core::peers::context::{
     secret_proof_from_secret,
 };
 pub use easytier_core::peers::context::{TrustedKeyMap, TrustedKeyMetadata, TrustedKeySource};
+use easytier_core::peers::encrypt::{derive_key_128, derive_key_256};
 use easytier_core::peers::public_ipv6::PublicIpv6Runtime;
 
 use super::{
@@ -801,43 +801,21 @@ impl GlobalCtx {
     }
 
     pub fn get_128_key(&self) -> [u8; 16] {
-        let mut key = [0u8; 16];
         let secret = self
             .config
             .get_network_identity()
             .network_secret
             .unwrap_or_default();
-        // fill key according to network secret
-        let mut hasher = DefaultHasher::new();
-        hasher.write(secret.as_bytes());
-        key[0..8].copy_from_slice(&hasher.finish().to_be_bytes());
-        hasher.write(&key[0..8]);
-        key[8..16].copy_from_slice(&hasher.finish().to_be_bytes());
-        hasher.write(&key[0..16]);
-        key
+        derive_key_128(&secret)
     }
 
     pub fn get_256_key(&self) -> [u8; 32] {
-        let mut key = [0u8; 32];
         let secret = self
             .config
             .get_network_identity()
             .network_secret
             .unwrap_or_default();
-        // fill key according to network secret
-        let mut hasher = DefaultHasher::new();
-        hasher.write(secret.as_bytes());
-        hasher.write(b"easytier-256bit-key"); // 添加固定盐值以区分128位和256位密钥
-
-        // 生成32字节密钥
-        for i in 0..4 {
-            let chunk_start = i * 8;
-            let chunk_end = chunk_start + 8;
-            hasher.write(&key[0..chunk_start]);
-            hasher.write(&[i as u8]); // 添加索引以确保每个8字节块都不同
-            key[chunk_start..chunk_end].copy_from_slice(&hasher.finish().to_be_bytes());
-        }
-        key
+        derive_key_256(&secret)
     }
 
     pub fn enable_exit_node(&self) -> bool {
