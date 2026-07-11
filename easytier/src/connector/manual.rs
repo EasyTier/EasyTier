@@ -45,7 +45,9 @@ use crate::{
     use_global_var,
 };
 
-use super::{create_connector_by_url, runtime::RuntimeConnectorHost};
+use super::{
+    create_connector_by_url, protocol::RuntimeClientProtocolUpgrader, runtime::RuntimeConnectorHost,
+};
 
 type ConnectorMap = Arc<DashSet<url::Url>>;
 type CoreConnectorManager = CoreManualConnectorManager<RuntimeConnectorHost>;
@@ -112,6 +114,7 @@ impl ManualConnectorManager {
                 MANUAL_CONNECTOR_RECONNECT_INTERVAL_MS
             )),
             connect_timeout: Duration::from_secs(2),
+            websocket_connect_timeout: Duration::from_secs(20),
             bind_device: flags.bind_device,
             allow_interface_bind: !cfg!(any(
                 target_os = "android",
@@ -126,6 +129,7 @@ impl ManualConnectorManager {
             peer_manager.core(),
             Arc::new(RuntimeConnectorHost::new(global_ctx.clone())),
             Arc::new(RuntimeDnsResolver::new()) as Arc<dyn DnsResolver>,
+            Arc::new(RuntimeClientProtocolUpgrader::new(global_ctx.clone())),
             core_options,
             Arc::new(GlobalCtxManualConnectivityEventSink {
                 global_ctx: global_ctx.clone(),
@@ -203,7 +207,14 @@ impl ManualConnectorManager {
 
 impl ManualConnectorManager {
     fn core_owns_scheme(url: &url::Url) -> bool {
-        matches!(url.scheme(), "tcp" | "udp")
+        match url.scheme() {
+            "tcp" | "udp" => true,
+            "ws" | "wss" => cfg!(feature = "websocket"),
+            "wg" => cfg!(feature = "wireguard"),
+            "quic" => cfg!(feature = "quic"),
+            "faketcp" => cfg!(feature = "faketcp"),
+            _ => false,
+        }
     }
 
     pub fn add_connector<T>(&self, connector: T)
@@ -551,6 +562,32 @@ mod tests {
     };
 
     use super::*;
+
+    #[test]
+    fn core_owns_enabled_ip_protocols_only() {
+        assert!(ManualConnectorManager::core_owns_scheme(
+            &"tcp://127.0.0.1".parse().unwrap()
+        ));
+        assert!(ManualConnectorManager::core_owns_scheme(
+            &"udp://127.0.0.1".parse().unwrap()
+        ));
+        for (url, enabled) in [
+            ("ws://127.0.0.1", cfg!(feature = "websocket")),
+            ("wss://127.0.0.1", cfg!(feature = "websocket")),
+            ("wg://127.0.0.1", cfg!(feature = "wireguard")),
+            ("quic://127.0.0.1", cfg!(feature = "quic")),
+            ("faketcp://127.0.0.1", cfg!(feature = "faketcp")),
+        ] {
+            assert_eq!(
+                ManualConnectorManager::core_owns_scheme(&url.parse().unwrap()),
+                enabled,
+                "unexpected core ownership for {url}"
+            );
+        }
+        assert!(!ManualConnectorManager::core_owns_scheme(
+            &"http://127.0.0.1".parse().unwrap()
+        ));
+    }
 
     #[tokio::test]
     async fn reconnect_timeout_reports_exhausted_budget_for_stage() {

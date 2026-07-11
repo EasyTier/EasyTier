@@ -17,15 +17,17 @@ use url::Url;
 
 use crate::{
     connectivity::{
-        protocol::raw,
+        protocol::ClientProtocolUpgrader,
         transport::{self, ConnectedTransport, UdpSessionMode},
     },
     peers::peer_manager::PeerManagerCore,
     socket::{
         IpVersion, SocketContext,
         dns::{DnsQuery, DnsResolver},
-        tcp::{TcpBindOptions, VirtualTcpSocketFactory},
-        udp::{UdpBindOptions, UdpSessionControlHandler, VirtualUdpSocketFactory},
+        tcp::{TcpBindOptions, TcpSocketPurpose, VirtualTcpSocketFactory},
+        udp::{
+            UdpBindOptions, UdpSessionControlHandler, UdpSessionProtocol, VirtualUdpSocketFactory,
+        },
     },
     tunnel::TunnelError,
 };
@@ -38,19 +40,45 @@ pub use crate::connectivity::protocol::raw::{
 const MANUAL_DEFAULT_PORT: u16 = 11010;
 const MANUAL_PREFLIGHT_DEFAULT_PORT: u16 = 1000;
 
+fn manual_default_port(url: &Url) -> u16 {
+    match url.scheme() {
+        "ws" => 80,
+        "wss" => 443,
+        "wg" => 11011,
+        "quic" => 11012,
+        "faketcp" => 11013,
+        _ => MANUAL_DEFAULT_PORT,
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ManualTransport {
-    Tcp,
-    Udp,
+    Tcp(TcpSocketPurpose),
+    Udp(UdpSessionMode),
 }
 
 impl ManualTransport {
     pub(crate) fn from_url(url: &Url) -> anyhow::Result<Self> {
         match url.scheme() {
-            "tcp" => Ok(Self::Tcp),
-            "udp" => Ok(Self::Udp),
+            "tcp" | "ws" | "wss" => Ok(Self::Tcp(TcpSocketPurpose::ManualConnect)),
+            "faketcp" => Ok(Self::Tcp(TcpSocketPurpose::FakeTcp)),
+            "udp" => Ok(Self::Udp(UdpSessionMode::EasyTierMux)),
+            "wg" => Ok(Self::Udp(UdpSessionMode::Classified(
+                UdpSessionProtocol::WireGuard,
+            ))),
+            "quic" => Ok(Self::Udp(UdpSessionMode::Classified(
+                UdpSessionProtocol::Quic,
+            ))),
             _ => anyhow::bail!("unsupported core manual connector URL: {url}"),
         }
+    }
+
+    fn is_udp(self) -> bool {
+        matches!(self, Self::Udp(_))
+    }
+
+    fn supports_interface_bind(self) -> bool {
+        !matches!(self, Self::Tcp(TcpSocketPurpose::FakeTcp))
     }
 }
 
@@ -112,6 +140,7 @@ pub struct ManualConnectorSnapshot {
 pub struct ManualConnectorOptions {
     pub reconnect_interval: Duration,
     pub connect_timeout: Duration,
+    pub websocket_connect_timeout: Duration,
     pub bind_device: bool,
     pub allow_interface_bind: bool,
     pub tcp_bind: TcpBindOptions,
@@ -123,6 +152,7 @@ impl Default for ManualConnectorOptions {
         Self {
             reconnect_interval: Duration::from_secs(1),
             connect_timeout: Duration::from_secs(2),
+            websocket_connect_timeout: Duration::from_secs(20),
             bind_device: false,
             allow_interface_bind: true,
             tcp_bind: TcpBindOptions::default(),
@@ -132,10 +162,18 @@ impl Default for ManualConnectorOptions {
 }
 
 impl ManualConnectorOptions {
+    fn connect_timeout(&self, url: &Url) -> Duration {
+        if matches!(url.scheme(), "ws" | "wss") {
+            self.websocket_connect_timeout
+        } else {
+            self.connect_timeout
+        }
+    }
+
     pub(crate) fn socket_mark(&self, transport: ManualTransport) -> Option<u32> {
         match transport {
-            ManualTransport::Tcp => self.tcp_bind.socket_mark,
-            ManualTransport::Udp => self.udp_bind.socket_mark,
+            ManualTransport::Tcp(_) => self.tcp_bind.socket_mark,
+            ManualTransport::Udp(_) => self.udp_bind.socket_mark,
         }
     }
 }
@@ -150,6 +188,7 @@ where
     peer_manager: Weak<PeerManagerCore>,
     host: Arc<H>,
     dns: Arc<dyn DnsResolver>,
+    protocol: Arc<dyn ClientProtocolUpgrader<<H as VirtualTcpSocketFactory>::Socket>>,
     events: Arc<dyn ManualConnectivityEventSink>,
     options: ManualConnectorOptions,
 }
@@ -170,12 +209,14 @@ where
         peer_manager: Arc<PeerManagerCore>,
         host: Arc<H>,
         dns: Arc<dyn DnsResolver>,
+        protocol: Arc<dyn ClientProtocolUpgrader<<H as VirtualTcpSocketFactory>::Socket>>,
         options: ManualConnectorOptions,
     ) -> Self {
         Self::new_with_events(
             peer_manager,
             host,
             dns,
+            protocol,
             options,
             Arc::new(NoopManualConnectivityEventSink),
         )
@@ -185,6 +226,7 @@ where
         peer_manager: Arc<PeerManagerCore>,
         host: Arc<H>,
         dns: Arc<dyn DnsResolver>,
+        protocol: Arc<dyn ClientProtocolUpgrader<<H as VirtualTcpSocketFactory>::Socket>>,
         options: ManualConnectorOptions,
         events: Arc<dyn ManualConnectivityEventSink>,
     ) -> Self {
@@ -195,6 +237,7 @@ where
             peer_manager: Arc::downgrade(&peer_manager),
             host,
             dns,
+            protocol,
             events,
             options,
         });
@@ -346,6 +389,7 @@ where
     H: ManualConnectorHost,
 {
     let transport = ManualTransport::from_url(&url)?;
+    let connect_timeout = data.options.connect_timeout(&url);
     tracing::info!(%url, ?transport, "manual reconnect start");
     let normalized_url = match convert_idn_to_ascii(url.clone()) {
         Ok(url) => url,
@@ -357,7 +401,7 @@ where
     let preflight = with_timeout_budget(
         "resolve",
         Instant::now(),
-        data.options.connect_timeout,
+        connect_timeout,
         resolve_url_addrs(
             &normalized_url,
             MANUAL_PREFLIGHT_DEFAULT_PORT,
@@ -393,6 +437,7 @@ where
             transport,
             ip_version,
             started_at,
+            connect_timeout,
         )
         .await
         {
@@ -412,13 +457,14 @@ async fn reconnect_with_ip_version<H>(
     transport: ManualTransport,
     ip_version: IpVersion,
     started_at: Instant,
+    connect_timeout: Duration,
 ) -> anyhow::Result<()>
 where
     H: ManualConnectorHost,
 {
     let normalized_url = convert_idn_to_ascii(requested_url.clone())?;
     let (remote_addr, bind_addrs) =
-        with_timeout_budget("resolve", started_at, data.options.connect_timeout, async {
+        with_timeout_budget("resolve", started_at, connect_timeout, async {
             let peer_manager = data
                 .peer_manager
                 .upgrade()
@@ -428,16 +474,19 @@ where
                 data.host.as_ref(),
                 data.dns.as_ref(),
                 &normalized_url,
-                MANUAL_DEFAULT_PORT,
+                manual_default_port(&normalized_url),
                 ip_version,
                 data.options.socket_mark(transport),
             )
             .await?;
-            let bind_addrs = if data.options.bind_device && data.options.allow_interface_bind {
+            let bind_addrs = if data.options.bind_device
+                && data.options.allow_interface_bind
+                && transport.supports_interface_bind()
+            {
                 collect_bind_addrs(
                     peer_manager.as_ref(),
                     data.host.as_ref(),
-                    transport == ManualTransport::Udp,
+                    transport.is_udp(),
                     remote_addr,
                 )
                 .await?
@@ -451,37 +500,33 @@ where
         url: requested_url.clone(),
     });
 
-    let connected = with_timeout_budget(
-        "connect",
-        started_at,
-        data.options.connect_timeout,
-        connect_resolved(
+    let tunnel = with_timeout_budget("connect", started_at, connect_timeout, async {
+        let connected = connect_resolved(
             data.host.clone(),
             transport,
             remote_addr,
             bind_addrs,
             data.options.tcp_bind.clone(),
             data.options.udp_bind.clone(),
-        ),
-    )
+        )
+        .await?;
+        data.protocol
+            .upgrade_client(connected, requested_url.clone())
+            .await
+    })
     .await?;
-    let tunnel = raw::upgrade_connected(connected, requested_url.clone())?;
     let peer_manager = data
         .peer_manager
         .upgrade()
         .ok_or_else(|| anyhow::anyhow!("peer manager is gone, cannot reconnect"))?;
-    let (peer_id, conn_id) = with_timeout_budget(
-        "handshake",
-        started_at,
-        data.options.connect_timeout,
-        async move {
+    let (peer_id, conn_id) =
+        with_timeout_budget("handshake", started_at, connect_timeout, async move {
             peer_manager
                 .add_client_tunnel_with_peer_id_hint(tunnel, true, None)
                 .await
                 .map_err(anyhow::Error::from)
-        },
-    )
-    .await?;
+        })
+        .await?;
     tracing::info!(peer_id, %conn_id, %requested_url, "manual reconnect succeeded");
     Ok(())
 }
@@ -498,24 +543,16 @@ where
     H: ManualConnectorHost,
 {
     match transport {
-        ManualTransport::Tcp => transport::connect_tcp(
-            host,
-            remote_addr,
-            bind_addrs,
-            tcp_bind,
-            crate::socket::tcp::TcpSocketPurpose::ManualConnect,
-        )
-        .await
-        .map(ConnectedTransport::Tcp),
-        ManualTransport::Udp => transport::connect_udp(
-            host,
-            remote_addr,
-            bind_addrs,
-            udp_bind,
-            UdpSessionMode::EasyTierMux,
-        )
-        .await
-        .map(ConnectedTransport::Udp),
+        ManualTransport::Tcp(purpose) => {
+            transport::connect_tcp(host, remote_addr, bind_addrs, tcp_bind, purpose)
+                .await
+                .map(ConnectedTransport::Tcp)
+        }
+        ManualTransport::Udp(mode) => {
+            transport::connect_udp(host, remote_addr, bind_addrs, udp_bind, mode)
+                .await
+                .map(ConnectedTransport::Udp)
+        }
     }
 }
 
@@ -712,16 +749,75 @@ mod tests {
     }
 
     #[test]
-    fn manual_transport_accepts_only_migrated_schemes() {
+    fn manual_transport_maps_ip_protocols_to_their_socket_boundary() {
+        let cases = [
+            (
+                "tcp://127.0.0.1:1",
+                ManualTransport::Tcp(TcpSocketPurpose::ManualConnect),
+            ),
+            (
+                "ws://127.0.0.1:1",
+                ManualTransport::Tcp(TcpSocketPurpose::ManualConnect),
+            ),
+            (
+                "wss://127.0.0.1:1",
+                ManualTransport::Tcp(TcpSocketPurpose::ManualConnect),
+            ),
+            (
+                "faketcp://127.0.0.1:1",
+                ManualTransport::Tcp(TcpSocketPurpose::FakeTcp),
+            ),
+            (
+                "udp://127.0.0.1:1",
+                ManualTransport::Udp(UdpSessionMode::EasyTierMux),
+            ),
+            (
+                "wg://127.0.0.1:1",
+                ManualTransport::Udp(UdpSessionMode::Classified(UdpSessionProtocol::WireGuard)),
+            ),
+            (
+                "quic://127.0.0.1:1",
+                ManualTransport::Udp(UdpSessionMode::Classified(UdpSessionProtocol::Quic)),
+            ),
+        ];
+
+        for (url, expected) in cases {
+            assert_eq!(
+                ManualTransport::from_url(&url.parse().unwrap()).unwrap(),
+                expected
+            );
+        }
+        assert!(ManualTransport::from_url(&"http://127.0.0.1:1".parse().unwrap()).is_err());
+    }
+
+    #[test]
+    fn manual_protocols_keep_their_default_ports() {
+        let cases = [
+            ("tcp://127.0.0.1", 11010),
+            ("udp://127.0.0.1", 11010),
+            ("ws://127.0.0.1", 80),
+            ("wss://127.0.0.1", 443),
+            ("wg://127.0.0.1", 11011),
+            ("quic://127.0.0.1", 11012),
+            ("faketcp://127.0.0.1", 11013),
+        ];
+
+        for (url, expected) in cases {
+            assert_eq!(manual_default_port(&url.parse().unwrap()), expected);
+        }
+    }
+
+    #[test]
+    fn websocket_connectors_keep_the_longer_timeout() {
+        let options = ManualConnectorOptions::default();
         assert_eq!(
-            ManualTransport::from_url(&"tcp://127.0.0.1:1".parse().unwrap()).unwrap(),
-            ManualTransport::Tcp
+            options.connect_timeout(&"ws://127.0.0.1".parse().unwrap()),
+            Duration::from_secs(20)
         );
         assert_eq!(
-            ManualTransport::from_url(&"udp://127.0.0.1:1".parse().unwrap()).unwrap(),
-            ManualTransport::Udp
+            options.connect_timeout(&"tcp://127.0.0.1".parse().unwrap()),
+            Duration::from_secs(2)
         );
-        assert!(ManualTransport::from_url(&"wg://127.0.0.1:1".parse().unwrap()).is_err());
     }
 
     #[tokio::test]
