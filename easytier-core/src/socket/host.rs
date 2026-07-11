@@ -1,4 +1,5 @@
 use std::{
+    collections::HashMap,
     fmt, io,
     net::SocketAddr,
     pin::Pin,
@@ -16,6 +17,8 @@ use super::tcp::VirtualTcpSocket;
 #[cfg(target_os = "wasi")]
 pub mod wasi;
 
+static NEXT_HOST_OPERATION: AtomicU64 = AtomicU64::new(1);
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct HostSocketHandle(pub u64);
 
@@ -25,9 +28,9 @@ pub struct HostOperationId(pub u64);
 /// Mechanical host I/O below core's socket scheduling seam.
 ///
 /// Submit methods must return without waiting for I/O. `submit_write` must take
-/// ownership of the submitted bytes before returning; it may not retain the
-/// borrowed slice. Completion methods may copy completed data into guest memory
-/// only during the call.
+/// ownership of the complete source before returning and complete only after
+/// all accepted bytes are written or an error occurs. Completion methods return
+/// host-owned results; they never retain guest-memory borrows.
 pub trait HostTcpIo: Send + Sync + 'static {
     fn submit_read(
         &self,
@@ -36,11 +39,7 @@ pub trait HostTcpIo: Send + Sync + 'static {
         capacity: usize,
     ) -> io::Result<()>;
 
-    fn take_read(
-        &self,
-        operation: HostOperationId,
-        destination: &mut [u8],
-    ) -> Poll<io::Result<usize>>;
+    fn take_read(&self, operation: HostOperationId) -> Poll<io::Result<Vec<u8>>>;
 
     fn submit_write(
         &self,
@@ -49,7 +48,7 @@ pub trait HostTcpIo: Send + Sync + 'static {
         source: &[u8],
     ) -> io::Result<()>;
 
-    fn take_write(&self, operation: HostOperationId) -> Poll<io::Result<usize>>;
+    fn take_write(&self, operation: HostOperationId) -> Poll<io::Result<()>>;
 
     fn cancel_operation(&self, operation: HostOperationId) -> io::Result<()>;
 
@@ -59,15 +58,26 @@ pub trait HostTcpIo: Send + Sync + 'static {
 
 #[derive(Default)]
 struct WakerRegistry {
-    wakers: Mutex<Vec<Waker>>,
+    wakers: Mutex<HashMap<HostOperationId, Waker>>,
 }
 
 impl WakerRegistry {
-    fn register(&self, waker: &Waker) {
+    fn register(&self, operation: HostOperationId, waker: &Waker) {
         let mut wakers = self.wakers.lock().expect("host waker registry poisoned");
-        if !wakers.iter().any(|registered| registered.will_wake(waker)) {
-            wakers.push(waker.clone());
+        match wakers.get_mut(&operation) {
+            Some(registered) if registered.will_wake(waker) => {}
+            Some(registered) => *registered = waker.clone(),
+            None => {
+                wakers.insert(operation, waker.clone());
+            }
         }
+    }
+
+    fn remove(&self, operation: HostOperationId) {
+        self.wakers
+            .lock()
+            .expect("host waker registry poisoned")
+            .remove(&operation);
     }
 
     fn wake_all(&self) {
@@ -75,15 +85,20 @@ impl WakerRegistry {
             let mut registered = self.wakers.lock().expect("host waker registry poisoned");
             std::mem::take(&mut *registered)
         };
-        for waker in wakers {
+        for waker in wakers.into_values() {
             waker.wake();
         }
+    }
+
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        self.wakers.lock().unwrap().len()
     }
 }
 
 struct HostSocketRuntimeInner {
     io: Arc<dyn HostTcpIo>,
-    next_operation: AtomicU64,
+    completion_epoch: AtomicU64,
     wakers: WakerRegistry,
 }
 
@@ -97,7 +112,7 @@ impl HostSocketRuntime {
         Self {
             inner: Arc::new(HostSocketRuntimeInner {
                 io,
-                next_operation: AtomicU64::new(1),
+                completion_epoch: AtomicU64::new(0),
                 wakers: WakerRegistry::default(),
             }),
         }
@@ -117,6 +132,8 @@ impl HostSocketRuntime {
             peer_addr,
             transport_label,
             read_operation: None,
+            read_buffer: None,
+            read_eof: false,
             write_operation: None,
             closed: false,
         }
@@ -124,12 +141,36 @@ impl HostSocketRuntime {
 
     /// Wake socket tasks after the host reports one or more completions.
     pub fn notify_completions(&self) {
+        self.inner.completion_epoch.fetch_add(1, Ordering::SeqCst);
         self.inner.wakers.wake_all();
     }
 
     fn next_operation(&self) -> HostOperationId {
-        HostOperationId(self.inner.next_operation.fetch_add(1, Ordering::Relaxed))
+        loop {
+            let operation = NEXT_HOST_OPERATION.fetch_add(1, Ordering::Relaxed);
+            if operation != 0 {
+                return HostOperationId(operation);
+            }
+        }
     }
+
+    fn register_pending(
+        &self,
+        operation: HostOperationId,
+        observed_epoch: u64,
+        context: &Context<'_>,
+    ) {
+        self.inner.wakers.register(operation, context.waker());
+        if self.inner.completion_epoch.load(Ordering::SeqCst) != observed_epoch {
+            self.inner.wakers.remove(operation);
+            context.waker().wake_by_ref();
+        }
+    }
+}
+
+struct ReadBuffer {
+    data: Vec<u8>,
+    offset: usize,
 }
 
 pub struct HostTcpStream {
@@ -139,14 +180,10 @@ pub struct HostTcpStream {
     peer_addr: SocketAddr,
     transport_label: Option<String>,
     read_operation: Option<HostOperationId>,
-    write_operation: Option<PendingWrite>,
+    read_buffer: Option<ReadBuffer>,
+    read_eof: bool,
+    write_operation: Option<HostOperationId>,
     closed: bool,
-}
-
-struct PendingWrite {
-    operation: HostOperationId,
-    data: Vec<u8>,
-    offset: usize,
 }
 
 impl HostTcpStream {
@@ -154,24 +191,24 @@ impl HostTcpStream {
         if self.closed {
             return Ok(());
         }
-        self.closed = true;
 
         let mut first_error = None;
-        if let Some(operation) = self.read_operation.take()
-            && let Err(error) = self.runtime.inner.io.cancel_operation(operation)
+        for operation in [self.read_operation.take(), self.write_operation.take()]
+            .into_iter()
+            .flatten()
         {
-            first_error = Some(error);
+            self.runtime.inner.wakers.remove(operation);
+            if let Err(error) = self.runtime.inner.io.cancel_operation(operation)
+                && first_error.is_none()
+            {
+                first_error = Some(error);
+            }
         }
-        if let Some(pending) = self.write_operation.take()
-            && let Err(error) = self.runtime.inner.io.cancel_operation(pending.operation)
-            && first_error.is_none()
-        {
-            first_error = Some(error);
-        }
-        if let Err(error) = self.runtime.inner.io.close(self.handle)
-            && first_error.is_none()
-        {
-            first_error = Some(error);
+
+        match self.runtime.inner.io.close(self.handle) {
+            Ok(()) => self.closed = true,
+            Err(error) if first_error.is_none() => first_error = Some(error),
+            Err(_) => {}
         }
 
         match first_error {
@@ -180,71 +217,34 @@ impl HostTcpStream {
         }
     }
 
-    fn submit_write(&mut self, data: Vec<u8>) -> io::Result<()> {
-        let operation = self.runtime.next_operation();
-        self.runtime
-            .inner
-            .io
-            .submit_write(self.handle, operation, &data)?;
-        self.write_operation = Some(PendingWrite {
-            operation,
-            data,
-            offset: 0,
-        });
-        Ok(())
+    fn copy_buffered_read(&mut self, buffer: &mut ReadBuf<'_>) -> bool {
+        let Some(pending) = &mut self.read_buffer else {
+            return false;
+        };
+        let remaining = &pending.data[pending.offset..];
+        let copy_len = remaining.len().min(buffer.remaining());
+        buffer.put_slice(&remaining[..copy_len]);
+        pending.offset += copy_len;
+        if pending.offset == pending.data.len() {
+            self.read_buffer = None;
+        }
+        true
     }
 
-    fn poll_pending_write(&mut self, context: &mut Context<'_>) -> Poll<io::Result<usize>> {
-        loop {
-            let Some(pending) = &self.write_operation else {
-                return Poll::Ready(Ok(0));
-            };
-            let operation = pending.operation;
-            let remaining_len = pending.data.len() - pending.offset;
-            match self.runtime.inner.io.take_write(operation) {
-                Poll::Pending => {
-                    self.runtime.inner.wakers.register(context.waker());
-                    return Poll::Pending;
-                }
-                Poll::Ready(Err(error)) => {
-                    self.write_operation = None;
-                    return Poll::Ready(Err(error));
-                }
-                Poll::Ready(Ok(0)) => {
-                    self.write_operation = None;
-                    return Poll::Ready(Err(io::Error::new(
-                        io::ErrorKind::WriteZero,
-                        "host write operation made no progress",
-                    )));
-                }
-                Poll::Ready(Ok(length)) if length > remaining_len => {
-                    self.write_operation = None;
-                    return Poll::Ready(Err(io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        "host write completion exceeds the submitted buffer",
-                    )));
-                }
-                Poll::Ready(Ok(length)) => {
-                    let pending = self.write_operation.as_mut().unwrap();
-                    pending.offset += length;
-                    if pending.offset == pending.data.len() {
-                        let completed_len = pending.data.len();
-                        self.write_operation = None;
-                        return Poll::Ready(Ok(completed_len));
-                    }
-
-                    let operation = self.runtime.next_operation();
-                    let pending = self.write_operation.as_mut().unwrap();
-                    if let Err(error) = self.runtime.inner.io.submit_write(
-                        self.handle,
-                        operation,
-                        &pending.data[pending.offset..],
-                    ) {
-                        self.write_operation = None;
-                        return Poll::Ready(Err(error));
-                    }
-                    pending.operation = operation;
-                }
+    fn poll_write_completion(&mut self, context: &Context<'_>) -> Poll<io::Result<()>> {
+        let Some(operation) = self.write_operation else {
+            return Poll::Ready(Ok(()));
+        };
+        let epoch = self.runtime.inner.completion_epoch.load(Ordering::SeqCst);
+        match self.runtime.inner.io.take_write(operation) {
+            Poll::Pending => {
+                self.runtime.register_pending(operation, epoch, context);
+                Poll::Pending
+            }
+            Poll::Ready(result) => {
+                self.runtime.inner.wakers.remove(operation);
+                self.write_operation = None;
+                Poll::Ready(result)
             }
         }
     }
@@ -269,45 +269,52 @@ impl AsyncRead for HostTcpStream {
         context: &mut Context<'_>,
         buffer: &mut ReadBuf<'_>,
     ) -> Poll<io::Result<()>> {
-        if self.closed || buffer.remaining() == 0 {
+        if buffer.remaining() == 0 || self.closed || self.read_eof {
+            return Poll::Ready(Ok(()));
+        }
+        if self.copy_buffered_read(buffer) {
             return Poll::Ready(Ok(()));
         }
 
-        let operation = match self.read_operation {
-            Some(operation) => operation,
-            None => {
-                let operation = self.runtime.next_operation();
-                if let Err(error) =
-                    self.runtime
-                        .inner
-                        .io
-                        .submit_read(self.handle, operation, buffer.remaining())
-                {
-                    return Poll::Ready(Err(error));
-                }
-                self.read_operation = Some(operation);
-                operation
-            }
-        };
-
-        let destination = buffer.initialize_unfilled();
-        match self.runtime.inner.io.take_read(operation, destination) {
-            Poll::Pending => {
-                self.runtime.inner.wakers.register(context.waker());
-                Poll::Pending
-            }
-            Poll::Ready(result) => {
-                self.read_operation = None;
-                match result {
-                    Ok(length) if length <= destination.len() => {
-                        buffer.advance(length);
-                        Poll::Ready(Ok(()))
+        loop {
+            let operation = match self.read_operation {
+                Some(operation) => operation,
+                None => {
+                    let operation = self.runtime.next_operation();
+                    if let Err(error) = self.runtime.inner.io.submit_read(
+                        self.handle,
+                        operation,
+                        buffer.remaining(),
+                    ) {
+                        return Poll::Ready(Err(error));
                     }
-                    Ok(_) => Poll::Ready(Err(io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        "host read completion exceeds the guest buffer",
-                    ))),
-                    Err(error) => Poll::Ready(Err(error)),
+                    self.read_operation = Some(operation);
+                    operation
+                }
+            };
+
+            let epoch = self.runtime.inner.completion_epoch.load(Ordering::SeqCst);
+            match self.runtime.inner.io.take_read(operation) {
+                Poll::Pending => {
+                    self.runtime.register_pending(operation, epoch, context);
+                    return Poll::Pending;
+                }
+                Poll::Ready(result) => {
+                    self.runtime.inner.wakers.remove(operation);
+                    self.read_operation = None;
+                    match result {
+                        Ok(data) if data.is_empty() => {
+                            self.read_eof = true;
+                            return Poll::Ready(Ok(()));
+                        }
+                        Ok(data) => {
+                            self.read_buffer = Some(ReadBuffer { data, offset: 0 });
+                            if self.copy_buffered_read(buffer) {
+                                return Poll::Ready(Ok(()));
+                            }
+                        }
+                        Err(error) => return Poll::Ready(Err(error)),
+                    }
                 }
             }
         }
@@ -330,39 +337,40 @@ impl AsyncWrite for HostTcpStream {
             return Poll::Ready(Ok(0));
         }
 
-        loop {
-            if let Some(pending) = &self.write_operation {
-                let same_write = pending.data.as_slice() == buffer;
-                match self.poll_pending_write(context) {
-                    Poll::Pending => return Poll::Pending,
-                    Poll::Ready(Err(error)) => return Poll::Ready(Err(error)),
-                    Poll::Ready(Ok(length)) if same_write => return Poll::Ready(Ok(length)),
-                    Poll::Ready(Ok(_)) => continue,
-                }
-            }
-
-            if let Err(error) = self.submit_write(buffer.to_vec()) {
-                return Poll::Ready(Err(error));
-            }
+        match self.poll_write_completion(context) {
+            Poll::Pending => return Poll::Pending,
+            Poll::Ready(Err(error)) => return Poll::Ready(Err(error)),
+            Poll::Ready(Ok(())) => {}
         }
+
+        let operation = self.runtime.next_operation();
+        if let Err(error) = self
+            .runtime
+            .inner
+            .io
+            .submit_write(self.handle, operation, buffer)
+        {
+            return Poll::Ready(Err(error));
+        }
+        self.write_operation = Some(operation);
+        Poll::Ready(Ok(buffer.len()))
     }
 
     fn poll_flush(mut self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<io::Result<()>> {
-        match self.poll_pending_write(context) {
-            Poll::Pending => Poll::Pending,
-            Poll::Ready(result) => Poll::Ready(result.map(|_| ())),
-        }
+        self.poll_write_completion(context)
     }
 
     fn poll_shutdown(mut self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<io::Result<()>> {
-        if self.write_operation.is_some() {
-            match self.poll_pending_write(context) {
-                Poll::Pending => return Poll::Pending,
-                Poll::Ready(Err(error)) => return Poll::Ready(Err(error)),
-                Poll::Ready(Ok(_)) => {}
-            }
+        let flush_error = match self.poll_write_completion(context) {
+            Poll::Pending => return Poll::Pending,
+            Poll::Ready(Ok(())) => None,
+            Poll::Ready(Err(error)) => Some(error),
+        };
+        let close_result = self.close();
+        match (flush_error, close_result) {
+            (Some(error), _) => Poll::Ready(Err(error)),
+            (None, result) => Poll::Ready(result),
         }
-        Poll::Ready(self.close())
     }
 }
 
@@ -388,17 +396,17 @@ impl Drop for HostTcpStream {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::{HashMap, HashSet};
+    use std::{collections::HashSet, sync::atomic::AtomicBool};
 
     use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
     use super::*;
 
     enum TestOperation {
-        Read(Option<Vec<u8>>),
+        Read(Option<io::Result<Vec<u8>>>),
         Write {
             source: Vec<u8>,
-            result: Option<usize>,
+            result: Option<io::Result<()>>,
         },
     }
 
@@ -407,30 +415,31 @@ mod tests {
         operations: Mutex<HashMap<HostOperationId, TestOperation>>,
         cancelled: Mutex<Vec<HostOperationId>>,
         closed: Mutex<HashSet<HostSocketHandle>>,
+        notify_during_take: AtomicBool,
+        runtime: Mutex<Option<HostSocketRuntime>>,
     }
 
     impl TestHostIo {
-        fn read_operation(&self) -> HostOperationId {
+        fn operation(&self, read: bool) -> HostOperationId {
             self.operations
                 .lock()
                 .unwrap()
                 .iter()
-                .find_map(|(id, operation)| {
-                    matches!(operation, TestOperation::Read(_)).then_some(*id)
+                .find_map(|(id, operation)| match (read, operation) {
+                    (true, TestOperation::Read(_)) | (false, TestOperation::Write { .. }) => {
+                        Some(*id)
+                    }
+                    _ => None,
                 })
-                .expect("read operation was not submitted")
+                .expect("operation was not submitted")
         }
 
-        fn write_operation(&self) -> (HostOperationId, Vec<u8>) {
-            self.operations
-                .lock()
-                .unwrap()
-                .iter()
-                .find_map(|(id, operation)| match operation {
-                    TestOperation::Write { source, .. } => Some((*id, source.clone())),
-                    TestOperation::Read(_) => None,
-                })
-                .expect("write operation was not submitted")
+        fn write_source(&self, operation: HostOperationId) -> Vec<u8> {
+            let operations = self.operations.lock().unwrap();
+            let TestOperation::Write { source, .. } = operations.get(&operation).unwrap() else {
+                panic!("operation is not a write");
+            };
+            source.clone()
         }
 
         fn complete_read(&self, operation: HostOperationId, data: Vec<u8>) {
@@ -438,16 +447,25 @@ mod tests {
             let TestOperation::Read(result) = operations.get_mut(&operation).unwrap() else {
                 panic!("operation is not a read");
             };
-            *result = Some(data);
+            *result = Some(Ok(data));
         }
 
-        fn complete_write(&self, operation: HostOperationId, length: usize) {
+        fn complete_write(&self, operation: HostOperationId) {
             let mut operations = self.operations.lock().unwrap();
             let TestOperation::Write { result, .. } = operations.get_mut(&operation).unwrap()
             else {
                 panic!("operation is not a write");
             };
-            *result = Some(length);
+            *result = Some(Ok(()));
+        }
+
+        fn fail_write(&self, operation: HostOperationId) {
+            let mut operations = self.operations.lock().unwrap();
+            let TestOperation::Write { result, .. } = operations.get_mut(&operation).unwrap()
+            else {
+                panic!("operation is not a write");
+            };
+            *result = Some(Err(io::Error::other("write failed")));
         }
     }
 
@@ -465,25 +483,28 @@ mod tests {
             Ok(())
         }
 
-        fn take_read(
-            &self,
-            operation: HostOperationId,
-            destination: &mut [u8],
-        ) -> Poll<io::Result<usize>> {
+        fn take_read(&self, operation: HostOperationId) -> Poll<io::Result<Vec<u8>>> {
+            if self.notify_during_take.swap(false, Ordering::SeqCst) {
+                self.runtime
+                    .lock()
+                    .unwrap()
+                    .as_ref()
+                    .unwrap()
+                    .notify_completions();
+                return Poll::Pending;
+            }
             let mut operations = self.operations.lock().unwrap();
-            let Some(TestOperation::Read(Some(data))) = operations.get(&operation) else {
+            let Some(TestOperation::Read(result)) = operations.get_mut(&operation) else {
+                return Poll::Ready(Err(io::Error::new(
+                    io::ErrorKind::NotFound,
+                    "read operation is missing",
+                )));
+            };
+            let Some(result) = result.take() else {
                 return Poll::Pending;
             };
-            if data.len() > destination.len() {
-                return Poll::Ready(Err(io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    "destination is too small",
-                )));
-            }
-            destination[..data.len()].copy_from_slice(data);
-            let length = data.len();
             operations.remove(&operation);
-            Poll::Ready(Ok(length))
+            Poll::Ready(result)
         }
 
         fn submit_write(
@@ -502,18 +523,19 @@ mod tests {
             Ok(())
         }
 
-        fn take_write(&self, operation: HostOperationId) -> Poll<io::Result<usize>> {
+        fn take_write(&self, operation: HostOperationId) -> Poll<io::Result<()>> {
             let mut operations = self.operations.lock().unwrap();
-            let Some(TestOperation::Write {
-                result: Some(length),
-                ..
-            }) = operations.get(&operation)
-            else {
+            let Some(TestOperation::Write { result, .. }) = operations.get_mut(&operation) else {
+                return Poll::Ready(Err(io::Error::new(
+                    io::ErrorKind::NotFound,
+                    "write operation is missing",
+                )));
+            };
+            let Some(result) = result.take() else {
                 return Poll::Pending;
             };
-            let length = *length;
             operations.remove(&operation);
-            Poll::Ready(Ok(length))
+            Poll::Ready(result)
         }
 
         fn cancel_operation(&self, operation: HostOperationId) -> io::Result<()> {
@@ -529,7 +551,8 @@ mod tests {
     }
 
     fn test_stream(io: Arc<TestHostIo>) -> (HostSocketRuntime, HostTcpStream) {
-        let runtime = HostSocketRuntime::new(io);
+        let runtime = HostSocketRuntime::new(io.clone());
+        *io.runtime.lock().unwrap() = Some(runtime.clone());
         let stream = runtime.tcp_stream(
             HostSocketHandle(7),
             "192.0.2.1:10000".parse().unwrap(),
@@ -540,7 +563,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn pending_completions_wake_read_and_write_tasks() {
+    async fn pending_completions_wake_reads_and_apply_write_backpressure() {
         let io = Arc::new(TestHostIo::default());
         let (runtime, stream) = test_stream(io.clone());
         assert_eq!(stream.transport_label(), Some("host-test"));
@@ -552,28 +575,50 @@ mod tests {
             data
         });
         tokio::task::yield_now().await;
-        let read_operation = io.read_operation();
+        let read_operation = io.operation(true);
         io.complete_read(read_operation, b"abc".to_vec());
         runtime.notify_completions();
         assert_eq!(read_task.await.unwrap(), *b"abc");
 
         let write_task = tokio::spawn(async move {
-            writer.write_all(b"xyz").await.unwrap();
+            writer.write_all(b"one").await.unwrap();
+            writer.write_all(b"two").await.unwrap();
             writer.shutdown().await.unwrap();
         });
         tokio::task::yield_now().await;
-        let (write_operation, source) = io.write_operation();
-        assert_eq!(source, b"xyz");
-        io.complete_write(write_operation, 1);
+        let first_write = io.operation(false);
+        assert_eq!(io.write_source(first_write), b"one");
+        io.complete_write(first_write);
         runtime.notify_completions();
         tokio::task::yield_now().await;
-        let (write_operation, source) = io.write_operation();
-        assert_eq!(source, b"yz");
-        io.complete_write(write_operation, source.len());
+        let second_write = io.operation(false);
+        assert_ne!(second_write, first_write);
+        assert_eq!(io.write_source(second_write), b"two");
+        io.complete_write(second_write);
         runtime.notify_completions();
         write_task.await.unwrap();
 
         assert!(io.closed.lock().unwrap().contains(&HostSocketHandle(7)));
+    }
+
+    #[tokio::test]
+    async fn cancelled_read_keeps_owned_completion_remainder() {
+        let io = Arc::new(TestHostIo::default());
+        let (runtime, mut stream) = test_stream(io.clone());
+        let mut large = [0_u8; 4];
+        let mut first_read = Box::pin(stream.read(&mut large));
+        assert!(futures::poll!(&mut first_read).is_pending());
+        drop(first_read);
+
+        let operation = io.operation(true);
+        io.complete_read(operation, b"abcd".to_vec());
+        runtime.notify_completions();
+        let mut first = [0_u8; 1];
+        stream.read_exact(&mut first).await.unwrap();
+        assert_eq!(&first, b"a");
+        let mut remainder = [0_u8; 3];
+        stream.read_exact(&mut remainder).await.unwrap();
+        assert_eq!(&remainder, b"bcd");
     }
 
     #[tokio::test]
@@ -585,28 +630,75 @@ mod tests {
             stream.read(&mut byte).await.unwrap()
         });
         tokio::task::yield_now().await;
-        let operation = io.read_operation();
+        let operation = io.operation(true);
         io.complete_read(operation, Vec::new());
         runtime.notify_completions();
 
         assert_eq!(read_task.await.unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn shutdown_closes_handle_after_buffered_write_error() {
+        let io = Arc::new(TestHostIo::default());
+        let (runtime, mut stream) = test_stream(io.clone());
+        stream.write_all(b"data").await.unwrap();
+        let operation = io.operation(false);
+        io.fail_write(operation);
+        runtime.notify_completions();
+
+        let error = stream.shutdown().await.unwrap_err();
+        assert_eq!(error.to_string(), "write failed");
         assert!(io.closed.lock().unwrap().contains(&HostSocketHandle(7)));
     }
 
     #[tokio::test]
-    async fn dropping_pending_stream_cancels_operation_and_closes_handle() {
+    async fn completion_between_poll_and_registration_is_not_lost() {
         let io = Arc::new(TestHostIo::default());
         let (_runtime, mut stream) = test_stream(io.clone());
+        let operation = {
+            let mut byte = [0_u8; 1];
+            let mut read = Box::pin(stream.read(&mut byte));
+            assert!(futures::poll!(&mut read).is_pending());
+            io.operation(true)
+        };
+        io.complete_read(operation, b"x".to_vec());
+        io.notify_during_take.store(true, Ordering::SeqCst);
+
+        let mut byte = [0_u8; 1];
+        tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            stream.read_exact(&mut byte),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(&byte, b"x");
+    }
+
+    #[tokio::test]
+    async fn dropping_pending_stream_removes_waker_cancels_and_closes() {
+        let io = Arc::new(TestHostIo::default());
+        let (runtime, mut stream) = test_stream(io.clone());
         let read_task = tokio::spawn(async move {
             let mut byte = [0_u8; 1];
             let _ = stream.read(&mut byte).await;
         });
         tokio::task::yield_now().await;
-        let operation = io.read_operation();
+        let operation = io.operation(true);
+        assert_eq!(runtime.inner.wakers.len(), 1);
         read_task.abort();
         let _ = read_task.await;
 
+        assert_eq!(runtime.inner.wakers.len(), 0);
         assert_eq!(*io.cancelled.lock().unwrap(), vec![operation]);
         assert!(io.closed.lock().unwrap().contains(&HostSocketHandle(7)));
+    }
+
+    #[test]
+    fn shared_host_io_receives_unique_operation_ids() {
+        let io = Arc::new(TestHostIo::default());
+        let runtime_a = HostSocketRuntime::new(io.clone());
+        let runtime_b = HostSocketRuntime::new(io);
+        assert_ne!(runtime_a.next_operation(), runtime_b.next_operation());
     }
 }

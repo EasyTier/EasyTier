@@ -1,4 +1,4 @@
-use std::{io, task::Poll};
+use std::{collections::HashMap, io, sync::Mutex, task::Poll};
 
 use super::{HostOperationId, HostSocketHandle, HostTcpIo};
 
@@ -14,8 +14,10 @@ unsafe extern "C" {
     fn close(handle: u64) -> i32;
 }
 
-#[derive(Debug, Default, Clone, Copy)]
-pub struct WasiHostTcpIo;
+#[derive(Debug, Default)]
+pub struct WasiHostTcpIo {
+    read_buffers: Mutex<HashMap<HostOperationId, Vec<u8>>>,
+}
 
 impl HostTcpIo for WasiHostTcpIo {
     fn submit_read(
@@ -24,26 +26,51 @@ impl HostTcpIo for WasiHostTcpIo {
         operation: HostOperationId,
         capacity: usize,
     ) -> io::Result<()> {
-        let capacity = u32::try_from(capacity)
+        let capacity_u32 = u32::try_from(capacity)
             .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "read buffer is too large"))?;
         status("start_read", unsafe {
-            start_read(handle.0, operation.0, capacity)
-        })
+            start_read(handle.0, operation.0, capacity_u32)
+        })?;
+        self.read_buffers
+            .lock()
+            .expect("WASI read buffer registry poisoned")
+            .insert(operation, vec![0; capacity]);
+        Ok(())
     }
 
-    fn take_read(
-        &self,
-        operation: HostOperationId,
-        destination: &mut [u8],
-    ) -> Poll<io::Result<usize>> {
-        let Ok(capacity) = u32::try_from(destination.len()) else {
+    fn take_read(&self, operation: HostOperationId) -> Poll<io::Result<Vec<u8>>> {
+        let mut buffers = self
+            .read_buffers
+            .lock()
+            .expect("WASI read buffer registry poisoned");
+        let Some(buffer) = buffers.get_mut(&operation) else {
             return Poll::Ready(Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "read buffer is too large",
+                io::ErrorKind::NotFound,
+                "WASI read operation buffer is missing",
             )));
         };
-        let result = unsafe { take_read(operation.0, destination.as_mut_ptr() as u32, capacity) };
-        completion("take_read", result)
+        let result =
+            unsafe { take_read(operation.0, buffer.as_mut_ptr() as u32, buffer.len() as u32) };
+        match result {
+            HOST_PENDING => Poll::Pending,
+            value if value >= 0 => {
+                let length = value as usize;
+                if length > buffer.len() {
+                    buffers.remove(&operation);
+                    return Poll::Ready(Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "host read completion exceeds the submitted capacity",
+                    )));
+                }
+                let mut buffer = buffers.remove(&operation).unwrap();
+                buffer.truncate(length);
+                Poll::Ready(Ok(buffer))
+            }
+            value => {
+                buffers.remove(&operation);
+                Poll::Ready(Err(host_error("take_read", value)))
+            }
+        }
     }
 
     fn submit_write(
@@ -60,11 +87,19 @@ impl HostTcpIo for WasiHostTcpIo {
         })
     }
 
-    fn take_write(&self, operation: HostOperationId) -> Poll<io::Result<usize>> {
-        completion("take_write", unsafe { take_write(operation.0) })
+    fn take_write(&self, operation: HostOperationId) -> Poll<io::Result<()>> {
+        match unsafe { take_write(operation.0) } {
+            HOST_PENDING => Poll::Pending,
+            0 => Poll::Ready(Ok(())),
+            value => Poll::Ready(Err(host_error("take_write", value))),
+        }
     }
 
     fn cancel_operation(&self, operation: HostOperationId) -> io::Result<()> {
+        self.read_buffers
+            .lock()
+            .expect("WASI read buffer registry poisoned")
+            .remove(&operation);
         status("cancel_operation", unsafe { cancel_operation(operation.0) })
     }
 
@@ -78,14 +113,6 @@ fn status(operation: &str, result: i32) -> io::Result<()> {
         Ok(())
     } else {
         Err(host_error(operation, result))
-    }
-}
-
-fn completion(operation: &str, result: i32) -> Poll<io::Result<usize>> {
-    match result {
-        HOST_PENDING => Poll::Pending,
-        value if value >= 0 => Poll::Ready(Ok(value as usize)),
-        value => Poll::Ready(Err(host_error(operation, value))),
     }
 }
 
