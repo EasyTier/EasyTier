@@ -329,11 +329,12 @@ func (b *opaqueBridge) closeHandle(
 		packet.closeAfterQueuedSends()
 	}
 	if listenerExists {
-		if err := listener.listener.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
-			return opaqueHostIOError
-		}
+		closeErr := listener.listener.Close()
 		for _, accepted := range listener.accepted {
 			_ = accepted.Close()
+		}
+		if closeErr != nil && !errors.Is(closeErr, net.ErrClosed) {
+			return opaqueHostIOError
 		}
 	}
 	return 0

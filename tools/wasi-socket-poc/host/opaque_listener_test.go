@@ -210,8 +210,17 @@ func (b *opaqueBridge) takeTCPAccept(
 			b.mu.Unlock()
 			return opaqueHostPending
 		}
+		state.acceptErr = nil
 		delete(b.tcpAccepts, operation)
+		startWorker := !state.acceptRunning && hasTCPAcceptWaiter(b, waiter.handle)
+		if startWorker {
+			state.acceptRunning = true
+			b.workers.Add(1)
+		}
 		b.mu.Unlock()
+		if startWorker {
+			go b.runTCPAccept(waiter.handle, state)
+		}
 		return opaqueHostIOError
 	}
 	connection := state.accepted[0]
@@ -220,8 +229,16 @@ func (b *opaqueBridge) takeTCPAccept(
 	handle := b.allocateHandleLocked()
 	encoded, err := encodeTCPSocketResult(handle, connection.LocalAddr(), connection.RemoteAddr())
 	if err != nil || !module.Memory().Write(resultPointer, encoded[:]) {
+		startWorker := !state.acceptRunning && hasTCPAcceptWaiter(b, waiter.handle)
+		if startWorker {
+			state.acceptRunning = true
+			b.workers.Add(1)
+		}
 		b.mu.Unlock()
 		_ = connection.Close()
+		if startWorker {
+			go b.runTCPAccept(waiter.handle, state)
+		}
 		return opaqueHostMemory
 	}
 	b.handles[handle] = connection
