@@ -33,6 +33,9 @@ where
     F: FnOnce(MagicDnsQuery) -> Fut,
     Fut: Future<Output = Option<Vec<u8>>>,
 {
+    if packet.peer_manager_header().is_none() {
+        return false;
+    }
     let Some(ip_packet) = Ipv4Packet::new(packet.payload()) else {
         return false;
     };
@@ -47,7 +50,6 @@ where
         || ip_total_length != packet.payload().len()
         || ip_packet.get_fragment_offset() != 0
         || ip_packet.get_flags() & Ipv4Flags::MoreFragments != 0
-        || packet.peer_manager_header().is_none()
     {
         return false;
     }
@@ -440,6 +442,23 @@ mod tests {
             .await
         );
         assert_eq!(packet.payload(), original);
+    }
+
+    #[cfg(feature = "proxy-packet")]
+    #[tokio::test]
+    async fn packet_engine_rejects_short_zc_packet_without_panicking() {
+        let mut packet =
+            ZCPacket::new_from_buf(Default::default(), crate::packet::ZCPacketType::NIC);
+
+        assert!(
+            !process_magic_dns_packet(
+                &mut packet,
+                "100.100.100.101".parse().unwrap(),
+                42,
+                |_| async { panic!("short packet must not invoke DNS") },
+            )
+            .await
+        );
     }
 
     #[cfg(feature = "proxy-packet")]
