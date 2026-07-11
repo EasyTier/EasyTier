@@ -7,23 +7,27 @@ use std::{
     time::Duration,
 };
 
-use easytier_core::socket::{
-    IpVersion, NetNamespace, SocketContext,
-    dns::{DnsQuery, DnsRecordResolver, DnsResolver, DnsSrvRecord},
-    host::{
-        HostSocketHandle, HostSocketRuntime,
-        dns::{HostDnsResolver, wasi::WasiHostDnsIo},
-        factory::HostSocketFactory,
-        listener::HostTcpListenerFactory,
-        udp::wasi::WasiHostUdpIo,
-        wasi::WasiHostTcpIo,
-        wasi_backend::WasiHostSocketBackend,
+use easytier_core::{
+    instance::PacketSink,
+    socket::{
+        IpVersion, NetNamespace, SocketContext,
+        dns::{DnsQuery, DnsRecordResolver, DnsResolver, DnsSrvRecord},
+        host::{
+            HostSocketHandle, HostSocketRuntime,
+            dns::{HostDnsResolver, wasi::WasiHostDnsIo},
+            factory::HostSocketFactory,
+            listener::HostTcpListenerFactory,
+            packet::{HostPacketSink, HostPacketSinkHandle, wasi::WasiHostPacketIo},
+            udp::wasi::WasiHostUdpIo,
+            wasi::WasiHostTcpIo,
+            wasi_backend::WasiHostSocketBackend,
+        },
+        tcp::{
+            TcpConnectOptions, TcpListenOptions, VirtualTcpListener, VirtualTcpListenerFactory,
+            VirtualTcpSocketFactory,
+        },
+        udp::{UdpBindOptions, VirtualUdpSocket, VirtualUdpSocketFactory},
     },
-    tcp::{
-        TcpConnectOptions, TcpListenOptions, VirtualTcpListener, VirtualTcpListenerFactory,
-        VirtualTcpSocketFactory,
-    },
-    udp::{UdpBindOptions, VirtualUdpSocket, VirtualUdpSocketFactory},
 };
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
@@ -46,6 +50,7 @@ thread_local! {
     static FACTORY_PROBE: RefCell<Option<FactoryProbe>> = const { RefCell::new(None) };
     static LISTENER_PROBE: RefCell<Option<FactoryProbe>> = const { RefCell::new(None) };
     static DNS_PROBE: RefCell<Option<FactoryProbe>> = const { RefCell::new(None) };
+    static PACKET_PROBE: RefCell<Option<FactoryProbe>> = const { RefCell::new(None) };
 }
 
 struct Probe {
@@ -532,6 +537,62 @@ pub extern "C" fn drive_dns_probe() -> u32 {
     DNS_PROBE.with_borrow_mut(|slot| {
         let Some(probe) = slot.as_mut() else {
             return ERROR | 12;
+        };
+        probe.sockets.notify_completions();
+        probe
+            .runtime
+            .block_on(async { tokio::task::yield_now().await });
+        probe.status.load(Ordering::SeqCst)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn init_packet_probe(handle: u64) -> i32 {
+    PACKET_PROBE.with_borrow_mut(|slot| {
+        if slot.is_some() {
+            return -1;
+        }
+        let runtime = match Builder::new_current_thread().enable_time().build() {
+            Ok(runtime) => runtime,
+            Err(_) => return -2,
+        };
+        let status = Arc::new(AtomicU32::new(0));
+        let sockets = HostSocketRuntime::new();
+        let sink = HostPacketSink::new(
+            sockets.clone(),
+            Arc::new(WasiHostPacketIo),
+            HostPacketSinkHandle(handle),
+        );
+        let task_status = status.clone();
+        runtime.spawn(async move {
+            let result = async {
+                sink.write_packet(b"first-packet".to_vec()).await?;
+                sink.write_packet(b"second-packet".to_vec()).await
+            }
+            .await;
+            match result {
+                Ok(()) => {
+                    task_status.fetch_or(DONE, Ordering::SeqCst);
+                }
+                Err(_) => {
+                    task_status.fetch_or(ERROR | 13, Ordering::SeqCst);
+                }
+            }
+        });
+        *slot = Some(FactoryProbe {
+            runtime,
+            status,
+            sockets,
+        });
+        0
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn drive_packet_probe() -> u32 {
+    PACKET_PROBE.with_borrow_mut(|slot| {
+        let Some(probe) = slot.as_mut() else {
+            return ERROR | 14;
         };
         probe.sockets.notify_completions();
         probe
