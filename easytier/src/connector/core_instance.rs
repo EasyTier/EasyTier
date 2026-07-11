@@ -310,7 +310,7 @@ mod tests {
             RuntimeCoreInstance::new_portable(
                 runtime_core_instance_adapters(global_ctx),
                 PortableCoreInstanceConfig { peer, connectivity },
-                packet_sink,
+                Arc::new(packet_sink),
             )
             .unwrap(),
         );
@@ -365,7 +365,7 @@ mod tests {
                         direct: runtime_direct_options(&global_a, true),
                     },
                 },
-                packet_sink_a,
+                Arc::new(packet_sink_a),
             )
             .unwrap(),
         );
@@ -381,7 +381,7 @@ mod tests {
                         direct: runtime_direct_options(&global_b, true),
                     },
                 },
-                packet_sink_b,
+                Arc::new(packet_sink_b),
             )
             .unwrap(),
         );
@@ -432,7 +432,7 @@ mod tests {
         let error = RuntimeCoreInstance::new_portable(
             runtime_core_instance_adapters(global_ctx),
             PortableCoreInstanceConfig { peer, connectivity },
-            packet_sink,
+            Arc::new(packet_sink),
         )
         .err()
         .expect("conflicting P2P policy should be rejected");
@@ -468,7 +468,7 @@ mod tests {
         let error = RuntimeCoreInstance::new_portable(
             runtime_core_instance_adapters(global_ctx),
             PortableCoreInstanceConfig { peer, connectivity },
-            packet_sink,
+            Arc::new(packet_sink),
         )
         .err()
         .expect("optional listener without a handler should be rejected");

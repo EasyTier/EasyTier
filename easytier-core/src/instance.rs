@@ -1,5 +1,7 @@
 //! Lifecycle owner for the portable EasyTier runtime.
 
+pub mod packet_io;
+
 use std::sync::{
     Arc, Weak,
     atomic::{AtomicBool, AtomicU8, Ordering},
@@ -28,11 +30,14 @@ use crate::{
         },
     },
     peers::{
-        PacketRecvChan,
+        create_packet_recv_chan,
         peer_manager::{PeerManagerCore, PortablePeerManagerConfig},
     },
     socket::{dns::DnsResolver, tcp::VirtualTcpSocketFactory},
 };
+
+use packet_io::PacketEgress;
+pub use packet_io::PacketSink;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
@@ -211,6 +216,7 @@ where
     listener_started: AtomicBool,
     udp_hole_punch: Option<Arc<dyn UdpHolePunchService>>,
     udp_hole_punch_started: AtomicBool,
+    packet_egress: Option<PacketEgress>,
 }
 
 impl<H> CoreInstance<H>
@@ -220,7 +226,7 @@ where
     pub fn new_portable(
         adapters: CoreInstanceAdapters<H>,
         config: PortableCoreInstanceConfig,
-        packet_sink: PacketRecvChan,
+        packet_sink: Arc<dyn PacketSink>,
     ) -> anyhow::Result<Self> {
         validate_portable_connectivity_config(&config)?;
         validate_listener_protocols(
@@ -235,12 +241,15 @@ where
                 network_name
             );
         }
+        let (packet_tx, packet_rx) = create_packet_recv_chan();
         let peer_manager = Arc::new(PeerManagerCore::new_portable(
             config.peer,
             adapters.dns.clone(),
-            packet_sink,
+            packet_tx,
         )?);
-        Self::new(peer_manager, adapters, config.connectivity)
+        let mut instance = Self::new(peer_manager, adapters, config.connectivity)?;
+        instance.packet_egress = Some(PacketEgress::new(packet_rx, packet_sink));
+        Ok(instance)
     }
 
     pub fn new(
@@ -346,6 +355,7 @@ where
             listener_started: AtomicBool::new(false),
             udp_hole_punch,
             udp_hole_punch_started: AtomicBool::new(false),
+            packet_egress: None,
         })
     }
 
@@ -381,6 +391,9 @@ where
         self.tcp_hole_punch.stop().await;
         self.direct.stop().await;
         self.peer_manager.clear_resources().await;
+        if let Some(packet_egress) = &self.packet_egress {
+            packet_egress.stop().await;
+        }
     }
 
     pub async fn start(self: &Arc<Self>) -> anyhow::Result<()> {
@@ -391,6 +404,15 @@ where
         }
         self.set_state(CoreInstanceState::Starting);
         let mut recovery = self.recovery_guard();
+
+        if let Some(packet_egress) = &self.packet_egress
+            && let Err(error) = packet_egress.start()
+        {
+            self.stop_components().await;
+            self.set_state(CoreInstanceState::Stopped);
+            recovery.disarm();
+            return Err(error);
+        }
 
         let start_result = tokio::select! {
             _ = self.cancel.cancelled() => Err(anyhow::anyhow!("core instance start cancelled")),
