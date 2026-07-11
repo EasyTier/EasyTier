@@ -13,6 +13,9 @@ use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
 use super::tcp::VirtualTcpSocket;
 
+#[cfg(target_os = "wasi")]
+pub mod wasi;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct HostSocketHandle(pub u64);
 
