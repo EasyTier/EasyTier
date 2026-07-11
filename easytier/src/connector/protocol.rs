@@ -1,7 +1,9 @@
+use std::sync::Arc;
+
 use async_trait::async_trait;
 use easytier_core::{
     connectivity::{
-        protocol::{ClientProtocolUpgrader, raw},
+        protocol::{ClientProtocolUpgrader, CoreClientProtocolConfig, CoreClientProtocolUpgrader},
         transport::ConnectedTransport,
     },
     tunnel::Tunnel,
@@ -19,37 +21,37 @@ impl RuntimeClientProtocolUpgrader {
     }
 }
 
+pub(crate) fn runtime_client_protocol_upgrader(
+    global_ctx: ArcGlobalCtx,
+) -> Arc<dyn ClientProtocolUpgrader<RuntimeTcpSocket>> {
+    Arc::new(CoreClientProtocolUpgrader::with_external(
+        CoreClientProtocolConfig {
+            unix: cfg!(unix),
+            faketcp: cfg!(feature = "faketcp"),
+        },
+        Arc::new(RuntimeClientProtocolUpgrader::new(global_ctx)),
+    ))
+}
+
 #[async_trait]
 impl ClientProtocolUpgrader<RuntimeTcpSocket> for RuntimeClientProtocolUpgrader {
     fn supports_scheme(&self, scheme: &str) -> bool {
         match scheme {
-            "tcp" | "udp" | "ring" => true,
-            "unix" => cfg!(unix),
             "ws" | "wss" => cfg!(feature = "websocket"),
             "wg" => cfg!(feature = "wireguard"),
             "quic" => cfg!(feature = "quic"),
-            "faketcp" => cfg!(feature = "faketcp"),
             _ => false,
         }
     }
 
     async fn upgrade_client(
         &self,
-        connected: ConnectedTransport<RuntimeTcpSocket>,
+        _connected: ConnectedTransport<RuntimeTcpSocket>,
         requested_url: url::Url,
     ) -> anyhow::Result<Box<dyn Tunnel>> {
         match requested_url.scheme() {
-            "tcp" | "udp" => Ok(raw::upgrade_connected(connected, requested_url)?),
-            "ring" | "unix" => match connected {
-                ConnectedTransport::ByteStream(stream) => {
-                    Ok(raw::upgrade_connected_byte_stream(stream)?)
-                }
-                ConnectedTransport::Tcp(_) | ConnectedTransport::Udp(_) => {
-                    anyhow::bail!("external protocol requires a host-created byte stream")
-                }
-            },
             #[cfg(feature = "websocket")]
-            "ws" | "wss" => match connected {
+            "ws" | "wss" => match _connected {
                 ConnectedTransport::Tcp(socket) => {
                     Ok(crate::tunnel::websocket::upgrade_connected(socket, requested_url).await?)
                 }
@@ -61,7 +63,7 @@ impl ClientProtocolUpgrader<RuntimeTcpSocket> for RuntimeClientProtocolUpgrader 
                 }
             },
             #[cfg(feature = "wireguard")]
-            "wg" => match connected {
+            "wg" => match _connected {
                 ConnectedTransport::Udp(session) => {
                     use crate::tunnel::wireguard::{WgConfig, upgrade_connected};
                     let identity = self.global_ctx.get_network_identity();
@@ -79,7 +81,7 @@ impl ClientProtocolUpgrader<RuntimeTcpSocket> for RuntimeClientProtocolUpgrader 
                 }
             },
             #[cfg(feature = "quic")]
-            "quic" => match connected {
+            "quic" => match _connected {
                 ConnectedTransport::Udp(session) => {
                     Ok(crate::tunnel::quic::upgrade_connected(session, requested_url).await?)
                 }
@@ -90,21 +92,6 @@ impl ClientProtocolUpgrader<RuntimeTcpSocket> for RuntimeClientProtocolUpgrader 
                     anyhow::bail!("QUIC protocol requires a UDP session")
                 }
             },
-            #[cfg(feature = "faketcp")]
-            "faketcp" => match connected {
-                ConnectedTransport::Tcp(socket) => Ok(
-                    easytier_core::connectivity::protocol::faketcp::upgrade_connected(
-                        socket,
-                        requested_url,
-                    )?,
-                ),
-                ConnectedTransport::Udp(_) => {
-                    anyhow::bail!("FakeTCP protocol requires a TCP transport")
-                }
-                ConnectedTransport::ByteStream(_) => {
-                    anyhow::bail!("FakeTCP protocol requires a TCP transport")
-                }
-            },
             scheme => anyhow::bail!("unsupported client protocol upgrader: {scheme}"),
         }
     }
@@ -112,9 +99,7 @@ impl ClientProtocolUpgrader<RuntimeTcpSocket> for RuntimeClientProtocolUpgrader 
 
 #[cfg(test)]
 mod tests {
-    use easytier_core::connectivity::protocol::{
-        ClientProtocolUpgrader, RawClientProtocolUpgrader,
-    };
+    use easytier_core::connectivity::protocol::RawClientProtocolUpgrader;
 
     use crate::common::global_ctx::tests::get_mock_global_ctx;
 
@@ -122,7 +107,17 @@ mod tests {
 
     #[tokio::test]
     async fn protocol_capabilities_follow_enabled_features() {
-        let upgrader = RuntimeClientProtocolUpgrader::new(get_mock_global_ctx());
+        let global_ctx = get_mock_global_ctx();
+        let external = RuntimeClientProtocolUpgrader::new(global_ctx.clone());
+
+        assert!(!external.supports_scheme("tcp"));
+        assert!(!external.supports_scheme("faketcp"));
+        assert_eq!(external.supports_scheme("ws"), cfg!(feature = "websocket"));
+        assert_eq!(external.supports_scheme("wss"), cfg!(feature = "websocket"));
+        assert_eq!(external.supports_scheme("wg"), cfg!(feature = "wireguard"));
+        assert_eq!(external.supports_scheme("quic"), cfg!(feature = "quic"));
+
+        let upgrader = runtime_client_protocol_upgrader(global_ctx);
 
         assert!(upgrader.supports_scheme("tcp"));
         assert!(upgrader.supports_scheme("udp"));

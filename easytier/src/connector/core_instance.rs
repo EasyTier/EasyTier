@@ -7,7 +7,6 @@ use easytier_core::{
             ManualConnectivityEvent, ManualConnectivityEventSink, ManualConnectorOptions,
             discovery::ManualEndpointDiscoveryConfig,
         },
-        protocol::ClientProtocolUpgrader,
     },
     instance::{CoreInstance, CoreInstanceAdapters, CoreInstanceConfig},
     socket::{
@@ -32,7 +31,7 @@ use crate::{
     use_global_var,
 };
 
-use super::{protocol::RuntimeClientProtocolUpgrader, runtime::RuntimeConnectorHost};
+use super::{protocol::runtime_client_protocol_upgrader, runtime::RuntimeConnectorHost};
 
 pub(crate) type RuntimeCoreInstance = CoreInstance<RuntimeConnectorHost>;
 
@@ -131,10 +130,7 @@ pub(crate) fn runtime_core_instance_adapters(
         host,
         dns,
         dns_records,
-        protocol: Some(
-            Arc::new(RuntimeClientProtocolUpgrader::new(global_ctx.clone()))
-                as Arc<dyn ClientProtocolUpgrader<_>>,
-        ),
+        protocol: Some(runtime_client_protocol_upgrader(global_ctx.clone())),
         manual_events: Some(Arc::new(GlobalCtxManualConnectivityEventSink {
             global_ctx,
         })),

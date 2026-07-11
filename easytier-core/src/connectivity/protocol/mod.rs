@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use async_trait::async_trait;
 use url::Url;
 
@@ -20,6 +22,103 @@ pub trait ClientProtocolUpgrader<TcpSocket>: Send + Sync + 'static {
         connected: ConnectedTransport<TcpSocket>,
         requested_url: Url,
     ) -> anyhow::Result<Box<dyn Tunnel>>;
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct CoreClientProtocolConfig {
+    pub unix: bool,
+    pub faketcp: bool,
+}
+
+/// Owns portable client protocol dispatch and delegates only protocol engines
+/// that are not yet available in core.
+pub struct CoreClientProtocolUpgrader<TcpSocket> {
+    config: CoreClientProtocolConfig,
+    external: Option<Arc<dyn ClientProtocolUpgrader<TcpSocket>>>,
+}
+
+impl<TcpSocket> CoreClientProtocolUpgrader<TcpSocket> {
+    pub fn new(config: CoreClientProtocolConfig) -> Self {
+        Self {
+            config,
+            external: None,
+        }
+    }
+
+    pub fn with_external(
+        config: CoreClientProtocolConfig,
+        external: Arc<dyn ClientProtocolUpgrader<TcpSocket>>,
+    ) -> Self {
+        Self {
+            config,
+            external: Some(external),
+        }
+    }
+}
+
+#[async_trait]
+impl<TcpSocket> ClientProtocolUpgrader<TcpSocket> for CoreClientProtocolUpgrader<TcpSocket>
+where
+    TcpSocket: VirtualTcpSocket,
+{
+    fn supports_scheme(&self, scheme: &str) -> bool {
+        match scheme {
+            "tcp" | "udp" | "ring" => true,
+            "unix" => self.config.unix,
+            "faketcp" => self.config.faketcp,
+            _ => self
+                .external
+                .as_ref()
+                .is_some_and(|external| external.supports_scheme(scheme)),
+        }
+    }
+
+    async fn upgrade_client(
+        &self,
+        connected: ConnectedTransport<TcpSocket>,
+        requested_url: Url,
+    ) -> anyhow::Result<Box<dyn Tunnel>> {
+        match requested_url.scheme() {
+            "tcp" | "udp" => Ok(raw::upgrade_connected(connected, requested_url)?),
+            "ring" => upgrade_byte_stream(connected),
+            "unix" if self.config.unix => upgrade_byte_stream(connected),
+            "faketcp" if self.config.faketcp => match connected {
+                ConnectedTransport::Tcp(socket) => {
+                    Ok(faketcp::upgrade_connected(socket, requested_url)?)
+                }
+                ConnectedTransport::Udp(_) | ConnectedTransport::ByteStream(_) => {
+                    anyhow::bail!("FakeTCP protocol requires a TCP transport")
+                }
+            },
+            "unix" | "faketcp" => anyhow::bail!(
+                "unsupported client protocol upgrader: {}",
+                requested_url.scheme()
+            ),
+            scheme => {
+                let Some(external) = &self.external else {
+                    anyhow::bail!("unsupported client protocol upgrader: {scheme}");
+                };
+                if !external.supports_scheme(scheme) {
+                    anyhow::bail!("unsupported client protocol upgrader: {scheme}");
+                }
+                external.upgrade_client(connected, requested_url).await
+            }
+        }
+    }
+}
+
+fn upgrade_byte_stream<TcpSocket>(
+    connected: ConnectedTransport<TcpSocket>,
+) -> anyhow::Result<Box<dyn Tunnel>>
+where
+    TcpSocket: VirtualTcpSocket,
+{
+    match connected {
+        ConnectedTransport::ByteStream(stream) => Ok(raw::upgrade_connected_byte_stream(stream)?),
+        ConnectedTransport::Tcp(_) | ConnectedTransport::Udp(_) => {
+            anyhow::bail!("external protocol requires a host-created byte stream")
+        }
+    }
 }
 
 /// Core's built-in TCP and UDP tunnel framing.
@@ -123,6 +222,23 @@ mod tests {
         }
     }
 
+    struct MockExternalUpgrader;
+
+    #[async_trait]
+    impl ClientProtocolUpgrader<MockTcpSocket> for MockExternalUpgrader {
+        fn supports_scheme(&self, _scheme: &str) -> bool {
+            true
+        }
+
+        async fn upgrade_client(
+            &self,
+            _connected: ConnectedTransport<MockTcpSocket>,
+            _requested_url: Url,
+        ) -> anyhow::Result<Box<dyn Tunnel>> {
+            anyhow::bail!("external protocol invoked")
+        }
+    }
+
     #[tokio::test]
     async fn raw_upgrader_rejects_non_raw_and_mismatched_protocols() {
         let upgrader = RawClientProtocolUpgrader;
@@ -150,5 +266,44 @@ mod tests {
             )
             .await;
         assert!(mismatched.is_err());
+    }
+
+    #[tokio::test]
+    async fn core_upgrader_owns_builtin_capabilities_and_delegates_external_protocols() {
+        let upgrader = CoreClientProtocolUpgrader::with_external(
+            CoreClientProtocolConfig {
+                unix: false,
+                faketcp: false,
+            },
+            Arc::new(MockExternalUpgrader),
+        );
+
+        assert!(upgrader.supports_scheme("tcp"));
+        assert!(upgrader.supports_scheme("ring"));
+        assert!(upgrader.supports_scheme("ws"));
+        assert!(!upgrader.supports_scheme("unix"));
+        assert!(!upgrader.supports_scheme("faketcp"));
+
+        let external = upgrader
+            .upgrade_client(
+                ConnectedTransport::Tcp(MockTcpSocket),
+                "ws://127.0.0.1:2000".parse().unwrap(),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(external.to_string(), "external protocol invoked");
+
+        let disabled_builtin = upgrader
+            .upgrade_client(
+                ConnectedTransport::Tcp(MockTcpSocket),
+                "faketcp://127.0.0.1:2000".parse().unwrap(),
+            )
+            .await
+            .unwrap_err();
+        assert!(
+            disabled_builtin
+                .to_string()
+                .contains("unsupported client protocol upgrader")
+        );
     }
 }

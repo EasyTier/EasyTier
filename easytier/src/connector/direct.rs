@@ -11,7 +11,7 @@ use crate::{
 };
 
 use super::{
-    core_instance::runtime_direct_options, protocol::RuntimeClientProtocolUpgrader,
+    core_instance::runtime_direct_options, protocol::runtime_client_protocol_upgrader,
     runtime::RuntimeConnectorHost,
 };
 
@@ -27,7 +27,7 @@ pub(crate) fn runtime_direct_connector_manager(
         peer_manager.core(),
         Arc::new(RuntimeConnectorHost::new(global_ctx.clone())),
         Arc::new(RuntimeDnsResolver::new()) as Arc<dyn DnsResolver>,
-        Arc::new(RuntimeClientProtocolUpgrader::new(global_ctx)),
+        runtime_client_protocol_upgrader(global_ctx),
         options,
     )
 }
