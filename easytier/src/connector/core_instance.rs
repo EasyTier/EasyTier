@@ -346,6 +346,7 @@ mod tests {
         assert_eq!(instance.state(), CoreInstanceState::Created);
         assert!(instance.list_connectors().is_empty());
         assert!(instance.start_transport_proxy().await.is_err());
+        assert!(instance.start_network_services().await.is_err());
         assert!(instance.start_proxy().await.is_err());
         assert!(instance.start_peer_center().await.is_err());
         instance.start().await.unwrap();
@@ -353,22 +354,14 @@ mod tests {
         assert!(instance.list_connectors().is_empty());
         assert!(instance.start_initial_peers().await.is_err());
         assert!(instance.start().await.is_err());
-        instance.start_peer_center().await.unwrap();
-        instance.start_peer_center().await.unwrap();
-        instance.start_initial_peers().await.unwrap();
-        instance.start_initial_peers().await.unwrap();
-        assert_eq!(instance.list_connectors().len(), 1);
-        assert_eq!(instance.list_connectors()[0].url, initial_peer);
         instance.start_transport_proxy().await.unwrap();
         instance.start_transport_proxy().await.unwrap();
         assert_eq!(transport_proxy.start_calls.load(Ordering::Relaxed), 1);
-        instance.start_proxy().await.unwrap();
-        instance.start_proxy().await.unwrap();
+        instance.start_network_services().await.unwrap();
+        instance.start_network_services().await.unwrap();
+        assert_eq!(instance.list_connectors().len(), 1);
+        assert_eq!(instance.list_connectors()[0].url, initial_peer);
         assert_eq!(proxy.start_calls.load(Ordering::Relaxed), 1);
-        instance.start_proxy_cidr_monitor().await.unwrap();
-        instance.start_proxy_cidr_monitor().await.unwrap();
-        instance.start_udp_hole_punch().await.unwrap();
-        instance.start_udp_hole_punch().await.unwrap();
 
         instance.stop().await;
         instance.stop().await;

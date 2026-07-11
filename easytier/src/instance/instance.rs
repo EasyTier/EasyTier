@@ -1023,15 +1023,7 @@ impl Instance {
             .reload_rules(AclRuleBuilder::build(&self.global_ctx)?.as_ref());
 
         // run after tun device created, so listener can bind to tun device, which may be required by win 10
-        self.core_instance.start_proxy().await?;
-
-        self.core_instance.start_udp_hole_punch().await?;
-
-        self.core_instance.start_peer_center().await?;
-
-        self.core_instance.start_initial_peers().await?;
-
-        self.core_instance.start_proxy_cidr_monitor().await?;
+        self.core_instance.start_network_services().await?;
 
         if self.global_ctx.get_vpn_portal_cidr().is_some() {
             self.run_vpn_portal().await?;

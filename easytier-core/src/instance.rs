@@ -793,6 +793,17 @@ where
         Ok(())
     }
 
+    /// Starts the core-owned services that run after the host has prepared its
+    /// packet interface and loaded the initial access-control configuration.
+    pub async fn start_network_services(self: &Arc<Self>) -> anyhow::Result<()> {
+        self.start_proxy().await?;
+        self.start_udp_hole_punch().await?;
+        self.start_peer_center().await?;
+        self.start_initial_peers().await?;
+        self.start_proxy_cidr_monitor().await?;
+        Ok(())
+    }
+
     pub async fn start_dhcp_ipv4(
         self: &Arc<Self>,
         host: Arc<dyn DhcpIpv4Host>,
