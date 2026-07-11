@@ -21,10 +21,11 @@ pub struct HostUdpDatagram {
 
 /// Mechanical host UDP I/O below core's datagram scheduling seam.
 ///
-/// Submit methods must return without waiting for I/O. `submit_send` must copy
-/// or otherwise own the complete datagram before returning. A successful send
-/// completion means the complete datagram was sent atomically. Receive
-/// completions own their payload and are consumed by `take_recv`.
+/// Submit methods register readiness without performing the datagram I/O.
+/// Receive datagrams stay in a host-owned socket queue until `take_recv` is
+/// called from a guest poll, so canceling a waiter cannot consume a datagram.
+/// `try_send` must synchronously copy one complete datagram into a bounded host
+/// queue or return `WouldBlock`; it must never retain guest-memory borrows.
 pub trait HostUdpIo: HostSocketIo {
     fn submit_recv(
         &self,
@@ -35,16 +36,21 @@ pub trait HostUdpIo: HostSocketIo {
 
     fn take_recv(&self, operation: HostOperationId) -> Poll<io::Result<HostUdpDatagram>>;
 
-    fn submit_send(
+    fn try_send(
         &self,
         handle: HostSocketHandle,
-        operation: HostOperationId,
         source: &[u8],
         peer_addr: SocketAddr,
         meta: UdpSocketSendMeta,
     ) -> io::Result<()>;
 
-    fn take_send(&self, operation: HostOperationId) -> Poll<io::Result<()>>;
+    fn submit_send_ready(
+        &self,
+        handle: HostSocketHandle,
+        operation: HostOperationId,
+    ) -> io::Result<()>;
+
+    fn take_send_ready(&self, operation: HostOperationId) -> Poll<io::Result<()>>;
 }
 
 struct PendingHostUdpOperation {
@@ -110,30 +116,36 @@ impl HostUdpSocket {
         peer_addr: SocketAddr,
         meta: UdpSocketSendMeta,
     ) -> io::Result<usize> {
-        let operation = self.runtime.next_operation();
-        self.io
-            .submit_send(self.handle, operation, data, peer_addr, meta)?;
-        let mut pending =
-            PendingHostUdpOperation::new(self.runtime.clone(), self.io.clone(), operation);
-        poll_fn(|context| {
-            let epoch = self
-                .runtime
-                .inner
-                .completion_epoch
-                .load(std::sync::atomic::Ordering::SeqCst);
-            match self.io.take_send(operation) {
-                Poll::Pending => {
-                    self.runtime.register_pending(operation, epoch, context);
-                    Poll::Pending
-                }
-                Poll::Ready(result) => {
-                    pending.complete();
-                    Poll::Ready(result)
-                }
+        loop {
+            match self.io.try_send(self.handle, data, peer_addr, meta) {
+                Ok(()) => return Ok(data.len()),
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => {}
+                Err(error) => return Err(error),
             }
-        })
-        .await?;
-        Ok(data.len())
+
+            let operation = self.runtime.next_operation();
+            self.io.submit_send_ready(self.handle, operation)?;
+            let mut pending =
+                PendingHostUdpOperation::new(self.runtime.clone(), self.io.clone(), operation);
+            poll_fn(|context| {
+                let epoch = self
+                    .runtime
+                    .inner
+                    .completion_epoch
+                    .load(std::sync::atomic::Ordering::SeqCst);
+                match self.io.take_send_ready(operation) {
+                    Poll::Pending => {
+                        self.runtime.register_pending(operation, epoch, context);
+                        Poll::Pending
+                    }
+                    Poll::Ready(result) => {
+                        pending.complete();
+                        Poll::Ready(result)
+                    }
+                }
+            })
+            .await?;
+        }
     }
 
     async fn receive(&self, buffer: &mut [u8]) -> io::Result<HostUdpDatagram> {
@@ -160,13 +172,10 @@ impl HostUdpSocket {
         })
         .await?;
 
-        if datagram.data.len() > buffer.len() {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "host UDP receive completion exceeds the submitted capacity",
-            ));
-        }
-        buffer[..datagram.data.len()].copy_from_slice(&datagram.data);
+        let copy_len = datagram.data.len().min(buffer.len());
+        buffer[..copy_len].copy_from_slice(&datagram.data[..copy_len]);
+        let mut datagram = datagram;
+        datagram.data.truncate(copy_len);
         Ok(datagram)
     }
 }
@@ -223,26 +232,27 @@ impl Drop for HostUdpSocket {
 #[cfg(test)]
 mod tests {
     use std::{
-        collections::{HashMap, HashSet},
+        collections::{HashMap, HashSet, VecDeque},
         net::{IpAddr, Ipv4Addr},
-        sync::Mutex,
+        sync::{
+            Mutex,
+            atomic::{AtomicBool, Ordering},
+        },
     };
 
     use super::*;
 
     enum TestOperation {
-        Receive(Option<io::Result<HostUdpDatagram>>),
-        Send {
-            source: Vec<u8>,
-            peer_addr: SocketAddr,
-            meta: UdpSocketSendMeta,
-            result: Option<io::Result<()>>,
-        },
+        Receive,
+        SendReady(Option<io::Result<()>>),
     }
 
     #[derive(Default)]
     struct TestHostUdpIo {
         operations: Mutex<HashMap<HostOperationId, TestOperation>>,
+        received: Mutex<VecDeque<HostUdpDatagram>>,
+        sent: Mutex<Vec<(Vec<u8>, SocketAddr, UdpSocketSendMeta)>>,
+        writable: AtomicBool,
         cancelled: Mutex<Vec<HostOperationId>>,
         closed: Mutex<HashSet<HostSocketHandle>>,
     }
@@ -254,7 +264,7 @@ mod tests {
                 .unwrap()
                 .iter()
                 .find_map(|(id, operation)| match (receive, operation) {
-                    (true, TestOperation::Receive(_)) | (false, TestOperation::Send { .. }) => {
+                    (true, TestOperation::Receive) | (false, TestOperation::SendReady(_)) => {
                         Some(*id)
                     }
                     _ => None,
@@ -263,19 +273,20 @@ mod tests {
         }
 
         fn complete_recv(&self, operation: HostOperationId, datagram: HostUdpDatagram) {
-            let mut operations = self.operations.lock().unwrap();
-            let TestOperation::Receive(result) = operations.get_mut(&operation).unwrap() else {
+            let operations = self.operations.lock().unwrap();
+            let TestOperation::Receive = operations.get(&operation).unwrap() else {
                 panic!("operation is not a receive");
             };
-            *result = Some(Ok(datagram));
+            self.received.lock().unwrap().push_back(datagram);
         }
 
         fn complete_send(&self, operation: HostOperationId) {
             let mut operations = self.operations.lock().unwrap();
-            let TestOperation::Send { result, .. } = operations.get_mut(&operation).unwrap() else {
+            let TestOperation::SendReady(result) = operations.get_mut(&operation).unwrap() else {
                 panic!("operation is not a send");
             };
             *result = Some(Ok(()));
+            self.writable.store(true, Ordering::SeqCst);
         }
     }
 
@@ -302,51 +313,60 @@ mod tests {
             self.operations
                 .lock()
                 .unwrap()
-                .insert(operation, TestOperation::Receive(None));
+                .insert(operation, TestOperation::Receive);
             Ok(())
         }
 
         fn take_recv(&self, operation: HostOperationId) -> Poll<io::Result<HostUdpDatagram>> {
             let mut operations = self.operations.lock().unwrap();
-            let Some(TestOperation::Receive(result)) = operations.get_mut(&operation) else {
+            let Some(TestOperation::Receive) = operations.get_mut(&operation) else {
                 return Poll::Ready(Err(io::Error::new(
                     io::ErrorKind::NotFound,
                     "receive operation is missing",
                 )));
             };
-            let Some(result) = result.take() else {
+            let Some(datagram) = self.received.lock().unwrap().pop_front() else {
                 return Poll::Pending;
             };
             operations.remove(&operation);
-            Poll::Ready(result)
+            Poll::Ready(Ok(datagram))
         }
 
-        fn submit_send(
+        fn try_send(
             &self,
             _handle: HostSocketHandle,
-            operation: HostOperationId,
             source: &[u8],
             peer_addr: SocketAddr,
             meta: UdpSocketSendMeta,
         ) -> io::Result<()> {
-            self.operations.lock().unwrap().insert(
-                operation,
-                TestOperation::Send {
-                    source: source.to_vec(),
-                    peer_addr,
-                    meta,
-                    result: None,
-                },
-            );
+            if !self.writable.swap(false, Ordering::SeqCst) {
+                return Err(io::ErrorKind::WouldBlock.into());
+            }
+            self.sent
+                .lock()
+                .unwrap()
+                .push((source.to_vec(), peer_addr, meta));
             Ok(())
         }
 
-        fn take_send(&self, operation: HostOperationId) -> Poll<io::Result<()>> {
+        fn submit_send_ready(
+            &self,
+            _handle: HostSocketHandle,
+            operation: HostOperationId,
+        ) -> io::Result<()> {
+            self.operations
+                .lock()
+                .unwrap()
+                .insert(operation, TestOperation::SendReady(None));
+            Ok(())
+        }
+
+        fn take_send_ready(&self, operation: HostOperationId) -> Poll<io::Result<()>> {
             let mut operations = self.operations.lock().unwrap();
-            let Some(TestOperation::Send { result, .. }) = operations.get_mut(&operation) else {
+            let Some(TestOperation::SendReady(result)) = operations.get_mut(&operation) else {
                 return Poll::Ready(Err(io::Error::new(
                     io::ErrorKind::NotFound,
-                    "send operation is missing",
+                    "send readiness operation is missing",
                 )));
             };
             let Some(result) = result.take() else {
@@ -365,7 +385,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn send_owns_datagram_and_waits_for_atomic_completion() {
+    async fn send_waits_for_readiness_then_enqueues_atomically() {
         let io = Arc::new(TestHostUdpIo::default());
         let (runtime, socket) = test_socket(io.clone());
         let socket = Arc::new(socket);
@@ -388,25 +408,21 @@ mod tests {
         tokio::task::yield_now().await;
 
         let operation = io.operation(false);
-        {
-            let operations = io.operations.lock().unwrap();
-            let TestOperation::Send {
-                source,
-                peer_addr: submitted_peer,
-                meta,
-                ..
-            } = operations.get(&operation).unwrap()
-            else {
-                panic!("operation is not a send");
-            };
-            assert_eq!(source, b"udp");
-            assert_eq!(*submitted_peer, peer_addr);
-            assert_eq!(meta.src_ip, Some(source_ip));
-        }
+        assert!(io.sent.lock().unwrap().is_empty());
 
         io.complete_send(operation);
         runtime.notify_completions();
         assert_eq!(task.await.unwrap().unwrap(), 3);
+        assert_eq!(
+            *io.sent.lock().unwrap(),
+            vec![(
+                b"udp".to_vec(),
+                peer_addr,
+                UdpSocketSendMeta {
+                    src_ip: Some(source_ip)
+                }
+            )]
+        );
         drop(socket);
         assert!(io.closed.lock().unwrap().contains(&HostSocketHandle(9)));
     }
@@ -450,22 +466,101 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn cancelling_receive_removes_waker_and_cancels_host_operation() {
+    async fn cancelling_completed_receive_preserves_datagram_for_next_poll() {
         let io = Arc::new(TestHostUdpIo::default());
         let (runtime, socket) = test_socket(io.clone());
+        let peer_addr = "192.0.2.2:22026".parse().unwrap();
         let operation = {
             let mut buffer = [0_u8; 1];
             let mut receive = Box::pin(socket.recv_from(&mut buffer));
             assert!(futures::poll!(&mut receive).is_pending());
             let operation = io.operation(true);
             assert_eq!(runtime.inner.wakers.len(), 1);
+            io.complete_recv(
+                operation,
+                HostUdpDatagram {
+                    data: b"kept".to_vec(),
+                    peer_addr,
+                    meta: UdpSocketRecvMeta::default(),
+                },
+            );
+            runtime.notify_completions();
             drop(receive);
             operation
         };
 
         assert_eq!(runtime.inner.wakers.len(), 0);
         assert_eq!(*io.cancelled.lock().unwrap(), vec![operation]);
+        let mut recovered = [0_u8; 4];
+        assert_eq!(
+            socket.recv_from(&mut recovered).await.unwrap(),
+            (4, peer_addr)
+        );
+        assert_eq!(&recovered, b"kept");
         drop(socket);
         assert!(io.closed.lock().unwrap().contains(&HostSocketHandle(9)));
+    }
+
+    #[tokio::test]
+    async fn cancelling_send_readiness_never_enqueues_datagram() {
+        let io = Arc::new(TestHostUdpIo::default());
+        let (runtime, socket) = test_socket(io.clone());
+        let peer_addr = "192.0.2.2:22026".parse().unwrap();
+        let operation = {
+            let mut send = Box::pin(socket.send_to(b"cancelled", peer_addr));
+            assert!(futures::poll!(&mut send).is_pending());
+            let operation = io.operation(false);
+            io.complete_send(operation);
+            runtime.notify_completions();
+            drop(send);
+            operation
+        };
+
+        assert_eq!(*io.cancelled.lock().unwrap(), vec![operation]);
+        assert!(io.sent.lock().unwrap().is_empty());
+    }
+
+    async fn receive_payload<const N: usize>(
+        runtime: &HostSocketRuntime,
+        io: &Arc<TestHostUdpIo>,
+        socket: Arc<HostUdpSocket>,
+        payload: Vec<u8>,
+    ) -> (usize, [u8; N]) {
+        let peer_addr = "192.0.2.2:22026".parse().unwrap();
+        let task = tokio::spawn(async move {
+            let mut buffer = [0_u8; N];
+            let (length, _) = socket.recv_from(&mut buffer).await.unwrap();
+            (length, buffer)
+        });
+        tokio::task::yield_now().await;
+        let operation = io.operation(true);
+        io.complete_recv(
+            operation,
+            HostUdpDatagram {
+                data: payload,
+                peer_addr,
+                meta: UdpSocketRecvMeta::default(),
+            },
+        );
+        runtime.notify_completions();
+        task.await.unwrap()
+    }
+
+    #[tokio::test]
+    async fn receive_truncates_and_distinguishes_empty_buffers_from_datagrams() {
+        let io = Arc::new(TestHostUdpIo::default());
+        let (runtime, socket) = test_socket(io.clone());
+        let socket = Arc::new(socket);
+
+        let (length, buffer) =
+            receive_payload(&runtime, &io, socket.clone(), b"long".to_vec()).await;
+        assert_eq!((length, buffer), (2, *b"lo"));
+
+        let (length, buffer) =
+            receive_payload::<0>(&runtime, &io, socket.clone(), b"consumed".to_vec()).await;
+        assert_eq!((length, buffer), (0, []));
+
+        let (length, buffer) = receive_payload(&runtime, &io, socket, Vec::new()).await;
+        assert_eq!((length, buffer), (0, [0]));
     }
 }

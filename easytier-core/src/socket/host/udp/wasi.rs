@@ -12,6 +12,7 @@ use crate::socket::host::{
 };
 
 const HOST_PENDING: i32 = -1;
+const HOST_WOULD_BLOCK: i32 = -5;
 
 #[link(wasm_import_module = "easytier_host")]
 unsafe extern "C" {
@@ -23,15 +24,10 @@ unsafe extern "C" {
         metadata: u32,
         metadata_len: u32,
     ) -> i32;
-    fn start_udp_send(
-        handle: u64,
-        operation: u64,
-        source: u32,
-        length: u32,
-        metadata: u32,
-        metadata_len: u32,
-    ) -> i32;
-    fn take_udp_send(operation: u64) -> i32;
+    fn try_udp_send(handle: u64, source: u32, length: u32, metadata: u32, metadata_len: u32)
+    -> i32;
+    fn start_udp_send_ready(handle: u64, operation: u64) -> i32;
+    fn take_udp_send_ready(operation: u64) -> i32;
     fn cancel_operation(operation: u64) -> i32;
     fn close(handle: u64) -> i32;
 }
@@ -138,10 +134,9 @@ impl HostUdpIo for WasiHostUdpIo {
         }
     }
 
-    fn submit_send(
+    fn try_send(
         &self,
         handle: HostSocketHandle,
-        operation: HostOperationId,
         source: &[u8],
         peer_addr: std::net::SocketAddr,
         meta: UdpSocketSendMeta,
@@ -150,23 +145,36 @@ impl HostUdpIo for WasiHostUdpIo {
             io::Error::new(io::ErrorKind::InvalidInput, "UDP send buffer is too large")
         })?;
         let metadata = encode_udp_metadata(peer_addr, meta.src_ip);
-        status("start_udp_send", unsafe {
-            start_udp_send(
+        match unsafe {
+            try_udp_send(
                 handle.0,
-                operation.0,
                 source.as_ptr() as u32,
                 length,
                 metadata.as_ptr() as u32,
                 UDP_METADATA_LEN as u32,
             )
+        } {
+            0 => Ok(()),
+            HOST_WOULD_BLOCK => Err(io::ErrorKind::WouldBlock.into()),
+            value => Err(host_error("try_udp_send", value)),
+        }
+    }
+
+    fn submit_send_ready(
+        &self,
+        handle: HostSocketHandle,
+        operation: HostOperationId,
+    ) -> io::Result<()> {
+        status("start_udp_send_ready", unsafe {
+            start_udp_send_ready(handle.0, operation.0)
         })
     }
 
-    fn take_send(&self, operation: HostOperationId) -> Poll<io::Result<()>> {
-        match unsafe { take_udp_send(operation.0) } {
+    fn take_send_ready(&self, operation: HostOperationId) -> Poll<io::Result<()>> {
+        match unsafe { take_udp_send_ready(operation.0) } {
             HOST_PENDING => Poll::Pending,
             0 => Poll::Ready(Ok(())),
-            value => Poll::Ready(Err(host_error("take_udp_send", value))),
+            value => Poll::Ready(Err(host_error("take_udp_send_ready", value))),
         }
     }
 }

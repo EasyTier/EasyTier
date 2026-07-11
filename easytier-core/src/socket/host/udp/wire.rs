@@ -128,10 +128,14 @@ mod tests {
     fn round_trips_ipv4_address_and_optional_source() {
         let peer = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(192, 0, 2, 1), 11013));
         let source = Some(IpAddr::V4(Ipv4Addr::new(198, 51, 100, 2)));
-        assert_eq!(
-            decode_udp_metadata(&encode_udp_metadata(peer, source)).unwrap(),
-            (peer, source)
-        );
+        let expected = [
+            0x04, 0xc0, 0x00, 0x02, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x2b, 0x05, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x04,
+            0xc6, 0x33, 0x64, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00,
+        ];
+        assert_eq!(encode_udp_metadata(peer, source), expected);
+        assert_eq!(decode_udp_metadata(&expected).unwrap(), (peer, source));
     }
 
     #[test]
