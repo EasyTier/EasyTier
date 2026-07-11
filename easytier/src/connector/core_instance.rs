@@ -139,8 +139,10 @@ pub(crate) fn runtime_core_instance_adapters(
         endpoint_resolver: Arc::new(RuntimeManualEndpointResolver {
             global_ctx: global_ctx.clone(),
         }),
-        protocol: Arc::new(RuntimeClientProtocolUpgrader::new(global_ctx.clone()))
-            as Arc<dyn ClientProtocolUpgrader<_>>,
+        protocol: Some(
+            Arc::new(RuntimeClientProtocolUpgrader::new(global_ctx.clone()))
+                as Arc<dyn ClientProtocolUpgrader<_>>,
+        ),
         manual_events: Some(Arc::new(GlobalCtxManualConnectivityEventSink {
             global_ctx,
         })),

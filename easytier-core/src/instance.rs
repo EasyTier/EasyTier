@@ -17,7 +17,7 @@ use crate::{
             ManualConnectivityEventSink, ManualConnectorManager, ManualConnectorOptions,
             ManualConnectorSnapshot, ManualEndpointResolver,
         },
-        protocol::ClientProtocolUpgrader,
+        protocol::{ClientProtocolUpgrader, RawClientProtocolUpgrader},
     },
     hole_punch::tcp::{TcpHolePunchConnector, TcpHolePunchHost},
     peers::peer_manager::PeerManagerCore,
@@ -104,7 +104,7 @@ where
     pub host: Arc<H>,
     pub dns: Arc<dyn DnsResolver>,
     pub endpoint_resolver: Arc<dyn ManualEndpointResolver>,
-    pub protocol: Arc<dyn ClientProtocolUpgrader<<H as VirtualTcpSocketFactory>::Socket>>,
+    pub protocol: Option<Arc<dyn ClientProtocolUpgrader<<H as VirtualTcpSocketFactory>::Socket>>>,
     pub manual_events: Option<Arc<dyn ManualConnectivityEventSink>>,
     pub listener: Option<Arc<dyn ListenerService>>,
     pub udp_hole_punch: Option<Arc<dyn UdpHolePunchService>>,
@@ -154,13 +154,16 @@ where
     ) -> anyhow::Result<Self> {
         let listener = adapters.listener;
         let udp_hole_punch = adapters.udp_hole_punch;
+        let protocol = adapters
+            .protocol
+            .unwrap_or_else(|| Arc::new(RawClientProtocolUpgrader));
         let manual = match adapters.manual_events {
             Some(events) => ManualConnectorManager::new_with_events(
                 peer_manager.clone(),
                 adapters.host.clone(),
                 adapters.dns.clone(),
                 adapters.endpoint_resolver,
-                adapters.protocol.clone(),
+                protocol.clone(),
                 config.manual,
                 events,
             ),
@@ -169,7 +172,7 @@ where
                 adapters.host.clone(),
                 adapters.dns.clone(),
                 adapters.endpoint_resolver,
-                adapters.protocol.clone(),
+                protocol.clone(),
                 config.manual,
             ),
         };
@@ -181,7 +184,7 @@ where
             peer_manager.clone(),
             adapters.host.clone(),
             adapters.dns,
-            adapters.protocol,
+            protocol,
             config.direct,
         );
         let tcp_hole_punch =
