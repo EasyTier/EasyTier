@@ -21,6 +21,7 @@ use crate::{
         transport::{self, ConnectedTransport, UdpSessionMode},
     },
     peers::peer_manager::PeerManagerCore,
+    proto::common::TunnelInfo,
     socket::{
         IpVersion, SocketContext,
         dns::{DnsQuery, DnsResolver},
@@ -29,7 +30,7 @@ use crate::{
             UdpBindOptions, UdpSessionControlHandler, UdpSessionProtocol, VirtualUdpSocketFactory,
         },
     },
-    tunnel::TunnelError,
+    tunnel::{SplitTunnel, Tunnel, TunnelError},
 };
 
 pub use crate::connectivity::protocol::raw::{
@@ -48,6 +49,18 @@ fn manual_default_port(url: &Url) -> u16 {
         "quic" => 11012,
         "faketcp" => 11013,
         _ => MANUAL_DEFAULT_PORT,
+    }
+}
+
+fn is_manual_endpoint_scheme(scheme: &str) -> bool {
+    matches!(scheme, "http" | "https" | "txt" | "srv")
+}
+
+fn validate_manual_url(url: &Url) -> anyhow::Result<()> {
+    if ManualTransport::from_url(url).is_ok() || is_manual_endpoint_scheme(url.scheme()) {
+        Ok(())
+    } else {
+        anyhow::bail!("unsupported core manual connector URL: {url}")
     }
 }
 
@@ -98,6 +111,31 @@ pub trait ManualConnectorHost:
     async fn local_addr_for_remote(&self, remote_addr: SocketAddr) -> anyhow::Result<SocketAddr>;
 
     async fn interface_addrs(&self) -> anyhow::Result<ManualInterfaceAddrs>;
+}
+
+#[async_trait]
+pub trait ManualEndpointResolver: Send + Sync + 'static {
+    async fn resolve_endpoint(&self, url: &Url) -> anyhow::Result<Url>;
+}
+
+struct ResolvedManualTunnel {
+    inner: Box<dyn Tunnel>,
+    info: TunnelInfo,
+}
+
+impl Tunnel for ResolvedManualTunnel {
+    fn split(&self) -> SplitTunnel {
+        self.inner.split()
+    }
+
+    fn info(&self) -> Option<TunnelInfo> {
+        Some(self.info.clone())
+    }
+}
+
+struct ResolvedManualEndpoint {
+    url: Url,
+    tunnel_prefixes: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -163,7 +201,10 @@ impl Default for ManualConnectorOptions {
 
 impl ManualConnectorOptions {
     fn connect_timeout(&self, url: &Url) -> Duration {
-        if matches!(url.scheme(), "ws" | "wss") {
+        if matches!(
+            url.scheme(),
+            "ws" | "wss" | "http" | "https" | "txt" | "srv"
+        ) {
             self.websocket_connect_timeout
         } else {
             self.connect_timeout
@@ -189,6 +230,7 @@ where
     peer_manager: Weak<PeerManagerCore>,
     host: Arc<H>,
     dns: Arc<dyn DnsResolver>,
+    endpoint_resolver: Arc<dyn ManualEndpointResolver>,
     protocol: Arc<dyn ClientProtocolUpgrader<<H as VirtualTcpSocketFactory>::Socket>>,
     events: Arc<dyn ManualConnectivityEventSink>,
     options: ManualConnectorOptions,
@@ -210,6 +252,7 @@ where
         peer_manager: Arc<PeerManagerCore>,
         host: Arc<H>,
         dns: Arc<dyn DnsResolver>,
+        endpoint_resolver: Arc<dyn ManualEndpointResolver>,
         protocol: Arc<dyn ClientProtocolUpgrader<<H as VirtualTcpSocketFactory>::Socket>>,
         options: ManualConnectorOptions,
     ) -> Self {
@@ -217,6 +260,7 @@ where
             peer_manager,
             host,
             dns,
+            endpoint_resolver,
             protocol,
             options,
             Arc::new(NoopManualConnectivityEventSink),
@@ -227,6 +271,7 @@ where
         peer_manager: Arc<PeerManagerCore>,
         host: Arc<H>,
         dns: Arc<dyn DnsResolver>,
+        endpoint_resolver: Arc<dyn ManualEndpointResolver>,
         protocol: Arc<dyn ClientProtocolUpgrader<<H as VirtualTcpSocketFactory>::Socket>>,
         options: ManualConnectorOptions,
         events: Arc<dyn ManualConnectivityEventSink>,
@@ -239,6 +284,7 @@ where
             peer_manager: Arc::downgrade(&peer_manager),
             host,
             dns,
+            endpoint_resolver,
             protocol,
             events,
             options,
@@ -248,7 +294,7 @@ where
     }
 
     pub fn add_connector(&self, url: Url) -> anyhow::Result<()> {
-        ManualTransport::from_url(&url)?;
+        validate_manual_url(&url)?;
         let _state_guard = self.data.state_lock.lock().unwrap();
         self.data.removed.remove(&url);
         if !self.data.reconnecting.contains(&url) {
@@ -385,13 +431,55 @@ fn client_url_is_alive(peer_manager: &PeerManagerCore, url: &Url) -> bool {
             .is_client_url_alive(url)
 }
 
+async fn resolve_manual_endpoint(
+    resolver: &dyn ManualEndpointResolver,
+    requested_url: Url,
+) -> anyhow::Result<ResolvedManualEndpoint> {
+    let mut url = requested_url;
+    let mut tunnel_prefixes = Vec::new();
+    loop {
+        if ManualTransport::from_url(&url).is_ok() {
+            return Ok(ResolvedManualEndpoint {
+                url,
+                tunnel_prefixes,
+            });
+        }
+        if !is_manual_endpoint_scheme(url.scheme()) {
+            anyhow::bail!("unsupported resolved manual connector URL: {url}");
+        }
+        tunnel_prefixes.push(url.scheme().to_owned());
+        url = convert_idn_to_ascii(resolver.resolve_endpoint(&url).await?)?;
+    }
+}
+
+fn apply_resolved_endpoint_info(
+    tunnel: Box<dyn Tunnel>,
+    requested_url: Url,
+    tunnel_prefixes: Vec<String>,
+) -> Box<dyn Tunnel> {
+    if tunnel_prefixes.is_empty() {
+        return tunnel;
+    }
+    let inner_info = tunnel.info().unwrap_or_default();
+    let tunnel_type = format!("{}-{}", tunnel_prefixes.join("-"), inner_info.tunnel_type);
+    Box::new(ResolvedManualTunnel {
+        inner: tunnel,
+        info: TunnelInfo {
+            local_addr: inner_info.local_addr,
+            remote_addr: Some(requested_url.into()),
+            resolved_remote_addr: inner_info.resolved_remote_addr.or(inner_info.remote_addr),
+            tunnel_type,
+        },
+    })
+}
+
 async fn reconnect<H>(data: Arc<ManualConnectorData<H>>, url: Url) -> anyhow::Result<()>
 where
     H: ManualConnectorHost,
 {
-    let transport = ManualTransport::from_url(&url)?;
+    validate_manual_url(&url)?;
     let connect_timeout = data.options.connect_timeout(&url);
-    tracing::info!(%url, ?transport, "manual reconnect start");
+    tracing::info!(%url, "manual reconnect start");
     let normalized_url = match convert_idn_to_ascii(url.clone()) {
         Ok(url) => url,
         Err(error) => {
@@ -407,7 +495,9 @@ where
             &normalized_url,
             MANUAL_PREFLIGHT_DEFAULT_PORT,
             IpVersion::Both,
-            data.options.socket_mark(transport),
+            ManualTransport::from_url(&normalized_url)
+                .ok()
+                .and_then(|transport| data.options.socket_mark(transport)),
             data.dns.as_ref(),
         ),
     )
@@ -435,7 +525,6 @@ where
         match reconnect_with_ip_version(
             data.clone(),
             url.clone(),
-            transport,
             ip_version,
             started_at,
             connect_timeout,
@@ -455,7 +544,6 @@ where
 async fn reconnect_with_ip_version<H>(
     data: Arc<ManualConnectorData<H>>,
     requested_url: Url,
-    transport: ManualTransport,
     ip_version: IpVersion,
     started_at: Instant,
     connect_timeout: Duration,
@@ -463,7 +551,17 @@ async fn reconnect_with_ip_version<H>(
 where
     H: ManualConnectorHost,
 {
-    let normalized_url = convert_idn_to_ascii(requested_url.clone())?;
+    let endpoint = with_timeout_budget(
+        "discover",
+        started_at,
+        connect_timeout,
+        resolve_manual_endpoint(
+            data.endpoint_resolver.as_ref(),
+            convert_idn_to_ascii(requested_url.clone())?,
+        ),
+    )
+    .await?;
+    let transport = ManualTransport::from_url(&endpoint.url)?;
     let (remote_addr, bind_addrs) =
         with_timeout_budget("resolve", started_at, connect_timeout, async {
             let peer_manager = data
@@ -474,8 +572,8 @@ where
                 peer_manager.as_ref(),
                 data.host.as_ref(),
                 data.dns.as_ref(),
-                &normalized_url,
-                manual_default_port(&normalized_url),
+                &endpoint.url,
+                manual_default_port(&endpoint.url),
                 ip_version,
                 data.options.socket_mark(transport),
             )
@@ -511,11 +609,11 @@ where
             data.options.udp_bind.clone(),
         )
         .await?;
-        data.protocol
-            .upgrade_client(connected, requested_url.clone())
-            .await
+        data.protocol.upgrade_client(connected, endpoint.url).await
     })
     .await?;
+    let tunnel =
+        apply_resolved_endpoint_info(tunnel, requested_url.clone(), endpoint.tunnel_prefixes);
     let peer_manager = data
         .peer_manager
         .upgrade()
@@ -741,6 +839,19 @@ mod tests {
         queries: Mutex<Vec<DnsQuery>>,
     }
 
+    struct ChainedEndpointResolver;
+
+    #[async_trait]
+    impl ManualEndpointResolver for ChainedEndpointResolver {
+        async fn resolve_endpoint(&self, url: &Url) -> anyhow::Result<Url> {
+            match url.scheme() {
+                "http" => Ok("txt://discovery.example".parse().unwrap()),
+                "txt" => Ok("tcp://peer.example:12000".parse().unwrap()),
+                scheme => anyhow::bail!("unexpected endpoint scheme: {scheme}"),
+            }
+        }
+    }
+
     #[async_trait]
     impl DnsResolver for StaticDnsResolver {
         async fn resolve(&self, query: DnsQuery) -> anyhow::Result<Vec<IpAddr>> {
@@ -789,6 +900,20 @@ mod tests {
             );
         }
         assert!(ManualTransport::from_url(&"http://127.0.0.1:1".parse().unwrap()).is_err());
+        assert!(validate_manual_url(&"http://127.0.0.1:1".parse().unwrap()).is_ok());
+    }
+
+    #[tokio::test]
+    async fn manual_endpoint_resolution_preserves_the_discovery_chain() {
+        let endpoint = resolve_manual_endpoint(
+            &ChainedEndpointResolver,
+            "http://discovery.example".parse().unwrap(),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(endpoint.url.as_str(), "tcp://peer.example:12000");
+        assert_eq!(endpoint.tunnel_prefixes, ["http", "txt"]);
     }
 
     #[test]

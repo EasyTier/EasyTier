@@ -10,7 +10,7 @@ use easytier_core::{
     connectivity::manual::{
         ManualConnectivityEvent, ManualConnectivityEventSink,
         ManualConnectorManager as CoreManualConnectorManager, ManualConnectorOptions,
-        ManualConnectorStatus,
+        ManualConnectorStatus, ManualEndpointResolver,
     },
     socket::{dns::DnsResolver, tcp::TcpBindOptions, udp::UdpBindOptions},
 };
@@ -46,7 +46,9 @@ use crate::{
 };
 
 use super::{
-    create_connector_by_url, protocol::RuntimeClientProtocolUpgrader, runtime::RuntimeConnectorHost,
+    create_connector_by_url, dns_connector::DnsTunnelConnector,
+    http_connector::HttpTunnelConnector, protocol::RuntimeClientProtocolUpgrader,
+    runtime::RuntimeConnectorHost,
 };
 
 type ConnectorMap = Arc<DashSet<url::Url>>;
@@ -72,6 +74,35 @@ struct ConnectorManagerData {
 
 struct GlobalCtxManualConnectivityEventSink {
     global_ctx: ArcGlobalCtx,
+}
+
+struct RuntimeManualEndpointResolver {
+    global_ctx: ArcGlobalCtx,
+}
+
+#[async_trait::async_trait]
+impl ManualEndpointResolver for RuntimeManualEndpointResolver {
+    async fn resolve_endpoint(&self, url: &url::Url) -> anyhow::Result<url::Url> {
+        let connector = match url.scheme() {
+            "http" | "https" => {
+                let mut resolver = HttpTunnelConnector::new(url.clone(), self.global_ctx.clone());
+                resolver.get_redirected_connector(url.as_str()).await?
+            }
+            "txt" | "srv" => {
+                let resolver = DnsTunnelConnector::new(url.clone(), self.global_ctx.clone());
+                let host = url
+                    .host_str()
+                    .ok_or_else(|| anyhow::anyhow!("host should not be empty in {url}"))?;
+                if url.scheme() == "txt" {
+                    resolver.handle_txt_record(host).await?
+                } else {
+                    resolver.handle_srv_record(host).await?
+                }
+            }
+            scheme => anyhow::bail!("unsupported manual endpoint resolver scheme: {scheme}"),
+        };
+        Ok(connector.remote_url())
+    }
 }
 
 impl ManualConnectivityEventSink for GlobalCtxManualConnectivityEventSink {
@@ -129,6 +160,9 @@ impl ManualConnectorManager {
             peer_manager.core(),
             Arc::new(RuntimeConnectorHost::new(global_ctx.clone())),
             Arc::new(RuntimeDnsResolver::new()) as Arc<dyn DnsResolver>,
+            Arc::new(RuntimeManualEndpointResolver {
+                global_ctx: global_ctx.clone(),
+            }),
             Arc::new(RuntimeClientProtocolUpgrader::new(global_ctx.clone())),
             core_options,
             Arc::new(GlobalCtxManualConnectivityEventSink {
@@ -208,7 +242,7 @@ impl ManualConnectorManager {
 impl ManualConnectorManager {
     fn core_owns_scheme(url: &url::Url) -> bool {
         match url.scheme() {
-            "tcp" | "udp" => true,
+            "tcp" | "udp" | "http" | "https" | "txt" | "srv" => true,
             "ws" | "wss" => cfg!(feature = "websocket"),
             "wg" => cfg!(feature = "wireguard"),
             "quic" => cfg!(feature = "quic"),
@@ -553,6 +587,8 @@ impl ConnectorManageRpc for ConnectorManagerRpcService {
 
 #[cfg(test)]
 mod tests {
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+
     use crate::{
         common::config::ConfigLoader,
         instance::listeners::ListenerManager,
@@ -791,6 +827,73 @@ mod tests {
                         .is_some_and(|url| url.url == listener_url.as_str())
                 })
         );
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn core_http_discovery_connects_through_resolved_tcp_endpoint() {
+        set_global_var!(MANUAL_CONNECTOR_RECONNECT_INTERVAL_MS, 10);
+
+        let server = create_mock_peer_manager().await;
+        server
+            .get_global_ctx()
+            .config
+            .set_listeners(vec!["tcp://127.0.0.1:0".parse().unwrap()]);
+        let mut listener_manager = ListenerManager::new(server.get_global_ctx(), server.core());
+        listener_manager.prepare_listeners().await.unwrap();
+        listener_manager.run().await.unwrap();
+        wait_for_condition(
+            || {
+                let server = server.clone();
+                async move {
+                    server
+                        .get_global_ctx()
+                        .get_running_listeners()
+                        .into_iter()
+                        .any(|url| url.scheme() == "tcp")
+                }
+            },
+            Duration::from_secs(2),
+        )
+        .await;
+        let target_url = server
+            .get_global_ctx()
+            .get_running_listeners()
+            .into_iter()
+            .find(|url| url.scheme() == "tcp")
+            .unwrap();
+
+        let discovery_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let discovery_url: url::Url =
+            format!("http://{}", discovery_listener.local_addr().unwrap())
+                .parse()
+                .unwrap();
+        tokio::spawn(async move {
+            let (mut stream, _) = discovery_listener.accept().await.unwrap();
+            let mut request = [0_u8; 2048];
+            let _ = stream.read(&mut request).await.unwrap();
+            let response = format!(
+                "HTTP/1.1 302 Found\r\nLocation: {target_url}\r\nContent-Length: 0\r\n\r\n"
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        });
+
+        let client = create_mock_peer_manager().await;
+        let mut flags = client.get_global_ctx().get_flags();
+        flags.bind_device = false;
+        client.get_global_ctx().set_flags(flags);
+        let connector_manager =
+            ManualConnectorManager::new(client.get_global_ctx(), client.clone());
+        connector_manager
+            .add_connector_by_url(discovery_url.clone())
+            .await
+            .unwrap();
+
+        wait_route_appear(client.clone(), server.clone())
+            .await
+            .unwrap();
+        assert!(client.get_peer_map().is_client_url_alive(&discovery_url));
+        assert!(client.has_directly_connected_conn(server.my_peer_id()));
     }
 
     #[tokio::test]
