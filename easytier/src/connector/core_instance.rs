@@ -415,6 +415,45 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn runtime_core_reads_proxy_policy_at_activation() {
+        let global_ctx = get_mock_global_ctx();
+        let (nic_channel, _nic_receiver) = create_packet_recv_chan();
+        let peer_manager = Arc::new(PeerManager::new(
+            RouteAlgoType::Ospf,
+            global_ctx.clone(),
+            nic_channel,
+        ));
+        let proxy = Arc::new(RecordingProxyService::default());
+        let transport_proxy = Arc::new(RecordingProxyService::default());
+        let instance = Arc::new(
+            build_runtime_core_instance_with_transport(
+                global_ctx.clone(),
+                peer_manager,
+                Some(transport_proxy.clone()),
+                Some(proxy.clone()),
+            )
+            .expect("runtime core composition should succeed"),
+        );
+
+        instance.start().await.unwrap();
+        instance.start_transport_proxy().await.unwrap();
+        instance.start_proxy().await.unwrap();
+        assert_eq!(transport_proxy.start_calls.load(Ordering::Relaxed), 1);
+        assert_eq!(proxy.start_calls.load(Ordering::Relaxed), 0);
+
+        global_ctx
+            .config
+            .add_proxy_cidr("10.1.2.0/24".parse().unwrap(), None)
+            .unwrap();
+        instance.start_proxy().await.unwrap();
+        assert_eq!(proxy.start_calls.load(Ordering::Relaxed), 1);
+
+        instance.stop().await;
+        assert_eq!(transport_proxy.stop_calls.load(Ordering::Relaxed), 1);
+        assert_eq!(proxy.stop_calls.load(Ordering::Relaxed), 1);
+    }
+
+    #[tokio::test]
     async fn runtime_core_reads_acl_config_at_activation() {
         let global_ctx = get_mock_global_ctx();
         let (nic_channel, _nic_receiver) = create_packet_recv_chan();
