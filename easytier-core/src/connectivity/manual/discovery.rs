@@ -1,13 +1,177 @@
-use std::collections::HashSet;
+use std::{collections::HashSet, sync::Arc, time::Duration};
 
 use anyhow::Context as _;
+use bytes::Bytes;
+use http_body_util::{BodyExt as _, Empty};
+use hyper::{Request, header};
+use hyper_util::rt::TokioIo;
 use rand::{Rng as _, seq::SliceRandom};
+use rustls::pki_types::ServerName;
+use tokio::io::{AsyncRead, AsyncWrite};
+use tokio_rustls::TlsConnector;
+use tokio_util::task::AbortOnDropHandle;
 use url::Url;
 
-use crate::socket::{
-    SocketContext,
-    dns::{DnsQuery, DnsRecordResolver, DnsSrvRecord},
+use crate::{
+    connectivity::transport,
+    socket::{
+        IpVersion, SocketContext,
+        dns::{DnsQuery, DnsRecordResolver, DnsResolver, DnsSrvRecord},
+        tcp::{TcpBindOptions, TcpSocketPurpose, VirtualTcpSocketFactory},
+    },
 };
+
+use super::resolve_url_addrs;
+
+const HTTP_DEFAULT_PORT: u16 = 80;
+const HTTPS_DEFAULT_PORT: u16 = 443;
+
+#[derive(Debug, Clone)]
+pub struct HttpDiscoveryRequest {
+    pub url: Url,
+    pub user_agent: String,
+    pub network_name: String,
+    pub timeout: Duration,
+    pub ip_version: IpVersion,
+    pub tcp_bind: TcpBindOptions,
+}
+
+pub async fn fetch_http_discovery<H>(
+    host: Arc<H>,
+    dns: &dyn DnsResolver,
+    request: HttpDiscoveryRequest,
+) -> anyhow::Result<HttpDiscoveryResponse>
+where
+    H: VirtualTcpSocketFactory,
+{
+    let timeout = request.timeout;
+    tokio::time::timeout(timeout, fetch_http_discovery_inner(host, dns, request))
+        .await
+        .map_err(|_| anyhow::anyhow!("HTTP discovery timed out after {timeout:?}"))?
+}
+
+async fn fetch_http_discovery_inner<H>(
+    host: Arc<H>,
+    dns: &dyn DnsResolver,
+    request: HttpDiscoveryRequest,
+) -> anyhow::Result<HttpDiscoveryResponse>
+where
+    H: VirtualTcpSocketFactory,
+{
+    let default_port = match request.url.scheme() {
+        "http" => HTTP_DEFAULT_PORT,
+        "https" => HTTPS_DEFAULT_PORT,
+        scheme => anyhow::bail!("unsupported HTTP discovery scheme: {scheme}"),
+    };
+    let addrs = resolve_url_addrs(
+        &request.url,
+        default_port,
+        request.ip_version,
+        request.tcp_bind.socket_mark,
+        dns,
+    )
+    .await?;
+
+    let mut last_error = None;
+    let mut socket = None;
+    for addr in addrs {
+        match transport::connect_tcp(
+            host.clone(),
+            addr,
+            Vec::new(),
+            request.tcp_bind.clone(),
+            TcpSocketPurpose::ManualConnect,
+        )
+        .await
+        {
+            Ok(connected) => {
+                socket = Some(connected);
+                break;
+            }
+            Err(error) => last_error = Some(error),
+        }
+    }
+    let socket = socket.ok_or_else(|| {
+        last_error.unwrap_or_else(|| anyhow::anyhow!("no HTTP discovery address candidates"))
+    })?;
+
+    if request.url.scheme() == "https" {
+        let server_name = request
+            .url
+            .host_str()
+            .ok_or_else(|| anyhow::anyhow!("HTTP discovery URL has no host: {}", request.url))?
+            .to_owned();
+        let server_name = ServerName::try_from(server_name)
+            .with_context(|| format!("invalid HTTPS server name in {}", request.url))?;
+        let root_store = rustls::RootCertStore {
+            roots: webpki_roots::TLS_SERVER_ROOTS.iter().cloned().collect(),
+        };
+        let tls_config = rustls::ClientConfig::builder()
+            .with_root_certificates(root_store)
+            .with_no_client_auth();
+        let stream = TlsConnector::from(Arc::new(tls_config))
+            .connect(server_name, socket)
+            .await
+            .with_context(|| format!("HTTPS handshake failed for {}", request.url))?;
+        send_http_discovery_request(stream, request).await
+    } else {
+        send_http_discovery_request(socket, request).await
+    }
+}
+
+async fn send_http_discovery_request<S>(
+    stream: S,
+    request: HttpDiscoveryRequest,
+) -> anyhow::Result<HttpDiscoveryResponse>
+where
+    S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+{
+    let io = TokioIo::new(stream);
+    let (mut sender, connection) = hyper::client::conn::http1::handshake(io)
+        .await
+        .with_context(|| format!("starting HTTP connection failed for {}", request.url))?;
+    let connection_task = AbortOnDropHandle::new(tokio::spawn(connection));
+
+    let request_target = match request.url.query() {
+        Some(query) => format!("{}?{query}", request.url.path()),
+        None => request.url.path().to_owned(),
+    };
+    let host_header = &request.url[url::Position::BeforeHost..url::Position::AfterPort];
+    let outgoing = Request::builder()
+        .method("GET")
+        .uri(request_target)
+        .header(header::HOST, host_header)
+        .header(header::USER_AGENT, request.user_agent)
+        .header("X-Network-Name", request.network_name)
+        .header(header::CONNECTION, "close")
+        .body(Empty::<Bytes>::new())?;
+    let response = sender
+        .send_request(outgoing)
+        .await
+        .with_context(|| format!("sending HTTP request failed for {}", request.url))?;
+    let status_code = response.status().as_u16();
+    let location = response
+        .headers()
+        .get(header::LOCATION)
+        .map(|value| String::from_utf8_lossy(value.as_bytes()).into_owned());
+    let body = response
+        .into_body()
+        .collect()
+        .await
+        .with_context(|| format!("reading HTTP response failed for {}", request.url))?
+        .to_bytes();
+    drop(sender);
+    connection_task
+        .await
+        .context("HTTP connection task failed")?
+        .with_context(|| format!("HTTP connection failed for {}", request.url))?;
+
+    Ok(HttpDiscoveryResponse {
+        status_code,
+        location,
+        body: String::from_utf8_lossy(&body).into_owned(),
+    })
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HttpEndpointSource {
@@ -201,11 +365,177 @@ pub async fn resolve_srv_endpoint(
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Mutex;
+    use std::{
+        io,
+        net::{IpAddr, Ipv4Addr, SocketAddr},
+        pin::Pin,
+        sync::Mutex,
+        task::{Context, Poll},
+    };
 
     use async_trait::async_trait;
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _, DuplexStream, ReadBuf};
+
+    use crate::socket::tcp::{TcpConnectOptions, VirtualTcpSocket, VirtualTcpSocketFactory};
 
     use super::*;
+
+    struct HttpTestSocket {
+        stream: DuplexStream,
+        local_addr: SocketAddr,
+        peer_addr: SocketAddr,
+    }
+
+    impl AsyncRead for HttpTestSocket {
+        fn poll_read(
+            mut self: Pin<&mut Self>,
+            cx: &mut Context<'_>,
+            buf: &mut ReadBuf<'_>,
+        ) -> Poll<io::Result<()>> {
+            Pin::new(&mut self.stream).poll_read(cx, buf)
+        }
+    }
+
+    impl AsyncWrite for HttpTestSocket {
+        fn poll_write(
+            mut self: Pin<&mut Self>,
+            cx: &mut Context<'_>,
+            buf: &[u8],
+        ) -> Poll<io::Result<usize>> {
+            Pin::new(&mut self.stream).poll_write(cx, buf)
+        }
+
+        fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Pin::new(&mut self.stream).poll_flush(cx)
+        }
+
+        fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Pin::new(&mut self.stream).poll_shutdown(cx)
+        }
+    }
+
+    impl VirtualTcpSocket for HttpTestSocket {
+        fn local_addr(&self) -> io::Result<SocketAddr> {
+            Ok(self.local_addr)
+        }
+
+        fn peer_addr(&self) -> io::Result<SocketAddr> {
+            Ok(self.peer_addr)
+        }
+    }
+
+    struct HttpTestHost {
+        stream: Mutex<Option<DuplexStream>>,
+        connects: Mutex<Vec<TcpConnectOptions>>,
+    }
+
+    #[async_trait]
+    impl VirtualTcpSocketFactory for HttpTestHost {
+        type Socket = HttpTestSocket;
+
+        async fn connect_tcp(&self, options: TcpConnectOptions) -> anyhow::Result<Self::Socket> {
+            self.connects.lock().unwrap().push(options.clone());
+            let stream = self
+                .stream
+                .lock()
+                .unwrap()
+                .take()
+                .ok_or_else(|| anyhow::anyhow!("test socket already connected"))?;
+            Ok(HttpTestSocket {
+                stream,
+                local_addr: "192.0.2.2:40000".parse().unwrap(),
+                peer_addr: options.remote_addr,
+            })
+        }
+    }
+
+    struct HttpTestDns {
+        queries: Mutex<Vec<DnsQuery>>,
+    }
+
+    #[async_trait]
+    impl DnsResolver for HttpTestDns {
+        async fn resolve(&self, query: DnsQuery) -> anyhow::Result<Vec<IpAddr>> {
+            self.queries.lock().unwrap().push(query);
+            Ok(vec![IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1))])
+        }
+    }
+
+    #[tokio::test]
+    async fn http_fetch_uses_host_dns_and_socket_while_core_drives_io() {
+        let (client, mut server) = tokio::io::duplex(8192);
+        let host = Arc::new(HttpTestHost {
+            stream: Mutex::new(Some(client)),
+            connects: Mutex::new(Vec::new()),
+        });
+        let dns = HttpTestDns {
+            queries: Mutex::new(Vec::new()),
+        };
+        let server_task = tokio::spawn(async move {
+            let mut request = Vec::new();
+            loop {
+                let mut chunk = [0; 1024];
+                let len = server.read(&mut chunk).await.unwrap();
+                assert_ne!(len, 0, "HTTP request ended before its headers");
+                request.extend_from_slice(&chunk[..len]);
+                if request.windows(4).any(|window| window == b"\r\n\r\n") {
+                    break;
+                }
+            }
+            let request = String::from_utf8(request).unwrap().to_ascii_lowercase();
+            assert!(request.starts_with("get /lookup?kind=peer http/1.1\r\n"));
+            assert!(request.contains("host: discovery.example:18080\r\n"));
+            assert!(request.contains("user-agent: easytier/test\r\n"));
+            assert!(request.contains("x-network-name: test-network\r\n"));
+            assert!(request.contains("connection: close\r\n"));
+
+            server
+                .write_all(
+                    b"HTTP/1.1 302 Found\r\nLocation: tcp://192.0.2.10:11010\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n5\r\nhello\r\n0\r\n\r\n",
+                )
+                .await
+                .unwrap();
+            server.shutdown().await.unwrap();
+        });
+
+        let response = fetch_http_discovery(
+            host.clone(),
+            &dns,
+            HttpDiscoveryRequest {
+                url: "http://discovery.example:18080/lookup?kind=peer"
+                    .parse()
+                    .unwrap(),
+                user_agent: "easytier/test".to_owned(),
+                network_name: "test-network".to_owned(),
+                timeout: Duration::from_secs(1),
+                ip_version: IpVersion::V4,
+                tcp_bind: TcpBindOptions::default().with_socket_mark(Some(9)),
+            },
+        )
+        .await
+        .unwrap();
+        server_task.await.unwrap();
+
+        assert_eq!(response.status_code, 302);
+        assert_eq!(response.location.as_deref(), Some("tcp://192.0.2.10:11010"));
+        assert_eq!(response.body, "hello");
+        assert_eq!(
+            *dns.queries.lock().unwrap(),
+            [DnsQuery::new(
+                "discovery.example",
+                SocketContext {
+                    ip_version: IpVersion::V4,
+                    socket_mark: Some(9),
+                    netns: None,
+                }
+            )]
+        );
+        assert_eq!(host.connects.lock().unwrap().len(), 1);
+        let options = &host.connects.lock().unwrap()[0];
+        assert_eq!(options.remote_addr, "192.0.2.1:18080".parse().unwrap());
+        assert_eq!(options.purpose, TcpSocketPurpose::ManualConnect);
+        assert_eq!(options.bind.socket_mark, Some(9));
+    }
 
     #[test]
     fn http_discovery_interprets_redirect_and_body_forms() {

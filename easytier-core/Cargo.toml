@@ -28,6 +28,9 @@ easytier-proto = { path = "../easytier-proto", default-features = false, feature
 futures = "0.3"
 guarden = "0.2"
 hmac = "0.12.1"
+http-body-util = "0.1"
+hyper = { version = "1", default-features = false, features = ["client", "http1"] }
+hyper-util = { version = "0.1", default-features = false, features = ["tokio"] }
 idna = "1.0"
 atomic-shim = "0.2.0"
 ordered_hash_map = "0.5.0"
@@ -41,6 +44,7 @@ prost-reflect = { version = "0.16.4", default-features = false, features = ["der
 prost-wkt-types = "0.7.1"
 rand = "0.8.5"
 quanta = "0.12"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 serde = { version = "1.0", features = ["derive"] }
 sha2 = "0.10.8"
 smoltcp = { git = "https://github.com/smoltcp-rs/smoltcp.git", rev = "0a926767a68bc88d5512afefa7529c5ecdade4ea", optional = true, default-features = false }
@@ -56,8 +60,10 @@ tokio = { version = "1", default-features = false, features = [
     "io-util",
 ] }
 tokio-util = { version = "0.7", features = ["io", "rt"] }
+tokio-rustls = { version = "0.26", default-features = false }
 url = { version = "2.5", features = ["serde"] }
 uuid = { version = "1.5.0", features = ["v4", "fast-rng"] }
+webpki-roots = "0.26"
 x25519-dalek = { version = "2.0", features = ["static_secrets"] }
 zerocopy = { version = "0.7.32", features = ["derive", "simd"] }
 zstd = { version = "0.13", optional = true }
