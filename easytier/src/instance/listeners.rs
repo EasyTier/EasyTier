@@ -14,6 +14,7 @@ use easytier_core::{
         udp::{UdpSession, UdpSessionAcceptKind, UdpSessionSocketListener},
     },
 };
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 use crate::{
     common::{
@@ -151,6 +152,7 @@ enum AcceptedConnection {
     TcpStream {
         stream: RuntimeTcpSocket,
         local_url: url::Url,
+        upgrade_permit: Option<OwnedSemaphorePermit>,
     },
     UdpSession {
         session: UdpSession,
@@ -348,6 +350,7 @@ struct RuntimeTcpSocketListener {
     net_ns: NetNS,
     factory: Arc<RuntimeTcpListenerFactory>,
     socket_mark: Option<u32>,
+    upgrade_slots: Option<Arc<Semaphore>>,
     inner: Option<EasyTierTcpSocketListener>,
 }
 
@@ -358,11 +361,17 @@ impl RuntimeTcpSocketListener {
         factory: Arc<RuntimeTcpListenerFactory>,
         socket_mark: Option<u32>,
     ) -> Self {
+        let upgrade_slots = match url.scheme() {
+            #[cfg(feature = "websocket")]
+            "ws" | "wss" => Some(Arc::new(Semaphore::new(1))),
+            _ => None,
+        };
         Self {
             url,
             net_ns,
             factory,
             socket_mark,
+            upgrade_slots,
             inner: None,
         }
     }
@@ -410,10 +419,15 @@ impl core_listener::SocketListener for RuntimeTcpSocketListener {
     }
 
     async fn accept(&mut self) -> anyhow::Result<Self::Accepted> {
+        let upgrade_permit = match &self.upgrade_slots {
+            Some(slots) => Some(slots.clone().acquire_owned().await?),
+            None => None,
+        };
         let local_url = self.local_url();
         Ok(AcceptedConnection::TcpStream {
             stream: self.inner()?.accept().await?,
             local_url,
+            upgrade_permit,
         })
     }
 
@@ -646,7 +660,9 @@ impl core_listener::ListenerEventSink for GlobalCtxListenerEventSink {
                     ));
             }
             core_listener::ListenerEvent::SocketAccepted { .. } => {}
-            core_listener::ListenerEvent::AcceptedSocketHandleFailed { .. } => {}
+            core_listener::ListenerEvent::AcceptedSocketHandleFailed { url, error } => {
+                tracing::error!(%url, %error, "accepted socket handler failed");
+            }
         }
     }
 }
@@ -672,8 +688,13 @@ where
     async fn handle_accepted_socket(&self, accepted: AcceptedConnection) -> anyhow::Result<()> {
         match accepted {
             AcceptedConnection::Tunnel(tunnel) => self.handle_tunnel(tunnel).await,
-            AcceptedConnection::TcpStream { stream, local_url } => {
-                self.handle_tcp_stream(stream, local_url).await
+            AcceptedConnection::TcpStream {
+                stream,
+                local_url,
+                upgrade_permit,
+            } => {
+                self.handle_tcp_stream(stream, local_url, upgrade_permit)
+                    .await
             }
             AcceptedConnection::UdpSession { session, local_url } => {
                 self.handle_udp_session(session, local_url).await
@@ -690,7 +711,9 @@ where
         &self,
         stream: RuntimeTcpSocket,
         local_url: url::Url,
+        upgrade_permit: Option<OwnedSemaphorePermit>,
     ) -> anyhow::Result<()> {
+        let _upgrade_permit = upgrade_permit;
         let tunnel = match local_url.scheme() {
             "tcp" => upgrade_accepted_socket(stream)?,
             #[cfg(feature = "websocket")]
@@ -851,6 +874,51 @@ mod tests {
                 Some(core_listener_plan::ListenerKind::TcpStream)
             );
         }
+    }
+
+    #[cfg(feature = "websocket")]
+    #[tokio::test]
+    async fn websocket_listener_allows_only_one_pending_upgrade() {
+        let global_ctx = get_mock_global_ctx();
+        let factory = Arc::new(RuntimeTcpListenerFactory::new(global_ctx.net_ns.clone()));
+        let mut listener = RuntimeTcpSocketListener::new(
+            "ws://127.0.0.1:0".parse().unwrap(),
+            global_ctx.net_ns.clone(),
+            factory,
+            None,
+        );
+        core_listener::SocketListener::listen(&mut listener)
+            .await
+            .unwrap();
+        let addr = SocketAddr::from_url(
+            core_listener::SocketListener::local_url(&listener),
+            IpVersion::Both,
+        )
+        .await
+        .unwrap();
+
+        let _first_client = tokio::net::TcpStream::connect(addr).await.unwrap();
+        let first = core_listener::SocketListener::accept(&mut listener)
+            .await
+            .unwrap();
+        let _second_client = tokio::net::TcpStream::connect(addr).await.unwrap();
+        assert!(
+            timeout(
+                std::time::Duration::from_millis(50),
+                core_listener::SocketListener::accept(&mut listener),
+            )
+            .await
+            .is_err()
+        );
+
+        drop(first);
+        timeout(
+            std::time::Duration::from_secs(1),
+            core_listener::SocketListener::accept(&mut listener),
+        )
+        .await
+        .unwrap()
+        .unwrap();
     }
 
     #[cfg(feature = "wireguard")]
