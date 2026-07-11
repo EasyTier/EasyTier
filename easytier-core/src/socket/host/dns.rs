@@ -387,24 +387,28 @@ mod tests {
     async fn dropping_pending_or_unobserved_completion_cancels_host_state() {
         let io = Arc::new(TestDnsIo::default());
         let runtime = HostSocketRuntime::new();
-        let resolver = HostDnsResolver::new(runtime, io.clone());
+        let resolver = HostDnsResolver::new(runtime.clone(), io.clone());
 
         let pending_operation = {
             let mut resolve =
                 Box::pin(resolver.resolve_txt(query("pending.example", IpVersion::Both)));
             assert!(futures::poll!(&mut resolve).is_pending());
+            assert_eq!(runtime.inner.wakers.len(), 1);
             let (operation, _) =
                 io.operation(|value| matches!(value, TestDnsOperation::Txt { .. }));
             drop(resolve);
+            assert_eq!(runtime.inner.wakers.len(), 0);
             operation
         };
         let completed_operation = {
             let mut resolve = Box::pin(resolver.resolve(query("cancel.example", IpVersion::Both)));
             assert!(futures::poll!(&mut resolve).is_pending());
+            assert_eq!(runtime.inner.wakers.len(), 1);
             let (operation, _) =
                 io.operation(|value| matches!(value, TestDnsOperation::Resolve { .. }));
             io.complete_resolve(operation, vec!["192.0.2.2".parse().unwrap()]);
             drop(resolve);
+            assert_eq!(runtime.inner.wakers.len(), 0);
             operation
         };
 
