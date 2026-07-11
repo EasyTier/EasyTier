@@ -163,7 +163,50 @@ impl ProxyCidrEntry {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
     use super::*;
+
+    #[derive(Default)]
+    struct MutableSnapshotProvider {
+        snapshot: Mutex<ProxyCidrSnapshot>,
+        calls: AtomicUsize,
+    }
+
+    impl MutableSnapshotProvider {
+        fn set(&self, snapshot: ProxyCidrSnapshot) {
+            *self.snapshot.lock().unwrap() = snapshot;
+        }
+    }
+
+    impl ProxyCidrSnapshotProvider for MutableSnapshotProvider {
+        fn proxy_cidr_snapshot(&self) -> ProxyCidrSnapshot {
+            self.calls.fetch_add(1, Ordering::AcqRel);
+            self.snapshot.lock().unwrap().clone()
+        }
+    }
+
+    fn mapped_rule(real: &str, mapped: &str) -> ProxyCidrSnapshot {
+        ProxyCidrSnapshot {
+            rules: vec![ProxyCidrRule {
+                cidr: real.parse().unwrap(),
+                mapped_cidr: Some(mapped.parse().unwrap()),
+            }],
+        }
+    }
+
+    async fn wait_for_lookup(table: &ProxyCidrTable, mapped_ip: Ipv4Addr, expected: Ipv4Addr) {
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if table.lookup_v4(mapped_ip) == Some(expected) {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("proxy CIDR updater did not observe provider change");
+    }
 
     #[test]
     fn lookup_returns_original_ip_for_unmapped_cidr() {
@@ -194,5 +237,46 @@ mod tests {
             table.lookup_v4("10.10.10.42".parse().unwrap()),
             Some("127.0.0.42".parse().unwrap())
         );
+    }
+
+    #[tokio::test]
+    async fn runtime_owns_update_stop_restart_and_drop_lifecycle() {
+        let provider = Arc::new(MutableSnapshotProvider::default());
+        provider.set(mapped_rule("127.0.0.0/24", "10.10.10.0/24"));
+        let runtime = ProxyCidrTableRuntime::new_started(provider.clone());
+        runtime.start_updater();
+        let table = runtime.table();
+        assert_eq!(
+            table.lookup_v4("10.10.10.42".parse().unwrap()),
+            Some("127.0.0.42".parse().unwrap())
+        );
+
+        provider.set(mapped_rule("192.0.2.0/24", "198.51.100.0/24"));
+        wait_for_lookup(
+            &table,
+            "198.51.100.42".parse().unwrap(),
+            "192.0.2.42".parse().unwrap(),
+        )
+        .await;
+
+        runtime.stop_updater();
+        let calls_after_stop = provider.calls.load(Ordering::Acquire);
+        provider.set(mapped_rule("203.0.113.0/24", "10.20.30.0/24"));
+        tokio::time::sleep(Duration::from_millis(1100)).await;
+        assert_eq!(provider.calls.load(Ordering::Acquire), calls_after_stop);
+        assert_eq!(table.lookup_v4("10.20.30.42".parse().unwrap()), None);
+
+        runtime.start_updater();
+        assert_eq!(
+            table.lookup_v4("10.20.30.42".parse().unwrap()),
+            Some("203.0.113.42".parse().unwrap())
+        );
+
+        drop(runtime);
+        let calls_after_drop = provider.calls.load(Ordering::Acquire);
+        provider.set(mapped_rule("10.0.0.0/24", "172.16.0.0/24"));
+        tokio::time::sleep(Duration::from_millis(1100)).await;
+        assert_eq!(provider.calls.load(Ordering::Acquire), calls_after_drop);
+        assert_eq!(table.lookup_v4("172.16.0.42".parse().unwrap()), None);
     }
 }
