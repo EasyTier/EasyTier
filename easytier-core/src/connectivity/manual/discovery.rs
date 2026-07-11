@@ -706,18 +706,18 @@ mod tests {
     struct TestResolver {
         txt: String,
         srv: Vec<DnsSrvRecord>,
-        queries: Mutex<Vec<String>>,
+        queries: Mutex<Vec<DnsQuery>>,
     }
 
     #[async_trait]
     impl DnsRecordResolver for TestResolver {
         async fn resolve_txt(&self, query: DnsQuery) -> anyhow::Result<String> {
-            self.queries.lock().unwrap().push(query.host);
+            self.queries.lock().unwrap().push(query);
             Ok(self.txt.clone())
         }
 
         async fn resolve_srv(&self, query: DnsQuery) -> anyhow::Result<Vec<DnsSrvRecord>> {
-            self.queries.lock().unwrap().push(query.host);
+            self.queries.lock().unwrap().push(query);
             Ok(self.srv.clone())
         }
     }
@@ -741,6 +741,11 @@ mod tests {
             }],
             queries: Mutex::new(Vec::new()),
         });
+        let record_context = SocketContext {
+            ip_version: IpVersion::V6,
+            socket_mark: Some(17),
+            netns: None,
+        };
         let resolver = CoreManualEndpointResolver::new(
             host,
             dns,
@@ -751,7 +756,7 @@ mod tests {
                 http_timeout: Duration::from_secs(1),
                 http_ip_version: IpVersion::Both,
                 http_tcp_bind: TcpBindOptions::default(),
-                dns_record_context: SocketContext::default(),
+                dns_record_context: record_context.clone(),
                 srv_protocols: vec!["quic".to_owned()],
             },
         );
@@ -769,8 +774,87 @@ mod tests {
         assert_eq!(srv.as_str(), "quic://peer.example.com.:11012");
         assert_eq!(
             *records.queries.lock().unwrap(),
-            ["discovery.example", "_easytier._quic.discovery.example"]
+            [
+                DnsQuery::new("discovery.example", record_context.clone()),
+                DnsQuery::new("_easytier._quic.discovery.example", record_context)
+            ]
         );
+    }
+
+    #[tokio::test]
+    async fn core_endpoint_resolver_passes_http_config_and_error_classification() {
+        let (client, mut server) = tokio::io::duplex(8192);
+        let host = Arc::new(HttpTestHost {
+            stream: Mutex::new(Some(client)),
+            connects: Mutex::new(Vec::new()),
+        });
+        let dns = Arc::new(HttpTestDns {
+            queries: Mutex::new(Vec::new()),
+        });
+        let records = Arc::new(TestResolver {
+            txt: String::new(),
+            srv: Vec::new(),
+            queries: Mutex::new(Vec::new()),
+        });
+        let server_task = tokio::spawn(async move {
+            let mut request = Vec::new();
+            loop {
+                let mut chunk = [0; 1024];
+                let len = server.read(&mut chunk).await.unwrap();
+                assert_ne!(len, 0, "HTTP request ended before its headers");
+                request.extend_from_slice(&chunk[..len]);
+                if request.windows(4).any(|window| window == b"\r\n\r\n") {
+                    break;
+                }
+            }
+            let request = String::from_utf8(request).unwrap().to_ascii_lowercase();
+            assert!(request.contains("user-agent: easytier/facade-test\r\n"));
+            assert!(request.contains("x-network-name: facade-network\r\n"));
+            server
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Length: 9\r\nConnection: close\r\n\r\nnot a URL",
+                )
+                .await
+                .unwrap();
+            server.shutdown().await.unwrap();
+        });
+        let resolver = CoreManualEndpointResolver::new(
+            host.clone(),
+            dns.clone(),
+            records,
+            ManualEndpointDiscoveryConfig {
+                user_agent: "easytier/facade-test".to_owned(),
+                network_name: "facade-network".to_owned(),
+                http_timeout: Duration::from_secs(1),
+                http_ip_version: IpVersion::V4,
+                http_tcp_bind: TcpBindOptions::default().with_socket_mark(Some(23)),
+                dns_record_context: SocketContext::default(),
+                srv_protocols: Vec::new(),
+            },
+        );
+
+        let error = resolver
+            .resolve_endpoint(&"http://discovery.example:18081/endpoint".parse().unwrap())
+            .await
+            .unwrap_err();
+        server_task.await.unwrap();
+
+        assert!(error.to_string().starts_with("Invalid Url:"));
+        assert_eq!(
+            *dns.queries.lock().unwrap(),
+            [DnsQuery::new(
+                "discovery.example",
+                SocketContext {
+                    ip_version: IpVersion::V4,
+                    socket_mark: Some(23),
+                    netns: None,
+                }
+            )]
+        );
+        let connects = host.connects.lock().unwrap();
+        assert_eq!(connects.len(), 1);
+        assert_eq!(connects[0].remote_addr, "192.0.2.1:18081".parse().unwrap());
+        assert_eq!(connects[0].bind.socket_mark, Some(23));
     }
 
     #[tokio::test]
@@ -787,7 +871,10 @@ mod tests {
                 .unwrap();
 
         assert_eq!(endpoint.as_str(), "tcp://127.0.0.1:11010");
-        assert_eq!(*resolver.queries.lock().unwrap(), ["discovery.example"]);
+        assert_eq!(
+            *resolver.queries.lock().unwrap(),
+            [DnsQuery::new("discovery.example", SocketContext::default())]
+        );
     }
 
     #[tokio::test]
@@ -815,7 +902,10 @@ mod tests {
         assert_eq!(endpoint.as_str(), "quic://peer.example.com.:11012");
         assert_eq!(
             *resolver.queries.lock().unwrap(),
-            ["_easytier._quic.discovery.example"]
+            [DnsQuery::new(
+                "_easytier._quic.discovery.example",
+                SocketContext::default()
+            )]
         );
     }
 
