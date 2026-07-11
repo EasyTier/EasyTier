@@ -169,7 +169,10 @@ mod tests {
     use easytier_core::instance::CoreInstanceState;
 
     use crate::{
-        common::global_ctx::tests::get_mock_global_ctx,
+        common::global_ctx::{
+            NetworkIdentity,
+            tests::{get_mock_global_ctx, get_mock_global_ctx_with_network},
+        },
         peers::{
             create_packet_recv_chan,
             peer_manager::{PeerManager, RouteAlgoType},
@@ -200,5 +203,47 @@ mod tests {
         instance.stop().await;
         instance.stop().await;
         assert_eq!(instance.state(), CoreInstanceState::Stopped);
+    }
+
+    fn build_test_instance(network_name: &str) -> Arc<RuntimeCoreInstance> {
+        let global_ctx = get_mock_global_ctx_with_network(Some(NetworkIdentity::new(
+            network_name.to_owned(),
+            String::new(),
+        )));
+        let (nic_channel, _nic_receiver) = create_packet_recv_chan();
+        let peer_manager = Arc::new(PeerManager::new(
+            RouteAlgoType::Ospf,
+            global_ctx.clone(),
+            nic_channel,
+        ));
+        Arc::new(build_runtime_core_instance(global_ctx, peer_manager).unwrap())
+    }
+
+    #[tokio::test]
+    async fn runtime_core_instances_keep_lifecycle_and_connectors_isolated() {
+        let instance_a = build_test_instance("instance-a");
+        let instance_b = build_test_instance("instance-b");
+        let connector_a: url::Url = "tcp://127.0.0.1:21001".parse().unwrap();
+        let connector_b: url::Url = "udp://127.0.0.1:21002".parse().unwrap();
+
+        instance_a.add_connector(connector_a.clone()).unwrap();
+        instance_b.add_connector(connector_b.clone()).unwrap();
+        assert_eq!(instance_a.list_connectors()[0].url, connector_a);
+        assert_eq!(instance_b.list_connectors()[0].url, connector_b);
+        instance_a.clear_connectors();
+        instance_b.clear_connectors();
+
+        let (start_a, start_b) = tokio::join!(instance_a.start(), instance_b.start());
+        start_a.unwrap();
+        start_b.unwrap();
+        assert_eq!(instance_a.state(), CoreInstanceState::Running);
+        assert_eq!(instance_b.state(), CoreInstanceState::Running);
+
+        instance_a.stop().await;
+        assert_eq!(instance_a.state(), CoreInstanceState::Stopped);
+        assert_eq!(instance_b.state(), CoreInstanceState::Running);
+
+        instance_b.stop().await;
+        assert_eq!(instance_b.state(), CoreInstanceState::Stopped);
     }
 }
