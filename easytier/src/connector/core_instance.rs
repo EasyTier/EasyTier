@@ -180,6 +180,7 @@ mod tests {
 
     use easytier_core::instance::{CoreInstanceState, ListenerService};
     use tokio::sync::Notify;
+    use tokio_util::task::AbortOnDropHandle;
 
     use crate::{
         common::global_ctx::{
@@ -318,12 +319,18 @@ mod tests {
         let listener = Arc::new(BlockingListenerService::default());
         let instance = build_test_instance_with_listener("pending-listener", listener.clone());
         let start_instance = instance.clone();
-        let start_task = tokio::spawn(async move { start_instance.start_listeners().await });
-        listener.start_entered.notified().await;
+        let start_task = AbortOnDropHandle::new(tokio::spawn(async move {
+            start_instance.start_listeners().await
+        }));
+        let start_result = tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            listener.start_entered.notified().await;
+            instance.stop().await;
+            start_task.await.unwrap()
+        })
+        .await
+        .expect("listener cancellation should complete promptly");
 
-        instance.stop().await;
-
-        assert!(start_task.await.unwrap().is_err());
+        assert!(start_result.is_err());
         assert_eq!(instance.state(), CoreInstanceState::Stopped);
         assert_eq!(listener.stop_calls.load(Ordering::Relaxed), 1);
     }
