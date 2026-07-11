@@ -166,6 +166,7 @@ pub(crate) fn build_runtime_core_instance(
     adapters.listener = Some(Arc::new(RuntimeListenerService::new(
         global_ctx,
         peer_manager.core(),
+        adapters.host.clone(),
     )));
     adapters.udp_hole_punch = Some(Arc::new(super::udp_hole_punch::UdpHolePunchConnector::new(
         peer_manager.clone(),
@@ -257,6 +258,10 @@ mod tests {
     #[tokio::test]
     async fn runtime_core_instance_owns_connectivity_lifecycle() {
         let global_ctx = get_mock_global_ctx();
+        global_ctx.config.set_listeners(vec![
+            "tcp://127.0.0.1:0".parse().unwrap(),
+            "udp://127.0.0.1:0".parse().unwrap(),
+        ]);
         let (nic_channel, _nic_receiver) = create_packet_recv_chan();
         let peer_manager = Arc::new(PeerManager::new(
             RouteAlgoType::Ospf,
@@ -264,13 +269,21 @@ mod tests {
             nic_channel,
         ));
         let instance = Arc::new(
-            build_runtime_core_instance(global_ctx, peer_manager)
+            build_runtime_core_instance(global_ctx.clone(), peer_manager)
                 .expect("runtime core composition should succeed"),
         );
 
         assert_eq!(instance.state(), CoreInstanceState::Created);
         instance.start_listeners().await.unwrap();
         instance.start_listeners().await.unwrap();
+        let running_schemes = global_ctx
+            .get_running_listeners()
+            .into_iter()
+            .map(|url| url.scheme().to_owned())
+            .collect::<std::collections::BTreeSet<_>>();
+        assert!(running_schemes.contains("ring"));
+        assert!(running_schemes.contains("tcp"));
+        assert!(running_schemes.contains("udp"));
         instance.start().await.unwrap();
         assert_eq!(instance.state(), CoreInstanceState::Running);
         assert!(instance.start_listeners().await.is_err());
