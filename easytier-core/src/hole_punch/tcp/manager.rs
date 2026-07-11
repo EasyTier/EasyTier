@@ -1,5 +1,8 @@
 use std::{
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
     time::Duration,
 };
 
@@ -108,6 +111,7 @@ where
     host: Arc<H>,
     peer_manager: Arc<PeerManagerCore>,
     tasks: Arc<Mutex<JoinSet<()>>>,
+    stopping: AtomicBool,
 }
 
 impl<H> TcpHolePunchServer<H>
@@ -121,7 +125,12 @@ where
             host,
             peer_manager,
             tasks,
+            stopping: AtomicBool::new(false),
         })
+    }
+
+    fn begin_stop(&self) {
+        self.stopping.store(true, Ordering::Release);
     }
 
     async fn stop(&self) {
@@ -184,7 +193,11 @@ where
 
         let host = self.host.clone();
         let peer_manager = self.peer_manager.clone();
-        self.tasks.lock().unwrap().spawn(async move {
+        let mut tasks = self.tasks.lock().unwrap();
+        if self.stopping.load(Ordering::Acquire) {
+            return Err(rpc_types::error::Error::Shutdown);
+        }
+        tasks.spawn(async move {
             let _ = try_connect_to_remote(
                 host,
                 peer_manager,
@@ -520,6 +533,7 @@ where
 
     pub async fn stop(&self) {
         self.client.stop().await;
+        self.server.begin_stop();
         self.peer_manager
             .get_peer_rpc_mgr()
             .rpc_server()

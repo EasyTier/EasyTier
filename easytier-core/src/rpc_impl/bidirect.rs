@@ -219,8 +219,8 @@ impl BidirectRpcManager {
     pub async fn stop(&self) {
         self.running.store(false, Ordering::Relaxed);
         self.tunnel.lock().unwrap().take();
-        self.rpc_client.stop();
-        self.rpc_server.stop();
+        self.rpc_client.stop().await;
+        self.rpc_server.stop().await;
         let Some(mut tasks) = self.tasks.lock().unwrap().take() else {
             return;
         };
@@ -241,8 +241,8 @@ impl BidirectRpcManager {
         }
         self.running.store(false, Ordering::Relaxed);
         self.tunnel.lock().unwrap().take();
-        self.rpc_client.stop();
-        self.rpc_server.stop();
+        self.rpc_client.stop().await;
+        self.rpc_server.stop().await;
     }
 
     pub fn is_running(&self) -> bool {

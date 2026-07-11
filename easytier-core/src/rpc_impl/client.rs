@@ -430,8 +430,13 @@ impl Client {
         self.peer_info.clone()
     }
 
-    pub fn stop(&self) {
+    pub async fn stop(&self) {
         self.transport.lock().unwrap().close();
-        self.tasks.lock().unwrap().abort_all();
+        let mut tasks = {
+            let mut task_slot = self.tasks.lock().unwrap();
+            std::mem::replace(&mut *task_slot, JoinSet::new())
+        };
+        tasks.abort_all();
+        while tasks.join_next().await.is_some() {}
     }
 }

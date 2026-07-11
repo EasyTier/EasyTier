@@ -36,38 +36,36 @@ use super::{
     service_registry::ServiceRegistry,
 };
 
-fn join_joinset_background(
+async fn join_joinset_background(
     js: Arc<Mutex<JoinSet<()>>>,
     stopped: Arc<AtomicBool>,
     origin: &'static str,
 ) {
     let js = Arc::downgrade(&js);
-    tokio::spawn(async move {
-        while js.strong_count() > 0 && !stopped.load(Ordering::Relaxed) {
-            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+    while js.strong_count() > 0 && !stopped.load(Ordering::Relaxed) {
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
 
-            let fut = future::poll_fn(|cx| {
-                let Some(js) = js.upgrade() else {
-                    return std::task::Poll::Ready(());
-                };
+        let fut = future::poll_fn(|cx| {
+            let Some(js) = js.upgrade() else {
+                return std::task::Poll::Ready(());
+            };
 
-                let mut js = js.lock().unwrap();
-                while !js.is_empty() {
-                    match js.poll_join_next(cx) {
-                        std::task::Poll::Ready(Some(_)) => continue,
-                        std::task::Poll::Ready(None) => break,
-                        std::task::Poll::Pending => return std::task::Poll::Pending,
-                    }
+            let mut js = js.lock().unwrap();
+            while !js.is_empty() {
+                match js.poll_join_next(cx) {
+                    std::task::Poll::Ready(Some(_)) => continue,
+                    std::task::Poll::Ready(None) => break,
+                    std::task::Poll::Pending => return std::task::Poll::Pending,
                 }
+            }
 
-                std::task::Poll::Ready(())
-            });
+            std::task::Poll::Ready(())
+        });
 
-            let _ = timeout(std::time::Duration::from_secs(5), fut).await;
-        }
+        let _ = timeout(std::time::Duration::from_secs(5), fut).await;
+    }
 
-        tracing::debug!(origin, "joinset task exit");
-    });
+    tracing::debug!(origin, "joinset task exit");
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -149,11 +147,11 @@ impl Server {
     pub fn run(&self) {
         self.stopped.store(false, Ordering::Relaxed);
         let handler_tasks = self.handler_tasks.clone();
-        join_joinset_background(
+        self.tasks.lock().unwrap().spawn(join_joinset_background(
             handler_tasks.clone(),
             self.stopped.clone(),
             "rpc server handlers",
-        );
+        ));
 
         let mpsc = self.mpsc.lock().unwrap().take().unwrap();
 
@@ -162,6 +160,7 @@ impl Server {
         let tunnel_info = mpsc.tunnel_info();
         let metrics = self.metrics.clone();
         let handler_tasks_weak = Arc::downgrade(&handler_tasks);
+        let stopped = self.stopped.clone();
         self.tasks.lock().unwrap().spawn(async move {
             let mut mpsc = mpsc;
             let mut rx = mpsc.get_stream();
@@ -203,7 +202,11 @@ impl Server {
                             tracing::error!("rpc server handler task set is dropped");
                             return;
                         };
-                        handler_tasks.lock().unwrap().spawn(Self::handle_rpc(
+                        let mut handler_tasks = handler_tasks.lock().unwrap();
+                        if stopped.load(Ordering::Relaxed) {
+                            return;
+                        }
+                        handler_tasks.spawn(Self::handle_rpc(
                             mpsc.get_sink(),
                             packet,
                             reg.clone(),
@@ -347,10 +350,20 @@ impl Server {
         self.transport.lock().unwrap().close();
     }
 
-    pub fn stop(&self) {
+    pub async fn stop(&self) {
         self.stopped.store(true, Ordering::Relaxed);
         self.close();
-        self.tasks.lock().unwrap().abort_all();
-        self.handler_tasks.lock().unwrap().abort_all();
+        let (mut tasks, mut handler_tasks) = {
+            let mut task_slot = self.tasks.lock().unwrap();
+            let mut handler_task_slot = self.handler_tasks.lock().unwrap();
+            (
+                std::mem::replace(&mut *task_slot, JoinSet::new()),
+                std::mem::replace(&mut *handler_task_slot, JoinSet::new()),
+            )
+        };
+        tasks.abort_all();
+        handler_tasks.abort_all();
+        while tasks.join_next().await.is_some() {}
+        while handler_tasks.join_next().await.is_some() {}
     }
 }
