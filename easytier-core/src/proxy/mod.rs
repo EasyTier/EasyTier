@@ -1,3 +1,4 @@
+pub mod cidr_monitor;
 pub mod cidr_table;
 pub mod proxy_acl;
 #[cfg(feature = "proxy-packet")]
