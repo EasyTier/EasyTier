@@ -39,6 +39,7 @@ use crate::{
         acl_config::AclRuleConfig,
         create_packet_recv_chan,
         peer_manager::{PeerManagerCore, PortablePeerManagerConfig},
+        public_ipv6::PublicIpv6ProviderConfig,
     },
     proxy::cidr_monitor::{
         ProxyCidrDiff, ProxyCidrMonitor, ProxyCidrMonitorHost, collect_proxy_cidr_diff,
@@ -114,6 +115,7 @@ where
 pub struct CoreRuntimeConfig {
     pub acl: AclRuleConfig,
     pub dhcp_ipv4: bool,
+    pub public_ipv6_provider: PublicIpv6ProviderConfig,
 }
 
 impl Default for CoreRuntimeConfig {
@@ -121,6 +123,11 @@ impl Default for CoreRuntimeConfig {
         Self {
             acl: AclRuleConfig::default(),
             dhcp_ipv4: false,
+            public_ipv6_provider: PublicIpv6ProviderConfig {
+                provider_enabled: false,
+                configured_prefix: None,
+                provider_supported: false,
+            },
         }
     }
 }
@@ -592,6 +599,19 @@ where
         if state != CoreInstanceState::Created {
             anyhow::bail!("core instance cannot start from state {state:?}");
         }
+
+        let public_ipv6_config = self
+            .runtime_config
+            .current_runtime_config()
+            .public_ipv6_provider;
+        public_ipv6_config.validate().map_err(anyhow::Error::new)?;
+        if public_ipv6_config.provider_enabled && self.public_ipv6_provider.is_none() {
+            anyhow::bail!("public IPv6 provider is enabled but no host adapter was provided");
+        }
+        if let Some(public_ipv6_provider) = &self.public_ipv6_provider {
+            public_ipv6_provider.apply_config().await;
+        }
+
         self.set_state(CoreInstanceState::Starting);
         let mut recovery = self.recovery_guard();
 
@@ -633,6 +653,7 @@ where
         self.manual.start();
 
         self.set_state(CoreInstanceState::Running);
+        self.start_public_ipv6_provider().await;
         recovery.disarm();
         Ok(())
     }

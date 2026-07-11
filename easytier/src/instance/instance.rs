@@ -69,9 +69,7 @@ use crate::vpn_portal::{self, VpnPortal};
 
 #[cfg(feature = "magic-dns")]
 use super::dns_server::{MAGIC_DNS_FAKE_IP, runner::DnsRunner};
-use super::public_ipv6_provider::{
-    validate_public_ipv6_config, validate_public_ipv6_config_values,
-};
+use super::public_ipv6_provider::validate_public_ipv6_config_values;
 
 #[cfg(feature = "socks5")]
 use crate::gateway::socks5::Socks5Server;
@@ -829,12 +827,6 @@ impl Instance {
         ))
     }
 
-    async fn prepare_public_ipv6_config(&self) -> Result<(), Error> {
-        validate_public_ipv6_config(&self.global_ctx)?;
-        self.core_instance.reconcile_public_ipv6_provider().await;
-        Ok(())
-    }
-
     // use a mock nic ctx to consume packets.
     #[cfg(feature = "tun")]
     async fn clear_nic_ctx(
@@ -988,9 +980,7 @@ impl Instance {
     }
 
     pub async fn run(&mut self) -> Result<(), Error> {
-        self.prepare_public_ipv6_config().await?;
         self.core_instance.start().await?;
-        self.core_instance.start_public_ipv6_provider().await;
 
         #[cfg(feature = "tun")]
         {

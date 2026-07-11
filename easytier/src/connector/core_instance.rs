@@ -31,7 +31,9 @@ use crate::{
     },
     instance::listeners::RuntimeListenerService,
     instance::proxy_cidrs_monitor::runtime_proxy_cidr_monitor_host,
-    instance::public_ipv6_provider::runtime_public_ipv6_provider_host,
+    instance::public_ipv6_provider::{
+        runtime_public_ipv6_provider_config, runtime_public_ipv6_provider_host,
+    },
     peers::peer_manager::PeerManager,
     tunnel::IpScheme,
     use_global_var,
@@ -54,6 +56,7 @@ impl CoreRuntimeConfigProvider for RuntimeCoreConfigProvider {
         CoreRuntimeConfig {
             acl: runtime_acl_config(&self.global_ctx),
             dhcp_ipv4: self.global_ctx.config.get_dhcp(),
+            public_ipv6_provider: runtime_public_ipv6_provider_config(&self.global_ctx),
         }
     }
 }
@@ -191,6 +194,7 @@ pub(crate) fn build_runtime_core_instance_with_transport(
         runtime: CoreRuntimeConfig {
             acl: runtime_acl_config(&global_ctx),
             dhcp_ipv4: global_ctx.config.get_dhcp(),
+            public_ipv6_provider: runtime_public_ipv6_provider_config(&global_ctx),
         },
         endpoint_discovery: runtime_endpoint_discovery_config(&global_ctx),
         manual: runtime_manual_options(&global_ctx),
@@ -441,6 +445,32 @@ mod tests {
             "unexpected DHCP activation error: {error:#}"
         );
         instance.stop().await;
+    }
+
+    #[tokio::test]
+    async fn runtime_core_reads_public_ipv6_config_at_activation() {
+        let global_ctx = get_mock_global_ctx();
+        let (nic_channel, _nic_receiver) = create_packet_recv_chan();
+        let peer_manager = Arc::new(PeerManager::new(
+            RouteAlgoType::Ospf,
+            global_ctx.clone(),
+            nic_channel,
+        ));
+        let instance = Arc::new(
+            build_runtime_core_instance(global_ctx.clone(), peer_manager, None)
+                .expect("runtime core composition should succeed"),
+        );
+
+        global_ctx.config.set_ipv6_public_addr_provider(true);
+        global_ctx
+            .config
+            .set_ipv6_public_addr_prefix(Some("fd00::/64".parse().unwrap()));
+        let error = instance.start().await.unwrap_err();
+        assert!(
+            error.to_string().contains("not a valid global unicast"),
+            "unexpected public IPv6 activation error: {error:#}"
+        );
+        assert_eq!(instance.state(), CoreInstanceState::Created);
     }
 
     #[tokio::test]

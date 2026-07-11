@@ -46,7 +46,7 @@ enum PublicIpv6ProviderRuntimeState {
     Active(PublicIpv6ProviderActiveState),
 }
 
-fn read_public_ipv6_provider_config_snapshot(
+pub(crate) fn runtime_public_ipv6_provider_config(
     global_ctx: &ArcGlobalCtx,
 ) -> PublicIpv6ProviderConfig {
     PublicIpv6ProviderConfig {
@@ -61,9 +61,7 @@ fn should_run_public_ipv6_provider_reconcile_task(config: PublicIpv6ProviderConf
 }
 
 fn should_run_public_ipv6_provider_reconcile(global_ctx: &ArcGlobalCtx) -> bool {
-    should_run_public_ipv6_provider_reconcile_task(read_public_ipv6_provider_config_snapshot(
-        global_ctx,
-    ))
+    should_run_public_ipv6_provider_reconcile_task(runtime_public_ipv6_provider_config(global_ctx))
 }
 
 pub(super) fn validate_public_ipv6_config_values(
@@ -79,15 +77,6 @@ pub(super) fn validate_public_ipv6_config_values(
     }
     .validate()
     .map_err(|error| anyhow::Error::new(error).into())
-}
-
-pub(super) fn validate_public_ipv6_config(global_ctx: &ArcGlobalCtx) -> Result<(), Error> {
-    validate_public_ipv6_config_values(
-        global_ctx.get_ipv6(),
-        global_ctx.config.get_ipv6_public_addr_provider(),
-        global_ctx.config.get_ipv6_public_addr_auto(),
-        global_ctx.config.get_ipv6_public_addr_prefix(),
-    )
 }
 
 fn ensure_public_ipv6_provider_supported() -> Result<(), Error> {
@@ -593,7 +582,7 @@ fn try_apply_public_ipv6_provider_runtime_state(
     config: PublicIpv6ProviderConfig,
     state: &PublicIpv6ProviderRuntimeState,
 ) -> Option<bool> {
-    (read_public_ipv6_provider_config_snapshot(global_ctx) == config)
+    (runtime_public_ipv6_provider_config(global_ctx) == config)
         .then(|| apply_public_ipv6_provider_runtime_state(global_ctx, state))
 }
 
@@ -619,7 +608,7 @@ async fn reconcile_public_ipv6_provider_runtime_with_state(
     global_ctx: &ArcGlobalCtx,
 ) -> (PublicIpv6ProviderRuntimeState, bool) {
     for attempt in 0..PUBLIC_IPV6_PROVIDER_RECONCILE_MAX_RETRIES {
-        let config = read_public_ipv6_provider_config_snapshot(global_ctx);
+        let config = runtime_public_ipv6_provider_config(global_ctx);
         let next_state = resolve_public_ipv6_provider_runtime_state(global_ctx, config).await;
 
         if let Some(changed) =
@@ -1121,7 +1110,7 @@ mod tests {
     use super::ensure_public_ipv6_provider_supported;
     use super::{
         PublicIpv6ProviderConfig, PublicIpv6ProviderRuntimeState,
-        active_public_ipv6_provider_state, read_public_ipv6_provider_config_snapshot,
+        active_public_ipv6_provider_state, runtime_public_ipv6_provider_config,
         should_run_public_ipv6_provider_reconcile_task,
         try_apply_public_ipv6_provider_runtime_state,
     };
@@ -1351,14 +1340,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_read_public_ipv6_provider_config_snapshot_reads_provider_fields() {
+    async fn test_runtime_public_ipv6_provider_config_reads_provider_fields() {
         let global_ctx = test_global_ctx();
         let prefix = "2001:db8::/48".parse().unwrap();
         global_ctx.config.set_ipv6_public_addr_provider(true);
         global_ctx.config.set_ipv6_public_addr_prefix(Some(prefix));
 
         assert_eq!(
-            read_public_ipv6_provider_config_snapshot(&global_ctx),
+            runtime_public_ipv6_provider_config(&global_ctx),
             PublicIpv6ProviderConfig {
                 provider_enabled: true,
                 configured_prefix: Some(prefix),
@@ -1422,7 +1411,7 @@ mod tests {
         let prefix = "2001:db8::/48".parse().unwrap();
         global_ctx.config.set_ipv6_public_addr_provider(true);
         global_ctx.config.set_ipv6_public_addr_prefix(Some(prefix));
-        let config = read_public_ipv6_provider_config_snapshot(&global_ctx);
+        let config = runtime_public_ipv6_provider_config(&global_ctx);
 
         let changed = try_apply_public_ipv6_provider_runtime_state(
             &global_ctx,
