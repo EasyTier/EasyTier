@@ -14,7 +14,10 @@ use crate::tunnel::{
 use anyhow::Context;
 use derivative::Derivative;
 use derive_more::{Deref, DerefMut};
-use easytier_core::socket::udp::{UdpSessionProtocol, UdpSessionSocket, parse_quic_initial_dcid};
+use easytier_core::{
+    connectivity::transport::ConnectedUdpSession,
+    socket::udp::{UdpSessionProtocol, UdpSessionSocket, parse_quic_initial_dcid},
+};
 use parking_lot::RwLock;
 use quinn::{
     AsyncUdpSocket, ClientConfig, ConnectError, Connecting, Connection, Endpoint, EndpointConfig,
@@ -48,6 +51,9 @@ use tokio::{
     task::JoinSet,
 };
 use tokio_util::task::AbortOnDropHandle;
+
+mod session_socket;
+pub(crate) use session_socket::QuicUdpSessionSocket;
 
 // region config
 mod crypto {
@@ -1656,6 +1662,51 @@ impl QuicTunnelConnector {
     }
 }
 
+pub(crate) async fn upgrade_connected(
+    connected: ConnectedUdpSession,
+    remote_url: url::Url,
+) -> Result<Box<dyn Tunnel>, TunnelError> {
+    let socket = Arc::new(QuicUdpSessionSocket::new(connected)?);
+    let local_addr = socket.local_addr()?;
+    let remote_addr = socket.peer_addr();
+    let runtime = default_runtime().ok_or(TunnelError::InternalError(
+        "no async runtime found".to_owned(),
+    ))?;
+    let mut endpoint =
+        Endpoint::new_with_abstract_socket(endpoint_config(), None, socket, runtime)?;
+    endpoint.set_default_client_config(client_config());
+    let connecting = endpoint
+        .connect(remote_addr, "localhost")
+        .map_err(anyhow::Error::new)
+        .with_context(|| format!("failed to start connection to {remote_addr}"))?;
+    let connection = connecting
+        .await
+        .with_context(|| format!("failed to connect to {remote_addr}"))?;
+    let (write, read) = connection
+        .open_bi()
+        .await
+        .with_context(|| "open_bi failed")?;
+    let resolved_remote_addr = connection.remote_address();
+    let connection = Arc::new(ConnWrapper {
+        conn: connection,
+        _endpoint: Some(endpoint),
+        _udp_session_cleanup: None,
+    });
+    let info = TunnelInfo {
+        tunnel_type: "quic".to_owned(),
+        local_addr: Some(super::build_url_from_socket_addr(&local_addr.to_string(), "quic").into()),
+        remote_addr: Some(remote_url.into()),
+        resolved_remote_addr: Some(
+            super::build_url_from_socket_addr(&resolved_remote_addr.to_string(), "quic").into(),
+        ),
+    };
+    Ok(Box::new(TunnelWrapper::new(
+        FramedReader::new_with_associate_data(read, 4500, Some(Box::new(connection.clone()))),
+        FramedWriter::new_with_associate_data(write, Some(Box::new(connection))),
+        Some(info),
+    )))
+}
+
 #[async_trait::async_trait]
 impl TunnelConnector for QuicTunnelConnector {
     async fn connect(&mut self) -> Result<Box<dyn Tunnel>, TunnelError> {
@@ -1715,6 +1766,11 @@ mod tests {
     use crate::tunnel::{
         TunnelConnector,
         common::tests::{_tunnel_bench, _tunnel_pingpong},
+        udp::RuntimeUdpSessionControlHandler,
+    };
+    use easytier_core::{
+        connectivity::transport::{UdpSessionMode, connect_udp},
+        socket::udp::UdpBindOptions,
     };
     use futures::future::poll_fn;
     use std::io::IoSliceMut;
@@ -1730,6 +1786,31 @@ mod tests {
     fn global_ctx() -> ArcGlobalCtx {
         let identity = crate::common::config::NetworkIdentity::default();
         get_mock_global_ctx_with_network(Some(identity))
+    }
+
+    struct SessionQuicConnector {
+        remote_url: url::Url,
+    }
+
+    #[async_trait::async_trait]
+    impl TunnelConnector for SessionQuicConnector {
+        async fn connect(&mut self) -> Result<Box<dyn Tunnel>, TunnelError> {
+            let remote_addr =
+                SocketAddr::from_url(self.remote_url.clone(), IpVersion::Both).await?;
+            let connected = connect_udp(
+                Arc::new(RuntimeUdpSessionControlHandler),
+                remote_addr,
+                Vec::new(),
+                UdpBindOptions::direct_connect(),
+                UdpSessionMode::Classified(UdpSessionProtocol::Quic),
+            )
+            .await?;
+            upgrade_connected(connected, self.remote_url.clone()).await
+        }
+
+        fn remote_url(&self) -> url::Url {
+            self.remote_url.clone()
+        }
     }
 
     fn stopped_client_endpoint() -> (Endpoint, SocketAddr) {
@@ -1755,6 +1836,18 @@ mod tests {
         let connector =
             QuicTunnelConnector::new("quic://127.0.0.1:21011".parse().unwrap(), global_ctx());
         _tunnel_pingpong(listener, connector).await
+    }
+
+    #[test]
+    fn quic_over_connected_udp_session_pingpong() {
+        RUNTIME.block_on(async {
+            let listener =
+                QuicTunnelListener::new("quic://127.0.0.1:21013".parse().unwrap(), global_ctx());
+            let connector = SessionQuicConnector {
+                remote_url: "quic://127.0.0.1:21013".parse().unwrap(),
+            };
+            _tunnel_pingpong(listener, connector).await;
+        })
     }
 
     #[test]
