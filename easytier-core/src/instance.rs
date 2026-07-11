@@ -111,10 +111,25 @@ where
 }
 
 #[derive(Debug, Clone)]
+pub struct CoreRuntimeConfig {
+    pub acl: AclRuleConfig,
+    pub dhcp_ipv4: bool,
+}
+
+impl Default for CoreRuntimeConfig {
+    fn default() -> Self {
+        Self {
+            acl: AclRuleConfig::default(),
+            dhcp_ipv4: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
 pub struct CoreInstanceConfig {
     pub initial_peers: Vec<Url>,
     pub listeners: Vec<TransportListenerConfig>,
-    pub acl: AclRuleConfig,
+    pub runtime: CoreRuntimeConfig,
     pub endpoint_discovery: ManualEndpointDiscoveryConfig,
     pub manual: ManualConnectorOptions,
     pub direct: DirectConnectorOptions,
@@ -125,7 +140,7 @@ impl Default for CoreInstanceConfig {
         Self {
             initial_peers: Vec::new(),
             listeners: Vec::new(),
-            acl: AclRuleConfig::default(),
+            runtime: CoreRuntimeConfig::default(),
             endpoint_discovery: ManualEndpointDiscoveryConfig::default(),
             manual: ManualConnectorOptions::default(),
             direct: DirectConnectorOptions::default(),
@@ -188,21 +203,21 @@ where
     pub accepted_transport_handler:
         Option<Arc<dyn AcceptedSocketHandler<AcceptedTransport<HostAcceptedTcpSocket<H>>>>>,
     pub udp_hole_punch: Option<Arc<dyn UdpHolePunchService>>,
-    pub acl_config: Option<Arc<dyn AclConfigProvider>>,
+    pub runtime_config: Option<Arc<dyn CoreRuntimeConfigProvider>>,
     pub transport_proxy: Option<Arc<dyn ProxyService>>,
     pub proxy: Option<Arc<dyn ProxyService>>,
     pub proxy_cidr_monitor: Option<Arc<dyn ProxyCidrMonitorHost>>,
     pub public_ipv6_provider: Option<Arc<dyn PublicIpv6ProviderHost>>,
 }
 
-pub trait AclConfigProvider: Send + Sync + 'static {
-    fn current_acl_config(&self) -> AclRuleConfig;
+pub trait CoreRuntimeConfigProvider: Send + Sync + 'static {
+    fn current_runtime_config(&self) -> CoreRuntimeConfig;
 }
 
-struct StaticAclConfigProvider(AclRuleConfig);
+struct StaticCoreRuntimeConfigProvider(CoreRuntimeConfig);
 
-impl AclConfigProvider for StaticAclConfigProvider {
-    fn current_acl_config(&self) -> AclRuleConfig {
+impl CoreRuntimeConfigProvider for StaticCoreRuntimeConfigProvider {
+    fn current_runtime_config(&self) -> CoreRuntimeConfig {
         self.0.clone()
     }
 }
@@ -331,7 +346,7 @@ where
     public_ipv6_provider: Option<Arc<PublicIpv6ProviderService>>,
     initial_peers: Vec<Url>,
     initial_peers_started: AtomicBool,
-    acl_config: Arc<dyn AclConfigProvider>,
+    runtime_config: Arc<dyn CoreRuntimeConfigProvider>,
     initial_acl_loaded: AtomicBool,
 }
 
@@ -386,7 +401,7 @@ where
             listener,
             accepted_transport_handler,
             udp_hole_punch,
-            acl_config,
+            runtime_config,
             transport_proxy,
             proxy,
             proxy_cidr_monitor,
@@ -395,7 +410,7 @@ where
         let CoreInstanceConfig {
             initial_peers,
             listeners,
-            acl: initial_acl,
+            runtime: initial_runtime_config,
             endpoint_discovery,
             manual: manual_options,
             direct: direct_options,
@@ -434,9 +449,9 @@ where
             dns_records,
             endpoint_discovery,
         ));
-        peer_manager.initialize_portable_acl(&initial_acl)?;
-        let acl_config: Arc<dyn AclConfigProvider> =
-            acl_config.unwrap_or_else(|| Arc::new(StaticAclConfigProvider(initial_acl)));
+        peer_manager.initialize_portable_acl(&initial_runtime_config.acl)?;
+        let runtime_config: Arc<dyn CoreRuntimeConfigProvider> = runtime_config
+            .unwrap_or_else(|| Arc::new(StaticCoreRuntimeConfigProvider(initial_runtime_config)));
         let manual = match manual_events {
             Some(events) => ManualConnectorManager::new_with_events(
                 peer_manager.clone(),
@@ -501,7 +516,7 @@ where
             public_ipv6_provider,
             initial_peers,
             initial_peers_started: AtomicBool::new(false),
-            acl_config,
+            runtime_config,
             initial_acl_loaded: AtomicBool::new(false),
         })
     }
@@ -820,7 +835,16 @@ where
 
     /// Starts the core-owned services that run after the host has prepared its
     /// packet interface.
-    pub async fn start_network_services(self: &Arc<Self>) -> anyhow::Result<()> {
+    pub async fn start_network_services(
+        self: &Arc<Self>,
+        dhcp_ipv4_host: Option<Arc<dyn DhcpIpv4Host>>,
+    ) -> anyhow::Result<()> {
+        if self.runtime_config.current_runtime_config().dhcp_ipv4 {
+            let host = dhcp_ipv4_host.ok_or_else(|| {
+                anyhow::anyhow!("DHCP IPv4 is enabled but no host adapter was provided")
+            })?;
+            self.start_dhcp_ipv4(host).await?;
+        }
         self.start_transport_proxy().await?;
         self.load_initial_acl().await?;
         self.start_proxy().await?;
@@ -841,7 +865,7 @@ where
             return Ok(());
         }
 
-        let acl = self.acl_config.current_acl_config().build()?;
+        let acl = self.runtime_config.current_runtime_config().acl.build()?;
         if self.peer_manager.reload_acl(acl.as_ref()) {
             self.refresh_acl_groups().await;
         }

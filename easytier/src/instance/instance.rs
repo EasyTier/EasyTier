@@ -1004,14 +1004,10 @@ impl Instance {
             }
         }
 
-        if self.global_ctx.config.get_dhcp() {
-            self.core_instance
-                .start_dhcp_ipv4(RuntimeDhcpIpv4Host::new(self))
-                .await?;
-        }
-
         // run after tun device created, so listener can bind to tun device, which may be required by win 10
-        self.core_instance.start_network_services().await?;
+        self.core_instance
+            .start_network_services(Some(RuntimeDhcpIpv4Host::new(self)))
+            .await?;
 
         if self.global_ctx.get_vpn_portal_cidr().is_some() {
             self.run_vpn_portal().await?;

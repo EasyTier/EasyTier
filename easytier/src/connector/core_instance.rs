@@ -8,7 +8,10 @@ use easytier_core::{
             discovery::ManualEndpointDiscoveryConfig,
         },
     },
-    instance::{AclConfigProvider, CoreInstance, CoreInstanceAdapters, CoreInstanceConfig},
+    instance::{
+        CoreInstance, CoreInstanceAdapters, CoreInstanceConfig, CoreRuntimeConfig,
+        CoreRuntimeConfigProvider,
+    },
     socket::{
         IpVersion, SocketContext,
         dns::{DnsRecordResolver, DnsResolver},
@@ -42,13 +45,16 @@ struct GlobalCtxManualConnectivityEventSink {
     global_ctx: ArcGlobalCtx,
 }
 
-struct RuntimeAclConfigProvider {
+struct RuntimeCoreConfigProvider {
     global_ctx: ArcGlobalCtx,
 }
 
-impl AclConfigProvider for RuntimeAclConfigProvider {
-    fn current_acl_config(&self) -> easytier_core::peers::acl_config::AclRuleConfig {
-        runtime_acl_config(&self.global_ctx)
+impl CoreRuntimeConfigProvider for RuntimeCoreConfigProvider {
+    fn current_runtime_config(&self) -> CoreRuntimeConfig {
+        CoreRuntimeConfig {
+            acl: runtime_acl_config(&self.global_ctx),
+            dhcp_ipv4: self.global_ctx.config.get_dhcp(),
+        }
     }
 }
 
@@ -150,7 +156,7 @@ pub(crate) fn runtime_core_instance_adapters(
         listener: None,
         accepted_transport_handler: None,
         udp_hole_punch: None,
-        acl_config: Some(Arc::new(RuntimeAclConfigProvider {
+        runtime_config: Some(Arc::new(RuntimeCoreConfigProvider {
             global_ctx: global_ctx.clone(),
         })),
         transport_proxy: None,
@@ -182,7 +188,10 @@ pub(crate) fn build_runtime_core_instance_with_transport(
             .map(|peer| peer.uri)
             .collect(),
         listeners: Vec::new(),
-        acl: runtime_acl_config(&global_ctx),
+        runtime: CoreRuntimeConfig {
+            acl: runtime_acl_config(&global_ctx),
+            dhcp_ipv4: global_ctx.config.get_dhcp(),
+        },
         endpoint_discovery: runtime_endpoint_discovery_config(&global_ctx),
         manual: runtime_manual_options(&global_ctx),
         direct: runtime_direct_options(&global_ctx, false),
@@ -323,7 +332,7 @@ mod tests {
         let config = CoreInstanceConfig {
             initial_peers: Vec::new(),
             listeners: Vec::new(),
-            acl: Default::default(),
+            runtime: Default::default(),
             endpoint_discovery: runtime_endpoint_discovery_config(&global_ctx),
             manual: runtime_manual_options(&global_ctx),
             direct: runtime_direct_options(&global_ctx, false),
@@ -362,7 +371,7 @@ mod tests {
         assert_eq!(instance.state(), CoreInstanceState::Created);
         assert!(instance.list_connectors().is_empty());
         assert!(instance.start_transport_proxy().await.is_err());
-        assert!(instance.start_network_services().await.is_err());
+        assert!(instance.start_network_services(None).await.is_err());
         assert!(instance.start_proxy().await.is_err());
         assert!(instance.start_peer_center().await.is_err());
         instance.start().await.unwrap();
@@ -370,8 +379,8 @@ mod tests {
         assert!(instance.list_connectors().is_empty());
         assert!(instance.start_initial_peers().await.is_err());
         assert!(instance.start().await.is_err());
-        instance.start_network_services().await.unwrap();
-        instance.start_network_services().await.unwrap();
+        instance.start_network_services(None).await.unwrap();
+        instance.start_network_services(None).await.unwrap();
         assert_eq!(transport_proxy.start_calls.load(Ordering::Relaxed), 1);
         assert_eq!(instance.list_connectors().len(), 1);
         assert_eq!(instance.list_connectors()[0].url, initial_peer);
@@ -402,10 +411,34 @@ mod tests {
             .config
             .set_tcp_whitelist(vec!["invalid".to_string()]);
         instance.start().await.unwrap();
-        let error = instance.start_network_services().await.unwrap_err();
+        let error = instance.start_network_services(None).await.unwrap_err();
         assert!(
             error.to_string().contains("Invalid port number"),
             "unexpected ACL activation error: {error:#}"
+        );
+        instance.stop().await;
+    }
+
+    #[tokio::test]
+    async fn runtime_core_reads_dhcp_config_at_activation() {
+        let global_ctx = get_mock_global_ctx();
+        let (nic_channel, _nic_receiver) = create_packet_recv_chan();
+        let peer_manager = Arc::new(PeerManager::new(
+            RouteAlgoType::Ospf,
+            global_ctx.clone(),
+            nic_channel,
+        ));
+        let instance = Arc::new(
+            build_runtime_core_instance(global_ctx.clone(), peer_manager, None)
+                .expect("runtime core composition should succeed"),
+        );
+
+        global_ctx.config.set_dhcp(true);
+        instance.start().await.unwrap();
+        let error = instance.start_network_services(None).await.unwrap_err();
+        assert!(
+            error.to_string().contains("no host adapter was provided"),
+            "unexpected DHCP activation error: {error:#}"
         );
         instance.stop().await;
     }
@@ -513,7 +546,7 @@ mod tests {
                     must_succeed: true,
                 },
             ],
-            acl: Default::default(),
+            runtime: Default::default(),
             endpoint_discovery: runtime_endpoint_discovery_config(&global_ctx),
             manual: runtime_manual_options(&global_ctx),
             direct: runtime_direct_options(&global_ctx, false),
@@ -574,7 +607,7 @@ mod tests {
                             ),
                             must_succeed: true,
                         }],
-                        acl: Default::default(),
+                        runtime: Default::default(),
                         endpoint_discovery: runtime_endpoint_discovery_config(&global_a),
                         manual: Default::default(),
                         direct: runtime_direct_options(&global_a, true),
@@ -592,7 +625,7 @@ mod tests {
                     connectivity: CoreInstanceConfig {
                         initial_peers: Vec::new(),
                         listeners: Vec::new(),
-                        acl: Default::default(),
+                        runtime: Default::default(),
                         endpoint_discovery: runtime_endpoint_discovery_config(&global_b),
                         manual: Default::default(),
                         direct: runtime_direct_options(&global_b, true),
@@ -687,7 +720,7 @@ mod tests {
         let mut connectivity = CoreInstanceConfig {
             initial_peers: Vec::new(),
             listeners: Vec::new(),
-            acl: Default::default(),
+            runtime: Default::default(),
             endpoint_discovery: runtime_endpoint_discovery_config(&global_ctx),
             manual: runtime_manual_options(&global_ctx),
             direct: runtime_direct_options(&global_ctx, false),
@@ -726,7 +759,7 @@ mod tests {
                 ),
                 must_succeed: true,
             }],
-            acl: Default::default(),
+            runtime: Default::default(),
             endpoint_discovery: runtime_endpoint_discovery_config(&global_ctx),
             manual: runtime_manual_options(&global_ctx),
             direct: runtime_direct_options(&global_ctx, false),
