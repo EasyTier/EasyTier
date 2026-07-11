@@ -1,4 +1,4 @@
-use std::{sync::Arc, time::Duration};
+use std::{marker::PhantomData, sync::Arc, time::Duration};
 
 use async_trait::async_trait;
 use url::Url;
@@ -25,6 +25,33 @@ pub trait ClientProtocolUpgrader<TcpSocket>: Send + Sync + 'static {
         connected: ConnectedTransport<TcpSocket>,
         requested_url: Url,
     ) -> anyhow::Result<Box<dyn Tunnel>>;
+}
+
+#[async_trait]
+pub trait ServerTunnelAcceptor: Send + 'static {
+    async fn accept(&mut self) -> anyhow::Result<Box<dyn Tunnel>>;
+}
+
+pub enum ServerProtocolUpgrade {
+    Tunnel(Box<dyn Tunnel>),
+    Acceptor(Box<dyn ServerTunnelAcceptor>),
+}
+
+#[async_trait]
+pub trait ServerProtocolUpgrader<TcpSocket>: Send + Sync + 'static {
+    fn supports_scheme(&self, scheme: &str) -> bool;
+
+    async fn upgrade_tcp(
+        &self,
+        socket: TcpSocket,
+        local_url: Url,
+    ) -> anyhow::Result<ServerProtocolUpgrade>;
+
+    async fn upgrade_udp(
+        &self,
+        session: UdpSession,
+        local_url: Url,
+    ) -> anyhow::Result<ServerProtocolUpgrade>;
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -156,6 +183,101 @@ impl Default for CoreServerProtocolConfig {
     }
 }
 
+/// Owns portable server protocol dispatch and delegates only protocol engines
+/// that are not available in core.
+pub struct CoreServerProtocolUpgrader<TcpSocket> {
+    config: CoreServerProtocolConfig,
+    external: Option<Arc<dyn ServerProtocolUpgrader<TcpSocket>>>,
+    tcp_socket: PhantomData<fn() -> TcpSocket>,
+}
+
+impl<TcpSocket: 'static> CoreServerProtocolUpgrader<TcpSocket> {
+    pub fn new(config: CoreServerProtocolConfig) -> Self {
+        Self {
+            config,
+            external: None,
+            tcp_socket: PhantomData,
+        }
+    }
+
+    pub fn with_external(
+        config: CoreServerProtocolConfig,
+        external: Arc<dyn ServerProtocolUpgrader<TcpSocket>>,
+    ) -> Self {
+        Self {
+            config,
+            external: Some(external),
+            tcp_socket: PhantomData,
+        }
+    }
+
+    fn supports_core_scheme(&self, scheme: &str) -> Option<bool> {
+        match scheme {
+            "tcp" | "udp" => Some(true),
+            "ws" | "wss" => Some(self.config.websocket),
+            "faketcp" => Some(self.config.faketcp),
+            _ => None,
+        }
+    }
+
+    fn external(&self, scheme: &str) -> anyhow::Result<&dyn ServerProtocolUpgrader<TcpSocket>> {
+        let external = self
+            .external
+            .as_deref()
+            .ok_or_else(|| anyhow::anyhow!("unsupported server protocol upgrader: {scheme}"))?;
+        if !external.supports_scheme(scheme) {
+            anyhow::bail!("unsupported server protocol upgrader: {scheme}");
+        }
+        Ok(external)
+    }
+}
+
+#[async_trait]
+impl<TcpSocket> ServerProtocolUpgrader<TcpSocket> for CoreServerProtocolUpgrader<TcpSocket>
+where
+    TcpSocket: VirtualTcpSocket,
+{
+    fn supports_scheme(&self, scheme: &str) -> bool {
+        self.supports_core_scheme(scheme).unwrap_or_else(|| {
+            self.external
+                .as_ref()
+                .is_some_and(|external| external.supports_scheme(scheme))
+        })
+    }
+
+    async fn upgrade_tcp(
+        &self,
+        socket: TcpSocket,
+        local_url: Url,
+    ) -> anyhow::Result<ServerProtocolUpgrade> {
+        match local_url.scheme() {
+            "tcp" | "ws" | "wss" | "faketcp" => Ok(ServerProtocolUpgrade::Tunnel(
+                upgrade_accepted_tcp(socket, local_url, self.config).await?,
+            )),
+            "udp" | "wg" | "quic" => {
+                anyhow::bail!("{} protocol requires a UDP session", local_url.scheme())
+            }
+            scheme => self.external(scheme)?.upgrade_tcp(socket, local_url).await,
+        }
+    }
+
+    async fn upgrade_udp(
+        &self,
+        session: UdpSession,
+        local_url: Url,
+    ) -> anyhow::Result<ServerProtocolUpgrade> {
+        match local_url.scheme() {
+            "udp" => Ok(ServerProtocolUpgrade::Tunnel(upgrade_accepted_udp(
+                session, &local_url,
+            )?)),
+            "tcp" | "ws" | "wss" | "faketcp" => {
+                anyhow::bail!("{} protocol requires a TCP transport", local_url.scheme())
+            }
+            scheme => self.external(scheme)?.upgrade_udp(session, local_url).await,
+        }
+    }
+}
+
 pub async fn upgrade_accepted_tcp<TcpSocket>(
     socket: TcpSocket,
     local_url: Url,
@@ -256,6 +378,29 @@ mod tests {
             _requested_url: Url,
         ) -> anyhow::Result<Box<dyn Tunnel>> {
             anyhow::bail!("external protocol invoked")
+        }
+    }
+
+    #[async_trait]
+    impl ServerProtocolUpgrader<MockTcpSocket> for MockExternalUpgrader {
+        fn supports_scheme(&self, scheme: &str) -> bool {
+            scheme == "external"
+        }
+
+        async fn upgrade_tcp(
+            &self,
+            _socket: MockTcpSocket,
+            _local_url: Url,
+        ) -> anyhow::Result<ServerProtocolUpgrade> {
+            anyhow::bail!("external server protocol invoked")
+        }
+
+        async fn upgrade_udp(
+            &self,
+            _session: UdpSession,
+            _local_url: Url,
+        ) -> anyhow::Result<ServerProtocolUpgrade> {
+            anyhow::bail!("external server UDP protocol invoked")
         }
     }
 
@@ -376,6 +521,37 @@ mod tests {
         assert_eq!(
             disabled.to_string(),
             "unsupported TCP listener protocol: ws"
+        );
+    }
+
+    #[tokio::test]
+    async fn core_server_upgrader_owns_builtin_dispatch_and_delegates_external_protocols() {
+        let upgrader = CoreServerProtocolUpgrader::with_external(
+            CoreServerProtocolConfig::default(),
+            Arc::new(MockExternalUpgrader),
+        );
+
+        assert!(upgrader.supports_scheme("tcp"));
+        assert!(upgrader.supports_scheme("udp"));
+        assert!(!upgrader.supports_scheme("ws"));
+        assert!(!upgrader.supports_scheme("quic"));
+        assert!(upgrader.supports_scheme("external"));
+
+        let external = upgrader
+            .upgrade_tcp(MockTcpSocket, "external://0.0.0.0:2000".parse().unwrap())
+            .await
+            .err()
+            .unwrap();
+        assert_eq!(external.to_string(), "external server protocol invoked");
+
+        let mismatched = upgrader
+            .upgrade_tcp(MockTcpSocket, "quic://0.0.0.0:2000".parse().unwrap())
+            .await
+            .err()
+            .unwrap();
+        assert_eq!(
+            mismatched.to_string(),
+            "quic protocol requires a UDP session"
         );
     }
 }
