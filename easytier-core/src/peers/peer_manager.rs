@@ -197,6 +197,46 @@ impl PortablePeerManagerConfig {
     }
 }
 
+fn legacy_limit_is_unlimited(limit: u64) -> bool {
+    limit == 0 || limit == u64::MAX
+}
+
+fn validate_portable_routes(routes: &crate::config::RouteConfig) -> anyhow::Result<()> {
+    if let Some(prefix) = &routes.ipv4 {
+        if !matches!(prefix.address, IpAddr::V4(_)) || prefix.prefix_len > 32 {
+            anyhow::bail!("routes.ipv4 must contain a valid IPv4 prefix");
+        }
+    }
+    if let Some(prefix) = &routes.ipv6 {
+        if !matches!(prefix.address, IpAddr::V6(_)) || prefix.prefix_len > 128 {
+            anyhow::bail!("routes.ipv6 must contain a valid IPv6 prefix");
+        }
+    }
+    for proxy in &routes.proxy_networks {
+        for (field, prefix) in [
+            ("real", Some(&proxy.real)),
+            ("mapped", proxy.mapped.as_ref()),
+        ] {
+            let Some(prefix) = prefix else {
+                continue;
+            };
+            let IpAddr::V4(address) = prefix.address else {
+                anyhow::bail!("proxy network {field} prefix must be IPv4");
+            };
+            if cidr::Ipv4Cidr::new(address, prefix.prefix_len).is_err() {
+                anyhow::bail!("proxy network {field} must be a valid IPv4 network prefix");
+            }
+        }
+    }
+    if !routes.advertised_routes.is_empty() {
+        anyhow::bail!("advertised routes are not available in portable composition");
+    }
+    if !routes.foreign_networks.is_empty() {
+        anyhow::bail!("foreign network routes are not available in portable composition");
+    }
+    Ok(())
+}
+
 pub enum RouteAlgoInst {
     Ospf(Arc<PeerRoute>),
     None,
@@ -785,6 +825,7 @@ impl PeerManagerCore {
             ),
             _ => {}
         }
+        validate_portable_routes(&config.runtime.core.routes)?;
 
         if let (Some(_), Some(expected_digest)) = (
             config.runtime.network_identity.network_secret.as_ref(),
@@ -803,25 +844,35 @@ impl PeerManagerCore {
                 anyhow::bail!("network secret does not match the configured digest");
             }
         }
+        if config.runtime.network_identity.network_secret.is_none()
+            && config
+                .runtime
+                .network_identity
+                .network_secret_digest
+                .as_ref()
+                .is_some_and(|digest| digest.iter().any(|byte| *byte != 0))
+        {
+            anyhow::bail!("digest-only local identity requires credential key capabilities");
+        }
         if config.runtime.feature_flags.is_credential_peer {
             anyhow::bail!(
                 "credential peer mode requires a trust adapter and is not available in portable composition"
             );
         }
-        if config.flags.instance_recv_bps_limit != 0
-            || config.flags.foreign_relay_bps_limit != 0
+        if !legacy_limit_is_unlimited(config.flags.instance_recv_bps_limit)
+            || !legacy_limit_is_unlimited(config.flags.foreign_relay_bps_limit)
             || config
                 .runtime
                 .core
                 .traffic
                 .instance_recv_bps_limit
-                .is_some_and(|limit| limit != 0)
+                .is_some_and(|limit| !legacy_limit_is_unlimited(limit))
             || config
                 .runtime
                 .core
                 .traffic
                 .foreign_relay_bps_limit
-                .is_some_and(|limit| limit != 0)
+                .is_some_and(|limit| !legacy_limit_is_unlimited(limit))
         {
             anyhow::bail!(
                 "traffic limits require a limiter adapter and are not available in portable composition"
@@ -3255,7 +3306,7 @@ mod tests {
 
     use super::*;
     use crate::{
-        config::{CoreConfig, NetworkIdentity, NodeConfig},
+        config::{CoreConfig, IpPrefix, NetworkIdentity, NodeConfig},
         peers::{context::PeerContext, create_packet_recv_chan},
         proto::common::{PeerFeatureFlag, StunInfo},
     };
@@ -3374,12 +3425,14 @@ mod tests {
     }
 
     fn build_portable_for_test(runtime: PeerRuntimeConfig) -> anyhow::Result<PeerManagerCore> {
+        build_portable_config_for_test(PortablePeerManagerConfig::new(runtime))
+    }
+
+    fn build_portable_config_for_test(
+        config: PortablePeerManagerConfig,
+    ) -> anyhow::Result<PeerManagerCore> {
         let (packet_tx, _packet_rx) = create_packet_recv_chan();
-        PeerManagerCore::new_portable(
-            PortablePeerManagerConfig::new(runtime),
-            Arc::new(PanicDnsResolver),
-            packet_tx,
-        )
+        PeerManagerCore::new_portable(config, Arc::new(PanicDnsResolver), packet_tx)
     }
 
     #[tokio::test]
@@ -3449,9 +3502,57 @@ mod tests {
         assert!(build_portable_for_test(secure_without_keys).is_err());
     }
 
+    #[tokio::test]
+    async fn portable_peer_manager_accepts_legacy_unlimited_limits() {
+        let config = PortablePeerManagerConfig::new(portable_runtime_config("portable-net", 84));
+        let mut flags = config.flags.clone();
+        flags.instance_recv_bps_limit = u64::MAX;
+        flags.foreign_relay_bps_limit = u64::MAX;
+
+        let core = build_portable_config_for_test(config.with_flags(flags)).unwrap();
+        core.clear_resources().await;
+    }
+
+    #[tokio::test]
+    async fn portable_peer_manager_rejects_invalid_identity_and_routes() {
+        let mut digest_only = portable_runtime_config("portable-net", 85);
+        digest_only.network_identity.network_secret = None;
+        digest_only.network_identity.network_secret_digest = Some([1; 32]);
+        assert!(build_portable_for_test(digest_only).is_err());
+
+        let mut wrong_family = portable_runtime_config("portable-net", 86);
+        wrong_family.core.routes.ipv4 = Some(IpPrefix {
+            address: "2001:db8::1".parse().unwrap(),
+            prefix_len: 64,
+        });
+        assert!(build_portable_for_test(wrong_family).is_err());
+
+        let mut proxy_host_bits = portable_runtime_config("portable-net", 87);
+        proxy_host_bits.core.routes.proxy_networks = vec![crate::config::ProxyNetworkConfig {
+            real: IpPrefix::new("10.50.0.7".parse().unwrap(), 16).unwrap(),
+            mapped: None,
+        }];
+        assert!(build_portable_for_test(proxy_host_bits).is_err());
+
+        let mut wrong_proxy_family = portable_runtime_config("portable-net", 88);
+        wrong_proxy_family.core.routes.proxy_networks = vec![crate::config::ProxyNetworkConfig {
+            real: IpPrefix::new("10.50.0.0".parse().unwrap(), 16).unwrap(),
+            mapped: Some(IpPrefix::new("2001:db8::".parse().unwrap(), 64).unwrap()),
+        }];
+        assert!(build_portable_for_test(wrong_proxy_family).is_err());
+
+        let mut advertised = portable_runtime_config("portable-net", 89);
+        advertised
+            .core
+            .routes
+            .advertised_routes
+            .push(IpPrefix::new("10.60.0.0".parse().unwrap(), 16).unwrap());
+        assert!(build_portable_for_test(advertised).is_err());
+    }
+
     #[test]
     fn portable_peer_manager_reports_missing_tokio_runtime() {
-        let result = build_portable_for_test(portable_runtime_config("portable-net", 84));
+        let result = build_portable_for_test(portable_runtime_config("portable-net", 90));
 
         let Err(error) = result else {
             panic!("construction outside Tokio must fail");
