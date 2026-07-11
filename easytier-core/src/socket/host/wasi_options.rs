@@ -34,6 +34,7 @@ pub(super) fn encode_tcp_connect_options(options: &TcpConnectOptions) -> io::Res
         TcpSocketPurpose::FakeTcp => 1,
         TcpSocketPurpose::HolePunch => 2,
         TcpSocketPurpose::ManualConnect => 3,
+        TcpSocketPurpose::ProxyNat => 4,
     });
     encode_bind_device(&mut encoded, &options.bind.bind_device)?;
     Ok(encoded)
@@ -74,6 +75,7 @@ pub(super) fn encode_tcp_listen_options(options: &TcpListenOptions) -> io::Resul
         TcpListenPurpose::DirectConnect => 0,
         TcpListenPurpose::HolePunch => 1,
         TcpListenPurpose::ManualConnect => 2,
+        TcpListenPurpose::ProxyNat => 3,
     });
     encode_bind_device(&mut encoded, &options.bind.bind_device)?;
     Ok(encoded)
@@ -214,6 +216,17 @@ mod tests {
     fn encodes_udp_proxy_nat_purpose() {
         let encoded = encode_udp_bind_options(&UdpBindOptions::proxy_nat()).unwrap();
         assert_eq!(encoded[36], 4);
+    }
+
+    #[test]
+    fn encodes_tcp_proxy_nat_purposes() {
+        let remote = "192.0.2.2:11013".parse().unwrap();
+        let connect = encode_tcp_connect_options(&TcpConnectOptions::proxy_nat(remote)).unwrap();
+        assert_eq!(connect[63], 4);
+
+        let local = "0.0.0.0:0".parse().unwrap();
+        let listen = encode_tcp_listen_options(&TcpListenOptions::proxy_nat(local)).unwrap();
+        assert_eq!(listen[36], 3);
     }
 
     #[test]

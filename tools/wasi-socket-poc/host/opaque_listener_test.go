@@ -280,7 +280,7 @@ func decodeTCPListenOptions(encoded []byte) (*net.TCPAddr, error) {
 	if err := validatePoCBindOptions(encoded[28], encoded[29:33], encoded[33], encoded[34], encoded[35]); err != nil {
 		return nil, err
 	}
-	if encoded[36] > 2 {
+	if encoded[36] > 3 {
 		return nil, fmt.Errorf("invalid TCP listen purpose")
 	}
 	device, err := decodeBindDevice(encoded[37:])
@@ -291,6 +291,20 @@ func decodeTCPListenOptions(encoded []byte) (*net.TCPAddr, error) {
 		return nil, fmt.Errorf("bind device policy is outside this PoC")
 	}
 	return &net.TCPAddr{IP: local.IP, Port: local.Port, Zone: local.Zone}, nil
+}
+
+func TestDecodeTCPProxyNatListenPurpose(t *testing.T) {
+	encoded := make([]byte, 42)
+	encoded[0] = 1
+	local, err := encodeNetAddr(&net.TCPAddr{IP: net.IPv4zero, Port: 0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	copy(encoded[1:28], local[:])
+	encoded[36] = 3
+	if _, err := decodeTCPListenOptions(encoded); err != nil {
+		t.Fatalf("decode proxy NAT TCP listen options: %v", err)
+	}
 }
 
 func TestOpaqueListenerAcceptsCoreStream(t *testing.T) {

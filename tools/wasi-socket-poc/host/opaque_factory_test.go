@@ -292,7 +292,7 @@ func decodeTCPConnectOptions(encoded []byte) (decodedTCPConnectOptions, error) {
 	if err := validatePoCBindOptions(encoded[55], encoded[56:60], encoded[60], encoded[61], encoded[62]); err != nil {
 		return decodedTCPConnectOptions{}, err
 	}
-	if encoded[63] > 3 {
+	if encoded[63] > 4 {
 		return decodedTCPConnectOptions{}, fmt.Errorf("invalid TCP purpose")
 	}
 	if encoded[63] == 1 {
@@ -309,6 +309,20 @@ func decodeTCPConnectOptions(encoded []byte) (decodedTCPConnectOptions, error) {
 		remoteAddr: &net.TCPAddr{IP: remote.IP, Port: remote.Port, Zone: remote.Zone},
 		localAddr:  udpToTCPAddr(local),
 	}, nil
+}
+
+func TestDecodeTCPProxyNatPurpose(t *testing.T) {
+	encoded := make([]byte, 69)
+	encoded[0] = 1
+	remote, err := encodeNetAddr(&net.TCPAddr{IP: net.IPv4(192, 0, 2, 2), Port: 11013})
+	if err != nil {
+		t.Fatal(err)
+	}
+	copy(encoded[1:28], remote[:])
+	encoded[63] = 4
+	if _, err := decodeTCPConnectOptions(encoded); err != nil {
+		t.Fatalf("decode proxy NAT TCP connect options: %v", err)
+	}
 }
 
 func decodeUDPBindOptions(encoded []byte) (decodedUDPBindOptions, error) {

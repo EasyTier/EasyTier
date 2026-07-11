@@ -7,10 +7,11 @@ use std::{
 };
 
 use easytier_core::socket::tcp::{
-    TcpBindOptions, TcpConnectOptions, TcpListenOptions, VirtualTcpListener,
-    VirtualTcpListenerFactory, VirtualTcpSocket,
+    TcpBindOptions, TcpConnectOptions, TcpListenOptions, TcpListenPurpose, TcpSocketPurpose,
+    VirtualTcpListener, VirtualTcpListenerFactory, VirtualTcpSocket,
 };
 use easytier_core::tunnel::ring::{RingByteStream, RingTunnelSocket};
+use socket2::{SockRef, TcpKeepalive};
 #[cfg(unix)]
 use tokio::net::UnixStream;
 use tokio::{
@@ -175,11 +176,12 @@ impl VirtualTcpSocket for RuntimeTcpSocket {
 #[derive(Debug)]
 pub(crate) struct RuntimeTcpListener {
     listener: TcpListener,
+    purpose: TcpListenPurpose,
 }
 
 impl RuntimeTcpListener {
-    pub(crate) fn new(listener: TcpListener) -> Self {
-        Self { listener }
+    pub(crate) fn new(listener: TcpListener, purpose: TcpListenPurpose) -> Self {
+        Self { listener, purpose }
     }
 }
 
@@ -193,6 +195,9 @@ impl VirtualTcpListener for RuntimeTcpListener {
 
     async fn accept(&self) -> io::Result<(Self::Socket, SocketAddr)> {
         let (stream, addr) = self.listener.accept().await?;
+        if self.purpose == TcpListenPurpose::ProxyNat {
+            prepare_proxy_tcp_socket(&stream)?;
+        }
         Ok((RuntimeTcpSocket::new(stream), addr))
     }
 }
@@ -291,6 +296,7 @@ fn bind_tcp_listener_with_netns(
     options: TcpListenOptions,
     net_ns: Option<NetNS>,
 ) -> Result<RuntimeTcpListener, TunnelError> {
+    let purpose = options.purpose;
     let bind_options = options.bind;
     let addr = bind_options.local_addr.ok_or_else(|| {
         TunnelError::InvalidAddr("tcp listener requires a local bind address".to_owned())
@@ -305,13 +311,14 @@ fn bind_tcp_listener_with_netns(
         .reuse_port(bind_options.reuse_port)
         .maybe_socket_mark(bind_options.socket_mark)
         .call()?;
-    Ok(RuntimeTcpListener::new(listener))
+    Ok(RuntimeTcpListener::new(listener, purpose))
 }
 
 pub(crate) async fn connect_tcp(
     options: TcpConnectOptions,
 ) -> Result<RuntimeTcpSocket, TunnelError> {
     let remote_addr = options.remote_addr;
+    let purpose = options.purpose;
     let bind_options = options.bind;
 
     if !must_bind_before_connect(&bind_options) {
@@ -326,12 +333,39 @@ pub(crate) async fn connect_tcp(
         } else {
             TcpStream::connect(remote_addr).await?
         };
+        if purpose == TcpSocketPurpose::ProxyNat {
+            prepare_proxy_tcp_socket(&stream)?;
+        }
         return Ok(RuntimeTcpSocket::new(stream));
     }
 
     let socket = bind_tcp_socket(remote_addr, bind_options)?;
     let stream = socket.connect(remote_addr).await?;
+    if purpose == TcpSocketPurpose::ProxyNat {
+        prepare_proxy_tcp_socket(&stream)?;
+    }
     Ok(RuntimeTcpSocket::new(stream))
+}
+
+pub(crate) fn prepare_proxy_tcp_socket(stream: &TcpStream) -> io::Result<()> {
+    const TCP_KEEPALIVE_TIME: std::time::Duration = std::time::Duration::from_secs(5);
+    const TCP_KEEPALIVE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(2);
+    const TCP_KEEPALIVE_RETRIES: u32 = 2;
+
+    let keepalive = TcpKeepalive::new()
+        .with_time(TCP_KEEPALIVE_TIME)
+        .with_interval(TCP_KEEPALIVE_INTERVAL);
+
+    #[cfg(not(target_os = "windows"))]
+    let keepalive = keepalive.with_retries(TCP_KEEPALIVE_RETRIES);
+
+    let socket = SockRef::from(stream);
+    socket.set_tcp_keepalive(&keepalive)?;
+    if let Err(error) = socket.set_nodelay(true) {
+        tracing::warn!(?error, "set_nodelay failed, ignore it");
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]

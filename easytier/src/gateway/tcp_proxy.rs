@@ -16,7 +16,6 @@ use easytier_core::proxy::tcp_proxy_engine::{
     TcpNatEntrySnapshot, TcpNatEntryState as CoreTcpNatEntryState, TcpProxyMode, TcpProxyNicContext,
 };
 use easytier_core::proxy::tcp_proxy_service::TcpProxyService;
-use socket2::{SockRef, TcpKeepalive};
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::{TcpListener, TcpSocket, TcpStream};
 use tokio::time::timeout;
@@ -33,6 +32,7 @@ use crate::proto::api::instance::{
 use crate::proto::rpc_types;
 use crate::proto::rpc_types::controller::BaseController;
 use crate::tunnel::packet_def::ZCPacket;
+use crate::tunnel::tcp_socket::prepare_proxy_tcp_socket;
 
 use super::CidrSet;
 
@@ -64,7 +64,7 @@ impl NatDstConnector for NatDstTcpConnector {
             .await?
             .with_context(|| format!("connect to nat dst failed: {:?}", nat_dst))?;
 
-        prepare_kernel_tcp_socket(&stream).map_err(|err| ProxyRuntimeError::Other(err.into()))?;
+        prepare_proxy_tcp_socket(&stream).map_err(|err| ProxyRuntimeError::Other(err.into()))?;
 
         Ok(stream)
     }
@@ -76,27 +76,6 @@ impl NatDstConnector for NatDstTcpConnector {
     fn transport_type(&self) -> TcpProxyEntryTransportType {
         TcpProxyEntryTransportType::Tcp
     }
-}
-
-fn prepare_kernel_tcp_socket(stream: &TcpStream) -> Result<()> {
-    const TCP_KEEPALIVE_TIME: Duration = Duration::from_secs(5);
-    const TCP_KEEPALIVE_INTERVAL: Duration = Duration::from_secs(2);
-    const TCP_KEEPALIVE_RETRIES: u32 = 2;
-
-    let ka = TcpKeepalive::new()
-        .with_time(TCP_KEEPALIVE_TIME)
-        .with_interval(TCP_KEEPALIVE_INTERVAL);
-
-    #[cfg(not(target_os = "windows"))]
-    let ka = ka.with_retries(TCP_KEEPALIVE_RETRIES);
-
-    let sf = SockRef::from(stream);
-    sf.set_tcp_keepalive(&ka)?;
-    if let Err(err) = sf.set_nodelay(true) {
-        tracing::warn!(?err, "set_nodelay failed, ignore it");
-    }
-
-    Ok(())
 }
 
 struct RuntimeKernelTcpListener {
@@ -118,7 +97,7 @@ impl TcpProxyKernelListener for RuntimeKernelTcpListener {
         &self,
     ) -> std::result::Result<(SocketAddr, Box<dyn TcpProxySrcStream>), ProxyRuntimeError> {
         let (stream, addr) = self.listener.accept().await?;
-        prepare_kernel_tcp_socket(&stream).map_err(|err| ProxyRuntimeError::Other(err.into()))?;
+        prepare_proxy_tcp_socket(&stream).map_err(|err| ProxyRuntimeError::Other(err.into()))?;
         Ok((addr, Box::new(stream)))
     }
 }

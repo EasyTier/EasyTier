@@ -27,6 +27,7 @@ pub enum TcpSocketPurpose {
     FakeTcp,
     HolePunch,
     ManualConnect,
+    ProxyNat,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -126,6 +127,14 @@ impl TcpConnectOptions {
         }
     }
 
+    pub fn proxy_nat(remote_addr: SocketAddr) -> Self {
+        Self {
+            remote_addr,
+            bind: TcpBindOptions::default(),
+            purpose: TcpSocketPurpose::ProxyNat,
+        }
+    }
+
     pub fn with_bind(mut self, bind: TcpBindOptions) -> Self {
         self.bind = bind;
         self
@@ -153,6 +162,7 @@ pub enum TcpListenPurpose {
     DirectConnect,
     HolePunch,
     ManualConnect,
+    ProxyNat,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -180,6 +190,13 @@ impl TcpListenOptions {
         Self {
             bind: TcpBindOptions::default().with_local_addr(Some(local_addr)),
             purpose: TcpListenPurpose::ManualConnect,
+        }
+    }
+
+    pub fn proxy_nat(local_addr: SocketAddr) -> Self {
+        Self {
+            bind: TcpBindOptions::default().with_local_addr(Some(local_addr)),
+            purpose: TcpListenPurpose::ProxyNat,
         }
     }
 
@@ -448,6 +465,14 @@ mod tests {
                 purpose: TcpSocketPurpose::ManualConnect,
             }
         );
+        assert_eq!(
+            TcpConnectOptions::proxy_nat(remote_addr),
+            TcpConnectOptions {
+                remote_addr,
+                bind: TcpBindOptions::default(),
+                purpose: TcpSocketPurpose::ProxyNat,
+            }
+        );
     }
 
     #[test]
@@ -473,6 +498,13 @@ mod tests {
             TcpListenOptions {
                 bind: TcpBindOptions::default().with_local_addr(Some(local_addr)),
                 purpose: TcpListenPurpose::ManualConnect,
+            }
+        );
+        assert_eq!(
+            TcpListenOptions::proxy_nat(local_addr),
+            TcpListenOptions {
+                bind: TcpBindOptions::default().with_local_addr(Some(local_addr)),
+                purpose: TcpListenPurpose::ProxyNat,
             }
         );
     }
