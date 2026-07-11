@@ -12,7 +12,7 @@ use percent_encoding::percent_decode_str;
 use quanta::Instant;
 use rand::seq::SliceRandom;
 use tokio::task::JoinSet;
-use tokio_util::task::AbortOnDropHandle;
+use tokio_util::{sync::CancellationToken, task::AbortOnDropHandle};
 use url::Url;
 
 use crate::{
@@ -243,7 +243,12 @@ where
     H: ManualConnectorHost,
 {
     data: Arc<ManualConnectorData<H>>,
-    task: Mutex<Option<AbortOnDropHandle<()>>>,
+    task: Mutex<Option<ManualConnectorTask>>,
+}
+
+struct ManualConnectorTask {
+    cancel: CancellationToken,
+    handle: AbortOnDropHandle<()>,
 }
 
 impl<H> ManualConnectorManager<H>
@@ -299,19 +304,27 @@ where
 
     pub fn start(&self) {
         let mut task_slot = self.task.lock().unwrap();
-        if task_slot.as_ref().is_some_and(|task| !task.is_finished()) {
+        if task_slot
+            .as_ref()
+            .is_some_and(|task| !task.handle.is_finished())
+        {
             return;
         }
-        task_slot.replace(AbortOnDropHandle::new(tokio::spawn(Self::run(
-            self.data.clone(),
-        ))));
+        let cancel = CancellationToken::new();
+        task_slot.replace(ManualConnectorTask {
+            handle: AbortOnDropHandle::new(tokio::spawn(Self::run(
+                self.data.clone(),
+                cancel.clone(),
+            ))),
+            cancel,
+        });
     }
 
     pub async fn stop(&self) {
         let task = self.task.lock().unwrap().take();
         if let Some(task) = task {
-            task.abort();
-            let _ = task.await;
+            task.cancel.cancel();
+            let _ = task.handle.await;
         }
     }
 
@@ -380,12 +393,13 @@ where
         snapshots
     }
 
-    async fn run(data: Arc<ManualConnectorData<H>>) {
+    async fn run(data: Arc<ManualConnectorData<H>>, cancel: CancellationToken) {
         let mut interval = tokio::time::interval(data.options.reconnect_interval);
         let mut reconnect_tasks = JoinSet::new();
 
         loop {
             tokio::select! {
+                _ = cancel.cancelled() => break,
                 _ = interval.tick() => {
                     for url in take_dead_connectors_for_reconnect(&data) {
                         let task_data = data.clone();
@@ -416,6 +430,29 @@ where
                     }
                 }
             }
+        }
+
+        reconnect_tasks.abort_all();
+        while reconnect_tasks.join_next().await.is_some() {}
+
+        let _state_guard = data.state_lock.lock().unwrap();
+        restore_interrupted_connectors(&data.connectors, &data.reconnecting, &data.removed);
+    }
+}
+
+fn restore_interrupted_connectors(
+    connectors: &DashSet<Url>,
+    reconnecting: &DashSet<Url>,
+    removed: &DashSet<Url>,
+) {
+    let interrupted = reconnecting
+        .iter()
+        .map(|entry| entry.key().clone())
+        .collect::<Vec<_>>();
+    for url in interrupted {
+        reconnecting.remove(&url);
+        if removed.remove(&url).is_none() {
+            connectors.insert(url);
         }
     }
 }
@@ -1078,5 +1115,24 @@ mod tests {
             .unwrap_err();
 
         assert!(error.to_string().contains("connect timeout after"));
+    }
+
+    #[test]
+    fn interrupted_reconnects_return_to_the_pending_set_unless_removed() {
+        let connectors = DashSet::new();
+        let reconnecting = DashSet::new();
+        let removed = DashSet::new();
+        let retained: Url = "tcp://127.0.0.1:11010".parse().unwrap();
+        let deleted: Url = "udp://127.0.0.1:11010".parse().unwrap();
+        reconnecting.insert(retained.clone());
+        reconnecting.insert(deleted.clone());
+        removed.insert(deleted.clone());
+
+        restore_interrupted_connectors(&connectors, &reconnecting, &removed);
+
+        assert!(connectors.contains(&retained));
+        assert!(!connectors.contains(&deleted));
+        assert!(reconnecting.is_empty());
+        assert!(removed.is_empty());
     }
 }

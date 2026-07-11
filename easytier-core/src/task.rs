@@ -68,6 +68,9 @@ pub trait PeerTaskLauncher: Send + Sync + Clone + 'static {
 pub struct PeerTaskManager<Launcher: PeerTaskLauncher> {
     launcher: Launcher,
     main_loop_task: Mutex<Option<AbortOnDropHandle<()>>>,
+    peer_tasks: Arc<
+        DashMap<Launcher::CollectPeerItem, AbortOnDropHandle<Result<Launcher::TaskRet, Error>>>,
+    >,
     run_signal: Arc<Notify>,
     external_signal: Option<Arc<ExternalTaskSignal>>,
     data: Launcher::Data,
@@ -93,6 +96,7 @@ where
         Self {
             launcher,
             main_loop_task: Mutex::new(None),
+            peer_tasks: Arc::new(DashMap::new()),
             run_signal: Arc::new(Notify::new()),
             external_signal,
             data,
@@ -109,6 +113,7 @@ where
             self.data.clone(),
             self.run_signal.clone(),
             self.external_signal.clone(),
+            self.peer_tasks.clone(),
         )));
         task_slot.replace(task);
     }
@@ -119,6 +124,18 @@ where
             task.abort();
             let _ = task.await;
         }
+        let keys = self
+            .peer_tasks
+            .iter()
+            .map(|entry| entry.key().clone())
+            .collect::<Vec<_>>();
+        for key in keys {
+            if let Some((_, task)) = self.peer_tasks.remove(&key) {
+                task.abort();
+                let _ = task.await;
+            }
+        }
+        self.peer_tasks.shrink_to_fit();
     }
 
     async fn main_loop(
@@ -126,8 +143,8 @@ where
         data: D,
         signal: Arc<Notify>,
         external_signal: Option<Arc<ExternalTaskSignal>>,
+        peer_task_map: Arc<DashMap<C, AbortOnDropHandle<Result<T, Error>>>>,
     ) {
-        let peer_task_map = Arc::new(DashMap::<C, AbortOnDropHandle<Result<T, Error>>>::new());
         let mut external_signal_version = external_signal.as_ref().map(|signal| signal.version());
 
         loop {
