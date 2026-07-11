@@ -19,7 +19,7 @@ use easytier_core::{
         SendPunchPacketHardSym as CoreSendPunchPacketHardSym,
         SendPunchPacketHardSymResponse as CoreSendPunchPacketHardSymResponse,
         UdpHolePunchConnector as CoreUdpHolePunchConnector, UdpHolePunchInbound,
-        UdpHolePunchServer as CoreUdpHolePunchServer, UdpHolePunchSignalError,
+        UdpHolePunchServer as CoreUdpHolePunchServer, UdpHolePunchSignalError, UdpSymPunchLock,
     },
     peers::peer_manager::PeerManagerCore,
 };
@@ -60,11 +60,11 @@ struct UdpHolePunchServer {
 }
 
 impl UdpHolePunchServer {
-    pub fn new(peer_mgr: Arc<PeerManager>) -> Arc<Self> {
+    pub fn new(peer_mgr: Arc<PeerManager>, sym_punch_lock: UdpSymPunchLock) -> Arc<Self> {
         let inner = CoreUdpHolePunchServer::new(
-            peer_mgr.my_peer_id(),
             Arc::new(RuntimeUdpHolePunchRuntime::new(peer_mgr.get_global_ctx())),
             peer_mgr.core(),
+            sym_punch_lock,
         );
 
         Arc::new(Self { inner })
@@ -294,17 +294,19 @@ pub struct UdpHolePunchConnector {
 
 impl UdpHolePunchConnector {
     pub fn new(peer_mgr: Arc<PeerManager>) -> Self {
+        let sym_punch_lock = UdpSymPunchLock::default();
         let client = RuntimeUdpHolePunchConnector::new(
             Arc::new(RuntimeUdpHolePunchPeerSource::new(peer_mgr.clone())),
             Arc::new(PeerRpcUdpHolePunchSignaling::new(peer_mgr.clone())),
             peer_mgr.core(),
             Arc::new(RuntimeUdpHolePunchRuntime::new(peer_mgr.get_global_ctx())),
+            sym_punch_lock.clone(),
             Some(peer_mgr.p2p_demand_notify()),
         );
         client.set_try_cone_before_sym(!RUN_TESTING.load(Ordering::Relaxed));
 
         Self {
-            server: UdpHolePunchServer::new(peer_mgr.clone()),
+            server: UdpHolePunchServer::new(peer_mgr.clone(), sym_punch_lock),
             client,
             peer_mgr,
         }

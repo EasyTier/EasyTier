@@ -18,7 +18,7 @@ pub use client::{
     UdpSymToConePunchClient, apply_peer_easy_sym_port_offset, punch_cone_to_cone,
 };
 pub use common::{BLACKLIST_TIMEOUT_SEC, BackOff, UdpNatType, UdpPunchClientMethod};
-pub use connector::{UdpHolePunchConnector, UdpHolePunchConnectorData, get_udp_sym_punch_lock};
+pub use connector::{UdpHolePunchConnector, UdpHolePunchConnectorData, UdpSymPunchLock};
 pub use listener::{
     MAX_PUBLIC_UDP_HOLE_PUNCH_LISTENERS, ReusableUdpPunchListener, can_reuse_port_mapping_listener,
     can_reuse_public_listener, select_reusable_port_mapping_listener_idx,

@@ -11,7 +11,7 @@ use rand::{Rng, seq::SliceRandom as _};
 use tokio::{sync::Mutex, task::JoinSet};
 use tokio_util::task::AbortOnDropHandle;
 
-use crate::{config::PeerId, connectivity::protocol::raw};
+use crate::connectivity::protocol::raw;
 
 use super::{
     HOLE_PUNCH_PACKET_BODY_LEN, MAX_PUBLIC_UDP_HOLE_PUNCH_LISTENERS, ReusableUdpPunchListener,
@@ -19,11 +19,10 @@ use super::{
     SendPunchPacketBothEasySymResponse, SendPunchPacketCone, SendPunchPacketEasySym,
     SendPunchPacketHardSym, SendPunchPacketHardSymResponse, UdpHolePunchInbound,
     UdpHolePunchRuntime, UdpHolePunchSignalError, UdpHolePunchTunnelSink, UdpPortMappingLease,
-    UdpPunchConnCounter, UdpPunchListener, UdpSocketArray, VirtualUdpSocket,
-    can_reuse_port_mapping_listener, can_reuse_public_listener, get_udp_sym_punch_lock,
-    new_hole_punch_packet, select_reusable_port_mapping_listener_idx,
-    select_reusable_public_listener_idx, should_create_public_listener,
-    should_retry_public_listener_selection,
+    UdpPunchConnCounter, UdpPunchListener, UdpSocketArray, UdpSymPunchLock, VirtualUdpSocket,
+    can_reuse_port_mapping_listener, can_reuse_public_listener, new_hole_punch_packet,
+    select_reusable_port_mapping_listener_idx, select_reusable_public_listener_idx,
+    should_create_public_listener, should_retry_public_listener_selection,
 };
 
 const MAX_K1_FOR_RANDOM_HARD_SYM: u32 = 180;
@@ -38,7 +37,7 @@ where
     R: UdpHolePunchRuntime,
     T: UdpHolePunchTunnelSink + 'static,
 {
-    local_peer_id: PeerId,
+    sym_punch_lock: UdpSymPunchLock,
     common: Arc<UdpHolePunchServerCommon<R, T>>,
     both_easy_sym_server: UdpBothEasySymPunchServer<R, T>,
     shuffled_port_vec: Arc<Vec<u16>>,
@@ -49,7 +48,7 @@ where
     R: UdpHolePunchRuntime,
     T: UdpHolePunchTunnelSink + 'static,
 {
-    pub fn new(local_peer_id: PeerId, runtime: Arc<R>, tunnel_sink: Arc<T>) -> Self {
+    pub fn new(runtime: Arc<R>, tunnel_sink: Arc<T>, sym_punch_lock: UdpSymPunchLock) -> Self {
         let common = Arc::new(UdpHolePunchServerCommon::new(
             runtime.clone(),
             tunnel_sink.clone(),
@@ -60,7 +59,7 @@ where
         shuffled_port_vec.shuffle(&mut rand::thread_rng());
 
         Self {
-            local_peer_id,
+            sym_punch_lock,
             common,
             both_easy_sym_server,
             shuffled_port_vec: Arc::new(shuffled_port_vec),
@@ -228,8 +227,9 @@ where
         &self,
         request: SendPunchPacketHardSym,
     ) -> Result<SendPunchPacketHardSymResponse, UdpHolePunchSignalError> {
-        let _locked = get_udp_sym_punch_lock(self.local_peer_id)
-            .try_lock_owned()
+        let _locked = self
+            .sym_punch_lock
+            .try_lock()
             .map_err(|_| Self::busy_signal_error())?;
         self.send_punch_packet_hard_sym_inner(request)
             .await
@@ -240,8 +240,9 @@ where
         &self,
         request: SendPunchPacketEasySym,
     ) -> Result<(), UdpHolePunchSignalError> {
-        let _locked = get_udp_sym_punch_lock(self.local_peer_id)
-            .try_lock_owned()
+        let _locked = self
+            .sym_punch_lock
+            .try_lock()
             .map_err(|_| Self::busy_signal_error())?;
         self.send_punch_packet_easy_sym_inner(request)
             .await
@@ -252,8 +253,9 @@ where
         &self,
         request: SendPunchPacketBothEasySym,
     ) -> Result<SendPunchPacketBothEasySymResponse, UdpHolePunchSignalError> {
-        let _locked = get_udp_sym_punch_lock(self.local_peer_id)
-            .try_lock_owned()
+        let _locked = self
+            .sym_punch_lock
+            .try_lock()
             .map_err(|_| Self::busy_signal_error())?;
         self.both_easy_sym_server
             .send_punch_packet_both_easy_sym(request)
@@ -931,7 +933,7 @@ mod tests {
     async fn server_keeps_both_easy_sym_listener_pool_separate() {
         let runtime = Arc::new(MockRuntime::new(Vec::new()));
         let sink = Arc::new(MockSink::default());
-        let server = UdpHolePunchServer::new(1, runtime, sink);
+        let server = UdpHolePunchServer::new(runtime, sink, UdpSymPunchLock::default());
 
         assert!(!Arc::ptr_eq(
             &server.common,

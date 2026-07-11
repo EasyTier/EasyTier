@@ -1,7 +1,7 @@
 use std::{
     marker::PhantomData,
     sync::{
-        Arc, OnceLock,
+        Arc,
         atomic::{AtomicBool, Ordering},
     },
 };
@@ -9,7 +9,10 @@ use std::{
 use anyhow::Error;
 use dashmap::DashMap;
 use quanta::Instant;
-use tokio::{sync::Mutex, task::JoinHandle};
+use tokio::{
+    sync::{Mutex, OwnedMutexGuard, TryLockError},
+    task::JoinHandle,
+};
 
 use crate::{
     config::PeerId,
@@ -26,15 +29,19 @@ use super::{
     should_blacklist_signal_error,
 };
 
-static SYM_PUNCH_LOCK: OnceLock<DashMap<PeerId, Arc<Mutex<()>>>> = OnceLock::new();
+#[derive(Clone, Default)]
+pub struct UdpSymPunchLock {
+    inner: Arc<Mutex<()>>,
+}
 
-pub fn get_udp_sym_punch_lock(peer_id: PeerId) -> Arc<Mutex<()>> {
-    SYM_PUNCH_LOCK
-        .get_or_init(DashMap::new)
-        .entry(peer_id)
-        .or_insert_with(|| Arc::new(Mutex::new(())))
-        .value()
-        .clone()
+impl UdpSymPunchLock {
+    pub(crate) async fn lock(&self) -> OwnedMutexGuard<()> {
+        self.inner.clone().lock_owned().await
+    }
+
+    pub(crate) fn try_lock(&self) -> Result<OwnedMutexGuard<()>, TryLockError> {
+        self.inner.clone().try_lock_owned()
+    }
 }
 
 struct UdpHolePunchBlacklist {
@@ -84,6 +91,7 @@ where
     signaling: Arc<S>,
     tunnel_sink: Arc<T>,
     runtime: Arc<R>,
+    sym_punch_lock: UdpSymPunchLock,
     try_cone_before_sym: AtomicBool,
 }
 
@@ -98,6 +106,7 @@ where
     signaling: Arc<S>,
     tunnel_sink: Arc<T>,
     runtime: Arc<R>,
+    sym_punch_lock: UdpSymPunchLock,
     blacklist: UdpHolePunchBlacklist,
     try_cone_before_sym: Arc<AtomicBool>,
     pub sym_to_cone_client: UdpSymToConePunchClient<R, S>,
@@ -117,6 +126,7 @@ where
             signaling: parts.signaling.clone(),
             tunnel_sink: parts.tunnel_sink.clone(),
             runtime: parts.runtime.clone(),
+            sym_punch_lock: parts.sym_punch_lock.clone(),
             blacklist: UdpHolePunchBlacklist::new(),
             try_cone_before_sym: Arc::new(AtomicBool::new(
                 parts.try_cone_before_sym.load(Ordering::Relaxed),
@@ -284,9 +294,7 @@ where
             }
 
             let ret = {
-                let _lock = get_udp_sym_punch_lock(self.peer_source.local_peer_id())
-                    .lock_owned()
-                    .await;
+                let _lock = self.sym_punch_lock.lock().await;
                 self.sym_to_cone_client
                     .do_hole_punching(
                         task_info.dst_peer_id,
@@ -339,9 +347,7 @@ where
 
             let mut is_busy = false;
             let ret = {
-                let _lock = get_udp_sym_punch_lock(self.peer_source.local_peer_id())
-                    .lock_owned()
-                    .await;
+                let _lock = self.sym_punch_lock.lock().await;
                 self.both_easy_sym_client
                     .do_hole_punching(
                         task_info.dst_peer_id,
@@ -479,6 +485,7 @@ where
         signaling: Arc<S>,
         tunnel_sink: Arc<T>,
         runtime: Arc<R>,
+        sym_punch_lock: UdpSymPunchLock,
         external_signal: Option<Arc<ExternalTaskSignal>>,
     ) -> Self {
         let parts = Arc::new(UdpHolePunchConnectorParts {
@@ -486,6 +493,7 @@ where
             signaling,
             tunnel_sink,
             runtime,
+            sym_punch_lock,
             try_cone_before_sym: AtomicBool::new(true),
         });
         Self {
@@ -519,5 +527,21 @@ where
 
     pub fn p2p_policy_flags(&self) -> P2pPolicyFlags {
         self.parts.peer_source.p2p_policy_flags()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::UdpSymPunchLock;
+
+    #[test]
+    fn symmetric_punch_locks_are_scoped_per_instance() {
+        let first = UdpSymPunchLock::default();
+        let first_clone = first.clone();
+        let second = UdpSymPunchLock::default();
+
+        let _first_guard = first.try_lock().unwrap();
+        assert!(first_clone.try_lock().is_err());
+        assert!(second.try_lock().is_ok());
     }
 }
