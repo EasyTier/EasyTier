@@ -24,6 +24,7 @@ use crate::{
         },
         protocol::{ClientProtocolUpgrader, CoreClientProtocolConfig, CoreClientProtocolUpgrader},
     },
+    dhcp::{DhcpIpv4Host, DhcpIpv4RouteSource, DhcpIpv4Service},
     hole_punch::tcp::{TcpHolePunchConnector, TcpHolePunchHost},
     listener::{
         AcceptedSocketHandler, RunningListenerProvider, RunningListenerRegistry,
@@ -299,6 +300,7 @@ where
     proxy_started: AtomicBool,
     proxy_cidr_monitor: Option<Arc<dyn ProxyCidrMonitorHost>>,
     proxy_cidr_monitor_task: Mutex<Option<AbortOnDropHandle<()>>>,
+    dhcp_ipv4_task: Mutex<Option<AbortOnDropHandle<()>>>,
     packet_egress: Option<PacketEgress>,
 }
 
@@ -454,6 +456,7 @@ where
             proxy_started: AtomicBool::new(false),
             proxy_cidr_monitor,
             proxy_cidr_monitor_task: Mutex::new(None),
+            dhcp_ipv4_task: Mutex::new(None),
             packet_egress: None,
         })
     }
@@ -478,6 +481,7 @@ where
     }
 
     async fn stop_components(&self) {
+        self.dhcp_ipv4_task.lock().await.take();
         self.proxy_cidr_monitor_task.lock().await.take();
         if let Some(listener) = &self.listener {
             listener.stop().await;
@@ -652,6 +656,32 @@ where
         if self.cancel.is_cancelled() {
             task.take();
             anyhow::bail!("proxy CIDR monitor start cancelled");
+        }
+        Ok(())
+    }
+
+    pub async fn start_dhcp_ipv4(
+        self: &Arc<Self>,
+        host: Arc<dyn DhcpIpv4Host>,
+    ) -> anyhow::Result<()> {
+        let _operation = self.operation.lock().await;
+        let state = self.state();
+        if state != CoreInstanceState::Running {
+            anyhow::bail!("DHCP IPv4 cannot start from core instance state {state:?}");
+        }
+        let mut task = self.dhcp_ipv4_task.lock().await;
+        if task.is_some() {
+            return Ok(());
+        }
+        if self.cancel.is_cancelled() {
+            anyhow::bail!("DHCP IPv4 start cancelled");
+        }
+
+        let route_source: Arc<dyn DhcpIpv4RouteSource> = self.peer_manager.clone();
+        task.replace(DhcpIpv4Service::new(route_source, host).start());
+        if self.cancel.is_cancelled() {
+            task.take();
+            anyhow::bail!("DHCP IPv4 start cancelled");
         }
         Ok(())
     }

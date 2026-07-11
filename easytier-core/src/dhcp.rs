@@ -1,6 +1,11 @@
-use std::{collections::HashSet, net::Ipv4Addr};
+use std::{collections::HashSet, net::Ipv4Addr, sync::Arc, time::Duration};
 
+use async_trait::async_trait;
 use cidr::Ipv4Inet;
+use rand::Rng;
+use tokio_util::task::AbortOnDropHandle;
+
+use crate::peers::peer_manager::PeerManagerCore;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DhcpIpv4Decision {
@@ -73,9 +78,163 @@ impl DhcpIpv4Allocator {
     }
 }
 
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct DhcpIpv4RouteSnapshot {
+    pub has_routes: bool,
+    pub used_ipv4: HashSet<Ipv4Inet>,
+}
+
+#[async_trait]
+pub trait DhcpIpv4RouteSource: Send + Sync + 'static {
+    async fn dhcp_ipv4_route_snapshot(&self) -> DhcpIpv4RouteSnapshot;
+}
+
+#[async_trait]
+impl DhcpIpv4RouteSource for PeerManagerCore {
+    async fn dhcp_ipv4_route_snapshot(&self) -> DhcpIpv4RouteSnapshot {
+        let routes = self.get_route().list_routes().await;
+        let has_routes = !routes.is_empty();
+        let used_ipv4 = routes
+            .into_iter()
+            .filter_map(|route| route.ipv4_addr.map(Into::into))
+            .collect();
+        DhcpIpv4RouteSnapshot {
+            has_routes,
+            used_ipv4,
+        }
+    }
+}
+
+#[async_trait]
+pub trait DhcpIpv4Host: Send + Sync + 'static {
+    fn take_interface_closed(&self) -> bool;
+
+    async fn apply_dhcp_ipv4(
+        &self,
+        previous: Option<Ipv4Inet>,
+        next: Option<Ipv4Inet>,
+    ) -> anyhow::Result<()>;
+}
+
+pub struct DhcpIpv4Service {
+    operation: tokio::sync::Mutex<()>,
+    allocator: std::sync::Mutex<DhcpIpv4Allocator>,
+    route_source: Arc<dyn DhcpIpv4RouteSource>,
+    host: Arc<dyn DhcpIpv4Host>,
+}
+
+impl DhcpIpv4Service {
+    pub fn new(
+        route_source: Arc<dyn DhcpIpv4RouteSource>,
+        host: Arc<dyn DhcpIpv4Host>,
+    ) -> Arc<Self> {
+        Arc::new(Self {
+            operation: tokio::sync::Mutex::new(()),
+            allocator: std::sync::Mutex::new(DhcpIpv4Allocator::default()),
+            route_source,
+            host,
+        })
+    }
+
+    pub fn current(&self) -> Option<Ipv4Inet> {
+        self.allocator.lock().unwrap().current()
+    }
+
+    pub async fn reconcile_once(&self) -> bool {
+        let _operation = self.operation.lock().await;
+        if self.host.take_interface_closed() {
+            self.allocator.lock().unwrap().reset();
+        }
+        let snapshot = self.route_source.dhcp_ipv4_route_snapshot().await;
+        let decision = self
+            .allocator
+            .lock()
+            .unwrap()
+            .evaluate(snapshot.has_routes, &snapshot.used_ipv4);
+
+        let DhcpIpv4Decision::Change { previous, next } = decision else {
+            return snapshot.has_routes;
+        };
+        tracing::debug!(?previous, ?next, "DHCP IPv4 reconciliation applying change");
+        match self.host.apply_dhcp_ipv4(previous, next).await {
+            Ok(()) => self.allocator.lock().unwrap().commit(next),
+            Err(err) => {
+                tracing::error!(?previous, ?next, ?err, "DHCP IPv4 apply failed");
+            }
+        }
+        snapshot.has_routes
+    }
+
+    pub fn start(self: &Arc<Self>) -> AbortOnDropHandle<()> {
+        let service = self.clone();
+        AbortOnDropHandle::new(tokio::spawn(async move {
+            let mut next_sleep = Duration::ZERO;
+            loop {
+                tokio::time::sleep(next_sleep).await;
+                next_sleep = if service.reconcile_once().await {
+                    Duration::from_secs(rand::thread_rng().gen_range(5..10))
+                } else {
+                    Duration::from_secs(1)
+                };
+            }
+        }))
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use std::sync::{
+        Mutex,
+        atomic::{AtomicBool, Ordering},
+    };
+
     use super::*;
+
+    struct StaticRouteSource {
+        snapshot: Mutex<DhcpIpv4RouteSnapshot>,
+    }
+
+    #[async_trait]
+    impl DhcpIpv4RouteSource for StaticRouteSource {
+        async fn dhcp_ipv4_route_snapshot(&self) -> DhcpIpv4RouteSnapshot {
+            self.snapshot.lock().unwrap().clone()
+        }
+    }
+
+    #[derive(Default)]
+    struct RecordingHost {
+        interface_closed: AtomicBool,
+        fail_apply: AtomicBool,
+        changes: Mutex<Vec<(Option<Ipv4Inet>, Option<Ipv4Inet>)>>,
+    }
+
+    #[async_trait]
+    impl DhcpIpv4Host for RecordingHost {
+        fn take_interface_closed(&self) -> bool {
+            self.interface_closed.swap(false, Ordering::AcqRel)
+        }
+
+        async fn apply_dhcp_ipv4(
+            &self,
+            previous: Option<Ipv4Inet>,
+            next: Option<Ipv4Inet>,
+        ) -> anyhow::Result<()> {
+            self.changes.lock().unwrap().push((previous, next));
+            if self.fail_apply.load(Ordering::Acquire) {
+                anyhow::bail!("apply failed");
+            }
+            Ok(())
+        }
+    }
+
+    fn service(snapshot: DhcpIpv4RouteSnapshot, host: Arc<RecordingHost>) -> Arc<DhcpIpv4Service> {
+        DhcpIpv4Service::new(
+            Arc::new(StaticRouteSource {
+                snapshot: Mutex::new(snapshot),
+            }),
+            host,
+        )
+    }
 
     #[test]
     fn waits_until_at_least_one_route_exists() {
@@ -135,5 +294,68 @@ mod tests {
         allocator.reset();
 
         assert_eq!(allocator.current(), None);
+    }
+
+    #[tokio::test]
+    async fn service_commits_only_after_host_apply_succeeds() {
+        let host = Arc::new(RecordingHost::default());
+        let service = service(
+            DhcpIpv4RouteSnapshot {
+                has_routes: true,
+                used_ipv4: HashSet::new(),
+            },
+            host.clone(),
+        );
+
+        assert!(service.reconcile_once().await);
+
+        assert_eq!(service.current(), Some("10.126.126.1/24".parse().unwrap()));
+        assert_eq!(
+            *host.changes.lock().unwrap(),
+            [(None, Some("10.126.126.1/24".parse().unwrap()))]
+        );
+    }
+
+    #[tokio::test]
+    async fn service_retries_change_when_host_apply_fails() {
+        let host = Arc::new(RecordingHost::default());
+        host.fail_apply.store(true, Ordering::Release);
+        let service = service(
+            DhcpIpv4RouteSnapshot {
+                has_routes: true,
+                used_ipv4: HashSet::new(),
+            },
+            host.clone(),
+        );
+
+        service.reconcile_once().await;
+        service.reconcile_once().await;
+
+        assert_eq!(service.current(), None);
+        assert_eq!(host.changes.lock().unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn interface_close_resets_previous_allocation_before_reapply() {
+        let host = Arc::new(RecordingHost::default());
+        let service = service(
+            DhcpIpv4RouteSnapshot {
+                has_routes: true,
+                used_ipv4: HashSet::new(),
+            },
+            host.clone(),
+        );
+        service.reconcile_once().await;
+        host.interface_closed.store(true, Ordering::Release);
+
+        service.reconcile_once().await;
+
+        assert_eq!(
+            host.changes.lock().unwrap().as_slice(),
+            [
+                (None, Some("10.126.126.1/24".parse().unwrap())),
+                (None, Some("10.126.126.1/24".parse().unwrap())),
+            ]
+        );
     }
 }
