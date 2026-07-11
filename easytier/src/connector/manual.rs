@@ -6,23 +6,14 @@ use std::{
 };
 
 use dashmap::DashSet;
-use easytier_core::{
-    connectivity::manual::{
-        ManualConnectivityEvent, ManualConnectivityEventSink,
-        ManualConnectorManager as CoreManualConnectorManager, ManualConnectorOptions,
-        ManualConnectorStatus, ManualEndpointResolver,
-    },
-    socket::{dns::DnsResolver, tcp::TcpBindOptions, udp::UdpBindOptions},
+use easytier_core::connectivity::manual::{
+    ManualConnectorManager as CoreManualConnectorManager, ManualConnectorStatus,
 };
 use quanta::Instant;
 use tokio::{sync::mpsc, task::JoinSet, time::timeout};
 
 use crate::{
-    common::{
-        PeerId,
-        dns::{RuntimeDnsResolver, socket_addrs},
-        join_joinset_background,
-    },
+    common::{PeerId, dns::socket_addrs, join_joinset_background},
     peers::peer_conn::PeerConnId,
     proto::{
         api::instance::{
@@ -46,8 +37,8 @@ use crate::{
 };
 
 use super::{
-    create_connector_by_url, dns_connector::DnsTunnelConnector,
-    http_connector::HttpTunnelConnector, protocol::RuntimeClientProtocolUpgrader,
+    core_instance::{runtime_core_instance_adapters, runtime_manual_options},
+    create_connector_by_url,
     runtime::RuntimeConnectorHost,
 };
 
@@ -72,59 +63,6 @@ struct ConnectorManagerData {
     global_ctx: ArcGlobalCtx,
 }
 
-struct GlobalCtxManualConnectivityEventSink {
-    global_ctx: ArcGlobalCtx,
-}
-
-struct RuntimeManualEndpointResolver {
-    global_ctx: ArcGlobalCtx,
-}
-
-#[async_trait::async_trait]
-impl ManualEndpointResolver for RuntimeManualEndpointResolver {
-    async fn resolve_endpoint(&self, url: &url::Url) -> anyhow::Result<url::Url> {
-        match url.scheme() {
-            "http" | "https" => {
-                let mut resolver = HttpTunnelConnector::new(url.clone(), self.global_ctx.clone());
-                Ok(resolver.get_redirected_url(url.as_str()).await?)
-            }
-            "txt" | "srv" => {
-                let resolver = DnsTunnelConnector::new(url.clone(), self.global_ctx.clone());
-                let host = url
-                    .host_str()
-                    .ok_or_else(|| anyhow::anyhow!("host should not be empty in {url}"))?;
-                if url.scheme() == "txt" {
-                    Ok(resolver.resolve_txt_endpoint(host).await?)
-                } else {
-                    Ok(resolver.resolve_srv_endpoint(host).await?)
-                }
-            }
-            scheme => anyhow::bail!("unsupported manual endpoint resolver scheme: {scheme}"),
-        }
-    }
-}
-
-impl ManualConnectivityEventSink for GlobalCtxManualConnectivityEventSink {
-    fn emit(&self, event: ManualConnectivityEvent) {
-        match event {
-            ManualConnectivityEvent::Connecting { url } => {
-                self.global_ctx.issue_event(GlobalCtxEvent::Connecting(url));
-            }
-            ManualConnectivityEvent::ConnectError {
-                url,
-                ip_version,
-                error,
-            } => {
-                self.global_ctx.issue_event(GlobalCtxEvent::ConnectError(
-                    url.to_string(),
-                    format!("{ip_version:?}"),
-                    error,
-                ));
-            }
-        }
-    }
-}
-
 pub struct ManualConnectorManager {
     global_ctx: ArcGlobalCtx,
     data: Arc<ConnectorManagerData>,
@@ -134,39 +72,17 @@ pub struct ManualConnectorManager {
 
 impl ManualConnectorManager {
     pub fn new(global_ctx: ArcGlobalCtx, peer_manager: Arc<PeerManager>) -> Self {
-        use crate::common::config::ConfigLoader;
-
         let connectors = Arc::new(DashSet::new());
         let tasks = JoinSet::new();
-        let flags = global_ctx.config.get_flags();
-        let core_options = ManualConnectorOptions {
-            reconnect_interval: Duration::from_millis(use_global_var!(
-                MANUAL_CONNECTOR_RECONNECT_INTERVAL_MS
-            )),
-            connect_timeout: Duration::from_secs(2),
-            websocket_connect_timeout: Duration::from_secs(20),
-            bind_device: flags.bind_device,
-            allow_interface_bind: !cfg!(any(
-                target_os = "android",
-                target_os = "ios",
-                all(target_os = "macos", feature = "macos-ne"),
-                target_env = "ohos"
-            )),
-            tcp_bind: TcpBindOptions::default().with_socket_mark(flags.socket_mark),
-            udp_bind: UdpBindOptions::direct_connect().with_socket_mark(flags.socket_mark),
-        };
+        let adapters = runtime_core_instance_adapters(global_ctx.clone());
         let core_manager = Arc::new(CoreManualConnectorManager::new_with_events(
             peer_manager.core(),
-            Arc::new(RuntimeConnectorHost::new(global_ctx.clone())),
-            Arc::new(RuntimeDnsResolver::new()) as Arc<dyn DnsResolver>,
-            Arc::new(RuntimeManualEndpointResolver {
-                global_ctx: global_ctx.clone(),
-            }),
-            Arc::new(RuntimeClientProtocolUpgrader::new(global_ctx.clone())),
-            core_options,
-            Arc::new(GlobalCtxManualConnectivityEventSink {
-                global_ctx: global_ctx.clone(),
-            }),
+            adapters.host,
+            adapters.dns,
+            adapters.endpoint_resolver,
+            adapters.protocol,
+            runtime_manual_options(&global_ctx),
+            adapters.manual_events.unwrap(),
         ));
         core_manager.start();
 

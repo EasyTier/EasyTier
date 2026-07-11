@@ -15,6 +15,7 @@ use crate::{
 use http_connector::HttpTunnelConnector;
 use rand::seq::SliceRandom;
 
+pub(crate) mod core_instance;
 pub mod direct;
 pub mod manual;
 pub(crate) mod protocol;
