@@ -76,25 +76,33 @@ use super::public_ipv6_provider::{
 #[cfg(feature = "socks5")]
 use crate::gateway::socks5::Socks5Server;
 
-#[derive(Clone)]
-struct IpProxy {
+struct RuntimeProxyService {
+    group: Arc<ProxyServiceGroup>,
     tcp_proxy: Arc<TcpProxy<NatDstTcpConnector>>,
-    icmp_proxy: Arc<IcmpProxy>,
 }
 
-impl IpProxy {
-    fn new(global_ctx: ArcGlobalCtx, peer_manager: Arc<PeerManager>) -> Result<Self, Error> {
+impl RuntimeProxyService {
+    fn new(global_ctx: ArcGlobalCtx, peer_manager: Arc<PeerManager>) -> Result<Arc<Self>, Error> {
         let tcp_proxy = TcpProxy::new(peer_manager.clone(), NatDstTcpConnector {});
         let icmp_proxy = IcmpProxy::new(global_ctx.clone(), peer_manager.clone())
             .with_context(|| "create icmp proxy failed")?;
-        Ok(IpProxy {
-            tcp_proxy,
-            icmp_proxy,
-        })
+        let udp_proxy = UdpProxy::new(global_ctx.clone(), peer_manager)
+            .with_context(|| "create UDP proxy failed")?;
+        let services: Vec<Arc<dyn ProxyService>> = vec![tcp_proxy.clone(), icmp_proxy, udp_proxy];
+        let group =
+            ProxyServiceGroup::new(Arc::new(RuntimeProxyStartupPolicy { global_ctx }), services);
+        Ok(Arc::new(Self { group, tcp_proxy }))
+    }
+}
+
+#[async_trait::async_trait]
+impl ProxyService for RuntimeProxyService {
+    async fn start(&self) -> anyhow::Result<()> {
+        self.group.start().await
     }
 
-    fn services(&self) -> Vec<Arc<dyn ProxyService>> {
-        vec![self.tcp_proxy.clone(), self.icmp_proxy.clone()]
+    async fn stop(&self) {
+        self.group.stop().await;
     }
 }
 
@@ -613,7 +621,7 @@ pub struct Instance {
     peer_manager: Arc<PeerManager>,
     core_instance: Arc<RuntimeCoreInstance>,
 
-    ip_proxy: Option<IpProxy>,
+    proxy: Arc<RuntimeProxyService>,
 
     #[cfg(feature = "kcp")]
     kcp_proxy: Arc<KcpProxyService>,
@@ -751,18 +759,8 @@ impl Instance {
             global_ctx.clone(),
             peer_packet_sender,
         ));
-        let ip_proxy = IpProxy::new(global_ctx.clone(), peer_manager.clone())
-            .expect("IP proxy adapter construction should be infallible");
-        let udp_proxy = UdpProxy::new(global_ctx.clone(), peer_manager.clone())
-            .expect("UDP proxy adapter construction should be infallible");
-        let mut proxy_services = ip_proxy.services();
-        proxy_services.push(udp_proxy);
-        let proxy = ProxyServiceGroup::new(
-            Arc::new(RuntimeProxyStartupPolicy {
-                global_ctx: global_ctx.clone(),
-            }),
-            proxy_services,
-        );
+        let proxy = RuntimeProxyService::new(global_ctx.clone(), peer_manager.clone())
+            .expect("runtime proxy adapter construction should be infallible");
         #[cfg(feature = "kcp")]
         let kcp_proxy = Arc::new(KcpProxyService::new(peer_manager.clone()));
         #[cfg(feature = "quic")]
@@ -785,7 +783,7 @@ impl Instance {
                 global_ctx.clone(),
                 peer_manager.clone(),
                 transport_proxy,
-                Some(proxy),
+                Some(proxy.clone()),
             )
             .expect("runtime core instance composition should be valid"),
         );
@@ -809,7 +807,7 @@ impl Instance {
             peer_manager,
             core_instance,
 
-            ip_proxy: Some(ip_proxy),
+            proxy,
             #[cfg(feature = "kcp")]
             kcp_proxy,
 
@@ -1398,12 +1396,10 @@ impl Instance {
                     Arc<dyn TcpProxyRpc<Controller = BaseController> + Send + Sync>,
                 > = dashmap::DashMap::new();
 
-                if let Some(ip_proxy) = self.ip_proxy.as_ref() {
-                    tcp_proxy_rpc_services.insert(
-                        "tcp".to_string(),
-                        Arc::new(TcpProxyRpcService::new(ip_proxy.tcp_proxy.clone())),
-                    );
-                }
+                tcp_proxy_rpc_services.insert(
+                    "tcp".to_string(),
+                    Arc::new(TcpProxyRpcService::new(self.proxy.tcp_proxy.clone())),
+                );
                 #[cfg(feature = "kcp")]
                 if let Some(kcp_proxy) = self.kcp_proxy.src_tcp_proxy() {
                     tcp_proxy_rpc_services.insert(
