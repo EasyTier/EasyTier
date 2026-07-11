@@ -1,6 +1,5 @@
 #[cfg(feature = "tun")]
 use std::any::Any;
-use std::collections::HashSet;
 use std::net::IpAddr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Weak};
@@ -9,11 +8,14 @@ use std::time::Duration;
 
 use anyhow::Context;
 use cidr::{IpCidr, Ipv4Inet};
-use easytier_core::dhcp::{DhcpIpv4Allocator, DhcpIpv4Decision};
+use easytier_core::dhcp::DhcpIpv4Host;
 use easytier_core::instance::{ProxyService, ProxyServiceGroup, ProxyStartupPolicy};
 use easytier_core::proxy::ProxyStartupContext;
+#[cfg(feature = "tun")]
 use futures::FutureExt;
-use tokio::sync::{Mutex, Notify};
+use tokio::sync::Mutex;
+#[cfg(feature = "tun")]
+use tokio::sync::Notify;
 #[cfg(feature = "tun")]
 use tokio::{sync::oneshot, task::JoinSet};
 #[cfg(feature = "magic-dns")]
@@ -674,6 +676,110 @@ pub struct Instance {
     global_ctx: ArcGlobalCtx,
 }
 
+struct RuntimeDhcpIpv4Host {
+    global_ctx: ArcGlobalCtx,
+    #[cfg(feature = "tun")]
+    nic_ctx: ArcNicCtx,
+    #[cfg(feature = "tun")]
+    peer_packet_receiver: Arc<Mutex<PacketRecvChanReceiver>>,
+    #[cfg(feature = "tun")]
+    nic_closed_notifier: Arc<Notify>,
+    #[cfg(all(not(mobile), feature = "tun"))]
+    peer_manager: Weak<PeerManager>,
+    #[cfg(all(not(mobile), feature = "tun"))]
+    core_instance: Weak<RuntimeCoreInstance>,
+}
+
+impl RuntimeDhcpIpv4Host {
+    fn new(instance: &Instance) -> Arc<Self> {
+        Arc::new(Self {
+            global_ctx: instance.global_ctx.clone(),
+            #[cfg(feature = "tun")]
+            nic_ctx: instance.nic_ctx.clone(),
+            #[cfg(feature = "tun")]
+            peer_packet_receiver: instance.peer_packet_receiver.clone(),
+            #[cfg(feature = "tun")]
+            nic_closed_notifier: Arc::new(Notify::new()),
+            #[cfg(all(not(mobile), feature = "tun"))]
+            peer_manager: Arc::downgrade(&instance.peer_manager),
+            #[cfg(all(not(mobile), feature = "tun"))]
+            core_instance: Arc::downgrade(&instance.core_instance),
+        })
+    }
+}
+
+#[async_trait::async_trait]
+impl DhcpIpv4Host for RuntimeDhcpIpv4Host {
+    fn take_interface_closed(&self) -> bool {
+        #[cfg(feature = "tun")]
+        {
+            return self.nic_closed_notifier.notified().now_or_never().is_some();
+        }
+        #[cfg(not(feature = "tun"))]
+        false
+    }
+
+    async fn apply_dhcp_ipv4(
+        &self,
+        previous: Option<Ipv4Inet>,
+        next: Option<Ipv4Inet>,
+    ) -> anyhow::Result<()> {
+        #[cfg(feature = "tun")]
+        Instance::clear_nic_ctx(self.nic_ctx.clone(), self.peer_packet_receiver.clone()).await;
+
+        let Some(ip) = next else {
+            self.global_ctx.set_ipv4(None);
+            self.global_ctx
+                .issue_event(GlobalCtxEvent::DhcpIpv4Conflicted(previous));
+            return Ok(());
+        };
+
+        if self.global_ctx.no_tun() {
+            self.global_ctx.set_ipv4(Some(ip));
+            self.global_ctx
+                .issue_event(GlobalCtxEvent::DhcpIpv4Changed(previous, Some(ip)));
+            return Ok(());
+        }
+
+        #[cfg(all(not(mobile), feature = "tun"))]
+        {
+            let peer_manager = self
+                .peer_manager
+                .upgrade()
+                .context("peer manager is gone during DHCP IPv4 apply")?;
+            let core_instance = self
+                .core_instance
+                .upgrade()
+                .context("core instance is gone during DHCP IPv4 apply")?;
+            let mut new_nic_ctx = NicCtx::new(
+                self.global_ctx.clone(),
+                &peer_manager,
+                &core_instance,
+                self.peer_packet_receiver.clone(),
+                self.nic_closed_notifier.clone(),
+            );
+            if let Err(err) = new_nic_ctx.run(Some(ip), self.global_ctx.get_ipv6()).await {
+                self.global_ctx.set_ipv4(None);
+                return Err(err.into());
+            }
+            #[cfg(feature = "magic-dns")]
+            let ifname = new_nic_ctx.ifname().await;
+            Instance::use_new_nic_ctx(
+                self.nic_ctx.clone(),
+                new_nic_ctx,
+                #[cfg(feature = "magic-dns")]
+                Instance::create_magic_dns_runner(peer_manager, ifname, ip),
+            )
+            .await;
+        }
+
+        self.global_ctx.set_ipv4(Some(ip));
+        self.global_ctx
+            .issue_event(GlobalCtxEvent::DhcpIpv4Changed(previous, Some(ip)));
+        Ok(())
+    }
+}
+
 impl Instance {
     pub fn new(config: impl ConfigLoader + 'static) -> Self {
         let global_ctx = Arc::new(GlobalCtx::new(config));
@@ -840,123 +946,6 @@ impl Instance {
         tracing::debug!("nic ctx updated.");
     }
 
-    // Warning, if there is an IP conflict in the network when using DHCP, the IP will be automatically changed.
-    fn check_dhcp_ip_conflict(&self) {
-        use rand::Rng;
-        let peer_manager_c = Arc::downgrade(&self.peer_manager.clone());
-        let global_ctx_c = self.get_global_ctx();
-        #[cfg(feature = "tun")]
-        let nic_ctx = self.nic_ctx.clone();
-        let _peer_packet_receiver = self.peer_packet_receiver.clone();
-        #[cfg(feature = "tun")]
-        let core_instance = Arc::downgrade(&self.core_instance);
-        tokio::spawn(async move {
-            let mut allocator = DhcpIpv4Allocator::default();
-            let mut next_sleep_time = 0;
-            let nic_closed_notifier = Arc::new(Notify::new());
-            loop {
-                tokio::time::sleep(std::time::Duration::from_secs(next_sleep_time)).await;
-
-                let Some(peer_manager_c) = peer_manager_c.upgrade() else {
-                    tracing::warn!("peer manager is dropped, stop dhcp check.");
-                    return;
-                };
-                #[cfg(feature = "tun")]
-                let Some(core_instance) = core_instance.upgrade() else {
-                    tracing::warn!("core instance is dropped, stop DHCP check.");
-                    return;
-                };
-
-                if nic_closed_notifier.notified().now_or_never().is_some() {
-                    tracing::debug!("nic ctx is closed, try recreate it");
-                    allocator.reset();
-                }
-
-                // do not allocate ip if no peer connected
-                let routes = peer_manager_c.list_routes().await;
-                let has_routes = !routes.is_empty();
-                if !has_routes {
-                    next_sleep_time = 1;
-                } else {
-                    next_sleep_time = rand::thread_rng().gen_range(5..10);
-                }
-
-                let mut used_ipv4 = HashSet::new();
-                for route in routes {
-                    let Some(peer_ipv4_addr) = route.ipv4_addr else {
-                        continue;
-                    };
-
-                    used_ipv4.insert(peer_ipv4_addr.into());
-                }
-
-                let DhcpIpv4Decision::Change {
-                    previous: last_ip,
-                    next: candidate_ipv4_addr,
-                } = allocator.evaluate(has_routes, &used_ipv4)
-                else {
-                    continue;
-                };
-                tracing::debug!(
-                    current_dhcp_ip = ?allocator.current(),
-                    ?candidate_ipv4_addr,
-                    "dhcp start changing ip"
-                );
-
-                #[cfg(feature = "tun")]
-                Self::clear_nic_ctx(nic_ctx.clone(), _peer_packet_receiver.clone()).await;
-
-                if let Some(ip) = candidate_ipv4_addr {
-                    if global_ctx_c.no_tun() {
-                        allocator.commit(Some(ip));
-                        global_ctx_c.set_ipv4(Some(ip));
-                        global_ctx_c
-                            .issue_event(GlobalCtxEvent::DhcpIpv4Changed(last_ip, Some(ip)));
-                        continue;
-                    }
-
-                    #[cfg(all(not(mobile), feature = "tun"))]
-                    {
-                        let mut new_nic_ctx = NicCtx::new(
-                            global_ctx_c.clone(),
-                            &peer_manager_c,
-                            &core_instance,
-                            _peer_packet_receiver.clone(),
-                            nic_closed_notifier.clone(),
-                        );
-                        if let Err(e) = new_nic_ctx.run(Some(ip), global_ctx_c.get_ipv6()).await {
-                            tracing::error!(
-                                current_dhcp_ip = ?allocator.current(),
-                                ?candidate_ipv4_addr,
-                                ?e,
-                                "add ip failed"
-                            );
-                            global_ctx_c.set_ipv4(None);
-                            continue;
-                        }
-                        #[cfg(feature = "magic-dns")]
-                        let ifname = new_nic_ctx.ifname().await;
-                        Self::use_new_nic_ctx(
-                            nic_ctx.clone(),
-                            new_nic_ctx,
-                            #[cfg(feature = "magic-dns")]
-                            Self::create_magic_dns_runner(peer_manager_c.clone(), ifname, ip),
-                        )
-                        .await;
-                    }
-
-                    allocator.commit(Some(ip));
-                    global_ctx_c.set_ipv4(Some(ip));
-                    global_ctx_c.issue_event(GlobalCtxEvent::DhcpIpv4Changed(last_ip, Some(ip)));
-                } else {
-                    allocator.commit(None);
-                    global_ctx_c.set_ipv4(None);
-                    global_ctx_c.issue_event(GlobalCtxEvent::DhcpIpv4Conflicted(last_ip));
-                }
-            }
-        });
-    }
-
     #[cfg(all(not(mobile), feature = "tun"))]
     fn check_for_static_ip(&self, first_round_output: oneshot::Sender<Result<(), Error>>) {
         let ipv4_addr = self.global_ctx.get_ipv4();
@@ -1065,7 +1054,9 @@ impl Instance {
         }
 
         if self.global_ctx.config.get_dhcp() {
-            self.check_dhcp_ip_conflict();
+            self.core_instance
+                .start_dhcp_ipv4(RuntimeDhcpIpv4Host::new(self))
+                .await?;
         }
 
         #[cfg(feature = "kcp")]
