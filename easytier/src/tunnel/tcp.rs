@@ -1,10 +1,13 @@
-use std::net::{IpAddr, SocketAddr};
+use std::{
+    net::{IpAddr, SocketAddr},
+    sync::Arc,
+};
 
 use async_trait::async_trait;
 use easytier_core::{
     socket::{
         SocketContext,
-        dns::{DnsQuery, DnsResolveError, global_dns_resolver},
+        dns::{DnsQuery, DnsResolver},
         tcp::{
             TcpBindOptions, TcpConnectOptions, TcpListenOptions, VirtualTcpListener,
             VirtualTcpSocket,
@@ -19,7 +22,7 @@ use super::{
     IpScheme, IpVersion, Tunnel, TunnelError, TunnelInfo, TunnelListener,
     common::wait_for_connect_futures,
 };
-use crate::{common::dns::register_core_dns_resolver, tunnel::tcp_socket};
+use crate::{common::dns::RuntimeDnsResolver, tunnel::tcp_socket};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum TcpUrlEndpoint {
@@ -214,19 +217,10 @@ async fn resolve_tcp_domain_addrs(
     host: String,
     port: u16,
     context: SocketContext,
+    resolver: &dyn DnsResolver,
 ) -> Result<Vec<SocketAddr>, TunnelError> {
     let query = DnsQuery::new(host, context);
-    let resolved = match global_dns_resolver().resolve(query.clone()).await {
-        Ok(ips) => ips,
-        Err(DnsResolveError::NotRegistered) => {
-            register_core_dns_resolver();
-            global_dns_resolver()
-                .resolve(query)
-                .await
-                .map_err(|error| TunnelError::Anyhow(error.into()))?
-        }
-        Err(error) => return Err(TunnelError::Anyhow(error.into())),
-    };
+    let resolved = resolver.resolve(query).await.map_err(TunnelError::Anyhow)?;
     Ok(resolved
         .into_iter()
         .map(|ip| SocketAddr::new(ip, port))
@@ -255,12 +249,18 @@ async fn resolve_tcp_remote_addrs(
     endpoint: TcpUrlEndpoint,
     ip_version: IpVersion,
     socket_mark: Option<u32>,
+    resolver: &dyn DnsResolver,
 ) -> Result<Vec<SocketAddr>, TunnelError> {
     let addrs = match endpoint {
         TcpUrlEndpoint::Addr(addr) => vec![addr],
         TcpUrlEndpoint::Domain { host, port } => {
-            resolve_tcp_domain_addrs(host, port, tcp_socket_context(ip_version, socket_mark))
-                .await?
+            resolve_tcp_domain_addrs(
+                host,
+                port,
+                tcp_socket_context(ip_version, socket_mark),
+                resolver,
+            )
+            .await?
         }
     };
     let addrs = dedup_addrs(
@@ -293,11 +293,17 @@ pub(crate) async fn resolve_tcp_bind_url_addr(
     ip_version: IpVersion,
     socket_mark: Option<u32>,
 ) -> Result<SocketAddr, TunnelError> {
+    let resolver = RuntimeDnsResolver::new();
     let addrs = match remote_endpoint_from_tcp_url(url)? {
         TcpUrlEndpoint::Addr(addr) => vec![addr],
         TcpUrlEndpoint::Domain { host, port } => {
-            resolve_tcp_domain_addrs(host, port, tcp_socket_context(ip_version, socket_mark))
-                .await?
+            resolve_tcp_domain_addrs(
+                host,
+                port,
+                tcp_socket_context(ip_version, socket_mark),
+                &resolver,
+            )
+            .await?
         }
     };
     let addrs = addrs
@@ -310,7 +316,6 @@ pub(crate) async fn resolve_tcp_bind_url_addr(
         .ok_or(TunnelError::NoDnsRecordFound(ip_version))
 }
 
-#[derive(Debug)]
 pub struct TcpTunnelConnector {
     addr: url::Url,
 
@@ -318,6 +323,19 @@ pub struct TcpTunnelConnector {
     ip_version: IpVersion,
     resolved_addr: Option<SocketAddr>,
     socket_mark: Option<u32>,
+    dns_resolver: Arc<dyn DnsResolver>,
+}
+
+impl std::fmt::Debug for TcpTunnelConnector {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TcpTunnelConnector")
+            .field("addr", &self.addr)
+            .field("bind_addrs", &self.bind_addrs)
+            .field("ip_version", &self.ip_version)
+            .field("resolved_addr", &self.resolved_addr)
+            .field("socket_mark", &self.socket_mark)
+            .finish_non_exhaustive()
+    }
 }
 
 impl TcpTunnelConnector {
@@ -328,7 +346,14 @@ impl TcpTunnelConnector {
             ip_version: IpVersion::Both,
             resolved_addr: None,
             socket_mark: None,
+            dns_resolver: Arc::new(RuntimeDnsResolver::new()),
         }
+    }
+
+    #[cfg(test)]
+    fn with_dns_resolver(mut self, dns_resolver: Arc<dyn DnsResolver>) -> Self {
+        self.dns_resolver = dns_resolver;
+        self
     }
 
     async fn resolve_remote_addrs(&self) -> Result<Vec<SocketAddr>, TunnelError> {
@@ -337,7 +362,13 @@ impl TcpTunnelConnector {
             .map(TcpUrlEndpoint::Addr)
             .map(Ok)
             .unwrap_or_else(|| remote_endpoint_from_tcp_url(&self.addr))?;
-        resolve_tcp_remote_addrs(endpoint, self.ip_version, self.socket_mark).await
+        resolve_tcp_remote_addrs(
+            endpoint,
+            self.ip_version,
+            self.socket_mark,
+            self.dns_resolver.as_ref(),
+        )
+        .await
     }
 
     fn selectable_remote_addrs(&self, remote_addrs: Vec<SocketAddr>) -> Vec<SocketAddr> {
@@ -448,8 +479,7 @@ mod tests {
     };
 
     use async_trait::async_trait;
-    use easytier_core::socket::dns::{DnsQuery, DnsResolver, global_dns_resolver};
-    use guarden::defer;
+    use easytier_core::socket::dns::{DnsQuery, DnsResolver};
 
     use crate::tunnel::{
         TunnelConnector,
@@ -555,18 +585,11 @@ mod tests {
 
     #[tokio::test]
     async fn ipv6_domain_pingpong() {
-        let previous = global_dns_resolver().register(Arc::new(StaticDnsResolver {
+        let resolver = Arc::new(StaticDnsResolver {
             ips: vec![
                 IpAddr::from([0, 0, 0, 0, 0, 0, 0, 1]),
                 IpAddr::from([127, 0, 0, 1]),
             ],
-        }));
-        defer!({
-            if let Some(previous) = previous {
-                global_dns_resolver().register(previous);
-            } else {
-                global_dns_resolver().unregister();
-            }
         });
 
         let mut listener = TcpTunnelListener::new("tcp://[::1]:0".parse().unwrap());
@@ -575,7 +598,8 @@ mod tests {
         let connector_url: url::Url = format!("tcp://tcp-test.easytier.invalid:{port}")
             .parse()
             .unwrap();
-        let mut connector = TcpTunnelConnector::new(connector_url);
+        let mut connector =
+            TcpTunnelConnector::new(connector_url).with_dns_resolver(resolver.clone());
         connector.set_ip_version(IpVersion::V6);
         _tunnel_pingpong(listener, connector).await;
 
@@ -585,7 +609,7 @@ mod tests {
         let connector_url: url::Url = format!("tcp://tcp-test.easytier.invalid:{port}")
             .parse()
             .unwrap();
-        let mut connector = TcpTunnelConnector::new(connector_url);
+        let mut connector = TcpTunnelConnector::new(connector_url).with_dns_resolver(resolver);
         connector.set_ip_version(IpVersion::V4);
         _tunnel_pingpong(listener, connector).await;
     }

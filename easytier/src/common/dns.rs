@@ -4,7 +4,7 @@ use std::sync::atomic::AtomicBool;
 
 use anyhow::Context;
 use async_trait::async_trait;
-use easytier_core::socket::dns::{DnsQuery, DnsResolver, global_dns_resolver};
+use easytier_core::socket::dns::{DnsQuery, DnsResolver};
 use hickory_proto::runtime::TokioRuntimeProvider;
 use hickory_proto::xfer::Protocol;
 use hickory_resolver::config::{LookupIpStrategy, NameServerConfig, ResolverConfig, ResolverOpts};
@@ -12,7 +12,6 @@ use hickory_resolver::name_server::{GenericConnector, TokioConnectionProvider};
 use hickory_resolver::system_conf::read_system_conf;
 use hickory_resolver::{Resolver, TokioResolver};
 use once_cell::sync::Lazy;
-use std::sync::Once;
 use tokio::net::lookup_host;
 
 use super::error::Error;
@@ -49,8 +48,6 @@ pub static RESOLVER: Lazy<Arc<Resolver<GenericConnector<TokioRuntimeProvider>>>>
         Arc::new(builder.build())
     });
 
-static CORE_DNS_RESOLVER_REGISTER: Once = Once::new();
-
 pub(crate) struct RuntimeDnsResolver;
 
 impl RuntimeDnsResolver {
@@ -64,12 +61,6 @@ impl DnsResolver for RuntimeDnsResolver {
     async fn resolve(&self, query: DnsQuery) -> anyhow::Result<Vec<IpAddr>> {
         Ok(resolve_ips(&query.host).await?)
     }
-}
-
-pub fn register_core_dns_resolver() {
-    CORE_DNS_RESOLVER_REGISTER.call_once(|| {
-        global_dns_resolver().register(Arc::new(RuntimeDnsResolver::new()));
-    });
 }
 
 pub async fn resolve_txt_record(domain_name: &str) -> Result<String, Error> {
