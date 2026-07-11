@@ -29,6 +29,13 @@ pub trait TcpHolePunchHost: VirtualTcpListenerFactory + VirtualTcpSocketFactory 
     async fn tcp_port_mapping(&self, local_port: u16) -> anyhow::Result<SocketAddr>;
 }
 
+#[async_trait]
+pub trait TcpHolePunchEnvironment: Send + Sync + 'static {
+    fn tcp_nat_type(&self) -> NatType;
+
+    async fn tcp_port_mapping(&self, local_port: u16) -> anyhow::Result<SocketAddr>;
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TcpHolePunchAdmission {
     Client,
