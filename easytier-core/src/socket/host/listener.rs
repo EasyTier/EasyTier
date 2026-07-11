@@ -40,19 +40,21 @@ pub trait HostTcpListenerIo: HostSocketIo {
     -> Poll<io::Result<HostTcpConnectResult>>;
 }
 
-struct PendingHostListenerOperation {
+struct PendingHostListenerOperation<B>
+where
+    B: HostTcpListenerIo,
+{
     runtime: HostSocketRuntime,
-    io: Arc<dyn HostTcpListenerIo>,
+    io: Arc<B>,
     operation: HostOperationId,
     completed: bool,
 }
 
-impl PendingHostListenerOperation {
-    fn new(
-        runtime: HostSocketRuntime,
-        io: Arc<dyn HostTcpListenerIo>,
-        operation: HostOperationId,
-    ) -> Self {
+impl<B> PendingHostListenerOperation<B>
+where
+    B: HostTcpListenerIo,
+{
+    fn new(runtime: HostSocketRuntime, io: Arc<B>, operation: HostOperationId) -> Self {
         Self {
             runtime,
             io,
@@ -67,7 +69,10 @@ impl PendingHostListenerOperation {
     }
 }
 
-impl Drop for PendingHostListenerOperation {
+impl<B> Drop for PendingHostListenerOperation<B>
+where
+    B: HostTcpListenerIo,
+{
     fn drop(&mut self) {
         if self.completed {
             return;
@@ -77,32 +82,44 @@ impl Drop for PendingHostListenerOperation {
     }
 }
 
-#[derive(Clone)]
-pub struct HostTcpListenerFactory {
+pub trait HostTcpListenerBackend: HostTcpListenerIo + HostTcpIo {}
+
+impl<T> HostTcpListenerBackend for T where T: HostTcpListenerIo + HostTcpIo {}
+
+pub struct HostTcpListenerFactory<B>
+where
+    B: HostTcpListenerBackend,
+{
     runtime: HostSocketRuntime,
-    listener_io: Arc<dyn HostTcpListenerIo>,
-    tcp_io: Arc<dyn HostTcpIo>,
+    backend: Arc<B>,
 }
 
-impl HostTcpListenerFactory {
-    pub fn new(
-        runtime: HostSocketRuntime,
-        listener_io: Arc<dyn HostTcpListenerIo>,
-        tcp_io: Arc<dyn HostTcpIo>,
-    ) -> Self {
+impl<B> Clone for HostTcpListenerFactory<B>
+where
+    B: HostTcpListenerBackend,
+{
+    fn clone(&self) -> Self {
         Self {
-            runtime,
-            listener_io,
-            tcp_io,
+            runtime: self.runtime.clone(),
+            backend: self.backend.clone(),
         }
     }
+}
 
-    async fn bind(&self, options: TcpListenOptions) -> io::Result<Arc<HostTcpListener>> {
+impl<B> HostTcpListenerFactory<B>
+where
+    B: HostTcpListenerBackend,
+{
+    pub fn new(runtime: HostSocketRuntime, backend: Arc<B>) -> Self {
+        Self { runtime, backend }
+    }
+
+    async fn bind(&self, options: TcpListenOptions) -> io::Result<Arc<HostTcpListener<B>>> {
         let operation = self.runtime.next_operation();
-        self.listener_io.submit_tcp_bind(operation, &options)?;
+        self.backend.submit_tcp_bind(operation, &options)?;
         let mut pending = PendingHostListenerOperation::new(
             self.runtime.clone(),
-            self.listener_io.clone(),
+            self.backend.clone(),
             operation,
         );
         let result = poll_fn(|context| {
@@ -111,7 +128,7 @@ impl HostTcpListenerFactory {
                 .inner
                 .completion_epoch
                 .load(std::sync::atomic::Ordering::SeqCst);
-            match self.listener_io.take_tcp_bind(operation) {
+            match self.backend.take_tcp_bind(operation) {
                 Poll::Pending => {
                     self.runtime.register_pending(operation, epoch, context);
                     Poll::Pending
@@ -125,8 +142,7 @@ impl HostTcpListenerFactory {
         .await?;
         Ok(Arc::new(HostTcpListener {
             runtime: self.runtime.clone(),
-            listener_io: self.listener_io.clone(),
-            tcp_io: self.tcp_io.clone(),
+            backend: self.backend.clone(),
             handle: result.handle,
             local_addr: result.local_addr,
         }))
@@ -134,23 +150,31 @@ impl HostTcpListenerFactory {
 }
 
 #[async_trait]
-impl VirtualTcpListenerFactory for HostTcpListenerFactory {
-    type Listener = HostTcpListener;
+impl<B> VirtualTcpListenerFactory for HostTcpListenerFactory<B>
+where
+    B: HostTcpListenerBackend,
+{
+    type Listener = HostTcpListener<B>;
 
     async fn bind_tcp(&self, options: TcpListenOptions) -> anyhow::Result<Arc<Self::Listener>> {
         Ok(self.bind(options).await?)
     }
 }
 
-pub struct HostTcpListener {
+pub struct HostTcpListener<B>
+where
+    B: HostTcpListenerBackend,
+{
     runtime: HostSocketRuntime,
-    listener_io: Arc<dyn HostTcpListenerIo>,
-    tcp_io: Arc<dyn HostTcpIo>,
+    backend: Arc<B>,
     handle: HostSocketHandle,
     local_addr: SocketAddr,
 }
 
-impl std::fmt::Debug for HostTcpListener {
+impl<B> std::fmt::Debug for HostTcpListener<B>
+where
+    B: HostTcpListenerBackend,
+{
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
             .debug_struct("HostTcpListener")
@@ -161,7 +185,10 @@ impl std::fmt::Debug for HostTcpListener {
 }
 
 #[async_trait]
-impl VirtualTcpListener for HostTcpListener {
+impl<B> VirtualTcpListener for HostTcpListener<B>
+where
+    B: HostTcpListenerBackend,
+{
     type Socket = HostTcpStream;
 
     fn local_addr(&self) -> io::Result<SocketAddr> {
@@ -170,10 +197,10 @@ impl VirtualTcpListener for HostTcpListener {
 
     async fn accept(&self) -> io::Result<(Self::Socket, SocketAddr)> {
         let operation = self.runtime.next_operation();
-        self.listener_io.submit_tcp_accept(self.handle, operation)?;
+        self.backend.submit_tcp_accept(self.handle, operation)?;
         let mut pending = PendingHostListenerOperation::new(
             self.runtime.clone(),
-            self.listener_io.clone(),
+            self.backend.clone(),
             operation,
         );
         let result = poll_fn(|context| {
@@ -182,7 +209,7 @@ impl VirtualTcpListener for HostTcpListener {
                 .inner
                 .completion_epoch
                 .load(std::sync::atomic::Ordering::SeqCst);
-            match self.listener_io.take_tcp_accept(operation) {
+            match self.backend.take_tcp_accept(operation) {
                 Poll::Pending => {
                     self.runtime.register_pending(operation, epoch, context);
                     Poll::Pending
@@ -197,7 +224,7 @@ impl VirtualTcpListener for HostTcpListener {
         let peer_addr = result.peer_addr;
         Ok((
             self.runtime.tcp_stream(
-                self.tcp_io.clone(),
+                self.backend.clone(),
                 result.handle,
                 result.local_addr,
                 peer_addr,
@@ -208,9 +235,12 @@ impl VirtualTcpListener for HostTcpListener {
     }
 }
 
-impl Drop for HostTcpListener {
+impl<B> Drop for HostTcpListener<B>
+where
+    B: HostTcpListenerBackend,
+{
     fn drop(&mut self) {
-        let _ = self.listener_io.close(self.handle);
+        let _ = self.backend.close(self.handle);
     }
 }
 
@@ -401,11 +431,10 @@ mod tests {
         runtime: &HostSocketRuntime,
         io: Arc<TestHostIo>,
         handle: HostSocketHandle,
-    ) -> HostTcpListener {
+    ) -> HostTcpListener<TestHostIo> {
         HostTcpListener {
             runtime: runtime.clone(),
-            listener_io: io.clone(),
-            tcp_io: io,
+            backend: io,
             handle,
             local_addr: "192.0.2.1:11013".parse().unwrap(),
         }
@@ -415,7 +444,7 @@ mod tests {
     async fn forwards_bind_options_and_wraps_accepted_stream() {
         let io = Arc::new(TestHostIo::default());
         let runtime = HostSocketRuntime::new();
-        let factory = HostTcpListenerFactory::new(runtime.clone(), io.clone(), io.clone());
+        let factory = HostTcpListenerFactory::new(runtime.clone(), io.clone());
         let options = TcpListenOptions {
             bind: TcpBindOptions::default()
                 .with_local_addr(Some("192.0.2.1:0".parse().unwrap()))
