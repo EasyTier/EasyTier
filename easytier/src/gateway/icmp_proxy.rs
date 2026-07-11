@@ -7,35 +7,100 @@ use std::{
 };
 
 use anyhow::Context;
-use socket2::Socket;
-use tokio::{
-    sync::{Mutex, mpsc::UnboundedSender},
-    task::JoinSet,
+use easytier_core::proxy::{
+    icmp_proxy_service::IcmpProxyService,
+    runtime::{
+        IcmpProxyResponseSink, IcmpProxyRuntime, ProxyRuntimeError, ProxyRuntimeInfo,
+        ProxyRuntimeSnapshot,
+    },
 };
-
-use tracing::Instrument;
-
-use easytier_core::proxy::icmp_proxy_engine::{IcmpProxyAction, IcmpProxyContext, IcmpProxyEngine};
+use socket2::Socket;
 
 use crate::{
     common::{error::Error, global_ctx::ArcGlobalCtx},
-    peers::{PeerPacketFilter, peer_manager::PeerManager},
-    tunnel::packet_def::ZCPacket,
+    peers::peer_manager::PeerManager,
 };
 
 use super::CidrSet;
 
 #[derive(Debug)]
-pub struct IcmpProxy {
+struct RuntimeIcmpProxyAdapter {
     global_ctx: ArcGlobalCtx,
-    peer_manager: Weak<PeerManager>,
+    socket: std::sync::Mutex<Option<Arc<Socket>>>,
+}
 
-    cidr_set: CidrSet,
-    socket: std::sync::Mutex<Option<Arc<socket2::Socket>>>,
-    engine: Arc<IcmpProxyEngine>,
+impl RuntimeIcmpProxyAdapter {
+    fn new(global_ctx: ArcGlobalCtx) -> Self {
+        Self {
+            global_ctx,
+            socket: std::sync::Mutex::new(None),
+        }
+    }
 
-    tasks: Mutex<JoinSet<()>>,
-    icmp_sender: Arc<std::sync::Mutex<Option<UnboundedSender<ZCPacket>>>>,
+    fn create_raw_socket(&self) -> Result<Socket, std::io::Error> {
+        let _guard = self.global_ctx.net_ns.guard();
+        let socket = Socket::new(
+            socket2::Domain::IPV4,
+            socket2::Type::RAW,
+            Some(socket2::Protocol::ICMPV4),
+        )?;
+        socket.bind(&socket2::SockAddr::from(SocketAddrV4::new(
+            Ipv4Addr::UNSPECIFIED,
+            0,
+        )))?;
+        Ok(socket)
+    }
+}
+
+impl ProxyRuntimeInfo for RuntimeIcmpProxyAdapter {
+    fn proxy_runtime_snapshot(&self) -> ProxyRuntimeSnapshot {
+        let local_inet = self.global_ctx.get_ipv4().as_ref().cloned();
+        ProxyRuntimeSnapshot {
+            local_inet,
+            virtual_ipv4: local_inet.map(|inet| inet.address()),
+            no_tun: self.global_ctx.no_tun(),
+            enable_exit_node: self.global_ctx.enable_exit_node(),
+            smoltcp_enabled: false,
+            latency_first: self.global_ctx.latency_first(),
+        }
+    }
+
+    fn is_ip_local_virtual_ip(&self, ip: &IpAddr) -> bool {
+        self.global_ctx.is_ip_local_virtual_ip(ip)
+    }
+}
+
+impl IcmpProxyRuntime for RuntimeIcmpProxyAdapter {
+    fn start_icmp(
+        &self,
+        response_sink: Weak<dyn IcmpProxyResponseSink>,
+    ) -> Result<(), ProxyRuntimeError> {
+        let socket = self.create_raw_socket().inspect_err(|err| {
+            tracing::warn!(?err, "create ICMP socket failed");
+        })?;
+        let socket = Arc::new(socket);
+        self.socket.lock().unwrap().replace(socket.clone());
+        thread::spawn(move || socket_recv_loop(socket, response_sink));
+        Ok(())
+    }
+
+    fn send_icmp_to_socket(
+        &self,
+        destination: Ipv4Addr,
+        packet: &[u8],
+    ) -> Result<(), ProxyRuntimeError> {
+        let socket = self.socket.lock().unwrap();
+        let socket = socket.as_ref().with_context(|| "ICMP socket not created")?;
+        socket.send_to(packet, &SocketAddrV4::new(destination, 0).into())?;
+        Ok(())
+    }
+
+    fn stop_icmp(&self) {
+        tracing::info!(socket = ?self.socket.lock().unwrap().as_ref(), "stopping ICMP runtime");
+        if let Some(socket) = self.socket.lock().unwrap().as_ref() {
+            let _ = socket.shutdown(std::net::Shutdown::Both);
+        }
+    }
 }
 
 fn socket_recv(
@@ -45,82 +110,45 @@ fn socket_recv(
     let (size, addr) = socket.recv_from(buf)?;
     let addr = match addr.as_socket() {
         None => IpAddr::V4(Ipv4Addr::UNSPECIFIED),
-        Some(add) => add.ip(),
+        Some(addr) => addr.ip(),
     };
     Ok((size, addr))
 }
 
-fn socket_recv_loop(
-    socket: Arc<Socket>,
-    engine: Arc<IcmpProxyEngine>,
-    sender: UnboundedSender<ZCPacket>,
-) {
-    let mut buf = [0u8; 8192];
+fn socket_recv_loop(socket: Arc<Socket>, response_sink: Weak<dyn IcmpProxyResponseSink>) {
+    let mut buf = [0_u8; 8192];
     let data: &mut [MaybeUninit<u8>] = unsafe { std::mem::transmute(&mut buf[..]) };
 
     loop {
         let (len, peer_ip) = match socket_recv(&socket, data) {
-            Ok((len, peer_ip)) => (len, peer_ip),
-            Err(e) => {
-                tracing::error!("recv icmp packet failed: {:?}", e);
-                if sender.is_closed() {
+            Ok(result) => result,
+            Err(err) => {
+                tracing::error!(?err, "receive ICMP packet failed");
+                if response_sink.strong_count() == 0 {
                     break;
-                } else {
-                    continue;
                 }
+                continue;
             }
         };
 
         if len == 0 {
-            tracing::error!("recv empty packet, len: {}", len);
+            tracing::error!(len, "received empty ICMP packet");
             return;
         }
 
         let IpAddr::V4(peer_ip) = peer_ip else {
             continue;
         };
-
-        for packet in engine.handle_socket_response(peer_ip, &mut buf[..len]) {
-            if let Err(e) = sender.send(packet) {
-                tracing::error!("send icmp packet to peer failed: {:?}, may exiting..", e);
-            }
-        }
+        let Some(response_sink) = response_sink.upgrade() else {
+            break;
+        };
+        response_sink.handle_socket_response(peer_ip, &mut buf[..len]);
     }
 }
 
-#[async_trait::async_trait]
-impl PeerPacketFilter for IcmpProxy {
-    async fn try_process_packet_from_peer(&self, packet: ZCPacket) -> Option<ZCPacket> {
-        let context = IcmpProxyContext {
-            virtual_ipv4: self
-                .global_ctx
-                .get_ipv4()
-                .as_ref()
-                .map(cidr::Ipv4Inet::address),
-            enable_exit_node: self.global_ctx.enable_exit_node(),
-            no_tun: self.global_ctx.no_tun(),
-        };
-        match self.engine.handle_peer_packet(&packet, context) {
-            IcmpProxyAction::Pass => Some(packet),
-            IcmpProxyAction::SendToSocket {
-                destination,
-                packet: request,
-            } => {
-                if let Err(e) = self.send_icmp_packet(destination, &request) {
-                    tracing::error!("send icmp packet failed: {:?}", e);
-                }
-                None
-            }
-            IcmpProxyAction::SendToPeer(packets) => {
-                let sender = self.icmp_sender.lock().unwrap();
-                let sender = sender.as_ref().expect("ICMP proxy sender is initialized");
-                for packet in packets {
-                    let _ = sender.send(packet);
-                }
-                None
-            }
-        }
-    }
+pub struct IcmpProxy {
+    _cidr_set: CidrSet,
+    service: Arc<IcmpProxyService<RuntimeIcmpProxyAdapter>>,
 }
 
 impl IcmpProxy {
@@ -129,140 +157,33 @@ impl IcmpProxy {
         peer_manager: Arc<PeerManager>,
     ) -> Result<Arc<Self>, Error> {
         let cidr_set = CidrSet::new(global_ctx.clone());
-        let engine = Arc::new(IcmpProxyEngine::new(
+        let runtime = Arc::new(RuntimeIcmpProxyAdapter::new(global_ctx));
+        let service = IcmpProxyService::new(
+            peer_manager.core(),
+            runtime,
             cidr_set.table(),
             Duration::from_secs(10),
-        ));
-        let ret = Self {
-            global_ctx,
-            peer_manager: Arc::downgrade(&peer_manager),
-            cidr_set,
-            socket: std::sync::Mutex::new(None),
-            engine,
-            tasks: Mutex::new(JoinSet::new()),
-            icmp_sender: Arc::new(std::sync::Mutex::new(None)),
-        };
-
-        Ok(Arc::new(ret))
-    }
-
-    fn create_raw_socket(self: &Arc<Self>) -> Result<Socket, Error> {
-        let _g = self.global_ctx.net_ns.guard();
-        let socket = socket2::Socket::new(
-            socket2::Domain::IPV4,
-            socket2::Type::RAW,
-            Some(socket2::Protocol::ICMPV4),
-        )?;
-        socket.bind(&socket2::SockAddr::from(SocketAddrV4::new(
-            std::net::Ipv4Addr::UNSPECIFIED,
-            0,
-        )))?;
-        Ok(socket)
-    }
-
-    pub async fn start(self: &Arc<Self>) -> Result<(), Error> {
-        let socket = self.create_raw_socket();
-        match socket {
-            Ok(socket) => {
-                self.socket.lock().unwrap().replace(Arc::new(socket));
-            }
-            Err(e) => {
-                tracing::warn!("create icmp socket failed: {:?}", e);
-                if !self.global_ctx.no_tun() {
-                    return Err(anyhow::anyhow!("create icmp socket failed: {:?}", e).into());
-                }
-            }
-        }
-
-        self.start_icmp_proxy().await?;
-        self.start_nat_table_cleaner().await?;
-        Ok(())
-    }
-
-    async fn start_nat_table_cleaner(self: &Arc<Self>) -> Result<(), Error> {
-        let engine = self.engine.clone();
-        self.tasks.lock().await.spawn(
-            async move {
-                loop {
-                    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-                    engine.remove_expired_entries(Duration::from_secs(20));
-                }
-            }
-            .instrument(tracing::info_span!("icmp proxy nat table cleaner")),
         );
-        Ok(())
+        Ok(Arc::new(Self {
+            _cidr_set: cidr_set,
+            service,
+        }))
     }
 
-    async fn start_icmp_proxy(self: &Arc<Self>) -> Result<(), Error> {
-        let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
-        self.icmp_sender.lock().unwrap().replace(sender.clone());
-        if let Some(socket) = self.socket.lock().unwrap().as_ref() {
-            let socket = socket.clone();
-            let engine = self.engine.clone();
-            thread::spawn(|| {
-                socket_recv_loop(socket, engine, sender);
-            });
-        }
-
-        let peer_manager = self.peer_manager.clone();
-        let is_latency_first = self.global_ctx.latency_first();
-        self.tasks.lock().await.spawn(
-            async move {
-                while let Some(mut msg) = receiver.recv().await {
-                    let hdr = msg.mut_peer_manager_header().unwrap();
-                    hdr.set_latency_first(is_latency_first);
-                    let to_peer_id = hdr.to_peer_id.into();
-                    let Some(pm) = peer_manager.upgrade() else {
-                        tracing::warn!("peer manager is gone, icmp proxy send loop exit");
-                        return;
-                    };
-                    let ret = pm.send_msg_for_proxy(msg, to_peer_id).await;
-                    if ret.is_err() {
-                        tracing::error!("send icmp packet to peer failed: {:?}", ret);
-                    }
-                }
-            }
-            .instrument(tracing::info_span!("icmp proxy send loop")),
-        );
-
-        let engine = self.engine.clone();
-        self.tasks.lock().await.spawn(async move {
-            loop {
-                tokio::time::sleep(Duration::from_secs(1)).await;
-                engine.remove_expired_fragments();
-            }
-        });
-
-        let Some(pm) = self.peer_manager.upgrade() else {
-            tracing::warn!("peer manager is gone, icmp proxy init failed");
-            return Err(anyhow::anyhow!("peer manager is gone").into());
-        };
-
-        pm.add_packet_process_pipeline(Box::new(self.clone())).await;
-        Ok(())
+    pub async fn start(&self) -> Result<(), Error> {
+        self.service
+            .start()
+            .await
+            .map_err(|err| anyhow::anyhow!(err).into())
     }
 
-    fn send_icmp_packet(&self, dst_ip: Ipv4Addr, packet: &[u8]) -> Result<(), Error> {
-        self.socket
-            .lock()
-            .unwrap()
-            .as_ref()
-            .with_context(|| "icmp socket not created")?
-            .send_to(packet, &SocketAddrV4::new(dst_ip, 0).into())?;
-
-        Ok(())
+    pub fn stop(&self) {
+        self.service.stop();
     }
 }
 
 impl Drop for IcmpProxy {
     fn drop(&mut self) {
-        tracing::info!(
-            "dropping icmp proxy, {:?}",
-            self.socket.lock().unwrap().as_ref()
-        );
-        if let Some(s) = self.socket.lock().unwrap().as_ref() {
-            tracing::info!("shutting down icmp socket");
-            let _ = s.shutdown(std::net::Shutdown::Both);
-        }
+        self.stop();
     }
 }
