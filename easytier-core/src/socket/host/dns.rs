@@ -7,6 +7,11 @@ use crate::socket::dns::{DnsQuery, DnsRecordResolver, DnsResolver, DnsSrvRecord}
 
 use super::{HostOperationId, HostSocketRuntime};
 
+#[cfg(target_os = "wasi")]
+pub mod wasi;
+#[cfg(any(test, target_os = "wasi"))]
+mod wasi_wire;
+
 /// Mechanical asynchronous DNS below core's resolver seam.
 ///
 /// Submit methods must return without waiting for DNS. Completion methods own
