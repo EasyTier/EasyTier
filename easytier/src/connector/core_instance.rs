@@ -151,7 +151,12 @@ pub(crate) fn build_runtime_core_instance(
     proxy: Option<Arc<dyn easytier_core::instance::ProxyService>>,
 ) -> anyhow::Result<RuntimeCoreInstance> {
     let config = CoreInstanceConfig {
-        initial_peers: Vec::new(),
+        initial_peers: global_ctx
+            .config
+            .get_peers()
+            .into_iter()
+            .map(|peer| peer.uri)
+            .collect(),
         listeners: Vec::new(),
         endpoint_discovery: runtime_endpoint_discovery_config(&global_ctx),
         manual: runtime_manual_options(&global_ctx),
@@ -195,9 +200,12 @@ mod tests {
     use tokio_util::task::AbortOnDropHandle;
 
     use crate::{
-        common::global_ctx::{
-            NetworkIdentity,
-            tests::{get_mock_global_ctx, get_mock_global_ctx_with_network},
+        common::{
+            config::PeerConfig,
+            global_ctx::{
+                NetworkIdentity,
+                tests::{get_mock_global_ctx, get_mock_global_ctx_with_network},
+            },
         },
         peers::{
             create_packet_recv_chan,
@@ -301,6 +309,11 @@ mod tests {
     #[tokio::test]
     async fn runtime_core_instance_owns_connectivity_lifecycle() {
         let global_ctx = get_mock_global_ctx();
+        let initial_peer: url::Url = "tcp://127.0.0.1:29999".parse().unwrap();
+        global_ctx.config.set_peers(vec![PeerConfig {
+            uri: initial_peer.clone(),
+            peer_public_key: None,
+        }]);
         let (nic_channel, _nic_receiver) = create_packet_recv_chan();
         let peer_manager = Arc::new(PeerManager::new(
             RouteAlgoType::Ospf,
@@ -314,13 +327,20 @@ mod tests {
         );
 
         assert_eq!(instance.state(), CoreInstanceState::Created);
+        assert!(instance.list_connectors().is_empty());
         assert!(instance.start_proxy().await.is_err());
         assert!(instance.start_peer_center().await.is_err());
         instance.start().await.unwrap();
         assert_eq!(instance.state(), CoreInstanceState::Running);
+        assert!(instance.list_connectors().is_empty());
+        assert!(instance.start_initial_peers().await.is_err());
         assert!(instance.start().await.is_err());
         instance.start_peer_center().await.unwrap();
         instance.start_peer_center().await.unwrap();
+        instance.start_initial_peers().await.unwrap();
+        instance.start_initial_peers().await.unwrap();
+        assert_eq!(instance.list_connectors().len(), 1);
+        assert_eq!(instance.list_connectors()[0].url, initial_peer);
         instance.start_proxy().await.unwrap();
         instance.start_proxy().await.unwrap();
         assert_eq!(proxy.start_calls.load(Ordering::Relaxed), 1);

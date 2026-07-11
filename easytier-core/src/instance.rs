@@ -22,6 +22,7 @@ use crate::{
             ManualConnectivityEventSink, ManualConnectorManager, ManualConnectorOptions,
             ManualConnectorSnapshot,
             discovery::{CoreManualEndpointResolver, ManualEndpointDiscoveryConfig},
+            validate_manual_url,
         },
         protocol::{ClientProtocolUpgrader, CoreClientProtocolConfig, CoreClientProtocolUpgrader},
     },
@@ -310,6 +311,8 @@ where
     peer_center: Arc<PeerCenterInstance>,
     peer_center_started: AtomicBool,
     public_ipv6_provider: Option<Arc<PublicIpv6ProviderService>>,
+    initial_peers: Vec<Url>,
+    initial_peers_started: AtomicBool,
 }
 
 impl<H> CoreInstance<H>
@@ -427,8 +430,8 @@ where
                 manual_options,
             ),
         };
-        for url in initial_peers {
-            manual.add_connector(url)?;
+        for url in &initial_peers {
+            validate_manual_url(url)?;
         }
 
         let direct = match running_listeners {
@@ -472,6 +475,8 @@ where
             peer_center,
             peer_center_started: AtomicBool::new(false),
             public_ipv6_provider,
+            initial_peers,
+            initial_peers_started: AtomicBool::new(false),
         })
     }
 
@@ -635,6 +640,26 @@ where
             .set_route_cost_fn(self.peer_center.get_cost_calculator())
             .await;
         self.peer_center_started.store(true, Ordering::Release);
+        Ok(())
+    }
+
+    pub async fn start_initial_peers(self: &Arc<Self>) -> anyhow::Result<()> {
+        let _operation = self.operation.lock().await;
+        let state = self.state();
+        if state != CoreInstanceState::Running {
+            anyhow::bail!("initial peers cannot start from core instance state {state:?}");
+        }
+        if !self.peer_center_started.load(Ordering::Acquire) {
+            anyhow::bail!("initial peers cannot start before peer center");
+        }
+        if self.initial_peers_started.load(Ordering::Acquire) {
+            return Ok(());
+        }
+
+        for url in &self.initial_peers {
+            self.manual.add_connector(url.clone())?;
+        }
+        self.initial_peers_started.store(true, Ordering::Release);
         Ok(())
     }
 

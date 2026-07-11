@@ -808,13 +808,6 @@ impl Instance {
         self.conn_manager.clone()
     }
 
-    async fn add_initial_peers(&self) -> Result<(), Error> {
-        for peer in self.global_ctx.config.get_peers().iter() {
-            self.core_instance.add_connector(peer.uri.clone())?;
-        }
-        Ok(())
-    }
-
     async fn prepare_public_ipv6_config(&self) -> Result<(), Error> {
         validate_public_ipv6_config(&self.global_ctx)?;
         self.core_instance.reconcile_public_ipv6_provider().await;
@@ -1032,7 +1025,7 @@ impl Instance {
 
         self.core_instance.start_peer_center().await?;
 
-        self.add_initial_peers().await?;
+        self.core_instance.start_initial_peers().await?;
 
         self.core_instance.start_proxy_cidr_monitor().await?;
 
