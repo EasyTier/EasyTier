@@ -9,6 +9,7 @@ pub mod faketcp;
 pub mod insecure_tls;
 pub mod raw;
 pub mod websocket;
+pub mod wireguard;
 
 #[async_trait]
 pub trait ClientProtocolUpgrader<TcpSocket>: Send + Sync + 'static {

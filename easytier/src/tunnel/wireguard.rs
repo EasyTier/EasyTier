@@ -12,7 +12,6 @@ use super::{
     FromUrl, IpVersion, Tunnel, TunnelError, TunnelInfo, TunnelListener, ZCPacketSink,
     ZCPacketStream,
     common::wait_for_connect_futures,
-    generate_digest_from_str,
     packet_def::{PEER_MANAGER_HEADER_SIZE, ZCPacketType},
     ring::create_ring_tunnel_pair,
     udp::{
@@ -53,81 +52,14 @@ use tokio::{
 
 const MAX_PACKET: usize = 2048;
 
-#[derive(Debug, Clone)]
-enum WgType {
-    // used by easytier peer, need remove/add ip header for in/out wg msg
-    InternalUse,
-    // used by wireguard peer, keep original ip header
-    ExternalUse,
-}
-
-#[derive(Clone)]
-pub struct WgConfig {
-    my_secret_key: StaticSecret,
-    my_public_key: PublicKey,
-
-    peer_secret_key: StaticSecret,
-    peer_public_key: PublicKey,
-
-    wg_type: WgType,
-}
-
-impl WgConfig {
-    pub fn new_from_network_identity(network_name: &str, network_secret: &str) -> Self {
-        let mut my_sec = [0u8; 32];
-        generate_digest_from_str(network_name, network_secret, &mut my_sec);
-
-        let my_secret_key = StaticSecret::from(my_sec);
-        let my_public_key = PublicKey::from(&my_secret_key);
-        let peer_secret_key = StaticSecret::from(my_sec);
-        let peer_public_key = my_public_key;
-
-        WgConfig {
-            my_secret_key,
-            my_public_key,
-            peer_secret_key,
-            peer_public_key,
-
-            wg_type: WgType::InternalUse,
-        }
-    }
-
-    pub fn new_for_portal(server_key_seed: &str, client_key_seed: &str) -> Self {
-        let server_cfg = Self::new_from_network_identity("server", server_key_seed);
-        let client_cfg = Self::new_from_network_identity("client", client_key_seed);
-        Self {
-            my_secret_key: server_cfg.my_secret_key,
-            my_public_key: server_cfg.my_public_key,
-            peer_secret_key: client_cfg.my_secret_key,
-            peer_public_key: client_cfg.my_public_key,
-
-            wg_type: WgType::ExternalUse,
-        }
-    }
-
-    pub fn my_secret_key(&self) -> &[u8] {
-        self.my_secret_key.as_bytes()
-    }
-
-    pub fn peer_secret_key(&self) -> &[u8] {
-        self.peer_secret_key.as_bytes()
-    }
-
-    pub fn my_public_key(&self) -> &[u8] {
-        self.my_public_key.as_bytes()
-    }
-
-    pub fn peer_public_key(&self) -> &[u8] {
-        self.peer_public_key.as_bytes()
-    }
-}
+pub use easytier_core::connectivity::protocol::wireguard::WgConfig;
 
 #[derive(Clone)]
 struct WgPeerData {
     session: Arc<dyn UdpSessionSocket>,
     endpoint: SocketAddr,
     tunn: Arc<Mutex<Tunn>>,
-    wg_type: WgType,
+    internal_use: bool,
     access_time: Arc<AtomicCell<Instant>>,
     stopped: Arc<AtomicBool>,
 }
@@ -146,7 +78,7 @@ impl WgPeerData {
     async fn handle_one_packet_from_me(&self, zc_packet: ZCPacket) -> Result<(), anyhow::Error> {
         let mut send_buf = vec![0u8; MAX_PACKET];
 
-        let packet = if matches!(self.wg_type, WgType::InternalUse) {
+        let packet = if self.internal_use {
             let mut zc_packet = zc_packet.convert_type(ZCPacketType::WG);
             Self::fill_ip_header(&mut zc_packet);
             zc_packet.into_bytes()
@@ -252,7 +184,7 @@ impl WgPeerData {
                     packet.len()
                 );
                 let mut b = BytesMut::new();
-                if matches!(self.wg_type, WgType::InternalUse) {
+                if self.internal_use {
                     b.resize(WG_TUNNEL_HEADER_SIZE, 0);
                     b.extend_from_slice(self.remove_ip_header(packet, packet[0] >> 4 == 4));
                 } else {
@@ -375,8 +307,8 @@ impl WgPeer {
     ) -> Self {
         WgPeer {
             tunn: Some(Mutex::new(Tunn::new(
-                config.my_secret_key.clone(),
-                config.peer_public_key,
+                StaticSecret::from(<[u8; 32]>::try_from(config.my_secret_key()).unwrap()),
+                PublicKey::from(<[u8; 32]>::try_from(config.peer_public_key()).unwrap()),
                 None,
                 None,
                 rand::thread_rng().next_u32(),
@@ -416,7 +348,7 @@ impl WgPeer {
             session: self.session.clone(),
             endpoint: self.endpoint,
             tunn: Arc::new(self.tunn.take().unwrap()),
-            wg_type: self.config.wg_type.clone(),
+            internal_use: self.config.is_internal(),
             access_time: self.access_time.clone(),
             stopped: Arc::new(AtomicBool::new(false)),
         };
@@ -840,26 +772,13 @@ pub mod tests {
 
     pub fn create_wg_config() -> (WgConfig, WgConfig) {
         let my_secret_key = x25519::StaticSecret::random_from_rng(rand::thread_rng());
-        let my_public_key = x25519::PublicKey::from(&my_secret_key);
 
         let their_secret_key = x25519::StaticSecret::random_from_rng(rand::thread_rng());
-        let their_public_key = x25519::PublicKey::from(&their_secret_key);
 
-        let server_cfg = WgConfig {
-            my_secret_key: my_secret_key.clone(),
-            my_public_key,
-            peer_secret_key: their_secret_key.clone(),
-            peer_public_key: their_public_key,
-            wg_type: WgType::InternalUse,
-        };
-
-        let client_cfg = WgConfig {
-            my_secret_key: their_secret_key,
-            my_public_key: their_public_key,
-            peer_secret_key: my_secret_key,
-            peer_public_key: my_public_key,
-            wg_type: WgType::InternalUse,
-        };
+        let server_cfg =
+            WgConfig::new_internal(*my_secret_key.as_bytes(), *their_secret_key.as_bytes());
+        let client_cfg =
+            WgConfig::new_internal(*their_secret_key.as_bytes(), *my_secret_key.as_bytes());
 
         (server_cfg, client_cfg)
     }
