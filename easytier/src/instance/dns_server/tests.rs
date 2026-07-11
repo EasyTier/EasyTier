@@ -12,6 +12,7 @@ use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
 
 use crate::common::global_ctx::tests::get_mock_global_ctx;
+use crate::connector::core_instance::build_runtime_core_instance;
 use crate::connector::udp_hole_punch::tests::replace_stun_info_collector;
 
 use crate::instance::dns_server::runner::DnsRunner;
@@ -51,12 +52,16 @@ pub async fn prepare_env_with_tld_dns_zone(
     let (s, r) = create_packet_recv_chan();
     let peer_mgr = Arc::new(PeerManager::new(RouteAlgoType::Ospf, ctx, s));
     peer_mgr.run().await.unwrap();
+    let core_instance = Arc::new(
+        build_runtime_core_instance(peer_mgr.get_global_ctx(), peer_mgr.clone(), None).unwrap(),
+    );
     replace_stun_info_collector(peer_mgr.clone(), NatType::PortRestricted);
 
     let r = Arc::new(tokio::sync::Mutex::new(r));
     let mut virtual_nic = NicCtx::new(
         peer_mgr.get_global_ctx(),
         &peer_mgr,
+        &core_instance,
         r,
         Arc::new(Notify::new()),
     );

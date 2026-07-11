@@ -855,6 +855,8 @@ impl Instance {
         #[cfg(feature = "tun")]
         let nic_ctx = self.nic_ctx.clone();
         let _peer_packet_receiver = self.peer_packet_receiver.clone();
+        #[cfg(feature = "tun")]
+        let core_instance = Arc::downgrade(&self.core_instance);
         tokio::spawn(async move {
             let default_ipv4_addr = Ipv4Inet::new(Ipv4Addr::new(10, 126, 126, 0), 24).unwrap();
             let mut current_dhcp_ip: Option<Ipv4Inet> = None;
@@ -865,6 +867,11 @@ impl Instance {
 
                 let Some(peer_manager_c) = peer_manager_c.upgrade() else {
                     tracing::warn!("peer manager is dropped, stop dhcp check.");
+                    return;
+                };
+                #[cfg(feature = "tun")]
+                let Some(core_instance) = core_instance.upgrade() else {
+                    tracing::warn!("core instance is dropped, stop DHCP check.");
                     return;
                 };
 
@@ -935,6 +942,7 @@ impl Instance {
                         let mut new_nic_ctx = NicCtx::new(
                             global_ctx_c.clone(),
                             &peer_manager_c,
+                            &core_instance,
                             _peer_packet_receiver.clone(),
                             nic_closed_notifier.clone(),
                         );
@@ -984,6 +992,7 @@ impl Instance {
 
         let nic_ctx = self.nic_ctx.clone();
         let peer_mgr = Arc::downgrade(&self.peer_manager);
+        let core_instance = Arc::downgrade(&self.core_instance);
         let peer_packet_receiver = self.peer_packet_receiver.clone();
 
         tokio::spawn(async move {
@@ -999,10 +1008,18 @@ impl Instance {
                         }
                         return;
                     };
+                    let Some(core_instance) = core_instance.upgrade() else {
+                        tracing::warn!("core instance is dropped, stop static IP check.");
+                        if let Some(output_tx) = output_tx.take() {
+                            let _ = output_tx.send(Err(Error::Unknown));
+                        }
+                        return;
+                    };
 
                     let mut new_nic_ctx = NicCtx::new(
                         peer_mgr.get_global_ctx(),
                         &peer_mgr,
+                        &core_instance,
                         peer_packet_receiver.clone(),
                         close_notifier.clone(),
                     );
@@ -1589,11 +1606,16 @@ impl Instance {
         self.peer_packet_receiver.clone()
     }
 
+    pub(crate) fn get_core_instance(&self) -> Arc<RuntimeCoreInstance> {
+        self.core_instance.clone()
+    }
+
     #[cfg(mobile)]
-    pub async fn setup_nic_ctx_for_mobile(
+    pub(crate) async fn setup_nic_ctx_for_mobile(
         nic_ctx: ArcNicCtx,
         global_ctx: ArcGlobalCtx,
         peer_manager: Arc<PeerManager>,
+        core_instance: Arc<RuntimeCoreInstance>,
         peer_packet_receiver: Arc<Mutex<PacketRecvChanReceiver>>,
         fd: i32,
     ) -> Result<(), anyhow::Error> {
@@ -1606,6 +1628,7 @@ impl Instance {
         let mut new_nic_ctx = NicCtx::new(
             global_ctx.clone(),
             &peer_manager,
+            &core_instance,
             peer_packet_receiver.clone(),
             close_notifier.clone(),
         );
