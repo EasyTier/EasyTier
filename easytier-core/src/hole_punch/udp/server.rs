@@ -90,6 +90,7 @@ where
     pub async fn stop(&self) {
         self.begin_stop();
         let _admission = self.admission.write().await;
+        self.stopping.store(true, Ordering::Release);
         self.both_easy_sym_server.stop().await;
         self.both_easy_sym_server.common.stop().await;
         self.common.stop().await;
@@ -352,9 +353,9 @@ where
         task_slot.replace(AbortOnDropHandle::new(tokio::spawn(async move {
             loop {
                 tokio::time::sleep(Duration::from_secs(5)).await;
-                let expired = {
+                {
+                    let mut retiring = retiring.lock().await;
                     let mut listeners = listeners.lock().await;
-                    let mut expired = Vec::new();
                     let mut index = 0;
                     while index < listeners.len() {
                         let listener = &listeners[index];
@@ -363,12 +364,10 @@ where
                         if active {
                             index += 1;
                         } else {
-                            expired.push(listeners.remove(index));
+                            retiring.push(listeners.remove(index));
                         }
                     }
-                    expired
-                };
-                retiring.lock().await.extend(expired);
+                }
                 drain_retiring_listeners(retiring.as_ref()).await;
             }
         })));
@@ -383,19 +382,42 @@ where
         cleanup_task.take();
         drop(cleanup_task);
 
-        let listeners = std::mem::take(&mut *self.listeners.lock().await);
-        self.retiring.lock().await.extend(listeners);
+        {
+            let mut retiring = self.retiring.lock().await;
+            let mut listeners = self.listeners.lock().await;
+            retiring.extend(std::mem::take(&mut *listeners));
+        }
         drain_retiring_listeners(self.retiring.as_ref()).await;
     }
 
     pub async fn add_listener(&self, listener: UdpPunchListener<R::Socket>) {
-        self.listeners
-            .lock()
-            .await
-            .push(Arc::new(UdpPunchListenerRecord::new(
-                listener,
-                self.tunnel_sink.clone(),
-            )));
+        let listener = self.track_listener(listener).await;
+        self.promote_listener(listener).await;
+    }
+
+    async fn track_listener(
+        &self,
+        listener: UdpPunchListener<R::Socket>,
+    ) -> Arc<UdpPunchListenerRecord<R::Socket>> {
+        let mut retiring = self.retiring.lock().await;
+        let listener = Arc::new(UdpPunchListenerRecord::new(
+            listener,
+            self.tunnel_sink.clone(),
+        ));
+        retiring.push(listener.clone());
+        listener
+    }
+
+    async fn promote_listener(&self, listener: Arc<UdpPunchListenerRecord<R::Socket>>) {
+        let mut retiring = self.retiring.lock().await;
+        let mut listeners = self.listeners.lock().await;
+        if let Some(index) = retiring
+            .iter()
+            .position(|candidate| Arc::ptr_eq(candidate, &listener))
+        {
+            retiring.remove(index);
+            listeners.push(listener);
+        }
     }
 
     pub async fn find_listener(&self, addr: &SocketAddr) -> Option<Arc<R::Socket>> {
@@ -840,10 +862,7 @@ where
                         }
                     };
                     let socket = listener.socket.clone();
-                    let record = Arc::new(UdpPunchListenerRecord::new(
-                        listener,
-                        common.tunnel_sink.clone(),
-                    ));
+                    let record = common.track_listener(listener).await;
                     punched.push((socket, remote_addr));
                     listeners.push(record);
                 }
@@ -875,9 +894,10 @@ where
 
             for listener in listeners {
                 if listener.conn_count() > 0 {
-                    common.listeners.lock().await.push(listener);
+                    common.promote_listener(listener).await;
                 }
             }
+            drain_retiring_listeners(common.retiring.as_ref()).await;
         });
 
         *locked_task = Some(AbortOnDropHandle::new(task));
