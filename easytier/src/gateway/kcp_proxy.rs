@@ -471,8 +471,6 @@ struct KcpProxyServiceState {
 
 pub struct KcpProxyService {
     peer_manager: Arc<PeerManager>,
-    src_enabled: bool,
-    dst_enabled: bool,
     state: Mutex<Option<KcpProxyServiceState>>,
     src_endpoint: StdMutex<Option<Arc<KcpEndpoint>>>,
     src_tcp_proxy: StdMutex<Option<Arc<TcpProxy<NatDstKcpConnector>>>>,
@@ -480,16 +478,19 @@ pub struct KcpProxyService {
 }
 
 impl KcpProxyService {
-    pub fn new(peer_manager: Arc<PeerManager>, src_enabled: bool, dst_enabled: bool) -> Self {
+    pub fn new(peer_manager: Arc<PeerManager>) -> Self {
         Self {
             peer_manager,
-            src_enabled,
-            dst_enabled,
             state: Mutex::new(None),
             src_endpoint: StdMutex::new(None),
             src_tcp_proxy: StdMutex::new(None),
             dst_proxy_entries: StdMutex::new(None),
         }
+    }
+
+    pub(crate) fn enabled_directions(&self) -> (bool, bool) {
+        let flags = self.peer_manager.get_global_ctx().get_flags();
+        (flags.enable_kcp_proxy, !flags.disable_kcp_input)
     }
 
     pub fn src_endpoint(&self) -> Option<Arc<KcpEndpoint>> {
@@ -523,14 +524,15 @@ impl ProxyService for KcpProxyService {
             return Ok(());
         }
 
-        let src = if self.src_enabled {
+        let (src_enabled, dst_enabled) = self.enabled_directions();
+        let src = if src_enabled {
             let src = KcpProxySrc::new(self.peer_manager.clone()).await;
             src.start().await;
             Some(src)
         } else {
             None
         };
-        let dst = if self.dst_enabled {
+        let dst = if dst_enabled {
             let mut dst = KcpProxyDst::new(self.peer_manager.clone()).await;
             dst.start().await;
             Some(dst)

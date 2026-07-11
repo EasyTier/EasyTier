@@ -757,11 +757,7 @@ impl Instance {
             proxy_services,
         );
         #[cfg(feature = "kcp")]
-        let kcp_proxy = Arc::new(KcpProxyService::new(
-            peer_manager.clone(),
-            global_ctx.get_flags().enable_kcp_proxy,
-            !global_ctx.get_flags().disable_kcp_input,
-        ));
+        let kcp_proxy = Arc::new(KcpProxyService::new(peer_manager.clone()));
         #[cfg(feature = "kcp")]
         let transport_proxy: Option<Arc<dyn ProxyService>> = Some(kcp_proxy.clone());
         #[cfg(not(feature = "kcp"))]
@@ -1537,11 +1533,25 @@ impl Drop for Instance {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(feature = "kcp")]
+    use crate::{common::config::TomlConfigLoader, instance::instance::Instance};
     use crate::{
         common::global_ctx::tests::get_mock_global_ctx,
         instance::instance::{InstanceConfigPatcher, InstanceRpcServerHook},
         proto::{api::config::InstanceConfigPatch, rpc_impl::standalone::RpcServerHook},
     };
+
+    #[cfg(feature = "kcp")]
+    #[tokio::test]
+    async fn kcp_proxy_reads_direction_flags_at_activation() {
+        let instance = Instance::new(TomlConfigLoader::default());
+        let mut flags = instance.global_ctx.get_flags();
+        flags.enable_kcp_proxy = true;
+        flags.disable_kcp_input = true;
+        instance.global_ctx.set_flags(flags);
+
+        assert_eq!(instance.kcp_proxy.enabled_directions(), (true, false));
+    }
 
     #[tokio::test]
     async fn test_rpc_portal_whitelist() {
