@@ -21,7 +21,7 @@ use easytier_core::{
 use parking_lot::RwLock;
 use quinn::{
     AsyncUdpSocket, ClientConfig, ConnectError, Connecting, Connection, Endpoint, EndpointConfig,
-    ServerConfig, TransportConfig, UdpPoller,
+    Incoming, ServerConfig, TransportConfig, UdpPoller,
     congestion::BbrConfig,
     default_runtime,
     udp::{RecvMeta, Transmit},
@@ -1741,32 +1741,6 @@ struct PendingQuicSessionTunnel {
     _handshake_permit: OwnedSemaphorePermit,
 }
 
-async fn accept_quic_session_incoming(
-    endpoint: Endpoint,
-    local_url: url::Url,
-    handshakes: Arc<Semaphore>,
-) -> Result<PendingQuicSessionTunnel, TunnelError> {
-    let incoming = endpoint
-        .accept()
-        .await
-        .ok_or_else(|| TunnelError::InvalidPacket("quic accept failed".to_owned()))?;
-    let remote_addr = incoming.remote_address();
-    let handshake_permit = handshakes
-        .acquire_owned()
-        .await
-        .map_err(|_| TunnelError::Shutdown)?;
-    let connecting = incoming
-        .accept()
-        .with_context(|| "quic accept connection failed")?;
-    Ok(PendingQuicSessionTunnel {
-        connecting,
-        endpoint,
-        local_url,
-        remote_addr,
-        _handshake_permit: handshake_permit,
-    })
-}
-
 async fn finish_quic_session_tunnel(
     pending: PendingQuicSessionTunnel,
 ) -> Result<Box<dyn Tunnel>, TunnelError> {
@@ -1812,6 +1786,7 @@ async fn run_quic_accepted_session(
     completed: Sender<Result<Box<dyn Tunnel>, TunnelError>>,
 ) {
     let mut complete_tasks = JoinSet::new();
+    let mut pending_incoming: Option<Incoming> = None;
     loop {
         tokio::select! {
             Some(result) = complete_tasks.join_next(), if !complete_tasks.is_empty() => {
@@ -1825,20 +1800,41 @@ async fn run_quic_accepted_session(
                     break;
                 }
             }
-            accepted = accept_quic_session_incoming(
-                endpoint.clone(),
-                local_url.clone(),
-                handshakes.clone(),
-            ) => {
-                match accepted {
-                    Ok(pending) => {
-                        complete_tasks.spawn(finish_quic_session_tunnel(pending));
+            incoming = endpoint.accept(), if pending_incoming.is_none() => {
+                match incoming {
+                    Some(incoming) => pending_incoming = Some(incoming),
+                    None => break,
+                }
+            }
+            permit = handshakes.clone().acquire_owned(), if pending_incoming.is_some() => {
+                let Ok(handshake_permit) = permit else {
+                    break;
+                };
+                let incoming = pending_incoming.take().unwrap();
+                let remote_addr = incoming.remote_address();
+                match incoming.accept() {
+                    Ok(connecting) => {
+                        complete_tasks.spawn(finish_quic_session_tunnel(
+                            PendingQuicSessionTunnel {
+                                connecting,
+                                endpoint: endpoint.clone(),
+                                local_url: local_url.clone(),
+                                remote_addr,
+                                _handshake_permit: handshake_permit,
+                            },
+                        ));
                     }
                     Err(error) => {
-                        if completed.send(Err(error)).await.is_err() {
+                        drop(handshake_permit);
+                        if completed
+                            .send(Err(anyhow::Error::new(error)
+                                .context("quic accept connection failed")
+                                .into()))
+                            .await
+                            .is_err()
+                        {
                             break;
                         }
-                        break;
                     }
                 }
             }
