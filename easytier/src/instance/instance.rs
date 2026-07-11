@@ -83,7 +83,9 @@ impl RuntimeProxyService {
     fn new(global_ctx: ArcGlobalCtx, peer_manager: Arc<PeerManager>) -> Result<Arc<Self>, Error> {
         let tcp_proxy = TcpProxy::new(
             peer_manager.clone(),
-            NatDstTcpConnector::new(global_ctx.clone()),
+            NatDstTcpConnector::new(Arc::new(
+                crate::connector::runtime::RuntimeConnectorHost::new(global_ctx.clone()),
+            )),
         );
         let icmp_proxy = IcmpProxy::new(global_ctx.clone(), peer_manager.clone())
             .with_context(|| "create icmp proxy failed")?;

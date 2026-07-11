@@ -15,8 +15,8 @@ use crate::socket::tcp::{TcpListenOptions, VirtualTcpListener, VirtualTcpListene
 
 use super::cidr_table::ProxyCidrTable;
 use super::runtime::{
-    ProxyRuntimeError, TcpProxyConnectContext, TcpProxyDstStream, TcpProxyRuntime,
-    TcpProxySrcStream,
+    ProxyRuntimeError, TcpProxyConnectContext, TcpProxyDestinationConnector, TcpProxyDstStream,
+    TcpProxyRuntime, TcpProxySrcStream,
 };
 #[cfg(feature = "proxy-smoltcp-stack")]
 use super::smoltcp_stack::{SmolTcpStack, output_dst_ip};
@@ -25,10 +25,15 @@ use super::tcp_proxy_engine::{
     TcpProxyPacketAction, TcpProxyPeerContext,
 };
 
-pub struct TcpProxyService<R: TcpProxyRuntime + 'static, F: VirtualTcpListenerFactory> {
+pub struct TcpProxyService<
+    R: TcpProxyRuntime + 'static,
+    F: VirtualTcpListenerFactory,
+    C: TcpProxyDestinationConnector,
+> {
     peer_manager: Arc<PeerManagerCore>,
     runtime: Arc<R>,
     listener_factory: Arc<F>,
+    connector: Arc<C>,
     engine: Arc<TcpProxyEngine>,
     mode: TcpProxyMode,
     peer_pipeline_guard: std::sync::Mutex<Option<PipelineRegistrationGuard>>,
@@ -40,18 +45,22 @@ pub struct TcpProxyService<R: TcpProxyRuntime + 'static, F: VirtualTcpListenerFa
     started: AtomicBool,
 }
 
-impl<R: TcpProxyRuntime + 'static, F: VirtualTcpListenerFactory> TcpProxyService<R, F> {
+impl<R: TcpProxyRuntime + 'static, F: VirtualTcpListenerFactory, C: TcpProxyDestinationConnector>
+    TcpProxyService<R, F, C>
+{
     pub fn new(
         peer_manager: Arc<PeerManagerCore>,
         runtime: Arc<R>,
         listener_factory: Arc<F>,
+        connector: Arc<C>,
         cidr_table: Arc<ProxyCidrTable>,
-        mode: TcpProxyMode,
     ) -> Arc<Self> {
+        let mode = connector.proxy_mode();
         Arc::new(Self {
             peer_manager,
             runtime,
             listener_factory,
+            connector,
             engine: Arc::new(TcpProxyEngine::new(cidr_table)),
             mode,
             peer_pipeline_guard: std::sync::Mutex::new(None),
@@ -309,12 +318,20 @@ impl<R: TcpProxyRuntime + 'static, F: VirtualTcpListenerFactory> TcpProxyService
             real_dst: entry.real_dst(),
             mapped_dst: entry.mapped_dst(),
         };
-        let Ok(mut dst_stream) = service.runtime.connect_dst(ctx).await else {
+        let socket_dst = if service.runtime.is_ip_local_virtual_ip(&ctx.real_dst.ip()) {
+            std::net::SocketAddr::new(std::net::Ipv4Addr::LOCALHOST.into(), ctx.real_dst.port())
+        } else {
+            ctx.real_dst
+        };
+        service.runtime.record_tcp_proxy_connect(ctx, socket_dst);
+
+        let Ok(dst_stream) = service.connector.connect(ctx.src, socket_dst).await else {
             tracing::error!("connect to dst failed: {:?}", entry);
             entry.set_state(TcpNatEntryState::Closed);
             service.engine.remove_entry(entry.id());
             return;
         };
+        let mut dst_stream: Box<dyn TcpProxyDstStream> = Box::new(dst_stream);
 
         tracing::info!(?entry, "tcp connection to dst established");
         if entry.state() == TcpNatEntryState::ConnectingDst {
@@ -421,19 +438,25 @@ async fn copy_bidirectional_no_shutdown(
     Ok(())
 }
 
-impl<R: TcpProxyRuntime + 'static, F: VirtualTcpListenerFactory> Drop for TcpProxyService<R, F> {
+impl<R: TcpProxyRuntime + 'static, F: VirtualTcpListenerFactory, C: TcpProxyDestinationConnector>
+    Drop for TcpProxyService<R, F, C>
+{
     fn drop(&mut self) {
         self.stop();
     }
 }
 
-struct TcpProxyServiceFilter<R: TcpProxyRuntime + 'static, F: VirtualTcpListenerFactory> {
-    service: Weak<TcpProxyService<R, F>>,
+struct TcpProxyServiceFilter<
+    R: TcpProxyRuntime + 'static,
+    F: VirtualTcpListenerFactory,
+    C: TcpProxyDestinationConnector,
+> {
+    service: Weak<TcpProxyService<R, F, C>>,
 }
 
 #[async_trait::async_trait]
-impl<R: TcpProxyRuntime + 'static, F: VirtualTcpListenerFactory> PeerPacketFilter
-    for TcpProxyServiceFilter<R, F>
+impl<R: TcpProxyRuntime + 'static, F: VirtualTcpListenerFactory, C: TcpProxyDestinationConnector>
+    PeerPacketFilter for TcpProxyServiceFilter<R, F, C>
 {
     async fn try_process_packet_from_peer(&self, packet: ZCPacket) -> Option<ZCPacket> {
         let Some(service) = self.service.upgrade() else {
@@ -444,8 +467,8 @@ impl<R: TcpProxyRuntime + 'static, F: VirtualTcpListenerFactory> PeerPacketFilte
 }
 
 #[async_trait::async_trait]
-impl<R: TcpProxyRuntime + 'static, F: VirtualTcpListenerFactory> NicPacketFilter
-    for TcpProxyServiceFilter<R, F>
+impl<R: TcpProxyRuntime + 'static, F: VirtualTcpListenerFactory, C: TcpProxyDestinationConnector>
+    NicPacketFilter for TcpProxyServiceFilter<R, F, C>
 {
     async fn try_process_packet_from_nic(&self, packet: &mut ZCPacket) -> bool {
         let Some(service) = self.service.upgrade() else {

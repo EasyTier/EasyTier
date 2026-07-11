@@ -45,13 +45,13 @@ use tokio::{
     time::timeout,
 };
 
-#[cfg(feature = "kcp")]
-use super::tcp_proxy::NatDstConnector as _;
 use crate::tunnel::common::bind;
 use crate::{
     common::{error::Error, global_ctx::GlobalCtx},
     peers::{PeerPacketFilter, peer_manager::PeerManager},
 };
+#[cfg(feature = "kcp")]
+use easytier_core::proxy::runtime::TcpProxyDestinationConnector as _;
 
 #[cfg(feature = "ffi-dataplane")]
 mod dataplane;

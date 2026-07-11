@@ -1,24 +1,19 @@
-use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-use std::sync::{
-    Arc, Weak,
-    atomic::{AtomicBool, Ordering},
-};
-use std::time::Duration;
-
-use anyhow::Context;
 use cidr::Ipv4Inet;
 use easytier_core::instance::ProxyService;
 use easytier_core::proxy::runtime::{
-    ProxyRuntimeError, ProxyRuntimeInfo, ProxyRuntimeSnapshot, TcpProxyConnectContext,
-    TcpProxyDstStream, TcpProxyRuntime,
+    ProxyRuntimeInfo, ProxyRuntimeSnapshot, TcpProxyConnectContext, TcpProxyDestinationConnector,
+    TcpProxyRuntime,
 };
 use easytier_core::proxy::tcp_proxy_engine::{
     TcpNatEntrySnapshot, TcpNatEntryState as CoreTcpNatEntryState, TcpProxyMode, TcpProxyNicContext,
 };
 use easytier_core::proxy::tcp_proxy_service::TcpProxyService;
-use easytier_core::socket::tcp::{TcpConnectOptions, VirtualTcpSocketFactory};
-use tokio::io::{AsyncRead, AsyncWrite};
-use tokio::time::timeout;
+use easytier_core::proxy::tcp_socket_connector::TcpSocketProxyConnector;
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::sync::{
+    Arc, Weak,
+    atomic::{AtomicBool, Ordering},
+};
 
 use crate::common::error::Result;
 use crate::common::global_ctx::{ArcGlobalCtx, GlobalCtx};
@@ -32,71 +27,24 @@ use crate::proto::api::instance::{
 use crate::proto::rpc_types;
 use crate::proto::rpc_types::controller::BaseController;
 use crate::tunnel::packet_def::ZCPacket;
-use crate::tunnel::tcp_socket::RuntimeTcpSocket;
 
 use super::CidrSet;
 
-#[async_trait::async_trait]
-pub(crate) trait NatDstConnector: Send + Sync + Clone + 'static {
-    type DstStream: AsyncRead + AsyncWrite + Unpin + Send + 'static;
-
-    async fn connect(&self, src: SocketAddr, dst: SocketAddr) -> anyhow::Result<Self::DstStream>;
-    fn proxy_mode(&self) -> TcpProxyMode;
-    fn transport_type(&self) -> TcpProxyEntryTransportType;
-}
+pub type NatDstTcpConnector = TcpSocketProxyConnector<RuntimeConnectorHost>;
 
 #[derive(Clone)]
-pub struct NatDstTcpConnector {
-    host: Arc<RuntimeConnectorHost>,
-}
-
-impl NatDstTcpConnector {
-    pub fn new(global_ctx: ArcGlobalCtx) -> Self {
-        Self {
-            host: Arc::new(RuntimeConnectorHost::new(global_ctx)),
-        }
-    }
-}
-
-#[async_trait::async_trait]
-impl NatDstConnector for NatDstTcpConnector {
-    type DstStream = RuntimeTcpSocket;
-
-    async fn connect(
-        &self,
-        _src: SocketAddr,
-        nat_dst: SocketAddr,
-    ) -> anyhow::Result<Self::DstStream> {
-        timeout(
-            Duration::from_secs(10),
-            self.host.connect_tcp(TcpConnectOptions::proxy_nat(nat_dst)),
-        )
-        .await?
-        .with_context(|| format!("connect to nat dst failed: {:?}", nat_dst))
-    }
-
-    fn proxy_mode(&self) -> TcpProxyMode {
-        TcpProxyMode::Tcp
-    }
-
-    fn transport_type(&self) -> TcpProxyEntryTransportType {
-        TcpProxyEntryTransportType::Tcp
-    }
-}
-
-#[derive(Clone)]
-struct RuntimeTcpProxyAdapter<C: NatDstConnector> {
+struct RuntimeTcpProxyAdapter {
     global_ctx: Arc<GlobalCtx>,
-    connector: C,
+    transport_type: TcpProxyEntryTransportType,
     smoltcp_enabled: Arc<AtomicBool>,
 }
 
-impl<C: NatDstConnector> RuntimeTcpProxyAdapter<C> {
-    fn new(global_ctx: ArcGlobalCtx, connector: C) -> Self {
+impl RuntimeTcpProxyAdapter {
+    fn new(global_ctx: ArcGlobalCtx, transport_type: TcpProxyEntryTransportType) -> Self {
         let smoltcp_enabled = Self::compute_smoltcp_enabled(&global_ctx);
         Self {
             global_ctx,
-            connector,
+            transport_type,
             smoltcp_enabled: Arc::new(AtomicBool::new(smoltcp_enabled)),
         }
     }
@@ -140,7 +88,7 @@ impl<C: NatDstConnector> RuntimeTcpProxyAdapter<C> {
     }
 }
 
-impl<C: NatDstConnector> ProxyRuntimeInfo for RuntimeTcpProxyAdapter<C> {
+impl ProxyRuntimeInfo for RuntimeTcpProxyAdapter {
     fn proxy_runtime_snapshot(&self) -> ProxyRuntimeSnapshot {
         let local_inet = self.local_inet();
         ProxyRuntimeSnapshot {
@@ -158,66 +106,59 @@ impl<C: NatDstConnector> ProxyRuntimeInfo for RuntimeTcpProxyAdapter<C> {
     }
 }
 
-#[async_trait::async_trait]
-impl<C: NatDstConnector> TcpProxyRuntime for RuntimeTcpProxyAdapter<C> {
+impl TcpProxyRuntime for RuntimeTcpProxyAdapter {
     fn should_deny_tcp_proxy(&self, dst: SocketAddr) -> bool {
         self.global_ctx.should_deny_proxy(&dst, false)
     }
 
-    async fn connect_dst(
-        &self,
-        ctx: TcpProxyConnectContext,
-    ) -> std::result::Result<Box<dyn TcpProxyDstStream>, ProxyRuntimeError> {
-        let nat_dst = if self.global_ctx.is_ip_local_virtual_ip(&ctx.real_dst.ip()) {
-            format!("127.0.0.1:{}", ctx.real_dst.port())
-                .parse()
-                .unwrap()
-        } else {
-            ctx.real_dst
-        };
-
+    fn record_tcp_proxy_connect(&self, ctx: TcpProxyConnectContext, socket_dst: SocketAddr) {
         self.global_ctx
             .stats_manager()
             .get_counter(
                 MetricName::TcpProxyConnect,
                 LabelSet::new()
                     .with_label_type(LabelType::Protocol(
-                        self.connector.transport_type().as_str_name().to_string(),
+                        self.transport_type.as_str_name().to_string(),
                     ))
-                    .with_label_type(LabelType::DstIp(nat_dst.ip().to_string()))
+                    .with_label_type(LabelType::DstIp(socket_dst.ip().to_string()))
                     .with_label_type(LabelType::MappedDstIp(ctx.mapped_dst.ip().to_string())),
             )
             .inc();
-
-        let stream = self.connector.connect(ctx.src, nat_dst).await?;
-
-        Ok(Box::new(stream))
     }
 }
 
-pub struct TcpProxy<C: NatDstConnector> {
+fn transport_type_for_mode(mode: TcpProxyMode) -> TcpProxyEntryTransportType {
+    match mode {
+        TcpProxyMode::Tcp => TcpProxyEntryTransportType::Tcp,
+        TcpProxyMode::KcpSrc => TcpProxyEntryTransportType::Kcp,
+        TcpProxyMode::QuicSrc => TcpProxyEntryTransportType::Quic,
+    }
+}
+
+pub struct TcpProxy<C: TcpProxyDestinationConnector> {
     global_ctx: Arc<GlobalCtx>,
     peer_manager: Weak<PeerManager>,
     cidr_set: CidrSet,
-    runtime: Arc<RuntimeTcpProxyAdapter<C>>,
-    service: Arc<TcpProxyService<RuntimeTcpProxyAdapter<C>, RuntimeConnectorHost>>,
-    connector: C,
+    runtime: Arc<RuntimeTcpProxyAdapter>,
+    service: Arc<TcpProxyService<RuntimeTcpProxyAdapter, RuntimeConnectorHost, C>>,
+    transport_type: TcpProxyEntryTransportType,
 }
 
-impl<C: NatDstConnector> TcpProxy<C> {
+impl<C: TcpProxyDestinationConnector> TcpProxy<C> {
     pub fn new(peer_manager: Arc<PeerManager>, connector: C) -> Arc<Self> {
         let global_ctx = peer_manager.get_global_ctx();
         let cidr_set = CidrSet::new_without_updater(global_ctx.clone());
+        let transport_type = transport_type_for_mode(connector.proxy_mode());
         let runtime = Arc::new(RuntimeTcpProxyAdapter::new(
             global_ctx.clone(),
-            connector.clone(),
+            transport_type,
         ));
         let service = TcpProxyService::new(
             peer_manager.core(),
             runtime.clone(),
             Arc::new(RuntimeConnectorHost::new(global_ctx.clone())),
+            Arc::new(connector),
             cidr_set.table(),
-            connector.proxy_mode(),
         );
 
         Arc::new(Self {
@@ -226,7 +167,7 @@ impl<C: NatDstConnector> TcpProxy<C> {
             cidr_set,
             runtime,
             service,
-            connector,
+            transport_type,
         })
     }
 
@@ -298,7 +239,7 @@ impl<C: NatDstConnector> TcpProxy<C> {
     }
 
     pub fn list_proxy_entries(&self) -> Vec<TcpProxyEntry> {
-        let transport_type = self.connector.transport_type();
+        let transport_type = self.transport_type;
         self.service
             .engine()
             .list_entries()
@@ -308,18 +249,18 @@ impl<C: NatDstConnector> TcpProxy<C> {
     }
 
     pub fn get_transport_type(&self) -> TcpProxyEntryTransportType {
-        self.connector.transport_type()
+        self.transport_type
     }
 }
 
-impl<C: NatDstConnector> Drop for TcpProxy<C> {
+impl<C: TcpProxyDestinationConnector> Drop for TcpProxy<C> {
     fn drop(&mut self) {
         self.stop();
     }
 }
 
 #[async_trait::async_trait]
-impl<C: NatDstConnector> ProxyService for TcpProxy<C> {
+impl<C: TcpProxyDestinationConnector> ProxyService for TcpProxy<C> {
     async fn start(&self) -> anyhow::Result<()> {
         self.cidr_set.start_updater();
         self.runtime.latch_smoltcp_enabled();
@@ -356,12 +297,12 @@ fn tcp_entry_state_to_pb(state: CoreTcpNatEntryState) -> TcpProxyEntryState {
 }
 
 #[derive(Clone)]
-pub struct TcpProxyRpcService<C: NatDstConnector> {
+pub struct TcpProxyRpcService<C: TcpProxyDestinationConnector> {
     tcp_proxy: Weak<TcpProxy<C>>,
 }
 
 #[async_trait::async_trait]
-impl<C: NatDstConnector> TcpProxyRpc for TcpProxyRpcService<C> {
+impl<C: TcpProxyDestinationConnector> TcpProxyRpc for TcpProxyRpcService<C> {
     type Controller = BaseController;
 
     async fn list_tcp_proxy_entry(
@@ -377,7 +318,7 @@ impl<C: NatDstConnector> TcpProxyRpc for TcpProxyRpcService<C> {
     }
 }
 
-impl<C: NatDstConnector> TcpProxyRpcService<C> {
+impl<C: TcpProxyDestinationConnector> TcpProxyRpcService<C> {
     pub fn new(tcp_proxy: Arc<TcpProxy<C>>) -> Self {
         Self {
             tcp_proxy: Arc::downgrade(&tcp_proxy),

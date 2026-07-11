@@ -21,6 +21,7 @@ use easytier_core::{
     instance::ProxyService,
     proxy::{
         proxy_acl::ProxyAclHandler,
+        runtime::TcpProxyDestinationConnector,
         tcp_proxy_engine::TcpProxyMode,
         wrapped_tcp_proxy::{
             WrappedTcpProxyNicContext, WrappedTcpProxyTransport,
@@ -31,7 +32,7 @@ use easytier_core::{
 
 use super::{
     CidrSet,
-    tcp_proxy::{NatDstConnector, NatDstTcpConnector, TcpProxy},
+    tcp_proxy::{NatDstTcpConnector, TcpProxy},
 };
 use crate::utils::task::HedgeExt;
 use crate::{
@@ -119,7 +120,7 @@ pub struct NatDstKcpConnector {
 }
 
 #[async_trait::async_trait]
-impl NatDstConnector for NatDstKcpConnector {
+impl TcpProxyDestinationConnector for NatDstKcpConnector {
     type DstStream = KcpStream;
 
     async fn connect(
@@ -177,10 +178,6 @@ impl NatDstConnector for NatDstKcpConnector {
 
     fn proxy_mode(&self) -> TcpProxyMode {
         TcpProxyMode::KcpSrc
-    }
-
-    fn transport_type(&self) -> TcpProxyEntryTransportType {
-        TcpProxyEntryTransportType::Kcp
     }
 }
 
@@ -405,7 +402,9 @@ impl KcpProxyDst {
 
         tracing::debug!("kcp connect to dst socket: {:?}", dst_socket);
 
-        let connector = NatDstTcpConnector::new(global_ctx.clone());
+        let connector = NatDstTcpConnector::new(Arc::new(
+            crate::connector::runtime::RuntimeConnectorHost::new(global_ctx.clone()),
+        ));
         let ret = connector
             .connect("0.0.0.0:0".parse().unwrap(), dst_socket)
             .await?;

@@ -6,6 +6,7 @@ use cidr::Ipv4Inet;
 use tokio::io::{AsyncRead, AsyncWrite};
 
 use super::tcp_proxy_engine::TcpNatEntryId;
+use super::tcp_proxy_engine::TcpProxyMode;
 use super::udp_proxy_engine::UdpNatEntryId;
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -105,12 +106,17 @@ pub struct TcpProxyConnectContext {
     pub mapped_dst: SocketAddr,
 }
 
-#[async_trait::async_trait]
 pub trait TcpProxyRuntime: ProxyRuntimeInfo {
     fn should_deny_tcp_proxy(&self, dst: SocketAddr) -> bool;
 
-    async fn connect_dst(
-        &self,
-        ctx: TcpProxyConnectContext,
-    ) -> Result<Box<dyn TcpProxyDstStream>, ProxyRuntimeError>;
+    fn record_tcp_proxy_connect(&self, ctx: TcpProxyConnectContext, socket_dst: SocketAddr);
+}
+
+#[async_trait::async_trait]
+pub trait TcpProxyDestinationConnector: Send + Sync + 'static {
+    type DstStream: TcpProxyDstStream + 'static;
+
+    async fn connect(&self, src: SocketAddr, dst: SocketAddr) -> anyhow::Result<Self::DstStream>;
+
+    fn proxy_mode(&self) -> TcpProxyMode;
 }

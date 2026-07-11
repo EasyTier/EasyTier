@@ -16,6 +16,8 @@ pub mod smoltcp_stack;
 pub mod tcp_proxy_engine;
 #[cfg(feature = "proxy-packet")]
 pub mod tcp_proxy_service;
+#[cfg(feature = "proxy-packet")]
+pub mod tcp_socket_connector;
 #[cfg(feature = "proxy-smoltcp-stack")]
 pub mod tokio_smoltcp;
 #[cfg(feature = "proxy-packet")]

@@ -2,7 +2,7 @@ use crate::common::PeerId;
 use crate::common::acl_processor::PacketInfo;
 use crate::common::global_ctx::ArcGlobalCtx;
 use crate::gateway::CidrSet;
-use crate::gateway::tcp_proxy::{NatDstConnector, TcpProxy};
+use crate::gateway::tcp_proxy::TcpProxy;
 use crate::peers::peer_manager::PeerManager;
 use crate::peers::{NicPacketFilter, PeerPacketFilter};
 use crate::proto::acl::{ChainType, Protocol};
@@ -53,6 +53,7 @@ use easytier_core::{
     instance::ProxyService,
     proxy::{
         proxy_acl::ProxyAclHandler,
+        runtime::TcpProxyDestinationConnector,
         tcp_proxy_engine::TcpProxyMode,
         wrapped_tcp_proxy::{
             WrappedTcpProxyNicContext, WrappedTcpProxyTransport,
@@ -296,7 +297,7 @@ pub struct NatDstQuicConnector {
 }
 
 #[async_trait::async_trait]
-impl NatDstConnector for NatDstQuicConnector {
+impl TcpProxyDestinationConnector for NatDstQuicConnector {
     type DstStream = QuicStreamInner;
 
     async fn connect(
@@ -419,11 +420,6 @@ impl NatDstConnector for NatDstQuicConnector {
     #[inline]
     fn proxy_mode(&self) -> TcpProxyMode {
         TcpProxyMode::QuicSrc
-    }
-
-    #[inline]
-    fn transport_type(&self) -> TcpProxyEntryTransportType {
-        TcpProxyEntryTransportType::Quic
     }
 }
 
@@ -784,7 +780,9 @@ impl QuicStreamReceiver {
 
         debug!("quic connect to dst socket: {:?}", dst_socket);
 
-        let connector = crate::gateway::tcp_proxy::NatDstTcpConnector::new(global_ctx.clone());
+        let connector = crate::gateway::tcp_proxy::NatDstTcpConnector::new(Arc::new(
+            crate::connector::runtime::RuntimeConnectorHost::new(global_ctx.clone()),
+        ));
         let ret = connector.connect("0.0.0.0:0".parse()?, dst_socket).await?;
 
         if let Some(mut e) = proxy_entries.get_mut(&handle) {
