@@ -68,24 +68,6 @@ impl RuntimeTcpSocket {
             inner: RuntimeTcpSocketInner::FakeTcp(socket),
         }
     }
-
-    #[cfg(feature = "faketcp")]
-    pub(crate) fn into_fake_tcp(
-        self,
-    ) -> Result<crate::tunnel::fake_tcp::FakeTcpSocket, TunnelError> {
-        match self.inner {
-            RuntimeTcpSocketInner::FakeTcp(socket) => Ok(socket),
-            RuntimeTcpSocketInner::Tcp(_) | RuntimeTcpSocketInner::Ring(_) => {
-                Err(TunnelError::InternalError(
-                    "FakeTCP upgrader received an ordinary TCP socket".to_owned(),
-                ))
-            }
-            #[cfg(unix)]
-            RuntimeTcpSocketInner::Unix(_) => Err(TunnelError::InternalError(
-                "FakeTCP upgrader received a Unix stream".to_owned(),
-            )),
-        }
-    }
 }
 
 impl AsyncRead for RuntimeTcpSocket {
@@ -176,6 +158,16 @@ impl VirtualTcpSocket for RuntimeTcpSocket {
             )),
             #[cfg(feature = "faketcp")]
             RuntimeTcpSocketInner::FakeTcp(socket) => socket.peer_addr(),
+        }
+    }
+
+    fn transport_label(&self) -> Option<&str> {
+        match &self.inner {
+            #[cfg(feature = "faketcp")]
+            RuntimeTcpSocketInner::FakeTcp(socket) => socket.transport_label(),
+            RuntimeTcpSocketInner::Tcp(_) | RuntimeTcpSocketInner::Ring(_) => None,
+            #[cfg(unix)]
+            RuntimeTcpSocketInner::Unix(_) => None,
         }
     }
 }

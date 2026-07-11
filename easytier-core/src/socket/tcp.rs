@@ -14,6 +14,11 @@ pub trait VirtualTcpSocket: AsyncRead + AsyncWrite + Unpin + Send + 'static {
     fn local_addr(&self) -> io::Result<SocketAddr>;
 
     fn peer_addr(&self) -> io::Result<SocketAddr>;
+
+    /// Optional host transport label retained in tunnel management metadata.
+    fn transport_label(&self) -> Option<&str> {
+        None
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

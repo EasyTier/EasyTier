@@ -5,6 +5,7 @@ use crate::{socket::tcp::VirtualTcpSocket, tunnel::Tunnel};
 
 use super::transport::ConnectedTransport;
 
+pub mod faketcp;
 pub mod insecure_tls;
 pub mod raw;
 pub mod websocket;

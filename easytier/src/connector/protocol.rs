@@ -92,12 +92,12 @@ impl ClientProtocolUpgrader<RuntimeTcpSocket> for RuntimeClientProtocolUpgrader 
             },
             #[cfg(feature = "faketcp")]
             "faketcp" => match connected {
-                ConnectedTransport::Tcp(socket) => {
-                    Ok(crate::tunnel::fake_tcp::upgrade_connected_socket(
-                        socket.into_fake_tcp()?,
+                ConnectedTransport::Tcp(socket) => Ok(
+                    easytier_core::connectivity::protocol::faketcp::upgrade_connected(
+                        socket,
                         requested_url,
-                    )?)
-                }
+                    )?,
+                ),
                 ConnectedTransport::Udp(_) => {
                     anyhow::bail!("FakeTCP protocol requires a TCP transport")
                 }

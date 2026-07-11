@@ -1048,7 +1048,7 @@ where
             }
             #[cfg(feature = "faketcp")]
             "faketcp" => {
-                tunnel::fake_tcp::upgrade_accepted_socket(stream.into_fake_tcp()?, local_url)?
+                easytier_core::connectivity::protocol::faketcp::upgrade_accepted(stream, local_url)?
             }
             scheme => anyhow::bail!("unsupported TCP listener protocol: {scheme}"),
         };
