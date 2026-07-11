@@ -9,6 +9,7 @@ use async_trait::async_trait;
 use easytier_core::socket::udp::UdpSessionSocket;
 use easytier_core::{
     connectivity::manual::{upgrade_accepted_session, upgrade_accepted_socket},
+    instance::ListenerService,
     listener::{self as core_listener, plan as core_listener_plan},
     peers::peer_manager::PeerManagerCore,
     socket::{
@@ -16,7 +17,7 @@ use easytier_core::{
         udp::{UdpSession, UdpSessionAcceptKind, UdpSessionSocketListener},
     },
 };
-use tokio::sync::{OwnedSemaphorePermit, Semaphore};
+use tokio::sync::{Mutex, OwnedSemaphorePermit, Semaphore};
 
 use crate::{
     common::{
@@ -363,6 +364,36 @@ impl<H: TunnelHandlerForListener + Send + Sync + 'static> ListenerManager<H> {
 
     pub async fn run(&mut self) -> Result<(), Error> {
         self.listener_manager.run().await.map_err(Into::into)
+    }
+
+    pub async fn stop(&self) {
+        self.listener_manager.stop().await;
+    }
+}
+
+pub(crate) struct RuntimeListenerService {
+    manager: Mutex<ListenerManager<PeerManagerCore>>,
+}
+
+impl RuntimeListenerService {
+    pub(crate) fn new(global_ctx: ArcGlobalCtx, peer_manager: Arc<PeerManagerCore>) -> Self {
+        Self {
+            manager: Mutex::new(ListenerManager::new(global_ctx, peer_manager)),
+        }
+    }
+}
+
+#[async_trait]
+impl ListenerService for RuntimeListenerService {
+    async fn start(&self) -> anyhow::Result<()> {
+        let mut manager = self.manager.lock().await;
+        manager.prepare_listeners().await?;
+        manager.run().await?;
+        Ok(())
+    }
+
+    async fn stop(&self) {
+        self.manager.lock().await.stop().await;
     }
 }
 

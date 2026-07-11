@@ -17,8 +17,6 @@ use tokio::{sync::oneshot, task::JoinSet};
 use tokio_util::sync::CancellationToken;
 use tokio_util::task::AbortOnDropHandle;
 
-use easytier_core::peers::peer_manager::PeerManagerCore;
-
 use crate::common::PeerId;
 use crate::common::acl_processor::AclRuleBuilder;
 use crate::common::config::ConfigLoader;
@@ -64,7 +62,6 @@ use crate::vpn_portal::{self, VpnPortal};
 
 #[cfg(feature = "magic-dns")]
 use super::dns_server::{MAGIC_DNS_FAKE_IP, runner::DnsRunner};
-use super::listeners::ListenerManager;
 use super::public_ipv6_provider::{
     PublicIpv6ProviderReconcileTask, reconcile_public_ipv6_provider_runtime,
     run_public_ipv6_provider_reconcile_task, should_run_public_ipv6_provider_reconcile,
@@ -671,7 +668,6 @@ pub struct Instance {
     peer_packet_receiver: Arc<Mutex<PacketRecvChanReceiver>>,
     peer_manager: Arc<PeerManager>,
     core_instance: Arc<RuntimeCoreInstance>,
-    listener_manager: Arc<Mutex<ListenerManager<PeerManagerCore>>>,
     conn_manager: Arc<ManualConnectorManager>,
 
     ip_proxy: Option<IpProxy>,
@@ -720,11 +716,6 @@ impl Instance {
                 .expect("runtime core instance composition should be valid"),
         );
 
-        let listener_manager = Arc::new(Mutex::new(ListenerManager::new(
-            global_ctx.clone(),
-            peer_manager.core(),
-        )));
-
         let conn_manager = Arc::new(ManualConnectorManager::new_with_core_instance(
             global_ctx.clone(),
             peer_manager.clone(),
@@ -751,7 +742,6 @@ impl Instance {
 
             peer_manager,
             core_instance,
-            listener_manager,
             conn_manager,
 
             ip_proxy: None,
@@ -1065,12 +1055,7 @@ impl Instance {
 
     pub async fn run(&mut self) -> Result<(), Error> {
         self.prepare_public_ipv6_config().await?;
-        self.listener_manager
-            .lock()
-            .await
-            .prepare_listeners()
-            .await?;
-        self.listener_manager.lock().await.run().await?;
+        self.core_instance.start_listeners().await?;
         self.core_instance.start().await?;
         ensure_public_ipv6_provider_reconcile_task(
             &self.global_ctx,

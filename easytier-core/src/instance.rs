@@ -106,7 +106,14 @@ where
     pub endpoint_resolver: Arc<dyn ManualEndpointResolver>,
     pub protocol: Arc<dyn ClientProtocolUpgrader<<H as VirtualTcpSocketFactory>::Socket>>,
     pub manual_events: Option<Arc<dyn ManualConnectivityEventSink>>,
+    pub listener: Option<Arc<dyn ListenerService>>,
     pub udp_hole_punch: Option<Arc<dyn UdpHolePunchService>>,
+}
+
+#[async_trait]
+pub trait ListenerService: Send + Sync + 'static {
+    async fn start(&self) -> anyhow::Result<()>;
+    async fn stop(&self);
 }
 
 #[async_trait]
@@ -130,6 +137,8 @@ where
     manual: ManualConnectorManager<H>,
     direct: DirectConnectorManager<H>,
     tcp_hole_punch: TcpHolePunchConnector<H>,
+    listener: Option<Arc<dyn ListenerService>>,
+    listener_started: AtomicBool,
     udp_hole_punch: Option<Arc<dyn UdpHolePunchService>>,
     udp_hole_punch_started: AtomicBool,
 }
@@ -143,6 +152,7 @@ where
         adapters: CoreInstanceAdapters<H>,
         config: CoreInstanceConfig,
     ) -> anyhow::Result<Self> {
+        let listener = adapters.listener;
         let udp_hole_punch = adapters.udp_hole_punch;
         let manual = match adapters.manual_events {
             Some(events) => ManualConnectorManager::new_with_events(
@@ -185,6 +195,8 @@ where
             manual,
             direct,
             tcp_hole_punch,
+            listener,
+            listener_started: AtomicBool::new(false),
             udp_hole_punch,
             udp_hole_punch_started: AtomicBool::new(false),
         })
@@ -210,6 +222,10 @@ where
     }
 
     async fn stop_components(&self) {
+        if let Some(listener) = &self.listener {
+            listener.stop().await;
+            self.listener_started.store(false, Ordering::Release);
+        }
         if let Some(udp_hole_punch) = &self.udp_hole_punch {
             udp_hole_punch.stop().await;
             self.udp_hole_punch_started.store(false, Ordering::Release);
@@ -255,6 +271,35 @@ where
         Ok(())
     }
 
+    pub async fn start_listeners(self: &Arc<Self>) -> anyhow::Result<()> {
+        let _operation = self.operation.lock().await;
+        let state = self.state();
+        if state != CoreInstanceState::Created {
+            anyhow::bail!("listeners cannot start from core instance state {state:?}");
+        }
+        let Some(listener) = &self.listener else {
+            return Ok(());
+        };
+        if self.listener_started.load(Ordering::Acquire) {
+            return Ok(());
+        }
+
+        let mut recovery = self.recovery_guard();
+        self.listener_started.store(true, Ordering::Release);
+        let start_result = tokio::select! {
+            _ = self.cancel.cancelled() => Err(anyhow::anyhow!("listener start cancelled")),
+            result = listener.start() => result,
+        };
+        if let Err(error) = start_result {
+            self.stop_components().await;
+            self.set_state(CoreInstanceState::Stopped);
+            recovery.disarm();
+            return Err(error);
+        }
+        recovery.disarm();
+        Ok(())
+    }
+
     pub async fn start_udp_hole_punch(self: &Arc<Self>) -> anyhow::Result<()> {
         let _operation = self.operation.lock().await;
         let state = self.state();
@@ -291,12 +336,13 @@ where
         let mut recovery = self.recovery_guard();
         let _operation = self.operation.lock().await;
         match self.state() {
-            CoreInstanceState::Created | CoreInstanceState::Stopped => {
+            CoreInstanceState::Stopped => {
                 self.set_state(CoreInstanceState::Stopped);
                 recovery.disarm();
                 return;
             }
-            CoreInstanceState::Starting
+            CoreInstanceState::Created
+            | CoreInstanceState::Starting
             | CoreInstanceState::Running
             | CoreInstanceState::Stopping => {
                 self.set_state(CoreInstanceState::Stopping);

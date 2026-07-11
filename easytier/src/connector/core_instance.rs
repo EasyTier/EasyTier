@@ -19,6 +19,7 @@ use crate::{
         dns::RuntimeDnsResolver,
         global_ctx::{ArcGlobalCtx, GlobalCtxEvent},
     },
+    instance::listeners::RuntimeListenerService,
     peers::peer_manager::PeerManager,
     use_global_var,
 };
@@ -143,6 +144,7 @@ pub(crate) fn runtime_core_instance_adapters(
         manual_events: Some(Arc::new(GlobalCtxManualConnectivityEventSink {
             global_ctx,
         })),
+        listener: None,
         udp_hole_punch: None,
     }
 }
@@ -156,7 +158,11 @@ pub(crate) fn build_runtime_core_instance(
         manual: runtime_manual_options(&global_ctx),
         direct: runtime_direct_options(&global_ctx, false),
     };
-    let mut adapters = runtime_core_instance_adapters(global_ctx);
+    let mut adapters = runtime_core_instance_adapters(global_ctx.clone());
+    adapters.listener = Some(Arc::new(RuntimeListenerService::new(
+        global_ctx,
+        peer_manager.core(),
+    )));
     adapters.udp_hole_punch = Some(Arc::new(super::udp_hole_punch::UdpHolePunchConnector::new(
         peer_manager.clone(),
     )));
@@ -197,8 +203,11 @@ mod tests {
         );
 
         assert_eq!(instance.state(), CoreInstanceState::Created);
+        instance.start_listeners().await.unwrap();
+        instance.start_listeners().await.unwrap();
         instance.start().await.unwrap();
         assert_eq!(instance.state(), CoreInstanceState::Running);
+        assert!(instance.start_listeners().await.is_err());
         assert!(instance.start().await.is_err());
         instance.start_udp_hole_punch().await.unwrap();
         instance.start_udp_hole_punch().await.unwrap();
