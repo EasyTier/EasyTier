@@ -17,7 +17,7 @@ pub(super) const TCP_SOCKET_RESULT_LEN: usize = 8 + SOCKET_ADDRESS_LEN * 2;
 pub(super) const BOUND_SOCKET_RESULT_LEN: usize = 8 + SOCKET_ADDRESS_LEN;
 
 pub(super) fn encode_tcp_connect_options(options: &TcpConnectOptions) -> io::Result<Vec<u8>> {
-    let mut encoded = Vec::with_capacity(68 + bind_device_len(&options.bind.bind_device));
+    let mut encoded = Vec::with_capacity(69 + bind_device_len(&options.bind.bind_device));
     encoded.push(OPTIONS_VERSION);
     encoded.extend_from_slice(&encode_socket_address(options.remote_addr));
     encode_optional_address(&mut encoded, options.bind.local_addr);
@@ -40,7 +40,7 @@ pub(super) fn encode_tcp_connect_options(options: &TcpConnectOptions) -> io::Res
 }
 
 pub(super) fn encode_udp_bind_options(options: &UdpBindOptions) -> io::Result<Vec<u8>> {
-    let mut encoded = Vec::with_capacity(41 + bind_device_len(&options.bind_device));
+    let mut encoded = Vec::with_capacity(42 + bind_device_len(&options.bind_device));
     encoded.push(OPTIONS_VERSION);
     encode_optional_address(&mut encoded, options.local_addr);
     encode_mark(&mut encoded, options.socket_mark);
@@ -58,7 +58,7 @@ pub(super) fn encode_udp_bind_options(options: &UdpBindOptions) -> io::Result<Ve
 }
 
 pub(super) fn encode_tcp_listen_options(options: &TcpListenOptions) -> io::Result<Vec<u8>> {
-    let mut encoded = Vec::with_capacity(41 + bind_device_len(&options.bind.bind_device));
+    let mut encoded = Vec::with_capacity(42 + bind_device_len(&options.bind.bind_device));
     encoded.push(OPTIONS_VERSION);
     encode_optional_address(&mut encoded, options.bind.local_addr);
     encode_mark(&mut encoded, options.bind.socket_mark);
@@ -135,6 +135,7 @@ fn encode_mark(encoded: &mut Vec<u8>, mark: Option<u32>) {
 
 fn encode_bind_device(encoded: &mut Vec<u8>, device: &Option<String>) -> io::Result<()> {
     let bytes = device.as_deref().unwrap_or_default().as_bytes();
+    encoded.push(u8::from(device.is_some()));
     let length = u32::try_from(bytes.len())
         .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "bind device is too long"))?;
     encoded.extend_from_slice(&length.to_be_bytes());
@@ -166,12 +167,46 @@ mod tests {
             purpose: TcpSocketPurpose::ManualConnect,
         };
         let encoded = encode_tcp_connect_options(&options).unwrap();
-        assert_eq!(encoded.len(), 75);
+        assert_eq!(encoded.len(), 76);
         assert_eq!(encoded[0], OPTIONS_VERSION);
         assert_eq!(&encoded[55..60], &[1, 1, 2, 3, 4]);
         assert_eq!(&encoded[60..64], &[2, 1, 1, 3]);
-        assert_eq!(&encoded[64..68], &7_u32.to_be_bytes());
-        assert_eq!(&encoded[68..], b"mihomo0");
+        assert_eq!(encoded[64], 1);
+        assert_eq!(&encoded[65..69], &7_u32.to_be_bytes());
+        assert_eq!(&encoded[69..], b"mihomo0");
+    }
+
+    #[test]
+    fn bind_device_presence_distinguishes_none_empty_and_named() {
+        let remote = "192.0.2.2:11013".parse().unwrap();
+        let none = encode_tcp_connect_options(&TcpConnectOptions::direct_connect(remote)).unwrap();
+        let empty = encode_tcp_connect_options(
+            &TcpConnectOptions::direct_connect(remote)
+                .with_bind(TcpBindOptions::default().with_bind_device(Some(String::new()))),
+        )
+        .unwrap();
+        assert_eq!(&none[64..69], &[0, 0, 0, 0, 0]);
+        assert_eq!(&empty[64..69], &[1, 0, 0, 0, 0]);
+
+        let udp_none = encode_udp_bind_options(&UdpBindOptions::direct_connect()).unwrap();
+        let udp_empty = encode_udp_bind_options(
+            &UdpBindOptions::direct_connect().with_bind_device(Some(String::new())),
+        )
+        .unwrap();
+        assert_eq!(&udp_none[37..42], &[0, 0, 0, 0, 0]);
+        assert_eq!(&udp_empty[37..42], &[1, 0, 0, 0, 0]);
+
+        let listen_none = encode_tcp_listen_options(&TcpListenOptions::direct_connect(
+            "192.0.2.1:11013".parse().unwrap(),
+        ))
+        .unwrap();
+        let listen_empty = encode_tcp_listen_options(
+            &TcpListenOptions::direct_connect("192.0.2.1:11013".parse().unwrap())
+                .with_bind(TcpBindOptions::default().with_bind_device(Some(String::new()))),
+        )
+        .unwrap();
+        assert_eq!(&listen_none[37..42], &[0, 0, 0, 0, 0]);
+        assert_eq!(&listen_empty[37..42], &[1, 0, 0, 0, 0]);
     }
 
     #[test]

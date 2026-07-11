@@ -41,6 +41,26 @@ pub struct WasiHostSocketBackend {
     udp: WasiHostUdpIo,
 }
 
+impl WasiHostSocketBackend {
+    fn decode_transferred<T>(&self, encoded: &[u8], decoded: io::Result<T>) -> io::Result<T> {
+        match decoded {
+            Ok(result) => Ok(result),
+            Err(decode_error) => {
+                let handle = HostSocketHandle(u64::from_be_bytes(encoded[..8].try_into().unwrap()));
+                match self.close(handle) {
+                    Ok(()) => Err(decode_error),
+                    Err(close_error) => Err(io::Error::new(
+                        decode_error.kind(),
+                        format!(
+                            "{decode_error}; additionally failed to close malformed host result: {close_error}"
+                        ),
+                    )),
+                }
+            }
+        }
+    }
+}
+
 impl HostSocketIo for WasiHostSocketBackend {
     fn cancel_operation(&self, operation: HostOperationId) -> io::Result<()> {
         self.tcp.forget_operation(operation);
@@ -147,7 +167,7 @@ impl HostSocketFactoryIo for WasiHostSocketBackend {
             )
         } {
             HOST_PENDING => Poll::Pending,
-            0 => Poll::Ready(decode_tcp_socket_result(&encoded)),
+            0 => Poll::Ready(self.decode_transferred(&encoded, decode_tcp_socket_result(&encoded))),
             value => Poll::Ready(Err(host_error("take_tcp_connect", value))),
         }
     }
@@ -177,7 +197,7 @@ impl HostSocketFactoryIo for WasiHostSocketBackend {
             )
         } {
             HOST_PENDING => Poll::Pending,
-            0 => Poll::Ready(decode_udp_bind_result(&encoded)),
+            0 => Poll::Ready(self.decode_transferred(&encoded, decode_udp_bind_result(&encoded))),
             value => Poll::Ready(Err(host_error("take_udp_bind", value))),
         }
     }
@@ -209,7 +229,7 @@ impl HostTcpListenerIo for WasiHostSocketBackend {
             )
         } {
             HOST_PENDING => Poll::Pending,
-            0 => Poll::Ready(decode_tcp_bind_result(&encoded)),
+            0 => Poll::Ready(self.decode_transferred(&encoded, decode_tcp_bind_result(&encoded))),
             value => Poll::Ready(Err(host_error("take_tcp_bind", value))),
         }
     }
@@ -237,7 +257,7 @@ impl HostTcpListenerIo for WasiHostSocketBackend {
             )
         } {
             HOST_PENDING => Poll::Pending,
-            0 => Poll::Ready(decode_tcp_socket_result(&encoded)),
+            0 => Poll::Ready(self.decode_transferred(&encoded, decode_tcp_socket_result(&encoded))),
             value => Poll::Ready(Err(host_error("take_tcp_accept", value))),
         }
     }
