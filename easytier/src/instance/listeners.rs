@@ -20,6 +20,8 @@ use easytier_core::{
 };
 use tokio::sync::{Mutex, OwnedSemaphorePermit, Semaphore};
 
+#[cfg(feature = "faketcp")]
+use crate::tunnel::TunnelListener;
 use crate::{
     common::{
         error::Error,
@@ -28,66 +30,14 @@ use crate::{
     },
     peers::peer_manager::PeerManager,
     tunnel::{
-        self, FromUrl, IpScheme, IpVersion, Tunnel, TunnelConnCounter, TunnelListener,
-        TunnelScheme,
-        tcp::{TcpTunnelListener, resolve_tcp_bind_url_addr},
+        self, FromUrl, IpVersion, Tunnel,
+        tcp::resolve_tcp_bind_url_addr,
         tcp_socket::{RuntimeTcpListenerFactory, RuntimeTcpSocket},
-        udp::{RuntimeUdpSessionControlHandler, RuntimeUdpSocketFactory, UdpTunnelListener},
+        udp::{RuntimeUdpSessionControlHandler, RuntimeUdpSocketFactory},
     },
-    utils::BoxExt,
 };
 
 pub use easytier_core::listener::plan::{is_url_host_ipv6, is_url_host_unspecified};
-
-pub fn create_listener_by_url(
-    l: &url::Url,
-    global_ctx: ArcGlobalCtx,
-) -> Result<Box<dyn TunnelListener>, Error> {
-    use crate::common::config::ConfigLoader;
-    let socket_mark = global_ctx.config.get_flags().socket_mark;
-    Ok(match l.try_into()? {
-        TunnelScheme::Ip(scheme) => match scheme {
-            IpScheme::Tcp => {
-                let mut l = TcpTunnelListener::new(l.clone());
-                l.set_socket_mark(socket_mark);
-                l.boxed()
-            }
-            IpScheme::Udp => {
-                let mut l = UdpTunnelListener::new(l.clone());
-                l.set_socket_mark(socket_mark);
-                l.boxed()
-            }
-            #[cfg(feature = "wireguard")]
-            IpScheme::Wg => {
-                use crate::tunnel::wireguard::{WgConfig, WgTunnelListener};
-                let nid = global_ctx.get_network_identity();
-                let wg_config = WgConfig::new_from_network_identity(
-                    &nid.network_name,
-                    &nid.network_secret.unwrap_or_default(),
-                );
-                let mut l = WgTunnelListener::new(l.clone(), wg_config);
-                l.set_socket_mark(socket_mark);
-                l.boxed()
-            }
-            #[cfg(feature = "quic")]
-            IpScheme::Quic => {
-                // QUIC reads socket_mark from global_ctx in QuicEndpointManager
-                tunnel::quic::QuicTunnelListener::new(l.clone(), global_ctx.clone()).boxed()
-            }
-            #[cfg(feature = "websocket")]
-            IpScheme::Ws | IpScheme::Wss => {
-                let mut l = tunnel::websocket::WsTunnelListener::new(l.clone());
-                l.set_socket_mark(socket_mark);
-                l.boxed()
-            }
-            #[cfg(feature = "faketcp")]
-            IpScheme::FakeTcp => tunnel::fake_tcp::FakeTcpTunnelListener::new(l.clone()).boxed(),
-        },
-        #[cfg(unix)]
-        TunnelScheme::Unix => tunnel::unix::UnixSocketTunnelListener::new(l.clone()).boxed(),
-        _ => return Err(Error::InvalidUrl(l.to_string())),
-    })
-}
 
 #[async_trait]
 impl AcceptedTunnelHandler for PeerManager {
@@ -97,9 +47,6 @@ impl AcceptedTunnelHandler for PeerManager {
         Ok(())
     }
 }
-
-pub trait ListenerCreatorTrait: Fn() -> Box<dyn TunnelListener> + Send + Sync {}
-impl<T: Send + Sync> ListenerCreatorTrait for T where T: Fn() -> Box<dyn TunnelListener> + Send {}
 
 fn listener_scheme_registry() -> core_listener_plan::ListenerSchemeRegistry {
     let mut registry = core_listener_plan::ListenerSchemeRegistry::new()
@@ -137,7 +84,6 @@ fn listener_scheme_registry() -> core_listener_plan::ListenerSchemeRegistry {
 }
 
 enum AcceptedConnection {
-    Tunnel(Box<dyn Tunnel>),
     ByteStream {
         stream: RuntimeTcpSocket,
         local_url: url::Url,
@@ -172,7 +118,7 @@ impl<H: AcceptedTunnelHandler> ListenerManager<H> {
         });
         let protocol = ProtocolAcceptedTransportHandler::new(&tunnel_handler, protocol);
         let handler = Arc::new(EasyTierAcceptedHandler {
-            tunnel_handler,
+            _tunnel_handler: tunnel_handler,
             protocol,
         });
         let events = Arc::new(GlobalCtxListenerEventSink {
@@ -241,33 +187,15 @@ impl<H: AcceptedTunnelHandler> ListenerManager<H> {
                     );
                     return Ok(());
                 }
-                self.add_external_listener(listener.url, listener.must_succeed)
-                    .await
+                let message = format!(
+                    "failed to get listener by url: {}, maybe not supported",
+                    listener.url
+                );
+                self.global_ctx
+                    .issue_event(GlobalCtxEvent::ListenerAddFailed(listener.url, message));
+                Ok(())
             }
         }
-    }
-
-    async fn add_external_listener(
-        &mut self,
-        listener: url::Url,
-        must_succeed: bool,
-    ) -> Result<(), Error> {
-        let ctx = self.global_ctx.clone();
-        if create_listener_by_url(&listener, ctx.clone()).is_err() {
-            let msg = format!(
-                "failed to get listener by url: {}, maybe not supported",
-                listener
-            );
-            self.global_ctx
-                .issue_event(GlobalCtxEvent::ListenerAddFailed(listener, msg));
-            return Ok(());
-        };
-
-        self.add_listener(
-            move || create_listener_by_url(&listener, ctx.clone()).unwrap(),
-            must_succeed,
-        )
-        .await
     }
 
     pub async fn add_tcp_listener(
@@ -350,19 +278,6 @@ impl<H: AcceptedTunnelHandler> ListenerManager<H> {
                 ))
             },
             must_succeed,
-        );
-        Ok(())
-    }
-
-    pub async fn add_listener<C: ListenerCreatorTrait + 'static>(
-        &mut self,
-        creator: C,
-        must_succ: bool,
-    ) -> Result<(), Error> {
-        let net_ns = self.net_ns.clone();
-        self.listener_manager.add_listener(
-            move || Box::new(TunnelListenerAdapter::new(net_ns.clone(), creator())),
-            must_succ,
         );
         Ok(())
     }
@@ -696,68 +611,6 @@ impl core_listener::SocketListener for RuntimeFakeTcpSocketListener {
     }
 }
 
-struct TunnelListenerAdapter {
-    net_ns: NetNS,
-    inner: Box<dyn TunnelListener>,
-}
-
-impl TunnelListenerAdapter {
-    fn new(net_ns: NetNS, inner: Box<dyn TunnelListener>) -> Self {
-        Self { net_ns, inner }
-    }
-}
-
-impl Debug for TunnelListenerAdapter {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("TunnelListenerAdapter")
-            .field("url", &self.inner.local_url())
-            .finish()
-    }
-}
-
-#[async_trait]
-impl core_listener::SocketListener for TunnelListenerAdapter {
-    type Accepted = AcceptedConnection;
-
-    async fn listen(&mut self) -> anyhow::Result<()> {
-        let _guard = self.net_ns.guard();
-        self.inner.listen().await?;
-        Ok(())
-    }
-
-    async fn accept(&mut self) -> anyhow::Result<Self::Accepted> {
-        Ok(AcceptedConnection::Tunnel(self.inner.accept().await?))
-    }
-
-    fn local_url(&self) -> url::Url {
-        self.inner.local_url()
-    }
-
-    fn connection_counter(&self) -> Arc<dyn core_listener::ListenerConnectionCounter> {
-        Arc::new(TunnelConnectionCounterAdapter {
-            inner: self.inner.get_conn_counter(),
-        })
-    }
-}
-
-struct TunnelConnectionCounterAdapter {
-    inner: Arc<Box<dyn TunnelConnCounter>>,
-}
-
-impl Debug for TunnelConnectionCounterAdapter {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("TunnelConnectionCounterAdapter")
-            .field("count", &self.inner.get())
-            .finish()
-    }
-}
-
-impl core_listener::ListenerConnectionCounter for TunnelConnectionCounterAdapter {
-    fn get(&self) -> Option<u32> {
-        self.inner.get()
-    }
-}
-
 struct RuntimeUdpSessionSocketListener {
     url: url::Url,
     net_ns: NetNS,
@@ -1002,7 +855,7 @@ where
 }
 
 struct EasyTierAcceptedHandler<H> {
-    tunnel_handler: Arc<RuntimeAcceptedTunnelHandler<H>>,
+    _tunnel_handler: Arc<RuntimeAcceptedTunnelHandler<H>>,
     protocol: ProtocolAcceptedTransportHandler<RuntimeTcpSocket, RuntimeAcceptedTunnelHandler<H>>,
 }
 
@@ -1019,9 +872,6 @@ where
 {
     async fn handle_accepted_socket(&self, accepted: AcceptedConnection) -> anyhow::Result<()> {
         let transport = match accepted {
-            AcceptedConnection::Tunnel(tunnel) => {
-                return self.tunnel_handler.handle_tunnel(tunnel).await;
-            }
             AcceptedConnection::ByteStream {
                 stream,
                 local_url,
