@@ -9,6 +9,7 @@ use std::time::Duration;
 
 use anyhow::Context;
 use cidr::{IpCidr, Ipv4Inet};
+use easytier_core::proxy::ProxyStartupContext;
 use futures::FutureExt;
 use tokio::sync::{Mutex, Notify};
 #[cfg(feature = "tun")]
@@ -93,17 +94,15 @@ impl IpProxy {
     }
 
     async fn start(&self) -> Result<bool, Error> {
-        if (self.global_ctx.config.get_proxy_cidrs().is_empty()
-            || self.started.load(Ordering::Relaxed))
-            && !self.global_ctx.enable_exit_node()
-            && !self.global_ctx.no_tun()
+        if !(ProxyStartupContext {
+            has_proxy_cidrs: !self.global_ctx.config.get_proxy_cidrs().is_empty(),
+            already_started: self.started.load(Ordering::Relaxed),
+            enable_exit_node: self.global_ctx.enable_exit_node(),
+            no_tun: self.global_ctx.no_tun(),
+            forward_by_system: self.global_ctx.proxy_forward_by_system(),
+        })
+        .should_start()
         {
-            return Ok(false);
-        }
-
-        // Actually, if this node is enabled as an exit node,
-        // we still can use the system stack to forward packets.
-        if self.global_ctx.proxy_forward_by_system() && !self.global_ctx.no_tun() {
             return Ok(false);
         }
 
