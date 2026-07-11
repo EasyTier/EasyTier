@@ -62,8 +62,24 @@ where
     S: VirtualTcpSocket,
 {
     let local_addr = socket.local_addr()?;
+    upgrade_accepted_tcp_with_local_url(socket, socket_url("tcp", local_addr))
+}
+
+pub fn upgrade_accepted_tcp_with_local_url<S>(
+    socket: S,
+    local_url: Url,
+) -> Result<Box<dyn Tunnel>, TunnelError>
+where
+    S: VirtualTcpSocket,
+{
     let remote_addr = socket.peer_addr()?;
-    let info = accepted_tunnel_info("tcp", local_addr, remote_addr);
+    let remote_url = socket_url("tcp", remote_addr);
+    let info = TunnelInfo {
+        tunnel_type: "tcp".to_owned(),
+        local_addr: Some(local_url.into()),
+        remote_addr: Some(remote_url.clone().into()),
+        resolved_remote_addr: Some(remote_url.into()),
+    };
     TcpTunnelUpgrader::new(info).upgrade(socket)
 }
 
@@ -202,6 +218,17 @@ mod tests {
         assert_eq!(
             accepted_info.remote_addr,
             accepted_info.resolved_remote_addr
+        );
+
+        let requested_local_url: Url = "tcp://0.0.0.0:1000".parse().unwrap();
+        let accepted = upgrade_accepted_tcp_with_local_url(
+            MockTcpSocket::new(local_addr, peer_addr),
+            requested_local_url.clone(),
+        )
+        .unwrap();
+        assert_eq!(
+            accepted.info().unwrap().local_addr.unwrap().url,
+            requested_local_url.as_str()
         );
     }
 }

@@ -5,6 +5,13 @@ use std::{
 };
 
 use anyhow::{Context, Error};
+use easytier_core::{
+    connectivity::protocol::raw,
+    socket::tcp::{
+        TcpBindOptions, TcpConnectOptions, TcpListenOptions, VirtualTcpListener,
+        VirtualTcpListenerFactory, VirtualTcpSocketFactory,
+    },
+};
 use quanta::Instant;
 use rand::Rng as _;
 use tokio::task::JoinSet;
@@ -24,13 +31,11 @@ use crate::{
         },
         rpc_types::{self, controller::BaseController},
     },
-    tunnel::{
-        TunnelConnector as _, TunnelListener as _,
-        tcp::{TcpTunnelConnector, TcpTunnelListener},
-    },
 };
 
-use crate::connector::{should_background_p2p_with_peer, should_try_p2p_with_peer};
+use crate::connector::{
+    runtime::RuntimeConnectorHost, should_background_p2p_with_peer, should_try_p2p_with_peer,
+};
 
 pub const BLACKLIST_TIMEOUT_SEC: u64 = 3600;
 
@@ -65,11 +70,12 @@ fn bind_addr_for_port(port: u16, is_v6: bool) -> SocketAddr {
     }
 }
 
-async fn select_local_port(peer_mgr: &Arc<PeerManager>, is_v6: bool) -> Result<u16, Error> {
+async fn select_local_port(host: &RuntimeConnectorHost, is_v6: bool) -> Result<u16, Error> {
     let bind_addr = bind_addr_for_port(0, is_v6);
     tracing::trace!(?bind_addr, is_v6, "tcp hole punch select local port");
-    let _g = peer_mgr.get_global_ctx().net_ns.guard();
-    let listener = tokio::net::TcpListener::bind(bind_addr).await?;
+    let listener = host
+        .bind_tcp(TcpListenOptions::hole_punch(bind_addr))
+        .await?;
     let port = listener.local_addr()?.port();
     tracing::debug!(?bind_addr, port, "tcp hole punch selected local port");
     Ok(port)
@@ -77,6 +83,7 @@ async fn select_local_port(peer_mgr: &Arc<PeerManager>, is_v6: bool) -> Result<u
 
 // tcp support simultaneous connect, so initiator and server can both use connect.
 async fn try_connect_to_remote(
+    host: Arc<RuntimeConnectorHost>,
     peer_mgr: Arc<PeerManager>,
     a_mapped_addr: SocketAddr,
     local_port: u16,
@@ -89,21 +96,21 @@ async fn try_connect_to_remote(
         "tcp hole punch server start connect loop"
     );
 
-    let mut connector =
-        TcpTunnelConnector::new(format!("tcp://{}", a_mapped_addr).parse().unwrap());
-    connector.set_bind_addrs(vec![bind_addr_for_port(
-        local_port,
-        a_mapped_addr.is_ipv6(),
-    )]);
+    let bind_addr = bind_addr_for_port(local_port, a_mapped_addr.is_ipv6());
+    let requested_url: url::Url = format!("tcp://{a_mapped_addr}").parse().unwrap();
 
     let start = tokio::time::Instant::now();
     let mut attempts: u32 = 0;
     while start.elapsed() < Duration::from_secs(10) && attempts < max_attempts {
         attempts = attempts.wrapping_add(1);
-        let _g = peer_mgr.get_global_ctx().net_ns.guard();
-        if let Ok(Ok(tunnel)) =
-            tokio::time::timeout(Duration::from_secs(3), connector.connect()).await
+        let bind = TcpBindOptions::default()
+            .with_local_addr(Some(bind_addr))
+            .with_only_v6(true);
+        let options = TcpConnectOptions::hole_punch(a_mapped_addr, Some(bind_addr)).with_bind(bind);
+        if let Ok(Ok(socket)) =
+            tokio::time::timeout(Duration::from_secs(3), host.connect_tcp(options)).await
         {
+            let tunnel = raw::upgrade_connected_tcp(socket, requested_url.clone())?;
             let add_tunnel_ret = if is_client {
                 peer_mgr.add_client_tunnel(tunnel, false).await.map(|_| ())
             } else {
@@ -152,15 +159,20 @@ async fn try_connect_to_remote(
 }
 
 struct TcpHolePunchServer {
+    host: Arc<RuntimeConnectorHost>,
     peer_mgr: Arc<PeerManager>,
     tasks: Arc<std::sync::Mutex<JoinSet<()>>>,
 }
 
 impl TcpHolePunchServer {
-    fn new(peer_mgr: Arc<PeerManager>) -> Arc<Self> {
+    fn new(host: Arc<RuntimeConnectorHost>, peer_mgr: Arc<PeerManager>) -> Arc<Self> {
         let tasks = Arc::new(std::sync::Mutex::new(JoinSet::new()));
         join_joinset_background(tasks.clone(), "tcp hole punch server".to_string());
-        Arc::new(Self { peer_mgr, tasks })
+        Arc::new(Self {
+            host,
+            peer_mgr,
+            tasks,
+        })
     }
 }
 
@@ -199,7 +211,7 @@ impl TcpHolePunchRpc for TcpHolePunchServer {
         }
 
         let is_v6 = a_mapped_addr.is_ipv6();
-        let local_port = select_local_port(&self.peer_mgr, is_v6).await?;
+        let local_port = select_local_port(self.host.as_ref(), is_v6).await?;
         let mapped_addr = self
             .peer_mgr
             .get_global_ctx()
@@ -216,8 +228,9 @@ impl TcpHolePunchRpc for TcpHolePunchServer {
         );
 
         let peer_mgr = self.peer_mgr.clone();
+        let host = self.host.clone();
         self.tasks.lock().unwrap().spawn(async move {
-            let _ = try_connect_to_remote(peer_mgr, a_mapped_addr, local_port, true, 5).await;
+            let _ = try_connect_to_remote(host, peer_mgr, a_mapped_addr, local_port, true, 5).await;
         });
 
         Ok(TcpHolePunchResponse {
@@ -227,13 +240,15 @@ impl TcpHolePunchRpc for TcpHolePunchServer {
 }
 
 struct TcpHolePunchConnectorData {
+    host: Arc<RuntimeConnectorHost>,
     peer_mgr: Arc<PeerManager>,
     blacklist: Arc<timedmap::TimedMap<PeerId, ()>>,
 }
 
 impl TcpHolePunchConnectorData {
-    fn new(peer_mgr: Arc<PeerManager>) -> Arc<Self> {
+    fn new(host: Arc<RuntimeConnectorHost>, peer_mgr: Arc<PeerManager>) -> Arc<Self> {
         Arc::new(Self {
+            host,
             peer_mgr,
             blacklist: Arc::new(timedmap::TimedMap::new()),
         })
@@ -276,7 +291,7 @@ impl TcpHolePunchConnectorData {
             return Ok(());
         }
 
-        let local_port = select_local_port(&self.peer_mgr, false).await?;
+        let local_port = select_local_port(self.host.as_ref(), false).await?;
         let mapped_addr = global_ctx
             .get_stun_info_collector()
             .get_tcp_port_mapping(local_port)
@@ -323,6 +338,7 @@ impl TcpHolePunchConnectorData {
         );
 
         if let Ok(()) = try_connect_to_remote(
+            self.host.clone(),
             self.peer_mgr.clone(),
             remote_mapped_addr,
             local_port,
@@ -347,22 +363,24 @@ impl TcpHolePunchConnectorData {
             "tcp hole punch initiator sent syn to remote mapped addr"
         );
 
-        let mut listener =
-            TcpTunnelListener::new(format!("tcp://0.0.0.0:{}", local_port).parse().unwrap());
-        {
-            let _g = self.peer_mgr.get_global_ctx().net_ns.guard();
-            listener.listen().await?;
-        }
+        let bind_addr = bind_addr_for_port(local_port, false);
+        let bind = TcpBindOptions::default()
+            .with_local_addr(Some(bind_addr))
+            .with_only_v6(true);
+        let listener = self
+            .host
+            .bind_tcp(TcpListenOptions::hole_punch(bind_addr).with_bind(bind))
+            .await?;
         tracing::info!(
             dst_peer_id,
             local_port,
-            url = %listener.local_url(),
+            local_addr = ?listener.local_addr()?,
             "tcp hole punch initiator listening"
         );
 
         tokio::time::timeout(
             Duration::from_secs(10),
-            self.accept_loop(&mut listener, dst_peer_id),
+            self.accept_loop(listener, dst_peer_id),
         )
         .await??;
 
@@ -376,12 +394,22 @@ impl TcpHolePunchConnectorData {
 
     async fn accept_loop(
         &self,
-        listener: &mut TcpTunnelListener,
+        listener: Arc<crate::tunnel::tcp_socket::RuntimeTcpListener>,
         dst_peer_id: PeerId,
     ) -> Result<(), Error> {
         loop {
             match listener.accept().await {
-                Ok(tunnel) => {
+                Ok((socket, _)) => {
+                    let local_url = format!("tcp://0.0.0.0:{}", listener.local_addr()?.port())
+                        .parse()
+                        .unwrap();
+                    let tunnel = match raw::upgrade_accepted_tcp_with_local_url(socket, local_url) {
+                        Ok(tunnel) => tunnel,
+                        Err(error) => {
+                            tracing::error!(?error, "tcp hole punch upgrade accepted socket error");
+                            continue;
+                        }
+                    };
                     if let Err(e) = self.peer_mgr.add_tunnel_as_server(tunnel, false).await {
                         tracing::error!("tcp hole punch add tunnel error: {}", e);
                         continue;
@@ -406,7 +434,9 @@ struct TcpPunchTaskInfo {
 }
 
 #[derive(Clone)]
-struct TcpHolePunchPeerTaskLauncher {}
+struct TcpHolePunchPeerTaskLauncher {
+    host: Arc<RuntimeConnectorHost>,
+}
 
 #[async_trait::async_trait]
 impl PeerTaskLauncher for TcpHolePunchPeerTaskLauncher {
@@ -416,7 +446,7 @@ impl PeerTaskLauncher for TcpHolePunchPeerTaskLauncher {
     type TaskRet = ();
 
     fn new_data(&self, peer_mgr: Arc<PeerManager>) -> Self::Data {
-        TcpHolePunchConnectorData::new(peer_mgr)
+        TcpHolePunchConnectorData::new(self.host.clone(), peer_mgr)
     }
 
     #[tracing::instrument(skip(self, data))]
@@ -534,10 +564,11 @@ pub struct TcpHolePunchConnector {
 
 impl TcpHolePunchConnector {
     pub fn new(peer_mgr: Arc<PeerManager>) -> Self {
+        let host = Arc::new(RuntimeConnectorHost::new(peer_mgr.get_global_ctx()));
         Self {
-            server: TcpHolePunchServer::new(peer_mgr.clone()),
+            server: TcpHolePunchServer::new(host.clone(), peer_mgr.clone()),
             client: PeerTaskManager::new_with_external_signal(
-                TcpHolePunchPeerTaskLauncher {},
+                TcpHolePunchPeerTaskLauncher { host },
                 peer_mgr.clone(),
                 Some(peer_mgr.p2p_demand_notify()),
             ),
@@ -649,7 +680,11 @@ mod tests {
     }
 
     async fn collect_lazy_punch_peers(peer_mgr: Arc<PeerManager>) -> Vec<u32> {
-        let launcher = TcpHolePunchPeerTaskLauncher {};
+        let launcher = TcpHolePunchPeerTaskLauncher {
+            host: Arc::new(crate::connector::runtime::RuntimeConnectorHost::new(
+                peer_mgr.get_global_ctx(),
+            )),
+        };
         let data = launcher.new_data(peer_mgr);
         launcher
             .collect_peers_need_task(&data)

@@ -10,7 +10,10 @@ use easytier_core::{
         manual::{ManualConnectorHost, ManualInterfaceAddrs},
     },
     socket::{
-        tcp::{TcpConnectOptions, TcpSocketPurpose, VirtualTcpSocketFactory},
+        tcp::{
+            TcpConnectOptions, TcpListenOptions, TcpSocketPurpose, VirtualTcpListenerFactory,
+            VirtualTcpSocketFactory,
+        },
         udp::{
             PreferredIpv6Source, UdpBindOptions, UdpSessionControlHandler, VirtualUdpSocketFactory,
         },
@@ -21,22 +24,33 @@ use crate::{
     common::{global_ctx::ArcGlobalCtx, network::IPCollector},
     proto::peer_rpc::GetIpListResponse,
     tunnel::{
-        tcp_socket::{self, RuntimeTcpSocket},
+        tcp_socket::{self, RuntimeTcpListener, RuntimeTcpListenerFactory, RuntimeTcpSocket},
         udp::{RuntimeUdpSessionControlHandler, RuntimeUdpSocket, RuntimeUdpSocketFactory},
     },
 };
 
 pub(crate) struct RuntimeConnectorHost {
     global_ctx: ArcGlobalCtx,
+    tcp_listener_factory: RuntimeTcpListenerFactory,
     udp_socket_factory: RuntimeUdpSocketFactory,
 }
 
 impl RuntimeConnectorHost {
     pub(crate) fn new(global_ctx: ArcGlobalCtx) -> Self {
         Self {
+            tcp_listener_factory: RuntimeTcpListenerFactory::new(global_ctx.net_ns.clone()),
             udp_socket_factory: RuntimeUdpSocketFactory::new(global_ctx.net_ns.clone()),
             global_ctx,
         }
+    }
+}
+
+#[async_trait]
+impl VirtualTcpListenerFactory for RuntimeConnectorHost {
+    type Listener = RuntimeTcpListener;
+
+    async fn bind_tcp(&self, options: TcpListenOptions) -> anyhow::Result<Arc<Self::Listener>> {
+        self.tcp_listener_factory.bind_tcp(options).await
     }
 }
 
