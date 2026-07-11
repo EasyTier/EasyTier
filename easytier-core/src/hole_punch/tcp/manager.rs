@@ -11,6 +11,7 @@ use async_trait::async_trait;
 use dashmap::DashMap;
 use quanta::Instant;
 use tokio::task::JoinSet;
+use tokio_util::task::AbortOnDropHandle;
 
 use crate::{
     config::PeerId,
@@ -90,9 +91,9 @@ fn is_symmetric_tcp_nat(nat_type: NatType) -> bool {
     )
 }
 
-fn join_joinset_background(tasks: Arc<Mutex<JoinSet<()>>>) {
+fn join_joinset_background(tasks: Arc<Mutex<JoinSet<()>>>) -> AbortOnDropHandle<()> {
     let tasks = Arc::downgrade(&tasks);
-    tokio::spawn(async move {
+    AbortOnDropHandle::new(tokio::spawn(async move {
         while tasks.strong_count() > 0 {
             tokio::time::sleep(Duration::from_secs(1)).await;
             let Some(tasks) = tasks.upgrade() else {
@@ -101,7 +102,7 @@ fn join_joinset_background(tasks: Arc<Mutex<JoinSet<()>>>) {
             let mut tasks = tasks.lock().unwrap();
             while tasks.try_join_next().is_some() {}
         }
-    });
+    }))
 }
 
 struct TcpHolePunchServer<H>
@@ -111,6 +112,7 @@ where
     host: Arc<H>,
     peer_manager: Arc<PeerManagerCore>,
     tasks: Arc<Mutex<JoinSet<()>>>,
+    reaper: Mutex<Option<AbortOnDropHandle<()>>>,
     stopping: AtomicBool,
 }
 
@@ -119,14 +121,25 @@ where
     H: TcpHolePunchHost,
 {
     fn new(host: Arc<H>, peer_manager: Arc<PeerManagerCore>) -> Arc<Self> {
-        let tasks = Arc::new(Mutex::new(JoinSet::new()));
-        join_joinset_background(tasks.clone());
         Arc::new(Self {
             host,
             peer_manager,
-            tasks,
-            stopping: AtomicBool::new(false),
+            tasks: Arc::new(Mutex::new(JoinSet::new())),
+            reaper: Mutex::new(None),
+            stopping: AtomicBool::new(true),
         })
+    }
+
+    fn start(&self) {
+        let mut reaper = self.reaper.lock().unwrap();
+        if reaper.as_ref().is_some_and(|task| !task.is_finished()) {
+            return;
+        }
+        {
+            let _tasks = self.tasks.lock().unwrap();
+            self.stopping.store(false, Ordering::Release);
+        }
+        reaper.replace(join_joinset_background(self.tasks.clone()));
     }
 
     fn begin_stop(&self) {
@@ -134,6 +147,11 @@ where
     }
 
     async fn stop(&self) {
+        let reaper = self.reaper.lock().unwrap().take();
+        if let Some(reaper) = reaper {
+            reaper.abort();
+            let _ = reaper.await;
+        }
         let mut tasks = {
             let mut task_slot = self.tasks.lock().unwrap();
             std::mem::replace(&mut *task_slot, JoinSet::new())
@@ -516,7 +534,7 @@ where
             tracing::debug!("tcp hole punch disabled by runtime configuration");
             return;
         }
-        self.client.start();
+        self.server.start();
         self.peer_manager
             .get_peer_rpc_mgr()
             .rpc_server()
@@ -525,6 +543,7 @@ where
                 TcpHolePunchRpcServer::new_arc(self.server.clone()),
                 self.peer_manager.network_name(),
             );
+        self.client.start();
     }
 
     pub async fn run_immediately(&self) {
