@@ -263,7 +263,7 @@ fn bind_tcp_socket(
         .addr(bind_addr)
         .dev(bind_dev)
         .only_v6(bind_options.only_v6)
-        .reuse_addr(bind_options.reuse_addr)
+        .reuse_addr(native_reuse_addr(&bind_options))
         .reuse_port(bind_options.reuse_port)
         .maybe_socket_mark(bind_options.socket_mark)
         .call()
@@ -274,7 +274,19 @@ fn must_bind_before_connect(bind_options: &TcpBindOptions) -> bool {
         || bind_options.bind_device.is_some()
         || bind_options.reuse_port
         || bind_options.only_v6
-        || bind_options.reuse_addr != !cfg!(target_os = "windows")
+        || bind_options
+            .reuse_addr
+            .is_some_and(|reuse_addr| reuse_addr != native_reuse_addr_default())
+}
+
+fn native_reuse_addr_default() -> bool {
+    !cfg!(target_os = "windows")
+}
+
+fn native_reuse_addr(bind_options: &TcpBindOptions) -> bool {
+    bind_options
+        .reuse_addr
+        .unwrap_or_else(native_reuse_addr_default)
 }
 
 pub(crate) fn bind_tcp_listener(
@@ -297,7 +309,7 @@ fn bind_tcp_listener_with_netns(
         .dev(bind_dev)
         .maybe_net_ns(net_ns)
         .only_v6(bind_options.only_v6)
-        .reuse_addr(bind_options.reuse_addr)
+        .reuse_addr(native_reuse_addr(&bind_options))
         .reuse_port(bind_options.reuse_port)
         .maybe_socket_mark(bind_options.socket_mark)
         .call()?;
@@ -343,5 +355,15 @@ mod tests {
             &TcpBindOptions::default().with_bind_device(Some("eth0".to_owned()))
         ));
         assert!(!must_bind_before_connect(&TcpBindOptions::default()));
+        assert!(!must_bind_before_connect(
+            &TcpBindOptions::default().with_reuse_addr(native_reuse_addr_default())
+        ));
+        assert!(must_bind_before_connect(
+            &TcpBindOptions::default().with_reuse_addr(!native_reuse_addr_default())
+        ));
+        assert_eq!(
+            native_reuse_addr(&TcpBindOptions::default()),
+            native_reuse_addr_default()
+        );
     }
 }

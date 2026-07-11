@@ -29,7 +29,8 @@ pub struct TcpBindOptions {
     pub local_addr: Option<SocketAddr>,
     pub socket_mark: Option<u32>,
     pub bind_device: Option<String>,
-    pub reuse_addr: bool,
+    /// `None` delegates the platform default to the host socket adapter.
+    pub reuse_addr: Option<bool>,
     pub reuse_port: bool,
     pub only_v6: bool,
 }
@@ -40,7 +41,7 @@ impl TcpBindOptions {
             local_addr: None,
             socket_mark: None,
             bind_device: None,
-            reuse_addr: !cfg!(target_os = "windows"),
+            reuse_addr: None,
             reuse_port: false,
             only_v6: false,
         }
@@ -62,7 +63,7 @@ impl TcpBindOptions {
     }
 
     pub fn with_reuse_addr(mut self, reuse_addr: bool) -> Self {
-        self.reuse_addr = reuse_addr;
+        self.reuse_addr = Some(reuse_addr);
         self
     }
 
@@ -488,11 +489,16 @@ mod tests {
                 local_addr: Some(local_addr),
                 socket_mark: Some(7),
                 bind_device: Some("eth0".to_owned()),
-                reuse_addr: true,
+                reuse_addr: Some(true),
                 reuse_port: true,
                 only_v6: true,
             }
         );
+    }
+
+    #[test]
+    fn tcp_bind_default_delegates_reuse_addr_policy_to_host() {
+        assert_eq!(TcpBindOptions::default().reuse_addr, None);
     }
 
     #[tokio::test]
