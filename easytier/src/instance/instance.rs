@@ -1651,6 +1651,7 @@ impl Instance {
 
     pub async fn clear_resources(&mut self) {
         self.public_ipv6_provider_task.shutdown().await;
+        self.udp_hole_puncher.lock().await.stop().await;
         self.core_instance.stop().await;
         #[cfg(feature = "tun")]
         let _ = self.nic_ctx.lock().await.take();
@@ -1662,11 +1663,13 @@ impl Drop for Instance {
         let my_peer_id = self.peer_manager.my_peer_id();
         let pm = Arc::downgrade(&self.peer_manager);
         let core_instance = self.core_instance.clone();
+        let udp_hole_puncher = self.udp_hole_puncher.clone();
         #[cfg(feature = "tun")]
         let nic_ctx = self.nic_ctx.clone();
         tokio::spawn(async move {
             #[cfg(feature = "tun")]
             nic_ctx.lock().await.take();
+            udp_hole_puncher.lock().await.stop().await;
             core_instance.stop().await;
 
             let now = std::time::Instant::now();

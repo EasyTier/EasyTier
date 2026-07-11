@@ -69,6 +69,14 @@ impl UdpHolePunchServer {
 
         Arc::new(Self { inner })
     }
+
+    fn start(&self) {
+        self.inner.start();
+    }
+
+    async fn stop(&self) {
+        self.inner.stop().await;
+    }
 }
 
 fn signal_error_to_rpc_error(error: UdpHolePunchSignalError) -> rpc_types::error::Error {
@@ -318,6 +326,7 @@ impl UdpHolePunchConnector {
     }
 
     pub async fn run_as_server(&mut self) -> Result<(), Error> {
+        self.server.start();
         self.peer_mgr
             .get_peer_rpc_mgr()
             .rpc_server()
@@ -337,10 +346,23 @@ impl UdpHolePunchConnector {
             return Ok(());
         }
 
-        self.run_as_client().await?;
         self.run_as_server().await?;
+        self.run_as_client().await?;
 
         Ok(())
+    }
+
+    pub async fn stop(&self) {
+        self.client.stop().await;
+        self.peer_mgr
+            .get_peer_rpc_mgr()
+            .rpc_server()
+            .registry()
+            .unregister(
+                UdpHolePunchRpcServer::new(Arc::downgrade(&self.server)),
+                &self.peer_mgr.get_global_ctx().get_network_name(),
+            );
+        self.server.stop().await;
     }
 
     #[cfg(test)]
@@ -466,5 +488,15 @@ pub mod tests {
                 .await
                 .contains(&p_c.my_peer_id())
         );
+    }
+
+    #[tokio::test]
+    async fn udp_hole_punch_lifecycle_stops_idempotently() {
+        let peer_manager = create_mock_peer_manager_with_mock_stun(NatType::PortRestricted).await;
+        let mut connector = UdpHolePunchConnector::new(peer_manager);
+
+        connector.run().await.unwrap();
+        connector.stop().await;
+        connector.stop().await;
     }
 }
