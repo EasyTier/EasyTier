@@ -1012,9 +1012,6 @@ impl Instance {
                 .await?;
         }
 
-        #[cfg(any(feature = "kcp", feature = "quic"))]
-        self.core_instance.start_transport_proxy().await?;
-
         // run after tun device created, so listener can bind to tun device, which may be required by win 10
         self.core_instance.start_network_services().await?;
 

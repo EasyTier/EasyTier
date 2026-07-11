@@ -821,6 +821,7 @@ where
     /// Starts the core-owned services that run after the host has prepared its
     /// packet interface.
     pub async fn start_network_services(self: &Arc<Self>) -> anyhow::Result<()> {
+        self.start_transport_proxy().await?;
         self.load_initial_acl().await?;
         self.start_proxy().await?;
         self.start_udp_hole_punch().await?;
