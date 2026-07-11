@@ -12,14 +12,13 @@ use crate::{
     connectivity::{
         direct::DirectConnectorHost,
         manual::{ManualConnectorHost, ManualInterfaceAddrs},
-        transport::ConnectedByteStream,
     },
     hole_punch::tcp::{TcpHolePunchEnvironment, TcpHolePunchHost},
     proto::{common::NatType, peer_rpc::GetIpListResponse},
     socket::{
         host::{
             HostSocketRuntime, HostTcpStream,
-            factory::{HostSocketBackend, HostSocketFactory, HostTcpConnectResult},
+            factory::{HostSocketBackend, HostSocketFactory},
             listener::{HostTcpListener, HostTcpListenerBackend, HostTcpListenerFactory},
             udp::HostUdpSocket,
         },
@@ -32,40 +31,12 @@ use crate::{
     },
 };
 
-/// Host-owned non-IP stream before core wraps it in the connector socket type.
-pub struct HostByteStreamResult {
-    pub socket: HostTcpConnectResult,
-    pub local_url: Option<Url>,
-    pub remote_url: Url,
-    pub resolved_remote_url: Option<Url>,
-}
-
-impl HostByteStreamResult {
-    pub fn new(
-        socket: HostTcpConnectResult,
-        local_url: Option<Url>,
-        remote_url: Url,
-        resolved_remote_url: Option<Url>,
-    ) -> Self {
-        Self {
-            socket,
-            local_url,
-            remote_url,
-            resolved_remote_url,
-        }
-    }
-}
-
 /// Non-socket capabilities required by manual connectivity.
 #[async_trait]
 pub trait ManualConnectorEnvironment: Send + Sync + 'static {
     async fn local_addr_for_remote(&self, remote_addr: SocketAddr) -> anyhow::Result<SocketAddr>;
 
     async fn interface_addrs(&self) -> anyhow::Result<ManualInterfaceAddrs>;
-
-    async fn connect_byte_stream(&self, url: &Url) -> anyhow::Result<HostByteStreamResult> {
-        anyhow::bail!("host does not support external byte stream: {url}")
-    }
 }
 
 /// Runtime state and address-policy capabilities required by direct connectivity.
@@ -103,8 +74,6 @@ pub struct HostConnectorAdapter<B, E>
 where
     B: HostConnectorSocketBackend,
 {
-    runtime: HostSocketRuntime,
-    backend: Arc<B>,
     sockets: HostSocketFactory<B>,
     listeners: HostTcpListenerFactory<B>,
     environment: Arc<E>,
@@ -117,9 +86,7 @@ where
     pub fn new(runtime: HostSocketRuntime, backend: Arc<B>, environment: Arc<E>) -> Self {
         Self {
             sockets: HostSocketFactory::new(runtime.clone(), backend.clone()),
-            listeners: HostTcpListenerFactory::new(runtime.clone(), backend.clone()),
-            runtime,
-            backend,
+            listeners: HostTcpListenerFactory::new(runtime, backend),
             environment,
         }
     }
@@ -202,27 +169,6 @@ where
 
     async fn interface_addrs(&self) -> anyhow::Result<ManualInterfaceAddrs> {
         self.environment.interface_addrs().await
-    }
-
-    async fn connect_byte_stream(
-        &self,
-        url: &Url,
-    ) -> anyhow::Result<ConnectedByteStream<HostTcpStream>> {
-        let result = self.environment.connect_byte_stream(url).await?;
-        let socket = result.socket;
-        let stream = self.runtime.tcp_stream(
-            self.backend.clone(),
-            socket.handle,
-            socket.local_addr,
-            socket.peer_addr,
-            socket.transport_label,
-        );
-        Ok(ConnectedByteStream::new(
-            stream,
-            result.local_url,
-            result.remote_url,
-            result.resolved_remote_url,
-        ))
     }
 }
 
@@ -466,10 +412,6 @@ mod tests {
                 public_ipv6: Some("2001:db8::1".parse().unwrap()),
             })
         }
-
-        async fn connect_byte_stream(&self, _url: &Url) -> anyhow::Result<HostByteStreamResult> {
-            anyhow::bail!("test environment byte stream")
-        }
     }
 
     #[async_trait]
@@ -565,7 +507,7 @@ mod tests {
             };
         assert_eq!(
             byte_stream_error.to_string(),
-            "test environment byte stream"
+            "host does not support external byte stream: ring://42"
         );
         assert_eq!(
             DirectConnectorHost::mapped_listeners(&host),
