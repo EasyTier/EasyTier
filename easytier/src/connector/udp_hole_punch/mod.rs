@@ -70,12 +70,16 @@ impl UdpHolePunchServer {
         Arc::new(Self { inner })
     }
 
-    fn start(&self) {
-        self.inner.start();
+    async fn start(&self) {
+        self.inner.start().await;
     }
 
     async fn stop(&self) {
         self.inner.stop().await;
+    }
+
+    fn begin_stop(&self) {
+        self.inner.begin_stop();
     }
 }
 
@@ -326,7 +330,7 @@ impl UdpHolePunchConnector {
     }
 
     pub async fn run_as_server(&mut self) -> Result<(), Error> {
-        self.server.start();
+        self.server.start().await;
         self.peer_mgr
             .get_peer_rpc_mgr()
             .rpc_server()
@@ -354,6 +358,7 @@ impl UdpHolePunchConnector {
 
     pub async fn stop(&self) {
         self.client.stop().await;
+        self.server.begin_stop();
         self.peer_mgr
             .get_peer_rpc_mgr()
             .rpc_server()

@@ -1,6 +1,9 @@
 use std::{
     net::{Ipv4Addr, SocketAddr, SocketAddrV4},
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
     time::Duration,
 };
 
@@ -8,7 +11,10 @@ use anyhow::Context;
 use crossbeam::atomic::AtomicCell;
 use quanta::Instant;
 use rand::{Rng, seq::SliceRandom as _};
-use tokio::{sync::Mutex, task::JoinSet};
+use tokio::{
+    sync::{Mutex, RwLock, RwLockReadGuard},
+    task::JoinSet,
+};
 use tokio_util::task::AbortOnDropHandle;
 
 use crate::connectivity::protocol::raw;
@@ -41,6 +47,8 @@ where
     common: Arc<UdpHolePunchServerCommon<R, T>>,
     both_easy_sym_server: UdpBothEasySymPunchServer<R, T>,
     shuffled_port_vec: Arc<Vec<u16>>,
+    admission: RwLock<()>,
+    stopping: AtomicBool,
 }
 
 impl<R, T> UdpHolePunchServer<R, T>
@@ -63,18 +71,43 @@ where
             common,
             both_easy_sym_server,
             shuffled_port_vec: Arc::new(shuffled_port_vec),
+            admission: RwLock::new(()),
+            stopping: AtomicBool::new(true),
         }
     }
 
-    pub fn start(&self) {
-        self.common.start();
-        self.both_easy_sym_server.common.start();
+    pub async fn start(&self) {
+        let _admission = self.admission.write().await;
+        self.common.start().await;
+        self.both_easy_sym_server.common.start().await;
+        self.stopping.store(false, Ordering::Release);
+    }
+
+    pub fn begin_stop(&self) {
+        self.stopping.store(true, Ordering::Release);
     }
 
     pub async fn stop(&self) {
+        self.begin_stop();
+        let _admission = self.admission.write().await;
         self.both_easy_sym_server.stop().await;
         self.both_easy_sym_server.common.stop().await;
         self.common.stop().await;
+    }
+
+    async fn admit(&self) -> Result<RwLockReadGuard<'_, ()>, UdpHolePunchSignalError> {
+        if self.stopping.load(Ordering::Acquire) {
+            return Err(UdpHolePunchSignalError::Transport(
+                "udp hole punch server is stopping".into(),
+            ));
+        }
+        let guard = self.admission.read().await;
+        if self.stopping.load(Ordering::Acquire) {
+            return Err(UdpHolePunchSignalError::Transport(
+                "udp hole punch server is stopping".into(),
+            ));
+        }
+        Ok(guard)
     }
 
     fn busy_signal_error() -> UdpHolePunchSignalError {
@@ -202,6 +235,7 @@ where
         &self,
         request: SelectPunchListener,
     ) -> Result<SelectPunchListenerResponse, UdpHolePunchSignalError> {
+        let _admission = self.admit().await?;
         let selected = self
             .common
             .select_listener(request.force_new, request.prefer_port_mapping)
@@ -219,6 +253,7 @@ where
         &self,
         request: SendPunchPacketCone,
     ) -> Result<(), UdpHolePunchSignalError> {
+        let _admission = self.admit().await?;
         let listener = self
             .common
             .find_listener(&request.listener_mapped_addr)
@@ -238,6 +273,7 @@ where
         &self,
         request: SendPunchPacketHardSym,
     ) -> Result<SendPunchPacketHardSymResponse, UdpHolePunchSignalError> {
+        let _admission = self.admit().await?;
         let _locked = self
             .sym_punch_lock
             .try_lock()
@@ -251,6 +287,7 @@ where
         &self,
         request: SendPunchPacketEasySym,
     ) -> Result<(), UdpHolePunchSignalError> {
+        let _admission = self.admit().await?;
         let _locked = self
             .sym_punch_lock
             .try_lock()
@@ -264,6 +301,7 @@ where
         &self,
         request: SendPunchPacketBothEasySym,
     ) -> Result<SendPunchPacketBothEasySymResponse, UdpHolePunchSignalError> {
+        let _admission = self.admit().await?;
         let _locked = self
             .sym_punch_lock
             .try_lock()
@@ -282,8 +320,9 @@ where
 {
     runtime: Arc<R>,
     tunnel_sink: Arc<T>,
-    listeners: Arc<Mutex<Vec<UdpPunchListenerRecord<R::Socket>>>>,
-    cleanup_task: std::sync::Mutex<Option<AbortOnDropHandle<()>>>,
+    listeners: Arc<Mutex<Vec<Arc<UdpPunchListenerRecord<R::Socket>>>>>,
+    retiring: Arc<Mutex<Vec<Arc<UdpPunchListenerRecord<R::Socket>>>>>,
+    cleanup_task: Mutex<Option<AbortOnDropHandle<()>>>,
 }
 
 impl<R, T> UdpHolePunchServerCommon<R, T>
@@ -292,22 +331,24 @@ where
     T: UdpHolePunchTunnelSink + 'static,
 {
     pub fn new(runtime: Arc<R>, tunnel_sink: Arc<T>) -> Self {
-        let listeners = Arc::new(Mutex::new(Vec::<UdpPunchListenerRecord<R::Socket>>::new()));
+        let listeners = Arc::new(Mutex::new(Vec::new()));
 
         Self {
             runtime,
             tunnel_sink,
             listeners,
-            cleanup_task: std::sync::Mutex::new(None),
+            retiring: Arc::new(Mutex::new(Vec::new())),
+            cleanup_task: Mutex::new(None),
         }
     }
 
-    pub fn start(&self) {
-        let mut task_slot = self.cleanup_task.lock().unwrap();
+    pub async fn start(&self) {
+        let mut task_slot = self.cleanup_task.lock().await;
         if task_slot.as_ref().is_some_and(|task| !task.is_finished()) {
             return;
         }
         let listeners = self.listeners.clone();
+        let retiring = self.retiring.clone();
         task_slot.replace(AbortOnDropHandle::new(tokio::spawn(async move {
             loop {
                 tokio::time::sleep(Duration::from_secs(5)).await;
@@ -327,33 +368,34 @@ where
                     }
                     expired
                 };
-                for listener in expired {
-                    listener.stop().await;
-                }
+                retiring.lock().await.extend(expired);
+                drain_retiring_listeners(retiring.as_ref()).await;
             }
         })));
     }
 
     pub async fn stop(&self) {
-        let cleanup_task = self.cleanup_task.lock().unwrap().take();
-        if let Some(cleanup_task) = cleanup_task {
+        let mut cleanup_task = self.cleanup_task.lock().await;
+        if let Some(cleanup_task) = cleanup_task.as_mut() {
             cleanup_task.abort();
             let _ = cleanup_task.await;
         }
+        cleanup_task.take();
+        drop(cleanup_task);
+
         let listeners = std::mem::take(&mut *self.listeners.lock().await);
-        for listener in listeners {
-            listener.stop().await;
-        }
+        self.retiring.lock().await.extend(listeners);
+        drain_retiring_listeners(self.retiring.as_ref()).await;
     }
 
     pub async fn add_listener(&self, listener: UdpPunchListener<R::Socket>) {
         self.listeners
             .lock()
             .await
-            .push(UdpPunchListenerRecord::new(
+            .push(Arc::new(UdpPunchListenerRecord::new(
                 listener,
                 self.tunnel_sink.clone(),
-            ));
+            )));
     }
 
     pub async fn find_listener(&self, addr: &SocketAddr) -> Option<Arc<R::Socket>> {
@@ -465,8 +507,8 @@ where
 
 struct UdpPunchListenerRecord<S> {
     socket: Arc<S>,
-    tasks: JoinSet<()>,
-    connection_tasks: Arc<std::sync::Mutex<JoinSet<()>>>,
+    tasks: Mutex<JoinSet<()>>,
+    connection_tasks: Arc<Mutex<JoinSet<()>>>,
     running: Arc<AtomicCell<bool>>,
     mapped_addr: SocketAddr,
     has_port_mapping_lease: bool,
@@ -497,7 +539,7 @@ where
         let running = Arc::new(AtomicCell::new(true));
         let running_clone = running.clone();
         let mut tasks = JoinSet::new();
-        let connection_tasks = Arc::new(std::sync::Mutex::new(JoinSet::new()));
+        let connection_tasks = Arc::new(Mutex::new(JoinSet::new()));
         let accept_connection_tasks = connection_tasks.clone();
 
         tasks.spawn(async move {
@@ -512,7 +554,7 @@ where
                     }
                 };
                 let tunnel_sink = tunnel_sink.clone();
-                let mut connection_tasks = accept_connection_tasks.lock().unwrap();
+                let mut connection_tasks = accept_connection_tasks.lock().await;
                 while connection_tasks.try_join_next().is_some() {}
                 connection_tasks.spawn(async move {
                     if let Err(err) = tunnel_sink.add_server_tunnel(tunnel).await {
@@ -543,7 +585,7 @@ where
 
         Self {
             socket,
-            tasks,
+            tasks: Mutex::new(tasks),
             connection_tasks,
             running,
             mapped_addr,
@@ -575,27 +617,48 @@ where
         }
     }
 
-    async fn stop(mut self) {
-        self.tasks.abort_all();
-        while self.tasks.join_next().await.is_some() {}
-        let mut connection_tasks = {
-            let mut task_slot = self.connection_tasks.lock().unwrap();
-            std::mem::replace(&mut *task_slot, JoinSet::new())
-        };
+    async fn stop(&self) {
+        let mut tasks = self.tasks.lock().await;
+        tasks.abort_all();
+        while tasks.join_next().await.is_some() {}
+        drop(tasks);
+
+        let mut connection_tasks = self.connection_tasks.lock().await;
         connection_tasks.abort_all();
         while connection_tasks.join_next().await.is_some() {}
+        self.running.store(false);
+    }
+}
+
+async fn drain_retiring_listeners<S>(retiring: &Mutex<Vec<Arc<UdpPunchListenerRecord<S>>>>)
+where
+    S: VirtualUdpSocket + 'static,
+{
+    loop {
+        let listener = retiring.lock().await.first().cloned();
+        let Some(listener) = listener else {
+            return;
+        };
+        listener.stop().await;
+        let mut retiring = retiring.lock().await;
+        if let Some(index) = retiring
+            .iter()
+            .position(|candidate| Arc::ptr_eq(candidate, &listener))
+        {
+            retiring.remove(index);
+        }
     }
 }
 
 fn listener_reuse_states<S>(
-    listeners: &[UdpPunchListenerRecord<S>],
+    listeners: &[Arc<UdpPunchListenerRecord<S>>],
 ) -> Vec<ReusableUdpPunchListener>
 where
     S: VirtualUdpSocket + 'static,
 {
     listeners
         .iter()
-        .map(UdpPunchListenerRecord::reuse_state)
+        .map(|listener| listener.reuse_state())
         .collect()
 }
 
@@ -693,11 +756,12 @@ where
     }
 
     pub async fn stop(&self) {
-        let task = self.task.lock().await.take();
-        if let Some(task) = task {
+        let mut task = self.task.lock().await;
+        if let Some(task) = task.as_mut() {
             task.abort();
             let _ = task.await;
         }
+        task.take();
     }
 
     #[tracing::instrument(skip(self), ret, err)]
@@ -776,7 +840,10 @@ where
                         }
                     };
                     let socket = listener.socket.clone();
-                    let record = UdpPunchListenerRecord::new(listener, common.tunnel_sink.clone());
+                    let record = Arc::new(UdpPunchListenerRecord::new(
+                        listener,
+                        common.tunnel_sink.clone(),
+                    ));
                     punched.push((socket, remote_addr));
                     listeners.push(record);
                 }
@@ -1029,7 +1096,7 @@ mod tests {
         common.select_listener(false, false).await.unwrap();
         common.stop().await;
 
-        assert!(common.cleanup_task.lock().unwrap().is_none());
+        assert!(common.cleanup_task.lock().await.is_none());
         assert!(common.listeners.lock().await.is_empty());
     }
 

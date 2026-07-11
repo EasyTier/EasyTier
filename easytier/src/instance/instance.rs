@@ -1670,6 +1670,7 @@ impl Drop for Instance {
             #[cfg(feature = "tun")]
             nic_ctx.lock().await.take();
             udp_hole_puncher.lock().await.stop().await;
+            drop(udp_hole_puncher);
             core_instance.stop().await;
 
             let now = std::time::Instant::now();
