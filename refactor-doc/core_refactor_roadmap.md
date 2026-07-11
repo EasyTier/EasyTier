@@ -125,7 +125,7 @@ Work:
 6. Delete each legacy tunnel-producing path as soon as its replacement passes
    native and wasm conformance tests.
 
-### Current protocol dependency constraint
+### Current protocol dependency constraints
 
 The WS/WSS accepted-socket upgrade is core-owned. The outbound upgrade still
 uses native `tokio-websockets::ClientBuilder::connect_on` because the current
@@ -137,6 +137,22 @@ Complete the outbound move by splitting an established-stream client handshake
 feature from socket creation in the existing fork. Do not hide the client path
 with a WASI `cfg`, replace the wire implementation during the refactor, or let
 the host perform the WebSocket handshake.
+
+QUIC already receives a core `ConnectedUdpSession`, and Quinn's abstract-socket
+Interface can drive that session without creating a socket. However, Quinn
+0.11 still compiles `socket2` for `wasm32-wasip1`; the dependency fails before
+the abstract-socket path can be used. Keep the Quinn engine behind the narrow
+native protocol-upgrade Adapter until the dependency can build its protocol and
+abstract-socket runtime without the OS socket implementation. Core continues to
+own protocol selection and the UDP-session seam.
+
+WireGuard configuration and key derivation are core-owned. The current
+`boringtun-easytier` 0.6.1 protocol engine fails on `wasm32-wasip1` because its
+monotonic-clock implementation only selects Windows or Unix. Its mock-clock
+feature is not a production substitute because timers advance only when a test
+drives them. Keep the BoringTun engine behind the narrow native
+protocol-upgrade Adapter until the dependency supplies a real WASI clock; do
+not freeze protocol timers or hide the engine with a guest-target `cfg`.
 
 Exit gate:
 
