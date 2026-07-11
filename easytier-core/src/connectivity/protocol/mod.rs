@@ -82,7 +82,22 @@ where
         requested_url: Url,
     ) -> anyhow::Result<Box<dyn Tunnel>> {
         match requested_url.scheme() {
-            "tcp" | "udp" => Ok(raw::upgrade_connected(connected, requested_url)?),
+            "tcp" => match connected {
+                ConnectedTransport::Tcp(socket) => {
+                    Ok(raw::upgrade_connected_tcp(socket, requested_url)?)
+                }
+                ConnectedTransport::Udp(_) | ConnectedTransport::ByteStream(_) => {
+                    anyhow::bail!("TCP protocol requires a TCP transport")
+                }
+            },
+            "udp" => match connected {
+                ConnectedTransport::Udp(session) => {
+                    Ok(raw::upgrade_connected_udp(session, requested_url)?)
+                }
+                ConnectedTransport::Tcp(_) | ConnectedTransport::ByteStream(_) => {
+                    anyhow::bail!("UDP protocol requires a UDP session")
+                }
+            },
             "ring" => upgrade_byte_stream(connected),
             "unix" if self.config.unix => upgrade_byte_stream(connected),
             "faketcp" if self.config.faketcp => match connected {
@@ -354,6 +369,35 @@ mod tests {
             disabled_builtin
                 .to_string()
                 .contains("unsupported client protocol upgrader")
+        );
+
+        let mismatched_udp = upgrader
+            .upgrade_client(
+                ConnectedTransport::Tcp(MockTcpSocket),
+                "udp://127.0.0.1:2000".parse().unwrap(),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(
+            mismatched_udp.to_string(),
+            "UDP protocol requires a UDP session"
+        );
+
+        let mismatched_tcp = upgrader
+            .upgrade_client(
+                ConnectedTransport::ByteStream(super::super::transport::ConnectedByteStream::new(
+                    MockTcpSocket,
+                    None,
+                    "ring://remote".parse().unwrap(),
+                    None,
+                )),
+                "tcp://127.0.0.1:2000".parse().unwrap(),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(
+            mismatched_tcp.to_string(),
+            "TCP protocol requires a TCP transport"
         );
     }
 
