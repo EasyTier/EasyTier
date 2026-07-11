@@ -132,6 +132,25 @@ fn validate_portable_connectivity_config(
     Ok(())
 }
 
+fn validate_listener_protocols(
+    listeners: &[TransportListenerConfig],
+    has_custom_handler: bool,
+) -> anyhow::Result<()> {
+    if has_custom_handler {
+        return Ok(());
+    }
+    if let Some(listener) = listeners
+        .iter()
+        .find(|listener| !listener.supports_raw_handler())
+    {
+        anyhow::bail!(
+            "listener {} requires a custom accepted transport handler",
+            listener.url()
+        );
+    }
+    Ok(())
+}
+
 pub struct CoreInstanceAdapters<H>
 where
     H: DirectConnectorHost + TcpHolePunchHost,
@@ -204,6 +223,10 @@ where
         packet_sink: PacketRecvChan,
     ) -> anyhow::Result<Self> {
         validate_portable_connectivity_config(&config)?;
+        validate_listener_protocols(
+            &config.connectivity.listeners,
+            adapters.accepted_transport_handler.is_some(),
+        )?;
         let network_name = &config.peer.runtime.network_identity.network_name;
         if config.connectivity.direct.network_name != *network_name {
             anyhow::bail!(
@@ -225,6 +248,10 @@ where
         adapters: CoreInstanceAdapters<H>,
         config: CoreInstanceConfig,
     ) -> anyhow::Result<Self> {
+        validate_listener_protocols(
+            &config.listeners,
+            adapters.accepted_transport_handler.is_some(),
+        )?;
         let CoreInstanceAdapters {
             host,
             dns,

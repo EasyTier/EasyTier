@@ -350,6 +350,46 @@ mod tests {
         assert!(error.to_string().contains("P2P policy"));
     }
 
+    #[tokio::test]
+    async fn portable_core_instance_rejects_optional_listener_without_handler() {
+        let global_ctx = get_mock_global_ctx_with_network(Some(NetworkIdentity::new(
+            "portable-listener-validation".to_owned(),
+            String::new(),
+        )));
+        let (packet_sink, _packet_receiver) = create_packet_recv_chan();
+        let peer = PortablePeerManagerConfig::new(global_ctx.runtime_config())
+            .with_flags(global_ctx.get_flags());
+        let connectivity = CoreInstanceConfig {
+            initial_peers: Vec::new(),
+            listeners: vec![TransportListenerConfig::Udp {
+                url: "wg://127.0.0.1:0".parse().unwrap(),
+                request: UdpSessionListenRequest::new(UdpBindOptions::port_bound_listener(
+                    "127.0.0.1:0".parse().unwrap(),
+                )),
+                accept_kind: UdpSessionAcceptKind::Classified(
+                    easytier_core::socket::udp::UdpSessionProtocol::WireGuard,
+                ),
+                must_succeed: true,
+            }],
+            manual: runtime_manual_options(&global_ctx),
+            direct: runtime_direct_options(&global_ctx, false),
+        };
+
+        let error = RuntimeCoreInstance::new_portable(
+            runtime_core_instance_adapters(global_ctx),
+            PortableCoreInstanceConfig { peer, connectivity },
+            packet_sink,
+        )
+        .err()
+        .expect("optional listener without a handler should be rejected");
+
+        assert!(
+            error
+                .to_string()
+                .contains("custom accepted transport handler")
+        );
+    }
+
     fn build_test_instance(network_name: &str) -> Arc<RuntimeCoreInstance> {
         let global_ctx = get_mock_global_ctx_with_network(Some(NetworkIdentity::new(
             network_name.to_owned(),

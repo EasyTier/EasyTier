@@ -108,6 +108,17 @@ impl TransportListenerConfig {
             Self::Tcp { must_succeed, .. } | Self::Udp { must_succeed, .. } => *must_succeed,
         }
     }
+
+    pub fn url(&self) -> &Url {
+        match self {
+            Self::Tcp { url, .. } | Self::Udp { url, .. } => url,
+        }
+    }
+
+    pub fn supports_raw_handler(&self) -> bool {
+        matches!(self, Self::Tcp { url, .. } if url.scheme() == "tcp")
+            || matches!(self, Self::Udp { url, .. } if url.scheme() == "udp")
+    }
 }
 
 struct TcpTransportListener<H>
