@@ -7,13 +7,6 @@ use std::{
 };
 
 use anyhow::Context;
-use pnet::packet::{
-    Packet,
-    icmp::{self, IcmpCode, IcmpTypes, MutableIcmpPacket, echo_reply::MutableEchoReplyPacket},
-    ip::IpNextHeaderProtocols,
-    ipv4::Ipv4Packet,
-};
-use quanta::Instant;
 use socket2::Socket;
 use tokio::{
     sync::{Mutex, mpsc::UnboundedSender},
@@ -22,54 +15,15 @@ use tokio::{
 
 use tracing::Instrument;
 
-use easytier_core::proxy::ip_reassembler::{
-    ComposeIpv4PacketArgs, IpProtocol, IpReassembler, SmolIpv4Packet, compose_ipv4_packet,
-};
+use easytier_core::proxy::icmp_proxy_engine::{IcmpProxyAction, IcmpProxyContext, IcmpProxyEngine};
 
 use crate::{
-    common::{PeerId, error::Error, global_ctx::ArcGlobalCtx},
+    common::{error::Error, global_ctx::ArcGlobalCtx},
     peers::{PeerPacketFilter, peer_manager::PeerManager},
-    tunnel::packet_def::{PacketType, ZCPacket},
+    tunnel::packet_def::ZCPacket,
 };
 
 use super::CidrSet;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-struct IcmpNatKey {
-    real_dst_ip: std::net::IpAddr,
-    icmp_id: u16,
-    icmp_seq: u16,
-}
-
-#[derive(Debug)]
-struct IcmpNatEntry {
-    src_peer_id: PeerId,
-    my_peer_id: PeerId,
-    src_ip: IpAddr,
-    start_time: Instant,
-    mapped_dst_ip: std::net::Ipv4Addr,
-}
-
-impl IcmpNatEntry {
-    fn new(
-        src_peer_id: PeerId,
-        my_peer_id: PeerId,
-        src_ip: IpAddr,
-        mapped_dst_ip: Ipv4Addr,
-    ) -> Result<Self, Error> {
-        Ok(Self {
-            src_peer_id,
-            my_peer_id,
-            src_ip,
-            start_time: Instant::now(),
-            mapped_dst_ip,
-        })
-    }
-}
-
-type IcmpNatTable = Arc<dashmap::DashMap<IcmpNatKey, IcmpNatEntry>>;
-type NewPacketSender = tokio::sync::mpsc::UnboundedSender<IcmpNatKey>;
-type NewPacketReceiver = tokio::sync::mpsc::UnboundedReceiver<IcmpNatKey>;
 
 #[derive(Debug)]
 pub struct IcmpProxy {
@@ -78,12 +32,9 @@ pub struct IcmpProxy {
 
     cidr_set: CidrSet,
     socket: std::sync::Mutex<Option<Arc<socket2::Socket>>>,
-
-    nat_table: IcmpNatTable,
+    engine: Arc<IcmpProxyEngine>,
 
     tasks: Mutex<JoinSet<()>>,
-
-    ip_resemmbler: Arc<IpReassembler>,
     icmp_sender: Arc<std::sync::Mutex<Option<UnboundedSender<ZCPacket>>>>,
 }
 
@@ -101,7 +52,7 @@ fn socket_recv(
 
 fn socket_recv_loop(
     socket: Arc<Socket>,
-    nat_table: IcmpNatTable,
+    engine: Arc<IcmpProxyEngine>,
     sender: UnboundedSender<ZCPacket>,
 ) {
     let mut buf = [0u8; 8192];
@@ -125,71 +76,49 @@ fn socket_recv_loop(
             return;
         }
 
-        if !peer_ip.is_ipv4() {
+        let IpAddr::V4(peer_ip) = peer_ip else {
             continue;
+        };
+
+        for packet in engine.handle_socket_response(peer_ip, &mut buf[..len]) {
+            if let Err(e) = sender.send(packet) {
+                tracing::error!("send icmp packet to peer failed: {:?}, may exiting..", e);
+            }
         }
-
-        let Some(ipv4_packet) = Ipv4Packet::new(&buf[..len]) else {
-            continue;
-        };
-
-        let Some(icmp_packet) = icmp::echo_reply::EchoReplyPacket::new(ipv4_packet.payload())
-        else {
-            continue;
-        };
-
-        if icmp_packet.get_icmp_type() != IcmpTypes::EchoReply {
-            continue;
-        }
-
-        let key = IcmpNatKey {
-            real_dst_ip: peer_ip,
-            icmp_id: icmp_packet.get_identifier(),
-            icmp_seq: icmp_packet.get_sequence_number(),
-        };
-
-        let Some((_, v)) = nat_table.remove(&key) else {
-            continue;
-        };
-
-        // send packet back to the peer where this request origin.
-        let IpAddr::V4(dest_ip) = v.src_ip else {
-            continue;
-        };
-
-        let payload_len = len - ipv4_packet.get_header_length() as usize * 4;
-        let id = ipv4_packet.get_identification();
-        let _ = compose_ipv4_packet(
-            ComposeIpv4PacketArgs {
-                buf: &mut buf[..],
-                src_v4: &v.mapped_dst_ip,
-                dst_v4: &dest_ip,
-                next_protocol: IpProtocol::Icmp,
-                payload_len,
-                payload_mtu: 1200,
-                ip_id: id,
-            },
-            |buf| {
-                let mut p = ZCPacket::new_with_payload(buf);
-                p.fill_peer_manager_hdr(v.my_peer_id, v.src_peer_id, PacketType::Data as u8);
-                p.mut_peer_manager_header().unwrap().set_no_proxy(true);
-
-                if let Err(e) = sender.send(p) {
-                    tracing::error!("send icmp packet to peer failed: {:?}, may exiting..", e);
-                }
-                Ok(())
-            },
-        );
     }
 }
 
 #[async_trait::async_trait]
 impl PeerPacketFilter for IcmpProxy {
     async fn try_process_packet_from_peer(&self, packet: ZCPacket) -> Option<ZCPacket> {
-        if self.try_handle_peer_packet(&packet).await.is_some() {
-            return None;
-        } else {
-            return Some(packet);
+        let context = IcmpProxyContext {
+            virtual_ipv4: self
+                .global_ctx
+                .get_ipv4()
+                .as_ref()
+                .map(cidr::Ipv4Inet::address),
+            enable_exit_node: self.global_ctx.enable_exit_node(),
+            no_tun: self.global_ctx.no_tun(),
+        };
+        match self.engine.handle_peer_packet(&packet, context) {
+            IcmpProxyAction::Pass => Some(packet),
+            IcmpProxyAction::SendToSocket {
+                destination,
+                packet: request,
+            } => {
+                if let Err(e) = self.send_icmp_packet(destination, &request) {
+                    tracing::error!("send icmp packet failed: {:?}", e);
+                }
+                None
+            }
+            IcmpProxyAction::SendToPeer(packets) => {
+                let sender = self.icmp_sender.lock().unwrap();
+                let sender = sender.as_ref().expect("ICMP proxy sender is initialized");
+                for packet in packets {
+                    let _ = sender.send(packet);
+                }
+                None
+            }
         }
     }
 }
@@ -200,16 +129,17 @@ impl IcmpProxy {
         peer_manager: Arc<PeerManager>,
     ) -> Result<Arc<Self>, Error> {
         let cidr_set = CidrSet::new(global_ctx.clone());
+        let engine = Arc::new(IcmpProxyEngine::new(
+            cidr_set.table(),
+            Duration::from_secs(10),
+        ));
         let ret = Self {
             global_ctx,
             peer_manager: Arc::downgrade(&peer_manager),
             cidr_set,
             socket: std::sync::Mutex::new(None),
-
-            nat_table: Arc::new(dashmap::DashMap::new()),
+            engine,
             tasks: Mutex::new(JoinSet::new()),
-
-            ip_resemmbler: Arc::new(IpReassembler::new(Duration::from_secs(10))),
             icmp_sender: Arc::new(std::sync::Mutex::new(None)),
         };
 
@@ -250,13 +180,12 @@ impl IcmpProxy {
     }
 
     async fn start_nat_table_cleaner(self: &Arc<Self>) -> Result<(), Error> {
-        let nat_table = self.nat_table.clone();
+        let engine = self.engine.clone();
         self.tasks.lock().await.spawn(
             async move {
                 loop {
                     tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-                    nat_table.retain(|_, v| v.start_time.elapsed().as_secs() < 20);
-                    nat_table.shrink_to_fit();
+                    engine.remove_expired_entries(Duration::from_secs(20));
                 }
             }
             .instrument(tracing::info_span!("icmp proxy nat table cleaner")),
@@ -269,9 +198,9 @@ impl IcmpProxy {
         self.icmp_sender.lock().unwrap().replace(sender.clone());
         if let Some(socket) = self.socket.lock().unwrap().as_ref() {
             let socket = socket.clone();
-            let nat_table = self.nat_table.clone();
+            let engine = self.engine.clone();
             thread::spawn(|| {
-                socket_recv_loop(socket, nat_table, sender);
+                socket_recv_loop(socket, engine, sender);
             });
         }
 
@@ -296,11 +225,11 @@ impl IcmpProxy {
             .instrument(tracing::info_span!("icmp proxy send loop")),
         );
 
-        let ip_resembler = self.ip_resemmbler.clone();
+        let engine = self.engine.clone();
         self.tasks.lock().await.spawn(async move {
             loop {
                 tokio::time::sleep(Duration::from_secs(1)).await;
-                ip_resembler.remove_expired_packets();
+                engine.remove_expired_fragments();
             }
         });
 
@@ -313,168 +242,15 @@ impl IcmpProxy {
         Ok(())
     }
 
-    fn send_icmp_packet(
-        &self,
-        dst_ip: Ipv4Addr,
-        icmp_packet: &icmp::echo_request::EchoRequestPacket,
-    ) -> Result<(), Error> {
+    fn send_icmp_packet(&self, dst_ip: Ipv4Addr, packet: &[u8]) -> Result<(), Error> {
         self.socket
             .lock()
             .unwrap()
             .as_ref()
             .with_context(|| "icmp socket not created")?
-            .send_to(icmp_packet.packet(), &SocketAddrV4::new(dst_ip, 0).into())?;
+            .send_to(packet, &SocketAddrV4::new(dst_ip, 0).into())?;
 
         Ok(())
-    }
-
-    async fn send_icmp_reply_to_peer(
-        &self,
-        src_ip: &Ipv4Addr,
-        dst_ip: &Ipv4Addr,
-        src_peer_id: PeerId,
-        dst_peer_id: PeerId,
-        icmp_packet: &icmp::echo_request::EchoRequestPacket<'_>,
-    ) {
-        let mut buf = vec![0u8; icmp_packet.packet().len() + 20];
-        let mut reply_packet = MutableEchoReplyPacket::new(&mut buf[20..]).unwrap();
-        reply_packet.set_icmp_type(IcmpTypes::EchoReply);
-        reply_packet.set_icmp_code(IcmpCode::new(0));
-        reply_packet.set_identifier(icmp_packet.get_identifier());
-        reply_packet.set_sequence_number(icmp_packet.get_sequence_number());
-        reply_packet.set_payload(icmp_packet.payload());
-
-        let mut icmp_packet = MutableIcmpPacket::new(&mut buf[20..]).unwrap();
-        icmp_packet.set_checksum(icmp::checksum(&icmp_packet.to_immutable()));
-
-        let len = buf.len() - 20;
-        let _ = compose_ipv4_packet(
-            ComposeIpv4PacketArgs {
-                buf: &mut buf[..],
-                src_v4: src_ip,
-                dst_v4: dst_ip,
-                next_protocol: IpProtocol::Icmp,
-                payload_len: len,
-                payload_mtu: 1200,
-                ip_id: rand::random(),
-            },
-            |buf| {
-                let mut packet = ZCPacket::new_with_payload(buf);
-                packet.fill_peer_manager_hdr(src_peer_id, dst_peer_id, PacketType::Data as u8);
-                let _ = self
-                    .icmp_sender
-                    .lock()
-                    .unwrap()
-                    .as_ref()
-                    .unwrap()
-                    .send(packet);
-                Ok(())
-            },
-        );
-    }
-
-    async fn try_handle_peer_packet(&self, packet: &ZCPacket) -> Option<()> {
-        if self.cidr_set.is_empty()
-            && !self.global_ctx.enable_exit_node()
-            && !self.global_ctx.no_tun()
-        {
-            return None;
-        }
-
-        let _ = self.global_ctx.get_ipv4()?;
-        let hdr = packet.peer_manager_header().unwrap();
-        let is_exit_node = hdr.is_exit_node();
-
-        if hdr.packet_type != PacketType::Data as u8 || hdr.is_no_proxy() {
-            return None;
-        };
-
-        let ipv4 = Ipv4Packet::new(packet.payload())?;
-
-        if ipv4.get_version() != 4 || ipv4.get_next_level_protocol() != IpNextHeaderProtocols::Icmp
-        {
-            return None;
-        }
-
-        let mut real_dst_ip = ipv4.get_destination();
-
-        if !(self
-            .cidr_set
-            .contains_v4(ipv4.get_destination(), &mut real_dst_ip)
-            || is_exit_node
-            || (self.global_ctx.no_tun()
-                && Some(ipv4.get_destination())
-                    == self
-                        .global_ctx
-                        .get_ipv4()
-                        .as_ref()
-                        .map(cidr::Ipv4Inet::address)))
-        {
-            return None;
-        }
-
-        let resembled_buf: Option<Vec<u8>>;
-        let smol_ipv4 = SmolIpv4Packet::new_unchecked(ipv4.packet());
-        let icmp_packet = if IpReassembler::is_packet_fragmented(&smol_ipv4) {
-            let smol_ipv4 = SmolIpv4Packet::new_checked(ipv4.packet()).ok()?;
-            resembled_buf = self.ip_resemmbler.add_fragment(&smol_ipv4);
-            resembled_buf.as_ref()?;
-            icmp::echo_request::EchoRequestPacket::new(resembled_buf.as_ref().unwrap())?
-        } else {
-            icmp::echo_request::EchoRequestPacket::new(ipv4.payload())?
-        };
-
-        if icmp_packet.get_icmp_type() != IcmpTypes::EchoRequest {
-            // if it's other icmp type, just ignore it. may forwarding network to network replay packet.
-            tracing::trace!("unsupported icmp type: {:?}", icmp_packet.get_icmp_type());
-            return None;
-        }
-
-        if self.global_ctx.no_tun()
-            && Some(ipv4.get_destination())
-                == self
-                    .global_ctx
-                    .get_ipv4()
-                    .as_ref()
-                    .map(cidr::Ipv4Inet::address)
-        {
-            self.send_icmp_reply_to_peer(
-                &ipv4.get_destination(),
-                &ipv4.get_source(),
-                hdr.to_peer_id.get(),
-                hdr.from_peer_id.get(),
-                &icmp_packet,
-            )
-            .await;
-            return Some(());
-        }
-
-        let icmp_id = icmp_packet.get_identifier();
-        let icmp_seq = icmp_packet.get_sequence_number();
-
-        let key = IcmpNatKey {
-            real_dst_ip: real_dst_ip.into(),
-            icmp_id,
-            icmp_seq,
-        };
-
-        let value = IcmpNatEntry::new(
-            hdr.from_peer_id.into(),
-            hdr.to_peer_id.into(),
-            ipv4.get_source().into(),
-            ipv4.get_destination(),
-        )
-        .ok()?;
-
-        if let Some(old) = self.nat_table.insert(key, value) {
-            tracing::info!("icmp nat table entry replaced: {:?}", old);
-        }
-
-        if let Err(e) = self.send_icmp_packet(real_dst_ip, &icmp_packet) {
-            tracing::error!("send icmp packet failed: {:?}", e);
-        }
-
-        Some(())
     }
 }
 
