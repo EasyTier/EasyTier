@@ -1,19 +1,14 @@
-use std::{
-    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
-    sync::Arc,
-    time::Duration,
-};
+use std::{net::SocketAddr, sync::Arc, time::Duration};
 
 use anyhow::{Context, Error};
 use easytier_core::{
     connectivity::protocol::raw,
+    hole_punch::tcp::{TcpHolePunchAdmission, select_local_port, try_connect_to_remote},
     socket::tcp::{
-        TcpBindOptions, TcpConnectOptions, TcpListenOptions, VirtualTcpListener,
-        VirtualTcpListenerFactory, VirtualTcpSocketFactory,
+        TcpBindOptions, TcpListenOptions, VirtualTcpListener, VirtualTcpListenerFactory,
     },
 };
 use quanta::Instant;
-use rand::Rng as _;
 use tokio::task::JoinSet;
 
 use crate::{
@@ -60,102 +55,6 @@ fn is_symmetric_tcp_nat(nat_type: NatType) -> bool {
         nat_type,
         NatType::Symmetric | NatType::SymmetricEasyInc | NatType::SymmetricEasyDec
     )
-}
-
-fn bind_addr_for_port(port: u16, is_v6: bool) -> SocketAddr {
-    if is_v6 {
-        SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), port)
-    } else {
-        SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), port)
-    }
-}
-
-async fn select_local_port(host: &RuntimeConnectorHost, is_v6: bool) -> Result<u16, Error> {
-    let bind_addr = bind_addr_for_port(0, is_v6);
-    tracing::trace!(?bind_addr, is_v6, "tcp hole punch select local port");
-    let listener = host
-        .bind_tcp(TcpListenOptions::hole_punch(bind_addr))
-        .await?;
-    let port = listener.local_addr()?.port();
-    tracing::debug!(?bind_addr, port, "tcp hole punch selected local port");
-    Ok(port)
-}
-
-// tcp support simultaneous connect, so initiator and server can both use connect.
-async fn try_connect_to_remote(
-    host: Arc<RuntimeConnectorHost>,
-    peer_mgr: Arc<PeerManager>,
-    a_mapped_addr: SocketAddr,
-    local_port: u16,
-    is_client: bool,
-    max_attempts: u32,
-) -> Result<(), Error> {
-    tracing::info!(
-        ?a_mapped_addr,
-        local_port,
-        "tcp hole punch server start connect loop"
-    );
-
-    let bind_addr = bind_addr_for_port(local_port, a_mapped_addr.is_ipv6());
-    let requested_url: url::Url = format!("tcp://{a_mapped_addr}").parse().unwrap();
-
-    let start = tokio::time::Instant::now();
-    let mut attempts: u32 = 0;
-    while start.elapsed() < Duration::from_secs(10) && attempts < max_attempts {
-        attempts = attempts.wrapping_add(1);
-        let bind = TcpBindOptions::default()
-            .with_local_addr(Some(bind_addr))
-            .with_only_v6(true);
-        let options = TcpConnectOptions::hole_punch(a_mapped_addr, Some(bind_addr)).with_bind(bind);
-        if let Ok(Ok(socket)) =
-            tokio::time::timeout(Duration::from_secs(3), host.connect_tcp(options)).await
-        {
-            let tunnel = raw::upgrade_connected_tcp(socket, requested_url.clone())?;
-            let add_tunnel_ret = if is_client {
-                peer_mgr.add_client_tunnel(tunnel, false).await.map(|_| ())
-            } else {
-                peer_mgr.add_tunnel_as_server(tunnel, false).await
-            };
-            if let Err(e) = add_tunnel_ret {
-                tracing::error!(
-                    ?a_mapped_addr,
-                    local_port,
-                    attempts,
-                    ?e,
-                    "tcp hole punch server connected and added client tunnel failed"
-                );
-                continue;
-            } else {
-                tracing::info!(
-                    ?a_mapped_addr,
-                    local_port,
-                    attempts,
-                    is_client,
-                    "tcp hole punch server connected and added tunnel"
-                );
-                return Ok(());
-            }
-        }
-        tracing::trace!(
-            ?a_mapped_addr,
-            local_port,
-            attempts,
-            "tcp hole punch server connect attempt failed"
-        );
-        let sleep_ms = rand::thread_rng().gen_range(10..100);
-        tokio::time::sleep(Duration::from_millis(sleep_ms)).await;
-    }
-
-    tracing::warn!(
-        ?a_mapped_addr,
-        local_port,
-        attempts,
-        "tcp hole punch server connect loop timeout"
-    );
-
-    Err(anyhow::anyhow!(
-        "tcp hole punch server connect loop timeout"
-    ))
 }
 
 struct TcpHolePunchServer {
@@ -227,10 +126,18 @@ impl TcpHolePunchRpc for TcpHolePunchServer {
             "tcp hole punch rpc responding with listener mapped addr and start connecting"
         );
 
-        let peer_mgr = self.peer_mgr.clone();
+        let peer_manager = self.peer_mgr.core();
         let host = self.host.clone();
         self.tasks.lock().unwrap().spawn(async move {
-            let _ = try_connect_to_remote(host, peer_mgr, a_mapped_addr, local_port, true, 5).await;
+            let _ = try_connect_to_remote(
+                host,
+                peer_manager,
+                a_mapped_addr,
+                local_port,
+                TcpHolePunchAdmission::Client,
+                5,
+            )
+            .await;
         });
 
         Ok(TcpHolePunchResponse {
@@ -339,10 +246,10 @@ impl TcpHolePunchConnectorData {
 
         if let Ok(()) = try_connect_to_remote(
             self.host.clone(),
-            self.peer_mgr.clone(),
+            self.peer_mgr.core(),
             remote_mapped_addr,
             local_port,
-            false,
+            TcpHolePunchAdmission::Server,
             1,
         )
         .await
@@ -363,7 +270,7 @@ impl TcpHolePunchConnectorData {
             "tcp hole punch initiator sent syn to remote mapped addr"
         );
 
-        let bind_addr = bind_addr_for_port(local_port, false);
+        let bind_addr = SocketAddr::new(std::net::Ipv4Addr::UNSPECIFIED.into(), local_port);
         let bind = TcpBindOptions::default()
             .with_local_addr(Some(bind_addr))
             .with_only_v6(true);
