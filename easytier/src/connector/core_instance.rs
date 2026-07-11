@@ -332,6 +332,87 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn portable_core_instances_connect_through_core_tcp_listener() {
+        let global_a = get_mock_global_ctx_with_network(Some(NetworkIdentity::new(
+            "portable-connect-listen".to_owned(),
+            "shared-secret".to_owned(),
+        )));
+        let global_b = get_mock_global_ctx_with_network(Some(NetworkIdentity::new(
+            "portable-connect-listen".to_owned(),
+            "shared-secret".to_owned(),
+        )));
+        let (packet_sink_a, _packet_receiver_a) = create_packet_recv_chan();
+        let (packet_sink_b, _packet_receiver_b) = create_packet_recv_chan();
+        let peer_a = PortablePeerManagerConfig::new(global_a.runtime_config())
+            .with_flags(global_a.get_flags());
+        let peer_b = PortablePeerManagerConfig::new(global_b.runtime_config())
+            .with_flags(global_b.get_flags());
+        let instance_a = Arc::new(
+            RuntimeCoreInstance::new_portable(
+                runtime_core_instance_adapters(global_a.clone()),
+                PortableCoreInstanceConfig {
+                    peer: peer_a,
+                    connectivity: CoreInstanceConfig {
+                        initial_peers: Vec::new(),
+                        listeners: vec![TransportListenerConfig::Tcp {
+                            url: "tcp://127.0.0.1:0".parse().unwrap(),
+                            options: TcpListenOptions::manual_connect(
+                                "127.0.0.1:0".parse().unwrap(),
+                            ),
+                            must_succeed: true,
+                        }],
+                        manual: Default::default(),
+                        direct: runtime_direct_options(&global_a, true),
+                    },
+                },
+                packet_sink_a,
+            )
+            .unwrap(),
+        );
+        let instance_b = Arc::new(
+            RuntimeCoreInstance::new_portable(
+                runtime_core_instance_adapters(global_b.clone()),
+                PortableCoreInstanceConfig {
+                    peer: peer_b,
+                    connectivity: CoreInstanceConfig {
+                        initial_peers: Vec::new(),
+                        listeners: Vec::new(),
+                        manual: Default::default(),
+                        direct: runtime_direct_options(&global_b, true),
+                    },
+                },
+                packet_sink_b,
+            )
+            .unwrap(),
+        );
+
+        instance_a.start_listeners().await.unwrap();
+        let listener = instance_a.running_listeners().pop().unwrap();
+        let (start_a, start_b) = tokio::join!(instance_a.start(), instance_b.start());
+        start_a.unwrap();
+        start_b.unwrap();
+        instance_b.add_connector(listener).unwrap();
+
+        let peer_a_id = instance_a.peer_id();
+        let peer_b_id = instance_b.peer_id();
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            loop {
+                let a_peers = instance_a.connected_peers().await;
+                let b_peers = instance_b.connected_peers().await;
+                if a_peers.contains(&peer_b_id) && b_peers.contains(&peer_a_id) {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("portable core instances did not connect through the core listener");
+
+        instance_b.stop().await;
+        instance_a.stop().await;
+    }
+
+    #[tokio::test]
     async fn portable_core_instance_rejects_conflicting_p2p_policy() {
         let global_ctx = get_mock_global_ctx_with_network(Some(NetworkIdentity::new(
             "portable-policy-validation".to_owned(),

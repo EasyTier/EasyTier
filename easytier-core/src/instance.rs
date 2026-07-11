@@ -520,4 +520,15 @@ where
     pub fn running_listeners(&self) -> Vec<Url> {
         self.direct.running_listeners()
     }
+
+    pub fn peer_id(&self) -> crate::config::PeerId {
+        self.peer_manager.my_peer_id()
+    }
+
+    pub async fn connected_peers(&self) -> Vec<crate::config::PeerId> {
+        self.peer_manager
+            .get_peer_map()
+            .list_peers_with_conn()
+            .await
+    }
 }
