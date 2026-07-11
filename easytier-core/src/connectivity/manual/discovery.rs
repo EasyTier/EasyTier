@@ -21,7 +21,7 @@ use crate::{
     },
 };
 
-use super::resolve_url_addrs;
+use super::{ManualEndpointResolver, resolve_url_addrs};
 
 const HTTP_DEFAULT_PORT: u16 = 80;
 const HTTPS_DEFAULT_PORT: u16 = 443;
@@ -34,6 +34,100 @@ pub struct HttpDiscoveryRequest {
     pub timeout: Duration,
     pub ip_version: IpVersion,
     pub tcp_bind: TcpBindOptions,
+}
+
+#[derive(Debug, Clone)]
+pub struct ManualEndpointDiscoveryConfig {
+    pub user_agent: String,
+    pub network_name: String,
+    pub http_timeout: Duration,
+    pub http_ip_version: IpVersion,
+    pub http_tcp_bind: TcpBindOptions,
+    pub dns_record_context: SocketContext,
+    pub srv_protocols: Vec<String>,
+}
+
+pub struct CoreManualEndpointResolver<H>
+where
+    H: VirtualTcpSocketFactory,
+{
+    host: Arc<H>,
+    dns: Arc<dyn DnsResolver>,
+    dns_records: Arc<dyn DnsRecordResolver>,
+    config: ManualEndpointDiscoveryConfig,
+}
+
+impl<H> CoreManualEndpointResolver<H>
+where
+    H: VirtualTcpSocketFactory,
+{
+    pub fn new(
+        host: Arc<H>,
+        dns: Arc<dyn DnsResolver>,
+        dns_records: Arc<dyn DnsRecordResolver>,
+        config: ManualEndpointDiscoveryConfig,
+    ) -> Self {
+        Self {
+            host,
+            dns,
+            dns_records,
+            config,
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl<H> ManualEndpointResolver for CoreManualEndpointResolver<H>
+where
+    H: VirtualTcpSocketFactory,
+{
+    async fn resolve_endpoint(&self, url: &Url) -> anyhow::Result<Url> {
+        match url.scheme() {
+            "http" | "https" => {
+                let response = fetch_http_discovery(
+                    self.host.clone(),
+                    self.dns.as_ref(),
+                    HttpDiscoveryRequest {
+                        url: url.clone(),
+                        user_agent: self.config.user_agent.clone(),
+                        network_name: self.config.network_name.clone(),
+                        timeout: self.config.http_timeout,
+                        ip_version: self.config.http_ip_version,
+                        tcp_bind: self.config.http_tcp_bind.clone(),
+                    },
+                )
+                .await?;
+                resolve_http_endpoint(response)
+                    .map(|endpoint| endpoint.url)
+                    .map_err(|error| anyhow::anyhow!("Invalid Url: {error}"))
+            }
+            "txt" => {
+                let host = endpoint_host(url)?;
+                resolve_txt_endpoint(
+                    self.dns_records.as_ref(),
+                    host,
+                    self.config.dns_record_context.clone(),
+                )
+                .await
+            }
+            "srv" => {
+                let host = endpoint_host(url)?;
+                resolve_srv_endpoint(
+                    self.dns_records.as_ref(),
+                    host,
+                    &self.config.srv_protocols,
+                    self.config.dns_record_context.clone(),
+                )
+                .await
+            }
+            scheme => anyhow::bail!("unsupported manual endpoint resolver scheme: {scheme}"),
+        }
+    }
+}
+
+fn endpoint_host(url: &Url) -> anyhow::Result<&str> {
+    url.host_str()
+        .ok_or_else(|| anyhow::anyhow!("host should not be empty in {url}"))
 }
 
 pub async fn fetch_http_discovery<H>(
@@ -626,6 +720,57 @@ mod tests {
             self.queries.lock().unwrap().push(query.host);
             Ok(self.srv.clone())
         }
+    }
+
+    #[tokio::test]
+    async fn core_endpoint_resolver_owns_record_scheme_dispatch() {
+        let host = Arc::new(HttpTestHost {
+            stream: Mutex::new(None),
+            connects: Mutex::new(Vec::new()),
+        });
+        let dns: Arc<dyn DnsResolver> = Arc::new(HttpTestDns {
+            queries: Mutex::new(Vec::new()),
+        });
+        let records = Arc::new(TestResolver {
+            txt: "tcp://192.0.2.10:11010".to_owned(),
+            srv: vec![DnsSrvRecord {
+                priority: 1,
+                weight: 10,
+                port: 11012,
+                target: "peer.example.com.".to_owned(),
+            }],
+            queries: Mutex::new(Vec::new()),
+        });
+        let resolver = CoreManualEndpointResolver::new(
+            host,
+            dns,
+            records.clone(),
+            ManualEndpointDiscoveryConfig {
+                user_agent: "easytier/test".to_owned(),
+                network_name: "test-network".to_owned(),
+                http_timeout: Duration::from_secs(1),
+                http_ip_version: IpVersion::Both,
+                http_tcp_bind: TcpBindOptions::default(),
+                dns_record_context: SocketContext::default(),
+                srv_protocols: vec!["quic".to_owned()],
+            },
+        );
+
+        let txt = resolver
+            .resolve_endpoint(&"txt://discovery.example".parse().unwrap())
+            .await
+            .unwrap();
+        let srv = resolver
+            .resolve_endpoint(&"srv://discovery.example".parse().unwrap())
+            .await
+            .unwrap();
+
+        assert_eq!(txt.as_str(), "tcp://192.0.2.10:11010");
+        assert_eq!(srv.as_str(), "quic://peer.example.com.:11012");
+        assert_eq!(
+            *records.queries.lock().unwrap(),
+            ["discovery.example", "_easytier._quic.discovery.example"]
+        );
     }
 
     #[tokio::test]
