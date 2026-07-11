@@ -390,9 +390,10 @@ mod tests {
             .unwrap(),
         );
 
-        instance_a.start().await.unwrap();
+        let (start_a, start_b) = tokio::join!(instance_a.start(), instance_b.start());
+        start_a.unwrap();
+        start_b.unwrap();
         let listener = instance_a.running_listeners().pop().unwrap();
-        instance_b.start().await.unwrap();
         instance_b.add_connector(listener).unwrap();
 
         let peer_a_id = instance_a.peer_id();
