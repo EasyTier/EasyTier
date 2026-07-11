@@ -2,7 +2,7 @@ use std::{
     collections::BTreeSet,
     future::Future,
     net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
-    sync::{Arc, Weak},
+    sync::{Arc, Mutex, Weak},
     time::Duration,
 };
 
@@ -185,6 +185,7 @@ where
     connectors: DashSet<Url>,
     reconnecting: DashSet<Url>,
     removed: DashSet<Url>,
+    state_lock: Mutex<()>,
     peer_manager: Weak<PeerManagerCore>,
     host: Arc<H>,
     dns: Arc<dyn DnsResolver>,
@@ -234,6 +235,7 @@ where
             connectors: DashSet::new(),
             reconnecting: DashSet::new(),
             removed: DashSet::new(),
+            state_lock: Mutex::new(()),
             peer_manager: Arc::downgrade(&peer_manager),
             host,
             dns,
@@ -247,30 +249,37 @@ where
 
     pub fn add_connector(&self, url: Url) -> anyhow::Result<()> {
         ManualTransport::from_url(&url)?;
-        self.data.connectors.insert(url);
+        let _state_guard = self.data.state_lock.lock().unwrap();
+        self.data.removed.remove(&url);
+        if !self.data.reconnecting.contains(&url) {
+            self.data.connectors.insert(url);
+        }
         Ok(())
     }
 
     pub fn remove_connector(&self, url: &Url) -> bool {
-        handle_removed_connectors(&self.data);
-        if !self.data.connectors.contains(url) && !self.data.reconnecting.contains(url) {
-            return false;
+        let _state_guard = self.data.state_lock.lock().unwrap();
+        if self.data.connectors.remove(url).is_some() {
+            tracing::warn!(%url, "manual connector removed");
+            return true;
         }
-        self.data.removed.insert(url.clone());
-        true
+        if self.data.reconnecting.contains(url) {
+            self.data.removed.insert(url.clone());
+            return true;
+        }
+        false
     }
 
     pub fn clear_connectors(&self) {
-        for url in self.data.connectors.iter() {
-            self.data.removed.insert(url.key().clone());
-        }
+        let _state_guard = self.data.state_lock.lock().unwrap();
+        self.data.connectors.clear();
         for url in self.data.reconnecting.iter() {
             self.data.removed.insert(url.key().clone());
         }
     }
 
     pub fn list_connectors(&self) -> Vec<ManualConnectorSnapshot> {
-        handle_removed_connectors(&self.data);
+        let _state_guard = self.data.state_lock.lock().unwrap();
         let peer_manager = self.data.peer_manager.upgrade();
         let mut snapshots = self
             .data
@@ -310,11 +319,7 @@ where
         loop {
             tokio::select! {
                 _ = interval.tick() => {
-                    for url in collect_dead_connectors(&data) {
-                        let removed = data.connectors.remove(&url);
-                        debug_assert!(removed.is_some());
-                        let inserted = data.reconnecting.insert(url.clone());
-                        debug_assert!(inserted);
+                    for url in take_dead_connectors_for_reconnect(&data) {
                         let task_data = data.clone();
                         reconnect_tasks.spawn(async move {
                             let result = reconnect(task_data, url.clone()).await;
@@ -329,8 +334,13 @@ where
                     match result {
                         Ok((url, reconnect_result)) => {
                             tracing::warn!(?url, ?reconnect_result, "manual reconnect task done");
+                            let _state_guard = data.state_lock.lock().unwrap();
                             data.reconnecting.remove(&url);
-                            data.connectors.insert(url);
+                            if data.removed.remove(&url).is_some() {
+                                tracing::warn!(%url, "manual connector removed after reconnect");
+                            } else {
+                                data.connectors.insert(url);
+                            }
                         }
                         Err(error) => {
                             tracing::error!(?error, "manual reconnect task failed");
@@ -342,41 +352,30 @@ where
     }
 }
 
-fn handle_removed_connectors<H>(data: &ManualConnectorData<H>)
+fn take_dead_connectors_for_reconnect<H>(data: &ManualConnectorData<H>) -> BTreeSet<Url>
 where
     H: ManualConnectorHost,
 {
-    let mut remove_later = Vec::new();
-    for entry in data.removed.iter() {
-        let url = entry.key();
-        if data.connectors.remove(url).is_some() {
-            tracing::warn!(%url, "manual connector removed");
-        } else if data.reconnecting.contains(url) {
-            remove_later.push(url.clone());
-        }
-    }
-    data.removed.clear();
-    for url in remove_later {
-        data.removed.insert(url);
-    }
-}
-
-fn collect_dead_connectors<H>(data: &ManualConnectorData<H>) -> BTreeSet<Url>
-where
-    H: ManualConnectorHost,
-{
-    handle_removed_connectors(data);
+    let _state_guard = data.state_lock.lock().unwrap();
     let Some(peer_manager) = data.peer_manager.upgrade() else {
         tracing::warn!("peer manager is gone, skip manual reconnect");
         return BTreeSet::new();
     };
-    data.connectors
+    let dead_connectors = data
+        .connectors
         .iter()
         .filter_map(|entry| {
             let url = entry.key();
             (!client_url_is_alive(&peer_manager, url)).then(|| url.clone())
         })
-        .collect()
+        .collect::<BTreeSet<_>>();
+    for url in &dead_connectors {
+        let removed = data.connectors.remove(url);
+        debug_assert!(removed.is_some());
+        let inserted = data.reconnecting.insert(url.clone());
+        debug_assert!(inserted);
+    }
+    dead_connectors
 }
 
 fn client_url_is_alive(peer_manager: &PeerManagerCore, url: &Url) -> bool {
