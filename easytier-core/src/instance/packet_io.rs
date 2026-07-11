@@ -31,7 +31,7 @@ fn parse_ipv4_packet(packet: &[u8]) -> anyhow::Result<IpPacketMeta> {
     }
     let header_len = usize::from(packet[0] & 0x0f) * 4;
     let total_len = usize::from(u16::from_be_bytes([packet[2], packet[3]]));
-    if header_len < 20 || total_len < header_len || total_len > packet.len() {
+    if header_len < 20 || total_len < header_len || total_len != packet.len() {
         anyhow::bail!("invalid IPv4 header or total length");
     }
     Ok(IpPacketMeta {
@@ -49,8 +49,10 @@ fn parse_ipv6_packet(packet: &[u8]) -> anyhow::Result<IpPacketMeta> {
         anyhow::bail!("IPv6 packet is shorter than the fixed header");
     }
     let payload_len = usize::from(u16::from_be_bytes([packet[4], packet[5]]));
-    if payload_len != 0 && 40 + payload_len > packet.len() {
-        anyhow::bail!("IPv6 payload length exceeds the packet");
+    if (payload_len == 0 && packet.len() != 40)
+        || (payload_len != 0 && 40 + payload_len != packet.len())
+    {
+        anyhow::bail!("IPv6 payload length does not match the packet");
     }
     Ok(IpPacketMeta {
         source: IpAddr::V6(Ipv6Addr::from(
@@ -172,6 +174,15 @@ mod tests {
         assert!(parse_ip_packet(&[0x70]).is_err());
         assert!(parse_ip_packet(&[0x45; 19]).is_err());
         assert!(parse_ip_packet(&[0x60; 39]).is_err());
+
+        let mut ipv4_with_trailing_bytes = vec![0u8; 21];
+        ipv4_with_trailing_bytes[0] = 0x45;
+        ipv4_with_trailing_bytes[2..4].copy_from_slice(&20u16.to_be_bytes());
+        assert!(parse_ip_packet(&ipv4_with_trailing_bytes).is_err());
+
+        let mut unsupported_ipv6_jumbogram = vec![0u8; 41];
+        unsupported_ipv6_jumbogram[0] = 0x60;
+        assert!(parse_ip_packet(&unsupported_ipv6_jumbogram).is_err());
     }
 
     #[tokio::test]
