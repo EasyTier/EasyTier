@@ -252,6 +252,7 @@ where
     }
 
     pub fn remove_connector(&self, url: &Url) -> bool {
+        handle_removed_connectors(&self.data);
         if !self.data.connectors.contains(url) && !self.data.reconnecting.contains(url) {
             return false;
         }
@@ -269,6 +270,7 @@ where
     }
 
     pub fn list_connectors(&self) -> Vec<ManualConnectorSnapshot> {
+        handle_removed_connectors(&self.data);
         let peer_manager = self.data.peer_manager.upgrade();
         let mut snapshots = self
             .data

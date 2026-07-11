@@ -755,26 +755,42 @@ mod tests {
             .remove_connector(listener_url.clone())
             .await
             .unwrap();
-        tokio::time::timeout(Duration::from_secs(1), async {
-            loop {
-                let removed = !connector_manager
-                    .list_connectors()
-                    .await
-                    .iter()
-                    .any(|connector| {
-                        connector
-                            .url
-                            .as_ref()
-                            .is_some_and(|url| url.url == listener_url.as_str())
-                    });
-                if removed {
-                    break;
-                }
-                tokio::time::sleep(Duration::from_millis(10)).await;
-            }
-        })
-        .await
-        .unwrap();
+        assert!(
+            !connector_manager
+                .list_connectors()
+                .await
+                .iter()
+                .any(|connector| {
+                    connector
+                        .url
+                        .as_ref()
+                        .is_some_and(|url| url.url == listener_url.as_str())
+                })
+        );
+        assert!(
+            connector_manager
+                .remove_connector(listener_url.clone())
+                .await
+                .is_err()
+        );
+
+        connector_manager
+            .add_connector_by_url(listener_url.clone())
+            .await
+            .unwrap();
+        connector_manager.clear_connectors().await;
+        assert!(
+            !connector_manager
+                .list_connectors()
+                .await
+                .iter()
+                .any(|connector| {
+                    connector
+                        .url
+                        .as_ref()
+                        .is_some_and(|url| url.url == listener_url.as_str())
+                })
+        );
     }
 
     #[tokio::test]
