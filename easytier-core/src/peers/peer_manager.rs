@@ -854,22 +854,22 @@ impl PeerManagerCore {
         {
             anyhow::bail!("digest-only local identity requires credential key capabilities");
         }
-        if config.runtime.feature_flags.is_credential_peer {
-            anyhow::bail!(
-                "credential peer mode requires a trust adapter and is not available in portable composition"
-            );
+        let is_secure_mode_enabled = config
+            .runtime
+            .secure_mode
+            .as_ref()
+            .is_some_and(|secure| secure.enabled);
+        let is_credential_peer = config.runtime.network_identity.network_secret.is_none();
+        if is_credential_peer && !is_secure_mode_enabled {
+            anyhow::bail!("credential peer identity requires secure mode and a local keypair");
         }
+        config.runtime.feature_flags.is_credential_peer = is_credential_peer;
         if let Some(secure) = config
             .runtime
             .secure_mode
             .as_ref()
             .filter(|secure| secure.enabled)
         {
-            if config.runtime.network_identity.network_secret.is_none() {
-                anyhow::bail!(
-                    "secure mode without a network secret requires trust and pin adapters"
-                );
-            }
             let private_key = secure.private_key()?;
             let public_key = secure.public_key()?;
             let derived_public = x25519_dalek::PublicKey::from(&private_key);
@@ -913,11 +913,6 @@ impl PeerManagerCore {
         } else {
             Arc::new(NullCipher)
         };
-        let is_secure_mode_enabled = config
-            .runtime
-            .secure_mode
-            .as_ref()
-            .is_some_and(|secure| secure.enabled);
         config.runtime.feature_flags.disable_p2p = config.flags.disable_p2p;
         config.runtime.feature_flags.need_p2p = config.flags.need_p2p;
         config.runtime.feature_flags.avoid_relay_data |= config.flags.disable_relay_data;
@@ -3295,8 +3290,10 @@ pub async fn send_msg_internal(
 mod tests {
     use std::{net::SocketAddr, time::Duration};
 
+    use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
     use dashmap::DashMap;
     use quanta::Instant;
+    use x25519_dalek::{PublicKey, StaticSecret};
 
     use super::*;
     use crate::{
@@ -3419,6 +3416,16 @@ mod tests {
         }
     }
 
+    fn credential_secure_mode() -> crate::proto::common::SecureModeConfig {
+        let private = StaticSecret::from([7; 32]);
+        let public = PublicKey::from(&private);
+        crate::proto::common::SecureModeConfig {
+            enabled: true,
+            local_private_key: Some(BASE64_STANDARD.encode(private.as_bytes())),
+            local_public_key: Some(BASE64_STANDARD.encode(public.as_bytes())),
+        }
+    }
+
     fn build_portable_for_test(runtime: PeerRuntimeConfig) -> anyhow::Result<PeerManagerCore> {
         build_portable_config_for_test(PortablePeerManagerConfig::new(runtime))
     }
@@ -3492,24 +3499,44 @@ mod tests {
         digest_mismatch.network_identity.network_secret_digest = Some([1; 32]);
         assert!(build_portable_for_test(digest_mismatch).is_err());
 
-        let mut credential = portable_runtime_config("portable-net", 81);
-        credential.feature_flags.is_credential_peer = true;
-        assert!(build_portable_for_test(credential).is_err());
-
-        let mut secure_without_trust = portable_runtime_config("portable-net", 82);
-        secure_without_trust.network_identity.network_secret = None;
-        secure_without_trust.secure_mode = Some(crate::proto::common::SecureModeConfig {
-            enabled: true,
-            ..Default::default()
-        });
-        assert!(build_portable_for_test(secure_without_trust).is_err());
-
         let mut secure_without_keys = portable_runtime_config("portable-net", 83);
         secure_without_keys.secure_mode = Some(crate::proto::common::SecureModeConfig {
             enabled: true,
             ..Default::default()
         });
         assert!(build_portable_for_test(secure_without_keys).is_err());
+
+        let mut mismatched_keys = portable_runtime_config("portable-net", 82);
+        mismatched_keys.secure_mode = Some(credential_secure_mode());
+        mismatched_keys
+            .secure_mode
+            .as_mut()
+            .unwrap()
+            .local_public_key = Some(BASE64_STANDARD.encode([9; 32]));
+        assert!(build_portable_for_test(mismatched_keys).is_err());
+
+        let mut credential_without_secure_mode = portable_runtime_config("portable-net", 84);
+        credential_without_secure_mode
+            .network_identity
+            .network_secret = None;
+        credential_without_secure_mode
+            .network_identity
+            .network_secret_digest = None;
+        assert!(build_portable_for_test(credential_without_secure_mode).is_err());
+    }
+
+    #[tokio::test]
+    async fn portable_peer_manager_accepts_credential_client_config() {
+        let mut runtime = portable_runtime_config("portable-net", 81);
+        runtime.network_identity.network_secret = None;
+        runtime.network_identity.network_secret_digest = None;
+        runtime.secure_mode = Some(credential_secure_mode());
+
+        let core = build_portable_for_test(runtime).unwrap();
+        assert!(core.context.feature_flags().is_credential_peer);
+        assert!(core.context.network_identity().network_secret.is_none());
+        assert!(core.is_secure_mode_enabled);
+        core.clear_resources().await;
     }
 
     #[tokio::test]
