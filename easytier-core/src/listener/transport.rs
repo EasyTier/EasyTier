@@ -8,7 +8,9 @@ use async_trait::async_trait;
 use url::Url;
 
 use crate::{
-    connectivity::protocol::{ServerProtocolUpgrade, ServerProtocolUpgrader, raw},
+    connectivity::protocol::{
+        ServerProtocolAdmissionController, ServerProtocolUpgrade, ServerProtocolUpgrader, raw,
+    },
     listener::{
         AcceptedSocketHandler, ListenerConnectionCounter, ListenerEventSink, ListenerManager,
         SocketListener,
@@ -18,7 +20,7 @@ use crate::{
         tcp::{TcpListenOptions, TcpSocketListener, VirtualTcpListener, VirtualTcpListenerFactory},
         udp::{
             UdpSession, UdpSessionAcceptKind, UdpSessionControlHandler, UdpSessionListenRequest,
-            UdpSessionSocketListener, VirtualUdpSocketFactory,
+            UdpSessionSocket, UdpSessionSocketListener, VirtualUdpSocketFactory,
         },
     },
 };
@@ -304,8 +306,12 @@ where
     H: VirtualUdpSocketFactory + UdpSessionControlHandler<H::Socket>,
 {
     inner: UdpSessionSocketListener<H, H>,
+    protocol_admission: Option<ServerProtocolAdmissionController>,
     tcp_socket: PhantomData<fn() -> TcpSocket>,
 }
+
+const QUIC_MAX_ACTIVE_UDP_SESSIONS: usize = 1024;
+const QUIC_MAX_IN_FLIGHT_HANDSHAKES: usize = 128;
 
 impl<H, TcpSocket> UdpTransportListener<H, TcpSocket>
 where
@@ -317,6 +323,16 @@ where
         accept_kind: UdpSessionAcceptKind,
         host: Arc<H>,
     ) -> Self {
+        let protocol_admission = matches!(
+            accept_kind,
+            UdpSessionAcceptKind::Classified(crate::socket::udp::UdpSessionProtocol::Quic)
+        )
+        .then(|| {
+            ServerProtocolAdmissionController::new(
+                QUIC_MAX_ACTIVE_UDP_SESSIONS,
+                QUIC_MAX_IN_FLIGHT_HANDSHAKES,
+            )
+        });
         Self {
             inner: UdpSessionSocketListener::new_with_request(
                 url,
@@ -325,6 +341,7 @@ where
                 host.clone(),
                 host,
             ),
+            protocol_admission,
             tcp_socket: PhantomData,
         }
     }
@@ -355,12 +372,27 @@ where
     }
 
     async fn accept(&mut self) -> anyhow::Result<Self::Accepted> {
-        let session = self.inner.accept().await?;
-        Ok(AcceptedTransport::Udp {
-            session,
-            local_url: self.inner.local_url(),
-            admission: None,
-        })
+        loop {
+            let session = self.inner.accept().await?;
+            let admission = match &self.protocol_admission {
+                Some(controller) => match controller.try_admit() {
+                    Some(admission) => Some(admission),
+                    None => {
+                        tracing::debug!(
+                            peer_addr = ?session.peer_addr(),
+                            "drop UDP session after protocol admission limit"
+                        );
+                        continue;
+                    }
+                },
+                None => None,
+            };
+            return Ok(AcceptedTransport::Udp {
+                session,
+                local_url: self.inner.local_url(),
+                admission,
+            });
+        }
     }
 
     fn local_url(&self) -> Url {
@@ -885,6 +917,63 @@ mod tests {
         let mut packet = vec![0; 32];
         packet[..4].copy_from_slice(&4u32.to_le_bytes());
         packet
+    }
+
+    fn quic_initial_packet(dcid: u8) -> Vec<u8> {
+        let mut packet = vec![0; 1200];
+        packet[0] = 0xc0;
+        packet[4] = 1;
+        packet[5] = 1;
+        packet[6] = dcid;
+        packet[7] = 0;
+        packet[8] = 0;
+        packet[9] = 1;
+        packet
+    }
+
+    #[tokio::test]
+    async fn quic_admission_happens_before_transport_is_returned() -> anyhow::Result<()> {
+        let host = Arc::new(MockHost::new());
+        let mut listener = UdpTransportListener::<MockHost, MockTcpSocket>::new(
+            "quic://127.0.0.1:0".parse()?,
+            UdpSessionListenRequest::new(UdpBindOptions::port_bound_listener(
+                "127.0.0.1:0".parse()?,
+            )),
+            UdpSessionAcceptKind::Classified(UdpSessionProtocol::Quic),
+            host.clone(),
+        );
+        listener.protocol_admission = Some(ServerProtocolAdmissionController::new(1, 1));
+        listener.listen().await?;
+        let socket = host.udp_socket(0);
+
+        socket.receive_from(quic_initial_packet(1), "127.0.0.1:32001".parse()?);
+        let first = tokio::time::timeout(Duration::from_secs(1), listener.accept()).await??;
+        assert!(matches!(
+            &first,
+            AcceptedTransport::Udp {
+                admission: Some(_),
+                ..
+            }
+        ));
+
+        socket.receive_from(quic_initial_packet(2), "127.0.0.1:32002".parse()?);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), listener.accept())
+                .await
+                .is_err()
+        );
+
+        drop(first);
+        socket.receive_from(quic_initial_packet(3), "127.0.0.1:32003".parse()?);
+        let third = tokio::time::timeout(Duration::from_secs(1), listener.accept()).await??;
+        assert!(matches!(
+            third,
+            AcceptedTransport::Udp {
+                admission: Some(_),
+                ..
+            }
+        ));
+        Ok(())
     }
 
     #[tokio::test]
