@@ -77,6 +77,24 @@ The factory and listener probes then remove the pre-created-handle shortcut:
 - the created/accepted resources complete TCP, UDP, and listener echoes through
   the same core-owned I/O and protocol boundary.
 
+The DNS probe uses the same operation reactor without adding a blocking import:
+
+- core submits address, TXT, and SRV queries with IP-version, socket-mark, and
+  netns context;
+- Go copies the query, runs an explicitly injected resolver, and retains an
+  owned result until the guest performs a bounded two-step take;
+- the first lookup is held pending until Tokio registers its waker, and every
+  later guest drive requires a host completion signal;
+- TXT record/chunk and UTF-8 normalization belong to the injected resolver;
+  the PoC deliberately has no `net.DefaultResolver` fallback with different
+  semantics.
+
+The packet-egress probe uses a real `HostPacketSink` with a capacity-one Go
+queue. The first packet fills the queue, the second write waits only for
+writable readiness, and Go consumption emits the completion that admits the
+second packet. The test verifies FIFO payloads and waiter cleanup; Go does not
+parse or route the packets.
+
 This slice does not add a wazero fork. Its 5 ms drive loop remains test-only
 rather than becoming part of `easytier-core`.
 
@@ -119,16 +137,20 @@ The minimal Model B path works with wazero 1.12.0:
 - Rust and Go share an independently asserted golden UDP metadata vector;
 - connect, bind, listen, and accept are requested by core rather than injected
   into probe initialization;
+- address, TXT, and SRV resolution is requested through core's injected DNS
+  Interface, including host policy metadata and deterministic completion wakes;
+- packet egress preserves core ordering across bounded Go-host backpressure;
 - all guest calls remain serialized. Go I/O workers never re-enter the module.
 
 The observed test completes with status `0x1b`: timer progress, second-socket
 progress, pending-read isolation, and completion. The exact drive-call count is
 timing-dependent.
 
-This proves functional scheduling, host-controlled socket creation, and reuse
-of the real core TCP/UDP Socket Adapters, not the production wake strategy. The
-5 ms tick is only a PoC
-mechanism for advancing Tokio timers. Before selecting the bounded-drive
+This proves functional scheduling, host-controlled socket/DNS resources,
+bounded packet egress, and reuse of the real core Adapters, not the production
+wake strategy. The 5 ms tick is only a PoC mechanism for advancing Tokio timers
+in scenarios that also need deadlines. DNS and packet backpressure probes are
+completion-gated without that tick. Before selecting the bounded-drive
 design, core must export its next timer deadline (or provide one central wait)
 so an idle instance does not poll periodically. Forced TCP partial I/O, UDP
 zero-length/truncation and cancellation through wazero, sustained backpressure,

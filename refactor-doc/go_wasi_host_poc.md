@@ -106,6 +106,22 @@ connections remain queued in Go until a core `accept()` poll takes one. The
 reproducible probes complete TCP connect, UDP bind, TCP listen/accept, and all
 three echo paths without passing pre-created handles into guest initialization.
 
+The integration harness now also uses core's real host-backed DNS and packet
+Interfaces. Address, TXT, and SRV queries cross a nonblocking, versioned ABI
+with IP-version, socket-mark, and netns context. The Go host must inject a DNS
+Implementation that normalizes TXT semantics before the seam; the PoC does not
+hide Go/native record-chunk differences behind a default resolver. Variable DNS
+results use a non-consuming size probe followed by one bounded owned copy, and
+rejected results are canceled explicitly.
+
+Packet egress uses a capacity-one Go queue. A successful import owns a complete
+packet copy, queue-full has no side effects, and core retries only after a
+writable-readiness completion. The deterministic probe proves FIFO delivery,
+backpressure, and waiter cleanup without moving packet parsing or routing into
+Go. Packet ingress already enters portable logic through
+`CoreInstance::send_ip_packet`; exporting the serialized instance command is a
+later composition step.
+
 The probe uses two `net.Pipe` connections, so success does not depend on an OS
 descriptor. One read remains permanently pending while the second connection
 echoes a byte and a 50 ms Tokio timer completes. The observed status `0x1b`
@@ -117,8 +133,9 @@ EasyTier tasks request and observe I/O, while Go performs the unavoidable
 mechanical call on the logical `net.Conn` or `net.PacketConn`. Go does not need
 to own framing, sessions, protocol state, retries, or routing.
 
-The bounded drive currently uses a 5 ms tick in addition to completion wakes.
-That is a test mechanism, not an accepted idle strategy. The PoC has not yet
+Some socket/timer probes still use a 5 ms tick in addition to completion wakes.
+The DNS and packet-backpressure probes require completion signals and do not use
+that tick. No periodic tick is an accepted idle strategy. The PoC has not yet
 proven deadline-aware sleeping, idle CPU, the full UDP conformance matrix,
 partial TCP I/O, EOF, sustained backpressure, or lifecycle cleanup.
 
