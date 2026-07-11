@@ -1,3 +1,3 @@
 //! Portable connection orchestration.
 
-pub mod tcp;
+pub mod manual;

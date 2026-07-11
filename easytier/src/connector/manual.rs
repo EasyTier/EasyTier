@@ -1,7 +1,7 @@
 use std::{
     collections::BTreeSet,
     future::Future,
-    net::SocketAddr,
+    net::{SocketAddr, SocketAddrV4, SocketAddrV6},
     sync::{Arc, Weak},
     time::Duration,
 };
@@ -9,14 +9,17 @@ use std::{
 use async_trait::async_trait;
 use dashmap::DashSet;
 use easytier_core::{
-    connectivity::tcp::{
-        ManualTcpConnectorManager as CoreManualTcpConnectorManager, ManualTcpConnectorOptions,
-        ManualTcpConnectorStatus, TcpConnectivityEvent, TcpConnectivityEventSink, TcpConnectorHost,
-        TcpInterfaceAddrs,
+    connectivity::manual::{
+        ManualConnectivityEvent, ManualConnectivityEventSink, ManualConnectorHost,
+        ManualConnectorManager as CoreManualConnectorManager, ManualConnectorOptions,
+        ManualConnectorStatus, ManualInterfaceAddrs,
     },
     socket::{
         dns::DnsResolver,
         tcp::{TcpBindOptions, TcpConnectOptions, VirtualTcpSocketFactory},
+        udp::{
+            PreferredIpv6Source, UdpBindOptions, UdpSessionControlHandler, VirtualUdpSocketFactory,
+        },
     },
 };
 use quanta::Instant;
@@ -39,6 +42,7 @@ use crate::{
     tunnel::{
         IpVersion, TunnelConnector, TunnelScheme, matches_scheme,
         tcp_socket::{self, RuntimeTcpSocket},
+        udp::{RuntimeUdpSessionControlHandler, RuntimeUdpSocket, RuntimeUdpSocketFactory},
     },
     utils::weak_upgrade,
 };
@@ -56,7 +60,7 @@ use crate::{
 use super::create_connector_by_url;
 
 type ConnectorMap = Arc<DashSet<url::Url>>;
-type CoreTcpConnectorManager = CoreManualTcpConnectorManager<RuntimeTcpConnectorHost>;
+type CoreConnectorManager = CoreManualConnectorManager<RuntimeManualConnectorHost>;
 
 #[derive(Debug, Clone)]
 struct ReconnResult {
@@ -76,18 +80,22 @@ struct ConnectorManagerData {
     global_ctx: ArcGlobalCtx,
 }
 
-struct RuntimeTcpConnectorHost {
+struct RuntimeManualConnectorHost {
     global_ctx: ArcGlobalCtx,
+    udp_socket_factory: RuntimeUdpSocketFactory,
 }
 
-impl RuntimeTcpConnectorHost {
+impl RuntimeManualConnectorHost {
     fn new(global_ctx: ArcGlobalCtx) -> Self {
-        Self { global_ctx }
+        Self {
+            udp_socket_factory: RuntimeUdpSocketFactory::new(global_ctx.net_ns.clone()),
+            global_ctx,
+        }
     }
 }
 
 #[async_trait]
-impl VirtualTcpSocketFactory for RuntimeTcpConnectorHost {
+impl VirtualTcpSocketFactory for RuntimeManualConnectorHost {
     type Socket = RuntimeTcpSocket;
 
     async fn connect_tcp(&self, options: TcpConnectOptions) -> anyhow::Result<Self::Socket> {
@@ -103,7 +111,43 @@ impl VirtualTcpSocketFactory for RuntimeTcpConnectorHost {
 }
 
 #[async_trait]
-impl TcpConnectorHost for RuntimeTcpConnectorHost {
+impl VirtualUdpSocketFactory for RuntimeManualConnectorHost {
+    type Socket = RuntimeUdpSocket;
+
+    async fn bind_udp(&self, options: UdpBindOptions) -> anyhow::Result<Arc<Self::Socket>> {
+        let socket = self.udp_socket_factory.bind_udp(options).await?;
+        #[cfg(target_os = "windows")]
+        crate::arch::windows::disable_connection_reset(socket.socket().as_ref())?;
+        Ok(socket)
+    }
+}
+
+#[async_trait]
+impl UdpSessionControlHandler<RuntimeUdpSocket> for RuntimeManualConnectorHost {
+    async fn send_v4_hole_punch(
+        &self,
+        socket: Arc<RuntimeUdpSocket>,
+        dst_addr: SocketAddrV4,
+    ) -> std::io::Result<usize> {
+        RuntimeUdpSessionControlHandler
+            .send_v4_hole_punch(socket, dst_addr)
+            .await
+    }
+
+    async fn send_v6_hole_punch(
+        &self,
+        socket: Arc<RuntimeUdpSocket>,
+        dst_addr: SocketAddrV6,
+        preferred_src: Option<PreferredIpv6Source>,
+    ) -> std::io::Result<usize> {
+        RuntimeUdpSessionControlHandler
+            .send_v6_hole_punch(socket, dst_addr, preferred_src)
+            .await
+    }
+}
+
+#[async_trait]
+impl ManualConnectorHost for RuntimeManualConnectorHost {
     async fn local_addr_for_remote(&self, remote_addr: SocketAddr) -> anyhow::Result<SocketAddr> {
         let socket = self
             .global_ctx
@@ -114,9 +158,9 @@ impl TcpConnectorHost for RuntimeTcpConnectorHost {
         Ok(socket.local_addr()?)
     }
 
-    async fn interface_addrs(&self) -> anyhow::Result<TcpInterfaceAddrs> {
+    async fn interface_addrs(&self) -> anyhow::Result<ManualInterfaceAddrs> {
         let addrs = self.global_ctx.get_ip_collector().collect_ip_addrs().await;
-        Ok(TcpInterfaceAddrs {
+        Ok(ManualInterfaceAddrs {
             interface_ipv4s: addrs
                 .interface_ipv4s
                 .into_iter()
@@ -132,17 +176,17 @@ impl TcpConnectorHost for RuntimeTcpConnectorHost {
     }
 }
 
-struct GlobalCtxTcpConnectivityEventSink {
+struct GlobalCtxManualConnectivityEventSink {
     global_ctx: ArcGlobalCtx,
 }
 
-impl TcpConnectivityEventSink for GlobalCtxTcpConnectivityEventSink {
-    fn emit(&self, event: TcpConnectivityEvent) {
+impl ManualConnectivityEventSink for GlobalCtxManualConnectivityEventSink {
+    fn emit(&self, event: ManualConnectivityEvent) {
         match event {
-            TcpConnectivityEvent::Connecting { url } => {
+            ManualConnectivityEvent::Connecting { url } => {
                 self.global_ctx.issue_event(GlobalCtxEvent::Connecting(url));
             }
-            TcpConnectivityEvent::ConnectError {
+            ManualConnectivityEvent::ConnectError {
                 url,
                 ip_version,
                 error,
@@ -160,7 +204,7 @@ impl TcpConnectivityEventSink for GlobalCtxTcpConnectivityEventSink {
 pub struct ManualConnectorManager {
     global_ctx: ArcGlobalCtx,
     data: Arc<ConnectorManagerData>,
-    tcp_manager: Arc<CoreTcpConnectorManager>,
+    core_manager: Arc<CoreConnectorManager>,
     tasks: JoinSet<()>,
 }
 
@@ -171,7 +215,7 @@ impl ManualConnectorManager {
         let connectors = Arc::new(DashSet::new());
         let tasks = JoinSet::new();
         let flags = global_ctx.config.get_flags();
-        let tcp_options = ManualTcpConnectorOptions {
+        let core_options = ManualConnectorOptions {
             reconnect_interval: Duration::from_millis(use_global_var!(
                 MANUAL_CONNECTOR_RECONNECT_INTERVAL_MS
             )),
@@ -183,14 +227,15 @@ impl ManualConnectorManager {
                 all(target_os = "macos", feature = "macos-ne"),
                 target_env = "ohos"
             )),
-            bind: TcpBindOptions::default().with_socket_mark(flags.socket_mark),
+            tcp_bind: TcpBindOptions::default().with_socket_mark(flags.socket_mark),
+            udp_bind: UdpBindOptions::direct_connect().with_socket_mark(flags.socket_mark),
         };
-        let tcp_manager = Arc::new(CoreManualTcpConnectorManager::new_with_events(
+        let core_manager = Arc::new(CoreManualConnectorManager::new_with_events(
             peer_manager.core(),
-            Arc::new(RuntimeTcpConnectorHost::new(global_ctx.clone())),
+            Arc::new(RuntimeManualConnectorHost::new(global_ctx.clone())),
             Arc::new(RuntimeDnsResolver::new()) as Arc<dyn DnsResolver>,
-            tcp_options,
-            Arc::new(GlobalCtxTcpConnectivityEventSink {
+            core_options,
+            Arc::new(GlobalCtxManualConnectivityEventSink {
                 global_ctx: global_ctx.clone(),
             }),
         ));
@@ -206,7 +251,7 @@ impl ManualConnectorManager {
                 net_ns: global_ctx.net_ns.clone(),
                 global_ctx,
             }),
-            tcp_manager,
+            core_manager,
             tasks,
         };
 
@@ -265,24 +310,28 @@ impl ManualConnectorManager {
 }
 
 impl ManualConnectorManager {
+    fn core_owns_scheme(url: &url::Url) -> bool {
+        matches!(url.scheme(), "tcp" | "udp")
+    }
+
     pub fn add_connector<T>(&self, connector: T)
     where
         T: TunnelConnector + 'static,
     {
         let url = connector.remote_url();
         tracing::info!("add_connector: {}", url);
-        if url.scheme() == "tcp" {
-            self.tcp_manager
+        if Self::core_owns_scheme(&url) {
+            self.core_manager
                 .add_connector(url)
-                .expect("TCP connector URL should be valid");
+                .expect("core manual connector URL should be valid");
         } else {
             self.data.connectors.insert(url);
         }
     }
 
     pub async fn add_connector_by_url(&self, url: url::Url) -> Result<(), Error> {
-        if url.scheme() == "tcp" {
-            self.tcp_manager.add_connector(url)?;
+        if Self::core_owns_scheme(&url) {
+            self.core_manager.add_connector(url)?;
             return Ok(());
         }
         self.data.connectors.insert(url);
@@ -291,7 +340,7 @@ impl ManualConnectorManager {
 
     pub async fn remove_connector(&self, url: url::Url) -> Result<(), Error> {
         tracing::info!("remove_connector: {}", url);
-        if url.scheme() == "tcp" && self.tcp_manager.remove_connector(&url) {
+        if Self::core_owns_scheme(&url) && self.core_manager.remove_connector(&url) {
             return Ok(());
         }
         let url = url.into();
@@ -308,7 +357,7 @@ impl ManualConnectorManager {
     }
 
     pub async fn clear_connectors(&self) {
-        self.tcp_manager.clear_connectors();
+        self.core_manager.clear_connectors();
         for url in self.data.connectors.iter() {
             self.data.removed_conn_urls.insert(url.key().clone());
         }
@@ -353,11 +402,11 @@ impl ManualConnectorManager {
             );
         }
 
-        for connector in self.tcp_manager.list_connectors() {
+        for connector in self.core_manager.list_connectors() {
             let status = match connector.status {
-                ManualTcpConnectorStatus::Connected => ConnectorStatus::Connected,
-                ManualTcpConnectorStatus::Disconnected => ConnectorStatus::Disconnected,
-                ManualTcpConnectorStatus::Connecting => ConnectorStatus::Connecting,
+                ManualConnectorStatus::Connected => ConnectorStatus::Connected,
+                ManualConnectorStatus::Disconnected => ConnectorStatus::Disconnected,
+                ManualConnectorStatus::Connecting => ConnectorStatus::Connecting,
             };
             ret.insert(
                 0,
@@ -717,6 +766,122 @@ mod tests {
             .into_iter()
             .find(|url| url.scheme() == "tcp")
             .expect("TCP listener should start");
+
+        let client = create_mock_peer_manager().await;
+        let mut flags = client.get_global_ctx().get_flags();
+        flags.bind_device = false;
+        client.get_global_ctx().set_flags(flags);
+        let connector_manager =
+            ManualConnectorManager::new(client.get_global_ctx(), client.clone());
+        connector_manager
+            .add_connector_by_url(listener_url.clone())
+            .await
+            .unwrap();
+
+        wait_route_appear(client.clone(), server.clone())
+            .await
+            .unwrap();
+        assert!(client.get_peer_map().is_client_url_alive(&listener_url));
+        assert!(client.has_directly_connected_conn(server.my_peer_id()));
+
+        let server_peer_id = server.my_peer_id();
+        let first_conn_id = client
+            .get_peer_map()
+            .get_peer_default_conn_id(server_peer_id)
+            .await
+            .unwrap();
+        client
+            .close_peer_conn(server_peer_id, &first_conn_id)
+            .await
+            .unwrap();
+        wait_for_condition(
+            || {
+                let client = client.clone();
+                async move {
+                    client
+                        .get_peer_map()
+                        .get_peer_default_conn_id(server_peer_id)
+                        .await
+                        .is_some_and(|conn_id| conn_id != first_conn_id)
+                }
+            },
+            Duration::from_secs(3),
+        )
+        .await;
+        assert!(client.get_peer_map().is_client_url_alive(&listener_url));
+
+        assert!(
+            connector_manager
+                .list_connectors()
+                .await
+                .iter()
+                .any(|connector| {
+                    connector.url.as_ref().is_some_and(|url| {
+                        url.url == listener_url.as_str()
+                            && connector.status == ConnectorStatus::Connected as i32
+                    })
+                })
+        );
+        connector_manager
+            .remove_connector(listener_url.clone())
+            .await
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                let removed = !connector_manager
+                    .list_connectors()
+                    .await
+                    .iter()
+                    .any(|connector| {
+                        connector
+                            .url
+                            .as_ref()
+                            .is_some_and(|url| url.url == listener_url.as_str())
+                    });
+                if removed {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn core_udp_connector_and_listener_form_peer_connection() {
+        set_global_var!(MANUAL_CONNECTOR_RECONNECT_INTERVAL_MS, 10);
+
+        let server = create_mock_peer_manager().await;
+        server
+            .get_global_ctx()
+            .config
+            .set_listeners(vec!["udp://127.0.0.1:0".parse().unwrap()]);
+        let mut listener_manager = ListenerManager::new(server.get_global_ctx(), server.core());
+        listener_manager.prepare_listeners().await.unwrap();
+        listener_manager.run().await.unwrap();
+
+        wait_for_condition(
+            || {
+                let server = server.clone();
+                async move {
+                    server
+                        .get_global_ctx()
+                        .get_running_listeners()
+                        .into_iter()
+                        .any(|url| url.scheme() == "udp")
+                }
+            },
+            Duration::from_secs(2),
+        )
+        .await;
+        let listener_url = server
+            .get_global_ctx()
+            .get_running_listeners()
+            .into_iter()
+            .find(|url| url.scheme() == "udp")
+            .expect("UDP listener should start");
 
         let client = create_mock_peer_manager().await;
         let mut flags = client.get_global_ctx().get_flags();

@@ -6,14 +6,13 @@ use std::{
 
 use async_trait::async_trait;
 use easytier_core::{
-    connectivity::tcp::upgrade_accepted_socket,
+    connectivity::manual::{upgrade_accepted_session, upgrade_accepted_socket},
     listener::{self as core_listener, plan as core_listener_plan},
     peers::peer_manager::PeerManagerCore,
     socket::{
         tcp::TcpSocketListener,
-        udp::{UdpSession, UdpSessionAcceptKind, UdpSessionSocket, UdpSessionSocketListener},
+        udp::{UdpSession, UdpSessionAcceptKind, UdpSessionSocketListener},
     },
-    tunnel::udp::UdpTunnelUpgrader,
 };
 
 use crate::{
@@ -24,8 +23,8 @@ use crate::{
     },
     peers::peer_manager::PeerManager,
     tunnel::{
-        self, FromUrl, IpScheme, IpVersion, Tunnel, TunnelConnCounter, TunnelInfo, TunnelListener,
-        TunnelScheme, build_url_from_socket_addr,
+        self, FromUrl, IpScheme, IpVersion, Tunnel, TunnelConnCounter, TunnelListener,
+        TunnelScheme,
         ring::RingTunnelListener,
         tcp::{TcpTunnelListener, resolve_tcp_bind_url_addr},
         tcp_socket::{RuntimeTcpListenerFactory, RuntimeTcpSocket},
@@ -665,18 +664,7 @@ where
     }
 
     async fn handle_udp_session(&self, session: UdpSession) -> anyhow::Result<()> {
-        let local_addr = session.local_addr()?;
-        let remote_addr = session.peer_addr()?;
-        let local_url = build_url_from_socket_addr(&local_addr.to_string(), "udp");
-        let remote_url = build_url_from_socket_addr(&remote_addr.to_string(), "udp");
-        let tunnel_info = TunnelInfo {
-            tunnel_type: "udp".to_owned(),
-            local_addr: Some(local_url.clone().into()),
-            remote_addr: Some(remote_url.clone().into()),
-            resolved_remote_addr: Some(remote_url.clone().into()),
-        };
-
-        let tunnel = UdpTunnelUpgrader::new(tunnel_info).upgrade(session)?;
+        let tunnel = upgrade_accepted_session(session)?;
         self.handle_tunnel(tunnel).await
     }
 

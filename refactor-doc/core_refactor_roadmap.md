@@ -1,6 +1,6 @@
 # EasyTier Core Refactor Roadmap
 
-> Status: active and authoritative. Updated 2026-07-10.
+> Status: active and authoritative. Updated 2026-07-11.
 
 ## Outcome
 
@@ -38,16 +38,18 @@ Already established:
 - peer routing, peer RPC, route state, stream framing, core-side TCP and UDP
   socket Interfaces, DNS Interface, and substantial hole-punch logic have moved
   into core;
-- UDP hole-punch completion and ordinary TCP manual reconnect/listener paths now
-  produce host-created sockets before core-owned tunnel upgrade and peer
-  admission;
+- UDP hole-punch completion and ordinary TCP/UDP manual reconnect/listener paths
+  now produce host-created sockets or sessions before core-owned tunnel upgrade
+  and peer admission;
+- ordinary TCP and UDP connectors share one core-owned manual Connectivity
+  Module for URL state, DNS, IP-family ordering, retries, status, and admission;
 - the native crate already contains Adapter implementations for several core
   Interfaces.
 
 The current architecture is still intermediate:
 
-- non-TCP manual reconnect, direct-connect, and TCP hole-punch paths can still
-  create legacy tunnels outside the final socket seam;
+- non-TCP/UDP manual reconnect, direct-connect, and TCP hole-punch paths can
+  still create legacy tunnels outside the final socket seam;
 - not every inbound protocol listener is expressed as a core-owned socket
   listener plus portable tunnel upgrade;
 - native `Instance`, `PeerManager`, `PeerContext`, and process-global state

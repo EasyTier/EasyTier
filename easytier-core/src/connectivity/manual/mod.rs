@@ -18,34 +18,60 @@ use url::Url;
 
 use crate::{
     peers::peer_manager::PeerManagerCore,
-    proto::common::TunnelInfo,
     socket::{
         IpVersion, SocketContext,
         dns::{DnsQuery, DnsResolver},
-        tcp::{TcpBindOptions, TcpConnectOptions, VirtualTcpSocket, VirtualTcpSocketFactory},
+        tcp::{TcpBindOptions, VirtualTcpSocketFactory},
+        udp::{UdpBindOptions, UdpSessionControlHandler, VirtualUdpSocketFactory},
     },
-    tunnel::{Tunnel, TunnelError, tcp::TcpTunnelUpgrader},
+    tunnel::{Tunnel, TunnelError},
 };
 
-const TCP_DEFAULT_PORT: u16 = 11010;
+mod tcp;
+mod udp;
+
+pub use tcp::upgrade_accepted_socket;
+pub use udp::upgrade_accepted_session;
+
+const MANUAL_DEFAULT_PORT: u16 = 11010;
 const MANUAL_PREFLIGHT_DEFAULT_PORT: u16 = 1000;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ManualTransport {
+    Tcp,
+    Udp,
+}
+
+impl ManualTransport {
+    fn from_url(url: &Url) -> anyhow::Result<Self> {
+        match url.scheme() {
+            "tcp" => Ok(Self::Tcp),
+            "udp" => Ok(Self::Udp),
+            _ => anyhow::bail!("unsupported core manual connector URL: {url}"),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TcpInterfaceAddrs {
+pub struct ManualInterfaceAddrs {
     pub interface_ipv4s: Vec<Ipv4Addr>,
     pub interface_ipv6s: Vec<Ipv6Addr>,
     pub public_ipv6: Option<Ipv6Addr>,
 }
 
 #[async_trait]
-pub trait TcpConnectorHost: VirtualTcpSocketFactory {
+pub trait ManualConnectorHost:
+    VirtualTcpSocketFactory
+    + VirtualUdpSocketFactory
+    + UdpSessionControlHandler<<Self as VirtualUdpSocketFactory>::Socket>
+{
     async fn local_addr_for_remote(&self, remote_addr: SocketAddr) -> anyhow::Result<SocketAddr>;
 
-    async fn interface_addrs(&self) -> anyhow::Result<TcpInterfaceAddrs>;
+    async fn interface_addrs(&self) -> anyhow::Result<ManualInterfaceAddrs>;
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum TcpConnectivityEvent {
+pub enum ManualConnectivityEvent {
     Connecting {
         url: Url,
     },
@@ -56,54 +82,65 @@ pub enum TcpConnectivityEvent {
     },
 }
 
-pub trait TcpConnectivityEventSink: Send + Sync + 'static {
-    fn emit(&self, event: TcpConnectivityEvent);
+pub trait ManualConnectivityEventSink: Send + Sync + 'static {
+    fn emit(&self, event: ManualConnectivityEvent);
 }
 
 #[derive(Debug)]
-struct NoopTcpConnectivityEventSink;
+struct NoopManualConnectivityEventSink;
 
-impl TcpConnectivityEventSink for NoopTcpConnectivityEventSink {
-    fn emit(&self, _event: TcpConnectivityEvent) {}
+impl ManualConnectivityEventSink for NoopManualConnectivityEventSink {
+    fn emit(&self, _event: ManualConnectivityEvent) {}
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ManualTcpConnectorStatus {
+pub enum ManualConnectorStatus {
     Connected,
     Disconnected,
     Connecting,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ManualTcpConnectorSnapshot {
+pub struct ManualConnectorSnapshot {
     pub url: Url,
-    pub status: ManualTcpConnectorStatus,
+    pub status: ManualConnectorStatus,
 }
 
 #[derive(Debug, Clone)]
-pub struct ManualTcpConnectorOptions {
+pub struct ManualConnectorOptions {
     pub reconnect_interval: Duration,
     pub connect_timeout: Duration,
     pub bind_device: bool,
     pub allow_interface_bind: bool,
-    pub bind: TcpBindOptions,
+    pub tcp_bind: TcpBindOptions,
+    pub udp_bind: UdpBindOptions,
 }
 
-impl Default for ManualTcpConnectorOptions {
+impl Default for ManualConnectorOptions {
     fn default() -> Self {
         Self {
             reconnect_interval: Duration::from_secs(1),
             connect_timeout: Duration::from_secs(2),
             bind_device: false,
             allow_interface_bind: true,
-            bind: TcpBindOptions::default(),
+            tcp_bind: TcpBindOptions::default(),
+            udp_bind: UdpBindOptions::direct_connect(),
         }
     }
 }
 
-struct ManualTcpConnectorData<H>
+impl ManualConnectorOptions {
+    fn socket_mark(&self, transport: ManualTransport) -> Option<u32> {
+        match transport {
+            ManualTransport::Tcp => self.tcp_bind.socket_mark,
+            ManualTransport::Udp => self.udp_bind.socket_mark,
+        }
+    }
+}
+
+struct ManualConnectorData<H>
 where
-    H: TcpConnectorHost,
+    H: ManualConnectorHost,
 {
     connectors: DashSet<Url>,
     reconnecting: DashSet<Url>,
@@ -111,34 +148,34 @@ where
     peer_manager: Weak<PeerManagerCore>,
     host: Arc<H>,
     dns: Arc<dyn DnsResolver>,
-    events: Arc<dyn TcpConnectivityEventSink>,
-    options: ManualTcpConnectorOptions,
+    events: Arc<dyn ManualConnectivityEventSink>,
+    options: ManualConnectorOptions,
 }
 
-pub struct ManualTcpConnectorManager<H>
+pub struct ManualConnectorManager<H>
 where
-    H: TcpConnectorHost,
+    H: ManualConnectorHost,
 {
-    data: Arc<ManualTcpConnectorData<H>>,
+    data: Arc<ManualConnectorData<H>>,
     _task: AbortOnDropHandle<()>,
 }
 
-impl<H> ManualTcpConnectorManager<H>
+impl<H> ManualConnectorManager<H>
 where
-    H: TcpConnectorHost,
+    H: ManualConnectorHost,
 {
     pub fn new(
         peer_manager: Arc<PeerManagerCore>,
         host: Arc<H>,
         dns: Arc<dyn DnsResolver>,
-        options: ManualTcpConnectorOptions,
+        options: ManualConnectorOptions,
     ) -> Self {
         Self::new_with_events(
             peer_manager,
             host,
             dns,
             options,
-            Arc::new(NoopTcpConnectivityEventSink),
+            Arc::new(NoopManualConnectivityEventSink),
         )
     }
 
@@ -146,10 +183,10 @@ where
         peer_manager: Arc<PeerManagerCore>,
         host: Arc<H>,
         dns: Arc<dyn DnsResolver>,
-        options: ManualTcpConnectorOptions,
-        events: Arc<dyn TcpConnectivityEventSink>,
+        options: ManualConnectorOptions,
+        events: Arc<dyn ManualConnectivityEventSink>,
     ) -> Self {
-        let data = Arc::new(ManualTcpConnectorData {
+        let data = Arc::new(ManualConnectorData {
             connectors: DashSet::new(),
             reconnecting: DashSet::new(),
             removed: DashSet::new(),
@@ -164,9 +201,7 @@ where
     }
 
     pub fn add_connector(&self, url: Url) -> anyhow::Result<()> {
-        if url.scheme() != "tcp" {
-            anyhow::bail!("manual TCP connector requires a tcp URL: {url}");
-        }
+        ManualTransport::from_url(&url)?;
         self.data.connectors.insert(url);
         Ok(())
     }
@@ -188,7 +223,7 @@ where
         }
     }
 
-    pub fn list_connectors(&self) -> Vec<ManualTcpConnectorSnapshot> {
+    pub fn list_connectors(&self) -> Vec<ManualConnectorSnapshot> {
         let peer_manager = self.data.peer_manager.upgrade();
         let mut snapshots = self
             .data
@@ -199,12 +234,12 @@ where
                 let connected = peer_manager
                     .as_ref()
                     .is_some_and(|peer_manager| client_url_is_alive(peer_manager, &url));
-                ManualTcpConnectorSnapshot {
+                ManualConnectorSnapshot {
                     url,
                     status: if connected {
-                        ManualTcpConnectorStatus::Connected
+                        ManualConnectorStatus::Connected
                     } else {
-                        ManualTcpConnectorStatus::Disconnected
+                        ManualConnectorStatus::Disconnected
                     },
                 }
             })
@@ -213,23 +248,22 @@ where
             self.data
                 .reconnecting
                 .iter()
-                .map(|entry| ManualTcpConnectorSnapshot {
+                .map(|entry| ManualConnectorSnapshot {
                     url: entry.key().clone(),
-                    status: ManualTcpConnectorStatus::Connecting,
+                    status: ManualConnectorStatus::Connecting,
                 }),
         );
         snapshots
     }
 
-    async fn run(data: Arc<ManualTcpConnectorData<H>>) {
+    async fn run(data: Arc<ManualConnectorData<H>>) {
         let mut interval = tokio::time::interval(data.options.reconnect_interval);
         let mut reconnect_tasks = JoinSet::new();
 
         loop {
             tokio::select! {
                 _ = interval.tick() => {
-                    let dead_urls = collect_dead_connectors(&data);
-                    for url in dead_urls {
+                    for url in collect_dead_connectors(&data) {
                         let removed = data.connectors.remove(&url);
                         debug_assert!(removed.is_some());
                         let inserted = data.reconnecting.insert(url.clone());
@@ -247,12 +281,12 @@ where
                     };
                     match result {
                         Ok((url, reconnect_result)) => {
-                            tracing::warn!(?url, ?reconnect_result, "manual TCP reconnect task done");
+                            tracing::warn!(?url, ?reconnect_result, "manual reconnect task done");
                             data.reconnecting.remove(&url);
                             data.connectors.insert(url);
                         }
                         Err(error) => {
-                            tracing::error!(?error, "manual TCP reconnect task failed");
+                            tracing::error!(?error, "manual reconnect task failed");
                         }
                     }
                 }
@@ -261,15 +295,15 @@ where
     }
 }
 
-fn handle_removed_connectors<H>(data: &ManualTcpConnectorData<H>)
+fn handle_removed_connectors<H>(data: &ManualConnectorData<H>)
 where
-    H: TcpConnectorHost,
+    H: ManualConnectorHost,
 {
     let mut remove_later = Vec::new();
     for entry in data.removed.iter() {
         let url = entry.key();
         if data.connectors.remove(url).is_some() {
-            tracing::warn!(%url, "manual TCP connector removed");
+            tracing::warn!(%url, "manual connector removed");
         } else if data.reconnecting.contains(url) {
             remove_later.push(url.clone());
         }
@@ -280,13 +314,13 @@ where
     }
 }
 
-fn collect_dead_connectors<H>(data: &ManualTcpConnectorData<H>) -> BTreeSet<Url>
+fn collect_dead_connectors<H>(data: &ManualConnectorData<H>) -> BTreeSet<Url>
 where
-    H: TcpConnectorHost,
+    H: ManualConnectorHost,
 {
     handle_removed_connectors(data);
     let Some(peer_manager) = data.peer_manager.upgrade() else {
-        tracing::warn!("peer manager is gone, skip manual TCP reconnect");
+        tracing::warn!("peer manager is gone, skip manual reconnect");
         return BTreeSet::new();
     };
     data.connectors
@@ -305,11 +339,12 @@ fn client_url_is_alive(peer_manager: &PeerManagerCore, url: &Url) -> bool {
             .is_client_url_alive(url)
 }
 
-async fn reconnect<H>(data: Arc<ManualTcpConnectorData<H>>, url: Url) -> anyhow::Result<()>
+async fn reconnect<H>(data: Arc<ManualConnectorData<H>>, url: Url) -> anyhow::Result<()>
 where
-    H: TcpConnectorHost,
+    H: ManualConnectorHost,
 {
-    tracing::info!(%url, "manual TCP reconnect start");
+    let transport = ManualTransport::from_url(&url)?;
+    tracing::info!(%url, ?transport, "manual reconnect start");
     let normalized_url = match convert_idn_to_ascii(url.clone()) {
         Ok(url) => url,
         Err(error) => {
@@ -325,7 +360,7 @@ where
             &normalized_url,
             MANUAL_PREFLIGHT_DEFAULT_PORT,
             IpVersion::Both,
-            data.options.bind.socket_mark,
+            data.options.socket_mark(transport),
             data.dns.as_ref(),
         ),
     )
@@ -337,7 +372,7 @@ where
             return Err(error);
         }
     };
-    tracing::info!(?addrs, %url, "manual TCP preflight resolve done");
+    tracing::info!(?addrs, %url, "manual preflight resolve done");
 
     let mut ip_versions = Vec::new();
     if addrs.iter().any(SocketAddr::is_ipv4) {
@@ -350,7 +385,15 @@ where
     let mut last_error = anyhow::anyhow!("cannot get IP from URL");
     for ip_version in ip_versions {
         let started_at = Instant::now();
-        match reconnect_with_ip_version(data.clone(), url.clone(), ip_version, started_at).await {
+        match reconnect_with_ip_version(
+            data.clone(),
+            url.clone(),
+            transport,
+            ip_version,
+            started_at,
+        )
+        .await
+        {
             Ok(()) => return Ok(()),
             Err(error) => {
                 emit_connect_error(&data, &url, ip_version, &error);
@@ -362,38 +405,45 @@ where
 }
 
 async fn reconnect_with_ip_version<H>(
-    data: Arc<ManualTcpConnectorData<H>>,
+    data: Arc<ManualConnectorData<H>>,
     requested_url: Url,
+    transport: ManualTransport,
     ip_version: IpVersion,
     started_at: Instant,
 ) -> anyhow::Result<()>
 where
-    H: TcpConnectorHost,
+    H: ManualConnectorHost,
 {
     let normalized_url = convert_idn_to_ascii(requested_url.clone())?;
     let (remote_addr, bind_addrs) =
         with_timeout_budget("resolve", started_at, data.options.connect_timeout, async {
-            let remote_addr = resolve_remote_addr(&data, &normalized_url, ip_version).await?;
+            let remote_addr =
+                resolve_remote_addr(&data, &normalized_url, transport, ip_version).await?;
             let bind_addrs = if data.options.bind_device && data.options.allow_interface_bind {
-                collect_bind_addrs(&data, remote_addr).await?
+                collect_bind_addrs(&data, transport, remote_addr).await?
             } else {
                 Vec::new()
             };
             Ok((remote_addr, bind_addrs))
         })
         .await?;
-    data.events.emit(TcpConnectivityEvent::Connecting {
+    data.events.emit(ManualConnectivityEvent::Connecting {
         url: requested_url.clone(),
     });
 
-    let socket = with_timeout_budget(
+    let tunnel = with_timeout_budget(
         "connect",
         started_at,
         data.options.connect_timeout,
-        connect_socket(&data, remote_addr, bind_addrs),
+        connect_and_upgrade(
+            &data,
+            transport,
+            remote_addr,
+            bind_addrs,
+            requested_url.clone(),
+        ),
     )
     .await?;
-    let tunnel = upgrade_connected_socket(socket, requested_url.clone())?;
     let peer_manager = data
         .peer_manager
         .upgrade()
@@ -410,23 +460,58 @@ where
         },
     )
     .await?;
-    tracing::info!(peer_id, %conn_id, %requested_url, "manual TCP reconnect succeeded");
+    tracing::info!(peer_id, %conn_id, %requested_url, "manual reconnect succeeded");
     Ok(())
 }
 
+async fn connect_and_upgrade<H>(
+    data: &ManualConnectorData<H>,
+    transport: ManualTransport,
+    remote_addr: SocketAddr,
+    bind_addrs: Vec<SocketAddr>,
+    requested_url: Url,
+) -> anyhow::Result<Box<dyn Tunnel>>
+where
+    H: ManualConnectorHost,
+{
+    match transport {
+        ManualTransport::Tcp => {
+            tcp::connect_and_upgrade(
+                data.host.clone(),
+                remote_addr,
+                bind_addrs,
+                data.options.tcp_bind.clone(),
+                requested_url,
+            )
+            .await
+        }
+        ManualTransport::Udp => {
+            udp::connect_and_upgrade(
+                data.host.clone(),
+                remote_addr,
+                bind_addrs,
+                data.options.udp_bind.clone(),
+                requested_url,
+            )
+            .await
+        }
+    }
+}
+
 async fn resolve_remote_addr<H>(
-    data: &ManualTcpConnectorData<H>,
+    data: &ManualConnectorData<H>,
     url: &Url,
+    transport: ManualTransport,
     ip_version: IpVersion,
 ) -> anyhow::Result<SocketAddr>
 where
-    H: TcpConnectorHost,
+    H: ManualConnectorHost,
 {
     let addrs = resolve_url_addrs(
         url,
-        TCP_DEFAULT_PORT,
+        MANUAL_DEFAULT_PORT,
         ip_version,
-        data.options.bind.socket_mark,
+        data.options.socket_mark(transport),
         data.dns.as_ref(),
     )
     .await?;
@@ -475,43 +560,18 @@ where
         .ok_or_else(|| TunnelError::NoDnsRecordFound(ip_version).into())
 }
 
-async fn connect_socket<H>(
-    data: &ManualTcpConnectorData<H>,
-    remote_addr: SocketAddr,
-    bind_addrs: Vec<SocketAddr>,
-) -> anyhow::Result<H::Socket>
-where
-    H: TcpConnectorHost,
-{
-    let futures = FuturesUnordered::new();
-    if bind_addrs.is_empty() {
-        futures.push(data.host.connect_tcp(
-            TcpConnectOptions::direct_connect(remote_addr).with_bind(data.options.bind.clone()),
-        ));
-    } else {
-        for bind_addr in bind_addrs {
-            let bind = data
-                .options
-                .bind
-                .clone()
-                .with_local_addr(Some(bind_addr))
-                .with_only_v6(true);
-            futures.push(
-                data.host
-                    .connect_tcp(TcpConnectOptions::direct_connect(remote_addr).with_bind(bind)),
-            );
-        }
-    }
-    first_success(futures).await
-}
-
 async fn collect_bind_addrs<H>(
-    data: &ManualTcpConnectorData<H>,
+    data: &ManualConnectorData<H>,
+    transport: ManualTransport,
     remote_addr: SocketAddr,
 ) -> anyhow::Result<Vec<SocketAddr>>
 where
-    H: TcpConnectorHost,
+    H: ManualConnectorHost,
 {
+    if transport == ManualTransport::Udp && remote_addr.is_ipv6() {
+        return Ok(Vec::new());
+    }
+
     let addrs = data.host.interface_addrs().await?;
     if remote_addr.is_ipv4() {
         return Ok(addrs
@@ -536,7 +596,7 @@ where
     Ok(ret)
 }
 
-async fn first_success<F, T>(mut futures: FuturesUnordered<F>) -> anyhow::Result<T>
+pub(super) async fn first_success<F, T>(mut futures: FuturesUnordered<F>) -> anyhow::Result<T>
 where
     F: Future<Output = anyhow::Result<T>> + Send,
 {
@@ -547,7 +607,7 @@ where
             Err(error) => last_error = Some(error),
         }
     }
-    Err(last_error.unwrap_or_else(|| anyhow::anyhow!("no TCP connect candidates")))
+    Err(last_error.unwrap_or_else(|| anyhow::anyhow!("no manual connect candidates")))
 }
 
 async fn resolve_url_addrs(
@@ -605,14 +665,14 @@ fn convert_idn_to_ascii(mut url: Url) -> anyhow::Result<Url> {
 }
 
 fn emit_connect_error<H>(
-    data: &ManualTcpConnectorData<H>,
+    data: &ManualConnectorData<H>,
     url: &Url,
     ip_version: IpVersion,
     error: &anyhow::Error,
 ) where
-    H: TcpConnectorHost,
+    H: ManualConnectorHost,
 {
-    data.events.emit(TcpConnectivityEvent::ConnectError {
+    data.events.emit(ManualConnectivityEvent::ConnectError {
         url: url.clone(),
         ip_version,
         error: format!("{error:#?}"),
@@ -637,116 +697,11 @@ where
         .map_err(|_| anyhow::anyhow!("{stage} timeout after {remaining:?}"))?
 }
 
-pub fn upgrade_connected_socket<S>(
-    socket: S,
-    requested_remote_addr: Url,
-) -> Result<Box<dyn Tunnel>, TunnelError>
-where
-    S: VirtualTcpSocket,
-{
-    let local_addr = socket.local_addr()?;
-    let resolved_remote_addr = socket.peer_addr()?;
-    let info = TunnelInfo {
-        tunnel_type: "tcp".to_owned(),
-        local_addr: Some(tcp_url(local_addr).into()),
-        remote_addr: Some(requested_remote_addr.into()),
-        resolved_remote_addr: Some(tcp_url(resolved_remote_addr).into()),
-    };
-    TcpTunnelUpgrader::new(info).upgrade(socket)
-}
-
-pub fn upgrade_accepted_socket<S>(socket: S) -> Result<Box<dyn Tunnel>, TunnelError>
-where
-    S: VirtualTcpSocket,
-{
-    let local_addr = socket.local_addr()?;
-    let remote_addr = socket.peer_addr()?;
-    let remote_url = tcp_url(remote_addr);
-    let info = TunnelInfo {
-        tunnel_type: "tcp".to_owned(),
-        local_addr: Some(tcp_url(local_addr).into()),
-        remote_addr: Some(remote_url.clone().into()),
-        resolved_remote_addr: Some(remote_url.into()),
-    };
-    TcpTunnelUpgrader::new(info).upgrade(socket)
-}
-
-fn tcp_url(addr: SocketAddr) -> Url {
-    let mut url = Url::parse("tcp://0.0.0.0").expect("static TCP URL should be valid");
-    url.set_ip_host(addr.ip())
-        .expect("socket IP should be a valid URL host");
-    url.set_port(Some(addr.port()))
-        .expect("TCP URL should accept a port");
-    url
-}
-
 #[cfg(test)]
 mod tests {
-    use std::{
-        io,
-        pin::Pin,
-        sync::Mutex,
-        task::{Context, Poll},
-    };
-
-    use tokio::io::{AsyncRead, AsyncWrite, DuplexStream, ReadBuf};
+    use std::sync::Mutex;
 
     use super::*;
-
-    struct MockTcpSocket {
-        stream: DuplexStream,
-        local_addr: SocketAddr,
-        peer_addr: SocketAddr,
-    }
-
-    impl MockTcpSocket {
-        fn new(local_addr: SocketAddr, peer_addr: SocketAddr) -> Self {
-            let (stream, _) = tokio::io::duplex(64);
-            Self {
-                stream,
-                local_addr,
-                peer_addr,
-            }
-        }
-    }
-
-    impl AsyncRead for MockTcpSocket {
-        fn poll_read(
-            mut self: Pin<&mut Self>,
-            cx: &mut Context<'_>,
-            buf: &mut ReadBuf<'_>,
-        ) -> Poll<io::Result<()>> {
-            Pin::new(&mut self.stream).poll_read(cx, buf)
-        }
-    }
-
-    impl AsyncWrite for MockTcpSocket {
-        fn poll_write(
-            mut self: Pin<&mut Self>,
-            cx: &mut Context<'_>,
-            buf: &[u8],
-        ) -> Poll<io::Result<usize>> {
-            Pin::new(&mut self.stream).poll_write(cx, buf)
-        }
-
-        fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-            Pin::new(&mut self.stream).poll_flush(cx)
-        }
-
-        fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-            Pin::new(&mut self.stream).poll_shutdown(cx)
-        }
-    }
-
-    impl VirtualTcpSocket for MockTcpSocket {
-        fn local_addr(&self) -> io::Result<SocketAddr> {
-            Ok(self.local_addr)
-        }
-
-        fn peer_addr(&self) -> io::Result<SocketAddr> {
-            Ok(self.peer_addr)
-        }
-    }
 
     struct StaticDnsResolver {
         ips: Vec<IpAddr>,
@@ -762,31 +717,16 @@ mod tests {
     }
 
     #[test]
-    fn tcp_socket_upgrades_preserve_requested_and_resolved_addresses() {
-        let local_addr: SocketAddr = "127.0.0.1:1000".parse().unwrap();
-        let peer_addr: SocketAddr = "127.0.0.1:2000".parse().unwrap();
-        let requested_url: Url = "tcp://example.com:2000".parse().unwrap();
-
-        let connected = upgrade_connected_socket(
-            MockTcpSocket::new(local_addr, peer_addr),
-            requested_url.clone(),
-        )
-        .unwrap();
-        let connected_info = connected.info().unwrap();
+    fn manual_transport_accepts_only_migrated_schemes() {
         assert_eq!(
-            connected_info.remote_addr.unwrap().url,
-            requested_url.as_str()
+            ManualTransport::from_url(&"tcp://127.0.0.1:1".parse().unwrap()).unwrap(),
+            ManualTransport::Tcp
         );
-        let connected_resolved: Url = connected_info.resolved_remote_addr.unwrap().into();
-        assert_eq!(connected_resolved.host_str(), Some("127.0.0.1"));
-        assert_eq!(connected_resolved.port(), Some(2000));
-
-        let accepted = upgrade_accepted_socket(MockTcpSocket::new(local_addr, peer_addr)).unwrap();
-        let accepted_info = accepted.info().unwrap();
         assert_eq!(
-            accepted_info.remote_addr,
-            accepted_info.resolved_remote_addr
+            ManualTransport::from_url(&"udp://127.0.0.1:1".parse().unwrap()).unwrap(),
+            ManualTransport::Udp
         );
+        assert!(ManualTransport::from_url(&"wg://127.0.0.1:1".parse().unwrap()).is_err());
     }
 
     #[tokio::test]
@@ -795,9 +735,9 @@ mod tests {
             ips: vec![IpAddr::from([127, 0, 0, 1]), Ipv6Addr::LOCALHOST.into()],
             queries: Mutex::new(Vec::new()),
         };
-        let url: Url = "tcp://example.com:12000".parse().unwrap();
+        let url: Url = "udp://example.com:12000".parse().unwrap();
 
-        let addrs = resolve_url_addrs(&url, TCP_DEFAULT_PORT, IpVersion::V6, Some(7), &resolver)
+        let addrs = resolve_url_addrs(&url, MANUAL_DEFAULT_PORT, IpVersion::V6, Some(7), &resolver)
             .await
             .unwrap();
 
