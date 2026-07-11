@@ -1662,6 +1662,7 @@ impl Drop for Instance {
             #[cfg(feature = "tun")]
             nic_ctx.lock().await.take();
             core_instance.stop().await;
+            drop(core_instance);
 
             let now = std::time::Instant::now();
             while now.elapsed().as_secs() < 10 {

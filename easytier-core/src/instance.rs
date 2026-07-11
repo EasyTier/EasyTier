@@ -270,7 +270,13 @@ where
 
         let mut recovery = self.recovery_guard();
         self.udp_hole_punch_started.store(true, Ordering::Release);
-        if let Err(error) = udp_hole_punch.start().await {
+        let start_result = tokio::select! {
+            _ = self.cancel.cancelled() => {
+                Err(anyhow::anyhow!("UDP hole punching start cancelled"))
+            }
+            result = udp_hole_punch.start() => result,
+        };
+        if let Err(error) = start_result {
             udp_hole_punch.stop().await;
             self.udp_hole_punch_started.store(false, Ordering::Release);
             recovery.disarm();
