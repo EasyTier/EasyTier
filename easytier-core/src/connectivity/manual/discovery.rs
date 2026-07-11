@@ -1,5 +1,6 @@
 use std::collections::HashSet;
 
+use anyhow::Context as _;
 use rand::{Rng as _, seq::SliceRandom};
 use url::Url;
 
@@ -118,7 +119,8 @@ pub async fn resolve_txt_endpoint(
 ) -> anyhow::Result<Url> {
     let txt_data = resolver
         .resolve_txt(DnsQuery::new(domain_name, context))
-        .await?;
+        .await
+        .with_context(|| format!("resolve TXT record failed for {domain_name}"))?;
     let candidates = txt_data
         .split(' ')
         .filter_map(|candidate| Url::parse(candidate).ok())
@@ -171,11 +173,19 @@ pub async fn resolve_srv_endpoint(
         let Ok(records) = result else {
             continue;
         };
-        candidates.extend(
-            records
-                .into_iter()
-                .filter_map(|record| srv_record_url(&protocol, record).ok()),
-        );
+        candidates.extend(records.into_iter().filter_map(|record| {
+            match srv_record_url(&protocol, record) {
+                Ok(candidate) => Some(candidate),
+                Err(error) => {
+                    tracing::warn!(
+                        ?error,
+                        srv_domain = %format!("_easytier._{protocol}.{domain_name}"),
+                        "ignore invalid SRV endpoint record"
+                    );
+                    None
+                }
+            }
+        }));
     }
     if candidates.is_empty() {
         anyhow::bail!("no SRV endpoint found for {domain_name}");
