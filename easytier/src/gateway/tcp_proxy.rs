@@ -28,7 +28,7 @@ use crate::proto::rpc_types;
 use crate::proto::rpc_types::controller::BaseController;
 use crate::tunnel::packet_def::ZCPacket;
 
-use super::CidrSet;
+use super::{CidrSet, runtime_cidr_set_without_updater};
 
 pub type NatDstTcpConnector = TcpSocketProxyConnector<RuntimeConnectorHost>;
 
@@ -147,7 +147,7 @@ pub struct TcpProxy<C: TcpProxyDestinationConnector> {
 impl<C: TcpProxyDestinationConnector> TcpProxy<C> {
     pub fn new(peer_manager: Arc<PeerManager>, connector: C) -> Arc<Self> {
         let global_ctx = peer_manager.get_global_ctx();
-        let cidr_set = CidrSet::new_without_updater(global_ctx.clone());
+        let cidr_set = runtime_cidr_set_without_updater(global_ctx.clone());
         let transport_type = transport_type_for_mode(connector.proxy_mode());
         let runtime = Arc::new(RuntimeTcpProxyAdapter::new(
             global_ctx.clone(),

@@ -31,7 +31,7 @@ use easytier_core::{
 };
 
 use super::{
-    CidrSet,
+    CidrSet, runtime_cidr_set,
     tcp_proxy::{NatDstTcpConnector, TcpProxy},
 };
 use crate::utils::task::HedgeExt;
@@ -305,7 +305,7 @@ impl KcpProxyDst {
             output_receiver,
             false,
         ));
-        let cidr_set = CidrSet::new(peer_manager.get_global_ctx());
+        let cidr_set = runtime_cidr_set(peer_manager.get_global_ctx());
         Self {
             kcp_endpoint: Arc::new(kcp_endpoint),
             peer_manager,

@@ -26,7 +26,7 @@ use tokio::sync::Mutex;
 #[cfg(test)]
 use tokio::sync::mpsc::{Receiver, Sender, channel};
 
-use super::CidrSet;
+use super::{CidrSet, runtime_cidr_set_without_updater};
 #[cfg(test)]
 use crate::tunnel::packet_def::ZCPacket;
 use crate::{
@@ -91,7 +91,7 @@ impl UdpProxy {
         global_ctx: ArcGlobalCtx,
         peer_manager: Arc<PeerManager>,
     ) -> Result<Arc<Self>, Error> {
-        let cidr_set = CidrSet::new_without_updater(global_ctx.clone());
+        let cidr_set = runtime_cidr_set_without_updater(global_ctx.clone());
         let runtime = Arc::new(UdpSocketProxyRuntime::new(
             Arc::new(RuntimeConnectorHost::new(global_ctx.clone())),
             Arc::new(RuntimeUdpProxyPolicy::new(global_ctx)),

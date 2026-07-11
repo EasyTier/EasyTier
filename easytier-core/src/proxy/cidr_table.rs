@@ -1,6 +1,11 @@
-use std::net::Ipv4Addr;
+use std::{
+    net::Ipv4Addr,
+    sync::{Arc, Mutex},
+    time::Duration,
+};
 
 use parking_lot::RwLock;
+use tokio_util::task::AbortOnDropHandle;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ProxyCidrRule {
@@ -15,6 +20,82 @@ pub struct ProxyCidrSnapshot {
 
 pub trait ProxyCidrSnapshotProvider: Send + Sync {
     fn proxy_cidr_snapshot(&self) -> ProxyCidrSnapshot;
+}
+
+pub struct ProxyCidrTableRuntime<P: ProxyCidrSnapshotProvider + 'static> {
+    provider: Arc<P>,
+    table: Arc<ProxyCidrTable>,
+    updater_task: Mutex<Option<AbortOnDropHandle<()>>>,
+}
+
+impl<P: ProxyCidrSnapshotProvider + 'static> ProxyCidrTableRuntime<P> {
+    pub fn new(provider: Arc<P>) -> Self {
+        Self {
+            provider,
+            table: Arc::new(ProxyCidrTable::new()),
+            updater_task: Mutex::new(None),
+        }
+    }
+
+    pub fn new_started(provider: Arc<P>) -> Self {
+        let runtime = Self::new(provider);
+        runtime.start_updater();
+        runtime
+    }
+
+    pub fn start_updater(&self) {
+        let mut updater_task = self.updater_task.lock().unwrap();
+        if updater_task.is_some() {
+            return;
+        }
+        let mut last_snapshot = self.provider.proxy_cidr_snapshot();
+        self.table.update_snapshot(last_snapshot.clone());
+        let provider = self.provider.clone();
+        let table = self.table.clone();
+        updater_task.replace(AbortOnDropHandle::new(tokio::spawn(async move {
+            loop {
+                let snapshot = provider.proxy_cidr_snapshot();
+                if snapshot != last_snapshot {
+                    last_snapshot = snapshot.clone();
+                    table.update_snapshot(snapshot);
+                }
+                tokio::time::sleep(Duration::from_secs(1)).await;
+            }
+        })));
+    }
+
+    pub fn stop_updater(&self) {
+        self.updater_task.lock().unwrap().take();
+    }
+
+    pub fn contains_v4(&self, ipv4: Ipv4Addr, real_ip: &mut Ipv4Addr) -> bool {
+        if let Some(mapped_ip) = self.table.lookup_v4(ipv4) {
+            *real_ip = mapped_ip;
+            return true;
+        }
+        false
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.table.is_empty()
+    }
+
+    pub fn table(&self) -> Arc<ProxyCidrTable> {
+        self.table.clone()
+    }
+}
+
+impl<P: ProxyCidrSnapshotProvider + 'static> std::fmt::Debug for ProxyCidrTableRuntime<P> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ProxyCidrTableRuntime")
+            .field("table", &self.table)
+            .field(
+                "updater_running",
+                &self.updater_task.lock().unwrap().is_some(),
+            )
+            .finish_non_exhaustive()
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

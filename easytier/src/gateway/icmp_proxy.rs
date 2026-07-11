@@ -20,7 +20,7 @@ use crate::{
     peers::peer_manager::PeerManager,
 };
 
-use super::CidrSet;
+use super::{CidrSet, runtime_cidr_set_without_updater};
 
 #[derive(Debug)]
 struct RuntimeIcmpProxyAdapter {
@@ -141,7 +141,7 @@ impl IcmpProxy {
         global_ctx: ArcGlobalCtx,
         peer_manager: Arc<PeerManager>,
     ) -> Result<Arc<Self>, Error> {
-        let cidr_set = CidrSet::new_without_updater(global_ctx.clone());
+        let cidr_set = runtime_cidr_set_without_updater(global_ctx.clone());
         let runtime = Arc::new(RuntimeIcmpProxyAdapter::new(global_ctx));
         let service = IcmpProxyService::new(
             peer_manager.core(),

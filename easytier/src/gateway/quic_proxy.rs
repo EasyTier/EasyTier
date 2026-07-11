@@ -1,8 +1,8 @@
 use crate::common::PeerId;
 use crate::common::acl_processor::PacketInfo;
 use crate::common::global_ctx::ArcGlobalCtx;
-use crate::gateway::CidrSet;
 use crate::gateway::tcp_proxy::TcpProxy;
+use crate::gateway::{CidrSet, runtime_cidr_set};
 use crate::peers::peer_manager::PeerManager;
 use crate::peers::{NicPacketFilter, PeerPacketFilter};
 use crate::proto::acl::{ChainType, Protocol};
@@ -580,7 +580,7 @@ impl QuicStreamContext {
         Self {
             global_ctx: global_ctx.clone(),
             proxy_entries: Arc::new(DashMap::new()),
-            cidr_set: Arc::new(CidrSet::new(global_ctx.clone())),
+            cidr_set: Arc::new(runtime_cidr_set(global_ctx.clone())),
             route: Arc::new(peer_mgr.get_route()),
         }
     }
