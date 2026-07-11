@@ -211,6 +211,13 @@ mod tests {
 
     use super::*;
 
+    fn create_host_packet_channel() -> (
+        tokio::sync::mpsc::Sender<Vec<u8>>,
+        tokio::sync::mpsc::Receiver<Vec<u8>>,
+    ) {
+        tokio::sync::mpsc::channel(16)
+    }
+
     #[derive(Default)]
     struct BlockingListenerService {
         start_entered: Notify,
@@ -289,7 +296,7 @@ mod tests {
             "portable-core-instance".to_owned(),
             String::new(),
         )));
-        let (packet_sink, _packet_receiver) = create_packet_recv_chan();
+        let (packet_sink, _packet_receiver) = create_host_packet_channel();
         let peer = PortablePeerManagerConfig::new(global_ctx.runtime_config())
             .with_flags(global_ctx.get_flags());
         let connectivity = CoreInstanceConfig {
@@ -349,8 +356,8 @@ mod tests {
         )));
         global_a.set_ipv4(Some("10.250.0.1/24".parse().unwrap()));
         global_b.set_ipv4(Some("10.250.0.2/24".parse().unwrap()));
-        let (packet_sink_a, _packet_receiver_a) = create_packet_recv_chan();
-        let (packet_sink_b, mut packet_receiver_b) = create_packet_recv_chan();
+        let (packet_sink_a, _packet_receiver_a) = create_host_packet_channel();
+        let (packet_sink_b, mut packet_receiver_b) = create_host_packet_channel();
         let peer_a = PortablePeerManagerConfig::new(global_a.runtime_config())
             .with_flags(global_a.get_flags());
         let peer_b = PortablePeerManagerConfig::new(global_b.runtime_config())
@@ -461,7 +468,7 @@ mod tests {
         })
         .await
         .expect("portable host packet sink did not receive the IP packet");
-        assert_eq!(received.payload(), ip_packet);
+        assert_eq!(received, ip_packet);
 
         instance_b.stop().await;
         instance_a.stop().await;
@@ -473,7 +480,7 @@ mod tests {
             "portable-policy-validation".to_owned(),
             String::new(),
         )));
-        let (packet_sink, _packet_receiver) = create_packet_recv_chan();
+        let (packet_sink, _packet_receiver) = create_host_packet_channel();
         let peer = PortablePeerManagerConfig::new(global_ctx.runtime_config())
             .with_flags(global_ctx.get_flags());
         let mut connectivity = CoreInstanceConfig {
@@ -501,7 +508,7 @@ mod tests {
             "portable-listener-validation".to_owned(),
             String::new(),
         )));
-        let (packet_sink, _packet_receiver) = create_packet_recv_chan();
+        let (packet_sink, _packet_receiver) = create_host_packet_channel();
         let peer = PortablePeerManagerConfig::new(global_ctx.runtime_config())
             .with_flags(global_ctx.get_flags());
         let connectivity = CoreInstanceConfig {
