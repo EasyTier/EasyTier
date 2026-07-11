@@ -213,7 +213,6 @@ where
     pub runtime_config: Option<Arc<dyn CoreRuntimeConfigProvider>>,
     pub transport_proxy: Option<Arc<dyn ProxyService>>,
     pub proxy: Option<Arc<dyn ProxyService>>,
-    pub post_network: Option<Arc<dyn ProxyService>>,
     pub proxy_cidr_monitor: Option<Arc<dyn ProxyCidrMonitorHost>>,
     pub public_ipv6_provider: Option<Arc<dyn PublicIpv6ProviderHost>>,
 }
@@ -345,8 +344,6 @@ where
     transport_proxy_started: AtomicBool,
     proxy: Option<Arc<dyn ProxyService>>,
     proxy_started: AtomicBool,
-    post_network: Option<Arc<dyn ProxyService>>,
-    post_network_started: AtomicBool,
     proxy_cidr_monitor: Option<Arc<dyn ProxyCidrMonitorHost>>,
     proxy_cidr_monitor_task: Mutex<Option<AbortOnDropHandle<()>>>,
     dhcp_ipv4_task: Mutex<Option<AbortOnDropHandle<()>>>,
@@ -414,7 +411,6 @@ where
             runtime_config,
             transport_proxy,
             proxy,
-            post_network,
             proxy_cidr_monitor,
             public_ipv6_provider,
         } = adapters;
@@ -518,8 +514,6 @@ where
             transport_proxy_started: AtomicBool::new(false),
             proxy,
             proxy_started: AtomicBool::new(false),
-            post_network,
-            post_network_started: AtomicBool::new(false),
             proxy_cidr_monitor,
             proxy_cidr_monitor_task: Mutex::new(None),
             dhcp_ipv4_task: Mutex::new(None),
@@ -554,12 +548,6 @@ where
     }
 
     async fn stop_components(&self) {
-        if let Some(post_network) = &self.post_network
-            && self.post_network_started.load(Ordering::Acquire)
-        {
-            post_network.stop().await;
-            self.post_network_started.store(false, Ordering::Release);
-        }
         if let Some(public_ipv6_provider) = &self.public_ipv6_provider {
             public_ipv6_provider.stop().await;
         }
@@ -841,43 +829,6 @@ where
         Ok(())
     }
 
-    pub async fn start_post_network(self: &Arc<Self>) -> anyhow::Result<()> {
-        let _operation = self.operation.lock().await;
-        let state = self.state();
-        if state != CoreInstanceState::Running {
-            anyhow::bail!("post-network services cannot start from core instance state {state:?}");
-        }
-        let Some(post_network) = &self.post_network else {
-            return Ok(());
-        };
-        if self.post_network_started.load(Ordering::Acquire) {
-            return Ok(());
-        }
-
-        let mut recovery = self.recovery_guard();
-        self.post_network_started.store(true, Ordering::Release);
-        let start_result = tokio::select! {
-            _ = self.cancel.cancelled() => {
-                Err(anyhow::anyhow!("post-network service start cancelled"))
-            }
-            result = post_network.start() => result,
-        };
-        if let Err(error) = start_result {
-            post_network.stop().await;
-            self.post_network_started.store(false, Ordering::Release);
-            recovery.disarm();
-            return Err(error);
-        }
-        if self.cancel.is_cancelled() {
-            post_network.stop().await;
-            self.post_network_started.store(false, Ordering::Release);
-            recovery.disarm();
-            anyhow::bail!("post-network service start cancelled");
-        }
-        recovery.disarm();
-        Ok(())
-    }
-
     pub async fn start_proxy_cidr_monitor(self: &Arc<Self>) -> anyhow::Result<()> {
         let _operation = self.operation.lock().await;
         let state = self.state();
@@ -922,7 +873,6 @@ where
         self.start_peer_center().await?;
         self.start_initial_peers().await?;
         self.start_proxy_cidr_monitor().await?;
-        self.start_post_network().await?;
         Ok(())
     }
 
