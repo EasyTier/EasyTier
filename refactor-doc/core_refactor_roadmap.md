@@ -125,6 +125,19 @@ Work:
 6. Delete each legacy tunnel-producing path as soon as its replacement passes
    native and wasm conformance tests.
 
+### Current protocol dependency constraint
+
+The WS/WSS accepted-socket upgrade is core-owned. The outbound upgrade still
+uses native `tokio-websockets::ClientBuilder::connect_on` because the current
+EasyTier fork couples its `client` feature to `tokio/net`, even when the caller
+provides an established stream. Enabling that feature in `easytier-core` breaks
+the stable `wasm32-wasip1` Tokio profile.
+
+Complete the outbound move by splitting an established-stream client handshake
+feature from socket creation in the existing fork. Do not hide the client path
+with a WASI `cfg`, replace the wire implementation during the refactor, or let
+the host perform the WebSocket handshake.
+
 Exit gate:
 
 - a repository search finds no native connectivity path that directly creates
