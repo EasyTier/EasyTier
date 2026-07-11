@@ -77,9 +77,10 @@ func (b *opaqueBridge) startPacketWriteReady(
 		handle: handle,
 		ready:  len(sink.packets) < sink.capacity,
 	}
+	ready := waiter.ready
 	b.packetWrites[operation] = waiter
 	b.mu.Unlock()
-	if waiter.ready {
+	if ready {
 		b.signalCompletion()
 	}
 	return 0
@@ -115,6 +116,7 @@ func (b *opaqueBridge) consumePacket(handle uint64) ([]byte, error) {
 		return nil, fmt.Errorf("packet sink %d is empty", handle)
 	}
 	packet := sink.packets[0]
+	sink.packets[0] = nil
 	sink.packets = sink.packets[1:]
 	for _, waiter := range b.packetWrites {
 		if waiter.handle == handle {
