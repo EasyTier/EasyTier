@@ -614,7 +614,7 @@ mod tests {
         .unwrap();
         tokio::time::timeout(Duration::from_secs(1), server_task)
             .await
-            .expect("HTTP facade test server did not finish")
+            .expect("HTTP fetch test server did not finish")
             .unwrap();
 
         assert_eq!(response.status_code, 302);
@@ -840,7 +840,10 @@ mod tests {
             .resolve_endpoint(&"http://discovery.example:18081/endpoint".parse().unwrap())
             .await
             .unwrap_err();
-        server_task.await.unwrap();
+        tokio::time::timeout(Duration::from_secs(1), server_task)
+            .await
+            .expect("HTTP facade test server did not finish")
+            .unwrap();
 
         assert!(error.to_string().starts_with("Invalid Url:"));
         assert_eq!(
