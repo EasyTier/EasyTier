@@ -1,5 +1,5 @@
 use std::{
-    net::Ipv4Addr,
+    net::{IpAddr, Ipv4Addr},
     sync::{
         Arc, Weak,
         atomic::{AtomicBool, Ordering},
@@ -23,23 +23,24 @@ use crate::{
 use super::{
     cidr_table::ProxyCidrTable,
     icmp_proxy_engine::{IcmpProxyAction, IcmpProxyContext, IcmpProxyEngine},
-    runtime::{IcmpProxyResponseSink, IcmpProxyRuntime, ProxyRuntimeError},
+    runtime::{IcmpProxyRuntime, IcmpProxySocket, ProxyRuntimeError},
 };
 
-fn start_icmp_runtime<R: IcmpProxyRuntime + 'static>(
+async fn start_icmp_runtime<R: IcmpProxyRuntime + 'static>(
     runtime: &R,
-    response_sink: Weak<dyn IcmpProxyResponseSink>,
     no_tun: bool,
-) -> Result<bool, ProxyRuntimeError> {
-    if let Err(err) = runtime.start_icmp(response_sink) {
-        runtime.stop_icmp();
-        if !no_tun {
-            return Err(err);
+) -> Result<Option<Arc<R::Socket>>, ProxyRuntimeError> {
+    match runtime.start_icmp().await {
+        Ok(socket) => Ok(Some(socket)),
+        Err(err) => {
+            runtime.stop_icmp();
+            if !no_tun {
+                return Err(err);
+            }
+            tracing::warn!(?err, "start ICMP runtime failed without TUN");
+            Ok(None)
         }
-        tracing::warn!(?err, "start ICMP runtime failed without TUN");
-        return Ok(false);
     }
-    Ok(true)
 }
 
 pub struct IcmpProxyService<R: IcmpProxyRuntime + 'static> {
@@ -50,6 +51,7 @@ pub struct IcmpProxyService<R: IcmpProxyRuntime + 'static> {
     response_rx: std::sync::Mutex<Option<UnboundedReceiver<ZCPacket>>>,
     pipeline_guard: std::sync::Mutex<Option<PipelineRegistrationGuard>>,
     tasks: std::sync::Mutex<JoinSet<()>>,
+    socket: std::sync::Mutex<Option<Arc<R::Socket>>>,
     runtime_started: AtomicBool,
     started: AtomicBool,
 }
@@ -70,6 +72,7 @@ impl<R: IcmpProxyRuntime + 'static> IcmpProxyService<R> {
             response_rx: std::sync::Mutex::new(Some(response_rx)),
             pipeline_guard: std::sync::Mutex::new(None),
             tasks: std::sync::Mutex::new(JoinSet::new()),
+            socket: std::sync::Mutex::new(None),
             runtime_started: AtomicBool::new(false),
             started: AtomicBool::new(false),
         })
@@ -85,20 +88,17 @@ impl<R: IcmpProxyRuntime + 'static> IcmpProxyService<R> {
         }
 
         let snapshot = self.runtime.proxy_runtime_snapshot();
-        let response_sink: Arc<dyn IcmpProxyResponseSink> = self.clone();
-        let runtime_started = match start_icmp_runtime(
-            self.runtime.as_ref(),
-            Arc::downgrade(&response_sink),
-            snapshot.no_tun,
-        ) {
-            Ok(runtime_started) => runtime_started,
+        let socket = match start_icmp_runtime(self.runtime.as_ref(), snapshot.no_tun).await {
+            Ok(socket) => socket,
             Err(err) => {
                 self.started.store(false, Ordering::Release);
                 return Err(err);
             }
         };
+        let runtime_started = socket.is_some();
         self.runtime_started
             .store(runtime_started, Ordering::Release);
+        self.socket.lock().unwrap().clone_from(&socket);
 
         if let Some(mut response_rx) = self.response_rx.lock().unwrap().take() {
             let peer_manager = self.peer_manager.clone();
@@ -113,6 +113,33 @@ impl<R: IcmpProxyRuntime + 'static> IcmpProxyService<R> {
                     if let Err(err) = peer_manager.send_msg_for_proxy(packet, to_peer_id).await {
                         tracing::error!(?err, "send ICMP proxy response to peer failed");
                     }
+                }
+            });
+        }
+
+        if let Some(socket) = socket {
+            let service = Arc::downgrade(self);
+            self.tasks.lock().unwrap().spawn(async move {
+                loop {
+                    let recv_result = socket.recv().await;
+                    let (peer_ip, mut packet) = match recv_result {
+                        Ok(packet) => packet,
+                        Err(err) => {
+                            tracing::error!(?err, "receive ICMP packet failed");
+                            continue;
+                        }
+                    };
+                    if packet.is_empty() {
+                        tracing::error!("received empty ICMP packet");
+                        break;
+                    }
+                    let IpAddr::V4(peer_ip) = peer_ip else {
+                        continue;
+                    };
+                    let Some(service) = service.upgrade() else {
+                        break;
+                    };
+                    service.handle_socket_response(peer_ip, &mut packet);
                 }
             });
         }
@@ -163,6 +190,7 @@ impl<R: IcmpProxyRuntime + 'static> IcmpProxyService<R> {
         if self.runtime_started.swap(false, Ordering::AcqRel) {
             self.runtime.stop_icmp();
         }
+        self.socket.lock().unwrap().take();
     }
 
     async fn handle_peer_packet(self: Arc<Self>, packet: ZCPacket) -> Option<ZCPacket> {
@@ -180,8 +208,14 @@ impl<R: IcmpProxyRuntime + 'static> IcmpProxyService<R> {
                 destination,
                 packet: request,
             } => {
-                if let Err(err) = self.runtime.send_icmp_to_socket(destination, &request) {
-                    tracing::error!(?err, "send ICMP packet through runtime failed");
+                let socket = self.socket.lock().unwrap().clone();
+                match socket {
+                    Some(socket) => {
+                        if let Err(err) = socket.send(destination, &request).await {
+                            tracing::error!(?err, "send ICMP packet through runtime failed");
+                        }
+                    }
+                    None => tracing::error!("send ICMP packet without a runtime socket"),
                 }
                 None
             }
@@ -197,7 +231,7 @@ impl<R: IcmpProxyRuntime + 'static> IcmpProxyService<R> {
     }
 }
 
-impl<R: IcmpProxyRuntime + 'static> IcmpProxyResponseSink for IcmpProxyService<R> {
+impl<R: IcmpProxyRuntime + 'static> IcmpProxyService<R> {
     fn handle_socket_response(&self, peer_ip: Ipv4Addr, packet: &mut [u8]) {
         for response in self.engine.handle_socket_response(peer_ip, packet) {
             if let Err(err) = self.response_tx.send(response) {
@@ -232,13 +266,13 @@ mod tests {
     use std::{
         net::{IpAddr, Ipv4Addr},
         sync::{
-            Arc, Weak,
+            Arc,
             atomic::{AtomicUsize, Ordering},
         },
     };
 
     use super::*;
-    use crate::proxy::runtime::{IcmpProxyResponseSink, ProxyRuntimeInfo, ProxyRuntimeSnapshot};
+    use crate::proxy::runtime::{IcmpProxySocket, ProxyRuntimeInfo, ProxyRuntimeSnapshot};
 
     #[derive(Default)]
     struct PartialStartRuntime {
@@ -255,15 +289,11 @@ mod tests {
         }
     }
 
-    impl IcmpProxyRuntime for PartialStartRuntime {
-        fn start_icmp(
-            &self,
-            _response_sink: Weak<dyn IcmpProxyResponseSink>,
-        ) -> Result<(), ProxyRuntimeError> {
-            Err(std::io::Error::other("partial start").into())
-        }
+    struct NoopIcmpSocket;
 
-        fn send_icmp_to_socket(
+    #[async_trait::async_trait]
+    impl IcmpProxySocket for NoopIcmpSocket {
+        async fn send(
             &self,
             _destination: Ipv4Addr,
             _packet: &[u8],
@@ -271,34 +301,39 @@ mod tests {
             Ok(())
         }
 
+        async fn recv(&self) -> Result<(IpAddr, Vec<u8>), ProxyRuntimeError> {
+            Err(std::io::Error::other("unused test socket").into())
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl IcmpProxyRuntime for PartialStartRuntime {
+        type Socket = NoopIcmpSocket;
+
+        async fn start_icmp(&self) -> Result<Arc<Self::Socket>, ProxyRuntimeError> {
+            Err(std::io::Error::other("partial start").into())
+        }
+
         fn stop_icmp(&self) {
             self.stop_count.fetch_add(1, Ordering::AcqRel);
         }
     }
 
-    struct NoopResponseSink;
-
-    impl IcmpProxyResponseSink for NoopResponseSink {
-        fn handle_socket_response(&self, _peer_ip: Ipv4Addr, _packet: &mut [u8]) {}
-    }
-
-    #[test]
-    fn failed_runtime_start_rolls_back_partial_resources() {
+    #[tokio::test]
+    async fn failed_runtime_start_rolls_back_partial_resources() {
         let runtime = PartialStartRuntime::default();
-        let sink: Arc<dyn IcmpProxyResponseSink> = Arc::new(NoopResponseSink);
 
-        assert!(start_icmp_runtime(&runtime, Arc::downgrade(&sink), false).is_err());
+        assert!(start_icmp_runtime(&runtime, false).await.is_err());
         assert_eq!(runtime.stop_count.load(Ordering::Acquire), 1);
     }
 
-    #[test]
-    fn no_tun_suppresses_start_error_after_rollback() {
+    #[tokio::test]
+    async fn no_tun_suppresses_start_error_after_rollback() {
         let runtime = PartialStartRuntime::default();
-        let sink: Arc<dyn IcmpProxyResponseSink> = Arc::new(NoopResponseSink);
 
-        let runtime_started = start_icmp_runtime(&runtime, Arc::downgrade(&sink), true).unwrap();
-        assert!(!runtime_started);
-        if runtime_started {
+        let socket = start_icmp_runtime(&runtime, true).await.unwrap();
+        assert!(socket.is_none());
+        if socket.is_some() {
             runtime.stop_icmp();
         }
         assert_eq!(runtime.stop_count.load(Ordering::Acquire), 1);

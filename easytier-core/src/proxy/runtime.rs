@@ -1,5 +1,5 @@
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-use std::sync::Weak;
+use std::sync::{Arc, Weak};
 
 use bytes::Bytes;
 use cidr::Ipv4Inet;
@@ -36,21 +36,18 @@ impl From<std::io::Error> for ProxyRuntimeError {
     }
 }
 
-pub trait IcmpProxyResponseSink: Send + Sync {
-    fn handle_socket_response(&self, peer_ip: Ipv4Addr, packet: &mut [u8]);
+#[async_trait::async_trait]
+pub trait IcmpProxySocket: Send + Sync + 'static {
+    async fn send(&self, destination: Ipv4Addr, packet: &[u8]) -> Result<(), ProxyRuntimeError>;
+
+    async fn recv(&self) -> Result<(IpAddr, Vec<u8>), ProxyRuntimeError>;
 }
 
+#[async_trait::async_trait]
 pub trait IcmpProxyRuntime: ProxyRuntimeInfo {
-    fn start_icmp(
-        &self,
-        response_sink: Weak<dyn IcmpProxyResponseSink>,
-    ) -> Result<(), ProxyRuntimeError>;
+    type Socket: IcmpProxySocket;
 
-    fn send_icmp_to_socket(
-        &self,
-        destination: Ipv4Addr,
-        packet: &[u8],
-    ) -> Result<(), ProxyRuntimeError>;
+    async fn start_icmp(&self) -> Result<Arc<Self::Socket>, ProxyRuntimeError>;
 
     fn stop_icmp(&self);
 }
