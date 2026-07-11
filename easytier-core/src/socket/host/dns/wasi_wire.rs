@@ -146,3 +146,106 @@ impl<'a> Decoder<'a> {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::socket::{NetNamespace, SocketContext};
+
+    use super::*;
+
+    #[test]
+    fn query_encoding_has_stable_versioned_layout() {
+        let query = DnsQuery::new(
+            "peer.example",
+            SocketContext {
+                ip_version: IpVersion::V6,
+                socket_mark: Some(0x01020304),
+                netns: Some(NetNamespace::new("mihomo")),
+            },
+        );
+        let encoded = encode_query(&query).unwrap();
+
+        let mut expected = vec![DNS_WIRE_VERSION, 6, 1, 1, 2, 3, 4, 1];
+        expected.extend_from_slice(&6_u32.to_be_bytes());
+        expected.extend_from_slice(b"mihomo");
+        expected.extend_from_slice(&12_u32.to_be_bytes());
+        expected.extend_from_slice(b"peer.example");
+        assert_eq!(encoded, expected);
+
+        let without_optional = encode_query(&DnsQuery::new(
+            "v4.example",
+            SocketContext {
+                ip_version: IpVersion::V4,
+                socket_mark: None,
+                netns: None,
+            },
+        ))
+        .unwrap();
+        assert_eq!(
+            &without_optional[..12],
+            &[1, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+        );
+        assert_eq!(&without_optional[12..16], &10_u32.to_be_bytes());
+        assert_eq!(&without_optional[16..], b"v4.example");
+    }
+
+    #[test]
+    fn decodes_owned_address_txt_and_srv_results() {
+        let mut addresses = 2_u32.to_be_bytes().to_vec();
+        addresses.push(4);
+        addresses.extend_from_slice(&[192, 0, 2, 1]);
+        addresses.push(6);
+        addresses.extend_from_slice(
+            &"2001:db8::1"
+                .parse::<std::net::Ipv6Addr>()
+                .unwrap()
+                .octets(),
+        );
+        assert_eq!(
+            decode_addresses(&addresses).unwrap(),
+            vec![
+                "192.0.2.1".parse::<IpAddr>().unwrap(),
+                "2001:db8::1".parse::<IpAddr>().unwrap(),
+            ]
+        );
+
+        let mut txt = 12_u32.to_be_bytes().to_vec();
+        txt.extend_from_slice(b"tcp://peer:1");
+        assert_eq!(decode_txt(&txt).unwrap(), "tcp://peer:1");
+
+        let mut srv = 1_u32.to_be_bytes().to_vec();
+        srv.extend_from_slice(&10_u16.to_be_bytes());
+        srv.extend_from_slice(&20_u16.to_be_bytes());
+        srv.extend_from_slice(&11010_u16.to_be_bytes());
+        srv.extend_from_slice(&13_u32.to_be_bytes());
+        srv.extend_from_slice(b"peer.example.");
+        assert_eq!(
+            decode_srv(&srv).unwrap(),
+            vec![DnsSrvRecord {
+                priority: 10,
+                weight: 20,
+                port: 11010,
+                target: "peer.example.".to_owned(),
+            }]
+        );
+    }
+
+    #[test]
+    fn rejects_malformed_results() {
+        assert!(decode_addresses(&[0, 0, 0]).is_err());
+        assert!(decode_addresses(&[0, 0, 0, 1, 9]).is_err());
+        assert!(decode_addresses(&[0, 0, 0, 0, 1]).is_err());
+
+        let mut invalid_txt = 1_u32.to_be_bytes().to_vec();
+        invalid_txt.push(0xff);
+        assert!(decode_txt(&invalid_txt).is_err());
+
+        let mut truncated_srv = 1_u32.to_be_bytes().to_vec();
+        truncated_srv.extend_from_slice(&10_u16.to_be_bytes());
+        assert!(decode_srv(&truncated_srv).is_err());
+
+        let mut trailing_srv = 0_u32.to_be_bytes().to_vec();
+        trailing_srv.push(0);
+        assert!(decode_srv(&trailing_srv).is_err());
+    }
+}
