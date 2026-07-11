@@ -10,7 +10,7 @@ use easytier_core::{
         manual::{ManualConnectorHost, ManualInterfaceAddrs},
     },
     socket::{
-        tcp::{TcpConnectOptions, VirtualTcpSocketFactory},
+        tcp::{TcpConnectOptions, TcpSocketPurpose, VirtualTcpSocketFactory},
         udp::{
             PreferredIpv6Source, UdpBindOptions, UdpSessionControlHandler, VirtualUdpSocketFactory,
         },
@@ -45,6 +45,25 @@ impl VirtualTcpSocketFactory for RuntimeConnectorHost {
     type Socket = RuntimeTcpSocket;
 
     async fn connect_tcp(&self, options: TcpConnectOptions) -> anyhow::Result<Self::Socket> {
+        #[cfg(feature = "faketcp")]
+        if options.purpose == TcpSocketPurpose::FakeTcp {
+            let remote_addr = options.remote_addr;
+            let socket_mark = options.bind.socket_mark;
+            let socket = self
+                .global_ctx
+                .net_ns
+                .run_async(|| async move {
+                    crate::tunnel::fake_tcp::connect_socket(remote_addr, socket_mark).await
+                })
+                .await?;
+            return Ok(RuntimeTcpSocket::from_fake_tcp(socket));
+        }
+
+        #[cfg(not(feature = "faketcp"))]
+        if options.purpose == TcpSocketPurpose::FakeTcp {
+            anyhow::bail!("FakeTCP socket support is disabled")
+        }
+
         self.global_ctx
             .net_ns
             .run_async(|| async move {

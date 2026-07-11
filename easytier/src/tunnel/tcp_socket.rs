@@ -23,9 +23,14 @@ use crate::{
     },
 };
 
-#[derive(Debug)]
+enum RuntimeTcpSocketInner {
+    Tcp(TcpStream),
+    #[cfg(feature = "faketcp")]
+    FakeTcp(crate::tunnel::fake_tcp::FakeTcpSocket),
+}
+
 pub(crate) struct RuntimeTcpSocket {
-    stream: TcpStream,
+    inner: RuntimeTcpSocketInner,
 }
 
 impl RuntimeTcpSocket {
@@ -33,7 +38,28 @@ impl RuntimeTcpSocket {
         if let Err(error) = stream.set_nodelay(true) {
             tracing::warn!(?error, "set_nodelay failed for tcp stream");
         }
-        Self { stream }
+        Self {
+            inner: RuntimeTcpSocketInner::Tcp(stream),
+        }
+    }
+
+    #[cfg(feature = "faketcp")]
+    pub(crate) fn from_fake_tcp(socket: crate::tunnel::fake_tcp::FakeTcpSocket) -> Self {
+        Self {
+            inner: RuntimeTcpSocketInner::FakeTcp(socket),
+        }
+    }
+
+    #[cfg(feature = "faketcp")]
+    pub(crate) fn into_fake_tcp(
+        self,
+    ) -> Result<crate::tunnel::fake_tcp::FakeTcpSocket, TunnelError> {
+        match self.inner {
+            RuntimeTcpSocketInner::FakeTcp(socket) => Ok(socket),
+            RuntimeTcpSocketInner::Tcp(_) => Err(TunnelError::InternalError(
+                "FakeTCP upgrader received an ordinary TCP socket".to_owned(),
+            )),
+        }
     }
 }
 
@@ -43,7 +69,11 @@ impl AsyncRead for RuntimeTcpSocket {
         cx: &mut Context<'_>,
         buf: &mut ReadBuf<'_>,
     ) -> Poll<io::Result<()>> {
-        Pin::new(&mut self.stream).poll_read(cx, buf)
+        match &mut self.inner {
+            RuntimeTcpSocketInner::Tcp(stream) => Pin::new(stream).poll_read(cx, buf),
+            #[cfg(feature = "faketcp")]
+            RuntimeTcpSocketInner::FakeTcp(socket) => Pin::new(socket).poll_read(cx, buf),
+        }
     }
 }
 
@@ -53,25 +83,45 @@ impl AsyncWrite for RuntimeTcpSocket {
         cx: &mut Context<'_>,
         buf: &[u8],
     ) -> Poll<io::Result<usize>> {
-        Pin::new(&mut self.stream).poll_write(cx, buf)
+        match &mut self.inner {
+            RuntimeTcpSocketInner::Tcp(stream) => Pin::new(stream).poll_write(cx, buf),
+            #[cfg(feature = "faketcp")]
+            RuntimeTcpSocketInner::FakeTcp(socket) => Pin::new(socket).poll_write(cx, buf),
+        }
     }
 
     fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        Pin::new(&mut self.stream).poll_flush(cx)
+        match &mut self.inner {
+            RuntimeTcpSocketInner::Tcp(stream) => Pin::new(stream).poll_flush(cx),
+            #[cfg(feature = "faketcp")]
+            RuntimeTcpSocketInner::FakeTcp(socket) => Pin::new(socket).poll_flush(cx),
+        }
     }
 
     fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        Pin::new(&mut self.stream).poll_shutdown(cx)
+        match &mut self.inner {
+            RuntimeTcpSocketInner::Tcp(stream) => Pin::new(stream).poll_shutdown(cx),
+            #[cfg(feature = "faketcp")]
+            RuntimeTcpSocketInner::FakeTcp(socket) => Pin::new(socket).poll_shutdown(cx),
+        }
     }
 }
 
 impl VirtualTcpSocket for RuntimeTcpSocket {
     fn local_addr(&self) -> io::Result<SocketAddr> {
-        self.stream.local_addr()
+        match &self.inner {
+            RuntimeTcpSocketInner::Tcp(stream) => stream.local_addr(),
+            #[cfg(feature = "faketcp")]
+            RuntimeTcpSocketInner::FakeTcp(socket) => socket.local_addr(),
+        }
     }
 
     fn peer_addr(&self) -> io::Result<SocketAddr> {
-        self.stream.peer_addr()
+        match &self.inner {
+            RuntimeTcpSocketInner::Tcp(stream) => stream.peer_addr(),
+            #[cfg(feature = "faketcp")]
+            RuntimeTcpSocketInner::FakeTcp(socket) => socket.peer_addr(),
+        }
     }
 }
 

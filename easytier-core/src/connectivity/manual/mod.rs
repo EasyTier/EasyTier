@@ -498,9 +498,15 @@ where
     H: ManualConnectorHost,
 {
     match transport {
-        ManualTransport::Tcp => transport::connect_tcp(host, remote_addr, bind_addrs, tcp_bind)
-            .await
-            .map(ConnectedTransport::Tcp),
+        ManualTransport::Tcp => transport::connect_tcp(
+            host,
+            remote_addr,
+            bind_addrs,
+            tcp_bind,
+            crate::socket::tcp::TcpSocketPurpose::ManualConnect,
+        )
+        .await
+        .map(ConnectedTransport::Tcp),
         ManualTransport::Udp => transport::connect_udp(
             host,
             remote_addr,

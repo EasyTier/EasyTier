@@ -34,7 +34,7 @@ use crate::{
     socket::{
         IpVersion,
         dns::DnsResolver,
-        tcp::TcpBindOptions,
+        tcp::{TcpBindOptions, TcpSocketPurpose},
         udp::{
             PreferredIpv6Source, UdpBindOptions, UdpSessionProtocol, VirtualUdpSocket,
             VirtualUdpSocketFactory, send_v4_hole_punch_control_packet,
@@ -83,14 +83,15 @@ pub trait DirectConnectorHost: ManualConnectorHost {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum DirectTransport {
-    Tcp,
+    Tcp(TcpSocketPurpose),
     Udp(UdpSessionMode),
 }
 
 impl DirectTransport {
     fn from_url(url: &Url) -> anyhow::Result<Self> {
         match url.scheme() {
-            "tcp" | "ws" | "wss" => Ok(Self::Tcp),
+            "tcp" | "ws" | "wss" => Ok(Self::Tcp(TcpSocketPurpose::DirectConnect)),
+            "faketcp" => Ok(Self::Tcp(TcpSocketPurpose::FakeTcp)),
             "udp" => Ok(Self::Udp(UdpSessionMode::EasyTierMux)),
             "wg" => Ok(Self::Udp(UdpSessionMode::Classified(
                 UdpSessionProtocol::WireGuard,
@@ -104,6 +105,10 @@ impl DirectTransport {
 
     fn is_udp(self) -> bool {
         matches!(self, Self::Udp(_))
+    }
+
+    fn supports_interface_bind(self) -> bool {
+        !matches!(self, Self::Tcp(TcpSocketPurpose::FakeTcp))
     }
 }
 
@@ -145,7 +150,7 @@ impl Default for DirectConnectorOptions {
 impl DirectConnectorOptions {
     fn socket_mark(&self, transport: DirectTransport) -> Option<u32> {
         match transport {
-            DirectTransport::Tcp => self.tcp_bind.socket_mark,
+            DirectTransport::Tcp(_) => self.tcp_bind.socket_mark,
             DirectTransport::Udp(_) => self.udp_bind.socket_mark,
         }
     }
@@ -672,7 +677,10 @@ where
             self.options.socket_mark(transport),
         )
         .await?;
-        let bind_addrs = if self.options.bind_device && self.options.allow_interface_bind {
+        let bind_addrs = if self.options.bind_device
+            && self.options.allow_interface_bind
+            && transport.supports_interface_bind()
+        {
             collect_bind_addrs(
                 self.peer_manager.as_ref(),
                 self.host.as_ref(),
@@ -685,12 +693,13 @@ where
         };
         tokio::time::timeout(DIRECT_CONNECT_TIMEOUT, async {
             let connected = match transport {
-                DirectTransport::Tcp => ConnectedTransport::Tcp(
+                DirectTransport::Tcp(purpose) => ConnectedTransport::Tcp(
                     transport::connect_tcp(
                         self.host.clone(),
                         remote_addr,
                         bind_addrs,
                         self.options.tcp_bind.clone(),
+                        purpose,
                     )
                     .await?,
                 ),
@@ -1064,6 +1073,16 @@ mod tests {
             mapped_listener_port(&"wg://127.0.0.1".parse().unwrap()),
             Some(11011)
         );
+    }
+
+    #[test]
+    fn faketcp_uses_specialized_tcp_socket_without_interface_binding() {
+        let transport =
+            DirectTransport::from_url(&"faketcp://127.0.0.1:11013".parse().unwrap()).unwrap();
+
+        assert_eq!(transport, DirectTransport::Tcp(TcpSocketPurpose::FakeTcp));
+        assert!(!transport.supports_interface_bind());
+        assert!(!transport.is_udp());
     }
 
     #[test]

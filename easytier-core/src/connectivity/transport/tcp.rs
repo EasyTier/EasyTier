@@ -2,7 +2,9 @@ use std::{net::SocketAddr, sync::Arc};
 
 use futures::stream::FuturesUnordered;
 
-use crate::socket::tcp::{TcpBindOptions, TcpConnectOptions, VirtualTcpSocketFactory};
+use crate::socket::tcp::{
+    TcpBindOptions, TcpConnectOptions, TcpSocketPurpose, VirtualTcpSocketFactory,
+};
 
 use super::first_success;
 
@@ -11,6 +13,7 @@ pub async fn connect_tcp<H>(
     remote_addr: SocketAddr,
     bind_addrs: Vec<SocketAddr>,
     default_bind: TcpBindOptions,
+    purpose: TcpSocketPurpose,
 ) -> anyhow::Result<H::Socket>
 where
     H: VirtualTcpSocketFactory,
@@ -19,7 +22,9 @@ where
     if bind_addrs.is_empty() {
         futures.push(
             host.connect_tcp(
-                TcpConnectOptions::direct_connect(remote_addr).with_bind(default_bind),
+                TcpConnectOptions::direct_connect(remote_addr)
+                    .with_purpose(purpose)
+                    .with_bind(default_bind),
             ),
         );
     } else {
@@ -29,7 +34,11 @@ where
                 .with_local_addr(Some(bind_addr))
                 .with_only_v6(true);
             futures.push(
-                host.connect_tcp(TcpConnectOptions::direct_connect(remote_addr).with_bind(bind)),
+                host.connect_tcp(
+                    TcpConnectOptions::direct_connect(remote_addr)
+                        .with_purpose(purpose)
+                        .with_bind(bind),
+                ),
             );
         }
     }

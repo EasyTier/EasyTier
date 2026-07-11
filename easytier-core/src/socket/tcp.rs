@@ -19,6 +19,7 @@ pub trait VirtualTcpSocket: AsyncRead + AsyncWrite + Unpin + Send + 'static {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TcpSocketPurpose {
     DirectConnect,
+    FakeTcp,
     HolePunch,
     ManualConnect,
 }
@@ -96,6 +97,11 @@ impl TcpConnectOptions {
             bind: TcpBindOptions::default(),
             purpose: TcpSocketPurpose::DirectConnect,
         }
+    }
+
+    pub fn with_purpose(mut self, purpose: TcpSocketPurpose) -> Self {
+        self.purpose = purpose;
+        self
     }
 
     pub fn hole_punch(remote_addr: SocketAddr, local_addr: Option<SocketAddr>) -> Self {

@@ -189,9 +189,21 @@ mod tests {
     #[rstest::rstest]
     #[tokio::test]
     async fn direct_connector_basic_test(
-        #[values("tcp", "udp", "wg")] protocol: &str,
+        #[cfg_attr(feature = "faketcp", values("tcp", "udp", "wg", "faketcp"))]
+        #[cfg_attr(not(feature = "faketcp"), values("tcp", "udp", "wg"))]
+        protocol: &str,
         #[values(true, false)] ipv6: bool,
     ) {
+        if protocol == "faketcp" {
+            if ipv6 {
+                return;
+            }
+            #[cfg(target_family = "unix")]
+            if unsafe { nix::libc::geteuid() } != 0 {
+                return;
+            }
+        }
+
         TESTING.store(true, std::sync::atomic::Ordering::Relaxed);
 
         let p_a = create_mock_peer_manager().await;
@@ -212,7 +224,11 @@ mod tests {
         direct_a.run_as_client();
         direct_c.run_as_server();
 
-        let port = if protocol == "wg" { 11040 } else { 11041 };
+        let port = match protocol {
+            "wg" => 11040,
+            "faketcp" => 11042,
+            _ => 11041,
+        };
         let listener = if ipv6 {
             format!("{protocol}://[::]:{port}")
         } else {

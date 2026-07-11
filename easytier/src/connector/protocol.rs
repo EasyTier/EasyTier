@@ -61,6 +61,18 @@ impl ClientProtocolUpgrader<RuntimeTcpSocket> for RuntimeClientProtocolUpgrader 
                     anyhow::bail!("QUIC protocol requires a UDP session")
                 }
             },
+            #[cfg(feature = "faketcp")]
+            "faketcp" => match connected {
+                ConnectedTransport::Tcp(socket) => {
+                    Ok(crate::tunnel::fake_tcp::upgrade_connected_socket(
+                        socket.into_fake_tcp()?,
+                        requested_url,
+                    )?)
+                }
+                ConnectedTransport::Udp(_) => {
+                    anyhow::bail!("FakeTCP protocol requires a TCP transport")
+                }
+            },
             scheme => anyhow::bail!("unsupported client protocol upgrader: {scheme}"),
         }
     }
