@@ -7,6 +7,8 @@ pub mod runtime;
 #[cfg(feature = "proxy-packet")]
 pub mod icmp_proxy_engine;
 #[cfg(feature = "proxy-packet")]
+pub mod icmp_proxy_service;
+#[cfg(feature = "proxy-packet")]
 pub mod ip_reassembler;
 #[cfg(feature = "proxy-smoltcp-stack")]
 pub mod smoltcp_stack;

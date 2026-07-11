@@ -35,6 +35,25 @@ impl From<std::io::Error> for ProxyRuntimeError {
     }
 }
 
+pub trait IcmpProxyResponseSink: Send + Sync {
+    fn handle_socket_response(&self, peer_ip: Ipv4Addr, packet: &mut [u8]);
+}
+
+pub trait IcmpProxyRuntime: ProxyRuntimeInfo {
+    fn start_icmp(
+        &self,
+        response_sink: Weak<dyn IcmpProxyResponseSink>,
+    ) -> Result<(), ProxyRuntimeError>;
+
+    fn send_icmp_to_socket(
+        &self,
+        destination: Ipv4Addr,
+        packet: &[u8],
+    ) -> Result<(), ProxyRuntimeError>;
+
+    fn stop_icmp(&self);
+}
+
 #[async_trait::async_trait]
 pub trait UdpProxyResponseSink: Send + Sync {
     async fn handle_socket_response(
