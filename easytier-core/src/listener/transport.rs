@@ -8,7 +8,7 @@ use async_trait::async_trait;
 use url::Url;
 
 use crate::{
-    connectivity::protocol::raw,
+    connectivity::protocol::{ServerProtocolUpgrade, ServerProtocolUpgrader, raw},
     listener::{
         AcceptedSocketHandler, ListenerConnectionCounter, ListenerEventSink, ListenerManager,
         SocketListener,
@@ -45,6 +45,83 @@ impl<TcpSocket> AcceptedTransport<TcpSocket> {
 
 pub struct RawAcceptedTransportHandler {
     peer_manager: Weak<PeerManagerCore>,
+}
+
+#[async_trait]
+pub trait AcceptedTunnelHandler: Send + Sync + 'static {
+    async fn handle_tunnel(&self, tunnel: Box<dyn crate::tunnel::Tunnel>) -> anyhow::Result<()>;
+}
+
+#[async_trait]
+impl AcceptedTunnelHandler for PeerManagerCore {
+    async fn handle_tunnel(&self, tunnel: Box<dyn crate::tunnel::Tunnel>) -> anyhow::Result<()> {
+        self.add_tunnel_as_server(tunnel, true).await?;
+        Ok(())
+    }
+}
+
+/// Upgrades accepted sockets or sessions in core before peer admission.
+pub struct ProtocolAcceptedTransportHandler<TcpSocket, H> {
+    tunnel_handler: Weak<H>,
+    protocol: Arc<dyn ServerProtocolUpgrader<TcpSocket>>,
+}
+
+impl<TcpSocket, H> ProtocolAcceptedTransportHandler<TcpSocket, H> {
+    pub fn new(
+        tunnel_handler: &Arc<H>,
+        protocol: Arc<dyn ServerProtocolUpgrader<TcpSocket>>,
+    ) -> Self {
+        Self {
+            tunnel_handler: Arc::downgrade(tunnel_handler),
+            protocol,
+        }
+    }
+}
+
+impl<TcpSocket, H> ProtocolAcceptedTransportHandler<TcpSocket, H>
+where
+    H: AcceptedTunnelHandler,
+{
+    async fn handle_tunnel(&self, tunnel: Box<dyn crate::tunnel::Tunnel>) -> anyhow::Result<()> {
+        self.tunnel_handler
+            .upgrade()
+            .ok_or_else(|| anyhow::anyhow!("accepted tunnel handler is gone"))?
+            .handle_tunnel(tunnel)
+            .await
+    }
+
+    async fn handle_upgrade(&self, upgrade: ServerProtocolUpgrade) -> anyhow::Result<()> {
+        match upgrade {
+            ServerProtocolUpgrade::Tunnel(tunnel) => self.handle_tunnel(tunnel).await,
+            ServerProtocolUpgrade::Acceptor(mut acceptor) => loop {
+                let tunnel = acceptor.accept().await?;
+                let _ = self.handle_tunnel(tunnel).await;
+            },
+        }
+    }
+}
+
+#[async_trait]
+impl<TcpSocket, H> AcceptedSocketHandler<AcceptedTransport<TcpSocket>>
+    for ProtocolAcceptedTransportHandler<TcpSocket, H>
+where
+    TcpSocket: crate::socket::tcp::VirtualTcpSocket,
+    H: AcceptedTunnelHandler,
+{
+    async fn handle_accepted_socket(
+        &self,
+        accepted: AcceptedTransport<TcpSocket>,
+    ) -> anyhow::Result<()> {
+        let upgrade = match accepted {
+            AcceptedTransport::Tcp { socket, local_url } => {
+                self.protocol.upgrade_tcp(socket, local_url).await?
+            }
+            AcceptedTransport::Udp { session, local_url } => {
+                self.protocol.upgrade_udp(session, local_url).await?
+            }
+        };
+        self.handle_upgrade(upgrade).await
+    }
 }
 
 impl RawAcceptedTransportHandler {
@@ -401,11 +478,14 @@ mod tests {
     };
 
     use super::*;
-    use crate::socket::{
-        tcp::{VirtualTcpListener, VirtualTcpSocket},
-        udp::{
-            UdpBindOptions, UdpSessionKind, UdpSessionProtocol, UdpSessionSocket, VirtualUdpSocket,
-            new_syn_packet,
+    use crate::{
+        connectivity::protocol::ServerTunnelAcceptor,
+        socket::{
+            tcp::{VirtualTcpListener, VirtualTcpSocket},
+            udp::{
+                UdpBindOptions, UdpSessionKind, UdpSessionProtocol, UdpSessionSocket,
+                VirtualUdpSocket, new_syn_packet,
+            },
         },
     };
 
@@ -630,6 +710,89 @@ mod tests {
         active: Arc<AtomicUsize>,
     }
 
+    struct QueueTunnelAcceptor {
+        tunnels: VecDeque<Box<dyn crate::tunnel::Tunnel>>,
+    }
+
+    #[async_trait]
+    impl ServerTunnelAcceptor for QueueTunnelAcceptor {
+        async fn accept(&mut self) -> anyhow::Result<Box<dyn crate::tunnel::Tunnel>> {
+            self.tunnels
+                .pop_front()
+                .ok_or_else(|| anyhow::anyhow!("server tunnel acceptor finished"))
+        }
+    }
+
+    struct RecordingServerProtocolUpgrader {
+        tcp_calls: AtomicUsize,
+        udp_calls: AtomicUsize,
+    }
+
+    impl RecordingServerProtocolUpgrader {
+        fn new() -> Self {
+            Self {
+                tcp_calls: AtomicUsize::new(0),
+                udp_calls: AtomicUsize::new(0),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl ServerProtocolUpgrader<MockTcpSocket> for RecordingServerProtocolUpgrader {
+        fn supports_scheme(&self, scheme: &str) -> bool {
+            matches!(scheme, "tcp" | "udp")
+        }
+
+        async fn upgrade_tcp(
+            &self,
+            socket: MockTcpSocket,
+            _local_url: Url,
+        ) -> anyhow::Result<ServerProtocolUpgrade> {
+            self.tcp_calls.fetch_add(1, Ordering::Relaxed);
+            let first = raw::upgrade_accepted_tcp(socket)?;
+            let (stream, _remote) = tokio::io::duplex(64);
+            let second = raw::upgrade_accepted_tcp(MockTcpSocket {
+                stream,
+                local_addr: "127.0.0.1:21001".parse().unwrap(),
+                peer_addr: "127.0.0.1:31001".parse().unwrap(),
+            })?;
+            Ok(ServerProtocolUpgrade::Acceptor(Box::new(
+                QueueTunnelAcceptor {
+                    tunnels: VecDeque::from([first, second]),
+                },
+            )))
+        }
+
+        async fn upgrade_udp(
+            &self,
+            session: UdpSession,
+            _local_url: Url,
+        ) -> anyhow::Result<ServerProtocolUpgrade> {
+            self.udp_calls.fetch_add(1, Ordering::Relaxed);
+            Ok(ServerProtocolUpgrade::Tunnel(raw::upgrade_accepted_udp(
+                session,
+            )?))
+        }
+    }
+
+    struct RecordingTunnelHandler {
+        calls: AtomicUsize,
+    }
+
+    #[async_trait]
+    impl AcceptedTunnelHandler for RecordingTunnelHandler {
+        async fn handle_tunnel(
+            &self,
+            _tunnel: Box<dyn crate::tunnel::Tunnel>,
+        ) -> anyhow::Result<()> {
+            let call = self.calls.fetch_add(1, Ordering::Relaxed);
+            if call == 0 {
+                anyhow::bail!("first admission rejected");
+            }
+            Ok(())
+        }
+    }
+
     #[async_trait]
     impl AcceptedSocketHandler<AcceptedTransport<MockTcpSocket>> for RecordingHandler {
         async fn handle_accepted_socket(
@@ -662,6 +825,49 @@ mod tests {
         let mut packet = vec![0; 32];
         packet[..4].copy_from_slice(&4u32.to_le_bytes());
         packet
+    }
+
+    #[tokio::test]
+    async fn protocol_handler_consumes_multi_tunnel_acceptors_and_udp_upgrades()
+    -> anyhow::Result<()> {
+        let tunnel_handler = Arc::new(RecordingTunnelHandler {
+            calls: AtomicUsize::new(0),
+        });
+        let protocol = Arc::new(RecordingServerProtocolUpgrader::new());
+        let handler = ProtocolAcceptedTransportHandler::new(&tunnel_handler, protocol.clone());
+
+        let (stream, _remote) = tokio::io::duplex(64);
+        let tcp_result = handler
+            .handle_accepted_socket(AcceptedTransport::Tcp {
+                socket: MockTcpSocket {
+                    stream,
+                    local_addr: "127.0.0.1:21000".parse().unwrap(),
+                    peer_addr: "127.0.0.1:31000".parse().unwrap(),
+                },
+                local_url: "tcp://127.0.0.1:21000".parse().unwrap(),
+            })
+            .await
+            .unwrap_err();
+        assert_eq!(tcp_result.to_string(), "server tunnel acceptor finished");
+        assert_eq!(protocol.tcp_calls.load(Ordering::Relaxed), 1);
+        assert_eq!(tunnel_handler.calls.load(Ordering::Relaxed), 2);
+
+        let udp_socket = Arc::new(MockUdpSocket::new("127.0.0.1:22000".parse().unwrap()));
+        let udp_session = UdpSession::identity_standalone(
+            udp_socket,
+            "127.0.0.1:32000".parse().unwrap(),
+            UdpSessionKind::EasyTierMux,
+        )?;
+        handler
+            .handle_accepted_socket(AcceptedTransport::Udp {
+                session: udp_session,
+                local_url: "udp://127.0.0.1:22000".parse().unwrap(),
+            })
+            .await?;
+        assert_eq!(protocol.udp_calls.load(Ordering::Relaxed), 1);
+        assert_eq!(tunnel_handler.calls.load(Ordering::Relaxed), 3);
+
+        Ok::<(), anyhow::Error>(())
     }
 
     #[tokio::test]
