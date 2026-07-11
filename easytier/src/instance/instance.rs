@@ -23,7 +23,7 @@ use tokio_util::sync::CancellationToken;
 use tokio_util::task::AbortOnDropHandle;
 
 use crate::common::PeerId;
-use crate::common::acl_processor::AclRuleBuilder;
+use crate::common::acl_processor::runtime_acl_config;
 use crate::common::config::ConfigLoader;
 use crate::common::error::Error;
 use crate::common::global_ctx::{ArcGlobalCtx, GlobalCtx, GlobalCtxEvent};
@@ -454,12 +454,9 @@ impl InstanceConfigPatcher {
             crate::proto::api::config::patch_vec(&mut current_whitelist, patches);
             global_ctx.config.set_udp_whitelist(current_whitelist);
         }
-        global_ctx
-            .get_acl_filter()
-            .reload_rules(AclRuleBuilder::build(&global_ctx)?.as_ref());
         weak_upgrade(&self.core_instance)?
-            .refresh_acl_groups()
-            .await;
+            .apply_acl_config(runtime_acl_config(&global_ctx))
+            .await?;
         Ok(())
     }
 
@@ -1017,10 +1014,6 @@ impl Instance {
 
         #[cfg(any(feature = "kcp", feature = "quic"))]
         self.core_instance.start_transport_proxy().await?;
-
-        self.global_ctx
-            .get_acl_filter()
-            .reload_rules(AclRuleBuilder::build(&self.global_ctx)?.as_ref());
 
         // run after tun device created, so listener can bind to tun device, which may be required by win 10
         self.core_instance.start_network_services().await?;

@@ -1,3 +1,4 @@
+pub mod acl_config;
 pub mod acl_filter;
 pub mod acl_processor;
 pub mod context;

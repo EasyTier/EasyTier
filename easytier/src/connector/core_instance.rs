@@ -8,7 +8,7 @@ use easytier_core::{
             discovery::ManualEndpointDiscoveryConfig,
         },
     },
-    instance::{CoreInstance, CoreInstanceAdapters, CoreInstanceConfig},
+    instance::{AclConfigProvider, CoreInstance, CoreInstanceAdapters, CoreInstanceConfig},
     socket::{
         IpVersion, SocketContext,
         dns::{DnsRecordResolver, DnsResolver},
@@ -21,6 +21,7 @@ use strum::VariantArray as _;
 use crate::{
     VERSION,
     common::{
+        acl_processor::runtime_acl_config,
         config::ConfigLoader as _,
         dns::RuntimeDnsResolver,
         global_ctx::{ArcGlobalCtx, GlobalCtxEvent},
@@ -39,6 +40,16 @@ pub(crate) type RuntimeCoreInstance = CoreInstance<RuntimeConnectorHost>;
 
 struct GlobalCtxManualConnectivityEventSink {
     global_ctx: ArcGlobalCtx,
+}
+
+struct RuntimeAclConfigProvider {
+    global_ctx: ArcGlobalCtx,
+}
+
+impl AclConfigProvider for RuntimeAclConfigProvider {
+    fn current_acl_config(&self) -> easytier_core::peers::acl_config::AclRuleConfig {
+        runtime_acl_config(&self.global_ctx)
+    }
 }
 
 impl ManualConnectivityEventSink for GlobalCtxManualConnectivityEventSink {
@@ -139,6 +150,9 @@ pub(crate) fn runtime_core_instance_adapters(
         listener: None,
         accepted_transport_handler: None,
         udp_hole_punch: None,
+        acl_config: Some(Arc::new(RuntimeAclConfigProvider {
+            global_ctx: global_ctx.clone(),
+        })),
         transport_proxy: None,
         proxy: None,
         proxy_cidr_monitor: Some(runtime_proxy_cidr_monitor_host(global_ctx.clone())),
@@ -168,6 +182,7 @@ pub(crate) fn build_runtime_core_instance_with_transport(
             .map(|peer| peer.uri)
             .collect(),
         listeners: Vec::new(),
+        acl: runtime_acl_config(&global_ctx),
         endpoint_discovery: runtime_endpoint_discovery_config(&global_ctx),
         manual: runtime_manual_options(&global_ctx),
         direct: runtime_direct_options(&global_ctx, false),
@@ -308,6 +323,7 @@ mod tests {
         let config = CoreInstanceConfig {
             initial_peers: Vec::new(),
             listeners: Vec::new(),
+            acl: Default::default(),
             endpoint_discovery: runtime_endpoint_discovery_config(&global_ctx),
             manual: runtime_manual_options(&global_ctx),
             direct: runtime_direct_options(&global_ctx, false),
@@ -368,6 +384,32 @@ mod tests {
         assert_eq!(instance.state(), CoreInstanceState::Stopped);
         assert_eq!(transport_proxy.stop_calls.load(Ordering::Relaxed), 1);
         assert_eq!(proxy.stop_calls.load(Ordering::Relaxed), 1);
+    }
+
+    #[tokio::test]
+    async fn runtime_core_reads_acl_config_at_activation() {
+        let global_ctx = get_mock_global_ctx();
+        let (nic_channel, _nic_receiver) = create_packet_recv_chan();
+        let peer_manager = Arc::new(PeerManager::new(
+            RouteAlgoType::Ospf,
+            global_ctx.clone(),
+            nic_channel,
+        ));
+        let instance = Arc::new(
+            build_runtime_core_instance(global_ctx.clone(), peer_manager, None)
+                .expect("runtime core composition should succeed"),
+        );
+
+        global_ctx
+            .config
+            .set_tcp_whitelist(vec!["invalid".to_string()]);
+        instance.start().await.unwrap();
+        let error = instance.start_network_services().await.unwrap_err();
+        assert!(
+            error.to_string().contains("Invalid port number"),
+            "unexpected ACL activation error: {error:#}"
+        );
+        instance.stop().await;
     }
 
     #[tokio::test]
@@ -473,6 +515,7 @@ mod tests {
                     must_succeed: true,
                 },
             ],
+            acl: Default::default(),
             endpoint_discovery: runtime_endpoint_discovery_config(&global_ctx),
             manual: runtime_manual_options(&global_ctx),
             direct: runtime_direct_options(&global_ctx, false),
@@ -533,6 +576,7 @@ mod tests {
                             ),
                             must_succeed: true,
                         }],
+                        acl: Default::default(),
                         endpoint_discovery: runtime_endpoint_discovery_config(&global_a),
                         manual: Default::default(),
                         direct: runtime_direct_options(&global_a, true),
@@ -550,6 +594,7 @@ mod tests {
                     connectivity: CoreInstanceConfig {
                         initial_peers: Vec::new(),
                         listeners: Vec::new(),
+                        acl: Default::default(),
                         endpoint_discovery: runtime_endpoint_discovery_config(&global_b),
                         manual: Default::default(),
                         direct: runtime_direct_options(&global_b, true),
@@ -644,6 +689,7 @@ mod tests {
         let mut connectivity = CoreInstanceConfig {
             initial_peers: Vec::new(),
             listeners: Vec::new(),
+            acl: Default::default(),
             endpoint_discovery: runtime_endpoint_discovery_config(&global_ctx),
             manual: runtime_manual_options(&global_ctx),
             direct: runtime_direct_options(&global_ctx, false),
@@ -682,6 +728,7 @@ mod tests {
                 ),
                 must_succeed: true,
             }],
+            acl: Default::default(),
             endpoint_discovery: runtime_endpoint_discovery_config(&global_ctx),
             manual: runtime_manual_options(&global_ctx),
             direct: runtime_direct_options(&global_ctx, false),

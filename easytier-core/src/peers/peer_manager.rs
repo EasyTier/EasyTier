@@ -1501,6 +1501,10 @@ impl PeerManagerCore {
         *self.exit_nodes.write().await = exit_nodes;
     }
 
+    pub(crate) fn reload_acl(&self, acl: Option<&crate::proto::acl::Acl>) {
+        self.acl_filter.reload_rules(acl);
+    }
+
     pub async fn wait(&self) {
         while !self.tasks.lock().await.is_empty() {
             tokio::time::sleep(std::time::Duration::from_secs(1)).await;

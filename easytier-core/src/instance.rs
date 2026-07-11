@@ -36,6 +36,7 @@ use crate::{
     },
     peer_center::instance::{PeerCenterInstance, PeerCenterInstanceService},
     peers::{
+        acl_config::AclRuleConfig,
         create_packet_recv_chan,
         peer_manager::{PeerManagerCore, PortablePeerManagerConfig},
     },
@@ -113,6 +114,7 @@ where
 pub struct CoreInstanceConfig {
     pub initial_peers: Vec<Url>,
     pub listeners: Vec<TransportListenerConfig>,
+    pub acl: AclRuleConfig,
     pub endpoint_discovery: ManualEndpointDiscoveryConfig,
     pub manual: ManualConnectorOptions,
     pub direct: DirectConnectorOptions,
@@ -123,6 +125,7 @@ impl Default for CoreInstanceConfig {
         Self {
             initial_peers: Vec::new(),
             listeners: Vec::new(),
+            acl: AclRuleConfig::default(),
             endpoint_discovery: ManualEndpointDiscoveryConfig::default(),
             manual: ManualConnectorOptions::default(),
             direct: DirectConnectorOptions::default(),
@@ -185,10 +188,23 @@ where
     pub accepted_transport_handler:
         Option<Arc<dyn AcceptedSocketHandler<AcceptedTransport<HostAcceptedTcpSocket<H>>>>>,
     pub udp_hole_punch: Option<Arc<dyn UdpHolePunchService>>,
+    pub acl_config: Option<Arc<dyn AclConfigProvider>>,
     pub transport_proxy: Option<Arc<dyn ProxyService>>,
     pub proxy: Option<Arc<dyn ProxyService>>,
     pub proxy_cidr_monitor: Option<Arc<dyn ProxyCidrMonitorHost>>,
     pub public_ipv6_provider: Option<Arc<dyn PublicIpv6ProviderHost>>,
+}
+
+pub trait AclConfigProvider: Send + Sync + 'static {
+    fn current_acl_config(&self) -> AclRuleConfig;
+}
+
+struct StaticAclConfigProvider(AclRuleConfig);
+
+impl AclConfigProvider for StaticAclConfigProvider {
+    fn current_acl_config(&self) -> AclRuleConfig {
+        self.0.clone()
+    }
 }
 
 #[async_trait]
@@ -315,6 +331,8 @@ where
     public_ipv6_provider: Option<Arc<PublicIpv6ProviderService>>,
     initial_peers: Vec<Url>,
     initial_peers_started: AtomicBool,
+    acl_config: Arc<dyn AclConfigProvider>,
+    initial_acl_loaded: AtomicBool,
 }
 
 impl<H> CoreInstance<H>
@@ -368,6 +386,7 @@ where
             listener,
             accepted_transport_handler,
             udp_hole_punch,
+            acl_config,
             transport_proxy,
             proxy,
             proxy_cidr_monitor,
@@ -376,6 +395,7 @@ where
         let CoreInstanceConfig {
             initial_peers,
             listeners,
+            acl: initial_acl,
             endpoint_discovery,
             manual: manual_options,
             direct: direct_options,
@@ -414,6 +434,8 @@ where
             dns_records,
             endpoint_discovery,
         ));
+        let acl_config: Arc<dyn AclConfigProvider> =
+            acl_config.unwrap_or_else(|| Arc::new(StaticAclConfigProvider(initial_acl)));
         let manual = match manual_events {
             Some(events) => ManualConnectorManager::new_with_events(
                 peer_manager.clone(),
@@ -478,6 +500,8 @@ where
             public_ipv6_provider,
             initial_peers,
             initial_peers_started: AtomicBool::new(false),
+            acl_config,
+            initial_acl_loaded: AtomicBool::new(false),
         })
     }
 
@@ -794,13 +818,37 @@ where
     }
 
     /// Starts the core-owned services that run after the host has prepared its
-    /// packet interface and loaded the initial access-control configuration.
+    /// packet interface.
     pub async fn start_network_services(self: &Arc<Self>) -> anyhow::Result<()> {
+        self.load_initial_acl().await?;
         self.start_proxy().await?;
         self.start_udp_hole_punch().await?;
         self.start_peer_center().await?;
         self.start_initial_peers().await?;
         self.start_proxy_cidr_monitor().await?;
+        Ok(())
+    }
+
+    async fn load_initial_acl(&self) -> anyhow::Result<()> {
+        let _operation = self.operation.lock().await;
+        let state = self.state();
+        if state != CoreInstanceState::Running {
+            anyhow::bail!("ACL cannot load from core instance state {state:?}");
+        }
+        if self.initial_acl_loaded.load(Ordering::Acquire) {
+            return Ok(());
+        }
+
+        let acl = self.acl_config.current_acl_config().build()?;
+        self.peer_manager.reload_acl(acl.as_ref());
+        self.initial_acl_loaded.store(true, Ordering::Release);
+        Ok(())
+    }
+
+    pub async fn apply_acl_config(&self, config: AclRuleConfig) -> anyhow::Result<()> {
+        let acl = config.build()?;
+        self.peer_manager.reload_acl(acl.as_ref());
+        self.refresh_acl_groups().await;
         Ok(())
     }
 
