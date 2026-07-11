@@ -1,7 +1,6 @@
 #[cfg(feature = "tun")]
 use std::any::Any;
 use std::net::IpAddr;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Weak};
 #[cfg(feature = "tun")]
 use std::time::Duration;
@@ -69,8 +68,6 @@ use crate::vpn_portal::{self, VpnPortal};
 #[cfg(feature = "magic-dns")]
 use super::dns_server::{MAGIC_DNS_FAKE_IP, runner::DnsRunner};
 use super::public_ipv6_provider::{
-    PublicIpv6ProviderReconcileTask, reconcile_public_ipv6_provider_runtime,
-    run_public_ipv6_provider_reconcile_task, should_run_public_ipv6_provider_reconcile,
     validate_public_ipv6_config, validate_public_ipv6_config_values,
 };
 
@@ -176,45 +173,6 @@ impl NicCtxContainer {
 
 #[cfg(feature = "tun")]
 type ArcNicCtx = Arc<Mutex<Option<NicCtxContainer>>>;
-type ArcPublicIpv6ProviderTaskSlot = Arc<PublicIpv6ProviderTaskSlot>;
-
-struct PublicIpv6ProviderTaskSlot {
-    task: Mutex<Option<PublicIpv6ProviderReconcileTask>>,
-    closing: AtomicBool,
-}
-
-impl PublicIpv6ProviderTaskSlot {
-    fn new() -> Self {
-        Self {
-            task: Mutex::new(None),
-            closing: AtomicBool::new(false),
-        }
-    }
-
-    async fn ensure_started(&self, global_ctx: &ArcGlobalCtx) {
-        let mut task = self.task.lock().await;
-        if self.closing.load(Ordering::Acquire) || task.is_some() {
-            return;
-        }
-        *task = run_public_ipv6_provider_reconcile_task(global_ctx);
-    }
-
-    async fn shutdown(&self) {
-        self.closing.store(true, Ordering::Release);
-        let task = self.task.lock().await.take();
-        if let Some(task) = task {
-            task.shutdown().await;
-        }
-    }
-}
-
-async fn ensure_public_ipv6_provider_reconcile_task(
-    global_ctx: &ArcGlobalCtx,
-    task_slot: &ArcPublicIpv6ProviderTaskSlot,
-) {
-    task_slot.ensure_started(global_ctx).await;
-}
-
 pub struct InstanceRpcServerHook {
     rpc_portal_whitelist: Vec<IpCidr>,
 }
@@ -273,7 +231,6 @@ pub struct InstanceConfigPatcher {
     #[cfg(feature = "socks5")]
     socks5_server: Weak<Socks5Server>,
     core_instance: Weak<RuntimeCoreInstance>,
-    public_ipv6_provider_task: ArcPublicIpv6ProviderTaskSlot,
 }
 
 impl InstanceConfigPatcher {
@@ -379,15 +336,9 @@ impl InstanceConfigPatcher {
         global_ctx.issue_event(GlobalCtxEvent::ConfigPatched(patch_for_event));
 
         if provider_config_changed {
-            reconcile_public_ipv6_provider_runtime(&global_ctx).await;
-
-            if should_run_public_ipv6_provider_reconcile(&global_ctx) {
-                ensure_public_ipv6_provider_reconcile_task(
-                    &global_ctx,
-                    &self.public_ipv6_provider_task,
-                )
-                .await;
-            }
+            let core_instance = weak_upgrade(&self.core_instance)?;
+            core_instance.reconcile_public_ipv6_provider().await;
+            core_instance.start_public_ipv6_provider().await;
         }
 
         Ok(())
@@ -669,8 +620,6 @@ pub struct Instance {
     #[cfg(feature = "socks5")]
     socks5_server: Arc<Socks5Server>,
 
-    public_ipv6_provider_task: ArcPublicIpv6ProviderTaskSlot,
-
     global_ctx: ArcGlobalCtx,
 }
 
@@ -851,8 +800,6 @@ impl Instance {
             #[cfg(feature = "socks5")]
             socks5_server,
 
-            public_ipv6_provider_task: Arc::new(PublicIpv6ProviderTaskSlot::new()),
-
             global_ctx,
         }
     }
@@ -870,7 +817,7 @@ impl Instance {
 
     async fn prepare_public_ipv6_config(&self) -> Result<(), Error> {
         validate_public_ipv6_config(&self.global_ctx)?;
-        reconcile_public_ipv6_provider_runtime(&self.global_ctx).await;
+        self.core_instance.reconcile_public_ipv6_provider().await;
         Ok(())
     }
 
@@ -1029,11 +976,7 @@ impl Instance {
     pub async fn run(&mut self) -> Result<(), Error> {
         self.prepare_public_ipv6_config().await?;
         self.core_instance.start().await?;
-        ensure_public_ipv6_provider_reconcile_task(
-            &self.global_ctx,
-            &self.public_ipv6_provider_task,
-        )
-        .await;
+        self.core_instance.start_public_ipv6_provider().await;
 
         #[cfg(feature = "tun")]
         {
@@ -1325,7 +1268,6 @@ impl Instance {
             #[cfg(feature = "socks5")]
             socks5_server: Arc::downgrade(&self.socks5_server),
             core_instance: Arc::downgrade(&self.core_instance),
-            public_ipv6_provider_task: self.public_ipv6_provider_task.clone(),
         }
     }
 
@@ -1587,7 +1529,6 @@ impl Instance {
     }
 
     pub async fn clear_resources(&mut self) {
-        self.public_ipv6_provider_task.shutdown().await;
         self.core_instance.stop().await;
         #[cfg(feature = "tun")]
         let _ = self.nic_ctx.lock().await.take();
@@ -1751,21 +1692,6 @@ mod tests {
             err.to_string()
                 .contains("not a valid global unicast IPv6 prefix")
         );
-    }
-
-    #[tokio::test]
-    async fn public_ipv6_provider_task_slot_does_not_restart_after_shutdown() {
-        let global_ctx = get_mock_global_ctx();
-        let slot = std::sync::Arc::new(super::PublicIpv6ProviderTaskSlot::new());
-        global_ctx.config.set_ipv6_public_addr_provider(true);
-        global_ctx
-            .config
-            .set_ipv6_public_addr_prefix(Some("2001:db8::/48".parse().unwrap()));
-
-        slot.shutdown().await;
-        super::ensure_public_ipv6_provider_reconcile_task(&global_ctx, &slot).await;
-
-        assert!(slot.task.lock().await.is_none());
     }
 
     #[tokio::test]

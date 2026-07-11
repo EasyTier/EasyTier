@@ -1,6 +1,7 @@
 //! Lifecycle owner for the portable EasyTier runtime.
 
 pub mod packet_io;
+pub mod public_ipv6_provider;
 
 use std::sync::{
     Arc, Weak,
@@ -46,6 +47,8 @@ use crate::{
         tcp::VirtualTcpSocketFactory,
     },
 };
+
+use self::public_ipv6_provider::{PublicIpv6ProviderHost, PublicIpv6ProviderService};
 
 pub use packet_io::PacketSink;
 use packet_io::{PacketEgress, parse_ip_packet};
@@ -184,6 +187,7 @@ where
     pub udp_hole_punch: Option<Arc<dyn UdpHolePunchService>>,
     pub proxy: Option<Arc<dyn ProxyService>>,
     pub proxy_cidr_monitor: Option<Arc<dyn ProxyCidrMonitorHost>>,
+    pub public_ipv6_provider: Option<Arc<dyn PublicIpv6ProviderHost>>,
 }
 
 #[async_trait]
@@ -305,6 +309,7 @@ where
     packet_egress: Option<PacketEgress>,
     peer_center: Arc<PeerCenterInstance>,
     peer_center_started: AtomicBool,
+    public_ipv6_provider: Option<Arc<PublicIpv6ProviderService>>,
 }
 
 impl<H> CoreInstance<H>
@@ -360,6 +365,7 @@ where
             udp_hole_punch,
             proxy,
             proxy_cidr_monitor,
+            public_ipv6_provider,
         } = adapters;
         let CoreInstanceConfig {
             initial_peers,
@@ -444,6 +450,7 @@ where
         };
         let tcp_hole_punch = TcpHolePunchConnector::new(peer_manager.clone(), host);
         let peer_center = Arc::new(PeerCenterInstance::new(peer_manager.clone()));
+        let public_ipv6_provider = public_ipv6_provider.map(PublicIpv6ProviderService::new);
 
         Ok(Self {
             state: AtomicU8::new(CoreInstanceState::Created as u8),
@@ -464,6 +471,7 @@ where
             packet_egress: None,
             peer_center,
             peer_center_started: AtomicBool::new(false),
+            public_ipv6_provider,
         })
     }
 
@@ -487,6 +495,9 @@ where
     }
 
     async fn stop_components(&self) {
+        if let Some(public_ipv6_provider) = &self.public_ipv6_provider {
+            public_ipv6_provider.stop().await;
+        }
         self.dhcp_ipv4_task.lock().await.take();
         self.proxy_cidr_monitor_task.lock().await.take();
         if let Some(listener) = &self.listener {
@@ -625,6 +636,20 @@ where
             .await;
         self.peer_center_started.store(true, Ordering::Release);
         Ok(())
+    }
+
+    pub async fn reconcile_public_ipv6_provider(&self) -> bool {
+        let Some(public_ipv6_provider) = &self.public_ipv6_provider else {
+            return false;
+        };
+        public_ipv6_provider.apply_config().await
+    }
+
+    pub async fn start_public_ipv6_provider(&self) {
+        let Some(public_ipv6_provider) = &self.public_ipv6_provider else {
+            return;
+        };
+        public_ipv6_provider.start().await;
     }
 
     /// Starts proxy services after the host has prepared its packet interface.

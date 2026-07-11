@@ -27,6 +27,7 @@ use crate::{
     },
     instance::listeners::RuntimeListenerService,
     instance::proxy_cidrs_monitor::runtime_proxy_cidr_monitor_host,
+    instance::public_ipv6_provider::runtime_public_ipv6_provider_host,
     peers::peer_manager::PeerManager,
     tunnel::IpScheme,
     use_global_var,
@@ -140,6 +141,7 @@ pub(crate) fn runtime_core_instance_adapters(
         udp_hole_punch: None,
         proxy: None,
         proxy_cidr_monitor: Some(runtime_proxy_cidr_monitor_host(global_ctx.clone())),
+        public_ipv6_provider: Some(runtime_public_ipv6_provider_host(&global_ctx)),
     }
 }
 

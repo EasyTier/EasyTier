@@ -4,7 +4,7 @@ pub mod instance;
 
 pub mod listeners;
 
-mod public_ipv6_provider;
+pub(crate) mod public_ipv6_provider;
 
 pub mod proxy_cidrs_monitor;
 
