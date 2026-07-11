@@ -1186,7 +1186,6 @@ dependencies = [
  "arc-swap",
  "ariadne",
  "async-recursion",
- "async-ringbuf",
  "async-stream",
  "async-trait",
  "atomic-shim",
@@ -1228,7 +1227,6 @@ dependencies = [
  "hickory-server",
  "hmac",
  "http",
- "http_req",
  "humansize",
  "humantime-serde",
  "idna",
@@ -1251,29 +1249,22 @@ dependencies = [
  "parking_lot",
  "paste",
  "pbjson",
- "pbjson-build",
  "percent-encoding",
  "petgraph",
  "pin-project-lite",
  "pnet",
  "prefix-trie",
- "proc-macro2",
  "prost 0.14.3",
- "prost-build",
  "prost-reflect 0.16.4",
- "prost-reflect-build",
  "prost-wkt-types",
  "quanta",
  "quinn",
  "quinn-proto",
- "quote",
  "rand 0.8.5",
  "rcgen",
  "regex",
- "reqwest",
  "resolv-conf",
  "ring",
- "ringbuf",
  "rust-i18n",
  "rustls",
  "seahash",
@@ -1316,7 +1307,6 @@ dependencies = [
  "winreg 0.52.0",
  "x25519-dalek",
  "zerocopy 0.7.35",
- "zip",
  "zstd",
 ]
 
@@ -1324,14 +1314,57 @@ dependencies = [
 name = "easytier-core"
 version = "2.6.4"
 dependencies = [
+ "aes-gcm",
+ "anyhow",
+ "arc-swap",
+ "async-ringbuf",
  "async-trait",
+ "atomic-shim",
+ "auto_impl",
+ "base64 0.22.1",
  "bitflags 2.9.4",
+ "bytecodec",
  "bytes",
+ "chacha20poly1305",
+ "cidr",
+ "crossbeam",
+ "dashmap",
  "easytier-proto",
+ "futures",
+ "guarden",
+ "hmac",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
+ "idna",
+ "ordered_hash_map",
+ "parking_lot",
+ "percent-encoding",
+ "petgraph",
+ "pin-project-lite",
+ "prefix-trie",
+ "prost 0.14.3",
+ "prost-reflect 0.16.4",
+ "prost-wkt-types",
+ "quanta",
+ "rand 0.8.5",
+ "rustls",
+ "serde",
+ "sha2",
+ "smoltcp",
+ "snow",
+ "stun_codec",
  "thiserror 1.0.69",
  "tokio",
+ "tokio-rustls",
+ "tokio-util",
  "tracing",
+ "url",
+ "uuid",
+ "webpki-roots 0.26.11",
+ "x25519-dalek",
  "zerocopy 0.7.35",
+ "zstd",
 ]
 
 [[package]]
@@ -1385,6 +1418,7 @@ dependencies = [
  "prost-reflect-build",
  "prost-wkt-types",
  "quote",
+ "reqwest",
  "serde",
  "serde_json",
  "sha2",
@@ -1393,6 +1427,7 @@ dependencies = [
  "url",
  "uuid",
  "x25519-dalek",
+ "zip",
 ]
 
 [[package]]
@@ -2175,22 +2210,6 @@ dependencies = [
  "http",
  "http-body",
  "pin-project-lite",
-]
-
-[[package]]
-name = "http_req"
-version = "0.13.1"
-source = "git+https://github.com/EasyTier/http_req.git#b10aa9fc0db3067cc3d2174683a87250b80a1ea9"
-dependencies = [
- "base64 0.22.1",
- "rand 0.8.5",
- "rustls",
- "rustls-pemfile",
- "rustls-pki-types",
- "unicase",
- "webpki",
- "webpki-roots 0.26.11",
- "zeroize",
 ]
 
 [[package]]
@@ -4356,15 +4375,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "rustls-pemfile"
-version = "2.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dce314e5fee3f39953d46bb63bb8a46d40c2f8fb7cc5a3b6cab2bde9721d6e50"
-dependencies = [
- "rustls-pki-types",
-]
-
-[[package]]
 name = "rustls-pki-types"
 version = "1.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5736,16 +5746,6 @@ checksum = "5a6580f308b1fad9207618087a65c04e7a10bc77e02c8e84e9b00dd4b12fa0bb"
 dependencies = [
  "js-sys",
  "wasm-bindgen",
-]
-
-[[package]]
-name = "webpki"
-version = "0.22.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ed63aea5ce73d0ff405984102c42de94fc55a6b75765d621c65262469b3c9b53"
-dependencies = [
- "ring",
- "untrusted",
 ]
 
 [[package]]
