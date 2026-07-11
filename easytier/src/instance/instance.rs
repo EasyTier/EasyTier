@@ -75,7 +75,6 @@ use crate::gateway::socks5::Socks5Server;
 struct IpProxy {
     tcp_proxy: Arc<TcpProxy<NatDstTcpConnector>>,
     icmp_proxy: Arc<IcmpProxy>,
-    udp_proxy: Arc<UdpProxy>,
     global_ctx: ArcGlobalCtx,
     started: Arc<AtomicBool>,
 }
@@ -85,30 +84,27 @@ impl IpProxy {
         let tcp_proxy = TcpProxy::new(peer_manager.clone(), NatDstTcpConnector {});
         let icmp_proxy = IcmpProxy::new(global_ctx.clone(), peer_manager.clone())
             .with_context(|| "create icmp proxy failed")?;
-        let udp_proxy = UdpProxy::new(global_ctx.clone(), peer_manager)
-            .with_context(|| "create udp proxy failed")?;
         Ok(IpProxy {
             tcp_proxy,
             icmp_proxy,
-            udp_proxy,
             global_ctx,
             started: Arc::new(AtomicBool::new(false)),
         })
     }
 
-    async fn start(&self) -> Result<(), Error> {
+    async fn start(&self) -> Result<bool, Error> {
         if (self.global_ctx.config.get_proxy_cidrs().is_empty()
             || self.started.load(Ordering::Relaxed))
             && !self.global_ctx.enable_exit_node()
             && !self.global_ctx.no_tun()
         {
-            return Ok(());
+            return Ok(false);
         }
 
         // Actually, if this node is enabled as an exit node,
         // we still can use the system stack to forward packets.
         if self.global_ctx.proxy_forward_by_system() && !self.global_ctx.no_tun() {
-            return Ok(());
+            return Ok(false);
         }
 
         self.started.store(true, Ordering::Relaxed);
@@ -127,8 +123,7 @@ impl IpProxy {
                 return Err(e);
             }
         }
-        self.udp_proxy.start().await?;
-        Ok(())
+        Ok(true)
     }
 }
 
@@ -711,8 +706,10 @@ impl Instance {
             global_ctx.clone(),
             peer_packet_sender,
         ));
+        let udp_proxy = UdpProxy::new(global_ctx.clone(), peer_manager.clone())
+            .expect("UDP proxy adapter construction should be infallible");
         let core_instance = Arc::new(
-            build_runtime_core_instance(global_ctx.clone(), peer_manager.clone())
+            build_runtime_core_instance(global_ctx.clone(), peer_manager.clone(), Some(udp_proxy))
                 .expect("runtime core instance composition should be valid"),
         );
 
@@ -1110,7 +1107,9 @@ impl Instance {
             self.get_global_ctx(),
             self.get_peer_manager(),
         )?);
-        self.run_ip_proxy().await?;
+        if self.run_ip_proxy().await? {
+            self.core_instance.start_proxy().await?;
+        }
 
         self.core_instance.start_udp_hole_punch().await?;
 
@@ -1146,12 +1145,11 @@ impl Instance {
         Ok(())
     }
 
-    pub async fn run_ip_proxy(&mut self) -> Result<(), Error> {
+    pub async fn run_ip_proxy(&mut self) -> Result<bool, Error> {
         if self.ip_proxy.is_none() {
             return Err(anyhow::anyhow!("ip proxy not enabled.").into());
         }
-        self.ip_proxy.as_ref().unwrap().start().await?;
-        Ok(())
+        self.ip_proxy.as_ref().unwrap().start().await
     }
 
     pub async fn run_vpn_portal(&mut self) -> Result<(), Error> {

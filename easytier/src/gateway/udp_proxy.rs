@@ -6,6 +6,7 @@ use std::{
 
 use bytes::Bytes;
 use dashmap::{DashMap, mapref::entry::Entry};
+use easytier_core::instance::ProxyService;
 use easytier_core::proxy::{
     runtime::{
         ProxyRuntimeError, ProxyRuntimeInfo, ProxyRuntimeSnapshot, UdpProxyResponseSink,
@@ -273,6 +274,11 @@ impl UdpProxy {
         Ok(())
     }
 
+    pub fn stop(&self) {
+        self.service.stop();
+        self.runtime.close_all();
+    }
+
     pub fn engine(&self) -> Arc<UdpProxyEngine> {
         self.service.engine()
     }
@@ -354,8 +360,19 @@ impl UdpProxyResponseSink for TestUdpResponseSink {
 
 impl Drop for UdpProxy {
     fn drop(&mut self) {
-        self.service.stop();
-        self.runtime.close_all();
+        self.stop();
+    }
+}
+
+#[async_trait::async_trait]
+impl ProxyService for UdpProxy {
+    async fn start(&self) -> anyhow::Result<()> {
+        self.service.start().await;
+        Ok(())
+    }
+
+    async fn stop(&self) {
+        UdpProxy::stop(self);
     }
 }
 

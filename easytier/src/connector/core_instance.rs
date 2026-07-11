@@ -144,6 +144,7 @@ pub(crate) fn runtime_core_instance_adapters(
 pub(crate) fn build_runtime_core_instance(
     global_ctx: ArcGlobalCtx,
     peer_manager: Arc<PeerManager>,
+    proxy: Option<Arc<dyn easytier_core::instance::ProxyService>>,
 ) -> anyhow::Result<RuntimeCoreInstance> {
     let config = CoreInstanceConfig {
         initial_peers: Vec::new(),
@@ -153,6 +154,7 @@ pub(crate) fn build_runtime_core_instance(
         direct: runtime_direct_options(&global_ctx, false),
     };
     let mut adapters = runtime_core_instance_adapters(global_ctx.clone());
+    adapters.proxy = proxy;
     adapters.listener = Some(Arc::new(RuntimeListenerService::new(
         global_ctx,
         peer_manager.core(),
@@ -262,7 +264,7 @@ mod tests {
             nic_channel,
         ));
         let instance = Arc::new(
-            build_runtime_core_instance(global_ctx, peer_manager)
+            build_runtime_core_instance(global_ctx, peer_manager, None)
                 .expect("runtime core composition should succeed"),
         );
 
@@ -544,7 +546,7 @@ mod tests {
             global_ctx.clone(),
             nic_channel,
         ));
-        Arc::new(build_runtime_core_instance(global_ctx, peer_manager).unwrap())
+        Arc::new(build_runtime_core_instance(global_ctx, peer_manager, None).unwrap())
     }
 
     #[tokio::test]
