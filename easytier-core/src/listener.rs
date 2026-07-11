@@ -6,6 +6,7 @@ use tokio::{
     sync::{Mutex, mpsc},
     task::JoinSet,
 };
+use tokio_util::sync::CancellationToken;
 use url::Url;
 
 pub mod plan;
@@ -147,6 +148,8 @@ pub struct ListenerManager<Accepted, H> {
     handler: Arc<H>,
     events: Arc<dyn ListenerEventSink>,
     options: ListenerManagerOptions,
+    operation: Mutex<()>,
+    cancel: CancellationToken,
     tasks: Mutex<JoinSet<()>>,
     handler_tasks: Arc<Mutex<JoinSet<()>>>,
     accepted_tasks: AcceptedTaskSpawner,
@@ -204,6 +207,8 @@ where
             handler,
             events,
             options,
+            operation: Mutex::new(()),
+            cancel: CancellationToken::new(),
             tasks: Mutex::new(JoinSet::new()),
             handler_tasks: Arc::new(Mutex::new(JoinSet::new())),
             accepted_tasks,
@@ -228,6 +233,10 @@ where
     }
 
     pub async fn run(&self) -> anyhow::Result<()> {
+        let _operation = self.operation.lock().await;
+        if self.cancel.is_cancelled() {
+            anyhow::bail!("listener manager is stopped");
+        }
         let accepted_task_rx = self
             .accepted_task_rx
             .lock()
@@ -237,37 +246,53 @@ where
         let mut initial_listeners = Vec::with_capacity(self.factories.len());
         for factory in &self.factories {
             initial_listeners.push(if factory.must_succeed {
-                Some(
-                    listen_once(factory.creator.clone())
-                        .await
-                        .with_context(|| "required listener failed to start")?,
-                )
+                Some(tokio::select! {
+                    _ = self.cancel.cancelled() => {
+                        anyhow::bail!("listener manager stopped during startup")
+                    }
+                    result = listen_once(factory.creator.clone()) => {
+                        result.with_context(|| "required listener failed to start")?
+                    }
+                })
             } else {
                 None
             });
+        }
+        if self.cancel.is_cancelled() {
+            anyhow::bail!("listener manager stopped during startup");
         }
 
         let mut tasks = self.tasks.lock().await;
         tasks.spawn(run_accepted_task_runner(
             accepted_task_rx,
             self.handler_tasks.clone(),
+            self.cancel.clone(),
         ));
 
         for (factory, initial_listener) in self.factories.iter().zip(initial_listeners) {
-            tasks.spawn(run_listener(
+            let cancel = self.cancel.clone();
+            let listener = run_listener(
                 factory.creator.clone(),
                 self.handler.clone(),
                 self.events.clone(),
                 self.options.clone(),
                 self.accepted_tasks.clone(),
                 initial_listener,
-            ));
+            );
+            tasks.spawn(async move {
+                tokio::select! {
+                    _ = cancel.cancelled() => {}
+                    _ = listener => {}
+                }
+            });
         }
 
         Ok(())
     }
 
     pub async fn stop(&self) {
+        self.cancel.cancel();
+        let _operation = self.operation.lock().await;
         let mut tasks = self.tasks.lock().await;
         tasks.abort_all();
         while tasks.join_next().await.is_some() {}
@@ -373,9 +398,11 @@ async fn run_listener<Accepted, H>(
 async fn run_accepted_task_runner(
     mut accepted_task_rx: mpsc::UnboundedReceiver<AcceptedTask>,
     handler_tasks: Arc<Mutex<JoinSet<()>>>,
+    cancel: CancellationToken,
 ) {
     loop {
         tokio::select! {
+            _ = cancel.cancelled() => break,
             maybe_task = accepted_task_rx.recv() => {
                 match maybe_task {
                     Some(task) => {
@@ -396,6 +423,9 @@ async fn run_accepted_task_runner(
     }
 
     let mut handler_tasks = handler_tasks.lock().await;
+    if cancel.is_cancelled() {
+        handler_tasks.abort_all();
+    }
     while let Some(task) = handler_tasks.join_next().await {
         if let Err(error) = task {
             tracing::error!(?error, "accepted socket handler task failed");
@@ -466,6 +496,29 @@ mod tests {
 
         fn local_url(&self) -> Url {
             self.url.clone()
+        }
+    }
+
+    #[derive(Debug)]
+    struct BlockingListenListener {
+        started: Arc<tokio::sync::Notify>,
+    }
+
+    #[async_trait]
+    impl SocketListener for BlockingListenListener {
+        type Accepted = usize;
+
+        async fn listen(&mut self) -> anyhow::Result<()> {
+            self.started.notify_one();
+            std::future::pending().await
+        }
+
+        async fn accept(&mut self) -> anyhow::Result<Self::Accepted> {
+            std::future::pending().await
+        }
+
+        fn local_url(&self) -> Url {
+            "mock://blocking-start".parse().unwrap()
         }
     }
 
@@ -791,6 +844,36 @@ mod tests {
             .unwrap()
             .unwrap();
         assert!(manager.run().await.is_err());
+    }
+
+    #[tokio::test]
+    async fn stop_interrupts_required_listener_startup() {
+        let started = Arc::new(tokio::sync::Notify::new());
+        let mut manager = ListenerManager::new(Arc::new(MockHandler {
+            accepted: Mutex::new(Vec::new()),
+        }));
+        let listener_started = started.clone();
+        manager.add_listener(
+            move || {
+                Box::new(BlockingListenListener {
+                    started: listener_started.clone(),
+                })
+            },
+            true,
+        );
+        let manager = Arc::new(manager);
+        let run_task = {
+            let manager = manager.clone();
+            tokio::spawn(async move { manager.run().await })
+        };
+
+        tokio::time::timeout(Duration::from_secs(1), started.notified())
+            .await
+            .unwrap();
+        manager.stop().await;
+
+        assert!(run_task.await.unwrap().is_err());
+        assert!(manager.tasks.lock().await.is_empty());
     }
 
     #[tokio::test]
