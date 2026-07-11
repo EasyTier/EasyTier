@@ -249,6 +249,7 @@ impl WsTunnelConnector {
         socket_addr: SocketAddr,
         tcp_socket: TcpSocket,
     ) -> Result<Box<dyn Tunnel>, TunnelError> {
+        is_wss(&addr)?;
         let stream = tcp_socket.connect(socket_addr).await?;
         if let Err(error) = stream.set_nodelay(true) {
             tracing::warn!(?error, "set_nodelay fail in ws connect");
