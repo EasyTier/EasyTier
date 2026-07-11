@@ -185,6 +185,7 @@ where
     pub accepted_transport_handler:
         Option<Arc<dyn AcceptedSocketHandler<AcceptedTransport<HostAcceptedTcpSocket<H>>>>>,
     pub udp_hole_punch: Option<Arc<dyn UdpHolePunchService>>,
+    pub transport_proxy: Option<Arc<dyn ProxyService>>,
     pub proxy: Option<Arc<dyn ProxyService>>,
     pub proxy_cidr_monitor: Option<Arc<dyn ProxyCidrMonitorHost>>,
     pub public_ipv6_provider: Option<Arc<dyn PublicIpv6ProviderHost>>,
@@ -301,6 +302,8 @@ where
     listener: Option<Arc<dyn ListenerService>>,
     udp_hole_punch: Option<Arc<dyn UdpHolePunchService>>,
     udp_hole_punch_started: AtomicBool,
+    transport_proxy: Option<Arc<dyn ProxyService>>,
+    transport_proxy_started: AtomicBool,
     proxy: Option<Arc<dyn ProxyService>>,
     proxy_started: AtomicBool,
     proxy_cidr_monitor: Option<Arc<dyn ProxyCidrMonitorHost>>,
@@ -365,6 +368,7 @@ where
             listener,
             accepted_transport_handler,
             udp_hole_punch,
+            transport_proxy,
             proxy,
             proxy_cidr_monitor,
             public_ipv6_provider,
@@ -461,6 +465,8 @@ where
             listener,
             udp_hole_punch,
             udp_hole_punch_started: AtomicBool::new(false),
+            transport_proxy,
+            transport_proxy_started: AtomicBool::new(false),
             proxy,
             proxy_started: AtomicBool::new(false),
             proxy_cidr_monitor,
@@ -506,6 +512,12 @@ where
         if let Some(udp_hole_punch) = &self.udp_hole_punch {
             udp_hole_punch.stop().await;
             self.udp_hole_punch_started.store(false, Ordering::Release);
+        }
+        if let Some(transport_proxy) = &self.transport_proxy
+            && self.transport_proxy_started.load(Ordering::Acquire)
+        {
+            transport_proxy.stop().await;
+            self.transport_proxy_started.store(false, Ordering::Release);
         }
         if let Some(proxy) = &self.proxy
             && self.proxy_started.load(Ordering::Acquire)
@@ -664,6 +676,43 @@ where
             anyhow::bail!("initial peer start cancelled");
         }
         self.initial_peers_started.store(true, Ordering::Release);
+        Ok(())
+    }
+
+    pub async fn start_transport_proxy(self: &Arc<Self>) -> anyhow::Result<()> {
+        let _operation = self.operation.lock().await;
+        let state = self.state();
+        if state != CoreInstanceState::Running {
+            anyhow::bail!("transport proxy cannot start from core instance state {state:?}");
+        }
+        let Some(transport_proxy) = &self.transport_proxy else {
+            return Ok(());
+        };
+        if self.transport_proxy_started.load(Ordering::Acquire) {
+            return Ok(());
+        }
+
+        let mut recovery = self.recovery_guard();
+        self.transport_proxy_started.store(true, Ordering::Release);
+        let start_result = tokio::select! {
+            _ = self.cancel.cancelled() => {
+                Err(anyhow::anyhow!("transport proxy start cancelled"))
+            }
+            result = transport_proxy.start() => result,
+        };
+        if let Err(error) = start_result {
+            transport_proxy.stop().await;
+            self.transport_proxy_started.store(false, Ordering::Release);
+            recovery.disarm();
+            return Err(error);
+        }
+        if self.cancel.is_cancelled() {
+            transport_proxy.stop().await;
+            self.transport_proxy_started.store(false, Ordering::Release);
+            recovery.disarm();
+            anyhow::bail!("transport proxy start cancelled");
+        }
+        recovery.disarm();
         Ok(())
     }
 

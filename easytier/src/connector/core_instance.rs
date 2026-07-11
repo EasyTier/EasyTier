@@ -139,6 +139,7 @@ pub(crate) fn runtime_core_instance_adapters(
         listener: None,
         accepted_transport_handler: None,
         udp_hole_punch: None,
+        transport_proxy: None,
         proxy: None,
         proxy_cidr_monitor: Some(runtime_proxy_cidr_monitor_host(global_ctx.clone())),
         public_ipv6_provider: Some(runtime_public_ipv6_provider_host(&global_ctx)),
@@ -148,6 +149,15 @@ pub(crate) fn runtime_core_instance_adapters(
 pub(crate) fn build_runtime_core_instance(
     global_ctx: ArcGlobalCtx,
     peer_manager: Arc<PeerManager>,
+    proxy: Option<Arc<dyn easytier_core::instance::ProxyService>>,
+) -> anyhow::Result<RuntimeCoreInstance> {
+    build_runtime_core_instance_with_transport(global_ctx, peer_manager, None, proxy)
+}
+
+pub(crate) fn build_runtime_core_instance_with_transport(
+    global_ctx: ArcGlobalCtx,
+    peer_manager: Arc<PeerManager>,
+    transport_proxy: Option<Arc<dyn easytier_core::instance::ProxyService>>,
     proxy: Option<Arc<dyn easytier_core::instance::ProxyService>>,
 ) -> anyhow::Result<RuntimeCoreInstance> {
     let config = CoreInstanceConfig {
@@ -163,6 +173,7 @@ pub(crate) fn build_runtime_core_instance(
         direct: runtime_direct_options(&global_ctx, false),
     };
     let mut adapters = runtime_core_instance_adapters(global_ctx.clone());
+    adapters.transport_proxy = transport_proxy;
     adapters.proxy = proxy;
     adapters.listener = Some(Arc::new(RuntimeListenerService::new(
         global_ctx,
@@ -321,13 +332,20 @@ mod tests {
             nic_channel,
         ));
         let proxy = Arc::new(RecordingProxyService::default());
+        let transport_proxy = Arc::new(RecordingProxyService::default());
         let instance = Arc::new(
-            build_runtime_core_instance(global_ctx, peer_manager, Some(proxy.clone()))
-                .expect("runtime core composition should succeed"),
+            build_runtime_core_instance_with_transport(
+                global_ctx,
+                peer_manager,
+                Some(transport_proxy.clone()),
+                Some(proxy.clone()),
+            )
+            .expect("runtime core composition should succeed"),
         );
 
         assert_eq!(instance.state(), CoreInstanceState::Created);
         assert!(instance.list_connectors().is_empty());
+        assert!(instance.start_transport_proxy().await.is_err());
         assert!(instance.start_proxy().await.is_err());
         assert!(instance.start_peer_center().await.is_err());
         instance.start().await.unwrap();
@@ -341,6 +359,9 @@ mod tests {
         instance.start_initial_peers().await.unwrap();
         assert_eq!(instance.list_connectors().len(), 1);
         assert_eq!(instance.list_connectors()[0].url, initial_peer);
+        instance.start_transport_proxy().await.unwrap();
+        instance.start_transport_proxy().await.unwrap();
+        assert_eq!(transport_proxy.start_calls.load(Ordering::Relaxed), 1);
         instance.start_proxy().await.unwrap();
         instance.start_proxy().await.unwrap();
         assert_eq!(proxy.start_calls.load(Ordering::Relaxed), 1);
@@ -352,6 +373,7 @@ mod tests {
         instance.stop().await;
         instance.stop().await;
         assert_eq!(instance.state(), CoreInstanceState::Stopped);
+        assert_eq!(transport_proxy.stop_calls.load(Ordering::Relaxed), 1);
         assert_eq!(proxy.stop_calls.load(Ordering::Relaxed), 1);
     }
 

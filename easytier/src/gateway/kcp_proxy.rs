@@ -1,6 +1,6 @@
 use std::{
     net::{IpAddr, SocketAddr},
-    sync::{Arc, Weak},
+    sync::{Arc, Mutex as StdMutex, Weak},
     time::Duration,
 };
 
@@ -15,14 +15,17 @@ use kcp_sys::{
     stream::KcpStream,
 };
 use prost::Message;
-use tokio::task::JoinSet;
+use tokio::{sync::Mutex, task::JoinSet};
 
-use easytier_core::proxy::{
-    proxy_acl::ProxyAclHandler,
-    tcp_proxy_engine::TcpProxyMode,
-    wrapped_tcp_proxy::{
-        WrappedTcpProxyNicContext, WrappedTcpProxyTransport,
-        try_process_wrapped_tcp_packet_from_nic,
+use easytier_core::{
+    instance::ProxyService,
+    proxy::{
+        proxy_acl::ProxyAclHandler,
+        tcp_proxy_engine::TcpProxyMode,
+        wrapped_tcp_proxy::{
+            WrappedTcpProxyNicContext, WrappedTcpProxyTransport,
+            try_process_wrapped_tcp_packet_from_nic,
+        },
     },
 };
 
@@ -460,12 +463,124 @@ impl KcpProxyDst {
     }
 }
 
+#[derive(Default)]
+struct KcpProxyServiceState {
+    src: Option<KcpProxySrc>,
+    dst: Option<KcpProxyDst>,
+}
+
+pub struct KcpProxyService {
+    peer_manager: Arc<PeerManager>,
+    src_enabled: bool,
+    dst_enabled: bool,
+    state: Mutex<Option<KcpProxyServiceState>>,
+    src_endpoint: StdMutex<Option<Arc<KcpEndpoint>>>,
+    src_tcp_proxy: StdMutex<Option<Arc<TcpProxy<NatDstKcpConnector>>>>,
+    dst_proxy_entries: StdMutex<Option<Arc<DashMap<ConnId, TcpProxyEntry>>>>,
+}
+
+impl KcpProxyService {
+    pub fn new(peer_manager: Arc<PeerManager>, src_enabled: bool, dst_enabled: bool) -> Self {
+        Self {
+            peer_manager,
+            src_enabled,
+            dst_enabled,
+            state: Mutex::new(None),
+            src_endpoint: StdMutex::new(None),
+            src_tcp_proxy: StdMutex::new(None),
+            dst_proxy_entries: StdMutex::new(None),
+        }
+    }
+
+    pub fn src_endpoint(&self) -> Option<Arc<KcpEndpoint>> {
+        self.src_endpoint
+            .lock()
+            .expect("KCP source endpoint mutex poisoned")
+            .clone()
+    }
+
+    pub fn src_tcp_proxy(&self) -> Option<Arc<TcpProxy<NatDstKcpConnector>>> {
+        self.src_tcp_proxy
+            .lock()
+            .expect("KCP source TCP proxy mutex poisoned")
+            .clone()
+    }
+
+    pub fn dst_rpc_service(&self) -> Option<KcpProxyDstRpcService> {
+        self.dst_proxy_entries
+            .lock()
+            .expect("KCP destination proxy entries mutex poisoned")
+            .as_ref()
+            .map(KcpProxyDstRpcService::new)
+    }
+}
+
+#[async_trait::async_trait]
+impl ProxyService for KcpProxyService {
+    async fn start(&self) -> anyhow::Result<()> {
+        let mut state = self.state.lock().await;
+        if state.is_some() {
+            return Ok(());
+        }
+
+        let src = if self.src_enabled {
+            let src = KcpProxySrc::new(self.peer_manager.clone()).await;
+            src.start().await;
+            Some(src)
+        } else {
+            None
+        };
+        let dst = if self.dst_enabled {
+            let mut dst = KcpProxyDst::new(self.peer_manager.clone()).await;
+            dst.start().await;
+            Some(dst)
+        } else {
+            None
+        };
+
+        *self
+            .src_endpoint
+            .lock()
+            .expect("KCP source endpoint mutex poisoned") =
+            src.as_ref().map(KcpProxySrc::get_kcp_endpoint);
+        *self
+            .src_tcp_proxy
+            .lock()
+            .expect("KCP source TCP proxy mutex poisoned") =
+            src.as_ref().map(KcpProxySrc::get_tcp_proxy);
+        *self
+            .dst_proxy_entries
+            .lock()
+            .expect("KCP destination proxy entries mutex poisoned") =
+            dst.as_ref().map(|dst| dst.proxy_entries.clone());
+        *state = Some(KcpProxyServiceState { src, dst });
+        Ok(())
+    }
+
+    async fn stop(&self) {
+        let state = self.state.lock().await.take();
+        self.src_endpoint
+            .lock()
+            .expect("KCP source endpoint mutex poisoned")
+            .take();
+        self.src_tcp_proxy
+            .lock()
+            .expect("KCP source TCP proxy mutex poisoned")
+            .take();
+        self.dst_proxy_entries
+            .lock()
+            .expect("KCP destination proxy entries mutex poisoned")
+            .take();
+        drop(state);
+    }
+}
+
 #[derive(Clone)]
 pub struct KcpProxyDstRpcService(Weak<DashMap<ConnId, TcpProxyEntry>>);
 
 impl KcpProxyDstRpcService {
-    pub fn new(kcp_proxy_dst: &KcpProxyDst) -> Self {
-        Self(Arc::downgrade(&kcp_proxy_dst.proxy_entries))
+    pub fn new(proxy_entries: &Arc<DashMap<ConnId, TcpProxyEntry>>) -> Self {
+        Self(Arc::downgrade(proxy_entries))
     }
 }
 
