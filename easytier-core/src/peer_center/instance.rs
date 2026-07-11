@@ -251,6 +251,12 @@ impl PeerCenterBase {
             lock: Arc::new(Mutex::new(())),
         }
     }
+
+    async fn stop(&self) {
+        let mut tasks = self.tasks.lock().await;
+        tasks.abort_all();
+        while tasks.join_next().await.is_some() {}
+    }
 }
 
 #[derive(Clone)]
@@ -308,6 +314,10 @@ impl PeerCenterInstance {
         self.client.init().await.unwrap();
         self.init_get_global_info_job().await;
         self.init_report_peers_job().await;
+    }
+
+    pub async fn stop(&self) {
+        self.client.stop().await;
     }
 
     async fn init_get_global_info_job(&self) {

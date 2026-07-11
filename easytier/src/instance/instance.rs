@@ -38,7 +38,7 @@ use crate::gateway::quic_proxy::{QuicProxy, QuicProxyDstRpcService};
 use crate::gateway::tcp_proxy::{NatDstTcpConnector, TcpProxy, TcpProxyRpcService};
 use crate::gateway::udp_proxy::UdpProxy;
 use crate::launcher::NetworkConfigExt;
-use crate::peer_center::instance::{PeerCenterInstance, PeerCenterInstanceService};
+use crate::peer_center::instance::PeerCenterInstanceService;
 use crate::peers::peer_conn::PeerConnId;
 use crate::peers::peer_manager::{PeerManager, RouteAlgoType};
 #[cfg(feature = "tun")]
@@ -664,8 +664,6 @@ pub struct Instance {
     #[cfg(feature = "quic")]
     quic_proxy: Option<QuicProxy>,
 
-    peer_center: Arc<PeerCenterInstance>,
-
     vpn_portal: Arc<Mutex<Box<dyn VpnPortal>>>,
 
     #[cfg(feature = "socks5")]
@@ -819,8 +817,6 @@ impl Instance {
             core_instance.clone(),
         ));
 
-        let peer_center = Arc::new(PeerCenterInstance::new(peer_manager.core()));
-
         #[cfg(feature = "wireguard")]
         let vpn_portal_inst = vpn_portal::wireguard::WireGuard::default();
         #[cfg(not(feature = "wireguard"))]
@@ -849,8 +845,6 @@ impl Instance {
 
             #[cfg(feature = "quic")]
             quic_proxy: None,
-
-            peer_center,
 
             vpn_portal: Arc::new(Mutex::new(Box::new(vpn_portal_inst))),
 
@@ -1093,12 +1087,7 @@ impl Instance {
 
         self.core_instance.start_udp_hole_punch().await?;
 
-        self.peer_center.init().await;
-        let route_calc = self.peer_center.get_cost_calculator();
-        self.peer_manager
-            .get_route()
-            .set_route_cost_fn(route_calc)
-            .await;
+        self.core_instance.start_peer_center().await?;
 
         self.add_initial_peers().await?;
 
@@ -1535,7 +1524,7 @@ impl Instance {
             port_forward_manage_rpc_service: self.get_port_forward_manager_rpc_service(),
             stats_rpc_service: self.get_stats_rpc_service(),
             config_rpc_service: self.get_config_service(),
-            peer_center_rpc_service: Arc::new(self.peer_center.get_rpc_service()),
+            peer_center_rpc_service: Arc::new(self.core_instance.peer_center_rpc_service()),
             credential_manage_rpc_service: PeerManagerRpcService::new(self.peer_manager.clone()),
         }
     }

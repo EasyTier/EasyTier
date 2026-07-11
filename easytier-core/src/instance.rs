@@ -33,6 +33,7 @@ use crate::{
             TransportListenerConfig, TransportListenerService,
         },
     },
+    peer_center::instance::{PeerCenterInstance, PeerCenterInstanceService},
     peers::{
         create_packet_recv_chan,
         peer_manager::{PeerManagerCore, PortablePeerManagerConfig},
@@ -302,6 +303,8 @@ where
     proxy_cidr_monitor_task: Mutex<Option<AbortOnDropHandle<()>>>,
     dhcp_ipv4_task: Mutex<Option<AbortOnDropHandle<()>>>,
     packet_egress: Option<PacketEgress>,
+    peer_center: Arc<PeerCenterInstance>,
+    peer_center_started: AtomicBool,
 }
 
 impl<H> CoreInstance<H>
@@ -440,6 +443,7 @@ where
             ),
         };
         let tcp_hole_punch = TcpHolePunchConnector::new(peer_manager.clone(), host);
+        let peer_center = Arc::new(PeerCenterInstance::new(peer_manager.clone()));
 
         Ok(Self {
             state: AtomicU8::new(CoreInstanceState::Created as u8),
@@ -458,6 +462,8 @@ where
             proxy_cidr_monitor_task: Mutex::new(None),
             dhcp_ipv4_task: Mutex::new(None),
             packet_egress: None,
+            peer_center,
+            peer_center_started: AtomicBool::new(false),
         })
     }
 
@@ -499,6 +505,8 @@ where
         self.manual.stop().await;
         self.tcp_hole_punch.stop().await;
         self.direct.stop().await;
+        self.peer_center.stop().await;
+        self.peer_center_started.store(false, Ordering::Release);
         self.peer_manager.clear_resources().await;
         if let Some(packet_egress) = &self.packet_egress {
             packet_egress.stop().await;
@@ -594,6 +602,28 @@ where
             return Err(error);
         }
         recovery.disarm();
+        Ok(())
+    }
+
+    pub async fn start_peer_center(self: &Arc<Self>) -> anyhow::Result<()> {
+        let _operation = self.operation.lock().await;
+        let state = self.state();
+        if state != CoreInstanceState::Running {
+            anyhow::bail!("peer center cannot start from core instance state {state:?}");
+        }
+        if self.peer_center_started.load(Ordering::Acquire) {
+            return Ok(());
+        }
+        if self.cancel.is_cancelled() {
+            anyhow::bail!("peer center start cancelled");
+        }
+
+        self.peer_center.init().await;
+        self.peer_manager
+            .get_route()
+            .set_route_cost_fn(self.peer_center.get_cost_calculator())
+            .await;
+        self.peer_center_started.store(true, Ordering::Release);
         Ok(())
     }
 
@@ -731,6 +761,10 @@ where
 
     pub fn peer_id(&self) -> crate::config::PeerId {
         self.peer_manager.my_peer_id()
+    }
+
+    pub fn peer_center_rpc_service(&self) -> PeerCenterInstanceService {
+        self.peer_center.get_rpc_service()
     }
 
     pub async fn connected_peers(&self) -> Vec<crate::config::PeerId> {

@@ -1,4 +1,6 @@
-pub use easytier_core::peer_center::instance::{PeerCenterInstance, PeerCenterInstanceService};
+#[cfg(test)]
+use easytier_core::peer_center::instance::PeerCenterInstance;
+pub use easytier_core::peer_center::instance::PeerCenterInstanceService;
 
 #[cfg(test)]
 mod tests {

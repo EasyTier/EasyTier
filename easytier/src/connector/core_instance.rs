@@ -313,9 +313,12 @@ mod tests {
 
         assert_eq!(instance.state(), CoreInstanceState::Created);
         assert!(instance.start_proxy().await.is_err());
+        assert!(instance.start_peer_center().await.is_err());
         instance.start().await.unwrap();
         assert_eq!(instance.state(), CoreInstanceState::Running);
         assert!(instance.start().await.is_err());
+        instance.start_peer_center().await.unwrap();
+        instance.start_peer_center().await.unwrap();
         instance.start_proxy().await.unwrap();
         instance.start_proxy().await.unwrap();
         assert_eq!(proxy.start_calls.load(Ordering::Relaxed), 1);
