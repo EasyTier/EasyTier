@@ -428,6 +428,7 @@ where
                 data.host.as_ref(),
                 data.dns.as_ref(),
                 &normalized_url,
+                MANUAL_DEFAULT_PORT,
                 ip_version,
                 data.options.socket_mark(transport),
             )
@@ -436,7 +437,7 @@ where
                 collect_bind_addrs(
                     peer_manager.as_ref(),
                     data.host.as_ref(),
-                    transport,
+                    transport == ManualTransport::Udp,
                     remote_addr,
                 )
                 .await?
@@ -517,13 +518,14 @@ pub(crate) async fn resolve_remote_addr<H>(
     host: &H,
     dns: &dyn DnsResolver,
     url: &Url,
+    default_port: u16,
     ip_version: IpVersion,
     socket_mark: Option<u32>,
 ) -> anyhow::Result<SocketAddr>
 where
     H: ManualConnectorHost,
 {
-    let addrs = resolve_url_addrs(url, MANUAL_DEFAULT_PORT, ip_version, socket_mark, dns).await?;
+    let addrs = resolve_url_addrs(url, default_port, ip_version, socket_mark, dns).await?;
     let mut usable = Vec::new();
     let mut rejected_reason = None;
     for addr in addrs {
@@ -567,13 +569,13 @@ where
 pub(crate) async fn collect_bind_addrs<H>(
     peer_manager: &PeerManagerCore,
     host: &H,
-    transport: ManualTransport,
+    is_udp: bool,
     remote_addr: SocketAddr,
 ) -> anyhow::Result<Vec<SocketAddr>>
 where
     H: ManualConnectorHost,
 {
-    if transport == ManualTransport::Udp && remote_addr.is_ipv6() {
+    if is_udp && remote_addr.is_ipv6() {
         return Ok(Vec::new());
     }
 
