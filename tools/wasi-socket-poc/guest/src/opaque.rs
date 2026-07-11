@@ -33,9 +33,11 @@ struct Probe {
 
 fn tcp_stream(
     sockets: &HostSocketRuntime,
+    io: Arc<WasiHostTcpIo>,
     handle: u32,
 ) -> easytier_core::socket::host::HostTcpStream {
     sockets.tcp_stream(
+        io,
         HostSocketHandle(u64::from(handle)),
         "192.0.2.1:10000".parse().unwrap(),
         "192.0.2.2:11013".parse().unwrap(),
@@ -55,10 +57,11 @@ pub extern "C" fn init_opaque_probe(pending_handle: u32, active_handle: u32) -> 
             Err(_) => return -2,
         };
         let status = Arc::new(AtomicU32::new(0));
-        let sockets = HostSocketRuntime::new(Arc::new(WasiHostTcpIo::default()));
+        let sockets = HostSocketRuntime::new();
+        let tcp_io = Arc::new(WasiHostTcpIo::default());
 
         let pending_status = status.clone();
-        let pending_stream = tcp_stream(&sockets, pending_handle);
+        let pending_stream = tcp_stream(&sockets, tcp_io.clone(), pending_handle);
         runtime.spawn(async move {
             let mut stream = pending_stream;
             let mut byte = [0_u8; 1];
@@ -67,7 +70,7 @@ pub extern "C" fn init_opaque_probe(pending_handle: u32, active_handle: u32) -> 
         });
 
         let active_status = status.clone();
-        let active_stream = tcp_stream(&sockets, active_handle);
+        let active_stream = tcp_stream(&sockets, tcp_io, active_handle);
         runtime.spawn(async move {
             let mut stream = active_stream;
             let mut byte = [0_u8; 1];

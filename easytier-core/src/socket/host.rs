@@ -97,7 +97,6 @@ impl WakerRegistry {
 }
 
 struct HostSocketRuntimeInner {
-    io: Arc<dyn HostTcpIo>,
     completion_epoch: AtomicU64,
     wakers: WakerRegistry,
 }
@@ -107,11 +106,16 @@ pub struct HostSocketRuntime {
     inner: Arc<HostSocketRuntimeInner>,
 }
 
+impl Default for HostSocketRuntime {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl HostSocketRuntime {
-    pub fn new(io: Arc<dyn HostTcpIo>) -> Self {
+    pub fn new() -> Self {
         Self {
             inner: Arc::new(HostSocketRuntimeInner {
-                io,
                 completion_epoch: AtomicU64::new(0),
                 wakers: WakerRegistry::default(),
             }),
@@ -120,6 +124,7 @@ impl HostSocketRuntime {
 
     pub fn tcp_stream(
         &self,
+        io: Arc<dyn HostTcpIo>,
         handle: HostSocketHandle,
         local_addr: SocketAddr,
         peer_addr: SocketAddr,
@@ -127,6 +132,7 @@ impl HostSocketRuntime {
     ) -> HostTcpStream {
         HostTcpStream {
             runtime: self.clone(),
+            io,
             handle,
             local_addr,
             peer_addr,
@@ -175,6 +181,7 @@ struct ReadBuffer {
 
 pub struct HostTcpStream {
     runtime: HostSocketRuntime,
+    io: Arc<dyn HostTcpIo>,
     handle: HostSocketHandle,
     local_addr: SocketAddr,
     peer_addr: SocketAddr,
@@ -198,14 +205,14 @@ impl HostTcpStream {
             .flatten()
         {
             self.runtime.inner.wakers.remove(operation);
-            if let Err(error) = self.runtime.inner.io.cancel_operation(operation)
+            if let Err(error) = self.io.cancel_operation(operation)
                 && first_error.is_none()
             {
                 first_error = Some(error);
             }
         }
 
-        match self.runtime.inner.io.close(self.handle) {
+        match self.io.close(self.handle) {
             Ok(()) => self.closed = true,
             Err(error) if first_error.is_none() => first_error = Some(error),
             Err(_) => {}
@@ -236,7 +243,7 @@ impl HostTcpStream {
             return Poll::Ready(Ok(()));
         };
         let epoch = self.runtime.inner.completion_epoch.load(Ordering::SeqCst);
-        match self.runtime.inner.io.take_write(operation) {
+        match self.io.take_write(operation) {
             Poll::Pending => {
                 self.runtime.register_pending(operation, epoch, context);
                 Poll::Pending
@@ -281,11 +288,10 @@ impl AsyncRead for HostTcpStream {
                 Some(operation) => operation,
                 None => {
                     let operation = self.runtime.next_operation();
-                    if let Err(error) = self.runtime.inner.io.submit_read(
-                        self.handle,
-                        operation,
-                        buffer.remaining(),
-                    ) {
+                    if let Err(error) =
+                        self.io
+                            .submit_read(self.handle, operation, buffer.remaining())
+                    {
                         return Poll::Ready(Err(error));
                     }
                     self.read_operation = Some(operation);
@@ -294,7 +300,7 @@ impl AsyncRead for HostTcpStream {
             };
 
             let epoch = self.runtime.inner.completion_epoch.load(Ordering::SeqCst);
-            match self.runtime.inner.io.take_read(operation) {
+            match self.io.take_read(operation) {
                 Poll::Pending => {
                     self.runtime.register_pending(operation, epoch, context);
                     return Poll::Pending;
@@ -344,12 +350,7 @@ impl AsyncWrite for HostTcpStream {
         }
 
         let operation = self.runtime.next_operation();
-        if let Err(error) = self
-            .runtime
-            .inner
-            .io
-            .submit_write(self.handle, operation, buffer)
-        {
+        if let Err(error) = self.io.submit_write(self.handle, operation, buffer) {
             return Poll::Ready(Err(error));
         }
         self.write_operation = Some(operation);
@@ -551,9 +552,10 @@ mod tests {
     }
 
     fn test_stream(io: Arc<TestHostIo>) -> (HostSocketRuntime, HostTcpStream) {
-        let runtime = HostSocketRuntime::new(io.clone());
+        let runtime = HostSocketRuntime::new();
         *io.runtime.lock().unwrap() = Some(runtime.clone());
         let stream = runtime.tcp_stream(
+            io,
             HostSocketHandle(7),
             "192.0.2.1:10000".parse().unwrap(),
             "192.0.2.2:11013".parse().unwrap(),
@@ -696,9 +698,8 @@ mod tests {
 
     #[test]
     fn shared_host_io_receives_unique_operation_ids() {
-        let io = Arc::new(TestHostIo::default());
-        let runtime_a = HostSocketRuntime::new(io.clone());
-        let runtime_b = HostSocketRuntime::new(io);
+        let runtime_a = HostSocketRuntime::new();
+        let runtime_b = HostSocketRuntime::new();
         assert_ne!(runtime_a.next_operation(), runtime_b.next_operation());
     }
 }
