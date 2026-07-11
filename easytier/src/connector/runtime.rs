@@ -9,6 +9,8 @@ use easytier_core::{
         direct::DirectConnectorHost,
         manual::{ManualConnectorHost, ManualInterfaceAddrs},
     },
+    hole_punch::tcp::TcpHolePunchHost,
+    proto::common::NatType,
     socket::{
         tcp::{
             TcpConnectOptions, TcpListenOptions, TcpSocketPurpose, VirtualTcpListenerFactory,
@@ -21,7 +23,7 @@ use easytier_core::{
 };
 
 use crate::{
-    common::{global_ctx::ArcGlobalCtx, network::IPCollector},
+    common::{global_ctx::ArcGlobalCtx, network::IPCollector, stun::StunInfoCollectorTrait},
     proto::peer_rpc::GetIpListResponse,
     tunnel::{
         tcp_socket::{self, RuntimeTcpListener, RuntimeTcpListenerFactory, RuntimeTcpSocket},
@@ -42,6 +44,27 @@ impl RuntimeConnectorHost {
             udp_socket_factory: RuntimeUdpSocketFactory::new(global_ctx.net_ns.clone()),
             global_ctx,
         }
+    }
+}
+
+#[async_trait]
+impl TcpHolePunchHost for RuntimeConnectorHost {
+    fn tcp_nat_type(&self) -> NatType {
+        NatType::try_from(
+            self.global_ctx
+                .get_stun_info_collector()
+                .get_stun_info()
+                .tcp_nat_type,
+        )
+        .unwrap_or(NatType::Unknown)
+    }
+
+    async fn tcp_port_mapping(&self, local_port: u16) -> anyhow::Result<SocketAddr> {
+        self.global_ctx
+            .get_stun_info_collector()
+            .get_tcp_port_mapping(local_port)
+            .await
+            .map_err(anyhow::Error::from)
     }
 }
 
