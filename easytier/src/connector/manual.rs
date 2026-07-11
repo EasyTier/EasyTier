@@ -37,13 +37,48 @@ use crate::{
 };
 
 use super::{
-    core_instance::{runtime_core_instance_adapters, runtime_manual_options},
+    core_instance::{RuntimeCoreInstance, runtime_core_instance_adapters, runtime_manual_options},
     create_connector_by_url,
     runtime::RuntimeConnectorHost,
 };
 
 type ConnectorMap = Arc<DashSet<url::Url>>;
 type CoreConnectorManager = CoreManualConnectorManager<RuntimeConnectorHost>;
+
+enum PortableManualOwner {
+    Standalone(Arc<CoreConnectorManager>),
+    Instance(Arc<RuntimeCoreInstance>),
+}
+
+impl PortableManualOwner {
+    fn add_connector(&self, url: url::Url) -> anyhow::Result<()> {
+        match self {
+            Self::Standalone(manager) => manager.add_connector(url),
+            Self::Instance(instance) => instance.add_connector(url),
+        }
+    }
+
+    fn remove_connector(&self, url: &url::Url) -> bool {
+        match self {
+            Self::Standalone(manager) => manager.remove_connector(url),
+            Self::Instance(instance) => instance.remove_connector(url),
+        }
+    }
+
+    fn clear_connectors(&self) {
+        match self {
+            Self::Standalone(manager) => manager.clear_connectors(),
+            Self::Instance(instance) => instance.clear_connectors(),
+        }
+    }
+
+    fn list_connectors(&self) -> Vec<easytier_core::connectivity::manual::ManualConnectorSnapshot> {
+        match self {
+            Self::Standalone(manager) => manager.list_connectors(),
+            Self::Instance(instance) => instance.list_connectors(),
+        }
+    }
+}
 
 #[derive(Debug, Clone)]
 struct ReconnResult {
@@ -66,14 +101,12 @@ struct ConnectorManagerData {
 pub struct ManualConnectorManager {
     global_ctx: ArcGlobalCtx,
     data: Arc<ConnectorManagerData>,
-    core_manager: Arc<CoreConnectorManager>,
+    portable: PortableManualOwner,
     tasks: JoinSet<()>,
 }
 
 impl ManualConnectorManager {
     pub fn new(global_ctx: ArcGlobalCtx, peer_manager: Arc<PeerManager>) -> Self {
-        let connectors = Arc::new(DashSet::new());
-        let tasks = JoinSet::new();
         let adapters = runtime_core_instance_adapters(global_ctx.clone());
         let core_manager = Arc::new(CoreManualConnectorManager::new_with_events(
             peer_manager.core(),
@@ -86,6 +119,33 @@ impl ManualConnectorManager {
         ));
         core_manager.start();
 
+        Self::new_with_portable_owner(
+            global_ctx,
+            peer_manager,
+            PortableManualOwner::Standalone(core_manager),
+        )
+    }
+
+    pub(crate) fn new_with_core_instance(
+        global_ctx: ArcGlobalCtx,
+        peer_manager: Arc<PeerManager>,
+        core_instance: Arc<RuntimeCoreInstance>,
+    ) -> Self {
+        Self::new_with_portable_owner(
+            global_ctx,
+            peer_manager,
+            PortableManualOwner::Instance(core_instance),
+        )
+    }
+
+    fn new_with_portable_owner(
+        global_ctx: ArcGlobalCtx,
+        peer_manager: Arc<PeerManager>,
+        portable: PortableManualOwner,
+    ) -> Self {
+        let connectors = Arc::new(DashSet::new());
+        let tasks = JoinSet::new();
+
         let mut ret = Self {
             global_ctx: global_ctx.clone(),
             data: Arc::new(ConnectorManagerData {
@@ -97,7 +157,7 @@ impl ManualConnectorManager {
                 net_ns: global_ctx.net_ns.clone(),
                 global_ctx,
             }),
-            core_manager,
+            portable,
             tasks,
         };
 
@@ -174,7 +234,7 @@ impl ManualConnectorManager {
         let url = connector.remote_url();
         tracing::info!("add_connector: {}", url);
         if Self::core_owns_scheme(&url) {
-            self.core_manager
+            self.portable
                 .add_connector(url)
                 .expect("core manual connector URL should be valid");
         } else {
@@ -184,7 +244,7 @@ impl ManualConnectorManager {
 
     pub async fn add_connector_by_url(&self, url: url::Url) -> Result<(), Error> {
         if Self::core_owns_scheme(&url) {
-            self.core_manager.add_connector(url)?;
+            self.portable.add_connector(url)?;
             return Ok(());
         }
         self.data.connectors.insert(url);
@@ -193,7 +253,7 @@ impl ManualConnectorManager {
 
     pub async fn remove_connector(&self, url: url::Url) -> Result<(), Error> {
         tracing::info!("remove_connector: {}", url);
-        if Self::core_owns_scheme(&url) && self.core_manager.remove_connector(&url) {
+        if Self::core_owns_scheme(&url) && self.portable.remove_connector(&url) {
             return Ok(());
         }
         let url = url.into();
@@ -210,7 +270,7 @@ impl ManualConnectorManager {
     }
 
     pub async fn clear_connectors(&self) {
-        self.core_manager.clear_connectors();
+        self.portable.clear_connectors();
         for url in self.data.connectors.iter() {
             self.data.removed_conn_urls.insert(url.key().clone());
         }
@@ -255,7 +315,7 @@ impl ManualConnectorManager {
             );
         }
 
-        for connector in self.core_manager.list_connectors() {
+        for connector in self.portable.list_connectors() {
             let status = match connector.status {
                 ManualConnectorStatus::Connected => ConnectorStatus::Connected,
                 ManualConnectorStatus::Disconnected => ConnectorStatus::Disconnected,
