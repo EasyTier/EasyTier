@@ -8,8 +8,7 @@ use std::time::Duration;
 use anyhow::Context;
 use cidr::{IpCidr, Ipv4Inet};
 use easytier_core::dhcp::DhcpIpv4Host;
-use easytier_core::instance::{ProxyService, ProxyServiceGroup, ProxyStartupPolicy};
-use easytier_core::proxy::ProxyStartupContext;
+use easytier_core::instance::{ProxyService, ProxyServiceGroup};
 #[cfg(feature = "tun")]
 use futures::FutureExt;
 use tokio::sync::Mutex;
@@ -92,8 +91,7 @@ impl RuntimeProxyService {
         let udp_proxy = UdpProxy::new(global_ctx.clone(), peer_manager)
             .with_context(|| "create UDP proxy failed")?;
         let services: Vec<Arc<dyn ProxyService>> = vec![tcp_proxy.clone(), icmp_proxy, udp_proxy];
-        let group =
-            ProxyServiceGroup::new(Arc::new(RuntimeProxyStartupPolicy { global_ctx }), services);
+        let group = ProxyServiceGroup::new_unconditional(services);
         Ok(Arc::new(Self { group, tcp_proxy }))
     }
 }
@@ -106,33 +104,6 @@ impl ProxyService for RuntimeProxyService {
 
     async fn stop(&self) {
         self.group.stop().await;
-    }
-}
-
-struct RuntimeProxyStartupPolicy {
-    global_ctx: ArcGlobalCtx,
-}
-
-impl ProxyStartupPolicy for RuntimeProxyStartupPolicy {
-    fn should_start(&self) -> bool {
-        ProxyStartupContext {
-            has_proxy_cidrs: !self.global_ctx.config.get_proxy_cidrs().is_empty(),
-            already_started: false,
-            enable_exit_node: self.global_ctx.enable_exit_node(),
-            no_tun: self.global_ctx.no_tun(),
-            forward_by_system: self.global_ctx.proxy_forward_by_system(),
-        }
-        .should_start()
-    }
-}
-
-#[cfg(any(feature = "kcp", feature = "quic"))]
-struct RuntimeTransportProxyStartupPolicy;
-
-#[cfg(any(feature = "kcp", feature = "quic"))]
-impl ProxyStartupPolicy for RuntimeTransportProxyStartupPolicy {
-    fn should_start(&self) -> bool {
-        true
     }
 }
 
@@ -775,8 +746,7 @@ impl Instance {
             services.push(kcp_proxy.clone());
             #[cfg(feature = "quic")]
             services.push(quic_proxy.clone());
-            let group: Arc<dyn ProxyService> =
-                ProxyServiceGroup::new(Arc::new(RuntimeTransportProxyStartupPolicy), services);
+            let group: Arc<dyn ProxyService> = ProxyServiceGroup::new_unconditional(services);
             Some(group)
         };
         #[cfg(not(any(feature = "kcp", feature = "quic")))]

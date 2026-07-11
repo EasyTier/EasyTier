@@ -41,8 +41,11 @@ use crate::{
         peer_manager::{PeerManagerCore, PortablePeerManagerConfig},
         public_ipv6::PublicIpv6ProviderConfig,
     },
-    proxy::cidr_monitor::{
-        ProxyCidrDiff, ProxyCidrMonitor, ProxyCidrMonitorHost, collect_proxy_cidr_diff,
+    proxy::{
+        ProxyStartupContext,
+        cidr_monitor::{
+            ProxyCidrDiff, ProxyCidrMonitor, ProxyCidrMonitorHost, collect_proxy_cidr_diff,
+        },
     },
     socket::{
         dns::{DnsRecordResolver, DnsResolver},
@@ -115,6 +118,7 @@ where
 pub struct CoreRuntimeConfig {
     pub acl: AclRuleConfig,
     pub dhcp_ipv4: bool,
+    pub proxy: ProxyStartupContext,
     pub public_ipv6_provider: PublicIpv6ProviderConfig,
 }
 
@@ -123,6 +127,7 @@ impl Default for CoreRuntimeConfig {
         Self {
             acl: AclRuleConfig::default(),
             dhcp_ipv4: false,
+            proxy: ProxyStartupContext::default(),
             public_ipv6_provider: PublicIpv6ProviderConfig {
                 provider_enabled: false,
                 configured_prefix: None,
@@ -272,6 +277,14 @@ pub struct ProxyServiceGroup {
     started_count: AtomicUsize,
 }
 
+struct UnconditionalProxyStartupPolicy;
+
+impl ProxyStartupPolicy for UnconditionalProxyStartupPolicy {
+    fn should_start(&self) -> bool {
+        true
+    }
+}
+
 impl ProxyServiceGroup {
     pub fn new(
         policy: Arc<dyn ProxyStartupPolicy>,
@@ -283,6 +296,10 @@ impl ProxyServiceGroup {
             services,
             started_count: AtomicUsize::new(0),
         })
+    }
+
+    pub fn new_unconditional(services: Vec<Arc<dyn ProxyService>>) -> Arc<Self> {
+        Self::new(Arc::new(UnconditionalProxyStartupPolicy), services)
     }
 
     async fn stop_started(&self) {
@@ -802,6 +819,14 @@ where
             return Ok(());
         };
         if self.proxy_started.load(Ordering::Acquire) {
+            return Ok(());
+        }
+        if !self
+            .runtime_config
+            .current_runtime_config()
+            .proxy
+            .should_start()
+        {
             return Ok(());
         }
 

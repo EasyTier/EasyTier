@@ -12,6 +12,7 @@ use easytier_core::{
         CoreInstance, CoreInstanceAdapters, CoreInstanceConfig, CoreRuntimeConfig,
         CoreRuntimeConfigProvider,
     },
+    proxy::ProxyStartupContext,
     socket::{
         IpVersion, SocketContext,
         dns::{DnsRecordResolver, DnsResolver},
@@ -56,8 +57,19 @@ impl CoreRuntimeConfigProvider for RuntimeCoreConfigProvider {
         CoreRuntimeConfig {
             acl: runtime_acl_config(&self.global_ctx),
             dhcp_ipv4: self.global_ctx.config.get_dhcp(),
+            proxy: runtime_proxy_startup_context(&self.global_ctx),
             public_ipv6_provider: runtime_public_ipv6_provider_config(&self.global_ctx),
         }
+    }
+}
+
+pub(crate) fn runtime_proxy_startup_context(global_ctx: &ArcGlobalCtx) -> ProxyStartupContext {
+    ProxyStartupContext {
+        has_proxy_cidrs: !global_ctx.config.get_proxy_cidrs().is_empty(),
+        already_started: false,
+        enable_exit_node: global_ctx.enable_exit_node(),
+        no_tun: global_ctx.no_tun(),
+        forward_by_system: global_ctx.proxy_forward_by_system(),
     }
 }
 
@@ -194,6 +206,7 @@ pub(crate) fn build_runtime_core_instance_with_transport(
         runtime: CoreRuntimeConfig {
             acl: runtime_acl_config(&global_ctx),
             dhcp_ipv4: global_ctx.config.get_dhcp(),
+            proxy: runtime_proxy_startup_context(&global_ctx),
             public_ipv6_provider: runtime_public_ipv6_provider_config(&global_ctx),
         },
         endpoint_discovery: runtime_endpoint_discovery_config(&global_ctx),
@@ -349,6 +362,10 @@ mod tests {
     #[tokio::test]
     async fn runtime_core_instance_owns_connectivity_lifecycle() {
         let global_ctx = get_mock_global_ctx();
+        global_ctx
+            .config
+            .add_proxy_cidr("10.1.2.0/24".parse().unwrap(), None)
+            .unwrap();
         let initial_peer: url::Url = "tcp://127.0.0.1:29999".parse().unwrap();
         global_ctx.config.set_peers(vec![PeerConfig {
             uri: initial_peer.clone(),
@@ -476,6 +493,10 @@ mod tests {
     #[tokio::test]
     async fn stopping_while_proxy_starts_rolls_back_once() {
         let global_ctx = get_mock_global_ctx();
+        global_ctx
+            .config
+            .add_proxy_cidr("10.1.2.0/24".parse().unwrap(), None)
+            .unwrap();
         let initial_peer: url::Url = "tcp://127.0.0.1:29998".parse().unwrap();
         global_ctx.config.set_peers(vec![PeerConfig {
             uri: initial_peer,
