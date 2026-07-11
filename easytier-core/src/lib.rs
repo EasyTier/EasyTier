@@ -1,6 +1,7 @@
 pub mod compressor;
 pub mod config;
 pub mod connectivity;
+pub mod dhcp;
 pub mod hole_punch;
 pub mod instance;
 pub mod listener;
