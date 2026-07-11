@@ -83,10 +83,10 @@ struct RuntimeManualEndpointResolver {
 #[async_trait::async_trait]
 impl ManualEndpointResolver for RuntimeManualEndpointResolver {
     async fn resolve_endpoint(&self, url: &url::Url) -> anyhow::Result<url::Url> {
-        let connector = match url.scheme() {
+        match url.scheme() {
             "http" | "https" => {
                 let mut resolver = HttpTunnelConnector::new(url.clone(), self.global_ctx.clone());
-                resolver.get_redirected_connector(url.as_str()).await?
+                Ok(resolver.get_redirected_url(url.as_str()).await?)
             }
             "txt" | "srv" => {
                 let resolver = DnsTunnelConnector::new(url.clone(), self.global_ctx.clone());
@@ -94,14 +94,13 @@ impl ManualEndpointResolver for RuntimeManualEndpointResolver {
                     .host_str()
                     .ok_or_else(|| anyhow::anyhow!("host should not be empty in {url}"))?;
                 if url.scheme() == "txt" {
-                    resolver.handle_txt_record(host).await?
+                    Ok(resolver.resolve_txt_endpoint(host).await?)
                 } else {
-                    resolver.handle_srv_record(host).await?
+                    Ok(resolver.resolve_srv_endpoint(host).await?)
                 }
             }
             scheme => anyhow::bail!("unsupported manual endpoint resolver scheme: {scheme}"),
-        };
-        Ok(connector.remote_url())
+        }
     }
 }
 

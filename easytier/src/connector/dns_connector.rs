@@ -54,10 +54,7 @@ impl DnsTunnelConnector {
     }
 
     #[tracing::instrument(ret, err)]
-    pub async fn handle_txt_record(
-        &self,
-        domain_name: &str,
-    ) -> Result<Box<dyn TunnelConnector>, Error> {
+    pub async fn resolve_txt_endpoint(&self, domain_name: &str) -> Result<url::Url, Error> {
         let txt_data = resolve_txt_record(domain_name)
             .await
             .with_context(|| format!("resolve txt record failed, domain_name: {}", domain_name))?;
@@ -78,9 +75,15 @@ impl DnsTunnelConnector {
                 )
             })?;
 
-        let connector =
-            create_connector_by_url(url.as_str(), &self.global_ctx, self.ip_version).await?;
-        Ok(connector)
+        Ok(url.clone())
+    }
+
+    pub async fn handle_txt_record(
+        &self,
+        domain_name: &str,
+    ) -> Result<Box<dyn TunnelConnector>, Error> {
+        let url = self.resolve_txt_endpoint(domain_name).await?;
+        create_connector_by_url(url.as_str(), &self.global_ctx, self.ip_version).await
     }
 
     fn handle_one_srv_record(record: &SRV, protocol: IpScheme) -> Result<(url::Url, u64), Error> {
@@ -107,10 +110,7 @@ impl DnsTunnelConnector {
     }
 
     #[tracing::instrument(ret, err)]
-    pub async fn handle_srv_record(
-        &self,
-        domain_name: &str,
-    ) -> Result<Box<dyn TunnelConnector>, Error> {
+    pub async fn resolve_srv_endpoint(&self, domain_name: &str) -> Result<url::Url, Error> {
         tracing::info!("handle_srv_record: {}", domain_name);
 
         let srv_domains = IpScheme::VARIANTS
@@ -156,9 +156,15 @@ impl DnsTunnelConnector {
             )
         })?;
 
-        let connector =
-            create_connector_by_url(url.as_str(), &self.global_ctx, self.ip_version).await?;
-        Ok(connector)
+        Ok(url.clone())
+    }
+
+    pub async fn handle_srv_record(
+        &self,
+        domain_name: &str,
+    ) -> Result<Box<dyn TunnelConnector>, Error> {
+        let url = self.resolve_srv_endpoint(domain_name).await?;
+        create_connector_by_url(url.as_str(), &self.global_ctx, self.ip_version).await
     }
 }
 

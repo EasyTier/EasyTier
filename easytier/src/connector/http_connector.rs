@@ -76,7 +76,7 @@ impl HttpTunnelConnector {
         &mut self,
         new_url: url::Url,
         url_str: &str,
-    ) -> Result<Box<dyn TunnelConnector>, Error> {
+    ) -> Result<Url, Error> {
         // the url should be in following format:
         // 1: http(s)://easytier.cn/?url=tcp://10.147.22.22:11010 (scheme is http, domain is ignored, path is splitted into proto type and addr)
         // 2: http(s)://tcp://10.137.22.22:11010 (connector url is appended to the scheme)
@@ -93,24 +93,14 @@ impl HttpTunnelConnector {
             if !query.is_empty() {
                 tracing::info!("try to create connector by url: {}", query[0]);
                 self.redirect_type = HttpRedirectType::RedirectToQuery;
-                return create_connector_by_url(
-                    query[0].as_ref(),
-                    &self.global_ctx,
-                    self.ip_version,
-                )
-                .await;
+                return Ok(query[0].clone());
             } else if let Some(new_url) = url_str
                 .strip_prefix(format!("{}://", url.scheme()).as_str())
                 .and_then(|x| Url::parse(x).ok())
             {
                 // stripe the scheme and create connector by url
                 self.redirect_type = HttpRedirectType::RedirectToUrl;
-                return create_connector_by_url(
-                    new_url.as_str(),
-                    &self.global_ctx,
-                    self.ip_version,
-                )
-                .await;
+                return Ok(new_url);
             }
             return Err(Error::InvalidUrl(format!(
                 "no valid connector url found in url: {}",
@@ -118,16 +108,12 @@ impl HttpTunnelConnector {
             )));
         } else {
             self.redirect_type = HttpRedirectType::RedirectToUrl;
-            return create_connector_by_url(new_url.as_str(), &self.global_ctx, self.ip_version)
-                .await;
+            return Ok(new_url);
         }
     }
 
     #[tracing::instrument]
-    async fn handle_200_success(
-        &mut self,
-        body: &String,
-    ) -> Result<Box<dyn TunnelConnector>, Error> {
+    async fn handle_200_success(&mut self, body: &String) -> Result<Url, Error> {
         // resp body should be line of connector urls, like:
         // tcp://10.1.1.1:11010
         // udp://10.1.1.1:11010
@@ -149,7 +135,7 @@ impl HttpTunnelConnector {
                 continue;
             }
             self.redirect_type = HttpRedirectType::BodyUrls;
-            return create_connector_by_url(line, &self.global_ctx, self.ip_version).await;
+            return Ok(url.unwrap());
         }
 
         Err(Error::InvalidUrl(format!(
@@ -159,10 +145,7 @@ impl HttpTunnelConnector {
     }
 
     #[tracing::instrument(ret)]
-    pub async fn get_redirected_connector(
-        &mut self,
-        original_url: &str,
-    ) -> Result<Box<dyn TunnelConnector>, Error> {
+    pub async fn get_redirected_url(&mut self, original_url: &str) -> Result<Url, Error> {
         self.redirect_type = HttpRedirectType::Unknown;
         tracing::info!("get_redirected_url: {}", original_url);
         // Container for body of a response.
@@ -211,6 +194,14 @@ impl HttpTunnelConnector {
                 res, body,
             )));
         }
+    }
+
+    pub async fn get_redirected_connector(
+        &mut self,
+        original_url: &str,
+    ) -> Result<Box<dyn TunnelConnector>, Error> {
+        let url = self.get_redirected_url(original_url).await?;
+        create_connector_by_url(url.as_str(), &self.global_ctx, self.ip_version).await
     }
 }
 
