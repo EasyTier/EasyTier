@@ -186,7 +186,10 @@ impl RuntimeUdpSocketFactory {
             return BindDev::from(bind_device.as_str());
         }
 
-        if options.purpose == UdpSocketPurpose::PortBoundListener {
+        if matches!(
+            options.purpose,
+            UdpSocketPurpose::DirectConnect | UdpSocketPurpose::PortBoundListener
+        ) {
             return BindDev::Auto;
         }
 
@@ -739,6 +742,10 @@ mod tests {
 
         assert!(matches!(
             factory.bind_device_for(&UdpBindOptions::port_bound_listener(listener_addr)),
+            BindDev::Auto
+        ));
+        assert!(matches!(
+            factory.bind_device_for(&UdpBindOptions::direct_connect()),
             BindDev::Auto
         ));
         assert!(matches!(
