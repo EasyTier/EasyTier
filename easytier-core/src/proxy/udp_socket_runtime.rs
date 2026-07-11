@@ -9,6 +9,7 @@ use std::{
 
 use bytes::Bytes;
 use dashmap::{DashMap, mapref::entry::Entry};
+use tokio::sync::Notify;
 use tokio_util::task::AbortOnDropHandle;
 
 use crate::socket::udp::{UdpBindOptions, VirtualUdpSocket, VirtualUdpSocketFactory};
@@ -30,6 +31,73 @@ where
     socket: Arc<S>,
     receive_task: std::sync::Mutex<Option<AbortOnDropHandle<()>>>,
     closed: AtomicBool,
+}
+
+struct UdpSocketEntryState<S>
+where
+    S: VirtualUdpSocket,
+{
+    entry: Option<Arc<UdpSocketNatEntry<S>>>,
+    error: Option<String>,
+}
+
+struct UdpSocketEntrySlot<S>
+where
+    S: VirtualUdpSocket,
+{
+    state: std::sync::Mutex<UdpSocketEntryState<S>>,
+    changed: Notify,
+    closed: AtomicBool,
+}
+
+impl<S> UdpSocketEntrySlot<S>
+where
+    S: VirtualUdpSocket,
+{
+    fn new() -> Arc<Self> {
+        Arc::new(Self {
+            state: std::sync::Mutex::new(UdpSocketEntryState {
+                entry: None,
+                error: None,
+            }),
+            changed: Notify::new(),
+            closed: AtomicBool::new(false),
+        })
+    }
+
+    async fn wait_for_entry(&self) -> Result<Arc<UdpSocketNatEntry<S>>, ProxyRuntimeError> {
+        loop {
+            let changed = self.changed.notified();
+            {
+                let state = self.state.lock().unwrap();
+                if let Some(entry) = &state.entry {
+                    return Ok(entry.clone());
+                }
+                if let Some(error) = &state.error {
+                    return Err(ProxyRuntimeError::Other(anyhow::anyhow!(error.clone())));
+                }
+                if self.closed.load(Ordering::Acquire) {
+                    return Err(ProxyRuntimeError::Other(anyhow::anyhow!(
+                        "UDP proxy socket entry was closed while being created"
+                    )));
+                }
+            }
+            changed.await;
+        }
+    }
+
+    fn fail(&self, error: &ProxyRuntimeError) {
+        self.state.lock().unwrap().error = Some(error.to_string());
+        self.changed.notify_waiters();
+    }
+
+    fn close(&self) {
+        self.closed.store(true, Ordering::Release);
+        if let Some(entry) = self.state.lock().unwrap().entry.take() {
+            entry.stop();
+        }
+        self.changed.notify_waiters();
+    }
 }
 
 impl<S> UdpSocketNatEntry<S>
@@ -110,7 +178,8 @@ where
     policy: Arc<P>,
     bind_options: UdpBindOptions,
     receive_timeout: Duration,
-    entries: DashMap<UdpNatEntryId, Arc<UdpSocketNatEntry<F::Socket>>>,
+    entries: DashMap<UdpNatEntryId, Arc<UdpSocketEntrySlot<F::Socket>>>,
+    closing: AtomicBool,
 }
 
 impl<F, P> UdpSocketProxyRuntime<F, P>
@@ -130,6 +199,7 @@ where
             bind_options,
             receive_timeout,
             entries: DashMap::new(),
+            closing: AtomicBool::new(false),
         }
     }
 
@@ -138,26 +208,71 @@ where
         entry_id: UdpNatEntryId,
         response_sink: Weak<dyn UdpProxyResponseSink>,
     ) -> Result<Arc<UdpSocketNatEntry<F::Socket>>, ProxyRuntimeError> {
-        if let Some(entry) = self.entries.get(&entry_id) {
-            return Ok(entry.clone());
+        if self.closing.load(Ordering::Acquire) {
+            return Err(ProxyRuntimeError::Other(anyhow::anyhow!(
+                "UDP proxy runtime is closing"
+            )));
         }
 
-        let socket = self.factory.bind_udp(self.bind_options.clone()).await?;
-        let candidate = UdpSocketNatEntry::new(socket);
-        let entry = match self.entries.entry(entry_id) {
-            Entry::Occupied(entry) => entry.get().clone(),
+        let (slot, create) = match self.entries.entry(entry_id) {
+            Entry::Occupied(entry) => (entry.get().clone(), false),
             Entry::Vacant(entry) => {
-                entry.insert(candidate.clone());
-                candidate.start_receive_task(entry_id, response_sink, self.receive_timeout);
-                candidate
+                let slot = UdpSocketEntrySlot::new();
+                entry.insert(slot.clone());
+                (slot, true)
             }
         };
-        Ok(entry)
+        if self.closing.load(Ordering::Acquire) {
+            slot.close();
+            self.remove_slot(entry_id, &slot);
+            return Err(ProxyRuntimeError::Other(anyhow::anyhow!(
+                "UDP proxy runtime is closing"
+            )));
+        }
+        if !create {
+            return slot.wait_for_entry().await;
+        }
+
+        let socket = match self.factory.bind_udp(self.bind_options.clone()).await {
+            Ok(socket) => socket,
+            Err(error) => {
+                let error = ProxyRuntimeError::Other(error);
+                slot.fail(&error);
+                self.remove_slot(entry_id, &slot);
+                return Err(error);
+            }
+        };
+        let candidate = UdpSocketNatEntry::new(socket);
+        {
+            let mut state = slot.state.lock().unwrap();
+            if slot.closed.load(Ordering::Acquire) || self.closing.load(Ordering::Acquire) {
+                candidate.stop();
+                drop(state);
+                slot.changed.notify_waiters();
+                self.remove_slot(entry_id, &slot);
+                return Err(ProxyRuntimeError::Other(anyhow::anyhow!(
+                    "UDP proxy socket entry was closed while being created"
+                )));
+            }
+            candidate.start_receive_task(entry_id, response_sink, self.receive_timeout);
+            state.entry = Some(candidate.clone());
+        }
+        slot.changed.notify_waiters();
+        Ok(candidate)
+    }
+
+    fn remove_slot(&self, entry_id: UdpNatEntryId, slot: &Arc<UdpSocketEntrySlot<F::Socket>>) {
+        if let Entry::Occupied(entry) = self.entries.entry(entry_id)
+            && Arc::ptr_eq(entry.get(), slot)
+        {
+            entry.remove();
+        }
     }
 
     pub fn close_all(&self) {
-        for entry in self.entries.iter() {
-            entry.stop();
+        self.closing.store(true, Ordering::Release);
+        for slot in self.entries.iter() {
+            slot.close();
         }
         self.entries.clear();
         self.entries.shrink_to_fit();
@@ -210,8 +325,8 @@ where
     }
 
     fn close_udp_socket(&self, entry_id: UdpNatEntryId) {
-        if let Some((_, entry)) = self.entries.remove(&entry_id) {
-            entry.stop();
+        if let Some((_, slot)) = self.entries.remove(&entry_id) {
+            slot.close();
         }
         self.entries.shrink_to_fit();
     }
@@ -229,7 +344,11 @@ where
 
 #[cfg(test)]
 mod tests {
-    use std::{io, net::Ipv4Addr};
+    use std::{
+        io,
+        net::Ipv4Addr,
+        sync::atomic::{AtomicUsize, Ordering as AtomicOrdering},
+    };
 
     use super::*;
     use crate::socket::udp::UdpSocketPurpose;
@@ -267,6 +386,26 @@ mod tests {
 
         async fn bind_udp(&self, options: UdpBindOptions) -> anyhow::Result<Arc<Self::Socket>> {
             self.options.lock().unwrap().push(options);
+            Ok(self.socket.clone())
+        }
+    }
+
+    #[derive(Default)]
+    struct DelayedFactory {
+        socket: Arc<RecordingSocket>,
+        bind_calls: AtomicUsize,
+        bind_started: Notify,
+        release_bind: Notify,
+    }
+
+    #[async_trait::async_trait]
+    impl VirtualUdpSocketFactory for DelayedFactory {
+        type Socket = RecordingSocket;
+
+        async fn bind_udp(&self, _options: UdpBindOptions) -> anyhow::Result<Arc<Self::Socket>> {
+            self.bind_calls.fetch_add(1, AtomicOrdering::AcqRel);
+            self.bind_started.notify_one();
+            self.release_bind.notified().await;
             Ok(self.socket.clone())
         }
     }
@@ -356,5 +495,38 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(factory.options.lock().unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn close_all_cancels_an_inflight_socket_creation() {
+        let factory = Arc::new(DelayedFactory::default());
+        let runtime = Arc::new(UdpSocketProxyRuntime::new(
+            factory.clone(),
+            Arc::new(TestPolicy),
+            UdpBindOptions::proxy_nat(),
+            Duration::from_secs(120),
+        ));
+        let sink: Arc<dyn UdpProxyResponseSink> = Arc::new(NoopResponseSink);
+        let entry_id = UdpNatEntryId::new();
+        let destination = SocketAddr::from((Ipv4Addr::LOCALHOST, 53));
+        let send_task = tokio::spawn({
+            let runtime = runtime.clone();
+            let sink = Arc::downgrade(&sink);
+            async move {
+                runtime
+                    .send_udp_to_socket(entry_id, destination, Bytes::from_static(b"request"), sink)
+                    .await
+            }
+        });
+
+        factory.bind_started.notified().await;
+        runtime.close_all();
+        factory.release_bind.notify_one();
+
+        let error = send_task.await.unwrap().unwrap_err();
+        assert!(error.to_string().contains("closed while being created"));
+        assert_eq!(factory.bind_calls.load(AtomicOrdering::Acquire), 1);
+        assert!(factory.socket.sent.lock().unwrap().is_empty());
+        assert!(runtime.entries.is_empty());
     }
 }
