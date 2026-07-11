@@ -184,7 +184,7 @@ impl IcmpProxy {
         global_ctx: ArcGlobalCtx,
         peer_manager: Arc<PeerManager>,
     ) -> Result<Arc<Self>, Error> {
-        let cidr_set = CidrSet::new(global_ctx.clone());
+        let cidr_set = CidrSet::new_without_updater(global_ctx.clone());
         let runtime = Arc::new(RuntimeIcmpProxyAdapter::new(global_ctx));
         let service = IcmpProxyService::new(
             peer_manager.core(),
@@ -196,6 +196,7 @@ impl IcmpProxy {
     }
 
     pub async fn start(&self) -> Result<(), Error> {
+        self.cidr_set.start_updater();
         self.service
             .start()
             .await

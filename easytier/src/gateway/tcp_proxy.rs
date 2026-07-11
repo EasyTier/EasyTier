@@ -282,7 +282,7 @@ pub struct TcpProxy<C: NatDstConnector> {
 impl<C: NatDstConnector> TcpProxy<C> {
     pub fn new(peer_manager: Arc<PeerManager>, connector: C) -> Arc<Self> {
         let global_ctx = peer_manager.get_global_ctx();
-        let cidr_set = CidrSet::new(global_ctx.clone());
+        let cidr_set = CidrSet::new_without_updater(global_ctx.clone());
         let runtime = Arc::new(RuntimeTcpProxyAdapter::new(
             global_ctx.clone(),
             connector.clone(),
@@ -309,6 +309,7 @@ impl<C: NatDstConnector> TcpProxy<C> {
     }
 
     pub async fn start(self: &Arc<Self>, add_pipeline: bool) -> Result<()> {
+        self.cidr_set.start_updater();
         self.runtime.latch_smoltcp_enabled();
         self.service
             .start(add_pipeline)
@@ -394,6 +395,7 @@ impl<C: NatDstConnector> Drop for TcpProxy<C> {
 #[async_trait::async_trait]
 impl<C: NatDstConnector> ProxyService for TcpProxy<C> {
     async fn start(&self) -> anyhow::Result<()> {
+        self.cidr_set.start_updater();
         self.runtime.latch_smoltcp_enabled();
         self.service.start(true).await.map_err(anyhow::Error::new)
     }
