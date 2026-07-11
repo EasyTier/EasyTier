@@ -1063,18 +1063,15 @@ where
 mod tests {
     use std::sync::atomic::{AtomicI32, Ordering};
 
+    use easytier_core::connectivity::{manual::ManualConnectorHost, protocol::raw};
     use futures::{SinkExt, StreamExt};
     use tokio::time::timeout;
 
     use crate::{
         common::config::ConfigLoader,
         common::global_ctx::tests::get_mock_global_ctx,
-        tunnel::{
-            TunnelConnector, TunnelError,
-            packet_def::ZCPacket,
-            ring::{RingTunnelConnector, RingTunnelListener},
-            tcp::TcpTunnelConnector,
-        },
+        connector::runtime::RuntimeConnectorHost,
+        tunnel::{TunnelConnector, TunnelError, packet_def::ZCPacket, tcp::TcpTunnelConnector},
     };
 
     use super::*;
@@ -1485,36 +1482,33 @@ mod tests {
     #[tokio::test]
     async fn handle_error_in_accept() {
         let handler = Arc::new(MockListenerHandler {});
-        let mut listener_mgr = ListenerManager::new(get_mock_global_ctx(), handler.clone());
-
-        let ring_id = format!("ring://{}", uuid::Uuid::new_v4());
-
-        let ring_id_clone = ring_id.clone();
-        listener_mgr
-            .add_listener(
-                move || Box::new(RingTunnelListener::new(ring_id_clone.parse().unwrap())),
-                true,
-            )
-            .await
-            .unwrap();
+        let global_ctx = get_mock_global_ctx();
+        let ring_id = core_listener_plan::ring_listener_url(global_ctx.get_id());
+        let mut listener_mgr = ListenerManager::new(global_ctx.clone(), handler.clone());
+        listener_mgr.prepare_listeners().await.unwrap();
         listener_mgr.run().await.unwrap();
 
         tokio::time::sleep(std::time::Duration::from_secs(1)).await;
 
-        let connect_once = |ring_id| async move {
-            let tunnel = RingTunnelConnector::new(ring_id).connect().await.unwrap();
-            let (mut recv, _send) = tunnel.split();
-            assert_eq!(
-                recv.next().await.unwrap().unwrap().payload(),
-                "abc".as_bytes()
-            );
-            tunnel
+        let host = Arc::new(RuntimeConnectorHost::new(global_ctx));
+        let connect_once = |ring_id| {
+            let host = host.clone();
+            async move {
+                let connected = host.connect_byte_stream(&ring_id).await.unwrap();
+                let tunnel = raw::upgrade_connected_byte_stream(connected).unwrap();
+                let (mut recv, _send) = tunnel.split();
+                assert_eq!(
+                    recv.next().await.unwrap().unwrap().payload(),
+                    "abc".as_bytes()
+                );
+                tunnel
+            }
         };
 
         timeout(std::time::Duration::from_secs(1), async move {
-            connect_once(ring_id.parse().unwrap()).await;
+            connect_once(ring_id.clone()).await;
             // handle tunnel fail should not impact the second connect
-            connect_once(ring_id.parse().unwrap()).await;
+            connect_once(ring_id).await;
         })
         .await
         .unwrap();
@@ -1524,21 +1518,24 @@ mod tests {
     async fn retry_listen() {
         let counter = Arc::new(AtomicI32::new(0));
         let drop_counter = Arc::new(AtomicI32::new(0));
+        #[derive(Debug)]
         struct MockListener {
             counter: Arc<AtomicI32>,
             drop_counter: Arc<AtomicI32>,
         }
 
         #[async_trait::async_trait]
-        impl TunnelListener for MockListener {
-            async fn listen(&mut self) -> Result<(), TunnelError> {
+        impl core_listener::SocketListener for MockListener {
+            type Accepted = AcceptedConnection;
+
+            async fn listen(&mut self) -> anyhow::Result<()> {
                 self.counter.fetch_add(1, Ordering::Relaxed);
                 Ok(())
             }
 
-            async fn accept(&mut self) -> Result<Box<dyn Tunnel>, TunnelError> {
+            async fn accept(&mut self) -> anyhow::Result<Self::Accepted> {
                 tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-                Err(TunnelError::BufferFull)
+                Err(TunnelError::BufferFull.into())
             }
 
             fn local_url(&self) -> url::Url {
@@ -1556,18 +1553,15 @@ mod tests {
         let mut listener_mgr = ListenerManager::new(get_mock_global_ctx(), handler.clone());
         let counter_clone = counter.clone();
         let drop_counter_clone = drop_counter.clone();
-        listener_mgr
-            .add_listener(
-                move || {
-                    Box::new(MockListener {
-                        counter: counter_clone.clone(),
-                        drop_counter: drop_counter_clone.clone(),
-                    })
-                },
-                true,
-            )
-            .await
-            .unwrap();
+        listener_mgr.listener_manager.add_listener(
+            move || {
+                Box::new(MockListener {
+                    counter: counter_clone.clone(),
+                    drop_counter: drop_counter_clone.clone(),
+                })
+            },
+            true,
+        );
         listener_mgr.run().await.unwrap();
 
         tokio::time::sleep(std::time::Duration::from_secs(3)).await;
