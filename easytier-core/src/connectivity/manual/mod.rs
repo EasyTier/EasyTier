@@ -8,7 +8,6 @@ use std::{
 
 use async_trait::async_trait;
 use dashmap::DashSet;
-use futures::{StreamExt, stream::FuturesUnordered};
 use percent_encoding::percent_decode_str;
 use quanta::Instant;
 use rand::seq::SliceRandom;
@@ -17,6 +16,10 @@ use tokio_util::task::AbortOnDropHandle;
 use url::Url;
 
 use crate::{
+    connectivity::{
+        protocol::raw,
+        transport::{self, ConnectedTransport, UdpSessionMode},
+    },
     peers::peer_manager::PeerManagerCore,
     socket::{
         IpVersion, SocketContext,
@@ -24,26 +27,25 @@ use crate::{
         tcp::{TcpBindOptions, VirtualTcpSocketFactory},
         udp::{UdpBindOptions, UdpSessionControlHandler, VirtualUdpSocketFactory},
     },
-    tunnel::{Tunnel, TunnelError},
+    tunnel::TunnelError,
 };
 
-mod tcp;
-mod udp;
-
-pub use tcp::upgrade_accepted_socket;
-pub use udp::upgrade_accepted_session;
+pub use crate::connectivity::protocol::raw::{
+    upgrade_accepted_tcp as upgrade_accepted_socket,
+    upgrade_accepted_udp as upgrade_accepted_session,
+};
 
 const MANUAL_DEFAULT_PORT: u16 = 11010;
 const MANUAL_PREFLIGHT_DEFAULT_PORT: u16 = 1000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ManualTransport {
+pub(crate) enum ManualTransport {
     Tcp,
     Udp,
 }
 
 impl ManualTransport {
-    fn from_url(url: &Url) -> anyhow::Result<Self> {
+    pub(crate) fn from_url(url: &Url) -> anyhow::Result<Self> {
         match url.scheme() {
             "tcp" => Ok(Self::Tcp),
             "udp" => Ok(Self::Udp),
@@ -130,7 +132,7 @@ impl Default for ManualConnectorOptions {
 }
 
 impl ManualConnectorOptions {
-    fn socket_mark(&self, transport: ManualTransport) -> Option<u32> {
+    pub(crate) fn socket_mark(&self, transport: ManualTransport) -> Option<u32> {
         match transport {
             ManualTransport::Tcp => self.tcp_bind.socket_mark,
             ManualTransport::Udp => self.udp_bind.socket_mark,
@@ -417,10 +419,27 @@ where
     let normalized_url = convert_idn_to_ascii(requested_url.clone())?;
     let (remote_addr, bind_addrs) =
         with_timeout_budget("resolve", started_at, data.options.connect_timeout, async {
-            let remote_addr =
-                resolve_remote_addr(&data, &normalized_url, transport, ip_version).await?;
+            let peer_manager = data
+                .peer_manager
+                .upgrade()
+                .ok_or_else(|| anyhow::anyhow!("peer manager is gone, cannot resolve connector"))?;
+            let remote_addr = resolve_remote_addr(
+                peer_manager.as_ref(),
+                data.host.as_ref(),
+                data.dns.as_ref(),
+                &normalized_url,
+                ip_version,
+                data.options.socket_mark(transport),
+            )
+            .await?;
             let bind_addrs = if data.options.bind_device && data.options.allow_interface_bind {
-                collect_bind_addrs(&data, transport, remote_addr).await?
+                collect_bind_addrs(
+                    peer_manager.as_ref(),
+                    data.host.as_ref(),
+                    transport,
+                    remote_addr,
+                )
+                .await?
             } else {
                 Vec::new()
             };
@@ -431,19 +450,21 @@ where
         url: requested_url.clone(),
     });
 
-    let tunnel = with_timeout_budget(
+    let connected = with_timeout_budget(
         "connect",
         started_at,
         data.options.connect_timeout,
-        connect_and_upgrade(
-            &data,
+        connect_resolved(
+            data.host.clone(),
             transport,
             remote_addr,
             bind_addrs,
-            requested_url.clone(),
+            data.options.tcp_bind.clone(),
+            data.options.udp_bind.clone(),
         ),
     )
     .await?;
+    let tunnel = raw::upgrade_connected(connected, requested_url.clone())?;
     let peer_manager = data
         .peer_manager
         .upgrade()
@@ -464,64 +485,47 @@ where
     Ok(())
 }
 
-async fn connect_and_upgrade<H>(
-    data: &ManualConnectorData<H>,
+pub(crate) async fn connect_resolved<H>(
+    host: Arc<H>,
     transport: ManualTransport,
     remote_addr: SocketAddr,
     bind_addrs: Vec<SocketAddr>,
-    requested_url: Url,
-) -> anyhow::Result<Box<dyn Tunnel>>
+    tcp_bind: TcpBindOptions,
+    udp_bind: UdpBindOptions,
+) -> anyhow::Result<ConnectedTransport<H>>
 where
     H: ManualConnectorHost,
 {
     match transport {
-        ManualTransport::Tcp => {
-            tcp::connect_and_upgrade(
-                data.host.clone(),
-                remote_addr,
-                bind_addrs,
-                data.options.tcp_bind.clone(),
-                requested_url,
-            )
+        ManualTransport::Tcp => transport::connect_tcp(host, remote_addr, bind_addrs, tcp_bind)
             .await
-        }
-        ManualTransport::Udp => {
-            udp::connect_and_upgrade(
-                data.host.clone(),
-                remote_addr,
-                bind_addrs,
-                data.options.udp_bind.clone(),
-                requested_url,
-            )
-            .await
-        }
+            .map(ConnectedTransport::Tcp),
+        ManualTransport::Udp => transport::connect_udp(
+            host,
+            remote_addr,
+            bind_addrs,
+            udp_bind,
+            UdpSessionMode::EasyTierMux,
+        )
+        .await
+        .map(ConnectedTransport::Udp),
     }
 }
 
-async fn resolve_remote_addr<H>(
-    data: &ManualConnectorData<H>,
+pub(crate) async fn resolve_remote_addr<H>(
+    peer_manager: &PeerManagerCore,
+    host: &H,
+    dns: &dyn DnsResolver,
     url: &Url,
-    transport: ManualTransport,
     ip_version: IpVersion,
+    socket_mark: Option<u32>,
 ) -> anyhow::Result<SocketAddr>
 where
     H: ManualConnectorHost,
 {
-    let addrs = resolve_url_addrs(
-        url,
-        MANUAL_DEFAULT_PORT,
-        ip_version,
-        data.options.socket_mark(transport),
-        data.dns.as_ref(),
-    )
-    .await?;
+    let addrs = resolve_url_addrs(url, MANUAL_DEFAULT_PORT, ip_version, socket_mark, dns).await?;
     let mut usable = Vec::new();
     let mut rejected_reason = None;
-    let peer_manager = data
-        .peer_manager
-        .upgrade()
-        .ok_or_else(|| anyhow::anyhow!("peer manager is gone, cannot resolve connector"))?;
-
     for addr in addrs {
         let SocketAddr::V6(v6_addr) = addr else {
             usable.push(addr);
@@ -534,7 +538,7 @@ where
             ));
             continue;
         }
-        match data.host.local_addr_for_remote(addr).await {
+        match host.local_addr_for_remote(addr).await {
             Ok(SocketAddr::V6(local_addr))
                 if peer_manager.is_easytier_managed_ipv6(local_addr.ip()).await =>
             {
@@ -544,6 +548,11 @@ where
                 ));
             }
             Ok(_) => usable.push(addr),
+            Err(error) if ip_version == IpVersion::Both => {
+                rejected_reason = Some(format!(
+                    "{url} IPv6 candidate {v6_addr} could not be validated: {error}"
+                ));
+            }
             Err(error) => return Err(error),
         }
     }
@@ -560,8 +569,9 @@ where
         .ok_or_else(|| TunnelError::NoDnsRecordFound(ip_version).into())
 }
 
-async fn collect_bind_addrs<H>(
-    data: &ManualConnectorData<H>,
+pub(crate) async fn collect_bind_addrs<H>(
+    peer_manager: &PeerManagerCore,
+    host: &H,
     transport: ManualTransport,
     remote_addr: SocketAddr,
 ) -> anyhow::Result<Vec<SocketAddr>>
@@ -572,7 +582,7 @@ where
         return Ok(Vec::new());
     }
 
-    let addrs = data.host.interface_addrs().await?;
+    let addrs = host.interface_addrs().await?;
     if remote_addr.is_ipv4() {
         return Ok(addrs
             .interface_ipv4s
@@ -581,10 +591,6 @@ where
             .collect());
     }
 
-    let peer_manager = data
-        .peer_manager
-        .upgrade()
-        .ok_or_else(|| anyhow::anyhow!("peer manager is gone, cannot collect bind addresses"))?;
     let mut ipv6s = addrs.interface_ipv6s;
     ipv6s.extend(addrs.public_ipv6);
     let mut ret = Vec::new();
@@ -596,21 +602,7 @@ where
     Ok(ret)
 }
 
-pub(super) async fn first_success<F, T>(mut futures: FuturesUnordered<F>) -> anyhow::Result<T>
-where
-    F: Future<Output = anyhow::Result<T>> + Send,
-{
-    let mut last_error = None;
-    while let Some(result) = futures.next().await {
-        match result {
-            Ok(value) => return Ok(value),
-            Err(error) => last_error = Some(error),
-        }
-    }
-    Err(last_error.unwrap_or_else(|| anyhow::anyhow!("no manual connect candidates")))
-}
-
-async fn resolve_url_addrs(
+pub(crate) async fn resolve_url_addrs(
     url: &Url,
     default_port: u16,
     ip_version: IpVersion,
@@ -652,7 +644,7 @@ async fn resolve_url_addrs(
     Ok(addrs)
 }
 
-fn convert_idn_to_ascii(mut url: Url) -> anyhow::Result<Url> {
+pub(crate) fn convert_idn_to_ascii(mut url: Url) -> anyhow::Result<Url> {
     if url.is_special() {
         return Ok(url);
     }
