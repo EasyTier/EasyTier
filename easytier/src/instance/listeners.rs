@@ -5,6 +5,8 @@ use std::{
 };
 
 use async_trait::async_trait;
+#[cfg(feature = "quic")]
+use easytier_core::socket::udp::UdpSessionSocket;
 use easytier_core::{
     connectivity::manual::{upgrade_accepted_session, upgrade_accepted_socket},
     listener::{self as core_listener, plan as core_listener_plan},
@@ -157,6 +159,8 @@ enum AcceptedConnection {
     UdpSession {
         session: UdpSession,
         local_url: url::Url,
+        #[cfg(feature = "quic")]
+        quic_session_permit: Option<tunnel::quic::QuicSessionPermit>,
     },
 }
 
@@ -593,6 +597,8 @@ struct RuntimeUdpSessionSocketListener {
     factory: Arc<RuntimeUdpSocketFactory>,
     control_handler: Arc<RuntimeUdpSessionControlHandler>,
     socket_mark: Option<u32>,
+    #[cfg(feature = "quic")]
+    quic_admission: Option<Arc<tunnel::quic::QuicSessionAdmission>>,
     inner: Option<EasyTierUdpSessionSocketListener>,
 }
 
@@ -605,6 +611,12 @@ impl RuntimeUdpSessionSocketListener {
         control_handler: Arc<RuntimeUdpSessionControlHandler>,
         socket_mark: Option<u32>,
     ) -> Self {
+        #[cfg(feature = "quic")]
+        let quic_admission = matches!(
+            accept_kind,
+            UdpSessionAcceptKind::Classified(easytier_core::socket::udp::UdpSessionProtocol::Quic)
+        )
+        .then(tunnel::quic::QuicSessionAdmission::new);
         Self {
             url,
             net_ns,
@@ -612,6 +624,8 @@ impl RuntimeUdpSessionSocketListener {
             factory,
             control_handler,
             socket_mark,
+            #[cfg(feature = "quic")]
+            quic_admission,
             inner: None,
         }
     }
@@ -669,11 +683,30 @@ impl core_listener::SocketListener for RuntimeUdpSessionSocketListener {
     }
 
     async fn accept(&mut self) -> anyhow::Result<Self::Accepted> {
-        let local_url = self.local_url();
-        Ok(AcceptedConnection::UdpSession {
-            session: self.inner()?.accept().await?,
-            local_url,
-        })
+        loop {
+            let local_url = self.local_url();
+            let session = self.inner()?.accept().await?;
+            #[cfg(feature = "quic")]
+            let quic_session_permit = match &self.quic_admission {
+                Some(admission) => match admission.try_acquire_session() {
+                    Some(permit) => Some(permit),
+                    None => {
+                        tracing::debug!(
+                            peer_addr = ?session.peer_addr(),
+                            "drop QUIC UDP session after active session limit"
+                        );
+                        continue;
+                    }
+                },
+                None => None,
+            };
+            return Ok(AcceptedConnection::UdpSession {
+                session,
+                local_url,
+                #[cfg(feature = "quic")]
+                quic_session_permit,
+            });
+        }
     }
 
     fn local_url(&self) -> url::Url {
@@ -771,7 +804,24 @@ where
                 self.handle_tcp_stream(stream, local_url, upgrade_permit)
                     .await
             }
-            AcceptedConnection::UdpSession { session, local_url } => {
+            AcceptedConnection::UdpSession {
+                session,
+                local_url,
+                #[cfg(feature = "quic")]
+                quic_session_permit,
+            } => {
+                #[cfg(feature = "quic")]
+                if local_url.scheme() == "quic" {
+                    return self
+                        .handle_quic_session(
+                            session,
+                            local_url,
+                            quic_session_permit.ok_or_else(|| {
+                                anyhow::anyhow!("QUIC session admission permit is missing")
+                            })?,
+                        )
+                        .await;
+                }
                 self.handle_udp_session(session, local_url).await
             }
         }
@@ -824,11 +874,23 @@ where
                 );
                 tunnel::wireguard::upgrade_accepted(session, config)?
             }
-            #[cfg(feature = "quic")]
-            "quic" => tunnel::quic::upgrade_accepted(session, local_url).await?,
             scheme => anyhow::bail!("unsupported UDP listener protocol: {scheme}"),
         };
         self.handle_tunnel(tunnel).await
+    }
+
+    #[cfg(feature = "quic")]
+    async fn handle_quic_session(
+        &self,
+        session: UdpSession,
+        local_url: url::Url,
+        admission: tunnel::quic::QuicSessionPermit,
+    ) -> anyhow::Result<()> {
+        let mut accepted = tunnel::quic::QuicAcceptedSession::new(session, local_url, admission)?;
+        loop {
+            let tunnel = accepted.accept().await?;
+            let _ = self.handle_tunnel(tunnel).await;
+        }
     }
 
     async fn handle_tunnel(&self, tunnel: Box<dyn Tunnel>) -> anyhow::Result<()> {
@@ -1204,21 +1266,32 @@ mod tests {
         .await
         .unwrap();
 
-        let tunnel = timeout(
-            std::time::Duration::from_secs(5),
-            tunnel::quic::QuicTunnelConnector::new(listener_url, global_ctx).connect(),
-        )
-        .await
-        .unwrap()
-        .unwrap();
-        let (mut recv, mut send) = tunnel.split();
-        send.send(ZCPacket::new_with_payload("abc".as_bytes()))
-            .await
-            .unwrap();
-        assert_eq!(
-            recv.next().await.unwrap().unwrap().payload(),
-            "abc".as_bytes()
-        );
+        let mut tunnels = Vec::new();
+        for _ in 0..2 {
+            tunnels.push(
+                timeout(
+                    std::time::Duration::from_secs(5),
+                    tunnel::quic::QuicTunnelConnector::new(
+                        listener_url.clone(),
+                        global_ctx.clone(),
+                    )
+                    .connect(),
+                )
+                .await
+                .unwrap()
+                .unwrap(),
+            );
+        }
+        for tunnel in tunnels {
+            let (mut recv, mut send) = tunnel.split();
+            send.send(ZCPacket::new_with_payload("abc".as_bytes()))
+                .await
+                .unwrap();
+            assert_eq!(
+                recv.next().await.unwrap().unwrap().payload(),
+                "abc".as_bytes()
+            );
+        }
     }
 
     #[cfg(feature = "faketcp")]

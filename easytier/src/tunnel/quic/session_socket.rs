@@ -55,8 +55,11 @@ impl QuicUdpSessionSocket {
         Self::from_session(Arc::new(session), session_guard)
     }
 
-    pub(crate) fn from_accepted(session: UdpSession) -> io::Result<Self> {
-        Self::from_session(Arc::new(session), Box::new(()))
+    pub(crate) fn from_accepted<T>(session: UdpSession, session_guard: T) -> io::Result<Self>
+    where
+        T: Send + Sync + 'static,
+    {
+        Self::from_session(Arc::new(session), Box::new(session_guard))
     }
 
     fn from_session(
