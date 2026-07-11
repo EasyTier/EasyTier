@@ -5,6 +5,7 @@ pub mod dhcp;
 pub mod hole_punch;
 pub mod instance;
 pub mod listener;
+pub mod magic_dns;
 pub mod packet;
 pub mod peer_center;
 pub mod peers;
