@@ -22,7 +22,6 @@ use crate::{
             ManualConnectivityEventSink, ManualConnectorManager, ManualConnectorOptions,
             ManualConnectorSnapshot,
             discovery::{CoreManualEndpointResolver, ManualEndpointDiscoveryConfig},
-            validate_manual_url,
         },
         protocol::{ClientProtocolUpgrader, CoreClientProtocolConfig, CoreClientProtocolUpgrader},
     },
@@ -430,10 +429,6 @@ where
                 manual_options,
             ),
         };
-        for url in &initial_peers {
-            validate_manual_url(url)?;
-        }
-
         let direct = match running_listeners {
             Some(running_listeners) => DirectConnectorManager::new_with_running_listeners(
                 peer_manager.clone(),
@@ -652,12 +647,21 @@ where
         if !self.peer_center_started.load(Ordering::Acquire) {
             anyhow::bail!("initial peers cannot start before peer center");
         }
+        if self.cancel.is_cancelled() {
+            anyhow::bail!("initial peer start cancelled");
+        }
         if self.initial_peers_started.load(Ordering::Acquire) {
             return Ok(());
         }
 
         for url in &self.initial_peers {
+            if self.cancel.is_cancelled() {
+                anyhow::bail!("initial peer start cancelled");
+            }
             self.manual.add_connector(url.clone())?;
+        }
+        if self.cancel.is_cancelled() {
+            anyhow::bail!("initial peer start cancelled");
         }
         self.initial_peers_started.store(true, Ordering::Release);
         Ok(())

@@ -59,7 +59,7 @@ fn is_manual_endpoint_scheme(scheme: &str) -> bool {
     matches!(scheme, "http" | "https" | "txt" | "srv")
 }
 
-pub(crate) fn validate_manual_url(url: &Url) -> anyhow::Result<()> {
+fn validate_manual_url(url: &Url) -> anyhow::Result<()> {
     if ManualTransport::from_url(url).is_ok() || is_manual_endpoint_scheme(url.scheme()) {
         Ok(())
     } else {

@@ -358,6 +358,11 @@ mod tests {
     #[tokio::test]
     async fn stopping_while_proxy_starts_rolls_back_once() {
         let global_ctx = get_mock_global_ctx();
+        let initial_peer: url::Url = "tcp://127.0.0.1:29998".parse().unwrap();
+        global_ctx.config.set_peers(vec![PeerConfig {
+            uri: initial_peer,
+            peer_public_key: None,
+        }]);
         let (nic_channel, _nic_receiver) = create_packet_recv_chan();
         let peer_manager = Arc::new(PeerManager::new(
             RouteAlgoType::Ospf,
@@ -370,12 +375,18 @@ mod tests {
                 .expect("runtime core composition should succeed"),
         );
         instance.start().await.unwrap();
+        instance.start_peer_center().await.unwrap();
 
         let start_task = tokio::spawn({
             let instance = instance.clone();
             async move { instance.start_proxy().await }
         });
         proxy.start_entered.notified().await;
+        let initial_peer_task = tokio::spawn({
+            let instance = instance.clone();
+            async move { instance.start_initial_peers().await }
+        });
+        tokio::task::yield_now().await;
         let stop_task = tokio::spawn({
             let instance = instance.clone();
             async move { instance.stop().await }
@@ -384,10 +395,41 @@ mod tests {
         proxy.release_start.notify_one();
 
         assert!(start_task.await.unwrap().is_err());
+        assert!(initial_peer_task.await.unwrap().is_err());
         stop_task.await.unwrap();
+        assert!(instance.list_connectors().is_empty());
         assert_eq!(instance.state(), CoreInstanceState::Stopped);
         assert_eq!(proxy.start_calls.load(Ordering::Relaxed), 1);
         assert_eq!(proxy.stop_calls.load(Ordering::Relaxed), 1);
+    }
+
+    #[tokio::test]
+    async fn invalid_initial_peer_fails_during_activation() {
+        let global_ctx = get_mock_global_ctx();
+        global_ctx.config.set_peers(vec![PeerConfig {
+            uri: "unsupported://peer.example:1234".parse().unwrap(),
+            peer_public_key: None,
+        }]);
+        let (nic_channel, _nic_receiver) = create_packet_recv_chan();
+        let peer_manager = Arc::new(PeerManager::new(
+            RouteAlgoType::Ospf,
+            global_ctx.clone(),
+            nic_channel,
+        ));
+        let instance = Arc::new(
+            build_runtime_core_instance(global_ctx, peer_manager, None)
+                .expect("invalid peer schemes must not panic during composition"),
+        );
+
+        instance.start().await.unwrap();
+        instance.start_peer_center().await.unwrap();
+        let error = instance.start_initial_peers().await.unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("unsupported core manual connector URL")
+        );
+        instance.stop().await;
     }
 
     #[tokio::test]
