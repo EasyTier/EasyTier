@@ -1,6 +1,6 @@
 use super::{
     FromUrl, IpVersion, Tunnel, TunnelConnector, TunnelError, TunnelListener,
-    common::{TunnelWrapper, wait_for_connect_futures},
+    common::wait_for_connect_futures,
     insecure_tls::{get_insecure_tls_cert, init_crypto_provider},
     packet_def::{ZCPacket, ZCPacketType},
 };
@@ -11,7 +11,7 @@ use crate::{
 };
 use anyhow::Context;
 use bytes::BytesMut;
-use easytier_core::socket::tcp::VirtualTcpSocket;
+use easytier_core::{socket::tcp::VirtualTcpSocket, tunnel::wrapper::TunnelWrapper};
 use forwarded_header_value::ForwardedHeaderValue;
 use futures::{SinkExt, StreamExt, stream::FuturesUnordered};
 use pnet::ipnetwork::IpNetwork;

@@ -25,7 +25,6 @@ use crate::{
     common::shrink_dashmap,
     tunnel::{
         build_url_from_socket_addr,
-        common::TunnelWrapper,
         packet_def::{WG_TUNNEL_HEADER_SIZE, ZCPacket},
     },
 };
@@ -42,6 +41,7 @@ use dashmap::DashMap;
 use easytier_core::{
     connectivity::transport::ConnectedUdpSession,
     socket::udp::{UdpSession, UdpSessionProtocol, UdpSessionSocket},
+    tunnel::wrapper::TunnelWrapper,
 };
 use futures::{SinkExt, StreamExt, stream::FuturesUnordered};
 use rand::RngCore;

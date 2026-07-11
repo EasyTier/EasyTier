@@ -7,7 +7,7 @@ use crate::common::global_ctx::ArcGlobalCtx;
 use crate::tunnel::common::bind;
 use crate::tunnel::{
     TunnelInfo,
-    common::{FramedReader, FramedWriter, TunnelWrapper},
+    common::{FramedReader, FramedWriter},
     udp::{RuntimeUdpSessionLayer, RuntimeUdpSessionListener},
     udp_src,
 };
@@ -17,6 +17,7 @@ use derive_more::{Deref, DerefMut};
 use easytier_core::{
     connectivity::transport::ConnectedUdpSession,
     socket::udp::{UdpSession, UdpSessionProtocol, UdpSessionSocket, parse_quic_initial_dcid},
+    tunnel::wrapper::TunnelWrapper,
 };
 use parking_lot::RwLock;
 use quinn::{

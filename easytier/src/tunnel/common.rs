@@ -1,15 +1,9 @@
 use bon::builder;
 use futures::{Future, stream::FuturesUnordered};
 use network_interface::NetworkInterfaceConfig as _;
-use std::{
-    any::Any,
-    net::{IpAddr, SocketAddr},
-    pin::Pin,
-    sync::{Arc, Mutex},
-};
+use std::net::{IpAddr, SocketAddr};
 
-use super::TunnelInfo;
-use super::{Tunnel, TunnelError, ZCPacketSink, ZCPacketStream};
+use super::TunnelError;
 use crate::common::netns::NetNS;
 use tokio::net::{TcpListener, TcpSocket, UdpSocket};
 use tokio_stream::StreamExt;
@@ -17,49 +11,6 @@ use tokio_stream::StreamExt;
 pub use easytier_core::tunnel::framed::{
     FramedReader, FramedWriter, TcpZCPacketToBytes, ZCPacketToBytes, reserve_buf,
 };
-
-pub struct TunnelWrapper<R, W> {
-    reader: Arc<Mutex<Option<R>>>,
-    writer: Arc<Mutex<Option<W>>>,
-    info: Option<TunnelInfo>,
-    associate_data: Option<Box<dyn Any + Send + 'static>>,
-}
-
-impl<R, W> TunnelWrapper<R, W> {
-    pub fn new(reader: R, writer: W, info: Option<TunnelInfo>) -> Self {
-        Self::new_with_associate_data(reader, writer, info, None)
-    }
-
-    pub fn new_with_associate_data(
-        reader: R,
-        writer: W,
-        info: Option<TunnelInfo>,
-        associate_data: Option<Box<dyn Any + Send + 'static>>,
-    ) -> Self {
-        TunnelWrapper {
-            reader: Arc::new(Mutex::new(Some(reader))),
-            writer: Arc::new(Mutex::new(Some(writer))),
-            info,
-            associate_data,
-        }
-    }
-}
-
-impl<R, W> Tunnel for TunnelWrapper<R, W>
-where
-    R: ZCPacketStream + Send + 'static,
-    W: ZCPacketSink + Send + 'static,
-{
-    fn split(&self) -> (Pin<Box<dyn ZCPacketStream>>, Pin<Box<dyn ZCPacketSink>>) {
-        let reader = self.reader.lock().unwrap().take().unwrap();
-        let writer = self.writer.lock().unwrap().take().unwrap();
-        (Box::pin(reader), Box::pin(writer))
-    }
-
-    fn info(&self) -> Option<TunnelInfo> {
-        self.info.clone()
-    }
-}
 
 pub(crate) fn get_interface_name_by_ip(local_ip: &IpAddr) -> Option<String> {
     if local_ip.is_unspecified() || local_ip.is_multicast() {
@@ -428,7 +379,7 @@ pub mod tests {
         ));
     }
 
-    pub async fn _tunnel_echo_server(tunnel: Box<dyn super::Tunnel>, once: bool) {
+    pub async fn _tunnel_echo_server(tunnel: Box<dyn crate::tunnel::Tunnel>, once: bool) {
         let (mut recv, mut send) = tunnel.split();
 
         if !once {

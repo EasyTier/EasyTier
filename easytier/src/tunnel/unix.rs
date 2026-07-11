@@ -1,13 +1,14 @@
 use std::path::Path;
 
 use async_trait::async_trait;
+use easytier_core::tunnel::wrapper::TunnelWrapper;
 use tokio::net::{UnixListener, UnixStream, unix::SocketAddr};
 
 use super::TunnelInfo;
 
 use super::{
     IpVersion, Tunnel, TunnelError, TunnelListener,
-    common::{FramedReader, FramedWriter, TunnelWrapper},
+    common::{FramedReader, FramedWriter},
 };
 
 const MAX_PACKET_SIZE: usize = 4096;

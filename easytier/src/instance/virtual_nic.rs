@@ -18,10 +18,12 @@ use crate::{
     peers::{PacketRecvChanReceiver, peer_manager::PeerManager, recv_packet_from_chan},
     tunnel::{
         StreamItem, Tunnel, TunnelError, ZCPacketSink, ZCPacketStream,
-        common::{FramedWriter, TunnelWrapper, ZCPacketToBytes, reserve_buf},
+        common::{FramedWriter, ZCPacketToBytes, reserve_buf},
         packet_def::{TAIL_RESERVED_SIZE, ZCPacket, ZCPacketType},
     },
 };
+
+use easytier_core::tunnel::wrapper::TunnelWrapper;
 
 use byteorder::WriteBytesExt as _;
 use bytes::{Buf, BufMut, BytesMut};
