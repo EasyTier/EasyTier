@@ -273,6 +273,25 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn dropping_pending_waiter_removes_waker_and_host_state() {
+        let (runtime, io, sink) = test_sink(false);
+        let operation = {
+            let mut write = Box::pin(sink.write_packet(vec![7, 8]));
+            assert!(futures::poll!(&mut write).is_pending());
+            assert_eq!(runtime.inner.wakers.len(), 1);
+            let operation = io.waiter();
+            drop(write);
+            operation
+        };
+
+        let state = io.state.lock().unwrap();
+        assert!(state.packets.is_empty());
+        assert!(state.waiters.is_empty());
+        assert_eq!(state.cancelled, vec![operation]);
+        assert_eq!(runtime.inner.wakers.len(), 0);
+    }
+
+    #[tokio::test]
     async fn dropping_ready_waiter_does_not_admit_packet() {
         let (runtime, io, sink) = test_sink(false);
         let operation = {
