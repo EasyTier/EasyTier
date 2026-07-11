@@ -4,7 +4,7 @@ pub mod packet_io;
 
 use std::sync::{
     Arc, Weak,
-    atomic::{AtomicBool, AtomicU8, Ordering},
+    atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering},
 };
 use std::{collections::BTreeSet, net::IpAddr};
 
@@ -214,6 +214,62 @@ pub trait UdpHolePunchService: Send + Sync + 'static {
 pub trait ProxyService: Send + Sync + 'static {
     async fn start(&self) -> anyhow::Result<()>;
     async fn stop(&self);
+}
+
+pub trait ProxyStartupPolicy: Send + Sync + 'static {
+    fn should_start(&self) -> bool;
+}
+
+pub struct ProxyServiceGroup {
+    operation: Mutex<()>,
+    policy: Arc<dyn ProxyStartupPolicy>,
+    services: Vec<Arc<dyn ProxyService>>,
+    started_count: AtomicUsize,
+}
+
+impl ProxyServiceGroup {
+    pub fn new(
+        policy: Arc<dyn ProxyStartupPolicy>,
+        services: Vec<Arc<dyn ProxyService>>,
+    ) -> Arc<Self> {
+        Arc::new(Self {
+            operation: Mutex::new(()),
+            policy,
+            services,
+            started_count: AtomicUsize::new(0),
+        })
+    }
+
+    async fn stop_started(&self) {
+        let started_count = self.started_count.swap(0, Ordering::AcqRel);
+        for service in self.services[..started_count].iter().rev() {
+            service.stop().await;
+        }
+    }
+}
+
+#[async_trait]
+impl ProxyService for ProxyServiceGroup {
+    async fn start(&self) -> anyhow::Result<()> {
+        let _operation = self.operation.lock().await;
+        if self.started_count.load(Ordering::Acquire) != 0 || !self.policy.should_start() {
+            return Ok(());
+        }
+
+        for (index, service) in self.services.iter().enumerate() {
+            self.started_count.store(index + 1, Ordering::Release);
+            if let Err(err) = service.start().await {
+                self.stop_started().await;
+                return Err(err);
+            }
+        }
+        Ok(())
+    }
+
+    async fn stop(&self) {
+        let _operation = self.operation.lock().await;
+        self.stop_started().await;
+    }
 }
 
 /// Owns the portable peer and connectivity runtime for one EasyTier instance.
@@ -679,5 +735,121 @@ where
             )
             .await
             .map_err(Into::into)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::{Arc, Mutex};
+
+    use super::*;
+
+    struct StaticProxyPolicy(bool);
+
+    impl ProxyStartupPolicy for StaticProxyPolicy {
+        fn should_start(&self) -> bool {
+            self.0
+        }
+    }
+
+    struct RecordingProxyService {
+        name: &'static str,
+        fail_start: bool,
+        events: Arc<Mutex<Vec<String>>>,
+    }
+
+    #[async_trait]
+    impl ProxyService for RecordingProxyService {
+        async fn start(&self) -> anyhow::Result<()> {
+            self.events
+                .lock()
+                .unwrap()
+                .push(format!("start:{}", self.name));
+            if self.fail_start {
+                anyhow::bail!("{} start failed", self.name);
+            }
+            Ok(())
+        }
+
+        async fn stop(&self) {
+            self.events
+                .lock()
+                .unwrap()
+                .push(format!("stop:{}", self.name));
+        }
+    }
+
+    fn service(
+        name: &'static str,
+        fail_start: bool,
+        events: &Arc<Mutex<Vec<String>>>,
+    ) -> Arc<dyn ProxyService> {
+        Arc::new(RecordingProxyService {
+            name,
+            fail_start,
+            events: events.clone(),
+        })
+    }
+
+    #[tokio::test]
+    async fn proxy_group_starts_in_order_and_stops_in_reverse() {
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let group = ProxyServiceGroup::new(
+            Arc::new(StaticProxyPolicy(true)),
+            vec![
+                service("tcp", false, &events),
+                service("icmp", false, &events),
+                service("udp", false, &events),
+            ],
+        );
+
+        group.start().await.unwrap();
+        group.stop().await;
+
+        assert_eq!(
+            *events.lock().unwrap(),
+            [
+                "start:tcp",
+                "start:icmp",
+                "start:udp",
+                "stop:udp",
+                "stop:icmp",
+                "stop:tcp",
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn proxy_group_rolls_back_the_failing_service_and_predecessors() {
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let group = ProxyServiceGroup::new(
+            Arc::new(StaticProxyPolicy(true)),
+            vec![
+                service("tcp", false, &events),
+                service("icmp", true, &events),
+                service("udp", false, &events),
+            ],
+        );
+
+        assert!(group.start().await.is_err());
+
+        assert_eq!(
+            *events.lock().unwrap(),
+            ["start:tcp", "start:icmp", "stop:icmp", "stop:tcp"]
+        );
+    }
+
+    #[tokio::test]
+    async fn proxy_group_skips_services_when_policy_is_disabled() {
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let group = ProxyServiceGroup::new(
+            Arc::new(StaticProxyPolicy(false)),
+            vec![service("tcp", false, &events)],
+        );
+
+        group.start().await.unwrap();
+        group.stop().await;
+
+        assert!(events.lock().unwrap().is_empty());
     }
 }
