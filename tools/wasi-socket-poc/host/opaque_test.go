@@ -77,7 +77,7 @@ func newOpaqueBridge(
 		tcpAccepts:  make(map[uint64]*opaqueTCPAcceptWaiter),
 		creates:     make(map[uint64]*opaqueCreateOperation),
 		dns:         make(map[uint64]*opaqueDNSOperation),
-		dnsResolver: systemOpaqueDNSResolver{},
+		dnsResolver: unsupportedOpaqueDNSResolver{},
 		nextHandle:  1 << 48,
 		completion:  make(chan struct{}, 1),
 	}

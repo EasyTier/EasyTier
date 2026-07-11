@@ -15,40 +15,24 @@ const (
 
 type opaqueDNSResolver interface {
 	lookupIP(context.Context, decodedDNSQuery) ([]netip.Addr, error)
+	// lookupTXT returns one host-normalized core TXT value. Implementations
+	// preserve their intended RR/chunk and UTF-8 policy before this seam.
 	lookupTXT(context.Context, decodedDNSQuery) (string, error)
 	lookupSRV(context.Context, decodedDNSQuery) ([]*net.SRV, error)
 }
 
-type systemOpaqueDNSResolver struct{}
+type unsupportedOpaqueDNSResolver struct{}
 
-func (systemOpaqueDNSResolver) lookupIP(ctx context.Context, query decodedDNSQuery) ([]netip.Addr, error) {
-	network := "ip"
-	if query.ipVersion == 4 {
-		network = "ip4"
-	} else if query.ipVersion == 6 {
-		network = "ip6"
-	}
-	addresses, err := net.DefaultResolver.LookupNetIP(ctx, network, query.host)
-	if err != nil {
-		return nil, err
-	}
-	return addresses, nil
+func (unsupportedOpaqueDNSResolver) lookupIP(context.Context, decodedDNSQuery) ([]netip.Addr, error) {
+	return nil, fmt.Errorf("no Go DNS resolver was injected")
 }
 
-func (systemOpaqueDNSResolver) lookupTXT(ctx context.Context, query decodedDNSQuery) (string, error) {
-	records, err := net.DefaultResolver.LookupTXT(ctx, query.host)
-	if err != nil {
-		return "", err
-	}
-	if len(records) == 0 {
-		return "", fmt.Errorf("DNS TXT query returned no records")
-	}
-	return records[0], nil
+func (unsupportedOpaqueDNSResolver) lookupTXT(context.Context, decodedDNSQuery) (string, error) {
+	return "", fmt.Errorf("no Go DNS resolver was injected")
 }
 
-func (systemOpaqueDNSResolver) lookupSRV(ctx context.Context, query decodedDNSQuery) ([]*net.SRV, error) {
-	_, records, err := net.DefaultResolver.LookupSRV(ctx, "", "", query.host)
-	return records, err
+func (unsupportedOpaqueDNSResolver) lookupSRV(context.Context, decodedDNSQuery) ([]*net.SRV, error) {
+	return nil, fmt.Errorf("no Go DNS resolver was injected")
 }
 
 type opaqueDNSOperation struct {

@@ -95,6 +95,9 @@ func encodeDNSAddresses(addresses []netip.Addr) ([]byte, error) {
 }
 
 func encodeDNSTXT(text string) ([]byte, error) {
+	if !utf8.ValidString(text) {
+		return nil, fmt.Errorf("normalized DNS TXT value is not UTF-8")
+	}
 	result := make([]byte, 4, 4+len(text))
 	binary.BigEndian.PutUint32(result, uint32(len(text)))
 	result = append(result, text...)
