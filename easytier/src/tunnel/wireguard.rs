@@ -41,7 +41,7 @@ use crossbeam::atomic::AtomicCell;
 use dashmap::DashMap;
 use easytier_core::{
     connectivity::transport::ConnectedUdpSession,
-    socket::udp::{UdpSessionProtocol, UdpSessionSocket},
+    socket::udp::{UdpSession, UdpSessionProtocol, UdpSessionSocket},
 };
 use futures::{SinkExt, StreamExt, stream::FuturesUnordered};
 use rand::RngCore;
@@ -725,6 +725,32 @@ pub(crate) async fn upgrade_connected(
     ));
 
     Ok(ret)
+}
+
+pub(crate) fn upgrade_accepted(
+    session: UdpSession,
+    config: WgConfig,
+) -> Result<Box<dyn Tunnel>, TunnelError> {
+    let session = Arc::new(session) as Arc<dyn UdpSessionSocket>;
+    let remote_addr = session.peer_addr()?;
+    let local_addr = session.local_addr()?;
+    let mut wg_peer = WgPeer::new(Box::new(()), session, config, remote_addr);
+    let tunnel = wg_peer.start_and_get_tunnel();
+    wg_peer.spawn_session_recv_task(None);
+
+    let (stream, sink) = tunnel.split();
+    let remote_url = build_url_from_socket_addr(&remote_addr.to_string(), "wg");
+    Ok(Box::new(TunnelWrapper::new_with_associate_data(
+        stream,
+        sink,
+        Some(TunnelInfo {
+            tunnel_type: "wg".to_owned(),
+            local_addr: Some(build_url_from_socket_addr(&local_addr.to_string(), "wg").into()),
+            remote_addr: Some(remote_url.clone().into()),
+            resolved_remote_addr: Some(remote_url.into()),
+        }),
+        Some(Box::new(wg_peer)),
+    )))
 }
 
 impl WgTunnelConnector {

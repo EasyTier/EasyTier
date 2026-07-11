@@ -118,7 +118,7 @@ fn listener_scheme_registry() -> core_listener_plan::ListenerSchemeRegistry {
 
     #[cfg(feature = "wireguard")]
     {
-        registry = registry.support("wg", core_listener_plan::ListenerKind::External);
+        registry = registry.support("wg", core_listener_plan::ListenerKind::UdpSession);
     }
     #[cfg(feature = "quic")]
     {
@@ -152,7 +152,10 @@ enum AcceptedConnection {
         stream: RuntimeTcpSocket,
         local_url: url::Url,
     },
-    UdpSession(UdpSession),
+    UdpSession {
+        session: UdpSession,
+        local_url: url::Url,
+    },
 }
 
 pub struct ListenerManager<H> {
@@ -292,12 +295,24 @@ impl<H: TunnelHandlerForListener + Send + Sync + 'static> ListenerManager<H> {
         );
         let control_handler = Arc::new(RuntimeUdpSessionControlHandler);
         let net_ns = self.net_ns.clone();
+        let accept_kind = match listener.scheme() {
+            "udp" => UdpSessionAcceptKind::EasyTierMux,
+            #[cfg(feature = "wireguard")]
+            "wg" => UdpSessionAcceptKind::Classified(
+                easytier_core::socket::udp::UdpSessionProtocol::WireGuard,
+            ),
+            scheme => {
+                return Err(Error::InvalidUrl(format!(
+                    "unsupported UDP listener: {scheme}"
+                )));
+            }
+        };
         self.listener_manager.add_listener(
             move || {
                 Box::new(RuntimeUdpSessionSocketListener::new(
                     listener.clone(),
                     net_ns.clone(),
-                    UdpSessionAcceptKind::EasyTierMux,
+                    accept_kind,
                     factory.clone(),
                     control_handler.clone(),
                     socket_mark,
@@ -565,9 +580,11 @@ impl core_listener::SocketListener for RuntimeUdpSessionSocketListener {
     }
 
     async fn accept(&mut self) -> anyhow::Result<Self::Accepted> {
-        Ok(AcceptedConnection::UdpSession(
-            self.inner()?.accept().await?,
-        ))
+        let local_url = self.local_url();
+        Ok(AcceptedConnection::UdpSession {
+            session: self.inner()?.accept().await?,
+            local_url,
+        })
     }
 
     fn local_url(&self) -> url::Url {
@@ -658,7 +675,9 @@ where
             AcceptedConnection::TcpStream { stream, local_url } => {
                 self.handle_tcp_stream(stream, local_url).await
             }
-            AcceptedConnection::UdpSession(session) => self.handle_udp_session(session).await,
+            AcceptedConnection::UdpSession { session, local_url } => {
+                self.handle_udp_session(session, local_url).await
+            }
         }
     }
 }
@@ -687,8 +706,24 @@ where
         self.handle_tunnel(tunnel).await
     }
 
-    async fn handle_udp_session(&self, session: UdpSession) -> anyhow::Result<()> {
-        let tunnel = upgrade_accepted_session(session)?;
+    async fn handle_udp_session(
+        &self,
+        session: UdpSession,
+        local_url: url::Url,
+    ) -> anyhow::Result<()> {
+        let tunnel = match local_url.scheme() {
+            "udp" => upgrade_accepted_session(session)?,
+            #[cfg(feature = "wireguard")]
+            "wg" => {
+                let identity = self.global_ctx.get_network_identity();
+                let config = tunnel::wireguard::WgConfig::new_from_network_identity(
+                    &identity.network_name,
+                    &identity.network_secret.unwrap_or_default(),
+                );
+                tunnel::wireguard::upgrade_accepted(session, config)?
+            }
+            scheme => anyhow::bail!("unsupported UDP listener protocol: {scheme}"),
+        };
         self.handle_tunnel(tunnel).await
     }
 
@@ -769,6 +804,20 @@ mod tests {
         }
     }
 
+    #[derive(Debug)]
+    struct EchoListenerHandler;
+
+    #[async_trait]
+    impl TunnelHandlerForListener for EchoListenerHandler {
+        async fn handle_tunnel(&self, tunnel: Box<dyn Tunnel>) -> Result<(), Error> {
+            let (mut recv, mut send) = tunnel.split();
+            while let Some(packet) = recv.next().await {
+                send.send(packet?).await?;
+            }
+            Ok(())
+        }
+    }
+
     #[tokio::test]
     async fn prepare_udp_listeners_registers_core_listener_manager() {
         let global_ctx = get_mock_global_ctx();
@@ -802,6 +851,16 @@ mod tests {
                 Some(core_listener_plan::ListenerKind::TcpStream)
             );
         }
+    }
+
+    #[cfg(feature = "wireguard")]
+    #[test]
+    fn listener_scheme_registry_classifies_wireguard_as_udp_session() {
+        let url = "wg://127.0.0.1:0".parse().unwrap();
+        assert_eq!(
+            listener_scheme_registry().classify(&url),
+            Some(core_listener_plan::ListenerKind::UdpSession)
+        );
     }
 
     #[tokio::test]
@@ -892,6 +951,56 @@ mod tests {
             .await
             .unwrap();
         let (mut recv, _send) = tunnel.split();
+        assert_eq!(
+            recv.next().await.unwrap().unwrap().payload(),
+            "abc".as_bytes()
+        );
+    }
+
+    #[cfg(feature = "wireguard")]
+    #[tokio::test]
+    async fn wireguard_listener_accepts_through_core_session_listener() {
+        let global_ctx = get_mock_global_ctx();
+        global_ctx
+            .config
+            .set_listeners(vec!["wg://127.0.0.1:0".parse().unwrap()]);
+        let handler = Arc::new(EchoListenerHandler);
+        let mut listener_mgr = ListenerManager::new(global_ctx.clone(), handler.clone());
+
+        listener_mgr.prepare_listeners().await.unwrap();
+        listener_mgr.run().await.unwrap();
+
+        let listener_url = timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                if let Some(url) = global_ctx
+                    .get_running_listeners()
+                    .into_iter()
+                    .find(|url| url.scheme() == "wg")
+                {
+                    break url;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+
+        let identity = global_ctx.get_network_identity();
+        let config = tunnel::wireguard::WgConfig::new_from_network_identity(
+            &identity.network_name,
+            &identity.network_secret.unwrap_or_default(),
+        );
+        let tunnel = timeout(
+            std::time::Duration::from_secs(5),
+            tunnel::wireguard::WgTunnelConnector::new(listener_url, config).connect(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        let (mut recv, mut send) = tunnel.split();
+        send.send(ZCPacket::new_with_payload("abc".as_bytes()))
+            .await
+            .unwrap();
         assert_eq!(
             recv.next().await.unwrap().unwrap().payload(),
             "abc".as_bytes()
