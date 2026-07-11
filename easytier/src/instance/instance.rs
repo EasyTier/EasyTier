@@ -9,6 +9,7 @@ use std::time::Duration;
 
 use anyhow::Context;
 use cidr::{IpCidr, Ipv4Inet};
+use easytier_core::instance::{ProxyService, ProxyServiceGroup, ProxyStartupPolicy};
 use easytier_core::proxy::ProxyStartupContext;
 use futures::FutureExt;
 use tokio::sync::{Mutex, Notify};
@@ -77,8 +78,6 @@ use crate::gateway::socks5::Socks5Server;
 struct IpProxy {
     tcp_proxy: Arc<TcpProxy<NatDstTcpConnector>>,
     icmp_proxy: Arc<IcmpProxy>,
-    global_ctx: ArcGlobalCtx,
-    started: Arc<AtomicBool>,
 }
 
 impl IpProxy {
@@ -89,41 +88,28 @@ impl IpProxy {
         Ok(IpProxy {
             tcp_proxy,
             icmp_proxy,
-            global_ctx,
-            started: Arc::new(AtomicBool::new(false)),
         })
     }
 
-    async fn start(&self) -> Result<bool, Error> {
-        if !(ProxyStartupContext {
+    fn services(&self) -> Vec<Arc<dyn ProxyService>> {
+        vec![self.tcp_proxy.clone(), self.icmp_proxy.clone()]
+    }
+}
+
+struct RuntimeProxyStartupPolicy {
+    global_ctx: ArcGlobalCtx,
+}
+
+impl ProxyStartupPolicy for RuntimeProxyStartupPolicy {
+    fn should_start(&self) -> bool {
+        ProxyStartupContext {
             has_proxy_cidrs: !self.global_ctx.config.get_proxy_cidrs().is_empty(),
-            already_started: self.started.load(Ordering::Relaxed),
+            already_started: false,
             enable_exit_node: self.global_ctx.enable_exit_node(),
             no_tun: self.global_ctx.no_tun(),
             forward_by_system: self.global_ctx.proxy_forward_by_system(),
-        })
+        }
         .should_start()
-        {
-            return Ok(false);
-        }
-
-        self.started.store(true, Ordering::Relaxed);
-        self.tcp_proxy.start(true).await?;
-        if let Err(e) = self.icmp_proxy.start().await {
-            tracing::error!("start icmp proxy failed: {:?}", e);
-            if cfg!(not(any(
-                target_os = "android",
-                any(
-                    target_os = "ios",
-                    all(target_os = "macos", feature = "macos-ne")
-                ),
-                target_env = "ohos"
-            ))) {
-                // android, ios and ohos not support icmp proxy
-                return Err(e);
-            }
-        }
-        Ok(true)
     }
 }
 
@@ -705,10 +691,20 @@ impl Instance {
             global_ctx.clone(),
             peer_packet_sender,
         ));
+        let ip_proxy = IpProxy::new(global_ctx.clone(), peer_manager.clone())
+            .expect("IP proxy adapter construction should be infallible");
         let udp_proxy = UdpProxy::new(global_ctx.clone(), peer_manager.clone())
             .expect("UDP proxy adapter construction should be infallible");
+        let mut proxy_services = ip_proxy.services();
+        proxy_services.push(udp_proxy);
+        let proxy = ProxyServiceGroup::new(
+            Arc::new(RuntimeProxyStartupPolicy {
+                global_ctx: global_ctx.clone(),
+            }),
+            proxy_services,
+        );
         let core_instance = Arc::new(
-            build_runtime_core_instance(global_ctx.clone(), peer_manager.clone(), Some(udp_proxy))
+            build_runtime_core_instance(global_ctx.clone(), peer_manager.clone(), Some(proxy))
                 .expect("runtime core instance composition should be valid"),
         );
 
@@ -738,7 +734,7 @@ impl Instance {
             core_instance,
             conn_manager,
 
-            ip_proxy: None,
+            ip_proxy: Some(ip_proxy),
             #[cfg(feature = "kcp")]
             kcp_proxy_src: None,
             #[cfg(feature = "kcp")]
@@ -1116,13 +1112,7 @@ impl Instance {
             .reload_rules(AclRuleBuilder::build(&self.global_ctx)?.as_ref());
 
         // run after tun device created, so listener can bind to tun device, which may be required by win 10
-        self.ip_proxy = Some(IpProxy::new(
-            self.get_global_ctx(),
-            self.get_peer_manager(),
-        )?);
-        if self.run_ip_proxy().await? {
-            self.core_instance.start_proxy().await?;
-        }
+        self.core_instance.start_proxy().await?;
 
         self.core_instance.start_udp_hole_punch().await?;
 
@@ -1152,13 +1142,6 @@ impl Instance {
             .await?;
 
         Ok(())
-    }
-
-    pub async fn run_ip_proxy(&mut self) -> Result<bool, Error> {
-        if self.ip_proxy.is_none() {
-            return Err(anyhow::anyhow!("ip proxy not enabled.").into());
-        }
-        self.ip_proxy.as_ref().unwrap().start().await
     }
 
     pub async fn run_vpn_portal(&mut self) -> Result<(), Error> {
