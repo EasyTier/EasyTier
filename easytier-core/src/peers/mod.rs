@@ -21,7 +21,7 @@ pub(crate) mod test_support;
 mod tests;
 
 use crate::packet::ZCPacket;
-use tokio::sync::mpsc::error::{SendError, TrySendError};
+use tokio::sync::mpsc::error::{SendError, TryRecvError, TrySendError};
 
 pub type PacketRecvChan = tokio::sync::mpsc::Sender<ZCPacket>;
 pub type PacketRecvChanReceiver = tokio::sync::mpsc::Receiver<ZCPacket>;
@@ -44,10 +44,14 @@ pub(crate) async fn send_packet_to_chan(
 pub async fn recv_packet_from_chan(
     packet_recv_chan_receiver: &mut PacketRecvChanReceiver,
 ) -> Result<ZCPacket, anyhow::Error> {
-    packet_recv_chan_receiver
-        .recv()
-        .await
-        .ok_or(anyhow::anyhow!("recv_packet_from_chan failed"))
+    match packet_recv_chan_receiver.try_recv() {
+        Ok(packet) => Ok(packet),
+        Err(TryRecvError::Empty) => packet_recv_chan_receiver
+            .recv()
+            .await
+            .ok_or(anyhow::anyhow!("recv_packet_from_chan failed")),
+        Err(TryRecvError::Disconnected) => Err(anyhow::anyhow!("recv_packet_from_chan failed")),
+    }
 }
 
 #[async_trait::async_trait]
