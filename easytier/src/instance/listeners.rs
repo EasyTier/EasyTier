@@ -941,7 +941,7 @@ where
         local_url: url::Url,
         remote_url: url::Url,
     ) -> anyhow::Result<()> {
-        let tunnel = raw::upgrade_accepted_byte_stream(stream, local_url, remote_url)?;
+        let tunnel = raw::upgrade_accepted_byte_stream(stream, local_url, Some(remote_url))?;
         self.handle_tunnel(tunnel).await
     }
 

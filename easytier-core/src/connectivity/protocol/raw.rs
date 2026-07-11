@@ -103,7 +103,7 @@ where
 pub fn upgrade_accepted_byte_stream<S>(
     socket: S,
     local_url: Url,
-    remote_url: Url,
+    remote_url: Option<Url>,
 ) -> Result<Box<dyn Tunnel>, TunnelError>
 where
     S: VirtualTcpSocket,
@@ -111,8 +111,8 @@ where
     let info = TunnelInfo {
         tunnel_type: local_url.scheme().to_owned(),
         local_addr: Some(local_url.into()),
-        remote_addr: Some(remote_url.clone().into()),
-        resolved_remote_addr: Some(remote_url.into()),
+        remote_addr: remote_url.clone().map(Into::into),
+        resolved_remote_addr: remote_url.map(Into::into),
     };
     TcpTunnelUpgrader::new(info).upgrade(socket)
 }
@@ -298,7 +298,7 @@ mod tests {
                 "127.0.0.1:2000".parse().unwrap(),
             ),
             local_url.clone(),
-            remote_url.clone(),
+            Some(remote_url.clone()),
         )
         .unwrap();
         let info = tunnel.info().unwrap();
@@ -307,5 +307,23 @@ mod tests {
         assert_eq!(info.local_addr.unwrap().url, local_url.as_str());
         assert_eq!(info.remote_addr.unwrap().url, remote_url.as_str());
         assert_eq!(info.resolved_remote_addr.unwrap().url, remote_url.as_str());
+    }
+
+    #[test]
+    fn accepted_byte_stream_allows_unnamed_remote_endpoint() {
+        let tunnel = upgrade_accepted_byte_stream(
+            MockTcpSocket::new(
+                "127.0.0.1:1000".parse().unwrap(),
+                "127.0.0.1:2000".parse().unwrap(),
+            ),
+            "unix:///tmp/easytier.sock".parse().unwrap(),
+            None,
+        )
+        .unwrap();
+        let info = tunnel.info().unwrap();
+
+        assert_eq!(info.tunnel_type, "unix");
+        assert!(info.remote_addr.is_none());
+        assert!(info.resolved_remote_addr.is_none());
     }
 }
