@@ -1,26 +1,18 @@
 use std::{
     collections::BTreeSet,
     future::Future,
-    net::{SocketAddr, SocketAddrV4, SocketAddrV6},
     sync::{Arc, Weak},
     time::Duration,
 };
 
-use async_trait::async_trait;
 use dashmap::DashSet;
 use easytier_core::{
     connectivity::manual::{
-        ManualConnectivityEvent, ManualConnectivityEventSink, ManualConnectorHost,
+        ManualConnectivityEvent, ManualConnectivityEventSink,
         ManualConnectorManager as CoreManualConnectorManager, ManualConnectorOptions,
-        ManualConnectorStatus, ManualInterfaceAddrs,
+        ManualConnectorStatus,
     },
-    socket::{
-        dns::DnsResolver,
-        tcp::{TcpBindOptions, TcpConnectOptions, VirtualTcpSocketFactory},
-        udp::{
-            PreferredIpv6Source, UdpBindOptions, UdpSessionControlHandler, VirtualUdpSocketFactory,
-        },
-    },
+    socket::{dns::DnsResolver, tcp::TcpBindOptions, udp::UdpBindOptions},
 };
 use quanta::Instant;
 use tokio::{sync::mpsc, task::JoinSet, time::timeout};
@@ -39,11 +31,7 @@ use crate::{
         },
         rpc_types::{self, controller::BaseController},
     },
-    tunnel::{
-        IpVersion, TunnelConnector, TunnelScheme, matches_scheme,
-        tcp_socket::{self, RuntimeTcpSocket},
-        udp::{RuntimeUdpSessionControlHandler, RuntimeUdpSocket, RuntimeUdpSocketFactory},
-    },
+    tunnel::{IpVersion, TunnelConnector, TunnelScheme, matches_scheme},
     utils::weak_upgrade,
 };
 
@@ -57,10 +45,10 @@ use crate::{
     use_global_var,
 };
 
-use super::create_connector_by_url;
+use super::{create_connector_by_url, runtime::RuntimeConnectorHost};
 
 type ConnectorMap = Arc<DashSet<url::Url>>;
-type CoreConnectorManager = CoreManualConnectorManager<RuntimeManualConnectorHost>;
+type CoreConnectorManager = CoreManualConnectorManager<RuntimeConnectorHost>;
 
 #[derive(Debug, Clone)]
 struct ReconnResult {
@@ -78,102 +66,6 @@ struct ConnectorManagerData {
     removed_conn_urls: Arc<DashSet<url::Url>>,
     net_ns: NetNS,
     global_ctx: ArcGlobalCtx,
-}
-
-struct RuntimeManualConnectorHost {
-    global_ctx: ArcGlobalCtx,
-    udp_socket_factory: RuntimeUdpSocketFactory,
-}
-
-impl RuntimeManualConnectorHost {
-    fn new(global_ctx: ArcGlobalCtx) -> Self {
-        Self {
-            udp_socket_factory: RuntimeUdpSocketFactory::new(global_ctx.net_ns.clone()),
-            global_ctx,
-        }
-    }
-}
-
-#[async_trait]
-impl VirtualTcpSocketFactory for RuntimeManualConnectorHost {
-    type Socket = RuntimeTcpSocket;
-
-    async fn connect_tcp(&self, options: TcpConnectOptions) -> anyhow::Result<Self::Socket> {
-        self.global_ctx
-            .net_ns
-            .run_async(|| async move {
-                tcp_socket::connect_tcp(options)
-                    .await
-                    .map_err(anyhow::Error::from)
-            })
-            .await
-    }
-}
-
-#[async_trait]
-impl VirtualUdpSocketFactory for RuntimeManualConnectorHost {
-    type Socket = RuntimeUdpSocket;
-
-    async fn bind_udp(&self, options: UdpBindOptions) -> anyhow::Result<Arc<Self::Socket>> {
-        let socket = self.udp_socket_factory.bind_udp(options).await?;
-        #[cfg(target_os = "windows")]
-        crate::arch::windows::disable_connection_reset(socket.socket().as_ref())?;
-        Ok(socket)
-    }
-}
-
-#[async_trait]
-impl UdpSessionControlHandler<RuntimeUdpSocket> for RuntimeManualConnectorHost {
-    async fn send_v4_hole_punch(
-        &self,
-        socket: Arc<RuntimeUdpSocket>,
-        dst_addr: SocketAddrV4,
-    ) -> std::io::Result<usize> {
-        RuntimeUdpSessionControlHandler
-            .send_v4_hole_punch(socket, dst_addr)
-            .await
-    }
-
-    async fn send_v6_hole_punch(
-        &self,
-        socket: Arc<RuntimeUdpSocket>,
-        dst_addr: SocketAddrV6,
-        preferred_src: Option<PreferredIpv6Source>,
-    ) -> std::io::Result<usize> {
-        RuntimeUdpSessionControlHandler
-            .send_v6_hole_punch(socket, dst_addr, preferred_src)
-            .await
-    }
-}
-
-#[async_trait]
-impl ManualConnectorHost for RuntimeManualConnectorHost {
-    async fn local_addr_for_remote(&self, remote_addr: SocketAddr) -> anyhow::Result<SocketAddr> {
-        let socket = self
-            .global_ctx
-            .net_ns
-            .run_async(|| tokio::net::UdpSocket::bind("[::]:0"))
-            .await?;
-        socket.connect(remote_addr).await?;
-        Ok(socket.local_addr()?)
-    }
-
-    async fn interface_addrs(&self) -> anyhow::Result<ManualInterfaceAddrs> {
-        let addrs = self.global_ctx.get_ip_collector().collect_ip_addrs().await;
-        Ok(ManualInterfaceAddrs {
-            interface_ipv4s: addrs
-                .interface_ipv4s
-                .into_iter()
-                .map(std::net::Ipv4Addr::from)
-                .collect(),
-            interface_ipv6s: addrs
-                .interface_ipv6s
-                .into_iter()
-                .map(std::net::Ipv6Addr::from)
-                .collect(),
-            public_ipv6: addrs.public_ipv6.map(std::net::Ipv6Addr::from),
-        })
-    }
 }
 
 struct GlobalCtxManualConnectivityEventSink {
@@ -232,7 +124,7 @@ impl ManualConnectorManager {
         };
         let core_manager = Arc::new(CoreManualConnectorManager::new_with_events(
             peer_manager.core(),
-            Arc::new(RuntimeManualConnectorHost::new(global_ctx.clone())),
+            Arc::new(RuntimeConnectorHost::new(global_ctx.clone())),
             Arc::new(RuntimeDnsResolver::new()) as Arc<dyn DnsResolver>,
             core_options,
             Arc::new(GlobalCtxManualConnectivityEventSink {
