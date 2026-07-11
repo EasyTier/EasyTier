@@ -78,6 +78,10 @@ where
 
     pub async fn start(&self) {
         let _admission = self.admission.write().await;
+        if !self.stopping.load(Ordering::Acquire) {
+            return;
+        }
+        self.stop_inner().await;
         self.common.start().await;
         self.both_easy_sym_server.common.start().await;
         self.stopping.store(false, Ordering::Release);
@@ -91,6 +95,10 @@ where
         self.begin_stop();
         let _admission = self.admission.write().await;
         self.stopping.store(true, Ordering::Release);
+        self.stop_inner().await;
+    }
+
+    async fn stop_inner(&self) {
         self.both_easy_sym_server.stop().await;
         self.both_easy_sym_server.common.stop().await;
         self.common.stop().await;
@@ -322,6 +330,7 @@ where
     runtime: Arc<R>,
     tunnel_sink: Arc<T>,
     listeners: Arc<Mutex<Vec<Arc<UdpPunchListenerRecord<R::Socket>>>>>,
+    pending: Arc<Mutex<Vec<Arc<UdpPunchListenerRecord<R::Socket>>>>>,
     retiring: Arc<Mutex<Vec<Arc<UdpPunchListenerRecord<R::Socket>>>>>,
     cleanup_task: Mutex<Option<AbortOnDropHandle<()>>>,
 }
@@ -338,6 +347,7 @@ where
             runtime,
             tunnel_sink,
             listeners,
+            pending: Arc::new(Mutex::new(Vec::new())),
             retiring: Arc::new(Mutex::new(Vec::new())),
             cleanup_task: Mutex::new(None),
         }
@@ -383,40 +393,56 @@ where
         drop(cleanup_task);
 
         {
+            let mut pending = self.pending.lock().await;
             let mut retiring = self.retiring.lock().await;
             let mut listeners = self.listeners.lock().await;
+            retiring.extend(std::mem::take(&mut *pending));
             retiring.extend(std::mem::take(&mut *listeners));
         }
         drain_retiring_listeners(self.retiring.as_ref()).await;
     }
 
     pub async fn add_listener(&self, listener: UdpPunchListener<R::Socket>) {
-        let listener = self.track_listener(listener).await;
-        self.promote_listener(listener).await;
+        let mut listeners = self.listeners.lock().await;
+        listeners.push(Arc::new(UdpPunchListenerRecord::new(
+            listener,
+            self.tunnel_sink.clone(),
+        )));
     }
 
-    async fn track_listener(
+    async fn track_pending_listener(
         &self,
         listener: UdpPunchListener<R::Socket>,
     ) -> Arc<UdpPunchListenerRecord<R::Socket>> {
-        let mut retiring = self.retiring.lock().await;
+        let mut pending = self.pending.lock().await;
         let listener = Arc::new(UdpPunchListenerRecord::new(
             listener,
             self.tunnel_sink.clone(),
         ));
-        retiring.push(listener.clone());
+        pending.push(listener.clone());
         listener
     }
 
-    async fn promote_listener(&self, listener: Arc<UdpPunchListenerRecord<R::Socket>>) {
-        let mut retiring = self.retiring.lock().await;
+    async fn promote_pending_listener(&self, listener: Arc<UdpPunchListenerRecord<R::Socket>>) {
+        let mut pending = self.pending.lock().await;
         let mut listeners = self.listeners.lock().await;
-        if let Some(index) = retiring
+        if let Some(index) = pending
             .iter()
             .position(|candidate| Arc::ptr_eq(candidate, &listener))
         {
-            retiring.remove(index);
+            pending.remove(index);
             listeners.push(listener);
+        }
+    }
+
+    async fn retire_pending_listener(&self, listener: Arc<UdpPunchListenerRecord<R::Socket>>) {
+        let mut pending = self.pending.lock().await;
+        let mut retiring = self.retiring.lock().await;
+        if let Some(index) = pending
+            .iter()
+            .position(|candidate| Arc::ptr_eq(candidate, &listener))
+        {
+            retiring.push(pending.remove(index));
         }
     }
 
@@ -862,7 +888,7 @@ where
                         }
                     };
                     let socket = listener.socket.clone();
-                    let record = common.track_listener(listener).await;
+                    let record = common.track_pending_listener(listener).await;
                     punched.push((socket, remote_addr));
                     listeners.push(record);
                 }
@@ -894,7 +920,9 @@ where
 
             for listener in listeners {
                 if listener.conn_count() > 0 {
-                    common.promote_listener(listener).await;
+                    common.promote_pending_listener(listener).await;
+                } else {
+                    common.retire_pending_listener(listener).await;
                 }
             }
             drain_retiring_listeners(common.retiring.as_ref()).await;
