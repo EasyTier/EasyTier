@@ -1,7 +1,4 @@
-use std::sync::{
-    Arc,
-    atomic::{AtomicBool, Ordering},
-};
+use std::sync::Arc;
 
 use easytier_core::{
     connectivity::direct::DirectConnectorManager as CoreDirectConnectorManager,
@@ -13,75 +10,38 @@ use crate::{
     peers::peer_manager::PeerManager,
 };
 
-#[cfg(test)]
-use crate::{
-    common::{PeerId, error::Error},
-    proto::peer_rpc::GetIpListResponse,
-};
-
 use super::{
     core_instance::runtime_direct_options, protocol::RuntimeClientProtocolUpgrader,
     runtime::RuntimeConnectorHost,
 };
 
-static TESTING: AtomicBool = AtomicBool::new(false);
+pub(crate) type RuntimeDirectConnectorManager = CoreDirectConnectorManager<RuntimeConnectorHost>;
 
-type CoreManager = CoreDirectConnectorManager<RuntimeConnectorHost>;
-
-pub struct DirectConnectorManager {
-    inner: CoreManager,
-}
-
-impl DirectConnectorManager {
-    pub fn new(global_ctx: ArcGlobalCtx, peer_manager: Arc<PeerManager>) -> Self {
-        let options = runtime_direct_options(&global_ctx, TESTING.load(Ordering::Relaxed));
-        let inner = CoreDirectConnectorManager::new(
-            peer_manager.core(),
-            Arc::new(RuntimeConnectorHost::new(global_ctx.clone())),
-            Arc::new(RuntimeDnsResolver::new()) as Arc<dyn DnsResolver>,
-            Arc::new(RuntimeClientProtocolUpgrader::new(global_ctx)),
-            options,
-        );
-        Self { inner }
-    }
-
-    pub fn run(&mut self) {
-        self.inner.run();
-    }
-
-    pub fn run_as_server(&mut self) {
-        self.inner.run_as_server();
-    }
-
-    pub fn run_as_client(&mut self) {
-        self.inner.run_as_client();
-    }
-
-    #[cfg(test)]
-    pub(crate) async fn try_direct_connect_with_ip_list(
-        &self,
-        dst_peer_id: PeerId,
-        ip_list: GetIpListResponse,
-    ) -> Result<(), Error> {
-        self.inner
-            .try_direct_connect_with_ip_list(dst_peer_id, ip_list)
-            .await
-            .map_err(Error::from)
-    }
+pub(crate) fn runtime_direct_connector_manager(
+    global_ctx: ArcGlobalCtx,
+    peer_manager: Arc<PeerManager>,
+    testing: bool,
+) -> RuntimeDirectConnectorManager {
+    let options = runtime_direct_options(&global_ctx, testing);
+    CoreDirectConnectorManager::new(
+        peer_manager.core(),
+        Arc::new(RuntimeConnectorHost::new(global_ctx.clone())),
+        Arc::new(RuntimeDnsResolver::new()) as Arc<dyn DnsResolver>,
+        Arc::new(RuntimeClientProtocolUpgrader::new(global_ctx)),
+        options,
+    )
 }
 
 #[cfg(test)]
 mod tests {
     use crate::{
-        connector::direct::DirectConnectorManager,
+        connector::direct::runtime_direct_connector_manager,
         instance::listeners::ListenerManager,
         peers::tests::{create_mock_peer_manager, wait_route_appear, wait_route_appear_with_cost},
         proto::common::TunnelInfo,
         tunnel::{Tunnel, ring::RingTunnel},
     };
     use easytier_core::tunnel::ring::create_ring_socket_pair;
-
-    use super::TESTING;
 
     fn ring_tunnel_info(local: &str, remote: &str) -> TunnelInfo {
         TunnelInfo {
@@ -123,7 +83,6 @@ mod tests {
         mapped_listener: &str,
         target_listener: &str,
     ) {
-        TESTING.store(true, std::sync::atomic::Ordering::Relaxed);
         let p_a = create_mock_peer_manager().await;
         let p_b = create_mock_peer_manager().await;
         let p_c = create_mock_peer_manager().await;
@@ -151,8 +110,8 @@ mod tests {
         listener_manager.run().await.unwrap();
 
         tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-        let mut direct_a = DirectConnectorManager::new(p_a.get_global_ctx(), p_a.clone());
-        let mut direct_c = DirectConnectorManager::new(p_c.get_global_ctx(), p_c.clone());
+        let direct_a = runtime_direct_connector_manager(p_a.get_global_ctx(), p_a.clone(), true);
+        let direct_c = runtime_direct_connector_manager(p_c.get_global_ctx(), p_c.clone(), true);
         direct_a.run_as_client();
         direct_c.run_as_server();
 
@@ -188,8 +147,6 @@ mod tests {
             }
         }
 
-        TESTING.store(true, std::sync::atomic::Ordering::Relaxed);
-
         let p_a = create_mock_peer_manager().await;
         let p_b = create_mock_peer_manager().await;
         let p_c = create_mock_peer_manager().await;
@@ -203,8 +160,8 @@ mod tests {
             .await;
         tokio::time::sleep(std::time::Duration::from_secs(4)).await;
 
-        let mut direct_a = DirectConnectorManager::new(p_a.get_global_ctx(), p_a.clone());
-        let mut direct_c = DirectConnectorManager::new(p_c.get_global_ctx(), p_c.clone());
+        let direct_a = runtime_direct_connector_manager(p_a.get_global_ctx(), p_a.clone(), true);
+        let direct_c = runtime_direct_connector_manager(p_c.get_global_ctx(), p_c.clone(), true);
         direct_a.run_as_client();
         direct_c.run_as_server();
 

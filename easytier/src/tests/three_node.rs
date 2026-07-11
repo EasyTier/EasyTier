@@ -267,7 +267,7 @@ mod direct_connector_mapped_listener_tests {
             global_ctx::GlobalCtx,
             stun::MockStunInfoCollector,
         },
-        connector::direct::DirectConnectorManager,
+        connector::direct::runtime_direct_connector_manager,
         instance::listeners::ListenerManager,
         peers::{
             create_packet_recv_chan,
@@ -327,7 +327,7 @@ mod direct_connector_mapped_listener_tests {
         lis_c.run().await.unwrap();
 
         tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-        let dm_a = DirectConnectorManager::new(p_a.get_global_ctx(), p_a.clone());
+        let dm_a = runtime_direct_connector_manager(p_a.get_global_ctx(), p_a.clone(), true);
         let mut ip_list = GetIpListResponse::default();
         ip_list.listeners.push(mapped_listener.parse().unwrap());
         dm_a.try_direct_connect_with_ip_list(p_c.my_peer_id(), ip_list)

@@ -16,7 +16,8 @@ use http_connector::HttpTunnelConnector;
 use rand::seq::SliceRandom;
 
 pub(crate) mod core_instance;
-pub mod direct;
+#[cfg(test)]
+pub(crate) mod direct;
 pub mod manual;
 pub(crate) mod protocol;
 pub(crate) mod runtime;
