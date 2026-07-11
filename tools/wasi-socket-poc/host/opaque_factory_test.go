@@ -105,9 +105,11 @@ func (b *opaqueBridge) takeTCPConnect(
 	resultLength uint32,
 ) int32 {
 	if resultLength != tcpSocketResultLen {
+		b.discardCreateOperation(operation)
 		return opaqueHostMemory
 	}
 	if _, ok := module.Memory().Read(resultPointer, resultLength); !ok {
+		b.discardCreateOperation(operation)
 		return opaqueHostMemory
 	}
 
@@ -199,9 +201,11 @@ func (b *opaqueBridge) takeUDPBind(
 	resultLength uint32,
 ) int32 {
 	if resultLength != boundSocketResultLen {
+		b.discardCreateOperation(operation)
 		return opaqueHostMemory
 	}
 	if _, ok := module.Memory().Read(resultPointer, resultLength); !ok {
+		b.discardCreateOperation(operation)
 		return opaqueHostMemory
 	}
 
@@ -240,6 +244,28 @@ func (b *opaqueBridge) allocateHandleLocked() uint64 {
 	return b.nextHandle
 }
 
+func (b *opaqueBridge) discardCreateOperation(operation uint64) {
+	b.mu.Lock()
+	create := b.creates[operation]
+	delete(b.creates, operation)
+	b.mu.Unlock()
+	if create == nil {
+		return
+	}
+	if create.cancel != nil {
+		create.cancel()
+	}
+	if create.connection != nil {
+		_ = create.connection.Close()
+	}
+	if create.packet != nil {
+		_ = create.packet.Close()
+	}
+	if create.listener != nil {
+		_ = create.listener.Close()
+	}
+}
+
 func readOwnedOptions(module api.Module, pointer, length uint32) ([]byte, bool) {
 	if length > maxFactoryOptionsSize {
 		return nil, false
@@ -268,6 +294,9 @@ func decodeTCPConnectOptions(encoded []byte) (decodedTCPConnectOptions, error) {
 	}
 	if encoded[63] > 3 {
 		return decodedTCPConnectOptions{}, fmt.Errorf("invalid TCP purpose")
+	}
+	if encoded[63] == 1 {
+		return decodedTCPConnectOptions{}, fmt.Errorf("FakeTCP is outside this PoC")
 	}
 	device, err := decodeBindDevice(encoded[64:])
 	if err != nil {
@@ -345,7 +374,10 @@ func decodeSocketAddress(encoded []byte, optional bool) (*net.UDPAddr, error) {
 	}
 	metadata := make([]byte, udpMetadataLen)
 	copy(metadata, encoded)
-	address, _, _, err := decodeUDPMetadata(metadata)
+	address, _, flowinfo, err := decodeUDPMetadata(metadata)
+	if err == nil && flowinfo != 0 {
+		return nil, fmt.Errorf("IPv6 flowinfo is outside this PoC")
+	}
 	return address, err
 }
 
@@ -498,5 +530,53 @@ func TestOpaqueFactoryCreatesSocketsForCore(t *testing.T) {
 		case <-ctx.Done():
 			t.Fatalf("wait for %s echo: %v", name, ctx.Err())
 		}
+	}
+}
+
+func TestFactoryRejectsUnsupportedTransportAndFlowinfo(t *testing.T) {
+	base := make([]byte, 69)
+	base[0] = 1
+	remote, err := encodeNetAddr(&net.TCPAddr{IP: net.IPv4(192, 0, 2, 2), Port: 11013})
+	if err != nil {
+		t.Fatal(err)
+	}
+	copy(base[1:28], remote[:])
+	base[63] = 1
+	if _, err := decodeTCPConnectOptions(base); err == nil {
+		t.Fatal("FakeTCP options were accepted as ordinary TCP")
+	}
+
+	remote, err = encodeNetAddr(&net.TCPAddr{IP: net.ParseIP("2001:db8::2"), Port: 11013})
+	if err != nil {
+		t.Fatal(err)
+	}
+	binary.BigEndian.PutUint32(remote[19:23], 7)
+	copy(base[1:28], remote[:])
+	base[63] = 0
+	if _, err := decodeTCPConnectOptions(base); err == nil {
+		t.Fatal("nonzero IPv6 flowinfo was silently discarded")
+	}
+}
+
+func TestDiscardCreateOperationCancelsAndCloses(t *testing.T) {
+	bridge := newOpaqueBridge(nil, nil)
+	connection, peer := net.Pipe()
+	defer peer.Close()
+	createContext, cancel := context.WithCancel(context.Background())
+	bridge.creates[77] = &opaqueCreateOperation{
+		cancel:     cancel,
+		connection: connection,
+	}
+	bridge.discardCreateOperation(77)
+	if _, exists := bridge.creates[77]; exists {
+		t.Fatal("discarded create operation remains registered")
+	}
+	select {
+	case <-createContext.Done():
+	default:
+		t.Fatal("discarded create operation was not canceled")
+	}
+	if _, err := connection.Write([]byte{1}); err == nil {
+		t.Fatal("discarded completed connection remains open")
 	}
 }

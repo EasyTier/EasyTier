@@ -83,9 +83,11 @@ func (b *opaqueBridge) takeTCPBind(
 	resultLength uint32,
 ) int32 {
 	if resultLength != boundSocketResultLen {
+		b.discardCreateOperation(operation)
 		return opaqueHostMemory
 	}
 	if _, ok := module.Memory().Read(resultPointer, resultLength); !ok {
+		b.discardCreateOperation(operation)
 		return opaqueHostMemory
 	}
 	b.mu.Lock()
@@ -184,9 +186,11 @@ func (b *opaqueBridge) takeTCPAccept(
 	resultLength uint32,
 ) int32 {
 	if resultLength != tcpSocketResultLen {
+		b.discardTCPAcceptWaiter(operation)
 		return opaqueHostMemory
 	}
 	if _, ok := module.Memory().Read(resultPointer, resultLength); !ok {
+		b.discardTCPAcceptWaiter(operation)
 		return opaqueHostMemory
 	}
 	b.mu.Lock()
@@ -240,6 +244,12 @@ func hasTCPAcceptWaiter(b *opaqueBridge, handle uint64) bool {
 		}
 	}
 	return false
+}
+
+func (b *opaqueBridge) discardTCPAcceptWaiter(operation uint64) {
+	b.mu.Lock()
+	delete(b.tcpAccepts, operation)
+	b.mu.Unlock()
 }
 
 func decodeTCPListenOptions(encoded []byte) (*net.TCPAddr, error) {
