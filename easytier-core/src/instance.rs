@@ -547,6 +547,12 @@ where
             recovery.disarm();
             return Err(error);
         }
+        if self.cancel.is_cancelled() {
+            proxy.stop().await;
+            self.proxy_started.store(false, Ordering::Release);
+            recovery.disarm();
+            anyhow::bail!("proxy service start cancelled");
+        }
         recovery.disarm();
         Ok(())
     }
