@@ -1,87 +1,24 @@
 use super::{
     FromUrl, IpVersion, Tunnel, TunnelConnector, TunnelError, TunnelListener,
     common::wait_for_connect_futures,
-    packet_def::{ZCPacket, ZCPacketType},
 };
 use crate::tunnel::common::bind;
 use crate::{proto::common::TunnelInfo, tunnel::tcp_socket::RuntimeTcpSocket};
-use anyhow::Context;
-use bytes::BytesMut;
 use easytier_core::{
-    connectivity::protocol::insecure_tls::{
-        get_insecure_tls_cert, get_insecure_tls_client_config, init_crypto_provider,
+    connectivity::protocol::{
+        insecure_tls::{get_insecure_tls_client_config, init_crypto_provider},
+        websocket::{is_wss, map_from_ws_message, sink_from_zc_packet, upgrade_accepted},
     },
     socket::tcp::VirtualTcpSocket,
     tunnel::wrapper::TunnelWrapper,
 };
-use forwarded_header_value::ForwardedHeaderValue;
 use futures::{SinkExt, StreamExt, stream::FuturesUnordered};
-use pnet::ipnetwork::IpNetwork;
-use std::{
-    net::SocketAddr,
-    sync::{Arc, LazyLock},
-    time::Duration,
-};
+use std::{net::SocketAddr, sync::Arc, time::Duration};
 use tokio::{
     net::{TcpListener, TcpSocket},
     time::timeout,
 };
-use tokio_rustls::TlsAcceptor;
-use tokio_util::either::Either;
-use tokio_websockets::{ClientBuilder, Limits, MaybeTlsStream, Message, ServerBuilder};
-use zerocopy::AsBytes;
-
-fn is_wss(addr: &url::Url) -> Result<bool, TunnelError> {
-    match addr.scheme() {
-        "ws" => Ok(false),
-        "wss" => Ok(true),
-        _ => Err(TunnelError::InvalidProtocol(addr.scheme().to_string())),
-    }
-}
-
-async fn sink_from_zc_packet<E>(msg: ZCPacket) -> Result<Message, E> {
-    Ok(Message::binary(msg.tunnel_payload_bytes().freeze()))
-}
-
-async fn map_from_ws_message(
-    msg: Result<Message, tokio_websockets::Error>,
-) -> Option<Result<ZCPacket, TunnelError>> {
-    if let Err(e) = msg {
-        tracing::error!(?e, "recv from websocket error");
-        return Some(Err(TunnelError::websocket_error(e)));
-    }
-
-    let msg = msg.unwrap();
-    if msg.is_close() {
-        tracing::warn!("recv close message from websocket");
-        return None;
-    }
-
-    if !msg.is_binary() {
-        let msg = format!("{:?}", msg);
-        tracing::error!(?msg, "Invalid packet");
-        return Some(Err(TunnelError::InvalidPacket(msg)));
-    }
-
-    Some(Ok(ZCPacket::new_from_buf(
-        BytesMut::from(msg.into_payload().as_bytes()),
-        ZCPacketType::DummyTunnel,
-    )))
-}
-
-static TRUSTED_PROXIES: LazyLock<Vec<IpNetwork>> = LazyLock::new(|| {
-    [
-        "127.0.0.0/8", // IPV4 Loopback
-        "10.0.0.0/8",  // IPV4 Private Networks
-        "172.16.0.0/12",
-        "192.168.0.0/16",
-        "::1/128",  // IPV6 Loopback
-        "fc00::/7", // IPV6 Private network
-    ]
-    .into_iter()
-    .map(|s| s.parse().unwrap())
-    .collect()
-});
+use tokio_websockets::{ClientBuilder, MaybeTlsStream};
 
 #[derive(Debug)]
 pub struct WsTunnelListener {
@@ -102,81 +39,6 @@ impl WsTunnelListener {
     pub fn set_socket_mark(&mut self, socket_mark: Option<u32>) {
         self.socket_mark = socket_mark;
     }
-}
-
-pub(crate) async fn upgrade_accepted<S>(
-    stream: S,
-    local_url: url::Url,
-) -> Result<Box<dyn Tunnel>, TunnelError>
-where
-    S: VirtualTcpSocket,
-{
-    let peer_addr = stream.peer_addr()?;
-    let mut remote_addr =
-        super::build_url_from_socket_addr(&peer_addr.to_string(), local_url.scheme());
-
-    let stream = if is_wss(&local_url)? {
-        init_crypto_provider();
-        let (certs, key) = get_insecure_tls_cert();
-        let config = rustls::ServerConfig::builder()
-            .with_no_client_auth()
-            .with_single_cert(certs, key)
-            .with_context(|| "Failed to create server config")?;
-
-        let stream = TlsAcceptor::from(Arc::new(config)).accept(stream).await?;
-        Either::Left(stream)
-    } else {
-        Either::Right(stream)
-    };
-
-    let (request, stream) = ServerBuilder::new()
-        .limits(Limits::unlimited())
-        .max_headers(128)
-        .accept(stream)
-        .await
-        .map_err(TunnelError::websocket_error)?;
-
-    if TRUSTED_PROXIES
-        .iter()
-        .any(|net| net.contains(peer_addr.ip()))
-        && let Some(forwarded) = request
-            .headers()
-            .get("Forwarded")
-            .and_then(|f| f.to_str().ok())
-            .and_then(|f| ForwardedHeaderValue::from_forwarded(f).ok())
-            .or_else(|| {
-                request
-                    .headers()
-                    .get("X-Forwarded-For")
-                    .and_then(|f| f.to_str().ok())
-                    .and_then(|f| ForwardedHeaderValue::from_x_forwarded_for(f).ok())
-            })
-        && let Some(ip) = forwarded.remotest_forwarded_for_ip()
-    {
-        remote_addr
-            .set_host(Some(&ip.to_string()))
-            .map_err(|_| TunnelError::InvalidAddr(format!("invalid forwarded ip {ip}")))?;
-        remote_addr
-            .query_pairs_mut()
-            .append_pair("proxy", &peer_addr.to_string());
-    }
-
-    let (write, read) = stream.split();
-    let remote_addr: crate::proto::common::Url = remote_addr.into();
-    let info = TunnelInfo {
-        tunnel_type: local_url.scheme().to_owned(),
-        local_addr: Some(local_url.into()),
-        remote_addr: Some(remote_addr.clone()),
-        resolved_remote_addr: Some(remote_addr),
-    };
-
-    Ok(Box::new(TunnelWrapper::new(
-        read.filter_map(map_from_ws_message),
-        write
-            .sink_map_err(TunnelError::websocket_error)
-            .with(sink_from_zc_packet::<TunnelError>),
-        Some(info),
-    )))
 }
 
 #[async_trait::async_trait]

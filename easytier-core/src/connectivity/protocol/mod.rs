@@ -7,6 +7,7 @@ use super::transport::ConnectedTransport;
 
 pub mod insecure_tls;
 pub mod raw;
+pub mod websocket;
 
 #[async_trait]
 pub trait ClientProtocolUpgrader<TcpSocket>: Send + Sync + 'static {

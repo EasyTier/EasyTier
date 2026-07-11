@@ -1040,7 +1040,9 @@ where
             "ws" | "wss" => {
                 tokio::time::timeout(
                     std::time::Duration::from_secs(3),
-                    tunnel::websocket::upgrade_accepted(stream, local_url),
+                    easytier_core::connectivity::protocol::websocket::upgrade_accepted(
+                        stream, local_url,
+                    ),
                 )
                 .await??
             }
