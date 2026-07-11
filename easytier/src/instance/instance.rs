@@ -819,7 +819,7 @@ impl Instance {
             core_instance.clone(),
         ));
 
-        let peer_center = Arc::new(PeerCenterInstance::new(peer_manager.clone()));
+        let peer_center = Arc::new(PeerCenterInstance::new(peer_manager.core()));
 
         #[cfg(feature = "wireguard")]
         let vpn_portal_inst = vpn_portal::wireguard::WireGuard::default();

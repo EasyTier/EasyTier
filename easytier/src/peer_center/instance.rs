@@ -1,39 +1,4 @@
-use std::sync::{Arc, Weak};
-
-pub use easytier_core::peer_center::instance::{
-    PeerCenterInstance, PeerCenterInstanceService, PeerCenterPeerManagerTrait,
-};
-
-use crate::{
-    common::PeerId,
-    peers::{
-        peer_manager::PeerManager, peer_rpc::PeerRpcManager, rpc_service::PeerManagerRpcService,
-    },
-    proto::peer_rpc::PeerInfoForGlobalMap,
-};
-
-#[async_trait::async_trait]
-impl PeerCenterPeerManagerTrait for PeerManager {
-    async fn list_peers(&self) -> PeerInfoForGlobalMap {
-        PeerManagerRpcService::list_peers(self).await.into()
-    }
-
-    fn my_peer_id(&self) -> PeerId {
-        self.get_peer_map().my_peer_id()
-    }
-
-    fn network_name(&self) -> String {
-        self.get_global_ctx().get_network_name()
-    }
-
-    fn get_rpc_mgr(&self) -> Weak<PeerRpcManager> {
-        Arc::downgrade(&self.get_peer_rpc_mgr())
-    }
-
-    async fn list_routes(&self) -> Vec<easytier_core::proto::core_peer::peer::Route> {
-        self.get_route().list_routes().await
-    }
-}
+pub use easytier_core::peer_center::instance::{PeerCenterInstance, PeerCenterInstanceService};
 
 #[cfg(test)]
 mod tests {
@@ -56,9 +21,9 @@ mod tests {
         let peer_mgr_b = create_mock_peer_manager().await;
         let peer_mgr_c = create_mock_peer_manager().await;
 
-        let peer_center_a = PeerCenterInstance::new(peer_mgr_a.clone());
-        let peer_center_b = PeerCenterInstance::new(peer_mgr_b.clone());
-        let peer_center_c = PeerCenterInstance::new(peer_mgr_c.clone());
+        let peer_center_a = PeerCenterInstance::new(peer_mgr_a.core());
+        let peer_center_b = PeerCenterInstance::new(peer_mgr_b.core());
+        let peer_center_c = PeerCenterInstance::new(peer_mgr_c.core());
 
         let peer_centers = [&peer_center_a, &peer_center_b, &peer_center_c];
         for pc in peer_centers.iter() {
