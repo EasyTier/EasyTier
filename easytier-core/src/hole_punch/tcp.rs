@@ -7,6 +7,7 @@ use std::{
 use rand::Rng as _;
 
 use crate::{
+    config::PeerId,
     connectivity::protocol::raw,
     peers::peer_manager::PeerManagerCore,
     socket::tcp::{
@@ -126,6 +127,44 @@ where
     Err(anyhow::anyhow!(
         "tcp hole punch server connect loop timeout"
     ))
+}
+
+pub async fn accept_connections<L>(
+    listener: Arc<L>,
+    peer_manager: Arc<PeerManagerCore>,
+    dst_peer_id: PeerId,
+) -> anyhow::Result<()>
+where
+    L: VirtualTcpListener,
+{
+    loop {
+        match listener.accept().await {
+            Ok((socket, _)) => {
+                let local_url = format!("tcp://0.0.0.0:{}", listener.local_addr()?.port())
+                    .parse()
+                    .unwrap();
+                let tunnel = match raw::upgrade_accepted_tcp_with_local_url(socket, local_url) {
+                    Ok(tunnel) => tunnel,
+                    Err(error) => {
+                        tracing::error!(?error, "tcp hole punch upgrade accepted socket error");
+                        continue;
+                    }
+                };
+                if let Err(error) = peer_manager.add_tunnel_as_server(tunnel, false).await {
+                    tracing::error!(?error, "tcp hole punch add tunnel error");
+                    continue;
+                }
+
+                tracing::info!(
+                    dst_peer_id,
+                    "tcp hole punch initiator accepted and added server tunnel"
+                );
+            }
+            Err(error) => {
+                tracing::error!(?error, "tcp hole punch accept error");
+            }
+        }
+    }
 }
 
 #[cfg(test)]

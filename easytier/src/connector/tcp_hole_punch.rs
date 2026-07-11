@@ -2,8 +2,9 @@ use std::{net::SocketAddr, sync::Arc, time::Duration};
 
 use anyhow::{Context, Error};
 use easytier_core::{
-    connectivity::protocol::raw,
-    hole_punch::tcp::{TcpHolePunchAdmission, select_local_port, try_connect_to_remote},
+    hole_punch::tcp::{
+        TcpHolePunchAdmission, accept_connections, select_local_port, try_connect_to_remote,
+    },
     socket::tcp::{
         TcpBindOptions, TcpListenOptions, VirtualTcpListener, VirtualTcpListenerFactory,
     },
@@ -287,7 +288,7 @@ impl TcpHolePunchConnectorData {
 
         tokio::time::timeout(
             Duration::from_secs(10),
-            self.accept_loop(listener, dst_peer_id),
+            accept_connections(listener, self.peer_mgr.core(), dst_peer_id),
         )
         .await??;
 
@@ -297,41 +298,6 @@ impl TcpHolePunchConnectorData {
         );
 
         Ok(())
-    }
-
-    async fn accept_loop(
-        &self,
-        listener: Arc<crate::tunnel::tcp_socket::RuntimeTcpListener>,
-        dst_peer_id: PeerId,
-    ) -> Result<(), Error> {
-        loop {
-            match listener.accept().await {
-                Ok((socket, _)) => {
-                    let local_url = format!("tcp://0.0.0.0:{}", listener.local_addr()?.port())
-                        .parse()
-                        .unwrap();
-                    let tunnel = match raw::upgrade_accepted_tcp_with_local_url(socket, local_url) {
-                        Ok(tunnel) => tunnel,
-                        Err(error) => {
-                            tracing::error!(?error, "tcp hole punch upgrade accepted socket error");
-                            continue;
-                        }
-                    };
-                    if let Err(e) = self.peer_mgr.add_tunnel_as_server(tunnel, false).await {
-                        tracing::error!("tcp hole punch add tunnel error: {}", e);
-                        continue;
-                    }
-
-                    tracing::info!(
-                        dst_peer_id,
-                        "tcp hole punch initiator accepted and added server tunnel"
-                    );
-                }
-                Err(e) => {
-                    tracing::error!("tcp hole punch accept error: {}", e);
-                }
-            }
-        }
     }
 }
 
