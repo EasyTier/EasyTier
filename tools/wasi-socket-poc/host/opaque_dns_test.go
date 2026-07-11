@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"net/netip"
 
 	"github.com/tetratelabs/wazero/api"
 )
@@ -13,29 +14,36 @@ const (
 )
 
 type opaqueDNSResolver interface {
-	lookupIP(context.Context, decodedDNSQuery) ([]net.IP, error)
-	lookupTXT(context.Context, decodedDNSQuery) ([]string, error)
+	lookupIP(context.Context, decodedDNSQuery) ([]netip.Addr, error)
+	lookupTXT(context.Context, decodedDNSQuery) (string, error)
 	lookupSRV(context.Context, decodedDNSQuery) ([]*net.SRV, error)
 }
 
 type systemOpaqueDNSResolver struct{}
 
-func (systemOpaqueDNSResolver) lookupIP(ctx context.Context, query decodedDNSQuery) ([]net.IP, error) {
+func (systemOpaqueDNSResolver) lookupIP(ctx context.Context, query decodedDNSQuery) ([]netip.Addr, error) {
 	network := "ip"
 	if query.ipVersion == 4 {
 		network = "ip4"
 	} else if query.ipVersion == 6 {
 		network = "ip6"
 	}
-	addresses, err := net.DefaultResolver.LookupIP(ctx, network, query.host)
+	addresses, err := net.DefaultResolver.LookupNetIP(ctx, network, query.host)
 	if err != nil {
 		return nil, err
 	}
 	return addresses, nil
 }
 
-func (systemOpaqueDNSResolver) lookupTXT(ctx context.Context, query decodedDNSQuery) ([]string, error) {
-	return net.DefaultResolver.LookupTXT(ctx, query.host)
+func (systemOpaqueDNSResolver) lookupTXT(ctx context.Context, query decodedDNSQuery) (string, error) {
+	records, err := net.DefaultResolver.LookupTXT(ctx, query.host)
+	if err != nil {
+		return "", err
+	}
+	if len(records) == 0 {
+		return "", fmt.Errorf("DNS TXT query returned no records")
+	}
+	return records[0], nil
 }
 
 func (systemOpaqueDNSResolver) lookupSRV(ctx context.Context, query decodedDNSQuery) ([]*net.SRV, error) {
@@ -124,16 +132,16 @@ func (b *opaqueBridge) startDNS(
 		var err error
 		switch kind {
 		case opaqueDNSAddress:
-			var addresses []net.IP
+			var addresses []netip.Addr
 			addresses, err = b.dnsResolver.lookupIP(resolveContext, query)
 			if err == nil {
 				result, err = encodeDNSAddresses(addresses)
 			}
 		case opaqueDNSTXT:
-			var records []string
-			records, err = b.dnsResolver.lookupTXT(resolveContext, query)
+			var text string
+			text, err = b.dnsResolver.lookupTXT(resolveContext, query)
 			if err == nil {
-				result, err = encodeDNSTXT(records)
+				result, err = encodeDNSTXT(text)
 			}
 		case opaqueDNSSRV:
 			var records []*net.SRV

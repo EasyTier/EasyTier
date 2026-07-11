@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"net"
+	"net/netip"
 	"unicode/utf8"
 )
 
@@ -33,15 +34,18 @@ func decodeDNSQuery(encoded []byte) (decodedDNSQuery, error) {
 	if encoded[2] == 1 {
 		mark := binary.BigEndian.Uint32(encoded[3:7])
 		query.socketMark = &mark
+	} else if binary.BigEndian.Uint32(encoded[3:7]) != 0 {
+		return decodedDNSQuery{}, fmt.Errorf("DNS socket mark value without presence")
 	}
 	if encoded[7] > 1 {
 		return decodedDNSQuery{}, fmt.Errorf("invalid DNS netns presence")
 	}
 	offset := 12
-	netnsLength := int(binary.BigEndian.Uint32(encoded[8:12]))
-	if netnsLength > len(encoded)-offset {
+	netnsLengthWire := binary.BigEndian.Uint32(encoded[8:12])
+	if uint64(netnsLengthWire) > uint64(len(encoded)-offset) {
 		return decodedDNSQuery{}, fmt.Errorf("truncated DNS netns token")
 	}
+	netnsLength := int(netnsLengthWire)
 	if encoded[7] == 0 && netnsLength != 0 {
 		return decodedDNSQuery{}, fmt.Errorf("DNS netns length without presence")
 	}
@@ -57,9 +61,9 @@ func decodeDNSQuery(encoded []byte) (decodedDNSQuery, error) {
 	if len(encoded)-offset < 4 {
 		return decodedDNSQuery{}, fmt.Errorf("missing DNS host length")
 	}
-	hostLength := int(binary.BigEndian.Uint32(encoded[offset : offset+4]))
+	hostLengthWire := binary.BigEndian.Uint32(encoded[offset : offset+4])
 	offset += 4
-	if hostLength == 0 || hostLength != len(encoded)-offset {
+	if hostLengthWire == 0 || uint64(hostLengthWire) != uint64(len(encoded)-offset) {
 		return decodedDNSQuery{}, fmt.Errorf("invalid DNS host length")
 	}
 	host := encoded[offset:]
@@ -70,30 +74,27 @@ func decodeDNSQuery(encoded []byte) (decodedDNSQuery, error) {
 	return query, nil
 }
 
-func encodeDNSAddresses(addresses []net.IP) ([]byte, error) {
+func encodeDNSAddresses(addresses []netip.Addr) ([]byte, error) {
 	result := make([]byte, 4)
 	binary.BigEndian.PutUint32(result, uint32(len(addresses)))
 	for _, address := range addresses {
-		if ipv4 := address.To4(); ipv4 != nil {
+		if address.Is4() {
+			ipv4 := address.As4()
 			result = append(result, 4)
-			result = append(result, ipv4...)
+			result = append(result, ipv4[:]...)
 			continue
 		}
-		ipv6 := address.To16()
-		if ipv6 == nil {
+		if !address.Is6() {
 			return nil, fmt.Errorf("invalid DNS address")
 		}
+		ipv6 := address.As16()
 		result = append(result, 6)
-		result = append(result, ipv6...)
+		result = append(result, ipv6[:]...)
 	}
 	return boundedDNSResult(result)
 }
 
-func encodeDNSTXT(records []string) ([]byte, error) {
-	if len(records) == 0 {
-		return nil, fmt.Errorf("DNS TXT query returned no records")
-	}
-	text := records[0]
+func encodeDNSTXT(text string) ([]byte, error) {
 	result := make([]byte, 4, 4+len(text))
 	binary.BigEndian.PutUint32(result, uint32(len(text)))
 	result = append(result, text...)
