@@ -96,13 +96,7 @@ where
     })?;
 
     if request.url.scheme() == "https" {
-        let server_name = request
-            .url
-            .host_str()
-            .ok_or_else(|| anyhow::anyhow!("HTTP discovery URL has no host: {}", request.url))?
-            .to_owned();
-        let server_name = ServerName::try_from(server_name)
-            .with_context(|| format!("invalid HTTPS server name in {}", request.url))?;
+        let server_name = tls_server_name(&request.url)?;
         let root_store = rustls::RootCertStore {
             roots: webpki_roots::TLS_SERVER_ROOTS.iter().cloned().collect(),
         };
@@ -116,6 +110,16 @@ where
         send_http_discovery_request(stream, request).await
     } else {
         send_http_discovery_request(socket, request).await
+    }
+}
+
+fn tls_server_name(url: &Url) -> anyhow::Result<ServerName<'static>> {
+    match url.host() {
+        Some(url::Host::Domain(host)) => ServerName::try_from(host.to_owned())
+            .with_context(|| format!("invalid HTTPS server name in {url}")),
+        Some(url::Host::Ipv4(ip)) => Ok(ServerName::IpAddress(ip.into())),
+        Some(url::Host::Ipv6(ip)) => Ok(ServerName::IpAddress(ip.into())),
+        None => anyhow::bail!("HTTP discovery URL has no host: {url}"),
     }
 }
 
@@ -588,6 +592,21 @@ mod tests {
         let message = error.to_string();
         assert!(message.contains("parsing redirect URL failed"));
         assert!(message.contains("not a URL"));
+    }
+
+    #[test]
+    fn https_server_name_accepts_ip_literals_without_url_brackets() {
+        let ipv4: Url = "https://192.0.2.1/".parse().unwrap();
+        let ipv6: Url = "https://[2001:db8::1]/".parse().unwrap();
+
+        assert_eq!(
+            tls_server_name(&ipv4).unwrap(),
+            ServerName::IpAddress(Ipv4Addr::new(192, 0, 2, 1).into())
+        );
+        assert_eq!(
+            tls_server_name(&ipv6).unwrap(),
+            ServerName::IpAddress("2001:db8::1".parse::<std::net::Ipv6Addr>().unwrap().into())
+        );
     }
 
     struct TestResolver {
