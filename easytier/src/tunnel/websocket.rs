@@ -5,9 +5,13 @@ use super::{
     packet_def::{ZCPacket, ZCPacketType},
 };
 use crate::tunnel::common::bind;
-use crate::{proto::common::TunnelInfo, tunnel::insecure_tls::get_insecure_tls_client_config};
+use crate::{
+    proto::common::TunnelInfo,
+    tunnel::{insecure_tls::get_insecure_tls_client_config, tcp_socket::RuntimeTcpSocket},
+};
 use anyhow::Context;
 use bytes::BytesMut;
+use easytier_core::socket::tcp::VirtualTcpSocket;
 use forwarded_header_value::ForwardedHeaderValue;
 use futures::{SinkExt, StreamExt, stream::FuturesUnordered};
 use pnet::ipnetwork::IpNetwork;
@@ -17,7 +21,7 @@ use std::{
     time::Duration,
 };
 use tokio::{
-    net::{TcpListener, TcpSocket, TcpStream},
+    net::{TcpListener, TcpSocket},
     time::timeout,
 };
 use tokio_rustls::TlsAcceptor;
@@ -96,76 +100,81 @@ impl WsTunnelListener {
     pub fn set_socket_mark(&mut self, socket_mark: Option<u32>) {
         self.socket_mark = socket_mark;
     }
+}
 
-    async fn try_accept(&self, stream: TcpStream) -> Result<Box<dyn Tunnel>, TunnelError> {
-        let peer_addr = stream.peer_addr()?;
-        let mut remote_addr =
-            super::build_url_from_socket_addr(&peer_addr.to_string(), self.addr.scheme());
+pub(crate) async fn upgrade_accepted<S>(
+    stream: S,
+    local_url: url::Url,
+) -> Result<Box<dyn Tunnel>, TunnelError>
+where
+    S: VirtualTcpSocket,
+{
+    let peer_addr = stream.peer_addr()?;
+    let mut remote_addr =
+        super::build_url_from_socket_addr(&peer_addr.to_string(), local_url.scheme());
 
-        let stream = if is_wss(&self.addr)? {
-            init_crypto_provider();
-            let (certs, key) = get_insecure_tls_cert();
-            let config = rustls::ServerConfig::builder()
-                .with_no_client_auth()
-                .with_single_cert(certs, key)
-                .with_context(|| "Failed to create server config")?;
+    let stream = if is_wss(&local_url)? {
+        init_crypto_provider();
+        let (certs, key) = get_insecure_tls_cert();
+        let config = rustls::ServerConfig::builder()
+            .with_no_client_auth()
+            .with_single_cert(certs, key)
+            .with_context(|| "Failed to create server config")?;
 
-            let stream = TlsAcceptor::from(Arc::new(config)).accept(stream).await?;
-            Either::Left(stream)
-        } else {
-            Either::Right(stream)
-        };
+        let stream = TlsAcceptor::from(Arc::new(config)).accept(stream).await?;
+        Either::Left(stream)
+    } else {
+        Either::Right(stream)
+    };
 
-        let (request, stream) = ServerBuilder::new()
-            .limits(Limits::unlimited())
-            .max_headers(128)
-            .accept(stream)
-            .await
-            .map_err(TunnelError::websocket_error)?;
+    let (request, stream) = ServerBuilder::new()
+        .limits(Limits::unlimited())
+        .max_headers(128)
+        .accept(stream)
+        .await
+        .map_err(TunnelError::websocket_error)?;
 
-        if TRUSTED_PROXIES
-            .iter()
-            .any(|net| net.contains(peer_addr.ip()))
-            && let Some(forwarded) = request
-                .headers()
-                .get("Forwarded")
-                .and_then(|f| f.to_str().ok())
-                .and_then(|f| ForwardedHeaderValue::from_forwarded(f).ok())
-                .or_else(|| {
-                    request
-                        .headers()
-                        .get("X-Forwarded-For")
-                        .and_then(|f| f.to_str().ok())
-                        .and_then(|f| ForwardedHeaderValue::from_x_forwarded_for(f).ok())
-                })
-            && let Some(ip) = forwarded.remotest_forwarded_for_ip()
-        {
-            remote_addr
-                .set_host(Some(&ip.to_string()))
-                .map_err(|_| TunnelError::InvalidAddr(format!("invalid forwarded ip {}", ip)))?;
-            remote_addr
-                .query_pairs_mut()
-                .append_pair("proxy", &peer_addr.to_string());
-        }
-
-        let (write, read) = stream.split();
-        let remote_addr: crate::proto::common::Url = remote_addr.into();
-
-        let info = TunnelInfo {
-            tunnel_type: self.addr.scheme().to_owned(),
-            local_addr: Some(self.local_url().into()),
-            remote_addr: Some(remote_addr.clone()),
-            resolved_remote_addr: Some(remote_addr),
-        };
-
-        Ok(Box::new(TunnelWrapper::new(
-            read.filter_map(map_from_ws_message),
-            write
-                .sink_map_err(TunnelError::websocket_error)
-                .with(sink_from_zc_packet::<TunnelError>),
-            Some(info),
-        )))
+    if TRUSTED_PROXIES
+        .iter()
+        .any(|net| net.contains(peer_addr.ip()))
+        && let Some(forwarded) = request
+            .headers()
+            .get("Forwarded")
+            .and_then(|f| f.to_str().ok())
+            .and_then(|f| ForwardedHeaderValue::from_forwarded(f).ok())
+            .or_else(|| {
+                request
+                    .headers()
+                    .get("X-Forwarded-For")
+                    .and_then(|f| f.to_str().ok())
+                    .and_then(|f| ForwardedHeaderValue::from_x_forwarded_for(f).ok())
+            })
+        && let Some(ip) = forwarded.remotest_forwarded_for_ip()
+    {
+        remote_addr
+            .set_host(Some(&ip.to_string()))
+            .map_err(|_| TunnelError::InvalidAddr(format!("invalid forwarded ip {ip}")))?;
+        remote_addr
+            .query_pairs_mut()
+            .append_pair("proxy", &peer_addr.to_string());
     }
+
+    let (write, read) = stream.split();
+    let remote_addr: crate::proto::common::Url = remote_addr.into();
+    let info = TunnelInfo {
+        tunnel_type: local_url.scheme().to_owned(),
+        local_addr: Some(local_url.into()),
+        remote_addr: Some(remote_addr.clone()),
+        resolved_remote_addr: Some(remote_addr),
+    };
+
+    Ok(Box::new(TunnelWrapper::new(
+        read.filter_map(map_from_ws_message),
+        write
+            .sink_map_err(TunnelError::websocket_error)
+            .with(sink_from_zc_packet::<TunnelError>),
+        Some(info),
+    )))
 }
 
 #[async_trait::async_trait]
@@ -194,7 +203,12 @@ impl TunnelListener for WsTunnelListener {
             // only fail on tcp accept error
             let (stream, _) = listener.accept().await?;
             stream.set_nodelay(true).unwrap();
-            match timeout(Duration::from_secs(3), self.try_accept(stream)).await {
+            match timeout(
+                Duration::from_secs(3),
+                upgrade_accepted(RuntimeTcpSocket::new(stream), self.local_url()),
+            )
+            .await
+            {
                 Ok(Ok(tunnel)) => return Ok(tunnel),
                 e => {
                     tracing::error!(?e, ?self, "Failed to accept ws/wss tunnel");
@@ -235,56 +249,11 @@ impl WsTunnelConnector {
         socket_addr: SocketAddr,
         tcp_socket: TcpSocket,
     ) -> Result<Box<dyn Tunnel>, TunnelError> {
-        let is_wss = is_wss(&addr)?;
         let stream = tcp_socket.connect(socket_addr).await?;
         if let Err(error) = stream.set_nodelay(true) {
             tracing::warn!(?error, "set_nodelay fail in ws connect");
         }
-
-        let info = TunnelInfo {
-            tunnel_type: addr.scheme().to_owned(),
-            local_addr: Some(
-                super::build_url_from_socket_addr(
-                    &stream.local_addr()?.to_string(),
-                    addr.scheme().to_string().as_str(),
-                )
-                .into(),
-            ),
-            remote_addr: Some(addr.clone().into()),
-            resolved_remote_addr: Some(
-                super::build_url_from_socket_addr(&socket_addr.to_string(), addr.scheme()).into(),
-            ),
-        };
-
-        let c = ClientBuilder::from_uri(http::Uri::try_from(addr.to_string()).unwrap())
-            .max_headers(128);
-        let stream: MaybeTlsStream<TcpStream> = if is_wss {
-            init_crypto_provider();
-            let tls_conn =
-                tokio_rustls::TlsConnector::from(Arc::new(get_insecure_tls_client_config()));
-            // Modify SNI logic: use "localhost" as SNI for url without domain to avoid IP blocking.
-            let sni = match addr.domain() {
-                None => "localhost".to_string(),
-                Some(domain) => domain.to_string(),
-            };
-            let server_name = rustls::pki_types::ServerName::try_from(sni)
-                .map_err(|_| TunnelError::InvalidProtocol("Invalid SNI".to_string()))?;
-            let stream = tls_conn.connect(server_name, stream).await?;
-            MaybeTlsStream::Rustls(stream)
-        } else {
-            MaybeTlsStream::Plain(stream)
-        };
-
-        let (client, _) = c
-            .connect_on(stream)
-            .await
-            .map_err(TunnelError::websocket_error)?;
-        let (write, read) = client.split();
-        let read = read.filter_map(map_from_ws_message);
-        let write = write
-            .sink_map_err(TunnelError::websocket_error)
-            .with(sink_from_zc_packet::<TunnelError>);
-        Ok(Box::new(TunnelWrapper::new(read, write, Some(info))))
+        upgrade_connected(RuntimeTcpSocket::new(stream), addr).await
     }
 
     async fn connect_with_default_bind(
@@ -327,6 +296,58 @@ impl WsTunnelConnector {
 
         wait_for_connect_futures(futures).await
     }
+}
+
+pub(crate) async fn upgrade_connected<S>(
+    stream: S,
+    remote_url: url::Url,
+) -> Result<Box<dyn Tunnel>, TunnelError>
+where
+    S: VirtualTcpSocket,
+{
+    let is_wss = is_wss(&remote_url)?;
+    let local_addr = stream.local_addr()?;
+    let resolved_remote_addr = stream.peer_addr()?;
+    let info = TunnelInfo {
+        tunnel_type: remote_url.scheme().to_owned(),
+        local_addr: Some(
+            super::build_url_from_socket_addr(&local_addr.to_string(), remote_url.scheme()).into(),
+        ),
+        remote_addr: Some(remote_url.clone().into()),
+        resolved_remote_addr: Some(
+            super::build_url_from_socket_addr(
+                &resolved_remote_addr.to_string(),
+                remote_url.scheme(),
+            )
+            .into(),
+        ),
+    };
+
+    let client = ClientBuilder::from_uri(http::Uri::try_from(remote_url.to_string()).unwrap())
+        .max_headers(128);
+    let stream: MaybeTlsStream<S> = if is_wss {
+        init_crypto_provider();
+        let tls = tokio_rustls::TlsConnector::from(Arc::new(get_insecure_tls_client_config()));
+        let sni = remote_url.domain().unwrap_or("localhost").to_owned();
+        let server_name = rustls::pki_types::ServerName::try_from(sni)
+            .map_err(|_| TunnelError::InvalidProtocol("Invalid SNI".to_owned()))?;
+        MaybeTlsStream::Rustls(tls.connect(server_name, stream).await?)
+    } else {
+        MaybeTlsStream::Plain(stream)
+    };
+
+    let (client, _) = client
+        .connect_on(stream)
+        .await
+        .map_err(TunnelError::websocket_error)?;
+    let (write, read) = client.split();
+    Ok(Box::new(TunnelWrapper::new(
+        read.filter_map(map_from_ws_message),
+        write
+            .sink_map_err(TunnelError::websocket_error)
+            .with(sink_from_zc_packet::<TunnelError>),
+        Some(info),
+    )))
 }
 
 #[async_trait::async_trait]
