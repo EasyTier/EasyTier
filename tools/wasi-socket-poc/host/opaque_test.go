@@ -42,21 +42,23 @@ type opaqueWriteOperation struct {
 }
 
 type opaqueBridge struct {
-	mu          sync.Mutex
-	handles     map[uint64]net.Conn
-	packets     map[uint64]*opaquePacketState
-	listeners   map[uint64]*opaqueTCPListenerState
-	reads       map[uint64]*opaqueReadOperation
-	writes      map[uint64]*opaqueWriteOperation
-	udpReads    map[uint64]*opaqueUDPReadWaiter
-	udpWrites   map[uint64]*opaqueUDPWriteWaiter
-	tcpAccepts  map[uint64]*opaqueTCPAcceptWaiter
-	creates     map[uint64]*opaqueCreateOperation
-	dns         map[uint64]*opaqueDNSOperation
-	dnsResolver opaqueDNSResolver
-	nextHandle  uint64
-	completion  chan struct{}
-	workers     sync.WaitGroup
+	mu           sync.Mutex
+	handles      map[uint64]net.Conn
+	packets      map[uint64]*opaquePacketState
+	listeners    map[uint64]*opaqueTCPListenerState
+	reads        map[uint64]*opaqueReadOperation
+	writes       map[uint64]*opaqueWriteOperation
+	udpReads     map[uint64]*opaqueUDPReadWaiter
+	udpWrites    map[uint64]*opaqueUDPWriteWaiter
+	tcpAccepts   map[uint64]*opaqueTCPAcceptWaiter
+	creates      map[uint64]*opaqueCreateOperation
+	dns          map[uint64]*opaqueDNSOperation
+	dnsResolver  opaqueDNSResolver
+	packetSinks  map[uint64]*opaquePacketSinkState
+	packetWrites map[uint64]*opaquePacketWriteWaiter
+	nextHandle   uint64
+	completion   chan struct{}
+	workers      sync.WaitGroup
 }
 
 func newOpaqueBridge(
@@ -67,19 +69,21 @@ func newOpaqueBridge(
 		handles = make(map[uint64]net.Conn)
 	}
 	bridge := &opaqueBridge{
-		handles:     handles,
-		packets:     make(map[uint64]*opaquePacketState, len(packets)),
-		listeners:   make(map[uint64]*opaqueTCPListenerState),
-		reads:       make(map[uint64]*opaqueReadOperation),
-		writes:      make(map[uint64]*opaqueWriteOperation),
-		udpReads:    make(map[uint64]*opaqueUDPReadWaiter),
-		udpWrites:   make(map[uint64]*opaqueUDPWriteWaiter),
-		tcpAccepts:  make(map[uint64]*opaqueTCPAcceptWaiter),
-		creates:     make(map[uint64]*opaqueCreateOperation),
-		dns:         make(map[uint64]*opaqueDNSOperation),
-		dnsResolver: unsupportedOpaqueDNSResolver{},
-		nextHandle:  1 << 48,
-		completion:  make(chan struct{}, 1),
+		handles:      handles,
+		packets:      make(map[uint64]*opaquePacketState, len(packets)),
+		listeners:    make(map[uint64]*opaqueTCPListenerState),
+		reads:        make(map[uint64]*opaqueReadOperation),
+		writes:       make(map[uint64]*opaqueWriteOperation),
+		udpReads:     make(map[uint64]*opaqueUDPReadWaiter),
+		udpWrites:    make(map[uint64]*opaqueUDPWriteWaiter),
+		tcpAccepts:   make(map[uint64]*opaqueTCPAcceptWaiter),
+		creates:      make(map[uint64]*opaqueCreateOperation),
+		dns:          make(map[uint64]*opaqueDNSOperation),
+		dnsResolver:  unsupportedOpaqueDNSResolver{},
+		packetSinks:  make(map[uint64]*opaquePacketSinkState),
+		packetWrites: make(map[uint64]*opaquePacketWriteWaiter),
+		nextHandle:   1 << 48,
+		completion:   make(chan struct{}, 1),
 	}
 	for handle, connection := range packets {
 		state := newOpaquePacketState(connection)
@@ -303,6 +307,10 @@ func (b *opaqueBridge) cancelOperation(
 		dns.cancel()
 		return 0
 	}
+	if _, exists := b.packetWrites[operation]; exists {
+		delete(b.packetWrites, operation)
+		return 0
+	}
 	return opaqueHostInvalid
 }
 
@@ -386,6 +394,8 @@ func (b *opaqueBridge) close() {
 		dns = append(dns, operation)
 	}
 	b.dns = make(map[uint64]*opaqueDNSOperation)
+	b.packetSinks = make(map[uint64]*opaquePacketSinkState)
+	b.packetWrites = make(map[uint64]*opaquePacketWriteWaiter)
 	b.mu.Unlock()
 
 	for _, connection := range connections {
@@ -630,6 +640,9 @@ func instantiateOpaqueHost(
 		NewFunctionBuilder().WithFunc(bridge.takeDNSTXT).Export("take_dns_txt").
 		NewFunctionBuilder().WithFunc(bridge.startDNSSRV).Export("start_dns_srv").
 		NewFunctionBuilder().WithFunc(bridge.takeDNSSRV).Export("take_dns_srv").
+		NewFunctionBuilder().WithFunc(bridge.tryPacketWrite).Export("try_packet_write").
+		NewFunctionBuilder().WithFunc(bridge.startPacketWriteReady).Export("start_packet_write_ready").
+		NewFunctionBuilder().WithFunc(bridge.takePacketWriteReady).Export("take_packet_write_ready").
 		NewFunctionBuilder().WithFunc(bridge.cancelOperation).Export("cancel_operation").
 		NewFunctionBuilder().WithFunc(bridge.closeHandle).Export("close").
 		Instantiate(ctx)
