@@ -849,6 +849,7 @@ where
     }
 
     pub async fn apply_acl_config(&self, config: AclRuleConfig) -> anyhow::Result<()> {
+        let _operation = self.operation.lock().await;
         let acl = config.build()?;
         self.peer_manager.reload_acl(acl.as_ref());
         self.refresh_acl_groups().await;
