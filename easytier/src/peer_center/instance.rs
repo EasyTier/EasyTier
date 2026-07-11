@@ -2,10 +2,17 @@ pub use easytier_core::peer_center::instance::{PeerCenterInstance, PeerCenterIns
 
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
+    use std::{sync::Arc, time::Duration};
+
+    use easytier_core::peers::peer_manager::PeerManagerCore;
 
     use crate::{
-        peers::tests::{connect_peer_manager, create_mock_peer_manager, wait_route_appear},
+        connector::manual::ManualConnectorManager,
+        instance::listeners::ListenerManager,
+        peers::{
+            peer_manager::PeerManager,
+            tests::{create_mock_peer_manager, wait_route_appear},
+        },
         proto::{
             peer_rpc::{GetGlobalPeerMapRequest, PeerCenterRpc},
             rpc_types::controller::BaseController,
@@ -14,6 +21,32 @@ mod tests {
     };
 
     use super::*;
+
+    async fn connect_through_core(
+        client: Arc<PeerManager>,
+        server: Arc<PeerManager>,
+    ) -> (ManualConnectorManager, ListenerManager<PeerManagerCore>) {
+        server
+            .get_global_ctx()
+            .config
+            .set_listeners(vec!["tcp://127.0.0.1:0".parse().unwrap()]);
+        let mut listener = ListenerManager::new(server.get_global_ctx(), server.core());
+        listener.prepare_listeners().await.unwrap();
+        listener.run().await.unwrap();
+        let listener_url = server
+            .get_global_ctx()
+            .get_running_listeners()
+            .into_iter()
+            .find(|url| url.scheme() == "tcp")
+            .unwrap();
+
+        let mut flags = client.get_global_ctx().get_flags();
+        flags.bind_device = false;
+        client.get_global_ctx().set_flags(flags);
+        let connector = ManualConnectorManager::new(client.get_global_ctx(), client);
+        connector.add_connector_by_url(listener_url).await.unwrap();
+        (connector, listener)
+    }
 
     #[tokio::test]
     async fn test_peer_center_instance() {
@@ -30,8 +63,10 @@ mod tests {
             pc.init().await;
         }
 
-        connect_peer_manager(peer_mgr_a.clone(), peer_mgr_b.clone()).await;
-        connect_peer_manager(peer_mgr_b.clone(), peer_mgr_c.clone()).await;
+        let (_connector_ab, _listener_b) =
+            connect_through_core(peer_mgr_a.clone(), peer_mgr_b.clone()).await;
+        let (_connector_bc, _listener_c) =
+            connect_through_core(peer_mgr_b.clone(), peer_mgr_c.clone()).await;
 
         wait_route_appear(peer_mgr_a.clone(), peer_mgr_c.clone())
             .await
