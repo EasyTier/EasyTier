@@ -1,175 +1,51 @@
 use std::{
-    net::{IpAddr, Ipv4Addr, SocketAddr},
-    sync::{Arc, atomic::AtomicBool},
+    net::{IpAddr, SocketAddr},
+    sync::Arc,
     time::Duration,
 };
 
+#[cfg(test)]
 use bytes::Bytes;
-use dashmap::{DashMap, mapref::entry::Entry};
-use easytier_core::instance::ProxyService;
+#[cfg(test)]
 use easytier_core::proxy::{
-    runtime::{
-        ProxyRuntimeError, ProxyRuntimeInfo, ProxyRuntimeSnapshot, UdpProxyResponseSink,
-        UdpProxyRuntime,
+    runtime::{UdpProxyResponseSink, UdpProxyRuntime},
+    udp_proxy_engine::UdpNatEntryId,
+};
+use easytier_core::{
+    instance::ProxyService,
+    proxy::{
+        runtime::{ProxyRuntimeInfo, ProxyRuntimeSnapshot, UdpProxyPolicy},
+        udp_proxy_engine::UdpProxyEngine,
+        udp_proxy_service::UdpProxyService,
+        udp_socket_runtime::UdpSocketProxyRuntime,
     },
-    udp_proxy_engine::{UdpNatEntryId, UdpProxyEngine},
-    udp_proxy_service::UdpProxyService,
+    socket::udp::UdpBindOptions,
 };
 #[cfg(test)]
+use tokio::sync::Mutex;
+#[cfg(test)]
 use tokio::sync::mpsc::{Receiver, Sender, channel};
-use tokio::{net::UdpSocket, sync::Mutex, task::JoinHandle, time::timeout};
-use tokio_util::task::AbortOnDropHandle;
 
 use super::CidrSet;
-use crate::tunnel::common::bind;
 #[cfg(test)]
 use crate::tunnel::packet_def::ZCPacket;
 use crate::{
     common::{error::Error, global_ctx::ArcGlobalCtx},
+    connector::runtime::RuntimeConnectorHost,
     peers::peer_manager::PeerManager,
 };
 
-#[derive(Debug)]
-struct RuntimeUdpNatEntry {
-    socket: UdpSocket,
-    forward_task: Mutex<Option<JoinHandle<()>>>,
-    stopped: AtomicBool,
-}
-
-impl RuntimeUdpNatEntry {
-    fn new() -> Result<Self, Error> {
-        // TODO: try use src port, so we will be ip restricted nat type
-        let socket = bind().addr("0.0.0.0:0".parse().unwrap()).call()?;
-
-        Ok(Self {
-            socket,
-            forward_task: Mutex::new(None),
-            stopped: AtomicBool::new(false),
-        })
-    }
-
-    pub fn stop(&self) {
-        self.stopped
-            .store(true, std::sync::atomic::Ordering::Relaxed);
-        if let Ok(local_addr) = self.socket.local_addr()
-            && let Ok(wake_socket) = std::net::UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0))
-        {
-            let _ = wake_socket.send_to(&[], local_addr);
-        }
-    }
-
-    async fn forward_task(
-        self: Arc<Self>,
-        entry_id: UdpNatEntryId,
-        response_sink: std::sync::Weak<dyn UdpProxyResponseSink>,
-    ) {
-        let self_clone = self.clone();
-        let recv_task = AbortOnDropHandle::new(tokio::spawn(async move {
-            loop {
-                if self_clone
-                    .stopped
-                    .load(std::sync::atomic::Ordering::Relaxed)
-                {
-                    break;
-                }
-
-                let mut buf = vec![0; 64 * 1024];
-                let (len, src_socket) = match timeout(
-                    Duration::from_secs(120),
-                    self_clone.socket.recv_from(&mut buf),
-                )
-                .await
-                {
-                    Ok(Ok(x)) => x,
-                    Ok(Err(err)) => {
-                        tracing::error!(?err, "udp nat recv failed");
-                        break;
-                    }
-                    Err(err) => {
-                        tracing::error!(?err, "udp nat recv timeout");
-                        break;
-                    }
-                };
-
-                tracing::trace!(?len, ?src_socket, "udp nat packet response received");
-                if self_clone
-                    .stopped
-                    .load(std::sync::atomic::Ordering::Relaxed)
-                {
-                    break;
-                }
-
-                let Some(response_sink) = response_sink.upgrade() else {
-                    break;
-                };
-                response_sink
-                    .handle_socket_response(
-                        entry_id,
-                        src_socket,
-                        Bytes::copy_from_slice(&buf[..len]),
-                    )
-                    .await;
-            }
-        }));
-
-        let _ = recv_task.await;
-
-        self.stop();
-    }
-}
-
-#[derive(Debug)]
-struct RuntimeUdpProxyAdapter {
+struct RuntimeUdpProxyPolicy {
     global_ctx: ArcGlobalCtx,
-    socket_entries: Arc<DashMap<UdpNatEntryId, Arc<RuntimeUdpNatEntry>>>,
 }
 
-impl RuntimeUdpProxyAdapter {
+impl RuntimeUdpProxyPolicy {
     fn new(global_ctx: ArcGlobalCtx) -> Self {
-        Self {
-            global_ctx,
-            socket_entries: Arc::new(DashMap::new()),
-        }
-    }
-
-    async fn ensure_socket_entry(
-        &self,
-        entry_id: UdpNatEntryId,
-        response_sink: std::sync::Weak<dyn UdpProxyResponseSink>,
-    ) -> Result<Arc<RuntimeUdpNatEntry>, Error> {
-        let entry = match self.socket_entries.entry(entry_id) {
-            Entry::Occupied(entry) => entry.get().clone(),
-            Entry::Vacant(entry) => {
-                let _g = self.global_ctx.net_ns.guard();
-                let runtime_entry = Arc::new(RuntimeUdpNatEntry::new()?);
-                entry.insert(runtime_entry.clone());
-                runtime_entry
-            }
-        };
-
-        let mut task = entry.forward_task.lock().await;
-        if task.is_none() {
-            task.replace(tokio::spawn(RuntimeUdpNatEntry::forward_task(
-                entry.clone(),
-                entry_id,
-                response_sink,
-            )));
-        }
-        drop(task);
-
-        Ok(entry)
-    }
-
-    fn close_all(&self) {
-        let _g = self.global_ctx.net_ns.guard();
-        for entry in self.socket_entries.iter() {
-            entry.stop();
-        }
-        self.socket_entries.clear();
+        Self { global_ctx }
     }
 }
 
-impl ProxyRuntimeInfo for RuntimeUdpProxyAdapter {
+impl ProxyRuntimeInfo for RuntimeUdpProxyPolicy {
     fn proxy_runtime_snapshot(&self) -> ProxyRuntimeSnapshot {
         let local_inet = self.global_ctx.get_ipv4().as_ref().cloned();
         ProxyRuntimeSnapshot {
@@ -188,7 +64,7 @@ impl ProxyRuntimeInfo for RuntimeUdpProxyAdapter {
 }
 
 #[async_trait::async_trait]
-impl UdpProxyRuntime for RuntimeUdpProxyAdapter {
+impl UdpProxyPolicy for RuntimeUdpProxyPolicy {
     fn should_deny_udp_proxy(&self, dst: SocketAddr) -> bool {
         self.global_ctx.should_deny_proxy(&dst, true)
     }
@@ -196,41 +72,14 @@ impl UdpProxyRuntime for RuntimeUdpProxyAdapter {
     fn udp_response_ipv4_mtu(&self) -> usize {
         1280
     }
-
-    async fn send_udp_to_socket(
-        &self,
-        entry_id: UdpNatEntryId,
-        dst: SocketAddr,
-        payload: Bytes,
-        response_sink: std::sync::Weak<dyn UdpProxyResponseSink>,
-    ) -> Result<(), ProxyRuntimeError> {
-        let nat_entry = self
-            .ensure_socket_entry(entry_id, response_sink)
-            .await
-            .map_err(|err| ProxyRuntimeError::Other(err.into()))?;
-        let send_ret = {
-            let _g = self.global_ctx.net_ns.guard();
-            nat_entry.socket.send_to(&payload, dst).await
-        };
-
-        send_ret
-            .map(|_| ())
-            .map_err(|err| ProxyRuntimeError::Other(err.into()))
-    }
-
-    fn close_udp_socket(&self, entry_id: UdpNatEntryId) {
-        if let Some((_, entry)) = self.socket_entries.remove(&entry_id) {
-            let _g = self.global_ctx.net_ns.guard();
-            entry.stop();
-        }
-        self.socket_entries.shrink_to_fit();
-    }
 }
+
+type RuntimeUdpProxy = UdpSocketProxyRuntime<RuntimeConnectorHost, RuntimeUdpProxyPolicy>;
 
 pub struct UdpProxy {
     cidr_set: CidrSet,
-    runtime: Arc<RuntimeUdpProxyAdapter>,
-    service: Arc<UdpProxyService<RuntimeUdpProxyAdapter>>,
+    runtime: Arc<RuntimeUdpProxy>,
+    service: Arc<UdpProxyService<RuntimeUdpProxy>>,
     #[cfg(test)]
     receiver: Mutex<Option<Receiver<ZCPacket>>>,
     #[cfg(test)]
@@ -243,7 +92,12 @@ impl UdpProxy {
         peer_manager: Arc<PeerManager>,
     ) -> Result<Arc<Self>, Error> {
         let cidr_set = CidrSet::new_without_updater(global_ctx.clone());
-        let runtime = Arc::new(RuntimeUdpProxyAdapter::new(global_ctx));
+        let runtime = Arc::new(UdpSocketProxyRuntime::new(
+            Arc::new(RuntimeConnectorHost::new(global_ctx.clone())),
+            Arc::new(RuntimeUdpProxyPolicy::new(global_ctx)),
+            UdpBindOptions::proxy_nat(),
+            Duration::from_secs(120),
+        ));
         let service = UdpProxyService::new(
             peer_manager.core(),
             runtime.clone(),
@@ -327,7 +181,7 @@ impl UdpProxy {
 #[cfg(test)]
 struct TestUdpResponseSink {
     engine: Arc<UdpProxyEngine>,
-    runtime: Arc<RuntimeUdpProxyAdapter>,
+    runtime: Arc<RuntimeUdpProxy>,
     sender: Sender<ZCPacket>,
 }
 
@@ -505,28 +359,8 @@ mod tests {
         assert_eq!(udp_packet.payload(), payload);
     }
 
-    async fn stop_nat_entries(proxy: &UdpProxy) {
-        let nat_socket_addrs = proxy
-            .runtime
-            .socket_entries
-            .iter()
-            .filter_map(|entry| {
-                entry
-                    .socket
-                    .local_addr()
-                    .ok()
-                    .map(|addr| SocketAddr::from((Ipv4Addr::LOCALHOST, addr.port())))
-            })
-            .collect::<Vec<_>>();
-
-        for entry in proxy.runtime.socket_entries.iter() {
-            entry.stop();
-        }
-
-        let wake_socket = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
-        for addr in nat_socket_addrs {
-            let _ = wake_socket.send_to(b"wake", addr).await;
-        }
+    fn stop_nat_entries(proxy: &UdpProxy) {
+        proxy.runtime.close_all();
     }
 
     #[tokio::test]
@@ -569,7 +403,7 @@ mod tests {
             b"reply",
         );
 
-        stop_nat_entries(&proxy).await;
+        stop_nat_entries(&proxy);
     }
 
     #[tokio::test]
@@ -615,7 +449,7 @@ mod tests {
             b"reply",
         );
 
-        stop_nat_entries(&proxy).await;
+        stop_nat_entries(&proxy);
     }
 
     #[tokio::test]
@@ -691,6 +525,6 @@ mod tests {
             b"second-reply",
         );
 
-        stop_nat_entries(&proxy).await;
+        stop_nat_entries(&proxy);
     }
 }

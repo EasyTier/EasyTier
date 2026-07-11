@@ -198,8 +198,10 @@ impl RuntimeUdpSocketFactory {
 
     fn reuse_addr_for(&self, options: &UdpBindOptions) -> bool {
         options.reuse_addr
-            || (options.purpose == UdpSocketPurpose::PortBoundListener
-                && !cfg!(target_os = "windows"))
+            || (matches!(
+                options.purpose,
+                UdpSocketPurpose::PortBoundListener | UdpSocketPurpose::ProxyNat
+            ) && !cfg!(target_os = "windows"))
     }
 }
 
@@ -757,6 +759,10 @@ mod tests {
             !cfg!(target_os = "windows")
         );
         assert!(!factory.reuse_addr_for(&UdpBindOptions::hole_punch_control()));
+        assert_eq!(
+            factory.reuse_addr_for(&UdpBindOptions::proxy_nat()),
+            !cfg!(target_os = "windows")
+        );
     }
 
     #[test]

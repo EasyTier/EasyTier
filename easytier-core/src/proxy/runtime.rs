@@ -64,6 +64,11 @@ pub trait UdpProxyResponseSink: Send + Sync {
     );
 }
 
+pub trait UdpProxyPolicy: ProxyRuntimeInfo {
+    fn should_deny_udp_proxy(&self, dst: SocketAddr) -> bool;
+    fn udp_response_ipv4_mtu(&self) -> usize;
+}
+
 #[async_trait::async_trait]
 pub trait UdpProxyRuntime: ProxyRuntimeInfo {
     fn should_deny_udp_proxy(&self, dst: SocketAddr) -> bool;

@@ -23,6 +23,8 @@ pub mod udp_proxy_engine;
 #[cfg(feature = "proxy-packet")]
 pub mod udp_proxy_service;
 #[cfg(feature = "proxy-packet")]
+pub mod udp_socket_runtime;
+#[cfg(feature = "proxy-packet")]
 pub mod wrapped_tcp_proxy;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

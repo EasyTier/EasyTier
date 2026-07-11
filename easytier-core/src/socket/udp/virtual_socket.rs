@@ -162,6 +162,7 @@ pub enum UdpSocketPurpose {
     HolePunchCandidate,
     DirectConnect,
     PortBoundListener,
+    ProxyNat,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -205,6 +206,10 @@ impl UdpBindOptions {
             local_addr: Some(local_addr),
             ..Self::for_purpose(UdpSocketPurpose::PortBoundListener)
         }
+    }
+
+    pub fn proxy_nat() -> Self {
+        Self::for_purpose(UdpSocketPurpose::ProxyNat)
     }
 
     pub fn with_local_addr(mut self, local_addr: Option<SocketAddr>) -> Self {

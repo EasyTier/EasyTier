@@ -322,7 +322,7 @@ func decodeUDPBindOptions(encoded []byte) (decodedUDPBindOptions, error) {
 	if err := validatePoCBindOptions(encoded[28], encoded[29:33], encoded[33], encoded[34], encoded[35]); err != nil {
 		return decodedUDPBindOptions{}, err
 	}
-	if encoded[36] > 3 {
+	if encoded[36] > 4 {
 		return decodedUDPBindOptions{}, fmt.Errorf("invalid UDP purpose")
 	}
 	device, err := decodeBindDevice(encoded[37:])
@@ -333,6 +333,15 @@ func decodeUDPBindOptions(encoded []byte) (decodedUDPBindOptions, error) {
 		return decodedUDPBindOptions{}, fmt.Errorf("bind device policy is outside this PoC")
 	}
 	return decodedUDPBindOptions{localAddr: local}, nil
+}
+
+func TestDecodeUDPProxyNatPurpose(t *testing.T) {
+	encoded := make([]byte, 42)
+	encoded[0] = 1
+	encoded[36] = 4
+	if _, err := decodeUDPBindOptions(encoded); err != nil {
+		t.Fatalf("decode proxy NAT UDP bind options: %v", err)
+	}
 }
 
 func validatePoCBindOptions(markPresent byte, mark []byte, reuseMode, reusePort, onlyV6 byte) error {
