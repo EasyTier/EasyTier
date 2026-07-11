@@ -218,106 +218,37 @@ impl ManualConnectorManager {
 }
 
 impl ManualConnectorManager {
-    fn core_owns_scheme(url: &url::Url) -> bool {
-        match url.scheme() {
-            "tcp" | "udp" | "http" | "https" | "txt" | "srv" | "ring" => true,
-            "unix" => cfg!(unix),
-            "ws" | "wss" => cfg!(feature = "websocket"),
-            "wg" => cfg!(feature = "wireguard"),
-            "quic" => cfg!(feature = "quic"),
-            "faketcp" => cfg!(feature = "faketcp"),
-            _ => false,
-        }
-    }
-
     pub fn add_connector<T>(&self, connector: T)
     where
         T: TunnelConnector + 'static,
     {
         let url = connector.remote_url();
         tracing::info!("add_connector: {}", url);
-        if Self::core_owns_scheme(&url) {
-            self.portable
-                .add_connector(url)
-                .expect("core manual connector URL should be valid");
-        } else {
-            self.data.connectors.insert(url);
-        }
+        self.portable
+            .add_connector(url)
+            .expect("core manual connector URL should be valid");
     }
 
     pub async fn add_connector_by_url(&self, url: url::Url) -> Result<(), Error> {
-        if Self::core_owns_scheme(&url) {
-            self.portable.add_connector(url)?;
-            return Ok(());
-        }
-        self.data.connectors.insert(url);
+        self.portable.add_connector(url)?;
         Ok(())
     }
 
     pub async fn remove_connector(&self, url: url::Url) -> Result<(), Error> {
         tracing::info!("remove_connector: {}", url);
-        if Self::core_owns_scheme(&url) && self.portable.remove_connector(&url) {
-            return Ok(());
+        if self.portable.remove_connector(&url) {
+            Ok(())
+        } else {
+            Err(Error::NotFound)
         }
-        let url = url.into();
-        if !self
-            .list_connectors()
-            .await
-            .iter()
-            .any(|x| x.url.as_ref() == Some(&url))
-        {
-            return Err(Error::NotFound);
-        }
-        self.data.removed_conn_urls.insert(url.into());
-        Ok(())
     }
 
     pub async fn clear_connectors(&self) {
         self.portable.clear_connectors();
-        for url in self.data.connectors.iter() {
-            self.data.removed_conn_urls.insert(url.key().clone());
-        }
-        for url in self.data.reconnecting.iter() {
-            self.data.removed_conn_urls.insert(url.key().clone());
-        }
     }
 
     pub async fn list_connectors(&self) -> Vec<Connector> {
-        let dead_urls: BTreeSet<url::Url> = Self::collect_dead_conns(self.data.clone())
-            .await
-            .into_iter()
-            .collect();
-
         let mut ret = Vec::new();
-
-        for item in self.data.connectors.iter() {
-            let conn_url = item.key().clone();
-            let mut status = ConnectorStatus::Connected;
-            if dead_urls.contains(&conn_url) {
-                status = ConnectorStatus::Disconnected;
-            }
-            ret.insert(
-                0,
-                Connector {
-                    url: Some(conn_url.into()),
-                    status: status.into(),
-                },
-            );
-        }
-
-        let reconnecting_urls: BTreeSet<url::Url> =
-            self.data.reconnecting.iter().map(|x| x.clone()).collect();
-
-        for conn_url in reconnecting_urls {
-            ret.insert(
-                0,
-                Connector {
-                    url: Some(conn_url.into()),
-                    status: ConnectorStatus::Connecting.into(),
-                },
-            );
-        }
-
         for connector in self.portable.list_connectors() {
             let status = match connector.status {
                 ManualConnectorStatus::Connected => ConnectorStatus::Connected,
@@ -577,47 +508,6 @@ mod tests {
     };
 
     use super::*;
-
-    #[test]
-    fn core_owns_enabled_ip_and_discovery_protocols() {
-        assert!(ManualConnectorManager::core_owns_scheme(
-            &"tcp://127.0.0.1".parse().unwrap()
-        ));
-        assert!(ManualConnectorManager::core_owns_scheme(
-            &"udp://127.0.0.1".parse().unwrap()
-        ));
-        for (url, enabled) in [
-            ("ws://127.0.0.1", cfg!(feature = "websocket")),
-            ("wss://127.0.0.1", cfg!(feature = "websocket")),
-            ("wg://127.0.0.1", cfg!(feature = "wireguard")),
-            ("quic://127.0.0.1", cfg!(feature = "quic")),
-            ("faketcp://127.0.0.1", cfg!(feature = "faketcp")),
-        ] {
-            assert_eq!(
-                ManualConnectorManager::core_owns_scheme(&url.parse().unwrap()),
-                enabled,
-                "unexpected core ownership for {url}"
-            );
-        }
-        for url in [
-            "http://127.0.0.1",
-            "https://127.0.0.1",
-            "txt://discovery.example",
-            "srv://discovery.example",
-        ] {
-            assert!(
-                ManualConnectorManager::core_owns_scheme(&url.parse().unwrap()),
-                "core should own discovery URL {url}"
-            );
-        }
-        assert!(ManualConnectorManager::core_owns_scheme(
-            &"ring://local".parse().unwrap()
-        ));
-        assert_eq!(
-            ManualConnectorManager::core_owns_scheme(&"unix:///tmp/easytier.sock".parse().unwrap()),
-            cfg!(unix)
-        );
-    }
 
     #[tokio::test]
     async fn reconnect_timeout_reports_exhausted_budget_for_stage() {
