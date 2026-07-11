@@ -65,6 +65,60 @@ pub struct PeerRuntimeConfig {
     pub secure_mode: Option<SecureModeConfig>,
 }
 
+#[derive(Debug, Clone)]
+pub struct ConfigPeerContext {
+    runtime: PeerRuntimeConfig,
+    flags: FlagsInConfig,
+}
+
+impl ConfigPeerContext {
+    pub fn new(runtime: PeerRuntimeConfig) -> Self {
+        Self {
+            runtime,
+            flags: FlagsInConfig::default(),
+        }
+    }
+
+    pub fn with_flags(mut self, flags: FlagsInConfig) -> Self {
+        self.flags = flags;
+        self
+    }
+}
+
+fn config_ipv4(value: &IpPrefix) -> Option<Ipv4Inet> {
+    let IpAddr::V4(address) = value.address else {
+        return None;
+    };
+    Ipv4Inet::new(address, value.prefix_len).ok()
+}
+
+fn config_ipv6(value: &IpPrefix) -> Option<Ipv6Inet> {
+    let IpAddr::V6(address) = value.address else {
+        return None;
+    };
+    Ipv6Inet::new(address, value.prefix_len).ok()
+}
+
+fn same_ip_prefix(left: IpAddr, right: IpAddr, prefix_len: u8) -> bool {
+    match (left, right) {
+        (IpAddr::V4(left), IpAddr::V4(right)) => {
+            let Some(shift) = 32u32.checked_sub(u32::from(prefix_len)) else {
+                return false;
+            };
+            let mask = u32::MAX.checked_shl(shift).unwrap_or(0);
+            u32::from(left) & mask == u32::from(right) & mask
+        }
+        (IpAddr::V6(left), IpAddr::V6(right)) => {
+            let Some(shift) = 128u32.checked_sub(u32::from(prefix_len)) else {
+                return false;
+            };
+            let mask = u128::MAX.checked_shl(shift).unwrap_or(0);
+            u128::from(left) & mask == u128::from(right) & mask
+        }
+        _ => false,
+    }
+}
+
 fn ipv4_inet_to_config(value: Ipv4Inet) -> IpPrefix {
     IpPrefix::new(IpAddr::V4(value.address()), value.network_length())
         .expect("Ipv4Inet should always have a valid IPv4 prefix length")
@@ -446,6 +500,68 @@ impl PeerContext for NoopPeerContext {
     }
 }
 
+impl PeerContext for ConfigPeerContext {
+    fn runtime_config(&self) -> PeerRuntimeConfig {
+        self.runtime.clone()
+    }
+
+    fn network_identity(&self) -> NetworkIdentity {
+        self.runtime.network_identity.clone()
+    }
+
+    fn flags(&self) -> FlagsInConfig {
+        self.flags.clone()
+    }
+
+    fn secure_mode(&self) -> Option<SecureModeConfig> {
+        self.runtime.secure_mode.clone()
+    }
+
+    fn stun_info(&self) -> StunInfo {
+        self.runtime.stun_info.clone()
+    }
+
+    fn instance_id(&self) -> uuid::Uuid {
+        self.runtime
+            .core
+            .node
+            .instance_id
+            .map(uuid::Uuid::from_bytes)
+            .unwrap_or_else(uuid::Uuid::nil)
+    }
+
+    fn ipv4(&self) -> Option<Ipv4Inet> {
+        self.runtime.core.routes.ipv4.as_ref().and_then(config_ipv4)
+    }
+
+    fn ipv6(&self) -> Option<Ipv6Inet> {
+        self.runtime.core.routes.ipv6.as_ref().and_then(config_ipv6)
+    }
+
+    fn is_ip_in_same_network(&self, ip: &IpAddr) -> bool {
+        [
+            self.runtime.core.routes.ipv4.as_ref(),
+            self.runtime.core.routes.ipv6.as_ref(),
+        ]
+        .into_iter()
+        .flatten()
+        .any(|prefix| same_ip_prefix(prefix.address, *ip, prefix.prefix_len))
+    }
+
+    fn hostname(&self) -> String {
+        self.runtime.core.node.hostname.clone().unwrap_or_default()
+    }
+
+    fn feature_flags(&self) -> PeerFeatureFlag {
+        self.runtime.feature_flags
+    }
+
+    fn secret_proof(&self, challenge: &[u8]) -> Option<Hmac<Sha256>> {
+        let secret = self.runtime.network_identity.network_secret.as_ref()?;
+        secret_proof_from_secret(secret, challenge)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -522,6 +638,64 @@ mod tests {
             config.core.routes.ipv6,
             Some(IpPrefix::new("2001:db8::1".parse().unwrap(), 64).unwrap())
         );
+    }
+
+    #[test]
+    fn config_peer_context_reads_normalized_snapshot() {
+        let instance_id = uuid::Uuid::from_u128(0x00112233445566778899aabbccddeeff);
+        let runtime = PeerRuntimeConfig {
+            core: CoreConfig {
+                node: NodeConfig {
+                    peer_id: Some(7),
+                    instance_id: Some(*instance_id.as_bytes()),
+                    hostname: Some("config-node".to_owned()),
+                    network_name: "config-net".to_owned(),
+                },
+                routes: RouteConfig {
+                    ipv4: Some(IpPrefix::new("10.20.0.7".parse().unwrap(), 16).unwrap()),
+                    ipv6: Some(IpPrefix::new("2001:db8::7".parse().unwrap(), 64).unwrap()),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            network_identity: NetworkIdentity {
+                network_name: "config-net".to_owned(),
+                network_secret: Some("secret".to_owned()),
+                network_secret_digest: None,
+            },
+            stun_info: StunInfo::default(),
+            feature_flags: PeerFeatureFlag::default(),
+            secure_mode: Some(SecureModeConfig {
+                enabled: true,
+                ..Default::default()
+            }),
+        };
+        let mut flags = FlagsInConfig::default();
+        flags.p2p_only = true;
+        let context = ConfigPeerContext::new(runtime.clone()).with_flags(flags.clone());
+
+        assert_eq!(context.runtime_config().core, runtime.core);
+        assert_eq!(context.network_identity(), runtime.network_identity);
+        assert_eq!(context.flags(), flags);
+        assert_eq!(context.instance_id(), instance_id);
+        assert_eq!(context.hostname(), "config-node");
+        assert_eq!(context.ipv4(), Some("10.20.0.7/16".parse().unwrap()));
+        assert_eq!(context.ipv6(), Some("2001:db8::7/64".parse().unwrap()));
+        assert!(context.is_ip_in_same_network(&"10.20.99.1".parse().unwrap()));
+        assert!(context.is_ip_in_same_network(&"2001:db8::99".parse().unwrap()));
+        assert!(!context.is_ip_in_same_network(&"10.21.0.1".parse().unwrap()));
+        assert!(context.secure_mode().unwrap().enabled);
+
+        let proof = context
+            .secret_proof(b"challenge")
+            .unwrap()
+            .finalize()
+            .into_bytes();
+        let expected = secret_proof_from_secret("secret", b"challenge")
+            .unwrap()
+            .finalize()
+            .into_bytes();
+        assert_eq!(proof, expected);
     }
 
     #[test]
