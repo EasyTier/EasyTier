@@ -5,16 +5,22 @@ use easytier_core::{
         direct::DirectConnectorOptions,
         manual::{
             ManualConnectivityEvent, ManualConnectivityEventSink, ManualConnectorOptions,
-            ManualEndpointResolver, discovery,
+            discovery::{CoreManualEndpointResolver, ManualEndpointDiscoveryConfig},
         },
         protocol::ClientProtocolUpgrader,
     },
     instance::{CoreInstance, CoreInstanceAdapters, CoreInstanceConfig},
-    socket::{SocketContext, dns::DnsResolver, tcp::TcpBindOptions, udp::UdpBindOptions},
+    socket::{
+        IpVersion, SocketContext,
+        dns::{DnsRecordResolver, DnsResolver},
+        tcp::TcpBindOptions,
+        udp::UdpBindOptions,
+    },
 };
 use strum::VariantArray as _;
 
 use crate::{
+    VERSION,
     common::{
         config::ConfigLoader as _,
         dns::RuntimeDnsResolver,
@@ -26,53 +32,12 @@ use crate::{
     use_global_var,
 };
 
-use super::{
-    http_connector::HttpTunnelConnector, protocol::RuntimeClientProtocolUpgrader,
-    runtime::RuntimeConnectorHost,
-};
+use super::{protocol::RuntimeClientProtocolUpgrader, runtime::RuntimeConnectorHost};
 
 pub(crate) type RuntimeCoreInstance = CoreInstance<RuntimeConnectorHost>;
 
 struct GlobalCtxManualConnectivityEventSink {
     global_ctx: ArcGlobalCtx,
-}
-
-struct RuntimeManualEndpointResolver {
-    global_ctx: ArcGlobalCtx,
-}
-
-#[async_trait::async_trait]
-impl ManualEndpointResolver for RuntimeManualEndpointResolver {
-    async fn resolve_endpoint(&self, url: &url::Url) -> anyhow::Result<url::Url> {
-        match url.scheme() {
-            "http" | "https" => {
-                let mut resolver = HttpTunnelConnector::new(url.clone(), self.global_ctx.clone());
-                Ok(resolver.get_redirected_url(url.as_str()).await?)
-            }
-            "txt" | "srv" => {
-                let host = url
-                    .host_str()
-                    .ok_or_else(|| anyhow::anyhow!("host should not be empty in {url}"))?;
-                let resolver = RuntimeDnsResolver::new();
-                if url.scheme() == "txt" {
-                    discovery::resolve_txt_endpoint(&resolver, host, SocketContext::default()).await
-                } else {
-                    let protocols = IpScheme::VARIANTS
-                        .iter()
-                        .map(ToString::to_string)
-                        .collect::<Vec<_>>();
-                    discovery::resolve_srv_endpoint(
-                        &resolver,
-                        host,
-                        &protocols,
-                        SocketContext::default(),
-                    )
-                    .await
-                }
-            }
-            scheme => anyhow::bail!("unsupported manual endpoint resolver scheme: {scheme}"),
-        }
-    }
 }
 
 impl ManualConnectivityEventSink for GlobalCtxManualConnectivityEventSink {
@@ -145,12 +110,28 @@ pub(crate) fn runtime_direct_options(
 pub(crate) fn runtime_core_instance_adapters(
     global_ctx: ArcGlobalCtx,
 ) -> CoreInstanceAdapters<RuntimeConnectorHost> {
+    let host = Arc::new(RuntimeConnectorHost::new(global_ctx.clone()));
+    let dns: Arc<dyn DnsResolver> = Arc::new(RuntimeDnsResolver::new());
+    let dns_records: Arc<dyn DnsRecordResolver> = Arc::new(RuntimeDnsResolver::new());
+    let manual = runtime_manual_options(&global_ctx);
+    let endpoint_resolver = Arc::new(CoreManualEndpointResolver::new(
+        host.clone(),
+        dns.clone(),
+        dns_records,
+        ManualEndpointDiscoveryConfig {
+            user_agent: format!("easytier/{VERSION}"),
+            network_name: global_ctx.network.network_name.clone(),
+            http_timeout: Duration::from_secs(20),
+            http_ip_version: IpVersion::Both,
+            http_tcp_bind: manual.tcp_bind,
+            dns_record_context: SocketContext::default(),
+            srv_protocols: IpScheme::VARIANTS.iter().map(ToString::to_string).collect(),
+        },
+    ));
     CoreInstanceAdapters {
-        host: Arc::new(RuntimeConnectorHost::new(global_ctx.clone())),
-        dns: Arc::new(RuntimeDnsResolver::new()) as Arc<dyn DnsResolver>,
-        endpoint_resolver: Arc::new(RuntimeManualEndpointResolver {
-            global_ctx: global_ctx.clone(),
-        }),
+        host,
+        dns,
+        endpoint_resolver,
         protocol: Some(
             Arc::new(RuntimeClientProtocolUpgrader::new(global_ctx.clone()))
                 as Arc<dyn ClientProtocolUpgrader<_>>,
