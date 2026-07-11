@@ -415,9 +415,10 @@ where
             self.udp_hole_punch_started.store(false, Ordering::Release);
         }
         if let Some(proxy) = &self.proxy
-            && self.proxy_started.swap(false, Ordering::AcqRel)
+            && self.proxy_started.load(Ordering::Acquire)
         {
             proxy.stop().await;
+            self.proxy_started.store(false, Ordering::Release);
         }
         self.manual.stop().await;
         self.tcp_hole_punch.stop().await;
