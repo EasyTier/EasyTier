@@ -54,19 +54,21 @@ pub trait HostSocketFactoryIo: HostSocketIo {
     fn take_udp_bind(&self, operation: HostOperationId) -> Poll<io::Result<HostUdpBindResult>>;
 }
 
-struct PendingHostCreate {
+struct PendingHostCreate<B>
+where
+    B: HostSocketFactoryIo,
+{
     runtime: HostSocketRuntime,
-    io: Arc<dyn HostSocketFactoryIo>,
+    io: Arc<B>,
     operation: HostOperationId,
     completed: bool,
 }
 
-impl PendingHostCreate {
-    fn new(
-        runtime: HostSocketRuntime,
-        io: Arc<dyn HostSocketFactoryIo>,
-        operation: HostOperationId,
-    ) -> Self {
+impl<B> PendingHostCreate<B>
+where
+    B: HostSocketFactoryIo,
+{
+    fn new(runtime: HostSocketRuntime, io: Arc<B>, operation: HostOperationId) -> Self {
         Self {
             runtime,
             io,
@@ -81,7 +83,10 @@ impl PendingHostCreate {
     }
 }
 
-impl Drop for PendingHostCreate {
+impl<B> Drop for PendingHostCreate<B>
+where
+    B: HostSocketFactoryIo,
+{
     fn drop(&mut self) {
         if self.completed {
             return;
@@ -91,41 +96,50 @@ impl Drop for PendingHostCreate {
     }
 }
 
-#[derive(Clone)]
-pub struct HostSocketFactory {
+pub trait HostSocketBackend: HostSocketFactoryIo + HostTcpIo + HostUdpIo {}
+
+impl<T> HostSocketBackend for T where T: HostSocketFactoryIo + HostTcpIo + HostUdpIo {}
+
+pub struct HostSocketFactory<B>
+where
+    B: HostSocketBackend,
+{
     runtime: HostSocketRuntime,
-    factory_io: Arc<dyn HostSocketFactoryIo>,
-    tcp_io: Arc<dyn HostTcpIo>,
-    udp_io: Arc<dyn HostUdpIo>,
+    backend: Arc<B>,
 }
 
-impl HostSocketFactory {
-    pub fn new(
-        runtime: HostSocketRuntime,
-        factory_io: Arc<dyn HostSocketFactoryIo>,
-        tcp_io: Arc<dyn HostTcpIo>,
-        udp_io: Arc<dyn HostUdpIo>,
-    ) -> Self {
+impl<B> Clone for HostSocketFactory<B>
+where
+    B: HostSocketBackend,
+{
+    fn clone(&self) -> Self {
         Self {
-            runtime,
-            factory_io,
-            tcp_io,
-            udp_io,
+            runtime: self.runtime.clone(),
+            backend: self.backend.clone(),
         }
+    }
+}
+
+impl<B> HostSocketFactory<B>
+where
+    B: HostSocketBackend,
+{
+    pub fn new(runtime: HostSocketRuntime, backend: Arc<B>) -> Self {
+        Self { runtime, backend }
     }
 
     async fn connect_tcp(&self, options: TcpConnectOptions) -> io::Result<HostTcpStream> {
         let operation = self.runtime.next_operation();
-        self.factory_io.submit_tcp_connect(operation, &options)?;
+        self.backend.submit_tcp_connect(operation, &options)?;
         let mut pending =
-            PendingHostCreate::new(self.runtime.clone(), self.factory_io.clone(), operation);
+            PendingHostCreate::new(self.runtime.clone(), self.backend.clone(), operation);
         let result = poll_fn(|context| {
             let epoch = self
                 .runtime
                 .inner
                 .completion_epoch
                 .load(std::sync::atomic::Ordering::SeqCst);
-            match self.factory_io.take_tcp_connect(operation) {
+            match self.backend.take_tcp_connect(operation) {
                 Poll::Pending => {
                     self.runtime.register_pending(operation, epoch, context);
                     Poll::Pending
@@ -138,7 +152,7 @@ impl HostSocketFactory {
         })
         .await?;
         Ok(self.runtime.tcp_stream(
-            self.tcp_io.clone(),
+            self.backend.clone(),
             result.handle,
             result.local_addr,
             result.peer_addr,
@@ -148,16 +162,16 @@ impl HostSocketFactory {
 
     async fn bind_udp(&self, options: UdpBindOptions) -> io::Result<Arc<HostUdpSocket>> {
         let operation = self.runtime.next_operation();
-        self.factory_io.submit_udp_bind(operation, &options)?;
+        self.backend.submit_udp_bind(operation, &options)?;
         let mut pending =
-            PendingHostCreate::new(self.runtime.clone(), self.factory_io.clone(), operation);
+            PendingHostCreate::new(self.runtime.clone(), self.backend.clone(), operation);
         let result = poll_fn(|context| {
             let epoch = self
                 .runtime
                 .inner
                 .completion_epoch
                 .load(std::sync::atomic::Ordering::SeqCst);
-            match self.factory_io.take_udp_bind(operation) {
+            match self.backend.take_udp_bind(operation) {
                 Poll::Pending => {
                     self.runtime.register_pending(operation, epoch, context);
                     Poll::Pending
@@ -170,7 +184,7 @@ impl HostSocketFactory {
         })
         .await?;
         Ok(Arc::new(self.runtime.udp_socket(
-            self.udp_io.clone(),
+            self.backend.clone(),
             result.handle,
             result.local_addr,
         )))
@@ -178,7 +192,10 @@ impl HostSocketFactory {
 }
 
 #[async_trait]
-impl VirtualTcpSocketFactory for HostSocketFactory {
+impl<B> VirtualTcpSocketFactory for HostSocketFactory<B>
+where
+    B: HostSocketBackend,
+{
     type Socket = HostTcpStream;
 
     async fn connect_tcp(&self, options: TcpConnectOptions) -> anyhow::Result<Self::Socket> {
@@ -187,7 +204,10 @@ impl VirtualTcpSocketFactory for HostSocketFactory {
 }
 
 #[async_trait]
-impl VirtualUdpSocketFactory for HostSocketFactory {
+impl<B> VirtualUdpSocketFactory for HostSocketFactory<B>
+where
+    B: HostSocketBackend,
+{
     type Socket = HostUdpSocket;
 
     async fn bind_udp(&self, options: UdpBindOptions) -> anyhow::Result<Arc<Self::Socket>> {
@@ -420,9 +440,9 @@ mod tests {
         }
     }
 
-    fn test_factory(io: Arc<TestHostIo>) -> (HostSocketRuntime, HostSocketFactory) {
+    fn test_factory(io: Arc<TestHostIo>) -> (HostSocketRuntime, HostSocketFactory<TestHostIo>) {
         let runtime = HostSocketRuntime::new();
-        let factory = HostSocketFactory::new(runtime.clone(), io.clone(), io.clone(), io);
+        let factory = HostSocketFactory::new(runtime.clone(), io);
         (runtime, factory)
     }
 
