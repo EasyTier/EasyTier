@@ -8,6 +8,94 @@ use crate::socket::{
     dns::{DnsQuery, DnsRecordResolver, DnsSrvRecord},
 };
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HttpEndpointSource {
+    RedirectQuery,
+    RedirectUrl,
+    ResponseBody,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HttpDiscoveryResponse {
+    pub status_code: u16,
+    pub location: Option<String>,
+    pub body: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedHttpEndpoint {
+    pub url: Url,
+    pub source: HttpEndpointSource,
+}
+
+fn resolve_http_redirect(location: &str) -> anyhow::Result<ResolvedHttpEndpoint> {
+    let url = Url::parse(location)?;
+    if !matches!(url.scheme(), "http" | "https") {
+        return Ok(ResolvedHttpEndpoint {
+            url,
+            source: HttpEndpointSource::RedirectUrl,
+        });
+    }
+
+    let candidates = url
+        .query_pairs()
+        .filter_map(|(_, value)| Url::parse(&value).ok())
+        .collect::<Vec<_>>();
+    if let Some(url) = candidates.choose(&mut rand::thread_rng()).cloned() {
+        return Ok(ResolvedHttpEndpoint {
+            url,
+            source: HttpEndpointSource::RedirectQuery,
+        });
+    }
+
+    if let Some(url) = location
+        .strip_prefix(&format!("{}://", url.scheme()))
+        .and_then(|value| Url::parse(value).ok())
+    {
+        return Ok(ResolvedHttpEndpoint {
+            url,
+            source: HttpEndpointSource::RedirectUrl,
+        });
+    }
+
+    anyhow::bail!("no valid connector URL found in redirect location {location:?}")
+}
+
+fn resolve_http_body(body: &str) -> anyhow::Result<ResolvedHttpEndpoint> {
+    let candidates = body
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .filter_map(|line| Url::parse(line).ok())
+        .collect::<Vec<_>>();
+    let url = candidates
+        .choose(&mut rand::thread_rng())
+        .cloned()
+        .ok_or_else(|| anyhow::anyhow!("no valid connector URL found in response body {body:?}"))?;
+    Ok(ResolvedHttpEndpoint {
+        url,
+        source: HttpEndpointSource::ResponseBody,
+    })
+}
+
+pub fn resolve_http_endpoint(
+    response: HttpDiscoveryResponse,
+) -> anyhow::Result<ResolvedHttpEndpoint> {
+    match response.status_code {
+        300..=399 => resolve_http_redirect(
+            response
+                .location
+                .as_deref()
+                .ok_or_else(|| anyhow::anyhow!("HTTP redirect has no Location header"))?,
+        ),
+        200..=299 => resolve_http_body(&response.body),
+        status_code => anyhow::bail!(
+            "unexpected HTTP discovery status {status_code}, body: {:?}",
+            response.body
+        ),
+    }
+}
+
 fn choose_weighted<T>(options: &[(T, u64)]) -> Option<&T> {
     let total_weight = options.iter().map(|(_, weight)| *weight).sum();
     let mut rng = rand::thread_rng();
@@ -106,6 +194,45 @@ mod tests {
     use async_trait::async_trait;
 
     use super::*;
+
+    #[test]
+    fn http_discovery_interprets_redirect_and_body_forms() {
+        let query = resolve_http_endpoint(HttpDiscoveryResponse {
+            status_code: 302,
+            location: Some("https://discovery.example/?url=tcp://127.0.0.1:11010".to_owned()),
+            body: String::new(),
+        })
+        .unwrap();
+        assert_eq!(query.url.as_str(), "tcp://127.0.0.1:11010");
+        assert_eq!(query.source, HttpEndpointSource::RedirectQuery);
+
+        let nested = resolve_http_endpoint(HttpDiscoveryResponse {
+            status_code: 302,
+            location: Some("https://udp://127.0.0.1:11010".to_owned()),
+            body: String::new(),
+        })
+        .unwrap();
+        assert_eq!(nested.url.as_str(), "udp://127.0.0.1:11010");
+        assert_eq!(nested.source, HttpEndpointSource::RedirectUrl);
+
+        let direct = resolve_http_endpoint(HttpDiscoveryResponse {
+            status_code: 307,
+            location: Some("quic://127.0.0.1:11012".to_owned()),
+            body: String::new(),
+        })
+        .unwrap();
+        assert_eq!(direct.url.as_str(), "quic://127.0.0.1:11012");
+        assert_eq!(direct.source, HttpEndpointSource::RedirectUrl);
+
+        let body = resolve_http_endpoint(HttpDiscoveryResponse {
+            status_code: 200,
+            location: None,
+            body: "invalid\nwg://127.0.0.1:11011\n".to_owned(),
+        })
+        .unwrap();
+        assert_eq!(body.url.as_str(), "wg://127.0.0.1:11011");
+        assert_eq!(body.source, HttpEndpointSource::ResponseBody);
+    }
 
     struct TestResolver {
         txt: String,
