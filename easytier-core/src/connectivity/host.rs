@@ -19,7 +19,7 @@ use crate::{
     socket::{
         host::{
             HostSocketRuntime, HostTcpStream,
-            factory::{HostSocketBackend, HostSocketFactory},
+            factory::{HostSocketBackend, HostSocketFactory, HostTcpConnectResult},
             listener::{HostTcpListener, HostTcpListenerBackend, HostTcpListenerFactory},
             udp::HostUdpSocket,
         },
@@ -32,6 +32,30 @@ use crate::{
     },
 };
 
+/// Host-owned non-IP stream before core wraps it in the connector socket type.
+pub struct HostByteStreamResult {
+    pub socket: HostTcpConnectResult,
+    pub local_url: Option<Url>,
+    pub remote_url: Url,
+    pub resolved_remote_url: Option<Url>,
+}
+
+impl HostByteStreamResult {
+    pub fn new(
+        socket: HostTcpConnectResult,
+        local_url: Option<Url>,
+        remote_url: Url,
+        resolved_remote_url: Option<Url>,
+    ) -> Self {
+        Self {
+            socket,
+            local_url,
+            remote_url,
+            resolved_remote_url,
+        }
+    }
+}
+
 /// Non-socket capabilities required by manual connectivity.
 #[async_trait]
 pub trait ManualConnectorEnvironment: Send + Sync + 'static {
@@ -39,10 +63,7 @@ pub trait ManualConnectorEnvironment: Send + Sync + 'static {
 
     async fn interface_addrs(&self) -> anyhow::Result<ManualInterfaceAddrs>;
 
-    async fn connect_byte_stream(
-        &self,
-        url: &Url,
-    ) -> anyhow::Result<ConnectedByteStream<HostTcpStream>> {
+    async fn connect_byte_stream(&self, url: &Url) -> anyhow::Result<HostByteStreamResult> {
         anyhow::bail!("host does not support external byte stream: {url}")
     }
 }
@@ -82,6 +103,8 @@ pub struct HostConnectorAdapter<B, E>
 where
     B: HostConnectorSocketBackend,
 {
+    runtime: HostSocketRuntime,
+    backend: Arc<B>,
     sockets: HostSocketFactory<B>,
     listeners: HostTcpListenerFactory<B>,
     environment: Arc<E>,
@@ -94,7 +117,9 @@ where
     pub fn new(runtime: HostSocketRuntime, backend: Arc<B>, environment: Arc<E>) -> Self {
         Self {
             sockets: HostSocketFactory::new(runtime.clone(), backend.clone()),
-            listeners: HostTcpListenerFactory::new(runtime, backend),
+            listeners: HostTcpListenerFactory::new(runtime.clone(), backend.clone()),
+            runtime,
+            backend,
             environment,
         }
     }
@@ -183,7 +208,21 @@ where
         &self,
         url: &Url,
     ) -> anyhow::Result<ConnectedByteStream<HostTcpStream>> {
-        self.environment.connect_byte_stream(url).await
+        let result = self.environment.connect_byte_stream(url).await?;
+        let socket = result.socket;
+        let stream = self.runtime.tcp_stream(
+            self.backend.clone(),
+            socket.handle,
+            socket.local_addr,
+            socket.peer_addr,
+            socket.transport_label,
+        );
+        Ok(ConnectedByteStream::new(
+            stream,
+            result.local_url,
+            result.remote_url,
+            result.resolved_remote_url,
+        ))
     }
 }
 
@@ -427,6 +466,10 @@ mod tests {
                 public_ipv6: Some("2001:db8::1".parse().unwrap()),
             })
         }
+
+        async fn connect_byte_stream(&self, _url: &Url) -> anyhow::Result<HostByteStreamResult> {
+            anyhow::bail!("test environment byte stream")
+        }
     }
 
     #[async_trait]
@@ -512,6 +555,17 @@ mod tests {
                 .unwrap()
                 .public_ipv6,
             Some("2001:db8::1".parse().unwrap())
+        );
+        let byte_stream_error =
+            match ManualConnectorHost::connect_byte_stream(&host, &"ring://42".parse().unwrap())
+                .await
+            {
+                Ok(_) => panic!("test environment should reject byte streams"),
+                Err(error) => error,
+            };
+        assert_eq!(
+            byte_stream_error.to_string(),
+            "test environment byte stream"
         );
         assert_eq!(
             DirectConnectorHost::mapped_listeners(&host),
