@@ -178,7 +178,10 @@ mod tests {
         atomic::{AtomicUsize, Ordering},
     };
 
-    use easytier_core::instance::{CoreInstanceState, ListenerService};
+    use easytier_core::{
+        instance::{CoreInstanceState, ListenerService, PortableCoreInstanceConfig},
+        peers::{context::PeerContext, peer_manager::PortablePeerManagerConfig},
+    };
     use tokio::sync::Notify;
     use tokio_util::task::AbortOnDropHandle;
 
@@ -262,6 +265,35 @@ mod tests {
         instance.start_udp_hole_punch().await.unwrap();
 
         instance.stop().await;
+        instance.stop().await;
+        assert_eq!(instance.state(), CoreInstanceState::Stopped);
+    }
+
+    #[tokio::test]
+    async fn portable_core_instance_builds_peer_graph_from_native_adapters() {
+        let global_ctx = get_mock_global_ctx_with_network(Some(NetworkIdentity::new(
+            "portable-core-instance".to_owned(),
+            String::new(),
+        )));
+        let (packet_sink, _packet_receiver) = create_packet_recv_chan();
+        let peer = PortablePeerManagerConfig::new(global_ctx.runtime_config())
+            .with_flags(global_ctx.get_flags());
+        let connectivity = CoreInstanceConfig {
+            initial_peers: Vec::new(),
+            manual: runtime_manual_options(&global_ctx),
+            direct: runtime_direct_options(&global_ctx, false),
+        };
+        let instance = Arc::new(
+            RuntimeCoreInstance::new_portable(
+                runtime_core_instance_adapters(global_ctx),
+                PortableCoreInstanceConfig { peer, connectivity },
+                packet_sink,
+            )
+            .unwrap(),
+        );
+
+        instance.start().await.unwrap();
+        assert_eq!(instance.state(), CoreInstanceState::Running);
         instance.stop().await;
         assert_eq!(instance.state(), CoreInstanceState::Stopped);
     }

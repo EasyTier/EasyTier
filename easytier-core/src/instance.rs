@@ -20,7 +20,10 @@ use crate::{
         protocol::{ClientProtocolUpgrader, RawClientProtocolUpgrader},
     },
     hole_punch::tcp::{TcpHolePunchConnector, TcpHolePunchHost},
-    peers::peer_manager::PeerManagerCore,
+    peers::{
+        PacketRecvChan,
+        peer_manager::{PeerManagerCore, PortablePeerManagerConfig},
+    },
     socket::{dns::DnsResolver, tcp::VirtualTcpSocketFactory},
 };
 
@@ -97,6 +100,12 @@ impl Default for CoreInstanceConfig {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct PortableCoreInstanceConfig {
+    pub peer: PortablePeerManagerConfig,
+    pub connectivity: CoreInstanceConfig,
+}
+
 pub struct CoreInstanceAdapters<H>
 where
     H: DirectConnectorHost + TcpHolePunchHost,
@@ -147,6 +156,27 @@ impl<H> CoreInstance<H>
 where
     H: DirectConnectorHost + TcpHolePunchHost,
 {
+    pub fn new_portable(
+        adapters: CoreInstanceAdapters<H>,
+        config: PortableCoreInstanceConfig,
+        packet_sink: PacketRecvChan,
+    ) -> anyhow::Result<Self> {
+        let network_name = &config.peer.runtime.network_identity.network_name;
+        if config.connectivity.direct.network_name != *network_name {
+            anyhow::bail!(
+                "direct connectivity network {:?} does not match peer identity {:?}",
+                config.connectivity.direct.network_name,
+                network_name
+            );
+        }
+        let peer_manager = Arc::new(PeerManagerCore::new_portable(
+            config.peer,
+            adapters.dns.clone(),
+            packet_sink,
+        )?);
+        Self::new(peer_manager, adapters, config.connectivity)
+    }
+
     pub fn new(
         peer_manager: Arc<PeerManagerCore>,
         adapters: CoreInstanceAdapters<H>,
