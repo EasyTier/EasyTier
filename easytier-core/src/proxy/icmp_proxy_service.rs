@@ -30,15 +30,16 @@ fn start_icmp_runtime<R: IcmpProxyRuntime + 'static>(
     runtime: &R,
     response_sink: Weak<dyn IcmpProxyResponseSink>,
     no_tun: bool,
-) -> Result<(), ProxyRuntimeError> {
+) -> Result<bool, ProxyRuntimeError> {
     if let Err(err) = runtime.start_icmp(response_sink) {
         runtime.stop_icmp();
         if !no_tun {
             return Err(err);
         }
         tracing::warn!(?err, "start ICMP runtime failed without TUN");
+        return Ok(false);
     }
-    Ok(())
+    Ok(true)
 }
 
 pub struct IcmpProxyService<R: IcmpProxyRuntime + 'static> {
@@ -49,6 +50,7 @@ pub struct IcmpProxyService<R: IcmpProxyRuntime + 'static> {
     response_rx: std::sync::Mutex<Option<UnboundedReceiver<ZCPacket>>>,
     pipeline_guard: std::sync::Mutex<Option<PipelineRegistrationGuard>>,
     tasks: std::sync::Mutex<JoinSet<()>>,
+    runtime_started: AtomicBool,
     started: AtomicBool,
 }
 
@@ -68,6 +70,7 @@ impl<R: IcmpProxyRuntime + 'static> IcmpProxyService<R> {
             response_rx: std::sync::Mutex::new(Some(response_rx)),
             pipeline_guard: std::sync::Mutex::new(None),
             tasks: std::sync::Mutex::new(JoinSet::new()),
+            runtime_started: AtomicBool::new(false),
             started: AtomicBool::new(false),
         })
     }
@@ -83,14 +86,19 @@ impl<R: IcmpProxyRuntime + 'static> IcmpProxyService<R> {
 
         let snapshot = self.runtime.proxy_runtime_snapshot();
         let response_sink: Arc<dyn IcmpProxyResponseSink> = self.clone();
-        if let Err(err) = start_icmp_runtime(
+        let runtime_started = match start_icmp_runtime(
             self.runtime.as_ref(),
             Arc::downgrade(&response_sink),
             snapshot.no_tun,
         ) {
-            self.started.store(false, Ordering::Release);
-            return Err(err);
-        }
+            Ok(runtime_started) => runtime_started,
+            Err(err) => {
+                self.started.store(false, Ordering::Release);
+                return Err(err);
+            }
+        };
+        self.runtime_started
+            .store(runtime_started, Ordering::Release);
 
         if let Some(mut response_rx) = self.response_rx.lock().unwrap().take() {
             let peer_manager = self.peer_manager.clone();
@@ -152,7 +160,9 @@ impl<R: IcmpProxyRuntime + 'static> IcmpProxyService<R> {
             guard.close();
         }
         self.tasks.lock().unwrap().abort_all();
-        self.runtime.stop_icmp();
+        if self.runtime_started.swap(false, Ordering::AcqRel) {
+            self.runtime.stop_icmp();
+        }
     }
 
     async fn handle_peer_packet(self: Arc<Self>, packet: ZCPacket) -> Option<ZCPacket> {
@@ -221,7 +231,10 @@ impl<R: IcmpProxyRuntime + 'static> PeerPacketFilter for IcmpProxyServiceFilter<
 mod tests {
     use std::{
         net::{IpAddr, Ipv4Addr},
-        sync::{Arc, Weak, atomic::AtomicBool},
+        sync::{
+            Arc, Weak,
+            atomic::{AtomicUsize, Ordering},
+        },
     };
 
     use super::*;
@@ -229,7 +242,7 @@ mod tests {
 
     #[derive(Default)]
     struct PartialStartRuntime {
-        stopped: AtomicBool,
+        stop_count: AtomicUsize,
     }
 
     impl ProxyRuntimeInfo for PartialStartRuntime {
@@ -259,7 +272,7 @@ mod tests {
         }
 
         fn stop_icmp(&self) {
-            self.stopped.store(true, Ordering::Release);
+            self.stop_count.fetch_add(1, Ordering::AcqRel);
         }
     }
 
@@ -275,7 +288,7 @@ mod tests {
         let sink: Arc<dyn IcmpProxyResponseSink> = Arc::new(NoopResponseSink);
 
         assert!(start_icmp_runtime(&runtime, Arc::downgrade(&sink), false).is_err());
-        assert!(runtime.stopped.load(Ordering::Acquire));
+        assert_eq!(runtime.stop_count.load(Ordering::Acquire), 1);
     }
 
     #[test]
@@ -283,7 +296,11 @@ mod tests {
         let runtime = PartialStartRuntime::default();
         let sink: Arc<dyn IcmpProxyResponseSink> = Arc::new(NoopResponseSink);
 
-        assert!(start_icmp_runtime(&runtime, Arc::downgrade(&sink), true).is_ok());
-        assert!(runtime.stopped.load(Ordering::Acquire));
+        let runtime_started = start_icmp_runtime(&runtime, Arc::downgrade(&sink), true).unwrap();
+        assert!(!runtime_started);
+        if runtime_started {
+            runtime.stop_icmp();
+        }
+        assert_eq!(runtime.stop_count.load(Ordering::Acquire), 1);
     }
 }
