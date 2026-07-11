@@ -1,7 +1,10 @@
 use std::{
     mem::MaybeUninit,
     net::{IpAddr, Ipv4Addr, SocketAddrV4},
-    sync::{Arc, Weak},
+    sync::{
+        Arc, Weak,
+        atomic::{AtomicBool, Ordering},
+    },
     thread,
     time::Duration,
 };
@@ -27,6 +30,7 @@ use super::CidrSet;
 struct RuntimeIcmpProxyAdapter {
     global_ctx: ArcGlobalCtx,
     socket: std::sync::Mutex<Option<Arc<Socket>>>,
+    recv_stopped: std::sync::Mutex<Option<Arc<AtomicBool>>>,
 }
 
 impl RuntimeIcmpProxyAdapter {
@@ -34,6 +38,7 @@ impl RuntimeIcmpProxyAdapter {
         Self {
             global_ctx,
             socket: std::sync::Mutex::new(None),
+            recv_stopped: std::sync::Mutex::new(None),
         }
     }
 
@@ -80,7 +85,12 @@ impl IcmpProxyRuntime for RuntimeIcmpProxyAdapter {
         })?;
         let socket = Arc::new(socket);
         self.socket.lock().unwrap().replace(socket.clone());
-        thread::spawn(move || socket_recv_loop(socket, response_sink));
+        let recv_stopped = Arc::new(AtomicBool::new(false));
+        self.recv_stopped
+            .lock()
+            .unwrap()
+            .replace(recv_stopped.clone());
+        thread::spawn(move || socket_recv_loop(socket, response_sink, recv_stopped));
         Ok(())
     }
 
@@ -97,6 +107,9 @@ impl IcmpProxyRuntime for RuntimeIcmpProxyAdapter {
 
     fn stop_icmp(&self) {
         tracing::info!(socket = ?self.socket.lock().unwrap().as_ref(), "stopping ICMP runtime");
+        if let Some(recv_stopped) = self.recv_stopped.lock().unwrap().take() {
+            recv_stopped.store(true, Ordering::Release);
+        }
         if let Some(socket) = self.socket.lock().unwrap().as_ref() {
             let _ = socket.shutdown(std::net::Shutdown::Both);
         }
@@ -115,7 +128,18 @@ fn socket_recv(
     Ok((size, addr))
 }
 
-fn socket_recv_loop(socket: Arc<Socket>, response_sink: Weak<dyn IcmpProxyResponseSink>) {
+fn recv_loop_should_stop(
+    recv_stopped: &AtomicBool,
+    response_sink: &Weak<dyn IcmpProxyResponseSink>,
+) -> bool {
+    recv_stopped.load(Ordering::Acquire) || response_sink.strong_count() == 0
+}
+
+fn socket_recv_loop(
+    socket: Arc<Socket>,
+    response_sink: Weak<dyn IcmpProxyResponseSink>,
+    recv_stopped: Arc<AtomicBool>,
+) {
     let mut buf = [0_u8; 8192];
     let data: &mut [MaybeUninit<u8>] = unsafe { std::mem::transmute(&mut buf[..]) };
 
@@ -124,7 +148,7 @@ fn socket_recv_loop(socket: Arc<Socket>, response_sink: Weak<dyn IcmpProxyRespon
             Ok(result) => result,
             Err(err) => {
                 tracing::error!(?err, "receive ICMP packet failed");
-                if response_sink.strong_count() == 0 {
+                if recv_loop_should_stop(&recv_stopped, &response_sink) {
                     break;
                 }
                 continue;
@@ -134,6 +158,9 @@ fn socket_recv_loop(socket: Arc<Socket>, response_sink: Weak<dyn IcmpProxyRespon
         if len == 0 {
             tracing::error!(len, "received empty ICMP packet");
             return;
+        }
+        if recv_loop_should_stop(&recv_stopped, &response_sink) {
+            break;
         }
 
         let IpAddr::V4(peer_ip) = peer_ip else {
@@ -185,5 +212,25 @@ impl IcmpProxy {
 impl Drop for IcmpProxy {
     fn drop(&mut self) {
         self.stop();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct NoopResponseSink;
+
+    impl IcmpProxyResponseSink for NoopResponseSink {
+        fn handle_socket_response(&self, _peer_ip: Ipv4Addr, _packet: &mut [u8]) {}
+    }
+
+    #[test]
+    fn stopped_runtime_terminates_recv_while_sink_is_retained() {
+        let sink: Arc<dyn IcmpProxyResponseSink> = Arc::new(NoopResponseSink);
+        let sink = Arc::downgrade(&sink);
+        let stopped = AtomicBool::new(true);
+
+        assert!(recv_loop_should_stop(&stopped, &sink));
     }
 }
