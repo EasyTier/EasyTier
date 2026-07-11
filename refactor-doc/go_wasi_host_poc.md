@@ -79,7 +79,7 @@ extension.
 ### Opaque-handle probe result
 
 The same harness now contains a minimal Model B implementation that uses the
-real host-backed TCP Socket Module in `easytier-core`:
+real host-backed TCP and UDP Socket Modules in `easytier-core`:
 
 - Go stores arbitrary `net.Conn` values behind opaque integer handles;
 - core `HostTcpStream` implements Tokio `AsyncRead` and `AsyncWrite`, while a
@@ -91,6 +91,14 @@ real host-backed TCP Socket Module in `easytier-core`:
 - the host serially invokes a bounded guest `drive`, which wakes the registered
   tasks and lets current-thread Tokio poll them again.
 
+For UDP, the Host Adapter keeps datagrams in a per-socket receive queue until a
+guest poll removes one. Sends are synchronously copied into a bounded host queue
+from the guest poll; when that queue is full, core waits only for writable
+readiness. This preserves Tokio's `send_to` and `recv_from` cancellation
+semantics without blocking the guest or retaining guest-memory borrows. The
+WASI ABI uses an independently golden-tested 44-byte metadata record for peer
+address, port, IPv6 flow/scope, and optional source or destination IP.
+
 The probe uses two `net.Pipe` connections, so success does not depend on an OS
 descriptor. One read remains permanently pending while the second connection
 echoes a byte and a 50 ms Tokio timer completes. The observed status `0x1b`
@@ -99,13 +107,13 @@ successful completion. All wasm calls remain serialized.
 
 This answers the ownership question precisely: Tokio can keep control of when
 EasyTier tasks request and observe I/O, while Go performs the unavoidable
-mechanical call on the logical `net.Conn`. Go does not need to own framing,
-protocol state, retries, or routing.
+mechanical call on the logical `net.Conn` or `net.PacketConn`. Go does not need
+to own framing, sessions, protocol state, retries, or routing.
 
 The bounded drive currently uses a 5 ms tick in addition to completion wakes.
 That is a test mechanism, not an accepted idle strategy. The PoC has not yet
-proven deadline-aware sleeping, idle CPU, UDP semantics, partial I/O,
-cancellation, EOF, sustained backpressure, or lifecycle cleanup.
+proven deadline-aware sleeping, idle CPU, the full UDP conformance matrix,
+partial TCP I/O, EOF, sustained backpressure, or lifecycle cleanup.
 
 ## Constraints
 
