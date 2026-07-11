@@ -717,8 +717,6 @@ impl Instance {
         );
 
         let conn_manager = Arc::new(ManualConnectorManager::new_with_core_instance(
-            global_ctx.clone(),
-            peer_manager.clone(),
             core_instance.clone(),
         ));
 
