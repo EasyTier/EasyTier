@@ -157,7 +157,7 @@ enum AcceptedConnection {
     ByteStream {
         stream: RuntimeTcpSocket,
         local_url: url::Url,
-        remote_url: url::Url,
+        remote_url: Option<url::Url>,
     },
     TcpStream {
         stream: RuntimeTcpSocket,
@@ -243,6 +243,15 @@ impl<H: TunnelHandlerForListener + Send + Sync + 'static> ListenerManager<H> {
                     .await
             }
             core_listener_plan::ListenerKind::External => {
+                #[cfg(unix)]
+                if listener.url.scheme() == "unix" {
+                    let url = listener.url;
+                    self.listener_manager.add_listener(
+                        move || Box::new(RuntimeUnixStreamListener::new(url.clone())),
+                        listener.must_succeed,
+                    );
+                    return Ok(());
+                }
                 self.add_external_listener(listener.url, listener.must_succeed)
                     .await
             }
@@ -452,7 +461,7 @@ impl core_listener::SocketListener for RuntimeRingStreamListener {
         Ok(AcceptedConnection::ByteStream {
             stream: RuntimeTcpSocket::from_ring(accepted.socket)?,
             local_url: format!("ring://{}", accepted.local_id).parse()?,
-            remote_url: format!("ring://{}", accepted.remote_id).parse()?,
+            remote_url: Some(format!("ring://{}", accepted.remote_id).parse()?),
         })
     }
 
@@ -462,6 +471,81 @@ impl core_listener::SocketListener for RuntimeRingStreamListener {
 
     fn connection_counter(&self) -> Arc<dyn core_listener::ListenerConnectionCounter> {
         Arc::new(ZeroConnectionCounter)
+    }
+}
+
+#[cfg(unix)]
+struct RuntimeUnixStreamListener {
+    url: url::Url,
+    inner: Option<tokio::net::UnixListener>,
+}
+
+#[cfg(unix)]
+impl RuntimeUnixStreamListener {
+    fn new(url: url::Url) -> Self {
+        Self { url, inner: None }
+    }
+}
+
+#[cfg(unix)]
+fn unix_stream_remote_url(remote_addr: tokio::net::unix::SocketAddr) -> url::Url {
+    crate::tunnel::unix::url_from_unix_socket_addr(remote_addr).unwrap_or_else(|| {
+        format!("unix://anonymous/{}", uuid::Uuid::new_v4())
+            .parse()
+            .expect("synthetic Unix stream URL should be valid")
+    })
+}
+
+#[cfg(unix)]
+impl Debug for RuntimeUnixStreamListener {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("RuntimeUnixStreamListener")
+            .field("url", &self.url)
+            .field("listening", &self.inner.is_some())
+            .finish()
+    }
+}
+
+#[cfg(unix)]
+#[async_trait]
+impl core_listener::SocketListener for RuntimeUnixStreamListener {
+    type Accepted = AcceptedConnection;
+
+    async fn listen(&mut self) -> anyhow::Result<()> {
+        if self.inner.is_none() {
+            self.inner = Some(tokio::net::UnixListener::bind(self.url.path())?);
+        }
+        Ok(())
+    }
+
+    async fn accept(&mut self) -> anyhow::Result<Self::Accepted> {
+        let (stream, remote_addr) = self
+            .inner
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("Unix stream listener is not started"))?
+            .accept()
+            .await?;
+        Ok(AcceptedConnection::ByteStream {
+            stream: RuntimeTcpSocket::from_unix(stream),
+            local_url: self.url.clone(),
+            remote_url: Some(unix_stream_remote_url(remote_addr)),
+        })
+    }
+
+    fn local_url(&self) -> url::Url {
+        self.url.clone()
+    }
+
+    fn connection_counter(&self) -> Arc<dyn core_listener::ListenerConnectionCounter> {
+        Arc::new(ZeroConnectionCounter)
+    }
+}
+
+#[cfg(unix)]
+impl Drop for RuntimeUnixStreamListener {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(self.url.path());
     }
 }
 
@@ -939,9 +1023,9 @@ where
         &self,
         stream: RuntimeTcpSocket,
         local_url: url::Url,
-        remote_url: url::Url,
+        remote_url: Option<url::Url>,
     ) -> anyhow::Result<()> {
-        let tunnel = raw::upgrade_accepted_byte_stream(stream, local_url, Some(remote_url))?;
+        let tunnel = raw::upgrade_accepted_byte_stream(stream, local_url, remote_url)?;
         self.handle_tunnel(tunnel).await
     }
 
@@ -1121,6 +1205,21 @@ mod tests {
             listener_scheme_registry().classify(&url),
             Some(core_listener_plan::ListenerKind::TcpStream)
         );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn unnamed_unix_stream_peers_receive_unique_synthetic_urls() {
+        let (first, _) = tokio::net::UnixStream::pair().unwrap();
+        let first_addr = first.peer_addr().unwrap();
+        let (second, _) = tokio::net::UnixStream::pair().unwrap();
+        let second_addr = second.peer_addr().unwrap();
+
+        let first_url = unix_stream_remote_url(first_addr);
+        let second_url = unix_stream_remote_url(second_addr);
+        assert_eq!(first_url.host_str(), Some("anonymous"));
+        assert_eq!(second_url.host_str(), Some("anonymous"));
+        assert_ne!(first_url, second_url);
     }
 
     #[cfg(feature = "websocket")]

@@ -183,22 +183,38 @@ impl ManualConnectorHost for RuntimeConnectorHost {
         &self,
         url: &url::Url,
     ) -> anyhow::Result<ConnectedByteStream<RuntimeTcpSocket>> {
-        if url.scheme() != "ring" {
-            anyhow::bail!("unsupported runtime byte stream: {url}");
+        if url.scheme() == "ring" {
+            let remote_id = url
+                .host_str()
+                .ok_or_else(|| anyhow::anyhow!("ring URL has no peer id: {url}"))?
+                .parse()?;
+            let dialed = connect_ring_socket(remote_id)?;
+            let local_url = format!("ring://{}", dialed.local_id).parse()?;
+            let socket = RuntimeTcpSocket::from_ring(dialed.socket)?;
+            return Ok(ConnectedByteStream::new(
+                socket,
+                Some(local_url),
+                url.clone(),
+                Some(url.clone()),
+            ));
         }
-        let remote_id = url
-            .host_str()
-            .ok_or_else(|| anyhow::anyhow!("ring URL has no peer id: {url}"))?
-            .parse()?;
-        let dialed = connect_ring_socket(remote_id)?;
-        let local_url = format!("ring://{}", dialed.local_id).parse()?;
-        let socket = RuntimeTcpSocket::from_ring(dialed.socket)?;
-        Ok(ConnectedByteStream::new(
-            socket,
-            Some(local_url),
-            url.clone(),
-            Some(url.clone()),
-        ))
+
+        #[cfg(unix)]
+        if url.scheme() == "unix" {
+            let stream = tokio::net::UnixStream::connect(url.path()).await?;
+            let local_url = stream
+                .local_addr()
+                .ok()
+                .and_then(crate::tunnel::unix::url_from_unix_socket_addr);
+            return Ok(ConnectedByteStream::new(
+                RuntimeTcpSocket::from_unix(stream),
+                local_url,
+                url.clone(),
+                Some(url.clone()),
+            ));
+        }
+
+        anyhow::bail!("unsupported runtime byte stream: {url}")
     }
 }
 

@@ -221,6 +221,7 @@ impl ManualConnectorManager {
     fn core_owns_scheme(url: &url::Url) -> bool {
         match url.scheme() {
             "tcp" | "udp" | "http" | "https" | "txt" | "srv" | "ring" => true,
+            "unix" => cfg!(unix),
             "ws" | "wss" => cfg!(feature = "websocket"),
             "wg" => cfg!(feature = "wireguard"),
             "quic" => cfg!(feature = "quic"),
@@ -612,6 +613,10 @@ mod tests {
         assert!(ManualConnectorManager::core_owns_scheme(
             &"ring://local".parse().unwrap()
         ));
+        assert_eq!(
+            ManualConnectorManager::core_owns_scheme(&"unix:///tmp/easytier.sock".parse().unwrap()),
+            cfg!(unix)
+        );
     }
 
     #[tokio::test]
@@ -833,6 +838,42 @@ mod tests {
             .into_iter()
             .find(|url| url.scheme() == "ring")
             .expect("Ring listener should start");
+
+        let client = create_mock_peer_manager().await;
+        let connector_manager =
+            ManualConnectorManager::new(client.get_global_ctx(), client.clone());
+        connector_manager
+            .add_connector_by_url(listener_url.clone())
+            .await
+            .unwrap();
+
+        wait_route_appear(client.clone(), server.clone())
+            .await
+            .unwrap();
+        assert!(client.get_peer_map().is_client_url_alive(&listener_url));
+        assert!(client.has_directly_connected_conn(server.my_peer_id()));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn core_unix_connector_and_listener_form_peer_connection() {
+        set_global_var!(MANUAL_CONNECTOR_RECONNECT_INTERVAL_MS, 10);
+        let listener_url: url::Url = format!(
+            "unix:///tmp/easytier-core-manual-{}.sock",
+            uuid::Uuid::new_v4()
+        )
+        .parse()
+        .unwrap();
+
+        let server = create_mock_peer_manager().await;
+        server
+            .get_global_ctx()
+            .config
+            .set_listeners(vec![listener_url.clone()]);
+        let mut listener_manager = ListenerManager::new(server.get_global_ctx(), server.core());
+        listener_manager.prepare_listeners().await.unwrap();
+        listener_manager.run().await.unwrap();
 
         let client = create_mock_peer_manager().await;
         let connector_manager =

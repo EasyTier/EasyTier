@@ -11,6 +11,8 @@ use easytier_core::socket::tcp::{
     VirtualTcpListenerFactory, VirtualTcpSocket,
 };
 use easytier_core::tunnel::ring::{RingByteStream, RingTunnelSocket};
+#[cfg(unix)]
+use tokio::net::UnixStream;
 use tokio::{
     io::{AsyncRead, AsyncWrite, ReadBuf},
     net::{TcpListener, TcpSocket, TcpStream},
@@ -27,6 +29,8 @@ use crate::{
 enum RuntimeTcpSocketInner {
     Tcp(TcpStream),
     Ring(RingByteStream),
+    #[cfg(unix)]
+    Unix(UnixStream),
     #[cfg(feature = "faketcp")]
     FakeTcp(crate::tunnel::fake_tcp::FakeTcpSocket),
 }
@@ -51,6 +55,13 @@ impl RuntimeTcpSocket {
         })
     }
 
+    #[cfg(unix)]
+    pub(crate) fn from_unix(stream: UnixStream) -> Self {
+        Self {
+            inner: RuntimeTcpSocketInner::Unix(stream),
+        }
+    }
+
     #[cfg(feature = "faketcp")]
     pub(crate) fn from_fake_tcp(socket: crate::tunnel::fake_tcp::FakeTcpSocket) -> Self {
         Self {
@@ -69,6 +80,10 @@ impl RuntimeTcpSocket {
                     "FakeTCP upgrader received an ordinary TCP socket".to_owned(),
                 ))
             }
+            #[cfg(unix)]
+            RuntimeTcpSocketInner::Unix(_) => Err(TunnelError::InternalError(
+                "FakeTCP upgrader received a Unix stream".to_owned(),
+            )),
         }
     }
 }
@@ -82,6 +97,8 @@ impl AsyncRead for RuntimeTcpSocket {
         match &mut self.inner {
             RuntimeTcpSocketInner::Tcp(stream) => Pin::new(stream).poll_read(cx, buf),
             RuntimeTcpSocketInner::Ring(stream) => Pin::new(stream).poll_read(cx, buf),
+            #[cfg(unix)]
+            RuntimeTcpSocketInner::Unix(stream) => Pin::new(stream).poll_read(cx, buf),
             #[cfg(feature = "faketcp")]
             RuntimeTcpSocketInner::FakeTcp(socket) => Pin::new(socket).poll_read(cx, buf),
         }
@@ -97,6 +114,8 @@ impl AsyncWrite for RuntimeTcpSocket {
         match &mut self.inner {
             RuntimeTcpSocketInner::Tcp(stream) => Pin::new(stream).poll_write(cx, buf),
             RuntimeTcpSocketInner::Ring(stream) => Pin::new(stream).poll_write(cx, buf),
+            #[cfg(unix)]
+            RuntimeTcpSocketInner::Unix(stream) => Pin::new(stream).poll_write(cx, buf),
             #[cfg(feature = "faketcp")]
             RuntimeTcpSocketInner::FakeTcp(socket) => Pin::new(socket).poll_write(cx, buf),
         }
@@ -106,6 +125,8 @@ impl AsyncWrite for RuntimeTcpSocket {
         match &mut self.inner {
             RuntimeTcpSocketInner::Tcp(stream) => Pin::new(stream).poll_flush(cx),
             RuntimeTcpSocketInner::Ring(stream) => Pin::new(stream).poll_flush(cx),
+            #[cfg(unix)]
+            RuntimeTcpSocketInner::Unix(stream) => Pin::new(stream).poll_flush(cx),
             #[cfg(feature = "faketcp")]
             RuntimeTcpSocketInner::FakeTcp(socket) => Pin::new(socket).poll_flush(cx),
         }
@@ -115,6 +136,8 @@ impl AsyncWrite for RuntimeTcpSocket {
         match &mut self.inner {
             RuntimeTcpSocketInner::Tcp(stream) => Pin::new(stream).poll_shutdown(cx),
             RuntimeTcpSocketInner::Ring(stream) => Pin::new(stream).poll_shutdown(cx),
+            #[cfg(unix)]
+            RuntimeTcpSocketInner::Unix(stream) => Pin::new(stream).poll_shutdown(cx),
             #[cfg(feature = "faketcp")]
             RuntimeTcpSocketInner::FakeTcp(socket) => Pin::new(socket).poll_shutdown(cx),
         }
@@ -129,6 +152,11 @@ impl VirtualTcpSocket for RuntimeTcpSocket {
                 io::ErrorKind::Unsupported,
                 "ring stream has no IP local address",
             )),
+            #[cfg(unix)]
+            RuntimeTcpSocketInner::Unix(_) => Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "Unix stream has no IP local address",
+            )),
             #[cfg(feature = "faketcp")]
             RuntimeTcpSocketInner::FakeTcp(socket) => socket.local_addr(),
         }
@@ -140,6 +168,11 @@ impl VirtualTcpSocket for RuntimeTcpSocket {
             RuntimeTcpSocketInner::Ring(_) => Err(io::Error::new(
                 io::ErrorKind::Unsupported,
                 "ring stream has no IP peer address",
+            )),
+            #[cfg(unix)]
+            RuntimeTcpSocketInner::Unix(_) => Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "Unix stream has no IP peer address",
             )),
             #[cfg(feature = "faketcp")]
             RuntimeTcpSocketInner::FakeTcp(socket) => socket.peer_addr(),

@@ -12,7 +12,7 @@ use super::{
 
 const MAX_PACKET_SIZE: usize = 4096;
 
-fn url_from_unix_socket_addr(addr: SocketAddr) -> Option<url::Url> {
+pub(crate) fn url_from_unix_socket_addr(addr: SocketAddr) -> Option<url::Url> {
     addr.as_pathname()
         .and_then(|p| p.to_str())
         .and_then(|s| format!("unix://{}", s).parse().ok())
