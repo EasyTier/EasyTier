@@ -1746,15 +1746,15 @@ async fn accept_quic_session_incoming(
     local_url: url::Url,
     handshakes: Arc<Semaphore>,
 ) -> Result<PendingQuicSessionTunnel, TunnelError> {
-    let handshake_permit = handshakes
-        .acquire_owned()
-        .await
-        .map_err(|_| TunnelError::Shutdown)?;
     let incoming = endpoint
         .accept()
         .await
         .ok_or_else(|| TunnelError::InvalidPacket("quic accept failed".to_owned()))?;
     let remote_addr = incoming.remote_address();
+    let handshake_permit = handshakes
+        .acquire_owned()
+        .await
+        .map_err(|_| TunnelError::Shutdown)?;
     let connecting = incoming
         .accept()
         .with_context(|| "quic accept connection failed")?;
@@ -1888,7 +1888,15 @@ impl QuicAcceptedSession {
     }
 
     pub(crate) async fn accept(&mut self) -> Result<Box<dyn Tunnel>, TunnelError> {
-        self.completed.recv().await.ok_or(TunnelError::Shutdown)?
+        while let Some(result) = self.completed.recv().await {
+            match result {
+                Ok(tunnel) => return Ok(tunnel),
+                Err(error) => {
+                    tracing::warn!(?error, "QUIC session connection failed");
+                }
+            }
+        }
+        Err(TunnelError::Shutdown)
     }
 }
 
