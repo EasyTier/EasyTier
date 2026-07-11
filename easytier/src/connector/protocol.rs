@@ -1,11 +1,18 @@
 use std::sync::Arc;
+#[cfg(feature = "quic")]
+use std::{collections::HashMap, sync::Mutex};
 
 use async_trait::async_trait;
 use easytier_core::{
     connectivity::{
-        protocol::{ClientProtocolUpgrader, CoreClientProtocolConfig, CoreClientProtocolUpgrader},
+        protocol::{
+            ClientProtocolUpgrader, CoreClientProtocolConfig, CoreClientProtocolUpgrader,
+            CoreServerProtocolConfig, CoreServerProtocolUpgrader, ServerProtocolUpgrade,
+            ServerProtocolUpgrader,
+        },
         transport::ConnectedTransport,
     },
+    socket::udp::UdpSession,
     tunnel::Tunnel,
 };
 
@@ -13,6 +20,22 @@ use crate::{common::global_ctx::ArcGlobalCtx, tunnel::tcp_socket::RuntimeTcpSock
 
 pub(crate) struct RuntimeClientProtocolUpgrader {
     global_ctx: ArcGlobalCtx,
+}
+
+pub(crate) struct RuntimeServerProtocolUpgrader {
+    global_ctx: ArcGlobalCtx,
+    #[cfg(feature = "quic")]
+    quic_admissions: Mutex<HashMap<url::Url, Arc<crate::tunnel::quic::QuicSessionAdmission>>>,
+}
+
+impl RuntimeServerProtocolUpgrader {
+    pub(crate) fn new(global_ctx: ArcGlobalCtx) -> Self {
+        Self {
+            global_ctx,
+            #[cfg(feature = "quic")]
+            quic_admissions: Mutex::new(HashMap::new()),
+        }
+    }
 }
 
 impl RuntimeClientProtocolUpgrader {
@@ -30,6 +53,20 @@ pub(crate) fn runtime_client_protocol_upgrader(
             faketcp: cfg!(feature = "faketcp"),
         },
         Arc::new(RuntimeClientProtocolUpgrader::new(global_ctx)),
+    ))
+}
+
+pub(crate) fn runtime_server_protocol_upgrader(
+    global_ctx: ArcGlobalCtx,
+) -> Arc<dyn ServerProtocolUpgrader<RuntimeTcpSocket>> {
+    Arc::new(CoreServerProtocolUpgrader::with_external(
+        CoreServerProtocolConfig {
+            unix: cfg!(unix),
+            websocket: cfg!(feature = "websocket"),
+            faketcp: cfg!(feature = "faketcp"),
+            ..Default::default()
+        },
+        Arc::new(RuntimeServerProtocolUpgrader::new(global_ctx)),
     ))
 }
 
@@ -97,6 +134,78 @@ impl ClientProtocolUpgrader<RuntimeTcpSocket> for RuntimeClientProtocolUpgrader 
     }
 }
 
+#[async_trait]
+impl ServerProtocolUpgrader<RuntimeTcpSocket> for RuntimeServerProtocolUpgrader {
+    fn supports_scheme(&self, scheme: &str) -> bool {
+        match scheme {
+            "wg" => cfg!(feature = "wireguard"),
+            "quic" => cfg!(feature = "quic"),
+            _ => false,
+        }
+    }
+
+    async fn upgrade_tcp(
+        &self,
+        _socket: RuntimeTcpSocket,
+        local_url: url::Url,
+    ) -> anyhow::Result<ServerProtocolUpgrade> {
+        anyhow::bail!(
+            "unsupported native TCP server protocol upgrader: {}",
+            local_url.scheme()
+        )
+    }
+
+    async fn upgrade_udp(
+        &self,
+        _session: UdpSession,
+        local_url: url::Url,
+    ) -> anyhow::Result<ServerProtocolUpgrade> {
+        match local_url.scheme() {
+            #[cfg(feature = "wireguard")]
+            "wg" => {
+                use crate::tunnel::wireguard::{WgConfig, upgrade_accepted};
+                let identity = self.global_ctx.get_network_identity();
+                let config = WgConfig::new_from_network_identity(
+                    &identity.network_name,
+                    &identity.network_secret.unwrap_or_default(),
+                );
+                Ok(ServerProtocolUpgrade::Tunnel(upgrade_accepted(
+                    _session, config,
+                )?))
+            }
+            #[cfg(feature = "quic")]
+            "quic" => {
+                let admission = self
+                    .quic_admissions
+                    .lock()
+                    .map_err(|_| anyhow::anyhow!("QUIC admission registry is poisoned"))?
+                    .entry(local_url.clone())
+                    .or_insert_with(crate::tunnel::quic::QuicSessionAdmission::new)
+                    .clone();
+                let permit = admission
+                    .try_acquire_session()
+                    .ok_or_else(|| anyhow::anyhow!("QUIC active session limit reached"))?;
+                Ok(ServerProtocolUpgrade::Acceptor(Box::new(
+                    crate::tunnel::quic::QuicAcceptedSession::new(_session, local_url, permit)?,
+                )))
+            }
+            scheme => anyhow::bail!("unsupported native UDP server protocol upgrader: {scheme}"),
+        }
+    }
+
+    async fn upgrade_byte_stream(
+        &self,
+        _socket: RuntimeTcpSocket,
+        local_url: url::Url,
+        _remote_url: Option<url::Url>,
+    ) -> anyhow::Result<ServerProtocolUpgrade> {
+        anyhow::bail!(
+            "unsupported native byte-stream server protocol upgrader: {}",
+            local_url.scheme()
+        )
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use crate::common::global_ctx::tests::get_mock_global_ctx;
@@ -115,7 +224,7 @@ mod tests {
         assert_eq!(external.supports_scheme("wg"), cfg!(feature = "wireguard"));
         assert_eq!(external.supports_scheme("quic"), cfg!(feature = "quic"));
 
-        let upgrader = runtime_client_protocol_upgrader(global_ctx);
+        let upgrader = runtime_client_protocol_upgrader(global_ctx.clone());
 
         assert!(upgrader.supports_scheme("tcp"));
         assert!(upgrader.supports_scheme("udp"));
@@ -129,5 +238,27 @@ mod tests {
             upgrader.supports_scheme("faketcp"),
             cfg!(feature = "faketcp")
         );
+
+        let server_external = RuntimeServerProtocolUpgrader::new(global_ctx.clone());
+        assert!(!server_external.supports_scheme("tcp"));
+        assert!(!server_external.supports_scheme("udp"));
+        assert!(!server_external.supports_scheme("ring"));
+        assert_eq!(
+            server_external.supports_scheme("wg"),
+            cfg!(feature = "wireguard")
+        );
+        assert_eq!(
+            server_external.supports_scheme("quic"),
+            cfg!(feature = "quic")
+        );
+
+        let server = runtime_server_protocol_upgrader(global_ctx);
+        assert!(server.supports_scheme("tcp"));
+        assert!(server.supports_scheme("udp"));
+        assert!(server.supports_scheme("ring"));
+        assert_eq!(server.supports_scheme("unix"), cfg!(unix));
+        assert_eq!(server.supports_scheme("ws"), cfg!(feature = "websocket"));
+        assert_eq!(server.supports_scheme("wg"), cfg!(feature = "wireguard"));
+        assert_eq!(server.supports_scheme("quic"), cfg!(feature = "quic"));
     }
 }

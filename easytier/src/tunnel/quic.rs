@@ -15,7 +15,7 @@ use anyhow::Context;
 use derivative::Derivative;
 use derive_more::{Deref, DerefMut};
 use easytier_core::{
-    connectivity::transport::ConnectedUdpSession,
+    connectivity::{protocol::ServerTunnelAcceptor, transport::ConnectedUdpSession},
     socket::udp::{UdpSession, UdpSessionProtocol, UdpSessionSocket, parse_quic_initial_dcid},
     tunnel::wrapper::TunnelWrapper,
 };
@@ -1894,6 +1894,13 @@ impl QuicAcceptedSession {
             }
         }
         Err(TunnelError::Shutdown)
+    }
+}
+
+#[async_trait::async_trait]
+impl ServerTunnelAcceptor for QuicAcceptedSession {
+    async fn accept(&mut self) -> anyhow::Result<Box<dyn Tunnel>> {
+        Ok(QuicAcceptedSession::accept(self).await?)
     }
 }
 
