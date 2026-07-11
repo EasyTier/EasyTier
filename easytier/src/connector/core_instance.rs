@@ -266,11 +266,8 @@ mod tests {
         );
 
         assert_eq!(instance.state(), CoreInstanceState::Created);
-        instance.start_listeners().await.unwrap();
-        instance.start_listeners().await.unwrap();
         instance.start().await.unwrap();
         assert_eq!(instance.state(), CoreInstanceState::Running);
-        assert!(instance.start_listeners().await.is_err());
         assert!(instance.start().await.is_err());
         instance.start_udp_hole_punch().await.unwrap();
         instance.start_udp_hole_punch().await.unwrap();
@@ -320,7 +317,7 @@ mod tests {
         );
 
         assert!(instance.running_listeners().is_empty());
-        instance.start_listeners().await.unwrap();
+        instance.start().await.unwrap();
         let running_listeners = instance.running_listeners();
         assert_eq!(running_listeners.len(), 2);
         assert!(
@@ -328,7 +325,6 @@ mod tests {
                 .iter()
                 .all(|listener| listener.port().is_some_and(|port| port != 0))
         );
-        instance.start().await.unwrap();
         assert_eq!(instance.state(), CoreInstanceState::Running);
         instance.stop().await;
         assert_eq!(instance.state(), CoreInstanceState::Stopped);
@@ -394,11 +390,9 @@ mod tests {
             .unwrap(),
         );
 
-        instance_a.start_listeners().await.unwrap();
+        instance_a.start().await.unwrap();
         let listener = instance_a.running_listeners().pop().unwrap();
-        let (start_a, start_b) = tokio::join!(instance_a.start(), instance_b.start());
-        start_a.unwrap();
-        start_b.unwrap();
+        instance_b.start().await.unwrap();
         instance_b.add_connector(listener).unwrap();
 
         let peer_a_id = instance_a.peer_id();
@@ -590,9 +584,8 @@ mod tests {
         let listener = Arc::new(BlockingListenerService::default());
         let instance = build_test_instance_with_listener("pending-listener", listener.clone());
         let start_instance = instance.clone();
-        let start_task = AbortOnDropHandle::new(tokio::spawn(async move {
-            start_instance.start_listeners().await
-        }));
+        let start_task =
+            AbortOnDropHandle::new(tokio::spawn(async move { start_instance.start().await }));
         let start_result = tokio::time::timeout(std::time::Duration::from_secs(1), async {
             listener.start_entered.notified().await;
             instance.stop().await;

@@ -220,7 +220,6 @@ where
     direct: DirectConnectorManager<H>,
     tcp_hole_punch: TcpHolePunchConnector<H>,
     listener: Option<Arc<dyn ListenerService>>,
-    listener_started: AtomicBool,
     udp_hole_punch: Option<Arc<dyn UdpHolePunchService>>,
     udp_hole_punch_started: AtomicBool,
     packet_egress: Option<PacketEgress>,
@@ -366,7 +365,6 @@ where
             direct,
             tcp_hole_punch,
             listener,
-            listener_started: AtomicBool::new(false),
             udp_hole_punch,
             udp_hole_punch_started: AtomicBool::new(false),
             packet_egress: None,
@@ -395,7 +393,6 @@ where
     async fn stop_components(&self) {
         if let Some(listener) = &self.listener {
             listener.stop().await;
-            self.listener_started.store(false, Ordering::Release);
         }
         if let Some(udp_hole_punch) = &self.udp_hole_punch {
             udp_hole_punch.stop().await;
@@ -410,6 +407,16 @@ where
         }
     }
 
+    async fn start_listener(&self) -> anyhow::Result<()> {
+        let Some(listener) = &self.listener else {
+            return Ok(());
+        };
+        tokio::select! {
+            _ = self.cancel.cancelled() => Err(anyhow::anyhow!("listener start cancelled")),
+            result = listener.start() => result,
+        }
+    }
+
     pub async fn start(self: &Arc<Self>) -> anyhow::Result<()> {
         let _operation = self.operation.lock().await;
         let state = self.state();
@@ -418,6 +425,13 @@ where
         }
         self.set_state(CoreInstanceState::Starting);
         let mut recovery = self.recovery_guard();
+
+        if let Err(error) = self.start_listener().await {
+            self.stop_components().await;
+            self.set_state(CoreInstanceState::Stopped);
+            recovery.disarm();
+            return Err(error);
+        }
 
         if let Some(packet_egress) = &self.packet_egress
             && let Err(error) = packet_egress.start()
@@ -450,35 +464,6 @@ where
         self.manual.start();
 
         self.set_state(CoreInstanceState::Running);
-        recovery.disarm();
-        Ok(())
-    }
-
-    pub async fn start_listeners(self: &Arc<Self>) -> anyhow::Result<()> {
-        let _operation = self.operation.lock().await;
-        let state = self.state();
-        if state != CoreInstanceState::Created {
-            anyhow::bail!("listeners cannot start from core instance state {state:?}");
-        }
-        let Some(listener) = &self.listener else {
-            return Ok(());
-        };
-        if self.listener_started.load(Ordering::Acquire) {
-            return Ok(());
-        }
-
-        let mut recovery = self.recovery_guard();
-        self.listener_started.store(true, Ordering::Release);
-        let start_result = tokio::select! {
-            _ = self.cancel.cancelled() => Err(anyhow::anyhow!("listener start cancelled")),
-            result = listener.start() => result,
-        };
-        if let Err(error) = start_result {
-            self.stop_components().await;
-            self.set_state(CoreInstanceState::Stopped);
-            recovery.disarm();
-            return Err(error);
-        }
         recovery.disarm();
         Ok(())
     }

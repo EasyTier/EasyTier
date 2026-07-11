@@ -1053,7 +1053,6 @@ impl Instance {
 
     pub async fn run(&mut self) -> Result<(), Error> {
         self.prepare_public_ipv6_config().await?;
-        self.core_instance.start_listeners().await?;
         self.core_instance.start().await?;
         ensure_public_ipv6_provider_reconcile_task(
             &self.global_ctx,
