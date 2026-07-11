@@ -23,11 +23,10 @@ impl MpscTunnelSender {
         match self.0.try_send(item) {
             Ok(()) => Ok(()),
             Err(TrySendError::Full(item)) => {
-                self.0.send(item).await.with_context(|| "send error")?;
-                Ok(())
-            }
-            Err(TrySendError::Closed(_)) => Err(TunnelError::Shutdown),
-        }
+                Err(TrySendError::Closed(item)) => {
+                    self.0.send(item).await.with_context(|| "send error")?;
+                    Ok(())
+                },
     }
 
     pub fn try_send(&self, item: ZCPacket) -> Result<(), TunnelError> {
