@@ -3,7 +3,7 @@ use std::{
     fmt::Debug,
     io,
     pin::Pin,
-    sync::{Arc, LazyLock, Mutex},
+    sync::{Arc, Mutex},
     task::{Context, Poll, ready},
 };
 
@@ -183,9 +183,6 @@ impl RingTunnelRegistry {
     }
 }
 
-static DEFAULT_RING_REGISTRY: LazyLock<Arc<RingTunnelRegistry>> =
-    LazyLock::new(|| Arc::new(RingTunnelRegistry::default()));
-
 pub struct AcceptedRingSocket {
     pub socket: Arc<RingTunnelSocket>,
     pub local_id: RingSocketId,
@@ -214,10 +211,6 @@ impl Debug for RingTunnelSocketListener {
 }
 
 impl RingTunnelSocketListener {
-    pub fn bind(local_id: RingSocketId) -> Result<Self, RingTunnelRegistryError> {
-        DEFAULT_RING_REGISTRY.bind(local_id)
-    }
-
     pub fn local_id(&self) -> RingSocketId {
         self.local_id
     }
@@ -255,12 +248,6 @@ impl Drop for RingTunnelSocketListener {
             connections.remove(&self.local_id);
         }
     }
-}
-
-pub fn connect_ring_socket(
-    remote_id: RingSocketId,
-) -> Result<DialedRingSocket, RingTunnelRegistryError> {
-    DEFAULT_RING_REGISTRY.connect(remote_id)
 }
 
 pub struct RingStream {

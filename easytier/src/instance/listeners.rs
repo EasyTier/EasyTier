@@ -445,9 +445,7 @@ impl core_listener::SocketListener for RuntimeRingStreamListener {
             return Ok(());
         }
         let local_id = uuid::Uuid::from_url(self.url.clone(), IpVersion::Both).await?;
-        self.inner = Some(easytier_core::tunnel::ring::RingTunnelSocketListener::bind(
-            local_id,
-        )?);
+        self.inner = Some(tunnel::ring::runtime_ring_registry().bind(local_id)?);
         Ok(())
     }
 

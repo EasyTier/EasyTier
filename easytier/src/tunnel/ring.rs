@@ -1,8 +1,10 @@
+use std::sync::{Arc, LazyLock};
+
 use async_trait::async_trait;
 pub use easytier_core::tunnel::ring::{
-    RING_TUNNEL_CAP, RingSink, RingSinkSendError, RingStream, RingTunnel, RingTunnelSocket,
-    RingTunnelSocketListener, connect_ring_socket, create_ring_socket_pair,
-    create_ring_tunnel_pair, split_ring_socket,
+    RING_TUNNEL_CAP, RingSink, RingSinkSendError, RingStream, RingTunnel, RingTunnelRegistry,
+    RingTunnelSocket, RingTunnelSocketListener, create_ring_socket_pair, create_ring_tunnel_pair,
+    split_ring_socket,
 };
 use uuid::Uuid;
 
@@ -11,6 +13,13 @@ use crate::tunnel::{FromUrl, IpVersion};
 use super::{
     Tunnel, TunnelConnector, TunnelError, TunnelInfo, TunnelListener, build_url_from_socket_addr,
 };
+
+static RUNTIME_RING_REGISTRY: LazyLock<Arc<RingTunnelRegistry>> =
+    LazyLock::new(|| Arc::new(RingTunnelRegistry::default()));
+
+pub(crate) fn runtime_ring_registry() -> Arc<RingTunnelRegistry> {
+    RUNTIME_RING_REGISTRY.clone()
+}
 
 #[derive(Debug)]
 pub struct RingTunnelListener {
@@ -51,7 +60,11 @@ impl TunnelListener for RingTunnelListener {
     async fn listen(&mut self) -> Result<(), TunnelError> {
         tracing::info!("listen new conn of key: {}", self.listener_addr);
         let addr = self.get_addr().await?;
-        self.listener = Some(RingTunnelSocketListener::bind(addr).map_err(map_registry_error)?);
+        self.listener = Some(
+            runtime_ring_registry()
+                .bind(addr)
+                .map_err(map_registry_error)?,
+        );
         Ok(())
     }
 
@@ -95,7 +108,9 @@ impl TunnelConnector for RingTunnelConnector {
     async fn connect(&mut self) -> Result<Box<dyn Tunnel>, super::TunnelError> {
         let remote_id = Uuid::from_url(self.remote_addr.clone(), IpVersion::Both).await?;
         tracing::info!("connecting");
-        let dialed = connect_ring_socket(remote_id).map_err(map_registry_error)?;
+        let dialed = runtime_ring_registry()
+            .connect(remote_id)
+            .map_err(map_registry_error)?;
 
         Ok(Box::new(RingTunnel::new(
             dialed.socket,
