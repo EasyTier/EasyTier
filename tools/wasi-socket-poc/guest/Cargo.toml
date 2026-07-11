@@ -8,7 +8,7 @@ publish = false
 crate-type = ["cdylib"]
 
 [dependencies]
+easytier-core = { path = "../../../easytier-core" }
 tokio = { version = "=1.52.1", features = ["io-util", "net", "rt", "time"] }
 
 [workspace]
-

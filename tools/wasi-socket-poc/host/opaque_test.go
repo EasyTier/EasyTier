@@ -30,7 +30,7 @@ const (
 )
 
 type opaqueReadOperation struct {
-	handle uint32
+	handle uint64
 	done   bool
 	data   []byte
 	err    error
@@ -38,24 +38,23 @@ type opaqueReadOperation struct {
 
 type opaqueWriteOperation struct {
 	done bool
-	n    int
 	err  error
 }
 
 type opaqueBridge struct {
 	mu         sync.Mutex
-	handles    map[uint32]net.Conn
-	reads      map[uint32]*opaqueReadOperation
-	writes     map[uint32]*opaqueWriteOperation
+	handles    map[uint64]net.Conn
+	reads      map[uint64]*opaqueReadOperation
+	writes     map[uint64]*opaqueWriteOperation
 	completion chan struct{}
 	workers    sync.WaitGroup
 }
 
-func newOpaqueBridge(handles map[uint32]net.Conn) *opaqueBridge {
+func newOpaqueBridge(handles map[uint64]net.Conn) *opaqueBridge {
 	return &opaqueBridge{
 		handles:    handles,
-		reads:      make(map[uint32]*opaqueReadOperation),
-		writes:     make(map[uint32]*opaqueWriteOperation),
+		reads:      make(map[uint64]*opaqueReadOperation),
+		writes:     make(map[uint64]*opaqueWriteOperation),
 		completion: make(chan struct{}, 1),
 	}
 }
@@ -63,8 +62,8 @@ func newOpaqueBridge(handles map[uint32]net.Conn) *opaqueBridge {
 func (b *opaqueBridge) startRead(
 	_ context.Context,
 	_ api.Module,
-	handle uint32,
-	operation uint32,
+	handle uint64,
+	operation uint64,
 	capacity uint32,
 ) int32 {
 	b.mu.Lock()
@@ -102,7 +101,7 @@ func (b *opaqueBridge) startRead(
 func (b *opaqueBridge) takeRead(
 	_ context.Context,
 	module api.Module,
-	operation uint32,
+	operation uint64,
 	destination uint32,
 	capacity uint32,
 ) int32 {
@@ -138,8 +137,8 @@ func (b *opaqueBridge) takeRead(
 func (b *opaqueBridge) startWrite(
 	_ context.Context,
 	module api.Module,
-	handle uint32,
-	operation uint32,
+	handle uint64,
+	operation uint64,
 	source uint32,
 	length uint32,
 ) int32 {
@@ -167,10 +166,22 @@ func (b *opaqueBridge) startWrite(
 	go func() {
 		defer b.workers.Done()
 
-		n, err := connection.Write(buffer)
+		written := 0
+		var err error
+		for written < len(buffer) {
+			var n int
+			n, err = connection.Write(buffer[written:])
+			written += n
+			if err != nil {
+				break
+			}
+			if n == 0 {
+				err = io.ErrShortWrite
+				break
+			}
+		}
 
 		b.mu.Lock()
-		result.n = n
 		result.err = err
 		result.done = true
 		b.mu.Unlock()
@@ -183,7 +194,7 @@ func (b *opaqueBridge) startWrite(
 func (b *opaqueBridge) takeWrite(
 	_ context.Context,
 	_ api.Module,
-	operation uint32,
+	operation uint64,
 ) int32 {
 	b.mu.Lock()
 	result, exists := b.writes[operation]
@@ -196,12 +207,9 @@ func (b *opaqueBridge) takeWrite(
 		return opaqueHostPending
 	}
 	delete(b.writes, operation)
-	n, err := result.n, result.err
+	err := result.err
 	b.mu.Unlock()
 
-	if n > 0 {
-		return int32(n)
-	}
 	if err != nil {
 		return opaqueHostIOError
 	}
@@ -215,7 +223,47 @@ func (b *opaqueBridge) signalCompletion() {
 	}
 }
 
-func (b *opaqueBridge) readInFlight(handle uint32) bool {
+func (b *opaqueBridge) cancelOperation(
+	_ context.Context,
+	_ api.Module,
+	operation uint64,
+) int32 {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	if _, exists := b.reads[operation]; exists {
+		delete(b.reads, operation)
+		return 0
+	}
+	if _, exists := b.writes[operation]; exists {
+		delete(b.writes, operation)
+		return 0
+	}
+	return opaqueHostInvalid
+}
+
+func (b *opaqueBridge) closeHandle(
+	_ context.Context,
+	_ api.Module,
+	handle uint64,
+) int32 {
+	b.mu.Lock()
+	connection, exists := b.handles[handle]
+	if exists {
+		delete(b.handles, handle)
+	}
+	b.mu.Unlock()
+
+	if !exists {
+		return 0
+	}
+	if err := connection.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
+		return opaqueHostIOError
+	}
+	return 0
+}
+
+func (b *opaqueBridge) readInFlight(handle uint64) bool {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
@@ -244,13 +292,14 @@ func (b *opaqueBridge) close() {
 func TestOpaqueSocketBridgeDrivesTokio(t *testing.T) {
 	pendingHost, pendingPeer := net.Pipe()
 	activeHost, activePeer := net.Pipe()
-	bridge := newOpaqueBridge(map[uint32]net.Conn{
+	bridge := newOpaqueBridge(map[uint64]net.Conn{
 		1: pendingHost,
 		2: activeHost,
 	})
 	defer bridge.close()
 	defer pendingPeer.Close()
 	defer activePeer.Close()
+	wasm := buildGuest(t)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -261,7 +310,7 @@ func TestOpaqueSocketBridgeDrivesTokio(t *testing.T) {
 	instantiateOpaqueHost(t, ctx, runtime, bridge)
 	wasi_snapshot_preview1.MustInstantiate(ctx, runtime)
 
-	compiled, err := runtime.CompileModule(ctx, buildGuest(t))
+	compiled, err := runtime.CompileModule(ctx, wasm)
 	if err != nil {
 		t.Fatalf("compile guest: %v", err)
 	}
@@ -420,6 +469,8 @@ func instantiateOpaqueHost(
 		NewFunctionBuilder().WithFunc(bridge.takeRead).Export("take_read").
 		NewFunctionBuilder().WithFunc(bridge.startWrite).Export("start_write").
 		NewFunctionBuilder().WithFunc(bridge.takeWrite).Export("take_write").
+		NewFunctionBuilder().WithFunc(bridge.cancelOperation).Export("cancel_operation").
+		NewFunctionBuilder().WithFunc(bridge.closeHandle).Export("close").
 		Instantiate(ctx)
 	if err != nil {
 		t.Fatalf("instantiate opaque socket host module: %v", err)

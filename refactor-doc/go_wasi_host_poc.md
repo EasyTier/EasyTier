@@ -78,14 +78,16 @@ extension.
 
 ### Opaque-handle probe result
 
-The same harness now contains a minimal Model B implementation:
+The same harness now contains a minimal Model B implementation that uses the
+real host-backed TCP Socket Module in `easytier-core`:
 
 - Go stores arbitrary `net.Conn` values behind opaque integer handles;
-- a guest `HostTcpStream` implements Tokio `AsyncRead` and `AsyncWrite`;
+- core `HostTcpStream` implements Tokio `AsyncRead` and `AsyncWrite`, while a
+  WASI Adapter maps its demand-driven operations to host imports;
 - the Adapter submits at most one operation per direction when Tokio polls it;
-- Go workers mechanically call the requested `net.Conn.Read` or
-  `net.Conn.Write`, own any buffer while the guest is not running, and signal a
-  completion without re-entering wasm;
+- Go workers mechanically call the requested `net.Conn.Read` or complete a
+  `net.Conn.Write` loop, own every buffer while the guest is not running, and
+  signal a completion without re-entering wasm;
 - the host serially invokes a bounded guest `drive`, which wakes the registered
   tasks and lets current-thread Tokio poll them again.
 

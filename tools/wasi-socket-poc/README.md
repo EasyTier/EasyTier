@@ -6,9 +6,10 @@ create a connection and let a current-thread Tokio guest drive asynchronous
 read/write without blocking unrelated work, either through a WASI virtual fd or
 an opaque host handle?
 
-The experiment deliberately uses a separate Rust guest instead of
-`easytier-core`. This keeps Tokio/wazero capability failures separate from the
-ongoing EasyTier ownership migration.
+The experiment uses a small standalone Rust guest that depends on
+`easytier-core`. The public-fd probe isolates Tokio/wazero capabilities, while
+the opaque-handle probe exercises the real core Socket Adapter without pulling
+in a complete EasyTier instance.
 
 ## Run
 
@@ -40,8 +41,11 @@ The public-fd probe tests wazero's pre-opened TCP listener support:
 The opaque-handle probe then tests a deliberately small host Interface:
 
 - Go holds two arbitrary logical `net.Conn` values in a handle table;
-- the guest's `AsyncRead` and `AsyncWrite` implementations submit operations
-  only when Tokio polls them;
+- the guest uses `easytier-core`'s `HostSocketRuntime`, `HostTcpStream`, and
+  `WasiHostTcpIo` rather than a PoC-only socket implementation;
+- `HostTcpStream` submits a demand-driven read or one bounded, owned write-all
+  operation when Tokio polls it, and `flush` observes asynchronous write
+  completion;
 - Go executes the requested `net.Conn.Read` or `net.Conn.Write` in goroutines and
   records owned completion data;
 - the host serially re-enters one bounded guest `drive` after an I/O completion
@@ -49,7 +53,8 @@ The opaque-handle probe then tests a deliberately small host Interface:
 - one `net.Pipe` read remains pending while another `net.Pipe` echoes data and a
   Tokio timer advances.
 
-This slice does not add a wazero fork and does not modify `easytier-core`.
+This slice does not add a wazero fork. Its 5 ms drive loop remains test-only
+rather than becoming part of `easytier-core`.
 
 ## Result with wazero 1.12.0
 
@@ -79,6 +84,9 @@ The minimal Model B path works with wazero 1.12.0:
 - Tokio initiates each read/write by polling the guest Socket Adapter;
 - Go only performs the requested logical `net.Conn` operation and reports its
   completion; it does not implement framing or protocol state;
+- operation IDs are unique across socket runtimes in one wasm module and read
+  completions are owned by core; core conformance tests separately cover stream
+  cancellation and close;
 - a permanently pending read does not block a second connection or a 50 ms
   Tokio timer;
 - all guest calls remain serialized. Go I/O workers never re-enter the module.
@@ -87,9 +95,10 @@ The observed test completes with status `0x1b`: timer progress, second-socket
 progress, pending-read isolation, and completion. The exact drive-call count is
 timing-dependent.
 
-This proves functional scheduling, not the production wake strategy. The 5 ms
-tick is only a PoC mechanism for advancing Tokio timers. Before selecting the
-bounded-drive design, core must export its next timer deadline (or provide one
-central wait) so an idle instance does not poll periodically. UDP, partial I/O,
-cancellation, EOF, sustained backpressure, and lifecycle remain later P0.2
-work.
+This proves functional scheduling and reuse of the real core TCP Socket
+Adapter, not the production wake strategy. The 5 ms tick is only a PoC
+mechanism for advancing Tokio timers. Before selecting the bounded-drive
+design, core must export its next timer deadline (or provide one central wait)
+so an idle instance does not poll periodically. UDP, forced host partial I/O,
+full cancellation races, sustained backpressure, and complete instance
+lifecycle remain later P0.2 work.
