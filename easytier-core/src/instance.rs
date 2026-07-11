@@ -241,9 +241,14 @@ impl ProxyServiceGroup {
     }
 
     async fn stop_started(&self) {
-        let started_count = self.started_count.swap(0, Ordering::AcqRel);
-        for service in self.services[..started_count].iter().rev() {
-            service.stop().await;
+        loop {
+            let started_count = self.started_count.load(Ordering::Acquire);
+            if started_count == 0 {
+                break;
+            }
+            self.services[started_count - 1].stop().await;
+            self.started_count
+                .store(started_count - 1, Ordering::Release);
         }
     }
 }
@@ -740,7 +745,12 @@ where
 
 #[cfg(test)]
 mod tests {
-    use std::sync::{Arc, Mutex};
+    use std::sync::{
+        Arc, Mutex,
+        atomic::{AtomicUsize, Ordering},
+    };
+
+    use tokio::sync::Notify;
 
     use super::*;
 
@@ -756,6 +766,30 @@ mod tests {
         name: &'static str,
         fail_start: bool,
         events: Arc<Mutex<Vec<String>>>,
+    }
+
+    struct CancelOnceStopService {
+        stop_calls: AtomicUsize,
+        stop_entered: Notify,
+        release_first_stop: Notify,
+        events: Arc<Mutex<Vec<String>>>,
+    }
+
+    #[async_trait]
+    impl ProxyService for CancelOnceStopService {
+        async fn start(&self) -> anyhow::Result<()> {
+            self.events.lock().unwrap().push("start:blocking".into());
+            Ok(())
+        }
+
+        async fn stop(&self) {
+            let call = self.stop_calls.fetch_add(1, Ordering::AcqRel);
+            self.events.lock().unwrap().push("stop:blocking".into());
+            if call == 0 {
+                self.stop_entered.notify_one();
+                self.release_first_stop.notified().await;
+            }
+        }
     }
 
     #[async_trait]
@@ -851,5 +885,43 @@ mod tests {
         group.stop().await;
 
         assert!(events.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn proxy_group_retries_cleanup_after_stop_is_cancelled() {
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let blocking = Arc::new(CancelOnceStopService {
+            stop_calls: AtomicUsize::new(0),
+            stop_entered: Notify::new(),
+            release_first_stop: Notify::new(),
+            events: events.clone(),
+        });
+        let group = ProxyServiceGroup::new(
+            Arc::new(StaticProxyPolicy(true)),
+            vec![service("tcp", false, &events), blocking.clone()],
+        );
+        group.start().await.unwrap();
+
+        let stop_task = tokio::spawn({
+            let group = group.clone();
+            async move { group.stop().await }
+        });
+        blocking.stop_entered.notified().await;
+        stop_task.abort();
+        assert!(stop_task.await.unwrap_err().is_cancelled());
+
+        group.stop().await;
+
+        assert_eq!(blocking.stop_calls.load(Ordering::Acquire), 2);
+        assert_eq!(
+            *events.lock().unwrap(),
+            [
+                "start:tcp",
+                "start:blocking",
+                "stop:blocking",
+                "stop:blocking",
+                "stop:tcp",
+            ]
+        );
     }
 }
