@@ -283,7 +283,7 @@ pub struct InstanceConfigPatcher {
     #[cfg(feature = "socks5")]
     socks5_server: Weak<Socks5Server>,
     peer_manager: Weak<PeerManager>,
-    conn_manager: Weak<ManualConnectorManager>,
+    core_instance: Weak<RuntimeCoreInstance>,
     public_ipv6_provider_task: ArcPublicIpv6ProviderTaskSlot,
 }
 
@@ -623,7 +623,7 @@ impl InstanceConfigPatcher {
         if connectors.is_empty() {
             return Ok(());
         }
-        let conn_manager = weak_upgrade(&self.conn_manager)?;
+        let core_instance = weak_upgrade(&self.core_instance)?;
         for connector in connectors {
             let Some(url) = connector.url.map(Into::<url::Url>::into) else {
                 tracing::warn!("Connector url is None, skipping.");
@@ -632,15 +632,17 @@ impl InstanceConfigPatcher {
             match ConfigPatchAction::try_from(connector.action) {
                 Ok(ConfigPatchAction::Add) => {
                     tracing::info!("Connector added: {}", url);
-                    conn_manager.add_connector_by_url(url).await?;
+                    core_instance.add_connector(url)?;
                 }
                 Ok(ConfigPatchAction::Remove) => {
                     tracing::info!("Connector removed: {}", url);
-                    conn_manager.remove_connector(url).await?;
+                    if !core_instance.remove_connector(&url) {
+                        return Err(Error::NotFound.into());
+                    }
                 }
                 Ok(ConfigPatchAction::Clear) => {
                     tracing::info!("Connectors cleared.");
-                    conn_manager.clear_connectors().await;
+                    core_instance.clear_connectors();
                 }
                 Err(_) => {
                     tracing::warn!("Invalid connector action: {}", connector.action);
@@ -767,9 +769,7 @@ impl Instance {
 
     async fn add_initial_peers(&self) -> Result<(), Error> {
         for peer in self.global_ctx.config.get_peers().iter() {
-            self.get_conn_manager()
-                .add_connector_by_url(peer.uri.clone())
-                .await?;
+            self.core_instance.add_connector(peer.uri.clone())?;
         }
         Ok(())
     }
@@ -1383,7 +1383,7 @@ impl Instance {
             #[cfg(feature = "socks5")]
             socks5_server: Arc::downgrade(&self.socks5_server),
             peer_manager: Arc::downgrade(&self.peer_manager),
-            conn_manager: Arc::downgrade(&self.conn_manager),
+            core_instance: Arc::downgrade(&self.core_instance),
             public_ipv6_provider_task: self.public_ipv6_provider_task.clone(),
         }
     }
