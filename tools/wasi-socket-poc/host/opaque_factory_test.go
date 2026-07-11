@@ -28,6 +28,7 @@ type opaqueCreateOperation struct {
 	cancel     context.CancelFunc
 	connection net.Conn
 	packet     net.PacketConn
+	listener   net.Listener
 	localAddr  net.Addr
 	peerAddr   net.Addr
 	err        error
@@ -399,40 +400,6 @@ func encodeNetAddr(address net.Addr) ([socketAddressLen]byte, error) {
 	}
 	copy(encoded[:], metadata[:socketAddressLen])
 	return encoded, nil
-}
-
-func (b *opaqueBridge) unsupportedTCPBind(
-	context.Context,
-	api.Module,
-	uint64,
-	uint32,
-	uint32,
-) int32 {
-	return opaqueHostInvalid
-}
-
-func (b *opaqueBridge) unsupportedTakeBound(
-	context.Context,
-	api.Module,
-	uint64,
-	uint32,
-	uint32,
-) int32 {
-	return opaqueHostInvalid
-}
-
-func (b *opaqueBridge) unsupportedTCPAccept(context.Context, api.Module, uint64, uint64) int32 {
-	return opaqueHostInvalid
-}
-
-func (b *opaqueBridge) unsupportedTakeSocket(
-	context.Context,
-	api.Module,
-	uint64,
-	uint32,
-	uint32,
-) int32 {
-	return opaqueHostInvalid
 }
 
 func TestOpaqueFactoryCreatesSocketsForCore(t *testing.T) {

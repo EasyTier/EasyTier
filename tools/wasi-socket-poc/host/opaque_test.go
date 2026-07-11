@@ -45,10 +45,12 @@ type opaqueBridge struct {
 	mu         sync.Mutex
 	handles    map[uint64]net.Conn
 	packets    map[uint64]*opaquePacketState
+	listeners  map[uint64]*opaqueTCPListenerState
 	reads      map[uint64]*opaqueReadOperation
 	writes     map[uint64]*opaqueWriteOperation
 	udpReads   map[uint64]*opaqueUDPReadWaiter
 	udpWrites  map[uint64]*opaqueUDPWriteWaiter
+	tcpAccepts map[uint64]*opaqueTCPAcceptWaiter
 	creates    map[uint64]*opaqueCreateOperation
 	nextHandle uint64
 	completion chan struct{}
@@ -65,10 +67,12 @@ func newOpaqueBridge(
 	bridge := &opaqueBridge{
 		handles:    handles,
 		packets:    make(map[uint64]*opaquePacketState, len(packets)),
+		listeners:  make(map[uint64]*opaqueTCPListenerState),
 		reads:      make(map[uint64]*opaqueReadOperation),
 		writes:     make(map[uint64]*opaqueWriteOperation),
 		udpReads:   make(map[uint64]*opaqueUDPReadWaiter),
 		udpWrites:  make(map[uint64]*opaqueUDPWriteWaiter),
+		tcpAccepts: make(map[uint64]*opaqueTCPAcceptWaiter),
 		creates:    make(map[uint64]*opaqueCreateOperation),
 		nextHandle: 1 << 48,
 		completion: make(chan struct{}, 1),
@@ -281,6 +285,13 @@ func (b *opaqueBridge) cancelOperation(
 		if create.packet != nil {
 			_ = create.packet.Close()
 		}
+		if create.listener != nil {
+			_ = create.listener.Close()
+		}
+		return 0
+	}
+	if _, exists := b.tcpAccepts[operation]; exists {
+		delete(b.tcpAccepts, operation)
 		return 0
 	}
 	return opaqueHostInvalid
@@ -300,9 +311,13 @@ func (b *opaqueBridge) closeHandle(
 	if packetExists {
 		delete(b.packets, handle)
 	}
+	listener, listenerExists := b.listeners[handle]
+	if listenerExists {
+		delete(b.listeners, handle)
+	}
 	b.mu.Unlock()
 
-	if !exists && !packetExists {
+	if !exists && !packetExists && !listenerExists {
 		return 0
 	}
 	if exists {
@@ -312,6 +327,14 @@ func (b *opaqueBridge) closeHandle(
 	}
 	if packetExists {
 		packet.closeAfterQueuedSends()
+	}
+	if listenerExists {
+		if err := listener.listener.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
+			return opaqueHostIOError
+		}
+		for _, accepted := range listener.accepted {
+			_ = accepted.Close()
+		}
 	}
 	return 0
 }
@@ -338,6 +361,11 @@ func (b *opaqueBridge) close() {
 	for _, packet := range b.packets {
 		packets = append(packets, packet)
 	}
+	listeners := make([]*opaqueTCPListenerState, 0, len(b.listeners))
+	for _, listener := range b.listeners {
+		listeners = append(listeners, listener)
+	}
+	b.listeners = make(map[uint64]*opaqueTCPListenerState)
 	creates := make([]*opaqueCreateOperation, 0, len(b.creates))
 	for _, create := range b.creates {
 		creates = append(creates, create)
@@ -351,6 +379,12 @@ func (b *opaqueBridge) close() {
 	for _, packet := range packets {
 		packet.closeAfterQueuedSends()
 	}
+	for _, listener := range listeners {
+		_ = listener.listener.Close()
+		for _, accepted := range listener.accepted {
+			_ = accepted.Close()
+		}
+	}
 	for _, create := range creates {
 		if create.cancel != nil {
 			create.cancel()
@@ -360,6 +394,9 @@ func (b *opaqueBridge) close() {
 		}
 		if create.packet != nil {
 			_ = create.packet.Close()
+		}
+		if create.listener != nil {
+			_ = create.listener.Close()
 		}
 	}
 	b.workers.Wait()
@@ -565,10 +602,10 @@ func instantiateOpaqueHost(
 		NewFunctionBuilder().WithFunc(bridge.takeTCPConnect).Export("take_tcp_connect").
 		NewFunctionBuilder().WithFunc(bridge.startUDPBind).Export("start_udp_bind").
 		NewFunctionBuilder().WithFunc(bridge.takeUDPBind).Export("take_udp_bind").
-		NewFunctionBuilder().WithFunc(bridge.unsupportedTCPBind).Export("start_tcp_bind").
-		NewFunctionBuilder().WithFunc(bridge.unsupportedTakeBound).Export("take_tcp_bind").
-		NewFunctionBuilder().WithFunc(bridge.unsupportedTCPAccept).Export("start_tcp_accept").
-		NewFunctionBuilder().WithFunc(bridge.unsupportedTakeSocket).Export("take_tcp_accept").
+		NewFunctionBuilder().WithFunc(bridge.startTCPBind).Export("start_tcp_bind").
+		NewFunctionBuilder().WithFunc(bridge.takeTCPBind).Export("take_tcp_bind").
+		NewFunctionBuilder().WithFunc(bridge.startTCPAccept).Export("start_tcp_accept").
+		NewFunctionBuilder().WithFunc(bridge.takeTCPAccept).Export("take_tcp_accept").
 		NewFunctionBuilder().WithFunc(bridge.cancelOperation).Export("cancel_operation").
 		NewFunctionBuilder().WithFunc(bridge.closeHandle).Export("close").
 		Instantiate(ctx)

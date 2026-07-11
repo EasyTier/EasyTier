@@ -9,10 +9,14 @@ use std::{
 
 use easytier_core::socket::{
     host::{
-        HostSocketHandle, HostSocketRuntime, factory::HostSocketFactory, udp::wasi::WasiHostUdpIo,
-        wasi::WasiHostTcpIo, wasi_backend::WasiHostSocketBackend,
+        HostSocketHandle, HostSocketRuntime, factory::HostSocketFactory,
+        listener::HostTcpListenerFactory, udp::wasi::WasiHostUdpIo, wasi::WasiHostTcpIo,
+        wasi_backend::WasiHostSocketBackend,
     },
-    tcp::{TcpConnectOptions, VirtualTcpSocketFactory},
+    tcp::{
+        TcpConnectOptions, TcpListenOptions, VirtualTcpListener, VirtualTcpListenerFactory,
+        VirtualTcpSocketFactory,
+    },
     udp::{UdpBindOptions, VirtualUdpSocket, VirtualUdpSocketFactory},
 };
 use tokio::{
@@ -34,6 +38,7 @@ thread_local! {
     static PROBE: RefCell<Option<Probe>> = const { RefCell::new(None) };
     static UDP_PROBE: RefCell<Option<UdpProbe>> = const { RefCell::new(None) };
     static FACTORY_PROBE: RefCell<Option<FactoryProbe>> = const { RefCell::new(None) };
+    static LISTENER_PROBE: RefCell<Option<FactoryProbe>> = const { RefCell::new(None) };
 }
 
 struct Probe {
@@ -342,6 +347,82 @@ pub extern "C" fn drive_factory_probe() -> u32 {
         {
             probe.status.fetch_or(DONE, Ordering::SeqCst);
         }
+        probe.status.load(Ordering::SeqCst)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn init_listener_probe(port: u32) -> i32 {
+    LISTENER_PROBE.with_borrow_mut(|slot| {
+        if slot.is_some() {
+            return -1;
+        }
+        let Ok(port) = u16::try_from(port) else {
+            return -2;
+        };
+        let runtime = match Builder::new_current_thread().enable_time().build() {
+            Ok(runtime) => runtime,
+            Err(_) => return -3,
+        };
+        let status = Arc::new(AtomicU32::new(0));
+        let sockets = HostSocketRuntime::new();
+        let factory = HostTcpListenerFactory::new(
+            sockets.clone(),
+            Arc::new(WasiHostSocketBackend::default()),
+        );
+        let task_status = status.clone();
+        runtime.spawn(async move {
+            let result: Result<(), String> = async {
+                let local_addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
+                let listener = factory
+                    .bind_tcp(TcpListenOptions::manual_connect(local_addr))
+                    .await
+                    .map_err(|error| error.to_string())?;
+                let (mut stream, _) = listener.accept().await.map_err(|error| error.to_string())?;
+                let mut payload = [0_u8; 8];
+                stream
+                    .read_exact(&mut payload)
+                    .await
+                    .map_err(|error| error.to_string())?;
+                if &payload != b"listener" {
+                    return Err("listener payload mismatch".to_owned());
+                }
+                stream
+                    .write_all(&payload)
+                    .await
+                    .map_err(|error| error.to_string())?;
+                stream.flush().await.map_err(|error| error.to_string())?;
+                Ok(())
+            }
+            .await;
+            match result {
+                Ok(()) => {
+                    task_status.fetch_or(DONE, Ordering::SeqCst);
+                }
+                Err(_) => {
+                    task_status.fetch_or(ERROR | 9, Ordering::SeqCst);
+                }
+            }
+        });
+        *slot = Some(FactoryProbe {
+            runtime,
+            status,
+            sockets,
+        });
+        0
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn drive_listener_probe() -> u32 {
+    LISTENER_PROBE.with_borrow_mut(|slot| {
+        let Some(probe) = slot.as_mut() else {
+            return ERROR | 10;
+        };
+        probe.sockets.notify_completions();
+        probe
+            .runtime
+            .block_on(async { tokio::task::yield_now().await });
         probe.status.load(Ordering::SeqCst)
     })
 }
