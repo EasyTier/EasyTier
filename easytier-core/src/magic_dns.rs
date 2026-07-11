@@ -6,9 +6,9 @@ use std::future::Future;
 #[cfg(feature = "proxy-packet")]
 use pnet_packet::{
     MutablePacket, Packet,
-    icmp::{self, IcmpTypes, MutableIcmpPacket},
+    icmp::{self, IcmpPacket, IcmpTypes, MutableIcmpPacket},
     ip::IpNextHeaderProtocols,
-    ipv4::{self, Ipv4Packet, MutableIpv4Packet},
+    ipv4::{self, Ipv4Flags, Ipv4Packet, MutableIpv4Packet},
     udp::{self, MutableUdpPacket, UdpPacket},
 };
 
@@ -41,21 +41,36 @@ where
     }
 
     let ip_header_length = ip_packet.get_header_length() as usize * 4;
+    let ip_total_length = ip_packet.get_total_length() as usize;
+    if ip_header_length < MutableIpv4Packet::minimum_packet_size()
+        || ip_header_length > ip_total_length
+        || ip_total_length != packet.payload().len()
+        || ip_packet.get_fragment_offset() != 0
+        || ip_packet.get_flags() & Ipv4Flags::MoreFragments != 0
+        || packet.peer_manager_header().is_none()
+    {
+        return false;
+    }
+
     let protocol = ip_packet.get_next_level_protocol();
     let source_ip = ip_packet.get_source();
     let destination_ip = ip_packet.get_destination();
 
     match protocol {
         IpNextHeaderProtocols::Udp => {
-            let Some(udp_packet) = UdpPacket::new(&packet.payload()[ip_header_length..]) else {
+            let ip_payload = &packet.payload()[ip_header_length..ip_total_length];
+            let Some(udp_packet) = UdpPacket::new(ip_payload) else {
                 return false;
             };
+            let udp_length = udp_packet.get_length() as usize;
+            if udp_length != ip_payload.len() || udp_length < UdpPacket::minimum_packet_size() {
+                return false;
+            }
             if udp_packet.get_destination() != 53 {
                 return false;
             }
             let source_port = udp_packet.get_source();
             let destination_port = udp_packet.get_destination();
-            let request_length = udp_packet.payload().len();
             let query = MagicDnsQuery {
                 source: std::net::SocketAddr::from((source_ip, source_port)),
                 payload: udp_packet.payload().to_vec(),
@@ -69,21 +84,24 @@ where
                 destination_ip,
                 source_port,
                 destination_port,
-                request_length,
+                ip_header_length,
                 &response,
             ) {
                 return false;
             }
         }
         IpNextHeaderProtocols::Icmp => {
-            let Some(mut icmp_packet) =
-                MutableIcmpPacket::new(&mut packet.mut_payload()[ip_header_length..])
-            else {
+            let Some(icmp_packet) = IcmpPacket::new(&packet.payload()[ip_header_length..]) else {
                 return false;
             };
             if icmp_packet.get_icmp_type() != IcmpTypes::EchoRequest {
                 return false;
             }
+            let Some(mut icmp_packet) =
+                MutableIcmpPacket::new(&mut packet.mut_payload()[ip_header_length..])
+            else {
+                return false;
+            };
             icmp_packet.set_icmp_type(IcmpTypes::EchoReply);
             icmp_packet.set_checksum(icmp::checksum(&icmp_packet.to_immutable()));
         }
@@ -96,10 +114,12 @@ where
     ip_packet.set_source(destination_ip);
     ip_packet.set_destination(source_ip);
     ip_packet.set_checksum(ipv4::checksum(&ip_packet.to_immutable()));
+    let payload_length = packet.payload().len() as u32;
     let Some(header) = packet.mut_peer_manager_header() else {
         return false;
     };
     header.to_peer_id = my_peer_id.into();
+    header.len.set(payload_length);
     true
 }
 
@@ -111,25 +131,40 @@ fn apply_udp_response(
     destination_ip: Ipv4Addr,
     source_port: u16,
     destination_port: u16,
-    request_length: usize,
+    ip_header_length: usize,
     response: &[u8],
 ) -> bool {
-    let delta_length = response.len() as isize - request_length as isize;
-    let inner_length = (packet.buf_len() as isize + delta_length) as usize;
+    let Some(udp_length) = UdpPacket::minimum_packet_size().checked_add(response.len()) else {
+        return false;
+    };
+    let Some(ip_length) = ip_header_length.checked_add(udp_length) else {
+        return false;
+    };
+    if ip_length > u16::MAX as usize {
+        return false;
+    }
+    let Some(header_length) = packet.buf_len().checked_sub(packet.payload().len()) else {
+        return false;
+    };
+    let Some(inner_length) = header_length.checked_add(ip_length) else {
+        return false;
+    };
+
     if packet.mut_inner().capacity() < inner_length {
-        let header_length = inner_length - response.len();
-        packet.mut_inner().truncate(header_length);
+        packet
+            .mut_inner()
+            .truncate(header_length + ip_header_length + UdpPacket::minimum_packet_size());
     }
     packet.mut_inner().resize(inner_length, 0);
 
     let Some(mut ip_packet) = MutableIpv4Packet::new(packet.mut_payload()) else {
         return false;
     };
-    ip_packet.set_total_length((ip_packet.get_total_length() as isize + delta_length) as u16);
+    ip_packet.set_total_length(ip_length as u16);
     let Some(mut udp_packet) = MutableUdpPacket::new(ip_packet.payload_mut()) else {
         return false;
     };
-    udp_packet.set_length((udp_packet.get_length() as isize + delta_length) as u16);
+    udp_packet.set_length(udp_length as u16);
     udp_packet.set_source(destination_port);
     udp_packet.set_destination(source_port);
     udp_packet.payload_mut().copy_from_slice(response);
@@ -380,6 +415,94 @@ mod tests {
         assert_eq!(udp.get_destination(), 53000);
         assert_eq!(udp.payload(), b"response");
         assert_eq!(packet.get_dst_peer_id(), Some(42));
+        assert_eq!(
+            packet.peer_manager_header().unwrap().len.get() as usize,
+            packet.payload().len()
+        );
+    }
+
+    #[cfg(feature = "proxy-packet")]
+    #[tokio::test]
+    async fn packet_engine_rejects_invalid_ipv4_header_without_mutation() {
+        let mut packet = udp_query(b"query", 53);
+        MutableIpv4Packet::new(packet.mut_payload())
+            .unwrap()
+            .set_header_length(15);
+        let original = packet.payload().to_vec();
+
+        assert!(
+            !process_magic_dns_packet(
+                &mut packet,
+                "100.100.100.101".parse().unwrap(),
+                42,
+                |_| async { panic!("invalid IPv4 header must not invoke DNS") },
+            )
+            .await
+        );
+        assert_eq!(packet.payload(), original);
+    }
+
+    #[cfg(feature = "proxy-packet")]
+    #[tokio::test]
+    async fn packet_engine_rejects_inconsistent_udp_length_without_mutation() {
+        let mut packet = udp_query(b"query", 53);
+        let mut ip = MutableIpv4Packet::new(packet.mut_payload()).unwrap();
+        MutableUdpPacket::new(ip.payload_mut())
+            .unwrap()
+            .set_length(8);
+        let original = packet.payload().to_vec();
+
+        assert!(
+            !process_magic_dns_packet(
+                &mut packet,
+                "100.100.100.101".parse().unwrap(),
+                42,
+                |_| async { panic!("invalid UDP length must not invoke DNS") },
+            )
+            .await
+        );
+        assert_eq!(packet.payload(), original);
+    }
+
+    #[cfg(feature = "proxy-packet")]
+    #[tokio::test]
+    async fn packet_engine_rejects_fragmented_packets_without_mutation() {
+        let mut packet = udp_query(b"query", 53);
+        MutableIpv4Packet::new(packet.mut_payload())
+            .unwrap()
+            .set_flags(Ipv4Flags::MoreFragments);
+        let original = packet.payload().to_vec();
+
+        assert!(
+            !process_magic_dns_packet(
+                &mut packet,
+                "100.100.100.101".parse().unwrap(),
+                42,
+                |_| async { panic!("fragmented packet must not invoke DNS") },
+            )
+            .await
+        );
+        assert_eq!(packet.payload(), original);
+    }
+
+    #[cfg(feature = "proxy-packet")]
+    #[tokio::test]
+    async fn packet_engine_rejects_oversized_response_without_mutation() {
+        let mut packet = udp_query(b"query", 53);
+        let original = packet.payload().to_vec();
+        let original_length = packet.buf_len();
+
+        assert!(
+            !process_magic_dns_packet(
+                &mut packet,
+                "100.100.100.101".parse().unwrap(),
+                42,
+                |_| async { Some(vec![0; u16::MAX as usize]) },
+            )
+            .await
+        );
+        assert_eq!(packet.buf_len(), original_length);
+        assert_eq!(packet.payload(), original);
     }
 
     #[cfg(feature = "proxy-packet")]
