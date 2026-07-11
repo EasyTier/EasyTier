@@ -242,7 +242,7 @@ impl UdpProxy {
         global_ctx: ArcGlobalCtx,
         peer_manager: Arc<PeerManager>,
     ) -> Result<Arc<Self>, Error> {
-        let cidr_set = CidrSet::new(global_ctx.clone());
+        let cidr_set = CidrSet::new_without_updater(global_ctx.clone());
         let runtime = Arc::new(RuntimeUdpProxyAdapter::new(global_ctx));
         let service = UdpProxyService::new(
             peer_manager.core(),
@@ -269,7 +269,8 @@ impl UdpProxy {
         }))
     }
 
-    pub async fn start(self: &Arc<Self>) -> Result<(), Error> {
+    pub async fn start(&self) -> Result<(), Error> {
+        self.cidr_set.start_updater();
         self.service.start().await;
         Ok(())
     }
@@ -277,6 +278,7 @@ impl UdpProxy {
     pub fn stop(&self) {
         self.service.stop();
         self.runtime.close_all();
+        self.cidr_set.stop_updater();
     }
 
     pub fn engine(&self) -> Arc<UdpProxyEngine> {
@@ -367,8 +369,7 @@ impl Drop for UdpProxy {
 #[async_trait::async_trait]
 impl ProxyService for UdpProxy {
     async fn start(&self) -> anyhow::Result<()> {
-        self.service.start().await;
-        Ok(())
+        UdpProxy::start(self).await.map_err(Into::into)
     }
 
     async fn stop(&self) {
@@ -402,6 +403,24 @@ mod tests {
     };
 
     use super::UdpProxy;
+
+    #[test]
+    fn udp_proxy_construction_does_not_require_tokio_runtime() {
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let (global_ctx, peer_manager, _packet_receiver) = {
+            let _runtime_guard = runtime.enter();
+            let global_ctx = get_mock_global_ctx();
+            let (packet_sender, packet_receiver) = create_packet_recv_chan();
+            let peer_manager = Arc::new(PeerManager::new(
+                RouteAlgoType::Ospf,
+                global_ctx.clone(),
+                packet_sender,
+            ));
+            (global_ctx, peer_manager, packet_receiver)
+        };
+
+        UdpProxy::new(global_ctx, peer_manager).unwrap();
+    }
 
     fn build_udp_proxy_packet(
         src_ip: Ipv4Addr,
@@ -536,6 +555,7 @@ mod tests {
             packet_sender,
         ));
         let proxy = UdpProxy::new(global_ctx, peer_manager).unwrap();
+        proxy.start().await.unwrap();
         wait_proxy_cidr_loaded(&proxy).await;
         let mut response_receiver = proxy.receiver.lock().await.take().unwrap();
 
@@ -581,6 +601,7 @@ mod tests {
             packet_sender,
         ));
         let proxy = UdpProxy::new(global_ctx, peer_manager).unwrap();
+        proxy.start().await.unwrap();
         wait_proxy_cidr_loaded(&proxy).await;
         let mut response_receiver = proxy.receiver.lock().await.take().unwrap();
 
@@ -633,6 +654,7 @@ mod tests {
             packet_sender,
         ));
         let proxy = UdpProxy::new(global_ctx, peer_manager).unwrap();
+        proxy.start().await.unwrap();
         wait_proxy_cidr_loaded(&proxy).await;
         let mut response_receiver = proxy.receiver.lock().await.take().unwrap();
 

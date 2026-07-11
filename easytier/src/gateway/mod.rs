@@ -1,5 +1,6 @@
-use std::sync::Arc;
-use tokio::task::JoinSet;
+use std::sync::{Arc, Mutex};
+
+use tokio_util::task::AbortOnDropHandle;
 
 use easytier_core::proxy::cidr_table::{
     ProxyCidrRule, ProxyCidrSnapshot, ProxyCidrSnapshotProvider, ProxyCidrTable,
@@ -26,24 +27,32 @@ pub mod quic_proxy;
 pub(crate) struct CidrSet {
     global_ctx: ArcGlobalCtx,
     table: Arc<ProxyCidrTable>,
-    tasks: JoinSet<()>,
+    updater_task: Mutex<Option<AbortOnDropHandle<()>>>,
 }
 
 impl CidrSet {
     pub fn new(global_ctx: ArcGlobalCtx) -> Self {
-        let mut ret = Self {
-            global_ctx,
-            table: Arc::new(ProxyCidrTable::new()),
-            tasks: JoinSet::new(),
-        };
-        ret.run_cidr_updater();
+        let ret = Self::new_without_updater(global_ctx);
+        ret.start_updater();
         ret
     }
 
-    fn run_cidr_updater(&mut self) {
+    pub fn new_without_updater(global_ctx: ArcGlobalCtx) -> Self {
+        Self {
+            global_ctx,
+            table: Arc::new(ProxyCidrTable::new()),
+            updater_task: Mutex::new(None),
+        }
+    }
+
+    pub fn start_updater(&self) {
+        let mut updater_task = self.updater_task.lock().unwrap();
+        if updater_task.is_some() {
+            return;
+        }
         let global_ctx = self.global_ctx.clone();
         let table = self.table.clone();
-        self.tasks.spawn(async move {
+        updater_task.replace(AbortOnDropHandle::new(tokio::spawn(async move {
             let mut last_cidrs = vec![];
             loop {
                 let cidrs = global_ctx.config.get_proxy_cidrs();
@@ -61,7 +70,11 @@ impl CidrSet {
                 }
                 tokio::time::sleep(std::time::Duration::from_secs(1)).await;
             }
-        });
+        })));
+    }
+
+    pub fn stop_updater(&self) {
+        self.updater_task.lock().unwrap().take();
     }
 
     pub fn contains_v4(&self, ipv4: std::net::Ipv4Addr, real_ip: &mut std::net::Ipv4Addr) -> bool {
