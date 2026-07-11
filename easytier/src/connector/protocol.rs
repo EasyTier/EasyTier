@@ -21,6 +21,17 @@ impl RuntimeClientProtocolUpgrader {
 
 #[async_trait]
 impl ClientProtocolUpgrader<RuntimeTcpSocket> for RuntimeClientProtocolUpgrader {
+    fn supports_scheme(&self, scheme: &str) -> bool {
+        match scheme {
+            "tcp" | "udp" => true,
+            "ws" | "wss" => cfg!(feature = "websocket"),
+            "wg" => cfg!(feature = "wireguard"),
+            "quic" => cfg!(feature = "quic"),
+            "faketcp" => cfg!(feature = "faketcp"),
+            _ => false,
+        }
+    }
+
     async fn upgrade_client(
         &self,
         connected: ConnectedTransport<RuntimeTcpSocket>,
@@ -75,5 +86,31 @@ impl ClientProtocolUpgrader<RuntimeTcpSocket> for RuntimeClientProtocolUpgrader 
             },
             scheme => anyhow::bail!("unsupported client protocol upgrader: {scheme}"),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use easytier_core::connectivity::protocol::ClientProtocolUpgrader;
+
+    use crate::common::global_ctx::tests::get_mock_global_ctx;
+
+    use super::*;
+
+    #[tokio::test]
+    async fn protocol_capabilities_follow_enabled_features() {
+        let upgrader = RuntimeClientProtocolUpgrader::new(get_mock_global_ctx());
+
+        assert!(upgrader.supports_scheme("tcp"));
+        assert!(upgrader.supports_scheme("udp"));
+        assert_eq!(upgrader.supports_scheme("ws"), cfg!(feature = "websocket"));
+        assert_eq!(upgrader.supports_scheme("wss"), cfg!(feature = "websocket"));
+        assert_eq!(upgrader.supports_scheme("wg"), cfg!(feature = "wireguard"));
+        assert_eq!(upgrader.supports_scheme("quic"), cfg!(feature = "quic"));
+        assert_eq!(
+            upgrader.supports_scheme("faketcp"),
+            cfg!(feature = "faketcp")
+        );
+        assert!(!upgrader.supports_scheme("ring"));
     }
 }

@@ -610,6 +610,12 @@ where
         ),
     )
     .await?;
+    if !data.protocol.supports_scheme(endpoint.url.scheme()) {
+        anyhow::bail!(
+            "unsupported client protocol upgrader: {}",
+            endpoint.url.scheme()
+        );
+    }
     let transport = ManualTransport::from_url(&endpoint.url)?;
     let (remote_addr, bind_addrs) =
         with_timeout_budget("resolve", started_at, connect_timeout, async {
