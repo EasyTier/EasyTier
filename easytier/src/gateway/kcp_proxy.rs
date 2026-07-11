@@ -405,8 +405,7 @@ impl KcpProxyDst {
 
         tracing::debug!("kcp connect to dst socket: {:?}", dst_socket);
 
-        let _g = global_ctx.net_ns.guard();
-        let connector = NatDstTcpConnector {};
+        let connector = NatDstTcpConnector::new(global_ctx.clone());
         let ret = connector
             .connect("0.0.0.0:0".parse().unwrap(), dst_socket)
             .await?;

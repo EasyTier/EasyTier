@@ -784,8 +784,7 @@ impl QuicStreamReceiver {
 
         debug!("quic connect to dst socket: {:?}", dst_socket);
 
-        let _g = global_ctx.net_ns.guard();
-        let connector = crate::gateway::tcp_proxy::NatDstTcpConnector {};
+        let connector = crate::gateway::tcp_proxy::NatDstTcpConnector::new(global_ctx.clone());
         let ret = connector.connect("0.0.0.0:0".parse()?, dst_socket).await?;
 
         if let Some(mut e) = proxy_entries.get_mut(&handle) {

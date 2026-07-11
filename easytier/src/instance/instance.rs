@@ -81,7 +81,10 @@ struct RuntimeProxyService {
 
 impl RuntimeProxyService {
     fn new(global_ctx: ArcGlobalCtx, peer_manager: Arc<PeerManager>) -> Result<Arc<Self>, Error> {
-        let tcp_proxy = TcpProxy::new(peer_manager.clone(), NatDstTcpConnector {});
+        let tcp_proxy = TcpProxy::new(
+            peer_manager.clone(),
+            NatDstTcpConnector::new(global_ctx.clone()),
+        );
         let icmp_proxy = IcmpProxy::new(global_ctx.clone(), peer_manager.clone())
             .with_context(|| "create icmp proxy failed")?;
         let udp_proxy = UdpProxy::new(global_ctx.clone(), peer_manager)

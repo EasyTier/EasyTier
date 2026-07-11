@@ -16,13 +16,12 @@ use easytier_core::proxy::tcp_proxy_engine::{
     TcpNatEntrySnapshot, TcpNatEntryState as CoreTcpNatEntryState, TcpProxyMode, TcpProxyNicContext,
 };
 use easytier_core::proxy::tcp_proxy_service::TcpProxyService;
+use easytier_core::socket::tcp::{TcpConnectOptions, VirtualTcpSocketFactory};
 use tokio::io::{AsyncRead, AsyncWrite};
-use tokio::net::{TcpSocket, TcpStream};
 use tokio::time::timeout;
 
 use crate::common::error::Result;
 use crate::common::global_ctx::{ArcGlobalCtx, GlobalCtx};
-use crate::common::log;
 use crate::common::stats_manager::{LabelSet, LabelType, MetricName};
 use crate::connector::runtime::RuntimeConnectorHost;
 use crate::peers::peer_manager::PeerManager;
@@ -33,7 +32,7 @@ use crate::proto::api::instance::{
 use crate::proto::rpc_types;
 use crate::proto::rpc_types::controller::BaseController;
 use crate::tunnel::packet_def::ZCPacket;
-use crate::tunnel::tcp_socket::prepare_proxy_tcp_socket;
+use crate::tunnel::tcp_socket::RuntimeTcpSocket;
 
 use super::CidrSet;
 
@@ -46,28 +45,34 @@ pub(crate) trait NatDstConnector: Send + Sync + Clone + 'static {
     fn transport_type(&self) -> TcpProxyEntryTransportType;
 }
 
-#[derive(Debug, Clone)]
-pub struct NatDstTcpConnector;
+#[derive(Clone)]
+pub struct NatDstTcpConnector {
+    host: Arc<RuntimeConnectorHost>,
+}
+
+impl NatDstTcpConnector {
+    pub fn new(global_ctx: ArcGlobalCtx) -> Self {
+        Self {
+            host: Arc::new(RuntimeConnectorHost::new(global_ctx)),
+        }
+    }
+}
 
 #[async_trait::async_trait]
 impl NatDstConnector for NatDstTcpConnector {
-    type DstStream = TcpStream;
+    type DstStream = RuntimeTcpSocket;
 
     async fn connect(
         &self,
         _src: SocketAddr,
         nat_dst: SocketAddr,
     ) -> anyhow::Result<Self::DstStream> {
-        let socket = TcpSocket::new_v4()
-            .inspect_err(|error| log::error!(?error, "create v4 socket failed"))?;
-
-        let stream = timeout(Duration::from_secs(10), socket.connect(nat_dst))
-            .await?
-            .with_context(|| format!("connect to nat dst failed: {:?}", nat_dst))?;
-
-        prepare_proxy_tcp_socket(&stream).map_err(|err| ProxyRuntimeError::Other(err.into()))?;
-
-        Ok(stream)
+        timeout(
+            Duration::from_secs(10),
+            self.host.connect_tcp(TcpConnectOptions::proxy_nat(nat_dst)),
+        )
+        .await?
+        .with_context(|| format!("connect to nat dst failed: {:?}", nat_dst))
     }
 
     fn proxy_mode(&self) -> TcpProxyMode {
@@ -184,9 +189,7 @@ impl<C: NatDstConnector> TcpProxyRuntime for RuntimeTcpProxyAdapter<C> {
             )
             .inc();
 
-        let _guard = self.global_ctx.net_ns.guard();
         let stream = self.connector.connect(ctx.src, nat_dst).await?;
-        drop(_guard);
 
         Ok(Box::new(stream))
     }
