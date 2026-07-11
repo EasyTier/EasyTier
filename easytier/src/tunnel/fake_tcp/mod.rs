@@ -290,13 +290,16 @@ impl AsyncWrite for FakeTcpSocket {
         _context: &mut TaskContext<'_>,
         buffer: &[u8],
     ) -> Poll<io::Result<usize>> {
-        match self.socket.try_send(buffer) {
-            Some(()) => Poll::Ready(Ok(buffer.len())),
-            None => Poll::Ready(Err(io::Error::new(
-                io::ErrorKind::BrokenPipe,
-                "FakeTCP socket closed while sending",
-            ))),
+        if self.socket.try_send(buffer).is_none() {
+            // Preserve FakeTCP's existing lossy send behavior. A temporary
+            // driver lock conflict is indistinguishable from a closed stack
+            // here, and the former must not tear down the peer connection.
+            tracing::trace!(
+                len = buffer.len(),
+                "FakeTCP socket dropped an outgoing frame"
+            );
         }
+        Poll::Ready(Ok(buffer.len()))
     }
 
     fn poll_flush(self: Pin<&mut Self>, _context: &mut TaskContext<'_>) -> Poll<io::Result<()>> {
