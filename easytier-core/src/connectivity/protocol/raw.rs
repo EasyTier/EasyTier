@@ -12,6 +12,8 @@ use crate::{
     tunnel::{Tunnel, TunnelError, tcp::TcpTunnelUpgrader, udp::UdpTunnelUpgrader},
 };
 
+const BYTE_STREAM_MAX_PACKET_SIZE: usize = 4096;
+
 pub fn upgrade_connected<S>(
     connected: ConnectedTransport<S>,
     requested_remote_addr: Url,
@@ -39,7 +41,9 @@ where
         remote_addr: Some(remote_url.clone().into()),
         resolved_remote_addr: Some(resolved_remote_url.unwrap_or(remote_url).into()),
     };
-    TcpTunnelUpgrader::new(info).upgrade(socket)
+    TcpTunnelUpgrader::new(info)
+        .with_max_packet_size(BYTE_STREAM_MAX_PACKET_SIZE)
+        .upgrade(socket)
 }
 
 pub fn upgrade_connected_tcp<S>(
@@ -114,7 +118,9 @@ where
         remote_addr: remote_url.clone().map(Into::into),
         resolved_remote_addr: remote_url.map(Into::into),
     };
-    TcpTunnelUpgrader::new(info).upgrade(socket)
+    TcpTunnelUpgrader::new(info)
+        .with_max_packet_size(BYTE_STREAM_MAX_PACKET_SIZE)
+        .upgrade(socket)
 }
 
 pub fn upgrade_accepted_udp(session: UdpSession) -> Result<Box<dyn Tunnel>, TunnelError> {
@@ -168,7 +174,10 @@ mod tests {
         task::{Context, Poll},
     };
 
+    use futures::{SinkExt, StreamExt};
     use tokio::io::{AsyncRead, AsyncWrite, DuplexStream, ReadBuf};
+
+    use crate::packet::ZCPacket;
 
     use super::*;
 
@@ -181,6 +190,14 @@ mod tests {
     impl MockTcpSocket {
         fn new(local_addr: SocketAddr, peer_addr: SocketAddr) -> Self {
             let (stream, _) = tokio::io::duplex(64);
+            Self::from_stream(stream, local_addr, peer_addr)
+        }
+
+        fn from_stream(
+            stream: DuplexStream,
+            local_addr: SocketAddr,
+            peer_addr: SocketAddr,
+        ) -> Self {
             Self {
                 stream,
                 local_addr,
@@ -325,5 +342,42 @@ mod tests {
         assert_eq!(info.tunnel_type, "unix");
         assert!(info.remote_addr.is_none());
         assert!(info.resolved_remote_addr.is_none());
+    }
+
+    #[tokio::test]
+    async fn byte_stream_upgrader_preserves_legacy_unix_packet_limit() {
+        let (client_stream, server_stream) = tokio::io::duplex(8192);
+        let client = upgrade_connected_byte_stream(ConnectedByteStream::new(
+            MockTcpSocket::from_stream(
+                client_stream,
+                "127.0.0.1:1000".parse().unwrap(),
+                "127.0.0.1:2000".parse().unwrap(),
+            ),
+            None,
+            "unix:///tmp/easytier.sock".parse().unwrap(),
+            None,
+        ))
+        .unwrap();
+        let server = upgrade_accepted_byte_stream(
+            MockTcpSocket::from_stream(
+                server_stream,
+                "127.0.0.1:2000".parse().unwrap(),
+                "127.0.0.1:1000".parse().unwrap(),
+            ),
+            "unix:///tmp/easytier.sock".parse().unwrap(),
+            Some("unix://anonymous/peer".parse().unwrap()),
+        )
+        .unwrap();
+
+        let (_, mut client_sink) = client.split();
+        let (mut server_stream, _) = server.split();
+        let payload = vec![0x5a; 3000];
+        client_sink
+            .send(ZCPacket::new_with_payload(&payload))
+            .await
+            .unwrap();
+
+        let packet = server_stream.next().await.unwrap().unwrap();
+        assert_eq!(packet.payload(), payload);
     }
 }

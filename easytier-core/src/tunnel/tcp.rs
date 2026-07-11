@@ -10,13 +10,15 @@ use crate::{
 pub struct TcpTunnel<S> {
     info: Option<TunnelInfo>,
     socket: StdMutex<Option<S>>,
+    max_packet_size: usize,
 }
 
 impl<S> TcpTunnel<S> {
-    fn new(socket: S, tunnel_info: TunnelInfo) -> Self {
+    fn new(socket: S, tunnel_info: TunnelInfo, max_packet_size: usize) -> Self {
         Self {
             info: Some(tunnel_info),
             socket: StdMutex::new(Some(socket)),
+            max_packet_size,
         }
     }
 }
@@ -34,7 +36,7 @@ where
             .expect("TcpTunnel can only be split once");
         let (reader, writer) = tokio::io::split(socket);
         (
-            Box::pin(FramedReader::new(reader, TCP_MTU_BYTES)),
+            Box::pin(FramedReader::new(reader, self.max_packet_size)),
             Box::pin(FramedWriter::new(writer)),
         )
     }
@@ -46,18 +48,31 @@ where
 
 pub struct TcpTunnelUpgrader {
     tunnel_info: TunnelInfo,
+    max_packet_size: usize,
 }
 
 impl TcpTunnelUpgrader {
     pub fn new(tunnel_info: TunnelInfo) -> Self {
-        Self { tunnel_info }
+        Self {
+            tunnel_info,
+            max_packet_size: TCP_MTU_BYTES,
+        }
+    }
+
+    pub(crate) fn with_max_packet_size(mut self, max_packet_size: usize) -> Self {
+        self.max_packet_size = max_packet_size;
+        self
     }
 
     pub fn upgrade<S>(self, socket: S) -> Result<Box<dyn Tunnel>, TunnelError>
     where
         S: VirtualTcpSocket,
     {
-        Ok(Box::new(TcpTunnel::new(socket, self.tunnel_info)))
+        Ok(Box::new(TcpTunnel::new(
+            socket,
+            self.tunnel_info,
+            self.max_packet_size,
+        )))
     }
 }
 
