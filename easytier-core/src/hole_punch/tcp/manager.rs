@@ -123,6 +123,15 @@ where
             tasks,
         })
     }
+
+    async fn stop(&self) {
+        let mut tasks = {
+            let mut task_slot = self.tasks.lock().unwrap();
+            std::mem::replace(&mut *task_slot, JoinSet::new())
+        };
+        tasks.abort_all();
+        while tasks.join_next().await.is_some() {}
+    }
 }
 
 #[async_trait]
@@ -507,6 +516,19 @@ where
 
     pub async fn run_immediately(&self) {
         self.client.run_immediately().await;
+    }
+
+    pub async fn stop(&self) {
+        self.client.stop().await;
+        self.peer_manager
+            .get_peer_rpc_mgr()
+            .rpc_server()
+            .registry()
+            .unregister(
+                TcpHolePunchRpcServer::new_arc(self.server.clone()),
+                self.peer_manager.network_name(),
+            );
+        self.server.stop().await;
     }
 
     pub async fn collect_peers_need_task(&self) -> Vec<PeerId> {

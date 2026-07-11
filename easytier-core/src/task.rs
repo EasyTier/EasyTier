@@ -100,13 +100,25 @@ where
     }
 
     pub fn start(&self) {
+        let mut task_slot = self.main_loop_task.lock().unwrap();
+        if task_slot.as_ref().is_some_and(|task| !task.is_finished()) {
+            return;
+        }
         let task = AbortOnDropHandle::new(tokio::spawn(Self::main_loop(
             self.launcher.clone(),
             self.data.clone(),
             self.run_signal.clone(),
             self.external_signal.clone(),
         )));
-        self.main_loop_task.lock().unwrap().replace(task);
+        task_slot.replace(task);
+    }
+
+    pub async fn stop(&self) {
+        let task = self.main_loop_task.lock().unwrap().take();
+        if let Some(task) = task {
+            task.abort();
+            let _ = task.await;
+        }
     }
 
     async fn main_loop(
@@ -207,5 +219,78 @@ where
 
     pub fn data(&self) -> D {
         self.data.clone()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+
+    use super::*;
+
+    #[derive(Clone)]
+    struct TestLauncher {
+        active_tasks: Arc<AtomicUsize>,
+    }
+
+    struct ActiveTaskGuard(Arc<AtomicUsize>);
+
+    impl Drop for ActiveTaskGuard {
+        fn drop(&mut self) {
+            self.0.fetch_sub(1, Ordering::SeqCst);
+        }
+    }
+
+    #[async_trait]
+    impl PeerTaskLauncher for TestLauncher {
+        type PeerManager = ();
+        type Data = ();
+        type CollectPeerItem = u8;
+        type TaskRet = ();
+
+        fn new_data(&self, _peer_manager: Arc<()>) {}
+
+        async fn collect_peers_need_task(&self, _data: &()) -> Vec<u8> {
+            vec![1]
+        }
+
+        async fn launch_task(&self, _data: &(), _item: u8) -> JoinHandle<Result<(), Error>> {
+            let active_tasks = self.active_tasks.clone();
+            tokio::spawn(async move {
+                active_tasks.fetch_add(1, Ordering::SeqCst);
+                let _guard = ActiveTaskGuard(active_tasks);
+                std::future::pending::<()>().await;
+                Ok(())
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn peer_task_manager_is_cold_and_joins_children_on_stop() {
+        let active_tasks = Arc::new(AtomicUsize::new(0));
+        let manager = PeerTaskManager::new(
+            TestLauncher {
+                active_tasks: active_tasks.clone(),
+            },
+            Arc::new(()),
+        );
+
+        tokio::task::yield_now().await;
+        assert_eq!(active_tasks.load(Ordering::SeqCst), 0);
+
+        manager.start();
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            while active_tasks.load(Ordering::SeqCst) == 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+
+        manager.stop().await;
+        assert_eq!(active_tasks.load(Ordering::SeqCst), 0);
     }
 }

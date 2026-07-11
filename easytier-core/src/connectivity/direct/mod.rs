@@ -290,6 +290,21 @@ where
         self.client.start();
     }
 
+    pub async fn stop(&self) {
+        self.client.stop().await;
+        self.data
+            .peer_manager
+            .get_peer_rpc_mgr()
+            .rpc_server()
+            .registry()
+            .unregister(
+                GeneratedDirectConnectorRpcServer::new(DirectConnectorRpcHandler::new(
+                    self.data.host.clone(),
+                )),
+                &self.data.options.network_name,
+            );
+    }
+
     pub async fn try_direct_connect_with_ip_list(
         &self,
         dst_peer_id: PeerId,

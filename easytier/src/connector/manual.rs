@@ -168,6 +168,7 @@ impl ManualConnectorManager {
                 global_ctx: global_ctx.clone(),
             }),
         ));
+        core_manager.start();
 
         let mut ret = Self {
             global_ctx: global_ctx.clone(),

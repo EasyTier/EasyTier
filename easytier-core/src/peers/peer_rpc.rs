@@ -86,6 +86,16 @@ impl PeerRpcManager {
         });
     }
 
+    pub async fn stop(&self) {
+        self.bidirect_rpc.stop().await;
+        let mut tasks = {
+            let mut task_slot = self.tasks.lock().unwrap();
+            std::mem::replace(&mut *task_slot, JoinSet::new())
+        };
+        tasks.abort_all();
+        while tasks.join_next().await.is_some() {}
+    }
+
     pub fn rpc_client(&self) -> &rpc_impl::client::Client {
         self.bidirect_rpc.rpc_client()
     }

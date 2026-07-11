@@ -1104,7 +1104,18 @@ impl PeerManagerCore {
         }
     }
 
+    pub async fn stop(&self) {
+        let mut tasks = {
+            let mut task_slot = self.tasks.lock().await;
+            std::mem::replace(&mut *task_slot, JoinSet::new())
+        };
+        tasks.abort_all();
+        while tasks.join_next().await.is_some() {}
+        self.peer_rpc_mgr.stop().await;
+    }
+
     pub async fn clear_resources(&self) {
+        self.stop().await;
         let mut peer_pipeline = self.peer_packet_process_pipeline.write().await;
         peer_pipeline.clear();
         let mut nic_pipeline = self.nic_packet_process_pipeline.write().await;

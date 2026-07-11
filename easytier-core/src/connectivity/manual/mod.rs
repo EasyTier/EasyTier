@@ -243,7 +243,7 @@ where
     H: ManualConnectorHost,
 {
     data: Arc<ManualConnectorData<H>>,
-    _task: AbortOnDropHandle<()>,
+    task: Mutex<Option<AbortOnDropHandle<()>>>,
 }
 
 impl<H> ManualConnectorManager<H>
@@ -291,8 +291,28 @@ where
             events,
             options,
         });
-        let task = AbortOnDropHandle::new(tokio::spawn(Self::run(data.clone())));
-        Self { data, _task: task }
+        Self {
+            data,
+            task: Mutex::new(None),
+        }
+    }
+
+    pub fn start(&self) {
+        let mut task_slot = self.task.lock().unwrap();
+        if task_slot.as_ref().is_some_and(|task| !task.is_finished()) {
+            return;
+        }
+        task_slot.replace(AbortOnDropHandle::new(tokio::spawn(Self::run(
+            self.data.clone(),
+        ))));
+    }
+
+    pub async fn stop(&self) {
+        let task = self.task.lock().unwrap().take();
+        if let Some(task) = task {
+            task.abort();
+            let _ = task.await;
+        }
     }
 
     pub fn add_connector(&self, url: Url) -> anyhow::Result<()> {
