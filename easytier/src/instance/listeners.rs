@@ -5,16 +5,17 @@ use std::{
 };
 
 use async_trait::async_trait;
-#[cfg(feature = "quic")]
-use easytier_core::socket::udp::UdpSessionSocket;
 use easytier_core::{
-    connectivity::protocol::{self as core_protocol, CoreServerProtocolConfig, raw},
+    connectivity::protocol::{ServerProtocolAdmission, ServerProtocolAdmissionController},
     instance::ListenerService,
-    listener::{self as core_listener, plan as core_listener_plan},
+    listener::{
+        self as core_listener, plan as core_listener_plan,
+        transport::{AcceptedTransport, AcceptedTunnelHandler, ProtocolAcceptedTransportHandler},
+    },
     peers::peer_manager::PeerManagerCore,
     socket::{
         tcp::TcpSocketListener,
-        udp::{UdpSession, UdpSessionAcceptKind, UdpSessionSocketListener},
+        udp::{UdpSession, UdpSessionAcceptKind, UdpSessionSocket, UdpSessionSocketListener},
     },
 };
 use tokio::sync::{Mutex, OwnedSemaphorePermit, Semaphore};
@@ -89,25 +90,11 @@ pub fn create_listener_by_url(
 }
 
 #[async_trait]
-pub trait TunnelHandlerForListener {
-    async fn handle_tunnel(&self, tunnel: Box<dyn Tunnel>) -> Result<(), Error>;
-}
-
-#[async_trait]
-impl TunnelHandlerForListener for PeerManager {
+impl AcceptedTunnelHandler for PeerManager {
     #[tracing::instrument(skip(self))]
-    async fn handle_tunnel(&self, tunnel: Box<dyn Tunnel>) -> Result<(), Error> {
-        self.add_tunnel_as_server(tunnel, true).await
-    }
-}
-
-#[async_trait]
-impl TunnelHandlerForListener for PeerManagerCore {
-    #[tracing::instrument(skip(self))]
-    async fn handle_tunnel(&self, tunnel: Box<dyn Tunnel>) -> Result<(), Error> {
-        self.add_tunnel_as_server(tunnel, true)
-            .await
-            .map_err(Error::from)
+    async fn handle_tunnel(&self, tunnel: Box<dyn Tunnel>) -> anyhow::Result<()> {
+        self.add_tunnel_as_server(tunnel, true).await?;
+        Ok(())
     }
 }
 
@@ -164,8 +151,7 @@ enum AcceptedConnection {
     UdpSession {
         session: UdpSession,
         local_url: url::Url,
-        #[cfg(feature = "quic")]
-        quic_session_permit: Option<tunnel::quic::QuicSessionPermit>,
+        admission: Option<ServerProtocolAdmission>,
     },
 }
 
@@ -176,12 +162,18 @@ pub struct ListenerManager<H> {
         core_listener::ListenerManager<AcceptedConnection, EasyTierAcceptedHandler<H>>,
 }
 
-impl<H: TunnelHandlerForListener + Send + Sync + 'static> ListenerManager<H> {
+impl<H: AcceptedTunnelHandler> ListenerManager<H> {
     pub fn new(global_ctx: ArcGlobalCtx, peer_manager: Arc<H>) -> Self {
-        let peer_manager = Arc::downgrade(&peer_manager);
-        let handler = Arc::new(EasyTierAcceptedHandler {
+        let protocol =
+            crate::connector::protocol::runtime_server_protocol_upgrader(global_ctx.clone());
+        let tunnel_handler = Arc::new(RuntimeAcceptedTunnelHandler {
             global_ctx: global_ctx.clone(),
-            peer_manager: peer_manager.clone(),
+            inner: Arc::downgrade(&peer_manager),
+        });
+        let protocol = ProtocolAcceptedTransportHandler::new(&tunnel_handler, protocol);
+        let handler = Arc::new(EasyTierAcceptedHandler {
+            tunnel_handler,
+            protocol,
         });
         let events = Arc::new(GlobalCtxListenerEventSink {
             global_ctx: global_ctx.clone(),
@@ -773,8 +765,7 @@ struct RuntimeUdpSessionSocketListener {
     factory: Arc<RuntimeUdpSocketFactory>,
     control_handler: Arc<RuntimeUdpSessionControlHandler>,
     socket_mark: Option<u32>,
-    #[cfg(feature = "quic")]
-    quic_admission: Option<Arc<tunnel::quic::QuicSessionAdmission>>,
+    protocol_admission: Option<ServerProtocolAdmissionController>,
     inner: Option<EasyTierUdpSessionSocketListener>,
 }
 
@@ -787,12 +778,11 @@ impl RuntimeUdpSessionSocketListener {
         control_handler: Arc<RuntimeUdpSessionControlHandler>,
         socket_mark: Option<u32>,
     ) -> Self {
-        #[cfg(feature = "quic")]
-        let quic_admission = matches!(
+        let protocol_admission = matches!(
             accept_kind,
             UdpSessionAcceptKind::Classified(easytier_core::socket::udp::UdpSessionProtocol::Quic)
         )
-        .then(tunnel::quic::QuicSessionAdmission::new);
+        .then(ServerProtocolAdmissionController::quic);
         Self {
             url,
             net_ns,
@@ -800,8 +790,7 @@ impl RuntimeUdpSessionSocketListener {
             factory,
             control_handler,
             socket_mark,
-            #[cfg(feature = "quic")]
-            quic_admission,
+            protocol_admission,
             inner: None,
         }
     }
@@ -862,10 +851,9 @@ impl core_listener::SocketListener for RuntimeUdpSessionSocketListener {
         loop {
             let local_url = self.local_url();
             let session = self.inner()?.accept().await?;
-            #[cfg(feature = "quic")]
-            let quic_session_permit = match &self.quic_admission {
-                Some(admission) => match admission.try_acquire_session() {
-                    Some(permit) => Some(permit),
+            let admission = match &self.protocol_admission {
+                Some(controller) => match controller.try_admit() {
+                    Some(admission) => Some(admission),
                     None => {
                         tracing::debug!(
                             peer_addr = ?session.peer_addr(),
@@ -879,8 +867,7 @@ impl core_listener::SocketListener for RuntimeUdpSessionSocketListener {
             return Ok(AcceptedConnection::UdpSession {
                 session,
                 local_url,
-                #[cfg(feature = "quic")]
-                quic_session_permit,
+                admission,
             });
         }
     }
@@ -952,134 +939,24 @@ impl core_listener::ListenerEventSink for GlobalCtxListenerEventSink {
     }
 }
 
-struct EasyTierAcceptedHandler<H> {
+struct RuntimeAcceptedTunnelHandler<H> {
     global_ctx: ArcGlobalCtx,
-    peer_manager: Weak<H>,
+    inner: Weak<H>,
 }
 
-impl<H> Debug for EasyTierAcceptedHandler<H> {
+impl<H> Debug for RuntimeAcceptedTunnelHandler<H> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("EasyTierAcceptedHandler")
-            .field("peer_manager_available", &self.peer_manager.strong_count())
+        f.debug_struct("RuntimeAcceptedTunnelHandler")
+            .field("inner_available", &self.inner.strong_count())
             .finish()
     }
 }
 
 #[async_trait]
-impl<H> core_listener::AcceptedSocketHandler<AcceptedConnection> for EasyTierAcceptedHandler<H>
+impl<H> AcceptedTunnelHandler for RuntimeAcceptedTunnelHandler<H>
 where
-    H: TunnelHandlerForListener + Send + Sync + 'static,
+    H: AcceptedTunnelHandler,
 {
-    async fn handle_accepted_socket(&self, accepted: AcceptedConnection) -> anyhow::Result<()> {
-        match accepted {
-            AcceptedConnection::Tunnel(tunnel) => self.handle_tunnel(tunnel).await,
-            AcceptedConnection::ByteStream {
-                stream,
-                local_url,
-                remote_url,
-            } => self.handle_byte_stream(stream, local_url, remote_url).await,
-            AcceptedConnection::TcpStream {
-                stream,
-                local_url,
-                upgrade_permit,
-            } => {
-                self.handle_tcp_stream(stream, local_url, upgrade_permit)
-                    .await
-            }
-            AcceptedConnection::UdpSession {
-                session,
-                local_url,
-                #[cfg(feature = "quic")]
-                quic_session_permit,
-            } => {
-                #[cfg(feature = "quic")]
-                if local_url.scheme() == "quic" {
-                    return self
-                        .handle_quic_session(
-                            session,
-                            local_url,
-                            quic_session_permit.ok_or_else(|| {
-                                anyhow::anyhow!("QUIC session admission permit is missing")
-                            })?,
-                        )
-                        .await;
-                }
-                self.handle_udp_session(session, local_url).await
-            }
-        }
-    }
-}
-
-impl<H> EasyTierAcceptedHandler<H>
-where
-    H: TunnelHandlerForListener + Send + Sync + 'static,
-{
-    async fn handle_byte_stream(
-        &self,
-        stream: RuntimeTcpSocket,
-        local_url: url::Url,
-        remote_url: Option<url::Url>,
-    ) -> anyhow::Result<()> {
-        let tunnel = raw::upgrade_accepted_byte_stream(stream, local_url, remote_url)?;
-        self.handle_tunnel(tunnel).await
-    }
-
-    async fn handle_tcp_stream(
-        &self,
-        stream: RuntimeTcpSocket,
-        local_url: url::Url,
-        upgrade_permit: Option<OwnedSemaphorePermit>,
-    ) -> anyhow::Result<()> {
-        let _upgrade_permit = upgrade_permit;
-        let tunnel = core_protocol::upgrade_accepted_tcp(
-            stream,
-            local_url,
-            CoreServerProtocolConfig {
-                unix: cfg!(unix),
-                websocket: cfg!(feature = "websocket"),
-                faketcp: cfg!(feature = "faketcp"),
-                websocket_timeout: std::time::Duration::from_secs(3),
-            },
-        )
-        .await?;
-        self.handle_tunnel(tunnel).await
-    }
-
-    async fn handle_udp_session(
-        &self,
-        session: UdpSession,
-        local_url: url::Url,
-    ) -> anyhow::Result<()> {
-        let tunnel = match local_url.scheme() {
-            "udp" => core_protocol::upgrade_accepted_udp(session, &local_url)?,
-            #[cfg(feature = "wireguard")]
-            "wg" => {
-                let identity = self.global_ctx.get_network_identity();
-                let config = tunnel::wireguard::WgConfig::new_from_network_identity(
-                    &identity.network_name,
-                    &identity.network_secret.unwrap_or_default(),
-                );
-                tunnel::wireguard::upgrade_accepted(session, config)?
-            }
-            scheme => anyhow::bail!("unsupported UDP listener protocol: {scheme}"),
-        };
-        self.handle_tunnel(tunnel).await
-    }
-
-    #[cfg(feature = "quic")]
-    async fn handle_quic_session(
-        &self,
-        session: UdpSession,
-        local_url: url::Url,
-        admission: tunnel::quic::QuicSessionPermit,
-    ) -> anyhow::Result<()> {
-        let mut accepted = tunnel::quic::QuicAcceptedSession::new(session, local_url, admission)?;
-        loop {
-            let tunnel = accepted.accept().await?;
-            let _ = self.handle_tunnel(tunnel).await;
-        }
-    }
-
     async fn handle_tunnel(&self, tunnel: Box<dyn Tunnel>) -> anyhow::Result<()> {
         let tunnel_info = tunnel
             .info()
@@ -1101,7 +978,7 @@ where
             ));
         tracing::info!(ret = ?tunnel, "conn accepted");
 
-        let Some(peer_manager) = self.peer_manager.upgrade() else {
+        let Some(inner) = self.inner.upgrade() else {
             let error = "peer manager is gone, cannot handle tunnel".to_owned();
             self.global_ctx.issue_event(GlobalCtxEvent::ConnectionError(
                 local_url,
@@ -1111,16 +988,74 @@ where
             tracing::error!(error = %error, "handle conn error");
             return Err(anyhow::anyhow!(error));
         };
-        if let Err(error) = peer_manager.handle_tunnel(tunnel).await {
+        if let Err(error) = inner.handle_tunnel(tunnel).await {
             self.global_ctx.issue_event(GlobalCtxEvent::ConnectionError(
                 local_url,
                 remote_url,
                 error.to_string(),
             ));
             tracing::error!(?error, "handle conn error");
-            return Err(error.into());
+            return Err(error);
         }
         Ok(())
+    }
+}
+
+struct EasyTierAcceptedHandler<H> {
+    tunnel_handler: Arc<RuntimeAcceptedTunnelHandler<H>>,
+    protocol: ProtocolAcceptedTransportHandler<RuntimeTcpSocket, RuntimeAcceptedTunnelHandler<H>>,
+}
+
+impl<H> Debug for EasyTierAcceptedHandler<H> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("EasyTierAcceptedHandler").finish()
+    }
+}
+
+#[async_trait]
+impl<H> core_listener::AcceptedSocketHandler<AcceptedConnection> for EasyTierAcceptedHandler<H>
+where
+    H: AcceptedTunnelHandler,
+{
+    async fn handle_accepted_socket(&self, accepted: AcceptedConnection) -> anyhow::Result<()> {
+        let transport = match accepted {
+            AcceptedConnection::Tunnel(tunnel) => {
+                return self.tunnel_handler.handle_tunnel(tunnel).await;
+            }
+            AcceptedConnection::ByteStream {
+                stream,
+                local_url,
+                remote_url,
+            } => AcceptedTransport::ByteStream {
+                socket: stream,
+                local_url,
+                remote_url,
+            },
+            AcceptedConnection::TcpStream {
+                stream,
+                local_url,
+                upgrade_permit,
+            } => {
+                let _upgrade_permit = upgrade_permit;
+                return self
+                    .protocol
+                    .handle_accepted_socket(AcceptedTransport::Tcp {
+                        socket: stream,
+                        local_url,
+                    })
+                    .await;
+            }
+            AcceptedConnection::UdpSession {
+                session,
+                local_url,
+                admission,
+            } => AcceptedTransport::Udp {
+                session,
+                local_url,
+                admission,
+            },
+        };
+        self.protocol.handle_accepted_socket(transport).await
     }
 }
 
@@ -1148,14 +1083,14 @@ mod tests {
     struct MockListenerHandler {}
 
     #[async_trait]
-    impl TunnelHandlerForListener for MockListenerHandler {
-        async fn handle_tunnel(&self, tunnel: Box<dyn Tunnel>) -> Result<(), Error> {
+    impl AcceptedTunnelHandler for MockListenerHandler {
+        async fn handle_tunnel(&self, tunnel: Box<dyn Tunnel>) -> anyhow::Result<()> {
             let data = "abc";
             let (_recv, mut send) = tunnel.split();
 
             let zc_packet = ZCPacket::new_with_payload(data.as_bytes());
             send.send(zc_packet).await.unwrap();
-            Err(Error::Unknown)
+            Err(Error::Unknown.into())
         }
     }
 
@@ -1163,8 +1098,8 @@ mod tests {
     struct EchoListenerHandler;
 
     #[async_trait]
-    impl TunnelHandlerForListener for EchoListenerHandler {
-        async fn handle_tunnel(&self, tunnel: Box<dyn Tunnel>) -> Result<(), Error> {
+    impl AcceptedTunnelHandler for EchoListenerHandler {
+        async fn handle_tunnel(&self, tunnel: Box<dyn Tunnel>) -> anyhow::Result<()> {
             let (mut recv, mut send) = tunnel.split();
             while let Some(packet) = recv.next().await {
                 send.send(packet?).await?;

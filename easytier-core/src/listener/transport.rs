@@ -310,9 +310,6 @@ where
     tcp_socket: PhantomData<fn() -> TcpSocket>,
 }
 
-const QUIC_MAX_ACTIVE_UDP_SESSIONS: usize = 1024;
-const QUIC_MAX_IN_FLIGHT_HANDSHAKES: usize = 128;
-
 impl<H, TcpSocket> UdpTransportListener<H, TcpSocket>
 where
     H: VirtualUdpSocketFactory + UdpSessionControlHandler<H::Socket>,
@@ -327,12 +324,7 @@ where
             accept_kind,
             UdpSessionAcceptKind::Classified(crate::socket::udp::UdpSessionProtocol::Quic)
         )
-        .then(|| {
-            ServerProtocolAdmissionController::new(
-                QUIC_MAX_ACTIVE_UDP_SESSIONS,
-                QUIC_MAX_IN_FLIGHT_HANDSHAKES,
-            )
-        });
+        .then(ServerProtocolAdmissionController::quic);
         Self {
             inner: UdpSessionSocketListener::new_with_request(
                 url,

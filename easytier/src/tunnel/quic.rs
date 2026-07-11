@@ -1143,32 +1143,6 @@ const QUIC_MAX_ACTIVE_UDP_SESSIONS: usize = 1024;
 const QUIC_MAX_IN_FLIGHT_HANDSHAKES: usize = 128;
 const QUIC_ACCEPT_COMPLETION_TIMEOUT: Duration = Duration::from_secs(10);
 
-pub(crate) struct QuicSessionAdmission {
-    active_sessions: Arc<Semaphore>,
-    handshakes: Arc<Semaphore>,
-}
-
-impl QuicSessionAdmission {
-    pub(crate) fn new() -> Arc<Self> {
-        Arc::new(Self {
-            active_sessions: Arc::new(Semaphore::new(QUIC_MAX_ACTIVE_UDP_SESSIONS)),
-            handshakes: Arc::new(Semaphore::new(QUIC_MAX_IN_FLIGHT_HANDSHAKES)),
-        })
-    }
-
-    pub(crate) fn try_acquire_session(self: &Arc<Self>) -> Option<QuicSessionPermit> {
-        Some(QuicSessionPermit {
-            _active_session: self.active_sessions.clone().try_acquire_owned().ok()?,
-            handshakes: self.handshakes.clone(),
-        })
-    }
-}
-
-pub(crate) struct QuicSessionPermit {
-    _active_session: OwnedSemaphorePermit,
-    handshakes: Arc<Semaphore>,
-}
-
 struct QuicUdpListenerSocket {
     send_socket: Arc<UdpSocket>,
     local_addr: SocketAddr,
@@ -1853,18 +1827,6 @@ pub(crate) struct QuicAcceptedSession {
 
 impl QuicAcceptedSession {
     pub(crate) fn new(
-        session: UdpSession,
-        local_url: url::Url,
-        admission: QuicSessionPermit,
-    ) -> Result<Self, TunnelError> {
-        let QuicSessionPermit {
-            _active_session,
-            handshakes,
-        } = admission;
-        Self::new_with_admission_parts(session, local_url, _active_session, handshakes)
-    }
-
-    pub(crate) fn new_with_core_admission(
         session: UdpSession,
         local_url: url::Url,
         admission: ServerProtocolAdmission,

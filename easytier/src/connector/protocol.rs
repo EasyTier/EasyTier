@@ -171,9 +171,7 @@ impl ServerProtocolUpgrader<RuntimeTcpSocket> for RuntimeServerProtocolUpgrader 
                 let admission = _admission
                     .ok_or_else(|| anyhow::anyhow!("QUIC server admission permit is missing"))?;
                 Ok(ServerProtocolUpgrade::Acceptor(Box::new(
-                    crate::tunnel::quic::QuicAcceptedSession::new_with_core_admission(
-                        _session, local_url, admission,
-                    )?,
+                    crate::tunnel::quic::QuicAcceptedSession::new(_session, local_url, admission)?,
                 )))
             }
             scheme => anyhow::bail!("unsupported native UDP server protocol upgrader: {scheme}"),

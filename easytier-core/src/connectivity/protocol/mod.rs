@@ -68,6 +68,10 @@ impl ServerProtocolAdmissionController {
             handshake_slots: self.handshake_slots.clone(),
         })
     }
+
+    pub fn quic() -> Self {
+        Self::new(1024, 128)
+    }
 }
 
 #[async_trait]
