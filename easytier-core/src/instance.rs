@@ -2,6 +2,7 @@
 
 pub mod packet_io;
 
+use std::net::IpAddr;
 use std::sync::{
     Arc, Weak,
     atomic::{AtomicBool, AtomicU8, Ordering},
@@ -36,8 +37,8 @@ use crate::{
     socket::{dns::DnsResolver, tcp::VirtualTcpSocketFactory},
 };
 
-use packet_io::PacketEgress;
 pub use packet_io::PacketSink;
+use packet_io::{PacketEgress, parse_ip_packet};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
@@ -552,5 +553,21 @@ where
             .get_peer_map()
             .list_peers_with_conn()
             .await
+    }
+
+    pub async fn send_ip_packet(&self, packet: Vec<u8>) -> anyhow::Result<()> {
+        let meta = parse_ip_packet(&packet)?;
+        let source_is_local = self.peer_manager.is_local_virtual_ip(&meta.source);
+        if matches!(meta.source, IpAddr::V6(ip) if ip.is_unicast_link_local()) && !source_is_local {
+            return Ok(());
+        }
+        self.peer_manager
+            .send_msg_by_ip(
+                crate::packet::ZCPacket::new_with_payload(&packet),
+                meta.destination,
+                source_is_local,
+            )
+            .await
+            .map_err(Into::into)
     }
 }

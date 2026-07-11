@@ -69,6 +69,7 @@ pub struct PeerRuntimeConfig {
 pub(crate) struct ConfigPeerContext {
     runtime: PeerRuntimeConfig,
     flags: FlagsInConfig,
+    peer_events: tokio::sync::broadcast::Sender<PeerContextEvent>,
 }
 
 impl ConfigPeerContext {
@@ -76,6 +77,7 @@ impl ConfigPeerContext {
         Self {
             runtime,
             flags: FlagsInConfig::default(),
+            peer_events: tokio::sync::broadcast::channel(100).0,
         }
     }
 
@@ -500,6 +502,20 @@ impl PeerContext for ConfigPeerContext {
         self.flags.clone()
     }
 
+    fn issue_event(&self, event: PeerEvent) {
+        let event = match event {
+            PeerEvent::PeerAdded(peer_id) => PeerContextEvent::PeerAdded(peer_id),
+            PeerEvent::PeerRemoved(peer_id) => PeerContextEvent::PeerRemoved(peer_id),
+            PeerEvent::PeerConnAdded(_) => PeerContextEvent::PeerConnAdded,
+            PeerEvent::PeerConnRemoved(_) => PeerContextEvent::PeerConnRemoved,
+        };
+        let _ = self.peer_events.send(event);
+    }
+
+    fn subscribe_peer_events(&self) -> Option<PeerContextEventSubscriber> {
+        Some(self.peer_events.subscribe())
+    }
+
     fn secure_mode(&self) -> Option<SecureModeConfig> {
         self.runtime.secure_mode.clone()
     }
@@ -727,6 +743,30 @@ mod tests {
             feature_flags: PeerFeatureFlag::default(),
             secure_mode: None,
         })
+    }
+
+    #[tokio::test]
+    async fn config_peer_context_publishes_peer_events_per_instance() {
+        let context = config_context_with_routes(None, None);
+        let mut events = context.subscribe_peer_events().unwrap();
+
+        context.issue_event(PeerEvent::PeerAdded(7));
+        assert_eq!(events.recv().await.unwrap(), PeerContextEvent::PeerAdded(7));
+        context.issue_event(PeerEvent::PeerConnAdded(Default::default()));
+        assert_eq!(
+            events.recv().await.unwrap(),
+            PeerContextEvent::PeerConnAdded
+        );
+        context.issue_event(PeerEvent::PeerConnRemoved(Default::default()));
+        assert_eq!(
+            events.recv().await.unwrap(),
+            PeerContextEvent::PeerConnRemoved
+        );
+        context.issue_event(PeerEvent::PeerRemoved(7));
+        assert_eq!(
+            events.recv().await.unwrap(),
+            PeerContextEvent::PeerRemoved(7)
+        );
     }
 
     #[test]

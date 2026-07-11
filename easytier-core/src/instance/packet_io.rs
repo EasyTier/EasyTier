@@ -1,9 +1,66 @@
-use std::sync::{Arc, Mutex};
+use std::{
+    net::{IpAddr, Ipv4Addr, Ipv6Addr},
+    sync::{Arc, Mutex},
+};
 
 use async_trait::async_trait;
 use tokio::{sync::mpsc, task::JoinHandle};
 
 use crate::packet::ZCPacket;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct IpPacketMeta {
+    pub(crate) source: IpAddr,
+    pub(crate) destination: IpAddr,
+}
+
+pub(crate) fn parse_ip_packet(packet: &[u8]) -> anyhow::Result<IpPacketMeta> {
+    let Some(version) = packet.first().map(|byte| byte >> 4) else {
+        anyhow::bail!("IP packet is empty");
+    };
+    match version {
+        4 => parse_ipv4_packet(packet),
+        6 => parse_ipv6_packet(packet),
+        _ => anyhow::bail!("unsupported IP version: {version}"),
+    }
+}
+
+fn parse_ipv4_packet(packet: &[u8]) -> anyhow::Result<IpPacketMeta> {
+    if packet.len() < 20 {
+        anyhow::bail!("IPv4 packet is shorter than the minimum header");
+    }
+    let header_len = usize::from(packet[0] & 0x0f) * 4;
+    let total_len = usize::from(u16::from_be_bytes([packet[2], packet[3]]));
+    if header_len < 20 || total_len < header_len || total_len > packet.len() {
+        anyhow::bail!("invalid IPv4 header or total length");
+    }
+    Ok(IpPacketMeta {
+        source: IpAddr::V4(Ipv4Addr::new(
+            packet[12], packet[13], packet[14], packet[15],
+        )),
+        destination: IpAddr::V4(Ipv4Addr::new(
+            packet[16], packet[17], packet[18], packet[19],
+        )),
+    })
+}
+
+fn parse_ipv6_packet(packet: &[u8]) -> anyhow::Result<IpPacketMeta> {
+    if packet.len() < 40 {
+        anyhow::bail!("IPv6 packet is shorter than the fixed header");
+    }
+    let payload_len = usize::from(u16::from_be_bytes([packet[4], packet[5]]));
+    if payload_len != 0 && 40 + payload_len > packet.len() {
+        anyhow::bail!("IPv6 payload length exceeds the packet");
+    }
+    Ok(IpPacketMeta {
+        source: IpAddr::V6(Ipv6Addr::from(
+            <[u8; 16]>::try_from(&packet[8..24]).expect("checked IPv6 header length"),
+        )),
+        destination: IpAddr::V6(Ipv6Addr::from(
+            <[u8; 16]>::try_from(&packet[24..40]).expect("checked IPv6 header length"),
+        )),
+    })
+}
 
 /// Receives decoded data packets leaving the EasyTier peer graph.
 ///
@@ -80,6 +137,42 @@ mod tests {
     use tokio::time::{Duration, timeout};
 
     use super::*;
+
+    #[test]
+    fn parses_ipv4_and_ipv6_packet_endpoints() {
+        let mut ipv4 = vec![0u8; 20];
+        ipv4[0] = 0x45;
+        ipv4[2..4].copy_from_slice(&20u16.to_be_bytes());
+        ipv4[12..16].copy_from_slice(&[10, 1, 0, 1]);
+        ipv4[16..20].copy_from_slice(&[10, 2, 0, 1]);
+        assert_eq!(
+            parse_ip_packet(&ipv4).unwrap(),
+            IpPacketMeta {
+                source: "10.1.0.1".parse().unwrap(),
+                destination: "10.2.0.1".parse().unwrap(),
+            }
+        );
+
+        let mut ipv6 = vec![0u8; 40];
+        ipv6[0] = 0x60;
+        ipv6[8..24].copy_from_slice(&"fd00::1".parse::<Ipv6Addr>().unwrap().octets());
+        ipv6[24..40].copy_from_slice(&"fd00::2".parse::<Ipv6Addr>().unwrap().octets());
+        assert_eq!(
+            parse_ip_packet(&ipv6).unwrap(),
+            IpPacketMeta {
+                source: "fd00::1".parse().unwrap(),
+                destination: "fd00::2".parse().unwrap(),
+            }
+        );
+    }
+
+    #[test]
+    fn rejects_truncated_or_unknown_ip_packets() {
+        assert!(parse_ip_packet(&[]).is_err());
+        assert!(parse_ip_packet(&[0x70]).is_err());
+        assert!(parse_ip_packet(&[0x45; 19]).is_err());
+        assert!(parse_ip_packet(&[0x60; 39]).is_err());
+    }
 
     #[tokio::test]
     async fn packet_egress_forwards_to_host_sink_and_joins_on_stop() {

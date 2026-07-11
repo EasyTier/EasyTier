@@ -1315,6 +1315,10 @@ impl PeerManagerCore {
         self.nic_channel.clone()
     }
 
+    pub(crate) fn is_local_virtual_ip(&self, ip: &IpAddr) -> bool {
+        self.context.is_ip_local_virtual_ip(ip)
+    }
+
     pub fn get_foreign_network_client(&self) -> Arc<ForeignNetworkClient> {
         self.foreign_network_client.clone()
     }

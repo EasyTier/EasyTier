@@ -189,6 +189,12 @@ mod tests {
             udp::{UdpBindOptions, UdpSessionAcceptKind, UdpSessionListenRequest},
         },
     };
+    use pnet::packet::{
+        MutablePacket,
+        ip::IpNextHeaderProtocols,
+        ipv4::{self, MutableIpv4Packet},
+        udp::{self, MutableUdpPacket},
+    };
     use tokio::sync::Notify;
     use tokio_util::task::AbortOnDropHandle;
 
@@ -341,8 +347,10 @@ mod tests {
             "portable-connect-listen".to_owned(),
             "shared-secret".to_owned(),
         )));
+        global_a.set_ipv4(Some("10.250.0.1/24".parse().unwrap()));
+        global_b.set_ipv4(Some("10.250.0.2/24".parse().unwrap()));
         let (packet_sink_a, _packet_receiver_a) = create_packet_recv_chan();
-        let (packet_sink_b, _packet_receiver_b) = create_packet_recv_chan();
+        let (packet_sink_b, mut packet_receiver_b) = create_packet_recv_chan();
         let peer_a = PortablePeerManagerConfig::new(global_a.runtime_config())
             .with_flags(global_a.get_flags());
         let peer_b = PortablePeerManagerConfig::new(global_b.runtime_config())
@@ -407,6 +415,53 @@ mod tests {
         })
         .await
         .expect("portable core instances did not connect through the core listener");
+
+        let source_ip = "10.250.0.1".parse().unwrap();
+        let destination_ip = "10.250.0.2".parse().unwrap();
+        let mut ip_packet = vec![0u8; 28];
+        {
+            let mut ipv4 = MutableIpv4Packet::new(&mut ip_packet).unwrap();
+            ipv4.set_version(4);
+            ipv4.set_header_length(5);
+            ipv4.set_total_length(28);
+            ipv4.set_ttl(64);
+            ipv4.set_next_level_protocol(IpNextHeaderProtocols::Udp);
+            ipv4.set_source(source_ip);
+            ipv4.set_destination(destination_ip);
+        }
+        {
+            let mut udp = MutableUdpPacket::new(&mut ip_packet[20..]).unwrap();
+            udp.set_source(10000);
+            udp.set_destination(10001);
+            udp.set_length(8);
+            udp.set_checksum(udp::ipv4_checksum(
+                &udp.to_immutable(),
+                &source_ip,
+                &destination_ip,
+            ));
+        }
+        {
+            let mut ipv4 = MutableIpv4Packet::new(&mut ip_packet).unwrap();
+            ipv4.set_checksum(ipv4::checksum(&ipv4.to_immutable()));
+        }
+        let received = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            loop {
+                instance_a.send_ip_packet(ip_packet.clone()).await.unwrap();
+                match tokio::time::timeout(
+                    std::time::Duration::from_millis(100),
+                    packet_receiver_b.recv(),
+                )
+                .await
+                {
+                    Ok(Some(packet)) => break packet,
+                    Ok(None) => panic!("portable host packet sink closed"),
+                    Err(_) => {}
+                }
+            }
+        })
+        .await
+        .expect("portable host packet sink did not receive the IP packet");
+        assert_eq!(received.payload(), ip_packet);
 
         instance_b.stop().await;
         instance_a.stop().await;
