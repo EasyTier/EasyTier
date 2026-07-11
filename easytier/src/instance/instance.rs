@@ -1,7 +1,7 @@
 #[cfg(feature = "tun")]
 use std::any::Any;
 use std::collections::HashSet;
-use std::net::{IpAddr, Ipv4Addr};
+use std::net::IpAddr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Weak};
 #[cfg(feature = "tun")]
@@ -9,6 +9,7 @@ use std::time::Duration;
 
 use anyhow::Context;
 use cidr::{IpCidr, Ipv4Inet};
+use easytier_core::dhcp::{DhcpIpv4Allocator, DhcpIpv4Decision};
 use easytier_core::instance::{ProxyService, ProxyServiceGroup, ProxyStartupPolicy};
 use easytier_core::proxy::ProxyStartupContext;
 use futures::FutureExt;
@@ -850,8 +851,7 @@ impl Instance {
         #[cfg(feature = "tun")]
         let core_instance = Arc::downgrade(&self.core_instance);
         tokio::spawn(async move {
-            let default_ipv4_addr = Ipv4Inet::new(Ipv4Addr::new(10, 126, 126, 0), 24).unwrap();
-            let mut current_dhcp_ip: Option<Ipv4Inet> = None;
+            let mut allocator = DhcpIpv4Allocator::default();
             let mut next_sleep_time = 0;
             let nic_closed_notifier = Arc::new(Notify::new());
             loop {
@@ -869,14 +869,14 @@ impl Instance {
 
                 if nic_closed_notifier.notified().now_or_never().is_some() {
                     tracing::debug!("nic ctx is closed, try recreate it");
-                    current_dhcp_ip = None;
+                    allocator.reset();
                 }
 
                 // do not allocate ip if no peer connected
                 let routes = peer_manager_c.list_routes().await;
-                if routes.is_empty() {
+                let has_routes = !routes.is_empty();
+                if !has_routes {
                     next_sleep_time = 1;
-                    continue;
                 } else {
                     next_sleep_time = rand::thread_rng().gen_range(5..10);
                 }
@@ -890,29 +890,15 @@ impl Instance {
                     used_ipv4.insert(peer_ipv4_addr.into());
                 }
 
-                let dhcp_inet = used_ipv4.iter().next().unwrap_or(&default_ipv4_addr);
-                // if old ip is already in this subnet and not conflicted, use it
-                if let Some(ip) = current_dhcp_ip
-                    && ip.network() == dhcp_inet.network()
-                    && !used_ipv4.contains(&ip)
-                {
+                let DhcpIpv4Decision::Change {
+                    previous: last_ip,
+                    next: candidate_ipv4_addr,
+                } = allocator.evaluate(has_routes, &used_ipv4)
+                else {
                     continue;
-                }
-
-                // find an available ip in the subnet
-                let candidate_ipv4_addr = dhcp_inet.network().iter().find(|ip| {
-                    ip.address() != dhcp_inet.first_address()
-                        && ip.address() != dhcp_inet.last_address()
-                        && !used_ipv4.contains(ip)
-                });
-
-                if current_dhcp_ip == candidate_ipv4_addr {
-                    continue;
-                }
-
-                let last_ip = current_dhcp_ip;
+                };
                 tracing::debug!(
-                    ?current_dhcp_ip,
+                    current_dhcp_ip = ?allocator.current(),
                     ?candidate_ipv4_addr,
                     "dhcp start changing ip"
                 );
@@ -922,7 +908,7 @@ impl Instance {
 
                 if let Some(ip) = candidate_ipv4_addr {
                     if global_ctx_c.no_tun() {
-                        current_dhcp_ip = Some(ip);
+                        allocator.commit(Some(ip));
                         global_ctx_c.set_ipv4(Some(ip));
                         global_ctx_c
                             .issue_event(GlobalCtxEvent::DhcpIpv4Changed(last_ip, Some(ip)));
@@ -940,7 +926,7 @@ impl Instance {
                         );
                         if let Err(e) = new_nic_ctx.run(Some(ip), global_ctx_c.get_ipv6()).await {
                             tracing::error!(
-                                ?current_dhcp_ip,
+                                current_dhcp_ip = ?allocator.current(),
                                 ?candidate_ipv4_addr,
                                 ?e,
                                 "add ip failed"
@@ -959,11 +945,11 @@ impl Instance {
                         .await;
                     }
 
-                    current_dhcp_ip = Some(ip);
+                    allocator.commit(Some(ip));
                     global_ctx_c.set_ipv4(Some(ip));
                     global_ctx_c.issue_event(GlobalCtxEvent::DhcpIpv4Changed(last_ip, Some(ip)));
                 } else {
-                    current_dhcp_ip = None;
+                    allocator.commit(None);
                     global_ctx_c.set_ipv4(None);
                     global_ctx_c.issue_event(GlobalCtxEvent::DhcpIpv4Conflicted(last_ip));
                 }
