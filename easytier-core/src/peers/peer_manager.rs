@@ -22,6 +22,10 @@ use crate::{
     config::{P2pPolicyFlags, PeerId},
     packet::{CompressorAlgo, PacketType, ZCPacket},
     proto::core_peer::peer::Route as CoreRoute,
+    socket::{
+        SocketContext,
+        dns::{DnsQuery, DnsResolver},
+    },
     tunnel::Tunnel,
 };
 
@@ -522,6 +526,72 @@ impl AddressResolver for NoopAddressResolver {
         _default_port: Option<u16>,
     ) -> AddressResolution {
         AddressResolution::Unavailable
+    }
+}
+
+pub struct DnsAddressResolver {
+    dns: Arc<dyn DnsResolver>,
+    context: SocketContext,
+}
+
+impl DnsAddressResolver {
+    pub fn new(dns: Arc<dyn DnsResolver>) -> Self {
+        Self {
+            dns,
+            context: SocketContext::default(),
+        }
+    }
+
+    pub fn with_context(mut self, context: SocketContext) -> Self {
+        self.context = context;
+        self
+    }
+}
+
+#[async_trait::async_trait]
+impl AddressResolver for DnsAddressResolver {
+    async fn resolve_remote(
+        &self,
+        remote_addr: &Url,
+        default_port: Option<u16>,
+    ) -> AddressResolution {
+        if matches!(remote_addr.scheme(), "ring" | "unix") {
+            return AddressResolution::NotIpBased;
+        }
+        let Some(host) = remote_addr.host() else {
+            return AddressResolution::Unavailable;
+        };
+        let Some(port) = remote_addr.port().or(default_port) else {
+            return AddressResolution::Unavailable;
+        };
+        match host {
+            url::Host::Ipv4(ip) => {
+                AddressResolution::IpAddrs(vec![SocketAddr::new(IpAddr::V4(ip), port)])
+            }
+            url::Host::Ipv6(ip) => {
+                AddressResolution::IpAddrs(vec![SocketAddr::new(IpAddr::V6(ip), port)])
+            }
+            url::Host::Domain(host) => {
+                if let Ok(ip) = host.parse::<IpAddr>() {
+                    return AddressResolution::IpAddrs(vec![SocketAddr::new(ip, port)]);
+                }
+                match self
+                    .dns
+                    .resolve(DnsQuery::new(host, self.context.clone()))
+                    .await
+                {
+                    Ok(ips) => AddressResolution::IpAddrs(
+                        ips.into_iter()
+                            .map(|ip| SocketAddr::new(ip, port))
+                            .collect(),
+                    ),
+                    Err(error) => {
+                        tracing::debug!(?error, ?remote_addr, "remote address resolution failed");
+                        AddressResolution::Unavailable
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -2901,6 +2971,65 @@ mod tests {
                 AddressResolution::Unavailable => AddressResolution::Unavailable,
             }
         }
+    }
+
+    struct StaticDnsResolver;
+
+    #[async_trait::async_trait]
+    impl DnsResolver for StaticDnsResolver {
+        async fn resolve(&self, query: DnsQuery) -> anyhow::Result<Vec<IpAddr>> {
+            assert_eq!(
+                query,
+                DnsQuery::new("example.test", SocketContext::default())
+            );
+            Ok(vec![
+                IpAddr::from([192, 0, 2, 10]),
+                "2001:db8::10".parse().unwrap(),
+            ])
+        }
+    }
+
+    struct PanicDnsResolver;
+
+    #[async_trait::async_trait]
+    impl DnsResolver for PanicDnsResolver {
+        async fn resolve(&self, _query: DnsQuery) -> anyhow::Result<Vec<IpAddr>> {
+            panic!("IP literals must not invoke DNS")
+        }
+    }
+
+    #[tokio::test]
+    async fn dns_address_resolver_uses_host_dns_and_default_port() {
+        let resolver = DnsAddressResolver::new(Arc::new(StaticDnsResolver));
+
+        let result = resolver
+            .resolve_remote(&Url::parse("tcp://example.test").unwrap(), Some(11010))
+            .await;
+
+        let AddressResolution::IpAddrs(addrs) = result else {
+            panic!("domain should resolve to socket addresses");
+        };
+        assert_eq!(
+            addrs,
+            vec![
+                SocketAddr::from(([192, 0, 2, 10], 11010)),
+                SocketAddr::new("2001:db8::10".parse().unwrap(), 11010),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn dns_address_resolver_keeps_ip_literals_below_dns_seam() {
+        let resolver = DnsAddressResolver::new(Arc::new(PanicDnsResolver));
+
+        let result = resolver
+            .resolve_remote(&Url::parse("tcp://127.0.0.1:0").unwrap(), Some(11010))
+            .await;
+
+        let AddressResolution::IpAddrs(addrs) = result else {
+            panic!("IP literal should produce a socket address");
+        };
+        assert_eq!(addrs, vec![SocketAddr::from(([127, 0, 0, 1], 0))]);
     }
 
     #[test]

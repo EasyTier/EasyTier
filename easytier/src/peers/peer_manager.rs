@@ -1,7 +1,7 @@
 use cidr::{Ipv4Cidr, Ipv6Cidr};
 pub use easytier_core::peers::peer_manager::RouteAlgoType;
 use easytier_core::peers::peer_manager::{
-    AddressResolution, AddressResolver, PeerManagerCore, PipelineRegistrationGuard,
+    DnsAddressResolver, PeerManagerCore, PipelineRegistrationGuard,
 };
 use quanta::Instant;
 use std::collections::BTreeSet;
@@ -13,8 +13,8 @@ use std::{
 
 use crate::{
     common::{
-        PeerId, constants::EASYTIER_VERSION, dns, error::Error, global_ctx::ArcGlobalCtx,
-        stun::StunInfoCollectorTrait,
+        PeerId, constants::EASYTIER_VERSION, dns::RuntimeDnsResolver, error::Error,
+        global_ctx::ArcGlobalCtx, stun::StunInfoCollectorTrait,
     },
     peers::{
         PeerPacketFilter, peer_session::PeerSessionStore, traffic_metrics::TrafficMetricRecorder,
@@ -44,33 +44,6 @@ pub struct PeerManager {
     core: Arc<PeerManagerCore>,
 
     foreign_network_manager: Arc<ForeignNetworkManager>,
-}
-
-struct RuntimeAddressResolver;
-
-#[async_trait::async_trait]
-impl AddressResolver for RuntimeAddressResolver {
-    async fn resolve_remote(
-        &self,
-        remote_addr: &url::Url,
-        default_port: Option<u16>,
-    ) -> AddressResolution {
-        if matches!(remote_addr.scheme(), "ring" | "unix") {
-            return AddressResolution::NotIpBased;
-        }
-
-        match dns::socket_addrs(remote_addr, || default_port).await {
-            Ok(addrs) => AddressResolution::IpAddrs(addrs),
-            Err(err) => {
-                tracing::debug!(
-                    ?err,
-                    ?remote_addr,
-                    "skip remote address virtual network check because address resolution failed"
-                );
-                AddressResolution::Unavailable
-            }
-        }
-    }
 }
 
 impl Debug for PeerManager {
@@ -136,7 +109,7 @@ impl PeerManager {
             is_secure_mode_enabled,
             data_compress_algo,
             exit_nodes,
-            Arc::new(RuntimeAddressResolver),
+            Arc::new(DnsAddressResolver::new(Arc::new(RuntimeDnsResolver::new()))),
             move |my_peer_id, peer_session_store, packet_sender_to_mgr, accessor| {
                 Arc::new(ForeignNetworkManager::new(
                     my_peer_id,
