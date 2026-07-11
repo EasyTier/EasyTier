@@ -4,17 +4,30 @@ use std::{
     time::Duration,
 };
 
+use async_trait::async_trait;
 use rand::Rng as _;
 
 use crate::{
     config::PeerId,
     connectivity::protocol::raw,
     peers::peer_manager::PeerManagerCore,
+    proto::common::NatType,
     socket::tcp::{
         TcpBindOptions, TcpConnectOptions, TcpListenOptions, VirtualTcpListener,
         VirtualTcpListenerFactory, VirtualTcpSocketFactory,
     },
 };
+
+mod manager;
+
+pub use manager::{TcpHolePunchConnector, TcpHolePunchOptions};
+
+#[async_trait]
+pub trait TcpHolePunchHost: VirtualTcpListenerFactory + VirtualTcpSocketFactory {
+    fn tcp_nat_type(&self) -> NatType;
+
+    async fn tcp_port_mapping(&self, local_port: u16) -> anyhow::Result<SocketAddr>;
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TcpHolePunchAdmission {

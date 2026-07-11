@@ -1,0 +1,567 @@
+use std::{
+    sync::{Arc, Mutex},
+    time::Duration,
+};
+
+use anyhow::Context as _;
+use async_trait::async_trait;
+use dashmap::DashMap;
+use quanta::Instant;
+use tokio::task::JoinSet;
+
+use crate::{
+    config::PeerId,
+    hole_punch::udp::{BackOff, should_background_p2p_with_peer, should_try_p2p_with_peer},
+    peers::peer_manager::PeerManagerCore,
+    proto::{
+        common::NatType,
+        peer_rpc::{
+            TcpHolePunchRequest, TcpHolePunchResponse, TcpHolePunchRpc,
+            TcpHolePunchRpcClientFactory, TcpHolePunchRpcServer,
+        },
+        rpc_types::{self, controller::BaseController},
+    },
+    socket::tcp::VirtualTcpListener,
+    task::{PeerTaskLauncher, PeerTaskManager},
+};
+
+use super::{
+    TcpHolePunchAdmission, TcpHolePunchHost, accept_connections, select_local_port,
+    try_connect_to_remote,
+};
+
+const BLACKLIST_TIMEOUT: Duration = Duration::from_secs(3600);
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TcpHolePunchOptions {
+    pub network_name: String,
+    pub disabled: bool,
+    pub lazy_p2p: bool,
+    pub disable_p2p: bool,
+    pub need_p2p: bool,
+}
+
+impl Default for TcpHolePunchOptions {
+    fn default() -> Self {
+        Self {
+            network_name: String::new(),
+            disabled: false,
+            lazy_p2p: false,
+            disable_p2p: false,
+            need_p2p: false,
+        }
+    }
+}
+
+struct TcpHolePunchBlacklist {
+    entries: DashMap<PeerId, Instant>,
+}
+
+impl TcpHolePunchBlacklist {
+    fn new() -> Self {
+        Self {
+            entries: DashMap::new(),
+        }
+    }
+
+    fn insert(&self, peer_id: PeerId) {
+        self.entries.insert(peer_id, Instant::now());
+    }
+
+    fn contains(&self, peer_id: PeerId) -> bool {
+        let active = self
+            .entries
+            .get(&peer_id)
+            .is_some_and(|inserted_at| inserted_at.elapsed() < BLACKLIST_TIMEOUT);
+        if !active {
+            self.entries.remove(&peer_id);
+        }
+        active
+    }
+
+    fn cleanup(&self) {
+        self.entries
+            .retain(|_, inserted_at| inserted_at.elapsed() < BLACKLIST_TIMEOUT);
+    }
+}
+
+fn handle_rpc_result<T>(
+    result: Result<T, rpc_types::error::Error>,
+    dst_peer_id: PeerId,
+    blacklist: &TcpHolePunchBlacklist,
+) -> Result<T, rpc_types::error::Error> {
+    match result {
+        Ok(result) => Ok(result),
+        Err(error) => {
+            if matches!(error, rpc_types::error::Error::InvalidServiceKey(_, _)) {
+                blacklist.insert(dst_peer_id);
+            }
+            Err(error)
+        }
+    }
+}
+
+fn is_symmetric_tcp_nat(nat_type: NatType) -> bool {
+    matches!(
+        nat_type,
+        NatType::Symmetric | NatType::SymmetricEasyInc | NatType::SymmetricEasyDec
+    )
+}
+
+fn join_joinset_background(tasks: Arc<Mutex<JoinSet<()>>>) {
+    let tasks = Arc::downgrade(&tasks);
+    tokio::spawn(async move {
+        while tasks.strong_count() > 0 {
+            tokio::time::sleep(Duration::from_secs(1)).await;
+            let Some(tasks) = tasks.upgrade() else {
+                break;
+            };
+            let mut tasks = tasks.lock().unwrap();
+            while tasks.try_join_next().is_some() {}
+        }
+    });
+}
+
+struct TcpHolePunchServer<H>
+where
+    H: TcpHolePunchHost,
+{
+    host: Arc<H>,
+    peer_manager: Arc<PeerManagerCore>,
+    tasks: Arc<Mutex<JoinSet<()>>>,
+}
+
+impl<H> TcpHolePunchServer<H>
+where
+    H: TcpHolePunchHost,
+{
+    fn new(host: Arc<H>, peer_manager: Arc<PeerManagerCore>) -> Arc<Self> {
+        let tasks = Arc::new(Mutex::new(JoinSet::new()));
+        join_joinset_background(tasks.clone());
+        Arc::new(Self {
+            host,
+            peer_manager,
+            tasks,
+        })
+    }
+}
+
+#[async_trait]
+impl<H> TcpHolePunchRpc for TcpHolePunchServer<H>
+where
+    H: TcpHolePunchHost,
+{
+    type Controller = BaseController;
+
+    #[tracing::instrument(skip(self), fields(a_mapped_addr = ?input.connector_mapped_addr), err)]
+    async fn exchange_mapped_addr(
+        &self,
+        _controller: Self::Controller,
+        input: TcpHolePunchRequest,
+    ) -> rpc_types::error::Result<TcpHolePunchResponse> {
+        let local_nat_type = self.host.tcp_nat_type();
+        tracing::debug!(?local_nat_type, "tcp hole punch rpc received");
+        if local_nat_type == NatType::Unknown {
+            tracing::warn!(?local_nat_type, "tcp hole punch rpc rejected (unknown)");
+            return Err(anyhow::anyhow!("tcp nat type unknown not supported").into());
+        }
+
+        let remote_mapped_addr = input
+            .connector_mapped_addr
+            .ok_or_else(|| anyhow::anyhow!("connector_mapped_addr is required"))?;
+        let remote_mapped_addr: std::net::SocketAddr = remote_mapped_addr.into();
+        let remote_ip = remote_mapped_addr.ip();
+        if remote_ip.is_unspecified() || remote_ip.is_multicast() {
+            tracing::warn!(
+                ?remote_mapped_addr,
+                "tcp hole punch rpc invalid connector addr"
+            );
+            return Err(anyhow::anyhow!("connector_mapped_addr is malformed").into());
+        }
+
+        let local_port =
+            select_local_port(self.host.as_ref(), remote_mapped_addr.is_ipv6()).await?;
+        let local_mapped_addr = self
+            .host
+            .tcp_port_mapping(local_port)
+            .await
+            .context("failed to get tcp port mapping")?;
+
+        tracing::info!(
+            ?remote_mapped_addr,
+            local_port,
+            ?local_mapped_addr,
+            "tcp hole punch rpc responding with listener mapped addr and start connecting"
+        );
+
+        let host = self.host.clone();
+        let peer_manager = self.peer_manager.clone();
+        self.tasks.lock().unwrap().spawn(async move {
+            let _ = try_connect_to_remote(
+                host,
+                peer_manager,
+                remote_mapped_addr,
+                local_port,
+                TcpHolePunchAdmission::Client,
+                5,
+            )
+            .await;
+        });
+
+        Ok(TcpHolePunchResponse {
+            listener_mapped_addr: Some(local_mapped_addr.into()),
+        })
+    }
+}
+
+struct TcpHolePunchConnectorData<H>
+where
+    H: TcpHolePunchHost,
+{
+    host: Arc<H>,
+    peer_manager: Arc<PeerManagerCore>,
+    options: TcpHolePunchOptions,
+    blacklist: TcpHolePunchBlacklist,
+}
+
+impl<H> TcpHolePunchConnectorData<H>
+where
+    H: TcpHolePunchHost,
+{
+    async fn punch_as_initiator(self: Arc<Self>, dst_peer_id: PeerId) -> anyhow::Result<()> {
+        let mut backoff = BackOff::new(vec![1000, 1000, 4000, 8000]);
+
+        loop {
+            backoff.sleep_for_next_backoff().await;
+            if self.do_punch_as_initiator(dst_peer_id).await.is_ok() {
+                break;
+            }
+
+            if self.blacklist.contains(dst_peer_id) {
+                tracing::warn!(
+                    dst_peer_id,
+                    "tcp hole punch initiator skipped (blacklisted)"
+                );
+                break;
+            }
+        }
+
+        Ok(())
+    }
+
+    #[tracing::instrument(skip(self), fields(dst_peer_id), err)]
+    async fn do_punch_as_initiator(&self, dst_peer_id: PeerId) -> anyhow::Result<()> {
+        let local_nat_type = self.host.tcp_nat_type();
+        tracing::debug!(?local_nat_type, "tcp hole punch initiator start");
+        if is_symmetric_tcp_nat(local_nat_type) || local_nat_type == NatType::Unknown {
+            tracing::debug!("tcp hole punch initiator skipped (symmetric)");
+            return Ok(());
+        }
+
+        let local_port = select_local_port(self.host.as_ref(), false).await?;
+        let local_mapped_addr = self
+            .host
+            .tcp_port_mapping(local_port)
+            .await
+            .context("failed to get tcp port mapping")?;
+
+        tracing::info!(
+            dst_peer_id,
+            local_port,
+            ?local_mapped_addr,
+            "tcp hole punch initiator got mapped addr, start rpc exchange"
+        );
+
+        let rpc_stub = self
+            .peer_manager
+            .get_peer_rpc_mgr()
+            .rpc_client()
+            .scoped_client::<TcpHolePunchRpcClientFactory<BaseController>>(
+            self.peer_manager.my_peer_id(),
+            dst_peer_id,
+            self.options.network_name.clone(),
+        );
+        let response = rpc_stub
+            .exchange_mapped_addr(
+                BaseController {
+                    timeout_ms: 6000,
+                    ..Default::default()
+                },
+                TcpHolePunchRequest {
+                    connector_mapped_addr: Some(local_mapped_addr.into()),
+                },
+            )
+            .await;
+        let response = handle_rpc_result(response, dst_peer_id, &self.blacklist)?;
+        let remote_mapped_addr = response
+            .listener_mapped_addr
+            .ok_or_else(|| anyhow::anyhow!("listener_mapped_addr is required"))?;
+        let remote_mapped_addr = remote_mapped_addr.into();
+        tracing::info!(
+            dst_peer_id,
+            ?remote_mapped_addr,
+            "tcp hole punch initiator rpc returned"
+        );
+
+        if try_connect_to_remote(
+            self.host.clone(),
+            self.peer_manager.clone(),
+            remote_mapped_addr,
+            local_port,
+            TcpHolePunchAdmission::Server,
+            1,
+        )
+        .await
+        .is_ok()
+        {
+            tracing::info!(
+                dst_peer_id,
+                local_port,
+                ?remote_mapped_addr,
+                "tcp hole punch initiator connected to remote mapped addr with simultaneous connection"
+            );
+            return Ok(());
+        }
+
+        tracing::debug!(
+            dst_peer_id,
+            local_port,
+            ?remote_mapped_addr,
+            "tcp hole punch initiator sent syn to remote mapped addr"
+        );
+
+        let bind_addr =
+            std::net::SocketAddr::new(std::net::Ipv4Addr::UNSPECIFIED.into(), local_port);
+        let bind = crate::socket::tcp::TcpBindOptions::default()
+            .with_local_addr(Some(bind_addr))
+            .with_only_v6(true);
+        let listener = self
+            .host
+            .bind_tcp(crate::socket::tcp::TcpListenOptions::hole_punch(bind_addr).with_bind(bind))
+            .await?;
+        tracing::info!(
+            dst_peer_id,
+            local_port,
+            local_addr = ?listener.local_addr()?,
+            "tcp hole punch initiator listening"
+        );
+
+        tokio::time::timeout(
+            Duration::from_secs(10),
+            accept_connections(listener, self.peer_manager.clone(), dst_peer_id),
+        )
+        .await??;
+
+        tracing::info!(
+            dst_peer_id,
+            "tcp hole punch initiator accepted and added server tunnel"
+        );
+        Ok(())
+    }
+
+    async fn collect_peers_need_task(&self) -> Vec<PeerId> {
+        let local_nat_type = self.host.tcp_nat_type();
+        if is_symmetric_tcp_nat(local_nat_type) || local_nat_type == NatType::Unknown {
+            tracing::trace!(
+                ?local_nat_type,
+                "tcp hole punch task collect skipped (symmetric)"
+            );
+            return Vec::new();
+        }
+
+        self.blacklist.cleanup();
+        let local_peer_id = self.peer_manager.my_peer_id();
+        let now = Instant::now();
+        let mut peers_to_connect = Vec::new();
+        for route in self.peer_manager.get_route().list_routes().await {
+            let static_allowed = should_background_p2p_with_peer(
+                route.feature_flag.as_ref(),
+                false,
+                self.options.lazy_p2p,
+                self.options.disable_p2p,
+                self.options.need_p2p,
+            );
+            let dynamic_allowed = should_try_p2p_with_peer(
+                route.feature_flag.as_ref(),
+                false,
+                self.options.disable_p2p,
+                self.options.need_p2p,
+            ) && self.peer_manager.has_recent_traffic(route.peer_id, now);
+            if !static_allowed && !dynamic_allowed {
+                continue;
+            }
+
+            let peer_id = route.peer_id;
+            if peer_id == local_peer_id {
+                tracing::trace!(peer_id, "tcp hole punch task collect skip self");
+                continue;
+            }
+            if self.blacklist.contains(peer_id) {
+                tracing::debug!(peer_id, "tcp hole punch task collect skip blacklisted");
+                continue;
+            }
+            if self.peer_manager.get_peer_map().has_peer(peer_id) {
+                tracing::trace!(peer_id, "tcp hole punch task collect skip already has peer");
+                continue;
+            }
+
+            let peer_nat_type = route
+                .stun_info
+                .as_ref()
+                .map(|stun_info| stun_info.tcp_nat_type)
+                .and_then(|nat_type| NatType::try_from(nat_type).ok())
+                .unwrap_or(NatType::Unknown);
+            if peer_nat_type == NatType::Unknown {
+                tracing::debug!(
+                    peer_id,
+                    ?peer_nat_type,
+                    "tcp hole punch task collect skip peer unknown"
+                );
+                continue;
+            }
+
+            tracing::info!(
+                peer_id,
+                local_peer_id,
+                ?local_nat_type,
+                ?peer_nat_type,
+                "tcp hole punch task collect add peer"
+            );
+            peers_to_connect.push(peer_id);
+        }
+        peers_to_connect
+    }
+}
+
+struct TcpHolePunchPeerTaskLauncher<H>(Arc<TcpHolePunchConnectorData<H>>)
+where
+    H: TcpHolePunchHost;
+
+impl<H> Clone for TcpHolePunchPeerTaskLauncher<H>
+where
+    H: TcpHolePunchHost,
+{
+    fn clone(&self) -> Self {
+        Self(self.0.clone())
+    }
+}
+
+#[async_trait]
+impl<H> PeerTaskLauncher for TcpHolePunchPeerTaskLauncher<H>
+where
+    H: TcpHolePunchHost,
+{
+    type PeerManager = PeerManagerCore;
+    type Data = Arc<TcpHolePunchConnectorData<H>>;
+    type CollectPeerItem = PeerId;
+    type TaskRet = ();
+
+    fn new_data(&self, _peer_manager: Arc<PeerManagerCore>) -> Self::Data {
+        self.0.clone()
+    }
+
+    async fn collect_peers_need_task(&self, data: &Self::Data) -> Vec<PeerId> {
+        data.collect_peers_need_task().await
+    }
+
+    async fn launch_task(
+        &self,
+        data: &Self::Data,
+        dst_peer_id: PeerId,
+    ) -> tokio::task::JoinHandle<anyhow::Result<()>> {
+        let data = data.clone();
+        tokio::spawn(async move { data.punch_as_initiator(dst_peer_id).await })
+    }
+
+    fn loop_interval_ms(&self) -> u64 {
+        5000
+    }
+}
+
+pub struct TcpHolePunchConnector<H>
+where
+    H: TcpHolePunchHost,
+{
+    server: Arc<TcpHolePunchServer<H>>,
+    client: PeerTaskManager<TcpHolePunchPeerTaskLauncher<H>>,
+    data: Arc<TcpHolePunchConnectorData<H>>,
+    peer_manager: Arc<PeerManagerCore>,
+    options: TcpHolePunchOptions,
+}
+
+impl<H> TcpHolePunchConnector<H>
+where
+    H: TcpHolePunchHost,
+{
+    pub fn new(
+        peer_manager: Arc<PeerManagerCore>,
+        host: Arc<H>,
+        options: TcpHolePunchOptions,
+    ) -> Self {
+        let data = Arc::new(TcpHolePunchConnectorData {
+            host: host.clone(),
+            peer_manager: peer_manager.clone(),
+            options: options.clone(),
+            blacklist: TcpHolePunchBlacklist::new(),
+        });
+        Self {
+            server: TcpHolePunchServer::new(host, peer_manager.clone()),
+            client: PeerTaskManager::new_with_external_signal(
+                TcpHolePunchPeerTaskLauncher(data.clone()),
+                peer_manager.clone(),
+                Some(peer_manager.p2p_demand_notify()),
+            ),
+            data,
+            peer_manager,
+            options,
+        }
+    }
+
+    pub fn run(&self) {
+        if self.options.disabled {
+            tracing::debug!("tcp hole punch disabled by runtime configuration");
+            return;
+        }
+        self.client.start();
+        self.peer_manager
+            .get_peer_rpc_mgr()
+            .rpc_server()
+            .registry()
+            .register(
+                TcpHolePunchRpcServer::new_arc(self.server.clone()),
+                &self.options.network_name,
+            );
+    }
+
+    pub async fn run_immediately(&self) {
+        self.client.run_immediately().await;
+    }
+
+    pub async fn collect_peers_need_task(&self) -> Vec<PeerId> {
+        self.data.collect_peers_need_task().await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn symmetric_tcp_nat_variants_are_ineligible_initiators() {
+        assert!(is_symmetric_tcp_nat(NatType::Symmetric));
+        assert!(is_symmetric_tcp_nat(NatType::SymmetricEasyInc));
+        assert!(is_symmetric_tcp_nat(NatType::SymmetricEasyDec));
+        assert!(!is_symmetric_tcp_nat(NatType::PortRestricted));
+        assert!(!is_symmetric_tcp_nat(NatType::Unknown));
+    }
+
+    #[test]
+    fn blacklist_tracks_and_cleans_entries() {
+        let blacklist = TcpHolePunchBlacklist::new();
+        assert!(!blacklist.contains(7));
+        blacklist.insert(7);
+        assert!(blacklist.contains(7));
+        blacklist.cleanup();
+        assert!(blacklist.contains(7));
+    }
+}
