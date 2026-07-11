@@ -1,6 +1,6 @@
 use std::{collections::HashMap, io, sync::Mutex, task::Poll};
 
-use super::{HostOperationId, HostSocketHandle, HostTcpIo};
+use super::{HostOperationId, HostSocketHandle, HostSocketIo, HostTcpIo};
 
 const HOST_PENDING: i32 = -1;
 
@@ -17,6 +17,20 @@ unsafe extern "C" {
 #[derive(Debug, Default)]
 pub struct WasiHostTcpIo {
     read_buffers: Mutex<HashMap<HostOperationId, Vec<u8>>>,
+}
+
+impl HostSocketIo for WasiHostTcpIo {
+    fn cancel_operation(&self, operation: HostOperationId) -> io::Result<()> {
+        self.read_buffers
+            .lock()
+            .expect("WASI read buffer registry poisoned")
+            .remove(&operation);
+        status("cancel_operation", unsafe { cancel_operation(operation.0) })
+    }
+
+    fn close(&self, handle: HostSocketHandle) -> io::Result<()> {
+        status("close", unsafe { close(handle.0) })
+    }
 }
 
 impl HostTcpIo for WasiHostTcpIo {
@@ -93,18 +107,6 @@ impl HostTcpIo for WasiHostTcpIo {
             0 => Poll::Ready(Ok(())),
             value => Poll::Ready(Err(host_error("take_write", value))),
         }
-    }
-
-    fn cancel_operation(&self, operation: HostOperationId) -> io::Result<()> {
-        self.read_buffers
-            .lock()
-            .expect("WASI read buffer registry poisoned")
-            .remove(&operation);
-        status("cancel_operation", unsafe { cancel_operation(operation.0) })
-    }
-
-    fn close(&self, handle: HostSocketHandle) -> io::Result<()> {
-        status("close", unsafe { close(handle.0) })
     }
 }
 

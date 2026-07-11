@@ -14,6 +14,7 @@ use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
 use super::tcp::VirtualTcpSocket;
 
+pub mod udp;
 #[cfg(target_os = "wasi")]
 pub mod wasi;
 
@@ -26,12 +27,20 @@ pub struct HostSocketHandle(pub u64);
 pub struct HostOperationId(pub u64);
 
 /// Mechanical host I/O below core's socket scheduling seam.
+pub trait HostSocketIo: Send + Sync + 'static {
+    fn cancel_operation(&self, operation: HostOperationId) -> io::Result<()>;
+
+    /// Close must be idempotent.
+    fn close(&self, handle: HostSocketHandle) -> io::Result<()>;
+}
+
+/// Mechanical host TCP I/O below core's socket scheduling seam.
 ///
 /// Submit methods must return without waiting for I/O. `submit_write` must take
 /// ownership of the complete source before returning and complete only after
 /// all accepted bytes are written or an error occurs. Completion methods return
 /// host-owned results; they never retain guest-memory borrows.
-pub trait HostTcpIo: Send + Sync + 'static {
+pub trait HostTcpIo: HostSocketIo {
     fn submit_read(
         &self,
         handle: HostSocketHandle,
@@ -49,11 +58,6 @@ pub trait HostTcpIo: Send + Sync + 'static {
     ) -> io::Result<()>;
 
     fn take_write(&self, operation: HostOperationId) -> Poll<io::Result<()>>;
-
-    fn cancel_operation(&self, operation: HostOperationId) -> io::Result<()>;
-
-    /// Close must be idempotent.
-    fn close(&self, handle: HostSocketHandle) -> io::Result<()>;
 }
 
 #[derive(Default)]
@@ -470,6 +474,19 @@ mod tests {
         }
     }
 
+    impl HostSocketIo for TestHostIo {
+        fn cancel_operation(&self, operation: HostOperationId) -> io::Result<()> {
+            self.operations.lock().unwrap().remove(&operation);
+            self.cancelled.lock().unwrap().push(operation);
+            Ok(())
+        }
+
+        fn close(&self, handle: HostSocketHandle) -> io::Result<()> {
+            self.closed.lock().unwrap().insert(handle);
+            Ok(())
+        }
+    }
+
     impl HostTcpIo for TestHostIo {
         fn submit_read(
             &self,
@@ -537,17 +554,6 @@ mod tests {
             };
             operations.remove(&operation);
             Poll::Ready(result)
-        }
-
-        fn cancel_operation(&self, operation: HostOperationId) -> io::Result<()> {
-            self.operations.lock().unwrap().remove(&operation);
-            self.cancelled.lock().unwrap().push(operation);
-            Ok(())
-        }
-
-        fn close(&self, handle: HostSocketHandle) -> io::Result<()> {
-            self.closed.lock().unwrap().insert(handle);
-            Ok(())
         }
     }
 
