@@ -66,6 +66,17 @@ where
         }
     }
 
+    pub fn start(&self) {
+        self.common.start();
+        self.both_easy_sym_server.common.start();
+    }
+
+    pub async fn stop(&self) {
+        self.both_easy_sym_server.stop().await;
+        self.both_easy_sym_server.common.stop().await;
+        self.common.stop().await;
+    }
+
     fn busy_signal_error() -> UdpHolePunchSignalError {
         UdpHolePunchSignalError::RemoteRejected("sym punch lock is busy".into())
     }
@@ -272,7 +283,7 @@ where
     runtime: Arc<R>,
     tunnel_sink: Arc<T>,
     listeners: Arc<Mutex<Vec<UdpPunchListenerRecord<R::Socket>>>>,
-    _cleanup_task: AbortOnDropHandle<()>,
+    cleanup_task: std::sync::Mutex<Option<AbortOnDropHandle<()>>>,
 }
 
 impl<R, T> UdpHolePunchServerCommon<R, T>
@@ -282,22 +293,56 @@ where
 {
     pub fn new(runtime: Arc<R>, tunnel_sink: Arc<T>) -> Self {
         let listeners = Arc::new(Mutex::new(Vec::<UdpPunchListenerRecord<R::Socket>>::new()));
-        let cleanup_listeners = listeners.clone();
-        let cleanup_task = AbortOnDropHandle::new(tokio::spawn(async move {
-            loop {
-                tokio::time::sleep(Duration::from_secs(5)).await;
-                cleanup_listeners.lock().await.retain(|listener| {
-                    listener.last_active_time.load().elapsed().as_secs() < 40
-                        || listener.last_select_time.load().elapsed().as_secs() < 30
-                });
-            }
-        }));
 
         Self {
             runtime,
             tunnel_sink,
             listeners,
-            _cleanup_task: cleanup_task,
+            cleanup_task: std::sync::Mutex::new(None),
+        }
+    }
+
+    pub fn start(&self) {
+        let mut task_slot = self.cleanup_task.lock().unwrap();
+        if task_slot.as_ref().is_some_and(|task| !task.is_finished()) {
+            return;
+        }
+        let listeners = self.listeners.clone();
+        task_slot.replace(AbortOnDropHandle::new(tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(Duration::from_secs(5)).await;
+                let expired = {
+                    let mut listeners = listeners.lock().await;
+                    let mut expired = Vec::new();
+                    let mut index = 0;
+                    while index < listeners.len() {
+                        let listener = &listeners[index];
+                        let active = listener.last_active_time.load().elapsed().as_secs() < 40
+                            || listener.last_select_time.load().elapsed().as_secs() < 30;
+                        if active {
+                            index += 1;
+                        } else {
+                            expired.push(listeners.remove(index));
+                        }
+                    }
+                    expired
+                };
+                for listener in expired {
+                    listener.stop().await;
+                }
+            }
+        })));
+    }
+
+    pub async fn stop(&self) {
+        let cleanup_task = self.cleanup_task.lock().unwrap().take();
+        if let Some(cleanup_task) = cleanup_task {
+            cleanup_task.abort();
+            let _ = cleanup_task.await;
+        }
+        let listeners = std::mem::take(&mut *self.listeners.lock().await);
+        for listener in listeners {
+            listener.stop().await;
         }
     }
 
@@ -420,7 +465,8 @@ where
 
 struct UdpPunchListenerRecord<S> {
     socket: Arc<S>,
-    _tasks: JoinSet<()>,
+    tasks: JoinSet<()>,
+    connection_tasks: Arc<std::sync::Mutex<JoinSet<()>>>,
     running: Arc<AtomicCell<bool>>,
     mapped_addr: SocketAddr,
     has_port_mapping_lease: bool,
@@ -451,6 +497,8 @@ where
         let running = Arc::new(AtomicCell::new(true));
         let running_clone = running.clone();
         let mut tasks = JoinSet::new();
+        let connection_tasks = Arc::new(std::sync::Mutex::new(JoinSet::new()));
+        let accept_connection_tasks = connection_tasks.clone();
 
         tasks.spawn(async move {
             while let Ok(socket) = acceptor.accept().await {
@@ -464,7 +512,9 @@ where
                     }
                 };
                 let tunnel_sink = tunnel_sink.clone();
-                tokio::spawn(async move {
+                let mut connection_tasks = accept_connection_tasks.lock().unwrap();
+                while connection_tasks.try_join_next().is_some() {}
+                connection_tasks.spawn(async move {
                     if let Err(err) = tunnel_sink.add_server_tunnel(tunnel).await {
                         tracing::error!(
                             ?err,
@@ -493,7 +543,8 @@ where
 
         Self {
             socket,
-            _tasks: tasks,
+            tasks,
+            connection_tasks,
             running,
             mapped_addr,
             has_port_mapping_lease: port_mapping_lease.is_some(),
@@ -522,6 +573,17 @@ where
             has_port_mapping_lease: self.has_port_mapping_lease,
             last_active_time: self.last_active_time.load(),
         }
+    }
+
+    async fn stop(mut self) {
+        self.tasks.abort_all();
+        while self.tasks.join_next().await.is_some() {}
+        let mut connection_tasks = {
+            let mut task_slot = self.connection_tasks.lock().unwrap();
+            std::mem::replace(&mut *task_slot, JoinSet::new())
+        };
+        connection_tasks.abort_all();
+        while connection_tasks.join_next().await.is_some() {}
     }
 }
 
@@ -627,6 +689,14 @@ where
         match self.task.try_lock() {
             Ok(locked_task) => locked_task.as_ref().is_some_and(|task| !task.is_finished()),
             Err(_) => true,
+        }
+    }
+
+    pub async fn stop(&self) {
+        let task = self.task.lock().await.take();
+        if let Some(task) = task {
+            task.abort();
+            let _ = task.await;
         }
     }
 
@@ -939,6 +1009,28 @@ mod tests {
             &server.common,
             &server.both_easy_sym_server.common
         ));
+    }
+
+    #[test]
+    fn server_constructor_is_cold() {
+        let runtime = Arc::new(MockRuntime::new(Vec::new()));
+        let sink = Arc::new(MockSink::default());
+
+        let _server = UdpHolePunchServer::new(runtime, sink, UdpSymPunchLock::default());
+    }
+
+    #[tokio::test]
+    async fn common_lifecycle_joins_cleanup_and_listener_tasks() {
+        let runtime = Arc::new(MockRuntime::new(vec![listener(10003, Vec::new())]));
+        let sink = Arc::new(MockSink::default());
+        let common = Arc::new(UdpHolePunchServerCommon::new(runtime, sink));
+
+        common.start();
+        common.select_listener(false, false).await.unwrap();
+        common.stop().await;
+
+        assert!(common.cleanup_task.lock().unwrap().is_none());
+        assert!(common.listeners.lock().await.is_empty());
     }
 
     #[tokio::test]
