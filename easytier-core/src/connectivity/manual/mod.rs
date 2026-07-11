@@ -326,6 +326,12 @@ where
             task.cancel.cancel();
             let _ = task.handle.await;
         }
+        let _state_guard = self.data.state_lock.lock().unwrap();
+        restore_interrupted_connectors(
+            &self.data.connectors,
+            &self.data.reconnecting,
+            &self.data.removed,
+        );
     }
 
     pub fn add_connector(&self, url: Url) -> anyhow::Result<()> {
@@ -1128,6 +1134,7 @@ mod tests {
         reconnecting.insert(deleted.clone());
         removed.insert(deleted.clone());
 
+        restore_interrupted_connectors(&connectors, &reconnecting, &removed);
         restore_interrupted_connectors(&connectors, &reconnecting, &removed);
 
         assert!(connectors.contains(&retained));
