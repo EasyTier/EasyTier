@@ -247,3 +247,283 @@ where
         self.environment.tcp_port_mapping(local_port).await
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::{io, task::Poll};
+
+    use crate::socket::{
+        host::{
+            HostOperationId, HostSocketHandle, HostSocketIo, HostTcpIo,
+            factory::{HostSocketFactoryIo, HostTcpConnectResult, HostUdpBindResult},
+            listener::{HostTcpBindResult, HostTcpListenerIo},
+            udp::{HostUdpDatagram, HostUdpIo},
+        },
+        udp::UdpSocketSendMeta,
+    };
+
+    use super::*;
+
+    struct UnsupportedBackend;
+
+    fn unsupported<T>() -> io::Result<T> {
+        Err(io::ErrorKind::Unsupported.into())
+    }
+
+    impl HostSocketIo for UnsupportedBackend {
+        fn cancel_operation(&self, _operation: HostOperationId) -> io::Result<()> {
+            Ok(())
+        }
+
+        fn close(&self, _handle: HostSocketHandle) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl HostTcpIo for UnsupportedBackend {
+        fn submit_read(
+            &self,
+            _handle: HostSocketHandle,
+            _operation: HostOperationId,
+            _capacity: usize,
+        ) -> io::Result<()> {
+            unsupported()
+        }
+
+        fn take_read(&self, _operation: HostOperationId) -> Poll<io::Result<Vec<u8>>> {
+            Poll::Ready(unsupported())
+        }
+
+        fn submit_write(
+            &self,
+            _handle: HostSocketHandle,
+            _operation: HostOperationId,
+            _source: &[u8],
+        ) -> io::Result<()> {
+            unsupported()
+        }
+
+        fn take_write(&self, _operation: HostOperationId) -> Poll<io::Result<()>> {
+            Poll::Ready(unsupported())
+        }
+    }
+
+    impl HostUdpIo for UnsupportedBackend {
+        fn submit_recv(
+            &self,
+            _handle: HostSocketHandle,
+            _operation: HostOperationId,
+            _capacity: usize,
+        ) -> io::Result<()> {
+            unsupported()
+        }
+
+        fn take_recv(&self, _operation: HostOperationId) -> Poll<io::Result<HostUdpDatagram>> {
+            Poll::Ready(unsupported())
+        }
+
+        fn try_send(
+            &self,
+            _handle: HostSocketHandle,
+            _source: &[u8],
+            _peer_addr: SocketAddr,
+            _meta: UdpSocketSendMeta,
+        ) -> io::Result<()> {
+            unsupported()
+        }
+
+        fn submit_send_ready(
+            &self,
+            _handle: HostSocketHandle,
+            _operation: HostOperationId,
+        ) -> io::Result<()> {
+            unsupported()
+        }
+
+        fn take_send_ready(&self, _operation: HostOperationId) -> Poll<io::Result<()>> {
+            Poll::Ready(unsupported())
+        }
+    }
+
+    impl HostSocketFactoryIo for UnsupportedBackend {
+        fn submit_tcp_connect(
+            &self,
+            _operation: HostOperationId,
+            _options: &TcpConnectOptions,
+        ) -> io::Result<()> {
+            unsupported()
+        }
+
+        fn take_tcp_connect(
+            &self,
+            _operation: HostOperationId,
+        ) -> Poll<io::Result<HostTcpConnectResult>> {
+            Poll::Ready(unsupported())
+        }
+
+        fn submit_udp_bind(
+            &self,
+            _operation: HostOperationId,
+            _options: &UdpBindOptions,
+        ) -> io::Result<()> {
+            unsupported()
+        }
+
+        fn take_udp_bind(
+            &self,
+            _operation: HostOperationId,
+        ) -> Poll<io::Result<HostUdpBindResult>> {
+            Poll::Ready(unsupported())
+        }
+    }
+
+    impl HostTcpListenerIo for UnsupportedBackend {
+        fn submit_tcp_bind(
+            &self,
+            _operation: HostOperationId,
+            _options: &TcpListenOptions,
+        ) -> io::Result<()> {
+            unsupported()
+        }
+
+        fn take_tcp_bind(
+            &self,
+            _operation: HostOperationId,
+        ) -> Poll<io::Result<HostTcpBindResult>> {
+            Poll::Ready(unsupported())
+        }
+
+        fn submit_tcp_accept(
+            &self,
+            _handle: HostSocketHandle,
+            _operation: HostOperationId,
+        ) -> io::Result<()> {
+            unsupported()
+        }
+
+        fn take_tcp_accept(
+            &self,
+            _operation: HostOperationId,
+        ) -> Poll<io::Result<HostTcpConnectResult>> {
+            Poll::Ready(unsupported())
+        }
+    }
+
+    struct TestEnvironment;
+
+    #[async_trait]
+    impl ManualConnectorEnvironment for TestEnvironment {
+        async fn local_addr_for_remote(
+            &self,
+            _remote_addr: SocketAddr,
+        ) -> anyhow::Result<SocketAddr> {
+            Ok("192.0.2.1:40100".parse().unwrap())
+        }
+
+        async fn interface_addrs(&self) -> anyhow::Result<ManualInterfaceAddrs> {
+            Ok(ManualInterfaceAddrs {
+                interface_ipv4s: vec!["192.0.2.1".parse().unwrap()],
+                interface_ipv6s: vec!["2001:db8::1".parse().unwrap()],
+                public_ipv6: Some("2001:db8::1".parse().unwrap()),
+            })
+        }
+    }
+
+    #[async_trait]
+    impl DirectConnectorEnvironment for TestEnvironment {
+        async fn collect_ip_addrs(&self) -> anyhow::Result<GetIpListResponse> {
+            Ok(GetIpListResponse::default())
+        }
+
+        fn mapped_listeners(&self) -> Vec<Url> {
+            vec!["tcp://192.0.2.1:11010".parse().unwrap()]
+        }
+
+        fn running_listeners(&self) -> Vec<Url> {
+            vec!["udp://192.0.2.1:11010".parse().unwrap()]
+        }
+
+        fn is_local_ip(&self, ip: &IpAddr) -> bool {
+            *ip == "192.0.2.1".parse::<IpAddr>().unwrap()
+        }
+
+        fn is_protected_tcp_port(&self, port: u16) -> bool {
+            port == 11010
+        }
+
+        fn stun_public_ips(&self) -> Vec<IpAddr> {
+            vec!["198.51.100.1".parse().unwrap()]
+        }
+
+        fn is_easytier_managed_ipv6(&self, ip: &Ipv6Addr) -> bool {
+            *ip == "2001:db8::1".parse::<Ipv6Addr>().unwrap()
+        }
+
+        async fn udp_port_mapping(
+            &self,
+            _socket: Arc<HostUdpSocket>,
+        ) -> anyhow::Result<SocketAddr> {
+            Ok("198.51.100.1:41000".parse().unwrap())
+        }
+
+        async fn preferred_ipv6_source(&self, ip: Ipv6Addr) -> Option<PreferredIpv6Source> {
+            Some(PreferredIpv6Source { ip, ifindex: 7 })
+        }
+    }
+
+    #[async_trait]
+    impl UdpSessionControlHandler<HostUdpSocket> for TestEnvironment {}
+
+    #[async_trait]
+    impl TcpHolePunchEnvironment for TestEnvironment {
+        fn tcp_nat_type(&self) -> NatType {
+            NatType::Unknown
+        }
+
+        async fn tcp_port_mapping(&self, local_port: u16) -> anyhow::Result<SocketAddr> {
+            Ok(SocketAddr::new("198.51.100.1".parse().unwrap(), local_port))
+        }
+    }
+
+    fn assert_core_host<H>()
+    where
+        H: DirectConnectorHost + TcpHolePunchHost,
+    {
+    }
+
+    #[tokio::test]
+    async fn delegates_connector_environment_without_owning_policy() {
+        type TestHost = HostConnectorAdapter<UnsupportedBackend, TestEnvironment>;
+        assert_core_host::<TestHost>();
+
+        let host = TestHost::new(
+            HostSocketRuntime::new(),
+            Arc::new(UnsupportedBackend),
+            Arc::new(TestEnvironment),
+        );
+        let local =
+            ManualConnectorHost::local_addr_for_remote(&host, "203.0.113.1:11010".parse().unwrap())
+                .await
+                .unwrap();
+        assert_eq!(local, "192.0.2.1:40100".parse().unwrap());
+        assert_eq!(
+            ManualConnectorHost::interface_addrs(&host)
+                .await
+                .unwrap()
+                .public_ipv6,
+            Some("2001:db8::1".parse().unwrap())
+        );
+        assert_eq!(
+            DirectConnectorHost::mapped_listeners(&host),
+            vec!["tcp://192.0.2.1:11010".parse::<Url>().unwrap()]
+        );
+        assert!(DirectConnectorHost::is_protected_tcp_port(&host, 11010));
+        assert_eq!(TcpHolePunchHost::tcp_nat_type(&host), NatType::Unknown);
+        assert_eq!(
+            TcpHolePunchHost::tcp_port_mapping(&host, 42000)
+                .await
+                .unwrap(),
+            "198.51.100.1:42000".parse().unwrap()
+        );
+    }
+}
