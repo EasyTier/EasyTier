@@ -20,7 +20,7 @@ use crate::{
 
 mod manager;
 
-pub use manager::{TcpHolePunchConnector, TcpHolePunchOptions};
+pub use manager::TcpHolePunchConnector;
 
 #[async_trait]
 pub trait TcpHolePunchHost: VirtualTcpListenerFactory + VirtualTcpSocketFactory {

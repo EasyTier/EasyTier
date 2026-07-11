@@ -19,7 +19,7 @@ use url::Url;
 
 use crate::{
     compressor::{Compressor as _, DefaultCompressor},
-    config::PeerId,
+    config::{P2pPolicyFlags, PeerId},
     packet::{CompressorAlgo, PacketType, ZCPacket},
     proto::core_peer::peer::Route as CoreRoute,
     tunnel::Tunnel,
@@ -855,6 +855,25 @@ impl PeerManagerCore {
 
     pub fn my_peer_id(&self) -> PeerId {
         self.my_peer_id
+    }
+
+    pub fn network_name(&self) -> &str {
+        &self.network_name
+    }
+
+    pub fn p2p_policy_flags(&self) -> P2pPolicyFlags {
+        let flags = self.context.flags();
+        P2pPolicyFlags {
+            disable_udp_hole_punching: flags.disable_udp_hole_punching,
+            disable_sym_hole_punching: flags.disable_sym_hole_punching,
+            lazy_p2p: flags.lazy_p2p,
+            disable_p2p: flags.disable_p2p,
+            need_p2p: flags.need_p2p,
+        }
+    }
+
+    pub fn tcp_hole_punching_disabled(&self) -> bool {
+        self.context.flags().disable_tcp_hole_punching
     }
 
     pub fn get_peer_map(&self) -> Arc<PeerMap> {

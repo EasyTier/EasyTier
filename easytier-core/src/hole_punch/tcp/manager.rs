@@ -1,5 +1,5 @@
 use std::{
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, Weak},
     time::Duration,
 };
 
@@ -31,27 +31,6 @@ use super::{
 };
 
 const BLACKLIST_TIMEOUT: Duration = Duration::from_secs(3600);
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TcpHolePunchOptions {
-    pub network_name: String,
-    pub disabled: bool,
-    pub lazy_p2p: bool,
-    pub disable_p2p: bool,
-    pub need_p2p: bool,
-}
-
-impl Default for TcpHolePunchOptions {
-    fn default() -> Self {
-        Self {
-            network_name: String::new(),
-            disabled: false,
-            lazy_p2p: false,
-            disable_p2p: false,
-            need_p2p: false,
-        }
-    }
-}
 
 struct TcpHolePunchBlacklist {
     entries: DashMap<PeerId, Instant>,
@@ -127,7 +106,7 @@ where
     H: TcpHolePunchHost,
 {
     host: Arc<H>,
-    peer_manager: Arc<PeerManagerCore>,
+    peer_manager: Weak<PeerManagerCore>,
     tasks: Arc<Mutex<JoinSet<()>>>,
 }
 
@@ -140,7 +119,7 @@ where
         join_joinset_background(tasks.clone());
         Arc::new(Self {
             host,
-            peer_manager,
+            peer_manager: Arc::downgrade(&peer_manager),
             tasks,
         })
     }
@@ -159,6 +138,10 @@ where
         _controller: Self::Controller,
         input: TcpHolePunchRequest,
     ) -> rpc_types::error::Result<TcpHolePunchResponse> {
+        let peer_manager = self
+            .peer_manager
+            .upgrade()
+            .ok_or_else(|| anyhow::anyhow!("peer manager is gone"))?;
         let local_nat_type = self.host.tcp_nat_type();
         tracing::debug!(?local_nat_type, "tcp hole punch rpc received");
         if local_nat_type == NatType::Unknown {
@@ -195,7 +178,6 @@ where
         );
 
         let host = self.host.clone();
-        let peer_manager = self.peer_manager.clone();
         self.tasks.lock().unwrap().spawn(async move {
             let _ = try_connect_to_remote(
                 host,
@@ -220,7 +202,6 @@ where
 {
     host: Arc<H>,
     peer_manager: Arc<PeerManagerCore>,
-    options: TcpHolePunchOptions,
     blacklist: TcpHolePunchBlacklist,
 }
 
@@ -279,7 +260,7 @@ where
             .scoped_client::<TcpHolePunchRpcClientFactory<BaseController>>(
             self.peer_manager.my_peer_id(),
             dst_peer_id,
-            self.options.network_name.clone(),
+            self.peer_manager.network_name().to_owned(),
         );
         let response = rpc_stub
             .exchange_mapped_addr(
@@ -370,6 +351,7 @@ where
         }
 
         self.blacklist.cleanup();
+        let policy = self.peer_manager.p2p_policy_flags();
         let local_peer_id = self.peer_manager.my_peer_id();
         let now = Instant::now();
         let mut peers_to_connect = Vec::new();
@@ -377,15 +359,15 @@ where
             let static_allowed = should_background_p2p_with_peer(
                 route.feature_flag.as_ref(),
                 false,
-                self.options.lazy_p2p,
-                self.options.disable_p2p,
-                self.options.need_p2p,
+                policy.lazy_p2p,
+                policy.disable_p2p,
+                policy.need_p2p,
             );
             let dynamic_allowed = should_try_p2p_with_peer(
                 route.feature_flag.as_ref(),
                 false,
-                self.options.disable_p2p,
-                self.options.need_p2p,
+                policy.disable_p2p,
+                policy.need_p2p,
             ) && self.peer_manager.has_recent_traffic(route.peer_id, now);
             if !static_allowed && !dynamic_allowed {
                 continue;
@@ -486,22 +468,16 @@ where
     client: PeerTaskManager<TcpHolePunchPeerTaskLauncher<H>>,
     data: Arc<TcpHolePunchConnectorData<H>>,
     peer_manager: Arc<PeerManagerCore>,
-    options: TcpHolePunchOptions,
 }
 
 impl<H> TcpHolePunchConnector<H>
 where
     H: TcpHolePunchHost,
 {
-    pub fn new(
-        peer_manager: Arc<PeerManagerCore>,
-        host: Arc<H>,
-        options: TcpHolePunchOptions,
-    ) -> Self {
+    pub fn new(peer_manager: Arc<PeerManagerCore>, host: Arc<H>) -> Self {
         let data = Arc::new(TcpHolePunchConnectorData {
             host: host.clone(),
             peer_manager: peer_manager.clone(),
-            options: options.clone(),
             blacklist: TcpHolePunchBlacklist::new(),
         });
         Self {
@@ -513,12 +489,11 @@ where
             ),
             data,
             peer_manager,
-            options,
         }
     }
 
     pub fn run(&self) {
-        if self.options.disabled {
+        if self.peer_manager.tcp_hole_punching_disabled() {
             tracing::debug!("tcp hole punch disabled by runtime configuration");
             return;
         }
@@ -529,7 +504,7 @@ where
             .registry()
             .register(
                 TcpHolePunchRpcServer::new_arc(self.server.clone()),
-                &self.options.network_name,
+                self.peer_manager.network_name(),
             );
     }
 

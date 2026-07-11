@@ -1,8 +1,6 @@
 use std::sync::Arc;
 
-use easytier_core::hole_punch::tcp::{
-    TcpHolePunchConnector as CoreTcpHolePunchConnector, TcpHolePunchOptions,
-};
+use easytier_core::hole_punch::tcp::TcpHolePunchConnector as CoreTcpHolePunchConnector;
 
 use crate::{
     common::error::Error, connector::runtime::RuntimeConnectorHost,
@@ -18,19 +16,10 @@ pub struct TcpHolePunchConnector {
 impl TcpHolePunchConnector {
     pub fn new(peer_manager: Arc<PeerManager>) -> Self {
         let global_ctx = peer_manager.get_global_ctx();
-        let flags = global_ctx.get_flags();
-        let options = TcpHolePunchOptions {
-            network_name: global_ctx.get_network_name(),
-            disabled: flags.disable_tcp_hole_punching,
-            lazy_p2p: flags.lazy_p2p,
-            disable_p2p: flags.disable_p2p,
-            need_p2p: flags.need_p2p,
-        };
         Self {
             inner: RuntimeTcpHolePunchConnector::new(
                 peer_manager.core(),
                 Arc::new(RuntimeConnectorHost::new(global_ctx)),
-                options,
             ),
         }
     }
@@ -116,10 +105,8 @@ mod tests {
             .replace_stun_info_collector(collector);
     }
 
-    async fn collect_lazy_punch_peers(peer_mgr: Arc<PeerManager>) -> Vec<u32> {
-        TcpHolePunchConnector::new(peer_mgr)
-            .collect_peers_need_task()
-            .await
+    async fn collect_lazy_punch_peers(connector: &TcpHolePunchConnector) -> Vec<u32> {
+        connector.collect_peers_need_task().await
     }
 
     #[tokio::test]
@@ -224,9 +211,10 @@ mod tests {
         connect_peer_manager(p_a.clone(), p_b.clone()).await;
         connect_peer_manager(p_b.clone(), p_c.clone()).await;
         wait_route_appear(p_a.clone(), p_c.clone()).await.unwrap();
+        let connector = TcpHolePunchConnector::new(p_a.clone());
 
         assert!(
-            !collect_lazy_punch_peers(p_a.clone())
+            !collect_lazy_punch_peers(&connector)
                 .await
                 .contains(&p_c.my_peer_id())
         );
@@ -234,7 +222,16 @@ mod tests {
         p_a.mark_recent_traffic(p_c.my_peer_id());
 
         assert!(
-            collect_lazy_punch_peers(p_a.clone())
+            collect_lazy_punch_peers(&connector)
+                .await
+                .contains(&p_c.my_peer_id())
+        );
+
+        let mut flags = p_a.get_global_ctx().get_flags();
+        flags.disable_p2p = true;
+        p_a.get_global_ctx().set_flags(flags);
+        assert!(
+            !collect_lazy_punch_peers(&connector)
                 .await
                 .contains(&p_c.my_peer_id())
         );
