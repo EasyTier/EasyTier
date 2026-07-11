@@ -8,10 +8,7 @@ use async_trait::async_trait;
 #[cfg(feature = "quic")]
 use easytier_core::socket::udp::UdpSessionSocket;
 use easytier_core::{
-    connectivity::{
-        manual::{upgrade_accepted_session, upgrade_accepted_socket},
-        protocol::raw,
-    },
+    connectivity::protocol::{self as core_protocol, CoreServerProtocolConfig, raw},
     instance::ListenerService,
     listener::{self as core_listener, plan as core_listener_plan},
     peers::peer_manager::PeerManagerCore,
@@ -1034,24 +1031,16 @@ where
         upgrade_permit: Option<OwnedSemaphorePermit>,
     ) -> anyhow::Result<()> {
         let _upgrade_permit = upgrade_permit;
-        let tunnel = match local_url.scheme() {
-            "tcp" => upgrade_accepted_socket(stream)?,
-            #[cfg(feature = "websocket")]
-            "ws" | "wss" => {
-                tokio::time::timeout(
-                    std::time::Duration::from_secs(3),
-                    easytier_core::connectivity::protocol::websocket::upgrade_accepted(
-                        stream, local_url,
-                    ),
-                )
-                .await??
-            }
-            #[cfg(feature = "faketcp")]
-            "faketcp" => {
-                easytier_core::connectivity::protocol::faketcp::upgrade_accepted(stream, local_url)?
-            }
-            scheme => anyhow::bail!("unsupported TCP listener protocol: {scheme}"),
-        };
+        let tunnel = core_protocol::upgrade_accepted_tcp(
+            stream,
+            local_url,
+            CoreServerProtocolConfig {
+                websocket: cfg!(feature = "websocket"),
+                faketcp: cfg!(feature = "faketcp"),
+                websocket_timeout: std::time::Duration::from_secs(3),
+            },
+        )
+        .await?;
         self.handle_tunnel(tunnel).await
     }
 
@@ -1061,7 +1050,7 @@ where
         local_url: url::Url,
     ) -> anyhow::Result<()> {
         let tunnel = match local_url.scheme() {
-            "udp" => upgrade_accepted_session(session)?,
+            "udp" => core_protocol::upgrade_accepted_udp(session, &local_url)?,
             #[cfg(feature = "wireguard")]
             "wg" => {
                 let identity = self.global_ctx.get_network_identity();

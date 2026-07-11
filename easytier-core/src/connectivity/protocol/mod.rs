@@ -1,9 +1,12 @@
-use std::sync::Arc;
+use std::{sync::Arc, time::Duration};
 
 use async_trait::async_trait;
 use url::Url;
 
-use crate::{socket::tcp::VirtualTcpSocket, tunnel::Tunnel};
+use crate::{
+    socket::{tcp::VirtualTcpSocket, udp::UdpSession},
+    tunnel::Tunnel,
+};
 
 use super::transport::ConnectedTransport;
 
@@ -118,6 +121,53 @@ where
         ConnectedTransport::Tcp(_) | ConnectedTransport::Udp(_) => {
             anyhow::bail!("external protocol requires a host-created byte stream")
         }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CoreServerProtocolConfig {
+    pub websocket: bool,
+    pub faketcp: bool,
+    pub websocket_timeout: Duration,
+}
+
+impl Default for CoreServerProtocolConfig {
+    fn default() -> Self {
+        Self {
+            websocket: false,
+            faketcp: false,
+            websocket_timeout: Duration::from_secs(3),
+        }
+    }
+}
+
+pub async fn upgrade_accepted_tcp<TcpSocket>(
+    socket: TcpSocket,
+    local_url: Url,
+    config: CoreServerProtocolConfig,
+) -> anyhow::Result<Box<dyn Tunnel>>
+where
+    TcpSocket: VirtualTcpSocket,
+{
+    match local_url.scheme() {
+        "tcp" => Ok(raw::upgrade_accepted_tcp(socket)?),
+        "ws" | "wss" if config.websocket => Ok(tokio::time::timeout(
+            config.websocket_timeout,
+            websocket::upgrade_accepted(socket, local_url),
+        )
+        .await??),
+        "faketcp" if config.faketcp => Ok(faketcp::upgrade_accepted(socket, local_url)?),
+        scheme => anyhow::bail!("unsupported TCP listener protocol: {scheme}"),
+    }
+}
+
+pub fn upgrade_accepted_udp(
+    session: UdpSession,
+    local_url: &Url,
+) -> anyhow::Result<Box<dyn Tunnel>> {
+    match local_url.scheme() {
+        "udp" => Ok(raw::upgrade_accepted_udp(session)?),
+        scheme => anyhow::bail!("unsupported UDP listener protocol: {scheme}"),
     }
 }
 
@@ -304,6 +354,33 @@ mod tests {
             disabled_builtin
                 .to_string()
                 .contains("unsupported client protocol upgrader")
+        );
+    }
+
+    #[tokio::test]
+    async fn core_server_dispatches_raw_tcp_and_enforces_host_capabilities() {
+        let tunnel = upgrade_accepted_tcp(
+            MockTcpSocket,
+            "tcp://0.0.0.0:2000".parse().unwrap(),
+            CoreServerProtocolConfig::default(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            tunnel.info().unwrap().local_addr.unwrap().url,
+            "tcp://127.0.0.1:1000"
+        );
+
+        let disabled = upgrade_accepted_tcp(
+            MockTcpSocket,
+            "ws://0.0.0.0:2000".parse().unwrap(),
+            CoreServerProtocolConfig::default(),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(
+            disabled.to_string(),
+            "unsupported TCP listener protocol: ws"
         );
     }
 }
