@@ -11,7 +11,7 @@ use rand::{Rng, seq::SliceRandom as _};
 use tokio::{sync::Mutex, task::JoinSet};
 use tokio_util::task::AbortOnDropHandle;
 
-use crate::config::PeerId;
+use crate::{config::PeerId, connectivity::protocol::raw};
 
 use super::{
     HOLE_PUNCH_PACKET_BODY_LEN, MAX_PUBLIC_UDP_HOLE_PUNCH_LISTENERS, ReusableUdpPunchListener,
@@ -453,7 +453,8 @@ where
         tasks.spawn(async move {
             while let Ok(socket) = acceptor.accept().await {
                 tracing::warn!(?socket, "udp hole punching listener got peer connection");
-                let tunnel = match socket.into_tunnel() {
+                let (connected, requested_url) = socket.into_connected();
+                let tunnel = match raw::upgrade_connected_udp(connected, requested_url) {
                     Ok(tunnel) => tunnel,
                     Err(err) => {
                         tracing::error!(?err, "failed to build UDP hole-punch tunnel");

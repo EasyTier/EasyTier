@@ -6,11 +6,10 @@ use std::{
 use async_trait::async_trait;
 
 use crate::{
-    proto::common::{StunInfo, TunnelInfo},
-    socket::udp::{
-        UdpBindOptions, UdpSession, UdpSessionSocket, VirtualUdpSocket, VirtualUdpSocketFactory,
-    },
-    tunnel::{Tunnel, TunnelError, udp::UdpTunnelUpgrader},
+    connectivity::transport::ConnectedUdpSession,
+    proto::common::StunInfo,
+    socket::udp::{UdpBindOptions, UdpSession, VirtualUdpSocket, VirtualUdpSocketFactory},
+    tunnel::Tunnel,
 };
 
 #[async_trait]
@@ -36,16 +35,11 @@ impl UdpPunchSocket {
         }
     }
 
-    pub(crate) fn into_tunnel(self) -> Result<Box<dyn Tunnel>, TunnelError> {
-        let local_addr = self.session.local_addr()?;
-        let resolved_remote_addr = self.session.peer_addr()?;
-        let tunnel_info = TunnelInfo {
-            tunnel_type: "udp".to_owned(),
-            local_addr: Some(udp_url(local_addr).into()),
-            remote_addr: Some(udp_url(self.requested_remote_addr).into()),
-            resolved_remote_addr: Some(udp_url(resolved_remote_addr).into()),
-        };
-        UdpTunnelUpgrader::with_keep_alive(tunnel_info, self.lifetime_guard).upgrade(self.session)
+    pub(crate) fn into_connected(self) -> (ConnectedUdpSession, url::Url) {
+        (
+            ConnectedUdpSession::new(self.session, self.lifetime_guard),
+            udp_url(self.requested_remote_addr),
+        )
     }
 }
 
@@ -345,7 +339,10 @@ mod tests {
             DropSignal(guard_dropped.clone()),
         );
 
-        let tunnel = socket.into_tunnel().unwrap();
+        let (connected, requested_url) = socket.into_connected();
+        let tunnel =
+            crate::connectivity::protocol::raw::upgrade_connected_udp(connected, requested_url)
+                .unwrap();
         let info = tunnel.info().unwrap();
         let local_url: url::Url = info.local_addr.unwrap().into();
         let remote_url: url::Url = info.remote_addr.unwrap().into();

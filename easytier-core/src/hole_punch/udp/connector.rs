@@ -13,6 +13,7 @@ use tokio::{sync::Mutex, task::JoinHandle};
 
 use crate::{
     config::PeerId,
+    connectivity::protocol::raw,
     proto::common::NatType,
     task::{ExternalTaskSignal, PeerTaskLauncher, PeerTaskManager},
 };
@@ -190,7 +191,8 @@ where
 
         match ret {
             Ok(Some(socket)) => {
-                let tunnel = match socket.into_tunnel() {
+                let (connected, requested_url) = socket.into_connected();
+                let tunnel = match raw::upgrade_connected_udp(connected, requested_url) {
                     Ok(tunnel) => tunnel,
                     Err(err) => {
                         tracing::warn!(?err, "build UDP hole-punch tunnel failed");
