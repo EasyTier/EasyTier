@@ -4,7 +4,7 @@ use quanta::Instant;
 use serde::{Deserialize, Serialize};
 use std::cell::UnsafeCell;
 use std::fmt;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::time::interval;
 use tokio_util::task::AbortOnDropHandle;
@@ -602,7 +602,7 @@ impl MetricSnapshot {
 /// StatsManager manages global statistics with high performance counters
 pub struct StatsManager {
     counters: Arc<DashMap<MetricKey, Arc<MetricData>>>,
-    _cleanup_task: AbortOnDropHandle<()>,
+    cleanup_task: Mutex<Option<AbortOnDropHandle<()>>>,
 }
 
 impl StatsManager {
@@ -635,8 +635,21 @@ impl StatsManager {
 
         Self {
             counters,
-            _cleanup_task: AbortOnDropHandle::new(cleanup_task),
+            cleanup_task: Mutex::new(Some(AbortOnDropHandle::new(cleanup_task))),
         }
+    }
+
+    pub(crate) async fn stop_cleanup_task(&self) {
+        let task = self.cleanup_task.lock().unwrap().take();
+        if let Some(task) = task {
+            task.abort();
+            let _ = task.await;
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn cleanup_task_is_stopped(&self) -> bool {
+        self.cleanup_task.lock().unwrap().is_none()
     }
 
     /// Get or create a counter with the given name and labels

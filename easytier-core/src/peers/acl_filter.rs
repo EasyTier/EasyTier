@@ -2,7 +2,7 @@ use std::net::{Ipv4Addr, Ipv6Addr};
 use std::sync::atomic::Ordering;
 use std::{
     net::IpAddr,
-    sync::{Arc, atomic::AtomicBool},
+    sync::{Arc, Mutex, atomic::AtomicBool},
 };
 
 use arc_swap::ArcSwap;
@@ -151,7 +151,7 @@ pub struct AclFilter {
     // packets, even if they would normally be dropped by ACL rules
     outbound_allow_records: Arc<DashMap<OutboundAllowRecord, Instant>>,
     #[allow(dead_code)]
-    clean_task: AbortOnDropHandle<()>,
+    clean_task: Mutex<Option<AbortOnDropHandle<()>>>,
 }
 
 impl Default for AclFilter {
@@ -168,14 +168,27 @@ impl AclFilter {
             acl_processor: ArcSwap::from(Arc::new(AclProcessor::new(Acl::default()))),
             acl_enabled: Arc::new(AtomicBool::new(false)),
             outbound_allow_records,
-            clean_task: AbortOnDropHandle::new(tokio::spawn(async move {
+            clean_task: Mutex::new(Some(AbortOnDropHandle::new(tokio::spawn(async move {
                 let max_life = std::time::Duration::from_secs(30);
                 loop {
                     record_clone.retain(|_, v| v.elapsed() < max_life);
                     tokio::time::sleep(std::time::Duration::from_secs(30)).await;
                 }
-            })),
+            })))),
         }
+    }
+
+    pub(crate) async fn stop_cleanup_task(&self) {
+        let task = self.clean_task.lock().unwrap().take();
+        if let Some(task) = task {
+            task.abort();
+            let _ = task.await;
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn cleanup_task_is_stopped(&self) -> bool {
+        self.clean_task.lock().unwrap().is_none()
     }
 
     /// Hot reload ACL rules by creating a new processor instance

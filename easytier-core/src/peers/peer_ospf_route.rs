@@ -1920,6 +1920,14 @@ impl SessionTask {
             false
         }
     }
+
+    async fn stop(&self) {
+        let task = self.task.lock().unwrap().take();
+        if let Some(task) = task {
+            task.abort();
+            let _ = task.await;
+        }
+    }
 }
 
 impl Drop for SessionTask {
@@ -4027,17 +4035,8 @@ impl PeerRoute {
             .unwrap()
             .spawn(self.public_ipv6_service.clone().client_routine());
     }
-}
 
-impl Drop for PeerRoute {
-    fn drop(&mut self) {
-        tracing::debug!(
-            self.my_peer_id,
-            network = ?self.context.network_identity(),
-            service = ?self.service_impl,
-            "PeerRoute drop"
-        );
-
+    fn unregister_rpc_services(&self) {
         let Some(peer_rpc) = self.peer_rpc.upgrade() else {
             return;
         };
@@ -4051,6 +4050,55 @@ impl Drop for PeerRoute {
             &self.context.network_name(),
         );
     }
+
+    async fn stop(&self) {
+        let mut tasks = {
+            let mut tasks = self.tasks.lock().unwrap();
+            std::mem::replace(&mut *tasks, JoinSet::new())
+        };
+        tasks.abort_all();
+        while tasks.join_next().await.is_some() {}
+
+        let sessions = self
+            .service_impl
+            .sessions
+            .iter()
+            .map(|session| session.value().clone())
+            .collect::<Vec<_>>();
+        self.service_impl.sessions.clear();
+        self.service_impl.sessions.shrink_to_fit();
+        for session in sessions {
+            session.task.stop().await;
+        }
+
+        *self.service_impl.interface.lock().await = None;
+        self.unregister_rpc_services();
+    }
+
+    #[cfg(test)]
+    pub(crate) fn task_count(&self) -> usize {
+        let route_tasks = self.tasks.lock().unwrap().len();
+        let session_tasks = self
+            .service_impl
+            .sessions
+            .iter()
+            .filter(|session| session.task.is_running())
+            .count();
+        route_tasks + session_tasks
+    }
+}
+
+impl Drop for PeerRoute {
+    fn drop(&mut self) {
+        tracing::debug!(
+            self.my_peer_id,
+            network = ?self.context.network_identity(),
+            service = ?self.service_impl,
+            "PeerRoute drop"
+        );
+
+        self.unregister_rpc_services();
+    }
 }
 
 #[async_trait::async_trait]
@@ -4061,7 +4109,9 @@ impl Route for PeerRoute {
         Ok(1)
     }
 
-    async fn close(&self) {}
+    async fn close(&self) {
+        self.stop().await;
+    }
 
     async fn get_next_hop(&self, dst_peer_id: PeerId) -> Option<PeerId> {
         let route_table = &self.service_impl.route_table;

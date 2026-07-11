@@ -539,6 +539,7 @@ pub struct PeerManagerCore {
     stats_manager: Arc<StatsManager>,
     network_name: String,
     counters: PeerManagerTrafficCounters,
+    owns_support_tasks: bool,
 }
 
 pub enum AddressResolution {
@@ -913,7 +914,9 @@ impl PeerManagerCore {
             address_resolver,
             |_, _, _, _| Arc::new(DisabledForeignNetworkManager),
         );
-        Ok(result.core)
+        let mut core = result.core;
+        core.owns_support_tasks = true;
+        Ok(core)
     }
 
     /// Builds the default peer control-plane graph while letting runtime provide
@@ -1214,6 +1217,7 @@ impl PeerManagerCore {
             stats_manager,
             network_name,
             counters,
+            owns_support_tasks: false,
         }
     }
 
@@ -1475,7 +1479,12 @@ impl PeerManagerCore {
         };
         tasks.abort_all();
         while tasks.join_next().await.is_some() {}
+        self.route.close().await;
         self.peer_rpc_mgr.stop().await;
+        if self.owns_support_tasks {
+            self.stats_manager.stop_cleanup_task().await;
+            self.acl_filter.stop_cleanup_task().await;
+        }
     }
 
     pub(crate) async fn clear_resources(&self) {
@@ -3385,7 +3394,14 @@ mod tests {
         assert!(!DisabledForeignNetworkManager.allow_client_foreign_network());
 
         core.run().await.unwrap();
+        let route = core.route_algo_inst.ospf_route().unwrap();
+        assert!(route.task_count() > 0);
+        assert!(!core.stats_manager.cleanup_task_is_stopped());
+        assert!(!core.acl_filter.cleanup_task_is_stopped());
         core.clear_resources().await;
+        assert_eq!(route.task_count(), 0);
+        assert!(core.stats_manager.cleanup_task_is_stopped());
+        assert!(core.acl_filter.cleanup_task_is_stopped());
     }
 
     #[tokio::test]
