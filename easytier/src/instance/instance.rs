@@ -1546,6 +1546,8 @@ mod tests {
         instance::instance::{InstanceConfigPatcher, InstanceRpcServerHook},
         proto::{api::config::InstanceConfigPatch, rpc_impl::standalone::RpcServerHook},
     };
+    #[cfg(feature = "quic")]
+    use easytier_core::instance::ProxyService as _;
 
     #[cfg(feature = "kcp")]
     #[tokio::test]
@@ -1568,7 +1570,13 @@ mod tests {
         flags.disable_quic_input = true;
         instance.global_ctx.set_flags(flags);
 
-        assert_eq!(instance.quic_proxy.enabled_directions(), (true, false));
+        instance.quic_proxy.start().await.unwrap();
+        assert!(instance.quic_proxy.src_tcp_proxy().is_some());
+        assert!(instance.quic_proxy.dst_rpc_service().is_none());
+
+        instance.quic_proxy.stop().await;
+        assert!(instance.quic_proxy.src_tcp_proxy().is_none());
+        assert!(instance.quic_proxy.dst_rpc_service().is_none());
     }
 
     #[tokio::test]
