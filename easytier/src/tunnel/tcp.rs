@@ -185,7 +185,11 @@ fn remote_endpoint_from_tcp_url(url: &url::Url) -> Result<TcpUrlEndpoint, Tunnel
     let host = url
         .host_str()
         .ok_or_else(|| TunnelError::InvalidAddr(url.to_string()))?;
-    let port = url.port().unwrap_or(IpScheme::Tcp.default_port());
+    let scheme = url
+        .scheme()
+        .parse::<IpScheme>()
+        .map_err(|_| TunnelError::InvalidProtocol(url.scheme().to_owned()))?;
+    let port = url.port().unwrap_or(scheme.default_port());
     Ok(match parse_url_host_ip_literal(host) {
         Ok(ip) => TcpUrlEndpoint::Addr(SocketAddr::new(ip, port)),
         Err(_) => TcpUrlEndpoint::Domain {
@@ -438,7 +442,10 @@ impl super::TunnelConnector for TcpTunnelConnector {
 
 #[cfg(test)]
 mod tests {
-    use std::{net::IpAddr, sync::Arc};
+    use std::{
+        net::{IpAddr, Ipv4Addr},
+        sync::Arc,
+    };
 
     use async_trait::async_trait;
     use easytier_core::socket::dns::{DnsQuery, DnsResolver, global_dns_resolver};
@@ -480,6 +487,24 @@ mod tests {
         assert_eq!(candidates.len(), 1);
         assert_eq!(candidates[0].options.remote_addr, remote_v4);
         assert_eq!(candidates[0].options.bind.local_addr, Some(bind_v4));
+    }
+
+    #[cfg(feature = "websocket")]
+    #[test]
+    fn tcp_url_endpoint_uses_protocol_default_port() {
+        for (url, expected_port) in [
+            ("tcp://127.0.0.1", 11010),
+            ("ws://127.0.0.1", 80),
+            ("wss://127.0.0.1", 443),
+        ] {
+            assert_eq!(
+                remote_endpoint_from_tcp_url(&url.parse().unwrap()).unwrap(),
+                TcpUrlEndpoint::Addr(SocketAddr::new(
+                    IpAddr::V4(Ipv4Addr::LOCALHOST),
+                    expected_port
+                ))
+            );
+        }
     }
 
     #[tokio::test]
