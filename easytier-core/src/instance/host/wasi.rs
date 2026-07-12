@@ -339,14 +339,14 @@ pub extern "C" fn easytier_instance_send_packet(
     packet_pointer: u32,
     packet_length: u32,
 ) -> i32 {
-    let packet = match read_guest_buffer(packet_pointer, packet_length, 1024 * 1024) {
-        Ok(packet) => packet,
-        Err(error) => {
-            INSTANCES.with_borrow_mut(|registry| registry.set_error(error));
-            return INVALID_INPUT;
-        }
-    };
     with_entry(handle, |entry| {
+        let packet = match read_guest_buffer(packet_pointer, packet_length, 1024 * 1024) {
+            Ok(packet) => packet,
+            Err(error) => {
+                entry.error = error.to_string();
+                return Ok(INVALID_INPUT);
+            }
+        };
         let instance = entry.instance.instance().clone();
         entry.runtime.spawn(async move {
             if let Err(error) = instance.send_ip_packet(packet).await {
