@@ -35,7 +35,6 @@ use easytier_core::proxy::tokio_smoltcp::{Net, TcpListener};
 use super::{
     Socks5AutoConnector, Socks5Entry, Socks5EntryData, Socks5EntrySet, Socks5Server,
     SocksTcpStream, SocksUdpSocket, TCP_ENTRY, TCP_LISTEN_ENTRY, UDP_ENTRY, UdpClientKey,
-    decrement_entry_count, insert_entry_and_increment_count, try_insert_entry_and_increment_count,
 };
 
 struct DataPlaneRef {
@@ -48,57 +47,28 @@ struct DataPlaneRef {
 /// route and drops the count back.
 struct OwnedRouteEntry {
     entries: Socks5EntrySet,
-    entry_count: Arc<AtomicUsize>,
     entry: Socks5Entry,
 }
 
 impl OwnedRouteEntry {
     /// Inserts the route, replacing any existing entry for the same key.
-    fn register(
-        entries: Socks5EntrySet,
-        entry_count: Arc<AtomicUsize>,
-        entry: Socks5Entry,
-    ) -> Self {
-        insert_entry_and_increment_count(
-            &entries,
-            &entry_count,
-            entry.clone(),
-            Socks5EntryData::DataPlaneRoute,
-        );
-        Self {
-            entries,
-            entry_count,
-            entry,
-        }
+    fn register(entries: Socks5EntrySet, entry: Socks5Entry) -> Self {
+        entries.insert(entry.clone(), Socks5EntryData::DataPlaneRoute);
+        Self { entries, entry }
     }
 
     /// Inserts the route only if the key is free, returning `None` on conflict.
-    fn try_register(
-        entries: Socks5EntrySet,
-        entry_count: Arc<AtomicUsize>,
-        entry: Socks5Entry,
-    ) -> Option<Self> {
-        if !try_insert_entry_and_increment_count(
-            &entries,
-            &entry_count,
-            entry.clone(),
-            Socks5EntryData::DataPlaneRoute,
-        ) {
+    fn try_register(entries: Socks5EntrySet, entry: Socks5Entry) -> Option<Self> {
+        if !entries.try_insert(entry.clone(), Socks5EntryData::DataPlaneRoute) {
             return None;
         }
-        Some(Self {
-            entries,
-            entry_count,
-            entry,
-        })
+        Some(Self { entries, entry })
     }
 }
 
 impl Drop for OwnedRouteEntry {
     fn drop(&mut self) {
-        if self.entries.remove(&self.entry).is_some() {
-            decrement_entry_count(&self.entry_count);
-        }
+        self.entries.remove(&self.entry);
     }
 }
 
@@ -129,7 +99,6 @@ pub struct DataPlaneTcpListener {
     listener: TcpListener,
     local_addr: SocketAddr,
     entries: Socks5EntrySet,
-    entry_count: Arc<AtomicUsize>,
     _listen_route: OwnedRouteEntry,
     _data_plane_ref: DataPlaneRef,
 }
@@ -137,7 +106,6 @@ pub struct DataPlaneTcpListener {
 pub struct DataPlaneUdpSocket {
     socket: Arc<SocksUdpSocket>,
     entries: Socks5EntrySet,
-    entry_count: Arc<AtomicUsize>,
     local_addr: SocketAddr,
     _data_plane_ref: DataPlaneRef,
 }
@@ -166,7 +134,6 @@ impl DataPlaneTcpListener {
         let local_addr = stream.local_addr()?;
         let route = OwnedRouteEntry::register(
             self.entries.clone(),
-            self.entry_count.clone(),
             Socks5Entry {
                 src: local_addr,
                 dst: peer_addr,
@@ -225,9 +192,7 @@ impl DataPlaneUdpSocket {
             dst: addr,
             kind: UDP_ENTRY,
         };
-        try_insert_entry_and_increment_count(
-            &self.entries,
-            &self.entry_count,
+        self.entries.try_insert(
             key,
             Socks5EntryData::Udp((
                 self.socket.clone(),
@@ -247,15 +212,10 @@ impl DataPlaneUdpSocket {
 
 impl Drop for DataPlaneUdpSocket {
     fn drop(&mut self) {
-        let mut removed_entries = 0;
         self.entries.retain(|_, data| match data {
-            Socks5EntryData::Udp((socket, _)) if Arc::ptr_eq(socket, &self.socket) => {
-                removed_entries += 1;
-                false
-            }
+            Socks5EntryData::Udp((socket, _)) if Arc::ptr_eq(socket, &self.socket) => false,
             _ => true,
         });
-        super::decrement_entry_count_by(&self.entry_count, removed_entries);
     }
 }
 
@@ -324,7 +284,6 @@ impl Socks5Server {
             entries: self.entries.clone(),
             smoltcp_net: Some(smoltcp_net),
             src_addr: local_addr,
-            entry_count: self.entry_count.clone(),
             inner_connector: parking_lot::Mutex::new(None),
         };
 
@@ -356,7 +315,6 @@ impl Socks5Server {
         let local_addr = listener.local_addr()?;
         let listen_route = OwnedRouteEntry::try_register(
             self.entries.clone(),
-            self.entry_count.clone(),
             Socks5Entry {
                 src: local_addr,
                 dst: SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0),
@@ -369,7 +327,6 @@ impl Socks5Server {
             listener,
             local_addr,
             entries: self.entries.clone(),
-            entry_count: self.entry_count.clone(),
             _listen_route: listen_route,
             _data_plane_ref: data_plane_ref,
         })
@@ -391,7 +348,6 @@ impl Socks5Server {
         Ok(DataPlaneUdpSocket {
             socket,
             entries: self.entries.clone(),
-            entry_count: self.entry_count.clone(),
             local_addr,
             _data_plane_ref: data_plane_ref,
         })

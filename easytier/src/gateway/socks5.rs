@@ -3,10 +3,13 @@ use std::{
     net::{IpAddr, Ipv4Addr, SocketAddr},
     sync::{
         Arc, Weak,
-        atomic::{AtomicBool, AtomicUsize, Ordering},
+        atomic::{AtomicBool, Ordering},
     },
     time::Duration,
 };
+
+#[cfg(feature = "ffi-dataplane")]
+use std::sync::atomic::AtomicUsize;
 
 use crossbeam::atomic::AtomicCell;
 #[cfg(feature = "kcp")]
@@ -28,11 +31,11 @@ use crate::{
     tunnel::packet_def::{PacketType, ZCPacket},
 };
 use anyhow::Context;
-use dashmap::{DashMap, mapref::entry::Entry};
+use dashmap::DashMap;
 use easytier_core::proxy::{
     socks5::{
-        Socks5Entry, Socks5EntryKind, Socks5PeerPacket, Socks5TcpConnectPlan, Socks5TcpRoute,
-        classify_peer_ipv4_payload,
+        Socks5Entry, Socks5EntryKind, Socks5EntryTable, Socks5PeerPacket, Socks5TcpConnectPlan,
+        Socks5TcpRoute, classify_peer_ipv4_payload,
     },
     tokio_smoltcp::{self, BufferSize, Net, NetConfig, channel_device},
 };
@@ -156,93 +159,11 @@ const TCP_ENTRY: Socks5EntryKind = Socks5EntryKind::Tcp;
 #[cfg(feature = "ffi-dataplane")]
 const TCP_LISTEN_ENTRY: Socks5EntryKind = Socks5EntryKind::TcpListen;
 
-type Socks5EntrySet = Arc<DashMap<Socks5Entry, Socks5EntryData>>;
-
-fn increment_entry_count(entry_count: &AtomicUsize) -> (usize, usize) {
-    let old_entry_count = entry_count
-        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |count| {
-            count.checked_add(1)
-        })
-        .unwrap_or_else(|count| count);
-    (old_entry_count, old_entry_count.saturating_add(1))
-}
-
-fn decrement_entry_count(entry_count: &AtomicUsize) -> (usize, usize) {
-    decrement_entry_count_by(entry_count, 1)
-}
-
-fn decrement_entry_count_by(entry_count: &AtomicUsize, delta: usize) -> (usize, usize) {
-    if delta == 0 {
-        let current = entry_count.load(Ordering::Relaxed);
-        return (current, current);
-    }
-
-    let old_entry_count = entry_count
-        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |count| {
-            Some(count.saturating_sub(delta))
-        })
-        .unwrap_or_else(|count| count);
-    (old_entry_count, old_entry_count.saturating_sub(delta))
-}
-
-fn insert_entry_and_increment_count(
-    entries: &Socks5EntrySet,
-    entry_count: &AtomicUsize,
-    entry: Socks5Entry,
-    data: Socks5EntryData,
-) -> (bool, usize, usize) {
-    match entries.entry(entry) {
-        Entry::Occupied(mut occupied) => {
-            occupied.insert(data);
-            let current = entry_count.load(Ordering::Relaxed);
-            (true, current, current)
-        }
-        Entry::Vacant(vacant) => {
-            // Keep the count update inside the VacantEntry shard lock so bulk clear
-            // cannot observe the inserted entry before its count is reserved.
-            let (old_entry_count, new_entry_count) = increment_entry_count(entry_count);
-            vacant.insert(data);
-            (false, old_entry_count, new_entry_count)
-        }
-    }
-}
-
-fn try_insert_entry_and_increment_count(
-    entries: &Socks5EntrySet,
-    entry_count: &AtomicUsize,
-    entry: Socks5Entry,
-    data: Socks5EntryData,
-) -> bool {
-    match entries.entry(entry) {
-        Entry::Occupied(_) => false,
-        Entry::Vacant(vacant) => {
-            // See insert_entry_and_increment_count for why the count is reserved first.
-            increment_entry_count(entry_count);
-            vacant.insert(data);
-            true
-        }
-    }
-}
-
-fn remove_entry_and_decrement_count(
-    entries: &Socks5EntrySet,
-    entry_count: &AtomicUsize,
-    entry: &Socks5Entry,
-) -> (bool, usize, usize) {
-    let removed = entries.remove(entry).is_some();
-    let (old_entry_count, new_entry_count) = if removed {
-        decrement_entry_count(entry_count)
-    } else {
-        let current = entry_count.load(Ordering::Relaxed);
-        (current, current)
-    };
-    (removed, old_entry_count, new_entry_count)
-}
+type Socks5EntrySet = Arc<Socks5EntryTable<Socks5EntryData>>;
 
 struct SmolTcpConnector {
     net: Arc<Net>,
     entries: Socks5EntrySet,
-    entry_count: Arc<AtomicUsize>,
     current_entry: std::sync::Mutex<Option<Socks5Entry>>,
 }
 
@@ -265,17 +186,14 @@ impl AsyncTcpConnector for SmolTcpConnector {
             kind: TCP_ENTRY,
         };
         *self.current_entry.lock().unwrap() = Some(entry.clone());
-        let (replaced, old_entry_count, new_entry_count) = insert_entry_and_increment_count(
-            &self.entries,
-            &self.entry_count,
-            entry.clone(),
-            Socks5EntryData::Tcp(tmp_listener),
-        );
+        let insert = self
+            .entries
+            .insert(entry.clone(), Socks5EntryData::Tcp(tmp_listener));
         tracing::trace!(
             ?entry,
-            replaced,
-            old_entry_count,
-            new_entry_count,
+            replaced = insert.replaced,
+            old_entry_count = insert.count.previous,
+            new_entry_count = insert.count.current,
             entries_len = self.entries.len(),
             "socks5 inserted smoltcp tcp connector entry"
         );
@@ -306,13 +224,12 @@ impl Drop for SmolTcpConnector {
     fn drop(&mut self) {
         if let Some(entry) = self.current_entry.lock().unwrap().take() {
             tracing::debug!("drop smoltcp connector entry {:?}", entry);
-            let (removed, old_entry_count, new_entry_count) =
-                remove_entry_and_decrement_count(&self.entries, &self.entry_count, &entry);
+            let removal = self.entries.remove(&entry);
             tracing::trace!(
                 ?entry,
-                removed,
-                old_entry_count,
-                new_entry_count,
+                removed = removal.removed,
+                old_entry_count = removal.count.previous,
+                new_entry_count = removal.count.current,
                 entries_len = self.entries.len(),
                 "socks5 removed smoltcp tcp connector entry"
             );
@@ -357,7 +274,6 @@ struct Socks5AutoConnector {
     kcp_endpoint: Option<Weak<KcpEndpoint>>,
     peer_mgr: Weak<PeerManager>,
     entries: Socks5EntrySet,
-    entry_count: Arc<AtomicUsize>,
     smoltcp_net: Option<Arc<Net>>,
     src_addr: SocketAddr,
 
@@ -452,7 +368,6 @@ impl AsyncTcpConnector for Socks5AutoConnector {
                 Box::new(SmolTcpConnector {
                     net: self.smoltcp_net.clone().unwrap(),
                     entries: self.entries.clone(),
-                    entry_count: self.entry_count.clone(),
                     current_entry: std::sync::Mutex::new(None),
                 })
             }
@@ -628,13 +543,12 @@ pub struct Socks5Server {
     data_plane_net_ready: tokio::sync::watch::Sender<bool>,
     cancel_tokens: Arc<DashMap<PortForwardConfig, DropGuard>>,
     port_forward_list_change_notifier: Arc<Notify>,
-    entry_count: Arc<AtomicUsize>,
 }
 
 #[async_trait::async_trait]
 impl PeerPacketFilter for Socks5Server {
     async fn try_process_packet_from_peer(&self, packet: ZCPacket) -> Option<ZCPacket> {
-        let entry_count = self.entry_count.load(Ordering::Relaxed);
+        let entry_count = self.entries.count();
         let socks5_enabled = self.socks5_enabled.load(Ordering::Relaxed);
         if entry_count == 0 && !socks5_enabled && self.entries.is_empty() {
             if tracing::enabled!(tracing::Level::TRACE)
@@ -729,7 +643,7 @@ impl PeerPacketFilter for Socks5Server {
             Socks5PeerPacket::FragmentedUdp { source } => {
                 let source: IpAddr = source.into();
                 // only send to smoltcp if the ipv4 src is in the entries
-                let is_in_entries = self.entries.iter().any(|x| x.key().dst.ip() == source);
+                let is_in_entries = self.entries.contains_destination_ip(source);
                 tracing::trace!(
                     ?is_in_entries,
                     "ipv4 src = {:?}, check need send both smoltcp and kernel tun",
@@ -741,13 +655,13 @@ impl PeerPacketFilter for Socks5Server {
                     match self.packet_sender.try_send(packet.clone()) {
                         Ok(()) => tracing::trace!(
                             ?source,
-                            entry_count = self.entry_count.load(Ordering::Relaxed),
+                            entry_count = self.entries.count(),
                             "socks5 delivered fragmented packet from peer to smoltcp"
                         ),
                         Err(err) => tracing::trace!(
                             ?source,
                             ?err,
-                            entry_count = self.entry_count.load(Ordering::Relaxed),
+                            entry_count = self.entries.count(),
                             "socks5 failed to deliver fragmented packet from peer to smoltcp"
                         ),
                     }
@@ -763,7 +677,7 @@ impl PeerPacketFilter for Socks5Server {
                 ?tcp_flags,
                 ipv4_src = %entry_key.dst.ip(),
                 ipv4_dst = %entry_key.src.ip(),
-                entry_count = self.entry_count.load(Ordering::Relaxed),
+                entry_count = self.entries.count(),
                 socks5_enabled = self.socks5_enabled.load(Ordering::Relaxed),
                 "socks5 no entry for packet from peer"
             );
@@ -775,7 +689,7 @@ impl PeerPacketFilter for Socks5Server {
             ?tcp_flags,
             ipv4_src = %entry_key.dst.ip(),
             ipv4_dst = %entry_key.src.ip(),
-            entry_count = self.entry_count.load(Ordering::Relaxed),
+            entry_count = self.entries.count(),
             "socks5 found entry for packet from peer"
         );
 
@@ -783,14 +697,14 @@ impl PeerPacketFilter for Socks5Server {
             Ok(()) => tracing::trace!(
                 ?entry_key,
                 ?tcp_flags,
-                entry_count = self.entry_count.load(Ordering::Relaxed),
+                entry_count = self.entries.count(),
                 "socks5 delivered packet from peer to smoltcp"
             ),
             Err(err) => tracing::trace!(
                 ?entry_key,
                 ?tcp_flags,
                 ?err,
-                entry_count = self.entry_count.load(Ordering::Relaxed),
+                entry_count = self.entries.count(),
                 "socks5 failed to deliver packet from peer to smoltcp"
             ),
         }
@@ -816,7 +730,7 @@ impl Socks5Server {
             packet_sender,
 
             net: Arc::new(Mutex::new(None)),
-            entries: Arc::new(DashMap::new()),
+            entries: Arc::new(Socks5EntryTable::default()),
 
             udp_client_map: Arc::new(DashMap::new()),
             udp_forward_task: Arc::new(DashMap::new()),
@@ -831,7 +745,6 @@ impl Socks5Server {
             data_plane_net_ready: tokio::sync::watch::channel(false).0,
             cancel_tokens: Arc::new(DashMap::new()),
             port_forward_list_change_notifier: Arc::new(Notify::new()),
-            entry_count: Arc::new(AtomicUsize::new(0)),
         })
     }
 
@@ -841,7 +754,6 @@ impl Socks5Server {
         let peer_manager = self.peer_manager.clone();
         let packet_recv = self.packet_recv.clone();
         let entries = self.entries.clone();
-        let entry_count = self.entry_count.clone();
         let udp_client_map = self.udp_client_map.clone();
         let cancel_tokens = self.cancel_tokens.clone();
         let port_forward_list_change_notifier = self.port_forward_list_change_notifier.clone();
@@ -870,7 +782,7 @@ impl Socks5Server {
                         active_port_forwards,
                         is_socks5_enabled,
                         data_plane_active,
-                        entry_count = entry_count.load(Ordering::Relaxed),
+                        entry_count = entries.count(),
                         entries_len = entries.len(),
                         "socks5 net update waiting for consumers"
                     );
@@ -890,24 +802,18 @@ impl Socks5Server {
                     tracing::trace!(
                         ?old_ipv4,
                         ?cur_ipv4,
-                        old_entry_count = entry_count.load(Ordering::Relaxed),
+                        old_entry_count = entries.count(),
                         old_entries_len = entries.len(),
                         udp_client_count = udp_client_map.len(),
                         "socks5 net update resetting entries for ipv4 change"
                     );
-                    let mut removed_entries = 0;
-                    entries.retain(|_, _| {
-                        removed_entries += 1;
-                        false
-                    });
-                    let (_, new_entry_count) =
-                        decrement_entry_count_by(&entry_count, removed_entries);
+                    let cleared = entries.clear();
                     udp_client_map.clear();
                     tracing::trace!(
                         ?old_ipv4,
                         ?cur_ipv4,
-                        removed_entries,
-                        new_entry_count,
+                        removed_entries = cleared.removed,
+                        new_entry_count = cleared.count.current,
                         new_entries_len = entries.len(),
                         udp_client_count = udp_client_map.len(),
                         "socks5 net update reset entries complete"
@@ -923,7 +829,7 @@ impl Socks5Server {
                         ));
                         tracing::trace!(
                             ?cur_ipv4,
-                            entry_count = entry_count.load(Ordering::Relaxed),
+                            entry_count = entries.count(),
                             entries_len = entries.len(),
                             "socks5 net update installed smoltcp net"
                         );
@@ -934,7 +840,7 @@ impl Socks5Server {
                     } else {
                         let _ = net.lock().await.take();
                         tracing::trace!(
-                            entry_count = entry_count.load(Ordering::Relaxed),
+                            entry_count = entries.count(),
                             entries_len = entries.len(),
                             "socks5 net update removed smoltcp net"
                         );
@@ -972,7 +878,6 @@ impl Socks5Server {
                 .call()?;
 
             let entries = self.entries.clone();
-            let entry_count = self.entry_count.clone();
             let peer_manager = self.peer_manager.clone();
             let net = self.net.clone();
             self.tasks.lock().unwrap().spawn(async move {
@@ -992,7 +897,6 @@ impl Socks5Server {
                                 peer_mgr: peer_manager.clone(),
                                 src_addr: addr,
                                 inner_connector: parking_lot::Mutex::new(None),
-                                entry_count: entry_count.clone(),
                             };
                             if let Some(net) = net.lock().await.as_ref() {
                                 net.handle_tcp_stream(socket, connector);
@@ -1023,7 +927,7 @@ impl Socks5Server {
         tracing::trace!(
             cfg_count = cfgs.len(),
             cancel_token_count = self.cancel_tokens.len(),
-            entry_count = self.entry_count.load(Ordering::Relaxed),
+            entry_count = self.entries.count(),
             entries_len = self.entries.len(),
             "socks5 peer packet pipeline registered"
         );
@@ -1118,7 +1022,6 @@ impl Socks5Server {
 
         let net = self.net.clone();
         let entries = self.entries.clone();
-        let entry_count = self.entry_count.clone();
         let tasks = Arc::new(std::sync::Mutex::new(JoinSet::new()));
         join_joinset_background(tasks.clone(), "tcp port forward".to_string());
         let forward_tasks = tasks;
@@ -1167,7 +1070,7 @@ impl Socks5Server {
                     client_addr = ?addr,
                     has_smoltcp_net = smoltcp_net.is_some(),
                     ?net_ipv4,
-                    entry_count = entry_count.load(Ordering::Relaxed),
+                    entry_count = entries.count(),
                     entries_len = entries.len(),
                     "port forward: preparing connector"
                 );
@@ -1179,7 +1082,6 @@ impl Socks5Server {
                     entries: entries.clone(),
                     smoltcp_net,
                     src_addr: addr,
-                    entry_count: entry_count.clone(),
                     inner_connector: parking_lot::Mutex::new(None),
                 };
 
@@ -1208,7 +1110,6 @@ impl Socks5Server {
         );
 
         let entries = self.entries.clone();
-        let entry_count = self.entry_count.clone();
         let net_ns = self.global_ctx.net_ns.clone();
         let net = self.net.clone();
         let udp_client_map = self.udp_client_map.clone();
@@ -1290,8 +1191,13 @@ impl Socks5Server {
 
                 client_info.last_active.store(Instant::now());
 
-                let entry_data = match entries.get(&client_info.entry_key) {
-                    Some(data) => data,
+                let udp_socket = match entries.with_entry(&client_info.entry_key, |data| {
+                    match data {
+                        Socks5EntryData::Udp((socket, _)) => socket.clone(),
+                        _ => panic!("udp entry data is not udp entry data"),
+                    }
+                }) {
+                    Some(socket) => socket,
                     None => {
                         let guard = net.lock().await;
                         let Some(net) = guard.as_ref() else {
@@ -1313,9 +1219,7 @@ impl Socks5Server {
                             )
                         };
                         let socks_udp = Arc::new(sokcs_udp);
-                        insert_entry_and_increment_count(
-                            &entries,
-                            &entry_count,
+                        entries.insert(
                             client_info.entry_key.clone(),
                             Socks5EntryData::Udp((socks_udp.clone(), udp_client_key.clone())),
                         );
@@ -1347,19 +1251,16 @@ impl Socks5Server {
                             })),
                         );
 
-                        entries.get(&client_info.entry_key).unwrap()
+                        entries
+                            .with_entry(&client_info.entry_key, |data| match data {
+                                Socks5EntryData::Udp((socket, _)) => socket.clone(),
+                                _ => panic!("udp entry data is not udp entry data"),
+                            })
+                            .unwrap()
                     }
                 };
 
-                let s = match entry_data.value() {
-                    Socks5EntryData::Udp((s, _)) => s.clone(),
-                    _ => {
-                        panic!("udp entry data is not udp entry data");
-                    }
-                };
-                drop(entry_data);
-
-                if let Err(e) = s.send_to(&buf[..len], dst_addr).await {
+                if let Err(e) = udp_socket.send_to(&buf[..len], dst_addr).await {
                     tracing::error!(?dst_addr, ?len, "udp port forward send error = {:?}", e);
                 } else {
                     tracing::trace!(?dst_addr, ?len, "udp port forward send packet success");
@@ -1371,7 +1272,6 @@ impl Socks5Server {
         let udp_client_map = self.udp_client_map.clone();
         let udp_forward_task = self.udp_forward_task.clone();
         let entries = self.entries.clone();
-        let entry_count = self.entry_count.clone();
         let cancel_tokens = self.cancel_tokens.clone();
         self.tasks.lock().unwrap().spawn(async move {
             loop {
@@ -1381,18 +1281,12 @@ impl Socks5Server {
                     now.duration_since(client_info.last_active.load()).as_secs() < 600
                 });
                 udp_forward_task.retain(|k, _| udp_client_map.contains_key(k));
-                let mut removed_entries = 0;
                 entries.retain(|_, data| match data {
                     Socks5EntryData::Udp((_, udp_client_key)) => {
-                        let keep = udp_client_map.contains_key(udp_client_key);
-                        if !keep {
-                            removed_entries += 1;
-                        }
-                        keep
+                        udp_client_map.contains_key(udp_client_key)
                     }
                     _ => true,
                 });
-                decrement_entry_count_by(&entry_count, removed_entries);
 
                 udp_client_map.shrink_to_fit();
                 udp_forward_task.shrink_to_fit();
@@ -1493,12 +1387,7 @@ mod tests {
             kind: TCP_ENTRY,
         };
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        insert_entry_and_increment_count(
-            &server.entries,
-            &server.entry_count,
-            entry,
-            Socks5EntryData::Tcp(listener),
-        );
+        server.entries.insert(entry, Socks5EntryData::Tcp(listener));
 
         for packet_type in [
             PacketType::DataWithKcpSrcModified,
@@ -1524,9 +1413,7 @@ mod tests {
         let peer_manager = create_mock_peer_manager().await;
         let server = Socks5Server::new(peer_manager.get_global_ctx(), peer_manager, None);
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        insert_entry_and_increment_count(
-            &server.entries,
-            &server.entry_count,
+        server.entries.insert(
             Socks5Entry {
                 src: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 144, 144, 1)), 40000),
                 dst: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 144, 144, 3)), 22),
@@ -1565,12 +1452,7 @@ mod tests {
             kind: TCP_ENTRY,
         };
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        insert_entry_and_increment_count(
-            &server.entries,
-            &server.entry_count,
-            entry,
-            Socks5EntryData::Tcp(listener),
-        );
+        server.entries.insert(entry, Socks5EntryData::Tcp(listener));
 
         let mut packet = ZCPacket::new_with_payload(&build_tcp_packet(remote, local));
         packet.fill_peer_manager_hdr(1, 2, PacketType::DataWithKcpSrcModified as u8);
@@ -1583,7 +1465,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn socks5_mirrors_fragmented_udp_even_when_entry_count_is_stale_zero() {
+    async fn socks5_mirrors_fragmented_udp_when_entry_matches() {
         let peer_manager = create_mock_peer_manager().await;
         let server = Socks5Server::new(peer_manager.get_global_ctx(), peer_manager, None);
 
@@ -1604,7 +1486,7 @@ mod tests {
                 },
             )),
         );
-        assert_eq!(server.entry_count.load(Ordering::Relaxed), 0);
+        assert_eq!(server.entries.count(), 1);
 
         let mut packet = ZCPacket::new_with_payload(&build_udp_followup_fragment(
             match remote.ip() {
@@ -1627,101 +1509,5 @@ mod tests {
             received.peer_manager_header().unwrap().packet_type,
             PacketType::Data as u8
         );
-    }
-
-    #[test]
-    fn decrement_entry_count_does_not_underflow() {
-        let entry_count = AtomicUsize::new(0);
-
-        let (old_entry_count, new_entry_count) = decrement_entry_count(&entry_count);
-
-        assert_eq!(old_entry_count, 0);
-        assert_eq!(new_entry_count, 0);
-        assert_eq!(entry_count.load(Ordering::Relaxed), 0);
-    }
-
-    #[tokio::test]
-    async fn removing_missing_entry_does_not_decrement_entry_count() {
-        let entries = Arc::new(DashMap::new());
-        let entry_count = AtomicUsize::new(1);
-        let entry = Socks5Entry {
-            src: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 42, 0, 2)), 40000),
-            dst: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 42, 0, 1)), 22),
-            kind: TCP_ENTRY,
-        };
-
-        let (removed, old_entry_count, new_entry_count) =
-            remove_entry_and_decrement_count(&entries, &entry_count, &entry);
-
-        assert!(!removed);
-        assert_eq!(old_entry_count, 1);
-        assert_eq!(new_entry_count, 1);
-        assert_eq!(entry_count.load(Ordering::Relaxed), 1);
-    }
-
-    #[tokio::test]
-    async fn removing_present_entry_decrements_entry_count_once() {
-        let entries = Arc::new(DashMap::new());
-        let entry_count = AtomicUsize::new(0);
-        let entry = Socks5Entry {
-            src: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 42, 0, 2)), 40000),
-            dst: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 42, 0, 1)), 22),
-            kind: TCP_ENTRY,
-        };
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        insert_entry_and_increment_count(
-            &entries,
-            &entry_count,
-            entry.clone(),
-            Socks5EntryData::Tcp(listener),
-        );
-
-        let (removed, old_entry_count, new_entry_count) =
-            remove_entry_and_decrement_count(&entries, &entry_count, &entry);
-        let (removed_again, old_entry_count_again, new_entry_count_again) =
-            remove_entry_and_decrement_count(&entries, &entry_count, &entry);
-
-        assert!(removed);
-        assert_eq!(old_entry_count, 1);
-        assert_eq!(new_entry_count, 0);
-        assert!(!removed_again);
-        assert_eq!(old_entry_count_again, 0);
-        assert_eq!(new_entry_count_again, 0);
-        assert_eq!(entry_count.load(Ordering::Relaxed), 0);
-    }
-
-    #[tokio::test]
-    async fn replacing_present_entry_does_not_increment_entry_count() {
-        let entries = Arc::new(DashMap::new());
-        let entry_count = AtomicUsize::new(0);
-        let entry = Socks5Entry {
-            src: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 42, 0, 2)), 40000),
-            dst: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 42, 0, 1)), 22),
-            kind: TCP_ENTRY,
-        };
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let replacement = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-
-        let (replaced, old_entry_count, new_entry_count) = insert_entry_and_increment_count(
-            &entries,
-            &entry_count,
-            entry.clone(),
-            Socks5EntryData::Tcp(listener),
-        );
-        let (replaced_again, old_entry_count_again, new_entry_count_again) =
-            insert_entry_and_increment_count(
-                &entries,
-                &entry_count,
-                entry,
-                Socks5EntryData::Tcp(replacement),
-            );
-
-        assert!(!replaced);
-        assert_eq!(old_entry_count, 0);
-        assert_eq!(new_entry_count, 1);
-        assert!(replaced_again);
-        assert_eq!(old_entry_count_again, 1);
-        assert_eq!(new_entry_count_again, 1);
-        assert_eq!(entry_count.load(Ordering::Relaxed), 1);
     }
 }
