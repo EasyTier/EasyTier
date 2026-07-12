@@ -4,10 +4,9 @@ use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::sync::Notify;
-use tokio::time;
 use tokio_util::task::AbortOnDropHandle;
 
-use crate::peers::context::ByteLimiter;
+use crate::{peers::context::ByteLimiter, runtime_time as time};
 use easytier_proto::common::LimiterConfig;
 
 /// Token Bucket rate limiter using atomic operations
@@ -209,7 +208,7 @@ impl TokenBucketManager {
                 buckets_clone.retain(|_, bucket| Arc::<TokenBucket>::strong_count(bucket) > 1);
                 buckets_clone.shrink_to_fit();
                 // Sleep for a while before next retention check
-                tokio::time::sleep(Duration::from_secs(5)).await;
+                time::sleep(Duration::from_secs(5)).await;
                 tracing::info!(
                     "Retained buckets: {} ({} dropped)",
                     buckets_clone.len(),

@@ -1,9 +1,8 @@
 use std::{fmt::Debug, pin::Pin};
 
 use futures::{Sink, Stream};
-use tokio::time::error::Elapsed;
 
-use crate::{packet::ZCPacket, proto::common::TunnelInfo};
+use crate::{packet::ZCPacket, proto::common::TunnelInfo, runtime_time::error::Elapsed};
 
 pub use crate::socket::IpVersion;
 

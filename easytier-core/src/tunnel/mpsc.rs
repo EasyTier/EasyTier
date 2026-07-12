@@ -4,12 +4,12 @@ use futures::SinkExt;
 use tokio::{
     sync::mpsc::{Receiver, Sender, channel, error::TrySendError},
     task::JoinHandle,
-    time::timeout,
 };
 
 use crate::{
     packet::ZCPacket,
     proto::common::TunnelInfo,
+    runtime_time::timeout,
     tunnel::{Tunnel, TunnelError, ZCPacketSink, ZCPacketStream},
 };
 

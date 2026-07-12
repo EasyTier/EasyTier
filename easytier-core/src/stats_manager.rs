@@ -6,8 +6,9 @@ use std::cell::UnsafeCell;
 use std::fmt;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use tokio::time::interval;
 use tokio_util::task::AbortOnDropHandle;
+
+use crate::runtime_time::interval;
 
 /// Predefined metric names for type safety
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
