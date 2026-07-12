@@ -269,7 +269,7 @@ impl<TcpSocket: 'static, T> ProtocolUdpHolePunchTransportSink<TcpSocket, T> {
 #[async_trait]
 impl<TcpSocket, T> UdpHolePunchTransportSink for ProtocolUdpHolePunchTransportSink<TcpSocket, T>
 where
-    TcpSocket: Send + Sync + 'static,
+    TcpSocket: 'static,
     T: UdpHolePunchTunnelSink + 'static,
 {
     async fn add_client_transport(
