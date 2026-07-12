@@ -791,7 +791,13 @@ impl DhcpIpv4Host for RuntimeDhcpIpv4Host {
                 return Err(err.into());
             }
             #[cfg(feature = "magic-dns")]
-            let ifname = new_nic_ctx.ifname().await;
+            let ifname = tokio::select! {
+                biased;
+                _ = self.config_operation.cancel.cancelled() => {
+                    anyhow::bail!("instance is closing; DHCP update cancelled");
+                }
+                ifname = new_nic_ctx.ifname() => ifname,
+            };
             tokio::select! {
                 biased;
                 _ = self.config_operation.cancel.cancelled() => {
