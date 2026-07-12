@@ -8,10 +8,7 @@ use easytier_core::{
             discovery::ManualEndpointDiscoveryConfig,
         },
     },
-    instance::{
-        CoreInstance, CoreInstanceAdapters, CoreInstanceConfig, CoreRuntimeConfig,
-        CoreRuntimeConfigProvider,
-    },
+    instance::{CoreInstance, CoreInstanceAdapters, CoreInstanceConfig, CoreRuntimeConfig},
     proxy::{ProxyStartupContext, cidr_table::ProxyCidrRuntime},
     socket::{
         IpVersion, SocketContext,
@@ -48,18 +45,12 @@ struct GlobalCtxManualConnectivityEventSink {
     global_ctx: ArcGlobalCtx,
 }
 
-struct RuntimeCoreConfigProvider {
-    global_ctx: ArcGlobalCtx,
-}
-
-impl CoreRuntimeConfigProvider for RuntimeCoreConfigProvider {
-    fn current_runtime_config(&self) -> CoreRuntimeConfig {
-        CoreRuntimeConfig {
-            acl: runtime_acl_config(&self.global_ctx),
-            dhcp_ipv4: self.global_ctx.config.get_dhcp(),
-            proxy: runtime_proxy_startup_context(&self.global_ctx),
-            public_ipv6_provider: runtime_public_ipv6_provider_config(&self.global_ctx),
-        }
+pub(crate) fn runtime_core_config(global_ctx: &ArcGlobalCtx) -> CoreRuntimeConfig {
+    CoreRuntimeConfig {
+        acl: runtime_acl_config(global_ctx),
+        dhcp_ipv4: global_ctx.config.get_dhcp(),
+        proxy: runtime_proxy_startup_context(global_ctx),
+        public_ipv6_provider: runtime_public_ipv6_provider_config(global_ctx),
     }
 }
 
@@ -171,9 +162,6 @@ pub(crate) fn runtime_core_instance_adapters(
         listener: None,
         accepted_transport_handler: None,
         udp_hole_punch: None,
-        runtime_config: Some(Arc::new(RuntimeCoreConfigProvider {
-            global_ctx: global_ctx.clone(),
-        })),
         transport_proxy: None,
         proxy: None,
         proxy_cidr_runtime: None,
@@ -220,12 +208,7 @@ pub(crate) fn build_runtime_core_instance_with_services(
             .map(|peer| peer.uri)
             .collect(),
         listeners: Vec::new(),
-        runtime: CoreRuntimeConfig {
-            acl: runtime_acl_config(&global_ctx),
-            dhcp_ipv4: global_ctx.config.get_dhcp(),
-            proxy: runtime_proxy_startup_context(&global_ctx),
-            public_ipv6_provider: runtime_public_ipv6_provider_config(&global_ctx),
-        },
+        runtime: runtime_core_config(&global_ctx),
         endpoint_discovery: runtime_endpoint_discovery_config(&global_ctx),
         manual: runtime_manual_options(&global_ctx),
         direct: runtime_direct_options(&global_ctx, false),
@@ -527,7 +510,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn runtime_core_reads_proxy_policy_at_activation() {
+    async fn runtime_core_requires_explicit_proxy_policy_update() {
         let global_ctx = get_mock_global_ctx();
         let (nic_channel, _nic_receiver) = create_packet_recv_chan();
         let peer_manager = Arc::new(PeerManager::new(
@@ -558,6 +541,13 @@ mod tests {
             .add_proxy_cidr("10.1.2.0/24".parse().unwrap(), None)
             .unwrap();
         instance.start_proxy().await.unwrap();
+        assert_eq!(proxy.start_calls.load(Ordering::Relaxed), 0);
+
+        instance
+            .update_runtime_config(runtime_core_config(&global_ctx))
+            .await
+            .unwrap();
+        instance.start_proxy().await.unwrap();
         assert_eq!(proxy.start_calls.load(Ordering::Relaxed), 1);
 
         instance.stop().await;
@@ -566,7 +556,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn runtime_core_reads_acl_config_at_activation() {
+    async fn runtime_core_accepts_explicit_acl_runtime_snapshot() {
         let global_ctx = get_mock_global_ctx();
         let (nic_channel, _nic_receiver) = create_packet_recv_chan();
         let peer_manager = Arc::new(PeerManager::new(
@@ -583,6 +573,10 @@ mod tests {
         global_ctx
             .config
             .set_tcp_whitelist(vec!["invalid".to_string()]);
+        instance
+            .update_runtime_config(runtime_core_config(&global_ctx))
+            .await
+            .unwrap();
         instance.start().await.unwrap();
         let error = instance.start_network_services(None).await.unwrap_err();
         assert!(
@@ -594,7 +588,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn runtime_core_reads_dhcp_config_at_activation() {
+    async fn runtime_core_accepts_explicit_dhcp_runtime_snapshot() {
         let global_ctx = get_mock_global_ctx();
         let (nic_channel, _nic_receiver) = create_packet_recv_chan();
         let peer_manager = Arc::new(PeerManager::new(
@@ -608,6 +602,10 @@ mod tests {
         );
 
         global_ctx.config.set_dhcp(true);
+        instance
+            .update_runtime_config(runtime_core_config(&global_ctx))
+            .await
+            .unwrap();
         instance.start().await.unwrap();
         let error = instance.start_network_services(None).await.unwrap_err();
         assert!(
@@ -618,7 +616,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn runtime_core_reads_public_ipv6_config_at_activation() {
+    async fn runtime_core_accepts_explicit_public_ipv6_runtime_snapshot() {
         let global_ctx = get_mock_global_ctx();
         let (nic_channel, _nic_receiver) = create_packet_recv_chan();
         let peer_manager = Arc::new(PeerManager::new(
@@ -635,6 +633,10 @@ mod tests {
         global_ctx
             .config
             .set_ipv6_public_addr_prefix(Some("fd00::/64".parse().unwrap()));
+        instance
+            .update_runtime_config(runtime_core_config(&global_ctx))
+            .await
+            .unwrap();
         let error = instance.start().await.unwrap_err();
         assert!(
             error.to_string().contains("not a valid global unicast"),

@@ -27,7 +27,7 @@ use crate::common::config::ConfigLoader;
 use crate::common::error::Error;
 use crate::common::global_ctx::{ArcGlobalCtx, GlobalCtx, GlobalCtxEvent};
 use crate::connector::core_instance::{
-    RuntimeCoreInstance, build_runtime_core_instance_with_services,
+    RuntimeCoreInstance, build_runtime_core_instance_with_services, runtime_core_config,
 };
 use crate::connector::manual::{ConnectorManagerRpcService, ManualConnectorManager};
 use crate::gateway::icmp_proxy::IcmpProxy;
@@ -333,10 +333,13 @@ impl InstanceConfigPatcher {
             provider_config_changed = true;
         }
 
+        let core_instance = weak_upgrade(&self.core_instance)?;
+        core_instance
+            .update_runtime_config(runtime_core_config(&global_ctx))
+            .await?;
         global_ctx.issue_event(GlobalCtxEvent::ConfigPatched(patch_for_event));
 
         if provider_config_changed {
-            let core_instance = weak_upgrade(&self.core_instance)?;
             core_instance.reconcile_public_ipv6_provider().await;
             core_instance.start_public_ipv6_provider().await;
         }
@@ -973,6 +976,9 @@ impl Instance {
     }
 
     pub async fn run(&mut self) -> Result<(), Error> {
+        self.core_instance
+            .update_runtime_config(runtime_core_config(&self.global_ctx))
+            .await?;
         self.core_instance.start().await?;
 
         #[cfg(feature = "tun")]

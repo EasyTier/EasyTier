@@ -253,7 +253,6 @@ where
     pub accepted_transport_handler:
         Option<Arc<dyn AcceptedSocketHandler<AcceptedTransport<HostAcceptedTcpSocket<H>>>>>,
     pub udp_hole_punch: Option<Arc<dyn UdpHolePunchService>>,
-    pub runtime_config: Option<Arc<dyn CoreRuntimeConfigProvider>>,
     pub transport_proxy: Option<Arc<dyn ProxyService>>,
     pub proxy: Option<Arc<dyn ProxyService>>,
     pub proxy_cidr_runtime: Option<Arc<dyn ProxyCidrRuntime>>,
@@ -277,18 +276,6 @@ where
 {
     fn running_listeners(&self) -> Vec<Url> {
         self.0.running_listeners()
-    }
-}
-
-pub trait CoreRuntimeConfigProvider: Send + Sync + 'static {
-    fn current_runtime_config(&self) -> CoreRuntimeConfig;
-}
-
-struct StaticCoreRuntimeConfigProvider(CoreRuntimeConfig);
-
-impl CoreRuntimeConfigProvider for StaticCoreRuntimeConfigProvider {
-    fn current_runtime_config(&self) -> CoreRuntimeConfig {
-        self.0.clone()
     }
 }
 
@@ -482,7 +469,7 @@ where
     public_ipv6_provider: Option<Arc<PublicIpv6ProviderService>>,
     initial_peers: Vec<Url>,
     initial_peers_started: AtomicBool,
-    runtime_config: Arc<dyn CoreRuntimeConfigProvider>,
+    runtime_config: RwLock<CoreRuntimeConfig>,
     acl_whitelist: RwLock<AclWhitelistSnapshot>,
     initial_acl_loaded: AtomicBool,
 }
@@ -538,7 +525,6 @@ where
             listener,
             accepted_transport_handler,
             udp_hole_punch,
-            runtime_config,
             transport_proxy,
             proxy,
             proxy_cidr_runtime,
@@ -601,8 +587,6 @@ where
         ));
         peer_manager.initialize_portable_acl(&initial_runtime_config.acl)?;
         let acl_whitelist = AclWhitelistSnapshot::from(&initial_runtime_config.acl);
-        let runtime_config: Arc<dyn CoreRuntimeConfigProvider> = runtime_config
-            .unwrap_or_else(|| Arc::new(StaticCoreRuntimeConfigProvider(initial_runtime_config)));
         let manual = match manual_events {
             Some(events) => ManualConnectorManager::new_with_events(
                 peer_manager.clone(),
@@ -677,7 +661,7 @@ where
             public_ipv6_provider,
             initial_peers,
             initial_peers_started: AtomicBool::new(false),
-            runtime_config,
+            runtime_config: RwLock::new(initial_runtime_config),
             acl_whitelist: RwLock::new(acl_whitelist),
             initial_acl_loaded: AtomicBool::new(false),
         })
@@ -762,10 +746,7 @@ where
             anyhow::bail!("core instance cannot start from state {state:?}");
         }
 
-        let public_ipv6_config = self
-            .runtime_config
-            .current_runtime_config()
-            .public_ipv6_provider;
+        let public_ipv6_config = self.runtime_config.read().public_ipv6_provider;
         public_ipv6_config.validate().map_err(anyhow::Error::new)?;
         if public_ipv6_config.provider_enabled && self.public_ipv6_provider.is_none() {
             anyhow::bail!("public IPv6 provider is enabled but no host adapter was provided");
@@ -966,12 +947,7 @@ where
         if self.proxy_started.load(Ordering::Acquire) {
             return Ok(());
         }
-        if !self
-            .runtime_config
-            .current_runtime_config()
-            .proxy
-            .should_start()
-        {
+        if !self.runtime_config.read().proxy.should_start() {
             return Ok(());
         }
 
@@ -1030,7 +1006,7 @@ where
         self: &Arc<Self>,
         dhcp_ipv4_host: Option<Arc<dyn DhcpIpv4Host>>,
     ) -> anyhow::Result<()> {
-        if self.runtime_config.current_runtime_config().dhcp_ipv4 {
+        if self.runtime_config.read().dhcp_ipv4 {
             let host = dhcp_ipv4_host.ok_or_else(|| {
                 anyhow::anyhow!("DHCP IPv4 is enabled but no host adapter was provided")
             })?;
@@ -1074,7 +1050,7 @@ where
             return Ok(());
         }
 
-        let config = self.runtime_config.current_runtime_config().acl;
+        let config = self.runtime_config.read().acl.clone();
         *self.acl_whitelist.write() = AclWhitelistSnapshot::from(&config);
         let acl = config.build()?;
         if self.peer_manager.reload_acl(acl.as_ref()) {
@@ -1090,6 +1066,23 @@ where
         let acl = config.build()?;
         self.peer_manager.reload_acl(acl.as_ref());
         self.refresh_acl_groups().await;
+        self.runtime_config.write().acl = config;
+        Ok(())
+    }
+
+    /// Replaces the explicit runtime snapshot used by services that have not
+    /// started yet. Host configuration changes have no effect until the host
+    /// submits a new snapshot through this method.
+    pub async fn update_runtime_config(&self, config: CoreRuntimeConfig) -> anyhow::Result<()> {
+        let _operation = self.operation.lock().await;
+        let state = self.state();
+        if !matches!(
+            state,
+            CoreInstanceState::Created | CoreInstanceState::Running
+        ) {
+            anyhow::bail!("runtime config cannot update from core instance state {state:?}");
+        }
+        *self.runtime_config.write() = config;
         Ok(())
     }
 
