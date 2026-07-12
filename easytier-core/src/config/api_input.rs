@@ -441,6 +441,10 @@ impl NetworkConfigExt for NetworkConfig {
             flags.accept_dns = enable_magic_dns;
         }
 
+        if let Some(ref tld_dns_zone) = self.tld_dns_zone {
+            flags.tld_dns_zone = tld_dns_zone.clone();
+        }
+
         if let Some(mtu) = self.mtu {
             flags.mtu = mtu as u32;
         }
@@ -620,6 +624,7 @@ impl NetworkConfigExt for NetworkConfig {
         result.enable_udp_broadcast_relay = Some(flags.enable_udp_broadcast_relay);
         result.disable_sym_hole_punching = Some(flags.disable_sym_hole_punching);
         result.enable_magic_dns = Some(flags.accept_dns);
+        result.tld_dns_zone = Some(flags.tld_dns_zone.clone());
         result.mtu = Some(flags.mtu as i32);
         result.data_compress_algo = (flags.data_compress_algo != default_flags.data_compress_algo)
             .then_some(flags.data_compress_algo);
