@@ -30,20 +30,27 @@ func TestCoreInstanceLifecycle(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	runtime, module, handle, _ := instantiateCoreModule(t, ctx, wasm, bridge, config)
+	runtime, _, core, _ := instantiateCoreModule(t, ctx, wasm, bridge, config)
 	defer runtime.Close(ctx)
 
 	dropped := false
 	defer func() {
 		if !dropped {
-			_, _ = module.ExportedFunction("easytier_instance_drop").Call(ctx, handle)
+			_ = core.Drop(ctx)
 		}
 	}()
 
-	coreCallStatus(t, ctx, module, handle, "easytier_instance_start")
-	driveCoreUntil(t, ctx, module, bridge, handle, coreStateRunning)
+	if err := core.Start(ctx); err != nil {
+		t.Fatalf("start core instance: %v", err)
+	}
+	if err := core.DriveUntil(ctx, bridge.completion, CoreStateRunning); err != nil {
+		t.Fatalf("drive core instance until running: %v", err)
+	}
 
-	deadline := coreDeadline(t, ctx, module, handle)
+	deadline, err := core.NextDeadline(ctx)
+	if err != nil {
+		t.Fatalf("query running core deadline: %v", err)
+	}
 	if deadline < 0 {
 		t.Fatalf("running instance returned error deadline: %d", deadline)
 	}
@@ -51,9 +58,15 @@ func TestCoreInstanceLifecycle(t *testing.T) {
 		t.Fatalf("minimal config unexpectedly used environment operations: %d", bridge.environmentCallCount())
 	}
 
-	coreCallStatus(t, ctx, module, handle, "easytier_instance_stop")
-	driveCoreUntil(t, ctx, module, bridge, handle, coreStateStopped)
-	coreCallStatus(t, ctx, module, handle, "easytier_instance_drop")
+	if err := core.Stop(ctx); err != nil {
+		t.Fatalf("stop core instance: %v", err)
+	}
+	if err := core.DriveUntil(ctx, bridge.completion, CoreStateStopped); err != nil {
+		t.Fatalf("drive core instance until stopped: %v", err)
+	}
+	if err := core.Drop(ctx); err != nil {
+		t.Fatalf("drop core instance: %v", err)
+	}
 	dropped = true
 }
 
@@ -63,7 +76,7 @@ func instantiateCoreModule(
 	wasm []byte,
 	bridge *opaqueBridge,
 	config []byte,
-) (wazero.Runtime, api.Module, uint64, uint64) {
+) (wazero.Runtime, api.Module, *CoreInstance, uint64) {
 	t.Helper()
 	packetSink, err := bridge.registerPacketSink(16)
 	if err != nil {
@@ -94,33 +107,12 @@ func instantiateCoreModule(
 	if err != nil {
 		t.Fatalf("instantiate easytier-core: %v", err)
 	}
-	configPointer := coreAllocate(t, ctx, module, uint32(len(config)))
-	bufferFreed := false
-	defer func() {
-		if !bufferFreed {
-			_, _ = module.ExportedFunction("easytier_buffer_free").Call(ctx, uint64(configPointer))
-		}
-	}()
-	if !module.Memory().Write(configPointer, config) {
-		t.Fatal("write core instance fixture to guest memory")
-	}
-	createResult, err := module.ExportedFunction("easytier_instance_create").Call(
-		ctx,
-		uint64(configPointer),
-		uint64(len(config)),
-		packetSink,
-	)
-	coreFree(t, ctx, module, configPointer)
-	bufferFreed = true
+	core, err := CreateCoreInstance(ctx, module, config, packetSink)
 	if err != nil {
 		t.Fatalf("create core instance: %v", err)
 	}
-	if len(createResult) != 1 || createResult[0] == 0 {
-		t.Fatalf("create core instance: %s", coreError(t, ctx, module, 0))
-	}
-	handle := createResult[0]
 	initialized = true
-	return runtime, module, handle, packetSink
+	return runtime, module, core, packetSink
 }
 
 func driveCoreUntil(
