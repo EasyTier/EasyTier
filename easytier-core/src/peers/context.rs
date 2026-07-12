@@ -79,6 +79,136 @@ pub struct HostRoutingPolicy {
     pub local_exit_node_fallback: bool,
 }
 
+/// One normalized peer configuration version submitted by a host.
+#[derive(Debug, Clone)]
+pub struct PeerRuntimeSnapshot {
+    pub runtime: PeerRuntimeConfig,
+    pub flags: FlagsInConfig,
+    pub vpn_portal_cidr: Option<Ipv4Cidr>,
+    pub pinned_peers: Vec<(url::Url, Option<String>)>,
+    pub peer_group_memberships: Vec<PeerGroupIdentity>,
+    pub acl_group_declarations: Vec<PeerGroupIdentity>,
+}
+
+impl PeerRuntimeSnapshot {
+    pub fn new(runtime: PeerRuntimeConfig, flags: FlagsInConfig) -> Self {
+        Self {
+            runtime,
+            flags,
+            vpn_portal_cidr: None,
+            pinned_peers: Vec::new(),
+            peer_group_memberships: Vec::new(),
+            acl_group_declarations: Vec::new(),
+        }
+    }
+}
+
+/// Supplies the current core-owned peer configuration version.
+pub trait PeerRuntimeConfigSource: Send + Sync {
+    fn peer_runtime_snapshot(&self) -> Arc<PeerRuntimeSnapshot>;
+}
+
+/// Live observations and side effects that cannot be represented as submitted
+/// peer configuration.
+pub trait PeerRuntimeSupport: Send + Sync {
+    fn stun_info(&self) -> StunInfo {
+        StunInfo::default()
+    }
+
+    fn public_ipv6_lease_contains(&self, _ip: &std::net::Ipv6Addr) -> bool {
+        false
+    }
+
+    fn avoid_relay_data_preference(&self) -> bool {
+        false
+    }
+
+    fn public_ipv6_provider_enabled(&self) -> bool {
+        false
+    }
+
+    fn easytier_version(&self) -> String {
+        env!("CARGO_PKG_VERSION").to_owned()
+    }
+
+    fn ospf_update_my_foreign_network_interval_sec(&self) -> u64 {
+        10
+    }
+
+    fn advertised_ipv6_public_addr_prefix(&self) -> Option<Ipv6Cidr> {
+        None
+    }
+
+    fn hmac_secret_digest_enabled(&self) -> bool {
+        false
+    }
+
+    fn is_pubkey_trusted(&self, _pubkey: &[u8], _network_name: &str) -> bool {
+        false
+    }
+
+    fn is_pubkey_trusted_with_source(
+        &self,
+        _pubkey: &[u8],
+        _network_name: &str,
+        _source: TrustedKeySource,
+    ) -> bool {
+        false
+    }
+
+    fn trusted_credential_pubkeys(
+        &self,
+        _network_secret: &str,
+    ) -> Vec<TrustedCredentialPubkeyProof> {
+        Vec::new()
+    }
+
+    fn remove_expired_credentials(&self) -> bool {
+        false
+    }
+
+    fn issue_credential_changed(&self) {}
+
+    fn update_trusted_keys(&self, _keys: TrustedKeyMap, _network_name: &str) {}
+
+    fn remove_trusted_keys(&self, _network_name: &str) {}
+
+    fn record_control_tx(&self, _network_name: &str, _bytes: u64) {}
+
+    fn record_control_rx(&self, _network_name: &str, _bytes: u64) {}
+
+    fn recv_limiter(&self, _key: &str, _bps: u64) -> Option<ArcByteLimiter> {
+        None
+    }
+
+    fn issue_event(&self, _event: PeerEvent) {}
+
+    fn subscribe_peer_events(&self) -> Option<PeerContextEventSubscriber> {
+        None
+    }
+}
+
+/// Peer context whose configuration comes exclusively from a core-owned
+/// submitted snapshot while live effects stay behind a narrow support seam.
+#[derive(Clone)]
+pub struct SubmittedPeerContext {
+    config: Arc<dyn PeerRuntimeConfigSource>,
+    support: Arc<dyn PeerRuntimeSupport>,
+}
+
+impl SubmittedPeerContext {
+    pub fn new(
+        config: Arc<dyn PeerRuntimeConfigSource>,
+        support: Arc<dyn PeerRuntimeSupport>,
+    ) -> Self {
+        Self { config, support }
+    }
+
+    fn snapshot(&self) -> Arc<PeerRuntimeSnapshot> {
+        self.config.peer_runtime_snapshot()
+    }
+}
+
 #[derive(Clone)]
 pub(crate) struct ConfigPeerContext {
     runtime: PeerRuntimeConfig,
@@ -777,9 +907,317 @@ impl PeerContext for ConfigPeerContext {
     }
 }
 
+impl PeerContext for SubmittedPeerContext {
+    fn runtime_config(&self) -> PeerRuntimeConfig {
+        self.snapshot().runtime.clone()
+    }
+
+    fn network_identity(&self) -> NetworkIdentity {
+        self.snapshot().runtime.network_identity.clone()
+    }
+
+    fn flags(&self) -> FlagsInConfig {
+        self.snapshot().flags.clone()
+    }
+
+    fn host_routing_policy(&self) -> HostRoutingPolicy {
+        self.snapshot().runtime.host_routing
+    }
+
+    fn secure_mode(&self) -> Option<SecureModeConfig> {
+        self.snapshot().runtime.secure_mode.clone()
+    }
+
+    fn stun_info(&self) -> StunInfo {
+        self.support.stun_info()
+    }
+
+    fn instance_id(&self) -> uuid::Uuid {
+        self.snapshot()
+            .runtime
+            .core
+            .node
+            .instance_id
+            .map(uuid::Uuid::from_bytes)
+            .unwrap_or_else(uuid::Uuid::nil)
+    }
+
+    fn ipv4(&self) -> Option<Ipv4Inet> {
+        self.snapshot()
+            .runtime
+            .core
+            .routes
+            .ipv4
+            .as_ref()
+            .and_then(config_ipv4)
+    }
+
+    fn ipv6(&self) -> Option<Ipv6Inet> {
+        self.snapshot()
+            .runtime
+            .core
+            .routes
+            .ipv6
+            .as_ref()
+            .and_then(config_ipv6)
+    }
+
+    fn is_ip_local_ipv6(&self, ip: &std::net::Ipv6Addr) -> bool {
+        self.ipv6().is_some_and(|address| address.address() == *ip)
+            || self.support.public_ipv6_lease_contains(ip)
+    }
+
+    fn proxy_cidrs(&self) -> Vec<Ipv4Cidr> {
+        self.snapshot()
+            .runtime
+            .core
+            .routes
+            .proxy_networks
+            .iter()
+            .filter_map(|proxy| config_ipv4_cidr(proxy.mapped.as_ref().unwrap_or(&proxy.real)))
+            .collect()
+    }
+
+    fn proxy_networks(&self) -> Vec<ProxyNetworkConfig> {
+        self.snapshot().runtime.core.routes.proxy_networks.clone()
+    }
+
+    fn vpn_portal_cidr(&self) -> Option<Ipv4Cidr> {
+        self.snapshot().vpn_portal_cidr
+    }
+
+    fn hostname(&self) -> String {
+        self.snapshot()
+            .runtime
+            .core
+            .node
+            .hostname
+            .clone()
+            .unwrap_or_default()
+    }
+
+    fn feature_flags(&self) -> PeerFeatureFlag {
+        let snapshot = self.snapshot();
+        let mut flags = snapshot.runtime.feature_flags;
+        flags.avoid_relay_data =
+            snapshot.flags.disable_relay_data || self.support.avoid_relay_data_preference();
+        flags.ipv6_public_addr_provider = self.support.public_ipv6_provider_enabled();
+        flags
+    }
+
+    fn easytier_version(&self) -> String {
+        self.support.easytier_version()
+    }
+
+    fn ospf_update_my_foreign_network_interval_sec(&self) -> u64 {
+        self.support.ospf_update_my_foreign_network_interval_sec()
+    }
+
+    fn advertised_ipv6_public_addr_prefix(&self) -> Option<Ipv6Cidr> {
+        self.support.advertised_ipv6_public_addr_prefix()
+    }
+
+    fn is_ip_in_same_network(&self, ip: &IpAddr) -> bool {
+        match ip {
+            IpAddr::V4(ip) => self.ipv4().is_some_and(|network| network.contains(ip)),
+            IpAddr::V6(ip) => self.ipv6().is_some_and(|network| network.contains(ip)),
+        }
+    }
+
+    fn pinned_remote_static_pubkey(&self, tunnel_info: Option<&TunnelInfo>) -> Option<String> {
+        let remote_url = tunnel_info
+            .and_then(|info| info.remote_addr.as_ref())?
+            .url
+            .parse::<url::Url>()
+            .ok()?;
+        self.snapshot()
+            .pinned_peers
+            .iter()
+            .find(|(uri, _)| *uri == remote_url)
+            .and_then(|(_, public_key)| public_key.clone())
+    }
+
+    fn secret_proof(&self, challenge: &[u8]) -> Option<Hmac<Sha256>> {
+        let snapshot = self.snapshot();
+        let secret = snapshot.runtime.network_identity.network_secret.as_ref()?;
+        secret_proof_from_secret(secret, challenge)
+    }
+
+    fn secret_digest(&self, network_identity: &NetworkIdentity) -> Vec<u8> {
+        if self.support.hmac_secret_digest_enabled() {
+            self.secret_proof(b"digest")
+                .map(|mac| mac.finalize().into_bytes().to_vec())
+                .unwrap_or_default()
+        } else {
+            network_identity
+                .secret_digest()
+                .unwrap_or_default()
+                .to_vec()
+        }
+    }
+
+    fn peer_groups(&self, peer_id: PeerId) -> Vec<PeerGroupInfo> {
+        self.snapshot()
+            .peer_group_memberships
+            .iter()
+            .map(|group| {
+                PeerGroupInfo::generate_with_proof(
+                    group.group_name.clone(),
+                    group.group_secret.clone(),
+                    peer_id,
+                )
+            })
+            .collect()
+    }
+
+    fn acl_group_declarations(&self) -> Vec<PeerGroupIdentity> {
+        self.snapshot().acl_group_declarations.clone()
+    }
+
+    fn is_pubkey_trusted(&self, pubkey: &[u8], network_name: &str) -> bool {
+        self.support.is_pubkey_trusted(pubkey, network_name)
+    }
+
+    fn is_pubkey_trusted_with_source(
+        &self,
+        pubkey: &[u8],
+        network_name: &str,
+        source: TrustedKeySource,
+    ) -> bool {
+        self.support
+            .is_pubkey_trusted_with_source(pubkey, network_name, source)
+    }
+
+    fn trusted_credential_pubkeys(
+        &self,
+        network_secret: &str,
+    ) -> Vec<TrustedCredentialPubkeyProof> {
+        self.support.trusted_credential_pubkeys(network_secret)
+    }
+
+    fn remove_expired_credentials(&self) -> bool {
+        self.support.remove_expired_credentials()
+    }
+
+    fn issue_credential_changed(&self) {
+        self.support.issue_credential_changed();
+    }
+
+    fn update_trusted_keys(&self, keys: TrustedKeyMap, network_name: &str) {
+        self.support.update_trusted_keys(keys, network_name);
+    }
+
+    fn remove_trusted_keys(&self, network_name: &str) {
+        self.support.remove_trusted_keys(network_name);
+    }
+
+    fn record_control_tx(&self, network_name: &str, bytes: u64) {
+        self.support.record_control_tx(network_name, bytes);
+    }
+
+    fn record_control_rx(&self, network_name: &str, bytes: u64) {
+        self.support.record_control_rx(network_name, bytes);
+    }
+
+    fn recv_limiter(&self, network_name: &str, is_foreign_network: bool) -> Option<ArcByteLimiter> {
+        let flags = &self.snapshot().flags;
+        if is_foreign_network && flags.foreign_relay_bps_limit != u64::MAX {
+            return self.support.recv_limiter(
+                &format!("{network_name}:recv"),
+                flags.foreign_relay_bps_limit,
+            );
+        }
+        if flags.instance_recv_bps_limit != u64::MAX {
+            return self
+                .support
+                .recv_limiter("instance:recv", flags.instance_recv_bps_limit);
+        }
+        None
+    }
+
+    fn issue_event(&self, event: PeerEvent) {
+        self.support.issue_event(event);
+    }
+
+    fn subscribe_peer_events(&self) -> Option<PeerContextEventSubscriber> {
+        self.support.subscribe_peer_events()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    struct TestSubmittedConfig {
+        snapshot: ArcSwap<PeerRuntimeSnapshot>,
+    }
+
+    impl PeerRuntimeConfigSource for TestSubmittedConfig {
+        fn peer_runtime_snapshot(&self) -> Arc<PeerRuntimeSnapshot> {
+            self.snapshot.load_full()
+        }
+    }
+
+    #[derive(Default)]
+    struct TestSubmittedSupport {
+        avoid_relay_data: AtomicBool,
+    }
+
+    impl PeerRuntimeSupport for TestSubmittedSupport {
+        fn avoid_relay_data_preference(&self) -> bool {
+            self.avoid_relay_data.load(Ordering::Acquire)
+        }
+    }
+
+    fn submitted_snapshot(hostname: &str, disable_relay_data: bool) -> PeerRuntimeSnapshot {
+        let mut flags = FlagsInConfig::default();
+        flags.disable_relay_data = disable_relay_data;
+        PeerRuntimeSnapshot::new(
+            PeerRuntimeConfig {
+                core: CoreConfig {
+                    node: NodeConfig {
+                        hostname: Some(hostname.to_owned()),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+                network_identity: NetworkIdentity::default(),
+                stun_info: StunInfo::default(),
+                feature_flags: PeerFeatureFlag::default(),
+                secure_mode: None,
+                host_routing: HostRoutingPolicy::default(),
+            },
+            flags,
+        )
+    }
+
+    #[test]
+    fn submitted_peer_context_separates_config_versions_from_live_support() {
+        let config = Arc::new(TestSubmittedConfig {
+            snapshot: ArcSwap::from_pointee(submitted_snapshot("before", false)),
+        });
+        let support = Arc::new(TestSubmittedSupport::default());
+        let context = SubmittedPeerContext::new(config.clone(), support.clone());
+
+        assert_eq!(context.hostname(), "before");
+        assert!(!context.feature_flags().avoid_relay_data);
+
+        support.avoid_relay_data.store(true, Ordering::Release);
+        assert!(context.feature_flags().avoid_relay_data);
+
+        config
+            .snapshot
+            .store(Arc::new(submitted_snapshot("after", true)));
+        support.avoid_relay_data.store(false, Ordering::Release);
+        assert_eq!(context.hostname(), "after");
+        assert!(context.feature_flags().avoid_relay_data);
+
+        config
+            .snapshot
+            .store(Arc::new(submitted_snapshot("after", false)));
+        assert!(!context.feature_flags().avoid_relay_data);
+    }
 
     #[test]
     fn noop_peer_context_uses_runtime_secret_proof_prefix() {
