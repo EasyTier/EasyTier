@@ -70,6 +70,34 @@ func TestCoreInstanceLifecycle(t *testing.T) {
 	dropped = true
 }
 
+func TestCoreModuleAllowsOnlyOneLiveInstance(t *testing.T) {
+	bridge := newOpaqueBridge(nil, nil)
+	defer bridge.close()
+	wasm := buildCore(t)
+	config, err := os.ReadFile(filepath.Join("testdata", "minimal_core_instance.json"))
+	if err != nil {
+		t.Fatalf("read core instance fixture: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	runtime, _, core, packetSink := instantiateCoreModule(t, ctx, wasm, bridge, config)
+	defer runtime.Close(ctx)
+
+	if _, err := core.coreModule.CreateInstance(ctx, config, packetSink); err == nil {
+		t.Fatal("CoreModule created two live instances with one completion domain")
+	}
+	if err := core.Drop(ctx); err != nil {
+		t.Fatalf("drop first core instance: %v", err)
+	}
+	replacement, err := core.coreModule.CreateInstance(ctx, config, packetSink)
+	if err != nil {
+		t.Fatalf("create replacement core instance: %v", err)
+	}
+	if err := replacement.Drop(ctx); err != nil {
+		t.Fatalf("drop replacement core instance: %v", err)
+	}
+}
+
 func instantiateCoreModule(
 	t *testing.T,
 	ctx context.Context,

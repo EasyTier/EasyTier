@@ -22,11 +22,12 @@ const (
 )
 
 // CoreModule serializes every call into one instantiated easytier-core module.
-// Construct exactly one CoreModule for each api.Module and create all of that
-// module's core instances through it.
+// Construct exactly one CoreModule for each api.Module. A module owns at most
+// one live CoreInstance because host completion readiness is module-scoped.
 type CoreModule struct {
-	mu     sync.Mutex
-	module api.Module
+	mu             sync.Mutex
+	module         api.Module
+	activeInstance uint64
 }
 
 // CoreInstance is one core handle owned by a CoreModule.
@@ -49,6 +50,9 @@ func (module *CoreModule) CreateInstance(
 ) (*CoreInstance, error) {
 	module.mu.Lock()
 	defer module.mu.Unlock()
+	if module.activeInstance != 0 {
+		return nil, fmt.Errorf("core module already owns a live instance")
+	}
 
 	pointer, err := module.allocate(ctx, uint32(len(config)))
 	if err != nil {
@@ -87,6 +91,7 @@ func (module *CoreModule) CreateInstance(
 		)
 		return nil, err
 	}
+	module.activeInstance = result
 	return &CoreInstance{coreModule: module, handle: result}, nil
 }
 
@@ -242,6 +247,7 @@ func (instance *CoreInstance) Drop(ctx context.Context) error {
 		return err
 	}
 	instance.dropped = true
+	instance.coreModule.activeInstance = 0
 	return nil
 }
 
