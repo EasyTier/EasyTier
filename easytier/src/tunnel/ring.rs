@@ -21,16 +21,31 @@ pub(crate) fn runtime_ring_registry() -> Arc<RingTunnelRegistry> {
     RUNTIME_RING_REGISTRY.clone()
 }
 
-#[derive(Debug)]
 pub struct RingTunnelListener {
     listener_addr: url::Url,
+    ring_registry: Arc<RingTunnelRegistry>,
     listener: Option<RingTunnelSocketListener>,
+}
+
+impl std::fmt::Debug for RingTunnelListener {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("RingTunnelListener")
+            .field("listener_addr", &self.listener_addr)
+            .field("listening", &self.listener.is_some())
+            .finish()
+    }
 }
 
 impl RingTunnelListener {
     pub fn new(key: url::Url) -> Self {
+        Self::new_with_ring_registry(key, runtime_ring_registry())
+    }
+
+    pub fn new_with_ring_registry(key: url::Url, ring_registry: Arc<RingTunnelRegistry>) -> Self {
         Self {
             listener_addr: key,
+            ring_registry,
             listener: None,
         }
     }
@@ -60,11 +75,7 @@ impl TunnelListener for RingTunnelListener {
     async fn listen(&mut self) -> Result<(), TunnelError> {
         tracing::info!("listen new conn of key: {}", self.listener_addr);
         let addr = self.get_addr().await?;
-        self.listener = Some(
-            runtime_ring_registry()
-                .bind(addr)
-                .map_err(map_registry_error)?,
-        );
+        self.listener = Some(self.ring_registry.bind(addr).map_err(map_registry_error)?);
         Ok(())
     }
 
@@ -95,11 +106,22 @@ impl TunnelListener for RingTunnelListener {
 
 pub struct RingTunnelConnector {
     remote_addr: url::Url,
+    ring_registry: Arc<RingTunnelRegistry>,
 }
 
 impl RingTunnelConnector {
     pub fn new(remote_addr: url::Url) -> Self {
-        RingTunnelConnector { remote_addr }
+        Self::new_with_ring_registry(remote_addr, runtime_ring_registry())
+    }
+
+    pub fn new_with_ring_registry(
+        remote_addr: url::Url,
+        ring_registry: Arc<RingTunnelRegistry>,
+    ) -> Self {
+        RingTunnelConnector {
+            remote_addr,
+            ring_registry,
+        }
     }
 }
 
@@ -108,7 +130,8 @@ impl TunnelConnector for RingTunnelConnector {
     async fn connect(&mut self) -> Result<Box<dyn Tunnel>, super::TunnelError> {
         let remote_id = Uuid::from_url(self.remote_addr.clone(), IpVersion::Both).await?;
         tracing::info!("connecting");
-        let dialed = runtime_ring_registry()
+        let dialed = self
+            .ring_registry
             .connect(remote_id)
             .map_err(map_registry_error)?;
 
@@ -135,16 +158,20 @@ mod tests {
     #[tokio::test]
     async fn ring_pingpong() {
         let id: url::Url = format!("ring://{}", Uuid::new_v4()).parse().unwrap();
-        let listener = RingTunnelListener::new(id.clone());
-        let connector = RingTunnelConnector::new(id.clone());
+        let ring_registry = Arc::new(RingTunnelRegistry::default());
+        let listener =
+            RingTunnelListener::new_with_ring_registry(id.clone(), ring_registry.clone());
+        let connector = RingTunnelConnector::new_with_ring_registry(id.clone(), ring_registry);
         _tunnel_pingpong(listener, connector).await
     }
 
     #[tokio::test]
     async fn ring_bench() {
         let id: url::Url = format!("ring://{}", Uuid::new_v4()).parse().unwrap();
-        let listener = RingTunnelListener::new(id.clone());
-        let connector = RingTunnelConnector::new(id);
+        let ring_registry = Arc::new(RingTunnelRegistry::default());
+        let listener =
+            RingTunnelListener::new_with_ring_registry(id.clone(), ring_registry.clone());
+        let connector = RingTunnelConnector::new_with_ring_registry(id, ring_registry);
         _tunnel_bench(listener, connector).await
     }
 
