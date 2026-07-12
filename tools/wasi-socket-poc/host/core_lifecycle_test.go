@@ -70,11 +70,16 @@ func instantiateCoreModule(
 		t.Fatalf("register packet sink: %v", err)
 	}
 	runtime := wazero.NewRuntimeWithConfig(ctx, wazero.NewRuntimeConfig().WithCloseOnContextDone(true))
+	initialized := false
+	defer func() {
+		if !initialized {
+			_ = runtime.Close(ctx)
+		}
+	}()
 	instantiateOpaqueHost(t, ctx, runtime, bridge)
 	wasi_snapshot_preview1.MustInstantiate(ctx, runtime)
 	compiled, err := runtime.CompileModule(ctx, wasm)
 	if err != nil {
-		_ = runtime.Close(ctx)
 		t.Fatalf("compile easytier-core: %v", err)
 	}
 	module, err := runtime.InstantiateModule(
@@ -87,10 +92,15 @@ func instantiateCoreModule(
 			WithSysNanosleep(),
 	)
 	if err != nil {
-		_ = runtime.Close(ctx)
 		t.Fatalf("instantiate easytier-core: %v", err)
 	}
 	configPointer := coreAllocate(t, ctx, module, uint32(len(config)))
+	bufferFreed := false
+	defer func() {
+		if !bufferFreed {
+			_, _ = module.ExportedFunction("easytier_buffer_free").Call(ctx, uint64(configPointer))
+		}
+	}()
 	if !module.Memory().Write(configPointer, config) {
 		t.Fatal("write core instance fixture to guest memory")
 	}
@@ -101,6 +111,7 @@ func instantiateCoreModule(
 		packetSink,
 	)
 	coreFree(t, ctx, module, configPointer)
+	bufferFreed = true
 	if err != nil {
 		t.Fatalf("create core instance: %v", err)
 	}
@@ -108,6 +119,7 @@ func instantiateCoreModule(
 		t.Fatalf("create core instance: %s", coreError(t, ctx, module, 0))
 	}
 	handle := createResult[0]
+	initialized = true
 	return runtime, module, handle, packetSink
 }
 
