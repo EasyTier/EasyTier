@@ -15,6 +15,7 @@ use tokio_util::task::AbortOnDropHandle;
 
 use crate::{
     config::PeerId,
+    connectivity::protocol::{ClientProtocolUpgrader, ServerProtocolUpgrader},
     hole_punch::udp::{BackOff, should_background_p2p_with_peer, should_try_p2p_with_peer},
     peers::peer_manager::PeerManagerCore,
     proto::{
@@ -30,8 +31,9 @@ use crate::{
 };
 
 use super::{
-    TcpHolePunchAdmission, TcpHolePunchHost, accept_connections, select_local_port,
-    try_connect_to_remote,
+    AcceptedTcpSocket, ConnectedTcpSocket, ProtocolTcpHolePunchTransportSink,
+    TcpHolePunchAdmission, TcpHolePunchHost, TcpHolePunchTransportSinkFor, accept_connections,
+    select_local_port, try_connect_to_remote,
 };
 
 const BLACKLIST_TIMEOUT: Duration = Duration::from_secs(3600);
@@ -110,7 +112,7 @@ where
     H: TcpHolePunchHost,
 {
     host: Arc<H>,
-    peer_manager: Arc<PeerManagerCore>,
+    transport_sink: Arc<TcpHolePunchTransportSinkFor<H>>,
     tasks: Arc<Mutex<JoinSet<()>>>,
     reaper: Mutex<Option<AbortOnDropHandle<()>>>,
     stopping: AtomicBool,
@@ -120,10 +122,10 @@ impl<H> TcpHolePunchServer<H>
 where
     H: TcpHolePunchHost,
 {
-    fn new(host: Arc<H>, peer_manager: Arc<PeerManagerCore>) -> Arc<Self> {
+    fn new(host: Arc<H>, transport_sink: Arc<TcpHolePunchTransportSinkFor<H>>) -> Arc<Self> {
         Arc::new(Self {
             host,
-            peer_manager,
+            transport_sink,
             tasks: Arc::new(Mutex::new(JoinSet::new())),
             reaper: Mutex::new(None),
             stopping: AtomicBool::new(true),
@@ -210,7 +212,7 @@ where
         );
 
         let host = self.host.clone();
-        let peer_manager = self.peer_manager.clone();
+        let transport_sink = self.transport_sink.clone();
         let mut tasks = self.tasks.lock().unwrap();
         if self.stopping.load(Ordering::Acquire) {
             return Err(rpc_types::error::Error::Shutdown);
@@ -218,7 +220,7 @@ where
         tasks.spawn(async move {
             let _ = try_connect_to_remote(
                 host,
-                peer_manager,
+                transport_sink,
                 remote_mapped_addr,
                 local_port,
                 TcpHolePunchAdmission::Client,
@@ -239,6 +241,7 @@ where
 {
     host: Arc<H>,
     peer_manager: Arc<PeerManagerCore>,
+    transport_sink: Arc<TcpHolePunchTransportSinkFor<H>>,
     blacklist: TcpHolePunchBlacklist,
 }
 
@@ -323,7 +326,7 @@ where
 
         if try_connect_to_remote(
             self.host.clone(),
-            self.peer_manager.clone(),
+            self.transport_sink.clone(),
             remote_mapped_addr,
             local_port,
             TcpHolePunchAdmission::Server,
@@ -366,7 +369,7 @@ where
 
         crate::runtime_time::timeout(
             Duration::from_secs(10),
-            accept_connections(listener, self.peer_manager.clone(), dst_peer_id),
+            accept_connections(listener, self.transport_sink.clone(), dst_peer_id),
         )
         .await??;
 
@@ -511,14 +514,26 @@ impl<H> TcpHolePunchConnector<H>
 where
     H: TcpHolePunchHost,
 {
-    pub fn new(peer_manager: Arc<PeerManagerCore>, host: Arc<H>) -> Self {
+    pub fn new(
+        peer_manager: Arc<PeerManagerCore>,
+        host: Arc<H>,
+        client_protocol: Arc<dyn ClientProtocolUpgrader<ConnectedTcpSocket<H>>>,
+        server_protocol: Arc<dyn ServerProtocolUpgrader<AcceptedTcpSocket<H>>>,
+    ) -> Self {
+        let transport_sink: Arc<TcpHolePunchTransportSinkFor<H>> =
+            Arc::new(ProtocolTcpHolePunchTransportSink::new(
+                client_protocol,
+                server_protocol,
+                peer_manager.clone(),
+            ));
         let data = Arc::new(TcpHolePunchConnectorData {
             host: host.clone(),
             peer_manager: peer_manager.clone(),
+            transport_sink: transport_sink.clone(),
             blacklist: TcpHolePunchBlacklist::new(),
         });
         Self {
-            server: TcpHolePunchServer::new(host, peer_manager.clone()),
+            server: TcpHolePunchServer::new(host, transport_sink),
             client: PeerTaskManager::new_with_external_signal(
                 TcpHolePunchPeerTaskLauncher(data.clone()),
                 peer_manager.clone(),

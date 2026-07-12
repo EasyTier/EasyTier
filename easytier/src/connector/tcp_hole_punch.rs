@@ -12,7 +12,9 @@ pub(crate) fn runtime_tcp_hole_punch_connector(
     let global_ctx = peer_manager.get_global_ctx();
     RuntimeTcpHolePunchConnector::new(
         peer_manager.core(),
-        Arc::new(RuntimeConnectorHost::new(global_ctx)),
+        Arc::new(RuntimeConnectorHost::new(global_ctx.clone())),
+        super::protocol::runtime_client_protocol_upgrader(global_ctx.clone()),
+        super::protocol::runtime_server_protocol_upgrader(global_ctx),
     )
 }
 

@@ -26,7 +26,10 @@ use crate::{
             ManualConnectorSnapshot,
             discovery::{CoreManualEndpointResolver, ManualEndpointDiscoveryConfig},
         },
-        protocol::{ClientProtocolUpgrader, CoreClientProtocolConfig, CoreClientProtocolUpgrader},
+        protocol::{
+            ClientProtocolUpgrader, CoreClientProtocolConfig, CoreClientProtocolUpgrader,
+            CoreServerProtocolConfig, CoreServerProtocolUpgrader,
+        },
     },
     dhcp::{DhcpIpv4Host, DhcpIpv4RouteSource, DhcpIpv4Service},
     hole_punch::tcp::{TcpHolePunchConnector, TcpHolePunchHost},
@@ -616,6 +619,7 @@ where
                 manual_options,
             ),
         };
+        let tcp_hole_punch_protocol = protocol.clone();
         let direct = match running_listeners {
             Some(running_listeners) => DirectConnectorManager::new_with_running_listeners(
                 peer_manager.clone(),
@@ -633,7 +637,14 @@ where
                 direct_options,
             ),
         };
-        let tcp_hole_punch = TcpHolePunchConnector::new(peer_manager.clone(), host);
+        let tcp_hole_punch = TcpHolePunchConnector::new(
+            peer_manager.clone(),
+            host,
+            tcp_hole_punch_protocol,
+            Arc::new(CoreServerProtocolUpgrader::<HostAcceptedTcpSocket<H>>::new(
+                CoreServerProtocolConfig::default(),
+            )),
+        );
         let peer_center = Arc::new(PeerCenterInstance::new(peer_manager.clone()));
         let public_ipv6_provider = public_ipv6_provider.map(PublicIpv6ProviderService::new);
 

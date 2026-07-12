@@ -9,13 +9,16 @@ use rand::Rng as _;
 
 use crate::{
     config::PeerId,
-    connectivity::protocol::raw,
-    peers::peer_manager::PeerManagerCore,
+    connectivity::{
+        protocol::{ClientProtocolUpgrader, ServerProtocolUpgrade, ServerProtocolUpgrader},
+        transport::ConnectedTransport,
+    },
     proto::common::NatType,
     socket::tcp::{
         TcpBindOptions, TcpConnectOptions, TcpListenOptions, VirtualTcpListener,
         VirtualTcpListenerFactory, VirtualTcpSocketFactory,
     },
+    tunnel::Tunnel,
 };
 
 mod manager;
@@ -42,6 +45,103 @@ pub enum TcpHolePunchAdmission {
     Server,
 }
 
+#[async_trait]
+pub trait TcpHolePunchTunnelSink: Send + Sync + 'static {
+    async fn add_client_tunnel(&self, tunnel: Box<dyn Tunnel>) -> anyhow::Result<()>;
+
+    async fn add_server_tunnel(&self, tunnel: Box<dyn Tunnel>) -> anyhow::Result<()>;
+}
+
+#[async_trait]
+pub trait TcpHolePunchTransportSink: Send + Sync + 'static {
+    type ConnectedSocket;
+    type AcceptedSocket;
+
+    async fn add_connected_transport(
+        &self,
+        socket: Self::ConnectedSocket,
+        requested_url: url::Url,
+        admission: TcpHolePunchAdmission,
+    ) -> anyhow::Result<()>;
+
+    async fn add_accepted_transport(
+        &self,
+        socket: Self::AcceptedSocket,
+        local_url: url::Url,
+    ) -> anyhow::Result<()>;
+}
+
+pub struct ProtocolTcpHolePunchTransportSink<ConnectedSocket, AcceptedSocket, T> {
+    client_protocol: Arc<dyn ClientProtocolUpgrader<ConnectedSocket>>,
+    server_protocol: Arc<dyn ServerProtocolUpgrader<AcceptedSocket>>,
+    tunnel_sink: Arc<T>,
+}
+
+impl<ConnectedSocket, AcceptedSocket, T>
+    ProtocolTcpHolePunchTransportSink<ConnectedSocket, AcceptedSocket, T>
+{
+    pub fn new(
+        client_protocol: Arc<dyn ClientProtocolUpgrader<ConnectedSocket>>,
+        server_protocol: Arc<dyn ServerProtocolUpgrader<AcceptedSocket>>,
+        tunnel_sink: Arc<T>,
+    ) -> Self {
+        Self {
+            client_protocol,
+            server_protocol,
+            tunnel_sink,
+        }
+    }
+}
+
+#[async_trait]
+impl<ConnectedSocket, AcceptedSocket, T> TcpHolePunchTransportSink
+    for ProtocolTcpHolePunchTransportSink<ConnectedSocket, AcceptedSocket, T>
+where
+    ConnectedSocket: Send + 'static,
+    AcceptedSocket: Send + 'static,
+    T: TcpHolePunchTunnelSink,
+{
+    type ConnectedSocket = ConnectedSocket;
+    type AcceptedSocket = AcceptedSocket;
+
+    async fn add_connected_transport(
+        &self,
+        socket: ConnectedSocket,
+        requested_url: url::Url,
+        admission: TcpHolePunchAdmission,
+    ) -> anyhow::Result<()> {
+        let tunnel = self
+            .client_protocol
+            .upgrade_client(ConnectedTransport::Tcp(socket), requested_url)
+            .await?;
+        match admission {
+            TcpHolePunchAdmission::Client => self.tunnel_sink.add_client_tunnel(tunnel).await,
+            TcpHolePunchAdmission::Server => self.tunnel_sink.add_server_tunnel(tunnel).await,
+        }
+    }
+
+    async fn add_accepted_transport(
+        &self,
+        socket: AcceptedSocket,
+        local_url: url::Url,
+    ) -> anyhow::Result<()> {
+        let upgrade = self.server_protocol.upgrade_tcp(socket, local_url).await?;
+        let ServerProtocolUpgrade::Tunnel(tunnel) = upgrade else {
+            anyhow::bail!("TCP hole-punch protocol returned a tunnel acceptor");
+        };
+        self.tunnel_sink.add_server_tunnel(tunnel).await
+    }
+}
+
+type ConnectedTcpSocket<H> = <H as VirtualTcpSocketFactory>::Socket;
+type AcceptedTcpSocket<H> =
+    <<H as VirtualTcpListenerFactory>::Listener as VirtualTcpListener>::Socket;
+
+pub(super) type TcpHolePunchTransportSinkFor<H> = dyn TcpHolePunchTransportSink<
+        ConnectedSocket = ConnectedTcpSocket<H>,
+        AcceptedSocket = AcceptedTcpSocket<H>,
+    >;
+
 fn bind_addr_for_port(port: u16, is_v6: bool) -> SocketAddr {
     if is_v6 {
         SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), port)
@@ -67,14 +167,14 @@ where
 // TCP supports simultaneous connect, so both peers may dial from the mapped port.
 pub async fn try_connect_to_remote<H>(
     host: Arc<H>,
-    peer_manager: Arc<PeerManagerCore>,
+    transport_sink: Arc<TcpHolePunchTransportSinkFor<H>>,
     remote_mapped_addr: SocketAddr,
     local_port: u16,
     admission: TcpHolePunchAdmission,
     max_attempts: u32,
 ) -> anyhow::Result<()>
 where
-    H: VirtualTcpSocketFactory,
+    H: TcpHolePunchHost,
 {
     tracing::info!(
         ?remote_mapped_addr,
@@ -97,16 +197,9 @@ where
         if let Ok(Ok(socket)) =
             crate::runtime_time::timeout(Duration::from_secs(3), host.connect_tcp(options)).await
         {
-            let tunnel = raw::upgrade_connected_tcp(socket, requested_url.clone())?;
-            let admission_result = match admission {
-                TcpHolePunchAdmission::Client => peer_manager
-                    .add_client_tunnel(tunnel, false)
-                    .await
-                    .map(|_| ()),
-                TcpHolePunchAdmission::Server => {
-                    peer_manager.add_tunnel_as_server(tunnel, false).await
-                }
-            };
+            let admission_result = transport_sink
+                .add_connected_transport(socket, requested_url.clone(), admission)
+                .await;
             if let Err(error) = admission_result {
                 tracing::error!(
                     ?remote_mapped_addr,
@@ -149,13 +242,16 @@ where
     ))
 }
 
-pub async fn accept_connections<L>(
+pub async fn accept_connections<L, ConnectedSocket>(
     listener: Arc<L>,
-    peer_manager: Arc<PeerManagerCore>,
+    transport_sink: Arc<
+        dyn TcpHolePunchTransportSink<ConnectedSocket = ConnectedSocket, AcceptedSocket = L::Socket>,
+    >,
     dst_peer_id: PeerId,
 ) -> anyhow::Result<()>
 where
     L: VirtualTcpListener,
+    ConnectedSocket: 'static,
 {
     loop {
         match listener.accept().await {
@@ -163,15 +259,11 @@ where
                 let local_url = format!("tcp://0.0.0.0:{}", listener.local_addr()?.port())
                     .parse()
                     .unwrap();
-                let tunnel = match raw::upgrade_accepted_tcp_with_local_url(socket, local_url) {
-                    Ok(tunnel) => tunnel,
-                    Err(error) => {
-                        tracing::error!(?error, "tcp hole punch upgrade accepted socket error");
-                        continue;
-                    }
-                };
-                if let Err(error) = peer_manager.add_tunnel_as_server(tunnel, false).await {
-                    tracing::error!(?error, "tcp hole punch add tunnel error");
+                if let Err(error) = transport_sink
+                    .add_accepted_transport(socket, local_url)
+                    .await
+                {
+                    tracing::error!(?error, "tcp hole punch transport admission error");
                     continue;
                 }
 
@@ -189,7 +281,114 @@ where
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
     use super::*;
+
+    #[derive(Default)]
+    struct MockProtocols {
+        client_upgrades: AtomicUsize,
+        server_upgrades: AtomicUsize,
+    }
+
+    #[async_trait]
+    impl ClientProtocolUpgrader<()> for MockProtocols {
+        fn supports_scheme(&self, scheme: &str) -> bool {
+            scheme == "tcp"
+        }
+
+        async fn upgrade_client(
+            &self,
+            connected: ConnectedTransport<()>,
+            _requested_url: url::Url,
+        ) -> anyhow::Result<Box<dyn Tunnel>> {
+            let ConnectedTransport::Tcp(()) = connected else {
+                anyhow::bail!("expected TCP transport");
+            };
+            self.client_upgrades.fetch_add(1, Ordering::Relaxed);
+            Ok(crate::tunnel::ring::create_ring_tunnel_pair().0)
+        }
+    }
+
+    #[async_trait]
+    impl ServerProtocolUpgrader<()> for MockProtocols {
+        fn supports_scheme(&self, scheme: &str) -> bool {
+            scheme == "tcp"
+        }
+
+        async fn upgrade_tcp(
+            &self,
+            _socket: (),
+            _local_url: url::Url,
+        ) -> anyhow::Result<ServerProtocolUpgrade> {
+            self.server_upgrades.fetch_add(1, Ordering::Relaxed);
+            Ok(ServerProtocolUpgrade::Tunnel(
+                crate::tunnel::ring::create_ring_tunnel_pair().0,
+            ))
+        }
+
+        async fn upgrade_udp(
+            &self,
+            _session: crate::socket::udp::UdpSession,
+            _local_url: url::Url,
+            _admission: Option<crate::connectivity::protocol::ServerProtocolAdmission>,
+        ) -> anyhow::Result<ServerProtocolUpgrade> {
+            anyhow::bail!("unexpected UDP transport")
+        }
+
+        async fn upgrade_byte_stream(
+            &self,
+            _socket: (),
+            _local_url: url::Url,
+            _remote_url: Option<url::Url>,
+        ) -> anyhow::Result<ServerProtocolUpgrade> {
+            anyhow::bail!("unexpected byte stream")
+        }
+    }
+
+    #[derive(Default)]
+    struct MockTunnelSink {
+        clients: AtomicUsize,
+        servers: AtomicUsize,
+    }
+
+    #[async_trait]
+    impl TcpHolePunchTunnelSink for MockTunnelSink {
+        async fn add_client_tunnel(&self, _tunnel: Box<dyn Tunnel>) -> anyhow::Result<()> {
+            self.clients.fetch_add(1, Ordering::Relaxed);
+            Ok(())
+        }
+
+        async fn add_server_tunnel(&self, _tunnel: Box<dyn Tunnel>) -> anyhow::Result<()> {
+            self.servers.fetch_add(1, Ordering::Relaxed);
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn protocol_sink_upgrades_before_tcp_hole_punch_admission() {
+        let protocols = Arc::new(MockProtocols::default());
+        let tunnel_sink = Arc::new(MockTunnelSink::default());
+        let sink = ProtocolTcpHolePunchTransportSink::new(
+            protocols.clone(),
+            protocols.clone(),
+            tunnel_sink.clone(),
+        );
+        let url = url::Url::parse("tcp://198.51.100.1:11010").unwrap();
+
+        sink.add_connected_transport((), url.clone(), TcpHolePunchAdmission::Client)
+            .await
+            .unwrap();
+        sink.add_connected_transport((), url.clone(), TcpHolePunchAdmission::Server)
+            .await
+            .unwrap();
+        sink.add_accepted_transport((), url).await.unwrap();
+
+        assert_eq!(protocols.client_upgrades.load(Ordering::Relaxed), 2);
+        assert_eq!(protocols.server_upgrades.load(Ordering::Relaxed), 1);
+        assert_eq!(tunnel_sink.clients.load(Ordering::Relaxed), 1);
+        assert_eq!(tunnel_sink.servers.load(Ordering::Relaxed), 2);
+    }
 
     #[test]
     fn bind_address_tracks_requested_family_and_port() {
