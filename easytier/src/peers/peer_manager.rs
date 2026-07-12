@@ -4,6 +4,10 @@ use easytier_core::peers::peer_manager::{
     DnsAddressResolver, PeerManagerCore, PipelineRegistrationGuard,
 };
 use easytier_core::tunnel::ring::RingTunnelRegistry;
+use easytier_core::{
+    instance::{CoreRuntimeConfig, CoreRuntimeConfigStore},
+    peers::context::SubmittedPeerContext,
+};
 use quanta::Instant;
 use std::collections::BTreeSet;
 use std::{
@@ -25,7 +29,7 @@ use crate::{
 };
 
 use super::{
-    BoxNicPacketFilter, BoxPeerPacketFilter, PacketRecvChan, context::RuntimePeerContext,
+    BoxNicPacketFilter, BoxPeerPacketFilter, PacketRecvChan, context::runtime_peer_snapshot,
     encrypt::NullCipher, foreign_network_client::ForeignNetworkClient,
     foreign_network_manager::ForeignNetworkManager, peer_conn::PeerConnId, peer_map::PeerMap,
     peer_rpc::PeerRpcManager, peer_task::ExternalTaskSignal, relay_peer_map::RelayPeerMap,
@@ -35,7 +39,8 @@ use super::{
 pub struct PeerManager {
     global_ctx: ArcGlobalCtx,
     core: Arc<PeerManagerCore>,
-    peer_context: Arc<RuntimePeerContext>,
+    peer_context: Arc<SubmittedPeerContext>,
+    runtime_config: CoreRuntimeConfigStore,
     ring_registry: Arc<RingTunnelRegistry>,
 
     foreign_network_manager: Arc<ForeignNetworkManager>,
@@ -104,7 +109,14 @@ impl PeerManager {
             compressor_algo_from_pb(global_ctx.get_flags().data_compress_algo())
                 .expect("invalid data compress algo, maybe some features not enabled");
         let exit_nodes = global_ctx.config.get_exit_nodes();
-        let peer_context = Arc::new(RuntimePeerContext::new(global_ctx.clone()));
+        let runtime_config = CoreRuntimeConfigStore::new(
+            CoreRuntimeConfig::default(),
+            Arc::new(runtime_peer_snapshot(&global_ctx)),
+        );
+        let peer_context = Arc::new(SubmittedPeerContext::new(
+            Arc::new(runtime_config.clone()),
+            global_ctx.clone(),
+        ));
 
         let global_ctx_for_foreign = global_ctx.clone();
         let peer_context_for_foreign = peer_context.clone();
@@ -140,13 +152,19 @@ impl PeerManager {
             global_ctx,
             core: Arc::new(build_result.core),
             peer_context,
+            runtime_config,
             ring_registry,
             foreign_network_manager: build_result.foreign_network_manager,
         }
     }
 
     pub(crate) fn refresh_runtime_config(&self) {
-        self.peer_context.refresh();
+        self.runtime_config
+            .update_peer(Arc::new(runtime_peer_snapshot(&self.global_ctx)));
+    }
+
+    pub(crate) fn runtime_config_store(&self) -> CoreRuntimeConfigStore {
+        self.runtime_config.clone()
     }
 
     pub fn core(&self) -> Arc<PeerManagerCore> {

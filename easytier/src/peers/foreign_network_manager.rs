@@ -1456,7 +1456,12 @@ pub mod tests {
             "__access__".to_string(),
             "access_secret".to_string(),
         )));
-        let parent_context = Arc::new(crate::peers::context::RuntimePeerContext::new(
+        let runtime_config = easytier_core::instance::CoreRuntimeConfigStore::new(
+            easytier_core::instance::CoreRuntimeConfig::default(),
+            Arc::new(crate::peers::context::runtime_peer_snapshot(&global_ctx)),
+        );
+        let parent_context = Arc::new(easytier_core::peers::context::SubmittedPeerContext::new(
+            Arc::new(runtime_config.clone()),
             global_ctx.clone(),
         ));
         let runtime = ForeignNetworkRuntimeImpl::new(global_ctx.clone(), parent_context.clone());
@@ -1470,7 +1475,9 @@ pub mod tests {
         assert!(!runtime.relay_all_peer_rpc());
         assert!(runtime.check_network_in_whitelist("net1").is_ok());
 
-        parent_context.refresh();
+        runtime_config.update_peer(Arc::new(crate::peers::context::runtime_peer_snapshot(
+            &global_ctx,
+        )));
         assert!(runtime.relay_all_peer_rpc());
         assert!(runtime.check_network_in_whitelist("net1").is_err());
     }

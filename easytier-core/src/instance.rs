@@ -1136,25 +1136,31 @@ where
 
     pub async fn apply_acl_config(&self, config: AclRuleConfig) -> anyhow::Result<()> {
         let _operation = self.operation.lock().await;
-        *self.acl_whitelist.write() = AclWhitelistSnapshot::from(&config);
-        let acl = config.build()?;
-        self.peer_manager.reload_acl(acl.as_ref());
-        self.refresh_acl_groups().await;
+        self.reload_acl_config_inner(&config).await?;
         self.runtime_config
             .update_services(|services| services.acl = config);
         Ok(())
     }
 
-    /// Replaces the explicit runtime snapshot used by services that have not
-    /// started yet. Host configuration changes have no effect until the host
-    /// submits a new snapshot through this method.
-    pub async fn update_runtime_config(&self, config: CoreRuntimeConfig) {
+    /// Applies ACL runtime effects without publishing a separate config
+    /// version. The caller must subsequently submit the complete instance
+    /// runtime config, including this ACL.
+    pub async fn reload_acl_config(&self, config: &AclRuleConfig) -> anyhow::Result<()> {
         let _operation = self.operation.lock().await;
-        self.runtime_config
-            .update_services(|services| *services = config);
+        self.reload_acl_config_inner(config).await
     }
 
-    pub async fn update_instance_runtime_config(&self, config: CoreInstanceRuntimeConfig) {
+    async fn reload_acl_config_inner(&self, config: &AclRuleConfig) -> anyhow::Result<()> {
+        *self.acl_whitelist.write() = AclWhitelistSnapshot::from(config);
+        let acl = config.build()?;
+        self.peer_manager.reload_acl(acl.as_ref());
+        self.refresh_acl_groups().await;
+        Ok(())
+    }
+
+    /// Publishes one complete instance configuration version. Host changes have
+    /// no effect until submitted through this method.
+    pub async fn update_runtime_config(&self, config: CoreInstanceRuntimeConfig) {
         let _operation = self.operation.lock().await;
         self.runtime_config.replace(config);
     }

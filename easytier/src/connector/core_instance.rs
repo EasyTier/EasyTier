@@ -8,7 +8,10 @@ use easytier_core::{
             discovery::ManualEndpointDiscoveryConfig,
         },
     },
-    instance::{CoreInstance, CoreInstanceAdapters, CoreInstanceConfig, CoreRuntimeConfig},
+    instance::{
+        CoreInstance, CoreInstanceAdapters, CoreInstanceConfig, CoreInstanceRuntimeConfig,
+        CoreRuntimeConfig,
+    },
     proxy::{ProxyStartupContext, cidr_table::ProxyCidrRuntime},
     socket::{
         IpVersion, SocketContext,
@@ -52,6 +55,13 @@ pub(crate) fn runtime_core_config(global_ctx: &ArcGlobalCtx) -> CoreRuntimeConfi
         dhcp_ipv4: global_ctx.config.get_dhcp(),
         proxy: runtime_proxy_startup_context(global_ctx),
         public_ipv6_provider: runtime_public_ipv6_provider_config(global_ctx),
+    }
+}
+
+pub(crate) fn runtime_instance_config(global_ctx: &ArcGlobalCtx) -> CoreInstanceRuntimeConfig {
+    CoreInstanceRuntimeConfig {
+        services: runtime_core_config(global_ctx),
+        peer: Arc::new(crate::peers::context::runtime_peer_snapshot(global_ctx)),
     }
 }
 
@@ -260,7 +270,12 @@ pub(crate) fn build_runtime_core_instance_with_services_and_ring_registry(
     adapters.udp_hole_punch = Some(Arc::new(super::udp_hole_punch::UdpHolePunchConnector::new(
         peer_manager.clone(),
     )));
-    CoreInstance::new(peer_manager.core(), adapters, config)
+    CoreInstance::new_with_runtime_config_store(
+        peer_manager.core(),
+        adapters,
+        config,
+        peer_manager.runtime_config_store(),
+    )
 }
 
 #[cfg(test)]
@@ -580,7 +595,7 @@ mod tests {
         assert_eq!(proxy.start_calls.load(Ordering::Relaxed), 0);
 
         instance
-            .update_runtime_config(runtime_core_config(&global_ctx))
+            .update_runtime_config(runtime_instance_config(&global_ctx))
             .await;
         instance.start_proxy().await.unwrap();
         assert_eq!(proxy.start_calls.load(Ordering::Relaxed), 1);
@@ -609,7 +624,7 @@ mod tests {
             .config
             .set_tcp_whitelist(vec!["invalid".to_string()]);
         instance
-            .update_runtime_config(runtime_core_config(&global_ctx))
+            .update_runtime_config(runtime_instance_config(&global_ctx))
             .await;
         instance.start().await.unwrap();
         let error = instance.start_network_services(None).await.unwrap_err();
@@ -637,7 +652,7 @@ mod tests {
 
         global_ctx.config.set_dhcp(true);
         instance
-            .update_runtime_config(runtime_core_config(&global_ctx))
+            .update_runtime_config(runtime_instance_config(&global_ctx))
             .await;
         instance.start().await.unwrap();
         let error = instance.start_network_services(None).await.unwrap_err();
@@ -667,7 +682,7 @@ mod tests {
             .config
             .set_ipv6_public_addr_prefix(Some("fd00::/64".parse().unwrap()));
         instance
-            .update_runtime_config(runtime_core_config(&global_ctx))
+            .update_runtime_config(runtime_instance_config(&global_ctx))
             .await;
         let error = instance.start().await.unwrap_err();
         assert!(

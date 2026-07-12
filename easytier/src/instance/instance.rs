@@ -32,7 +32,7 @@ use crate::common::error::Error;
 use crate::common::global_ctx::{ArcGlobalCtx, GlobalCtx, GlobalCtxEvent};
 use crate::connector::core_instance::{
     RuntimeCoreInstance, build_runtime_core_instance_with_services_and_ring_registry,
-    runtime_core_config,
+    runtime_instance_config,
 };
 use crate::connector::manual::{ConnectorManagerRpcService, ManualConnectorManager};
 use crate::gateway::icmp_proxy::IcmpProxy;
@@ -316,7 +316,6 @@ impl InstanceConfigPatcher {
         let patch_for_event = patch.clone();
         let global_ctx = weak_upgrade(&self.global_ctx)?;
         let core_instance = weak_upgrade(&self.core_instance)?;
-        let peer_manager = weak_upgrade(&self.peer_manager)?;
         let parsed_ipv6_public_addr_prefix = Self::validate_public_ipv6_patch(&global_ctx, &patch)?;
 
         // Preserve the legacy ordered partial-commit contract: earlier valid
@@ -367,9 +366,8 @@ impl InstanceConfigPatcher {
         }
         .await;
 
-        peer_manager.refresh_runtime_config();
         core_instance
-            .update_runtime_config(runtime_core_config(&global_ctx))
+            .update_runtime_config(runtime_instance_config(&global_ctx))
             .await;
         let provider_config_changed = patch_result?;
         global_ctx.issue_event(GlobalCtxEvent::ConfigPatched(patch_for_event));
@@ -478,7 +476,6 @@ impl InstanceConfigPatcher {
             crate::proto::api::config::patch_vec(&mut config.udp_whitelist, patches);
         }
         config.build()?;
-        let peer_manager = weak_upgrade(&self.peer_manager)?;
         let previous_acl = global_ctx.config.get_acl();
         let previous_tcp_whitelist = global_ctx.config.get_tcp_whitelist();
         let previous_udp_whitelist = global_ctx.config.get_udp_whitelist();
@@ -486,15 +483,13 @@ impl InstanceConfigPatcher {
         global_ctx.config.set_acl(config.acl);
         global_ctx.config.set_tcp_whitelist(config.tcp_whitelist);
         global_ctx.config.set_udp_whitelist(config.udp_whitelist);
-        peer_manager.refresh_runtime_config();
         if let Err(error) = weak_upgrade(&self.core_instance)?
-            .apply_acl_config(core_config)
+            .reload_acl_config(&core_config)
             .await
         {
             global_ctx.config.set_acl(previous_acl);
             global_ctx.config.set_tcp_whitelist(previous_tcp_whitelist);
             global_ctx.config.set_udp_whitelist(previous_udp_whitelist);
-            peer_manager.refresh_runtime_config();
             return Err(error);
         }
         Ok(())
@@ -1056,9 +1051,8 @@ impl Instance {
         if config_operation.closing.load(Ordering::Acquire) {
             return Err(anyhow::anyhow!("instance is closing; start rejected").into());
         }
-        self.peer_manager.refresh_runtime_config();
         self.core_instance
-            .update_runtime_config(runtime_core_config(&self.global_ctx))
+            .update_runtime_config(runtime_instance_config(&self.global_ctx))
             .await;
         self.core_instance.start().await?;
 

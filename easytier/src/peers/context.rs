@@ -1,98 +1,50 @@
-use std::{
-    collections::HashSet,
-    net::IpAddr,
-    sync::{Arc, Mutex},
+use std::collections::HashSet;
+
+use easytier_core::peers::context::{
+    ArcByteLimiter, PeerContext, PeerContextEventSubscriber, PeerEvent, PeerRuntimeConfig,
+    PeerRuntimeSnapshot, PeerRuntimeSupport, TrustedKeyMap, TrustedKeySource,
 };
 
-use arc_swap::ArcSwap;
-use cidr::{Ipv4Cidr, Ipv4Inet, Ipv6Cidr, Ipv6Inet};
-use easytier_core::{
-    config::{IpPrefix, PeerId, ProxyNetworkConfig},
-    peers::context::{
-        ArcByteLimiter, HostRoutingPolicy, PeerContext, PeerContextEventSubscriber,
-        PeerGroupIdentity, PeerRuntimeConfig, TrustedKeyMap, TrustedKeySource,
+use crate::{
+    common::{
+        constants::EASYTIER_VERSION,
+        global_ctx::{ArcGlobalCtx, GlobalCtx, GlobalCtxEvent},
     },
-    proto::{
-        common::{FlagsInConfig, PeerFeatureFlag, SecureModeConfig, StunInfo, TunnelInfo},
-        peer_rpc::{PeerGroupInfo, TrustedCredentialPubkeyProof},
-    },
+    proto::common::LimiterConfig,
+    use_global_var,
 };
-use hmac::{Hmac, Mac};
-use sha2::Sha256;
 
-use crate::common::global_ctx::ArcGlobalCtx;
-
-/// Core-owned peer configuration plus narrow native runtime support.
-///
-/// Config decisions are read only from the submitted snapshots. `GlobalCtx`
-/// remains behind this adapter for observations, events, metrics, credentials,
-/// and trusted-key storage that have not yet moved into the core instance.
-pub(crate) struct RuntimePeerContext {
-    snapshot: ArcSwap<RuntimePeerSnapshot>,
-    refresh_lock: Mutex<()>,
-    support: ArcGlobalCtx,
-}
-
-#[derive(Clone)]
-struct RuntimePeerSnapshot {
-    runtime: PeerRuntimeConfig,
-    flags: FlagsInConfig,
-    vpn_portal_cidr: Option<Ipv4Cidr>,
-    pinned_peers: Vec<(url::Url, Option<String>)>,
-    peer_group_memberships: Vec<PeerGroupIdentity>,
-    acl_group_declarations: Vec<PeerGroupIdentity>,
-}
-
-impl RuntimePeerSnapshot {
-    fn from_global_ctx(global_ctx: &ArcGlobalCtx) -> Self {
-        let acl_group_declarations = PeerContext::acl_group_declarations(global_ctx.as_ref());
-        let memberships = global_ctx
+/// Normalizes the native host configuration into one portable peer version.
+pub(crate) fn runtime_peer_snapshot(global_ctx: &ArcGlobalCtx) -> PeerRuntimeSnapshot {
+    let acl_group_declarations = PeerContext::acl_group_declarations(global_ctx.as_ref());
+    let memberships = global_ctx
+        .config
+        .get_acl()
+        .and_then(|acl| acl.acl_v1)
+        .and_then(|acl| acl.group)
+        .map(|group| group.members.into_iter().collect::<HashSet<_>>())
+        .unwrap_or_default();
+    let peer_group_memberships = acl_group_declarations
+        .iter()
+        .filter(|group| memberships.contains(&group.group_name))
+        .cloned()
+        .collect();
+    PeerRuntimeSnapshot {
+        runtime: runtime_peer_config(global_ctx),
+        flags: global_ctx.get_flags(),
+        vpn_portal_cidr: PeerContext::vpn_portal_cidr(global_ctx.as_ref()),
+        pinned_peers: global_ctx
             .config
-            .get_acl()
-            .and_then(|acl| acl.acl_v1)
-            .and_then(|acl| acl.group)
-            .map(|group| group.members.into_iter().collect::<HashSet<_>>())
-            .unwrap_or_default();
-        let peer_group_memberships = acl_group_declarations
-            .iter()
-            .filter(|group| memberships.contains(&group.group_name))
-            .cloned()
-            .collect();
-        Self {
-            runtime: runtime_peer_config(global_ctx),
-            flags: global_ctx.get_flags(),
-            vpn_portal_cidr: PeerContext::vpn_portal_cidr(global_ctx.as_ref()),
-            pinned_peers: global_ctx
-                .config
-                .get_peers()
-                .into_iter()
-                .map(|peer| (peer.uri, peer.peer_public_key))
-                .collect(),
-            peer_group_memberships,
-            acl_group_declarations,
-        }
-    }
-}
-
-impl RuntimePeerContext {
-    pub(crate) fn new(support: ArcGlobalCtx) -> Self {
-        Self {
-            snapshot: ArcSwap::from_pointee(RuntimePeerSnapshot::from_global_ctx(&support)),
-            refresh_lock: Mutex::new(()),
-            support,
-        }
-    }
-
-    pub(crate) fn refresh(&self) {
-        let _guard = self.refresh_lock.lock().unwrap();
-        self.snapshot
-            .store(Arc::new(RuntimePeerSnapshot::from_global_ctx(
-                &self.support,
-            )));
-    }
-
-    fn snapshot(&self) -> Arc<RuntimePeerSnapshot> {
-        self.snapshot.load_full()
+            .get_peers()
+            .into_iter()
+            .map(|peer| (peer.uri, peer.peer_public_key))
+            .collect(),
+        peer_group_memberships,
+        acl_group_declarations,
+        ospf_update_my_foreign_network_interval_sec: use_global_var!(
+            OSPF_UPDATE_MY_GLOBAL_FOREIGN_NETWORK_INTERVAL_SEC
+        ),
+        hmac_secret_digest: use_global_var!(HMAC_SECRET_DIGEST),
     }
 }
 
@@ -102,206 +54,34 @@ fn runtime_peer_config(global_ctx: &ArcGlobalCtx) -> PeerRuntimeConfig {
     runtime
 }
 
-fn ipv4(prefix: &IpPrefix) -> Option<Ipv4Inet> {
-    let IpAddr::V4(address) = prefix.address else {
-        return None;
-    };
-    Ipv4Inet::new(address, prefix.prefix_len).ok()
-}
-
-fn ipv4_cidr(prefix: &IpPrefix) -> Option<Ipv4Cidr> {
-    let IpAddr::V4(address) = prefix.address else {
-        return None;
-    };
-    Ipv4Cidr::new(address, prefix.prefix_len).ok()
-}
-
-fn ipv6(prefix: &IpPrefix) -> Option<Ipv6Inet> {
-    let IpAddr::V6(address) = prefix.address else {
-        return None;
-    };
-    Ipv6Inet::new(address, prefix.prefix_len).ok()
-}
-
-impl PeerContext for RuntimePeerContext {
-    fn runtime_config(&self) -> PeerRuntimeConfig {
-        self.snapshot().runtime.clone()
+impl PeerRuntimeSupport for GlobalCtx {
+    fn stun_info(&self) -> crate::proto::common::StunInfo {
+        PeerContext::stun_info(self)
     }
 
-    fn network_identity(&self) -> easytier_core::config::NetworkIdentity {
-        self.snapshot().runtime.network_identity.clone()
+    fn public_ipv6_lease_contains(&self, ip: &std::net::Ipv6Addr) -> bool {
+        self.get_public_ipv6_lease()
+            .is_some_and(|address| address.address() == *ip)
     }
 
-    fn flags(&self) -> FlagsInConfig {
-        self.snapshot().flags.clone()
+    fn avoid_relay_data_preference(&self) -> bool {
+        self.get_avoid_relay_data_preference()
     }
 
-    fn host_routing_policy(&self) -> HostRoutingPolicy {
-        self.snapshot().runtime.host_routing
-    }
-
-    fn secure_mode(&self) -> Option<SecureModeConfig> {
-        self.snapshot().runtime.secure_mode.clone()
-    }
-
-    fn stun_info(&self) -> StunInfo {
-        PeerContext::stun_info(self.support.as_ref())
-    }
-
-    fn instance_id(&self) -> uuid::Uuid {
-        self.snapshot()
-            .runtime
-            .core
-            .node
-            .instance_id
-            .map(uuid::Uuid::from_bytes)
-            .unwrap_or_else(uuid::Uuid::nil)
-    }
-
-    fn ipv4(&self) -> Option<Ipv4Inet> {
-        self.snapshot()
-            .runtime
-            .core
-            .routes
-            .ipv4
-            .as_ref()
-            .and_then(ipv4)
-    }
-
-    fn ipv6(&self) -> Option<Ipv6Inet> {
-        self.snapshot()
-            .runtime
-            .core
-            .routes
-            .ipv6
-            .as_ref()
-            .and_then(ipv6)
-    }
-
-    fn is_ip_local_ipv6(&self, ip: &std::net::Ipv6Addr) -> bool {
-        // The delegated public-IPv6 lease is live host observation; the
-        // configured virtual IPv6 address remains snapshot-owned above.
-        self.ipv6().is_some_and(|address| address.address() == *ip)
-            || self
-                .support
-                .get_public_ipv6_lease()
-                .is_some_and(|address| address.address() == *ip)
-    }
-
-    fn proxy_cidrs(&self) -> Vec<Ipv4Cidr> {
-        self.snapshot()
-            .runtime
-            .core
-            .routes
-            .proxy_networks
-            .iter()
-            .filter_map(|proxy| ipv4_cidr(proxy.mapped.as_ref().unwrap_or(&proxy.real)))
-            .collect()
-    }
-
-    fn proxy_networks(&self) -> Vec<ProxyNetworkConfig> {
-        self.snapshot().runtime.core.routes.proxy_networks.clone()
-    }
-
-    fn vpn_portal_cidr(&self) -> Option<Ipv4Cidr> {
-        self.snapshot().vpn_portal_cidr
-    }
-
-    fn hostname(&self) -> String {
-        self.snapshot()
-            .runtime
-            .core
-            .node
-            .hostname
-            .clone()
-            .unwrap_or_default()
-    }
-
-    fn feature_flags(&self) -> PeerFeatureFlag {
-        let snapshot = self.snapshot();
-        let mut flags = snapshot.runtime.feature_flags;
-        flags.avoid_relay_data =
-            snapshot.flags.disable_relay_data || self.support.get_avoid_relay_data_preference();
-        flags.ipv6_public_addr_provider =
-            self.support.get_feature_flags().ipv6_public_addr_provider;
-        flags
+    fn public_ipv6_provider_enabled(&self) -> bool {
+        self.get_feature_flags().ipv6_public_addr_provider
     }
 
     fn easytier_version(&self) -> String {
-        PeerContext::easytier_version(self.support.as_ref())
+        EASYTIER_VERSION.to_owned()
     }
 
-    fn ospf_update_my_foreign_network_interval_sec(&self) -> u64 {
-        PeerContext::ospf_update_my_foreign_network_interval_sec(self.support.as_ref())
-    }
-
-    fn advertised_ipv6_public_addr_prefix(&self) -> Option<Ipv6Cidr> {
-        PeerContext::advertised_ipv6_public_addr_prefix(self.support.as_ref())
-    }
-
-    fn is_ip_in_same_network(&self, ip: &IpAddr) -> bool {
-        match ip {
-            IpAddr::V4(ip) => self.ipv4().is_some_and(|network| network.contains(ip)),
-            IpAddr::V6(ip) => self.ipv6().is_some_and(|network| network.contains(ip)),
-        }
-    }
-
-    fn pinned_remote_static_pubkey(&self, tunnel_info: Option<&TunnelInfo>) -> Option<String> {
-        let remote_url = tunnel_info
-            .and_then(|info| info.remote_addr.as_ref())?
-            .url
-            .parse::<url::Url>()
-            .ok()?;
-        self.snapshot()
-            .pinned_peers
-            .iter()
-            .find(|(uri, _)| *uri == remote_url)
-            .and_then(|(_, public_key)| public_key.clone())
-    }
-
-    fn secret_proof(&self, challenge: &[u8]) -> Option<Hmac<Sha256>> {
-        let secret = self
-            .snapshot()
-            .runtime
-            .network_identity
-            .network_secret
-            .clone()?;
-        easytier_core::peers::context::secret_proof_from_secret(&secret, challenge)
-    }
-
-    fn secret_digest(&self, network_identity: &easytier_core::config::NetworkIdentity) -> Vec<u8> {
-        if crate::use_global_var!(HMAC_SECRET_DIGEST) {
-            self.secret_proof(b"digest")
-                .map(|mac| mac.finalize().into_bytes().to_vec())
-                .unwrap_or_default()
-        } else {
-            network_identity
-                .secret_digest()
-                .unwrap_or_default()
-                .to_vec()
-        }
-    }
-
-    fn peer_groups(&self, peer_id: PeerId) -> Vec<PeerGroupInfo> {
-        self.snapshot()
-            .peer_group_memberships
-            .iter()
-            .map(|group| {
-                PeerGroupInfo::generate_with_proof(
-                    group.group_name.clone(),
-                    group.group_secret.clone(),
-                    peer_id,
-                )
-            })
-            .collect()
-    }
-
-    fn acl_group_declarations(&self) -> Vec<PeerGroupIdentity> {
-        self.snapshot().acl_group_declarations.clone()
+    fn advertised_ipv6_public_addr_prefix(&self) -> Option<cidr::Ipv6Cidr> {
+        self.get_advertised_ipv6_public_addr_prefix()
     }
 
     fn is_pubkey_trusted(&self, pubkey: &[u8], network_name: &str) -> bool {
-        PeerContext::is_pubkey_trusted(self.support.as_ref(), pubkey, network_name)
+        PeerContext::is_pubkey_trusted(self, pubkey, network_name)
     }
 
     fn is_pubkey_trusted_with_source(
@@ -310,66 +90,91 @@ impl PeerContext for RuntimePeerContext {
         network_name: &str,
         source: TrustedKeySource,
     ) -> bool {
-        PeerContext::is_pubkey_trusted_with_source(
-            self.support.as_ref(),
-            pubkey,
-            network_name,
-            source,
-        )
+        PeerContext::is_pubkey_trusted_with_source(self, pubkey, network_name, source)
     }
 
     fn trusted_credential_pubkeys(
         &self,
         network_secret: &str,
-    ) -> Vec<TrustedCredentialPubkeyProof> {
-        PeerContext::trusted_credential_pubkeys(self.support.as_ref(), network_secret)
+    ) -> Vec<crate::proto::peer_rpc::TrustedCredentialPubkeyProof> {
+        PeerContext::trusted_credential_pubkeys(self, network_secret)
     }
 
     fn remove_expired_credentials(&self) -> bool {
-        PeerContext::remove_expired_credentials(self.support.as_ref())
+        PeerContext::remove_expired_credentials(self)
     }
 
     fn issue_credential_changed(&self) {
-        PeerContext::issue_credential_changed(self.support.as_ref());
+        self.issue_event(GlobalCtxEvent::CredentialChanged);
     }
 
     fn update_trusted_keys(&self, keys: TrustedKeyMap, network_name: &str) {
-        PeerContext::update_trusted_keys(self.support.as_ref(), keys, network_name);
+        PeerContext::update_trusted_keys(self, keys, network_name);
     }
 
     fn remove_trusted_keys(&self, network_name: &str) {
-        PeerContext::remove_trusted_keys(self.support.as_ref(), network_name);
+        PeerContext::remove_trusted_keys(self, network_name);
     }
 
     fn record_control_tx(&self, network_name: &str, bytes: u64) {
-        PeerContext::record_control_tx(self.support.as_ref(), network_name, bytes);
+        PeerContext::record_control_tx(self, network_name, bytes);
     }
 
     fn record_control_rx(&self, network_name: &str, bytes: u64) {
-        PeerContext::record_control_rx(self.support.as_ref(), network_name, bytes);
+        PeerContext::record_control_rx(self, network_name, bytes);
     }
 
-    fn recv_limiter(&self, network_name: &str, is_foreign_network: bool) -> Option<ArcByteLimiter> {
-        PeerContext::recv_limiter(self.support.as_ref(), network_name, is_foreign_network)
+    fn recv_limiter(&self, key: &str, bps: u64) -> Option<ArcByteLimiter> {
+        Some(
+            self.token_bucket_manager().get_or_create(
+                key,
+                LimiterConfig {
+                    burst_rate: None,
+                    bps: Some(bps),
+                    fill_duration_ms: None,
+                }
+                .into(),
+            ),
+        )
     }
 
-    fn issue_event(&self, event: easytier_core::peers::context::PeerEvent) {
-        PeerContext::issue_event(self.support.as_ref(), event);
+    fn issue_event(&self, event: PeerEvent) {
+        PeerContext::issue_event(self, event);
     }
 
     fn subscribe_peer_events(&self) -> Option<PeerContextEventSubscriber> {
-        PeerContext::subscribe_peer_events(self.support.as_ref())
+        PeerContext::subscribe_peer_events(self)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use easytier_core::{
+        instance::{CoreRuntimeConfig, CoreRuntimeConfigStore},
+        peers::context::SubmittedPeerContext,
+    };
+    use std::sync::Arc;
+
     use crate::common::{
         config::{PeerConfig, VpnPortalConfig},
         global_ctx::tests::get_mock_global_ctx,
     };
-    use crate::proto::acl::{Acl, AclV1, GroupIdentity, GroupInfo};
+    use crate::proto::{
+        acl::{Acl, AclV1, GroupIdentity, GroupInfo},
+        common::TunnelInfo,
+    };
+
+    fn submitted_context(
+        global_ctx: ArcGlobalCtx,
+    ) -> (CoreRuntimeConfigStore, SubmittedPeerContext) {
+        let config = CoreRuntimeConfigStore::new(
+            CoreRuntimeConfig::default(),
+            Arc::new(runtime_peer_snapshot(&global_ctx)),
+        );
+        let context = SubmittedPeerContext::new(Arc::new(config.clone()), global_ctx);
+        (config, context)
+    }
 
     #[tokio::test]
     async fn config_changes_require_an_explicit_snapshot_update() {
@@ -393,7 +198,7 @@ mod tests {
                 ..Default::default()
             }),
         }));
-        let context = RuntimePeerContext::new(global_ctx.clone());
+        let (config, context) = submitted_context(global_ctx.clone());
 
         global_ctx.set_hostname("after".to_owned());
         global_ctx.set_ipv4(Some("198.51.100.1/24".parse().unwrap()));
@@ -423,7 +228,7 @@ mod tests {
         }));
         let mut flags = global_ctx.get_flags();
         flags.disable_relay_data = true;
-        global_ctx.set_flags(flags.clone());
+        global_ctx.set_flags(flags);
         let tunnel_info = TunnelInfo {
             remote_addr: Some(remote_url.into()),
             ..Default::default()
@@ -448,7 +253,7 @@ mod tests {
         global_ctx.set_avoid_relay_data_preference(true);
         assert!(context.feature_flags().avoid_relay_data);
 
-        context.refresh();
+        config.update_peer(Arc::new(runtime_peer_snapshot(&global_ctx)));
         assert_eq!(context.hostname(), "after");
         assert_eq!(context.proxy_networks().len(), 1);
         assert!(context.disable_relay_data());
@@ -473,17 +278,17 @@ mod tests {
     async fn runtime_avoid_relay_preference_remains_reversible_after_refresh() {
         let global_ctx = get_mock_global_ctx();
         global_ctx.set_avoid_relay_data_preference(true);
-        let context = RuntimePeerContext::new(global_ctx.clone());
+        let (config, context) = submitted_context(global_ctx.clone());
 
         assert!(context.feature_flags().avoid_relay_data);
-        context.refresh();
+        config.update_peer(Arc::new(runtime_peer_snapshot(&global_ctx)));
         global_ctx.set_avoid_relay_data_preference(false);
         assert!(!context.feature_flags().avoid_relay_data);
 
         let mut flags = global_ctx.get_flags();
         flags.disable_relay_data = true;
         global_ctx.set_flags(flags);
-        context.refresh();
+        config.update_peer(Arc::new(runtime_peer_snapshot(&global_ctx)));
         assert!(context.feature_flags().avoid_relay_data);
     }
 }
