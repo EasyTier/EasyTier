@@ -91,6 +91,7 @@ impl PeerManager {
         let peer_context = Arc::new(RuntimePeerContext::new(global_ctx.clone()));
 
         let global_ctx_for_foreign = global_ctx.clone();
+        let peer_context_for_foreign = peer_context.clone();
         let build_result = PeerManagerCore::new_with_default_components(
             route_algo,
             my_peer_id,
@@ -109,6 +110,7 @@ impl PeerManager {
                 Arc::new(ForeignNetworkManager::new(
                     my_peer_id,
                     global_ctx_for_foreign.clone(),
+                    peer_context_for_foreign,
                     peer_session_store,
                     packet_sender_to_mgr,
                     accessor,

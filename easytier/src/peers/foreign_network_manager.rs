@@ -9,6 +9,7 @@ use std::{sync::Arc, time::SystemTime};
 
 use dashmap::DashMap;
 use easytier_core::connectivity::direct::DirectConnectorRpcHandler;
+use easytier_core::peers::context::ArcPeerContext;
 use easytier_core::peers::foreign_network_manager as core_foreign_network_manager;
 pub use easytier_core::peers::foreign_network_manager::{
     ForeignNetworkInfoProvider, ForeignNetworkRouteInfo, ForeignNetworkRouteInfoProvider,
@@ -73,6 +74,7 @@ impl ForeignNetworkEntry {
         let foreign_global_ctx = ForeignNetworkRuntimeImpl::build_foreign_global_ctx(
             &network,
             global_ctx.clone(),
+            global_ctx.clone(),
             relay_data,
         );
         Self {
@@ -89,8 +91,9 @@ impl ForeignNetworkEntry {
         global_ctx: &ArcGlobalCtx,
         relay_data: bool,
     ) -> bool {
+        let parent_context: ArcPeerContext = parent_global_ctx.clone();
         ForeignNetworkRuntimeImpl::sync_parent_relay_data_feature_flag(
-            parent_global_ctx,
+            &parent_context,
             global_ctx,
             relay_data,
         )
@@ -126,13 +129,15 @@ struct RuntimeForeignNetworkContext {
 
 struct ForeignNetworkRuntimeImpl {
     global_ctx: ArcGlobalCtx,
+    parent_context: ArcPeerContext,
     foreign_contexts: DashMap<String, Arc<RuntimeForeignNetworkContext>>,
 }
 
 impl ForeignNetworkRuntimeImpl {
-    fn new(global_ctx: ArcGlobalCtx) -> Self {
+    fn new(global_ctx: ArcGlobalCtx, parent_context: ArcPeerContext) -> Self {
         Self {
             global_ctx,
+            parent_context,
             foreign_contexts: DashMap::new(),
         }
     }
@@ -148,19 +153,19 @@ impl ForeignNetworkRuntimeImpl {
     }
 
     fn desired_avoid_relay_data_feature_flag(
-        parent_global_ctx: &ArcGlobalCtx,
+        parent_context: &ArcPeerContext,
         relay_data: bool,
     ) -> bool {
-        !relay_data || parent_global_ctx.get_feature_flags().avoid_relay_data
+        !relay_data || parent_context.feature_flags().avoid_relay_data
     }
 
     fn sync_parent_relay_data_feature_flag(
-        parent_global_ctx: &ArcGlobalCtx,
+        parent_context: &ArcPeerContext,
         global_ctx: &ArcGlobalCtx,
         relay_data: bool,
     ) -> bool {
         let avoid_relay_data =
-            Self::desired_avoid_relay_data_feature_flag(parent_global_ctx, relay_data);
+            Self::desired_avoid_relay_data_feature_flag(parent_context, relay_data);
         if global_ctx.get_feature_flags().avoid_relay_data == avoid_relay_data {
             return false;
         }
@@ -171,6 +176,7 @@ impl ForeignNetworkRuntimeImpl {
     fn build_foreign_global_ctx(
         network: &NetworkIdentity,
         global_ctx: ArcGlobalCtx,
+        parent_context: ArcPeerContext,
         relay_data: bool,
     ) -> ArcGlobalCtx {
         let config = TomlConfigLoader::default();
@@ -178,14 +184,15 @@ impl ForeignNetworkRuntimeImpl {
         config.set_hostname(Some(format!(
             "{}{}",
             PUBLIC_SERVER_HOSTNAME_PREFIX,
-            global_ctx.get_hostname()
+            parent_context.hostname()
         )));
-        config.set_secure_mode(global_ctx.config.get_secure_mode());
+        config.set_secure_mode(parent_context.secure_mode());
 
         let mut flags = config.get_flags();
-        flags.disable_relay_kcp = !global_ctx.get_flags().enable_relay_foreign_network_kcp;
-        flags.disable_relay_quic = !global_ctx.get_flags().enable_relay_foreign_network_quic;
-        flags.socket_mark = global_ctx.get_flags().socket_mark;
+        let parent_flags = parent_context.flags();
+        flags.disable_relay_kcp = !parent_flags.enable_relay_foreign_network_kcp;
+        flags.disable_relay_quic = !parent_flags.enable_relay_foreign_network_quic;
+        flags.socket_mark = parent_flags.socket_mark;
         config.set_flags(flags);
 
         config.set_mapped_listeners(Some(global_ctx.config.get_mapped_listeners()));
@@ -194,10 +201,10 @@ impl ForeignNetworkRuntimeImpl {
         foreign_global_ctx
             .replace_stun_info_collector(Box::new(global_ctx.get_stun_info_collector().clone()));
 
-        let mut feature_flag = global_ctx.get_feature_flags();
+        let mut feature_flag = parent_context.feature_flags();
         feature_flag.is_public_server = true;
         feature_flag.avoid_relay_data =
-            Self::desired_avoid_relay_data_feature_flag(&global_ctx, relay_data);
+            Self::desired_avoid_relay_data_feature_flag(&parent_context, relay_data);
         foreign_global_ctx.set_base_advertised_feature_flags(feature_flag);
 
         for u in global_ctx.get_running_listeners().into_iter() {
@@ -211,7 +218,7 @@ impl ForeignNetworkRuntimeImpl {
 #[async_trait::async_trait]
 impl core_foreign_network_manager::ForeignNetworkRuntime for ForeignNetworkRuntimeImpl {
     fn parent_context(&self) -> easytier_core::peers::context::ArcPeerContext {
-        self.global_ctx.clone()
+        self.parent_context.clone()
     }
 
     fn build_foreign_context(
@@ -222,6 +229,7 @@ impl core_foreign_network_manager::ForeignNetworkRuntime for ForeignNetworkRunti
         let foreign_global_ctx = ForeignNetworkRuntimeImpl::build_foreign_global_ctx(
             &network.clone().into(),
             self.global_ctx.clone(),
+            self.parent_context.clone(),
             relay_data,
         );
         let lifecycle_token = Arc::new(());
@@ -256,7 +264,7 @@ impl core_foreign_network_manager::ForeignNetworkRuntime for ForeignNetworkRunti
     }
 
     fn relay_limiter(&self, network_name: &str) -> Option<Arc<TokenBucket>> {
-        let relay_bps_limit = self.global_ctx.config.get_flags().foreign_relay_bps_limit;
+        let relay_bps_limit = self.parent_context.flags().foreign_relay_bps_limit;
         (relay_bps_limit != u64::MAX).then(|| {
             let limiter_config = LimiterConfig {
                 burst_rate: None,
@@ -279,7 +287,7 @@ impl core_foreign_network_manager::ForeignNetworkRuntime for ForeignNetworkRunti
     }
 
     fn relay_all_peer_rpc(&self) -> bool {
-        self.global_ctx.get_flags().relay_all_peer_rpc
+        self.parent_context.flags().relay_all_peer_rpc
     }
 
     fn max_direct_conns_per_peer_in_foreign_network(&self) -> usize {
@@ -340,7 +348,7 @@ impl core_foreign_network_manager::ForeignNetworkRuntime for ForeignNetworkRunti
             return;
         };
         ForeignNetworkRuntimeImpl::sync_parent_relay_data_feature_flag(
-            &self.global_ctx,
+            &self.parent_context,
             &foreign_context.global_ctx,
             relay_data,
         );
@@ -419,11 +427,12 @@ impl ForeignNetworkManager {
     pub fn new(
         _my_peer_id: PeerId,
         global_ctx: ArcGlobalCtx,
+        parent_context: ArcPeerContext,
         peer_session_store: Arc<PeerSessionStore>,
         packet_sender_to_mgr: PacketRecvChan,
         accessor: Box<dyn GlobalForeignNetworkAccessor>,
     ) -> Self {
-        let runtime = Arc::new(ForeignNetworkRuntimeImpl::new(global_ctx));
+        let runtime = Arc::new(ForeignNetworkRuntimeImpl::new(global_ctx, parent_context));
         Self {
             core: core_foreign_network_manager::ForeignNetworkManager::new(
                 runtime.clone(),
@@ -1412,6 +1421,29 @@ pub mod tests {
     }
 
     #[tokio::test]
+    async fn parent_config_reads_require_peer_snapshot_refresh() {
+        use easytier_core::peers::foreign_network_manager::ForeignNetworkRuntime as _;
+
+        let global_ctx = get_mock_global_ctx_with_network(Some(NetworkIdentity::new(
+            "__access__".to_string(),
+            "access_secret".to_string(),
+        )));
+        let parent_context = Arc::new(crate::peers::context::RuntimePeerContext::new(
+            global_ctx.clone(),
+        ));
+        let runtime = ForeignNetworkRuntimeImpl::new(global_ctx.clone(), parent_context.clone());
+        assert!(!runtime.relay_all_peer_rpc());
+
+        let mut flags = global_ctx.get_flags();
+        flags.relay_all_peer_rpc = true;
+        global_ctx.set_flags(flags);
+        assert!(!runtime.relay_all_peer_rpc());
+
+        parent_context.refresh();
+        assert!(runtime.relay_all_peer_rpc());
+    }
+
+    #[tokio::test]
     async fn parent_feature_flag_change_reaches_each_foreign_context() {
         use easytier_core::peers::foreign_network_manager::ForeignNetworkRuntime as _;
 
@@ -1419,7 +1451,10 @@ pub mod tests {
             "__access__".to_string(),
             "access_secret".to_string(),
         )));
-        let runtime = Arc::new(ForeignNetworkRuntimeImpl::new(global_ctx.clone()));
+        let runtime = Arc::new(ForeignNetworkRuntimeImpl::new(
+            global_ctx.clone(),
+            global_ctx.clone(),
+        ));
         let net1 = easytier_core::peers::context::NetworkIdentity {
             network_name: "net1".to_string(),
             network_secret: Some("net1_secret".to_string()),
@@ -1496,7 +1531,7 @@ pub mod tests {
             "__access__".to_string(),
             "access_secret".to_string(),
         )));
-        let runtime = ForeignNetworkRuntimeImpl::new(global_ctx);
+        let runtime = ForeignNetworkRuntimeImpl::new(global_ctx.clone(), global_ctx);
         let network = easytier_core::peers::context::NetworkIdentity {
             network_name: "net1".to_string(),
             network_secret: Some("net1_secret".to_string()),
