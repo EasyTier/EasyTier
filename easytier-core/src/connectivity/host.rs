@@ -1,5 +1,7 @@
 //! Composition adapter for connector logic driven by host-owned sockets.
 
+pub mod environment;
+
 use std::{
     net::{IpAddr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6},
     sync::Arc,

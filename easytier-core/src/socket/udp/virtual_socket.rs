@@ -5,6 +5,7 @@ use std::{
 };
 
 use async_trait::async_trait;
+use serde::{Deserialize, Serialize};
 
 use super::packet::{new_v4_hole_punch_packet, new_v6_hole_punch_packet};
 
@@ -257,7 +258,7 @@ pub trait VirtualUdpSocketFactory: Send + Sync + 'static {
     async fn bind_udp(&self, options: UdpBindOptions) -> anyhow::Result<Arc<Self::Socket>>;
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PreferredIpv6Source {
     pub ip: Ipv6Addr,
     pub ifindex: u32,
