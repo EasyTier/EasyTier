@@ -50,6 +50,10 @@ Already established:
 - two isolated release wasm instances form a raw-TCP EasyTier connection and
   exchange an IPv4 packet using Go-owned DNS, sockets, packet sinks, and
   connector-environment operations.
+- the Go harness now exposes reusable, non-test `Bridge`, `SocketFactory`,
+  `DNSResolver`, `ConnectorEnvironment`, `CoreModule`, and `CoreInstance` APIs;
+  socket creation is injectable while read/write/accept scheduling remains
+  core/Tokio-owned.
 
 The current architecture is still intermediate:
 
@@ -58,8 +62,9 @@ The current architecture is still intermediate:
   upgrader; ring, Unix, and FakeTCP creation remain Host Adapter concerns;
 - native `Instance`, `PeerManager`, `PeerContext`, and process-global state
   still overlap in lifecycle and state ownership;
-- the wasm ABI and Go bridge are now functional reference contracts, but still
-  need repeated failure/isolation measurements and a production host package;
+- the wasm ABI and reusable Go bridge are now functional reference contracts,
+  but still need repeated failure/isolation measurements, quantitative gates,
+  and a stable final integration location outside the PoC tool tree;
 - build features exist, but ownership has not yet settled into deep Modules
   suitable for deliberate feature slicing.
 

@@ -76,6 +76,29 @@ import would pause the only current-thread guest executor.
   call. Data ownership and readiness notification must be explicit.
 - A fixed periodic drive is not accepted without idle-CPU and latency evidence.
 
+## Implementation update (2026-07-12)
+
+The unmodified wazero 1.12.0 virtual-fd path failed its first Tokio I/O-driver
+poll with WASIp1 `ENOTSUP`, so the current functional implementation uses
+opaque host handles and bounded cooperative drives. This is the selected
+reference implementation while the quantitative Phase 0 gates remain open.
+
+The reusable Go package reflects the ownership boundary in this decision:
+
+- `SocketFactory` controls only TCP connect, UDP bind, and TCP listen creation;
+- returned `net.Conn`, `net.PacketConn`, and `net.Listener` resources enter one
+  host handle table;
+- core/Tokio initiates every read, write, receive, send, and accept operation;
+- `DNSResolver` and `ConnectorEnvironment` preserve host policy without adding
+  blocking guest imports;
+- `CoreModule` serializes all handles in one wazero module;
+- `Bridge.Close` stops new host work, releases resources, and waits for workers.
+
+Complete core instances use the exported exact timer deadline plus coalesced
+host completions, not a periodic drive tick. Functional socket, DNS,
+environment, packet, lifecycle, two-peer route, and packet-exchange gates pass;
+performance, repeated-failure, and hard-isolation gates are still outstanding.
+
 ## Phase 0 unresolved decisions
 
 Phase 0 must resolve four independent choices:

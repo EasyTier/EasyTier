@@ -27,6 +27,56 @@ go test -v ./...
 The Go test builds the Rust guest automatically and pins Tokio 1.52.1 and
 wazero 1.12.0.
 
+## Reusable Go host API
+
+The `host` package is no longer test-only. Its two production entry points are:
+
+- `Bridge`, which owns host sockets, DNS/environment adapters, packet sinks,
+  completion delivery, and the `easytier_host` imports;
+- `CoreModule`, which serializes every call into one wazero module and creates
+  one or more `CoreInstance` handles.
+
+A host composes them in this order:
+
+```go
+bridge := host.NewBridge(host.BridgeConfig{
+    SocketFactory:        socketFactory,
+    DNSResolver:          dnsResolver,
+    ConnectorEnvironment: environment,
+})
+defer bridge.Close()
+
+if err := bridge.InstantiateHost(ctx, runtime); err != nil {
+    return err
+}
+packetSink, err := bridge.RegisterPacketSink(16)
+if err != nil {
+    return err
+}
+moduleOwner := host.NewCoreModule(module)
+core, err := moduleOwner.CreateInstance(ctx, normalizedConfig, packetSink)
+if err != nil {
+    return err
+}
+if err := core.Start(ctx); err != nil {
+    return err
+}
+if err := core.DriveUntil(ctx, bridge.Completion(), host.CoreStateRunning); err != nil {
+    return err
+}
+```
+
+`SocketFactory` owns only `ConnectTCP`, `BindUDP`, and `ListenTCP`. It returns
+standard Go `net` resources, after which core/Tokio decides when read, write,
+receive, send, and accept operations are polled. The bridge performs only the
+requested host operation and reports a coalesced completion; it does not own
+EasyTier framing, retries, routing, or protocol state.
+
+All calls into one wazero module must use the same `CoreModule`. On shutdown,
+stop and drop every `CoreInstance` before closing its module and `Bridge`.
+`Bridge.Close` rejects new work, releases all host resources, and waits for
+in-flight workers; concurrent `Close` calls wait for the same cleanup.
+
 ## Scope
 
 The public-fd probe tests wazero's pre-opened TCP listener support:
@@ -75,6 +125,9 @@ The factory and listener probes then remove the pre-created-handle shortcut:
   returns high-bit opaque handles with their actual local/peer addresses;
 - accepted connections remain in a Go listener queue until core polls
   `accept`, so canceling a waiter cannot consume an accepted stream;
+- an injected Go `SocketFactory` observes every connect, bind, and listen
+  request with its normalized purpose, while the default implementation keeps
+  the original standard-library behaviour;
 - the created/accepted resources complete TCP, UDP, and listener echoes through
   the same core-owned I/O and protocol boundary.
 
