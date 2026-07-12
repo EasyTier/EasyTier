@@ -1043,6 +1043,16 @@ where
             .await
     }
 
+    pub async fn try_direct_connect_with_ip_list(
+        &self,
+        dst_peer_id: crate::config::PeerId,
+        ip_list: crate::proto::peer_rpc::GetIpListResponse,
+    ) -> anyhow::Result<()> {
+        self.direct
+            .try_direct_connect_with_ip_list(dst_peer_id, ip_list)
+            .await
+    }
+
     pub async fn update_exit_nodes(&self, exit_nodes: Vec<IpAddr>) {
         self.peer_manager.update_exit_nodes(exit_nodes).await;
     }

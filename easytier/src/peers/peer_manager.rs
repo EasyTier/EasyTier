@@ -27,7 +27,7 @@ use crate::{
         peer_rpc::RouteForeignNetworkSummary,
     },
     tunnel::{
-        Tunnel, TunnelConnector,
+        Tunnel,
         packet_def::{ZCPacket, compressor_algo_from_pb},
     },
 };
@@ -177,39 +177,6 @@ impl PeerManager {
 
     pub fn has_directly_connected_conn(&self, peer_id: PeerId) -> bool {
         self.core.has_directly_connected_conn(peer_id)
-    }
-
-    #[tracing::instrument]
-    pub async fn try_direct_connect<C>(&self, connector: C) -> Result<(PeerId, PeerConnId), Error>
-    where
-        C: TunnelConnector + Debug,
-    {
-        self.try_direct_connect_with_peer_id_hint(connector, None)
-            .await
-    }
-
-    #[tracing::instrument]
-    pub async fn try_direct_connect_with_peer_id_hint<C>(
-        &self,
-        connector: C,
-        peer_id_hint: Option<PeerId>,
-    ) -> Result<(PeerId, PeerConnId), Error>
-    where
-        C: TunnelConnector + Debug,
-    {
-        let t = self.connect_tunnel(connector).await?;
-        self.add_client_tunnel_with_peer_id_hint(t, true, peer_id_hint)
-            .await
-    }
-
-    pub(crate) async fn connect_tunnel<C>(&self, mut connector: C) -> Result<Box<dyn Tunnel>, Error>
-    where
-        C: TunnelConnector + Debug,
-    {
-        let ns = self.global_ctx.net_ns.clone();
-        Ok(ns
-            .run_async(|| async move { connector.connect().await })
-            .await?)
     }
 
     #[tracing::instrument(ret)]

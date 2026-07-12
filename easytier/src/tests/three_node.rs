@@ -2452,17 +2452,34 @@ pub async fn instance_recv_bps_limit_test(#[values(100, 800)] bps_limit: u64) {
     drop_insts(insts).await;
 }
 
-async fn assert_try_direct_connect_err<C>(inst: &Instance, connector: C)
-where
-    C: crate::tunnel::TunnelConnector + std::fmt::Debug,
-{
-    let ret = tokio::time::timeout(
+async fn assert_direct_connect_blocked(inst: &Instance, dst_peer_id: PeerId, url: url::Url) {
+    async fn peer_conn_ids(inst: &Instance, peer_id: PeerId) -> Vec<String> {
+        let mut ids = inst
+            .get_peer_manager()
+            .get_peer_map()
+            .list_peer_conns(peer_id)
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .map(|conn| conn.conn_id)
+            .collect::<Vec<_>>();
+        ids.sort();
+        ids
+    }
+
+    let before = peer_conn_ids(inst, dst_peer_id).await;
+    let ip_list = easytier_core::proto::peer_rpc::GetIpListResponse {
+        listeners: vec![url.into()],
+        ..Default::default()
+    };
+    let _ = tokio::time::timeout(
         Duration::from_millis(100),
-        inst.get_peer_manager().try_direct_connect(connector),
+        inst.get_core_instance()
+            .try_direct_connect_with_ip_list(dst_peer_id, ip_list),
     )
     .await;
 
-    assert!(matches!(ret, Err(_) | Ok(Err(_))));
+    assert_eq!(peer_conn_ids(inst, dst_peer_id).await, before);
 }
 
 use std::fs;
@@ -2533,27 +2550,31 @@ async fn avoid_tunnel_loop_back_to_virtual_network(
     )
     .await;
 
-    assert_try_direct_connect_err(
+    assert_direct_connect_blocked(
         &insts[0],
-        TcpTunnelConnector::new("tcp://10.144.144.2:11010".parse().unwrap()),
+        insts[1].peer_id(),
+        "tcp://10.144.144.2:11010".parse().unwrap(),
     )
     .await;
 
-    assert_try_direct_connect_err(
+    assert_direct_connect_blocked(
         &insts[0],
-        UdpTunnelConnector::new("udp://10.144.144.3:11010".parse().unwrap()),
+        insts[2].peer_id(),
+        "udp://10.144.144.3:11010".parse().unwrap(),
     )
     .await;
 
-    assert_try_direct_connect_err(
+    assert_direct_connect_blocked(
         &insts[0],
-        TcpTunnelConnector::new("tcp://10.1.2.3:11010".parse().unwrap()),
+        insts[2].peer_id(),
+        "tcp://10.1.2.3:11010".parse().unwrap(),
     )
     .await;
 
-    assert_try_direct_connect_err(
+    assert_direct_connect_blocked(
         &insts[0],
-        UdpTunnelConnector::new("udp://10.1.2.3:11010".parse().unwrap()),
+        insts[2].peer_id(),
+        "udp://10.1.2.3:11010".parse().unwrap(),
     )
     .await;
 
