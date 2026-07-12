@@ -1,6 +1,9 @@
 use std::{
     net::{IpAddr, Ipv4Addr, SocketAddr},
-    sync::atomic::{AtomicUsize, Ordering},
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
 };
 
 use dashmap::{DashMap, mapref::entry::Entry};
@@ -55,6 +58,62 @@ pub struct Socks5EntryRetain {
 pub struct Socks5EntryTable<V> {
     entries: DashMap<Socks5Entry, V>,
     count: AtomicUsize,
+}
+
+pub struct Socks5EntryGuard<V> {
+    table: Arc<Socks5EntryTable<V>>,
+    entry: Socks5Entry,
+    active: bool,
+}
+
+impl<V> Socks5EntryGuard<V> {
+    pub fn register(
+        table: Arc<Socks5EntryTable<V>>,
+        entry: Socks5Entry,
+        value: V,
+    ) -> (Self, Socks5EntryInsert) {
+        let insert = table.insert(entry.clone(), value);
+        (
+            Self {
+                table,
+                entry,
+                active: true,
+            },
+            insert,
+        )
+    }
+
+    pub fn try_register(
+        table: Arc<Socks5EntryTable<V>>,
+        entry: Socks5Entry,
+        value: V,
+    ) -> Option<Self> {
+        if !table.try_insert(entry.clone(), value) {
+            return None;
+        }
+        Some(Self {
+            table,
+            entry,
+            active: true,
+        })
+    }
+
+    pub fn entry(&self) -> &Socks5Entry {
+        &self.entry
+    }
+
+    pub fn remove(mut self) -> Socks5EntryRemoval {
+        self.active = false;
+        self.table.remove(&self.entry)
+    }
+}
+
+impl<V> Drop for Socks5EntryGuard<V> {
+    fn drop(&mut self) {
+        if self.active {
+            self.table.remove(&self.entry);
+        }
+    }
 }
 
 impl<V> Default for Socks5EntryTable<V> {
@@ -387,7 +446,8 @@ impl Socks5TcpConnectPlan {
 #[cfg(test)]
 mod tests {
     use super::{
-        Socks5Entry, Socks5EntryKind, Socks5EntryTable, Socks5TcpConnectPlan, Socks5TcpRoute,
+        Socks5Entry, Socks5EntryGuard, Socks5EntryKind, Socks5EntryTable, Socks5TcpConnectPlan,
+        Socks5TcpRoute,
     };
 
     #[cfg(feature = "proxy-packet")]
@@ -400,7 +460,10 @@ mod tests {
         tcp::{MutableTcpPacket, TcpFlags},
         udp::MutableUdpPacket,
     };
-    use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+    use std::{
+        net::{IpAddr, Ipv4Addr, SocketAddr},
+        sync::Arc,
+    };
 
     #[test]
     fn entry_kind_values_preserve_native_table_identity() {
@@ -468,6 +531,26 @@ mod tests {
         assert_eq!(cleared.removed, 1);
         assert_eq!(cleared.count.current, 0);
         assert!(table.is_empty());
+    }
+
+    #[test]
+    fn entry_guard_owns_registration_lifetime() {
+        let table = Arc::new(Socks5EntryTable::default());
+        let entry = table_entry(40000);
+
+        let (guard, insert) = Socks5EntryGuard::register(table.clone(), entry.clone(), "first");
+        assert!(!insert.replaced);
+        assert!(table.contains_key(&entry));
+        assert!(Socks5EntryGuard::try_register(table.clone(), entry.clone(), "second").is_none());
+        assert_eq!(table.with_entry(&entry, |value| *value), Some("first"));
+
+        drop(guard);
+        assert!(!table.contains_key(&entry));
+
+        let guard = Socks5EntryGuard::try_register(table.clone(), entry.clone(), "third").unwrap();
+        let removal = guard.remove();
+        assert!(removal.removed);
+        assert_eq!(table.count(), 0);
     }
 
     #[cfg(feature = "proxy-packet")]
