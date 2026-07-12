@@ -103,7 +103,7 @@ func TestBridgeCloseClearsResourcesAndRejectsNewWork(t *testing.T) {
 	if status != opaqueHostInvalid || started {
 		t.Fatalf("closed bridge started environment work: status=%d started=%v", status, started)
 	}
-	if err := bridge.InstantiateHost(context.Background(), nil); err == nil {
+	if _, err := bridge.BindCoreHost(context.Background(), nil); err == nil {
 		t.Fatal("closed bridge instantiated a host module")
 	}
 }

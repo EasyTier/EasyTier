@@ -23,7 +23,8 @@ bridge := corehost.NewBridge(corehost.BridgeConfig{
 })
 defer bridge.Close()
 
-if err := bridge.InstantiateHost(ctx, runtime); err != nil {
+binding, err := bridge.BindCoreHost(ctx, runtime)
+if err != nil {
     return err
 }
 packetSink, err := bridge.RegisterPacketSink(16)
@@ -32,10 +33,9 @@ if err != nil {
 }
 moduleOwner, err := corehost.InstantiateCoreModule(
     ctx,
-    runtime,
+    binding,
     compiledModule,
     wazero.NewModuleConfig().WithStartFunctions("_initialize"),
-	bridge,
 )
 if err != nil {
     return err

@@ -47,18 +47,18 @@ type CoreInstance struct {
 // creates its unique call-serialization and completion ownership domain.
 func InstantiateCoreModule(
 	ctx context.Context,
-	runtime wazero.Runtime,
+	binding *CoreHostBinding,
 	compiled wazero.CompiledModule,
 	moduleConfig wazero.ModuleConfig,
-	bridge *Bridge,
 ) (*CoreModule, error) {
-	if bridge == nil {
-		return nil, fmt.Errorf("instantiate core module with nil bridge")
+	if binding == nil || binding.runtime == nil || binding.bridge == nil {
+		return nil, fmt.Errorf("instantiate core module with invalid host binding")
 	}
+	bridge := binding.bridge
 	if err := bridge.claimCoreModule(); err != nil {
 		return nil, err
 	}
-	module, err := runtime.InstantiateModule(ctx, compiled, moduleConfig)
+	module, err := binding.runtime.InstantiateModule(ctx, compiled, moduleConfig)
 	if err != nil {
 		bridge.releaseCoreModuleClaim()
 		return nil, err

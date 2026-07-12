@@ -30,7 +30,7 @@ func TestCoreInstanceLifecycle(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	runtime, _, core, _ := instantiateCoreModule(t, ctx, wasm, bridge, config)
+	runtime, _, core, _, _ := instantiateCoreModule(t, ctx, wasm, bridge, config)
 	defer runtime.Close(ctx)
 
 	dropped := false
@@ -81,7 +81,13 @@ func TestCoreModuleAllowsOnlyOneLiveInstance(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	runtime, _, core, packetSink := instantiateCoreModule(t, ctx, wasm, bridge, config)
+	runtime, _, core, packetSink, binding := instantiateCoreModule(
+		t,
+		ctx,
+		wasm,
+		&bridgeCopy,
+		config,
+	)
 	defer runtime.Close(ctx)
 	moduleCopy := *core.coreModule
 
@@ -106,10 +112,9 @@ func TestCoreModuleAllowsOnlyOneLiveInstance(t *testing.T) {
 	defer compiled.Close(ctx)
 	if _, err := InstantiateCoreModule(
 		ctx,
-		runtime,
+		binding,
 		compiled,
 		wazero.NewModuleConfig().WithName("second-core"),
-		&bridgeCopy,
 	); err == nil {
 		t.Fatal("Bridge bound a second core module to one completion domain")
 	}
@@ -121,7 +126,7 @@ func instantiateCoreModule(
 	wasm []byte,
 	bridge *opaqueBridge,
 	config []byte,
-) (wazero.Runtime, api.Module, *CoreInstance, uint64) {
+) (wazero.Runtime, api.Module, *CoreInstance, uint64, *CoreHostBinding) {
 	t.Helper()
 	packetSink, err := bridge.registerPacketSink(16)
 	if err != nil {
@@ -134,7 +139,10 @@ func instantiateCoreModule(
 			_ = runtime.Close(ctx)
 		}
 	}()
-	instantiateOpaqueHost(t, ctx, runtime, bridge)
+	binding, err := bridge.BindCoreHost(ctx, runtime)
+	if err != nil {
+		t.Fatalf("bind easytier host module: %v", err)
+	}
 	wasi_snapshot_preview1.MustInstantiate(ctx, runtime)
 	compiled, err := runtime.CompileModule(ctx, wasm)
 	if err != nil {
@@ -142,14 +150,13 @@ func instantiateCoreModule(
 	}
 	moduleOwner, err := InstantiateCoreModule(
 		ctx,
-		runtime,
+		binding,
 		compiled,
 		wazero.NewModuleConfig().
 			WithStartFunctions("_initialize").
 			WithSysWalltime().
 			WithSysNanotime().
 			WithSysNanosleep(),
-		bridge,
 	)
 	if err != nil {
 		t.Fatalf("instantiate easytier-core: %v", err)
@@ -159,7 +166,7 @@ func instantiateCoreModule(
 		t.Fatalf("create core instance: %v", err)
 	}
 	initialized = true
-	return runtime, moduleOwner.module, core, packetSink
+	return runtime, moduleOwner.module, core, packetSink, binding
 }
 
 func driveCoreUntil(

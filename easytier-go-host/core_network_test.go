@@ -155,7 +155,7 @@ func newCoreNetworkInstance(
 	}()
 	resolver := &coreNetworkDNSResolver{}
 	bridge.dnsResolver = resolver
-	runtime, module, core, packetSink := instantiateCoreModule(t, ctx, wasm, bridge, config)
+	runtime, module, core, packetSink, _ := instantiateCoreModule(t, ctx, wasm, bridge, config)
 	initialized = true
 	return &coreNetworkInstance{
 		bridge:     bridge,

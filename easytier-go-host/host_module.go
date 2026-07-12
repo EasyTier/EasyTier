@@ -7,6 +7,14 @@ import (
 	"github.com/tetratelabs/wazero"
 )
 
+// CoreHostBinding ties one runtime's easytier_host imports to their owning
+// Bridge. Its fields are private so callers cannot pair a core module with a
+// different completion domain.
+type CoreHostBinding struct {
+	runtime wazero.Runtime
+	bridge  *Bridge
+}
+
 func (b *opaqueBridge) instantiateHost(ctx context.Context, runtime wazero.Runtime) error {
 	b.mu.Lock()
 	closed := b.closed
@@ -53,7 +61,17 @@ func (b *opaqueBridge) instantiateHost(ctx context.Context, runtime wazero.Runti
 	return err
 }
 
-// InstantiateHost registers the easytier_host imports in runtime.
-func (b *Bridge) InstantiateHost(ctx context.Context, runtime wazero.Runtime) error {
-	return b.instantiateHost(ctx, runtime)
+// BindCoreHost registers easytier_host and returns the binding required to
+// instantiate the corresponding core module.
+func (b *Bridge) BindCoreHost(
+	ctx context.Context,
+	runtime wazero.Runtime,
+) (*CoreHostBinding, error) {
+	if runtime == nil {
+		return nil, fmt.Errorf("bind core host with nil runtime")
+	}
+	if err := b.instantiateHost(ctx, runtime); err != nil {
+		return nil, err
+	}
+	return &CoreHostBinding{runtime: runtime, bridge: b}, nil
 }
