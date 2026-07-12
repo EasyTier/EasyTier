@@ -130,8 +130,10 @@ impl WasiInstanceEntry {
     fn drive(&mut self, domain: u64) -> anyhow::Result<()> {
         let _domain = enter_domain(domain);
         self.instance.notify_host_completions();
-        self.runtime
-            .block_on(async { tokio::task::yield_now().await });
+        self.runtime.block_on(async {
+            tokio::time::sleep(std::time::Duration::ZERO).await;
+            tokio::task::yield_now().await;
+        });
 
         if self
             .start_task
@@ -155,6 +157,12 @@ impl WasiInstanceEntry {
     }
 
     fn state_code(&self) -> i32 {
+        if self.stop_task.is_some() {
+            return 3;
+        }
+        if self.start_task.is_some() {
+            return 1;
+        }
         match self.instance.instance().state() {
             CoreInstanceState::Created => 0,
             CoreInstanceState::Starting => 1,
