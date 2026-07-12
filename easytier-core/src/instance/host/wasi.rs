@@ -6,6 +6,7 @@ use tokio::{runtime::Builder, task::JoinHandle};
 
 use crate::{
     instance::{CoreInstanceState, host::HostCoreInstanceCreateConfig},
+    runtime_time::{clear_domain, enter_domain, next_deadline_millis},
     socket::host::packet::HostPacketSinkHandle,
 };
 
@@ -125,7 +126,8 @@ impl WasiInstanceEntry {
         }));
     }
 
-    fn drive(&mut self) -> anyhow::Result<()> {
+    fn drive(&mut self, domain: u64) -> anyhow::Result<()> {
+        let _domain = enter_domain(domain);
         self.instance.notify_host_completions();
         self.runtime
             .block_on(async { tokio::task::yield_now().await });
@@ -261,7 +263,9 @@ pub extern "C" fn easytier_instance_create(
             return 0;
         }
     };
+    let handle = INSTANCES.with_borrow_mut(WasiInstanceRegistry::allocate_handle);
     let instance = {
+        let _domain = enter_domain(handle);
         let _runtime = runtime.enter();
         new_wasi_host_core_instance(
             config.instance,
@@ -272,13 +276,13 @@ pub extern "C" fn easytier_instance_create(
     let instance = match instance {
         Ok(instance) => instance,
         Err(error) => {
+            clear_domain(handle);
             INSTANCES.with_borrow_mut(|registry| registry.set_error(error));
             return 0;
         }
     };
 
     INSTANCES.with_borrow_mut(|registry| {
-        let handle = registry.allocate_handle();
         registry.entries.insert(
             handle,
             WasiInstanceEntry {
@@ -315,7 +319,7 @@ pub extern "C" fn easytier_instance_stop(handle: u64) -> i32 {
 #[unsafe(no_mangle)]
 pub extern "C" fn easytier_instance_drive(handle: u64) -> i32 {
     with_entry(handle, |entry| {
-        entry.drive()?;
+        entry.drive(handle)?;
         Ok(entry.state_code())
     })
 }
@@ -331,6 +335,25 @@ pub extern "C" fn easytier_instance_notify_completions(handle: u64) -> i32 {
 #[unsafe(no_mangle)]
 pub extern "C" fn easytier_instance_state(handle: u64) -> i32 {
     with_entry(handle, |entry| Ok(entry.state_code()))
+}
+
+/// Returns milliseconds until the next core timer, rounded up. `-1` means no
+/// timer is registered; other negative values are ABI status codes.
+#[unsafe(no_mangle)]
+pub extern "C" fn easytier_instance_next_deadline_millis(handle: u64) -> i64 {
+    INSTANCES.with_borrow_mut(|registry| {
+        if registry.active_entry {
+            registry.set_error("core instance lifecycle call is not reentrant");
+            return i64::from(BUSY);
+        }
+        if !registry.entries.contains_key(&handle) {
+            registry.set_error(format!("unknown core instance handle: {handle}"));
+            return i64::from(INVALID_HANDLE);
+        }
+        next_deadline_millis(handle)
+            .map(|millis| i64::try_from(millis).unwrap_or(i64::MAX))
+            .unwrap_or(-1)
+    })
 }
 
 #[unsafe(no_mangle)]
@@ -363,7 +386,11 @@ pub extern "C" fn easytier_instance_drop(handle: u64) -> i32 {
         Ok(entry) => entry,
         Err(status) => return status,
     };
-    drop(entry);
+    {
+        let _domain = enter_domain(handle);
+        drop(entry);
+    }
+    clear_domain(handle);
     INSTANCES.with_borrow_mut(WasiInstanceRegistry::finish_entry_call);
     0
 }
