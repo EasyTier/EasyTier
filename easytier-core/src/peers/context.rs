@@ -1040,8 +1040,14 @@ impl PeerContext for SubmittedPeerContext {
     }
 
     fn secret_digest(&self, network_identity: &NetworkIdentity) -> Vec<u8> {
-        if self.snapshot().hmac_secret_digest {
-            self.secret_proof(b"digest")
+        let snapshot = self.snapshot();
+        if snapshot.hmac_secret_digest {
+            snapshot
+                .runtime
+                .network_identity
+                .network_secret
+                .as_deref()
+                .and_then(|secret| secret_proof_from_secret(secret, b"digest"))
                 .map(|mac| mac.finalize().into_bytes().to_vec())
                 .unwrap_or_default()
         } else {
