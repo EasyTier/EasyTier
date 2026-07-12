@@ -15,6 +15,7 @@ use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use super::tcp::VirtualTcpSocket;
 
 pub mod dns;
+pub mod environment;
 pub mod factory;
 pub mod listener;
 pub mod packet;
