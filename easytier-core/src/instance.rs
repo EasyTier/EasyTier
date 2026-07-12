@@ -1175,6 +1175,14 @@ where
         self.peer_manager.list_route_snapshots().await
     }
 
+    pub async fn public_ipv6_routes(&self) -> BTreeSet<cidr::Ipv6Inet> {
+        self.peer_manager.list_public_ipv6_routes().await
+    }
+
+    pub async fn public_ipv6_addr(&self) -> Option<cidr::Ipv6Inet> {
+        self.peer_manager.public_ipv6_addr().await
+    }
+
     pub async fn dump_route(&self) -> String {
         self.peer_manager.dump_route().await
     }

@@ -1373,6 +1373,14 @@ impl PeerManagerCore {
         self.get_route().list_routes().await
     }
 
+    pub async fn list_public_ipv6_routes(&self) -> BTreeSet<cidr::Ipv6Inet> {
+        self.get_route().list_public_ipv6_routes().await
+    }
+
+    pub async fn public_ipv6_addr(&self) -> Option<cidr::Ipv6Inet> {
+        self.get_route().get_my_public_ipv6_addr().await
+    }
+
     pub async fn dump_route(&self) -> String {
         self.get_route().dump().await
     }

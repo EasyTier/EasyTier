@@ -1120,8 +1120,8 @@ impl NicCtx {
     }
 
     async fn run_public_ipv6_route_updater(&mut self) -> Result<(), Error> {
-        let Some(peer_mgr) = self.peer_mgr.upgrade() else {
-            return Err(anyhow::anyhow!("peer manager not available").into());
+        let Some(core_instance) = self.core_instance.upgrade() else {
+            return Err(anyhow::anyhow!("core instance not available").into());
         };
         let global_ctx = self.global_ctx.clone();
         let net_ns = self.global_ctx.net_ns.clone();
@@ -1132,7 +1132,7 @@ impl NicCtx {
 
         self.tasks.spawn(async move {
             let mut cur_routes = BTreeSet::<cidr::Ipv6Inet>::new();
-            let initial_routes = peer_mgr.list_public_ipv6_routes().await;
+            let initial_routes = core_instance.public_ipv6_routes().await;
             let initial_added = initial_routes.iter().copied().collect::<Vec<_>>();
             Self::apply_public_ipv6_route_changes(
                 &ifcfg,
@@ -1150,7 +1150,7 @@ impl NicCtx {
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
                         event_receiver = event_receiver.resubscribe();
-                        let latest = peer_mgr.list_public_ipv6_routes().await;
+                        let latest = core_instance.public_ipv6_routes().await;
                         let added = latest.difference(&cur_routes).copied().collect::<Vec<_>>();
                         let removed = cur_routes.difference(&latest).copied().collect::<Vec<_>>();
                         GlobalCtxEvent::PublicIpv6RoutesUpdated(added, removed)
@@ -1178,15 +1178,15 @@ impl NicCtx {
     }
 
     async fn run_public_ipv6_addr_updater(&mut self) -> Result<(), Error> {
-        let Some(peer_mgr) = self.peer_mgr.upgrade() else {
-            return Err(anyhow::anyhow!("peer manager not available").into());
+        let Some(core_instance) = self.core_instance.upgrade() else {
+            return Err(anyhow::anyhow!("core instance not available").into());
         };
         let global_ctx = self.global_ctx.clone();
         let nic = self.nic.clone();
         let mut event_receiver = global_ctx.subscribe();
 
         self.tasks.spawn(async move {
-            let mut current_addr = peer_mgr.get_my_public_ipv6_addr().await;
+            let mut current_addr = core_instance.public_ipv6_addr().await;
             if let Some(addr) = current_addr {
                 let nic = nic.lock().await;
                 if let Err(err) = nic.link_up().await {
@@ -1209,7 +1209,7 @@ impl NicCtx {
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
                         event_receiver = event_receiver.resubscribe();
-                        let latest = peer_mgr.get_my_public_ipv6_addr().await;
+                        let latest = core_instance.public_ipv6_addr().await;
                         GlobalCtxEvent::PublicIpv6Changed(current_addr, latest)
                     }
                 };

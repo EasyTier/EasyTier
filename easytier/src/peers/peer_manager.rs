@@ -242,11 +242,11 @@ impl PeerManager {
     }
 
     pub async fn list_public_ipv6_routes(&self) -> BTreeSet<cidr::Ipv6Inet> {
-        self.get_route().list_public_ipv6_routes().await
+        self.core.list_public_ipv6_routes().await
     }
 
     pub async fn get_my_public_ipv6_addr(&self) -> Option<cidr::Ipv6Inet> {
-        self.get_route().get_my_public_ipv6_addr().await
+        self.core.public_ipv6_addr().await
     }
 
     pub async fn remove_nic_packet_process_pipeline(&self, id: String) -> Result<(), Error> {
