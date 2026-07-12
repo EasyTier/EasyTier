@@ -244,7 +244,9 @@ mod tests {
         let provider = Arc::new(MutableSnapshotProvider::default());
         provider.set(mapped_rule("127.0.0.0/24", "10.10.10.0/24"));
         let runtime = ProxyCidrTableRuntime::new_started(provider.clone());
+        let calls_after_start = provider.calls.load(Ordering::Acquire);
         runtime.start_updater();
+        assert_eq!(provider.calls.load(Ordering::Acquire), calls_after_start);
         let table = runtime.table();
         assert_eq!(
             table.lookup_v4("10.10.10.42".parse().unwrap()),
