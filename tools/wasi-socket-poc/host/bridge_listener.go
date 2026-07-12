@@ -81,12 +81,13 @@ func (b *opaqueBridge) takeTCPBind(
 		return opaqueHostMemory
 	}
 	b.mu.Lock()
-	defer b.mu.Unlock()
 	create, exists := b.creates[operation]
 	if !exists {
+		b.mu.Unlock()
 		return opaqueHostInvalid
 	}
 	if !create.done {
+		b.mu.Unlock()
 		return opaqueHostPending
 	}
 	delete(b.creates, operation)
@@ -94,15 +95,23 @@ func (b *opaqueBridge) takeTCPBind(
 		create.cancel()
 	}
 	if create.err != nil || create.listener == nil {
+		listener := create.listener
+		b.mu.Unlock()
+		if listener != nil {
+			_ = listener.Close()
+		}
 		return opaqueHostIOError
 	}
 	handle := b.allocateHandleLocked()
 	encoded, err := encodeBoundSocketResult(handle, create.localAddr)
 	if err != nil || !module.Memory().Write(resultPointer, encoded[:]) {
-		_ = create.listener.Close()
+		listener := create.listener
+		b.mu.Unlock()
+		_ = listener.Close()
 		return opaqueHostMemory
 	}
 	b.listeners[handle] = &opaqueTCPListenerState{listener: create.listener}
+	b.mu.Unlock()
 	return 0
 }
 

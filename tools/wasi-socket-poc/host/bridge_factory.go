@@ -95,12 +95,13 @@ func (b *opaqueBridge) takeTCPConnect(
 	}
 
 	b.mu.Lock()
-	defer b.mu.Unlock()
 	create, exists := b.creates[operation]
 	if !exists {
+		b.mu.Unlock()
 		return opaqueHostInvalid
 	}
 	if !create.done {
+		b.mu.Unlock()
 		return opaqueHostPending
 	}
 	delete(b.creates, operation)
@@ -108,15 +109,23 @@ func (b *opaqueBridge) takeTCPConnect(
 		create.cancel()
 	}
 	if create.err != nil || create.connection == nil {
+		connection := create.connection
+		b.mu.Unlock()
+		if connection != nil {
+			_ = connection.Close()
+		}
 		return opaqueHostIOError
 	}
 	handle := b.allocateHandleLocked()
 	encoded, err := encodeTCPSocketResult(handle, create.localAddr, create.peerAddr)
 	if err != nil || !module.Memory().Write(resultPointer, encoded[:]) {
-		_ = create.connection.Close()
+		connection := create.connection
+		b.mu.Unlock()
+		_ = connection.Close()
 		return opaqueHostMemory
 	}
 	b.handles[handle] = create.connection
+	b.mu.Unlock()
 	return 0
 }
 
@@ -207,7 +216,11 @@ func (b *opaqueBridge) takeUDPBind(
 		create.cancel()
 	}
 	if create.err != nil || create.packet == nil {
+		packet := create.packet
 		b.mu.Unlock()
+		if packet != nil {
+			_ = packet.Close()
+		}
 		return opaqueHostIOError
 	}
 	handle := b.allocateHandleLocked()
