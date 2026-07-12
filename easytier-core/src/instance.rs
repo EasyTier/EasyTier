@@ -1381,8 +1381,7 @@ mod tests {
                 crate::connectivity::host::environment::HostConnectorEnvironmentSnapshot::default(),
         };
         create.validate().unwrap();
-        let fixture =
-            include_bytes!("../../easytier-go-host/testdata/minimal_core_instance.json");
+        let fixture = include_bytes!("../../easytier-go-host/testdata/minimal_core_instance.json");
         assert_eq!(
             serde_json::from_slice::<serde_json::Value>(fixture).unwrap(),
             serde_json::to_value(&create).unwrap()
