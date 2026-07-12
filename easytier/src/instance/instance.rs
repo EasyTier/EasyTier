@@ -231,6 +231,7 @@ pub struct InstanceConfigPatcher {
     #[cfg(feature = "socks5")]
     socks5_server: Weak<Socks5Server>,
     core_instance: Weak<RuntimeCoreInstance>,
+    operation: Arc<Mutex<()>>,
 }
 
 impl InstanceConfigPatcher {
@@ -289,6 +290,7 @@ impl InstanceConfigPatcher {
         &self,
         patch: crate::proto::api::config::InstanceConfigPatch,
     ) -> Result<(), anyhow::Error> {
+        let _operation = self.operation.lock().await;
         let patch_for_event = patch.clone();
         let global_ctx = weak_upgrade(&self.global_ctx)?;
         let parsed_ipv6_public_addr_prefix = Self::validate_public_ipv6_patch(&global_ctx, &patch)?;
@@ -336,7 +338,7 @@ impl InstanceConfigPatcher {
         let core_instance = weak_upgrade(&self.core_instance)?;
         core_instance
             .update_runtime_config(runtime_core_config(&global_ctx))
-            .await?;
+            .await;
         global_ctx.issue_event(GlobalCtxEvent::ConfigPatched(patch_for_event));
 
         if provider_config_changed {
@@ -400,14 +402,12 @@ impl InstanceConfigPatcher {
         InstanceConfigPatcher::trace_patchables(&patches);
         crate::proto::api::config::patch_vec(&mut current_forwards, patches);
 
-        global_ctx
-            .config
-            .set_port_forwards(current_forwards.clone());
         #[cfg(feature = "socks5")]
         socks5_server
             .reload_port_forwards(&current_forwards)
             .await
             .with_context(|| "Failed to reload port forwards")?;
+        global_ctx.config.set_port_forwards(current_forwards);
 
         Ok(())
     }
@@ -420,34 +420,35 @@ impl InstanceConfigPatcher {
             return Ok(());
         };
         let global_ctx = weak_upgrade(&self.global_ctx)?;
+        let mut config = runtime_acl_config(&global_ctx);
         if let Some(acl) = acl_patch.acl {
-            global_ctx.config.set_acl(Some(acl));
+            config.acl = Some(acl);
         }
         if !acl_patch.tcp_whitelist.is_empty() {
-            let mut current_whitelist = global_ctx.config.get_tcp_whitelist();
             let patches = acl_patch
                 .tcp_whitelist
                 .into_iter()
                 .map(Into::into)
                 .collect();
             InstanceConfigPatcher::trace_patchables(&patches);
-            crate::proto::api::config::patch_vec(&mut current_whitelist, patches);
-            global_ctx.config.set_tcp_whitelist(current_whitelist);
+            crate::proto::api::config::patch_vec(&mut config.tcp_whitelist, patches);
         }
         if !acl_patch.udp_whitelist.is_empty() {
-            let mut current_whitelist = global_ctx.config.get_udp_whitelist();
             let patches = acl_patch
                 .udp_whitelist
                 .into_iter()
                 .map(Into::into)
                 .collect();
             InstanceConfigPatcher::trace_patchables(&patches);
-            crate::proto::api::config::patch_vec(&mut current_whitelist, patches);
-            global_ctx.config.set_udp_whitelist(current_whitelist);
+            crate::proto::api::config::patch_vec(&mut config.udp_whitelist, patches);
         }
+        config.build()?;
         weak_upgrade(&self.core_instance)?
-            .apply_acl_config(runtime_acl_config(&global_ctx))
+            .apply_acl_config(config.clone())
             .await?;
+        global_ctx.config.set_acl(config.acl);
+        global_ctx.config.set_tcp_whitelist(config.tcp_whitelist);
+        global_ctx.config.set_udp_whitelist(config.udp_whitelist);
         Ok(())
     }
 
@@ -603,6 +604,7 @@ pub struct Instance {
     peer_packet_receiver: Arc<Mutex<PacketRecvChanReceiver>>,
     peer_manager: Arc<PeerManager>,
     core_instance: Arc<RuntimeCoreInstance>,
+    config_operation: Arc<Mutex<()>>,
 
     proxy: Arc<RuntimeProxyService>,
 
@@ -781,6 +783,7 @@ impl Instance {
             )
             .expect("runtime core instance composition should be valid"),
         );
+        let config_operation = Arc::new(Mutex::new(()));
 
         #[cfg(feature = "wireguard")]
         let vpn_portal_inst = vpn_portal::wireguard::WireGuard::default();
@@ -800,6 +803,7 @@ impl Instance {
 
             peer_manager,
             core_instance,
+            config_operation,
 
             proxy,
             #[cfg(feature = "kcp")]
@@ -976,9 +980,11 @@ impl Instance {
     }
 
     pub async fn run(&mut self) -> Result<(), Error> {
+        let config_operation = self.config_operation.clone();
+        let _config_operation = config_operation.lock().await;
         self.core_instance
             .update_runtime_config(runtime_core_config(&self.global_ctx))
-            .await?;
+            .await;
         self.core_instance.start().await?;
 
         #[cfg(feature = "tun")]
@@ -1230,6 +1236,7 @@ impl Instance {
             #[cfg(feature = "socks5")]
             socks5_server: Arc::downgrade(&self.socks5_server),
             core_instance: Arc::downgrade(&self.core_instance),
+            operation: self.config_operation.clone(),
         }
     }
 
@@ -1489,6 +1496,7 @@ impl Instance {
     }
 
     pub async fn clear_resources(&mut self) {
+        let _config_operation = self.config_operation.lock().await;
         self.core_instance.stop().await;
         #[cfg(feature = "tun")]
         let _ = self.nic_ctx.lock().await.take();
@@ -1511,15 +1519,73 @@ impl Drop for Instance {
 
 #[cfg(test)]
 mod tests {
-    #[cfg(any(feature = "kcp", feature = "quic"))]
-    use crate::{common::config::TomlConfigLoader, instance::instance::Instance};
     use crate::{
+        common::config::ConfigLoader,
         common::global_ctx::tests::get_mock_global_ctx,
         instance::instance::{InstanceConfigPatcher, InstanceRpcServerHook},
-        proto::{api::config::InstanceConfigPatch, rpc_impl::standalone::RpcServerHook},
+        proto::{
+            api::config::{AclPatch, ConfigPatchAction, InstanceConfigPatch, StringPatch},
+            rpc_impl::standalone::RpcServerHook,
+        },
     };
+    use crate::{common::config::TomlConfigLoader, instance::instance::Instance};
     #[cfg(feature = "quic")]
     use easytier_core::instance::ProxyService as _;
+
+    fn tcp_whitelist_patch(port: &str) -> InstanceConfigPatch {
+        InstanceConfigPatch {
+            acl: Some(AclPatch {
+                acl: None,
+                tcp_whitelist: vec![StringPatch {
+                    action: ConfigPatchAction::Add.into(),
+                    value: port.to_owned(),
+                }],
+                udp_whitelist: Vec::new(),
+            }),
+            ..Default::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn config_patches_serialize_host_and_core_acl_state() {
+        let mut instance = Instance::new(TomlConfigLoader::default());
+        let patcher_a = instance.get_config_patcher();
+        let patcher_b = instance.get_config_patcher();
+        let (result_a, result_b) = tokio::join!(
+            patcher_a.apply_patch(tcp_whitelist_patch("80")),
+            patcher_b.apply_patch(tcp_whitelist_patch("443")),
+        );
+        result_a.unwrap();
+        result_b.unwrap();
+
+        let mut host_ports = instance.global_ctx.config.get_tcp_whitelist();
+        host_ports.sort();
+        let mut core_ports = instance.core_instance.acl_whitelist_snapshot().tcp_ports;
+        core_ports.sort();
+        assert_eq!(host_ports, ["443", "80"]);
+        assert_eq!(core_ports, host_ports);
+        instance.clear_resources().await;
+    }
+
+    #[tokio::test]
+    async fn invalid_acl_patch_leaves_host_and_core_unchanged() {
+        let mut instance = Instance::new(TomlConfigLoader::default());
+        let error = instance
+            .get_config_patcher()
+            .apply_patch(tcp_whitelist_patch("invalid"))
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("Invalid port number"));
+        assert!(instance.global_ctx.config.get_tcp_whitelist().is_empty());
+        assert!(
+            instance
+                .core_instance
+                .acl_whitelist_snapshot()
+                .tcp_ports
+                .is_empty()
+        );
+        instance.clear_resources().await;
+    }
 
     #[cfg(feature = "kcp")]
     #[tokio::test]

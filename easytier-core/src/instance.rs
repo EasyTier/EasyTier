@@ -1073,17 +1073,9 @@ where
     /// Replaces the explicit runtime snapshot used by services that have not
     /// started yet. Host configuration changes have no effect until the host
     /// submits a new snapshot through this method.
-    pub async fn update_runtime_config(&self, config: CoreRuntimeConfig) -> anyhow::Result<()> {
+    pub async fn update_runtime_config(&self, config: CoreRuntimeConfig) {
         let _operation = self.operation.lock().await;
-        let state = self.state();
-        if !matches!(
-            state,
-            CoreInstanceState::Created | CoreInstanceState::Running
-        ) {
-            anyhow::bail!("runtime config cannot update from core instance state {state:?}");
-        }
         *self.runtime_config.write() = config;
-        Ok(())
     }
 
     pub async fn start_dhcp_ipv4(

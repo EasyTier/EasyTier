@@ -545,8 +545,7 @@ mod tests {
 
         instance
             .update_runtime_config(runtime_core_config(&global_ctx))
-            .await
-            .unwrap();
+            .await;
         instance.start_proxy().await.unwrap();
         assert_eq!(proxy.start_calls.load(Ordering::Relaxed), 1);
 
@@ -575,8 +574,7 @@ mod tests {
             .set_tcp_whitelist(vec!["invalid".to_string()]);
         instance
             .update_runtime_config(runtime_core_config(&global_ctx))
-            .await
-            .unwrap();
+            .await;
         instance.start().await.unwrap();
         let error = instance.start_network_services(None).await.unwrap_err();
         assert!(
@@ -604,8 +602,7 @@ mod tests {
         global_ctx.config.set_dhcp(true);
         instance
             .update_runtime_config(runtime_core_config(&global_ctx))
-            .await
-            .unwrap();
+            .await;
         instance.start().await.unwrap();
         let error = instance.start_network_services(None).await.unwrap_err();
         assert!(
@@ -635,8 +632,7 @@ mod tests {
             .set_ipv6_public_addr_prefix(Some("fd00::/64".parse().unwrap()));
         instance
             .update_runtime_config(runtime_core_config(&global_ctx))
-            .await
-            .unwrap();
+            .await;
         let error = instance.start().await.unwrap_err();
         assert!(
             error.to_string().contains("not a valid global unicast"),
