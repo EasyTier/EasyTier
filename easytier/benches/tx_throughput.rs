@@ -15,7 +15,9 @@ use easytier::{
     common::config::{ConfigLoader, TomlConfigLoader},
     instance::instance::Instance,
     tunnel::{
-        packet_def::ZCPacket, ring::RingTunnelConnector, tcp::TcpTunnelConnector,
+        packet_def::ZCPacket,
+        ring::{RingTunnelConnector, RingTunnelRegistry},
+        tcp::TcpTunnelConnector,
         udp::UdpTunnelConnector,
     },
 };
@@ -263,18 +265,28 @@ async fn setup_topology(tunnel: TunnelKind, packet_size: usize) -> BenchTopology
         ],
     };
 
-    let mut inst_a = Instance::new(no_tun_config("hot-a", VIRTUAL_IP_A, netns_a, listeners_a));
-    let mut inst_b = Instance::new(no_tun_config("hot-b", VIRTUAL_IP_B, netns_b, Vec::new()));
+    let ring_registry = Arc::new(RingTunnelRegistry::default());
+    let mut inst_a = Instance::new_with_ring_registry(
+        no_tun_config("hot-a", VIRTUAL_IP_A, netns_a, listeners_a),
+        ring_registry.clone(),
+    );
+    let mut inst_b = Instance::new_with_ring_registry(
+        no_tun_config("hot-b", VIRTUAL_IP_B, netns_b, Vec::new()),
+        ring_registry.clone(),
+    );
 
     inst_a.run().await.expect("inst_a run");
     inst_b.run().await.expect("inst_b run");
 
     match tunnel {
-        TunnelKind::Ring => inst_b
-            .get_conn_manager()
-            .add_connector(RingTunnelConnector::new(
-                format!("ring://{}", inst_a.id()).parse().unwrap(),
-            )),
+        TunnelKind::Ring => {
+            inst_b
+                .get_conn_manager()
+                .add_connector(RingTunnelConnector::new_with_ring_registry(
+                    format!("ring://{}", inst_a.id()).parse().unwrap(),
+                    ring_registry,
+                ))
+        }
         TunnelKind::Tcp => inst_b
             .get_conn_manager()
             .add_connector(TcpTunnelConnector::new(

@@ -171,8 +171,9 @@ async fn init_three_node_ex_with_inst3<F: Fn(TomlConfigLoader) -> TomlConfigLoad
 
     inst3
         .get_conn_manager()
-        .add_connector(RingTunnelConnector::new(
+        .add_connector(RingTunnelConnector::new_with_ring_registry(
             format!("ring://{}", inst2.id()).parse().unwrap(),
+            inst2.ring_registry(),
         ));
 
     // wait inst2 have two route.
@@ -1714,14 +1715,16 @@ pub async fn foreign_network_forward_nic_data() {
 
     inst1
         .get_conn_manager()
-        .add_connector(RingTunnelConnector::new(
+        .add_connector(RingTunnelConnector::new_with_ring_registry(
             format!("ring://{}", center_inst.id()).parse().unwrap(),
+            center_inst.ring_registry(),
         ));
 
     inst2
         .get_conn_manager()
-        .add_connector(RingTunnelConnector::new(
+        .add_connector(RingTunnelConnector::new_with_ring_registry(
             format!("ring://{}", center_inst.id()).parse().unwrap(),
+            center_inst.ring_registry(),
         ));
 
     wait_for_condition(
@@ -1976,20 +1979,23 @@ pub async fn foreign_network_functional_cluster() {
 
     center_inst1
         .get_conn_manager()
-        .add_connector(RingTunnelConnector::new(
+        .add_connector(RingTunnelConnector::new_with_ring_registry(
             format!("ring://{}", center_inst2.id()).parse().unwrap(),
+            center_inst2.ring_registry(),
         ));
 
     inst1
         .get_conn_manager()
-        .add_connector(RingTunnelConnector::new(
+        .add_connector(RingTunnelConnector::new_with_ring_registry(
             format!("ring://{}", center_inst1.id()).parse().unwrap(),
+            center_inst1.ring_registry(),
         ));
 
     inst2
         .get_conn_manager()
-        .add_connector(RingTunnelConnector::new(
+        .add_connector(RingTunnelConnector::new_with_ring_registry(
             format!("ring://{}", center_inst2.id()).parse().unwrap(),
+            center_inst2.ring_registry(),
         ));
 
     let peer_map_inst1 = inst1.get_peer_manager();
@@ -2005,8 +2011,9 @@ pub async fn foreign_network_functional_cluster() {
     // connect to two centers, ping should work
     inst1
         .get_conn_manager()
-        .add_connector(RingTunnelConnector::new(
+        .add_connector(RingTunnelConnector::new_with_ring_registry(
             format!("ring://{}", center_inst2.id()).parse().unwrap(),
+            center_inst2.ring_registry(),
         ));
     tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
     wait_for_condition(
@@ -2051,14 +2058,16 @@ pub async fn manual_reconnector(#[values(true, false)] is_foreign: bool) {
 
     inst1
         .get_conn_manager()
-        .add_connector(RingTunnelConnector::new(
+        .add_connector(RingTunnelConnector::new_with_ring_registry(
             format!("ring://{}", center_inst.id()).parse().unwrap(),
+            center_inst.ring_registry(),
         ));
 
     inst2
         .get_conn_manager()
-        .add_connector(RingTunnelConnector::new(
+        .add_connector(RingTunnelConnector::new_with_ring_registry(
             format!("ring://{}", center_inst.id()).parse().unwrap(),
+            center_inst.ring_registry(),
         ));
 
     tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
@@ -3092,8 +3101,9 @@ pub async fn p2p_only_test(
     if has_p2p_conn {
         insts[2]
             .get_conn_manager()
-            .add_connector(RingTunnelConnector::new(
+            .add_connector(RingTunnelConnector::new_with_ring_registry(
                 format!("ring://{}", insts[0].id()).parse().unwrap(),
+                insts[0].ring_registry(),
             ));
         wait_route_appear_with_cost(
             insts[2].get_peer_manager(),

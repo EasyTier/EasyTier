@@ -1793,13 +1793,15 @@ async fn instances_build_direct_connection_via_upnp_udp_hole_punch() {
 
     inst_a
         .get_conn_manager()
-        .add_connector(RingTunnelConnector::new(
+        .add_connector(RingTunnelConnector::new_with_ring_registry(
             format!("ring://{}", inst_b.id()).parse().unwrap(),
+            inst_b.ring_registry(),
         ));
     inst_c
         .get_conn_manager()
-        .add_connector(RingTunnelConnector::new(
+        .add_connector(RingTunnelConnector::new_with_ring_registry(
             format!("ring://{}", inst_b.id()).parse().unwrap(),
+            inst_b.ring_registry(),
         ));
 
     timeout_stage(
