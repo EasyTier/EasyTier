@@ -2,6 +2,7 @@ package host
 
 import (
 	"context"
+	"encoding/binary"
 	"fmt"
 	"io"
 	"net"
@@ -27,6 +28,39 @@ func TestDecodeTCPProxyNatListenPurpose(t *testing.T) {
 	}
 	if options.Purpose != TCPListenProxyNAT {
 		t.Fatalf("decoded TCP listen purpose %d, want ProxyNAT", options.Purpose)
+	}
+}
+
+func TestDecodeTCPListenBindPolicyForCustomFactory(t *testing.T) {
+	encoded := make([]byte, 45)
+	encoded[0] = 1
+	local, err := encodeNetAddr(&net.TCPAddr{IP: net.IPv4zero, Port: 11010})
+	if err != nil {
+		t.Fatal(err)
+	}
+	copy(encoded[1:28], local[:])
+	encoded[28] = 1
+	binary.BigEndian.PutUint32(encoded[29:33], 11)
+	encoded[33] = 1
+	encoded[34] = 1
+	encoded[35] = 1
+	encoded[36] = byte(TCPListenManual)
+	encoded[37] = 1
+	binary.BigEndian.PutUint32(encoded[38:42], 3)
+	copy(encoded[42:], "tun")
+
+	options, err := decodeTCPListenOptions(encoded)
+	if err != nil {
+		t.Fatalf("decode TCP listen bind policy: %v", err)
+	}
+	if options.Bind.SocketMark == nil || *options.Bind.SocketMark != 11 ||
+		options.Bind.BindDevice == nil || *options.Bind.BindDevice != "tun" ||
+		options.Bind.ReuseAddr == nil || *options.Bind.ReuseAddr ||
+		!options.Bind.ReusePort || !options.Bind.OnlyV6 {
+		t.Fatalf("unexpected TCP listen bind policy: %#v", options.Bind)
+	}
+	if _, err := (NetSocketFactory{}).ListenTCP(context.Background(), options); err == nil {
+		t.Fatal("NetSocketFactory accepted a non-default TCP listen bind policy")
 	}
 }
 

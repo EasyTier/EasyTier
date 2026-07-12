@@ -2,6 +2,7 @@ package host
 
 import (
 	"context"
+	"fmt"
 	"net"
 )
 
@@ -34,20 +35,34 @@ const (
 	TCPListenProxyNAT
 )
 
+type TCPBindOptions struct {
+	LocalAddr  *net.TCPAddr
+	SocketMark *uint32
+	BindDevice *string
+	ReuseAddr  *bool
+	ReusePort  bool
+	OnlyV6     bool
+}
+
 type TCPConnectOptions struct {
 	RemoteAddr *net.TCPAddr
-	LocalAddr  *net.TCPAddr
+	Bind       TCPBindOptions
 	Purpose    TCPConnectPurpose
 }
 
 type UDPBindOptions struct {
-	LocalAddr *net.UDPAddr
-	Purpose   UDPBindPurpose
+	LocalAddr  *net.UDPAddr
+	SocketMark *uint32
+	BindDevice *string
+	ReuseAddr  bool
+	ReusePort  bool
+	OnlyV6     bool
+	Purpose    UDPBindPurpose
 }
 
 type TCPListenOptions struct {
-	LocalAddr *net.TCPAddr
-	Purpose   TCPListenPurpose
+	Bind    TCPBindOptions
+	Purpose TCPListenPurpose
 }
 
 // SocketFactory owns only socket creation. The bridge retains every returned
@@ -65,7 +80,13 @@ func (NetSocketFactory) ConnectTCP(
 	ctx context.Context,
 	options TCPConnectOptions,
 ) (net.Conn, error) {
-	dialer := net.Dialer{LocalAddr: options.LocalAddr}
+	if options.Purpose == TCPConnectFake {
+		return nil, fmt.Errorf("FakeTCP is not supported by NetSocketFactory")
+	}
+	if err := validateNetTCPBindOptions(options.Bind); err != nil {
+		return nil, err
+	}
+	dialer := net.Dialer{LocalAddr: options.Bind.LocalAddr}
 	return dialer.DialContext(ctx, "tcp", options.RemoteAddr.String())
 }
 
@@ -73,6 +94,10 @@ func (NetSocketFactory) BindUDP(
 	_ context.Context,
 	options UDPBindOptions,
 ) (net.PacketConn, error) {
+	if options.SocketMark != nil || options.BindDevice != nil || options.ReuseAddr ||
+		options.ReusePort || options.OnlyV6 {
+		return nil, fmt.Errorf("non-default UDP bind policy is not supported by NetSocketFactory")
+	}
 	network := "udp4"
 	if options.LocalAddr != nil && options.LocalAddr.IP.To4() == nil {
 		network = "udp6"
@@ -84,5 +109,16 @@ func (NetSocketFactory) ListenTCP(
 	ctx context.Context,
 	options TCPListenOptions,
 ) (net.Listener, error) {
-	return (&net.ListenConfig{}).Listen(ctx, "tcp", options.LocalAddr.String())
+	if err := validateNetTCPBindOptions(options.Bind); err != nil {
+		return nil, err
+	}
+	return (&net.ListenConfig{}).Listen(ctx, "tcp", options.Bind.LocalAddr.String())
+}
+
+func validateNetTCPBindOptions(options TCPBindOptions) error {
+	if options.SocketMark != nil || options.BindDevice != nil || options.ReuseAddr != nil ||
+		options.ReusePort || options.OnlyV6 {
+		return fmt.Errorf("non-default TCP bind policy is not supported by NetSocketFactory")
+	}
+	return nil
 }

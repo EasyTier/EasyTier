@@ -276,21 +276,23 @@ func decodeTCPListenOptions(encoded []byte) (TCPListenOptions, error) {
 	if err != nil || local == nil {
 		return TCPListenOptions{}, fmt.Errorf("invalid TCP listen address")
 	}
-	if err := validatePoCBindOptions(encoded[28], encoded[29:33], encoded[33], encoded[34], encoded[35]); err != nil {
+	bind, err := decodeTCPBindPolicy(
+		&net.TCPAddr{IP: local.IP, Port: local.Port, Zone: local.Zone},
+		encoded[28],
+		encoded[29:33],
+		encoded[33],
+		encoded[34],
+		encoded[35],
+		encoded[37:],
+	)
+	if err != nil {
 		return TCPListenOptions{}, err
 	}
 	if encoded[36] > 3 {
 		return TCPListenOptions{}, fmt.Errorf("invalid TCP listen purpose")
 	}
-	device, err := decodeBindDevice(encoded[37:])
-	if err != nil {
-		return TCPListenOptions{}, err
-	}
-	if device != nil {
-		return TCPListenOptions{}, fmt.Errorf("bind device policy is outside this PoC")
-	}
 	return TCPListenOptions{
-		LocalAddr: &net.TCPAddr{IP: local.IP, Port: local.Port, Zone: local.Zone},
-		Purpose:   TCPListenPurpose(encoded[36]),
+		Bind:    bind,
+		Purpose: TCPListenPurpose(encoded[36]),
 	}, nil
 }

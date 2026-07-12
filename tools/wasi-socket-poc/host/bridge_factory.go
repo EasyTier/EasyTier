@@ -283,25 +283,24 @@ func decodeTCPConnectOptions(encoded []byte) (TCPConnectOptions, error) {
 	if err != nil {
 		return TCPConnectOptions{}, err
 	}
-	if err := validatePoCBindOptions(encoded[55], encoded[56:60], encoded[60], encoded[61], encoded[62]); err != nil {
+	bind, err := decodeTCPBindPolicy(
+		udpToTCPAddr(local),
+		encoded[55],
+		encoded[56:60],
+		encoded[60],
+		encoded[61],
+		encoded[62],
+		encoded[64:],
+	)
+	if err != nil {
 		return TCPConnectOptions{}, err
 	}
 	if encoded[63] > 4 {
 		return TCPConnectOptions{}, fmt.Errorf("invalid TCP purpose")
 	}
-	if encoded[63] == 1 {
-		return TCPConnectOptions{}, fmt.Errorf("FakeTCP is outside this PoC")
-	}
-	device, err := decodeBindDevice(encoded[64:])
-	if err != nil {
-		return TCPConnectOptions{}, err
-	}
-	if device != nil {
-		return TCPConnectOptions{}, fmt.Errorf("bind device policy is outside this PoC")
-	}
 	return TCPConnectOptions{
 		RemoteAddr: &net.TCPAddr{IP: remote.IP, Port: remote.Port, Zone: remote.Zone},
-		LocalAddr:  udpToTCPAddr(local),
+		Bind:       bind,
 		Purpose:    TCPConnectPurpose(encoded[63]),
 	}, nil
 }
@@ -314,7 +313,20 @@ func decodeUDPBindOptions(encoded []byte) (UDPBindOptions, error) {
 	if err != nil {
 		return UDPBindOptions{}, err
 	}
-	if err := validatePoCBindOptions(encoded[28], encoded[29:33], encoded[33], encoded[34], encoded[35]); err != nil {
+	mark, err := decodeSocketMark(encoded[28], encoded[29:33])
+	if err != nil {
+		return UDPBindOptions{}, err
+	}
+	reuseAddr, err := decodeWireBool("UDP reuse_addr", encoded[33])
+	if err != nil {
+		return UDPBindOptions{}, err
+	}
+	reusePort, err := decodeWireBool("UDP reuse_port", encoded[34])
+	if err != nil {
+		return UDPBindOptions{}, err
+	}
+	onlyV6, err := decodeWireBool("UDP only_v6", encoded[35])
+	if err != nil {
 		return UDPBindOptions{}, err
 	}
 	if encoded[36] > 4 {
@@ -324,20 +336,80 @@ func decodeUDPBindOptions(encoded []byte) (UDPBindOptions, error) {
 	if err != nil {
 		return UDPBindOptions{}, err
 	}
-	if device != nil {
-		return UDPBindOptions{}, fmt.Errorf("bind device policy is outside this PoC")
-	}
-	return UDPBindOptions{LocalAddr: local, Purpose: UDPBindPurpose(encoded[36])}, nil
+	return UDPBindOptions{
+		LocalAddr:  local,
+		SocketMark: mark,
+		BindDevice: device,
+		ReuseAddr:  reuseAddr,
+		ReusePort:  reusePort,
+		OnlyV6:     onlyV6,
+		Purpose:    UDPBindPurpose(encoded[36]),
+	}, nil
 }
 
-func validatePoCBindOptions(markPresent byte, mark []byte, reuseMode, reusePort, onlyV6 byte) error {
-	if markPresent > 1 || len(mark) != 4 || (markPresent == 0 && binary.BigEndian.Uint32(mark) != 0) {
-		return fmt.Errorf("invalid socket mark encoding")
+func decodeTCPBindPolicy(
+	localAddr *net.TCPAddr,
+	markPresent byte,
+	markBytes []byte,
+	reuseMode byte,
+	reusePortByte byte,
+	onlyV6Byte byte,
+	deviceBytes []byte,
+) (TCPBindOptions, error) {
+	mark, err := decodeSocketMark(markPresent, markBytes)
+	if err != nil {
+		return TCPBindOptions{}, err
 	}
-	if markPresent != 0 || reuseMode != 0 || reusePort != 0 || onlyV6 != 0 {
-		return fmt.Errorf("non-default bind policy is outside this PoC")
+	var reuseAddr *bool
+	switch reuseMode {
+	case 0:
+	case 1:
+		value := false
+		reuseAddr = &value
+	case 2:
+		value := true
+		reuseAddr = &value
+	default:
+		return TCPBindOptions{}, fmt.Errorf("invalid TCP reuse_addr")
 	}
-	return nil
+	reusePort, err := decodeWireBool("TCP reuse_port", reusePortByte)
+	if err != nil {
+		return TCPBindOptions{}, err
+	}
+	onlyV6, err := decodeWireBool("TCP only_v6", onlyV6Byte)
+	if err != nil {
+		return TCPBindOptions{}, err
+	}
+	device, err := decodeBindDevice(deviceBytes)
+	if err != nil {
+		return TCPBindOptions{}, err
+	}
+	return TCPBindOptions{
+		LocalAddr:  localAddr,
+		SocketMark: mark,
+		BindDevice: device,
+		ReuseAddr:  reuseAddr,
+		ReusePort:  reusePort,
+		OnlyV6:     onlyV6,
+	}, nil
+}
+
+func decodeSocketMark(present byte, encoded []byte) (*uint32, error) {
+	if present > 1 || len(encoded) != 4 || (present == 0 && binary.BigEndian.Uint32(encoded) != 0) {
+		return nil, fmt.Errorf("invalid socket mark encoding")
+	}
+	if present == 0 {
+		return nil, nil
+	}
+	mark := binary.BigEndian.Uint32(encoded)
+	return &mark, nil
+}
+
+func decodeWireBool(name string, encoded byte) (bool, error) {
+	if encoded > 1 {
+		return false, fmt.Errorf("invalid %s", name)
+	}
+	return encoded == 1, nil
 }
 
 func decodeBindDevice(encoded []byte) (*string, error) {

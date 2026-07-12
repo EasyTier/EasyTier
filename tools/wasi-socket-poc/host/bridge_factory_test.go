@@ -43,6 +43,66 @@ func TestDecodeUDPProxyNatPurpose(t *testing.T) {
 	}
 }
 
+func TestDecodeTCPBindPolicyForCustomFactory(t *testing.T) {
+	encoded := make([]byte, 72)
+	encoded[0] = 1
+	remote, err := encodeNetAddr(&net.TCPAddr{IP: net.IPv4(192, 0, 2, 2), Port: 11013})
+	if err != nil {
+		t.Fatal(err)
+	}
+	copy(encoded[1:28], remote[:])
+	encoded[55] = 1
+	binary.BigEndian.PutUint32(encoded[56:60], 7)
+	encoded[60] = 2
+	encoded[61] = 1
+	encoded[62] = 1
+	encoded[63] = byte(TCPConnectManual)
+	encoded[64] = 1
+	binary.BigEndian.PutUint32(encoded[65:69], 3)
+	copy(encoded[69:], "tun")
+
+	options, err := decodeTCPConnectOptions(encoded)
+	if err != nil {
+		t.Fatalf("decode TCP bind policy: %v", err)
+	}
+	if options.Bind.SocketMark == nil || *options.Bind.SocketMark != 7 ||
+		options.Bind.BindDevice == nil || *options.Bind.BindDevice != "tun" ||
+		options.Bind.ReuseAddr == nil || !*options.Bind.ReuseAddr ||
+		!options.Bind.ReusePort || !options.Bind.OnlyV6 {
+		t.Fatalf("unexpected TCP bind policy: %#v", options.Bind)
+	}
+	if _, err := (NetSocketFactory{}).ConnectTCP(context.Background(), options); err == nil {
+		t.Fatal("NetSocketFactory accepted a non-default TCP bind policy")
+	}
+}
+
+func TestDecodeUDPBindPolicyForCustomFactory(t *testing.T) {
+	encoded := make([]byte, 45)
+	encoded[0] = 1
+	encoded[28] = 1
+	binary.BigEndian.PutUint32(encoded[29:33], 9)
+	encoded[33] = 1
+	encoded[34] = 1
+	encoded[35] = 1
+	encoded[36] = byte(UDPBindProxyNAT)
+	encoded[37] = 1
+	binary.BigEndian.PutUint32(encoded[38:42], 3)
+	copy(encoded[42:], "tun")
+
+	options, err := decodeUDPBindOptions(encoded)
+	if err != nil {
+		t.Fatalf("decode UDP bind policy: %v", err)
+	}
+	if options.SocketMark == nil || *options.SocketMark != 9 ||
+		options.BindDevice == nil || *options.BindDevice != "tun" ||
+		!options.ReuseAddr || !options.ReusePort || !options.OnlyV6 {
+		t.Fatalf("unexpected UDP bind policy: %#v", options)
+	}
+	if _, err := (NetSocketFactory{}).BindUDP(context.Background(), options); err == nil {
+		t.Fatal("NetSocketFactory accepted a non-default UDP bind policy")
+	}
+}
+
 func TestOpaqueFactoryCreatesSocketsForCore(t *testing.T) {
 	tcpListener, err := net.Listen("tcp4", "127.0.0.1:0")
 	if err != nil {
@@ -159,8 +219,12 @@ func TestFactoryRejectsUnsupportedTransportAndFlowinfo(t *testing.T) {
 	}
 	copy(base[1:28], remote[:])
 	base[63] = 1
-	if _, err := decodeTCPConnectOptions(base); err == nil {
-		t.Fatal("FakeTCP options were accepted as ordinary TCP")
+	options, err := decodeTCPConnectOptions(base)
+	if err != nil || options.Purpose != TCPConnectFake {
+		t.Fatalf("decode FakeTCP purpose: options=%#v error=%v", options, err)
+	}
+	if _, err := (NetSocketFactory{}).ConnectTCP(context.Background(), options); err == nil {
+		t.Fatal("NetSocketFactory accepted FakeTCP as ordinary TCP")
 	}
 
 	remote, err = encodeNetAddr(&net.TCPAddr{IP: net.ParseIP("2001:db8::2"), Port: 11013})
