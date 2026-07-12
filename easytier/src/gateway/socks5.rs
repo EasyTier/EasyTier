@@ -31,6 +31,7 @@ use anyhow::Context;
 use dashmap::{DashMap, mapref::entry::Entry};
 use easytier_core::proxy::{
     ip_reassembler::{IpReassembler, SmolIpv4Packet},
+    socks5::{Socks5TcpRoute, Socks5TcpRouteContext},
     tokio_smoltcp::{self, BufferSize, Net, NetConfig, channel_device},
 };
 use pnet::packet::{
@@ -400,11 +401,21 @@ impl AsyncTcpConnector for Socks5AutoConnector {
         } else {
             None
         };
+        #[cfg(feature = "kcp")]
+        let kcp_available = self.kcp_endpoint.is_some();
+        #[cfg(not(feature = "kcp"))]
+        let kcp_available = false;
+        let route_context = Socks5TcpRouteContext {
+            has_smoltcp_net,
+            destination_in_virtual_network: dst_peers
+                .as_ref()
+                .is_some_and(|peers| !peers.is_empty()),
+            destination_is_loopback: addr.ip().is_loopback(),
+            kcp_available,
+            destination_allows_kcp: false,
+        };
 
-        if !has_smoltcp_net
-            || dst_peers.as_ref().is_some_and(Vec::is_empty)
-            || addr.ip().is_loopback()
-        {
+        if !route_context.routes_over_virtual_network() {
             // cannot find dst in virtual network, so try connect to dst directly
             tracing::trace!(
                 ?addr,
@@ -421,54 +432,50 @@ impl AsyncTcpConnector for Socks5AutoConnector {
 
         let dst_allow_kcp = peer_mgr_arc.check_allow_kcp_to_dst(&addr.ip()).await;
         tracing::debug!("dst_allow_kcp: {:?}", dst_allow_kcp);
+        let route = Socks5TcpRouteContext {
+            destination_allows_kcp: dst_allow_kcp,
+            ..route_context
+        }
+        .route();
 
-        #[cfg(feature = "kcp")]
-        let connector: Box<dyn AsyncTcpConnector<S = SocksTcpStream> + Send> =
-            match (&self.kcp_endpoint, dst_allow_kcp) {
-                (Some(kcp_endpoint), true) => {
-                    tracing::trace!(
-                        ?addr,
-                        src_addr = ?self.src_addr,
-                        dst_peer_count = dst_peers.as_ref().map(Vec::len),
-                        "socks5 auto connector selected kcp"
-                    );
-                    Box::new(Socks5KcpConnector {
-                        kcp_endpoint: kcp_endpoint.clone(),
-                        peer_mgr: self.peer_mgr.clone(),
-                        src_addr: self.src_addr,
-                    })
-                }
-                (_, _) => {
-                    tracing::trace!(
-                        ?addr,
-                        src_addr = ?self.src_addr,
-                        dst_peer_count = dst_peers.as_ref().map(Vec::len),
-                        dst_allow_kcp,
-                        has_kcp_endpoint = self.kcp_endpoint.is_some(),
-                        "socks5 auto connector selected smoltcp"
-                    );
-                    Box::new(SmolTcpConnector {
-                        net: self.smoltcp_net.clone().unwrap(),
-                        entries: self.entries.clone(),
-                        entry_count: self.entry_count.clone(),
-                        current_entry: std::sync::Mutex::new(None),
-                    })
-                }
-            };
-        #[cfg(not(feature = "kcp"))]
-        let connector = {
-            tracing::trace!(
-                ?addr,
-                src_addr = ?self.src_addr,
-                dst_peer_count = dst_peers.as_ref().map(Vec::len),
-                "socks5 auto connector selected smoltcp"
-            );
-            Box::new(SmolTcpConnector {
-                net: self.smoltcp_net.clone().unwrap(),
-                entries: self.entries.clone(),
-                entry_count: self.entry_count.clone(),
-                current_entry: std::sync::Mutex::new(None),
-            })
+        let connector: Box<dyn AsyncTcpConnector<S = SocksTcpStream> + Send> = match route {
+            #[cfg(feature = "kcp")]
+            Socks5TcpRoute::Kcp => {
+                let kcp_endpoint = self
+                    .kcp_endpoint
+                    .as_ref()
+                    .expect("KCP route requires an available endpoint");
+                tracing::trace!(
+                    ?addr,
+                    src_addr = ?self.src_addr,
+                    dst_peer_count = dst_peers.as_ref().map(Vec::len),
+                    "socks5 auto connector selected kcp"
+                );
+                Box::new(Socks5KcpConnector {
+                    kcp_endpoint: kcp_endpoint.clone(),
+                    peer_mgr: self.peer_mgr.clone(),
+                    src_addr: self.src_addr,
+                })
+            }
+            Socks5TcpRoute::Smoltcp => {
+                tracing::trace!(
+                    ?addr,
+                    src_addr = ?self.src_addr,
+                    dst_peer_count = dst_peers.as_ref().map(Vec::len),
+                    dst_allow_kcp,
+                    kcp_available,
+                    "socks5 auto connector selected smoltcp"
+                );
+                Box::new(SmolTcpConnector {
+                    net: self.smoltcp_net.clone().unwrap(),
+                    entries: self.entries.clone(),
+                    entry_count: self.entry_count.clone(),
+                    current_entry: std::sync::Mutex::new(None),
+                })
+            }
+            Socks5TcpRoute::Kernel => unreachable!("kernel route returned above"),
+            #[cfg(not(feature = "kcp"))]
+            Socks5TcpRoute::Kcp => unreachable!("KCP route requires the KCP feature"),
         };
 
         let ret = connector.tcp_connect(addr, timeout_s).await;

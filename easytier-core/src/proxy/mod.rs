@@ -3,6 +3,7 @@ pub mod cidr_table;
 pub mod proxy_acl;
 #[cfg(feature = "proxy-packet")]
 pub mod runtime;
+pub mod socks5;
 
 #[cfg(feature = "proxy-packet")]
 pub mod icmp_proxy_engine;
