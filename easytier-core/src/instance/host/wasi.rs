@@ -5,7 +5,11 @@ use std::{cell::RefCell, collections::BTreeMap};
 use tokio::{runtime::Builder, task::JoinHandle};
 
 use crate::{
-    instance::{CoreInstanceState, host::HostCoreInstanceCreateConfig},
+    instance::{
+        CoreInstanceState,
+        host::HostCoreInstanceCreateConfig,
+        runtime_driver::{RuntimeDriveOutcome, RuntimeDriver},
+    },
     runtime_time::{clear_domain, enter_domain, next_deadline_millis},
     socket::host::packet::HostPacketSinkHandle,
 };
@@ -35,6 +39,8 @@ struct WasiInstanceRegistry {
 
 struct WasiInstanceEntry {
     runtime: tokio::runtime::Runtime,
+    runtime_driver: RuntimeDriver,
+    drive_again: bool,
     instance: WasiHostCoreInstance,
     start_task: Option<JoinHandle<anyhow::Result<()>>>,
     stop_task: Option<JoinHandle<()>>,
@@ -130,10 +136,8 @@ impl WasiInstanceEntry {
     fn drive(&mut self, domain: u64) -> anyhow::Result<()> {
         let _domain = enter_domain(domain);
         self.instance.notify_host_completions();
-        self.runtime.block_on(async {
-            tokio::time::sleep(std::time::Duration::ZERO).await;
-            tokio::task::yield_now().await;
-        });
+        self.drive_again =
+            self.runtime_driver.drive(&self.runtime) == RuntimeDriveOutcome::BudgetExhausted;
 
         if self
             .start_task
@@ -173,23 +177,11 @@ impl WasiInstanceEntry {
     }
 
     fn next_wait_millis(&self, domain: u64) -> Option<u64> {
-        scheduler_wait_millis(
-            next_deadline_millis(domain),
-            self.start_task.is_some() || self.stop_task.is_some(),
-            self.instance.has_pending_host_operations(),
-        )
-    }
-}
-
-fn scheduler_wait_millis(
-    timer_deadline: Option<u64>,
-    lifecycle_pending: bool,
-    host_operation_pending: bool,
-) -> Option<u64> {
-    if lifecycle_pending && !host_operation_pending {
-        Some(0)
-    } else {
-        timer_deadline
+        if self.drive_again {
+            Some(0)
+        } else {
+            next_deadline_millis(domain)
+        }
     }
 }
 
@@ -285,7 +277,13 @@ pub extern "C" fn easytier_instance_create(
             return 0;
         }
     };
-    let runtime = match Builder::new_current_thread().enable_time().build() {
+    let runtime_driver = RuntimeDriver::default();
+    let park_driver = runtime_driver.clone();
+    let runtime = match Builder::new_current_thread()
+        .enable_time()
+        .on_thread_park(move || park_driver.on_thread_park())
+        .build()
+    {
         Ok(runtime) => runtime,
         Err(error) => {
             INSTANCES.with_borrow_mut(|registry| registry.set_error(error));
@@ -316,6 +314,8 @@ pub extern "C" fn easytier_instance_create(
             handle,
             WasiInstanceEntry {
                 runtime,
+                runtime_driver,
+                drive_again: false,
                 instance,
                 start_task: None,
                 stop_task: None,
@@ -461,19 +461,4 @@ pub extern "C" fn easytier_instance_error_copy(
         destination[..error.len()].copy_from_slice(&error);
         i32::try_from(error.len()).unwrap_or(INVALID_INPUT)
     })
-}
-
-#[cfg(test)]
-mod tests {
-    use super::scheduler_wait_millis;
-
-    #[test]
-    fn scheduler_wait_distinguishes_local_lifecycle_work_from_host_io() {
-        assert_eq!(scheduler_wait_millis(None, true, false), Some(0));
-        assert_eq!(scheduler_wait_millis(Some(500), true, false), Some(0));
-        assert_eq!(scheduler_wait_millis(None, true, true), None);
-        assert_eq!(scheduler_wait_millis(Some(500), true, true), Some(500));
-        assert_eq!(scheduler_wait_millis(Some(250), false, false), Some(250));
-        assert_eq!(scheduler_wait_millis(None, false, false), None);
-    }
 }

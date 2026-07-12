@@ -121,11 +121,6 @@ where
     pub fn notify_host_completions(&self) {
         self.socket_runtime.notify_completions();
     }
-
-    #[cfg(target_os = "wasi")]
-    pub(crate) fn has_pending_host_operations(&self) -> bool {
-        self.socket_runtime.has_pending_operations()
-    }
 }
 
 impl<B, I> HostCoreInstance<B, HostConnectorEnvironment<HostConnectorEnvironmentServiceAdapter<I>>>

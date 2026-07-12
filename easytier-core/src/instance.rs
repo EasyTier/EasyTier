@@ -4,6 +4,9 @@ pub mod host;
 pub mod packet_io;
 pub mod public_ipv6_provider;
 
+#[cfg(any(test, target_os = "wasi"))]
+mod runtime_driver;
+
 use std::sync::{
     Arc, Weak,
     atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering},
