@@ -158,7 +158,7 @@ where
     Ok(())
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum UdpSocketPurpose {
     HolePunchControl,
     HolePunchCandidate,
@@ -167,7 +167,7 @@ pub enum UdpSocketPurpose {
     ProxyNat,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UdpBindOptions {
     pub local_addr: Option<SocketAddr>,
     pub socket_mark: Option<u32>,

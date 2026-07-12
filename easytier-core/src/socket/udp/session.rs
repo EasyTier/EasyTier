@@ -8,6 +8,7 @@ use async_trait::async_trait;
 use bytes::BytesMut;
 use dashmap::DashMap;
 use futures::{SinkExt, StreamExt};
+use serde::{Deserialize, Serialize};
 use tokio::{
     sync::{Mutex as TokioMutex, mpsc, oneshot, watch},
     task::JoinHandle,
@@ -85,7 +86,7 @@ pub trait UdpSessionSocket: Send + Sync + 'static {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum UdpSessionProtocol {
     WireGuard,
     Quic,
@@ -122,7 +123,7 @@ impl UdpSessionConnectRequest {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UdpSessionListenRequest {
     pub bind: UdpBindOptions,
 }

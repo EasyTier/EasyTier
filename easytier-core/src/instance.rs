@@ -12,6 +12,7 @@ use std::{collections::BTreeSet, net::IpAddr, time::Duration};
 
 use async_trait::async_trait;
 use parking_lot::RwLock;
+use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 use tokio_util::task::AbortOnDropHandle;
@@ -135,7 +136,7 @@ where
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CoreRuntimeConfig {
     pub acl: AclRuleConfig,
     pub dhcp_ipv4: bool,
@@ -158,7 +159,7 @@ impl Default for CoreRuntimeConfig {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CoreInstanceConfig {
     pub initial_peers: Vec<Url>,
     pub listeners: Vec<TransportListenerConfig>,
@@ -181,7 +182,7 @@ impl Default for CoreInstanceConfig {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PortableCoreInstanceConfig {
     pub peer: PortablePeerManagerConfig,
     pub connectivity: CoreInstanceConfig,
@@ -1324,6 +1325,29 @@ mod tests {
     use tokio::sync::Notify;
 
     use super::*;
+
+    #[test]
+    fn portable_instance_config_round_trips_as_normalized_json() {
+        let peer = crate::peers::peer_manager::PortablePeerManagerConfig::new(
+            crate::peers::context::PeerRuntimeConfig {
+                core: crate::config::CoreConfig::default(),
+                network_identity: crate::config::NetworkIdentity::default(),
+                stun_info: crate::proto::common::StunInfo::default(),
+                feature_flags: crate::proto::common::PeerFeatureFlag::default(),
+                secure_mode: None,
+                host_routing: crate::peers::context::HostRoutingPolicy::default(),
+            },
+        );
+        let config = PortableCoreInstanceConfig {
+            peer,
+            connectivity: CoreInstanceConfig::default(),
+        };
+
+        let encoded = serde_json::to_value(&config).unwrap();
+        let decoded: PortableCoreInstanceConfig = serde_json::from_value(encoded.clone()).unwrap();
+
+        assert_eq!(serde_json::to_value(decoded).unwrap(), encoded);
+    }
 
     struct StaticProxyPolicy(bool);
 

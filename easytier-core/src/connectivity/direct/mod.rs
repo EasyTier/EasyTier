@@ -11,6 +11,7 @@ use async_trait::async_trait;
 use dashmap::DashMap;
 use quanta::Instant;
 use rand::Rng;
+use serde::{Deserialize, Serialize};
 use tokio::task::JoinSet;
 use url::{Host, Url};
 
@@ -142,7 +143,7 @@ impl DirectTransport {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DirectConnectorOptions {
     pub network_name: String,
     pub default_protocol: String,

@@ -11,6 +11,7 @@ use std::{
 use anyhow::Context;
 use dashmap::DashMap;
 use quanta::Instant;
+use serde::{Deserialize, Serialize};
 use tokio::sync::{
     Mutex, RwLock,
     mpsc::{self, UnboundedReceiver, UnboundedSender},
@@ -190,13 +191,13 @@ pub fn get_next_hop_policy(is_latency_first: bool) -> NextHopPolicy {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RouteAlgoType {
     Ospf,
     None,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PortablePeerManagerConfig {
     pub runtime: PeerRuntimeConfig,
     pub flags: FlagsInConfig,

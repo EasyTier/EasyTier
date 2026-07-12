@@ -5,12 +5,13 @@ use std::{
 };
 
 use easytier_proto::{common as common_pb, core_config as pb};
+use serde::{Deserialize, Serialize};
 
 pub type PeerId = u32;
 
 pub type NetworkSecretDigest = [u8; 32];
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NetworkIdentity {
     pub network_name: String,
     pub network_secret: Option<String>,
@@ -96,7 +97,7 @@ impl Default for NetworkIdentity {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct CoreConfig {
     pub node: NodeConfig,
     pub routes: RouteConfig,
@@ -104,7 +105,7 @@ pub struct CoreConfig {
     pub traffic: TrafficConfig,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct NodeConfig {
     pub peer_id: Option<PeerId>,
     pub instance_id: Option<[u8; 16]>,
@@ -112,7 +113,7 @@ pub struct NodeConfig {
     pub network_name: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct RouteConfig {
     pub ipv4: Option<IpPrefix>,
     pub ipv6: Option<IpPrefix>,
@@ -121,25 +122,25 @@ pub struct RouteConfig {
     pub foreign_networks: Vec<ForeignNetworkConfig>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct IpPrefix {
     pub address: IpAddr,
     pub prefix_len: u8,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProxyNetworkConfig {
     pub real: IpPrefix,
     pub mapped: Option<IpPrefix>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ForeignNetworkConfig {
     pub name: String,
     pub cidrs: Vec<IpPrefix>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PeerPolicyConfig {
     pub p2p_enabled: bool,
     pub relay_peer_rpc: bool,
@@ -160,7 +161,7 @@ impl Default for PeerPolicyConfig {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct P2pPolicyFlags {
     pub disable_udp_hole_punching: bool,
     pub disable_sym_hole_punching: bool,
@@ -169,7 +170,7 @@ pub struct P2pPolicyFlags {
     pub need_p2p: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct TrafficConfig {
     pub mtu: Option<u16>,
     pub instance_recv_bps_limit: Option<u64>,

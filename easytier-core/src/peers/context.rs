@@ -17,6 +17,7 @@ use easytier_proto::{
     peer_rpc::{PeerGroupInfo, TrustedCredentialPubkeyProof},
 };
 use hmac::{Hmac, Mac};
+use serde::{Deserialize, Serialize};
 use sha2::Sha256;
 
 pub use crate::config::{NetworkIdentity, NetworkSecretDigest};
@@ -61,7 +62,7 @@ pub enum PeerContextEvent {
 
 pub type PeerContextEventSubscriber = tokio::sync::broadcast::Receiver<PeerContextEvent>;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PeerRuntimeConfig {
     pub core: CoreConfig,
     pub network_identity: NetworkIdentity,
@@ -71,7 +72,7 @@ pub struct PeerRuntimeConfig {
     pub host_routing: HostRoutingPolicy,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HostRoutingPolicy {
     /// Route otherwise-unreachable external IPv4 traffic through this node and
     /// keep self-delivered packets eligible for the host TUN/proxy path.

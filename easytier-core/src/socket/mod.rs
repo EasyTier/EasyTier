@@ -10,14 +10,16 @@ pub mod ring;
 pub mod tcp;
 pub mod udp;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum IpVersion {
     V4,
     V6,
     Both,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NetNamespace(String);
 
 impl NetNamespace {
@@ -30,7 +32,7 @@ impl NetNamespace {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SocketContext {
     pub ip_version: IpVersion,
     pub socket_mark: Option<u32>,

@@ -6,6 +6,7 @@ use std::{
 };
 
 use cidr::{Ipv6Cidr, Ipv6Inet};
+use serde::{Deserialize, Serialize};
 
 use crate::{
     config::PeerId,
@@ -29,7 +30,7 @@ use crate::{
 static PUBLIC_IPV6_LEASE_TTL: Duration = Duration::from_secs(120);
 static PUBLIC_IPV6_RENEW_INTERVAL: Duration = Duration::from_secs(40);
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PublicIpv6ProviderConfig {
     pub provider_enabled: bool,
     pub configured_prefix: Option<Ipv6Cidr>,

@@ -13,6 +13,7 @@ use dashmap::DashSet;
 use percent_encoding::percent_decode_str;
 use quanta::Instant;
 use rand::seq::SliceRandom;
+use serde::{Deserialize, Serialize};
 use tokio::task::JoinSet;
 use tokio_util::{sync::CancellationToken, task::AbortOnDropHandle};
 use url::Url;
@@ -190,7 +191,7 @@ pub struct ManualConnectorSnapshot {
     pub status: ManualConnectorStatus,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ManualConnectorOptions {
     pub reconnect_interval: Duration,
     pub connect_timeout: Duration,

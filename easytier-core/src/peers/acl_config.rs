@@ -1,8 +1,9 @@
 use anyhow::Context as _;
+use serde::{Deserialize, Serialize};
 
 use crate::proto::acl::{Acl, AclV1, Action, Chain, ChainType, GroupInfo, Protocol, Rule};
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct AclRuleConfig {
     pub acl: Option<Acl>,
     pub tcp_whitelist: Vec<String>,

@@ -21,7 +21,7 @@ base64 = "0.22"
 bitflags = "2.5"
 bytecodec = "0.4.15"
 bytes = "1.5.0"
-cidr = "0.3.1"
+cidr = { version = "0.3.1", features = ["serde"] }
 crossbeam = "0.8.4"
 dashmap = "6.0"
 easytier-proto = { path = "../easytier-proto", default-features = false, features = ["core"] }

@@ -7,6 +7,7 @@ use hyper::{Request, header};
 use hyper_util::rt::TokioIo;
 use rand::{Rng as _, seq::SliceRandom};
 use rustls::pki_types::ServerName;
+use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio_rustls::TlsConnector;
 use tokio_util::task::AbortOnDropHandle;
@@ -36,7 +37,7 @@ pub struct HttpDiscoveryRequest {
     pub tcp_bind: TcpBindOptions,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ManualEndpointDiscoveryConfig {
     pub user_agent: String,
     pub network_name: String,

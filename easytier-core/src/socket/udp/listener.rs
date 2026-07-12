@@ -5,6 +5,7 @@ use std::{
 };
 
 use async_trait::async_trait;
+use serde::{Deserialize, Serialize};
 use url::Url;
 
 use crate::listener::{ListenerConnectionCounter, SocketListener};
@@ -15,7 +16,7 @@ use super::{
     VirtualUdpSocket, VirtualUdpSocketFactory,
 };
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum UdpSessionAcceptKind {
     EasyTierMux,
     Classified(UdpSessionProtocol),

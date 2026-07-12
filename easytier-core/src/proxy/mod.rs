@@ -1,3 +1,5 @@
+use serde::{Deserialize, Serialize};
+
 pub mod cidr_monitor;
 pub mod cidr_table;
 pub mod proxy_acl;
@@ -30,7 +32,7 @@ pub mod udp_socket_runtime;
 #[cfg(feature = "proxy-packet")]
 pub mod wrapped_tcp_proxy;
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProxyStartupContext {
     pub has_proxy_cidrs: bool,
     pub already_started: bool,

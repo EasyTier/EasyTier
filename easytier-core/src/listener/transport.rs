@@ -5,6 +5,7 @@ use std::{
 };
 
 use async_trait::async_trait;
+use serde::{Deserialize, Serialize};
 use url::Url;
 
 use crate::{
@@ -202,7 +203,7 @@ where
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum TransportListenerConfig {
     Tcp {
         url: Url,

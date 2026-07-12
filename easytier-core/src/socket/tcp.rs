@@ -1,6 +1,7 @@
 use std::{fmt, io, net::SocketAddr, sync::Arc};
 
 use async_trait::async_trait;
+use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncRead, AsyncWrite};
 
 use crate::listener::SocketListener;
@@ -21,7 +22,7 @@ pub trait VirtualTcpSocket: AsyncRead + AsyncWrite + Unpin + Send + 'static {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TcpSocketPurpose {
     DirectConnect,
     FakeTcp,
@@ -30,7 +31,7 @@ pub enum TcpSocketPurpose {
     ProxyNat,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TcpBindOptions {
     pub local_addr: Option<SocketAddr>,
     pub socket_mark: Option<u32>,
@@ -157,7 +158,7 @@ pub trait VirtualTcpListener: Send + Sync + 'static {
     async fn accept(&self) -> io::Result<(Self::Socket, SocketAddr)>;
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TcpListenPurpose {
     DirectConnect,
     HolePunch,
@@ -165,7 +166,7 @@ pub enum TcpListenPurpose {
     ProxyNat,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TcpListenOptions {
     pub bind: TcpBindOptions,
     pub purpose: TcpListenPurpose,
