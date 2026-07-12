@@ -1,4 +1,7 @@
-use std::{collections::BTreeMap, net::Ipv4Addr, sync::Mutex};
+use std::{collections::BTreeMap, net::Ipv4Addr, sync::Mutex, time::Duration};
+
+use async_trait::async_trait;
+use quanta::Instant;
 
 #[cfg(feature = "proxy-packet")]
 use std::future::Future;
@@ -185,6 +188,59 @@ pub struct MagicDnsRoute {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MagicDnsRouteSnapshot {
+    pub revision: Instant,
+    pub routes: Vec<MagicDnsRouteAdvertisement>,
+    pub zone: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MagicDnsRouteAdvertisement {
+    pub hostname: String,
+    pub ipv4_addr: Option<cidr::Ipv4Inet>,
+}
+
+#[async_trait]
+pub trait MagicDnsRouteSource: Send + Sync {
+    async fn snapshot(&self) -> MagicDnsRouteSnapshot;
+    async fn revision(&self) -> Instant;
+}
+
+#[async_trait]
+pub trait MagicDnsRoutePublisher: Send {
+    async fn handshake(&mut self) -> anyhow::Result<()>;
+    async fn heartbeat(&mut self) -> anyhow::Result<()>;
+    async fn publish(&mut self, snapshot: &MagicDnsRouteSnapshot) -> anyhow::Result<()>;
+}
+
+pub async fn run_magic_dns_route_publisher<S, P>(
+    source: &S,
+    publisher: &mut P,
+    unchanged_interval: Duration,
+) -> anyhow::Result<()>
+where
+    S: MagicDnsRouteSource + ?Sized,
+    P: MagicDnsRoutePublisher + ?Sized,
+{
+    let mut published_revision = None;
+    publisher.handshake().await?;
+    loop {
+        publisher.heartbeat().await?;
+
+        let snapshot = source.snapshot().await;
+        if published_revision == Some(snapshot.revision) {
+            tokio::time::sleep(unchanged_interval).await;
+            continue;
+        }
+
+        publisher.publish(&snapshot).await?;
+        if source.revision().await == snapshot.revision {
+            published_revision = Some(snapshot.revision);
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MagicDnsRecordSnapshot {
     pub zones: BTreeMap<String, Vec<MagicDnsRoute>>,
 }
@@ -262,7 +318,119 @@ impl MagicDnsRecordStore {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use super::*;
+
+    struct TestRouteSource {
+        revision: Mutex<Instant>,
+    }
+
+    #[async_trait]
+    impl MagicDnsRouteSource for TestRouteSource {
+        async fn snapshot(&self) -> MagicDnsRouteSnapshot {
+            MagicDnsRouteSnapshot {
+                revision: *self.revision.lock().unwrap(),
+                routes: vec![MagicDnsRouteAdvertisement {
+                    hostname: "node-a".to_owned(),
+                    ipv4_addr: Some("10.1.0.1/24".parse().unwrap()),
+                }],
+                zone: "et.net.".to_owned(),
+            }
+        }
+
+        async fn revision(&self) -> Instant {
+            *self.revision.lock().unwrap()
+        }
+    }
+
+    struct TestRoutePublisher {
+        source: Arc<TestRouteSource>,
+        heartbeat_calls: usize,
+        fail_heartbeat_at: usize,
+        change_revision_on_first_publish: bool,
+        handshake_calls: usize,
+        snapshots: Vec<MagicDnsRouteSnapshot>,
+    }
+
+    #[async_trait]
+    impl MagicDnsRoutePublisher for TestRoutePublisher {
+        async fn handshake(&mut self) -> anyhow::Result<()> {
+            self.handshake_calls += 1;
+            Ok(())
+        }
+
+        async fn heartbeat(&mut self) -> anyhow::Result<()> {
+            self.heartbeat_calls += 1;
+            if self.heartbeat_calls == self.fail_heartbeat_at {
+                anyhow::bail!("stop test publisher");
+            }
+            Ok(())
+        }
+
+        async fn publish(&mut self, snapshot: &MagicDnsRouteSnapshot) -> anyhow::Result<()> {
+            self.snapshots.push(snapshot.clone());
+            if self.change_revision_on_first_publish && self.snapshots.len() == 1 {
+                *self.source.revision.lock().unwrap() = snapshot.revision + Duration::from_secs(1);
+            }
+            Ok(())
+        }
+    }
+
+    fn test_publisher(source: Arc<TestRouteSource>) -> TestRoutePublisher {
+        TestRoutePublisher {
+            source,
+            heartbeat_calls: 0,
+            fail_heartbeat_at: 3,
+            change_revision_on_first_publish: false,
+            handshake_calls: 0,
+            snapshots: Vec::new(),
+        }
+    }
+
+    #[tokio::test]
+    async fn route_publisher_skips_unchanged_snapshot() {
+        let source = Arc::new(TestRouteSource {
+            revision: Mutex::new(Instant::now()),
+        });
+        let mut publisher = test_publisher(source.clone());
+
+        let error = run_magic_dns_route_publisher(
+            source.as_ref(),
+            &mut publisher,
+            Duration::from_millis(1),
+        )
+        .await
+        .unwrap_err();
+
+        assert!(error.to_string().contains("stop test publisher"));
+        assert_eq!(publisher.handshake_calls, 1);
+        assert_eq!(publisher.snapshots.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn route_publisher_retries_change_during_publish() {
+        let source = Arc::new(TestRouteSource {
+            revision: Mutex::new(Instant::now()),
+        });
+        let mut publisher = test_publisher(source.clone());
+        publisher.change_revision_on_first_publish = true;
+
+        let error = run_magic_dns_route_publisher(
+            source.as_ref(),
+            &mut publisher,
+            Duration::from_millis(1),
+        )
+        .await
+        .unwrap_err();
+
+        assert!(error.to_string().contains("stop test publisher"));
+        assert_eq!(publisher.snapshots.len(), 2);
+        assert_ne!(
+            publisher.snapshots[0].revision,
+            publisher.snapshots[1].revision
+        );
+    }
 
     #[cfg(feature = "proxy-packet")]
     fn udp_query(payload: &[u8], destination_port: u16) -> ZCPacket {

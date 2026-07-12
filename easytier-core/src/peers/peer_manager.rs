@@ -21,6 +21,7 @@ use url::Url;
 use crate::{
     compressor::{Compressor as _, DefaultCompressor},
     config::{P2pPolicyFlags, PeerId, ProxyNetworkConfig},
+    magic_dns::{MagicDnsRouteAdvertisement, MagicDnsRouteSnapshot, MagicDnsRouteSource},
     packet::{CompressorAlgo, PacketType, ZCPacket},
     proto::common::{FlagsInConfig, PeerFeatureFlag, StunInfo},
     proto::core_peer::peer::{ListPublicIpv6InfoResponse, PeerConnInfo, Route as CoreRoute},
@@ -1800,6 +1801,35 @@ impl PeerManagerCore {
     #[doc(hidden)]
     pub async fn run_for_test(&self) -> Result<(), Error> {
         self.run().await
+    }
+}
+
+#[async_trait::async_trait]
+impl MagicDnsRouteSource for PeerManagerCore {
+    async fn snapshot(&self) -> MagicDnsRouteSnapshot {
+        let revision = self.get_route().get_peer_info_last_update_time().await;
+        let mut routes = self
+            .list_route_snapshots()
+            .await
+            .into_iter()
+            .map(|route| MagicDnsRouteAdvertisement {
+                hostname: route.hostname,
+                ipv4_addr: route.ipv4_addr.map(Into::into),
+            })
+            .collect::<Vec<_>>();
+        routes.push(MagicDnsRouteAdvertisement {
+            hostname: self.context.hostname(),
+            ipv4_addr: self.context.ipv4(),
+        });
+        MagicDnsRouteSnapshot {
+            revision,
+            routes,
+            zone: self.context.flags().tld_dns_zone,
+        }
+    }
+
+    async fn revision(&self) -> Instant {
+        self.get_route().get_peer_info_last_update_time().await
     }
 }
 
@@ -3663,6 +3693,15 @@ mod tests {
         assert_eq!(snapshot.version, env!("CARGO_PKG_VERSION"));
         assert!(snapshot.public_ipv6_addr.is_none());
         assert!(snapshot.ipv6_public_addr_prefix.is_none());
+
+        let dns_snapshot = MagicDnsRouteSource::snapshot(&core).await;
+        assert_eq!(
+            dns_snapshot.routes.last(),
+            Some(&MagicDnsRouteAdvertisement {
+                hostname: "portable-node".to_owned(),
+                ipv4_addr: Some("10.20.0.91/16".parse().unwrap()),
+            })
+        );
     }
 
     #[tokio::test]
