@@ -28,12 +28,13 @@ pub use listener::{
 pub use packet::{HOLE_PUNCH_PACKET_BODY_LEN, hole_punch_packet_tid, new_hole_punch_packet};
 pub use policy::{should_background_p2p_with_peer, should_try_p2p_with_peer};
 pub use runtime::{
-    SelectPunchListener, SelectPunchListenerResponse, SendPunchPacketBothEasySym,
-    SendPunchPacketBothEasySymResponse, SendPunchPacketCone, SendPunchPacketEasySym,
-    SendPunchPacketHardSym, SendPunchPacketHardSymResponse, UdpHolePunchInbound,
-    UdpHolePunchPeerSource, UdpHolePunchRuntime, UdpHolePunchSignalError, UdpHolePunchSignaling,
-    UdpHolePunchTunnelSink, UdpPortMappingLease, UdpPunchAcceptor, UdpPunchConnCounter,
-    UdpPunchListener, UdpPunchSocket, UdpResolvedPublicAddr, should_blacklist_signal_error,
+    ProtocolUdpHolePunchTransportSink, SelectPunchListener, SelectPunchListenerResponse,
+    SendPunchPacketBothEasySym, SendPunchPacketBothEasySymResponse, SendPunchPacketCone,
+    SendPunchPacketEasySym, SendPunchPacketHardSym, SendPunchPacketHardSymResponse,
+    UdpHolePunchInbound, UdpHolePunchPeerSource, UdpHolePunchRuntime, UdpHolePunchSignalError,
+    UdpHolePunchSignaling, UdpHolePunchTransportSink, UdpHolePunchTunnelSink, UdpPortMappingLease,
+    UdpPunchAcceptor, UdpPunchConnCounter, UdpPunchListener, UdpPunchSocket, UdpResolvedPublicAddr,
+    should_blacklist_signal_error,
 };
 pub use server::{
     SelectedUdpPunchListener, UdpBothEasySymPunchServer, UdpHolePunchServer,

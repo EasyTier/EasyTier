@@ -17,14 +17,12 @@ use tokio::{
 };
 use tokio_util::task::AbortOnDropHandle;
 
-use crate::connectivity::protocol::raw;
-
 use super::{
     HOLE_PUNCH_PACKET_BODY_LEN, MAX_PUBLIC_UDP_HOLE_PUNCH_LISTENERS, ReusableUdpPunchListener,
     SelectPunchListener, SelectPunchListenerResponse, SendPunchPacketBothEasySym,
     SendPunchPacketBothEasySymResponse, SendPunchPacketCone, SendPunchPacketEasySym,
     SendPunchPacketHardSym, SendPunchPacketHardSymResponse, UdpHolePunchInbound,
-    UdpHolePunchRuntime, UdpHolePunchSignalError, UdpHolePunchTunnelSink, UdpPortMappingLease,
+    UdpHolePunchRuntime, UdpHolePunchSignalError, UdpHolePunchTransportSink, UdpPortMappingLease,
     UdpPunchConnCounter, UdpPunchListener, UdpSocketArray, UdpSymPunchLock, VirtualUdpSocket,
     can_reuse_port_mapping_listener, can_reuse_public_listener, new_hole_punch_packet,
     select_reusable_port_mapping_listener_idx, select_reusable_public_listener_idx,
@@ -41,7 +39,7 @@ pub struct SelectedUdpPunchListener<S> {
 pub struct UdpHolePunchServer<R, T>
 where
     R: UdpHolePunchRuntime,
-    T: UdpHolePunchTunnelSink + 'static,
+    T: UdpHolePunchTransportSink + 'static,
 {
     sym_punch_lock: UdpSymPunchLock,
     common: Arc<UdpHolePunchServerCommon<R, T>>,
@@ -54,14 +52,14 @@ where
 impl<R, T> UdpHolePunchServer<R, T>
 where
     R: UdpHolePunchRuntime,
-    T: UdpHolePunchTunnelSink + 'static,
+    T: UdpHolePunchTransportSink + 'static,
 {
-    pub fn new(runtime: Arc<R>, tunnel_sink: Arc<T>, sym_punch_lock: UdpSymPunchLock) -> Self {
+    pub fn new(runtime: Arc<R>, transport_sink: Arc<T>, sym_punch_lock: UdpSymPunchLock) -> Self {
         let common = Arc::new(UdpHolePunchServerCommon::new(
             runtime.clone(),
-            tunnel_sink.clone(),
+            transport_sink.clone(),
         ));
-        let both_easy_sym_common = Arc::new(UdpHolePunchServerCommon::new(runtime, tunnel_sink));
+        let both_easy_sym_common = Arc::new(UdpHolePunchServerCommon::new(runtime, transport_sink));
         let both_easy_sym_server = UdpBothEasySymPunchServer::new(both_easy_sym_common);
         let mut shuffled_port_vec: Vec<u16> = (1..=65535).collect();
         shuffled_port_vec.shuffle(&mut rand::thread_rng());
@@ -238,7 +236,7 @@ where
 impl<R, T> UdpHolePunchInbound for UdpHolePunchServer<R, T>
 where
     R: UdpHolePunchRuntime,
-    T: UdpHolePunchTunnelSink + 'static,
+    T: UdpHolePunchTransportSink + 'static,
 {
     async fn select_punch_listener(
         &self,
@@ -325,10 +323,10 @@ where
 pub struct UdpHolePunchServerCommon<R, T>
 where
     R: UdpHolePunchRuntime,
-    T: UdpHolePunchTunnelSink + 'static,
+    T: UdpHolePunchTransportSink + 'static,
 {
     runtime: Arc<R>,
-    tunnel_sink: Arc<T>,
+    transport_sink: Arc<T>,
     listeners: Arc<Mutex<Vec<Arc<UdpPunchListenerRecord<R::Socket>>>>>,
     pending: Arc<Mutex<Vec<Arc<UdpPunchListenerRecord<R::Socket>>>>>,
     retiring: Arc<Mutex<Vec<Arc<UdpPunchListenerRecord<R::Socket>>>>>,
@@ -338,14 +336,14 @@ where
 impl<R, T> UdpHolePunchServerCommon<R, T>
 where
     R: UdpHolePunchRuntime,
-    T: UdpHolePunchTunnelSink + 'static,
+    T: UdpHolePunchTransportSink + 'static,
 {
-    pub fn new(runtime: Arc<R>, tunnel_sink: Arc<T>) -> Self {
+    pub fn new(runtime: Arc<R>, transport_sink: Arc<T>) -> Self {
         let listeners = Arc::new(Mutex::new(Vec::new()));
 
         Self {
             runtime,
-            tunnel_sink,
+            transport_sink,
             listeners,
             pending: Arc::new(Mutex::new(Vec::new())),
             retiring: Arc::new(Mutex::new(Vec::new())),
@@ -406,7 +404,7 @@ where
         let mut listeners = self.listeners.lock().await;
         listeners.push(Arc::new(UdpPunchListenerRecord::new(
             listener,
-            self.tunnel_sink.clone(),
+            self.transport_sink.clone(),
         )));
     }
 
@@ -417,7 +415,7 @@ where
         let mut pending = self.pending.lock().await;
         let listener = Arc::new(UdpPunchListenerRecord::new(
             listener,
-            self.tunnel_sink.clone(),
+            self.transport_sink.clone(),
         ));
         pending.push(listener.clone());
         listener
@@ -572,9 +570,9 @@ impl<S> UdpPunchListenerRecord<S>
 where
     S: VirtualUdpSocket + 'static,
 {
-    fn new<T>(listener: UdpPunchListener<S>, tunnel_sink: Arc<T>) -> Self
+    fn new<T>(listener: UdpPunchListener<S>, transport_sink: Arc<T>) -> Self
     where
-        T: UdpHolePunchTunnelSink + 'static,
+        T: UdpHolePunchTransportSink + 'static,
     {
         let UdpPunchListener {
             socket,
@@ -594,21 +592,17 @@ where
             while let Ok(socket) = acceptor.accept().await {
                 tracing::warn!(?socket, "udp hole punching listener got peer connection");
                 let (connected, requested_url) = socket.into_connected();
-                let tunnel = match raw::upgrade_connected_udp(connected, requested_url) {
-                    Ok(tunnel) => tunnel,
-                    Err(err) => {
-                        tracing::error!(?err, "failed to build UDP hole-punch tunnel");
-                        continue;
-                    }
-                };
-                let tunnel_sink = tunnel_sink.clone();
+                let transport_sink = transport_sink.clone();
                 let mut connection_tasks = accept_connection_tasks.lock().await;
                 while connection_tasks.try_join_next().is_some() {}
                 connection_tasks.spawn(async move {
-                    if let Err(err) = tunnel_sink.add_server_tunnel(tunnel).await {
+                    if let Err(err) = transport_sink
+                        .add_server_transport(connected, requested_url)
+                        .await
+                    {
                         tracing::error!(
                             ?err,
-                            "failed to add tunnel as server in hole punch listener"
+                            "failed to upgrade or add server UDP hole-punch transport"
                         );
                     }
                 });
@@ -778,7 +772,7 @@ where
 pub struct UdpBothEasySymPunchServer<R, T>
 where
     R: UdpHolePunchRuntime,
-    T: UdpHolePunchTunnelSink + 'static,
+    T: UdpHolePunchTransportSink + 'static,
 {
     common: Arc<UdpHolePunchServerCommon<R, T>>,
     task: Mutex<Option<AbortOnDropHandle<()>>>,
@@ -787,7 +781,7 @@ where
 impl<R, T> UdpBothEasySymPunchServer<R, T>
 where
     R: UdpHolePunchRuntime,
-    T: UdpHolePunchTunnelSink + 'static,
+    T: UdpHolePunchTransportSink + 'static,
 {
     pub fn new(common: Arc<UdpHolePunchServerCommon<R, T>>) -> Self {
         Self {
@@ -956,7 +950,6 @@ mod tests {
         },
         proto::common::StunInfo,
         socket::udp::{UdpBindOptions, UdpSession, UdpSessionKind},
-        tunnel::Tunnel,
     };
 
     struct MockSocket {
@@ -1087,12 +1080,20 @@ mod tests {
     }
 
     #[async_trait]
-    impl UdpHolePunchTunnelSink for MockSink {
-        async fn add_client_tunnel(&self, _tunnel: Box<dyn Tunnel>) -> anyhow::Result<()> {
+    impl UdpHolePunchTransportSink for MockSink {
+        async fn add_client_transport(
+            &self,
+            _connected: crate::connectivity::transport::ConnectedUdpSession,
+            _requested_url: url::Url,
+        ) -> anyhow::Result<()> {
             Ok(())
         }
 
-        async fn add_server_tunnel(&self, _tunnel: Box<dyn Tunnel>) -> anyhow::Result<()> {
+        async fn add_server_transport(
+            &self,
+            _connected: crate::connectivity::transport::ConnectedUdpSession,
+            _requested_url: url::Url,
+        ) -> anyhow::Result<()> {
             self.server_tunnels.fetch_add(1, Ordering::Relaxed);
             Ok(())
         }

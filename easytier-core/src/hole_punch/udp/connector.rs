@@ -16,7 +16,6 @@ use tokio::{
 
 use crate::{
     config::PeerId,
-    connectivity::protocol::raw,
     proto::common::NatType,
     task::{ExternalTaskSignal, PeerTaskLauncher, PeerTaskManager},
 };
@@ -24,7 +23,7 @@ use crate::{
 use super::{
     BLACKLIST_TIMEOUT_SEC, BackOff, P2pPolicyFlags, UdpBothEasySymPunchClient,
     UdpHolePunchClientError, UdpHolePunchPeerSource, UdpHolePunchRuntime, UdpHolePunchSignaling,
-    UdpHolePunchTunnelSink, UdpNatType, UdpPunchClientMethod, UdpPunchSocket, UdpPunchTaskInfo,
+    UdpHolePunchTransportSink, UdpNatType, UdpPunchClientMethod, UdpPunchSocket, UdpPunchTaskInfo,
     UdpSymToConePunchClient, collect_udp_punch_tasks, punch_cone_to_cone,
     should_blacklist_signal_error,
 };
@@ -84,12 +83,12 @@ struct UdpHolePunchConnectorParts<P, S, T, R>
 where
     P: UdpHolePunchPeerSource + 'static,
     S: UdpHolePunchSignaling + 'static,
-    T: UdpHolePunchTunnelSink + 'static,
+    T: UdpHolePunchTransportSink + 'static,
     R: UdpHolePunchRuntime,
 {
     peer_source: Arc<P>,
     signaling: Arc<S>,
-    tunnel_sink: Arc<T>,
+    transport_sink: Arc<T>,
     runtime: Arc<R>,
     sym_punch_lock: UdpSymPunchLock,
     try_cone_before_sym: AtomicBool,
@@ -99,12 +98,12 @@ pub struct UdpHolePunchConnectorData<P, S, T, R>
 where
     P: UdpHolePunchPeerSource + 'static,
     S: UdpHolePunchSignaling + 'static,
-    T: UdpHolePunchTunnelSink + 'static,
+    T: UdpHolePunchTransportSink + 'static,
     R: UdpHolePunchRuntime,
 {
     peer_source: Arc<P>,
     signaling: Arc<S>,
-    tunnel_sink: Arc<T>,
+    transport_sink: Arc<T>,
     runtime: Arc<R>,
     sym_punch_lock: UdpSymPunchLock,
     blacklist: UdpHolePunchBlacklist,
@@ -117,14 +116,14 @@ impl<P, S, T, R> UdpHolePunchConnectorData<P, S, T, R>
 where
     P: UdpHolePunchPeerSource + 'static,
     S: UdpHolePunchSignaling + 'static,
-    T: UdpHolePunchTunnelSink + 'static,
+    T: UdpHolePunchTransportSink + 'static,
     R: UdpHolePunchRuntime,
 {
     fn new(parts: Arc<UdpHolePunchConnectorParts<P, S, T, R>>) -> Arc<Self> {
         Arc::new(Self {
             peer_source: parts.peer_source.clone(),
             signaling: parts.signaling.clone(),
-            tunnel_sink: parts.tunnel_sink.clone(),
+            transport_sink: parts.transport_sink.clone(),
             runtime: parts.runtime.clone(),
             sym_punch_lock: parts.sym_punch_lock.clone(),
             blacklist: UdpHolePunchBlacklist::new(),
@@ -202,21 +201,16 @@ where
         match ret {
             Ok(Some(socket)) => {
                 let (connected, requested_url) = socket.into_connected();
-                let tunnel = match raw::upgrade_connected_udp(connected, requested_url) {
-                    Ok(tunnel) => tunnel,
-                    Err(err) => {
-                        tracing::warn!(?err, "build UDP hole-punch tunnel failed");
-                        op(true);
-                        return false;
-                    }
-                };
-                tracing::info!(?tunnel, "hole punching get tunnel success");
-
-                if let Err(err) = self.tunnel_sink.add_client_tunnel(tunnel).await {
-                    tracing::warn!(?err, "add client tunnel failed");
+                if let Err(err) = self
+                    .transport_sink
+                    .add_client_transport(connected, requested_url)
+                    .await
+                {
+                    tracing::warn!(?err, "upgrade or add UDP hole-punch transport failed");
                     op(true);
                     false
                 } else {
+                    tracing::info!("hole punching transport admitted successfully");
                     true
                 }
             }
@@ -386,7 +380,7 @@ impl<P, S, T, R> PeerTaskLauncher for UdpHolePunchPeerTaskLauncher<P, S, T, R>
 where
     P: UdpHolePunchPeerSource + 'static,
     S: UdpHolePunchSignaling + 'static,
-    T: UdpHolePunchTunnelSink + 'static,
+    T: UdpHolePunchTransportSink + 'static,
     R: UdpHolePunchRuntime,
 {
     type PeerManager = UdpHolePunchConnectorParts<P, S, T, R>;
@@ -466,7 +460,7 @@ pub struct UdpHolePunchConnector<P, S, T, R>
 where
     P: UdpHolePunchPeerSource + 'static,
     S: UdpHolePunchSignaling + 'static,
-    T: UdpHolePunchTunnelSink + 'static,
+    T: UdpHolePunchTransportSink + 'static,
     R: UdpHolePunchRuntime,
 {
     client: PeerTaskManager<UdpHolePunchPeerTaskLauncher<P, S, T, R>>,
@@ -477,13 +471,13 @@ impl<P, S, T, R> UdpHolePunchConnector<P, S, T, R>
 where
     P: UdpHolePunchPeerSource + 'static,
     S: UdpHolePunchSignaling + 'static,
-    T: UdpHolePunchTunnelSink + 'static,
+    T: UdpHolePunchTransportSink + 'static,
     R: UdpHolePunchRuntime,
 {
     pub fn new(
         peer_source: Arc<P>,
         signaling: Arc<S>,
-        tunnel_sink: Arc<T>,
+        transport_sink: Arc<T>,
         runtime: Arc<R>,
         sym_punch_lock: UdpSymPunchLock,
         external_signal: Option<Arc<ExternalTaskSignal>>,
@@ -491,7 +485,7 @@ where
         let parts = Arc::new(UdpHolePunchConnectorParts {
             peer_source,
             signaling,
-            tunnel_sink,
+            transport_sink,
             runtime,
             sym_punch_lock,
             try_cone_before_sym: AtomicBool::new(true),

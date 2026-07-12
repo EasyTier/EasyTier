@@ -6,7 +6,10 @@ use std::{
 use async_trait::async_trait;
 
 use crate::{
-    connectivity::transport::ConnectedUdpSession,
+    connectivity::{
+        protocol::ClientProtocolUpgrader,
+        transport::{ConnectedTransport, ConnectedUdpSession},
+    },
     proto::common::StunInfo,
     socket::udp::{UdpBindOptions, UdpSession, VirtualUdpSocket, VirtualUdpSocketFactory},
     tunnel::Tunnel,
@@ -225,6 +228,70 @@ pub trait UdpHolePunchTunnelSink: Send + Sync {
 }
 
 #[async_trait]
+pub trait UdpHolePunchTransportSink: Send + Sync {
+    async fn add_client_transport(
+        &self,
+        connected: ConnectedUdpSession,
+        requested_url: url::Url,
+    ) -> anyhow::Result<()>;
+
+    async fn add_server_transport(
+        &self,
+        connected: ConnectedUdpSession,
+        requested_url: url::Url,
+    ) -> anyhow::Result<()>;
+}
+
+pub struct ProtocolUdpHolePunchTransportSink<TcpSocket, T> {
+    protocol: Arc<dyn ClientProtocolUpgrader<TcpSocket>>,
+    tunnel_sink: Arc<T>,
+}
+
+impl<TcpSocket: 'static, T> ProtocolUdpHolePunchTransportSink<TcpSocket, T> {
+    pub fn new(protocol: Arc<dyn ClientProtocolUpgrader<TcpSocket>>, tunnel_sink: Arc<T>) -> Self {
+        Self {
+            protocol,
+            tunnel_sink,
+        }
+    }
+
+    async fn upgrade(
+        &self,
+        connected: ConnectedUdpSession,
+        requested_url: url::Url,
+    ) -> anyhow::Result<Box<dyn Tunnel>> {
+        self.protocol
+            .upgrade_client(ConnectedTransport::Udp(connected), requested_url)
+            .await
+    }
+}
+
+#[async_trait]
+impl<TcpSocket, T> UdpHolePunchTransportSink for ProtocolUdpHolePunchTransportSink<TcpSocket, T>
+where
+    TcpSocket: Send + Sync + 'static,
+    T: UdpHolePunchTunnelSink + 'static,
+{
+    async fn add_client_transport(
+        &self,
+        connected: ConnectedUdpSession,
+        requested_url: url::Url,
+    ) -> anyhow::Result<()> {
+        let tunnel = self.upgrade(connected, requested_url).await?;
+        self.tunnel_sink.add_client_tunnel(tunnel).await
+    }
+
+    async fn add_server_transport(
+        &self,
+        connected: ConnectedUdpSession,
+        requested_url: url::Url,
+    ) -> anyhow::Result<()> {
+        let tunnel = self.upgrade(connected, requested_url).await?;
+        self.tunnel_sink.add_server_tunnel(tunnel).await
+    }
+}
+
+#[async_trait]
 pub trait UdpHolePunchPeerSource: Send + Sync {
     fn local_peer_id(&self) -> crate::config::PeerId;
     fn network_name(&self) -> &str;
@@ -287,7 +354,7 @@ mod tests {
         io,
         sync::{
             Arc,
-            atomic::{AtomicBool, Ordering},
+            atomic::{AtomicBool, AtomicUsize, Ordering},
         },
     };
 
@@ -319,6 +386,82 @@ mod tests {
         fn drop(&mut self) {
             self.0.store(true, Ordering::Relaxed);
         }
+    }
+
+    #[derive(Default)]
+    struct MockProtocol {
+        upgrades: AtomicUsize,
+    }
+
+    #[async_trait]
+    impl ClientProtocolUpgrader<()> for MockProtocol {
+        fn supports_scheme(&self, scheme: &str) -> bool {
+            scheme == "udp"
+        }
+
+        async fn upgrade_client(
+            &self,
+            connected: ConnectedTransport<()>,
+            requested_url: url::Url,
+        ) -> anyhow::Result<Box<dyn Tunnel>> {
+            self.upgrades.fetch_add(1, Ordering::Relaxed);
+            let ConnectedTransport::Udp(connected) = connected else {
+                anyhow::bail!("expected UDP transport");
+            };
+            Ok(crate::connectivity::protocol::raw::upgrade_connected_udp(
+                connected,
+                requested_url,
+            )?)
+        }
+    }
+
+    #[derive(Default)]
+    struct MockTunnelSink {
+        clients: AtomicUsize,
+        servers: AtomicUsize,
+    }
+
+    #[async_trait]
+    impl UdpHolePunchTunnelSink for MockTunnelSink {
+        async fn add_client_tunnel(&self, _tunnel: Box<dyn Tunnel>) -> anyhow::Result<()> {
+            self.clients.fetch_add(1, Ordering::Relaxed);
+            Ok(())
+        }
+
+        async fn add_server_tunnel(&self, _tunnel: Box<dyn Tunnel>) -> anyhow::Result<()> {
+            self.servers.fetch_add(1, Ordering::Relaxed);
+            Ok(())
+        }
+    }
+
+    fn punched_socket(local_port: u16, remote_port: u16) -> UdpPunchSocket {
+        let remote_addr = SocketAddr::from(([203, 0, 113, 1], remote_port));
+        let session = UdpSession::identity_standalone(
+            Arc::new(MockSocket {
+                local_addr: SocketAddr::from(([127, 0, 0, 1], local_port)),
+            }),
+            remote_addr,
+            UdpSessionKind::EasyTierMux,
+        )
+        .unwrap();
+        UdpPunchSocket::new(session, remote_addr, ())
+    }
+
+    #[tokio::test]
+    async fn protocol_sink_upgrades_before_role_specific_admission() {
+        let protocol = Arc::new(MockProtocol::default());
+        let tunnel_sink = Arc::new(MockTunnelSink::default());
+        let sink =
+            ProtocolUdpHolePunchTransportSink::<(), _>::new(protocol.clone(), tunnel_sink.clone());
+
+        let (client, client_url) = punched_socket(1000, 2000).into_connected();
+        sink.add_client_transport(client, client_url).await.unwrap();
+        let (server, server_url) = punched_socket(1001, 2001).into_connected();
+        sink.add_server_transport(server, server_url).await.unwrap();
+
+        assert_eq!(protocol.upgrades.load(Ordering::Relaxed), 2);
+        assert_eq!(tunnel_sink.clients.load(Ordering::Relaxed), 1);
+        assert_eq!(tunnel_sink.servers.load(Ordering::Relaxed), 1);
     }
 
     #[tokio::test]
