@@ -163,6 +163,21 @@ impl std::fmt::Debug for GlobalCtx {
 
 pub type ArcGlobalCtx = std::sync::Arc<GlobalCtx>;
 
+pub(crate) fn check_network_in_relay_whitelist(
+    relay_network_whitelist: &str,
+    network_name: &str,
+) -> Result<(), anyhow::Error> {
+    if relay_network_whitelist
+        .split(' ')
+        .map(wildmatch::WildMatch::new)
+        .any(|whitelist| whitelist.matches(network_name))
+    {
+        Ok(())
+    } else {
+        Err(anyhow::anyhow!("network {} not in whitelist", network_name))
+    }
+}
+
 impl PeerContext for GlobalCtx {
     fn network_identity(&self) -> CoreNetworkIdentity {
         let identity = self.get_network_identity();
@@ -650,17 +665,7 @@ impl GlobalCtx {
     }
 
     pub fn check_network_in_whitelist(&self, network_name: &str) -> Result<(), anyhow::Error> {
-        if self
-            .get_flags()
-            .relay_network_whitelist
-            .split(" ")
-            .map(wildmatch::WildMatch::new)
-            .any(|wl| wl.matches(network_name))
-        {
-            Ok(())
-        } else {
-            Err(anyhow::anyhow!("network {} not in whitelist", network_name))
-        }
+        check_network_in_relay_whitelist(&self.get_flags().relay_network_whitelist, network_name)
     }
 
     pub fn get_ipv4(&self) -> Option<cidr::Ipv4Inet> {

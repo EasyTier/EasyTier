@@ -27,7 +27,10 @@ use crate::{
         PeerId,
         config::{ConfigLoader, TomlConfigLoader},
         error::Error,
-        global_ctx::{ArcGlobalCtx, GlobalCtx, NetworkIdentity, TrustedKeySource},
+        global_ctx::{
+            ArcGlobalCtx, GlobalCtx, NetworkIdentity, TrustedKeySource,
+            check_network_in_relay_whitelist,
+        },
         shrink_dashmap,
         stats_manager::StatsManager,
         token_bucket::TokenBucket,
@@ -281,9 +284,11 @@ impl core_foreign_network_manager::ForeignNetworkRuntime for ForeignNetworkRunti
         &self,
         network_name: &str,
     ) -> Result<(), easytier_core::peers::error::Error> {
-        self.global_ctx
-            .check_network_in_whitelist(network_name)
-            .map_err(easytier_core::peers::error::Error::Other)
+        check_network_in_relay_whitelist(
+            &self.parent_context.flags().relay_network_whitelist,
+            network_name,
+        )
+        .map_err(easytier_core::peers::error::Error::Other)
     }
 
     fn relay_all_peer_rpc(&self) -> bool {
@@ -1433,14 +1438,18 @@ pub mod tests {
         ));
         let runtime = ForeignNetworkRuntimeImpl::new(global_ctx.clone(), parent_context.clone());
         assert!(!runtime.relay_all_peer_rpc());
+        assert!(runtime.check_network_in_whitelist("net1").is_ok());
 
         let mut flags = global_ctx.get_flags();
         flags.relay_all_peer_rpc = true;
+        flags.relay_network_whitelist.clear();
         global_ctx.set_flags(flags);
         assert!(!runtime.relay_all_peer_rpc());
+        assert!(runtime.check_network_in_whitelist("net1").is_ok());
 
         parent_context.refresh();
         assert!(runtime.relay_all_peer_rpc());
+        assert!(runtime.check_network_in_whitelist("net1").is_err());
     }
 
     #[tokio::test]
