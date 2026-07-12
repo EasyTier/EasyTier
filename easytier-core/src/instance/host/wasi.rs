@@ -1,6 +1,6 @@
 //! Serialized lifecycle ABI for a Go-driven WASI core instance.
 
-use std::{cell::RefCell, collections::BTreeMap, slice};
+use std::{cell::RefCell, collections::BTreeMap};
 
 use tokio::{runtime::Builder, task::JoinHandle};
 
@@ -12,9 +12,12 @@ use crate::{
 use super::{WasiHostCoreInstance, new_wasi_host_core_instance};
 
 const MAX_CREATE_CONFIG_LEN: usize = 16 * 1024 * 1024;
+const MAX_GUEST_BUFFER_LEN: usize = MAX_CREATE_CONFIG_LEN;
 const INVALID_HANDLE: i32 = -1;
+const INVALID_STATE: i32 = -2;
 const INVALID_INPUT: i32 = -3;
 const ASYNC_ERROR: i32 = -4;
+const BUSY: i32 = -5;
 
 thread_local! {
     static INSTANCES: RefCell<WasiInstanceRegistry> = RefCell::new(WasiInstanceRegistry::default());
@@ -24,6 +27,8 @@ thread_local! {
 struct WasiInstanceRegistry {
     next_handle: u64,
     entries: BTreeMap<u64, WasiInstanceEntry>,
+    buffers: BTreeMap<u32, Box<[u8]>>,
+    active_entry: bool,
     error: String,
 }
 
@@ -48,11 +53,50 @@ impl WasiInstanceRegistry {
     fn set_error(&mut self, error: impl ToString) {
         self.error = error.to_string();
     }
+
+    fn take_entry(&mut self, handle: u64) -> Result<WasiInstanceEntry, i32> {
+        if self.active_entry {
+            self.set_error("core instance lifecycle call is not reentrant");
+            return Err(BUSY);
+        }
+        let Some(entry) = self.entries.remove(&handle) else {
+            self.set_error(format!("unknown core instance handle: {handle}"));
+            return Err(INVALID_HANDLE);
+        };
+        self.active_entry = true;
+        Ok(entry)
+    }
+
+    fn restore_entry(&mut self, handle: u64, entry: WasiInstanceEntry) {
+        debug_assert!(self.active_entry);
+        debug_assert!(self.entries.insert(handle, entry).is_none());
+        self.active_entry = false;
+    }
+
+    fn finish_entry_call(&mut self) {
+        debug_assert!(self.active_entry);
+        self.active_entry = false;
+    }
+
+    fn read_buffer(&self, pointer: u32, length: usize) -> anyhow::Result<Vec<u8>> {
+        let buffer = self
+            .buffers
+            .get(&pointer)
+            .ok_or_else(|| anyhow::anyhow!("unknown guest buffer: {pointer}"))?;
+        if length > buffer.len() {
+            anyhow::bail!(
+                "guest buffer length {length} exceeds allocation {}",
+                buffer.len()
+            );
+        }
+        Ok(buffer[..length].to_vec())
+    }
 }
 
 impl WasiInstanceEntry {
     fn start(&mut self) -> anyhow::Result<()> {
         if self.start_task.is_some()
+            || self.stop_task.is_some()
             || self.instance.instance().state() != CoreInstanceState::Created
         {
             anyhow::bail!("core instance cannot schedule start from its current state");
@@ -118,12 +162,10 @@ impl WasiInstanceEntry {
     }
 }
 
-fn decode_create_config(pointer: u32, length: u32) -> anyhow::Result<HostCoreInstanceCreateConfig> {
-    let length = usize::try_from(length).expect("u32 fits usize on wasm32");
-    if pointer == 0 || length == 0 || length > MAX_CREATE_CONFIG_LEN {
+fn decode_create_config(encoded: &[u8]) -> anyhow::Result<HostCoreInstanceCreateConfig> {
+    if encoded.is_empty() || encoded.len() > MAX_CREATE_CONFIG_LEN {
         anyhow::bail!("invalid host core instance config buffer");
     }
-    let encoded = unsafe { slice::from_raw_parts(pointer as *const u8, length) };
     let config: HostCoreInstanceCreateConfig = serde_json::from_slice(encoded)?;
     config.validate()?;
     Ok(config)
@@ -133,17 +175,61 @@ fn with_entry(
     handle: u64,
     operation: impl FnOnce(&mut WasiInstanceEntry) -> anyhow::Result<i32>,
 ) -> i32 {
+    let mut entry = match INSTANCES.with_borrow_mut(|registry| registry.take_entry(handle)) {
+        Ok(entry) => entry,
+        Err(status) => return status,
+    };
+    let status = match operation(&mut entry) {
+        Ok(status) => status,
+        Err(error) => {
+            entry.error = error.to_string();
+            ASYNC_ERROR
+        }
+    };
+    INSTANCES.with_borrow_mut(|registry| registry.restore_entry(handle, entry));
+    status
+}
+
+fn read_guest_buffer(pointer: u32, length: u32, maximum: usize) -> anyhow::Result<Vec<u8>> {
+    let length = usize::try_from(length).expect("u32 fits usize on wasm32");
+    if pointer == 0 || length == 0 || length > maximum {
+        anyhow::bail!("invalid guest buffer reference");
+    }
+    INSTANCES.with_borrow(|registry| registry.read_buffer(pointer, length))
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn easytier_buffer_alloc(length: u32) -> u32 {
+    let length = usize::try_from(length).expect("u32 fits usize on wasm32");
+    if length == 0 || length > MAX_GUEST_BUFFER_LEN {
+        INSTANCES.with_borrow_mut(|registry| registry.set_error("invalid guest buffer length"));
+        return 0;
+    }
+    let mut buffer = vec![0_u8; length].into_boxed_slice();
+    let pointer = buffer.as_mut_ptr() as u32;
+    if pointer == 0 {
+        INSTANCES.with_borrow_mut(|registry| registry.set_error("guest buffer allocation failed"));
+        return 0;
+    }
     INSTANCES.with_borrow_mut(|registry| {
-        let Some(entry) = registry.entries.get_mut(&handle) else {
-            registry.set_error(format!("unknown core instance handle: {handle}"));
-            return INVALID_HANDLE;
-        };
-        match operation(entry) {
-            Ok(status) => status,
-            Err(error) => {
-                entry.error = error.to_string();
-                ASYNC_ERROR
-            }
+        if registry.buffers.contains_key(&pointer) {
+            registry.set_error("guest buffer allocation collided with a live buffer");
+            0
+        } else {
+            registry.buffers.insert(pointer, buffer);
+            pointer
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn easytier_buffer_free(pointer: u32) -> i32 {
+    INSTANCES.with_borrow_mut(|registry| {
+        if registry.buffers.remove(&pointer).is_some() {
+            0
+        } else {
+            registry.set_error(format!("unknown guest buffer: {pointer}"));
+            INVALID_INPUT
         }
     })
 }
@@ -154,7 +240,14 @@ pub extern "C" fn easytier_instance_create(
     config_length: u32,
     packet_sink_handle: u64,
 ) -> u64 {
-    let config = match decode_create_config(config_pointer, config_length) {
+    let encoded = match read_guest_buffer(config_pointer, config_length, MAX_CREATE_CONFIG_LEN) {
+        Ok(encoded) => encoded,
+        Err(error) => {
+            INSTANCES.with_borrow_mut(|registry| registry.set_error(error));
+            return 0;
+        }
+    };
+    let config = match decode_create_config(&encoded) {
         Ok(config) => config,
         Err(error) => {
             INSTANCES.with_borrow_mut(|registry| registry.set_error(error));
@@ -202,9 +295,12 @@ pub extern "C" fn easytier_instance_create(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn easytier_instance_start(handle: u64) -> i32 {
-    with_entry(handle, |entry| {
-        entry.start()?;
-        Ok(0)
+    with_entry(handle, |entry| match entry.start() {
+        Ok(()) => Ok(0),
+        Err(error) => {
+            entry.error = error.to_string();
+            Ok(INVALID_STATE)
+        }
     })
 }
 
@@ -243,12 +339,14 @@ pub extern "C" fn easytier_instance_send_packet(
     packet_pointer: u32,
     packet_length: u32,
 ) -> i32 {
-    with_entry(handle, |entry| {
-        let length = usize::try_from(packet_length).expect("u32 fits usize on wasm32");
-        if packet_pointer == 0 || length == 0 || length > 1024 * 1024 {
-            return Ok(INVALID_INPUT);
+    let packet = match read_guest_buffer(packet_pointer, packet_length, 1024 * 1024) {
+        Ok(packet) => packet,
+        Err(error) => {
+            INSTANCES.with_borrow_mut(|registry| registry.set_error(error));
+            return INVALID_INPUT;
         }
-        let packet = unsafe { slice::from_raw_parts(packet_pointer as *const u8, length) }.to_vec();
+    };
+    with_entry(handle, |entry| {
         let instance = entry.instance.instance().clone();
         entry.runtime.spawn(async move {
             if let Err(error) = instance.send_ip_packet(packet).await {
@@ -261,14 +359,13 @@ pub extern "C" fn easytier_instance_send_packet(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn easytier_instance_drop(handle: u64) -> i32 {
-    INSTANCES.with_borrow_mut(|registry| {
-        if registry.entries.remove(&handle).is_none() {
-            registry.set_error(format!("unknown core instance handle: {handle}"));
-            INVALID_HANDLE
-        } else {
-            0
-        }
-    })
+    let entry = match INSTANCES.with_borrow_mut(|registry| registry.take_entry(handle)) {
+        Ok(entry) => entry,
+        Err(status) => return status,
+    };
+    drop(entry);
+    INSTANCES.with_borrow_mut(WasiInstanceRegistry::finish_entry_call);
+    0
 }
 
 #[unsafe(no_mangle)]
@@ -289,18 +386,21 @@ pub extern "C" fn easytier_instance_error_copy(
     destination: u32,
     capacity: u32,
 ) -> i32 {
-    INSTANCES.with_borrow(|registry| {
+    INSTANCES.with_borrow_mut(|registry| {
         let error = registry
             .entries
             .get(&handle)
             .map(|entry| entry.error.as_bytes())
-            .unwrap_or_else(|| registry.error.as_bytes());
+            .unwrap_or_else(|| registry.error.as_bytes())
+            .to_vec();
         let capacity = usize::try_from(capacity).expect("u32 fits usize on wasm32");
-        if destination == 0 || capacity < error.len() {
+        let Some(destination) = registry.buffers.get_mut(&destination) else {
+            return INVALID_INPUT;
+        };
+        if capacity > destination.len() || capacity < error.len() {
             return INVALID_INPUT;
         }
-        let destination = unsafe { slice::from_raw_parts_mut(destination as *mut u8, error.len()) };
-        destination.copy_from_slice(error);
+        destination[..error.len()].copy_from_slice(&error);
         i32::try_from(error.len()).unwrap_or(INVALID_INPUT)
     })
 }
