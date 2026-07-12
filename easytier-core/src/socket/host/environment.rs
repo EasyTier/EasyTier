@@ -10,6 +10,12 @@ use crate::connectivity::host::environment::HostConnectorEnvironmentServices;
 use super::{HostOperationId, HostSocketHandle, HostSocketRuntime, udp::HostUdpSocket};
 
 /// Mechanical asynchronous environment operations below connector policy.
+///
+/// Submit calls must take ownership of their complete input before returning
+/// and must leave no operation state when they return an error. A `Pending`
+/// take retains the operation; a `Ready` take consumes both successful and
+/// failed results. Cancellation must remove pending and completed-but-unread
+/// state and is idempotent for an already-absent operation.
 pub trait HostConnectorEnvironmentIo: Send + Sync + 'static {
     fn submit_local_addr_for_remote(
         &self,
@@ -168,7 +174,21 @@ where
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::HashMap, sync::Mutex};
+    use std::{
+        collections::HashMap,
+        sync::{
+            Mutex,
+            atomic::{AtomicBool, Ordering},
+        },
+    };
+
+    use crate::socket::{
+        host::{
+            HostSocketIo,
+            udp::{HostUdpDatagram, HostUdpIo},
+        },
+        udp::UdpSocketSendMeta,
+    };
 
     use super::*;
 
@@ -179,9 +199,15 @@ mod tests {
         Tcp(u16),
     }
 
+    #[derive(Debug, Clone, Copy)]
+    enum Completion {
+        Ok(SocketAddr),
+        Err(io::ErrorKind),
+    }
+
     #[derive(Default)]
     struct TestIo {
-        requests: Mutex<HashMap<HostOperationId, (Request, Option<SocketAddr>)>>,
+        requests: Mutex<HashMap<HostOperationId, (Request, Option<Completion>)>>,
         cancelled: Mutex<Vec<HostOperationId>>,
     }
 
@@ -207,7 +233,10 @@ mod tests {
                 return Poll::Pending;
             };
             requests.remove(&operation);
-            Poll::Ready(Ok(result))
+            Poll::Ready(match result {
+                Completion::Ok(address) => Ok(address),
+                Completion::Err(kind) => Err(kind.into()),
+            })
         }
 
         fn operation_for(&self, request: Request) -> HostOperationId {
@@ -221,8 +250,61 @@ mod tests {
                 .expect("submitted host environment operation")
         }
 
-        fn complete(&self, operation: HostOperationId, result: SocketAddr) {
+        fn complete(&self, operation: HostOperationId, result: Completion) {
             self.requests.lock().unwrap().get_mut(&operation).unwrap().1 = Some(result);
+        }
+    }
+
+    #[derive(Default)]
+    struct CloseTrackingUdpIo {
+        closed: AtomicBool,
+    }
+
+    impl HostSocketIo for CloseTrackingUdpIo {
+        fn cancel_operation(&self, _operation: HostOperationId) -> io::Result<()> {
+            Ok(())
+        }
+
+        fn close(&self, _handle: HostSocketHandle) -> io::Result<()> {
+            self.closed.store(true, Ordering::Relaxed);
+            Ok(())
+        }
+    }
+
+    impl HostUdpIo for CloseTrackingUdpIo {
+        fn submit_recv(
+            &self,
+            _handle: HostSocketHandle,
+            _operation: HostOperationId,
+            _capacity: usize,
+        ) -> io::Result<()> {
+            Err(io::ErrorKind::Unsupported.into())
+        }
+
+        fn take_recv(&self, _operation: HostOperationId) -> Poll<io::Result<HostUdpDatagram>> {
+            Poll::Ready(Err(io::ErrorKind::Unsupported.into()))
+        }
+
+        fn try_send(
+            &self,
+            _handle: HostSocketHandle,
+            _source: &[u8],
+            _peer_addr: SocketAddr,
+            _meta: UdpSocketSendMeta,
+        ) -> io::Result<()> {
+            Err(io::ErrorKind::Unsupported.into())
+        }
+
+        fn submit_send_ready(
+            &self,
+            _handle: HostSocketHandle,
+            _operation: HostOperationId,
+        ) -> io::Result<()> {
+            Err(io::ErrorKind::Unsupported.into())
+        }
+
+        fn take_send_ready(&self, _operation: HostOperationId) -> Poll<io::Result<()>> {
+            Poll::Ready(Err(io::ErrorKind::Unsupported.into()))
         }
     }
 
@@ -295,7 +377,10 @@ mod tests {
         tokio::task::yield_now().await;
 
         let operation = io.operation_for(Request::Local(remote));
-        io.complete(operation, "192.0.2.1:40100".parse().unwrap());
+        io.complete(
+            operation,
+            Completion::Ok("192.0.2.1:40100".parse().unwrap()),
+        );
         runtime.notify_completions();
         assert_eq!(
             task.await.unwrap().unwrap(),
@@ -312,5 +397,66 @@ mod tests {
         let _ = pending.await;
         assert_eq!(*io.cancelled.lock().unwrap(), vec![cancelled]);
         assert!(!io.requests.lock().unwrap().contains_key(&cancelled));
+
+        let failed = tokio::spawn({
+            let services = services.clone();
+            async move { services.tcp_port_mapping(43000).await }
+        });
+        tokio::task::yield_now().await;
+        let failed_operation = io.operation_for(Request::Tcp(43000));
+        io.complete(
+            failed_operation,
+            Completion::Err(io::ErrorKind::AddrNotAvailable),
+        );
+        runtime.notify_completions();
+        assert_eq!(
+            failed
+                .await
+                .unwrap()
+                .unwrap_err()
+                .downcast_ref::<io::Error>()
+                .unwrap()
+                .kind(),
+            io::ErrorKind::AddrNotAvailable
+        );
+        assert!(!io.requests.lock().unwrap().contains_key(&failed_operation));
+
+        let unread = tokio::spawn({
+            let services = services.clone();
+            async move { services.tcp_port_mapping(44000).await }
+        });
+        tokio::task::yield_now().await;
+        let unread_operation = io.operation_for(Request::Tcp(44000));
+        io.complete(
+            unread_operation,
+            Completion::Ok("198.51.100.1:44000".parse().unwrap()),
+        );
+        runtime.notify_completions();
+        unread.abort();
+        let _ = unread.await;
+        assert!(io.cancelled.lock().unwrap().contains(&unread_operation));
+        assert!(!io.requests.lock().unwrap().contains_key(&unread_operation));
+
+        let handle = HostSocketHandle(17);
+        let udp_io = Arc::new(CloseTrackingUdpIo::default());
+        let socket =
+            Arc::new(runtime.udp_socket(udp_io.clone(), handle, "0.0.0.0:41000".parse().unwrap()));
+        let mapping = tokio::spawn({
+            let services = services.clone();
+            async move { services.udp_port_mapping(socket).await }
+        });
+        tokio::task::yield_now().await;
+        let mapping_operation = io.operation_for(Request::Udp(handle));
+        assert!(!udp_io.closed.load(Ordering::Relaxed));
+        io.complete(
+            mapping_operation,
+            Completion::Ok("198.51.100.1:41000".parse().unwrap()),
+        );
+        runtime.notify_completions();
+        assert_eq!(
+            mapping.await.unwrap().unwrap(),
+            "198.51.100.1:41000".parse().unwrap()
+        );
+        assert!(udp_io.closed.load(Ordering::Relaxed));
     }
 }

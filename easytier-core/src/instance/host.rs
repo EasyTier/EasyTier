@@ -5,11 +5,13 @@ use std::sync::Arc;
 use crate::{
     connectivity::host::{
         DirectConnectorEnvironment, HostConnectorAdapter, HostConnectorSocketBackend,
+        environment::{HostConnectorEnvironment, HostConnectorEnvironmentSnapshot},
     },
     hole_punch::tcp::TcpHolePunchEnvironment,
     socket::host::{
         HostSocketRuntime,
         dns::{HostDnsIo, HostDnsResolver},
+        environment::{HostConnectorEnvironmentIo, HostConnectorEnvironmentServiceAdapter},
         packet::{HostPacketIo, HostPacketSink, HostPacketSinkHandle},
     },
 };
@@ -34,8 +36,12 @@ where
     B: HostConnectorSocketBackend,
     E: DirectConnectorEnvironment + TcpHolePunchEnvironment,
 {
-    pub fn new<D, P>(
+    /// Composes adapters under a caller-provided completion runtime.
+    ///
+    /// Any asynchronous environment implementation must use this same runtime.
+    pub fn new_with_runtime<D, P>(
         config: PortableCoreInstanceConfig,
+        socket_runtime: HostSocketRuntime,
         socket_backend: Arc<B>,
         environment: Arc<E>,
         dns_io: Arc<D>,
@@ -46,7 +52,6 @@ where
         D: HostDnsIo,
         P: HostPacketIo,
     {
-        let socket_runtime = HostSocketRuntime::new();
         let host = Arc::new(HostConnectorAdapter::new(
             socket_runtime.clone(),
             socket_backend,
@@ -88,5 +93,46 @@ where
 
     pub fn notify_host_completions(&self) {
         self.socket_runtime.notify_completions();
+    }
+}
+
+impl<B, I> HostCoreInstance<B, HostConnectorEnvironment<HostConnectorEnvironmentServiceAdapter<I>>>
+where
+    B: HostConnectorSocketBackend,
+    I: HostConnectorEnvironmentIo,
+{
+    /// Composes environment operations with every other host adapter under one
+    /// completion runtime.
+    pub fn new_with_environment_io<D, P>(
+        config: PortableCoreInstanceConfig,
+        socket_backend: Arc<B>,
+        environment_snapshot: HostConnectorEnvironmentSnapshot,
+        environment_io: Arc<I>,
+        dns_io: Arc<D>,
+        packet_io: Arc<P>,
+        packet_sink: HostPacketSinkHandle,
+    ) -> anyhow::Result<Self>
+    where
+        D: HostDnsIo,
+        P: HostPacketIo,
+    {
+        let socket_runtime = HostSocketRuntime::new();
+        let services = Arc::new(HostConnectorEnvironmentServiceAdapter::new(
+            socket_runtime.clone(),
+            environment_io,
+        ));
+        let environment = Arc::new(HostConnectorEnvironment::new(
+            environment_snapshot,
+            services,
+        ));
+        Self::new_with_runtime(
+            config,
+            socket_runtime,
+            socket_backend,
+            environment,
+            dns_io,
+            packet_io,
+            packet_sink,
+        )
     }
 }
