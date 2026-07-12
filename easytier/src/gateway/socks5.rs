@@ -30,13 +30,13 @@ use crate::{
 use anyhow::Context;
 use dashmap::{DashMap, mapref::entry::Entry};
 use easytier_core::proxy::{
-    ip_reassembler::{IpReassembler, SmolIpv4Packet},
-    socks5::{Socks5Entry, Socks5EntryKind, Socks5TcpRoute, Socks5TcpRouteContext},
+    socks5::{
+        Socks5Entry, Socks5EntryKind, Socks5PeerPacket, Socks5TcpRoute, Socks5TcpRouteContext,
+        classify_peer_ipv4_payload,
+    },
     tokio_smoltcp::{self, BufferSize, Net, NetConfig, channel_device},
 };
-use pnet::packet::{
-    Packet, ip::IpNextHeaderProtocols, ipv4::Ipv4Packet, tcp::TcpPacket, udp::UdpPacket,
-};
+use pnet::packet::{Packet, ip::IpNextHeaderProtocols, ipv4::Ipv4Packet, tcp::TcpPacket};
 use tokio::{
     io::{AsyncRead, AsyncWrite},
     net::{TcpListener, UdpSocket},
@@ -717,101 +717,62 @@ impl PeerPacketFilter for Socks5Server {
             return Some(packet);
         }
 
-        let payload_bytes = packet.payload();
-
-        let Some(ipv4) = Ipv4Packet::new(payload_bytes) else {
-            return Some(packet);
-        };
-        if ipv4.get_version() != 4 {
-            return Some(packet);
-        }
-
-        let (entry_key, tcp_flags) = match ipv4.get_next_level_protocol() {
-            IpNextHeaderProtocols::Tcp => {
-                let Some(tcp_packet) = TcpPacket::new(ipv4.payload()) else {
-                    return Some(packet);
-                };
-                let entry = Socks5Entry {
-                    dst: SocketAddr::new(ipv4.get_source().into(), tcp_packet.get_source()),
-                    src: SocketAddr::new(
-                        ipv4.get_destination().into(),
-                        tcp_packet.get_destination(),
-                    ),
-                    kind: TCP_ENTRY,
-                };
+        let (entry_key, tcp_flags) = match classify_peer_ipv4_payload(packet.payload()) {
+            Socks5PeerPacket::Tcp {
+                entry,
+                listen_entry,
+                flags,
+            } => {
+                #[cfg(not(feature = "ffi-dataplane"))]
+                let _ = listen_entry;
                 #[cfg(feature = "ffi-dataplane")]
                 let entry = if self.entries.contains_key(&entry) {
                     // Case 1: it is an established connection that has an exactly matched inbound.
                     entry
                 } else {
                     // Case 2: it could be a new TCP SYN packet that has not been accepted.
-                    Socks5Entry {
-                        src: entry.src,
-                        dst: SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0),
-                        kind: TCP_LISTEN_ENTRY,
-                    }
+                    listen_entry
                 };
-                (entry, Some(tcp_packet.get_flags()))
+                (entry, Some(flags))
             }
-
-            IpNextHeaderProtocols::Udp => {
-                let smol_ipv4 = SmolIpv4Packet::new_unchecked(ipv4.packet());
-                let is_fragmented = IpReassembler::is_packet_fragmented(&smol_ipv4);
-                if is_fragmented {
-                    let ipv4_src: IpAddr = ipv4.get_source().into();
-                    // only send to smoltcp if the ipv4 src is in the entries
-                    let is_in_entries = self.entries.iter().any(|x| x.key().dst.ip() == ipv4_src);
-                    tracing::trace!(
-                        ?is_in_entries,
-                        "ipv4 src = {:?}, check need send both smoltcp and kernel tun",
-                        ipv4_src
-                    );
-                    if is_in_entries {
-                        // if the packet is fragmented, no matther what the payload is, need send it to both smoltcp and kernel tun. because
-                        // we cannot determine the udp port of the packet.
-                        match self.packet_sender.try_send(packet.clone()) {
-                            Ok(()) => tracing::trace!(
-                                ?ipv4_src,
-                                entry_count = self.entry_count.load(Ordering::Relaxed),
-                                "socks5 delivered fragmented packet from peer to smoltcp"
-                            ),
-                            Err(err) => tracing::trace!(
-                                ?ipv4_src,
-                                ?err,
-                                entry_count = self.entry_count.load(Ordering::Relaxed),
-                                "socks5 failed to deliver fragmented packet from peer to smoltcp"
-                            ),
-                        }
-                    }
-                    return Some(packet);
-                }
-
-                let Some(udp_packet) = UdpPacket::new(ipv4.payload()) else {
-                    return Some(packet);
-                };
-                (
-                    Socks5Entry {
-                        dst: SocketAddr::new(ipv4.get_source().into(), udp_packet.get_source()),
-                        src: SocketAddr::new(
-                            ipv4.get_destination().into(),
-                            udp_packet.get_destination(),
+            Socks5PeerPacket::Udp { entry } => (entry, None),
+            Socks5PeerPacket::FragmentedUdp { source } => {
+                let source: IpAddr = source.into();
+                // only send to smoltcp if the ipv4 src is in the entries
+                let is_in_entries = self.entries.iter().any(|x| x.key().dst.ip() == source);
+                tracing::trace!(
+                    ?is_in_entries,
+                    "ipv4 src = {:?}, check need send both smoltcp and kernel tun",
+                    source
+                );
+                if is_in_entries {
+                    // if the packet is fragmented, no matther what the payload is, need send it to both smoltcp and kernel tun. because
+                    // we cannot determine the udp port of the packet.
+                    match self.packet_sender.try_send(packet.clone()) {
+                        Ok(()) => tracing::trace!(
+                            ?source,
+                            entry_count = self.entry_count.load(Ordering::Relaxed),
+                            "socks5 delivered fragmented packet from peer to smoltcp"
                         ),
-                        kind: UDP_ENTRY,
-                    },
-                    None,
-                )
-            }
-            _ => {
+                        Err(err) => tracing::trace!(
+                            ?source,
+                            ?err,
+                            entry_count = self.entry_count.load(Ordering::Relaxed),
+                            "socks5 failed to deliver fragmented packet from peer to smoltcp"
+                        ),
+                    }
+                }
                 return Some(packet);
             }
+            Socks5PeerPacket::Unsupported => return Some(packet),
         };
 
         if !self.entries.contains_key(&entry_key) {
             tracing::trace!(
                 ?entry_key,
                 ?tcp_flags,
-                ipv4_src = %ipv4.get_source(),
-                ipv4_dst = %ipv4.get_destination(),
+                ipv4_src = %entry_key.dst.ip(),
+                ipv4_dst = %entry_key.src.ip(),
                 entry_count = self.entry_count.load(Ordering::Relaxed),
                 socks5_enabled = self.socks5_enabled.load(Ordering::Relaxed),
                 "socks5 no entry for packet from peer"
@@ -822,7 +783,8 @@ impl PeerPacketFilter for Socks5Server {
         tracing::trace!(
             ?entry_key,
             ?tcp_flags,
-            ?ipv4,
+            ipv4_src = %entry_key.dst.ip(),
+            ipv4_dst = %entry_key.src.ip(),
             entry_count = self.entry_count.load(Ordering::Relaxed),
             "socks5 found entry for packet from peer"
         );
