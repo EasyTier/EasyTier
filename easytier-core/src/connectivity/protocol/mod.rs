@@ -14,6 +14,7 @@ use super::transport::ConnectedTransport;
 pub mod faketcp;
 pub mod insecure_tls;
 pub mod raw;
+#[cfg(feature = "websocket")]
 pub mod websocket;
 pub mod wireguard;
 
@@ -262,7 +263,7 @@ impl<TcpSocket: 'static> CoreServerProtocolUpgrader<TcpSocket> {
         match scheme {
             "tcp" | "udp" | "ring" => Some(true),
             "unix" => Some(self.config.unix),
-            "ws" | "wss" => Some(self.config.websocket),
+            "ws" | "wss" => Some(cfg!(feature = "websocket") && self.config.websocket),
             "faketcp" => Some(self.config.faketcp),
             _ => None,
         }
@@ -375,6 +376,7 @@ where
 {
     match local_url.scheme() {
         "tcp" => Ok(raw::upgrade_accepted_tcp_with_local_url(socket, local_url)?),
+        #[cfg(feature = "websocket")]
         "ws" | "wss" if config.websocket => Ok(crate::runtime_time::timeout(
             config.websocket_timeout,
             websocket::upgrade_accepted(socket, local_url),
@@ -619,6 +621,17 @@ mod tests {
             disabled.to_string(),
             "unsupported TCP listener protocol: ws"
         );
+    }
+
+    #[test]
+    fn core_server_websocket_capability_follows_feature() {
+        let upgrader = CoreServerProtocolUpgrader::<MockTcpSocket>::new(CoreServerProtocolConfig {
+            websocket: true,
+            ..Default::default()
+        });
+
+        assert_eq!(upgrader.supports_scheme("ws"), cfg!(feature = "websocket"));
+        assert_eq!(upgrader.supports_scheme("wss"), cfg!(feature = "websocket"));
     }
 
     #[tokio::test]

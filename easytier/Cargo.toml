@@ -387,6 +387,7 @@ websocket = [
     "dep:http",
     "dep:tokio-rustls",
     "dep:rustls",
+    "easytier-core/websocket",
     "easytier-proto/websocket",
 ]
 smoltcp = ["dep:smoltcp", "easytier-core/proxy-smoltcp-stack"]
