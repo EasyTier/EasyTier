@@ -578,6 +578,7 @@ mod tests {
             build_runtime_core_instance(global_ctx.clone(), peer_manager, None)
                 .expect("runtime core composition should succeed"),
         );
+        assert_eq!(instance.acl_whitelist_snapshot(), Default::default());
 
         global_ctx
             .config
@@ -588,6 +589,7 @@ mod tests {
             error.to_string().contains("Invalid port number"),
             "unexpected ACL activation error: {error:#}"
         );
+        assert_eq!(instance.acl_whitelist_snapshot().tcp_ports, ["invalid"]);
         instance.stop().await;
     }
 

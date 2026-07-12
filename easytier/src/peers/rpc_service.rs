@@ -251,17 +251,15 @@ impl AclManageRpc for PeerManagerRpcService {
         _: BaseController,
         _request: GetWhitelistRequest,
     ) -> Result<GetWhitelistResponse, rpc_types::error::Error> {
-        let global_ctx = weak_upgrade(&self.peer_manager)?.get_global_ctx();
-        let tcp_ports = global_ctx.config.get_tcp_whitelist();
-        let udp_ports = global_ctx.config.get_udp_whitelist();
+        let snapshot = weak_upgrade(&self.core_instance)?.acl_whitelist_snapshot();
         tracing::info!(
             "Getting whitelist - TCP: {:?}, UDP: {:?}",
-            tcp_ports,
-            udp_ports
+            snapshot.tcp_ports,
+            snapshot.udp_ports
         );
         Ok(GetWhitelistResponse {
-            tcp_ports,
-            udp_ports,
+            tcp_ports: snapshot.tcp_ports,
+            udp_ports: snapshot.udp_ports,
         })
     }
 }

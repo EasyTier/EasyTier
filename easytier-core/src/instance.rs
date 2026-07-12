@@ -10,6 +10,7 @@ use std::sync::{
 use std::{collections::BTreeSet, net::IpAddr, time::Duration};
 
 use async_trait::async_trait;
+use parking_lot::RwLock;
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 use tokio_util::task::AbortOnDropHandle;
@@ -70,6 +71,21 @@ pub enum CoreInstanceState {
     Running,
     Stopping,
     Stopped,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct AclWhitelistSnapshot {
+    pub tcp_ports: Vec<String>,
+    pub udp_ports: Vec<String>,
+}
+
+impl From<&AclRuleConfig> for AclWhitelistSnapshot {
+    fn from(config: &AclRuleConfig) -> Self {
+        Self {
+            tcp_ports: config.tcp_whitelist.clone(),
+            udp_ports: config.udp_whitelist.clone(),
+        }
+    }
 }
 
 impl CoreInstanceState {
@@ -459,6 +475,7 @@ where
     initial_peers: Vec<Url>,
     initial_peers_started: AtomicBool,
     runtime_config: Arc<dyn CoreRuntimeConfigProvider>,
+    acl_whitelist: RwLock<AclWhitelistSnapshot>,
     initial_acl_loaded: AtomicBool,
 }
 
@@ -575,6 +592,7 @@ where
             endpoint_discovery,
         ));
         peer_manager.initialize_portable_acl(&initial_runtime_config.acl)?;
+        let acl_whitelist = AclWhitelistSnapshot::from(&initial_runtime_config.acl);
         let runtime_config: Arc<dyn CoreRuntimeConfigProvider> = runtime_config
             .unwrap_or_else(|| Arc::new(StaticCoreRuntimeConfigProvider(initial_runtime_config)));
         let manual = match manual_events {
@@ -644,6 +662,7 @@ where
             initial_peers,
             initial_peers_started: AtomicBool::new(false),
             runtime_config,
+            acl_whitelist: RwLock::new(acl_whitelist),
             initial_acl_loaded: AtomicBool::new(false),
         })
     }
@@ -1039,7 +1058,9 @@ where
             return Ok(());
         }
 
-        let acl = self.runtime_config.current_runtime_config().acl.build()?;
+        let config = self.runtime_config.current_runtime_config().acl;
+        *self.acl_whitelist.write() = AclWhitelistSnapshot::from(&config);
+        let acl = config.build()?;
         if self.peer_manager.reload_acl(acl.as_ref()) {
             self.refresh_acl_groups().await;
         }
@@ -1049,6 +1070,7 @@ where
 
     pub async fn apply_acl_config(&self, config: AclRuleConfig) -> anyhow::Result<()> {
         let _operation = self.operation.lock().await;
+        *self.acl_whitelist.write() = AclWhitelistSnapshot::from(&config);
         let acl = config.build()?;
         self.peer_manager.reload_acl(acl.as_ref());
         self.refresh_acl_groups().await;
@@ -1177,6 +1199,10 @@ where
 
     pub fn acl_stats(&self) -> crate::proto::acl::AclStats {
         self.peer_manager.acl_stats()
+    }
+
+    pub fn acl_whitelist_snapshot(&self) -> AclWhitelistSnapshot {
+        self.acl_whitelist.read().clone()
     }
 
     pub fn generate_credential(
