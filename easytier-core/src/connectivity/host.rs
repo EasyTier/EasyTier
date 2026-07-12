@@ -14,6 +14,7 @@ use crate::{
         manual::{ManualConnectorHost, ManualInterfaceAddrs},
     },
     hole_punch::tcp::{TcpHolePunchEnvironment, TcpHolePunchHost},
+    hole_punch::udp::new_hole_punch_packet,
     proto::{common::NatType, peer_rpc::GetIpListResponse},
     socket::{
         host::{
@@ -26,7 +27,8 @@ use crate::{
             TcpConnectOptions, TcpListenOptions, VirtualTcpListenerFactory, VirtualTcpSocketFactory,
         },
         udp::{
-            PreferredIpv6Source, UdpBindOptions, UdpSessionControlHandler, VirtualUdpSocketFactory,
+            PreferredIpv6Source, UdpBindOptions, UdpSessionControlHandler, UdpSocketSendMeta,
+            VirtualUdpSocket, VirtualUdpSocketFactory,
         },
     },
 };
@@ -135,14 +137,15 @@ where
 impl<B, E> UdpSessionControlHandler<HostUdpSocket> for HostConnectorAdapter<B, E>
 where
     B: HostConnectorSocketBackend,
-    E: UdpSessionControlHandler<HostUdpSocket>,
+    E: Send + Sync + 'static,
 {
     async fn send_v4_hole_punch(
         &self,
         socket: Arc<HostUdpSocket>,
         dst_addr: SocketAddrV4,
     ) -> std::io::Result<usize> {
-        self.environment.send_v4_hole_punch(socket, dst_addr).await
+        let packet = new_hole_punch_packet(1, 32).into_bytes();
+        socket.send_to(&packet, SocketAddr::V4(dst_addr)).await
     }
 
     async fn send_v6_hole_punch(
@@ -151,9 +154,31 @@ where
         dst_addr: SocketAddrV6,
         preferred_src: Option<PreferredIpv6Source>,
     ) -> std::io::Result<usize> {
-        self.environment
-            .send_v6_hole_punch(socket, dst_addr, preferred_src)
-            .await
+        let packet = new_hole_punch_packet(1, 32).into_bytes();
+        if let Some(source) = preferred_src {
+            let result = socket
+                .send_to_with_meta(
+                    &packet,
+                    SocketAddr::V6(dst_addr),
+                    UdpSocketSendMeta {
+                        src_ip: Some(IpAddr::V6(source.ip)),
+                        src_ifindex: Some(source.ifindex),
+                    },
+                )
+                .await;
+            match result {
+                Ok(sent) => return Ok(sent),
+                Err(error) => {
+                    tracing::debug!(
+                        ?source,
+                        ?dst_addr,
+                        ?error,
+                        "UDP preferred IPv6 source failed, falling back"
+                    );
+                }
+            }
+        }
+        socket.send_to(&packet, SocketAddr::V6(dst_addr)).await
     }
 }
 
@@ -161,7 +186,7 @@ where
 impl<B, E> ManualConnectorHost for HostConnectorAdapter<B, E>
 where
     B: HostConnectorSocketBackend,
-    E: ManualConnectorEnvironment + UdpSessionControlHandler<HostUdpSocket>,
+    E: ManualConnectorEnvironment,
 {
     async fn local_addr_for_remote(&self, remote_addr: SocketAddr) -> anyhow::Result<SocketAddr> {
         self.environment.local_addr_for_remote(remote_addr).await
@@ -176,7 +201,7 @@ where
 impl<B, E> DirectConnectorHost for HostConnectorAdapter<B, E>
 where
     B: HostConnectorSocketBackend,
-    E: DirectConnectorEnvironment + UdpSessionControlHandler<HostUdpSocket>,
+    E: DirectConnectorEnvironment,
 {
     async fn collect_ip_addrs(&self) -> anyhow::Result<GetIpListResponse> {
         self.environment.collect_ip_addrs().await
@@ -235,7 +260,14 @@ where
 
 #[cfg(test)]
 mod tests {
-    use std::{io, task::Poll};
+    use std::{
+        io,
+        sync::{
+            Mutex,
+            atomic::{AtomicBool, Ordering},
+        },
+        task::Poll,
+    };
 
     use crate::socket::{
         host::{
@@ -249,7 +281,11 @@ mod tests {
 
     use super::*;
 
-    struct UnsupportedBackend;
+    #[derive(Default)]
+    struct UnsupportedBackend {
+        udp_send_attempts: Mutex<Vec<(Vec<u8>, SocketAddr, UdpSocketSendMeta)>>,
+        reject_preferred_source: AtomicBool,
+    }
 
     fn unsupported<T>() -> io::Result<T> {
         Err(io::ErrorKind::Unsupported.into())
@@ -310,11 +346,18 @@ mod tests {
         fn try_send(
             &self,
             _handle: HostSocketHandle,
-            _source: &[u8],
-            _peer_addr: SocketAddr,
-            _meta: UdpSocketSendMeta,
+            source: &[u8],
+            peer_addr: SocketAddr,
+            meta: UdpSocketSendMeta,
         ) -> io::Result<()> {
-            unsupported()
+            self.udp_send_attempts
+                .lock()
+                .unwrap()
+                .push((source.to_vec(), peer_addr, meta));
+            if self.reject_preferred_source.load(Ordering::Relaxed) && meta.src_ip.is_some() {
+                return Err(io::ErrorKind::AddrNotAvailable.into());
+            }
+            Ok(())
         }
 
         fn submit_send_ready(
@@ -457,9 +500,6 @@ mod tests {
     }
 
     #[async_trait]
-    impl UdpSessionControlHandler<HostUdpSocket> for TestEnvironment {}
-
-    #[async_trait]
     impl TcpHolePunchEnvironment for TestEnvironment {
         fn tcp_nat_type(&self) -> NatType {
             NatType::Unknown
@@ -483,7 +523,7 @@ mod tests {
 
         let host = TestHost::new(
             HostSocketRuntime::new(),
-            Arc::new(UnsupportedBackend),
+            Arc::new(UnsupportedBackend::default()),
             Arc::new(TestEnvironment),
         );
         let local =
@@ -521,5 +561,60 @@ mod tests {
                 .unwrap(),
             "198.51.100.1:42000".parse().unwrap()
         );
+    }
+
+    #[tokio::test]
+    async fn core_builds_udp_hole_punch_packets_and_falls_back_without_source() {
+        let runtime = HostSocketRuntime::new();
+        let backend = Arc::new(UnsupportedBackend::default());
+        let host =
+            HostConnectorAdapter::new(runtime.clone(), backend.clone(), Arc::new(TestEnvironment));
+        let socket = Arc::new(runtime.udp_socket(
+            backend.clone(),
+            HostSocketHandle(7),
+            "[::]:40100".parse().unwrap(),
+        ));
+        let destination = "[2001:db8::2]:41000".parse().unwrap();
+        let preferred = PreferredIpv6Source {
+            ip: "2001:db8::1".parse().unwrap(),
+            ifindex: 9,
+        };
+
+        let v4_destination = "192.0.2.2:41000".parse().unwrap();
+        let v4_sent = host
+            .send_v4_hole_punch(socket.clone(), v4_destination)
+            .await
+            .unwrap();
+        {
+            let mut attempts = backend.udp_send_attempts.lock().unwrap();
+            assert_eq!(attempts.len(), 1);
+            assert_eq!(v4_sent, attempts[0].0.len());
+            assert_eq!(attempts[0].1, SocketAddr::V4(v4_destination));
+            assert_eq!(attempts[0].2, UdpSocketSendMeta::default());
+            attempts.clear();
+        }
+
+        backend
+            .reject_preferred_source
+            .store(true, Ordering::Relaxed);
+        let sent = host
+            .send_v6_hole_punch(socket, destination, Some(preferred))
+            .await
+            .unwrap();
+
+        let attempts = backend.udp_send_attempts.lock().unwrap();
+        assert_eq!(attempts.len(), 2);
+        assert_eq!(sent, attempts[1].0.len());
+        assert!(!attempts[0].0.is_empty());
+        assert_eq!(attempts[0].0, attempts[1].0);
+        assert_eq!(attempts[0].1, SocketAddr::V6(destination));
+        assert_eq!(
+            attempts[0].2,
+            UdpSocketSendMeta {
+                src_ip: Some(IpAddr::V6(preferred.ip)),
+                src_ifindex: Some(preferred.ifindex),
+            }
+        );
+        assert_eq!(attempts[1].2, UdpSocketSendMeta::default());
     }
 }

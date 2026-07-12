@@ -7,14 +7,10 @@ use crate::{
         DirectConnectorEnvironment, HostConnectorAdapter, HostConnectorSocketBackend,
     },
     hole_punch::tcp::TcpHolePunchEnvironment,
-    socket::{
-        host::{
-            HostSocketRuntime,
-            dns::{HostDnsIo, HostDnsResolver},
-            packet::{HostPacketIo, HostPacketSink, HostPacketSinkHandle},
-            udp::HostUdpSocket,
-        },
-        udp::UdpSessionControlHandler,
+    socket::host::{
+        HostSocketRuntime,
+        dns::{HostDnsIo, HostDnsResolver},
+        packet::{HostPacketIo, HostPacketSink, HostPacketSinkHandle},
     },
 };
 
@@ -27,9 +23,7 @@ use super::{CoreInstance, CoreInstanceAdapters, PortableCoreInstanceConfig};
 pub struct HostCoreInstance<B, E>
 where
     B: HostConnectorSocketBackend,
-    E: DirectConnectorEnvironment
-        + TcpHolePunchEnvironment
-        + UdpSessionControlHandler<HostUdpSocket>,
+    E: DirectConnectorEnvironment + TcpHolePunchEnvironment,
 {
     socket_runtime: HostSocketRuntime,
     instance: Arc<CoreInstance<HostConnectorAdapter<B, E>>>,
@@ -38,9 +32,7 @@ where
 impl<B, E> HostCoreInstance<B, E>
 where
     B: HostConnectorSocketBackend,
-    E: DirectConnectorEnvironment
-        + TcpHolePunchEnvironment
-        + UdpSessionControlHandler<HostUdpSocket>,
+    E: DirectConnectorEnvironment + TcpHolePunchEnvironment,
 {
     pub fn new<D, P>(
         config: PortableCoreInstanceConfig,
