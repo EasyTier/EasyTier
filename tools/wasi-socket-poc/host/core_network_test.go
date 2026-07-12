@@ -28,8 +28,9 @@ type coreNetworkInstance struct {
 }
 
 type coreNetworkDNSResolver struct {
-	mu      sync.Mutex
-	queries []string
+	mu                  sync.Mutex
+	queries             []string
+	successfulIPQueries []string
 }
 
 func (resolver *coreNetworkDNSResolver) record(query decodedDNSQuery) {
@@ -47,6 +48,9 @@ func (resolver *coreNetworkDNSResolver) lookupIP(
 	if err != nil {
 		return nil, fmt.Errorf("network test does not resolve hostname %q", query.host)
 	}
+	resolver.mu.Lock()
+	resolver.successfulIPQueries = append(resolver.successfulIPQueries, query.host)
+	resolver.mu.Unlock()
 	return []netip.Addr{address}, nil
 }
 
@@ -72,24 +76,36 @@ func (resolver *coreNetworkDNSResolver) recorded() []string {
 	return append([]string(nil), resolver.queries...)
 }
 
+func (resolver *coreNetworkDNSResolver) resolvedIP(host string) bool {
+	resolver.mu.Lock()
+	defer resolver.mu.Unlock()
+	for _, query := range resolver.successfulIPQueries {
+		if query == host {
+			return true
+		}
+	}
+	return false
+}
+
 func TestTwoCoreInstancesConnectAndExchangePacket(t *testing.T) {
 	wasm := buildCore(t)
 	fixture, err := os.ReadFile(filepath.Join("testdata", "minimal_core_instance.json"))
 	if err != nil {
 		t.Fatalf("read core instance fixture: %v", err)
 	}
-	port := reserveTCPPort(t)
-	serverConfig := coreNetworkConfig(t, fixture, 1, "10.144.0.1", port, false)
-	clientConfig := coreNetworkConfig(t, fixture, 2, "10.144.0.2", port, true)
+	serverConfig := coreNetworkConfig(t, fixture, 1, "10.144.0.1", 0, false)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	server := newCoreNetworkInstance(t, ctx, wasm, serverConfig)
 	defer server.close(t, ctx)
+	server.start(t, ctx)
+	port := server.bridge.tcpListenerPort(t)
+
+	clientConfig := coreNetworkConfig(t, fixture, 2, "10.144.0.2", port, true)
 	client := newCoreNetworkInstance(t, ctx, wasm, clientConfig)
 	defer client.close(t, ctx)
 
-	server.start(t, ctx)
 	client.start(t, ctx)
 	packet := ipv4Packet(net.IPv4(10, 144, 0, 2), net.IPv4(10, 144, 0, 1), []byte("go-host-core"))
 	driveCoreNetworkUntilPacket(t, ctx, server, client, packet)
@@ -107,8 +123,8 @@ func TestTwoCoreInstancesConnectAndExchangePacket(t *testing.T) {
 	if server.bridge.environmentCallCount() != 0 || client.bridge.environmentCallCount() != 0 {
 		t.Fatal("P2P-disabled network unexpectedly used environment operations")
 	}
-	if queries := client.bridge.dnsResolver.(*coreNetworkDNSResolver).recorded(); len(queries) == 0 {
-		t.Fatal("client did not route DNS through the Go host")
+	if resolver := client.bridge.dnsResolver.(*coreNetworkDNSResolver); !resolver.resolvedIP("127.0.0.1") {
+		t.Fatalf("client did not resolve 127.0.0.1 through Go host: queries=%v", resolver.recorded())
 	}
 
 	client.stop(t, ctx)
@@ -184,6 +200,24 @@ func (b *opaqueBridge) hostResourceCounts() (int, int) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	return len(b.handles), len(b.listeners)
+}
+
+func (b *opaqueBridge) tcpListenerPort(t *testing.T) int {
+	t.Helper()
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if len(b.listeners) != 1 {
+		t.Fatalf("expected one host TCP listener, got %d", len(b.listeners))
+	}
+	for _, listener := range b.listeners {
+		address, ok := listener.listener.Addr().(*net.TCPAddr)
+		if !ok {
+			t.Fatalf("host listener returned %T address", listener.listener.Addr())
+		}
+		return address.Port
+	}
+	t.Fatal("host TCP listener disappeared")
+	return 0
 }
 
 func driveCoreNetworkUntilPacket(
