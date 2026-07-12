@@ -48,8 +48,8 @@ The opaque-handle probes then test a deliberately small host Interface:
   completion;
 - Go executes the requested `net.Conn.Read` or `net.Conn.Write` in goroutines and
   records owned completion data;
-- the host serially re-enters one bounded guest `drive` after an I/O completion
-  or a 5 ms timer tick;
+- the standalone socket probe serially re-enters one bounded guest `drive`
+  after an I/O completion or a test-only 5 ms timer tick;
 - one `net.Pipe` read remains pending while another `net.Pipe` echoes data and a
   Tokio timer advances.
 
@@ -61,8 +61,9 @@ The UDP probe uses the same core reactor with `HostUdpSocket` and
   poll removes one, preserving Tokio cancellation semantics;
 - `try_udp_send` synchronously copies one complete datagram into a bounded Go
   queue; writable waits do not enqueue data and are cancel-safe;
-- a fixed 44-byte network-order ABI carries IPv4/IPv6 peer addresses, port,
-  IPv6 flow/scope, and optional source or destination IP metadata;
+- a fixed 48-byte network-order ABI carries IPv4/IPv6 peer addresses, port,
+  IPv6 flow/scope, optional source or destination IP metadata, and an IPv6
+  source-interface index;
 - the real core socket receives and echoes `udp`; Go performs only
   `ReadFrom`/`WriteTo` and queue bookkeeping.
 
@@ -95,8 +96,32 @@ writable readiness, and Go consumption emits the completion that admits the
 second packet. The test verifies FIFO payloads and waiter cleanup; Go does not
 parse or route the packets.
 
-This slice does not add a wazero fork. Its 5 ms drive loop remains test-only
-rather than becoming part of `easytier-core`.
+The environment probe drives the real
+`HostConnectorEnvironmentServiceAdapter<WasiHostConnectorEnvironmentIo>`:
+
+- Go supplies local-route selection plus UDP and TCP port-mapping operations;
+- every operation is forced through Pending, host completion, guest notify,
+  and owned result consumption;
+- cancellation removes host ownership before cancelling the worker, so a late
+  result cannot reappear.
+
+The lifecycle and minimal-network probes use the actual release
+`easytier_core.wasm` artifact rather than the small guest wrapper:
+
+- Go passes a normalized, versioned JSON config through guest-owned buffers;
+- `create`, `start`, bounded `drive`, `stop`, and `drop` use the exported core
+  lifecycle ABI;
+- the host waits for an I/O completion or the exact value returned by
+  `easytier_instance_next_deadline_millis`; there is no periodic drive tick;
+- two isolated wazero runtimes and Go bridges form a raw-TCP EasyTier peer
+  connection, converge a route, and deliver an injected IPv4 packet through
+  the other instance's host packet sink;
+- the server binds port zero through Go, and the client receives the actual
+  host-created listener port without a reserve-and-release race;
+- cooperative shutdown removes every Go-owned TCP handle and listener.
+
+This slice does not add a wazero fork. The legacy standalone socket probe's
+5 ms loop remains test-only; complete core instances use exported deadlines.
 
 ## Result with wazero 1.12.0
 
@@ -139,19 +164,21 @@ The minimal Model B path works with wazero 1.12.0:
   into probe initialization;
 - address, TXT, and SRV resolution is requested through core's injected DNS
   Interface, including host policy metadata and deterministic completion wakes;
+- local-route and port-mapping services use the same owned asynchronous host
+  operation model;
 - packet egress preserves core ordering across bounded Go-host backpressure;
+- two real core modules complete TCP peer admission, route convergence, packet
+  exchange, and cooperative resource cleanup;
 - all guest calls remain serialized. Go I/O workers never re-enter the module.
 
 The observed test completes with status `0x1b`: timer progress, second-socket
 progress, pending-read isolation, and completion. The exact drive-call count is
 timing-dependent.
 
-This proves functional scheduling, host-controlled socket/DNS resources,
-bounded packet egress, and reuse of the real core Adapters, not the production
-wake strategy. The 5 ms tick is only a PoC mechanism for advancing Tokio timers
-in scenarios that also need deadlines. DNS and packet backpressure probes are
-completion-gated without that tick. Before selecting the bounded-drive
-design, core must export its next timer deadline (or provide one central wait)
-so an idle instance does not poll periodically. Forced TCP partial I/O, UDP
-zero-length/truncation and cancellation through wazero, sustained backpressure,
-multiple UDP peers, and complete instance lifecycle remain later P0.2 work.
+This proves the functional bounded-drive strategy, host-controlled
+socket/DNS/environment resources, bounded packet egress, and reuse of the real
+core Adapters. Complete core instances export their next timer deadline, so an
+idle Go host does not poll periodically. Remaining PoC work is measurement and
+failure-depth coverage: forced TCP partial I/O, UDP zero-length/truncation,
+sustained backpressure, multiple UDP peers, repeated lifecycle failure cases,
+hard kill isolation, and latency/resource accounting.

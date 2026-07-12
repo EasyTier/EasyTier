@@ -301,6 +301,12 @@ a wazero extension.
 
 ### P0.3: DNS and minimal EasyTier network
 
+> Status: functional gate passed with opaque Model B. Two release
+> `easytier_core.wasm` instances use separate Go bridges, create a raw TCP
+> listener/connection through the host, complete peer admission and route
+> convergence, and exchange an IPv4 packet through host packet Interfaces.
+> Address DNS is injected by Go and the scheduler uses exported core deadlines.
+
 - route every hostname lookup through the Go Host Adapter;
 - ensure IP literals and non-IP transports do not accidentally invoke DNS;
 - instantiate two real core wasm modules with different minimal configurations;
@@ -316,6 +322,11 @@ the missing ownership as Phase 1 or Phase 2 work rather than pulling the whole
 refactor into the PoC.
 
 ### P0.4: lifecycle and measurement
+
+> Status: basic cooperative lifecycle passed. Go drives create/start/stop/drop
+> for real core modules and verifies host TCP handles/listeners are released.
+> Repetition, forced failures, hard-kill isolation, and quantitative
+> measurements remain open.
 
 - start and cooperatively stop two module instances repeatedly;
 - leave DNS and socket resources pending during graceful stop and verify cleanup

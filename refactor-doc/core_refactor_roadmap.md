@@ -1,6 +1,6 @@
 # EasyTier Core Refactor Roadmap
 
-> Status: active and authoritative. Updated 2026-07-11.
+> Status: active and authoritative. Updated 2026-07-12.
 
 ## Outcome
 
@@ -45,6 +45,11 @@ Already established:
   Module for URL state, DNS, IP-family ordering, retries, status, and admission;
 - the native crate already contains Adapter implementations for several core
   Interfaces.
+- `easytier-core` exports a versioned WASI lifecycle ABI and host-visible timer
+  deadlines; a Go/wazero host drives it without periodic polling;
+- two isolated release wasm instances form a raw-TCP EasyTier connection and
+  exchange an IPv4 packet using Go-owned DNS, sockets, packet sinks, and
+  connector-environment operations.
 
 The current architecture is still intermediate:
 
@@ -54,7 +59,8 @@ The current architecture is still intermediate:
   listener plus portable tunnel upgrade;
 - native `Instance`, `PeerManager`, `PeerContext`, and process-global state
   still overlap in lifecycle and state ownership;
-- core has no stable wasm artifact contract or Go socket/DNS bridge;
+- the wasm ABI and Go bridge are now functional reference contracts, but still
+  need repeated failure/isolation measurements and a production host package;
 - build features exist, but ownership has not yet settled into deep Modules
   suitable for deliberate feature slicing.
 
@@ -101,6 +107,11 @@ Exit gate:
   ADR;
 - failure produces a written architectural decision before more migration. A
   failed PoC is not patched with per-operation blocking imports.
+
+Current result: public WASIp1 virtual fds are rejected for Tokio socket I/O;
+opaque Model B passes the functional socket, DNS, environment, lifecycle,
+two-instance peer, route, and packet gates. Quantitative measurement and deeper
+failure/isolation cases remain before declaring the ABI production-ready.
 
 ## Phase 1: close the socket-to-tunnel seam
 
