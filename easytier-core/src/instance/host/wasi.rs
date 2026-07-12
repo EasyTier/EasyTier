@@ -171,6 +171,26 @@ impl WasiInstanceEntry {
             CoreInstanceState::Stopped => 4,
         }
     }
+
+    fn next_wait_millis(&self, domain: u64) -> Option<u64> {
+        scheduler_wait_millis(
+            next_deadline_millis(domain),
+            self.start_task.is_some() || self.stop_task.is_some(),
+            self.instance.has_pending_host_operations(),
+        )
+    }
+}
+
+fn scheduler_wait_millis(
+    timer_deadline: Option<u64>,
+    lifecycle_pending: bool,
+    host_operation_pending: bool,
+) -> Option<u64> {
+    if lifecycle_pending && !host_operation_pending {
+        Some(0)
+    } else {
+        timer_deadline
+    }
 }
 
 fn decode_create_config(encoded: &[u8]) -> anyhow::Result<HostCoreInstanceCreateConfig> {
@@ -346,8 +366,9 @@ pub extern "C" fn easytier_instance_state(handle: u64) -> i32 {
     with_entry(handle, |entry| Ok(entry.state_code()))
 }
 
-/// Returns milliseconds until the next core timer, rounded up. `i64::MAX`
-/// means no timer is registered; negative values are ABI status codes.
+/// Returns milliseconds until the next required drive, rounded up. A zero
+/// means lifecycle work remains locally runnable. `i64::MAX` means core is
+/// waiting only for a host completion; negative values are ABI status codes.
 #[unsafe(no_mangle)]
 pub extern "C" fn easytier_instance_next_deadline_millis(handle: u64) -> i64 {
     INSTANCES.with_borrow_mut(|registry| {
@@ -355,11 +376,12 @@ pub extern "C" fn easytier_instance_next_deadline_millis(handle: u64) -> i64 {
             registry.set_error("core instance lifecycle call is not reentrant");
             return i64::from(BUSY);
         }
-        if !registry.entries.contains_key(&handle) {
+        let Some(entry) = registry.entries.get(&handle) else {
             registry.set_error(format!("unknown core instance handle: {handle}"));
             return i64::from(INVALID_HANDLE);
-        }
-        next_deadline_millis(handle)
+        };
+        entry
+            .next_wait_millis(handle)
             .map(|millis| i64::try_from(millis).unwrap_or(i64::MAX))
             .unwrap_or(i64::MAX)
     })
@@ -439,4 +461,19 @@ pub extern "C" fn easytier_instance_error_copy(
         destination[..error.len()].copy_from_slice(&error);
         i32::try_from(error.len()).unwrap_or(INVALID_INPUT)
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::scheduler_wait_millis;
+
+    #[test]
+    fn scheduler_wait_distinguishes_local_lifecycle_work_from_host_io() {
+        assert_eq!(scheduler_wait_millis(None, true, false), Some(0));
+        assert_eq!(scheduler_wait_millis(Some(500), true, false), Some(0));
+        assert_eq!(scheduler_wait_millis(None, true, true), None);
+        assert_eq!(scheduler_wait_millis(Some(500), true, true), Some(500));
+        assert_eq!(scheduler_wait_millis(Some(250), false, false), Some(250));
+        assert_eq!(scheduler_wait_millis(None, false, false), None);
+    }
 }

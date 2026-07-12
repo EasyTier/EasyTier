@@ -107,7 +107,7 @@ impl WakerRegistry {
         }
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, target_os = "wasi"))]
     fn len(&self) -> usize {
         self.wakers.lock().unwrap().len()
     }
@@ -166,6 +166,11 @@ impl HostSocketRuntime {
     pub fn notify_completions(&self) {
         self.inner.completion_epoch.fetch_add(1, Ordering::SeqCst);
         self.inner.wakers.wake_all();
+    }
+
+    #[cfg(target_os = "wasi")]
+    pub(crate) fn has_pending_operations(&self) -> bool {
+        self.inner.wakers.len() != 0
     }
 
     fn next_operation(&self) -> HostOperationId {
