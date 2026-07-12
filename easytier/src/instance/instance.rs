@@ -12,6 +12,7 @@ use anyhow::Context;
 use cidr::{IpCidr, Ipv4Inet};
 use easytier_core::dhcp::DhcpIpv4Host;
 use easytier_core::instance::{ProxyService, ProxyServiceGroup};
+use easytier_core::tunnel::ring::RingTunnelRegistry;
 #[cfg(feature = "tun")]
 use futures::FutureExt;
 use tokio::sync::Mutex;
@@ -30,7 +31,8 @@ use crate::common::config::ConfigLoader;
 use crate::common::error::Error;
 use crate::common::global_ctx::{ArcGlobalCtx, GlobalCtx, GlobalCtxEvent};
 use crate::connector::core_instance::{
-    RuntimeCoreInstance, build_runtime_core_instance_with_services, runtime_core_config,
+    RuntimeCoreInstance, build_runtime_core_instance_with_services_and_ring_registry,
+    runtime_core_config,
 };
 use crate::connector::manual::{ConnectorManagerRpcService, ManualConnectorManager};
 use crate::gateway::icmp_proxy::IcmpProxy;
@@ -87,11 +89,15 @@ impl RuntimeProxyService {
         global_ctx: ArcGlobalCtx,
         peer_manager: Arc<PeerManager>,
         cidr_set: Arc<CidrSet>,
+        ring_registry: Arc<RingTunnelRegistry>,
     ) -> Result<Arc<Self>, Error> {
         let tcp_proxy = TcpProxy::new(
             peer_manager.clone(),
             NatDstTcpConnector::new(Arc::new(
-                crate::connector::runtime::RuntimeConnectorHost::new(global_ctx.clone()),
+                crate::connector::runtime::RuntimeConnectorHost::new_with_ring_registry(
+                    global_ctx.clone(),
+                    ring_registry,
+                ),
             )),
             cidr_set.clone(),
         );
@@ -779,6 +785,7 @@ impl DhcpIpv4Host for RuntimeDhcpIpv4Host {
 impl Instance {
     pub fn new(config: impl ConfigLoader + 'static) -> Self {
         let global_ctx = Arc::new(GlobalCtx::new(config));
+        let ring_registry = crate::tunnel::ring::runtime_ring_registry();
 
         tracing::info!(
             "[INIT] instance creating. config: {}",
@@ -799,6 +806,7 @@ impl Instance {
             global_ctx.clone(),
             peer_manager.clone(),
             proxy_cidr_runtime.clone(),
+            ring_registry.clone(),
         )
         .expect("runtime proxy adapter construction should be infallible");
         #[cfg(feature = "kcp")]
@@ -824,12 +832,13 @@ impl Instance {
         #[cfg(not(any(feature = "kcp", feature = "quic")))]
         let transport_proxy: Option<Arc<dyn ProxyService>> = None;
         let core_instance = Arc::new(
-            build_runtime_core_instance_with_services(
+            build_runtime_core_instance_with_services_and_ring_registry(
                 global_ctx.clone(),
                 peer_manager.clone(),
                 transport_proxy,
                 Some(proxy.clone()),
                 Some(proxy_cidr_runtime),
+                ring_registry,
             )
             .expect("runtime core instance composition should be valid"),
         );

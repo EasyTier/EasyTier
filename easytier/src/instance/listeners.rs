@@ -17,6 +17,7 @@ use easytier_core::{
         tcp::TcpSocketListener,
         udp::{UdpSession, UdpSessionAcceptKind, UdpSessionSocket, UdpSessionSocketListener},
     },
+    tunnel::ring::RingTunnelRegistry,
 };
 use tokio::sync::{Mutex, OwnedSemaphorePermit, Semaphore};
 
@@ -94,12 +95,25 @@ enum AcceptedConnection {
 pub struct ListenerManager<H> {
     global_ctx: ArcGlobalCtx,
     net_ns: NetNS,
+    ring_registry: Arc<RingTunnelRegistry>,
     listener_manager:
         core_listener::ListenerManager<AcceptedConnection, EasyTierAcceptedHandler<H>>,
 }
 
 impl<H: AcceptedTunnelHandler> ListenerManager<H> {
     pub fn new(global_ctx: ArcGlobalCtx, peer_manager: Arc<H>) -> Self {
+        Self::new_with_ring_registry(
+            global_ctx,
+            peer_manager,
+            tunnel::ring::runtime_ring_registry(),
+        )
+    }
+
+    pub(crate) fn new_with_ring_registry(
+        global_ctx: ArcGlobalCtx,
+        peer_manager: Arc<H>,
+        ring_registry: Arc<RingTunnelRegistry>,
+    ) -> Self {
         let protocol =
             crate::connector::protocol::runtime_server_protocol_upgrader(global_ctx.clone());
         let tunnel_handler = Arc::new(RuntimeAcceptedTunnelHandler {
@@ -117,6 +131,7 @@ impl<H: AcceptedTunnelHandler> ListenerManager<H> {
         Self {
             global_ctx: global_ctx.clone(),
             net_ns: global_ctx.net_ns.clone(),
+            ring_registry,
             listener_manager: core_listener::ListenerManager::new_with_events(handler, events),
         }
     }
@@ -153,8 +168,14 @@ impl<H: AcceptedTunnelHandler> ListenerManager<H> {
         match listener.kind {
             core_listener_plan::ListenerKind::Ring => {
                 let url = listener.url;
+                let ring_registry = self.ring_registry.clone();
                 self.listener_manager.add_listener(
-                    move || Box::new(RuntimeRingStreamListener::new(url.clone())),
+                    move || {
+                        Box::new(RuntimeRingStreamListener::new(
+                            url.clone(),
+                            ring_registry.clone(),
+                        ))
+                    },
                     listener.must_succeed,
                 );
                 Ok(())
@@ -286,9 +307,17 @@ pub(crate) struct RuntimeListenerService {
 }
 
 impl RuntimeListenerService {
-    pub(crate) fn new(global_ctx: ArcGlobalCtx, peer_manager: Arc<PeerManagerCore>) -> Self {
+    pub(crate) fn new(
+        global_ctx: ArcGlobalCtx,
+        peer_manager: Arc<PeerManagerCore>,
+        ring_registry: Arc<RingTunnelRegistry>,
+    ) -> Self {
         Self {
-            manager: Mutex::new(ListenerManager::new(global_ctx, peer_manager)),
+            manager: Mutex::new(ListenerManager::new_with_ring_registry(
+                global_ctx,
+                peer_manager,
+                ring_registry,
+            )),
         }
     }
 }
@@ -311,12 +340,17 @@ type EasyTierTcpSocketListener = TcpSocketListener<RuntimeTcpListenerFactory>;
 
 struct RuntimeRingStreamListener {
     url: url::Url,
+    ring_registry: Arc<RingTunnelRegistry>,
     inner: Option<easytier_core::tunnel::ring::RingTunnelSocketListener>,
 }
 
 impl RuntimeRingStreamListener {
-    fn new(url: url::Url) -> Self {
-        Self { url, inner: None }
+    fn new(url: url::Url, ring_registry: Arc<RingTunnelRegistry>) -> Self {
+        Self {
+            url,
+            ring_registry,
+            inner: None,
+        }
     }
 }
 
@@ -339,7 +373,7 @@ impl core_listener::SocketListener for RuntimeRingStreamListener {
             return Ok(());
         }
         let local_id = uuid::Uuid::from_url(self.url.clone(), IpVersion::Both).await?;
-        self.inner = Some(tunnel::ring::runtime_ring_registry().bind(local_id)?);
+        self.inner = Some(self.ring_registry.bind(local_id)?);
         Ok(())
     }
 
@@ -943,6 +977,38 @@ mod tests {
             }
             Ok(())
         }
+    }
+
+    #[tokio::test]
+    async fn ring_connector_and_listener_use_injected_registry() {
+        let global_ctx = get_mock_global_ctx();
+        let shared_registry = Arc::new(RingTunnelRegistry::default());
+        let isolated_registry = Arc::new(RingTunnelRegistry::default());
+        let listener_url: url::Url = format!("ring://{}", uuid::Uuid::new_v4()).parse().unwrap();
+        let mut listener =
+            RuntimeRingStreamListener::new(listener_url.clone(), shared_registry.clone());
+        core_listener::SocketListener::listen(&mut listener)
+            .await
+            .unwrap();
+
+        let isolated_host =
+            RuntimeConnectorHost::new_with_ring_registry(global_ctx.clone(), isolated_registry);
+        assert!(
+            ManualConnectorHost::connect_byte_stream(&isolated_host, &listener_url)
+                .await
+                .is_err()
+        );
+
+        let shared_host = RuntimeConnectorHost::new_with_ring_registry(global_ctx, shared_registry);
+        ManualConnectorHost::connect_byte_stream(&shared_host, &listener_url)
+            .await
+            .unwrap();
+        assert!(matches!(
+            core_listener::SocketListener::accept(&mut listener)
+                .await
+                .unwrap(),
+            AcceptedConnection::ByteStream { .. }
+        ));
     }
 
     #[tokio::test]

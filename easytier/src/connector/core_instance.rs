@@ -16,6 +16,7 @@ use easytier_core::{
         tcp::TcpBindOptions,
         udp::UdpBindOptions,
     },
+    tunnel::ring::RingTunnelRegistry,
 };
 use strum::VariantArray as _;
 
@@ -148,7 +149,20 @@ pub(crate) fn runtime_direct_options(
 pub(crate) fn runtime_core_instance_adapters(
     global_ctx: ArcGlobalCtx,
 ) -> CoreInstanceAdapters<RuntimeConnectorHost> {
-    let host = Arc::new(RuntimeConnectorHost::new(global_ctx.clone()));
+    runtime_core_instance_adapters_with_ring_registry(
+        global_ctx,
+        crate::tunnel::ring::runtime_ring_registry(),
+    )
+}
+
+pub(crate) fn runtime_core_instance_adapters_with_ring_registry(
+    global_ctx: ArcGlobalCtx,
+    ring_registry: Arc<RingTunnelRegistry>,
+) -> CoreInstanceAdapters<RuntimeConnectorHost> {
+    let host = Arc::new(RuntimeConnectorHost::new_with_ring_registry(
+        global_ctx.clone(),
+        ring_registry,
+    ));
     let dns: Arc<dyn DnsResolver> = Arc::new(RuntimeDnsResolver::new());
     let dns_records: Arc<dyn DnsRecordResolver> = Arc::new(RuntimeDnsResolver::new());
     CoreInstanceAdapters {
@@ -200,6 +214,24 @@ pub(crate) fn build_runtime_core_instance_with_services(
     proxy: Option<Arc<dyn easytier_core::instance::ProxyService>>,
     proxy_cidr_runtime: Option<Arc<dyn ProxyCidrRuntime>>,
 ) -> anyhow::Result<RuntimeCoreInstance> {
+    build_runtime_core_instance_with_services_and_ring_registry(
+        global_ctx,
+        peer_manager,
+        transport_proxy,
+        proxy,
+        proxy_cidr_runtime,
+        crate::tunnel::ring::runtime_ring_registry(),
+    )
+}
+
+pub(crate) fn build_runtime_core_instance_with_services_and_ring_registry(
+    global_ctx: ArcGlobalCtx,
+    peer_manager: Arc<PeerManager>,
+    transport_proxy: Option<Arc<dyn easytier_core::instance::ProxyService>>,
+    proxy: Option<Arc<dyn easytier_core::instance::ProxyService>>,
+    proxy_cidr_runtime: Option<Arc<dyn ProxyCidrRuntime>>,
+    ring_registry: Arc<RingTunnelRegistry>,
+) -> anyhow::Result<RuntimeCoreInstance> {
     let config = CoreInstanceConfig {
         initial_peers: global_ctx
             .config
@@ -213,13 +245,17 @@ pub(crate) fn build_runtime_core_instance_with_services(
         manual: runtime_manual_options(&global_ctx),
         direct: runtime_direct_options(&global_ctx, false),
     };
-    let mut adapters = runtime_core_instance_adapters(global_ctx.clone());
+    let mut adapters = runtime_core_instance_adapters_with_ring_registry(
+        global_ctx.clone(),
+        ring_registry.clone(),
+    );
     adapters.transport_proxy = transport_proxy;
     adapters.proxy = proxy;
     adapters.proxy_cidr_runtime = proxy_cidr_runtime;
     adapters.listener = Some(Arc::new(RuntimeListenerService::new(
         global_ctx,
         peer_manager.core(),
+        ring_registry,
     )));
     adapters.udp_hole_punch = Some(Arc::new(super::udp_hole_punch::UdpHolePunchConnector::new(
         peer_manager.clone(),

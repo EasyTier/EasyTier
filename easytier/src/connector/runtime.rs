@@ -21,13 +21,13 @@ use easytier_core::{
             PreferredIpv6Source, UdpBindOptions, UdpSessionControlHandler, VirtualUdpSocketFactory,
         },
     },
+    tunnel::ring::RingTunnelRegistry,
 };
 
 use crate::{
     common::{global_ctx::ArcGlobalCtx, network::IPCollector, stun::StunInfoCollectorTrait},
     proto::peer_rpc::GetIpListResponse,
     tunnel::{
-        ring::runtime_ring_registry,
         tcp_socket::{self, RuntimeTcpListener, RuntimeTcpListenerFactory, RuntimeTcpSocket},
         udp::{RuntimeUdpSessionControlHandler, RuntimeUdpSocket, RuntimeUdpSocketFactory},
     },
@@ -35,16 +35,25 @@ use crate::{
 
 pub(crate) struct RuntimeConnectorHost {
     global_ctx: ArcGlobalCtx,
+    ring_registry: Arc<RingTunnelRegistry>,
     tcp_listener_factory: RuntimeTcpListenerFactory,
     udp_socket_factory: RuntimeUdpSocketFactory,
 }
 
 impl RuntimeConnectorHost {
     pub(crate) fn new(global_ctx: ArcGlobalCtx) -> Self {
+        Self::new_with_ring_registry(global_ctx, crate::tunnel::ring::runtime_ring_registry())
+    }
+
+    pub(crate) fn new_with_ring_registry(
+        global_ctx: ArcGlobalCtx,
+        ring_registry: Arc<RingTunnelRegistry>,
+    ) -> Self {
         Self {
             tcp_listener_factory: RuntimeTcpListenerFactory::new(global_ctx.net_ns.clone()),
             udp_socket_factory: RuntimeUdpSocketFactory::new(global_ctx.net_ns.clone()),
             global_ctx,
+            ring_registry,
         }
     }
 }
@@ -188,7 +197,7 @@ impl ManualConnectorHost for RuntimeConnectorHost {
                 .host_str()
                 .ok_or_else(|| anyhow::anyhow!("ring URL has no peer id: {url}"))?
                 .parse()?;
-            let dialed = runtime_ring_registry().connect(remote_id)?;
+            let dialed = self.ring_registry.connect(remote_id)?;
             let local_url = format!("ring://{}", dialed.local_id).parse()?;
             let socket = RuntimeTcpSocket::from_ring(dialed.socket)?;
             return Ok(ConnectedByteStream::new(
