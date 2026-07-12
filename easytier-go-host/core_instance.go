@@ -82,16 +82,27 @@ func (module *CoreModule) CreateInstance(
 		}
 		return nil, fmt.Errorf("create core instance: %s", message)
 	}
+	module.activeInstance = result
 	if err := module.free(context.WithoutCancel(ctx), pointer); err != nil {
-		_, _ = callOne(
+		dropResult, dropErr := callOne(
 			context.WithoutCancel(ctx),
 			module.module,
 			"easytier_instance_drop",
 			result,
 		)
-		return nil, err
+		if dropErr == nil && int32(dropResult) == 0 {
+			module.activeInstance = 0
+			return nil, err
+		}
+		if dropErr != nil {
+			return nil, fmt.Errorf("%w; drop failed core instance: %v", err, dropErr)
+		}
+		return nil, fmt.Errorf(
+			"%w; drop failed core instance: status=%d",
+			err,
+			int32(dropResult),
+		)
 	}
-	module.activeInstance = result
 	return &CoreInstance{coreModule: module, handle: result}, nil
 }
 
