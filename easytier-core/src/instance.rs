@@ -39,7 +39,7 @@ use crate::{
         acl_config::AclRuleConfig,
         create_packet_recv_chan,
         peer_conn::PeerConnId,
-        peer_manager::{PeerManagerCore, PortablePeerManagerConfig},
+        peer_manager::{PeerManagerCore, PeerSnapshot, PortablePeerManagerConfig},
         public_ipv6::PublicIpv6ProviderConfig,
     },
     proxy::{
@@ -1042,6 +1042,10 @@ where
             .get_peer_map()
             .list_peers_with_conn()
             .await
+    }
+
+    pub async fn peer_snapshots(&self) -> Vec<PeerSnapshot> {
+        self.peer_manager.list_peer_snapshots().await
     }
 
     pub async fn close_peer_conn(

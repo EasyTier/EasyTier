@@ -23,7 +23,7 @@ use crate::{
     config::{P2pPolicyFlags, PeerId},
     packet::{CompressorAlgo, PacketType, ZCPacket},
     proto::common::FlagsInConfig,
-    proto::core_peer::peer::Route as CoreRoute,
+    proto::core_peer::peer::{PeerConnInfo, Route as CoreRoute},
     socket::{
         SocketContext,
         dns::{DnsQuery, DnsResolver},
@@ -69,6 +69,14 @@ use crate::proto::peer_rpc::{
     ForeignNetworkRouteInfoEntry, ForeignNetworkRouteInfoKey, PeerIdentityType,
 };
 use crate::stats_manager::{CounterHandle, LabelSet, LabelType, MetricName, StatsManager};
+
+#[derive(Debug, Clone)]
+pub struct PeerSnapshot {
+    pub peer_id: PeerId,
+    pub default_conn_id: Option<PeerConnId>,
+    pub directly_connected_conns: Vec<PeerConnId>,
+    pub conns: Vec<PeerConnInfo>,
+}
 
 pub struct RpcTransport {
     my_peer_id: PeerId,
@@ -1254,6 +1262,35 @@ impl PeerManagerCore {
 
     pub fn my_peer_id(&self) -> PeerId {
         self.my_peer_id
+    }
+
+    pub async fn list_peer_snapshots(&self) -> Vec<PeerSnapshot> {
+        let foreign_peer_map = self.foreign_network_client.get_peer_map();
+        let mut peers = self.peers.list_peers();
+        peers.extend(foreign_peer_map.list_peers());
+
+        let mut snapshots = Vec::with_capacity(peers.len());
+        for peer_id in peers {
+            let conns = if let Some(conns) = self.peers.list_peer_conns(peer_id).await {
+                conns
+            } else {
+                foreign_peer_map
+                    .list_peer_conns(peer_id)
+                    .await
+                    .unwrap_or_default()
+            };
+            snapshots.push(PeerSnapshot {
+                peer_id,
+                default_conn_id: self.peers.get_peer_default_conn_id(peer_id).await,
+                directly_connected_conns: self
+                    .peers
+                    .get_directly_connections_by_peer_id(peer_id)
+                    .into_iter()
+                    .collect(),
+                conns,
+            });
+        }
+        snapshots
     }
 
     pub fn network_name(&self) -> &str {

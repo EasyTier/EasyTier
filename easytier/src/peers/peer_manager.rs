@@ -1,7 +1,7 @@
 use cidr::{Ipv4Cidr, Ipv6Cidr};
 pub use easytier_core::peers::peer_manager::RouteAlgoType;
 use easytier_core::peers::peer_manager::{
-    DnsAddressResolver, PeerManagerCore, PipelineRegistrationGuard,
+    DnsAddressResolver, PeerManagerCore, PeerSnapshot, PipelineRegistrationGuard,
 };
 use quanta::Instant;
 use std::collections::BTreeSet;
@@ -343,6 +343,10 @@ impl PeerManager {
 
     pub fn get_peer_map(&self) -> Arc<PeerMap> {
         self.core.get_peer_map()
+    }
+
+    pub async fn list_peer_snapshots(&self) -> Vec<PeerSnapshot> {
+        self.core.list_peer_snapshots().await
     }
 
     pub fn get_relay_peer_map(&self) -> Arc<RelayPeerMap> {
