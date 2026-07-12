@@ -1,21 +1,38 @@
-use std::{collections::HashMap, path::PathBuf, time::Duration};
+use std::{path::PathBuf, sync::Arc, time::Duration};
 
 use easytier_core::peers::credential_manager::{
-    CredentialEntry, CredentialInfo, CredentialManager as CoreCredentialManager,
+    CredentialInfo, CredentialManager as CoreCredentialManager, CredentialStorage,
 };
 
 pub struct CredentialManager {
     core: CoreCredentialManager,
-    storage_path: Option<PathBuf>,
+}
+
+struct FileCredentialStorage {
+    path: PathBuf,
+}
+
+impl CredentialStorage for FileCredentialStorage {
+    fn load(&self) -> anyhow::Result<Option<String>> {
+        let Ok(serialized) = std::fs::read_to_string(&self.path) else {
+            return Ok(None);
+        };
+        tracing::info!("loaded credentials from {}", self.path.display());
+        Ok(Some(serialized))
+    }
+
+    fn store(&self, serialized_credentials: &str) -> anyhow::Result<()> {
+        std::fs::write(&self.path, serialized_credentials)?;
+        Ok(())
+    }
 }
 
 impl CredentialManager {
     pub fn new(storage_path: Option<PathBuf>) -> Self {
-        let entries = Self::load_entries_from_disk(storage_path.as_ref());
-        Self {
-            core: CoreCredentialManager::from_entries(entries),
-            storage_path,
-        }
+        let core = storage_path.map_or_else(CoreCredentialManager::new, |path| {
+            CoreCredentialManager::from_storage(Arc::new(FileCredentialStorage { path }))
+        });
+        Self { core }
     }
 
     pub fn generate_credential(
@@ -62,11 +79,7 @@ impl CredentialManager {
         credential_id: Option<String>,
         reusable: bool,
     ) -> (String, String) {
-        if self.core.remove_expired_credentials() {
-            self.save_to_disk();
-        }
-
-        let generated = self.core.generate_credential_with_options_after_cleanup(
+        let generated = self.core.generate_credential_with_options(
             groups,
             allow_relay,
             allowed_proxy_cidrs,
@@ -74,26 +87,15 @@ impl CredentialManager {
             credential_id,
             reusable,
         );
-        if generated.changed {
-            self.save_to_disk();
-        }
         (generated.credential_id, generated.secret)
     }
 
     pub fn revoke_credential(&self, credential_id: &str) -> bool {
-        let removed = self.core.revoke_credential(credential_id);
-        if removed {
-            self.save_to_disk();
-        }
-        removed
+        self.core.revoke_credential(credential_id)
     }
 
     pub fn remove_expired_credentials(&self) -> bool {
-        let removed = self.core.remove_expired_credentials();
-        if removed {
-            self.save_to_disk();
-        }
-        removed
+        self.core.remove_expired_credentials()
     }
 
     pub fn get_trusted_pubkeys(
@@ -113,38 +115,6 @@ impl CredentialManager {
             .into_iter()
             .map(core_credential_info_to_api)
             .collect()
-    }
-
-    fn save_to_disk(&self) {
-        let Some(path) = &self.storage_path else {
-            return;
-        };
-        self.core.with_entries(|creds| {
-            if let Ok(json) = serde_json::to_string_pretty(creds)
-                && let Err(e) = std::fs::write(path, json)
-            {
-                tracing::warn!(?e, "failed to save credentials to disk");
-            }
-        });
-    }
-
-    fn load_entries_from_disk(path: Option<&PathBuf>) -> HashMap<String, CredentialEntry> {
-        let Some(path) = path else {
-            return HashMap::new();
-        };
-        let Ok(data) = std::fs::read_to_string(path) else {
-            return HashMap::new();
-        };
-        match serde_json::from_str::<HashMap<String, CredentialEntry>>(&data) {
-            Ok(loaded) => {
-                tracing::info!("loaded credentials from {}", path.display());
-                loaded
-            }
-            Err(e) => {
-                tracing::warn!(?e, "failed to parse credentials file");
-                HashMap::new()
-            }
-        }
     }
 }
 
