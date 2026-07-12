@@ -218,8 +218,10 @@ impl PeerContext for RuntimePeerContext {
     }
 
     fn feature_flags(&self) -> PeerFeatureFlag {
-        let mut flags = self.snapshot().runtime.feature_flags;
-        flags.avoid_relay_data |= self.support.get_avoid_relay_data_preference();
+        let snapshot = self.snapshot();
+        let mut flags = snapshot.runtime.feature_flags;
+        flags.avoid_relay_data =
+            snapshot.flags.disable_relay_data || self.support.get_avoid_relay_data_preference();
         flags.ipv6_public_addr_provider =
             self.support.get_feature_flags().ipv6_public_addr_provider;
         flags
@@ -465,5 +467,23 @@ mod tests {
             "after-group"
         );
         assert_eq!(context.peer_groups(7)[0].group_name, "after-group");
+    }
+
+    #[tokio::test]
+    async fn runtime_avoid_relay_preference_remains_reversible_after_refresh() {
+        let global_ctx = get_mock_global_ctx();
+        global_ctx.set_avoid_relay_data_preference(true);
+        let context = RuntimePeerContext::new(global_ctx.clone());
+
+        assert!(context.feature_flags().avoid_relay_data);
+        context.refresh();
+        global_ctx.set_avoid_relay_data_preference(false);
+        assert!(!context.feature_flags().avoid_relay_data);
+
+        let mut flags = global_ctx.get_flags();
+        flags.disable_relay_data = true;
+        global_ctx.set_flags(flags);
+        context.refresh();
+        assert!(context.feature_flags().avoid_relay_data);
     }
 }
