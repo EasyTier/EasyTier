@@ -271,6 +271,15 @@ pub struct ForeignNetworkEntryInfo {
 
 #[async_trait::async_trait]
 #[auto_impl::auto_impl(&, Arc)]
+pub trait ForeignNetworkInfoProvider: Send + Sync + 'static {
+    async fn list_foreign_network_infos(
+        &self,
+        include_trusted_keys: bool,
+    ) -> std::collections::HashMap<String, ForeignNetworkEntryInfo>;
+}
+
+#[async_trait::async_trait]
+#[auto_impl::auto_impl(&, Arc)]
 pub trait ForeignNetworkRuntime: Send + Sync + 'static {
     fn parent_context(&self) -> ArcPeerContext;
 
@@ -1124,6 +1133,16 @@ impl ForeignNetworkManager {
             }
         }
         Err(Error::NotFound)
+    }
+}
+
+#[async_trait::async_trait]
+impl ForeignNetworkInfoProvider for ForeignNetworkManager {
+    async fn list_foreign_network_infos(
+        &self,
+        include_trusted_keys: bool,
+    ) -> std::collections::HashMap<String, ForeignNetworkEntryInfo> {
+        ForeignNetworkManager::list_foreign_network_infos(self, include_trusted_keys).await
     }
 }
 

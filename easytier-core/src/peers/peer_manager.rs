@@ -44,7 +44,8 @@ use super::{
     error::Error,
     foreign_network_client::ForeignNetworkClient,
     foreign_network_manager::{
-        ForeignNetworkRouteInfo, ForeignNetworkRouteInfoProvider, GlobalForeignNetworkAccessor,
+        ForeignNetworkEntryInfo, ForeignNetworkInfoProvider, ForeignNetworkRouteInfo,
+        ForeignNetworkRouteInfoProvider, GlobalForeignNetworkAccessor,
         peer_map_foreign_network_accessor,
     },
     peer_conn::{PeerConn, PeerConnId},
@@ -586,6 +587,7 @@ pub struct PeerManagerCore {
     foreign_network_client: Arc<ForeignNetworkClient>,
     foreign_network_handler: Arc<dyn ForeignNetworkPacketHandler>,
     foreign_network_provider: Arc<dyn ForeignNetworkRouteInfoProvider>,
+    foreign_network_info_provider: Arc<dyn ForeignNetworkInfoProvider>,
     foreign_network_closer: Arc<dyn ForeignPeerConnectionCloser>,
     relay_peer_map: Arc<RelayPeerMap>,
     peer_connection_admission: PeerConnectionAdmission,
@@ -798,6 +800,16 @@ impl ForeignNetworkRouteInfoProvider for DisabledForeignNetworkManager {
 }
 
 #[async_trait::async_trait]
+impl ForeignNetworkInfoProvider for DisabledForeignNetworkManager {
+    async fn list_foreign_network_infos(
+        &self,
+        _include_trusted_keys: bool,
+    ) -> std::collections::HashMap<String, ForeignNetworkEntryInfo> {
+        std::collections::HashMap::new()
+    }
+}
+
+#[async_trait::async_trait]
 impl ForeignPeerConnectionCloser for DisabledForeignNetworkManager {
     async fn close_peer_conn(&self, _peer_id: PeerId, _conn_id: &PeerConnId) -> Result<(), Error> {
         Err(Error::NotFound)
@@ -1001,6 +1013,7 @@ impl PeerManagerCore {
     where
         F: ForeignNetworkConnectionAdmission
             + ForeignNetworkPacketHandler
+            + ForeignNetworkInfoProvider
             + ForeignNetworkRouteInfoProvider
             + ForeignPeerConnectionCloser
             + Send
@@ -1176,6 +1189,8 @@ impl PeerManagerCore {
             foreign_network_manager.clone();
         let foreign_network_provider: Arc<dyn ForeignNetworkRouteInfoProvider> =
             foreign_network_manager.clone();
+        let foreign_network_info_provider: Arc<dyn ForeignNetworkInfoProvider> =
+            foreign_network_manager.clone();
         let foreign_network_closer: Arc<dyn ForeignPeerConnectionCloser> =
             foreign_network_manager.clone();
 
@@ -1193,6 +1208,7 @@ impl PeerManagerCore {
                 foreign_network_client,
                 foreign_network_handler,
                 foreign_network_provider,
+                foreign_network_info_provider,
                 foreign_network_closer,
                 relay_peer_map,
                 peer_connection_admission,
@@ -1230,6 +1246,7 @@ impl PeerManagerCore {
         foreign_network_client: Arc<ForeignNetworkClient>,
         foreign_network_handler: Arc<dyn ForeignNetworkPacketHandler>,
         foreign_network_provider: Arc<dyn ForeignNetworkRouteInfoProvider>,
+        foreign_network_info_provider: Arc<dyn ForeignNetworkInfoProvider>,
         foreign_network_closer: Arc<dyn ForeignPeerConnectionCloser>,
         relay_peer_map: Arc<RelayPeerMap>,
         peer_connection_admission: PeerConnectionAdmission,
@@ -1263,6 +1280,7 @@ impl PeerManagerCore {
             foreign_network_client,
             foreign_network_handler,
             foreign_network_provider,
+            foreign_network_info_provider,
             foreign_network_closer,
             relay_peer_map,
             peer_connection_admission,
@@ -1365,6 +1383,15 @@ impl PeerManagerCore {
 
     pub async fn foreign_network_route_infos(&self) -> RouteForeignNetworkInfos {
         self.get_route().list_foreign_network_info().await
+    }
+
+    pub async fn list_foreign_network_infos(
+        &self,
+        include_trusted_keys: bool,
+    ) -> std::collections::HashMap<String, ForeignNetworkEntryInfo> {
+        self.foreign_network_info_provider
+            .list_foreign_network_infos(include_trusted_keys)
+            .await
     }
 
     pub async fn foreign_network_route_summary(&self) -> RouteForeignNetworkSummary {
@@ -3588,6 +3615,7 @@ mod tests {
         assert_ne!(core.context.instance_id(), uuid::Uuid::nil());
         assert_eq!(core.data_compress_algo, CompressorAlgo::None);
         assert!(!DisabledForeignNetworkManager.allow_client_foreign_network());
+        assert!(core.list_foreign_network_infos(false).await.is_empty());
 
         core.run().await.unwrap();
         let route = core.route_algo_inst.ospf_route().unwrap();

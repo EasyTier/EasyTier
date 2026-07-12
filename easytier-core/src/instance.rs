@@ -1191,6 +1191,18 @@ where
         self.peer_manager.foreign_network_route_infos().await
     }
 
+    pub async fn foreign_network_snapshots(
+        &self,
+        include_trusted_keys: bool,
+    ) -> std::collections::HashMap<
+        String,
+        crate::peers::foreign_network_manager::ForeignNetworkEntryInfo,
+    > {
+        self.peer_manager
+            .list_foreign_network_infos(include_trusted_keys)
+            .await
+    }
+
     pub async fn foreign_network_route_summary(
         &self,
     ) -> crate::proto::peer_rpc::RouteForeignNetworkSummary {

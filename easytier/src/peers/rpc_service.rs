@@ -24,7 +24,7 @@ use crate::{
     utils::weak_upgrade,
 };
 
-use super::peer_manager::PeerManager;
+use super::{foreign_network_manager::foreign_network_info_to_api, peer_manager::PeerManager};
 
 #[derive(Clone)]
 pub struct PeerManagerRpcService {
@@ -80,6 +80,20 @@ impl PeerManagerRpcService {
             });
         }
         response
+    }
+
+    async fn list_foreign_networks(
+        core_instance: &RuntimeCoreInstance,
+        include_trusted_keys: bool,
+    ) -> ListForeignNetworkResponse {
+        ListForeignNetworkResponse {
+            foreign_networks: core_instance
+                .foreign_network_snapshots(include_trusted_keys)
+                .await
+                .into_iter()
+                .map(|(network_name, info)| (network_name, foreign_network_info_to_api(info)))
+                .collect(),
+        }
     }
 
     fn format_prefix(prefix: &easytier_core::config::IpPrefix) -> String {
@@ -157,11 +171,8 @@ impl PeerManageRpc for PeerManagerRpcService {
         _: BaseController,
         request: ListForeignNetworkRequest,
     ) -> Result<ListForeignNetworkResponse, rpc_types::error::Error> {
-        let reply = weak_upgrade(&self.peer_manager)?
-            .get_foreign_network_manager()
-            .list_foreign_networks_with_options(request.include_trusted_keys)
-            .await;
-        Ok(reply)
+        let core_instance = weak_upgrade(&self.core_instance)?;
+        Ok(Self::list_foreign_networks(&core_instance, request.include_trusted_keys).await)
     }
 
     async fn list_global_foreign_network(

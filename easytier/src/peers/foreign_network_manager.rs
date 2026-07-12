@@ -11,7 +11,8 @@ use dashmap::DashMap;
 use easytier_core::connectivity::direct::DirectConnectorRpcHandler;
 use easytier_core::peers::foreign_network_manager as core_foreign_network_manager;
 pub use easytier_core::peers::foreign_network_manager::{
-    ForeignNetworkRouteInfo, ForeignNetworkRouteInfoProvider, GlobalForeignNetworkAccessor,
+    ForeignNetworkInfoProvider, ForeignNetworkRouteInfo, ForeignNetworkRouteInfoProvider,
+    GlobalForeignNetworkAccessor,
 };
 use easytier_core::peers::peer_manager::{self as core_peer_manager, ForeignNetworkPacketHandler};
 use tokio::sync::Mutex;
@@ -366,6 +367,36 @@ pub struct ForeignNetworkManager {
     runtime: Arc<ForeignNetworkRuntimeImpl>,
 }
 
+pub(crate) fn foreign_network_info_to_api(
+    info: core_foreign_network_manager::ForeignNetworkEntryInfo,
+) -> ForeignNetworkEntryPb {
+    ForeignNetworkEntryPb {
+        network_secret_digest: info.network_secret_digest,
+        my_peer_id_for_this_network: info.my_peer_id_for_this_network,
+        peers: info
+            .peers
+            .into_iter()
+            .map(|peer| PeerInfo {
+                peer_id: peer.peer_id,
+                conns: peer.conns.into_iter().map(Into::into).collect(),
+                ..Default::default()
+            })
+            .collect(),
+        trusted_keys: info
+            .trusted_keys
+            .into_iter()
+            .map(|key| TrustedKeyInfoPb {
+                pubkey: key.pubkey,
+                source: match key.source {
+                    TrustedKeySource::OspfNode => TrustedKeySourcePb::OspfNode.into(),
+                    TrustedKeySource::OspfCredential => TrustedKeySourcePb::OspfCredential.into(),
+                },
+                expiry_unix: key.expiry_unix,
+            })
+            .collect(),
+    }
+}
+
 impl ForeignNetworkManager {
     #[cfg(test)]
     fn should_reject_credential_trust_path(identity_type: PeerIdentityType) -> bool {
@@ -472,36 +503,8 @@ impl ForeignNetworkManager {
             .await;
 
         for (network_name, info) in networks {
-            let mut entry = ForeignNetworkEntryPb {
-                network_secret_digest: info.network_secret_digest,
-                my_peer_id_for_this_network: info.my_peer_id_for_this_network,
-                peers: Default::default(),
-                trusted_keys: if include_trusted_keys {
-                    info.trusted_keys
-                        .into_iter()
-                        .map(|item| TrustedKeyInfoPb {
-                            pubkey: item.pubkey,
-                            source: match item.source {
-                                TrustedKeySource::OspfNode => TrustedKeySourcePb::OspfNode.into(),
-                                TrustedKeySource::OspfCredential => {
-                                    TrustedKeySourcePb::OspfCredential.into()
-                                }
-                            },
-                            expiry_unix: item.expiry_unix,
-                        })
-                        .collect()
-                } else {
-                    Default::default()
-                },
-            };
-            for peer in info.peers {
-                entry.peers.push(PeerInfo {
-                    peer_id: peer.peer_id,
-                    conns: peer.conns.into_iter().map(Into::into).collect(),
-                    ..Default::default()
-                });
-            }
-            ret.foreign_networks.insert(network_name, entry);
+            ret.foreign_networks
+                .insert(network_name, foreign_network_info_to_api(info));
         }
 
         ret
@@ -532,6 +535,19 @@ impl ForeignNetworkManager {
             .close_peer_conn(peer_id, conn_id)
             .await
             .map_err(Into::into)
+    }
+}
+
+#[async_trait::async_trait]
+impl ForeignNetworkInfoProvider for ForeignNetworkManager {
+    async fn list_foreign_network_infos(
+        &self,
+        include_trusted_keys: bool,
+    ) -> std::collections::HashMap<String, core_foreign_network_manager::ForeignNetworkEntryInfo>
+    {
+        self.core
+            .list_foreign_network_infos(include_trusted_keys)
+            .await
     }
 }
 
@@ -1258,6 +1274,9 @@ pub mod tests {
             Duration::from_secs(5),
         )
         .await;
+
+        let core_infos = pm_center.core().list_foreign_network_infos(true).await;
+        assert!(!core_infos["net1"].trusted_keys.is_empty());
 
         let with_trusted_keys = foreign_mgr.list_foreign_networks_with_options(true).await;
         assert!(
