@@ -34,7 +34,7 @@ use anyhow::Context;
 use dashmap::DashMap;
 use easytier_core::proxy::{
     socks5::{
-        Socks5Entry, Socks5EntryGuard, Socks5EntryKind, Socks5EntryTable, Socks5PeerPacketRoute,
+        Socks5Entry, Socks5EntryKind, Socks5EntryTable, Socks5PeerPacketRoute,
         Socks5TcpConnectPlan, Socks5TcpRoute,
     },
     tokio_smoltcp::{self, BufferSize, Net, NetConfig, channel_device},
@@ -164,7 +164,7 @@ type Socks5EntrySet = Arc<Socks5EntryTable<Socks5EntryData>>;
 struct SmolTcpConnector {
     net: Arc<Net>,
     entries: Socks5EntrySet,
-    current_entry: std::sync::Mutex<Option<Socks5EntryGuard<Socks5EntryData>>>,
+    current_entry: std::sync::Mutex<Option<Socks5Entry>>,
 }
 
 #[async_trait::async_trait]
@@ -185,12 +185,10 @@ impl AsyncTcpConnector for SmolTcpConnector {
             dst: addr,
             kind: TCP_ENTRY,
         };
-        let (entry_guard, insert) = Socks5EntryGuard::register(
-            self.entries.clone(),
-            entry.clone(),
-            Socks5EntryData::Tcp(tmp_listener),
-        );
-        *self.current_entry.lock().unwrap() = Some(entry_guard);
+        *self.current_entry.lock().unwrap() = Some(entry.clone());
+        let insert = self
+            .entries
+            .insert(entry.clone(), Socks5EntryData::Tcp(tmp_listener));
         tracing::trace!(
             ?entry,
             replaced = insert.replaced,
@@ -224,10 +222,9 @@ impl AsyncTcpConnector for SmolTcpConnector {
 
 impl Drop for SmolTcpConnector {
     fn drop(&mut self) {
-        if let Some(entry_guard) = self.current_entry.lock().unwrap().take() {
-            let entry = entry_guard.entry().clone();
+        if let Some(entry) = self.current_entry.lock().unwrap().take() {
             tracing::debug!("drop smoltcp connector entry {:?}", entry);
-            let removal = entry_guard.remove();
+            let removal = self.entries.remove(&entry);
             tracing::trace!(
                 ?entry,
                 removed = removal.removed,
