@@ -130,6 +130,9 @@ func driveCoreUntil(
 			continue
 		}
 		deadline := coreDeadline(t, ctx, module, handle)
+		if deadline < 0 {
+			t.Fatalf("query core deadline: status=%d core_error=%s", deadline, coreError(t, ctx, module, handle))
+		}
 		if deadline == math.MaxInt64 {
 			select {
 			case <-bridge.completion:
