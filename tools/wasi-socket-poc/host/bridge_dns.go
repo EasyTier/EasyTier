@@ -1,5 +1,7 @@
 package host
 
+// DNS operations preserve host policy while returning normalized wire data.
+
 import (
 	"context"
 	"fmt"
