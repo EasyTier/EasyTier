@@ -22,6 +22,11 @@ func (b *opaqueBridge) registerPacketSink(capacity int) (uint64, error) {
 	return handle, nil
 }
 
+// RegisterPacketSink allocates a bounded queue for core packet egress.
+func (b *Bridge) RegisterPacketSink(capacity int) (uint64, error) {
+	return b.registerPacketSink(capacity)
+}
+
 func (b *opaqueBridge) tryPacketWrite(
 	_ context.Context,
 	module api.Module,
@@ -118,4 +123,9 @@ func (b *opaqueBridge) consumePacket(handle uint64) ([]byte, error) {
 	b.mu.Unlock()
 	b.signalCompletion()
 	return packet, nil
+}
+
+// ConsumePacket removes one core egress packet and wakes blocked writers.
+func (b *Bridge) ConsumePacket(handle uint64) ([]byte, error) {
+	return b.consumePacket(handle)
 }

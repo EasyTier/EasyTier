@@ -8,14 +8,20 @@ import (
 	"github.com/tetratelabs/wazero/api"
 )
 
-func newOpaqueBridge(
-	handles map[uint64]net.Conn,
-	packets map[uint64]net.PacketConn,
-) *opaqueBridge {
+// BridgeConfig supplies host resources already authorized for core use. The
+// bridge owns every supplied connection and closes it during Close.
+type BridgeConfig struct {
+	TCPStreams map[uint64]net.Conn
+	UDPSockets map[uint64]net.PacketConn
+}
+
+func NewBridge(config BridgeConfig) *Bridge {
+	handles := config.TCPStreams
+	packets := config.UDPSockets
 	if handles == nil {
 		handles = make(map[uint64]net.Conn)
 	}
-	bridge := &opaqueBridge{
+	bridge := &Bridge{
 		handles:             handles,
 		packets:             make(map[uint64]*opaquePacketState, len(packets)),
 		listeners:           make(map[uint64]*opaqueTCPListenerState),
@@ -41,6 +47,24 @@ func newOpaqueBridge(
 		go bridge.runUDPSends(handle, state)
 	}
 	return bridge
+}
+
+func newOpaqueBridge(
+	handles map[uint64]net.Conn,
+	packets map[uint64]net.PacketConn,
+) *Bridge {
+	return NewBridge(BridgeConfig{TCPStreams: handles, UDPSockets: packets})
+}
+
+// Completion returns a coalescing notification channel. A notification means
+// at least one host operation may be ready for another core drive.
+func (b *Bridge) Completion() <-chan struct{} {
+	return b.completion
+}
+
+// Close releases bridge-owned resources and waits for their workers to exit.
+func (b *Bridge) Close() {
+	b.close()
 }
 
 func (b *opaqueBridge) cancelOperation(

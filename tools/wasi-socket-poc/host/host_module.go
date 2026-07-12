@@ -45,3 +45,8 @@ func (b *opaqueBridge) instantiateHost(ctx context.Context, runtime wazero.Runti
 		Instantiate(ctx)
 	return err
 }
+
+// InstantiateHost registers the easytier_host imports in runtime.
+func (b *Bridge) InstantiateHost(ctx context.Context, runtime wazero.Runtime) error {
+	return b.instantiateHost(ctx, runtime)
+}

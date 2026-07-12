@@ -219,7 +219,7 @@ func instantiateOpaqueHost(
 ) {
 	t.Helper()
 
-	if err := bridge.instantiateHost(ctx, runtime); err != nil {
+	if err := bridge.InstantiateHost(ctx, runtime); err != nil {
 		t.Fatalf("instantiate opaque socket host module: %v", err)
 	}
 }

@@ -121,7 +121,7 @@ type opaquePacketWriteWaiter struct {
 	ready  bool
 }
 
-type opaqueBridge struct {
+type Bridge struct {
 	mu                  sync.Mutex
 	handles             map[uint64]net.Conn
 	packets             map[uint64]*opaquePacketState
@@ -143,6 +143,8 @@ type opaqueBridge struct {
 	completion          chan struct{}
 	workers             sync.WaitGroup
 }
+
+type opaqueBridge = Bridge
 
 func (b *opaqueBridge) allocateHandleLocked() uint64 {
 	b.nextHandle++
