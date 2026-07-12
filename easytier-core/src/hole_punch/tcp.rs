@@ -85,7 +85,7 @@ where
     let bind_addr = bind_addr_for_port(local_port, remote_mapped_addr.is_ipv6());
     let requested_url: url::Url = format!("tcp://{remote_mapped_addr}").parse().unwrap();
 
-    let start = tokio::time::Instant::now();
+    let start = crate::runtime_time::Instant::now();
     let mut attempts = 0_u32;
     while start.elapsed() < Duration::from_secs(10) && attempts < max_attempts {
         attempts = attempts.wrapping_add(1);
@@ -95,7 +95,7 @@ where
         let options =
             TcpConnectOptions::hole_punch(remote_mapped_addr, Some(bind_addr)).with_bind(bind);
         if let Ok(Ok(socket)) =
-            tokio::time::timeout(Duration::from_secs(3), host.connect_tcp(options)).await
+            crate::runtime_time::timeout(Duration::from_secs(3), host.connect_tcp(options)).await
         {
             let tunnel = raw::upgrade_connected_tcp(socket, requested_url.clone())?;
             let admission_result = match admission {
@@ -134,7 +134,7 @@ where
             "tcp hole punch server connect attempt failed"
         );
         let sleep_ms = rand::thread_rng().gen_range(10..100);
-        tokio::time::sleep(Duration::from_millis(sleep_ms)).await;
+        crate::runtime_time::sleep(Duration::from_millis(sleep_ms)).await;
     }
 
     tracing::warn!(

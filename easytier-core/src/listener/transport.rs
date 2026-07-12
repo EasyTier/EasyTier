@@ -940,7 +940,8 @@ mod tests {
         let socket = host.udp_socket(0);
 
         socket.receive_from(quic_initial_packet(1), "127.0.0.1:32001".parse()?);
-        let first = tokio::time::timeout(Duration::from_secs(1), listener.accept()).await??;
+        let first =
+            crate::runtime_time::timeout(Duration::from_secs(1), listener.accept()).await??;
         assert!(matches!(
             &first,
             AcceptedTransport::Udp {
@@ -951,14 +952,15 @@ mod tests {
 
         socket.receive_from(quic_initial_packet(2), "127.0.0.1:32002".parse()?);
         assert!(
-            tokio::time::timeout(Duration::from_millis(100), listener.accept())
+            crate::runtime_time::timeout(Duration::from_millis(100), listener.accept())
                 .await
                 .is_err()
         );
 
         drop(first);
         socket.receive_from(quic_initial_packet(3), "127.0.0.1:32003".parse()?);
-        let third = tokio::time::timeout(Duration::from_secs(1), listener.accept()).await??;
+        let third =
+            crate::runtime_time::timeout(Duration::from_secs(1), listener.accept()).await??;
         assert!(matches!(
             third,
             AcceptedTransport::Udp {
@@ -1104,7 +1106,7 @@ mod tests {
         let mut events = Vec::new();
         for _ in 0..3 {
             events.push(
-                tokio::time::timeout(Duration::from_secs(1), event_rx.recv())
+                crate::runtime_time::timeout(Duration::from_secs(1), event_rx.recv())
                     .await
                     .expect("accepted transport was not handled")
                     .expect("accepted transport event channel closed"),
@@ -1121,7 +1123,7 @@ mod tests {
         }));
         assert_eq!(active.load(Ordering::Relaxed), 3);
 
-        tokio::time::timeout(Duration::from_secs(1), service.stop())
+        crate::runtime_time::timeout(Duration::from_secs(1), service.stop())
             .await
             .expect("transport listener service did not stop");
         assert_eq!(active.load(Ordering::Relaxed), 0);

@@ -154,7 +154,7 @@ where
     H: VirtualTcpSocketFactory,
 {
     let timeout = request.timeout;
-    tokio::time::timeout(timeout, fetch_http_discovery_inner(host, dns, request))
+    crate::runtime_time::timeout(timeout, fetch_http_discovery_inner(host, dns, request))
         .await
         .map_err(|_| anyhow::anyhow!("HTTP discovery timed out after {timeout:?}"))?
 }
@@ -627,7 +627,7 @@ mod tests {
         )
         .await
         .unwrap();
-        tokio::time::timeout(Duration::from_secs(1), server_task)
+        crate::runtime_time::timeout(Duration::from_secs(1), server_task)
             .await
             .expect("HTTP fetch test server did not finish")
             .unwrap();
@@ -855,7 +855,7 @@ mod tests {
             .resolve_endpoint(&"http://discovery.example:18081/endpoint".parse().unwrap())
             .await
             .unwrap_err();
-        tokio::time::timeout(Duration::from_secs(1), server_task)
+        crate::runtime_time::timeout(Duration::from_secs(1), server_task)
             .await
             .expect("HTTP facade test server did not finish")
             .unwrap();

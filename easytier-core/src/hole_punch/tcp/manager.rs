@@ -95,7 +95,7 @@ fn join_joinset_background(tasks: Arc<Mutex<JoinSet<()>>>) -> AbortOnDropHandle<
     let tasks = Arc::downgrade(&tasks);
     AbortOnDropHandle::new(tokio::spawn(async move {
         while tasks.strong_count() > 0 {
-            tokio::time::sleep(Duration::from_secs(1)).await;
+            crate::runtime_time::sleep(Duration::from_secs(1)).await;
             let Some(tasks) = tasks.upgrade() else {
                 break;
             };
@@ -364,7 +364,7 @@ where
             "tcp hole punch initiator listening"
         );
 
-        tokio::time::timeout(
+        crate::runtime_time::timeout(
             Duration::from_secs(10),
             accept_connections(listener, self.peer_manager.clone(), dst_peer_id),
         )

@@ -205,7 +205,7 @@ fn join_joinset_background<T: Debug + Send + Sync + 'static>(
     tokio::spawn(
         async move {
             while js.strong_count() > 0 {
-                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                crate::runtime_time::sleep(std::time::Duration::from_secs(1)).await;
 
                 let fut = std::future::poll_fn(|cx| {
                     let Some(js) = js.upgrade() else {
@@ -230,7 +230,7 @@ fn join_joinset_background<T: Debug + Send + Sync + 'static>(
                     std::task::Poll::Ready(())
                 });
 
-                let _ = tokio::time::timeout(std::time::Duration::from_secs(5), fut).await;
+                let _ = crate::runtime_time::timeout(std::time::Duration::from_secs(5), fut).await;
             }
             tracing::debug!(?origin, "joinset task exit");
         }

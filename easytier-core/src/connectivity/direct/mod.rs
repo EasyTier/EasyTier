@@ -468,7 +468,7 @@ where
                 anyhow::bail!("peer {dst_peer_id} is blacklisted");
             }
             if attempt > 0 {
-                tokio::time::sleep(Duration::from_millis(backoffs_ms[backoff_index])).await;
+                crate::runtime_time::sleep(Duration::from_millis(backoffs_ms[backoff_index])).await;
                 backoff_index = (backoff_index + 1).min(backoffs_ms.len() - 1);
             }
             attempt += 1;
@@ -703,7 +703,7 @@ where
                 let mut rng = rand::thread_rng();
                 base + rng.gen_range(-delta..delta)
             };
-            tokio::time::sleep(Duration::from_millis(delay_ms as u64)).await;
+            crate::runtime_time::sleep(Duration::from_millis(delay_ms as u64)).await;
         }
         unreachable!("direct URL retry loop must return")
     }
@@ -768,7 +768,7 @@ where
         } else {
             Vec::new()
         };
-        tokio::time::timeout(DIRECT_CONNECT_TIMEOUT, async {
+        crate::runtime_time::timeout(DIRECT_CONNECT_TIMEOUT, async {
             let connected = match transport {
                 DirectTransport::Tcp(purpose) => ConnectedTransport::Tcp(
                     transport::connect_tcp(
@@ -1052,7 +1052,7 @@ where
                     tracing::debug!(?error, ?connector_addr, "send UDP punch packet failed");
                 }
             }
-            tokio::time::sleep(Duration::from_millis(30)).await;
+            crate::runtime_time::sleep(Duration::from_millis(30)).await;
         }
         Ok(Void::default())
     }

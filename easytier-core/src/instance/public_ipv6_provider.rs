@@ -121,7 +121,7 @@ impl PublicIpv6ProviderService {
             drop(service);
             let should_continue = tokio::select! {
                 _ = cancel.cancelled() => false,
-                _ = tokio::time::sleep(interval) => true,
+                _ = crate::runtime_time::sleep(interval) => true,
                 changed = host.wait_for_change() => changed,
             };
             if !should_continue {
@@ -176,7 +176,7 @@ mod tests {
     }
 
     async fn wait_for_calls(counter: &AtomicUsize, expected: usize) {
-        tokio::time::timeout(Duration::from_secs(1), async {
+        crate::runtime_time::timeout(Duration::from_secs(1), async {
             while counter.load(Ordering::Acquire) < expected {
                 tokio::task::yield_now().await;
             }

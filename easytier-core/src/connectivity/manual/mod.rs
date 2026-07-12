@@ -416,7 +416,7 @@ where
     }
 
     async fn run(data: Arc<ManualConnectorData<H>>, cancel: CancellationToken) {
-        let mut interval = tokio::time::interval(data.options.reconnect_interval);
+        let mut interval = crate::runtime_time::interval(data.options.reconnect_interval);
         let mut reconnect_tasks = JoinSet::new();
 
         loop {
@@ -957,7 +957,7 @@ where
         .checked_sub(started_at.elapsed())
         .filter(|remaining| !remaining.is_zero())
         .ok_or_else(|| anyhow::anyhow!("{stage} timeout after {:?}", started_at.elapsed()))?;
-    tokio::time::timeout(remaining, future)
+    crate::runtime_time::timeout(remaining, future)
         .await
         .map_err(|_| anyhow::anyhow!("{stage} timeout after {remaining:?}"))?
 }
@@ -1171,7 +1171,7 @@ mod tests {
     async fn timeout_budget_reports_the_active_stage() {
         let error =
             with_timeout_budget("connect", Instant::now(), Duration::from_millis(1), async {
-                tokio::time::sleep(Duration::from_millis(20)).await;
+                crate::runtime_time::sleep(Duration::from_millis(20)).await;
                 Ok::<(), anyhow::Error>(())
             })
             .await

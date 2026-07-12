@@ -29,7 +29,7 @@ impl BackOff {
     pub async fn sleep_for_next_backoff(&mut self) {
         let backoff = self.next_backoff();
         if backoff > 0 {
-            tokio::time::sleep(tokio::time::Duration::from_millis(backoff)).await;
+            crate::runtime_time::sleep(crate::runtime_time::Duration::from_millis(backoff)).await;
         }
     }
 }

@@ -114,7 +114,7 @@ where
 
     let mut finish_time: Option<Instant> = None;
     while finish_time.is_none() || finish_time.as_ref().unwrap().elapsed().as_millis() < 1000 {
-        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        crate::runtime_time::sleep(std::time::Duration::from_millis(200)).await;
 
         if finish_time.is_none() && punch_task.is_finished() {
             finish_time = Some(Instant::now());
@@ -305,7 +305,7 @@ where
         while finish_time.is_none() || finish_time.as_ref().unwrap().elapsed().as_millis() < 1000 {
             udp_array.send_with_all(packet, remote_mapped_addr).await?;
 
-            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            crate::runtime_time::sleep(std::time::Duration::from_millis(200)).await;
 
             if finish_time.is_none() && punch_task.is_finished() {
                 finish_time = Some(Instant::now());
@@ -535,7 +535,7 @@ where
                 )
                 .await?;
 
-            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            crate::runtime_time::sleep(std::time::Duration::from_millis(100)).await;
 
             let Some(socket) = udp_array.try_fetch_punched_socket(tid) else {
                 tracing::trace!(

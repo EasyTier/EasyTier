@@ -229,7 +229,7 @@ where
 
         let snapshot = source.snapshot().await;
         if published_revision == Some(snapshot.revision) {
-            tokio::time::sleep(unchanged_interval).await;
+            crate::runtime_time::sleep(unchanged_interval).await;
             continue;
         }
 

@@ -137,7 +137,7 @@ impl Drop for PacketEgress {
 
 #[cfg(test)]
 mod tests {
-    use tokio::time::{Duration, timeout};
+    use crate::runtime_time::{Duration, timeout};
 
     use super::*;
 

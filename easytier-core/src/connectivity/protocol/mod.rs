@@ -375,7 +375,7 @@ where
 {
     match local_url.scheme() {
         "tcp" => Ok(raw::upgrade_accepted_tcp(socket)?),
-        "ws" | "wss" if config.websocket => Ok(tokio::time::timeout(
+        "ws" | "wss" if config.websocket => Ok(crate::runtime_time::timeout(
             config.websocket_timeout,
             websocket::upgrade_accepted(socket, local_url),
         )
