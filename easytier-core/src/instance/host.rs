@@ -1,6 +1,11 @@
 //! Composition root for a core instance driven by host-owned I/O handles.
 
+#[cfg(target_os = "wasi")]
+pub mod wasi;
+
 use std::sync::Arc;
+
+use serde::{Deserialize, Serialize};
 
 use crate::{
     connectivity::host::{
@@ -17,6 +22,28 @@ use crate::{
 };
 
 use super::{CoreInstance, CoreInstanceAdapters, PortableCoreInstanceConfig};
+
+pub const HOST_CORE_INSTANCE_CONFIG_VERSION: u32 = 1;
+
+/// Versioned payload accepted by host-driven instance frontends.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HostCoreInstanceCreateConfig {
+    pub version: u32,
+    pub instance: PortableCoreInstanceConfig,
+    pub environment: HostConnectorEnvironmentSnapshot,
+}
+
+impl HostCoreInstanceCreateConfig {
+    pub fn validate(&self) -> anyhow::Result<()> {
+        if self.version != HOST_CORE_INSTANCE_CONFIG_VERSION {
+            anyhow::bail!(
+                "unsupported host core instance config version: {}",
+                self.version
+            );
+        }
+        Ok(())
+    }
+}
 
 /// A portable core instance and the shared scheduler bridge for its host I/O.
 ///

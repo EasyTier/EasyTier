@@ -11,6 +11,9 @@ keywords = ["vpn", "p2p", "network", "easytier"]
 categories = ["network-programming"]
 license-file = "../LICENSE"
 
+[lib]
+crate-type = ["rlib", "cdylib"]
+
 [dependencies]
 anyhow = "1.0"
 arc-swap = "1.7"

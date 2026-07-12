@@ -1350,7 +1350,22 @@ mod tests {
         let decoded: PortableCoreInstanceConfig = serde_json::from_value(encoded.clone()).unwrap();
 
         assert!(!decoded.connectivity.direct.testing);
-        assert_eq!(serde_json::to_value(decoded).unwrap(), encoded);
+        assert_eq!(serde_json::to_value(&decoded).unwrap(), encoded);
+
+        let mut create = crate::instance::host::HostCoreInstanceCreateConfig {
+            version: crate::instance::host::HOST_CORE_INSTANCE_CONFIG_VERSION,
+            instance: decoded,
+            environment:
+                crate::connectivity::host::environment::HostConnectorEnvironmentSnapshot::default(),
+        };
+        create.validate().unwrap();
+        let create_json = serde_json::to_vec(&create).unwrap();
+        serde_json::from_slice::<crate::instance::host::HostCoreInstanceCreateConfig>(&create_json)
+            .unwrap()
+            .validate()
+            .unwrap();
+        create.version += 1;
+        assert!(create.validate().is_err());
     }
 
     struct StaticProxyPolicy(bool);
