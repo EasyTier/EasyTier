@@ -1546,6 +1546,45 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn core_credential_commands_share_native_storage() {
+        let instance = Instance::new(TomlConfigLoader::default());
+        let generated = instance
+            .core_instance
+            .generate_credential(easytier_core::instance::CredentialCreateOptions {
+                groups: vec!["guest".to_owned()],
+                allow_relay: false,
+                allowed_proxy_cidrs: Vec::new(),
+                ttl: std::time::Duration::from_secs(3600),
+                credential_id: Some("shared-credential".to_owned()),
+                reusable: true,
+            })
+            .unwrap();
+
+        assert_eq!(generated.credential_id, "shared-credential");
+        assert_eq!(
+            instance
+                .global_ctx
+                .get_credential_manager()
+                .list_credentials()
+                .len(),
+            1
+        );
+        assert!(
+            instance
+                .core_instance
+                .revoke_credential("shared-credential")
+                .unwrap()
+        );
+        assert!(
+            instance
+                .global_ctx
+                .get_credential_manager()
+                .list_credentials()
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
     async fn test_rpc_portal_whitelist() {
         use cidr::IpCidr;
 

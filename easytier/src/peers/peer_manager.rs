@@ -98,6 +98,7 @@ impl PeerManager {
             global_ctx.clone(),
             global_ctx.stats_manager().clone(),
             global_ctx.get_acl_filter().clone(),
+            global_ctx.get_credential_manager().core(),
             nic_channel,
             encryptor,
             is_secure_mode_enabled,

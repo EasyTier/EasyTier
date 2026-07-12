@@ -7,7 +7,7 @@ use std::sync::{
     Arc, Weak,
     atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering},
 };
-use std::{collections::BTreeSet, net::IpAddr};
+use std::{collections::BTreeSet, net::IpAddr, time::Duration};
 
 use async_trait::async_trait;
 use tokio::sync::Mutex;
@@ -39,6 +39,7 @@ use crate::{
     peers::{
         acl_config::AclRuleConfig,
         create_packet_recv_chan,
+        credential_manager::{CredentialInfo, GeneratedCredential},
         peer_conn::PeerConnId,
         peer_manager::{PeerManagerCore, PeerSnapshot, PortablePeerManagerConfig},
         public_ipv6::PublicIpv6ProviderConfig,
@@ -167,6 +168,16 @@ impl Default for CoreInstanceConfig {
 pub struct PortableCoreInstanceConfig {
     pub peer: PortablePeerManagerConfig,
     pub connectivity: CoreInstanceConfig,
+}
+
+#[derive(Debug, Clone)]
+pub struct CredentialCreateOptions {
+    pub groups: Vec<String>,
+    pub allow_relay: bool,
+    pub allowed_proxy_cidrs: Vec<String>,
+    pub ttl: Duration,
+    pub credential_id: Option<String>,
+    pub reusable: bool,
 }
 
 fn validate_portable_connectivity_config(
@@ -1160,6 +1171,49 @@ where
 
     pub fn acl_stats(&self) -> crate::proto::acl::AclStats {
         self.peer_manager.acl_stats()
+    }
+
+    pub fn generate_credential(
+        &self,
+        options: CredentialCreateOptions,
+    ) -> anyhow::Result<GeneratedCredential> {
+        if !self.peer_manager.can_manage_credentials() {
+            anyhow::bail!("only admin nodes (with network_secret) can generate credentials");
+        }
+        if options.ttl.is_zero() {
+            anyhow::bail!("ttl_seconds must be positive");
+        }
+        let generated = self
+            .peer_manager
+            .credential_manager()
+            .generate_credential_with_options(
+                options.groups,
+                options.allow_relay,
+                options.allowed_proxy_cidrs,
+                options.ttl,
+                options.credential_id,
+                options.reusable,
+            );
+        self.peer_manager.notify_credential_changed();
+        Ok(generated)
+    }
+
+    pub fn revoke_credential(&self, credential_id: &str) -> anyhow::Result<bool> {
+        if !self.peer_manager.can_manage_credentials() {
+            anyhow::bail!("only admin nodes (with network_secret) can revoke credentials");
+        }
+        let revoked = self
+            .peer_manager
+            .credential_manager()
+            .revoke_credential(credential_id);
+        if revoked {
+            self.peer_manager.notify_credential_changed();
+        }
+        Ok(revoked)
+    }
+
+    pub fn credential_snapshots(&self) -> Vec<CredentialInfo> {
+        self.peer_manager.credential_manager().list_credentials()
     }
 
     pub async fn close_peer_conn(

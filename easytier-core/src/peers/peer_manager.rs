@@ -39,6 +39,7 @@ use super::{
         ArcPeerContext, ConfigPeerContext, ConfigPeerContextSupport, HostRoutingPolicy,
         NetworkIdentity, PeerRuntimeConfig,
     },
+    credential_manager::CredentialManager,
     encrypt::{Encryptor, NullCipher, create_encryptor, derive_key_128, derive_key_256},
     error::Error,
     foreign_network_client::ForeignNetworkClient,
@@ -580,6 +581,7 @@ pub struct PeerManagerCore {
     data_compress_algo: CompressorAlgo,
     exit_nodes: Arc<RwLock<Vec<IpAddr>>>,
     acl_filter: Arc<AclFilter>,
+    credential_manager: Arc<CredentialManager>,
     context: ArcPeerContext,
     is_secure_mode_enabled: bool,
     route: ArcRoute,
@@ -925,8 +927,11 @@ impl PeerManagerCore {
         config.runtime.feature_flags.disable_p2p = config.flags.disable_p2p;
         config.runtime.feature_flags.need_p2p = config.flags.need_p2p;
         config.runtime.feature_flags.avoid_relay_data |= config.flags.disable_relay_data;
-        let config_context =
-            Arc::new(ConfigPeerContext::new(config.runtime).with_flags(config.flags));
+        let credential_manager = Arc::new(CredentialManager::new());
+        let config_context = Arc::new(
+            ConfigPeerContext::new(config.runtime, credential_manager.clone())
+                .with_flags(config.flags),
+        );
         let config_context_support = config_context.support();
         let context: ArcPeerContext = config_context;
         let public_ipv6_runtime = Arc::new(DisabledPublicIpv6Runtime {
@@ -944,6 +949,7 @@ impl PeerManagerCore {
             public_ipv6_runtime,
             stats_manager,
             acl_filter,
+            credential_manager,
             nic_channel,
             encryptor,
             is_secure_mode_enabled,
@@ -968,6 +974,7 @@ impl PeerManagerCore {
         public_ipv6_runtime: Arc<dyn PublicIpv6Runtime>,
         stats_manager: Arc<StatsManager>,
         acl_filter: Arc<AclFilter>,
+        credential_manager: Arc<CredentialManager>,
         nic_channel: PacketRecvChan,
         encryptor: Arc<dyn Encryptor + 'static>,
         is_secure_mode_enabled: bool,
@@ -1181,6 +1188,7 @@ impl PeerManagerCore {
                 data_compress_algo,
                 exit_nodes,
                 acl_filter,
+                credential_manager,
                 context,
                 is_secure_mode_enabled,
                 route,
@@ -1217,6 +1225,7 @@ impl PeerManagerCore {
         data_compress_algo: CompressorAlgo,
         exit_nodes: Arc<RwLock<Vec<IpAddr>>>,
         acl_filter: Arc<AclFilter>,
+        credential_manager: Arc<CredentialManager>,
         context: ArcPeerContext,
         is_secure_mode_enabled: bool,
         route: ArcRoute,
@@ -1249,6 +1258,7 @@ impl PeerManagerCore {
             data_compress_algo,
             exit_nodes,
             acl_filter,
+            credential_manager,
             context,
             is_secure_mode_enabled,
             route,
@@ -1263,6 +1273,18 @@ impl PeerManagerCore {
 
     pub fn my_peer_id(&self) -> PeerId {
         self.my_peer_id
+    }
+
+    pub fn credential_manager(&self) -> Arc<CredentialManager> {
+        self.credential_manager.clone()
+    }
+
+    pub fn can_manage_credentials(&self) -> bool {
+        self.context.network_identity().network_secret.is_some()
+    }
+
+    pub fn notify_credential_changed(&self) {
+        self.context.issue_credential_changed();
     }
 
     pub async fn list_peer_snapshots(&self) -> Vec<PeerSnapshot> {
@@ -3541,6 +3563,34 @@ mod tests {
         assert_eq!(route.task_count(), 0);
         assert!(core.stats_manager.cleanup_task_is_stopped());
         assert!(core.acl_filter.cleanup_task_is_stopped());
+    }
+
+    #[tokio::test]
+    async fn portable_peer_manager_auth_uses_managed_credentials() {
+        let core = build_portable_for_test(portable_runtime_config("portable-net", 84)).unwrap();
+        let generated = core.credential_manager().generate_credential(
+            vec!["guest".to_owned()],
+            false,
+            Vec::new(),
+            Duration::from_secs(3600),
+        );
+        let private_bytes: [u8; 32] = BASE64_STANDARD
+            .decode(generated.secret)
+            .unwrap()
+            .try_into()
+            .unwrap();
+        let public_key = PublicKey::from(&StaticSecret::from(private_bytes));
+
+        assert!(
+            core.context
+                .is_pubkey_trusted(public_key.as_bytes(), "portable-net")
+        );
+        assert!(
+            !core
+                .context
+                .is_pubkey_trusted(public_key.as_bytes(), "other")
+        );
+        assert_eq!(core.context.trusted_credential_pubkeys("secret").len(), 1);
     }
 
     #[tokio::test]

@@ -5,7 +5,7 @@ use easytier_core::peers::credential_manager::{
 };
 
 pub struct CredentialManager {
-    core: CoreCredentialManager,
+    core: Arc<CoreCredentialManager>,
 }
 
 struct FileCredentialStorage {
@@ -32,7 +32,13 @@ impl CredentialManager {
         let core = storage_path.map_or_else(CoreCredentialManager::new, |path| {
             CoreCredentialManager::from_storage(Arc::new(FileCredentialStorage { path }))
         });
-        Self { core }
+        Self {
+            core: Arc::new(core),
+        }
+    }
+
+    pub fn core(&self) -> Arc<CoreCredentialManager> {
+        self.core.clone()
     }
 
     pub fn generate_credential(
@@ -118,7 +124,7 @@ impl CredentialManager {
     }
 }
 
-fn core_credential_info_to_api(
+pub(crate) fn core_credential_info_to_api(
     info: CredentialInfo,
 ) -> crate::proto::api::instance::CredentialInfo {
     crate::proto::api::instance::CredentialInfo {

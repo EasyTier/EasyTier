@@ -4,6 +4,7 @@ use std::{
 };
 
 use crate::{
+    common::credential_manager::core_credential_info_to_api,
     connector::core_instance::RuntimeCoreInstance,
     proto::{
         api::instance::{
@@ -229,15 +230,6 @@ impl CredentialManageRpc for PeerManagerRpcService {
         _: BaseController,
         request: GenerateCredentialRequest,
     ) -> Result<GenerateCredentialResponse, rpc_types::error::Error> {
-        let pm = weak_upgrade(&self.peer_manager)?;
-        let global_ctx = pm.get_global_ctx();
-
-        if global_ctx.get_network_identity().network_secret.is_none() {
-            return Err(rpc_types::error::Error::ExecutionError(anyhow::anyhow!(
-                "only admin nodes (with network_secret) can generate credentials"
-            )));
-        }
-
         let ttl = if request.ttl_seconds > 0 {
             Duration::from_secs(request.ttl_seconds as u64)
         } else {
@@ -246,22 +238,20 @@ impl CredentialManageRpc for PeerManagerRpcService {
             )));
         };
 
-        let (id, secret) = global_ctx
-            .get_credential_manager()
-            .generate_credential_with_options(
-                request.groups,
-                request.allow_relay,
-                request.allowed_proxy_cidrs,
+        let generated = weak_upgrade(&self.core_instance)?
+            .generate_credential(easytier_core::instance::CredentialCreateOptions {
+                groups: request.groups,
+                allow_relay: request.allow_relay,
+                allowed_proxy_cidrs: request.allowed_proxy_cidrs,
                 ttl,
-                request.credential_id,
-                request.reusable.unwrap_or(true),
-            );
-
-        global_ctx.issue_event(crate::common::global_ctx::GlobalCtxEvent::CredentialChanged);
+                credential_id: request.credential_id,
+                reusable: request.reusable.unwrap_or(true),
+            })
+            .map_err(rpc_types::error::Error::ExecutionError)?;
 
         Ok(GenerateCredentialResponse {
-            credential_id: id,
-            credential_secret: secret,
+            credential_id: generated.credential_id,
+            credential_secret: generated.secret,
         })
     }
 
@@ -270,21 +260,9 @@ impl CredentialManageRpc for PeerManagerRpcService {
         _: BaseController,
         request: RevokeCredentialRequest,
     ) -> Result<RevokeCredentialResponse, rpc_types::error::Error> {
-        let pm = weak_upgrade(&self.peer_manager)?;
-        let global_ctx = pm.get_global_ctx();
-        if global_ctx.get_network_identity().network_secret.is_none() {
-            return Err(rpc_types::error::Error::ExecutionError(anyhow::anyhow!(
-                "only admin nodes (with network_secret) can revoke credentials"
-            )));
-        }
-
-        let success = global_ctx
-            .get_credential_manager()
-            .revoke_credential(&request.credential_id);
-
-        if success {
-            global_ctx.issue_event(crate::common::global_ctx::GlobalCtxEvent::CredentialChanged);
-        }
+        let success = weak_upgrade(&self.core_instance)?
+            .revoke_credential(&request.credential_id)
+            .map_err(rpc_types::error::Error::ExecutionError)?;
 
         Ok(RevokeCredentialResponse { success })
     }
@@ -294,11 +272,12 @@ impl CredentialManageRpc for PeerManagerRpcService {
         _: BaseController,
         _request: ListCredentialsRequest,
     ) -> Result<ListCredentialsResponse, rpc_types::error::Error> {
-        let pm = weak_upgrade(&self.peer_manager)?;
-        let global_ctx = pm.get_global_ctx();
-
         Ok(ListCredentialsResponse {
-            credentials: global_ctx.get_credential_manager().list_credentials(),
+            credentials: weak_upgrade(&self.core_instance)?
+                .credential_snapshots()
+                .into_iter()
+                .map(core_credential_info_to_api)
+                .collect(),
         })
     }
 }

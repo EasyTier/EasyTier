@@ -24,7 +24,7 @@ use crate::{
     config::{
         CoreConfig, IpPrefix, NodeConfig, PeerId, PeerPolicyConfig, RouteConfig, TrafficConfig,
     },
-    peers::util::shrink_dashmap,
+    peers::{credential_manager::CredentialManager, util::shrink_dashmap},
     token_bucket::TokenBucketManager,
 };
 
@@ -95,9 +95,17 @@ struct ConfigLimiterState {
 pub(crate) struct ConfigPeerContextSupport {
     limiter_state: Mutex<ConfigLimiterState>,
     acl: ArcSwapOption<Acl>,
+    credentials: Arc<CredentialManager>,
 }
 
 impl ConfigPeerContextSupport {
+    fn new(credentials: Arc<CredentialManager>) -> Self {
+        Self {
+            credentials,
+            ..Default::default()
+        }
+    }
+
     pub(crate) fn set_acl(&self, acl: Option<Acl>) {
         self.acl.store(acl.map(Arc::new));
     }
@@ -175,12 +183,12 @@ impl ConfigPeerContextSupport {
 }
 
 impl ConfigPeerContext {
-    pub(crate) fn new(runtime: PeerRuntimeConfig) -> Self {
+    pub(crate) fn new(runtime: PeerRuntimeConfig, credentials: Arc<CredentialManager>) -> Self {
         Self {
             runtime,
             flags: FlagsInConfig::default(),
             peer_events: tokio::sync::broadcast::channel(100).0,
-            support: Arc::new(ConfigPeerContextSupport::default()),
+            support: Arc::new(ConfigPeerContextSupport::new(credentials)),
         }
     }
 
@@ -695,6 +703,22 @@ impl PeerContext for ConfigPeerContext {
         secret_proof_from_secret(secret, challenge)
     }
 
+    fn is_pubkey_trusted(&self, pubkey: &[u8], network_name: &str) -> bool {
+        network_name == self.runtime.network_identity.network_name
+            && self.support.credentials.is_pubkey_trusted(pubkey)
+    }
+
+    fn trusted_credential_pubkeys(
+        &self,
+        network_secret: &str,
+    ) -> Vec<TrustedCredentialPubkeyProof> {
+        self.support.credentials.get_trusted_pubkeys(network_secret)
+    }
+
+    fn remove_expired_credentials(&self) -> bool {
+        self.support.credentials.remove_expired_credentials()
+    }
+
     fn recv_limiter(&self, network_name: &str, is_foreign_network: bool) -> Option<ArcByteLimiter> {
         let traffic = &self.runtime.core.traffic;
         let foreign_limit = traffic
@@ -837,7 +861,8 @@ mod tests {
         };
         let mut flags = FlagsInConfig::default();
         flags.p2p_only = true;
-        let context = ConfigPeerContext::new(runtime.clone()).with_flags(flags.clone());
+        let context = ConfigPeerContext::new(runtime.clone(), Arc::new(CredentialManager::new()))
+            .with_flags(flags.clone());
 
         assert_eq!(context.runtime_config().core, runtime.core);
         assert_eq!(context.network_identity(), runtime.network_identity);
@@ -899,21 +924,24 @@ mod tests {
         ipv4: Option<IpPrefix>,
         ipv6: Option<IpPrefix>,
     ) -> ConfigPeerContext {
-        ConfigPeerContext::new(PeerRuntimeConfig {
-            core: CoreConfig {
-                routes: RouteConfig {
-                    ipv4,
-                    ipv6,
+        ConfigPeerContext::new(
+            PeerRuntimeConfig {
+                core: CoreConfig {
+                    routes: RouteConfig {
+                        ipv4,
+                        ipv6,
+                        ..Default::default()
+                    },
                     ..Default::default()
                 },
-                ..Default::default()
+                network_identity: NetworkIdentity::default(),
+                stun_info: StunInfo::default(),
+                feature_flags: PeerFeatureFlag::default(),
+                secure_mode: None,
+                host_routing: HostRoutingPolicy::default(),
             },
-            network_identity: NetworkIdentity::default(),
-            stun_info: StunInfo::default(),
-            feature_flags: PeerFeatureFlag::default(),
-            secure_mode: None,
-            host_routing: HostRoutingPolicy::default(),
-        })
+            Arc::new(CredentialManager::new()),
+        )
     }
 
     #[tokio::test]
