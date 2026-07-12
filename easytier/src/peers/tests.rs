@@ -235,11 +235,20 @@ async fn foreign_mgr_stress_test() {
     for _ in 0..5 {
         for i in 0..PUBLIC_PEER_COUNT {
             let p = public_peers[i as usize].clone();
+            let foreign_peer_count = p
+                .core()
+                .foreign_network_route_infos()
+                .await
+                .infos
+                .iter()
+                .filter_map(|info| info.key.as_ref().map(|key| key.peer_id))
+                .collect::<std::collections::BTreeSet<_>>()
+                .len();
             println!(
                 "public peer {} routes: {:?}, global_foreign_network: {:?}, peers: {:?}",
                 i,
                 p.list_routes().await,
-                p.list_global_foreign_network().await.foreign_networks.len(),
+                foreign_peer_count,
                 p.get_peer_map().list_peers()
             );
         }

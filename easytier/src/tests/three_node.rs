@@ -862,10 +862,7 @@ pub async fn public_ipv6_auto_addr_end_to_end() {
             .into()
         )
     );
-    let provider_info = provider
-        .get_peer_manager()
-        .get_local_public_ipv6_info()
-        .await;
+    let provider_info = provider.get_core_instance().local_public_ipv6_info().await;
     let client_peer_id = client.get_peer_manager().get_my_info().await.peer_id;
     assert_eq!(
         provider_info.provider_prefix,

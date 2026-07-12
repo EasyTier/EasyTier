@@ -1051,7 +1051,7 @@ impl Instance {
     }
 
     pub fn peer_id(&self) -> PeerId {
-        self.peer_manager.my_peer_id()
+        self.core_instance.peer_id()
     }
 
     fn get_vpn_portal_rpc_service(
@@ -1365,7 +1365,10 @@ impl Instance {
         }
 
         ApiRpcServiceImpl {
-            peer_mgr_rpc_service: PeerManagerRpcService::new(self.peer_manager.clone()),
+            peer_mgr_rpc_service: PeerManagerRpcService::new(
+                self.peer_manager.clone(),
+                &self.core_instance,
+            ),
             connector_mgr_rpc_service: ConnectorManagerRpcService::new(&self.core_instance),
             mapped_listener_mgr_rpc_service: self.get_mapped_listener_manager_rpc_service(),
             vpn_portal_rpc_service: self.get_vpn_portal_rpc_service(),
@@ -1407,12 +1410,18 @@ impl Instance {
 
                 tcp_proxy_rpc_services
             },
-            acl_manage_rpc_service: PeerManagerRpcService::new(self.peer_manager.clone()),
+            acl_manage_rpc_service: PeerManagerRpcService::new(
+                self.peer_manager.clone(),
+                &self.core_instance,
+            ),
             port_forward_manage_rpc_service: self.get_port_forward_manager_rpc_service(),
             stats_rpc_service: self.get_stats_rpc_service(),
             config_rpc_service: self.get_config_service(),
             peer_center_rpc_service: Arc::new(self.core_instance.peer_center_rpc_service()),
-            credential_manage_rpc_service: PeerManagerRpcService::new(self.peer_manager.clone()),
+            credential_manage_rpc_service: PeerManagerRpcService::new(
+                self.peer_manager.clone(),
+                &self.core_instance,
+            ),
         }
     }
 

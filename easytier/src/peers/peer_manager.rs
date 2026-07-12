@@ -1,7 +1,7 @@
 use cidr::{Ipv4Cidr, Ipv6Cidr};
 pub use easytier_core::peers::peer_manager::RouteAlgoType;
 use easytier_core::peers::peer_manager::{
-    DnsAddressResolver, PeerManagerCore, PeerSnapshot, PipelineRegistrationGuard,
+    DnsAddressResolver, PeerManagerCore, PipelineRegistrationGuard,
 };
 use quanta::Instant;
 use std::collections::BTreeSet;
@@ -19,13 +19,7 @@ use crate::{
     peers::{
         PeerPacketFilter, peer_session::PeerSessionStore, traffic_metrics::TrafficMetricRecorder,
     },
-    proto::{
-        api::instance::{
-            self, ListGlobalForeignNetworkResponse,
-            list_global_foreign_network_response::OneForeignNetwork,
-        },
-        peer_rpc::RouteForeignNetworkSummary,
-    },
+    proto::api::instance,
     tunnel::{
         Tunnel,
         packet_def::{ZCPacket, compressor_algo_from_pb},
@@ -257,43 +251,6 @@ impl PeerManager {
         self.get_route().get_my_public_ipv6_addr().await
     }
 
-    pub async fn get_local_public_ipv6_info(&self) -> instance::ListPublicIpv6InfoResponse {
-        self.core.local_public_ipv6_info().await.into()
-    }
-
-    pub async fn dump_route(&self) -> String {
-        self.core.dump_route().await
-    }
-
-    pub async fn list_global_foreign_network(&self) -> ListGlobalForeignNetworkResponse {
-        let mut resp = ListGlobalForeignNetworkResponse::default();
-        let ret = self.core.foreign_network_route_infos().await;
-        for info in ret.infos.iter() {
-            let entry = resp
-                .foreign_networks
-                .entry(info.key.as_ref().unwrap().peer_id)
-                .or_insert_with(Default::default);
-            let Some(route_info) = info.value.as_ref() else {
-                continue;
-            };
-
-            let f = OneForeignNetwork {
-                network_name: info.key.as_ref().unwrap().network_name.clone(),
-                peer_ids: route_info.foreign_peer_ids.clone(),
-                last_updated: serde_json::to_string(&route_info.last_update.unwrap()).unwrap(),
-                version: route_info.version,
-            };
-
-            entry.foreign_networks.push(f);
-        }
-
-        resp
-    }
-
-    pub async fn get_foreign_network_summary(&self) -> RouteForeignNetworkSummary {
-        self.core.foreign_network_route_summary().await
-    }
-
     pub async fn remove_nic_packet_process_pipeline(&self, id: String) -> Result<(), Error> {
         self.core
             .remove_nic_packet_process_pipeline(id)
@@ -343,10 +300,6 @@ impl PeerManager {
 
     pub fn get_peer_map(&self) -> Arc<PeerMap> {
         self.core.get_peer_map()
-    }
-
-    pub async fn list_peer_snapshots(&self) -> Vec<PeerSnapshot> {
-        self.core.list_peer_snapshots().await
     }
 
     pub fn get_relay_peer_map(&self) -> Arc<RelayPeerMap> {

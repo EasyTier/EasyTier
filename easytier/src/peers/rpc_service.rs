@@ -4,6 +4,7 @@ use std::{
 };
 
 use crate::{
+    connector::core_instance::RuntimeCoreInstance,
     proto::{
         api::instance::{
             AclManageRpc, CredentialManageRpc, DumpRouteRequest, DumpRouteResponse,
@@ -15,6 +16,7 @@ use crate::{
             ListPeerResponse, ListPublicIpv6InfoRequest, ListPublicIpv6InfoResponse,
             ListRouteRequest, ListRouteResponse, PeerInfo, PeerManageRpc, RevokeCredentialRequest,
             RevokeCredentialResponse, ShowNodeInfoRequest, ShowNodeInfoResponse,
+            list_global_foreign_network_response::OneForeignNetwork,
         },
         rpc_types::{self, controller::BaseController},
     },
@@ -26,18 +28,23 @@ use super::peer_manager::PeerManager;
 #[derive(Clone)]
 pub struct PeerManagerRpcService {
     peer_manager: Weak<PeerManager>,
+    core_instance: Weak<RuntimeCoreInstance>,
 }
 
 impl PeerManagerRpcService {
-    pub fn new(peer_manager: Arc<PeerManager>) -> Self {
+    pub(crate) fn new(
+        peer_manager: Arc<PeerManager>,
+        core_instance: &Arc<RuntimeCoreInstance>,
+    ) -> Self {
         PeerManagerRpcService {
             peer_manager: Arc::downgrade(&peer_manager),
+            core_instance: Arc::downgrade(core_instance),
         }
     }
 
-    pub async fn list_peers(peer_manager: &PeerManager) -> Vec<PeerInfo> {
-        peer_manager
-            .list_peer_snapshots()
+    async fn list_peers(core_instance: &RuntimeCoreInstance) -> Vec<PeerInfo> {
+        core_instance
+            .peer_snapshots()
             .await
             .into_iter()
             .map(|snapshot| PeerInfo {
@@ -52,6 +59,27 @@ impl PeerManagerRpcService {
             })
             .collect()
     }
+
+    async fn list_global_foreign_network(
+        core_instance: &RuntimeCoreInstance,
+    ) -> ListGlobalForeignNetworkResponse {
+        let mut response = ListGlobalForeignNetworkResponse::default();
+        let route_infos = core_instance.foreign_network_route_infos().await;
+        for info in &route_infos.infos {
+            let key = info.key.as_ref().unwrap();
+            let entry = response.foreign_networks.entry(key.peer_id).or_default();
+            let Some(route_info) = info.value.as_ref() else {
+                continue;
+            };
+            entry.foreign_networks.push(OneForeignNetwork {
+                network_name: key.network_name.clone(),
+                peer_ids: route_info.foreign_peer_ids.clone(),
+                last_updated: serde_json::to_string(&route_info.last_update.unwrap()).unwrap(),
+                version: route_info.version,
+            });
+        }
+        response
+    }
 }
 
 #[async_trait::async_trait]
@@ -64,8 +92,8 @@ impl PeerManageRpc for PeerManagerRpcService {
     ) -> Result<ListPeerResponse, rpc_types::error::Error> {
         let mut reply = ListPeerResponse::default();
 
-        let peer_manager = weak_upgrade(&self.peer_manager)?;
-        let peers = PeerManagerRpcService::list_peers(&peer_manager).await;
+        let core_instance = weak_upgrade(&self.core_instance)?;
+        let peers = PeerManagerRpcService::list_peers(&core_instance).await;
         for peer in peers {
             reply.peer_infos.push(peer);
         }
@@ -78,9 +106,10 @@ impl PeerManageRpc for PeerManagerRpcService {
         _: BaseController,
         _request: ListPublicIpv6InfoRequest,
     ) -> Result<ListPublicIpv6InfoResponse, rpc_types::error::Error> {
-        Ok(weak_upgrade(&self.peer_manager)?
-            .get_local_public_ipv6_info()
-            .await)
+        Ok(weak_upgrade(&self.core_instance)?
+            .local_public_ipv6_info()
+            .await
+            .into())
     }
 
     async fn list_route(
@@ -89,7 +118,12 @@ impl PeerManageRpc for PeerManagerRpcService {
         _request: ListRouteRequest, // Accept request of type HelloRequest
     ) -> Result<ListRouteResponse, rpc_types::error::Error> {
         let reply = ListRouteResponse {
-            routes: weak_upgrade(&self.peer_manager)?.list_routes().await,
+            routes: weak_upgrade(&self.core_instance)?
+                .route_snapshots()
+                .await
+                .into_iter()
+                .map(Into::into)
+                .collect(),
         };
         Ok(reply)
     }
@@ -100,7 +134,7 @@ impl PeerManageRpc for PeerManagerRpcService {
         _request: DumpRouteRequest, // Accept request of type HelloRequest
     ) -> Result<DumpRouteResponse, rpc_types::error::Error> {
         let reply = DumpRouteResponse {
-            result: weak_upgrade(&self.peer_manager)?.dump_route().await,
+            result: weak_upgrade(&self.core_instance)?.dump_route().await,
         };
         Ok(reply)
     }
@@ -122,9 +156,8 @@ impl PeerManageRpc for PeerManagerRpcService {
         _: BaseController,
         _request: ListGlobalForeignNetworkRequest,
     ) -> Result<ListGlobalForeignNetworkResponse, rpc_types::error::Error> {
-        Ok(weak_upgrade(&self.peer_manager)?
-            .list_global_foreign_network()
-            .await)
+        let core_instance = weak_upgrade(&self.core_instance)?;
+        Ok(Self::list_global_foreign_network(&core_instance).await)
     }
 
     async fn get_foreign_network_summary(
@@ -134,8 +167,8 @@ impl PeerManageRpc for PeerManagerRpcService {
     ) -> Result<GetForeignNetworkSummaryResponse, rpc_types::error::Error> {
         Ok(GetForeignNetworkSummaryResponse {
             summary: Some(
-                weak_upgrade(&self.peer_manager)?
-                    .get_foreign_network_summary()
+                weak_upgrade(&self.core_instance)?
+                    .foreign_network_route_summary()
                     .await,
             ),
         })
