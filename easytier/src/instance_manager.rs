@@ -1,6 +1,7 @@
 #[cfg(feature = "ffi-dataplane")]
 use crate::launcher::{DataPlaneTcpListener, DataPlaneTcpStream, DataPlaneUdpSocket};
 use dashmap::DashMap;
+use easytier_core::tunnel::ring::RingTunnelRegistry;
 use std::{collections::BTreeMap, path::PathBuf, sync::Arc};
 use tokio_util::task::AbortOnDropHandle;
 
@@ -33,6 +34,7 @@ pub struct NetworkInstanceManager {
     config_dir: Option<PathBuf>,
     guard_counter: Arc<()>,
     remote_mutation_lock: Arc<tokio::sync::Mutex<()>>,
+    ring_registry: Arc<RingTunnelRegistry>,
 }
 
 impl Default for NetworkInstanceManager {
@@ -51,6 +53,7 @@ impl NetworkInstanceManager {
             config_dir: None,
             guard_counter: Arc::new(()),
             remote_mutation_lock: Arc::new(tokio::sync::Mutex::new(())),
+            ring_registry: Arc::new(RingTunnelRegistry::default()),
         }
     }
 
@@ -116,7 +119,11 @@ impl NetworkInstanceManager {
             anyhow::bail!("instance {} already exists", instance_id);
         }
 
-        let mut instance = NetworkInstance::new(cfg, config_file_control);
+        let mut instance = NetworkInstance::new_with_ring_registry(
+            cfg,
+            config_file_control,
+            self.ring_registry.clone(),
+        );
         instance.start()?;
 
         self.instance_map.insert(instance_id, instance);

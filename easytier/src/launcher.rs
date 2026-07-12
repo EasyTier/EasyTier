@@ -23,6 +23,7 @@ use crate::{
 };
 use anyhow::Context;
 use chrono::{DateTime, Local};
+use easytier_core::tunnel::ring::RingTunnelRegistry;
 use std::{
     collections::VecDeque,
     net::SocketAddr,
@@ -83,10 +84,15 @@ pub struct EasyTierLauncher {
     running_cfg: String,
     error_msg: Arc<RwLock<Option<String>>>,
     data: Arc<EasyTierData>,
+    ring_registry: Arc<RingTunnelRegistry>,
 }
 
 impl EasyTierLauncher {
     pub fn new() -> Self {
+        Self::new_with_ring_registry(Arc::new(RingTunnelRegistry::default()))
+    }
+
+    pub(crate) fn new_with_ring_registry(ring_registry: Arc<RingTunnelRegistry>) -> Self {
         let instance_alive = Arc::new(AtomicBool::new(false));
         Self {
             instance_alive,
@@ -96,6 +102,7 @@ impl EasyTierLauncher {
             running_cfg: String::new(),
             stop_flag: Arc::new(AtomicBool::new(false)),
             data: Arc::new(EasyTierData::default()),
+            ring_registry,
         }
     }
 
@@ -144,11 +151,12 @@ impl EasyTierLauncher {
 
     async fn easytier_routine(
         cfg: TomlConfigLoader,
+        ring_registry: Arc<RingTunnelRegistry>,
         stop_signal: Arc<tokio::sync::Notify>,
         api_service: ArcMutApiService,
         data: Arc<EasyTierData>,
     ) -> Result<(), anyhow::Error> {
-        let mut instance = Instance::new(cfg);
+        let mut instance = Instance::new_with_ring_registry(cfg, ring_registry);
         let mut tasks = JoinSet::new();
 
         // Subscribe to global context events
@@ -225,6 +233,7 @@ impl EasyTierLauncher {
 
         let data = self.data.clone();
         let api_service = self.api_service.clone();
+        let ring_registry = self.ring_registry.clone();
 
         self.thread_handle = Some(std::thread::spawn(move || {
             let rt = if cfg.get_flags().multi_thread {
@@ -260,6 +269,7 @@ impl EasyTierLauncher {
             let notifier = data.instance_stop_notifier.clone();
             let ret = rt.block_on(Self::easytier_routine(
                 cfg,
+                ring_registry,
                 stop_notifier,
                 api_service,
                 data,
@@ -359,14 +369,28 @@ pub struct NetworkInstance {
     config: TomlConfigLoader,
     launcher: Option<EasyTierLauncher>,
     config_file_control: ConfigFileControl,
+    ring_registry: Arc<RingTunnelRegistry>,
 }
 
 impl NetworkInstance {
     pub fn new(config: TomlConfigLoader, config_file_control: ConfigFileControl) -> Self {
+        Self::new_with_ring_registry(
+            config,
+            config_file_control,
+            Arc::new(RingTunnelRegistry::default()),
+        )
+    }
+
+    pub(crate) fn new_with_ring_registry(
+        config: TomlConfigLoader,
+        config_file_control: ConfigFileControl,
+        ring_registry: Arc<RingTunnelRegistry>,
+    ) -> Self {
         Self {
             config,
             launcher: None,
             config_file_control,
+            ring_registry,
         }
     }
 
@@ -479,7 +503,7 @@ impl NetworkInstance {
             return Ok(self.subscribe_event().unwrap());
         }
 
-        let launcher = EasyTierLauncher::new();
+        let launcher = EasyTierLauncher::new_with_ring_registry(self.ring_registry.clone());
         self.launcher = Some(launcher);
         let ev = self.subscribe_event().unwrap();
 
@@ -1234,6 +1258,7 @@ impl NetworkConfigExt for NetworkConfig {
 
 #[cfg(test)]
 mod tests {
+    use super::{EasyTierLauncher, NetworkInstance, RingTunnelRegistry};
     use crate::{
         common::config::{ConfigLoader, process_secure_mode_cfg},
         launcher::NetworkConfigExt,
@@ -1241,7 +1266,24 @@ mod tests {
     };
     use base64::prelude::{BASE64_STANDARD, Engine as _};
     use rand::Rng;
-    use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+    use std::{
+        net::{IpAddr, Ipv4Addr, Ipv6Addr},
+        sync::Arc,
+    };
+
+    #[test]
+    fn native_ring_registry_is_explicitly_shared_with_launcher() {
+        let ring_registry = Arc::new(RingTunnelRegistry::default());
+        let instance = NetworkInstance::new_with_ring_registry(
+            crate::common::config::TomlConfigLoader::default(),
+            crate::common::config::ConfigFileControl::STATIC_CONFIG,
+            ring_registry.clone(),
+        );
+        let launcher = EasyTierLauncher::new_with_ring_registry(instance.ring_registry.clone());
+
+        assert!(Arc::ptr_eq(&ring_registry, &instance.ring_registry));
+        assert!(Arc::ptr_eq(&ring_registry, &launcher.ring_registry));
+    }
 
     fn gen_default_config() -> crate::common::config::TomlConfigLoader {
         let config = crate::common::config::TomlConfigLoader::default();
