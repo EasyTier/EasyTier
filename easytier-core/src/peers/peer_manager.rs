@@ -97,6 +97,13 @@ pub struct NodeSnapshot {
     pub ipv6_public_addr_prefix: Option<cidr::Ipv6Inet>,
 }
 
+fn magic_dns_route_advertisement(route: CoreRoute) -> MagicDnsRouteAdvertisement {
+    MagicDnsRouteAdvertisement {
+        hostname: route.hostname,
+        ipv4_addr: route.ipv4_addr,
+    }
+}
+
 pub struct RpcTransport {
     my_peer_id: PeerId,
     peers: Weak<PeerMap>,
@@ -1812,14 +1819,11 @@ impl MagicDnsRouteSource for PeerManagerCore {
             .list_route_snapshots()
             .await
             .into_iter()
-            .map(|route| MagicDnsRouteAdvertisement {
-                hostname: route.hostname,
-                ipv4_addr: route.ipv4_addr.map(Into::into),
-            })
+            .map(magic_dns_route_advertisement)
             .collect::<Vec<_>>();
         routes.push(MagicDnsRouteAdvertisement {
             hostname: self.context.hostname(),
-            ipv4_addr: self.context.ipv4(),
+            ipv4_addr: self.context.ipv4().map(Into::into),
         });
         MagicDnsRouteSnapshot {
             revision,
@@ -3699,9 +3703,25 @@ mod tests {
             dns_snapshot.routes.last(),
             Some(&MagicDnsRouteAdvertisement {
                 hostname: "portable-node".to_owned(),
-                ipv4_addr: Some("10.20.0.91/16".parse().unwrap()),
+                ipv4_addr: Some("10.20.0.91/16".parse::<cidr::Ipv4Inet>().unwrap().into()),
             })
         );
+    }
+
+    #[test]
+    fn magic_dns_advertisement_preserves_untrusted_prefix_without_parsing() {
+        let ipv4_addr = crate::proto::common::Ipv4Inet {
+            address: Some("192.0.2.1".parse::<std::net::Ipv4Addr>().unwrap().into()),
+            network_length: 33,
+        };
+
+        let advertisement = magic_dns_route_advertisement(CoreRoute {
+            hostname: "remote".to_owned(),
+            ipv4_addr: Some(ipv4_addr.clone()),
+            ..Default::default()
+        });
+
+        assert_eq!(advertisement.ipv4_addr, Some(ipv4_addr));
     }
 
     #[tokio::test]

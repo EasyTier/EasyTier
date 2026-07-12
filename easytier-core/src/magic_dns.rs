@@ -197,7 +197,7 @@ pub struct MagicDnsRouteSnapshot {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MagicDnsRouteAdvertisement {
     pub hostname: String,
-    pub ipv4_addr: Option<cidr::Ipv4Inet>,
+    pub ipv4_addr: Option<crate::proto::common::Ipv4Inet>,
 }
 
 #[async_trait]
@@ -333,7 +333,7 @@ mod tests {
                 revision: *self.revision.lock().unwrap(),
                 routes: vec![MagicDnsRouteAdvertisement {
                     hostname: "node-a".to_owned(),
-                    ipv4_addr: Some("10.1.0.1/24".parse().unwrap()),
+                    ipv4_addr: Some("10.1.0.1/24".parse::<cidr::Ipv4Inet>().unwrap().into()),
                 }],
                 zone: "et.net.".to_owned(),
             }
