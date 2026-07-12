@@ -42,23 +42,24 @@ type opaqueWriteOperation struct {
 }
 
 type opaqueBridge struct {
-	mu           sync.Mutex
-	handles      map[uint64]net.Conn
-	packets      map[uint64]*opaquePacketState
-	listeners    map[uint64]*opaqueTCPListenerState
-	reads        map[uint64]*opaqueReadOperation
-	writes       map[uint64]*opaqueWriteOperation
-	udpReads     map[uint64]*opaqueUDPReadWaiter
-	udpWrites    map[uint64]*opaqueUDPWriteWaiter
-	tcpAccepts   map[uint64]*opaqueTCPAcceptWaiter
-	creates      map[uint64]*opaqueCreateOperation
-	dns          map[uint64]*opaqueDNSOperation
-	dnsResolver  opaqueDNSResolver
-	packetSinks  map[uint64]*opaquePacketSinkState
-	packetWrites map[uint64]*opaquePacketWriteWaiter
-	nextHandle   uint64
-	completion   chan struct{}
-	workers      sync.WaitGroup
+	mu               sync.Mutex
+	handles          map[uint64]net.Conn
+	packets          map[uint64]*opaquePacketState
+	listeners        map[uint64]*opaqueTCPListenerState
+	reads            map[uint64]*opaqueReadOperation
+	writes           map[uint64]*opaqueWriteOperation
+	udpReads         map[uint64]*opaqueUDPReadWaiter
+	udpWrites        map[uint64]*opaqueUDPWriteWaiter
+	tcpAccepts       map[uint64]*opaqueTCPAcceptWaiter
+	creates          map[uint64]*opaqueCreateOperation
+	dns              map[uint64]*opaqueDNSOperation
+	dnsResolver      opaqueDNSResolver
+	packetSinks      map[uint64]*opaquePacketSinkState
+	packetWrites     map[uint64]*opaquePacketWriteWaiter
+	environmentCalls int
+	nextHandle       uint64
+	completion       chan struct{}
+	workers          sync.WaitGroup
 }
 
 func newOpaqueBridge(
@@ -640,6 +641,12 @@ func instantiateOpaqueHost(
 		NewFunctionBuilder().WithFunc(bridge.takeDNSTXT).Export("take_dns_txt").
 		NewFunctionBuilder().WithFunc(bridge.startDNSSRV).Export("start_dns_srv").
 		NewFunctionBuilder().WithFunc(bridge.takeDNSSRV).Export("take_dns_srv").
+		NewFunctionBuilder().WithFunc(bridge.startLocalAddrForRemote).Export("start_local_addr_for_remote").
+		NewFunctionBuilder().WithFunc(bridge.takeLocalAddrForRemote).Export("take_local_addr_for_remote").
+		NewFunctionBuilder().WithFunc(bridge.startUDPPortMapping).Export("start_udp_port_mapping").
+		NewFunctionBuilder().WithFunc(bridge.takeUDPPortMapping).Export("take_udp_port_mapping").
+		NewFunctionBuilder().WithFunc(bridge.startTCPPortMapping).Export("start_tcp_port_mapping").
+		NewFunctionBuilder().WithFunc(bridge.takeTCPPortMapping).Export("take_tcp_port_mapping").
 		NewFunctionBuilder().WithFunc(bridge.tryPacketWrite).Export("try_packet_write").
 		NewFunctionBuilder().WithFunc(bridge.startPacketWriteReady).Export("start_packet_write_ready").
 		NewFunctionBuilder().WithFunc(bridge.takePacketWriteReady).Export("take_packet_write_ready").

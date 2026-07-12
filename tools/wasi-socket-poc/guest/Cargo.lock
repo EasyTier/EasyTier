@@ -572,6 +572,7 @@ dependencies = [
  "rcgen",
  "rustls",
  "serde",
+ "serde_json",
  "sha2",
  "snow",
  "stun_codec",
