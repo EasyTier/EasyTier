@@ -12,7 +12,10 @@ use dashmap::{DashMap, mapref::entry::Entry};
 use tokio::sync::Notify;
 use tokio_util::task::AbortOnDropHandle;
 
-use crate::socket::udp::{UdpBindOptions, VirtualUdpSocket, VirtualUdpSocketFactory};
+use crate::{
+    runtime_time,
+    socket::udp::{UdpBindOptions, VirtualUdpSocket, VirtualUdpSocketFactory},
+};
 
 use super::{
     runtime::{
@@ -189,37 +192,36 @@ where
         }
 
         let socket = self.socket.clone();
-        let task =
-            AbortOnDropHandle::new(tokio::spawn(async move {
-                loop {
-                    let mut buffer = vec![0; UDP_PROXY_RECEIVE_BUFFER_SIZE];
-                    let (length, source) =
-                        match tokio::time::timeout(receive_timeout, socket.recv_from(&mut buffer))
-                            .await
-                        {
-                            Ok(Ok(received)) => received,
-                            Ok(Err(error)) => {
-                                tracing::error!(?error, ?entry_id, "UDP proxy receive failed");
-                                break;
-                            }
-                            Err(error) => {
-                                tracing::error!(?error, ?entry_id, "UDP proxy receive timed out");
-                                break;
-                            }
-                        };
-
-                    let Some(response_sink) = response_sink.upgrade() else {
-                        break;
+        let task = AbortOnDropHandle::new(tokio::spawn(async move {
+            loop {
+                let mut buffer = vec![0; UDP_PROXY_RECEIVE_BUFFER_SIZE];
+                let (length, source) =
+                    match runtime_time::timeout(receive_timeout, socket.recv_from(&mut buffer))
+                        .await
+                    {
+                        Ok(Ok(received)) => received,
+                        Ok(Err(error)) => {
+                            tracing::error!(?error, ?entry_id, "UDP proxy receive failed");
+                            break;
+                        }
+                        Err(error) => {
+                            tracing::error!(?error, ?entry_id, "UDP proxy receive timed out");
+                            break;
+                        }
                     };
-                    response_sink
-                        .handle_socket_response(
-                            entry_id,
-                            source,
-                            Bytes::copy_from_slice(&buffer[..length]),
-                        )
-                        .await;
-                }
-            }));
+
+                let Some(response_sink) = response_sink.upgrade() else {
+                    break;
+                };
+                response_sink
+                    .handle_socket_response(
+                        entry_id,
+                        source,
+                        Bytes::copy_from_slice(&buffer[..length]),
+                    )
+                    .await;
+            }
+        }));
 
         let mut receive_task = self.receive_task.lock().unwrap();
         if self.closed.load(Ordering::Acquire) {
@@ -636,7 +638,7 @@ mod tests {
         factory.bind_started.notified().await;
         factory.release_bind.notify_one();
 
-        tokio::time::timeout(Duration::from_secs(1), retry)
+        runtime_time::timeout(Duration::from_secs(1), retry)
             .await
             .unwrap()
             .unwrap()

@@ -1,9 +1,11 @@
 use std::{net::SocketAddr, sync::Arc, time::Duration};
 
 use anyhow::Context;
-use tokio::time::timeout;
 
-use crate::socket::tcp::{TcpConnectOptions, VirtualTcpSocketFactory};
+use crate::{
+    runtime_time::timeout,
+    socket::tcp::{TcpConnectOptions, VirtualTcpSocketFactory},
+};
 
 use super::{runtime::TcpProxyDestinationConnector, tcp_proxy_engine::TcpProxyMode};
 

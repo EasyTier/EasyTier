@@ -85,7 +85,7 @@ impl ProxyCidrMonitor {
             let mut last_update = None;
 
             loop {
-                tokio::time::sleep(Duration::from_secs(1)).await;
+                crate::runtime_time::sleep(Duration::from_secs(1)).await;
                 let Some(peer_manager) = self.peer_manager.upgrade() else {
                     break;
                 };

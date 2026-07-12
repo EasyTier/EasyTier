@@ -3,9 +3,11 @@ use std::sync::Arc;
 
 use tokio::sync::{Mutex, mpsc};
 use tokio::task::JoinSet;
-use tokio::time::{Duration, timeout};
 
-use crate::packet::ZCPacket;
+use crate::{
+    packet::ZCPacket,
+    runtime_time::{Duration, timeout},
+};
 
 use super::runtime::TcpProxySrcStream;
 use super::tokio_smoltcp::{BufferSize, Net, NetConfig, channel_device};

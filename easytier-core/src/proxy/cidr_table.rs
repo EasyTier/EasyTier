@@ -64,7 +64,7 @@ impl<P: ProxyCidrSnapshotProvider + 'static> ProxyCidrTableRuntime<P> {
                     last_snapshot = snapshot.clone();
                     table.update_snapshot(snapshot);
                 }
-                tokio::time::sleep(Duration::from_secs(1)).await;
+                crate::runtime_time::sleep(Duration::from_secs(1)).await;
             }
         })));
     }
@@ -211,12 +211,12 @@ mod tests {
     }
 
     async fn wait_for_lookup(table: &ProxyCidrTable, mapped_ip: Ipv4Addr, expected: Ipv4Addr) {
-        tokio::time::timeout(Duration::from_secs(2), async {
+        crate::runtime_time::timeout(Duration::from_secs(2), async {
             loop {
                 if table.lookup_v4(mapped_ip) == Some(expected) {
                     break;
                 }
-                tokio::time::sleep(Duration::from_millis(10)).await;
+                crate::runtime_time::sleep(Duration::from_millis(10)).await;
             }
         })
         .await
@@ -279,7 +279,7 @@ mod tests {
         runtime.stop_updater();
         let calls_after_stop = provider.calls.load(Ordering::Acquire);
         provider.set(mapped_rule("203.0.113.0/24", "10.20.30.0/24"));
-        tokio::time::sleep(Duration::from_millis(1100)).await;
+        crate::runtime_time::sleep(Duration::from_millis(1100)).await;
         assert_eq!(provider.calls.load(Ordering::Acquire), calls_after_stop);
         assert_eq!(table.lookup_v4("10.20.30.42".parse().unwrap()), None);
 
@@ -292,7 +292,7 @@ mod tests {
         drop(runtime);
         let calls_after_drop = provider.calls.load(Ordering::Acquire);
         provider.set(mapped_rule("10.0.0.0/24", "172.16.0.0/24"));
-        tokio::time::sleep(Duration::from_millis(1100)).await;
+        crate::runtime_time::sleep(Duration::from_millis(1100)).await;
         assert_eq!(provider.calls.load(Ordering::Acquire), calls_after_drop);
         assert_eq!(table.lookup_v4("172.16.0.42".parse().unwrap()), None);
     }

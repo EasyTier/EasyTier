@@ -92,7 +92,7 @@ impl<R: UdpProxyRuntime + 'static> UdpProxyService<R> {
         let service = Arc::downgrade(self);
         self.tasks.lock().unwrap().spawn(async move {
             loop {
-                tokio::time::sleep(Duration::from_secs(15)).await;
+                crate::runtime_time::sleep(Duration::from_secs(15)).await;
                 let Some(service) = service.upgrade() else {
                     break;
                 };
@@ -105,7 +105,7 @@ impl<R: UdpProxyRuntime + 'static> UdpProxyService<R> {
         let service = Arc::downgrade(self);
         self.tasks.lock().unwrap().spawn(async move {
             loop {
-                tokio::time::sleep(Duration::from_secs(1)).await;
+                crate::runtime_time::sleep(Duration::from_secs(1)).await;
                 let Some(service) = service.upgrade() else {
                     break;
                 };

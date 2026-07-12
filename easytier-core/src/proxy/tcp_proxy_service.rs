@@ -6,12 +6,16 @@ use std::time::Duration;
 
 use tokio::io::{AsyncWriteExt, copy};
 use tokio::task::JoinSet;
-use tokio::time::timeout;
 
-use crate::packet::ZCPacket;
-use crate::peers::peer_manager::{PeerManagerCore, PipelineRegistrationGuard};
-use crate::peers::{NicPacketFilter, PeerPacketFilter};
-use crate::socket::tcp::{TcpListenOptions, VirtualTcpListener, VirtualTcpListenerFactory};
+use crate::{
+    packet::ZCPacket,
+    peers::{
+        NicPacketFilter, PeerPacketFilter,
+        peer_manager::{PeerManagerCore, PipelineRegistrationGuard},
+    },
+    runtime_time::timeout,
+    socket::tcp::{TcpListenOptions, VirtualTcpListener, VirtualTcpListenerFactory},
+};
 
 use super::cidr_table::ProxyCidrTable;
 use super::runtime::{
@@ -163,7 +167,7 @@ impl<R: TcpProxyRuntime + 'static, F: VirtualTcpListenerFactory, C: TcpProxyDest
         let service = Arc::downgrade(self);
         self.tasks.lock().unwrap().spawn(async move {
             loop {
-                tokio::time::sleep(Duration::from_secs(10)).await;
+                crate::runtime_time::sleep(Duration::from_secs(10)).await;
                 let Some(service) = service.upgrade() else {
                     break;
                 };
@@ -353,7 +357,7 @@ impl<R: TcpProxyRuntime + 'static, F: VirtualTcpListenerFactory, C: TcpProxyDest
         drop(dst_stream);
 
         entry.set_state(TcpNatEntryState::Closed);
-        tokio::time::sleep(Duration::from_secs(10)).await;
+        crate::runtime_time::sleep(Duration::from_secs(10)).await;
         service.engine.remove_entry(entry.id());
     }
 
