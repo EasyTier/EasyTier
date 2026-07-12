@@ -88,6 +88,8 @@ pub struct PeerRuntimeSnapshot {
     pub pinned_peers: Vec<(url::Url, Option<String>)>,
     pub peer_group_memberships: Vec<PeerGroupIdentity>,
     pub acl_group_declarations: Vec<PeerGroupIdentity>,
+    pub ospf_update_my_foreign_network_interval_sec: u64,
+    pub hmac_secret_digest: bool,
 }
 
 impl PeerRuntimeSnapshot {
@@ -99,6 +101,8 @@ impl PeerRuntimeSnapshot {
             pinned_peers: Vec::new(),
             peer_group_memberships: Vec::new(),
             acl_group_declarations: Vec::new(),
+            ospf_update_my_foreign_network_interval_sec: 10,
+            hmac_secret_digest: false,
         }
     }
 }
@@ -131,16 +135,8 @@ pub trait PeerRuntimeSupport: Send + Sync {
         env!("CARGO_PKG_VERSION").to_owned()
     }
 
-    fn ospf_update_my_foreign_network_interval_sec(&self) -> u64 {
-        10
-    }
-
     fn advertised_ipv6_public_addr_prefix(&self) -> Option<Ipv6Cidr> {
         None
-    }
-
-    fn hmac_secret_digest_enabled(&self) -> bool {
-        false
     }
 
     fn is_pubkey_trusted(&self, _pubkey: &[u8], _network_name: &str) -> bool {
@@ -1010,7 +1006,7 @@ impl PeerContext for SubmittedPeerContext {
     }
 
     fn ospf_update_my_foreign_network_interval_sec(&self) -> u64 {
-        self.support.ospf_update_my_foreign_network_interval_sec()
+        self.snapshot().ospf_update_my_foreign_network_interval_sec
     }
 
     fn advertised_ipv6_public_addr_prefix(&self) -> Option<Ipv6Cidr> {
@@ -1044,7 +1040,7 @@ impl PeerContext for SubmittedPeerContext {
     }
 
     fn secret_digest(&self, network_identity: &NetworkIdentity) -> Vec<u8> {
-        if self.support.hmac_secret_digest_enabled() {
+        if self.snapshot().hmac_secret_digest {
             self.secret_proof(b"digest")
                 .map(|mac| mac.finalize().into_bytes().to_vec())
                 .unwrap_or_default()
